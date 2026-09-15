@@ -1,0 +1,2434 @@
+import express from "express";
+import path from "path";
+import crypto from "crypto";
+import fs from "fs";
+import { createServer as createViteServer } from "vite";
+import { GoogleGenAI } from "@google/genai";
+import dotenv from "dotenv";
+
+dotenv.config();
+
+const app = express();
+const PORT = 3000;
+const PROJECT_VERSION = "13.0.0";
+const STATE_SCHEMA_VERSION = 15;
+const BACKUP_DIR = path.join(process.cwd(), ".gharabi-backups");
+
+app.use(express.json({ limit: "256kb" }));
+
+// Request correlation: every API response receives a short trace id. It is safe
+// to expose and contains no credentials; it helps the owner match UI errors to
+// audit/support records without logging request bodies or secrets.
+app.use((req, res, next) => {
+  const incoming = typeof req.headers["x-request-id"] === "string" ? req.headers["x-request-id"].trim() : "";
+  const requestId = (incoming || crypto.randomUUID()).slice(0, 80);
+  (req as any).requestId = requestId;
+  res.setHeader("X-Request-ID", requestId);
+  next();
+});
+
+const authAttemptWindow = new Map<string, { startedAt: number; count: number }>();
+function allowAuthAttempt(key: string, limit = 12): boolean {
+  const now = Date.now();
+  const item = authAttemptWindow.get(key);
+  if (!item || now - item.startedAt >= 15 * 60 * 1000) {
+    authAttemptWindow.set(key, { startedAt: now, count: 1 });
+    return true;
+  }
+  if (item.count >= limit) return false;
+  item.count += 1;
+  return true;
+}
+
+
+// Baseline security headers without adding another dependency.
+app.disable("x-powered-by");
+app.use((_req, res, next) => {
+  res.setHeader("X-Content-Type-Options", "nosniff");
+  res.setHeader("X-Frame-Options", "DENY");
+  res.setHeader("Referrer-Policy", "no-referrer");
+  res.setHeader("Permissions-Policy", "camera=(), microphone=(), geolocation=()");
+  next();
+});
+
+// -------------------------------------------------------------
+// Security & Role-Based Access Control (RBAC) System
+// -------------------------------------------------------------
+
+export type ServerUserRole = 'owner' | 'manager' | 'staff' | 'content_creator' | 'customer_support';
+
+export interface ServerUser {
+  id: string;
+  name: string;
+  email: string;
+  role: ServerUserRole;
+  roleTitleArabic: string;
+  avatar: string;
+  active: boolean;
+  createdAt: string;
+}
+
+export interface ActiveSession {
+  token: string;
+  user: {
+    id: string;
+    name: string;
+    email: string;
+    role: ServerUserRole;
+    roleTitleArabic: string;
+    avatar: string;
+    active: boolean;
+  };
+  expiresAt: number;
+}
+
+// Configurable Owner Email (Single source of truth on the server)
+const OWNER_EMAIL = (process.env.OWNER_EMAIL || "").toLowerCase().trim();
+const GOOGLE_CLIENT_ID = (process.env.GOOGLE_CLIENT_ID || "").trim();
+
+function getRoleTitle(role: ServerUserRole): string {
+  switch (role) {
+    case 'owner':
+      return 'مالك النظام (Owner)';
+    case 'manager':
+      return 'المدير العام';
+    case 'staff':
+      return 'الموظف';
+    case 'content_creator':
+      return 'مسؤول المحتوى';
+    case 'customer_support':
+      return 'مسؤول خدمة العملاء';
+    default:
+      return 'مستخدم';
+  }
+}
+
+// Persistent server-side store. Only real owner/user records are loaded; no demo data.
+const STATE_FILE = path.join(process.cwd(), ".gharabi-state.json");
+const defaultOwner: ServerUser = {
+  id: "owner",
+  name: "مالك النظام (Owner)",
+  email: OWNER_EMAIL,
+  role: "owner",
+  roleTitleArabic: "مالك النظام (Owner)",
+  avatar: "",
+  active: true,
+  createdAt: new Date().toISOString(),
+};
+
+function loadPersistentState(): any {
+  try {
+    const raw = JSON.parse(fs.readFileSync(STATE_FILE, "utf8"));
+    if (!raw.schemaVersion) raw.schemaVersion = 1;
+    const users = Array.isArray(raw.users) ? raw.users : [defaultOwner];
+    if (!users.some((u: ServerUser) => u.id === "owner")) users.unshift(defaultOwner);
+    return { users, audit: Array.isArray(raw.audit) ? raw.audit.slice(0, 200) : [], jobs: Array.isArray(raw.jobs) ? raw.jobs.slice(0, 200) : [], workspace: raw.workspace && typeof raw.workspace === "object" ? { showroom: raw.workspace.showroom || {}, products: Array.isArray(raw.workspace.products) ? raw.workspace.products.slice(0, 1000) : [], posts: Array.isArray(raw.workspace.posts) ? raw.workspace.posts.slice(0, 1000) : [], conversations: Array.isArray(raw.workspace.conversations) ? raw.workspace.conversations.slice(0, 1000) : [], installmentPlans: Array.isArray(raw.workspace.installmentPlans) ? raw.workspace.installmentPlans.slice(0, 200) : [], leads: Array.isArray(raw.workspace.leads) ? raw.workspace.leads.slice(0, 2000) : [], tasks: Array.isArray(raw.workspace.tasks) ? raw.workspace.tasks.slice(0, 1000) : [], sales: Array.isArray(raw.workspace.sales) ? raw.workspace.sales.slice(0, 5000) : [], payments: Array.isArray(raw.workspace.payments) ? raw.workspace.payments.slice(0, 10000) : [], inventoryMovements: Array.isArray(raw.workspace.inventoryMovements) ? raw.workspace.inventoryMovements.slice(0, 20000) : [], suppliers: Array.isArray(raw.workspace.suppliers) ? raw.workspace.suppliers.slice(0, 1000) : [], purchases: Array.isArray(raw.workspace.purchases) ? raw.workspace.purchases.slice(0, 5000) : [], expenses: Array.isArray(raw.workspace.expenses) ? raw.workspace.expenses.slice(0, 10000) : [], contracts: Array.isArray(raw.workspace.contracts) ? raw.workspace.contracts.slice(0, 5000) : [], installmentSchedules: Array.isArray(raw.workspace.installmentSchedules) ? raw.workspace.installmentSchedules.slice(0, 20000) : [], notifications: Array.isArray(raw.workspace.notifications) ? raw.workspace.notifications.slice(0, 10000) : [], webhookEvents: Array.isArray(raw.workspace.webhookEvents) ? raw.workspace.webhookEvents.slice(0, 10000) : [], providerEvents: Array.isArray(raw.workspace.providerEvents) ? raw.workspace.providerEvents.slice(0, 10000) : [], providerTokens: raw.workspace.providerTokens && typeof raw.workspace.providerTokens === "object" ? raw.workspace.providerTokens : {} } : { showroom: {}, products: [], posts: [], conversations: [], installmentPlans: [], leads: [], tasks: [], sales: [], payments: [], inventoryMovements: [], suppliers: [], purchases: [], expenses: [], contracts: [], installmentSchedules: [], notifications: [], webhookEvents: [], providerEvents: [], providerTokens: {} } };
+  } catch {
+    return { users: [defaultOwner], audit: [], jobs: [], workspace: { showroom: {}, products: [], posts: [], conversations: [], installmentPlans: [], leads: [], tasks: [], sales: [], payments: [], inventoryMovements: [], suppliers: [], purchases: [], expenses: [], contracts: [], installmentSchedules: [], notifications: [], webhookEvents: [], providerEvents: [], providerTokens: {} } };
+  }
+}
+
+const persisted = loadPersistentState();
+const serverUsers: ServerUser[] = persisted.users;
+const workspace = persisted.workspace;
+for (const key of ["inventoryMovements","suppliers","purchases","expenses","contracts","installmentSchedules","notifications","webhookEvents","providerEvents"]) if (!Array.isArray((workspace as any)[key])) (workspace as any)[key] = [];
+if (!Array.isArray((workspace as any).inventoryMovements)) (workspace as any).inventoryMovements = [];
+for (const key of ["suppliers","purchases","expenses","contracts","installmentSchedules","notifications","webhookEvents","providerEvents"]) if (!Array.isArray((workspace as any)[key])) (workspace as any)[key] = [];
+if (!(workspace as any).providerTokens || typeof (workspace as any).providerTokens !== "object") (workspace as any).providerTokens = {};
+
+// Migration guard: a post is never considered externally published merely because
+// an old/local record said so. Until a real provider execution receipt exists,
+// legacy "published" records are downgraded to approved.
+for (const post of workspace.posts) {
+  if (post?.status === "published") {
+    post.status = "approved";
+    delete post.publishedAt;
+  }
+}
+
+// Active sessions: token -> ActiveSession
+const activeSessions = new Map<string, ActiveSession>();
+
+// Temporary challenge store for owner verification fallback (expires in 10 mins)
+const verificationChallenges = new Map<string, { code: string; expiresAt: number }>();
+
+function createSessionForUser(user: ServerUser): ActiveSession {
+  const token = crypto.randomBytes(32).toString("hex");
+  const session: ActiveSession = {
+    token,
+    user: {
+      id: user.id,
+      name: user.name,
+      email: user.email,
+      role: user.role,
+      roleTitleArabic: user.roleTitleArabic,
+      avatar: user.avatar,
+      active: user.active,
+    },
+    expiresAt: Date.now() + 1000 * 60 * 60 * 24 * 7, // 7 days valid
+  };
+  activeSessions.set(token, session);
+  return session;
+}
+
+// Middleware: Authenticate incoming token
+function authenticateToken(req: express.Request, res: express.Response, next: express.NextFunction) {
+  const authHeader = req.headers.authorization;
+  if (!authHeader || !authHeader.startsWith("Bearer ")) {
+    return res.status(401).json({
+      success: false,
+      error: "غير مصرح. يجب تسجيل الدخول للوصول إلى هذا المورد.",
+    });
+  }
+
+  const token = authHeader.substring(7).trim();
+  const session = activeSessions.get(token);
+
+  if (!session || session.expiresAt < Date.now()) {
+    if (session) activeSessions.delete(token);
+    return res.status(401).json({
+      success: false,
+      error: "انتهت صلاحية جلسة الدخول. يرجى إعادة تسجيل الدخول.",
+    });
+  }
+
+  const dbUser = serverUsers.find((u) => u.id === session.user.id);
+  if (!dbUser || !dbUser.active) {
+    activeSessions.delete(token);
+    return res.status(403).json({
+      success: false,
+      error: "تم إلغاء تفعيل هذا الحساب أو حذفه.",
+    });
+  }
+
+  // Synchronize server-side role
+  session.user.role = dbUser.role;
+  (req as any).session = session;
+  (req as any).user = dbUser;
+  next();
+}
+
+// Middleware: Strict Owner authorization
+function requireOwner(req: express.Request, res: express.Response, next: express.NextFunction) {
+  authenticateToken(req, res, () => {
+    const user = (req as any).user as ServerUser;
+    if (user.role !== "owner") {
+      return res.status(403).json({
+        success: false,
+        error: "صلاحية مرفوضة: هذه العملية مقتصرة حصرياً على مالك النظام (Owner).",
+      });
+    }
+    next();
+  });
+}
+
+// -------------------------------------------------------------
+// Authentication Endpoints
+// -------------------------------------------------------------
+
+// 1. Google Sign-In verification endpoint
+app.post("/api/auth/google", async (req, res) => {
+  try {
+    const key = `google:${req.ip}`;
+    if (!allowAuthAttempt(key)) return res.status(429).json({ success: false, error: "محاولات المصادقة كثيرة. حاول لاحقاً." });
+    const { credential } = req.body;
+    if (!credential || typeof credential !== "string") {
+      return res.status(400).json({ success: false, error: "رمز المصادقة من Google مطلوب." });
+    }
+
+    // Securely verify ID token with Google tokeninfo endpoint
+    const googleVerifyRes = await fetch(`https://oauth2.googleapis.com/tokeninfo?id_token=${encodeURIComponent(credential)}`);
+    if (!googleVerifyRes.ok) {
+      return res.status(401).json({ success: false, error: "فشل التحقق من صحة حساب Google." });
+    }
+
+    const tokenPayload: any = await googleVerifyRes.json();
+    const email = (tokenPayload.email || "").toLowerCase().trim();
+    const emailVerified = tokenPayload.email_verified === "true" || tokenPayload.email_verified === true;
+
+    if (!email || !emailVerified) {
+      return res.status(401).json({ success: false, error: "البريد الإلكتروني لحساب Google غير مؤكد." });
+    }
+
+    if (GOOGLE_CLIENT_ID && tokenPayload.aud !== GOOGLE_CLIENT_ID) {
+      return res.status(401).json({ success: false, error: "حساب Google غير مهيأ لهذا التطبيق." });
+    }
+
+    // Check if this user is the registered OWNER
+    let user: ServerUser | undefined;
+    if (email === OWNER_EMAIL) {
+      user = serverUsers.find((u) => u.id === "owner");
+      if (user) {
+        user.email = email;
+        if (tokenPayload.name) user.name = tokenPayload.name;
+        if (tokenPayload.picture) user.avatar = tokenPayload.picture;
+      }
+    } else {
+      // Check if user was explicitly authorized by Owner in the server
+      user = serverUsers.find((u) => u.email.toLowerCase() === email && u.active);
+      if (!user) {
+        return res.status(403).json({
+          success: false,
+          error: "عذراً، هذا الحساب غير مسجل أو مصرح له. يجب إضافة الحساب من قبل مالك النظام (Owner) أولاً.",
+        });
+      }
+      if (tokenPayload.name) user.name = tokenPayload.name;
+      if (tokenPayload.picture) user.avatar = tokenPayload.picture;
+    }
+
+    if (!user || !user.active) {
+      return res.status(403).json({ success: false, error: "هذا الحساب معطل حالياً." });
+    }
+
+    const session = createSessionForUser(user);
+    console.log(`[Auth] User authenticated: ${user.email} (${user.role})`);
+
+    return res.json({
+      success: true,
+      token: session.token,
+      user: session.user,
+    });
+  } catch (err: any) {
+    console.error("Google auth error:", err);
+    return res.status(500).json({ success: false, error: "حدث خطأ غير متوقع أثناء المصادقة." });
+  }
+});
+
+// 2. Owner Challenge Verification Flow (Secure server-side OTP for owner email)
+app.post("/api/auth/request-owner-challenge", (req, res) => {
+  const { email } = req.body;
+  const normalizedEmail = (email || "").toLowerCase().trim();
+  if (!OWNER_EMAIL) return res.status(503).json({ success: false, message: "لم يتم ضبط بريد مالك النظام على الخادم بعد." });
+  const challengeKey = `${req.ip || "unknown"}:${normalizedEmail}`;
+  if (!allowChallengeAttempt(challengeKey)) return res.status(429).json({ success: false, message: "تم تجاوز عدد محاولات التحقق المسموح مؤقتاً. حاول لاحقاً." });
+
+  if (normalizedEmail !== OWNER_EMAIL) {
+    // Return standard message to prevent email enumeration
+    return res.json({
+      success: true,
+      message: "إذا كان هذا البريد مسجلاً، فقد تم إصدار رمز التحقق بنجاح.",
+    });
+  }
+
+  // Generate secure 6-digit code
+  const code = crypto.randomInt(100000, 1000000).toString();
+  verificationChallenges.set(normalizedEmail, {
+    code,
+    expiresAt: Date.now() + 10 * 60 * 1000, // 10 minutes
+  });
+
+  // Never print the secret challenge code to logs. A real deployment should
+  // deliver this challenge through a configured email/SMS provider.
+  auditLog.unshift({ id: crypto.randomUUID(), at: new Date().toISOString(), userId: "system", action: "owner_challenge_issued", detail: "challenge-created" });
+  if (auditLog.length > 100) auditLog.pop();
+  persistState();
+
+  return res.json({
+    success: true,
+    message: "تم إنشاء رمز تحقق مؤقت. يجب تسليمه للمالك عبر قناة تحقق خارجية مُهيأة في بيئة التشغيل.",
+  });
+});
+
+app.post("/api/auth/verify-challenge", (req, res) => {
+  const { email, code } = req.body;
+  const normalizedEmail = (email || "").toLowerCase().trim();
+
+  if (!normalizedEmail || !code) {
+    return res.status(400).json({ success: false, error: "البريد الإلكتروني ورمز التحقق مطلوبان." });
+  }
+
+  const record = verificationChallenges.get(normalizedEmail);
+  if (!record || record.expiresAt < Date.now()) {
+    verificationChallenges.delete(normalizedEmail);
+    return res.status(401).json({ success: false, error: "رمز التحقق غير صحيح أو انتهت صلاحيته." });
+  }
+
+  if (record.code !== code.toString().trim()) {
+    return res.status(401).json({ success: false, error: "رمز التحقق المدخل غير صحيح." });
+  }
+
+  // Successful verification, invalidate challenge
+  verificationChallenges.delete(normalizedEmail);
+
+  let user = serverUsers.find((u) => u.email.toLowerCase() === normalizedEmail && u.active);
+  if (!user && normalizedEmail === OWNER_EMAIL) {
+    user = serverUsers.find((u) => u.id === "owner");
+    if (user) user.email = normalizedEmail;
+  }
+
+  if (!user || !user.active) {
+    return res.status(403).json({ success: false, error: "هذا الحساب غير مصرح له أو معطل." });
+  }
+
+  const session = createSessionForUser(user);
+  return res.json({
+    success: true,
+    token: session.token,
+    user: session.user,
+  });
+});
+
+// 3. Current User verification endpoint
+app.get("/api/auth/me", authenticateToken, (req, res) => {
+  const session = (req as any).session as ActiveSession;
+  res.json({
+    success: true,
+    user: session.user,
+  });
+});
+
+// 4. Logout endpoint
+app.post("/api/auth/logout", (req, res) => {
+  const authHeader = req.headers.authorization;
+  if (authHeader && authHeader.startsWith("Bearer ")) {
+    const token = authHeader.substring(7).trim();
+    activeSessions.delete(token);
+  }
+  res.json({ success: true, message: "تم تسجيل الخروج بنجاح." });
+});
+
+// -------------------------------------------------------------
+// User Management Endpoints (Strictly Protected by requireOwner)
+// -------------------------------------------------------------
+
+// List users (Any authenticated user can view the team directory)
+app.get("/api/users", authenticateToken, (_req, res) => {
+  res.json({
+    success: true,
+    users: serverUsers.map((u) => ({
+      id: u.id,
+      name: u.name,
+      email: u.email,
+      role: u.role,
+      roleTitleArabic: u.roleTitleArabic,
+      avatar: u.avatar,
+      active: u.active,
+    })),
+  });
+});
+
+// Add user (ONLY Owner can add users, CANNOT add another owner)
+app.post("/api/users", requireOwner, (req, res) => {
+  try {
+    const { name, email, role, avatar } = req.body;
+    if (!name || !email || !role) {
+      return res.status(400).json({ success: false, error: "الاسم، البريد الإلكتروني، والرتبة حقول مطلوبة." });
+    }
+
+    const normalizedEmail = email.toLowerCase().trim();
+
+    // Security invariant: No one can create another 'owner'
+    if (role === "owner") {
+      return res.status(403).json({
+        success: false,
+        error: "لا يمكن تعيين مستخدم آخر كمالك للنظام (Owner). المالك حصري وفريد.",
+      });
+    }
+
+    const existing = serverUsers.find((u) => u.email.toLowerCase() === normalizedEmail);
+    if (existing) {
+      return res.status(400).json({ success: false, error: "هذا البريد الإلكتروني مضاف مسبقاً في النظام." });
+    }
+
+    const newUser: ServerUser = {
+      id: "usr-" + Date.now(),
+      name: name.trim(),
+      email: normalizedEmail,
+      role,
+      roleTitleArabic: getRoleTitle(role),
+      avatar: avatar || "",
+      active: true,
+      createdAt: new Date().toISOString(),
+    };
+
+    serverUsers.push(newUser);
+    persistState();
+    console.log(`[RBAC] Owner added new user: ${newUser.email} (${newUser.role})`);
+
+    return res.json({
+      success: true,
+      user: {
+        id: newUser.id,
+        name: newUser.name,
+        email: newUser.email,
+        role: newUser.role,
+        roleTitleArabic: newUser.roleTitleArabic,
+        avatar: newUser.avatar,
+        active: newUser.active,
+      },
+    });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, error: err.message || "حدث خطأ أثناء إضافة المستخدم." });
+  }
+});
+
+// Update role (ONLY Owner can modify roles, CANNOT modify Owner's role, CANNOT promote to Owner)
+app.put("/api/users/:id/role", requireOwner, (req, res) => {
+  try {
+    const { id } = req.params;
+    const { role } = req.body;
+
+    if (id === "owner") {
+      return res.status(403).json({
+        success: false,
+        error: "لا يمكن تعديل صلاحيات أو رتبة مالك النظام (Owner).",
+      });
+    }
+
+    if (role === "owner") {
+      return res.status(403).json({
+        success: false,
+        error: "لا يمكن ترقية أي مستخدم إلى مالك النظام (Owner).",
+      });
+    }
+
+    const user = serverUsers.find((u) => u.id === id);
+    if (!user) {
+      return res.status(404).json({ success: false, error: "المستخدم غير موجود." });
+    }
+
+    user.role = role;
+    user.roleTitleArabic = getRoleTitle(role);
+    persistState();
+
+    // Update active sessions for this user
+    for (const session of activeSessions.values()) {
+      if (session.user.id === id) {
+        session.user.role = role;
+        session.user.roleTitleArabic = user.roleTitleArabic;
+      }
+    }
+
+    console.log(`[RBAC] Owner updated role for user ${user.email} to ${role}`);
+    return res.json({ success: true, user });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, error: err.message || "حدث خطأ أثناء تعديل الدور." });
+  }
+});
+
+// Toggle user active status (ONLY Owner, CANNOT deactivate Owner)
+app.put("/api/users/:id/status", requireOwner, (req, res) => {
+  try {
+    const { id } = req.params;
+    const { active } = req.body;
+
+    if (id === "owner") {
+      return res.status(403).json({
+        success: false,
+        error: "لا يمكن تعطيل حساب مالك النظام (Owner).",
+      });
+    }
+
+    const user = serverUsers.find((u) => u.id === id);
+    if (!user) {
+      return res.status(404).json({ success: false, error: "المستخدم غير موجود." });
+    }
+
+    user.active = Boolean(active);
+    persistState();
+
+    // If deactivated, revoke sessions immediately
+    if (!user.active) {
+      for (const [token, session] of activeSessions.entries()) {
+        if (session.user.id === id) {
+          activeSessions.delete(token);
+        }
+      }
+    }
+
+    console.log(`[RBAC] Owner changed user ${user.email} status to active=${user.active}`);
+    return res.json({ success: true, user });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, error: err.message || "حدث خطأ أثناء تعديل الحالة." });
+  }
+});
+
+// Delete user (ONLY Owner, CANNOT delete Owner)
+app.delete("/api/users/:id", requireOwner, (req, res) => {
+  try {
+    const { id } = req.params;
+
+    if (id === "owner") {
+      return res.status(403).json({
+        success: false,
+        error: "لا يمكن حذف حساب مالك النظام (Owner).",
+      });
+    }
+
+    const index = serverUsers.findIndex((u) => u.id === id);
+    if (index === -1) {
+      return res.status(404).json({ success: false, error: "المستخدم غير موجود." });
+    }
+
+    // Revoke sessions
+    for (const [token, session] of activeSessions.entries()) {
+      if (session.user.id === id) {
+        activeSessions.delete(token);
+      }
+    }
+
+    serverUsers.splice(index, 1);
+    persistState();
+    console.log(`[RBAC] Owner deleted user with id ${id}`);
+    return res.json({ success: true, message: "تم حذف المستخدم بنجاح." });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, error: err.message || "حدث خطأ أثناء حذف المستخدم." });
+  }
+});
+
+// Persistent multi-platform control state. Accounts remain disconnected until a real OAuth/API callback explicitly marks them connected.
+type PlatformConnection = { platform: string; status: "connected" | "reauth_needed" | "disconnected"; accountName?: string; accountId?: string; connectedAt?: string; lastSyncAt?: string; providerVerified?: boolean; provider?: string };
+const SUPPORTED_PLATFORMS = [
+  { id: "tiktok", name: "TikTok", capabilities: ["publish", "analytics"] },
+  { id: "youtube", name: "YouTube", capabilities: ["publish", "analytics"] },
+  { id: "facebook", name: "Facebook", capabilities: ["publish", "messages", "analytics"] },
+  { id: "instagram", name: "Instagram", capabilities: ["publish", "messages", "analytics"] },
+  { id: "whatsapp", name: "WhatsApp Business", capabilities: ["messages"] },
+  { id: "telegram", name: "Telegram", capabilities: ["publish", "messages"] },
+  { id: "x", name: "X", capabilities: ["publish", "analytics"] },
+  { id: "snapchat", name: "Snapchat", capabilities: ["publish", "analytics"] },
+  { id: "threads", name: "Threads", capabilities: ["publish", "messages", "analytics"] },
+  { id: "google_business", name: "Google Business Profile", capabilities: ["publish", "analytics"] },
+];
+const platformConnections = new Map<string, PlatformConnection>();
+
+type OAuthPending = { platform: string; userId: string; expiresAt: number; codeVerifier?: string };
+const pendingOAuth = new Map<string, OAuthPending>();
+const PLATFORM_TOKEN_KEY = (process.env.PLATFORM_TOKEN_ENCRYPTION_KEY || "").trim();
+function tokenKeyBytes() {
+  if (!PLATFORM_TOKEN_KEY) return null;
+  try {
+    const raw = /^[0-9a-fA-F]{64}$/.test(PLATFORM_TOKEN_KEY) ? Buffer.from(PLATFORM_TOKEN_KEY, "hex") : Buffer.from(PLATFORM_TOKEN_KEY, "base64");
+    return raw.length === 32 ? raw : null;
+  } catch { return null; }
+}
+function encryptSecret(value: string) {
+  const key = tokenKeyBytes();
+  if (!key) throw new Error("PLATFORM_TOKEN_ENCRYPTION_KEY غير مضبوط أو غير صالح (يلزم 32 بايت). ");
+  const iv = crypto.randomBytes(12);
+  const cipher = crypto.createCipheriv("aes-256-gcm", key, iv);
+  const encrypted = Buffer.concat([cipher.update(value, "utf8"), cipher.final()]);
+  return { alg: "aes-256-gcm", iv: iv.toString("base64url"), tag: cipher.getAuthTag().toString("base64url"), data: encrypted.toString("base64url") };
+}
+function decryptSecret(record: any): string | null {
+  try {
+    const key = tokenKeyBytes(); if (!key || !record?.iv || !record?.tag || !record?.data) return null;
+    const decipher = crypto.createDecipheriv("aes-256-gcm", key, Buffer.from(record.iv, "base64url"));
+    decipher.setAuthTag(Buffer.from(record.tag, "base64url"));
+    return Buffer.concat([decipher.update(Buffer.from(record.data, "base64url")), decipher.final()]).toString("utf8");
+  } catch { return null; }
+}
+function setProviderToken(platform: string, token: any) {
+  (workspace as any).providerTokens[platform] = encryptSecret(JSON.stringify(token));
+  persistState();
+}
+function getProviderToken(platform: string): any | null {
+  const raw = decryptSecret((workspace as any).providerTokens?.[platform]);
+  if (!raw) return null;
+  try { return JSON.parse(raw); } catch { return null; }
+}
+function clearProviderToken(platform: string) { delete (workspace as any).providerTokens[platform]; persistState(); }
+
+const BASE_URL = (process.env.APP_URL || `http://localhost:${PORT}`).replace(/\/$/, "");
+const OAUTH_CONFIG: Record<string, any> = {
+  youtube: { provider: "google", auth: "https://accounts.google.com/o/oauth2/v2/auth", token: "https://oauth2.googleapis.com/token", clientId: process.env.GOOGLE_OAUTH_CLIENT_ID || process.env.GOOGLE_CLIENT_ID, clientSecret: process.env.GOOGLE_OAUTH_CLIENT_SECRET, scopes: ["https://www.googleapis.com/auth/youtube.upload"], callback: `${BASE_URL}/api/platforms/youtube/oauth/callback` },
+  google_business: { provider: "google", auth: "https://accounts.google.com/o/oauth2/v2/auth", token: "https://oauth2.googleapis.com/token", clientId: process.env.GOOGLE_OAUTH_CLIENT_ID || process.env.GOOGLE_CLIENT_ID, clientSecret: process.env.GOOGLE_OAUTH_CLIENT_SECRET, scopes: ["https://www.googleapis.com/auth/business.manage"], callback: `${BASE_URL}/api/platforms/google_business/oauth/callback` },
+  tiktok: { provider: "tiktok", auth: "https://www.tiktok.com/v2/auth/authorize/", token: "https://open.tiktokapis.com/v2/oauth/token/", clientId: process.env.TIKTOK_CLIENT_KEY, clientSecret: process.env.TIKTOK_CLIENT_SECRET, scopes: ["user.info.basic", "video.publish"], callback: `${BASE_URL}/api/platforms/tiktok/oauth/callback` },
+};
+function oauthReady(platform: string) { const c = OAUTH_CONFIG[platform]; return Boolean(c?.clientId && c?.clientSecret && process.env.APP_URL && tokenKeyBytes()); }
+function publicProviderReadiness(platform: string) {
+  if (platform === "telegram") return { configured: Boolean(process.env.TELEGRAM_BOT_TOKEN && tokenKeyBytes()), mode: "bot-token", action: "configure" };
+  const c = OAUTH_CONFIG[platform];
+  if (c) return { configured: oauthReady(platform), mode: "oauth2", action: "authorize", missing: [!c.clientId && "client_id", !c.clientSecret && "client_secret", !process.env.APP_URL && "APP_URL", !tokenKeyBytes() && "PLATFORM_TOKEN_ENCRYPTION_KEY"].filter(Boolean) };
+  return { configured: false, mode: "provider-adapter", action: "configuration-required" };
+}
+function safeConnection(platform: string) { const c:any=platformConnections.get(platform); return c ? { platform:c.platform, status:c.status, accountName:c.accountName, accountId:c.accountId, connectedAt:c.connectedAt, lastSyncAt:c.lastSyncAt, providerVerified:Boolean(c.providerVerified), provider:publicProviderReadiness(platform) } : null; }
+for (const p of SUPPORTED_PLATFORMS) platformConnections.set(p.id, { platform: p.id, status: "disconnected" });
+function savePlatformConnections() { try { const raw = JSON.parse(fs.existsSync(STATE_FILE) ? fs.readFileSync(STATE_FILE, "utf8") : "{}"); raw.platformConnections = Array.from(platformConnections.values()); const tmp = `${STATE_FILE}.tmp`; fs.writeFileSync(tmp, JSON.stringify(raw, null, 2)); fs.renameSync(tmp, STATE_FILE); } catch (e) { console.warn("Could not persist platform connections:", e); } }
+function loadPlatformConnections() { try { const raw = JSON.parse(fs.readFileSync(STATE_FILE, "utf8")); if (Array.isArray(raw.platformConnections)) for (const item of raw.platformConnections) if (item?.platform && platformConnections.has(item.platform)) platformConnections.set(item.platform, item); } catch {} }
+loadPlatformConnections();
+function connectedPlatformIds() { return Array.from(platformConnections.values()).filter(x => x.status === "connected").map(x => x.platform); }
+function hasCapability(platform: string, capability: string) { return SUPPORTED_PLATFORMS.some(p => p.id === platform && p.capabilities.includes(capability)); }
+
+// -------------------------------------------------------------
+// Central control-plane endpoints (deterministic, no Gemini cost)
+// -------------------------------------------------------------
+app.get("/api/platforms/:platform/oauth/start", requireOwner, (req,res)=>{
+  const platform=req.params.platform; const cfg=OAUTH_CONFIG[platform];
+  if(!cfg) return res.status(501).json({success:false,error:"هذا المزود يحتاج إعداد موصل خاص قبل بدء OAuth."});
+  if(!oauthReady(platform)) return res.status(503).json({success:false,error:"إعداد OAuth غير مكتمل. يلزم APP_URL وبيانات تطبيق المزود ومفتاح PLATFORM_TOKEN_ENCRYPTION_KEY."});
+  const state=crypto.randomBytes(24).toString("hex");
+  const pending:OAuthPending={platform,userId:(req as any).user.id,expiresAt:Date.now()+10*60*1000};
+  if(platform==="tiktok") { const verifier=crypto.randomBytes(48).toString("base64url"); pending.codeVerifier=verifier; }
+  pendingOAuth.set(state,pending);
+  const u=new URL(cfg.auth);
+  if(platform==="tiktok") { const challenge=crypto.createHash("sha256").update(pending.codeVerifier||"").digest("base64url"); u.searchParams.set("client_key",cfg.clientId); u.searchParams.set("response_type","code"); u.searchParams.set("scope",cfg.scopes.join(",")); u.searchParams.set("redirect_uri",cfg.callback); u.searchParams.set("state",state); u.searchParams.set("code_challenge",challenge); u.searchParams.set("code_challenge_method","S256"); }
+  else { u.searchParams.set("client_id",cfg.clientId); u.searchParams.set("redirect_uri",cfg.callback); u.searchParams.set("response_type","code"); u.searchParams.set("scope",cfg.scopes.join(" ")); u.searchParams.set("access_type","offline"); u.searchParams.set("prompt","consent"); u.searchParams.set("state",state); }
+  audit((req as any).user.id,"platform_oauth_started",platform); res.json({success:true,platform,authorizationUrl:u.toString(),expiresAt:pending.expiresAt});
+});
+
+app.get("/api/platforms/:platform/oauth/callback", async (req,res)=>{
+  const platform=req.params.platform; const state=typeof req.query.state==="string"?req.query.state:""; const pending=pendingOAuth.get(state); const cfg=OAUTH_CONFIG[platform];
+  if(!pending || pending.platform!==platform || pending.expiresAt<Date.now()) return res.status(400).send("فشل التحقق من جلسة OAuth أو انتهت صلاحيتها.");
+  pendingOAuth.delete(state);
+  if(req.query.error) return res.status(400).send(`رفض مزود المنصة عملية الربط: ${String(req.query.error_description||req.query.error).slice(0,200)}`);
+  const code=typeof req.query.code==="string"?req.query.code:""; if(!code) return res.status(400).send("لم يتم استلام رمز OAuth.");
+  try {
+    const body=new URLSearchParams(); body.set("client_id",cfg.clientId); body.set("client_secret",cfg.clientSecret); body.set("code",code); body.set("grant_type","authorization_code"); body.set("redirect_uri",cfg.callback); if(pending.codeVerifier) body.set("code_verifier",pending.codeVerifier);
+    const tokenRes=await fetch(cfg.token,{method:"POST",headers:{"Content-Type":"application/x-www-form-urlencoded"},body}); const token=await tokenRes.json();
+    if(!tokenRes.ok || !token.access_token) throw new Error(token.error_description||token.error||"فشل تبادل رمز OAuth");
+    let accountId="authorized-user", accountName="حساب متصل";
+    if(platform==="youtube") { const r=await fetch(`https://www.googleapis.com/youtube/v3/channels?part=snippet&mine=true`,{headers:{Authorization:`Bearer ${token.access_token}`}}); const d=await r.json(); if(r.ok&&d.items?.[0]) { accountId=d.items[0].id; accountName=d.items[0].snippet?.title||accountName; } }
+    if(platform==="tiktok") { const r=await fetch("https://open.tiktokapis.com/v2/user/info/?fields=open_id,display_name",{headers:{Authorization:`Bearer ${token.access_token}`}}); const d=await r.json(); if(r.ok&&d.data?.user){ accountId=d.data.user.open_id||accountId; accountName=d.data.user.display_name||accountName; } }
+    setProviderToken(platform,token); platformConnections.set(platform,{platform,status:"connected",accountId,accountName,connectedAt:new Date().toISOString(),providerVerified:true}); savePlatformConnections(); audit(pending.userId,"platform_oauth_connected",`${platform}:${accountId}`);
+    res.send("<html lang='ar' dir='rtl'><meta charset='utf-8'><title>تم الربط</title><body style='font-family:sans-serif;padding:40px'><h2>تم ربط المنصة بنجاح.</h2><p>يمكنك إغلاق هذه النافذة والعودة إلى الغرابي AI.</p></body></html>");
+  } catch(e:any) { audit(pending.userId,"platform_oauth_failed",platform); res.status(502).send(`فشل إكمال ربط المنصة: ${String(e?.message||e).slice(0,240)}`); }
+});
+
+app.post("/api/platforms/telegram/configure", requireOwner, async (req,res)=>{
+  const botToken=typeof req.body?.botToken==="string"?req.body.botToken.trim():""; if(!botToken) return res.status(400).json({success:false,error:"رمز Telegram Bot مطلوب."});
+  if(!tokenKeyBytes()) return res.status(503).json({success:false,error:"PLATFORM_TOKEN_ENCRYPTION_KEY غير مضبوط."});
+  const r=await fetch(`https://api.telegram.org/bot${encodeURIComponent(botToken)}/getMe`); const d=await r.json(); if(!r.ok||!d.ok||!d.result?.id) return res.status(400).json({success:false,error:"تعذر التحقق من Telegram Bot Token."});
+  setProviderToken("telegram",{botToken}); platformConnections.set("telegram",{platform:"telegram",status:"connected",accountId:String(d.result.id),accountName:d.result.username?`@${d.result.username}`:d.result.first_name||"Telegram Bot",connectedAt:new Date().toISOString(),providerVerified:true}); savePlatformConnections(); audit((req as any).user.id,"telegram_configured",String(d.result.id)); res.json({success:true,connection:safeConnection("telegram")});
+});
+
+app.get("/api/platforms/:platform/health", authenticateToken, async (req,res)=>{
+  const platform=req.params.platform;
+  const c:any=platformConnections.get(platform);
+  if(!c || c.status!=="connected" || c.providerVerified!==true) return res.status(409).json({success:false,platform,healthy:false,error:"المنصة غير متصلة باتصال مزود موثق."});
+  try {
+    const token:any=getProviderToken(platform);
+    if(platform==="telegram") {
+      if(!token?.botToken) throw new Error("توكن Telegram غير متوفر.");
+      const r=await fetch(`https://api.telegram.org/bot${encodeURIComponent(token.botToken)}/getMe`); const d=await r.json();
+      return res.status(r.ok&&d.ok?200:502).json({success:r.ok&&d.ok,platform,healthy:r.ok&&d.ok,provider:"telegram",accountId:String(d.result?.id||c.accountId),accountName:d.result?.username?`@${d.result.username}`:c.accountName,checkedAt:new Date().toISOString()});
+    }
+    if(platform==="youtube") {
+      if(!token?.access_token) throw new Error("رمز YouTube غير متوفر.");
+      const r=await fetch("https://www.googleapis.com/youtube/v3/channels?part=snippet&mine=true",{headers:{Authorization:`Bearer ${token.access_token}`}}); const d=await r.json();
+      return res.status(r.ok&&Array.isArray(d.items)?200:502).json({success:r.ok&&Array.isArray(d.items),platform,healthy:r.ok&&Array.isArray(d.items),provider:"youtube",accountId:d.items?.[0]?.id||c.accountId,accountName:d.items?.[0]?.snippet?.title||c.accountName,checkedAt:new Date().toISOString()});
+    }
+    if(platform==="tiktok") {
+      if(!token?.access_token) throw new Error("رمز TikTok غير متوفر.");
+      const r=await fetch("https://open.tiktokapis.com/v2/user/info/?fields=open_id,display_name",{headers:{Authorization:`Bearer ${token.access_token}`}}); const d=await r.json();
+      return res.status(r.ok&&Boolean(d.data?.user)?200:502).json({success:r.ok&&Boolean(d.data?.user),platform,healthy:r.ok&&Boolean(d.data?.user),provider:"tiktok",accountId:d.data?.user?.open_id||c.accountId,accountName:d.data?.user?.display_name||c.accountName,checkedAt:new Date().toISOString()});
+    }
+    if(platform==="google_business") {
+      if(!token?.access_token) throw new Error("رمز Google Business Profile غير متوفر.");
+      const r=await fetch("https://mybusinessaccountmanagement.googleapis.com/v1/accounts",{headers:{Authorization:`Bearer ${token.access_token}`}}); const d=await r.json();
+      return res.status(r.ok?200:502).json({success:r.ok,platform,healthy:r.ok,provider:"google_business",accounts:Array.isArray(d.accounts)?d.accounts.map((x:any)=>({name:x.name,displayName:x.accountName||x.name})):[],checkedAt:new Date().toISOString()});
+    }
+    return res.status(501).json({success:false,platform,healthy:false,error:"لا يوجد فحص مزود إنتاجي لهذا الموصل حتى الآن."});
+  } catch(e:any) { return res.status(502).json({success:false,platform,healthy:false,error:String(e?.message||e).slice(0,240)}); }
+});
+
+app.get("/api/platforms/readiness", authenticateToken, (_req,res)=>res.json({success:true,platforms:SUPPORTED_PLATFORMS.map(p=>({platform:p.id,name:p.name,connection:safeConnection(p.id)})),generatedAt:new Date().toISOString()}));
+
+app.get("/api/platforms/production-readiness", authenticateToken, (_req,res)=>{
+  const rows=SUPPORTED_PLATFORMS.map((p:any)=>{ const r=publicProviderReadiness(p.id); const c:any=platformConnections.get(p.id); const connected=Boolean(c?.status==="connected" && c?.providerVerified===true); const production=connected && (p.id==="telegram"); return {platform:p.id,name:p.name,configured:r.configured,connected,providerVerified:Boolean(c?.providerVerified),productionReady:production,mode:r.mode,missing:r.missing||[],next:p.id==="telegram"?"ضبط Bot Token وChat ID ثم اختبار الإرسال":OAUTH_CONFIG[p.id]?"ضبط بيانات OAuth ثم تسجيل Redirect URI والربط": "إضافة موصل إنتاجي معتمد قبل تفعيل النشر"}; });
+  res.json({success:true,generatedAt:new Date().toISOString(),projectVersion:PROJECT_VERSION,summary:{total:rows.length,connected:rows.filter(x=>x.connected).length,productionReady:rows.filter(x=>x.productionReady).length},platforms:rows,note:"هذه الصفحة تميز الجاهزية التقنية عن الاتصال الفعلي ولا تمنح أي منصة حالة نجاح وهمية."});
+});
+
+app.get("/api/control/final-check", requireOwner, (_req,res)=>{
+  const checks:any[]=[]; const add=(id:string,ok:boolean,detail:string,blocking=false)=>checks.push({id,ok,detail,blocking});
+  add("state-persistence",fs.existsSync(STATE_FILE),"ملف الحالة متاح أو سيتم إنشاؤه عند أول كتابة",true);
+  add("owner",Boolean(OWNER_EMAIL),"OWNER_EMAIL مضبوط",true);
+  add("token-encryption",Boolean(tokenKeyBytes()),"مفتاح تشفير توكنات المنصات مضبوط",true);
+  add("gemini-guard",Number.isFinite(GEMINI_DAILY_LIMIT)&&GEMINI_DAILY_LIMIT>0,"حارس Gemini المحلي فعال",false);
+  add("real-connections",connectedPlatformIds().length>0,connectedPlatformIds().length?`متصل فعلياً: ${connectedPlatformIds().join(", ")}`:"لا توجد منصة متصلة فعلياً بعد",false);
+  add("fake-publish-safety",automationJobs.every((j:any)=>j.status!=="published" || j.providerVerified===true),"كل سجل نشر خارجي موثق بإيصال مزود",true);
+  add("backup",fs.existsSync(BACKUP_DIR),"مجلد النسخ الاحتياطية متاح",true);
+  const blocking=checks.filter(x=>x.blocking&&!x.ok); res.status(blocking.length?503:200).json({success:blocking.length===0,ready:blocking.length===0,version:PROJECT_VERSION,schemaVersion:STATE_SCHEMA_VERSION,checks,blocking});
+});
+
+app.get("/api/platforms/capabilities", authenticateToken, (_req, res) => {
+  res.json({ success: true, platforms: SUPPORTED_PLATFORMS.map(p => ({ ...p, connection: platformConnections.get(p.id) })), connectedPlatforms: connectedPlatformIds(), note: "الاتصال لا يُعتبر حقيقياً إلا بعد OAuth/API فعلي." });
+});
+
+app.post("/api/platforms/:platform/connect-intent", requireOwner, (req, res) => {
+  const platform = req.params.platform;
+  if (!SUPPORTED_PLATFORMS.some(p => p.id === platform)) return res.status(404).json({ success: false, error: "المنصة غير مدعومة." });
+  const intent = { id: `conn-${Date.now()}-${crypto.randomBytes(4).toString("hex")}`, platform, createdAt: new Date().toISOString(), status: "awaiting_oauth" };
+  audit((req as any).user.id, "platform_connect_intent", `${platform}:${intent.id}`);
+  res.status(201).json({ success: true, intent, message: "تم إنشاء نية الربط فقط. لم يتم الاتصال بالحساب بعد." });
+});
+
+app.post("/api/platforms/:platform/disconnect", requireOwner, (req, res) => {
+  const platform = req.params.platform;
+  if (!platformConnections.has(platform)) return res.status(404).json({ success: false, error: "المنصة غير مدعومة." });
+  platformConnections.set(platform, { platform, status: "disconnected" });
+  clearProviderToken(platform); savePlatformConnections(); audit((req as any).user.id, "platform_disconnect", platform);
+  res.json({ success: true, connection: platformConnections.get(platform) });
+});
+
+app.post("/api/platforms/:platform/connection-callback", requireOwner, (req, res) => {
+  const platform = req.params.platform; const { providerVerified, accountId, accountName } = req.body || {};
+  if (!platformConnections.has(platform)) return res.status(404).json({ success: false, error: "المنصة غير مدعومة." });
+  if (providerVerified !== true || typeof accountId !== "string" || !accountId.trim()) return res.status(400).json({ success: false, error: "لم يتم إثبات اتصال مزود المنصة. لا يمكن تفعيل الاتصال يدوياً." });
+  const connection: PlatformConnection = { platform, status: "connected", accountId: accountId.trim().slice(0, 200), accountName: typeof accountName === "string" ? accountName.trim().slice(0, 200) : undefined, connectedAt: new Date().toISOString(), providerVerified: true };
+  platformConnections.set(platform, connection); savePlatformConnections(); audit((req as any).user.id, "platform_connected", platform);
+  res.json({ success: true, connection });
+});
+app.get("/api/control/activity", authenticateToken, (req, res) => {
+  res.json({ success: true, activity: auditLog.filter(x => x.userId === (req as any).user.id || (req as any).user.role === "owner").slice(0, 30) });
+});
+
+app.get("/api/control/audit", authenticateToken, (req, res) => {
+  const user = (req as any).user as ServerUser;
+  const limit = Math.min(100, Math.max(1, Number(req.query.limit || 50)));
+  const since = typeof req.query.since === "string" ? Date.parse(req.query.since) : NaN;
+  const visible = auditLog.filter((entry) => user.role === "owner" || entry.userId === user.id)
+    .filter((entry) => !Number.isFinite(since) || Date.parse(entry.at) > since)
+    .slice(0, limit);
+  res.json({ success: true, entries: visible, count: visible.length, generatedAt: new Date().toISOString() });
+});
+
+app.get("/api/system/backups", requireOwner, (_req, res) => {
+  ensureBackupDirectory();
+  const backups = fs.readdirSync(BACKUP_DIR)
+    .filter((name) => /^state-\d{4}-\d{2}-\d{2}\.json$/.test(name))
+    .map((name) => { const stat = fs.statSync(path.join(BACKUP_DIR, name)); return { name, size: stat.size, modifiedAt: stat.mtime.toISOString() }; })
+    .sort((a, b) => b.modifiedAt.localeCompare(a.modifiedAt));
+  res.json({ success: true, backups, retention: 7 });
+});
+
+app.post("/api/control/jobs/preflight", requireOwner, (req, res) => {
+  const changed = runSafeJobPreflight();
+  const ready = automationJobs.filter((j: any) => j.status === "ready").length;
+  audit((req as any).user.id, "manual_job_preflight", `ready=${ready}`);
+  res.json({ success: true, changed, ready, message: "تم فحص المهام دون تنفيذ أي نشر أو اتصال خارجي." });
+});
+
+app.get("/api/ai/capabilities", authenticateToken, (_req, res) => {
+  res.json({ success: true, deterministic: ["orchestration", "fallback_content", "message_classification", "platform_readiness"], gemini: ["content_generation", "strategic_chat"], safety: { dailyGuard: GEMINI_DAILY_LIMIT, cache: true, inFlightDeduplication: true, perUserMinuteGuard: 8 } });
+});
+
+app.post("/api/ai/plan-week", authenticateToken, (req, res) => {
+  const user = (req as any).user as ServerUser;
+  const platforms = Array.isArray(req.body?.platforms) ? req.body.platforms.slice(0, 10) : [];
+  const focus = typeof req.body?.focus === "string" ? req.body.focus.trim().slice(0, 160) : "عروض ومنتجات المعرض";
+  const days = ["السبت", "الأحد", "الاثنين", "الثلاثاء", "الأربعاء", "الخميس", "الجمعة"];
+  const plan = days.map((day, i) => ({ day, objective: i % 2 === 0 ? "عرض منتج وفائدة عملية" : "توعية بشروط التقسيط وخدمة العملاء", focus, platforms, requiresApproval: true, usesGemini: false }));
+  audit(user.id, "plan_week", `platforms=${platforms.length}`);
+  res.json({ success: true, plan, generatedBy: "deterministic-planner" });
+});
+
+// Central automation queue: plans work once, then waits for explicit approval/external connection.
+app.get("/api/control/jobs", authenticateToken, (req, res) => {
+  const user = (req as any).user as ServerUser;
+  const visible = user.role === "owner" ? automationJobs : automationJobs.filter(j => j.createdBy === user.id);
+  res.json({ success: true, jobs: visible.slice(0, 50), count: visible.length });
+});
+
+app.post("/api/control/jobs", authenticateToken, (req, res) => {
+  const user = (req as any).user as ServerUser;
+  const type = typeof req.body?.type === "string" ? req.body.type.trim().slice(0, 60) : "content_campaign";
+  const payload = req.body?.payload && typeof req.body.payload === "object" ? req.body.payload : {};
+  const idem = requestKey(req);
+  const duplicate = findRecentJobByIdempotency(user.id, idem);
+  if (duplicate) return res.status(200).json({ success: true, job: duplicate, duplicate: true, message: "تمت إعادة نفس المهمة السابقة دون إنشاء مهمة جديدة." });
+  const job = {
+    id: `job-${Date.now()}-${crypto.randomBytes(4).toString("hex")}`,
+    type, status: "queued" as const, createdAt: new Date().toISOString(), createdBy: user.id,
+    payload: { ...payload, ...(idem ? { idempotencyKey: idem } : {}) }, requiresExternalConnection: true, scheduledFor: typeof payload.scheduledFor === "string" ? payload.scheduledFor : undefined,
+  };
+  automationJobs.unshift(job);
+  persistState();
+  audit(user.id, "create_automation_job", `${job.id}:${type}`);
+  res.status(201).json({ success: true, job, message: "تم إنشاء المهمة. لن يتم نشر أو إرسال أي شيء قبل الموافقة والاتصال الفعلي بالمنصة." });
+});
+
+app.post("/api/control/jobs/:id/approve", requireOwner, (req, res) => {
+  const job = automationJobs.find(j => j.id === req.params.id);
+  if (!job) return res.status(404).json({ success: false, error: "المهمة غير موجودة." });
+  if (job.status !== "queued") return res.status(409).json({ success: false, error: "حالة المهمة لا تسمح بالموافقة." });
+  job.status = "approved";
+  persistState();
+  audit((req as any).user.id, "approve_automation_job", job.id);
+  res.json({ success: true, job, message: "تمت الموافقة. التنفيذ الخارجي ما زال متوقفاً حتى وجود اتصال فعلي بالمنصة." });
+});
+
+app.get("/api/control/jobs/:id/preflight", authenticateToken, (req, res) => {
+  const user = (req as any).user as ServerUser;
+  const job = automationJobs.find(j => j.id === req.params.id);
+  if (!job) return res.status(404).json({ success:false, error:"المهمة غير موجودة." });
+  if (job.createdBy !== user.id && user.role !== "owner") return res.status(403).json({ success:false, error:"لا تملك صلاحية فحص هذه المهمة." });
+  const platform = typeof job.payload?.platform === "string" ? job.payload.platform : "";
+  const content = typeof job.payload?.content === "string" ? job.payload.content.trim() : "";
+  const scheduledFor = job.scheduledFor || job.payload?.scheduledFor;
+  const scheduleReady = !scheduledFor || (Number.isFinite(Date.parse(scheduledFor)) && Date.parse(scheduledFor) <= Date.now());
+  const checks = { content: Boolean(content), approval: job.status === "approved" || job.status === "ready", connection: platformConnections.get(platform)?.status === "connected", capability: hasCapability(platform, "publish"), schedule: scheduleReady };
+  const ready = Object.values(checks).every(Boolean);
+  res.json({ success:true, ready, checks, platform, status:job.status, note:"الفحص لا ينفذ أي نشر خارجي." });
+});
+
+app.get("/api/control/overview", authenticateToken, (req, res) => {
+  const user = (req as any).user as ServerUser;
+  const visibleJobs = user.role === "owner" ? automationJobs : automationJobs.filter(j => j.createdBy === user.id);
+  const connected = connectedPlatformIds().length;
+  res.json({ success: true, overview: { projectVersion: PROJECT_VERSION, supportedPlatforms: 10, connectedPlatforms: connected, disconnectedPlatforms: 10 - connected, jobs: visibleJobs.length, pendingApproval: visibleJobs.filter(j => j.status === "queued").length, approvedAwaitingConnection: visibleJobs.filter(j => j.status === "approved").length, ready: visibleJobs.filter(j => j.status === "ready").length, failed: visibleJobs.filter(j => j.status === "failed").length, scheduled: visibleJobs.filter((j: any) => Boolean(j.scheduledFor)).length, gemini: geminiStatus() }, note: "الأرقام المعروضة فعلية من حالة الخادم وليست بيانات تجريبية." });
+});
+
+// Operational foundation: deterministic endpoints below consume ZERO Gemini calls.
+app.post("/api/catalog/quote", authenticateToken, (req, res) => {
+  const price = Number(req.body?.cashPrice); const downPayment = Number(req.body?.downPayment ?? 0); const months = Number(req.body?.months);
+  if (!Number.isFinite(price) || price <= 0 || !Number.isFinite(downPayment) || downPayment < 0 || downPayment >= price || !Number.isInteger(months) || months < 1 || months > 60) return res.status(400).json({ success: false, error: "بيانات حسبة القسط غير صحيحة." });
+  const financed = Math.max(0, price - downPayment); const monthly = Math.ceil(financed / months);
+  res.json({ success: true, quote: { cashPrice: price, downPayment, financedAmount: financed, months, monthlyPayment: monthly, totalInstallments: monthly * months, rounding: "ceil-to-IQD" }, generatedBy: "deterministic-calculator" });
+});
+
+app.post("/api/campaigns/draft", authenticateToken, (req, res) => {
+  const user = (req as any).user as ServerUser; const title = typeof req.body?.title === "string" ? req.body.title.trim().slice(0, 120) : "حملة معرض الغرابي";
+  const platforms = Array.isArray(req.body?.platforms) ? req.body.platforms.filter((x: any) => typeof x === "string" && SUPPORTED_PLATFORMS.some(p => p.id === x)).slice(0, 10) : [];
+  const productName = typeof req.body?.productName === "string" ? req.body.productName.trim().slice(0, 160) : "منتج من المعرض";
+  const campaign = { id: `camp-${Date.now()}-${crypto.randomBytes(4).toString("hex")}`, title, productName, platforms, status: "draft", createdBy: user.id, createdAt: new Date().toISOString(), steps: ["brief", "content", "review", "schedule", "publish"], currentStep: "brief", usesGemini: false };
+  audit(user.id, "campaign_draft_created", campaign.id); res.status(201).json({ success: true, campaign, message: "تم إنشاء مسودة الحملة دون استهلاك Gemini." });
+});
+
+// Unified campaign workflow: one deterministic operation creates a reusable campaign,
+// platform-specific drafts, and approval jobs without calling Gemini.
+app.post("/api/campaigns/build-batch", authenticateToken, (req, res) => {
+  const user = (req as any).user as ServerUser;
+  const title = typeof req.body?.title === "string" ? req.body.title.trim().slice(0, 120) : "حملة معرض الغرابي";
+  const productName = typeof req.body?.productName === "string" ? req.body.productName.trim().slice(0, 160) : "منتج من المعرض";
+  const focus = typeof req.body?.focus === "string" ? req.body.focus.trim().slice(0, 180) : "عرض المنتج ومزايا التقسيط";
+  const requested = Array.isArray(req.body?.platforms) ? req.body.platforms : [];
+  const platforms = [...new Set(requested.filter((x: any) => typeof x === "string" && SUPPORTED_PLATFORMS.some(p => p.id === x)))].slice(0, 10);
+  if (!platforms.length) return res.status(400).json({ success: false, error: "اختر منصة واحدة على الأقل." });
+  const id = `camp-${Date.now()}-${crypto.randomBytes(4).toString("hex")}`;
+  const createdAt = new Date().toISOString();
+  const drafts = platforms.map((platform: string) => ({
+    id: `${id}-${platform}`,
+    platform,
+    status: "draft",
+    content: generateSmartFallbackContent(platform, "post", focus, `المنتج: ${productName}`),
+    usesGemini: false,
+    requiresApproval: true,
+  }));
+  const jobs = drafts.map((draft: any) => ({
+    id: `job-${Date.now()}-${crypto.randomBytes(3).toString("hex")}`,
+    type: "campaign_publish",
+    status: "queued" as const,
+    createdAt,
+    createdBy: user.id,
+    payload: { campaignId: id, title, productName, focus, platform: draft.platform, draftId: draft.id, content: draft.content },
+    requiresExternalConnection: true,
+  }));
+  automationJobs.unshift(...jobs);
+  const campaign = { id, title, productName, focus, platforms, drafts, jobs: jobs.map(j => j.id), status: "draft", createdBy: user.id, createdAt, usesGemini: false };
+  persistState();
+  audit(user.id, "campaign_batch_built", `${id}:${platforms.length}`);
+  res.status(201).json({ success: true, campaign, message: "تم بناء دفعة الحملة كاملة دون استهلاك Gemini. النشر الفعلي متوقف حتى الموافقة والاتصال الحقيقي." });
+});
+
+app.get("/api/campaigns", authenticateToken, (req, res) => {
+  const user = (req as any).user as ServerUser;
+  const jobs = user.role === "owner" ? automationJobs : automationJobs.filter(j => j.createdBy === user.id);
+  const grouped = new Map<string, any>();
+  for (const job of jobs) {
+    const cid = job.payload?.campaignId;
+    if (!cid) continue;
+    if (!grouped.has(cid)) grouped.set(cid, { id: cid, title: job.payload?.title || "حملة", jobs: [] });
+    grouped.get(cid).jobs.push({ id: job.id, platform: job.payload?.platform, status: job.status, draftId: job.payload?.draftId });
+  }
+  res.json({ success: true, campaigns: Array.from(grouped.values()) });
+});
+
+app.post("/api/control/jobs/:id/cancel", authenticateToken, (req, res) => {
+  const user = (req as any).user as ServerUser;
+  const job = automationJobs.find(j => j.id === req.params.id);
+  if (!job) return res.status(404).json({ success: false, error: "المهمة غير موجودة." });
+  if (job.createdBy !== user.id && user.role !== "owner") return res.status(403).json({ success: false, error: "لا تملك صلاحية إلغاء هذه المهمة." });
+  if (!["queued", "approved", "ready"].includes(job.status)) return res.status(409).json({ success: false, error: "لا يمكن إلغاء المهمة في حالتها الحالية." });
+  job.status = "failed";
+  job.payload = { ...job.payload, cancelled: true, cancelledAt: new Date().toISOString() };
+  persistState(); audit(user.id, "cancel_job", job.id);
+  res.json({ success: true, job });
+});
+
+app.post("/api/control/jobs/:id/retry", authenticateToken, (req, res) => {
+  const user = (req as any).user as ServerUser;
+  const job = automationJobs.find(j => j.id === req.params.id);
+  if (!job) return res.status(404).json({ success: false, error: "المهمة غير موجودة." });
+  if (job.createdBy !== user.id && user.role !== "owner") return res.status(403).json({ success: false, error: "لا تملك صلاحية إعادة المحاولة." });
+  if (job.status !== "failed") return res.status(409).json({ success: false, error: "إعادة المحاولة متاحة للمهام الفاشلة فقط." });
+  job.status = "queued";
+  job.payload = { ...job.payload, retryCount: Number(job.payload?.retryCount || 0) + 1, lastRetryAt: new Date().toISOString(), cancelled: false };
+  persistState();
+  audit(user.id, "retry_job", job.id);
+  res.json({ success: true, job, message: "أعيدت المهمة إلى طابور الانتظار. لا يوجد تنفيذ خارجي تلقائي." });
+});
+
+// Safe queue worker: prepares approved jobs for execution but NEVER calls a social provider.
+// A job becomes "ready" only when its platform is really connected, the capability exists,
+// content exists, approval is present, and any requested schedule has arrived.
+function runSafeJobPreflight() {
+  const now = Date.now();
+  let changed = false;
+  for (const job of automationJobs) {
+    if (job.status !== "approved") continue;
+    const platform = typeof job.payload?.platform === "string" ? job.payload.platform : "";
+    const content = typeof job.payload?.content === "string" ? job.payload.content.trim() : "";
+    const scheduledFor = job.scheduledFor || job.payload?.scheduledFor;
+    if (scheduledFor) {
+      const when = Date.parse(scheduledFor);
+      if (!Number.isFinite(when) || when > now) continue;
+    }
+    if (!platform || !content || !platformConnections.has(platform) || platformConnections.get(platform)?.status !== "connected" || !hasCapability(platform, "publish")) continue;
+    job.status = "ready";
+    job.readyAt = new Date().toISOString();
+    job.lastError = undefined;
+    changed = true;
+  }
+  if (changed) {
+    persistState();
+    auditLog.unshift({ id: crypto.randomUUID(), at: new Date().toISOString(), userId: "system", action: "safe_job_preflight_ready", detail: "approved jobs prepared without external execution" });
+    if (auditLog.length > 100) auditLog.pop();
+    persistState();
+  }
+  return changed;
+}
+const safeJobWorkerTimer = setInterval(runSafeJobPreflight, 60 * 1000);
+(safeJobWorkerTimer as any).unref?.();
+
+app.post("/api/control/jobs/:id/execute", requireOwner, async (req,res)=>{
+  const job=automationJobs.find((j:any)=>j.id===req.params.id); if(!job) return res.status(404).json({success:false,error:"المهمة غير موجودة."});
+  if(job.status!=="ready") return res.status(409).json({success:false,error:"المهمة ليست جاهزة للتنفيذ."});
+  const platform=String(job.payload?.platform||""); const content=String(job.payload?.content||"").trim(); const conn:any=platformConnections.get(platform);
+  if(!conn || conn.status!=="connected" || conn.providerVerified!==true) return res.status(409).json({success:false,error:"المنصة غير موثقة باتصال حقيقي."});
+  try {
+    if(platform==="telegram") {
+      const token=getProviderToken("telegram")?.botToken; const chatId=String(process.env.TELEGRAM_DEFAULT_CHAT_ID||job.payload?.chatId||""); if(!token||!chatId) return res.status(503).json({success:false,error:"Telegram يحتاج TELEGRAM_DEFAULT_CHAT_ID أو chatId في المهمة."});
+      const r=await fetch(`https://api.telegram.org/bot${encodeURIComponent(token)}/sendMessage`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({chat_id:chatId,text:content})}); const d=await r.json(); if(!r.ok||!d.ok) throw new Error(d.description||"فشل إرسال Telegram");
+      job.status="executed"; job.executedAt=new Date().toISOString(); job.providerVerified=true; job.providerReceipt={provider:"telegram",messageId:d.result?.message_id,executedAt:new Date().toISOString()}; persistState(); audit((req as any).user.id,"job_executed",`${job.id}:telegram`); return res.json({success:true,job,receipt:job.providerReceipt});
+    }
+    return res.status(501).json({success:false,error:"الموصل متصل ومتحقق، لكن تنفيذ هذا النوع من النشر يحتاج بيانات الوسائط/العملية الخاصة بالمزود ولم يتم اختلاق تنفيذ وهمي."});
+  } catch(e:any) { job.status="failed"; job.lastError=String(e?.message||e).slice(0,500); persistState(); audit((req as any).user.id,"job_execution_failed",`${job.id}:${platform}`); return res.status(502).json({success:false,error:job.lastError,job}); }
+});
+
+app.post("/api/publish/preflight", authenticateToken, (req, res) => {
+  const platform = typeof req.body?.platform === "string" ? req.body.platform : ""; const approved = req.body?.approved === true; const hasContent = typeof req.body?.content === "string" && req.body.content.trim().length > 0; const connected = platformConnections.get(platform)?.status === "connected"; const reasons: string[] = [];
+  if (!hasContent) reasons.push("المحتوى غير موجود."); if (!approved) reasons.push("المحتوى لم تتم الموافقة عليه."); if (!connected) reasons.push("الحساب غير متصل باتصال فعلي."); if (!hasCapability(platform, "publish")) reasons.push("المنصة لا تملك قدرة نشر في هذا النظام.");
+  res.json({ success: reasons.length === 0, ready: reasons.length === 0, platform, checks: { content: hasContent, approval: approved, connection: connected, capability: hasCapability(platform, "publish") }, reasons });
+});
+
+
+// -------------------------------------------------------------
+// Central Workspace API — deterministic, no Gemini consumption.
+// This is the single operational source for showroom/catalog/content/customer state.
+// -------------------------------------------------------------
+
+function cleanText(value: unknown, max = 500): string {
+  return typeof value === "string" ? value.trim().slice(0, max) : "";
+}
+
+function workspaceId(prefix: string): string {
+  return `${prefix}-${Date.now()}-${crypto.randomBytes(4).toString("hex")}`;
+}
+
+app.get("/api/workspace/snapshot", authenticateToken, (_req, res) => {
+  const connected = connectedPlatformIds();
+  res.json({
+    success: true,
+    snapshot: {
+      showroom: workspace.showroom,
+      products: workspace.products,
+      installmentPlans: workspace.installmentPlans,
+      posts: workspace.posts,
+      conversations: workspace.conversations,
+      platforms: SUPPORTED_PLATFORMS.map((p: any) => ({ ...p, connection: platformConnections.get(p.id) })),
+      connectedPlatforms: connected,
+      generatedAt: new Date().toISOString(),
+      source: "server-workspace"
+    }
+  });
+});
+
+app.get("/api/workspace/summary", authenticateToken, (_req, res) => {
+  const connected = connectedPlatformIds();
+  const activePosts = workspace.posts.filter((p: any) => ["review", "approved", "scheduled", "published"].includes(p.status)).length;
+  const openConversations = workspace.conversations.filter((c: any) => c.status !== "resolved").length;
+  res.json({
+    success: true,
+    summary: {
+      showroomConfigured: Boolean(workspace.showroom?.name && workspace.showroom?.name.trim()),
+      products: workspace.products.length,
+      inStockProducts: workspace.products.filter((p: any) => p.inStock !== false).length,
+      posts: workspace.posts.length,
+      activePosts,
+      conversations: workspace.conversations.length,
+      installmentPlans: workspace.installmentPlans.length,
+      leads: workspace.leads.length,
+      openLeads: workspace.leads.filter((x:any)=>!['won','lost'].includes(x.status)).length,
+      tasks: workspace.tasks.length,
+      openTasks: workspace.tasks.filter((x:any)=>['open','in_progress'].includes(x.status)).length,
+      openConversations,
+      connectedPlatforms: connected.length,
+      connectedPlatformIds: connected,
+      pendingJobs: automationJobs.filter((j: any) => ["queued", "approved", "ready"].includes(j.status)).length,
+      gemini: geminiStatus(),
+      source: "server-workspace"
+    }
+  });
+});
+
+app.get("/api/workspace/showroom", authenticateToken, (_req, res) => {
+  res.json({ success: true, showroom: workspace.showroom });
+});
+
+app.put("/api/workspace/showroom", authenticateToken, (req, res) => {
+  const user = (req as any).user as ServerUser;
+  if (user.role !== "owner" && user.role !== "manager") return res.status(403).json({ success: false, error: "لا تملك صلاحية تعديل بيانات المعرض." });
+  const next = req.body && typeof req.body === "object" ? req.body : {};
+  workspace.showroom = {
+    name: cleanText(next.name, 160), tagline: cleanText(next.tagline, 240), address: cleanText(next.address, 240),
+    city: cleanText(next.city, 80), phoneUnified: cleanText(next.phoneUnified, 60), whatsappSales: cleanText(next.whatsappSales, 60),
+    supportEmail: cleanText(next.supportEmail, 160), workingHours: cleanText(next.workingHours, 160), about: cleanText(next.about, 1000),
+    policies: Array.isArray(next.policies) ? next.policies.filter((x: any) => typeof x === "string").slice(0, 30).map((x: string) => x.trim().slice(0, 300)) : [],
+    faqs: Array.isArray(next.faqs) ? next.faqs.slice(0, 100).map((x: any) => ({ id: cleanText(x?.id, 80) || workspaceId("faq"), q: cleanText(x?.q, 300), a: cleanText(x?.a, 1000), category: cleanText(x?.category, 80) })) : []
+  };
+  persistState(); audit(user.id, "workspace_showroom_updated");
+  res.json({ success: true, showroom: workspace.showroom });
+});
+
+app.get("/api/workspace/products", authenticateToken, (_req, res) => {
+  res.json({ success: true, products: workspace.products, count: workspace.products.length });
+});
+
+app.post("/api/workspace/products", authenticateToken, (req, res) => {
+  const user = (req as any).user as ServerUser;
+  if (!["owner", "manager", "staff"].includes(user.role)) return res.status(403).json({ success: false, error: "لا تملك صلاحية إضافة المنتجات." });
+  const b = req.body || {};
+  const name = cleanText(b.name, 160);
+  const cashPrice = Number(b.cashPrice);
+  if (!name || !Number.isFinite(cashPrice) || cashPrice <= 0) return res.status(400).json({ success: false, error: "اسم المنتج وسعر البيع النقدي مطلوبان." });
+  const product = {
+    id: cleanText(b.id, 100) || workspaceId("prod"), name, category: ["appliances","phones","construction","electronics","other"].includes(b.category) ? b.category : "other",
+    modelYear: cleanText(b.modelYear, 20), cashPrice, installmentFrom: Number.isFinite(Number(b.installmentFrom)) ? Math.max(0, Number(b.installmentFrom)) : cashPrice,
+    downPaymentPercent: Number.isFinite(Number(b.downPaymentPercent)) ? Math.max(0, Math.min(100, Number(b.downPaymentPercent))) : 0,
+    durationMonths: Number.isInteger(Number(b.durationMonths)) ? Math.max(1, Math.min(60, Number(b.durationMonths))) : 1,
+    image: cleanText(b.image, 500), inStock: b.inStock !== false, stockQuantity: Number.isFinite(Number(b.stockQuantity)) ? Math.max(0, Math.floor(Number(b.stockQuantity))) : 0, reorderLevel: Number.isFinite(Number(b.reorderLevel)) ? Math.max(0, Math.floor(Number(b.reorderLevel))) : 0, featured: b.featured === true,
+    specs: Array.isArray(b.specs) ? b.specs.filter((x: any) => typeof x === "string").slice(0, 30).map((x: string) => x.trim().slice(0, 200)) : [],
+    installmentOptions: Array.isArray(b.installmentOptions) ? b.installmentOptions.filter((x: any) => typeof x === "string").slice(0, 20).map((x: string) => x.trim().slice(0, 200)) : []
+  };
+  workspace.products.unshift(product); persistState(); audit(user.id, "workspace_product_created", product.id);
+  res.status(201).json({ success: true, product });
+});
+
+app.patch("/api/workspace/products/:id", authenticateToken, (req, res) => {
+  const user = (req as any).user as ServerUser;
+  if (!["owner", "manager", "staff"].includes(user.role)) return res.status(403).json({ success: false, error: "لا تملك صلاحية تعديل المنتجات." });
+  const product = workspace.products.find((p: any) => p.id === req.params.id);
+  if (!product) return res.status(404).json({ success: false, error: "المنتج غير موجود." });
+  const b = req.body || {};
+  if (b.name !== undefined) product.name = cleanText(b.name, 160) || product.name;
+  if (b.cashPrice !== undefined && Number.isFinite(Number(b.cashPrice)) && Number(b.cashPrice) > 0) product.cashPrice = Number(b.cashPrice);
+  if (b.inStock !== undefined) product.inStock = Boolean(b.inStock);
+  if (b.stockQuantity !== undefined && Number.isFinite(Number(b.stockQuantity))) product.stockQuantity = Math.max(0, Math.floor(Number(b.stockQuantity)));
+  if (b.reorderLevel !== undefined && Number.isFinite(Number(b.reorderLevel))) product.reorderLevel = Math.max(0, Math.floor(Number(b.reorderLevel)));
+  if (b.featured !== undefined) product.featured = Boolean(b.featured);
+  if (b.category !== undefined && ["appliances","phones","construction","electronics","other"].includes(b.category)) product.category = b.category;
+  if (b.durationMonths !== undefined && Number.isInteger(Number(b.durationMonths))) product.durationMonths = Math.max(1, Math.min(60, Number(b.durationMonths)));
+  if (b.installmentFrom !== undefined && Number.isFinite(Number(b.installmentFrom)) && Number(b.installmentFrom) >= 0) product.installmentFrom = Number(b.installmentFrom);
+  if (b.downPaymentPercent !== undefined && Number.isFinite(Number(b.downPaymentPercent))) product.downPaymentPercent = Math.max(0, Math.min(100, Number(b.downPaymentPercent)));
+  if (b.modelYear !== undefined) product.modelYear = cleanText(b.modelYear, 20);
+  if (b.image !== undefined) product.image = cleanText(b.image, 500);
+  if (Array.isArray(b.specs)) product.specs = b.specs.filter((x:any)=>typeof x === "string").slice(0,30).map((x:string)=>x.trim().slice(0,200));
+  if (Array.isArray(b.installmentOptions)) product.installmentOptions = b.installmentOptions.filter((x:any)=>typeof x === "string").slice(0,20).map((x:string)=>x.trim().slice(0,200));
+  persistState(); audit(user.id, "workspace_product_updated", product.id); res.json({ success: true, product });
+});
+
+app.delete("/api/workspace/products/:id", requireOwner, (req, res) => {
+  const idx = workspace.products.findIndex((p: any) => p.id === req.params.id);
+  if (idx < 0) return res.status(404).json({ success: false, error: "المنتج غير موجود." });
+  const [removed] = workspace.products.splice(idx, 1); persistState(); audit((req as any).user.id, "workspace_product_deleted", removed.id);
+  res.json({ success: true, id: removed.id });
+});
+
+app.get("/api/workspace/plans", authenticateToken, (_req, res) => {
+  res.json({ success: true, plans: workspace.installmentPlans, count: workspace.installmentPlans.length });
+});
+
+app.post("/api/workspace/plans", authenticateToken, (req, res) => {
+  const user = (req as any).user as ServerUser;
+  if (!["owner", "manager", "staff"].includes(user.role)) return res.status(403).json({ success: false, error: "لا تملك صلاحية إضافة خطط التقسيط." });
+  const b = req.body || {};
+  const title = cleanText(b.title, 160);
+  if (!title) return res.status(400).json({ success: false, error: "عنوان خطة التقسيط مطلوب." });
+  const plan = { id: cleanText(b.id, 100) || workspaceId("plan"), title, description: cleanText(b.description, 1000), minDownPaymentPercent: Number.isFinite(Number(b.minDownPaymentPercent)) ? Math.max(0, Math.min(100, Number(b.minDownPaymentPercent))) : 0, maxMonths: Number.isInteger(Number(b.maxMonths)) ? Math.max(1, Math.min(60, Number(b.maxMonths))) : 60, requirements: Array.isArray(b.requirements) ? b.requirements.filter((x:any)=>typeof x === "string").slice(0,20).map((x:string)=>x.trim().slice(0,300)) : [], targetAudience: cleanText(b.targetAudience, 300), features: Array.isArray(b.features) ? b.features.filter((x:any)=>typeof x === "string").slice(0,20).map((x:string)=>x.trim().slice(0,300)) : [], shariaApproved: Boolean(b.shariaApproved) };
+  workspace.installmentPlans.unshift(plan); persistState(); audit(user.id, "workspace_plan_created", plan.id);
+  res.status(201).json({ success: true, plan });
+});
+
+app.patch("/api/workspace/plans/:id", authenticateToken, (req, res) => {
+  const user = (req as any).user as ServerUser;
+  if (!["owner", "manager", "staff"].includes(user.role)) return res.status(403).json({ success: false, error: "لا تملك صلاحية تعديل خطط التقسيط." });
+  const plan = workspace.installmentPlans.find((p:any)=>p.id===req.params.id);
+  if (!plan) return res.status(404).json({ success: false, error: "خطة التقسيط غير موجودة." });
+  const b=req.body||{};
+  if (b.title !== undefined) plan.title = cleanText(b.title,160) || plan.title;
+  if (b.description !== undefined) plan.description = cleanText(b.description,1000);
+  if (b.minDownPaymentPercent !== undefined && Number.isFinite(Number(b.minDownPaymentPercent))) plan.minDownPaymentPercent=Math.max(0,Math.min(100,Number(b.minDownPaymentPercent)));
+  if (b.maxMonths !== undefined && Number.isInteger(Number(b.maxMonths))) plan.maxMonths=Math.max(1,Math.min(60,Number(b.maxMonths)));
+  if (Array.isArray(b.requirements)) plan.requirements=b.requirements.filter((x:any)=>typeof x==='string').slice(0,20).map((x:string)=>x.trim().slice(0,300));
+  if (Array.isArray(b.features)) plan.features=b.features.filter((x:any)=>typeof x==='string').slice(0,20).map((x:string)=>x.trim().slice(0,300));
+  if (b.targetAudience !== undefined) plan.targetAudience=cleanText(b.targetAudience,300);
+  if (b.shariaApproved !== undefined) plan.shariaApproved=Boolean(b.shariaApproved);
+  persistState(); audit(user.id,"workspace_plan_updated",plan.id); res.json({success:true,plan});
+});
+
+app.delete("/api/workspace/plans/:id", requireOwner, (req,res)=>{
+  const idx=workspace.installmentPlans.findIndex((p:any)=>p.id===req.params.id);
+  if(idx<0) return res.status(404).json({success:false,error:"خطة التقسيط غير موجودة."});
+  const [removed]=workspace.installmentPlans.splice(idx,1); persistState(); audit((req as any).user.id,"workspace_plan_deleted",removed.id); res.json({success:true,id:removed.id});
+});
+
+app.get("/api/workspace/content", authenticateToken, (_req, res) => {
+  res.json({ success: true, posts: workspace.posts, count: workspace.posts.length });
+});
+
+app.post("/api/workspace/content/validate", authenticateToken, (req, res) => {
+  const content = cleanText(req.body?.content, 10000);
+  const platform = cleanText(req.body?.platform, 40);
+  const warnings: string[] = [];
+  if (!content) warnings.push("المحتوى فارغ.");
+  if (content.length > 4000) warnings.push("المحتوى طويل وقد يحتاج إلى اختصار حسب المنصة.");
+  if (/125\s*\/\s*125/i.test(content)) warnings.push("تم اكتشاف عداد استخدام قديم وغير مسموح.");
+  if (/سيارة|سيارات|car|cars/i.test(content)) warnings.push("المحتوى يحتوي على مصطلحات سيارات، وهي خارج نشاط معرض الغرابي.");
+  if (platform && !SUPPORTED_PLATFORMS.some((p: any) => p.id === platform)) warnings.push("المنصة غير مدعومة في مركز الغرابي.");
+  res.json({ success: warnings.length === 0, valid: warnings.length === 0, warnings, checkedBy: "deterministic-content-guard" });
+});
+
+app.post("/api/workspace/content", authenticateToken, (req, res) => {
+  const user = (req as any).user as ServerUser; const b = req.body || {};
+  const content = cleanText(b.content, 10000); const targets = Array.isArray(b.targetPlatforms) ? [...new Set(b.targetPlatforms.filter((x: any) => SUPPORTED_PLATFORMS.some((p: any) => p.id === x)))].slice(0,10) : [];
+  if (!content || !targets.length) return res.status(400).json({ success: false, error: "المحتوى ومنصة واحدة على الأقل مطلوبان." });
+  if (/125\s*\/\s*125/i.test(content) || /سيارة|سيارات|\bcars?\b/i.test(content)) return res.status(422).json({ success: false, error: "المحتوى خالف قواعد مشروع الغرابي: لا عدادات قديمة ولا محتوى سيارات." });
+  const post = { id: cleanText(b.id, 100) || workspaceId("post"), title: cleanText(b.title, 160) || "مسودة جديدة", content, platformVersions: b.platformVersions && typeof b.platformVersions === "object" ? b.platformVersions : undefined, targetPlatforms: targets, mediaUrl: cleanText(b.mediaUrl, 500) || undefined, mediaType: ["image","video","carousel"].includes(b.mediaType) ? b.mediaType : undefined, status: ["draft","review","edited","approved","scheduled","published"].includes(b.status) ? b.status : "draft", scheduledFor: cleanText(b.scheduledFor, 80) || undefined, publishedAt: cleanText(b.publishedAt, 80) || undefined, createdAt: cleanText(b.createdAt, 80) || new Date().toISOString(), authorId: user.id, authorName: cleanText(b.authorName, 160) || user.name, authorRole: cleanText(b.authorRole, 40) || user.role, history: Array.isArray(b.history) ? b.history.slice(-50) : [], metrics: b.metrics && typeof b.metrics === "object" ? b.metrics : undefined, tags: Array.isArray(b.tags) ? b.tags.filter((x:any)=>typeof x === "string").slice(0,20) : [], campaignName: cleanText(b.campaignName, 160) };
+  workspace.posts.unshift(post); persistState(); audit(user.id, "workspace_content_created", post.id); res.status(201).json({ success: true, post });
+});
+
+app.patch("/api/workspace/content/:id", authenticateToken, (req,res)=>{
+  const user=(req as any).user as ServerUser; const post=workspace.posts.find((p:any)=>p.id===req.params.id);
+  if(!post) return res.status(404).json({success:false,error:"المنشور غير موجود."});
+  if (!["owner","manager","staff","content_creator"].includes(user.role)) return res.status(403).json({success:false,error:"لا تملك صلاحية تعديل المحتوى."});
+  const b=req.body||{};
+  if(b.title!==undefined) post.title=cleanText(b.title,160)||post.title;
+  if(b.content!==undefined){ const c=cleanText(b.content,10000); if(!c) return res.status(400).json({success:false,error:"المحتوى لا يمكن أن يكون فارغاً."}); if(/125\s*\/\s*125/i.test(c)||/سيارة|سيارات|\bcars?\b/i.test(c)) return res.status(422).json({success:false,error:"المحتوى خالف قواعد مشروع الغرابي."}); post.content=c; }
+  if(Array.isArray(b.targetPlatforms)) post.targetPlatforms=[...new Set(b.targetPlatforms.filter((x:any)=>SUPPORTED_PLATFORMS.some((p:any)=>p.id===x)))].slice(0,10);
+  if (b.status === "published") return res.status(409).json({ success:false, error:"لا يمكن تسجيل المنشور كمُنشر دون إيصال تنفيذ خارجي موثّق من مزود المنصة." });
+  if(["draft","review","edited","approved","scheduled"].includes(b.status)) post.status=b.status;
+  if(b.scheduledFor!==undefined) post.scheduledFor=cleanText(b.scheduledFor,80);
+  if(b.campaignName!==undefined) post.campaignName=cleanText(b.campaignName,160);
+  persistState(); audit(user.id,"workspace_content_updated",post.id); res.json({success:true,post});
+});
+
+app.delete("/api/workspace/content/:id", authenticateToken, (req,res)=>{
+  const user=(req as any).user as ServerUser; if(!["owner","manager","staff","content_creator"].includes(user.role)) return res.status(403).json({success:false,error:"لا تملك صلاحية حذف المحتوى."});
+  const idx=workspace.posts.findIndex((p:any)=>p.id===req.params.id); if(idx<0) return res.status(404).json({success:false,error:"المنشور غير موجود."});
+  const [removed]=workspace.posts.splice(idx,1); persistState(); audit(user.id,"workspace_content_deleted",removed.id); res.json({success:true,id:removed.id});
+});
+
+app.get("/api/workspace/conversations", authenticateToken, (_req, res) => {
+  res.json({ success: true, conversations: workspace.conversations, count: workspace.conversations.length });
+});
+
+app.patch("/api/workspace/conversations/:id", authenticateToken, (req,res)=>{
+  const user=(req as any).user as ServerUser; const c=workspace.conversations.find((x:any)=>x.id===req.params.id);
+  if(!c) return res.status(404).json({success:false,error:"المحادثة غير موجودة."});
+  if(!["owner","manager","staff","customer_support"].includes(user.role)) return res.status(403).json({success:false,error:"لا تملك صلاحية تعديل المحادثة."});
+  const b=req.body||{};
+  if(b.status && ["new","ai_replied","transferred_human","resolved"].includes(b.status)) c.status=b.status;
+  if(b.assignedStaff!==undefined) c.assignedStaff=cleanText(b.assignedStaff,160);
+  if(b.category!==undefined) c.category=cleanText(b.category,120);
+  if(b.urgency && ["high","medium","low"].includes(b.urgency)) c.urgency=b.urgency;
+  if(b.notes!==undefined) c.notes=cleanText(b.notes,2000);
+  if(typeof b.replyText==='string' && b.replyText.trim()){ const text=cleanText(b.replyText,4000); c.history=Array.isArray(c.history)?c.history:[]; c.history.push({id:workspaceId("msg"),sender:b.asAi===true?"ai":"human",senderName:b.asAi===true?"الغرابي AI":user.name,text,timestamp:new Date().toISOString()}); c.lastMessage=text; c.lastMessageTime=new Date().toISOString(); c.status=b.asAi===true?"ai_replied":"transferred_human"; }
+  persistState(); audit(user.id,"workspace_conversation_updated",c.id); res.json({success:true,conversation:c});
+});
+
+app.post("/api/workspace/conversations", authenticateToken, (req, res) => {
+  const user = (req as any).user as ServerUser; const b = req.body || {}; const message = cleanText(b.message, 4000);
+  if (!message) return res.status(400).json({ success: false, error: "رسالة العميل مطلوبة." });
+  const c = { id: cleanText(b.id, 100) || workspaceId("conv"), customerName: cleanText(b.customerName,120) || "عميل", phone: cleanText(b.phone,60), channel: SUPPORTED_PLATFORMS.some((p:any)=>p.id===b.channel) ? b.channel : "other", status: "new", createdAt: new Date().toISOString(), lastMessage: message, history: [{ id: workspaceId("msg"), sender: "customer", text: message, timestamp: new Date().toISOString() }] };
+  workspace.conversations.unshift(c); persistState(); audit(user.id, "workspace_conversation_created", c.id); res.status(201).json({ success: true, conversation: c });
+});
+
+
+// -------------------------------------------------------------
+// Inventory + customer 360 + operational reporting. Deterministic, durable and Gemini-free.
+function inventoryProductView(product:any){ const qty=Math.max(0,Math.floor(Number(product.stockQuantity||0))); const reorder=Math.max(0,Math.floor(Number(product.reorderLevel||0))); return {...product,stockQuantity:qty,reorderLevel:reorder,stockStatus:qty===0?"out":(reorder>0&&qty<=reorder?"low":"ok")}; }
+app.get("/api/inventory", authenticateToken, (_req,res)=>{ const items=workspace.products.map(inventoryProductView); res.json({success:true,items,summary:{products:items.length,totalUnits:items.reduce((n:number,x:any)=>n+x.stockQuantity,0),lowStock:items.filter((x:any)=>x.stockStatus==="low").length,outOfStock:items.filter((x:any)=>x.stockStatus==="out").length}}); });
+app.get("/api/inventory/movements", authenticateToken, (req,res)=>{ const productId=typeof req.query.productId==="string"?req.query.productId:""; let rows=(workspace as any).inventoryMovements.slice(); if(productId) rows=rows.filter((x:any)=>x.productId===productId); res.json({success:true,movements:rows.slice(0,500)}); });
+app.post("/api/inventory/:productId/adjust", authenticateToken, (req,res)=>{ const user=(req as any).user as ServerUser; if(!["owner","manager","staff"].includes(user.role)) return res.status(403).json({success:false,error:"لا تملك صلاحية تعديل المخزون."}); const product=workspace.products.find((x:any)=>x.id===req.params.productId); if(!product) return res.status(404).json({success:false,error:"المنتج غير موجود."}); const delta=Number(req.body?.delta), reason=cleanText(req.body?.reason,240); if(!Number.isInteger(delta)||delta===0||!reason) return res.status(400).json({success:false,error:"قيمة الحركة والسبب مطلوبان."}); const before=Math.max(0,Math.floor(Number(product.stockQuantity||0))), after=before+delta; if(after<0) return res.status(400).json({success:false,error:"لا يمكن أن يصبح المخزون سالباً."}); product.stockQuantity=after; product.inStock=after>0; const movement={id:workspaceId("stock"),productId:product.id,productName:product.name,delta,before,after,reason,createdBy:user.id,createdAt:new Date().toISOString()}; (workspace as any).inventoryMovements.unshift(movement); (workspace as any).inventoryMovements=(workspace as any).inventoryMovements.slice(0,20000); persistState(); audit(user.id,"inventory_adjusted",`${product.id}:${delta}`); res.json({success:true,product:inventoryProductView(product),movement}); });
+app.get("/api/inventory/alerts", authenticateToken, (_req,res)=>{ const alerts=workspace.products.map(inventoryProductView).filter((x:any)=>x.stockStatus!=="ok").map((x:any)=>({id:x.id,name:x.name,stockQuantity:x.stockQuantity,reorderLevel:x.reorderLevel,status:x.stockStatus})); res.json({success:true,alerts}); });
+app.get("/api/customers/360", authenticateToken, (req,res)=>{ const q=normalizeSearch(req.query.q); const map=new Map<string,any>(); const key=(n:any,p:any)=>String(p||n||"unknown").trim().toLowerCase(); const make=(n:any,p:any)=>({id:`cust-${Buffer.from(key(n,p)).toString("hex").slice(0,18)}`,name:n||"عميل",phone:p||"",leads:0,sales:0,paid:0,balance:0,conversations:0}); for(const l of workspace.leads){const k=key(l.customerName,l.phone),c=map.get(k)||make(l.customerName,l.phone);c.leads++;map.set(k,c)} for(const s of workspace.sales){const k=key(s.customerName,s.phone),c=map.get(k)||make(s.customerName,s.phone);c.sales++;c.paid+=salePaid(s.id);c.balance+=saleBalance(s);map.set(k,c)} for(const v of workspace.conversations){const k=key(v.customerName,v.phone),c=map.get(k)||make(v.customerName,v.phone);c.conversations++;map.set(k,c)} let customers=Array.from(map.values()); if(q) customers=customers.filter((c:any)=>containsQuery(c.name,q)||containsQuery(c.phone,q)); customers.sort((a:any,b:any)=>(b.sales-a.sales)||(b.conversations-a.conversations)); res.json({success:true,customers:customers.slice(0,100),count:customers.length}); });
+app.get("/api/reports/operations", authenticateToken, (req,res)=>{ const days=Math.min(90,Math.max(1,Number(req.query.days||30))); const since=Date.now()-days*86400000; const sales=workspace.sales.filter((x:any)=>Date.parse(x.createdAt||"")>=since), payments=workspace.payments.filter((x:any)=>Date.parse(x.createdAt||"")>=since), daily=new Map<string,any>(); for(const s of sales){const d=String(s.createdAt).slice(0,10),r=daily.get(d)||{date:d,sales:0,salesValue:0,collected:0};r.sales++;r.salesValue+=Number(s.totalAmount||0);daily.set(d,r)} for(const p of payments){const d=String(p.createdAt).slice(0,10),r=daily.get(d)||{date:d,sales:0,salesValue:0,collected:0};r.collected+=Number(p.amount||0);daily.set(d,r)} const inv=workspace.products.map(inventoryProductView); res.json({success:true,periodDays:days,metrics:{salesCount:sales.length,salesValue:sales.reduce((n:number,x:any)=>n+Number(x.totalAmount||0),0),collected:payments.reduce((n:number,x:any)=>n+Number(x.amount||0),0),openLeads:workspace.leads.filter((x:any)=>!['won','lost'].includes(x.status)).length,openTasks:workspace.tasks.filter((x:any)=>['open','in_progress'].includes(x.status)).length,lowStock:inv.filter((x:any)=>x.stockStatus!=="ok").length,openConversations:workspace.conversations.filter((x:any)=>x.status!=="resolved").length},daily:Array.from(daily.values()).sort((a:any,b:any)=>a.date.localeCompare(b.date))}); });
+
+// CRM + operational task center. Deterministic, durable and Gemini-free.
+// -------------------------------------------------------------
+const LEAD_STATUSES = ["new", "contacted", "qualified", "proposal", "won", "lost"];
+const TASK_STATUSES = ["open", "in_progress", "done", "cancelled"];
+const TASK_PRIORITIES = ["low", "medium", "high", "urgent"];
+
+function sanitizeLead(body: any, existing: any = {}) {
+  const b = body || {};
+  const status = LEAD_STATUSES.includes(b.status) ? b.status : (existing.status || "new");
+  const source = cleanText(b.source ?? existing.source, 80) || "direct";
+  return {
+    ...existing,
+    id: cleanText(b.id, 100) || existing.id || workspaceId("lead"),
+    customerName: cleanText(b.customerName ?? existing.customerName, 120) || "عميل",
+    phone: cleanText(b.phone ?? existing.phone, 60),
+    channel: SUPPORTED_PLATFORMS.some((p:any)=>p.id===b.channel) ? b.channel : (existing.channel || "direct"),
+    source,
+    status,
+    interestedProduct: cleanText(b.interestedProduct ?? existing.interestedProduct, 160),
+    budget: Number.isFinite(Number(b.budget ?? existing.budget)) ? Math.max(0, Number(b.budget ?? existing.budget)) : undefined,
+    notes: cleanText(b.notes ?? existing.notes, 2000),
+    nextFollowUpAt: cleanText(b.nextFollowUpAt ?? existing.nextFollowUpAt, 80) || undefined,
+    ownerId: cleanText(b.ownerId ?? existing.ownerId, 100) || undefined,
+    createdAt: existing.createdAt || new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+    lastContactAt: cleanText(b.lastContactAt ?? existing.lastContactAt, 80) || undefined,
+    conversationId: cleanText(b.conversationId ?? existing.conversationId, 100) || undefined,
+  };
+}
+
+app.get("/api/crm/leads", authenticateToken, (req,res) => {
+  const user=(req as any).user as ServerUser;
+  const status=typeof req.query.status === "string" ? req.query.status : "";
+  const dueOnly=req.query.dueOnly === "true";
+  const now=Date.now();
+  let leads=workspace.leads.slice();
+  if(user.role !== "owner" && user.role !== "manager") leads=leads.filter((x:any)=>!x.ownerId || x.ownerId===user.id);
+  if(LEAD_STATUSES.includes(status)) leads=leads.filter((x:any)=>x.status===status);
+  if(dueOnly) leads=leads.filter((x:any)=>x.nextFollowUpAt && Number.isFinite(Date.parse(x.nextFollowUpAt)) && Date.parse(x.nextFollowUpAt)<=now && !["won","lost"].includes(x.status));
+  res.json({success:true,leads:leads.slice(0,500),count:leads.length,generatedAt:new Date().toISOString()});
+});
+
+app.post("/api/crm/leads", authenticateToken, (req,res) => {
+  const user=(req as any).user as ServerUser;
+  if(!["owner","manager","staff","customer_support"].includes(user.role)) return res.status(403).json({success:false,error:"لا تملك صلاحية إضافة العملاء المحتملين."});
+  const lead=sanitizeLead({...req.body, ownerId:req.body?.ownerId || user.id});
+  workspace.leads.unshift(lead); persistState(); audit(user.id,"crm_lead_created",lead.id);
+  res.status(201).json({success:true,lead});
+});
+
+app.patch("/api/crm/leads/:id", authenticateToken, (req,res) => {
+  const user=(req as any).user as ServerUser;
+  const lead=workspace.leads.find((x:any)=>x.id===req.params.id);
+  if(!lead) return res.status(404).json({success:false,error:"العميل المحتمل غير موجود."});
+  if(user.role!=="owner" && user.role!=="manager" && lead.ownerId && lead.ownerId!==user.id) return res.status(403).json({success:false,error:"لا تملك صلاحية تعديل هذا العميل."});
+  const updated=sanitizeLead(req.body,lead); Object.assign(lead,updated);
+  persistState(); audit(user.id,"crm_lead_updated",lead.id); res.json({success:true,lead});
+});
+
+app.delete("/api/crm/leads/:id", requireOwner, (req,res) => {
+  const idx=workspace.leads.findIndex((x:any)=>x.id===req.params.id);
+  if(idx<0) return res.status(404).json({success:false,error:"العميل المحتمل غير موجود."});
+  const [removed]=workspace.leads.splice(idx,1); persistState(); audit((req as any).user.id,"crm_lead_deleted",removed.id);
+  res.json({success:true,id:removed.id});
+});
+
+app.post("/api/crm/leads/from-conversation/:id", authenticateToken, (req,res) => {
+  const user=(req as any).user as ServerUser;
+  const c=workspace.conversations.find((x:any)=>x.id===req.params.id);
+  if(!c) return res.status(404).json({success:false,error:"المحادثة غير موجودة."});
+  const existing=workspace.leads.find((x:any)=>x.conversationId===c.id);
+  if(existing) return res.json({success:true,lead:existing,duplicate:true});
+  const lead=sanitizeLead({customerName:c.customerName,phone:c.phone,channel:c.channel,interestedProduct:c.interestedProduct,notes:c.notes,conversationId:c.id,ownerId:user.id,source:c.channel||"conversation"});
+  workspace.leads.unshift(lead); persistState(); audit(user.id,"crm_lead_from_conversation",`${c.id}:${lead.id}`);
+  res.status(201).json({success:true,lead});
+});
+
+app.get("/api/crm/follow-ups", authenticateToken, (req,res) => {
+  const now=Date.now();
+  const horizonRaw=Number(req.query.horizonHours || 24);
+  const horizon=Math.min(168,Math.max(1,Number.isFinite(horizonRaw)?horizonRaw:24));
+  const end=now+horizon*60*60*1000;
+  const due=workspace.leads.filter((x:any)=>x.nextFollowUpAt && Number.isFinite(Date.parse(x.nextFollowUpAt)) && Date.parse(x.nextFollowUpAt)<=end && !["won","lost"].includes(x.status)).sort((a:any,b:any)=>Date.parse(a.nextFollowUpAt)-Date.parse(b.nextFollowUpAt));
+  res.json({success:true,now:new Date(now).toISOString(),horizonHours:horizon,due:due.slice(0,200),count:due.length});
+});
+
+function sanitizeTask(body:any, existing:any={}, userId="") {
+  const b=body||{};
+  return {
+    ...existing,
+    id:cleanText(b.id,100)||existing.id||workspaceId("task"),
+    title:cleanText(b.title??existing.title,180),
+    description:cleanText(b.description??existing.description,1500),
+    status:TASK_STATUSES.includes(b.status)?b.status:(existing.status||"open"),
+    priority:TASK_PRIORITIES.includes(b.priority)?b.priority:(existing.priority||"medium"),
+    dueAt:cleanText(b.dueAt??existing.dueAt,80)||undefined,
+    assigneeId:cleanText(b.assigneeId??existing.assigneeId,100)||userId||undefined,
+    relatedType:cleanText(b.relatedType??existing.relatedType,60)||undefined,
+    relatedId:cleanText(b.relatedId??existing.relatedId,100)||undefined,
+    createdBy:existing.createdBy||userId,
+    createdAt:existing.createdAt||new Date().toISOString(),
+    updatedAt:new Date().toISOString(),
+    completedAt:b.status==="done"?(existing.completedAt||new Date().toISOString()):existing.completedAt,
+  };
+}
+
+app.get("/api/tasks", authenticateToken, (req,res) => {
+  const user=(req as any).user as ServerUser;
+  let tasks=workspace.tasks.slice();
+  if(user.role!=="owner" && user.role!=="manager") tasks=tasks.filter((x:any)=>x.assigneeId===user.id || x.createdBy===user.id);
+  if(typeof req.query.status==="string" && TASK_STATUSES.includes(req.query.status)) tasks=tasks.filter((x:any)=>x.status===req.query.status);
+  res.json({success:true,tasks:tasks.slice(0,500),count:tasks.length});
+});
+
+app.post("/api/tasks", authenticateToken, (req,res) => {
+  const user=(req as any).user as ServerUser;
+  const task=sanitizeTask(req.body,{},user.id);
+  if(!task.title) return res.status(400).json({success:false,error:"عنوان المهمة مطلوب."});
+  workspace.tasks.unshift(task); persistState(); audit(user.id,"task_created",task.id); res.status(201).json({success:true,task});
+});
+
+app.patch("/api/tasks/:id", authenticateToken, (req,res) => {
+  const user=(req as any).user as ServerUser;
+  const task=workspace.tasks.find((x:any)=>x.id===req.params.id);
+  if(!task) return res.status(404).json({success:false,error:"المهمة غير موجودة."});
+  if(user.role!=="owner" && user.role!=="manager" && task.assigneeId!==user.id && task.createdBy!==user.id) return res.status(403).json({success:false,error:"لا تملك صلاحية تعديل هذه المهمة."});
+  Object.assign(task,sanitizeTask(req.body,task,user.id));
+  persistState(); audit(user.id,"task_updated",task.id); res.json({success:true,task});
+});
+
+app.delete("/api/tasks/:id", authenticateToken, (req,res) => {
+  const user=(req as any).user as ServerUser;
+  const idx=workspace.tasks.findIndex((x:any)=>x.id===req.params.id); if(idx<0) return res.status(404).json({success:false,error:"المهمة غير موجودة."});
+  const task=workspace.tasks[idx];
+  if(user.role!=="owner" && user.role!=="manager" && task.createdBy!==user.id) return res.status(403).json({success:false,error:"لا تملك صلاحية حذف هذه المهمة."});
+  workspace.tasks.splice(idx,1); persistState(); audit(user.id,"task_deleted",task.id); res.json({success:true,id:task.id});
+});
+
+
+// -------------------------------------------------------------
+// Sales + installment ledger. Durable, auditable and Gemini-free.
+// -------------------------------------------------------------
+const SALE_STATUSES = ["draft", "confirmed", "active_installment", "completed", "cancelled"];
+const PAYMENT_METHODS = ["cash", "bank", "transfer", "other"];
+function sanitizeSale(body:any, existing:any={}, userId="") {
+  const b=body||{};
+  const total=Math.max(0, Number(b.totalAmount ?? existing.totalAmount ?? 0) || 0);
+  const down=Math.min(total, Math.max(0, Number(b.downPayment ?? existing.downPayment ?? 0) || 0));
+  const months=Math.min(60, Math.max(1, Number(b.months ?? existing.months ?? 1) || 1));
+  return { ...existing, id:cleanText(b.id,100)||existing.id||workspaceId("sale"), customerName:cleanText(b.customerName??existing.customerName,120)||"عميل", phone:cleanText(b.phone??existing.phone,60), productId:cleanText(b.productId??existing.productId,100)||undefined, productName:cleanText(b.productName??existing.productName,180), totalAmount:total, downPayment:down, financedAmount:Math.max(0,total-down), months, monthlyAmount:months?Math.ceil(Math.max(0,total-down)/months):0, status:SALE_STATUSES.includes(b.status)?b.status:(existing.status||"draft"), ownerId:cleanText(b.ownerId??existing.ownerId,100)||userId, notes:cleanText(b.notes??existing.notes,1500), createdBy:existing.createdBy||userId, createdAt:existing.createdAt||new Date().toISOString(), updatedAt:new Date().toISOString() };
+}
+function salePaid(saleId:string){ return workspace.payments.filter((p:any)=>p.saleId===saleId).reduce((n:number,p:any)=>n+Number(p.amount||0),0); }
+function saleBalance(s:any){ return Math.max(0,Number(s.financedAmount||0)-salePaid(s.id)); }
+app.get("/api/sales", authenticateToken, (req,res)=>{
+  const user=(req as any).user as ServerUser; let sales=workspace.sales.slice();
+  if(user.role!=="owner" && user.role!=="manager") sales=sales.filter((x:any)=>!x.ownerId||x.ownerId===user.id||x.createdBy===user.id);
+  if(typeof req.query.status==="string" && SALE_STATUSES.includes(req.query.status)) sales=sales.filter((x:any)=>x.status===req.query.status);
+  res.json({success:true,sales:sales.slice(0,1000).map((x:any)=>({...x,paidAmount:salePaid(x.id),balance:saleBalance(x)})),count:sales.length});
+});
+app.post("/api/sales", authenticateToken, (req,res)=>{
+  const user=(req as any).user as ServerUser;
+  if(!["owner","manager","staff"].includes(user.role)) return res.status(403).json({success:false,error:"لا تملك صلاحية إنشاء عملية بيع."});
+  const sale=sanitizeSale(req.body,{},user.id); if(!sale.productName||sale.totalAmount<=0) return res.status(400).json({success:false,error:"اسم المنتج وقيمة البيع مطلوبان."});
+  workspace.sales.unshift(sale); persistState(); audit(user.id,"sale_created",sale.id); res.status(201).json({success:true,sale:{...sale,paidAmount:0,balance:saleBalance(sale)}});
+});
+app.patch("/api/sales/:id", authenticateToken, (req,res)=>{
+  const user=(req as any).user as ServerUser; const sale=workspace.sales.find((x:any)=>x.id===req.params.id); if(!sale) return res.status(404).json({success:false,error:"عملية البيع غير موجودة."});
+  if(user.role!=="owner"&&user.role!=="manager"&&sale.ownerId!==user.id&&sale.createdBy!==user.id) return res.status(403).json({success:false,error:"لا تملك صلاحية تعديل هذه العملية."});
+  Object.assign(sale,sanitizeSale(req.body,sale,user.id)); persistState(); audit(user.id,"sale_updated",sale.id); res.json({success:true,sale:{...sale,paidAmount:salePaid(sale.id),balance:saleBalance(sale)}});
+});
+app.post("/api/sales/:id/payments", authenticateToken, (req,res)=>{
+  const user=(req as any).user as ServerUser; const sale=workspace.sales.find((x:any)=>x.id===req.params.id); if(!sale) return res.status(404).json({success:false,error:"عملية البيع غير موجودة."});
+  if(user.role!=="owner"&&user.role!=="manager"&&sale.ownerId!==user.id&&sale.createdBy!==user.id) return res.status(403).json({success:false,error:"لا تملك صلاحية تسجيل الدفعة."});
+  const amount=Math.max(0,Number(req.body?.amount)||0); if(amount<=0) return res.status(400).json({success:false,error:"قيمة الدفعة يجب أن تكون أكبر من صفر."});
+  const balance=saleBalance(sale); if(amount>balance) return res.status(400).json({success:false,error:`قيمة الدفعة تتجاوز الرصيد المتبقي (${balance.toLocaleString()} د.ع).`});
+  const method=PAYMENT_METHODS.includes(req.body?.method)?req.body.method:"other";
+  const payment={id:workspaceId("pay"),saleId:sale.id,amount,method,note:cleanText(req.body?.note,500),receivedBy:user.id,receivedAt:new Date().toISOString()}; workspace.payments.unshift(payment);
+  const newBalance=saleBalance(sale); if(newBalance===0) sale.status="completed"; else if(sale.status==="confirmed"||sale.status==="draft") sale.status="active_installment";
+  persistState(); audit(user.id,"sale_payment_recorded",`${sale.id}:${payment.id}`); res.status(201).json({success:true,payment,sale:{...sale,paidAmount:salePaid(sale.id),balance:newBalance}});
+});
+app.get("/api/sales/:id/payments", authenticateToken, (req,res)=>{ const sale=workspace.sales.find((x:any)=>x.id===req.params.id); if(!sale) return res.status(404).json({success:false,error:"عملية البيع غير موجودة."}); res.json({success:true,payments:workspace.payments.filter((p:any)=>p.saleId===sale.id)}); });
+
+// -------------------------------------------------------------
+// v8 business suite: suppliers, purchasing, expenses, contracts
+// and installment schedules. Deterministic only; no Gemini usage.
+// -------------------------------------------------------------
+const VALID_EXPENSE_CATEGORIES = ["تشغيل", "رواتب", "نقل", "تسويق", "إيجار", "خدمات", "أخرى"];
+function safeMoney(value: unknown): number { const n=Number(value); return Number.isFinite(n)&&n>=0 ? Math.round(n) : 0; }
+function buildInstallmentSchedule(sale:any){
+  const financed=Math.max(0,Number(sale.financedAmount||0)); const months=Math.max(1,Math.min(60,Number(sale.months||1)));
+  const monthly=Math.floor((financed/months)*100)/100; let remainder=financed;
+  const start=Date.parse(sale.firstDueAt||sale.createdAt||new Date().toISOString()); const rows:any[]=[];
+  for(let i=1;i<=months;i++){ const amount=i===months?Math.round(remainder*100)/100:monthly; remainder=Math.max(0,remainder-amount); const due=new Date(start+i*30*86400000).toISOString(); rows.push({id:workspaceId("inst"),saleId:sale.id,sequence:i,dueAt:due,amount,paid:0,status:"pending"}); }
+  return rows;
+}
+
+app.get("/api/business/overview", authenticateToken, (_req,res)=>{
+  const now=Date.now();
+  const purchases=workspace.purchases as any[], expenses=workspace.expenses as any[], schedules=workspace.installmentSchedules as any[];
+  const due=schedules.filter(x=>x.status!=="paid"&&Date.parse(x.dueAt)<now);
+  const purchaseTotal=purchases.reduce((n:number,x:any)=>n+safeMoney(x.total),0);
+  const expenseTotal=expenses.reduce((n:number,x:any)=>n+safeMoney(x.amount),0);
+  res.json({success:true,metrics:{suppliers:workspace.suppliers.length,purchases:purchases.length,purchaseTotal,expenses:expenses.length,expenseTotal,contracts:workspace.contracts.length,installments:schedules.length,overdueInstallments:due.length,overdueValue:due.reduce((n:number,x:any)=>n+Math.max(0,safeMoney(x.amount)-safeMoney(x.paid)),0)}});
+});
+
+app.get("/api/suppliers", authenticateToken, (_req,res)=>res.json({success:true,suppliers:workspace.suppliers.slice(0,1000)}));
+app.post("/api/suppliers", authenticateToken, (req,res)=>{ const u=(req as any).user as ServerUser; const name=cleanText(req.body?.name,160); if(!name)return res.status(400).json({success:false,error:"اسم المورد مطلوب."}); const item={id:workspaceId("sup"),name,phone:cleanText(req.body?.phone,40),address:cleanText(req.body?.address,240),notes:cleanText(req.body?.notes,500),createdAt:new Date().toISOString(),createdBy:u.id}; workspace.suppliers.unshift(item); persistState(); audit(u.id,"supplier_created",item.id); res.status(201).json({success:true,supplier:item}); });
+app.patch("/api/suppliers/:id", authenticateToken, (req,res)=>{ const u=(req as any).user as ServerUser; const item=workspace.suppliers.find((x:any)=>x.id===req.params.id); if(!item)return res.status(404).json({success:false,error:"المورد غير موجود."}); for(const k of ["name","phone","address","notes"]) if(req.body?.[k]!==undefined)item[k]=cleanText(req.body[k],k==="notes"?500:k==="address"?240:k==="name"?160:40); if(!item.name)return res.status(400).json({success:false,error:"اسم المورد مطلوب."}); item.updatedAt=new Date().toISOString(); persistState(); audit(u.id,"supplier_updated",item.id); res.json({success:true,supplier:item}); });
+app.delete("/api/suppliers/:id", requireOwner, (req,res)=>{ const i=workspace.suppliers.findIndex((x:any)=>x.id===req.params.id); if(i<0)return res.status(404).json({success:false,error:"المورد غير موجود."}); workspace.suppliers.splice(i,1); persistState(); audit((req as any).user.id,"supplier_deleted",req.params.id); res.json({success:true}); });
+
+app.get("/api/purchases", authenticateToken, (_req,res)=>res.json({success:true,purchases:workspace.purchases.slice(0,1000)}));
+app.post("/api/purchases", authenticateToken, (req,res)=>{ const u=(req as any).user as ServerUser; const supplierId=cleanText(req.body?.supplierId,100); const items=Array.isArray(req.body?.items)?req.body.items.slice(0,100):[]; if(!supplierId||!workspace.suppliers.some((x:any)=>x.id===supplierId)||!items.length)return res.status(400).json({success:false,error:"المورد وبنود الشراء مطلوبان."}); const normalized=items.map((x:any)=>({productId:cleanText(x.productId,100),productName:cleanText(x.productName,160),quantity:Math.max(1,Math.floor(Number(x.quantity)||0)),unitCost:safeMoney(x.unitCost)})).filter((x:any)=>x.productName&&x.quantity>0); if(!normalized.length)return res.status(400).json({success:false,error:"بنود الشراء غير صالحة."}); const total=normalized.reduce((n:number,x:any)=>n+x.quantity*x.unitCost,0); const item={id:workspaceId("purchase"),supplierId,items:normalized,total,status:"received",notes:cleanText(req.body?.notes,500),createdAt:new Date().toISOString(),createdBy:u.id}; workspace.purchases.unshift(item); for(const line of normalized){ const product=workspace.products.find((p:any)=>p.id===line.productId); if(product){ const before=Math.max(0,Math.floor(Number(product.stockQuantity||0))); const after=before+line.quantity; product.stockQuantity=after; product.inStock=after>0; workspace.inventoryMovements.unshift({id:workspaceId("stock"),productId:product.id,productName:product.name,delta:line.quantity,before,after,reason:`استلام شراء ${item.id}`,createdBy:u.id,createdAt:new Date().toISOString()}); } } persistState(); audit(u.id,"purchase_created",item.id); res.status(201).json({success:true,purchase:item}); });
+
+app.get("/api/expenses", authenticateToken, (req,res)=>{ const cat=cleanText(req.query?.category,60); let rows=workspace.expenses.slice(); if(cat)rows=rows.filter((x:any)=>x.category===cat); res.json({success:true,expenses:rows.slice(0,2000),categories:VALID_EXPENSE_CATEGORIES}); });
+app.post("/api/expenses", authenticateToken, (req,res)=>{ const u=(req as any).user as ServerUser; const amount=safeMoney(req.body?.amount),category=cleanText(req.body?.category,60),description=cleanText(req.body?.description,240); if(!amount||!VALID_EXPENSE_CATEGORIES.includes(category)||!description)return res.status(400).json({success:false,error:"المبلغ والتصنيف والوصف مطلوبة."}); const item={id:workspaceId("expense"),amount,category,description,paymentMethod:cleanText(req.body?.paymentMethod,40)||"cash",createdAt:new Date().toISOString(),createdBy:u.id}; workspace.expenses.unshift(item); persistState(); audit(u.id,"expense_created",item.id); res.status(201).json({success:true,expense:item}); });
+app.delete("/api/expenses/:id", requireOwner, (req,res)=>{ const i=workspace.expenses.findIndex((x:any)=>x.id===req.params.id); if(i<0)return res.status(404).json({success:false,error:"المصروف غير موجود."}); workspace.expenses.splice(i,1); persistState(); audit((req as any).user.id,"expense_deleted",req.params.id); res.json({success:true}); });
+
+app.get("/api/contracts", authenticateToken, (_req,res)=>res.json({success:true,contracts:workspace.contracts.slice(0,1000)}));
+app.post("/api/contracts", authenticateToken, (req,res)=>{ const u=(req as any).user as ServerUser; const customerName=cleanText(req.body?.customerName,160),phone=cleanText(req.body?.phone,40),saleId=cleanText(req.body?.saleId,100); if(!customerName||!saleId)return res.status(400).json({success:false,error:"اسم العميل ورقم عملية البيع مطلوبان."}); const sale=workspace.sales.find((x:any)=>x.id===saleId); if(!sale)return res.status(404).json({success:false,error:"عملية البيع غير موجودة."}); const existing=workspace.contracts.find((x:any)=>x.saleId===saleId&&x.status!=="cancelled"); if(existing)return res.status(409).json({success:false,error:"يوجد عقد قائم لهذه العملية."}); const item={id:workspaceId("contract"),contractNumber:`GH-${new Date().getFullYear()}-${String(Date.now()).slice(-7)}`,saleId,customerName,phone,status:"draft",signedAt:null,createdAt:new Date().toISOString(),createdBy:u.id}; workspace.contracts.unshift(item); persistState(); audit(u.id,"contract_created",item.id); res.status(201).json({success:true,contract:item}); });
+app.post("/api/contracts/:id/sign", authenticateToken, (req,res)=>{ const u=(req as any).user as ServerUser; const item=workspace.contracts.find((x:any)=>x.id===req.params.id); if(!item)return res.status(404).json({success:false,error:"العقد غير موجود."}); if(item.status!=="draft")return res.status(409).json({success:false,error:"حالة العقد لا تسمح بالتوقيع."}); item.status="signed"; item.signedAt=new Date().toISOString(); item.signatureReference=cleanText(req.body?.signatureReference,160)||`local-sign-${crypto.randomBytes(8).toString("hex")}`; persistState(); audit(u.id,"contract_signed",item.id); res.json({success:true,contract:item}); });
+
+app.get("/api/installments/schedule", authenticateToken, (req,res)=>{ const saleId=cleanText(req.query?.saleId,100); let rows=workspace.installmentSchedules.slice(); if(saleId)rows=rows.filter((x:any)=>x.saleId===saleId); rows.sort((a:any,b)=>Date.parse(a.dueAt)-Date.parse(b.dueAt)); res.json({success:true,schedules:rows.slice(0,5000)}); });
+app.post("/api/installments/generate", authenticateToken, (req,res)=>{ const u=(req as any).user as ServerUser; const saleId=cleanText(req.body?.saleId,100); const sale=workspace.sales.find((x:any)=>x.id===saleId); if(!sale)return res.status(404).json({success:false,error:"عملية البيع غير موجودة."}); workspace.installmentSchedules=workspace.installmentSchedules.filter((x:any)=>x.saleId!==saleId); const rows=buildInstallmentSchedule(sale); workspace.installmentSchedules.push(...rows); persistState(); audit(u.id,"installment_schedule_generated",saleId); res.status(201).json({success:true,schedules:rows}); });
+app.get("/api/installments/due", authenticateToken, (req,res)=>{ const days=Math.min(30,Math.max(0,Number(req.query?.days||7))); const end=Date.now()+days*86400000; const rows=workspace.installmentSchedules.filter((x:any)=>x.status!=="paid"&&Date.parse(x.dueAt)<=end).sort((a:any,b)=>Date.parse(a.dueAt)-Date.parse(b.dueAt)); res.json({success:true,schedules:rows.slice(0,2000)}); });
+
+app.get("/api/finance/overview", authenticateToken, (_req,res)=>{
+  const sales=workspace.sales; const payments=workspace.payments; const totalSales=sales.filter((s:any)=>s.status!=="cancelled").reduce((n:number,s:any)=>n+Number(s.totalAmount||0),0); const down=sales.filter((s:any)=>s.status!=="cancelled").reduce((n:number,s:any)=>n+Number(s.downPayment||0),0); const collected=payments.reduce((n:number,p:any)=>n+Number(p.amount||0),0); const receivable=sales.filter((s:any)=>!['cancelled','completed'].includes(s.status)).reduce((n:number,s:any)=>n+saleBalance(s),0);
+  res.json({success:true,metrics:{salesCount:sales.length,totalSales,downPayments:down,collected,receivable,activeInstallments:sales.filter((s:any)=>s.status==="active_installment").length,completed:sales.filter((s:any)=>s.status==="completed").length},generatedAt:new Date().toISOString()});
+});
+
+app.get("/api/calendar/schedule", authenticateToken, (req,res) => {
+  const from=typeof req.query.from==="string"?Date.parse(req.query.from):NaN;
+  const to=typeof req.query.to==="string"?Date.parse(req.query.to):NaN;
+  const posts=workspace.posts.filter((p:any)=>p.scheduledFor && Number.isFinite(Date.parse(p.scheduledFor)))
+    .filter((p:any)=>!Number.isFinite(from)||Date.parse(p.scheduledFor)>=from)
+    .filter((p:any)=>!Number.isFinite(to)||Date.parse(p.scheduledFor)<=to)
+    .sort((a:any,b:any)=>Date.parse(a.scheduledFor)-Date.parse(b.scheduledFor));
+  res.json({success:true,entries:posts.slice(0,500),count:posts.length,source:"server-workspace"});
+});
+
+// Strict content workflow. These endpoints centralize state transitions and audit them.
+app.post("/api/workspace/content/:id/submit-review", authenticateToken, (req,res) => {
+  const user=(req as any).user as ServerUser; const post=workspace.posts.find((x:any)=>x.id===req.params.id);
+  if(!post) return res.status(404).json({success:false,error:"المنشور غير موجود."});
+  if(!["owner","manager","staff","content_creator"].includes(user.role)) return res.status(403).json({success:false,error:"لا تملك صلاحية إرسال المحتوى للمراجعة."});
+  if(!post.content || !Array.isArray(post.targetPlatforms)||!post.targetPlatforms.length) return res.status(422).json({success:false,error:"المحتوى والمنصات المستهدفة مطلوبان."});
+  post.status="review"; post.history=Array.isArray(post.history)?post.history:[]; post.history.push({id:workspaceId("approval"),byUser:user.name,userRole:user.role,action:"submit_review",timestamp:new Date().toISOString(),note:cleanText(req.body?.note,500)});
+  persistState(); audit(user.id,"content_submitted_for_review",post.id); res.json({success:true,post});
+});
+
+app.post("/api/workspace/content/:id/approve", requireOwner, (req,res) => {
+  const user=(req as any).user as ServerUser; const post=workspace.posts.find((x:any)=>x.id===req.params.id);
+  if(!post) return res.status(404).json({success:false,error:"المنشور غير موجود."});
+  if(!["review","edited"].includes(post.status)) return res.status(409).json({success:false,error:"حالة المحتوى الحالية لا تسمح بالموافقة."});
+  post.status="approved"; post.history=Array.isArray(post.history)?post.history:[]; post.history.push({id:workspaceId("approval"),byUser:user.name,userRole:user.role,action:"approve",timestamp:new Date().toISOString(),note:cleanText(req.body?.note,500)});
+  persistState(); audit(user.id,"content_approved",post.id); res.json({success:true,post});
+});
+
+app.post("/api/workspace/content/:id/reject", requireOwner, (req,res) => {
+  const user=(req as any).user as ServerUser; const post=workspace.posts.find((x:any)=>x.id===req.params.id);
+  if(!post) return res.status(404).json({success:false,error:"المنشور غير موجود."});
+  if(!["review","edited","approved"].includes(post.status)) return res.status(409).json({success:false,error:"حالة المحتوى الحالية لا تسمح بالرفض."});
+  post.status="edited"; post.history=Array.isArray(post.history)?post.history:[]; post.history.push({id:workspaceId("approval"),byUser:user.name,userRole:user.role,action:"reject",timestamp:new Date().toISOString(),note:cleanText(req.body?.note,1000)||"يحتاج إلى تعديل"});
+  persistState(); audit(user.id,"content_rejected",post.id); res.json({success:true,post});
+});
+
+app.post("/api/workspace/content/:id/schedule", requireOwner, (req,res) => {
+  const user=(req as any).user as ServerUser; const post=workspace.posts.find((x:any)=>x.id===req.params.id); const when=cleanText(req.body?.scheduledFor,80);
+  if(!post) return res.status(404).json({success:false,error:"المنشور غير موجود."});
+  if(post.status!=="approved") return res.status(409).json({success:false,error:"لا يمكن الجدولة قبل موافقة المالك."});
+  if(!when || !Number.isFinite(Date.parse(when)) || Date.parse(when)<=Date.now()) return res.status(400).json({success:false,error:"موعد الجدولة غير صالح أو في الماضي."});
+  post.status="scheduled"; post.scheduledFor=when; post.history=Array.isArray(post.history)?post.history:[]; post.history.push({id:workspaceId("approval"),byUser:user.name,userRole:user.role,action:"schedule",timestamp:new Date().toISOString(),note:when});
+  persistState(); audit(user.id,"content_scheduled",`${post.id}:${when}`); res.json({success:true,post});
+});
+
+app.post("/api/analytics/ingest", requireOwner, (req,res) => {
+  const user=(req as any).user as ServerUser; const {providerVerified, postId, platform, metrics}=req.body||{};
+  if(providerVerified!==true) return res.status(400).json({success:false,error:"لا يمكن تسجيل مؤشرات خارجية دون إثبات من مزود المنصة."});
+  if(!SUPPORTED_PLATFORMS.some((p:any)=>p.id===platform)) return res.status(400).json({success:false,error:"المنصة غير مدعومة."});
+  const post=workspace.posts.find((x:any)=>x.id===postId);
+  if(!post) return res.status(404).json({success:false,error:"المنشور غير موجود."});
+  const safe={views:Math.max(0,Number(metrics?.views)||0),likes:Math.max(0,Number(metrics?.likes)||0),comments:Math.max(0,Number(metrics?.comments)||0),shares:Math.max(0,Number(metrics?.shares)||0),reach:Math.max(0,Number(metrics?.reach)||0)};
+  post.metrics={...(post.metrics||{}),...safe}; post.metricSource="provider_verified"; post.metricsUpdatedAt=new Date().toISOString();
+  persistState(); audit(user.id,"analytics_ingested",`${platform}:${postId}`); res.json({success:true,postId,platform,metrics:safe,source:"provider_verified"});
+});
+
+// -------------------------------------------------------------
+// Operations intelligence: deterministic search, analytics and alerts.
+// These endpoints never call Gemini and never claim external social metrics.
+// -------------------------------------------------------------
+function normalizeSearch(value: unknown): string { return String(value ?? "").trim().toLowerCase().slice(0, 120); }
+function containsQuery(value: unknown, q: string): boolean { return q ? String(value ?? "").toLowerCase().includes(q) : false; }
+
+app.get("/api/workspace/search", authenticateToken, (req, res) => {
+  const q = normalizeSearch(req.query.q);
+  if (q.length < 2) return res.status(400).json({ success: false, error: "اكتب كلمتين على الأقل للبحث." });
+  const products = workspace.products.filter((x: any) => [x.name, x.category, x.modelYear, ...(x.specs || [])].some(v => containsQuery(v, q))).slice(0, 25);
+  const posts = workspace.posts.filter((x: any) => [x.title, x.content, x.campaignName, ...(x.tags || [])].some(v => containsQuery(v, q))).slice(0, 25);
+  const conversations = workspace.conversations.filter((x: any) => [x.customerName, x.phone, x.lastMessage, x.interestedProduct, ...(x.history || []).map((m:any)=>m.text)].some(v => containsQuery(v, q))).slice(0, 25);
+  audit((req as any).user.id, "workspace_search", q);
+  res.json({ success: true, query: q, counts: { products: products.length, posts: posts.length, conversations: conversations.length }, results: { products, posts, conversations } });
+});
+
+app.get("/api/analytics/overview", authenticateToken, (_req, res) => {
+  const posts = workspace.posts;
+  const conversations = workspace.conversations;
+  const statusCount = (status: string) => posts.filter((p:any) => p.status === status).length;
+  const channels = SUPPORTED_PLATFORMS.map(p => ({ platform: p.id, name: p.name, connected: platformConnections.get(p.id)?.status === "connected", posts: posts.filter((x:any) => (x.targetPlatforms || []).includes(p.id)).length, conversations: conversations.filter((x:any) => x.channel === p.id).length }));
+  const metrics = posts.reduce((a:any,p:any) => { const m=p.metrics || {}; a.views += Number(m.views)||0; a.likes += Number(m.likes)||0; a.comments += Number(m.comments)||0; a.shares += Number(m.shares)||0; a.reach += Number(m.reach)||0; return a; }, { views:0, likes:0, comments:0, shares:0, reach:0 });
+  res.json({ success:true, source:"local_workspace", externalMetricsAvailable:false, generatedAt:new Date().toISOString(), posts:{ total:posts.length, drafts:statusCount("draft"), review:statusCount("review"), approved:statusCount("approved"), scheduled:statusCount("scheduled"), published:statusCount("published") }, conversations:{ total:conversations.length, new:conversations.filter((x:any)=>x.status==="new").length, open:conversations.filter((x:any)=>x.status!=="resolved").length, resolved:conversations.filter((x:any)=>x.status==="resolved").length }, metrics, channels });
+});
+
+app.get("/api/system/diagnostics", requireOwner, (_req, res) => {
+  const memory = process.memoryUsage();
+  const queued = automationJobs.filter((j:any)=>j.status==="queued").length;
+  const approved = automationJobs.filter((j:any)=>j.status==="approved").length;
+  const ready = automationJobs.filter((j:any)=>j.status==="ready").length;
+  const failed = automationJobs.filter((j:any)=>j.status==="failed").length;
+  res.json({ success:true, generatedAt:new Date().toISOString(), version:PROJECT_VERSION, schemaVersion:STATE_SCHEMA_VERSION, node:process.version, uptimeSeconds:Math.round(process.uptime()), memory:{ rss:memory.rss, heapUsed:memory.heapUsed, heapTotal:memory.heapTotal }, sessions:activeSessions.size, users:serverUsers.length, platforms:{ total:SUPPORTED_PLATFORMS.length, connected:connectedPlatformIds().length }, workspace:{ products:workspace.products.length, posts:workspace.posts.length, conversations:workspace.conversations.length, plans:workspace.installmentPlans.length, leads:workspace.leads.length, tasks:workspace.tasks.length, sales:workspace.sales.length, payments:workspace.payments.length, suppliers:workspace.suppliers.length, purchases:workspace.purchases.length, expenses:workspace.expenses.length, contracts:workspace.contracts.length, installmentSchedules:workspace.installmentSchedules.length }, jobs:{ total:automationJobs.length, queued, approved, ready, failed }, backups:{ count: (()=>{ try{return fs.readdirSync(BACKUP_DIR).filter(n=>n.startsWith("state-")&&n.endsWith(".json")).length;}catch{return 0;} })() } });
+});
+
+
+app.get("/api/executive/overview", authenticateToken, (_req,res)=>{
+  const now=Date.now();
+  const sales=workspace.sales.filter((s:any)=>s.status!=="cancelled");
+  const totalSales=sales.reduce((n:number,s:any)=>n+Number(s.totalAmount||0),0);
+  const paid=sales.reduce((n:number,s:any)=>n+salePaid(s.id),0);
+  const balance=Math.max(0,totalSales-paid);
+  const overdueSales=sales.filter((s:any)=>{
+    const due=Date.parse(s.nextDueAt||s.dueAt||"");
+    return Number.isFinite(due)&&due<now&&saleBalance(s)>0;
+  });
+  const overdueBalance=overdueSales.reduce((n:number,s:any)=>n+saleBalance(s),0);
+  const aging={current:0,days1to30:0,days31to60:0,days61to90:0,over90:0};
+  for(const s of sales){
+    const due=Date.parse(s.nextDueAt||s.dueAt||"");
+    if(!Number.isFinite(due) || due>=now) aging.current+=saleBalance(s);
+  }
+  for(const s of overdueSales){
+    const due=Date.parse(s.nextDueAt||s.dueAt||""); const days=Math.max(0,Math.floor((now-due)/86400000)); const b=saleBalance(s);
+    if(days<=30) aging.days1to30+=b; else if(days<=60) aging.days31to60+=b; else if(days<=90) aging.days61to90+=b; else aging.over90+=b;
+  }
+  const inv=workspace.products.map(inventoryProductView);
+  const dueFollowUps=workspace.leads.filter((l:any)=>l.nextFollowUpAt&&Date.parse(l.nextFollowUpAt)<=now&&!['won','lost'].includes(l.status)).length;
+  const overdueTasks=workspace.tasks.filter((t:any)=>t.dueAt&&Date.parse(t.dueAt)<now&&['open','in_progress'].includes(t.status)).length;
+  const newMessages=workspace.conversations.filter((c:any)=>c.status==='new').length;
+  const reviewPosts=workspace.posts.filter((p:any)=>p.status==='review'||p.status==='edited').length;
+  const queuedJobs=automationJobs.filter((j:any)=>['queued','approved','ready'].includes(j.status)).length;
+  const actionQueue=[
+    {id:'collections',type:'finance',severity:overdueBalance>0?'high':'normal',count:overdueSales.length,value:overdueBalance,label:'أقساط متأخرة تحتاج متابعة'},
+    {id:'followups',type:'crm',severity:dueFollowUps>0?'high':'normal',count:dueFollowUps,label:'متابعات عملاء مستحقة'},
+    {id:'tasks',type:'tasks',severity:overdueTasks>0?'high':'normal',count:overdueTasks,label:'مهام متأخرة'},
+    {id:'messages',type:'messages',severity:newMessages>0?'normal':'normal',count:newMessages,label:'استفسارات جديدة'},
+    {id:'content',type:'content',severity:reviewPosts>0?'normal':'normal',count:reviewPosts,label:'محتوى ينتظر إجراء'},
+    {id:'jobs',type:'jobs',severity:queuedJobs>0?'normal':'normal',count:queuedJobs,label:'مهام نشر/تشغيل في الطابور'}
+  ].filter(x=>x.count>0);
+  res.json({success:true,generatedAt:new Date().toISOString(),metrics:{salesCount:sales.length,totalSales,paid,balance,overdueSales:overdueSales.length,overdueBalance,openLeads:workspace.leads.filter((x:any)=>!['won','lost'].includes(x.status)).length,lowStock:inv.filter((x:any)=>x.stockStatus!=='ok').length,openConversations:newMessages,openTasks:workspace.tasks.filter((x:any)=>['open','in_progress'].includes(x.status)).length},aging,inventory:{products:inv.length,totalUnits:inv.reduce((n:number,x:any)=>n+x.stockQuantity,0),low:inv.filter((x:any)=>x.stockStatus==='low').length,out:inv.filter((x:any)=>x.stockStatus==='out').length},crm:{new:workspace.leads.filter((x:any)=>x.status==='new').length,qualified:workspace.leads.filter((x:any)=>x.status==='qualified').length,proposal:workspace.leads.filter((x:any)=>x.status==='proposal').length,won:workspace.leads.filter((x:any)=>x.status==='won').length,lost:workspace.leads.filter((x:any)=>x.status==='lost').length},actionQueue});
+});
+
+app.get("/api/finance/aging", authenticateToken, (_req,res)=>{
+  const now=Date.now();
+  const rows=workspace.sales.filter((s:any)=>s.status!=="cancelled"&&saleBalance(s)>0).map((s:any)=>{
+    const due=Date.parse(s.nextDueAt||s.dueAt||""); const overdue=Number.isFinite(due)&&due<now; const days=overdue?Math.floor((now-due)/86400000):0;
+    return {...s,paidAmount:salePaid(s.id),balance:saleBalance(s),dueAt:s.nextDueAt||s.dueAt||null,overdue,overdueDays:days};
+  }).sort((a:any,b:any)=>b.overdueDays-a.overdueDays||b.balance-a.balance);
+  res.json({success:true,rows:rows.slice(0,1000),summary:{count:rows.length,overdue:rows.filter((x:any)=>x.overdue).length,overdueBalance:rows.filter((x:any)=>x.overdue).reduce((n:number,x:any)=>n+x.balance,0)}});
+});
+
+app.get("/api/crm/follow-ups/today", authenticateToken, (_req,res)=>{
+  const now=Date.now(); const end=now+86400000;
+  const rows=workspace.leads.filter((x:any)=>x.nextFollowUpAt&&Date.parse(x.nextFollowUpAt)<=end&&!['won','lost'].includes(x.status)).sort((a:any,b:any)=>Date.parse(a.nextFollowUpAt)-Date.parse(b.nextFollowUpAt));
+  res.json({success:true,rows:rows.slice(0,500),overdue:rows.filter((x:any)=>Date.parse(x.nextFollowUpAt)<now).length,today:rows.filter((x:any)=>Date.parse(x.nextFollowUpAt)>=now).length});
+});
+
+app.get("/api/system/alerts", authenticateToken, (req, res) => {
+  const alerts:any[] = [];
+  if (!OWNER_EMAIL) alerts.push({ id:"owner-email", severity:"critical", title:"بريد المالك غير مضبوط", detail:"يجب ضبط OWNER_EMAIL قبل الاعتماد على نظام التحقق الخاص بالمالك." });
+  if (!GOOGLE_CLIENT_ID) alerts.push({ id:"google-client", severity:"warning", title:"تحقق Google غير مضبوط", detail:"تسجيل Google لن يملك فحص جمهور التطبيق حتى يتم ضبط GOOGLE_CLIENT_ID." });
+  if (connectedPlatformIds().length === 0) alerts.push({ id:"platforms", severity:"info", title:"لا توجد منصات متصلة", detail:"جميع المنصات ما زالت بانتظار OAuth/API فعلي؛ لا يوجد نشر خارجي." });
+  const failed = automationJobs.filter((j:any)=>j.status==="failed").length;
+  if (failed) alerts.push({ id:"jobs-failed", severity:"warning", title:"مهام فاشلة", detail:`يوجد ${failed} مهمة فاشلة تحتاج مراجعة.` });
+  const newConversations = workspace.conversations.filter((c:any)=>c.status==="new").length;
+  if (newConversations) alerts.push({ id:"messages", severity:"info", title:"استفسارات جديدة", detail:`يوجد ${newConversations} استفسار يحتاج متابعة.` });
+  res.json({ success:true, generatedAt:new Date().toISOString(), alerts });
+});
+
+app.post("/api/control/jobs/preflight-all", requireOwner, (req, res) => {
+  const ids = Array.isArray(req.body?.ids) ? req.body.ids.map(String).slice(0, 100) : automationJobs.filter((j:any)=>j.status === "queued" || j.status === "approved").map((j:any)=>j.id).slice(0,100);
+  const results = ids.map(id => { const job:any=automationJobs.find((j:any)=>j.id===id); if(!job) return {id, ok:false, reason:"المهمة غير موجودة"}; const platform=job.payload?.platform; const connection=platform ? platformConnections.get(platform) : null; const approved=job.status==="approved" || job.status==="ready"; const scheduled=!job.scheduledFor || new Date(job.scheduledFor).getTime() <= Date.now(); const connected=!job.requiresExternalConnection || connection?.status==="connected"; const content=typeof job.payload?.content === "string" ? job.payload.content.trim().length>0 : true; const ok=approved && scheduled && connected && content; return {id, ok, checks:{approved,scheduled,connected,content}, reason:ok?null:"المهمة غير جاهزة للتنفيذ"}; });
+  audit((req as any).user.id,"jobs_preflight_all",String(results.length));
+  res.json({success:true,results});
+});
+
+// Gemini usage guard: protects the project from accidental loops/retries and
+// prevents fake/demo counters from being mistaken for real provider quota.
+const GEMINI_DAILY_LIMIT = Math.min(6, Math.max(1, Number(process.env.GEMINI_DAILY_LIMIT || 4)));
+const USAGE_FILE = path.join(process.cwd(), '.gharabi-usage.json');
+let geminiUsageDay = new Date().toISOString().slice(0, 10);
+let geminiUsageCount = 0;
+const geminiRecentCache = new Map<string, { value: string; expiresAt: number }>();
+const geminiInFlight = new Map<string, Promise<string>>();
+const requestWindow = new Map<string, { startedAt: number; count: number }>();
+const challengeWindow = new Map<string, { startedAt: number; count: number }>();
+function allowChallengeAttempt(key: string): boolean {
+  const now = Date.now();
+  const item = challengeWindow.get(key);
+  if (!item || now - item.startedAt >= 15 * 60 * 1000) { challengeWindow.set(key, { startedAt: now, count: 1 }); return true; }
+  if (item.count >= 5) return false;
+  item.count += 1; return true;
+}
+const auditLog: Array<{ id: string; at: string; userId: string; action: string; detail?: string }> = persisted.audit;
+const automationJobs: Array<{ id: string; type: string; status: "queued" | "approved" | "ready" | "executed" | "failed"; createdAt: string; createdBy: string; payload: any; requiresExternalConnection: boolean; scheduledFor?: string; readyAt?: string; executedAt?: string; lastError?: string; providerVerified?: boolean; providerReceipt?: any }> = persisted.jobs as any;
+
+function loadUsage() {
+  try {
+    const raw = JSON.parse(fs.readFileSync(USAGE_FILE, 'utf8'));
+    if (raw.day === geminiUsageDay && Number.isFinite(raw.count)) geminiUsageCount = Math.max(0, Number(raw.count));
+  } catch {}
+}
+function saveUsage() {
+  try { fs.writeFileSync(USAGE_FILE, JSON.stringify({ day: geminiUsageDay, count: geminiUsageCount }, null, 2)); } catch {}
+}
+loadUsage();
+
+function rateLimitAI(userId: string): boolean {
+  const now = Date.now();
+  const item = requestWindow.get(userId);
+  if (!item || now - item.startedAt >= 60_000) {
+    requestWindow.set(userId, { startedAt: now, count: 1 });
+    return true;
+  }
+  if (item.count >= 8) return false;
+  item.count += 1;
+  return true;
+}
+
+// Lightweight housekeeping: bound in-memory request/session maps so a long-lived
+// process does not grow without limit. No external calls and no Gemini usage.
+function cleanupRuntimeState() {
+  const now = Date.now();
+  for (const [token, session] of activeSessions) if (session.expiresAt < now) activeSessions.delete(token);
+  for (const [email, challenge] of verificationChallenges) if (challenge.expiresAt < now) verificationChallenges.delete(email);
+  for (const [userId, window] of requestWindow) if (now - window.startedAt >= 60_000) requestWindow.delete(userId);
+  for (const [key, window] of challengeWindow) if (now - window.startedAt >= 15 * 60 * 1000) challengeWindow.delete(key);
+  for (const [key, window] of authAttemptWindow) if (now - window.startedAt >= 15 * 60 * 1000) authAttemptWindow.delete(key);
+  for (const [key, item] of geminiRecentCache) if (item.expiresAt <= now) geminiRecentCache.delete(key);
+}
+const runtimeCleanupTimer = setInterval(cleanupRuntimeState, 5 * 60 * 1000);
+(runtimeCleanupTimer as any).unref?.();
+
+function requestKey(req: express.Request): string {
+  const supplied = typeof req.headers['x-idempotency-key'] === 'string' ? req.headers['x-idempotency-key'].trim() : '';
+  return supplied.slice(0, 120);
+}
+
+function findRecentJobByIdempotency(userId: string, key: string) {
+  if (!key) return null;
+  return automationJobs.find((j: any) => j.createdBy === userId && j.payload?.idempotencyKey === key && Date.now() - new Date(j.createdAt).getTime() < 24 * 60 * 60 * 1000) || null;
+}
+
+function ensureBackupDirectory() {
+  try { fs.mkdirSync(BACKUP_DIR, { recursive: true }); } catch {}
+}
+
+function backupStateBeforeWrite() {
+  try {
+    if (!fs.existsSync(STATE_FILE)) return;
+    ensureBackupDirectory();
+    const stamp = new Date().toISOString().slice(0, 10);
+    const target = path.join(BACKUP_DIR, `state-${stamp}.json`);
+    if (!fs.existsSync(target)) fs.copyFileSync(STATE_FILE, target);
+    const backups = fs.readdirSync(BACKUP_DIR).filter((n) => n.startsWith('state-') && n.endsWith('.json')).sort();
+    while (backups.length > 7) { const old = backups.shift(); if (old) { try { fs.unlinkSync(path.join(BACKUP_DIR, old)); } catch {} } }
+  } catch (error) {
+    console.warn("Could not create state backup:", error);
+  }
+}
+
+function buildPersistedState() {
+  return {
+    schemaVersion: STATE_SCHEMA_VERSION,
+    savedAt: new Date().toISOString(),
+    users: serverUsers,
+    audit: auditLog.slice(0, 200),
+    jobs: automationJobs.slice(0, 200),
+    platformConnections: Array.from(platformConnections.values()),
+    workspace: {
+      showroom: workspace.showroom,
+      products: workspace.products.slice(0, 1000),
+      posts: workspace.posts.slice(0, 1000),
+      conversations: workspace.conversations.slice(0, 1000),
+      installmentPlans: workspace.installmentPlans.slice(0, 200),
+      leads: workspace.leads.slice(0, 2000),
+      tasks: workspace.tasks.slice(0, 1000),
+      sales: workspace.sales.slice(0, 5000),
+      payments: workspace.payments.slice(0, 10000), suppliers: workspace.suppliers.slice(0, 1000), purchases: workspace.purchases.slice(0, 5000), expenses: workspace.expenses.slice(0, 10000), contracts: workspace.contracts.slice(0, 5000), installmentSchedules: workspace.installmentSchedules.slice(0, 20000)
+    }
+  };
+}
+
+function persistState() {
+  try {
+    backupStateBeforeWrite();
+    const tmp = `${STATE_FILE}.tmp`;
+    fs.writeFileSync(tmp, JSON.stringify(buildPersistedState(), null, 2), { encoding: "utf8", mode: 0o600 });
+    fs.renameSync(tmp, STATE_FILE);
+  } catch (error) {
+    console.warn("Could not persist server state:", error);
+    try { if (fs.existsSync(`${STATE_FILE}.tmp`)) fs.unlinkSync(`${STATE_FILE}.tmp`); } catch {}
+  }
+}
+
+function audit(userId: string, action: string, detail?: string) {
+  auditLog.unshift({ id: crypto.randomUUID(), at: new Date().toISOString(), userId, action, detail });
+  if (auditLog.length > 100) auditLog.pop();
+  persistState();
+}
+
+function canUseGemini(): boolean {
+  const today = new Date().toISOString().slice(0, 10);
+  if (today !== geminiUsageDay) {
+    geminiUsageDay = today;
+    geminiUsageCount = 0;
+    geminiRecentCache.clear();
+    saveUsage();
+  }
+  return geminiUsageCount < GEMINI_DAILY_LIMIT;
+}
+
+function consumeGeminiSlot(): boolean {
+  if (!canUseGemini()) return false;
+  geminiUsageCount += 1;
+  saveUsage();
+  return true;
+}
+
+function cachedGemini(key: string): string | null {
+  const item = geminiRecentCache.get(key);
+  if (!item) return null;
+  if (item.expiresAt <= Date.now()) { geminiRecentCache.delete(key); return null; }
+  return item.value;
+}
+
+function cacheGemini(key: string, value: string, ttlMs = 10 * 60 * 1000) {
+  geminiRecentCache.set(key, { value, expiresAt: Date.now() + ttlMs });
+}
+
+function geminiStatus() {
+  canUseGemini();
+  return { enabled: Boolean(process.env.GEMINI_API_KEY), usedToday: geminiUsageCount, dailyGuard: GEMINI_DAILY_LIMIT, remainingByGuard: Math.max(0, GEMINI_DAILY_LIMIT - geminiUsageCount) };
+}
+
+// Initialize Gemini SDK with telemetry header
+const getGeminiClient = () => {
+  const apiKey = process.env.GEMINI_API_KEY;
+  if (!apiKey) return null;
+  try {
+    return new GoogleGenAI({
+      apiKey,
+      httpOptions: {
+        headers: {
+          "User-Agent": "aistudio-build",
+        },
+      },
+    });
+  } catch (err) {
+    console.error("Failed to initialize GoogleGenAI:", err);
+    return null;
+  }
+};
+
+// Owner-only system diagnostics and durable-state export. No secrets or Gemini keys are included.
+app.get("/api/system/integrity", requireOwner, (_req, res) => {
+  const checks = {
+    stateFile: fs.existsSync(STATE_FILE),
+    stateWritable: (() => { try { fs.accessSync(process.cwd(), fs.constants.W_OK); return true; } catch { return false; } })(),
+    ownerConfigured: Boolean(OWNER_EMAIL),
+    googleAudienceCheckConfigured: Boolean(GOOGLE_CLIENT_ID),
+    platformConnectionsPersisted: fs.existsSync(STATE_FILE),
+    workspaceLoaded: Boolean(workspace && typeof workspace === "object"),
+    backupDirectory: (() => { try { ensureBackupDirectory(); return true; } catch { return false; } })(),
+  };
+  const healthy = Object.values(checks).every(Boolean);
+  res.status(healthy ? 200 : 503).json({ success: healthy, healthy, version: PROJECT_VERSION, schemaVersion: STATE_SCHEMA_VERSION, checks, counts: { users: serverUsers.length, products: workspace.products.length, plans: workspace.installmentPlans.length, posts: workspace.posts.length, conversations: workspace.conversations.length, leads: workspace.leads.length, tasks: workspace.tasks.length, sales: workspace.sales.length, payments: workspace.payments.length, inventoryMovements: (workspace as any).inventoryMovements.length, jobs: automationJobs.length, audit: auditLog.length }, timestamp: new Date().toISOString() });
+});
+
+app.get("/api/system/export", requireOwner, (_req, res) => {
+  const payload = { ...buildPersistedState(), exportVersion: PROJECT_VERSION, exportedAt: new Date().toISOString() };
+  res.setHeader("Content-Type", "application/json; charset=utf-8");
+  res.setHeader("Content-Disposition", `attachment; filename="al-gharabi-ai-backup-${new Date().toISOString().slice(0,10)}.json"`);
+  res.json(payload);
+});
+
+// Readiness is deterministic and does not call Gemini. It helps deployment systems
+// distinguish a running process from a fully initialized application.
+app.get("/api/readiness", (_req, res) => {
+  const stateWritable = (() => {
+    try {
+      fs.accessSync(process.cwd(), fs.constants.W_OK);
+      return true;
+    } catch { return false; }
+  })();
+  res.json({ success: true, ready: stateWritable, version: PROJECT_VERSION, statePersistence: stateWritable, geminiConfigured: Boolean(process.env.GEMINI_API_KEY), timestamp: new Date().toISOString() });
+});
+
+// Health endpoint
+
+// -------------------------------------------------------------
+// v9 unified operations layer: customer 360, cashflow, alerts,
+// reconciliation and operational control. Deterministic only.
+// -------------------------------------------------------------
+function normalizedPhone(v:any){ return String(v||'').replace(/[^0-9+]/g,'').replace(/^00/,'+').trim(); }
+function customerKey(x:any){ const phone=normalizedPhone(x.phone); return phone || cleanText(x.customerName||x.name,160).toLowerCase(); }
+function buildCustomerDirectory(){
+  const map=new Map<string,any>();
+  const touch=(raw:any, source:string)=>{
+    const key=customerKey(raw); if(!key)return;
+    const c=map.get(key)||{id:`cust_${Buffer.from(key).toString('base64url').slice(0,18)}`,name:cleanText(raw.customerName||raw.name,160)||'عميل',phone:normalizedPhone(raw.phone),sources:new Set<string>(),salesCount:0,salesValue:0,paid:0,balance:0,openConversations:0,openLeads:0,lastActivity:null};
+    c.sources.add(source); if(raw.phone&&!c.phone)c.phone=normalizedPhone(raw.phone); if(raw.customerName&&!c.name)c.name=cleanText(raw.customerName,160);
+    const at=raw.createdAt||raw.updatedAt||raw.at; if(at&&(!c.lastActivity||Date.parse(at)>Date.parse(c.lastActivity)))c.lastActivity=at;
+    if(source==='sale'){c.salesCount++;c.salesValue+=safeMoney(raw.totalAmount);c.paid+=safeMoney(raw.paidAmount);c.balance+=safeMoney(raw.balance);}
+    if(source==='conversation'&&raw.status!=='resolved')c.openConversations++;
+    if(source==='lead'&&!['won','lost'].includes(raw.status))c.openLeads++;
+    map.set(key,c);
+  };
+  for(const x of workspace.sales)touch(x,'sale'); for(const x of workspace.leads)touch(x,'lead'); for(const x of workspace.conversations)touch(x,'conversation');
+  return [...map.values()].map(c=>({...c,sources:[...c.sources]})).sort((a,b)=>b.salesValue-a.salesValue || String(b.lastActivity||'').localeCompare(String(a.lastActivity||'')));
+}
+
+app.get('/api/control/alerts', authenticateToken, (_req,res)=>{
+  const now=Date.now(), alerts:any[]=[];
+  const low=(workspace.products as any[]).filter(p=>Number(p.stockQuantity||0)<=Number(p.reorderLevel||0));
+  if(low.length) alerts.push({id:'stock-low',severity:'warning',type:'inventory',title:'مخزون يحتاج إعادة طلب',count:low.length,value:low.reduce((n:number,p:any)=>n+Math.max(0,Number(p.stockQuantity||0)),0)});
+  const overdue=(workspace.installmentSchedules as any[]).filter(x=>x.status!=='paid'&&Date.parse(x.dueAt)<now);
+  if(overdue.length) alerts.push({id:'installments-overdue',severity:'critical',type:'finance',title:'أقساط متأخرة',count:overdue.length,value:overdue.reduce((n:number,x:any)=>n+Math.max(0,safeMoney(x.amount)-safeMoney(x.paid)),0)});
+  const dueTasks=(workspace.tasks as any[]).filter(x=>x.status!=='done'&&x.status!=='cancelled'&&x.dueAt&&Date.parse(x.dueAt)<now);
+  if(dueTasks.length) alerts.push({id:'tasks-overdue',severity:'warning',type:'tasks',title:'مهام متأخرة',count:dueTasks.length});
+  const openLeads=(workspace.leads as any[]).filter(x=>!['won','lost'].includes(x.status));
+  if(openLeads.length) alerts.push({id:'leads-open',severity:'info',type:'crm',title:'عملاء محتملون بانتظار المتابعة',count:openLeads.length});
+  const reviewPosts=(workspace.posts as any[]).filter(x=>x.status==='review');
+  if(reviewPosts.length) alerts.push({id:'content-review',severity:'info',type:'content',title:'محتوى بانتظار المراجعة',count:reviewPosts.length});
+  res.json({success:true,generatedAt:new Date().toISOString(),alerts});
+});
+
+app.get('/api/control/customer-directory', authenticateToken, (req,res)=>{
+  const q=cleanText(req.query?.q,160).toLowerCase(); let rows=buildCustomerDirectory();
+  if(q) rows=rows.filter(x=>String(x.name).toLowerCase().includes(q)||String(x.phone).toLowerCase().includes(q));
+  res.json({success:true,customers:rows.slice(0,1000)});
+});
+
+app.get('/api/control/cashflow', authenticateToken, (req,res)=>{
+  const days=Math.min(365,Math.max(7,Number(req.query?.days||30))), cutoff=Date.now()-days*86400000;
+  const rows:any[]=[]; const push=(at:any,type:string,amount:number,label:string,ref:string)=>{const t=Date.parse(at||'');if(Number.isFinite(t)&&t>=cutoff)rows.push({at:new Date(t).toISOString(),type,amount:safeMoney(amount),label,ref});};
+  for(const x of workspace.payments)push(x.createdAt,'in',x.amount,'تحصيل دفعة',x.saleId||x.id);
+  for(const x of workspace.sales)push(x.createdAt,'in',x.downPayment,'دفعة مقدمة',x.id);
+  for(const x of workspace.purchases)push(x.createdAt,'out',x.total,'مشتريات',x.id);
+  for(const x of workspace.expenses)push(x.createdAt,'out',x.amount,'مصروف',x.id);
+  rows.sort((a,b)=>Date.parse(a.at)-Date.parse(b.at)); let balance=0; for(const r of rows){balance+=r.type==='in'?r.amount:-r.amount;r.runningBalance=balance;}
+  const inflow=rows.filter(x=>x.type==='in').reduce((n,x)=>n+x.amount,0), outflow=rows.filter(x=>x.type==='out').reduce((n,x)=>n+x.amount,0);
+  res.json({success:true,days,inflow,outflow,net:inflow-outflow,rows:rows.slice(-2000)});
+});
+
+app.get('/api/control/reconciliation', requireOwner, (_req,res)=>{
+  const salesValue=(workspace.sales as any[]).reduce((n:number,x:any)=>n+safeMoney(x.totalAmount),0);
+  const paid=(workspace.sales as any[]).reduce((n:number,x:any)=>n+safeMoney(x.paidAmount),0);
+  const payments=(workspace.payments as any[]).reduce((n:number,x:any)=>n+safeMoney(x.amount),0);
+  const down=(workspace.sales as any[]).reduce((n:number,x:any)=>n+safeMoney(x.downPayment),0);
+  const computedPaid=down+payments;
+  const differences={salesPaidVsTransactions:paid-computedPaid,recordedPayments:payments,downPayments:down};
+  res.json({success:true,ok:Math.abs(differences.salesPaidVsTransactions)<0.01,salesValue,recordedPaid:paid,transactionPaid:computedPaid,differences,checkedAt:new Date().toISOString()});
+});
+
+app.get('/api/control/daily-brief', authenticateToken, (_req,res)=>{
+  const now=new Date(), start=new Date(now.getFullYear(),now.getMonth(),now.getDate()).getTime();
+  const todaySales=(workspace.sales as any[]).filter(x=>Date.parse(x.createdAt||'')>=start);
+  const todayPayments=(workspace.payments as any[]).filter(x=>Date.parse(x.createdAt||'')>=start);
+  const todayExpenses=(workspace.expenses as any[]).filter(x=>Date.parse(x.createdAt||'')>=start);
+  const pendingJobs=automationJobs.filter((x:any)=>['queued','approved','ready'].includes(x.status)).length;
+  res.json({success:true,date:now.toISOString().slice(0,10),sales:{count:todaySales.length,value:todaySales.reduce((n:number,x:any)=>n+safeMoney(x.totalAmount),0)},collections:todayPayments.reduce((n:number,x:any)=>n+safeMoney(x.amount),0),expenses:todayExpenses.reduce((n:number,x:any)=>n+safeMoney(x.amount),0),openConversations:workspace.conversations.filter((x:any)=>x.status!=='resolved').length,openLeads:workspace.leads.filter((x:any)=>!['won','lost'].includes(x.status)).length,lowStock:workspace.products.filter((x:any)=>Number(x.stockQuantity||0)<=Number(x.reorderLevel||0)).length,pendingJobs});
+});
+
+
+// v10 finalization layer: notifications, audit query, provider adapter contract, webhook intake, exports, and final readiness.
+const WEBHOOK_SECRET = process.env.WEBHOOK_SECRET || "";
+function pushNotification(userId:string|null, type:string, title:string, body:string, severity:"info"|"warning"|"critical"="info", link?:string){
+  const item={id:workspaceId("notif"),userId,title,body,type,severity,read:false,link:link||null,createdAt:new Date().toISOString()};
+  (workspace as any).notifications.unshift(item); (workspace as any).notifications=(workspace as any).notifications.slice(0,10000); return item;
+}
+function providerStatus(platform:string){
+  const account=platformConnections.get(platform);
+  return {platform, connected:Boolean(account?.status==="connected"), accountId:account?.accountId||null, providerVerified:Boolean(account?.providerVerified), adapter:SUPPORTED_PLATFORMS.some((p:any)=>p.id===platform)?"adapter-contract":"unsupported"};
+}
+app.get("/api/notifications", authenticateToken, (req,res)=>{
+  const u=(req as any).user as ServerUser; const all=(workspace as any).notifications||[];
+  const rows=all.filter((n:any)=>!n.userId||n.userId===u.id).slice(0,200);
+  res.json({success:true,notifications:rows,unread:rows.filter((n:any)=>!n.read).length});
+});
+app.post("/api/notifications/:id/read", authenticateToken, (req,res)=>{
+  const u=(req as any).user as ServerUser; const n=(workspace as any).notifications.find((x:any)=>x.id===req.params.id);
+  if(!n|| (n.userId&&n.userId!==u.id)) return res.status(404).json({success:false,error:"التنبيه غير موجود."});
+  n.read=true; n.readAt=new Date().toISOString(); n.readBy=u.id; persistState(); res.json({success:true,notification:n});
+});
+app.post("/api/notifications/read-all", authenticateToken, (req,res)=>{
+  const u=(req as any).user as ServerUser; for(const n of (workspace as any).notifications){ if(!n.userId||n.userId===u.id){n.read=true;n.readAt=new Date().toISOString();n.readBy=u.id;} } persistState(); res.json({success:true});
+});
+app.get("/api/audit/query", requireOwner, (req,res)=>{
+  const q=normalizeSearch(req.query.q); const action=cleanText(req.query.action,80); const limit=Math.min(500,Math.max(1,Number(req.query.limit||100)));
+  let rows=auditLog.slice(); if(q) rows=rows.filter((x:any)=>containsQuery(x.action,q)||containsQuery(x.detail,q)||containsQuery(x.userId,q)); if(action) rows=rows.filter((x:any)=>x.action===action);
+  res.json({success:true,entries:rows.slice(0,limit),count:rows.length});
+});
+app.get("/api/providers/capabilities", authenticateToken, (_req,res)=>{ res.json({success:true,contractVersion:"2.0",mode:"real-provider-required",providers:SUPPORTED_PLATFORMS.map((p:any)=>({platform:p.id,name:p.name,...providerStatus(p.id),capabilities:{oauth:Boolean(OAUTH_CONFIG[p.id]),webhook:true,publish:p.capabilities.includes("publish"),analytics:p.capabilities.includes("analytics"),messaging:p.capabilities.includes("messages")},execution:p.id==="telegram"?"production-text-publish":"adapter-ready-credentials-required"}))}); });
+app.post("/api/webhooks/:platform", (req,res)=>{
+  const platform=String(req.params.platform); if(!SUPPORTED_PLATFORMS.some((p:any)=>p.id===platform)) return res.status(404).json({success:false,error:"المنصة غير مدعومة."});
+  if(!WEBHOOK_SECRET) return res.status(503).json({success:false,error:"WEBHOOK_SECRET غير مضبوط؛ تم تعطيل استقبال Webhook لحماية النظام."});
+  const signature=String(req.headers["x-gharabi-signature"]||""); const raw=JSON.stringify(req.body||{}); const expected=crypto.createHmac("sha256",WEBHOOK_SECRET).update(raw).digest("hex");
+  if(!signature || signature.length!==expected.length || !crypto.timingSafeEqual(Buffer.from(signature),Buffer.from(expected))) return res.status(401).json({success:false,error:"توقيع Webhook غير صالح."});
+  const eventId=cleanText(req.headers["x-event-id"],160)||workspaceId("event"); if((workspace as any).webhookEvents.some((x:any)=>x.id===eventId)) return res.json({success:true,duplicate:true});
+  const event={id:eventId,platform,type:cleanText(req.body?.type,100)||"unknown",payload:req.body?.data||req.body,receivedAt:new Date().toISOString()};
+  (workspace as any).webhookEvents.unshift(event); (workspace as any).webhookEvents=(workspace as any).webhookEvents.slice(0,10000); (workspace as any).providerEvents.unshift({id:workspaceId("pevent"),platform,eventId,type:event.type,receivedAt:event.receivedAt}); (workspace as any).providerEvents=(workspace as any).providerEvents.slice(0,10000); persistState();
+  res.status(202).json({success:true,accepted:true,eventId});
+});
+app.get("/api/webhooks/events", requireOwner, (req,res)=>{ const platform=cleanText(req.query.platform,60); let rows=(workspace as any).webhookEvents.slice(); if(platform) rows=rows.filter((x:any)=>x.platform===platform); res.json({success:true,events:rows.slice(0,500)}); });
+app.get("/api/system/export/audit", requireOwner, (_req,res)=>{
+  res.json({success:true,exportedAt:new Date().toISOString(),version:PROJECT_VERSION,entries:auditLog.slice(0,5000)});
+});
+app.get("/api/system/final-readiness", requireOwner, (_req,res)=>{
+  const checks:any[]=[]; const add=(id:string,label:string,ok:boolean,detail:string)=>checks.push({id,label,ok,detail});
+  add("auth","بوابة المصادقة",serverUsers.length>0,"لا يوجد مستخدم نظام" );
+  add("owner","حساب المالك",serverUsers.some((u:any)=>u.role==="owner"),"يجب وجود مالك واحد على الأقل");
+  add("persistence","التخزين الدائم",Boolean(workspace&&typeof workspace==="object"),"حالة workspace غير متاحة");
+  add("integrity","سلامة البيانات",Array.isArray(workspace.products)&&Array.isArray(workspace.sales)&&Array.isArray(workspace.payments),"هياكل البيانات الأساسية غير مكتملة");
+  add("social-safety","سلامة النشر الخارجي",automationJobs.every((j:any)=>j.status!=="published" || j.providerVerified===true),"يوجد سجل نشر خارجي غير موثق");
+  add("gemini-guard","حارس Gemini",GEMINI_DAILY_LIMIT>=1&&GEMINI_DAILY_LIMIT<=6,"إعداد حارس Gemini غير آمن");
+  add("webhook-safety","حماية Webhook",!WEBHOOK_SECRET || WEBHOOK_SECRET.length>=16,"WEBHOOK_SECRET يجب أن يكون 16 محرفًا على الأقل أو يُترك معطلًا");
+  const healthy=checks.every(x=>x.ok); res.status(healthy?200:503).json({success:healthy,ready:healthy,projectVersion:PROJECT_VERSION,schemaVersion:STATE_SCHEMA_VERSION,checks,blocking:checks.filter(x=>!x.ok)});
+});
+
+app.get("/api/system/deployment-checklist", requireOwner, (_req,res)=>{
+  const platformRows=SUPPORTED_PLATFORMS.map((p:any)=>{ const r=publicProviderReadiness(p.id); const c:any=platformConnections.get(p.id); return {platform:p.id,name:p.name,configured:Boolean(r.configured),connected:Boolean(c?.status==="connected"&&c?.providerVerified===true),providerVerified:Boolean(c?.providerVerified===true),productionReady:Boolean(c?.status==="connected"&&c?.providerVerified===true&&p.id==="telegram"),missing:r.missing||[],next:r.next||"إضافة موصل إنتاجي معتمد"}; });
+  const checks=[
+    {id:"auth",label:"المصادقة والمالك",ok:serverUsers.some((u:any)=>u.role==="owner")},
+    {id:"persistence",label:"التخزين والنسخ الاحتياطية",ok:Boolean(workspace&&fs.existsSync(STATE_FILE))},
+    {id:"integrity",label:"سلامة البيانات الأساسية",ok:Array.isArray(workspace.products)&&Array.isArray(workspace.sales)&&Array.isArray(workspace.payments)},
+    {id:"ai-guard",label:"حارس Gemini",ok:GEMINI_DAILY_LIMIT>=1&&GEMINI_DAILY_LIMIT<=6},
+    {id:"publish-safety",label:"سلامة النشر",ok:automationJobs.every((j:any)=>j.status!=="published"||j.providerVerified===true)},
+    {id:"provider-clarity",label:"وضوح حالة المنصات",ok:platformRows.every((x:any)=>!x.connected||x.providerVerified)},
+  ];
+  res.json({success:true,ready:checks.every(x=>x.ok),projectVersion:PROJECT_VERSION,schemaVersion:STATE_SCHEMA_VERSION,checks,platforms:platformRows,productionAdapters:{telegram:"ready",youtube:"credentials-required",tiktok:"credentials-required",google_business:"credentials-required",facebook:"adapter-required",instagram:"adapter-required",whatsapp:"adapter-required",x:"adapter-required",snapchat:"adapter-required",threads:"adapter-required"},note:"الربط الحقيقي للمنصات يحتاج بيانات تطبيقات واعتمادات الحسابات الخاصة بالمالك؛ لا يتم اختلاقها أو اعتبار المنصة متصلة بدون تحقق مزود فعلي."});
+});
+
+app.get("/api/health", (_req, res) => {
+  const hasKey = Boolean(process.env.GEMINI_API_KEY);
+  res.json({
+    status: "ok",
+    aiEnabled: hasKey,
+    timestamp: new Date().toISOString(),
+    service: "Al-Gharabi AI Backend",
+    version: PROJECT_VERSION,
+    geminiUsage: geminiStatus(),
+  });
+});
+
+// Protected AI budget status. It reports only this server's safety guard, not provider quota.
+app.get("/api/ai/status", authenticateToken, (_req, res) => {
+  res.json({ success: true, gemini: geminiStatus(), note: "هذه أرقام حماية محلية وليست حصة مزود الخدمة." });
+});
+
+// Central orchestration: deterministic routing first, without consuming Gemini quota
+app.post("/api/ai/orchestrate", authenticateToken, (req, res) => {
+  const message = typeof req.body?.message === "string" ? req.body.message.trim() : "";
+  if (!message) return res.status(400).json({ success: false, error: "الرسالة مطلوبة." });
+
+  const text = message.toLowerCase();
+  const platforms = [
+    ["tiktok", "تيك توك"], ["youtube", "يوتيوب"], ["facebook", "فيسبوك"],
+    ["instagram", "انستغرام"], ["whatsapp", "واتساب"], ["telegram", "تلغرام"],
+    ["x", "تويتر"], ["snapchat", "سناب"], ["threads", "ثريدز"], ["google_business", "جوجل"],
+  ];
+  const detectedPlatforms = platforms.filter(([id, ar]) => text.includes(id) || text.includes(ar)).map(([id]) => id);
+  let intent = "general";
+  let targetModule = "agent";
+  if (/منشور|محتوى|فيديو|ريلز|ستوري|حملة|اعلان/.test(text)) { intent = "content"; targetModule = "content"; }
+  else if (/عميل|رسالة|محادثة|استفسار|شكوى/.test(text)) { intent = "customer_support"; targetModule = "customers"; }
+  else if (/منتج|سعر|مخزون|جهاز|هاتف|مواد بناء/.test(text)) { intent = "product_data"; targetModule = "database"; }
+  else if (/تقويم|جدول|موعد|مجدول/.test(text)) { intent = "scheduling"; targetModule = "calendar"; }
+  else if (/تحليل|احصائ|أداء|تفاعل|متابع/.test(text)) { intent = "analytics"; targetModule = "analytics"; }
+  else if (/مستخدم|موظف|صلاحية|دور/.test(text)) { intent = "team"; targetModule = "users"; }
+
+  return res.json({
+    success: true,
+    intent,
+    targetModule,
+    platforms: detectedPlatforms,
+    requiresGemini: intent === "content" || intent === "general",
+    approvalRequired: intent === "content",
+    message: "تم توجيه الطلب إلى الوحدة المناسبة دون استهلاك Gemini."
+  });
+});
+
+// 1. Generate Platform-Specific Content (Authenticated users only)
+app.post("/api/ai/generate-content", authenticateToken, async (req, res) => {
+  try {
+    const user = (req as any).user as ServerUser;
+    if (!rateLimitAI(user.id)) return res.status(429).json({ success: false, error: "تم تفعيل حماية الطلبات: انتظر دقيقة قبل إرسال طلبات AI إضافية.", generatedBy: "local-guard" });
+    audit(user.id, "generate_content");
+    const {
+      platform,
+      contentType,
+      topic,
+      tone = "professional",
+      productName,
+      installmentDetails,
+      customInstructions,
+    } = req.body;
+
+    const ai = getGeminiClient();
+
+    const systemPrompt = `أنت المساعد الذكي الرسمي والمؤلف الإعلاني لـ "معرض الغرابي للتقسيط".
+معرض الغرابي يقدم حلول تقسيط وتسهيلات مرنة وإجراءات معتمدة وواضحة.
+
+المطلوب: توليد محتوى تسويقي احترافي مخصص لمنصة: "${platform || 'عامة'}"
+نوع المحتوى: "${contentType || 'منشور'}"
+الموضوع/المنتج: "${topic || productName || 'عروض التقسيط الميسر'}"
+النبرة: "${tone}"
+تفاصيل القسط والمنتج إن وجدت: "${installmentDetails || ''}"
+تعليمات إضافية: "${customInstructions || ''}"
+
+إرشادات المنصات:
+- TikTok: ركز على الهوك الأول (Hook) في البداية، نص سريع وجذاب، هاشتاغات مناسبة (#تقسيط_ميسر #معرض_الغرابي #عروض_التقسيط).
+- Instagram: صياغة بصرية مرتبة بفواصل أنيقة، توضيح شروط التقسيط، ودعوة مباشرة للتواصل عبر الرسائل الخاصة أو الرابط في البايو.
+- YouTube: عنوان ملفت وجذاب، وصف متكامل ومفصل، وكلمات مفتاحية دقيقة.
+- X (Twitter): تغريدة أو ثريد مباشر يبرز مزايا وأنظمة التقسيط والتسهيلات التنافسية.
+- Snapchat: سيناريو ستوري مقسم لـ 3 لقطات (اللقطة 1: لفت الانتباه، اللقطة 2: المزايا والتفاصيل، اللقطة 3: اسحب الشاشة للتواصل).
+- Facebook: منشور تسويقي مفصل يوضح الفئات المستهدفة، التسهيلات، وإجراءات التقسيط.
+- WhatsApp / Telegram: رسالة برودكاست منظمة بنقاط وأيقونات جذابة وروابط تواصل مباشرة.
+- Google Business Profile: تحديث إخباري محلي لمعرض الغرابي يوضح أحدث العروض وساعات العمل مع دعوة للزيارة أو الاتصال.
+
+ملاحظة هامة:
+لا تقم باختراع أرقام هواتف أو عناوين وهمية أو أسماء موظفين، واعتمد حصراً على المعلومات المحددة من إدارة المعرض.
+أجب باللغة العربية بأسلوب احترافي رفيع دون أي مقدمات إنجليزية.`;
+
+    if (ai && canUseGemini()) {
+      const cacheKey = `content:${JSON.stringify({ platform, contentType, topic, tone, productName, installmentDetails, customInstructions })}`;
+      const cached = cachedGemini(cacheKey);
+      if (cached) return res.json({ success: true, content: cached, platform, contentType, generatedBy: "gemini-cache" });
+      let generated = geminiInFlight.get(cacheKey);
+      if (!generated) {
+        if (!consumeGeminiSlot()) {
+          return res.status(429).json({ success: false, error: "تم بلوغ حد الحماية اليومية المحلي للذكاء الاصطناعي. استخدم المحرك المحلي أو جرّب غداً.", fallback: generateSmartFallbackContent(platform, contentType, topic || productName, installmentDetails) });
+        }
+        generated = ai.models.generateContent({
+          model: process.env.GEMINI_MODEL || "gemini-3.8-flash",
+          contents: systemPrompt,
+        }).then((r) => r.text || "").catch((error) => {
+          geminiUsageCount = Math.max(0, geminiUsageCount - 1);
+          saveUsage();
+          throw error;
+        }).finally(() => geminiInFlight.delete(cacheKey));
+        geminiInFlight.set(cacheKey, generated);
+      }
+      const generatedText = await generated;
+      cacheGemini(cacheKey, generatedText);
+
+      return res.json({
+        success: true,
+        content: generatedText,
+        platform,
+        contentType,
+        generatedBy: process.env.GEMINI_MODEL || "gemini-3.8-flash",
+      });
+    }
+
+    // Fallback if no API key is configured
+    const fallbackResponse = generateSmartFallbackContent(
+      platform,
+      contentType,
+      topic || productName,
+      installmentDetails
+    );
+    return res.json({
+      success: true,
+      content: fallbackResponse,
+      platform,
+      contentType,
+      generatedBy: "local-smart-engine",
+    });
+  } catch (error: any) {
+    console.error("Content generation error:", error);
+    res.status(500).json({
+      success: false,
+      error: error.message || "حدث خطأ أثناء توليد المحتوى",
+      fallback: generateSmartFallbackContent(
+        req.body.platform,
+        req.body.contentType,
+        req.body.topic,
+        req.body.installmentDetails
+      ),
+    });
+  }
+});
+
+// 2. Classify Customer Message & Suggest Reply (Authenticated users only)
+app.post("/api/ai/classify-message", authenticateToken, async (req, res) => {
+  try {
+    const user = (req as any).user as ServerUser;
+    if (!rateLimitAI(user.id)) return res.status(429).json({ success: false, error: "تم تفعيل حماية الطلبات: انتظر دقيقة قبل إرسال طلبات AI إضافية." });
+    audit(user.id, "classify_message");
+    const { customerName, message, channel, showroomInfo } = req.body;
+    const ai = getGeminiClient();
+
+    const prompt = `أنت مساعد خدمة العملاء الذكي في "معرض الغرابي للتقسيط".
+رسالة العميل (${customerName || 'عميل'} عبر ${channel || 'القناة'}): "${message}"
+
+سياسات ومعلومات المعرض المرجعية:
+${showroomInfo ? JSON.stringify(showroomInfo) : 'معرض الغرابي للتقسيط - أنظمة تمويل وتقسيط ميسرة.'}
+
+المطلوب إرجاع رد بصيغة JSON حصراً بالشكل التالي:
+{
+  "category": "تصنيف الاستفسار (مثال: استفسار عن قسط / شروط ومستندات / موقع المعرض / استفسار عن دفعة أولى / شكوى / تفاوض / جاهز للتعاقد)",
+  "urgency": "عاجل | متوسط | عادي",
+  "needsHumanHandoff": true/false (إذا كان العميل غاضباً أو يريد التفاوض النهائي أو يطلب مستشار مالي شخصي اجعلها true),
+  "suggestedReply": "نص الرد المقترح المهذب والدقيق والمرحب بالعميل دون ذكر أرقام هواتف أو عناوين غير محددة",
+  "extractedEntities": {
+    "productName": "اسم المنتج أو الموديل إن ذكر",
+    "budget": "الميزانية إن ذكرت"
+  }
+}`;
+
+    if (ai && canUseGemini()) {
+      const cacheKey = `classify:${JSON.stringify({ customerName, message, channel, showroomInfo })}`;
+      const cached = cachedGemini(cacheKey);
+      if (cached) return res.json({ success: true, ...JSON.parse(cached), generatedBy: "gemini-cache" });
+      if (!consumeGeminiSlot()) {
+        return res.status(429).json({ success: false, error: "تم بلوغ حد الحماية اليومية المحلي للذكاء الاصطناعي." });
+      }
+      const response = await ai.models.generateContent({
+        model: process.env.GEMINI_MODEL || "gemini-3.8-flash",
+        contents: prompt,
+        config: {
+          responseMimeType: "application/json",
+        },
+      });
+
+      let parsed: any;
+      try { parsed = JSON.parse(response.text || "{}"); }
+      catch { parsed = { category: "استفسار عام عن التقسيط", urgency: "متوسط", needsHumanHandoff: true, suggestedReply: "سيتولى فريق خدمة العملاء مراجعة طلبكم.", extractedEntities: {} }; }
+      cacheGemini(cacheKey, JSON.stringify(parsed));
+      return res.json({ success: true, ...parsed, generatedBy: process.env.GEMINI_MODEL || "gemini-3.8-flash" });
+    }
+
+    // Dynamic fallback classification logic
+    const lower = (message || "").toLowerCase();
+    let category = "استفسار عام عن التقسيط";
+    let needsHumanHandoff = false;
+    let urgency = "متوسط";
+
+    if (lower.includes("شروط") || lower.includes("اوراق") || lower.includes("مستندات") || lower.includes("راتب")) {
+      category = "شروط التقسيط والمستندات المطلوبة";
+    } else if (lower.includes("قسط") || lower.includes("دفعة") || lower.includes("سعر") || lower.includes("حسبة")) {
+      category = "حساب الأقساط والدفعة الشهرية";
+    } else if (lower.includes("موقع") || lower.includes("مكان") || lower.includes("ساعات") || lower.includes("فرع")) {
+      category = "موقع المعرض وساعات العمل";
+    } else if (lower.includes("شكوى") || lower.includes("مدير") || lower.includes("موظف") || lower.includes("تاخير")) {
+      category = "طلب محادثة موظف / متابعة خاصة";
+      needsHumanHandoff = true;
+      urgency = "عاجل";
+    }
+
+    const fallbackReply = `أهلاً بك يا ${customerName || 'عزيزنا العميل'} في معرض الغرابي للتقسيط.
+يسعدنا خدمتكم وتزويدكم بكافة تفاصيل وأنظمة التقسيط المتاحة.
+يمكنكم تزويدنا بتفاصيل طلبكم ليقوم مستشار المبيعات بمراجعتها وتقديم الحسبة المناسبة لكم فوراً.`;
+
+    return res.json({
+      success: true,
+      category,
+      urgency,
+      needsHumanHandoff,
+      suggestedReply: fallbackReply,
+      extractedEntities: {},
+    });
+  } catch (error: any) {
+    console.error("Classify message error:", error);
+    res.status(500).json({
+      success: false,
+      category: "استفسار عن التقسيط",
+      urgency: "متوسط",
+      needsHumanHandoff: false,
+      suggestedReply: "مرحباً بكم في معرض الغرابي للتقسيط، نسعد بخدمتكم وتلبية استفساراتكم.",
+    });
+  }
+});
+
+// 3. Central Showroom AI Agent Chat & Strategist (Authenticated users only)
+app.post("/api/ai/agent-chat", authenticateToken, async (req, res) => {
+  try {
+    const user = (req as any).user as ServerUser;
+    if (!rateLimitAI(user.id)) return res.status(429).json({ success: false, reply: "تم تفعيل حماية الطلبات مؤقتاً لتجنب استنزاف الحصة. استخدم المحرك المحلي أو انتظر دقيقة." });
+    audit(user.id, "agent_chat");
+    const { message, chatHistory = [], context } = req.body;
+    const ai = getGeminiClient();
+
+    const systemPrompt = `أنت "الغرابي AI" - الوكيل الذكي المركزي ومستشار العمليات التسويقية والتشغيلية لمعرض الغرابي للتقسيط.
+مهامك:
+1. المساعدة في إدارة وتسويق خدمات ومنتجات معرض الغرابي للتقسيط عبر جميع القنوات والمنصات المعتمدة.
+2. المساعدة في صياغة منشورات وحملات تسويقية مبتكرة للمنصات (TikTok, YouTube, Facebook, Instagram, WhatsApp, Telegram, X, Snapchat, Threads, Google Business).
+3. تحليل الأداء واقتراح استراتيجيات عملية لرفع التفاعل وخدمة العملاء.
+4. عدم افتراض أو توليد أرقام هواتف أو عناوين وهمية أو أسماء موظفين، والاعتماد حصراً على ما يحدده مالك النظام في قاعدة البيانات.
+
+نبرتك: احترافية، راقية، دقيقة ومباشرة.
+سياق النظام الحالي: ${JSON.stringify(context || {})}
+رسالة المستخدم: ${message}`;
+
+    if (ai && canUseGemini()) {
+      const cacheKey = `agent:${JSON.stringify({ message, chatHistory, context })}`;
+      const cached = cachedGemini(cacheKey);
+      if (cached) return res.json({ success: true, reply: cached, generatedBy: "gemini-cache" });
+      let generated = geminiInFlight.get(cacheKey);
+      if (!generated) {
+        if (!consumeGeminiSlot()) {
+          return res.status(429).json({ success: false, reply: "وصلنا إلى حد الحماية اليومية المحلي. سأبقى متاحاً بالمحرك المحلي دون استهلاك إضافي من Gemini." });
+        }
+        generated = ai.models.generateContent({
+          model: process.env.GEMINI_MODEL || "gemini-3.8-flash",
+          contents: systemPrompt,
+        }).then((r) => r.text || "").catch((error) => {
+          geminiUsageCount = Math.max(0, geminiUsageCount - 1);
+          saveUsage();
+          throw error;
+        }).finally(() => geminiInFlight.delete(cacheKey));
+        geminiInFlight.set(cacheKey, generated);
+      }
+      const generatedText = await generated;
+      cacheGemini(cacheKey, generatedText);
+
+      return res.json({
+        success: true,
+        reply: generatedText,
+        generatedBy: process.env.GEMINI_MODEL || "gemini-3.8-flash",
+      });
+    }
+
+    // Dynamic clean conversational fallback
+    const reply = `أهلاً بك في الغرابي AI!
+أنا جاهز لمساعدتك في كل ما يخص إدارة معرض الغرابي للتقسيط:
+• صياغة وجدولة المحتوى لجميع المنصات الاجتماعية العشر.
+• مساعدة فريق العمل في تصنيف استفسارات العملاء واقتراح الردود المناسبة.
+• تحسين عروض وأنظمة التقسيط المسجلة في قاعدة بيانات المعرض.
+كيف يمكنني مساعدتك في مهام المعرض اليوم؟`;
+
+    return res.json({
+      success: true,
+      reply,
+    });
+  } catch (error: any) {
+    console.error("Agent chat error:", error);
+    res.status(500).json({
+      success: false,
+      reply: "أهلاً بك، يسعدني دائماً مساعدتك في أي استفسار يخص إدارة وتشغيل معرض الغرابي للتقسيط.",
+    });
+  }
+});
+
+// Helper for local template generation without mock data
+function generateSmartFallbackContent(
+  platform: string = "",
+  type: string = "post",
+  topic: string = "عروض تقسيط ميسرة",
+  details?: string
+) {
+  const p = platform.toLowerCase();
+  if (p.includes("tiktok") || type === "script") {
+    return `🎬 [سكربت تيك توك / ريلز - معرض الغرابي للتقسيط]
+⏱️ المدة المقترحة: 20-30 ثانية
+
+[00:00 - 00:03] البداية (Hook):
+"تبحث عن خطة تقسيط ميسرة وبدون تعقيدات؟ تفضل معنا..."
+
+[00:04 - 00:15] المحتوى الأساسي:
+"معرض الغرابي للتقسيط يوفر لك خيارات دفع ميسرة وأنظمة سداد مرنة تناسب دخلك والتزاماتك."
+
+[00:16 - 00:25] التفاصيل:
+${details ? details : 'إجراءات واضحة وسريعة، وإشراف متكامل على كافة خطوات التقديم.'}
+
+[00:26 - 00:30] الدعوة للتفاعل (CTA):
+"تواصل معنا الآن عبر الرسائل أو من خلال الرابط المتاح في البايو لمعرفة كامل التفاصيل!"
+
+#معرض_الغرابي #تقسيط #عروض_التقسيط #تسهيلات`;
+  }
+
+  if (p.includes("youtube")) {
+    return `📌 [محتوى فيديو يوتيوب - معرض الغرابي للتقسيط]
+
+🎯 العنوان المقترح:
+"دليلك الشامل لخطط وأنظمة التقسيط الميسر | خدمات معرض الغرابي"
+
+📝 الوصف المفصل:
+في هذا المقطع نقدم شرحاً وافياً لخدمات وأنظمة التقسيط المتاحة في معرض الغرابي للتقسيط، مع توضيح الإجراءات والمستندات المطلوبة وطريقة تقديم الطلب بسهولة.
+
+⏱️ الفواصل المقترحة:
+00:00 - مقدمة عن خدمات معرض الغرابي
+01:00 - أنظمة وخطط التقسيط المتوفرة
+02:30 - المستندات والشروط
+03:30 - كيفية التواصل والتقديم المباشر
+
+#معرض_الغرابي #تقسيط #خدمات_التقسيط`;
+  }
+
+  if (p.includes("snapchat")) {
+    return `👻 [سيناريو سناب شات - إعلان ستوري]
+
+📸 سناب 1 (جذب الانتباه):
+- "تخطط لشراء جديد بنظام تقسيط مريح ومناسب؟ 👀"
+
+📸 سناب 2 (المزايا):
+- حلول تقسيط مرنة من معرض الغرابي
+- فترات سداد مريحة
+- إجراءات ميسرة وبدون تعقيد
+
+📸 سناب 3 (الدعوة للتواصل):
+- "اسحب الشاشة الآن وتواصل مع فريق خدمة العملاء مباشرة 📲"`;
+  }
+
+  if (p.includes("x") || p.includes("twitter")) {
+    return `في #معرض_الغرابي للتقسيط نوفر لكم حلول تقسيط مرنة ومتوافقة مع احتياجاتكم:
+✅ خطط سداد ميسرة
+✅ إجراءات سريعة وواضحة
+✅ خدمات مخصصة لكافة العملاء
+
+تواصلوا معنا الآن للاستفسار وحساب الخطة الأنسب لكم!
+#تقسيط #معرض_الغرابي #عروض_التقسيط`;
+  }
+
+  // Default Facebook / Instagram / General
+  return `نقدم لكم في معرض الغرابي للتقسيط حلولاً تمويلية وتقسيطاً ميسراً يلبي تطلعاتكم:
+🔹 فترات سداد مرنة ومريحة
+🔹 شروط واضحة وإجراءات ميسرة
+🔹 متابعة سريعة لطلباتكم
+
+${details ? `📌 تفاصيل الخطة: ${details}` : '📌 خيارات متعددة تناسب مختلف الميزانيات والاحتياجات.'}
+
+تفضلوا بالتواصل مع فريقنا للتعرف على كافة الخيارات المتاحة واختيار الخطة الأنسب لكم.
+
+#معرض_الغرابي #تقسيط #تسهيلات #عروض`;
+}
+
+// Start Server and mount Vite middleware
+async function startServer() {
+  if (process.env.NODE_ENV !== "production") {
+    const vite = await createViteServer({
+      server: { middlewareMode: true },
+      appType: "spa",
+    });
+    app.use(vite.middlewares);
+  } else {
+    const distPath = path.join(process.cwd(), "dist");
+    app.use(express.static(distPath));
+    app.get("*", (_req, res) => {
+      res.sendFile(path.join(distPath, "index.html"));
+    });
+  }
+
+  app.listen(PORT, "0.0.0.0", () => {
+    console.log(`[الغرابي AI Server] running on http://0.0.0.0:${PORT}`);
+  });
+}
+
+startServer();

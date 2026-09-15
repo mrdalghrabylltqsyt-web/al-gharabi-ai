@@ -1,0 +1,7 @@
+{
+  "name": "الغرابي AI",
+  "description": "مركز الذكاء الاصطناعي وإدارة وسائل التواصل وخدمة العملاء وقاعدة بيانات معرض الغرابي للتقسيط",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
+
