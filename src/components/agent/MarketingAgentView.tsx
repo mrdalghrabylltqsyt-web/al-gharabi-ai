@@ -1,7 +1,12 @@
 import React, { useState } from 'react';
 import { useApp } from '../../context/AppContext';
 import { apiService } from '../../services/api';
-import { MarketingBriefResult, MarketingGoal, SocialPlatformId } from '../../types';
+import { MarketingCampaignPanel } from './MarketingCampaignPanel';
+import {
+  MarketingBriefResult,
+  MarketingGoal,
+  SocialPlatformId,
+} from '../../types';
 import {
   Bot,
   Sparkles,
@@ -13,6 +18,7 @@ import {
   Calculator,
   RefreshCw,
   FileText,
+  Layers,
 } from 'lucide-react';
 
 const GOALS: Array<{ id: MarketingGoal; label: string; hint: string }> = [
@@ -33,7 +39,9 @@ const QUICK_TASKS = [
 const formatIqd = (value: number) => `${Math.round(value).toLocaleString('en-US')} د.ع`;
 
 export const MarketingAgentView: React.FC = () => {
-  const { products, platforms, showroomInfo, createPost, showToast, setActiveTab, currentUser } = useApp();
+  const { products, platforms, showroomInfo, createPost, showToast, setActiveTab, currentUser, refreshWorkspace } = useApp();
+
+  const [mode, setMode] = useState<'single' | 'campaign'>('single');
 
   const [task, setTask] = useState<string>('');
   const [goal, setGoal] = useState<MarketingGoal>('offer');
@@ -150,6 +158,31 @@ export const MarketingAgentView: React.FC = () => {
         </span>
       </div>
 
+      {/* Mode switch: single task vs small campaign */}
+      <div className="flex flex-wrap gap-2 p-1.5 rounded-2xl bg-slate-900 border border-slate-800 w-fit">
+        <button
+          onClick={() => setMode('single')}
+          className={`px-4 py-2 rounded-xl text-xs font-bold transition cursor-pointer flex items-center gap-1.5 ${
+            mode === 'single' ? 'bg-emerald-500 text-slate-950' : 'text-slate-300 hover:text-white'
+          }`}
+        >
+          <Sparkles className="w-3.5 h-3.5" />
+          مهمة واحدة
+        </button>
+        <button
+          onClick={() => setMode('campaign')}
+          className={`px-4 py-2 rounded-xl text-xs font-bold transition cursor-pointer flex items-center gap-1.5 ${
+            mode === 'campaign' ? 'bg-emerald-500 text-slate-950' : 'text-slate-300 hover:text-white'
+          }`}
+        >
+          <Layers className="w-3.5 h-3.5" />
+          حملة على عدة منتجات
+        </button>
+      </div>
+
+      {mode === 'campaign' && <MarketingCampaignPanel />}
+
+      {mode === 'single' && (
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
         {/* Brief form */}
         <div className="lg:col-span-5 space-y-5">
@@ -497,6 +530,7 @@ export const MarketingAgentView: React.FC = () => {
           )}
         </div>
       </div>
+      )}
     </div>
   );
 };

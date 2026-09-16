@@ -266,3 +266,98 @@ export interface MarketingBriefResult {
   createdAt: string;
   nextStep: string;
 }
+
+/**
+ * (مسار A) حملة تسويقية صغيرة.
+ * حتمية بالكامل: لا تستدعي Gemini، ولا تنشر خارجياً، ولا تعتبر أي منصة متصلة
+ * بدون إثبات مزود فعلي. تُبنى حصراً من منتجات قاعدة بيانات المعرض الحقيقية.
+ */
+export type MarketingCampaignStatus = 'draft' | 'active' | 'completed' | 'archived';
+
+export interface MarketingCampaignRequest {
+  /** اسم الحملة كما سيظهر في السجل. */
+  name: string;
+  /** المهمة الواضحة المطبقة على كل منتج في الحملة. */
+  task: string;
+  goal?: MarketingGoal;
+  tone?: string;
+  notes?: string;
+  /** منتجات حقيقية من قاعدة بيانات المعرض. */
+  productIds: string[];
+  platforms: SocialPlatformId[];
+  /** إن مُحدد يُطبّق على كل المنتجات؛ وإلا تُستخدم قيم كل منتج الحقيقية. */
+  downPaymentPercent?: number;
+  durationMonths?: number;
+  /** افتراضياً true — إنشاء مسودات مرتبطة بمسار المراجعة والاعتماد. */
+  createDrafts?: boolean;
+}
+
+/** الموارد المتاحة فعلياً لكل منصة — لا تُختلق أي حالة اتصال. */
+export interface MarketingPlatformResource {
+  platform: SocialPlatformId;
+  name: string;
+  capabilities: string[];
+  textLimit: number;
+  connectionStatus: 'connected' | 'reauth_needed' | 'disconnected';
+  connected: boolean;
+  providerVerified: boolean;
+  configurationReady: boolean;
+  missing: string[];
+  next: string;
+}
+
+export interface MarketingCampaignProduct {
+  id: string;
+  name: string;
+  category?: string;
+  cashPrice?: number | null;
+  inStock?: boolean;
+}
+
+/** مهمة داخل الحملة — حالتها مستمدة مباشرة من مسودة مسار المراجعة. */
+export interface MarketingCampaignTask {
+  id: string;
+  title: string;
+  productId: string;
+  productName: string;
+  platform: SocialPlatformId;
+  draftPostId: string;
+  status: string;
+  statusLabel: string;
+  createdAt: string;
+}
+
+export interface MarketingCampaignSummary {
+  id: string;
+  name: string;
+  goal: MarketingGoal;
+  goalLabel: string;
+  status: MarketingCampaignStatus;
+  platforms: SocialPlatformId[];
+  productIds: string[];
+  productNames: string[];
+  productsCount: number;
+  draftsCount: number;
+  tasksByStatus: Record<string, number>;
+  createdBy: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface MarketingCampaignDetail extends MarketingCampaignSummary {
+  task: string;
+  tone: string;
+  notes: string;
+  products: MarketingCampaignProduct[];
+  warnings: string[];
+  platformResources: MarketingPlatformResource[];
+  tasks: MarketingCampaignTask[];
+  history: Array<{ action: string; byUser: string; userRole: string; timestamp: string; note?: string }>;
+}
+
+/** تفاصيل إضافية تُعاد فقط عند إنشاء الحملة. */
+export interface MarketingCampaignCreationResult extends MarketingCampaignSummary {
+  tasks: MarketingCampaignTask[];
+  platformResources: MarketingPlatformResource[];
+  warnings: string[];
+}

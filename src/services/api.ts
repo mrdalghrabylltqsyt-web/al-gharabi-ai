@@ -1,4 +1,4 @@
-import { AppUser, UserRole, MarketingBriefRequest, MarketingBriefResult } from '../types';
+import { AppUser, UserRole, MarketingBriefRequest, MarketingBriefResult, MarketingCampaignRequest, MarketingCampaignSummary, MarketingCampaignDetail, MarketingCampaignCreationResult, MarketingCampaignStatus } from '../types';
 
 export interface GenerateContentRequest {
   platform: string;
@@ -752,5 +752,34 @@ ${payload.topic || payload.productName || 'أنظمة وحلول التقسيط 
     const data = await res.json();
     if (!res.ok || !data.success) throw new Error(data.error || 'تعذر جلب سجل المهام');
     return data.briefs || [];
+  },
+
+  // مسار A — الحملات التسويقية الصغيرة (حتمية، بدون Gemini وبدون نشر خارجي)
+  async createMarketingCampaign(payload: MarketingCampaignRequest): Promise<MarketingCampaignCreationResult> {
+    const res = await fetch('/api/ai/marketing-campaigns', { method: 'POST', headers: getAuthHeaders(), body: JSON.stringify(payload) });
+    const data = await res.json();
+    if (!res.ok || !data.success) throw new Error(data.error || 'تعذر إنشاء الحملة');
+    return data.campaign as MarketingCampaignCreationResult;
+  },
+
+  async listMarketingCampaigns(limit = 20): Promise<MarketingCampaignSummary[]> {
+    const res = await fetch(`/api/ai/marketing-campaigns?limit=${encodeURIComponent(String(limit))}`, { headers: getAuthHeaders() });
+    const data = await res.json();
+    if (!res.ok || !data.success) throw new Error(data.error || 'تعذر جلب الحملات');
+    return data.campaigns || [];
+  },
+
+  async getMarketingCampaign(id: string): Promise<MarketingCampaignDetail> {
+    const res = await fetch(`/api/ai/marketing-campaigns/${encodeURIComponent(id)}`, { headers: getAuthHeaders() });
+    const data = await res.json();
+    if (!res.ok || !data.success) throw new Error(data.error || 'تعذر جلب تفاصيل الحملة');
+    return data.campaign as MarketingCampaignDetail;
+  },
+
+  async updateMarketingCampaignStatus(id: string, status: MarketingCampaignStatus): Promise<MarketingCampaignSummary> {
+    const res = await fetch(`/api/ai/marketing-campaigns/${encodeURIComponent(id)}`, { method: 'PATCH', headers: getAuthHeaders(), body: JSON.stringify({ status }) });
+    const data = await res.json();
+    if (!res.ok || !data.success) throw new Error(data.error || 'تعذر تحديث حالة الحملة');
+    return data.campaign as MarketingCampaignSummary;
   }
 };

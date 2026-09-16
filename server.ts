@@ -127,9 +127,9 @@ function loadPersistentState(): any {
     if (!raw.schemaVersion) raw.schemaVersion = 1;
     const users = Array.isArray(raw.users) ? raw.users : [defaultOwner];
     if (!users.some((u: ServerUser) => u.id === "owner")) users.unshift(defaultOwner);
-    return { users, audit: Array.isArray(raw.audit) ? raw.audit.slice(0, 200) : [], jobs: Array.isArray(raw.jobs) ? raw.jobs.slice(0, 200) : [], workspace: raw.workspace && typeof raw.workspace === "object" ? { showroom: raw.workspace.showroom || {}, products: Array.isArray(raw.workspace.products) ? raw.workspace.products.slice(0, 1000) : [], posts: Array.isArray(raw.workspace.posts) ? raw.workspace.posts.slice(0, 1000) : [], conversations: Array.isArray(raw.workspace.conversations) ? raw.workspace.conversations.slice(0, 1000) : [], installmentPlans: Array.isArray(raw.workspace.installmentPlans) ? raw.workspace.installmentPlans.slice(0, 200) : [], leads: Array.isArray(raw.workspace.leads) ? raw.workspace.leads.slice(0, 2000) : [], tasks: Array.isArray(raw.workspace.tasks) ? raw.workspace.tasks.slice(0, 1000) : [], sales: Array.isArray(raw.workspace.sales) ? raw.workspace.sales.slice(0, 5000) : [], payments: Array.isArray(raw.workspace.payments) ? raw.workspace.payments.slice(0, 10000) : [], inventoryMovements: Array.isArray(raw.workspace.inventoryMovements) ? raw.workspace.inventoryMovements.slice(0, 20000) : [], suppliers: Array.isArray(raw.workspace.suppliers) ? raw.workspace.suppliers.slice(0, 1000) : [], purchases: Array.isArray(raw.workspace.purchases) ? raw.workspace.purchases.slice(0, 5000) : [], expenses: Array.isArray(raw.workspace.expenses) ? raw.workspace.expenses.slice(0, 10000) : [], contracts: Array.isArray(raw.workspace.contracts) ? raw.workspace.contracts.slice(0, 5000) : [], installmentSchedules: Array.isArray(raw.workspace.installmentSchedules) ? raw.workspace.installmentSchedules.slice(0, 20000) : [], notifications: Array.isArray(raw.workspace.notifications) ? raw.workspace.notifications.slice(0, 10000) : [], webhookEvents: Array.isArray(raw.workspace.webhookEvents) ? raw.workspace.webhookEvents.slice(0, 10000) : [], providerEvents: Array.isArray(raw.workspace.providerEvents) ? raw.workspace.providerEvents.slice(0, 10000) : [], marketingBriefs: Array.isArray(raw.workspace.marketingBriefs) ? raw.workspace.marketingBriefs.slice(0, 2000) : [], providerTokens: raw.workspace.providerTokens && typeof raw.workspace.providerTokens === "object" ? raw.workspace.providerTokens : {} } : { showroom: {}, products: [], posts: [], conversations: [], installmentPlans: [], leads: [], tasks: [], sales: [], payments: [], inventoryMovements: [], suppliers: [], purchases: [], expenses: [], contracts: [], installmentSchedules: [], notifications: [], webhookEvents: [], providerEvents: [], marketingBriefs: [], providerTokens: {} } };
+    return { users, audit: Array.isArray(raw.audit) ? raw.audit.slice(0, 200) : [], jobs: Array.isArray(raw.jobs) ? raw.jobs.slice(0, 200) : [], workspace: raw.workspace && typeof raw.workspace === "object" ? { showroom: raw.workspace.showroom || {}, products: Array.isArray(raw.workspace.products) ? raw.workspace.products.slice(0, 1000) : [], posts: Array.isArray(raw.workspace.posts) ? raw.workspace.posts.slice(0, 1000) : [], conversations: Array.isArray(raw.workspace.conversations) ? raw.workspace.conversations.slice(0, 1000) : [], installmentPlans: Array.isArray(raw.workspace.installmentPlans) ? raw.workspace.installmentPlans.slice(0, 200) : [], leads: Array.isArray(raw.workspace.leads) ? raw.workspace.leads.slice(0, 2000) : [], tasks: Array.isArray(raw.workspace.tasks) ? raw.workspace.tasks.slice(0, 1000) : [], sales: Array.isArray(raw.workspace.sales) ? raw.workspace.sales.slice(0, 5000) : [], payments: Array.isArray(raw.workspace.payments) ? raw.workspace.payments.slice(0, 10000) : [], inventoryMovements: Array.isArray(raw.workspace.inventoryMovements) ? raw.workspace.inventoryMovements.slice(0, 20000) : [], suppliers: Array.isArray(raw.workspace.suppliers) ? raw.workspace.suppliers.slice(0, 1000) : [], purchases: Array.isArray(raw.workspace.purchases) ? raw.workspace.purchases.slice(0, 5000) : [], expenses: Array.isArray(raw.workspace.expenses) ? raw.workspace.expenses.slice(0, 10000) : [], contracts: Array.isArray(raw.workspace.contracts) ? raw.workspace.contracts.slice(0, 5000) : [], installmentSchedules: Array.isArray(raw.workspace.installmentSchedules) ? raw.workspace.installmentSchedules.slice(0, 20000) : [], notifications: Array.isArray(raw.workspace.notifications) ? raw.workspace.notifications.slice(0, 10000) : [], webhookEvents: Array.isArray(raw.workspace.webhookEvents) ? raw.workspace.webhookEvents.slice(0, 10000) : [], providerEvents: Array.isArray(raw.workspace.providerEvents) ? raw.workspace.providerEvents.slice(0, 10000) : [], marketingBriefs: Array.isArray(raw.workspace.marketingBriefs) ? raw.workspace.marketingBriefs.slice(0, 2000) : [], marketingCampaigns: Array.isArray(raw.workspace.marketingCampaigns) ? raw.workspace.marketingCampaigns.slice(0, 1000) : [], providerTokens: raw.workspace.providerTokens && typeof raw.workspace.providerTokens === "object" ? raw.workspace.providerTokens : {} } : { showroom: {}, products: [], posts: [], conversations: [], installmentPlans: [], leads: [], tasks: [], sales: [], payments: [], inventoryMovements: [], suppliers: [], purchases: [], expenses: [], contracts: [], installmentSchedules: [], notifications: [], webhookEvents: [], providerEvents: [], marketingBriefs: [], marketingCampaigns: [], providerTokens: {} } };
   } catch {
-    return { users: [defaultOwner], audit: [], jobs: [], workspace: { showroom: {}, products: [], posts: [], conversations: [], installmentPlans: [], leads: [], tasks: [], sales: [], payments: [], inventoryMovements: [], suppliers: [], purchases: [], expenses: [], contracts: [], installmentSchedules: [], notifications: [], webhookEvents: [], providerEvents: [], marketingBriefs: [], providerTokens: {} } };
+    return { users: [defaultOwner], audit: [], jobs: [], workspace: { showroom: {}, products: [], posts: [], conversations: [], installmentPlans: [], leads: [], tasks: [], sales: [], payments: [], inventoryMovements: [], suppliers: [], purchases: [], expenses: [], contracts: [], installmentSchedules: [], notifications: [], webhookEvents: [], providerEvents: [], marketingBriefs: [], marketingCampaigns: [], providerTokens: {} } };
   }
 }
 
@@ -138,7 +138,7 @@ const serverUsers: ServerUser[] = persisted.users;
 const workspace = persisted.workspace;
 for (const key of ["inventoryMovements","suppliers","purchases","expenses","contracts","installmentSchedules","notifications","webhookEvents","providerEvents"]) if (!Array.isArray((workspace as any)[key])) (workspace as any)[key] = [];
 if (!Array.isArray((workspace as any).inventoryMovements)) (workspace as any).inventoryMovements = [];
-for (const key of ["suppliers","purchases","expenses","contracts","installmentSchedules","notifications","webhookEvents","providerEvents","marketingBriefs"]) if (!Array.isArray((workspace as any)[key])) (workspace as any)[key] = [];
+for (const key of ["suppliers","purchases","expenses","contracts","installmentSchedules","notifications","webhookEvents","providerEvents","marketingBriefs","marketingCampaigns"]) if (!Array.isArray((workspace as any)[key])) (workspace as any)[key] = [];
 if (!(workspace as any).providerTokens || typeof (workspace as any).providerTokens !== "object") (workspace as any).providerTokens = {};
 
 // Migration guard: a post is never considered externally published merely because
@@ -1765,7 +1765,7 @@ function buildPersistedState() {
       leads: workspace.leads.slice(0, 2000),
       tasks: workspace.tasks.slice(0, 1000),
       sales: workspace.sales.slice(0, 5000),
-      payments: workspace.payments.slice(0, 10000), suppliers: workspace.suppliers.slice(0, 1000), purchases: workspace.purchases.slice(0, 5000), expenses: workspace.expenses.slice(0, 10000), contracts: workspace.contracts.slice(0, 5000), installmentSchedules: workspace.installmentSchedules.slice(0, 20000), marketingBriefs: (workspace as any).marketingBriefs.slice(0, 2000)
+      payments: workspace.payments.slice(0, 10000), suppliers: workspace.suppliers.slice(0, 1000), purchases: workspace.purchases.slice(0, 5000), expenses: workspace.expenses.slice(0, 10000), contracts: workspace.contracts.slice(0, 5000), installmentSchedules: workspace.installmentSchedules.slice(0, 20000), marketingBriefs: (workspace as any).marketingBriefs.slice(0, 2000), marketingCampaigns: (workspace as any).marketingCampaigns.slice(0, 1000)
     }
   };
 }
@@ -2459,39 +2459,14 @@ function buildPlatformCopy(input: {
   }
 }
 
-app.post("/api/ai/content-brief", authenticateToken, (req, res) => {
-  const user = (req as any).user as ServerUser;
-  if (!rateLimitAI(user.id)) return res.status(429).json({ success: false, error: "تم تفعيل حماية الطلبات: انتظر دقيقة قبل إرسال طلبات إضافية.", generatedBy: "local-guard" });
-
-  const b = req.body || {};
-  const task = cleanText(b.task, 600);
-  if (!task || task.length < 3) return res.status(400).json({ success: false, error: "المهمة مطلوبة ويجب أن تكون واضحة (3 أحرف على الأقل)." });
-
-  const goal = typeof b.goal === "string" && MARKETING_GOALS[b.goal] ? b.goal : "offer";
-  const tone = cleanText(b.tone, 120) || "احترافية ومباشرة موجهة لعملاء التقسيط";
-  const notes = cleanText(b.notes, 600);
-
-  const requested = Array.isArray(b.platforms) ? b.platforms : [];
-  const platforms = [...new Set(requested.filter((x: any) => typeof x === "string" && SUPPORTED_PLATFORMS.some((p: any) => p.id === x)))].slice(0, 10) as string[];
-  if (!platforms.length) return res.status(400).json({ success: false, error: "اختر منصة واحدة على الأقل من المنصات المدعومة." });
-
-  // Project rules are enforced before anything is generated.
-  if (FORBIDDEN_CONTENT_PATTERN.test(`${task} ${notes}`)) return res.status(422).json({ success: false, error: "المهمة تحتوي على مصطلحات سيارات، وهي خارج نشاط معرض الغرابي للتقسيط." });
-  if (LEGACY_COUNTER_PATTERN.test(`${task} ${notes}`)) return res.status(422).json({ success: false, error: "تم اكتشاف عداد استخدام قديم غير مسموح في المشروع." });
-
-  let product: any = null;
-  const productId = cleanText(b.productId, 100);
-  if (productId) {
-    product = workspace.products.find((p: any) => p.id === productId) || null;
-    if (!product) return res.status(404).json({ success: false, error: "المنتج المحدد غير موجود في قاعدة بيانات المعرض." });
-  }
-  const manualName = cleanText(b.productName, 160);
-  const productName = product?.name || manualName;
-  if (!productName) return res.status(400).json({ success: false, error: "حدد منتجاً من قاعدة البيانات أو اكتب اسم المنتج." });
-
+// Shared deterministic generator: used by the single-task agent and by campaigns
+// so both produce identical, rule-compliant Arabic copy from real showroom data.
+function generateBriefContent(input: {
+  task: string; goal: string; tone: string; notes: string; platforms: string[];
+  product: any | null; productName: string; downPaymentPercent: number; durationMonths: number;
+}) {
+  const { task, goal, tone, notes, platforms, product, productName, downPaymentPercent, durationMonths } = input;
   const warnings: string[] = [];
-  const downPaymentPercent = Number.isFinite(Number(b.downPaymentPercent)) ? Math.max(0, Math.min(99, Math.floor(Number(b.downPaymentPercent)))) : Number(product?.downPaymentPercent || 0);
-  const durationMonths = Number.isInteger(Number(b.durationMonths)) ? Math.max(1, Math.min(60, Number(b.durationMonths))) : Number(product?.durationMonths || 0);
 
   let quote: any = null;
   const cashPrice = Number(product?.cashPrice);
@@ -2522,6 +2497,47 @@ app.post("/api/ai/content-brief", authenticateToken, (req, res) => {
     });
     const composed = composePlatformText(copy.headline, copy.body, copy.cta, copy.hashtags, PLATFORM_TEXT_LIMITS[platform] || 2000);
     return { platform, platformName, headline: copy.headline, body: copy.body, callToAction: copy.cta, hashtags: composed.hashtags, charCount: composed.charCount, limit: composed.limit, withinLimit: composed.withinLimit, text: composed.text };
+  });
+
+  return { content, quote, warnings };
+}
+
+app.post("/api/ai/content-brief", authenticateToken, (req, res) => {
+  const user = (req as any).user as ServerUser;
+  if (!rateLimitAI(user.id)) return res.status(429).json({ success: false, error: "تم تفعيل حماية الطلبات: انتظر دقيقة قبل إرسال طلبات إضافية.", generatedBy: "local-guard" });
+
+  const b = req.body || {};
+  const task = cleanText(b.task, 600);
+  if (!task || task.length < 3) return res.status(400).json({ success: false, error: "المهمة مطلوبة ويجب أن تكون واضحة (3 أحرف على الأقل)." });
+
+  const goal = typeof b.goal === "string" && MARKETING_GOALS[b.goal] ? b.goal : "offer";
+  const tone = cleanText(b.tone, 120) || "احترافية ومباشرة موجهة لعملاء التقسيط";
+  const notes = cleanText(b.notes, 600);
+
+  const requested = Array.isArray(b.platforms) ? b.platforms : [];
+  const platforms = [...new Set(requested.filter((x: any) => typeof x === "string" && SUPPORTED_PLATFORMS.some((p: any) => p.id === x)))].slice(0, 10) as string[];
+  if (!platforms.length) return res.status(400).json({ success: false, error: "اختر منصة واحدة على الأقل من المنصات المدعومة." });
+
+  // Project rules are enforced before anything is generated.
+  if (FORBIDDEN_CONTENT_PATTERN.test(`${task} ${notes}`)) return res.status(422).json({ success: false, error: "المهمة تحتوي على مصطلحات سيارات، وهي خارج نشاط معرض الغرابي للتقسيط." });
+  if (LEGACY_COUNTER_PATTERN.test(`${task} ${notes}`)) return res.status(422).json({ success: false, error: "تم اكتشاف عداد استخدام قديم غير مسموح في المشروع." });
+
+  let product: any = null;
+  const productId = cleanText(b.productId, 100);
+  if (productId) {
+    product = workspace.products.find((p: any) => p.id === productId) || null;
+    if (!product) return res.status(404).json({ success: false, error: "المنتج المحدد غير موجود في قاعدة بيانات المعرض." });
+  }
+  const manualName = cleanText(b.productName, 160);
+  const productName = product?.name || manualName;
+  if (!productName) return res.status(400).json({ success: false, error: "حدد منتجاً من قاعدة البيانات أو اكتب اسم المنتج." });
+
+  const downPaymentPercent = Number.isFinite(Number(b.downPaymentPercent)) ? Math.max(0, Math.min(99, Math.floor(Number(b.downPaymentPercent)))) : Number(product?.downPaymentPercent || 0);
+  const durationMonths = Number.isInteger(Number(b.durationMonths)) ? Math.max(1, Math.min(60, Number(b.durationMonths))) : Number(product?.durationMonths || 0);
+  const cashPrice = Number(product?.cashPrice);
+
+  const { content, quote, warnings } = generateBriefContent({
+    task, goal, tone, notes, platforms, product, productName, downPaymentPercent, durationMonths,
   });
 
   // Final safety net: generated text must obey the same project rules.
@@ -2582,6 +2598,246 @@ app.get("/api/ai/content-briefs", authenticateToken, (req, res) => {
     .slice(0, limit)
     .map((x: any) => ({ id: x.id, task: x.task, goal: x.goal, platforms: x.platforms, productName: x.productName, quote: x.quote, warnings: x.warnings, savedPostIds: x.savedPostIds, createdAt: x.createdAt, content: x.content }));
   res.json({ success: true, briefs: rows, count: rows.length });
+});
+
+// -------------------------------------------------------------
+// مسار A — الحملات التسويقية الصغيرة (Small Campaigns).
+// يحوّل مهمة المحتوى الواحدة إلى حملة تتذكّر: عدة منتجات، هدف واحد، مهام محددة،
+// ومسودات محتوى مرتبطة بمسار المراجعة والاعتماد القائم. حتمي بالكامل.
+// لا ينشر خارجياً ولا يعتبر أي منصة متصلة بدون إثبات مزود فعلي.
+// -------------------------------------------------------------
+const CAMPAIGN_STATUSES = ["draft", "active", "completed", "archived"] as const;
+const MAX_CAMPAIGN_PRODUCTS = 10;
+const MAX_CAMPAIGN_DRAFTS = 80;
+
+// Live per-platform resources from real configuration only (no fabricated connections).
+function campaignPlatformResources(platforms: string[]) {
+  return platforms.map((id: string) => {
+    const meta: any = SUPPORTED_PLATFORMS.find((p: any) => p.id === id);
+    const readiness: any = publicProviderReadiness(id);
+    const conn: any = platformConnections.get(id);
+    return {
+      platform: id,
+      name: meta?.name || id,
+      capabilities: meta?.capabilities || [],
+      textLimit: PLATFORM_TEXT_LIMITS[id] || 2000,
+      connectionStatus: conn?.status || "disconnected",
+      connected: Boolean(conn?.status === "connected" && conn?.providerVerified === true),
+      providerVerified: Boolean(conn?.providerVerified === true),
+      configurationReady: Boolean(readiness?.configured),
+      missing: readiness?.missing || [],
+      next: readiness?.next || "إضافة موصل إنتاجي معتمد قبل تفعيل النشر",
+    };
+  });
+}
+
+// Campaign task status is derived live from the linked draft so nothing is duplicated.
+const CAMPAIGN_TASK_STATUS_LABELS: Record<string, string> = {
+  draft: "مسودة", review: "قيد المراجعة", edited: "تم التعديل", approved: "تمت الموافقة",
+  scheduled: "مجدول", published: "منشور", deleted: "محذوفة",
+};
+function campaignTasksFor(briefs: any[]) {
+  const byId = new Map<string, any>((workspace as any).posts.map((p: any) => [p.id, p]));
+  const tasks: any[] = [];
+  for (const b of briefs) {
+    for (const d of b.drafts || []) {
+      const post: any = byId.get(d.postId);
+      const status = post?.status || "deleted";
+      tasks.push({
+        id: d.taskId,
+        title: d.title,
+        productId: b.productId,
+        productName: b.productName,
+        platform: d.platform,
+        draftPostId: d.postId,
+        status,
+        statusLabel: post ? (CAMPAIGN_TASK_STATUS_LABELS[status] || status) : "محذوفة",
+        createdAt: d.createdAt,
+      });
+    }
+  }
+  return tasks;
+}
+
+function campaignSummary(c: any) {
+  const tasks = campaignTasksFor(c.briefs || []);
+  const byStatus: Record<string, number> = {};
+  for (const t of tasks) byStatus[t.status] = (byStatus[t.status] || 0) + 1;
+  return {
+    id: c.id, name: c.name, goal: c.goal, goalLabel: MARKETING_GOALS[c.goal]?.label || c.goal,
+    status: c.status, platforms: c.platforms,
+    productIds: (c.products || []).map((p: any) => p.id),
+    productNames: (c.products || []).map((p: any) => p.name),
+    productsCount: (c.products || []).length,
+    draftsCount: tasks.length,
+    tasksByStatus: byStatus,
+    createdBy: c.createdBy, createdAt: c.createdAt, updatedAt: c.updatedAt,
+  };
+}
+
+// Creates a real campaign from real showroom products. Deterministic; no Gemini.
+app.post("/api/ai/marketing-campaigns", authenticateToken, (req, res) => {
+  const user = (req as any).user as ServerUser;
+  if (!rateLimitAI(user.id)) return res.status(429).json({ success: false, error: "تم تفعيل حماية الطلبات: انتظر دقيقة قبل إرسال طلبات إضافية.", generatedBy: "local-guard" });
+
+  const b = req.body || {};
+  const name = cleanText(b.name, 160);
+  if (!name || name.length < 3) return res.status(400).json({ success: false, error: "اسم الحملة مطلوب (3 أحرف على الأقل)." });
+
+  const goal = typeof b.goal === "string" && MARKETING_GOALS[b.goal] ? b.goal : "offer";
+  const task = cleanText(b.task, 600);
+  if (!task || task.length < 3) return res.status(400).json({ success: false, error: "مهمة الحملة مطلوبة ويجب أن تكون واضحة (3 أحرف على الأقل)." });
+  const tone = cleanText(b.tone, 120) || "احترافية ومباشرة موجهة لعملاء التقسيط";
+  const notes = cleanText(b.notes, 600);
+
+  // Project rules are enforced before anything is generated.
+  if (FORBIDDEN_CONTENT_PATTERN.test(`${name} ${task} ${notes}`)) return res.status(422).json({ success: false, error: "الحملة تحتوي على مصطلحات سيارات، وهي خارج نشاط معرض الغرابي للتقسيط." });
+  if (LEGACY_COUNTER_PATTERN.test(`${name} ${task} ${notes}`)) return res.status(422).json({ success: false, error: "تم اكتشاف عداد استخدام قديم غير مسموح في المشروع." });
+
+  const requestedPlatforms = Array.isArray(b.platforms) ? b.platforms : [];
+  const platforms = [...new Set(requestedPlatforms.filter((x: any) => typeof x === "string" && SUPPORTED_PLATFORMS.some((p: any) => p.id === x)))].slice(0, 10) as string[];
+  if (!platforms.length) return res.status(400).json({ success: false, error: "اختر منصة واحدة على الأقل من المنصات المدعومة." });
+
+  const requestedProductIds = Array.isArray(b.productIds) ? b.productIds.filter((x: any) => typeof x === "string") : [];
+  if (!requestedProductIds.length) return res.status(400).json({ success: false, error: "اختر منتجاً واحداً على الأقل من قاعدة بيانات المعرض." });
+  const uniqueIds = [...new Set(requestedProductIds)].slice(0, MAX_CAMPAIGN_PRODUCTS);
+  const products: any[] = [];
+  for (const pid of uniqueIds) {
+    const found = workspace.products.find((p: any) => p.id === pid);
+    if (!found) return res.status(404).json({ success: false, error: `المنتج المحدد غير موجود في قاعدة بيانات المعرض: ${pid}` });
+    products.push(found);
+  }
+  if (products.length * platforms.length > MAX_CAMPAIGN_DRAFTS) {
+    return res.status(400).json({ success: false, error: `عدد المسودات كبير جداً (${products.length * platforms.length}). الحد الأقصى ${MAX_CAMPAIGN_DRAFTS} مسودة في الحملة.` });
+  }
+
+  // Optional explicit payment terms; otherwise each product keeps its own real values.
+  const overrideDown = Number.isFinite(Number(b.downPaymentPercent)) ? Math.max(0, Math.min(99, Math.floor(Number(b.downPaymentPercent)))) : null;
+  const overrideMonths = Number.isInteger(Number(b.durationMonths)) ? Math.max(1, Math.min(60, Number(b.durationMonths))) : null;
+  const createDrafts = b.createDrafts !== false;
+
+  const campaignId = workspaceId("camp");
+  const createdAt = new Date().toISOString();
+  const briefs: any[] = [];
+  let allWarnings: string[] = [];
+
+  // Each product is generated independently so prices and figures never mix.
+  for (const product of products) {
+    const downPaymentPercent = overrideDown !== null ? overrideDown : Number(product?.downPaymentPercent || 0);
+    const durationMonths = overrideMonths !== null ? overrideMonths : Number(product?.durationMonths || 0);
+    const { content, quote, warnings } = generateBriefContent({
+      task, goal, tone, notes, platforms, product, productName: product.name,
+      downPaymentPercent, durationMonths,
+    });
+
+    const offending = content.find((c: any) => FORBIDDEN_CONTENT_PATTERN.test(c.text) || LEGACY_COUNTER_PATTERN.test(c.text));
+    if (offending) return res.status(422).json({ success: false, error: "المحتوى المولد خالف قواعد مشروع الغرابي وتم إيقافه." });
+
+    const briefId = workspaceId("brief");
+    const drafts: any[] = [];
+
+    if (createDrafts) {
+      for (const piece of content) {
+        const post = {
+          id: workspaceId("post"), title: piece.headline || `عرض ${product.name}`,
+          content: piece.text, platformVersions: { [piece.platform]: piece.text },
+          targetPlatforms: [piece.platform], mediaUrl: cleanText(product?.image, 500) || undefined,
+          mediaType: undefined, status: "draft", createdAt,
+          authorId: user.id, authorName: user.name, authorRole: user.role,
+          history: [{ id: workspaceId("act"), byUser: user.name, userRole: user.role, action: "create", timestamp: createdAt, note: `أُنشئ ضمن حملة: ${name}` }],
+          tags: ["تقسيط_منتجات", "معرض_الغرابي", piece.platform], campaignName: name,
+        };
+        workspace.posts.unshift(post);
+        drafts.push({ taskId: workspaceId("task"), title: post.title, platform: piece.platform, postId: post.id, createdAt });
+      }
+    }
+
+    const briefRecord = {
+      id: briefId, task, goal, tone, platforms, productName: product.name, productId: product.id,
+      content: content.map((c: any) => ({ platform: c.platform, text: c.text, charCount: c.charCount, withinLimit: c.withinLimit })),
+      quote, warnings, savedPostIds: drafts.map((d) => d.postId), campaignId, campaignName: name,
+      createdBy: user.id, createdAt,
+    };
+    (workspace as any).marketingBriefs.unshift(briefRecord);
+    briefs.push({ productId: product.id, productName: product.name, briefId, quote, warnings, drafts });
+    allWarnings = allWarnings.concat(warnings.map((w) => `${product.name}: ${w}`));
+  }
+
+  (workspace as any).marketingBriefs = (workspace as any).marketingBriefs.slice(0, 2000);
+
+  const campaign = {
+    id: campaignId, name, goal, task, tone, notes, platforms, status: "draft",
+    products: products.map((p: any) => ({ id: p.id, name: p.name, category: p.category, cashPrice: Number(p.cashPrice) || null, inStock: p.inStock !== false, image: p.image || "" })),
+    briefs,
+    warnings: [...new Set(allWarnings)],
+    platformResources: campaignPlatformResources(platforms),
+    createdBy: user.id, createdAt, updatedAt: createdAt,
+    history: [{ action: "created", byUser: user.name, userRole: user.role, timestamp: createdAt, note: `أُنشئت الحملة ب${products.length} منتج و${platforms.length} منصة` }],
+  };
+  (workspace as any).marketingCampaigns.unshift(campaign);
+  (workspace as any).marketingCampaigns = (workspace as any).marketingCampaigns.slice(0, 1000);
+  persistState();
+  audit(user.id, "marketing_campaign_created", `${campaignId}:${products.length}x${platforms.length}`);
+
+  res.status(201).json({
+    success: true,
+    campaign: { ...campaignSummary(campaign), tasks: campaignTasksFor(briefs), platformResources: campaign.platformResources, warnings: campaign.warnings },
+    note: "حملة حتمية مبنية على بيانات المعرض الحقيقية، دون استهلاك Gemini ودون أي نشر خارجي.",
+  });
+});
+
+// Lists campaigns (owner sees all, others see their own).
+app.get("/api/ai/marketing-campaigns", authenticateToken, (req, res) => {
+  const user = (req as any).user as ServerUser;
+  const limit = Math.min(50, Math.max(1, Number(req.query.limit || 20)));
+  const rows = ((workspace as any).marketingCampaigns || [])
+    .filter((x: any) => user.role === "owner" || x.createdBy === user.id)
+    .slice(0, limit)
+    .map(campaignSummary);
+  res.json({ success: true, campaigns: rows, count: rows.length, geminiUsed: false });
+});
+
+// Full campaign detail: products, tasks, per-platform resources and live draft status.
+app.get("/api/ai/marketing-campaigns/:id", authenticateToken, (req, res) => {
+  const user = (req as any).user as ServerUser;
+  const id = cleanText(req.params.id, 100);
+  const c: any = ((workspace as any).marketingCampaigns || []).find((x: any) => x.id === id);
+  if (!c) return res.status(404).json({ success: false, error: "الحملة غير موجودة." });
+  if (user.role !== "owner" && c.createdBy !== user.id) return res.status(403).json({ success: false, error: "غير مصرح بالوصول إلى هذه الحملة." });
+
+  const tasks = campaignTasksFor(c.briefs || []);
+  res.json({
+    success: true,
+    campaign: {
+      ...campaignSummary(c), task: c.task, tone: c.tone, notes: c.notes,
+      products: c.products, warnings: c.warnings,
+      platformResources: c.platformResources?.length ? c.platformResources : campaignPlatformResources(c.platforms),
+      tasks,
+      history: c.history || [],
+    },
+    note: "حالة كل مهمة مستمدة مباشرة من مسار المراجعة والاعتماد، ولم يُنشر شيء خارجياً.",
+  });
+});
+
+// Minimal status update for the campaign record (no publishing side effects).
+app.patch("/api/ai/marketing-campaigns/:id", authenticateToken, (req, res) => {
+  const user = (req as any).user as ServerUser;
+  const id = cleanText(req.params.id, 100);
+  const c: any = ((workspace as any).marketingCampaigns || []).find((x: any) => x.id === id);
+  if (!c) return res.status(404).json({ success: false, error: "الحملة غير موجودة." });
+  if (user.role !== "owner" && c.createdBy !== user.id) return res.status(403).json({ success: false, error: "غير مصرح بالوصول إلى هذه الحملة." });
+
+  const status = cleanText(req.body?.status, 40);
+  if (!CAMPAIGN_STATUSES.includes(status as any)) return res.status(400).json({ success: false, error: `حالة الحملة غير صالحة. المسموح: ${CAMPAIGN_STATUSES.join(", ")}` });
+
+  c.status = status;
+  c.updatedAt = new Date().toISOString();
+  c.history = Array.isArray(c.history) ? c.history : [];
+  c.history.push({ action: "status_changed", byUser: user.name, userRole: user.role, timestamp: c.updatedAt, note: `الحالة الجديدة: ${status}` });
+  c.history = c.history.slice(-50);
+  persistState();
+  audit(user.id, "marketing_campaign_status_changed", `${id}:${status}`);
+  res.json({ success: true, campaign: campaignSummary(c), note: "تحديث حالة الحملة لا ينفذ أي نشر خارجي." });
 });
 
 // Helper for local template generation without mock data

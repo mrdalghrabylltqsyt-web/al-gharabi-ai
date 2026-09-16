@@ -46,6 +46,8 @@ interface AppContextType {
   updatePostStatus: (postId: string, newStatus: PostStatus, note?: string) => void;
   updatePostContent: (postId: string, updatedFields: Partial<Post>) => void;
   deletePost: (postId: string) => void;
+  /** Re-reads the server workspace; used after server-side batch creation (e.g. campaigns). */
+  refreshWorkspace: () => Promise<void>;
 
   // Customer Conversations
   conversations: CustomerConversation[];
@@ -683,6 +685,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         updatePostStatus,
         updatePostContent,
         deletePost,
+        refreshWorkspace: hydrateWorkspace,
         conversations,
         activeConversation,
         setActiveConversationId,
