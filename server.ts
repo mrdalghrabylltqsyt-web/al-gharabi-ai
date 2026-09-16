@@ -3104,6 +3104,16 @@ app.post("/api/ai/marketing-campaigns/:id/drafts/:taskId/link", authenticateToke
   const post: any = linkedPostForDraft(draft);
   if (!post) return res.status(409).json({ success: false, error: "لا يوجد منشور مرتبط بهذه المسودة، ولا يمكن إنشاء منشور دون محتوى مسودة حقيقي." });
 
+  // Only an approved draft can be linked. The UI hides the action for other
+  // states, but the decision must be enforced server-side so a direct API call
+  // cannot attach an unreviewed draft to a workspace post.
+  if (String(post.status || "draft") !== "approved") {
+    return res.status(409).json({
+      success: false,
+      error: `لا يمكن ربط مسودة بحالة «${CAMPAIGN_TASK_STATUS_LABELS[post.status] || post.status}». الرابط متاح للمسودات المعتمدة فقط.`,
+    });
+  }
+
   const alreadyLinked = post?.campaignLink?.campaignId === campaign.id && post?.campaignLink?.draftId === taskId;
   if (!alreadyLinked) {
     post.campaignLink = {
