@@ -1,0 +1,14 @@
+node_modules/
+build/
+dist/
+coverage/
+.DS_Store
+*.log
+.env*
+!.env.example
+
+# Runtime server state (may hold encrypted provider tokens and real business data).
+.gharabi-state.json
+.gharabi-state.json.tmp
+.gharabi-usage.json
+.gharabi-backups/

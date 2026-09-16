@@ -184,3 +184,85 @@ export interface CalendarEntry {
   platforms: SocialPlatformId[];
   status: PostStatus;
 }
+
+/**
+ * وكيل الغرابي الذكي — مهمة محتوى تسويقي عربية.
+ * حتمي بالكامل: لا يستدعي Gemini ولا يتطلب أي حساب اجتماعي متصل.
+ */
+export type MarketingGoal =
+  | 'offer' // عرض سعر/تقسيط
+  | 'product_intro' // تعريف بمنتج
+  | 'installment_terms' // توضيح شروط التقسيط
+  | 'trust_builder' // بناء الثقة والإجراءات
+  | 'follow_up'; // متابعة وتذكير
+
+export interface MarketingBriefRequest {
+  /** المهمة الواضحة المطلوبة من الوكيل. */
+  task: string;
+  /** الهدف التسويقي. */
+  goal?: MarketingGoal;
+  /** معرف منتج حقيقي من قاعدة بيانات المعرض (اختياري). */
+  productId?: string;
+  /** اسم المنتج الحر إن لم يوجد في قاعدة البيانات. */
+  productName?: string;
+  /** المنصات المستهدفة (1 إلى 10 من المنصات المدعومة). */
+  platforms: SocialPlatformId[];
+  /** نبرة المحتوى. */
+  tone?: string;
+  /** نسبة الدفعة الأولى لحسبة القسط (0-99). */
+  downPaymentPercent?: number;
+  /** عدد الأشهر لحسبة القسط (1-60). */
+  durationMonths?: number;
+  /** ملاحظات إضافية من المستخدم. */
+  notes?: string;
+  /** حفظ الناتج كمسودة في مركز المحتوى تلقائياً. */
+  saveDrafts?: boolean;
+}
+
+export interface MarketingContentPiece {
+  platform: SocialPlatformId;
+  platformName: string;
+  headline: string;
+  body: string;
+  callToAction: string;
+  hashtags: string[];
+  charCount: number;
+  limit: number;
+  withinLimit: boolean;
+}
+
+export interface MarketingQuoteLine {
+  cashPrice: number;
+  downPayment: number;
+  financedAmount: number;
+  months: number;
+  monthlyPayment: number;
+  totalInstallments: number;
+  currency: 'IQD';
+  rounding: string;
+}
+
+export interface MarketingBriefResult {
+  briefId: string;
+  task: string;
+  goal: MarketingGoal;
+  tone: string;
+  product: {
+    id?: string;
+    name: string;
+    category?: string;
+    source: 'showroom-database' | 'manual';
+    cashPrice?: number;
+    inStock?: boolean;
+  };
+  platforms: SocialPlatformId[];
+  content: MarketingContentPiece[];
+  quote?: MarketingQuoteLine;
+  warnings: string[];
+  savedPostIds: string[];
+  generatedBy: 'deterministic-marketing-agent';
+  usesGemini: false;
+  requiresExternalConnection: false;
+  createdAt: string;
+  nextStep: string;
+}

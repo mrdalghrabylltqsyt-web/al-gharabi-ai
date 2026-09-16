@@ -121,6 +121,14 @@ export const Sidebar: React.FC<SidebarProps> = ({ mobileOpen, onCloseMobile }) =
       desc: 'المنتجات، الأقساط، والسياسات',
     },
     {
+      id: 'marketing_agent',
+      label: 'وكيل الغرابي الذكي',
+      icon: Sparkles,
+      badge: 'مهمة جديدة',
+      badgeColor: 'bg-emerald-500/20 text-emerald-300 border-emerald-500/30',
+      desc: 'أعطِ الوكيل مهمة واحصل على محتوى عربي جاهز',
+    },
+    {
       id: 'agent',
       label: 'الوكيل الذكي المركزي',
       icon: Bot,

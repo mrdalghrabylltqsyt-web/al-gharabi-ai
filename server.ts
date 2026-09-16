@@ -122,9 +122,9 @@ function loadPersistentState(): any {
     if (!raw.schemaVersion) raw.schemaVersion = 1;
     const users = Array.isArray(raw.users) ? raw.users : [defaultOwner];
     if (!users.some((u: ServerUser) => u.id === "owner")) users.unshift(defaultOwner);
-    return { users, audit: Array.isArray(raw.audit) ? raw.audit.slice(0, 200) : [], jobs: Array.isArray(raw.jobs) ? raw.jobs.slice(0, 200) : [], workspace: raw.workspace && typeof raw.workspace === "object" ? { showroom: raw.workspace.showroom || {}, products: Array.isArray(raw.workspace.products) ? raw.workspace.products.slice(0, 1000) : [], posts: Array.isArray(raw.workspace.posts) ? raw.workspace.posts.slice(0, 1000) : [], conversations: Array.isArray(raw.workspace.conversations) ? raw.workspace.conversations.slice(0, 1000) : [], installmentPlans: Array.isArray(raw.workspace.installmentPlans) ? raw.workspace.installmentPlans.slice(0, 200) : [], leads: Array.isArray(raw.workspace.leads) ? raw.workspace.leads.slice(0, 2000) : [], tasks: Array.isArray(raw.workspace.tasks) ? raw.workspace.tasks.slice(0, 1000) : [], sales: Array.isArray(raw.workspace.sales) ? raw.workspace.sales.slice(0, 5000) : [], payments: Array.isArray(raw.workspace.payments) ? raw.workspace.payments.slice(0, 10000) : [], inventoryMovements: Array.isArray(raw.workspace.inventoryMovements) ? raw.workspace.inventoryMovements.slice(0, 20000) : [], suppliers: Array.isArray(raw.workspace.suppliers) ? raw.workspace.suppliers.slice(0, 1000) : [], purchases: Array.isArray(raw.workspace.purchases) ? raw.workspace.purchases.slice(0, 5000) : [], expenses: Array.isArray(raw.workspace.expenses) ? raw.workspace.expenses.slice(0, 10000) : [], contracts: Array.isArray(raw.workspace.contracts) ? raw.workspace.contracts.slice(0, 5000) : [], installmentSchedules: Array.isArray(raw.workspace.installmentSchedules) ? raw.workspace.installmentSchedules.slice(0, 20000) : [], notifications: Array.isArray(raw.workspace.notifications) ? raw.workspace.notifications.slice(0, 10000) : [], webhookEvents: Array.isArray(raw.workspace.webhookEvents) ? raw.workspace.webhookEvents.slice(0, 10000) : [], providerEvents: Array.isArray(raw.workspace.providerEvents) ? raw.workspace.providerEvents.slice(0, 10000) : [], providerTokens: raw.workspace.providerTokens && typeof raw.workspace.providerTokens === "object" ? raw.workspace.providerTokens : {} } : { showroom: {}, products: [], posts: [], conversations: [], installmentPlans: [], leads: [], tasks: [], sales: [], payments: [], inventoryMovements: [], suppliers: [], purchases: [], expenses: [], contracts: [], installmentSchedules: [], notifications: [], webhookEvents: [], providerEvents: [], providerTokens: {} } };
+    return { users, audit: Array.isArray(raw.audit) ? raw.audit.slice(0, 200) : [], jobs: Array.isArray(raw.jobs) ? raw.jobs.slice(0, 200) : [], workspace: raw.workspace && typeof raw.workspace === "object" ? { showroom: raw.workspace.showroom || {}, products: Array.isArray(raw.workspace.products) ? raw.workspace.products.slice(0, 1000) : [], posts: Array.isArray(raw.workspace.posts) ? raw.workspace.posts.slice(0, 1000) : [], conversations: Array.isArray(raw.workspace.conversations) ? raw.workspace.conversations.slice(0, 1000) : [], installmentPlans: Array.isArray(raw.workspace.installmentPlans) ? raw.workspace.installmentPlans.slice(0, 200) : [], leads: Array.isArray(raw.workspace.leads) ? raw.workspace.leads.slice(0, 2000) : [], tasks: Array.isArray(raw.workspace.tasks) ? raw.workspace.tasks.slice(0, 1000) : [], sales: Array.isArray(raw.workspace.sales) ? raw.workspace.sales.slice(0, 5000) : [], payments: Array.isArray(raw.workspace.payments) ? raw.workspace.payments.slice(0, 10000) : [], inventoryMovements: Array.isArray(raw.workspace.inventoryMovements) ? raw.workspace.inventoryMovements.slice(0, 20000) : [], suppliers: Array.isArray(raw.workspace.suppliers) ? raw.workspace.suppliers.slice(0, 1000) : [], purchases: Array.isArray(raw.workspace.purchases) ? raw.workspace.purchases.slice(0, 5000) : [], expenses: Array.isArray(raw.workspace.expenses) ? raw.workspace.expenses.slice(0, 10000) : [], contracts: Array.isArray(raw.workspace.contracts) ? raw.workspace.contracts.slice(0, 5000) : [], installmentSchedules: Array.isArray(raw.workspace.installmentSchedules) ? raw.workspace.installmentSchedules.slice(0, 20000) : [], notifications: Array.isArray(raw.workspace.notifications) ? raw.workspace.notifications.slice(0, 10000) : [], webhookEvents: Array.isArray(raw.workspace.webhookEvents) ? raw.workspace.webhookEvents.slice(0, 10000) : [], providerEvents: Array.isArray(raw.workspace.providerEvents) ? raw.workspace.providerEvents.slice(0, 10000) : [], marketingBriefs: Array.isArray(raw.workspace.marketingBriefs) ? raw.workspace.marketingBriefs.slice(0, 2000) : [], providerTokens: raw.workspace.providerTokens && typeof raw.workspace.providerTokens === "object" ? raw.workspace.providerTokens : {} } : { showroom: {}, products: [], posts: [], conversations: [], installmentPlans: [], leads: [], tasks: [], sales: [], payments: [], inventoryMovements: [], suppliers: [], purchases: [], expenses: [], contracts: [], installmentSchedules: [], notifications: [], webhookEvents: [], providerEvents: [], marketingBriefs: [], providerTokens: {} } };
   } catch {
-    return { users: [defaultOwner], audit: [], jobs: [], workspace: { showroom: {}, products: [], posts: [], conversations: [], installmentPlans: [], leads: [], tasks: [], sales: [], payments: [], inventoryMovements: [], suppliers: [], purchases: [], expenses: [], contracts: [], installmentSchedules: [], notifications: [], webhookEvents: [], providerEvents: [], providerTokens: {} } };
+    return { users: [defaultOwner], audit: [], jobs: [], workspace: { showroom: {}, products: [], posts: [], conversations: [], installmentPlans: [], leads: [], tasks: [], sales: [], payments: [], inventoryMovements: [], suppliers: [], purchases: [], expenses: [], contracts: [], installmentSchedules: [], notifications: [], webhookEvents: [], providerEvents: [], marketingBriefs: [], providerTokens: {} } };
   }
 }
 
@@ -133,7 +133,7 @@ const serverUsers: ServerUser[] = persisted.users;
 const workspace = persisted.workspace;
 for (const key of ["inventoryMovements","suppliers","purchases","expenses","contracts","installmentSchedules","notifications","webhookEvents","providerEvents"]) if (!Array.isArray((workspace as any)[key])) (workspace as any)[key] = [];
 if (!Array.isArray((workspace as any).inventoryMovements)) (workspace as any).inventoryMovements = [];
-for (const key of ["suppliers","purchases","expenses","contracts","installmentSchedules","notifications","webhookEvents","providerEvents"]) if (!Array.isArray((workspace as any)[key])) (workspace as any)[key] = [];
+for (const key of ["suppliers","purchases","expenses","contracts","installmentSchedules","notifications","webhookEvents","providerEvents","marketingBriefs"]) if (!Array.isArray((workspace as any)[key])) (workspace as any)[key] = [];
 if (!(workspace as any).providerTokens || typeof (workspace as any).providerTokens !== "object") (workspace as any).providerTokens = {};
 
 // Migration guard: a post is never considered externally published merely because
@@ -636,11 +636,11 @@ const OAUTH_CONFIG: Record<string, any> = {
   tiktok: { provider: "tiktok", auth: "https://www.tiktok.com/v2/auth/authorize/", token: "https://open.tiktokapis.com/v2/oauth/token/", clientId: process.env.TIKTOK_CLIENT_KEY, clientSecret: process.env.TIKTOK_CLIENT_SECRET, scopes: ["user.info.basic", "video.publish"], callback: `${BASE_URL}/api/platforms/tiktok/oauth/callback` },
 };
 function oauthReady(platform: string) { const c = OAUTH_CONFIG[platform]; return Boolean(c?.clientId && c?.clientSecret && process.env.APP_URL && tokenKeyBytes()); }
-function publicProviderReadiness(platform: string) {
-  if (platform === "telegram") return { configured: Boolean(process.env.TELEGRAM_BOT_TOKEN && tokenKeyBytes()), mode: "bot-token", action: "configure" };
+function publicProviderReadiness(platform: string): { configured: boolean; mode: string; action: string; missing?: string[]; next?: string } {
+  if (platform === "telegram") return { configured: Boolean(process.env.TELEGRAM_BOT_TOKEN && tokenKeyBytes()), mode: "bot-token", action: "configure", next: "ضبط Bot Token ثم اختبار الإرسال" };
   const c = OAUTH_CONFIG[platform];
-  if (c) return { configured: oauthReady(platform), mode: "oauth2", action: "authorize", missing: [!c.clientId && "client_id", !c.clientSecret && "client_secret", !process.env.APP_URL && "APP_URL", !tokenKeyBytes() && "PLATFORM_TOKEN_ENCRYPTION_KEY"].filter(Boolean) };
-  return { configured: false, mode: "provider-adapter", action: "configuration-required" };
+  if (c) return { configured: oauthReady(platform), mode: "oauth2", action: "authorize", next: "ضبط بيانات OAuth وتسجيل Redirect URI", missing: [!c.clientId && "client_id", !c.clientSecret && "client_secret", !process.env.APP_URL && "APP_URL", !tokenKeyBytes() && "PLATFORM_TOKEN_ENCRYPTION_KEY"].filter((x): x is string => Boolean(x)) };
+  return { configured: false, mode: "provider-adapter", action: "configuration-required", next: "إضافة موصل إنتاجي معتمد قبل تفعيل النشر" };
 }
 function safeConnection(platform: string) { const c:any=platformConnections.get(platform); return c ? { platform:c.platform, status:c.status, accountName:c.accountName, accountId:c.accountId, connectedAt:c.connectedAt, lastSyncAt:c.lastSyncAt, providerVerified:Boolean(c.providerVerified), provider:publicProviderReadiness(platform) } : null; }
 for (const p of SUPPORTED_PLATFORMS) platformConnections.set(p.id, { platform: p.id, status: "disconnected" });
@@ -1760,7 +1760,7 @@ function buildPersistedState() {
       leads: workspace.leads.slice(0, 2000),
       tasks: workspace.tasks.slice(0, 1000),
       sales: workspace.sales.slice(0, 5000),
-      payments: workspace.payments.slice(0, 10000), suppliers: workspace.suppliers.slice(0, 1000), purchases: workspace.purchases.slice(0, 5000), expenses: workspace.expenses.slice(0, 10000), contracts: workspace.contracts.slice(0, 5000), installmentSchedules: workspace.installmentSchedules.slice(0, 20000)
+      payments: workspace.payments.slice(0, 10000), suppliers: workspace.suppliers.slice(0, 1000), purchases: workspace.purchases.slice(0, 5000), expenses: workspace.expenses.slice(0, 10000), contracts: workspace.contracts.slice(0, 5000), installmentSchedules: workspace.installmentSchedules.slice(0, 20000), marketingBriefs: (workspace as any).marketingBriefs.slice(0, 2000)
     }
   };
 }
@@ -2325,6 +2325,258 @@ app.post("/api/ai/agent-chat", authenticateToken, async (req, res) => {
       reply: "أهلاً بك، يسعدني دائماً مساعدتك في أي استفسار يخص إدارة وتشغيل معرض الغرابي للتقسيط.",
     });
   }
+});
+
+// -------------------------------------------------------------
+// وكيل الغرابي الذكي — مهمة المحتوى التسويقي العربية (حتمي بالكامل).
+// لا يستدعي Gemini، ولا يتطلب أي حساب اجتماعي متصل، ولا يدّعي نشراً خارجياً.
+// يعتمد حصراً على بيانات المعرض الحقيقية المحفوظة على الخادم.
+// -------------------------------------------------------------
+const MARKETING_GOALS: Record<string, { label: string; angle: string }> = {
+  offer: { label: "عرض سعر وتقسيط", angle: "إبراز سعر الكاش والقسط الشهري والدفعة الأولى" },
+  product_intro: { label: "تعريف بمنتج", angle: "تعريف مختصر بالمواصفات والاستخدام" },
+  installment_terms: { label: "توضيح شروط التقسيط", angle: "شرح المستندات والخطوات دون وعود غير مؤكدة" },
+  trust_builder: { label: "بناء الثقة", angle: "إبراز وضوح الإجراءات والمتابعة الرسمية" },
+  follow_up: { label: "متابعة وتذكير", angle: "تذكير مهذب بعرض قائم ودعوة للتواصل" },
+};
+
+const PLATFORM_TEXT_LIMITS: Record<string, number> = {
+  tiktok: 2200, instagram: 2200, facebook: 2000, youtube: 5000, x: 280,
+  snapchat: 250, whatsapp: 4096, telegram: 4096, threads: 500, google_business: 1500,
+};
+
+// Guards that mirror the project rules: no automotive content, no legacy fake counter.
+const FORBIDDEN_CONTENT_PATTERN = /سيارة|سيارات|automotive|\bcars?\b/i;
+const LEGACY_COUNTER_PATTERN = /125\s*\/\s*125/;
+
+function formatIqd(value: number): string {
+  return `${Math.round(value).toLocaleString("en-US")} د.ع`;
+}
+
+// Mirrors /api/catalog/quote: down payment then ceil-to-IQD monthly installment.
+function buildMarketingQuote(cashPrice: number, downPaymentPercent: number, months: number) {
+  const downPayment = Math.ceil((cashPrice * downPaymentPercent) / 100);
+  const financedAmount = Math.max(0, cashPrice - downPayment);
+  const monthlyPayment = Math.ceil(financedAmount / months);
+  return {
+    cashPrice, downPayment, financedAmount, months, monthlyPayment,
+    totalInstallments: monthlyPayment * months, currency: "IQD" as const, rounding: "ceil-to-IQD",
+  };
+}
+
+function trimToWordBoundary(text: string, max: number): string {
+  if (max <= 0) return "";
+  if (text.length <= max) return text;
+  const cut = text.slice(0, max);
+  const lastSpace = cut.lastIndexOf(" ");
+  return `${(lastSpace > max * 0.6 ? cut.slice(0, lastSpace) : cut).trimEnd()}…`;
+}
+
+// Composes the final platform text and guarantees it fits the platform limit by
+// shortening the body first, then dropping hashtags. Never truncates mid-word.
+function composePlatformText(headline: string, body: string, callToAction: string, hashtags: string[], limit: number) {
+  let tags = hashtags.slice();
+  let currentBody = body;
+  const render = () => [headline, currentBody, callToAction, tags.join(" ")].filter((x) => x && x.trim()).join("\n\n");
+  let text = render();
+  while (text.length > limit && tags.length > 1) { tags = tags.slice(0, -1); text = render(); }
+  if (text.length > limit) {
+    tags = [];
+    const reserved = render().length - currentBody.length;
+    currentBody = trimToWordBoundary(currentBody, Math.max(0, limit - reserved));
+    text = render();
+  }
+  if (text.length > limit) text = trimToWordBoundary(render(), limit);
+  return { text, hashtags: tags, charCount: text.length, limit, withinLimit: text.length <= limit };
+}
+
+// Per-platform Arabic copy. Uses only the real product/showroom facts it is given.
+function buildPlatformCopy(input: {
+  platform: string; platformName: string; goal: string; tone: string; task: string;
+  productName: string; categoryLabel: string; quote: any | null; specs: string[];
+  installmentOptions: string[]; showroom: any; contactLine: string; notes: string;
+}) {
+  const { platform, goal, tone, task, productName, categoryLabel, quote, specs, installmentOptions, showroom, contactLine, notes } = input;
+  const showroomName = showroom?.name?.trim() || "معرض الغرابي للتقسيط";
+  const goalLabel = MARKETING_GOALS[goal]?.label || MARKETING_GOALS.offer.label;
+  const specLine = specs.length ? `المواصفات: ${specs.slice(0, 4).join("، ")}` : "";
+  const optionsLine = installmentOptions.length ? `خيارات السداد: ${installmentOptions.slice(0, 4).join("، ")}` : "";
+  const quoteLine = quote
+    ? `سعر الكاش: ${formatIqd(quote.cashPrice)}\nالدفعة الأولى: ${formatIqd(quote.downPayment)}\nالقسط الشهري: ${formatIqd(quote.monthlyPayment)} لمدة ${quote.months} شهراً\nإجمالي الأقساط: ${formatIqd(quote.totalInstallments)}`
+    : "";
+  const hoursLine = showroom?.workingHours?.trim() ? `ساعات العمل: ${showroom.workingHours.trim()}` : "";
+  const locationLine = [showroom?.address?.trim(), showroom?.city?.trim()].filter(Boolean).join(" - ");
+  const notesLine = notes ? `ملاحظة: ${notes}` : "";
+
+  const headlineByGoal: Record<string, string> = {
+    offer: `${productName} بنظام التقسيط المريح من ${showroomName}`,
+    product_intro: `تعرف على ${productName} المتوفر لدى ${showroomName}`,
+    installment_terms: `شروط وخطوات تقسيط ${productName} في ${showroomName}`,
+    trust_builder: `تقسيط ${productName} بإجراءات واضحة من ${showroomName}`,
+    follow_up: `عرضك على ${productName} ما زال متاحاً في ${showroomName}`,
+  };
+  const headline = headlineByGoal[goal] || headlineByGoal.offer;
+
+  const bodyBase = [
+    `${goalLabel} — ${categoryLabel}`,
+    `المطلوب: ${task}`,
+    quoteLine,
+    specLine,
+    optionsLine,
+  ].filter(Boolean).join("\n");
+
+  const ctaDefault = contactLine || "تواصل مع فريق المعرض لمعرفة التفاصيل والخطة الأنسب لك.";
+  const tagsBase = ["#معرض_الغرابي", "#تقسيط", "#العراق", `#${productName.replace(/\s+/g, "_")}`];
+
+  switch (platform) {
+    case "tiktok":
+      return { headline, body: `🎬 هوك سريع (3 ثوان): "${productName} بخطة تقسيط تناسب دخلك!"\n\n${bodyBase}\n\n⏱️ لقطات مقترحة: 1) المنتج 2) القسط والدفعة الأولى 3) خطوات التقديم.`, cta: `📲 ${ctaDefault}`, hashtags: [...tagsBase, "#عروض_العراق", "#تقسيط_ميسر"] };
+    case "instagram":
+      return { headline, body: `✨ ${bodyBase}\n\n🔹 إجراءات ميسرة ومتابعة كاملة للطلب.\n🔹 ${hoursLine || "التفاصيل متاحة عبر الرسائل الخاصة."}`, cta: `💬 ${ctaDefault}`, hashtags: [...tagsBase, "#بغداد", "#أجهزة_منزلية"] };
+    case "facebook":
+      return { headline, body: `${bodyBase}\n\n📍 ${locationLine || "يمكنك التواصل لمعرفة أقرب طريقة لاستلام طلبك."}\n🕒 ${hoursLine || "أوقات العمل متاحة عبر التواصل."}\n${notesLine}`, cta: `✅ ${ctaDefault}`, hashtags: tagsBase };
+    case "youtube":
+      return { headline, body: `العنوان المقترح: ${headline}\n\nالوصف:\n${bodyBase}\n\n⏱️ الفواصل:\n00:00 مقدمة\n00:20 تفاصيل ${productName}\n01:00 ${quote ? "القسط والدفعة الأولى" : "خيارات التقسيط"}\n01:40 خطوات التقديم\n\nكلمات مفتاحية: تقسيط، ${productName}، ${showroomName}`, cta: ctaDefault, hashtags: tagsBase };
+    case "x":
+      return { headline: "", body: `${productName} | ${quote ? `قسط شهري ${formatIqd(quote.monthlyPayment)}` : "خطة تقسيط مرنة"}\n${contactLine || showroomName}`, cta: ctaDefault, hashtags: ["#تقسيط", "#العراق"] };
+    case "snapchat":
+      return { headline: "", body: `👻 لقطة 1: ${productName} متوفر الآن!\n👻 لقطة 2: ${quote ? `قسط شهري ${formatIqd(quote.monthlyPayment)}` : "خطة تقسيط ميسرة"}\n👻 لقطة 3: خطوات التقديم بسيطة وسريعة.`, cta: `اسحب للأعلى — ${ctaDefault}`, hashtags: ["#تقسيط", "#معرض_الغرابي"] };
+    case "whatsapp":
+      return { headline: "", body: `السلام عليكم 🌟\n${bodyBase}\n${hoursLine}`, cta: `للتفاصيل: ${contactLine || "أرسل لنا اسم المنتج والمدة المطلوبة."}`, hashtags: [] };
+    case "telegram":
+      return { headline: `📢 ${headline}`, body: bodyBase, cta: ctaDefault, hashtags: ["#تقسيط", "#معرض_الغرابي"] };
+    case "threads":
+      return { headline: "", body: `${productName}: ${quote ? `قسط شهري ${formatIqd(quote.monthlyPayment)}` : "خطة تقسيط مرنة"} — ${tone}`, cta: ctaDefault, hashtags: ["#تقسيط", "#العراق"] };
+    case "google_business":
+      return { headline, body: `تحديث من ${showroomName}\n${bodyBase}\n📍 ${locationLine || "زيارة المعرض للاطلاع على التفاصيل."}\n🕒 ${hoursLine || ""}`, cta: ctaDefault, hashtags: [] };
+    default:
+      return { headline, body: bodyBase, cta: ctaDefault, hashtags: tagsBase };
+  }
+}
+
+app.post("/api/ai/content-brief", authenticateToken, (req, res) => {
+  const user = (req as any).user as ServerUser;
+  if (!rateLimitAI(user.id)) return res.status(429).json({ success: false, error: "تم تفعيل حماية الطلبات: انتظر دقيقة قبل إرسال طلبات إضافية.", generatedBy: "local-guard" });
+
+  const b = req.body || {};
+  const task = cleanText(b.task, 600);
+  if (!task || task.length < 3) return res.status(400).json({ success: false, error: "المهمة مطلوبة ويجب أن تكون واضحة (3 أحرف على الأقل)." });
+
+  const goal = typeof b.goal === "string" && MARKETING_GOALS[b.goal] ? b.goal : "offer";
+  const tone = cleanText(b.tone, 120) || "احترافية ومباشرة موجهة لعملاء التقسيط";
+  const notes = cleanText(b.notes, 600);
+
+  const requested = Array.isArray(b.platforms) ? b.platforms : [];
+  const platforms = [...new Set(requested.filter((x: any) => typeof x === "string" && SUPPORTED_PLATFORMS.some((p: any) => p.id === x)))].slice(0, 10) as string[];
+  if (!platforms.length) return res.status(400).json({ success: false, error: "اختر منصة واحدة على الأقل من المنصات المدعومة." });
+
+  // Project rules are enforced before anything is generated.
+  if (FORBIDDEN_CONTENT_PATTERN.test(`${task} ${notes}`)) return res.status(422).json({ success: false, error: "المهمة تحتوي على مصطلحات سيارات، وهي خارج نشاط معرض الغرابي للتقسيط." });
+  if (LEGACY_COUNTER_PATTERN.test(`${task} ${notes}`)) return res.status(422).json({ success: false, error: "تم اكتشاف عداد استخدام قديم غير مسموح في المشروع." });
+
+  let product: any = null;
+  const productId = cleanText(b.productId, 100);
+  if (productId) {
+    product = workspace.products.find((p: any) => p.id === productId) || null;
+    if (!product) return res.status(404).json({ success: false, error: "المنتج المحدد غير موجود في قاعدة بيانات المعرض." });
+  }
+  const manualName = cleanText(b.productName, 160);
+  const productName = product?.name || manualName;
+  if (!productName) return res.status(400).json({ success: false, error: "حدد منتجاً من قاعدة البيانات أو اكتب اسم المنتج." });
+
+  const warnings: string[] = [];
+  const downPaymentPercent = Number.isFinite(Number(b.downPaymentPercent)) ? Math.max(0, Math.min(99, Math.floor(Number(b.downPaymentPercent)))) : Number(product?.downPaymentPercent || 0);
+  const durationMonths = Number.isInteger(Number(b.durationMonths)) ? Math.max(1, Math.min(60, Number(b.durationMonths))) : Number(product?.durationMonths || 0);
+
+  let quote: any = null;
+  const cashPrice = Number(product?.cashPrice);
+  if (Number.isFinite(cashPrice) && cashPrice > 0) {
+    quote = buildMarketingQuote(cashPrice, downPaymentPercent, durationMonths > 0 ? durationMonths : 1);
+    if (durationMonths <= 0) warnings.push("لم تُحدد مدة الأقساط، فتم استخدام شهر واحد لحسبة القسط. حدّد المدة لعرض أدق.");
+    if (product?.inStock === false) warnings.push("المنتج غير متوفر حالياً في المخزون؛ راجع الكمية قبل نشر العرض.");
+  } else {
+    warnings.push("لا يوجد سعر نقدي مسجل لهذا المنتج، فلم تُدرج حسبة قسط. أضف السعر في قاعدة بيانات المعرض لدقة أعلى.");
+  }
+
+  // Contact data is only used when it is really configured; never fabricated.
+  const contactParts = [workspace.showroom?.phoneUnified, workspace.showroom?.whatsappSales].map((x: any) => cleanText(x, 60)).filter(Boolean);
+  const contactLine = contactParts.length ? `تواصل معنا: ${contactParts.join(" أو ")}` : "";
+  if (!contactLine) warnings.push("لا يوجد رقم تواصل مسجل في بيانات المعرض، لذلك لم يُدرج أي رقم في المحتوى. سجّل الرقم من قاعدة بيانات المعرض.");
+  if (!cleanText(workspace.showroom?.name, 160)) warnings.push("اسم المعرض غير مسجل في بيانات المعرض بعد؛ استخدم الاسم الافتراضي المعتمد.");
+
+  const categoryLabels: Record<string, string> = { appliances: "أجهزة منزلية", phones: "هواتف ذكية", construction: "مواد بناء", electronics: "إلكترونيات", other: "منتجات المعرض" };
+  const categoryLabel = categoryLabels[product?.category] || "منتجات المعرض";
+
+  const content = platforms.map((platform: string) => {
+    const platformName = SUPPORTED_PLATFORMS.find((p: any) => p.id === platform)?.name || platform;
+    const copy = buildPlatformCopy({
+      platform, platformName, goal, tone, task, productName, categoryLabel, quote,
+      specs: Array.isArray(product?.specs) ? product.specs : [],
+      installmentOptions: Array.isArray(product?.installmentOptions) ? product.installmentOptions : [],
+      showroom: workspace.showroom, contactLine, notes,
+    });
+    const composed = composePlatformText(copy.headline, copy.body, copy.cta, copy.hashtags, PLATFORM_TEXT_LIMITS[platform] || 2000);
+    return { platform, platformName, headline: copy.headline, body: copy.body, callToAction: copy.cta, hashtags: composed.hashtags, charCount: composed.charCount, limit: composed.limit, withinLimit: composed.withinLimit, text: composed.text };
+  });
+
+  // Final safety net: generated text must obey the same project rules.
+  const offending = content.find((c: any) => FORBIDDEN_CONTENT_PATTERN.test(c.text) || LEGACY_COUNTER_PATTERN.test(c.text));
+  if (offending) return res.status(422).json({ success: false, error: "المحتوى المولد خالف قواعد مشروع الغرابي وتم إيقافه." });
+
+  const briefId = workspaceId("brief");
+  const createdAt = new Date().toISOString();
+  const savedPostIds: string[] = [];
+
+  if (b.saveDrafts === true) {
+    for (const piece of content) {
+      const post = {
+        id: workspaceId("post"), title: piece.headline || `عرض ${productName}`,
+        content: piece.text, platformVersions: { [piece.platform]: piece.text },
+        targetPlatforms: [piece.platform], mediaUrl: cleanText(product?.image, 500) || undefined,
+        mediaType: undefined, status: "draft", createdAt,
+        authorId: user.id, authorName: user.name, authorRole: user.role,
+        history: [{ id: workspaceId("act"), byUser: user.name, userRole: user.role, action: "create", timestamp: createdAt, note: "أُنشئ بواسطة وكيل الغرابي الذكي" }],
+        tags: ["تقسيط_منتجات", "معرض_الغرابي", piece.platform], campaignName: cleanText(b.campaignName, 160) || undefined,
+      };
+      workspace.posts.unshift(post);
+      savedPostIds.push(post.id);
+    }
+  }
+
+  const briefRecord = {
+    id: briefId, task, goal, tone, platforms, productName, productId: product?.id || null,
+    content: content.map((c: any) => ({ platform: c.platform, text: c.text, charCount: c.charCount, withinLimit: c.withinLimit })),
+    quote, warnings, savedPostIds, createdBy: user.id, createdAt,
+  };
+  (workspace as any).marketingBriefs.unshift(briefRecord);
+  (workspace as any).marketingBriefs = (workspace as any).marketingBriefs.slice(0, 2000);
+  persistState();
+  audit(user.id, "marketing_brief_created", `${briefId}:${platforms.length}`);
+
+  res.status(201).json({
+    success: true,
+    result: {
+      briefId, task, goal, tone,
+      product: { id: product?.id, name: productName, category: product?.category, source: product ? "showroom-database" : "manual", cashPrice: Number.isFinite(cashPrice) ? cashPrice : undefined, inStock: product?.inStock },
+      platforms, content: content.map(({ text, ...rest }: any) => rest), quote, warnings, savedPostIds,
+      generatedBy: "deterministic-marketing-agent", usesGemini: false, requiresExternalConnection: false, createdAt,
+      nextStep: savedPostIds.length
+        ? "راجع المسودات في مركز المحتوى ثم أرسلها للمراجعة والاعتماد. النشر الخارجي يحتاج اتصالاً حقيقياً بالمنصة."
+        : "راجع المحتوى، ثم احفظه كمسودة للدخول في مسار المراجعة والاعتماد.",
+    },
+    note: "أُنشئ هذا المحتوى بالمحرك المحلي الحتمي دون استهلاك Gemini ودون أي اتصال خارجي.",
+  });
+});
+
+// Read-only listing of previously generated briefs (owner sees all, others see their own).
+app.get("/api/ai/content-briefs", authenticateToken, (req, res) => {
+  const user = (req as any).user as ServerUser;
+  const limit = Math.min(50, Math.max(1, Number(req.query.limit || 20)));
+  const rows = ((workspace as any).marketingBriefs || [])
+    .filter((x: any) => user.role === "owner" || x.createdBy === user.id)
+    .slice(0, limit)
+    .map((x: any) => ({ id: x.id, task: x.task, goal: x.goal, platforms: x.platforms, productName: x.productName, quote: x.quote, warnings: x.warnings, savedPostIds: x.savedPostIds, createdAt: x.createdAt, content: x.content }));
+  res.json({ success: true, briefs: rows, count: rows.length });
 });
 
 // Helper for local template generation without mock data

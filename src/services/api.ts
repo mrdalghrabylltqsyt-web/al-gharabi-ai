@@ -1,4 +1,4 @@
-import { AppUser, UserRole } from '../types';
+import { AppUser, UserRole, MarketingBriefRequest, MarketingBriefResult } from '../types';
 
 export interface GenerateContentRequest {
   platform: string;
@@ -737,7 +737,20 @@ ${payload.topic || payload.productName || 'أنظمة وحلول التقسيط 
   async getCustomerDirectory(q?:string){const u=q?`/api/control/customer-directory?q=${encodeURIComponent(q)}`:'/api/control/customer-directory';const r=await fetch(u,{headers:getAuthHeaders()});const d=await r.json();if(!r.ok||!d.success)throw new Error(d.error||'تعذر جلب دليل العملاء');return d.customers||[];},
   async getCashflow(days=30){const r=await fetch(`/api/control/cashflow?days=${days}`,{headers:getAuthHeaders()});const d=await r.json();if(!r.ok||!d.success)throw new Error(d.error||'تعذر جلب التدفق النقدي');return d;},
   async getReconciliation(){const r=await fetch('/api/control/reconciliation',{headers:getAuthHeaders()});const d=await r.json();if(!r.ok||!d.success)throw new Error(d.error||'تعذر إجراء المطابقة');return d;},
-  async getDailyBrief(){const r=await fetch('/api/control/daily-brief',{headers:getAuthHeaders()});const d=await r.json();if(!r.ok||!d.success)throw new Error(d.error||'تعذر جلب ملخص اليوم');return d;}
+  async getDailyBrief(){const r=await fetch('/api/control/daily-brief',{headers:getAuthHeaders()});const d=await r.json();if(!r.ok||!d.success)throw new Error(d.error||'تعذر جلب ملخص اليوم');return d;},
 
+  // وكيل الغرابي الذكي — مهمة محتوى تسويقي (حتمي، بدون Gemini وبدون اتصال خارجي)
+  async createMarketingBrief(payload: MarketingBriefRequest): Promise<MarketingBriefResult> {
+    const res = await fetch('/api/ai/content-brief', { method: 'POST', headers: getAuthHeaders(), body: JSON.stringify(payload) });
+    const data = await res.json();
+    if (!res.ok || !data.success) throw new Error(data.error || 'تعذر تنفيذ مهمة المحتوى');
+    return data.result as MarketingBriefResult;
+  },
 
+  async listMarketingBriefs(limit = 20): Promise<Array<Record<string, unknown>>> {
+    const res = await fetch(`/api/ai/content-briefs?limit=${encodeURIComponent(String(limit))}`, { headers: getAuthHeaders() });
+    const data = await res.json();
+    if (!res.ok || !data.success) throw new Error(data.error || 'تعذر جلب سجل المهام');
+    return data.briefs || [];
+  }
 };
