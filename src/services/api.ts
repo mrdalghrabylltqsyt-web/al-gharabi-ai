@@ -1,4 +1,4 @@
-import { AppUser, UserRole, MarketingBriefRequest, MarketingBriefResult, MarketingCampaignRequest, MarketingCampaignSummary, MarketingCampaignDetail, MarketingCampaignCreationResult, MarketingCampaignStatus } from '../types';
+import { AppUser, UserRole, MarketingBriefRequest, MarketingBriefResult, MarketingCampaignRequest, MarketingCampaignSummary, MarketingCampaignDetail, MarketingCampaignCreationResult, MarketingCampaignStatus, MarketingDraftAction, MarketingDraftBulkResult, MarketingDraftLinkResult } from '../types';
 
 export interface GenerateContentRequest {
   platform: string;
@@ -781,5 +781,35 @@ ${payload.topic || payload.productName || 'أنظمة وحلول التقسيط 
     const data = await res.json();
     if (!res.ok || !data.success) throw new Error(data.error || 'تعذر تحديث حالة الحملة');
     return data.campaign as MarketingCampaignSummary;
+  },
+
+  /** قرار فردي على مسودة داخل الحملة: مراجعة / اعتماد / رفض. */
+  async actOnMarketingDraft(campaignId: string, taskId: string, action: MarketingDraftAction, note?: string): Promise<{ result: { taskId: string; from: string; to: string; action: string }; campaign: MarketingCampaignDetail }> {
+    const res = await fetch(`/api/ai/marketing-campaigns/${encodeURIComponent(campaignId)}/drafts/${encodeURIComponent(taskId)}/action`, {
+      method: 'POST', headers: getAuthHeaders(), body: JSON.stringify({ action, note }),
+    });
+    const data = await res.json();
+    if (!res.ok || !data.success) throw new Error(data.error || 'تعذر تنفيذ الإجراء على المسودة');
+    return data;
+  },
+
+  /** عملية جماعية على مسودات محددة داخل الحملة. */
+  async bulkMarketingDraftAction(campaignId: string, taskIds: string[], action: MarketingDraftAction, note?: string): Promise<MarketingDraftBulkResult> {
+    const res = await fetch(`/api/ai/marketing-campaigns/${encodeURIComponent(campaignId)}/drafts/bulk`, {
+      method: 'POST', headers: getAuthHeaders(), body: JSON.stringify({ taskIds, action, note }),
+    });
+    const data = await res.json();
+    if (!res.ok || !data.success) throw new Error(data.error || 'تعذر تنفيذ العملية الجماعية');
+    return data as MarketingDraftBulkResult;
+  },
+
+  /** ربط المسودة المعتمدة بالمنشور في مساحة المنشورات دون إنشاء نسخة مكررة. */
+  async linkMarketingDraft(campaignId: string, taskId: string): Promise<MarketingDraftLinkResult> {
+    const res = await fetch(`/api/ai/marketing-campaigns/${encodeURIComponent(campaignId)}/drafts/${encodeURIComponent(taskId)}/link`, {
+      method: 'POST', headers: getAuthHeaders(), body: JSON.stringify({}),
+    });
+    const data = await res.json();
+    if (!res.ok || !data.success) throw new Error(data.error || 'تعذر ربط المسودة بالمنشور');
+    return data as MarketingDraftLinkResult;
   }
 };

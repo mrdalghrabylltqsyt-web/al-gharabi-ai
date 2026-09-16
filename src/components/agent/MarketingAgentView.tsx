@@ -159,7 +159,7 @@ export const MarketingAgentView: React.FC = () => {
       </div>
 
       {/* Mode switch: single task vs small campaign */}
-      <div className="flex flex-wrap gap-2 p-1.5 rounded-2xl bg-slate-900 border border-slate-800 w-fit">
+      <div className="flex flex-wrap items-center gap-2 p-1.5 rounded-2xl bg-slate-900 border border-slate-800 w-fit">
         <button
           onClick={() => setMode('single')}
           className={`px-4 py-2 rounded-xl text-xs font-bold transition cursor-pointer flex items-center gap-1.5 ${
@@ -167,8 +167,9 @@ export const MarketingAgentView: React.FC = () => {
           }`}
         >
           <Sparkles className="w-3.5 h-3.5" />
-          مهمة واحدة
+          1. مهمة واحدة
         </button>
+        <span className="text-slate-600 text-xs">←</span>
         <button
           onClick={() => setMode('campaign')}
           className={`px-4 py-2 rounded-xl text-xs font-bold transition cursor-pointer flex items-center gap-1.5 ${
@@ -176,9 +177,14 @@ export const MarketingAgentView: React.FC = () => {
           }`}
         >
           <Layers className="w-3.5 h-3.5" />
-          حملة على عدة منتجات
+          2. حملة تسويقية على عدة منتجات
         </button>
       </div>
+      <p className="text-[11px] text-slate-400">
+        {mode === 'single'
+          ? 'المسار: مهمة واحدة ← محتوى جاهز لكل منصة ← حفظ كمسودات ← مركز الموافقات.'
+          : 'المسار: حملة تسويقية ← قائمة الحملات ← تفاصيل الحملة ← إدارة المسودات ← الربط مع مساحة المنشورات.'}
+      </p>
 
       {mode === 'campaign' && <MarketingCampaignPanel />}
 

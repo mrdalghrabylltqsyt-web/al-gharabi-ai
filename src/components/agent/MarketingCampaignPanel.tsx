@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { useApp } from '../../context/AppContext';
 import { apiService } from '../../services/api';
+import { MarketingCampaignDetailView } from './MarketingCampaignDetailView';
 import {
   MarketingGoal,
   SocialPlatformId,
@@ -20,6 +21,7 @@ import {
   Link2Off,
   CheckCircle2,
   FileText,
+  ClipboardList,
 } from 'lucide-react';
 
 const GOALS: Array<{ id: MarketingGoal; label: string }> = [
@@ -159,6 +161,19 @@ export const MarketingCampaignPanel: React.FC = () => {
 
   const resources: MarketingPlatformResource[] = detail?.platformResources || creation?.platformResources || [];
   const summary = detail || creation;
+
+  const closeDetail = () => setDetail(null);
+
+  if (detail) {
+    return (
+      <MarketingCampaignDetailView
+        campaign={detail}
+        onClose={closeDetail}
+        onChanged={(updated: MarketingCampaignDetail) => setDetail(updated)}
+        onRefreshList={loadCampaigns}
+      />
+    );
+  }
 
   return (
     <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
@@ -348,20 +363,29 @@ export const MarketingCampaignPanel: React.FC = () => {
               </div>
             </div>
 
-            <div className="flex flex-wrap gap-2">
-              {(['draft', 'active', 'completed', 'archived'] as MarketingCampaignStatus[]).map((s) => (
-                <button
-                  key={s}
-                  onClick={() => changeStatus(summary.id, s)}
-                  className={`px-2.5 py-1 rounded-lg text-[10px] font-bold border transition cursor-pointer ${
-                    summary.status === s
-                      ? 'bg-emerald-500 text-slate-950 border-emerald-500'
-                      : 'bg-slate-950 border-slate-800 text-slate-300 hover:border-emerald-500/40'
-                  }`}
-                >
-                  {CAMPAIGN_STATUS_LABELS[s]}
-                </button>
-              ))}
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="flex flex-wrap gap-2">
+                {(['draft', 'active', 'completed', 'archived'] as MarketingCampaignStatus[]).map((s) => (
+                  <button
+                    key={s}
+                    onClick={() => changeStatus(summary.id, s)}
+                    className={`px-2.5 py-1 rounded-lg text-[10px] font-bold border transition cursor-pointer ${
+                      summary.status === s
+                        ? 'bg-emerald-500 text-slate-950 border-emerald-500'
+                        : 'bg-slate-950 border-slate-800 text-slate-300 hover:border-emerald-500/40'
+                    }`}
+                  >
+                    {CAMPAIGN_STATUS_LABELS[s]}
+                  </button>
+                ))}
+              </div>
+              <button
+                onClick={() => openDetail(summary.id)}
+                className="px-3 py-2 rounded-xl bg-emerald-950/60 border border-emerald-500/30 text-xs text-emerald-300 hover:text-emerald-200 flex items-center gap-1.5 transition cursor-pointer"
+              >
+                <ClipboardList className="w-3.5 h-3.5" />
+                إدارة الحملة (التفاصيل والمسودات)
+              </button>
             </div>
 
             {/* Products in the campaign */}
@@ -469,7 +493,7 @@ export const MarketingCampaignPanel: React.FC = () => {
         {/* Campaign list */}
         <div className="p-5 rounded-2xl bg-slate-900 border border-slate-800 space-y-3">
           <div className="flex items-center justify-between">
-            <h3 className="text-sm font-black text-white">سجل الحملات ({campaigns.length})</h3>
+            <h3 className="text-sm font-black text-white">الحملات السابقة ({campaigns.length})</h3>
             <button
               onClick={loadCampaigns}
               className="p-1.5 rounded-lg bg-slate-950 border border-slate-800 text-slate-400 hover:text-white transition cursor-pointer"
@@ -482,20 +506,29 @@ export const MarketingCampaignPanel: React.FC = () => {
           ) : (
             <div className="space-y-1.5">
               {campaigns.map((c) => (
-                <button
+                <div
                   key={c.id}
-                  onClick={() => openDetail(c.id)}
-                  className={`w-full text-right p-3 rounded-xl border transition cursor-pointer ${
-                    detail?.id === c.id
-                      ? 'bg-emerald-950/50 border-emerald-500/40'
-                      : 'bg-slate-950 border-slate-800 hover:border-emerald-500/30'
-                  }`}
+                  className="p-3 rounded-xl bg-slate-950 border border-slate-800 hover:border-emerald-500/30 transition flex flex-wrap items-center justify-between gap-2"
                 >
-                  <p className="text-[11px] font-bold text-white">{c.name}</p>
-                  <p className="text-[10px] text-slate-400">
-                    {c.goalLabel} • {c.productsCount} منتجات • {c.draftsCount} مسودة • {CAMPAIGN_STATUS_LABELS[c.status]}
-                  </p>
-                </button>
+                  <div className="min-w-0">
+                    <p className="text-[11px] font-bold text-white">{c.name}</p>
+                    <p className="text-[10px] text-slate-400">
+                      {c.goalLabel} • {c.productsCount} منتجات • {c.draftsCount} مسودة •{' '}
+                      {c.statusLabel || CAMPAIGN_STATUS_LABELS[c.status]}
+                    </p>
+                    <p className="text-[10px] text-slate-500 mt-0.5">
+                      آخر تحديث: {new Date(c.updatedAt).toLocaleString('en-GB')}
+                      {c.lastActivity?.byUser ? ` • آخر نشاط بواسطة ${c.lastActivity.byUser}` : ''}
+                    </p>
+                  </div>
+                  <button
+                    onClick={() => openDetail(c.id)}
+                    className="px-3 py-1.5 rounded-lg bg-emerald-950/60 border border-emerald-500/30 text-emerald-300 text-[10px] font-bold hover:text-emerald-200 flex items-center gap-1 transition cursor-pointer shrink-0"
+                  >
+                    <ClipboardList className="w-3 h-3" />
+                    فتح التفاصيل
+                  </button>
+                </div>
               ))}
             </div>
           )}

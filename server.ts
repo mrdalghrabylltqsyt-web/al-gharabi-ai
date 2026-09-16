@@ -2607,8 +2607,86 @@ app.get("/api/ai/content-briefs", authenticateToken, (req, res) => {
 // لا ينشر خارجياً ولا يعتبر أي منصة متصلة بدون إثبات مزود فعلي.
 // -------------------------------------------------------------
 const CAMPAIGN_STATUSES = ["draft", "active", "completed", "archived"] as const;
+const MARKETING_CAMPAIGN_STATUS_LABELS: Record<string, string> = {
+  draft: "مسودة", active: "نشطة", completed: "مكتملة", archived: "مؤرشفة",
+};
+const CAMPAIGN_HISTORY_LABELS: Record<string, string> = {
+  created: "إنشاء الحملة", status_changed: "تغيير حالة الحملة", draft_decision: "قرار على مسودة",
+  draft_linked: "ربط مسودة بمنشور", drafts_bulk_decision: "عملية جماعية على المسودات",
+};
 const MAX_CAMPAIGN_PRODUCTS = 10;
 const MAX_CAMPAIGN_DRAFTS = 80;
+const MAX_BULK_DRAFTS = 40;
+
+// Draft state machine. Each transition declares the states it may start from and
+// the state it lands in, so an illogical jump is rejected on the server.
+// `review` is available to content roles; approving/rejecting stays owner-only,
+// matching the existing "/api/workspace/content/:id/approve|reject" rules.
+const DRAFT_ACTION_SPECS: Record<string, { from: string[]; to: string; label: string; ownerOnly: boolean; historyAction: string }> = {
+  review: { from: ["draft", "edited"], to: "review", label: "إرسال للمراجعة", ownerOnly: false, historyAction: "submit_review" },
+  approve: { from: ["review", "edited"], to: "approved", label: "اعتماد", ownerOnly: true, historyAction: "approve" },
+  reject: { from: ["review", "edited", "approved"], to: "edited", label: "رفض وإعادة للتعديل", ownerOnly: true, historyAction: "reject" },
+};
+const DRAFT_SUBMIT_ROLES = ["owner", "manager", "staff", "content_creator"];
+
+// Rebuilds the decision trail from the linked post history so drafts created
+// before decisions were recorded still report an accurate state.
+function deriveDraftDecision(post: any) {
+  const history: any[] = Array.isArray(post?.history) ? post.history : [];
+  for (let i = history.length - 1; i >= 0; i--) {
+    const action = history[i]?.action;
+    if (action === "approve") return { decision: "approve", at: history[i].timestamp, by: history[i].byUser, note: history[i].note };
+    if (action === "reject") return { decision: "reject", at: history[i].timestamp, by: history[i].byUser, note: history[i].note };
+    if (action === "submit_review") return { decision: "review", at: history[i].timestamp, by: history[i].byUser, note: history[i].note };
+  }
+  return null;
+}
+
+function findCampaign(id: string) {
+  return ((workspace as any).marketingCampaigns || []).find((x: any) => x.id === id) || null;
+}
+
+function canAccessCampaign(user: ServerUser, campaign: any): boolean {
+  return user.role === "owner" || campaign?.createdBy === user.id;
+}
+
+// Resolves one draft by its campaign task id, ensuring the draft really belongs
+// to the campaign and still points at an existing post.
+function locateCampaignDraft(campaign: any, taskId: string) {
+  for (const brief of campaign?.briefs || []) {
+    for (const draft of brief.drafts || []) {
+      if (draft.taskId === taskId) return { brief, draft };
+    }
+  }
+  return null;
+}
+
+function draftDecisionView(draft: any, post: any) {
+  const derived = deriveDraftDecision(post);
+  const decision = draft.decision || derived?.decision || null;
+  return {
+    decision,
+    decisionLabel: decision ? (CAMPAIGN_DECISION_LABELS[decision] || decision) : null,
+    decidedAt: draft.decidedAt || derived?.at || null,
+    decidedBy: draft.decidedBy || derived?.by || null,
+    decisionNote: draft.decisionNote || derived?.note || null,
+  };
+}
+
+// The post a draft is linked to. The campaign/draft ids are written on the post
+// so the link survives a workspace reload and can never be duplicated.
+function linkedPostForDraft(draft: any) {
+  return workspace.posts.find((p: any) => p?.campaignLink?.draftId === draft?.taskId)
+    || workspace.posts.find((p: any) => p?.campaignLink?.draftId === draft?.postId)
+    || workspace.posts.find((p: any) => p.id === draft?.postId)
+    || null;
+}
+
+function recordCampaignHistory(campaign: any, user: ServerUser, action: string, note: string, timestamp: string) {
+  campaign.history = Array.isArray(campaign.history) ? campaign.history : [];
+  campaign.history.push({ action, byUser: user.name, userRole: user.role, timestamp, note });
+  campaign.history = campaign.history.slice(-80);
+}
 
 // Live per-platform resources from real configuration only (no fabricated connections).
 function campaignPlatformResources(platforms: string[]) {
@@ -2636,6 +2714,9 @@ const CAMPAIGN_TASK_STATUS_LABELS: Record<string, string> = {
   draft: "مسودة", review: "قيد المراجعة", edited: "تم التعديل", approved: "تمت الموافقة",
   scheduled: "مجدول", published: "منشور", deleted: "محذوفة",
 };
+const CAMPAIGN_DECISION_LABELS: Record<string, string> = {
+  review: "أُرسلت للمراجعة", approve: "مُعتمدة", reject: "مرفوضة — تحتاج تعديلاً",
+};
 function campaignTasksFor(briefs: any[]) {
   const byId = new Map<string, any>((workspace as any).posts.map((p: any) => [p.id, p]));
   const tasks: any[] = [];
@@ -2643,16 +2724,24 @@ function campaignTasksFor(briefs: any[]) {
     for (const d of b.drafts || []) {
       const post: any = byId.get(d.postId);
       const status = post?.status || "deleted";
+      const content = typeof post?.content === "string" ? post.content : "";
+      const decision = draftDecisionView(d, post);
       tasks.push({
         id: d.taskId,
         title: d.title,
         productId: b.productId,
         productName: b.productName,
         platform: d.platform,
+        platformName: SUPPORTED_PLATFORMS.find((p: any) => p.id === d.platform)?.name || d.platform,
         draftPostId: d.postId,
         status,
         statusLabel: post ? (CAMPAIGN_TASK_STATUS_LABELS[status] || status) : "محذوفة",
         createdAt: d.createdAt,
+        charCount: content.length,
+        contentPreview: content.slice(0, 200),
+        content,
+        ...decision,
+        allowedActions: Object.keys(DRAFT_ACTION_SPECS).filter((a) => DRAFT_ACTION_SPECS[a].from.includes(status)),
       });
     }
   }
@@ -2663,15 +2752,27 @@ function campaignSummary(c: any) {
   const tasks = campaignTasksFor(c.briefs || []);
   const byStatus: Record<string, number> = {};
   for (const t of tasks) byStatus[t.status] = (byStatus[t.status] || 0) + 1;
+  const history: any[] = Array.isArray(c.history) ? c.history : [];
+  const lastHistory = history[history.length - 1];
+  const lastActivity = lastHistory
+    ? { action: lastHistory.action, byUser: lastHistory.byUser, userRole: lastHistory.userRole, timestamp: lastHistory.timestamp, note: lastHistory.note || "" }
+    : null;
   return {
     id: c.id, name: c.name, goal: c.goal, goalLabel: MARKETING_GOALS[c.goal]?.label || c.goal,
-    status: c.status, platforms: c.platforms,
+    status: c.status, statusLabel: MARKETING_CAMPAIGN_STATUS_LABELS[c.status] || c.status, platforms: c.platforms,
     productIds: (c.products || []).map((p: any) => p.id),
     productNames: (c.products || []).map((p: any) => p.name),
     productsCount: (c.products || []).length,
     draftsCount: tasks.length,
+    draftsByDecision: {
+      pending: tasks.filter((t) => !t.decision).length,
+      review: tasks.filter((t) => t.decision === "review").length,
+      approve: tasks.filter((t) => t.decision === "approve").length,
+      reject: tasks.filter((t) => t.decision === "reject").length,
+    },
     tasksByStatus: byStatus,
     createdBy: c.createdBy, createdAt: c.createdAt, updatedAt: c.updatedAt,
+    lastActivity,
   };
 }
 
@@ -2738,6 +2839,7 @@ app.post("/api/ai/marketing-campaigns", authenticateToken, (req, res) => {
 
     if (createDrafts) {
       for (const piece of content) {
+        const taskId = workspaceId("task");
         const post = {
           id: workspaceId("post"), title: piece.headline || `عرض ${product.name}`,
           content: piece.text, platformVersions: { [piece.platform]: piece.text },
@@ -2746,9 +2848,11 @@ app.post("/api/ai/marketing-campaigns", authenticateToken, (req, res) => {
           authorId: user.id, authorName: user.name, authorRole: user.role,
           history: [{ id: workspaceId("act"), byUser: user.name, userRole: user.role, action: "create", timestamp: createdAt, note: `أُنشئ ضمن حملة: ${name}` }],
           tags: ["تقسيط_منتجات", "معرض_الغرابي", piece.platform], campaignName: name,
+          // Durable, single-source link between the post and its campaign draft.
+          campaignLink: { campaignId, campaignName: name, draftId: taskId, productId: product.id, productName: product.name, platform: piece.platform, linkedAt: createdAt },
         };
         workspace.posts.unshift(post);
-        drafts.push({ taskId: workspaceId("task"), title: post.title, platform: piece.platform, postId: post.id, createdAt });
+        drafts.push({ taskId, title: post.title, platform: piece.platform, postId: post.id, createdAt, decision: null, decidedAt: null, decidedBy: null, decisionNote: null });
       }
     }
 
@@ -2801,11 +2905,13 @@ app.get("/api/ai/marketing-campaigns", authenticateToken, (req, res) => {
 app.get("/api/ai/marketing-campaigns/:id", authenticateToken, (req, res) => {
   const user = (req as any).user as ServerUser;
   const id = cleanText(req.params.id, 100);
-  const c: any = ((workspace as any).marketingCampaigns || []).find((x: any) => x.id === id);
+  const c: any = findCampaign(id);
   if (!c) return res.status(404).json({ success: false, error: "الحملة غير موجودة." });
-  if (user.role !== "owner" && c.createdBy !== user.id) return res.status(403).json({ success: false, error: "غير مصرح بالوصول إلى هذه الحملة." });
+  if (!canAccessCampaign(user, c)) return res.status(403).json({ success: false, error: "غير مصرح بالوصول إلى هذه الحملة." });
 
   const tasks = campaignTasksFor(c.briefs || []);
+  const linkedPostIds = new Set(tasks.map((t: any) => t.draftPostId));
+  const linkedPosts = workspace.posts.filter((p: any) => linkedPostIds.has(p.id) || p?.campaignLink?.campaignId === c.id);
   res.json({
     success: true,
     campaign: {
@@ -2813,7 +2919,10 @@ app.get("/api/ai/marketing-campaigns/:id", authenticateToken, (req, res) => {
       products: c.products, warnings: c.warnings,
       platformResources: c.platformResources?.length ? c.platformResources : campaignPlatformResources(c.platforms),
       tasks,
-      history: c.history || [],
+      drafts: tasks,
+      canDecideDrafts: user.role === "owner" || user.role === "manager",
+      linkedPostsCount: linkedPosts.length,
+      history: (Array.isArray(c.history) ? c.history : []).map((h: any) => ({ ...h, actionLabel: CAMPAIGN_HISTORY_LABELS[h.action] || h.action })),
     },
     note: "حالة كل مهمة مستمدة مباشرة من مسار المراجعة والاعتماد، ولم يُنشر شيء خارجياً.",
   });
@@ -2823,21 +2932,201 @@ app.get("/api/ai/marketing-campaigns/:id", authenticateToken, (req, res) => {
 app.patch("/api/ai/marketing-campaigns/:id", authenticateToken, (req, res) => {
   const user = (req as any).user as ServerUser;
   const id = cleanText(req.params.id, 100);
-  const c: any = ((workspace as any).marketingCampaigns || []).find((x: any) => x.id === id);
+  const c: any = findCampaign(id);
   if (!c) return res.status(404).json({ success: false, error: "الحملة غير موجودة." });
-  if (user.role !== "owner" && c.createdBy !== user.id) return res.status(403).json({ success: false, error: "غير مصرح بالوصول إلى هذه الحملة." });
+  if (!canAccessCampaign(user, c)) return res.status(403).json({ success: false, error: "غير مصرح بالوصول إلى هذه الحملة." });
 
   const status = cleanText(req.body?.status, 40);
   if (!CAMPAIGN_STATUSES.includes(status as any)) return res.status(400).json({ success: false, error: `حالة الحملة غير صالحة. المسموح: ${CAMPAIGN_STATUSES.join(", ")}` });
 
   c.status = status;
   c.updatedAt = new Date().toISOString();
-  c.history = Array.isArray(c.history) ? c.history : [];
-  c.history.push({ action: "status_changed", byUser: user.name, userRole: user.role, timestamp: c.updatedAt, note: `الحالة الجديدة: ${status}` });
-  c.history = c.history.slice(-50);
+  recordCampaignHistory(c, user, "status_changed", `الحالة الجديدة: ${MARKETING_CAMPAIGN_STATUS_LABELS[status] || status}`, c.updatedAt);
   persistState();
   audit(user.id, "marketing_campaign_status_changed", `${id}:${status}`);
   res.json({ success: true, campaign: campaignSummary(c), note: "تحديث حالة الحملة لا ينفذ أي نشر خارجي." });
+});
+
+// -------------------------------------------------------------
+// Draft lifecycle inside a campaign.
+// Every transition is validated against DRAFT_ACTION_SPECS on the server, so an
+// illogical jump (e.g. approving a rejected draft again) is refused and reported
+// explicitly. Ownership and role are always re-checked from the session, never
+// trusted from the client payload.
+// -------------------------------------------------------------
+type DraftTransitionOutcome = {
+  taskId: string;
+  status: "applied" | "skipped" | "missing";
+  from?: string;
+  to?: string;
+  error?: string;
+  applied?: boolean;
+  skipped?: boolean;
+};
+
+function applyDraftAction(campaign: any, user: ServerUser, taskId: string, action: string, note: string): { ok: boolean; code?: number; error?: string; taskId?: string; from?: string; to?: string; postId?: string; timestamp?: string } {
+  const located = locateCampaignDraft(campaign, taskId);
+  if (!located) return { ok: false, code: 404, error: `المسودة غير موجودة في هذه الحملة: ${taskId}` };
+  const { draft } = located;
+  const post: any = linkedPostForDraft(draft);
+  if (!post) return { ok: false, code: 409, error: "المنشور المرتبط بالمسودة لم يعد موجوداً، فلا يمكن تنفيذ قرار عليها." };
+
+  const spec = DRAFT_ACTION_SPECS[action];
+  if (!spec) return { ok: false, code: 400, error: `إجراء غير معروف. المسموح: ${Object.keys(DRAFT_ACTION_SPECS).join(", ")}` };
+
+  if (spec.ownerOnly && user.role !== "owner" && user.role !== "manager") {
+    return { ok: false, code: 403, error: `صلاحية مرفوضة: إجراء «${spec.label}» مقتصر على المالك أو المدير العام.` };
+  }
+  if (!spec.ownerOnly && !DRAFT_SUBMIT_ROLES.includes(user.role)) {
+    return { ok: false, code: 403, error: `صلاحية مرفوضة: إجراء «${spec.label}» غير متاح لدورك.` };
+  }
+
+  const currentStatus = String(post.status || "draft");
+  if (!spec.from.includes(currentStatus)) {
+    return { ok: false, code: 409, error: `انتقال غير منطقي: لا يمكن تنفيذ «${spec.label}» ومسودة بحالة «${CAMPAIGN_TASK_STATUS_LABELS[currentStatus] || currentStatus}».` };
+  }
+
+  const timestamp = new Date().toISOString();
+  post.status = spec.to;
+  post.history = Array.isArray(post.history) ? post.history : [];
+  post.history.push({ id: workspaceId("approval"), byUser: user.name, userRole: user.role, action: spec.historyAction, timestamp, note: note || spec.label });
+  post.history = post.history.slice(-50);
+
+  draft.decision = action;
+  draft.decidedAt = timestamp;
+  draft.decidedBy = user.name;
+  draft.decisionNote = note || spec.label;
+
+  campaign.updatedAt = timestamp;
+  recordCampaignHistory(
+    campaign, user, "draft_decision",
+    `«${spec.label}» على مسودة ${draft.platform} للمنتج ${located.brief?.productName || "غير محدد"}${note ? ` — ${note}` : ""}`,
+    timestamp,
+  );
+  audit(user.id, `marketing_campaign_draft_${action}`, `${campaign.id}:${taskId}`);
+  return { ok: true, taskId, from: currentStatus, to: spec.to, postId: post.id, timestamp };
+}
+
+// Single draft review / approve / reject.
+app.post("/api/ai/marketing-campaigns/:id/drafts/:taskId/action", authenticateToken, (req, res) => {
+  const user = (req as any).user as ServerUser;
+  const campaign: any = findCampaign(cleanText(req.params.id, 100));
+  if (!campaign) return res.status(404).json({ success: false, error: "الحملة غير موجودة." });
+  if (!canAccessCampaign(user, campaign)) return res.status(403).json({ success: false, error: "غير مصرح بالوصول إلى هذه الحملة." });
+
+  const action = cleanText(req.body?.action, 20);
+  const note = cleanText(req.body?.note, 500);
+  const result = applyDraftAction(campaign, user, cleanText(req.params.taskId, 100), action, note);
+  if (!result.ok) return res.status(result.code).json({ success: false, error: result.error });
+
+  persistState();
+  res.json({
+    success: true,
+    result: { taskId: result.taskId, from: result.from, to: result.to, action, note: note || DRAFT_ACTION_SPECS[action].label },
+    campaign: { ...campaignSummary(campaign), tasks: campaignTasksFor(campaign.briefs || []) },
+    note: "تم تسجيل القرار في سجل الحملة وفي مسار الاعتماد. لا يوجد أي نشر خارجي.",
+  });
+});
+
+// Bulk review / approve / reject over an explicit selection of drafts.
+// Duplicate ids are collapsed, unknown ids are reported instead of silently ignored,
+// and already-decided drafts are skipped rather than re-processed.
+app.post("/api/ai/marketing-campaigns/:id/drafts/bulk", authenticateToken, (req, res) => {
+  const user = (req as any).user as ServerUser;
+  const campaign: any = findCampaign(cleanText(req.params.id, 100));
+  if (!campaign) return res.status(404).json({ success: false, error: "الحملة غير موجودة." });
+  if (!canAccessCampaign(user, campaign)) return res.status(403).json({ success: false, error: "غير مصرح بالوصول إلى هذه الحملة." });
+
+  const rawIds: any[] = Array.isArray(req.body?.taskIds) ? req.body.taskIds : [];
+  const cleanedIds: string[] = rawIds.filter((x: any) => typeof x === "string" && x.trim()).map((x: string) => x.trim());
+  const taskIds: string[] = [...new Set<string>(cleanedIds)].slice(0, MAX_BULK_DRAFTS);
+  if (!taskIds.length) return res.status(400).json({ success: false, error: "حدد مسودة واحدة على الأقل لتنفيذ العملية الجماعية." });
+  const duplicatesRemoved = cleanedIds.length - taskIds.length;
+
+  const action = cleanText(req.body?.action, 20);
+  const spec = DRAFT_ACTION_SPECS[action];
+  if (!spec) return res.status(400).json({ success: false, error: `إجراء جماعي غير معروف. المسموح: ${Object.keys(DRAFT_ACTION_SPECS).join(", ")}` });
+  if (spec.ownerOnly && user.role !== "owner" && user.role !== "manager") {
+    return res.status(403).json({ success: false, error: `صلاحية مرفوضة: «${spec.label}» الجماعي مقتصر على المالك أو المدير العام.` });
+  }
+  if (!spec.ownerOnly && !DRAFT_SUBMIT_ROLES.includes(user.role)) {
+    return res.status(403).json({ success: false, error: `صلاحية مرفوضة: «${spec.label}» الجماعي غير متاح لدورك.` });
+  }
+
+  const note = cleanText(req.body?.note, 500);
+  const outcomes: DraftTransitionOutcome[] = [];
+  for (const taskId of taskIds) {
+    const result: any = applyDraftAction(campaign, user, taskId, action, note);
+    if (result.ok) outcomes.push({ taskId, status: "applied", from: result.from, to: result.to, applied: true });
+    else outcomes.push({ taskId, status: result.code === 404 ? "missing" : "skipped", error: result.error, skipped: true });
+  }
+
+  const applied = outcomes.filter((o) => o.status === "applied");
+  const skipped = outcomes.filter((o) => o.status !== "applied");
+  if (applied.length) {
+    campaign.updatedAt = new Date().toISOString();
+    recordCampaignHistory(campaign, user, "drafts_bulk_decision", `عملية جماعية «${spec.label}»: ${applied.length} نجحت، ${skipped.length} لم تُنفّذ`, campaign.updatedAt);
+    persistState();
+    audit(user.id, "marketing_campaign_drafts_bulk", `${campaign.id}:${action}:${applied.length}/${taskIds.length}`);
+  }
+
+  res.json({
+    success: true,
+    action,
+    actionLabel: spec.label,
+    requested: taskIds.length,
+    duplicatesRemoved,
+    appliedCount: applied.length,
+    skippedCount: skipped.length,
+    appliedTaskIds: applied.map((o) => o.taskId),
+    skipped: skipped.map((o) => ({ taskId: o.taskId, reason: o.error })),
+    campaign: { ...campaignSummary(campaign), tasks: campaignTasksFor(campaign.briefs || []) },
+    note: applied.length
+      ? `نُفّذت العملية على ${applied.length} مسودة، ولم يُنشر أي محتوى خارجياً.`
+      : "لم تُنفّذ أي مسودة. راجع الأسباب المرفقة لكل مسودة.",
+  });
+});
+
+// Links an approved draft to its workspace post. Idempotent: if the post already
+// carries the campaign/draft link it is returned untouched, so no duplicate post
+// is ever created. Nothing here claims an external publish.
+app.post("/api/ai/marketing-campaigns/:id/drafts/:taskId/link", authenticateToken, (req, res) => {
+  const user = (req as any).user as ServerUser;
+  const campaign: any = findCampaign(cleanText(req.params.id, 100));
+  if (!campaign) return res.status(404).json({ success: false, error: "الحملة غير موجودة." });
+  if (!canAccessCampaign(user, campaign)) return res.status(403).json({ success: false, error: "غير مصرح بالوصول إلى هذه الحملة." });
+
+  const taskId = cleanText(req.params.taskId, 100);
+  const located = locateCampaignDraft(campaign, taskId);
+  if (!located) return res.status(404).json({ success: false, error: `المسودة غير موجودة في هذه الحملة: ${taskId}` });
+  const { draft, brief } = located;
+
+  const post: any = linkedPostForDraft(draft);
+  if (!post) return res.status(409).json({ success: false, error: "لا يوجد منشور مرتبط بهذه المسودة، ولا يمكن إنشاء منشور دون محتوى مسودة حقيقي." });
+
+  const alreadyLinked = post?.campaignLink?.campaignId === campaign.id && post?.campaignLink?.draftId === taskId;
+  if (!alreadyLinked) {
+    post.campaignLink = {
+      campaignId: campaign.id, campaignName: campaign.name, draftId: taskId,
+      productId: brief?.productId || null, productName: brief?.productName || null,
+      platform: draft.platform, linkedAt: new Date().toISOString(), linkedBy: user.id,
+    };
+    post.campaignName = campaign.name;
+    campaign.updatedAt = post.campaignLink.linkedAt;
+    recordCampaignHistory(campaign, user, "draft_linked", `ربط مسودة ${draft.platform} بالمنشور ${post.id}`, campaign.updatedAt);
+    persistState();
+    audit(user.id, "marketing_campaign_draft_linked", `${campaign.id}:${taskId}:${post.id}`);
+  }
+
+  res.json({
+    success: true,
+    created: false,
+    alreadyLinked,
+    link: post.campaignLink,
+    post: { id: post.id, title: post.title, status: post.status, statusLabel: CAMPAIGN_TASK_STATUS_LABELS[post.status] || post.status, targetPlatforms: post.targetPlatforms, scheduledFor: post.scheduledFor || null, publishedAt: post.publishedAt || null, metricsSource: post.metricSource || null },
+    externalPublishClaimed: false,
+    note: "الربط محلي مع مساحة المنشورات. لا يوجد أي إثبات نشر خارجي لهذه المسودة.",
+  });
 });
 
 // Helper for local template generation without mock data

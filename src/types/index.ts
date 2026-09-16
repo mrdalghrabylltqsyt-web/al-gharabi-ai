@@ -321,10 +321,52 @@ export interface MarketingCampaignTask {
   productId: string;
   productName: string;
   platform: SocialPlatformId;
+  platformName: string;
   draftPostId: string;
   status: string;
   statusLabel: string;
   createdAt: string;
+  charCount: number;
+  contentPreview: string;
+  content: string;
+  decision: MarketingDraftDecision | null;
+  decisionLabel: string | null;
+  decidedAt: string | null;
+  decidedBy: string | null;
+  decisionNote: string | null;
+  /** الإجراءات المسموحة فعلياً من الحالة الحالية حسب قواعد الخادم. */
+  allowedActions: string[];
+}
+
+/** قرار مسار المراجعة المسجّل على مسودة داخل حملة. */
+export type MarketingDraftDecision = 'review' | 'approve' | 'reject';
+
+/** الإجراءات الجماعية والفردية المتاحة على مسودات الحملة. */
+export type MarketingDraftAction = 'review' | 'approve' | 'reject';
+
+export interface MarketingDraftActionSpec {
+  action: MarketingDraftAction;
+  label: string;
+  from: string[];
+  to: string;
+  ownerOnly: boolean;
+}
+
+export interface MarketingCampaignLastActivity {
+  action: string;
+  byUser: string;
+  userRole: string;
+  timestamp: string;
+  note: string;
+}
+
+export interface MarketingCampaignHistoryEntry {
+  action: string;
+  actionLabel?: string;
+  byUser: string;
+  userRole: string;
+  timestamp: string;
+  note?: string;
 }
 
 export interface MarketingCampaignSummary {
@@ -333,15 +375,18 @@ export interface MarketingCampaignSummary {
   goal: MarketingGoal;
   goalLabel: string;
   status: MarketingCampaignStatus;
+  statusLabel: string;
   platforms: SocialPlatformId[];
   productIds: string[];
   productNames: string[];
   productsCount: number;
   draftsCount: number;
+  draftsByDecision: Record<'pending' | MarketingDraftDecision, number>;
   tasksByStatus: Record<string, number>;
   createdBy: string;
   createdAt: string;
   updatedAt: string;
+  lastActivity: MarketingCampaignLastActivity | null;
 }
 
 export interface MarketingCampaignDetail extends MarketingCampaignSummary {
@@ -352,7 +397,57 @@ export interface MarketingCampaignDetail extends MarketingCampaignSummary {
   warnings: string[];
   platformResources: MarketingPlatformResource[];
   tasks: MarketingCampaignTask[];
-  history: Array<{ action: string; byUser: string; userRole: string; timestamp: string; note?: string }>;
+  /** نفس مهام الحملة، مسمّاة صراحةً كمسودات في واجهة إدارة الحملة. */
+  drafts: MarketingCampaignTask[];
+  canDecideDrafts: boolean;
+  linkedPostsCount: number;
+  history: MarketingCampaignHistoryEntry[];
+}
+
+/** نتيجة عملية جماعية على مجموعة مسودات محددة. */
+export interface MarketingDraftBulkResult {
+  success: boolean;
+  action: MarketingDraftAction;
+  actionLabel: string;
+  requested: number;
+  duplicatesRemoved: number;
+  appliedCount: number;
+  skippedCount: number;
+  appliedTaskIds: string[];
+  skipped: Array<{ taskId: string; reason?: string }>;
+  campaign: MarketingCampaignSummary & { tasks: MarketingCampaignTask[] };
+  note: string;
+}
+
+/** رابط المسودة بالمنشور داخل مساحة المنشورات. */
+export interface MarketingDraftPostLink {
+  campaignId: string;
+  campaignName: string;
+  draftId: string;
+  productId?: string | null;
+  productName?: string | null;
+  platform: SocialPlatformId;
+  linkedAt: string;
+  linkedBy?: string;
+}
+
+export interface MarketingDraftLinkResult {
+  success: boolean;
+  created: boolean;
+  alreadyLinked: boolean;
+  link: MarketingDraftPostLink;
+  post: {
+    id: string;
+    title: string;
+    status: PostStatus | string;
+    statusLabel: string;
+    targetPlatforms: SocialPlatformId[];
+    scheduledFor: string | null;
+    publishedAt: string | null;
+    metricsSource: string | null;
+  };
+  externalPublishClaimed: false;
+  note: string;
 }
 
 /** تفاصيل إضافية تُعاد فقط عند إنشاء الحملة. */
@@ -361,3 +456,20 @@ export interface MarketingCampaignCreationResult extends MarketingCampaignSummar
   platformResources: MarketingPlatformResource[];
   warnings: string[];
 }
+
+/** قواعد الانتقال المنطقي بين حالات المسودة، كما يعرضها الخادم. */
+export const MARKETING_DRAFT_ACTIONS: MarketingDraftActionSpec[] = [
+  { action: 'review', label: 'إرسال للمراجعة', from: ['draft', 'edited'], to: 'review', ownerOnly: false },
+  { action: 'approve', label: 'اعتماد', from: ['review', 'edited'], to: 'approved', ownerOnly: true },
+  { action: 'reject', label: 'رفض وإعادة للتعديل', from: ['review', 'edited', 'approved'], to: 'edited', ownerOnly: true },
+];
+
+export const MARKETING_DRAFT_STATUS_LABELS: Record<string, string> = {
+  draft: 'مسودة',
+  review: 'قيد المراجعة',
+  edited: 'تم التعديل',
+  approved: 'تمت الموافقة',
+  scheduled: 'مجدول',
+  published: 'منشور',
+  deleted: 'محذوفة',
+};
