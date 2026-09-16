@@ -9,7 +9,12 @@ import dotenv from "dotenv";
 dotenv.config();
 
 const app = express();
-const PORT = 3000;
+// PORT is configurable so the app can run behind any host that injects its own
+// port (containers/PaaS). Values outside the valid TCP range fall back to 3000.
+const PORT = (() => {
+  const raw = Number(process.env.PORT);
+  return Number.isInteger(raw) && raw > 0 && raw <= 65535 ? raw : 3000;
+})();
 const PROJECT_VERSION = "13.0.0";
 const STATE_SCHEMA_VERSION = 15;
 const BACKUP_DIR = path.join(process.cwd(), ".gharabi-backups");
