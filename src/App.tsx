@@ -18,14 +18,14 @@ export default function App() {
       budget,
       targetAudience: audience
     };
-   const result: any = { success: true, message: "تم التقييم بنجاح", campaign: input };
+  const result: any = { success: true, message: "تم تقديم الطلب بنجاح", campaign: { ...input, channels: [input.targetAudience], status: 'pending' } };
     setDecision(result);
     setFinalCampaign(null);
   };
 
   const handleOwnerApproval = (approved: boolean) => {
     if (decision?.campaign) {
-      const updated: any = { ...decision.campaign, status: approved ? 'approved' : 'rejected' };
+    const updated: any = { ...decision.campaign, status: approved ? 'approved' : 'rejected' };
       setFinalCampaign(updated);
     }
   };
