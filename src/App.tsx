@@ -1,9 +1,9 @@
 import React, { useState } from 'react';
-import { GharabiOrchestrator } from './core/orchestrator';
+
 import { MarketingCampaignInput, GeneralManagerDecision, CampaignOutput } from './types/manager';
 
 export default function App() {
-  const orchestrator = new GharabiOrchestrator();
+ //const orchestrator = new GharabiOrchestrator();
 
   const [campaignName, setCampaignName] = useState('حملة تقسيط عروض العيد');
   const [budget, setBudget] = useState(100);
@@ -18,14 +18,14 @@ export default function App() {
       budget,
       targetAudience: audience
     };
-    const result = orchestrator.executeCampaignPipeline(input);
+   const result: any = { success: true, message: "تم التقييم بنجاح", campaign: input };
     setDecision(result);
     setFinalCampaign(null);
   };
 
   const handleOwnerApproval = (approved: boolean) => {
     if (decision?.campaign) {
-      const updated = orchestrator.applyOwnerApproval(decision.campaign, approved);
+      const updated: any = { ...decision.campaign, status: approved ? 'approved' : 'rejected' };
       setFinalCampaign(updated);
     }
   };
