@@ -1,120 +1,132 @@
 import React, { useState } from 'react';
-import { MarketingCampaignInput, GeneralManagerDecision, CampaignOutput } from './types/manager';
+import { GoogleGenAI } from '@google/genai';
+
+// تهيئة محرك Gemini بالمفتاح الموجود في Netlify
+const ai = new GoogleGenAI({ 
+  apiKey: import.meta.env.VITE_GEMINI_API_KEY 
+});
 
 export default function App() {
-  const [campaignName, setCampaignName] = useState('حملة تقسيط عروض العيد');
-  const [budget, setBudget] = useState(100);
-  const [audience, setAudience] = useState<'فيسبوك' | 'إنستجرام' | 'تيك توك' | 'الكل'>('الكل');
+  const [activeTab, setActiveTab] = useState<'leads' | 'campaigns' | 'analysis'>('campaigns');
+  const [loading, setLoading] = useState(false);
+  const [aiResponse, setAiResponse] = useState('');
 
-  const [decision, setDecision] = useState<GeneralManagerDecision | null>(null);
-  const [finalCampaign, setFinalCampaign] = useState<CampaignOutput | null>(null);
+  // بيانات نموذج الحملة
+  const [campaignName, setCampaignName] = useState('عرض تقسيط الأجهزة الذكية');
+  const [budget, setBudget] = useState('250');
+  const [targetAudience, setTargetAudience] = useState('بغداد والمحافظات - موظفين ومتقاعدين');
 
-  const handleEvaluate = () => {
-    const input: MarketingCampaignInput = {
-      campaignName,
-      budget,
-      targetAudience: audience
-    };
-    
-    const result: any = { 
-      success: true, 
-      message: "تم تقديم الطلب بنجاح ونقله للمدير العام", 
-      campaign: { ...input, channels: [input.targetAudience], status: 'pending' } 
-    };
-    setDecision(result);
-    setFinalCampaign(null);
-  };
+  // دالة طلب التحليل من Gemini 2.5 Flash
+  const handleGenerateStrategy = async () => {
+    setLoading(true);
+    setAiResponse('');
+    try {
+      const prompt = `
+        أنت المساعد الذكي المباشر لـ "معرض الغرابي للأقساط" في العراق.
+        قام المدير بطلب استراتيجية للحملة التالية:
+        - اسم الحملة: ${campaignName}
+        - الميزانية المخصصة: ${budget}$
+        - الجمهور المستهدف: ${targetAudience}
 
-  const handleOwnerApproval = (approved: boolean) => {
-    if (decision?.campaign) {
-      const updated: any = { ...decision.campaign, status: approved ? 'approved' : 'rejected' };
-      setFinalCampaign(updated);
+        يرجى تقديم خطة عمل تسويقية وتنفيذية متكاملة تناسب السوق العراقي وضوابط التقسيط، وتتضمن:
+        1. جدول الزخم وأفضل ساعات النشر على منصات (فيسبوك، إنستغرام، تيك توك).
+        2. قوالب ردود سريعة ومقنعة للرد على استفسارات الزبائن عبر واتساب وماسنجر.
+        3. توصيات لزيادة نسبة المبيعات وتسهيل معاملات المعاملات التقسيط.
+      `;
+
+      const response = await ai.models.generateContent({
+        model: 'gemini-2.5-flash',
+        contents: prompt,
+      });
+
+      setAiResponse(response.text || 'لم يتم استلام رد من الذكاء الاصطناعي.');
+    } catch (error) {
+      console.error(error);
+      setAiResponse('حدث خطأ أثناء الاتصال بمحرك الذكاء الاصطناعي. يرجى التأكد من ضبط المفتاح.');
+    } finally {
+      setLoading(false);
     }
   };
 
   return (
-    <div style={{ padding: '20px', fontFamily: 'sans-serif', direction: 'rtl', backgroundColor: '#f4f6f8', minHeight: '100vh', color: '#222' }}>
-      <h1 style={{ color: '#1a365d' }}>نظام المدير العام - معرض الغرابي للأقساط</h1>
-      
-      <div style={{ background: '#fff', padding: '20px', borderRadius: '8px', marginBottom: '20px', boxShadow: '0 2px 4px rgba(0,0,0,0.1)' }}>
-        <h2>طلب حملة تسويقية جديدة</h2>
-        <div style={{ marginBottom: '10px' }}>
-          <label style={{ display: 'block', fontWeight: 'bold', marginBottom: '5px', color: '#333' }}>اسم الحملة:</label>
-          <input 
-            type="text" 
-            value={campaignName} 
-            onChange={(e) => setCampaignName(e.target.value)} 
-            style={{ width: '100%', padding: '8px', marginTop: '5px', border: '1px solid #ccc', borderRadius: '4px', color: '#000', backgroundColor: '#fff' }} 
-          />
-        </div>
-        <div style={{ marginBottom: '10px' }}>
-          <label style={{ display: 'block', fontWeight: 'bold', marginBottom: '5px', color: '#333' }}>الميزانية ($):</label>
-          <input 
-            type="number" 
-            value={budget} 
-            onChange={(e) => setBudget(Number(e.target.value))} 
-            style={{ width: '100%', padding: '8px', marginTop: '5px', border: '1px solid #ccc', borderRadius: '4px', color: '#000', backgroundColor: '#fff' }} 
-          />
-        </div>
-        <div style={{ marginBottom: '15px' }}>
-          <label style={{ display: 'block', fontWeight: 'bold', marginBottom: '5px', color: '#333' }}>الجمهور المستهدف:</label>
-          <select 
-            value={audience} 
-            onChange={(e) => setAudience(e.target.value as any)} 
-            style={{ width: '100%', padding: '8px', marginTop: '5px', border: '1px solid #ccc', borderRadius: '4px', color: '#000', backgroundColor: '#fff' }}
-          >
-            <option value="الكل">الكل (جميع المنصات)</option>
-            <option value="فيسبوك">فيسبوك</option>
-            <option value="إنستجرام">إنستجرام</option>
-            <option value="تيك توك">تيك توك</option>
-          </select>
-        </div>
+    <div style={{ fontFamily: 'sans-serif', direction: 'rtl', padding: '20px', backgroundColor: '#f4f6f9', minHeight: '100vh' }}>
+      <header style={{ backgroundColor: '#1e293b', color: '#fff', padding: '15px 20px', borderRadius: '8px', marginBottom: '20px' }}>
+        <h1 style={{ margin: 0, fontSize: '20px' }}>لوحة تحكم الذكاء الاصطناعي - معرض الغرابي للأقساط</h1>
+        <p style={{ margin: '5px 0 0 0', fontSize: '14px', color: '#94a3b8' }}>المحرك الإستراتيجي الذكي لربط المبيعات وتوجيه الحملات</p>
+      </header>
+
+      {/* شريط التنقل */}
+      <div style={{ display: 'flex', gap: '10px', marginBottom: '20px' }}>
         <button 
-          onClick={handleEvaluate} 
-          style={{ padding: '10px 20px', backgroundColor: '#2b6cb0', color: '#fff', border: 'none', borderRadius: '5px', cursor: 'pointer', fontWeight: 'bold' }}
-        >
-          تقديم الطلب للمدير العام
+          onClick={() => setActiveTab('campaigns')}
+          style={{ padding: '10px 20px', borderRadius: '6px', border: 'none', cursor: 'pointer', backgroundColor: activeTab === 'campaigns' ? '#2563eb' : '#cbd5e1', color: activeTab === 'campaigns' ? '#fff' : '#0f172a' }}>
+          إدارة الحملات والذكاء الاصطناعي
+        </button>
+        <button 
+          onClick={() => setActiveTab('leads')}
+          style={{ padding: '10px 20px', borderRadius: '6px', border: 'none', cursor: 'pointer', backgroundColor: activeTab === 'leads' ? '#2563eb' : '#cbd5e1', color: activeTab === 'leads' ? '#fff' : '#0f172a' }}>
+          متابعة الطلبات (CRM)
         </button>
       </div>
 
-      {decision && (
-        <div style={{ background: '#fff', padding: '20px', borderRadius: '8px', marginBottom: '20px', boxShadow: '0 2px 4px rgba(0,0,0,0.1)' }}>
-          <h2>قرار المدير العام</h2>
-          <p><strong>الحالة:</strong> {decision.success ? 'تم قبول الطلب والتخطيط' : 'تم رفض الطلب'}</p>
-          <p><strong>الرسالة:</strong> {decision.message}</p>
-          
-          {decision.success && decision.campaign && (
-            <div>
-              <h3>تفاصيل الحملة الموصى بها</h3>
-              <p><strong>القنوات:</strong> {decision.campaign.channels.join(', ')}</p>
-              <p><strong>حالة الموافقة:</strong> {decision.campaign.status}</p>
+      {/* قسم الحملات */}
+      {activeTab === 'campaigns' && (
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '20px' }}>
+          <div style={{ backgroundColor: '#fff', padding: '20px', borderRadius: '8px', boxShadow: '0 2px 4px rgba(0,0,0,0.05)' }}>
+            <h3 style={{ marginTop: 0 }}>تخطيط حملة تسويقية جديدة</h3>
+            
+            <label style={{ display: 'block', marginBottom: '8px', fontWeight: 'bold' }}>اسم الحملة:</label>
+            <input 
+              type="text" 
+              value={campaignName} 
+              onChange={(e) => setCampaignName(e.target.value)}
+              style={{ width: '100%', padding: '10px', marginBottom: '15px', borderRadius: '4px', border: '1px solid #ccc' }}
+            />
 
-              {!finalCampaign && (
-                <div style={{ marginTop: '15px' }}>
-                  <p style={{ color: '#c53030', fontWeight: 'bold' }}>مطلوب موافقة المالك لتفعيل الحملة:</p>
-                  <button 
-                    onClick={() => handleOwnerApproval(true)} 
-                    style={{ padding: '8px 16px', backgroundColor: '#38a169', color: '#fff', border: 'none', borderRadius: '5px', marginLeft: '10px', cursor: 'pointer' }}
-                  >
-                    موافقة المالك
-                  </button>
-                  <button 
-                    onClick={() => handleOwnerApproval(false)} 
-                    style={{ padding: '8px 16px', backgroundColor: '#e53e3e', color: '#fff', border: 'none', borderRadius: '5px', cursor: 'pointer' }}
-                  >
-                    رفض
-                  </button>
-                </div>
-              )}
-            </div>
-          )}
+            <label style={{ display: 'block', marginBottom: '8px', fontWeight: 'bold' }}>الميزانية ($):</label>
+            <input 
+              type="number" 
+              value={budget} 
+              onChange={(e) => setBudget(e.target.value)}
+              style={{ width: '100%', padding: '10px', marginBottom: '15px', borderRadius: '4px', border: '1px solid #ccc' }}
+            />
+
+            <label style={{ display: 'block', marginBottom: '8px', fontWeight: 'bold' }}>الجمهور المستهدف:</label>
+            <input 
+              type="text" 
+              value={targetAudience} 
+              onChange={(e) => setTargetAudience(e.target.value)}
+              style={{ width: '100%', padding: '10px', marginBottom: '15px', borderRadius: '4px', border: '1px solid #ccc' }}
+            />
+
+            <button 
+              onClick={handleGenerateStrategy}
+              disabled={loading}
+              style={{ width: '100%', padding: '12px', backgroundColor: '#16a34a', color: '#fff', border: 'none', borderRadius: '6px', cursor: 'pointer', fontSize: '16px', fontWeight: 'bold' }}>
+              {loading ? 'جاري التحليل بواسطة Gemini...' : 'توليد الخطة بالذكاء الاصطناعي'}
+            </button>
+          </div>
+
+          <div style={{ backgroundColor: '#fff', padding: '20px', borderRadius: '8px', boxShadow: '0 2px 4px rgba(0,0,0,0.05)', minHeight: '300px' }}>
+            <h3 style={{ marginTop: 0 }}>التحليل والتوجيه الإستراتيجي حياً</h3>
+            {loading && <p>جاري معالجة البيانات واستدعاء Gemini 2.5 Flash...</p>}
+            {!loading && aiResponse && (
+              <div style={{ whiteSpace: 'pre-wrap', lineHeight: '1.6', backgroundColor: '#f8fafc', padding: '15px', borderRadius: '6px', border: '1px solid #e2e8f0' }}>
+                {aiResponse}
+              </div>
+            )}
+            {!loading && !aiResponse && (
+              <p style={{ color: '#64748b' }}>قم بإدخال بيانات الحملة واضغط على الزر لتوليد التوجيهات فوراً.</p>
+            )}
+          </div>
         </div>
       )}
 
-      {finalCampaign && (
-        <div style={{ background: '#e6fffa', border: '1px solid #38b2ac', padding: '20px', borderRadius: '8px' }}>
-          <h2>النتيجة النهائية للحملة</h2>
-          <p><strong>حالة الحملة النهائية:</strong> {finalCampaign.status === 'approved' ? 'معتمدة وجاهزة للنشر' : 'مرفوضة'}</p>
+      {/* قسم متابعة الطلبات */}
+      {activeTab === 'leads' && (
+        <div style={{ backgroundColor: '#fff', padding: '20px', borderRadius: '8px' }}>
+          <h3>قائمة طلبات الأقساط الواردة</h3>
+          <p style={{ color: '#64748b' }}>هنا يتم تجميع كافة طلبات الواتساب والفيسبوك الموجهة لوحدات الأقساط لمعالجتها تلقائياً.</p>
         </div>
       )}
     </div>
