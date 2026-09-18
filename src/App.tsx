@@ -1,7 +1,8 @@
 import React, { useState } from 'react';
 import { GoogleGenAI } from '@google/genai';
 
-const apiKey = import.meta.env.VITE_GEMINI_API_KEY || "AIzaSy_YOUR_API_KEY_HERE";
+// محرك الذكاء الاصطناعي
+const apiKey = import.meta.env.VITE_GEMINI_API_KEY || "";
 const ai = new GoogleGenAI({ apiKey });
 
 export default function App() {
@@ -23,7 +24,7 @@ export default function App() {
     setAiResponse('');
     try {
       const isFree = budgetType === 'free' || !budget || budget === '0';
-      const prompt = `
+      const promptText = `
         أنت المساعد الذكي المباشر لـ "معرض الغرابي للأقساط" في العراق.
         قام المدير بطلب استراتيجية للحملة التالية:
         - اسم الحملة/الفكرة: ${campaignName}
@@ -43,16 +44,16 @@ export default function App() {
         `}
       `;
 
-      // استخدام الموديل المستقر المعتمد من Google
+      // استخدام الصيغة الرسمية المعرفّة في المكتبة الحديثة
       const response = await ai.models.generateContent({
-        model: 'gemini-1.5-flash',
-        contents: prompt,
+        model: 'gemini-2.5-flash',
+        contents: promptText,
       });
 
       setAiResponse(response.text || 'لم يتم استلام رد من الذكاء الاصطناعي.');
     } catch (error: any) {
       console.error(error);
-      setAiResponse(`حدث خطأ أثناء الاتصال بالذكاء الاصطناعي: ${error?.message || 'تأكد من المفتاح'}`);
+      setAiResponse(`حدث خطأ أثناء الاتصال بالذكاء الاصطناعي: ${error?.message || 'تأكد من إعدادات المفتاح والموديل'}`);
     } finally {
       setLoading(false);
     }
