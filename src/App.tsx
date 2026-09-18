@@ -5,54 +5,79 @@ const apiKey = import.meta.env.VITE_GEMINI_API_KEY || "";
 const ai = new GoogleGenAI({ apiKey });
 
 export default function App() {
-  const [activeTab, setActiveTab] = useState<'leads' | 'campaigns'>('campaigns');
+  const [activeTab, setActiveTab] = useState<'brain_manager' | 'campaigns'>('brain_manager');
   const [loading, setLoading] = useState(false);
   const [aiResponse, setAiResponse] = useState('');
 
-  const [campaignName, setCampaignName] = useState('');
-  const [budgetType, setBudgetType] = useState<'free' | 'paid'>('free');
-  const [budget, setBudget] = useState('0');
-  const [targetAudience, setTargetAudience] = useState('');
+  // متغيرات عقل المدير الذكي
+  const [taskType, setTaskType] = useState<'decision' | 'schedule' | 'behavior_analysis'>('decision');
+  const [contextData, setContextData] = useState('');
+  const [platform, setPlatform] = useState<'facebook' | 'tiktok' | 'instagram'>('facebook');
 
-  const handleGenerateStrategy = async () => {
-    if (!campaignName) {
-      alert('يرجى إدخال اسم الحملة أو فكرة المنشور');
+  // تشغيل المحرك التحليلي الاستنتاجي
+  const handleHumanBrainProcess = async () => {
+    if (!contextData) {
+      alert('يرجى إدخال البيانات أو الملاحظة الميدانية ليتولى العقل الآلي تحليلها واستنتاج القرار.');
       return;
     }
     setLoading(true);
     setAiResponse('');
     try {
-      const isFree = budgetType === 'free' || !budget || budget === '0';
-      const promptText = `
-        أنت المساعد الذكي المباشر لـ "معرض الغرابي للأقساط" في العراق.
-        قام المدير بطلب استراتيجية للحملة التالية:
-        - اسم الحملة/الفكرة: ${campaignName}
-        - نوع التسويق والميزانية: ${isFree ? 'تسويق مجاني بالكامل (Organic / بدون إعلانات ممولة)' : `إعلان ممول بميزانية: ${budget}$`}
-        - الجمهور المستهدف: ${targetAudience || 'جمهور عام في العراق (موظفين ومتقاعدين)'}
-
-        يرجى تقديم خطة عمل تناسب السوق العراقي وضوابط التقسيط لدى معرض الغرابي:
-        ${isFree ? `
-        1. استراتيجية محتوى مجاني (فيديوهات Reels/TikTok ورسائل تفاعلية).
-        2. أفضل أوقات النشر المجاني للحصول على أعلى نسبة مشاهدات وتفاعل.
-        3. نص منشور جاهز للنسخ وصياغة جذابة للجمهور.
-        4. قوالب ردود سريعة ومقنعة للرسائل (واتساب وماسنجر).
-        ` : `
-        1. جدول الزخم وأفضل ساعات النشر للاعلانات الممولة.
-        2. كيفية توزيع الميزانية على منصات فيسبوك وإنستغرام وتيك توك.
-        3. قوالب ردود سريعة ومقنعة للرد على استفسارات الزبائن.
-        `}
+      let systemPrompt = `
+        أنت لست مجرد بوت ردود، أنت "مدير تسويق ومبيعات تنفيذي بعقل بشري مفكر" لـ "معرض الغرابي للأقساط" في العراق.
+        تتمتع بقدرة عالية على الاستنتاج، المقاطعة التحليلية للبيانات، واتخاذ القرارات التجارية الذكية.
       `;
 
-      // استخدام اسم الموديل الموصى به بالضبط في رسالة الخطأ
+      let promptText = '';
+
+      if (taskType === 'decision') {
+        promptText = `
+          ${systemPrompt}
+          
+          الموقف والبيانات الحالية من المعرض:
+          "${contextData}"
+
+          المطلوب منك كـ (عقل مفكر ومحلل):
+          1. **التقاط واستنتاج المشكلة/الفرصة**: تحليل الموقف برؤية بشرية عميقة.
+          2. **مطابقة وتقاطع البيانات**: ربط حالة السوق العراقي بسلوك الزبون (موظفين، متقاعدين، ماستر كارد).
+          3. **تحديد واجبات ومهام فورية**: توزيع المهام للموظفين أو لفرق النشر والردود.
+          4. **الخوارزمية المقترحة**: التكتيك الذكي للتعامل مع هذا الموقف لزيادة مبيعات الأقساط.
+        `;
+      } else if (taskType === 'schedule') {
+        promptText = `
+          ${systemPrompt}
+          
+          هدف الحملة/المحتوى والملاحظات الزمنية:
+          "${contextData}"
+
+          المطلوب منك كـ (مدير خوارزميات وأوقات زخم):
+          1. **تحديد ساعات الزخم الحقيقية**: تحديد أفضل أوقات النشر والتفاعل على منصة ${platform} للجمهور العراقي.
+          2. **جدولة المحتوى والتفاعل**: وضع جدول زمني بالدقائق والساعات للتحكم بالنشر والرد الآلي.
+          3. **خوارزمية رفع التفاعل**: الخطوات التكتيكية لرفع الريتش (Reels/Posts) واستفزاز خوارزمية المنصة بالردود.
+        `;
+      } else if (taskType === 'behavior_analysis') {
+        promptText = `
+          ${systemPrompt}
+          
+          سلوك وتصرف الزبون أو التعليق المعقد:
+          "${contextData}"
+
+          المطلوب منك كـ (عقل إنساني يستنتج النوايا):
+          1. **استنتاج نية الزبون**: هل هو جاد؟ متردد؟ متخوف من الفائدة؟ أم خائف من الشروط؟
+          2. **الرد العاطفي والمنطقي المفصل**: صياغة رد بشري دافئ ومقنع جداً باللهجة العراقية المباشرة يتجاوز مخاوفه.
+          3. **تحديد الخطوة التالية (Next Action)**: تحديد الإجراء التالي لإغلاق الصفقة وتوجيهه للمعرض.
+        `;
+      }
+
       const response = await ai.models.generateContent({
         model: 'gemini-3.6-flash',
         contents: promptText,
       });
 
-      setAiResponse(response.text || 'لم يتم استلام رد من الذكاء الاصطناعي.');
+      setAiResponse(response.text || 'لم يتم استلام استنتاج من العقل الآلي.');
     } catch (error: any) {
       console.error(error);
-      setAiResponse(`حدث خطأ أثناء الاتصال بالذكاء الاصطناعي: ${error?.message || 'تأكد من إعدادات المفتاح والموديل'}`);
+      setAiResponse(`حدث خطأ أثناء معالجة البيانات: ${error?.message || 'تأكد من المفتاح والموديل'}`);
     } finally {
       setLoading(false);
     }
@@ -62,100 +87,84 @@ export default function App() {
     <div style={{ fontFamily: 'Segoe UI, Tahoma, Geneva, Verdana, sans-serif', direction: 'rtl', padding: '20px', backgroundColor: '#e2e8f0', minHeight: '100vh', color: '#0f172a' }}>
       <header style={{ backgroundColor: '#0f172a', color: '#ffffff', padding: '20px', borderRadius: '10px', marginBottom: '25px', boxShadow: '0 4px 6px -1px rgba(0, 0, 0, 0.1)' }}>
         <h1 style={{ margin: 0, fontSize: '22px', fontWeight: 'bold' }}>لوحة تحكم الذكاء الاصطناعي - معرض الغرابي للأقساط</h1>
-        <p style={{ margin: '8px 0 0 0', fontSize: '14px', color: '#94a3b8' }}>المحرك الإستراتيجي الذكي لربط المبيعات وتوجيه الحملات</p>
+        <p style={{ margin: '8px 0 0 0', fontSize: '14px', color: '#94a3b8' }}>العقل الإداري المفكر لربط المبيعات وتوجيه الخوارزميات</p>
       </header>
 
       {/* شريط التنقل */}
       <div style={{ display: 'flex', gap: '12px', marginBottom: '20px' }}>
         <button 
-          onClick={() => setActiveTab('campaigns')}
-          style={{ padding: '12px 24px', borderRadius: '8px', border: 'none', cursor: 'pointer', fontWeight: 'bold', fontSize: '15px', backgroundColor: activeTab === 'campaigns' ? '#2563eb' : '#94a3b8', color: '#ffffff' }}>
-          📢 إدارة الحملات والمحتوى
-        </button>
-        <button 
-          onClick={() => setActiveTab('leads')}
-          style={{ padding: '12px 24px', borderRadius: '8px', border: 'none', cursor: 'pointer', fontWeight: 'bold', fontSize: '15px', backgroundColor: activeTab === 'leads' ? '#2563eb' : '#94a3b8', color: '#ffffff' }}>
-          👥 متابعة الطلبات (CRM)
+          onClick={() => { setActiveTab('brain_manager'); setAiResponse(''); }}
+          style={{ padding: '12px 24px', borderRadius: '8px', border: 'none', cursor: 'pointer', fontWeight: 'bold', fontSize: '15px', backgroundColor: activeTab === 'brain_manager' ? '#2563eb' : '#94a3b8', color: '#ffffff' }}>
+          🧠 العقل المفكر (تحليل، قرارات، وأوقات زخم)
         </button>
       </div>
 
-      {/* قسم الحملات */}
-      {activeTab === 'campaigns' && (
+      {/* قسم العقل المفكر */}
+      {activeTab === 'brain_manager' && (
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '20px' }}>
-          
-          {/* نموذج إدخال البيانات */}
           <div style={{ backgroundColor: '#ffffff', padding: '25px', borderRadius: '12px', boxShadow: '0 4px 6px -1px rgba(0,0,0,0.1)' }}>
-            <h3 style={{ marginTop: 0, marginBottom: '20px', color: '#1e293b', borderBottom: '2px solid #e2e8f0', paddingBottom: '10px' }}>تخطيط حملة / محتوى جديد</h3>
+            <h3 style={{ marginTop: 0, marginBottom: '20px', color: '#1e293b', borderBottom: '2px solid #e2e8f0', paddingBottom: '10px' }}>محاكاة العقل الإداري والاستنتاج</h3>
             
             <div style={{ marginBottom: '18px' }}>
-              <label style={{ display: 'block', marginBottom: '8px', fontWeight: 'bold', color: '#0f172a', fontSize: '15px' }}>
-                📌 اسم الحملة / فكرة المنشور:
-              </label>
-              <input 
-                type="text" 
-                placeholder="مثال: فيديو تقسيط الشاشات والمكيفات بدون مقدم"
-                value={campaignName} 
-                onChange={(e) => setCampaignName(e.target.value)}
-                style={{ width: '100%', padding: '12px', borderRadius: '6px', border: '2px solid #cbd5e1', fontSize: '14px', color: '#0f172a', backgroundColor: '#ffffff', boxSizing: 'border-box' }}
-              />
+              <label style={{ display: 'block', marginBottom: '8px', fontWeight: 'bold', color: '#0f172a' }}>🌐 اختر المنصة الهدف:</label>
+              <select 
+                value={platform} 
+                onChange={(e: any) => setPlatform(e.target.value)}
+                style={{ width: '100%', padding: '12px', borderRadius: '6px', border: '2px solid #cbd5e1', fontSize: '14px', color: '#0f172a', backgroundColor: '#ffffff' }}>
+                <option value="facebook">فيسبوك (Facebook)</option>
+                <option value="tiktok">تيك توك (TikTok)</option>
+                <option value="instagram">إنستغرام (Instagram)</option>
+              </select>
             </div>
 
-            {/* خيار الميزانية */}
             <div style={{ marginBottom: '18px' }}>
-              <label style={{ display: 'block', marginBottom: '8px', fontWeight: 'bold', color: '#0f172a', fontSize: '15px' }}>
-                💰 نوع التمويل والميزانية:
-              </label>
-              <div style={{ display: 'flex', gap: '10px', marginBottom: '10px' }}>
+              <label style={{ display: 'block', marginBottom: '8px', fontWeight: 'bold', color: '#0f172a' }}>⚙️ نمط التفكير المطلوب:</label>
+              <div style={{ display: 'flex', gap: '8px' }}>
                 <button 
-                  type="button"
-                  onClick={() => { setBudgetType('free'); setBudget('0'); }}
-                  style={{ flex: 1, padding: '10px', borderRadius: '6px', border: '2px solid #16a34a', backgroundColor: budgetType === 'free' ? '#16a34a' : '#ffffff', color: budgetType === 'free' ? '#ffffff' : '#16a34a', fontWeight: 'bold', cursor: 'pointer' }}>
-                  🎁 مجاني (بدون تمويل)
+                  type="button" 
+                  onClick={() => setTaskType('decision')}
+                  style={{ flex: 1, padding: '10px', borderRadius: '6px', border: '2px solid #2563eb', backgroundColor: taskType === 'decision' ? '#2563eb' : '#ffffff', color: taskType === 'decision' ? '#ffffff' : '#2563eb', fontWeight: 'bold', cursor: 'pointer', fontSize: '13px' }}>
+                  🎯 اتخاذ قرار وتوجيه مهام
                 </button>
                 <button 
-                  type="button"
-                  onClick={() => setBudgetType('paid')}
-                  style={{ flex: 1, padding: '10px', borderRadius: '6px', border: '2px solid #2563eb', backgroundColor: budgetType === 'paid' ? '#2563eb' : '#ffffff', color: budgetType === 'paid' ? '#ffffff' : '#2563eb', fontWeight: 'bold', cursor: 'pointer' }}>
-                  💳 إعلان ممول ($)
+                  type="button" 
+                  onClick={() => setTaskType('schedule')}
+                  style={{ flex: 1, padding: '10px', borderRadius: '6px', border: '2px solid #2563eb', backgroundColor: taskType === 'schedule' ? '#2563eb' : '#ffffff', color: taskType === 'schedule' ? '#ffffff' : '#2563eb', fontWeight: 'bold', cursor: 'pointer', fontSize: '13px' }}>
+                  ⏰ أوقات الزخم والخوارزميات
+                </button>
+                <button 
+                  type="button" 
+                  onClick={() => setTaskType('behavior_analysis')}
+                  style={{ flex: 1, padding: '10px', borderRadius: '6px', border: '2px solid #2563eb', backgroundColor: taskType === 'behavior_analysis' ? '#2563eb' : '#ffffff', color: taskType === 'behavior_analysis' ? '#ffffff' : '#2563eb', fontWeight: 'bold', cursor: 'pointer', fontSize: '13px' }}>
+                  🕵️ تحليل سلوك نية الزبون
                 </button>
               </div>
-
-              {budgetType === 'paid' && (
-                <input 
-                  type="number" 
-                  placeholder="أدخل الميزانية بالدولار (مثال: 50)"
-                  value={budget} 
-                  onChange={(e) => setBudget(e.target.value)}
-                  style={{ width: '100%', padding: '12px', borderRadius: '6px', border: '2px solid #cbd5e1', fontSize: '14px', color: '#0f172a', backgroundColor: '#ffffff', boxSizing: 'border-box' }}
-                />
-              )}
             </div>
 
             <div style={{ marginBottom: '22px' }}>
-              <label style={{ display: 'block', marginBottom: '8px', fontWeight: 'bold', color: '#0f172a', fontSize: '15px' }}>
-                🎯 الجمهور المستهدف:
+              <label style={{ display: 'block', marginBottom: '8px', fontWeight: 'bold', color: '#0f172a' }}>
+                📝 أدخل المعطيات، المواقف، أو سلوك الزبون للتحليل:
               </label>
-              <input 
-                type="text" 
-                placeholder="مثال: موظفين ومتقاعدين في بغداد والمحافظات"
-                value={targetAudience} 
-                onChange={(e) => setTargetAudience(e.target.value)}
+              <textarea 
+                rows={5}
+                placeholder="مثال: الزبائن بالتعليقات يتساءلون عن أسعار الشاشات لكن عند معرفة الاستقطاع المالي يختفون، أو: نريد تحديد أفضل ساعات النشر ليوم الخميس لرواتب المتقاعدين..."
+                value={contextData} 
+                onChange={(e) => setContextData(e.target.value)}
                 style={{ width: '100%', padding: '12px', borderRadius: '6px', border: '2px solid #cbd5e1', fontSize: '14px', color: '#0f172a', backgroundColor: '#ffffff', boxSizing: 'border-box' }}
               />
             </div>
 
             <button 
-              onClick={handleGenerateStrategy}
+              onClick={handleHumanBrainProcess}
               disabled={loading}
-              style={{ width: '100%', padding: '14px', backgroundColor: loading ? '#94a3b8' : '#16a34a', color: '#ffffff', border: 'none', borderRadius: '8px', cursor: loading ? 'not-allowed' : 'pointer', fontSize: '16px', fontWeight: 'bold', transition: 'background-color 0.2s' }}>
-              {loading ? '⏳ جاري التوليد بواسطة Gemini...' : '🚀 توليد الخطة والمحتوى'}
+              style={{ width: '100%', padding: '14px', backgroundColor: loading ? '#94a3b8' : '#2563eb', color: '#ffffff', border: 'none', borderRadius: '8px', cursor: loading ? 'not-allowed' : 'pointer', fontSize: '16px', fontWeight: 'bold' }}>
+              {loading ? '🧠 العقل الآلي يفكر، يطابق، ويستنتج...' : '🚀 تشغيل تحليل العقل الآلي'}
             </button>
           </div>
 
-          {/* عرض التحليل */}
           <div style={{ backgroundColor: '#ffffff', padding: '25px', borderRadius: '12px', boxShadow: '0 4px 6px -1px rgba(0,0,0,0.1)', minHeight: '350px' }}>
-            <h3 style={{ marginTop: 0, marginBottom: '20px', color: '#1e293b', borderBottom: '2px solid #e2e8f0', paddingBottom: '10px' }}>الاستراتيجية والمحتوى الجاهز</h3>
-            {loading && <p style={{ color: '#2563eb', fontWeight: 'bold' }}>جاري المعالجة واستدعاء Gemini...</p>}
+            <h3 style={{ marginTop: 0, marginBottom: '20px', color: '#1e293b', borderBottom: '2px solid #e2e8f0', paddingBottom: '10px' }}>التحليل والتوجيهات التنفيذية</h3>
+            {loading && <p style={{ color: '#2563eb', fontWeight: 'bold' }}>جاري ربط المعطيات ومقاطعة البيانات...</p>}
             {!loading && aiResponse && (
               <div style={{ whiteSpace: 'pre-wrap', lineHeight: '1.7', backgroundColor: '#f8fafc', padding: '18px', borderRadius: '8px', border: '1px solid #cbd5e1', color: '#1e293b', fontSize: '14px' }}>
                 {aiResponse}
@@ -163,18 +172,10 @@ export default function App() {
             )}
             {!loading && !aiResponse && (
               <div style={{ textAlign: 'center', color: '#64748b', marginTop: '60px' }}>
-                <p style={{ fontSize: '16px' }}>👈 قم بإدخال الفكرة، اختر نوع التمويل (مجاني أو ممول)، ثم اضغط على الزر الأخضر.</p>
+                <p style={{ fontSize: '16px' }}>👈 أدخل موقفاً عملياً أو استفساراً، ثم اضغط تشغيل لمشاهدة كيف يحلل المدير المفكر المعطيات ويستنتج القرارات.</p>
               </div>
             )}
           </div>
-        </div>
-      )}
-
-      {/* قسم متابعة الطلبات */}
-      {activeTab === 'leads' && (
-        <div style={{ backgroundColor: '#ffffff', padding: '25px', borderRadius: '12px', boxShadow: '0 4px 6px -1px rgba(0,0,0,0.1)' }}>
-          <h3 style={{ marginTop: 0, color: '#1e293b' }}>قائمة طلبات الأقساط الواردة (CRM)</h3>
-          <p style={{ color: '#64748b' }}>هنا يتم تجميع كافة طلبات الواتساب والفيسبوك الموجهة لوحدات الأقساط لمعالجتها تلقائياً.</p>
         </div>
       )}
     </div>
