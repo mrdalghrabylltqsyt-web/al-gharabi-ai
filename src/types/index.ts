@@ -473,3 +473,174 @@ export const MARKETING_DRAFT_STATUS_LABELS: Record<string, string> = {
   published: 'منشور',
   deleted: 'محذوفة',
 };
+
+// ---------------------------------------------------------------
+// مدير السوشيال ميديا — أنواع مطابقة لاستجابات الخادم الفعلية.
+// كل حقل هنا يعكس حالة حقيقية؛ لا توجد قيم تجريبية في هذه الأنواع.
+// ---------------------------------------------------------------
+
+export interface SocialPlatformState {
+  platform: string;
+  displayName: string;
+  /** connected تعني اتصالاً موثقاً من المزود، وليس مجرد إعداد محلي. */
+  connection: 'connected' | 'reauth_needed' | 'disconnected';
+  accountId: string | null;
+  accountName: string | null;
+  connectedAt: string | null;
+  providerVerified: boolean;
+  capabilities: string[];
+  /** لا تكون true إلا بوجود موصل نشر إنتاجي معتمد. */
+  productionReady: boolean;
+  readinessNote: string;
+}
+
+export interface SocialManagerStatus {
+  success: boolean;
+  generatedAt: string;
+  platforms: SocialPlatformState[];
+  summary: {
+    totalPlatforms: number;
+    connected: number;
+    disconnected: number;
+    reauthNeeded: number;
+    publishCapable: number;
+    commentCapable: number;
+  };
+  content: {
+    total: number;
+    drafts: number;
+    review: number;
+    approved: number;
+    scheduled: number;
+    published: number;
+  };
+  activity: {
+    commentsTracked: number;
+    repliesRecorded: number;
+    publishRecords: number;
+  };
+  note: string;
+}
+
+/** توفر مؤشر واحد: غير المتاح يحمل سبباً صريحاً. */
+export interface SocialMetricAvailability {
+  metric: string;
+  available: boolean;
+  reason?: string;
+  /** القيمة الفعلية عند توفرها؛ تبقى null عند غياب أي سجل. */
+  value?: number | null;
+}
+
+export interface SocialCapabilitiesResult {
+  success: boolean;
+  platforms: (SocialPlatformState & { metrics: SocialMetricAvailability[] })[];
+  note: string;
+}
+
+export interface SocialCommentClassification {
+  intent: string;
+  sentiment: string;
+  isQuestion: boolean;
+  isComplaint: boolean;
+  isPraise: boolean;
+  isBusinessInquiry: boolean;
+  isSpam: boolean;
+  requiresHumanReview: boolean;
+  reviewReason?: string;
+  signals: string[];
+}
+
+export interface SocialCommentClassificationResult {
+  success: boolean;
+  platform: string | null;
+  classification: SocialCommentClassification;
+  autoReplyAllowed: boolean;
+  suggestedDeterministicReply: string | null;
+  note: string;
+}
+
+export interface SocialCommentRecord {
+  id: string;
+  platform: string;
+  externalId: string;
+  postExternalId: string | null;
+  authorName: string | null;
+  text: string;
+  createdAt: string;
+  classification: SocialCommentClassification;
+  requiresHumanReview: boolean;
+}
+
+export interface SocialCommentsResult {
+  success: boolean;
+  platform: string | null;
+  /** true فقط عند وجود اتصال موثق ودعم جلب التعليقات. */
+  externalFetchAvailable: boolean;
+  comments: SocialCommentRecord[];
+  count: number;
+  note: string;
+}
+
+export interface SocialAnalyticsResult {
+  success: boolean;
+  platform: string;
+  displayName: string;
+  connection: string;
+  metrics: SocialMetricAvailability[];
+  engagementRate: number | null;
+  sampleSize: number;
+  externalFetchAvailable: boolean;
+  note: string;
+}
+
+export interface MarketingDecisionPlanItem {
+  platform: string;
+  contentType: string;
+  format: string;
+  suggestedTiming: string;
+  /** estimated حتى تتوفر بيانات أداء فعلية تدعم التوقيت. */
+  timingConfidence: 'estimated' | 'measured';
+  reason: string;
+  successMetric: string;
+  /** هل المؤشر المختار متاح فعلاً عبر واجهة المنصة الرسمية؟ */
+  metricAvailable: boolean;
+}
+
+export interface MarketingDecision {
+  audience: { segments: string[]; dataAvailable: boolean; note: string };
+  objective: string;
+  plan: MarketingDecisionPlanItem[];
+  /** ما تعلمناه فعلياً من السجلات السابقة. */
+  learnings: string[];
+  /** ما الذي يجب تغييره في المنشور القادم. */
+  nextAdjustment: string;
+  /** بيانات ناقصة تمنع توصية أدق — تُعلن صراحة. */
+  dataGaps: string[];
+}
+
+export interface SocialMemorySnapshot {
+  publishedCount: number;
+  scheduledCount: number;
+  platformBreakdown: Record<string, number>;
+  contentTypeBreakdown: Record<string, number>;
+  topComments: string[];
+  frequentQuestions: string[];
+  decisions: { decision: string; at: string; reason: string }[];
+  strategiesTested: { strategy: string; outcome: string; at: string }[];
+}
+
+export interface MarketingDecisionResult {
+  success: boolean;
+  generatedAt: string;
+  objective: string;
+  connectedPlatforms: string[];
+  decision: MarketingDecision;
+  memory: SocialMemorySnapshot;
+  note: string;
+}
+
+export interface SocialMemoryResult {
+  success: boolean;
+  memory: SocialMemorySnapshot;
+  note: string;
+}

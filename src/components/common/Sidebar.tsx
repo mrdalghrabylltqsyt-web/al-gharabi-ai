@@ -23,6 +23,7 @@ import {
   FileBarChart2,
   Building2,
   Activity,
+  Brain,
 } from 'lucide-react';
 
 interface SidebarProps {
@@ -135,6 +136,22 @@ export const Sidebar: React.FC<SidebarProps> = ({ mobileOpen, onCloseMobile }) =
       badge: 'مستشار',
       badgeColor: 'bg-purple-500/20 text-purple-300 border-purple-500/30',
       desc: 'استراتيجيات التسويق والأداء',
+    },
+    {
+      id: 'social_manager',
+      label: 'مدير السوشيال ميديا',
+      icon: Bot,
+      badge: 'إدارة',
+      badgeColor: 'bg-emerald-500/20 text-emerald-300 border-emerald-500/30',
+      desc: 'إدارة المنصات والتعليقات والنشر والتحليل',
+    },
+    {
+      id: 'brain_manager',
+      label: 'العقل الإداري المفكر',
+      icon: Brain,
+      badge: 'تحليل',
+      badgeColor: 'bg-blue-500/20 text-blue-300 border-blue-500/30',
+      desc: 'تحليل المواقف الميدانية واستنتاج القرار',
     },
     {
       id: 'calendar',

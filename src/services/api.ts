@@ -1,4 +1,4 @@
-import { AppUser, UserRole, MarketingBriefRequest, MarketingBriefResult, MarketingCampaignRequest, MarketingCampaignSummary, MarketingCampaignDetail, MarketingCampaignCreationResult, MarketingCampaignStatus, MarketingDraftAction, MarketingDraftBulkResult, MarketingDraftLinkResult } from '../types';
+import { AppUser, UserRole, MarketingBriefRequest, MarketingBriefResult, MarketingCampaignRequest, MarketingCampaignSummary, MarketingCampaignDetail, MarketingCampaignCreationResult, MarketingCampaignStatus, MarketingDraftAction, MarketingDraftBulkResult, MarketingDraftLinkResult, SocialManagerStatus, SocialCapabilitiesResult, SocialCommentClassificationResult, SocialCommentsResult, SocialAnalyticsResult, MarketingDecisionResult, SocialMemoryResult } from '../types';
 
 export interface GenerateContentRequest {
   platform: string;
@@ -811,5 +811,72 @@ ${payload.topic || payload.productName || 'أنظمة وحلول التقسيط 
     const data = await res.json();
     if (!res.ok || !data.success) throw new Error(data.error || 'تعذر ربط المسودة بالمنشور');
     return data as MarketingDraftLinkResult;
+  },
+
+  // ---------------------------------------------------------------
+  // مدير السوشيال ميديا — قراءات حقيقية من الخادم، بلا أي بيانات وهمية.
+  // ---------------------------------------------------------------
+
+  /** حالة المدير الكاملة: المنصات، المحتوى، والنشاط الفعلي. */
+  async getSocialManagerStatus(): Promise<SocialManagerStatus> {
+    const res = await fetch('/api/social/manager/status', { headers: getAuthHeaders() });
+    const data = await res.json();
+    if (!res.ok || !data.success) throw new Error(data.error || 'تعذر تحميل حالة مدير السوشيال ميديا');
+    return data as SocialManagerStatus;
+  },
+
+  /** قدرات كل منصة وتوفر مؤشراتها كما تسمح به واجهاتها الرسمية. */
+  async getSocialCapabilities(): Promise<SocialCapabilitiesResult> {
+    const res = await fetch('/api/social/manager/capabilities', { headers: getAuthHeaders() });
+    const data = await res.json();
+    if (!res.ok || !data.success) throw new Error(data.error || 'تعذر تحميل قدرات المنصات');
+    return data as SocialCapabilitiesResult;
+  },
+
+  /** تصنيف تعليق حتمياً دون استهلاك أي حصة ذكاء اصطناعي. */
+  async classifySocialComment(text: string, platform?: string): Promise<SocialCommentClassificationResult> {
+    const res = await fetch('/api/social/manager/comments/classify', {
+      method: 'POST', headers: getAuthHeaders(), body: JSON.stringify({ text, platform }),
+    });
+    const data = await res.json();
+    if (!res.ok || !data.success) throw new Error(data.error || 'تعذر تصنيف التعليق');
+    return data as SocialCommentClassificationResult;
+  },
+
+  /** التعليقات المسجلة فعلياً. يوضّح الرد ما إذا كان الجلب الخارجي متاحاً. */
+  async getSocialComments(platform?: string): Promise<SocialCommentsResult> {
+    const qs = platform ? `?platform=${encodeURIComponent(platform)}` : '';
+    const res = await fetch(`/api/social/manager/comments${qs}`, { headers: getAuthHeaders() });
+    const data = await res.json();
+    if (!res.ok || !data.success) throw new Error(data.error || 'تعذر تحميل التعليقات');
+    return data as SocialCommentsResult;
+  },
+
+  /** تحليلات منصة: القيم الفعلية فقط، وغير المتاح يظهر كغير متاح. */
+  async getSocialAnalytics(platform: string): Promise<SocialAnalyticsResult> {
+    const res = await fetch(`/api/social/manager/analytics?platform=${encodeURIComponent(platform)}`, { headers: getAuthHeaders() });
+    const data = await res.json();
+    if (!res.ok || !data.success) throw new Error(data.error || 'تعذر تحميل التحليلات');
+    return data as SocialAnalyticsResult;
+  },
+
+  /** قرار العقل التسويقي مبني على بيانات النظام الفعلية. */
+  async getMarketingDecision(params?: { objective?: string; platforms?: string[] }): Promise<MarketingDecisionResult> {
+    const search = new URLSearchParams();
+    if (params?.objective) search.set('objective', params.objective);
+    if (params?.platforms?.length) search.set('platforms', params.platforms.join(','));
+    const qs = search.toString() ? `?${search.toString()}` : '';
+    const res = await fetch(`/api/social/manager/brain/decision${qs}`, { headers: getAuthHeaders() });
+    const data = await res.json();
+    if (!res.ok || !data.success) throw new Error(data.error || 'تعذر تحميل قرار العقل التسويقي');
+    return data as MarketingDecisionResult;
+  },
+
+  /** الذاكرة التشغيلية للسوشيال ميديا من السجلات الحقيقية. */
+  async getSocialMemory(): Promise<SocialMemoryResult> {
+    const res = await fetch('/api/social/manager/memory', { headers: getAuthHeaders() });
+    const data = await res.json();
+    if (!res.ok || !data.success) throw new Error(data.error || 'تعذر تحميل الذاكرة التشغيلية');
+    return data as SocialMemoryResult;
   }
 };

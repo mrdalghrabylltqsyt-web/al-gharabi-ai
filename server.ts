@@ -3,8 +3,35 @@ import path from "path";
 import crypto from "crypto";
 import fs from "fs";
 import { createServer as createViteServer } from "vite";
-import { GoogleGenAI } from "@google/genai";
 import dotenv from "dotenv";
+import { AiEngine, type AiUsageGuard } from "./engine/ai/engine";
+import { createGeminiProvider } from "./engine/ai/provider";
+import { resolveModelCandidates } from "./engine/ai/models";
+import { CircuitBreaker } from "./engine/ai/retry";
+import { registerSocialManagerRoutes } from "./engine/social/routes";
+import {
+  buildDeterministicReply,
+  canAutoReply,
+  classifyComment,
+  evaluateReplyGuard,
+  fingerprintReply,
+  isSelfAuthored,
+  type ReplyRecord,
+} from "./engine/social/comments";
+import {
+  buildPublishRecord,
+  canTransition,
+  collectAvailableMetrics,
+  engagementRate,
+  metricAvailability,
+  publishPreflight,
+  type PublishState,
+} from "./engine/social/publishing";
+import {
+  buildMarketingDecision,
+  buildMemorySnapshot,
+  type PerformanceRecord,
+} from "./engine/social/brain";
 
 dotenv.config();
 
@@ -140,6 +167,9 @@ for (const key of ["inventoryMovements","suppliers","purchases","expenses","cont
 if (!Array.isArray((workspace as any).inventoryMovements)) (workspace as any).inventoryMovements = [];
 for (const key of ["suppliers","purchases","expenses","contracts","installmentSchedules","notifications","webhookEvents","providerEvents","marketingBriefs","marketingCampaigns"]) if (!Array.isArray((workspace as any)[key])) (workspace as any)[key] = [];
 if (!(workspace as any).providerTokens || typeof (workspace as any).providerTokens !== "object") (workspace as any).providerTokens = {};
+// سجلات مدير السوشيال ميديا: تعليقات، ردود، نتائج نشر، وقرارات تسويقية.
+// كلها سجلات تشغيلية حقيقية تُبنى من عمليات فعلية فقط.
+for (const key of ["socialComments","socialReplies","publishRecords","marketingDecisions","strategiesTested","performanceRecords"]) if (!Array.isArray((workspace as any)[key])) (workspace as any)[key] = [];
 
 // Migration guard: a post is never considered externally published merely because
 // an old/local record said so. Until a real provider execution receipt exists,
@@ -1669,9 +1699,11 @@ const GEMINI_DAILY_LIMIT = Math.min(6, Math.max(1, Number(process.env.GEMINI_DAI
 const USAGE_FILE = path.join(process.cwd(), '.gharabi-usage.json');
 let geminiUsageDay = new Date().toISOString().slice(0, 10);
 let geminiUsageCount = 0;
-const geminiRecentCache = new Map<string, { value: string; expiresAt: number }>();
-const geminiInFlight = new Map<string, Promise<string>>();
 const requestWindow = new Map<string, { startedAt: number; count: number }>();
+// مهلة صريحة لكل طلب مزود: لا يبقى أي طلب معلقاً بلا نهاية.
+const AI_TIMEOUT_MS = Math.min(60_000, Math.max(5_000, Number(process.env.AI_TIMEOUT_MS || 20_000)));
+// حلقة تشخيص محدودة الحجم: لا تحتوي أي مفتاح أو توكن أو جسم طلب كامل.
+const aiEvents: Array<{ at: string; type: string; detail: string }> = [];
 const challengeWindow = new Map<string, { startedAt: number; count: number }>();
 function allowChallengeAttempt(key: string): boolean {
   const now = Date.now();
@@ -1715,7 +1747,7 @@ function cleanupRuntimeState() {
   for (const [userId, window] of requestWindow) if (now - window.startedAt >= 60_000) requestWindow.delete(userId);
   for (const [key, window] of challengeWindow) if (now - window.startedAt >= 15 * 60 * 1000) challengeWindow.delete(key);
   for (const [key, window] of authAttemptWindow) if (now - window.startedAt >= 15 * 60 * 1000) authAttemptWindow.delete(key);
-  for (const [key, item] of geminiRecentCache) if (item.expiresAt <= now) geminiRecentCache.delete(key);
+  aiEngine.pruneCache();
 }
 const runtimeCleanupTimer = setInterval(cleanupRuntimeState, 5 * 60 * 1000);
 (runtimeCleanupTimer as any).unref?.();
@@ -1788,58 +1820,79 @@ function audit(userId: string, action: string, detail?: string) {
   persistState();
 }
 
-function canUseGemini(): boolean {
+// تاريخ الاستخدام يُصفَّر عند تغيّر اليوم. يُنادى من كل عملية حماية.
+function rollUsageDayIfNeeded(): void {
   const today = new Date().toISOString().slice(0, 10);
   if (today !== geminiUsageDay) {
     geminiUsageDay = today;
     geminiUsageCount = 0;
-    geminiRecentCache.clear();
     saveUsage();
   }
+}
+
+function canUseGemini(): boolean {
+  rollUsageDayIfNeeded();
   return geminiUsageCount < GEMINI_DAILY_LIMIT;
 }
 
-function consumeGeminiSlot(): boolean {
-  if (!canUseGemini()) return false;
-  geminiUsageCount += 1;
-  saveUsage();
-  return true;
-}
+/** الحارس المحلي الذي يستهلكه محرك الذكاء الاصطناعي. */
+const aiUsageGuard: AiUsageGuard = {
+  canConsume: () => canUseGemini(),
+  consume: () => {
+    rollUsageDayIfNeeded();
+    if (geminiUsageCount >= GEMINI_DAILY_LIMIT) return false;
+    geminiUsageCount += 1;
+    saveUsage();
+    return true;
+  },
+  release: () => {
+    geminiUsageCount = Math.max(0, geminiUsageCount - 1);
+    saveUsage();
+  },
+  status: () => ({
+    usedToday: geminiUsageCount,
+    limit: GEMINI_DAILY_LIMIT,
+    remaining: Math.max(0, GEMINI_DAILY_LIMIT - geminiUsageCount),
+    enabled: Boolean(process.env.GEMINI_API_KEY),
+  }),
+};
 
-function cachedGemini(key: string): string | null {
-  const item = geminiRecentCache.get(key);
-  if (!item) return null;
-  if (item.expiresAt <= Date.now()) { geminiRecentCache.delete(key); return null; }
-  return item.value;
-}
+/**
+ * محرك الذكاء الاصطناعي المركزي: المزود → الحارس → المهلة → إعادة المحاولة
+ * → التخزين المؤقت → البديل الحتمي. تعطل المزود لا يُسقط أي مسار في النظام.
+ */
+const aiEngine = new AiEngine({
+  provider: createGeminiProvider(process.env.GEMINI_API_KEY, AI_TIMEOUT_MS),
+  guard: aiUsageGuard,
+  models: resolveModelCandidates(process.env.GEMINI_MODEL),
+  cacheTtlMs: 10 * 60 * 1000,
+  timeoutMs: AI_TIMEOUT_MS,
+  breaker: new CircuitBreaker(3, 60_000),
+  onEvent: (event) => { aiEvents.push({ at: new Date().toISOString(), ...event }); if (aiEvents.length > 200) aiEvents.shift(); },
+});
 
-function cacheGemini(key: string, value: string, ttlMs = 10 * 60 * 1000) {
-  geminiRecentCache.set(key, { value, expiresAt: Date.now() + ttlMs });
+/** حالة قاطع الدائرة الحقيقية من المحرك. */
+function aiEngineBreakerSnapshot() {
+  return aiEngine.breakerStatus();
 }
 
 function geminiStatus() {
-  canUseGemini();
-  return { enabled: Boolean(process.env.GEMINI_API_KEY), usedToday: geminiUsageCount, dailyGuard: GEMINI_DAILY_LIMIT, remainingByGuard: Math.max(0, GEMINI_DAILY_LIMIT - geminiUsageCount) };
+  const status = aiUsageGuard.status();
+  return {
+    enabled: status.enabled,
+    configured: aiEngine.providerConfigured,
+    usedToday: status.usedToday,
+    dailyGuard: status.limit,
+    remainingByGuard: status.remaining,
+    modelCandidates: resolveModelCandidates(process.env.GEMINI_MODEL),
+    breaker: aiEngineBreakerSnapshot(),
+    cachedEntries: aiEngine.cacheSize,
+    timeoutMs: AI_TIMEOUT_MS,
+    note: "أرقام حماية محلية داخل هذا الخادم وليست حصة مزود الخدمة.",
+  };
 }
 
-// Initialize Gemini SDK with telemetry header
-const getGeminiClient = () => {
-  const apiKey = process.env.GEMINI_API_KEY;
-  if (!apiKey) return null;
-  try {
-    return new GoogleGenAI({
-      apiKey,
-      httpOptions: {
-        headers: {
-          "User-Agent": "aistudio-build",
-        },
-      },
-    });
-  } catch (err) {
-    console.error("Failed to initialize GoogleGenAI:", err);
-    return null;
-  }
-};
+
 
 // Owner-only system diagnostics and durable-state export. No secrets or Gemini keys are included.
 app.get("/api/system/integrity", requireOwner, (_req, res) => {
@@ -2085,7 +2138,6 @@ app.post("/api/ai/generate-content", authenticateToken, async (req, res) => {
       customInstructions,
     } = req.body;
 
-    const ai = getGeminiClient();
 
     const systemPrompt = `أنت المساعد الذكي الرسمي والمؤلف الإعلاني لـ "معرض الغرابي للتقسيط".
 معرض الغرابي يقدم حلول تقسيط وتسهيلات مرنة وإجراءات معتمدة وواضحة.
@@ -2111,62 +2163,35 @@ app.post("/api/ai/generate-content", authenticateToken, async (req, res) => {
 لا تقم باختراع أرقام هواتف أو عناوين وهمية أو أسماء موظفين، واعتمد حصراً على المعلومات المحددة من إدارة المعرض.
 أجب باللغة العربية بأسلوب احترافي رفيع دون أي مقدمات إنجليزية.`;
 
-    if (ai && canUseGemini()) {
-      const cacheKey = `content:${JSON.stringify({ platform, contentType, topic, tone, productName, installmentDetails, customInstructions })}`;
-      const cached = cachedGemini(cacheKey);
-      if (cached) return res.json({ success: true, content: cached, platform, contentType, generatedBy: "gemini-cache" });
-      let generated = geminiInFlight.get(cacheKey);
-      if (!generated) {
-        if (!consumeGeminiSlot()) {
-          return res.status(429).json({ success: false, error: "تم بلوغ حد الحماية اليومية المحلي للذكاء الاصطناعي. استخدم المحرك المحلي أو جرّب غداً.", fallback: generateSmartFallbackContent(platform, contentType, topic || productName, installmentDetails) });
-        }
-        generated = ai.models.generateContent({
-          model: process.env.GEMINI_MODEL || "gemini-3.8-flash",
-          contents: systemPrompt,
-        }).then((r) => r.text || "").catch((error) => {
-          geminiUsageCount = Math.max(0, geminiUsageCount - 1);
-          saveUsage();
-          throw error;
-        }).finally(() => geminiInFlight.delete(cacheKey));
-        geminiInFlight.set(cacheKey, generated);
-      }
-      const generatedText = await generated;
-      cacheGemini(cacheKey, generatedText);
+    const cacheKey = `content:${JSON.stringify({ platform, contentType, topic, tone, productName, installmentDetails, customInstructions })}`;
+    const result = await aiEngine.run({
+      cacheKey,
+      prompt: systemPrompt,
+      deterministicFallback: () => generateSmartFallbackContent(platform, contentType, topic || productName, installmentDetails),
+    });
 
-      return res.json({
-        success: true,
-        content: generatedText,
-        platform,
-        contentType,
-        generatedBy: process.env.GEMINI_MODEL || "gemini-3.8-flash",
-      });
-    }
-
-    // Fallback if no API key is configured
-    const fallbackResponse = generateSmartFallbackContent(
-      platform,
-      contentType,
-      topic || productName,
-      installmentDetails
-    );
+    // المزود المتعطل لا يُسقط المسار: يُعاد دائماً محتوى صالح مع توضيح المصدر.
     return res.json({
       success: true,
-      content: fallbackResponse,
+      content: result.text,
       platform,
       contentType,
-      generatedBy: "local-smart-engine",
+      generatedBy: result.usedProvider
+        ? (result.model || (process.env.GEMINI_MODEL || "gemini-2.5-flash"))
+        : result.source === "cache" ? "ai-cache" : "local-smart-engine",
+      aiSource: result.source,
+      notice: result.notice,
     });
   } catch (error: any) {
-    console.error("Content generation error:", error);
-    res.status(500).json({
-      success: false,
-      error: error.message || "حدث خطأ أثناء توليد المحتوى",
-      fallback: generateSmartFallbackContent(
-        req.body.platform,
-        req.body.contentType,
-        req.body.topic,
-        req.body.installmentDetails
-      ),
+    // حتى الخطأ غير المتوقع يعيد بديلاً صالحاً بدل إسقاط الطلب.
+    res.status(200).json({
+      success: true,
+      content: generateSmartFallbackContent(req.body.platform, req.body.contentType, req.body.topic, req.body.installmentDetails),
+      platform: req.body.platform,
+      contentType: req.body.contentType,
+      generatedBy: "local-smart-engine",
+      aiSource: "fallback",
+      notice: "تعذر استخدام محرك الذكاء الاصطناعي؛ تم استخدام المحرك المحلي الحتمي.",
     });
   }
 });
@@ -2178,7 +2203,6 @@ app.post("/api/ai/classify-message", authenticateToken, async (req, res) => {
     if (!rateLimitAI(user.id)) return res.status(429).json({ success: false, error: "تم تفعيل حماية الطلبات: انتظر دقيقة قبل إرسال طلبات AI إضافية." });
     audit(user.id, "classify_message");
     const { customerName, message, channel, showroomInfo } = req.body;
-    const ai = getGeminiClient();
 
     const prompt = `أنت مساعد خدمة العملاء الذكي في "معرض الغرابي للتقسيط".
 رسالة العميل (${customerName || 'عميل'} عبر ${channel || 'القناة'}): "${message}"
@@ -2198,29 +2222,46 @@ ${showroomInfo ? JSON.stringify(showroomInfo) : 'معرض الغرابي للت�
   }
 }`;
 
-    if (ai && canUseGemini()) {
-      const cacheKey = `classify:${JSON.stringify({ customerName, message, channel, showroomInfo })}`;
-      const cached = cachedGemini(cacheKey);
-      if (cached) return res.json({ success: true, ...JSON.parse(cached), generatedBy: "gemini-cache" });
-      if (!consumeGeminiSlot()) {
-        return res.status(429).json({ success: false, error: "تم بلوغ حد الحماية اليومية المحلي للذكاء الاصطناعي." });
-      }
-      const response = await ai.models.generateContent({
-        model: process.env.GEMINI_MODEL || "gemini-3.8-flash",
-        contents: prompt,
-        config: {
-          responseMimeType: "application/json",
-        },
-      });
+    // التصنيف الحتمي هو الأساس: لا يستهلك حصة، ويعمل حتى عند تعطل المزود.
+    const deterministicClassification = classifyMessageDeterministic(customerName, message);
+    const cacheKey = `classify:${JSON.stringify({ customerName, message, channel, showroomInfo })}`;
+    const result = await aiEngine.run({
+      cacheKey,
+      prompt,
+      json: true,
+      deterministicFallback: () => JSON.stringify(deterministicClassification),
+    });
 
-      let parsed: any;
-      try { parsed = JSON.parse(response.text || "{}"); }
-      catch { parsed = { category: "استفسار عام عن التقسيط", urgency: "متوسط", needsHumanHandoff: true, suggestedReply: "سيتولى فريق خدمة العملاء مراجعة طلبكم.", extractedEntities: {} }; }
-      cacheGemini(cacheKey, JSON.stringify(parsed));
-      return res.json({ success: true, ...parsed, generatedBy: process.env.GEMINI_MODEL || "gemini-3.8-flash" });
+    let parsed: any = deterministicClassification;
+    if (result.usedProvider || result.source === "cache") {
+      try {
+        const candidate = JSON.parse(result.text);
+        // ندمج مخرجات المزود مع التصنيف الحتمي لضمان اكتمال كل الحقول.
+        parsed = { ...deterministicClassification, ...candidate };
+      } catch {
+        parsed = deterministicClassification;
+      }
     }
 
-    // Dynamic fallback classification logic
+    return res.json({
+      success: true,
+      ...parsed,
+      generatedBy: result.usedProvider ? (result.model || (process.env.GEMINI_MODEL || "gemini-2.5-flash")) : result.source === "cache" ? "ai-cache" : "local-deterministic-engine",
+      aiSource: result.source,
+      notice: result.notice,
+    });
+  } catch (error: any) {
+    res.status(200).json({
+      success: true,
+      ...classifyMessageDeterministic(req.body?.customerName, req.body?.message),
+      generatedBy: "local-deterministic-engine",
+      aiSource: "fallback",
+    });
+  }
+});
+
+/** تصنيف حتمي للرسالة: يعمل بدون أي مزود خارجي. */
+function classifyMessageDeterministic(customerName: string | undefined, message: string | undefined) {
     const lower = (message || "").toLowerCase();
     let category = "استفسار عام عن التقسيط";
     let needsHumanHandoff = false;
@@ -2242,25 +2283,14 @@ ${showroomInfo ? JSON.stringify(showroomInfo) : 'معرض الغرابي للت�
 يسعدنا خدمتكم وتزويدكم بكافة تفاصيل وأنظمة التقسيط المتاحة.
 يمكنكم تزويدنا بتفاصيل طلبكم ليقوم مستشار المبيعات بمراجعتها وتقديم الحسبة المناسبة لكم فوراً.`;
 
-    return res.json({
-      success: true,
+    return {
       category,
       urgency,
       needsHumanHandoff,
       suggestedReply: fallbackReply,
       extractedEntities: {},
-    });
-  } catch (error: any) {
-    console.error("Classify message error:", error);
-    res.status(500).json({
-      success: false,
-      category: "استفسار عن التقسيط",
-      urgency: "متوسط",
-      needsHumanHandoff: false,
-      suggestedReply: "مرحباً بكم في معرض الغرابي للتقسيط، نسعد بخدمتكم وتلبية استفساراتكم.",
-    });
-  }
-});
+    };
+}
 
 // 3. Central Showroom AI Agent Chat & Strategist (Authenticated users only)
 app.post("/api/ai/agent-chat", authenticateToken, async (req, res) => {
@@ -2269,7 +2299,6 @@ app.post("/api/ai/agent-chat", authenticateToken, async (req, res) => {
     if (!rateLimitAI(user.id)) return res.status(429).json({ success: false, reply: "تم تفعيل حماية الطلبات مؤقتاً لتجنب استنزاف الحصة. استخدم المحرك المحلي أو انتظر دقيقة." });
     audit(user.id, "agent_chat");
     const { message, chatHistory = [], context } = req.body;
-    const ai = getGeminiClient();
 
     const systemPrompt = `أنت "الغرابي AI" - الوكيل الذكي المركزي ومستشار العمليات التسويقية والتشغيلية لمعرض الغرابي للتقسيط.
 مهامك:
@@ -2282,55 +2311,83 @@ app.post("/api/ai/agent-chat", authenticateToken, async (req, res) => {
 سياق النظام الحالي: ${JSON.stringify(context || {})}
 رسالة المستخدم: ${message}`;
 
-    if (ai && canUseGemini()) {
-      const cacheKey = `agent:${JSON.stringify({ message, chatHistory, context })}`;
-      const cached = cachedGemini(cacheKey);
-      if (cached) return res.json({ success: true, reply: cached, generatedBy: "gemini-cache" });
-      let generated = geminiInFlight.get(cacheKey);
-      if (!generated) {
-        if (!consumeGeminiSlot()) {
-          return res.status(429).json({ success: false, reply: "وصلنا إلى حد الحماية اليومية المحلي. سأبقى متاحاً بالمحرك المحلي دون استهلاك إضافي من Gemini." });
-        }
-        generated = ai.models.generateContent({
-          model: process.env.GEMINI_MODEL || "gemini-3.8-flash",
-          contents: systemPrompt,
-        }).then((r) => r.text || "").catch((error) => {
-          geminiUsageCount = Math.max(0, geminiUsageCount - 1);
-          saveUsage();
-          throw error;
-        }).finally(() => geminiInFlight.delete(cacheKey));
-        geminiInFlight.set(cacheKey, generated);
-      }
-      const generatedText = await generated;
-      cacheGemini(cacheKey, generatedText);
+    const cacheKey = `agent:${JSON.stringify({ message, chatHistory, context })}`;
+    const result = await aiEngine.run({
+      cacheKey,
+      prompt: systemPrompt,
+      deterministicFallback: () => buildDeterministicAgentReply(message, context),
+    });
 
-      return res.json({
-        success: true,
-        reply: generatedText,
-        generatedBy: process.env.GEMINI_MODEL || "gemini-3.8-flash",
-      });
-    }
+    return res.json({
+      success: true,
+      reply: result.text,
+      generatedBy: result.usedProvider ? (result.model || (process.env.GEMINI_MODEL || "gemini-2.5-flash")) : result.source === "cache" ? "ai-cache" : "local-deterministic-engine",
+      aiSource: result.source,
+      notice: result.notice,
+    });
+  } catch (error: any) {
+    res.status(200).json({
+      success: true,
+      reply: buildDeterministicAgentReply(req.body?.message, req.body?.context),
+      generatedBy: "local-deterministic-engine",
+      aiSource: "fallback",
+    });
+  }
+});
 
-    // Dynamic clean conversational fallback
-    const reply = `أهلاً بك في الغرابي AI!
+/** رد حتمي مركّز حسب نمط طلب المستخدم — يعمل بدون أي مزود خارجي. */
+function buildDeterministicAgentReply(message: string | undefined, context: any): string {
+  const text = (message || "").trim();
+  const lower = text.toLowerCase();
+  const platformName = typeof context?.platform === "string" ? context.platform : "";
+  const taskType = typeof context?.taskType === "string" ? context.taskType : "";
+
+  const scopeLine = platformName && platformName !== "all"
+    ? `النطاق المحدد: ${platformName}.`
+    : "النطاق: كافة المنصات الموحدة.";
+
+  if (taskType === "schedule") {
+    return `${scopeLine}
+دراسة أوقات الزخم:
+• الأوقات المقترحة أدناه تقديرية مبنية على طبيعة الجمهور العراقي، وليست مقاسة من بيانات المنصة بعد.
+• الفترة المسائية (8-11 مساءً) هي الأكثر ملاءمة للعروض والمنتجات المنزلية.
+• الفترة الصباحية مناسبة لرسائل المتابعة والردود على الاستفسارات.
+• لا يمكن الجزم بأفضل وقت فعلي قبل توفر مؤشرات أداء حقيقية من المنصة.`;
+  }
+
+  if (taskType === "behavior_analysis") {
+    return `${scopeLine}
+تحليل نية العميل:
+• ابحث عن سبب التردد الحقيقي: القدرة على الدفعة الأولى، أو الخوف من التعقيد الإجرائي.
+• تجنّب الضغط المباشر، وركّز على وضوح الخطوات والمستندات المطلوبة.
+• الرد المقترح: مراجعة مهذبة توضح أن الإجراءات رسمية وواضحة، مع دعوة لتزويدنا بالتفاصيل لإعداد الحسبة المناسبة.`;
+  }
+
+  if (taskType === "decision") {
+    return `${scopeLine}
+قرار تنفيذي مقترح:
+• ابدأ بحملة موحدة على المنصات الأعلى وصولاً متى توفرت بيانات الأداء.
+• وزّع المهام: صياغة المحتوى، مراجعة الجودة، الرد على الاستفسارات، ومتابعة النتائج.
+• قياس النجاح يعتمد على مؤشرات المنصة المتاحة فعلياً، وتُسجَّل النتائج في سجل الأداء لتحسين القرار القادم.`;
+  }
+
+  if (text) {
+    return `${scopeLine}
+ملاحظات على المعطيات الميدانية: "${text.slice(0, 300)}"
+التوجيه التنفيذي:
+1. حدّد الجمهور المستهدف بوضوح (موظفون، متقاعدون، حاملو الماستر كارد، أسر حديثة التكوين).
+2. اختر الصيغة المناسبة لكل منصة بدل استخدام نص واحد للجميع.
+3. اربط كل منشور بمؤشر نجاح متاح فعلياً من المنصة.
+4. سجّل النتائج بعد النشر لبناء قياس حقيقي قبل أي تعديل استراتيجي.`;
+  }
+
+  return `أهلاً بك في الغرابي AI!
 أنا جاهز لمساعدتك في كل ما يخص إدارة معرض الغرابي للتقسيط:
 • صياغة وجدولة المحتوى لجميع المنصات الاجتماعية العشر.
 • مساعدة فريق العمل في تصنيف استفسارات العملاء واقتراح الردود المناسبة.
 • تحسين عروض وأنظمة التقسيط المسجلة في قاعدة بيانات المعرض.
 كيف يمكنني مساعدتك في مهام المعرض اليوم؟`;
-
-    return res.json({
-      success: true,
-      reply,
-    });
-  } catch (error: any) {
-    console.error("Agent chat error:", error);
-    res.status(500).json({
-      success: false,
-      reply: "أهلاً بك، يسعدني دائماً مساعدتك في أي استفسار يخص إدارة وتشغيل معرض الغرابي للتقسيط.",
-    });
-  }
-});
+}
 
 // -------------------------------------------------------------
 // وكيل الغرابي الذكي — مهمة المحتوى التسويقي العربية (حتمي بالكامل).
@@ -3221,6 +3278,17 @@ ${details ? `📌 تفاصيل الخطة: ${details}` : '📌 خيارات مت
 
 #معرض_الغرابي #تقسيط #تسهيلات #عروض`;
 }
+
+// مسارات مدير السوشيال ميديا (منفذة في وحدة مستقلة قابلة للاختبار).
+registerSocialManagerRoutes(app, {
+  authenticateToken,
+  requireOwner,
+  workspace,
+  platformConnections,
+  persistState,
+  audit,
+  workspaceId,
+});
 
 // Start Server and mount Vite middleware
 async function startServer() {
