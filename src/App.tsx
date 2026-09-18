@@ -1,7 +1,6 @@
 import React, { useState } from 'react';
 import { GoogleGenAI } from '@google/genai';
 
-// المفتاح المباشر لمحرك Gemini 2.5 Flash
 const apiKey = import.meta.env.VITE_GEMINI_API_KEY || "AIzaSy_YOUR_API_KEY_HERE";
 const ai = new GoogleGenAI({ apiKey });
 
@@ -44,8 +43,9 @@ export default function App() {
         `}
       `;
 
+      // استخدام الموديل المستقر المعتمد من Google
       const response = await ai.models.generateContent({
-        model: 'gemini-2.5-flash',
+        model: 'gemini-1.5-flash',
         contents: prompt,
       });
 
@@ -155,7 +155,7 @@ export default function App() {
           {/* عرض التحليل */}
           <div style={{ backgroundColor: '#ffffff', padding: '25px', borderRadius: '12px', boxShadow: '0 4px 6px -1px rgba(0,0,0,0.1)', minHeight: '350px' }}>
             <h3 style={{ marginTop: 0, marginBottom: '20px', color: '#1e293b', borderBottom: '2px solid #e2e8f0', paddingBottom: '10px' }}>الاستراتيجية والمحتوى الجاهز</h3>
-            {loading && <p style={{ color: '#2563eb', fontWeight: 'bold' }}>جاري المعالجة واستدعاء Gemini 2.5 Flash...</p>}
+            {loading && <p style={{ color: '#2563eb', fontWeight: 'bold' }}>جاري المعالجة واستدعاء Gemini...</p>}
             {!loading && aiResponse && (
               <div style={{ whiteSpace: 'pre-wrap', lineHeight: '1.7', backgroundColor: '#f8fafc', padding: '18px', borderRadius: '8px', border: '1px solid #cbd5e1', color: '#1e293b', fontSize: '14px' }}>
                 {aiResponse}
