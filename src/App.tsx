@@ -1,9 +1,9 @@
 import React, { useState } from 'react';
 import { GoogleGenAI } from '@google/genai';
 
-const ai = new GoogleGenAI({ 
-  apiKey: import.meta.env.VITE_GEMINI_API_KEY 
-});
+// المفتاح المباشر لمحرك Gemini 2.5 Flash
+const apiKey = import.meta.env.VITE_GEMINI_API_KEY || "AIzaSy_YOUR_API_KEY_HERE";
+const ai = new GoogleGenAI({ apiKey });
 
 export default function App() {
   const [activeTab, setActiveTab] = useState<'leads' | 'campaigns'>('campaigns');
@@ -50,9 +50,9 @@ export default function App() {
       });
 
       setAiResponse(response.text || 'لم يتم استلام رد من الذكاء الاصطناعي.');
-    } catch (error) {
+    } catch (error: any) {
       console.error(error);
-      setAiResponse('حدث خطأ أثناء الاتصال بمحرك الذكاء الاصطناعي. يرجى التأكد من ضبط المفتاح.');
+      setAiResponse(`حدث خطأ أثناء الاتصال بالذكاء الاصطناعي: ${error?.message || 'تأكد من المفتاح'}`);
     } finally {
       setLoading(false);
     }
