@@ -11,28 +11,37 @@ export default function App() {
   const [aiResponse, setAiResponse] = useState('');
 
   const [campaignName, setCampaignName] = useState('');
-  const [budget, setBudget] = useState('');
+  const [budgetType, setBudgetType] = useState<'free' | 'paid'>('free');
+  const [budget, setBudget] = useState('0');
   const [targetAudience, setTargetAudience] = useState('');
 
   const handleGenerateStrategy = async () => {
-    if (!campaignName || !budget) {
-      alert('يرجى إدخال اسم الحملة والميزانية على الأقل');
+    if (!campaignName) {
+      alert('يرجى إدخال اسم الحملة أو فكرة المنشور');
       return;
     }
     setLoading(true);
     setAiResponse('');
     try {
+      const isFree = budgetType === 'free' || !budget || budget === '0';
       const prompt = `
         أنت المساعد الذكي المباشر لـ "معرض الغرابي للأقساط" في العراق.
         قام المدير بطلب استراتيجية للحملة التالية:
-        - اسم الحملة: ${campaignName}
-        - الميزانية المخصصة: ${budget}$
-        - الجمهور المستهدف: ${targetAudience}
+        - اسم الحملة/الفكرة: ${campaignName}
+        - نوع التسويق والميزانية: ${isFree ? 'تسويق مجاني بالكامل (Organic / بدون إعلانات ممولة)' : `إعلان ممول بميزانية: ${budget}$`}
+        - الجمهور المستهدف: ${targetAudience || 'جمهور عام في العراق (موظفين ومتقاعدين)'}
 
-        يرجى تقديم خطة عمل تسويقية وتنفيذية متكاملة تناسب السوق العراقي وضوابط التقسيط، وتتضمن:
-        1. جدول الزخم وأفضل ساعات النشر على منصات (فيسبوك، إنستغرام، تيك توك).
-        2. قوالب ردود سريعة ومقنعة للرد على استفسارات الزبائن عبر واتساب وماسنجر.
-        3. توصيات لزيادة نسبة المبيعات وتسهيل معاملات المعاملات التقسيط.
+        يرجى تقديم خطة عمل تناسب السوق العراقي وضوابط التقسيط لدى معرض الغرابي:
+        ${isFree ? `
+        1. استراتيجية محتوى مجاني (فيديوهات Reels/TikTok ورسائل تفاعلية).
+        2. أفضل أوقات النشر المجاني للحصول على أعلى نسبة مشاهدات وتفاعل.
+        3. نص منشور جاهز للنسخ وصياغة جذابة للجمهور.
+        4. قوالب ردود سريعة ومقنعة للرسائل (واتساب وماسنجر).
+        ` : `
+        1. جدول الزخم وأفضل ساعات النشر للاعلانات الممولة.
+        2. كيفية توزيع الميزانية على منصات فيسبوك وإنستغرام وتيك توك.
+        3. قوالب ردود سريعة ومقنعة للرد على استفسارات الزبائن.
+        `}
       `;
 
       const response = await ai.models.generateContent({
@@ -61,7 +70,7 @@ export default function App() {
         <button 
           onClick={() => setActiveTab('campaigns')}
           style={{ padding: '12px 24px', borderRadius: '8px', border: 'none', cursor: 'pointer', fontWeight: 'bold', fontSize: '15px', backgroundColor: activeTab === 'campaigns' ? '#2563eb' : '#94a3b8', color: '#ffffff' }}>
-          📢 إدارة الحملات والذكاء الاصطناعي
+          📢 إدارة الحملات والمحتوى
         </button>
         <button 
           onClick={() => setActiveTab('leads')}
@@ -76,32 +85,50 @@ export default function App() {
           
           {/* نموذج إدخال البيانات */}
           <div style={{ backgroundColor: '#ffffff', padding: '25px', borderRadius: '12px', boxShadow: '0 4px 6px -1px rgba(0,0,0,0.1)' }}>
-            <h3 style={{ marginTop: 0, marginBottom: '20px', color: '#1e293b', borderBottom: '2px solid #e2e8f0', paddingBottom: '10px' }}>تخطيط حملة تسويقية جديدة</h3>
+            <h3 style={{ marginTop: 0, marginBottom: '20px', color: '#1e293b', borderBottom: '2px solid #e2e8f0', paddingBottom: '10px' }}>تخطيط حملة / محتوى جديد</h3>
             
             <div style={{ marginBottom: '18px' }}>
               <label style={{ display: 'block', marginBottom: '8px', fontWeight: 'bold', color: '#0f172a', fontSize: '15px' }}>
-                📌 اسم الحملة:
+                📌 اسم الحملة / فكرة المنشور:
               </label>
               <input 
                 type="text" 
-                placeholder="مثال: حملة تقسيط الشاشات والتكييف بدون مقدم"
+                placeholder="مثال: فيديو تقسيط الشاشات والمكيفات بدون مقدم"
                 value={campaignName} 
                 onChange={(e) => setCampaignName(e.target.value)}
                 style={{ width: '100%', padding: '12px', borderRadius: '6px', border: '2px solid #cbd5e1', fontSize: '14px', color: '#0f172a', backgroundColor: '#ffffff', boxSizing: 'border-box' }}
               />
             </div>
 
+            {/* خيار الميزانية */}
             <div style={{ marginBottom: '18px' }}>
               <label style={{ display: 'block', marginBottom: '8px', fontWeight: 'bold', color: '#0f172a', fontSize: '15px' }}>
-                💰 الميزانية المخصصة ($):
+                💰 نوع التمويل والميزانية:
               </label>
-              <input 
-                type="number" 
-                placeholder="مثال: 150"
-                value={budget} 
-                onChange={(e) => setBudget(e.target.value)}
-                style={{ width: '100%', padding: '12px', borderRadius: '6px', border: '2px solid #cbd5e1', fontSize: '14px', color: '#0f172a', backgroundColor: '#ffffff', boxSizing: 'border-box' }}
-              />
+              <div style={{ display: 'flex', gap: '10px', marginBottom: '10px' }}>
+                <button 
+                  type="button"
+                  onClick={() => { setBudgetType('free'); setBudget('0'); }}
+                  style={{ flex: 1, padding: '10px', borderRadius: '6px', border: '2px solid #16a34a', backgroundColor: budgetType === 'free' ? '#16a34a' : '#ffffff', color: budgetType === 'free' ? '#ffffff' : '#16a34a', fontWeight: 'bold', cursor: 'pointer' }}>
+                  🎁 مجاني (بدون تمويل)
+                </button>
+                <button 
+                  type="button"
+                  onClick={() => setBudgetType('paid')}
+                  style={{ flex: 1, padding: '10px', borderRadius: '6px', border: '2px solid #2563eb', backgroundColor: budgetType === 'paid' ? '#2563eb' : '#ffffff', color: budgetType === 'paid' ? '#ffffff' : '#2563eb', fontWeight: 'bold', cursor: 'pointer' }}>
+                  💳 إعلان ممول ($)
+                </button>
+              </div>
+
+              {budgetType === 'paid' && (
+                <input 
+                  type="number" 
+                  placeholder="أدخل الميزانية بالدولار (مثال: 50)"
+                  value={budget} 
+                  onChange={(e) => setBudget(e.target.value)}
+                  style={{ width: '100%', padding: '12px', borderRadius: '6px', border: '2px solid #cbd5e1', fontSize: '14px', color: '#0f172a', backgroundColor: '#ffffff', boxSizing: 'border-box' }}
+                />
+              )}
             </div>
 
             <div style={{ marginBottom: '22px' }}>
@@ -110,7 +137,7 @@ export default function App() {
               </label>
               <input 
                 type="text" 
-                placeholder="مثال: موظفي الدولة والمتقاعدين في بغداد والمحافظات"
+                placeholder="مثال: موظفين ومتقاعدين في بغداد والمحافظات"
                 value={targetAudience} 
                 onChange={(e) => setTargetAudience(e.target.value)}
                 style={{ width: '100%', padding: '12px', borderRadius: '6px', border: '2px solid #cbd5e1', fontSize: '14px', color: '#0f172a', backgroundColor: '#ffffff', boxSizing: 'border-box' }}
@@ -121,14 +148,14 @@ export default function App() {
               onClick={handleGenerateStrategy}
               disabled={loading}
               style={{ width: '100%', padding: '14px', backgroundColor: loading ? '#94a3b8' : '#16a34a', color: '#ffffff', border: 'none', borderRadius: '8px', cursor: loading ? 'not-allowed' : 'pointer', fontSize: '16px', fontWeight: 'bold', transition: 'background-color 0.2s' }}>
-              {loading ? '⏳ جاري التحليل بواسطة Gemini...' : '🚀 توليد الخطة بالذكاء الاصطناعي'}
+              {loading ? '⏳ جاري التوليد بواسطة Gemini...' : '🚀 توليد الخطة والمحتوى'}
             </button>
           </div>
 
           {/* عرض التحليل */}
           <div style={{ backgroundColor: '#ffffff', padding: '25px', borderRadius: '12px', boxShadow: '0 4px 6px -1px rgba(0,0,0,0.1)', minHeight: '350px' }}>
-            <h3 style={{ marginTop: 0, marginBottom: '20px', color: '#1e293b', borderBottom: '2px solid #e2e8f0', paddingBottom: '10px' }}>التحليل والتوجيه الإستراتيجي حياً</h3>
-            {loading && <p style={{ color: '#2563eb', fontWeight: 'bold' }}>جاري معالجة البيانات واستدعاء Gemini 2.5 Flash...</p>}
+            <h3 style={{ marginTop: 0, marginBottom: '20px', color: '#1e293b', borderBottom: '2px solid #e2e8f0', paddingBottom: '10px' }}>الاستراتيجية والمحتوى الجاهز</h3>
+            {loading && <p style={{ color: '#2563eb', fontWeight: 'bold' }}>جاري المعالجة واستدعاء Gemini 2.5 Flash...</p>}
             {!loading && aiResponse && (
               <div style={{ whiteSpace: 'pre-wrap', lineHeight: '1.7', backgroundColor: '#f8fafc', padding: '18px', borderRadius: '8px', border: '1px solid #cbd5e1', color: '#1e293b', fontSize: '14px' }}>
                 {aiResponse}
@@ -136,7 +163,7 @@ export default function App() {
             )}
             {!loading && !aiResponse && (
               <div style={{ textAlign: 'center', color: '#64748b', marginTop: '60px' }}>
-                <p style={{ fontSize: '16px' }}>👈 قم بإدخال بيانات الحملة واضغط على الزر الأخضر لتوليد التوجيهات فوراً.</p>
+                <p style={{ fontSize: '16px' }}>👈 قم بإدخال الفكرة، اختر نوع التمويل (مجاني أو ممول)، ثم اضغط على الزر الأخضر.</p>
               </div>
             )}
           </div>
