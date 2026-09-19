@@ -123,6 +123,15 @@ try {
     // و) POST مع جسم JSON يُقرأ فعلاً (بلا 404 ولا خطأ تفريغ).
     const p = await handler(apiEvent('/api/ai/generate-content', 'POST', { platform: 'facebook', contentType: 'post', topic: 'اختبار' }), {});
     check('POST /api/ai/generate-content -> 401 (لا 404)', p.statusCode === 401, `got ${p.statusCode}`);
+
+    // ز) تطبيع المسار: أي صيغة rewrite أو وصول مباشر للدالة يجب أن تصل Express
+    //    وترد JSON، لا صفحة HTML 404.
+    for (const variant of ['/api/health', '/.netlify/functions/api/health', '/.netlify/functions/api/api/health', '/health']) {
+      const r = await handler(apiEvent(variant), {});
+      const ct = r.headers?.['content-type'] || '';
+      check(`تطبيع المسار ${variant} -> 200`, r.statusCode === 200, `got ${r.statusCode}`);
+      check(`تطبيع المسار ${variant} -> JSON`, ct.includes('application/json'), `content-type=${ct}`);
+    }
   })();
 
   console.log('\n' + '='.repeat(60));
