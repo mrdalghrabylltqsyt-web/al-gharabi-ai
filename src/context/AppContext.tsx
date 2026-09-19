@@ -148,6 +148,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       try {
         // معاينة الجوال: الرابط يحمل توكن المعاينة، نقايضه بجلسة مالك حقيقية
         // ثم نمحو المعامل من الرابط فوراً حتى لا يبقى في التاريخ.
+        // نستبدل أي جلسة قديمة: جلَسَات الخادم في الذاكرة، فجلسة سابقة تموت
+        // عند إعادة التشغيل، ولو احترمناها لبقي رابط المعاينة معطلاً.
         try {
           const params = new URLSearchParams(window.location.search);
           const previewToken = params.get('preview_token');
@@ -155,15 +157,15 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             params.delete('preview_token');
             const clean = window.location.pathname + (params.toString() ? `?${params.toString()}` : '') + window.location.hash;
             window.history.replaceState({}, '', clean);
-            if (!getApiAuthToken()) {
+            try {
               const session = await apiService.previewLogin(previewToken);
               setApiAuthToken(session.token);
               setCurrentUser(session.user);
               setIsLoadingAuth(false);
               return;
-            }
+            } catch { /* توكن غير صالح: نكمل في مسار الجلسة العادي */ }
           }
-        } catch { /* رابط معاينة غير صالح: نكمل كزائر */ }
+        } catch { /* بلا window */ }
 
         const token = getApiAuthToken();
         if (!token) {
