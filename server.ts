@@ -2,7 +2,6 @@ import express from "express";
 import path from "path";
 import crypto from "crypto";
 import fs from "fs";
-import { createServer as createViteServer } from "vite";
 import dotenv from "dotenv";
 import { AiEngine, type AiUsageGuard } from "./engine/ai/engine";
 import { createGeminiProvider } from "./engine/ai/provider";
@@ -3447,6 +3446,10 @@ registerSocialManagerRoutes(app, {
 // Start Server and mount Vite middleware
 async function startServer() {
   if (process.env.NODE_ENV !== "production") {
+    // يُستورد Vite ديناميكياً عبر مُعرّف متغيّر ليبقى خارج حزمة Netlify Function:
+    // المُجمّع لا يستطيع حلّه ثابتاً، وهو لا يُنفَّذ أصلاً داخل الدالة.
+    const viteEntry = "vite";
+    const { createServer: createViteServer } = await import(viteEntry);
     const vite = await createViteServer({
       server: { middlewareMode: true },
       appType: "spa",
@@ -3465,4 +3468,19 @@ async function startServer() {
   });
 }
 
-startServer();
+// داخل Netlify Functions لا يوجد خادم دائم: يلتقط الطلب handler المُصدَّر من
+// netlify/functions/api.ts، ولا يُستدعى app.listen() إطلاقاً.
+const isNetlifyFunction =
+  Boolean(process.env.NETLIFY) ||
+  Boolean(process.env.AWS_LAMBDA_FUNCTION_NAME) ||
+  Boolean(process.env.LAMBDA_TASK_ROOT);
+
+if (!isNetlifyFunction) {
+  startServer().catch((error) => {
+    console.error("Failed to start server:", error);
+    process.exit(1);
+  });
+}
+
+export { app, isNetlifyFunction };
+export default app;

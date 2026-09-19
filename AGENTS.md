@@ -32,11 +32,13 @@ engine/social/comments.ts     تصنيف التعليقات الحتمي + من�
 engine/social/publishing.ts   preflight/execute + توفر المؤشرات لكل منصة
 engine/social/brain.ts        العقل التسويقي + الذاكرة التشغيلية
 engine/social/routes.ts       مسارات /api/social/manager/* (تُسجَّل من server.ts)
-engine/tests/                 4 مجموعات اختبار (214 فحصاً)
+engine/tests/                 6 مجموعات اختبار (333 فحصاً)
+netlify/functions/api.ts      غلاف Netlify Function حول تطبيق Express نفسه
 src/components/social/SocialManagerView.tsx   واجهة المدير
 src/components/agent/BrainCommandView.tsx     لوحة العقل المفكر
 ```
 - المسارات تُسجَّل عبر `registerSocialManagerRoutes(app, {...})` في `server.ts` (حوالي السطر 3283) بحقن التبعيات.
+- النشر على Netlify: نفس تطبيق Express يعمل داخل Function واحدة. `server.ts` يصدّر `app` ويتخطى `app.listen()` عند كشف بيئة Netlify/Lambda، ويستورد `vite` ديناميكياً ليبقى خارج الحزمة. التوجيه من `netlify.toml` عبر rewrite بحالة 200 يحافظ على المسار الأصلي.
 
 ## قواعد ملزمة عند التعديل
 1. **لا بيانات وهمية إطلاقاً.** لا حسابات، متابعين، منشورات، إعجابات، تعليقات، ولا Analytics مختلقة.

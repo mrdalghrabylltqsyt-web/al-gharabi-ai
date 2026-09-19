@@ -2,11 +2,19 @@
   command = "npm run build"
   publish = "dist"
 
+[functions]
+  directory = "netlify/functions"
+  node_bundler = "esbuild"
+
+# كل طلبات /api/* تُعاد كتابتها إلى دالة Express الموحّدة.
+# الحالة 200 (rewrite) تحافظ على المسار الأصلي داخل event.path،
+# فيرى Express مساراته كما هي (/api/health, /api/auth/...).
 [[redirects]]
   from = "/api/*"
-  to = "/.netlify/functions/:splat"
+  to = "/.netlify/functions/api/:splat"
   status = 200
 
+# تطبيق React أحادي الصفحة: أي مسار غير API يُخدم من index.html.
 [[redirects]]
   from = "/*"
   to = "/index.html"
