@@ -33,6 +33,8 @@ import {
   type PerformanceRecord,
 } from "./engine/social/brain";
 import { getOwnerEmailConfig, sendOwnerOtpEmail } from "./engine/notifications/owner-email";
+import { SESSION_TTL_MS, signSession, verifySession, type SessionPayload } from "./engine/auth/sessions";
+import { CHALLENGE_TTL_MS, issueChallengeCode, verifyChallengeCode } from "./engine/auth/challenge";
 
 dotenv.config();
 
@@ -44,8 +46,7 @@ const PORT = (() => {
   return Number.isInteger(raw) && raw > 0 && raw <= 65535 ? raw : 3000;
 })();
 const PROJECT_VERSION = "13.0.0";
-const STATE_SCHEMA_VERSION = 15;
-const BACKUP_DIR = path.join(process.cwd(), ".gharabi-backups");
+const STATE_SCHEMA_VERSION = 16;
 
 app.use(express.json({ limit: "256kb" }));
 
@@ -103,6 +104,8 @@ export interface ServerUser {
 
 export interface ActiveSession {
   token: string;
+  /** معرّف الجلسة — يُستخدم لإبطالها عند تسجيل الخروج. */
+  sid: string;
   user: {
     id: string;
     name: string;
@@ -118,6 +121,26 @@ export interface ActiveSession {
 // Configurable Owner Email (Single source of truth on the server)
 const OWNER_EMAIL = (process.env.OWNER_EMAIL || "").toLowerCase().trim();
 const GOOGLE_CLIENT_ID = (process.env.GOOGLE_CLIENT_ID || "").trim();
+
+// مفتاح توقيع الجلسات. يُشتق من SESSION_SECRET إن وُجد، وإلا من مفتاح تشفير
+// توكنات المنصات إن كان مضبوطاً، فيبقى التوقيع ثابتاً عبر العمليات وإعادة
+// النشر. بغيابهما يُولَّد مفتاح عابر لهذه العملية فقط، وتُعلن حالة الإعداد
+// بصراحة في /api/health حتى لا يُظن أن الجلسات دائمة وهي ليست كذلك.
+const SESSION_SECRET_VALUE = (process.env.SESSION_SECRET || "").trim();
+const SESSION_SECRET_SOURCE: "SESSION_SECRET" | "PLATFORM_TOKEN_ENCRYPTION_KEY" | "ephemeral" =
+  SESSION_SECRET_VALUE ? "SESSION_SECRET" : (process.env.PLATFORM_TOKEN_ENCRYPTION_KEY || "").trim() ? "PLATFORM_TOKEN_ENCRYPTION_KEY" : "ephemeral";
+function deriveSessionSecret(): Buffer {
+  if (SESSION_SECRET_SOURCE === "SESSION_SECRET") {
+    return crypto.createHash("sha256").update(`gharabi-session:${SESSION_SECRET_VALUE}`).digest();
+  }
+  if (SESSION_SECRET_SOURCE === "PLATFORM_TOKEN_ENCRYPTION_KEY") {
+    return crypto.createHash("sha256").update(`gharabi-session:${process.env.PLATFORM_TOKEN_ENCRYPTION_KEY}`).digest();
+  }
+  return crypto.randomBytes(32);
+}
+const SESSION_SECRET = deriveSessionSecret();
+/** هل الجلسات دائمة فعلاً (لا تُفقد بين العمليات)؟ */
+const SESSIONS_DURABLE = SESSION_SECRET_SOURCE !== "ephemeral";
 
 function getRoleTitle(role: ServerUserRole): string {
   switch (role) {
@@ -137,7 +160,27 @@ function getRoleTitle(role: ServerUserRole): string {
 }
 
 // Persistent server-side store. Only real owner/user records are loaded; no demo data.
-const STATE_FILE = path.join(process.cwd(), ".gharabi-state.json");
+// المسار قابل للضبط عبر STATE_DIR (مجلدات دائمة/مُثبّتة)، وافتراضياً مجلد العمل.
+const STATE_DIR = (process.env.STATE_DIR || process.cwd()).trim() || process.cwd();
+const STATE_FILE = path.join(STATE_DIR, ".gharabi-state.json");
+const BACKUP_DIR = path.join(STATE_DIR, ".gharabi-backups");
+
+/**
+ * هل يمكن الكتابة فعلاً في مجلد الحالة؟ على منصات بلا قرص دائم (مثل Netlify
+ * Functions) يكون الجذر للقراءة فقط، فيفشل الحفظ بصمت. نفحص مرة واحدة حتى
+ * تُعلن الحالة بصراحة في /api/health بدل الإيهام بدوام البيانات.
+ */
+const STATE_WRITABLE = (() => {
+  try {
+    fs.mkdirSync(STATE_DIR, { recursive: true });
+    const probe = path.join(STATE_DIR, `.gharabi-write-probe-${process.pid}`);
+    fs.writeFileSync(probe, "ok", { encoding: "utf8", mode: 0o600 });
+    fs.unlinkSync(probe);
+    return true;
+  } catch {
+    return false;
+  }
+})();
 const defaultOwner: ServerUser = {
   id: "owner",
   name: "مالك النظام (Owner)",
@@ -155,13 +198,34 @@ function loadPersistentState(): any {
     if (!raw.schemaVersion) raw.schemaVersion = 1;
     const users = Array.isArray(raw.users) ? raw.users : [defaultOwner];
     if (!users.some((u: ServerUser) => u.id === "owner")) users.unshift(defaultOwner);
-    return { users, audit: Array.isArray(raw.audit) ? raw.audit.slice(0, 200) : [], jobs: Array.isArray(raw.jobs) ? raw.jobs.slice(0, 200) : [], workspace: raw.workspace && typeof raw.workspace === "object" ? { showroom: raw.workspace.showroom || {}, products: Array.isArray(raw.workspace.products) ? raw.workspace.products.slice(0, 1000) : [], posts: Array.isArray(raw.workspace.posts) ? raw.workspace.posts.slice(0, 1000) : [], conversations: Array.isArray(raw.workspace.conversations) ? raw.workspace.conversations.slice(0, 1000) : [], installmentPlans: Array.isArray(raw.workspace.installmentPlans) ? raw.workspace.installmentPlans.slice(0, 200) : [], leads: Array.isArray(raw.workspace.leads) ? raw.workspace.leads.slice(0, 2000) : [], tasks: Array.isArray(raw.workspace.tasks) ? raw.workspace.tasks.slice(0, 1000) : [], sales: Array.isArray(raw.workspace.sales) ? raw.workspace.sales.slice(0, 5000) : [], payments: Array.isArray(raw.workspace.payments) ? raw.workspace.payments.slice(0, 10000) : [], inventoryMovements: Array.isArray(raw.workspace.inventoryMovements) ? raw.workspace.inventoryMovements.slice(0, 20000) : [], suppliers: Array.isArray(raw.workspace.suppliers) ? raw.workspace.suppliers.slice(0, 1000) : [], purchases: Array.isArray(raw.workspace.purchases) ? raw.workspace.purchases.slice(0, 5000) : [], expenses: Array.isArray(raw.workspace.expenses) ? raw.workspace.expenses.slice(0, 10000) : [], contracts: Array.isArray(raw.workspace.contracts) ? raw.workspace.contracts.slice(0, 5000) : [], installmentSchedules: Array.isArray(raw.workspace.installmentSchedules) ? raw.workspace.installmentSchedules.slice(0, 20000) : [], notifications: Array.isArray(raw.workspace.notifications) ? raw.workspace.notifications.slice(0, 10000) : [], webhookEvents: Array.isArray(raw.workspace.webhookEvents) ? raw.workspace.webhookEvents.slice(0, 10000) : [], providerEvents: Array.isArray(raw.workspace.providerEvents) ? raw.workspace.providerEvents.slice(0, 10000) : [], marketingBriefs: Array.isArray(raw.workspace.marketingBriefs) ? raw.workspace.marketingBriefs.slice(0, 2000) : [], marketingCampaigns: Array.isArray(raw.workspace.marketingCampaigns) ? raw.workspace.marketingCampaigns.slice(0, 1000) : [], providerTokens: raw.workspace.providerTokens && typeof raw.workspace.providerTokens === "object" ? raw.workspace.providerTokens : {} } : { showroom: {}, products: [], posts: [], conversations: [], installmentPlans: [], leads: [], tasks: [], sales: [], payments: [], inventoryMovements: [], suppliers: [], purchases: [], expenses: [], contracts: [], installmentSchedules: [], notifications: [], webhookEvents: [], providerEvents: [], marketingBriefs: [], marketingCampaigns: [], providerTokens: {} } };
+    return { users, revokedSessions: Array.isArray(raw.revokedSessions) ? raw.revokedSessions : [], userRevocations: Array.isArray(raw.userRevocations) ? raw.userRevocations : [], audit: Array.isArray(raw.audit) ? raw.audit.slice(0, 200) : [], jobs: Array.isArray(raw.jobs) ? raw.jobs.slice(0, 200) : [], workspace: raw.workspace && typeof raw.workspace === "object" ? { showroom: raw.workspace.showroom || {}, products: Array.isArray(raw.workspace.products) ? raw.workspace.products.slice(0, 1000) : [], posts: Array.isArray(raw.workspace.posts) ? raw.workspace.posts.slice(0, 1000) : [], conversations: Array.isArray(raw.workspace.conversations) ? raw.workspace.conversations.slice(0, 1000) : [], installmentPlans: Array.isArray(raw.workspace.installmentPlans) ? raw.workspace.installmentPlans.slice(0, 200) : [], leads: Array.isArray(raw.workspace.leads) ? raw.workspace.leads.slice(0, 2000) : [], tasks: Array.isArray(raw.workspace.tasks) ? raw.workspace.tasks.slice(0, 1000) : [], sales: Array.isArray(raw.workspace.sales) ? raw.workspace.sales.slice(0, 5000) : [], payments: Array.isArray(raw.workspace.payments) ? raw.workspace.payments.slice(0, 10000) : [], inventoryMovements: Array.isArray(raw.workspace.inventoryMovements) ? raw.workspace.inventoryMovements.slice(0, 20000) : [], suppliers: Array.isArray(raw.workspace.suppliers) ? raw.workspace.suppliers.slice(0, 1000) : [], purchases: Array.isArray(raw.workspace.purchases) ? raw.workspace.purchases.slice(0, 5000) : [], expenses: Array.isArray(raw.workspace.expenses) ? raw.workspace.expenses.slice(0, 10000) : [], contracts: Array.isArray(raw.workspace.contracts) ? raw.workspace.contracts.slice(0, 5000) : [], installmentSchedules: Array.isArray(raw.workspace.installmentSchedules) ? raw.workspace.installmentSchedules.slice(0, 20000) : [], notifications: Array.isArray(raw.workspace.notifications) ? raw.workspace.notifications.slice(0, 10000) : [], webhookEvents: Array.isArray(raw.workspace.webhookEvents) ? raw.workspace.webhookEvents.slice(0, 10000) : [], providerEvents: Array.isArray(raw.workspace.providerEvents) ? raw.workspace.providerEvents.slice(0, 10000) : [], marketingBriefs: Array.isArray(raw.workspace.marketingBriefs) ? raw.workspace.marketingBriefs.slice(0, 2000) : [], marketingCampaigns: Array.isArray(raw.workspace.marketingCampaigns) ? raw.workspace.marketingCampaigns.slice(0, 1000) : [], providerTokens: raw.workspace.providerTokens && typeof raw.workspace.providerTokens === "object" ? raw.workspace.providerTokens : {} } : { showroom: {}, products: [], posts: [], conversations: [], installmentPlans: [], leads: [], tasks: [], sales: [], payments: [], inventoryMovements: [], suppliers: [], purchases: [], expenses: [], contracts: [], installmentSchedules: [], notifications: [], webhookEvents: [], providerEvents: [], marketingBriefs: [], marketingCampaigns: [], providerTokens: {} } };
   } catch {
-    return { users: [defaultOwner], audit: [], jobs: [], workspace: { showroom: {}, products: [], posts: [], conversations: [], installmentPlans: [], leads: [], tasks: [], sales: [], payments: [], inventoryMovements: [], suppliers: [], purchases: [], expenses: [], contracts: [], installmentSchedules: [], notifications: [], webhookEvents: [], providerEvents: [], marketingBriefs: [], marketingCampaigns: [], providerTokens: {} } };
+    return { users: [defaultOwner], revokedSessions: [], userRevocations: [], audit: [], jobs: [], workspace: { showroom: {}, products: [], posts: [], conversations: [], installmentPlans: [], leads: [], tasks: [], sales: [], payments: [], inventoryMovements: [], suppliers: [], purchases: [], expenses: [], contracts: [], installmentSchedules: [], notifications: [], webhookEvents: [], providerEvents: [], marketingBriefs: [], marketingCampaigns: [], providerTokens: {} } };
   }
 }
 
+// الجلسات المُبطَلة (تسجيل خروج / إلغاء تفعيل / حذف مستخدم). تُحفظ على القرص
+// لأن الإبطال يجب أن يسري في كل العمليات لا في العملية التي نفّذته فقط.
+const revokedSessions = new Map<string, number>(); // sid -> exp
+
+// ختم إبطال على مستوى المستخدم: أي توكن صدر قبل الختم يُرفض. يُغطّي تغيير
+// الدور والتعطيل والحذف، ويسري في كل العمليات بعد إعادة التشغيل من القرص.
+const userRevocationEpoch = new Map<string, number>(); // userId -> timestamp
+
 const persisted = loadPersistentState();
+// الجلسات المُبطَلة تُحمَّل من القرص كي يستمر الإبطال عبر العمليات وإعادة النشر.
+for (const entry of Array.isArray(persisted.revokedSessions) ? persisted.revokedSessions : []) {
+  if (entry?.sid && typeof entry.exp === "number" && entry.exp > Date.now()) {
+    revokedSessions.set(entry.sid, entry.exp);
+  }
+}
+// ختم الإبطال على مستوى المستخدم يُحمَّل أيضاً كي لا تعود جلسة مُبطلة للحياة
+// بعد إعادة تشغيل العملية.
+for (const entry of Array.isArray(persisted.userRevocations) ? persisted.userRevocations : []) {
+  if (entry?.userId && typeof entry.at === "number") {
+    userRevocationEpoch.set(entry.userId, entry.at);
+  }
+}
 const serverUsers: ServerUser[] = persisted.users;
 const workspace = persisted.workspace;
 for (const key of ["inventoryMovements","suppliers","purchases","expenses","contracts","installmentSchedules","notifications","webhookEvents","providerEvents"]) if (!Array.isArray((workspace as any)[key])) (workspace as any)[key] = [];
@@ -182,16 +246,37 @@ for (const post of workspace.posts) {
   }
 }
 
-// Active sessions: token -> ActiveSession
+// Active sessions: kept in memory only as a small cache for the current process.
+// الحقيقة في التوكن الموقّع نفسه، لذا لا تعتمد الجلسة على هذه الخريطة.
 const activeSessions = new Map<string, ActiveSession>();
 
-// Temporary challenge store for owner verification fallback (expires in 10 mins)
-const verificationChallenges = new Map<string, { code: string; expiresAt: number }>();
+/**
+ * يُبطل كل جلسات مستخدم معيّن.
+ *
+ * الإبطال لا يمكن أن يعتمد على التوكنات المخزّنة في هذه العملية فقط، لأن
+ * العمليات الأخرى تحمل جلسات لا نراها. لذلك نُبطل على مستوى المستخدم نفسه
+ * عبر ختم زمني: أي توكن صادر قبل هذا الختم يُرفض، فيسري الإبطال في كل
+ * العمليات وإعادة النشر بلا حاجة لمشاركة قائمة التوكنات.
+ */
+function revokeUserSessions(userId: string) {
+  userRevocationEpoch.set(userId, Date.now());
+  for (const [token, session] of activeSessions.entries()) {
+    if (session.user.id === userId) activeSessions.delete(token);
+  }
+}
+
+// رموز تحقق استُهلكت في هذه العملية — أفضل جهد لمنع إعادة الاستخدام.
+// الأساس أن الرمز مشتق رياضياً (بلا حالة) ويبقى صالحاً في أي عملية.
+const consumedChallenges = new Map<string, number>(); // email -> exp
 
 function createSessionForUser(user: ServerUser): ActiveSession {
-  const token = crypto.randomBytes(32).toString("hex");
+  const sid = crypto.randomUUID();
+  const expiresAt = Date.now() + SESSION_TTL_MS;
+  // التوكن موقّع ويحمل المعرّف والصلاحية فقط، فيبقى صالحاً في أي عملية.
+  const token = signSession({ uid: user.id, iat: Date.now(), exp: expiresAt, sid }, SESSION_SECRET);
   const session: ActiveSession = {
     token,
+    sid,
     user: {
       id: user.id,
       name: user.name,
@@ -201,7 +286,7 @@ function createSessionForUser(user: ServerUser): ActiveSession {
       avatar: user.avatar,
       active: user.active,
     },
-    expiresAt: Date.now() + 1000 * 60 * 60 * 24 * 7, // 7 days valid
+    expiresAt,
   };
   activeSessions.set(token, session);
   return session;
@@ -218,27 +303,58 @@ function authenticateToken(req: express.Request, res: express.Response, next: ex
   }
 
   const token = authHeader.substring(7).trim();
-  const session = activeSessions.get(token);
+  const payload = verifySession(token, SESSION_SECRET);
 
-  if (!session || session.expiresAt < Date.now()) {
-    if (session) activeSessions.delete(token);
+  if (!payload) {
     return res.status(401).json({
       success: false,
       error: "انتهت صلاحية جلسة الدخول. يرجى إعادة تسجيل الدخول.",
     });
   }
 
-  const dbUser = serverUsers.find((u) => u.id === session.user.id);
+  // الإبطال الصريح (خروج/تعطيل/حذف) يسري في كل العمليات لأن القائمة محفوظة.
+  const revokedUntil = revokedSessions.get(payload.sid);
+  if (revokedUntil && revokedUntil > Date.now()) {
+    return res.status(401).json({
+      success: false,
+      error: "انتهت صلاحية جلسة الدخول. يرجى إعادة تسجيل الدخول.",
+    });
+  }
+
+  // إبطال على مستوى المستخدم: أي توكن صدر قبل ختم الإبطال يُرفض، فيسري
+  // التعطيل/تغيير الدور في كل العمليات لا في العملية التي نفّذت التغيير.
+  const epoch = userRevocationEpoch.get(payload.uid);
+  if (epoch && payload.iat < epoch) {
+    return res.status(401).json({
+      success: false,
+      error: "انتهت صلاحية جلسة الدخول. يرجى إعادة تسجيل الدخول.",
+    });
+  }
+
+  // الدور والمصادقة يُقرآن من قاعدة البيانات دائماً، لا من التوكن.
+  const dbUser = serverUsers.find((u) => u.id === payload.uid);
   if (!dbUser || !dbUser.active) {
-    activeSessions.delete(token);
     return res.status(403).json({
       success: false,
       error: "تم إلغاء تفعيل هذا الحساب أو حذفه.",
     });
   }
 
-  // Synchronize server-side role
-  session.user.role = dbUser.role;
+  const session: ActiveSession = {
+    token,
+    sid: payload.sid,
+    user: {
+      id: dbUser.id,
+      name: dbUser.name,
+      email: dbUser.email,
+      role: dbUser.role,
+      roleTitleArabic: dbUser.roleTitleArabic,
+      avatar: dbUser.avatar,
+      active: dbUser.active,
+    },
+    expiresAt: payload.exp,
+  };
+  activeSessions.set(token, session);
   (req as any).session = session;
   (req as any).user = dbUser;
   next();
@@ -346,18 +462,14 @@ app.post("/api/auth/request-owner-challenge", async (req, res) => {
     });
   }
 
-  // Generate secure 6-digit code
-  const code = crypto.randomInt(100000, 1000000).toString();
-  verificationChallenges.set(normalizedEmail, {
-    code,
-    expiresAt: Date.now() + 10 * 60 * 1000, // 10 minutes
-  });
+  // الرمز يُشتق رياضياً من مفتاح الخادم والنافذة الزمنية، فلا يعتمد على ذاكرة
+  // مشتركة ويمكن التحقق منه في أي عملية.
+  const code = issueChallengeCode(normalizedEmail, SESSION_SECRET);
 
   // الإرسال الفعلي عبر Resend. لا يُسجَّل الرمز ولا يُعاد في الاستجابة إطلاقاً.
   const result = await sendOwnerOtpEmail({ to: normalizedEmail, code });
   if (!result.sent) {
-    // لا رمز معلّقاً بلا تسليم: يُلغى كي لا يُقبل رمز لم يصل للمالك.
-    verificationChallenges.delete(normalizedEmail);
+    consumedChallenges.delete(normalizedEmail);
     auditLog.unshift({ id: crypto.randomUUID(), at: new Date().toISOString(), userId: "system", action: "owner_challenge_email_failed", detail: result.error || "send_failed" });
     if (auditLog.length > 100) auditLog.pop();
     persistState();
@@ -366,6 +478,8 @@ app.post("/api/auth/request-owner-challenge", async (req, res) => {
       error: "تعذر إرسال رمز التحقق، حاول مرة أخرى",
     });
   }
+
+  consumedChallenges.delete(normalizedEmail);
 
   auditLog.unshift({ id: crypto.randomUUID(), at: new Date().toISOString(), userId: "system", action: "owner_challenge_email_sent", detail: "owner-challenge-delivered" });
   if (auditLog.length > 100) auditLog.pop();
@@ -385,18 +499,19 @@ app.post("/api/auth/verify-challenge", (req, res) => {
     return res.status(400).json({ success: false, error: "البريد الإلكتروني ورمز التحقق مطلوبان." });
   }
 
-  const record = verificationChallenges.get(normalizedEmail);
-  if (!record || record.expiresAt < Date.now()) {
-    verificationChallenges.delete(normalizedEmail);
+  // منع إعادة استخدام رمز سبق أن نجح في هذه العملية.
+  const consumedAt = consumedChallenges.get(normalizedEmail);
+  if (consumedAt && consumedAt > Date.now()) {
     return res.status(401).json({ success: false, error: "رمز التحقق غير صحيح أو انتهت صلاحيته." });
   }
 
-  if (record.code !== code.toString().trim()) {
+  // التحقق الرياضي: يعمل في أي عملية بلا اعتماد على ذاكرة مشتركة.
+  if (!verifyChallengeCode(normalizedEmail, code, SESSION_SECRET)) {
     return res.status(401).json({ success: false, error: "رمز التحقق المدخل غير صحيح." });
   }
 
-  // Successful verification, invalidate challenge
-  verificationChallenges.delete(normalizedEmail);
+  // Successful verification: يُستهلك الرمز لهذه العملية.
+  consumedChallenges.set(normalizedEmail, Date.now() + CHALLENGE_TTL_MS);
 
   let user = serverUsers.find((u) => u.email.toLowerCase() === normalizedEmail && u.active);
   if (!user && normalizedEmail === OWNER_EMAIL) {
@@ -450,7 +565,13 @@ app.post("/api/auth/logout", (req, res) => {
   const authHeader = req.headers.authorization;
   if (authHeader && authHeader.startsWith("Bearer ")) {
     const token = authHeader.substring(7).trim();
-    activeSessions.delete(token);
+    const payload = verifySession(token, SESSION_SECRET);
+    if (payload) {
+      // الإبطال يُحفظ على القرص كي يسري في كل العمليات لا في هذه العملية فقط.
+      revokedSessions.set(payload.sid, payload.exp);
+      activeSessions.delete(token);
+      persistState();
+    }
   }
   res.json({ success: true, message: "تم تسجيل الخروج بنجاح." });
 });
@@ -557,15 +678,9 @@ app.put("/api/users/:id/role", requireOwner, (req, res) => {
 
     user.role = role;
     user.roleTitleArabic = getRoleTitle(role);
+    // تغيير الدور يُبطل الجلسات القائمة كي لا يستمر توكن قديم بصلاحية سابقة.
+    revokeUserSessions(id);
     persistState();
-
-    // Update active sessions for this user
-    for (const session of activeSessions.values()) {
-      if (session.user.id === id) {
-        session.user.role = role;
-        session.user.roleTitleArabic = user.roleTitleArabic;
-      }
-    }
 
     console.log(`[RBAC] Owner updated role for user ${user.email} to ${role}`);
     return res.json({ success: true, user });
@@ -593,16 +708,9 @@ app.put("/api/users/:id/status", requireOwner, (req, res) => {
     }
 
     user.active = Boolean(active);
+    // التعطيل يُبطل الجلسات فوراً في كل العمليات.
+    if (!user.active) revokeUserSessions(id);
     persistState();
-
-    // If deactivated, revoke sessions immediately
-    if (!user.active) {
-      for (const [token, session] of activeSessions.entries()) {
-        if (session.user.id === id) {
-          activeSessions.delete(token);
-        }
-      }
-    }
 
     console.log(`[RBAC] Owner changed user ${user.email} status to active=${user.active}`);
     return res.json({ success: true, user });
@@ -629,11 +737,7 @@ app.delete("/api/users/:id", requireOwner, (req, res) => {
     }
 
     // Revoke sessions
-    for (const [token, session] of activeSessions.entries()) {
-      if (session.user.id === id) {
-        activeSessions.delete(token);
-      }
-    }
+    revokeUserSessions(id);
 
     serverUsers.splice(index, 1);
     persistState();
@@ -1775,8 +1879,9 @@ function rateLimitAI(userId: string): boolean {
 // process does not grow without limit. No external calls and no Gemini usage.
 function cleanupRuntimeState() {
   const now = Date.now();
+  for (const [sid, exp] of revokedSessions) if (exp < now) revokedSessions.delete(sid);
+  for (const [email, exp] of consumedChallenges) if (exp < now) consumedChallenges.delete(email);
   for (const [token, session] of activeSessions) if (session.expiresAt < now) activeSessions.delete(token);
-  for (const [email, challenge] of verificationChallenges) if (challenge.expiresAt < now) verificationChallenges.delete(email);
   for (const [userId, window] of requestWindow) if (now - window.startedAt >= 60_000) requestWindow.delete(userId);
   for (const [key, window] of challengeWindow) if (now - window.startedAt >= 15 * 60 * 1000) challengeWindow.delete(key);
   for (const [key, window] of authAttemptWindow) if (now - window.startedAt >= 15 * 60 * 1000) authAttemptWindow.delete(key);
@@ -1820,6 +1925,15 @@ function buildPersistedState() {
     users: serverUsers,
     audit: auditLog.slice(0, 200),
     jobs: automationJobs.slice(0, 200),
+    // إبطال الجلسات يُحفظ ليبقى سارياً في كل العمليات. منتهية الصلاحية تُستبعد.
+    revokedSessions: Array.from(revokedSessions.entries())
+      .filter(([, exp]) => exp > Date.now())
+      .slice(-500)
+      .map(([sid, exp]) => ({ sid, exp })),
+    // أختام إبطال المستخدمين — الإبطال الجماعي يبقى سارياً بعد إعادة التشغيل.
+    userRevocations: Array.from(userRevocationEpoch.entries())
+      .slice(-500)
+      .map(([userId, at]) => ({ userId, at })),
     platformConnections: Array.from(platformConnections.values()),
     workspace: {
       showroom: workspace.showroom,
@@ -1994,20 +2108,23 @@ app.get("/api/system/email-status", requireOwner, (_req, res) => {
 // Readiness is deterministic and does not call Gemini. It helps deployment systems
 // distinguish a running process from a fully initialized application.
 app.get("/api/readiness", (_req, res) => {
-  const stateWritable = (() => {
-    try {
-      fs.accessSync(process.cwd(), fs.constants.W_OK);
-      return true;
-    } catch { return false; }
-  })();
   // الجاهزية التطبيقية منفصلة تماماً عن جاهزية مزود الذكاء الاصطناعي:
   // التطبيق جاهز للعمل حتى لو لم يُضبط المفتاح، لأن البديل الحتمي متاح دائماً.
   res.json({
     success: true,
-    ready: stateWritable,
+    ready: STATE_WRITABLE,
     version: PROJECT_VERSION,
-    statePersistence: stateWritable,
-    applicationReady: stateWritable,
+    statePersistence: STATE_WRITABLE,
+    applicationReady: STATE_WRITABLE,
+    auth: {
+      ownerEmailConfigured: Boolean(OWNER_EMAIL),
+      sessionsDurable: SESSIONS_DURABLE,
+      sessionSecretSource: SESSION_SECRET_SOURCE,
+      emailProviderConfigured: getOwnerEmailConfig().configured,
+      emailFromConfigured: getOwnerEmailConfig().fromConfigured,
+      /** الدخول الدائم يحتاج بريداً مضبوطاً لجلب الرمز ومفتاح جلسة ثابتاً. */
+      permanentAccessReady: Boolean(OWNER_EMAIL) && SESSIONS_DURABLE && getOwnerEmailConfig().configured && getOwnerEmailConfig().fromConfigured,
+    },
     ai: {
       ...aiProviderState(),
       /** المزود لا يُعتبر جاهزاً للإنتاج بمجرد وجود مفتاح؛ يلزم إثبات حي. */
@@ -2024,7 +2141,16 @@ app.get("/api/readiness", (_req, res) => {
  * طلب واحد قصير وحتمي، بلا cache وبلا retry (ينفَّذ مرة واحدة فقط)،
  * والغرض إثبات: المفتاح + SDK + الموديل + الطلب + الاستجابة.
  * لا يُعاد الطلب إن نجح، ولا يُطبع المفتاح ولا الترويسات.
+ *
+ * المسار كله للمالك: POST هو الفعل، وأي طريقة أخرى تُرفض بـ405 صريحة بدل
+ * أن تسقط إلى واجهة React وتُعيد HTML بحالة 200.
  */
+app.all("/api/ai/verify-provider", (req, res, next) => {
+  if (req.method !== "POST") {
+    return res.status(405).json({ success: false, error: "هذا المسار يدعم POST فقط." });
+  }
+  next();
+});
 app.post("/api/ai/verify-provider", requireOwner, async (_req, res) => {
   if (!process.env.GEMINI_API_KEY) {
     aiLiveVerification.state = 'skipped_no_key';
@@ -2261,6 +2387,15 @@ app.get("/api/health", (_req, res) => {
     service: "Al-Gharabi AI Backend",
     version: PROJECT_VERSION,
     geminiUsage: geminiStatus(),
+    // حالة الثبات: تُعلن بصراحة هل تُفقد الجلسات بين العمليات، وهل يمكن حفظ
+    // بيانات العمل على القرص. لا تُكشف أي قيمة سرية هنا.
+    persistence: {
+      sessionsDurable: SESSIONS_DURABLE,
+      sessionSecretSource: SESSION_SECRET_SOURCE,
+      challengeMode: "stateless-hmac",
+      stateWritable: STATE_WRITABLE,
+      stateDir: STATE_DIR,
+    },
   });
 });
 
@@ -3482,6 +3617,20 @@ registerSocialManagerRoutes(app, {
   workspaceId,
 });
 
+// شبكة أمان لمسارات الـAPI: أي مسار تحت /api غير مُعرّف — أو طريقة HTTP غير
+// مدعومة على مسار موجود — يجب أن يرد JSON 404 صريحاً. بدون هذا كانت هذه
+// الطلبات تسقط إلى واجهة React فتُعيد index.html بحالة 200، فيظن العميل أن
+// الطلب نجح ويتلقى HTML بدل خطأ مفهوم.
+app.use("/api", (req, res) => {
+  res.status(404).json({
+    success: false,
+    error: "المسار غير موجود.",
+    method: req.method,
+    path: req.path,
+    requestId: (req as any).requestId,
+  });
+});
+
 // Start Server and mount Vite middleware
 async function startServer() {
   if (process.env.NODE_ENV !== "production") {
@@ -3497,7 +3646,8 @@ async function startServer() {
   } else {
     const distPath = path.join(process.cwd(), "dist");
     app.use(express.static(distPath));
-    app.get("*", (_req, res) => {
+    // مسارات الـAPI غير المعروفة تُعالَج في الشبكة أعلاه بـJSON 404، وليست هنا.
+    app.get(/^\/(?!api\/).*/, (_req, res) => {
       res.sendFile(path.join(distPath, "index.html"));
     });
   }

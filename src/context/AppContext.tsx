@@ -183,6 +183,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           }
           await hydrateWorkspace();
         } else {
+          // التوكن مرفوض — يُمسح كي لا يبقى في المتصفح ويُعيد المحاولة بلا جدوى.
+          setApiAuthToken(null);
           setCurrentUser(null);
         }
       } catch {

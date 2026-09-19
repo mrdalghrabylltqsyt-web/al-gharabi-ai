@@ -11,7 +11,7 @@
     "clean": "rm -rf dist server.js",
     "lint": "tsc --noEmit",
     "final-audit": "node final-audit.mjs",
-    "test": "npm run test:engine && npm run test:models && npm run test:social && npm run test:network && npm run test:email && npm run test:preview && npm run test:netlify && npm run test:runtime",
+    "test": "npm run test:engine && npm run test:auth && npm run test:models && npm run test:social && npm run test:network && npm run test:email && npm run test:preview && npm run test:session && npm run test:netlify && npm run test:runtime",
     "test:engine": "tsx engine/tests/engine.test.ts",
     "test:models": "tsx engine/tests/model.policy.test.ts",
     "test:social": "tsx engine/tests/social.routes.test.ts",
@@ -19,7 +19,9 @@
     "test:email": "tsx engine/tests/owner.email.test.ts",
     "test:preview": "tsx engine/tests/preview.login.test.ts",
     "test:netlify": "tsx engine/tests/netlify.function.test.ts",
-    "test:runtime": "tsx engine/tests/runtime.smoke.test.ts"
+    "test:runtime": "tsx engine/tests/runtime.smoke.test.ts",
+    "test:session": "tsx engine/tests/session.durability.test.ts",
+    "test:auth": "tsx engine/tests/auth.challenge.test.ts"
   },
   "dependencies": {
     "@google/genai": "^2.4.0",

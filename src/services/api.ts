@@ -25,23 +25,25 @@ export interface AgentChatRequest {
 
 let _authToken: string | null = null;
 
+// التوكن يُحفظ في localStorage لا sessionStorage: الأخير يُفقد عند إغلاق
+// التبويب فيُطرد المالك إلى شاشة الدخول في كل مرة — وهو جوهر مشكلة الوصول
+// المؤقت. التوكن موقّع من الخادم ومحدود الصلاحية (30 يوماً) ويمكن إبطاله.
+const TOKEN_STORAGE_KEY = 'algharabi_auth_token';
+
 export const setApiAuthToken = (token: string | null) => {
   _authToken = token;
-  if (token) {
-    try {
-      sessionStorage.setItem('algharabi_auth_token', token);
-    } catch {}
-  } else {
-    try {
-      sessionStorage.removeItem('algharabi_auth_token');
-    } catch {}
-  }
+  try {
+    if (token) localStorage.setItem(TOKEN_STORAGE_KEY, token);
+    else localStorage.removeItem(TOKEN_STORAGE_KEY);
+  } catch {}
+  // إزالة أي توكن قديم في sessionStorage كي لا يبقى مصدراً مزدوجاً.
+  try { sessionStorage.removeItem(TOKEN_STORAGE_KEY); } catch {}
 };
 
 export const getApiAuthToken = (): string | null => {
   if (_authToken) return _authToken;
   try {
-    _authToken = sessionStorage.getItem('algharabi_auth_token');
+    _authToken = localStorage.getItem(TOKEN_STORAGE_KEY);
   } catch {}
   return _authToken;
 };
