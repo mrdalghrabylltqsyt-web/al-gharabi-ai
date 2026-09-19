@@ -416,6 +416,26 @@ app.post("/api/auth/verify-challenge", (req, res) => {
   });
 });
 
+// 2b. Preview login (opt-in فقط): يُفتح حصرياً بضبط GHARABI_PREVIEW_TOKEN في بيئة
+// الخادم. بدونه يعيد 404 كأن المسار غير موجود. التوكن لا يُسجَّل ولا يُعاد.
+app.get("/api/auth/preview-login", (req, res) => {
+  const configured = (process.env.GHARABI_PREVIEW_TOKEN || "").trim();
+  if (!configured) return res.status(404).json({ success: false, error: "Not found" });
+  const supplied = typeof req.query.token === "string" ? req.query.token.trim() : "";
+  const a = Buffer.from(configured);
+  const b = Buffer.from(supplied);
+  if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) {
+    return res.status(401).json({ success: false, error: "غير مصرح." });
+  }
+  const owner = serverUsers.find((u) => u.id === "owner" && u.active);
+  if (!owner) return res.status(403).json({ success: false, error: "حساب المالك غير متاح." });
+  const session = createSessionForUser(owner);
+  auditLog.unshift({ id: crypto.randomUUID(), at: new Date().toISOString(), userId: "system", action: "owner_preview_login", detail: "preview-session-created" });
+  if (auditLog.length > 100) auditLog.pop();
+  persistState();
+  return res.json({ success: true, token: session.token, user: session.user });
+});
+
 // 3. Current User verification endpoint
 app.get("/api/auth/me", authenticateToken, (req, res) => {
   const session = (req as any).session as ActiveSession;

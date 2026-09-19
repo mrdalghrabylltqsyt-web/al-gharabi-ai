@@ -18,7 +18,7 @@ import {
   INITIAL_POSTS,
   INITIAL_CONVERSATIONS,
 } from '../data/initialData';
-import { apiService, getApiAuthToken } from '../services/api';
+import { apiService, getApiAuthToken, setApiAuthToken } from '../services/api';
 
 interface AppContextType {
   // Navigation
@@ -146,6 +146,25 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   useEffect(() => {
     const initAuth = async () => {
       try {
+        // معاينة الجوال: الرابط يحمل توكن المعاينة، نقايضه بجلسة مالك حقيقية
+        // ثم نمحو المعامل من الرابط فوراً حتى لا يبقى في التاريخ.
+        try {
+          const params = new URLSearchParams(window.location.search);
+          const previewToken = params.get('preview_token');
+          if (previewToken) {
+            params.delete('preview_token');
+            const clean = window.location.pathname + (params.toString() ? `?${params.toString()}` : '') + window.location.hash;
+            window.history.replaceState({}, '', clean);
+            if (!getApiAuthToken()) {
+              const session = await apiService.previewLogin(previewToken);
+              setApiAuthToken(session.token);
+              setCurrentUser(session.user);
+              setIsLoadingAuth(false);
+              return;
+            }
+          }
+        } catch { /* رابط معاينة غير صالح: نكمل كزائر */ }
+
         const token = getApiAuthToken();
         if (!token) {
           setIsLoadingAuth(false);

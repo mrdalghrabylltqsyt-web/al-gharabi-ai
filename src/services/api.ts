@@ -102,6 +102,16 @@ export const apiService = {
     return data;
   },
 
+  // مقايضة توكن المعاينة بجلسة مالك حقيقية. تُستخدم فقط من رابط المعاينة.
+  async previewLogin(previewToken: string): Promise<{ success: boolean; token: string; user: AppUser }> {
+    const res = await fetch(`/api/auth/preview-login?token=${encodeURIComponent(previewToken)}`);
+    const data = await res.json().catch(() => ({ success: false }));
+    if (!res.ok || !data.success || !data.token) {
+      throw new Error('تعذر إنشاء جلسة المعاينة');
+    }
+    return data;
+  },
+
   async verifyChallenge(email: string, code: string): Promise<{ success: boolean; token: string; user: AppUser }> {
     const res = await fetch('/api/auth/verify-challenge', {
       method: 'POST',

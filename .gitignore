@@ -12,3 +12,8 @@ coverage/
 .gharabi-state.json.tmp
 .gharabi-usage.json
 .gharabi-backups/
+
+# Local preview/runtime env files: may hold the owner email, Resend key, and a
+# preview login token. Never commit these.
+.gharabi-preview.env
+.gharabi-*.local.env
