@@ -16,6 +16,7 @@
 
 import { classifyAiError, diagnosticLabel, type AiErrorInfo } from './errors';
 import { CircuitBreaker, withRetry, type RetryPolicy } from './retry';
+import { DEFAULT_MODEL_CANDIDATES, PRODUCTION_MODEL } from './models';
 
 export interface AiProvider {
   /** اسم المزود للتشخيص الآمن (بدون مفاتيح). */
@@ -61,6 +62,7 @@ export type AiSource = 'provider' | 'cache' | 'fallback' | 'deterministic' | 'br
 export interface AiResult {
   text: string;
   source: AiSource;
+  /** الموديل الذي أنتج النص فعلياً؛ null عند البديل الحتمي أو التخزين المؤقت. */
   model: string | null;
   /** هل النص ناتج عن مزود ذكاء اصطناعي فعلي؟ */
   usedProvider: boolean;
@@ -68,10 +70,43 @@ export interface AiResult {
   notice?: string;
   attempts: number;
   errorKind?: string;
+  /** الفئة التشخيصية لسبب اللجوء للبديل — للتشخيص الداخلي فقط، بلا أسرار. */
+  fallbackReason?: AiFallbackReason;
   cacheKey?: string;
 }
 
+/**
+ * سبب اللجوء إلى البديل الحتمي. يمنع إخفاء مشكلة المزود تحت «نتيجة ناجحة»،
+ * ويجعل كل حالة (مفتاح/موديل/ضغط/مهلة/شبكة/حصة) قابلة للتمييز في التشخيص.
+ */
+export type AiFallbackReason =
+  | 'provider_not_configured'
+  | 'circuit_open'
+  | 'quota_guard'
+  | 'invalid_model'
+  | 'auth_error'
+  | 'rate_limit'
+  | 'provider_error'
+  | 'timeout'
+  | 'network_error'
+  | 'blocked'
+  | 'unknown_error';
+
 const DEFAULT_TIMEOUT_MS = 20_000;
+
+/** يحوّل تصنيف خطأ المزود إلى سبب بديل صريح قابل للتمييز في التشخيص. */
+export function fallbackReasonFor(info: AiErrorInfo | undefined | null): AiFallbackReason {
+  switch (info?.kind) {
+    case 'not_found': return 'invalid_model';
+    case 'auth': return 'auth_error';
+    case 'rate_limited': return 'rate_limit';
+    case 'timeout': return 'timeout';
+    case 'network': return 'network_error';
+    case 'blocked': return 'blocked';
+    case 'unavailable': return 'provider_error';
+    default: return 'unknown_error';
+  }
+}
 
 /**
  * تنفيذ الطلب عبر مزود مع مهلة صريحة.
@@ -125,7 +160,7 @@ export class AiEngine {
   constructor(options: AiEngineOptions) {
     this.provider = options.provider;
     this.guard = options.guard;
-    this.models = options.models.length ? options.models : ['gemini-2.5-flash'];
+    this.models = options.models.length ? options.models : [...DEFAULT_MODEL_CANDIDATES];
     this.cache = options.cache ?? new Map();
     this.cacheTtlMs = options.cacheTtlMs ?? 10 * 60 * 1000;
     this.timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
@@ -213,7 +248,12 @@ export class AiEngine {
     deterministicFallback: () => string;
   }): Promise<AiResult> {
     const { cacheKey, prompt, json, deterministicFallback } = input;
-    const fallbackResult = (notice: string, errorKind?: string, attempts = 0): AiResult => ({
+    const fallbackResult = (
+      notice: string,
+      reason: AiFallbackReason,
+      errorKind?: string,
+      attempts = 0,
+    ): AiResult => ({
       text: deterministicFallback(),
       source: 'fallback',
       model: null,
@@ -221,25 +261,26 @@ export class AiEngine {
       notice,
       attempts,
       errorKind,
+      fallbackReason: reason,
       cacheKey,
     });
 
     // 3) لا مزود مهيأ → تنفيذ حتمي فوري بدون أي استهلاك.
     if (!this.provider) {
       this.onEvent({ type: 'provider_absent', detail: cacheKey });
-      return fallbackResult('محرك الذكاء الاصطناعي غير مهيأ على الخادم؛ تم استخدام المحرك المحلي الحتمي.');
+      return fallbackResult('محرك الذكاء الاصطناعي غير مهيأ على الخادم؛ تم استخدام المحرك المحلي الحتمي.', 'provider_not_configured');
     }
 
     // 4) قاطع الدائرة مفتوح → لا نغرق مزوداً متعطلاً.
     if (this.breaker.isOpen(this.now())) {
       this.onEvent({ type: 'breaker_open', detail: cacheKey });
-      return fallbackResult('مزود الذكاء الاصطناعي في فترة تعافٍ مؤقتة؛ تم استخدام المحرك المحلي الحتمي.', 'unavailable');
+      return fallbackResult('مزود الذكاء الاصطناعي في فترة تعافٍ مؤقتة؛ تم استخدام المحرك المحلي الحتمي.', 'circuit_open', 'unavailable');
     }
 
     // 5) الحارس: لا استهلاك بدون رصيد.
     if (!this.guard.canConsume() || !this.guard.consume()) {
       this.onEvent({ type: 'guard_blocked', detail: cacheKey });
-      return fallbackResult('تم بلوغ حد الحماية اليومي المحلي للذكاء الاصطناعي؛ تم استخدام المحرك المحلي الحتمي.', 'rate_limited');
+      return fallbackResult('تم بلوغ حد الحماية اليومي المحلي للذكاء الاصطناعي؛ تم استخدام المحرك المحلي الحتمي.', 'quota_guard', 'rate_limited');
     }
 
     let consumed = true;
@@ -251,6 +292,9 @@ export class AiEngine {
     };
 
     try {
+      // يتتبع آخر موديل أنتج نصاً فعلياً، ليُعرض في الاستجابة بدلاً من تخمينه.
+      let servedModel: string | null = null;
+
       const outcome = await withRetry<string>(
         async () => {
           // نجرّب كل موديل مرشح بالتتابع: خطأ "غير موجود" ينتقل للموديل التالي،
@@ -261,6 +305,7 @@ export class AiEngine {
               const text = await generateWithTimeout(this.provider as AiProvider, model, prompt, Boolean(json), this.timeoutMs);
               const trimmed = (text || '').trim();
               if (!trimmed) throw new Error('empty response from provider');
+              servedModel = model;
               return trimmed;
             } catch (err) {
               lastError = err;
@@ -290,6 +335,7 @@ export class AiEngine {
         this.onEvent({ type: 'provider_failed', detail: info ? diagnosticLabel(info) : 'unknown' });
         return fallbackResult(
           info?.safeMessage || 'تعذر إكمال طلب الذكاء الاصطناعي؛ تم استخدام المحرك المحلي.',
+          fallbackReasonFor(info),
           info?.kind,
           outcome.attempts,
         );
@@ -297,11 +343,12 @@ export class AiEngine {
 
       this.breaker.recordSuccess();
       this.store(cacheKey, outcome.value);
-      this.onEvent({ type: 'provider_ok', detail: `attempts=${outcome.attempts}` });
+      this.onEvent({ type: 'provider_ok', detail: `model=${servedModel ?? 'unknown'}:attempts=${outcome.attempts}` });
       return {
         text: outcome.value,
         source: 'provider',
-        model: null,
+        // الموديل الحقيقي الذي نجح فعلاً — لا تخمين ولا اسم من البيئة.
+        model: servedModel ?? this.models[0] ?? PRODUCTION_MODEL,
         usedProvider: true,
         attempts: outcome.attempts,
         cacheKey,
@@ -312,7 +359,7 @@ export class AiEngine {
       this.breaker.recordFailure(this.now());
       releaseSlot();
       this.onEvent({ type: 'engine_error', detail: diagnosticLabel(info) });
-      return fallbackResult(info.safeMessage, info.kind);
+      return fallbackResult(info.safeMessage, fallbackReasonFor(info), info.kind);
     } finally {
       // إن نجح الطلب فلا نُعيد الحجز؛ وإن فشل فقد أُعيد أعلاه.
       if (!consumed) {

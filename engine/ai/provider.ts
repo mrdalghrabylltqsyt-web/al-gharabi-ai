@@ -35,7 +35,13 @@ export class GeminiProvider implements AiProvider {
     const response = await this.client.models.generateContent({
       model: input.model,
       contents: input.prompt,
-      config: input.json ? { responseMimeType: 'application/json' } : undefined,
+      config: {
+        ...(input.json ? { responseMimeType: 'application/json' } : {}),
+        // تمرير إشارة الإلغاء يحرّر الطلب المعلّق محلياً عند انتهاء مهلة المحرك.
+        // ملاحظة من الـSDK: الإلغاء لا يوقف المعالجة على خدمة المزود، لذا يبقى
+        // تقليل عدد الطلبات (حارس الحصة + قاطع الدائرة) هو خط الدفاع عن الحصة.
+        ...(input.signal ? { abortSignal: input.signal } : {}),
+      },
     });
     return response.text || '';
   }

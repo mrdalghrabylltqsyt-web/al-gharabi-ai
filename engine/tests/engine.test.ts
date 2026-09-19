@@ -4,7 +4,7 @@
  */
 
 import { classifyAiError, diagnosticLabel } from '../ai/errors';
-import { resolveModelCandidates, isValidModelName } from '../ai/models';
+import { resolveModelCandidates, resolveModelPolicy, isValidModelName, isShutdownModel, SHUTDOWN_MODELS, PRODUCTION_MODEL } from '../ai/models';
 import { CircuitBreaker, computeBackoffDelay, withRetry } from '../ai/retry';
 import { AiEngine, type AiProvider, type AiUsageGuard } from '../ai/engine';
 import { buildAdapters, isSupportedPlatform, PLATFORM_SPECS } from '../social/registry';
@@ -134,15 +134,44 @@ async function run(): Promise<void> {
 
   // -------------------------------------------------------------- models
   group('اختيار الموديل');
-  check('الأسماء الافتراضية أسماء حقيقية لا وهمية', resolveModelCandidates().every((m) => m.startsWith('gemini-') && !m.includes('3.8') && !m.includes('3.6')));
-  check('موديل البيئة الصالح يتقدم القائمة', resolveModelCandidates('gemini-2.5-pro')[0] === 'gemini-2.5-pro');
+  // الموديلات الافتراضية يجب أن تكون GA حقيقية. تم التحقق من معرّفاتها مقابل
+  // المصادر الرسمية لـ Google، وليس استنتاجاً من الاسم.
+  check('موديل الإنتاج معرّف صراحةً', PRODUCTION_MODEL === 'gemini-3.8-flash');
+  check('كل المرشحين الافتراضيين معرّفات Gemini صالحة شكلياً', resolveModelCandidates().every((m) => /^gemini-[0-9]/.test(m)));
+  check('لا مرشح افتراضي مُوقف فعلياً', resolveModelCandidates().every((m) => !isShutdownModel(m)));
+  check('الموديلات الموقوفة لا تظهر في المرشحين', !resolveModelCandidates().some((m) => SHUTDOWN_MODELS.includes(m)));
+  check('موديل البيئة الصالح يتقدم القائمة', resolveModelCandidates('gemini-3.8-flash')[0] === 'gemini-3.8-flash');
   check('موديل البيئة الفارغ يُتجاهل', !resolveModelCandidates('   ').includes(''));
   check('قائمة المرشحين بلا تكرار', (() => {
-    const list = resolveModelCandidates('gemini-2.5-flash');
+    const list = resolveModelCandidates('gemini-3.6-flash');
     return new Set(list).size === list.length;
   })());
   check('رفض اسم موديل غير صالح شكلياً', !isValidModelName('gemini 2.5 flash!!'));
-  check('قبول اسم موديل صالح', isValidModelName('gemini-2.5-flash'));
+  check('قبول اسم موديل صالح', isValidModelName('gemini-3.8-flash'));
+
+  // رفض الموديلات الموقوفة — هذا هو جوهر منع تكرار عطل 503.
+  check('gemini-2.0-flash مُصنَّف كمُوقف', isShutdownModel('gemini-2.0-flash'));
+  check('gemini-2.0-flash-001 مُصنَّف كمُوقف', isShutdownModel('gemini-2.0-flash-001'));
+  check('gemini-1.5-flash مُصنَّف كمُوقف', isShutdownModel('gemini-1.5-flash'));
+  check('gemini-3-pro-preview مُصنَّف كمُوقف', isShutdownModel('gemini-3-pro-preview'));
+  check('موديل حالي ليس مُوقفاً', !isShutdownModel('gemini-3.8-flash'));
+
+  // موديل بيئة مُوقف: يُرفض ولا يُمرَّر للمزود أبداً.
+  check('موديل البيئة المُوقف يُرفض', (() => {
+    const p = resolveModelPolicy('gemini-2.0-flash');
+    return p.configuredModel === null && p.rejectedReason !== null && !p.candidates.includes('gemini-2.0-flash');
+  })());
+  check('رفض موديل البيئة المُوقف يُبقي مرشحين صالحين', resolveModelPolicy('gemini-2.0-flash-001').candidates.every((m) => !isShutdownModel(m)));
+  check('موديل البيئة غير الصالح شكلياً يُرفض بسبب', resolveModelPolicy('not a model!!').rejectedReason !== null);
+  check('موديل بيئة مُجدول للإيقاف يُقبل مع تحذير', (() => {
+    const p = resolveModelPolicy('gemini-2.5-flash');
+    return p.configuredModel === 'gemini-2.5-flash' && p.warnings.some((w) => w.includes('2026-10-16'));
+  })());
+  check('موديل معاينة يُقبل مع تحذير', (() => {
+    const p = resolveModelPolicy('gemini-3-flash-preview');
+    return p.configuredModel === 'gemini-3-flash-preview' && p.warnings.some((w) => w.includes('معاينة') || w.includes('تجريبي'));
+  })());
+  check('لا تحذير لموديل إنتاج نظيف', resolveModelPolicy('gemini-3.8-flash').warnings.length === 0);
 
   // -------------------------------------------------------------- retry
   group('إعادة المحاولة والتأخير التصاعدي');

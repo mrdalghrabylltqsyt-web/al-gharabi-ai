@@ -6,7 +6,8 @@ import { createServer as createViteServer } from "vite";
 import dotenv from "dotenv";
 import { AiEngine, type AiUsageGuard } from "./engine/ai/engine";
 import { createGeminiProvider } from "./engine/ai/provider";
-import { resolveModelCandidates } from "./engine/ai/models";
+import { resolveModelCandidates, describeModelPolicy, PRODUCTION_MODEL } from "./engine/ai/models";
+import { classifyAiError, diagnosticLabel } from "./engine/ai/errors";
 import { CircuitBreaker } from "./engine/ai/retry";
 import { registerSocialManagerRoutes } from "./engine/social/routes";
 import {
@@ -1876,14 +1877,50 @@ function aiEngineBreakerSnapshot() {
   return aiEngine.breakerStatus();
 }
 
+/**
+ * حالة مزود الذكاء الاصطناعي بتمييز صريح بين:
+ * configured (المفتاح موجود) / reachable+modelValid (أُثبت بطلب حقيقي) / fallback.
+ * لا يُعلن «جاهز» بمجرد وجود مفتاح؛ الإثبات يحتاج نتيجة طلب فعلي هذا التشغيل.
+ */
+function aiProviderState() {
+  const keyPresent = Boolean(process.env.GEMINI_API_KEY);
+  return {
+    configured: aiEngine.providerConfigured,
+    keyPresent,
+    /** هل أُثبت الوصول والموديل بطلب حقيقي ناجح خلال هذا التشغيل؟ */
+    verifiedLive: aiLiveVerification.state === 'ok',
+    verification: aiLiveVerification.state,
+    verificationDetail: aiLiveVerification.detail,
+    verifiedModel: aiLiveVerification.model,
+    verifiedAt: aiLiveVerification.at,
+    fallbackAvailable: true,
+    note: !keyPresent
+      ? 'GEMINI_API_KEY غير مضبوط؛ يعمل النظام بالمحرك الحتمي فقط دون أي اتصال بمزود.'
+      : aiLiveVerification.state === 'ok'
+        ? 'أُثبت الاتصال والموديل بطلب حقيقي ناجح.'
+        : 'المفتاح موجود لكن لم يُثبت الاتصال بطلب حقيقي بعد؛ لا يُعلن المزود جاهزاً قبل الإثبات.',
+  };
+}
+
+/** نتيجة آخر تحقق حي من المزود — لا تُعلن نجاحاً بدون طلب فعلي. */
+const aiLiveVerification: {
+  state: 'not_attempted' | 'ok' | 'failed' | 'skipped_no_key';
+  detail: string | null;
+  model: string | null;
+  at: string | null;
+} = { state: 'not_attempted', detail: null, model: null, at: null };
+
 function geminiStatus() {
   const status = aiUsageGuard.status();
   return {
     enabled: status.enabled,
     configured: aiEngine.providerConfigured,
+    providerState: aiProviderState(),
     usedToday: status.usedToday,
     dailyGuard: status.limit,
     remainingByGuard: status.remaining,
+    // سياسة الموديل كاملة: موديل الإنتاج، المرشحون، وموديل البيئة المرفوض إن وُجد.
+    modelPolicy: describeModelPolicy(process.env.GEMINI_MODEL),
     modelCandidates: resolveModelCandidates(process.env.GEMINI_MODEL),
     breaker: aiEngineBreakerSnapshot(),
     cachedEntries: aiEngine.cacheSize,
@@ -1925,7 +1962,111 @@ app.get("/api/readiness", (_req, res) => {
       return true;
     } catch { return false; }
   })();
-  res.json({ success: true, ready: stateWritable, version: PROJECT_VERSION, statePersistence: stateWritable, geminiConfigured: Boolean(process.env.GEMINI_API_KEY), timestamp: new Date().toISOString() });
+  // الجاهزية التطبيقية منفصلة تماماً عن جاهزية مزود الذكاء الاصطناعي:
+  // التطبيق جاهز للعمل حتى لو لم يُضبط المفتاح، لأن البديل الحتمي متاح دائماً.
+  res.json({
+    success: true,
+    ready: stateWritable,
+    version: PROJECT_VERSION,
+    statePersistence: stateWritable,
+    applicationReady: stateWritable,
+    ai: {
+      ...aiProviderState(),
+      /** المزود لا يُعتبر جاهزاً للإنتاج بمجرد وجود مفتاح؛ يلزم إثبات حي. */
+      providerReady: aiLiveVerification.state === 'ok',
+    },
+    geminiConfigured: Boolean(process.env.GEMINI_API_KEY),
+    timestamp: new Date().toISOString(),
+  });
+});
+
+/**
+ * تحقق حي واحد من مزود الذكاء الاصطناعي — للمالك فقط.
+ *
+ * طلب واحد قصير وحتمي، بلا cache وبلا retry (ينفَّذ مرة واحدة فقط)،
+ * والغرض إثبات: المفتاح + SDK + الموديل + الطلب + الاستجابة.
+ * لا يُعاد الطلب إن نجح، ولا يُطبع المفتاح ولا الترويسات.
+ */
+app.post("/api/ai/verify-provider", requireOwner, async (_req, res) => {
+  if (!process.env.GEMINI_API_KEY) {
+    aiLiveVerification.state = 'skipped_no_key';
+    aiLiveVerification.detail = 'GEMINI_API_KEY غير مضبوط في بيئة الخادم.';
+    aiLiveVerification.model = null;
+    aiLiveVerification.at = new Date().toISOString();
+    return res.status(200).json({
+      success: false,
+      verified: false,
+      state: aiLiveVerification.state,
+      detail: aiLiveVerification.detail,
+      note: 'NOT VERIFIED — GEMINI_API_KEY NOT AVAILABLE IN RUNTIME',
+    });
+  }
+
+  const candidates = resolveModelCandidates(process.env.GEMINI_MODEL);
+  const envPolicy = describeModelPolicy(process.env.GEMINI_MODEL);
+  const provider = createGeminiProvider(process.env.GEMINI_API_KEY, AI_TIMEOUT_MS);
+  if (!provider) {
+    aiLiveVerification.state = 'failed';
+    aiLiveVerification.detail = 'تعذر تهيئة موصل المزود.';
+    aiLiveVerification.model = null;
+    aiLiveVerification.at = new Date().toISOString();
+    return res.status(200).json({ success: false, verified: false, state: 'failed', detail: aiLiveVerification.detail });
+  }
+
+  // طلب واحد لكل مرشح بترتيب الأفضلية، بلا retry — أول نجاح يوقف المحاولة.
+  for (const model of candidates) {
+    const started = Date.now();
+    try {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), AI_TIMEOUT_MS);
+      let text = '';
+      try {
+        text = await provider.generate({ model, prompt: 'اكتب كلمة: جاهز', signal: controller.signal });
+      } finally {
+        clearTimeout(timer);
+      }
+      const trimmed = (text || '').trim();
+      if (!trimmed) {
+        aiLiveVerification.state = 'failed';
+        aiLiveVerification.detail = `الموديل ${model} أعاد استجابة فارغة.`;
+        aiLiveVerification.model = null;
+        aiLiveVerification.at = new Date().toISOString();
+        continue;
+      }
+      aiLiveVerification.state = 'ok';
+      aiLiveVerification.detail = 'تم إثبات الاتصال والموديل بطلب حقيقي واحد.';
+      aiLiveVerification.model = model;
+      aiLiveVerification.at = new Date().toISOString();
+      audit('system', 'ai_verify_provider', `model=${model}`);
+      return res.json({
+        success: true,
+        verified: true,
+        state: 'ok',
+        model,
+        latencyMs: Date.now() - started,
+        responsePreview: trimmed.slice(0, 80),
+        modelPolicy: envPolicy,
+        candidatesTried: candidates.indexOf(model) + 1,
+        note: 'تم الإثبات بطلب حقيقي واحد. لم تُستهلك حصة إضافية.',
+      });
+    } catch (err: any) {
+      const info = classifyAiError(err, model);
+      aiEvents.push({ at: new Date().toISOString(), type: 'verify_failed', detail: diagnosticLabel(info) });
+      aiLiveVerification.state = 'failed';
+      aiLiveVerification.detail = `فشل التحقق: ${info.kind}${info.status ? `/${info.status}` : ''}.`;
+      aiLiveVerification.model = null;
+      aiLiveVerification.at = new Date().toISOString();
+    }
+  }
+
+  return res.json({
+    success: false,
+    verified: false,
+    state: 'failed',
+    detail: aiLiveVerification.detail,
+    modelPolicy: envPolicy,
+    hint: 'راجع صلاحية GEMINI_API_KEY في بيئة الخادم (لا تُرسل المفتاح في المحادثة).',
+  });
 });
 
 // Health endpoint
@@ -2177,10 +2318,13 @@ app.post("/api/ai/generate-content", authenticateToken, async (req, res) => {
       platform,
       contentType,
       generatedBy: result.usedProvider
-        ? (result.model || (process.env.GEMINI_MODEL || "gemini-2.5-flash"))
+        ? (result.model || PRODUCTION_MODEL)
         : result.source === "cache" ? "ai-cache" : "local-smart-engine",
       aiSource: result.source,
+      // سبب اللجوء للبديل للتشخيص الداخلي: يمنع إخفاء مشكلة المزود تحت نجاح HTTP.
+      fallbackReason: result.fallbackReason,
       notice: result.notice,
+      model: result.model,
     });
   } catch (error: any) {
     // حتى الخطأ غير المتوقع يعيد بديلاً صالحاً بدل إسقاط الطلب.
@@ -2191,6 +2335,8 @@ app.post("/api/ai/generate-content", authenticateToken, async (req, res) => {
       contentType: req.body.contentType,
       generatedBy: "local-smart-engine",
       aiSource: "fallback",
+      fallbackReason: "unknown_error",
+      model: null,
       notice: "تعذر استخدام محرك الذكاء الاصطناعي؛ تم استخدام المحرك المحلي الحتمي.",
     });
   }
@@ -2246,8 +2392,10 @@ ${showroomInfo ? JSON.stringify(showroomInfo) : 'معرض الغرابي للت�
     return res.json({
       success: true,
       ...parsed,
-      generatedBy: result.usedProvider ? (result.model || (process.env.GEMINI_MODEL || "gemini-2.5-flash")) : result.source === "cache" ? "ai-cache" : "local-deterministic-engine",
+      generatedBy: result.usedProvider ? (result.model || PRODUCTION_MODEL) : result.source === "cache" ? "ai-cache" : "local-deterministic-engine",
       aiSource: result.source,
+      fallbackReason: result.fallbackReason,
+      model: result.model,
       notice: result.notice,
     });
   } catch (error: any) {
@@ -2256,6 +2404,8 @@ ${showroomInfo ? JSON.stringify(showroomInfo) : 'معرض الغرابي للت�
       ...classifyMessageDeterministic(req.body?.customerName, req.body?.message),
       generatedBy: "local-deterministic-engine",
       aiSource: "fallback",
+      fallbackReason: "unknown_error",
+      model: null,
     });
   }
 });
@@ -2321,8 +2471,10 @@ app.post("/api/ai/agent-chat", authenticateToken, async (req, res) => {
     return res.json({
       success: true,
       reply: result.text,
-      generatedBy: result.usedProvider ? (result.model || (process.env.GEMINI_MODEL || "gemini-2.5-flash")) : result.source === "cache" ? "ai-cache" : "local-deterministic-engine",
+      generatedBy: result.usedProvider ? (result.model || PRODUCTION_MODEL) : result.source === "cache" ? "ai-cache" : "local-deterministic-engine",
       aiSource: result.source,
+      fallbackReason: result.fallbackReason,
+      model: result.model,
       notice: result.notice,
     });
   } catch (error: any) {
@@ -2331,6 +2483,8 @@ app.post("/api/ai/agent-chat", authenticateToken, async (req, res) => {
       reply: buildDeterministicAgentReply(req.body?.message, req.body?.context),
       generatedBy: "local-deterministic-engine",
       aiSource: "fallback",
+      fallbackReason: "unknown_error",
+      model: null,
     });
   }
 });

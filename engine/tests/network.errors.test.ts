@@ -9,7 +9,7 @@
 import { AiEngine, type AiUsageGuard } from '../ai/engine';
 import { createGeminiProvider } from '../ai/provider';
 import { classifyAiError } from '../ai/errors';
-import { resolveModelCandidates } from '../ai/models';
+import { resolveModelCandidates, PRODUCTION_MODEL } from '../ai/models';
 
 let passed = 0;
 const failures: string[] = [];
@@ -41,7 +41,7 @@ async function run(): Promise<void> {
   const engine = new AiEngine({
     provider,
     guard,
-    models: resolveModelCandidates('gemini-3.8-flash'),
+    models: resolveModelCandidates(PRODUCTION_MODEL),
     timeoutMs: 8_000,
     policy: { maxAttempts: 2, baseDelayMs: 50, maxDelayMs: 100 },
   });
@@ -63,6 +63,9 @@ async function run(): Promise<void> {
   check('لا يُدّعى استخدام المزود', result.usedProvider === false);
   check('رسالة آمنة موجودة للمستخدم', typeof result.notice === 'string' && result.notice.length > 10);
   check('الخطأ مصنف كخطأ مفتاح لا كخطأ ضغط', result.errorKind === 'auth', `errorKind=${result.errorKind}`);
+  // سبب البديل صريح: يمنع إخفاء مشكلة المفتاح تحت «ضغط مرتفع».
+  check('سبب البديل مُعلن كخطأ مصادقة لا كضغط', result.fallbackReason === 'auth_error', `fallbackReason=${result.fallbackReason}`);
+  check('البديل لا يدّعي مصدر المزود', result.source === 'fallback' && result.model === null);
 
   // 2) الحصة تُعاد بالكامل عند فشل كل المحاولات.
   check('الحصة تُعاد عند فشل الطلب', guard.used === 0);

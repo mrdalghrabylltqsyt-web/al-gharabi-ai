@@ -11,8 +11,9 @@
     "clean": "rm -rf dist server.js",
     "lint": "tsc --noEmit",
     "final-audit": "node final-audit.mjs",
-    "test": "npm run test:engine && npm run test:social && npm run test:network && npm run test:runtime",
+    "test": "npm run test:engine && npm run test:models && npm run test:social && npm run test:network && npm run test:runtime",
     "test:engine": "tsx engine/tests/engine.test.ts",
+    "test:models": "tsx engine/tests/model.policy.test.ts",
     "test:social": "tsx engine/tests/social.routes.test.ts",
     "test:network": "tsx engine/tests/network.errors.test.ts",
     "test:runtime": "tsx engine/tests/runtime.smoke.test.ts"
