@@ -90,12 +90,12 @@ export const LoginView: React.FC = () => {
       const res = await requestOwnerChallenge(email.trim());
       if (res.success) {
         setStep('verify');
-        setSuccessInfo(res.message);
+        setSuccessInfo(res.message || 'تم إرسال رمز التحقق إلى بريد المالك');
       } else {
-        setError('تعذر إرسال رمز التحقق');
+        setError('تعذر إرسال رمز التحقق، حاول مرة أخرى');
       }
     } catch (err: any) {
-      setError(err.message || 'حدث خطأ في الخادم أثناء طلب الرمز');
+      setError(err?.message || 'تعذر إرسال رمز التحقق، حاول مرة أخرى');
     } finally {
       setLoading(false);
     }
@@ -298,7 +298,7 @@ export const LoginView: React.FC = () => {
                     <KeyRound className="w-4 h-4 text-slate-500 absolute left-3 top-3.5" />
                   </div>
                   <p className="text-[11px] text-slate-400">
-                    تم إرسال رمز التحقق إلى بريدك، كما يظهر في سجلات تشغيل الخادم الآمنة لأغراض الفحص.
+                    تم إرسال رمز التحقق إلى بريد المالك. أدخل الرمز المكوّن من 6 أرقام لإتمام الدخول.
                   </p>
                 </div>
 

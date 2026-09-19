@@ -105,7 +105,12 @@ try {
     // ج) مسار المصادقة المذكور في المهمة يصل للـbackend لا يرجع 404.
     const c = await handler(apiEvent('/api/auth/request-owner-challenge', 'POST', { email: 'probe@example.com' }), {});
     check('POST /api/auth/request-owner-challenge ليس 404', c.statusCode !== 404, `got ${c.statusCode}`);
-    check('POST request-owner-challenge ردّه 200 أو 503 (مسار حقيقي)', c.statusCode === 200 || c.statusCode === 503, `got ${c.statusCode}`);
+    check('POST request-owner-challenge ردّه 200 أو 503 أو 502 (مسار حقيقي)', [200, 502, 503].includes(c.statusCode), `got ${c.statusCode}`);
+    check('الرد لا يكشف أي مفتاح أو رمز', !/re_[A-Za-z0-9]{20,}|AIzaSy|\b\d{6}\b/.test(c.body || ''));
+
+    // ج٢) فحص حالة البريد محصور بالمالك (401 بلا جلسة، لا 404).
+    const es = await handler(apiEvent('/api/system/email-status', 'GET'), {});
+    check('GET /api/system/email-status -> 401 (لا 404)', es.statusCode === 401, `got ${es.statusCode}`);
 
     // د) المسارات المحمية تُثبت الوصول عبر 401 لا 404.
     const v = await handler(apiEvent('/api/ai/verify-provider', 'POST', {}), {});

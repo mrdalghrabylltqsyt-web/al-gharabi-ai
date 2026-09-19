@@ -32,6 +32,7 @@ import {
   buildMemorySnapshot,
   type PerformanceRecord,
 } from "./engine/social/brain";
+import { getOwnerEmailConfig, sendOwnerOtpEmail } from "./engine/notifications/owner-email";
 
 dotenv.config();
 
@@ -330,7 +331,7 @@ app.post("/api/auth/google", async (req, res) => {
 });
 
 // 2. Owner Challenge Verification Flow (Secure server-side OTP for owner email)
-app.post("/api/auth/request-owner-challenge", (req, res) => {
+app.post("/api/auth/request-owner-challenge", async (req, res) => {
   const { email } = req.body;
   const normalizedEmail = (email || "").toLowerCase().trim();
   if (!OWNER_EMAIL) return res.status(503).json({ success: false, message: "لم يتم ضبط بريد مالك النظام على الخادم بعد." });
@@ -352,15 +353,27 @@ app.post("/api/auth/request-owner-challenge", (req, res) => {
     expiresAt: Date.now() + 10 * 60 * 1000, // 10 minutes
   });
 
-  // Never print the secret challenge code to logs. A real deployment should
-  // deliver this challenge through a configured email/SMS provider.
-  auditLog.unshift({ id: crypto.randomUUID(), at: new Date().toISOString(), userId: "system", action: "owner_challenge_issued", detail: "challenge-created" });
+  // الإرسال الفعلي عبر Resend. لا يُسجَّل الرمز ولا يُعاد في الاستجابة إطلاقاً.
+  const result = await sendOwnerOtpEmail({ to: normalizedEmail, code });
+  if (!result.sent) {
+    // لا رمز معلّقاً بلا تسليم: يُلغى كي لا يُقبل رمز لم يصل للمالك.
+    verificationChallenges.delete(normalizedEmail);
+    auditLog.unshift({ id: crypto.randomUUID(), at: new Date().toISOString(), userId: "system", action: "owner_challenge_email_failed", detail: result.error || "send_failed" });
+    if (auditLog.length > 100) auditLog.pop();
+    persistState();
+    return res.status(502).json({
+      success: false,
+      error: "تعذر إرسال رمز التحقق، حاول مرة أخرى",
+    });
+  }
+
+  auditLog.unshift({ id: crypto.randomUUID(), at: new Date().toISOString(), userId: "system", action: "owner_challenge_email_sent", detail: "owner-challenge-delivered" });
   if (auditLog.length > 100) auditLog.pop();
   persistState();
 
   return res.json({
     success: true,
-    message: "تم إنشاء رمز تحقق مؤقت. يجب تسليمه للمالك عبر قناة تحقق خارجية مُهيأة في بيئة التشغيل.",
+    message: "تم إرسال رمز التحقق إلى بريد المالك",
   });
 });
 
@@ -1950,6 +1963,12 @@ app.get("/api/system/export", requireOwner, (_req, res) => {
   res.setHeader("Content-Type", "application/json; charset=utf-8");
   res.setHeader("Content-Disposition", `attachment; filename="al-gharabi-ai-backup-${new Date().toISOString().slice(0,10)}.json"`);
   res.json(payload);
+});
+
+// حالة إعداد البريد — للمالك فقط، وبلا كشف أي مفتاح أو قيمة سرية.
+app.get("/api/system/email-status", requireOwner, (_req, res) => {
+  const config = getOwnerEmailConfig();
+  res.json({ success: true, email: config, timestamp: new Date().toISOString() });
 });
 
 // Readiness is deterministic and does not call Gemini. It helps deployment systems

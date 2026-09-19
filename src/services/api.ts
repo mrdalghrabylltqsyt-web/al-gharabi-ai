@@ -95,7 +95,11 @@ export const apiService = {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ email }),
     });
-    return await res.json();
+    const data = await res.json().catch(() => ({ success: false }));
+    if (!res.ok || !data.success) {
+      throw new Error(data.error || data.message || 'تعذر إرسال رمز التحقق، حاول مرة أخرى');
+    }
+    return data;
   },
 
   async verifyChallenge(email: string, code: string): Promise<{ success: boolean; token: string; user: AppUser }> {
