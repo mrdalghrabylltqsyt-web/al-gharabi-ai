@@ -105,8 +105,20 @@ export const apiService = {
   },
 
   // مقايضة توكن المعاينة بجلسة مالك حقيقية. تُستخدم فقط من رابط المعاينة.
+  // التوكن يُرسل في جسم POST لا في سطر الطلب، فلا يظهر في سجلات الخادم ولا
+  // في محفوظات المتصفح ولا في Referer.
   async previewLogin(previewToken: string): Promise<{ success: boolean; token: string; user: AppUser }> {
-    const res = await fetch(`/api/auth/preview-login?token=${encodeURIComponent(previewToken)}`);
+    let res: Response;
+    try {
+      res = await fetch('/api/auth/preview-login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ token: previewToken }),
+      });
+    } catch {
+      // فشل شبكة عابر: لا نُسقط محاولة الدخول، يجرّبها المستدعي ثانيةً.
+      throw new Error('تعذر الوصول إلى الخادم لإنشاء جلسة المعاينة');
+    }
     const data = await res.json().catch(() => ({ success: false }));
     if (!res.ok || !data.success || !data.token) {
       throw new Error('تعذر إنشاء جلسة المعاينة');
@@ -139,10 +151,14 @@ export const apiService = {
       headers: getAuthHeaders(),
     });
 
-    if (!res.ok) {
+    // 401/403 يعني أن الخادم رفض الجلسة فعلاً (منتهية/مُبطلة/حساب معطّل)،
+    // فحينها فقط يُمسح التوكن. عطل عابر (5xx/شبكة) لا يجب أن يُسقط جلسة
+    // صحيحة فيُطرد المالك إلى شاشة الدخول بلا سبب.
+    if (res.status === 401 || res.status === 403) {
       setApiAuthToken(null);
       throw new Error('Unauthorized');
     }
+    if (!res.ok) throw new Error(`Auth check failed: ${res.status}`);
 
     return await res.json();
   },

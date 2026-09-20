@@ -533,23 +533,41 @@ app.post("/api/auth/verify-challenge", (req, res) => {
 
 // 2b. Preview login (opt-in فقط): يُفتح حصرياً بضبط GHARABI_PREVIEW_TOKEN في بيئة
 // الخادم. بدونه يعيد 404 كأن المسار غير موجود. التوكن لا يُسجَّل ولا يُعاد.
-app.get("/api/auth/preview-login", (req, res) => {
+//
+// المسار يقبل صيغتين:
+//  - GET  ?token=...  لرابط الإشارة المرجعية المباشر (توكن في سطر الطلب، لذا
+//    يُنصح بمسحه فوراً من شريط العنوان بعد الدخول).
+//  - POST { token }   لتبادل التوكن في جسم الطلب فلا يظهر في سجلات الخادم ولا
+//    في سجل المتصفح. الواجهة تُفضّل هذه الصيغة عبر مقطع الرابط (#preview_token).
+// كلا الصيغتين محروستان بمقارنة بزمن ثابت وحدّ محاولات لتقليل أثر التخمين.
+function handlePreviewLogin(req: express.Request, res: express.Response) {
   const configured = (process.env.GHARABI_PREVIEW_TOKEN || "").trim();
   if (!configured) return res.status(404).json({ success: false, error: "Not found" });
-  const supplied = typeof req.query.token === "string" ? req.query.token.trim() : "";
+
+  const rateKey = `preview:${req.ip || "unknown"}`;
+  if (!allowAuthAttempt(rateKey, 10)) {
+    return res.status(429).json({ success: false, error: "تم تجاوز عدد محاولات الدخول المسموح مؤقتاً. حاول لاحقاً." });
+  }
+
+  const suppliedRaw = typeof req.body?.token === "string" ? req.body.token : req.query.token;
+  const supplied = typeof suppliedRaw === "string" ? suppliedRaw.trim() : "";
   const a = Buffer.from(configured);
   const b = Buffer.from(supplied);
   if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) {
     return res.status(401).json({ success: false, error: "غير مصرح." });
   }
+
   const owner = serverUsers.find((u) => u.id === "owner" && u.active);
   if (!owner) return res.status(403).json({ success: false, error: "حساب المالك غير متاح." });
+
   const session = createSessionForUser(owner);
   auditLog.unshift({ id: crypto.randomUUID(), at: new Date().toISOString(), userId: "system", action: "owner_preview_login", detail: "preview-session-created" });
   if (auditLog.length > 100) auditLog.pop();
   persistState();
   return res.json({ success: true, token: session.token, user: session.user });
-});
+}
+app.get("/api/auth/preview-login", handlePreviewLogin);
+app.post("/api/auth/preview-login", handlePreviewLogin);
 
 // 3. Current User verification endpoint
 app.get("/api/auth/me", authenticateToken, (req, res) => {

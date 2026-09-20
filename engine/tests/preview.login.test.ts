@@ -103,20 +103,60 @@ async function run(): Promise<void> {
     const meWithout = await fetch(`${onBase}/api/auth/me`);
     check('بلا جلسة يبقى 401', meWithout.status === 401);
 
-    check('السجل لا يحتوي توكن المعاينة ولا توكن الجلسة', !on.log().includes(TOKEN) && !on.log().includes(okBody.token));
+    // صيغة POST: التوكن في جسم الطلب لا في الرابط، وهي الصيغة المفضّلة للواجهة.
+    const postWrong = await fetch(`${onBase}/api/auth/preview-login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ token: 'deadbeefdeadbeef' }),
+    });
+    check('POST بتوكن خاطئ: 401', postWrong.status === 401, `got ${postWrong.status}`);
+    const postOk = await fetch(`${onBase}/api/auth/preview-login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ token: TOKEN }),
+    });
+    const postOkBody = await postOk.json();
+    check('POST بتوكن صحيح: 200 وجلسة مالك', postOk.status === 200 && postOkBody.success === true && postOkBody.user?.role === 'owner', `got ${postOk.status}`);
+    const postMe = await fetch(`${onBase}/api/auth/me`, { headers: { Authorization: `Bearer ${postOkBody.token}` } });
+    check('جلسة POST تعمل على مسار محمي', postMe.status === 200, `got ${postMe.status}`);
 
-    console.log('\n' + '='.repeat(60));
-    if (failures.length) {
-      console.error(`FAILED: ${failures.length} / ${passed + failures.length}`);
-      for (const f of failures) console.error(`  ✗ ${f}`);
-      process.exitCode = 1;
-    } else {
-      console.log(`PASSED: ${passed} preview login checks`);
-    }
+    check('السجل لا يحتوي توكن المعاينة ولا توكن الجلسة', !on.log().includes(TOKEN) && !on.log().includes(okBody.token));
   } finally {
     try { on?.proc.kill('SIGTERM'); } catch {}
     await new Promise((r) => setTimeout(r, 500));
     try { rmSync(cwdOn, { recursive: true, force: true }); } catch {}
+  }
+
+  // ---- الحالة 3: حدّ المحاولات يمنع تخمين التوكن بلا نهاية ----
+  const cwdRl = mkdtempSync(join(tmpdir(), 'gharabi-preview-rl-'));
+  const rlPort = onPort + 1;
+  const rlBase = `http://127.0.0.1:${rlPort}`;
+  let rl: { proc: ChildProcess; log: () => string } | null = null;
+  try {
+    rl = startApp(rlPort, cwdRl, TOKEN);
+    check('الخادم يقلع لحالة حدّ المحاولات', await waitForHealth(rlBase), rl.log().slice(0, 300));
+    const statuses: number[] = [];
+    for (let i = 0; i < 11; i += 1) {
+      const r = await fetch(`${rlBase}/api/auth/preview-login?token=wrong-${i}`);
+      statuses.push(r.status);
+    }
+    check('أول 10 محاولات خاطئة: 401', statuses.slice(0, 10).every((s) => s === 401), JSON.stringify(statuses));
+    check('المحاولة الحادية عشرة: 429 (حدّ المحاولات)', statuses[10] === 429, `got ${statuses[10]}`);
+    const rlBody = await (await fetch(`${rlBase}/api/auth/preview-login?token=${TOKEN}`)).json().catch(() => ({}));
+    check('حتى التوكن الصحيح محجوب بعد تجاوز الحد', !rlBody.token, JSON.stringify(rlBody).slice(0, 120));
+  } finally {
+    try { rl?.proc.kill('SIGTERM'); } catch {}
+    await new Promise((r) => setTimeout(r, 500));
+    try { rmSync(cwdRl, { recursive: true, force: true }); } catch {}
+  }
+
+  console.log('\n' + '='.repeat(60));
+  if (failures.length) {
+    console.error(`FAILED: ${failures.length} / ${passed + failures.length}`);
+    for (const f of failures) console.error(`  ✗ ${f}`);
+    process.exitCode = 1;
+  } else {
+    console.log(`PASSED: ${passed} preview login checks`);
   }
 }
 

@@ -145,50 +145,84 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   // Initialize Auth & fetch verified user from backend
   useEffect(() => {
     const initAuth = async () => {
+      const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
       try {
-        // معاينة الجوال: الرابط يحمل توكن المعاينة، نقايضه بجلسة مالك حقيقية
-        // ثم نمحو المعامل من الرابط فوراً حتى لا يبقى في التاريخ.
-        // نستبدل أي جلسة قديمة: جلَسَات الخادم في الذاكرة، فجلسة سابقة تموت
-        // عند إعادة التشغيل، ولو احترمناها لبقي رابط المعاينة معطلاً.
-        try {
-          const params = new URLSearchParams(window.location.search);
-          const previewToken = params.get('preview_token');
-          if (previewToken) {
-            params.delete('preview_token');
-            const clean = window.location.pathname + (params.toString() ? `?${params.toString()}` : '') + window.location.hash;
-            window.history.replaceState({}, '', clean);
+        // معاينة المالك: رابط واحد يمنح جلسة مالك دائمة بلا OTP. يُقبل التوكن من
+        // مقطع الرابط (#preview_token) — وهو المفضّل لأنه لا يُرسل للخادم في
+        // سطر الطلب — أو من المعامل (?preview_token) كتوافق مع الروابط القديمة.
+        // يُمسح من الرابط فوراً حتى لا يبقى في المحفوظات أو في زر الرجوع.
+        const hashParams = new URLSearchParams(window.location.hash.replace(/^#/, ''));
+        const queryParams = new URLSearchParams(window.location.search);
+        const previewToken = hashParams.get('preview_token') || queryParams.get('preview_token');
+        if (previewToken) {
+          hashParams.delete('preview_token');
+          queryParams.delete('preview_token');
+          const hash = hashParams.toString();
+          const query = queryParams.toString();
+          window.history.replaceState(
+            {},
+            '',
+            `${window.location.pathname}${query ? `?${query}` : ''}${hash ? `#${hash}` : ''}`,
+          );
+
+          const exchange = async () => {
+            const session = await apiService.previewLogin(previewToken);
+            setApiAuthToken(session.token);
+            setCurrentUser(session.user);
             try {
-              const session = await apiService.previewLogin(previewToken);
-              setApiAuthToken(session.token);
-              setCurrentUser(session.user);
-              setIsLoadingAuth(false);
-              return;
-            } catch { /* توكن غير صالح: نكمل في مسار الجلسة العادي */ }
+              const serverUsers = await apiService.fetchUsers();
+              setUsers(serverUsers);
+            } catch {}
+            await hydrateWorkspace();
+          };
+
+          try {
+            await exchange();
+            return;
+          } catch {
+            // قد يكون عطلاً عابراً (شبكة/بدء بارد) لا توكن خاطئاً، فنعيد
+            // المحاولة قبل إظهار شاشة الدخول.
+            for (const delay of [800, 2000, 5000]) {
+              await sleep(delay);
+              try {
+                await exchange();
+                return;
+              } catch {}
+            }
+            // توكن غير صالح فعلاً: نكمل في مسار الجلسة العادي.
           }
-        } catch { /* بلا window */ }
+        }
 
         const token = getApiAuthToken();
-        if (!token) {
-          setIsLoadingAuth(false);
-          return;
-        }
-        const res = await apiService.getAuthMe();
-        if (res && res.success && res.user) {
-          setCurrentUser(res.user);
+        if (!token) return;
+
+        // عطل عابر في الطلب لا يعني جلسة منتهية، فلا نُسقط المالك إلى الدخول
+        // بسبب وميض شبكة. getAuthMe يمسح التوكن تلقائياً عند 401/403 فقط.
+        for (let attempt = 0; ; attempt += 1) {
           try {
-            const serverUsers = await apiService.fetchUsers();
-            setUsers(serverUsers);
-          } catch (err) {
-            console.warn('Could not fetch server users:', err);
+            const res = await apiService.getAuthMe();
+            if (res && res.success && res.user) {
+              setCurrentUser(res.user);
+              try {
+                const serverUsers = await apiService.fetchUsers();
+                setUsers(serverUsers);
+              } catch (err) {
+                console.warn('Could not fetch server users:', err);
+              }
+              await hydrateWorkspace();
+            }
+            break;
+          } catch (err: any) {
+            if (err?.message !== 'Unauthorized' && attempt < 3) {
+              await sleep(800 * (attempt + 1));
+              continue;
+            }
+            break;
           }
-          await hydrateWorkspace();
-        } else {
-          // التوكن مرفوض — يُمسح كي لا يبقى في المتصفح ويُعيد المحاولة بلا جدوى.
-          setApiAuthToken(null);
-          setCurrentUser(null);
         }
       } catch {
-        setCurrentUser(null);
+        // لا نُبطل جلسة قائمة بسبب خطأ غير متوقع في هذا المسار.
       } finally {
         setIsLoadingAuth(false);
       }
