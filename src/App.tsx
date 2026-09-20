@@ -34,7 +34,7 @@ import { OperationsControlView } from './components/control/OperationsControlVie
 import { CheckCircle2, ShieldCheck } from 'lucide-react';
 
 const AppContent: React.FC = () => {
-  const { activeTab, toastMessage, isAuthenticated, isLoadingAuth } = useApp();
+  const { activeTab, toastMessage, isAuthenticated, isLoadingAuth, authUnavailable, retryAuth } = useApp();
   const [mobileOpen, setMobileOpen] = useState(false);
 
   // Authentication Gate: Block dashboard and admin data for unauthenticated users
@@ -46,6 +46,29 @@ const AppContent: React.FC = () => {
         </div>
         <p className="text-sm font-bold text-white mb-1">التحقق من جلسة الأمان المشفرة...</p>
         <p className="text-xs text-slate-400">معرض الغرابي للتقسيط • نظام الحوكمة والمصادقة</p>
+      </div>
+    );
+  }
+
+  // تعذّر الوصول لخادم التحقق مع وجود جلسة محفوظة: ليست شاشة دخول. الجلسة لم
+  // تُرفض، لذا نعرض إعادة محاولة بدل مطالبة المالك بـOTP بسبب عطل عابر.
+  if (authUnavailable && !isAuthenticated) {
+    return (
+      <div className="min-h-screen bg-slate-950 flex flex-col items-center justify-center p-4 text-center font-['Cairo',sans-serif]">
+        <div className="w-14 h-14 rounded-2xl bg-amber-500/10 border border-amber-500/30 flex items-center justify-center mb-4">
+          <ShieldCheck className="w-7 h-7 text-amber-400" />
+        </div>
+        <p className="text-sm font-bold text-white mb-1">تعذّر الاتصال بخادم التحقق</p>
+        <p className="text-xs text-slate-400 mb-4 max-w-sm leading-relaxed">
+          جلستك ما زالت محفوظة ولم تُلغَ. قد يكون الخادم في بدء بارد أو هناك انقطاع شبكة مؤقت.
+        </p>
+        <button
+          type="button"
+          onClick={retryAuth}
+          className="px-5 py-2.5 rounded-xl bg-emerald-500 text-slate-950 text-xs font-black transition hover:bg-emerald-400"
+        >
+          إعادة المحاولة
+        </button>
       </div>
     );
   }

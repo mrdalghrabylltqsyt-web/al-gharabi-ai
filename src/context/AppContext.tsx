@@ -19,6 +19,7 @@ import {
   INITIAL_CONVERSATIONS,
 } from '../data/initialData';
 import { apiService, getApiAuthToken, setApiAuthToken } from '../services/api';
+import type { SessionOutcome } from '../services/sessionPolicy';
 
 interface AppContextType {
   // Navigation
@@ -29,6 +30,12 @@ interface AppContextType {
   currentUser: AppUser | null;
   isAuthenticated: boolean;
   isLoadingAuth: boolean;
+  /**
+   * true عندما يتعذّر الوصول لخادم التحقق (شبكة/5xx) مع وجود جلسة محفوظة.
+   * ليست شاشة دخول: الجلسة لم تُرفض، وتُعرض شاشة «إعادة المحاولة» بدلاً منها.
+   */
+  authUnavailable: boolean;
+  retryAuth: () => void;
   loginWithGoogle: (credential: string) => Promise<void>;
   requestOwnerChallenge: (email: string) => Promise<{ success: boolean; message: string }>;
   verifyOwnerChallenge: (email: string, code: string) => Promise<void>;
@@ -96,6 +103,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   // Auth State
   const [currentUser, setCurrentUser] = useState<AppUser | null>(null);
   const [isLoadingAuth, setIsLoadingAuth] = useState<boolean>(true);
+  const [authUnavailable, setAuthUnavailable] = useState<boolean>(false);
+  const [authRetryNonce, setAuthRetryNonce] = useState<number>(0);
   const [users, setUsers] = useState<AppUser[]>([]);
   const [workspaceHydrated, setWorkspaceHydrated] = useState<boolean>(false);
 
@@ -147,6 +156,17 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const initAuth = async () => {
       const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
+      // يُحمّل بيانات المستخدم بعد إثبات الجلسة: قائمة المستخدمين ومساحة العمل.
+      const loadAfterAuth = async () => {
+        try {
+          const serverUsers = await apiService.fetchUsers();
+          setUsers(serverUsers);
+        } catch (err) {
+          console.warn('Could not fetch server users:', err);
+        }
+        await hydrateWorkspace();
+      };
+
       try {
         // معاينة المالك: رابط واحد يمنح جلسة مالك دائمة بلا OTP. يُقبل التوكن من
         // مقطع الرابط (#preview_token) — وهو المفضّل لأنه لا يُرسل للخادم في
@@ -166,61 +186,52 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             `${window.location.pathname}${query ? `?${query}` : ''}${hash ? `#${hash}` : ''}`,
           );
 
-          const exchange = async () => {
-            const session = await apiService.previewLogin(previewToken);
-            setApiAuthToken(session.token);
-            setCurrentUser(session.user);
-            try {
-              const serverUsers = await apiService.fetchUsers();
-              setUsers(serverUsers);
-            } catch {}
-            await hydrateWorkspace();
-          };
-
-          try {
-            await exchange();
-            return;
-          } catch {
-            // قد يكون عطلاً عابراً (شبكة/بدء بارد) لا توكن خاطئاً، فنعيد
-            // المحاولة قبل إظهار شاشة الدخول.
-            for (const delay of [800, 2000, 5000]) {
-              await sleep(delay);
-              try {
-                await exchange();
-                return;
-              } catch {}
+          // التوكن باطل فعلاً (401/403/404) => fallback لمسار الدخول العادي.
+          // عطل خادم/شبكة لا يعني بطلان التوكن، لذا يُعاد بلا استسلام.
+          for (const delay of [0, 800, 2000, 5000, 10000]) {
+            if (delay) await sleep(delay);
+            const result = await apiService.previewLogin(previewToken);
+            if (result.outcome === 'ok') {
+              setApiAuthToken(result.token);
+              setCurrentUser(result.user);
+              await loadAfterAuth();
+              setIsLoadingAuth(false);
+              return;
             }
-            // توكن غير صالح فعلاً: نكمل في مسار الجلسة العادي.
+            if (result.outcome === 'invalid') {
+              // توكن غير صالح فعلاً: نكمل في مسار الجلسة العادي.
+              break;
+            }
+            // outcome === 'unavailable': نعيد المحاولة. لا شاشة دخول بسبب عطل عابر.
           }
         }
 
         const token = getApiAuthToken();
-        if (!token) return;
+        if (!token) {
+          setIsLoadingAuth(false);
+          return;
+        }
 
-        // عطل عابر في الطلب لا يعني جلسة منتهية، فلا نُسقط المالك إلى الدخول
-        // بسبب وميض شبكة. getAuthMe يمسح التوكن تلقائياً عند 401/403 فقط.
-        for (let attempt = 0; ; attempt += 1) {
-          try {
-            const res = await apiService.getAuthMe();
-            if (res && res.success && res.user) {
-              setCurrentUser(res.user);
-              try {
-                const serverUsers = await apiService.fetchUsers();
-                setUsers(serverUsers);
-              } catch (err) {
-                console.warn('Could not fetch server users:', err);
-              }
-              await hydrateWorkspace();
-            }
-            break;
-          } catch (err: any) {
-            if (err?.message !== 'Unauthorized' && attempt < 3) {
-              await sleep(800 * (attempt + 1));
-              continue;
-            }
+        // عطل عابر (شبكة/5xx) لا يعني جلسة منتهية: نعيد المحاولة بتراجع، وشاشة
+        // الدخول تُعرض فقط عند رفض صريح 401/403 أو غياب التوكن.
+        let attempt = 0;
+        let finalOutcome: SessionOutcome = 'unavailable';
+        for (;;) {
+          const { outcome, user } = await apiService.checkSession();
+          finalOutcome = outcome;
+          if (outcome === 'authenticated') {
+            setCurrentUser(user);
+            await loadAfterAuth();
             break;
           }
+          if (outcome === 'rejected') break; // التوكن مُسح داخل checkSession.
+          // outcome === 'unavailable': لا نُبطل الجلسة، نعيد المحاولة.
+          attempt += 1;
+          if (attempt > 8) break; // نستسلم مؤقتاً مع إبقاء الجلسة، لا نُظهر الدخول.
+          await sleep(Math.min(10000, 800 * attempt));
         }
+        // الخادم غير متاح مع وجود جلسة محفوظة => شاشة إعادة محاولة، لا شاشة دخول.
+        if (finalOutcome === 'unavailable' && getApiAuthToken()) setAuthUnavailable(true);
       } catch {
         // لا نُبطل جلسة قائمة بسبب خطأ غير متوقع في هذا المسار.
       } finally {
@@ -228,11 +239,18 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       }
     };
     initAuth();
-  }, []);
+  }, [authRetryNonce]);
+
+  const retryAuth = () => {
+    setAuthUnavailable(false);
+    setIsLoadingAuth(true);
+    setAuthRetryNonce((n) => n + 1);
+  };
 
   // Authentication Actions
   const loginWithGoogle = async (credential: string) => {
     setIsLoadingAuth(true);
+    setAuthUnavailable(false);
     try {
       const res = await apiService.loginWithGoogle(credential);
       setCurrentUser(res.user);
@@ -253,6 +271,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   const verifyOwnerChallenge = async (email: string, code: string) => {
     setIsLoadingAuth(true);
+    setAuthUnavailable(false);
     try {
       const res = await apiService.verifyChallenge(email, code);
       setCurrentUser(res.user);
@@ -271,6 +290,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     await apiService.logout();
     setCurrentUser(null);
     setUsers([]);
+    setAuthUnavailable(false);
     showToast('تم تسجيل الخروج بنجاح');
   };
 
@@ -729,6 +749,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         currentUser,
         isAuthenticated: Boolean(currentUser),
         isLoadingAuth,
+        authUnavailable,
+        retryAuth,
         loginWithGoogle,
         requestOwnerChallenge,
         verifyOwnerChallenge,

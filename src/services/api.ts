@@ -1,4 +1,5 @@
 import { AppUser, UserRole, MarketingBriefRequest, MarketingBriefResult, MarketingCampaignRequest, MarketingCampaignSummary, MarketingCampaignDetail, MarketingCampaignCreationResult, MarketingCampaignStatus, MarketingDraftAction, MarketingDraftBulkResult, MarketingDraftLinkResult, SocialManagerStatus, SocialCapabilitiesResult, SocialCommentClassificationResult, SocialCommentsResult, SocialAnalyticsResult, MarketingDecisionResult, SocialMemoryResult } from '../types';
+import { classifyPreviewExchange, classifySessionCheck, type SessionOutcome } from './sessionPolicy';
 
 export interface GenerateContentRequest {
   platform: string;
@@ -107,7 +108,11 @@ export const apiService = {
   // مقايضة توكن المعاينة بجلسة مالك حقيقية. تُستخدم فقط من رابط المعاينة.
   // التوكن يُرسل في جسم POST لا في سطر الطلب، فلا يظهر في سجلات الخادم ولا
   // في محفوظات المتصفح ولا في Referer.
-  async previewLogin(previewToken: string): Promise<{ success: boolean; token: string; user: AppUser }> {
+  // لا ترمي عند عطل الخادم: تُعيد تصنيفاً صريحاً حتى تميّز الواجهة بين توكن
+  // خاطئ (fallback للدخول) وبين عطل عابر (إعادة المحاولة بلا مسح الجلسة).
+  async previewLogin(previewToken: string): Promise<
+    { outcome: 'ok'; token: string; user: AppUser } | { outcome: 'invalid' | 'unavailable' }
+  > {
     let res: Response;
     try {
       res = await fetch('/api/auth/preview-login', {
@@ -116,14 +121,15 @@ export const apiService = {
         body: JSON.stringify({ token: previewToken }),
       });
     } catch {
-      // فشل شبكة عابر: لا نُسقط محاولة الدخول، يجرّبها المستدعي ثانيةً.
-      throw new Error('تعذر الوصول إلى الخادم لإنشاء جلسة المعاينة');
+      return { outcome: 'unavailable' };
     }
     const data = await res.json().catch(() => ({ success: false }));
-    if (!res.ok || !data.success || !data.token) {
-      throw new Error('تعذر إنشاء جلسة المعاينة');
-    }
-    return data;
+    const outcome = classifyPreviewExchange({
+      status: res.status,
+      hasSessionToken: Boolean(res.ok && data?.success && typeof data.token === 'string' && data.token),
+    });
+    if (outcome === 'ok') return { outcome: 'ok', token: data.token, user: data.user };
+    return { outcome };
   },
 
   async verifyChallenge(email: string, code: string): Promise<{ success: boolean; token: string; user: AppUser }> {
@@ -142,25 +148,36 @@ export const apiService = {
     return data;
   },
 
-  async getAuthMe(): Promise<{ success: boolean; user: AppUser }> {
+  /**
+   * يتحقق من الجلسة المحفوظة ويُصنّف النتيجة بلا آثار جانبية: مصادق/مرفوض/
+   * غير متاح، مع المستخدم عند النجاح. لا يمسح التوكن إلا عند رفض صريح
+   * (401/403)، ولا يرمي أبداً، حتى تتخذ الواجهة قراراً مبنياً على السياسة.
+   */
+  async checkSession(): Promise<{ outcome: SessionOutcome; user: AppUser | null }> {
     const token = getApiAuthToken();
-    if (!token) throw new Error('No token');
+    if (!token) return { outcome: classifySessionCheck({ hasToken: false, status: null, hasValidUser: false }), user: null };
 
-    const res = await fetch('/api/auth/me', {
-      method: 'GET',
-      headers: getAuthHeaders(),
-    });
-
-    // 401/403 يعني أن الخادم رفض الجلسة فعلاً (منتهية/مُبطلة/حساب معطّل)،
-    // فحينها فقط يُمسح التوكن. عطل عابر (5xx/شبكة) لا يجب أن يُسقط جلسة
-    // صحيحة فيُطرد المالك إلى شاشة الدخول بلا سبب.
-    if (res.status === 401 || res.status === 403) {
-      setApiAuthToken(null);
-      throw new Error('Unauthorized');
+    let res: Response;
+    try {
+      res = await fetch('/api/auth/me', { method: 'GET', headers: getAuthHeaders() });
+    } catch {
+      // انقطاع الشبكة: الجلسة لم تُرفض، فلا مسح ولا شاشة دخول.
+      return { outcome: 'unavailable', user: null };
     }
-    if (!res.ok) throw new Error(`Auth check failed: ${res.status}`);
 
-    return await res.json();
+    let user: AppUser | null = null;
+    if (res.ok) {
+      try {
+        const data = await res.json();
+        if (data?.success && data?.user) user = data.user as AppUser;
+      } catch {
+        user = null;
+      }
+    }
+
+    const outcome = classifySessionCheck({ hasToken: true, status: res.status, hasValidUser: Boolean(user) });
+    if (outcome === 'rejected') setApiAuthToken(null);
+    return { outcome, user };
   },
 
   async logout(): Promise<void> {
