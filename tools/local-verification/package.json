@@ -1,0 +1,12 @@
+{
+  "name": "gharabi-local-verification",
+  "private": true,
+  "type": "module",
+  "description": "أدوات تحقق محلية فقط (ليست تبعية إنتاج). لا تُثبَّت في CI ولا في Render.",
+  "scripts": {
+    "verify:db": "node verify-db.mjs"
+  },
+  "devDependencies": {
+    "embedded-postgres": "^18.4.0-beta.17"
+  }
+}

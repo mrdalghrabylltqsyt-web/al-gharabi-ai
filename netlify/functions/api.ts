@@ -13,9 +13,13 @@
  * يعيد Express صفحة HTML 404 بدل JSON. لذا نُطبّع المسار أدناه.
  */
 import serverless from "serverless-http";
-import { app } from "../../server";
+import { app, warmStorage } from "../../server";
 
 const inner = serverless(app);
+
+// كل عملية دالة جديدة تهيّئ المخزن أولاً (يقرأ الحالة الفعلية من Postgres_عند
+// وجود DATABASE_URL). يُخزَّن الوعد فلا تتكرر التهيئة داخل العملية الواحدة.
+const warmed = warmStorage();
 
 const FUNCTION_PREFIX = "/.netlify/functions/api";
 
@@ -38,5 +42,8 @@ function normalizeEvent(event: Record<string, unknown>): Record<string, unknown>
   return { ...event, path, rawPath: path };
 }
 
-export const handler = (event: Record<string, unknown>, context: Record<string, unknown>) =>
-  inner(normalizeEvent(event), context);
+export const handler = async (event: Record<string, unknown>, context: Record<string, unknown>) => {
+  // ننتظر تهيئة المخزن قبل معالجة أي طلب، فلا يقرأ الطلب حالة لم تُحمَّل بعد.
+  try { await warmed; } catch { /* يتعامل معها الخادم كحالة تخزين غير جاهزة */ }
+  return inner(normalizeEvent(event), context);
+};

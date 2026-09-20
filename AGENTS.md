@@ -12,11 +12,13 @@ npm install
 npm run dev            # tsx server.ts
 npm run lint           # tsc --noEmit
 npm run build          # vite build + esbuild server.ts -> dist/server.cjs
-npm run final-audit    # node final-audit.mjs (10 فحوص)
-npm test               # engine + social + network + runtime
+npm run final-audit    # node final-audit.mjs (37 فحصاً)
+npm test               # storage + engine + auth + ... + db + runtime
 ```
 - التشغيل الإنتاجي: `PORT=4517 NODE_ENV=production APP_URL=http://localhost:4517 node dist/server.cjs`
-- فحوص منفردة: `npm run test:engine` | `test:social` | `test:network` | `test:runtime`.
+- فحوص منفردة: `npm run test:engine` | `test:social` | `test:network` | `test:runtime` | `test:storage`.
+- استمرارية Postgres محلياً: `cd tools/local-verification && npm install && npm run verify:db`
+  (يشغّل Postgres مدمجاً ثم `engine/tests/database.persistence.test.ts`).
 
 ## البنية الفعلية (مصدر الحقيقة)
 ```
@@ -32,7 +34,8 @@ engine/social/comments.ts     تصنيف التعليقات الحتمي + من�
 engine/social/publishing.ts   preflight/execute + توفر المؤشرات لكل منصة
 engine/social/brain.ts        العقل التسويقي + الذاكرة التشغيلية
 engine/social/routes.ts       مسارات /api/social/manager/* (تُسجَّل من server.ts)
-engine/tests/                 6 مجموعات اختبار (333 فحصاً)
+engine/storage/adapter.ts     محوّل تخزين واحد: ملف محلي أو Postgres (DATABASE_URL)
+engine/tests/                 8 مجموعات اختبار (380+ فحصاً)
 netlify/functions/api.ts      غلاف Netlify Function حول تطبيق Express نفسه
 src/components/social/SocialManagerView.tsx   واجهة المدير
 src/components/agent/BrainCommandView.tsx     لوحة العقل المفكر
@@ -128,6 +131,33 @@ src/components/agent/BrainCommandView.tsx     لوحة العقل المفكر
 اختبارات: `engine/tests/session.policy.test.ts` (سياسة) و`engine/tests/netlify.coldstart.test.ts`
 (دالة Netlify في عمليات منفصلة: login، me، users، OTP، بدء بارد بمجلد فارغ، نجاة إعادة
 النشر، رفض سرّ مختلف، خروج يسري عبر العمليات، `STATE_DIR` للقراءة فقط، ولا تسريب توكنات).
+
+## ثبات الحالة على Render Free (صُحّح 2026-09-20) — جذر «يُطلب OTP ويضيع كل شيء بعد النشر»
+Render Free بلا قرص دائم: ملف `.gharabi-state.json` يُمسح عند كل إعادة نشر، فتضيع
+قائمة إبطال الجلسات وتوكنات المنصات المشفّرة ومساحة العمل بالكامل. الإصلاح:
+- `engine/storage/adapter.ts` واجهة تخزين واحدة (`readSync`/`read`/`write` ذرّي/`status`)
+  بخلفيتين: **ملف محلي** (الافتراضي للتطوير والنسخ الاحتياطية اليومية بحفظ 7 أيام)
+  و**Postgres** يُفعَّل تلقائياً عند وجود `DATABASE_URL` (متوافق مع Neon Free).
+  لا migrations معقدة: جدول واحد `gharabi_state(key text pk, value jsonb, updated_at)`.
+- كل ما كان يُكتب في ملف الحالة يمر عبر المحوّل: `revokedSessions`، `userRevocations`,
+  `serverUsers`، `workspace` (وفيه `providerTokens` مشفّرة AES-256-GCM)، `jobs`، `audit`،
+  `platformConnections`، ومفتاح `usage` لحارس Gemini. لا كتابة مباشرة لملف الحالة في `server.ts`.
+- التهيئة غير متزامنة قبل `app.listen` وعبر `warmStorage()` في غلاف Netlify: تُقرأ الحالة
+  الفعلية من Postgres أولاً، ثم يُسمح بالكتابة. **لا كتابة قبل الجهوزية** لئلا تُطمس حالة
+  قائمة بلقطة فارغة.
+- `/api/health` يعرض `persistence: { backend, durable, mode, healthy, warning, ... }`.
+  بلا `DATABASE_URL` على بيئة إنتاج: `mode: "ephemeral"` مع تحذير صريح
+  `MISSING DATABASE_URL`، و`revocationsDurable: false` — **لا ادعاء دوام غير مثبت**.
+  توكنات المنصات تبقى مشفّرة داخل القاعدة ولا تُسجَّل ولا تُعاد في أي استجابة.
+- `render.yaml`: خطة Free، `npm ci && npm run build`، `npm run start`،
+  `healthCheckPath: /api/health`، `NODE_VERSION=20`، وكل الأسرار `sync: false` بلا أي قيمة.
+
+اختبارات: `engine/tests/storage.adapter.test.ts` (واجهة المحوّل، الكتابة الذرّية، النسخ،
+الاختيار التلقائي، القراءة فقط) و`engine/tests/database.persistence.test.ts` (Postgres حقيقي:
+write → restart بمجلد فارغ → الإبطال يسري → جلسة المالك تنجو). الثاني يُتخطى صراحةً بدون
+`GHARABI_TEST_DATABASE_URL`؛ يمكن تشغيله محلياً عبر `tools/local-verification` (Postgres مدمج،
+أداة تطوير فقط وغير مثبّتة في CI/Render).
+- **الإنتاج لا يُعتبر جاهزاً للثبات قبل تشغيل اختبار الاستمرارية على النشر الفعلي.**
 
 ## فشل النشر على Netlify (صُحّح 2026-09-20) — جذر «الإنتاج يخدم كوداً قديماً»
 كان الإنتاج يخدم بنية قديمة (`eab658a`) مع أن `main` متقدم عليها، وكل محاولات النشر

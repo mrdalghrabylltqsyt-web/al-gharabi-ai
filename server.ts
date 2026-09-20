@@ -33,6 +33,14 @@ import {
   type PerformanceRecord,
 } from "./engine/social/brain";
 import { getOwnerEmailConfig, sendOwnerOtpEmail } from "./engine/notifications/owner-email";
+import {
+  createStorageAdapter,
+  isEphemeralHost,
+  STORAGE_KEY_STATE,
+  STORAGE_KEY_USAGE,
+  type StorageAdapter,
+  type StorageStatus,
+} from "./engine/storage/adapter";
 import { SESSION_TTL_MS, signSession, verifySession, type SessionPayload } from "./engine/auth/sessions";
 import { CHALLENGE_TTL_MS, issueChallengeCode, verifyChallengeCode } from "./engine/auth/challenge";
 
@@ -162,25 +170,20 @@ function getRoleTitle(role: ServerUserRole): string {
 // Persistent server-side store. Only real owner/user records are loaded; no demo data.
 // المسار قابل للضبط عبر STATE_DIR (مجلدات دائمة/مُثبّتة)، وافتراضياً مجلد العمل.
 const STATE_DIR = (process.env.STATE_DIR || process.cwd()).trim() || process.cwd();
-const STATE_FILE = path.join(STATE_DIR, ".gharabi-state.json");
 const BACKUP_DIR = path.join(STATE_DIR, ".gharabi-backups");
 
-/**
- * هل يمكن الكتابة فعلاً في مجلد الحالة؟ على منصات بلا قرص دائم (مثل Netlify
- * Functions) يكون الجذر للقراءة فقط، فيفشل الحفظ بصمت. نفحص مرة واحدة حتى
- * تُعلن الحالة بصراحة في /api/health بدل الإيهام بدوام البيانات.
- */
-const STATE_WRITABLE = (() => {
-  try {
-    fs.mkdirSync(STATE_DIR, { recursive: true });
-    const probe = path.join(STATE_DIR, `.gharabi-write-probe-${process.pid}`);
-    fs.writeFileSync(probe, "ok", { encoding: "utf8", mode: 0o600 });
-    fs.unlinkSync(probe);
-    return true;
-  } catch {
-    return false;
-  }
-})();
+// مخزن واحد لكل الحالة: ملف محلي افتراضياً (تطوير)، وPostgres خارجي تلقائياً
+// عند وجود DATABASE_URL. بدونه على Render Free (بلا قرص دائم) لا تنجو البيانات
+// من إعادة النشر، ويُعلَن ذلك بصراحة في /api/health بدل ادعاء الدوام.
+const storageAdapter: StorageAdapter = createStorageAdapter({
+  stateDir: STATE_DIR,
+  databaseUrl: process.env.DATABASE_URL,
+  ephemeralHost: isEphemeralHost(),
+});
+
+// حالة الكتابة تُقرأ من المخزّن الفعلي، لا من فحص مجلد منفصل.
+const STATE_WRITABLE = () => storageAdapter.status().writable;
+const storageStatus = (): StorageStatus => storageAdapter.status();
 const defaultOwner: ServerUser = {
   id: "owner",
   name: "مالك النظام (Owner)",
@@ -192,9 +195,14 @@ const defaultOwner: ServerUser = {
   createdAt: new Date().toISOString(),
 };
 
-function loadPersistentState(): any {
+/** يقرأ لقطة الحالة من المخزن مرّة واحدة عند الإقلاع (متزامن للملف فقط). */
+function readStateSnapshot(): any {
+  return storageAdapter.readSync<any>(STORAGE_KEY_STATE);
+}
+
+function loadPersistentState(snapshot?: any): any {
   try {
-    const raw = JSON.parse(fs.readFileSync(STATE_FILE, "utf8"));
+    const raw = snapshot ?? readStateSnapshot() ?? {};
     if (!raw.schemaVersion) raw.schemaVersion = 1;
     const users = Array.isArray(raw.users) ? raw.users : [defaultOwner];
     if (!users.some((u: ServerUser) => u.id === "owner")) users.unshift(defaultOwner);
@@ -213,7 +221,7 @@ const revokedSessions = new Map<string, number>(); // sid -> exp
 const userRevocationEpoch = new Map<string, number>(); // userId -> timestamp
 
 const persisted = loadPersistentState();
-// الجلسات المُبطَلة تُحمَّل من القرص كي يستمر الإبطال عبر العمليات وإعادة النشر.
+// الجلسات المُبطَلة تُحمَّل من المخزن كي يستمر الإبطال عبر العمليات وإعادة النشر.
 for (const entry of Array.isArray(persisted.revokedSessions) ? persisted.revokedSessions : []) {
   if (entry?.sid && typeof entry.exp === "number" && entry.exp > Date.now()) {
     revokedSessions.set(entry.sid, entry.exp);
@@ -834,8 +842,14 @@ function publicProviderReadiness(platform: string): { configured: boolean; mode:
 }
 function safeConnection(platform: string) { const c:any=platformConnections.get(platform); return c ? { platform:c.platform, status:c.status, accountName:c.accountName, accountId:c.accountId, connectedAt:c.connectedAt, lastSyncAt:c.lastSyncAt, providerVerified:Boolean(c.providerVerified), provider:publicProviderReadiness(platform) } : null; }
 for (const p of SUPPORTED_PLATFORMS) platformConnections.set(p.id, { platform: p.id, status: "disconnected" });
-function savePlatformConnections() { try { const raw = JSON.parse(fs.existsSync(STATE_FILE) ? fs.readFileSync(STATE_FILE, "utf8") : "{}"); raw.platformConnections = Array.from(platformConnections.values()); const tmp = `${STATE_FILE}.tmp`; fs.writeFileSync(tmp, JSON.stringify(raw, null, 2)); fs.renameSync(tmp, STATE_FILE); } catch (e) { console.warn("Could not persist platform connections:", e); } }
-function loadPlatformConnections() { try { const raw = JSON.parse(fs.readFileSync(STATE_FILE, "utf8")); if (Array.isArray(raw.platformConnections)) for (const item of raw.platformConnections) if (item?.platform && platformConnections.has(item.platform)) platformConnections.set(item.platform, item); } catch {} }
+// اتصالات المنصات وتوكناتها تمر عبر نفس المخزن: توكنات المنصات المشفّرة تُحفظ
+// داخل workspace.providerTokens، واتصالات المنصات في platformConnections.
+function savePlatformConnections() {
+  persistState();
+}
+function loadPlatformConnections() {
+  // التحميل الفعلي يتم من خلال الحالة المحمّلة (platformConnections) عند الإقلاع.
+}
 loadPlatformConnections();
 function connectedPlatformIds() { return Array.from(platformConnections.values()).filter(x => x.status === "connected").map(x => x.platform); }
 function hasCapability(platform: string, capability: string) { return SUPPORTED_PLATFORMS.some(p => p.id === platform && p.capabilities.includes(capability)); }
@@ -921,7 +935,7 @@ app.get("/api/platforms/production-readiness", authenticateToken, (_req,res)=>{
 
 app.get("/api/control/final-check", requireOwner, (_req,res)=>{
   const checks:any[]=[]; const add=(id:string,ok:boolean,detail:string,blocking=false)=>checks.push({id,ok,detail,blocking});
-  add("state-persistence",fs.existsSync(STATE_FILE),"ملف الحالة متاح أو سيتم إنشاؤه عند أول كتابة",true);
+  add("state-persistence",storageStatus().writable,"مخزن الحالة متاح وقابل للكتابة",true);
   add("owner",Boolean(OWNER_EMAIL),"OWNER_EMAIL مضبوط",true);
   add("token-encryption",Boolean(tokenKeyBytes()),"مفتاح تشفير توكنات المنصات مضبوط",true);
   add("gemini-guard",Number.isFinite(GEMINI_DAILY_LIMIT)&&GEMINI_DAILY_LIMIT>0,"حارس Gemini المحلي فعال",false);
@@ -974,12 +988,8 @@ app.get("/api/control/audit", authenticateToken, (req, res) => {
 });
 
 app.get("/api/system/backups", requireOwner, (_req, res) => {
-  ensureBackupDirectory();
-  const backups = fs.readdirSync(BACKUP_DIR)
-    .filter((name) => /^state-\d{4}-\d{2}-\d{2}\.json$/.test(name))
-    .map((name) => { const stat = fs.statSync(path.join(BACKUP_DIR, name)); return { name, size: stat.size, modifiedAt: stat.mtime.toISOString() }; })
-    .sort((a, b) => b.modifiedAt.localeCompare(a.modifiedAt));
-  res.json({ success: true, backups, retention: 7 });
+  const backups = storageAdapter.listBackups();
+  res.json({ success: true, backups, retention: 7, backend: storageAdapter.backend });
 });
 
 app.post("/api/control/jobs/preflight", requireOwner, (req, res) => {
@@ -1851,7 +1861,6 @@ app.post("/api/control/jobs/preflight-all", requireOwner, (req, res) => {
 // Gemini usage guard: protects the project from accidental loops/retries and
 // prevents fake/demo counters from being mistaken for real provider quota.
 const GEMINI_DAILY_LIMIT = Math.min(6, Math.max(1, Number(process.env.GEMINI_DAILY_LIMIT || 4)));
-const USAGE_FILE = path.join(process.cwd(), '.gharabi-usage.json');
 let geminiUsageDay = new Date().toISOString().slice(0, 10);
 let geminiUsageCount = 0;
 const requestWindow = new Map<string, { startedAt: number; count: number }>();
@@ -1870,14 +1879,68 @@ function allowChallengeAttempt(key: string): boolean {
 const auditLog: Array<{ id: string; at: string; userId: string; action: string; detail?: string }> = persisted.audit;
 const automationJobs: Array<{ id: string; type: string; status: "queued" | "approved" | "ready" | "executed" | "failed"; createdAt: string; createdBy: string; payload: any; requiresExternalConnection: boolean; scheduledFor?: string; readyAt?: string; executedAt?: string; lastError?: string; providerVerified?: boolean; providerReceipt?: any }> = persisted.jobs as any;
 
+/**
+ * يطبّق لقطة حالة (من المخزن) على كل الحاويات الحيّة دون استبدال مراجعها،
+ * فيبقى كل الكود الذي يمسك `workspace`/`serverUsers` صالحاً. يُستخدم عند
+ * التهيئة غير المتزامنة (Postgres) بعد قراءة الحالة الفعلية.
+ */
+function applyStateSnapshot(snapshot: any): void {
+  const next = loadPersistentState(snapshot);
+  serverUsers.splice(0, serverUsers.length, ...next.users);
+  for (const key of Object.keys(workspace)) delete (workspace as any)[key];
+  Object.assign(workspace, next.workspace);
+  revokedSessions.clear();
+  for (const entry of Array.isArray(next.revokedSessions) ? next.revokedSessions : []) {
+    if (entry?.sid && typeof entry.exp === "number" && entry.exp > Date.now()) revokedSessions.set(entry.sid, entry.exp);
+  }
+  userRevocationEpoch.clear();
+  for (const entry of Array.isArray(next.userRevocations) ? next.userRevocations : []) {
+    if (entry?.userId && typeof entry.at === "number") userRevocationEpoch.set(entry.userId, entry.at);
+  }
+  auditLog.splice(0, auditLog.length, ...(Array.isArray(next.audit) ? next.audit : []));
+  automationJobs.splice(0, automationJobs.length, ...(Array.isArray(next.jobs) ? next.jobs : []));
+  for (const p of SUPPORTED_PLATFORMS) platformConnections.set(p.id, { platform: p.id, status: "disconnected" });
+  if (Array.isArray(snapshot?.platformConnections)) {
+    for (const item of snapshot.platformConnections) {
+      if (item?.platform && platformConnections.has(item.platform)) platformConnections.set(item.platform, item);
+    }
+  }
+}
+
+/** لا يُسمح بأي كتابة قبل نجاح التهيئة إن كان المخزن خارجياً، حتى لا نطمس حالة قائمة بلقطة فارغة. */
+let storageReady = storageAdapter.backend === "file";
+let storageInitError: string | null = null;
+
+/**
+ * تهيئة المخزن ثم تحميل الحالة منه. للملف المحلي التحميل حصل عند الإقلاع
+ * (متزامن)، ولPostgres ننتظر الاتصال ونقرأ الحالة الفعلية قبل بدء الاستماع.
+ */
+async function bootstrapStorage(): Promise<void> {
+  await storageAdapter.init();
+  if (!storageAdapter.status().healthy) {
+    storageInitError = storageAdapter.status().detail || "storage_unavailable";
+    return;
+  }
+  if (storageAdapter.backend === "postgres") {
+    try {
+      const snapshot = await storageAdapter.read<any>(STORAGE_KEY_STATE);
+      if (snapshot) applyStateSnapshot(snapshot);
+      const usage = await storageAdapter.read<any>(STORAGE_KEY_USAGE);
+      if (usage?.day === geminiUsageDay && Number.isFinite(usage?.count)) geminiUsageCount = Math.max(0, Number(usage.count));
+    } catch (error: any) {
+      storageInitError = String(error?.code || error?.name || "state_read_failed").slice(0, 60);
+      return;
+    }
+  }
+  storageReady = true;
+}
+
 function loadUsage() {
-  try {
-    const raw = JSON.parse(fs.readFileSync(USAGE_FILE, 'utf8'));
-    if (raw.day === geminiUsageDay && Number.isFinite(raw.count)) geminiUsageCount = Math.max(0, Number(raw.count));
-  } catch {}
+  const raw = storageAdapter.readSync<any>(STORAGE_KEY_USAGE);
+  if (raw?.day === geminiUsageDay && Number.isFinite(raw?.count)) geminiUsageCount = Math.max(0, Number(raw.count));
 }
 function saveUsage() {
-  try { fs.writeFileSync(USAGE_FILE, JSON.stringify({ day: geminiUsageDay, count: geminiUsageCount }, null, 2)); } catch {}
+  void storageAdapter.write(STORAGE_KEY_USAGE, { day: geminiUsageDay, count: geminiUsageCount }).catch(() => { /* حارس محلي: فشل الحفظ لا يُسقط الخدمة */ });
 }
 loadUsage();
 
@@ -1922,19 +1985,8 @@ function ensureBackupDirectory() {
   try { fs.mkdirSync(BACKUP_DIR, { recursive: true }); } catch {}
 }
 
-function backupStateBeforeWrite() {
-  try {
-    if (!fs.existsSync(STATE_FILE)) return;
-    ensureBackupDirectory();
-    const stamp = new Date().toISOString().slice(0, 10);
-    const target = path.join(BACKUP_DIR, `state-${stamp}.json`);
-    if (!fs.existsSync(target)) fs.copyFileSync(STATE_FILE, target);
-    const backups = fs.readdirSync(BACKUP_DIR).filter((n) => n.startsWith('state-') && n.endsWith('.json')).sort();
-    while (backups.length > 7) { const old = backups.shift(); if (old) { try { fs.unlinkSync(path.join(BACKUP_DIR, old)); } catch {} } }
-  } catch (error) {
-    console.warn("Could not create state backup:", error);
-  }
-}
+// النسخ الاحتياطية اليومية مسؤولية المخزن: ملف محلي بحفظ 7 أيام، أو Postgres
+// (نسخ وdurability على مستوى القاعدة). لا منطق نسخ مكرر هنا.
 
 function buildPersistedState() {
   return {
@@ -1962,21 +2014,33 @@ function buildPersistedState() {
       leads: workspace.leads.slice(0, 2000),
       tasks: workspace.tasks.slice(0, 1000),
       sales: workspace.sales.slice(0, 5000),
-      payments: workspace.payments.slice(0, 10000), suppliers: workspace.suppliers.slice(0, 1000), purchases: workspace.purchases.slice(0, 5000), expenses: workspace.expenses.slice(0, 10000), contracts: workspace.contracts.slice(0, 5000), installmentSchedules: workspace.installmentSchedules.slice(0, 20000), marketingBriefs: (workspace as any).marketingBriefs.slice(0, 2000), marketingCampaigns: (workspace as any).marketingCampaigns.slice(0, 1000)
+      payments: workspace.payments.slice(0, 10000), suppliers: workspace.suppliers.slice(0, 1000), purchases: workspace.purchases.slice(0, 5000), expenses: workspace.expenses.slice(0, 10000), contracts: workspace.contracts.slice(0, 5000), installmentSchedules: workspace.installmentSchedules.slice(0, 20000), marketingBriefs: (workspace as any).marketingBriefs.slice(0, 2000), marketingCampaigns: (workspace as any).marketingCampaigns.slice(0, 1000),
+      providerTokens: (workspace as any).providerTokens,
     }
   };
 }
 
-function persistState() {
-  try {
-    backupStateBeforeWrite();
-    const tmp = `${STATE_FILE}.tmp`;
-    fs.writeFileSync(tmp, JSON.stringify(buildPersistedState(), null, 2), { encoding: "utf8", mode: 0o600 });
-    fs.renameSync(tmp, STATE_FILE);
-  } catch (error) {
-    console.warn("Could not persist server state:", error);
-    try { if (fs.existsSync(`${STATE_FILE}.tmp`)) fs.unlinkSync(`${STATE_FILE}.tmp`); } catch {}
+/**
+ * كتابة ذرّية عبر المخزن. تُسلسَل الكتابات لمنع تراكبها، وأي فشل يُسجَّل بصراحة
+ * ويُعلَن في /api/health بدل الادعاء بأن الحالة محفوظة.
+ */
+let persistQueue: Promise<void> = Promise.resolve();
+let lastPersistError: string | null = null;
+
+function persistState(): void {
+  // لا كتابة قبل جهوزية المخزن: كتابة لقطة فارغة فوق حالة قائمة أسوأ من عدم الكتابة.
+  if (!storageReady) {
+    lastPersistError = storageInitError || "storage_not_ready";
+    return;
   }
+  const snapshot = buildPersistedState();
+  persistQueue = persistQueue
+    .then(() => storageAdapter.write(STORAGE_KEY_STATE, snapshot))
+    .then(() => { lastPersistError = null; })
+    .catch((error: any) => {
+      lastPersistError = String(error?.code || error?.name || "persist_failed").slice(0, 60);
+      console.warn("Could not persist server state:", lastPersistError);
+    });
 }
 
 function audit(userId: string, action: string, detail?: string) {
@@ -2097,14 +2161,17 @@ function geminiStatus() {
 
 // Owner-only system diagnostics and durable-state export. No secrets or Gemini keys are included.
 app.get("/api/system/integrity", requireOwner, (_req, res) => {
+  const status = storageStatus();
+  // stateFile يحتفظ بمعناه التاريخي: هل المخزن مهيّأ وقابل للاستخدام.
+  const stateUsable = storageAdapter.backend === "file" ? fs.existsSync(path.join(STATE_DIR, ".gharabi-state.json")) || status.writable : status.healthy;
   const checks = {
-    stateFile: fs.existsSync(STATE_FILE),
-    stateWritable: (() => { try { fs.accessSync(process.cwd(), fs.constants.W_OK); return true; } catch { return false; } })(),
+    stateFile: stateUsable,
+    stateWritable: status.writable,
     ownerConfigured: Boolean(OWNER_EMAIL),
     googleAudienceCheckConfigured: Boolean(GOOGLE_CLIENT_ID),
-    platformConnectionsPersisted: fs.existsSync(STATE_FILE),
+    platformConnectionsPersisted: stateUsable,
     workspaceLoaded: Boolean(workspace && typeof workspace === "object"),
-    backupDirectory: (() => { try { ensureBackupDirectory(); return true; } catch { return false; } })(),
+    backupDirectory: storageAdapter.backend === "file" ? (() => { try { ensureBackupDirectory(); return true; } catch { return false; } })() : status.healthy,
   };
   const healthy = Object.values(checks).every(Boolean);
   res.status(healthy ? 200 : 503).json({ success: healthy, healthy, version: PROJECT_VERSION, schemaVersion: STATE_SCHEMA_VERSION, checks, counts: { users: serverUsers.length, products: workspace.products.length, plans: workspace.installmentPlans.length, posts: workspace.posts.length, conversations: workspace.conversations.length, leads: workspace.leads.length, tasks: workspace.tasks.length, sales: workspace.sales.length, payments: workspace.payments.length, inventoryMovements: (workspace as any).inventoryMovements.length, jobs: automationJobs.length, audit: auditLog.length }, timestamp: new Date().toISOString() });
@@ -2130,10 +2197,11 @@ app.get("/api/readiness", (_req, res) => {
   // التطبيق جاهز للعمل حتى لو لم يُضبط المفتاح، لأن البديل الحتمي متاح دائماً.
   res.json({
     success: true,
-    ready: STATE_WRITABLE,
+    ready: STATE_WRITABLE(),
     version: PROJECT_VERSION,
-    statePersistence: STATE_WRITABLE,
-    applicationReady: STATE_WRITABLE,
+    statePersistence: STATE_WRITABLE(),
+    applicationReady: STATE_WRITABLE(),
+    persistence: (() => { const s = storageStatus(); return { backend: s.backend, durable: s.durable, mode: s.durable ? "durable" : "ephemeral", healthy: s.healthy }; })(),
     auth: {
       ownerEmailConfigured: Boolean(OWNER_EMAIL),
       sessionsDurable: SESSIONS_DURABLE,
@@ -2387,7 +2455,7 @@ app.get("/api/system/deployment-checklist", requireOwner, (_req,res)=>{
   const platformRows=SUPPORTED_PLATFORMS.map((p:any)=>{ const r=publicProviderReadiness(p.id); const c:any=platformConnections.get(p.id); return {platform:p.id,name:p.name,configured:Boolean(r.configured),connected:Boolean(c?.status==="connected"&&c?.providerVerified===true),providerVerified:Boolean(c?.providerVerified===true),productionReady:Boolean(c?.status==="connected"&&c?.providerVerified===true&&p.id==="telegram"),missing:r.missing||[],next:r.next||"إضافة موصل إنتاجي معتمد"}; });
   const checks=[
     {id:"auth",label:"المصادقة والمالك",ok:serverUsers.some((u:any)=>u.role==="owner")},
-    {id:"persistence",label:"التخزين والنسخ الاحتياطية",ok:Boolean(workspace&&fs.existsSync(STATE_FILE))},
+    {id:"persistence",label:"التخزين والنسخ الاحتياطية",ok:Boolean(workspace&&typeof workspace==="object")&&storageStatus().healthy},
     {id:"integrity",label:"سلامة البيانات الأساسية",ok:Array.isArray(workspace.products)&&Array.isArray(workspace.sales)&&Array.isArray(workspace.payments)},
     {id:"ai-guard",label:"حارس Gemini",ok:GEMINI_DAILY_LIMIT>=1&&GEMINI_DAILY_LIMIT<=6},
     {id:"publish-safety",label:"سلامة النشر",ok:automationJobs.every((j:any)=>j.status!=="published"||j.providerVerified===true)},
@@ -2405,18 +2473,34 @@ app.get("/api/health", (_req, res) => {
     service: "Al-Gharabi AI Backend",
     version: PROJECT_VERSION,
     geminiUsage: geminiStatus(),
-    // حالة الثبات: تُعلن بصراحة هل تُفقد الجلسات بين العمليات، وهل يمكن حفظ
-    // بيانات العمل على القرص. لا تُكشف أي قيمة سرية هنا.
-    persistence: {
-      sessionsDurable: SESSIONS_DURABLE,
-      sessionSecretSource: SESSION_SECRET_SOURCE,
-      challengeMode: "stateless-hmac",
-      stateWritable: STATE_WRITABLE,
-      stateDir: STATE_DIR,
-      // منطقي فقط بلا أي قيمة: يتيح للمالك التأكد من ضبط مسار الدخول المباشر
-      // في بيئة النشر دون كشف التوكن أو تسجيله.
-      previewLoginEnabled: Boolean((process.env.GHARABI_PREVIEW_TOKEN || "").trim()),
-    },
+    // حالة الثبات: تُعلن بصراحة هل تُفقد الجلسات بين العمليات، وهل تنجو بيانات
+    // العمل من إعادة النشر. لا تُكشف أي قيمة سرية هنا، ولا يُدّعى الدوام بلا مخزن.
+    persistence: (() => {
+      const status = storageStatus();
+      // "ephemeral" = لا مخزن دائم: الملف المحلي على Render Free يُمسح عند كل نشر.
+      const durable = status.durable;
+      return {
+        backend: status.backend,
+        durable,
+        mode: durable ? "durable" : "ephemeral",
+        healthy: status.healthy,
+        stateWritable: status.writable,
+        stateDir: status.stateDir,
+        lastPersistError,
+        warning: durable
+          ? null
+          : status.backend === "file"
+            ? "MISSING DATABASE_URL: الحالة على ملف محلي غير دائم وستُفقد عند كل إعادة نشر. اضبط DATABASE_URL (Neon Free) لتفعيل Postgres."
+            : `مخزن Postgres غير مهيّأ: ${status.detail || "غير متاح"}. لن تُحفظ الحالة حتى يعود الاتصال.`,
+        sessionsDurable: SESSIONS_DURABLE,
+        sessionSecretSource: SESSION_SECRET_SOURCE,
+        challengeMode: "stateless-hmac",
+        revocationsDurable: durable,
+        // منطقي فقط بلا أي قيمة: يتيح للمالك التأكد من ضبط مسار الدخول المباشر
+        // في بيئة النشر دون كشف التوكن أو تسجيله.
+        previewLoginEnabled: Boolean((process.env.GHARABI_PREVIEW_TOKEN || "").trim()),
+      };
+    })(),
   });
 });
 
@@ -3653,7 +3737,21 @@ app.use("/api", (req, res) => {
 });
 
 // Start Server and mount Vite middleware
+let storageWarmup: Promise<void> | null = null;
+/** تهيئة واحدة مشتركة للمخزن (تُستدعى من الخادم ومن دالة Serverless). */
+function warmStorage(): Promise<void> {
+  if (!storageWarmup) storageWarmup = bootstrapStorage();
+  return storageWarmup;
+}
+
 async function startServer() {
+  // تهيئة المخزن قبل الاستماع: Postgres يحتاج قراءة الحالة الفعلية أولاً،
+  // وإلا بدأ الخادم بلقطة فارغة (طمس للإبطال واتصالات المنصات ومساحة العمل).
+  await warmStorage();
+  if (!storageReady) {
+    console.warn(`[الغرابي AI] storage not ready: ${storageInitError || "unknown"} — state writes are disabled until it recovers.`);
+  }
+
   if (process.env.NODE_ENV !== "production") {
     // يُستورد Vite ديناميكياً عبر مُعرّف متغيّر ليبقى خارج حزمة Netlify Function:
     // المُجمّع لا يستطيع حلّه ثابتاً، وهو لا يُنفَّذ أصلاً داخل الدالة.
@@ -3676,6 +3774,17 @@ async function startServer() {
   app.listen(PORT, "0.0.0.0", () => {
     console.log(`[الغرابي AI Server] running on http://0.0.0.0:${PORT}`);
   });
+
+  // إغلاق نظيف: يُنهي اتصال قاعدة البيانات ثم يخرج. لا يسجّل أي سر.
+  const shutdown = (signal: string) => {
+    console.log(`[الغرابي AI] received ${signal}, closing storage...`);
+    persistQueue
+      .then(() => storageAdapter.close())
+      .catch(() => { /* تجاهل */ })
+      .finally(() => process.exit(0));
+  };
+  process.once("SIGTERM", () => shutdown("SIGTERM"));
+  process.once("SIGINT", () => shutdown("SIGINT"));
 }
 
 // داخل Netlify Functions لا يوجد خادم دائم: يلتقط الطلب handler المُصدَّر من
@@ -3693,4 +3802,5 @@ if (!isNetlifyFunction) {
 }
 
 export { app, isNetlifyFunction };
+export { warmStorage };
 export default app;

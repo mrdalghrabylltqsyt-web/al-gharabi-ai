@@ -1,0 +1,50 @@
+# Render Blueprint — خطة Free (بلا قرص دائم).
+#
+# مهم: على خطة Free لا يوجد Persistent Disk، لذا لا يمكن الاعتماد على ملف الحالة
+# المحلي. اضبط DATABASE_URL (Neon Free) ليتحوّل التخزين تلقائياً إلى Postgres.
+# بدون DATABASE_URL يعمل الخادم لكن يُعلن /api/health أن persistence.mode=ephemeral
+# وتُفقد الحالة (الإبطال، اتصالات المنصات، مساحة العمل) عند كل إعادة نشر.
+#
+# لا تُكتب أي قيم سرية هنا. كل المتغيرات الحساسة sync: false تُدخَل من لوحة Render.
+services:
+  - type: web
+    name: al-gharabi-ai
+    runtime: node
+    plan: free
+    region: oregon
+    branch: main
+    autoDeploy: true
+    buildCommand: npm ci && npm run build
+    startCommand: npm run start
+    healthCheckPath: /api/health
+    envVars:
+      # Node 20 مثبّتة: الكود والاختبارات مبنية على Node 20+.
+      - key: NODE_VERSION
+        value: "20"
+      - key: NODE_ENV
+        value: production
+      # Render يضبط PORT تلقائياً؛ الخادم يقرأ process.env.PORT ويستمع على 0.0.0.0.
+
+      # --- أسرار: تُدخَل من لوحة Render ولا تُكتب هنا (sync: false) ---
+      - key: SESSION_SECRET
+        sync: false
+      - key: PLATFORM_TOKEN_ENCRYPTION_KEY
+        sync: false
+      - key: OWNER_EMAIL
+        sync: false
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: GEMINI_MODEL
+        sync: false
+      - key: RESEND_API_KEY
+        sync: false
+      - key: RESEND_FROM_EMAIL
+        sync: false
+      - key: APP_URL
+        sync: false
+      # DATABASE_URL: اتصال Neon Free. بدونه يكون التخزين عابراً (ephemeral).
+      - key: DATABASE_URL
+        sync: false
+      # اختياري: معطّل افتراضياً. لا تضبطه إلا لقصد الدخول المباشر.
+      - key: GHARABI_PREVIEW_TOKEN
+        sync: false

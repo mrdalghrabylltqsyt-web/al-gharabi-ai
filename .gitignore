@@ -22,3 +22,7 @@ bun.lockb
 # preview login token. Never commit these.
 .gharabi-preview.env
 .gharabi-*.local.env
+
+# Local verification tooling (embedded Postgres for testing persistence offline).
+# Its native binaries are heavy and never needed in CI or on Render.
+tools/local-verification/node_modules/

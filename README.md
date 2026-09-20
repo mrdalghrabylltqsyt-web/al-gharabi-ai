@@ -198,3 +198,15 @@ This release is the finalization baseline: it prioritizes end-to-end verificatio
 - تحليلات تعلن توفر كل مؤشر عبر الواجهة الرسمية، وغير المتاح يظهر صراحة كغير متاح.
 - ذاكرة تشغيلية للسوشيال ميديا من السجلات الفعلية، وعقل تسويقي يعلن فجوات بياناته.
 - واجهة «مدير السوشيال ميديا» بنفس تصميم لوحة التحكم الحالية ودعم RTL.
+
+## النشر على Render Free — وثبات الحالة
+- الخادم يقرأ `PORT` ويستمع على `0.0.0.0`، ويخدم `dist/` بعد `npm run build` عبر `npm run start`.
+- `render.yaml` جاهز: خطة Free، `buildCommand: npm ci && npm run build`، `startCommand: npm run start`،
+  `healthCheckPath: /api/health`، و`NODE_VERSION=20`. كل الأسرار `sync: false` ولا قيم مكتوبة في المستودع.
+- **لا قرص دائم على Free**: بلا `DATABASE_URL` يُعلن `/api/health` صراحةً
+  `persistence.mode: "ephemeral"` مع تحذير `MISSING DATABASE_URL` و`revocationsDurable: false`.
+- اضبط `DATABASE_URL` (اتصال Neon Free، مثال `postgresql://…?sslmode=require`) فيلوّح التخزين تلقائياً
+  إلى Postgres، فتبقى مساحة العمل وتوكنات المنصات المشفّرة وقائمة الإبطال بعد كل إعادة نشر.
+- توكنات المنصات تبقى مشفّرة (AES-256-GCM) داخل القاعدة، ولا تُسجَّل ولا تُعاد في أي استجابة.
+- **لا يُعتبر الإنتاج جاهزاً للثبات قبل تشغيل اختبار الاستمرارية على النشر الفعلي**:
+  اكتب حالة → أعد تشغيل الخدمة → تحقق من بقاء الحالة، واستمرار الإبطال، وصلاحية جلسة المالك.
