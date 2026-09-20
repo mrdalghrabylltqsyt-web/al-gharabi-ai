@@ -2413,6 +2413,9 @@ app.get("/api/health", (_req, res) => {
       challengeMode: "stateless-hmac",
       stateWritable: STATE_WRITABLE,
       stateDir: STATE_DIR,
+      // منطقي فقط بلا أي قيمة: يتيح للمالك التأكد من ضبط مسار الدخول المباشر
+      // في بيئة النشر دون كشف التوكن أو تسجيله.
+      previewLoginEnabled: Boolean((process.env.GHARABI_PREVIEW_TOKEN || "").trim()),
     },
   });
 });

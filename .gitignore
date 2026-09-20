@@ -7,6 +7,11 @@ coverage/
 .env*
 !.env.example
 
+# Netlify uses npm via package-lock.json. A stray Bun lockfile switches Netlify
+# to `bun install`, and an empty/invalid one fails the deploy instantly.
+bun.lock
+bun.lockb
+
 # Runtime server state (may hold encrypted provider tokens and real business data).
 .gharabi-state.json
 .gharabi-state.json.tmp

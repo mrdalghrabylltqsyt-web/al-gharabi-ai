@@ -2,6 +2,11 @@
   command = "npm run build"
   publish = "dist"
 
+# تثبيت نسخة Node على Netlify: الكود والاختبارات مبنية على Node 20+،
+# وتثبيتها يمنع أي انحراف في بيئة البناء بين المحلي والنشر.
+[build.environment]
+  NODE_VERSION = "20"
+
 [functions]
   directory = "netlify/functions"
   node_bundler = "esbuild"
