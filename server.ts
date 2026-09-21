@@ -32,6 +32,13 @@ import {
   buildMemorySnapshot,
   type PerformanceRecord,
 } from "./engine/social/brain";
+import {
+  analyzeBusinessClaims,
+  analyzeRequestClaims,
+  buildBusinessFacts,
+  type BusinessFacts,
+  type BusinessClaimViolation,
+} from "./engine/social/contentSafety";
 import { getOwnerEmailConfig, sendOwnerOtpEmail } from "./engine/notifications/owner-email";
 import {
   createStorageAdapter,
@@ -577,24 +584,28 @@ app.post("/api/auth/verify-challenge", async (req, res) => {
 // 2b. Preview login (opt-in فقط): يُفتح حصرياً بضبط GHARABI_PREVIEW_TOKEN في بيئة
 // الخادم. بدونه يعيد 404 كأن المسار غير موجود. التوكن لا يُسجَّل ولا يُعاد.
 //
-// المسار يقبل صيغتين:
-//  - GET  ?token=...  لرابط الإشارة المرجعية المباشر (توكن في سطر الطلب، لذا
-//    يُنصح بمسحه فوراً من شريط العنوان بعد الدخول).
-//  - POST { token }   لتبادل التوكن في جسم الطلب فلا يظهر في سجلات الخادم ولا
-//    في سجل المتصفح. الواجهة تُفضّل هذه الصيغة عبر مقطع الرابط (#preview_token).
-// كلا الصيغتين محروستان بمقارنة بزمن ثابت وحدّ محاولات لتقليل أثر التخمين.
+// صيغة واحدة فقط: POST { token } في جسم الطلب. سبب إلغاء صيغة GET ?token=:
+//  1) توكن في سطر الطلب يدخل سجلات الخادم والوسائط وسجل المحفوظات — تسريب.
+//  2) سطر الطلب يبقى في history المتصفح وإحالات Referer.
+// رابط المالك المحفوظ يستخدم مقطع الرابط (#preview_token) الذي لا يُرسل للخادم
+// إطلاقاً؛ تقرؤه الواجهة ثم ترسله في جسم POST ثم تمسحه من الرابط فوراً.
 async function handlePreviewLogin(req: express.Request, res: express.Response) {
   res.setHeader("Cache-Control", "no-store");
   const configured = (process.env.GHARABI_PREVIEW_TOKEN || "").trim();
   if (!configured) return res.status(404).json({ success: false, error: "Not found" });
+
+  // التوكن لا يُقبل إلا في جسم الطلب. أي محاولة تمريره في سطر الطلب تُرفض صراحةً
+  // حتى لا يدخل السجلات.
+  if (typeof req.query?.token === "string" || typeof req.query?.preview_token === "string") {
+    return res.status(400).json({ success: false, error: "لا يُقبل التوكن في سطر الطلب. استخدم جسم الطلب (POST)." });
+  }
 
   const rateKey = `preview:${req.ip || "unknown"}`;
   if (!allowAuthAttempt(rateKey, 10)) {
     return res.status(429).json({ success: false, error: "تم تجاوز عدد محاولات الدخول المسموح مؤقتاً. حاول لاحقاً." });
   }
 
-  const suppliedRaw = typeof req.body?.token === "string" ? req.body.token : req.query.token;
-  const supplied = typeof suppliedRaw === "string" ? suppliedRaw.trim() : "";
+  const supplied = typeof req.body?.token === "string" ? req.body.token.trim() : "";
   const a = Buffer.from(configured);
   const b = Buffer.from(supplied);
   if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) {
@@ -610,7 +621,7 @@ async function handlePreviewLogin(req: express.Request, res: express.Response) {
   await persistCritical();
   return res.json({ success: true, token: session.token, user: session.user });
 }
-app.get("/api/auth/preview-login", handlePreviewLogin);
+// يُسجَّل المسار لطريقة POST فقط: لا يوجد مسار GET يمرّر التوكن في سطر الطلب.
 app.post("/api/auth/preview-login", handlePreviewLogin);
 
 // 3. Current User verification endpoint
@@ -2683,9 +2694,31 @@ app.post("/api/ai/generate-content", authenticateToken, async (req, res) => {
       topic,
       tone = "professional",
       productName,
+      productId,
       installmentDetails,
       customInstructions,
     } = req.body;
+
+    // المنتج الحقيقي من قاعدة بيانات المعرض إن حُدّد؛ وإلا يبقى السياق عاماً.
+    const linkedProduct = productId
+      ? workspace.products.find((p: any) => p.id === cleanText(productId, 100)) || null
+      : productName
+        ? workspace.products.find((p: any) => p.name === cleanText(productName, 160)) || null
+        : null;
+
+    const requestText = [topic, productName, linkedProduct?.name, installmentDetails, customInstructions].filter(Boolean).join("\n");
+    // حارس المدخلات: لا نطلب من المزود عرضاً غير مسجّل أصلاً.
+    const requestFacts = buildFactsForProduct(linkedProduct, Number(linkedProduct?.downPaymentPercent || 0), Number(linkedProduct?.durationMonths || 0));
+    const requestCheck = analyzeRequestClaims(requestText, requestFacts);
+    if (!requestCheck.safe) {
+      return res.status(422).json({
+        success: false,
+        error: "الطلب يشمل عرضاً تجارياً غير مسجّل في بيانات المعرض.",
+        violations: describeViolations(requestCheck.blocked),
+        code: requestCheck.blocked[0]?.code || "business_claim_not_recorded",
+        note: "أزل العرض غير المسجّل، أو سجّل بياناته الحقيقية في قاعدة بيانات المعرض أولاً.",
+      });
+    }
 
 
     const systemPrompt = `أنت المساعد الذكي الرسمي والمؤلف الإعلاني لـ "معرض الغرابي للتقسيط".
@@ -2710,35 +2743,62 @@ app.post("/api/ai/generate-content", authenticateToken, async (req, res) => {
 
 ملاحظة هامة:
 لا تقم باختراع أرقام هواتف أو عناوين وهمية أو أسماء موظفين، واعتمد حصراً على المعلومات المحددة من إدارة المعرض.
+يُمنع منعاً تاماً ذكر أي عرض تجاري غير موجود في المعطيات أعلاه: لا أسعار، ولا خصومات، ولا «بدون دفعة أولى»، ولا شروط تقسيط، ولا ضمان، ولا توفر مخزون، ولا روابط، ولا أرقام تواصل. إن لم تتوفر معلومة فاحذفها أو استخدم صياغة عامة لا تدّعي وجودها.
 أجب باللغة العربية بأسلوب احترافي رفيع دون أي مقدمات إنجليزية.`;
 
-    const cacheKey = `content:${JSON.stringify({ platform, contentType, topic, tone, productName, installmentDetails, customInstructions })}`;
+    const cacheKey = `content:${JSON.stringify({ platform, contentType, topic, tone, productName, productId: linkedProduct?.id || null, installmentDetails, customInstructions })}`;
     const result = await aiEngine.run({
       cacheKey,
       prompt: systemPrompt,
       deterministicFallback: () => generateSmartFallbackContent(platform, contentType, topic || productName, installmentDetails),
     });
 
-    // المزود المتعطل لا يُسقط المسار: يُعاد دائماً محتوى صالح مع توضيح المصدر.
+    // حارس المخارج: يُفحص النص الفعلي (سواء من المزود أو البديل) مقابل بيانات
+    // المعرض، فلا يعتمد المنع على تعليمات الـprompt وحدها.
+    const outputFacts = buildFactsForProduct(linkedProduct, Number(linkedProduct?.downPaymentPercent || 0), Number(linkedProduct?.durationMonths || 0));
+    const outputCheck = analyzeBusinessClaims(result.text, outputFacts);
+
+    // المزود المتعطل لا يُسقط المسار، لكن ادعاءً تجارياً غير مسجّل يُسقط النص:
+    // لا يُعاد محتوى يخالف قواعد المشروع مهما كان مصدره.
+    const safeContent = outputCheck.safe
+      ? result.text
+      : generateSmartFallbackContent(platform, contentType, topic || productName, "");
+
     return res.json({
       success: true,
-      content: result.text,
+      content: safeContent,
       platform,
       contentType,
-      generatedBy: result.usedProvider
-        ? (result.model || PRODUCTION_MODEL)
-        : result.source === "cache" ? "ai-cache" : "local-smart-engine",
-      aiSource: result.source,
+      // نسخ المنصات تُبنى حتمياً من النص المُتحقَّق منه، فلا تُضاف أي معلومة جديدة
+      // (سعر/دفعة/ضمان/رقم) خارج ما تم فحصه.
+      adaptedVersions: Object.fromEntries(
+        ["tiktok", "instagram", "x", "snapchat", "facebook", "whatsapp"]
+          .map((p) => [p, adaptContentForPlatform(p, safeContent)]),
+      ),
+      generatedBy: outputCheck.safe
+        ? result.usedProvider
+          ? (result.model || PRODUCTION_MODEL)
+          : result.source === "cache" ? "ai-cache" : "local-smart-engine"
+        : "local-smart-engine",
+      aiSource: outputCheck.safe ? result.source : "fallback",
       // سبب اللجوء للبديل للتشخيص الداخلي: يمنع إخفاء مشكلة المزود تحت نجاح HTTP.
-      fallbackReason: result.fallbackReason,
-      notice: result.notice,
-      model: result.model,
+      fallbackReason: outputCheck.safe ? result.fallbackReason : "business_claim_not_recorded",
+      notice: outputCheck.safe
+        ? result.notice
+        : "تم حجب نص المزود لأنه تضمّن عرضاً تجارياً غير مسجّل في بيانات المعرض، واستُخدم نص حتمي عام بدلاً منه.",
+      model: outputCheck.safe ? result.model : null,
+      // سبب الحجب معلن صراحةً (بلا أي تفاصيل داخلية حساسة).
+      contentSafety: {
+        safe: outputCheck.safe,
+        violations: describeViolations(outputCheck.blocked),
+        codes: outputCheck.blocked.map((v) => v.code),
+      },
     });
   } catch (error: any) {
     // حتى الخطأ غير المتوقع يعيد بديلاً صالحاً بدل إسقاط الطلب.
     res.status(200).json({
       success: true,
-      content: generateSmartFallbackContent(req.body.platform, req.body.contentType, req.body.topic, req.body.installmentDetails),
+      content: generateSmartFallbackContent(req.body.platform, req.body.contentType, req.body.topic, ""),
       platform: req.body.platform,
       contentType: req.body.contentType,
       generatedBy: "local-smart-engine",
@@ -2749,6 +2809,39 @@ app.post("/api/ai/generate-content", authenticateToken, async (req, res) => {
     });
   }
 });
+
+/**
+ * تكييف النص لكل منصة.
+ *
+ * ملاحظة جوهرية: التكييف **حتمي 100%** ولا يستهلك أي حصة AI، ولا يعيد كتابة
+ * الأرقام أو العروض. يعيد استخدام **نفس الحقائق المسجّلة** المستخدمة في النص
+ * الأصلي مع تنسيق فقط (هاشتاغ، طول، أسلوب). هذا يمنع أن يخترع النموذج عرضاً
+ * جديداً أثناء «إعادة الصياغة»، وهو منفذ شائع لاختراع «بدون دفعة أولى».
+ */
+function adaptContentForPlatform(platform: string, baseText: string): string {
+  const text = cleanText(baseText, 10000);
+  if (!text) return "";
+  const hashtags = "#معرض_الغرابي #تقسيط #تسهيلات";
+  const limits: Record<string, number> = { x: 280, snapchat: 250, whatsapp: 4096, telegram: 4096, threads: 500, google_business: 1500 };
+  const limit = limits[platform] || 4096;
+
+  if (platform === "x") {
+    const tweet = text.replace(/\s+/g, " ").trim();
+    const withTags = tweet.includes("#") ? tweet : `${tweet} ${hashtags}`;
+    return withTags.length <= limit ? withTags : `${withTags.slice(0, limit - hashtags.length - 1).trimEnd()} ${hashtags}`;
+  }
+  if (platform === "snapchat") {
+    const lines = text.split(/\n+/).map((l) => l.trim()).filter(Boolean).slice(0, 3);
+    const body = lines.map((l, i) => `${i + 1}) ${l}`).join("\n");
+    return body.length ? `لقطة 1..2..3:\n${body}` : text;
+  }
+  if (platform === "tiktok") {
+    const first = text.split(/\n+/).map((l) => l.trim()).filter(Boolean)[0] || text;
+    return `${first.slice(0, 150)}\n\n${text}\n\n${hashtags}`;
+  }
+  // المنصات الأخرى: النص كما هو مع إضافة الهاشتاغ عند غيابه.
+  return text.includes("#") ? text : `${text}\n\n${hashtags}`;
+}
 
 // 2. Classify Customer Message & Suggest Reply (Authenticated users only)
 app.post("/api/ai/classify-message", authenticateToken, async (req, res) => {
@@ -2876,14 +2969,19 @@ app.post("/api/ai/agent-chat", authenticateToken, async (req, res) => {
       deterministicFallback: () => buildDeterministicAgentReply(message, context),
     });
 
+    // لا يعود للمستخدم نص يدّعي عرضاً أو رقماً غير مسجّل، حتى من المزود.
+    const safed = ensureSafeBusinessText(result.text, buildShowroomFacts(), () => buildDeterministicAgentReply(message, context));
+
     return res.json({
       success: true,
-      reply: result.text,
-      generatedBy: result.usedProvider ? (result.model || PRODUCTION_MODEL) : result.source === "cache" ? "ai-cache" : "local-deterministic-engine",
-      aiSource: result.source,
-      fallbackReason: result.fallbackReason,
-      model: result.model,
-      notice: result.notice,
+      reply: safed.text,
+      generatedBy: (result.usedProvider && !safed.replaced) ? (result.model || PRODUCTION_MODEL) : result.source === "cache" && !safed.replaced ? "ai-cache" : "local-deterministic-engine",
+      aiSource: (!safed.replaced && result.source) || "fallback",
+      fallbackReason: safed.replaced ? "business_claim_not_recorded" : result.fallbackReason,
+      model: safed.replaced ? null : result.model,
+      notice: safed.replaced
+        ? "تم حجب نص تضمّن ادعاءً تجارياً غير مسجّل في بيانات المعرض، واستُخدم رد حتمي مطابق للبيانات."
+        : result.notice,
     });
   } catch (error: any) {
     res.status(200).json({
@@ -2972,6 +3070,87 @@ const PLATFORM_TEXT_LIMITS: Record<string, number> = {
 // Guards that mirror the project rules: no automotive content, no legacy fake counter.
 const FORBIDDEN_CONTENT_PATTERN = /سيارة|سيارات|automotive|\bcars?\b/i;
 const LEGACY_COUNTER_PATTERN = /125\s*\/\s*125/;
+
+/**
+ * يبني الحقائق التجارية المتاحة فعلاً في بيانات المعرض لمنتج معيّن.
+ *
+ * الغرض: أي ادعاء في المحتوى المولّد (سعر، دفعة أولى، ضمان، توفر، رقم، رابط)
+ * يجب أن يقابله رقم أو نص مسجّل هنا. الحقائق المشتقة (دفعة أولى، قسط شهري،
+ * إجمالي أقساط) محسوبة رياضياً من السعر المسجّل وخطة التقسيط المسجّلة، فهي
+ * مشروعة لا مُختلقة.
+ */
+function buildFactsForProduct(product: any | null, downPaymentPercent: number, durationMonths: number): BusinessFacts {
+  const cashPrice = Number(product?.cashPrice);
+  const hasPrice = Number.isFinite(cashPrice) && cashPrice > 0;
+  const derived: number[] = [];
+  if (hasPrice) {
+    const percent = Number.isFinite(downPaymentPercent) ? Math.max(0, Math.min(99, downPaymentPercent)) : 0;
+    const months = Number.isInteger(durationMonths) && durationMonths > 0 ? durationMonths : 1;
+    const q = buildMarketingQuote(cashPrice, percent, months);
+    derived.push(q.cashPrice, q.downPayment, q.financedAmount, q.monthlyPayment, q.totalInstallments);
+  }
+  const showroom: any = workspace.showroom || {};
+  const urls = [product?.image].map((x: any) => cleanText(x, 500)).filter(Boolean);
+  return buildBusinessFacts({
+    cashPrices: hasPrice ? [cashPrice] : [],
+    derivedAmounts: derived,
+    downPaymentPercents: Number.isFinite(Number(product?.downPaymentPercent)) ? [Number(product.downPaymentPercent)] : [],
+    // أرقام التواصل الحقيقية فقط؛ غيابها يعني عدم إدراج أي رقم إطلاقاً.
+    phones: [showroom.phoneUnified, showroom.whatsappSales],
+    urls,
+    inStock: typeof product?.inStock === "boolean" ? product.inStock : null,
+    promotions: [showroom.promotions, showroom.activeOffer].map((x: any) => cleanText(x, 300)).filter(Boolean),
+    allowedPhrases: [
+      ...(Array.isArray(product?.installmentOptions) ? product.installmentOptions : []),
+      ...(Array.isArray(product?.specs) ? product.specs : []),
+      ...(Array.isArray(showroom.policies) ? showroom.policies : []),
+      cleanText(showroom.about, 1000),
+      cleanText(showroom.tagline, 240),
+    ],
+  });
+}
+
+/** ملخص عربي مختصر للانتهاكات يُعرض للمستخدم بلا كشف أي تفاصيل داخلية. */
+function describeViolations(violations: BusinessClaimViolation[]): string[] {
+  return [...new Set(violations.map((v) => v.detail))];
+}
+
+/**
+ * حقائق المعرض العامة: تُستخدم للمسارات التي لا ترتبط بمنتج واحد (المحادثة
+ * الذكية، الحملات العامة). لا سعر ولا رقم إطلاقاً، فيُحجب أي ادعاء رقمي.
+ */
+function buildShowroomFacts(): BusinessFacts {
+  const showroom: any = workspace.showroom || {};
+  return buildBusinessFacts({
+    phones: [showroom.phoneUnified, showroom.whatsappSales],
+    urls: [],
+    inStock: null,
+    promotions: [showroom.promotions, showroom.activeOffer].map((x: any) => cleanText(x, 300)).filter(Boolean),
+    allowedPhrases: [
+      ...(Array.isArray(showroom.policies) ? showroom.policies : []),
+      cleanText(showroom.about, 1000),
+      cleanText(showroom.tagline, 240),
+    ],
+  });
+}
+
+/**
+ * يضمن أن أي نص يعود للمستخدم لا يحمل ادعاءً تجارياً غير مسجّل.
+ * يُعيد النص إن كان سليماً، وإلا يُعيد البديل الحتمي إن كان سليماً أيضاً،
+ * وإلا يُعيد نصاً عاماً محايداً لا يدّعي أي معلومة.
+ */
+function ensureSafeBusinessText(text: string, facts: BusinessFacts, fallback: () => string) {
+  const check = analyzeBusinessClaims(text, facts);
+  if (check.safe) return { text, check, replaced: false };
+  const candidate = fallback();
+  const fallbackCheck = analyzeBusinessClaims(candidate, facts);
+  if (fallbackCheck.safe) return { text: candidate, check: fallbackCheck, replaced: true };
+  return {
+    text: "تواصل معنا لمعرفة التفاصيل والخطة المناسبة لك.",
+    check: fallbackCheck,
+    replaced: true,
+  };
+}
 
 function formatIqd(value: number): string {
   return `${Math.round(value).toLocaleString("en-US")} د.ع`;
@@ -3155,6 +3334,18 @@ app.post("/api/ai/content-brief", authenticateToken, (req, res) => {
   const durationMonths = Number.isInteger(Number(b.durationMonths)) ? Math.max(1, Math.min(60, Number(b.durationMonths))) : Number(product?.durationMonths || 0);
   const cashPrice = Number(product?.cashPrice);
 
+  // حارس المدخلات: لا تُطلب عروض غير مسجّلة من المحرك أصلاً (مثل «بدون دفعة أولى»).
+  const briefRequestFacts = buildFactsForProduct(product, downPaymentPercent, durationMonths);
+  const briefRequestCheck = analyzeRequestClaims(`${task}\n${notes}`, briefRequestFacts);
+  if (!briefRequestCheck.safe) {
+    return res.status(422).json({
+      success: false,
+      error: "المهمة أو الملاحظات تتضمّن عرضاً تجارياً غير مسجّل في بيانات المعرض.",
+      violations: describeViolations(briefRequestCheck.blocked),
+      code: briefRequestCheck.blocked[0]?.code || "business_claim_not_recorded",
+    });
+  }
+
   const { content, quote, warnings } = generateBriefContent({
     task, goal, tone, notes, platforms, product, productName, downPaymentPercent, durationMonths,
   });
@@ -3162,6 +3353,25 @@ app.post("/api/ai/content-brief", authenticateToken, (req, res) => {
   // Final safety net: generated text must obey the same project rules.
   const offending = content.find((c: any) => FORBIDDEN_CONTENT_PATTERN.test(c.text) || LEGACY_COUNTER_PATTERN.test(c.text));
   if (offending) return res.status(422).json({ success: false, error: "المحتوى المولد خالف قواعد مشروع الغرابي وتم إيقافه." });
+
+  // حارس الحقائق التجارية: كل نص مولّد يُفحص مقابل بيانات المنتج الفعلية، فلا
+  // يجوز أن يظهر سعر أو دفعة أولى أو ضمان أو رقم أو رابط غير مسجّل.
+  const briefFacts = buildFactsForProduct(product, downPaymentPercent, durationMonths);
+  const briefClaimIssues: { platform: string; violations: string[]; codes: string[] }[] = [];
+  for (const piece of content) {
+    const claimCheck = analyzeBusinessClaims(piece.text, briefFacts);
+    if (!claimCheck.safe) {
+      briefClaimIssues.push({ platform: piece.platform, violations: describeViolations(claimCheck.blocked), codes: claimCheck.blocked.map((v) => v.code) });
+    }
+  }
+  if (briefClaimIssues.length) {
+    return res.status(422).json({
+      success: false,
+      error: "المحتوى المولد تضمّن عرضاً تجارياً غير مسجّل في بيانات المعرض، وتم إيقافه.",
+      contentSafety: { safe: false, issues: briefClaimIssues },
+      note: "سجّل السعر/الشروط/الضمان الحقيقية في قاعدة بيانات المعرض، أو أزل العرض غير المسجّل من المهمة.",
+    });
+  }
 
   const briefId = workspaceId("brief");
   const createdAt = new Date().toISOString();
@@ -3445,6 +3655,19 @@ app.post("/api/ai/marketing-campaigns", authenticateToken, (req, res) => {
   for (const product of products) {
     const downPaymentPercent = overrideDown !== null ? overrideDown : Number(product?.downPaymentPercent || 0);
     const durationMonths = overrideMonths !== null ? overrideMonths : Number(product?.durationMonths || 0);
+
+    // حارس المدخلات لكل منتج على حدة: لا عرض غير مسجّل في بيانات هذا المنتج.
+    const productRequestFacts = buildFactsForProduct(product, downPaymentPercent, durationMonths);
+    const productRequestCheck = analyzeRequestClaims(`${task}\n${notes}`, productRequestFacts);
+    if (!productRequestCheck.safe) {
+      return res.status(422).json({
+        success: false,
+        error: `مهمة الحملة تتضمّن عرضاً تجارياً غير مسجّل في بيانات المعرض للمنتج: ${product.name}.`,
+        violations: describeViolations(productRequestCheck.blocked),
+        code: productRequestCheck.blocked[0]?.code || "business_claim_not_recorded",
+      });
+    }
+
     const { content, quote, warnings } = generateBriefContent({
       task, goal, tone, notes, platforms, product, productName: product.name,
       downPaymentPercent, durationMonths,
@@ -3452,6 +3675,23 @@ app.post("/api/ai/marketing-campaigns", authenticateToken, (req, res) => {
 
     const offending = content.find((c: any) => FORBIDDEN_CONTENT_PATTERN.test(c.text) || LEGACY_COUNTER_PATTERN.test(c.text));
     if (offending) return res.status(422).json({ success: false, error: "المحتوى المولد خالف قواعد مشروع الغرابي وتم إيقافه." });
+
+    // حارس المخارج لكل نص مولّد مقابل بيانات هذا المنتج تحديداً.
+    const productFacts = buildFactsForProduct(product, downPaymentPercent, durationMonths);
+    const productIssues: { platform: string; violations: string[]; codes: string[] }[] = [];
+    for (const piece of content) {
+      const claimCheck = analyzeBusinessClaims(piece.text, productFacts);
+      if (!claimCheck.safe) {
+        productIssues.push({ platform: piece.platform, violations: describeViolations(claimCheck.blocked), codes: claimCheck.blocked.map((v) => v.code) });
+      }
+    }
+    if (productIssues.length) {
+      return res.status(422).json({
+        success: false,
+        error: `المحتوى المولد للمنتج ${product.name} تضمّن عرضاً تجارياً غير مسجّل في بيانات المعرض.`,
+        contentSafety: { safe: false, issues: productIssues },
+      });
+    }
 
     const briefId = workspaceId("brief");
     const drafts: any[] = [];

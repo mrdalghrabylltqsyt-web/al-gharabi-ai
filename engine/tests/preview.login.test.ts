@@ -63,7 +63,9 @@ async function run(): Promise<void> {
   const off = startApp(offPort, cwdOff, null);
   try {
     check('الخادم يقلع بدون توكن المعاينة', await waitForHealth(offBase), off.log().slice(0, 300));
-    const r = await fetch(`${offBase}/api/auth/preview-login?token=${TOKEN}`);
+    const r = await fetch(`${offBase}/api/auth/preview-login`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ token: TOKEN }),
+    });
     check('بلا إعداد: مسار المعاينة يعيد 404 (معطّل تماماً)', r.status === 404, `got ${r.status}`);
     const body = await r.text();
     check('بلا إعداد: لا يكشف وجود الميزة', !/preview|token/i.test(body), body.slice(0, 120));
@@ -83,16 +85,27 @@ async function run(): Promise<void> {
     on = startApp(onPort, cwdOn, TOKEN);
     check('الخادم يقلع مع توكن المعاينة', await waitForHealth(onBase), on.log().slice(0, 300));
 
-    const noTok = await fetch(`${onBase}/api/auth/preview-login`);
+    const noTok = await fetch(`${onBase}/api/auth/preview-login`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({}) });
     check('بلا توكن: 401', noTok.status === 401, `got ${noTok.status}`);
-    const wrong = await fetch(`${onBase}/api/auth/preview-login?token=deadbeefdeadbeef`);
+    const wrong = await fetch(`${onBase}/api/auth/preview-login`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ token: 'deadbeefdeadbeef' }) });
     check('توكن خاطئ: 401', wrong.status === 401, `got ${wrong.status}`);
-    const near = await fetch(`${onBase}/api/auth/preview-login?token=${TOKEN.slice(0, -1)}`);
+    const near = await fetch(`${onBase}/api/auth/preview-login`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ token: TOKEN.slice(0, -1) }) });
     check('توكن ناقص بحرف واحد: 401', near.status === 401, `got ${near.status}`);
     const wrongBodies = await Promise.all([noTok.text(), wrong.text(), near.text()]);
     check('الاستجابات الخاطئة لا تحتوي التوكن الصحيح', wrongBodies.every((b) => !b.includes(TOKEN)));
 
-    const ok = await fetch(`${onBase}/api/auth/preview-login?token=${TOKEN}`);
+    // ★ لا يُقبل التوكن في سطر الطلب: منع دخوله سجلات الخادم والوسائط والمحفوظات.
+    // GET على المسار غير مُسجَّل أصلاً => 404 (لا يبدو أن الميزة موجودة إطلاقاً).
+    const getAttempt = await fetch(`${onBase}/api/auth/preview-login?token=${TOKEN}`);
+    check('★ GET مع توكن في سطر الطلب: 404 بلا أي إشارة لوجود الميزة', getAttempt.status === 404, `got ${getAttempt.status}`);
+    // POST مع توكن في سطر الطلب => رفض صريح 400 ولا يُقبل كبديل للجسم.
+    const queryAttempt = await fetch(`${onBase}/api/auth/preview-login?token=${TOKEN}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({}) });
+    check('★ POST مع توكن في سطر الطلب يُرفض صراحةً (400)', queryAttempt.status === 400, `got ${queryAttempt.status}`);
+    const queryBody = await queryAttempt.text();
+    check('★ رفض سطر الطلب لا يمنح جلسة ولا يكشف التوكن', !/"success"\s*:\s*true/.test(queryBody) && !queryBody.includes(TOKEN));
+    check('★ محاولات سطر الطلب لا تُسجَّل في السجل', !on.log().includes(TOKEN));
+
+    const ok = await fetch(`${onBase}/api/auth/preview-login`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ token: TOKEN }) });
     const okBody = await ok.json();
     check('توكن صحيح: 200 وجلسة ناجحة', ok.status === 200 && okBody.success === true, `got ${ok.status}`);
     check('الدور هو المالك', okBody.user?.role === 'owner', JSON.stringify(okBody.user?.role));
@@ -137,12 +150,12 @@ async function run(): Promise<void> {
     check('الخادم يقلع لحالة حدّ المحاولات', await waitForHealth(rlBase), rl.log().slice(0, 300));
     const statuses: number[] = [];
     for (let i = 0; i < 11; i += 1) {
-      const r = await fetch(`${rlBase}/api/auth/preview-login?token=wrong-${i}`);
+      const r = await fetch(`${rlBase}/api/auth/preview-login`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ token: `wrong-${i}` }) });
       statuses.push(r.status);
     }
     check('أول 10 محاولات خاطئة: 401', statuses.slice(0, 10).every((s) => s === 401), JSON.stringify(statuses));
     check('المحاولة الحادية عشرة: 429 (حدّ المحاولات)', statuses[10] === 429, `got ${statuses[10]}`);
-    const rlBody = await (await fetch(`${rlBase}/api/auth/preview-login?token=${TOKEN}`)).json().catch(() => ({}));
+    const rlBody = await (await fetch(`${rlBase}/api/auth/preview-login`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ token: TOKEN }) })).json().catch(() => ({}));
     check('حتى التوكن الصحيح محجوب بعد تجاوز الحد', !rlBody.token, JSON.stringify(rlBody).slice(0, 120));
   } finally {
     try { rl?.proc.kill('SIGTERM'); } catch {}

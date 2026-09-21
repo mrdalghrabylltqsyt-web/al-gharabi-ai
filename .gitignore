@@ -12,6 +12,9 @@ coverage/
 bun.lock
 bun.lockb
 
+# أرشيفات التصدير/البناء: تحتوي نسخة كاملة من المصدر وتُضخّم المستودع بلا داعٍ.
+*.zip
+
 # Runtime server state (may hold encrypted provider tokens and real business data).
 .gharabi-state.json
 .gharabi-state.json.tmp

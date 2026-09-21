@@ -169,21 +169,25 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
       try {
         // معاينة المالك: رابط واحد يمنح جلسة مالك دائمة بلا OTP. يُقبل التوكن من
-        // مقطع الرابط (#preview_token) — وهو المفضّل لأنه لا يُرسل للخادم في
-        // سطر الطلب — أو من المعامل (?preview_token) كتوافق مع الروابط القديمة.
-        // يُمسح من الرابط فوراً حتى لا يبقى في المحفوظات أو في زر الرجوع.
-        const hashParams = new URLSearchParams(window.location.hash.replace(/^#/, ''));
+        // مقطع الرابط (#preview_token) حصراً: المقطع لا يُرسل إلى الخادم في سطر
+        // الطلب ولا يظهر في سجلات الوصول ولا في ترويسة Referrer. لا يُقبل من
+        // المعامل (?preview_token) لأنه يسرّب التوكن إلى سجلات الخادم.
+        // إن وُجد معامل قديم في الرابط نمسحه فوراً دون استخدامه.
         const queryParams = new URLSearchParams(window.location.search);
-        const previewToken = hashParams.get('preview_token') || queryParams.get('preview_token');
+        if (queryParams.has('preview_token')) {
+          queryParams.delete('preview_token');
+          const query = queryParams.toString();
+          window.history.replaceState({}, '', `${window.location.pathname}${query ? `?${query}` : ''}${window.location.hash}`);
+        }
+        const hashParams = new URLSearchParams(window.location.hash.replace(/^#/, ''));
+        const previewToken = hashParams.get('preview_token');
         if (previewToken) {
           hashParams.delete('preview_token');
-          queryParams.delete('preview_token');
           const hash = hashParams.toString();
-          const query = queryParams.toString();
           window.history.replaceState(
             {},
             '',
-            `${window.location.pathname}${query ? `?${query}` : ''}${hash ? `#${hash}` : ''}`,
+            `${window.location.pathname}${window.location.search}${hash ? `#${hash}` : ''}`,
           );
 
           // التوكن باطل فعلاً (401/403/404) => fallback لمسار الدخول العادي.

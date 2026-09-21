@@ -15,7 +15,7 @@
  */
 
 import { classifyAiError, diagnosticLabel, type AiErrorInfo } from './errors';
-import { CircuitBreaker, withRetry, type RetryPolicy } from './retry';
+import { CircuitBreaker, DEFAULT_RETRY_POLICY, withRetry, type RetryPolicy } from './retry';
 import { DEFAULT_MODEL_CANDIDATES, PRODUCTION_MODEL } from './models';
 
 export interface AiProvider {
@@ -295,38 +295,46 @@ export class AiEngine {
       // يتتبع آخر موديل أنتج نصاً فعلياً، ليُعرض في الاستجابة بدلاً من تخمينه.
       let servedModel: string | null = null;
 
-      const outcome = await withRetry<string>(
-        async () => {
-          // نجرّب كل موديل مرشح بالتتابع: خطأ "غير موجود" ينتقل للموديل التالي،
-          // وخطأ الضغط يُعاد عليه بنفس الموديل عبر withRetry.
-          let lastError: any = null;
-          for (const model of this.models) {
-            try {
-              const text = await generateWithTimeout(this.provider as AiProvider, model, prompt, Boolean(json), this.timeoutMs);
-              const trimmed = (text || '').trim();
-              if (!trimmed) throw new Error('empty response from provider');
-              servedModel = model;
-              return trimmed;
-            } catch (err) {
-              lastError = err;
-              const info = classifyAiError(err, model);
-              this.onEvent({ type: 'model_failed', detail: diagnosticLabel(info) });
-              // خطأ الموديل غير الموجود أو الطلب غير الصالح: جرّب الموديل التالي.
-              if (info.kind === 'not_found' || info.kind === 'invalid_request') continue;
-              throw err;
-            }
+      // سياسة إعادة المحاولة: الأولى تمضي عبر كل الموديلات المرشحة (failover)،
+      // والمحاولات التالية تعيد المسار كاملاً بعد تراجع أسّي. هذا التغيير مقصود:
+      // سابقاً كان withRetry يعيد على **نفس الموديل الأول** عند خطأ 503، فيُهدر
+      // كل المحاولات على موديل مشغول ويتجاهل موديلات شقيقة سليمة (تحقّق حي:
+      // 3.8/3.7 يعيدان 503 بينما 3.5 ينجح في نفس اللحظة). النتيجة الآن: تعافٍ
+      // فعلي من ضغط المزود بدل السقوط إلى البديل الحتمي.
+      const attemptAllModels = async (): Promise<string> => {
+        let lastError: any = null;
+        for (const model of this.models) {
+          try {
+            const text = await generateWithTimeout(this.provider as AiProvider, model, prompt, Boolean(json), this.timeoutMs);
+            const trimmed = (text || '').trim();
+            if (!trimmed) throw new Error('empty response from provider');
+            servedModel = model;
+            return trimmed;
+          } catch (err) {
+            lastError = err;
+            const info = classifyAiError(err, model);
+            this.onEvent({ type: 'model_failed', detail: diagnosticLabel(info) });
+            // خطأ المفتاح/المصادقة يؤثر على كل الموديلات بالتساوي، فلا فائدة من
+            // تجربة موديل شقيق. أما أي خطأ آخر (غير موجود، ضغط، مهلة...) فينتقل
+            // للموديل التالي بدل حرق كل المحاولات على موديل واحد.
+            if (info.kind === 'auth') throw err;
+            continue;
           }
-          throw lastError ?? new Error('no model candidate succeeded');
+        }
+        throw lastError ?? new Error('no model candidate succeeded');
+      };
+
+      const outcome = await withRetry<string>(attemptAllModels, {
+        // مع تعدد الموديلات، تناوب الموديلات نفسه هو آلية التعافي؛ تكرار المسار
+        // كاملاً يعيد الأخطاء ذاتها ويستهلك الحصة بلا فائدة. لذا نعيد مرة واحدة
+        // فقط عند الموديل الواحد، ونكتفي بمسار واحد عند تعدد الموديلات.
+        policy: { ...this.policy, maxAttempts: this.models.length > 1 ? 1 : (this.policy.maxAttempts ?? DEFAULT_RETRY_POLICY.maxAttempts) },
+        sleep: this.sleep,
+        random: this.random,
+        onRetry: (record, delay) => {
+          this.onEvent({ type: 'retry', detail: `${diagnosticLabel(record.error)}:attempt=${record.attempt}:delay=${delay}` });
         },
-        {
-          policy: this.policy,
-          sleep: this.sleep,
-          random: this.random,
-          onRetry: (record, delay) => {
-            this.onEvent({ type: 'retry', detail: `${diagnosticLabel(record.error)}:attempt=${record.attempt}:delay=${delay}` });
-          },
-        },
-      );
+      });
 
       if (!outcome.ok || !outcome.value) {
         const info = outcome.error;

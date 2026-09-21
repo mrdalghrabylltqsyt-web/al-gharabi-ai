@@ -56,7 +56,7 @@ writeFileSync(
   });
   const call = async (...a) => { const r = await handler(ev(...a), {}); let j = null; try { j = JSON.parse(r.body); } catch {} return { status: r.statusCode, json: j }; };
   let out;
-  if (action === 'login') out = await call('/api/auth/preview-login', 'GET', null, { token });
+  if (action === 'login') out = await call('/api/auth/preview-login', 'POST', { token });
   else if (action === 'login-post') out = await call('/api/auth/preview-login', 'POST', { token });
   else if (action === 'me') out = await call('/api/auth/me', 'GET', null, null, args[0]);
   else if (action === 'users') out = await call('/api/users', 'GET', null, null, args[0]);

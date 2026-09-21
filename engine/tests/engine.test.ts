@@ -4,7 +4,7 @@
  */
 
 import { classifyAiError, diagnosticLabel } from '../ai/errors';
-import { resolveModelCandidates, resolveModelPolicy, isValidModelName, isShutdownModel, SHUTDOWN_MODELS, PRODUCTION_MODEL } from '../ai/models';
+import { resolveModelCandidates, resolveModelPolicy, isValidModelName, isShutdownModel, SHUTDOWN_MODELS, PRODUCTION_MODEL, DEFAULT_MODEL_CANDIDATES } from '../ai/models';
 import { CircuitBreaker, computeBackoffDelay, withRetry } from '../ai/retry';
 import { AiEngine, type AiProvider, type AiUsageGuard } from '../ai/engine';
 import { buildAdapters, isSupportedPlatform, PLATFORM_SPECS } from '../social/registry';
@@ -163,9 +163,10 @@ async function run(): Promise<void> {
   })());
   check('رفض موديل البيئة المُوقف يُبقي مرشحين صالحين', resolveModelPolicy('gemini-2.0-flash-001').candidates.every((m) => !isShutdownModel(m)));
   check('موديل البيئة غير الصالح شكلياً يُرفض بسبب', resolveModelPolicy('not a model!!').rejectedReason !== null);
-  check('موديل بيئة مُجدول للإيقاف يُقبل مع تحذير', (() => {
+  check('موديل بيئة غير متاح للحسابات الجديدة يُرفض بسبب', (() => {
+    // مُثبت حياً (2026-09-21): المزود يرفض gemini-2.5-flash بحالة 404.
     const p = resolveModelPolicy('gemini-2.5-flash');
-    return p.configuredModel === 'gemini-2.5-flash' && p.warnings.some((w) => w.includes('2026-10-16'));
+    return p.configuredModel === null && p.rejectedReason !== null && !p.candidates.includes('gemini-2.5-flash');
   })());
   check('موديل معاينة يُقبل مع تحذير', (() => {
     const p = resolveModelPolicy('gemini-3-flash-preview');
@@ -342,6 +343,27 @@ async function run(): Promise<void> {
     const engine = new AiEngine({ provider, guard: makeGuard(10), models: ['gemini-2.5-flash', 'gemini-2.0-flash'], sleep: noSleep });
     const result = await engine.run({ cacheKey: 'm1', prompt: 'p', deterministicFallback: () => 'بديل' });
     return result.usedProvider && seen.length === 2 && seen[1] === 'gemini-2.0-flash';
+  });
+
+  // ★ ضغط المزود (503) يجب أن ينتقل لموديل شقيق سليم في نفس الطلب، لا أن يُهدر
+  // كل المحاولات على الموديل المشغول. هذا ما لوحظ حياً: 3.8 يعيد 503 و3.5 ينجح.
+  await checkAsync('★ خطأ 503 ينتقل للموديل التالي بدل حرق المحاولات', async () => {
+    const seen: string[] = [];
+    const candidates = [...DEFAULT_MODEL_CANDIDATES];
+    const healthy = candidates[candidates.length - 1];
+    const provider: AiProvider = {
+      name: 'overload-then-ok',
+      generate: async ({ model }) => {
+        seen.push(model);
+        // كل الموديلات مشغولة إلا الأخير — تعافٍ فعلي من ضغط المزود.
+        if (model !== healthy) throw apiError(503, 'high demand');
+        return 'نجح بالموديل الشقيق';
+      },
+    };
+    const engine = new AiEngine({ provider, guard: makeGuard(10), models: candidates, sleep: noSleep });
+    const result = await engine.run({ cacheKey: 'f1', prompt: 'p', deterministicFallback: () => 'بديل' });
+    // نجح فعلاً، وجرّب المرشحين بالترتيب مرة واحدة بلا إعادة على نفس الموديل.
+    return result.usedProvider && result.model === healthy && seen.join(',') === candidates.join(',');
   });
 
   await checkAsync('استجابة المزود الفارغة تُعامل كفشل', async () => {

@@ -28,7 +28,10 @@ async function main() {
   await db.initialise();
   await db.start();
   await db.createDatabase(dbName);
-  const url = `postgresql://${user}:${password}@127.0.0.1:${PORT}/${dbName}`;
+  // القاعدة المدمجة محلية بلا TLS، والمحوّل يفرض TLS صراحةً على أي رابط لا
+  // يحمل sslmode=disable. بدون هذا العلم يفشل الإقلاع (وهو السلوك الصحيح:
+  // لا رجوع صامت لملف محلي). لا علاقة لهذا بالإنتاج حيث Neon يفرض TLS.
+  const url = `postgresql://${user}:${password}@127.0.0.1:${PORT}/${dbName}?sslmode=disable`;
   try {
     const res = spawnSync('npx', ['tsx', 'engine/tests/database.persistence.test.ts'], {
       stdio: 'inherit',

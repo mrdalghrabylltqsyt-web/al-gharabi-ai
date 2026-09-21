@@ -307,6 +307,14 @@ export const apiService = {
         body: JSON.stringify(payload),
       });
 
+      // 422 يعني أن الطلب خالف قواعد سلامة المحتوى التجاري: لا نُخفيه ببديل محلي،
+      // بل نُبلغ المستخدم صراحةً بسبب الرفض. لذلك نرفع خطأً موسوماً يمر عبر catch.
+      if (res.status === 422) {
+        const denied = await res.json().catch(() => ({} as any));
+        const violation = new Error(denied.error || 'المحتوى خالف قواعد سلامة البيانات التجارية.') as Error & { contentRejected?: boolean };
+        violation.contentRejected = true;
+        throw violation;
+      }
       if (!res.ok) {
         throw new Error(`Server returned ${res.status}`);
       }
@@ -316,15 +324,21 @@ export const apiService = {
         success: true,
         content: data.content || data.fallback || '',
         generatedBy: data.generatedBy,
-      };
+        aiSource: data.aiSource,
+        notice: data.notice,
+        contentSafety: data.contentSafety,
+        adaptedVersions: data.adaptedVersions,
+      } as any;
     } catch (err) {
+      // رفض سلامة المحتوى ليس عطلاً عابراً: لا يُستبدل ببديل محلي صامت.
+      if ((err as any)?.contentRejected) throw err;
       console.warn('API call failed, falling back to local engine:', err);
       return {
         success: true,
         content: `عروض معرض الغرابي للتقسيط:
 ${payload.topic || payload.productName || 'أنظمة وحلول التقسيط الميسر'}
 • خيارات دفع مرنة وتسهيلات ميسرة
-• متوافق مع الضوابط المعتمدة
+• إجراءات واضحة ومتابعة كاملة للطلب
 • تواصل معنا الآن لمعرفة التفاصيل والتقديم المباشر`,
         generatedBy: 'local-fallback',
       };

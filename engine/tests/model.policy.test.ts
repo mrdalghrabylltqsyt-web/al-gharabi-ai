@@ -83,9 +83,14 @@ async function run(): Promise<void> {
   check('موديل بيئة مُوقف لا يظهر في المرشحين', !resolveModelCandidates('gemini-2.0-flash-001').includes('gemini-2.0-flash-001'));
   check('موديل بيئة باسم غير صالح يُرفض', resolveModelPolicy('خيار غير صالح!!').configuredModel === null);
   check('موديل بيئة فارغ لا يُضاف', !resolveModelCandidates('').includes(''));
-  check('موديل بيئة مجدول للإيقاف يُقبل مع تحذير تاريخ', (() => {
+  check('موديل بيئة غير متاح للحسابات الجديدة يُرفض بلا تمرير', (() => {
+    // مُثبت حياً: المزود يرفض gemini-2.5-flash بحالة 404 «no longer available».
     const p = resolveModelPolicy('gemini-2.5-flash');
-    return p.configuredModel === 'gemini-2.5-flash' && p.warnings.some((w) => w.includes('2026-10-16'));
+    return p.configuredModel === null && p.rejectedReason !== null && !p.candidates.includes('gemini-2.5-flash');
+  })());
+  check('موديل مجدول للإيقاف لكنه متاح فعلاً يُقبل مع تحذير', (() => {
+    const p = resolveModelPolicy('gemini-3.1-flash-lite');
+    return p.configuredModel === 'gemini-3.1-flash-lite' && p.warnings.some((w) => w.includes('2027-05-07'));
   })());
   check('موديل بيئة معاينة يُقبل مع تحذير', resolveModelPolicy('gemini-3-flash-preview').warnings.length > 0);
   check('موديل بيئة نظيف بلا تحذيرات', resolveModelPolicy(PRODUCTION_MODEL).warnings.length === 0);

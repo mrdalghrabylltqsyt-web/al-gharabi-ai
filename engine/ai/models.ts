@@ -67,10 +67,22 @@ export const SHUTDOWN_MODELS: readonly string[] = [
 
 /** موديلات تعمل حالياً لكن لها تاريخ إيقاف معلن — مسموحة مع تحذير. */
 export const SCHEDULED_SHUTDOWN_MODELS: Readonly<Record<string, string>> = {
+  'gemini-3.1-flash-lite': '2027-05-07',
+};
+
+/**
+ * موديلات ما زالت تُدرَج في قائمة المزود لكن المزود يرفضها بحالة 404
+ * «no longer available to new users» — تحقّق حي فعلي (2026-09-21).
+ *
+ * سبب التصنيف منفصلاً عن SHUTDOWN_MODELS: المعرّف لم يُعلن إيقافه رسمياً بعد،
+ * لكنه غير قابل للاستخدام عملياً من هذا الحساب. تمريره يعني طلباً فاشلاً
+ * مؤكداً يُهدر الحصة ويُقنع المستخدم بوجود عطل — وهو نمط عطل 503 السابق نفسه.
+ * لذلك يُرفض من البيئة ولا يُمرَّر للمزود إطلاقاً.
+ */
+export const UNAVAILABLE_FOR_NEW_USERS_MODELS: Readonly<Record<string, string>> = {
   'gemini-2.5-flash': '2026-10-16',
   'gemini-2.5-pro': '2026-10-16',
   'gemini-2.5-flash-lite': '2026-10-16',
-  'gemini-3.1-flash-lite': '2027-05-07',
 };
 
 const MODEL_NAME_PATTERN = /^[a-z0-9][a-z0-9._-]{1,80}$/i;
@@ -87,6 +99,11 @@ export function isShutdownModel(name: string): boolean {
 /** تاريخ الإيقاف المعلن إن وُجد، أو null. */
 export function scheduledShutdownDate(name: string): string | null {
   return SCHEDULED_SHUTDOWN_MODELS[(name || '').trim().toLowerCase()] ?? null;
+}
+
+/** هل المزود يرفض هذا المعرّف فعلياً بحالة 404 (غير متاح للحسابات الجديدة)؟ */
+export function isUnavailableForNewUsers(name: string): boolean {
+  return Object.prototype.hasOwnProperty.call(UNAVAILABLE_FOR_NEW_USERS_MODELS, (name || '').trim().toLowerCase());
 }
 
 export interface ModelResolution {
@@ -119,6 +136,9 @@ export function resolveModelPolicy(envModel?: string): ModelResolution {
       rejectedReason = 'اسم الموديل في GEMINI_MODEL غير صالح شكلياً؛ تم تجاهله.';
     } else if (isShutdownModel(configured)) {
       rejectedReason = 'الموديل المحدد في GEMINI_MODEL أُوقف فعلياً من المزود؛ تم تجاهله لتجنّب طلب فاشل.';
+    } else if (isUnavailableForNewUsers(configured)) {
+      // مُثبت حياً بحالة 404 «no longer available to new users» — لا يُمرَّر أبداً.
+      rejectedReason = `الموديل ${configured} غير متاح للحسابات الجديدة ويرفضه المزود بحالة 404؛ تم تجاهله لتجنّب طلب فاشل.`;
     } else {
       configuredModel = configured;
       const shutdown = scheduledShutdownDate(configured);
@@ -151,5 +171,6 @@ export function describeModelPolicy(envModel?: string) {
     rejectedReason: policy.rejectedReason,
     warnings: policy.warnings,
     shutdownModelCount: SHUTDOWN_MODELS.length,
+    unavailableModelCount: Object.keys(UNAVAILABLE_FOR_NEW_USERS_MODELS).length,
   };
 }

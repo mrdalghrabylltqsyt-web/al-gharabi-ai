@@ -59,38 +59,32 @@ export const ContentEngineView: React.FC = () => {
     const payload = {
       platform: selectedPlatform,
       contentType,
-      topic: customTopic || (selectedProduct ? `عرض تقسيط ${selectedProduct.name}` : 'عروض التقسيط الميسر بدون دفعة أولى'),
+      topic: customTopic || (selectedProduct ? `عرض تقسيط ${selectedProduct.name}` : 'عروض التقسيط الميسر'),
       tone,
       productName: selectedProduct?.name,
+      productId: selectedProduct?.id,
       installmentDetails: productInfo,
       customInstructions,
     };
 
-    const res = await apiService.generateContent(payload);
+    const res = await apiService.generateContent(payload).catch((err: any) => {
+      // رفض سلامة البيانات التجارية يجب أن يظهر للمستخدم صراحةً بلا محتوى بديل.
+      showToast(err?.message || 'تعذر توليد المحتوى');
+      return null;
+    });
     setIsGenerating(false);
 
-    if (res.success && res.content) {
+    if (res && res.success && res.content) {
       setGeneratedResult(res.content);
       const title = customTopic || (selectedProduct ? `عرض تقسيط ${selectedProduct.name}` : 'حملة التقسيط المعتمدة');
       setPostTitle(title);
 
-      const contactNumber = showroomInfo.phoneUnified || showroomInfo.whatsappSales || '';
-
-      // Auto create adapted snippets for other key platforms
-      setAdaptedVersions({
-        tiktok: `🚨 ${selectedProduct?.name || 'طلبك جاهز'} بدون دفعة أولى وبقسط شهري ميسر! تفضل بزيارة معرض الغرابي للتقسيط أو تواصل عبر الرابط بالبايو 🔥 #تقسيط_منتجات #معرض_الغرابي`,
-        instagram: `✨ امتلك ${selectedProduct?.name || 'منتجك بنظام التقسيط'} اليوم من ${showroomInfo.name}!
-🔹 بدون دفعة أولى للعملاء المؤهلين
-🔹 أقساط ميسرة ومرنة
-🔹 سرعة في إنهاء المعاملات
-${contactNumber ? `📞 تواصل معنا: ${contactNumber}` : ''}`,
-        x: `جاهز لاستلام طلبك؟ 📦
-في #${showroomInfo.name.replace(/\s+/g, '_')} نوفر لك أسهل برامج التقسيط وبدون دفعة أولى!
-${contactNumber ? `تواصل معنا: ${contactNumber}` : ''}
-#تقسيط_منتجات #عروض_التقسيط`,
-        snapchat: `👻 هل تبحث عن نظام تقسيط ميسر بدون دفعة أولى؟ 👀 اسحب الشاشة وتواصل معنا مباشرة في معرض الغرابي!`,
-        [selectedPlatform]: res.content,
-      });
+      // نسخ المنصات تأتي من الخادم مبنية حتمياً من نفس النص المُتحقَّق منه، فلا
+      // تنشئ الواجهة أي عرض أو رقم من عندها.
+      const serverVersions = (res as any).adaptedVersions && typeof (res as any).adaptedVersions === 'object'
+        ? (res as any).adaptedVersions
+        : null;
+      setAdaptedVersions(serverVersions ? { ...serverVersions, [selectedPlatform]: res.content } : { [selectedPlatform]: res.content });
 
       showToast('تم توليد المحتوى الذكي وإعادة صياغته للمنصات بنجاح!');
     }
@@ -279,7 +273,7 @@ ${contactNumber ? `تواصل معنا: ${contactNumber}` : ''}
                 </label>
                 <input
                   type="text"
-                  placeholder="مثال: عروض التقسيط الميسر بدون دفعة أولى..."
+                  placeholder="مثال: عروض التقسيط الميسر..."
                   value={customTopic}
                   onChange={(e) => setCustomTopic(e.target.value)}
                   className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-emerald-500"
