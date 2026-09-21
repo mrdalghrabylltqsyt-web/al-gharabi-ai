@@ -47,14 +47,25 @@ export function issueChallengeCode(email: string, secret: Buffer, now = Date.now
  * يُعيد true فقط عند تطابق فعلي، والمقارنة بزمن ثابت لمنع هجمات التوقيت.
  */
 export function verifyChallengeCode(email: string, code: string, secret: Buffer, now = Date.now()): boolean {
+  return matchChallengeWindow(email, code, secret, now) !== null;
+}
+
+/**
+ * يُعيد رقم النافذة التي طابقها الرمز، أو null عند عدم التطابق.
+ *
+ * الحاجة: منع إعادة استخدام الرمز يتطلب معرفة النافذة المُستهلكة بالضبط، لا
+ * مجرد نجاح/فشل. هكذا يُرفض إعادة استخدام رمز نافذة سابقة بينما يبقى الرمز
+ * الجديد لنافذة أحدث مقبولاً.
+ */
+export function matchChallengeWindow(email: string, code: string, secret: Buffer, now = Date.now()): number | null {
   const supplied = String(code ?? "").trim();
-  if (!/^\d{6}$/.test(supplied)) return false;
+  if (!/^\d{6}$/.test(supplied)) return null;
 
   const current = windowIndexAt(now);
   const expected = Buffer.from(supplied);
   for (const index of [current, current - 1]) {
     const candidate = Buffer.from(codeForWindow(email, index, secret));
-    if (candidate.length === expected.length && crypto.timingSafeEqual(candidate, expected)) return true;
+    if (candidate.length === expected.length && crypto.timingSafeEqual(candidate, expected)) return index;
   }
-  return false;
+  return null;
 }

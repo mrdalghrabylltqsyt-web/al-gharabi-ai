@@ -7,7 +7,7 @@
 
 import crypto from 'node:crypto';
 import { SESSION_TTL_MS, signSession, verifySession } from '../auth/sessions';
-import { CHALLENGE_TTL_MS, issueChallengeCode, verifyChallengeCode } from '../auth/challenge';
+import { CHALLENGE_TTL_MS, issueChallengeCode, matchChallengeWindow, verifyChallengeCode } from '../auth/challenge';
 
 let passed = 0;
 const failures: string[] = [];
@@ -71,6 +71,18 @@ function run(): void {
     const earlier = issueChallengeCode(email, secretA, boundary - 2000);
     return verifyChallengeCode(email, earlier, secretA, boundary + 1000);
   })());
+
+  // matchChallengeWindow: يجب أن يُعيد رقم النافذة المطابقة بالضبط لأن منع
+  // إعادة استخدام الرمز يعتمد على مقارنة أرقام النوافذ لا على نعم/لا.
+  const windowNow = Math.floor(now / CHALLENGE_TTL_MS);
+  check('matchChallengeWindow يُعيد نافذة الرمز الحالية', matchChallengeWindow(email, code, secretA, now) === windowNow);
+  check('matchChallengeWindow يُعيد null لرمز خاطئ', matchChallengeWindow(email, code === '000000' ? '111111' : '000000', secretA, now) === null);
+  check('matchChallengeWindow يُعيد النافذة السابقة على الحدود', (() => {
+    const boundary = CHALLENGE_TTL_MS * 200 + 1000;
+    const earlier = issueChallengeCode(email, secretA, boundary - 2000);
+    return matchChallengeWindow(email, earlier, secretA, boundary + 1000) === Math.floor((boundary - 2000) / CHALLENGE_TTL_MS);
+  })());
+  check('verifyChallengeCode ما زال متوافقاً مع matchChallengeWindow', verifyChallengeCode(email, code, secretA, now) === (matchChallengeWindow(email, code, secretA, now) !== null));
 
   console.log('\n' + '='.repeat(60));
   if (failures.length) {

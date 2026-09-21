@@ -53,10 +53,17 @@ export interface StorageAdapter {
 /** مفاتيح منطقية بدل أسماء ملفات، ليبقى العقد واحداً بين الخلفيتين. */
 export const STORAGE_KEY_STATE = "state";
 export const STORAGE_KEY_USAGE = "usage";
+/**
+ * حالة تحكّم صغيرة منفصلة عن لقطة العمل: بصمة توكن المعاينة وختمه الزمني،
+ * ونافذة آخر رمز OTP استُهلك لكل بريد. فصلها يمنع تضخّم لقطة العمل ويكفي
+ * لتمريرها عبر المحوّل نفسه فيبقى الدوام واحداً للخلفيتين.
+ */
+export const STORAGE_KEY_CONTROL = "control";
 
 const FILE_NAMES: Record<string, string> = {
   [STORAGE_KEY_STATE]: ".gharabi-state.json",
   [STORAGE_KEY_USAGE]: ".gharabi-usage.json",
+  [STORAGE_KEY_CONTROL]: ".gharabi-control.json",
 };
 
 const BACKUP_PREFIX = "state-";
@@ -161,6 +168,26 @@ class FileStorageAdapter implements StorageAdapter {
 }
 
 /**
+ * إعداد pool لPostgres. دالة خالصة قابلة للاختبار بلا قاعدة فعلية.
+ *
+ * SSL مفروض من التطبيق (لا يُعتمد على sslmode في الرابط): بعض روابط Neon تأتي
+ * بلا sslmode، فنجبر TLS حتى لا يُنقل أي سر بلا تشفير. sslmode=disable يلغي
+ * الفرض صراحةً للاختبار المحلي فقط. الحد الأقصى للاتصالات 5، والمهلة 15 ثانية
+ * حتى يتسع استيقاظ Neon من النوم.
+ */
+export function postgresPoolConfig(connectionString: string): Record<string, unknown> {
+  const forceSsl = !/sslmode=disable/i.test(connectionString);
+  return {
+    connectionString,
+    max: 5,
+    connectionTimeoutMillis: 15_000,
+    idleTimeoutMillis: 30_000,
+    keepAlive: true,
+    ...(forceSsl ? { ssl: { rejectUnauthorized: false } } : {}),
+  };
+}
+
+/**
  * عميل Postgres بسيط: جدول key/value JSONB واحد، بلا migrations معقدة.
  * يُنشئ الجدول عند أول تشغيل إن لم يكن موجوداً.
  */
@@ -183,15 +210,12 @@ class PostgresStorageAdapter implements StorageAdapter {
       try {
         const { Pool } = await import("pg");
         if (!this.pool) {
-          this.pool = new Pool({
-            connectionString: this.connectionString,
-            max: 4,
-            connectionTimeoutMillis: 10_000,
-            idleTimeoutMillis: 30_000,
-          });
+          this.pool = new Pool(postgresPoolConfig(this.connectionString));
           // خطأ اتصال عابر داخل pool لا يجب أن يُسقط العملية.
           this.pool.on?.("error", () => { /* يُعالج عند الطلب التالي */ });
         }
+        // Neon Free ينام ويستيقظ عند أول اتصال؛ المهلة 15 ثانية تكفي للاستيقاظ،
+        // وإعادة المحاولة بتراجع تغطي أطول استيقاظ.
         await this.pool.query(
           `CREATE TABLE IF NOT EXISTS gharabi_state (
              key text PRIMARY KEY,
@@ -205,7 +229,7 @@ class PostgresStorageAdapter implements StorageAdapter {
       } catch (error: any) {
         this.healthy = false;
         this.detail = `database_unavailable:${String(error?.code || error?.name || "error").slice(0, 40)}`;
-        if (attempt < attempts) await new Promise((r) => setTimeout(r, attempt * 500));
+        if (attempt < attempts) await new Promise((r) => setTimeout(r, attempt * 1000));
       }
     }
   }

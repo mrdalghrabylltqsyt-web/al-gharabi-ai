@@ -38,11 +38,12 @@ import {
   isEphemeralHost,
   STORAGE_KEY_STATE,
   STORAGE_KEY_USAGE,
+  STORAGE_KEY_CONTROL,
   type StorageAdapter,
   type StorageStatus,
 } from "./engine/storage/adapter";
 import { SESSION_TTL_MS, signSession, verifySession, type SessionPayload } from "./engine/auth/sessions";
-import { CHALLENGE_TTL_MS, issueChallengeCode, verifyChallengeCode } from "./engine/auth/challenge";
+import { CHALLENGE_TTL_MS, issueChallengeCode, matchChallengeWindow } from "./engine/auth/challenge";
 
 dotenv.config();
 
@@ -220,6 +221,28 @@ const revokedSessions = new Map<string, number>(); // sid -> exp
 // الدور والتعطيل والحذف، ويسري في كل العمليات بعد إعادة التشغيل من القرص.
 const userRevocationEpoch = new Map<string, number>(); // userId -> timestamp
 
+/**
+ * بصمة توكن المعاينة الحالي (SHA-256، بلا كشف القيمة) وختم زمني لتغيّره.
+ *
+ * السبب: توكن المعاينة بلا حالة، فإن غيّر المالك GHARABI_PREVIEW_TOKEN ظلّت
+ * الجلسات القديمة صالحة 30 يوماً بلا طريقة لإبطالها إلا بتدوير SESSION_SECRET
+ * (فيسقط كل المستخدمين). البصمة تُحفظ في المخزن مع ختم وقت التغيير، وأي جلسة
+ * أُصدرت عبر المعاينة قبل الختم تُرفض تلقائياً عند تغيير التوكن.
+ */
+function hashPreviewToken(raw: string): string | null {
+  const value = (raw || "").trim();
+  if (!value) return null;
+  return crypto.createHash("sha256").update(`gharabi-preview:${value}`).digest("hex");
+}
+const previewControl: { tokenHash: string | null } = { tokenHash: null };
+
+// ختم زمني يُبطل جلسات المعاينة الصادرة قبل تغيير التوكن.
+const previewEpoch = { value: 0 };
+
+// آخر نافذة OTP استُهلكت لكل بريد، تُحفظ عبر المحوّل فيمنع إعادة استخدام الرمز
+// داخل نافذته حتى بعد restart، بلا تخزين الرمز نفسه.
+const consumedChallengeWindows = new Map<string, number>(); // email -> windowIndex
+
 const persisted = loadPersistentState();
 // الجلسات المُبطَلة تُحمَّل من المخزن كي يستمر الإبطال عبر العمليات وإعادة النشر.
 for (const entry of Array.isArray(persisted.revokedSessions) ? persisted.revokedSessions : []) {
@@ -277,11 +300,12 @@ function revokeUserSessions(userId: string) {
 // الأساس أن الرمز مشتق رياضياً (بلا حالة) ويبقى صالحاً في أي عملية.
 const consumedChallenges = new Map<string, number>(); // email -> exp
 
-function createSessionForUser(user: ServerUser): ActiveSession {
+function createSessionForUser(user: ServerUser, previewStamp?: number): ActiveSession {
   const sid = crypto.randomUUID();
   const expiresAt = Date.now() + SESSION_TTL_MS;
   // التوكن موقّع ويحمل المعرّف والصلاحية فقط، فيبقى صالحاً في أي عملية.
-  const token = signSession({ uid: user.id, iat: Date.now(), exp: expiresAt, sid }, SESSION_SECRET);
+  // pv يُضاف عند إصدار جلسة معاينة فقط (حتى لو كان صفراً) كي يبقى قابلاً للإبطال.
+  const token = signSession({ uid: user.id, iat: Date.now(), exp: expiresAt, sid, ...(previewStamp === undefined ? {} : { pv: previewStamp }) }, SESSION_SECRET);
   const session: ActiveSession = {
     token,
     sid,
@@ -333,6 +357,15 @@ function authenticateToken(req: express.Request, res: express.Response, next: ex
   // التعطيل/تغيير الدور في كل العمليات لا في العملية التي نفّذت التغيير.
   const epoch = userRevocationEpoch.get(payload.uid);
   if (epoch && payload.iat < epoch) {
+    return res.status(401).json({
+      success: false,
+      error: "انتهت صلاحية جلسة الدخول. يرجى إعادة تسجيل الدخول.",
+    });
+  }
+
+  // إبطال جلسات المعاينة عند تغيير توكن المعاينة: أي جلسة تحمل ختماً أقدم من
+  // الختم الحالي تُرفض، فلا يبقى وصول دائم بتوكن أُلغي.
+  if (payload.pv !== undefined && payload.pv < previewEpoch.value) {
     return res.status(401).json({
       success: false,
       error: "انتهت صلاحية جلسة الدخول. يرجى إعادة تسجيل الدخول.",
@@ -477,7 +510,6 @@ app.post("/api/auth/request-owner-challenge", async (req, res) => {
   // الإرسال الفعلي عبر Resend. لا يُسجَّل الرمز ولا يُعاد في الاستجابة إطلاقاً.
   const result = await sendOwnerOtpEmail({ to: normalizedEmail, code });
   if (!result.sent) {
-    consumedChallenges.delete(normalizedEmail);
     auditLog.unshift({ id: crypto.randomUUID(), at: new Date().toISOString(), userId: "system", action: "owner_challenge_email_failed", detail: result.error || "send_failed" });
     if (auditLog.length > 100) auditLog.pop();
     persistState();
@@ -486,8 +518,6 @@ app.post("/api/auth/request-owner-challenge", async (req, res) => {
       error: "تعذر إرسال رمز التحقق، حاول مرة أخرى",
     });
   }
-
-  consumedChallenges.delete(normalizedEmail);
 
   auditLog.unshift({ id: crypto.randomUUID(), at: new Date().toISOString(), userId: "system", action: "owner_challenge_email_sent", detail: "owner-challenge-delivered" });
   if (auditLog.length > 100) auditLog.pop();
@@ -499,7 +529,7 @@ app.post("/api/auth/request-owner-challenge", async (req, res) => {
   });
 });
 
-app.post("/api/auth/verify-challenge", (req, res) => {
+app.post("/api/auth/verify-challenge", async (req, res) => {
   const { email, code } = req.body;
   const normalizedEmail = (email || "").toLowerCase().trim();
 
@@ -507,19 +537,23 @@ app.post("/api/auth/verify-challenge", (req, res) => {
     return res.status(400).json({ success: false, error: "البريد الإلكتروني ورمز التحقق مطلوبان." });
   }
 
-  // منع إعادة استخدام رمز سبق أن نجح في هذه العملية.
-  const consumedAt = consumedChallenges.get(normalizedEmail);
-  if (consumedAt && consumedAt > Date.now()) {
+  // منع إعادة استخدام الرمز داخل نافذته: يُقارن بآخر نافذة استُهلكت للبريد
+  // (محفوظة عبر المحوّل)، فلا يُقبل رمز نافذة سابقة مرة أخرى حتى بعد إعادة
+  // التشغيل، بلا تخزين الرمز نفسه.
+  const matchedWindow = matchChallengeWindow(normalizedEmail, code, SESSION_SECRET);
+  if (matchedWindow === null) {
+    return res.status(401).json({ success: false, error: "رمز التحقق المدخل غير صحيح." });
+  }
+  const lastConsumed = consumedChallengeWindows.get(normalizedEmail);
+  if (lastConsumed !== undefined && matchedWindow <= lastConsumed) {
     return res.status(401).json({ success: false, error: "رمز التحقق غير صحيح أو انتهت صلاحيته." });
   }
 
-  // التحقق الرياضي: يعمل في أي عملية بلا اعتماد على ذاكرة مشتركة.
-  if (!verifyChallengeCode(normalizedEmail, code, SESSION_SECRET)) {
-    return res.status(401).json({ success: false, error: "رمز التحقق المدخل غير صحيح." });
-  }
-
-  // Successful verification: يُستهلك الرمز لهذه العملية.
+  // Successful verification: تُسجَّل النافذة المُستهلكة مرة واحدة لكل بريد.
+  consumedChallengeWindows.set(normalizedEmail, matchedWindow);
   consumedChallenges.set(normalizedEmail, Date.now() + CHALLENGE_TTL_MS);
+  // ننتظر الكتابة قبل إصدار الجلسة: لا يُمنح وصول قبل تثبيت الاستهلاك الموثوق.
+  await persistCritical();
 
   let user = serverUsers.find((u) => u.email.toLowerCase() === normalizedEmail && u.active);
   if (!user && normalizedEmail === OWNER_EMAIL) {
@@ -532,6 +566,7 @@ app.post("/api/auth/verify-challenge", (req, res) => {
   }
 
   const session = createSessionForUser(user);
+  await persistCritical();
   return res.json({
     success: true,
     token: session.token,
@@ -548,7 +583,8 @@ app.post("/api/auth/verify-challenge", (req, res) => {
 //  - POST { token }   لتبادل التوكن في جسم الطلب فلا يظهر في سجلات الخادم ولا
 //    في سجل المتصفح. الواجهة تُفضّل هذه الصيغة عبر مقطع الرابط (#preview_token).
 // كلا الصيغتين محروستان بمقارنة بزمن ثابت وحدّ محاولات لتقليل أثر التخمين.
-function handlePreviewLogin(req: express.Request, res: express.Response) {
+async function handlePreviewLogin(req: express.Request, res: express.Response) {
+  res.setHeader("Cache-Control", "no-store");
   const configured = (process.env.GHARABI_PREVIEW_TOKEN || "").trim();
   if (!configured) return res.status(404).json({ success: false, error: "Not found" });
 
@@ -568,10 +604,10 @@ function handlePreviewLogin(req: express.Request, res: express.Response) {
   const owner = serverUsers.find((u) => u.id === "owner" && u.active);
   if (!owner) return res.status(403).json({ success: false, error: "حساب المالك غير متاح." });
 
-  const session = createSessionForUser(owner);
+  const session = createSessionForUser(owner, previewEpoch.value);
   auditLog.unshift({ id: crypto.randomUUID(), at: new Date().toISOString(), userId: "system", action: "owner_preview_login", detail: "preview-session-created" });
   if (auditLog.length > 100) auditLog.pop();
-  persistState();
+  await persistCritical();
   return res.json({ success: true, token: session.token, user: session.user });
 }
 app.get("/api/auth/preview-login", handlePreviewLogin);
@@ -587,7 +623,7 @@ app.get("/api/auth/me", authenticateToken, (req, res) => {
 });
 
 // 4. Logout endpoint
-app.post("/api/auth/logout", (req, res) => {
+app.post("/api/auth/logout", async (req, res) => {
   const authHeader = req.headers.authorization;
   if (authHeader && authHeader.startsWith("Bearer ")) {
     const token = authHeader.substring(7).trim();
@@ -596,7 +632,8 @@ app.post("/api/auth/logout", (req, res) => {
       // الإبطال يُحفظ على القرص كي يسري في كل العمليات لا في هذه العملية فقط.
       revokedSessions.set(payload.sid, payload.exp);
       activeSessions.delete(token);
-      persistState();
+      // ننتظر التثبيت قبل الرد: لا نُعلن نجاح الخروج قبل استقرار الإبطال.
+      await persistCritical();
     }
   }
   res.json({ success: true, message: "تم تسجيل الخروج بنجاح." });
@@ -1927,12 +1964,84 @@ async function bootstrapStorage(): Promise<void> {
       if (snapshot) applyStateSnapshot(snapshot);
       const usage = await storageAdapter.read<any>(STORAGE_KEY_USAGE);
       if (usage?.day === geminiUsageDay && Number.isFinite(usage?.count)) geminiUsageCount = Math.max(0, Number(usage.count));
+      const control = await storageAdapter.read<any>(STORAGE_KEY_CONTROL);
+      if (control) applyControlSnapshot(control);
     } catch (error: any) {
       storageInitError = String(error?.code || error?.name || "state_read_failed").slice(0, 60);
       return;
     }
+  } else {
+    // للملف المحلي: القراءة متزامنة عند الإقلاع كما في لقطة الحالة.
+    loadControlStateSync();
   }
+  // الجهوزية تُعلن قبل مزامنة البصمة كي تُحفظ حالة التحكّم فعلاً عند أول إقلاع.
   storageReady = true;
+  reconcilePreviewTokenEpoch();
+}
+
+/**
+ * يطبّق بصمة توكن المعاينة المحفوظة ونوافذ OTP المُستهلكة على الحاويات الحيّة.
+ * لا يحتوي أي قيمة سرية: بصمة SHA-256 فقط.
+ */
+function applyControlSnapshot(control: any): void {
+  if (!control || typeof control !== "object") return;
+  // البصمة تُقرأ دائماً (قد تكون null في أول تشغيل) ليكتشف reconcile تغيّر التوكن.
+  previewControl.tokenHash = typeof control.previewTokenHash === "string" ? control.previewTokenHash : null;
+  if (typeof control.previewEpoch === "number" && control.previewEpoch > 0) {
+    previewEpoch.value = control.previewEpoch;
+  }
+  consumedChallengeWindows.clear();
+  if (Array.isArray(control.consumedOtpWindows)) {
+    for (const entry of control.consumedOtpWindows) {
+      if (entry?.email && typeof entry.window === "number") consumedChallengeWindows.set(entry.email, entry.window);
+    }
+  }
+}
+
+/** يقرأ حالة التحكّم متزامناً (backend الملف) عند الإقلاع. */
+function loadControlStateSync(): void {
+  const raw = storageAdapter.readSync<any>(STORAGE_KEY_CONTROL);
+  if (raw) applyControlSnapshot(raw);
+}
+
+function buildControlState() {
+  return {
+    // بصمة فقط، لا توكن المعاينة ولا أي سر.
+    previewTokenHash: previewControl.tokenHash,
+    previewEpoch: previewEpoch.value,
+    consumedOtpWindows: Array.from(consumedChallengeWindows.entries()).slice(-200).map(([email, window]) => ({ email, window })),
+  };
+}
+
+/**
+ * يحفظ حالة التحكّم عبر المحوّل. تُسلسَل مع طابور الحالة نفسه كي لا تتراكب
+ * الكتابات ويبقى الدوام واحداً للخلفيتين.
+ */
+function saveControlState(): void {
+  if (!storageReady) return;
+  persistQueue = persistQueue
+    .then(() => storageAdapter.write(STORAGE_KEY_CONTROL, buildControlState()))
+    .catch((error: any) => {
+      lastPersistError = String(error?.code || error?.name || "persist_failed").slice(0, 60);
+      console.warn("Could not persist control state:", lastPersistError);
+    });
+}
+
+/**
+ * يقارن بصمة توكن المعاينة الحالي بالمحفوظة. عند اختلافهما (تغيير التوكن)
+ * يُرفع الختم الزمني فتُبطل كل جلسات المعاينة الصادرة قبله، ثم تُحفظ البصمة
+ * الجديدة. لا يفعل شيئاً إن كان التوكن غير مضبوط أو لم يتغيّر.
+ */
+function reconcilePreviewTokenEpoch(): void {
+  const currentHash = hashPreviewToken(process.env.GHARABI_PREVIEW_TOKEN || "");
+  if (!currentHash) return;
+  if (previewControl.tokenHash === currentHash) return;
+  // تغيّر التوكن (أو أول إقلاع): ارفع الختم فقط إن كان هناك توكن سابق فعلاً.
+  if (previewControl.tokenHash && previewControl.tokenHash !== currentHash) {
+    previewEpoch.value = Date.now();
+  }
+  previewControl.tokenHash = currentHash;
+  saveControlState();
 }
 
 function loadUsage() {
@@ -2033,8 +2142,17 @@ function persistState(): void {
     lastPersistError = storageInitError || "storage_not_ready";
     return;
   }
+  persistQueue = persistStateNow();
+}
+
+/**
+ * يبني مهمة كتابة الحالة الحالية ويضعها في الطابور ويُعيدها.
+ * العمليات الحسّاسة (إنشاء جلسة، إبطال، استهلاك OTP) تنتظر هذه المهمة قبل
+ * اعتبار الطلب ناجحاً، فلا يُعاد توكن قبل أن تصل حالته إلى المخزن الدائم.
+ */
+function persistStateNow(): Promise<void> {
   const snapshot = buildPersistedState();
-  persistQueue = persistQueue
+  return persistQueue
     .then(() => storageAdapter.write(STORAGE_KEY_STATE, snapshot))
     .then(() => { lastPersistError = null; })
     .catch((error: any) => {
@@ -2046,7 +2164,19 @@ function persistState(): void {
 function audit(userId: string, action: string, detail?: string) {
   auditLog.unshift({ id: crypto.randomUUID(), at: new Date().toISOString(), userId, action, detail });
   if (auditLog.length > 100) auditLog.pop();
+
   persistState();
+}
+
+/**
+ * كتابة حسّاسة تُنتظر قبل اعتبار العملية ناجحة (إنشاء جلسة، إبطال، استهلاك
+ * OTP). تُثبّت لقطة الحالة وحالة التحكّم معاً (نافذة OTP المُستهلكة، بصمة
+ * توكن المعاينة)، فلا يُعاد توكن أو تُعلن نجاح إبطال قبل استقرارها في المخزن.
+ */
+function persistCritical(): Promise<void> {
+  persistState();
+  saveControlState();
+  return persistQueue;
 }
 
 // تاريخ الاستخدام يُصفَّر عند تغيّر اليوم. يُنادى من كل عملية حماية.
@@ -3749,6 +3879,12 @@ async function startServer() {
   // وإلا بدأ الخادم بلقطة فارغة (طمس للإبطال واتصالات المنصات ومساحة العمل).
   await warmStorage();
   if (!storageReady) {
+    // عند ضبط DATABASE_URL يكون المخزن الخارجي جزءاً من عقد الدوام: لا يجوز
+    // الإقلاع بلا قراءة الحالة، ولا الرجوع لملف محلي، ولا الكتابة فوق حالة
+    // قائمة. الفشل هنا صريح وسريع بدل خدمة تطبيق لا يحفظ شيئاً.
+    if (storageAdapter.backend === "postgres") {
+      throw new Error(`فشل الإقلاع: تعذّر تحميل الحالة من Postgres (${storageInitError || "storage_unavailable"}). لا رجوع لملف محلي ولا كتابة فوق حالة قائمة.`);
+    }
     console.warn(`[الغرابي AI] storage not ready: ${storageInitError || "unknown"} — state writes are disabled until it recovers.`);
   }
 
@@ -3775,12 +3911,27 @@ async function startServer() {
     console.log(`[الغرابي AI Server] running on http://0.0.0.0:${PORT}`);
   });
 
-  // إغلاق نظيف: يُنهي اتصال قاعدة البيانات ثم يخرج. لا يسجّل أي سر.
+  // إغلاق نظيف: ينتظر تفريغ طابور الكتابة (مع مهلة صارمة ≤ 10 ثوانٍ) ثم يُنهي
+  // اتصال قاعدة البيانات ويخرج. المهلة تمنع تعليق العملية إن تجمّد المخزن.
+  // نُفرّغ الطابور في حلقة لأن كتابة جديدة قد تُسلسَل أثناء الإغلاق، فنلتقط
+  // أحدث وعد حتى يستقر الطابور فعلاً (أو تنتهي المهلة).
+  let shuttingDown = false;
+  const drainQueue = async (): Promise<void> => {
+    const startedAt = Date.now();
+    let pending = persistQueue;
+    while (Date.now() - startedAt < 10_000) {
+      await pending.catch(() => { /* نُكمل الإغلاق حتى لو فشلت كتابة */ });
+      if (pending === persistQueue) return;
+      pending = persistQueue;
+    }
+  };
   const shutdown = (signal: string) => {
-    console.log(`[الغرابي AI] received ${signal}, closing storage...`);
-    persistQueue
-      .then(() => storageAdapter.close())
-      .catch(() => { /* تجاهل */ })
+    if (shuttingDown) return;
+    shuttingDown = true;
+    console.log(`[الغرابي AI] received ${signal}, flushing pending writes...`);
+    const deadline = new Promise<void>((resolve) => setTimeout(resolve, 10_000));
+    Promise.race([drainQueue(), deadline])
+      .then(() => storageAdapter.close().catch(() => { /* تجاهل */ }))
       .finally(() => process.exit(0));
   };
   process.once("SIGTERM", () => shutdown("SIGTERM"));

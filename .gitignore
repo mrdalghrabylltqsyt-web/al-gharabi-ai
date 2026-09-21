@@ -16,6 +16,8 @@ bun.lockb
 .gharabi-state.json
 .gharabi-state.json.tmp
 .gharabi-usage.json
+.gharabi-control.json
+.gharabi-control.json.tmp
 .gharabi-backups/
 
 # Local preview/runtime env files: may hold the owner email, Resend key, and a

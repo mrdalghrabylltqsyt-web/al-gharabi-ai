@@ -11,7 +11,7 @@
     "clean": "rm -rf dist server.js",
     "lint": "tsc --noEmit",
     "final-audit": "node final-audit.mjs",
-    "test": "npm run test:storage && npm run test:engine && npm run test:auth && npm run test:models && npm run test:social && npm run test:network && npm run test:email && npm run test:preview && npm run test:session && npm run test:policy && npm run test:netlify && npm run test:coldstart && npm run test:db && npm run test:runtime",
+    "test": "npm run test:storage && npm run test:engine && npm run test:auth && npm run test:models && npm run test:social && npm run test:network && npm run test:email && npm run test:preview && npm run test:session && npm run test:policy && npm run test:netlify && npm run test:coldstart && npm run test:control && npm run test:db && npm run test:runtime",
     "test:engine": "tsx engine/tests/engine.test.ts",
     "test:models": "tsx engine/tests/model.policy.test.ts",
     "test:social": "tsx engine/tests/social.routes.test.ts",
@@ -24,6 +24,7 @@
     "test:auth": "tsx engine/tests/auth.challenge.test.ts",
     "test:policy": "tsx engine/tests/session.policy.test.ts",
     "test:coldstart": "tsx engine/tests/netlify.coldstart.test.ts",
+    "test:control": "tsx engine/tests/persistence.control.test.ts",
     "test:storage": "tsx engine/tests/storage.adapter.test.ts",
     "test:db": "tsx engine/tests/database.persistence.test.ts"
   },

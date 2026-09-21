@@ -20,6 +20,12 @@ export interface SessionPayload {
   exp: number;
   /** معرّف الجلسة، يُستخدم للإبطال الفردي عند تسجيل الخروج. */
   sid: string;
+  /**
+   * ختم إبطال جلسات المعاينة عند إصدارها. غيابه يعني جلسة غير صادرة من
+   * المعاينة. عند تغيير GHARABI_PREVIEW_TOKEN يرتفع الختم فتُرفض الجلسات
+   * الأقدم بلا حاجة لتدوير SESSION_SECRET.
+   */
+  pv?: number;
 }
 
 function b64url(input: Buffer): string {

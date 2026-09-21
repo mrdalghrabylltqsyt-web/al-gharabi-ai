@@ -106,10 +106,19 @@ async function run(): Promise<void> {
   check('مضيف دائم (تطوير) => durable=true', createStorageAdapter({ stateDir: dir }).durable === true);
 
   // كشف المضيفات العابرة: Render/Heroku/Lambda/Netlify.
-  const { isEphemeralHost } = await import('../storage/adapter');
+  const { isEphemeralHost, postgresPoolConfig } = await import('../storage/adapter');
   check('RENDER=true يُكتشف كمضيف عابر', isEphemeralHost({ RENDER: 'true' } as any) === true);
   check('DYNO يُكتشف كمضيف عابر', isEphemeralHost({ DYNO: 'web.1' } as any) === true);
   check('بيئة فارغة ليست عابرة', isEphemeralHost({} as any) === false);
+
+  // إعداد pool لPostgres: SSL مفروض من التطبيق، pool ≤ 5، مهلة ≥ 10 ثوانٍ.
+  const neonUrl = 'postgresql://user:secret@host/db';
+  const poolCfg = postgresPoolConfig(neonUrl) as any;
+  check('★ SSL مفروض من التطبيق حتى بلا sslmode في الرابط', Boolean(poolCfg.ssl) && poolCfg.ssl.rejectUnauthorized === false);
+  check('★ حجم pool ≤ 5', typeof poolCfg.max === 'number' && poolCfg.max <= 5, `max=${poolCfg.max}`);
+  check('★ مهلة الاتصال ≥ 10 ثوانٍ (تسع استيقاظ Neon)', typeof poolCfg.connectionTimeoutMillis === 'number' && poolCfg.connectionTimeoutMillis >= 10_000, `timeout=${poolCfg.connectionTimeoutMillis}`);
+  check('sslmode=require يبقى مفروضاً', Boolean((postgresPoolConfig('postgresql://u:p@h/d?sslmode=require') as any).ssl));
+  check('sslmode=disable يلغي الفرض صراحةً (اختبار محلي)', !(postgresPoolConfig('postgresql://u:p@h/d?sslmode=disable') as any).ssl);
 
   console.log('\n' + '='.repeat(60));
   if (failures.length) {
