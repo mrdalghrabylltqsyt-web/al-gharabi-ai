@@ -211,6 +211,30 @@ write → restart بمجلد فارغ → الإبطال يسري → جلسة �
   الساعات، رفض الماضي، قبول المستقبل، حفظ ثم قراءة بنفس المعنى، عبور منتصف الليل، ومسار
   الخادم الفعلي (تخزين/إعادة قراءة/تقويم).
 
+## ثبات سجلات التفاعل وربط حارس المحتوى (صُحّح 2026-09-22)
+دفعة إكمال وتدقيق دورة إدارة التعليقات والتفاعلات، بعد Phase 0 VERIFY ONLY أثبتت
+أن التصنيف وبوابة الرد ومنع replay وحارس Gemini وحماية الجلب من المنصات غير
+المتصلة كلها تعمل فعلياً. الفجوتان الحقيقيتان الوحيدتان كانتا:
+
+1. **سجلات السوشيال لا تصمد بعد restart.** `socialComments` و`socialReplies`
+   و`publishRecords` و`performanceRecords` و`marketingDecisions` و`strategiesTested`
+   كانت تُكتب في `workspace`، لكن `loadPersistentState` و`buildPersistedState` لم
+   تضمناها، فتُفقد عند كل إعادة تشغيل/نشر. النتيجة الأخطر: حماية replay/duplicate
+   تسقط بعد restart، فيُنشئ نفس `externalId` سجلاً مكرراً. أُضيفت القائمة كاملة إلى
+   طرفَي الحفظ (بحدود أعلى لكل مصفوفة) — بلا أي تغيير في schema لأن الجدول
+   `gharabi_state` مخزن key/value عام.
+2. **حارس سلامة المحتوى لم يكن مربوطاً بمسار الرد.** `suggestedDeterministicReply`
+   ونص الرد في `/comments/reply` كانا يمرّان دون `contentSafety.ts`. الآن الرد
+   المقترح في `/comments/classify` يُفحص عبر `analyzeBusinessClaims` قبل عرضه
+   (ويُعلن `contentSafety`)، و`/comments/reply` يفرض حارساً من جهة الخادم يرفض
+   (422) أي نص رد يحمل عرضاً/رقماً/رابطاً غير مسجّل **قبل التسجيل**. الحقائق تُبنى
+   من بيانات المعرض الفعلية عبر `buildFacts` المحقونة من `server.ts`.
+
+اختبارات: `engine/tests/social.persistence.test.ts` (file backend: create → persist
+→ restart → read للتعليقات والردود و replay/duplicate)، وتحقق السوشيال أُضيف إلى
+`database.persistence.test.ts` (Postgres حقيقي عبر `tools/local-verification`)،
+وفحوص ربط حارس المحتوى في `social.routes.test.ts`.
+
 ## نمط الكود
 - تعليقات عربية موجزة تشرح «لماذا» فقط، دون شرح ما يفعله الكود.
 - الأنواع في `src/types/index.ts` يجب أن تطابق استجابات الخادم فعلياً؛ توجد فحوص عقد في `engine/tests/social.routes.test.ts` تكشف أي انحراف.

@@ -556,6 +556,8 @@ export interface SocialCommentClassificationResult {
   classification: SocialCommentClassification;
   autoReplyAllowed: boolean;
   suggestedDeterministicReply: string | null;
+  /** نتيجة حارس سلامة المحتوى على الرد المقترح؛ null إن لم يوجد رد مقترح. */
+  contentSafety: { safe: boolean; violations: string[]; codes: string[] } | null;
   note: string;
 }
 

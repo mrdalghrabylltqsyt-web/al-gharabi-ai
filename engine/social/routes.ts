@@ -20,6 +20,7 @@ import {
   isSelfAuthored,
   type ReplyRecord,
 } from './comments';
+import { analyzeBusinessClaims, type BusinessFacts } from './contentSafety';
 import {
   buildPublishRecord,
   collectAvailableMetrics,
@@ -46,10 +47,51 @@ export interface SocialRoutesDeps {
   persistState: () => void;
   audit: (userId: string, action: string, detail?: string) => void;
   workspaceId: (prefix: string) => string;
+  /**
+   * حقائق المعرض التجارية المسجّلة فعلاً (أسعار، أرقام، روابط، عروض معتمدة).
+   * تُستخدم لفحص أي نص رد مقترح قبل حفظه. غياب المنتج يقلّل الحقائق إلى بيانات
+   * المعرض العامة فقط، فيُحجب أي ادعاء غير مسجّل بدل تمريره.
+   */
+  buildFacts?: (productId?: string | null) => BusinessFacts;
 }
 
 export function registerSocialManagerRoutes(app: express.Express, deps: SocialRoutesDeps): void {
   const { authenticateToken, requireOwner, workspace, platformConnections, persistState, audit, workspaceId } = deps;
+
+  /**
+   * يبني حقائق المعرض التجارية من البيانات المسجّلة فعلاً. بلا `buildFacts`
+   * محقونة، تُستخدم بيانات المعرض العامة فقط (بلا أي سعر أو رابط مُختلق).
+   */
+  const factsFor = (productId?: string | null): BusinessFacts => {
+    if (deps.buildFacts) return deps.buildFacts(productId);
+    const showroom = workspace.showroom || {};
+    return {
+      cashPrices: [], derivedAmounts: [], downPaymentPercents: [],
+      phones: [showroom.phoneUnified, showroom.whatsappSales].map((p: any) => String(p ?? '').trim()).filter(Boolean),
+      urls: [],
+      inStock: null,
+      hasRecordedPromotion: [showroom.promotions, showroom.activeOffer].some((p: any) => String(p ?? '').trim().length > 0),
+      allowedPhrases: [
+        ...(Array.isArray(showroom.policies) ? showroom.policies : []),
+        typeof showroom.about === 'string' ? showroom.about : '',
+        typeof showroom.tagline === 'string' ? showroom.tagline : '',
+      ].map((p: any) => String(p ?? '').trim()).filter(Boolean),
+    };
+  };
+
+  /** حلّ منتج من معرّف أو اسم لربط الحقائق التجارية الصحيحة. */
+  const resolveProduct = (productId?: string | null, productName?: string | null) => {
+    const products = (workspace.products || []) as any[];
+    if (productId && String(productId).trim()) {
+      const byId = products.find((p) => p.id === String(productId).trim());
+      if (byId) return { product: byId, facts: factsFor(byId.id) };
+    }
+    if (productName && String(productName).trim()) {
+      const byName = products.find((p) => p.name === String(productName).trim());
+      if (byName) return { product: byName, facts: factsFor(byName.id) };
+    }
+    return { product: null, facts: factsFor(null) };
+  };
 
   const connectionFor = (platform: string) => {
     const conn = platformConnections.get(platform);
@@ -116,13 +158,23 @@ export function registerSocialManagerRoutes(app: express.Express, deps: SocialRo
     const platform = typeof req.body?.platform === 'string' ? req.body.platform : '';
     if (!text.trim()) return res.status(400).json({ success: false, error: 'نص التعليق مطلوب.' });
     const classification = classifyComment(text);
+    const autoReplyAllowed = canAutoReply(classification);
+    // الرد المقترح يمر عبر حارس سلامة المحتوى قبل عرضه للمراجعة البشرية.
+    // المسار: تعليق → توليد رد مقترح → contentSafety → مراجعة/عرض.
+    const rawSuggestion = autoReplyAllowed ? buildDeterministicReply(classification) : null;
+    const { facts } = resolveProduct(req.body?.productId, req.body?.productName);
+    const safety = rawSuggestion ? analyzeBusinessClaims(rawSuggestion, facts) : null;
+    const suggestedReply = rawSuggestion && safety?.safe ? rawSuggestion : null;
     res.json({
       success: true,
       platform: isSupportedPlatform(platform) ? platform : null,
       classification,
-      autoReplyAllowed: canAutoReply(classification),
-      suggestedDeterministicReply: canAutoReply(classification) ? buildDeterministicReply(classification) : null,
-      note: 'التصنيف حتمي ولا يستهلك أي حصة ذكاء اصطناعي.',
+      autoReplyAllowed,
+      suggestedDeterministicReply: suggestedReply,
+      contentSafety: safety
+        ? { safe: safety.safe, violations: safety.blocked.map((v) => v.detail), codes: safety.blocked.map((v) => v.code) }
+        : null,
+      note: 'التصنيف حتمي ولا يستهلك أي حصة ذكاء اصطناعي، والرد المقترح يمر عبر حارس سلامة المحتوى قبل أي استخدام.',
     });
   });
 
@@ -165,6 +217,23 @@ export function registerSocialManagerRoutes(app: express.Express, deps: SocialRo
     const ownNames = [String(workspace.showroom?.name || ''), 'معرض الغرابي'];
     if (isSelfAuthored(authorName, ownNames)) {
       return res.status(409).json({ success: false, error: 'التعليق صادر من حساب المعرض؛ لا يُرد عليه لتجنب حلقة ردود.' });
+    }
+
+    // حارس سلامة المحتوى من جهة الخادم قبل التسجيل النهائي أو أي إرسال:
+    // لا يُحفظ أو يُرسل نص رد يحمل عرضاً أو رقماً أو رابطاً غير مسجّل.
+    const { facts: replyFacts } = resolveProduct(req.body?.productId, req.body?.productName);
+    const replySafety = analyzeBusinessClaims(text, replyFacts);
+    if (!replySafety.safe) {
+      return res.status(422).json({
+        success: false,
+        error: 'نص الرد يحمل عرضاً تجارياً غير مسجّل في بيانات المعرض، وتم إيقافه قبل أي رد.',
+        contentSafety: {
+          safe: false,
+          violations: replySafety.blocked.map((v) => v.detail),
+          codes: replySafety.blocked.map((v) => v.code),
+        },
+        note: 'سجّل السعر/الشرط/الرقم الحقيقي في بيانات المعرض، أو أزل الادعاء غير المسجّل من نص الرد.',
+      });
     }
 
     const history: ReplyRecord[] = (workspace.socialReplies || []).map((r: any) => ({

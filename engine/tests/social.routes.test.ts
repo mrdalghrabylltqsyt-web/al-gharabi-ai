@@ -259,6 +259,27 @@ async function run(): Promise<void> {
     });
     check('الرد الآلي على الحالة الحساسة مرفوض', replySensitive.status === 422 && replySensitive.body.requiresHumanReview === true);
 
+    // --------------- ربط حارس سلامة المحتوى بمسار الرد (فجوة حقيقية أُغلقت) ---------------
+    // الرد المقترح يمر عبر contentSafety قبل عرضه للمراجعة/الاستخدام.
+    const contractClassifySafety = await post('/api/social/manager/comments/classify', { text: 'بكم السعر؟' });
+    check('التصنيف يعلن فحص سلامة المحتوى للرد المقترح', contractClassifySafety.body.contentSafety !== null && typeof contractClassifySafety.body.contentSafety.safe === 'boolean');
+    check('الرد المقترح السليم يُعلن آمناً ويُعرض', contractClassifySafety.body.contentSafety.safe === true && typeof contractClassifySafety.body.suggestedDeterministicReply === 'string');
+
+    // نص رد يحمل ادعاءً غير مسجّل (بدون دفعة أولى) يجب أن يُحجب قبل أي تسجيل.
+    const replyFabricated = await post('/api/social/manager/comments/reply', {
+      platform: 'facebook', externalId: 'c-reply-fab', text: 'متاح بدون دفعة أولى وبقسط ميسر', commentText: 'بكم السعر؟',
+    });
+    check('الرد الذي يحمل ادعاءً غير مسجّل مرفوض بحارس المحتوى', replyFabricated.status === 422, `status=${replyFabricated.status}`);
+    check('رفض الرد يُعلن سلامة المحتوى صراحةً', replyFabricated.body.contentSafety?.safe === false && replyFabricated.body.contentSafety.codes.includes('zero_down_payment_not_recorded'));
+    check('الرد المرفوض بحارس المحتوى لا يُسجَّل', !workspace.socialReplies.some((r: any) => r.externalId === 'c-reply-fab'));
+
+    // الرد السليم بلا ادعاء يُقبل ويُسجَّل بعلامة عدم التسليم (لا موصل إنتاجي).
+    const replyClean = await post('/api/social/manager/comments/reply', {
+      platform: 'facebook', externalId: 'c-reply-clean', text: 'أهلاً بك، شكراً لتواصلك معنا، فريق المعرض في خدمتك.', commentText: 'بكم السعر؟',
+    });
+    check('الرد السليم عبر حارس المحتوى يُقبل', replyClean.status === 200, `status=${replyClean.status}`);
+    check('الرد المقبول لا يُدّعى إرساله', replyClean.body.delivered === false && replyClean.body.simulated === true);
+
     // منصة لا تدعم التعليقات: تُرفض قبل أي محاولة.
     disconnected.set('snapchat', { platform: 'snapchat', status: 'connected', providerVerified: true });
     const replyUnsupported = await post('/api/social/manager/comments/reply', {

@@ -254,6 +254,11 @@ export const SocialManagerView: React.FC = () => {
                   {classification.suggestedDeterministicReply}
                 </div>
               )}
+              {classification.contentSafety && (
+                <div className={`pt-2 border-t border-slate-800 text-[11px] font-bold ${classification.contentSafety.safe ? 'text-emerald-400' : 'text-amber-400'}`}>
+                  {classification.contentSafety.safe ? 'الرد المقترح اجتاز حارس سلامة المحتوى.' : 'الرد المقترح محجوب: يحمل عرضاً غير مسجّل في بيانات المعرض.'}
+                </div>
+              )}
               {!classification.autoReplyAllowed && classification.classification.reviewReason && (
                 <p className="text-amber-300 pt-2 border-t border-slate-800">{classification.classification.reviewReason}</p>
               )}

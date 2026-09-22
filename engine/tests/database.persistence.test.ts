@@ -130,6 +130,36 @@ async function run(): Promise<void> {
     const durableCheck = await fetch(`${BASE}/api/auth/me`, { headers: { Authorization: `Bearer ${durableToken}` } });
     check('★ جلسة المالك تبقى صالحة بعد cold start', durableCheck.status === 200, `status=${durableCheck.status}`);
 
+    // ---- ثبات دورة التعليقات/الردود عبر Postgres (Create → Persist → Restart → Read) ----
+    const socialAuth = { 'Content-Type': 'application/json', Authorization: `Bearer ${durableToken}` };
+    const conn = await fetch(`${BASE}/api/platforms/facebook/connection-callback`, {
+      method: 'POST', headers: socialAuth, body: JSON.stringify({ providerVerified: true, accountId: 'db-test-fb', accountName: 'اختبار' }),
+    });
+    check('تسجيل اتصال موثق للاختبار', conn.status === 200);
+    const ingest = await fetch(`${BASE}/api/social/manager/comments/ingest`, {
+      method: 'POST', headers: socialAuth, body: JSON.stringify({ platform: 'facebook', externalId: 'db-persist-evt-1', text: 'بكم سعر الثلاجة؟', authorName: 'أحمد' }),
+    });
+    check('إنشاء تعليق وارد ناجح', ingest.status === 200 && (await ingest.json()).duplicate === false);
+    const reply = await fetch(`${BASE}/api/social/manager/comments/reply`, {
+      method: 'POST', headers: socialAuth, body: JSON.stringify({ platform: 'facebook', externalId: 'db-persist-evt-1', text: 'أهلاً بك، شكراً لتواصلك معنا، فريق المعرض في خدمتك.', commentText: 'بكم سعر الثلاجة؟' }),
+    });
+    check('تسجيل رد ناجح', reply.status === 200);
+    await new Promise((r) => setTimeout(r, 1500));
+
+    await stop(app.proc);
+    app = null;
+    app = startApp(PORT, emptyDirB);
+    check('الخادم الثاني (مجلد فارغ) يقلع', await waitForHealth(BASE), app.log().slice(0, 500));
+
+    const commentsAfter = await (await fetch(`${BASE}/api/social/manager/comments?platform=facebook`, { headers: socialAuth })).json();
+    check('★ التعليق يصمد بعد إعادة التشغيل من قاعدة البيانات', commentsAfter.count === 1, `count=${commentsAfter.count}`);
+    const statusAfter = await (await fetch(`${BASE}/api/social/manager/status`, { headers: socialAuth })).json();
+    check('★ الرد المسجل يصمد بعد إعادة التشغيل من قاعدة البيانات', statusAfter.activity.repliesRecorded >= 1, `replies=${statusAfter.activity.repliesRecorded}`);
+    const replayAfter = await fetch(`${BASE}/api/social/manager/comments/ingest`, {
+      method: 'POST', headers: socialAuth, body: JSON.stringify({ platform: 'facebook', externalId: 'db-persist-evt-1', text: 'بكم سعر الثلاجة؟', authorName: 'أحمد' }),
+    });
+    check('★ حماية replay تصمد بعد إعادة التشغيل من قاعدة البيانات', (await replayAfter.json()).duplicate === true);
+
     const health2 = await (await fetch(`${BASE}/api/health`)).json();
     check('الصحة بعد إعادة التشغيل ما زالت تعلن Postgres', health2.persistence?.backend === 'postgres' && health2.persistence?.durable === true);
   } finally {
