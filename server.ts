@@ -51,6 +51,7 @@ import {
 } from "./engine/storage/adapter";
 import { SESSION_TTL_MS, signSession, verifySession, type SessionPayload } from "./engine/auth/sessions";
 import { CHALLENGE_TTL_MS, issueChallengeCode, matchChallengeWindow } from "./engine/auth/challenge";
+import { isScheduleInFuture, normalizeScheduleInput, wallClockToEpoch } from "./src/utils/scheduleTime";
 
 dotenv.config();
 
@@ -1078,7 +1079,7 @@ app.post("/api/control/jobs", authenticateToken, (req, res) => {
   const job = {
     id: `job-${Date.now()}-${crypto.randomBytes(4).toString("hex")}`,
     type, status: "queued" as const, createdAt: new Date().toISOString(), createdBy: user.id,
-    payload: { ...payload, ...(idem ? { idempotencyKey: idem } : {}) }, requiresExternalConnection: true, scheduledFor: typeof payload.scheduledFor === "string" ? payload.scheduledFor : undefined,
+    payload: { ...payload, ...(idem ? { idempotencyKey: idem } : {}) }, requiresExternalConnection: true, scheduledFor: normalizeScheduleInput(payload.scheduledFor) ?? undefined,
   };
   automationJobs.unshift(job);
   persistState();
@@ -1104,7 +1105,7 @@ app.get("/api/control/jobs/:id/preflight", authenticateToken, (req, res) => {
   const platform = typeof job.payload?.platform === "string" ? job.payload.platform : "";
   const content = typeof job.payload?.content === "string" ? job.payload.content.trim() : "";
   const scheduledFor = job.scheduledFor || job.payload?.scheduledFor;
-  const scheduleReady = !scheduledFor || (Number.isFinite(Date.parse(scheduledFor)) && Date.parse(scheduledFor) <= Date.now());
+  const scheduleReady = !scheduledFor || (Number.isFinite(wallClockToEpoch(scheduledFor)) && wallClockToEpoch(scheduledFor) <= Date.now());
   const checks = { content: Boolean(content), approval: job.status === "approved" || job.status === "ready", connection: platformConnections.get(platform)?.status === "connected", capability: hasCapability(platform, "publish"), schedule: scheduleReady };
   const ready = Object.values(checks).every(Boolean);
   res.json({ success:true, ready, checks, platform, status:job.status, note:"الفحص لا ينفذ أي نشر خارجي." });
@@ -1219,7 +1220,7 @@ function runSafeJobPreflight() {
     const content = typeof job.payload?.content === "string" ? job.payload.content.trim() : "";
     const scheduledFor = job.scheduledFor || job.payload?.scheduledFor;
     if (scheduledFor) {
-      const when = Date.parse(scheduledFor);
+      const when = wallClockToEpoch(scheduledFor);
       if (!Number.isFinite(when) || when > now) continue;
     }
     if (!platform || !content || !platformConnections.has(platform) || platformConnections.get(platform)?.status !== "connected" || !hasCapability(platform, "publish")) continue;
@@ -1452,7 +1453,7 @@ app.post("/api/workspace/content", authenticateToken, (req, res) => {
   const content = cleanText(b.content, 10000); const targets = Array.isArray(b.targetPlatforms) ? [...new Set(b.targetPlatforms.filter((x: any) => SUPPORTED_PLATFORMS.some((p: any) => p.id === x)))].slice(0,10) : [];
   if (!content || !targets.length) return res.status(400).json({ success: false, error: "المحتوى ومنصة واحدة على الأقل مطلوبان." });
   if (/125\s*\/\s*125/i.test(content) || /سيارة|سيارات|\bcars?\b/i.test(content)) return res.status(422).json({ success: false, error: "المحتوى خالف قواعد مشروع الغرابي: لا عدادات قديمة ولا محتوى سيارات." });
-  const post = { id: cleanText(b.id, 100) || workspaceId("post"), title: cleanText(b.title, 160) || "مسودة جديدة", content, platformVersions: b.platformVersions && typeof b.platformVersions === "object" ? b.platformVersions : undefined, targetPlatforms: targets, mediaUrl: cleanText(b.mediaUrl, 500) || undefined, mediaType: ["image","video","carousel"].includes(b.mediaType) ? b.mediaType : undefined, status: ["draft","review","edited","approved","scheduled","published"].includes(b.status) ? b.status : "draft", scheduledFor: cleanText(b.scheduledFor, 80) || undefined, publishedAt: cleanText(b.publishedAt, 80) || undefined, createdAt: cleanText(b.createdAt, 80) || new Date().toISOString(), authorId: user.id, authorName: cleanText(b.authorName, 160) || user.name, authorRole: cleanText(b.authorRole, 40) || user.role, history: Array.isArray(b.history) ? b.history.slice(-50) : [], metrics: b.metrics && typeof b.metrics === "object" ? b.metrics : undefined, tags: Array.isArray(b.tags) ? b.tags.filter((x:any)=>typeof x === "string").slice(0,20) : [], campaignName: cleanText(b.campaignName, 160) };
+  const post = { id: cleanText(b.id, 100) || workspaceId("post"), title: cleanText(b.title, 160) || "مسودة جديدة", content, platformVersions: b.platformVersions && typeof b.platformVersions === "object" ? b.platformVersions : undefined, targetPlatforms: targets, mediaUrl: cleanText(b.mediaUrl, 500) || undefined, mediaType: ["image","video","carousel"].includes(b.mediaType) ? b.mediaType : undefined, status: ["draft","review","edited","approved","scheduled","published"].includes(b.status) ? b.status : "draft", scheduledFor: normalizeScheduleInput(b.scheduledFor) ?? undefined, publishedAt: cleanText(b.publishedAt, 80) || undefined, createdAt: cleanText(b.createdAt, 80) || new Date().toISOString(), authorId: user.id, authorName: cleanText(b.authorName, 160) || user.name, authorRole: cleanText(b.authorRole, 40) || user.role, history: Array.isArray(b.history) ? b.history.slice(-50) : [], metrics: b.metrics && typeof b.metrics === "object" ? b.metrics : undefined, tags: Array.isArray(b.tags) ? b.tags.filter((x:any)=>typeof x === "string").slice(0,20) : [], campaignName: cleanText(b.campaignName, 160) };
   workspace.posts.unshift(post); persistState(); audit(user.id, "workspace_content_created", post.id); res.status(201).json({ success: true, post });
 });
 
@@ -1466,7 +1467,7 @@ app.patch("/api/workspace/content/:id", authenticateToken, (req,res)=>{
   if(Array.isArray(b.targetPlatforms)) post.targetPlatforms=[...new Set(b.targetPlatforms.filter((x:any)=>SUPPORTED_PLATFORMS.some((p:any)=>p.id===x)))].slice(0,10);
   if (b.status === "published") return res.status(409).json({ success:false, error:"لا يمكن تسجيل المنشور كمُنشر دون إيصال تنفيذ خارجي موثّق من مزود المنصة." });
   if(["draft","review","edited","approved","scheduled"].includes(b.status)) post.status=b.status;
-  if(b.scheduledFor!==undefined) post.scheduledFor=cleanText(b.scheduledFor,80);
+  if(b.scheduledFor!==undefined){ const norm=normalizeScheduleInput(b.scheduledFor); post.scheduledFor=norm ?? undefined; }
   if(b.campaignName!==undefined) post.campaignName=cleanText(b.campaignName,160);
   persistState(); audit(user.id,"workspace_content_updated",post.id); res.json({success:true,post});
 });
@@ -1744,13 +1745,17 @@ app.get("/api/finance/overview", authenticateToken, (_req,res)=>{
 });
 
 app.get("/api/calendar/schedule", authenticateToken, (req,res) => {
-  const from=typeof req.query.from==="string"?Date.parse(req.query.from):NaN;
-  const to=typeof req.query.to==="string"?Date.parse(req.query.to):NaN;
-  const posts=workspace.posts.filter((p:any)=>p.scheduledFor && Number.isFinite(Date.parse(p.scheduledFor)))
-    .filter((p:any)=>!Number.isFinite(from)||Date.parse(p.scheduledFor)>=from)
-    .filter((p:any)=>!Number.isFinite(to)||Date.parse(p.scheduledFor)<=to)
-    .sort((a:any,b:any)=>Date.parse(a.scheduledFor)-Date.parse(b.scheduledFor));
-  res.json({success:true,entries:posts.slice(0,500),count:posts.length,source:"server-workspace"});
+  // المقارنة تجري على لحظة UTC الحقيقية المشتقة من الجدار المحلي Asia/Baghdad،
+  // فلا يختل الترتيب ولا التصفية بسبب تفسير النص بتوقيت المضيف.
+  const parseBound = (v: unknown): number => { const s = typeof v === "string" ? v : ""; const wall = wallClockToEpoch(s); return Number.isFinite(wall) ? wall : Date.parse(s); };
+  const from=parseBound(req.query.from);
+  const to=parseBound(req.query.to);
+  const scheduledEpoch = (p:any) => { const wall = wallClockToEpoch(p.scheduledFor); return Number.isFinite(wall) ? wall : Date.parse(p.scheduledFor); };
+  const posts=workspace.posts.filter((p:any)=>p.scheduledFor && Number.isFinite(scheduledEpoch(p)))
+    .filter((p:any)=>!Number.isFinite(from)||scheduledEpoch(p)>=from)
+    .filter((p:any)=>!Number.isFinite(to)||scheduledEpoch(p)<=to)
+    .sort((a:any,b:any)=>scheduledEpoch(a)-scheduledEpoch(b));
+  res.json({success:true,entries:posts.slice(0,500),count:posts.length,timeZone:"Asia/Baghdad",source:"server-workspace"});
 });
 
 // Strict content workflow. These endpoints centralize state transitions and audit them.
@@ -1780,10 +1785,12 @@ app.post("/api/workspace/content/:id/reject", requireOwner, (req,res) => {
 });
 
 app.post("/api/workspace/content/:id/schedule", requireOwner, (req,res) => {
-  const user=(req as any).user as ServerUser; const post=workspace.posts.find((x:any)=>x.id===req.params.id); const when=cleanText(req.body?.scheduledFor,80);
+  const user=(req as any).user as ServerUser; const post=workspace.posts.find((x:any)=>x.id===req.params.id); const raw=cleanText(req.body?.scheduledFor,80);
+  const when=normalizeScheduleInput(raw);
   if(!post) return res.status(404).json({success:false,error:"المنشور غير موجود."});
   if(post.status!=="approved") return res.status(409).json({success:false,error:"لا يمكن الجدولة قبل موافقة المالك."});
-  if(!when || !Number.isFinite(Date.parse(when)) || Date.parse(when)<=Date.now()) return res.status(400).json({success:false,error:"موعد الجدولة غير صالح أو في الماضي."});
+  // الجدار الزمني المحلي (Asia/Baghdad) هو المعنى المخزَّن؛ نقارنه باللحظة الحالية بتحويل صحيح.
+  if(!when || !isScheduleInFuture(when)) return res.status(400).json({success:false,error:"موعد الجدولة غير صالح أو في الماضي."});
   post.status="scheduled"; post.scheduledFor=when; post.history=Array.isArray(post.history)?post.history:[]; post.history.push({id:workspaceId("approval"),byUser:user.name,userRole:user.role,action:"schedule",timestamp:new Date().toISOString(),note:when});
   persistState(); audit(user.id,"content_scheduled",`${post.id}:${when}`); res.json({success:true,post});
 });
@@ -1901,7 +1908,7 @@ app.get("/api/system/alerts", authenticateToken, (req, res) => {
 
 app.post("/api/control/jobs/preflight-all", requireOwner, (req, res) => {
   const ids = Array.isArray(req.body?.ids) ? req.body.ids.map(String).slice(0, 100) : automationJobs.filter((j:any)=>j.status === "queued" || j.status === "approved").map((j:any)=>j.id).slice(0,100);
-  const results = ids.map(id => { const job:any=automationJobs.find((j:any)=>j.id===id); if(!job) return {id, ok:false, reason:"المهمة غير موجودة"}; const platform=job.payload?.platform; const connection=platform ? platformConnections.get(platform) : null; const approved=job.status==="approved" || job.status==="ready"; const scheduled=!job.scheduledFor || new Date(job.scheduledFor).getTime() <= Date.now(); const connected=!job.requiresExternalConnection || connection?.status==="connected"; const content=typeof job.payload?.content === "string" ? job.payload.content.trim().length>0 : true; const ok=approved && scheduled && connected && content; return {id, ok, checks:{approved,scheduled,connected,content}, reason:ok?null:"المهمة غير جاهزة للتنفيذ"}; });
+  const results = ids.map(id => { const job:any=automationJobs.find((j:any)=>j.id===id); if(!job) return {id, ok:false, reason:"المهمة غير موجودة"}; const platform=job.payload?.platform; const connection=platform ? platformConnections.get(platform) : null; const approved=job.status==="approved" || job.status==="ready"; const scheduled=!job.scheduledFor || wallClockToEpoch(job.scheduledFor) <= Date.now(); const connected=!job.requiresExternalConnection || connection?.status==="connected"; const content=typeof job.payload?.content === "string" ? job.payload.content.trim().length>0 : true; const ok=approved && scheduled && connected && content; return {id, ok, checks:{approved,scheduled,connected,content}, reason:ok?null:"المهمة غير جاهزة للتنفيذ"}; });
   audit((req as any).user.id,"jobs_preflight_all",String(results.length));
   res.json({success:true,results});
 });

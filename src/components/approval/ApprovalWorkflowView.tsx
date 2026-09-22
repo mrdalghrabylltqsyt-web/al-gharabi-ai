@@ -17,6 +17,7 @@ import {
   Share2,
 } from 'lucide-react';
 import { Post, PostStatus } from '../../types';
+import { defaultScheduleInput, toScheduleDisplay, wallClockInputValue, wallClockToEpoch } from '../../utils/scheduleTime';
 
 export const ApprovalWorkflowView: React.FC = () => {
   const {
@@ -33,11 +34,8 @@ export const ApprovalWorkflowView: React.FC = () => {
   const [editTitle, setEditTitle] = useState<string>('');
   const [editContent, setEditContent] = useState<string>('');
   const [schedulingPost, setSchedulingPost] = useState<Post | null>(null);
-  const [scheduleDateTime, setScheduleDateTime] = useState<string>(() => {
-    const d = new Date();
-    d.setHours(d.getHours() + 2, 0, 0, 0);
-    return d.toISOString().slice(0, 16);
-  });
+  // القيمة جدار محلي Asia/Baghdad كما اختاره المستخدم — لا تُحوَّل إلى UTC أبداً.
+  const [scheduleDateTime, setScheduleDateTime] = useState<string>(() => defaultScheduleInput());
   const [historyModalPost, setHistoryModalPost] = useState<Post | null>(null);
 
   const stages: Array<{ id: PostStatus; label: string; count: number; color: string }> = [
@@ -72,12 +70,23 @@ export const ApprovalWorkflowView: React.FC = () => {
 
   const handleConfirmSchedule = () => {
     if (!schedulingPost) return;
-    const formattedDate = scheduleDateTime.replace('T', ' ');
-    updatePostContent(schedulingPost.id, { scheduledFor: formattedDate });
+    // القيمة جدار محلي خالص: نرفض موعداً في الماضي بتحويل صحيح للّحظة، لا بمقارنة نصية.
+    const epoch = wallClockToEpoch(scheduleDateTime);
+    if (!Number.isFinite(epoch)) {
+      showToast('موعد الجدولة غير صالح.');
+      return;
+    }
+    if (epoch <= Date.now()) {
+      showToast('لا يمكن جدولة موعد في الماضي.');
+      return;
+    }
+    // نرسل الجدار المحلي كما هو فلا تتغيّر الساعة التي اختارها المستخدم في العراق.
+    const scheduledFor = scheduleDateTime.replace(' ', 'T');
     updatePostStatus(
       schedulingPost.id,
       'scheduled',
-      `جدولة النشر في ${formattedDate} بواسطة ${currentUser?.name || 'مستخدم النظام'}`
+      `جدولة النشر في ${scheduledFor} بواسطة ${currentUser?.name || 'مستخدم النظام'}`,
+      scheduledFor
     );
     setSchedulingPost(null);
   };
@@ -212,7 +221,7 @@ export const ApprovalWorkflowView: React.FC = () => {
                 {post.scheduledFor && (
                   <div className="p-2.5 rounded-xl bg-cyan-950/40 border border-cyan-500/30 text-xs text-cyan-300 flex items-center gap-2">
                     <Calendar className="w-4 h-4 text-cyan-400 shrink-0" />
-                    <span>مجدول للإطلاق في موعد: {post.scheduledFor}</span>
+                    <span>مجدول للإطلاق في موعد: {toScheduleDisplay(post.scheduledFor) ?? post.scheduledFor}</span>
                   </div>
                 )}
 
@@ -279,7 +288,11 @@ export const ApprovalWorkflowView: React.FC = () => {
                     {post.status === 'approved' && (
                       <>
                         <button
-                          onClick={() => setSchedulingPost(post)}
+                          onClick={() => {
+                            // نعرض الموعد المحفوظ بنفس الساعة التي اختارها المستخدم، أو الافتراضي.
+                            setScheduleDateTime(wallClockInputValue(post.scheduledFor) || defaultScheduleInput());
+                            setSchedulingPost(post);
+                          }}
                           className="px-3.5 py-1.5 rounded-xl bg-cyan-600 hover:bg-cyan-500 text-white text-xs font-bold flex items-center gap-1.5 cursor-pointer"
                         >
                           <Calendar className="w-3.5 h-3.5" />

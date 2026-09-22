@@ -20,6 +20,7 @@ import {
 } from '../data/initialData';
 import { apiService, getApiAuthToken, setApiAuthToken } from '../services/api';
 import type { SessionOutcome } from '../services/sessionPolicy';
+import { defaultScheduleInput } from '../utils/scheduleTime';
 
 interface AppContextType {
   // Navigation
@@ -50,7 +51,7 @@ interface AppContextType {
   // Posts & Approval Workflow
   posts: Post[];
   createPost: (post: Omit<Post, 'id' | 'createdAt' | 'history'>) => Post;
-  updatePostStatus: (postId: string, newStatus: PostStatus, note?: string) => void;
+  updatePostStatus: (postId: string, newStatus: PostStatus, note?: string, scheduledFor?: string) => void;
   updatePostContent: (postId: string, updatedFields: Partial<Post>) => void;
   deletePost: (postId: string) => void;
   /** Re-reads the server workspace; used after server-side batch creation (e.g. campaigns). */
@@ -460,12 +461,14 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     return newPost;
   };
 
-  const updatePostStatus = (postId: string, newStatus: PostStatus, note?: string) => {
+  const updatePostStatus = (postId: string, newStatus: PostStatus, note?: string, scheduledFor?: string) => {
     if (newStatus === 'published') {
       showToast('لا يمكن تسجيل المنشور كمُنشر قبل تنفيذ نشر خارجي موثّق من المنصة. تم الحفاظ على حالته الحالية.');
       return;
     }
     const timestamp = new Date().toISOString().replace('T', ' ').slice(0, 16);
+    // الوقت المختار من المستخدم (جدار Asia/Baghdad) يُمرَّر صراحةً كي لا يُستبدل بالافتراضي.
+    const scheduleValue = newStatus === 'scheduled' ? (scheduledFor || undefined) : undefined;
     setPosts((prev) =>
       prev.map((p) => {
         if (p.id === postId) {
@@ -494,8 +497,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             history: newHistory,
           };
 
-          if (newStatus === 'scheduled' && !updated.scheduledFor) {
-            updated.scheduledFor = timestamp;
+          if (newStatus === 'scheduled') {
+            // نُبقي الموعد المحفوظ، وإلا نضع الموعد الممرَّر أو الافتراضي (جدار محلي).
+            updated.scheduledFor = scheduleValue ?? p.scheduledFor ?? defaultScheduleInput();
           }
 
           return updated;
@@ -506,7 +510,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
     const changedPost = posts.find((p) => p.id === postId);
     if (changedPost) {
-      const updatedPost = { ...changedPost, status: newStatus, ...(newStatus === 'scheduled' && !changedPost.scheduledFor ? { scheduledFor: new Date().toISOString().replace('T',' ').slice(0,16) } : {}) };
+      const updatedPost = { ...changedPost, status: newStatus, ...(newStatus === 'scheduled' ? { scheduledFor: scheduleValue ?? changedPost.scheduledFor ?? defaultScheduleInput() } : {}) };
       void apiService.updateWorkspaceContent(postId, updatedPost as any).catch((err) => showToast(err.message || 'تعذر حفظ حالة المحتوى'));
     }
 

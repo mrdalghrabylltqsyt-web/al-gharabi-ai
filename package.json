@@ -11,7 +11,7 @@
     "clean": "rm -rf dist server.js",
     "lint": "tsc --noEmit",
     "final-audit": "node final-audit.mjs",
-    "test": "npm run test:storage && npm run test:engine && npm run test:auth && npm run test:models && npm run test:content-safety && npm run test:content-integration && npm run test:social && npm run test:network && npm run test:email && npm run test:preview && npm run test:session && npm run test:policy && npm run test:gemini-verify && npm run test:netlify && npm run test:coldstart && npm run test:control && npm run test:db && npm run test:runtime",
+    "test": "npm run test:storage && npm run test:engine && npm run test:auth && npm run test:models && npm run test:content-safety && npm run test:content-integration && npm run test:social && npm run test:network && npm run test:email && npm run test:preview && npm run test:session && npm run test:policy && npm run test:gemini-verify && npm run test:netlify && npm run test:coldstart && npm run test:control && npm run test:db && npm run test:runtime && npm run test:schedule",
     "test:engine": "tsx engine/tests/engine.test.ts",
     "test:models": "tsx engine/tests/model.policy.test.ts",
     "test:content-safety": "tsx engine/tests/content.safety.test.ts",
@@ -29,7 +29,8 @@
     "test:coldstart": "tsx engine/tests/netlify.coldstart.test.ts",
     "test:control": "tsx engine/tests/persistence.control.test.ts",
     "test:storage": "tsx engine/tests/storage.adapter.test.ts",
-    "test:db": "tsx engine/tests/database.persistence.test.ts"
+    "test:db": "tsx engine/tests/database.persistence.test.ts",
+    "test:schedule": "tsx engine/tests/schedule.timezone.test.ts"
   },
   "dependencies": {
     "@google/genai": "^2.4.0",
