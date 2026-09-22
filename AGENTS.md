@@ -235,6 +235,24 @@ write → restart بمجلد فارغ → الإبطال يسري → جلسة �
 `database.persistence.test.ts` (Postgres حقيقي عبر `tools/local-verification`)،
 وفحوص ربط حارس المحتوى في `social.routes.test.ts`.
 
+## فجوتا ثبات إضافيتان (صُحّحت 2026-09-22) — اتصالات المنصات وسجلات المخزون
+1. **اتصالات المنصات لم تكن تُسترجَع بخلفية الملف.** `platformConnections` كانت
+   تُحفظ في اللقطة عبر `buildPersistedState`، لكن `loadPersistentState` لم يُرجعها،
+   و`loadPlatformConnections` كان جسمها فارغاً، والاسترجاع الفعلي موجود فقط في
+   `applyStateSnapshot` (مسار Postgres). النتيجة: على التخزين الملفي (التطوير أو
+   `STATE_DIR` دائم) كان restart يُظهر منصة متصلة موثقة كـ `disconnected` رغم بقاء
+   توكنها المشفّر، فيسقط شرط `connected && providerVerified` بلا سبب فعلي. أُصلح
+   بإرجاع `platformConnections` من اللقطة واسترجاعها في `loadPlatformConnections`.
+2. **سجلات المخزون/الإشعارات/أحداث المزود كانت تُحمَّل ولا تُحفظ.** `inventoryMovements`
+   و`notifications` و`webhookEvents` و`providerEvents` موجودة في قائمة `loadPersistentState`
+   لكنها غائبة عن `buildPersistedState`، فتُفقد عند كل restart/نشر. أُضيفت بحدود أعلى
+   مطابقة لتحميلها.
+
+الدرس العام: أي مفتاح في `loadPersistentState` يجب أن يقابله مفتاح في `buildPersistedState`
+والعكس — وكلاهما يجب أن يُسترجَع فعلاً على الحالتين (ملف وPostgres). فحصان في
+`final-audit.mjs`: `platform-connections-restored` و`inventory-notifications-persisted`،
+وفحص ثبات الاتصال في `engine/tests/social.persistence.test.ts`.
+
 ## نمط الكود
 - تعليقات عربية موجزة تشرح «لماذا» فقط، دون شرح ما يفعله الكود.
 - الأنواع في `src/types/index.ts` يجب أن تطابق استجابات الخادم فعلياً؛ توجد فحوص عقد في `engine/tests/social.routes.test.ts` تكشف أي انحراف.

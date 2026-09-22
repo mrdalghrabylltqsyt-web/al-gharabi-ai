@@ -119,6 +119,12 @@ async function run(): Promise<void> {
     const comments = await (await fetch(`${BASE}/api/social/manager/comments?platform=facebook`, { headers: auth })).json();
     check('★ التعليق يصمد بعد إعادة التشغيل', comments.count === 1, `count=${comments.count}`);
 
+    // اتصال المنصة الموثق يجب أن يصمد أيضاً: كان يُحفظ في اللقطة لكن لا يُسترجَع
+    // عند الإقلاع بخلفية الملف، فتظهر منصة متصلة كـ disconnected بعد كل restart.
+    const readiness = await (await fetch(`${BASE}/api/platforms/production-readiness`, { headers: auth })).json();
+    const fb = (readiness.platforms || []).find((p: any) => p.platform === 'facebook');
+    check('★ اتصال المنصة الموثق يصمد بعد إعادة التشغيل', fb?.connected === true && fb?.providerVerified === true, JSON.stringify(fb));
+
     const status = await (await fetch(`${BASE}/api/social/manager/status`, { headers: auth })).json();
     check('★ عدد الردود المسجلة يصمد بعد إعادة التشغيل', status.activity.repliesRecorded >= 1, `replies=${status.activity.repliesRecorded}`);
 
