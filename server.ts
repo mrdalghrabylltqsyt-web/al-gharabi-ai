@@ -2369,6 +2369,11 @@ app.get("/api/readiness", (_req, res) => {
  * والغرض إثبات: المفتاح + SDK + الموديل + الطلب + الاستجابة.
  * لا يُعاد الطلب إن نجح، ولا يُطبع المفتاح ولا الترويسات.
  *
+ * البرهان مقصور على موديل الإنتاج (`PRODUCTION_MODEL`) حصراً: هذا المسار
+ * غايته إثبات جاهزية الموديل الإنتاجي المحدد، لا اختبار failover. لذلك لا
+ * ينتقل إلى أي موديل بديل، وفشل الموديل الأساسي يُعرض فشلاً صريحاً ولا
+ * يُقنَّع بنجاح موديل آخر. (منطق failover العام داخل المحرك لا يُمس.)
+ *
  * المسار كله للمالك: POST هو الفعل، وأي طريقة أخرى تُرفض بـ405 صريحة بدل
  * أن تسقط إلى واجهة React وتُعيد HTML بحالة 200.
  */
@@ -2379,6 +2384,10 @@ app.all("/api/ai/verify-provider", (req, res, next) => {
   next();
 });
 app.post("/api/ai/verify-provider", requireOwner, async (_req, res) => {
+  // الموديل الإنتاجي هو الوحيد الذي يُختبر — لا مرشحين بدلاء.
+  const model = PRODUCTION_MODEL;
+  const envPolicy = describeModelPolicy(process.env.GEMINI_MODEL);
+
   if (!process.env.GEMINI_API_KEY) {
     aiLiveVerification.state = 'skipped_no_key';
     aiLiveVerification.detail = 'GEMINI_API_KEY غير مضبوط في بيئة الخادم.';
@@ -2388,76 +2397,83 @@ app.post("/api/ai/verify-provider", requireOwner, async (_req, res) => {
       success: false,
       verified: false,
       state: aiLiveVerification.state,
+      model,
       detail: aiLiveVerification.detail,
       note: 'NOT VERIFIED — GEMINI_API_KEY NOT AVAILABLE IN RUNTIME',
     });
   }
 
-  const candidates = resolveModelCandidates(process.env.GEMINI_MODEL);
-  const envPolicy = describeModelPolicy(process.env.GEMINI_MODEL);
   const provider = createGeminiProvider(process.env.GEMINI_API_KEY, AI_TIMEOUT_MS);
   if (!provider) {
     aiLiveVerification.state = 'failed';
     aiLiveVerification.detail = 'تعذر تهيئة موصل المزود.';
     aiLiveVerification.model = null;
     aiLiveVerification.at = new Date().toISOString();
-    return res.status(200).json({ success: false, verified: false, state: 'failed', detail: aiLiveVerification.detail });
+    return res.status(200).json({ success: false, verified: false, state: 'failed', model, detail: aiLiveVerification.detail });
   }
 
-  // طلب واحد لكل مرشح بترتيب الأفضلية، بلا retry — أول نجاح يوقف المحاولة.
-  for (const model of candidates) {
-    const started = Date.now();
+  const started = Date.now();
+  // محاولة واحدة فقط على موديل الإنتاج، بلا retry وبلا بديل.
+  try {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), AI_TIMEOUT_MS);
+    let text = '';
     try {
-      const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), AI_TIMEOUT_MS);
-      let text = '';
-      try {
-        text = await provider.generate({ model, prompt: 'اكتب كلمة: جاهز', signal: controller.signal });
-      } finally {
-        clearTimeout(timer);
-      }
-      const trimmed = (text || '').trim();
-      if (!trimmed) {
-        aiLiveVerification.state = 'failed';
-        aiLiveVerification.detail = `الموديل ${model} أعاد استجابة فارغة.`;
-        aiLiveVerification.model = null;
-        aiLiveVerification.at = new Date().toISOString();
-        continue;
-      }
-      aiLiveVerification.state = 'ok';
-      aiLiveVerification.detail = 'تم إثبات الاتصال والموديل بطلب حقيقي واحد.';
-      aiLiveVerification.model = model;
-      aiLiveVerification.at = new Date().toISOString();
-      audit('system', 'ai_verify_provider', `model=${model}`);
-      return res.json({
-        success: true,
-        verified: true,
-        state: 'ok',
-        model,
-        latencyMs: Date.now() - started,
-        responsePreview: trimmed.slice(0, 80),
-        modelPolicy: envPolicy,
-        candidatesTried: candidates.indexOf(model) + 1,
-        note: 'تم الإثبات بطلب حقيقي واحد. لم تُستهلك حصة إضافية.',
-      });
-    } catch (err: any) {
-      const info = classifyAiError(err, model);
-      aiEvents.push({ at: new Date().toISOString(), type: 'verify_failed', detail: diagnosticLabel(info) });
+      text = await provider.generate({ model, prompt: 'اكتب كلمة: جاهز', signal: controller.signal });
+    } finally {
+      clearTimeout(timer);
+    }
+    const trimmed = (text || '').trim();
+    if (!trimmed) {
       aiLiveVerification.state = 'failed';
-      aiLiveVerification.detail = `فشل التحقق: ${info.kind}${info.status ? `/${info.status}` : ''}.`;
+      aiLiveVerification.detail = `الموديل الإنتاجي ${model} أعاد استجابة فارغة.`;
       aiLiveVerification.model = null;
       aiLiveVerification.at = new Date().toISOString();
+      return res.status(200).json({
+        success: false,
+        verified: false,
+        state: 'failed',
+        model,
+        detail: aiLiveVerification.detail,
+        modelPolicy: envPolicy,
+        hint: 'راجع صلاحية GEMINI_API_KEY في بيئة الخادم (لا تُرسل المفتاح في المحادثة).',
+      });
     }
+    aiLiveVerification.state = 'ok';
+    aiLiveVerification.detail = `تم إثبات الاتصال بالموديل الإنتاجي ${model} بطلب حقيقي واحد.`;
+    aiLiveVerification.model = model;
+    aiLiveVerification.at = new Date().toISOString();
+    audit('system', 'ai_verify_provider', `model=${model}`);
+    return res.json({
+      success: true,
+      verified: true,
+      state: 'ok',
+      model,
+      latencyMs: Date.now() - started,
+      responsePreview: trimmed.slice(0, 80),
+      modelPolicy: envPolicy,
+      candidatesTried: 1,
+      note: 'تم إثبات الموديل الإنتاجي بطلب حقيقي واحد. لم تُستهلك حصة إضافية ولا يوجد failover.',
+    });
+  } catch (err: any) {
+    // فشل الموديل الأساسي (503 أو أي خطأ) = فشل صريح، بلا رجوع لموديل آخر.
+    const info = classifyAiError(err, model);
+    aiEvents.push({ at: new Date().toISOString(), type: 'verify_failed', detail: diagnosticLabel(info) });
+    aiLiveVerification.state = 'failed';
+    aiLiveVerification.detail = `فشل التحقق من الموديل الإنتاجي ${model}: ${info.kind}${info.status ? `/${info.status}` : ''}.`;
+    aiLiveVerification.model = null;
+    aiLiveVerification.at = new Date().toISOString();
+    return res.status(200).json({
+      success: false,
+      verified: false,
+      state: 'failed',
+      model,
+      detail: aiLiveVerification.detail,
+      safeMessage: info.safeMessage,
+      modelPolicy: envPolicy,
+      hint: 'راجع صلاحية GEMINI_API_KEY في بيئة الخادم (لا تُرسل المفتاح في المحادثة).',
+    });
   }
-
-  return res.json({
-    success: false,
-    verified: false,
-    state: 'failed',
-    detail: aiLiveVerification.detail,
-    modelPolicy: envPolicy,
-    hint: 'راجع صلاحية GEMINI_API_KEY في بيئة الخادم (لا تُرسل المفتاح في المحادثة).',
-  });
 });
 
 // Health endpoint

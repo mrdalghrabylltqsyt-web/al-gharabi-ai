@@ -1,5 +1,6 @@
 import { AppUser, UserRole, MarketingBriefRequest, MarketingBriefResult, MarketingCampaignRequest, MarketingCampaignSummary, MarketingCampaignDetail, MarketingCampaignCreationResult, MarketingCampaignStatus, MarketingDraftAction, MarketingDraftBulkResult, MarketingDraftLinkResult, SocialManagerStatus, SocialCapabilitiesResult, SocialCommentClassificationResult, SocialCommentsResult, SocialAnalyticsResult, MarketingDecisionResult, SocialMemoryResult } from '../types';
 import { classifyPreviewExchange, classifySessionCheck, type SessionOutcome } from './sessionPolicy';
+import { createTimeoutSignal, GEMINI_VERIFY_TIMEOUT_MS, interpretGeminiVerification, type GeminiVerificationOutcome } from './geminiVerification';
 
 export interface GenerateContentRequest {
   platform: string;
@@ -289,6 +290,34 @@ export const apiService = {
     if (!res.ok) throw new Error((await res.json().catch(()=>({}))).error || 'تعذر تحميل قائمة الجاهزية');
     return res.json();
   },
+
+  /**
+   * فحص اتصال Gemini الحي — للمالك فقط، ويُستدعى يدوياً بضغطة زر واحدة.
+   *
+   * لا retry: طلب واحد بإشارة مهلة صريحة، ويُصنّف النتيجة إلى عرض آمن.
+   * لا يُشغَّل تلقائياً عند تحميل الصفحة، ولا يعرض أي مفتاح. مسار الخادم
+   * owner-protected ويبقى هو طبقة الأمان الإلزامية.
+   */
+  async verifyGeminiProvider(): Promise<GeminiVerificationOutcome> {
+    const { signal, clear } = createTimeoutSignal(GEMINI_VERIFY_TIMEOUT_MS);
+    try {
+      const res = await fetch('/api/ai/verify-provider', { method: 'POST', headers: getAuthHeaders(), signal });
+      const data = await res.json().catch(() => null);
+      if (!res.ok) {
+        if (res.status === 403) return { ok: false, model: null, latencyMs: null, message: 'هذه العملية مقتصرة على مالك النظام.' };
+        if (res.status === 401) return { ok: false, model: null, latencyMs: null, message: 'انتهت الجلسة، أعد تسجيل الدخول ثم حاول مجدداً.' };
+        return { ok: false, model: null, latencyMs: null, message: 'تعذر تنفيذ فحص Gemini من الخادم.' };
+      }
+      return interpretGeminiVerification(data);
+    } catch (err: any) {
+      // الإلغاء = تجاوز المهلة، أو انقطاع شبكة. لا إعادة إرسال تلقائية.
+      if (err?.name === 'AbortError') return { ok: false, model: null, latencyMs: null, message: 'تجاوز فحص الاتصال المهلة المحددة. لم يتم التحقق.' };
+      return { ok: false, model: null, latencyMs: null, message: 'تعذر الوصول إلى الخادم لإتمام فحص Gemini.' };
+    } finally {
+      clear();
+    }
+  },
+
   async checkHealth() {
     try {
       const res = await fetch('/api/health');

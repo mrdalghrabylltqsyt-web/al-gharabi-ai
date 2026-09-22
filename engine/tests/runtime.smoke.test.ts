@@ -145,6 +145,7 @@ async function run(): Promise<void> {
     const verify = await fetch(`${BASE}/api/ai/verify-provider`, { method: 'POST' });
     check('مسار التحقق الحي محمي بالمصادقة', verify.status === 401, `status=${verify.status}`);
     check('مسار التحقق لا يعيد 503', verify.status !== 503);
+    check('مسارات التحقق لا تسرّب أي مفتاح', !/AIza|api[_-]?key=/i.test(await verify.text()));
 
     console.log('\n' + '='.repeat(60));
     if (failures.length) {

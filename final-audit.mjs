@@ -55,6 +55,21 @@ add('no-empty-bun-lock', !bunLockEmpty, 'لا ملف bun.lock فارغ يعطّ�
 add('netlify-node-pinned', read('netlify.toml').includes('NODE_VERSION'), 'نسخة Node مثبّتة في netlify.toml');
 add('health-preview-flag-boolean-only', server.includes('previewLoginEnabled: Boolean(') && !/previewLoginEnabled:\s*(process\.env\.GHARABI_PREVIEW_TOKEN|["'`])/.test(server), 'فحص الصحة يكشف منطقي تفعيل المعاينة فقط بلا قيمة');
 
+// فحص اتصال Gemini: مسار واحد للمالك، يثبت موديل الإنتاج حصراً بلا failover،
+// بلا retry، وقابل للاختبار الحي اليدوي فقط. النجاح لا يُستنتج من HTTP 200 وحده.
+const verifyRouteStart = server.indexOf('app.post("/api/ai/verify-provider"');
+const verifyRouteEnd = server.indexOf('// Health endpoint', verifyRouteStart);
+const verifyRoute = verifyRouteStart >= 0 && verifyRouteEnd > verifyRouteStart ? server.slice(verifyRouteStart, verifyRouteEnd) : '';
+add('gemini-verify-owner-only', server.includes('app.post("/api/ai/verify-provider", requireOwner'), 'فحص المزود الحي محصور بالمالك');
+add('gemini-verify-production-model-only', verifyRoute.includes('const model = PRODUCTION_MODEL') && !verifyRoute.includes('resolveModelCandidates') && !verifyRoute.includes('for (const model of candidates)'), 'التحقق يثبت موديل الإنتاج حصراً بلا failover صامت');
+const verifyRouteCode = verifyRoute.split('\n').filter((l) => !l.trim().startsWith('//') && !l.trim().startsWith('*') && !l.trim().startsWith('/*')).join('\n');
+add('gemini-verify-no-retry', verifyRouteCode.length > 0 && !/retry/i.test(verifyRouteCode) && !verifyRouteCode.includes('aiEngine'), 'لا retry ولا cache في مسار التحقق الحي');
+const geminiVerifyTest = read('engine/tests/gemini.verification.test.ts');
+add('gemini-verify-test-exists', fs.existsSync(path.join(root, 'engine/tests/gemini.verification.test.ts')), 'اختبار فحص اتصال Gemini موجود');
+add('gemini-verify-ui-owner-only', read('src/components/system/SystemControlView.tsx').includes('اختبار اتصال Gemini') && read('src/components/system/SystemControlView.tsx').includes("currentUser?.role!=='owner'"), 'زر اختبار اتصال Gemini محصور بالمالك في الواجهة');
+add('gemini-verify-frontend-timeout', read('src/services/geminiVerification.ts').includes('GEMINI_VERIFY_TIMEOUT_MS') && /AbortController/.test(read('src/services/geminiVerification.ts')), 'مهلة صريحة لفحص Gemini من الواجهة');
+add('gemini-verify-test-no-secret', !/AIzaSy[A-Za-z0-9_\-]{5,}/.test(geminiVerifyTest), 'اختبار فحص Gemini لا يحمل أي مفتاح حقيقي');
+
 // ثبات الحالة: كل الكتابات تمر عبر محوّل تخزين واحد، وPostgres اختياري عبر
 // DATABASE_URL. لا يجب أن يبقى أي كتابة مباشرة لملف الحالة خارج المحوّل.
 const adapter = read('engine/storage/adapter.ts');
