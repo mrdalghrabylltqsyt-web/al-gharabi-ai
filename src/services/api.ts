@@ -1,4 +1,4 @@
-import { AppUser, UserRole, MarketingBriefRequest, MarketingBriefResult, MarketingCampaignRequest, MarketingCampaignSummary, MarketingCampaignDetail, MarketingCampaignCreationResult, MarketingCampaignStatus, MarketingDraftAction, MarketingDraftBulkResult, MarketingDraftLinkResult, SocialManagerStatus, SocialCapabilitiesResult, SocialCommentClassificationResult, SocialCommentsResult, SocialAnalyticsResult, MarketingDecisionResult, SocialMemoryResult } from '../types';
+import { AppUser, UserRole, MarketingBriefRequest, MarketingBriefResult, MarketingCampaignRequest, MarketingCampaignSummary, MarketingCampaignDetail, MarketingCampaignCreationResult, MarketingCampaignStatus, MarketingDraftAction, MarketingDraftBulkResult, MarketingDraftLinkResult, SocialManagerStatus, SocialCapabilitiesResult, SocialCommentClassificationResult, SocialCommentsResult, SocialRepliesResult, SocialApprovalsResult, SocialAnalyticsResult, MarketingDecisionResult, SocialMemoryResult } from '../types';
 import { classifyPreviewExchange, classifySessionCheck, type SessionOutcome } from './sessionPolicy';
 import { createTimeoutSignal, GEMINI_VERIFY_TIMEOUT_MS, interpretGeminiVerification, type GeminiVerificationOutcome } from './geminiVerification';
 
@@ -386,14 +386,20 @@ ${payload.topic || payload.productName || 'أنظمة وحلول التقسيط 
       return await res.json();
     } catch (err) {
       console.warn('Message classification error:', err);
+      // لا نُصدر رداً مقترحاً من طرف المتصفح: حارس سلامة المحتوى على الخادم هو
+      // المصدر الوحيد لاعتماد أي suggestedReply. عند تعذر الوصول للخادم نُعلن
+      // الحاجة لمراجعة بشرية بدل عرض نص غير مفحوص.
       return {
         success: true,
         category: 'استفسار عام عن التقسيط',
         urgency: 'medium',
-        needsHumanHandoff: false,
-        suggestedReply: `مرحباً بك يا ${payload.customerName || 'عزيزنا العميل'} في معرض الغرابي للتقسيط!
-يسعدنا تزويدك بتفاصيل وحلول التقسيط المتاحة ومساعدتك في اختيار الخطة الأنسب لك.
-تفضل بتزويدنا بتفاصيل طلبك لمتابعتها فوراً.`,
+        needsHumanHandoff: true,
+        suggestedReply: null,
+        requiresHumanReview: true,
+        generatedBy: 'unavailable',
+        aiSource: 'fallback',
+        fallbackReason: 'network_error',
+        contentSafety: { safe: false, blocked: true, codes: [], violations: ['تعذر فحص سلامة الرد على الخادم؛ يلزم مراجعة بشرية.'] },
       };
     }
   },
@@ -970,5 +976,70 @@ ${payload.topic || payload.productName || 'أنظمة وحلول التقسيط 
     const data = await res.json();
     if (!res.ok || !data.success) throw new Error(data.error || 'تعذر تحميل الذاكرة التشغيلية');
     return data as SocialMemoryResult;
+  },
+
+  // ---------------------------------------------------------------
+  // وحدة التعليقات والردود — كل الردود تُسجَّل داخلياً فقط (لا إرسال خارجي).
+  // ---------------------------------------------------------------
+
+  /** تسجيل تعليق وارد. إعادة نفس الحدث (replay) لا تُنشئ سجلاً مكرراً. */
+  async ingestSocialComment(payload: { platform: string; externalId: string; text: string; authorName?: string; postExternalId?: string }): Promise<any> {
+    const res = await fetch('/api/social/manager/comments/ingest', {
+      method: 'POST', headers: getAuthHeaders(), body: JSON.stringify(payload),
+    });
+    const data = await res.json();
+    if (!res.ok || !data.success) throw new Error(data.error || 'تعذر تسجيل التعليق');
+    return data;
+  },
+
+  /** تسجيل رد داخلي على تعليق. يمر عبر حارس سلامة المحتوى من جهة الخادم. */
+  async replyToSocialComment(payload: { platform: string; externalId: string; text: string; commentText?: string; authorName?: string; productId?: string; productName?: string }): Promise<any> {
+    const res = await fetch('/api/social/manager/comments/reply', {
+      method: 'POST', headers: getAuthHeaders(), body: JSON.stringify(payload),
+    });
+    const data = await res.json();
+    if (!res.ok || !data.success) {
+      const error: any = new Error(data.error || 'تعذر تسجيل الرد');
+      error.status = res.status;
+      error.body = data;
+      throw error;
+    }
+    return data;
+  },
+
+  /** الردود المسجّلة داخلياً للتعليقات. */
+  async getSocialReplies(platform?: string): Promise<SocialRepliesResult> {
+    const qs = platform ? `?platform=${encodeURIComponent(platform)}` : '';
+    const res = await fetch(`/api/social/manager/replies${qs}`, { headers: getAuthHeaders() });
+    const data = await res.json();
+    if (!res.ok || !data.success) throw new Error(data.error || 'تعذر تحميل الردود');
+    return data as SocialRepliesResult;
+  },
+
+  /** سجل قرارات المراجعة البشرية (اعتماد/رفض داخلي فقط). */
+  async getSocialApprovals(params?: { platform?: string; status?: string }): Promise<SocialApprovalsResult> {
+    const search = new URLSearchParams();
+    if (params?.platform) search.set('platform', params.platform);
+    if (params?.status) search.set('status', params.status);
+    const qs = search.toString() ? `?${search.toString()}` : '';
+    const res = await fetch(`/api/social/manager/approvals${qs}`, { headers: getAuthHeaders() });
+    const data = await res.json();
+    if (!res.ok || !data.success) throw new Error(data.error || 'تعذر تحميل قرارات المراجعة');
+    return data as SocialApprovalsResult;
+  },
+
+  /** تسجيل قرار مراجعة (pending/approved/rejected) — للمالك فقط. */
+  async submitSocialApproval(payload: { platform: string; externalId: string; status: 'pending' | 'approved' | 'rejected'; commentText?: string; replyText?: string; productId?: string; productName?: string }): Promise<any> {
+    const res = await fetch('/api/social/manager/approvals', {
+      method: 'POST', headers: getAuthHeaders(), body: JSON.stringify(payload),
+    });
+    const data = await res.json();
+    if (!res.ok || !data.success) {
+      const error: any = new Error(data.error || 'تعذر تسجيل قرار المراجعة');
+      error.status = res.status;
+      error.body = data;
+      throw error;
+    }
+    return data;
   }
 };

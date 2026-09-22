@@ -19,6 +19,9 @@ import {
 
 interface AdapterSpec {
   platform: PlatformId;
+  /** الاسم التقني كما يظهر في مسارات API (مثل Google Business Profile). */
+  name: string;
+  /** الاسم المعروض في الواجهة العربية/الإنجليزية. */
   displayName: string;
   capabilities: PlatformCapability[];
 }
@@ -38,54 +41,64 @@ interface AdapterSpec {
 const ADAPTER_SPECS: AdapterSpec[] = [
   {
     platform: 'tiktok',
+    name: 'TikTok',
     displayName: 'TikTok',
     capabilities: ['publish', 'analytics', 'comments', 'comment_reply', 'scheduling'],
   },
   {
     platform: 'youtube',
+    name: 'YouTube',
     displayName: 'YouTube',
     capabilities: ['publish', 'analytics', 'comments', 'comment_reply', 'scheduling', 'audience_insights'],
   },
   {
     platform: 'facebook',
+    name: 'Facebook',
     displayName: 'Facebook',
     capabilities: ['publish', 'messages', 'analytics', 'comments', 'comment_reply', 'scheduling', 'audience_insights'],
   },
   {
     platform: 'instagram',
+    name: 'Instagram',
     displayName: 'Instagram',
     capabilities: ['publish', 'messages', 'analytics', 'comments', 'comment_reply', 'scheduling', 'audience_insights'],
   },
   {
     platform: 'whatsapp',
+    name: 'WhatsApp Business',
     displayName: 'WhatsApp Business',
     // واتساب للأعمال لا يوفر نشر منشورات عامة ولا تعليقات؛ الرسائل فقط.
     capabilities: ['messages'],
   },
   {
     platform: 'telegram',
+    name: 'Telegram',
     displayName: 'Telegram',
     // البوت ينشر في القناة ويرسل رسائل؛ لا واجهة لقراءة التعليقات العامة.
     capabilities: ['publish', 'messages', 'scheduling'],
   },
   {
     platform: 'x',
+    name: 'X',
     displayName: 'X',
     capabilities: ['publish', 'analytics', 'comments', 'comment_reply', 'scheduling'],
   },
   {
     platform: 'snapchat',
+    name: 'Snapchat',
     displayName: 'Snapchat',
     // لا تتوفر قراءة تعليقات عامة عبر الواجهة الرسمية.
     capabilities: ['publish', 'analytics', 'scheduling'],
   },
   {
     platform: 'threads',
+    name: 'Threads',
     displayName: 'Threads',
     capabilities: ['publish', 'analytics', 'comments', 'comment_reply', 'scheduling'],
   },
   {
     platform: 'google_business',
+    name: 'Google Business Profile',
     displayName: 'Google Business Profile',
     // التحديثات المحلية متاحة؛ التعليقات غير متاحة عبر الواجهة الرسمية.
     capabilities: ['publish', 'analytics', 'scheduling'],
@@ -118,10 +131,30 @@ export function buildAdapters(
   });
 }
 
-/** أسماء المنصات المعروضة دون أي حالة اتصال (للواجهات المرجعية). */
-export const PLATFORM_SPECS: ReadonlyArray<{ platform: PlatformId; displayName: string; capabilities: readonly PlatformCapability[] }> =
-  ADAPTER_SPECS.map((s) => ({ platform: s.platform, displayName: s.displayName, capabilities: s.capabilities }));
+/**
+ * تعريف المنصات المرجعي بلا أي حالة اتصال (للواجهات ومسارات القدرات).
+ * هذا هو المصدر الوحيد الذي تقرأ منه بقية الوحدات قائمة المنصات وقدراتها،
+ * فلا تنحرف قائمة في server.ts عن سجل الموصلات.
+ */
+export const PLATFORM_SPECS: ReadonlyArray<{
+  platform: PlatformId;
+  name: string;
+  displayName: string;
+  capabilities: readonly PlatformCapability[];
+}> = ADAPTER_SPECS.map((s) => ({
+  platform: s.platform,
+  name: s.name,
+  displayName: s.displayName,
+  capabilities: s.capabilities,
+}));
 
 export function isSupportedPlatform(id: string): id is PlatformId {
   return ADAPTER_SPECS.some((s) => s.platform === id);
+}
+
+/** هل تدعم المنصة هذه القدرة كما تعرّفها واجهتها الرسمية؟ */
+export function platformSupports(platform: string, capability: string): boolean {
+  return ADAPTER_SPECS.some(
+    (s) => s.platform === platform && (s.capabilities as readonly string[]).includes(capability),
+  );
 }

@@ -583,6 +583,63 @@ export interface SocialCommentsResult {
   note: string;
 }
 
+/**
+ * سجل الرد المسجّل داخلياً. لا يوجد موصل إرسال إنتاجي، لذا يبقى:
+ * simulated:true و delivered:false دائماً. لا يُدّعى أي إرسال خارجي.
+ */
+export interface SocialReplyRecord {
+  id: string;
+  platform: string;
+  externalId: string;
+  text: string;
+  replyFingerprint: string;
+  classification: SocialCommentClassification;
+  repliedAt: string;
+  createdBy: string;
+  simulated: boolean;
+  delivered: boolean;
+  note: string;
+}
+
+/** حالة قرار الرد: معلّق للمراجعة أو معتمد/مرفوض داخلياً. */
+export type SocialApprovalStatus = 'pending' | 'approved' | 'rejected';
+
+/**
+ * قرار مراجعة بشرية داخلي. الاعتماد لا يعني أي نشر خارجي — هو تسجيل قرار
+ * داخلي فقط (الرد أصلاً غير مُسلَّم إلى أي منصة).
+ */
+export interface SocialApprovalRecord {
+  id: string;
+  platform: string;
+  externalId: string;
+  status: SocialApprovalStatus;
+  commentText: string;
+  replyText: string | null;
+  replyId: string | null;
+  classification: SocialCommentClassification | null;
+  contentSafety: { safe: boolean; violations: string[]; codes: string[] } | null;
+  decidedBy: string | null;
+  decidedAt: string | null;
+  createdAt: string;
+  simulated: boolean;
+  delivered: boolean;
+  note: string;
+}
+
+export interface SocialApprovalsResult {
+  success: boolean;
+  approvals: SocialApprovalRecord[];
+  count: number;
+  note: string;
+}
+
+export interface SocialRepliesResult {
+  success: boolean;
+  replies: SocialReplyRecord[];
+  count: number;
+  note: string;
+}
+
 export interface SocialAnalyticsResult {
   success: boolean;
   platform: string;

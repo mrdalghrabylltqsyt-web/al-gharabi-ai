@@ -81,7 +81,17 @@ export const CustomerCenterView: React.FC = () => {
 
     if (result && result.suggestedReply) {
       setReplyInputText(result.suggestedReply);
-      showToast('تم تحديث الرد الذكي المقترح عبر Gemini 3.8');
+      // لا ندّعي أن المصدر Gemini: الرد قد يكون حتمياً أو بديلاً آمناً. نعرض
+      // المصدر الفعلي كما أعلنه الخادم، ونحذّر عند الحاجة لمراجعة بشرية.
+      const sourceLabel =
+        result.aiSource === 'provider' ? 'Gemini' : result.aiSource === 'cache' ? 'ذاكرة مؤقتة' : 'محرك حتمي';
+      showToast(
+        result.requiresHumanReview
+          ? `تم تحديث الرد المقترح (${sourceLabel}) — يتطلب مراجعة بشرية قبل الإرسال.`
+          : `تم تحديث الرد المقترح (${sourceLabel}).`,
+      );
+    } else {
+      showToast('تعذر اعتماد رد آمن لهذه الرسالة؛ يلزم مراجعة بشرية قبل الرد.');
     }
   };
 

@@ -304,3 +304,38 @@ export function analyzeBusinessClaims(text: string, facts: BusinessFacts): Busin
 export function analyzeRequestClaims(text: string, facts: BusinessFacts): BusinessClaimReport {
   return analyzeBusinessClaims(text, facts);
 }
+
+export interface SafeBusinessTextResult {
+  /** النص الآمن المعروض: الأصل إن كان سليماً، وإلا البديل الآمن. */
+  text: string;
+  /** تقرير فحص النص المعروض فعلاً (آمن دائماً). */
+  report: BusinessClaimReport;
+  /** تقرير فحص النص الأصلي قبل أي استبدال (يكشف الادعاء المحجوب). */
+  originalReport: BusinessClaimReport;
+  /** هل استُبدل النص الأصلي بسبب ادعاء محجوب؟ */
+  replaced: boolean;
+}
+
+/**
+ * يضمن ألا يصل نص مولّد (من مزود أو بديل) إلى الواجهة وهو يحمل ادعاءً تجارياً
+ * غير مسجّل. يُعيد النص إن كان سليماً، وإلا البديل الحتمي إن كان سليماً أيضاً،
+ * وإلا نصاً عاماً محايداً لا يدّعي أي معلومة رقمية.
+ *
+ * منطق خالص حتمي: لا شبكة ولا مزود. الرد الآمن لا يُنسب أبداً إلى Gemini —
+ * تسمية المصدر مسؤولية المسار المستدعي.
+ */
+export function buildSafeBusinessReply(
+  text: string,
+  facts: BusinessFacts,
+  fallback: () => string,
+): SafeBusinessTextResult {
+  const originalReport = analyzeBusinessClaims(text, facts);
+  if (originalReport.safe) return { text, report: originalReport, originalReport, replaced: false };
+
+  const candidate = fallback();
+  const candidateReport = analyzeBusinessClaims(candidate, facts);
+  if (candidateReport.safe) return { text: candidate, report: candidateReport, originalReport, replaced: true };
+
+  const neutralText = 'تواصل معنا لمعرفة التفاصيل والخطة المناسبة لك.';
+  return { text: neutralText, report: analyzeBusinessClaims(neutralText, facts), originalReport, replaced: true };
+}

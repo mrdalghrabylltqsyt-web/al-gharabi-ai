@@ -287,6 +287,54 @@ async function run(): Promise<void> {
     });
     check('منصة لا تدعم الرد تُرفض بوضوح', replyUnsupported.status === 501);
 
+    // --------------- وحدة الردود والمراجعة البشرية (G3) ---------------
+    // قائمة الردود المسجّلة: كلها غير مُسلَّمة (لا موصل إرسال إنتاجي).
+    const repliesList = await get('/api/social/manager/replies?platform=facebook');
+    check('قائمة الردود تستجيب', repliesList.status === 200 && repliesList.body.success === true);
+    check('كل الردود مُعلَّمة كغير مُسلَّمة', repliesList.body.replies.every((r: any) => r.delivered === false && r.simulated === true));
+    check('الرد المسجّل يحمل حالة مراجعة داخلية', repliesList.body.replies.every((r: any) => typeof r.reviewStatus === 'string'));
+
+    // قرار مراجعة: اعتماد داخلي لا يعني نشراً خارجياً.
+    const approve = await post('/api/social/manager/approvals', {
+      platform: 'facebook', externalId: 'c-reply-clean', status: 'approved', commentText: 'بكم السعر؟',
+    });
+    check('تسجيل قرار الاعتماد ناجح', approve.status === 200 && approve.body.approval.status === 'approved');
+    check('الاعتماد لا يُدّعى إرساله للمنصة', approve.body.delivered === false && approve.body.simulated === true);
+    check('قرار الاعتماد يوضّح أنه داخلي فقط', String(approve.body.note).includes('داخلي'));
+
+    // جلب القرارات، ثم فرض منع تجاوز المراجعة (rejected → approved).
+    const approve2 = await post('/api/social/manager/approvals', {
+      platform: 'facebook', externalId: 'c-reply-clean', status: 'rejected', commentText: 'بكم السعر؟',
+    });
+    check('قرار الرفض يُسجَّل', approve2.status === 200 && approve2.body.approval.status === 'rejected');
+    const approveReopen = await post('/api/social/manager/approvals', {
+      platform: 'facebook', externalId: 'c-reply-clean', status: 'approved',
+    });
+    check('لا يمكن تحويل قرار مرفوض إلى معتمد', approveReopen.status === 409, `status=${approveReopen.status}`);
+
+    // قرار على تعليق بلا رد سابق: يوجد لكنه غير مرتبط برد.
+    const approvePending = await post('/api/social/manager/approvals', {
+      platform: 'facebook', externalId: 'c-review-only', status: 'pending', commentText: 'استفسار عام',
+    });
+    check('حالة المراجعة المعلّقة تُسجَّل بلا قرار', approvePending.status === 200 && approvePending.body.approval.status === 'pending' && approvePending.body.approval.decidedBy === null);
+
+    const approvalsList = await get('/api/social/manager/approvals?platform=facebook');
+    check('قائمة القرارات تستجيب', approvalsList.status === 200 && approvalsList.body.success === true);
+    check('قائمة القرارات تعرض القرارات المسجّلة', approvalsList.body.approvals.length >= 2);
+    check('كل القرارات داخلية وغير مُسلَّمة', approvalsList.body.approvals.every((a: any) => a.delivered === false && a.simulated === true));
+
+    // قرار على منصة غير معروفة أو معرّف ناقص يُرفض.
+    const approveBadPlatform = await post('/api/social/manager/approvals', { platform: 'myspace', externalId: 'x', status: 'approved' });
+    check('قرار على منصة غير معروفة مرفوض', approveBadPlatform.status === 400);
+    const approveBadId = await post('/api/social/manager/approvals', { platform: 'facebook', status: 'approved' });
+    check('قرار بلا معرّف تعليق مرفوض', approveBadId.status === 400);
+    // نص رد يحمل ادعاءً غير مسجّل يُحجب حتى في قرار المراجعة.
+    const approveUnsafe = await post('/api/social/manager/approvals', {
+      platform: 'facebook', externalId: 'c-reply-unsafe-approval', status: 'approved', replyText: 'متاح بدون دفعة أولى',
+    });
+    check('نص رد غير آمن يُحجب من قرار المراجعة', approveUnsafe.status === 422, `status=${approveUnsafe.status}`);
+    check('الحجب يُعلن سلامة المحتوى صراحةً', approveUnsafe.body.contentSafety?.safe === false);
+
     // ----------------------------------------- عقد الواجهة (client/server)
     // يتحقق من أن حقول الأنواع المُعلنة في الواجهة موجودة فعلاً في استجابات
     // الخادم، حتى لا تنحرف الأنواع عن الواقع عند أي تعديل لاحق.

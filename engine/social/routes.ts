@@ -252,10 +252,13 @@ export function registerSocialManagerRoutes(app: express.Express, deps: SocialRo
       text,
       replyFingerprint: decision.fingerprint,
       classification,
+      // الحارس نجح أعلاه، فالرد المسجّل آمن بالبناء. يُعلن التقرير صراحةً.
+      contentSafety: { safe: true, violations: [] as string[], codes: [] as string[] },
       repliedAt: new Date().toISOString(),
       createdBy: user.id,
       simulated: true,
       delivered: false,
+      reviewStatus: classification.requiresHumanReview ? 'pending_review' : 'recorded',
       note: 'لم يُرسل الرد إلى المنصة: لا يوجد موصل إنتاجي معتمد لهذه المنصة بعد.',
     };
     if (!Array.isArray(workspace.socialReplies)) workspace.socialReplies = [];
@@ -265,6 +268,116 @@ export function registerSocialManagerRoutes(app: express.Express, deps: SocialRo
     persistState();
 
     res.json({ success: true, reply: record, delivered: false, simulated: true, note: record.note });
+  });
+
+  /** الردود المسجَّلة داخلياً. كلها غير مُسلَّمة (لا موصل إرسال إنتاجي). */
+  app.get('/api/social/manager/replies', authenticateToken, (req, res) => {
+    const platform = typeof req.query?.platform === 'string' ? req.query.platform : '';
+    const externalId = typeof req.query?.externalId === 'string' ? req.query.externalId : '';
+    let replies = (workspace.socialReplies || []) as any[];
+    if (platform) replies = replies.filter((r) => r.platform === platform);
+    if (externalId) replies = replies.filter((r) => r.externalId === externalId);
+    res.json({
+      success: true,
+      replies: replies.slice(0, 200),
+      count: replies.length,
+      note: 'الردود مسجّلة داخلياً فقط. لا يوجد أي إرسال خارجي: delivered=false دائماً.',
+    });
+  });
+
+  /**
+   * سجل قرارات المراجعة البشرية للردود.
+   * الاعتماد/الرفض قرار داخلي بحت ولا يعني أي نشر خارجي على المنصة.
+   */
+  app.get('/api/social/manager/approvals', authenticateToken, (req, res) => {
+    const platform = typeof req.query?.platform === 'string' ? req.query.platform : '';
+    const status = typeof req.query?.status === 'string' ? req.query.status : '';
+    let approvals = (workspace.socialApprovals || []) as any[];
+    if (platform) approvals = approvals.filter((a) => a.platform === platform);
+    if (status) approvals = approvals.filter((a) => a.status === status);
+    res.json({
+      success: true,
+      approvals: approvals.slice(0, 200),
+      count: approvals.length,
+      note: 'قرارات المراجعة داخلية فقط؛ الاعتماد لا يُرسل أي رد إلى أي منصة.',
+    });
+  });
+
+  /**
+   * تسجيل قرار مراجعة بشرية (معلّق/معتمد/مرفوض) لتعليق وردّه.
+   * حماية: لا يجوز تحويل قرار «مرفوض» إلى «معتمد» (لا تجاوز للمراجعة).
+   * الاعتماد لا يعني نشراً خارجياً؛ الرد يبقى simulated/delivered=false.
+   */
+  app.post('/api/social/manager/approvals', requireOwner, (req, res) => {
+    const user = (req as any).user as { id: string };
+    const platform = typeof req.body?.platform === 'string' ? req.body.platform : '';
+    const externalId = typeof req.body?.externalId === 'string' ? req.body.externalId.trim() : '';
+    const decision = typeof req.body?.status === 'string' ? req.body.status : 'pending';
+    if (!isSupportedPlatform(platform)) return res.status(400).json({ success: false, error: 'منصة غير معروفة.' });
+    if (!externalId) return res.status(400).json({ success: false, error: 'معرّف التعليق لدى المنصة مطلوب.' });
+    if (!['pending', 'approved', 'rejected'].includes(decision)) {
+      return res.status(400).json({ success: false, error: 'قرار المراجعة يجب أن يكون pending أو approved أو rejected.' });
+    }
+
+    const approvals: any[] = Array.isArray(workspace.socialApprovals) ? workspace.socialApprovals : (workspace.socialApprovals = []);
+    const existing = approvals.find((a: any) => a.platform === platform && a.externalId === externalId);
+    if (existing && existing.status === 'rejected' && decision === 'approved') {
+      return res.status(409).json({ success: false, error: 'لا يمكن تحويل قرار مرفوض إلى معتمد. أعد التسجيل بقرار جديد من البداية.' });
+    }
+
+    const commentText = typeof req.body?.commentText === 'string' ? req.body.commentText : (existing?.commentText || '');
+    const replyText = typeof req.body?.replyText === 'string'
+      ? req.body.replyText
+      : (existing?.replyText ?? null);
+    const { facts } = resolveProduct(req.body?.productId, req.body?.productName);
+
+    // أي نص رد يتضمنه القرار يمر عبر حارس سلامة المحتوى قبل التسجيل.
+    let contentSafety: { safe: boolean; violations: string[]; codes: string[] } | null = null;
+    if (replyText) {
+      const safety = analyzeBusinessClaims(replyText, facts);
+      contentSafety = {
+        safe: safety.safe,
+        violations: safety.blocked.map((v) => v.detail),
+        codes: safety.blocked.map((v) => v.code),
+      };
+      if (!safety.safe) {
+        return res.status(422).json({
+          success: false,
+          error: 'نص الرد في القرار يحمل عرضاً تجارياً غير مسجّل، وتم إيقافه قبل التسجيل.',
+          contentSafety,
+        });
+      }
+    }
+
+    const linkedReply = (workspace.socialReplies || []).find(
+      (r: any) => r.platform === platform && r.externalId === externalId,
+    );
+    const now = new Date().toISOString();
+    const record = {
+      id: existing?.id || workspaceId('approval'),
+      platform,
+      externalId,
+      status: decision,
+      commentText,
+      replyText,
+      replyId: linkedReply?.id || null,
+      classification: linkedReply?.classification || null,
+      contentSafety,
+      decidedBy: decision === 'pending' ? null : user.id,
+      decidedAt: decision === 'pending' ? null : now,
+      createdAt: existing?.createdAt || now,
+      simulated: true,
+      delivered: false,
+      note: 'قرار داخلي فقط. لا يُرسل أي رد إلى المنصة: لا يوجد موصل إرسال إنتاجي معتمد.',
+    };
+
+    if (existing) Object.assign(existing, record);
+    else approvals.unshift(record);
+    if (approvals.length > 5000) approvals.pop();
+    audit(user.id, 'social_reply_approval', `${platform}:${externalId}:${decision}`);
+    persistState();
+
+    res.json({ success: true, approval: record, delivered: false, simulated: true, note: record.note });
   });
 
   app.get('/api/social/manager/comments', authenticateToken, (req, res) => {

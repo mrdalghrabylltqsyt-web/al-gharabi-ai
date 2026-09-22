@@ -9,6 +9,7 @@ import { resolveModelCandidates, describeModelPolicy, PRODUCTION_MODEL } from ".
 import { classifyAiError, diagnosticLabel } from "./engine/ai/errors";
 import { CircuitBreaker } from "./engine/ai/retry";
 import { registerSocialManagerRoutes } from "./engine/social/routes";
+import { PLATFORM_SPECS, platformSupports } from "./engine/social/registry";
 import {
   buildDeterministicReply,
   canAutoReply,
@@ -36,6 +37,7 @@ import {
   analyzeBusinessClaims,
   analyzeRequestClaims,
   buildBusinessFacts,
+  buildSafeBusinessReply,
   type BusinessFacts,
   type BusinessClaimViolation,
 } from "./engine/social/contentSafety";
@@ -215,9 +217,9 @@ function loadPersistentState(snapshot?: any): any {
     if (!raw.schemaVersion) raw.schemaVersion = 1;
     const users = Array.isArray(raw.users) ? raw.users : [defaultOwner];
     if (!users.some((u: ServerUser) => u.id === "owner")) users.unshift(defaultOwner);
-    return { users, revokedSessions: Array.isArray(raw.revokedSessions) ? raw.revokedSessions : [], userRevocations: Array.isArray(raw.userRevocations) ? raw.userRevocations : [], audit: Array.isArray(raw.audit) ? raw.audit.slice(0, 200) : [], jobs: Array.isArray(raw.jobs) ? raw.jobs.slice(0, 200) : [], platformConnections: Array.isArray(raw.platformConnections) ? raw.platformConnections : [], workspace: raw.workspace && typeof raw.workspace === "object" ? { showroom: raw.workspace.showroom || {}, products: Array.isArray(raw.workspace.products) ? raw.workspace.products.slice(0, 1000) : [], posts: Array.isArray(raw.workspace.posts) ? raw.workspace.posts.slice(0, 1000) : [], conversations: Array.isArray(raw.workspace.conversations) ? raw.workspace.conversations.slice(0, 1000) : [], installmentPlans: Array.isArray(raw.workspace.installmentPlans) ? raw.workspace.installmentPlans.slice(0, 200) : [], leads: Array.isArray(raw.workspace.leads) ? raw.workspace.leads.slice(0, 2000) : [], tasks: Array.isArray(raw.workspace.tasks) ? raw.workspace.tasks.slice(0, 1000) : [], sales: Array.isArray(raw.workspace.sales) ? raw.workspace.sales.slice(0, 5000) : [], payments: Array.isArray(raw.workspace.payments) ? raw.workspace.payments.slice(0, 10000) : [], inventoryMovements: Array.isArray(raw.workspace.inventoryMovements) ? raw.workspace.inventoryMovements.slice(0, 20000) : [], suppliers: Array.isArray(raw.workspace.suppliers) ? raw.workspace.suppliers.slice(0, 1000) : [], purchases: Array.isArray(raw.workspace.purchases) ? raw.workspace.purchases.slice(0, 5000) : [], expenses: Array.isArray(raw.workspace.expenses) ? raw.workspace.expenses.slice(0, 10000) : [], contracts: Array.isArray(raw.workspace.contracts) ? raw.workspace.contracts.slice(0, 5000) : [], installmentSchedules: Array.isArray(raw.workspace.installmentSchedules) ? raw.workspace.installmentSchedules.slice(0, 20000) : [], notifications: Array.isArray(raw.workspace.notifications) ? raw.workspace.notifications.slice(0, 10000) : [], webhookEvents: Array.isArray(raw.workspace.webhookEvents) ? raw.workspace.webhookEvents.slice(0, 10000) : [], providerEvents: Array.isArray(raw.workspace.providerEvents) ? raw.workspace.providerEvents.slice(0, 10000) : [], marketingBriefs: Array.isArray(raw.workspace.marketingBriefs) ? raw.workspace.marketingBriefs.slice(0, 2000) : [], marketingCampaigns: Array.isArray(raw.workspace.marketingCampaigns) ? raw.workspace.marketingCampaigns.slice(0, 1000) : [], socialComments: Array.isArray(raw.workspace.socialComments) ? raw.workspace.socialComments.slice(0, 10000) : [], socialReplies: Array.isArray(raw.workspace.socialReplies) ? raw.workspace.socialReplies.slice(0, 5000) : [], publishRecords: Array.isArray(raw.workspace.publishRecords) ? raw.workspace.publishRecords.slice(0, 5000) : [], performanceRecords: Array.isArray(raw.workspace.performanceRecords) ? raw.workspace.performanceRecords.slice(0, 20000) : [], marketingDecisions: Array.isArray(raw.workspace.marketingDecisions) ? raw.workspace.marketingDecisions.slice(0, 2000) : [], strategiesTested: Array.isArray(raw.workspace.strategiesTested) ? raw.workspace.strategiesTested.slice(0, 2000) : [], providerTokens: raw.workspace.providerTokens && typeof raw.workspace.providerTokens === "object" ? raw.workspace.providerTokens : {} } : { showroom: {}, products: [], posts: [], conversations: [], installmentPlans: [], leads: [], tasks: [], sales: [], payments: [], inventoryMovements: [], suppliers: [], purchases: [], expenses: [], contracts: [], installmentSchedules: [], notifications: [], webhookEvents: [], providerEvents: [], marketingBriefs: [], marketingCampaigns: [], socialComments: [], socialReplies: [], publishRecords: [], performanceRecords: [], marketingDecisions: [], strategiesTested: [], providerTokens: {} } };
+    return { users, revokedSessions: Array.isArray(raw.revokedSessions) ? raw.revokedSessions : [], userRevocations: Array.isArray(raw.userRevocations) ? raw.userRevocations : [], audit: Array.isArray(raw.audit) ? raw.audit.slice(0, 200) : [], jobs: Array.isArray(raw.jobs) ? raw.jobs.slice(0, 200) : [], platformConnections: Array.isArray(raw.platformConnections) ? raw.platformConnections : [], workspace: raw.workspace && typeof raw.workspace === "object" ? { showroom: raw.workspace.showroom || {}, products: Array.isArray(raw.workspace.products) ? raw.workspace.products.slice(0, 1000) : [], posts: Array.isArray(raw.workspace.posts) ? raw.workspace.posts.slice(0, 1000) : [], conversations: Array.isArray(raw.workspace.conversations) ? raw.workspace.conversations.slice(0, 1000) : [], installmentPlans: Array.isArray(raw.workspace.installmentPlans) ? raw.workspace.installmentPlans.slice(0, 200) : [], leads: Array.isArray(raw.workspace.leads) ? raw.workspace.leads.slice(0, 2000) : [], tasks: Array.isArray(raw.workspace.tasks) ? raw.workspace.tasks.slice(0, 1000) : [], sales: Array.isArray(raw.workspace.sales) ? raw.workspace.sales.slice(0, 5000) : [], payments: Array.isArray(raw.workspace.payments) ? raw.workspace.payments.slice(0, 10000) : [], inventoryMovements: Array.isArray(raw.workspace.inventoryMovements) ? raw.workspace.inventoryMovements.slice(0, 20000) : [], suppliers: Array.isArray(raw.workspace.suppliers) ? raw.workspace.suppliers.slice(0, 1000) : [], purchases: Array.isArray(raw.workspace.purchases) ? raw.workspace.purchases.slice(0, 5000) : [], expenses: Array.isArray(raw.workspace.expenses) ? raw.workspace.expenses.slice(0, 10000) : [], contracts: Array.isArray(raw.workspace.contracts) ? raw.workspace.contracts.slice(0, 5000) : [], installmentSchedules: Array.isArray(raw.workspace.installmentSchedules) ? raw.workspace.installmentSchedules.slice(0, 20000) : [], notifications: Array.isArray(raw.workspace.notifications) ? raw.workspace.notifications.slice(0, 10000) : [], webhookEvents: Array.isArray(raw.workspace.webhookEvents) ? raw.workspace.webhookEvents.slice(0, 10000) : [], providerEvents: Array.isArray(raw.workspace.providerEvents) ? raw.workspace.providerEvents.slice(0, 10000) : [], marketingBriefs: Array.isArray(raw.workspace.marketingBriefs) ? raw.workspace.marketingBriefs.slice(0, 2000) : [], marketingCampaigns: Array.isArray(raw.workspace.marketingCampaigns) ? raw.workspace.marketingCampaigns.slice(0, 1000) : [], socialComments: Array.isArray(raw.workspace.socialComments) ? raw.workspace.socialComments.slice(0, 10000) : [], socialReplies: Array.isArray(raw.workspace.socialReplies) ? raw.workspace.socialReplies.slice(0, 5000) : [], socialApprovals: Array.isArray(raw.workspace.socialApprovals) ? raw.workspace.socialApprovals.slice(0, 5000) : [], publishRecords: Array.isArray(raw.workspace.publishRecords) ? raw.workspace.publishRecords.slice(0, 5000) : [], performanceRecords: Array.isArray(raw.workspace.performanceRecords) ? raw.workspace.performanceRecords.slice(0, 20000) : [], marketingDecisions: Array.isArray(raw.workspace.marketingDecisions) ? raw.workspace.marketingDecisions.slice(0, 2000) : [], strategiesTested: Array.isArray(raw.workspace.strategiesTested) ? raw.workspace.strategiesTested.slice(0, 2000) : [], providerTokens: raw.workspace.providerTokens && typeof raw.workspace.providerTokens === "object" ? raw.workspace.providerTokens : {} } : { showroom: {}, products: [], posts: [], conversations: [], installmentPlans: [], leads: [], tasks: [], sales: [], payments: [], inventoryMovements: [], suppliers: [], purchases: [], expenses: [], contracts: [], installmentSchedules: [], notifications: [], webhookEvents: [], providerEvents: [], marketingBriefs: [], marketingCampaigns: [], socialComments: [], socialReplies: [], socialApprovals: [], publishRecords: [], performanceRecords: [], marketingDecisions: [], strategiesTested: [], providerTokens: {} } };
   } catch {
-    return { users: [defaultOwner], revokedSessions: [], userRevocations: [], audit: [], jobs: [], workspace: { showroom: {}, products: [], posts: [], conversations: [], installmentPlans: [], leads: [], tasks: [], sales: [], payments: [], inventoryMovements: [], suppliers: [], purchases: [], expenses: [], contracts: [], installmentSchedules: [], notifications: [], webhookEvents: [], providerEvents: [], marketingBriefs: [], marketingCampaigns: [], socialComments: [], socialReplies: [], publishRecords: [], performanceRecords: [], marketingDecisions: [], strategiesTested: [], providerTokens: {} } };
+    return { users: [defaultOwner], revokedSessions: [], userRevocations: [], audit: [], jobs: [], workspace: { showroom: {}, products: [], posts: [], conversations: [], installmentPlans: [], leads: [], tasks: [], sales: [], payments: [], inventoryMovements: [], suppliers: [], purchases: [], expenses: [], contracts: [], installmentSchedules: [], notifications: [], webhookEvents: [], providerEvents: [], marketingBriefs: [], marketingCampaigns: [], socialComments: [], socialReplies: [], socialApprovals: [], publishRecords: [], performanceRecords: [], marketingDecisions: [], strategiesTested: [], providerTokens: {} } };
   }
 }
 
@@ -273,7 +275,7 @@ for (const key of ["suppliers","purchases","expenses","contracts","installmentSc
 if (!(workspace as any).providerTokens || typeof (workspace as any).providerTokens !== "object") (workspace as any).providerTokens = {};
 // سجلات مدير السوشيال ميديا: تعليقات، ردود، نتائج نشر، وقرارات تسويقية.
 // كلها سجلات تشغيلية حقيقية تُبنى من عمليات فعلية فقط.
-for (const key of ["socialComments","socialReplies","publishRecords","marketingDecisions","strategiesTested","performanceRecords"]) if (!Array.isArray((workspace as any)[key])) (workspace as any)[key] = [];
+for (const key of ["socialComments","socialReplies","socialApprovals","publishRecords","marketingDecisions","strategiesTested","performanceRecords"]) if (!Array.isArray((workspace as any)[key])) (workspace as any)[key] = [];
 
 // Migration guard: a post is never considered externally published merely because
 // an old/local record said so. Until a real provider execution receipt exists,
@@ -825,18 +827,14 @@ app.delete("/api/users/:id", requireOwner, (req, res) => {
 
 // Persistent multi-platform control state. Accounts remain disconnected until a real OAuth/API callback explicitly marks them connected.
 type PlatformConnection = { platform: string; status: "connected" | "reauth_needed" | "disconnected"; accountName?: string; accountId?: string; connectedAt?: string; lastSyncAt?: string; providerVerified?: boolean; provider?: string };
-const SUPPORTED_PLATFORMS = [
-  { id: "tiktok", name: "TikTok", capabilities: ["publish", "analytics"] },
-  { id: "youtube", name: "YouTube", capabilities: ["publish", "analytics"] },
-  { id: "facebook", name: "Facebook", capabilities: ["publish", "messages", "analytics"] },
-  { id: "instagram", name: "Instagram", capabilities: ["publish", "messages", "analytics"] },
-  { id: "whatsapp", name: "WhatsApp Business", capabilities: ["messages"] },
-  { id: "telegram", name: "Telegram", capabilities: ["publish", "messages"] },
-  { id: "x", name: "X", capabilities: ["publish", "analytics"] },
-  { id: "snapchat", name: "Snapchat", capabilities: ["publish", "analytics"] },
-  { id: "threads", name: "Threads", capabilities: ["publish", "messages", "analytics"] },
-  { id: "google_business", name: "Google Business Profile", capabilities: ["publish", "analytics"] },
-];
+// مصدر الحقيقة الوحيد للمنصات وقدراتها هو سجل الموصلات (engine/social/registry.ts).
+// القائمة مشتقة منه فلا يمكن أن تنحرف عن قدرات الموصلات الفعلية، وتظهر في شكل
+// { id, name, capabilities } الذي تتوقعه بقية مسارات الخادم.
+const SUPPORTED_PLATFORMS = PLATFORM_SPECS.map((spec) => ({
+  id: spec.platform as string,
+  name: spec.name,
+  capabilities: [...spec.capabilities] as string[],
+}));
 const platformConnections = new Map<string, PlatformConnection>();
 
 type OAuthPending = { platform: string; userId: string; expiresAt: number; codeVerifier?: string };
@@ -908,7 +906,8 @@ function loadPlatformConnections() {
 }
 loadPlatformConnections();
 function connectedPlatformIds() { return Array.from(platformConnections.values()).filter(x => x.status === "connected").map(x => x.platform); }
-function hasCapability(platform: string, capability: string) { return SUPPORTED_PLATFORMS.some(p => p.id === platform && p.capabilities.includes(capability)); }
+// القدرة تُقرأ من سجل الموصلات مباشرةً، فلا تعتمد على أي قائمة موازية.
+function hasCapability(platform: string, capability: string) { return platformSupports(platform, capability); }
 
 // -------------------------------------------------------------
 // Central control-plane endpoints (deterministic, no Gemini cost)
@@ -2153,7 +2152,7 @@ function buildPersistedState() {
       inventoryMovements: (workspace as any).inventoryMovements.slice(0, 20000), notifications: (workspace as any).notifications.slice(0, 10000), webhookEvents: (workspace as any).webhookEvents.slice(0, 10000), providerEvents: (workspace as any).providerEvents.slice(0, 10000),
       // سجلات مدير السوشيال ميديا: بدونها لا تصمد حماية replay/duplicate بعد restart.
       socialComments: (workspace as any).socialComments.slice(0, 10000),
-      socialReplies: (workspace as any).socialReplies.slice(0, 5000), publishRecords: (workspace as any).publishRecords.slice(0, 5000), performanceRecords: (workspace as any).performanceRecords.slice(0, 20000), marketingDecisions: (workspace as any).marketingDecisions.slice(0, 2000), strategiesTested: (workspace as any).strategiesTested.slice(0, 2000),
+      socialReplies: (workspace as any).socialReplies.slice(0, 5000), socialApprovals: (workspace as any).socialApprovals.slice(0, 5000), publishRecords: (workspace as any).publishRecords.slice(0, 5000), performanceRecords: (workspace as any).performanceRecords.slice(0, 20000), marketingDecisions: (workspace as any).marketingDecisions.slice(0, 2000), strategiesTested: (workspace as any).strategiesTested.slice(0, 2000),
       providerTokens: (workspace as any).providerTokens,
     }
   };
@@ -2915,33 +2914,83 @@ ${showroomInfo ? JSON.stringify(showroomInfo) : 'معرض الغرابي للت�
     });
 
     let parsed: any = deterministicClassification;
+    let providerValidated = false;
     if (result.usedProvider || result.source === "cache") {
       try {
         const candidate = JSON.parse(result.text);
         // ندمج مخرجات المزود مع التصنيف الحتمي لضمان اكتمال كل الحقول.
         parsed = { ...deterministicClassification, ...candidate };
+        providerValidated = true;
       } catch {
         parsed = deterministicClassification;
       }
     }
 
+    // -------- حارس سلامة المحتوى على الرد المقترح (من جهة الخادم) --------
+    // لا يصل أي suggestedReply إلى الواجهة دون المرور بـ analyzeBusinessClaims.
+    // أي ادعاء تجاري غير مسجّل (عرض/خصم/ضمان/رقم/رابط/سعر) يُحجب: يُستبدل برد
+    // حتمي آمن، وإن لم ينجُ البديل أيضاً يُعرض نص محايد لا يدّعي أي معلومة.
+    const facts = buildShowroomFacts();
+    const safeReply = buildSafeBusinessReply(
+      typeof parsed.suggestedReply === "string" ? parsed.suggestedReply : "",
+      facts,
+      () => classifyMessageDeterministic(customerName, message).suggestedReply,
+    );
+    const contentSafety = {
+      // safe: هل الرد المعروض سليم؟ blocked: هل حُجب ادعاء من نص المزود؟
+      safe: safeReply.report.safe,
+      blocked: !safeReply.originalReport.safe,
+      codes: safeReply.originalReport.blocked.map((v) => v.code),
+      violations: describeViolations(safeReply.originalReport.blocked),
+    };
+
+    // الرد المعروض آمن دائماً بالبناء (buildSafeBusinessReply). إن استُبدل نص
+    // المزود ببديل حتمي، صار المصدر حتمياً وتُرصد مراجعة بشرية.
+    let requiresHumanReview = Boolean(parsed.needsHumanHandoff);
+    if (safeReply.replaced) {
+      parsed.needsHumanHandoff = true;
+      requiresHumanReview = true;
+    }
+
+    const aiSource = providerValidated ? result.source : "fallback";
+    const fallbackReason = !providerValidated
+      ? (result.fallbackReason || (result.source === "cache" ? "provider_error" : "provider_not_configured"))
+      : safeReply.replaced
+        ? "content_safety"
+        : result.fallbackReason;
+
     return res.json({
       success: true,
       ...parsed,
-      generatedBy: result.usedProvider ? (result.model || PRODUCTION_MODEL) : result.source === "cache" ? "ai-cache" : "local-deterministic-engine",
-      aiSource: result.source,
-      fallbackReason: result.fallbackReason,
-      model: result.model,
+      suggestedReply: safeReply.text,
+      requiresHumanReview,
+      generatedBy: providerValidated && !safeReply.replaced ? (result.model || PRODUCTION_MODEL) : "local-deterministic-engine",
+      aiSource,
+      fallbackReason,
+      model: aiSource === "provider" ? result.model : null,
       notice: result.notice,
+      contentSafety,
     });
   } catch (error: any) {
+    // مسار الطوارئ: حتى هنا يمر الرد الحتمي عبر حارس المحتوى قبل عرضه.
+    const fallbackClassification = classifyMessageDeterministic(req.body?.customerName, req.body?.message);
+    const facts = buildShowroomFacts();
+    const safeReply = buildSafeBusinessReply(fallbackClassification.suggestedReply, facts, () => fallbackClassification.suggestedReply);
     res.status(200).json({
       success: true,
-      ...classifyMessageDeterministic(req.body?.customerName, req.body?.message),
+      ...fallbackClassification,
+      suggestedReply: safeReply.text,
+      requiresHumanReview: safeReply.replaced ? true : fallbackClassification.needsHumanHandoff,
       generatedBy: "local-deterministic-engine",
       aiSource: "fallback",
       fallbackReason: "unknown_error",
       model: null,
+      contentSafety: {
+        safe: safeReply.report.safe,
+        blocked: !safeReply.report.safe,
+        codes: safeReply.report.blocked.map((v) => v.code),
+        violations: describeViolations(safeReply.report.blocked),
+      },
     });
   }
 });
@@ -3175,16 +3224,10 @@ function buildShowroomFacts(): BusinessFacts {
  * وإلا يُعيد نصاً عاماً محايداً لا يدّعي أي معلومة.
  */
 function ensureSafeBusinessText(text: string, facts: BusinessFacts, fallback: () => string) {
-  const check = analyzeBusinessClaims(text, facts);
-  if (check.safe) return { text, check, replaced: false };
-  const candidate = fallback();
-  const fallbackCheck = analyzeBusinessClaims(candidate, facts);
-  if (fallbackCheck.safe) return { text: candidate, check: fallbackCheck, replaced: true };
-  return {
-    text: "تواصل معنا لمعرفة التفاصيل والخطة المناسبة لك.",
-    check: fallbackCheck,
-    replaced: true,
-  };
+  // نفس المنطق الصافي في contentSafety.buildSafeBusinessReply: مصدر واحد للحماية
+  // يشترك فيه كل مسار يولّد نصاً تجارياً (توليد المحتوى، المحادثة، تصنيف الرسائل).
+  const result = buildSafeBusinessReply(text, facts, fallback);
+  return { text: result.text, check: result.report, replaced: result.replaced };
 }
 
 function formatIqd(value: number): string {

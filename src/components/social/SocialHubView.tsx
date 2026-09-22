@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import { useApp } from '../../context/AppContext';
 import { ScheduleTimestamp } from '../common/ScheduleTimestamp';
 import {
@@ -18,9 +18,35 @@ import {
   ExternalLink,
   ShieldCheck,
   Globe,
+  Inbox,
+  XCircle,
+  Clock,
 } from 'lucide-react';
-import { SocialPlatformId } from '../../types';
+import { SocialPlatformId, SocialCommentRecord, SocialApprovalRecord, SocialReplyRecord } from '../../types';
 import { apiService } from '../../services/api';
+
+const INTENT_LABELS: Record<string, string> = {
+  business_inquiry: 'استفسار تجاري',
+  question: 'سؤال',
+  complaint: 'شكوى',
+  praise: 'مدح',
+  spam: 'سبام',
+  other: 'أخرى',
+};
+
+const SENTIMENT_LABELS: Record<string, string> = {
+  positive: 'إيجابي',
+  negative: 'سلبي',
+  neutral: 'محايد',
+};
+
+const PLATFORM_LABELS: Record<string, string> = {
+  tiktok: 'TikTok', youtube: 'YouTube', facebook: 'Facebook', instagram: 'Instagram',
+  whatsapp: 'WhatsApp Business', telegram: 'Telegram', x: 'X', snapchat: 'Snapchat',
+  threads: 'Threads', google_business: 'Google Business Profile',
+};
+
+const approvalKey = (platform: string, externalId: string): string => `${platform}:${externalId}`;
 
 export const SocialHubView: React.FC = () => {
   const {
@@ -29,9 +55,9 @@ export const SocialHubView: React.FC = () => {
     addCustomPlatform,
     syncAllPlatforms,
     posts,
-    conversations,
     showToast,
     setActiveTab,
+    currentUser,
   } = useApp();
 
   const [selectedPlatform, setSelectedPlatform] = useState<SocialPlatformId | 'all'>('all');
@@ -41,23 +67,39 @@ export const SocialHubView: React.FC = () => {
   const [newPlatformHandle, setNewPlatformHandle] = useState('');
   const [newPlatformColor, setNewPlatformColor] = useState('from-purple-600 to-indigo-700');
 
-  // Interactive comments feed (empty initially, no mock data)
-  interface SocialCommentItem {
-    id: string;
-    platform: string;
-    author: string;
-    avatar?: string;
-    postTitle: string;
-    comment: string;
-    time: string;
-    likes: number;
-    replied: boolean;
-    replyText?: string;
-  }
+  const isOwner = currentUser?.role === 'owner';
 
-  const [commentsList, setCommentsList] = useState<SocialCommentItem[]>([]);
+  // ------- وحدة التعليقات والردود: سجلات حقيقية من الخادم فقط -------
+  const [commentRecords, setCommentRecords] = useState<SocialCommentRecord[]>([]);
+  const [approvals, setApprovals] = useState<Record<string, SocialApprovalRecord>>({});
+  const [replyRecords, setReplyRecords] = useState<Record<string, SocialReplyRecord>>({});
+  const [consoleLoading, setConsoleLoading] = useState(false);
+  const [classification, setClassification] = useState<Record<string, any>>({});
+  const [replyDraft, setReplyDraft] = useState<Record<string, string>>({});
+  const [rowError, setRowError] = useState<Record<string, string>>({});
+  const [ingestForm, setIngestForm] = useState({ platform: 'facebook', externalId: '', text: '', authorName: '' });
 
-  const [replyInput, setReplyInput] = useState<Record<string, string>>({});
+  const loadConsole = useCallback(async () => {
+    setConsoleLoading(true);
+    try {
+      const [commentsRes, approvalsRes, repliesRes] = await Promise.all([
+        apiService.getSocialComments(),
+        apiService.getSocialApprovals(),
+        apiService.getSocialReplies(),
+      ]);
+      setCommentRecords(commentsRes.comments);
+      setApprovals(Object.fromEntries(approvalsRes.approvals.map((a) => [approvalKey(a.platform, a.externalId), a])));
+      setReplyRecords(Object.fromEntries(repliesRes.replies.map((r) => [approvalKey(r.platform, r.externalId), r])));
+    } catch (error: any) {
+      showToast(error?.message || 'تعذر تحميل وحدة التعليقات');
+    } finally {
+      setConsoleLoading(false);
+    }
+  }, [showToast]);
+
+  useEffect(() => {
+    if (activeSubTab === 'comments') void loadConsole();
+  }, [activeSubTab, loadConsole]);
 
   const handleRealConnect = async (platformId: string) => {
     try {
@@ -66,14 +108,65 @@ export const SocialHubView: React.FC = () => {
     } catch (error: any) { showToast(error?.message || 'تعذر بدء الربط الحقيقي'); }
   };
 
-  const handleSendCommentReply = (commentId: string) => {
-    const text = replyInput[commentId];
-    if (!text) return;
-    setCommentsList((prev) =>
-      prev.map((c) => (c.id === commentId ? { ...c, replied: true, replyText: text } : c))
-    );
-    setReplyInput((prev) => ({ ...prev, [commentId]: '' }));
-    showToast('تم حفظ الرد محلياً. النشر الخارجي لا يتم إلا عبر موصل منصة موثق.');
+  const handleIngest = async () => {
+    const { platform, externalId, text, authorName } = ingestForm;
+    if (!externalId.trim() || !text.trim()) {
+      showToast('معرّف التعليق ونصه مطلوبان.');
+      return;
+    }
+    try {
+      const res = await apiService.ingestSocialComment({ platform, externalId: externalId.trim(), text: text.trim(), authorName: authorName.trim() || undefined });
+      showToast(res.duplicate ? 'التعليق مسجّل مسبقاً (حماية التكرار).' : 'تم تسجيل التعليق الوارد.');
+      setIngestForm({ platform, externalId: '', text: '', authorName: '' });
+      await loadConsole();
+    } catch (error: any) {
+      showToast(error?.message || 'تعذر تسجيل التعليق');
+    }
+  };
+
+  const runClassify = async (comment: SocialCommentRecord) => {
+    const key = approvalKey(comment.platform, comment.externalId);
+    try {
+      const res = await apiService.classifySocialComment(comment.text, comment.platform);
+      setClassification((prev) => ({ ...prev, [key]: res }));
+      if (res.suggestedDeterministicReply) setReplyDraft((prev) => ({ ...prev, [key]: res.suggestedDeterministicReply }));
+    } catch (error: any) {
+      showToast(error?.message || 'تعذر تصنيف التعليق');
+    }
+  };
+
+  const recordReply = async (comment: SocialCommentRecord) => {
+    const key = approvalKey(comment.platform, comment.externalId);
+    const text = (replyDraft[key] || '').trim();
+    if (!text) { showToast('اكتب نص الرد أولاً.'); return; }
+    setRowError((prev) => ({ ...prev, [key]: '' }));
+    try {
+      await apiService.replyToSocialComment({ platform: comment.platform, externalId: comment.externalId, text, commentText: comment.text, authorName: comment.authorName || undefined });
+      showToast('تم تسجيل الرد داخلياً. لا يُرسل إلى المنصة (لا يوجد موصل إرسال إنتاجي).');
+      setReplyDraft((prev) => ({ ...prev, [key]: '' }));
+      await loadConsole();
+    } catch (error: any) {
+      setRowError((prev) => ({ ...prev, [key]: error?.message || 'تعذر تسجيل الرد' }));
+    }
+  };
+
+  const decide = async (comment: SocialCommentRecord, status: 'approved' | 'rejected' | 'pending') => {
+    const key = approvalKey(comment.platform, comment.externalId);
+    setRowError((prev) => ({ ...prev, [key]: '' }));
+    try {
+      const reply = replyRecords[key];
+      await apiService.submitSocialApproval({
+        platform: comment.platform,
+        externalId: comment.externalId,
+        status,
+        commentText: comment.text,
+        replyText: reply?.text || undefined,
+      });
+      showToast(status === 'approved' ? 'تم تسجيل اعتماد داخلي. لا نشر خارجي.' : status === 'rejected' ? 'تم رفض الرد داخلياً.' : 'أُعيد إلى حالة المراجعة.');
+      await loadConsole();
+    } catch (error: any) {
+      setRowError((prev) => ({ ...prev, [key]: error?.message || 'تعذر تسجيل القرار' }));
+    }
   };
 
   const handleAddPlatformSubmit = (e: React.FormEvent) => {
@@ -95,7 +188,7 @@ export const SocialHubView: React.FC = () => {
   );
   const scheduledFiltered = filteredPosts.filter((p) => p.status === 'scheduled');
   const publishedFiltered = filteredPosts.filter((p) => p.status === 'published');
-  const filteredComments = commentsList.filter(
+  const filteredComments = commentRecords.filter(
     (c) => selectedPlatform === 'all' || c.platform === selectedPlatform
   );
 
@@ -375,87 +468,221 @@ export const SocialHubView: React.FC = () => {
       {/* Sub-Tab 4: Comments Feed & Replies */}
       {activeSubTab === 'comments' && (
         <div className="space-y-4">
-          <div className="p-4 rounded-2xl bg-slate-900/60 border border-slate-800 text-xs text-slate-400 flex items-center justify-between">
-            <span>الرد المباشر على تعليقات العملاء ينشر فوراً على المنصة المحددة.</span>
-            <span className="text-emerald-400 font-bold">{commentsList.length} تعليقات واردة</span>
+          <div className="p-4 rounded-2xl bg-amber-950/20 border border-amber-500/20 text-xs text-amber-200 flex items-start gap-2">
+            <ShieldCheck className="w-4 h-4 shrink-0 mt-0.5" />
+            <span className="leading-relaxed">
+              كل رد هنا يُسجَّل ويُراجَع <strong>داخل النظام فقط</strong>. لا يوجد موصل إرسال إنتاجي معتمد، لذا لا يُنشر
+              أي رد على أي منصة، وتبقى حالة التسليم <span className="font-mono">simulated</span> /{' '}
+              <span className="font-mono">not delivered</span>. النشر الخارجي يتطلب اتصالاً موثقاً من المزود وموصلاً معتمداً.
+            </span>
+          </div>
+
+          {/* تسجيل تعليق وارد — دورة الـingest الحقيقية */}
+          <div className="p-4 rounded-2xl bg-slate-900 border border-slate-800 space-y-3">
+            <div className="flex items-center justify-between">
+              <h3 className="text-xs font-bold text-white flex items-center gap-2">
+                <Inbox className="w-4 h-4 text-blue-400" /> تسجيل تعليق وارد للمراجعة
+              </h3>
+              <button
+                onClick={() => void loadConsole()}
+                disabled={consoleLoading}
+                className="text-[11px] font-bold text-slate-300 flex items-center gap-1 cursor-pointer disabled:opacity-60">
+                <RefreshCw className={`w-3.5 h-3.5 ${consoleLoading ? 'animate-spin' : ''}`} /> تحديث
+              </button>
+            </div>
+            <div className="grid grid-cols-1 sm:grid-cols-4 gap-2">
+              <select
+                value={ingestForm.platform}
+                onChange={(e) => setIngestForm({ ...ingestForm, platform: e.target.value })}
+                className="bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-emerald-500">
+                {Object.entries(PLATFORM_LABELS).map(([id, name]) => (
+                  <option key={id} value={id}>{name}</option>
+                ))}
+              </select>
+              <input
+                placeholder="معرّف التعليق لدى المنصة (فريد)"
+                value={ingestForm.externalId}
+                onChange={(e) => setIngestForm({ ...ingestForm, externalId: e.target.value })}
+                className="bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-emerald-500"
+              />
+              <input
+                placeholder="اسم الكاتب (اختياري)"
+                value={ingestForm.authorName}
+                onChange={(e) => setIngestForm({ ...ingestForm, authorName: e.target.value })}
+                className="bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-emerald-500"
+              />
+              <button
+                onClick={() => void handleIngest()}
+                className="px-3 py-2 rounded-xl bg-blue-600 hover:bg-blue-500 text-white text-xs font-bold transition flex items-center justify-center gap-1 cursor-pointer">
+                <Plus className="w-3.5 h-3.5" /> تسجيل التعليق
+              </button>
+            </div>
+            <textarea
+              rows={2}
+              placeholder="نص التعليق الوارد..."
+              value={ingestForm.text}
+              onChange={(e) => setIngestForm({ ...ingestForm, text: e.target.value })}
+              className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-emerald-500"
+            />
+          </div>
+
+          <div className="flex items-center justify-between text-xs text-slate-400 px-1">
+            <span>{filteredComments.length} تعليقات مسجّلة</span>
+            <span className="text-slate-500">لا جلب خارجي للتعليقات بدون اتصال موثق.</span>
           </div>
 
           <div className="space-y-3">
             {filteredComments.length === 0 ? (
               <div className="p-8 text-center text-slate-400 bg-slate-900/50 rounded-2xl border border-slate-800">
-                لا توجد تعليقات أو تفاعلات واردة حالياً من أي منصة اجتماعية.
+                لا توجد تعليقات مسجّلة بعد. سجّل تعليقاً وارداً أعلاه لبدء دورة المراجعة.
               </div>
             ) : (
-              filteredComments.map((com) => (
-                <div
-                  key={com.id}
-                  className="p-4 rounded-2xl bg-slate-900 border border-slate-800 space-y-3"
-                >
-                  <div className="flex items-start justify-between">
-                    <div className="flex items-center gap-2.5">
-                      <div className="w-8 h-8 rounded-lg bg-emerald-500/10 text-emerald-400 font-bold text-xs flex items-center justify-center border border-emerald-500/20">
-                        {com.author ? com.author.charAt(0) : 'ع'}
-                      </div>
-                      <div>
-                        <div className="flex items-center gap-2">
-                          <span className="text-xs font-bold text-white">{com.author}</span>
-                          <span className="text-[10px] px-1.5 py-0.5 rounded bg-slate-800 text-slate-300 font-mono">
-                            {com.platform}
-                          </span>
+              filteredComments.map((com) => {
+                const key = approvalKey(com.platform, com.externalId);
+                const approval = approvals[key];
+                const reply = replyRecords[key];
+                const cls = classification[key]?.classification || com.classification;
+                const contentSafety = classification[key]?.contentSafety;
+                const sourceLabel = reply
+                  ? 'deterministic'
+                  : '—';
+                return (
+                  <div key={com.id} className="p-4 rounded-2xl bg-slate-900 border border-slate-800 space-y-3">
+                    <div className="flex items-start justify-between gap-3 flex-wrap">
+                      <div className="flex items-center gap-2.5">
+                        <div className="w-8 h-8 rounded-lg bg-emerald-500/10 text-emerald-400 font-bold text-xs flex items-center justify-center border border-emerald-500/20">
+                          {com.authorName ? com.authorName.charAt(0) : 'ع'}
                         </div>
-                        <p className="text-[10px] text-slate-400">
-                          على منشور: "{com.postTitle}" • {com.time}
-                        </p>
+                        <div>
+                          <div className="flex items-center gap-2 flex-wrap">
+                            <span className="text-xs font-bold text-white">{com.authorName || 'عميل'}</span>
+                            <span className="text-[10px] px-1.5 py-0.5 rounded bg-slate-800 text-slate-300 font-mono">
+                              {PLATFORM_LABELS[com.platform] || com.platform}
+                            </span>
+                            <span className="text-[10px] px-1.5 py-0.5 rounded bg-slate-800 text-slate-300 font-mono">
+                              {com.externalId}
+                            </span>
+                          </div>
+                          <p className="text-[10px] text-slate-400 mt-0.5">
+                            النية: {INTENT_LABELS[cls?.intent] || cls?.intent || '—'} •
+                            المشاعر: {SENTIMENT_LABELS[cls?.sentiment] || cls?.sentiment || '—'}
+                            {cls?.requiresHumanReview && <span className="text-amber-300"> • مراجعة بشرية مطلوبة</span>}
+                          </p>
+                        </div>
+                      </div>
+
+                      <div className="flex items-center gap-1.5 flex-wrap">
+                        {approval ? (
+                          <span className={`text-[10px] font-bold px-2 py-0.5 rounded-md border ${
+                            approval.status === 'approved'
+                              ? 'bg-emerald-950 text-emerald-300 border-emerald-500/30'
+                              : approval.status === 'rejected'
+                                ? 'bg-rose-950 text-rose-300 border-rose-500/30'
+                                : 'bg-amber-950 text-amber-300 border-amber-500/30'
+                          }`}>
+                            {approval.status === 'approved' ? 'معتمد داخلياً' : approval.status === 'rejected' ? 'مرفوض' : 'قيد المراجعة'}
+                          </span>
+                        ) : (
+                          <span className="text-[10px] font-bold px-2 py-0.5 rounded-md bg-slate-800 text-slate-300 border border-slate-700">
+                            {reply ? 'مسجّل' : 'بانتظار التسجيل'}
+                          </span>
+                        )}
+                        <span className="text-[10px] font-bold px-2 py-0.5 rounded-md bg-slate-950 text-slate-400 border border-slate-700 font-mono">
+                          simulated / not delivered
+                        </span>
                       </div>
                     </div>
 
-                    <span
-                      className={`text-[10px] font-bold px-2 py-0.5 rounded-md ${
-                        com.replied
-                          ? 'bg-emerald-950 text-emerald-300 border border-emerald-500/30'
-                          : 'bg-amber-950 text-amber-300 border border-amber-500/30'
-                      }`}
-                    >
-                      {com.replied ? 'تم الرد' : 'بانتظار الرد'}
-                    </span>
-                  </div>
+                    <div className="text-xs text-slate-200 bg-slate-950/60 p-3 rounded-xl border border-slate-800/80">
+                      {com.text}
+                    </div>
 
-                  <div className="text-xs text-slate-200 bg-slate-950/60 p-3 rounded-xl border border-slate-800/80">
-                    {com.comment}
-                  </div>
-
-                  {com.replied && com.replyText && (
-                    <div className="text-xs text-emerald-300 bg-emerald-950/40 p-3 rounded-xl border border-emerald-500/30 flex items-start gap-2">
-                      <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0 mt-0.5" />
-                      <div>
-                        <span className="font-bold text-emerald-200">رد معرض الغرابي: </span>
-                        <span>{com.replyText}</span>
+                    {reply && (
+                      <div className="text-xs text-emerald-300 bg-emerald-950/40 p-3 rounded-xl border border-emerald-500/30 flex items-start gap-2">
+                        <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0 mt-0.5" />
+                        <div>
+                          <span className="font-bold text-emerald-200">الرد المسجّل داخلياً (مصدر: {sourceLabel}): </span>
+                          <span>{reply.text}</span>
+                        </div>
                       </div>
-                    </div>
-                  )}
+                    )}
 
-                  {!com.replied && (
-                    <div className="flex items-center gap-2 pt-1">
-                      <input
-                        type="text"
-                        placeholder="اكتب رداً رسمياً على التعليق..."
-                        value={replyInput[com.id] || ''}
-                        onChange={(e) =>
-                          setReplyInput({ ...replyInput, [com.id]: e.target.value })
-                        }
-                        className="flex-1 bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-emerald-500"
-                      />
-                      <button
-                        onClick={() => handleSendCommentReply(com.id)}
-                        className="px-3.5 py-2 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 text-xs font-bold transition flex items-center gap-1 cursor-pointer"
-                      >
-                        <Send className="w-3.5 h-3.5" />
-                        إرسال الرد
-                      </button>
-                    </div>
-                  )}
-                </div>
-              ))
+                    {contentSafety && (
+                      <div className={`text-[11px] font-bold ${contentSafety.safe ? 'text-emerald-400' : 'text-rose-400'}`}>
+                        {contentSafety.safe
+                          ? 'الرد المقترح اجتاز حارس سلامة المحتوى.'
+                          : 'الرد المقترح محجوب: يحمل عرضاً غير مسجّل في بيانات المعرض.'}
+                      </div>
+                    )}
+
+                    {!reply && (
+                      <div className="space-y-2 pt-1">
+                        <div className="flex items-center gap-2">
+                          <input
+                            type="text"
+                            placeholder="اكتب الرد (سيُسجَّل داخلياً فقط ولا يُنشر)..."
+                            value={replyDraft[key] || ''}
+                            onChange={(e) => setReplyDraft({ ...replyDraft, [key]: e.target.value })}
+                            className="flex-1 bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-emerald-500"
+                          />
+                          <button
+                            onClick={() => void runClassify(com)}
+                            className="px-3 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-bold transition cursor-pointer">
+                            تصنيف + اقتراح
+                          </button>
+                          <button
+                            onClick={() => void recordReply(com)}
+                            className="px-3.5 py-2 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 text-xs font-bold transition flex items-center gap-1 cursor-pointer">
+                            <Send className="w-3.5 h-3.5" />
+                            تسجيل الرد
+                          </button>
+                        </div>
+                        {rowError[key] && (
+                          <p className="text-[11px] text-rose-400 flex items-center gap-1">
+                            <AlertCircle className="w-3.5 h-3.5" /> {rowError[key]}
+                          </p>
+                        )}
+                      </div>
+                    )}
+
+                    {reply && (
+                      <div className="space-y-2">
+                        {rowError[key] && (
+                          <p className="text-[11px] text-rose-400 flex items-center gap-1">
+                            <AlertCircle className="w-3.5 h-3.5" /> {rowError[key]}
+                          </p>
+                        )}
+                        {isOwner ? (
+                          <div className="flex items-center gap-2 flex-wrap">
+                            <button
+                              onClick={() => void decide(com, 'approved')}
+                              disabled={approval?.status === 'approved'}
+                              className="px-3 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-[11px] font-bold transition cursor-pointer disabled:opacity-50 flex items-center gap-1">
+                              <CheckCircle2 className="w-3.5 h-3.5" /> اعتماد داخلي
+                            </button>
+                            <button
+                              onClick={() => void decide(com, 'rejected')}
+                              disabled={approval?.status === 'rejected'}
+                              className="px-3 py-1.5 rounded-xl bg-rose-600 hover:bg-rose-500 text-white text-[11px] font-bold transition cursor-pointer disabled:opacity-50 flex items-center gap-1">
+                              <XCircle className="w-3.5 h-3.5" /> رفض
+                            </button>
+                            <button
+                              onClick={() => void decide(com, 'pending')}
+                              className="px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 text-[11px] font-bold transition cursor-pointer flex items-center gap-1">
+                              <Clock className="w-3.5 h-3.5" /> إعادة للمراجعة
+                            </button>
+                            <span className="text-[10px] text-slate-500">الاعتماد قرار داخلي فقط — لا نشر خارجي.</span>
+                          </div>
+                        ) : (
+                          <p className="text-[11px] text-slate-500 flex items-center gap-1">
+                            <ShieldCheck className="w-3.5 h-3.5" /> الاعتماد متاح للمالك فقط.
+                          </p>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                );
+              })
             )}
           </div>
         </div>

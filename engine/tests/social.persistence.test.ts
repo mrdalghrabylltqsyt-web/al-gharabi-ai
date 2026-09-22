@@ -107,6 +107,14 @@ async function run(): Promise<void> {
     check('تسجيل رد ناجح', reply1.status === 200);
     check('الرد غير مُسلَّم (لا موصل إنتاجي)', reply1Body.delivered === false && reply1Body.simulated === true);
 
+    // قرار مراجعة داخلي (اعتماد لا يعني نشراً خارجياً).
+    const approval1 = await fetch(`${BASE}/api/social/manager/approvals`, {
+      method: 'POST', headers: auth, body: JSON.stringify({ platform: 'facebook', externalId: 'persist-evt-1', status: 'approved', commentText: 'بكم سعر الثلاجة؟' }),
+    });
+    const approval1Body = await approval1.json();
+    check('تسجيل قرار اعتماد داخلي ناجح', approval1.status === 200 && approval1Body.approval.status === 'approved');
+    check('قرار الاعتماد غير مُسلَّم للمنصة', approval1Body.delivered === false && approval1Body.simulated === true);
+
     // انتظر تفريغ طابور الكتابة إلى المخزن.
     await new Promise((r) => setTimeout(r, 1500));
     await stop(app.proc);
@@ -127,6 +135,14 @@ async function run(): Promise<void> {
 
     const status = await (await fetch(`${BASE}/api/social/manager/status`, { headers: auth })).json();
     check('★ عدد الردود المسجلة يصمد بعد إعادة التشغيل', status.activity.repliesRecorded >= 1, `replies=${status.activity.repliesRecorded}`);
+
+    // قرار المراجعة الداخلي يجب أن يصمد أيضاً، مع بقائه غير مُسلَّم.
+    const approvalsAfter = await (await fetch(`${BASE}/api/social/manager/approvals?platform=facebook`, { headers: auth })).json();
+    check('★ قرار المراجعة يصمد بعد إعادة التشغيل', approvalsAfter.count >= 1 && approvalsAfter.approvals[0].status === 'approved', `count=${approvalsAfter.count}`);
+    check('★ القرار المصمود يبقى غير مُسلَّم للمنصة', approvalsAfter.approvals[0].delivered === false && approvalsAfter.approvals[0].simulated === true);
+
+    const repliesAfter = await (await fetch(`${BASE}/api/social/manager/replies?platform=facebook`, { headers: auth })).json();
+    check('★ الردود المسجّلة تصمد بعد إعادة التشغيل', repliesAfter.count >= 1 && repliesAfter.replies[0].delivered === false);
 
     const replay = await fetch(`${BASE}/api/social/manager/comments/ingest`, {
       method: 'POST', headers: auth, body: JSON.stringify({ platform: 'facebook', externalId: 'persist-evt-1', text: 'بكم سعر الثلاجة؟', authorName: 'أحمد' }),
