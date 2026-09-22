@@ -17,7 +17,8 @@ import {
   Share2,
 } from 'lucide-react';
 import { Post, PostStatus } from '../../types';
-import { defaultScheduleInput, toScheduleDisplay, wallClockInputValue, wallClockToEpoch } from '../../utils/scheduleTime';
+import { defaultScheduleInput, wallClockInputValue, wallClockToEpoch } from '../../utils/scheduleTime';
+import { ScheduleTimestamp } from '../common/ScheduleTimestamp';
 
 export const ApprovalWorkflowView: React.FC = () => {
   const {
@@ -221,7 +222,9 @@ export const ApprovalWorkflowView: React.FC = () => {
                 {post.scheduledFor && (
                   <div className="p-2.5 rounded-xl bg-cyan-950/40 border border-cyan-500/30 text-xs text-cyan-300 flex items-center gap-2">
                     <Calendar className="w-4 h-4 text-cyan-400 shrink-0" />
-                    <span>مجدول للإطلاق في موعد: {toScheduleDisplay(post.scheduledFor) ?? post.scheduledFor}</span>
+                    <span>
+                      مجدول للإطلاق في موعد: <ScheduleTimestamp value={post.scheduledFor} />
+                    </span>
                   </div>
                 )}
 

@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { useApp } from '../../context/AppContext';
-import { toScheduleDisplay } from '../../utils/scheduleTime';
+import { ScheduleTimestamp } from '../common/ScheduleTimestamp';
 import {
   Share2,
   Plus,
@@ -350,7 +350,12 @@ export const SocialHubView: React.FC = () => {
                     <div>
                       <h4 className="font-bold text-sm text-white">{post.title}</h4>
                       <p className="text-xs text-cyan-300">
-                        مجدول للإطلاق في: {toScheduleDisplay(post.scheduledFor) || 'الموعد المحدد'}
+                        مجدول للإطلاق في:{' '}
+                        {post.scheduledFor ? (
+                          <ScheduleTimestamp value={post.scheduledFor} />
+                        ) : (
+                          'الموعد المحدد'
+                        )}
                       </p>
                     </div>
                   </div>
