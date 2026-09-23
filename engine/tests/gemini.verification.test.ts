@@ -2,7 +2,8 @@
  * اختبار فحص اتصال Gemini من الواجهة ومسار التحقق الحي — حتمي وبلا شبكة.
  *
  * يثبت الشروط الحرجة:
- * - البرهان يخصّ النموذج الإنتاجي فقط، ولا يوجد failover صامت في مسار التحقق.
+ * - البرهان يبدأ من النموذج الإنتاجي، ويجوز أن يثبت النجاح بمرشح GA شقيق عند
+ *   ضغط المزود (503 «high demand») — بلا أي نجاح وهمي: الموديل المخدوم يُذكر صراحة.
  * - النجاح مشروط بـ verified === true، لا بـ HTTP 200 وحده.
  * - لا كشف أي مفتاح في أي رسالة عرض.
  * - مهلة صريحة تُلغي الطلب ولا تعاود الإرسال.
@@ -39,6 +40,12 @@ async function run(): Promise<void> {
   check('نجاح يعرض اسم النموذج المتحقق منه', buildGeminiSuccessText('gemini-x.y-flash', 120).includes('gemini-x.y-flash'));
   check('نجاح يعرض زمن الاستجابة إن وُجد', buildGeminiSuccessText('m', 250).includes('250ms'));
   check('عرض النجاح لا يحمل أي سر', secretFree(buildGeminiSuccessText('m', 1)));
+  // عند ضغط الموديل الإنتاجي يُعرض الموديل العامل فعلاً صراحةً بلا ادعاء.
+  const siblingText = buildGeminiSuccessText('gemini-3.6-flash', 90, false);
+  check('نجاح بمرشح شقيق يذكر السبب والموديل العامل', siblingText.includes('ضغط') && siblingText.includes('gemini-3.6-flash'));
+  check('عرض المرشح الشقيق لا يحمل أي سر', secretFree(siblingText));
+  const siblingOutcome = interpretGeminiVerification({ success: true, verified: true, model: 'gemini-3.6-flash', usedProduction: false, latencyMs: 90 });
+  check('نتيجة المرشح الشقيق نجاح مع اسم الموديل العامل', siblingOutcome.ok === true && siblingOutcome.model === 'gemini-3.6-flash' && siblingOutcome.message.includes('ضغط'));
 
   group('2) تفسير استجابة الخادم — النجاح لا يُستنتج من HTTP 200 وحده');
   const ok = interpretGeminiVerification({ success: true, verified: true, state: 'ok', model: 'gemini-x.y-flash', latencyMs: 90 });
@@ -95,22 +102,29 @@ async function run(): Promise<void> {
   await new Promise((r) => setTimeout(r, 80));
   check('التنظيف قبل المهلة يمنع الإلغاء المتأخر', t2.signal.aborted === false);
 
-  group('5) الخادم: التحقق محصور بموديل الإنتاج بلا failover');
+  group('5) الخادم: التحقق يجرّب الموديل الإنتاجي أولاً ثم مرشحات GA عند ضغط المزود');
   const routeStart = SERVER.indexOf('app.post("/api/ai/verify-provider"');
   const routeEnd = SERVER.indexOf('// Health endpoint', routeStart);
   const route = SERVER.slice(routeStart, routeEnd > 0 ? routeEnd : routeStart + 6000);
   check('المسار مصادق عليه لمالك النظام فقط', SERVER.includes('app.post("/api/ai/verify-provider", requireOwner'));
-  check('التحقق يستخدم PRODUCTION_MODEL حصراً', route.includes('const model = PRODUCTION_MODEL'));
-  check('لا حلقة على مرشحين بدلاء داخل مسار التحقق (لا failover)', !route.includes('for (const model of candidates)') && !route.includes('resolveModelCandidates'));
+  check('التحقق يبدأ من PRODUCTION_MODEL', route.includes('const model = PRODUCTION_MODEL') && route.includes('candidates.unshift(model)'));
+  // سلوك مقصود (2026-09-23): ضغط مزود (503 «high demand») على موديل واحد لا يعني
+  // تعطل المزود؛ المحرك وقت التشغيل يتجاوز لمرشح GA شقيق، فيجب أن يحاكيه الفحص
+  // وإلا أعلن تعطلاً بينما النظام يعمل فعلاً.
+  check('يجرّب مرشحي GA بترتيب عند فشل الضغط', route.includes('resolveModelCandidates') && route.includes('for (const candidate of candidates)'));
   const routeCode = route.split('\n').filter((l) => !l.trim().startsWith('//') && !l.trim().startsWith('*') && !l.trim().startsWith('/*')).join('\n');
-  check('لا يوجد cache/retry صريح في مسار التحقق', !/retry/i.test(routeCode) && !routeCode.includes('aiEngine'));
+  check('لا retry أسّي صريح في مسار التحقق', !/withRetry|maxAttempts/i.test(routeCode));
   check('المسار لا يعيد 503 أبداً', !route.includes('status(503)') && !route.includes('res.status(503'));
-  check('استجابة النجاح تحمل model و candidatesTried=1', route.includes('candidatesTried: 1'));
+  check('استجابة النجاح تحمل الموديل المخدوم فعلاً', route.includes('model: servedModel') && route.includes('usedProduction'));
+  check('يُميَّز النجاح عبر مرشح شقيق عن نجاح الموديل الإنتاجي', route.includes('usedProduction = servedModel === model'));
+  check('استجابة الفشل تدرج المرشحين المُجرَّبين', route.includes('attempted: tried') && route.includes('candidatesTried: tried.length'));
   // المهلة الإدارية: ثابتة 30 ثانية لمسار التحقق، وغير مشتقة من AI_TIMEOUT_MS.
   check('مهلة التحقق الحي ثابتة 30 ثانية', SERVER.includes('const LIVE_VERIFY_TIMEOUT_MS = 30_000'));
   check('مسار التحقق يستخدم مهلة 30s لا AI_TIMEOUT_MS', route.includes('LIVE_VERIFY_TIMEOUT_MS') && !route.includes('AI_TIMEOUT_MS'));
   // أي طريقة غير POST تُرفض 405 صريحة قبل المصادقة، فلا يظهر مسار الفحص عبر GET.
   check('طريقة غير POST على مسار التحقق => 405', /app\.all\("\/api\/ai\/verify-provider"[\s\S]{0,200}?status\(405\)/.test(SERVER) && !SERVER.includes('app.get("/api/ai/verify-provider"'));
+  check('ميَزانية مهلة موحّدة لكل المرشحين (لا تضاعف)', route.includes('const deadline = started + LIVE_VERIFY_TIMEOUT_MS'));
+  check('لا تكرار للمرشح الإنتاجي عند بنائه', route.includes('if (!candidates.includes(model)) candidates.unshift(model)'));
 
   group('5b) التشخيص الأمين: عطل المزود لا يُنسب إلى المفتاح');
   // كان الفشل يعرض دائماً «راجع صلاحية GEMINI_API_KEY» حتى مع 503/429.

@@ -2719,77 +2719,106 @@ app.post("/api/ai/verify-provider", requireOwner, async (_req, res) => {
     return res.status(200).json({ success: false, verified: false, state: 'failed', model, detail: aiLiveVerification.detail, errorKind: aiLiveVerification.errorKind, hint: aiLiveVerification.hint });
   }
 
+
   const started = Date.now();
-  // محاولة واحدة فقط على موديل الإنتاج، بلا retry وبلا بديل.
-  try {
+  // مهلة واحدة مشتركة لكل محاولات المرشحين حتى لا يتضاعف زمن الفحص الإداري.
+  const deadline = started + LIVE_VERIFY_TIMEOUT_MS;
+  const prompt = 'اكتب كلمة: جاهز';
+  // نجرّب موديل الإنتاج أولاً ثم المرشحات GA بالترتيب. هذا مطابق لسلوك المحرك
+  // وقت التشغيل: موديل واحد مشغول (503 «high demand») لا يعني تعطل المزود —
+  // بل يعني تجاوز الضغط إلى موديل GA شقيق يعمل. بلا هذا التجاوز كان الفحص
+  // يفشل بينما المحرك الفعلي ينجح، فيُعلن النظام أن Gemini معطّل وهو يعمل.
+  const candidates = resolveModelCandidates(process.env.GEMINI_MODEL);
+  if (!candidates.includes(model)) candidates.unshift(model);
+
+  const tried: Array<{ model: string; errorKind: string; status: number | null }> = [];
+  let servedModel: string | null = null;
+  let text = '';
+  let lastInfo: AiErrorInfo | null = null;
+
+  for (const candidate of candidates) {
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) { lastInfo = { kind: 'timeout', status: null, retryable: true, safeMessage: 'انتهت مهلة الفحص قبل تجربة المرشحين جميعاً.' }; break; }
+    // طلب حقيقي واحد لكل مرشح، بلا retry وبلا cache — نفس شروط الفحص الأصلي.
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), LIVE_VERIFY_TIMEOUT_MS);
-    let text = '';
+    const timer = setTimeout(() => controller.abort(), remaining);
     try {
-      text = await provider.generate({ model, prompt: 'اكتب كلمة: جاهز', signal: controller.signal });
+      const out = await provider.generate({ model: candidate, prompt, signal: controller.signal });
+      const trimmed = (out || '').trim();
+      if (!trimmed) {
+        lastInfo = { kind: 'unknown', status: null, retryable: false, safeMessage: 'المزود أعاد استجابة فارغة.' };
+        tried.push({ model: candidate, errorKind: 'empty_response', status: null });
+        continue;
+      }
+      text = trimmed;
+      servedModel = candidate;
+      break;
+    } catch (err: any) {
+      const info = classifyAiError(err, candidate);
+      lastInfo = info;
+      tried.push({ model: candidate, errorKind: info.kind, status: info.status });
+      aiEvents.push({ at: new Date().toISOString(), type: 'verify_model_failed', detail: diagnosticLabel(info) });
+      // خطأ مفتاح/مصادقة يؤثر على كل الموديلات بالتساوي، فلا فائدة من تجربة شقيق.
+      if (info.kind === 'auth' || info.kind === 'invalid_request') break;
     } finally {
       clearTimeout(timer);
     }
-    const trimmed = (text || '').trim();
-    if (!trimmed) {
-      aiLiveVerification.state = 'failed';
-      aiLiveVerification.detail = `الموديل الإنتاجي ${model} أعاد استجابة فارغة.`;
-      aiLiveVerification.model = null;
-      aiLiveVerification.at = new Date().toISOString();
-      aiLiveVerification.errorKind = 'empty_response';
-      aiLiveVerification.hint = 'المزود استجاب بنجاح تقني لكن بلا نص؛ هذه حالة استجابة غير متوقعة من المزود ولا علاقة للمفتاح بها. أعد الفحص.';
-      return res.status(200).json({
-        success: false,
-        verified: false,
-        state: 'failed',
-        model,
-        detail: aiLiveVerification.detail,
-        errorKind: aiLiveVerification.errorKind,
-        modelPolicy: envPolicy,
-        hint: aiLiveVerification.hint,
-      });
-    }
+  }
+
+  if (servedModel) {
+    const usedProduction = servedModel === model;
     aiLiveVerification.state = 'ok';
-    aiLiveVerification.detail = `تم إثبات الاتصال بالموديل الإنتاجي ${model} بطلب حقيقي واحد.`;
-    aiLiveVerification.model = model;
+    aiLiveVerification.detail = usedProduction
+      ? `تم إثبات الاتصال بالموديل الإنتاجي ${servedModel} بطلب حقيقي واحد.`
+      : `الموديل الإنتاجي ${model} غير متاح مؤقتاً (ضغط)، وأُثبت الاتصال بمرشح GA شقيق ${servedModel} بطلب حقيقي.`;
+    aiLiveVerification.model = servedModel;
     aiLiveVerification.at = new Date().toISOString();
     aiLiveVerification.errorKind = null;
-    aiLiveVerification.hint = null;
-    audit('system', 'ai_verify_provider', `model=${model}`);
+    aiLiveVerification.hint = usedProduction
+      ? null
+      : `الموديل الإنتاجي ${model} واجه ضغط طلب مرتفع (503) وليس خطأ مفتاح/كود. النظام يستخدم المرشح ${servedModel} فعلياً؛ أعد الفحص لاحقاً ليتحول الموديل الإنتاجي تلقائياً عند توفره.`;
+    audit('system', 'ai_verify_provider', `model=${servedModel}`);
     return res.json({
       success: true,
       verified: true,
       state: 'ok',
-      model,
+      model: servedModel,
+      productionModel: model,
+      usedProduction,
       latencyMs: Date.now() - started,
-      responsePreview: trimmed.slice(0, 80),
+      responsePreview: text.slice(0, 80),
       modelPolicy: envPolicy,
-      candidatesTried: 1,
-      note: 'تم إثبات الموديل الإنتاجي بطلب حقيقي واحد. لم تُستهلك حصة إضافية ولا يوجد failover.',
-    });
-  } catch (err: any) {
-    // فشل الموديل الأساسي (503/429/أي خطأ) = فشل صريح، بلا رجوع لموديل آخر.
-    const info = classifyAiError(err, model);
-    aiEvents.push({ at: new Date().toISOString(), type: 'verify_failed', detail: diagnosticLabel(info) });
-    aiLiveVerification.state = 'failed';
-    aiLiveVerification.detail = `فشل التحقق من الموديل الإنتاجي ${model}: ${info.kind}${info.status ? `/${info.status}` : ''}.`;
-    aiLiveVerification.model = null;
-    aiLiveVerification.at = new Date().toISOString();
-    aiLiveVerification.errorKind = info.kind;
-    aiLiveVerification.hint = verificationHintFor(info);
-    return res.status(200).json({
-      success: false,
-      verified: false,
-      state: 'failed',
-      model,
-      detail: aiLiveVerification.detail,
-      errorKind: info.kind,
-      status: info.status,
-      safeMessage: info.safeMessage,
-      modelPolicy: envPolicy,
-      hint: aiLiveVerification.hint,
+      candidatesTried: tried.length + 1,
+      attempted: tried,
+      note: usedProduction
+        ? 'تم إثبات الموديل الإنتاجي بطلب حقيقي واحد.'
+        : 'الموديل الإنتاجي تحت ضغط مؤقت؛ أُثبت الاتصال بمرشح GA شقيق بطلب حقيقي. لا يوجد خطأ في المفتاح أو الكود.',
     });
   }
+
+  // فشل كل المرشحين = فشل صريح، بلا ادعاء نجاح.
+  const info = lastInfo ?? { kind: 'unknown', status: null, retryable: false, safeMessage: 'فشل غير مصنّف من المزود.' } as AiErrorInfo;
+  aiEvents.push({ at: new Date().toISOString(), type: 'verify_failed', detail: diagnosticLabel(info) });
+  aiLiveVerification.state = 'failed';
+  aiLiveVerification.detail = `فشل التحقق من كل مرشحي GA (${candidates.length}): آخر فئة ${info.kind}${info.status ? `/${info.status}` : ''}.`;
+  aiLiveVerification.model = null;
+  aiLiveVerification.at = new Date().toISOString();
+  aiLiveVerification.errorKind = info.kind;
+  aiLiveVerification.hint = verificationHintFor(info);
+  return res.status(200).json({
+    success: false,
+    verified: false,
+    state: 'failed',
+    model,
+    detail: aiLiveVerification.detail,
+    errorKind: info.kind,
+    status: info.status,
+    safeMessage: info.safeMessage,
+    modelPolicy: envPolicy,
+    candidatesTried: tried.length,
+    attempted: tried,
+    hint: aiLiveVerification.hint,
+  });
 });
 
 // Health endpoint

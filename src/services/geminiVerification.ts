@@ -6,7 +6,8 @@
  * الخادم إلى عرض آمن، ويوفّر إشارة إلغاء بمهلة صريحة لا تعاود الإرسال.
  *
  * المبادئ:
- * - البرهان يخصّ نموذج الإنتاج فقط؛ لا نجاح بديل ولا failover صامت.
+ * - البرهان يبدأ من نموذج الإنتاج؛ عند ضغط المزود يجوز إثبات النجاح بمرشح GA
+ *   شقيق، ويُعرض اسم الموديل المخدوم فعلاً صراحةً (لا نجاح وهمي).
  * - لا يُعرض أي مفتاح أو تفصيل سري؛ رسالة الفشل عامة ومختصرة.
  */
 
@@ -15,6 +16,8 @@ export interface GeminiVerificationResponse {
   verified?: boolean;
   state?: string;
   model?: string | null;
+  productionModel?: string | null;
+  usedProduction?: boolean;
   latencyMs?: number;
   safeMessage?: string;
   detail?: string;
@@ -49,9 +52,13 @@ export function createTimeoutSignal(timeoutMs: number): { signal: AbortSignal; c
 }
 
 /** يحوّل نتيجة الخادم الناجحة إلى عرض آمن: نجاح + اسم النموذج المتحقق منه. */
-export function buildGeminiSuccessText(model?: string | null, latencyMs?: number | null): string {
+export function buildGeminiSuccessText(model?: string | null, latencyMs?: number | null, usedProduction?: boolean): string {
   const name = (model || '').trim();
-  const base = name ? `Gemini متصل — النموذج المتحقق منه: ${name}` : 'Gemini متصل.';
+  const base = name
+    ? usedProduction === false
+      ? `Gemini متصل — الموديل الإنتاجي تحت ضغط مؤقت، والنموذج العامل حالياً: ${name}`
+      : `Gemini متصل — النموذج المتحقق منه: ${name}`
+    : 'Gemini متصل.';
   const ms = Number(latencyMs);
   return Number.isFinite(ms) && ms > 0 ? `${base} (${ms}ms)` : base;
 }
@@ -70,8 +77,8 @@ export function interpretGeminiVerification(data: GeminiVerificationResponse | n
       ok: true,
       model: (data?.model as string) || null,
       latencyMs: typeof data?.latencyMs === 'number' ? data.latencyMs : null,
-      message: buildGeminiSuccessText(data?.model as string, data?.latencyMs as number),
-      hint: null,
+      message: buildGeminiSuccessText(data?.model as string, data?.latencyMs as number, data?.usedProduction !== false),
+      hint: typeof data?.hint === 'string' && data.hint.trim() ? data.hint.trim() : null,
     };
   }
   // رسالة الفشل: عامة ومختصرة، مع تفصيل الخادم غير السرّي إن وُجد.

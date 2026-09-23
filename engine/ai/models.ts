@@ -26,6 +26,9 @@ export const DEFAULT_MODEL_CANDIDATES: readonly string[] = [
   'gemini-3.7-flash',
   'gemini-3.6-flash',
   'gemini-3.5-flash',
+  // احتياطي أخير: نموذج GA أخف وأقل عرضة لضغط الطلب المرتفع (تحقّق حي 2026-09-23:
+  // نجح بـ200 بينما 3.8/3.7/3.5 أعادت 503 «high demand» في نفس اللحظة).
+  'gemini-3.5-flash-lite',
 ] as const;
 
 /**
