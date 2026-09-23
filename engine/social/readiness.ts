@@ -20,6 +20,9 @@ import type { PlatformId } from './adapter';
 
 export type ReadinessLevel = 'READY' | 'EXTERNAL_SETUP_REQUIRED' | 'NOT_SUPPORTED';
 
+/** مستوى الحالة العملي المعروض في مصفوفة المالك (يشمل الحجب). */
+export type OperationalLevel = ReadinessLevel | 'BLOCKED';
+
 export type ImplementationStatus =
   | 'CONNECTOR_READY'
   | 'FOUNDATION_READY'
@@ -55,6 +58,39 @@ export interface PlatformReadiness {
   externalSetup: string[];
   implementationStatus: ImplementationStatus;
   note: string;
+}
+
+/** صف جاهزية غني يضيف حالة الاعتماد والاتصال والإجراء التالي للمالك. */
+export interface PlatformReadinessDetail extends PlatformReadiness {
+  /** حالة البيانات اللازمة لإتمام الاتصال (أسماء متغيرات بيئة ناقصة إن وُجدت). */
+  credentials: { configured: boolean; missing: string[] };
+  /** حالة بيانات webhook. */
+  webhookCredentials: { configured: boolean; missing: string[] };
+  /** الحالة التشغيلية الدقيقة الآن (من control plane): CODE_READY/CONNECTED/OPERATIONAL... */
+  operationalState: string;
+  /** هل الاتصال قائم الآن؟ */
+  connected: boolean;
+  providerVerified: boolean;
+  /**
+   * مستويات العمليات التشغيلية الفعلية الآن: READY إن كان الحساب موثقاً وكانت
+   * القدرة مدعومة، وBLOCKED إن كانت مدعومة لكن الحساب غير موثق، وNOT_SUPPORTED
+   * إن كانت المنصة لا توفرها. منفصلة عن مستويات الكود أعلاه حتى لا يختلط
+   * «منفّذ في الكود» بـ«يعمل الآن».
+   */
+  operational: {
+    connection: OperationalLevel;
+    verification: OperationalLevel;
+    webhook: OperationalLevel;
+    read: OperationalLevel;
+    reply: OperationalLevel;
+    publish: OperationalLevel;
+    schedule: OperationalLevel;
+    analytics: OperationalLevel;
+  };
+  /** سبب الحجب الرئيسي (إن وُجد). */
+  blockingReason: string | null;
+  /** الإجراء التالي المحدد. */
+  nextAction: string;
 }
 
 /**

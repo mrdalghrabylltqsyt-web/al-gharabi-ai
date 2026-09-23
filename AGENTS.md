@@ -363,6 +363,54 @@ WhatsApp يستخدم Cloud API token وليس OAuth، وTelegram bot token، ف
 **حالة التكامل الفعلية:** Telegram هو الموصل الوحيد المنفّذ (CONNECTOR_READY). بقية المنصات
 أساسها جاهز (FOUNDATION_READY) وتنتظر إجراءً خارجياً (تطبيق مطوّر/مراجعة/صلاحيات/Redirect URI).
 
+## طبقة التحكم التشغيلي ومركز ربط المنصات — Batch 7 (2026-09-23)
+
+نقل المشروع من «أساس تكامل» إلى **Social Operations Control Plane**: طبقة موحّدة تعرف
+وتدير دورة كل منصة كاملة، مع فصل صريح للحالات وتسلسل بوابات ملزم.
+
+**فصل الحالات الملزم (لا خلط):**
+`CODE_READY` (منفّذ بالكود) ≠ `EXTERNAL_SETUP_REQUIRED` ≠ `CONFIGURED` (الاعتماد حاضر)
+≠ `CONNECTED` (اتصال قائم) ≠ `VERIFIED` (أثبته المزود) ≠ `OPERATIONAL` (تشغيل حقيقي مثبت)
+≠ `NOT_SUPPORTED` / `FAILED` / `DISCONNECTED`. **لا يُعلن OPERATIONAL إلا باتصال موثق
+وموصل منفّذ** (`providerVerified === true && realConnector`).
+
+**تسلسل بوابات كل عملية:** Capability → Connection → Verification → Safety/Approval →
+Provider Operation. التصنيف حتمي محلي (متاح دائماً، لا حصة ولا اتصال).
+
+وحدات جديدة (منطق خالص قابل للاختبار):
+- `engine/social/credentials.ts`: كشف إعداد الاعتماد لكل منصة/غرض (اتصال/webhook/نشر)
+  **بأسماء متغيرات البيئة فقط** — لا يُعاد أي قيمة أبداً. يدعم بدائل (Instagram يرث
+  بيانات Facebook). `inspectPlatformCredentials`, `needsExternalCredentials`, `CREDENTIAL_SPECS`.
+- `engine/social/operations.ts`: طبقة التحكم — `computePlatformStatus` يحسب الحالة الدقيقة
+  من (جاهزية الكود + الاعتماد + الاتصال الحي)، وينتج `blockingReason` و`nextAction` وبوابات
+  العمليات الثماني. `buildReadinessDetails` يبني صفوف مركز الربط الغنية (levels للكود +
+  `operational` للحالة الآن + `operationalState` + `credentials` + `webhookCredentials`).
+  `computeAllPlatformStatuses` و`controlSummary`.
+
+مسارات الخادم الجديدة (محمية):
+- `GET /api/platforms/control-plane`: حالة كل منصة + بوابات العمليات الثماني + الملخص.
+- `GET /api/platforms/:platform/control`: منصة واحدة + أسماء الاعتماد المطلوبة.
+- `GET /api/platforms/external-setup`: خطوات الإعداد الخارجي وأسماء المتغيرات (بلا أسرار).
+- `GET /api/platforms/readiness-matrix`: أُثرِي بحقول `operational`/`operationalState`/
+  `blockingReason`/`nextAction`/`credentials` مع الحفاظ على حقل `connection` السابق.
+
+واجهة: `src/components/social/PlatformConnectionCenter.tsx` — **مركز ربط المنصات** (تبويب
+`platform_connections` في Sidebar، للمالك): يعرض لكل منصة حالتها الدقيقة، ما ينقص، الإجراء
+التالي، بوابات العمليات، وخطوات الإعداد الخارجي. الأزرار مرتبطة بالحالة الحقيقية: «بدء الربط»
+يظهر فقط حين يكون المسار جاهزاً، و«إكمال الإعداد الخارجي» حين يلزم إجراء من المزود، و«فصل»
+حين تكون متصلة.
+
+اختبارات: `engine/tests/platform.operations.test.ts` (48 فحصاً وحدة: فصل الحالات، بوابات
+العمليات، نقاء الاعتماد، لا OPERATIONAL بلا توثيق) و`engine/tests/platform.control.integration.test.ts`
+(30 فحصاً خادم حقيقي: تصريح 401، الحالات، الإعداد الخارجي بلا أسرار). final-audit: 103 فحصاً
+(`operations-control-plane`, `credentials-introspection`, `state-separation-explicit`,
+`no-operational-without-verify`, `control-plane-endpoints`, `readiness-matrix-enriched`,
+`external-setup-names-only`, `connection-center-ui`, `control-plane-tests`).
+
+**حالة المنصات التشغيلية الآن:** Telegram فقط يمكن أن يبلغ OPERATIONAL (موصل منفّذ)؛ بقية
+المنصات `EXTERNAL_SETUP_REQUIRED` (يلزم تطبيق مطوّر/مراجعة/صلاحيات/Redirect لدى المزود).
+لا تُنشئ المنصة أي حساب أو اتصال نيابة عن المالك، ولا تعرض أي سرّ.
+
 ## نمط الكود
 - تعليقات عربية موجزة تشرح «لماذا» فقط، دون شرح ما يفعله الكود.
 - الأنواع في `src/types/index.ts` يجب أن تطابق استجابات الخادم فعلياً؛ توجد فحوص عقد في `engine/tests/social.routes.test.ts` تكشف أي انحراف.

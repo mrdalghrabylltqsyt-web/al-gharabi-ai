@@ -10,6 +10,7 @@ import { Sidebar } from './components/common/Sidebar';
 import { DashboardView } from './components/dashboard/DashboardView';
 import { SocialHubView } from './components/social/SocialHubView';
 import { SocialManagerView } from './components/social/SocialManagerView';
+import { PlatformConnectionCenter } from './components/social/PlatformConnectionCenter';
 import { ContentEngineView } from './components/content/ContentEngineView';
 import { ApprovalWorkflowView } from './components/approval/ApprovalWorkflowView';
 import { CustomerCenterView } from './components/customers/CustomerCenterView';
@@ -83,6 +84,7 @@ const AppContent: React.FC = () => {
       case 'executive': return <ExecutiveCommandView />;
       case 'social': return <SocialHubView />;
       case 'social_manager': return <SocialManagerView />;
+      case 'platform_connections': return <PlatformConnectionCenter />;
       case 'content': return <ContentEngineView />;
       case 'approval': return <ApprovalWorkflowView />;
       case 'customers': return <CustomerCenterView />;

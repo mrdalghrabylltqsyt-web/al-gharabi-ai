@@ -34,6 +34,8 @@ import {
   OAUTH_STATE_TTL_MS,
 } from "./engine/social/oauth";
 import { PLATFORM_READINESS, readinessFor, readinessSummary } from "./engine/social/readiness";
+import { buildReadinessDetails, computeAllPlatformStatuses, computePlatformStatus, controlSummary, type LiveConnection } from "./engine/social/operations";
+import { inspectPlatformCredentials, CREDENTIAL_SPECS, GLOBAL_CREDENTIALS } from "./engine/social/credentials";
 import {
   secretHeaderVerifier,
   hmacSignatureVerifier,
@@ -1524,11 +1526,40 @@ app.get("/api/platforms/production-readiness", authenticateToken, (_req,res)=>{
  * لا تحمل أي حالة اتصال تشغيلية — تلك تُقرأ من `connection` منفصلاً.
  */
 app.get("/api/platforms/readiness-matrix", authenticateToken, (_req,res)=>{
-  const platforms = PLATFORM_READINESS.map((r)=>{
-    const c:any=platformConnections.get(r.platform);
-    return { ...r, connection: { status: c?.status||"disconnected", providerVerified: Boolean(c?.providerVerified), accountName: c?.accountName||null } };
-  });
-  res.json({success:true,generatedAt:new Date().toISOString(),projectVersion:PROJECT_VERSION,summary:readinessSummary(),platforms,note:"المصفوفة تصف الكود والمتطلبات الخارجية. حالة «متصل» تُقرأ من حقل connection ولا تُشتق من الجاهزية."});
+  const liveFor = (p:string): LiveConnection => { const c:any=platformConnections.get(p); return { status: c?.status||"disconnected", providerVerified: Boolean(c?.providerVerified), accountName: c?.accountName||null }; };
+  // الصفوف الغنية: جاهزية الكود + حالة الاعتماد + الحالة التشغيلية الآن + الحجب والإجراء التالي.
+  const platforms = buildReadinessDetails(liveFor, process.env).map((r)=>({ ...r, connection: { status: r.connected ? "connected" : "disconnected", providerVerified: r.providerVerified, accountName: null } }));
+  res.json({success:true,generatedAt:new Date().toISOString(),projectVersion:PROJECT_VERSION,summary:readinessSummary(),platforms,note:"levels أعلاه تصف الكود؛ operational تصف ما يعمل الآن فعلاً، وstate هي الحالة الجامعة الدقيقة. لا تحمل أي سرّ."});
+});
+
+/**
+ * مركز ربط المنصات (Batch 7): حالة كل منصة بدقة + ما ينقص + الإجراء التالي،
+ * مع بوابات العمليات الثماني. لا يحمل أي قيمة سرّية — أسماء المتغيرات فقط.
+ */
+app.get("/api/platforms/control-plane", authenticateToken, (_req,res)=>{
+  const liveFor = (p:string): LiveConnection => { const c:any=platformConnections.get(p); return { status: c?.status||"disconnected", providerVerified: Boolean(c?.providerVerified), accountName: c?.accountName||null }; };
+  const statuses = computeAllPlatformStatuses(liveFor, process.env);
+  res.json({ success:true, generatedAt:new Date().toISOString(), projectVersion:PROJECT_VERSION, summary:controlSummary(statuses), platforms:statuses, note:"الحالات منفصلة: CODE_READY ≠ CONFIGURED ≠ CONNECTED ≠ VERIFIED ≠ OPERATIONAL. لا تُعلن OPERATIONAL إلا باتصال موثق وموصل منفّذ." });
+});
+
+app.get("/api/platforms/:platform/control", authenticateToken, (req,res)=>{
+  const platform = req.params.platform;
+  if(!isSupportedPlatform(platform)) return res.status(404).json({success:false,error:"منصة غير مدعومة."});
+  const c:any=platformConnections.get(platform);
+  const status = computePlatformStatus(platform as PlatformId, { status: c?.status||"disconnected", providerVerified: Boolean(c?.providerVerified), accountName: c?.accountName||null }, process.env);
+  if(!status) return res.status(404).json({success:false,error:"منصة غير مدعومة."});
+  const creds = inspectPlatformCredentials(platform as PlatformId, process.env);
+  res.json({ success:true, control:status, credentials:{ connection:creds.connection, webhook:creds.webhook, requiredEnvNames:creds.requiredEnvNames }, note:"أسماء متغيرات فقط، بلا قيم." });
+});
+
+/**
+ * متطلبات الإعداد الخارجي لكل منصة (بلا أسرار): ما على المالك فعله لدى المزود.
+ * يقرأ من CREDENTIAL_SPECS (أسماء) + readiness.externalSetup (خطوات).
+ */
+app.get("/api/platforms/external-setup", authenticateToken, (_req,res)=>{
+  const rows = buildReadinessDetails((p)=>{ const c:any=platformConnections.get(p); return { status: c?.status||"disconnected", providerVerified: Boolean(c?.providerVerified) }; }, process.env)
+    .map((r)=>({ platform:r.platform, displayName:r.displayName, credentialMode:r.credentialMode, requiredEnvNames:inspectPlatformCredentials(r.platform, process.env).requiredEnvNames, steps:r.externalSetup, blockingReason:r.blockingReason, nextAction:r.nextAction, operationalState:r.operationalState }));
+  res.json({ success:true, generatedAt:new Date().toISOString(), platforms:rows, note:"خطوات وأسماء متغيرات فقط — لا أسرار. لا تُنشأ حسابات نيابة عن المالك." });
 });
 
 app.get("/api/platforms/:platform/readiness", authenticateToken, (req,res)=>{

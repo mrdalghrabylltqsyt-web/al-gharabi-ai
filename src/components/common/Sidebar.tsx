@@ -24,6 +24,7 @@ import {
   Building2,
   Activity,
   Brain,
+  PlugZap,
 } from 'lucide-react';
 
 interface SidebarProps {
@@ -144,6 +145,14 @@ export const Sidebar: React.FC<SidebarProps> = ({ mobileOpen, onCloseMobile }) =
       badge: 'إدارة',
       badgeColor: 'bg-emerald-500/20 text-emerald-300 border-emerald-500/30',
       desc: 'إدارة المنصات والتعليقات والنشر والتحليل',
+    },
+    {
+      id: 'platform_connections',
+      label: 'مركز ربط المنصات',
+      icon: PlugZap,
+      badge: currentUser?.role === 'owner' ? 'Owner' : null,
+      badgeColor: 'bg-emerald-500/20 text-emerald-300 border-emerald-500/30',
+      desc: 'حالة كل منصة والإجراء التالي لتفعيلها',
     },
     {
       id: 'brain_manager',

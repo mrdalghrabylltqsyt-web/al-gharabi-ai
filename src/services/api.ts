@@ -442,6 +442,10 @@ ${payload.topic || payload.productName || 'أنظمة وحلول التقسيط 
   async getPlatformReadiness() { const res = await fetch('/api/platforms/readiness', { headers: getAuthHeaders() }); const data = await res.json(); if(!res.ok || !data.success) throw new Error(data.error || 'تعذر تحميل جاهزية المنصات'); return data; },
   /** مصفوفة جاهزية المنصات (Batch 6): قدرات/إمكانات كل منصة من الكود الحقيقي. */
   async getReadinessMatrix() { const res = await fetch('/api/platforms/readiness-matrix', { headers: getAuthHeaders() }); const data = await res.json(); if(!res.ok || !data.success) throw new Error(data.error || 'تعذر تحميل مصفوفة الجاهزية'); return data; },
+  /** مركز ربط المنصات (Batch 7): الحالة الدقيقة لكل منصة + بوابات العمليات. */
+  async getPlatformControlPlane() { const res = await fetch('/api/platforms/control-plane', { headers: getAuthHeaders() }); const data = await res.json(); if(!res.ok || !data.success) throw new Error(data.error || 'تعذر تحميل مركز ربط المنصات'); return data; },
+  /** متطلبات الإعداد الخارجي لكل منصة (أسماء متغيرات وخطوات، بلا أسرار). */
+  async getPlatformExternalSetup() { const res = await fetch('/api/platforms/external-setup', { headers: getAuthHeaders() }); const data = await res.json(); if(!res.ok || !data.success) throw new Error(data.error || 'تعذر تحميل متطلبات الإعداد'); return data; },
 
   async getPlatformHealth(platform: string) { const res = await fetch(`/api/platforms/${encodeURIComponent(platform)}/health`, { headers: getAuthHeaders() }); const data = await res.json(); if(!res.ok || !data.success) throw new Error(data.error || 'تعذر فحص المنصة'); return data; },
 
