@@ -53,7 +53,11 @@ function run(): void {
   check('بلا حالة اتصال، كل المنصات disconnected', adapters.every((a) => a.describe().connection === 'disconnected'));
   check('productionReady=false دائماً (لا موصل إرسال)', adapters.every((a) => a.describe().productionReady === false));
   const connectedOnly = buildAdapters(() => ({ status: 'connected', providerVerified: true, accountId: 'x' }));
-  check('الاتصال الموثق لا يفعّل جاهزية إنتاجية', connectedOnly.every((a) => a.describe().productionReady === false));
+  // الجاهزية الإنتاجية الآن مرتبطة بوجود موصل حقيقي منفّذ AND اتصال موثق.
+  // Telegram هو أول موصل حقيقي؛ بقية المنصات تبقى غير جاهزة إنتاجياً حتى يُنفّذ موصلها.
+  check('الجاهزية الإنتاجية = موصل حقيقي + اتصال موثق فقط', connectedOnly.every((a) => a.describe().productionReady === (a.platform === 'telegram' && a.describe().providerVerified === true)));
+  check('المنصات بلا موصل حقيقي لا تُعلن جاهزية إنتاجية', connectedOnly.filter((a) => a.platform !== 'telegram').every((a) => a.describe().productionReady === false));
+  check('المنصات بلا موصل حقيقي تعلن انعدام الموصل', connectedOnly.filter((a) => a.platform !== 'telegram').every((a) => (a.describe() as any).realConnector === false));
   check('وجود capability لا يعني اتصالاً', connectedOnly.find((a) => a.platform === 'facebook')!.supports('comment_reply') === true);
 
   check('isSupportedPlatform يرفض المجهول', !isSupportedPlatform('myspace') && isSupportedPlatform('facebook'));

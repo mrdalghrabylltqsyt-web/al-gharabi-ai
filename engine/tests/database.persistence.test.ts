@@ -15,6 +15,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { issueChallengeCode } from '../auth/challenge';
+import { createTelegramMock, startTelegramMockServer } from './helpers/telegramMock';
 
 let passed = 0;
 const failures: string[] = [];
@@ -35,7 +36,7 @@ const REPO_ROOT = process.cwd();
 const tsxCli = join(REPO_ROOT, 'node_modules', 'tsx', 'dist', 'cli.mjs');
 const serverEntry = join(REPO_ROOT, 'server.ts');
 
-function startApp(port: number, cwd: string): { proc: ChildProcess; log: () => string } {
+function startApp(port: number, cwd: string, tgBase: string): { proc: ChildProcess; log: () => string } {
   let log = '';
   const env: Record<string, string> = {
     ...(process.env as Record<string, string>),
@@ -46,6 +47,11 @@ function startApp(port: number, cwd: string): { proc: ChildProcess; log: () => s
     APP_URL: `http://127.0.0.1:${port}`,
     DATABASE_URL: DB_URL,
     GHARABI_PREVIEW_TOKEN: PREVIEW_TOKEN,
+    // موصل Telegram الحقيقي مقابل خادم وهمي محلي (لا مزود حقيقي ولا حصة).
+    TELEGRAM_API_BASE: tgBase,
+    TELEGRAM_BOT_TOKEN: '111222333:DB_TEST_TOKEN_NOT_REAL',
+    TELEGRAM_WEBHOOK_SECRET: 'db_test_webhook_secret_1234',
+    PLATFORM_TOKEN_ENCRYPTION_KEY: crypto.randomBytes(32).toString('hex'),
   };
   const proc = spawn(process.execPath, [tsxCli, serverEntry], { cwd, env, stdio: ['ignore', 'pipe', 'pipe'] });
   proc.stdout?.on('data', (d) => (log += String(d)));
@@ -81,9 +87,12 @@ async function run(): Promise<void> {
   const emptyDirB = mkdtempSync(join(tmpdir(), 'gharabi-db-b-'));
 
   let app: { proc: ChildProcess; log: () => string } | null = null;
+  // خادم Telegram وهمي محلي: موصل حقيقي بلا مزود خارجي.
+  const TG_PORT = 6400 + Math.floor(Math.random() * 200);
+  const tg = await startTelegramMockServer(TG_PORT, createTelegramMock());
 
   try {
-    app = startApp(PORT, emptyDirA);
+    app = startApp(PORT, emptyDirA, tg.base);
     check('الخادم يقلع مع DATABASE_URL', await waitForHealth(BASE), app.log().slice(0, 500));
 
     const health = await (await fetch(`${BASE}/api/health`)).json();
@@ -119,7 +128,7 @@ async function run(): Promise<void> {
     // إعادة التشغيل بمجلد محلي فارغ تماماً: الحالة تُقرأ من Postgres.
     await stop(app.proc);
     app = null;
-    app = startApp(PORT, emptyDirB);
+    app = startApp(PORT, emptyDirB, tg.base);
     check('الخادم الثاني (مجلد فارغ) يقلع', await waitForHealth(BASE), app.log().slice(0, 500));
     check('لا ملف حالة محلي في المجلد الثاني', !(await import('node:fs')).existsSync(join(emptyDirB, '.gharabi-state.json')));
     // قد ينشئ الخادم ملفاً عند أول كتابة، لذا نتحقق من الإبطال لا من الملف.
@@ -132,10 +141,10 @@ async function run(): Promise<void> {
 
     // ---- ثبات دورة التعليقات/الردود عبر Postgres (Create → Persist → Restart → Read) ----
     const socialAuth = { 'Content-Type': 'application/json', Authorization: `Bearer ${durableToken}` };
-    const conn = await fetch(`${BASE}/api/platforms/facebook/connection-callback`, {
-      method: 'POST', headers: socialAuth, body: JSON.stringify({ providerVerified: true, accountId: 'db-test-fb', accountName: 'اختبار' }),
+    const conn = await fetch(`${BASE}/api/platforms/telegram/configure`, {
+      method: 'POST', headers: socialAuth, body: JSON.stringify({}),
     });
-    check('تسجيل اتصال موثق للاختبار', conn.status === 200);
+    check('ضبط اتصال Telegram الموثق للاختبار', conn.status === 200, (await conn.text()).slice(0, 200));
     const ingest = await fetch(`${BASE}/api/social/manager/comments/ingest`, {
       method: 'POST', headers: socialAuth, body: JSON.stringify({ platform: 'facebook', externalId: 'db-persist-evt-1', text: 'بكم سعر الثلاجة؟', authorName: 'أحمد' }),
     });
@@ -148,7 +157,7 @@ async function run(): Promise<void> {
 
     await stop(app.proc);
     app = null;
-    app = startApp(PORT, emptyDirB);
+    app = startApp(PORT, emptyDirB, tg.base);
     check('الخادم الثاني (مجلد فارغ) يقلع', await waitForHealth(BASE), app.log().slice(0, 500));
 
     const commentsAfter = await (await fetch(`${BASE}/api/social/manager/comments?platform=facebook`, { headers: socialAuth })).json();
@@ -164,6 +173,7 @@ async function run(): Promise<void> {
     check('الصحة بعد إعادة التشغيل ما زالت تعلن Postgres', health2.persistence?.backend === 'postgres' && health2.persistence?.durable === true);
   } finally {
     try { if (app) await stop(app.proc); } catch { /* تجاهل */ }
+    await tg.stop();
     rmSync(emptyDirA, { recursive: true, force: true });
     rmSync(emptyDirB, { recursive: true, force: true });
   }

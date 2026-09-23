@@ -48,3 +48,12 @@ services:
       # اختياري: معطّل افتراضياً. لا تضبطه إلا لقصد الدخول المباشر.
       - key: GHARABI_PREVIEW_TOKEN
         sync: false
+      # موصل Telegram الحقيقي (Batch 5). رمز البوت وسرّ webhook أسرار من لوحة Render.
+      # بدونهما يظهر Telegram "غير متصل" ولا يُنفَّذ أي إرسال خارجي.
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false
+      - key: TELEGRAM_WEBHOOK_SECRET
+        sync: false
+      # اختياري: دردشة/قناة افتراضية لتنفيذ المهام المجدولة (publish).
+      - key: TELEGRAM_DEFAULT_CHAT_ID
+        sync: false

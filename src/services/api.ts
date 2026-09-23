@@ -449,7 +449,19 @@ ${payload.topic || payload.productName || 'أنظمة وحلول التقسيط 
 
   async startPlatformOAuth(platform: string) { const res = await fetch(`/api/platforms/${encodeURIComponent(platform)}/oauth/start`, { headers: getAuthHeaders() }); const data = await res.json(); if(!res.ok || !data.success) throw new Error(data.error || 'تعذر بدء ربط المنصة'); return data; },
 
-  async configureTelegram(botToken: string) { const res = await fetch('/api/platforms/telegram/configure', { method:'POST', headers:getAuthHeaders(), body:JSON.stringify({botToken}) }); const data=await res.json(); if(!res.ok || !data.success) throw new Error(data.error || 'تعذر ربط Telegram'); return data; },
+  // الرمز اختياري: إن غاب يُستخدم TELEGRAM_BOT_TOKEN من بيئة الخادم (لا نطلب نسخ أسرار للواجهة).
+  async configureTelegram(botToken?: string) {
+    const res = await fetch('/api/platforms/telegram/configure', { method:'POST', headers:getAuthHeaders(), body:JSON.stringify(botToken ? { botToken } : {}) });
+    const data = await res.json(); if(!res.ok || !data.success) throw new Error(data.error || 'تعذر ربط Telegram'); return data;
+  },
+
+  // إرسال رد حقيقي عبر Telegram بعد موافقة المالك؛ يمر بحارس السلامة ومنع التكرار على الخادم.
+  async replyTelegram(payload: { externalId: string; text: string; commentText?: string; productId?: string; productName?: string }) {
+    const res = await fetch('/api/platforms/telegram/reply', { method:'POST', headers:getAuthHeaders(), body:JSON.stringify(payload) });
+    const data = await res.json();
+    if (!res.ok || !data.success) throw new Error(data.error || 'تعذر إرسال الرد عبر Telegram');
+    return data;
+  },
 
   async executeJob(jobId: string) { const res = await fetch(`/api/control/jobs/${encodeURIComponent(jobId)}/execute`, { method:'POST', headers:getAuthHeaders() }); const data=await res.json(); if(!res.ok || !data.success) throw new Error(data.error || 'تعذر تنفيذ المهمة'); return data; },
 

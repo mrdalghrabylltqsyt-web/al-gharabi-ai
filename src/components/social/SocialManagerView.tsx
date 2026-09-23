@@ -114,6 +114,36 @@ export const SocialManagerView: React.FC = () => {
   const platforms = status?.platforms || [];
   const summary = status?.summary;
 
+  // ---- موصل Telegram الحقيقي: أول تكامل اجتماعي خارجي فعلي ----
+  const telegram = platforms.find((p) => p.platform === 'telegram');
+  const [tgBusy, setTgBusy] = useState(false);
+  const [tgExternalId, setTgExternalId] = useState('');
+  const [tgReplyText, setTgReplyText] = useState('');
+
+  const connectTelegram = async () => {
+    setTgBusy(true);
+    try {
+      // الرمز يُقرأ من بيئة الخادم (TELEGRAM_BOT_TOKEN)؛ لا نطلب نسخ أي سر إلى الواجهة.
+      const res = await apiService.configureTelegram();
+      showToast(res.verified ? 'تم التحقق من البوت وتسجيل webhook الحقيقي.' : 'تم تنفيذ الربط.');
+      await load();
+    } catch (err: any) {
+      showToast(err?.message || 'تعذر ربط Telegram');
+    } finally { setTgBusy(false); }
+  };
+
+  const sendTelegramReply = async () => {
+    if (!tgExternalId.trim() || !tgReplyText.trim()) { showToast('معرّف التعليق ونص الرد مطلوبان.'); return; }
+    setTgBusy(true);
+    try {
+      const res = await apiService.replyTelegram({ externalId: tgExternalId.trim(), text: tgReplyText.trim() });
+      showToast(res.delivered ? `أُرسل الرد فعلياً عبر Telegram (معرّف ${res.providerReplyId || '—'}).` : 'لم يُسجَّل تسليم.');
+      setTgReplyText('');
+    } catch (err: any) {
+      showToast(err?.message || 'تعذر إرسال الرد عبر Telegram');
+    } finally { setTgBusy(false); }
+  };
+
   return (
     <div className="space-y-6">
       {/* Header */}
@@ -185,7 +215,16 @@ export const SocialManagerView: React.FC = () => {
             <tbody>
               {platforms.map((p) => (
                 <tr key={p.platform} className="border-b border-slate-800/60">
-                  <td className="py-3 px-3 font-bold text-white">{p.displayName}</td>
+                  <td className="py-3 px-3 font-bold text-white">
+                    <span className="inline-flex items-center gap-2">
+                      {p.displayName}
+                      {p.realConnector && (
+                        <span className="text-[9px] px-1.5 py-0.5 rounded bg-emerald-950 border border-emerald-600/40 text-emerald-300 font-semibold">
+                          موصل حقيقي
+                        </span>
+                      )}
+                    </span>
+                  </td>
                   <td className="py-3 px-3">
                     {p.connection === 'connected' ? (
                       <span className="inline-flex items-center gap-1 text-emerald-400 font-bold">
@@ -218,6 +257,55 @@ export const SocialManagerView: React.FC = () => {
         </div>
         <p className="text-[11px] text-slate-500 mt-4">{platforms[0]?.readinessNote}</p>
       </div>
+
+      {/* Telegram real connector — أول تكامل اجتماعي حقيقي */}
+      <div className="p-6 rounded-2xl bg-slate-900 border border-slate-800 space-y-5">
+        <h3 className="text-sm font-bold text-white border-b border-slate-800 pb-3 flex items-center gap-2">
+          <Send className="w-4 h-4 text-sky-400" /> موصل Telegram (تكامل خارجي حقيقي)
+        </h3>
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
+          <div className="space-y-3">
+            <div className="text-xs text-slate-300 space-y-1">
+              <div>حالة الاتصال: <span className={telegram?.connection === 'connected' ? 'text-emerald-400 font-bold' : 'text-slate-400 font-bold'}>{telegram?.connection === 'connected' ? 'متصلة وموثقة' : telegram?.connection === 'reauth_needed' ? 'تحتاج إعادة ربط' : 'غير متصلة'}</span></div>
+              {telegram?.accountName && <div>الحساب: <span className="font-mono text-slate-200">{telegram.accountName}</span></div>}
+              <div>آلية الاعتماد: <span className="font-mono text-slate-200">bot-token</span></div>
+            </div>
+            <p className="text-[11px] text-slate-500">
+              الربط يستدعي Telegram فعلياً (getMe) ويسجّل webhook حقيقياً بسرّ تحقق. رمز البوت يُقرأ من بيئة الخادم
+              (TELEGRAM_BOT_TOKEN) ولا يُدخل في الواجهة. لا تُعلن «متصلة» بلا تحقق مزود.
+            </p>
+            <button
+              onClick={() => void connectTelegram()}
+              disabled={tgBusy}
+              className="px-4 py-2 rounded-xl bg-sky-600 hover:bg-sky-500 disabled:opacity-50 text-white text-xs font-bold cursor-pointer">
+              {telegram?.connection === 'connected' ? 'إعادة التحقق من الربط' : 'ربط Telegram والتحقق'}
+            </button>
+          </div>
+          <div className="space-y-3">
+            <h4 className="text-xs font-bold text-slate-200">إرسال رد حقيقي على تعليق وارد</h4>
+            <input
+              value={tgExternalId}
+              onChange={(e) => setTgExternalId(e.target.value)}
+              placeholder="معرّف التعليق الخارجي (مثال: tg:-100123:42)"
+              className="w-full px-3 py-2.5 rounded-xl bg-slate-950 border border-slate-700 text-xs text-white focus:outline-none focus:border-emerald-500 box-border"
+            />
+            <textarea
+              rows={3}
+              value={tgReplyText}
+              onChange={(e) => setTgReplyText(e.target.value)}
+              placeholder="نص الرد (يمر بحارس سلامة المحتوى ومنع التكرار على الخادم)"
+              className="w-full px-3 py-2.5 rounded-xl bg-slate-950 border border-slate-700 text-xs text-white focus:outline-none focus:border-emerald-500 box-border"
+            />
+            <button
+              onClick={() => void sendTelegramReply()}
+              disabled={tgBusy}
+              className="px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white text-xs font-bold cursor-pointer">
+              إرسال فعلي عبر Telegram
+            </button>
+          </div>
+        </div>
+      </div>
+
 
       {/* Comment classification */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">

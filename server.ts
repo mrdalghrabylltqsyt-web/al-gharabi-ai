@@ -9,7 +9,16 @@ import { resolveModelCandidates, describeModelPolicy, PRODUCTION_MODEL } from ".
 import { classifyAiError, diagnosticLabel, type AiErrorInfo } from "./engine/ai/errors";
 import { CircuitBreaker } from "./engine/ai/retry";
 import { registerSocialManagerRoutes } from "./engine/social/routes";
-import { PLATFORM_SPECS, platformSupports } from "./engine/social/registry";
+import { PLATFORM_SPECS, platformSupports, hasRealConnector, credentialModeOf } from "./engine/social/registry";
+import {
+  TelegramClient,
+  parseTelegramUpdate,
+  verifyTelegramSecret,
+  telegramExternalId,
+  isDuplicateUpdate,
+  TELEGRAM_SECRET_HEADER,
+  type TelegramFetch,
+} from "./engine/social/telegram";
 import {
   buildDeterministicReply,
   canAutoReply,
@@ -217,9 +226,9 @@ function loadPersistentState(snapshot?: any): any {
     if (!raw.schemaVersion) raw.schemaVersion = 1;
     const users = Array.isArray(raw.users) ? raw.users : [defaultOwner];
     if (!users.some((u: ServerUser) => u.id === "owner")) users.unshift(defaultOwner);
-    return { users, revokedSessions: Array.isArray(raw.revokedSessions) ? raw.revokedSessions : [], userRevocations: Array.isArray(raw.userRevocations) ? raw.userRevocations : [], audit: Array.isArray(raw.audit) ? raw.audit.slice(0, 200) : [], jobs: Array.isArray(raw.jobs) ? raw.jobs.slice(0, 200) : [], platformConnections: Array.isArray(raw.platformConnections) ? raw.platformConnections : [], workspace: raw.workspace && typeof raw.workspace === "object" ? { showroom: raw.workspace.showroom || {}, products: Array.isArray(raw.workspace.products) ? raw.workspace.products.slice(0, 1000) : [], posts: Array.isArray(raw.workspace.posts) ? raw.workspace.posts.slice(0, 1000) : [], conversations: Array.isArray(raw.workspace.conversations) ? raw.workspace.conversations.slice(0, 1000) : [], installmentPlans: Array.isArray(raw.workspace.installmentPlans) ? raw.workspace.installmentPlans.slice(0, 200) : [], leads: Array.isArray(raw.workspace.leads) ? raw.workspace.leads.slice(0, 2000) : [], tasks: Array.isArray(raw.workspace.tasks) ? raw.workspace.tasks.slice(0, 1000) : [], sales: Array.isArray(raw.workspace.sales) ? raw.workspace.sales.slice(0, 5000) : [], payments: Array.isArray(raw.workspace.payments) ? raw.workspace.payments.slice(0, 10000) : [], inventoryMovements: Array.isArray(raw.workspace.inventoryMovements) ? raw.workspace.inventoryMovements.slice(0, 20000) : [], suppliers: Array.isArray(raw.workspace.suppliers) ? raw.workspace.suppliers.slice(0, 1000) : [], purchases: Array.isArray(raw.workspace.purchases) ? raw.workspace.purchases.slice(0, 5000) : [], expenses: Array.isArray(raw.workspace.expenses) ? raw.workspace.expenses.slice(0, 10000) : [], contracts: Array.isArray(raw.workspace.contracts) ? raw.workspace.contracts.slice(0, 5000) : [], installmentSchedules: Array.isArray(raw.workspace.installmentSchedules) ? raw.workspace.installmentSchedules.slice(0, 20000) : [], notifications: Array.isArray(raw.workspace.notifications) ? raw.workspace.notifications.slice(0, 10000) : [], webhookEvents: Array.isArray(raw.workspace.webhookEvents) ? raw.workspace.webhookEvents.slice(0, 10000) : [], providerEvents: Array.isArray(raw.workspace.providerEvents) ? raw.workspace.providerEvents.slice(0, 10000) : [], marketingBriefs: Array.isArray(raw.workspace.marketingBriefs) ? raw.workspace.marketingBriefs.slice(0, 2000) : [], marketingCampaigns: Array.isArray(raw.workspace.marketingCampaigns) ? raw.workspace.marketingCampaigns.slice(0, 1000) : [], socialComments: Array.isArray(raw.workspace.socialComments) ? raw.workspace.socialComments.slice(0, 10000) : [], socialReplies: Array.isArray(raw.workspace.socialReplies) ? raw.workspace.socialReplies.slice(0, 5000) : [], socialApprovals: Array.isArray(raw.workspace.socialApprovals) ? raw.workspace.socialApprovals.slice(0, 5000) : [], publishRecords: Array.isArray(raw.workspace.publishRecords) ? raw.workspace.publishRecords.slice(0, 5000) : [], performanceRecords: Array.isArray(raw.workspace.performanceRecords) ? raw.workspace.performanceRecords.slice(0, 20000) : [], marketingDecisions: Array.isArray(raw.workspace.marketingDecisions) ? raw.workspace.marketingDecisions.slice(0, 2000) : [], strategiesTested: Array.isArray(raw.workspace.strategiesTested) ? raw.workspace.strategiesTested.slice(0, 2000) : [], providerTokens: raw.workspace.providerTokens && typeof raw.workspace.providerTokens === "object" ? raw.workspace.providerTokens : {} } : { showroom: {}, products: [], posts: [], conversations: [], installmentPlans: [], leads: [], tasks: [], sales: [], payments: [], inventoryMovements: [], suppliers: [], purchases: [], expenses: [], contracts: [], installmentSchedules: [], notifications: [], webhookEvents: [], providerEvents: [], marketingBriefs: [], marketingCampaigns: [], socialComments: [], socialReplies: [], socialApprovals: [], publishRecords: [], performanceRecords: [], marketingDecisions: [], strategiesTested: [], providerTokens: {} } };
+    return { users, revokedSessions: Array.isArray(raw.revokedSessions) ? raw.revokedSessions : [], userRevocations: Array.isArray(raw.userRevocations) ? raw.userRevocations : [], audit: Array.isArray(raw.audit) ? raw.audit.slice(0, 200) : [], jobs: Array.isArray(raw.jobs) ? raw.jobs.slice(0, 200) : [], platformConnections: Array.isArray(raw.platformConnections) ? raw.platformConnections : [], workspace: raw.workspace && typeof raw.workspace === "object" ? { showroom: raw.workspace.showroom || {}, products: Array.isArray(raw.workspace.products) ? raw.workspace.products.slice(0, 1000) : [], posts: Array.isArray(raw.workspace.posts) ? raw.workspace.posts.slice(0, 1000) : [], conversations: Array.isArray(raw.workspace.conversations) ? raw.workspace.conversations.slice(0, 1000) : [], installmentPlans: Array.isArray(raw.workspace.installmentPlans) ? raw.workspace.installmentPlans.slice(0, 200) : [], leads: Array.isArray(raw.workspace.leads) ? raw.workspace.leads.slice(0, 2000) : [], tasks: Array.isArray(raw.workspace.tasks) ? raw.workspace.tasks.slice(0, 1000) : [], sales: Array.isArray(raw.workspace.sales) ? raw.workspace.sales.slice(0, 5000) : [], payments: Array.isArray(raw.workspace.payments) ? raw.workspace.payments.slice(0, 10000) : [], inventoryMovements: Array.isArray(raw.workspace.inventoryMovements) ? raw.workspace.inventoryMovements.slice(0, 20000) : [], suppliers: Array.isArray(raw.workspace.suppliers) ? raw.workspace.suppliers.slice(0, 1000) : [], purchases: Array.isArray(raw.workspace.purchases) ? raw.workspace.purchases.slice(0, 5000) : [], expenses: Array.isArray(raw.workspace.expenses) ? raw.workspace.expenses.slice(0, 10000) : [], contracts: Array.isArray(raw.workspace.contracts) ? raw.workspace.contracts.slice(0, 5000) : [], installmentSchedules: Array.isArray(raw.workspace.installmentSchedules) ? raw.workspace.installmentSchedules.slice(0, 20000) : [], notifications: Array.isArray(raw.workspace.notifications) ? raw.workspace.notifications.slice(0, 10000) : [], webhookEvents: Array.isArray(raw.workspace.webhookEvents) ? raw.workspace.webhookEvents.slice(0, 10000) : [], providerEvents: Array.isArray(raw.workspace.providerEvents) ? raw.workspace.providerEvents.slice(0, 10000) : [], marketingBriefs: Array.isArray(raw.workspace.marketingBriefs) ? raw.workspace.marketingBriefs.slice(0, 2000) : [], marketingCampaigns: Array.isArray(raw.workspace.marketingCampaigns) ? raw.workspace.marketingCampaigns.slice(0, 1000) : [], socialComments: Array.isArray(raw.workspace.socialComments) ? raw.workspace.socialComments.slice(0, 10000) : [], socialReplies: Array.isArray(raw.workspace.socialReplies) ? raw.workspace.socialReplies.slice(0, 5000) : [], socialApprovals: Array.isArray(raw.workspace.socialApprovals) ? raw.workspace.socialApprovals.slice(0, 5000) : [], publishRecords: Array.isArray(raw.workspace.publishRecords) ? raw.workspace.publishRecords.slice(0, 5000) : [], performanceRecords: Array.isArray(raw.workspace.performanceRecords) ? raw.workspace.performanceRecords.slice(0, 20000) : [], marketingDecisions: Array.isArray(raw.workspace.marketingDecisions) ? raw.workspace.marketingDecisions.slice(0, 2000) : [], strategiesTested: Array.isArray(raw.workspace.strategiesTested) ? raw.workspace.strategiesTested.slice(0, 2000) : [], telegramUpdateIds: Array.isArray(raw.workspace.telegramUpdateIds) ? raw.workspace.telegramUpdateIds.slice(0, 20000) : [], providerTokens: raw.workspace.providerTokens && typeof raw.workspace.providerTokens === "object" ? raw.workspace.providerTokens : {} } : { showroom: {}, products: [], posts: [], conversations: [], installmentPlans: [], leads: [], tasks: [], sales: [], payments: [], inventoryMovements: [], suppliers: [], purchases: [], expenses: [], contracts: [], installmentSchedules: [], notifications: [], webhookEvents: [], providerEvents: [], marketingBriefs: [], marketingCampaigns: [], socialComments: [], socialReplies: [], socialApprovals: [], publishRecords: [], performanceRecords: [], marketingDecisions: [], strategiesTested: [], telegramUpdateIds: [], providerTokens: {} } };
   } catch {
-    return { users: [defaultOwner], revokedSessions: [], userRevocations: [], audit: [], jobs: [], workspace: { showroom: {}, products: [], posts: [], conversations: [], installmentPlans: [], leads: [], tasks: [], sales: [], payments: [], inventoryMovements: [], suppliers: [], purchases: [], expenses: [], contracts: [], installmentSchedules: [], notifications: [], webhookEvents: [], providerEvents: [], marketingBriefs: [], marketingCampaigns: [], socialComments: [], socialReplies: [], socialApprovals: [], publishRecords: [], performanceRecords: [], marketingDecisions: [], strategiesTested: [], providerTokens: {} } };
+    return { users: [defaultOwner], revokedSessions: [], userRevocations: [], audit: [], jobs: [], workspace: { showroom: {}, products: [], posts: [], conversations: [], installmentPlans: [], leads: [], tasks: [], sales: [], payments: [], inventoryMovements: [], suppliers: [], purchases: [], expenses: [], contracts: [], installmentSchedules: [], notifications: [], webhookEvents: [], providerEvents: [], marketingBriefs: [], marketingCampaigns: [], socialComments: [], socialReplies: [], socialApprovals: [], publishRecords: [], performanceRecords: [], marketingDecisions: [], strategiesTested: [], telegramUpdateIds: [], providerTokens: {} } };
   }
 }
 
@@ -272,6 +281,7 @@ const workspace = persisted.workspace;
 for (const key of ["inventoryMovements","suppliers","purchases","expenses","contracts","installmentSchedules","notifications","webhookEvents","providerEvents"]) if (!Array.isArray((workspace as any)[key])) (workspace as any)[key] = [];
 if (!Array.isArray((workspace as any).inventoryMovements)) (workspace as any).inventoryMovements = [];
 for (const key of ["suppliers","purchases","expenses","contracts","installmentSchedules","notifications","webhookEvents","providerEvents","marketingBriefs","marketingCampaigns"]) if (!Array.isArray((workspace as any)[key])) (workspace as any)[key] = [];
+for (const key of ["telegramUpdateIds"]) if (!Array.isArray((workspace as any)[key])) (workspace as any)[key] = [];
 if (!(workspace as any).providerTokens || typeof (workspace as any).providerTokens !== "object") (workspace as any).providerTokens = {};
 // سجلات مدير السوشيال ميديا: تعليقات، ردود، نتائج نشر، وقرارات تسويقية.
 // كلها سجلات تشغيلية حقيقية تُبنى من عمليات فعلية فقط.
@@ -834,6 +844,8 @@ const SUPPORTED_PLATFORMS = PLATFORM_SPECS.map((spec) => ({
   id: spec.platform as string,
   name: spec.name,
   capabilities: [...spec.capabilities] as string[],
+  credentialMode: spec.credentialMode,
+  realConnector: spec.realConnector,
 }));
 const platformConnections = new Map<string, PlatformConnection>();
 
@@ -881,8 +893,81 @@ const OAUTH_CONFIG: Record<string, any> = {
   tiktok: { provider: "tiktok", auth: "https://www.tiktok.com/v2/auth/authorize/", token: "https://open.tiktokapis.com/v2/oauth/token/", clientId: process.env.TIKTOK_CLIENT_KEY, clientSecret: process.env.TIKTOK_CLIENT_SECRET, scopes: ["user.info.basic", "video.publish"], callback: `${BASE_URL}/api/platforms/tiktok/oauth/callback` },
 };
 function oauthReady(platform: string) { const c = OAUTH_CONFIG[platform]; return Boolean(c?.clientId && c?.clientSecret && process.env.APP_URL && tokenKeyBytes()); }
-function publicProviderReadiness(platform: string): { configured: boolean; mode: string; action: string; missing?: string[]; next?: string } {
-  if (platform === "telegram") return { configured: Boolean(process.env.TELEGRAM_BOT_TOKEN && tokenKeyBytes()), mode: "bot-token", action: "configure", next: "ضبط Bot Token ثم اختبار الإرسال" };
+
+// -------------------------------------------------------------
+// Telegram — أول موصل اجتماعي حقيقي (bot-token، بلا OAuth ولا تسجيل تطبيق).
+// الأسرار تُقرأ من بيئة الخادم فقط أو تُحفظ مشفّرة عبر محوّل الحالة.
+// -------------------------------------------------------------
+const TELEGRAM_WEBHOOK_SECRET_ENV = (process.env.TELEGRAM_WEBHOOK_SECRET || "").trim();
+/** رمز البوت من التوكن المحفوظ المشفّر (ضبطه المالك) ثم بيئة الخادم. */
+function telegramBotToken(): string {
+  const stored = getProviderToken("telegram");
+  if (stored?.botToken) return String(stored.botToken);
+  return (process.env.TELEGRAM_BOT_TOKEN || "").trim();
+}
+/**
+ * سرّ webhook الحقيقي الذي يتحقق منه Telegram في ترويسة كل تحديث.
+ * يُحفظ مشفّراً داخل نفس مخزن التوكنات، ويُسبق بسرّ البيئة إن وُجد.
+ */
+function telegramWebhookSecret(): string {
+  const stored = getProviderToken("telegram");
+  if (stored?.webhookSecret) return String(stored.webhookSecret);
+  return TELEGRAM_WEBHOOK_SECRET_ENV;
+}
+/** يحفظ رمز البوت والسرّ مشفّرين في مخزن الحالة الحالي (بلا مفتاح حالة جديد). */
+function saveTelegramCredentials(botToken: string, webhookSecret: string) {
+  setProviderToken("telegram", { botToken, webhookSecret });
+}
+/** الترويسة لا تُسجَّل ولا تُعاد أبداً؛ تُستخدم للتحقق فقط. */
+const telegramFetchImpl: TelegramFetch = (url, init) => fetch(url, init as any);
+function telegramClient(): TelegramClient | null {
+  const token = telegramBotToken();
+  if (!token) return null;
+  // TELEGRAM_API_BASE يُستخدم في الاختبار لتوجيه الطلبات لخادم وهمي محلي فقط.
+  return new TelegramClient(token, telegramFetchImpl, process.env.TELEGRAM_API_BASE);
+}
+/** رابط استقبال تحديثات Telegram لهذا الخادم (يستخدم APP_URL الرسمي). */
+function telegramWebhookUrl(): string { return `${BASE_URL}/api/platforms/telegram/webhook`; }
+/** هل موصل Telegram الحقيقي مكتمل الإعداد الآن؟ */
+function telegramConnectorConfigured(): boolean { return Boolean(telegramBotToken() && telegramWebhookSecret()); }
+
+/**
+ * يثبت اتصال المزود حقيقةً لمسار `connection-callback` بدل الثقة بالعميل.
+ * يدعم فقط المزودات ذات الموصل الحقيقي المنفّذ (Telegram)؛ وغيرها يُرفض
+ * صراحةً لأن إثبات الاتصال يجب أن يأتي من طلب مزود لا من تصريح الواجهة.
+ */
+async function verifyProviderConnection(platform: string): Promise<{ verified: boolean; accountId?: string; accountName?: string; error?: string }> {
+  if (platform === "telegram") {
+    const client = telegramClient();
+    if (!client) return { verified: false, error: "موصل Telegram غير مهيأ (رمز بوت غير متوفر)." };
+    const me = await client.getMe();
+    if (!me.ok || !me.botId) return { verified: false, error: me.error || "تعذر إثبات اتصال Telegram." };
+    // رمز البوت نفسه دليل الاتصال؛ وضبط webhook يجب أن يكون قد اكتمل.
+    if (!telegramWebhookSecret()) return { verified: false, error: "webhook غير مضبوط؛ لا يُوثّق الاتصال بدون استقبال حقيقي." };
+    return { verified: true, accountId: me.botId, accountName: me.username ? `@${me.username}` : me.firstName || undefined };
+  }
+  return { verified: false, error: "لا يوجد موصل إثبات حقيقي لهذه المنصة؛ إتمام الاتصال يحتاج اعتماد تطبيق من المزود." };
+}
+function publicProviderReadiness(platform: string): { configured: boolean; mode: string; action: string; missing?: string[]; next?: string; realConnector?: boolean } {
+  if (platform === "telegram") {
+    // موصل حقيقي: يكفي رمز بوت + سرّ webhook + مفتاح تشفير + APP_URL للإرسال والاستقبال.
+    const missing = [
+      !telegramBotToken() && "TELEGRAM_BOT_TOKEN",
+      !telegramWebhookSecret() && "TELEGRAM_WEBHOOK_SECRET",
+      !tokenKeyBytes() && "PLATFORM_TOKEN_ENCRYPTION_KEY",
+      !process.env.APP_URL && "APP_URL",
+    ].filter((x): x is string => Boolean(x));
+    return {
+      configured: telegramConnectorConfigured() && Boolean(tokenKeyBytes()),
+      mode: "bot-token",
+      action: "configure",
+      missing,
+      realConnector: true,
+      next: missing.length
+        ? "زوّد البيئة برمز البوت وسرّ webhook ثم اضغط «ربط Telegram» لتنفيذ getMe وضبط webhook فعلياً."
+        : "الموصل مكتمل الإعداد؛ نفّذ الضبط لتسجيل webhook الحقيقي ثم اختبر الإرسال.",
+    };
+  }
   const c = OAUTH_CONFIG[platform];
   if (c) return { configured: oauthReady(platform), mode: "oauth2", action: "authorize", next: "ضبط بيانات OAuth وتسجيل Redirect URI", missing: [!c.clientId && "client_id", !c.clientSecret && "client_secret", !process.env.APP_URL && "APP_URL", !tokenKeyBytes() && "PLATFORM_TOKEN_ENCRYPTION_KEY"].filter((x): x is string => Boolean(x)) };
   return { configured: false, mode: "provider-adapter", action: "configuration-required", next: "إضافة موصل إنتاجي معتمد قبل تفعيل النشر" };
@@ -945,10 +1030,144 @@ app.get("/api/platforms/:platform/oauth/callback", async (req,res)=>{
 });
 
 app.post("/api/platforms/telegram/configure", requireOwner, async (req,res)=>{
-  const botToken=typeof req.body?.botToken==="string"?req.body.botToken.trim():""; if(!botToken) return res.status(400).json({success:false,error:"رمز Telegram Bot مطلوب."});
+  // رمز البوت من المدخل ثم من بيئة الخادم؛ في الإنتاج يكفي ضبط البيئة
+  // دون نسخ أي سر إلى الواجهة أو المحادثة.
+  const botToken=(typeof req.body?.botToken==="string"?req.body.botToken.trim():"")||telegramBotToken();
+  const webhookSecret=(typeof req.body?.webhookSecret==="string"?req.body.webhookSecret.trim():"")||TELEGRAM_WEBHOOK_SECRET_ENV;
+  if(!botToken) return res.status(400).json({success:false,error:"رمز Telegram Bot مطلوب (أو اضبط TELEGRAM_BOT_TOKEN في البيئة)."});
   if(!tokenKeyBytes()) return res.status(503).json({success:false,error:"PLATFORM_TOKEN_ENCRYPTION_KEY غير مضبوط."});
-  const r=await fetch(`https://api.telegram.org/bot${encodeURIComponent(botToken)}/getMe`); const d=await r.json(); if(!r.ok||!d.ok||!d.result?.id) return res.status(400).json({success:false,error:"تعذر التحقق من Telegram Bot Token."});
-  setProviderToken("telegram",{botToken}); platformConnections.set("telegram",{platform:"telegram",status:"connected",accountId:String(d.result.id),accountName:d.result.username?`@${d.result.username}`:d.result.first_name||"Telegram Bot",connectedAt:new Date().toISOString(),providerVerified:true}); savePlatformConnections(); audit((req as any).user.id,"telegram_configured",String(d.result.id)); res.json({success:true,connection:safeConnection("telegram")});
+  if(!process.env.APP_URL) return res.status(503).json({success:false,error:"APP_URL غير مضبوط؛ لا يمكن تسجيل رابط webhook الحقيقي لدى Telegram."});
+  // السرّ يجب أن يكون قوياً حسب متطلبات Telegram (1-256 محرفاً، A-Z a-z 0-9 _ -).
+  const secret = webhookSecret || crypto.randomBytes(32).toString("hex");
+  if(!/^[A-Za-z0-9_-]{8,256}$/.test(secret)) return res.status(400).json({success:false,error:"سرّ webhook يجب أن يكون 8-256 محرفاً من A-Z a-z 0-9 _ - لتقبله Telegram."});
+  const client = new TelegramClient(botToken, telegramFetchImpl);
+  // 1) إثبات الرمز فعلياً: لا يُعلن اتصال بلا استجابة getMe صحيحة.
+  const me = await client.getMe();
+  if(!me.ok || !me.botId) return res.status(400).json({success:false,error:me.error||"تعذر التحقق من Telegram Bot Token."});
+  // 2) تسجيل webhook الحقيقي مع السرّ: يصبح أساس التحقق من كل تحديث وارد.
+  const hook = await client.setWebhook(telegramWebhookUrl(), secret);
+  if(!hook.ok) return res.status(502).json({success:false,error:`تم التحقق من البوت لكن تعذّر تسجيل webhook: ${hook.description||""}`.trim()});
+  saveTelegramCredentials(botToken, secret);
+  platformConnections.set("telegram",{platform:"telegram",status:"connected",accountId:me.botId,accountName:me.username?`@${me.username}`:me.firstName||"Telegram Bot",connectedAt:new Date().toISOString(),providerVerified:true});
+  savePlatformConnections(); audit((req as any).user.id,"telegram_configured",me.botId);
+  // لا يُعاد الرمز ولا السرّ إطلاقاً؛ يُعلن فقط نجاح التحقق وضبط الـwebhook.
+  res.json({success:true,connection:safeConnection("telegram"),webhook:{registered:true,url:telegramWebhookUrl(),secretConfigured:true},verified:true});
+});
+
+// -------------------------------------------------------------
+// Telegram webhook — استقبال حقيقي للرسائل الواردة ثم تمريرها لمدير السوشيال.
+// التحقق: ترويسة Telegram السرّية بزمن ثابت. منع التكرار: update_id والمعرّف الخارجي.
+// لا يُقبل أي payload بلا تحقق، ولا يُخزَّن حدث مكرر.
+// -------------------------------------------------------------
+app.post("/api/platforms/telegram/webhook", express.json({limit:"256kb"}), async (req,res)=>{
+  if(!SUPPORTED_PLATFORMS.some((p:any)=>p.id==="telegram")) return res.status(404).json({success:false,error:"المنصة غير مدعومة."});
+  const expected = telegramWebhookSecret();
+  const verification = verifyTelegramSecret({ header: String(req.headers[TELEGRAM_SECRET_HEADER]||""), expectedSecret: expected });
+  if(!verification.ok) return res.status(401).json({success:false,error:verification.reason||"تحديث غير موثوق."});
+  const parsed = parseTelegramUpdate(req.body);
+  // تحديث غير نصي (وسائط/تعديلات) يُقبل ويُتجاهل بلا خطأ، فلا يُعيد Telegram المحاولة.
+  if(!parsed) return res.status(200).json({success:true,accepted:true,ignored:"non_text_update"});
+  if(!Array.isArray((workspace as any).webhookEvents)) (workspace as any).webhookEvents = [];
+  const externalId = telegramExternalId(parsed.chatId, parsed.messageId);
+  const seenUpdates = (workspace as any).telegramUpdateIds || [];
+  const seenExternal = (workspace as any).socialComments.filter((c:any)=>c.platform==="telegram").map((c:any)=>c.externalId);
+  if(isDuplicateUpdate({ updateId: parsed.updateId, externalId, seenUpdateIds: seenUpdates, seenExternalIds: seenExternal })){
+    return res.status(200).json({success:true,duplicate:true,externalId});
+  }
+  // تخزين الحد الأدنى للحماية من التكرار ثم تمرير الرسالة لمخزن تعليقات مدير السوشيال.
+  (workspace as any).telegramUpdateIds = [...seenUpdates, parsed.updateId].slice(-20000);
+  if(!Array.isArray((workspace as any).socialComments)) (workspace as any).socialComments = [];
+  const classification = classifyComment(parsed.text);
+  const comment = {
+    id: workspaceId("comment"), platform: "telegram", externalId,
+    postExternalId: null, authorName: parsed.authorName||null, text: parsed.text,
+    createdAt: parsed.date || new Date().toISOString(), classification,
+    requiresHumanReview: classification.requiresHumanReview, ingestSource: "telegram_webhook",
+    // هدف الرد الحقيقي: الدردشة والرسالة، فيستطيع المُرسل الرد فعلياً لاحقاً.
+    replyTarget: { chatId: parsed.chatId, messageId: parsed.messageId },
+  };
+  (workspace as any).socialComments.unshift(comment);
+  if((workspace as any).socialComments.length>10000) (workspace as any).socialComments.pop();
+  (workspace as any).webhookEvents.unshift({id:workspaceId("event"),platform:"telegram",type:"message",externalId,receivedAt:new Date().toISOString()});
+  (workspace as any).webhookEvents=(workspace as any).webhookEvents.slice(0,10000);
+  persistState();
+  audit("system","telegram_inbound_message",externalId);
+  res.status(200).json({success:true,accepted:true,externalId,commentId:comment.id,requiresHumanReview:classification.requiresHumanReview});
+});
+
+// -------------------------------------------------------------
+// Telegram real sender — إرسال رد حقيقي بعد الموافقة.
+// الدورة: تعليق حقيقي → تصنيف → رد مقترح → سلامة المحتوى → موافقة → إرسال حقيقي
+//         → نتيجة تسليم → حفظ. لا يُسجَّل delivered=true إلا باستجابة Telegram حقيقية.
+// المسار مقيّد بالمالك لأنه يُرسل فعلاً باسم حساب المعرض.
+// -------------------------------------------------------------
+app.post("/api/platforms/telegram/reply", requireOwner, async (req,res)=>{
+  const user = (req as any).user as { id: string };
+  const externalId = typeof req.body?.externalId === "string" ? req.body.externalId.trim() : "";
+  const text = typeof req.body?.text === "string" ? req.body.text.trim() : "";
+  const commentText = typeof req.body?.commentText === "string" ? req.body.commentText : "";
+  if(!externalId) return res.status(400).json({success:false,error:"معرّف التعليق لدى المنصة مطلوب لمنع الرد المكرر."});
+  if(!text) return res.status(400).json({success:false,error:"نص الرد مطلوب."});
+
+  const conn:any = platformConnections.get("telegram");
+  if(!conn || conn.status!=="connected" || conn.providerVerified!==true){
+    return res.status(409).json({success:false,error:"Telegram غير متصل باتصال موثق؛ لا يمكن إرسال أي رد خارجي."});
+  }
+  const comment = (workspace as any).socialComments.find((c:any)=>c.platform==="telegram"&&c.externalId===externalId);
+  if(!comment) return res.status(404).json({success:false,error:"لا يوجد تعليق وارد بهذا المعرّف؛ لا إرسال بلا تعليق حقيقي."});
+  const target = comment.replyTarget || {};
+  if(!target.chatId) return res.status(409).json({success:false,error:"هدف الرد (الدردشة) غير متوفر لهذا التعليق."});
+
+  // 1) لا رد على الحالات الحساسة/السبام/تعليقنا (نفس حمايات التعليقات).
+  const classification = classifyComment(commentText || text);
+  if(!canAutoReply(classification)) return res.status(422).json({success:false,error:classification.reviewReason||"هذا التعليق يستوجب مراجعة بشرية قبل أي رد.",classification,requiresHumanReview:true});
+  const ownNames = [String(workspace.showroom?.name||""),"معرض الغرابي"];
+  if(isSelfAuthored(comment.authorName,ownNames)) return res.status(409).json({success:false,error:"التعليق صادر من حساب المعرض؛ لا يُرد عليه لتجنب حلقة ردود."});
+
+  // 2) حارس سلامة المحتوى: لا عرض/سعر/رابط غير مسجّل يخرج للمنصة.
+  const productId = typeof req.body?.productId === "string" ? req.body.productId.trim() : "";
+  const productName = typeof req.body?.productName === "string" ? req.body.productName.trim() : "";
+  const product = (workspace.products||[]).find((p:any)=>
+    (productId && p.id === productId) || (productName && p.name === productName)) || null;
+  const replyFacts = buildFactsForProduct(product, Number(product?.downPaymentPercent||0), Number(product?.durationMonths||0));
+  const safety = analyzeBusinessClaims(text, replyFacts);
+  if(!safety.safe){
+    return res.status(422).json({success:false,error:"نص الرد يحمل عرضاً تجارياً غير مسجّل، وتم إيقافه قبل أي إرسال.",
+      contentSafety:{safe:false,violations:safety.blocked.map((v)=>v.detail),codes:safety.blocked.map((v)=>v.code)}});
+  }
+
+  // 3) بوابة الرد المكرر (على معرّف التعليق الخارجي — يمنع replay/retry).
+  const history: ReplyRecord[] = (workspace as any).socialReplies.filter((r:any)=>r.platform==="telegram").map((r:any)=>({externalId:r.externalId,replyFingerprint:r.replyFingerprint,repliedAt:r.repliedAt}));
+  const decision = evaluateReplyGuard({externalId,replyText:text,history});
+  if(!decision.allowed) return res.status(409).json({success:false,error:decision.reason,guard:decision});
+
+  // 4) إرسال حقيقي عبر Telegram. لا تسجيل تسليم بلا استجابة مزود.
+  const client = telegramClient();
+  if(!client) return res.status(503).json({success:false,error:"موصل Telegram غير مهيأ (رمز بوت غير متوفر)."});
+  const result = await client.sendMessage({chatId:String(target.chatId),text,replyToMessageId:target.messageId?String(target.messageId):undefined});
+
+  const record = {
+    id: workspaceId("reply"), platform:"telegram", externalId, text,
+    replyFingerprint: decision.fingerprint, classification,
+    contentSafety:{safe:true,violations:[] as string[],codes:[] as string[]},
+    repliedAt:new Date().toISOString(), createdBy:user.id,
+    simulated:false,
+    delivered:result.ok,
+    providerReplyId: result.providerMessageId,
+    receipt: result.receipt,
+    deliveryError: result.ok ? null : (result.error||"فشل الإرسال عبر Telegram."),
+    reviewStatus: result.ok ? "delivered" : "failed",
+    note: result.ok
+      ? "أُرسل الرد فعلياً عبر Telegram وثُبّت بمعرّف رسالة من المزود."
+      : "فشل الإرسال عبر Telegram؛ لم يُسجَّل أي تسليم.",
+  };
+  if(!Array.isArray((workspace as any).socialReplies)) (workspace as any).socialReplies=[];
+  (workspace as any).socialReplies.unshift(record);
+  if((workspace as any).socialReplies.length>5000) (workspace as any).socialReplies.pop();
+  audit(user.id, result.ok?"social_telegram_reply_sent":"social_telegram_reply_failed", `${externalId}:${result.ok?"delivered":"failed"}`);
+  persistState();
+  if(!result.ok) return res.status(502).json({success:false,delivered:false,simulated:false,reply:record,error:record.deliveryError});
+  res.json({success:true,delivered:true,simulated:false,providerReplyId:result.providerMessageId,reply:record});
 });
 
 app.get("/api/platforms/:platform/health", authenticateToken, async (req,res)=>{
@@ -958,9 +1177,17 @@ app.get("/api/platforms/:platform/health", authenticateToken, async (req,res)=>{
   try {
     const token:any=getProviderToken(platform);
     if(platform==="telegram") {
-      if(!token?.botToken) throw new Error("توكن Telegram غير متوفر.");
-      const r=await fetch(`https://api.telegram.org/bot${encodeURIComponent(token.botToken)}/getMe`); const d=await r.json();
-      return res.status(r.ok&&d.ok?200:502).json({success:r.ok&&d.ok,platform,healthy:r.ok&&d.ok,provider:"telegram",accountId:String(d.result?.id||c.accountId),accountName:d.result?.username?`@${d.result.username}`:c.accountName,checkedAt:new Date().toISOString()});
+      // فحص حقيقي فعلي عبر TelegramClient؛ الرمز المسحوب/المبطَل يُعلن reauth_needed.
+      const client = telegramClient();
+      if(!client) throw new Error("توكن Telegram غير متوفر.");
+      const me = await client.getMe();
+      if(!me.ok){
+        // رمز مرفوض = الاتصال لم يعد صالحاً؛ نُعلن reauth_needed ولا ندّعي الصحة.
+        platformConnections.set("telegram",{...(c||{}),platform:"telegram",status:"reauth_needed"});
+        savePlatformConnections(); audit((req as any).user.id,"telegram_health_failed","reauth_needed");
+        return res.status(409).json({success:false,platform,healthy:false,provider:"telegram",status:"reauth_needed",error:me.error||"رمز Telegram لم يعد صالحاً."});
+      }
+      return res.json({success:true,platform,healthy:true,provider:"telegram",accountId:me.botId,accountName:me.username?`@${me.username}`:me.firstName||c.accountName,webhookConfigured:Boolean(telegramWebhookSecret()),checkedAt:new Date().toISOString()});
     }
     if(platform==="youtube") {
       if(!token?.access_token) throw new Error("رمز YouTube غير متوفر.");
@@ -984,8 +1211,8 @@ app.get("/api/platforms/:platform/health", authenticateToken, async (req,res)=>{
 app.get("/api/platforms/readiness", authenticateToken, (_req,res)=>res.json({success:true,platforms:SUPPORTED_PLATFORMS.map(p=>({platform:p.id,name:p.name,connection:safeConnection(p.id)})),generatedAt:new Date().toISOString()}));
 
 app.get("/api/platforms/production-readiness", authenticateToken, (_req,res)=>{
-  const rows=SUPPORTED_PLATFORMS.map((p:any)=>{ const r=publicProviderReadiness(p.id); const c:any=platformConnections.get(p.id); const connected=Boolean(c?.status==="connected" && c?.providerVerified===true); const production=connected && (p.id==="telegram"); return {platform:p.id,name:p.name,configured:r.configured,connected,providerVerified:Boolean(c?.providerVerified),productionReady:production,mode:r.mode,missing:r.missing||[],next:p.id==="telegram"?"ضبط Bot Token وChat ID ثم اختبار الإرسال":OAUTH_CONFIG[p.id]?"ضبط بيانات OAuth ثم تسجيل Redirect URI والربط": "إضافة موصل إنتاجي معتمد قبل تفعيل النشر"}; });
-  res.json({success:true,generatedAt:new Date().toISOString(),projectVersion:PROJECT_VERSION,summary:{total:rows.length,connected:rows.filter(x=>x.connected).length,productionReady:rows.filter(x=>x.productionReady).length},platforms:rows,note:"هذه الصفحة تميز الجاهزية التقنية عن الاتصال الفعلي ولا تمنح أي منصة حالة نجاح وهمية."});
+  const rows=SUPPORTED_PLATFORMS.map((p:any)=>{ const r=publicProviderReadiness(p.id); const c:any=platformConnections.get(p.id); const connected=Boolean(c?.status==="connected" && c?.providerVerified===true); const production=connected && hasRealConnector(p.id); return {platform:p.id,name:p.name,configured:r.configured,connected,providerVerified:Boolean(c?.providerVerified),productionReady:production,realConnector:hasRealConnector(p.id),credentialMode:credentialModeOf(p.id),mode:r.mode,missing:r.missing||[],next:p.id==="telegram"?"ضبط Bot Token ثم الضغط على «ربط Telegram» لتسجيل webhook حقيقي":OAUTH_CONFIG[p.id]?"ضبط بيانات OAuth ثم تسجيل Redirect URI والربط": "إضافة موصل إنتاجي معتمد قبل تفعيل النشر"}; });
+  res.json({success:true,generatedAt:new Date().toISOString(),projectVersion:PROJECT_VERSION,summary:{total:rows.length,connected:rows.filter(x=>x.connected).length,productionReady:rows.filter(x=>x.productionReady).length},platforms:rows,note:"هذه الصفحة تميز الجاهزية التقنية عن الاتصال الفعلي ولا تمنح أي منصة حالة نجاح وهمية. productionReady يتطلب موصلاً حقيقياً منفّذاً + اتصالاً موثقاً."});
 });
 
 app.get("/api/control/final-check", requireOwner, (_req,res)=>{
@@ -1012,21 +1239,32 @@ app.post("/api/platforms/:platform/connect-intent", requireOwner, (req, res) => 
   res.status(201).json({ success: true, intent, message: "تم إنشاء نية الربط فقط. لم يتم الاتصال بالحساب بعد." });
 });
 
-app.post("/api/platforms/:platform/disconnect", requireOwner, (req, res) => {
+app.post("/api/platforms/:platform/disconnect", requireOwner, async (req, res) => {
   const platform = req.params.platform;
   if (!platformConnections.has(platform)) return res.status(404).json({ success: false, error: "المنصة غير مدعومة." });
+  if (platform === "telegram") {
+    // إبطال طرف المزود أيضاً: حذف webhook الحقيقي لدى Telegram قدر الإمكان،
+    // ثم مسح الاعتماد المشفّر المحلي كي لا يبقى إرسال ممكّن.
+    const client = telegramClient();
+    if (client) { try { await client.deleteWebhook(); } catch { /* إبطال محلي يكفي */ } }
+  }
   platformConnections.set(platform, { platform, status: "disconnected" });
   clearProviderToken(platform); savePlatformConnections(); audit((req as any).user.id, "platform_disconnect", platform);
   res.json({ success: true, connection: platformConnections.get(platform) });
 });
 
-app.post("/api/platforms/:platform/connection-callback", requireOwner, (req, res) => {
-  const platform = req.params.platform; const { providerVerified, accountId, accountName } = req.body || {};
+app.post("/api/platforms/:platform/connection-callback", requireOwner, async (req, res) => {
+  const platform = req.params.platform;
   if (!platformConnections.has(platform)) return res.status(404).json({ success: false, error: "المنصة غير مدعومة." });
-  if (providerVerified !== true || typeof accountId !== "string" || !accountId.trim()) return res.status(400).json({ success: false, error: "لم يتم إثبات اتصال مزود المنصة. لا يمكن تفعيل الاتصال يدوياً." });
-  const connection: PlatformConnection = { platform, status: "connected", accountId: accountId.trim().slice(0, 200), accountName: typeof accountName === "string" ? accountName.trim().slice(0, 200) : undefined, connectedAt: new Date().toISOString(), providerVerified: true };
-  platformConnections.set(platform, connection); savePlatformConnections(); audit((req as any).user.id, "platform_connected", platform);
-  res.json({ success: true, connection });
+  // لا يُوثق الاتصال بتصريح من العميل. يجب إثباته بطلب حقيقي إلى المزود.
+  // (كان المسار يقبل providerVerified:true من الجسم — ثغرة اتصال وهمي أُغلقت.)
+  const proof = await verifyProviderConnection(platform);
+  if (!proof.verified) {
+    return res.status(409).json({ success: false, error: proof.error || "لم يُثبت اتصال المزود؛ لا يمكن تفعيل الاتصال.", providerVerified: false });
+  }
+  const connection: PlatformConnection = { platform, status: "connected", accountId: String(proof.accountId || "").slice(0, 200), accountName: proof.accountName ? String(proof.accountName).slice(0, 200) : undefined, connectedAt: new Date().toISOString(), providerVerified: true };
+  platformConnections.set(platform, connection); savePlatformConnections(); audit((req as any).user.id, "platform_verified_connected", platform);
+  res.json({ success: true, connection: safeConnection(platform) });
 });
 app.get("/api/control/activity", authenticateToken, (req, res) => {
   res.json({ success: true, activity: auditLog.filter(x => x.userId === (req as any).user.id || (req as any).user.role === "owner").slice(0, 30) });
@@ -1253,9 +1491,12 @@ app.post("/api/control/jobs/:id/execute", requireOwner, async (req,res)=>{
   if(!conn || conn.status!=="connected" || conn.providerVerified!==true) return res.status(409).json({success:false,error:"المنصة غير موثقة باتصال حقيقي."});
   try {
     if(platform==="telegram") {
-      const token=getProviderToken("telegram")?.botToken; const chatId=String(process.env.TELEGRAM_DEFAULT_CHAT_ID||job.payload?.chatId||""); if(!token||!chatId) return res.status(503).json({success:false,error:"Telegram يحتاج TELEGRAM_DEFAULT_CHAT_ID أو chatId في المهمة."});
-      const r=await fetch(`https://api.telegram.org/bot${encodeURIComponent(token)}/sendMessage`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({chat_id:chatId,text:content})}); const d=await r.json(); if(!r.ok||!d.ok) throw new Error(d.description||"فشل إرسال Telegram");
-      job.status="executed"; job.executedAt=new Date().toISOString(); job.providerVerified=true; job.providerReceipt={provider:"telegram",messageId:d.result?.message_id,executedAt:new Date().toISOString()}; persistState(); audit((req as any).user.id,"job_executed",`${job.id}:telegram`); return res.json({success:true,job,receipt:job.providerReceipt});
+      const client=telegramClient(); if(!client) return res.status(503).json({success:false,error:"موصل Telegram غير مهيأ (رمز بوت غير متوفر)."});
+      const chatId=String(process.env.TELEGRAM_DEFAULT_CHAT_ID||job.payload?.chatId||""); if(!chatId) return res.status(503).json({success:false,error:"Telegram يحتاج TELEGRAM_DEFAULT_CHAT_ID أو chatId في المهمة."});
+      // إرسال حقيقي عبر نفس عميل الموصل (مصدر واحد)؛ لا نشر بلا استجابة مزود.
+      const sent=await client.sendMessage({chatId,text:content});
+      if(!sent.ok) throw new Error(sent.error||"فشل إرسال Telegram");
+      job.status="executed"; job.executedAt=new Date().toISOString(); job.providerVerified=true; job.providerReceipt={provider:"telegram",messageId:sent.providerMessageId,executedAt:new Date().toISOString()}; persistState(); audit((req as any).user.id,"job_executed",`${job.id}:telegram`); return res.json({success:true,job,receipt:job.providerReceipt});
     }
     return res.status(501).json({success:false,error:"الموصل متصل ومتحقق، لكن تنفيذ هذا النوع من النشر يحتاج بيانات الوسائط/العملية الخاصة بالمزود ولم يتم اختلاق تنفيذ وهمي."});
   } catch(e:any) { job.status="failed"; job.lastError=String(e?.message||e).slice(0,500); persistState(); audit((req as any).user.id,"job_execution_failed",`${job.id}:${platform}`); return res.status(502).json({success:false,error:job.lastError,job}); }
@@ -2156,6 +2397,8 @@ function buildPersistedState() {
       // سجلات مدير السوشيال ميديا: بدونها لا تصمد حماية replay/duplicate بعد restart.
       socialComments: (workspace as any).socialComments.slice(0, 10000),
       socialReplies: (workspace as any).socialReplies.slice(0, 5000), socialApprovals: (workspace as any).socialApprovals.slice(0, 5000), publishRecords: (workspace as any).publishRecords.slice(0, 5000), performanceRecords: (workspace as any).performanceRecords.slice(0, 20000), marketingDecisions: (workspace as any).marketingDecisions.slice(0, 2000), strategiesTested: (workspace as any).strategiesTested.slice(0, 2000),
+      // معرّفات تحديثات Telegram لصمود منع التكرار بعد restart (يمنع إعادة معالجة رسالة).
+      telegramUpdateIds: ((workspace as any).telegramUpdateIds || []).slice(0, 20000),
       providerTokens: (workspace as any).providerTokens,
     }
   };

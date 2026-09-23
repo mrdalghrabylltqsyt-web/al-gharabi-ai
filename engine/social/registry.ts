@@ -24,6 +24,18 @@ interface AdapterSpec {
   /** الاسم المعروض في الواجهة العربية/الإنجليزية. */
   displayName: string;
   capabilities: PlatformCapability[];
+  /**
+   * آلية الاعتماد الرسمية لإتمام اتصال حقيقي:
+   * - bot-token: يكفي رمز/توكن من المالك بلا تسجيل تطبيق (قابل للاتصال الآن).
+   * - oauth2: يحتاج تسجيل تطبيق ومفتاح عميل وموافقة مراجعة من المزود.
+   * - app-registration: يحتاج تطبيقاً معتمداً ومراجعة صلاحيات قبل أي اتصال.
+   */
+  credentialMode: 'bot-token' | 'oauth2' | 'app-registration';
+  /**
+   * هل يوجد موصل إرسال/استقبال حقيقي منفّذ في الكود لهذه المنصة الآن؟
+   * false تعني أن المنصة معرّفة بقدراتها لكن لا موصل فعلي بعد — فلا يُوهم باكتمال.
+   */
+  realConnector: boolean;
 }
 
 /**
@@ -44,24 +56,32 @@ const ADAPTER_SPECS: AdapterSpec[] = [
     name: 'TikTok',
     displayName: 'TikTok',
     capabilities: ['publish', 'analytics', 'comments', 'comment_reply', 'scheduling'],
+    credentialMode: 'oauth2',
+    realConnector: false,
   },
   {
     platform: 'youtube',
     name: 'YouTube',
     displayName: 'YouTube',
     capabilities: ['publish', 'analytics', 'comments', 'comment_reply', 'scheduling', 'audience_insights'],
+    credentialMode: 'oauth2',
+    realConnector: false,
   },
   {
     platform: 'facebook',
     name: 'Facebook',
     displayName: 'Facebook',
     capabilities: ['publish', 'messages', 'analytics', 'comments', 'comment_reply', 'scheduling', 'audience_insights'],
+    credentialMode: 'app-registration',
+    realConnector: false,
   },
   {
     platform: 'instagram',
     name: 'Instagram',
     displayName: 'Instagram',
     capabilities: ['publish', 'messages', 'analytics', 'comments', 'comment_reply', 'scheduling', 'audience_insights'],
+    credentialMode: 'app-registration',
+    realConnector: false,
   },
   {
     platform: 'whatsapp',
@@ -69,6 +89,8 @@ const ADAPTER_SPECS: AdapterSpec[] = [
     displayName: 'WhatsApp Business',
     // واتساب للأعمال لا يوفر نشر منشورات عامة ولا تعليقات؛ الرسائل فقط.
     capabilities: ['messages'],
+    credentialMode: 'app-registration',
+    realConnector: false,
   },
   {
     platform: 'telegram',
@@ -76,12 +98,17 @@ const ADAPTER_SPECS: AdapterSpec[] = [
     displayName: 'Telegram',
     // البوت ينشر في القناة ويرسل رسائل؛ لا واجهة لقراءة التعليقات العامة.
     capabilities: ['publish', 'messages', 'scheduling'],
+    // أول موصل حقيقي: يكفي رمز بوت من المالك، والموصل منفّذ فعلاً في الكود.
+    credentialMode: 'bot-token',
+    realConnector: true,
   },
   {
     platform: 'x',
     name: 'X',
     displayName: 'X',
     capabilities: ['publish', 'analytics', 'comments', 'comment_reply', 'scheduling'],
+    credentialMode: 'oauth2',
+    realConnector: false,
   },
   {
     platform: 'snapchat',
@@ -89,12 +116,16 @@ const ADAPTER_SPECS: AdapterSpec[] = [
     displayName: 'Snapchat',
     // لا تتوفر قراءة تعليقات عامة عبر الواجهة الرسمية.
     capabilities: ['publish', 'analytics', 'scheduling'],
+    credentialMode: 'oauth2',
+    realConnector: false,
   },
   {
     platform: 'threads',
     name: 'Threads',
     displayName: 'Threads',
     capabilities: ['publish', 'analytics', 'comments', 'comment_reply', 'scheduling'],
+    credentialMode: 'oauth2',
+    realConnector: false,
   },
   {
     platform: 'google_business',
@@ -102,6 +133,8 @@ const ADAPTER_SPECS: AdapterSpec[] = [
     displayName: 'Google Business Profile',
     // التحديثات المحلية متاحة؛ التعليقات غير متاحة عبر الواجهة الرسمية.
     capabilities: ['publish', 'analytics', 'scheduling'],
+    credentialMode: 'oauth2',
+    realConnector: false,
   },
 ];
 
@@ -111,8 +144,31 @@ class GenericAdapter extends BasePlatformAdapter {
     readonly displayName: string,
     readonly capabilities: readonly PlatformCapability[],
     connection: PlatformAccountState,
+    readonly credentialMode: 'bot-token' | 'oauth2' | 'app-registration',
+    readonly realConnector: boolean,
   ) {
     super(connection);
+  }
+
+  /**
+   * جاهزية الإنتاج تنطبق فقط على منصة لها موصل إرسال حقيقي منفّذ AND اتصال
+   * موثق. المنصة بلا موصل فعلي تبقى productionReady=false حتى لو اتصلت، فلا
+   * يُوهم المالك بقدرة إرسال غير منفّذة.
+   */
+  override describe() {
+    const base = super.describe();
+    const connected = this.connection.status === 'connected' && this.connection.providerVerified === true;
+    return {
+      ...base,
+      credentialMode: this.credentialMode,
+      realConnector: this.realConnector,
+      productionReady: this.realConnector && connected,
+      readinessNote: !this.realConnector
+        ? 'لا يوجد موصل إرسال/استقبال حقيقي منفّذ لهذه المنصة بعد؛ تحتاج اعتماد تطبيق من المزود قبل أي عملية خارجية.'
+        : connected
+          ? 'الحساب متصل ومتحقق منه لدى المزود، والموصل الحقيقي جاهز لتنفيذ الإرسال/الاستقبال.'
+          : 'الحساب غير متصل. لا تُنفَّذ أي عملية خارجية قبل إتمام الاعتماد والتحقق من المزود.',
+    };
   }
 }
 
@@ -127,7 +183,7 @@ export function buildAdapters(
     const state: PlatformAccountState = conn
       ? { platform: spec.platform, status: conn.status, accountId: conn.accountId, accountName: conn.accountName, connectedAt: conn.connectedAt, providerVerified: conn.providerVerified }
       : disconnectedState(spec.platform);
-    return new GenericAdapter(spec.platform, spec.displayName, spec.capabilities, state);
+    return new GenericAdapter(spec.platform, spec.displayName, spec.capabilities, state, spec.credentialMode, spec.realConnector);
   });
 }
 
@@ -141,12 +197,27 @@ export const PLATFORM_SPECS: ReadonlyArray<{
   name: string;
   displayName: string;
   capabilities: readonly PlatformCapability[];
+  credentialMode: 'bot-token' | 'oauth2' | 'app-registration';
+  realConnector: boolean;
 }> = ADAPTER_SPECS.map((s) => ({
   platform: s.platform,
   name: s.name,
   displayName: s.displayName,
   capabilities: s.capabilities,
+  credentialMode: s.credentialMode,
+  realConnector: s.realConnector,
 }));
+
+/** هل يوجد موصل إرسال/استقبال حقيقي منفّذ فعلاً لهذه المنصة؟ */
+export function hasRealConnector(platform: string): boolean {
+  return ADAPTER_SPECS.some((s) => s.platform === platform && s.realConnector);
+}
+
+/** آلية الاعتماد الرسمية المطلوبة لإتمام اتصال حقيقي لهذه المنصة. */
+export function credentialModeOf(platform: string): 'bot-token' | 'oauth2' | 'app-registration' | null {
+  const spec = ADAPTER_SPECS.find((s) => s.platform === platform);
+  return spec ? spec.credentialMode : null;
+}
 
 export function isSupportedPlatform(id: string): id is PlatformId {
   return ADAPTER_SPECS.some((s) => s.platform === id);

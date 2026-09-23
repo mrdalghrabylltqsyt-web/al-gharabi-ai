@@ -255,6 +255,35 @@ write → restart بمجلد فارغ → الإبطال يسري → جلسة �
 `final-audit.mjs`: `platform-connections-restored` و`inventory-notifications-persisted`،
 وفحص ثبات الاتصال في `engine/tests/social.persistence.test.ts`.
 
+## موصل Telegram الحقيقي — أول تكامل اجتماعي خارجي (Batch 5)
+Telegram هو **أول** منصة بموصل إرسال/استقبال حقيقي منفّذ في الكود
+(`engine/social/telegram.ts`)، لأنه المنصة الوحيدة المدعومة التي تصل إلى حالة
+«متصل ومتحقق + إرسال حقيقي» بـ**رمز بوت فقط**، بلا تسجيل تطبيق ولا OAuth.
+بقية المنصات مسجّلة بـ`realConnector: false` وتبقى `productionReady=false`
+حتى يُنفّذ موصلها، ولا يُوهم المالك بقدرة إرسال غير موجودة.
+
+- السجل: `engine/social/registry.ts` صار يحمل لكل منصة `credentialMode`
+  (`bot-token` | `oauth2` | `app-registration`) و`realConnector`. دالتا
+  `hasRealConnector` و`credentialModeOf` مصدرهما الوحيد.
+- الدورة الكاملة: `POST /api/platforms/telegram/configure` (للمالك) ينفّذ
+  `getMe` فعلياً ثم `setWebhook` بسرّ حقيقي — لا اتصال بلا استجابة مزود.
+  `POST /api/platforms/telegram/webhook` يتحقق من ترويسة
+  `X-Telegram-Bot-Api-Secret-Token` بزمن ثابت، ثم يحلل الرسالة ويصنّفها ويخزّنها
+  كتعليق حقيقي (`ingestSource: telegram_webhook`). `POST /api/platforms/telegram/reply`
+  (للمالك) يمر بحارس سلامة المحتوى وبوابة الرد المكرر ثم يرسل `sendMessage` فعلياً،
+  ولا يسجّل `delivered=true` بلا `message_id` من المزود.
+- الأسرار: `TELEGRAM_BOT_TOKEN` و`TELEGRAM_WEBHOOK_SECRET` من بيئة الخادم أو
+  محفوظة مشفّرة عبر محوّل الحالة (`providerTokens.telegram`)؛ لا تُعاد في أي استجابة
+  ولا تُسجَّل. `TELEGRAM_DEFAULT_CHAT_ID` اختياري لتنفيذ المهام المجدولة.
+- منع التكرار: `update_id` و`externalId` (`tg:<chatId>:<messageId>`) محفوظان في
+  `telegramUpdateIds` عبر `loadPersistentState`/`buildPersistedState`، فيصمدان بعد restart.
+- إغلاق ثغرة: `POST /api/platforms/:platform/connection-callback` كان يقبل
+  `providerVerified:true` من الجسم (اتصال وهمي). الآن يثبت الاتصال بطلب مزود فعلي
+  (`verifyProviderConnection`) ولا يقبله من تصريح العميل.
+- اختبارات: `engine/tests/telegram.connector.test.ts` (وحدة + تكامل مع خادم
+  Telegram وهمي محلي عبر `TELEGRAM_API_BASE`، بلا مزود أو حصة)، وثبات السوشيال صار
+  يقيس المسار الحقيقي. فحوص final-audit السبعة الخاصة بـ`telegram-*`.
+
 ## نمط الكود
 - تعليقات عربية موجزة تشرح «لماذا» فقط، دون شرح ما يفعله الكود.
 - الأنواع في `src/types/index.ts` يجب أن تطابق استجابات الخادم فعلياً؛ توجد فحوص عقد في `engine/tests/social.routes.test.ts` تكشف أي انحراف.

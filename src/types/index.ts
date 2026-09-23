@@ -492,6 +492,10 @@ export interface SocialPlatformState {
   /** لا تكون true إلا بوجود موصل نشر إنتاجي معتمد. */
   productionReady: boolean;
   readinessNote: string;
+  /** آلية الاعتماد الرسمية المطلوبة (bot-token | oauth2 | app-registration). */
+  credentialMode?: string;
+  /** هل يوجد موصل إرسال/استقبال حقيقي منفّذ لهذه المنصة؟ */
+  realConnector?: boolean;
 }
 
 export interface SocialManagerStatus {

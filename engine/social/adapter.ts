@@ -116,6 +116,8 @@ export interface PlatformAdapter {
     providerVerified: boolean;
     productionReady: boolean;
     readinessNote: string;
+    credentialMode?: 'bot-token' | 'oauth2' | 'app-registration';
+    realConnector?: boolean;
   };
 }
 
