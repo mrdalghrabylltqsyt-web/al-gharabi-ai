@@ -440,6 +440,8 @@ ${payload.topic || payload.productName || 'أنظمة وحلول التقسيط 
   },
 
   async getPlatformReadiness() { const res = await fetch('/api/platforms/readiness', { headers: getAuthHeaders() }); const data = await res.json(); if(!res.ok || !data.success) throw new Error(data.error || 'تعذر تحميل جاهزية المنصات'); return data; },
+  /** مصفوفة جاهزية المنصات (Batch 6): قدرات/إمكانات كل منصة من الكود الحقيقي. */
+  async getReadinessMatrix() { const res = await fetch('/api/platforms/readiness-matrix', { headers: getAuthHeaders() }); const data = await res.json(); if(!res.ok || !data.success) throw new Error(data.error || 'تعذر تحميل مصفوفة الجاهزية'); return data; },
 
   async getPlatformHealth(platform: string) { const res = await fetch(`/api/platforms/${encodeURIComponent(platform)}/health`, { headers: getAuthHeaders() }); const data = await res.json(); if(!res.ok || !data.success) throw new Error(data.error || 'تعذر فحص المنصة'); return data; },
 

@@ -315,6 +315,54 @@ Telegram هو **أول** منصة بموصل إرسال/استقبال حقيق�
 **القاعدة:** HTTP 200 لا يعني نجاح Gemini؛ الحكم من `verified` + `usedProduction`
 + الموديل المخدوم، مع بقاء `fallbackReason` صريحاً عند البديل.
 
+## أساس تكامل المنصات المتعدد — Batch 6 (2026-09-23)
+
+بناء أساس موحّد حقيقي للمنصات العشر بلا أي ادعاء اتصال غير مثبت. الفصل الصريح:
+**Capability ≠ Connection ≠ Verification ≠ Delivery** يبقى قائماً في كل الوحدات الجديدة.
+
+وحدات جديدة (منطق خالص قابل للاختبار، بلا شبكة):
+- `engine/social/readiness.ts`: **مصفوفة الجاهزية** مشتقة من `PLATFORM_SPECS` مباشرة
+  (connector/oauth/connection/verification/webhook/read/reply/publish/schedule/analytics
+  + `externalSetup` + `implementationStatus`). لا تحمل حالة اتصال تشغيلية؛ «متصل»
+  يُقرأ من الخادم منفصلاً. `READY` / `EXTERNAL_SETUP_REQUIRED` / `NOT_SUPPORTED`.
+- `engine/social/oauth.ts`: أساس OAuth مشترك — `createOAuthState`، `createPkcePair`،
+  `validateOAuthCallback` (منصة + مستخدم + redirect + انتهاء)، `buildAuthorizationParams`
+  (فرق TikTok client_key عن Google/Meta client_id + offline/consent)، `parseTokenResponse`،
+  `isAccessTokenExpired` بهامش أمان. state يُستهلك مرة واحدة فقط.
+- `engine/social/webhook.ts`: أساس webhook موحّد — `secretHeaderVerifier` (نمط Telegram)
+  و`hmacSignatureVerifier` (نمط Meta `X-Hub-Signature-256`)، `isReplayOrDuplicate`،
+  `isValidWebhookPayload`، `buildNormalizedEvent` (حدث اجتماعي داخلي واحد).
+- `engine/social/analytics.ts`: غلاف موحّد `fetchPostMetrics/fetchAccountMetrics/fetchEngagement`
+  يعيد `NOT_SUPPORTED` بلا قيمة عند غياب المؤشر — **لا صفر وهمي**، والصفر الحقيقي يبقى صفراً.
+
+مسارات الخادم الجديدة:
+- `GET /api/platforms/readiness-matrix` و`GET /api/platforms/:platform/readiness` (محمية).
+- `GET /api/platforms/:platform/webhook` (challenge اشتراك، مقارنة بزمن ثابت) و
+  `POST /api/platforms/:platform/webhook` (تحقق HMAC على **الجسم الخام** عبر `req.rawBody`،
+  تطبيع Meta comments/messaging/WhatsApp، منع تكرار، تصنيف، حفظ).
+- `POST /api/platforms/:platform/publish` (owner): قدرة → سلامة محتوى → اتصال موثق →
+  موصل حقيقي. يُعلن `CAPABILITY_NOT_SUPPORTED` / `APPROVAL_REQUIRED` / `NOT_CONNECTED` /
+  `EXTERNAL_SETUP_REQUIRED` بصراحة، ولا يُسجّل نشراً بلا معرّف منشور من المزود.
+- `GET /api/platforms/:platform/metrics` (محمية): مؤشرات NOT_SUPPORTED بلا اختراع.
+
+`OAUTH_CONFIG` صار يغطي كل منصات OAuth الثماني (youtube/google_business/tiktok/facebook/
+instagram/x/snapchat/threads) ببيانات من **البيئة فقط** (`*_OAUTH_CLIENT_ID/SECRET`,
+`*_APP_SECRET`, `*_VERIFY_TOKEN`) — لا سرّ مكتوب في الكود ولا يُعاد في أي استجابة.
+WhatsApp يستخدم Cloud API token وليس OAuth، وTelegram bot token، فيظهران
+`oauth: NOT_SUPPORTED` صراحةً.
+
+واجهة: قسم «مصفوفة جاهزية المنصات العشر» في `SocialManagerView` يعرض الحالة لكل قدرة.
+اختبارات: `engine/tests/platform.foundation.test.ts` (71 فحصاً، وحدة) و
+`engine/tests/platform.integration.test.ts` (33 فحصاً، خادم حقيقي + webhook موقّع + نشر
+موحّد + تصريح). فحوص final-audit: `platform-readiness-matrix`, `readiness-reflects-registry`,
+`platform-oauth-foundation`, `oauth-state-single-use`, `platform-webhook-foundation`,
+`webhook-hmac-raw-body`, `webhook-replay-guard`, `unified-publish-capability`,
+`analytics-not-supported-honest`, `platform-foundation-tests`, `oauth-config-all-providers`,
+`platform-secrets-server-only` (94 فحصاً إجمالاً).
+
+**حالة التكامل الفعلية:** Telegram هو الموصل الوحيد المنفّذ (CONNECTOR_READY). بقية المنصات
+أساسها جاهز (FOUNDATION_READY) وتنتظر إجراءً خارجياً (تطبيق مطوّر/مراجعة/صلاحيات/Redirect URI).
+
 ## نمط الكود
 - تعليقات عربية موجزة تشرح «لماذا» فقط، دون شرح ما يفعله الكود.
 - الأنواع في `src/types/index.ts` يجب أن تطابق استجابات الخادم فعلياً؛ توجد فحوص عقد في `engine/tests/social.routes.test.ts` تكشف أي انحراف.

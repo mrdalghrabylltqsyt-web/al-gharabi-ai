@@ -9,7 +9,9 @@ import { resolveModelCandidates, describeModelPolicy, PRODUCTION_MODEL } from ".
 import { classifyAiError, diagnosticLabel, type AiErrorInfo } from "./engine/ai/errors";
 import { CircuitBreaker } from "./engine/ai/retry";
 import { registerSocialManagerRoutes } from "./engine/social/routes";
-import { PLATFORM_SPECS, platformSupports, hasRealConnector, credentialModeOf } from "./engine/social/registry";
+import { PLATFORM_SPECS, platformSupports, hasRealConnector, credentialModeOf, isSupportedPlatform, buildAdapters } from "./engine/social/registry";
+import type { PlatformId } from "./engine/social/adapter";
+import { fetchPostMetrics } from "./engine/social/analytics";
 import {
   TelegramClient,
   parseTelegramUpdate,
@@ -17,8 +19,30 @@ import {
   telegramExternalId,
   isDuplicateUpdate,
   TELEGRAM_SECRET_HEADER,
+  constantTimeEqual,
   type TelegramFetch,
 } from "./engine/social/telegram";
+import {
+  createOAuthState,
+  createPkcePair,
+  requiresPkce,
+  validateOAuthCallback,
+  buildAuthorizationParams,
+  buildTokenExchangeBody,
+  parseTokenResponse,
+  isAccessTokenExpired,
+  OAUTH_STATE_TTL_MS,
+} from "./engine/social/oauth";
+import { PLATFORM_READINESS, readinessFor, readinessSummary } from "./engine/social/readiness";
+import {
+  secretHeaderVerifier,
+  hmacSignatureVerifier,
+  isReplayOrDuplicate,
+  isValidWebhookPayload,
+  buildNormalizedEvent,
+  type WebhookVerifier,
+  type NormalizedSocialEvent,
+} from "./engine/social/webhook";
 import {
   buildDeterministicReply,
   canAutoReply,
@@ -849,7 +873,7 @@ const SUPPORTED_PLATFORMS = PLATFORM_SPECS.map((spec) => ({
 }));
 const platformConnections = new Map<string, PlatformConnection>();
 
-type OAuthPending = { platform: string; userId: string; expiresAt: number; codeVerifier?: string };
+type OAuthPending = { platform: string; userId: string; expiresAt: number; codeVerifier?: string; redirectUri: string };
 const pendingOAuth = new Map<string, OAuthPending>();
 const PLATFORM_TOKEN_KEY = (process.env.PLATFORM_TOKEN_ENCRYPTION_KEY || "").trim();
 function tokenKeyBytes() {
@@ -891,6 +915,11 @@ const OAUTH_CONFIG: Record<string, any> = {
   youtube: { provider: "google", auth: "https://accounts.google.com/o/oauth2/v2/auth", token: "https://oauth2.googleapis.com/token", clientId: process.env.GOOGLE_OAUTH_CLIENT_ID || process.env.GOOGLE_CLIENT_ID, clientSecret: process.env.GOOGLE_OAUTH_CLIENT_SECRET, scopes: ["https://www.googleapis.com/auth/youtube.upload"], callback: `${BASE_URL}/api/platforms/youtube/oauth/callback` },
   google_business: { provider: "google", auth: "https://accounts.google.com/o/oauth2/v2/auth", token: "https://oauth2.googleapis.com/token", clientId: process.env.GOOGLE_OAUTH_CLIENT_ID || process.env.GOOGLE_CLIENT_ID, clientSecret: process.env.GOOGLE_OAUTH_CLIENT_SECRET, scopes: ["https://www.googleapis.com/auth/business.manage"], callback: `${BASE_URL}/api/platforms/google_business/oauth/callback` },
   tiktok: { provider: "tiktok", auth: "https://www.tiktok.com/v2/auth/authorize/", token: "https://open.tiktokapis.com/v2/oauth/token/", clientId: process.env.TIKTOK_CLIENT_KEY, clientSecret: process.env.TIKTOK_CLIENT_SECRET, scopes: ["user.info.basic", "video.publish"], callback: `${BASE_URL}/api/platforms/tiktok/oauth/callback` },
+  facebook: { provider: "meta", auth: "https://www.facebook.com/v21.0/dialog/oauth", token: "https://graph.facebook.com/v21.0/oauth/access_token", clientId: process.env.FACEBOOK_OAUTH_CLIENT_ID, clientSecret: process.env.FACEBOOK_OAUTH_CLIENT_SECRET, scopes: ["pages_manage_posts", "pages_read_engagement", "pages_manage_engagement", "pages_messaging"], callback: `${BASE_URL}/api/platforms/facebook/oauth/callback` },
+  instagram: { provider: "meta", auth: "https://www.facebook.com/v21.0/dialog/oauth", token: "https://graph.facebook.com/v21.0/oauth/access_token", clientId: process.env.INSTAGRAM_OAUTH_CLIENT_ID, clientSecret: process.env.INSTAGRAM_OAUTH_CLIENT_SECRET, scopes: ["instagram_basic", "instagram_manage_comments", "instagram_manage_messages", "pages_show_list"], callback: `${BASE_URL}/api/platforms/instagram/oauth/callback` },
+  x: { provider: "x", auth: "https://twitter.com/i/oauth2/authorize", token: "https://api.twitter.com/2/oauth2/token", clientId: process.env.X_OAUTH_CLIENT_ID, clientSecret: process.env.X_OAUTH_CLIENT_SECRET, scopes: ["tweet.read", "tweet.write", "users.read", "offline.access"], callback: `${BASE_URL}/api/platforms/x/oauth/callback` },
+  snapchat: { provider: "snapchat", auth: "https://accounts.snapchat.com/login/oauth2/authorize", token: "https://accounts.snapchat.com/login/oauth2/access_token", clientId: process.env.SNAPCHAT_OAUTH_CLIENT_ID, clientSecret: process.env.SNAPCHAT_OAUTH_CLIENT_SECRET, scopes: ["snapchat-marketing-api"], callback: `${BASE_URL}/api/platforms/snapchat/oauth/callback` },
+  threads: { provider: "meta", auth: "https://threads.net/oauth/authorize", token: "https://graph.threads.net/oauth/access_token", clientId: process.env.THREADS_OAUTH_CLIENT_ID, clientSecret: process.env.THREADS_OAUTH_CLIENT_SECRET, scopes: ["threads_basic", "threads_content_publish", "threads_manage_replies"], callback: `${BASE_URL}/api/platforms/threads/oauth/callback` },
 };
 function oauthReady(platform: string) { const c = OAUTH_CONFIG[platform]; return Boolean(c?.clientId && c?.clientSecret && process.env.APP_URL && tokenKeyBytes()); }
 
@@ -997,36 +1026,80 @@ function hasCapability(platform: string, capability: string) { return platformSu
 // -------------------------------------------------------------
 // Central control-plane endpoints (deterministic, no Gemini cost)
 // -------------------------------------------------------------
+
+/**
+ * إثبات الحساب لدى المزود بعد تبادل الرمز. لا نختلق هوية: إن لم تدعم الواجهة
+ * استعلاماً مباشراً أو فشل، نُبقي المعرّف العام ونعتمد الإثبات على نجاح التبادل.
+ * كل استدعاء هنا رسمي ومحدود، ولا يُسجّل أي رمز.
+ */
+async function fetchProviderAccount(platform: string, accessToken: string): Promise<{ accountId?: string; accountName?: string } | null> {
+  try {
+    if (platform === "youtube") {
+      const r = await fetch("https://www.googleapis.com/youtube/v3/channels?part=snippet&mine=true", { headers: { Authorization: `Bearer ${accessToken}` } });
+      const d = await r.json(); if (r.ok && d.items?.[0]) return { accountId: d.items[0].id, accountName: d.items[0].snippet?.title };
+    }
+    if (platform === "tiktok") {
+      const r = await fetch("https://open.tiktokapis.com/v2/user/info/?fields=open_id,display_name", { headers: { Authorization: `Bearer ${accessToken}` } });
+      const d = await r.json(); if (r.ok && d.data?.user) return { accountId: d.data.user.open_id, accountName: d.data.user.display_name };
+    }
+    if (platform === "facebook" || platform === "instagram") {
+      const r = await fetch(`https://graph.facebook.com/v21.0/me?fields=id,name&access_token=${encodeURIComponent(accessToken)}`);
+      const d = await r.json(); if (r.ok && d.id) return { accountId: String(d.id), accountName: d.name };
+    }
+    if (platform === "threads") {
+      const r = await fetch(`https://graph.threads.net/v1.0/me?fields=id,username&access_token=${encodeURIComponent(accessToken)}`);
+      const d = await r.json(); if (r.ok && d.id) return { accountId: String(d.id), accountName: d.username };
+    }
+    if (platform === "x") {
+      const r = await fetch("https://api.twitter.com/2/users/me", { headers: { Authorization: `Bearer ${accessToken}` } });
+      const d = await r.json(); if (r.ok && d.data?.id) return { accountId: String(d.data.id), accountName: d.data.username ? `@${d.data.username}` : d.data.name };
+    }
+    if (platform === "google_business") {
+      const r = await fetch("https://mybusinessaccountmanagement.googleapis.com/v1/accounts", { headers: { Authorization: `Bearer ${accessToken}` } });
+      const d = await r.json(); if (r.ok && d.accounts?.[0]) return { accountId: d.accounts[0].name, accountName: d.accounts[0].accountName };
+    }
+  } catch { /* الإثبات الإضافي اختياري؛ الفشل لا يُلغي نجاح التبادل */ }
+  return null;
+}
+
 app.get("/api/platforms/:platform/oauth/start", requireOwner, (req,res)=>{
   const platform=req.params.platform; const cfg=OAUTH_CONFIG[platform];
   if(!cfg) return res.status(501).json({success:false,error:"هذا المزود يحتاج إعداد موصل خاص قبل بدء OAuth."});
   if(!oauthReady(platform)) return res.status(503).json({success:false,error:"إعداد OAuth غير مكتمل. يلزم APP_URL وبيانات تطبيق المزود ومفتاح PLATFORM_TOKEN_ENCRYPTION_KEY."});
-  const state=crypto.randomBytes(24).toString("hex");
-  const pending:OAuthPending={platform,userId:(req as any).user.id,expiresAt:Date.now()+10*60*1000};
-  if(platform==="tiktok") { const verifier=crypto.randomBytes(48).toString("base64url"); pending.codeVerifier=verifier; }
+  const state=createOAuthState();
+  const pending:OAuthPending={platform,userId:(req as any).user.id,expiresAt:Date.now()+OAUTH_STATE_TTL_MS,redirectUri:cfg.callback};
+  let pkceChallenge:string|undefined;
+  if(requiresPkce(platform)) { const pkce=createPkcePair(); pending.codeVerifier=pkce.verifier; pkceChallenge=pkce.challenge; }
   pendingOAuth.set(state,pending);
   const u=new URL(cfg.auth);
-  if(platform==="tiktok") { const challenge=crypto.createHash("sha256").update(pending.codeVerifier||"").digest("base64url"); u.searchParams.set("client_key",cfg.clientId); u.searchParams.set("response_type","code"); u.searchParams.set("scope",cfg.scopes.join(",")); u.searchParams.set("redirect_uri",cfg.callback); u.searchParams.set("state",state); u.searchParams.set("code_challenge",challenge); u.searchParams.set("code_challenge_method","S256"); }
-  else { u.searchParams.set("client_id",cfg.clientId); u.searchParams.set("redirect_uri",cfg.callback); u.searchParams.set("response_type","code"); u.searchParams.set("scope",cfg.scopes.join(" ")); u.searchParams.set("access_type","offline"); u.searchParams.set("prompt","consent"); u.searchParams.set("state",state); }
-  audit((req as any).user.id,"platform_oauth_started",platform); res.json({success:true,platform,authorizationUrl:u.toString(),expiresAt:pending.expiresAt});
+  const params=buildAuthorizationParams({platform,clientId:cfg.clientId,redirectUri:cfg.callback,scopes:cfg.scopes,state,pkceChallenge});
+  for(const [k,v] of Object.entries(params)) u.searchParams.set(k,v);
+  audit((req as any).user.id,"platform_oauth_started",platform); res.json({success:true,platform,authorizationUrl:u.toString(),expiresAt:pending.expiresAt,redirectUri:cfg.callback});
 });
 
 app.get("/api/platforms/:platform/oauth/callback", async (req,res)=>{
   const platform=req.params.platform; const state=typeof req.query.state==="string"?req.query.state:""; const pending=pendingOAuth.get(state); const cfg=OAUTH_CONFIG[platform];
-  if(!pending || pending.platform!==platform || pending.expiresAt<Date.now()) return res.status(400).send("فشل التحقق من جلسة OAuth أو انتهت صلاحيتها.");
+  const redirectUri=cfg?.callback||"";
+  const check=validateOAuthCallback({pending,platform,redirectUri});
+  if(!check.ok || !cfg) return res.status(400).send(`فشل التحقق من جلسة OAuth: ${check.reason||"مزود غير مُعدّ"}.`);
+  // يُستهلك state مرة واحدة فقط (يمنع إعادة الاستخدام).
   pendingOAuth.delete(state);
   if(req.query.error) return res.status(400).send(`رفض مزود المنصة عملية الربط: ${String(req.query.error_description||req.query.error).slice(0,200)}`);
   const code=typeof req.query.code==="string"?req.query.code:""; if(!code) return res.status(400).send("لم يتم استلام رمز OAuth.");
   try {
-    const body=new URLSearchParams(); body.set("client_id",cfg.clientId); body.set("client_secret",cfg.clientSecret); body.set("code",code); body.set("grant_type","authorization_code"); body.set("redirect_uri",cfg.callback); if(pending.codeVerifier) body.set("code_verifier",pending.codeVerifier);
+    const body=buildTokenExchangeBody({clientId:cfg.clientId,clientSecret:cfg.clientSecret,code,redirectUri:cfg.callback,codeVerifier:pending!.codeVerifier});
     const tokenRes=await fetch(cfg.token,{method:"POST",headers:{"Content-Type":"application/x-www-form-urlencoded"},body}); const token=await tokenRes.json();
-    if(!tokenRes.ok || !token.access_token) throw new Error(token.error_description||token.error||"فشل تبادل رمز OAuth");
+    const parsedToken=parseTokenResponse(token);
+    if(!tokenRes.ok || !parsedToken.valid) throw new Error(parsedToken.reason||token.error_description||token.error||"فشل تبادل رمز OAuth");
+    // إثبات حساب حقيقي حيث توفّره الواجهة الرسمية (لا نختلق هوية عند غياب الاستعلام).
     let accountId="authorized-user", accountName="حساب متصل";
-    if(platform==="youtube") { const r=await fetch(`https://www.googleapis.com/youtube/v3/channels?part=snippet&mine=true`,{headers:{Authorization:`Bearer ${token.access_token}`}}); const d=await r.json(); if(r.ok&&d.items?.[0]) { accountId=d.items[0].id; accountName=d.items[0].snippet?.title||accountName; } }
-    if(platform==="tiktok") { const r=await fetch("https://open.tiktokapis.com/v2/user/info/?fields=open_id,display_name",{headers:{Authorization:`Bearer ${token.access_token}`}}); const d=await r.json(); if(r.ok&&d.data?.user){ accountId=d.data.user.open_id||accountId; accountName=d.data.user.display_name||accountName; } }
-    setProviderToken(platform,token); platformConnections.set(platform,{platform,status:"connected",accountId,accountName,connectedAt:new Date().toISOString(),providerVerified:true}); savePlatformConnections(); audit(pending.userId,"platform_oauth_connected",`${platform}:${accountId}`);
+    const proof=await fetchProviderAccount(platform,parsedToken.accessToken!);
+    if(proof) { accountId=proof.accountId||accountId; accountName=proof.accountName||accountName; }
+    // يُخزَّن الرمز مع انتهاء مطلق محسوب ومع refresh token إن وُجد.
+    const stored={...token, expiresAt: parsedToken.expiresIn ? Date.now()+parsedToken.expiresIn*1000 : null};
+    setProviderToken(platform,stored); platformConnections.set(platform,{platform,status:"connected",accountId,accountName,connectedAt:new Date().toISOString(),providerVerified:true}); savePlatformConnections(); audit(pending!.userId,"platform_oauth_connected",`${platform}:${accountId}`);
     res.send("<html lang='ar' dir='rtl'><meta charset='utf-8'><title>تم الربط</title><body style='font-family:sans-serif;padding:40px'><h2>تم ربط المنصة بنجاح.</h2><p>يمكنك إغلاق هذه النافذة والعودة إلى الغرابي AI.</p></body></html>");
-  } catch(e:any) { audit(pending.userId,"platform_oauth_failed",platform); res.status(502).send(`فشل إكمال ربط المنصة: ${String(e?.message||e).slice(0,240)}`); }
+  } catch(e:any) { audit(pending!.userId,"platform_oauth_failed",platform); res.status(502).send(`فشل إكمال ربط المنصة: ${String(e?.message||e).slice(0,240)}`); }
 });
 
 app.post("/api/platforms/telegram/configure", requireOwner, async (req,res)=>{
@@ -1093,6 +1166,236 @@ app.post("/api/platforms/telegram/webhook", express.json({limit:"256kb"}), async
   persistState();
   audit("system","telegram_inbound_message",externalId);
   res.status(200).json({success:true,accepted:true,externalId,commentId:comment.id,requiresHumanReview:classification.requiresHumanReview});
+});
+
+// -------------------------------------------------------------
+// Unified webhook foundation (Batch 6) — مسار واحد لكل المنصات.
+// الخطوات: تحقق المصدر (HMAC/سرّ) → منع replay → منع تكرار → تطبيع → حفظ → تصنيف.
+// Telegram له مساره الخاص (ترويسة سرّية). هنا المنصات الموقّعة بـHMAC (Meta/Threads/WhatsApp).
+// لا يُقبل حدث بلا توقيع صحيح، ولا يُخزَّن مكرر.
+// -------------------------------------------------------------
+
+/** سرّ التوقيع لكل منصة (بيئة الخادم فقط؛ لا يُسجَّل ولا يُعاد). */
+function webhookSecretFor(platform: string): string {
+  if (platform === "facebook") return (process.env.FACEBOOK_APP_SECRET || "").trim();
+  if (platform === "instagram") return (process.env.INSTAGRAM_APP_SECRET || process.env.FACEBOOK_APP_SECRET || "").trim();
+  if (platform === "threads") return (process.env.THREADS_APP_SECRET || "").trim();
+  if (platform === "whatsapp") return (process.env.WHATSAPP_APP_SECRET || "").trim();
+  return "";
+}
+
+/** رمز تحقق الاشتراك (GET challenge) لكل منصة — يُقارن بزمن ثابت. */
+function webhookVerifyTokenFor(platform: string): string {
+  if (platform === "facebook") return (process.env.FACEBOOK_VERIFY_TOKEN || "").trim();
+  if (platform === "instagram") return (process.env.INSTAGRAM_VERIFY_TOKEN || process.env.FACEBOOK_VERIFY_TOKEN || "").trim();
+  if (platform === "threads") return (process.env.THREADS_VERIFY_TOKEN || "").trim();
+  if (platform === "whatsapp") return (process.env.WHATSAPP_VERIFY_TOKEN || "").trim();
+  return "";
+}
+
+/** مُتحقّق التوقيع لكل منصة (Meta Graph يستخدم sha256 على X-Hub-Signature-256). */
+function webhookVerifierFor(platform: string): WebhookVerifier | null {
+  if (["facebook", "instagram", "threads", "whatsapp"].includes(platform)) {
+    return hmacSignatureVerifier("x-hub-signature-256", "sha256");
+  }
+  return null;
+}
+
+/**
+ * تطبيع حمولة Meta إلى حدث موحّد. تُغطّى تعليقات الصفحة والرسائل الخاصة:
+ * - feed changes: entry[].changes[].value (comment/feed).
+ * - messaging: entry[].messaging[].message نصية.
+ * أي شكل غير معروف يُعاد [] (يُقبل ويُتجاهل بلا خطأ، فلا يعيد المزود المحاولة).
+ */
+function normalizeMetaEvents(platform: PlatformId, payload: any): NormalizedSocialEvent[] {
+  const events: NormalizedSocialEvent[] = [];
+  const entries = Array.isArray(payload?.entry) ? payload.entry : [];
+  for (const entry of entries) {
+    const pageId = entry?.id ? String(entry.id) : null;
+    // 1) تعليقات/تغييرات الصفحة.
+    for (const change of Array.isArray(entry?.changes) ? entry.changes : []) {
+      const v = change?.value || {};
+      const text = String(v.message ?? v.text ?? "").trim();
+      const externalId = v.comment_id ?? v.post_id ?? v.id;
+      if (!text || externalId === undefined || externalId === null) continue;
+      events.push(buildNormalizedEvent({
+        platform,
+        kind: "comment",
+        externalId: String(externalId),
+        parentExternalId: v.post_id ? String(v.post_id) : null,
+        authorName: v.from?.name ?? null,
+        text,
+        createdAt: v.created_time ? new Date(Number(v.created_time) * 1000).toISOString() : undefined,
+        // الرد على تعليق الصفحة يتم بمعرّف التعليق نفسه عبر Graph API.
+        replyTarget: { commentId: String(externalId), pageId },
+        raw: { source: "changes", item: change?.field ?? null },
+      }));
+    }
+    // 2) الرسائل الخاصة (Messenger/Instagram DM).
+    for (const m of Array.isArray(entry?.messaging) ? entry.messaging : []) {
+      const text = String(m?.message?.text ?? "").trim();
+      const externalId = m?.message?.mid;
+      if (!text || !externalId) continue;
+      const senderId = m?.sender?.id ? String(m.sender.id) : null;
+      events.push(buildNormalizedEvent({
+        platform,
+        kind: "message",
+        externalId: String(externalId),
+        parentExternalId: senderId,
+        authorName: null,
+        text,
+        createdAt: m?.timestamp ? new Date(Number(m.timestamp)).toISOString() : undefined,
+        replyTarget: { recipientId: senderId, pageId },
+        raw: { source: "messaging" },
+      }));
+    }
+    // 3) WhatsApp Cloud API: entry[].changes[].value.messages[].
+    for (const msg of Array.isArray(entry?.changes) ? entry.changes.flatMap((c: any) => c?.value?.messages || []) : []) {
+      const text = String(msg?.text?.body ?? "").trim();
+      const externalId = msg?.id;
+      if (!text || !externalId) continue;
+      const from = msg?.from ? String(msg.from) : null;
+      events.push(buildNormalizedEvent({
+        platform,
+        kind: "message",
+        externalId: String(externalId),
+        parentExternalId: from,
+        authorName: from,
+        text,
+        createdAt: msg?.timestamp ? new Date(Number(msg.timestamp) * 1000).toISOString() : undefined,
+        replyTarget: { recipientId: from },
+        raw: { source: "whatsapp_messages" },
+      }));
+    }
+  }
+  return events;
+}
+
+// اشتراك webhook (GET challenge) — يُقارن رمز التحقق بزمن ثابت.
+app.get("/api/platforms/:platform/webhook", (req, res) => {
+  const platform = req.params.platform;
+  if (!isSupportedPlatform(platform)) return res.status(404).json({ success: false, error: "المنصة غير مدعومة." });
+  const expected = webhookVerifyTokenFor(platform);
+  const mode = req.query["hub.mode"];
+  const token = typeof req.query["hub.verify_token"] === "string" ? req.query["hub.verify_token"] : "";
+  const challenge = typeof req.query["hub.challenge"] === "string" ? req.query["hub.challenge"] : "";
+  if (!expected) return res.status(404).json({ success: false, error: "webhook غير مُعدّ لهذه المنصة." });
+  if (mode !== "subscribe" || !constantTimeEqual(token, expected)) return res.status(403).json({ success: false, error: "فشل التحقق من طلب الاشتراك." });
+  res.type("text/plain").send(challenge);
+});
+
+// استقبال أحداث موقّعة (POST) — HMAC على الجسم الخام.
+// مهم: التوقيع يُحسب على البايتات المرسلة نفسها. Express يحلل JSON أولاً، لذلك
+// نحتفظ بالجسم الخام عبر verify لتفادي فشل التحقق بسبب إعادة التسلسل (مسافات/ترتيب).
+const captureRawBody = express.json({ limit: "512kb", verify: (req: any, _res, buf) => { req.rawBody = buf?.toString("utf8") ?? ""; } });
+app.post("/api/platforms/:platform/webhook", captureRawBody, async (req, res) => {
+  const platform = req.params.platform;
+  if (!isSupportedPlatform(platform)) return res.status(404).json({ success: false, error: "المنصة غير مدعومة." });
+  const verifier = webhookVerifierFor(platform);
+  if (!verifier) return res.status(404).json({ success: false, error: "لا يوجد مزود توقيع لهذه المنصة." });
+  const secret = webhookSecretFor(platform);
+  const rawBody = typeof (req as any).rawBody === "string" ? (req as any).rawBody : JSON.stringify(req.body ?? {});
+  const verification = verifier.verify({ headers: req.headers as Record<string, string | undefined>, rawBody, secret });
+  if (!verification.ok) return res.status(401).json({ success: false, error: verification.reason || "حدث غير موثوق." });
+  if (!isValidWebhookPayload(req.body)) return res.status(400).json({ success: false, error: "حمولة webhook غير صالحة." });
+
+  const events = normalizeMetaEvents(platform as PlatformId, req.body);
+  if (!events.length) return res.status(200).json({ success: true, accepted: true, ignored: "no_supported_event" });
+
+  if (!Array.isArray((workspace as any).webhookEvents)) (workspace as any).webhookEvents = [];
+  if (!Array.isArray((workspace as any).socialComments)) (workspace as any).socialComments = [];
+  const seenExternal = (workspace as any).socialComments.filter((c: any) => c.platform === platform).map((c: any) => c.externalId);
+  const accepted: string[] = [];
+  for (const ev of events) {
+    if (isReplayOrDuplicate({ providerEventId: ev.externalId, externalId: ev.externalId, seenProviderEventIds: [], seenExternalIds: [...seenExternal, ...accepted] })) continue;
+    const classification = classifyComment(ev.text);
+    (workspace as any).socialComments.unshift({
+      id: workspaceId("comment"), platform, externalId: ev.externalId, kind: ev.kind,
+      postExternalId: ev.parentExternalId, authorName: ev.authorName, text: ev.text,
+      createdAt: ev.createdAt, classification, requiresHumanReview: classification.requiresHumanReview,
+      ingestSource: `${platform}_webhook`, replyTarget: ev.replyTarget,
+    });
+    if ((workspace as any).socialComments.length > 10000) (workspace as any).socialComments.pop();
+    (workspace as any).webhookEvents.unshift({ id: workspaceId("event"), platform, type: ev.kind, externalId: ev.externalId, receivedAt: new Date().toISOString() });
+    accepted.push(ev.externalId);
+  }
+  (workspace as any).webhookEvents = (workspace as any).webhookEvents.slice(0, 10000);
+  persistState();
+  audit("system", `${platform}_inbound_events`, `${accepted.length}/${events.length}`);
+  res.status(200).json({ success: true, accepted: true, processed: accepted.length, ignoredDuplicates: events.length - accepted.length });
+});
+
+// -------------------------------------------------------------
+// Unified publishing pipeline (Batch 6) — مسار واحد للنشر المعتمد.
+// Approved → Capability Check → Connector → Platform API → Real Response → Record.
+// منصة لا تدعم نوع النشر تُردّ صراحةً بـ CAPABILITY_NOT_SUPPORTED، بلا فشل صامت.
+// منصة تدعم النشر لكن بلا موصل منفّذ تُردّ بـ EXTERNAL_SETUP_REQUIRED.
+// -------------------------------------------------------------
+app.post("/api/platforms/:platform/publish", requireOwner, async (req, res) => {
+  const platform = req.params.platform;
+  const user = (req as any).user as { id: string };
+  if (!isSupportedPlatform(platform)) return res.status(404).json({ success: false, error: "المنصة غير مدعومة." });
+  const content = typeof req.body?.content === "string" ? req.body.content.trim() : "";
+  const approved = req.body?.approved === true;
+  const chatId = typeof req.body?.chatId === "string" ? req.body.chatId.trim() : "";
+
+  if (!content) return res.status(400).json({ success: false, error: "المحتوى مطلوب.", code: "CONTENT_REQUIRED" });
+  if (!approved) return res.status(409).json({ success: false, error: "المحتوى لم تتم الموافقة عليه.", code: "APPROVAL_REQUIRED" });
+  // القدرة تُقرأ من السجل: منصة لا تدعم النشر لا تُحاول إطلاقاً.
+  if (!hasCapability(platform, "publish")) {
+    return res.status(422).json({ success: false, error: "المنصة لا تدعم النشر عبر واجهتها الرسمية في هذا النظام.", code: "CAPABILITY_NOT_SUPPORTED", platform });
+  }
+  // محتوى خارجي يمر عبر حارس السلامة قبل أي إرسال.
+  const safety = analyzeBusinessClaims(content, buildFactsForProduct(null, 0, 0));
+  if (!safety.safe) {
+    return res.status(422).json({ success: false, error: "المحتوى يحمل عرضاً تجارياً غير مسجّل، وتم إيقافه قبل الإرسال.", code: "CONTENT_SAFETY_BLOCKED", contentSafety: { violations: safety.blocked.map((v) => v.detail), codes: safety.blocked.map((v) => v.code) } });
+  }
+  const conn: any = platformConnections.get(platform);
+  if (!conn || conn.status !== "connected" || conn.providerVerified !== true) {
+    return res.status(409).json({ success: false, error: "المنصة غير متصلة باتصال موثق؛ لا نشر خارجي.", code: "NOT_CONNECTED" });
+  }
+  if (!hasRealConnector(platform)) {
+    return res.status(501).json({ success: false, error: "لا يوجد موصل نشر منفّذ لهذه المنصة بعد.", code: "EXTERNAL_SETUP_REQUIRED", platform });
+  }
+  try {
+    if (platform === "telegram") {
+      const client = telegramClient();
+      if (!client) return res.status(503).json({ success: false, error: "موصل Telegram غير مهيأ.", code: "CONNECTOR_NOT_READY" });
+      const target = chatId || String(process.env.TELEGRAM_DEFAULT_CHAT_ID || "");
+      if (!target) return res.status(503).json({ success: false, error: "Telegram يحتاج chatId أو TELEGRAM_DEFAULT_CHAT_ID.", code: "TARGET_REQUIRED" });
+      const sent = await client.sendMessage({ chatId: target, text: content });
+      const record = buildPublishRecord({ platform: platform as any, postId: typeof req.body?.postId === "string" ? req.body.postId : workspaceId("post"), providerPostId: sent.providerMessageId, simulated: false, error: sent.ok ? null : sent.error });
+      if (!Array.isArray((workspace as any).publishRecords)) (workspace as any).publishRecords = [];
+      (workspace as any).publishRecords.unshift({ ...record, id: workspaceId("publish"), createdBy: user.id, receipt: sent.receipt });
+      persistState();
+      audit(user.id, sent.ok ? "platform_publish_published" : "platform_publish_failed", `${platform}`);
+      if (!sent.ok) return res.status(502).json({ success: false, record, error: sent.error, note: "لم يُسجَّل أي نشر بلا معرّف منشور حقيقي من المزود." });
+      return res.json({ success: true, record, providerPostId: sent.providerMessageId, receipt: sent.receipt });
+    }
+    return res.status(501).json({ success: false, error: "الموصل متصل لكن تنفيذ النشر لهذه المنصة يحتاج بيانات المزود ولم يُختلق تنفيذ وهمي.", code: "EXTERNAL_SETUP_REQUIRED", platform });
+  } catch (e: any) {
+    return res.status(502).json({ success: false, error: String(e?.message || e).slice(0, 300), code: "PROVIDER_ERROR" });
+  }
+});
+
+/**
+ * مؤشرات موحّدة (Batch 6): أي مؤشر غير مدعوم أو غير متوفر يُعلن NOT_SUPPORTED
+ * ولا يُخترع له صفر. غير المتصل يُعلن صراحةً أنه لا جلب خارجي.
+ */
+app.get("/api/platforms/:platform/metrics", authenticateToken, async (req, res) => {
+  const platform = req.params.platform;
+  if (!isSupportedPlatform(platform)) return res.status(404).json({ success: false, error: "المنصة غير مدعومة." });
+  const externalId = typeof req.query.externalId === "string" ? req.query.externalId : "";
+  const adapter = buildAdapters((p) => { const c = platformConnections.get(p); return c ? { status: c.status, accountId: c.accountId, accountName: c.accountName, connectedAt: c.connectedAt, providerVerified: c.providerVerified } : null; }).find((a) => a.platform === platform)!;
+  if (!adapter.supports("analytics")) {
+    return res.json({ success: true, envelope: fetchPostMetrics(platform as PlatformId, externalId, {}), note: "المنصة لا تدعم التحليلات عبر واجهتها الرسمية؛ كل المؤشرات NOT_SUPPORTED." });
+  }
+  const conn: any = platformConnections.get(platform);
+  if (!conn || conn.status !== "connected" || conn.providerVerified !== true) {
+    return res.json({ success: true, envelope: fetchPostMetrics(platform as PlatformId, externalId, {}), externalFetchAvailable: false, note: "المنصة غير متصلة باتصال موثق؛ لا جلب مؤشرات خارجي، والقيم غير متاحة." });
+  }
+  // لا نختلق قيماً: بلا تنفيذ جلب إنتاجي معتمد، تُعلن كل القيم NOT_SUPPORTED.
+  return res.json({ success: true, envelope: fetchPostMetrics(platform as PlatformId, externalId, {}), externalFetchAvailable: true, note: "الاتصال موثق، لكن جلب المؤشرات الحقيقي يحتاج موصل تحليلات إنتاجي منفّذ؛ لا تُخترع أي قيمة." });
 });
 
 // -------------------------------------------------------------
@@ -1213,6 +1516,26 @@ app.get("/api/platforms/readiness", authenticateToken, (_req,res)=>res.json({suc
 app.get("/api/platforms/production-readiness", authenticateToken, (_req,res)=>{
   const rows=SUPPORTED_PLATFORMS.map((p:any)=>{ const r=publicProviderReadiness(p.id); const c:any=platformConnections.get(p.id); const connected=Boolean(c?.status==="connected" && c?.providerVerified===true); const production=connected && hasRealConnector(p.id); return {platform:p.id,name:p.name,configured:r.configured,connected,providerVerified:Boolean(c?.providerVerified),productionReady:production,realConnector:hasRealConnector(p.id),credentialMode:credentialModeOf(p.id),mode:r.mode,missing:r.missing||[],next:p.id==="telegram"?"ضبط Bot Token ثم الضغط على «ربط Telegram» لتسجيل webhook حقيقي":OAUTH_CONFIG[p.id]?"ضبط بيانات OAuth ثم تسجيل Redirect URI والربط": "إضافة موصل إنتاجي معتمد قبل تفعيل النشر"}; });
   res.json({success:true,generatedAt:new Date().toISOString(),projectVersion:PROJECT_VERSION,summary:{total:rows.length,connected:rows.filter(x=>x.connected).length,productionReady:rows.filter(x=>x.productionReady).length},platforms:rows,note:"هذه الصفحة تميز الجاهزية التقنية عن الاتصال الفعلي ولا تمنح أي منصة حالة نجاح وهمية. productionReady يتطلب موصلاً حقيقياً منفّذاً + اتصالاً موثقاً."});
+});
+
+/**
+ * مصفوفة جاهزية المنصات (Batch 6): مصدر واحد يعكس حالة الكود الحقيقية لكل منصة
+ * (موصل/OAuth/اتصال/تحقق/webhook/قراءة/رد/نشر/جدولة/تحليلات + متطلبات خارجية).
+ * لا تحمل أي حالة اتصال تشغيلية — تلك تُقرأ من `connection` منفصلاً.
+ */
+app.get("/api/platforms/readiness-matrix", authenticateToken, (_req,res)=>{
+  const platforms = PLATFORM_READINESS.map((r)=>{
+    const c:any=platformConnections.get(r.platform);
+    return { ...r, connection: { status: c?.status||"disconnected", providerVerified: Boolean(c?.providerVerified), accountName: c?.accountName||null } };
+  });
+  res.json({success:true,generatedAt:new Date().toISOString(),projectVersion:PROJECT_VERSION,summary:readinessSummary(),platforms,note:"المصفوفة تصف الكود والمتطلبات الخارجية. حالة «متصل» تُقرأ من حقل connection ولا تُشتق من الجاهزية."});
+});
+
+app.get("/api/platforms/:platform/readiness", authenticateToken, (req,res)=>{
+  const row=readinessFor(req.params.platform);
+  if(!row) return res.status(404).json({success:false,error:"منصة غير مدعومة."});
+  const c:any=platformConnections.get(row.platform);
+  res.json({success:true,readiness:row,connection:{status:c?.status||"disconnected",providerVerified:Boolean(c?.providerVerified)}});
 });
 
 app.get("/api/control/final-check", requireOwner, (_req,res)=>{

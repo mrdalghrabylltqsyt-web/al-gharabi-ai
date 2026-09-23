@@ -60,18 +60,22 @@ export const SocialManagerView: React.FC = () => {
   const [decision, setDecision] = useState<MarketingDecisionResult | null>(null);
   const [classifyText, setClassifyText] = useState('');
   const [classification, setClassification] = useState<any>(null);
+  // مصفوفة جاهزية المنصات (Batch 6): تكشف لكل منصة ما هو منفّذ فعلاً وما يحتاج إعداداً خارجياً.
+  const [readiness, setReadiness] = useState<any>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const [s, c, m] = await Promise.all([
+      const [s, c, m, r] = await Promise.all([
         apiService.getSocialManagerStatus(),
         apiService.getSocialCapabilities(),
         apiService.getSocialMemory(),
+        apiService.getReadinessMatrix().catch(() => null),
       ]);
       setStatus(s);
       setCapabilities(c);
       setMemory(m);
+      setReadiness(r);
     } catch (err: any) {
       showToast(err?.message || 'تعذر تحميل حالة مدير السوشيال ميديا');
     } finally {
@@ -257,6 +261,60 @@ export const SocialManagerView: React.FC = () => {
         </div>
         <p className="text-[11px] text-slate-500 mt-4">{platforms[0]?.readinessNote}</p>
       </div>
+
+      {/* مصفوفة جاهزية المنصات (Batch 6) — منفّذ فعلاً مقابل ما يحتاج إعداداً خارجياً */}
+      {readiness && (
+        <div className="p-6 rounded-2xl bg-slate-900 border border-slate-800">
+          <h3 className="text-sm font-bold text-white border-b border-slate-800 pb-3 mb-2 flex items-center gap-2">
+            <ShieldCheck className="w-4 h-4 text-emerald-400" /> مصفوفة جاهزية المنصات العشر
+          </h3>
+          <p className="text-[11px] text-slate-500 mb-4">
+            READY = منفّذ في الكود · <span className="text-amber-400">إعداد خارجي</span> = البنية جاهزة وتحتاج إجراءً من المزود · NOT_SUPPORTED = المنصة لا توفرها رسمياً.
+            {readiness.summary && <> — موصل جاهز: {readiness.summary.connectorReady} · أساس جاهز: {readiness.summary.foundationReady}</>}
+          </p>
+          <div className="overflow-x-auto">
+            <table className="w-full text-[11px]">
+              <thead>
+                <tr className="text-slate-400 text-right border-b border-slate-800">
+                  <th className="py-2 px-2 font-semibold">المنصة</th>
+                  <th className="py-2 px-2 font-semibold">الموصل</th>
+                  <th className="py-2 px-2 font-semibold">OAuth</th>
+                  <th className="py-2 px-2 font-semibold">التحقق</th>
+                  <th className="py-2 px-2 font-semibold">Webhook</th>
+                  <th className="py-2 px-2 font-semibold">قراءة</th>
+                  <th className="py-2 px-2 font-semibold">رد</th>
+                  <th className="py-2 px-2 font-semibold">نشر</th>
+                  <th className="py-2 px-2 font-semibold">جدولة</th>
+                  <th className="py-2 px-2 font-semibold">تحليلات</th>
+                </tr>
+              </thead>
+              <tbody>
+                {(readiness.platforms || []).map((r: any) => {
+                  const cell = (v: string) => v === 'READY'
+                    ? <span className="text-emerald-400 font-bold">READY</span>
+                    : v === 'EXTERNAL_SETUP_REQUIRED'
+                      ? <span className="text-amber-400">إعداد خارجي</span>
+                      : <span className="text-slate-600">غير مدعوم</span>;
+                  return (
+                    <tr key={r.platform} className="border-b border-slate-800/60">
+                      <td className="py-2 px-2 font-bold text-white whitespace-nowrap">{r.displayName}</td>
+                      <td className="py-2 px-2">{cell(r.connector)}</td>
+                      <td className="py-2 px-2">{cell(r.oauth)}</td>
+                      <td className="py-2 px-2">{cell(r.verification)}</td>
+                      <td className="py-2 px-2">{cell(r.webhook)}</td>
+                      <td className="py-2 px-2">{cell(r.read)}</td>
+                      <td className="py-2 px-2">{cell(r.reply)}</td>
+                      <td className="py-2 px-2">{cell(r.publish)}</td>
+                      <td className="py-2 px-2">{cell(r.schedule)}</td>
+                      <td className="py-2 px-2">{cell(r.analytics)}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
 
       {/* Telegram real connector — أول تكامل اجتماعي حقيقي */}
       <div className="p-6 rounded-2xl bg-slate-900 border border-slate-800 space-y-5">

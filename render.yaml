@@ -57,3 +57,58 @@ services:
       # اختياري: دردشة/قناة افتراضية لتنفيذ المهام المجدولة (publish).
       - key: TELEGRAM_DEFAULT_CHAT_ID
         sync: false
+
+      # --- Batch 6: بيانات OAuth لمزودي المنصات (تُدخَل من لوحة Render، sync: false) ---
+      # بدونها يبقى كل مزود "EXTERNAL_SETUP_REQUIRED" ولا يبدأ أي ربط فعلي.
+      # Google (YouTube + Google Business Profile):
+      - key: GOOGLE_OAUTH_CLIENT_ID
+        sync: false
+      - key: GOOGLE_OAUTH_CLIENT_SECRET
+        sync: false
+      # TikTok:
+      - key: TIKTOK_CLIENT_KEY
+        sync: false
+      - key: TIKTOK_CLIENT_SECRET
+        sync: false
+      # Meta (Facebook):
+      - key: FACEBOOK_OAUTH_CLIENT_ID
+        sync: false
+      - key: FACEBOOK_OAUTH_CLIENT_SECRET
+        sync: false
+      - key: FACEBOOK_APP_SECRET
+        sync: false
+      - key: FACEBOOK_VERIFY_TOKEN
+        sync: false
+      # Meta (Instagram):
+      - key: INSTAGRAM_OAUTH_CLIENT_ID
+        sync: false
+      - key: INSTAGRAM_OAUTH_CLIENT_SECRET
+        sync: false
+      - key: INSTAGRAM_APP_SECRET
+        sync: false
+      - key: INSTAGRAM_VERIFY_TOKEN
+        sync: false
+      # X / Twitter:
+      - key: X_OAUTH_CLIENT_ID
+        sync: false
+      - key: X_OAUTH_CLIENT_SECRET
+        sync: false
+      # Snapchat:
+      - key: SNAPCHAT_OAUTH_CLIENT_ID
+        sync: false
+      - key: SNAPCHAT_OAUTH_CLIENT_SECRET
+        sync: false
+      # Threads (Meta):
+      - key: THREADS_OAUTH_CLIENT_ID
+        sync: false
+      - key: THREADS_OAUTH_CLIENT_SECRET
+        sync: false
+      - key: THREADS_APP_SECRET
+        sync: false
+      - key: THREADS_VERIFY_TOKEN
+        sync: false
+      # WhatsApp Cloud API (token وليس OAuth):
+      - key: WHATSAPP_APP_SECRET
+        sync: false
+      - key: WHATSAPP_VERIFY_TOKEN
+        sync: false
