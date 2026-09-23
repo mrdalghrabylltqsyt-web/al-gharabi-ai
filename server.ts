@@ -1927,6 +1927,9 @@ let geminiUsageCount = 0;
 const requestWindow = new Map<string, { startedAt: number; count: number }>();
 // مهلة صريحة لكل طلب مزود: لا يبقى أي طلب معلقاً بلا نهاية.
 const AI_TIMEOUT_MS = Math.min(60_000, Math.max(5_000, Number(process.env.AI_TIMEOUT_MS || 20_000)));
+// مهلة التحقق الحي ثابتة وصريحة (30 ثانية) ولا تُشتق من AI_TIMEOUT_MS: الفحص
+// الإداري يجب أن يكون متوقع المدة، فلا تُقصّره قيمة بيئة صغيرة ولا تُطوّله كبيرة.
+const LIVE_VERIFY_TIMEOUT_MS = 30_000;
 // حلقة تشخيص محدودة الحجم: لا تحتوي أي مفتاح أو توكن أو جسم طلب كامل.
 const aiEvents: Array<{ at: string; type: string; detail: string }> = [];
 const challengeWindow = new Map<string, { startedAt: number; count: number }>();
@@ -2421,7 +2424,7 @@ app.post("/api/ai/verify-provider", requireOwner, async (_req, res) => {
     });
   }
 
-  const provider = createGeminiProvider(process.env.GEMINI_API_KEY, AI_TIMEOUT_MS);
+  const provider = createGeminiProvider(process.env.GEMINI_API_KEY, LIVE_VERIFY_TIMEOUT_MS);
   if (!provider) {
     aiLiveVerification.state = 'failed';
     aiLiveVerification.detail = 'تعذر تهيئة موصل المزود.';
@@ -2434,7 +2437,7 @@ app.post("/api/ai/verify-provider", requireOwner, async (_req, res) => {
   // محاولة واحدة فقط على موديل الإنتاج، بلا retry وبلا بديل.
   try {
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), AI_TIMEOUT_MS);
+    const timer = setTimeout(() => controller.abort(), LIVE_VERIFY_TIMEOUT_MS);
     let text = '';
     try {
       text = await provider.generate({ model, prompt: 'اكتب كلمة: جاهز', signal: controller.signal });

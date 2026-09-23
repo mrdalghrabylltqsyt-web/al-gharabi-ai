@@ -82,6 +82,11 @@ async function run(): Promise<void> {
   check('لا يوجد cache/retry صريح في مسار التحقق', !/retry/i.test(routeCode) && !routeCode.includes('aiEngine'));
   check('المسار لا يعيد 503 أبداً', !route.includes('status(503)') && !route.includes('res.status(503'));
   check('استجابة النجاح تحمل model و candidatesTried=1', route.includes('candidatesTried: 1'));
+  // المهلة الإدارية: ثابتة 30 ثانية لمسار التحقق، وغير مشتقة من AI_TIMEOUT_MS.
+  check('مهلة التحقق الحي ثابتة 30 ثانية', SERVER.includes('const LIVE_VERIFY_TIMEOUT_MS = 30_000'));
+  check('مسار التحقق يستخدم مهلة 30s لا AI_TIMEOUT_MS', route.includes('LIVE_VERIFY_TIMEOUT_MS') && !route.includes('AI_TIMEOUT_MS'));
+  // أي طريقة غير POST تُرفض 405 صريحة قبل المصادقة، فلا يظهر مسار الفحص عبر GET.
+  check('طريقة غير POST على مسار التحقق => 405', /app\.all\("\/api\/ai\/verify-provider"[\s\S]{0,200}?status\(405\)/.test(SERVER) && !SERVER.includes('app.get("/api/ai/verify-provider"'));
 
   group('6) خدمة الواجهة: طلب واحد بمهلة بلا retry');
   const svcStart = API.indexOf('async verifyGeminiProvider');

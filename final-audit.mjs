@@ -11,6 +11,15 @@ const rules = read('GHARABI_PROJECT_RULES.md');
 const checks = [];
 const add = (id, ok, detail) => checks.push({ id, ok, detail });
 add('version-consistency', pkg.version === '13.0.0' && server.includes('PROJECT_VERSION = "13.0.0"'), 'package.json و server.ts على 13.0.0');
+// لا تشير الوثائق إلى إصدار أحدث من الإصدار الفعلي (مثل v14/v15/v16 القديمة).
+add('readme-no-future-version', (() => {
+  const md = read('README.md');
+  const referenced = [...md.matchAll(/\bv(\d+)\.(\d+)(?:\.(\d+))?\b/g)].map((m) => Number(m[1]));
+  const max = referenced.length ? Math.max(...referenced) : 0;
+  const currentMajor = Number(pkg.version.split('.')[0]);
+  // v10 وv11 وv13 مراجع تاريخية مسموحة؛ أي رقم أكبر من الإصدار الحالي تناقض.
+  return max <= currentMajor && md.includes('جزء من الإصدار `13.0.0`');
+})(), 'README لا يوثّق إصداراً أحدث من 13.0.0');
 add('auth-gate', app.includes('if (!isAuthenticated)') && server.includes('function authenticateToken'), 'بوابة المصادقة موجودة على الواجهة والخادم');
 add('owner-guard', server.includes('function requireOwner') && server.includes('app.get("/api/control/final-check", requireOwner'), 'صلاحية المالك مطلوبة للفحوص النهائية');
 add('secret-encryption', server.includes('encryptSecret') && server.includes('PLATFORM_TOKEN_ENCRYPTION_KEY'), 'توكنات المنصات مشفرة ومفتاحها من البيئة');
@@ -83,6 +92,10 @@ add('gemini-verify-owner-only', server.includes('app.post("/api/ai/verify-provid
 add('gemini-verify-production-model-only', verifyRoute.includes('const model = PRODUCTION_MODEL') && !verifyRoute.includes('resolveModelCandidates') && !verifyRoute.includes('for (const model of candidates)'), 'التحقق يثبت موديل الإنتاج حصراً بلا failover صامت');
 const verifyRouteCode = verifyRoute.split('\n').filter((l) => !l.trim().startsWith('//') && !l.trim().startsWith('*') && !l.trim().startsWith('/*')).join('\n');
 add('gemini-verify-no-retry', verifyRouteCode.length > 0 && !/retry/i.test(verifyRouteCode) && !verifyRouteCode.includes('aiEngine'), 'لا retry ولا cache في مسار التحقق الحي');
+// المهلة الإدارية ثابتة 30 ثانية ولا تُشتق من AI_TIMEOUT_MS القابل للضبط.
+add('gemini-verify-fixed-30s-timeout', server.includes('const LIVE_VERIFY_TIMEOUT_MS = 30_000') && verifyRoute.includes('LIVE_VERIFY_TIMEOUT_MS') && !verifyRoute.includes('AI_TIMEOUT_MS'), 'مهلة التحقق الحي صريحة 30s ولا تتأثر بـAI_TIMEOUT_MS');
+// أي طريقة غير POST على مسار التحقق تُرفض 405 صريحة، فلا تستدعي الفحص واجهةً بحالة 200.
+add('gemini-verify-get-405', /app\.all\("\/api\/ai\/verify-provider"[\s\S]{0,200}?status\(405\)/.test(server) && !server.includes('app.get("/api/ai/verify-provider"'), 'التحقق الحي POST فقط وأي طريقة أخرى تُرفض 405');
 const geminiVerifyTest = read('engine/tests/gemini.verification.test.ts');
 add('gemini-verify-test-exists', fs.existsSync(path.join(root, 'engine/tests/gemini.verification.test.ts')), 'اختبار فحص اتصال Gemini موجود');
 add('gemini-verify-ui-owner-only', read('src/components/system/SystemControlView.tsx').includes('اختبار اتصال Gemini') && read('src/components/system/SystemControlView.tsx').includes("currentUser?.role!=='owner'"), 'زر اختبار اتصال Gemini محصور بالمالك في الواجهة');

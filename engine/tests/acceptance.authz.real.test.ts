@@ -144,6 +144,25 @@ async function run(): Promise<void> {
     check('معاينة غير مفعّلة: POST => 404', (await call('/api/auth/preview-login', 'POST', undefined, { token: 'x' })).status === 404);
     check('معاينة غير مفعّلة: GET => 404', (await call('/api/auth/preview-login?token=x', 'GET')).status === 404);
 
+    // 8) التحقق الحي من مزود Gemini محصور بالمالك على الخادم الفعلي،
+    //    ولا يمكن تجاوزه باستدعاء API مباشر. (جلسات جديدة لأن الخطوة 5 عطّلت
+    //    الموظف فأُبطلت توكناته، والخطوة 6 أخرجت المالك.)
+    const freshOwnerToken = mint('owner', crypto.randomUUID());
+    // إعادة تفعيل الموظف ليكون حساباً عادياً صالحاً في هذا الفحص.
+    check('مالك جديد: إعادة تفعيل الموظف', (await call('/api/users/staff-1/status', 'PUT', freshOwnerToken, { active: true })).status === 200);
+    const freshStaffToken = mint('staff-1', crypto.randomUUID());
+
+    check('بلا جلسة: التحقق الحي POST => 401', (await call('/api/ai/verify-provider', 'POST', undefined, {})).status === 401);
+    check('بلا جلسة: التحقق الحي GET => 405 (لا يمر للتسجيل)', (await call('/api/ai/verify-provider', 'GET')).status === 405);
+    const staffVerify = await call('/api/ai/verify-provider', 'POST', freshStaffToken, {});
+    check('موظف: التحقق الحي مرفوض 403 (owner-only)', staffVerify.status === 403, `status=${staffVerify.status}`);
+    check('موظف: الرفض لا يحمل أي نجاح', staffVerify.json?.success === false);
+    // بدون GEMINI_API_KEY في بيئة الاختبار: لا ادعاء نجاح، ورسالة NOT VERIFIED صريحة، وبلا سر.
+    const ownerVerify = await call('/api/ai/verify-provider', 'POST', freshOwnerToken, {});
+    check('مالك: التحقق الحي => 200 بلا ادعاء نجاح عند غياب المفتاح', ownerVerify.status === 200 && ownerVerify.json?.verified === false && ownerVerify.json?.success === false, `status=${ownerVerify.status}`);
+    check('مالك: رسالة NOT VERIFIED صريحة بلا مفتاح', String(ownerVerify.json?.note || '').includes('NOT VERIFIED'));
+    check('التحقق الحي لا يسرّب أي مفتاح', !/AIzaSy[A-Za-z0-9_\-]{5,}/.test(JSON.stringify(ownerVerify.json || {})));
+
     console.log('\n' + '='.repeat(60));
     if (failures.length) {
       console.error(`FAILED: ${failures.length} / ${passed + failures.length}`);

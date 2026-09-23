@@ -77,6 +77,7 @@ src/components/agent/BrainCommandView.tsx     لوحة العقل المفكر
 - `/api/health` يعرض `geminiUsage.providerState` (configured / verifiedLive / verification) و`modelPolicy` وقاطع الدائرة.
 - `/api/readiness` يفصل `applicationReady` عن `ai.providerReady`؛ **لا يُعلن المزود جاهزاً بمجرد وجود مفتاح**، بل يلزم تحقق حي.
 - `POST /api/ai/verify-provider` (للمالك فقط) ينفّذ **طلباً حقيقياً واحداً فقط** لإثبات المفتاح+SDK+الموديل+الاستجابة، بلا retry وبلا cache. عند غياب المفتاح يعيد `NOT VERIFIED — GEMINI_API_KEY NOT AVAILABLE IN RUNTIME`.
+- التحقق الحي **POST فقط**: أي طريقة أخرى تُرفض 405 صريحة قبل المصادقة؛ والمسار محصور بالمالك على الخادم (`requireOwner`) فلا يكفي إخفاء الزر في الواجهة. **مهلة التحقق ثابتة 30 ثانية** (`LIVE_VERIFY_TIMEOUT_MS`) ولا تُشتق من `AI_TIMEOUT_MS` القابل للضبط، والواجهة تستخدم 30 ثانية أيضاً (`GEMINI_VERIFY_TIMEOUT_MS`). إثبات الملكية على الخادم الفعلي في `engine/tests/acceptance.authz.real.test.ts` (401 بلا جلسة، 403 لغير المالك، 405 لـGET، ولا تسريب مفتاح).
 - كل مسارات `/api/social/manager/*` محمية بـ `authenticateToken` وتعيد 401 بدون جلسة.
 - الحالة تُحفظ في ملف JSON على الخادم مع كتابة ذرّية ونسخ احتياطية يومية (7 أيام).
 - اختبار الدخان `engine/tests/runtime.smoke.test.ts` يشغّل `dist/server.cjs` فعلياً، لذا شغّل `npm run build` قبله.
