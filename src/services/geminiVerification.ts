@@ -18,6 +18,8 @@ export interface GeminiVerificationResponse {
   latencyMs?: number;
   safeMessage?: string;
   detail?: string;
+  errorKind?: string;
+  hint?: string;
   [key: string]: unknown;
 }
 
@@ -26,6 +28,8 @@ export interface GeminiVerificationOutcome {
   model: string | null;
   latencyMs: number | null;
   message: string;
+  /** التوجيه التشخيصي الأمين حسب الفئة الفعلية (عطل مزود/حصة/مفتاح) — بلا أي سر. */
+  hint: string | null;
 }
 
 /** مهلة صريحة لطلب التحقق من جهة الواجهة — تمنع بقاء الزر في حالة تحميل أبدية. */
@@ -67,15 +71,18 @@ export function interpretGeminiVerification(data: GeminiVerificationResponse | n
       model: (data?.model as string) || null,
       latencyMs: typeof data?.latencyMs === 'number' ? data.latencyMs : null,
       message: buildGeminiSuccessText(data?.model as string, data?.latencyMs as number),
+      hint: null,
     };
   }
   // رسالة الفشل: عامة ومختصرة، مع تفصيل الخادم غير السرّي إن وُجد.
   const safe = typeof data?.safeMessage === 'string' && data.safeMessage.trim() ? data.safeMessage.trim() : '';
   const detail = typeof data?.detail === 'string' && data.detail.trim() ? data.detail.trim() : '';
+  const hint = typeof data?.hint === 'string' && data.hint.trim() ? data.hint.trim() : '';
   return {
     ok: false,
     model: null,
     latencyMs: null,
     message: safe || detail || 'تعذر إثبات اتصال النموذج الإنتاجي. لم يتم التحقق.',
+    hint: hint || null,
   };
 }

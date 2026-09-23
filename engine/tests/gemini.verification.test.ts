@@ -58,6 +58,30 @@ async function run(): Promise<void> {
   const fallback = interpretGeminiVerification({ success: false });
   check('فشل بلا تفصيل يعرض رسالة عامة', fallback.message.includes('لم يتم التحقق'));
   check('رسائل الفشل لا تحمل أي مفتاح', secretFree(withSafe.message + withDetail.message + fallback.message));
+  check('فشل بلا توجيه => hint = null', fallback.hint === null);
+
+  group('3b) التوجيه التشخيصي الأمين — يُميَّن السبب الحقيقي ولا يلوم المفتاح دائماً');
+  const rateLimited = interpretGeminiVerification({
+    success: false, verified: false, state: 'failed', model: 'gemini-x.y-flash',
+    errorKind: 'rate_limited', detail: 'فشل التحقق من الموديل الإنتاجي: rate_limited/429.',
+    hint: 'تجاوزت حصة الحساب لدى المزود (429): السبب حصة المزود/الفوترة، وليس الكود ولا المفتاح.',
+  });
+  check('حصة المزود (429) تُمرّر التوجيه للأمام', rateLimited.hint !== null && rateLimited.hint.includes('حصة الحساب'));
+  check('توجيه الحصة لا يلوم المفتاح', !rateLimited.hint!.includes('GEMINI_API_KEY'));
+  const overloaded = interpretGeminiVerification({
+    success: false, verified: false, state: 'failed',
+    errorKind: 'unavailable', detail: '...unavailable/503',
+    hint: 'الموديل الإنتاجي مشغول لدى المزود (503/504) ولا علاقة للمفتاح أو الكود بذلك.',
+  });
+  check('عطل المزود (503) لا يلوم المفتاح', overloaded.hint !== null && !overloaded.hint!.includes('GEMINI_API_KEY'));
+  check('توجيه عطل المزود يذكر الحالة الصحيحة', overloaded.hint!.includes('503'));
+  const authFail = interpretGeminiVerification({
+    success: false, verified: false, state: 'failed',
+    errorKind: 'auth', hint: 'المفتاح مرفوض من المزود: راجع صلاحية GEMINI_API_KEY في بيئة الخادم (لا تُرسل المفتاح في المحادثة).',
+  });
+  check('خطأ المصادقة وحده يوجّه لمراجعة المفتاح', authFail.hint !== null && authFail.hint!.includes('GEMINI_API_KEY'));
+  check('توجيه الفشل لا يحمل أي سر', secretFree(rateLimited.hint + overloaded.hint + authFail.hint));
+  check('نجاح لا يحمل توجيهاً', interpretGeminiVerification({ success: true, verified: true, model: 'm' }).hint === null);
 
   group('4) مهلة صريحة — لا إعادة إرسال');
   check('مهلة الواجهة معرّفة وإيجابية', Number.isFinite(GEMINI_VERIFY_TIMEOUT_MS) && GEMINI_VERIFY_TIMEOUT_MS > 0);
@@ -87,6 +111,17 @@ async function run(): Promise<void> {
   check('مسار التحقق يستخدم مهلة 30s لا AI_TIMEOUT_MS', route.includes('LIVE_VERIFY_TIMEOUT_MS') && !route.includes('AI_TIMEOUT_MS'));
   // أي طريقة غير POST تُرفض 405 صريحة قبل المصادقة، فلا يظهر مسار الفحص عبر GET.
   check('طريقة غير POST على مسار التحقق => 405', /app\.all\("\/api\/ai\/verify-provider"[\s\S]{0,200}?status\(405\)/.test(SERVER) && !SERVER.includes('app.get("/api/ai/verify-provider"'));
+
+  group('5b) التشخيص الأمين: عطل المزود لا يُنسب إلى المفتاح');
+  // كان الفشل يعرض دائماً «راجع صلاحية GEMINI_API_KEY» حتى مع 503/429.
+  check('يوجد مُوجِّه تشخيصي حسب فئة الخطأ', SERVER.includes('function verificationHintFor'));
+  check('فئة 429 تُوجَّه للحصة لا للمفتاح', /case 'rate_limited':[\s\S]{0,200}?حصة/.test(SERVER));
+  check('فئة 503 تُوجَّه لعطل المزود لا للمفتاح', /case 'unavailable':[\s\S]{0,220}?مشغول/.test(SERVER));
+  check('فئة المصادقة وحدها توجّه للمفتاح', /case 'auth':[\s\S]{0,160}?GEMINI_API_KEY/.test(SERVER));
+  check('التوجيه القديم الملوم للمفتاح دائماً أُزيل', !SERVER.includes("hint: 'راجع صلاحية GEMINI_API_KEY في بيئة الخادم (لا تُرسل المفتاح في المحادثة).'") || (SERVER.match(/راجع صلاحية GEMINI_API_KEY/g) || []).length === 1);
+  check('الاستجابة تحمل errorKind للتشخيص', route.includes('errorKind: info.kind'));
+  check('الاستجابة تحمل hint المحسوب', route.includes('hint: verificationHintFor(info)') || route.includes('hint: aiLiveVerification.hint'));
+  check('/api/health يعرض فئة الفشل وتوجيهه', SERVER.includes('verificationErrorKind: aiLiveVerification.errorKind') && SERVER.includes('verificationHint: aiLiveVerification.hint'));
 
   group('6) خدمة الواجهة: طلب واحد بمهلة بلا retry');
   const svcStart = API.indexOf('async verifyGeminiProvider');

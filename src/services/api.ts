@@ -304,15 +304,15 @@ export const apiService = {
       const res = await fetch('/api/ai/verify-provider', { method: 'POST', headers: getAuthHeaders(), signal });
       const data = await res.json().catch(() => null);
       if (!res.ok) {
-        if (res.status === 403) return { ok: false, model: null, latencyMs: null, message: 'هذه العملية مقتصرة على مالك النظام.' };
-        if (res.status === 401) return { ok: false, model: null, latencyMs: null, message: 'انتهت الجلسة، أعد تسجيل الدخول ثم حاول مجدداً.' };
-        return { ok: false, model: null, latencyMs: null, message: 'تعذر تنفيذ فحص Gemini من الخادم.' };
+        if (res.status === 403) return { ok: false, model: null, latencyMs: null, message: 'هذه العملية مقتصرة على مالك النظام.', hint: null };
+        if (res.status === 401) return { ok: false, model: null, latencyMs: null, message: 'انتهت الجلسة، أعد تسجيل الدخول ثم حاول مجدداً.', hint: null };
+        return { ok: false, model: null, latencyMs: null, message: 'تعذر تنفيذ فحص Gemini من الخادم.', hint: null };
       }
       return interpretGeminiVerification(data);
     } catch (err: any) {
       // الإلغاء = تجاوز المهلة، أو انقطاع شبكة. لا إعادة إرسال تلقائية.
-      if (err?.name === 'AbortError') return { ok: false, model: null, latencyMs: null, message: 'تجاوز فحص الاتصال المهلة المحددة. لم يتم التحقق.' };
-      return { ok: false, model: null, latencyMs: null, message: 'تعذر الوصول إلى الخادم لإتمام فحص Gemini.' };
+      if (err?.name === 'AbortError') return { ok: false, model: null, latencyMs: null, message: 'تجاوز فحص الاتصال المهلة المحددة. لم يتم التحقق.', hint: null };
+      return { ok: false, model: null, latencyMs: null, message: 'تعذر الوصول إلى الخادم لإتمام فحص Gemini.', hint: null };
     } finally {
       clear();
     }

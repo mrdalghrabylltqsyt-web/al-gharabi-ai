@@ -6,7 +6,7 @@ import dotenv from "dotenv";
 import { AiEngine, type AiUsageGuard } from "./engine/ai/engine";
 import { createGeminiProvider } from "./engine/ai/provider";
 import { resolveModelCandidates, describeModelPolicy, PRODUCTION_MODEL } from "./engine/ai/models";
-import { classifyAiError, diagnosticLabel } from "./engine/ai/errors";
+import { classifyAiError, diagnosticLabel, type AiErrorInfo } from "./engine/ai/errors";
 import { CircuitBreaker } from "./engine/ai/retry";
 import { registerSocialManagerRoutes } from "./engine/social/routes";
 import { PLATFORM_SPECS, platformSupports } from "./engine/social/registry";
@@ -2283,6 +2283,9 @@ function aiProviderState() {
     verificationDetail: aiLiveVerification.detail,
     verifiedModel: aiLiveVerification.model,
     verifiedAt: aiLiveVerification.at,
+    /** فئة الفشل الفعلية وتوجيهها الأمين — لتمييز عطل المزود عن خطأ المفتاح. */
+    verificationErrorKind: aiLiveVerification.errorKind,
+    verificationHint: aiLiveVerification.hint,
     fallbackAvailable: true,
     note: !keyPresent
       ? 'GEMINI_API_KEY غير مضبوط؛ يعمل النظام بالمحرك الحتمي فقط دون أي اتصال بمزود.'
@@ -2298,7 +2301,42 @@ const aiLiveVerification: {
   detail: string | null;
   model: string | null;
   at: string | null;
-} = { state: 'not_attempted', detail: null, model: null, at: null };
+  /** فئة الخطأ الحقيقية عند الفشل، لتمييز عطل المزود عن خطأ المفتاح. */
+  errorKind: string | null;
+  /** توجيه تشخيصي أمين يطابق الفئة الفعلية — بلا أي سر. */
+  hint: string | null;
+} = { state: 'not_attempted', detail: null, model: null, at: null, errorKind: null, hint: null };
+
+/**
+ * توجيه تشخيصي أمين حسب الفئة الفعلية للخطأ.
+ *
+ * سبب وجوده: كان الفشل يعرض دائماً «راجع صلاحية GEMINI_API_KEY» حتى عند خطأ
+ * ضغط (503) أو تجاوز حصة (429)، فيُوهم المالك بمشكلة مفتاح لا وجود لها.
+ * الآن يتطابق التوجيه مع الفئة المرصودة فعلاً، والمفتاح يبقى المشتبه به
+ * الوحيد في فئة المصادقة فقط.
+ */
+function verificationHintFor(info: AiErrorInfo): string {
+  switch (info.kind) {
+    case 'auth':
+      return 'المفتاح مرفوض من المزود: راجع صلاحية GEMINI_API_KEY في بيئة الخادم (لا تُرسل المفتاح في المحادثة).';
+    case 'invalid_request':
+      return 'المزود رفض شكل الطلب (invalid_request): راجع بناء الطلب/الموديل، وليس المفتاح.';
+    case 'not_found':
+      return `الموديل ${PRODUCTION_MODEL} غير متاح لهذا الحساب (404): حدّث GEMINI_MODEL إلى معرّف GA متاح.`;
+    case 'rate_limited':
+      return 'تجاوزت حصة الحساب لدى المزود (429): السبب حصة المزود/الفوترة، وليس الكود ولا المفتاح. أعد الفحص بعد انتهاء النافذة أو راجع خطة Gemini.';
+    case 'unavailable':
+      return 'الموديل الإنتاجي مشغول لدى المزود (503/504) ولا علاقة للمفتاح أو الكود بذلك. أعد الفحص بعد قليل؛ المزود يوجّه الطلبات تلقائياً للموديلات البديلة عند توفرها.';
+    case 'timeout':
+      return 'تجاوز الطلب المهلة: المزود لم يستجب خلال 30 ثانية. أعد المحاولة؛ لا صلة للمفتاح بذلك.';
+    case 'network':
+      return 'تعذر الوصول إلى مزود Google من الخادم (شبكة/تجاوز حمل): راجع الاتصال، وليس المفتاح.';
+    case 'blocked':
+      return 'حجب المزود الاستجابة وفق سياساته؛ جرّب مدخلاً مختلفاً.';
+    default:
+      return 'فشل غير مصنّف من المزود. أعد الفحص، وإن تكرر فراجع سجلات المزود.';
+  }
+}
 
 function geminiStatus() {
   const status = aiUsageGuard.status();
@@ -2414,12 +2452,15 @@ app.post("/api/ai/verify-provider", requireOwner, async (_req, res) => {
     aiLiveVerification.detail = 'GEMINI_API_KEY غير مضبوط في بيئة الخادم.';
     aiLiveVerification.model = null;
     aiLiveVerification.at = new Date().toISOString();
+    aiLiveVerification.errorKind = 'provider_not_configured';
+    aiLiveVerification.hint = 'اضبط GEMINI_API_KEY في بيئة الخادم ثم أعد الفحص (لا تُرسل المفتاح في المحادثة).';
     return res.status(200).json({
       success: false,
       verified: false,
       state: aiLiveVerification.state,
       model,
       detail: aiLiveVerification.detail,
+      errorKind: aiLiveVerification.errorKind,
       note: 'NOT VERIFIED — GEMINI_API_KEY NOT AVAILABLE IN RUNTIME',
     });
   }
@@ -2430,7 +2471,9 @@ app.post("/api/ai/verify-provider", requireOwner, async (_req, res) => {
     aiLiveVerification.detail = 'تعذر تهيئة موصل المزود.';
     aiLiveVerification.model = null;
     aiLiveVerification.at = new Date().toISOString();
-    return res.status(200).json({ success: false, verified: false, state: 'failed', model, detail: aiLiveVerification.detail });
+    aiLiveVerification.errorKind = 'provider_init_error';
+    aiLiveVerification.hint = 'تعذر تهيئة عميل SDK على الخادم؛ راجع سلامة اعتماديات الحزمة (@google/genai) وإصدار Node.';
+    return res.status(200).json({ success: false, verified: false, state: 'failed', model, detail: aiLiveVerification.detail, errorKind: aiLiveVerification.errorKind, hint: aiLiveVerification.hint });
   }
 
   const started = Date.now();
@@ -2450,20 +2493,25 @@ app.post("/api/ai/verify-provider", requireOwner, async (_req, res) => {
       aiLiveVerification.detail = `الموديل الإنتاجي ${model} أعاد استجابة فارغة.`;
       aiLiveVerification.model = null;
       aiLiveVerification.at = new Date().toISOString();
+      aiLiveVerification.errorKind = 'empty_response';
+      aiLiveVerification.hint = 'المزود استجاب بنجاح تقني لكن بلا نص؛ هذه حالة استجابة غير متوقعة من المزود ولا علاقة للمفتاح بها. أعد الفحص.';
       return res.status(200).json({
         success: false,
         verified: false,
         state: 'failed',
         model,
         detail: aiLiveVerification.detail,
+        errorKind: aiLiveVerification.errorKind,
         modelPolicy: envPolicy,
-        hint: 'راجع صلاحية GEMINI_API_KEY في بيئة الخادم (لا تُرسل المفتاح في المحادثة).',
+        hint: aiLiveVerification.hint,
       });
     }
     aiLiveVerification.state = 'ok';
     aiLiveVerification.detail = `تم إثبات الاتصال بالموديل الإنتاجي ${model} بطلب حقيقي واحد.`;
     aiLiveVerification.model = model;
     aiLiveVerification.at = new Date().toISOString();
+    aiLiveVerification.errorKind = null;
+    aiLiveVerification.hint = null;
     audit('system', 'ai_verify_provider', `model=${model}`);
     return res.json({
       success: true,
@@ -2477,22 +2525,26 @@ app.post("/api/ai/verify-provider", requireOwner, async (_req, res) => {
       note: 'تم إثبات الموديل الإنتاجي بطلب حقيقي واحد. لم تُستهلك حصة إضافية ولا يوجد failover.',
     });
   } catch (err: any) {
-    // فشل الموديل الأساسي (503 أو أي خطأ) = فشل صريح، بلا رجوع لموديل آخر.
+    // فشل الموديل الأساسي (503/429/أي خطأ) = فشل صريح، بلا رجوع لموديل آخر.
     const info = classifyAiError(err, model);
     aiEvents.push({ at: new Date().toISOString(), type: 'verify_failed', detail: diagnosticLabel(info) });
     aiLiveVerification.state = 'failed';
     aiLiveVerification.detail = `فشل التحقق من الموديل الإنتاجي ${model}: ${info.kind}${info.status ? `/${info.status}` : ''}.`;
     aiLiveVerification.model = null;
     aiLiveVerification.at = new Date().toISOString();
+    aiLiveVerification.errorKind = info.kind;
+    aiLiveVerification.hint = verificationHintFor(info);
     return res.status(200).json({
       success: false,
       verified: false,
       state: 'failed',
       model,
       detail: aiLiveVerification.detail,
+      errorKind: info.kind,
+      status: info.status,
       safeMessage: info.safeMessage,
       modelPolicy: envPolicy,
-      hint: 'راجع صلاحية GEMINI_API_KEY في بيئة الخادم (لا تُرسل المفتاح في المحادثة).',
+      hint: aiLiveVerification.hint,
     });
   }
 });
