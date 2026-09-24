@@ -60,6 +60,23 @@ check('لا ادعاء «عبر Gemini 3.8» في مركز العملاء', !/Ge
 check('مركز العملاء يعلن الحاجة لمراجعة بشرية عند غياب رد آمن', customer.includes('مراجعة بشرية'));
 check('لا يُصدر المتصفح suggestedReply غير مفحوص', !customer.includes('setReplyInputText(result.suggestedReply)') || customer.includes('if (result && result.suggestedReply)'));
 
+// 7) توجيه زر «ربط حقيقي»: Telegram عبر موصله الحقيقي، وبقية المنصات عبر OAuth.
+//    كان الزر يمرّر Telegram إلى مسار OAuth فيفشل، مع أن للمنصة موصلاً خاصاً برمز بوت.
+const connectFn = hub.slice(hub.indexOf('const handleRealConnect'), hub.indexOf('const handleIngest'));
+check('دالة الربط الحقيقي موجودة في الواجهة', connectFn.includes('handleRealConnect'));
+check('Telegram له فرع صريح في دالة الربط', connectFn.includes("platformId === 'telegram'"));
+check('Telegram يستخدم configureTelegram', connectFn.includes('apiService.configureTelegram()'));
+check('Telegram لا يستخدم startPlatformOAuth', connectFn.indexOf('apiService.configureTelegram()') < connectFn.indexOf('apiService.startPlatformOAuth(') && connectFn.indexOf("platformId === 'telegram'") < connectFn.indexOf('apiService.startPlatformOAuth('));
+check('فرع Telegram يُنهي الدالة بـ return قبل OAuth', /return;\s*\}[\s\S]*startPlatformOAuth/.test(connectFn));
+check('بقية المنصات ما زالت تستخدم startPlatformOAuth', connectFn.includes('apiService.startPlatformOAuth(platformId)'));
+check('رسالة النجاح مربوطة بـ verified', /data\.verified/.test(connectFn) && connectFn.includes('تم التحقق من بوت Telegram وتسجيل webhook الحقيقي.'));
+check('يوجد مسار بديل عند عدم إثبات التحقق', connectFn.includes('إعداد Telegram'));
+
+// 8) عقود الـAPI: مسار Telegram الحقيقي موجود ولم يُنشأ بديل OAuth له.
+check('configureTelegram يستدعي POST /api/platforms/telegram/configure', /async configureTelegram\([\s\S]*?fetch\('\/api\/platforms\/telegram\/configure'[\s\S]*?method\s*:\s*'POST'/.test(api));
+check('startPlatformOAuth ما زال مسار OAuth', api.includes('/oauth/start'));
+check('لا مسار oauth/start لـ Telegram في api.ts', !/platforms\/telegram\/oauth/.test(api));
+
 console.log('\n' + '='.repeat(60));
 if (failures.length) {
   console.error(`FAILED: ${failures.length} / ${passed + failures.length}`);

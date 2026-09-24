@@ -103,6 +103,15 @@ export const SocialHubView: React.FC = () => {
 
   const handleRealConnect = async (platformId: string) => {
     try {
+      // Telegram ليس OAuth: له موصل حقيقي خاص برمز بوت ومسار configure مخصص،
+      // فيجب ألا يمر بمسار بدء OAuth الخاص ببقية المنصات.
+      if (platformId === 'telegram') {
+        const data = await apiService.configureTelegram();
+        showToast(data.verified
+          ? 'تم التحقق من بوت Telegram وتسجيل webhook الحقيقي.'
+          : 'تم تنفيذ إعداد Telegram لكن لم يُثبت التحقق من البوت؛ راجع TELEGRAM_BOT_TOKEN و APP_URL.');
+        return;
+      }
       const data = await apiService.startPlatformOAuth(platformId);
       if (data.authorizationUrl) window.location.assign(data.authorizationUrl);
     } catch (error: any) { showToast(error?.message || 'تعذر بدء الربط الحقيقي'); }
