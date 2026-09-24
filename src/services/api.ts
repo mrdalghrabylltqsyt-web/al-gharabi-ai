@@ -469,6 +469,14 @@ ${payload.topic || payload.productName || 'أنظمة وحلول التقسيط 
     return data;
   },
 
+  // حالة webhook الحقيقية من Telegram (getWebhookInfo) بلا أي سرّ — للمالك فقط.
+  async getTelegramWebhookInfo() {
+    const res = await fetch('/api/platforms/telegram/webhook-info', { headers: getAuthHeaders() });
+    const data = await res.json();
+    if (!res.ok || !data.success) throw new Error(data.error || 'تعذر جلب حالة webhook من Telegram');
+    return data;
+  },
+
   async executeJob(jobId: string) { const res = await fetch(`/api/control/jobs/${encodeURIComponent(jobId)}/execute`, { method:'POST', headers:getAuthHeaders() }); const data=await res.json(); if(!res.ok || !data.success) throw new Error(data.error || 'تعذر تنفيذ المهمة'); return data; },
 
   async disconnectPlatform(platform: string) {

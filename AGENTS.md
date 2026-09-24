@@ -441,6 +441,53 @@ hex وBase64، ورفض 32 محرفاً لا تمثّل 32 بايت، وتميي
 `token-key-missing-vs-invalid`, `token-key-health-exposes-state`,
 `token-key-no-insecure-fallback`, `token-key-regression-test`.
 
+## إثبات مسار Telegram Webhook الحقيقي — إصلاح جذري (2026-09-24)
+
+الفجوة لم تكن في Render ولا في Telegram. المسار (`/api/platforms/telegram/webhook`)
+كان يعمل: التحقق من الترويسة السرّية يرد 401 صريحاً قبل أي معالجة، وترتيب middleware
+سليم (لا auth على الـwebhook، والـwebhook يستخدم ترويسة Telegram السرّية فقط). لكن كان
+يوجد ثلاث فجوات حقيقية تمنع إثبات الاستقبال أو تسبّب فشله صامتاً:
+
+1. **تدوير السرّ عند إعادة الضبط**: `configure` كان يولّد سرّاً عشوائياً جديداً في كل
+   نداء عند غياب السرّ من الجسم/البيئة، ثم يستدعي `setWebhook` **قبل** حفظ الاعتماد.
+   لو فشل الحفظ (كما كان يحدث سابقاً بمفتاح تشفير غير صالح) لبقيت لدى Telegram قيمة سرّ
+   لا يعرفها الخادم، فتُرفض كل التحديثات بعدها بـ401 بلا سبب ظاهر. الإصلاح:
+   - `const secret = webhookSecret || crypto.randomBytes(...)` حيث `webhookSecret` يُبنى من
+     `telegramWebhookSecret()` (المحفوظ مشفّراً) ثم `TELEGRAM_WEBHOOK_SECRET_ENV`، **فلا
+     يُدوَّر سرّ قائم أبداً**.
+   - `saveTelegramCredentials(botToken, secret, telegramWebhookUrl())` يُنفَّذ **قبل**
+     `setWebhook`، فلا ينفصل السرّ المسجّل عن السرّ المتحقَّق منه.
+2. **عدم إثبات التسجيل**: كان `configure` يثق برد `setWebhook` فقط. الآن يستدعي
+   `getWebhookInfo()` فعلياً ويقيّم التسجيل عبر `checkWebhookRegistration` مقابل
+   `telegramWebhookUrl()`، فتظهر حالات صريحة: `registered` / `url_mismatch` /
+   `not_registered` / `secret_missing` / `unavailable`. ويُحفظ الرابط المسجّل
+   (`webhookUrl`) ووقته داخل `providerTokens.telegram` المشفّر.
+3. **الكتابة fire-and-forget قبل الإقرار**: الـwebhook كان يستدعي `persistState()` ثم
+   يرد 200 فوراً؛ على Render قد تُعلَّق العملية بعد الرد فيُفقد التعليق ومعرّف التحديث
+   (فسقوط حماية التكرار). الآن `await persistStateDurable()` **قبل** إرجاع 200، والرد
+   يحمل `persisted` صريحاً.
+
+إضافات:
+- `engine/social/telegram.ts`: `getWebhookInfo()` + `sanitizeWebhookInfo()` (يحذف أي حقل
+  غير آمن — لا رمز ولا سرّ) + `checkWebhookRegistration()` (منطق خالص قابل للاختبار).
+- `GET /api/platforms/telegram/webhook-info` (**للمالك فقط**): يعيد الرابط المسجّل،
+  التحديثات المعلّقة، آخر خطأ دفع، مصدر السرّ (stored/env/none)، ومطابقة الرابط —
+  بلا أي سرّ.
+- سجل آمن `logTelegramWebhook`: `outcome=accepted|duplicate|rejected|ignored` مع
+  `update_id`/`external`/`persisted` فقط. **ممنوع** تسجيل الرمز أو الترويسة أو نص الرسالة.
+- واجهة: لوحة «حالة استقبال Telegram (getWebhookInfo)» في `SocialManagerView` +
+  `apiService.getTelegramWebhookInfo()`. لا يُعتبر الاستقبال فعّالاً بمجرد ظهور الزر أخضر،
+  بل بحالة `registered` المطابقة.
+
+اختبار `engine/tests/telegram.connector.test.ts` صار **76 فحصاً**: وحدة لتنقية
+getWebhookInfo وتقييم التسجيل، وتكامل لإثبات getMe+setWebhook+getWebhookInfo، وعدم تدوير
+السرّ عند إعادة الضبط، وإثبات التسجيل، وثبات التعليق وهدف الرد وحماية التكرار **بعد
+restart فعلي** (إعادة تشغيل العملية بنفس مجلد الحالة). فحوص final-audit الجديدة:
+`telegram-webhook-info-endpoint`, `telegram-getwebhookinfo-real`,
+`telegram-webhook-info-no-secret`, `telegram-secret-not-rotated`,
+`telegram-credentials-persisted-before-hook`, `telegram-inbound-durable-before-ack`,
+`telegram-inbound-safe-logging`, `telegram-webhook-info-test`, `telegram-ui-webhook-status`.
+
 ## نمط الكود
 - تعليقات عربية موجزة تشرح «لماذا» فقط، دون شرح ما يفعله الكود.
 - الأنواع في `src/types/index.ts` يجب أن تطابق استجابات الخادم فعلياً؛ توجد فحوص عقد في `engine/tests/social.routes.test.ts` تكشف أي انحراف.

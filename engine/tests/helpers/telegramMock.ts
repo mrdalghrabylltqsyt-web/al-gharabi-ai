@@ -24,6 +24,15 @@ export interface TelegramMockState {
   webhookSecret: string | null;
   webhookDeleted: boolean;
   lastToken: string | null;
+  /** عدّاد تحديثات معلّقة يعيدها getWebhookInfo (اختباري). */
+  pendingUpdateCount: number;
+  /** آخر خطأ دفع يعيده getWebhookInfo (اختباري). */
+  lastErrorDate: number | null;
+  lastErrorMessage: string | null;
+  /** يفشل getWebhookInfo عند true. */
+  failGetWebhookInfo: boolean;
+  /** عدد استدعاءات getWebhookInfo — لإثبات أن الفحص الحقيقي نُفّذ. */
+  webhookInfoCalls: number;
 }
 
 export function createTelegramMock(): TelegramMockState {
@@ -39,6 +48,11 @@ export function createTelegramMock(): TelegramMockState {
     webhookSecret: null,
     webhookDeleted: false,
     lastToken: null,
+    pendingUpdateCount: 0,
+    lastErrorDate: null,
+    lastErrorMessage: null,
+    failGetWebhookInfo: false,
+    webhookInfoCalls: 0,
   };
 }
 
@@ -71,6 +85,22 @@ export async function startTelegramMockServer(
       state.webhookDeleted = true;
       state.webhookUrl = null;
       return res.json({ ok: true, result: true });
+    }
+    if (method === 'getWebhookInfo') {
+      state.webhookInfoCalls += 1;
+      if (state.failGetWebhookInfo) return res.status(401).json({ ok: false, error_code: 401, description: 'Unauthorized' });
+      const result: Record<string, unknown> = {
+        url: state.webhookUrl || '',
+        has_custom_certificate: false,
+        pending_update_count: state.pendingUpdateCount,
+        max_connections: 40,
+        allowed_updates: ['message', 'channel_post'],
+      };
+      if (state.lastErrorDate) {
+        result.last_error_date = state.lastErrorDate;
+        result.last_error_message = state.lastErrorMessage || 'Wrong response from the webhook';
+      }
+      return res.json({ ok: true, result });
     }
     if (method === 'sendMessage') {
       if (state.failSend) return res.json({ ok: false, error_code: 400, description: 'Bad Request: chat not found' });

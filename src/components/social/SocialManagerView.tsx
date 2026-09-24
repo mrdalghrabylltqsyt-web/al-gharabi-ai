@@ -85,6 +85,9 @@ export const SocialManagerView: React.FC = () => {
 
   useEffect(() => { void load(); }, [load]);
 
+  // تُحمّل حالة webhook الحقيقية بعد تحميل الحالة؛ لا تُسقط الصفحة إن فشلت (مزود غير مضبوط مثلاً).
+  useEffect(() => { void loadTelegramWebhookInfo(); }, [load]);
+
   const loadAnalytics = useCallback(async (platform: string) => {
     try {
       setAnalytics(await apiService.getSocialAnalytics(platform));
@@ -123,6 +126,12 @@ export const SocialManagerView: React.FC = () => {
   const [tgBusy, setTgBusy] = useState(false);
   const [tgExternalId, setTgExternalId] = useState('');
   const [tgReplyText, setTgReplyText] = useState('');
+  const [tgWebhookInfo, setTgWebhookInfo] = useState<any | null>(null);
+
+  const loadTelegramWebhookInfo = async () => {
+    try { setTgWebhookInfo(await apiService.getTelegramWebhookInfo()); }
+    catch { setTgWebhookInfo(null); }
+  };
 
   const connectTelegram = async () => {
     setTgBusy(true);
@@ -131,6 +140,7 @@ export const SocialManagerView: React.FC = () => {
       const res = await apiService.configureTelegram();
       showToast(res.verified ? 'تم التحقق من البوت وتسجيل webhook الحقيقي.' : 'تم تنفيذ الربط.');
       await load();
+      await loadTelegramWebhookInfo();
     } catch (err: any) {
       showToast(err?.message || 'تعذر ربط Telegram');
     } finally { setTgBusy(false); }
@@ -361,6 +371,62 @@ export const SocialManagerView: React.FC = () => {
               إرسال فعلي عبر Telegram
             </button>
           </div>
+        </div>
+
+        {/* حالة webhook الحقيقية من Telegram (getWebhookInfo) — إثبات الاستقبال لا لون الزر */}
+        <div className="pt-4 border-t border-slate-800 space-y-3">
+          <div className="flex items-center justify-between">
+            <h4 className="text-xs font-bold text-slate-200 flex items-center gap-2">
+              <ShieldCheck className="w-4 h-4 text-emerald-400" /> حالة استقبال Telegram (getWebhookInfo)
+            </h4>
+            <button
+              onClick={() => void loadTelegramWebhookInfo()}
+              className="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 text-[11px] font-bold cursor-pointer">
+              تحديث الحالة
+            </button>
+          </div>
+          {!tgWebhookInfo ? (
+            <p className="text-[11px] text-slate-500">لم تُحمّل بعد — اضغط «تحديث الحالة» أو اربط البوت أولاً. الحالة تُقرأ فعلياً من Telegram بلا أي سرّ.</p>
+          ) : (
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-[11px]">
+              <div className="p-3 rounded-xl bg-slate-950 border border-slate-800 flex justify-between">
+                <span className="text-slate-400">حالة التسجيل</span>
+                <span className={tgWebhookInfo.status === 'registered' ? 'text-emerald-400 font-bold' : 'text-amber-400 font-bold'}>
+                  {tgWebhookInfo.status === 'registered' ? 'مسجّل ومطابق'
+                    : tgWebhookInfo.status === 'url_mismatch' ? 'رابط غير مطابق'
+                    : tgWebhookInfo.status === 'not_registered' ? 'غير مسجّل'
+                    : tgWebhookInfo.status === 'secret_missing' ? 'سرّ غير محفوظ'
+                    : 'غير متاح'}
+                </span>
+              </div>
+              <div className="p-3 rounded-xl bg-slate-950 border border-slate-800 flex justify-between">
+                <span className="text-slate-400">تحديثات معلّقة</span>
+                <span className="text-slate-100 font-mono">{tgWebhookInfo.pendingUpdateCount}</span>
+              </div>
+              <div className="p-3 rounded-xl bg-slate-950 border border-slate-800 sm:col-span-2">
+                <div className="flex justify-between gap-3">
+                  <span className="text-slate-400 whitespace-nowrap">الرابط المسجّل لدى Telegram</span>
+                  <span className="text-slate-200 font-mono break-all text-left" dir="ltr">{tgWebhookInfo.registeredUrl || '—'}</span>
+                </div>
+                <div className="flex justify-between gap-3 mt-1">
+                  <span className="text-slate-400 whitespace-nowrap">رابط هذا الخادم</span>
+                  <span className="text-slate-200 font-mono break-all text-left" dir="ltr">{tgWebhookInfo.expectedUrl}</span>
+                </div>
+              </div>
+              <div className="p-3 rounded-xl bg-slate-950 border border-slate-800 flex justify-between">
+                <span className="text-slate-400">مصدر السرّ</span>
+                <span className="text-slate-100 font-mono">{tgWebhookInfo.secretSource === 'stored' ? 'محفوظ مشفّراً' : tgWebhookInfo.secretSource === 'env' ? 'بيئة الخادم' : 'غير مضبوط'}</span>
+              </div>
+              <div className="p-3 rounded-xl bg-slate-950 border border-slate-800 flex justify-between">
+                <span className="text-slate-400">آخر خطأ دفع</span>
+                <span className="text-slate-100">{tgWebhookInfo.lastErrorDate ? new Date(tgWebhookInfo.lastErrorDate).toLocaleString('ar') : 'لا يوجد'}</span>
+              </div>
+              <p className="text-[11px] leading-relaxed sm:col-span-2 text-slate-400">{tgWebhookInfo.detail}</p>
+              {tgWebhookInfo.lastErrorMessage && (
+                <p className="text-[11px] sm:col-span-2 text-amber-300">آخر خطأ من Telegram: {tgWebhookInfo.lastErrorMessage}</p>
+              )}
+            </div>
+          )}
         </div>
       </div>
 

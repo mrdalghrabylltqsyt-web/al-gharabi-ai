@@ -181,6 +181,75 @@ export interface TelegramGetMeResult {
   error?: string;
 }
 
+/** حالة webhook الحقيقية كما يعيدها Telegram عبر getWebhookInfo (مُنقّاة من أي سرّ). */
+export interface TelegramWebhookInfo {
+  ok: boolean;
+  /** الرابط المسجّل حالياً لدى Telegram (null يعني لا webhook). */
+  url: string | null;
+  pendingUpdateCount: number;
+  /** آخر خطأ دفع من Telegram تجاه رابط الـwebhook (إن وُجد). */
+  lastErrorDate: string | null;
+  lastErrorMessage: string | null;
+  /** آخر خطأ مزامنة (getUpdates/deleteWebhook...) — منفصل عن خطأ الدفع. */
+  lastSynchronizationErrorDate: string | null;
+  maxConnections: number | null;
+  allowedUpdates: string[] | null;
+  error?: string;
+}
+
+/** تقييم تسجيل webhook مقارنةً بالرابط المتوقع منه في هذا الخادم. */
+export type WebhookRegistrationStatus =
+  | 'registered'
+  | 'not_registered'
+  | 'url_mismatch'
+  | 'secret_missing'
+  | 'unavailable';
+
+/**
+ * ينقّي استجابة getWebhookInfo إلى الحقول الآمنة فقط.
+ * لا يعيد أي رمز بوت ولا سرّ (Telegram لا يعيد السرّ أصلاً)، فيمكن عرضه للمالك.
+ */
+export function sanitizeWebhookInfo(data: any): TelegramWebhookInfo {
+  const r = data?.result && typeof data.result === 'object' ? data.result : {};
+  const toIso = (v: any): string | null => (typeof v === 'number' && Number.isFinite(v) ? new Date(v * 1000).toISOString() : null);
+  return {
+    ok: Boolean(data?.ok),
+    url: typeof r.url === 'string' && r.url ? r.url : null,
+    pendingUpdateCount: Number.isFinite(Number(r.pending_update_count)) ? Number(r.pending_update_count) : 0,
+    lastErrorDate: toIso(r.last_error_date),
+    lastErrorMessage: typeof r.last_error_message === 'string' && r.last_error_message ? r.last_error_message : null,
+    lastSynchronizationErrorDate: toIso(r.last_synchronization_error_date),
+    maxConnections: Number.isFinite(Number(r.max_connections)) ? Number(r.max_connections) : null,
+    allowedUpdates: Array.isArray(r.allowed_updates) ? r.allowed_updates.map((x: any) => String(x)) : null,
+  };
+}
+
+/**
+ * يفحص هل الـwebhook مسجّل فعلاً على الرابط المتوقع وبنفس السرّ.
+ * لا يمكن لـTelegram أن يعيد السرّ، لذا يُعلن «secret_missing» عند غياب
+ * السرّ من جهة الخادم بصراحة بدل ادعاء تسجيل سليم.
+ */
+export function checkWebhookRegistration(input: {
+  info: TelegramWebhookInfo;
+  expectedUrl: string;
+  secretConfigured: boolean;
+}): { status: WebhookRegistrationStatus; matchesExpectedUrl: boolean; detail: string } {
+  if (!input.info.ok) {
+    return { status: 'unavailable', matchesExpectedUrl: false, detail: input.info.error || 'تعذّر استعلام Telegram عن حالة الـwebhook.' };
+  }
+  if (!input.info.url) {
+    return { status: 'not_registered', matchesExpectedUrl: false, detail: 'لا يوجد webhook مسجّل لدى Telegram؛ أعد الضبط لتسجيل رابط الاستقبال.' };
+  }
+  const matchesExpectedUrl = input.info.url.replace(/\/+$/, '') === input.expectedUrl.replace(/\/+$/, '');
+  if (!matchesExpectedUrl) {
+    return { status: 'url_mismatch', matchesExpectedUrl: false, detail: `الرابط المسجّل لدى Telegram (${input.info.url}) لا يطابق رابط هذا الخادم (${input.expectedUrl})؛ أعد الضبط بعد تصحيح APP_URL.` };
+  }
+  if (!input.secretConfigured) {
+    return { status: 'secret_missing', matchesExpectedUrl: true, detail: 'الرابط مسجّل لكن لا سرّ webhook محفوظ في الخادم؛ ستُرفض كل التحديثات الواردة.' };
+  }
+  return { status: 'registered', matchesExpectedUrl: true, detail: 'الـwebhook مسجّل على رابط هذا الخادم وسرّه محفوظ.' };
+}
+
 /**
  * عميل Telegram الحقيقي. يستقبل `fetchImpl` للحقن، فتُختبر الدورة كاملة
  * (نجاح/فشل/استجابة مشوّهة) بلا أي اتصال شبكي في الاختبارات.
@@ -260,6 +329,27 @@ export class TelegramClient {
       return { ok: true };
     } catch (e: any) {
       return { ok: false, description: String(e?.message || 'فشل الاتصال بـTelegram.') };
+    }
+  }
+
+  /**
+   * يستعلم عن حالة webhook الحقيقية لدى Telegram (getWebhookInfo).
+   * يُستخدم لإثبات أن الرابط مسجّل فعلاً وبلا أسرار: النتيجة مُنقّاة عبر
+   * sanitizeWebhookInfo فلا تحمل إلا الحقول الآمنة.
+   */
+  async getWebhookInfo(): Promise<TelegramWebhookInfo> {
+    if (!this.botToken) {
+      return { ok: false, url: null, pendingUpdateCount: 0, lastErrorDate: null, lastErrorMessage: null, lastSynchronizationErrorDate: null, maxConnections: null, allowedUpdates: null, error: 'رمز البوت غير متوفر.' };
+    }
+    try {
+      const res = await this.fetchImpl(telegramApiUrl('getWebhookInfo', this.botToken, this.baseUrl), { method: 'GET' });
+      const data = await res.json().catch(() => null);
+      if (!res.ok || !data?.ok) {
+        return { ok: false, url: null, pendingUpdateCount: 0, lastErrorDate: null, lastErrorMessage: null, lastSynchronizationErrorDate: null, maxConnections: null, allowedUpdates: null, error: String(data?.description || 'تعذّر استعلام حالة webhook من Telegram.') };
+      }
+      return sanitizeWebhookInfo(data);
+    } catch (e: any) {
+      return { ok: false, url: null, pendingUpdateCount: 0, lastErrorDate: null, lastErrorMessage: null, lastSynchronizationErrorDate: null, maxConnections: null, allowedUpdates: null, error: String(e?.message || 'فشل الاتصال بـTelegram.') };
     }
   }
 

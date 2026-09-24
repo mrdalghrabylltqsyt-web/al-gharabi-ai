@@ -20,6 +20,7 @@ import {
   isDuplicateUpdate,
   TELEGRAM_SECRET_HEADER,
   constantTimeEqual,
+  checkWebhookRegistration,
   type TelegramFetch,
 } from "./engine/social/telegram";
 import {
@@ -935,7 +936,8 @@ function telegramBotToken(): string {
 }
 /**
  * سرّ webhook الحقيقي الذي يتحقق منه Telegram في ترويسة كل تحديث.
- * يُحفظ مشفّراً داخل نفس مخزن التوكنات، ويُسبق بسرّ البيئة إن وُجد.
+ * المصدر المفضّل هو السرّ المحفوظ مشفّراً (الذي سُجّل فعلاً لدى Telegram)،
+ * ثم سرّ البيئة TELEGRAM_WEBHOOK_SECRET كبديل أولي فقط.
  */
 function telegramWebhookSecret(): string {
   const stored = getProviderToken("telegram");
@@ -943,8 +945,15 @@ function telegramWebhookSecret(): string {
   return TELEGRAM_WEBHOOK_SECRET_ENV;
 }
 /** يحفظ رمز البوت والسرّ مشفّرين في مخزن الحالة الحالي (بلا مفتاح حالة جديد). */
-function saveTelegramCredentials(botToken: string, webhookSecret: string) {
-  setProviderToken("telegram", { botToken, webhookSecret });
+function saveTelegramCredentials(botToken: string, webhookSecret: string, webhookUrl?: string) {
+  const existing = getProviderToken("telegram") || {};
+  setProviderToken("telegram", {
+    ...existing,
+    botToken,
+    webhookSecret,
+    webhookUrl: webhookUrl || existing.webhookUrl || "",
+    webhookRegisteredAt: webhookUrl ? new Date().toISOString() : existing.webhookRegisteredAt || null,
+  });
 }
 /** الترويسة لا تُسجَّل ولا تُعاد أبداً؛ تُستخدم للتحقق فقط. */
 const telegramFetchImpl: TelegramFetch = (url, init) => fetch(url, init as any);
@@ -956,6 +965,17 @@ function telegramClient(): TelegramClient | null {
 }
 /** رابط استقبال تحديثات Telegram لهذا الخادم (يستخدم APP_URL الرسمي). */
 function telegramWebhookUrl(): string { return `${BASE_URL}/api/platforms/telegram/webhook`; }
+/**
+ * تسجيل آمن لحدث Telegram الوارد. ممنوع تسجيل أي سرّ (رمز/ترويسة/نص رسالة).
+ * يُقيَّد بالمعرّفات والنتيجة لتشخيص المسار من سجلات Render بلا كشف بيانات.
+ */
+function logTelegramWebhook(event: { updateId: number | null; externalId?: string | null; outcome: "accepted" | "duplicate" | "rejected" | "ignored"; persisted?: boolean }): void {
+  const parts = ["[telegram-webhook]", `platform=telegram`, `outcome=${event.outcome}`, `update_id=${event.updateId ?? "-"}`];
+  if (event.externalId) parts.push(`external=${event.externalId}`);
+  if (typeof event.persisted === "boolean") parts.push(`persisted=${event.persisted}`);
+  // معلومات فقط — لا أسرار ولا نصوص رسائل.
+  console.log(parts.join(" "));
+}
 /** هل موصل Telegram الحقيقي مكتمل الإعداد الآن؟ */
 function telegramConnectorConfigured(): boolean { return Boolean(telegramBotToken() && telegramWebhookSecret()); }
 
@@ -1117,7 +1137,10 @@ app.post("/api/platforms/telegram/configure", requireOwner, async (req,res)=>{
   // رمز البوت من المدخل ثم من بيئة الخادم؛ في الإنتاج يكفي ضبط البيئة
   // دون نسخ أي سر إلى الواجهة أو المحادثة.
   const botToken=(typeof req.body?.botToken==="string"?req.body.botToken.trim():"")||telegramBotToken();
-  const webhookSecret=(typeof req.body?.webhookSecret==="string"?req.body.webhookSecret.trim():"")||TELEGRAM_WEBHOOK_SECRET_ENV;
+  // السرّ لا يُدوَّر تلقائياً. إن وُجد سرّ محفوظ أو في البيئة يُعاد استخدامه
+  // كما هو، فلا ينفصل السرّ المسجّل لدى Telegram عن السرّ الذي يتحقق منه الخادم
+  // (وهو السبب الجذري لبقاء تحديثات Telegram مرفوضة بعد كل restart).
+  const webhookSecret=(typeof req.body?.webhookSecret==="string"?req.body.webhookSecret.trim():"")||telegramWebhookSecret()||TELEGRAM_WEBHOOK_SECRET_ENV;
   if(!botToken) return res.status(400).json({success:false,error:"رمز Telegram Bot مطلوب (أو اضبط TELEGRAM_BOT_TOKEN في البيئة)."});
   if(!tokenKeyBytes()) return res.status(503).json({success:false,error:tokenKeyInspection().reason});
   if(!process.env.APP_URL) return res.status(503).json({success:false,error:"APP_URL غير مضبوط؛ لا يمكن تسجيل رابط webhook الحقيقي لدى Telegram."});
@@ -1128,14 +1151,24 @@ app.post("/api/platforms/telegram/configure", requireOwner, async (req,res)=>{
   // 1) إثبات الرمز فعلياً: لا يُعلن اتصال بلا استجابة getMe صحيحة.
   const me = await client.getMe();
   if(!me.ok || !me.botId) return res.status(400).json({success:false,error:me.error||"تعذر التحقق من Telegram Bot Token."});
-  // 2) تسجيل webhook الحقيقي مع السرّ: يصبح أساس التحقق من كل تحديث وارد.
+  // 2) حفظ الاعتماد المشفّر **قبل** تسجيل webhook: لو فشل الحفظ لاحقاً لبقي
+  // لدى Telegram سرّ لا يعرفه الخادم فتُرفض كل التحديثات. الحفظ أولاً يمنع ذلك.
+  try { saveTelegramCredentials(botToken, secret, telegramWebhookUrl()); }
+  catch(e:any) { return res.status(503).json({success:false,error:`تعذّر حفظ اعتماد Telegram: ${String(e?.message||e).slice(0,180)}`}); }
+  // 3) تسجيل webhook الحقيقي مع السرّ: يصبح أساس التحقق من كل تحديث وارد.
   const hook = await client.setWebhook(telegramWebhookUrl(), secret);
   if(!hook.ok) return res.status(502).json({success:false,error:`تم التحقق من البوت لكن تعذّر تسجيل webhook: ${hook.description||""}`.trim()});
-  saveTelegramCredentials(botToken, secret);
+  // 4) إثبات التسجيل فعلاً لدى Telegram (getWebhookInfo) بدل الاكتفاء برد setWebhook.
+  const info = await client.getWebhookInfo();
+  const registration = checkWebhookRegistration({ info, expectedUrl: telegramWebhookUrl(), secretConfigured: Boolean(secret) });
   platformConnections.set("telegram",{platform:"telegram",status:"connected",accountId:me.botId,accountName:me.username?`@${me.username}`:me.firstName||"Telegram Bot",connectedAt:new Date().toISOString(),providerVerified:true});
-  savePlatformConnections(); audit((req as any).user.id,"telegram_configured",me.botId);
+  savePlatformConnections();
+  // ننتظر ثبات الاعتماد المشفّر قبل الرد: لا يجوز أن يبدأ Telegram بدفع التحديثات
+  // وسرّه ليس بعد في المخزن الدائم (وإلا رُفضت كل تحديثاته بعد restart).
+  await persistStateDurable();
+  audit((req as any).user.id,"telegram_configured",me.botId);
   // لا يُعاد الرمز ولا السرّ إطلاقاً؛ يُعلن فقط نجاح التحقق وضبط الـwebhook.
-  res.json({success:true,connection:safeConnection("telegram"),webhook:{registered:true,url:telegramWebhookUrl(),secretConfigured:true},verified:true});
+  res.json({success:true,connection:safeConnection("telegram"),webhook:{registered:true,url:telegramWebhookUrl(),secretConfigured:true,status:registration.status,verified:registration.matchesExpectedUrl,detail:registration.detail},verified:true});
 });
 
 // -------------------------------------------------------------
@@ -1146,16 +1179,25 @@ app.post("/api/platforms/telegram/configure", requireOwner, async (req,res)=>{
 app.post("/api/platforms/telegram/webhook", express.json({limit:"256kb"}), async (req,res)=>{
   if(!SUPPORTED_PLATFORMS.some((p:any)=>p.id==="telegram")) return res.status(404).json({success:false,error:"المنصة غير مدعومة."});
   const expected = telegramWebhookSecret();
+  const rawUpdateId = Number((req.body as any)?.update_id);
+  const updateId = Number.isFinite(rawUpdateId) ? rawUpdateId : null;
   const verification = verifyTelegramSecret({ header: String(req.headers[TELEGRAM_SECRET_HEADER]||""), expectedSecret: expected });
-  if(!verification.ok) return res.status(401).json({success:false,error:verification.reason||"تحديث غير موثوق."});
+  if(!verification.ok) {
+    logTelegramWebhook({ updateId, outcome: "rejected" });
+    return res.status(401).json({success:false,error:verification.reason||"تحديث غير موثوق."});
+  }
   const parsed = parseTelegramUpdate(req.body);
   // تحديث غير نصي (وسائط/تعديلات) يُقبل ويُتجاهل بلا خطأ، فلا يُعيد Telegram المحاولة.
-  if(!parsed) return res.status(200).json({success:true,accepted:true,ignored:"non_text_update"});
+  if(!parsed) {
+    logTelegramWebhook({ updateId, outcome: "ignored" });
+    return res.status(200).json({success:true,accepted:true,ignored:"non_text_update"});
+  }
   if(!Array.isArray((workspace as any).webhookEvents)) (workspace as any).webhookEvents = [];
   const externalId = telegramExternalId(parsed.chatId, parsed.messageId);
   const seenUpdates = (workspace as any).telegramUpdateIds || [];
   const seenExternal = (workspace as any).socialComments.filter((c:any)=>c.platform==="telegram").map((c:any)=>c.externalId);
   if(isDuplicateUpdate({ updateId: parsed.updateId, externalId, seenUpdateIds: seenUpdates, seenExternalIds: seenExternal })){
+    logTelegramWebhook({ updateId: parsed.updateId, externalId, outcome: "duplicate" });
     return res.status(200).json({success:true,duplicate:true,externalId});
   }
   // تخزين الحد الأدنى للحماية من التكرار ثم تمرير الرسالة لمخزن تعليقات مدير السوشيال.
@@ -1174,9 +1216,51 @@ app.post("/api/platforms/telegram/webhook", express.json({limit:"256kb"}), async
   if((workspace as any).socialComments.length>10000) (workspace as any).socialComments.pop();
   (workspace as any).webhookEvents.unshift({id:workspaceId("event"),platform:"telegram",type:"message",externalId,receivedAt:new Date().toISOString()});
   (workspace as any).webhookEvents=(workspace as any).webhookEvents.slice(0,10000);
-  persistState();
+  // ننتظر الكتابة الدائمة **قبل** إرجاع 200: تضمن أن التعليق ومعرّف التحديث
+  // (حماية التكرار) صارا في Postgres، فلا يُفقدان لو عُلّقت العملية بعد الرد.
+  await persistStateDurable();
+  const persisted = !lastPersistError;
   audit("system","telegram_inbound_message",externalId);
-  res.status(200).json({success:true,accepted:true,externalId,commentId:comment.id,requiresHumanReview:classification.requiresHumanReview});
+  logTelegramWebhook({ updateId: parsed.updateId, externalId, outcome: "accepted", persisted });
+  res.status(200).json({success:true,accepted:true,externalId,commentId:comment.id,requiresHumanReview:classification.requiresHumanReview,persisted});
+});
+
+// -------------------------------------------------------------
+// حالة webhook Telegram الحقيقية — للمالك فقط، بلا أي سرّ.
+// تستعلم getWebhookInfo فعلياً من Telegram (رابط، تحديثات معلّقة، آخر خطأ،
+// عدد الاتصالات) وتقارن الرابط المسجّل برابط هذا الخادم، فيُعرف من الواجهة هل
+// الاستقبال فعّال فعلاً بدل الاكتفاء بظهور الزر أخضر.
+// -------------------------------------------------------------
+app.get("/api/platforms/telegram/webhook-info", requireOwner, async (_req,res)=>{
+  const client = telegramClient();
+  if(!client) return res.status(503).json({success:false,error:"موصل Telegram غير مهيأ (رمز بوت غير متوفر)."});
+  const info = await client.getWebhookInfo();
+  if(!info.ok) return res.status(502).json({success:false,error:info.error||"تعذّر استعلام حالة webhook من Telegram."});
+  const expectedUrl = telegramWebhookUrl();
+  const registration = checkWebhookRegistration({ info, expectedUrl, secretConfigured: Boolean(telegramWebhookSecret()) });
+  const stored = getProviderToken("telegram");
+  res.json({
+    success:true,
+    provider:"telegram",
+    expectedUrl,
+    registeredUrl: info.url,
+    matchesExpectedUrl: registration.matchesExpectedUrl,
+    status: registration.status,
+    detail: registration.detail,
+    pendingUpdateCount: info.pendingUpdateCount,
+    lastErrorDate: info.lastErrorDate,
+    lastErrorMessage: info.lastErrorMessage,
+    lastSynchronizationErrorDate: info.lastSynchronizationErrorDate,
+    maxConnections: info.maxConnections,
+    allowedUpdates: info.allowedUpdates,
+    webhookSecretConfigured: Boolean(telegramWebhookSecret()),
+    secretSource: stored?.webhookSecret ? "stored" : (TELEGRAM_WEBHOOK_SECRET_ENV ? "env" : "none"),
+    registeredAt: stored?.webhookRegisteredAt || null,
+    botTokenConfigured: Boolean(telegramBotToken()),
+    checkedAt: new Date().toISOString(),
+    // لا يُعاد أي رمز بوت ولا سرّ — getWebhookInfo لا يعيد السرّ أصلاً.
+    note:"حالة حقيقية من Telegram بلا أي سرّ. لا يُعلن الاستقبال فعّالاً إلا إذا طابق الرابط المسجّل رابط هذا الخادم ووُجد سرّ محفوظ.",
+  });
 });
 
 // -------------------------------------------------------------
@@ -2781,6 +2865,16 @@ function persistState(): void {
     return;
   }
   persistQueue = persistStateNow();
+}
+
+/**
+ * كتابة تُنتظر قبل الرد. تُستخدم في مسارات الاستقبال الخارجي (webhook Telegram)
+ * حيث قد تُعلَّق العملية بعد إرجاع الاستجابة، فلو أُرسلت fire-and-forget لفُقد
+ * الحدث قبل وصوله للمخزن الدائم (فسقوط حماية التكرار).
+ */
+function persistStateDurable(): Promise<void> {
+  persistState();
+  return persistQueue;
 }
 
 /**

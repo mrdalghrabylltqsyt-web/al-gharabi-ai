@@ -24,6 +24,8 @@ import {
   telegramExternalId,
   buildSendMessageBody,
   telegramApiUrl,
+  sanitizeWebhookInfo,
+  checkWebhookRegistration,
 } from '../social/telegram';
 import { createTelegramMock, startTelegramMockServer } from './helpers/telegramMock';
 
@@ -127,12 +129,26 @@ function unitTests(): void {
   check('معاينة الروابط معطلة (بلا مظهر سبام)', (body.link_preview_options as any)?.is_disabled === true);
   check('الرابط يستخدم القاعدة الافتراضية', telegramApiUrl('getMe', 'tok').startsWith('https://api.telegram.org/bot'));
   check('الرابط يقبل قاعدة مخصّصة للاختبار', telegramApiUrl('getMe', 'tok', 'http://127.0.0.1:9999') === 'http://127.0.0.1:9999/bottok/getMe');
+
+  group('4b) وحدة: تنقية getWebhookInfo وتقييم التسجيل');
+  const info = sanitizeWebhookInfo({ ok: true, result: { url: 'https://x/api/platforms/telegram/webhook', pending_update_count: 3, last_error_date: 1700000000, last_error_message: 'boom', max_connections: 40, allowed_updates: ['message'], secret_token: 'SHOULD_NOT_SURVIVE' } });
+  check('ينقّي الرابط والعدّاد', info.url === 'https://x/api/platforms/telegram/webhook' && info.pendingUpdateCount === 3);
+  check('يحوّل خطأ الدفع إلى ISO', info.lastErrorDate === new Date(1700000000 * 1000).toISOString() && info.lastErrorMessage === 'boom');
+  check('لا يحمل أي سرّ في الناتج', !JSON.stringify(info).includes('SHOULD_NOT_SURVIVE') && !JSON.stringify(info).includes('secret'));
+  check('يقيّم registered عند التطابق', checkWebhookRegistration({ info, expectedUrl: 'https://x/api/platforms/telegram/webhook', secretConfigured: true }).status === 'registered');
+  check('يقيّم url_mismatch عند اختلاف الرابط', checkWebhookRegistration({ info, expectedUrl: 'https://y/api/platforms/telegram/webhook', secretConfigured: true }).status === 'url_mismatch');
+  check('يقيّم secret_missing بلا سرّ', checkWebhookRegistration({ info, expectedUrl: 'https://x/api/platforms/telegram/webhook', secretConfigured: false }).status === 'secret_missing');
+  const noUrl = sanitizeWebhookInfo({ ok: true, result: { url: '' } });
+  check('يقيّم not_registered بلا رابط', checkWebhookRegistration({ info: noUrl, expectedUrl: 'https://x', secretConfigured: true }).status === 'not_registered');
+  const badInfo = sanitizeWebhookInfo({ ok: false, description: 'x' });
+  check('يقيّم unavailable عند فشل الاستعلام', checkWebhookRegistration({ info: badInfo, expectedUrl: 'https://x', secretConfigured: true }).status === 'unavailable');
 }
 
 async function integrationTests(): Promise<void> {
   if (!existsSync(tsxCli)) { console.error('tsx CLI غير موجود — شغّل npm install أولاً.'); process.exit(1); }
   const mock = await startTelegramMockServer(TG_PORT, createTelegramMock());
   const app = startApp(mock.base);
+  let currentApp = app;
   const auth = { 'Content-Type': 'application/json' } as Record<string, string>;
   try {
     check('الخادم يقلع', await waitForHealth(), app.log().slice(0, 400));
@@ -147,6 +163,22 @@ async function integrationTests(): Promise<void> {
     check('سُجّل webhook حقيقي لدى المزود', mock.state.webhookUrl === `${BASE}/api/platforms/telegram/webhook`);
     check('الـwebhook يحمل السرّ الصحيح', mock.state.webhookSecret === WEBHOOK_SECRET);
     check('لا يُعاد الرمز ولا السرّ في الاستجابة', !JSON.stringify(configureBody).includes(BOT_TOKEN) && !JSON.stringify(configureBody).includes(WEBHOOK_SECRET));
+    check('الضبط يُثبت التسجيل عبر getWebhookInfo', configureBody.webhook?.status === 'registered' && configureBody.webhook?.verified === true);
+    check('سُجّل رابط الاستقبال لمنع الانحراف', configureBody.webhook?.url === `${BASE}/api/platforms/telegram/webhook`);
+
+    // إعادة الضبط بلا سرّ في الجسم يجب ألا تدوّر السرّ المحفوظ (يمنع انفصال السرّ).
+    const reconfigure = await fetch(`${BASE}/api/platforms/telegram/configure`, { method: 'POST', headers: auth, body: JSON.stringify({}) });
+    const reconfigureBody = await reconfigure.json();
+    check('إعادة الضبط لا تدوّر السرّ المحفوظ', mock.state.webhookSecret === WEBHOOK_SECRET && reconfigureBody.verified === true);
+
+    group('5b) تكامل: حالة webhook الحقيقية (getWebhookInfo)');
+    const infoNoAuth = await fetch(`${BASE}/api/platforms/telegram/webhook-info`);
+    check('حالة webhook بلا جلسة => 401', infoNoAuth.status === 401);
+    const infoRes = await fetch(`${BASE}/api/platforms/telegram/webhook-info`, { headers: auth });
+    const infoBody = await infoRes.json();
+    check('حالة webhook متاحة للمالك وتُعلن registered', infoRes.status === 200 && infoBody.status === 'registered' && infoBody.matchesExpectedUrl === true, JSON.stringify(infoBody).slice(0, 200));
+    check('حالة webhook لا تكشف أي سرّ', !JSON.stringify(infoBody).includes(BOT_TOKEN) && !JSON.stringify(infoBody).includes(WEBHOOK_SECRET));
+    check('حالة webhook تُعلن مصدر السرّ محفوظاً', infoBody.webhookSecretConfigured === true && infoBody.secretSource === 'stored');
 
     const health = await (await fetch(`${BASE}/api/platforms/telegram/health`, { headers: auth })).json();
     check('فحص الصحة يؤكد الاتصال عبر getMe', health.healthy === true && health.accountId === String(mock.state.botId));
@@ -171,6 +203,8 @@ async function integrationTests(): Promise<void> {
     });
     const inboundBody = await inbound.json();
     check('تحديث موثوق => 200 ومقبول', inbound.status === 200 && inboundBody.accepted === true);
+    check('الاستجابة تؤكد الكتابة الدائمة قبل الإقرار', inboundBody.persisted === true);
+    check('السجل يحمل دليل الاستقبال بلا سرّ', /\[telegram-webhook\].*outcome=accepted.*update_id=101/.test(app.log()), app.log().slice(-300));
     const comments = await (await fetch(`${BASE}/api/social/manager/comments?platform=telegram`, { headers: auth })).json();
     check('الرسالة خُزّنت كتعليق حقيقي', comments.count === 1 && comments.comments[0].externalId === 'tg:-100777:7');
     check('التصنيف حتمي ولا يحتاج مراجعة (استفسار تجاري)', comments.comments[0].classification.intent === 'business_inquiry' && comments.comments[0].requiresHumanReview === false);
@@ -239,12 +273,36 @@ async function integrationTests(): Promise<void> {
     const disconnectBody = await disconnect.json();
     check('القطع ينجح ويحوّل إلى disconnected', disconnect.status === 200 && disconnectBody.connection.status === 'disconnected');
     check('حُذف webhook لدى المزود عند القطع', mock.state.webhookDeleted === true);
+    // بعد حذف webhook لدى Telegram يجب أن تُعلن الحالة not_registered صراحةً.
+    const infoAfterDisconnect = await (await fetch(`${BASE}/api/platforms/telegram/webhook-info`, { headers: auth })).json();
+    check('حالة webhook بعد القطع => not_registered', infoAfterDisconnect.status === 'not_registered');
     const replyAfterDisconnect = await fetch(`${BASE}/api/platforms/telegram/reply`, {
       method: 'POST', headers: auth, body: JSON.stringify({ externalId: 'tg:-100777:7', text: 'مرحبا' }),
     });
     check('لا إرسال بعد القطع => 409', replyAfterDisconnect.status === 409);
+
+    group('14) تكامل: ثبات الاستقبال وحماية التكرار بعد restart');
+    // نُعيد التشغيل بنفس مجلد الحالة: يجب أن يبقى التعليق ومعرّف التحديث وهدف الرد.
+    await stop(app.proc);
+    currentApp = startApp(mock.base);
+    check('الخادم يقلع بعد إعادة التشغيل', await waitForHealth());
+    Object.assign(auth, await login());
+    const persistedComments = await (await fetch(`${BASE}/api/social/manager/comments?platform=telegram`, { headers: auth })).json();
+    const persistedComment = persistedComments.comments.find((c: any) => c.externalId === 'tg:-100777:7');
+    check('التعليق الوارد يبقى بعد restart', Boolean(persistedComment));
+    check('هدف الرد الحقيقي (chatId/messageId) يبقى بعد restart', persistedComment?.replyTarget?.chatId === '-100777' && persistedComment?.replyTarget?.messageId === '7');
+    check('المصدر يبقى telegram_webhook', persistedComment?.ingestSource === 'telegram_webhook');
+    const replayAfterRestart = await fetch(`${BASE}/api/platforms/telegram/webhook`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json', 'x-telegram-bot-api-secret-token': WEBHOOK_SECRET },
+      body: JSON.stringify({ update_id: 101, message: { message_id: 7, text: 'بكم سعر الغسالة بالتقسيط؟', chat: { id: -100777 }, from: { id: 3, first_name: 'سالم' } } }),
+    });
+    const replayAfterRestartBody = await replayAfterRestart.json();
+    check('منع التكرار يصمد بعد restart (update_id محفوظ)', replayAfterRestartBody.duplicate === true);
+    const afterRestartCount = await (await fetch(`${BASE}/api/social/manager/comments?platform=telegram`, { headers: auth })).json();
+    check('لا تعليق مكرر بعد restart', afterRestartCount.comments.filter((c: any) => c.externalId === 'tg:-100777:7').length === 1);
+    check('السجل يحمل قرار التكرار الآمن', /\[telegram-webhook\].*outcome=duplicate.*update_id=101/.test(currentApp.log()), currentApp.log().slice(-300));
   } finally {
-    try { await stop(app.proc); } catch { /* تجاهل */ }
+    try { await stop(currentApp.proc); } catch { /* تجاهل */ }
     await mock.stop();
     rmSync(stateDir, { recursive: true, force: true });
   }
