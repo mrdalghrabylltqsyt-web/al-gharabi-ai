@@ -173,13 +173,35 @@ export const SocialManagerView: React.FC = () => {
 
   // ---- موصل Facebook الحقيقي: تعليقات الصفحة + رسائل Messenger (منفصلة) ----
   const facebook = platforms.find((p) => p.platform === 'facebook');
+  // حالة «بانتظار اختيار الصفحة» تأتي من مصفوفة الجاهزية الحقيقية (حساب يدير أكثر من صفحة).
+  const fbReadinessRow = (readiness?.platforms || []).find((r: any) => r.platform === 'facebook');
+  const fbPageSelectionPending = fbReadinessRow?.pageSelectionPending === true;
   const [fbBusy, setFbBusy] = useState(false);
   const [fbWebhookInfo, setFbWebhookInfo] = useState<any | null>(null);
   const [fbIncoming, setFbIncoming] = useState<any[]>([]);
+  const [fbPages, setFbPages] = useState<any[] | null>(null);
   const [fbReplyId, setFbReplyId] = useState('');
   const [fbReplyText, setFbReplyText] = useState('');
   const [fbMsgRecipient, setFbMsgRecipient] = useState('');
   const [fbMsgText, setFbMsgText] = useState('');
+
+  const loadFacebookPages = async () => {
+    setFbBusy(true);
+    try { const res = await apiService.getFacebookPages(); setFbPages(res.pages || []); }
+    catch (err: any) { showToast(err?.message || 'تعذر جلب صفحات Facebook'); }
+    finally { setFbBusy(false); }
+  };
+  const chooseFacebookPage = async (pageId: string) => {
+    setFbBusy(true);
+    try {
+      const res = await apiService.selectFacebookPage(pageId);
+      showToast(res.webhookSubscribed ? 'تم ربط الصفحة والاشتراك في webhook.' : 'تم ربط الصفحة، لكن اشتراك webhook لم يُثبت.');
+      setFbPages(null);
+      await load();
+      await loadFacebookWebhookInfo();
+    } catch (err: any) { showToast(err?.message || 'تعذر ربط الصفحة'); }
+    finally { setFbBusy(false); }
+  };
 
   const loadFacebookWebhookInfo = async () => {
     try { setFbWebhookInfo(await apiService.getFacebookWebhookInfo()); }
@@ -536,6 +558,32 @@ export const SocialManagerView: React.FC = () => {
               الربط خاص بصفحات Facebook لا بالحساب الشخصي: OAuth ← اختيار الصفحة ← تبادل رمز الصفحة ← اشتراك في webhook.
               الأسرار من بيئة الخادم فقط (FACEBOOK_OAUTH_CLIENT_ID/SECRET, FACEBOOK_APP_SECRET, FACEBOOK_VERIFY_TOKEN) ولا تُدخل في الواجهة.
             </p>
+            {fbPageSelectionPending && (
+              <div className="rounded-xl border border-sky-600/40 bg-sky-500/10 p-3 space-y-2">
+                <p className="text-[11px] text-sky-200">
+                  تم تفويض Facebook بنجاح، لكن الحساب يدير أكثر من صفحة. اختر الصفحة المطلوبة لإتمام الربط والاشتراك في webhook.
+                </p>
+                <div className="flex flex-wrap gap-2">
+                  <button
+                    onClick={() => void loadFacebookPages()}
+                    disabled={fbBusy}
+                    className="px-3 py-1.5 rounded-lg bg-sky-500 text-slate-950 text-[11px] font-black cursor-pointer disabled:opacity-50">
+                    جلب الصفحات
+                  </button>
+                </div>
+                {fbPages && fbPages.length > 0 && (
+                  <div className="flex flex-wrap gap-2">
+                    {fbPages.map((pg: any) => (
+                      <button key={pg.pageId} onClick={() => void chooseFacebookPage(pg.pageId)} disabled={fbBusy}
+                        className="px-3 py-1.5 rounded-lg bg-slate-800 border border-slate-700 text-[11px] font-bold text-white cursor-pointer disabled:opacity-50">
+                        {pg.pageName || pg.pageId}
+                      </button>
+                    ))}
+                  </div>
+                )}
+                {fbPages && fbPages.length === 0 && <p className="text-[11px] text-slate-400">لا صفحات يديرها هذا الحساب.</p>}
+              </div>
+            )}
             <button
               onClick={() => void connectFacebook()}
               disabled={fbBusy}

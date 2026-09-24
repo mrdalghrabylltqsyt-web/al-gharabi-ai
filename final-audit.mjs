@@ -227,6 +227,9 @@ add('facebook-reply-guard-redirects', socialRoutes.includes('PLATFORM_USE_DEDICA
 add('facebook-connector-tests', fs.existsSync(path.join(root, 'engine/tests/facebook.connector.test.ts')) && fs.existsSync(path.join(root, 'engine/tests/helpers/facebookMock.ts')) && pkg.scripts['test:facebook'], 'اختبار موصل Facebook (وحدة + تكامل بخادم وهمي) مسجّل');
 add('facebook-test-in-suite', typeof pkg.scripts.test === 'string' && pkg.scripts.test.includes('test:facebook'), 'اختبار Facebook ضمن npm test');
 add('facebook-ui-connection', read('src/components/social/PlatformConnectionCenter.tsx').includes('startOAuth') && read('src/components/social/PlatformConnectionCenter.tsx').includes('OPERATIONAL') && read('src/services/api.ts').includes('/api/platforms/production-readiness'), 'الواجهة تجلب الحالة الحقيقية وتبدأ OAuth وتعرض OPERATIONAL بحسب الواقع');
+add('facebook-page-selection-pending', read('server.ts').includes('function facebookPageSelectionPending') && read('server.ts').includes('pageSelectionPending: true'), 'الخادم يميّز «بانتظار اختيار الصفحة» عن فشل الربط ويُعلنها');
+add('facebook-page-selection-reachable', read('src/components/social/PlatformConnectionCenter.tsx').includes('fbPageSelection') && read('src/components/social/SocialManagerView.tsx').includes('fbPageSelectionPending'), 'اختيار الصفحة متاح فعلاً في الواجهة ولا يُحجب خلف إعادة OAuth');
+add('facebook-multipage-test', read('engine/tests/facebook.connector.test.ts').includes('أكثر من صفحة') && read('engine/tests/facebook.connector.test.ts').includes('select-page'), 'اختبار انحدار لمسار الحساب متعدد الصفحات');
 
 const failed = checks.filter(x => !x.ok);
 console.table(checks);

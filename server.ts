@@ -1032,6 +1032,17 @@ function facebookPageToken(pageId?: string): string | null {
   if (pageId && stored.pageId && String(stored.pageId) !== String(pageId)) return null;
   return String(stored.pageAccessToken);
 }
+/**
+ * هل انتهى OAuth بنجاح لكن الحساب يدير أكثر من صفحة، فننتظر اختيار المالك؟
+ * وجود رمز المستخدم دون صفحة مُثبتة يعني أن الربط توقف عند اختيار الصفحة، لا أنه
+ * فشل. هذا التمييز ضروري: بدونه يظن المالك أن الربط لم يبدأ فيعيد OAuth، ولا تظهر
+ * أداة اختيار الصفحة إطلاقاً لأن زر البدء يحجبها.
+ */
+function facebookPageSelectionPending(): boolean {
+  const stored = getProviderToken("facebook");
+  if (!stored?.userAccessToken || stored?.pageId) return false;
+  return stored?.pendingPageSelection === true;
+}
 /** يهرب النص قبل إدراجه في صفحة HTML (اسم الصفحة من المزود). */
 function escapeHtml(value: string): string {
   return String(value).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c] as string));
@@ -2045,7 +2056,8 @@ app.get("/api/platforms/production-readiness", authenticateToken, (_req,res)=>{
 app.get("/api/platforms/readiness-matrix", authenticateToken, (_req,res)=>{
   const liveFor = (p:string): LiveConnection => { const c:any=platformConnections.get(p); return { status: c?.status||"disconnected", providerVerified: Boolean(c?.providerVerified), accountName: c?.accountName||null }; };
   // الصفوف الغنية: جاهزية الكود + حالة الاعتماد + الحالة التشغيلية الآن + الحجب والإجراء التالي.
-  const platforms = buildReadinessDetails(liveFor, process.env).map((r)=>({ ...r, connection: { status: r.connected ? "connected" : "disconnected", providerVerified: r.providerVerified, accountName: null } }));
+  const fbPending = facebookPageSelectionPending();
+  const platforms = buildReadinessDetails(liveFor, process.env).map((r)=>({ ...r, pageSelectionPending: r.platform === 'facebook' ? fbPending : undefined, connection: { status: r.connected ? "connected" : "disconnected", providerVerified: r.providerVerified, accountName: null } }));
   res.json({success:true,generatedAt:new Date().toISOString(),projectVersion:PROJECT_VERSION,summary:readinessSummary(),platforms,note:"levels أعلاه تصف الكود؛ operational تصف ما يعمل الآن فعلاً، وstate هي الحالة الجامعة الدقيقة. لا تحمل أي سرّ."});
 });
 
@@ -2056,15 +2068,23 @@ app.get("/api/platforms/readiness-matrix", authenticateToken, (_req,res)=>{
 app.get("/api/platforms/control-plane", authenticateToken, (_req,res)=>{
   const liveFor = (p:string): LiveConnection => { const c:any=platformConnections.get(p); return { status: c?.status||"disconnected", providerVerified: Boolean(c?.providerVerified), accountName: c?.accountName||null }; };
   const statuses = computeAllPlatformStatuses(liveFor, process.env);
-  res.json({ success:true, generatedAt:new Date().toISOString(), projectVersion:PROJECT_VERSION, summary:controlSummary(statuses), platforms:statuses, note:"الحالات منفصلة: CODE_READY ≠ CONFIGURED ≠ CONNECTED ≠ VERIFIED ≠ OPERATIONAL. لا تُعلن OPERATIONAL إلا باتصال موثق وموصل منفّذ." });
+  // Facebook خاص: قد يكتمل OAuth بينما ينتظر اختيار الصفحة. تُعلن هذه الحالة
+  // صراحةً ولا تُترك الواجهة تظن أن الربط لم يبدأ فتعيد OAuth بلا نهاية.
+  const fbPending = facebookPageSelectionPending();
+  const platforms = statuses.map((s)=> s.platform === "facebook" && fbPending
+    ? { ...s, pageSelectionPending: true, blockingReason: "تم تفويض Facebook بنجاح، لكن الحساب يدير أكثر من صفحة. اختر الصفحة المطلوبة لإتمام الربط.", nextAction: "اختر الصفحة «معرض الغرابي للتقسيط» من زر «اختيار الصفحة» لإتمام الربط والاشتراك في webhook." }
+    : { ...s, pageSelectionPending: s.platform === "facebook" ? false : undefined });
+  res.json({ success:true, generatedAt:new Date().toISOString(), projectVersion:PROJECT_VERSION, summary:controlSummary(statuses), platforms, note:"الحالات منفصلة: CODE_READY ≠ CONFIGURED ≠ CONNECTED ≠ VERIFIED ≠ OPERATIONAL. لا تُعلن OPERATIONAL إلا باتصال موثق وموصل منفّذ." });
 });
 
 app.get("/api/platforms/:platform/control", authenticateToken, (req,res)=>{
   const platform = req.params.platform;
   if(!isSupportedPlatform(platform)) return res.status(404).json({success:false,error:"منصة غير مدعومة."});
   const c:any=platformConnections.get(platform);
-  const status = computePlatformStatus(platform as PlatformId, { status: c?.status||"disconnected", providerVerified: Boolean(c?.providerVerified), accountName: c?.accountName||null }, process.env);
+  let status = computePlatformStatus(platform as PlatformId, { status: c?.status||"disconnected", providerVerified: Boolean(c?.providerVerified), accountName: c?.accountName||null }, process.env);
   if(!status) return res.status(404).json({success:false,error:"منصة غير مدعومة."});
+  const fbPending = platform === "facebook" && facebookPageSelectionPending();
+  if (fbPending) status = { ...status, pageSelectionPending: true, blockingReason: "تم تفويض Facebook بنجاح، لكن الحساب يدير أكثر من صفحة. اختر الصفحة المطلوبة لإتمام الربط.", nextAction: "اختر الصفحة «معرض الغرابي للتقسيط» من زر «اختيار الصفحة» لإتمام الربط والاشتراك في webhook." } as any;
   const creds = inspectPlatformCredentials(platform as PlatformId, process.env);
   res.json({ success:true, control:status, credentials:{ connection:creds.connection, webhook:creds.webhook, requiredEnvNames:creds.requiredEnvNames }, note:"أسماء متغيرات فقط، بلا قيم." });
 });

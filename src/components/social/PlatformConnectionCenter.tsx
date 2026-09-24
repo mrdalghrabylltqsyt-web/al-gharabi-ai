@@ -156,6 +156,9 @@ export const PlatformConnectionCenter: React.FC = () => {
           const extRow = external?.platforms?.find((x: any) => x.platform === p.platform);
           const canOAuth = p.operations?.find((o: any) => o.operation === 'connect')?.allowed === true && p.state !== 'EXTERNAL_SETUP_REQUIRED';
           const needsExternal = p.state === 'EXTERNAL_SETUP_REQUIRED';
+          // Facebook بعد OAuth قد ينتظر اختيار الصفحة (حساب يدير أكثر من صفحة).
+          // هذه الحالة تُعرض بإجراءها الصحيح، ولا تُحجب خلف زر «بدء الربط».
+          const fbPageSelection = p.platform === 'facebook' && p.pageSelectionPending === true;
           return (
             <div key={p.platform} className="p-5 rounded-2xl bg-slate-900 border border-slate-800">
               <div className="flex flex-wrap items-start justify-between gap-3">
@@ -176,6 +179,19 @@ export const PlatformConnectionCenter: React.FC = () => {
                   {p.connected ? (
                     <button onClick={async () => { try { await apiService.disconnectPlatform(p.platform); showToast('تم فصل المنصة.'); void load(); } catch (e: any) { showToast(e?.message || 'تعذر الفصل'); } }}
                       className="px-3 py-1.5 rounded-lg bg-rose-500/10 border border-rose-600/30 text-[11px] font-bold text-rose-300">فصل</button>
+                  ) : fbPageSelection ? (
+                    // تفويض OAuth اكتمل وينتظر اختيار الصفحة: الإجراء الصحيح هو اختيار
+                    // الصفحة، لا إعادة OAuth. نُبقي إعادة الربط متاحة كإجراء ثانوي.
+                    <>
+                      <button onClick={() => void loadFacebookPages()} disabled={busy === 'facebook-pages'}
+                        className="px-3 py-1.5 rounded-lg bg-sky-500 text-slate-950 text-[11px] font-black inline-flex items-center gap-1 disabled:opacity-50">
+                        {busy === 'facebook-pages' ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <KeyRound className="w-3.5 h-3.5" />} اختيار الصفحة
+                      </button>
+                      <button onClick={() => void startOAuth(p.platform)} disabled={busy === p.platform}
+                        className="px-3 py-1.5 rounded-lg bg-slate-800 border border-slate-700 text-[11px] font-bold text-slate-300 inline-flex items-center gap-1 disabled:opacity-50">
+                        {busy === p.platform ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <PlugZap className="w-3.5 h-3.5" />} إعادة الربط
+                      </button>
+                    </>
                   ) : needsExternal ? (
                     <span className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg bg-amber-500/10 border border-amber-600/30 text-[11px] font-bold text-amber-300">
                       <ExternalLink className="w-3.5 h-3.5" /> إكمال الإعداد الخارجي

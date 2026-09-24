@@ -337,6 +337,53 @@ async function integrationTests(): Promise<void> {
     check('callback ينجح بحالة محفوظة بعد restart (لا 400)', cbAfterRestart.status === 200, `status=${cbAfterRestart.status}`);
     const reuse = await fetch(`${BASE}/api/platforms/facebook/oauth/callback?state=${encodeURIComponent(pendingState)}&code=TESTCODE3`);
     check('state يُستهلك مرة واحدة حتى بعد restart', reuse.status === 400, `status=${reuse.status}`);
+
+    // سيناريو الحساب الذي يدير أكثر من صفحة: OAuth ينجح لكنه يتوقف عند اختيار
+    // الصفحة. كانت الواجهة تُخفي أداة الاختيار خلف زر «بدء الربط» فيستحيل إتمام
+    // الربط. هذا الفحص يثبت أن المسار كامل: pending → pages → select-page → connected.
+    group('19) تكامل: حساب يدير أكثر من صفحة (اختيار الصفحة)');
+    await stop(currentApp.proc);
+    // حالة نظيفة + خادم Graph بصفحتين، فلا يبقى اتصال سابق يخفي سيناريو الانتظار.
+    writeFileSync(join(stateDir, '.gharabi-state.json'), JSON.stringify({
+      schemaVersion: 16, savedAt: new Date().toISOString(), users: [ownerUser, staffUser],
+      revokedSessions: [], userRevocations: [], audit: [], jobs: [], platformConnections: [],
+      workspace: { showroom: {}, products: [], posts: [], socialComments: [], socialReplies: [], socialApprovals: [] },
+    }), 'utf8');
+    const multiMock = await startFacebookMockServer(FB_PORT + 1, createFacebookMock({
+      pages: [
+        { id: 'PAGE_A', name: 'معرض الغرابي للتقسيط', accessToken: 'PAGE_TOKEN_A', tasks: ['CREATE_CONTENT', 'MODERATE'] },
+        { id: 'PAGE_B', name: 'صفحة ثانية', accessToken: 'PAGE_TOKEN_B', tasks: ['CREATE_CONTENT'] },
+      ],
+    }));
+    currentApp = startApp(multiMock.base);
+    check('الخادم يقلع لسيناريو الصفحات المتعددة', await waitForHealth(), currentApp.log().slice(0, 300));
+    Object.assign(auth, await login());
+    const multiStart = await (await fetch(`${BASE}/api/platforms/facebook/oauth/start`, { headers: auth })).json();
+    const multiState = new URL(multiStart.authorizationUrl).searchParams.get('state') || '';
+    const multiCb = await fetch(`${BASE}/api/platforms/facebook/oauth/callback?state=${encodeURIComponent(multiState)}&code=MULTI`);
+    check('callback بحساب متعدد الصفحات ينجح (يوقف عند اختيار الصفحة)', multiCb.status === 200, `status=${multiCb.status}`);
+    const multiReadiness = await (await fetch(`${BASE}/api/platforms/production-readiness`, { headers: auth })).json();
+    const multiFb = multiReadiness.platforms.find((p: any) => p.platform === 'facebook');
+    check('لا اتصال بعد OAuth قبل اختيار الصفحة', multiFb.connected === false && multiFb.providerVerified === false);
+    const multiCp = await (await fetch(`${BASE}/api/platforms/control-plane`, { headers: auth })).json();
+    const multiCpFb = multiCp.platforms.find((p: any) => p.platform === 'facebook');
+    check('اللوحة تُعلن انتظار اختيار الصفحة صراحةً', multiCpFb.pageSelectionPending === true, JSON.stringify(multiCpFb).slice(0, 200));
+    check('سبب الحجب يوجّه لاختيار الصفحة لا لفشل الربط', String(multiCpFb.blockingReason || '').includes('أكثر من صفحة'));
+    const multiMatrix = await (await fetch(`${BASE}/api/platforms/readiness-matrix`, { headers: auth })).json();
+    const matrixFb = multiMatrix.platforms.find((p: any) => p.platform === 'facebook');
+    check('مصفوفة الجاهزية تُعلن انتظار اختيار الصفحة للواجهة الرئيسية', matrixFb.pageSelectionPending === true);
+    const pagesRes = await (await fetch(`${BASE}/api/platforms/facebook/pages`, { headers: auth })).json();
+    check('جلب الصفحات يعيد الصفحتين بلا أي رمز', pagesRes.pages?.length === 2 && !JSON.stringify(pagesRes).includes('PAGE_TOKEN'));
+    const sel = await fetch(`${BASE}/api/platforms/facebook/select-page`, { method: 'POST', headers: auth, body: JSON.stringify({ pageId: 'PAGE_A' }) });
+    const selBody = await sel.json();
+    check('اختيار الصفحة يُثبتها ويشترك في webhook', sel.status === 200 && selBody.success === true && selBody.webhookSubscribed === true, JSON.stringify(selBody).slice(0, 200));
+    check('الاشتراك المُنفَّذ للصفحة المختارة فعلياً', multiMock.state.lastSubscribe?.pageId === 'PAGE_A');
+    const multiAfter = await (await fetch(`${BASE}/api/platforms/production-readiness`, { headers: auth })).json();
+    const multiFbAfter = multiAfter.platforms.find((p: any) => p.platform === 'facebook');
+    check('Facebook يصبح متصلاً وموثقاً بعد اختيار الصفحة', multiFbAfter.connected === true && multiFbAfter.providerVerified === true);
+    const multiCpAfter = await (await fetch(`${BASE}/api/platforms/control-plane`, { headers: auth })).json();
+    check('لم يعد معلّقاً على اختيار الصفحة', multiCpAfter.platforms.find((p: any) => p.platform === 'facebook').pageSelectionPending === false);
+    await multiMock.stop();
   } finally {
     try { await stop(currentApp.proc); } catch { /* تجاهل */ }
     await mock.stop();
