@@ -322,6 +322,21 @@ async function integrationTests(): Promise<void> {
     const readinessRestart = await (await fetch(`${BASE}/api/platforms/production-readiness`, { headers: auth })).json();
     const fbRestart = readinessRestart.platforms.find((p: any) => p.platform === 'facebook');
     check('اتصال Facebook الموثق يصمد بعد restart', fbRestart.connected === true && fbRestart.providerVerified === true);
+
+    // جلسة OAuth المعلّقة كانت في الذاكرة فقط، فعلى Render Free (بلا قرص دائم)
+    // يقضي المالك وقتاً في شاشة الموافقة ثم تصل العودة لعملية جديدة فتضيع الحالة
+    // ويُرفض الربط بـ400. الفحص يثبت أن الحالة تصمد فعلاً عبر إعادة التشغيل.
+    group('18) تكامل: جلسة OAuth تصمد عبر إعادة التشغيل (سيناريو Render)');
+    const oauthStart2 = await (await fetch(`${BASE}/api/platforms/facebook/oauth/start`, { headers: auth })).json();
+    const pendingState = new URL(oauthStart2.authorizationUrl).searchParams.get('state') || '';
+    check('بدء OAuth جديد يعيد حالة قوية', pendingState.length >= 32);
+    await stop(currentApp.proc);
+    currentApp = startApp(mock.base);
+    check('الخادم يقلع بعد إعادة التشغيل الثانية', await waitForHealth(), currentApp.log().slice(0, 300));
+    const cbAfterRestart = await fetch(`${BASE}/api/platforms/facebook/oauth/callback?state=${encodeURIComponent(pendingState)}&code=TESTCODE2`);
+    check('callback ينجح بحالة محفوظة بعد restart (لا 400)', cbAfterRestart.status === 200, `status=${cbAfterRestart.status}`);
+    const reuse = await fetch(`${BASE}/api/platforms/facebook/oauth/callback?state=${encodeURIComponent(pendingState)}&code=TESTCODE3`);
+    check('state يُستهلك مرة واحدة حتى بعد restart', reuse.status === 400, `status=${reuse.status}`);
   } finally {
     try { await stop(currentApp.proc); } catch { /* تجاهل */ }
     await mock.stop();

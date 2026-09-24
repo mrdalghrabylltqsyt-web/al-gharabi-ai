@@ -1235,7 +1235,7 @@ async function fetchProviderAccount(platform: string, accessToken: string): Prom
   return null;
 }
 
-app.get("/api/platforms/:platform/oauth/start", requireOwner, (req,res)=>{
+app.get("/api/platforms/:platform/oauth/start", requireOwner, async (req,res)=>{
   const platform=req.params.platform; const cfg=OAUTH_CONFIG[platform];
   if(!cfg) return res.status(501).json({success:false,error:"هذا المزود يحتاج إعداد موصل خاص قبل بدء OAuth."});
   if(!oauthReady(platform)) {
@@ -1252,7 +1252,11 @@ app.get("/api/platforms/:platform/oauth/start", requireOwner, (req,res)=>{
   const u=new URL(cfg.auth);
   const params=buildAuthorizationParams({platform,clientId:cfg.clientId,redirectUri:cfg.callback,scopes:cfg.scopes,state,pkceChallenge});
   for(const [k,v] of Object.entries(params)) u.searchParams.set(k,v);
-  audit((req as any).user.id,"platform_oauth_started",platform); res.json({success:true,platform,authorizationUrl:u.toString(),expiresAt:pending.expiresAt,redirectUri:cfg.callback});
+  audit((req as any).user.id,"platform_oauth_started",platform);
+  // نثبّت جلسة OAuth قبل إرجاع رابط التفويض: قد يقضي المالك دقائق في شاشة
+  // الموافقة وقد تُطفأ العملية، فيلزم أن تصمد الحالة في المخزن الدائم.
+  await persistCritical();
+  res.json({success:true,platform,authorizationUrl:u.toString(),expiresAt:pending.expiresAt,redirectUri:cfg.callback});
 });
 
 app.get("/api/platforms/:platform/oauth/callback", async (req,res)=>{
@@ -1260,8 +1264,10 @@ app.get("/api/platforms/:platform/oauth/callback", async (req,res)=>{
   const redirectUri=cfg?.callback||"";
   const check=validateOAuthCallback({pending,platform,redirectUri});
   if(!check.ok || !cfg) return res.status(400).send(`فشل التحقق من جلسة OAuth: ${check.reason||"مزود غير مُعدّ"}.`);
-  // يُستهلك state مرة واحدة فقط (يمنع إعادة الاستخدام).
+  // يُستهلك state مرة واحدة فقط (يمنع إعادة الاستخدام)؛ نثبّت الحذف في المخزن
+  // الدائم فوراً فلا يُسترجَع عند إعادة تشغيل لاحقة فيُقبل تكرار الطلب.
   pendingOAuth.delete(state);
+  await persistCritical();
   if(req.query.error) return res.status(400).send(`رفض مزود المنصة عملية الربط: ${String(req.query.error_description||req.query.error).slice(0,200)}`);
   const code=typeof req.query.code==="string"?req.query.code:""; if(!code) return res.status(400).send("لم يتم استلام رمز OAuth.");
   try {
@@ -3129,6 +3135,24 @@ function applyControlSnapshot(control: any): void {
       if (entry?.email && typeof entry.window === "number") consumedChallengeWindows.set(entry.email, entry.window);
     }
   }
+  // جلسات OAuth المعلّقة تُسترجَع لتصمد عبر العمليات: على Render Free قد يُنفَّذ
+  // callback الموافقة في عملية جديدة بعد إطفاء/إعادة نشر، فتضيع الحالة الذاكرية
+  // ويُرفض الربط بـ400 بلا سبب حقيقي. المنتهية الصلاحية تُستبعد عند الاسترجاع.
+  pendingOAuth.clear();
+  if (Array.isArray(control.pendingOAuth)) {
+    const now = Date.now();
+    for (const entry of control.pendingOAuth) {
+      if (entry?.state && entry?.platform && entry?.userId && entry?.redirectUri && typeof entry?.expiresAt === "number" && entry.expiresAt > now) {
+        pendingOAuth.set(String(entry.state), {
+          platform: String(entry.platform),
+          userId: String(entry.userId),
+          expiresAt: entry.expiresAt,
+          redirectUri: String(entry.redirectUri),
+          codeVerifier: entry.codeVerifier ? String(entry.codeVerifier) : undefined,
+        });
+      }
+    }
+  }
 }
 
 /** يقرأ حالة التحكّم متزامناً (backend الملف) عند الإقلاع. */
@@ -3143,6 +3167,12 @@ function buildControlState() {
     previewTokenHash: previewControl.tokenHash,
     previewEpoch: previewEpoch.value,
     consumedOtpWindows: Array.from(consumedChallengeWindows.entries()).slice(-200).map(([email, window]) => ({ email, window })),
+    // جلسات OAuth المعلّقة (بلا أي سر: PKCE verifier ليس سرّ عميل، وstate عشوائي
+    // عابر). تُحفظ لتصمد عبر إعادة التشغيل فلا يفشل callback الموافقة في عملية أخرى.
+    pendingOAuth: Array.from(pendingOAuth.entries())
+      .filter(([, p]) => p.expiresAt > Date.now())
+      .slice(-200)
+      .map(([state, p]) => ({ state, platform: p.platform, userId: p.userId, expiresAt: p.expiresAt, redirectUri: p.redirectUri, codeVerifier: p.codeVerifier })),
   };
 }
 
