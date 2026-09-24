@@ -112,7 +112,16 @@ const PORT = (() => {
 const PROJECT_VERSION = "13.0.0";
 const STATE_SCHEMA_VERSION = 16;
 
-app.use(express.json({ limit: "256kb" }));
+// Body parser يُبقي نسخة نصية من البايتات المرسلة نفسها في req.rawBody.
+// هذا ضروري للتحقق من توقيع HMAC (X-Hub-Signature-256) على الجسم الخام تماماً
+// كما أرسله Meta، لا على إعادة تسلسل req.body (قد تختلف المسافات/ترتيب المفاتيح).
+// كونه الوسيط الأول يعني أنه يقرأ التدفق الوحيد نفسه، فلا يجد أي محلّل لاحق شيئاً.
+app.use(express.json({
+  limit: "256kb",
+  verify: (req: any, _res: unknown, buf: Buffer) => {
+    if (typeof req.rawBody !== "string") req.rawBody = buf?.toString("utf8") ?? "";
+  },
+}));
 
 // Request correlation: every API response receives a short trace id. It is safe
 // to expose and contains no credentials; it helps the owner match UI errors to
@@ -995,8 +1004,14 @@ function telegramConnectorConfigured(): boolean { return Boolean(telegramBotToke
 const FACEBOOK_APP_SECRET_ENV = (process.env.FACEBOOK_APP_SECRET || "").trim();
 const FACEBOOK_VERIFY_TOKEN_ENV = (process.env.FACEBOOK_VERIFY_TOKEN || "").trim();
 const FACEBOOK_GRAPH_API_BASE_ENV = process.env.FACEBOOK_GRAPH_API_BASE;
-/** الحقول التي نشترك بها في webhook الصفحة: التعليقات والرسائل فقط. */
-const FACEBOOK_SUBSCRIBED_FIELDS = ["feed", "messages"];
+/**
+ * الحقول التي نشترك بها في webhook الصفحة. الافتراض هو التعليقات والرسائل
+ * (المطلوب تشغيلياً)، ويمكن تعديله عبر FACEBOOK_SUBSCRIBED_FIELDS كما هو موثّق.
+ */
+const FACEBOOK_SUBSCRIBED_FIELDS = (() => {
+  const raw = (process.env.FACEBOOK_SUBSCRIBED_FIELDS || "").split(",").map((x) => x.trim()).filter(Boolean);
+  return raw.length ? raw : ["feed", "messages"];
+})();
 const faceBookFetchImpl: FacebookFetch = (url, init) => fetch(url, init as any);
 function facebookClient(): FacebookClient { return new FacebookClient(faceBookFetchImpl, FACEBOOK_GRAPH_API_BASE_ENV); }
 function facebookOAuthConfig(): any { return OAUTH_CONFIG["facebook"]; }
@@ -1423,8 +1438,18 @@ app.get("/api/platforms/telegram/webhook-info", requireOwner, async (_req,res)=>
   });
 });
 
-// Express JSON parser that also captures the raw body for HMAC verification.
-const captureRawBody = express.json({ limit: "512kb", verify: (req: any, _res, buf) => { req.rawBody = buf?.toString("utf8") ?? ""; } });
+/**
+ * الجسم الخام يُلتقط فعلياً في وسيط JSON الأول (أعلى الملف) حيث يقرأ التدفق
+ * الوحيد. هذا الوسيط يتحقق فقط من توفّره قبل حساب HMAC، ويرفض صراحةً إن غاب
+ * (نوع محتوى غير JSON مثلاً) بدل التحقق على جسم مُعاد تسلسله — فلا يمكن تجاوز
+ * التحقق أبداً بإعادة التسلسل.
+ */
+const requireRawBody: express.RequestHandler = (req, res, next) => {
+  if (typeof (req as any).rawBody !== "string") {
+    return res.status(400).json({ success: false, error: "جسم الطلب الخام غير متوفر للتحقق من التوقيع." });
+  }
+  next();
+};
 
 // -------------------------------------------------------------
 // Facebook — مسارات الموصل الحقيقي (OAuth + webhook + رد + رسالة).
@@ -1481,9 +1506,9 @@ app.get("/api/platforms/facebook/webhook-info", requireOwner, async (_req,res)=>
 });
 
 /** استقبال أحداث Facebook — تحقق HMAC على الجسم الخام ثم تمييز التعليق عن الرسالة. */
-app.post("/api/platforms/facebook/webhook", captureRawBody, async (req,res)=>{
+app.post("/api/platforms/facebook/webhook", requireRawBody, async (req,res)=>{
   const secret=facebookAppSecret();
-  const rawBody=typeof (req as any).rawBody==="string"?(req as any).rawBody:JSON.stringify(req.body??{});
+  const rawBody=String((req as any).rawBody ?? "");
   const verifier=hmacSignatureVerifier(FACEBOOK_SIGNATURE_HEADER,"sha256");
   const verification=verifier.verify({headers:req.headers as Record<string,string|undefined>,rawBody,secret});
   if(!verification.ok){ logFacebookWebhook({kind:"unknown",outcome:"rejected"}); return res.status(401).json({success:false,error:verification.reason||"حدث غير موثوق."}); }
@@ -1762,13 +1787,13 @@ app.get("/api/platforms/:platform/webhook", (req, res) => {
 // استقبال أحداث موقّعة (POST) — HMAC على الجسم الخام.
 // مهم: التوقيع يُحسب على البايتات المرسلة نفسها. Express يحلل JSON أولاً، لذلك
 // نحتفظ بالجسم الخام عبر verify لتفادي فشل التحقق بسبب إعادة التسلسل (مسافات/ترتيب).
-app.post("/api/platforms/:platform/webhook", captureRawBody, async (req, res) => {
+app.post("/api/platforms/:platform/webhook", requireRawBody, async (req, res) => {
   const platform = req.params.platform;
   if (!isSupportedPlatform(platform)) return res.status(404).json({ success: false, error: "المنصة غير مدعومة." });
   const verifier = webhookVerifierFor(platform);
   if (!verifier) return res.status(404).json({ success: false, error: "لا يوجد مزود توقيع لهذه المنصة." });
   const secret = webhookSecretFor(platform);
-  const rawBody = typeof (req as any).rawBody === "string" ? (req as any).rawBody : JSON.stringify(req.body ?? {});
+  const rawBody = String((req as any).rawBody ?? "");
   const verification = verifier.verify({ headers: req.headers as Record<string, string | undefined>, rawBody, secret });
   if (!verification.ok) return res.status(401).json({ success: false, error: verification.reason || "حدث غير موثوق." });
   if (!isValidWebhookPayload(req.body)) return res.status(400).json({ success: false, error: "حمولة webhook غير صالحة." });

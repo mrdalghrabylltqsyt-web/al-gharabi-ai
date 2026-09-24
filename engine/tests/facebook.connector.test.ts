@@ -41,9 +41,11 @@ function group(title: string): void { console.log(`\n▸ ${title}`); }
 const REPO_ROOT = process.cwd();
 const tsxCli = join(REPO_ROOT, 'node_modules', 'tsx', 'dist', 'cli.mjs');
 const serverEntry = join(REPO_ROOT, 'server.ts');
-const APP_PORT = 5960 + Math.floor(Math.random() * 120);
+// نطاقات منفصلة وآمنة: تتجنّب منافذ fetch المحظورة (مثل 6000/6667) وتفادي
+// تصادم النطاقات مع بقية الاختبارات، فلا يتخطّى fetch ولا يفشل الإقلاع عشوائياً.
+const APP_PORT = 6700 + Math.floor(Math.random() * 100);
 const BASE = `http://127.0.0.1:${APP_PORT}`;
-const FB_PORT = 6400 + Math.floor(Math.random() * 120);
+const FB_PORT = 6800 + Math.floor(Math.random() * 100);
 const PREVIEW_TOKEN = randomBytes(24).toString('hex');
 const SESSION_SECRET = 'facebook-connector-test-secret-not-real';
 const FB_APP_SECRET = 'fb_test_app_secret_not_real_1234567890';
@@ -217,6 +219,16 @@ async function integrationTests(): Promise<void> {
     check('إعادة نفس الحدث => duplicate', replay.json?.duplicates === 1 && replay.json?.processed === 0);
     const after = await (await fetch(`${BASE}/api/social/manager/comments?platform=facebook`, { headers: auth })).json();
     check('لا سجل مكرر بعد replay', after.comments.filter((c: any) => c.externalId === 'C1').length === 1);
+
+    group('8ب) تكامل: التوقيع يُحسب على البايتات الخام لا على إعادة التسلسل');
+    // Meta لا يضمن مطابقة تنسيقه (مسافات/أسطر) لما ينتجه JSON.stringify. لذلك
+    // يجب أن يُتحقق التوقيع على الجسم الخام كما وصل، وإلا فشل webhook حقيقي.
+    const spacedPayload = '{\n  "object": "page",\n  "entry": [ { "id": "PAGE_123", "changes": [ { "field": "feed", "value": { "item": "comment", "comment_id": "CSPACED", "post_id": "POST1", "message": "استفسار بصيغة مختلفة", "from": { "name": "سالم" } } } ] } ]\n}';
+    check('الجسم الخام يختلف فعلاً عن إعادة التسلسل', JSON.stringify(JSON.parse(spacedPayload)) !== spacedPayload);
+    const spaced = await postWebhook(spacedPayload, signHmac(spacedPayload, FB_APP_SECRET));
+    check('توقيع مطابق للجسم الخام غير المضغوط => 200', spaced.status === 200 && spaced.json?.processed === 1, `status=${spaced.status} body=${JSON.stringify(spaced.json).slice(0, 160)}`);
+    const spacedReplay = await postWebhook(JSON.stringify(JSON.parse(spacedPayload)), signHmac(JSON.stringify(JSON.parse(spacedPayload)), FB_APP_SECRET));
+    check('نفس الحدث بإعادة تسلسل مختلفة لا يُخلق مرتين', spacedReplay.json?.processed === 0 && spacedReplay.json?.duplicates === 1);
 
     group('9) تكامل: استقبال رسالة Messenger منفصلة عن التعليق');
     const msgPayload = JSON.stringify({ object: 'page', entry: [{ id: 'PAGE_123', messaging: [{ sender: { id: 'U9' }, recipient: { id: 'PAGE_123' }, timestamp: 1700000000000, message: { mid: 'MID1', text: 'هل لديكم توصيل للمنازل؟' } }] }] });
