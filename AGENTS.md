@@ -591,3 +591,28 @@ webhook حقيقي بـ401 بلا سبب ظاهر.
 - تعليقات عربية موجزة تشرح «لماذا» فقط، دون شرح ما يفعله الكود.
 - الأنواع في `src/types/index.ts` يجب أن تطابق استجابات الخادم فعلياً؛ توجد فحوص عقد في `engine/tests/social.routes.test.ts` تكشف أي انحراف.
 - واجهة المستخدم عربية RTL بتصميم لوحة التحكم الحالي (`bg-slate-900 border-slate-800 rounded-2xl`)؛ لا تُعد التصميم من الصفر.
+
+## اختيار صفحة Facebook بعد OAuth — إصلاح جذر «موصل حقيقي / غير متصلة» (2026-09-24)
+كان OAuth يكتمل بنجاح، لكن على حساب يدير **أكثر من صفحة** كان callback يحفظ رمز
+المستخدم وينتظر اختيار الصفحة **بلا أي وسيلة لاختيارها**:
+- زر «بدء الربط» في `PlatformConnectionCenter` كان يظهر دائماً (بوابة connect
+  `allowed=true` والحالة `CONFIGURED` لا `EXTERNAL_SETUP_REQUIRED`)، فيحجب فرع
+  «اختيار الصفحة» الذي يظهر فقط عند تعذّر OAuth. الفرع كان **غير قابل للوصول رياضياً**
+  لأن اختيار الصفحة يحتاج رمز مستخدم لا يوجد إلا بعد OAuth.
+- النتيجة: يظن المالك أن الربط لم يبدأ فيعيد OAuth، وتبقى الصفحة غير متصلة للأبد.
+
+الفصل المعتمد الآن: **`pendingPageSelection` ≠ فشل الربط**. نهاية OAuth بحالة انتظار
+صراحةً، والدليل وجود `userAccessToken` بلا `pageId` مع العلَم. تُعلن في
+`/api/platforms/control-plane` و`/:platform/control` و`/readiness-matrix` مع
+`blockingReason`/`nextAction` صريحين، ويصبح «اختيار الصفحة» الإجراء الأول في
+`PlatformConnectionCenter` و`SocialManagerView`. اختبار `facebook.connector.test.ts`
+المجموعة **19** يغطي: OAuth متعدد الصفحات → pending → pages → select-page →
+connected. فحوص final-audit: `facebook-page-selection-pending`,
+`facebook-page-selection-reachable`, `facebook-multipage-test`.
+
+**درس عام:** لا يكفي أن يكون إجراء موجوداً في الواجهة؛ يجب إثبات أن شرط ظهوره
+قابل للتحقق فعلاً في الحالة التي يحتاجها، وإلا صار الكود موجوداً ومعطّلاً.
+
+**نقطة توقف بشرية:** ما تبقى لإتمام Facebook COMPLETE هو تسجيل دخول/موافقة مالك
+Facebook نفسه على شاشة Meta (OAuth consent + الصفحة). لا يمكن تنفيذ ذلك نيابةً عنه
+من دون جلسته، ولا يوجد أي وكيل برمجي يمنح وصولاً لصفحته.
