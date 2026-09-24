@@ -616,3 +616,40 @@ connected. فحوص final-audit: `facebook-page-selection-pending`,
 **نقطة توقف بشرية:** ما تبقى لإتمام Facebook COMPLETE هو تسجيل دخول/موافقة مالك
 Facebook نفسه على شاشة Meta (OAuth consent + الصفحة). لا يمكن تنفيذ ذلك نيابةً عنه
 من دون جلسته، ولا يوجد أي وكيل برمجي يمنح وصولاً لصفحته.
+
+## مصدر واحد للعنوان العام — إصلاح «لا يمكن تحميل عنوان URL» (2026-09-24)
+عند فشل OAuth الحقيقي كان redirect_uri يُبنى حرفياً من APP_URL وحدها:
+`const BASE_URL = (process.env.APP_URL || http://localhost:${PORT})`. فإن غابت على
+Render لصار الرابط `http://localhost/...` فيرفضه Meta برسالة «لا يمكن تحميل عنوان
+URL / النطاق غير مُضمَّن في نطاقات التطبيق». والأسوأ: لم يكن الرابط الفعلي يُعرض
+للمالك ليُسجّله لدى Meta، فيدور بلا نهاية على رسالة غامضة.
+
+الإصلاح:
+- `engine/social/publicUrl.ts` هو **المصدر الوحيد** لحسم العنوان العام:
+  APP_URL → PUBLIC_URL → RENDER_EXTERNAL_URL → RENDER_EXTERNAL_HOSTNAME → VERCEL_URL
+  → ترويسات الوسيط (X-Forwarded-Host/Proto/Host) → localhost للتطوير.
+  يُقرأ عند كل استخدام لا وقت الإقلاع. **لا رجوع صامت**: إن كان أعلى مرشّح موجوداً
+  لكنه غير صالح (http على نطاق عام، أو بمسار/استعلام) يُعلن `valid=false` مع
+  `problems` ولا يُستبدل بعنوان أدنى لا يعرفه المزود (لئلا يُخفى سبب الفشل).
+- `server.ts`: `oauthCallbackUrl()` و`telegramWebhookUrl()`/`facebookWebhookUrl()`
+  تُبنى كلها من العنوان المعتمد. `oauthReady` و`facebookConnectorConfigured` يشترطان
+  `resolvePublicUrl().valid`. بدء OAuth يُعيد `domainWarning` صريحاً (بلا حجب لئلا
+  ينكسر التطوير المحلي) يحمل redirect_uri والنطاق الفعليين.
+- `GET /api/platforms/:platform/oauth/setup` (**للمالك**): يعرض redirect_uri الدقيق،
+  قيمة App Domains المقترحة، رابط webhook، وحقول Meta Dashboard — بلا أي سرّ.
+  `/api/health` يعرض كتلة `publicUrl` (`baseUrl`/`host`/`scheme`/`source`/`valid`/
+  `isPublic`/`problems`/`candidates`).
+- الواجهة: `OAuthSetupPanel` في `PlatformConnectionCenter` ولوحة في `SocialManagerView`
+  تُبرزان القيم المطلوبة عند فشل بدء الربط أو قبل ضبط Meta.
+
+اختبارات: `engine/tests/public.url.test.ts` (`npm run test:public-url`، 32 فحصاً) و
+`facebook.connector.test.ts` صار **99 فحصاً** (يثبت أن redirect_uri المُعاد هو الرابط
+الفعلي بالضبط، وأن oauth/setup لا يكشف سرّاً ولا يسمح لغير المالك). فحوص final-audit
+العشرة: `public-url-single-source` … `public-url-regression-test`.
+
+**حد Meta (نقطة توقف المالك):** الإصلاح البرمجي يضمن أن الرابط الذي يُرسَل إلى Meta
+صحيح وعام، لكن **قبول Meta له إعداد خارجي إجباري**: يجب أن يكون مضيف الرابط ضمن
+`App Domains` وأن يكون الرابط نفسه مضافاً في `Valid OAuth Redirect URIs`. بلا ذلك
+يبقى الرد «لا يمكن تحميل عنوان URL» مهما صحّ الكود. هذا الإعداد لا يمكن تنفيذه إلا
+من جلسة مالك Meta، ولا يوجد وكيل برمجي يفعله نيابةً عنه.
+
