@@ -231,6 +231,19 @@ add('facebook-page-selection-pending', read('server.ts').includes('function face
 add('facebook-page-selection-reachable', read('src/components/social/PlatformConnectionCenter.tsx').includes('fbPageSelection') && read('src/components/social/SocialManagerView.tsx').includes('fbPageSelectionPending'), 'اختيار الصفحة متاح فعلاً في الواجهة ولا يُحجب خلف إعادة OAuth');
 add('facebook-multipage-test', read('engine/tests/facebook.connector.test.ts').includes('أكثر من صفحة') && read('engine/tests/facebook.connector.test.ts').includes('select-page'), 'اختبار انحدار لمسار الحساب متعدد الصفحات');
 
+// إصلاح جذر «لا يمكن تحميل عنوان URL / النطاق غير مُضمَّن» في OAuth (2026-09-24):
+// كان redirect_uri يُبنى من APP_URL وحدها، فإن غابت على Render صار localhost فيرفضه
+// Meta. الآن مصدر واحد للعنوان العام يقرأ بدائل المنصة، ويُعرض الرابط الدقيق للمالك.
+add('public-url-single-source', fs.existsSync(path.join(root, 'engine/social/publicUrl.ts')) && read('engine/social/publicUrl.ts').includes('resolvePublicUrl') && read('engine/social/publicUrl.ts').includes('isLocalHost'), 'مصدر واحد لتحديد العنوان العام في engine/social/publicUrl.ts');
+add('public-url-server-integration', server.includes('from "./engine/social/publicUrl"') && server.includes('function oauthCallbackUrl') && !/const BASE_URL = \(process\.env\.APP_URL/.test(server), 'server.ts يستخدم مصدر العنوان العام ولا يبني BASE_URL من APP_URL وحدها');
+add('public-url-platform-fallbacks', read('engine/social/publicUrl.ts').includes('RENDER_EXTERNAL_URL') && read('engine/social/publicUrl.ts').includes('RENDER_EXTERNAL_HOSTNAME') && read('engine/social/publicUrl.ts').includes('PUBLIC_URL') && read('engine/social/publicUrl.ts').includes('VERCEL_URL'), 'بدائل المنصة مدعومة عند غياب APP_URL (جذر فشل Render)');
+add('public-url-no-silent-fallback', read('engine/social/publicUrl.ts').includes('لا رجوع صامت') && read('engine/social/publicUrl.ts').includes('problems'), 'عنوان صريح غير صالح لا يُستبدل صامتاً ببديل أدنى');
+add('public-url-rejects-insecure-public', read('engine/social/publicUrl.ts').includes("http على نطاق عام مرفوض") && read('engine/social/publicUrl.ts').includes("https:"), 'http على نطاق عام مرفوض ويلزم https');
+add('oauth-setup-exposes-exact-redirect', server.includes('/api/platforms/:platform/oauth/setup') && server.includes('appDomainsValue') && server.includes('redirectUri') && server.includes('metaDashboardFields'), 'مسار oauth/setup يعرض redirect_uri والنطاق المطلوب للمالك بلا أسرار');
+add('oauth-start-blocks-non-public-url', server.includes('PUBLIC_URL_NOT_PUBLIC') && /publicUrlIsPublic\(\)/.test(server), 'بدء OAuth يرفض عنواناً غير عام صراحةً بدل إرسال المالك لشاشة فشل غامضة');
+add('health-exposes-public-url', server.includes('publicUrl: (() =>') && server.includes('isPublic:') && server.includes('problems: u.problems'), '/api/health يعرض حالة العنوان العام بلا أي سرّ');
+add('public-url-regression-test', fs.existsSync(path.join(root, 'engine/tests/public.url.test.ts')) && pkg.scripts['test:public-url'] && typeof pkg.scripts.test === 'string' && pkg.scripts.test.includes('test:public-url'), 'اختبار انحدار العنوان العام مسجّل في package.json وضمن npm test');
+
 const failed = checks.filter(x => !x.ok);
 console.table(checks);
 if (failed.length) {

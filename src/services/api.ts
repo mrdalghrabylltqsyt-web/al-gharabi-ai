@@ -517,6 +517,14 @@ ${payload.topic || payload.productName || 'أنظمة وحلول التقسيط 
     return data;
   },
 
+  // إعداد OAuth الدقيق للمنصة (رابط الإرجاع والنطاق المطلوب) — للمالك، بلا أي سرّ.
+  async getPlatformOAuthSetup(platform: string) {
+    const res = await fetch(`/api/platforms/${encodeURIComponent(platform)}/oauth/setup`, { headers: getAuthHeaders() });
+    const data = await res.json();
+    if (!res.ok || !data.success) throw new Error(data.error || 'تعذر جلب إعداد OAuth للمنصة');
+    return data;
+  },
+
   async executeJob(jobId: string) { const res = await fetch(`/api/control/jobs/${encodeURIComponent(jobId)}/execute`, { method:'POST', headers:getAuthHeaders() }); const data=await res.json(); if(!res.ok || !data.success) throw new Error(data.error || 'تعذر تنفيذ المهمة'); return data; },
 
   async disconnectPlatform(platform: string) {

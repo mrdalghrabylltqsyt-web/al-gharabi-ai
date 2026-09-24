@@ -46,6 +46,7 @@ import { PLATFORM_READINESS, readinessFor, readinessSummary } from "./engine/soc
 import { buildReadinessDetails, computeAllPlatformStatuses, computePlatformStatus, controlSummary, type LiveConnection } from "./engine/social/operations";
 import { inspectPlatformCredentials, CREDENTIAL_SPECS, GLOBAL_CREDENTIALS } from "./engine/social/credentials";
 import { decodeTokenKey, inspectTokenKeyFromEnv } from "./engine/social/tokenKey";
+import { resolvePublicUrl, isLocalHost } from "./engine/social/publicUrl";
 import {
   secretHeaderVerifier,
   hmacSignatureVerifier,
@@ -927,18 +928,29 @@ function getProviderToken(platform: string): any | null {
 }
 function clearProviderToken(platform: string) { delete (workspace as any).providerTokens[platform]; persistState(); }
 
-const BASE_URL = (process.env.APP_URL || `http://localhost:${PORT}`).replace(/\/$/, "");
+/**
+ * العنوان العام المعتمد للتطبيق. يُحسم من مصدر واحد (publicUrl.ts) الذي يقرأ
+ * APP_URL ثم بدائل المنصة (RENDER_EXTERNAL_URL/RENDER_EXTERNAL_HOSTNAME/
+ * PUBLIC_URL/VERCEL_URL) ثم ترويسات الوسيط ثم localhost للتطوير. يُقرأ عند كل
+ * استخدام (لا يُلتقط وقت الإقلاع) فيعكس البيئة الفعلية، ويُصلح سبب رفض Meta
+ * لرابط الإرجاع عندما يكون APP_URL غير مضبوط على الإنتاج.
+ */
+function publicBaseUrlNow(): string { return resolvePublicUrl(process.env).baseUrl || `http://localhost:${PORT}`; }
+/** مسار إرجاع OAuth لكل منصة (يُبنى دائماً من العنوان العام المعتمد). */
+function oauthCallbackUrl(platform: string): string { return `${publicBaseUrlNow()}/api/platforms/${platform}/oauth/callback`; }
 const OAUTH_CONFIG: Record<string, any> = {
-  youtube: { provider: "google", auth: "https://accounts.google.com/o/oauth2/v2/auth", token: "https://oauth2.googleapis.com/token", clientId: process.env.GOOGLE_OAUTH_CLIENT_ID || process.env.GOOGLE_CLIENT_ID, clientSecret: process.env.GOOGLE_OAUTH_CLIENT_SECRET, scopes: ["https://www.googleapis.com/auth/youtube.upload"], callback: `${BASE_URL}/api/platforms/youtube/oauth/callback` },
-  google_business: { provider: "google", auth: "https://accounts.google.com/o/oauth2/v2/auth", token: "https://oauth2.googleapis.com/token", clientId: process.env.GOOGLE_OAUTH_CLIENT_ID || process.env.GOOGLE_CLIENT_ID, clientSecret: process.env.GOOGLE_OAUTH_CLIENT_SECRET, scopes: ["https://www.googleapis.com/auth/business.manage"], callback: `${BASE_URL}/api/platforms/google_business/oauth/callback` },
-  tiktok: { provider: "tiktok", auth: "https://www.tiktok.com/v2/auth/authorize/", token: "https://open.tiktokapis.com/v2/oauth/token/", clientId: process.env.TIKTOK_CLIENT_KEY, clientSecret: process.env.TIKTOK_CLIENT_SECRET, scopes: ["user.info.basic", "video.publish"], callback: `${BASE_URL}/api/platforms/tiktok/oauth/callback` },
-  facebook: { provider: "meta", auth: "https://www.facebook.com/v21.0/dialog/oauth", token: "https://graph.facebook.com/v21.0/oauth/access_token", clientId: process.env.FACEBOOK_OAUTH_CLIENT_ID, clientSecret: process.env.FACEBOOK_OAUTH_CLIENT_SECRET, scopes: ["pages_show_list", "pages_read_engagement", "pages_manage_engagement", "pages_manage_posts", "pages_manage_metadata", "pages_messaging"], callback: `${BASE_URL}/api/platforms/facebook/oauth/callback` },
-  instagram: { provider: "meta", auth: "https://www.facebook.com/v21.0/dialog/oauth", token: "https://graph.facebook.com/v21.0/oauth/access_token", clientId: process.env.INSTAGRAM_OAUTH_CLIENT_ID, clientSecret: process.env.INSTAGRAM_OAUTH_CLIENT_SECRET, scopes: ["instagram_basic", "instagram_manage_comments", "instagram_manage_messages", "pages_show_list"], callback: `${BASE_URL}/api/platforms/instagram/oauth/callback` },
-  x: { provider: "x", auth: "https://twitter.com/i/oauth2/authorize", token: "https://api.twitter.com/2/oauth2/token", clientId: process.env.X_OAUTH_CLIENT_ID, clientSecret: process.env.X_OAUTH_CLIENT_SECRET, scopes: ["tweet.read", "tweet.write", "users.read", "offline.access"], callback: `${BASE_URL}/api/platforms/x/oauth/callback` },
-  snapchat: { provider: "snapchat", auth: "https://accounts.snapchat.com/login/oauth2/authorize", token: "https://accounts.snapchat.com/login/oauth2/access_token", clientId: process.env.SNAPCHAT_OAUTH_CLIENT_ID, clientSecret: process.env.SNAPCHAT_OAUTH_CLIENT_SECRET, scopes: ["snapchat-marketing-api"], callback: `${BASE_URL}/api/platforms/snapchat/oauth/callback` },
-  threads: { provider: "meta", auth: "https://threads.net/oauth/authorize", token: "https://graph.threads.net/oauth/access_token", clientId: process.env.THREADS_OAUTH_CLIENT_ID, clientSecret: process.env.THREADS_OAUTH_CLIENT_SECRET, scopes: ["threads_basic", "threads_content_publish", "threads_manage_replies"], callback: `${BASE_URL}/api/platforms/threads/oauth/callback` },
+  youtube: { provider: "google", auth: "https://accounts.google.com/o/oauth2/v2/auth", token: "https://oauth2.googleapis.com/token", clientId: process.env.GOOGLE_OAUTH_CLIENT_ID || process.env.GOOGLE_CLIENT_ID, clientSecret: process.env.GOOGLE_OAUTH_CLIENT_SECRET, scopes: ["https://www.googleapis.com/auth/youtube.upload"] },
+  google_business: { provider: "google", auth: "https://accounts.google.com/o/oauth2/v2/auth", token: "https://oauth2.googleapis.com/token", clientId: process.env.GOOGLE_OAUTH_CLIENT_ID || process.env.GOOGLE_CLIENT_ID, clientSecret: process.env.GOOGLE_OAUTH_CLIENT_SECRET, scopes: ["https://www.googleapis.com/auth/business.manage"] },
+  tiktok: { provider: "tiktok", auth: "https://www.tiktok.com/v2/auth/authorize/", token: "https://open.tiktokapis.com/v2/oauth/token/", clientId: process.env.TIKTOK_CLIENT_KEY, clientSecret: process.env.TIKTOK_CLIENT_SECRET, scopes: ["user.info.basic", "video.publish"] },
+  facebook: { provider: "meta", auth: "https://www.facebook.com/v21.0/dialog/oauth", token: "https://graph.facebook.com/v21.0/oauth/access_token", clientId: process.env.FACEBOOK_OAUTH_CLIENT_ID, clientSecret: process.env.FACEBOOK_OAUTH_CLIENT_SECRET, scopes: ["pages_show_list", "pages_read_engagement", "pages_manage_engagement", "pages_manage_posts", "pages_manage_metadata", "pages_messaging"] },
+  instagram: { provider: "meta", auth: "https://www.facebook.com/v21.0/dialog/oauth", token: "https://graph.facebook.com/v21.0/oauth/access_token", clientId: process.env.INSTAGRAM_OAUTH_CLIENT_ID, clientSecret: process.env.INSTAGRAM_OAUTH_CLIENT_SECRET, scopes: ["instagram_basic", "instagram_manage_comments", "instagram_manage_messages", "pages_show_list"] },
+  x: { provider: "x", auth: "https://twitter.com/i/oauth2/authorize", token: "https://api.twitter.com/2/oauth2/token", clientId: process.env.X_OAUTH_CLIENT_ID, clientSecret: process.env.X_OAUTH_CLIENT_SECRET, scopes: ["tweet.read", "tweet.write", "users.read", "offline.access"] },
+  snapchat: { provider: "snapchat", auth: "https://accounts.snapchat.com/login/oauth2/authorize", token: "https://accounts.snapchat.com/login/oauth2/access_token", clientId: process.env.SNAPCHAT_OAUTH_CLIENT_ID, clientSecret: process.env.SNAPCHAT_OAUTH_CLIENT_SECRET, scopes: ["snapchat-marketing-api"] },
+  threads: { provider: "meta", auth: "https://threads.net/oauth/authorize", token: "https://graph.threads.net/oauth/access_token", clientId: process.env.THREADS_OAUTH_CLIENT_ID, clientSecret: process.env.THREADS_OAUTH_CLIENT_SECRET, scopes: ["threads_basic", "threads_content_publish", "threads_manage_replies"] },
 };
-function oauthReady(platform: string) { const c = OAUTH_CONFIG[platform]; return Boolean(c?.clientId && c?.clientSecret && process.env.APP_URL && tokenKeyBytes()); }
+function oauthReady(platform: string) { const c = OAUTH_CONFIG[platform]; return Boolean(c?.clientId && c?.clientSecret && resolvePublicUrl(process.env).valid && tokenKeyBytes()); }
+/** هل العنوان العام الحالي عام (https على نطاق غير محلي)؟ يلزم للربط الإنتاجي. */
+function publicUrlIsPublic(): boolean { const u = resolvePublicUrl(process.env); return u.valid && u.scheme === 'https' && !!u.host && !isLocalHost(u.host); }
 
 // -------------------------------------------------------------
 // Telegram — أول موصل اجتماعي حقيقي (bot-token، بلا OAuth ولا تسجيل تطبيق).
@@ -981,7 +993,7 @@ function telegramClient(): TelegramClient | null {
   return new TelegramClient(token, telegramFetchImpl, process.env.TELEGRAM_API_BASE);
 }
 /** رابط استقبال تحديثات Telegram لهذا الخادم (يستخدم APP_URL الرسمي). */
-function telegramWebhookUrl(): string { return `${BASE_URL}/api/platforms/telegram/webhook`; }
+function telegramWebhookUrl(): string { return `${publicBaseUrlNow()}/api/platforms/telegram/webhook`; }
 /**
  * تسجيل آمن لحدث Telegram الوارد. ممنوع تسجيل أي سرّ (رمز/ترويسة/نص رسالة).
  * يُقيَّد بالمعرّفات والنتيجة لتشخيص المسار من سجلات Render بلا كشف بيانات.
@@ -1024,7 +1036,7 @@ function facebookAppSecret(): string {
 /** رمز تحقق الاشتراك: من الاعتماد المحفوظ ثم البيئة. */
 function facebookVerifyToken(): string { return FACEBOOK_VERIFY_TOKEN_ENV; }
 /** رابط استقبال أحداث Facebook لهذا الخادم. */
-function facebookWebhookUrl(): string { return `${BASE_URL}/api/platforms/facebook/webhook`; }
+function facebookWebhookUrl(): string { return `${publicBaseUrlNow()}/api/platforms/facebook/webhook`; }
 /** رمز صفحة الاتصال الحالي (Page Access Token) من الاعتماد المشفّر. */
 function facebookPageToken(pageId?: string): string | null {
   const stored = getProviderToken("facebook");
@@ -1055,7 +1067,7 @@ function parsedTokenExpiry(token: any): number | null {
 /** هل موصل Facebook مكتمل الإعداد للاتصال؟ (تطبيق + مفتاح تشفير). */
 function facebookConnectorConfigured(): boolean {
   const c = facebookOAuthConfig();
-  return Boolean(c?.clientId && c?.clientSecret && process.env.APP_URL && tokenKeyBytes());
+  return Boolean(c?.clientId && c?.clientSecret && publicUrlIsPublic() && tokenKeyBytes());
 }
 /** تسجيل آمن لحدث Facebook الوارد. ممنوع تسجيل أي سرّ أو نص. */
 function logFacebookWebhook(event: { kind: string; externalId?: string | null; outcome: "accepted" | "duplicate" | "rejected" | "ignored"; persisted?: boolean }): void {
@@ -1136,7 +1148,7 @@ function publicProviderReadiness(platform: string): { configured: boolean; mode:
       !telegramBotToken() && "TELEGRAM_BOT_TOKEN",
       !telegramWebhookSecret() && "TELEGRAM_WEBHOOK_SECRET",
       tokenMissing,
-      !process.env.APP_URL && "APP_URL",
+      !resolvePublicUrl(process.env).valid && "APP_URL",
     ].filter((x): x is string => Boolean(x));
     const invalid = [tokenInvalid].filter((x): x is string => Boolean(x));
     return {
@@ -1164,7 +1176,7 @@ function publicProviderReadiness(platform: string): { configured: boolean; mode:
       !facebookVerifyToken() && "FACEBOOK_VERIFY_TOKEN",
       !stored?.pageAccessToken && "Page Access Token (يُكتسب عبر OAuth)",
       tokenMissing,
-      !process.env.APP_URL && "APP_URL",
+      !resolvePublicUrl(process.env).valid && "APP_URL",
     ].filter((x): x is string => Boolean(x));
     const invalid = [tokenInvalid].filter((x): x is string => Boolean(x));
     return {
@@ -1182,7 +1194,7 @@ function publicProviderReadiness(platform: string): { configured: boolean; mode:
     };
   }
   const c = OAUTH_CONFIG[platform];
-  if (c) return { configured: oauthReady(platform), mode: "oauth2", action: "authorize", next: "ضبط بيانات OAuth وتسجيل Redirect URI", missing: [!c.clientId && "client_id", !c.clientSecret && "client_secret", !process.env.APP_URL && "APP_URL", tokenMissing].filter((x): x is string => Boolean(x)), invalid: [tokenInvalid].filter((x): x is string => Boolean(x)) };
+  if (c) return { configured: oauthReady(platform), mode: "oauth2", action: "authorize", next: "ضبط بيانات OAuth وتسجيل Redirect URI", missing: [!c.clientId && "client_id", !c.clientSecret && "client_secret", !resolvePublicUrl(process.env).valid && "APP_URL", tokenMissing].filter((x): x is string => Boolean(x)), invalid: [tokenInvalid].filter((x): x is string => Boolean(x)) };
   return { configured: false, mode: "provider-adapter", action: "configuration-required", next: "إضافة موصل إنتاجي معتمد قبل تفعيل النشر" };
 }
 function safeConnection(platform: string) { const c:any=platformConnections.get(platform); return c ? { platform:c.platform, status:c.status, accountName:c.accountName, accountId:c.accountId, connectedAt:c.connectedAt, lastSyncAt:c.lastSyncAt, providerVerified:Boolean(c.providerVerified), provider:publicProviderReadiness(platform) } : null; }
@@ -1255,24 +1267,40 @@ app.get("/api/platforms/:platform/oauth/start", requireOwner, async (req,res)=>{
     const tokenNote = tk.state === 'valid' ? "" : ` ${tk.reason}`;
     return res.status(503).json({success:false,error:`إعداد OAuth غير مكتمل. يلزم APP_URL وبيانات تطبيق المزود ومفتاح PLATFORM_TOKEN_ENCRYPTION_KEY صالح.${tokenNote}`});
   }
+  const callbackUrl=oauthCallbackUrl(platform);
+  const urlInfo=resolvePublicUrl(process.env);
+  const publicOk=publicUrlIsPublic();
   const state=createOAuthState();
-  const pending:OAuthPending={platform,userId:(req as any).user.id,expiresAt:Date.now()+OAUTH_STATE_TTL_MS,redirectUri:cfg.callback};
+  const pending:OAuthPending={platform,userId:(req as any).user.id,expiresAt:Date.now()+OAUTH_STATE_TTL_MS,redirectUri:callbackUrl};
   let pkceChallenge:string|undefined;
   if(requiresPkce(platform)) { const pkce=createPkcePair(); pending.codeVerifier=pkce.verifier; pkceChallenge=pkce.challenge; }
   pendingOAuth.set(state,pending);
   const u=new URL(cfg.auth);
-  const params=buildAuthorizationParams({platform,clientId:cfg.clientId,redirectUri:cfg.callback,scopes:cfg.scopes,state,pkceChallenge});
+  const params=buildAuthorizationParams({platform,clientId:cfg.clientId,redirectUri:callbackUrl,scopes:cfg.scopes,state,pkceChallenge});
   for(const [k,v] of Object.entries(params)) u.searchParams.set(k,v);
   audit((req as any).user.id,"platform_oauth_started",platform);
   // نثبّت جلسة OAuth قبل إرجاع رابط التفويض: قد يقضي المالك دقائق في شاشة
   // الموافقة وقد تُطفأ العملية، فيلزم أن تصمد الحالة في المخزن الدائم.
   await persistCritical();
-  res.json({success:true,platform,authorizationUrl:u.toString(),expiresAt:pending.expiresAt,redirectUri:cfg.callback});
+  // Meta يرفض رابط إرجاع غير عام (localhost/بلا https) برسالة «لا يمكن تحميل
+  // عنوان URL / النطاق غير مُضمَّن في نطاقات التطبيق». لا نحجب البدء (لئلا نكسر
+  // التطوير المحلي)، لكن نُعلن السبب صراحةً ونُرفق الرابط والنطاق الفعليين
+  // اللذين يجب تسجيلهما لدى Meta، فلا يبقى المالك بلا قيمة صحيحة يضعها.
+  const domainWarning = publicOk ? null : {
+    code:"PUBLIC_URL_NOT_PUBLIC",
+    message:"العنوان العام غير إنتاجي (localhost أو بلا https)؛ سيرفض Meta رابط الإرجاع برسالة «لا يمكن تحميل عنوان URL». اضبط APP_URL على نطاقك العام (https) وسجّل رابط الإرجاع لدى Meta.",
+    redirectUri:callbackUrl,
+    domain:urlInfo.host,
+    publicUrlSource:urlInfo.source,
+    publicUrlProblems:urlInfo.problems,
+  };
+  if(domainWarning) console.warn(`[oauth] ${platform} redirect_uri غير عام: ${urlInfo.source} (${urlInfo.host || "-"})`);
+  res.json({success:true,platform,authorizationUrl:u.toString(),expiresAt:pending.expiresAt,redirectUri:callbackUrl,domain:urlInfo.host,publicUrlSource:urlInfo.source,publicUrlIsPublic:publicOk,domainWarning});
 });
 
 app.get("/api/platforms/:platform/oauth/callback", async (req,res)=>{
   const platform=req.params.platform; const state=typeof req.query.state==="string"?req.query.state:""; const pending=pendingOAuth.get(state); const cfg=OAUTH_CONFIG[platform];
-  const redirectUri=cfg?.callback||"";
+  const redirectUri=oauthCallbackUrl(platform);
   const check=validateOAuthCallback({pending,platform,redirectUri});
   if(!check.ok || !cfg) return res.status(400).send(`فشل التحقق من جلسة OAuth: ${check.reason||"مزود غير مُعدّ"}.`);
   // يُستهلك state مرة واحدة فقط (يمنع إعادة الاستخدام)؛ نثبّت الحذف في المخزن
@@ -1282,13 +1310,13 @@ app.get("/api/platforms/:platform/oauth/callback", async (req,res)=>{
   if(req.query.error) return res.status(400).send(`رفض مزود المنصة عملية الربط: ${String(req.query.error_description||req.query.error).slice(0,200)}`);
   const code=typeof req.query.code==="string"?req.query.code:""; if(!code) return res.status(400).send("لم يتم استلام رمز OAuth.");
   try {
-    const body=buildTokenExchangeBody({clientId:cfg.clientId,clientSecret:cfg.clientSecret,code,redirectUri:cfg.callback,codeVerifier:pending!.codeVerifier});
+    const body=buildTokenExchangeBody({clientId:cfg.clientId,clientSecret:cfg.clientSecret,code,redirectUri:redirectUri,codeVerifier:pending!.codeVerifier});
     // Facebook يبادل الرمز عبر GET على نقطة oauth/access_token (سلوك Meta الرسمي)
     // بخلاف مزودي application/x-www-form-urlencoded؛ الفرق معزول هنا.
     let token: any;
     if(platform==="facebook") {
       const client=facebookClient();
-      const short=await client.exchangeCode({clientId:cfg.clientId,clientSecret:cfg.clientSecret,code,redirectUri:cfg.callback});
+      const short=await client.exchangeCode({clientId:cfg.clientId,clientSecret:cfg.clientSecret,code,redirectUri:redirectUri});
       if(!short.ok || !short.data?.accessToken) throw new Error(short.error||"فشل تبادل رمز Facebook.");
       // رمز الصفحة الدائم يُشتق من رمز مستخدم طويل الأجل؛ نُطيله بدل الاعتماد على رمز قصير.
       const long=await client.exchangeLongLived({clientId:cfg.clientId,clientSecret:cfg.clientSecret,shortToken:short.data.accessToken});
@@ -1335,7 +1363,7 @@ app.post("/api/platforms/telegram/configure", requireOwner, async (req,res)=>{
   const webhookSecret=(typeof req.body?.webhookSecret==="string"?req.body.webhookSecret.trim():"")||telegramWebhookSecret()||TELEGRAM_WEBHOOK_SECRET_ENV;
   if(!botToken) return res.status(400).json({success:false,error:"رمز Telegram Bot مطلوب (أو اضبط TELEGRAM_BOT_TOKEN في البيئة)."});
   if(!tokenKeyBytes()) return res.status(503).json({success:false,error:tokenKeyInspection().reason});
-  if(!process.env.APP_URL) return res.status(503).json({success:false,error:"APP_URL غير مضبوط؛ لا يمكن تسجيل رابط webhook الحقيقي لدى Telegram."});
+  if(!resolvePublicUrl(process.env).valid) return res.status(503).json({success:false,error:"العنوان العام غير مضبوط (APP_URL أو ما يعادله)؛ لا يمكن تسجيل رابط webhook الحقيقي لدى Telegram."});
   // السرّ يجب أن يكون قوياً حسب متطلبات Telegram (1-256 محرفاً، A-Z a-z 0-9 _ -).
   const secret = webhookSecret || crypto.randomBytes(32).toString("hex");
   if(!/^[A-Za-z0-9_-]{8,256}$/.test(secret)) return res.status(400).json({success:false,error:"سرّ webhook يجب أن يكون 8-256 محرفاً من A-Z a-z 0-9 _ - لتقبله Telegram."});
@@ -2104,6 +2132,48 @@ app.get("/api/platforms/:platform/readiness", authenticateToken, (req,res)=>{
   if(!row) return res.status(404).json({success:false,error:"منصة غير مدعومة."});
   const c:any=platformConnections.get(row.platform);
   res.json({success:true,readiness:row,connection:{status:c?.status||"disconnected",providerVerified:Boolean(c?.providerVerified)}});
+});
+
+/**
+ * إعداد OAuth الدقيق لمنصة (للمالك فقط) — بلا أي سرّ. يعطي المالك حرفياً ما
+ * يحتاجه لتسجيله لدى Meta/Google: الرابط الفعلي لـredirect_uri، النطاق، والقيمة
+ * المطلوبة في حقل App Domains، والمصدر الذي حُسم منه العنوان إنشاءً.
+ * هذا ما كان ناقصاً فعلاً: الرسالة «النطاق غير مُضمَّن» بلا القيمة الصحيحة
+ * تُبقي المالك يدور بلا نهاية.
+ */
+app.get("/api/platforms/:platform/oauth/setup", requireOwner, (req,res)=>{
+  const platform=String(req.params.platform);
+  const cfg=OAUTH_CONFIG[platform];
+  if(!cfg) return res.status(404).json({success:false,error:"منصة بلا مسار OAuth مُعرَّف."});
+  const urlInfo=resolvePublicUrl(process.env);
+  const redirectUri=`${urlInfo.baseUrl||publicBaseUrlNow()}/api/platforms/${platform}/oauth/callback`;
+  const publicOk=publicUrlIsPublic();
+  res.json({
+    success:true,
+    platform,
+    provider:cfg.provider,
+    authorizationEndpoint:cfg.auth,
+    graphVersion:platform==="facebook"||platform==="instagram"?"v21.0":undefined,
+    redirectUri,
+    domain:urlInfo.host,
+    appDomainsValue:urlInfo.host && !isLocalHost(urlInfo.host) ? `https://${urlInfo.host}` : null,
+    publicUrlSource:urlInfo.source,
+    publicUrlValid:urlInfo.valid,
+    publicUrlProblems:urlInfo.problems,
+    publicUrlIsPublic:publicOk,
+    scopes:cfg.scopes,
+    clientIdConfigured:Boolean(cfg.clientId),
+    clientSecretConfigured:Boolean(cfg.clientSecret),
+    appSecretConfigured:platform==="facebook"?Boolean(facebookAppSecret()):undefined,
+    verifyTokenConfigured:platform==="facebook"?Boolean(facebookVerifyToken()):undefined,
+    webhookUrl:platform==="facebook"?facebookWebhookUrl():undefined,
+    metaDashboardFields:platform==="facebook"||platform==="instagram"?{
+      appDomains:"Settings → Basic → App Domains",
+      validOAuthRedirectUris:"Facebook Login → Settings → Client OAuth Settings → Valid OAuth Redirect URIs",
+      instructions:"أضف قيمة appDomainsValue إلى App Domains، وأضف redirectUri بالضبط إلى Valid OAuth Redirect URIs، ثم احفظ.",
+    }:undefined,
+    note:"قيَم حقيقية محسوبة من بيئة الخادم بلا أي سرّ. لا يُرسَل أي توكن أو مفتاح هنا.",
+  });
 });
 
 app.get("/api/control/final-check", requireOwner, (_req,res)=>{
@@ -3908,6 +3978,21 @@ app.get("/api/health", (_req, res) => {
     // حالة مفتاح تشفير توكنات المنصات: تفصل missing من invalid بلا كشف القيمة،
     // فتعكس نفس الحكم الذي يستخدمه encryptSecret/credentials فعلياً.
     platformTokenKey: { state: tokenKey.state, envName: "PLATFORM_TOKEN_ENCRYPTION_KEY", acceptedBytes: 32, reason: tokenKey.reason },
+    // العنوان العام المعتمد: يكشف سبب فشل OAuth قبل وقوعه بلا أي سرّ. يبيّن مصدر
+    // العنوان، وهل هو عام/https (شرط تسجيل redirect_uri لدى Meta/Google).
+    publicUrl: (() => {
+      const u = resolvePublicUrl(process.env);
+      return {
+        baseUrl: u.baseUrl,
+        host: u.host,
+        scheme: u.scheme,
+        source: u.source,
+        valid: u.valid,
+        isPublic: u.valid && u.scheme === "https" && !!u.host && !isLocalHost(u.host),
+        problems: u.problems,
+        candidates: u.candidates.map((c) => ({ source: c.source, valid: c.valid, present: c.raw !== null, reason: c.reason })),
+      };
+    })(),
     // حالة الثبات: تُعلن بصراحة هل تُفقد الجلسات بين العمليات، وهل تنجو بيانات
     // العمل من إعادة النشر. لا تُكشف أي قيمة سرية هنا، ولا يُدّعى الدوام بلا مخزن.
     persistence: (() => {

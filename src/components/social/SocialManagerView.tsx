@@ -180,6 +180,7 @@ export const SocialManagerView: React.FC = () => {
   const [fbWebhookInfo, setFbWebhookInfo] = useState<any | null>(null);
   const [fbIncoming, setFbIncoming] = useState<any[]>([]);
   const [fbPages, setFbPages] = useState<any[] | null>(null);
+  const [fbSetup, setFbSetup] = useState<any | null>(null);
   const [fbReplyId, setFbReplyId] = useState('');
   const [fbReplyText, setFbReplyText] = useState('');
   const [fbMsgRecipient, setFbMsgRecipient] = useState('');
@@ -219,7 +220,12 @@ export const SocialManagerView: React.FC = () => {
       const res = await apiService.startPlatformOAuth('facebook');
       if (res?.authorizationUrl) { window.location.href = res.authorizationUrl; return; }
       showToast('تم بدء ربط Facebook.');
-    } catch (err: any) { showToast(err?.message || 'تعذر بدء ربط Facebook'); }
+    } catch (err: any) {
+      // عند رفض العنوان العام (localhost/بلا https) أو غياب الإعداد، نُبرز الرابط
+      // والنطاق الفعليين ليُسجّلهما المالك لدى Meta بدل رسالة فشل غامضة.
+      showToast(err?.message || 'تعذر بدء ربط Facebook');
+      try { const setup = await apiService.getPlatformOAuthSetup('facebook'); setFbSetup(setup); } catch { /* اختياري */ }
+    }
     finally { setFbBusy(false); }
   };
   const sendFacebookCommentReply = async () => {
@@ -590,6 +596,29 @@ export const SocialManagerView: React.FC = () => {
               className="px-4 py-2 rounded-xl bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white text-xs font-bold cursor-pointer">
               {facebook?.connection === 'connected' ? 'إعادة ربط الصفحة' : 'ربط صفحة Facebook'}
             </button>
+            {fbSetup && (
+              <div className="rounded-xl border border-amber-600/40 bg-amber-500/10 p-3 space-y-1 text-[11px]" dir="rtl">
+                <p className="text-amber-200 font-bold">إعداد OAuth المطلوب لدى Meta (قيَم حقيقية بلا أسرار):</p>
+                {fbSetup.publicUrlIsPublic === false && (
+                  <p className="text-amber-300">
+                    العنوان العام غير إنتاجي ({fbSetup.publicUrlSource}: {fbSetup.publicUrlProblems?.[0] || 'غير صالح'}). اضبط APP_URL على نطاقك العام (https) أولاً، وإلا سيرفض Meta رابط الإرجاع.
+                  </p>
+                )}
+                <div className="flex flex-col gap-0.5">
+                  <span className="text-slate-400">Valid OAuth Redirect URIs:</span>
+                  <code dir="ltr" className="px-2 py-1 rounded bg-slate-950 border border-slate-700 text-emerald-300 break-all text-left select-all">{fbSetup.redirectUri}</code>
+                  {fbSetup.appDomainsValue && (<>
+                    <span className="text-slate-400 mt-1">App Domains:</span>
+                    <code dir="ltr" className="px-2 py-1 rounded bg-slate-950 border border-slate-700 text-sky-300 break-all text-left select-all">{fbSetup.appDomainsValue}</code>
+                  </>)}
+                  {fbSetup.webhookUrl && (<>
+                    <span className="text-slate-400 mt-1">Webhook Callback URL:</span>
+                    <code dir="ltr" className="px-2 py-1 rounded bg-slate-950 border border-slate-700 text-slate-300 break-all text-left select-all">{fbSetup.webhookUrl}</code>
+                  </>)}
+                </div>
+                <p className="text-slate-500">افتح Meta Dashboard ← Facebook Login ← Settings ← Client OAuth Settings، والصق القيم أعلاه ثم احفظ.</p>
+              </div>
+            )}
           </div>
 
           <div className="space-y-3">

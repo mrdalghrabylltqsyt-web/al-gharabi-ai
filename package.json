@@ -11,7 +11,7 @@
     "clean": "rm -rf dist server.js",
     "lint": "tsc --noEmit",
     "final-audit": "node final-audit.mjs",
-    "test": "npm run test:storage && npm run test:engine && npm run test:auth && npm run test:models && npm run test:content-safety && npm run test:content-integration && npm run test:classify-safety && npm run test:social && npm run test:social-persist && npm run test:capabilities && npm run test:foundation && npm run test:platform && npm run test:operations && npm run test:token-key && npm run test:control-plane && npm run test:telegram && npm run test:facebook && npm run test:social-ui && npm run test:authz && npm run test:network && npm run test:email && npm run test:preview && npm run test:session && npm run test:policy && npm run test:gemini-verify && npm run test:netlify && npm run test:coldstart && npm run test:control && npm run test:db && npm run test:runtime && npm run test:schedule && npm run test:schedule-rtl",
+    "test": "npm run test:storage && npm run test:engine && npm run test:auth && npm run test:models && npm run test:content-safety && npm run test:content-integration && npm run test:classify-safety && npm run test:social && npm run test:social-persist && npm run test:capabilities && npm run test:foundation && npm run test:platform && npm run test:operations && npm run test:token-key && npm run test:control-plane && npm run test:telegram && npm run test:facebook && npm run test:public-url && npm run test:social-ui && npm run test:authz && npm run test:network && npm run test:email && npm run test:preview && npm run test:session && npm run test:policy && npm run test:gemini-verify && npm run test:netlify && npm run test:coldstart && npm run test:control && npm run test:db && npm run test:runtime && npm run test:schedule && npm run test:schedule-rtl",
     "test:engine": "tsx engine/tests/engine.test.ts",
     "test:models": "tsx engine/tests/model.policy.test.ts",
     "test:content-safety": "tsx engine/tests/content.safety.test.ts",
@@ -43,7 +43,8 @@
     "test:storage": "tsx engine/tests/storage.adapter.test.ts",
     "test:db": "tsx engine/tests/database.persistence.test.ts",
     "test:schedule": "tsx engine/tests/schedule.timezone.test.ts",
-    "test:schedule-rtl": "tsx engine/tests/schedule.rtl.display.test.ts"
+    "test:schedule-rtl": "tsx engine/tests/schedule.rtl.display.test.ts",
+    "test:public-url": "tsx engine/tests/public.url.test.ts"
   },
   "dependencies": {
     "@google/genai": "^2.4.0",

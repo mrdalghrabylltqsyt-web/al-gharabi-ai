@@ -182,6 +182,18 @@ async function integrationTests(): Promise<void> {
     group('5) تكامل: OAuth حقيقي (تبادل + إطالة + اختيار الصفحة)');
     const startRes = await (await fetch(`${BASE}/api/platforms/facebook/oauth/start`, { headers: auth })).json();
     check('بدء OAuth يعيد رابط تفويض وحالة', Boolean(startRes.authorizationUrl) && startRes.platform === 'facebook', JSON.stringify(startRes).slice(0, 200));
+    // رابط الإرجاع حق يجب أن يكون هو نفسه الذي تحتسبه Meta؛ هنا نثبته بالضبط.
+    const expectedRedirect = `${BASE}/api/platforms/facebook/oauth/callback`;
+    check('redirect_uri المُعاد هو الرابط الفعلي بالضبط', startRes.redirectUri === expectedRedirect, `got=${startRes.redirectUri}`);
+    check('rابط التفويض يحمل نفس redirect_uri', new URL(startRes.authorizationUrl).searchParams.get('redirect_uri') === expectedRedirect);
+    check('النطاق المُعلن مطابق لمضيف الرابط', startRes.domain === new URL(BASE).hostname);
+    // إعداد OAuth للمالك يعطي القيم الدقيقة المطلوبة في Meta بلا أي سرّ.
+    const setup = await (await fetch(`${BASE}/api/platforms/facebook/oauth/setup`, { headers: auth })).json();
+    check('oauth/setup يعيد redirect_uri الدقيق', setup.redirectUri === expectedRedirect, JSON.stringify(setup).slice(0, 200));
+    check('oauth/setup يعرض حقل App Domains للعنوان العام فقط', setup.appDomainsValue === null && setup.publicUrlIsPublic === false, `appDomainsValue=${setup.appDomainsValue}`);
+    check('oauth/setup يوجّه لحقول Meta Dashboard', Boolean(setup.metaDashboardFields?.validOAuthRedirectUris));
+    check('oauth/setup لا يكشف أي سرّ', !JSON.stringify(setup).includes(FB_APP_SECRET) && !JSON.stringify(setup).includes(FB_VERIFY_TOKEN) && !JSON.stringify(setup).includes('PAGE_TOKEN'));
+    check('oauth/setup لغير المالك => 403', (await fetch(`${BASE}/api/platforms/facebook/oauth/setup`, { headers: staffAuth })).status === 403);
     const state = new URL(startRes.authorizationUrl).searchParams.get('state') || '';
     check('الحالة مُولَّدة قوية', state.length >= 32);
     const cbRes = await fetch(`${BASE}/api/platforms/facebook/oauth/callback?state=${encodeURIComponent(state)}&code=TESTCODE`);

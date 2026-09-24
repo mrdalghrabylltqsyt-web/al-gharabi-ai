@@ -39,6 +39,51 @@ function OpBadge({ op, opKey }: { op: any; opKey: string; key?: React.Key }) {
   );
 }
 
+/**
+ * لوحة إعداد OAuth الدقيق لمنصة (للمالك): تُظهر رابط الإرجاع الفعلي والنطاق
+ * المطلوب تسجيله لدى Meta — بلا أي سرّ. هذا ما كان ناقصاً فعلاً: رسالة Meta
+ * «النطاق غير مُضمَّن» بلا القيمة الصحيحة تُبقي المالك يدور بلا نهاية.
+ */
+const OAuthSetupPanel: React.FC<{ platform: string }> = ({ platform }) => {
+  const [info, setInfo] = useState<any>(null);
+  const [err, setErr] = useState<string>('');
+  useEffect(() => {
+    let alive = true;
+    apiService.getPlatformOAuthSetup(platform).then((d) => { if (alive) setInfo(d); }).catch((e) => { if (alive) setErr(e?.message || 'تعذر جلب إعداد OAuth'); });
+    return () => { alive = false; };
+  }, [platform]);
+  if (err) return <p className="text-[10px] text-amber-300 mt-2">إعداد OAuth: {err}</p>;
+  if (!info) return <p className="text-[10px] text-slate-500 mt-2">جارٍ جلب إعداد OAuth الحقيقي…</p>;
+  const notPublic = info.publicUrlIsPublic === false;
+  return (
+    <div className={`mt-3 pt-3 border-t border-slate-800/70 text-[10px] space-y-1.5`}>
+      <p className="text-slate-500 flex items-center gap-1"><KeyRound className="w-3 h-3" /> إعداد OAuth المطلوب لدى المزود (قيَم حقيقية بلا أسرار):</p>
+      {notPublic && (
+        <p className="text-amber-300">
+          العنوان العام غير إنتاجي ({info.publicUrlSource}: {info.publicUrlProblems?.[0] || 'غير صالح'}). اضبط APP_URL على نطاقك العام (https) — وإلا سيرفض Meta رابط الإرجاع برسالة «لا يمكن تحميل عنوان URL».
+        </p>
+      )}
+      <div className="flex flex-col gap-1">
+        <span className="text-slate-400">Valid OAuth Redirect URIs (الصق هذا بالضبط):</span>
+        <code dir="ltr" className="px-2 py-1 rounded bg-slate-950 border border-slate-700 text-emerald-300 break-all text-left select-all">{info.redirectUri}</code>
+        {info.appDomainsValue && (
+          <>
+            <span className="text-slate-400 mt-1">App Domains:</span>
+            <code dir="ltr" className="px-2 py-1 rounded bg-slate-950 border border-slate-700 text-sky-300 break-all text-left select-all">{info.appDomainsValue}</code>
+          </>
+        )}
+        {info.webhookUrl && (
+          <>
+            <span className="text-slate-400 mt-1">Webhook Callback URL:</span>
+            <code dir="ltr" className="px-2 py-1 rounded bg-slate-950 border border-slate-700 text-slate-300 break-all text-left select-all">{info.webhookUrl}</code>
+          </>
+        )}
+      </div>
+      <p className="text-slate-500">مصدر العنوان العام: <span className="text-slate-300">{info.publicUrlSource}</span> • النطاق: <span className="text-slate-300" dir="ltr">{info.domain}</span></p>
+    </div>
+  );
+};
+
 /** حالة اشتراك صفحة Facebook في webhook — حقيقية من Meta بلا أي سرّ. */
 const FacebookWebhookStatus: React.FC = () => {
   const [info, setInfo] = useState<any>(null);
@@ -235,6 +280,7 @@ export const PlatformConnectionCenter: React.FC = () => {
               )}
 
               {p.platform === 'facebook' && p.connected && <FacebookWebhookStatus />}
+              {['facebook', 'instagram', 'threads'].includes(p.platform) && <OAuthSetupPanel platform={p.platform} />}
 
               {extRow && (
                 <div className="mt-3 pt-3 border-t border-slate-800/70 grid md:grid-cols-2 gap-2 text-[10px]">
