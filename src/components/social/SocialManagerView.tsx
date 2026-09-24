@@ -171,6 +171,59 @@ export const SocialManagerView: React.FC = () => {
     } finally { setTgBusy(false); }
   };
 
+  // ---- موصل Facebook الحقيقي: تعليقات الصفحة + رسائل Messenger (منفصلة) ----
+  const facebook = platforms.find((p) => p.platform === 'facebook');
+  const [fbBusy, setFbBusy] = useState(false);
+  const [fbWebhookInfo, setFbWebhookInfo] = useState<any | null>(null);
+  const [fbIncoming, setFbIncoming] = useState<any[]>([]);
+  const [fbReplyId, setFbReplyId] = useState('');
+  const [fbReplyText, setFbReplyText] = useState('');
+  const [fbMsgRecipient, setFbMsgRecipient] = useState('');
+  const [fbMsgText, setFbMsgText] = useState('');
+
+  const loadFacebookWebhookInfo = async () => {
+    try { setFbWebhookInfo(await apiService.getFacebookWebhookInfo()); }
+    catch { setFbWebhookInfo(null); }
+  };
+  const loadFacebookIncoming = useCallback(async () => {
+    try { const res = await apiService.getSocialComments('facebook'); setFbIncoming(res.comments || []); }
+    catch { setFbIncoming([]); }
+  }, []);
+  useEffect(() => { void loadFacebookIncoming(); }, [loadFacebookIncoming]);
+
+  const connectFacebook = async () => {
+    setFbBusy(true);
+    try {
+      const res = await apiService.startPlatformOAuth('facebook');
+      if (res?.authorizationUrl) { window.location.href = res.authorizationUrl; return; }
+      showToast('تم بدء ربط Facebook.');
+    } catch (err: any) { showToast(err?.message || 'تعذر بدء ربط Facebook'); }
+    finally { setFbBusy(false); }
+  };
+  const sendFacebookCommentReply = async () => {
+    if (!fbReplyId.trim() || !fbReplyText.trim()) { showToast('معرّف التعليق ونص الرد مطلوبان.'); return; }
+    setFbBusy(true);
+    try {
+      const res = await apiService.replyFacebook({ externalId: fbReplyId.trim(), text: fbReplyText.trim() });
+      showToast(res.delivered ? `أُرسل الرد فعلياً على التعليق (معرّف ${res.providerReplyId || '—'}).` : 'لم يُسجَّل تسليم من Facebook.');
+      setFbReplyText('');
+      await loadFacebookIncoming();
+    } catch (err: any) { showToast(err?.message || 'تعذر إرسال الرد عبر Facebook'); }
+    finally { setFbBusy(false); }
+  };
+  const sendFacebookMessage = async () => {
+    if (!fbMsgRecipient.trim() || !fbMsgText.trim()) { showToast('معرّف المستلم ونص الرسالة مطلوبان.'); return; }
+    setFbBusy(true);
+    try {
+      const res = await apiService.messageReplyFacebook({ recipientId: fbMsgRecipient.trim(), text: fbMsgText.trim() });
+      showToast(res.delivered ? `أُرسلت الرسالة فعلياً (معرّف ${res.providerReplyId || '—'}).` : 'لم يُسجَّل تسليم من Facebook.');
+      setFbMsgText('');
+      await loadFacebookIncoming();
+    } catch (err: any) { showToast(err?.message || 'تعذر إرسال الرسالة عبر Facebook'); }
+    finally { setFbBusy(false); }
+  };
+  useEffect(() => { void loadFacebookWebhookInfo(); }, [load]);
+
   return (
     <div className="space-y-6">
       {/* Header */}
@@ -462,6 +515,147 @@ export const SocialManagerView: React.FC = () => {
               {tgWebhookInfo.lastErrorMessage && (
                 <p className="text-[11px] sm:col-span-2 text-amber-300">آخر خطأ من Telegram: {tgWebhookInfo.lastErrorMessage}</p>
               )}
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* Facebook real connector — تعليقات الصفحة ورسائل Messenger (منفصلان) */}
+      <div className="p-6 rounded-2xl bg-slate-900 border border-slate-800 space-y-5">
+        <h3 className="text-sm font-bold text-white border-b border-slate-800 pb-3 flex items-center gap-2">
+          <Send className="w-4 h-4 text-blue-400" /> موصل Facebook (تكامل خارجي حقيقي)
+        </h3>
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-5">
+          <div className="space-y-3">
+            <div className="text-xs text-slate-300 space-y-1">
+              <div>حالة الاتصال: <span className={facebook?.connection === 'connected' ? 'text-emerald-400 font-bold' : 'text-slate-400 font-bold'}>{facebook?.connection === 'connected' ? 'متصلة وموثقة' : facebook?.connection === 'reauth_needed' ? 'تحتاج إعادة ربط' : 'غير متصلة'}</span></div>
+              {facebook?.accountName && <div>الصفحة: <span className="font-mono text-slate-200">{facebook.accountName}</span></div>}
+              <div>آلية الاعتماد: <span className="font-mono text-slate-200">oauth2 (Meta)</span></div>
+            </div>
+            <p className="text-[11px] text-slate-500">
+              الربط خاص بصفحات Facebook لا بالحساب الشخصي: OAuth ← اختيار الصفحة ← تبادل رمز الصفحة ← اشتراك في webhook.
+              الأسرار من بيئة الخادم فقط (FACEBOOK_OAUTH_CLIENT_ID/SECRET, FACEBOOK_APP_SECRET, FACEBOOK_VERIFY_TOKEN) ولا تُدخل في الواجهة.
+            </p>
+            <button
+              onClick={() => void connectFacebook()}
+              disabled={fbBusy}
+              className="px-4 py-2 rounded-xl bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white text-xs font-bold cursor-pointer">
+              {facebook?.connection === 'connected' ? 'إعادة ربط الصفحة' : 'ربط صفحة Facebook'}
+            </button>
+          </div>
+
+          <div className="space-y-3">
+            <h4 className="text-xs font-bold text-slate-200">رد حقيقي على تعليق Facebook (comment_reply)</h4>
+            <input
+              value={fbReplyId}
+              onChange={(e) => setFbReplyId(e.target.value)}
+              placeholder="معرّف التعليق الخارجي (comment_id)"
+              className="w-full px-3 py-2.5 rounded-xl bg-slate-950 border border-slate-700 text-xs text-white focus:outline-none focus:border-emerald-500 box-border"
+            />
+            <textarea
+              rows={3}
+              value={fbReplyText}
+              onChange={(e) => setFbReplyText(e.target.value)}
+              placeholder="نص الرد على التعليق (يُرسل فعلياً ويمر بحارس سلامة المحتوى ومنع التكرار)"
+              className="w-full px-3 py-2.5 rounded-xl bg-slate-950 border border-slate-700 text-xs text-white focus:outline-none focus:border-emerald-500 box-border"
+            />
+            <button
+              onClick={() => void sendFacebookCommentReply()}
+              disabled={fbBusy}
+              className="px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white text-xs font-bold cursor-pointer">
+              إرسال فعلي كرد على تعليق
+            </button>
+          </div>
+
+          <div className="space-y-3">
+            <h4 className="text-xs font-bold text-slate-200">إرسال رسالة Messenger حقيقية (message_reply)</h4>
+            <input
+              value={fbMsgRecipient}
+              onChange={(e) => setFbMsgRecipient(e.target.value)}
+              placeholder="معرّف المستلم (PSID)"
+              className="w-full px-3 py-2.5 rounded-xl bg-slate-950 border border-slate-700 text-xs text-white focus:outline-none focus:border-emerald-500 box-border"
+            />
+            <textarea
+              rows={3}
+              value={fbMsgText}
+              onChange={(e) => setFbMsgText(e.target.value)}
+              placeholder="نص الرسالة (يُرسل فعلياً كرسالة Messenger، وليس تعليقاً)"
+              className="w-full px-3 py-2.5 rounded-xl bg-slate-950 border border-slate-700 text-xs text-white focus:outline-none focus:border-emerald-500 box-border"
+            />
+            <button
+              onClick={() => void sendFacebookMessage()}
+              disabled={fbBusy}
+              className="px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white text-xs font-bold cursor-pointer">
+              إرسال فعلي كرسالة
+            </button>
+            <p className="text-[10px] text-slate-500">لا يُسجَّل التسليم إلا باستجابة Meta حقيقية تحمل معرّفاً. فشل الإرسال يُعرض كما هو.</p>
+          </div>
+        </div>
+
+        {/* الرسائل والتعليقات الواردة فعلياً عبر webhook Facebook */}
+        {fbIncoming.length > 0 && (
+          <div className="pt-4 border-t border-slate-800 space-y-2">
+            <h4 className="text-xs font-bold text-slate-200">الوارد فعلياً من Facebook عبر webhook</h4>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 max-h-64 overflow-y-auto pr-1">
+              {fbIncoming.slice(0, 12).map((c: any) => (
+                <button
+                  key={c.id}
+                  onClick={() => setFbReplyId(c.externalId)}
+                  className="text-right p-2.5 rounded-xl border bg-slate-950 border-slate-800 hover:border-slate-700 cursor-pointer">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className={`text-[10px] font-bold ${c.kind === 'message' ? 'text-indigo-300' : 'text-sky-300'}`}>
+                      {c.kind === 'message' ? 'رسالة' : 'تعليق'} • مستلمة فعلياً
+                    </span>
+                    <span className="text-[10px] font-mono text-slate-400" dir="ltr">{c.externalId}</span>
+                  </div>
+                  <div className="text-[11px] text-slate-200 mt-1 line-clamp-2">{c.text}</div>
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* حالة اشتراك صفحة Facebook في webhook — حقيقية من Meta لا لون زر */}
+        <div className="pt-4 border-t border-slate-800 space-y-3">
+          <div className="flex items-center justify-between">
+            <h4 className="text-xs font-bold text-slate-200 flex items-center gap-2">
+              <ShieldCheck className="w-4 h-4 text-emerald-400" /> حالة استقبال Facebook (اشتراك الصفحة)
+            </h4>
+            <button
+              onClick={() => void loadFacebookWebhookInfo()}
+              className="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 text-[11px] font-bold cursor-pointer">
+              تحديث الحالة
+            </button>
+          </div>
+          {!fbWebhookInfo ? (
+            <p className="text-[11px] text-slate-500">لم تُحمّل بعد — تُقرأ الحالة فعلياً من Meta بلا أي سرّ.</p>
+          ) : (
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-[11px]">
+              <div className="p-3 rounded-xl bg-slate-950 border border-slate-800 flex justify-between">
+                <span className="text-slate-400">اشتراك الصفحة</span>
+                <span className={fbWebhookInfo.appSubscribed ? 'text-emerald-400 font-bold' : 'text-amber-400 font-bold'}>
+                  {fbWebhookInfo.appSubscribed ? 'مشتركة فعلياً' : 'لا اشتراك مثبت'}
+                </span>
+              </div>
+              <div className="p-3 rounded-xl bg-slate-950 border border-slate-800 flex justify-between">
+                <span className="text-slate-400">رمز التحقق</span>
+                <span className={fbWebhookInfo.verifyTokenConfigured ? 'text-emerald-400 font-bold' : 'text-slate-400 font-bold'}>
+                  {fbWebhookInfo.verifyTokenConfigured ? 'مضبوط' : 'ناقص'}
+                </span>
+              </div>
+              <div className="p-3 rounded-xl bg-slate-950 border border-slate-800 flex justify-between">
+                <span className="text-slate-400">سرّ التوقيع (App Secret)</span>
+                <span className={fbWebhookInfo.signatureSecretConfigured ? 'text-emerald-400 font-bold' : 'text-slate-400 font-bold'}>
+                  {fbWebhookInfo.signatureSecretConfigured ? 'مضبوط' : 'ناقص'}
+                </span>
+              </div>
+              <div className="p-3 rounded-xl bg-slate-950 border border-slate-800">
+                <div className="flex justify-between gap-3">
+                  <span className="text-slate-400 whitespace-nowrap">رابط الـwebhook</span>
+                  <span className="text-slate-200 font-mono break-all text-left" dir="ltr">{fbWebhookInfo.webhookUrl || '—'}</span>
+                </div>
+              </div>
+              <p className="text-[11px] leading-relaxed sm:col-span-2 text-slate-400">{fbWebhookInfo.detail}</p>
             </div>
           )}
         </div>

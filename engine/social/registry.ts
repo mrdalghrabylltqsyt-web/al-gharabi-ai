@@ -71,9 +71,12 @@ const ADAPTER_SPECS: AdapterSpec[] = [
     platform: 'facebook',
     name: 'Facebook',
     displayName: 'Facebook',
-    capabilities: ['publish', 'messages', 'message_reply', 'analytics', 'comments', 'comment_reply', 'scheduling', 'audience_insights'],
-    credentialMode: 'app-registration',
-    realConnector: false,
+    // الصفحات فقط (Page Access Token): نشر منشور، رسائل Messenger والرد عليها،
+    // تعليقات الصفحة والرد عليها. لا نعلن audience_insights (لم يُنفَّذ جلبها).
+    capabilities: ['publish', 'messages', 'message_reply', 'analytics', 'comments', 'comment_reply', 'scheduling'],
+    credentialMode: 'oauth2',
+    // ثاني موصل حقيقي منفّذ: OAuth + رمز صفحة + webhook + رد + رسالة + نشر.
+    realConnector: true,
   },
   {
     platform: 'instagram',

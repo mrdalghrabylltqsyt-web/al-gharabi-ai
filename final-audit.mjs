@@ -207,6 +207,26 @@ add('token-key-health-exposes-state', server.includes('platformTokenKey') && ser
 add('token-key-no-insecure-fallback', !/PLATFORM_TOKEN_ENCRYPTION_KEY\s*[:=]\s*["'`][A-Za-z0-9+/=_-]{16,}["'`]/.test(server) && !/fallback.*(?:token|encryption).*key/i.test(read('engine/social/tokenKey.ts')), 'لا مفتاح مكتوب في الكود ولا fallback غير آمن');
 add('token-key-regression-test', fs.existsSync(path.join(root, 'engine/tests/token.key.test.ts')) && pkg.scripts['test:token-key'], 'اختبار انحدار المفتاح مسجّل في package.json');
 
+// Batch 8: ربط Facebook الحقيقي (ثاني موصل اجتماعي خارجي بعد Telegram).
+add('facebook-connector-module', fs.existsSync(path.join(root, 'engine/social/facebook.ts')) && read('engine/social/facebook.ts').includes('parseFacebookWebhook') && read('engine/social/facebook.ts').includes('replyToComment') && read('engine/social/facebook.ts').includes('sendMessage') && read('engine/social/facebook.ts').includes('publishToPage'), 'موصل Facebook حقيقي: تطبيع/رد/رسالة/نشر');
+add('facebook-real-connector-registry', read('engine/social/registry.ts').includes("pageId") === false && /platform: 'facebook'[\s\S]{0,600}?realConnector: true/.test(read('engine/social/registry.ts')), 'Facebook معلن موصلاً حقيقياً في السجل');
+add('facebook-capabilities-message-reply', read('engine/social/registry.ts').includes("capabilities: ['publish', 'messages', 'message_reply', 'analytics', 'comments', 'comment_reply', 'scheduling']"), 'Facebook يعلن message_reply وcomment_reply منفصلين');
+add('facebook-webhook-verify-challenge', server.includes('webhookVerifyTokenFor') && /hub\.mode[\s\S]{0,600}?res\.type\("text\/plain"\)\.send\(challenge\)/.test(server) && server.includes('constantTimeEqual(token, expected)'), 'تحقق challenge لـFacebook بمقارنة رمز التحقق بزمن ثابت');
+add('facebook-webhook-hmac-raw-body', server.includes('FACEBOOK_SIGNATURE_HEADER') && server.includes("hmacSignatureVerifier(FACEBOOK_SIGNATURE_HEADER") && server.includes('rawBody'), 'توقيع Facebook يُحسب على الجسم الخام عبر X-Hub-Signature-256');
+add('facebook-comment-vs-message', read('engine/social/facebook.ts').includes("kind: 'comment'") && read('engine/social/facebook.ts').includes("kind: 'message'") && read('engine/social/facebook.ts').includes('ignored'), 'الموصل يفصل التعليق عن الرسالة ولا يعتبرها حدثاً غير مفهوم');
+add('facebook-oauth-real', server.includes('facebookFinalizePageSelection') && server.includes('listManagedPages') && server.includes('exchangeLongLived') && server.includes('subscribeApp'), 'OAuth حقيقي: تبادل + إطالة + اختيار صفحة + اشتراك');
+add('facebook-reply-dedicated-routes', server.includes('/api/platforms/facebook/reply') && server.includes('/api/platforms/facebook/message-reply') && server.includes('/api/platforms/facebook/webhook-info'), 'مسارات الرد/الرسالة/حالة webhook موجودة');
+add('facebook-publish-real-connector', server.includes('publishToPage(target.pageId, target.pageToken, content)') && server.includes("code: \"CONNECTOR_NOT_READY\""), 'النشر يستخدم الموصل الحقيقي بلا ادعاء بلا معرّف');
+add('facebook-reply-delivery-honest', server.includes('providerReplyId:result.data?.providerCommentId') && server.includes('providerReplyId:result.data?.providerMessageId') && server.includes('reviewStatus:result.ok?"delivered":"failed"'), 'نجاح/فشل الإرسال يُسجَّل صراحةً بإيصال أو خطأ بلا ادعاء');
+add('facebook-inbound-durable-before-ack', /parseFacebookWebhook\(req\.body\)[\s\S]{0,2500}?await persistStateDurable\(\)[\s\S]{0,400}?res\.status\(200\)/.test(server), 'استقبال Facebook ينتظر الكتابة الدائمة قبل الإقرار');
+add('facebook-duplicate-persistence', server.includes('facebookEventIds') && /facebookEventIds[\s\S]{0,200}?slice\(0, 20000\)/.test(server), 'معرّفات أحداث Facebook تُحفظ لصمود منع التكرار بعد restart');
+add('facebook-webhook-safe-logging', server.includes('logFacebookWebhook') && !/logFacebookWebhook\([^)]*(token|secret)/i.test(server), 'سجل استقبال آمن بلا أسرار');
+add('facebook-no-rotating-secret', !/facebook[\s\S]{0,400}?randomBytes\([^)]*\)[\s\S]{0,200}?webhookSecret/i.test(server), 'لا تدوير سرّ تلقائي في مسار Facebook');
+add('facebook-reply-guard-redirects', socialRoutes.includes('PLATFORM_USE_DEDICATED_REPLY') && socialRoutes.includes('PLATFORM_USE_DEDICATED_PUBLISH') && socialRoutes.includes('hasRealConnector(platform)'), 'المسار العام يوجّه منصات الموصل الحقيقي لمساراتها');
+add('facebook-connector-tests', fs.existsSync(path.join(root, 'engine/tests/facebook.connector.test.ts')) && fs.existsSync(path.join(root, 'engine/tests/helpers/facebookMock.ts')) && pkg.scripts['test:facebook'], 'اختبار موصل Facebook (وحدة + تكامل بخادم وهمي) مسجّل');
+add('facebook-test-in-suite', typeof pkg.scripts.test === 'string' && pkg.scripts.test.includes('test:facebook'), 'اختبار Facebook ضمن npm test');
+add('facebook-ui-connection', read('src/components/social/PlatformConnectionCenter.tsx').includes('startOAuth') && read('src/components/social/PlatformConnectionCenter.tsx').includes('OPERATIONAL') && read('src/services/api.ts').includes('/api/platforms/production-readiness'), 'الواجهة تجلب الحالة الحقيقية وتبدأ OAuth وتعرض OPERATIONAL بحسب الواقع');
+
 const failed = checks.filter(x => !x.ok);
 console.table(checks);
 if (failed.length) {

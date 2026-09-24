@@ -153,6 +153,10 @@ export const SocialHubView: React.FC = () => {
     // (chatId + messageId)، فيُرسل الرد فعلياً عبر مسار Telegram المخصص بدل
     // تسجيله داخلياً. لا يُقبل رده عبر مسار تعليقات لا يدعمه.
     const isTelegramMessage = comment.platform === 'telegram' && Boolean(comment.replyTarget?.chatId);
+    // Facebook: تعليق Page يُرد عبر مسار التعليقات الحقيقي، ورسالة Messenger عبر
+    // مسار الرسائل (message_reply). الفصل نفسه المطبَّق في Telegram.
+    const isFacebookComment = comment.platform === 'facebook' && comment.kind !== 'message';
+    const isFacebookMessage = comment.platform === 'facebook' && comment.kind === 'message';
     try {
       if (isTelegramMessage) {
         const res = await apiService.replyTelegram({
@@ -163,6 +167,16 @@ export const SocialHubView: React.FC = () => {
         showToast(res.delivered
           ? `أُرسل الرد فعلياً عبر Telegram (معرّف ${res.providerReplyId || '—'}).`
           : 'لم يُسجَّل تسليم من Telegram.');
+      } else if (isFacebookComment) {
+        const res = await apiService.replyFacebook({ externalId: comment.externalId, text, commentText: comment.text });
+        showToast(res.delivered
+          ? `أُرسل الرد فعلياً عبر Facebook (معرّف ${res.providerReplyId || '—'}).`
+          : 'لم يُسجَّل تسليم من Facebook.');
+      } else if (isFacebookMessage) {
+        const res = await apiService.messageReplyFacebook({ externalId: comment.externalId, recipientId: comment.replyTarget?.recipientId, text, commentText: comment.text });
+        showToast(res.delivered
+          ? `أُرسلت الرسالة فعلياً عبر Facebook (معرّف ${res.providerReplyId || '—'}).`
+          : 'لم يُسجَّل تسليم من Facebook.');
       } else {
         await apiService.replyToSocialComment({ platform: comment.platform, externalId: comment.externalId, text, commentText: comment.text, authorName: comment.authorName || undefined });
         showToast('تم تسجيل الرد داخلياً. لا يُرسل إلى المنصة (لا يوجد موصل إرسال إنتاجي).');
@@ -573,9 +587,16 @@ export const SocialHubView: React.FC = () => {
                 // Telegram رسالة واردة عبر webhook حقيقي، لا تعليق عام. تُفصل
                 // حالة الاستقبال عن حالة تسليم الرد.
                 const isTelegramMessage = com.platform === 'telegram' && Boolean(com.replyTarget?.chatId);
-                const receivedViaWebhook = com.ingestSource === 'telegram_webhook';
+                const isFacebookReal = com.platform === 'facebook';
+                // الاستقبال الحقيقي عبر webhook Facebook يُعرض «مستلمة فعلياً» بلا
+                // وسم simulated — الفصل نفسه المطبَّق في Telegram.
+                const receivedViaWebhook = com.ingestSource === 'telegram_webhook' || com.ingestSource === 'facebook_webhook';
                 const sourceLabel = reply
-                  ? (reply.delivered ? 'telegram-sendMessage' : 'deterministic')
+                  ? (reply.delivered
+                    ? (com.platform === 'facebook'
+                      ? (com.kind === 'message' ? 'facebook-sendMessage' : 'facebook-comment-reply')
+                      : 'telegram-sendMessage')
+                    : 'deterministic')
                   : '—';
                 return (
                   <div key={com.id} className="p-4 rounded-2xl bg-slate-900 border border-slate-800 space-y-3">
@@ -673,7 +694,11 @@ export const SocialHubView: React.FC = () => {
                             type="text"
                             placeholder={isTelegramMessage
                               ? 'اكتب الرد (سيُرسل فعلياً عبر Telegram)...'
-                              : 'اكتب الرد (سيُسجَّل داخلياً فقط ولا يُنشر)...'}
+                              : isFacebookReal
+                                ? (com.kind === 'message'
+                                  ? 'اكتب الرد (سيُرسل فعلياً كرسالة Messenger)...'
+                                  : 'اكتب الرد (سيُرسل فعلياً كرد على تعليق Facebook)...')
+                                : 'اكتب الرد (سيُسجَّل داخلياً فقط ولا يُنشر)...'}
                             value={replyDraft[key] || ''}
                             onChange={(e) => setReplyDraft({ ...replyDraft, [key]: e.target.value })}
                             className="flex-1 bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-emerald-500"
@@ -687,7 +712,11 @@ export const SocialHubView: React.FC = () => {
                             onClick={() => void recordReply(com)}
                             className="px-3.5 py-2 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 text-xs font-bold transition flex items-center gap-1 cursor-pointer">
                             <Send className="w-3.5 h-3.5" />
-                            {isTelegramMessage ? 'إرسال فعلي عبر Telegram' : 'تسجيل الرد'}
+                            {isTelegramMessage
+                              ? 'إرسال فعلي عبر Telegram'
+                              : isFacebookReal
+                                ? (com.kind === 'message' ? 'إرسال فعلي كرسالة' : 'إرسال فعلي كتعليق')
+                                : 'تسجيل الرد'}
                           </button>
                         </div>
                         {rowError[key] && (

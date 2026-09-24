@@ -96,7 +96,8 @@ async function login(): Promise<Record<string, string>> {
     check('لا منصة OPERATIONAL بلا اتصال فعلي', cp.platforms.every((p: any) => p.state !== 'OPERATIONAL'));
     check('Telegram: CODE_READY أو CONFIGURED (لا اتصال)', ['CODE_READY', 'CONFIGURED'].includes(cp.platforms.find((p: any) => p.platform === 'telegram').state));
     const fb = cp.platforms.find((p: any) => p.platform === 'facebook');
-    check('Facebook بلا موصل => EXTERNAL_SETUP_REQUIRED', fb.state === 'EXTERNAL_SETUP_REQUIRED');
+    // Facebook: موصل منفّذ + اعتماد مضبوط في بيئة الاختبار لكن بلا اتصال حي => CONFIGURED.
+    check('Facebook موصل منفّذ ومُعدّ بلا اتصال => CONFIGURED', fb.state === 'CONFIGURED');
     check('بوابات العمليات موجودة لكل منصة', cp.platforms.every((p: any) => Array.isArray(p.operations) && p.operations.length === 8));
     check('كل بوابة تحمل سمة allowed منطقية', cp.platforms.every((p: any) => p.operations.every((o: any) => typeof o.allowed === 'boolean')));
     check('سبب الحجب موجود للمنصات المحجوبة', Boolean(fb.blockingReason));

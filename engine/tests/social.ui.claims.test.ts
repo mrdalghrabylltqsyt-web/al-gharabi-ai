@@ -96,6 +96,16 @@ check('لوحة Telegram تحمّل الرسائل الواردة الحقيقي
 check('اللوحة تسمح باختيار هدف الرد من رسالة واردة', manager.includes('setTgExternalId(c.externalId)'));
 check('اللوحة تُعلن أن التسليم يحتاج استجابة مزود حقيقية', manager.includes('لا يُسجَّل التسليم إلا باستجابة Telegram حقيقية'));
 
+// 10b) ربط Facebook الحقيقي في الواجهة: تعليق عبر مسار comment_reply ورسالة عبر message_reply.
+check('recordReply يوجّه تعليق Facebook لمسار الرد الحقيقي', replyFn.includes("comment.platform === 'facebook'") && replyFn.includes('apiService.replyFacebook'));
+check('recordReply يوجّه رسالة Facebook لمسار message_reply', replyFn.includes('apiService.messageReplyFacebook') && replyFn.includes("comment.kind === 'message'"));
+check('Facebook لا يسلك مسار التعليقات العام', replyFn.indexOf('apiService.replyFacebook') < replyFn.indexOf('apiService.replyToSocialComment('));
+check('الواجهة تعتبر استقبال facebook_webhook استقبالاً حقيقياً', hub.includes("com.ingestSource === 'facebook_webhook'"));
+check('زر رد Facebook يعلن الإرسال الفعلي لا التسجيل الداخلي', hub.includes('إرسال فعلي كتعليق'));
+check('لوحة Facebook تحمّل الوارد الحقيقي وتعرض حالة الاشتراك', manager.includes('loadFacebookIncoming') && manager.includes("apiService.getSocialComments('facebook')") && manager.includes('getFacebookWebhookInfo'));
+check('لوحة Facebook تفصل capacity comment_reply عن message_reply', manager.includes('comment_reply') && manager.includes('message_reply'));
+check('عقود API: مسارات Facebook الحقيقية موجودة', api.includes('/api/platforms/facebook/reply') && api.includes('/api/platforms/facebook/message-reply') && api.includes('/api/platforms/facebook/webhook-info'));
+
 // 11) القدرة message_reply موجودة والمنصات الرسائلية تعلنها.
 const registry = readFileSync(join(ROOT, 'engine/social/registry.ts'), 'utf8');
 const adapter = readFileSync(join(ROOT, 'engine/social/adapter.ts'), 'utf8');

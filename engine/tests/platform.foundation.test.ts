@@ -54,8 +54,9 @@ function run(): void {
       const spec = PLATFORM_SPECS.find((s) => s.platform === r.platform)!;
       return spec.displayName === r.displayName && spec.credentialMode === r.credentialMode;
     }));
-  check('Telegram هو الوحيد CONNECTOR_READY', PLATFORM_READINESS.filter((r) => r.implementationStatus === 'CONNECTOR_READY').map((r) => r.platform).join(',') === 'telegram');
-  check('كل بقية المنصات FOUNDATION_READY', PLATFORM_READINESS.filter((r) => r.platform !== 'telegram').every((r) => r.implementationStatus === 'FOUNDATION_READY'));
+  // CONNECTOR_READY = موصل منفّذ فعلاً في الكود. Telegram أولاً ثم Facebook.
+  check('الموصلات المنفّذة CONNECTOR_READY = telegram,facebook', PLATFORM_READINESS.filter((r) => r.implementationStatus === 'CONNECTOR_READY').map((r) => r.platform).sort().join(',') === 'facebook,telegram');
+  check('كل بقية المنصات FOUNDATION_READY', PLATFORM_READINESS.filter((r) => !['telegram', 'facebook'].includes(r.platform)).every((r) => r.implementationStatus === 'FOUNDATION_READY'));
   check('المصفوفة لا تحمل حالة اتصال تشغيلية', PLATFORM_READINESS.every((r) => !('connected' in r) && !('providerVerified' in r) && ['READY', 'EXTERNAL_SETUP_REQUIRED', 'NOT_SUPPORTED'].includes(r.connection)));
   check('حقول الجاهزية كلها قيم معروفة',
     PLATFORM_READINESS.every((r) => [r.connector, r.oauth, r.connection, r.verification, r.webhook, r.read, r.reply, r.publish, r.schedule, r.analytics].every((v) => ['READY', 'EXTERNAL_SETUP_REQUIRED', 'NOT_SUPPORTED'].includes(v))));
@@ -69,11 +70,11 @@ function run(): void {
   check('google_business: رد NOT_SUPPORTED', readinessFor('google_business')!.reply === 'NOT_SUPPORTED');
   check('telegram: نشر ورد READY', readinessFor('telegram')!.publish === 'READY' && readinessFor('telegram')!.reply === 'READY');
   check('snapchat: webhook NOT_SUPPORTED', readinessFor('snapchat')!.webhook === 'NOT_SUPPORTED');
-  check('facebook: webhook يتطلب إعداداً خارجياً', readinessFor('facebook')!.webhook === 'EXTERNAL_SETUP_REQUIRED');
+  check('facebook: webhook منفّذ (READY)', readinessFor('facebook')!.webhook === 'READY');
   check('كل منصة تدعم الرد يجب أن تدعم القراءة', PLATFORM_READINESS.every((r) => r.reply !== 'READY' || r.read !== 'NOT_SUPPORTED'));
   check('readinessFor يرفض المجهول', readinessFor('myspace') === null);
   const sum = readinessSummary();
-  check('ملخص الجاهزية صحيح', sum.total === 10 && sum.connectorReady === 1 && sum.foundationReady === 9);
+  check('ملخص الجاهزية صحيح', sum.total === 10 && sum.connectorReady === 2 && sum.foundationReady === 8);
 
   // ---------- 2) أساس OAuth ----------
   const s1 = createOAuthState();

@@ -214,6 +214,16 @@ export function registerSocialManagerRoutes(app: express.Express, deps: SocialRo
         error: `المنصة ${adapter.displayName} غير متصلة باتصال موثق؛ لا يمكن إرسال أي رد خارجي.`,
       });
     }
+    // منصة تعليقات لها موصل رد حقيقي منفّذ (Facebook) يجب أن تسلك مسارها الحقيقي
+    // بدل تسجيل رد محاكى داخلياً؛ نوجّه صراحةً إلى مسار الرد الحقيقي.
+    if (hasRealConnector(platform)) {
+      return res.status(409).json({
+        success: false,
+        error: `المنصة ${adapter.displayName} لها موصل رد حقيقي منفّذ؛ يجب استخدام مسار الرد الحقيقي وليس مسار التسجيل الداخلي.`,
+        code: 'PLATFORM_USE_DEDICATED_REPLY',
+        replyRoute: `/api/platforms/${platform}/reply`,
+      });
+    }
 
     const classification = classifyComment(commentText || text);
     if (!canAutoReply(classification)) {
@@ -477,6 +487,16 @@ export function registerSocialManagerRoutes(app: express.Express, deps: SocialRo
     });
     if (!preflight.ready) {
       return res.status(409).json({ success: false, error: 'فشل فحص ما قبل النشر.', checks: preflight.checks, reasons: preflight.reasons });
+    }
+    // منصة لها موصل نشر حقيقي منفّذ (Facebook) يجب أن تنشر عبر مسارها الحقيقي
+    // بدل تسجيل محاولة محاكاة داخلية مضللة.
+    if (hasRealConnector(platform) && adapter?.supports('publish')) {
+      return res.status(409).json({
+        success: false,
+        error: `المنصة ${adapter.displayName} لها موصل نشر حقيقي منفّذ؛ استخدم مسار النشر الحقيقي.`,
+        code: 'PLATFORM_USE_DEDICATED_PUBLISH',
+        publishRoute: `/api/platforms/${platform}/publish`,
+      });
     }
 
     const record = buildPublishRecord({

@@ -524,6 +524,49 @@ self-authored). `social.ui.claims.test.ts` صار **46 فحصاً** (توجيه 
 `telegram-ui-routes-message-reply`, `incoming-vs-delivery-separated`,
 `telegram-reply-delivery-honest`, `telegram-message-reply-tests`.
 
+## موصل Facebook الحقيقي (Facebook Pages) — Batch 8 (2026-09-24)
+
+Facebook صار **ثاني موصل اجتماعي حقيقي منفّذ** بعد Telegram (`engine/social/facebook.ts`)،
+مع الفصل الصريح نفسه: `Capability ≠ Connection ≠ Verification ≠ Delivery`.
+
+- **الربط خاص بصفحات Facebook لا بالحساب الشخصي.** التدفق: `GET /api/platforms/facebook/oauth/start`
+  (state محمي عبر `createOAuthState`) → موافقة المالك لدى Meta → `oauth/callback` →
+  `listManagedPages` (GET `/me/accounts`) → `GET /api/platforms/facebook/pages` →
+  `POST /api/platforms/facebook/select-page` (إثبات الصفحة فعلياً + تبادل رمز طويل الأجل
+  `fb_exchange_token` + اشتراك `{page}/subscribed_apps`). لا يُعلن الاتصال إلا بعد إثبات Meta.
+- **Webhook حقيقي**: `GET /api/platforms/:platform/webhook` يتحقق من `hub.challenge`
+  بمقارنة `FACEBOOK_VERIFY_TOKEN` بزمن ثابت؛ `POST` يتحقق من توقيع `X-Hub-Signature-256`
+  (HMAC sha256 على **الجسم الخام** عبر `req.rawBody`) ويرفض 401 عند غياب/فساد التوقيع.
+- **تطبيع صريح**: `parseFacebookWebhook` يميّز `comment` (feed changes) عن `message`
+  (messaging) ويعيد أي شكل غير معروف في `ignored` بدل اعتباره تعليقاً/رسالة.
+- **منع التكرار يصمد**: معرّفات الأحداث تُخزَّن في `facebookEventIds` (داخل `workspace`)
+  وتُحفظ في طرفَي الحفظ، فلا يُنشئ إعادة إرسال Meta سجلاً ثانياً حتى بعد restart.
+- **الكتابة قبل الإقرار**: مسار الاستقبال ينتظر `persistStateDurable()` قبل `res.status(200)`،
+  والرد يحمل `persisted` صريحاً.
+- **الرد الحقيقي عبر مسارين منفصلين**: `POST /api/platforms/facebook/reply` (comment →
+  `{comment-id}/comments`) و`POST /api/platforms/facebook/message-reply` (message →
+  `{page-id}/messages`). كلاهما يمر بحارس سلامة المحتوى (422) وبوابة منع الرد المكرر،
+  ولا يُسجَّل `delivered=true` بلا `providerCommentId`/`providerMessageId` من Meta.
+- **المسار العام يوجّه**: `/api/social/manager/comments/reply` و`.../publish/execute`
+  يعيدان `409` مع `code: PLATFORM_USE_DEDICATED_REPLY` / `PLATFORM_USE_DEDICATED_PUBLISH`
+  لمنصات الموصل الحقيقي بدل تسجيل محاكاة داخلية.
+- **الأسرار من البيئة فقط**: `FACEBOOK_OAUTH_CLIENT_ID/SECRET`، `FACEBOOK_APP_SECRET`،
+  `FACEBOOK_VERIFY_TOKEN` (واختياري `FACEBOOK_GRAPH_VERSION`/`FACEBOOK_SUBSCRIBED_FIELDS`).
+  لا تُسجَّل ولا تُعاد في أي استجابة؛ صفحة التوكن تُحفظ مشفّرة عبر `providerTokens.facebook`.
+- **الواجهة**: `GET /api/platforms/facebook/webhook-info` يعرض اشتراك الصفحة وضبط رمز
+  التحقق وسرّ التوقيع ورابط الـwebhook (حقيقي من Meta بلا سرّ). لوحة Facebook في
+  `SocialManagerView` تفصل comment_reply عن message_reply، و`PlatformConnectionCenter`
+  يوفّر اختيار الصفحة وحالة الاشتراك.
+- **الجاهزية**: `readiness.ts` يعلن Facebook `CONNECTOR_READY` وwebhook `READY`؛
+  `operations.ts` لا يعلن `OPERATIONAL` إلا باتصال موثق + موصل منفّذ.
+
+اختبارات: `engine/tests/facebook.connector.test.ts` (`npm run test:facebook`، 73 فحصاً) مع
+`engine/tests/helpers/facebookMock.ts` (خادم Meta وهمي محلي عبر `FACEBOOK_GRAPH_API_BASE`).
+فحوص final-audit: `facebook-connector-module` … `facebook-ui-connection`.
+
+**حالة التكامل الفعلية:** Telegram (bot-token) وFacebook (OAuth صفحة) هما الموصلان الحقيقيان؛
+بقية المنصات `FOUNDATION_READY` وتنتظر إجراءً خارجياً من المزود.
+
 ## نمط الكود
 - تعليقات عربية موجزة تشرح «لماذا» فقط، دون شرح ما يفعله الكود.
 - الأنواع في `src/types/index.ts` يجب أن تطابق استجابات الخادم فعلياً؛ توجد فحوص عقد في `engine/tests/social.routes.test.ts` تكشف أي انحراف.

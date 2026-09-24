@@ -39,12 +39,44 @@ function OpBadge({ op, opKey }: { op: any; opKey: string; key?: React.Key }) {
   );
 }
 
+/** حالة اشتراك صفحة Facebook في webhook — حقيقية من Meta بلا أي سرّ. */
+const FacebookWebhookStatus: React.FC = () => {
+  const [info, setInfo] = useState<any>(null);
+  const [err, setErr] = useState<string>('');
+  useEffect(() => {
+    let alive = true;
+    apiService.getFacebookWebhookInfo().then((d) => { if (alive) setInfo(d); }).catch((e) => { if (alive) setErr(e?.message || 'تعذر جلب حالة webhook'); });
+    return () => { alive = false; };
+  }, []);
+  if (err) return <p className="text-[10px] text-amber-300 mt-2">حالة webhook: {err}</p>;
+  if (!info) return <p className="text-[10px] text-slate-500 mt-2">جارٍ جلب حالة webhook الحقيقية من Meta…</p>;
+  return (
+    <div className="mt-3 pt-3 border-t border-slate-800/70 text-[10px] space-y-1">
+      <p className="text-slate-500 flex items-center gap-1"><Webhook className="w-3 h-3" /> حالة استقبال webhook (حقيقية من Meta):</p>
+      <div className="flex flex-wrap gap-1.5">
+        <span className={`px-2 py-0.5 rounded-md border font-bold ${info.appSubscribed ? 'bg-emerald-500/10 text-emerald-300 border-emerald-600/30' : 'bg-amber-500/10 text-amber-300 border-amber-600/30'}`}>
+          {info.appSubscribed ? 'الصفحة مشتركة فعلياً' : 'لا اشتراك مثبت'}
+        </span>
+        <span className={`px-2 py-0.5 rounded-md border font-bold ${info.verifyTokenConfigured ? 'bg-emerald-500/10 text-emerald-300 border-emerald-600/30' : 'bg-slate-800 text-slate-400 border-slate-700'}`}>
+          {info.verifyTokenConfigured ? 'رمز التحقق مضبوط' : 'رمز التحقق ناقص'}
+        </span>
+        <span className={`px-2 py-0.5 rounded-md border font-bold ${info.signatureSecretConfigured ? 'bg-emerald-500/10 text-emerald-300 border-emerald-600/30' : 'bg-slate-800 text-slate-400 border-slate-700'}`}>
+          {info.signatureSecretConfigured ? 'سرّ التوقيع مضبوط' : 'سرّ التوقيع ناقص'}
+        </span>
+      </div>
+      <p className="text-slate-500">رابط الـwebhook: <code className="text-slate-300">{info.webhookUrl}</code> • الصفحة: <code className="text-slate-300">{info.pageName || info.pageId}</code></p>
+    </div>
+  );
+};
+
 export const PlatformConnectionCenter: React.FC = () => {
   const { currentUser, showToast } = useApp();
   const [loading, setLoading] = useState(false);
   const [control, setControl] = useState<any>(null);
   const [external, setExternal] = useState<any>(null);
   const [busy, setBusy] = useState<string | null>(null);
+  // Facebook: الحساب قد يدير أكثر من صفحة، فيُعرض اختيار الصفحة لإتمام الربط.
+  const [fbPages, setFbPages] = useState<any[] | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -67,6 +99,19 @@ export const PlatformConnectionCenter: React.FC = () => {
   if (currentUser?.role !== 'owner') {
     return <div className="p-8 rounded-2xl bg-slate-900 border border-slate-800 text-center text-slate-300">مركز ربط المنصات مخصص لمالك النظام فقط.</div>;
   }
+
+  const loadFacebookPages = async () => {
+    setBusy('facebook-pages');
+    try { const res = await apiService.getFacebookPages(); setFbPages(res.pages || []); }
+    catch (e: any) { showToast(e?.message || 'تعذر جلب صفحات Facebook'); }
+    finally { setBusy(null); }
+  };
+  const chooseFacebookPage = async (pageId: string) => {
+    setBusy(`facebook-page-${pageId}`);
+    try { const res = await apiService.selectFacebookPage(pageId); showToast(res.webhookSubscribed ? 'تم ربط الصفحة والاشتراك في webhook.' : 'تم ربط الصفحة، لكن اشتراك webhook لم يُثبت.'); setFbPages(null); void load(); }
+    catch (e: any) { showToast(e?.message || 'تعذر ربط الصفحة'); }
+    finally { setBusy(null); }
+  };
 
   const startOAuth = async (platform: string) => {
     setBusy(platform);
@@ -140,6 +185,12 @@ export const PlatformConnectionCenter: React.FC = () => {
                       className="px-3 py-1.5 rounded-lg bg-emerald-500 text-slate-950 text-[11px] font-black inline-flex items-center gap-1 disabled:opacity-50">
                       {busy === p.platform ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <PlugZap className="w-3.5 h-3.5" />} بدء الربط
                     </button>
+                  ) : p.platform === 'facebook' ? (
+                    // Facebook: الحساب موثوق لكنه يدير أكثر من صفحة؛ إتمام الربط باختيار الصفحة.
+                    <button onClick={() => void loadFacebookPages()} disabled={busy === 'facebook-pages'}
+                      className="px-3 py-1.5 rounded-lg bg-sky-500 text-slate-950 text-[11px] font-black inline-flex items-center gap-1 disabled:opacity-50">
+                      {busy === 'facebook-pages' ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <KeyRound className="w-3.5 h-3.5" />} اختيار الصفحة
+                    </button>
                   ) : (
                     <span className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg bg-slate-800 border border-slate-700 text-[11px] font-bold text-slate-400">
                       <KeyRound className="w-3.5 h-3.5" /> يلزم إعداد
@@ -151,6 +202,23 @@ export const PlatformConnectionCenter: React.FC = () => {
               <div className="flex flex-wrap gap-1 mt-3">
                 {(p.operations || []).map((o: any) => <OpBadge key={o.operation} opKey={o.operation} op={o} />)}
               </div>
+
+              {p.platform === 'facebook' && fbPages && (
+                <div className="mt-3 pt-3 border-t border-slate-800/70">
+                  <p className="text-[10px] text-slate-500 mb-1.5">اختر الصفحة التي تريد ربطها (معرّفات وأسماء فقط بلا أي رمز):</p>
+                  <div className="flex flex-wrap gap-2">
+                    {fbPages.length === 0 && <span className="text-[11px] text-slate-400">لا صفحات لهذا الحساب.</span>}
+                    {fbPages.map((pg: any) => (
+                      <button key={pg.pageId} onClick={() => void chooseFacebookPage(pg.pageId)} disabled={busy === `facebook-page-${pg.pageId}`}
+                        className="px-3 py-1.5 rounded-lg bg-slate-800 border border-slate-700 text-[11px] font-bold text-white inline-flex items-center gap-1 disabled:opacity-50">
+                        {busy === `facebook-page-${pg.pageId}` ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Webhook className="w-3.5 h-3.5" />} {pg.pageName || pg.pageId}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {p.platform === 'facebook' && p.connected && <FacebookWebhookStatus />}
 
               {extRow && (
                 <div className="mt-3 pt-3 border-t border-slate-800/70 grid md:grid-cols-2 gap-2 text-[10px]">

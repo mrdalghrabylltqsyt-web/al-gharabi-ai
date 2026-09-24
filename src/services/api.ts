@@ -477,6 +477,46 @@ ${payload.topic || payload.productName || 'أنظمة وحلول التقسيط 
     return data;
   },
 
+  // صفحات Facebook التي يديرها الحساب بعد OAuth (معرّفات وأسماء فقط بلا رموز).
+  async getFacebookPages() {
+    const res = await fetch('/api/platforms/facebook/pages', { headers: getAuthHeaders() });
+    const data = await res.json();
+    if (!res.ok || !data.success) throw new Error(data.error || 'تعذر جلب صفحات Facebook');
+    return data;
+  },
+
+  // اختيار صفحة Facebook لإتمام الربط (إثبات فعلي + اشتراك في webhook).
+  async selectFacebookPage(pageId: string) {
+    const res = await fetch('/api/platforms/facebook/select-page', { method:'POST', headers:getAuthHeaders(), body:JSON.stringify({ pageId }) });
+    const data = await res.json();
+    if (!res.ok || !data.success) throw new Error(data.error || 'تعذر ربط صفحة Facebook');
+    return data;
+  },
+
+  // إرسال رد حقيقي على تعليق Facebook بعد الموافقة؛ يمر بحارس السلامة ومنع التكرار.
+  async replyFacebook(payload: { externalId: string; text: string; commentText?: string; productId?: string; productName?: string }) {
+    const res = await fetch('/api/platforms/facebook/reply', { method:'POST', headers:getAuthHeaders(), body:JSON.stringify(payload) });
+    const data = await res.json();
+    if (!res.ok || !data.success) throw new Error(data.error || 'تعذر إرسال الرد عبر Facebook');
+    return data;
+  },
+
+  // إرسال رسالة Facebook Messenger حقيقية عبر مسار message_reply المنفصل.
+  async messageReplyFacebook(payload: { externalId?: string; recipientId?: string; text: string; commentText?: string }) {
+    const res = await fetch('/api/platforms/facebook/message-reply', { method:'POST', headers:getAuthHeaders(), body:JSON.stringify(payload) });
+    const data = await res.json();
+    if (!res.ok || !data.success) throw new Error(data.error || 'تعذر إرسال الرسالة عبر Facebook');
+    return data;
+  },
+
+  // حالة اشتراك صفحة Facebook في webhook (حقيقية من Meta بلا أي سرّ).
+  async getFacebookWebhookInfo() {
+    const res = await fetch('/api/platforms/facebook/webhook-info', { headers: getAuthHeaders() });
+    const data = await res.json();
+    if (!res.ok || !data.success) throw new Error(data.error || 'تعذر جلب حالة webhook من Facebook');
+    return data;
+  },
+
   async executeJob(jobId: string) { const res = await fetch(`/api/control/jobs/${encodeURIComponent(jobId)}/execute`, { method:'POST', headers:getAuthHeaders() }); const data=await res.json(); if(!res.ok || !data.success) throw new Error(data.error || 'تعذر تنفيذ المهمة'); return data; },
 
   async disconnectPlatform(platform: string) {

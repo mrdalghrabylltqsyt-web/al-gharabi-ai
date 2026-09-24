@@ -575,10 +575,14 @@ export interface SocialCommentRecord {
   createdAt: string;
   classification: SocialCommentClassification;
   requiresHumanReview: boolean;
-  /** هدف الرد الحقيقي للمنصات الرسائلية (مثل Telegram): الدردشة والرسالة. */
-  replyTarget?: { chatId?: string; messageId?: string } | null;
+  /**
+   * هدف الرد الحقيقي للمنصات الرسائلية: دردشة/رسالة (Telegram) أو مستلم (Facebook).
+   */
+  replyTarget?: { chatId?: string; messageId?: string; recipientId?: string; commentId?: string; pageId?: string } | null;
   /** مصدر السجل الوارد: webhook حقيقي أم تسجيل يدوي. */
   ingestSource?: string | null;
+  /** نوع الحدث الوارد: تعليق (comment) أم رسالة (message) — يفصل مساري الرد. */
+  kind?: 'comment' | 'message' | string | null;
 }
 
 export interface SocialCommentsResult {

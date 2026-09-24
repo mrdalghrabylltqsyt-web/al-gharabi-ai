@@ -12,7 +12,7 @@
  */
 
 import type { PlatformId, PlatformCapability } from './adapter';
-import { PLATFORM_SPECS, platformSupports } from './registry';
+import { PLATFORM_SPECS, platformSupports, hasRealConnector } from './registry';
 import { readinessFor, type ReadinessLevel, type OperationalLevel, type PlatformReadinessDetail } from './readiness';
 import { inspectPlatformCredentials } from './credentials';
 import { TOKEN_KEY_ENV_NAME } from './tokenKey';
@@ -137,7 +137,9 @@ export function computePlatformStatus(
   if (!readiness) return null;
   const creds = inspectPlatformCredentials(platform, env);
   const connectionConfigured = creds.connection.configured;
-  const connectorImplemented = readiness.connector === 'READY';
+  // الموصل المنفّذ فعلاً هو من يسمح بالوصول إلى OPERATIONAL. لا يكفي أن تكون
+  // البنية جاهزة (readiness.connector === READY) ما لم يوجد موصل تنفيذ حقيقي.
+  const connectorImplemented = readiness.connector === 'READY' && hasRealConnector(platform);
   const connected = live.status === 'connected';
   const verified = connected && live.providerVerified === true;
 

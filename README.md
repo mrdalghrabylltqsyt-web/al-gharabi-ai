@@ -87,6 +87,8 @@ TikTok، YouTube، Facebook، Instagram، WhatsApp Business، Telegram، X، Sna
 - صيغة `PLATFORM_TOKEN_ENCRYPTION_KEY` المقبولة (يُتحقق منها عبر `engine/social/tokenKey.ts`): **64 محرفاً hex** أو **Base64/Base64url يمثّل 32 بايت بالضبط**. أي قيمة أخرى تُرفض بوضوح بحالة `invalid` (منفصلة عن `missing`).
 - تم تجهيز OAuth فعلي لـ YouTube وGoogle Business Profile وTikTok.
 - تم تجهيز تحقق وربط Telegram Bot فعلياً، مع تنفيذ نشر نصي حقيقي عبر Bot API عند وجود `TELEGRAM_DEFAULT_CHAT_ID`.
+- **موصل Facebook الحقيقي**: ربط **صفحات Facebook** (لا الحساب الشخصي) عبر OAuth: `oauth/start` → موافقة المالك → `oauth/callback` → اختيار الصفحة (`/api/platforms/facebook/pages` ثم `/api/platforms/facebook/select-page`) → تبادل رمز الصفحة طويل الأجل → اشتراك الصفحة في webhook. الاستقبال عبر webhook موقّع (`X-Hub-Signature-256` على الجسم الخام) مع تحقق `hub.challenge`، وتطبيع التعليقات (`comment`) والرسائل (`message`) بشكل منفصل، وحفظها في الحالة الدائمة قبل الإقرار، مع منع تكرار بمعرّف الحدث يصمد بعد restart. الرد الحقيقي عبر مسارين منفصلين: `POST /api/platforms/facebook/reply` (comment) و`POST /api/platforms/facebook/message-reply` (message). حالة الاشتراك تُقرأ حقيقية من Meta عبر `GET /api/platforms/facebook/webhook-info`. لا يُعلن «تم التسليم» إلا بمعرّف من Meta.
+  - متغيرات البيئة المطلوبة (أسماء فقط، بلا قيم): `FACEBOOK_OAUTH_CLIENT_ID`، `FACEBOOK_OAUTH_CLIENT_SECRET`، `FACEBOOK_APP_SECRET`، `FACEBOOK_VERIFY_TOKEN`، واختياري `FACEBOOK_GRAPH_VERSION` و`FACEBOOK_SUBSCRIBED_FIELDS`. راجع `.env.example`.
 - بقية المنصات تبقى في وضع `adapter-ready-credentials-required` إلى أن تضاف بيانات تطبيق المزود وعمليات API الخاصة به؛ لا يوجد أي ادعاء بالنشر الوهمي.
 - قبل التشغيل يجب تسجيل redirect URIs الفعلية لدى المزودين واستخدام HTTPS.
 

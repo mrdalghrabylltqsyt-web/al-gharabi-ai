@@ -24,6 +24,14 @@ import {
   type TelegramFetch,
 } from "./engine/social/telegram";
 import {
+  FacebookClient,
+  parseFacebookWebhook,
+  facebookGraphUrl,
+  FACEBOOK_SIGNATURE_HEADER,
+  type FacebookFetch,
+  type FacebookPageIdentity,
+} from "./engine/social/facebook";
+import {
   createOAuthState,
   createPkcePair,
   requiresPkce,
@@ -254,7 +262,7 @@ function loadPersistentState(snapshot?: any): any {
     if (!raw.schemaVersion) raw.schemaVersion = 1;
     const users = Array.isArray(raw.users) ? raw.users : [defaultOwner];
     if (!users.some((u: ServerUser) => u.id === "owner")) users.unshift(defaultOwner);
-    return { users, revokedSessions: Array.isArray(raw.revokedSessions) ? raw.revokedSessions : [], userRevocations: Array.isArray(raw.userRevocations) ? raw.userRevocations : [], audit: Array.isArray(raw.audit) ? raw.audit.slice(0, 200) : [], jobs: Array.isArray(raw.jobs) ? raw.jobs.slice(0, 200) : [], platformConnections: Array.isArray(raw.platformConnections) ? raw.platformConnections : [], workspace: raw.workspace && typeof raw.workspace === "object" ? { showroom: raw.workspace.showroom || {}, products: Array.isArray(raw.workspace.products) ? raw.workspace.products.slice(0, 1000) : [], posts: Array.isArray(raw.workspace.posts) ? raw.workspace.posts.slice(0, 1000) : [], conversations: Array.isArray(raw.workspace.conversations) ? raw.workspace.conversations.slice(0, 1000) : [], installmentPlans: Array.isArray(raw.workspace.installmentPlans) ? raw.workspace.installmentPlans.slice(0, 200) : [], leads: Array.isArray(raw.workspace.leads) ? raw.workspace.leads.slice(0, 2000) : [], tasks: Array.isArray(raw.workspace.tasks) ? raw.workspace.tasks.slice(0, 1000) : [], sales: Array.isArray(raw.workspace.sales) ? raw.workspace.sales.slice(0, 5000) : [], payments: Array.isArray(raw.workspace.payments) ? raw.workspace.payments.slice(0, 10000) : [], inventoryMovements: Array.isArray(raw.workspace.inventoryMovements) ? raw.workspace.inventoryMovements.slice(0, 20000) : [], suppliers: Array.isArray(raw.workspace.suppliers) ? raw.workspace.suppliers.slice(0, 1000) : [], purchases: Array.isArray(raw.workspace.purchases) ? raw.workspace.purchases.slice(0, 5000) : [], expenses: Array.isArray(raw.workspace.expenses) ? raw.workspace.expenses.slice(0, 10000) : [], contracts: Array.isArray(raw.workspace.contracts) ? raw.workspace.contracts.slice(0, 5000) : [], installmentSchedules: Array.isArray(raw.workspace.installmentSchedules) ? raw.workspace.installmentSchedules.slice(0, 20000) : [], notifications: Array.isArray(raw.workspace.notifications) ? raw.workspace.notifications.slice(0, 10000) : [], webhookEvents: Array.isArray(raw.workspace.webhookEvents) ? raw.workspace.webhookEvents.slice(0, 10000) : [], providerEvents: Array.isArray(raw.workspace.providerEvents) ? raw.workspace.providerEvents.slice(0, 10000) : [], marketingBriefs: Array.isArray(raw.workspace.marketingBriefs) ? raw.workspace.marketingBriefs.slice(0, 2000) : [], marketingCampaigns: Array.isArray(raw.workspace.marketingCampaigns) ? raw.workspace.marketingCampaigns.slice(0, 1000) : [], socialComments: Array.isArray(raw.workspace.socialComments) ? raw.workspace.socialComments.slice(0, 10000) : [], socialReplies: Array.isArray(raw.workspace.socialReplies) ? raw.workspace.socialReplies.slice(0, 5000) : [], socialApprovals: Array.isArray(raw.workspace.socialApprovals) ? raw.workspace.socialApprovals.slice(0, 5000) : [], publishRecords: Array.isArray(raw.workspace.publishRecords) ? raw.workspace.publishRecords.slice(0, 5000) : [], performanceRecords: Array.isArray(raw.workspace.performanceRecords) ? raw.workspace.performanceRecords.slice(0, 20000) : [], marketingDecisions: Array.isArray(raw.workspace.marketingDecisions) ? raw.workspace.marketingDecisions.slice(0, 2000) : [], strategiesTested: Array.isArray(raw.workspace.strategiesTested) ? raw.workspace.strategiesTested.slice(0, 2000) : [], telegramUpdateIds: Array.isArray(raw.workspace.telegramUpdateIds) ? raw.workspace.telegramUpdateIds.slice(0, 20000) : [], providerTokens: raw.workspace.providerTokens && typeof raw.workspace.providerTokens === "object" ? raw.workspace.providerTokens : {} } : { showroom: {}, products: [], posts: [], conversations: [], installmentPlans: [], leads: [], tasks: [], sales: [], payments: [], inventoryMovements: [], suppliers: [], purchases: [], expenses: [], contracts: [], installmentSchedules: [], notifications: [], webhookEvents: [], providerEvents: [], marketingBriefs: [], marketingCampaigns: [], socialComments: [], socialReplies: [], socialApprovals: [], publishRecords: [], performanceRecords: [], marketingDecisions: [], strategiesTested: [], telegramUpdateIds: [], providerTokens: {} } };
+    return { users, revokedSessions: Array.isArray(raw.revokedSessions) ? raw.revokedSessions : [], userRevocations: Array.isArray(raw.userRevocations) ? raw.userRevocations : [], audit: Array.isArray(raw.audit) ? raw.audit.slice(0, 200) : [], jobs: Array.isArray(raw.jobs) ? raw.jobs.slice(0, 200) : [], platformConnections: Array.isArray(raw.platformConnections) ? raw.platformConnections : [], workspace: raw.workspace && typeof raw.workspace === "object" ? { showroom: raw.workspace.showroom || {}, products: Array.isArray(raw.workspace.products) ? raw.workspace.products.slice(0, 1000) : [], posts: Array.isArray(raw.workspace.posts) ? raw.workspace.posts.slice(0, 1000) : [], conversations: Array.isArray(raw.workspace.conversations) ? raw.workspace.conversations.slice(0, 1000) : [], installmentPlans: Array.isArray(raw.workspace.installmentPlans) ? raw.workspace.installmentPlans.slice(0, 200) : [], leads: Array.isArray(raw.workspace.leads) ? raw.workspace.leads.slice(0, 2000) : [], tasks: Array.isArray(raw.workspace.tasks) ? raw.workspace.tasks.slice(0, 1000) : [], sales: Array.isArray(raw.workspace.sales) ? raw.workspace.sales.slice(0, 5000) : [], payments: Array.isArray(raw.workspace.payments) ? raw.workspace.payments.slice(0, 10000) : [], inventoryMovements: Array.isArray(raw.workspace.inventoryMovements) ? raw.workspace.inventoryMovements.slice(0, 20000) : [], suppliers: Array.isArray(raw.workspace.suppliers) ? raw.workspace.suppliers.slice(0, 1000) : [], purchases: Array.isArray(raw.workspace.purchases) ? raw.workspace.purchases.slice(0, 5000) : [], expenses: Array.isArray(raw.workspace.expenses) ? raw.workspace.expenses.slice(0, 10000) : [], contracts: Array.isArray(raw.workspace.contracts) ? raw.workspace.contracts.slice(0, 5000) : [], installmentSchedules: Array.isArray(raw.workspace.installmentSchedules) ? raw.workspace.installmentSchedules.slice(0, 20000) : [], notifications: Array.isArray(raw.workspace.notifications) ? raw.workspace.notifications.slice(0, 10000) : [], webhookEvents: Array.isArray(raw.workspace.webhookEvents) ? raw.workspace.webhookEvents.slice(0, 10000) : [], providerEvents: Array.isArray(raw.workspace.providerEvents) ? raw.workspace.providerEvents.slice(0, 10000) : [], marketingBriefs: Array.isArray(raw.workspace.marketingBriefs) ? raw.workspace.marketingBriefs.slice(0, 2000) : [], marketingCampaigns: Array.isArray(raw.workspace.marketingCampaigns) ? raw.workspace.marketingCampaigns.slice(0, 1000) : [], socialComments: Array.isArray(raw.workspace.socialComments) ? raw.workspace.socialComments.slice(0, 10000) : [], socialReplies: Array.isArray(raw.workspace.socialReplies) ? raw.workspace.socialReplies.slice(0, 5000) : [], socialApprovals: Array.isArray(raw.workspace.socialApprovals) ? raw.workspace.socialApprovals.slice(0, 5000) : [], publishRecords: Array.isArray(raw.workspace.publishRecords) ? raw.workspace.publishRecords.slice(0, 5000) : [], performanceRecords: Array.isArray(raw.workspace.performanceRecords) ? raw.workspace.performanceRecords.slice(0, 20000) : [], marketingDecisions: Array.isArray(raw.workspace.marketingDecisions) ? raw.workspace.marketingDecisions.slice(0, 2000) : [], strategiesTested: Array.isArray(raw.workspace.strategiesTested) ? raw.workspace.strategiesTested.slice(0, 2000) : [], telegramUpdateIds: Array.isArray(raw.workspace.telegramUpdateIds) ? raw.workspace.telegramUpdateIds.slice(0, 20000) : [], facebookEventIds: Array.isArray(raw.workspace.facebookEventIds) ? raw.workspace.facebookEventIds.slice(0, 20000) : [], providerTokens: raw.workspace.providerTokens && typeof raw.workspace.providerTokens === "object" ? raw.workspace.providerTokens : {} } : { showroom: {}, products: [], posts: [], conversations: [], installmentPlans: [], leads: [], tasks: [], sales: [], payments: [], inventoryMovements: [], suppliers: [], purchases: [], expenses: [], contracts: [], installmentSchedules: [], notifications: [], webhookEvents: [], providerEvents: [], marketingBriefs: [], marketingCampaigns: [], socialComments: [], socialReplies: [], socialApprovals: [], publishRecords: [], performanceRecords: [], marketingDecisions: [], strategiesTested: [], telegramUpdateIds: [], facebookEventIds: [], providerTokens: {} } };
   } catch {
     return { users: [defaultOwner], revokedSessions: [], userRevocations: [], audit: [], jobs: [], workspace: { showroom: {}, products: [], posts: [], conversations: [], installmentPlans: [], leads: [], tasks: [], sales: [], payments: [], inventoryMovements: [], suppliers: [], purchases: [], expenses: [], contracts: [], installmentSchedules: [], notifications: [], webhookEvents: [], providerEvents: [], marketingBriefs: [], marketingCampaigns: [], socialComments: [], socialReplies: [], socialApprovals: [], publishRecords: [], performanceRecords: [], marketingDecisions: [], strategiesTested: [], telegramUpdateIds: [], providerTokens: {} } };
   }
@@ -309,7 +317,7 @@ const workspace = persisted.workspace;
 for (const key of ["inventoryMovements","suppliers","purchases","expenses","contracts","installmentSchedules","notifications","webhookEvents","providerEvents"]) if (!Array.isArray((workspace as any)[key])) (workspace as any)[key] = [];
 if (!Array.isArray((workspace as any).inventoryMovements)) (workspace as any).inventoryMovements = [];
 for (const key of ["suppliers","purchases","expenses","contracts","installmentSchedules","notifications","webhookEvents","providerEvents","marketingBriefs","marketingCampaigns"]) if (!Array.isArray((workspace as any)[key])) (workspace as any)[key] = [];
-for (const key of ["telegramUpdateIds"]) if (!Array.isArray((workspace as any)[key])) (workspace as any)[key] = [];
+for (const key of ["telegramUpdateIds","facebookEventIds"]) if (!Array.isArray((workspace as any)[key])) (workspace as any)[key] = [];
 if (!(workspace as any).providerTokens || typeof (workspace as any).providerTokens !== "object") (workspace as any).providerTokens = {};
 // سجلات مدير السوشيال ميديا: تعليقات، ردود، نتائج نشر، وقرارات تسويقية.
 // كلها سجلات تشغيلية حقيقية تُبنى من عمليات فعلية فقط.
@@ -915,7 +923,7 @@ const OAUTH_CONFIG: Record<string, any> = {
   youtube: { provider: "google", auth: "https://accounts.google.com/o/oauth2/v2/auth", token: "https://oauth2.googleapis.com/token", clientId: process.env.GOOGLE_OAUTH_CLIENT_ID || process.env.GOOGLE_CLIENT_ID, clientSecret: process.env.GOOGLE_OAUTH_CLIENT_SECRET, scopes: ["https://www.googleapis.com/auth/youtube.upload"], callback: `${BASE_URL}/api/platforms/youtube/oauth/callback` },
   google_business: { provider: "google", auth: "https://accounts.google.com/o/oauth2/v2/auth", token: "https://oauth2.googleapis.com/token", clientId: process.env.GOOGLE_OAUTH_CLIENT_ID || process.env.GOOGLE_CLIENT_ID, clientSecret: process.env.GOOGLE_OAUTH_CLIENT_SECRET, scopes: ["https://www.googleapis.com/auth/business.manage"], callback: `${BASE_URL}/api/platforms/google_business/oauth/callback` },
   tiktok: { provider: "tiktok", auth: "https://www.tiktok.com/v2/auth/authorize/", token: "https://open.tiktokapis.com/v2/oauth/token/", clientId: process.env.TIKTOK_CLIENT_KEY, clientSecret: process.env.TIKTOK_CLIENT_SECRET, scopes: ["user.info.basic", "video.publish"], callback: `${BASE_URL}/api/platforms/tiktok/oauth/callback` },
-  facebook: { provider: "meta", auth: "https://www.facebook.com/v21.0/dialog/oauth", token: "https://graph.facebook.com/v21.0/oauth/access_token", clientId: process.env.FACEBOOK_OAUTH_CLIENT_ID, clientSecret: process.env.FACEBOOK_OAUTH_CLIENT_SECRET, scopes: ["pages_manage_posts", "pages_read_engagement", "pages_manage_engagement", "pages_messaging"], callback: `${BASE_URL}/api/platforms/facebook/oauth/callback` },
+  facebook: { provider: "meta", auth: "https://www.facebook.com/v21.0/dialog/oauth", token: "https://graph.facebook.com/v21.0/oauth/access_token", clientId: process.env.FACEBOOK_OAUTH_CLIENT_ID, clientSecret: process.env.FACEBOOK_OAUTH_CLIENT_SECRET, scopes: ["pages_show_list", "pages_read_engagement", "pages_manage_engagement", "pages_manage_posts", "pages_manage_metadata", "pages_messaging"], callback: `${BASE_URL}/api/platforms/facebook/oauth/callback` },
   instagram: { provider: "meta", auth: "https://www.facebook.com/v21.0/dialog/oauth", token: "https://graph.facebook.com/v21.0/oauth/access_token", clientId: process.env.INSTAGRAM_OAUTH_CLIENT_ID, clientSecret: process.env.INSTAGRAM_OAUTH_CLIENT_SECRET, scopes: ["instagram_basic", "instagram_manage_comments", "instagram_manage_messages", "pages_show_list"], callback: `${BASE_URL}/api/platforms/instagram/oauth/callback` },
   x: { provider: "x", auth: "https://twitter.com/i/oauth2/authorize", token: "https://api.twitter.com/2/oauth2/token", clientId: process.env.X_OAUTH_CLIENT_ID, clientSecret: process.env.X_OAUTH_CLIENT_SECRET, scopes: ["tweet.read", "tweet.write", "users.read", "offline.access"], callback: `${BASE_URL}/api/platforms/x/oauth/callback` },
   snapchat: { provider: "snapchat", auth: "https://accounts.snapchat.com/login/oauth2/authorize", token: "https://accounts.snapchat.com/login/oauth2/access_token", clientId: process.env.SNAPCHAT_OAUTH_CLIENT_ID, clientSecret: process.env.SNAPCHAT_OAUTH_CLIENT_SECRET, scopes: ["snapchat-marketing-api"], callback: `${BASE_URL}/api/platforms/snapchat/oauth/callback` },
@@ -979,6 +987,92 @@ function logTelegramWebhook(event: { updateId: number | null; externalId?: strin
 /** هل موصل Telegram الحقيقي مكتمل الإعداد الآن؟ */
 function telegramConnectorConfigured(): boolean { return Boolean(telegramBotToken() && telegramWebhookSecret()); }
 
+// -------------------------------------------------------------
+// Facebook — ثاني موصل اجتماعي حقيقي (OAuth + Page Access Token).
+// الأسرار تُقرأ من بيئة الخادم فقط أو تُحفظ مشفّرة عبر محوّل الحالة. لا يُعلن
+// اتصال ولا يُرسل رد بلا إثبات فعلي من Meta Graph.
+// -------------------------------------------------------------
+const FACEBOOK_APP_SECRET_ENV = (process.env.FACEBOOK_APP_SECRET || "").trim();
+const FACEBOOK_VERIFY_TOKEN_ENV = (process.env.FACEBOOK_VERIFY_TOKEN || "").trim();
+const FACEBOOK_GRAPH_API_BASE_ENV = process.env.FACEBOOK_GRAPH_API_BASE;
+/** الحقول التي نشترك بها في webhook الصفحة: التعليقات والرسائل فقط. */
+const FACEBOOK_SUBSCRIBED_FIELDS = ["feed", "messages"];
+const faceBookFetchImpl: FacebookFetch = (url, init) => fetch(url, init as any);
+function facebookClient(): FacebookClient { return new FacebookClient(faceBookFetchImpl, FACEBOOK_GRAPH_API_BASE_ENV); }
+function facebookOAuthConfig(): any { return OAUTH_CONFIG["facebook"]; }
+/** سرّ توقيع webhook: من اعتماد الصفحة المحفوظ ثم البيئة. */
+function facebookAppSecret(): string {
+  const stored = getProviderToken("facebook");
+  if (stored?.appSecret) return String(stored.appSecret);
+  return FACEBOOK_APP_SECRET_ENV;
+}
+/** رمز تحقق الاشتراك: من الاعتماد المحفوظ ثم البيئة. */
+function facebookVerifyToken(): string { return FACEBOOK_VERIFY_TOKEN_ENV; }
+/** رابط استقبال أحداث Facebook لهذا الخادم. */
+function facebookWebhookUrl(): string { return `${BASE_URL}/api/platforms/facebook/webhook`; }
+/** رمز صفحة الاتصال الحالي (Page Access Token) من الاعتماد المشفّر. */
+function facebookPageToken(pageId?: string): string | null {
+  const stored = getProviderToken("facebook");
+  if (!stored?.pageAccessToken) return null;
+  if (pageId && stored.pageId && String(stored.pageId) !== String(pageId)) return null;
+  return String(stored.pageAccessToken);
+}
+/** يهرب النص قبل إدراجه في صفحة HTML (اسم الصفحة من المزود). */
+function escapeHtml(value: string): string {
+  return String(value).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c] as string));
+}
+/** انتهاء مطلق للرمز من expires_in (ثوانٍ) أو null عند غيابه. */
+function parsedTokenExpiry(token: any): number | null {
+  const n = Number(token?.expires_in);
+  return Number.isFinite(n) && n > 0 ? Date.now() + n * 1000 : null;
+}
+/** هل موصل Facebook مكتمل الإعداد للاتصال؟ (تطبيق + مفتاح تشفير). */
+function facebookConnectorConfigured(): boolean {
+  const c = facebookOAuthConfig();
+  return Boolean(c?.clientId && c?.clientSecret && process.env.APP_URL && tokenKeyBytes());
+}
+/** تسجيل آمن لحدث Facebook الوارد. ممنوع تسجيل أي سرّ أو نص. */
+function logFacebookWebhook(event: { kind: string; externalId?: string | null; outcome: "accepted" | "duplicate" | "rejected" | "ignored"; persisted?: boolean }): void {
+  const parts = ["[facebook-webhook]", "platform=facebook", `kind=${event.kind}`, `outcome=${event.outcome}`];
+  if (event.externalId) parts.push(`external=${event.externalId}`);
+  if (typeof event.persisted === "boolean") parts.push(`persisted=${event.persisted}`);
+  console.log(parts.join(" "));
+}
+/** يحفظ اعتماد Facebook مشفّراً (رمز الصفحة + الهوية + سرّ التوقيع) بلا كشفه. */
+function saveFacebookCredentials(input: { pageId: string; pageName?: string | null; pageAccessToken: string; userAccessToken?: string | null; appSecret?: string }) {
+  const existing = getProviderToken("facebook") || {};
+  setProviderToken("facebook", {
+    ...existing,
+    pageId: input.pageId,
+    pageName: input.pageName || existing.pageName || "",
+    pageAccessToken: input.pageAccessToken,
+    userAccessToken: input.userAccessToken || existing.userAccessToken || "",
+    appSecret: input.appSecret || existing.appSecret || FACEBOOK_APP_SECRET_ENV || "",
+    connectedAt: existing.connectedAt || new Date().toISOString(),
+  });
+}
+
+/**
+ * يثبت صفحة محدّدة فعلياً: يجلب هويتها ورمزها من Graph، يشترك تطبيقنا في
+ * أحداثها (feed/messages)، ثم يحفظ الاعتماد ويعلن الاتصال الموثق. لا يُعلن
+ * الاتصال بلا استجابة صفحة حقيقية. تُستخدم من OAuth callback ومن اختيار الصفحة.
+ */
+async function facebookFinalizePageSelection(pageId: string, userAccessToken: string): Promise<{ ok: boolean; pageName?: string | null; error?: string; subscribed?: boolean }> {
+  const client = facebookClient();
+  const proof = await client.getPageProfile(pageId, userAccessToken);
+  if (!proof.ok || !proof.data?.pageId || !proof.data.pageAccessToken) {
+    return { ok: false, error: proof.error || "تعذّر إثبات هوية الصفحة أو الحصول على رمز الصفحة." };
+  }
+  const pageToken = proof.data.pageAccessToken;
+  // اشتراك التطبيق في أحداث الصفحة. عدم الاشتراك لا يُبطل الاتصال لكنه يُعلن
+  // صراحةً لأن بدون اشتراك لن تصل أي أحداث webhook.
+  const sub = await client.subscribeApp(pageId, pageToken, FACEBOOK_SUBSCRIBED_FIELDS);
+  saveFacebookCredentials({ pageId: proof.data.pageId, pageName: proof.data.pageName, pageAccessToken: pageToken, userAccessToken });
+  platformConnections.set("facebook", { platform: "facebook", status: "connected", accountId: proof.data.pageId, accountName: proof.data.pageName || "Facebook Page", connectedAt: new Date().toISOString(), providerVerified: true });
+  savePlatformConnections();
+  return { ok: true, pageName: proof.data.pageName, subscribed: sub.ok, error: sub.ok ? undefined : sub.error };
+}
+
 /**
  * يثبت اتصال المزود حقيقةً لمسار `connection-callback` بدل الثقة بالعميل.
  * يدعم فقط المزودات ذات الموصل الحقيقي المنفّذ (Telegram)؛ وغيرها يُرفض
@@ -993,6 +1087,16 @@ async function verifyProviderConnection(platform: string): Promise<{ verified: b
     // رمز البوت نفسه دليل الاتصال؛ وضبط webhook يجب أن يكون قد اكتمل.
     if (!telegramWebhookSecret()) return { verified: false, error: "webhook غير مضبوط؛ لا يُوثّق الاتصال بدون استقبال حقيقي." };
     return { verified: true, accountId: me.botId, accountName: me.username ? `@${me.username}` : me.firstName || undefined };
+  }
+  if (platform === "facebook") {
+    const stored = getProviderToken("facebook");
+    const pageId = stored?.pageId ? String(stored.pageId) : "";
+    const token = stored?.pageAccessToken ? String(stored.pageAccessToken) : "";
+    if (!pageId || !token) return { verified: false, error: "لا اعتماد صفحة Facebook محفوظ؛ نفّذ الربط عبر OAuth أولاً." };
+    // إثبات حي: نستعلم عن هوية الصفحة فعلياً من Graph API بلا أي ادعاء.
+    const proof = await facebookClient().getPageProfile(pageId, token);
+    if (!proof.ok || !proof.data?.pageId) return { verified: false, error: proof.error || "تعذر إثبات هوية صفحة Facebook." };
+    return { verified: true, accountId: proof.data.pageId, accountName: proof.data.pageName || stored?.pageName || undefined };
   }
   return { verified: false, error: "لا يوجد موصل إثبات حقيقي لهذه المنصة؛ إتمام الاتصال يحتاج اعتماد تطبيق من المزود." };
 }
@@ -1021,6 +1125,34 @@ function publicProviderReadiness(platform: string): { configured: boolean; mode:
         : missing.length
           ? "زوّد البيئة برمز البوت وسرّ webhook ثم اضغط «ربط Telegram» لتنفيذ getMe وضبط webhook فعلياً."
           : "الموصل مكتمل الإعداد؛ نفّذ الضبط لتسجيل webhook الحقيقي ثم اختبر الإرسال.",
+    };
+  }
+  if (platform === "facebook") {
+    // موصل حقيقي: OAuth + رمز صفحة + سرّ توقيع + رمز تحقق + مفتاح تشفير + APP_URL.
+    const c = facebookOAuthConfig();
+    const stored = getProviderToken("facebook");
+    const missing = [
+      !c?.clientId && "FACEBOOK_OAUTH_CLIENT_ID",
+      !c?.clientSecret && "FACEBOOK_OAUTH_CLIENT_SECRET",
+      !facebookAppSecret() && "FACEBOOK_APP_SECRET",
+      !facebookVerifyToken() && "FACEBOOK_VERIFY_TOKEN",
+      !stored?.pageAccessToken && "Page Access Token (يُكتسب عبر OAuth)",
+      tokenMissing,
+      !process.env.APP_URL && "APP_URL",
+    ].filter((x): x is string => Boolean(x));
+    const invalid = [tokenInvalid].filter((x): x is string => Boolean(x));
+    return {
+      configured: facebookConnectorConfigured() && Boolean(stored?.pageAccessToken),
+      mode: "oauth2",
+      action: "authorize",
+      missing,
+      invalid,
+      realConnector: true,
+      next: invalid.length
+        ? `استبدل قيمة PLATFORM_TOKEN_ENCRYPTION_KEY بقيمة صالحة (32 بايت hex أو Base64) ثم أعد المحاولة.`
+        : missing.length
+          ? "زوّد البيئة ببيانات تطبيق Meta (Client ID/Secret وAPP_SECRET وVERIFY_TOKEN) ثم نفّذ الربط عبر OAuth لاختيار الصفحة."
+          : "الموصل مكتمل الإعداد؛ نفّذ الربط لاختيار الصفحة وإثباتها ثم اختبر الاستقبال والرد.",
     };
   }
   const c = OAUTH_CONFIG[platform];
@@ -1119,7 +1251,35 @@ app.get("/api/platforms/:platform/oauth/callback", async (req,res)=>{
   const code=typeof req.query.code==="string"?req.query.code:""; if(!code) return res.status(400).send("لم يتم استلام رمز OAuth.");
   try {
     const body=buildTokenExchangeBody({clientId:cfg.clientId,clientSecret:cfg.clientSecret,code,redirectUri:cfg.callback,codeVerifier:pending!.codeVerifier});
-    const tokenRes=await fetch(cfg.token,{method:"POST",headers:{"Content-Type":"application/x-www-form-urlencoded"},body}); const token=await tokenRes.json();
+    // Facebook يبادل الرمز عبر GET على نقطة oauth/access_token (سلوك Meta الرسمي)
+    // بخلاف مزودي application/x-www-form-urlencoded؛ الفرق معزول هنا.
+    let token: any;
+    if(platform==="facebook") {
+      const client=facebookClient();
+      const short=await client.exchangeCode({clientId:cfg.clientId,clientSecret:cfg.clientSecret,code,redirectUri:cfg.callback});
+      if(!short.ok || !short.data?.accessToken) throw new Error(short.error||"فشل تبادل رمز Facebook.");
+      // رمز الصفحة الدائم يُشتق من رمز مستخدم طويل الأجل؛ نُطيله بدل الاعتماد على رمز قصير.
+      const long=await client.exchangeLongLived({clientId:cfg.clientId,clientSecret:cfg.clientSecret,shortToken:short.data.accessToken});
+      const userToken=long.ok && long.data?.accessToken ? long.data.accessToken : short.data.accessToken;
+      token={access_token:userToken,expires_in:long.data?.expiresIn??short.data.expiresIn};
+      // ترشيح الصفحات: صفحة واحدة => ربط مباشر؛ عدة صفحات => اختيار من الواجهة.
+      const pages=await client.listManagedPages(userToken);
+      if(!pages.ok || !pages.data?.length) throw new Error(pages.error||"لا توجد صفحة Facebook يديرها هذا الحساب؛ الربط خاص بصفحات لا بالحساب الشخصي.");
+      if(pages.data.length===1) {
+        const fin=await facebookFinalizePageSelection(pages.data[0].pageId,userToken);
+        if(!fin.ok) throw new Error(fin.error||"تعذّر إتمام ربط الصفحة.");
+        setProviderToken("facebook",{...token,pageId:pages.data[0].pageId,pageName:pages.data[0].pageName||"",pageAccessToken:getProviderToken("facebook")?.pageAccessToken||pages.data[0].pageAccessToken||"",userAccessToken:userToken,expiresAt:parsedTokenExpiry(token)});
+        await persistStateDurable();
+        audit(pending!.userId,"platform_oauth_connected",`facebook:${pages.data[0].pageId}`);
+        return res.send(`<html lang='ar' dir='rtl'><meta charset='utf-8'><title>تم الربط</title><body style='font-family:sans-serif;padding:40px'><h2>تم ربط صفحة Facebook بنجاح.</h2><p>${escapeHtml(pages.data[0].pageName||"")} — يمكنك إغلاق هذه النافذة والعودة إلى الغرابي AI.</p></body></html>`);
+      }
+      // نحفظ رمز المستخدم مؤقتاً (مشفّراً) لاختيار الصفحة، ولا نعلن اتصالاً بعد.
+      setProviderToken("facebook",{...token,userAccessToken:userToken,expiresAt:parsedTokenExpiry(token),pendingPageSelection:true});
+      await persistStateDurable();
+      audit(pending!.userId,"platform_oauth_page_selection_pending",`facebook:${pages.data.length}`);
+      return res.send(`<html lang='ar' dir='rtl'><meta charset='utf-8'><title>اختيار الصفحة</title><body style='font-family:sans-serif;padding:40px'><h2>تم الربط، لكن الحساب يدير أكثر من صفحة.</h2><p>اختر الصفحة التي تريد ربطها من مركز ربط المنصات في الغرابي AI لإتمام الربط.</p></body></html>`);
+    }
+    const tokenRes=await fetch(cfg.token,{method:"POST",headers:{"Content-Type":"application/x-www-form-urlencoded"},body}); token=await tokenRes.json();
     const parsedToken=parseTokenResponse(token);
     if(!tokenRes.ok || !parsedToken.valid) throw new Error(parsedToken.reason||token.error_description||token.error||"فشل تبادل رمز OAuth");
     // إثبات حساب حقيقي حيث توفّره الواجهة الرسمية (لا نختلق هوية عند غياب الاستعلام).
@@ -1263,6 +1423,226 @@ app.get("/api/platforms/telegram/webhook-info", requireOwner, async (_req,res)=>
   });
 });
 
+// Express JSON parser that also captures the raw body for HMAC verification.
+const captureRawBody = express.json({ limit: "512kb", verify: (req: any, _res, buf) => { req.rawBody = buf?.toString("utf8") ?? ""; } });
+
+// -------------------------------------------------------------
+// Facebook — مسارات الموصل الحقيقي (OAuth + webhook + رد + رسالة).
+// التحقق: HMAC-SHA256 على الجسم الخام (X-Hub-Signature-256). منع التكرار:
+// معرّف الحدث الحقيقي من Meta (comment_id/mid) محفوظاً عبر المحوّل.
+// لا يُقبل حدث بلا توقيع صحيح، ولا يُخزَّن مكرر، ولا يُعلن تسليم بلا معرّف مزود.
+// -------------------------------------------------------------
+
+/** ترشيح الصفحات التي يديرها المستخدم بعد OAuth (لاختيار الصفحة يدوياً). */
+app.get("/api/platforms/facebook/pages", requireOwner, async (_req,res)=>{
+  const stored=getProviderToken("facebook");
+  const userToken=stored?.userAccessToken?String(stored.userAccessToken):"";
+  if(!userToken) return res.status(409).json({success:false,error:"لا رمز مستخدم Facebook محفوظ؛ نفّذ الربط عبر OAuth أولاً."});
+  const pages=await facebookClient().listManagedPages(userToken);
+  if(!pages.ok) return res.status(502).json({success:false,error:pages.error||"تعذّر جلب صفحات Facebook."});
+  // لا يُعاد أي رمز صفحة للواجهة؛ معرّف واسم فقط.
+  res.json({success:true,pages:(pages.data||[]).map((p)=>({pageId:p.pageId,pageName:p.pageName})),note:"معرّفات وأسماء فقط بلا أي رمز وصول."});
+});
+
+/** اختيار صفحة محدّدة لإتمام الربط (يثبتها ويشترك بها فعلياً). */
+app.post("/api/platforms/facebook/select-page", requireOwner, async (req,res)=>{
+  const pageId=typeof req.body?.pageId==="string"?req.body.pageId.trim():"";
+  if(!pageId) return res.status(400).json({success:false,error:"معرّف الصفحة مطلوب."});
+  const stored=getProviderToken("facebook");
+  const userToken=stored?.userAccessToken?String(stored.userAccessToken):"";
+  if(!userToken) return res.status(409).json({success:false,error:"لا رمز مستخدم Facebook محفوظ؛ نفّذ الربط عبر OAuth أولاً."});
+  const result=await facebookFinalizePageSelection(pageId,userToken);
+  if(!result.ok) return res.status(502).json({success:false,error:result.error||"تعذّر ربط الصفحة المختارة."});
+  await persistStateDurable();
+  audit((req as any).user.id,"facebook_page_selected",pageId);
+  res.json({success:true,connection:safeConnection("facebook"),pageName:result.pageName||null,webhookSubscribed:result.subscribed===true});
+});
+
+/** إثبات اشتراك الصفحة الفعلي في webhook (مقابل subscribed_apps). */
+app.get("/api/platforms/facebook/webhook-info", requireOwner, async (_req,res)=>{
+  const stored=getProviderToken("facebook");
+  const pageId=stored?.pageId?String(stored.pageId):"";
+  const pageToken=facebookPageToken(pageId||undefined);
+  if(!pageId||!pageToken) return res.status(409).json({success:false,error:"لا صفحة Facebook موثقة؛ نفّذ الربط أولاً."});
+  const subs=await facebookClient().getSubscribedApps(pageId,pageToken);
+  if(!subs.ok) return res.status(502).json({success:false,error:subs.error||"تعذّر قراءة اشتراكات الصفحة."});
+  res.json({
+    success:true,provider:"facebook",
+    pageId,pageName:stored?.pageName||null,
+    webhookUrl:facebookWebhookUrl(),
+    subscribedFields:FACEBOOK_SUBSCRIBED_FIELDS,
+    appSubscribed:(subs.data||[]).length>0,
+    subscribedAppCount:(subs.data||[]).length,
+    signatureSecretConfigured:Boolean(facebookAppSecret()),
+    verifyTokenConfigured:Boolean(facebookVerifyToken()),
+    checkedAt:new Date().toISOString(),
+    note:"حالة حقيقية من Meta بلا أي سرّ. لا يُعلن الاستقبال فعّالاً إلا باشتراك الصفحة الفعلي وتطابق رمز التحقق.",
+  });
+});
+
+/** استقبال أحداث Facebook — تحقق HMAC على الجسم الخام ثم تمييز التعليق عن الرسالة. */
+app.post("/api/platforms/facebook/webhook", captureRawBody, async (req,res)=>{
+  const secret=facebookAppSecret();
+  const rawBody=typeof (req as any).rawBody==="string"?(req as any).rawBody:JSON.stringify(req.body??{});
+  const verifier=hmacSignatureVerifier(FACEBOOK_SIGNATURE_HEADER,"sha256");
+  const verification=verifier.verify({headers:req.headers as Record<string,string|undefined>,rawBody,secret});
+  if(!verification.ok){ logFacebookWebhook({kind:"unknown",outcome:"rejected"}); return res.status(401).json({success:false,error:verification.reason||"حدث غير موثوق."}); }
+  if(!isValidWebhookPayload(req.body)) return res.status(400).json({success:false,error:"حمولة webhook غير صالحة."});
+  const parsed=parseFacebookWebhook(req.body);
+  if(!parsed.events.length){
+    // أحداث مفهومة الشكل لكن غير مدعومة (تفاعلات/منشورات...) تُقبل وتُتجاهل
+    // بلا خطأ، فلا يعيد Meta المحاولة، ولا تُخزَّن كتعليق أو رسالة.
+    if(parsed.ignored.length) logFacebookWebhook({kind:"ignored",outcome:"ignored"});
+    return res.status(200).json({success:true,accepted:true,ignored:parsed.ignored.length?parsed.ignored.map((x)=>x.reason):["no_supported_event"]});
+  }
+  if(!Array.isArray((workspace as any).socialComments)) (workspace as any).socialComments=[];
+  if(!Array.isArray((workspace as any).facebookEventIds)) (workspace as any).facebookEventIds=[];
+  const seenExternal=(workspace as any).socialComments.filter((c:any)=>c.platform==="facebook").map((c:any)=>c.externalId);
+  const accepted:string[]=[];
+  let duplicates=0;
+  for(const ev of parsed.events){
+    if(isReplayOrDuplicate({providerEventId:ev.externalId,externalId:ev.externalId,seenProviderEventIds:(workspace as any).facebookEventIds,seenExternalIds:[...seenExternal,...accepted]})){ duplicates+=1; logFacebookWebhook({kind:ev.kind,externalId:ev.externalId,outcome:"duplicate"}); continue; }
+    const classification=classifyComment(ev.text);
+    (workspace as any).socialComments.unshift({
+      id:workspaceId("comment"),platform:"facebook",kind:ev.kind,externalId:ev.externalId,
+      postExternalId:ev.parentExternalId,authorName:ev.authorName,text:ev.text,
+      createdAt:ev.createdAt,classification,requiresHumanReview:classification.requiresHumanReview,
+      // مصدر الاستقبال حقيقي صراحةً، فلا يظهر كـ simulated/not delivered.
+      ingestSource:"facebook_webhook",replyTarget:ev.replyTarget,
+    });
+    if((workspace as any).socialComments.length>10000) (workspace as any).socialComments.pop();
+    (workspace as any).facebookEventIds=[...(workspace as any).facebookEventIds,ev.externalId].slice(-20000);
+    accepted.push(ev.externalId);
+    logFacebookWebhook({kind:ev.kind,externalId:ev.externalId,outcome:"accepted"});
+  }
+  (workspace as any).webhookEvents.unshift(...accepted.map((id)=>({id:workspaceId("event"),platform:"facebook",type:"webhook",externalId:id,receivedAt:new Date().toISOString()})));
+  (workspace as any).webhookEvents=(workspace as any).webhookEvents.slice(0,10000);
+  // ننتظر الكتابة الدائمة قبل الإقرار: تضمن ثبات الحدث ومعرّف منع التكرار.
+  await persistStateDurable();
+  const persisted=!lastPersistError;
+  if(accepted.length) audit("system","facebook_inbound_events",`${accepted.length}/${parsed.events.length}`);
+  res.status(200).json({success:true,accepted:true,processed:accepted.length,duplicates,persisted,acceptedKinds:parsed.events.filter((e)=>accepted.includes(e.externalId)).map((e)=>e.kind)});
+});
+
+/** يبني هدف الرد الحقيقي من الحالة الحالية (صفحة + تعليق/مستلم). */
+function facebookReplyTarget(): { pageId: string; pageToken: string } | { error: string } {
+  const stored=getProviderToken("facebook");
+  const pageId=stored?.pageId?String(stored.pageId):"";
+  const pageToken=facebookPageToken(pageId||undefined);
+  if(!pageId||!pageToken) return {error:"لا صفحة Facebook موثقة؛ لا يمكن تنفيذ أي رد خارجي."};
+  return {pageId,pageToken};
+}
+
+/**
+ * الرد الحقيقي على تعليق Facebook — بعد الموافقة والتصنيف وحارس السلامة ومنع
+ * التكرار. لا يُسجَّل delivered=true إلا بمعرّف تعليق ردّ من Meta.
+ */
+app.post("/api/platforms/facebook/reply", requireOwner, async (req,res)=>{
+  const user=(req as any).user as {id:string};
+  const externalId=typeof req.body?.externalId==="string"?req.body.externalId.trim():"";
+  const text=typeof req.body?.text==="string"?req.body.text.trim():"";
+  const commentText=typeof req.body?.commentText==="string"?req.body.commentText:"";
+  if(!externalId) return res.status(400).json({success:false,error:"معرّف التعليق لدى Facebook مطلوب لمنع الرد المكرر."});
+  if(!text) return res.status(400).json({success:false,error:"نص الرد مطلوب."});
+  const conn:any=platformConnections.get("facebook");
+  if(!conn||conn.status!=="connected"||conn.providerVerified!==true){
+    return res.status(409).json({success:false,error:"Facebook غير متصل باتصال موثق؛ لا يمكن إرسال أي رد خارجي."});
+  }
+  const comment=(workspace as any).socialComments.find((c:any)=>c.platform==="facebook"&&c.externalId===externalId);
+  if(!comment) return res.status(404).json({success:false,error:"لا يوجد تعليق وارد بهذا المعرّف؛ لا إرسال بلا تعليق حقيقي."});
+
+  // 1) حمايات التصنيف وself-authored.
+  const classification=classifyComment(commentText||text);
+  if(!canAutoReply(classification)) return res.status(422).json({success:false,error:classification.reviewReason||"هذا التعليق يستوجب مراجعة بشرية قبل أي رد.",classification,requiresHumanReview:true});
+  const ownNames=[String(workspace.showroom?.name||""),"معرض الغرابي"];
+  if(isSelfAuthored(comment.authorName,ownNames)) return res.status(409).json({success:false,error:"التعليق صادر من حساب المعرض؛ لا يُرد عليه لتجنب حلقة ردود."});
+
+  // 2) حارس سلامة المحتوى قبل أي إرسال.
+  const productId=typeof req.body?.productId==="string"?req.body.productId.trim():"";
+  const productName=typeof req.body?.productName==="string"?req.body.productName.trim():"";
+  const product=(workspace.products||[]).find((p:any)=>(productId&&p.id===productId)||(productName&&p.name===productName))||null;
+  const replyFacts=buildFactsForProduct(product,Number(product?.downPaymentPercent||0),Number(product?.durationMonths||0));
+  const safety=analyzeBusinessClaims(text,replyFacts);
+  if(!safety.safe) return res.status(422).json({success:false,error:"نص الرد يحمل عرضاً تجارياً غير مسجّل، وتم إيقافه قبل أي إرسال.",contentSafety:{safe:false,violations:safety.blocked.map((v)=>v.detail),codes:safety.blocked.map((v)=>v.code)}});
+
+  // 3) بوابة منع الرد المكرر (على معرّف التعليق الخارجي).
+  const history:ReplyRecord[]=(workspace as any).socialReplies.filter((r:any)=>r.platform==="facebook").map((r:any)=>({externalId:r.externalId,replyFingerprint:r.replyFingerprint,repliedAt:r.repliedAt}));
+  const decision=evaluateReplyGuard({externalId,replyText:text,history});
+  if(!decision.allowed) return res.status(409).json({success:false,error:decision.reason,guard:decision});
+
+  // 4) إرسال حقيقي على مسار التعليقات فقط (comment_reply).
+  const target=facebookReplyTarget();
+  if("error" in target) return res.status(503).json({success:false,error:target.error});
+  const result=await facebookClient().replyToComment(String(comment.replyTarget?.commentId||externalId),target.pageToken,text);
+  const record={
+    id:workspaceId("reply"),platform:"facebook",externalId,text,kind:"comment",
+    replyFingerprint:decision.fingerprint,classification,
+    contentSafety:{safe:true,violations:[] as string[],codes:[] as string[]},
+    repliedAt:new Date().toISOString(),createdBy:user.id,simulated:false,
+    delivered:result.ok,providerReplyId:result.data?.providerCommentId||null,
+    receipt:result.ok?{provider:"facebook",commentId:result.data?.providerCommentId,sentAt:new Date().toISOString()}:null,
+    deliveryError:result.ok?null:(result.error||"فشل الرد على التعليق عبر Facebook."),
+    reviewStatus:result.ok?"delivered":"failed",
+    note:result.ok?"أُرسل الرد فعلياً عبر Facebook وثُبّت بمعرّف من Meta.":"فشل الإرسال عبر Facebook؛ لم يُسجَّل أي تسليم.",
+  };
+  if(!Array.isArray((workspace as any).socialReplies)) (workspace as any).socialReplies=[];
+  (workspace as any).socialReplies.unshift(record);
+  if((workspace as any).socialReplies.length>5000) (workspace as any).socialReplies.pop();
+  audit(user.id,result.ok?"social_facebook_comment_reply_sent":"social_facebook_comment_reply_failed",`${externalId}:${result.ok?"delivered":"failed"}`);
+  await persistStateDurable();
+  if(!result.ok) return res.status(502).json({success:false,delivered:false,simulated:false,reply:record,error:record.deliveryError});
+  res.json({success:true,delivered:true,simulated:false,providerReplyId:record.providerReplyId,reply:record});
+});
+
+/**
+ * الرد الحقيقي على رسالة Facebook Messenger — مسار منفصل تماماً عن تعليقات
+ * comment_reply (قدرة message_reply). لا تسليم بلا معرّف رسالة من Meta.
+ */
+app.post("/api/platforms/facebook/message-reply", requireOwner, async (req,res)=>{
+  const user=(req as any).user as {id:string};
+  const externalId=typeof req.body?.externalId==="string"?req.body.externalId.trim():"";
+  const recipientId=typeof req.body?.recipientId==="string"?req.body.recipientId.trim():"";
+  const text=typeof req.body?.text==="string"?req.body.text.trim():"";
+  const commentText=typeof req.body?.commentText==="string"?req.body.commentText:"";
+  if(!text) return res.status(400).json({success:false,error:"نص الرد مطلوب."});
+  const conn:any=platformConnections.get("facebook");
+  if(!conn||conn.status!=="connected"||conn.providerVerified!==true){
+    return res.status(409).json({success:false,error:"Facebook غير متصل باتصال موثق؛ لا يمكن إرسال أي رسالة خارجية."});
+  }
+  const comment=(workspace as any).socialComments.find((c:any)=>c.platform==="facebook"&&c.externalId===externalId&&c.kind==="message");
+  const targetRecipient=recipientId||String(comment?.replyTarget?.recipientId||"");
+  if(!comment&&!targetRecipient) return res.status(404).json({success:false,error:"لا توجد رسالة Facebook واردة بهذا المعرّف؛ لا إرسال بلا رسالة حقيقية."});
+  const classification=classifyComment(commentText||text);
+  if(!canAutoReply(classification)) return res.status(422).json({success:false,error:classification.reviewReason||"هذه الرسالة تستوجب مراجعة بشرية قبل أي رد.",classification,requiresHumanReview:true});
+
+  const guardExternalId=externalId||`fb-msg:${targetRecipient}`;
+  const history:ReplyRecord[]=(workspace as any).socialReplies.filter((r:any)=>r.platform==="facebook"&&r.kind==="message").map((r:any)=>({externalId:r.externalId,replyFingerprint:r.replyFingerprint,repliedAt:r.repliedAt}));
+  const decision=evaluateReplyGuard({externalId:guardExternalId,replyText:text,history});
+  if(!decision.allowed) return res.status(409).json({success:false,error:decision.reason,guard:decision});
+
+  const target=facebookReplyTarget();
+  if("error" in target) return res.status(503).json({success:false,error:target.error});
+  const result=await facebookClient().sendMessage(target.pageId,target.pageToken,targetRecipient,text);
+  const record={
+    id:workspaceId("reply"),platform:"facebook",externalId:guardExternalId,text,kind:"message",
+    replyFingerprint:decision.fingerprint,classification,
+    contentSafety:{safe:true,violations:[] as string[],codes:[] as string[]},
+    repliedAt:new Date().toISOString(),createdBy:user.id,simulated:false,
+    delivered:result.ok,providerReplyId:result.data?.providerMessageId||null,
+    receipt:result.ok?{provider:"facebook",messageId:result.data?.providerMessageId,recipientId:result.data?.recipientId,sentAt:new Date().toISOString()}:null,
+    deliveryError:result.ok?null:(result.error||"فشل إرسال الرسالة عبر Facebook."),
+    reviewStatus:result.ok?"delivered":"failed",
+    note:result.ok?"أُرسلت الرسالة فعلياً عبر Facebook وثُبّتت بمعرّف من Meta.":"فشل الإرسال عبر Facebook؛ لم يُسجَّل أي تسليم.",
+  };
+  if(!Array.isArray((workspace as any).socialReplies)) (workspace as any).socialReplies=[];
+  (workspace as any).socialReplies.unshift(record);
+  if((workspace as any).socialReplies.length>5000) (workspace as any).socialReplies.pop();
+  audit(user.id,result.ok?"social_facebook_message_reply_sent":"social_facebook_message_reply_failed",`${guardExternalId}:${result.ok?"delivered":"failed"}`);
+  await persistStateDurable();
+  if(!result.ok) return res.status(502).json({success:false,delivered:false,simulated:false,reply:record,error:record.deliveryError});
+  res.json({success:true,delivered:true,simulated:false,providerReplyId:record.providerReplyId,reply:record});
+});
+
 // -------------------------------------------------------------
 // Unified webhook foundation (Batch 6) — مسار واحد لكل المنصات.
 // الخطوات: تحقق المصدر (HMAC/سرّ) → منع replay → منع تكرار → تطبيع → حفظ → تصنيف.
@@ -1382,7 +1762,6 @@ app.get("/api/platforms/:platform/webhook", (req, res) => {
 // استقبال أحداث موقّعة (POST) — HMAC على الجسم الخام.
 // مهم: التوقيع يُحسب على البايتات المرسلة نفسها. Express يحلل JSON أولاً، لذلك
 // نحتفظ بالجسم الخام عبر verify لتفادي فشل التحقق بسبب إعادة التسلسل (مسافات/ترتيب).
-const captureRawBody = express.json({ limit: "512kb", verify: (req: any, _res, buf) => { req.rawBody = buf?.toString("utf8") ?? ""; } });
 app.post("/api/platforms/:platform/webhook", captureRawBody, async (req, res) => {
   const platform = req.params.platform;
   if (!isSupportedPlatform(platform)) return res.status(404).json({ success: false, error: "المنصة غير مدعومة." });
@@ -1466,6 +1845,20 @@ app.post("/api/platforms/:platform/publish", requireOwner, async (req, res) => {
       audit(user.id, sent.ok ? "platform_publish_published" : "platform_publish_failed", `${platform}`);
       if (!sent.ok) return res.status(502).json({ success: false, record, error: sent.error, note: "لم يُسجَّل أي نشر بلا معرّف منشور حقيقي من المزود." });
       return res.json({ success: true, record, providerPostId: sent.providerMessageId, receipt: sent.receipt });
+    }
+    if (platform === "facebook") {
+      // النشر على صفحة Facebook (Page Access Token). لا نشر بلا معرّف من Meta.
+      const target = facebookReplyTarget();
+      if ("error" in target) return res.status(503).json({ success: false, error: target.error, code: "CONNECTOR_NOT_READY" });
+      const result = await facebookClient().publishToPage(target.pageId, target.pageToken, content);
+      const receipt = result.ok ? { provider: "facebook", pageId: target.pageId, postId: result.data?.providerPostId, sentAt: new Date().toISOString() } : null;
+      const record = buildPublishRecord({ platform: platform as any, postId: typeof req.body?.postId === "string" ? req.body.postId : workspaceId("post"), providerPostId: result.data?.providerPostId || null, simulated: false, error: result.ok ? null : result.error });
+      if (!Array.isArray((workspace as any).publishRecords)) (workspace as any).publishRecords = [];
+      (workspace as any).publishRecords.unshift({ ...record, id: workspaceId("publish"), createdBy: user.id, receipt });
+      persistState();
+      audit(user.id, result.ok ? "platform_publish_published" : "platform_publish_failed", `${platform}`);
+      if (!result.ok) return res.status(502).json({ success: false, record, error: result.error, note: "لم يُسجَّل أي نشر بلا معرّف منشور حقيقي من المزود." });
+      return res.json({ success: true, record, providerPostId: result.data?.providerPostId, receipt });
     }
     return res.status(501).json({ success: false, error: "الموصل متصل لكن تنفيذ النشر لهذه المنصة يحتاج بيانات المزود ولم يُختلق تنفيذ وهمي.", code: "EXTERNAL_SETUP_REQUIRED", platform });
   } catch (e: any) {
@@ -2846,6 +3239,8 @@ function buildPersistedState() {
       socialReplies: (workspace as any).socialReplies.slice(0, 5000), socialApprovals: (workspace as any).socialApprovals.slice(0, 5000), publishRecords: (workspace as any).publishRecords.slice(0, 5000), performanceRecords: (workspace as any).performanceRecords.slice(0, 20000), marketingDecisions: (workspace as any).marketingDecisions.slice(0, 2000), strategiesTested: (workspace as any).strategiesTested.slice(0, 2000),
       // معرّفات تحديثات Telegram لصمود منع التكرار بعد restart (يمنع إعادة معالجة رسالة).
       telegramUpdateIds: ((workspace as any).telegramUpdateIds || []).slice(0, 20000),
+      // معرّفات أحداث Facebook الواردة لصمود منع التكرار بعد restart.
+      facebookEventIds: ((workspace as any).facebookEventIds || []).slice(0, 20000),
       providerTokens: (workspace as any).providerTokens,
     }
   };

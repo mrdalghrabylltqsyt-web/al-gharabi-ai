@@ -93,9 +93,9 @@ async function login(): Promise<Record<string, string>> {
     check('المصفوفة بلا جلسة => 401', matrixNoAuth.status === 401);
     const matrix = await (await fetch(`${BASE}/api/platforms/readiness-matrix`, { headers: auth })).json();
     check('المصفوفة تعيد عشر منصات', matrix.platforms.length === 10);
-    check('الملخص: موصل واحد جاهز', matrix.summary.connectorReady === 1 && matrix.summary.foundationReady === 9);
+    check('الملخص: موصلان جاهزان (telegram,facebook)', matrix.summary.connectorReady === 2 && matrix.summary.foundationReady === 8);
     const fb = matrix.platforms.find((p: any) => p.platform === 'facebook');
-    check('facebook: موصل غير منفّذ وOAuth يحتاج إعداداً', fb.implementationStatus === 'FOUNDATION_READY' && fb.oauth === 'EXTERNAL_SETUP_REQUIRED');
+    check('facebook: موصل منفّذ وOAuth يحتاج إعداداً خارجياً', fb.implementationStatus === 'CONNECTOR_READY' && fb.oauth === 'EXTERNAL_SETUP_REQUIRED');
     check('facebook: لا اتصال مدّعى', fb.connection.status === 'disconnected' && fb.connection.providerVerified === false);
     const tg = matrix.platforms.find((p: any) => p.platform === 'telegram');
     check('telegram: موصل جاهز وبلا اتصال ما لم يُضبط', tg.implementationStatus === 'CONNECTOR_READY' && tg.connection.status === 'disconnected');
@@ -144,7 +144,8 @@ async function login(): Promise<Record<string, string>> {
       method: 'POST', headers: { 'Content-Type': 'application/json', 'x-hub-signature-256': sig }, body: payload,
     });
     const againBody = await again.json();
-    check('إعادة نفس الحدث => مكرر (processed=0)', againBody.processed === 0 && againBody.ignoredDuplicates === 1);
+    // Facebook له مسار webhook مخصص حقيقي؛ يعيد duplicates بدل ignoredDuplicates.
+    check('إعادة نفس الحدث => مكرر (processed=0)', againBody.processed === 0 && (againBody.duplicates === 1 || againBody.ignoredDuplicates === 1));
     const after = await (await fetch(`${BASE}/api/social/manager/comments?platform=facebook`, { headers: auth })).json();
     check('لا سجل مكرر', after.count === 1);
 

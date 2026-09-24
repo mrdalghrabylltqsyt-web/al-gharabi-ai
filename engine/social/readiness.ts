@@ -101,7 +101,7 @@ export interface PlatformReadinessDetail extends PlatformReadiness {
 const WEBHOOK_SUPPORT: Record<PlatformId, { level: ReadinessLevel; note: string }> = {
   tiktok: { level: 'EXTERNAL_SETUP_REQUIRED', note: 'webhooks رسائل TikTok تحتاج تطبيق Business معتمداً ومراجعة.' },
   youtube: { level: 'EXTERNAL_SETUP_REQUIRED', note: 'إشعارات PubSubHubbub لليوتيوب تحتاج تسجيل تطبيق وتحقق نطاق.' },
-  facebook: { level: 'EXTERNAL_SETUP_REQUIRED', note: 'webhooks Graph API تحتاج تطبيق Meta معتمداً وصلاحيات مراجَعة.' },
+  facebook: { level: 'READY', note: 'webhook Facebook منفّذ فعلاً: تحقق challenge + توقيع X-Hub-Signature-256 على الجسم الخام + منع تكرار بمعرّف الحدث.' },
   instagram: { level: 'EXTERNAL_SETUP_REQUIRED', note: 'webhooks إنستغرام تمر عبر تطبيق Meta نفسه.' },
   whatsapp: { level: 'EXTERNAL_SETUP_REQUIRED', note: 'WhatsApp Cloud API تدعم webhooks بعد ربط رقم أعمال معتمد.' },
   telegram: { level: 'READY', note: 'webhook حقيقي منفّذ بترويسة سرّية + منع تكرار update_id.' },

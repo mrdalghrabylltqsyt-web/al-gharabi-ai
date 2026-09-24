@@ -222,52 +222,69 @@ async function run(): Promise<void> {
     const pfConnected = await post('/api/social/manager/publish/preflight', { platform: 'facebook', postId: 'post-approved' });
     check('فحص النشر ينجح عند اتصال موثق وموافقة', pfConnected.body.ready === true);
 
-    // الاتصال الموثق لا يعني نشراً حقيقياً: لا موصل إنتاجي معتمد بعد.
+    // Facebook صار له موصل نشر حقيقي: المسار العام يوجّه للمسار الحقيقي بدل
+    // تسجيل محاولة محاكاة داخلية.
     const publishConnected = await post('/api/social/manager/publish/execute', { platform: 'facebook', postId: 'post-approved' });
-    check('النشر لا ينجح بدون موصل إنتاجي', publishConnected.status === 501 && publishConnected.body.executed === false);
-    check('سجل النشر يُسجَّل فاشلاً لا منشوراً', publishConnected.body.record.state === 'failed' && publishConnected.body.record.providerPostId === null);
-    check('المحاولة مُعلَّمة كمحاكاة', publishConnected.body.record.simulated === true);
+    check('النشر عبر المسار العام يوجّه للمسار الحقيقي', publishConnected.status === 409 && publishConnected.body.code === 'PLATFORM_USE_DEDICATED_PUBLISH', `status=${publishConnected.status}`);
+    check('التوجيه يذكر مسار النشر الحقيقي', String(publishConnected.body.publishRoute).includes('/api/platforms/facebook/publish'));
+
+    // منصة بلا موصل نشر حقيقي (X) تبقى تسجّل محاولة فاشلة صريحة (لا نشر مُختلق).
+    disconnected.set('x', { platform: 'x', status: 'connected', providerVerified: true });
+    const publishX = await post('/api/social/manager/publish/execute', { platform: 'x', postId: 'post-approved' });
+    check('النشر لا ينجح بدون موصل إنتاجي', publishX.status === 501 && publishX.body.executed === false);
+    check('سجل النشر يُسجَّل فاشلاً لا منشوراً', publishX.body.record.state === 'failed' && publishX.body.record.providerPostId === null);
+    check('المحاولة مُعلَّمة كمحاكاة', publishX.body.record.simulated === true);
 
     const publishRecords = await get('/api/social/manager/publish/records');
     check('سجل النشر يحفظ المحاولة الفعلية', publishRecords.body.count === 1);
     check('لا يوجد أي نشر ناجح مُختلق', publishRecords.body.publishedCount === 0);
 
     const capsConnected = await get('/api/social/manager/capabilities');
-    check('لا تزال المنصة غير جاهزة إنتاجياً', capsConnected.body.platforms.every((p: any) => p.productionReady === false));
+    // Facebook صار موصلاً حقيقياً متصلاً وموثقاً => جاهزية إنتاجية فعلية.
+    check('Facebook المتصل بموصل حقيقي جاهز إنتاجياً', capsConnected.body.platforms.find((p: any) => p.platform === 'facebook')?.productionReady === true);
+    check('المنصات بلا موصل حقيقي تبقى غير جاهزة إنتاجياً', capsConnected.body.platforms.filter((p: any) => p.platform !== 'facebook').every((p: any) => p.productionReady === false));
 
-    // الرد الآن: الاتصال موجود لكن لا موصل إرسال → يُسجَّل محلياً كمحاكاة.
-    const replyConnected = await post('/api/social/manager/comments/reply', {
+    // الرد الآن: Facebook صار له موصل رد حقيقي (comment_reply) → مسار
+    // التعليقات العام يوجّه صراحةً إلى المسار الحقيقي بدل تسجيل محاكاة.
+    const replyRealFacebook = await post('/api/social/manager/comments/reply', {
       platform: 'facebook', externalId: 'c-reply-1', text: 'أهلاً بك، نشكر تواصلك معنا.', commentText: 'بكم السعر؟',
+    });
+    check('Facebook ذو الموصل الحقيقي يوجّه للمسار الحقيقي لا المحاكاة', replyRealFacebook.status === 409, `status=${replyRealFacebook.status}`);
+    check('التوجيه صريح لمسار الرد الحقيقي', replyRealFacebook.body.code === 'PLATFORM_USE_DEDICATED_REPLY' && String(replyRealFacebook.body.replyRoute).includes('/api/platforms/facebook/reply'));
+
+    // منصة بلا موصل إرسال حقيقي (X) تبقى تُسجَّل محلياً كمحاكاة صريحة.
+    disconnected.set('x', { platform: 'x', status: 'connected', providerVerified: true });
+    const replyConnected = await post('/api/social/manager/comments/reply', {
+      platform: 'x', externalId: 'c-reply-1', text: 'أهلاً بك، نشكر تواصلك معنا.', commentText: 'بكم السعر؟',
     });
     check('الرد يُقبل عند اتصال موثق', replyConnected.status === 200);
     check('الرد لا يُدّعى إرساله', replyConnected.body.delivered === false && replyConnected.body.simulated === true);
     check('سجل الرد يحفظ البصمة', typeof replyConnected.body.reply.replyFingerprint === 'string');
 
     const replyDuplicate = await post('/api/social/manager/comments/reply', {
-      platform: 'facebook', externalId: 'c-reply-1', text: 'رد آخر', commentText: 'بكم السعر؟',
+      platform: 'x', externalId: 'c-reply-1', text: 'رد آخر', commentText: 'بكم السعر؟',
     });
     check('الرد المكرر على نفس التعليق مرفوض', replyDuplicate.status === 409);
     check('سبب الرفض يذكر الرد المسبق', String(replyDuplicate.body.error).includes('مسبقاً'));
 
     const replySelf = await post('/api/social/manager/comments/reply', {
-      platform: 'facebook', externalId: 'c-reply-2', text: 'شكراً', commentText: 'شكراً لكم', authorName: 'معرض الغرابي',
+      platform: 'x', externalId: 'c-reply-2', text: 'شكراً', commentText: 'شكراً لكم', authorName: 'معرض الغرابي',
     });
     check('الرد على حساب المعرض نفسه مرفوض (حلقة ردود)', replySelf.status === 409);
 
     const replySensitive = await post('/api/social/manager/comments/reply', {
-      platform: 'facebook', externalId: 'c-reply-3', text: 'نعتذر', commentText: 'سأرفع قضية قانونية ضدكم',
+      platform: 'x', externalId: 'c-reply-3', text: 'نعتذر', commentText: 'سأرفع قضية قانونية ضدكم',
     });
     check('الرد الآلي على الحالة الحساسة مرفوض', replySensitive.status === 422 && replySensitive.body.requiresHumanReview === true);
 
     // --------------- ربط حارس سلامة المحتوى بمسار الرد (فجوة حقيقية أُغلقت) ---------------
-    // الرد المقترح يمر عبر contentSafety قبل عرضه للمراجعة/الاستخدام.
     const contractClassifySafety = await post('/api/social/manager/comments/classify', { text: 'بكم السعر؟' });
     check('التصنيف يعلن فحص سلامة المحتوى للرد المقترح', contractClassifySafety.body.contentSafety !== null && typeof contractClassifySafety.body.contentSafety.safe === 'boolean');
     check('الرد المقترح السليم يُعلن آمناً ويُعرض', contractClassifySafety.body.contentSafety.safe === true && typeof contractClassifySafety.body.suggestedDeterministicReply === 'string');
 
     // نص رد يحمل ادعاءً غير مسجّل (بدون دفعة أولى) يجب أن يُحجب قبل أي تسجيل.
     const replyFabricated = await post('/api/social/manager/comments/reply', {
-      platform: 'facebook', externalId: 'c-reply-fab', text: 'متاح بدون دفعة أولى وبقسط ميسر', commentText: 'بكم السعر؟',
+      platform: 'x', externalId: 'c-reply-fab', text: 'متاح بدون دفعة أولى وبقسط ميسر', commentText: 'بكم السعر؟',
     });
     check('الرد الذي يحمل ادعاءً غير مسجّل مرفوض بحارس المحتوى', replyFabricated.status === 422, `status=${replyFabricated.status}`);
     check('رفض الرد يُعلن سلامة المحتوى صراحةً', replyFabricated.body.contentSafety?.safe === false && replyFabricated.body.contentSafety.codes.includes('zero_down_payment_not_recorded'));
@@ -275,7 +292,7 @@ async function run(): Promise<void> {
 
     // الرد السليم بلا ادعاء يُقبل ويُسجَّل بعلامة عدم التسليم (لا موصل إنتاجي).
     const replyClean = await post('/api/social/manager/comments/reply', {
-      platform: 'facebook', externalId: 'c-reply-clean', text: 'أهلاً بك، شكراً لتواصلك معنا، فريق المعرض في خدمتك.', commentText: 'بكم السعر؟',
+      platform: 'x', externalId: 'c-reply-clean', text: 'أهلاً بك، شكراً لتواصلك معنا، فريق المعرض في خدمتك.', commentText: 'بكم السعر؟',
     });
     check('الرد السليم عبر حارس المحتوى يُقبل', replyClean.status === 200, `status=${replyClean.status}`);
     check('الرد المقبول لا يُدّعى إرساله', replyClean.body.delivered === false && replyClean.body.simulated === true);
@@ -289,14 +306,14 @@ async function run(): Promise<void> {
 
     // --------------- وحدة الردود والمراجعة البشرية (G3) ---------------
     // قائمة الردود المسجّلة: كلها غير مُسلَّمة (لا موصل إرسال إنتاجي).
-    const repliesList = await get('/api/social/manager/replies?platform=facebook');
+    const repliesList = await get('/api/social/manager/replies?platform=x');
     check('قائمة الردود تستجيب', repliesList.status === 200 && repliesList.body.success === true);
     check('كل الردود مُعلَّمة كغير مُسلَّمة', repliesList.body.replies.every((r: any) => r.delivered === false && r.simulated === true));
     check('الرد المسجّل يحمل حالة مراجعة داخلية', repliesList.body.replies.every((r: any) => typeof r.reviewStatus === 'string'));
 
     // قرار مراجعة: اعتماد داخلي لا يعني نشراً خارجياً.
     const approve = await post('/api/social/manager/approvals', {
-      platform: 'facebook', externalId: 'c-reply-clean', status: 'approved', commentText: 'بكم السعر؟',
+      platform: 'x', externalId: 'c-reply-clean', status: 'approved', commentText: 'بكم السعر؟',
     });
     check('تسجيل قرار الاعتماد ناجح', approve.status === 200 && approve.body.approval.status === 'approved');
     check('الاعتماد لا يُدّعى إرساله للمنصة', approve.body.delivered === false && approve.body.simulated === true);
@@ -304,21 +321,21 @@ async function run(): Promise<void> {
 
     // جلب القرارات، ثم فرض منع تجاوز المراجعة (rejected → approved).
     const approve2 = await post('/api/social/manager/approvals', {
-      platform: 'facebook', externalId: 'c-reply-clean', status: 'rejected', commentText: 'بكم السعر؟',
+      platform: 'x', externalId: 'c-reply-clean', status: 'rejected', commentText: 'بكم السعر؟',
     });
     check('قرار الرفض يُسجَّل', approve2.status === 200 && approve2.body.approval.status === 'rejected');
     const approveReopen = await post('/api/social/manager/approvals', {
-      platform: 'facebook', externalId: 'c-reply-clean', status: 'approved',
+      platform: 'x', externalId: 'c-reply-clean', status: 'approved',
     });
     check('لا يمكن تحويل قرار مرفوض إلى معتمد', approveReopen.status === 409, `status=${approveReopen.status}`);
 
     // قرار على تعليق بلا رد سابق: يوجد لكنه غير مرتبط برد.
     const approvePending = await post('/api/social/manager/approvals', {
-      platform: 'facebook', externalId: 'c-review-only', status: 'pending', commentText: 'استفسار عام',
+      platform: 'x', externalId: 'c-review-only', status: 'pending', commentText: 'استفسار عام',
     });
     check('حالة المراجعة المعلّقة تُسجَّل بلا قرار', approvePending.status === 200 && approvePending.body.approval.status === 'pending' && approvePending.body.approval.decidedBy === null);
 
-    const approvalsList = await get('/api/social/manager/approvals?platform=facebook');
+    const approvalsList = await get('/api/social/manager/approvals?platform=x');
     check('قائمة القرارات تستجيب', approvalsList.status === 200 && approvalsList.body.success === true);
     check('قائمة القرارات تعرض القرارات المسجّلة', approvalsList.body.approvals.length >= 2);
     check('كل القرارات داخلية وغير مُسلَّمة', approvalsList.body.approvals.every((a: any) => a.delivered === false && a.simulated === true));
@@ -330,7 +347,7 @@ async function run(): Promise<void> {
     check('قرار بلا معرّف تعليق مرفوض', approveBadId.status === 400);
     // نص رد يحمل ادعاءً غير مسجّل يُحجب حتى في قرار المراجعة.
     const approveUnsafe = await post('/api/social/manager/approvals', {
-      platform: 'facebook', externalId: 'c-reply-unsafe-approval', status: 'approved', replyText: 'متاح بدون دفعة أولى',
+      platform: 'x', externalId: 'c-reply-unsafe-approval', status: 'approved', replyText: 'متاح بدون دفعة أولى',
     });
     check('نص رد غير آمن يُحجب من قرار المراجعة', approveUnsafe.status === 422, `status=${approveUnsafe.status}`);
     check('الحجب يُعلن سلامة المحتوى صراحةً', approveUnsafe.body.contentSafety?.safe === false);
