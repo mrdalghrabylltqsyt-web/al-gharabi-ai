@@ -239,6 +239,7 @@ add('oauth-start-safe-logging', server.includes('function logOAuthStart') && !/l
 add('oauth-setup-explains-generic-error', server.includes('genericErrorMeaning') && server.includes('appIdFormatOk'), 'oauth/setup يشرح معنى «حدث خطأ ما» ويعرض شكل المعرّف');
 add('meta-no-google-only-params', !/platform === 'facebook'[\s\S]{0,400}?access_type/.test(read('engine/social/oauth.ts')) && read('engine/social/oauth.ts').includes("platform === 'facebook' || platform === 'instagram' || platform === 'threads'"), 'Meta لا يرسل access_type/prompt (معاملان خاصان بـGoogle)');
 add('meta-generic-error-tests', read('engine/tests/facebook.connector.test.ts').includes('حدث خطأ ما') && read('engine/tests/facebook.connector.test.ts').includes('PLATFORM__INVALID_APP_ID') && read('engine/tests/facebook.connector.test.ts').includes('META_APP_ID_INVALID'), 'اختبارات انحدار لتشخيص «حدث خطأ ما» ومنع الرابط الفاشل');
+add('meta-health-non-secret', server.includes('metaOAuth:') && server.includes('appIdFormatOk') && !/metaOAuth[\s\S]{0,400}?clientId\s*:/.test(server), '/api/health يعرض حالة Meta منطقية بلا كشف App ID/Secret');
 
 // إصلاح جذر «لا يمكن تحميل عنوان URL / النطاق غير مُضمَّن» في OAuth (2026-09-24):
 // كان redirect_uri يُبنى من APP_URL وحدها، فإن غابت على Render صار localhost فيرفضه

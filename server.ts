@@ -3790,6 +3790,25 @@ app.get("/api/readiness", (_req, res) => {
     geminiConfigured: Boolean(process.env.GEMINI_API_KEY),
     /** حالة مفتاح تشفير توكنات المنصات بنفس حكم التشفير الفعلي (بلا قيمة). */
     platformTokenKey: (() => { const tk = tokenKeyInspection(); return { state: tk.state, envName: "PLATFORM_TOKEN_ENCRYPTION_KEY", acceptedBytes: 32, reason: tk.reason }; })(),
+    /**
+     * حالة تشخيصية غير سرّية لتطبيق Meta: منطقي فقط (shape/configured)، بلا أي
+     * قيمة. الغرض تمكين المالك من رؤية سبب «حدث خطأ ما» بلا كشف App ID/Secret.
+     * الحكم الكامل مع إثبات Graph في GET /api/platforms/:platform/oauth/setup.
+     */
+    metaOAuth: (() => {
+      const fb = OAUTH_CONFIG["facebook"];
+      return {
+        platform: "facebook",
+        appIdConfigured: Boolean(fb?.clientId),
+        appIdFormatOk: isPlausibleMetaAppId(String(fb?.clientId || "")),
+        clientSecretConfigured: Boolean(fb?.clientSecret),
+        appSecretConfigured: Boolean(facebookAppSecret()),
+        verifyTokenConfigured: Boolean(facebookVerifyToken()),
+        userAccessTokenStored: Boolean(getProviderToken("facebook")?.userAccessToken),
+        pageAccessTokenStored: Boolean(getProviderToken("facebook")?.pageAccessToken),
+        pendingPageSelection: facebookPageSelectionPending(),
+      };
+    })(),
     timestamp: new Date().toISOString(),
   });
 });
@@ -4109,6 +4128,22 @@ app.get("/api/health", (_req, res) => {
     // حالة مفتاح تشفير توكنات المنصات: تفصل missing من invalid بلا كشف القيمة،
     // فتعكس نفس الحكم الذي يستخدمه encryptSecret/credentials فعلياً.
     platformTokenKey: { state: tokenKey.state, envName: "PLATFORM_TOKEN_ENCRYPTION_KEY", acceptedBytes: 32, reason: tokenKey.reason },
+    // حالة تطبيق Meta غير السرّية (منطقي فقط): تفصل missing من invalid وبين
+    // تكوين المعرّف والسرّ، فتكشف سبب صفحة «حدث خطأ ما» قبل إرسال المالك إليها.
+    metaOAuth: (() => {
+      const fb = OAUTH_CONFIG["facebook"];
+      return {
+        platform: "facebook",
+        appIdConfigured: Boolean(fb?.clientId),
+        appIdFormatOk: isPlausibleMetaAppId(String(fb?.clientId || "")),
+        clientSecretConfigured: Boolean(fb?.clientSecret),
+        appSecretConfigured: Boolean(facebookAppSecret()),
+        verifyTokenConfigured: Boolean(facebookVerifyToken()),
+        userAccessTokenStored: Boolean(getProviderToken("facebook")?.userAccessToken),
+        pageAccessTokenStored: Boolean(getProviderToken("facebook")?.pageAccessToken),
+        pendingPageSelection: facebookPageSelectionPending(),
+      };
+    })(),
     // العنوان العام المعتمد: يكشف سبب فشل OAuth قبل وقوعه بلا أي سرّ. يبيّن مصدر
     // العنوان، وهل هو عام/https (شرط تسجيل redirect_uri لدى Meta/Google).
     publicUrl: (() => {
