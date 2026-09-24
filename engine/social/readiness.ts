@@ -153,7 +153,9 @@ function rowFor(spec: (typeof PLATFORM_SPECS)[number]): PlatformReadiness {
   const read = levelFromCapability(platform, 'comments') !== 'NOT_SUPPORTED' || platformSupports(platform, 'messages')
     ? (realConnector ? 'READY' : 'EXTERNAL_SETUP_REQUIRED')
     : 'NOT_SUPPORTED';
-  const replySupported = platformSupports(platform, 'comment_reply') || platformSupports(platform, 'messages');
+  // الرد يشمل التعليقات العامة (comment_reply) أو الرسائل المباشرة (message_reply)؛
+  // كلاهما قدرة رد مستقلة عن الأخرى.
+  const replySupported = platformSupports(platform, 'comment_reply') || platformSupports(platform, 'message_reply');
   const reply: ReadinessLevel = replySupported ? (realConnector ? 'READY' : 'EXTERNAL_SETUP_REQUIRED') : 'NOT_SUPPORTED';
   const publishSupported = platformSupports(platform, 'publish');
   const publish: ReadinessLevel = publishSupported ? (realConnector ? 'READY' : 'EXTERNAL_SETUP_REQUIRED') : 'NOT_SUPPORTED';

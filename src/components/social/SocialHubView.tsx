@@ -149,9 +149,24 @@ export const SocialHubView: React.FC = () => {
     const text = (replyDraft[key] || '').trim();
     if (!text) { showToast('اكتب نص الرد أولاً.'); return; }
     setRowError((prev) => ({ ...prev, [key]: '' }));
+    // Telegram ليس منصة تعليقات عامة: رسالة واردة عبر webhook لها هدف رد حقيقي
+    // (chatId + messageId)، فيُرسل الرد فعلياً عبر مسار Telegram المخصص بدل
+    // تسجيله داخلياً. لا يُقبل رده عبر مسار تعليقات لا يدعمه.
+    const isTelegramMessage = comment.platform === 'telegram' && Boolean(comment.replyTarget?.chatId);
     try {
-      await apiService.replyToSocialComment({ platform: comment.platform, externalId: comment.externalId, text, commentText: comment.text, authorName: comment.authorName || undefined });
-      showToast('تم تسجيل الرد داخلياً. لا يُرسل إلى المنصة (لا يوجد موصل إرسال إنتاجي).');
+      if (isTelegramMessage) {
+        const res = await apiService.replyTelegram({
+          externalId: comment.externalId,
+          text,
+          commentText: comment.text,
+        });
+        showToast(res.delivered
+          ? `أُرسل الرد فعلياً عبر Telegram (معرّف ${res.providerReplyId || '—'}).`
+          : 'لم يُسجَّل تسليم من Telegram.');
+      } else {
+        await apiService.replyToSocialComment({ platform: comment.platform, externalId: comment.externalId, text, commentText: comment.text, authorName: comment.authorName || undefined });
+        showToast('تم تسجيل الرد داخلياً. لا يُرسل إلى المنصة (لا يوجد موصل إرسال إنتاجي).');
+      }
       setReplyDraft((prev) => ({ ...prev, [key]: '' }));
       await loadConsole();
     } catch (error: any) {
@@ -480,9 +495,12 @@ export const SocialHubView: React.FC = () => {
           <div className="p-4 rounded-2xl bg-amber-950/20 border border-amber-500/20 text-xs text-amber-200 flex items-start gap-2">
             <ShieldCheck className="w-4 h-4 shrink-0 mt-0.5" />
             <span className="leading-relaxed">
-              كل رد هنا يُسجَّل ويُراجَع <strong>داخل النظام فقط</strong>. لا يوجد موصل إرسال إنتاجي معتمد، لذا لا يُنشر
-              أي رد على أي منصة، وتبقى حالة التسليم <span className="font-mono">simulated</span> /{' '}
-              <span className="font-mono">not delivered</span>. النشر الخارجي يتطلب اتصالاً موثقاً من المزود وموصلاً معتمداً.
+              كل رد على <strong>تعليق عام</strong> هنا يُسجَّل ويُراجَع <strong>داخل النظام فقط</strong>. لا يوجد موصل إرسال
+              إنتاجي معتمد للتعليقات، لذا لا يُنشر أي رد على أي منصة، وتبقى حالة التسليم{' '}
+              <span className="font-mono">simulated</span> /{' '}
+              <span className="font-mono">not delivered</span>. أما رسائل Telegram الواردة فعلياً عبر webhook فهي{' '}
+              <strong>مستلمة فعلياً</strong> ويُرسل الرد عليها حقيقةً عبر{' '}
+              <span className="font-mono">sendMessage</span>، وتُفصل حالة استقبال الرسالة عن حالة تسليم الرد.
             </span>
           </div>
 
@@ -552,8 +570,12 @@ export const SocialHubView: React.FC = () => {
                 const reply = replyRecords[key];
                 const cls = classification[key]?.classification || com.classification;
                 const contentSafety = classification[key]?.contentSafety;
+                // Telegram رسالة واردة عبر webhook حقيقي، لا تعليق عام. تُفصل
+                // حالة الاستقبال عن حالة تسليم الرد.
+                const isTelegramMessage = com.platform === 'telegram' && Boolean(com.replyTarget?.chatId);
+                const receivedViaWebhook = com.ingestSource === 'telegram_webhook';
                 const sourceLabel = reply
-                  ? 'deterministic'
+                  ? (reply.delivered ? 'telegram-sendMessage' : 'deterministic')
                   : '—';
                 return (
                   <div key={com.id} className="p-4 rounded-2xl bg-slate-900 border border-slate-800 space-y-3">
@@ -596,9 +618,18 @@ export const SocialHubView: React.FC = () => {
                             {reply ? 'مسجّل' : 'بانتظار التسجيل'}
                           </span>
                         )}
-                        <span className="text-[10px] font-bold px-2 py-0.5 rounded-md bg-slate-950 text-slate-400 border border-slate-700 font-mono">
-                          simulated / not delivered
+                        <span className={`text-[10px] font-bold px-2 py-0.5 rounded-md border ${
+                          receivedViaWebhook
+                            ? 'bg-sky-950 text-sky-300 border-sky-500/30'
+                            : 'bg-slate-800 text-slate-300 border-slate-700'
+                        }`}>
+                          {receivedViaWebhook ? 'مستلمة فعلياً' : 'مسجّلة داخلياً'}
                         </span>
+                        {reply && !reply.delivered && (
+                          <span className="text-[10px] font-bold px-2 py-0.5 rounded-md bg-slate-950 text-slate-400 border border-slate-700 font-mono">
+                            simulated / not delivered
+                          </span>
+                        )}
                       </div>
                     </div>
 
@@ -607,11 +638,22 @@ export const SocialHubView: React.FC = () => {
                     </div>
 
                     {reply && (
-                      <div className="text-xs text-emerald-300 bg-emerald-950/40 p-3 rounded-xl border border-emerald-500/30 flex items-start gap-2">
-                        <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0 mt-0.5" />
+                      <div className={`text-xs p-3 rounded-xl border flex items-start gap-2 ${
+                        reply.delivered
+                          ? 'text-emerald-300 bg-emerald-950/40 border-emerald-500/30'
+                          : 'text-amber-200 bg-amber-950/30 border-amber-500/30'
+                      }`}>
+                        <CheckCircle2 className={`w-4 h-4 shrink-0 mt-0.5 ${reply.delivered ? 'text-emerald-400' : 'text-amber-400'}`} />
                         <div>
-                          <span className="font-bold text-emerald-200">الرد المسجّل داخلياً (مصدر: {sourceLabel}): </span>
+                          <span className={`font-bold ${reply.delivered ? 'text-emerald-200' : 'text-amber-200'}`}>
+                            {reply.delivered ? `الرد المُسلَّم فعلياً (مصدر: ${sourceLabel}): ` : `الرد المسجّل داخلياً (مصدر: ${sourceLabel}): `}
+                          </span>
                           <span>{reply.text}</span>
+                          {reply.delivered && reply.providerReplyId && (
+                            <span className="block text-[10px] text-emerald-400 font-mono mt-0.5">
+                              معرّف رسالة المزود: {reply.providerReplyId}
+                            </span>
+                          )}
                         </div>
                       </div>
                     )}
@@ -629,7 +671,9 @@ export const SocialHubView: React.FC = () => {
                         <div className="flex items-center gap-2">
                           <input
                             type="text"
-                            placeholder="اكتب الرد (سيُسجَّل داخلياً فقط ولا يُنشر)..."
+                            placeholder={isTelegramMessage
+                              ? 'اكتب الرد (سيُرسل فعلياً عبر Telegram)...'
+                              : 'اكتب الرد (سيُسجَّل داخلياً فقط ولا يُنشر)...'}
                             value={replyDraft[key] || ''}
                             onChange={(e) => setReplyDraft({ ...replyDraft, [key]: e.target.value })}
                             className="flex-1 bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-emerald-500"
@@ -643,7 +687,7 @@ export const SocialHubView: React.FC = () => {
                             onClick={() => void recordReply(com)}
                             className="px-3.5 py-2 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 text-xs font-bold transition flex items-center gap-1 cursor-pointer">
                             <Send className="w-3.5 h-3.5" />
-                            تسجيل الرد
+                            {isTelegramMessage ? 'إرسال فعلي عبر Telegram' : 'تسجيل الرد'}
                           </button>
                         </div>
                         {rowError[key] && (

@@ -71,7 +71,7 @@ const ADAPTER_SPECS: AdapterSpec[] = [
     platform: 'facebook',
     name: 'Facebook',
     displayName: 'Facebook',
-    capabilities: ['publish', 'messages', 'analytics', 'comments', 'comment_reply', 'scheduling', 'audience_insights'],
+    capabilities: ['publish', 'messages', 'message_reply', 'analytics', 'comments', 'comment_reply', 'scheduling', 'audience_insights'],
     credentialMode: 'app-registration',
     realConnector: false,
   },
@@ -79,7 +79,7 @@ const ADAPTER_SPECS: AdapterSpec[] = [
     platform: 'instagram',
     name: 'Instagram',
     displayName: 'Instagram',
-    capabilities: ['publish', 'messages', 'analytics', 'comments', 'comment_reply', 'scheduling', 'audience_insights'],
+    capabilities: ['publish', 'messages', 'message_reply', 'analytics', 'comments', 'comment_reply', 'scheduling', 'audience_insights'],
     credentialMode: 'app-registration',
     realConnector: false,
   },
@@ -87,8 +87,8 @@ const ADAPTER_SPECS: AdapterSpec[] = [
     platform: 'whatsapp',
     name: 'WhatsApp Business',
     displayName: 'WhatsApp Business',
-    // واتساب للأعمال لا يوفر نشر منشورات عامة ولا تعليقات؛ الرسائل فقط.
-    capabilities: ['messages'],
+    // واتساب للأعمال لا يوفر نشر منشورات عامة ولا تعليقات؛ الرسائل والرد عليها فقط.
+    capabilities: ['messages', 'message_reply'],
     credentialMode: 'app-registration',
     realConnector: false,
   },
@@ -96,8 +96,9 @@ const ADAPTER_SPECS: AdapterSpec[] = [
     platform: 'telegram',
     name: 'Telegram',
     displayName: 'Telegram',
-    // البوت ينشر في القناة ويرسل رسائل؛ لا واجهة لقراءة التعليقات العامة.
-    capabilities: ['publish', 'messages', 'scheduling'],
+    // البوت ينشر في القناة ويرسل/يستقبل رسائل ويرد عليها؛ لا واجهة لقراءة
+    // التعليقات العامة ولذلك لا تُعلن comment_reply إطلاقاً.
+    capabilities: ['publish', 'messages', 'message_reply', 'scheduling'],
     // أول موصل حقيقي: يكفي رمز بوت من المالك، والموصل منفّذ فعلاً في الكود.
     credentialMode: 'bot-token',
     realConnector: true,

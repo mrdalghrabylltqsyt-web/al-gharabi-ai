@@ -575,6 +575,10 @@ export interface SocialCommentRecord {
   createdAt: string;
   classification: SocialCommentClassification;
   requiresHumanReview: boolean;
+  /** هدف الرد الحقيقي للمنصات الرسائلية (مثل Telegram): الدردشة والرسالة. */
+  replyTarget?: { chatId?: string; messageId?: string } | null;
+  /** مصدر السجل الوارد: webhook حقيقي أم تسجيل يدوي. */
+  ingestSource?: string | null;
 }
 
 export interface SocialCommentsResult {
@@ -588,8 +592,11 @@ export interface SocialCommentsResult {
 }
 
 /**
- * سجل الرد المسجّل داخلياً. لا يوجد موصل إرسال إنتاجي، لذا يبقى:
- * simulated:true و delivered:false دائماً. لا يُدّعى أي إرسال خارجي.
+ * سجل الرد على تعليق/رسالة.
+ * - التعليقات العامة (comment_reply): لا يوجد موصل إرسال إنتاجي معتمد، فيبقى
+ *   التسجيل داخلياً: simulated:true و delivered:false دائماً.
+ * - رسائل Telegram (message_reply): إرسال حقيقي عبر sendMessage، فتُسجَّل
+ *   delivered:true فقط باستجابة مزود حقيقية مع providerReplyId.
  */
 export interface SocialReplyRecord {
   id: string;
@@ -603,6 +610,13 @@ export interface SocialReplyRecord {
   simulated: boolean;
   delivered: boolean;
   note: string;
+  /** معرّف الرسالة من المزود عند التسليم الحقيقي (Telegram). */
+  providerReplyId?: string | null;
+  /** إيصال التنفيذ الخام من المزود. */
+  receipt?: Record<string, unknown> | null;
+  /** مرجع الحالة: delivered / failed / recorded / pending_review. */
+  reviewStatus?: string;
+  deliveryError?: string | null;
 }
 
 /** حالة قرار الرد: معلّق للمراجعة أو معتمد/مرفوض داخلياً. */

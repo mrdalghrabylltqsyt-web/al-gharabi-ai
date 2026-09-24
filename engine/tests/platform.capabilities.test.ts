@@ -39,14 +39,18 @@ function run(): void {
   // 3) قدرات المنصات الفعلية محفوظة (لا اختراع ولا فقدان).
   check('واتساب: رسائل فقط بلا نشر', platformSupports('whatsapp', 'messages') && !platformSupports('whatsapp', 'publish'));
   check('واتساب بلا تعليقات', !platformSupports('whatsapp', 'comments') && !platformSupports('whatsapp', 'comment_reply'));
+  check('واتساب يعلن message_reply', platformSupports('whatsapp', 'message_reply'));
   check('سناب شات بلا تعليقات', !platformSupports('snapchat', 'comments'));
   check('Google Business بلا تعليقات', !platformSupports('google_business', 'comments'));
   check('فيسبوك يدعم النشر والرسائل والتعليقات', ['publish', 'messages', 'comments'].every((c) => platformSupports('facebook', c)));
   check('يوتيوب يدعم التعليقات', platformSupports('youtube', 'comments'));
   check('telegram ينشر ويراسل بلا تعليقات', platformSupports('telegram', 'publish') && platformSupports('telegram', 'messages') && !platformSupports('telegram', 'comments'));
+  check('telegram يعلن message_reply لا comment_reply', platformSupports('telegram', 'message_reply') && !platformSupports('telegram', 'comment_reply'));
 
   // 4) أي منصة تدعم comment_reply يجب أن تدعم comments أيضاً (اتساق داخلي).
   check('comment_reply تستلزم comments في كل المنصات', PLATFORM_SPECS.every((s) => !platformSupports(s.platform, 'comment_reply') || platformSupports(s.platform, 'comments')));
+  // 4b) أي منصة تدعم message_reply يجب أن تدعم messages (اتساق داخلي).
+  check('message_reply تستلزم messages في كل المنصات', PLATFORM_SPECS.every((s) => !platformSupports(s.platform, 'message_reply') || platformSupports(s.platform, 'messages')));
 
   // 5) الفصل بين التعريف والاتصال والإرسال: adapter غير متصل عند غياب الحالة.
   const adapters = buildAdapters(() => null);

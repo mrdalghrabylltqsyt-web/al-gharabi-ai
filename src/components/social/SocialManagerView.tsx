@@ -127,11 +127,23 @@ export const SocialManagerView: React.FC = () => {
   const [tgExternalId, setTgExternalId] = useState('');
   const [tgReplyText, setTgReplyText] = useState('');
   const [tgWebhookInfo, setTgWebhookInfo] = useState<any | null>(null);
+  const [tgIncoming, setTgIncoming] = useState<any[]>([]);
 
   const loadTelegramWebhookInfo = async () => {
     try { setTgWebhookInfo(await apiService.getTelegramWebhookInfo()); }
     catch { setTgWebhookInfo(null); }
   };
+
+  // الرسائل الواردة من Telegram عبر webhook الحقيقي — تُعرض بحالة استقبال
+  // منفصلة عن حالة إرسال الرد، فلا تظهر كـ simulated/not delivered.
+  const loadTelegramIncoming = useCallback(async () => {
+    try {
+      const res = await apiService.getSocialComments('telegram');
+      setTgIncoming(res.comments || []);
+    } catch { setTgIncoming([]); }
+  }, []);
+
+  useEffect(() => { void loadTelegramIncoming(); }, [loadTelegramIncoming]);
 
   const connectTelegram = async () => {
     setTgBusy(true);
@@ -153,6 +165,7 @@ export const SocialManagerView: React.FC = () => {
       const res = await apiService.replyTelegram({ externalId: tgExternalId.trim(), text: tgReplyText.trim() });
       showToast(res.delivered ? `أُرسل الرد فعلياً عبر Telegram (معرّف ${res.providerReplyId || '—'}).` : 'لم يُسجَّل تسليم.');
       setTgReplyText('');
+      await loadTelegramIncoming();
     } catch (err: any) {
       showToast(err?.message || 'تعذر إرسال الرد عبر Telegram');
     } finally { setTgBusy(false); }
@@ -350,18 +363,39 @@ export const SocialManagerView: React.FC = () => {
             </button>
           </div>
           <div className="space-y-3">
-            <h4 className="text-xs font-bold text-slate-200">إرسال رد حقيقي على تعليق وارد</h4>
+            <h4 className="text-xs font-bold text-slate-200">إرسال رد حقيقي على رسالة Telegram واردة</h4>
+            {tgIncoming.length > 0 && (
+              <div className="space-y-2 max-h-56 overflow-y-auto pr-1">
+                {tgIncoming.slice(0, 12).map((c: any) => {
+                  const selected = tgExternalId === c.externalId;
+                  return (
+                    <button
+                      key={c.id}
+                      onClick={() => setTgExternalId(c.externalId)}
+                      className={`w-full text-right p-2.5 rounded-xl border transition cursor-pointer ${
+                        selected ? 'bg-emerald-950/40 border-emerald-500/40' : 'bg-slate-950 border-slate-800 hover:border-slate-700'
+                      }`}>
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="text-[10px] font-bold text-sky-300">مستلمة فعلياً</span>
+                        <span className="text-[10px] font-mono text-slate-400" dir="ltr">{c.externalId}</span>
+                      </div>
+                      <div className="text-[11px] text-slate-200 mt-1 line-clamp-2">{c.text}</div>
+                    </button>
+                  );
+                })}
+              </div>
+            )}
             <input
               value={tgExternalId}
               onChange={(e) => setTgExternalId(e.target.value)}
-              placeholder="معرّف التعليق الخارجي (مثال: tg:-100123:42)"
+              placeholder="معرّف الرسالة الخارجي (مثال: tg:-100123:42)"
               className="w-full px-3 py-2.5 rounded-xl bg-slate-950 border border-slate-700 text-xs text-white focus:outline-none focus:border-emerald-500 box-border"
             />
             <textarea
               rows={3}
               value={tgReplyText}
               onChange={(e) => setTgReplyText(e.target.value)}
-              placeholder="نص الرد (يمر بحارس سلامة المحتوى ومنع التكرار على الخادم)"
+              placeholder="نص الرد (يُرسل فعلياً عبر Telegram ويمر بحارس سلامة المحتوى ومنع التكرار على الخادم)"
               className="w-full px-3 py-2.5 rounded-xl bg-slate-950 border border-slate-700 text-xs text-white focus:outline-none focus:border-emerald-500 box-border"
             />
             <button
@@ -370,6 +404,9 @@ export const SocialManagerView: React.FC = () => {
               className="px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white text-xs font-bold cursor-pointer">
               إرسال فعلي عبر Telegram
             </button>
+            <p className="text-[10px] text-slate-500">
+              لا يُسجَّل التسليم إلا باستجابة Telegram حقيقية تحمل معرّف رسالة. فشل الإرسال يُعرض كما هو بلا ادعاء تسليم.
+            </p>
           </div>
         </div>
 

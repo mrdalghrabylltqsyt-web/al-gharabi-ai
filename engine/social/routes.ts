@@ -11,7 +11,7 @@
  */
 
 import type express from 'express';
-import { buildAdapters, isSupportedPlatform } from './registry';
+import { buildAdapters, hasRealConnector, isSupportedPlatform } from './registry';
 import {
   buildDeterministicReply,
   canAutoReply,
@@ -192,6 +192,17 @@ export function registerSocialManagerRoutes(app: express.Express, deps: SocialRo
     const adapter = findAdapter(platform);
     if (!adapter) return res.status(400).json({ success: false, error: 'لا يوجد موصل لهذه المنصة.' });
     if (!adapter.supports('comment_reply')) {
+      // منصة رسائلية لها موصل رد حقيقي منفّذ (مثل Telegram) لا تدعم التعليقات
+      // العامة، لكنها ترد على الرسائل المباشرة عبر مسار مخصص. نوجّه صراحةً بدل
+      // رسالة منع مضللة. المنصة بلا موصل فعلي تُعلن عدم الدعم كما كان.
+      if (adapter.supports('message_reply') && hasRealConnector(platform)) {
+        return res.status(409).json({
+          success: false,
+          error: `المنصة ${adapter.displayName} لا تدعم التعليقات العامة؛ الرسائل الواردة تُرد عبر مسار الرسائل المخصص (message_reply).`,
+          code: 'MESSAGE_PLATFORM_NOT_COMMENT',
+          replyRoute: `/api/platforms/${platform}/reply`,
+        });
+      }
       return res.status(501).json({
         success: false,
         error: `المنصة ${adapter.displayName} لا تدعم الرد على التعليقات عبر واجهتها الرسمية في هذا النظام.`,

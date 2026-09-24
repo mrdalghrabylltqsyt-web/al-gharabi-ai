@@ -268,6 +268,45 @@ async function integrationTests(): Promise<void> {
     });
     check('لا إرسال بلا تعليق حقيقي => 404', unknown.status === 404);
 
+    group('12b) تكامل: رد الرسائل (message_reply) منفصل عن تعليقات comment_reply');
+    // Telegram رسالة لا تعليق عام: مسار التعليقات العام يوجّه صراحةً بدل منع مضلل.
+    const commentRouteOnTelegram = await fetch(`${BASE}/api/social/manager/comments/reply`, {
+      method: 'POST', headers: auth,
+      body: JSON.stringify({ platform: 'telegram', externalId: 'tg:-100777:7', text: 'مرحبا', commentText: 'بكم السعر؟' }),
+    });
+    const commentRouteBody = await commentRouteOnTelegram.json();
+    check('مسار تعليقات Telegram يعيد 409 مع توجيه message_reply (لا 501 مضلل)', commentRouteOnTelegram.status === 409 && commentRouteBody.code === 'MESSAGE_PLATFORM_NOT_COMMENT', JSON.stringify(commentRouteBody).slice(0, 200));
+    check('التوجيه يذكر مسار الرسائل الحقيقي', String(commentRouteBody.replyRoute).includes('/api/platforms/telegram/reply'));
+
+    group('12c) تكامل: فشل sendMessage لا يُسجَّل تسليماً');
+    await fetch(`${BASE}/api/platforms/telegram/webhook`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json', 'x-telegram-bot-api-secret-token': WEBHOOK_SECRET },
+      body: JSON.stringify({ update_id: 104, message: { message_id: 10, text: 'هل لديكم توصيل؟', chat: { id: -100777 }, from: { id: 6, first_name: 'ليلى' } } }),
+    });
+    // نُجبر فشل الإرسال عند المزود الوهمي: يجب ألا يُسجَّل delivered=true.
+    mock.state.failSend = true;
+    const failedReply = await fetch(`${BASE}/api/platforms/telegram/reply`, {
+      method: 'POST', headers: auth,
+      body: JSON.stringify({ externalId: 'tg:-100777:10', text: 'أهلاً بك، فريق المعرض في خدمتك.', commentText: 'هل لديكم توصيل؟' }),
+    });
+    const failedReplyBody = await failedReply.json();
+    check('فشل المزود => 502', failedReply.status === 502, `status=${failedReply.status}`);
+    check('فشل المزود لا يُعلن تسليماً', failedReplyBody.delivered === false && failedReplyBody.reply?.delivered === false);
+    check('فشل المزود يخزّن سبباً حقيقياً', typeof failedReplyBody.reply?.deliveryError === 'string' && failedReplyBody.reply.reviewStatus === 'failed');
+    check('لا معرّف مزود عند الفشل', !failedReplyBody.reply?.providerReplyId);
+    mock.state.failSend = false;
+
+    group('12d) تكامل: منع الرد على رسالة من حساب المعرض (self-authored)');
+    await fetch(`${BASE}/api/platforms/telegram/webhook`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json', 'x-telegram-bot-api-secret-token': WEBHOOK_SECRET },
+      body: JSON.stringify({ update_id: 105, message: { message_id: 11, text: 'عرض جديد اليوم', chat: { id: -100777 }, from: { id: 1, first_name: 'معرض', last_name: 'الغرابي' } } }),
+    });
+    const selfReply = await fetch(`${BASE}/api/platforms/telegram/reply`, {
+      method: 'POST', headers: auth,
+      body: JSON.stringify({ externalId: 'tg:-100777:11', text: 'شكراً لكم', commentText: 'عرض جديد اليوم' }),
+    });
+    check('الرد على رسالة حساب المعرض => 409 (منع حلقة)', selfReply.status === 409);
+
     group('13) تكامل: القطع يبطل طرف المزود');
     const disconnect = await fetch(`${BASE}/api/platforms/telegram/disconnect`, { method: 'POST', headers: auth });
     const disconnectBody = await disconnect.json();

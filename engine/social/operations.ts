@@ -84,7 +84,7 @@ const OPERATION_CAPABILITY: Record<OperationId, PlatformCapability | null> = {
   verify: null,
   receive: null,
   classify: null, // التصنيف حتمي محلي ولا يحتاج اتصالاً
-  reply: 'messages', // يُتحقق خاصة أدناه (رد على تعليق أو رسالة)
+  reply: 'message_reply', // يُتحقق خاصة أدناه (رد على تعليق أو رسالة)
   publish: 'publish',
   schedule: 'scheduling',
   metrics: 'analytics',
@@ -95,9 +95,9 @@ function supportsReceive(platform: PlatformId): boolean {
   return platformSupports(platform, 'comments') || platformSupports(platform, 'messages');
 }
 
-/** هل تدعم المنصة «الرد» (على تعليق أو رسالة)؟ */
+/** هل تدعم المنصة «الرد» (على تعليق عام أو رسالة مباشرة)؟ */
 function supportsReply(platform: PlatformId): boolean {
-  return platformSupports(platform, 'comment_reply') || platformSupports(platform, 'messages');
+  return platformSupports(platform, 'comment_reply') || platformSupports(platform, 'message_reply');
 }
 
 /**

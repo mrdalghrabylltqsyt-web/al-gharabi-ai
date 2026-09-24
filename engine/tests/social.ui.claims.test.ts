@@ -77,6 +77,34 @@ check('configureTelegram يستدعي POST /api/platforms/telegram/configure', /
 check('startPlatformOAuth ما زال مسار OAuth', api.includes('/oauth/start'));
 check('لا مسار oauth/start لـ Telegram في api.ts', !/platforms\/telegram\/oauth/.test(api));
 
+// 9) إصلاح إرسال رد Telegram للرسائل الواردة (message_reply ≠ comment_reply).
+//    كانت الواجهة تمنع الرد لأن Telegram لا يعلن comment_reply، مع أن له مسار
+//    رد حقيقي (sendMessage) على مسار /api/platforms/telegram/reply.
+const replyFn = hub.slice(hub.indexOf('const recordReply'), hub.indexOf('const decide'));
+check('recordReply يوجّه Telegram للرد الحقيقي', replyFn.includes("comment.platform === 'telegram'") && replyFn.includes('apiService.replyTelegram'));
+check('التوجيه يعتمد على replyTarget.chatId الرسالة', replyFn.includes('replyTarget?.chatId'));
+check('Telegram لا يستخدم مسار التعليقات العام', replyFn.indexOf('apiService.replyTelegram') < replyFn.indexOf('apiService.replyToSocialComment('));
+check('بقية المنصات تسلك مسار التعليقات', replyFn.includes('apiService.replyToSocialComment({ platform: comment.platform'));
+check('الواجهة تفصل استقبال الرسالة عن تسليم الرد', hub.includes('مستلمة فعلياً') && hub.includes('الرد المُسلَّم فعلياً'));
+check('الاستقبال الحقيقي مرتبط بـ telemetry webhook', hub.includes("com.ingestSource === 'telegram_webhook'") && hub.includes('receivedViaWebhook'));
+check('لا تعرض الرسالة الواردة كـ simulated دائماً', hub.includes("reply && !reply.delivered"));
+check('زر الرد على Telegram يعلن الإرسال الفعلي لا التسجيل الداخلي', hub.includes("'إرسال فعلي عبر Telegram'"));
+
+// 10) لوحة Telegram في SocialManagerView تعرض الرسائل الواردة وتختار هدف الرد.
+const manager = readFileSync(join(ROOT, 'src/components/social/SocialManagerView.tsx'), 'utf8');
+check('لوحة Telegram تحمّل الرسائل الواردة الحقيقية', manager.includes('loadTelegramIncoming') && manager.includes("apiService.getSocialComments('telegram')"));
+check('اللوحة تسمح باختيار هدف الرد من رسالة واردة', manager.includes('setTgExternalId(c.externalId)'));
+check('اللوحة تُعلن أن التسليم يحتاج استجابة مزود حقيقية', manager.includes('لا يُسجَّل التسليم إلا باستجابة Telegram حقيقية'));
+
+// 11) القدرة message_reply موجودة والمنصات الرسائلية تعلنها.
+const registry = readFileSync(join(ROOT, 'engine/social/registry.ts'), 'utf8');
+const adapter = readFileSync(join(ROOT, 'engine/social/adapter.ts'), 'utf8');
+check('قدرة message_reply معرّفة في العقد', adapter.includes("'message_reply'"));
+check('Telegram يعلن message_reply ولا يعلن comment_reply', registry.includes("capabilities: ['publish', 'messages', 'message_reply', 'scheduling']") && !registry.includes("capabilities: ['publish', 'messages', 'comment_reply'"));
+// مسار التعليقات العام يوجّه منصات الرسائل بدل رسالة منع مضللة.
+const socialRoutesSrc = readFileSync(join(ROOT, 'engine/social/routes.ts'), 'utf8');
+check('مسار التعليقات يوجّه منصات الرسائل إلى message_reply', socialRoutesSrc.includes("supports('message_reply')") && socialRoutesSrc.includes('MESSAGE_PLATFORM_NOT_COMMENT'));
+
 console.log('\n' + '='.repeat(60));
 if (failures.length) {
   console.error(`FAILED: ${failures.length} / ${passed + failures.length}`);

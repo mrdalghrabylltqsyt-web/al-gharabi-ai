@@ -488,6 +488,42 @@ restart فعلي** (إعادة تشغيل العملية بنفس مجلد ال�
 `telegram-credentials-persisted-before-hook`, `telegram-inbound-durable-before-ack`,
 `telegram-inbound-safe-logging`, `telegram-webhook-info-test`, `telegram-ui-webhook-status`.
 
+## فصل «الرسالة» عن «التعليق» في الرد — إصلاح جذر «Telegram لا تدعم الرد» (2026-09-24)
+كانت الواجهة تمنع إرسال أي رد على رسالة Telegram الواردة وتعرض «المنصة Telegram لا تدعم
+الرد على التعليقات…»، لأن `SocialHubView` كان يمرّر كل الردود عبر مسار التعليقات العام
+`/api/social/manager/comments/reply`، وTelegram لا يعلن `comment_reply` (لا تعليقات عامة
+عبر Bot API). التشخيص كان صحيحاً للمفهوم لكنه خاطئ للسياق: رسالة Telegram ليست تعليقاً عاماً.
+
+الإصلاح — **فصل مفهوم صريح**:
+- قدرة جديدة `message_reply` في `engine/social/adapter.ts`، منفصلة تماماً عن `comment_reply`.
+- `engine/social/registry.ts`: Telegram/WhatsApp يعلنان `message_reply` (لا `comment_reply`)؛
+  Facebook/Instagram يعلنان الاثنين معاً (رسائل + تعليقات).
+- `readiness.ts` و`operations.ts` يقرآن `message_reply` لبوابة الرد بدل `messages`، فيصبح
+  رد الرسائل عملية مستقلة قابلة للبوابة.
+- `engine/social/routes.ts` (مسار التعليقات العام): منصة رسائلية لها موصل حقيقي (Telegram)
+  تعيد **409** مع `code: MESSAGE_PLATFORM_NOT_COMMENT` و`replyRoute` يوجّه لمسار الرسائل
+  الحقيقي، بدل **501** المضلل. المنصة بلا موصل فعلي تبقى 501 كما كانت.
+- `SocialHubView` `recordReply`: إن كانت المنصة Telegram والسجل يحمل `replyTarget.chatId`
+  يُرسل الرد فعلياً عبر `apiService.replyTelegram` → `POST /api/platforms/telegram/reply`
+  (sendMessage حقيقي باستخدام `replyToMessageId`). غير ذلك يسلك مسار التعليقات كما كان.
+
+**فصل حالة الاستقبال عن حالة التسليم في الواجهة**: الرسالة الواردة عبر webhook تُعرض بوسم
+«مستلمة فعلياً» (مبنياً على `ingestSource === 'telegram_webhook'`)، ووسم `simulated / not delivered`
+لا يظهر إلا للردود المسجّلة داخلياً (`!reply.delivered`). الرد الحقيقي يظهر «الرد المُسلَّم فعلياً»
+مع معرّف رسالة المزود `providerReplyId`. لوحة Telegram في `SocialManagerView` تعرض الرسائل
+الواردة الحقيقية (`getSocialComments('telegram')`) وتسمح باختيار هدف الرد من قائمة.
+
+لا تغيير في: `PLATFORM_TOKEN_ENCRYPTION_KEY`، Gemini، webhook secret، معمارية webhook،
+`TELEGRAM_DEFAULT_CHAT_ID`، PostgreSQL، أو أي منصة أخرى. لا تدوير لأي سرّ.
+
+اختبارات: `telegram.connector.test.ts` صار **83 فحصاً** (توجيه message_reply، فشل sendMessage
+لا يُسجَّل تسليماً مع `deliveryError`/`reviewStatus=failed`، منع الرد على رسالة حساب المعرض،
+self-authored). `social.ui.claims.test.ts` صار **46 فحصاً** (توجيه الواجهة، فصل الاستقبال عن
+التسليم، القدرة الجديدة). فحوص final-audit: `capability-message-reply-explicit`,
+`telegram-message-not-comment-reply`, `reply-route-message-platform-redirect`,
+`telegram-ui-routes-message-reply`, `incoming-vs-delivery-separated`,
+`telegram-reply-delivery-honest`, `telegram-message-reply-tests`.
+
 ## نمط الكود
 - تعليقات عربية موجزة تشرح «لماذا» فقط، دون شرح ما يفعله الكود.
 - الأنواع في `src/types/index.ts` يجب أن تطابق استجابات الخادم فعلياً؛ توجد فحوص عقد في `engine/tests/social.routes.test.ts` تكشف أي انحراف.

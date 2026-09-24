@@ -27,6 +27,10 @@ export type PlatformCapability =
   | 'analytics'
   | 'comments'
   | 'comment_reply'
+  // الرد على رسالة/محادثة مباشرة (message) — مفهوم منفصل تماماً عن التعليقات
+  // العامة (comment_reply). Telegram مثلاً يستقبل رسائل ويستطيع الرد عليها
+  // عبر sendMessage، بينما لا يوفر واجهة لقراءة/الرد على تعليقات عامة.
+  | 'message_reply'
   | 'audience_insights'
   | 'scheduling';
 
