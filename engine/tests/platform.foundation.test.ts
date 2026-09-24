@@ -97,6 +97,11 @@ function run(): void {
   check('TikTok: client_key وcode_challenge', tkParams.client_key === 'ck' && tkParams.code_challenge === 'ch' && tkParams.scope === 'a,b');
   const gParams = buildAuthorizationParams({ platform: 'youtube', clientId: 'cid', redirectUri: 'r', scopes: ['s1', 's2'], state: 'st' });
   check('Google: client_id وoffline وconsent', gParams.client_id === 'cid' && gParams.access_type === 'offline' && gParams.prompt === 'consent' && gParams.scope === 's1 s2');
+  // Meta: scope بفواصل وبلا access_type/prompt (معاملان خاصان بـGoogle).
+  const fParams = buildAuthorizationParams({ platform: 'facebook', clientId: '145634995501895', redirectUri: 'r', scopes: ['pages_show_list', 'pages_messaging'], state: 'st' });
+  check('Meta: scope بفواصل', fParams.scope === 'pages_show_list,pages_messaging');
+  check('Meta: بلا access_type ولا prompt', fParams.access_type === undefined && fParams.prompt === undefined);
+  check('Meta: client_id هو نفس المعرّف', fParams.client_id === '145634995501895');
   const body = buildTokenExchangeBody({ clientId: 'c', clientSecret: 's', code: 'code', redirectUri: 'r', codeVerifier: 'v' });
   check('جسم التبادل يحمل الحقول الرسمية', body.get('grant_type') === 'authorization_code' && body.get('code_verifier') === 'v');
   check('parseTokenResponse: رمز صالح', parseTokenResponse({ access_token: 'a', refresh_token: 'r', expires_in: 3600 }).valid);

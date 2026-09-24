@@ -453,7 +453,7 @@ ${payload.topic || payload.productName || 'أنظمة وحلول التقسيط 
 
   async getFinalReadiness() { const res = await fetch('/api/system/final-readiness', { headers: getAuthHeaders() }); const data = await res.json(); if(!res.ok && !data) throw new Error('تعذر تحميل فحص الجاهزية النهائية'); return data; },
 
-  async startPlatformOAuth(platform: string) { const res = await fetch(`/api/platforms/${encodeURIComponent(platform)}/oauth/start`, { headers: getAuthHeaders() }); const data = await res.json(); if(!res.ok || !data.success) throw new Error(data.error || 'تعذر بدء ربط المنصة'); return data; },
+  async startPlatformOAuth(platform: string) { const res = await fetch(`/api/platforms/${encodeURIComponent(platform)}/oauth/start`, { headers: getAuthHeaders() }); const data = await res.json(); if(!res.ok || !data.success) { const msg = [data.error, data.hint].filter(Boolean).join(' — ') || 'تعذر بدء ربط المنصة'; const err: any = new Error(msg); err.code = data.code; err.redirectUri = data.redirectUri; err.appTokenKind = data.appTokenKind; throw err; } return data; },
 
   // الرمز اختياري: إن غاب يُستخدم TELEGRAM_BOT_TOKEN من بيئة الخادم (لا نطلب نسخ أسرار للواجهة).
   async configureTelegram(botToken?: string) {

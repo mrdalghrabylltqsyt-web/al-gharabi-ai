@@ -653,3 +653,48 @@ URL / النطاق غير مُضمَّن في نطاقات التطبيق». و�
 يبقى الرد «لا يمكن تحميل عنوان URL» مهما صحّ الكود. هذا الإعداد لا يمكن تنفيذه إلا
 من جلسة مالك Meta، ولا يوجد وكيل برمجي يفعله نيابةً عنه.
 
+## تشخيص جذر «حدث خطأ ما» في Meta OAuth — PLATFORM__INVALID_APP_ID (2026-09-24)
+
+بعد ضبط App Domains وValid OAuth Redirect URIs ظلّت Meta تعرض الصفحة العامة
+«Sorry, something went wrong.» أثناء الربط بـFacebook. التشخيص الحي أثبت أن **هذه
+الصفحة العامة هي بالضبط استجابة Meta لمعرّف تطبيق غير صالح/غير مطابق**
+(`GET /v21.0/dialog/oauth` → 302 إلى `/oauth/error/?error_code=PLATFORM__INVALID_APP_ID`).
+المصفوفة المثبتة حياً:
+
+| الحالة | استجابة Meta |
+|---|---|
+| معرّف تطبيق صالح + أي redirect | 302 إلى `login.php` (الحوار يتقدّم) |
+| معرّف أرقام غير موجود (مثل 123456789012345) | 302 إلى صفحة «حدث خطأ ما» |
+| معرّف فيه مسافة/سطر/تنصيص زائد | صفحة «Invalid App ID» (HTTP 200) |
+| إصدار المسار v17…v24 | لا فرق — ليس سبباً |
+
+**السبب الجذري:** قيمة `FACEBOOK_OAUTH_CLIENT_ID` في بيئة الإنتاج ليست App ID صالحاً
+لدى Meta — إمّا أنها **غير مطابقة** لمعرّف تطبيق Facebook Login، أو تحمل **مسافة/سطراً
+زائداً**. لا علاقة للأمر بـ`access_type`/`prompt` (أُثبت حياً أن Meta تتجاهلهما) ولا
+بإصدار Graph ولا بنمط الترميز. وبما أن الصفحة تظهر **قبل شاشة الموافقة** فالمشكلة في
+بدء الحوار نفسه لا في مرحلة العودة (callback).
+
+**الإصلاح (يمنع إرسال المالك إلى صفحة غامضة ويُعلن السبب الدقيق):**
+- `engine/social/facebook.ts`: `isPlausibleMetaAppId` يفحص أن المعرّف **أرقام فقط**
+  (6–20 خانة) **بلا trim** — لأن أي مسافة زائدة تنتج الصفحة العامة نفسها. و
+  `classifyMetaDialogInteraction` يصنّف استجابة الحوار (login/consent/invalid_app_id/
+  dialog_error) فلا تُعتبر صفحة «حدث خطأ ما» نجاحاً. و`classifyMetaAppTokenResponse`
+  يفرّق `invalid_client_id` (code 101، المطابق تماماً للصفحة العامة) عن السرّ الخاطئ.
+- `FacebookClient.fetchAppAccessToken`: طلب `grant_type=client_credentials` حقيقي
+  (لا يستهلك حصة تفاعل) يثبت `client_id`+`secret` قبل بدء الحوار.
+- `GET /api/platforms/:platform/oauth/start`: `oauthStartPreflight` يرفض **409**
+  برمز صريح (`INVALID_APP_ID_FORMAT` / `META_APP_ID_INVALID` / `META_APP_SECRET_INVALID`
+  / `META_APP_SECRET_MISSING`) مع الإجراء الدقيق ورابط الإرجاع، بدل توليد رابط سيفشل.
+  يُخزَّن النجاح فقط 5 دقائق، فلا يُقفَل المالك بعد إصلاح البيئة.
+- `engine/social/oauth.ts`: Meta (facebook/instagram) لم يعد يرسل `access_type=offline`
+  و`prompt=consent` (معاملان خاصان بـGoogle)، وscope مفصول بفواصل لعقد Meta الرسمي.
+- سجل آمن `logOAuthStart` (بدء/عودة) بلا state ولا code ولا أي سرّ، ليُقرأ مسار الفشل
+  من سجلات Render. و`oauth/setup` يعرض `appIdFormatOk` ومعنى «حدث خطأ ما» والفحوص.
+
+اختبارات: `facebook.connector.test.ts` صار **122 فحصاً** (مجموعة 2ب للتشخيص ومجموعة 20
+تثبت رفض 409 عند معرّف غير مطابق وأن الفحص يستدعي Graph فعلاً بلا كشف سرّ). فحوص
+final-audit الجديدة: `meta-generic-error-classified` … `meta-generic-error-tests`.
+
+**ما بقي على المالك (لا يُخفيه الكود):** تأكيد أن `FACEBOOK_OAUTH_CLIENT_ID` هو App ID
+تطبيق Facebook Login نفسه (أرقام فقط، بلا مسافة) و`FACEBOOK_OAUTH_CLIENT_SECRET` هو
+App Secret المطابق. الفحص الآن يُعلن ذلك صراحةً في رد `oauth/start` بدل الصفحة الغامضة.

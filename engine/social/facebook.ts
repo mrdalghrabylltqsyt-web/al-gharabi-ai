@@ -21,6 +21,15 @@ export const FACEBOOK_GRAPH_BASE = 'https://graph.facebook.com';
 export const FACEBOOK_OAUTH_DIALOG_BASE = 'https://www.facebook.com';
 export const FACEBOOK_GRAPH_VERSION = 'v21.0';
 export const FACEBOOK_SIGNATURE_HEADER = 'x-hub-signature-256';
+/**
+ * مسار حوار Facebook Login الرسمي (مع إصدار Graph كما في وثائق Meta).
+ *
+ * ملاحظة تشخيصية مهمة: أُثبت حياً أن `/v21.0/dialog/oauth` **يعمل** مع معرّف
+ * تطبيق صالح، وأن صفحة Meta العامة «حدث خطأ ما» (`PLATFORM__INVALID_APP_ID`)
+ * تظهر عند معرّف تطبيق **غير صالح/غير مطابق** لا عند إصدار المسار. أي مسافة أو
+ * سطر زائد في قيمة المعرّف ينتج نفس الصفحة العامة (أُثبت حياً أيضاً).
+ */
+export const FACEBOOK_DIALOG_PATH = '/v21.0/dialog/oauth';
 
 /**
  * القاعدة الفعلية لاستدعاءات Graph API. تُقرأ من `FACEBOOK_GRAPH_API_BASE`
@@ -52,6 +61,83 @@ export function facebookGraphUrl(path: string, baseOverride?: string): string {
 /** رابط تبادل/إطالة الرمز الرسمي. */
 export function facebookTokenUrl(baseOverride?: string): string {
   return facebookGraphUrl('/oauth/access_token', baseOverride);
+}
+
+// ---------------------------------------------------------------------------
+// تفاعل الحوار + فحص معرّف التطبيق (بلا أي سرّ)
+// ---------------------------------------------------------------------------
+
+/**
+ * معرّف تطبيق Meta صالح شكلياً: أرقام فقط (15–16 خانة عملياً، ونقبل 6+).
+ * لا يتم trim هنا: أي مسافة أو سطر أو علامة تنصيص زائدة يجعل Meta ترد «حدث
+ * خطأ ما»، فنُعلنها صراحةً بدل تمريرها للمزود.
+ */
+export function isPlausibleMetaAppId(value: unknown): boolean {
+  return typeof value === 'string' && /^[0-9]{6,20}$/.test(value);
+}
+
+export type MetaDialogInteractionKind = 'login' | 'consent' | 'invalid_app_id' | 'dialog_error' | 'unknown';
+
+export interface MetaDialogInteraction {
+  /** تصنيف تفاعل Meta: دخول/موافقة/معرّف تطبيق غير صالح/عطل حوار/غير معروف. */
+  kind: MetaDialogInteractionKind;
+  /** هل يتقدّم الحوار إلى تسجيل الدخول/الموافقة (أي أن التطبيق مقبول)؟ */
+  acceptable: boolean;
+  /** رمز خطأ Meta إن وُجد (بلا أي سرّ). */
+  errorCode: string | null;
+  /** رابط إعادة التوجيه كما أعاده Meta (بلا جسم الاستجابة). */
+  location: string | null;
+}
+
+/**
+ * يصنّف استجابة أول طلب لحوار Facebook Login من ترويسة Location والجسم.
+ *
+ * سبب الوجود: كانت «حدث خطأ ما» (PLATFORM__INVALID_APP_ID) تظهر للمالك بلا
+ * أي تفسير. Meta تردّ على الطلب الأول بـ302 إلى `/oauth/error/?error_code=...`
+ * أو بالصفحة نفسها في الجسم؛ هنا نحسم المعنى بدقة بلا افتراض.
+ */
+export function classifyMetaDialogInteraction(input: { status: number; location?: string | null; body?: string | null }): MetaDialogInteraction {
+  const location = (input.location || '').trim() || null;
+  const errorMatch = location ? /[?&]error_code=([A-Za-z0-9_]+)/.exec(location) : null;
+  const errorCode = errorMatch ? errorMatch[1] : null;
+  if (errorCode === 'PLATFORM__INVALID_APP_ID' || /PLATFORM__INVALID_APP_ID/.test(input.body || '')) {
+    return { kind: 'invalid_app_id', acceptable: false, errorCode: errorCode || 'PLATFORM__INVALID_APP_ID', location };
+  }
+  if (errorCode) return { kind: 'dialog_error', acceptable: false, errorCode, location };
+  if (location && /\/(v[0-9.]+\/)?dialog\/oauth\b/.test(location)) {
+    return { kind: 'consent', acceptable: true, errorCode: null, location };
+  }
+  if (location && /\/login\.php\b/.test(location)) {
+    return { kind: 'login', acceptable: true, errorCode: null, location };
+  }
+  // جسم يحمل صفحة عامة بلا توجيه: نعتبرها عطلاً صريحاً لا نجاحاً.
+  if (/something went wrong|Invalid App ID/i.test(input.body || '')) {
+    return { kind: 'dialog_error', acceptable: false, errorCode: 'META_DIALOG_PAGE', location };
+  }
+  return { kind: 'unknown', acceptable: false, errorCode: null, location };
+}
+
+/** مسار Graph لرمز التطبيق (client_credentials) — يثبت صحة client_id/secret. */
+export function facebookAppTokenPath(): string {
+  return '/oauth/access_token';
+}
+
+export type MetaAppTokenKind = 'ok' | 'invalid_client_id' | 'invalid_client_secret' | 'secret_required' | 'unknown';
+
+/**
+ * يصنّف نتيجة طلب client_credentials من Graph: يفرّق معرّف التطبيق الخاطئ
+ * (code 101 «Invalid Client ID» — وهو مطابق تماماً لـ«حدث خطأ ما» في شاشة
+ * الحوار) عن السرّ الخاطئ وعن باقي الأخطاء.
+ */
+export function classifyMetaAppTokenResponse(input: { status: number; data?: any }): { kind: MetaAppTokenKind; message: string; code: number | null } {
+  const err = input.data?.error;
+  const message = String(err?.message || input.data?.error_description || '').slice(0, 200);
+  const code = Number.isFinite(Number(err?.code)) ? Number(err.code) : null;
+  if (input.data?.access_token && input.status >= 200 && input.status < 300) return { kind: 'ok', message, code };
+  if (code === 101 || /Invalid Client ID/i.test(message)) return { kind: 'invalid_client_id', message, code };
+  if (/client secret/i.test(message)) return { kind: 'invalid_client_secret', message, code };
+  if (/access token is required|unknown error/i.test(message)) return { kind: 'secret_required', message, code };
+  return { kind: 'unknown', message: message || `HTTP ${input.status}`, code };
 }
 
 // ---------------------------------------------------------------------------
@@ -218,6 +304,36 @@ export class FacebookClient {
     private readonly fetchImpl: FacebookFetch,
     private readonly baseUrl?: string,
   ) {}
+
+  /**
+   * يثبت أن (client_id + client_secret) يعرّفان تطبيق Meta حقيقياً عبر
+   * `grant_type=client_credentials`. لا يستهلك حصة تفاعل المستخدم، ولا يعيد
+   * client_secret في أي مخرَج — فقط تصنيف النتيجة.
+   *
+   * السبب: كانت شاشة الحوار تُظهر «حدث خطأ ما» (PLATFORM__INVALID_APP_ID) بلا
+   * تفسير. هذا الطلب يحسم إن كان معرّف/سرّ التطبيق هو السبب قبل إرسال المالك.
+   */
+  async fetchAppAccessToken(input: { clientId: string; clientSecret: string }): Promise<{ kind: MetaAppTokenKind; message: string; code: number | null }> {
+    let u: URL;
+    try {
+      u = new URL(facebookGraphUrl(facebookAppTokenPath(), this.baseUrl));
+    } catch (e: any) {
+      return { kind: 'unknown', message: String(e?.message || 'رابط غير صالح.'), code: null };
+    }
+    u.searchParams.set('client_id', input.clientId);
+    u.searchParams.set('client_secret', input.clientSecret);
+    u.searchParams.set('grant_type', 'client_credentials');
+    try {
+      const res = await this.fetchImpl(u.toString(), { method: 'GET' });
+      const data = await res.json().catch(() => null);
+      const classified = classifyMetaAppTokenResponse({ status: res.status, data });
+      // لا يُسجَّل ولا يُعاد أي سرّ: نُبقي التصنيف والرسالة المطهّرة فقط.
+      if (classified.kind === 'ok') return { kind: 'ok', message: 'تطبيق Meta صالح ومثبت.', code: classified.code };
+      return { kind: classified.kind === 'unknown' ? 'unknown' : classified.kind, message: classified.message, code: classified.code };
+    } catch (e: any) {
+      return { kind: 'unknown', message: String(e?.message || 'فشل الاتصال بـMeta.'), code: null };
+    }
+  }
 
   /** يبادل رمز OAuth برمز وصول قصير الأجل. */
   async exchangeCode(input: { clientId: string; clientSecret: string; code: string; redirectUri: string }): Promise<FacebookResult<{ accessToken: string; expiresIn: number | null }>> {

@@ -26,6 +26,9 @@ import {
   buildSendMessagePayload,
   facebookGraphUrl,
   facebookTokenUrl,
+  isPlausibleMetaAppId,
+  classifyMetaDialogInteraction,
+  classifyMetaAppTokenResponse,
 } from '../social/facebook';
 import { createFacebookMock, startFacebookMockServer } from './helpers/facebookMock';
 import { signSession } from '../auth/sessions';
@@ -69,7 +72,8 @@ function startApp(fbBase: string): { proc: ChildProcess; log: () => string } {
     SESSION_SECRET,
     // خادم Graph وهمي محلي: لا اتصال بمزود حقيقي في الاختبارات.
     FACEBOOK_GRAPH_API_BASE: fbBase,
-    FACEBOOK_OAUTH_CLIENT_ID: 'test-fb-client-id',
+    // معرّف تطبيق رقمي (كما هو حقيقي لدى Meta) — الفحص الآن يرفض ما ليس أرقاماً.
+    FACEBOOK_OAUTH_CLIENT_ID: '145634995501895',
     FACEBOOK_OAUTH_CLIENT_SECRET: 'test-fb-client-secret',
     FACEBOOK_APP_SECRET: FB_APP_SECRET,
     FACEBOOK_VERIFY_TOKEN: FB_VERIFY_TOKEN,
@@ -144,6 +148,28 @@ function unitTests(): void {
   check('رابط Graph يستخدم القاعدة الافتراضية الرسمية', facebookGraphUrl('/me/accounts').startsWith('https://graph.facebook.com/v'));
   check('رابط الرمز الرسمي صحيح', facebookTokenUrl().includes('/oauth/access_token'));
   check('القاعدة قابلة للتجاوز في الاختبار', facebookGraphUrl('/me/accounts', 'http://127.0.0.1:9').startsWith('http://127.0.0.1:9/v'));
+
+  group('2ب) وحدة: تشخيص «حدث خطأ ما» — شكل معرّف التطبيق وتصنيف استجابة Meta');
+  // المعرّف الحقيقي أرقام فقط. أي مسافة/حرف/تنصيص => Meta ترد الصفحة العامة.
+  check('معرّف رقمي مقبول', isPlausibleMetaAppId('145634995501895'));
+  check('معرّف بمسافة مرفوض', !isPlausibleMetaAppId(' 145634995501895'));
+  check('معرّف بمسافة لاحقة مرفوض', !isPlausibleMetaAppId('145634995501895 '));
+  check('معرّف بعلامة تنصيص مرفوض', !isPlausibleMetaAppId('"145634995501895"'));
+  check('معرّف ببادئة نصية مرفوض', !isPlausibleMetaAppId('appid'));
+  check('معرّف أقصر من 6 خانات مرفوض', !isPlausibleMetaAppId('12345'));
+  check('معرّف غير نصي مرفوض', !isPlausibleMetaAppId(undefined) && !isPlausibleMetaAppId(145634995501895));
+  // 302 إلى /oauth/error?error_code=PLATFORM__INVALID_APP_ID = الصفحة العامة نفسها.
+  const invalidApp = classifyMetaDialogInteraction({ status: 302, location: 'https://www.facebook.com/oauth/error/?error_code=PLATFORM__INVALID_APP_ID' });
+  check('PLATFORM__INVALID_APP_ID يُصنَّف معرّف تطبيق غير صالح', invalidApp.kind === 'invalid_app_id' && invalidApp.acceptable === false && invalidApp.errorCode === 'PLATFORM__INVALID_APP_ID');
+  check('صفحة «حدث خطأ ما» العامة تُصنَّف عطلاً لا نجاحاً', classifyMetaDialogInteraction({ status: 200, body: 'Sorry, something went wrong. We\u2019re working on getting this fixed.' }).kind === 'dialog_error');
+  check('إعادة توجيه لتسجيل الدخول = تطبيق مقبول', classifyMetaDialogInteraction({ status: 302, location: 'https://www.facebook.com/login.php?skip_api_login=1&api_key=1' }).kind === 'login');
+  check('إعادة توجيه لحوار الموافقة = تطبيق مقبول', classifyMetaDialogInteraction({ status: 302, location: 'https://www.facebook.com/v21.0/dialog/oauth?client_id=1&ret=login' }).kind === 'consent');
+  check('بلا توجيه وبلا جسم معروف = غير معروف', classifyMetaDialogInteraction({ status: 200, body: 'x' }).kind === 'unknown');
+  // تصنيف رمز التطبيق: code 101 = معرّف خاطئ (مطابق تماماً لصفحة Meta العامة).
+  check('Graph code 101 => معرّف تطبيق غير صالح', classifyMetaAppTokenResponse({ status: 400, data: { error: { message: 'Invalid Client ID', code: 101 } } }).kind === 'invalid_client_id');
+  check('Graph سرّ خاطئ => invalid_client_secret', classifyMetaAppTokenResponse({ status: 400, data: { error: { message: 'Error validating client secret.', code: 1 } } }).kind === 'invalid_client_secret');
+  check('Graph نجاح => ok', classifyMetaAppTokenResponse({ status: 200, data: { access_token: 'APP_TOKEN_TEST' } }).kind === 'ok');
+  check('Graph رسالة non-JSON => لا ok', classifyMetaAppTokenResponse({ status: 200, data: null }).kind !== 'ok');
 }
 
 async function integrationTests(): Promise<void> {
@@ -396,6 +422,24 @@ async function integrationTests(): Promise<void> {
     const multiCpAfter = await (await fetch(`${BASE}/api/platforms/control-plane`, { headers: auth })).json();
     check('لم يعد معلّقاً على اختيار الصفحة', multiCpAfter.platforms.find((p: any) => p.platform === 'facebook').pageSelectionPending === false);
     await multiMock.stop();
+
+    // الفحص يمنع إرسال المالك إلى صفحة Meta العامة «حدث خطأ ما» عند معرّف تطبيق
+    // غير مطابق، ويُعلن السبب صراحةً بدل توليد رابط سيفشل حتماً.
+    group('20) تكامل: فحص ما قبل الحوار يمنع «حدث خطأ ما» بلا تفسير');
+    await stop(currentApp.proc);
+    const wrongAppMock = await startFacebookMockServer(FB_PORT + 2, createFacebookMock({ validAppId: '999999999999999' }));
+    currentApp = startApp(wrongAppMock.base);
+    check('الخادم يقلع لفحص معرّف التطبيق', await waitForHealth(), currentApp.log().slice(0, 300));
+    Object.assign(auth, await login());
+    const blocked = await fetch(`${BASE}/api/platforms/facebook/oauth/start`, { headers: auth });
+    const blockedBody = await blocked.json();
+    check('بدء OAuth يرفض معرّف تطبيق غير مطابق بـ409', blocked.status === 409, `status=${blocked.status} body=${JSON.stringify(blockedBody).slice(0, 200)}`);
+    check('السبب صريح META_APP_ID_INVALID', blockedBody.code === 'META_APP_ID_INVALID');
+    check('لا يُعاد رابط تفويض عند معرّف غير صالح', !blockedBody.authorizationUrl);
+    check('الفحص استدعى Graph فعلياً بمعرّف التطبيق', wrongAppMock.state.lastAppTokenCheck?.clientId === '145634995501895');
+    check('الفحص لا يكشف السرّ', !JSON.stringify(blockedBody).includes('test-fb-client-secret'));
+    check('الاستجابة تحمل رابط الإرجاع الصحيح للتسجيل لدى Meta', blockedBody.redirectUri === `${BASE}/api/platforms/facebook/oauth/callback`);
+    await wrongAppMock.stop();
   } finally {
     try { await stop(currentApp.proc); } catch { /* تجاهل */ }
     await mock.stop();

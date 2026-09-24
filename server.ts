@@ -27,6 +27,9 @@ import {
   FacebookClient,
   parseFacebookWebhook,
   facebookGraphUrl,
+  isPlausibleMetaAppId,
+  classifyMetaDialogInteraction,
+  FACEBOOK_DIALOG_PATH,
   FACEBOOK_SIGNATURE_HEADER,
   type FacebookFetch,
   type FacebookPageIdentity,
@@ -942,8 +945,8 @@ const OAUTH_CONFIG: Record<string, any> = {
   youtube: { provider: "google", auth: "https://accounts.google.com/o/oauth2/v2/auth", token: "https://oauth2.googleapis.com/token", clientId: process.env.GOOGLE_OAUTH_CLIENT_ID || process.env.GOOGLE_CLIENT_ID, clientSecret: process.env.GOOGLE_OAUTH_CLIENT_SECRET, scopes: ["https://www.googleapis.com/auth/youtube.upload"] },
   google_business: { provider: "google", auth: "https://accounts.google.com/o/oauth2/v2/auth", token: "https://oauth2.googleapis.com/token", clientId: process.env.GOOGLE_OAUTH_CLIENT_ID || process.env.GOOGLE_CLIENT_ID, clientSecret: process.env.GOOGLE_OAUTH_CLIENT_SECRET, scopes: ["https://www.googleapis.com/auth/business.manage"] },
   tiktok: { provider: "tiktok", auth: "https://www.tiktok.com/v2/auth/authorize/", token: "https://open.tiktokapis.com/v2/oauth/token/", clientId: process.env.TIKTOK_CLIENT_KEY, clientSecret: process.env.TIKTOK_CLIENT_SECRET, scopes: ["user.info.basic", "video.publish"] },
-  facebook: { provider: "meta", auth: "https://www.facebook.com/v21.0/dialog/oauth", token: "https://graph.facebook.com/v21.0/oauth/access_token", clientId: process.env.FACEBOOK_OAUTH_CLIENT_ID, clientSecret: process.env.FACEBOOK_OAUTH_CLIENT_SECRET, scopes: ["pages_show_list", "pages_read_engagement", "pages_manage_engagement", "pages_manage_posts", "pages_manage_metadata", "pages_messaging"] },
-  instagram: { provider: "meta", auth: "https://www.facebook.com/v21.0/dialog/oauth", token: "https://graph.facebook.com/v21.0/oauth/access_token", clientId: process.env.INSTAGRAM_OAUTH_CLIENT_ID, clientSecret: process.env.INSTAGRAM_OAUTH_CLIENT_SECRET, scopes: ["instagram_basic", "instagram_manage_comments", "instagram_manage_messages", "pages_show_list"] },
+  facebook: { provider: "meta", auth: `https://www.facebook.com${FACEBOOK_DIALOG_PATH}`, token: "https://graph.facebook.com/v21.0/oauth/access_token", clientId: process.env.FACEBOOK_OAUTH_CLIENT_ID, clientSecret: process.env.FACEBOOK_OAUTH_CLIENT_SECRET, scopes: ["pages_show_list", "pages_read_engagement", "pages_manage_engagement", "pages_manage_posts", "pages_manage_metadata", "pages_messaging"] },
+  instagram: { provider: "meta", auth: `https://www.facebook.com${FACEBOOK_DIALOG_PATH}`, token: "https://graph.facebook.com/v21.0/oauth/access_token", clientId: process.env.INSTAGRAM_OAUTH_CLIENT_ID, clientSecret: process.env.INSTAGRAM_OAUTH_CLIENT_SECRET, scopes: ["instagram_basic", "instagram_manage_comments", "instagram_manage_messages", "pages_show_list"] },
   x: { provider: "x", auth: "https://twitter.com/i/oauth2/authorize", token: "https://api.twitter.com/2/oauth2/token", clientId: process.env.X_OAUTH_CLIENT_ID, clientSecret: process.env.X_OAUTH_CLIENT_SECRET, scopes: ["tweet.read", "tweet.write", "users.read", "offline.access"] },
   snapchat: { provider: "snapchat", auth: "https://accounts.snapchat.com/login/oauth2/authorize", token: "https://accounts.snapchat.com/login/oauth2/access_token", clientId: process.env.SNAPCHAT_OAUTH_CLIENT_ID, clientSecret: process.env.SNAPCHAT_OAUTH_CLIENT_SECRET, scopes: ["snapchat-marketing-api"] },
   threads: { provider: "meta", auth: "https://threads.net/oauth/authorize", token: "https://graph.threads.net/oauth/access_token", clientId: process.env.THREADS_OAUTH_CLIENT_ID, clientSecret: process.env.THREADS_OAUTH_CLIENT_SECRET, scopes: ["threads_basic", "threads_content_publish", "threads_manage_replies"] },
@@ -1027,6 +1030,97 @@ const FACEBOOK_SUBSCRIBED_FIELDS = (() => {
 const faceBookFetchImpl: FacebookFetch = (url, init) => fetch(url, init as any);
 function facebookClient(): FacebookClient { return new FacebookClient(faceBookFetchImpl, FACEBOOK_GRAPH_API_BASE_ENV); }
 function facebookOAuthConfig(): any { return OAUTH_CONFIG["facebook"]; }
+/** منصات Meta التي يشترك مسار حوارها في نفس القواعد (client_id + scope بفواصل). */
+const META_OAUTH_PLATFORMS = new Set(["facebook", "instagram"]);
+/** تخزين مؤقت قصير لنتيجة فحص بدء OAuth (يمنع إغراق Meta عند كل ضغطة زر). */
+const oauthStartPreflightCache = new Map<string, { at: number; result: any }>();
+const OAUTH_PREFLIGHT_TTL_MS = 5 * 60 * 1000;
+
+/**
+ * سجل بدء OAuth آمن: بلا أي سرّ ولا توكن — فقط المنصة والنتيجة والفاتورة.
+ * الغرض تشخيص مسار «حدث خطأ ما» من سجلات Render بلا كشف بيانات.
+ */
+function logOAuthStart(platform: string, detail: Record<string, unknown>): void {
+  try { console.log(`[oauth] ${platform} ${JSON.stringify(detail)}`); } catch { /* التسجيل غير حرج */ }
+}
+
+/** وصف مشكلة معرّف تطبيق Meta بلا كشف السرّ (شكل فقط، لا قيمة). */
+function describeMetaAppIdProblem(clientId: unknown): string | null {
+  if (typeof clientId !== "string" || !clientId) return "FACEBOOK_OAUTH_CLIENT_ID غير مضبوط.";
+  if (!isPlausibleMetaAppId(clientId)) {
+    const trimmedChanged = clientId.trim() !== clientId;
+    return trimmedChanged
+      ? "FACEBOOK_OAUTH_CLIENT_ID يحمل مسافة/سطراً زائداً؛ هذا يجعل Meta ترد «حدث خطأ ما». احذف المسافات."
+      : "FACEBOOK_OAUTH_CLIENT_ID ليس أرقاماً فقط (App ID هو رقم 15–16 خانة من Meta App Dashboard).";
+  }
+  return null;
+}
+
+interface OAuthStartPreflight {
+  ok: boolean;
+  /** رمز صريح لنوع الحجب: INVALID_APP_ID_FORMAT / META_APP_ID_INVALID / META_APP_SECRET_INVALID / META_UNAVAILABLE_FORMAT */
+  code?: string;
+  error?: string;
+  hint?: string;
+  /** نتيجة فحص Graph لمعرّف/سرّ التطبيق (منصات Meta فقط). */
+  appToken?: { kind: string; message: string; code: number | null } | null;
+}
+
+/**
+ * فحص ما قبل إنشاء رابط الحوار — يمنع إرسال المالك إلى «حدث خطأ ما».
+ *
+ * الفرق بين هذا الفحص ومشكلة ضغط الموديل: هنا لا نخفي شيئاً. الفحص:
+ *  1) شكل معرّف التطبيق رقمياً (أي مسافة أو حرف => Meta ترد «حدث خطأ ما»).
+ *  2) لـMeta: طلب client_credentials حقيقي يثبت أن client_id + secret صالحان
+ *     (code 101 «Invalid Client ID» هو السبب المطابق تماماً لصفحة Meta العامة).
+ * وعند فشل الفحص نُعلن السبب والإجراء بدل توليد رابط سيفشل حتماً.
+ */
+async function oauthStartPreflight(platform: string): Promise<OAuthStartPreflight> {
+  const cfg = OAUTH_CONFIG[platform];
+  if (!cfg) return { ok: false, code: "NO_CONFIG", error: "مزود غير مُعدّ." };
+  if (META_OAUTH_PLATFORMS.has(platform)) {
+    const shapeProblem = describeMetaAppIdProblem(cfg.clientId || process.env.FACEBOOK_OAUTH_CLIENT_ID || "");
+    if (shapeProblem) return { ok: false, code: "INVALID_APP_ID_FORMAT", error: shapeProblem, hint: "افتح Meta App Dashboard → Settings → Basic وانسخ App ID رقماً فقط (15–16 خانة) بلا مسافات." };
+    const cached = oauthStartPreflightCache.get(platform);
+    if (cached && Date.now() - cached.at < OAUTH_PREFLIGHT_TTL_MS) return cached.result;
+    const appToken = await facebookClient().fetchAppAccessToken({ clientId: String(cfg.clientId), clientSecret: String(cfg.clientSecret || "") });
+    let result: OAuthStartPreflight;
+    if (appToken.kind === "invalid_client_id") {
+      result = {
+        ok: false,
+        code: "META_APP_ID_INVALID",
+        error: "معرّف تطبيق Meta (FACEBOOK_OAUTH_CLIENT_ID) غير موجود لدى Meta. هذا هو سبب صفحة «حدث خطأ ما» بالضبط.",
+        hint: "انسخ App ID الصحيح من Meta App Dashboard → Settings → Basic، وتأكد أنه معرّف تطبيق Facebook Login نفسه لا تطبيقاً آخر.",
+        appToken,
+      };
+    } else if (appToken.kind === "invalid_client_secret") {
+      result = {
+        ok: false,
+        code: "META_APP_SECRET_INVALID",
+        error: "سرّ تطبيق Meta (FACEBOOK_OAUTH_CLIENT_SECRET) لا يطابق معرّف التطبيق.",
+        hint: "من Meta App Dashboard → Settings → Basic اضغط Show بجانب App Secret وانسخ القيمة نفسها إلى FACEBOOK_OAUTH_CLIENT_SECRET.",
+        appToken,
+      };
+    } else if (appToken.kind === "secret_required") {
+      result = {
+        ok: false,
+        code: "META_APP_SECRET_MISSING",
+        error: "يلزم App Secret لإثبات تطبيق Meta قبل بدء الربط.",
+        hint: "اضبط FACEBOOK_OAUTH_CLIENT_SECRET بقيمة App Secret من Meta App Dashboard.",
+        appToken,
+      };
+    } else if (appToken.kind === "ok") {
+      result = { ok: true, appToken };
+    } else {
+      // تعذّر الفحص (شبكة/غير متوقع): لا نحجب بلا سبب؛ نُعلن أن الإثبات لم يتم.
+      result = { ok: true, code: "META_PREFLIGHT_UNAVAILABLE", hint: appToken.message, appToken };
+    }
+    // نُخزّن النجاح فقط. الفشل لا يُخزَّن حتى يستطيع المالك إصلاح البيئة والمحاولة فوراً.
+    if (result.ok && !result.code) oauthStartPreflightCache.set(platform, { at: Date.now(), result });
+    return result;
+  }
+  return { ok: true };
+}
 /** سرّ توقيع webhook: من اعتماد الصفحة المحفوظ ثم البيئة. */
 function facebookAppSecret(): string {
   const stored = getProviderToken("facebook");
@@ -1270,6 +1364,23 @@ app.get("/api/platforms/:platform/oauth/start", requireOwner, async (req,res)=>{
   const callbackUrl=oauthCallbackUrl(platform);
   const urlInfo=resolvePublicUrl(process.env);
   const publicOk=publicUrlIsPublic();
+  // فحص ما قبل الحوار: يمنع إرسال المالك إلى صفحة «حدث خطأ ما» بلا تفسير.
+  // عند الفشل نُعلن السبب والإجراء الدقيق بدل توليد رابط سيفشل حتماً لدى Meta.
+  const preflight = await oauthStartPreflight(platform);
+  if (!preflight.ok) {
+    logOAuthStart(platform, { outcome: "preflight_blocked", code: preflight.code, appTokenKind: preflight.appToken?.kind ?? null, redirectUri: callbackUrl, domain: urlInfo.host, publicUrlSource: urlInfo.source, publicUrlIsPublic: publicOk });
+    return res.status(409).json({
+      success: false,
+      code: preflight.code,
+      error: preflight.error,
+      hint: preflight.hint,
+      platform,
+      redirectUri: callbackUrl,
+      domain: urlInfo.host,
+      appIdFormatOk: isPlausibleMetaAppId(String(cfg.clientId || "")),
+      appTokenKind: preflight.appToken?.kind ?? null,
+    });
+  }
   const state=createOAuthState();
   const pending:OAuthPending={platform,userId:(req as any).user.id,expiresAt:Date.now()+OAUTH_STATE_TTL_MS,redirectUri:callbackUrl};
   let pkceChallenge:string|undefined;
@@ -1295,14 +1406,26 @@ app.get("/api/platforms/:platform/oauth/start", requireOwner, async (req,res)=>{
     publicUrlProblems:urlInfo.problems,
   };
   if(domainWarning) console.warn(`[oauth] ${platform} redirect_uri غير عام: ${urlInfo.source} (${urlInfo.host || "-"})`);
-  res.json({success:true,platform,authorizationUrl:u.toString(),expiresAt:pending.expiresAt,redirectUri:callbackUrl,domain:urlInfo.host,publicUrlSource:urlInfo.source,publicUrlIsPublic:publicOk,domainWarning});
+  // معلومات الإصلاح للمالك: عند تحذير الرابط أو تعذّر إثبات التطبيق، نُرفق
+  // دلائل دقيقة (شكل المعرّف ونتيجة فحص Graph) بلا أي سرّ.
+  const metaSetupHint = (META_OAUTH_PLATFORMS.has(platform) && (domainWarning || preflight.code === "META_PREFLIGHT_UNAVAILABLE")) ? {
+    appIdFormatOk: isPlausibleMetaAppId(String(cfg.clientId || "")),
+    appTokenKind: preflight.appToken?.kind ?? null,
+    appTokenMessage: preflight.appToken?.message ?? preflight.hint ?? null,
+    note:"إن ظهرت صفحة «حدث خطأ ما» فمعرّف التطبيق/سرّه أو App Domains/Valid OAuth Redirect URIs غير مطابق لدى Meta. القيم الدقيقة في GET /api/platforms/:platform/oauth/setup.",
+  } : undefined;
+  // سجل آمن: الروابط والنطاق والفاتورة فقط — بلا client_id ولا أي سرّ.
+  logOAuthStart(platform, { outcome: "authorized_url_issued", redirectUri: callbackUrl, domain: urlInfo.host, publicUrlSource: urlInfo.source, publicUrlIsPublic: publicOk, appTokenKind: preflight.appToken?.kind ?? null, scopeCount: Array.isArray(cfg.scopes) ? cfg.scopes.length : 0, authEndpoint: cfg.auth, domainWarning: Boolean(domainWarning), metaSetupHint: Boolean(metaSetupHint) });
+  res.json({success:true,platform,authorizationUrl:u.toString(),authEndpoint:cfg.auth,expiresAt:pending.expiresAt,redirectUri:callbackUrl,domain:urlInfo.host,publicUrlSource:urlInfo.source,publicUrlIsPublic:publicOk,scopes:cfg.scopes,appIdFormatOk:isPlausibleMetaAppId(String(cfg.clientId || "")),appTokenKind:preflight.appToken?.kind ?? null,domainWarning,metaSetupHint});
 });
 
 app.get("/api/platforms/:platform/oauth/callback", async (req,res)=>{
   const platform=req.params.platform; const state=typeof req.query.state==="string"?req.query.state:""; const pending=pendingOAuth.get(state); const cfg=OAUTH_CONFIG[platform];
   const redirectUri=oauthCallbackUrl(platform);
+  // سجل آمن لعودة Meta: هل وصلت، وبأي رمز خطأ — بلا state ولا code ولا توكن.
+  logOAuthStart(platform, { outcome: "callback_received", hasState: Boolean(state), hasCode: typeof req.query.code === "string", providerError: typeof req.query.error === "string" ? String(req.query.error).slice(0, 60) : null, redirectUri });
   const check=validateOAuthCallback({pending,platform,redirectUri});
-  if(!check.ok || !cfg) return res.status(400).send(`فشل التحقق من جلسة OAuth: ${check.reason||"مزود غير مُعدّ"}.`);
+  if(!check.ok || !cfg) { logOAuthStart(platform, { outcome: "callback_rejected", reason: check.reason || "no_config" }); return res.status(400).send(`فشل التحقق من جلسة OAuth: ${check.reason||"مزود غير مُعدّ"}.`); }
   // يُستهلك state مرة واحدة فقط (يمنع إعادة الاستخدام)؛ نثبّت الحذف في المخزن
   // الدائم فوراً فلا يُسترجَع عند إعادة تشغيل لاحقة فيُقبل تكرار الطلب.
   pendingOAuth.delete(state);
@@ -2164,6 +2287,14 @@ app.get("/api/platforms/:platform/oauth/setup", requireOwner, (req,res)=>{
     scopes:cfg.scopes,
     clientIdConfigured:Boolean(cfg.clientId),
     clientSecretConfigured:Boolean(cfg.clientSecret),
+    // شكل معرّف التطبيق فقط (منطقي) — لا قيمة سرّية: أي مسافة/حرف يجعل Meta
+    // ترد بصفحة «حدث خطأ ما» (PLATFORM__INVALID_APP_ID).
+    appIdFormatOk:isPlausibleMetaAppId(String(cfg.clientId||""))||undefined,
+    dialogPath:(platform==="facebook"||platform==="instagram")?FACEBOOK_DIALOG_PATH:undefined,
+    genericErrorMeaning:(platform==="facebook"||platform==="instagram")?{
+      message:"صفحة Meta «حدث خطأ ما» (Sorry, something went wrong) تظهر لسببين فقط يمكن فحصهما: (1) معرّف تطبيق غير صالح/غير مطابق، (2) نطاق غير مُضمَّن في App Domains أو رابط إرجاع غير مسجّل.",
+      checks:["طابق App ID مع Settings → Basic (أرقام فقط بلا مسافات).","أضف appDomainsValue إلى App Domains بلا https وبلا مسار.","أضف redirectUri بالضبط إلى Valid OAuth Redirect URIs.","تأكد أن Facebook Login product مُضاف وأن التطبيق Live (لا Development لمستخدمين غير مصرّح لهم)."],
+    }:undefined,
     appSecretConfigured:platform==="facebook"?Boolean(facebookAppSecret()):undefined,
     verifyTokenConfigured:platform==="facebook"?Boolean(facebookVerifyToken()):undefined,
     webhookUrl:platform==="facebook"?facebookWebhookUrl():undefined,

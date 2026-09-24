@@ -69,7 +69,11 @@ export function validateOAuthCallback(input: {
 /**
  * يبني معاملات رابط التفويض. يعزل الفروق بين المزودين:
  * - TikTok: تسمية client_key وcode_challenge (PKCE إلزامي).
- * - Google/Meta/X: client_id وaccess_type=offline وprompt=consent للحصول على refresh token.
+ * - Meta (facebook/instagram): scope مفصول بفواصل، وبلا access_type/prompt
+ *   (معاملان خاصان بـGoogle؛ Meta لا تعرفهما ولا تحتاجهما).
+ * - Threads: client_id وscope بفواصل.
+ * - Google/X: client_id وscope بمسافة وaccess_type=offline وprompt=consent
+ *   للحصول على refresh token.
  */
 export function buildAuthorizationParams(input: {
   platform: string;
@@ -87,6 +91,18 @@ export function buildAuthorizationParams(input: {
   };
   if (platform === 'tiktok') {
     params.client_key = clientId;
+    params.scope = scopes.join(',');
+    if (pkceChallenge) {
+      params.code_challenge = pkceChallenge;
+      params.code_challenge_method = 'S256';
+    }
+    return params;
+  }
+  // منصات Meta وThreads تستخدم client_id وscope بفواصل، ولا تتوقّع
+  // access_type/prompt (معاملان خاصان بـGoogle). إضافتهما ليست سبب رفض Meta،
+  // لكن حذفهما يجعل الطلب مطابقاً لعقد Meta الرسمي حرفياً.
+  if (platform === 'facebook' || platform === 'instagram' || platform === 'threads') {
+    params.client_id = clientId;
     params.scope = scopes.join(',');
     if (pkceChallenge) {
       params.code_challenge = pkceChallenge;

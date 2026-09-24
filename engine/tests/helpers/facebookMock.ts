@@ -50,6 +50,12 @@ export interface FacebookMockState {
   posts: { pageId: string; message: string; postId: string }[];
   /** عدد استدعاءات نقاط الشبكة — لإثبات التنفيذ الحقيقي. */
   calls: number;
+  /** معرّف التطبيق الذي يقبله الخادم الوهمي في client_credentials. */
+  validAppId: string;
+  /** سرّ التطبيق المطابق. */
+  validAppSecret: string;
+  /** آخر فحص رمز تطبيق (بلا سرّ كامل، فقط الطول للتحقق). */
+  lastAppTokenCheck: { clientId: string; secretLen: number } | null;
 }
 
 export function createFacebookMock(state: Partial<FacebookMockState> = {}): FacebookMockState {
@@ -69,6 +75,9 @@ export function createFacebookMock(state: Partial<FacebookMockState> = {}): Face
     sentMessages: [],
     posts: [],
     calls: 0,
+    validAppId: state.validAppId ?? '145634995501895',
+    validAppSecret: state.validAppSecret ?? 'test-fb-client-secret',
+    lastAppTokenCheck: null,
   };
 }
 
@@ -84,6 +93,15 @@ export async function startFacebookMockServer(
 
   app.get('/:version/oauth/access_token', (req, res) => {
     state.calls += 1;
+    // فحص رمز التطبيق (client_credentials): يثبت client_id/secret بلا حصة مستخدم.
+    if (req.query.grant_type === 'client_credentials') {
+      const clientId = String(req.query.client_id || '');
+      const secret = String(req.query.client_secret || '');
+      state.lastAppTokenCheck = { clientId, secretLen: secret.length };
+      if (clientId !== state.validAppId) return res.status(400).json({ error: { message: 'Invalid Client ID', type: 'OAuthException', code: 101 } });
+      if (secret !== state.validAppSecret) return res.status(400).json({ error: { message: 'Error validating client secret.', type: 'OAuthException', code: 1 } });
+      return res.json({ access_token: 'APP_TOKEN_TEST', token_type: 'bearer' });
+    }
     if (state.failTokenExchange) return res.status(400).json({ error: { message: 'Invalid code', type: 'OAuthException', code: 100 } });
     if (req.query.grant_type === 'fb_exchange_token') {
       return res.json({ access_token: state.userAccessToken, token_type: 'bearer', expires_in: 5_184_000 });
