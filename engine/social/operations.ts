@@ -15,6 +15,7 @@ import type { PlatformId, PlatformCapability } from './adapter';
 import { PLATFORM_SPECS, platformSupports } from './registry';
 import { readinessFor, type ReadinessLevel, type OperationalLevel, type PlatformReadinessDetail } from './readiness';
 import { inspectPlatformCredentials } from './credentials';
+import { TOKEN_KEY_ENV_NAME } from './tokenKey';
 
 /** حالات المنصة الدقيقة — لا يُخلط بينها في أي عرض أو قرار. */
 export type PlatformState =
@@ -100,6 +101,27 @@ function supportsReply(platform: PlatformId): boolean {
 }
 
 /**
+ * يبني رسالة الحجب والإجراء التالي لاعتماد ناقص، ويميّز صراحةً بين مفتاح
+ * التشفير الغائب ومفتاحه المضبوط بلا صيغة صالحة، فيعرف المالك أنه ليس «ناقصاً»
+ * بل «مضبوط لكن غير صالح». بلا كشف أي قيمة.
+ */
+function describeCredentialGap(missing: string[], invalid: string[]): { blocking: string; nextAction: string } {
+  const base = `بيانات الاعتماد ناقصة: ${missing.join(', ')}`;
+  const next = `ضبط متغيرات البيئة التالية: ${missing.join(', ')}`;
+  const tokenInvalid = invalid.includes(TOKEN_KEY_ENV_NAME);
+  if (tokenInvalid) {
+    return {
+      blocking: `${base} — و${TOKEN_KEY_ENV_NAME} مضبوط لكن قيمته غير صالحة: لا تمثّل 32 بايت.`,
+      nextAction: `استبدل قيمة ${TOKEN_KEY_ENV_NAME} بقيمة صالحة (32 بايت hex أو Base64)، ثم أعد المحاولة.`,
+    };
+  }
+  if (missing.includes(TOKEN_KEY_ENV_NAME)) {
+    return { blocking: `${base} — و${TOKEN_KEY_ENV_NAME} غير مضبوط أصلاً.`, nextAction: next };
+  }
+  return { blocking: base, nextAction: next };
+}
+
+/**
  * يحسب الحالة الدقيقة للمنصة من:
  * - الجاهزية الثابتة (الكود/القدرات/المتطلبات الخارجية).
  * - توفّر بيانات الاعتماد (بلا قيم).
@@ -131,15 +153,16 @@ export function computePlatformStatus(
 
   // سبب الحجب الرئيسي (أعلى أولوية أولاً).
   let blockingReason: string | null = null;
+  const credentialReason = describeCredentialGap(creds.connection.missing, creds.connection.invalid);
   if (!connectorImplemented) blockingReason = 'لا يوجد موصل تنفيذ منفّذ لهذه المنصة؛ يلزم إتمام تكاملها.';
-  else if (!connectionConfigured) blockingReason = `بيانات الاعتماد ناقصة: ${creds.connection.missing.join(', ')}`;
+  else if (!connectionConfigured) blockingReason = credentialReason.blocking;
   else if (live.status === 'reauth_needed') blockingReason = 'فشل التحقق من الحساب لدى المزود؛ يلزم إعادة الربط.';
   else if (!connected) blockingReason = 'المنصة غير متصلة؛ لم يُنفَّذ ربط موثق بعد.';
 
   const nextAction = !connectorImplemented
     ? 'إكمال إعداد المزود الخارجي (تطبيق/مراجعة/صلاحيات) قبل تنفيذ موصل الإرسال.'
     : !connectionConfigured
-      ? `ضبط متغيرات البيئة التالية: ${creds.connection.missing.join(', ')}`
+      ? credentialReason.nextAction
       : live.status === 'reauth_needed'
         ? 'إعادة الربط: رمز الحساب لم يعد صالحاً لدى المزود.'
         : !connected
@@ -288,8 +311,8 @@ export function buildReadinessDetails(
     const opLevel = (lvl: ReadinessLevel): OperationalLevel => (lvl === 'NOT_SUPPORTED' ? 'NOT_SUPPORTED' : status.providerVerified ? 'READY' : 'BLOCKED');
     out.push({
       ...base,
-      credentials: { configured: creds.connection.configured, missing: creds.connection.missing },
-      webhookCredentials: { configured: creds.webhook.configured, missing: creds.webhook.missing },
+      credentials: { configured: creds.connection.configured, missing: creds.connection.missing, invalid: creds.connection.invalid },
+      webhookCredentials: { configured: creds.webhook.configured, missing: creds.webhook.missing, invalid: creds.webhook.invalid },
       operationalState: status.state,
       connected: status.liveConnection === 'connected',
       providerVerified: status.providerVerified,

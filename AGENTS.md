@@ -411,6 +411,36 @@ Provider Operation. التصنيف حتمي محلي (متاح دائماً، ل
 المنصات `EXTERNAL_SETUP_REQUIRED` (يلزم تطبيق مطوّر/مراجعة/صلاحيات/Redirect لدى المزود).
 لا تُنشئ المنصة أي حساب أو اتصال نيابة عن المالك، ولا تعرض أي سرّ.
 
+## تعريف مفتاح تشفير التوكنات — مصدر واحد (صُحّح 2026-09-24)
+كان `tokenKeyBytes()` في `server.ts` يفكّ Base64 بتسامح (`Buffer.from(v,"base64")`) ثم
+يسقط أي نتيجة ليست 32 بايت بصمت، فتُعرض «غير مضبوط أو غير صالح (يلزم 32 بايت)» رغم أن
+`PLATFORM_TOKEN_ENCRYPTION_KEY` موجود في Render. وفي الوقت نفسه `credentials.ts`/`readiness`
+كانا يفحصان **وجود الاسم فقط** فيُعلنان «مضبوط» لنفس القيمة => تضارب بين اللوحة والعمل الفعلي.
+
+الإصلاح (بلا أي fallback غير آمن ولا مفتاح في الكود):
+- `engine/social/tokenKey.ts` هو **المصدر الوحيد**: `decodeTokenKey` و`inspectTokenKey`
+  و`inspectTokenKeyFromEnv` و`isTokenKeyValid` و`TOKEN_KEY_ENV_NAME` و`TOKEN_KEY_BYTES`.
+- الصيغ المقبولة حصراً: **64 محرفاً hex** أو **Base64/Base64url يمثّل 32 بايت بالضبط**.
+  يُرفض أي تمثيل ملتبس: 32 محرفاً ASCII (تفكّ إلى 24 بايت)، Base64 لبيانات غير 32 بايت،
+  محارف غريبة، أو علامات تنصيب/تنصيص (لا اعتماد على تسامح مكتبة Base64).
+- `server.ts` صار يفكّ عبر `decodeTokenKey`، و`tokenKeyBytes()` تقرأ البيئة عند كل استخدام
+  (لا تُلتقط وقت الإقلاع). `encryptSecret` ورسائل 503 تستخدم `inspectTokenKeyFromEnv().reason`
+  التي تفرّق **missing** عن **invalid**.
+- `credentials.ts` يستخدم `isTokenKeyValid` لمفتاح التشفير ويضيف قائمة `invalid` مستقلة عن
+  `missing`، ويُعلن `configured=false` عند أي منهما. `operations.ts` يبني رسالة الحجب
+  والإجراء التالي عبر `describeCredentialGap` فيقول صراحةً «مضبوط لكن غير صالح» بدل «ناقص».
+- `/api/health` و`/api/readiness` يعرضان كتلة `platformTokenKey`
+  (`state`/`envName`/`acceptedBytes`/`reason`) بلا أي قيمة سرّية، فيراه المالك مباشرة.
+- التوجيه الآمن: استخدم ناتج `node scripts/generate-secrets.mjs` (Base64 لـ32 بايت) أو
+  `openssl rand -hex 32`؛ كلاهما مقبول. لا تغيّر السر لمجرد اختلاف الصيغة إذا كان صالحاً.
+
+اختبار: `engine/tests/token.key.test.ts` (`npm run test:token-key`، 32 فحصاً) يثبّت قبول
+hex وBase64، ورفض 32 محرفاً لا تمثّل 32 بايت، وتمييز missing من invalid في الحالة والرسائل
+وفي الحجب وفي credentials. فحوص final-audit: `token-key-single-source`,
+`token-key-server-uses-single-source`, `token-key-credentials-real-validation`,
+`token-key-missing-vs-invalid`, `token-key-health-exposes-state`,
+`token-key-no-insecure-fallback`, `token-key-regression-test`.
+
 ## نمط الكود
 - تعليقات عربية موجزة تشرح «لماذا» فقط، دون شرح ما يفعله الكود.
 - الأنواع في `src/types/index.ts` يجب أن تطابق استجابات الخادم فعلياً؛ توجد فحوص عقد في `engine/tests/social.routes.test.ts` تكشف أي انحراف.

@@ -62,10 +62,10 @@ export interface PlatformReadiness {
 
 /** صف جاهزية غني يضيف حالة الاعتماد والاتصال والإجراء التالي للمالك. */
 export interface PlatformReadinessDetail extends PlatformReadiness {
-  /** حالة البيانات اللازمة لإتمام الاتصال (أسماء متغيرات بيئة ناقصة إن وُجدت). */
-  credentials: { configured: boolean; missing: string[] };
+  /** حالة البيانات اللازمة لإتمام الاتصال (أسماء متغيرات بيئة ناقصة/غير صالحة إن وُجدت). */
+  credentials: { configured: boolean; missing: string[]; invalid: string[] };
   /** حالة بيانات webhook. */
-  webhookCredentials: { configured: boolean; missing: string[] };
+  webhookCredentials: { configured: boolean; missing: string[]; invalid: string[] };
   /** الحالة التشغيلية الدقيقة الآن (من control plane): CODE_READY/CONNECTED/OPERATIONAL... */
   operationalState: string;
   /** هل الاتصال قائم الآن؟ */

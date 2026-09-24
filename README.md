@@ -84,6 +84,7 @@ TikTok، YouTube، Facebook، Instagram، WhatsApp Business، Telegram، X، Sna
 
 - لا تعتبر أي منصة متصلة إلا بعد تحقق مزودها فعلياً.
 - أسرار OAuth وTelegram تحفظ مشفرة على الخادم باستخدام `PLATFORM_TOKEN_ENCRYPTION_KEY` ولا ترسل للواجهة.
+- صيغة `PLATFORM_TOKEN_ENCRYPTION_KEY` المقبولة (يُتحقق منها عبر `engine/social/tokenKey.ts`): **64 محرفاً hex** أو **Base64/Base64url يمثّل 32 بايت بالضبط**. أي قيمة أخرى تُرفض بوضوح بحالة `invalid` (منفصلة عن `missing`).
 - تم تجهيز OAuth فعلي لـ YouTube وGoogle Business Profile وTikTok.
 - تم تجهيز تحقق وربط Telegram Bot فعلياً، مع تنفيذ نشر نصي حقيقي عبر Bot API عند وجود `TELEGRAM_DEFAULT_CHAT_ID`.
 - بقية المنصات تبقى في وضع `adapter-ready-credentials-required` إلى أن تضاف بيانات تطبيق المزود وعمليات API الخاصة به؛ لا يوجد أي ادعاء بالنشر الوهمي.

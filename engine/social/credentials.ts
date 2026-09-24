@@ -12,6 +12,7 @@
  */
 
 import type { PlatformId } from './adapter';
+import { TOKEN_KEY_ENV_NAME, isTokenKeyValid } from './tokenKey';
 
 /** متطلبات الاعتماد لكل منصة، مقسّمة حسب الغرض. */
 export interface CredentialSpec {
@@ -80,6 +81,11 @@ export interface CredentialStatus {
   configured: boolean;
   /** أسماء المتغيرات الناقصة فقط (لا قيم). */
   missing: string[];
+  /**
+   * أسماء متغيرات مضبوطة لكن قيمتها غير صالحة للاستخدام (مثل مفتاح تشفير لا
+   * يمثّل 32 بايت). منفصلة عن missing حتى لا يُظن أن القيمة غير موجودة.
+   */
+  invalid: string[];
   /** الأدوار المطلوبة (أسماء متغيرات) — للعرض التشخيصي. */
   required: string[];
 }
@@ -90,20 +96,31 @@ function present(env: Record<string, string | undefined>, key: string): boolean 
 }
 
 /**
+ * هل المتغير «صالح للاستخدام»؟ لمفتاح التشفير لا يكفي الوجود: يجب أن يُفكّ إلى
+ * 32 بايت بالضبط. هذا يمنع تضارب «مضبوط» في اللوحة مع فشل التشفير الفعلي.
+ */
+function usable(env: Record<string, string | undefined>, key: string): boolean {
+  if (key === TOKEN_KEY_ENV_NAME) return isTokenKeyValid(env);
+  return present(env, key);
+}
+
+/**
  * يفحص متطلباً واحداً مع احترام البدائل: متغير يُعدّ مضبوطاً إن وُجد هو أو بديله.
  * هذا يسمح لـInstagram بالاعتماد على بيانات Facebook عند غياب بيانات خاصة.
  */
-function checkNames(env: Record<string, string | undefined>, names: string[], alternatives?: string[][]): { missing: string[]; satisifiedBy: Record<string, boolean> } {
+function checkNames(env: Record<string, string | undefined>, names: string[], alternatives?: string[][]): { missing: string[]; invalid: string[]; satisifiedBy: Record<string, boolean> } {
   const missing: string[] = [];
+  const invalid: string[] = [];
   const satisifiedBy: Record<string, boolean> = {};
   for (const name of names) {
-    if (present(env, name)) { satisifiedBy[name] = true; continue; }
+    if (present(env, name) && !usable(env, name)) { invalid.push(name); continue; } // موجود لكن غير صالح
+    if (usable(env, name)) { satisifiedBy[name] = true; continue; }
     const alt = alternatives?.find((group) => group.includes(name));
-    const usedAlt = alt?.some((k) => k !== name && present(env, k));
+    const usedAlt = alt?.some((k) => k !== name && usable(env, k));
     if (usedAlt) { satisifiedBy[name] = true; continue; }
     missing.push(name);
   }
-  return { missing, satisifiedBy };
+  return { missing, invalid, satisifiedBy };
 }
 
 /** يفحص إعداد الاعتماد لمنصة لغرض معيّن. */
@@ -112,10 +129,10 @@ export function inspectCredentialPurpose(platform: PlatformId, purpose: 'connect
   const names = (purpose === 'connection' ? [...GLOBAL_CREDENTIALS.connection, ...(spec?.connection || [])]
     : purpose === 'webhook' ? (spec?.webhook || [])
       : (spec?.publish || []));
-  if (!names.length) return { configured: true, missing: [], required: [] };
+  if (!names.length) return { configured: true, missing: [], invalid: [], required: [] };
   // ATTENTION: publish may be optional by design for some platforms — handled by caller.
-  const { missing } = checkNames(env, names, spec?.alternatives);
-  return { configured: missing.length === 0, missing, required: names };
+  const { missing, invalid } = checkNames(env, names, spec?.alternatives);
+  return { configured: missing.length === 0 && invalid.length === 0, missing, invalid, required: names };
 }
 
 export interface PlatformCredentialReport {

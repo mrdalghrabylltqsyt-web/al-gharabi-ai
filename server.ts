@@ -36,6 +36,7 @@ import {
 import { PLATFORM_READINESS, readinessFor, readinessSummary } from "./engine/social/readiness";
 import { buildReadinessDetails, computeAllPlatformStatuses, computePlatformStatus, controlSummary, type LiveConnection } from "./engine/social/operations";
 import { inspectPlatformCredentials, CREDENTIAL_SPECS, GLOBAL_CREDENTIALS } from "./engine/social/credentials";
+import { decodeTokenKey, inspectTokenKeyFromEnv } from "./engine/social/tokenKey";
 import {
   secretHeaderVerifier,
   hmacSignatureVerifier,
@@ -877,17 +878,13 @@ const platformConnections = new Map<string, PlatformConnection>();
 
 type OAuthPending = { platform: string; userId: string; expiresAt: number; codeVerifier?: string; redirectUri: string };
 const pendingOAuth = new Map<string, OAuthPending>();
-const PLATFORM_TOKEN_KEY = (process.env.PLATFORM_TOKEN_ENCRYPTION_KEY || "").trim();
-function tokenKeyBytes() {
-  if (!PLATFORM_TOKEN_KEY) return null;
-  try {
-    const raw = /^[0-9a-fA-F]{64}$/.test(PLATFORM_TOKEN_KEY) ? Buffer.from(PLATFORM_TOKEN_KEY, "hex") : Buffer.from(PLATFORM_TOKEN_KEY, "base64");
-    return raw.length === 32 ? raw : null;
-  } catch { return null; }
-}
+// المفتاح يُقرأ عند كل استخدام (لا يُلتقط وقت الإقلاع) حتى يعكس التشخيص البيئة
+// الفعلية، ويُفكّ عبر التعريف الموحّد في engine/social/tokenKey.ts.
+function tokenKeyInspection() { return inspectTokenKeyFromEnv(); }
+function tokenKeyBytes() { return decodeTokenKey(process.env.PLATFORM_TOKEN_ENCRYPTION_KEY); }
 function encryptSecret(value: string) {
   const key = tokenKeyBytes();
-  if (!key) throw new Error("PLATFORM_TOKEN_ENCRYPTION_KEY غير مضبوط أو غير صالح (يلزم 32 بايت). ");
+  if (!key) throw new Error(tokenKeyInspection().reason);
   const iv = crypto.randomBytes(12);
   const cipher = crypto.createCipheriv("aes-256-gcm", key, iv);
   const encrypted = Buffer.concat([cipher.update(value, "utf8"), cipher.final()]);
@@ -979,28 +976,35 @@ async function verifyProviderConnection(platform: string): Promise<{ verified: b
   }
   return { verified: false, error: "لا يوجد موصل إثبات حقيقي لهذه المنصة؛ إتمام الاتصال يحتاج اعتماد تطبيق من المزود." };
 }
-function publicProviderReadiness(platform: string): { configured: boolean; mode: string; action: string; missing?: string[]; next?: string; realConnector?: boolean } {
+function publicProviderReadiness(platform: string): { configured: boolean; mode: string; action: string; missing?: string[]; invalid?: string[]; next?: string; realConnector?: boolean } {
+  const tk = tokenKeyInspection();
+  const tokenMissing = tk.state === "missing" && "PLATFORM_TOKEN_ENCRYPTION_KEY";
+  const tokenInvalid = tk.state === "invalid" && "PLATFORM_TOKEN_ENCRYPTION_KEY";
   if (platform === "telegram") {
-    // موصل حقيقي: يكفي رمز بوت + سرّ webhook + مفتاح تشفير + APP_URL للإرسال والاستقبال.
+    // موصل حقيقي: يكفي رمز بوت + سرّ webhook + مفتاح تشفير صالح + APP_URL للإرسال والاستقبال.
     const missing = [
       !telegramBotToken() && "TELEGRAM_BOT_TOKEN",
       !telegramWebhookSecret() && "TELEGRAM_WEBHOOK_SECRET",
-      !tokenKeyBytes() && "PLATFORM_TOKEN_ENCRYPTION_KEY",
+      tokenMissing,
       !process.env.APP_URL && "APP_URL",
     ].filter((x): x is string => Boolean(x));
+    const invalid = [tokenInvalid].filter((x): x is string => Boolean(x));
     return {
       configured: telegramConnectorConfigured() && Boolean(tokenKeyBytes()),
       mode: "bot-token",
       action: "configure",
       missing,
+      invalid,
       realConnector: true,
-      next: missing.length
-        ? "زوّد البيئة برمز البوت وسرّ webhook ثم اضغط «ربط Telegram» لتنفيذ getMe وضبط webhook فعلياً."
-        : "الموصل مكتمل الإعداد؛ نفّذ الضبط لتسجيل webhook الحقيقي ثم اختبر الإرسال.",
+      next: invalid.length
+        ? `استبدل قيمة PLATFORM_TOKEN_ENCRYPTION_KEY بقيمة صالحة (32 بايت hex أو Base64) ثم أعد المحاولة.`
+        : missing.length
+          ? "زوّد البيئة برمز البوت وسرّ webhook ثم اضغط «ربط Telegram» لتنفيذ getMe وضبط webhook فعلياً."
+          : "الموصل مكتمل الإعداد؛ نفّذ الضبط لتسجيل webhook الحقيقي ثم اختبر الإرسال.",
     };
   }
   const c = OAUTH_CONFIG[platform];
-  if (c) return { configured: oauthReady(platform), mode: "oauth2", action: "authorize", next: "ضبط بيانات OAuth وتسجيل Redirect URI", missing: [!c.clientId && "client_id", !c.clientSecret && "client_secret", !process.env.APP_URL && "APP_URL", !tokenKeyBytes() && "PLATFORM_TOKEN_ENCRYPTION_KEY"].filter((x): x is string => Boolean(x)) };
+  if (c) return { configured: oauthReady(platform), mode: "oauth2", action: "authorize", next: "ضبط بيانات OAuth وتسجيل Redirect URI", missing: [!c.clientId && "client_id", !c.clientSecret && "client_secret", !process.env.APP_URL && "APP_URL", tokenMissing].filter((x): x is string => Boolean(x)), invalid: [tokenInvalid].filter((x): x is string => Boolean(x)) };
   return { configured: false, mode: "provider-adapter", action: "configuration-required", next: "إضافة موصل إنتاجي معتمد قبل تفعيل النشر" };
 }
 function safeConnection(platform: string) { const c:any=platformConnections.get(platform); return c ? { platform:c.platform, status:c.status, accountName:c.accountName, accountId:c.accountId, connectedAt:c.connectedAt, lastSyncAt:c.lastSyncAt, providerVerified:Boolean(c.providerVerified), provider:publicProviderReadiness(platform) } : null; }
@@ -1067,7 +1071,12 @@ async function fetchProviderAccount(platform: string, accessToken: string): Prom
 app.get("/api/platforms/:platform/oauth/start", requireOwner, (req,res)=>{
   const platform=req.params.platform; const cfg=OAUTH_CONFIG[platform];
   if(!cfg) return res.status(501).json({success:false,error:"هذا المزود يحتاج إعداد موصل خاص قبل بدء OAuth."});
-  if(!oauthReady(platform)) return res.status(503).json({success:false,error:"إعداد OAuth غير مكتمل. يلزم APP_URL وبيانات تطبيق المزود ومفتاح PLATFORM_TOKEN_ENCRYPTION_KEY."});
+  if(!oauthReady(platform)) {
+    // تمييز missing من invalid في الرسالة نفسها بدل افتراض غياب المفتاح دائماً.
+    const tk = tokenKeyInspection();
+    const tokenNote = tk.state === 'valid' ? "" : ` ${tk.reason}`;
+    return res.status(503).json({success:false,error:`إعداد OAuth غير مكتمل. يلزم APP_URL وبيانات تطبيق المزود ومفتاح PLATFORM_TOKEN_ENCRYPTION_KEY صالح.${tokenNote}`});
+  }
   const state=createOAuthState();
   const pending:OAuthPending={platform,userId:(req as any).user.id,expiresAt:Date.now()+OAUTH_STATE_TTL_MS,redirectUri:cfg.callback};
   let pkceChallenge:string|undefined;
@@ -1110,7 +1119,7 @@ app.post("/api/platforms/telegram/configure", requireOwner, async (req,res)=>{
   const botToken=(typeof req.body?.botToken==="string"?req.body.botToken.trim():"")||telegramBotToken();
   const webhookSecret=(typeof req.body?.webhookSecret==="string"?req.body.webhookSecret.trim():"")||TELEGRAM_WEBHOOK_SECRET_ENV;
   if(!botToken) return res.status(400).json({success:false,error:"رمز Telegram Bot مطلوب (أو اضبط TELEGRAM_BOT_TOKEN في البيئة)."});
-  if(!tokenKeyBytes()) return res.status(503).json({success:false,error:"PLATFORM_TOKEN_ENCRYPTION_KEY غير مضبوط."});
+  if(!tokenKeyBytes()) return res.status(503).json({success:false,error:tokenKeyInspection().reason});
   if(!process.env.APP_URL) return res.status(503).json({success:false,error:"APP_URL غير مضبوط؛ لا يمكن تسجيل رابط webhook الحقيقي لدى Telegram."});
   // السرّ يجب أن يكون قوياً حسب متطلبات Telegram (1-256 محرفاً، A-Z a-z 0-9 _ -).
   const secret = webhookSecret || crypto.randomBytes(32).toString("hex");
@@ -1573,7 +1582,7 @@ app.get("/api/control/final-check", requireOwner, (_req,res)=>{
   const checks:any[]=[]; const add=(id:string,ok:boolean,detail:string,blocking=false)=>checks.push({id,ok,detail,blocking});
   add("state-persistence",storageStatus().writable,"مخزن الحالة متاح وقابل للكتابة",true);
   add("owner",Boolean(OWNER_EMAIL),"OWNER_EMAIL مضبوط",true);
-  add("token-encryption",Boolean(tokenKeyBytes()),"مفتاح تشفير توكنات المنصات مضبوط",true);
+  add("token-encryption",Boolean(tokenKeyBytes()),`مفتاح تشفير توكنات المنصات: ${tokenKeyInspection().state==="valid"?"صالح":tokenKeyInspection().reason}`,true);
   add("gemini-guard",Number.isFinite(GEMINI_DAILY_LIMIT)&&GEMINI_DAILY_LIMIT>0,"حارس Gemini المحلي فعال",false);
   add("real-connections",connectedPlatformIds().length>0,connectedPlatformIds().length?`متصل فعلياً: ${connectedPlatformIds().join(", ")}`:"لا توجد منصة متصلة فعلياً بعد",false);
   add("fake-publish-safety",automationJobs.every((j:any)=>j.status!=="published" || j.providerVerified===true),"كل سجل نشر خارجي موثق بإيصال مزود",true);
@@ -3014,6 +3023,8 @@ app.get("/api/readiness", (_req, res) => {
       providerReady: aiLiveVerification.state === 'ok',
     },
     geminiConfigured: Boolean(process.env.GEMINI_API_KEY),
+    /** حالة مفتاح تشفير توكنات المنصات بنفس حكم التشفير الفعلي (بلا قيمة). */
+    platformTokenKey: (() => { const tk = tokenKeyInspection(); return { state: tk.state, envName: "PLATFORM_TOKEN_ENCRYPTION_KEY", acceptedBytes: 32, reason: tk.reason }; })(),
     timestamp: new Date().toISOString(),
   });
 });
@@ -3322,6 +3333,7 @@ app.get("/api/system/deployment-checklist", requireOwner, (_req,res)=>{
 
 app.get("/api/health", (_req, res) => {
   const hasKey = Boolean(process.env.GEMINI_API_KEY);
+  const tokenKey = tokenKeyInspection();
   res.json({
     status: "ok",
     aiEnabled: hasKey,
@@ -3329,6 +3341,9 @@ app.get("/api/health", (_req, res) => {
     service: "Al-Gharabi AI Backend",
     version: PROJECT_VERSION,
     geminiUsage: geminiStatus(),
+    // حالة مفتاح تشفير توكنات المنصات: تفصل missing من invalid بلا كشف القيمة،
+    // فتعكس نفس الحكم الذي يستخدمه encryptSecret/credentials فعلياً.
+    platformTokenKey: { state: tokenKey.state, envName: "PLATFORM_TOKEN_ENCRYPTION_KEY", acceptedBytes: 32, reason: tokenKey.reason },
     // حالة الثبات: تُعلن بصراحة هل تُفقد الجلسات بين العمليات، وهل تنجو بيانات
     // العمل من إعادة النشر. لا تُكشف أي قيمة سرية هنا، ولا يُدّعى الدوام بلا مخزن.
     persistence: (() => {
