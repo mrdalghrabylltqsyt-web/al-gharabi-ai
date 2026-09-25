@@ -80,6 +80,26 @@ const OAuthSetupPanel: React.FC<{ platform: string }> = ({ platform }) => {
         )}
       </div>
       <p className="text-slate-500">مصدر العنوان العام: <span className="text-slate-300">{info.publicUrlSource}</span> • النطاق: <span className="text-slate-300" dir="ltr">{info.domain}</span></p>
+      {Array.isArray(info.loginConfigIdEnvNames) && (
+        <div className="mt-1.5 pt-1.5 border-t border-slate-800/70 space-y-1">
+          <p className="text-slate-500 flex items-center gap-1"><KeyRound className="w-3 h-3" /> Facebook Login for Business — Configuration:</p>
+          <span className={`px-2 py-0.5 rounded-md border font-bold inline-block ${info.loginConfigIdUsed ? 'bg-emerald-500/10 text-emerald-300 border-emerald-600/30' : info.loginConfigIdConfigured ? 'bg-rose-500/10 text-rose-300 border-rose-600/30' : 'bg-amber-500/10 text-amber-300 border-amber-600/30'}`}>
+            {info.loginConfigIdUsed ? 'config_id مُفعَّل (يُرسَل بدل scope)' : info.loginConfigIdConfigured ? 'config_id مضبوط لكن غير صالح' : 'config_id غير مضبوط (يُستخدم scope)'}
+          </span>
+          {Array.isArray(info.loginConfigIdProblems) && info.loginConfigIdProblems.length > 0 && (
+            <p className="text-rose-300">{info.loginConfigIdProblems.join(' ')}</p>
+          )}
+          <p className="text-slate-500">متغيرات البيئة: <code dir="ltr" className="text-slate-300">{info.loginConfigIdEnvNames.join(' أو ')}</code></p>
+          {Array.isArray(info.loginForBusinessSetup?.steps) && (
+            <details className="text-slate-400">
+              <summary className="cursor-pointer text-slate-500">خطوات إنشاء Configuration في Meta (بلا أسرار)</summary>
+              <ol className="list-decimal pr-4 mt-1 space-y-0.5">
+                {info.loginForBusinessSetup.steps.map((s: string, i: number) => <li key={i}>{s}</li>)}
+              </ol>
+            </details>
+          )}
+        </div>
+      )}
     </div>
   );
 };
@@ -141,6 +161,13 @@ const InstagramWebhookStatus: React.FC = () => {
       </div>
       <p className="text-slate-500">رابط الـwebhook: <code className="text-slate-300">{info.webhookUrl}</code> • الحساب: <code className="text-slate-300">{info.igUsername ? `@${info.igUsername}` : info.igAccountId}</code></p>
       <p className="text-slate-500">حقول الاشتراك المطلوبة: <code className="text-slate-300" dir="ltr">{(info.subscribedFields || []).join(', ')}</code> — تُفعَّل لكائن instagram من لوحة Meta.</p>
+      {info.instagramFieldsDashboardOnly && (
+        <p className={info.webhookFullyVerified ? 'text-emerald-300' : 'text-amber-300'}>
+          {info.webhookFullyVerified
+            ? 'الاستقبال موثّق: الصفحة مشتركة ورمز التحقق وسرّ التوقيع مضبوطان، وحقول instagram مُفعَّلة من اللوحة.'
+            : 'يلزم تفعيل حقلي comments/messages لكائن instagram من Meta App Dashboard (Graph API لا يضبط حقول Instagram عبر subscribed_apps)، ووصول حدث حقيقي بتوقيع صحيح قبل اعتباره موثّقاً.'}
+        </p>
+      )}
     </div>
   );
 };

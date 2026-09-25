@@ -40,6 +40,8 @@ export interface InstagramMockState {
   calls: number;
   validAppId: string;
   validAppSecret: string;
+  /** سلوك حوار التفويض: consent = تطبيق صالح، invalid_app_id = صفحة «حدث خطأ ما». */
+  dialogOutcome: 'consent' | 'login' | 'invalid_app_id' | 'opaque_200';
 }
 
 export function createInstagramMock(state: Partial<InstagramMockState> = {}): InstagramMockState {
@@ -65,6 +67,7 @@ export function createInstagramMock(state: Partial<InstagramMockState> = {}): In
     calls: 0,
     validAppId: state.validAppId ?? '145634995501895',
     validAppSecret: state.validAppSecret ?? 'test-fb-client-secret',
+    dialogOutcome: state.dialogOutcome ?? 'consent',
   };
 }
 
@@ -75,6 +78,22 @@ export async function startInstagramMockServer(
   const app = express();
   app.use(express.json());
   app.use(express.urlencoded({ extended: false }));
+
+  // حوار التفويض: نُحاكي سلوك Meta الحقيقي بترويسة Location بلا متابعة تحويل.
+  app.get('/:version/dialog/oauth', (req, res) => {
+    state.calls += 1;
+    if (state.dialogOutcome === 'invalid_app_id') {
+      return res.redirect(302, '/oauth/error/?error_code=PLATFORM__INVALID_APP_ID');
+    }
+    if (state.dialogOutcome === 'login') {
+      return res.redirect(302, `https://www.facebook.com/login.php?next=${encodeURIComponent(String(req.originalUrl || ''))}`);
+    }
+    if (state.dialogOutcome === 'opaque_200') {
+      // صفحة غير مفهومة بلا أي دليل رفض: لا يجوز الحجب بلا إثبات.
+      return res.status(200).send('<html><body>Consent screen</body></html>');
+    }
+    return res.redirect(302, `/v21.0/dialog/oauth?client_id=${String(req.query.client_id || '')}&state=${String(req.query.state || '')}`);
+  });
 
   app.get('/:version/oauth/access_token', (req, res) => {
     state.calls += 1;

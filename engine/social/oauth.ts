@@ -43,6 +43,72 @@ export function requiresPkce(platform: string): boolean {
   return platform === 'tiktok' || platform === 'x';
 }
 
+/**
+ * أسماء متغيرات بيئة Configuration ID لـFacebook Login for Business، لكل منصة
+ * بترتيب أولوية واضح. Instagram يفضّل معرّفه الخاص ثم يتشارك معرّف Facebook.
+ *
+ * سبب الوجود: مسار Facebook Login for Business يمرّر `config_id` بدل `scope`،
+ * والConfiguration تحمل الصلاحيات وحقول الوصول. استخدام معرّف خاطئ (أو تمريره مع
+ * scope معاً) يُنتج رفضاً من Meta قبل شاشة الموافقة بلا سبب ظاهر.
+ */
+export const LOGIN_CONFIG_ENV_NAMES: Readonly<Record<string, readonly string[]>> = Object.freeze({
+  facebook: ['FACEBOOK_LOGIN_CONFIG_ID'],
+  instagram: ['INSTAGRAM_LOGIN_CONFIG_ID', 'FACEBOOK_LOGIN_CONFIG_ID'],
+});
+
+/**
+ * Configuration ID صالح شكلياً: أرقام فقط (بلا مسافات ولا حروف). Meta ترفض
+ * معرّفاً غير صالح أو تعرض صفحة عامة، فنرفضه محلياً قبل إرسال المالك.
+ */
+export function isPlausibleLoginConfigId(value: unknown): boolean {
+  return typeof value === 'string' && /^[0-9]{6,20}$/.test(value);
+}
+
+/**
+ * يحسم Configuration ID من البيئة بترتيب الأولوية، ويميّز الغائب من المضبوط
+ * بشكل غير صالح (بلا كشف أي قيمة).
+ *
+ * المسافة/السطر الزائد لا يُبطل القيمة: تُطبَّع كما يفعل `envSecret` لبقية
+ * الأسرار، وتُسجَّل في `normalized` للتشخيص فقط. أما محتوى غير رقمي فيُبطل
+ * القيمة (`valid=false`) لأن Meta ترفضه أو تعرض صفحة عامة.
+ */
+export function inspectLoginConfigId(
+  platform: string,
+  env: Record<string, string | undefined> = process.env,
+): { configured: boolean; valid: boolean; normalized: boolean; envName: string | null; problems: string[] } {
+  const names = LOGIN_CONFIG_ENV_NAMES[platform] || [];
+  const problems: string[] = [];
+  let firstPresent: string | null = null;
+  let normalized = false;
+  for (const name of names) {
+    const raw = env[name];
+    if (typeof raw !== 'string' || !raw.trim()) continue;
+    if (firstPresent === null) firstPresent = name;
+    const trimmed = raw.trim();
+    if (trimmed !== raw) normalized = true;
+    if (!isPlausibleLoginConfigId(trimmed)) {
+      problems.push(`${name} ليس أرقاماً فقط (Configuration ID رقم من Meta App Dashboard).`);
+    }
+  }
+  const valid = problems.length === 0 && firstPresent !== null;
+  return { configured: firstPresent !== null, valid, normalized, envName: firstPresent, problems };
+}
+
+/** يعيد Configuration ID الصالح (مطبّعاً) أو null إن غاب/كان غير صالح. */
+export function resolveLoginConfigId(
+  platform: string,
+  env: Record<string, string | undefined> = process.env,
+): string | null {
+  const names = LOGIN_CONFIG_ENV_NAMES[platform] || [];
+  for (const name of names) {
+    const raw = env[name];
+    if (typeof raw !== 'string') continue;
+    const trimmed = raw.trim();
+    if (isPlausibleLoginConfigId(trimmed)) return trimmed;
+  }
+  return null;
+}
+
 /** هل انتهت صلاحية state؟ */
 export function isStateExpired(pending: Pick<OAuthPendingState, 'expiresAt'>, now = Date.now()): boolean {
   return !Number.isFinite(pending.expiresAt) || pending.expiresAt <= now;
@@ -82,8 +148,10 @@ export function buildAuthorizationParams(input: {
   scopes: string[];
   state: string;
   pkceChallenge?: string;
+  /** Configuration ID لـFacebook Login for Business (facebook/instagram فقط). */
+  loginConfigId?: string | null;
 }): Record<string, string> {
-  const { platform, clientId, redirectUri, scopes, state, pkceChallenge } = input;
+  const { platform, clientId, redirectUri, scopes, state, pkceChallenge, loginConfigId } = input;
   const params: Record<string, string> = {
     redirect_uri: redirectUri,
     response_type: 'code',
@@ -103,7 +171,13 @@ export function buildAuthorizationParams(input: {
   // لكن حذفهما يجعل الطلب مطابقاً لعقد Meta الرسمي حرفياً.
   if (platform === 'facebook' || platform === 'instagram' || platform === 'threads') {
     params.client_id = clientId;
-    params.scope = scopes.join(',');
+    // Facebook Login for Business: config_id يحلّ محل scope، وإرسالهما معاً
+    // يتعارض (الConfiguration تحمل الصلاحيات وحقول الوصول). Threads لا يستخدمه.
+    if (loginConfigId && (platform === 'facebook' || platform === 'instagram')) {
+      params.config_id = loginConfigId;
+    } else {
+      params.scope = scopes.join(',');
+    }
     if (pkceChallenge) {
       params.code_challenge = pkceChallenge;
       params.code_challenge_method = 'S256';

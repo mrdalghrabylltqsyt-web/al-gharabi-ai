@@ -33,24 +33,47 @@ export const INSTAGRAM_SIGNATURE_HEADER = 'x-hub-signature-256';
 // ---------------------------------------------------------------------------
 
 /**
- * رسم الاعتماديات الرسمي. طلب صلاحية بلا اعتماديتها إما يُرفض بـ«Invalid Scopes»
- * (تطبيق Live بلا مراجعة) أو يُسقَط صامتاً من الرمز فتبدو الواجهة قادرة والتنفيذ
- * يفشل بلا سبب ظاهر.
+ * رسم الاعتماديات الرسمي من «Permissions Reference» لـMeta (المسار المستخدم:
+ * Instagram API with Facebook Login). طلب صلاحية بلا اعتماديتها إما يُرفض
+ * بـ«Invalid Scopes» (تطبيق Live بلا مراجعة) أو يُسقَط صامتاً من الرمز فتبدو
+ * الواجهة قادرة والتنفيذ يفشل بلا سبب ظاهر.
+ *
+ * نصّ الوثيقة (مجموعة Dependencies لكل صلاحية):
+ *   instagram_basic            → (بلا اعتماديات)
+ *   instagram_content_publish  → instagram_basic, pages_read_engagement, pages_show_list
+ *   instagram_manage_comments  → instagram_basic, pages_read_engagement, pages_show_list
+ *   instagram_manage_messages  → instagram_basic, pages_read_engagement, pages_show_list
+ *   instagram_manage_insights  → instagram_basic, pages_read_engagement, pages_show_list
+ *   pages_read_engagement      → pages_show_list
+ *   pages_manage_metadata      → pages_show_list
+ *   business_management        → (بلا اعتماديات)
+ *
+ * ملاحظة مهمة: `pages_manage_metadata` ليست اعتمادية لأي صلاحية instagram_*، لكنها
+ * شرط مستقل لحقل webhook `comments` (وثائق Instagram Webhooks) ولذلك تبقى مطلوبة
+ * في المجموعة الدنيا رغم عدم كونها اعتمادية.
  */
 export const INSTAGRAM_PERMISSION_DEPENDENCIES: Readonly<Record<string, readonly string[]>> = Object.freeze({
   instagram_basic: [],
   instagram_content_publish: ['instagram_basic', 'pages_read_engagement', 'pages_show_list'],
-  instagram_manage_comments: ['instagram_basic', 'pages_read_engagement', 'pages_show_list', 'pages_manage_metadata'],
-  instagram_manage_messages: ['instagram_basic', 'pages_manage_metadata', 'pages_show_list'],
+  instagram_manage_comments: ['instagram_basic', 'pages_read_engagement', 'pages_show_list'],
+  instagram_manage_messages: ['instagram_basic', 'pages_read_engagement', 'pages_show_list'],
   instagram_manage_insights: ['instagram_basic', 'pages_read_engagement', 'pages_show_list'],
   pages_show_list: [],
   pages_read_engagement: ['pages_show_list'],
   pages_manage_metadata: ['pages_show_list'],
+  business_management: [],
 });
 
 /**
  * المجموعة الدنيا التي تغطي كل وظائف الموصل فعلاً: النشر + التعليقات + الرسائل +
- * التحليلات + اشتراك webhook + اكتشاف الصفحة. كل صلاحية هنا يقابلها استدعاء حقيقي.
+ * التحليلات + اشتراك webhook + اكتشاف الصفحة + صفحات Business Manager.
+ * كل صلاحية هنا يقابلها استدعاء حقيقي في الكود:
+ * - instagram_content_publish → POST /{ig-id}/media + media_publish (النشر).
+ * - instagram_manage_comments → POST /{comment-id}/replies (الرد على التعليق).
+ * - instagram_manage_messages → POST /{page-id}/messages (الرسائل).
+ * - instagram_manage_insights → قراءة مؤشرات الحساب (analytics).
+ * - pages_manage_metadata     → POST /{page-id}/subscribed_apps (اشتراك webhook).
+ * - business_management       → ظهور صفحات Business Manager في /me/accounts.
  */
 export const INSTAGRAM_REQUIRED_SCOPES: readonly string[] = Object.freeze([
   'instagram_basic',
@@ -61,10 +84,27 @@ export const INSTAGRAM_REQUIRED_SCOPES: readonly string[] = Object.freeze([
   'pages_show_list',
   'pages_read_engagement',
   'pages_manage_metadata',
+  'business_management',
 ]);
 
 /** حقيقة صريحة: هذا المسار يُوصَل عبر حساب Instagram للأعمال وليس الحساب الشخصي. */
 export const INSTAGRAM_REQUIRES_PROFESSIONAL_ACCOUNT = true;
+
+/**
+ * أنواع الحساب المقبولة للمسار: Business أو Creator فقط. الحساب الشخصي (Consumer)
+ * لا تدعمه هذه الواجهة، فلا يُقبل كحساب تشغيلي. المصدر الرسمي هو حقل
+ * `instagram_business_account` على الصفحة (لا يوجد حقل نوع منفصل في Graph v21).
+ */
+export const INSTAGRAM_PROFESSIONAL_ACCOUNT_TYPES: readonly string[] = Object.freeze(['business', 'creator']);
+
+/**
+ * حقول webhook الافتراضية لحساب Instagram المهني: التعليقات والرسائل.
+ * تُفعَّل من Meta App Dashboard، ولا يمكن ضبط حقول Instagram عبر subscribed_apps
+ * لصفحة Facebook (وثيقة Meta: «You cannot use the subscribed_fields parameter to
+ * configure or subscribe to Webhooks for Instagram»). لذلك نُثبت تجهيزنا المحلي
+ * هنا، ونطالب بتفعيلها في اللوحة، ولا ندّعي التحقق بلا اختبار فعلي.
+ */
+export const INSTAGRAM_SUBSCRIBED_FIELDS_DEFAULT: readonly string[] = Object.freeze(['comments', 'messages']);
 
 /** يوسّع قائمة صلاحيات بإضافة اعتمادياتها (بشكل متعدٍّ) بلا تكرار. */
 export function expandInstagramScopes(scopes: readonly string[]): string[] {
@@ -95,6 +135,12 @@ export function findMissingInstagramScopeDependencies(scopes: readonly string[])
     }
   }
   return missing;
+}
+
+/** يستنتج الاعتماديات الناقصة من قيمة بيئة مفصولة بفواصل (بلا أي سرّ). */
+export function missingInstagramScopeDependenciesFromCsv(raw: string | undefined | null): string[] {
+  const scopes = String(raw || '').split(',').map((s) => s.trim()).filter(Boolean);
+  return scopes.length ? findMissingInstagramScopeDependencies(scopes) : [];
 }
 
 // ---------------------------------------------------------------------------

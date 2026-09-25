@@ -78,6 +78,8 @@ function startApp(fbBase: string, extraEnv: Record<string, string> = {}): { proc
     SESSION_SECRET,
     // خادم Graph وهمي محلي: لا اتصال بمزود حقيقي في الاختبارات.
     FACEBOOK_GRAPH_API_BASE: fbBase,
+    // حوار Meta الوهمي: فحص ما قبل التوجيه لا يلمس مزوداً حقيقياً.
+    FACEBOOK_DIALOG_BASE: fbBase,
     // معرّف تطبيق رقمي (كما هو حقيقي لدى Meta) — الفحص الآن يرفض ما ليس أرقاماً.
     FACEBOOK_OAUTH_CLIENT_ID: '145634995501895',
     FACEBOOK_OAUTH_CLIENT_SECRET: 'test-fb-client-secret',
@@ -492,6 +494,50 @@ async function integrationTests(): Promise<void> {
     check('الفحص لا يكشف السرّ', !JSON.stringify(blockedBody).includes('test-fb-client-secret'));
     check('الاستجابة تحمل رابط الإرجاع الصحيح للتسجيل لدى Meta', blockedBody.redirectUri === `${BASE}/api/platforms/facebook/oauth/callback`);
     await wrongAppMock.stop();
+
+    // فحص الحوار نفسه: تطبيق صالح (فحص client_credentials ينجح) لكن Meta ترد
+    // على رابط التفويض بـPLATFORM__INVALID_APP_ID. يجب ألا يُرسَل المالك إلى
+    // «حدث خطأ ما»، بل تُعلن السبب الدقيق من التصنيف.
+    group('20ب) تكامل: فحص الحوار يمنع إرسال المالك إلى «حدث خطأ ما»');
+    await stop(currentApp.proc);
+    const dialogMock = await startFacebookMockServer(FB_PORT + 5, createFacebookMock({ dialogOutcome: 'invalid_app_id' }));
+    currentApp = startApp(dialogMock.base);
+    check('الخادم يقلع لفحص الحوار', await waitForHealth(), currentApp.log().slice(0, 300));
+    Object.assign(auth, await login());
+    const dlgBlocked = await fetch(`${BASE}/api/platforms/facebook/oauth/start`, { headers: auth });
+    const dlgBody: any = await dlgBlocked.json();
+    check('فحص الحوار يرفض بـ409 بدل التوجيه', dlgBlocked.status === 409, `status=${dlgBlocked.status}`);
+    check('الرمز يعلن PLATFORM__INVALID_APP_ID', dlgBody.code === 'META_DIALOG_PLATFORM__INVALID_APP_ID', `code=${dlgBody.code}`);
+    check('dialogKind يميّز invalid_app_id', dlgBody.dialogKind === 'invalid_app_id');
+    check('لا يُعاد رابط تفويض عند رفض الحوار', !dlgBody.authorizationUrl);
+    check('التوجيه يحمل رابط الإرجاع والنطاق المطلوبين', typeof dlgBody.redirectUri === 'string' && dlgBody.redirectUri.endsWith('/api/platforms/facebook/oauth/callback'));
+    check('التوجيه بلا أي سرّ', !JSON.stringify(dlgBody).includes('test-fb-client-secret'));
+    await dialogMock.stop();
+
+    // حوار مقبول (consent): الفحص لا يحجب ويُعاد رابط التفويض كالمعتاد.
+    group('20ج) تكامل: حوار مقبول (consent) لا يُحجب');
+    await stop(currentApp.proc);
+    const okMock = await startFacebookMockServer(FB_PORT + 6, createFacebookMock({ dialogOutcome: 'consent' }));
+    currentApp = startApp(okMock.base);
+    check('الخادم يقلع لحوار مقبول', await waitForHealth(), currentApp.log().slice(0, 300));
+    Object.assign(auth, await login());
+    const okStart = await fetch(`${BASE}/api/platforms/facebook/oauth/start`, { headers: auth });
+    const okBody: any = await okStart.json();
+    check('حوار مقبول => 200 ورابط تفويض', okStart.status === 200 && typeof okBody.authorizationUrl === 'string', `status=${okStart.status}`);
+    check('الفحص استدعى الحوار فعلياً (calls >= 2: token + dialog)', okMock.state.calls >= 2, `calls=${okMock.state.calls}`);
+    await okMock.stop();
+
+    // استجابة غير مفهومة (200 بلا دليل رفض): لا يجوز الحجب بلا إثبات.
+    group('20د) تكامل: استجابة حوار غير حاسمة لا تحجب الربط');
+    await stop(currentApp.proc);
+    const opaqueMock = await startFacebookMockServer(FB_PORT + 7, createFacebookMock({ dialogOutcome: 'opaque_200' }));
+    currentApp = startApp(opaqueMock.base);
+    check('الخادم يقلع لاستجابة غير حاسمة', await waitForHealth(), currentApp.log().slice(0, 300));
+    Object.assign(auth, await login());
+    const opaqueStart = await fetch(`${BASE}/api/platforms/facebook/oauth/start`, { headers: auth });
+    const opaqueBody: any = await opaqueStart.json();
+    check('استجابة غير حاسمة => 200 (لا حجب بلا إثبات رفض)', opaqueStart.status === 200 && typeof opaqueBody.authorizationUrl === 'string', `status=${opaqueStart.status}`);
+    await opaqueMock.stop();
 
     // تجاوز جزئي عبر FACEBOOK_OAUTH_SCOPES يجب ألا يُنتج «Invalid Scopes» ولا
     // صلاحية مُسقَطة: الحلّ يضيف الاعتماديات الناقصة ويُعلن الفارق للتشخيص.

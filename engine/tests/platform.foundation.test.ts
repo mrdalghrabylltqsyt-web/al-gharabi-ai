@@ -24,6 +24,9 @@ import {
   buildTokenExchangeBody,
   parseTokenResponse,
   isAccessTokenExpired,
+  isPlausibleLoginConfigId,
+  resolveLoginConfigId,
+  inspectLoginConfigId,
   OAUTH_STATE_TTL_MS,
 } from '../social/oauth';
 import {
@@ -102,6 +105,31 @@ function run(): void {
   check('Meta: scope بفواصل', fParams.scope === 'pages_show_list,pages_messaging');
   check('Meta: بلا access_type ولا prompt', fParams.access_type === undefined && fParams.prompt === undefined);
   check('Meta: client_id هو نفس المعرّف', fParams.client_id === '145634995501895');
+  // Facebook Login for Business: config_id يحلّ محل scope ولا يُرسَلان معاً.
+  const cfgParams = buildAuthorizationParams({ platform: 'facebook', clientId: '145634995501895', redirectUri: 'r', scopes: ['pages_show_list'], state: 'st', loginConfigId: '1003753455711313' });
+  check('config_id يُرسَل بدل scope', cfgParams.config_id === '1003753455711313' && cfgParams.scope === undefined);
+  check('config_id لا يُخِلّ بـresponse_type/state/redirect_uri', cfgParams.response_type === 'code' && cfgParams.state === 'st' && cfgParams.redirect_uri === 'r');
+  const igNoCfg = buildAuthorizationParams({ platform: 'instagram', clientId: '145634995501895', redirectUri: 'r', scopes: ['instagram_basic'], state: 'st' });
+  check('بلا config_id يبقى scope لـInstagram', igNoCfg.scope === 'instagram_basic' && igNoCfg.config_id === undefined);
+  const threadsParams = buildAuthorizationParams({ platform: 'threads', clientId: 'c', redirectUri: 'r', scopes: ['threads_basic'], state: 'st', loginConfigId: '1003753455711313' });
+  check('Threads لا يستخدم config_id (ليس مسار Facebook Login)', threadsParams.config_id === undefined && threadsParams.scope === 'threads_basic');
+  // صيغة Configuration ID: أرقام فقط؛ أي مسافة/حرف يُرفض.
+  check('Configuration ID صالح: أرقام فقط', isPlausibleLoginConfigId('1003753455711313'));
+  check('Configuration ID مرفوض: مسافة زائدة', !isPlausibleLoginConfigId('1003753455711313 '));
+  check('Configuration ID مرفوض: حروف', !isPlausibleLoginConfigId('abc123456'));
+  check('Configuration ID مرفوض: قصير جداً', !isPlausibleLoginConfigId('123'));
+  check('Configuration ID مرفوض: غير نص', !isPlausibleLoginConfigId(123456789));
+  const igConfigEnv = { INSTAGRAM_LOGIN_CONFIG_ID: '1003753455711313', FACEBOOK_LOGIN_CONFIG_ID: '999999999999999' };
+  check('أولوية Instagram على Facebook في الحسم', resolveLoginConfigId('instagram', igConfigEnv) === '1003753455711313');
+  check('Facebook يستخدم معرّفه وحده', resolveLoginConfigId('facebook', igConfigEnv) === '999999999999999');
+  check('غياب كامل => null', resolveLoginConfigId('instagram', {}) === null);
+  check('قيمة غير صالحة => null (لا تُمرَّر للمزود)', resolveLoginConfigId('instagram', { INSTAGRAM_LOGIN_CONFIG_ID: 'bad id' }) === null);
+  const cfgInspect = inspectLoginConfigId('instagram', { INSTAGRAM_LOGIN_CONFIG_ID: '1003753455711313 ' });
+  check('المسافة الزائدة تُطبَّع ولا تُبطل القيمة (كبقية الأسرار)', cfgInspect.configured === true && cfgInspect.valid === true && cfgInspect.normalized === true);
+  const cfgInvalid = inspectLoginConfigId('instagram', { INSTAGRAM_LOGIN_CONFIG_ID: 'not-a-number' });
+  check('المضبوط غير الرقمي يُعلن غير صالح بسبب صريح', cfgInvalid.configured === true && cfgInvalid.valid === false && cfgInvalid.problems.length === 1);
+  check('الفحص يعلن اسم المتغير بلا قيمة', cfgInvalid.envName === 'INSTAGRAM_LOGIN_CONFIG_ID' && !JSON.stringify(cfgInvalid).includes('not-a-number'));
+  check('الفحص عند الغياب: غير مضبوط وغير صالح', inspectLoginConfigId('instagram', {}).configured === false && inspectLoginConfigId('instagram', {}).valid === false);
   const body = buildTokenExchangeBody({ clientId: 'c', clientSecret: 's', code: 'code', redirectUri: 'r', codeVerifier: 'v' });
   check('جسم التبادل يحمل الحقول الرسمية', body.get('grant_type') === 'authorization_code' && body.get('code_verifier') === 'v');
   check('parseTokenResponse: رمز صالح', parseTokenResponse({ access_token: 'a', refresh_token: 'r', expires_in: 3600 }).valid);

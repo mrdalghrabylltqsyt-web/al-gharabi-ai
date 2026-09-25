@@ -22,6 +22,12 @@ export interface CredentialSpec {
   webhook: string[];
   /** بيانات إضافية للنشر/الهدف إن لزمت (اختيارية غالباً). */
   publish?: string[];
+  /**
+   * متغيرات اختيارية تُفعّل مساراً بديلاً دون أن تكون شرطاً للاتصال
+   * (مثل Configuration ID لـFacebook Login for Business). تُذكر للتشخيص فقط،
+   * وغيابها لا يجعل الاتصال «غير مُعدّ».
+   */
+  optional?: string[];
   /** بدائل مقبولة: أي مجموعة منها تكفي (مثل Instagram يرث بيانات Facebook). */
   alternatives?: string[][];
 }
@@ -52,10 +58,12 @@ export const CREDENTIAL_SPECS: Record<PlatformId, CredentialSpec> = {
   facebook: {
     connection: ['FACEBOOK_OAUTH_CLIENT_ID', 'FACEBOOK_OAUTH_CLIENT_SECRET'],
     webhook: ['FACEBOOK_APP_SECRET', 'FACEBOOK_VERIFY_TOKEN'],
+    optional: ['FACEBOOK_LOGIN_CONFIG_ID'],
   },
   instagram: {
     connection: ['INSTAGRAM_OAUTH_CLIENT_ID', 'INSTAGRAM_OAUTH_CLIENT_SECRET'],
     webhook: ['INSTAGRAM_APP_SECRET', 'INSTAGRAM_VERIFY_TOKEN'],
+    optional: ['INSTAGRAM_LOGIN_CONFIG_ID', 'FACEBOOK_LOGIN_CONFIG_ID'],
     alternatives: [['INSTAGRAM_OAUTH_CLIENT_ID', 'FACEBOOK_OAUTH_CLIENT_ID'], ['INSTAGRAM_OAUTH_CLIENT_SECRET', 'FACEBOOK_OAUTH_CLIENT_SECRET'], ['INSTAGRAM_APP_SECRET', 'FACEBOOK_APP_SECRET'], ['INSTAGRAM_VERIFY_TOKEN', 'FACEBOOK_VERIFY_TOKEN']],
   },
   x: {
@@ -142,6 +150,8 @@ export interface PlatformCredentialReport {
   publish: CredentialStatus;
   /** أسماء المتغيرات المطلوبة فعلاً لهذه المنصة (بلا قيم) — للتوثيق. */
   requiredEnvNames: string[];
+  /** أسماء متغيرات اختيارية (مثل Configuration ID) — بلا قيم وبلا شرط للاتصال. */
+  optionalEnvNames: string[];
 }
 
 /** تقرير اعتماد كامل لمنصة (اتصال + webhook + نشر) بلا أي قيمة سرّية. */
@@ -151,7 +161,7 @@ export function inspectPlatformCredentials(platform: PlatformId, env: Record<str
   const webhook = inspectCredentialPurpose(platform, 'webhook', env);
   const publish = inspectCredentialPurpose(platform, 'publish', env);
   const names = new Set<string>([...GLOBAL_CREDENTIALS.connection, ...(spec?.connection || []), ...(spec?.webhook || []), ...(spec?.publish || [])]);
-  return { platform, connection, webhook, publish, requiredEnvNames: [...names] };
+  return { platform, connection, webhook, publish, requiredEnvNames: [...names], optionalEnvNames: [...(spec?.optional || [])] };
 }
 
 /** هل يلزم اعتماد خارجي (إعداد ناقص) لتفعيل هذه المنصة؟ */

@@ -855,3 +855,58 @@ Meta نفسها عبر بدائل: `INSTAGRAM_OAUTH_CLIENT_ID/SECRET` ثم `FACE
 يُضاف redirect الحقيقي (`/api/platforms/instagram/oauth/callback`) في Valid OAuth Redirect
 URIs. أي رفض Advanced Access لصلاحيات التعليقات/الرسائل يحتاج App Review — يُعلن صراحةً
 ولا تُعتبر الميزة مفعّلة قبل تحقق فعلي.
+
+## Facebook Login for Business + فحص حوار Meta قبل التوجيه — Batch 11 (2026-09-25)
+
+إكمال مسار Instagram API with Facebook Login ليعمل فعلياً على تطبيق Meta القائم، بلا
+تطبيق ثانٍ وبلا تغيير نموذج الأمان (يبقى AES-256-GCM ونفس محوّل الحالة).
+
+### 1) Configuration ID (Facebook Login for Business)
+تطبيق «وكيل الغرابي الذكي» يعمل بسياق **Facebook Login for Business**، وهذا السياق
+يستخدم **Configuration** بدل تمرير `scope` يدوياً. أُضيف:
+- `engine/social/oauth.ts`: `isPlausibleLoginConfigId` (أرقام فقط 6–20 بلا trim — أي مسافة
+  زائدة تُنتج صفحة Meta العامة)، `resolveLoginConfigId` (أولوية `INSTAGRAM_LOGIN_CONFIG_ID`
+  ثم `FACEBOOK_LOGIN_CONFIG_ID`)، `inspectLoginConfigId` (يفرّق **غير مضبوط** عن **غير
+  صالح**)، `LOGIN_CONFIG_ENV_NAMES`.
+- `buildAuthorizationParams`: عند وجود `config_id` صالح **يُحذف `scope` تماماً** (إرسال
+  الاثنين معاً يتعارض)، وتبقى `client_id` و`redirect_uri` و`state` و`response_type=code` صحيحة.
+- `server.ts`: `loginConfigIdFor`/`loginConfigInspection`/`loginConfigEnvNames`، وبدء OAuth
+  يرفض **409 `LOGIN_CONFIG_ID_INVALID`** عند صيغة غير صالحة (بلا إرسال المالك إلى Meta)،
+  ويعرض `loginConfigIdUsed` و`permissionSource` (`facebook_login_for_business_configuration`
+  أو `oauth_scope_parameter`) و`loginConfigEnvNames` (أسماء فقط، بلا قيمة).
+- البيئة: `FACEBOOK_LOGIN_CONFIG_ID` و`INSTAGRAM_LOGIN_CONFIG_ID` في `.env.example`
+  و`render.yaml` بلا قيمة. لا تُسجَّل ولا تُعاد ولا تدخل Git.
+
+### 2) فحص حوار Meta قبل التوجيه (منع «حدث خطأ ما» العمياء)
+`probeMetaDialog` في `server.ts` يطلب رابط التفويض فعلياً بـ`redirect: "manual"` **بلا
+متابعة تحويل** وبلا تنفيذ شاشة موافقة، ثم يصنّف عبر `classifyMetaDialogInteraction`.
+القاعدة الحاكمة: **لا حجب بلا دليل رفض صريح** — استجابة مقبولة (login/consent) أو غير
+حاسمة (200 بلا دليل) أو تعذّر شبكة كلها **تمرّ**، والرفض الصريح فقط (`invalid_app_id` /
+`dialog_error`) يُحجب بـ**409** مع `code: META_DIALOG_<ERROR_CODE>` و`dialogKind` والإجراء
+الدقيق ورابط الإرجاع. **لا يُسجَّل رابط التفويض** (يحمل `client_id`/`state`/`config_id`).
+`FACEBOOK_DIALOG_BASE` يسمح بتوجيه الفحص إلى خادم وهمي في الاختبار فلا يُلمس مزود حقيقي.
+
+### 3) الواجهة والتشخيص
+`PlatformConnectionCenter` يعرض لوحة OAuth Setup (redirect_uri الدقيق، App Domains،
+الصلاحيات، Configuration ID، معنى «حدث خطأ ما») واختيار حساب Instagram وحالة اشتراك
+webhook. `oauth/setup` يعرض لـInstagram أيضاً `scopeDependencyGaps` و`scopeOverrideConfigured`.
+
+اختبارات: `instagram.connector.test.ts` = **147 فحصاً**، `facebook.connector.test.ts` =
+**176 فحصاً** (مجموعات 20ب/20ج/20د تثبت: رفض الحوار => 409، حوار مقبول => 200، استجابة
+غير حاسمة => لا حجب)، والخوادم الوهمية تحاكي حوار Meta (`dialogOutcome`). فحوص final-audit
+الجديدة: `meta-dialog-preprobe`, `meta-dialog-probe-no-follow`, `meta-dialog-probe-no-secret-log`,
+`meta-dialog-base-overridable`, `meta-dialog-mock-routes`, `meta-dialog-probe-tests`,
+`instagram-scope-dependency-gaps-exposed` (214 فحصاً إجمالاً).
+
+**نقطة توقف المالك (لا ينفّذها أي وكيل برمجي):**
+1. في Meta App Dashboard → **Facebook Login for Business → Configurations**: أنشئ Configuration
+   لـInstagram (أو أعد استخدام الموجودة) بنوع الرمز **User access token** وبالصلاحيات
+   الثمانية التي يعرضها `/api/platforms/instagram/oauth/setup` (`scopes`)، ثم انسخ
+   **Configuration ID** (أرقام فقط).
+2. في Render → Environment: أضف `INSTAGRAM_LOGIN_CONFIG_ID` بقيمته (بلا مسافات)، ثم أعد النشر.
+3. في Meta → App Domains أضف `al-gharabi-ai.onrender.com`، وفي Valid OAuth Redirect URIs
+   أضف `https://al-gharabi-ai.onrender.com/api/platforms/instagram/oauth/callback` بالضبط.
+4. في Webhooks → كائن **instagram** فعّل حقلي `comments` و`messages` (لا يمكن ضبطهما عبر
+   `subscribed_apps`؛ المصدر لوحة Meta فقط).
+5. اضغط «بدء الربط» ووافق بحساب Instagram **مهني** مرتبط بالصفحة. الشاشة النهائية يجب أن
+   تعرض CONNECTED → VERIFIED → OPERATIONAL.

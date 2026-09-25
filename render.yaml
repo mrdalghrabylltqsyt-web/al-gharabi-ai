@@ -79,6 +79,11 @@ services:
         sync: false
       - key: FACEBOOK_VERIFY_TOKEN
         sync: false
+      # Facebook Login for Business Configuration ID (optional; digits only).
+      # When set, OAuth sends config_id instead of scope. Value entered in the
+      # Render dashboard only — never in Git and never logged.
+      - key: FACEBOOK_LOGIN_CONFIG_ID
+        sync: false
       # Meta (Instagram):
       - key: INSTAGRAM_OAUTH_CLIENT_ID
         sync: false
@@ -87,6 +92,10 @@ services:
       - key: INSTAGRAM_APP_SECRET
         sync: false
       - key: INSTAGRAM_VERIFY_TOKEN
+        sync: false
+      # Instagram Login for Business Configuration ID (optional; digits only).
+      # Highest priority; falls back to FACEBOOK_LOGIN_CONFIG_ID.
+      - key: INSTAGRAM_LOGIN_CONFIG_ID
         sync: false
       # X / Twitter:
       - key: X_OAUTH_CLIENT_ID

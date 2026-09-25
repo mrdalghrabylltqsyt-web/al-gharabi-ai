@@ -56,6 +56,8 @@ export interface FacebookMockState {
   validAppSecret: string;
   /** آخر فحص رمز تطبيق (بلا سرّ كامل، فقط الطول للتحقق). */
   lastAppTokenCheck: { clientId: string; secretLen: number } | null;
+  /** سلوك حوار التفويض: consent = تطبيق صالح، invalid_app_id = صفحة «حدث خطأ ما». */
+  dialogOutcome: 'consent' | 'login' | 'invalid_app_id' | 'opaque_200';
 }
 
 export function createFacebookMock(state: Partial<FacebookMockState> = {}): FacebookMockState {
@@ -78,6 +80,8 @@ export function createFacebookMock(state: Partial<FacebookMockState> = {}): Face
     validAppId: state.validAppId ?? '145634995501895',
     validAppSecret: state.validAppSecret ?? 'test-fb-client-secret',
     lastAppTokenCheck: null,
+    // استجابة حوار التفويض: consent (تطبيق صالح) | login | invalid_app_id (صفحة «حدث خطأ ما»).
+    dialogOutcome: state.dialogOutcome ?? 'consent',
   };
 }
 
@@ -91,9 +95,24 @@ export async function startFacebookMockServer(
   // قراءة الجسم الخام أيضاً (Meta توقّع الجسم الخام) — غير مطلوب هنا لكنه آمن.
   app.use(express.urlencoded({ extended: false }));
 
+  // حوار التفويض: نُحاكي سلوك Meta الحقيقي بترويسة Location بلا متابعة تحويل.
+  app.get('/:version/dialog/oauth', (req, res) => {
+    state.calls += 1;
+    if (state.dialogOutcome === 'invalid_app_id') {
+      return res.redirect(302, '/oauth/error/?error_code=PLATFORM__INVALID_APP_ID');
+    }
+    if (state.dialogOutcome === 'login') {
+      return res.redirect(302, `https://www.facebook.com/login.php?next=${encodeURIComponent(String(req.originalUrl || ''))}`);
+    }
+    if (state.dialogOutcome === 'opaque_200') {
+      // صفحة غير مفهومة بلا أي دليل رفض: لا يجوز الحجب بلا إثبات.
+      return res.status(200).send('<html><body>Consent screen</body></html>');
+    }
+    return res.redirect(302, `/v21.0/dialog/oauth?client_id=${String(req.query.client_id || '')}&state=${String(req.query.state || '')}`);
+  });
+
   app.get('/:version/oauth/access_token', (req, res) => {
     state.calls += 1;
-    // فحص رمز التطبيق (client_credentials): يثبت client_id/secret بلا حصة مستخدم.
     if (req.query.grant_type === 'client_credentials') {
       const clientId = String(req.query.client_id || '');
       const secret = String(req.query.client_secret || '');

@@ -55,6 +55,9 @@ const SESSION_SECRET = 'instagram-connector-test-secret-not-real';
 const IG_APP_SECRET = 'ig_test_app_secret_not_real_1234567890';
 const IG_VERIFY_TOKEN = 'ig_test_verify_token_not_real';
 const stateDir = mkdtempSync(join(tmpdir(), 'gharabi-instagram-'));
+// مفتاح تشفير ثابت طوال الجولة: إعادة تشغيل الخادم في الاختبار يجب ألا تُفقد
+// التوكنات المشفّرة، وإلا صار اختبار «الثبات بعد restart» يقيس عطلاً مصطنعاً.
+const TOKEN_KEY = randomBytes(32).toString('hex');
 
 const secretBuffer = createHash('sha256').update(`gharabi-session:${SESSION_SECRET}`).digest();
 const ownerUser = { id: 'owner', name: 'مالك النظام', email: 'owner@example.invalid', role: 'owner', roleTitleArabic: 'مالك النظام', avatar: '', active: true, createdAt: new Date().toISOString() };
@@ -72,12 +75,14 @@ function startApp(igBase: string, extraEnv: Record<string, string> = {}): { proc
     SESSION_SECRET,
     // خادم Graph وهمي محلي: لا اتصال بمزود حقيقي في الاختبارات.
     FACEBOOK_GRAPH_API_BASE: igBase,
+    // حوار Meta الوهمي: فحص ما قبل التوجيه لا يلمس مزوداً حقيقياً.
+    FACEBOOK_DIALOG_BASE: igBase,
     // بيانات تطبيق Meta مشتركة (Instagram يرث بيانات Facebook بديلاً).
     FACEBOOK_OAUTH_CLIENT_ID: '145634995501895',
     FACEBOOK_OAUTH_CLIENT_SECRET: 'test-fb-client-secret',
     FACEBOOK_APP_SECRET: IG_APP_SECRET,
     FACEBOOK_VERIFY_TOKEN: IG_VERIFY_TOKEN,
-    PLATFORM_TOKEN_ENCRYPTION_KEY: randomBytes(32).toString('hex'),
+    PLATFORM_TOKEN_ENCRYPTION_KEY: TOKEN_KEY,
     ...extraEnv,
   };
   delete env.GEMINI_API_KEY;
@@ -168,7 +173,20 @@ function unitTests(): void {
   check('صلاحيات الصفحة اللازمة موجودة', ['pages_show_list', 'pages_read_engagement', 'pages_manage_metadata'].every((s) => INSTAGRAM_REQUIRED_SCOPES.includes(s)));
   check('المجموعة المطلوبة لا تكرّر أي صلاحية', new Set(INSTAGRAM_REQUIRED_SCOPES).size === INSTAGRAM_REQUIRED_SCOPES.length);
   check('لا صلاحية في المجموعة المطلوبة بلا اعتماديتها', findMissingInstagramScopeDependencies(INSTAGRAM_REQUIRED_SCOPES).length === 0, findMissingInstagramScopeDependencies(INSTAGRAM_REQUIRED_SCOPES).join(','));
-  check('رد التعليقات يعتمد على pages_manage_metadata', (INSTAGRAM_PERMISSION_DEPENDENCIES['instagram_manage_comments'] || []).includes('pages_manage_metadata'));
+  // الاعتماديات الرسمية من «Permissions Reference»: كل صلاحية instagram_* تعتمد
+  // على instagram_basic وpages_read_engagement وpages_show_list — ولا تعتمد على
+  // pages_manage_metadata (التي هي شرط مستقل لحقل webhook comments).
+  check('رد التعليقات يعتمد رسمياً على pages_read_engagement وpages_show_list',
+    (INSTAGRAM_PERMISSION_DEPENDENCIES['instagram_manage_comments'] || []).includes('pages_read_engagement') &&
+    (INSTAGRAM_PERMISSION_DEPENDENCIES['instagram_manage_comments'] || []).includes('pages_show_list'));
+  check('رد التعليقات لا يعلن pages_manage_metadata اعتمادية (الوثيقة الرسمية)',
+    !(INSTAGRAM_PERMISSION_DEPENDENCIES['instagram_manage_comments'] || []).includes('pages_manage_metadata'));
+  check('pages_manage_metadata تبقى مطلوبة لاشتراك webhook (comments)',
+    INSTAGRAM_REQUIRED_SCOPES.includes('pages_manage_metadata'));
+  check('business_management مطلوبة لصفحات Business Manager',
+    INSTAGRAM_REQUIRED_SCOPES.includes('business_management'));
+  check('لا صلاحية مطلوبة بلا استدعاء حقيقي (العدد = 9)',
+    INSTAGRAM_REQUIRED_SCOPES.length === 9, INSTAGRAM_REQUIRED_SCOPES.join(','));
   const partial = resolveInstagramScopes(['instagram_manage_comments']);
   check('حلّ مجموعة جزئية يضيف instagram_basic', partial.includes('instagram_basic'));
   check('حلّ مجموعة جزئية يضيف pages_show_list', partial.includes('pages_show_list'));
@@ -252,6 +270,57 @@ async function integrationTests(): Promise<void> {
     const igAfter = readinessAfter.platforms.find((p: any) => p.platform === 'instagram');
     check('Instagram أصبح متصلاً وموثقاً', igAfter.connected === true && igAfter.providerVerified === true);
     check('لا يُعاد أي رمز صفحة في الاستجابة', !JSON.stringify(igAfter).includes('PAGE_TOKEN_TEST') && !JSON.stringify(readinessAfter).includes('IG_USER_TOKEN_TEST_LONG'));
+
+    group('6أ) تكامل: مسار Facebook Login for Business (config_id بدل scope)');
+    // Configuration ID صالح: يُمرَّر كـconfig_id ويُحذف scope تماماً من رابط التفويض
+    // (إرسالهما معاً يتعارض). يبقى state وredirect_uri وresponse_type صحيحة.
+    // كل خادم يستخدم نفس المنفذ، فيُوقف السابق قبل تشغيل التالي.
+    const CONFIG_ID = '1003753455711313';
+    await stop(app.proc);
+    let cfgApp = startApp(mock.base, { INSTAGRAM_LOGIN_CONFIG_ID: CONFIG_ID });
+    currentApp = cfgApp;
+    check('الخادم يقلع بإعداد config_id', await waitForHealth(), cfgApp.log().slice(0, 400));
+    const cfgAuth = { 'Content-Type': 'application/json' } as Record<string, string>;
+    Object.assign(cfgAuth, await login());
+    const cfgStart = await (await fetch(`${BASE}/api/platforms/instagram/oauth/start`, { headers: cfgAuth })).json();
+    const cfgParams = new URL(cfgStart.authorizationUrl).searchParams;
+    check('config_id يُرسَل إلى Meta في رابط التفويض', cfgParams.get('config_id') === CONFIG_ID, `config_id=${cfgParams.get('config_id')}`);
+    check('لا يُرسَل scope مع config_id (تعارض)', cfgParams.get('scope') === null, `scope=${cfgParams.get('scope')}`);
+    check('response_type=code وredirect_uri وstate صحيحة', cfgParams.get('response_type') === 'code' && cfgParams.get('redirect_uri') === expectedRedirect && (cfgParams.get('state') || '').length >= 32);
+    check('الاستجابة تُعلن أن الصلاحيات من الConfiguration لا من scope', cfgStart.loginConfigIdUsed === true && cfgStart.permissionSource === 'facebook_login_for_business_configuration');
+    check('الاستجابة تذكر أسماء متغيرات config_id بلا قيمة', Array.isArray(cfgStart.loginConfigEnvNames) && cfgStart.loginConfigEnvNames.includes('INSTAGRAM_LOGIN_CONFIG_ID'));
+    // config_id يظهر مرة واحدة فقط: داخل authorizationUrl (لأن Meta تستقبله من
+    // الرابط نفسه). لا يُصدَّر كحقل مستقل ولا يتكرر في أي حقل تشخيصي آخر.
+    const cfgOccurrences = (JSON.stringify(cfgStart).match(new RegExp(CONFIG_ID, 'g')) || []).length;
+    check('config_id لا يُصدَّر كحقل مستقل ولا يتكرر في التشخيص', cfgOccurrences === 1, `occurrences=${cfgOccurrences}`);
+    // الأولوية: INSTAGRAM_LOGIN_CONFIG_ID يسبق FACEBOOK_LOGIN_CONFIG_ID.
+    await stop(cfgApp.proc);
+    const prioApp = startApp(mock.base, { INSTAGRAM_LOGIN_CONFIG_ID: CONFIG_ID, FACEBOOK_LOGIN_CONFIG_ID: '999999999999999' });
+    currentApp = prioApp;
+    check('الخادم يقلع لفحص الأولوية', await waitForHealth(), prioApp.log().slice(0, 400));
+    const prioAuth = { 'Content-Type': 'application/json' } as Record<string, string>;
+    Object.assign(prioAuth, await login());
+    const prioStart = await (await fetch(`${BASE}/api/platforms/instagram/oauth/start`, { headers: prioAuth })).json();
+    check('أولوية Instagram Configuration ID على Facebook', new URL(prioStart.authorizationUrl).searchParams.get('config_id') === CONFIG_ID);
+    // config_id غير صالح (مسافة/حروف) => 409 تشخيصي بلا إرسال المالك إلى Meta.
+    await stop(prioApp.proc);
+    const badCfgApp = startApp(mock.base, { INSTAGRAM_LOGIN_CONFIG_ID: 'not-a-number ' });
+    currentApp = badCfgApp;
+    check('الخادم يقلع بconfig_id غير صالح', await waitForHealth(), badCfgApp.log().slice(0, 400));
+    const badCfgAuth = { 'Content-Type': 'application/json' } as Record<string, string>;
+    Object.assign(badCfgAuth, await login());
+    const badCfg = await fetch(`${BASE}/api/platforms/instagram/oauth/start`, { headers: badCfgAuth });
+    const badCfgBody = await badCfg.json();
+    check('config_id غير صالح => 409 بلا إرسال المالك إلى Meta', badCfg.status === 409 && badCfgBody.code === 'LOGIN_CONFIG_ID_INVALID', JSON.stringify(badCfgBody).slice(0, 200));
+    check('رسالة 409 توجّه للوحة Meta بلا قيمة سرّية', typeof badCfgBody.hint === 'string' && badCfgBody.hint.includes('Configurations') && !JSON.stringify(badCfgBody).includes('not-a-number'));
+    check('الاستجابة تُعلن فحص config_id منطقياً', badCfgBody.loginConfigIdConfigured === true && badCfgBody.loginConfigIdValid === false);
+    // نُعيد الخادم الأصلي (بلا config_id) لبقية الاختبارات، ونُحدّث المرجعين
+    // حتى يستخدم الإغلاق في النهاية العملية الصحيحة.
+    await stop(badCfgApp.proc);
+    app = startApp(mock.base);
+    currentApp = app;
+    check('الخادم يعود للعمل بعد مسار config_id', await waitForHealth(), app.log().slice(0, 400));
+    await login();
 
     group('6ب) تكامل: اعتماد Instagram مشفّر في المخزن ولا يظهر كنص خام');
     const stateFileAtRest = readFileSync(join(stateDir, '.gharabi-state.json'), 'utf8');
@@ -449,6 +518,36 @@ async function integrationTests(): Promise<void> {
     const noIgRow = noIgReadiness.platforms.find((p: any) => p.platform === 'instagram');
     check('لا يُعلن Instagram متصلاً بلا حساب مهني', noIgRow.connected === false && noIgRow.providerVerified === false);
     await noIgMock.stop();
+
+    // فحص الحوار: Meta ترد على رابط التفويض بـPLATFORM__INVALID_APP_ID — يجب
+    // ألا يُرسَل المالك إلى «حدث خطأ ما» بل تُعلن السبب الدقيق.
+    group('20) تكامل: فحص الحوار يمنع إرسال المالك إلى «حدث خطأ ما»');
+    await stop(currentApp.proc);
+    const dlgMock = await startInstagramMockServer(IG_PORT + 3, createInstagramMock({ dialogOutcome: 'invalid_app_id' }));
+    currentApp = startApp(dlgMock.base);
+    check('الخادم يقلع لفحص الحوار', await waitForHealth(), currentApp.log().slice(0, 300));
+    Object.assign(auth, await login());
+    const dlgBlocked = await fetch(`${BASE}/api/platforms/instagram/oauth/start`, { headers: auth });
+    const dlgBody: any = await dlgBlocked.json();
+    check('فحص الحوار يرفض بـ409 بدل التوجيه', dlgBlocked.status === 409, `status=${dlgBlocked.status}`);
+    check('الرمز يعلن PLATFORM__INVALID_APP_ID', dlgBody.code === 'META_DIALOG_PLATFORM__INVALID_APP_ID', `code=${dlgBody.code}`);
+    check('لا يُعاد رابط تفويض عند رفض الحوار', !dlgBody.authorizationUrl);
+    check('التوجيه يحمل رابط الإرجاع المطلوب', dlgBody.redirectUri === `${BASE}/api/platforms/instagram/oauth/callback`);
+    check('التوجيه بلا أي سرّ', !JSON.stringify(dlgBody).includes('test-fb-client-secret'));
+    await dlgMock.stop();
+
+    // حوار مقبول: لا حجب.
+    group('21) تكامل: حوار مقبول لا يُحجب (Instagram)');
+    await stop(currentApp.proc);
+    const okMock = await startInstagramMockServer(IG_PORT + 4, createInstagramMock({ dialogOutcome: 'consent' }));
+    currentApp = startApp(okMock.base);
+    check('الخادم يقلع لحوار مقبول', await waitForHealth(), currentApp.log().slice(0, 300));
+    Object.assign(auth, await login());
+    const okStart = await fetch(`${BASE}/api/platforms/instagram/oauth/start`, { headers: auth });
+    const okBody: any = await okStart.json();
+    check('حوار مقبول => 200 ورابط تفويض', okStart.status === 200 && typeof okBody.authorizationUrl === 'string', `status=${okStart.status}`);
+    check('الفحص استدعى الحوار فعلياً', okMock.state.calls >= 2, `calls=${okMock.state.calls}`);
+    await okMock.stop();
   } finally {
     try { await stop(currentApp.proc); } catch { /* تجاهل */ }
     await mock.stop();

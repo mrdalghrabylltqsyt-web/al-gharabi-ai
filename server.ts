@@ -42,7 +42,10 @@ import {
   parseInstagramWebhook,
   INSTAGRAM_REQUIRED_SCOPES,
   INSTAGRAM_SIGNATURE_HEADER,
+  INSTAGRAM_SUBSCRIBED_FIELDS_DEFAULT,
+  INSTAGRAM_PROFESSIONAL_ACCOUNT_TYPES,
   resolveInstagramScopes,
+  missingInstagramScopeDependenciesFromCsv,
   type InstagramFetch,
   type InstagramLinkedPage,
 } from "./engine/social/instagram";
@@ -55,6 +58,10 @@ import {
   buildTokenExchangeBody,
   parseTokenResponse,
   isAccessTokenExpired,
+  inspectLoginConfigId,
+  resolveLoginConfigId,
+  isPlausibleLoginConfigId,
+  LOGIN_CONFIG_ENV_NAMES,
   OAUTH_STATE_TTL_MS,
 } from "./engine/social/oauth";
 import { PLATFORM_READINESS, readinessFor, readinessSummary } from "./engine/social/readiness";
@@ -980,6 +987,10 @@ function facebookOAuthScopes(): string[] {
 function facebookScopeDependencyGaps(): string[] {
   return missingScopeDependenciesFromCsv(process.env.FACEBOOK_OAUTH_SCOPES);
 }
+/** تجاوز صلاحيات Instagram من البيئة (قائمة مفصولة بفواصل، مطبَّعة). */
+function instagramScopeOverride(): string[] {
+  return (process.env.INSTAGRAM_OAUTH_SCOPES || "").split(",").map((s) => s.trim()).filter(Boolean);
+}
 /**
  * صلاحيات Instagram API with Facebook Login. نفس مصدر الحقيقة في
  * `engine/social/instagram.ts` مع رسم الاعتماديات الرسمي. التجاوز من
@@ -987,8 +998,12 @@ function facebookScopeDependencyGaps(): string[] {
  * الاعتماديات الناقصة تلقائياً، فلا ينتج «Invalid Scopes» ولا صلاحية مُسقَطة.
  */
 function instagramOAuthScopes(): string[] {
-  const override = (process.env.INSTAGRAM_OAUTH_SCOPES || "").split(",").map((s) => s.trim()).filter(Boolean);
+  const override = instagramScopeOverride();
   return resolveInstagramScopes(override.length ? override : INSTAGRAM_REQUIRED_SCOPES);
+}
+/** الاعتماديات الناقصة في تجاوز البيئة (بلا قيمة سرّية) — يُعرَض للتشخيص. */
+function instagramScopeDependencyGaps(): string[] {
+  return missingInstagramScopeDependenciesFromCsv(process.env.INSTAGRAM_OAUTH_SCOPES);
 }
 /**
  * قراءة قيمة بيئة مع تطبيع المسافات حولها.
@@ -1002,6 +1017,24 @@ function envSecret(name: string): string | undefined {
   const v = process.env[name];
   if (typeof v !== "string") return undefined;
   return v.trim() || undefined;
+}
+
+/**
+ * Configuration ID لـFacebook Login for Business: مسار Meta المعتمد الذي يمرّر
+ * `config_id` بدل `scope` (الConfiguration تحمل الصلاحيات وحقول الوصول). الأولوية:
+ * Instagram: INSTAGRAM_LOGIN_CONFIG_ID ثم FACEBOOK_LOGIN_CONFIG_ID؛ Facebook:
+ * FACEBOOK_LOGIN_CONFIG_ID. يُقرأ عند كل استخدام (لا وقت الإقلاع) ليعكس البيئة.
+ */
+function loginConfigIdFor(platform: string): string | null {
+  return resolveLoginConfigId(platform, process.env);
+}
+/** فحص الغياب/الصيغة غير الصالحة للConfiguration (بلا أي قيمة) للعرض التشخيصي. */
+function loginConfigInspection(platform: string) {
+  return inspectLoginConfigId(platform, process.env);
+}
+/** أسماء متغيرات Configuration ID المتوقعة لمنصة (للتوثيق، بلا قيم). */
+function loginConfigEnvNames(platform: string): string[] {
+  return [...(LOGIN_CONFIG_ENV_NAMES[platform] || [])];
 }
 
 const OAUTH_CONFIG: Record<string, any> = {
@@ -1108,7 +1141,7 @@ function instagramOAuthConfig(): any { return OAUTH_CONFIG["instagram"]; }
 /** حقول webhook لحساب Instagram المهني (تعليقات + رسائل). تُفعَّل من Meta Dashboard. */
 const INSTAGRAM_SUBSCRIBED_FIELDS = (() => {
   const raw = (process.env.INSTAGRAM_SUBSCRIBED_FIELDS || "").split(",").map((x) => x.trim()).filter(Boolean);
-  return raw.length ? raw : ["comments", "messages"];
+  return raw.length ? raw : [...INSTAGRAM_SUBSCRIBED_FIELDS_DEFAULT];
 })();
 /** سرّ توقيع webhook: نفس تطبيق Meta؛ يقبل INSTAGRAM_APP_SECRET ثم FACEBOOK_APP_SECRET. */
 function instagramAppSecret(): string {
@@ -1241,12 +1274,18 @@ interface OAuthStartPreflight {
   hint?: string;
   /** نتيجة فحص Graph لمعرّف/سرّ التطبيق (منصات Meta فقط). */
   appToken?: { kind: string; message: string; code: number | null } | null;
+  /** هل سيُستخدم مسار Facebook Login for Business (config_id) بدل scope؟ */
+  loginConfigIdUsed?: boolean;
+  /** فحص Configuration ID (غياب/صيغة) — بلا أي قيمة سرّية. */
+  loginConfig?: { configured: boolean; valid: boolean; envName: string | null; problems: string[] } | null;
 }
 
 /**
  * فحص ما قبل إنشاء رابط الحوار — يمنع إرسال المالك إلى «حدث خطأ ما».
  *
  * الفرق بين هذا الفحص ومشكلة ضغط الموديل: هنا لا نخفي شيئاً. الفحص:
+ *  0) لـMeta مع Facebook Login for Business: صيغة Configuration ID إن وُجد
+ *     (أي مسافة/حرف => Meta ترفض أو تعرض صفحة عامة). الغياب يبقى مقبولاً (تطوير).
  *  1) شكل معرّف التطبيق رقمياً (أي مسافة أو حرف => Meta ترد «حدث خطأ ما»).
  *  2) لـMeta: طلب client_credentials حقيقي يثبت أن client_id + secret صالحان
  *     (code 101 «Invalid Client ID» هو السبب المطابق تماماً لصفحة Meta العامة).
@@ -1256,10 +1295,25 @@ async function oauthStartPreflight(platform: string): Promise<OAuthStartPrefligh
   const cfg = OAUTH_CONFIG[platform];
   if (!cfg) return { ok: false, code: "NO_CONFIG", error: "مزود غير مُعدّ." };
   if (META_OAUTH_PLATFORMS.has(platform)) {
+    // 0) Configuration ID: صيغة صريحة، بلا قيمة سرّية. المضبوط بشكل غير صالح
+    // يُحجب محلياً بدل إرسال المالك إلى رفض Meta الغامض.
+    const loginConfig = loginConfigInspection(platform);
+    if (loginConfig.configured && !loginConfig.valid) {
+      const result: OAuthStartPreflight = {
+        ok: false,
+        code: "LOGIN_CONFIG_ID_INVALID",
+        error: `Configuration ID لـFacebook Login for Business غير صالح: ${loginConfig.problems.join(" ") || "صيغة غير متوقعة."}`,
+        hint: `افتح Meta App Dashboard → Facebook Login for Business → Configurations، وانسخ Configuration ID (أرقام فقط بلا مسافات) إلى ${loginConfigEnvNames(platform).join(" أو ")}.`,
+        loginConfig,
+        loginConfigIdUsed: false,
+      };
+      lastOAuthPreflight.set(platform, { at: Date.now(), code: result.code ?? null, appTokenKind: null, error: result.error, hint: result.hint });
+      return result;
+    }
     const shapeProblem = describeMetaAppIdProblem(cfg.clientId || process.env.FACEBOOK_OAUTH_CLIENT_ID || "");
-    if (shapeProblem) return { ok: false, code: "INVALID_APP_ID_FORMAT", error: shapeProblem, hint: "افتح Meta App Dashboard → Settings → Basic وانسخ App ID رقماً فقط (15–16 خانة) بلا مسافات." };
+    if (shapeProblem) return { ok: false, code: "INVALID_APP_ID_FORMAT", error: shapeProblem, hint: "افتح Meta App Dashboard → Settings → Basic وانسخ App ID رقماً فقط (15–16 خانة) بلا مسافات.", loginConfig };
     const cached = oauthStartPreflightCache.get(platform);
-    if (cached && Date.now() - cached.at < OAUTH_PREFLIGHT_TTL_MS) return cached.result;
+    if (cached && Date.now() - cached.at < OAUTH_PREFLIGHT_TTL_MS) return { ...cached.result, loginConfig };
     const appToken = await facebookClient().fetchAppAccessToken({ clientId: String(cfg.clientId), clientSecret: String(cfg.clientSecret || "") });
     let result: OAuthStartPreflight;
     if (appToken.kind === "invalid_client_id") {
@@ -1292,6 +1346,8 @@ async function oauthStartPreflight(platform: string): Promise<OAuthStartPrefligh
       // تعذّر الفحص (شبكة/غير متوقع): لا نحجب بلا سبب؛ نُعلن أن الإثبات لم يتم.
       result = { ok: true, code: "META_PREFLIGHT_UNAVAILABLE", hint: appToken.message, appToken };
     }
+    result.loginConfig = loginConfig;
+    result.loginConfigIdUsed = Boolean(loginConfig.valid && loginConfigIdFor(platform));
     // نُخزّن النجاح فقط. الفشل لا يُخزَّن حتى يستطيع المالك إصلاح البيئة والمحاولة فوراً.
     if (result.ok && !result.code) oauthStartPreflightCache.set(platform, { at: Date.now(), result });
     lastOAuthPreflight.set(platform, { at: Date.now(), code: result.code ?? null, appTokenKind: result.appToken?.kind ?? null, error: result.error, hint: result.hint });
@@ -1307,6 +1363,46 @@ function facebookAppSecret(): string {
 }
 /** رمز تحقق الاشتراك: من الاعتماد المحفوظ ثم البيئة. */
 function facebookVerifyToken(): string { return FACEBOOK_VERIFY_TOKEN_ENV; }
+/** قاعدة حوار Meta (قابلة للتجاوز في الاختبار فقط فلا يلمس مزوداً حقيقياً). */
+function metaDialogBase(): string {
+  return envSecret("FACEBOOK_DIALOG_BASE") || "https://www.facebook.com";
+}
+/** نقطة تفويض المنصة: لـMeta تُبنى من قاعدة الحوار القابلة للتجاوز في الاختبار. */
+function authEndpointFor(platform: string): string {
+  const cfg = OAUTH_CONFIG[platform];
+  if (platform === "facebook" || platform === "instagram") return `${metaDialogBase()}${FACEBOOK_DIALOG_PATH}`;
+  return cfg.auth;
+}
+/**
+ * فحص ما قبل التوجيه (الاقتراح الثالث): نطلب رابط التفويض فعلاً بلا متابعة
+ * إعادة التوجيه، ونصنّف استجابة Meta. الهدف ألا يُرسَل المالك إلى صفحة
+ * «حدث خطأ ما» عمياء: إن رفض Meta الرابط نُعلن السبب الدقيق أولاً.
+ * لا يُسجَّل الرابط (يحمل client_id/state/config_id) ولا يُتبَع أي تحويل.
+ */
+async function probeMetaDialog(input: { authorizationUrl: string }): Promise<{ ok: boolean; kind: string; errorCode: string | null; hint?: string }> {
+  const rejectionHint = "رفض Meta رابط التفويض قبل شاشة الموافقة. راجع App ID/App Domains/Valid OAuth Redirect URIs أو صيغة Configuration ID.";
+  try {
+    const res = await fetch(input.authorizationUrl, { method: "GET", redirect: "manual" });
+    const location = res.headers.get("location");
+    const classified = classifyMetaDialogInteraction({ status: res.status, location });
+    // مسار مقبول (login/consent) => لا حجب.
+    if (classified.acceptable) return { ok: true, kind: classified.kind, errorCode: classified.errorCode };
+    // رفض صريح من الترويسة/الحالة => حجب بتشخيص دقيق.
+    if (classified.errorCode) return { ok: false, kind: classified.kind, errorCode: classified.errorCode, hint: rejectionHint };
+    // غير حاسم: نفحص عيّنة من الجسم بحثاً عن دليل رفض صريح فقط (صفحة Meta العامة).
+    if (res.status === 200) {
+      const bodySample = await res.text().catch(() => "");
+      const fromBody = classifyMetaDialogInteraction({ status: 200, location: null, body: bodySample.slice(0, 2000) });
+      if (!fromBody.acceptable && fromBody.errorCode) return { ok: false, kind: fromBody.kind, errorCode: fromBody.errorCode, hint: rejectionHint };
+    }
+    // لا دليل قاطع على الرفض: نمرّر (لا نحجب بلا إثبات).
+    return { ok: true, kind: classified.kind, errorCode: null };
+  } catch (e: any) {
+    // تعذّر الفحص (شبكة): لا نحجب بلا سبب؛ نُعلن أن الإثبات لم يتم.
+    return { ok: true, kind: "unavailable", errorCode: null, hint: String(e?.message || "تعذّر فحص رابط التفويض.") };
+  }
+}
+
 /** رابط استقبال أحداث Facebook لهذا الخادم. */
 function facebookWebhookUrl(): string { return `${publicBaseUrlNow()}/api/platforms/facebook/webhook`; }
 /** رمز صفحة الاتصال الحالي (Page Access Token) من الاعتماد المشفّر. */
@@ -1599,16 +1695,45 @@ app.get("/api/platforms/:platform/oauth/start", requireOwner, async (req,res)=>{
       domain: urlInfo.host,
       appIdFormatOk: isPlausibleMetaAppId(String(cfg.clientId || "")),
       appTokenKind: preflight.appToken?.kind ?? null,
+      loginConfigIdConfigured: preflight.loginConfig?.configured ?? false,
+      loginConfigIdValid: preflight.loginConfig?.valid ?? false,
+      loginConfigEnvNames: META_OAUTH_PLATFORMS.has(platform) ? loginConfigEnvNames(platform) : undefined,
     });
   }
+  // مسار Facebook Login for Business: عند وجود Configuration ID صالح نمرّره
+  // كـconfig_id بدل scope (الConfiguration تحمل الصلاحيات وحقول الوصول).
+  const loginConfigId = META_OAUTH_PLATFORMS.has(platform) ? loginConfigIdFor(platform) : null;
   const state=createOAuthState();
   const pending:OAuthPending={platform,userId:(req as any).user.id,expiresAt:Date.now()+OAUTH_STATE_TTL_MS,redirectUri:callbackUrl};
   let pkceChallenge:string|undefined;
   if(requiresPkce(platform)) { const pkce=createPkcePair(); pending.codeVerifier=pkce.verifier; pkceChallenge=pkce.challenge; }
   pendingOAuth.set(state,pending);
-  const u=new URL(cfg.auth);
-  const params=buildAuthorizationParams({platform,clientId:cfg.clientId,redirectUri:callbackUrl,scopes,state,pkceChallenge});
+  const u=new URL(authEndpointFor(platform));
+  const params=buildAuthorizationParams({platform,clientId:cfg.clientId,redirectUri:callbackUrl,scopes,state,pkceChallenge,loginConfigId});
   for(const [k,v] of Object.entries(params)) u.searchParams.set(k,v);
+  // فحص ما قبل التوجيه (Meta فقط): نتحقق أن Meta تقبل الرابط فعلاً، فلا يُرسَل
+  // المالك إلى صفحة «حدث خطأ ما» عمياء. تعذّر الفحص لا يحجب (لئلا نكسر التطوير).
+  let dialogProbe: { ok: boolean; kind: string; errorCode: string | null; hint?: string } | null = null;
+  if (META_OAUTH_PLATFORMS.has(platform)) {
+    dialogProbe = await probeMetaDialog({ authorizationUrl: u.toString() });
+    if (!dialogProbe.ok) {
+      logOAuthStart(platform, { outcome: "dialog_rejected", code: `META_DIALOG_${String(dialogProbe.errorCode || dialogProbe.kind).toUpperCase()}`, redirectUri: callbackUrl, domain: urlInfo.host, publicUrlIsPublic: publicOk });
+      return res.status(409).json({
+        success: false,
+        code: `META_DIALOG_${String(dialogProbe.errorCode || dialogProbe.kind).toUpperCase()}`,
+        error: "رفض Meta رابط التفويض قبل شاشة الموافقة (صفحة «حدث خطأ ما»). لم يُرسَل المستخدم إلى Meta.",
+        hint: dialogProbe.hint,
+        platform,
+        dialogKind: dialogProbe.kind,
+        dialogErrorCode: dialogProbe.errorCode,
+        redirectUri: callbackUrl,
+        domain: urlInfo.host,
+        appIdFormatOk: isPlausibleMetaAppId(String(cfg.clientId || "")),
+        loginConfigIdUsed: Boolean(loginConfigId),
+        metaSetupHint: { appDomainsValue: urlInfo.host && !isLocalHost(urlInfo.host) ? `https://${urlInfo.host}` : null, redirectUri: callbackUrl, note: "طابق App ID وApp Domains وValid OAuth Redirect URIs، وتأكد أن Configuration ID صالح إن كنت تستخدم Facebook Login for Business." },
+      });
+    }
+  }
   audit((req as any).user.id,"platform_oauth_started",platform);
   // نثبّت جلسة OAuth قبل إرجاع رابط التفويض: قد يقضي المالك دقائق في شاشة
   // الموافقة وقد تُطفأ العملية، فيلزم أن تصمد الحالة في المخزن الدائم.
@@ -1635,8 +1760,16 @@ app.get("/api/platforms/:platform/oauth/start", requireOwner, async (req,res)=>{
     note:"إن ظهرت صفحة «حدث خطأ ما» فمعرّف التطبيق/سرّه أو App Domains/Valid OAuth Redirect URIs غير مطابق لدى Meta. القيم الدقيقة في GET /api/platforms/:platform/oauth/setup.",
   } : undefined;
   // سجل آمن: الروابط والنطاق والفاتورة فقط — بلا client_id ولا أي سرّ.
-  logOAuthStart(platform, { outcome: "authorized_url_issued", redirectUri: callbackUrl, domain: urlInfo.host, publicUrlSource: urlInfo.source, publicUrlIsPublic: publicOk, appTokenKind: preflight.appToken?.kind ?? null, scopeCount: scopes.length, authEndpoint: cfg.auth, domainWarning: Boolean(domainWarning), metaSetupHint: Boolean(metaSetupHint), scopeDependencyGaps: scopeGaps });
-  res.json({success:true,platform,authorizationUrl:u.toString(),authEndpoint:cfg.auth,expiresAt:pending.expiresAt,redirectUri:callbackUrl,domain:urlInfo.host,publicUrlSource:urlInfo.source,publicUrlIsPublic:publicOk,scopes,appIdFormatOk:isPlausibleMetaAppId(String(cfg.clientId || "")),appTokenKind:preflight.appToken?.kind ?? null,domainWarning,metaSetupHint,scopeDependencyGaps:scopeGaps.length?scopeGaps:undefined});
+  logOAuthStart(platform, { outcome: "authorized_url_issued", redirectUri: callbackUrl, domain: urlInfo.host, publicUrlSource: urlInfo.source, publicUrlIsPublic: publicOk, appTokenKind: preflight.appToken?.kind ?? null, scopeCount: scopes.length, authEndpoint: authEndpointFor(platform), domainWarning: Boolean(domainWarning), metaSetupHint: Boolean(metaSetupHint), scopeDependencyGaps: scopeGaps, loginConfigIdUsed: Boolean(loginConfigId) });
+  res.json({success:true,platform,authorizationUrl:u.toString(),authEndpoint:authEndpointFor(platform),expiresAt:pending.expiresAt,redirectUri:callbackUrl,domain:urlInfo.host,publicUrlSource:urlInfo.source,publicUrlIsPublic:publicOk,scopes,appIdFormatOk:isPlausibleMetaAppId(String(cfg.clientId || "")),appTokenKind:preflight.appToken?.kind ?? null,domainWarning,metaSetupHint,scopeDependencyGaps:scopeGaps.length?scopeGaps:undefined,
+    // Facebook Login for Business: عند استخدام config_id تُذكر الصلاحيات كالمجموعة
+    // المتوقعة في الConfiguration، ويُعلن صراحةً أن الطلب لم يحمل scope.
+    loginConfigIdUsed:Boolean(loginConfigId),
+    loginConfigIdConfigured:preflight.loginConfig?.configured??false,
+    loginConfigIdValid:preflight.loginConfig?.valid??false,
+    loginConfigEnvNames:META_OAUTH_PLATFORMS.has(platform)?loginConfigEnvNames(platform):undefined,
+    permissionSource:loginConfigId?"facebook_login_for_business_configuration":"oauth_scope_parameter",
+  });
 });
 
 app.get("/api/platforms/:platform/oauth/callback", async (req,res)=>{
@@ -2138,7 +2271,13 @@ app.get("/api/platforms/instagram/webhook-info", requireOwner, async (_req,res)=
     signatureSecretConfigured:Boolean(instagramAppSecret()),
     verifyTokenConfigured:Boolean(instagramVerifyToken()),
     checkedAt:new Date().toISOString(),
-    note:"حالة حقيقية من Meta بلا أي سرّ. لا يُعلن الاستقبال فعّالاً إلا باشتراك الصفحة الفعلي وتطابق رمز التحقق.",
+    // حد Meta الصريح: حقول Instagram (comments/messages) تُفعَّل من Meta App Dashboard
+    // فقط، ولا يمكن ضبطها عبر subscribed_apps لصفحة Facebook. نُثبت ما نستطيع
+    // (اشتراك الصفحة) ونعلن ما يلزم من اللوحة، فلا ندّعي «Verified» بلا اختبار فعلي.
+    instagramFieldsDashboardOnly:true,
+    dashboardWebhookFields:[...INSTAGRAM_SUBSCRIBED_FIELDS],
+    webhookFullyVerified:Boolean((subs.data||[]).length>0 && instagramAppSecret() && instagramVerifyToken()),
+    note:"حالة حقيقية من Meta بلا أي سرّ. اشتراك الصفحة نُثبته من Graph؛ أما حقول كائن instagram (comments/messages) فتُفعَّل من Meta App Dashboard، ولا يُعتبر الاستقبال موثّقاً بالكامل قبل وصول حدث حقيقي بتوقيع صحيح.",
   });
 });
 
@@ -2694,7 +2833,8 @@ app.get("/api/platforms/readiness-matrix", authenticateToken, (_req,res)=>{
   const liveFor = (p:string): LiveConnection => { const c:any=platformConnections.get(p); return { status: c?.status||"disconnected", providerVerified: Boolean(c?.providerVerified), accountName: c?.accountName||null }; };
   // الصفوف الغنية: جاهزية الكود + حالة الاعتماد + الحالة التشغيلية الآن + الحجب والإجراء التالي.
   const fbPending = facebookPageSelectionPending();
-  const platforms = buildReadinessDetails(liveFor, process.env).map((r)=>({ ...r, pageSelectionPending: r.platform === 'facebook' ? fbPending : undefined, connection: { status: r.connected ? "connected" : "disconnected", providerVerified: r.providerVerified, accountName: null } }));
+  const igPending = instagramPageSelectionPending();
+  const platforms = buildReadinessDetails(liveFor, process.env).map((r)=>({ ...r, pageSelectionPending: r.platform === 'facebook' ? fbPending : r.platform === 'instagram' ? igPending : undefined, connection: { status: r.connected ? "connected" : "disconnected", providerVerified: r.providerVerified, accountName: null } }));
   res.json({success:true,generatedAt:new Date().toISOString(),projectVersion:PROJECT_VERSION,summary:readinessSummary(),platforms,note:"levels أعلاه تصف الكود؛ operational تصف ما يعمل الآن فعلاً، وstate هي الحالة الجامعة الدقيقة. لا تحمل أي سرّ."});
 });
 
@@ -2728,7 +2868,10 @@ app.get("/api/platforms/:platform/control", authenticateToken, (req,res)=>{
   const igPending = platform === "instagram" && instagramPageSelectionPending();
   if (igPending) status = { ...status, pageSelectionPending: true, blockingReason: "تم تفويض Meta بنجاح، لكن الحساب يدير أكثر من صفحة لها حساب Instagram مهني. اختر الحساب المطلوب لإتمام الربط.", nextAction: "اختر حساب Instagram المطلوب من زر «اختيار الحساب» لإتمام الربط والاشتراك في webhook." } as any;
   const creds = inspectPlatformCredentials(platform as PlatformId, process.env);
-  res.json({ success:true, control:status, credentials:{ connection:creds.connection, webhook:creds.webhook, requiredEnvNames:creds.requiredEnvNames }, note:"أسماء متغيرات فقط، بلا قيم." });
+  res.json({ success:true, control:status, credentials:{ connection:creds.connection, webhook:creds.webhook, requiredEnvNames:creds.requiredEnvNames, optionalEnvNames:creds.optionalEnvNames },
+    // Facebook Login for Business: هل يُستخدم config_id بدل scope؟ (منطقي فقط بلا قيمة)
+    loginConfig: META_OAUTH_PLATFORMS.has(platform) ? { envNames: loginConfigEnvNames(platform), configured: loginConfigInspection(platform).configured, valid: loginConfigInspection(platform).valid, used: Boolean(loginConfigIdFor(platform)), problems: loginConfigInspection(platform).problems } : undefined,
+    note:"أسماء متغيرات فقط، بلا قيم." });
 });
 
 /**
@@ -2764,7 +2907,7 @@ app.get("/api/platforms/:platform/oauth/setup", requireOwner, (req,res)=>{
   const publicOk=publicUrlIsPublic();
   // Facebook/Instagram: الصلاحيات النهائية مع الاعتماديات الرسمية + أي فارق في تجاوز البيئة.
   const resolvedScopes = platform==="facebook" ? facebookOAuthScopes() : platform==="instagram" ? instagramOAuthScopes() : cfg.scopes;
-  const scopeDependencyGaps = platform==="facebook" ? facebookScopeDependencyGaps() : [];
+  const scopeDependencyGaps = platform==="facebook" ? facebookScopeDependencyGaps() : platform==="instagram" ? instagramScopeDependencyGaps() : [];
   const metaScopesResolved = platform==="facebook"||platform==="instagram";
   res.json({
     success:true,
@@ -2780,7 +2923,7 @@ app.get("/api/platforms/:platform/oauth/setup", requireOwner, (req,res)=>{
     publicUrlProblems:urlInfo.problems,
     publicUrlIsPublic:publicOk,
     scopes:resolvedScopes,
-    scopeOverrideConfigured:platform==="facebook"?facebookScopeOverride().length>0:undefined,
+    scopeOverrideConfigured:platform==="facebook"?facebookScopeOverride().length>0:platform==="instagram"?instagramScopeOverride().length>0:undefined,
     scopeDependenciesResolved:metaScopesResolved?true:undefined,
     scopeDependencyGaps:scopeDependencyGaps.length?scopeDependencyGaps:undefined,
     clientIdConfigured:Boolean(cfg.clientId),
@@ -2789,6 +2932,25 @@ app.get("/api/platforms/:platform/oauth/setup", requireOwner, (req,res)=>{
     // ترد بصفحة «حدث خطأ ما» (PLATFORM__INVALID_APP_ID).
     appIdFormatOk:isPlausibleMetaAppId(String(cfg.clientId||""))||undefined,
     dialogPath:(platform==="facebook"||platform==="instagram")?FACEBOOK_DIALOG_PATH:undefined,
+    // Facebook Login for Business: Configuration ID الحقيقي المطلوب. عند وجوده
+    // يُمرَّر config_id بدل scope، والصلاحيات تُقرأ من الConfiguration نفسها.
+    loginConfigIdEnvNames:metaScopesResolved?loginConfigEnvNames(platform):undefined,
+    loginConfigIdConfigured:metaScopesResolved?loginConfigInspection(platform).configured:undefined,
+    loginConfigIdValid:metaScopesResolved?loginConfigInspection(platform).valid:undefined,
+    loginConfigIdProblems:(metaScopesResolved&&loginConfigInspection(platform).problems.length)?loginConfigInspection(platform).problems:undefined,
+    loginConfigIdUsed:metaScopesResolved?Boolean(loginConfigIdFor(platform)):undefined,
+    permissionSource:metaScopesResolved?(loginConfigIdFor(platform)?"facebook_login_for_business_configuration":"oauth_scope_parameter"):undefined,
+    loginForBusinessSetup:(platform==="facebook"||platform==="instagram")?{
+      where:"Meta App Dashboard → Facebook Login for Business → Configurations",
+      steps:[
+        "افتح Facebook Login for Business → Configurations واضغط Create configuration (أو أعد استخدام Configuration موجودة لـInstagram).",
+        "اختر نوع الرمز: User access token (المطلوب لمسارات الصفحة/Instagram).",
+        "أضف الصلاحيات المذكورة في حقل scopes أعلاه بالضبط (نفس أسماء Facebook Login).",
+        "احفظ، ثم انسخ Configuration ID (أرقام فقط) إلى متغير البيئة المذكور في loginConfigIdEnvNames.",
+        "لا تضع القيمة في Git ولا في أي سجل؛ الخادم يقرأها من البيئة فقط.",
+      ],
+      note:"عند وجود Configuration ID صالح يمرّره الخادم كـconfig_id بدل scope، فلا يتعارض المعاملان.",
+    }:undefined,
     genericErrorMeaning:(platform==="facebook"||platform==="instagram")?{
       message:"صفحة Meta «حدث خطأ ما» (Sorry, something went wrong) تظهر لسببين فقط يمكن فحصهما: (1) معرّف تطبيق غير صالح/غير مطابق، (2) نطاق غير مُضمَّن في App Domains أو رابط إرجاع غير مسجّل.",
       checks:["طابق App ID مع Settings → Basic (أرقام فقط بلا مسافات).","أضف appDomainsValue إلى App Domains بلا https وبلا مسار.","أضف redirectUri بالضبط إلى Valid OAuth Redirect URIs.","تأكد أن Facebook Login product مُضاف وأن التطبيق Live (لا Development لمستخدمين غير مصرّح لهم)."],
@@ -4324,6 +4486,10 @@ app.get("/api/readiness", (_req, res) => {
         scopeCount: facebookOAuthScopes().length,
         scopeDependenciesResolved: facebookScopeDependencyGaps().length === 0,
         scopeDependencyGaps: facebookScopeDependencyGaps().length ? facebookScopeDependencyGaps() : undefined,
+        loginConfigIdConfigured: loginConfigInspection("facebook").configured,
+        loginConfigIdValid: loginConfigInspection("facebook").valid,
+        loginConfigIdUsed: Boolean(loginConfigIdFor("facebook")),
+        permissionSource: loginConfigIdFor("facebook") ? "facebook_login_for_business_configuration" : "oauth_scope_parameter",
       };
     })(),
     instagramOAuth: (() => {
@@ -4338,6 +4504,14 @@ app.get("/api/readiness", (_req, res) => {
         igAccountStored: Boolean(getProviderToken("instagram")?.igAccountId),
         pendingPageSelection: instagramPageSelectionPending(),
         scopeCount: instagramOAuthScopes().length,
+        scopesResolvedWithDependencies: instagramScopeDependencyGaps().length === 0,
+        loginConfigIdConfigured: loginConfigInspection("instagram").configured,
+        loginConfigIdValid: loginConfigInspection("instagram").valid,
+        loginConfigIdUsed: Boolean(loginConfigIdFor("instagram")),
+        loginConfigEnvNames: loginConfigEnvNames("instagram"),
+        permissionSource: loginConfigIdFor("instagram") ? "facebook_login_for_business_configuration" : "oauth_scope_parameter",
+        subscribedWebhookFields: [...INSTAGRAM_SUBSCRIBED_FIELDS],
+        webhookFieldsNeedDashboard: true,
       };
     })(),
     timestamp: new Date().toISOString(),
