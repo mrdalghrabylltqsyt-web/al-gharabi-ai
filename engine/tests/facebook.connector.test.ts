@@ -29,6 +29,12 @@ import {
   isPlausibleMetaAppId,
   classifyMetaDialogInteraction,
   classifyMetaAppTokenResponse,
+  FACEBOOK_REQUIRED_SCOPES,
+  FACEBOOK_PERMISSION_DEPENDENCIES,
+  resolveFacebookScopes,
+  findMissingScopeDependencies,
+  missingScopeDependenciesFromCsv,
+  expandWithDependencies,
 } from '../social/facebook';
 import { createFacebookMock, startFacebookMockServer } from './helpers/facebookMock';
 import { signSession } from '../auth/sessions';
@@ -60,7 +66,7 @@ const secretBuffer = createHash('sha256').update(`gharabi-session:${SESSION_SECR
 const ownerUser = { id: 'owner', name: 'مالك النظام', email: 'owner@example.invalid', role: 'owner', roleTitleArabic: 'مالك النظام', avatar: '', active: true, createdAt: new Date().toISOString() };
 const staffUser = { id: 'staff-1', name: 'موظف اختبار', email: 'staff@example.invalid', role: 'staff', roleTitleArabic: 'الموظف', avatar: '', active: true, createdAt: new Date().toISOString() };
 
-function startApp(fbBase: string): { proc: ChildProcess; log: () => string } {
+function startApp(fbBase: string, extraEnv: Record<string, string> = {}): { proc: ChildProcess; log: () => string } {
   let log = '';
   const env: Record<string, string> = {
     ...(process.env as Record<string, string>),
@@ -79,6 +85,7 @@ function startApp(fbBase: string): { proc: ChildProcess; log: () => string } {
     FACEBOOK_VERIFY_TOKEN: FB_VERIFY_TOKEN,
     // مفتاح تشفير اختباري فقط (32 بايت hex) — ليس سراً واقعياً.
     PLATFORM_TOKEN_ENCRYPTION_KEY: randomBytes(32).toString('hex'),
+    ...extraEnv,
   };
   delete env.GEMINI_API_KEY;
   delete env.DATABASE_URL;
@@ -170,6 +177,33 @@ function unitTests(): void {
   check('Graph سرّ خاطئ => invalid_client_secret', classifyMetaAppTokenResponse({ status: 400, data: { error: { message: 'Error validating client secret.', code: 1 } } }).kind === 'invalid_client_secret');
   check('Graph نجاح => ok', classifyMetaAppTokenResponse({ status: 200, data: { access_token: 'APP_TOKEN_TEST' } }).kind === 'ok');
   check('Graph رسالة non-JSON => لا ok', classifyMetaAppTokenResponse({ status: 200, data: null }).kind !== 'ok');
+
+  group('2ج) وحدة: اعتماديات صلاحيات Facebook — منع «Invalid Scopes» والصلاحية المُسقَطة');
+  // الجذر المُثبت: pages_manage_engagement (الرد على التعليقات) تعتمد رسمياً على
+  // pages_read_user_content، وكانت غائبة قبل الإصلاح => فشل OAuth أو صلاحية مُسقَطة.
+  const engagementDeps = FACEBOOK_PERMISSION_DEPENDENCIES['pages_manage_engagement'] || [];
+  check('pages_manage_engagement تعتمد pages_read_user_content', engagementDeps.includes('pages_read_user_content'));
+  check('المجموعة المطلوبة تحمل pages_read_user_content', FACEBOOK_REQUIRED_SCOPES.includes('pages_read_user_content'));
+  check('المجموعة المطلوبة تحمل pages_manage_engagement (الرد على التعليقات)', FACEBOOK_REQUIRED_SCOPES.includes('pages_manage_engagement'));
+  check('المجموعة المطلوبة تحمل business_management (صفحات Business Manager)', FACEBOOK_REQUIRED_SCOPES.includes('business_management'));
+  check('المجموعة المطلوبة تحمل pages_messaging (Messenger)', FACEBOOK_REQUIRED_SCOPES.includes('pages_messaging'));
+  check('المجموعة المطلوبة لا تكرّر أي صلاحية', new Set(FACEBOOK_REQUIRED_SCOPES).size === FACEBOOK_REQUIRED_SCOPES.length);
+  check('لا صلاحية في المجموعة المطلوبة بلا اعتماديتها', findMissingScopeDependencies(FACEBOOK_REQUIRED_SCOPES).length === 0, findMissingScopeDependencies(FACEBOOK_REQUIRED_SCOPES).join(','));
+  // الحلّ يضيف الاعتماديات الناقصة تلقائياً فلا يفشل تجاوز جزئي.
+  const partial = resolveFacebookScopes(['pages_manage_engagement']);
+  check('حلّ مجموعة جزئية يضيف pages_read_user_content', partial.includes('pages_read_user_content'));
+  check('حلّ مجموعة جزئية يضيف pages_show_list', partial.includes('pages_show_list'));
+  check('الاعتمادية تأتي قبل التابع (ترتيب طوبولوجي)', partial.indexOf('pages_read_user_content') < partial.indexOf('pages_manage_engagement'));
+  check('الحلّ بلا تكرار', new Set(partial).size === partial.length);
+  check('كشف الاعتمادية الناقصة صريح', findMissingScopeDependencies(['pages_manage_engagement']).includes('pages_read_user_content'));
+  check('كشف الاعتمادية الناقصة صريح لـpages_messaging', findMissingScopeDependencies(['pages_messaging']).includes('pages_manage_metadata'));
+  check('مجموعة متماسكة بلا نواقص', findMissingScopeDependencies(['pages_show_list', 'pages_read_user_content', 'pages_manage_engagement']).length === 0);
+  check('توسيع الصلاحيات لا يكرّر (expandWithDependencies)', expandWithDependencies(['pages_messaging', 'pages_manage_metadata']).length === 3);
+  check('استنتاج النواقص من CSV فارغ', missingScopeDependenciesFromCsv('').length === 0);
+  check('استنتاج النواقص من CSV ناقص', missingScopeDependenciesFromCsv('pages_manage_engagement').includes('pages_read_user_content'));
+  check('استنتاج النواقص من CSV كامل', missingScopeDependenciesFromCsv('pages_show_list,pages_read_user_content,pages_manage_engagement').length === 0);
+  // لا نضيف public_profile: ضمني في Facebook Login ولا يقابله استدعاء في الكود.
+  check('لا نضيف public_profile (ضمني وغير مستخدم)', !FACEBOOK_REQUIRED_SCOPES.includes('public_profile'));
 }
 
 async function integrationTests(): Promise<void> {
@@ -221,7 +255,14 @@ async function integrationTests(): Promise<void> {
     // الصلاحية الحاسمة لتعداد صفحات Business Manager: يجب أن تكون في الرابط والاستجابة.
     const startedScopes = (new URL(startRes.authorizationUrl).searchParams.get('scope') || '').split(',').filter(Boolean);
     check('رابط التفويض يطلب business_management', startedScopes.includes('business_management'), `scopes=${startedScopes.join(',')}`);
+    // إصلاح الاعتماديات: رد التعليقات (pages_manage_engagement) يصل دائماً بمرافقه
+    // pages_read_user_content، فلا ينتج «Invalid Scopes» ولا سقوط صامت للصلاحية.
+    check('رابط التفويض يحمل pages_read_user_content (اعتمادية رد التعليقات)', startedScopes.includes('pages_read_user_content'), `scopes=${startedScopes.join(',')}`);
+    check('رابط التفويض يحمل كامل الوظائف المنفّذة', ['pages_show_list', 'pages_read_engagement', 'pages_manage_engagement', 'pages_manage_posts', 'pages_manage_metadata', 'pages_messaging'].every((s) => startedScopes.includes(s)), `scopes=${startedScopes.join(',')}`);
+    check('لا اعتمادية صلاحية ناقصة في الرابط الفعلي', findMissingScopeDependencies(startedScopes).length === 0, findMissingScopeDependencies(startedScopes).join(','));
+    check('رابط التفويض لا يطلب public_profile غير المستخدم', !startedScopes.includes('public_profile'), `scopes=${startedScopes.join(',')}`);
     check('الصلاحيات المُعلنة تطابق المُطلب فعلاً', Array.isArray(startRes.scopes) && startRes.scopes.includes('business_management'));
+    check('لا فارق اعتماديات في التجاوز الافتراضي', startRes.scopeDependencyGaps === undefined);
     // إعداد OAuth للمالك يعطي القيم الدقيقة المطلوبة في Meta بلا أي سرّ.
     const setup = await (await fetch(`${BASE}/api/platforms/facebook/oauth/setup`, { headers: auth })).json();
     check('oauth/setup يعيد redirect_uri الدقيق', setup.redirectUri === expectedRedirect, JSON.stringify(setup).slice(0, 200));
@@ -451,6 +492,26 @@ async function integrationTests(): Promise<void> {
     check('الفحص لا يكشف السرّ', !JSON.stringify(blockedBody).includes('test-fb-client-secret'));
     check('الاستجابة تحمل رابط الإرجاع الصحيح للتسجيل لدى Meta', blockedBody.redirectUri === `${BASE}/api/platforms/facebook/oauth/callback`);
     await wrongAppMock.stop();
+
+    // تجاوز جزئي عبر FACEBOOK_OAUTH_SCOPES يجب ألا يُنتج «Invalid Scopes» ولا
+    // صلاحية مُسقَطة: الحلّ يضيف الاعتماديات الناقصة ويُعلن الفارق للتشخيص.
+    group('21) تكامل: تجاوز الصلاحيات الجزئي يُكمَّل باعتماديات Meta تلقائياً');
+    await stop(currentApp.proc);
+    const scopeMock = await startFacebookMockServer(FB_PORT + 3, createFacebookMock());
+    currentApp = startApp(scopeMock.base, { FACEBOOK_OAUTH_SCOPES: 'pages_manage_engagement,business_management' });
+    check('الخادم يقلع لتجاوز الصلاحيات الجزئي', await waitForHealth(), currentApp.log().slice(0, 300));
+    Object.assign(auth, await login());
+    const partialStart = await (await fetch(`${BASE}/api/platforms/facebook/oauth/start`, { headers: auth })).json();
+    const partialScopes = new URL(partialStart.authorizationUrl).searchParams.get('scope').split(',').filter(Boolean);
+    check('التجاوز الجزئي يكتمل بـpages_read_user_content', partialScopes.includes('pages_read_user_content'), partialScopes.join(','));
+    check('التجاوز الجزئي يكتمل بـpages_show_list', partialScopes.includes('pages_show_list'), partialScopes.join(','));
+    check('التجاوز الجزئي يبقي business_management', partialScopes.includes('business_management'));
+    check('التجاوز الجزئي يبقى بلا اعتماديات ناقصة', findMissingScopeDependencies(partialScopes).length === 0, findMissingScopeDependencies(partialScopes).join(','));
+    check('التجاوز الجزئي يُعلن الفارق المُكمَّل للتشخيص', Array.isArray(partialStart.scopeDependencyGaps) && partialStart.scopeDependencyGaps.includes('pages_read_user_content'));
+    const partialSetup = await (await fetch(`${BASE}/api/platforms/facebook/oauth/setup`, { headers: auth })).json();
+    check('oauth/setup يُعلن أن الصلاحيات حُلَّت باعتمادياتها', partialSetup.scopeDependenciesResolved === true && partialSetup.scopeOverrideConfigured === true);
+    check('oauth/setup يعرض الفارق المُكمَّل بلا سرّ', Array.isArray(partialSetup.scopeDependencyGaps) && partialSetup.scopeDependencyGaps.includes('pages_read_user_content'));
+    await scopeMock.stop();
   } finally {
     try { await stop(currentApp.proc); } catch { /* تجاهل */ }
     await mock.stop();

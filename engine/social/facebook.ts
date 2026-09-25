@@ -31,6 +31,109 @@ export const FACEBOOK_SIGNATURE_HEADER = 'x-hub-signature-256';
  */
 export const FACEBOOK_DIALOG_PATH = '/v21.0/dialog/oauth';
 
+// ---------------------------------------------------------------------------
+// صلاحيات Facebook Login — المصدر الواحد مع رسم الاعتماديات الرسمي
+// ---------------------------------------------------------------------------
+
+/**
+ * الصلاحيات التي يحتاجها هذا الموصل فعلاً + اعتمادياتها الرسمية من Meta.
+ *
+ * سبب الوجود: طلب صلاحية بلا اعتماديتها المسجلة لدى Meta إما يُرفض كـ
+ * «Invalid Scopes» (عند تطبيق في وضع Live بلا مراجعة للصلاحية)، أو يُسقَط
+ * صامتاً من الرمز المخوَّل فتبدو الواجهة قادرة والرد الفعلي لا يعمل. أخطر ما
+ * في ذلك صلاحية الرد على التعليقات `pages_manage_engagement` التي تعتمد
+ * رسمياً على `pages_read_user_content` — وكانت غائبة عن المجموعة القديمة.
+ *
+ * الوظائف التي تغطّيها كل صلاحية (مقابلة مباشرة مع الكود):
+ * - pages_show_list        → GET /me/accounts (اكتشاف الصفحات) + شروط اعتماد بقية الصلاحيات.
+ * - pages_read_engagement  → قراءة منشورات/بيانات الصفحة والتحليلات.
+ * - pages_manage_engagement→ POST /{comment-id}/comments (الرد على التعليقات).
+ * - pages_read_user_content→ اعتمادية pages_manage_engagement (محتوى المستخدم/التعليقات).
+ * - pages_manage_posts     → POST /{page-id}/feed (النشر على الصفحة).
+ * - pages_manage_metadata  → POST /{page-id}/subscribed_apps (اشتراك webhook) وإعدادات الصفحة.
+ * - pages_messaging        → POST /{page-id}/messages (رسائل Messenger والرد عليها).
+ * - business_management    → /me/accounts لصفحات Business Manager منذ Graph v17.
+ *
+ * ملاحظة عن public_profile: ضمني في Facebook Login ولا يلزم إدراجه صراحةً،
+ * فلا نضيفه (تجنّب صلاحية غير مستخدمة هو شرط هذا التطبيق).
+ */
+export const FACEBOOK_PERMISSION_DEPENDENCIES: Readonly<Record<string, readonly string[]>> = Object.freeze({
+  pages_show_list: [],
+  pages_read_engagement: ['pages_show_list'],
+  pages_read_user_content: ['pages_show_list'],
+  pages_manage_engagement: ['pages_read_user_content', 'pages_show_list'],
+  pages_manage_posts: ['pages_read_engagement', 'pages_show_list'],
+  pages_manage_metadata: ['pages_show_list'],
+  pages_messaging: ['pages_manage_metadata', 'pages_show_list'],
+  business_management: [],
+});
+
+/**
+ * المجموعة الافتراضية الدنيا التي تغطي كل وظائف الموصل فعلاً. لا تُضاف صلاحية
+ * لا يقابلها استدعاء حقيقي، ولا تُحذف صلاحية يحتاجها استدعاء قائم:
+ * النشر + الرد على التعليقات + الرسائل + اشتراك webhook + صفحات Business Manager.
+ */
+export const FACEBOOK_REQUIRED_SCOPES: readonly string[] = Object.freeze([
+  'business_management',
+  'pages_show_list',
+  'pages_read_engagement',
+  'pages_read_user_content',
+  'pages_manage_engagement',
+  'pages_manage_posts',
+  'pages_manage_metadata',
+  'pages_messaging',
+]);
+
+/**
+ * يوسّع قائمة صلاحيات بإضافة اعتمادياتها المسجلة (بشكل متعدٍّ) بلا تكرار،
+ * فيبقى الطلب مطابقاً لعقد Meta: لا صلاحية بلا اعتماديتها.
+ */
+export function expandWithDependencies(scopes: readonly string[]): string[] {
+  const resolved: string[] = [];
+  const seen = new Set<string>();
+  const visit = (scope: string) => {
+    if (!scope || seen.has(scope)) return;
+    seen.add(scope);
+    for (const dep of FACEBOOK_PERMISSION_DEPENDENCIES[scope] || []) visit(dep);
+    resolved.push(scope);
+  };
+  for (const scope of scopes) visit(scope);
+  return resolved;
+}
+
+/**
+ * يبني قائمة الصلاحيات النهائية من تجاوز حرّ (أو المجموعة المطلوبة)، بعد
+ * إضافة الاعتماديات وإزالة التكرار مع الحفاظ على الترتيب الطوبولوجي
+ * (الاعتمادية قبل التابع) — وهو الترتيب الذي تعرضه Meta في وثائقها.
+ * لا يرمي أبداً: التجاوز المجهول يبقى كما هو (مستخدم لتقدير المالك).
+ */
+export function resolveFacebookScopes(requested: readonly string[]): string[] {
+  return expandWithDependencies(requested);
+}
+
+/**
+ * يتحقق أن قائمة الصلاحيات لا تحمل صلاحية بلا اعتماديتها. يعيد الاعتماديات
+ * الناقصة (بلا تكرار) — قائمة فارغة تعني مجموعة متماسكة مع عقد Meta.
+ * الغرض: منع فشل OAuth صامت أو «Invalid Scopes» قبل إرسال المالك إلى Meta.
+ */
+export function findMissingScopeDependencies(scopes: readonly string[]): string[] {
+  const present = new Set(scopes);
+  const missing: string[] = [];
+  for (const scope of scopes) {
+    for (const dep of FACEBOOK_PERMISSION_DEPENDENCIES[scope] || []) {
+      if (!present.has(dep) && !missing.includes(dep)) missing.push(dep);
+    }
+  }
+  return missing;
+}
+
+/** يستنتج الاعتماديات الناقصة من قيمة بيئة مفصولة بفواصل (بلا أي سرّ). */
+export function missingScopeDependenciesFromCsv(raw: string | undefined | null): string[] {
+  const scopes = String(raw || '').split(',').map((s) => s.trim()).filter(Boolean);
+  return scopes.length ? findMissingScopeDependencies(scopes) : [];
+}
+
+
 /**
  * القاعدة الفعلية لاستدعاءات Graph API. تُقرأ من `FACEBOOK_GRAPH_API_BASE`
  * في الاختبار فقط (خادم وهمي محلي)، فلا تُشغَّل اختبارات على مزود حقيقي.
