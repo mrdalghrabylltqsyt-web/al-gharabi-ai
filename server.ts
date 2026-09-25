@@ -29,6 +29,9 @@ import {
   facebookGraphUrl,
   isPlausibleMetaAppId,
   classifyMetaDialogInteraction,
+  FACEBOOK_REQUIRED_SCOPES,
+  resolveFacebookScopes,
+  missingScopeDependenciesFromCsv,
   FACEBOOK_DIALOG_PATH,
   FACEBOOK_SIGNATURE_HEADER,
   type FacebookFetch,
@@ -948,10 +951,25 @@ function oauthCallbackUrl(platform: string): string { return `${publicBaseUrlNow
  * FACEBOOK_OAUTH_SCOPES (قائمة مفصولة بفواصل) إن رفض Meta صلاحية في وضع Live
  * بلا مراجعة — فتبقى القدرة على الربط متاحة بلا تعديل كود.
  */
-const FACEBOOK_DEFAULT_SCOPES = ["business_management", "pages_show_list", "pages_read_engagement", "pages_manage_engagement", "pages_manage_posts", "pages_manage_metadata", "pages_messaging"];
+const FACEBOOK_DEFAULT_SCOPES = [...FACEBOOK_REQUIRED_SCOPES];
+/**
+ * الصلاحيات النهائية التي يطلبها OAuth. المصدر الواحد هو `FACEBOOK_REQUIRED_SCOPES`
+ * في `engine/social/facebook.ts` (مع رسم الاعتماديات الرسمي). التجاوز من
+ * `FACEBOOK_OAUTH_SCOPES` يُمرّ عبر `resolveFacebookScopes` الذي يضيف الاعتماديات
+ * الناقصة تلقائياً، فلا يمكن لتجاوز ناقص أن ينتج «Invalid Scopes» أو يُسقط صلاحية
+ * صامتة. هذا يضمن أن رد التعليقات (pages_manage_engagement) يصل دائماً بمرافقه
+ * `pages_read_user_content`.
+ */
+function facebookScopeOverride(): string[] {
+  return (process.env.FACEBOOK_OAUTH_SCOPES || "").split(",").map((s) => s.trim()).filter(Boolean);
+}
 function facebookOAuthScopes(): string[] {
-  const raw = (process.env.FACEBOOK_OAUTH_SCOPES || "").split(",").map((s) => s.trim()).filter(Boolean);
-  return raw.length ? raw : FACEBOOK_DEFAULT_SCOPES;
+  const override = facebookScopeOverride();
+  return resolveFacebookScopes(override.length ? override : FACEBOOK_DEFAULT_SCOPES);
+}
+/** الاعتماديات الناقصة في تجاوز البيئة (بلا قيمة سرّية) — يُعرَض للتشخيص. */
+function facebookScopeDependencyGaps(): string[] {
+  return missingScopeDependenciesFromCsv(process.env.FACEBOOK_OAUTH_SCOPES);
 }
 const OAUTH_CONFIG: Record<string, any> = {
   youtube: { provider: "google", auth: "https://accounts.google.com/o/oauth2/v2/auth", token: "https://oauth2.googleapis.com/token", clientId: process.env.GOOGLE_OAUTH_CLIENT_ID || process.env.GOOGLE_CLIENT_ID, clientSecret: process.env.GOOGLE_OAUTH_CLIENT_SECRET, scopes: ["https://www.googleapis.com/auth/youtube.upload"] },
@@ -1378,6 +1396,10 @@ app.get("/api/platforms/:platform/oauth/start", requireOwner, async (req,res)=>{
   const callbackUrl=oauthCallbackUrl(platform);
   const urlInfo=resolvePublicUrl(process.env);
   const publicOk=publicUrlIsPublic();
+  // الصلاحيات تُحسَب عند كل بدء (لا وقت الإقلاع) لتعكس البيئة الفعلية وتضمن
+  // إضافة اعتماديات Meta الناقصة، فلا ينتج «Invalid Scopes» أو صلاحية مُسقَطة.
+  const scopeGaps = platform==="facebook" ? facebookScopeDependencyGaps() : [];
+  const scopes = platform==="facebook" ? facebookOAuthScopes() : (Array.isArray(cfg.scopes) ? cfg.scopes : []);
   // فحص ما قبل الحوار: يمنع إرسال المالك إلى صفحة «حدث خطأ ما» بلا تفسير.
   // عند الفشل نُعلن السبب والإجراء الدقيق بدل توليد رابط سيفشل حتماً لدى Meta.
   const preflight = await oauthStartPreflight(platform);
@@ -1401,7 +1423,7 @@ app.get("/api/platforms/:platform/oauth/start", requireOwner, async (req,res)=>{
   if(requiresPkce(platform)) { const pkce=createPkcePair(); pending.codeVerifier=pkce.verifier; pkceChallenge=pkce.challenge; }
   pendingOAuth.set(state,pending);
   const u=new URL(cfg.auth);
-  const params=buildAuthorizationParams({platform,clientId:cfg.clientId,redirectUri:callbackUrl,scopes:cfg.scopes,state,pkceChallenge});
+  const params=buildAuthorizationParams({platform,clientId:cfg.clientId,redirectUri:callbackUrl,scopes,state,pkceChallenge});
   for(const [k,v] of Object.entries(params)) u.searchParams.set(k,v);
   audit((req as any).user.id,"platform_oauth_started",platform);
   // نثبّت جلسة OAuth قبل إرجاع رابط التفويض: قد يقضي المالك دقائق في شاشة
@@ -1429,8 +1451,8 @@ app.get("/api/platforms/:platform/oauth/start", requireOwner, async (req,res)=>{
     note:"إن ظهرت صفحة «حدث خطأ ما» فمعرّف التطبيق/سرّه أو App Domains/Valid OAuth Redirect URIs غير مطابق لدى Meta. القيم الدقيقة في GET /api/platforms/:platform/oauth/setup.",
   } : undefined;
   // سجل آمن: الروابط والنطاق والفاتورة فقط — بلا client_id ولا أي سرّ.
-  logOAuthStart(platform, { outcome: "authorized_url_issued", redirectUri: callbackUrl, domain: urlInfo.host, publicUrlSource: urlInfo.source, publicUrlIsPublic: publicOk, appTokenKind: preflight.appToken?.kind ?? null, scopeCount: Array.isArray(cfg.scopes) ? cfg.scopes.length : 0, authEndpoint: cfg.auth, domainWarning: Boolean(domainWarning), metaSetupHint: Boolean(metaSetupHint) });
-  res.json({success:true,platform,authorizationUrl:u.toString(),authEndpoint:cfg.auth,expiresAt:pending.expiresAt,redirectUri:callbackUrl,domain:urlInfo.host,publicUrlSource:urlInfo.source,publicUrlIsPublic:publicOk,scopes:cfg.scopes,appIdFormatOk:isPlausibleMetaAppId(String(cfg.clientId || "")),appTokenKind:preflight.appToken?.kind ?? null,domainWarning,metaSetupHint});
+  logOAuthStart(platform, { outcome: "authorized_url_issued", redirectUri: callbackUrl, domain: urlInfo.host, publicUrlSource: urlInfo.source, publicUrlIsPublic: publicOk, appTokenKind: preflight.appToken?.kind ?? null, scopeCount: scopes.length, authEndpoint: cfg.auth, domainWarning: Boolean(domainWarning), metaSetupHint: Boolean(metaSetupHint), scopeDependencyGaps: scopeGaps });
+  res.json({success:true,platform,authorizationUrl:u.toString(),authEndpoint:cfg.auth,expiresAt:pending.expiresAt,redirectUri:callbackUrl,domain:urlInfo.host,publicUrlSource:urlInfo.source,publicUrlIsPublic:publicOk,scopes,appIdFormatOk:isPlausibleMetaAppId(String(cfg.clientId || "")),appTokenKind:preflight.appToken?.kind ?? null,domainWarning,metaSetupHint,scopeDependencyGaps:scopeGaps.length?scopeGaps:undefined});
 });
 
 app.get("/api/platforms/:platform/oauth/callback", async (req,res)=>{
@@ -2285,6 +2307,9 @@ app.get("/api/platforms/:platform/oauth/setup", requireOwner, (req,res)=>{
   const urlInfo=resolvePublicUrl(process.env);
   const redirectUri=`${urlInfo.baseUrl||publicBaseUrlNow()}/api/platforms/${platform}/oauth/callback`;
   const publicOk=publicUrlIsPublic();
+  // Facebook: الصلاحيات النهائية مع الاعتماديات الرسمية + أي فارق في تجاوز البيئة.
+  const resolvedScopes = platform==="facebook" ? facebookOAuthScopes() : cfg.scopes;
+  const scopeDependencyGaps = platform==="facebook" ? facebookScopeDependencyGaps() : [];
   res.json({
     success:true,
     platform,
@@ -2298,7 +2323,10 @@ app.get("/api/platforms/:platform/oauth/setup", requireOwner, (req,res)=>{
     publicUrlValid:urlInfo.valid,
     publicUrlProblems:urlInfo.problems,
     publicUrlIsPublic:publicOk,
-    scopes:cfg.scopes,
+    scopes:resolvedScopes,
+    scopeOverrideConfigured:platform==="facebook"?facebookScopeOverride().length>0:undefined,
+    scopeDependenciesResolved:platform==="facebook"?true:undefined,
+    scopeDependencyGaps:scopeDependencyGaps.length?scopeDependencyGaps:undefined,
     clientIdConfigured:Boolean(cfg.clientId),
     clientSecretConfigured:Boolean(cfg.clientSecret),
     // شكل معرّف التطبيق فقط (منطقي) — لا قيمة سرّية: أي مسافة/حرف يجعل Meta
@@ -3829,6 +3857,11 @@ app.get("/api/readiness", (_req, res) => {
         pageAccessTokenStored: Boolean(getProviderToken("facebook")?.pageAccessToken),
         pendingPageSelection: facebookPageSelectionPending(),
         businessManagementScope: facebookOAuthScopes().includes("business_management"),
+        // اكتمال الصلاحيات مع اعتماديات Meta الرسمية: قبل الإصلاح كانت
+        // pages_manage_engagement تُطلب بلا صفحاتها pages_read_user_content.
+        scopeCount: facebookOAuthScopes().length,
+        scopeDependenciesResolved: facebookScopeDependencyGaps().length === 0,
+        scopeDependencyGaps: facebookScopeDependencyGaps().length ? facebookScopeDependencyGaps() : undefined,
       };
     })(),
     timestamp: new Date().toISOString(),
@@ -4165,6 +4198,11 @@ app.get("/api/health", (_req, res) => {
         pageAccessTokenStored: Boolean(getProviderToken("facebook")?.pageAccessToken),
         pendingPageSelection: facebookPageSelectionPending(),
         businessManagementScope: facebookOAuthScopes().includes("business_management"),
+        // اكتمال الصلاحيات مع اعتماديات Meta الرسمية: قبل الإصلاح كانت
+        // pages_manage_engagement تُطلب بلا صفحاتها pages_read_user_content.
+        scopeCount: facebookOAuthScopes().length,
+        scopeDependenciesResolved: facebookScopeDependencyGaps().length === 0,
+        scopeDependencyGaps: facebookScopeDependencyGaps().length ? facebookScopeDependencyGaps() : undefined,
       };
     })(),
     // العنوان العام المعتمد: يكشف سبب فشل OAuth قبل وقوعه بلا أي سرّ. يبيّن مصدر

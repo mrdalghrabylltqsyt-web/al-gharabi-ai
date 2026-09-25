@@ -726,3 +726,69 @@ App Secret المطابق. الفحص الآن يُعلن ذلك صراحةً ف
 **حد لا يمكن للكود تجاوزه (نقطة توقف المالك):** وضع تطبيق Meta (Development/Live) —
 يُفحص من لوحة Meta فقط. في Development يمكن للرولات فقط التفويض؛ ولتفويض صفحة Business
 Manager يلزم رول على الصفحة + الصلاحية أعلاه.
+
+## اعتماديات صلاحيات Facebook — إصلاح «Invalid Scopes» والصلاحية المُسقَطة (2026-09-25)
+
+**الجذر المُثبت (لا تخمين):** `pages_manage_engagement` — الصلاحية التي يستخدمها الرد على
+تعليقات الصفحة (`POST /{comment-id}/comments`) — تعتمد رسمياً في «Permissions Reference»
+لدى Meta على `pages_read_user_content`، وكانت هذه الاعتمادية **غائبة** عن مجموعة
+`FACEBOOK_DEFAULT_SCOPES`. طلب صلاحية بلا اعتماديتها المسجّلة يُنتج إحدى نتيجتين، وكلاهما
+خطأ صامت:
+1. **«Invalid Scopes»** يظهر للمالك (صاحب رول الأدمن) في وضع Live بلا مراجعة للصلاحية،
+   فيتوقف OAuth قبل شاشة الموافقة.
+2. أو **سقوط الصلاحية صامتاً** من الرمز المخوَّل، فتبدو الواجهة قادرة على الرد بينما
+   `POST /{comment-id}/comments` يفشل بـ (#200) بلا سبب ظاهر للمالك.
+
+الاعتماديات الرسمية الكاملة المُثبتة من وثائق Meta (مطابَقة مع الاستدعاءات الفعلية في
+`engine/social/facebook.ts` و`server.ts`):
+
+| الصلاحية | الوظيفة في الكود | تعتمد على |
+|---|---|---|
+| `pages_show_list` | `GET /me/accounts` (اكتشاف الصفحات) | — |
+| `pages_read_engagement` | قراءة منشورات/بيانات الصفحة | `pages_show_list` |
+| `pages_read_user_content` | محتوى المستخدم/التعليقات | `pages_show_list` |
+| `pages_manage_engagement` | الرد على التعليقات | `pages_read_user_content`, `pages_show_list` |
+| `pages_manage_posts` | النشر `POST /{page-id}/feed` | `pages_read_engagement`, `pages_show_list` |
+| `pages_manage_metadata` | اشتراك webhook `subscribed_apps` | `pages_show_list` |
+| `pages_messaging` | رسائل Messenger `POST /{page-id}/messages` | `pages_manage_metadata`, `pages_show_list` |
+| `business_management` | صفحات Business Manager عبر `/me/accounts` | — |
+
+**`public_profile` لم يُضف:** ضمني في Facebook Login ولا يقابله استدعاء في الكود، وإضافة
+صلاحية غير مستخدمة تخالف قاعدة المشروع. **`business_management` لم يُحذف:** إلزامي منذ
+Graph v17 لصفحات Business Manager (أُضيف سابقاً عن قصد).
+
+الإصلاح — مصدر واحد مُختبَر:
+- `engine/social/facebook.ts`: `FACEBOOK_PERMISSION_DEPENDENCIES` (رسم الاعتماديات)،
+  `FACEBOOK_REQUIRED_SCOPES` (المجموعة الدنيا التي تغطي كل وظيفة)، `resolveFacebookScopes`
+  (يضيف الاعتماديات الناقصة بترتيب طوبولوجي بلا تكرار)، `findMissingScopeDependencies`،
+  `missingScopeDependenciesFromCsv`.
+- `server.ts`: `facebookOAuthScopes()` يمّر التجاوز عبر `resolveFacebookScopes`، فالصلاحيات
+  تُحسَب عند كل بدء OAuth (لا وقت الإقلاع). حتى لو ضبط المالك `FACEBOOK_OAUTH_SCOPES`
+  جزئياً، تُضاف الاعتماديات تلقائياً فلا ينتج «Invalid Scopes» ولا صلاحية مُسقَطة.
+  `facebookScopeDependencyGaps()` يُعلن ما تمّت إضافته للتشخيص.
+- `oauth/start` و`oauth/setup` و`metaOAuth` في health/readiness تعرض `scopes`,
+  `scopeDependenciesResolved`, `scopeDependencyGaps` (بلا أي سرّ).
+- `.env.example`: يوثّق أن التجاوز الجزئي يُكمَّل تلقائياً.
+
+اختبارات: `facebook.connector.test.ts` صار **159 فحصاً**: مجموعة 2ج للاعتماديات (وحدة)،
+وفحوص تكامل تثبت أن رابط التفويض الفعلي يحمل `pages_read_user_content` وباقي الوظائف وبلا
+اعتمادية ناقصة وبلا `public_profile`، ومجموعة 21 تثبت أن تجاوزاً جزئياً يُكمَّل تلقائياً
+ويُعلن الفارق. فحوص final-audit الخمسة: `facebook-scope-dependencies-single-source`,
+`facebook-comment-reply-dependency-present`, `facebook-scopes-resolved-with-dependencies`,
+`facebook-scope-gaps-exposed`, `facebook-scope-dependency-test` (172 فحصاً إجمالاً).
+
+**ملاحظة حاسمة عن `business_management`:** يذكر مطوّرون في منتدايات Meta أن إضافة هذه
+الصلاحية قد تُفشل تعداد الصفحات على حساب شخصي غير مرتبط بـBusiness Portfolio
+(threads/863296239022646). لذلك الفصل الصريح: تبقى مطلوبة لأن صفحة المعرض مُدارة عبر
+Business Portfolio، لكن أثره يجب أن يُثبت بالاختبار المعزول A/B/C (public_profile وحده
+→ صلاحيات الصفحة → business_management + صلاحيات الصفحة) — وهذا اختبار خارجي يحتاج جلسة
+المالك (نقطة التوقف أدناه).
+
+**نقطة توقف المالك (إجراء خارجي واحد لا يمكن تنفيذه من الكود):** افتح
+`https://al-gharabi-ai.onrender.com/api/platforms/facebook/oauth/setup` (للمالك) واقرأ
+`scopes` — يجب أن تظهر الثمانية مع `pages_read_user_content`، و`scopeDependenciesResolved: true`.
+ثم في Meta App Dashboard → **Use Cases**: تأكّد أن Use Case المستخدم (إدارة صفحة + محتوى)
+يحمل **نفس** الصلاحيات المفعّلة، لأن وجود صلاحية في الرابط لا يكفي إن لم تكن مفعّلة في
+Use Case. في Development يكفي رول المالك على الصفحة للتفويض؛ وأي حساب/صفحة خارج الرولات
+يحتاج App Review + Live.
+
