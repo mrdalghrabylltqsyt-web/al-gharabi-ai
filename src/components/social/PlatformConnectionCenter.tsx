@@ -114,6 +114,37 @@ const FacebookWebhookStatus: React.FC = () => {
   );
 };
 
+/** حالة اشتراك حساب Instagram في webhook — حقيقية من Meta بلا أي سرّ. */
+const InstagramWebhookStatus: React.FC = () => {
+  const [info, setInfo] = useState<any>(null);
+  const [err, setErr] = useState<string>('');
+  useEffect(() => {
+    let alive = true;
+    apiService.getInstagramWebhookInfo().then((d) => { if (alive) setInfo(d); }).catch((e) => { if (alive) setErr(e?.message || 'تعذر جلب حالة webhook'); });
+    return () => { alive = false; };
+  }, []);
+  if (err) return <p className="text-[10px] text-amber-300 mt-2">حالة webhook: {err}</p>;
+  if (!info) return <p className="text-[10px] text-slate-500 mt-2">جارٍ جلب حالة webhook الحقيقية من Meta…</p>;
+  return (
+    <div className="mt-3 pt-3 border-t border-slate-800/70 text-[10px] space-y-1">
+      <p className="text-slate-500 flex items-center gap-1"><Webhook className="w-3 h-3" /> حالة استقبال webhook (حقيقية من Meta):</p>
+      <div className="flex flex-wrap gap-1.5">
+        <span className={`px-2 py-0.5 rounded-md border font-bold ${info.appSubscribed ? 'bg-emerald-500/10 text-emerald-300 border-emerald-600/30' : 'bg-amber-500/10 text-amber-300 border-amber-600/30'}`}>
+          {info.appSubscribed ? 'الصفحة مشتركة فعلياً' : 'لا اشتراك مثبت'}
+        </span>
+        <span className={`px-2 py-0.5 rounded-md border font-bold ${info.verifyTokenConfigured ? 'bg-emerald-500/10 text-emerald-300 border-emerald-600/30' : 'bg-slate-800 text-slate-400 border-slate-700'}`}>
+          {info.verifyTokenConfigured ? 'رمز التحقق مضبوط' : 'رمز التحقق ناقص'}
+        </span>
+        <span className={`px-2 py-0.5 rounded-md border font-bold ${info.signatureSecretConfigured ? 'bg-emerald-500/10 text-emerald-300 border-emerald-600/30' : 'bg-slate-800 text-slate-400 border-slate-700'}`}>
+          {info.signatureSecretConfigured ? 'سرّ التوقيع مضبوط' : 'سرّ التوقيع ناقص'}
+        </span>
+      </div>
+      <p className="text-slate-500">رابط الـwebhook: <code className="text-slate-300">{info.webhookUrl}</code> • الحساب: <code className="text-slate-300">{info.igUsername ? `@${info.igUsername}` : info.igAccountId}</code></p>
+      <p className="text-slate-500">حقول الاشتراك المطلوبة: <code className="text-slate-300" dir="ltr">{(info.subscribedFields || []).join(', ')}</code> — تُفعَّل لكائن instagram من لوحة Meta.</p>
+    </div>
+  );
+};
+
 export const PlatformConnectionCenter: React.FC = () => {
   const { currentUser, showToast } = useApp();
   const [loading, setLoading] = useState(false);
@@ -122,6 +153,8 @@ export const PlatformConnectionCenter: React.FC = () => {
   const [busy, setBusy] = useState<string | null>(null);
   // Facebook: الحساب قد يدير أكثر من صفحة، فيُعرض اختيار الصفحة لإتمام الربط.
   const [fbPages, setFbPages] = useState<any[] | null>(null);
+  // Instagram: الحساب قد يدير أكثر من صفحة لها حساب مهني، فيُعرض اختيار الحساب.
+  const [igAccounts, setIgAccounts] = useState<any[] | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -155,6 +188,19 @@ export const PlatformConnectionCenter: React.FC = () => {
     setBusy(`facebook-page-${pageId}`);
     try { const res = await apiService.selectFacebookPage(pageId); showToast(res.webhookSubscribed ? 'تم ربط الصفحة والاشتراك في webhook.' : 'تم ربط الصفحة، لكن اشتراك webhook لم يُثبت.'); setFbPages(null); void load(); }
     catch (e: any) { showToast(e?.message || 'تعذر ربط الصفحة'); }
+    finally { setBusy(null); }
+  };
+
+  const loadInstagramAccounts = async () => {
+    setBusy('instagram-accounts');
+    try { const res = await apiService.getInstagramAccounts(); setIgAccounts(res.accounts || []); }
+    catch (e: any) { showToast(e?.message || 'تعذر جلب حسابات Instagram'); }
+    finally { setBusy(null); }
+  };
+  const chooseInstagramAccount = async (pageId: string) => {
+    setBusy(`instagram-account-${pageId}`);
+    try { const res = await apiService.selectInstagramAccount(pageId); showToast(res.webhookSubscribed ? 'تم ربط حساب Instagram والاشتراك في webhook.' : 'تم ربط حساب Instagram، لكن اشتراك webhook لم يُثبت.'); setIgAccounts(null); void load(); }
+    catch (e: any) { showToast(e?.message || 'تعذر ربط حساب Instagram'); }
     finally { setBusy(null); }
   };
 
@@ -209,6 +255,8 @@ export const PlatformConnectionCenter: React.FC = () => {
           // Facebook بعد OAuth قد ينتظر اختيار الصفحة (حساب يدير أكثر من صفحة).
           // هذه الحالة تُعرض بإجراءها الصحيح، ولا تُحجب خلف زر «بدء الربط».
           const fbPageSelection = p.platform === 'facebook' && p.pageSelectionPending === true;
+          // Instagram بعد OAuth قد ينتظر اختيار الحساب المهني من بين عدة صفحات.
+          const igPageSelection = p.platform === 'instagram' && p.pageSelectionPending === true;
           return (
             <div key={p.platform} className="p-5 rounded-2xl bg-slate-900 border border-slate-800">
               <div className="flex flex-wrap items-start justify-between gap-3">
@@ -242,6 +290,18 @@ export const PlatformConnectionCenter: React.FC = () => {
                         {busy === p.platform ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <PlugZap className="w-3.5 h-3.5" />} إعادة الربط
                       </button>
                     </>
+                  ) : igPageSelection ? (
+                    // Instagram: تفويض Meta اكتمل وينتظر اختيار الحساب المهني.
+                    <>
+                      <button onClick={() => void loadInstagramAccounts()} disabled={busy === 'instagram-accounts'}
+                        className="px-3 py-1.5 rounded-lg bg-sky-500 text-slate-950 text-[11px] font-black inline-flex items-center gap-1 disabled:opacity-50">
+                        {busy === 'instagram-accounts' ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <KeyRound className="w-3.5 h-3.5" />} اختيار الحساب
+                      </button>
+                      <button onClick={() => void startOAuth(p.platform)} disabled={busy === p.platform}
+                        className="px-3 py-1.5 rounded-lg bg-slate-800 border border-slate-700 text-[11px] font-bold text-slate-300 inline-flex items-center gap-1 disabled:opacity-50">
+                        {busy === p.platform ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <PlugZap className="w-3.5 h-3.5" />} إعادة الربط
+                      </button>
+                    </>
                   ) : needsExternal ? (
                     <span className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg bg-amber-500/10 border border-amber-600/30 text-[11px] font-bold text-amber-300">
                       <ExternalLink className="w-3.5 h-3.5" /> إكمال الإعداد الخارجي
@@ -256,6 +316,12 @@ export const PlatformConnectionCenter: React.FC = () => {
                     <button onClick={() => void loadFacebookPages()} disabled={busy === 'facebook-pages'}
                       className="px-3 py-1.5 rounded-lg bg-sky-500 text-slate-950 text-[11px] font-black inline-flex items-center gap-1 disabled:opacity-50">
                       {busy === 'facebook-pages' ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <KeyRound className="w-3.5 h-3.5" />} اختيار الصفحة
+                    </button>
+                  ) : p.platform === 'instagram' ? (
+                    // Instagram: الحساب موثوق؛ إتمام الربط باختيار الحساب المهني.
+                    <button onClick={() => void loadInstagramAccounts()} disabled={busy === 'instagram-accounts'}
+                      className="px-3 py-1.5 rounded-lg bg-sky-500 text-slate-950 text-[11px] font-black inline-flex items-center gap-1 disabled:opacity-50">
+                      {busy === 'instagram-accounts' ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <KeyRound className="w-3.5 h-3.5" />} اختيار الحساب
                     </button>
                   ) : (
                     <span className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg bg-slate-800 border border-slate-700 text-[11px] font-bold text-slate-400">
@@ -285,6 +351,23 @@ export const PlatformConnectionCenter: React.FC = () => {
               )}
 
               {p.platform === 'facebook' && p.connected && <FacebookWebhookStatus />}
+
+              {p.platform === 'instagram' && igAccounts && (
+                <div className="mt-3 pt-3 border-t border-slate-800/70">
+                  <p className="text-[10px] text-slate-500 mb-1.5">اختر حساب Instagram المهني (معرّفات وأسماء فقط بلا أي رمز):</p>
+                  <div className="flex flex-wrap gap-2">
+                    {igAccounts.length === 0 && <span className="text-[11px] text-slate-400">لا حسابات Instagram مهنية مرتبطة بصفحات هذا الحساب.</span>}
+                    {igAccounts.map((ac: any) => (
+                      <button key={ac.pageId} onClick={() => void chooseInstagramAccount(ac.pageId)} disabled={busy === `instagram-account-${ac.pageId}`}
+                        className="px-3 py-1.5 rounded-lg bg-slate-800 border border-slate-700 text-[11px] font-bold text-white inline-flex items-center gap-1 disabled:opacity-50">
+                        {busy === `instagram-account-${ac.pageId}` ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Webhook className="w-3.5 h-3.5" />} {ac.igUsername ? `@${ac.igUsername}` : ac.igAccountId}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {p.platform === 'instagram' && p.connected && <InstagramWebhookStatus />}
               {['facebook', 'instagram', 'threads'].includes(p.platform) && <OAuthSetupPanel platform={p.platform} />}
 
               {extRow && (

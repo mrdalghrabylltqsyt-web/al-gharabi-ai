@@ -88,13 +88,20 @@ function main(): void {
   check('reauth_needed => FAILED', tReauth.state === 'FAILED');
   check('FAILED يوجّه لإعادة الربط', /إعادة الربط/.test(tReauth.nextAction));
 
-  group('5) منصة بلا موصل منفّذ (Instagram)');
-  const igNoCreds = computePlatformStatus('instagram', disconnected, EMPTY_ENV)!;
-  check('بلا موصل => EXTERNAL_SETUP_REQUIRED', igNoCreds.state === 'EXTERNAL_SETUP_REQUIRED');
-  check('الاتصال محجوب موصل غير منفّذ', igNoCreds.operations.find((o) => o.operation === 'connect')!.code === 'CONNECTOR_NOT_IMPLEMENTED');
-  const igCreds = computePlatformStatus('instagram', disconnected, FULL_ENV)!;
-  check('حتى مع الاعتماد يبقى EXTERNAL_SETUP_REQUIRED (لا موصل)', igCreds.state === 'EXTERNAL_SETUP_REQUIRED');
-  check('لا OPERATIONAL لمنصة بلا موصل مهما كان', igCreds.state !== 'OPERATIONAL');
+  group('5) منصة بلا موصل منفّذ (Threads)؛ وInstagram صار موصلاً حقيقياً');
+  // Threads ما زال أساساً فقط: يلزم موصل منفّذ + اعتماد.
+  const thNoCreds = computePlatformStatus('threads', disconnected, EMPTY_ENV)!;
+  check('بلا موصل => EXTERNAL_SETUP_REQUIRED', thNoCreds.state === 'EXTERNAL_SETUP_REQUIRED');
+  check('الاتصال محجوب موصل غير منفّذ', thNoCreds.operations.find((o) => o.operation === 'connect')!.code === 'CONNECTOR_NOT_IMPLEMENTED');
+  const thCreds = computePlatformStatus('threads', disconnected, FULL_ENV)!;
+  check('حتى مع الاعتماد يبقى EXTERNAL_SETUP_REQUIRED (لا موصل)', thCreds.state === 'EXTERNAL_SETUP_REQUIRED');
+  check('لا OPERATIONAL لمنصة بلا موصل مهما كان', thCreds.state !== 'OPERATIONAL');
+  // Instagram أصبح ثالث موصل حقيقي: CONFIGURED بلا اتصال، وOPERATIONAL عند الاتصال الموثق.
+  const igConfigured = computePlatformStatus('instagram', disconnected, FULL_ENV)!;
+  check('Instagram موصل منفّذ => CONFIGURED (لا EXTERNAL_SETUP_REQUIRED)', igConfigured.state === 'CONFIGURED');
+  const igOperational = computePlatformStatus('instagram', connectedVerified, FULL_ENV)!;
+  check('Instagram متصل موثق + موصل منفّذ => OPERATIONAL', igOperational.state === 'OPERATIONAL' && igOperational.providerVerified);
+  check('لا OPERATIONAL لـInstagram بلا توثيق', computePlatformStatus('instagram', connectedUnverified, FULL_ENV)!.state !== 'OPERATIONAL');
 
   group('6) قدرات غير مدعومة تُعلن صراحةً');
   const wa = computePlatformStatus('whatsapp', connectedVerified, FULL_ENV)!;

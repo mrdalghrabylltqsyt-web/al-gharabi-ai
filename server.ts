@@ -38,6 +38,15 @@ import {
   type FacebookPageIdentity,
 } from "./engine/social/facebook";
 import {
+  InstagramClient,
+  parseInstagramWebhook,
+  INSTAGRAM_REQUIRED_SCOPES,
+  INSTAGRAM_SIGNATURE_HEADER,
+  resolveInstagramScopes,
+  type InstagramFetch,
+  type InstagramLinkedPage,
+} from "./engine/social/instagram";
+import {
   createOAuthState,
   createPkcePair,
   requiresPkce,
@@ -278,7 +287,7 @@ function loadPersistentState(snapshot?: any): any {
     if (!raw.schemaVersion) raw.schemaVersion = 1;
     const users = Array.isArray(raw.users) ? raw.users : [defaultOwner];
     if (!users.some((u: ServerUser) => u.id === "owner")) users.unshift(defaultOwner);
-    return { users, revokedSessions: Array.isArray(raw.revokedSessions) ? raw.revokedSessions : [], userRevocations: Array.isArray(raw.userRevocations) ? raw.userRevocations : [], audit: Array.isArray(raw.audit) ? raw.audit.slice(0, 200) : [], jobs: Array.isArray(raw.jobs) ? raw.jobs.slice(0, 200) : [], platformConnections: Array.isArray(raw.platformConnections) ? raw.platformConnections : [], workspace: raw.workspace && typeof raw.workspace === "object" ? { showroom: raw.workspace.showroom || {}, products: Array.isArray(raw.workspace.products) ? raw.workspace.products.slice(0, 1000) : [], posts: Array.isArray(raw.workspace.posts) ? raw.workspace.posts.slice(0, 1000) : [], conversations: Array.isArray(raw.workspace.conversations) ? raw.workspace.conversations.slice(0, 1000) : [], installmentPlans: Array.isArray(raw.workspace.installmentPlans) ? raw.workspace.installmentPlans.slice(0, 200) : [], leads: Array.isArray(raw.workspace.leads) ? raw.workspace.leads.slice(0, 2000) : [], tasks: Array.isArray(raw.workspace.tasks) ? raw.workspace.tasks.slice(0, 1000) : [], sales: Array.isArray(raw.workspace.sales) ? raw.workspace.sales.slice(0, 5000) : [], payments: Array.isArray(raw.workspace.payments) ? raw.workspace.payments.slice(0, 10000) : [], inventoryMovements: Array.isArray(raw.workspace.inventoryMovements) ? raw.workspace.inventoryMovements.slice(0, 20000) : [], suppliers: Array.isArray(raw.workspace.suppliers) ? raw.workspace.suppliers.slice(0, 1000) : [], purchases: Array.isArray(raw.workspace.purchases) ? raw.workspace.purchases.slice(0, 5000) : [], expenses: Array.isArray(raw.workspace.expenses) ? raw.workspace.expenses.slice(0, 10000) : [], contracts: Array.isArray(raw.workspace.contracts) ? raw.workspace.contracts.slice(0, 5000) : [], installmentSchedules: Array.isArray(raw.workspace.installmentSchedules) ? raw.workspace.installmentSchedules.slice(0, 20000) : [], notifications: Array.isArray(raw.workspace.notifications) ? raw.workspace.notifications.slice(0, 10000) : [], webhookEvents: Array.isArray(raw.workspace.webhookEvents) ? raw.workspace.webhookEvents.slice(0, 10000) : [], providerEvents: Array.isArray(raw.workspace.providerEvents) ? raw.workspace.providerEvents.slice(0, 10000) : [], marketingBriefs: Array.isArray(raw.workspace.marketingBriefs) ? raw.workspace.marketingBriefs.slice(0, 2000) : [], marketingCampaigns: Array.isArray(raw.workspace.marketingCampaigns) ? raw.workspace.marketingCampaigns.slice(0, 1000) : [], socialComments: Array.isArray(raw.workspace.socialComments) ? raw.workspace.socialComments.slice(0, 10000) : [], socialReplies: Array.isArray(raw.workspace.socialReplies) ? raw.workspace.socialReplies.slice(0, 5000) : [], socialApprovals: Array.isArray(raw.workspace.socialApprovals) ? raw.workspace.socialApprovals.slice(0, 5000) : [], publishRecords: Array.isArray(raw.workspace.publishRecords) ? raw.workspace.publishRecords.slice(0, 5000) : [], performanceRecords: Array.isArray(raw.workspace.performanceRecords) ? raw.workspace.performanceRecords.slice(0, 20000) : [], marketingDecisions: Array.isArray(raw.workspace.marketingDecisions) ? raw.workspace.marketingDecisions.slice(0, 2000) : [], strategiesTested: Array.isArray(raw.workspace.strategiesTested) ? raw.workspace.strategiesTested.slice(0, 2000) : [], telegramUpdateIds: Array.isArray(raw.workspace.telegramUpdateIds) ? raw.workspace.telegramUpdateIds.slice(0, 20000) : [], facebookEventIds: Array.isArray(raw.workspace.facebookEventIds) ? raw.workspace.facebookEventIds.slice(0, 20000) : [], providerTokens: raw.workspace.providerTokens && typeof raw.workspace.providerTokens === "object" ? raw.workspace.providerTokens : {} } : { showroom: {}, products: [], posts: [], conversations: [], installmentPlans: [], leads: [], tasks: [], sales: [], payments: [], inventoryMovements: [], suppliers: [], purchases: [], expenses: [], contracts: [], installmentSchedules: [], notifications: [], webhookEvents: [], providerEvents: [], marketingBriefs: [], marketingCampaigns: [], socialComments: [], socialReplies: [], socialApprovals: [], publishRecords: [], performanceRecords: [], marketingDecisions: [], strategiesTested: [], telegramUpdateIds: [], facebookEventIds: [], providerTokens: {} } };
+    return { users, revokedSessions: Array.isArray(raw.revokedSessions) ? raw.revokedSessions : [], userRevocations: Array.isArray(raw.userRevocations) ? raw.userRevocations : [], audit: Array.isArray(raw.audit) ? raw.audit.slice(0, 200) : [], jobs: Array.isArray(raw.jobs) ? raw.jobs.slice(0, 200) : [], platformConnections: Array.isArray(raw.platformConnections) ? raw.platformConnections : [], workspace: raw.workspace && typeof raw.workspace === "object" ? { showroom: raw.workspace.showroom || {}, products: Array.isArray(raw.workspace.products) ? raw.workspace.products.slice(0, 1000) : [], posts: Array.isArray(raw.workspace.posts) ? raw.workspace.posts.slice(0, 1000) : [], conversations: Array.isArray(raw.workspace.conversations) ? raw.workspace.conversations.slice(0, 1000) : [], installmentPlans: Array.isArray(raw.workspace.installmentPlans) ? raw.workspace.installmentPlans.slice(0, 200) : [], leads: Array.isArray(raw.workspace.leads) ? raw.workspace.leads.slice(0, 2000) : [], tasks: Array.isArray(raw.workspace.tasks) ? raw.workspace.tasks.slice(0, 1000) : [], sales: Array.isArray(raw.workspace.sales) ? raw.workspace.sales.slice(0, 5000) : [], payments: Array.isArray(raw.workspace.payments) ? raw.workspace.payments.slice(0, 10000) : [], inventoryMovements: Array.isArray(raw.workspace.inventoryMovements) ? raw.workspace.inventoryMovements.slice(0, 20000) : [], suppliers: Array.isArray(raw.workspace.suppliers) ? raw.workspace.suppliers.slice(0, 1000) : [], purchases: Array.isArray(raw.workspace.purchases) ? raw.workspace.purchases.slice(0, 5000) : [], expenses: Array.isArray(raw.workspace.expenses) ? raw.workspace.expenses.slice(0, 10000) : [], contracts: Array.isArray(raw.workspace.contracts) ? raw.workspace.contracts.slice(0, 5000) : [], installmentSchedules: Array.isArray(raw.workspace.installmentSchedules) ? raw.workspace.installmentSchedules.slice(0, 20000) : [], notifications: Array.isArray(raw.workspace.notifications) ? raw.workspace.notifications.slice(0, 10000) : [], webhookEvents: Array.isArray(raw.workspace.webhookEvents) ? raw.workspace.webhookEvents.slice(0, 10000) : [], providerEvents: Array.isArray(raw.workspace.providerEvents) ? raw.workspace.providerEvents.slice(0, 10000) : [], marketingBriefs: Array.isArray(raw.workspace.marketingBriefs) ? raw.workspace.marketingBriefs.slice(0, 2000) : [], marketingCampaigns: Array.isArray(raw.workspace.marketingCampaigns) ? raw.workspace.marketingCampaigns.slice(0, 1000) : [], socialComments: Array.isArray(raw.workspace.socialComments) ? raw.workspace.socialComments.slice(0, 10000) : [], socialReplies: Array.isArray(raw.workspace.socialReplies) ? raw.workspace.socialReplies.slice(0, 5000) : [], socialApprovals: Array.isArray(raw.workspace.socialApprovals) ? raw.workspace.socialApprovals.slice(0, 5000) : [], publishRecords: Array.isArray(raw.workspace.publishRecords) ? raw.workspace.publishRecords.slice(0, 5000) : [], performanceRecords: Array.isArray(raw.workspace.performanceRecords) ? raw.workspace.performanceRecords.slice(0, 20000) : [], marketingDecisions: Array.isArray(raw.workspace.marketingDecisions) ? raw.workspace.marketingDecisions.slice(0, 2000) : [], strategiesTested: Array.isArray(raw.workspace.strategiesTested) ? raw.workspace.strategiesTested.slice(0, 2000) : [], telegramUpdateIds: Array.isArray(raw.workspace.telegramUpdateIds) ? raw.workspace.telegramUpdateIds.slice(0, 20000) : [], facebookEventIds: Array.isArray(raw.workspace.facebookEventIds) ? raw.workspace.facebookEventIds.slice(0, 20000) : [], instagramEventIds: Array.isArray(raw.workspace.instagramEventIds) ? raw.workspace.instagramEventIds.slice(0, 20000) : [], providerTokens: raw.workspace.providerTokens && typeof raw.workspace.providerTokens === "object" ? raw.workspace.providerTokens : {} } : { showroom: {}, products: [], posts: [], conversations: [], installmentPlans: [], leads: [], tasks: [], sales: [], payments: [], inventoryMovements: [], suppliers: [], purchases: [], expenses: [], contracts: [], installmentSchedules: [], notifications: [], webhookEvents: [], providerEvents: [], marketingBriefs: [], marketingCampaigns: [], socialComments: [], socialReplies: [], socialApprovals: [], publishRecords: [], performanceRecords: [], marketingDecisions: [], strategiesTested: [], telegramUpdateIds: [], facebookEventIds: [], instagramEventIds: [], providerTokens: {} } };
   } catch {
     return { users: [defaultOwner], revokedSessions: [], userRevocations: [], audit: [], jobs: [], workspace: { showroom: {}, products: [], posts: [], conversations: [], installmentPlans: [], leads: [], tasks: [], sales: [], payments: [], inventoryMovements: [], suppliers: [], purchases: [], expenses: [], contracts: [], installmentSchedules: [], notifications: [], webhookEvents: [], providerEvents: [], marketingBriefs: [], marketingCampaigns: [], socialComments: [], socialReplies: [], socialApprovals: [], publishRecords: [], performanceRecords: [], marketingDecisions: [], strategiesTested: [], telegramUpdateIds: [], providerTokens: {} } };
   }
@@ -333,7 +342,7 @@ const workspace = persisted.workspace;
 for (const key of ["inventoryMovements","suppliers","purchases","expenses","contracts","installmentSchedules","notifications","webhookEvents","providerEvents"]) if (!Array.isArray((workspace as any)[key])) (workspace as any)[key] = [];
 if (!Array.isArray((workspace as any).inventoryMovements)) (workspace as any).inventoryMovements = [];
 for (const key of ["suppliers","purchases","expenses","contracts","installmentSchedules","notifications","webhookEvents","providerEvents","marketingBriefs","marketingCampaigns"]) if (!Array.isArray((workspace as any)[key])) (workspace as any)[key] = [];
-for (const key of ["telegramUpdateIds","facebookEventIds"]) if (!Array.isArray((workspace as any)[key])) (workspace as any)[key] = [];
+for (const key of ["telegramUpdateIds","facebookEventIds","instagramEventIds"]) if (!Array.isArray((workspace as any)[key])) (workspace as any)[key] = [];
 if (!(workspace as any).providerTokens || typeof (workspace as any).providerTokens !== "object") (workspace as any).providerTokens = {};
 // سجلات مدير السوشيال ميديا: تعليقات، ردود، نتائج نشر، وقرارات تسويقية.
 // كلها سجلات تشغيلية حقيقية تُبنى من عمليات فعلية فقط.
@@ -972,6 +981,16 @@ function facebookScopeDependencyGaps(): string[] {
   return missingScopeDependenciesFromCsv(process.env.FACEBOOK_OAUTH_SCOPES);
 }
 /**
+ * صلاحيات Instagram API with Facebook Login. نفس مصدر الحقيقة في
+ * `engine/social/instagram.ts` مع رسم الاعتماديات الرسمي. التجاوز من
+ * `INSTAGRAM_OAUTH_SCOPES` يُمرّ عبر `resolveInstagramScopes` الذي يضيف
+ * الاعتماديات الناقصة تلقائياً، فلا ينتج «Invalid Scopes» ولا صلاحية مُسقَطة.
+ */
+function instagramOAuthScopes(): string[] {
+  const override = (process.env.INSTAGRAM_OAUTH_SCOPES || "").split(",").map((s) => s.trim()).filter(Boolean);
+  return resolveInstagramScopes(override.length ? override : INSTAGRAM_REQUIRED_SCOPES);
+}
+/**
  * قراءة قيمة بيئة مع تطبيع المسافات حولها.
  *
  * السبب: Render (أو لصق القيمة) قد يضيف سطراً/مسافة زائدة، فتبدو القيمة
@@ -992,7 +1011,7 @@ const OAUTH_CONFIG: Record<string, any> = {
   // business_management إلزامي منذ Graph v17 لعرض صفحات Business Manager عبر
   // /me/accounts؛ بدونه يظهر الحساب «يدير صفر صفحات» فاشلاً بلا سبب واضح.
   facebook: { provider: "meta", auth: `https://www.facebook.com${FACEBOOK_DIALOG_PATH}`, token: "https://graph.facebook.com/v21.0/oauth/access_token", clientId: envSecret("FACEBOOK_OAUTH_CLIENT_ID"), clientSecret: envSecret("FACEBOOK_OAUTH_CLIENT_SECRET"), scopes: facebookOAuthScopes() },
-  instagram: { provider: "meta", auth: `https://www.facebook.com${FACEBOOK_DIALOG_PATH}`, token: "https://graph.facebook.com/v21.0/oauth/access_token", clientId: envSecret("INSTAGRAM_OAUTH_CLIENT_ID"), clientSecret: envSecret("INSTAGRAM_OAUTH_CLIENT_SECRET"), scopes: ["instagram_basic", "instagram_manage_comments", "instagram_manage_messages", "pages_show_list"] },
+  instagram: { provider: "meta", auth: `https://www.facebook.com${FACEBOOK_DIALOG_PATH}`, token: "https://graph.facebook.com/v21.0/oauth/access_token", clientId: envSecret("INSTAGRAM_OAUTH_CLIENT_ID") || envSecret("FACEBOOK_OAUTH_CLIENT_ID"), clientSecret: envSecret("INSTAGRAM_OAUTH_CLIENT_SECRET") || envSecret("FACEBOOK_OAUTH_CLIENT_SECRET"), scopes: [...INSTAGRAM_REQUIRED_SCOPES] },
   x: { provider: "x", auth: "https://twitter.com/i/oauth2/authorize", token: "https://api.twitter.com/2/oauth2/token", clientId: envSecret("X_OAUTH_CLIENT_ID"), clientSecret: envSecret("X_OAUTH_CLIENT_SECRET"), scopes: ["tweet.read", "tweet.write", "users.read", "offline.access"] },
   snapchat: { provider: "snapchat", auth: "https://accounts.snapchat.com/login/oauth2/authorize", token: "https://accounts.snapchat.com/login/oauth2/access_token", clientId: envSecret("SNAPCHAT_OAUTH_CLIENT_ID"), clientSecret: envSecret("SNAPCHAT_OAUTH_CLIENT_SECRET"), scopes: ["snapchat-marketing-api"] },
   threads: { provider: "meta", auth: "https://threads.net/oauth/authorize", token: "https://graph.threads.net/oauth/access_token", clientId: envSecret("THREADS_OAUTH_CLIENT_ID"), clientSecret: envSecret("THREADS_OAUTH_CLIENT_SECRET"), scopes: ["threads_basic", "threads_content_publish", "threads_manage_replies"] },
@@ -1076,6 +1095,112 @@ const FACEBOOK_SUBSCRIBED_FIELDS = (() => {
 const faceBookFetchImpl: FacebookFetch = (url, init) => fetch(url, init as any);
 function facebookClient(): FacebookClient { return new FacebookClient(faceBookFetchImpl, FACEBOOK_GRAPH_API_BASE_ENV); }
 function facebookOAuthConfig(): any { return OAUTH_CONFIG["facebook"]; }
+
+// -------------------------------------------------------------
+// Instagram — ثالث موصل اجتماعي حقيقي (Instagram API with Facebook Login).
+// يُعاد استخدام تطبيق Meta نفسه ومسار OAuth نفسه، ويُضاف اكتشاف حساب
+// Instagram للأعمال المرتبط بالصفحة واستقبال/رد/رسالة/نشر عبر Graph.
+// الأسرار تُقرأ من بيئة الخادم أو تُحفظ مشفّرة عبر محوّل الحالة؛ لا تُسجَّل ولا تُعاد.
+// -------------------------------------------------------------
+const instagramFetchImpl: InstagramFetch = (url, init) => fetch(url, init as any);
+function instagramClient(): InstagramClient { return new InstagramClient(instagramFetchImpl, FACEBOOK_GRAPH_API_BASE_ENV); }
+function instagramOAuthConfig(): any { return OAUTH_CONFIG["instagram"]; }
+/** حقول webhook لحساب Instagram المهني (تعليقات + رسائل). تُفعَّل من Meta Dashboard. */
+const INSTAGRAM_SUBSCRIBED_FIELDS = (() => {
+  const raw = (process.env.INSTAGRAM_SUBSCRIBED_FIELDS || "").split(",").map((x) => x.trim()).filter(Boolean);
+  return raw.length ? raw : ["comments", "messages"];
+})();
+/** سرّ توقيع webhook: نفس تطبيق Meta؛ يقبل INSTAGRAM_APP_SECRET ثم FACEBOOK_APP_SECRET. */
+function instagramAppSecret(): string {
+  const stored = getProviderToken("instagram");
+  if (stored?.appSecret) return String(stored.appSecret);
+  return (process.env.INSTAGRAM_APP_SECRET || process.env.FACEBOOK_APP_SECRET || "").trim();
+}
+/** رمز تحقق الاشتراك: يقبل INSTAGRAM_VERIFY_TOKEN ثم FACEBOOK_VERIFY_TOKEN. */
+function instagramVerifyToken(): string {
+  return (process.env.INSTAGRAM_VERIFY_TOKEN || process.env.FACEBOOK_VERIFY_TOKEN || "").trim();
+}
+/** رابط استقبال أحداث Instagram لهذا الخادم. */
+function instagramWebhookUrl(): string { return `${publicBaseUrlNow()}/api/platforms/instagram/webhook`; }
+/** رمز صفحة الاتصال الحالي (يُشتق من رمز المستخدم طويل الأجل) من الاعتماد المشفّر. */
+function instagramPageToken(): string | null {
+  const stored = getProviderToken("instagram");
+  return stored?.pageAccessToken ? String(stored.pageAccessToken) : null;
+}
+function instagramPageId(): string | null {
+  const stored = getProviderToken("instagram");
+  return stored?.pageId ? String(stored.pageId) : null;
+}
+function instagramAccountId(): string | null {
+  const stored = getProviderToken("instagram");
+  return stored?.igAccountId ? String(stored.igAccountId) : null;
+}
+/** هل انتهى OAuth بنجاح لكن الحساب بلا حساب Instagram مهني مرتبط (أو عدة صفحات)؟ */
+function instagramPageSelectionPending(): boolean {
+  const stored = getProviderToken("instagram");
+  if (!stored?.userAccessToken || stored?.pageId) return false;
+  return stored?.pendingPageSelection === true;
+}
+/** تسجيل آمن لحدث Instagram الوارد. ممنوع تسجيل أي سرّ أو نص رسالة. */
+function logInstagramWebhook(event: { kind: string; externalId?: string | null; outcome: "accepted" | "duplicate" | "rejected" | "ignored"; persisted?: boolean }): void {
+  const parts = ["[instagram-webhook]", "platform=instagram", `kind=${event.kind}`, `outcome=${event.outcome}`];
+  if (event.externalId) parts.push(`external=${event.externalId}`);
+  if (typeof event.persisted === "boolean") parts.push(`persisted=${event.persisted}`);
+  console.log(parts.join(" "));
+}
+/** يحفظ اعتماد Instagram مشفّراً (رمز الصفحة + حساب IG + سرّ التوقيع) بلا كشفه. */
+function saveInstagramCredentials(input: { pageId: string; pageName?: string | null; igAccountId: string; igUsername?: string | null; pageAccessToken: string; userAccessToken?: string | null; appSecret?: string }) {
+  const existing = getProviderToken("instagram") || {};
+  setProviderToken("instagram", {
+    ...existing,
+    pageId: input.pageId,
+    pageName: input.pageName || existing.pageName || "",
+    igAccountId: input.igAccountId,
+    igUsername: input.igUsername || existing.igUsername || "",
+    pageAccessToken: input.pageAccessToken,
+    userAccessToken: input.userAccessToken || existing.userAccessToken || "",
+    appSecret: input.appSecret || existing.appSecret || instagramAppSecret() || "",
+    connectedAt: existing.connectedAt || new Date().toISOString(),
+  });
+}
+/**
+ * يثبت حساب Instagram مهنياً مرتبطاً بصفحة محدّدة فعلياً، يشترك تطبيقنا في أحداث
+ * الصفحة (تعليقات/رسائل)، ثم يحفظ الاعتماد ويعلن الاتصال الموثق. لا يُعلن الاتصال
+ * بلا استجابة مزود حقيقية، ولا يُقبل حساب شخصي (يلزم instagram_business_account).
+ */
+async function instagramFinalizeAccountSelection(pageId: string, userAccessToken: string): Promise<{ ok: boolean; pageName?: string | null; igAccountId?: string; igUsername?: string | null; subscribed?: boolean; subscribedFields?: string[]; error?: string }> {
+  const client = instagramClient();
+  const proof = await client.getLinkedInstagramAccount(pageId, userAccessToken);
+  if (!proof.ok || !proof.data?.igAccountId) {
+    return { ok: false, error: proof.error || "تعذّر إثبات حساب Instagram المهني المرتبط بالصفحة." };
+  }
+  const pageToken = proof.data.pageAccessToken || userAccessToken;
+  // إثبات إضافي لهوية حساب Instagram نفسه — لا نعتمد على الصفحة وحدها.
+  const identity = await client.getInstagramProfile(proof.data.igAccountId, pageToken);
+  const igUsername = identity.data?.igUsername || proof.data.igUsername || null;
+  const sub = await client.subscribePage(pageId, pageToken, INSTAGRAM_SUBSCRIBED_FIELDS);
+  let subscribedFields: string[] | undefined;
+  if (sub.ok) {
+    const read = await client.getSubscribedFields(pageId, pageToken);
+    subscribedFields = read.data || undefined;
+  }
+  saveInstagramCredentials({
+    pageId: proof.data.pageId,
+    pageName: proof.data.pageName,
+    igAccountId: proof.data.igAccountId,
+    igUsername,
+    pageAccessToken: pageToken,
+    userAccessToken,
+  });
+  platformConnections.set("instagram", { platform: "instagram", status: "connected", accountId: proof.data.igAccountId, accountName: igUsername ? `@${igUsername}` : (proof.data.pageName || "Instagram"), connectedAt: new Date().toISOString(), providerVerified: true });
+  savePlatformConnections();
+  return { ok: true, pageName: proof.data.pageName, igAccountId: proof.data.igAccountId, igUsername, subscribed: sub.ok, subscribedFields, error: sub.ok ? undefined : sub.error };
+}
+/** هل موصل Instagram مكتمل الإعداد للاتصال؟ (تطبيق Meta + مفتاح تشفير + عنوان عام). */
+function instagramConnectorConfigured(): boolean {
+  const c = instagramOAuthConfig();
+  return Boolean(c?.clientId && c?.clientSecret && publicUrlIsPublic() && tokenKeyBytes());
+}
 /** منصات Meta التي يشترك مسار حوارها في نفس القواعد (client_id + scope بفواصل). */
 const META_OAUTH_PLATFORMS = new Set(["facebook", "instagram"]);
 /** تخزين مؤقت قصير لنتيجة فحص بدء OAuth (يمنع إغراق Meta عند كل ضغطة زر). */
@@ -1283,6 +1408,16 @@ async function verifyProviderConnection(platform: string): Promise<{ verified: b
     if (!proof.ok || !proof.data?.pageId) return { verified: false, error: proof.error || "تعذر إثبات هوية صفحة Facebook." };
     return { verified: true, accountId: proof.data.pageId, accountName: proof.data.pageName || stored?.pageName || undefined };
   }
+  if (platform === "instagram") {
+    const igAccountId = instagramAccountId();
+    const token = instagramPageToken();
+    if (!igAccountId || !token) return { verified: false, error: "لا اعتماد Instagram محفوظ؛ نفّذ الربط عبر OAuth أولاً." };
+    // إثبات حي: نستعلم عن هوية حساب Instagram المهني فعلياً من Graph بلا أي ادعاء.
+    const proof = await instagramClient().getInstagramProfile(igAccountId, token);
+    if (!proof.ok || !proof.data?.igAccountId) return { verified: false, error: proof.error || "تعذر إثبات هوية حساب Instagram." };
+    const stored = getProviderToken("instagram");
+    return { verified: true, accountId: proof.data.igAccountId, accountName: proof.data.igUsername ? `@${proof.data.igUsername}` : (stored?.pageName || undefined) };
+  }
   return { verified: false, error: "لا يوجد موصل إثبات حقيقي لهذه المنصة؛ إتمام الاتصال يحتاج اعتماد تطبيق من المزود." };
 }
 function publicProviderReadiness(platform: string): { configured: boolean; mode: string; action: string; missing?: string[]; invalid?: string[]; next?: string; realConnector?: boolean } {
@@ -1338,6 +1473,34 @@ function publicProviderReadiness(platform: string): { configured: boolean; mode:
         : missing.length
           ? "زوّد البيئة ببيانات تطبيق Meta (Client ID/Secret وAPP_SECRET وVERIFY_TOKEN) ثم نفّذ الربط عبر OAuth لاختيار الصفحة."
           : "الموصل مكتمل الإعداد؛ نفّذ الربط لاختيار الصفحة وإثباتها ثم اختبر الاستقبال والرد.",
+    };
+  }
+  if (platform === "instagram") {
+    // موصل حقيقي: نفس تطبيق Meta + رمز صفحة + اكتشاف حساب Instagram + سرّ توقيع + رمز تحقق.
+    const c = instagramOAuthConfig();
+    const stored = getProviderToken("instagram");
+    const missing = [
+      !c?.clientId && "INSTAGRAM_OAUTH_CLIENT_ID (أو FACEBOOK_OAUTH_CLIENT_ID)",
+      !c?.clientSecret && "INSTAGRAM_OAUTH_CLIENT_SECRET (أو FACEBOOK_OAUTH_CLIENT_SECRET)",
+      !instagramAppSecret() && "INSTAGRAM_APP_SECRET (أو FACEBOOK_APP_SECRET)",
+      !instagramVerifyToken() && "INSTAGRAM_VERIFY_TOKEN (أو FACEBOOK_VERIFY_TOKEN)",
+      !stored?.igAccountId && "حساب Instagram مهني (يُكتسب عبر OAuth)",
+      tokenMissing,
+      !resolvePublicUrl(process.env).valid && "APP_URL",
+    ].filter((x): x is string => Boolean(x));
+    const invalid = [tokenInvalid].filter((x): x is string => Boolean(x));
+    return {
+      configured: instagramConnectorConfigured() && Boolean(stored?.igAccountId),
+      mode: "oauth2",
+      action: "authorize",
+      missing,
+      invalid,
+      realConnector: true,
+      next: invalid.length
+        ? `استبدل قيمة PLATFORM_TOKEN_ENCRYPTION_KEY بقيمة صالحة (32 بايت hex أو Base64) ثم أعد المحاولة.`
+        : missing.length
+          ? "زوّد البيئة ببيانات تطبيق Meta (Client ID/Secret وAPP_SECRET وVERIFY_TOKEN) — تُقبل بيانات Facebook نفسها — ثم نفّذ الربط عبر OAuth لاختيار حساب Instagram المهني."
+          : "الموصل مكتمل الإعداد؛ نفّذ الربط لاختيار حساب Instagram وإثباته ثم اختبر الاستقبال والرد.",
     };
   }
   const c = OAUTH_CONFIG[platform];
@@ -1420,7 +1583,7 @@ app.get("/api/platforms/:platform/oauth/start", requireOwner, async (req,res)=>{
   // الصلاحيات تُحسَب عند كل بدء (لا وقت الإقلاع) لتعكس البيئة الفعلية وتضمن
   // إضافة اعتماديات Meta الناقصة، فلا ينتج «Invalid Scopes» أو صلاحية مُسقَطة.
   const scopeGaps = platform==="facebook" ? facebookScopeDependencyGaps() : [];
-  const scopes = platform==="facebook" ? facebookOAuthScopes() : (Array.isArray(cfg.scopes) ? cfg.scopes : []);
+  const scopes = platform==="facebook" ? facebookOAuthScopes() : platform==="instagram" ? instagramOAuthScopes() : (Array.isArray(cfg.scopes) ? cfg.scopes : []);
   // فحص ما قبل الحوار: يمنع إرسال المالك إلى صفحة «حدث خطأ ما» بلا تفسير.
   // عند الفشل نُعلن السبب والإجراء الدقيق بدل توليد رابط سيفشل حتماً لدى Meta.
   const preflight = await oauthStartPreflight(platform);
@@ -1518,6 +1681,35 @@ app.get("/api/platforms/:platform/oauth/callback", async (req,res)=>{
       await persistStateDurable();
       audit(pending!.userId,"platform_oauth_page_selection_pending",`facebook:${pages.data.length}`);
       return res.send(`<html lang='ar' dir='rtl'><meta charset='utf-8'><title>اختيار الصفحة</title><body style='font-family:sans-serif;padding:40px'><h2>تم الربط، لكن الحساب يدير أكثر من صفحة.</h2><p>اختر الصفحة التي تريد ربطها من مركز ربط المنصات في الغرابي AI لإتمام الربط.</p></body></html>`);
+    }
+    // Instagram يسلك مسار Meta نفسه (Instagram API with Facebook Login): تبادل
+    // الرمز ثم إطالته، ثم اكتشاف حساب Instagram المهني المرتبط بالصفحة.
+    if(platform==="instagram") {
+      const client=instagramClient();
+      const fb=facebookClient();
+      const codeRes=await fb.exchangeCode({clientId:cfg.clientId,clientSecret:cfg.clientSecret,code,redirectUri:redirectUri});
+      if(!codeRes.ok || !codeRes.data?.accessToken) throw new Error(codeRes.error||"فشل تبادل رمز Instagram.");
+      const long=await fb.exchangeLongLived({clientId:cfg.clientId,clientSecret:cfg.clientSecret,shortToken:codeRes.data.accessToken});
+      const userToken=long.ok && long.data?.accessToken ? long.data.accessToken : codeRes.data.accessToken;
+      token={access_token:userToken,expires_in:long.data?.expiresIn??codeRes.data.expiresIn};
+      // نكتشف الصفحات التي تحمل حساب Instagram مهنياً مرتبطاً.
+      const pages=await client.listLinkedInstagramAccounts(userToken);
+      if(!pages.ok || !pages.data) throw new Error(pages.error||"تعذّر جلب صفحات/حسابات Instagram.");
+      const withIg=pages.data.filter((p)=>p.igAccountId);
+      if(!withIg.length) throw new Error("لا يوجد حساب Instagram Professional (Business/Creator) مرتبط بأي صفحة يديرها هذا الحساب. اربط الحساب المهني بصفحة Facebook من إعدادات Instagram ثم أعد الربط.");
+      if(withIg.length===1) {
+        const fin=await instagramFinalizeAccountSelection(withIg[0].pageId,userToken);
+        if(!fin.ok) throw new Error(fin.error||"تعذّر إتمام ربط حساب Instagram.");
+        setProviderToken("instagram",{...getProviderToken("instagram"),expiresAt:parsedTokenExpiry(token),userAccessToken:userToken});
+        await persistStateDurable();
+        audit(pending!.userId,"platform_oauth_connected",`instagram:${fin.igAccountId}`);
+        return res.send(`<html lang='ar' dir='rtl'><meta charset='utf-8'><title>تم الربط</title><body style='font-family:sans-serif;padding:40px'><h2>تم ربط حساب Instagram بنجاح.</h2><p>${escapeHtml(fin.igUsername?`@${fin.igUsername}`:fin.pageName||"")} — يمكنك إغلاق هذه النافذة والعودة إلى الغرابي AI.</p></body></html>`);
+      }
+      // عدة صفحات تحمل حسابات Instagram: نحفظ رمز المستخدم وننتظر اختيار المالك.
+      setProviderToken("instagram",{...token,userAccessToken:userToken,expiresAt:parsedTokenExpiry(token),pendingPageSelection:true});
+      await persistStateDurable();
+      audit(pending!.userId,"platform_oauth_page_selection_pending",`instagram:${withIg.length}`);
+      return res.send(`<html lang='ar' dir='rtl'><meta charset='utf-8'><title>اختيار الحساب</title><body style='font-family:sans-serif;padding:40px'><h2>تم الربط، لكن الحساب يدير أكثر من صفحة لها حساب Instagram.</h2><p>اختر الحساب الذي تريد ربطه من مركز ربط المنصات في الغرابي AI لإتمام الربط.</p></body></html>`);
     }
     const tokenRes=await fetch(cfg.token,{method:"POST",headers:{"Content-Type":"application/x-www-form-urlencoded"},body}); token=await tokenRes.json();
     const parsedToken=parseTokenResponse(token);
@@ -1894,6 +2086,221 @@ app.post("/api/platforms/facebook/message-reply", requireOwner, async (req,res)=
 });
 
 // -------------------------------------------------------------
+// Instagram — مسارات الموصل الحقيقي (Instagram API with Facebook Login).
+// يُعاد استخدام تطبيق Meta نفسه ومسار OAuth نفسه (start/callback أعلاه).
+// التحقق: HMAC-SHA256 على الجسم الخام (X-Hub-Signature-256). منع التكرار:
+// معرّف الحدث الحقيقي من Instagram (comment id / mid) محفوظاً عبر المحوّل.
+// لا يُقبل حدث بلا توقيع صحيح، ولا يُخزَّن مكرر، ولا يُعلن تسليم بلا معرّف مزود.
+// -------------------------------------------------------------
+
+/** ترشيح الصفحات التي لها حساب Instagram مهني مرتبط (لاختيار الحساب يدوياً). */
+app.get("/api/platforms/instagram/accounts", requireOwner, async (_req,res)=>{
+  const stored=getProviderToken("instagram");
+  const userToken=stored?.userAccessToken?String(stored.userAccessToken):"";
+  if(!userToken) return res.status(409).json({success:false,error:"لا رمز مستخدم Meta محفوظ؛ نفّذ الربط عبر OAuth أولاً."});
+  const pages=await instagramClient().listLinkedInstagramAccounts(userToken);
+  if(!pages.ok) return res.status(502).json({success:false,error:pages.error||"تعذّر جلب حسابات Instagram."});
+  // لا يُعاد أي رمز للواجهة؛ معرّفات وأسماء فقط، والحسابات بلا Instagram مهني مُستبعدة.
+  const accounts=(pages.data||[]).filter((p)=>p.igAccountId).map((p)=>({pageId:p.pageId,pageName:p.pageName,igAccountId:p.igAccountId,igUsername:p.igUsername}));
+  res.json({success:true,accounts,note:"معرّفات وأسماء فقط بلا أي رمز وصول. تُعرض الحسابات المهنية المرتبطة بصفحات فقط."});
+});
+
+/** اختيار حساب Instagram محدّد لإتمام الربط (يثبته ويشترك في webhook فعلياً). */
+app.post("/api/platforms/instagram/select-account", requireOwner, async (req,res)=>{
+  const pageId=typeof req.body?.pageId==="string"?req.body.pageId.trim():"";
+  if(!pageId) return res.status(400).json({success:false,error:"معرّف الصفحة المرتبطة بالحساب مطلوب."});
+  const stored=getProviderToken("instagram");
+  const userToken=stored?.userAccessToken?String(stored.userAccessToken):"";
+  if(!userToken) return res.status(409).json({success:false,error:"لا رمز مستخدم Meta محفوظ؛ نفّذ الربط عبر OAuth أولاً."});
+  const result=await instagramFinalizeAccountSelection(pageId,userToken);
+  if(!result.ok) return res.status(502).json({success:false,error:result.error||"تعذّر ربط حساب Instagram المختار."});
+  await persistStateDurable();
+  audit((req as any).user.id,"instagram_account_selected",String(result.igAccountId||pageId));
+  res.json({success:true,connection:safeConnection("instagram"),igUsername:result.igUsername||null,webhookSubscribed:result.subscribed===true,subscribedFields:result.subscribedFields||null});
+});
+
+/** إثبات اشتراك الصفحة الفعلي في webhook (مقابل subscribed_apps). */
+app.get("/api/platforms/instagram/webhook-info", requireOwner, async (_req,res)=>{
+  const stored=getProviderToken("instagram");
+  const pageId=stored?.pageId?String(stored.pageId):"";
+  const pageToken=instagramPageToken();
+  if(!pageId||!pageToken) return res.status(409).json({success:false,error:"لا حساب Instagram موثق؛ نفّذ الربط أولاً."});
+  const subs=await instagramClient().getSubscribedFields(pageId,pageToken);
+  if(!subs.ok) return res.status(502).json({success:false,error:subs.error||"تعذّر قراءة اشتراكات الصفحة."});
+  res.json({
+    success:true,provider:"instagram",
+    pageId,pageName:stored?.pageName||null,
+    igAccountId:stored?.igAccountId||null,igUsername:stored?.igUsername||null,
+    webhookUrl:instagramWebhookUrl(),
+    subscribedFields:INSTAGRAM_SUBSCRIBED_FIELDS,
+    appSubscribed:(subs.data||[]).length>0,
+    subscribedFieldsReported:subs.data||[],
+    signatureSecretConfigured:Boolean(instagramAppSecret()),
+    verifyTokenConfigured:Boolean(instagramVerifyToken()),
+    checkedAt:new Date().toISOString(),
+    note:"حالة حقيقية من Meta بلا أي سرّ. لا يُعلن الاستقبال فعّالاً إلا باشتراك الصفحة الفعلي وتطابق رمز التحقق.",
+  });
+});
+
+/** استقبال أحداث Instagram — تحقق HMAC على الجسم الخام ثم تمييز التعليق عن الرسالة. */
+app.post("/api/platforms/instagram/webhook", requireRawBody, async (req,res)=>{
+  const secret=instagramAppSecret();
+  const rawBody=String((req as any).rawBody ?? "");
+  const verifier=hmacSignatureVerifier(INSTAGRAM_SIGNATURE_HEADER,"sha256");
+  const verification=verifier.verify({headers:req.headers as Record<string,string|undefined>,rawBody,secret});
+  if(!verification.ok){ logInstagramWebhook({kind:"unknown",outcome:"rejected"}); return res.status(401).json({success:false,error:verification.reason||"حدث غير موثوق."}); }
+  if(!isValidWebhookPayload(req.body)) return res.status(400).json({success:false,error:"حمولة webhook غير صالحة."});
+  const parsed=parseInstagramWebhook(req.body);
+  if(!parsed.events.length){
+    // أحداث مفهومة الشكل لكن غير مدعومة (تفاعلات/إشارات...) تُقبل وتُتجاهل بلا خطأ.
+    if(parsed.ignored.length) logInstagramWebhook({kind:"ignored",outcome:"ignored"});
+    return res.status(200).json({success:true,accepted:true,ignored:parsed.ignored.length?parsed.ignored.map((x)=>x.reason):["no_supported_event"]});
+  }
+  if(!Array.isArray((workspace as any).socialComments)) (workspace as any).socialComments=[];
+  if(!Array.isArray((workspace as any).instagramEventIds)) (workspace as any).instagramEventIds=[];
+  const seenExternal=(workspace as any).socialComments.filter((c:any)=>c.platform==="instagram").map((c:any)=>c.externalId);
+  const accepted:string[]=[];
+  let duplicates=0;
+  for(const ev of parsed.events){
+    if(isReplayOrDuplicate({providerEventId:ev.externalId,externalId:ev.externalId,seenProviderEventIds:(workspace as any).instagramEventIds,seenExternalIds:[...seenExternal,...accepted]})){ duplicates+=1; logInstagramWebhook({kind:ev.kind,externalId:ev.externalId,outcome:"duplicate"}); continue; }
+    const classification=classifyComment(ev.text);
+    (workspace as any).socialComments.unshift({
+      id:workspaceId("comment"),platform:"instagram",kind:ev.kind,externalId:ev.externalId,
+      postExternalId:ev.parentExternalId,authorName:ev.authorName,text:ev.text,
+      createdAt:ev.createdAt,classification,requiresHumanReview:classification.requiresHumanReview,
+      // مصدر الاستقبال حقيقي صراحةً، فلا يظهر كـ simulated/not delivered.
+      ingestSource:"instagram_webhook",replyTarget:ev.replyTarget,
+    });
+    if((workspace as any).socialComments.length>10000) (workspace as any).socialComments.pop();
+    (workspace as any).instagramEventIds=[...(workspace as any).instagramEventIds,ev.externalId].slice(-20000);
+    accepted.push(ev.externalId);
+    logInstagramWebhook({kind:ev.kind,externalId:ev.externalId,outcome:"accepted"});
+  }
+  (workspace as any).webhookEvents.unshift(...accepted.map((id)=>({id:workspaceId("event"),platform:"instagram",type:"webhook",externalId:id,receivedAt:new Date().toISOString()})));
+  (workspace as any).webhookEvents=(workspace as any).webhookEvents.slice(0,10000);
+  // ننتظر الكتابة الدائمة قبل الإقرار: تضمن ثبات الحدث ومعرّف منع التكرار.
+  await persistStateDurable();
+  const persisted=!lastPersistError;
+  if(accepted.length) audit("system","instagram_inbound_events",`${accepted.length}/${parsed.events.length}`);
+  res.status(200).json({success:true,accepted:true,processed:accepted.length,duplicates,persisted,acceptedKinds:parsed.events.filter((e)=>accepted.includes(e.externalId)).map((e)=>e.kind)});
+});
+
+/** يبني هدف الرد الحقيقي من الحالة الحالية (صفحة + رمز). */
+function instagramReplyTarget(): { pageId: string; pageToken: string; igAccountId: string } | { error: string } {
+  const pageId=instagramPageId();
+  const pageToken=instagramPageToken();
+  const igAccountId=instagramAccountId();
+  if(!pageId||!pageToken||!igAccountId) return {error:"لا حساب Instagram موثق؛ لا يمكن تنفيذ أي رد خارجي."};
+  return {pageId,pageToken,igAccountId};
+}
+
+/**
+ * الرد الحقيقي على تعليق Instagram — بعد التصنيف وحارس السلامة ومنع التكرار.
+ * لا يُسجَّل delivered=true إلا بمعرّف تعليق ردّ من Meta.
+ */
+app.post("/api/platforms/instagram/reply", requireOwner, async (req,res)=>{
+  const user=(req as any).user as {id:string};
+  const externalId=typeof req.body?.externalId==="string"?req.body.externalId.trim():"";
+  const text=typeof req.body?.text==="string"?req.body.text.trim():"";
+  const commentText=typeof req.body?.commentText==="string"?req.body.commentText:"";
+  if(!externalId) return res.status(400).json({success:false,error:"معرّف التعليق لدى Instagram مطلوب لمنع الرد المكرر."});
+  if(!text) return res.status(400).json({success:false,error:"نص الرد مطلوب."});
+  const conn:any=platformConnections.get("instagram");
+  if(!conn||conn.status!=="connected"||conn.providerVerified!==true){
+    return res.status(409).json({success:false,error:"Instagram غير متصل باتصال موثق؛ لا يمكن إرسال أي رد خارجي."});
+  }
+  const comment=(workspace as any).socialComments.find((c:any)=>c.platform==="instagram"&&c.externalId===externalId);
+  if(!comment) return res.status(404).json({success:false,error:"لا يوجد تعليق وارد بهذا المعرّف؛ لا إرسال بلا تعليق حقيقي."});
+
+  const classification=classifyComment(commentText||text);
+  if(!canAutoReply(classification)) return res.status(422).json({success:false,error:classification.reviewReason||"هذا التعليق يستوجب مراجعة بشرية قبل أي رد.",classification,requiresHumanReview:true});
+  const ownNames=[String(workspace.showroom?.name||""),"معرض الغرابي"];
+  if(isSelfAuthored(comment.authorName,ownNames)) return res.status(409).json({success:false,error:"التعليق صادر من حساب المعرض؛ لا يُرد عليه لتجنب حلقة ردود."});
+
+  const productId=typeof req.body?.productId==="string"?req.body.productId.trim():"";
+  const productName=typeof req.body?.productName==="string"?req.body.productName.trim():"";
+  const product=(workspace.products||[]).find((p:any)=>(productId&&p.id===productId)||(productName&&p.name===productName))||null;
+  const replyFacts=buildFactsForProduct(product,Number(product?.downPaymentPercent||0),Number(product?.durationMonths||0));
+  const safety=analyzeBusinessClaims(text,replyFacts);
+  if(!safety.safe) return res.status(422).json({success:false,error:"نص الرد يحمل عرضاً تجارياً غير مسجّل، وتم إيقافه قبل أي إرسال.",contentSafety:{safe:false,violations:safety.blocked.map((v)=>v.detail),codes:safety.blocked.map((v)=>v.code)}});
+
+  const history:ReplyRecord[]=(workspace as any).socialReplies.filter((r:any)=>r.platform==="instagram").map((r:any)=>({externalId:r.externalId,replyFingerprint:r.replyFingerprint,repliedAt:r.repliedAt}));
+  const decision=evaluateReplyGuard({externalId,replyText:text,history});
+  if(!decision.allowed) return res.status(409).json({success:false,error:decision.reason,guard:decision});
+
+  const target=instagramReplyTarget();
+  if("error" in target) return res.status(503).json({success:false,error:target.error});
+  const result=await instagramClient().replyToComment(String(comment.replyTarget?.commentId||externalId),target.pageToken,text);
+  const record={
+    id:workspaceId("reply"),platform:"instagram",externalId,text,kind:"comment",
+    replyFingerprint:decision.fingerprint,classification,
+    contentSafety:{safe:true,violations:[] as string[],codes:[] as string[]},
+    repliedAt:new Date().toISOString(),createdBy:user.id,simulated:false,
+    delivered:result.ok,providerReplyId:result.data?.providerCommentId||null,
+    receipt:result.ok?{provider:"instagram",commentId:result.data?.providerCommentId,sentAt:new Date().toISOString()}:null,
+    deliveryError:result.ok?null:(result.error||"فشل الرد على التعليق عبر Instagram."),
+    reviewStatus:result.ok?"delivered":"failed",
+    note:result.ok?"أُرسل الرد فعلياً عبر Instagram وثُبّت بمعرّف من Meta.":"فشل الإرسال عبر Instagram؛ لم يُسجَّل أي تسليم.",
+  };
+  if(!Array.isArray((workspace as any).socialReplies)) (workspace as any).socialReplies=[];
+  (workspace as any).socialReplies.unshift(record);
+  if((workspace as any).socialReplies.length>5000) (workspace as any).socialReplies.pop();
+  audit(user.id,result.ok?"social_instagram_comment_reply_sent":"social_instagram_comment_reply_failed",`${externalId}:${result.ok?"delivered":"failed"}`);
+  await persistStateDurable();
+  if(!result.ok) return res.status(502).json({success:false,delivered:false,simulated:false,reply:record,error:record.deliveryError});
+  res.json({success:true,delivered:true,simulated:false,providerReplyId:record.providerReplyId,reply:record});
+});
+
+/**
+ * الرد الحقيقي على رسالة Instagram المباشرة — مسار منفصل عن comment_reply
+ * (قدرة message_reply). لا تسليم بلا معرّف رسالة من Meta.
+ */
+app.post("/api/platforms/instagram/message-reply", requireOwner, async (req,res)=>{
+  const user=(req as any).user as {id:string};
+  const externalId=typeof req.body?.externalId==="string"?req.body.externalId.trim():"";
+  const recipientId=typeof req.body?.recipientId==="string"?req.body.recipientId.trim():"";
+  const text=typeof req.body?.text==="string"?req.body.text.trim():"";
+  const commentText=typeof req.body?.commentText==="string"?req.body.commentText:"";
+  if(!text) return res.status(400).json({success:false,error:"نص الرد مطلوب."});
+  const conn:any=platformConnections.get("instagram");
+  if(!conn||conn.status!=="connected"||conn.providerVerified!==true){
+    return res.status(409).json({success:false,error:"Instagram غير متصل باتصال موثق؛ لا يمكن إرسال أي رسالة خارجية."});
+  }
+  const comment=(workspace as any).socialComments.find((c:any)=>c.platform==="instagram"&&c.externalId===externalId&&c.kind==="message");
+  const targetRecipient=recipientId||String(comment?.replyTarget?.recipientId||"");
+  if(!comment&&!targetRecipient) return res.status(404).json({success:false,error:"لا توجد رسالة Instagram واردة بهذا المعرّف؛ لا إرسال بلا رسالة حقيقية."});
+  const classification=classifyComment(commentText||text);
+  if(!canAutoReply(classification)) return res.status(422).json({success:false,error:classification.reviewReason||"هذه الرسالة تستوجب مراجعة بشرية قبل أي رد.",classification,requiresHumanReview:true});
+
+  const guardExternalId=externalId||`ig-msg:${targetRecipient}`;
+  const history:ReplyRecord[]=(workspace as any).socialReplies.filter((r:any)=>r.platform==="instagram"&&r.kind==="message").map((r:any)=>({externalId:r.externalId,replyFingerprint:r.replyFingerprint,repliedAt:r.repliedAt}));
+  const decision=evaluateReplyGuard({externalId:guardExternalId,replyText:text,history});
+  if(!decision.allowed) return res.status(409).json({success:false,error:decision.reason,guard:decision});
+
+  const target=instagramReplyTarget();
+  if("error" in target) return res.status(503).json({success:false,error:target.error});
+  const result=await instagramClient().sendMessage(target.pageId,target.pageToken,targetRecipient,text);
+  const record={
+    id:workspaceId("reply"),platform:"instagram",externalId:guardExternalId,text,kind:"message",
+    replyFingerprint:decision.fingerprint,classification,
+    contentSafety:{safe:true,violations:[] as string[],codes:[] as string[]},
+    repliedAt:new Date().toISOString(),createdBy:user.id,simulated:false,
+    delivered:result.ok,providerReplyId:result.data?.providerMessageId||null,
+    receipt:result.ok?{provider:"instagram",messageId:result.data?.providerMessageId,recipientId:result.data?.recipientId,sentAt:new Date().toISOString()}:null,
+    deliveryError:result.ok?null:(result.error||"فشل إرسال الرسالة عبر Instagram."),
+    reviewStatus:result.ok?"delivered":"failed",
+    note:result.ok?"أُرسلت الرسالة فعلياً عبر Instagram وثُبّتت بمعرّف من Meta.":"فشل الإرسال عبر Instagram؛ لم يُسجَّل أي تسليم.",
+  };
+  if(!Array.isArray((workspace as any).socialReplies)) (workspace as any).socialReplies=[];
+  (workspace as any).socialReplies.unshift(record);
+  if((workspace as any).socialReplies.length>5000) (workspace as any).socialReplies.pop();
+  audit(user.id,result.ok?"social_instagram_message_reply_sent":"social_instagram_message_reply_failed",`${guardExternalId}:${result.ok?"delivered":"failed"}`);
+  await persistStateDurable();
+  if(!result.ok) return res.status(502).json({success:false,delivered:false,simulated:false,reply:record,error:record.deliveryError});
+  res.json({success:true,delivered:true,simulated:false,providerReplyId:record.providerReplyId,reply:record});
+});
+
+// -------------------------------------------------------------
 // Unified webhook foundation (Batch 6) — مسار واحد لكل المنصات.
 // الخطوات: تحقق المصدر (HMAC/سرّ) → منع replay → منع تكرار → تطبيع → حفظ → تصنيف.
 // Telegram له مساره الخاص (ترويسة سرّية). هنا المنصات الموقّعة بـHMAC (Meta/Threads/WhatsApp).
@@ -2110,6 +2517,28 @@ app.post("/api/platforms/:platform/publish", requireOwner, async (req, res) => {
       if (!result.ok) return res.status(502).json({ success: false, record, error: result.error, note: "لم يُسجَّل أي نشر بلا معرّف منشور حقيقي من المزود." });
       return res.json({ success: true, record, providerPostId: result.data?.providerPostId, receipt });
     }
+    if (platform === "instagram") {
+      // نشر Instagram عبر الخطوتين الرسميتين: إنشاء حاوية ثم نشرها.
+      // Instagram لا ينشر نصاً فقط؛ يلزم رابط صورة/فيديو عام — نُعلن ذلك صراحةً.
+      const target = instagramReplyTarget();
+      if ("error" in target) return res.status(503).json({ success: false, error: target.error, code: "CONNECTOR_NOT_READY" });
+      const imageUrl = typeof req.body?.imageUrl === "string" ? req.body.imageUrl.trim() : "";
+      const videoUrl = typeof req.body?.videoUrl === "string" ? req.body.videoUrl.trim() : "";
+      const reel = req.body?.reel === true;
+      const container = await instagramClient().createMediaContainer(target.igAccountId, target.pageToken, { imageUrl, videoUrl, caption: content, reel });
+      if (!container.ok || !container.data) {
+        return res.status(422).json({ success: false, error: container.error, code: "MEDIA_REQUIRED", note: "Instagram لا ينشر نصاً فقط؛ زوّد imageUrl أو videoUrl عاماً." });
+      }
+      const published = await instagramClient().publishContainer(target.igAccountId, target.pageToken, container.data.containerId);
+      const receipt = published.ok ? { provider: "instagram", igAccountId: target.igAccountId, containerId: container.data.containerId, postId: published.data?.providerPostId, mediaKind: container.data.mediaKind, sentAt: new Date().toISOString() } : null;
+      const record = buildPublishRecord({ platform: platform as any, postId: typeof req.body?.postId === "string" ? req.body.postId : workspaceId("post"), providerPostId: published.data?.providerPostId || null, simulated: false, error: published.ok ? null : published.error });
+      if (!Array.isArray((workspace as any).publishRecords)) (workspace as any).publishRecords = [];
+      (workspace as any).publishRecords.unshift({ ...record, id: workspaceId("publish"), createdBy: user.id, receipt });
+      persistState();
+      audit(user.id, published.ok ? "platform_publish_published" : "platform_publish_failed", `${platform}`);
+      if (!published.ok) return res.status(502).json({ success: false, record, error: published.error, containerId: container.data.containerId, note: "لم يُسجَّل أي نشر بلا معرّف منشور حقيقي من المزود." });
+      return res.json({ success: true, record, providerPostId: published.data?.providerPostId, containerId: container.data.containerId, receipt });
+    }
     return res.status(501).json({ success: false, error: "الموصل متصل لكن تنفيذ النشر لهذه المنصة يحتاج بيانات المزود ولم يُختلق تنفيذ وهمي.", code: "EXTERNAL_SETUP_REQUIRED", platform });
   } catch (e: any) {
     return res.status(502).json({ success: false, error: String(e?.message || e).slice(0, 300), code: "PROVIDER_ERROR" });
@@ -2279,9 +2708,12 @@ app.get("/api/platforms/control-plane", authenticateToken, (_req,res)=>{
   // Facebook خاص: قد يكتمل OAuth بينما ينتظر اختيار الصفحة. تُعلن هذه الحالة
   // صراحةً ولا تُترك الواجهة تظن أن الربط لم يبدأ فتعيد OAuth بلا نهاية.
   const fbPending = facebookPageSelectionPending();
+  const igPending = instagramPageSelectionPending();
   const platforms = statuses.map((s)=> s.platform === "facebook" && fbPending
     ? { ...s, pageSelectionPending: true, blockingReason: "تم تفويض Facebook بنجاح، لكن الحساب يدير أكثر من صفحة. اختر الصفحة المطلوبة لإتمام الربط.", nextAction: "اختر الصفحة «معرض الغرابي للتقسيط» من زر «اختيار الصفحة» لإتمام الربط والاشتراك في webhook." }
-    : { ...s, pageSelectionPending: s.platform === "facebook" ? false : undefined });
+    : s.platform === "instagram" && igPending
+      ? { ...s, pageSelectionPending: true, blockingReason: "تم تفويض Meta بنجاح، لكن الحساب يدير أكثر من صفحة لها حساب Instagram مهني. اختر الحساب المطلوب لإتمام الربط.", nextAction: "اختر حساب Instagram المطلوب من زر «اختيار الحساب» لإتمام الربط والاشتراك في webhook." }
+      : { ...s, pageSelectionPending: s.platform === "facebook" || s.platform === "instagram" ? false : undefined });
   res.json({ success:true, generatedAt:new Date().toISOString(), projectVersion:PROJECT_VERSION, summary:controlSummary(statuses), platforms, note:"الحالات منفصلة: CODE_READY ≠ CONFIGURED ≠ CONNECTED ≠ VERIFIED ≠ OPERATIONAL. لا تُعلن OPERATIONAL إلا باتصال موثق وموصل منفّذ." });
 });
 
@@ -2293,6 +2725,8 @@ app.get("/api/platforms/:platform/control", authenticateToken, (req,res)=>{
   if(!status) return res.status(404).json({success:false,error:"منصة غير مدعومة."});
   const fbPending = platform === "facebook" && facebookPageSelectionPending();
   if (fbPending) status = { ...status, pageSelectionPending: true, blockingReason: "تم تفويض Facebook بنجاح، لكن الحساب يدير أكثر من صفحة. اختر الصفحة المطلوبة لإتمام الربط.", nextAction: "اختر الصفحة «معرض الغرابي للتقسيط» من زر «اختيار الصفحة» لإتمام الربط والاشتراك في webhook." } as any;
+  const igPending = platform === "instagram" && instagramPageSelectionPending();
+  if (igPending) status = { ...status, pageSelectionPending: true, blockingReason: "تم تفويض Meta بنجاح، لكن الحساب يدير أكثر من صفحة لها حساب Instagram مهني. اختر الحساب المطلوب لإتمام الربط.", nextAction: "اختر حساب Instagram المطلوب من زر «اختيار الحساب» لإتمام الربط والاشتراك في webhook." } as any;
   const creds = inspectPlatformCredentials(platform as PlatformId, process.env);
   res.json({ success:true, control:status, credentials:{ connection:creds.connection, webhook:creds.webhook, requiredEnvNames:creds.requiredEnvNames }, note:"أسماء متغيرات فقط، بلا قيم." });
 });
@@ -2328,9 +2762,10 @@ app.get("/api/platforms/:platform/oauth/setup", requireOwner, (req,res)=>{
   const urlInfo=resolvePublicUrl(process.env);
   const redirectUri=`${urlInfo.baseUrl||publicBaseUrlNow()}/api/platforms/${platform}/oauth/callback`;
   const publicOk=publicUrlIsPublic();
-  // Facebook: الصلاحيات النهائية مع الاعتماديات الرسمية + أي فارق في تجاوز البيئة.
-  const resolvedScopes = platform==="facebook" ? facebookOAuthScopes() : cfg.scopes;
+  // Facebook/Instagram: الصلاحيات النهائية مع الاعتماديات الرسمية + أي فارق في تجاوز البيئة.
+  const resolvedScopes = platform==="facebook" ? facebookOAuthScopes() : platform==="instagram" ? instagramOAuthScopes() : cfg.scopes;
   const scopeDependencyGaps = platform==="facebook" ? facebookScopeDependencyGaps() : [];
+  const metaScopesResolved = platform==="facebook"||platform==="instagram";
   res.json({
     success:true,
     platform,
@@ -2346,7 +2781,7 @@ app.get("/api/platforms/:platform/oauth/setup", requireOwner, (req,res)=>{
     publicUrlIsPublic:publicOk,
     scopes:resolvedScopes,
     scopeOverrideConfigured:platform==="facebook"?facebookScopeOverride().length>0:undefined,
-    scopeDependenciesResolved:platform==="facebook"?true:undefined,
+    scopeDependenciesResolved:metaScopesResolved?true:undefined,
     scopeDependencyGaps:scopeDependencyGaps.length?scopeDependencyGaps:undefined,
     clientIdConfigured:Boolean(cfg.clientId),
     clientSecretConfigured:Boolean(cfg.clientSecret),
@@ -2358,12 +2793,12 @@ app.get("/api/platforms/:platform/oauth/setup", requireOwner, (req,res)=>{
       message:"صفحة Meta «حدث خطأ ما» (Sorry, something went wrong) تظهر لسببين فقط يمكن فحصهما: (1) معرّف تطبيق غير صالح/غير مطابق، (2) نطاق غير مُضمَّن في App Domains أو رابط إرجاع غير مسجّل.",
       checks:["طابق App ID مع Settings → Basic (أرقام فقط بلا مسافات).","أضف appDomainsValue إلى App Domains بلا https وبلا مسار.","أضف redirectUri بالضبط إلى Valid OAuth Redirect URIs.","تأكد أن Facebook Login product مُضاف وأن التطبيق Live (لا Development لمستخدمين غير مصرّح لهم)."],
     }:undefined,
-    appSecretConfigured:platform==="facebook"?Boolean(facebookAppSecret()):undefined,
-    verifyTokenConfigured:platform==="facebook"?Boolean(facebookVerifyToken()):undefined,
+    appSecretConfigured:(platform==="facebook"||platform==="instagram")?Boolean(platform==="instagram"?instagramAppSecret():facebookAppSecret()):undefined,
+    verifyTokenConfigured:(platform==="facebook"||platform==="instagram")?Boolean(platform==="instagram"?instagramVerifyToken():facebookVerifyToken()):undefined,
     // آخر نتيجة فحص بدء OAuth (منطقية فقط، بلا سرّ ولا استدعاء إضافي). تُظهر
     // للمالك سبب 409 داخل الواجهة: invalid_client_secret / invalid_client_id.
     lastPreflight:(()=>{ const p=lastOAuthPreflight.get(platform); return p ? { checkedAt:new Date(p.at).toISOString(), code:p.code, appTokenKind:p.appTokenKind, error:p.error??null, hint:p.hint??null } : null; })(),
-    webhookUrl:platform==="facebook"?facebookWebhookUrl():undefined,
+    webhookUrl:platform==="facebook"?facebookWebhookUrl():platform==="instagram"?instagramWebhookUrl():undefined,
     metaDashboardFields:platform==="facebook"||platform==="instagram"?{
       appDomains:"Settings → Basic → App Domains",
       validOAuthRedirectUris:"Facebook Login → Settings → Client OAuth Settings → Valid OAuth Redirect URIs",
@@ -2371,10 +2806,12 @@ app.get("/api/platforms/:platform/oauth/setup", requireOwner, (req,res)=>{
     }:undefined,
     // وضع التطبيق (Development/Live) لا يكشفه Graph API إطلاقاً؛ المصدر الوحيد
     // هو لوحة Meta. نُعلن ذلك صراحةً بدل الإيهام بفحص آلي لا وجود له.
-    metaAppModeNotice:platform==="facebook"?{
+    metaAppModeNotice:(platform==="facebook"||platform==="instagram")?{
       apiReadable:false,
       where:"Meta App Dashboard → الأعلى: مفتاح App Mode (Development/Live)",
-      impact:"في وضع Development يمكن للرولات (المدير/المطوّر/المختبِر) فقط التفويض؛ وأي حساب بلا رول يُرفض على شاشة الموافقة. ولأن صفحة المعرض قد تكون مملوكة لـBusiness Manager، فالمطلوب أيضاً رول على الصفحة وصلاحية business_management (يُطلبها الكود افتراضياً).",
+      impact:platform==="instagram"
+        ? "في وضع Development يمكن للرولات (المدير/المطوّر/المختبِر) فقط التفويض، ويلزم رول على الصفحة المرتبطة بحساب Instagram. ولتفعيل استقبال تعليقات/رسائل Instagram يجب تفعيل حقول webhook (comments/messages) لكائن instagram من لوحة Meta (Graph API لا يسمح بضبط حقول Instagram عبر subscribed_apps)."
+        : "في وضع Development يمكن للرولات (المدير/المطوّر/المختبِر) فقط التفويض؛ وأي حساب بلا رول يُرفض على شاشة الموافقة. ولأن صفحة المعرض قد تكون مملوكة لـBusiness Manager، فالمطلوب أيضاً رول على الصفحة وصلاحية business_management (يُطلبها الكود افتراضياً).",
     }:undefined,
     note:"قيَم حقيقية محسوبة من بيئة الخادم بلا أي سرّ. لا يُرسَل أي توكن أو مفتاح هنا.",
   });
@@ -3590,6 +4027,7 @@ function buildPersistedState() {
       telegramUpdateIds: ((workspace as any).telegramUpdateIds || []).slice(0, 20000),
       // معرّفات أحداث Facebook الواردة لصمود منع التكرار بعد restart.
       facebookEventIds: ((workspace as any).facebookEventIds || []).slice(0, 20000),
+      instagramEventIds: ((workspace as any).instagramEventIds || []).slice(0, 20000),
       providerTokens: (workspace as any).providerTokens,
     }
   };
@@ -3886,6 +4324,20 @@ app.get("/api/readiness", (_req, res) => {
         scopeCount: facebookOAuthScopes().length,
         scopeDependenciesResolved: facebookScopeDependencyGaps().length === 0,
         scopeDependencyGaps: facebookScopeDependencyGaps().length ? facebookScopeDependencyGaps() : undefined,
+      };
+    })(),
+    instagramOAuth: (() => {
+      const ig = OAUTH_CONFIG["instagram"];
+      return {
+        platform: "instagram",
+        clientIdConfigured: Boolean(ig?.clientId),
+        clientSecretConfigured: Boolean(ig?.clientSecret),
+        appSecretConfigured: Boolean(instagramAppSecret()),
+        verifyTokenConfigured: Boolean(instagramVerifyToken()),
+        pageAccessTokenStored: Boolean(getProviderToken("instagram")?.pageAccessToken),
+        igAccountStored: Boolean(getProviderToken("instagram")?.igAccountId),
+        pendingPageSelection: instagramPageSelectionPending(),
+        scopeCount: instagramOAuthScopes().length,
       };
     })(),
     timestamp: new Date().toISOString(),
@@ -4191,7 +4643,7 @@ app.get("/api/system/deployment-checklist", requireOwner, (_req,res)=>{
     {id:"publish-safety",label:"سلامة النشر",ok:automationJobs.every((j:any)=>j.status!=="published"||j.providerVerified===true)},
     {id:"provider-clarity",label:"وضوح حالة المنصات",ok:platformRows.every((x:any)=>!x.connected||x.providerVerified)},
   ];
-  res.json({success:true,ready:checks.every(x=>x.ok),projectVersion:PROJECT_VERSION,schemaVersion:STATE_SCHEMA_VERSION,checks,platforms:platformRows,productionAdapters:{telegram:"ready",youtube:"credentials-required",tiktok:"credentials-required",google_business:"credentials-required",facebook:"adapter-required",instagram:"adapter-required",whatsapp:"adapter-required",x:"adapter-required",snapchat:"adapter-required",threads:"adapter-required"},note:"الربط الحقيقي للمنصات يحتاج بيانات تطبيقات واعتمادات الحسابات الخاصة بالمالك؛ لا يتم اختلاقها أو اعتبار المنصة متصلة بدون تحقق مزود فعلي."});
+  res.json({success:true,ready:checks.every(x=>x.ok),projectVersion:PROJECT_VERSION,schemaVersion:STATE_SCHEMA_VERSION,checks,platforms:platformRows,productionAdapters:Object.fromEntries(SUPPORTED_PLATFORMS.map(p=>[p.id, hasRealConnector(p.id) ? "connector-implemented" : (OAUTH_CONFIG[p.id] ? "credentials-required" : "adapter-required")])),note:"الربط الحقيقي للمنصات يحتاج بيانات تطبيقات واعتمادات الحسابات الخاصة بالمالك؛ لا يتم اختلاقها أو اعتبار المنصة متصلة بدون تحقق مزود فعلي."});
 });
 
 app.get("/api/health", (_req, res) => {
@@ -4227,6 +4679,22 @@ app.get("/api/health", (_req, res) => {
         scopeCount: facebookOAuthScopes().length,
         scopeDependenciesResolved: facebookScopeDependencyGaps().length === 0,
         scopeDependencyGaps: facebookScopeDependencyGaps().length ? facebookScopeDependencyGaps() : undefined,
+      };
+    })(),
+    // حالة الاتصال الخاص بموصل Instagram الحقيقي (منطقي فقط بلا أي سرّ أو رمز).
+    instagramOAuth: (() => {
+      const ig = OAUTH_CONFIG["instagram"];
+      return {
+        platform: "instagram",
+        clientIdConfigured: Boolean(ig?.clientId),
+        clientSecretConfigured: Boolean(ig?.clientSecret),
+        appSecretConfigured: Boolean(instagramAppSecret()),
+        verifyTokenConfigured: Boolean(instagramVerifyToken()),
+        pageAccessTokenStored: Boolean(getProviderToken("instagram")?.pageAccessToken),
+        igAccountStored: Boolean(getProviderToken("instagram")?.igAccountId),
+        pendingPageSelection: instagramPageSelectionPending(),
+        scopeCount: instagramOAuthScopes().length,
+        scopesResolvedWithDependencies: true,
       };
     })(),
     // العنوان العام المعتمد: يكشف سبب فشل OAuth قبل وقوعه بلا أي سرّ. يبيّن مصدر

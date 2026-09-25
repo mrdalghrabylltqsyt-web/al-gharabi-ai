@@ -82,9 +82,14 @@ const ADAPTER_SPECS: AdapterSpec[] = [
     platform: 'instagram',
     name: 'Instagram',
     displayName: 'Instagram',
+    // Instagram API with Facebook Login: حساب Instagram للأعمال المرتبط بصفحة
+    // Facebook. التعليقات/الردود والرسائل المباشرة والنشر والتحليلات كلها عبر
+    // graph.facebook.com برمز الصفحة، فالقدرات مطابقة لِما يسمح به المسار فعلاً.
     capabilities: ['publish', 'messages', 'message_reply', 'analytics', 'comments', 'comment_reply', 'scheduling', 'audience_insights'],
-    credentialMode: 'app-registration',
-    realConnector: false,
+    // نفس آلية Facebook (OAuth تطبيق Meta + رمز صفحة) — لا حساب شخصي.
+    credentialMode: 'oauth2',
+    // ثالث موصل حقيقي منفّذ: OAuth + رمز صفحة + اكتشاف حساب IG + webhook + رد + رسالة + نشر.
+    realConnector: true,
   },
   {
     platform: 'whatsapp',

@@ -157,6 +157,10 @@ export const SocialHubView: React.FC = () => {
     // مسار الرسائل (message_reply). الفصل نفسه المطبَّق في Telegram.
     const isFacebookComment = comment.platform === 'facebook' && comment.kind !== 'message';
     const isFacebookMessage = comment.platform === 'facebook' && comment.kind === 'message';
+    // Instagram: تعليق يُرد عبر مسار التعليقات الحقيقي، ورسالة مباشرة عبر مسار
+    // الرسائل (message_reply). نفس الفصل المطبَّق في Facebook/Telegram.
+    const isInstagramComment = comment.platform === 'instagram' && comment.kind !== 'message';
+    const isInstagramMessage = comment.platform === 'instagram' && comment.kind === 'message';
     try {
       if (isTelegramMessage) {
         const res = await apiService.replyTelegram({
@@ -177,6 +181,16 @@ export const SocialHubView: React.FC = () => {
         showToast(res.delivered
           ? `أُرسلت الرسالة فعلياً عبر Facebook (معرّف ${res.providerReplyId || '—'}).`
           : 'لم يُسجَّل تسليم من Facebook.');
+      } else if (isInstagramComment) {
+        const res = await apiService.replyInstagram({ externalId: comment.externalId, text, commentText: comment.text });
+        showToast(res.delivered
+          ? `أُرسل الرد فعلياً عبر Instagram (معرّف ${res.providerReplyId || '—'}).`
+          : 'لم يُسجَّل تسليم من Instagram.');
+      } else if (isInstagramMessage) {
+        const res = await apiService.messageReplyInstagram({ externalId: comment.externalId, recipientId: comment.replyTarget?.recipientId, text, commentText: comment.text });
+        showToast(res.delivered
+          ? `أُرسلت الرسالة فعلياً عبر Instagram (معرّف ${res.providerReplyId || '—'}).`
+          : 'لم يُسجَّل تسليم من Instagram.');
       } else {
         await apiService.replyToSocialComment({ platform: comment.platform, externalId: comment.externalId, text, commentText: comment.text, authorName: comment.authorName || undefined });
         showToast('تم تسجيل الرد داخلياً. لا يُرسل إلى المنصة (لا يوجد موصل إرسال إنتاجي).');

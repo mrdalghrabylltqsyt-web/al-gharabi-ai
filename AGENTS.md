@@ -792,3 +792,66 @@ Business Portfolio، لكن أثره يجب أن يُثبت بالاختبار �
 Use Case. في Development يكفي رول المالك على الصفحة للتفويض؛ وأي حساب/صفحة خارج الرولات
 يحتاج App Review + Live.
 
+
+
+## موصل Instagram الحقيقي (Instagram API with Facebook Login) — Batch 10 (2026-09-25)
+
+Instagram صار **ثالث موصل اجتماعي حقيقي منفّذ** بعد Telegram وFacebook
+(`engine/social/instagram.ts`). المسار المعتمد هو **Instagram API with Facebook Login**
+وليس Instagram Login، لأنه المسار الذي تنتمي إليه البنية القائمة فعلاً: نفس تطبيق Meta
+(«وكيل الغرابي الذكي»)، ونفس `graph.facebook.com`، ونفس رمز صفحة Facebook (Page Access
+Token) المُشتق من رمز مستخدم طويل الأجل. لا تطبيق ثانٍ، ولا migration، وأقل تغيير ممكن.
+
+**القرار المُبرَّر:** لم يُنشأ Meta App جديد، ولا صفحة Facebook جديدة، ولا حساب Instagram
+جديد، ولم يُغيّر أي شيء في Gemini/Telegram/البنية. Instagram يعيد استخدام بيانات تطبيق
+Meta نفسها عبر بدائل: `INSTAGRAM_OAUTH_CLIENT_ID/SECRET` ثم `FACEBOOK_OAUTH_CLIENT_ID/SECRET`؛
+و`INSTAGRAM_APP_SECRET` ثم `FACEBOOK_APP_SECRET`؛ و`INSTAGRAM_VERIFY_TOKEN` ثم
+`FACEBOOK_VERIFY_TOKEN`. لذا **لا متغير بيئة جديد إلزامي** على Render للربط الافتراضي.
+
+**الصلاحيات (أسماء Facebook Login الرسمية، بلا أسماء Instagram Login):**
+`instagram_basic`, `instagram_content_publish`, `instagram_manage_comments`,
+`instagram_manage_messages`, `instagram_manage_insights`، وبديلات الصفحة
+`pages_show_list`, `pages_read_engagement`, `pages_manage_metadata`.
+`INSTAGRAM_PERMISSION_DEPENDENCIES` + `resolveInstagramScopes` +
+`findMissingInstagramScopeDependencies` هي المصدر الواحد الذي يضيف الاعتماديات الناقصة
+تلقائياً (كما في Facebook)، فلا ينتج «Invalid Scopes» ولا صلاحية مُسقَطة.
+**أسماء `instagram_business_*` (مسار Instagram Login) لا تُستخدم إطلاقاً** ويوجد فحص يمنعها.
+
+**الحساب المهني فقط:** الربط يقبل Instagram Business/Creator مرتبطاً بصفحة Facebook
+(`instagram_business_account`)؛ الحساب الشخصي Consumer غير مدعوم، وصفحة بلا حساب مهني
+تفشل صراحةً بلا ادعاء اتصال.
+
+- **الاكتشاف:** `GET /me/accounts?fields=...,instagram_business_account{id,username}` ثم
+  إثبات الهوية `GET /{ig-id}?fields=id,username`، ثم اشتراك الصفحة
+  `POST /{page-id}/subscribed_apps` بحقلي `comments,messages`.
+- **OAuth:** يسلك مسار `/api/platforms/:platform/oauth/start` + `/callback` نفسه
+  (state محمي، exchangeCode ثم exchangeLongLived)، وينتهي إما بربط مباشر (صفحة واحدة)
+  أو بحالة «بانتظار اختيار الحساب» (`instagramPageSelectionPending`) القابلة للوصول من
+  الواجهة عبر `/api/platforms/instagram/accounts` و`/select-account`.
+- **Webhook:** `GET /api/platforms/instagram/webhook` (challenge بمقارنة بزمن ثابت) و
+  `POST` بتحقق HMAC على **الجسم الخام** (`x-hub-signature-256`). `parseInstagramWebhook`
+  يميّز `comments` عن `messaging` ويعيد أي شكل غير معروف في `ignored`. معرّفات الأحداث
+  تُخزَّن في `instagramEventIds` عبر طَرَفَي الحفظ، فمنع التكرار يصمد بعد restart.
+  **الكتابة قبل الإقرار:** `await persistStateDurable()` قبل 200، والرد يحمل `persisted`.
+- **الرد:** مساران منفصلان — `POST /api/platforms/instagram/reply` (تعليق →
+  `POST /{comment-id}/replies`) و`POST /api/platforms/instagram/message-reply` (رسالة →
+  `POST /{page-id}/messages` بمستلم Instagram-scoped). كلاهما يمر بحارس سلامة المحتوى (422)
+  وبوابة منع التكرار، ولا `delivered=true` بلا معرّف تعليق/رسالة من Meta.
+- **النشر:** `POST /api/platforms/instagram/publish` (owner) بخطوتين رسميتين: إنشاء حاوية
+  `POST /{ig-id}/media` ثم `POST /{ig-id}/media_publish`. **Instagram لا ينشر نصاً فقط**؛
+  غياب رابط وسائط عام يُعلن `MEDIA_REQUIRED` (422) صراحةً. لا نشر بلا معرّف منشور من Meta.
+- **الأسرار:** تُحفظ مشفّرة AES-256-GCM داخل `providerTokens.instagram` ولا تُعاد ولا
+  تُسجَّل. سجل `logInstagramWebhook` آمن (نوع/معرّف/نتيجة فقط).
+
+**حالة التكامل الفعلية:** Telegram وFacebook وInstagram هي الموصلات الحقيقية الثلاثة؛
+بقية المنصات `FOUNDATION_READY`. Instagram يمكن أن يبلغ `OPERATIONAL` باتصال موثق + موصل
+منفّذ. اختبار `engine/tests/instagram.connector.test.ts` = **120 فحصاً** (وحدة + تكامل
+بخادم Meta وهمي محلي عبر `FACEBOOK_GRAPH_API_BASE`، بلا مزود ولا حصة). فحوص final-audit
+العشرون: `instagram-connector-module` … `instagram-health-non-secret` (196 فحصاً إجمالاً).
+
+**نقطة توقف المالك (إن ظهرت):** مسار Instagram API with Facebook Login يحتاج أن يكون
+حساب Instagram **مهنياً** (Business/Creator) ومرتبطاً بصفحة Facebook يديرها المالك، وأن
+تُفعَّل حقول webhook `comments`/`messages` لكائن `instagram` من Meta App Dashboard، وأن
+يُضاف redirect الحقيقي (`/api/platforms/instagram/oauth/callback`) في Valid OAuth Redirect
+URIs. أي رفض Advanced Access لصلاحيات التعليقات/الرسائل يحتاج App Review — يُعلن صراحةً
+ولا تُعتبر الميزة مفعّلة قبل تحقق فعلي.

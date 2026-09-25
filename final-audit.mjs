@@ -269,6 +269,30 @@ add('oauth-start-blocks-non-public-url', server.includes('PUBLIC_URL_NOT_PUBLIC'
 add('health-exposes-public-url', server.includes('publicUrl: (() =>') && server.includes('isPublic:') && server.includes('problems: u.problems'), '/api/health يعرض حالة العنوان العام بلا أي سرّ');
 add('public-url-regression-test', fs.existsSync(path.join(root, 'engine/tests/public.url.test.ts')) && pkg.scripts['test:public-url'] && typeof pkg.scripts.test === 'string' && pkg.scripts.test.includes('test:public-url'), 'اختبار انحدار العنوان العام مسجّل في package.json وضمن npm test');
 
+// Instagram — ثالث موصل اجتماعي حقيقي (Instagram API with Facebook Login، 2026-09-25).
+// نفس نمط Facebook: تطبيق Meta نفسه، توكن مشفّر، webhook موقّع، كتابة قبل الإقرار،
+// منع تكرار صامد، ورد/رسالة/نشر حقيقي بلا ادعاء. لا حساب شخصي (يلزم مهني).
+add('instagram-connector-module', fs.existsSync(path.join(root, 'engine/social/instagram.ts')) && read('engine/social/instagram.ts').includes('export class InstagramClient'), 'وحدة موصل Instagram الحقيقية موجودة');
+add('instagram-real-connector-registry', /platform: 'instagram'[\s\S]{0,900}?realConnector:\s*true/.test(read('engine/social/registry.ts')), 'Instagram مُعلن realConnector في السجل');
+add('instagram-modern-scopes', read('engine/social/instagram.ts').includes('instagram_basic') && read('engine/social/instagram.ts').includes('instagram_manage_comments') && read('engine/social/instagram.ts').includes('instagram_manage_messages') && read('engine/social/instagram.ts').includes('instagram_content_publish'), 'صلاحيات Instagram API with Facebook Login الرسمية مستخدمة');
+add('instagram-no-instagram-login-scope-names', !/INSTAGRAM_REQUIRED_SCOPES[\s\S]{0,500}?'instagram_business_/.test(read('engine/social/instagram.ts')), 'لا صلاحية باسم Instagram Login (instagram_business_*) في مخطط Facebook Login');
+add('instagram-professional-only', read('engine/social/instagram.ts').includes('INSTAGRAM_REQUIRES_PROFESSIONAL_ACCOUNT') && read('engine/social/instagram.ts').includes('instagram_business_account'), 'لا دعم للحساب الشخصي؛ يلزم Business/Creator مرتبط بصفحة');
+add('instagram-scope-dependencies', read('engine/social/instagram.ts').includes('INSTAGRAM_PERMISSION_DEPENDENCIES') && read('engine/social/instagram.ts').includes('resolveInstagramScopes') && read('engine/social/instagram.ts').includes('findMissingInstagramScopeDependencies'), 'اعتماديات صلاحيات Instagram مصدر واحد مُختبَر');
+add('instagram-oauth-routes', server.includes('/api/platforms/instagram/oauth/start') === false && server.includes('platform==="instagram"') && server.includes('instagramFinalizeAccountSelection'), 'Instagram يسلك مسار OAuth نفسه (start/callback) بإتمام اكتشاف الحساب');
+add('instagram-account-selection', server.includes('/api/platforms/instagram/accounts') && server.includes('/api/platforms/instagram/select-account') && server.includes('function instagramPageSelectionPending'), 'اكتشاف واختيار حساب Instagram المهني (مسار كامل قابل للوصول)');
+add('instagram-webhook-signature', server.includes('/api/platforms/instagram/webhook') && server.includes('INSTAGRAM_SIGNATURE_HEADER') && read('engine/social/instagram.ts').includes('parseInstagramWebhook'), 'webhook Instagram بتحقق توقيع وتطبيع صريح');
+add('instagram-inbound-durable-before-ack', /await persistStateDurable\(\);\s*const persisted=!lastPersistError;/.test(server) && /instagram\/webhook/.test(server), 'استقبال Instagram ينتظر الكتابة الدائمة قبل الإقرار');
+add('instagram-duplicate-persistence', server.includes('instagramEventIds') && read('server.ts').includes('instagramEventIds') && /instagramEventIds[\s\S]{0,400}?buildPersistedState|buildPersistedState[\s\S]{0,4000}?instagramEventIds/.test(server), 'معرّفات أحداث Instagram تُحفظ لصمود منع التكرار بعد restart');
+add('instagram-message-not-comment-reply', read('engine/social/registry.ts').includes('message_reply') && server.includes('/api/platforms/instagram/reply') && server.includes('/api/platforms/instagram/message-reply'), 'فصل تعليق Instagram عن رسالته (comment_reply ≠ message_reply)');
+add('instagram-reply-delivery-honest', /delivered:result\.ok,providerReplyId/.test(server) && server.includes('providerReplyId'), 'نجاح/فشل إرسال Instagram يُسجَّل صراحةً بلا ادعاء');
+add('instagram-publish-real-connector', server.includes('platform === "instagram"') && read('engine/social/instagram.ts').includes('createMediaContainer') && read('engine/social/instagram.ts').includes('publishContainer') && server.includes('MEDIA_REQUIRED'), 'نشر Instagram حقيقي (حاوية+نشر) بلا نص فقط وبلا ادعاء');
+add('instagram-webhook-safe-logging', server.includes('function logInstagramWebhook') && !/logInstagramWebhook\([^)]*(token|secret|access)/i.test(server), 'سجل استقبال Instagram آمن بلا أسرار');
+add('instagram-connector-tests', fs.existsSync(path.join(root, 'engine/tests/instagram.connector.test.ts')) && fs.existsSync(path.join(root, 'engine/tests/helpers/instagramMock.ts')) && pkg.scripts['test:instagram'], 'اختبار موصل Instagram (وحدة + تكامل بخادم وهمي) مسجّل');
+add('instagram-test-in-suite', typeof pkg.scripts.test === 'string' && pkg.scripts.test.includes('test:instagram'), 'اختبار Instagram ضمن npm test');
+add('instagram-connection-center-ui', read('src/components/social/PlatformConnectionCenter.tsx').includes('igPageSelection') && read('src/components/social/PlatformConnectionCenter.tsx').includes('InstagramWebhookStatus') && read('src/services/api.ts').includes('/api/platforms/instagram/select-account'), 'مركز الربط يعرض Instagram ويختار الحساب بلا أي سرّ');
+add('instagram-hub-real-reply', read('src/components/social/SocialHubView.tsx').includes('replyInstagram') && read('src/components/social/SocialHubView.tsx').includes('messageReplyInstagram'), 'الواجهة توجّه رد Instagram لمساره الحقيقي المنفصل');
+add('instagram-health-non-secret', server.includes('instagramOAuth:') && !/instagramOAuth[\s\S]{0,400}?clientId\s*:/.test(server), '/api/health/readiness يعرضان حالة Instagram منطقية بلا أي سرّ');
+
 const failed = checks.filter(x => !x.ok);
 console.table(checks);
 if (failed.length) {

@@ -517,6 +517,54 @@ ${payload.topic || payload.productName || 'أنظمة وحلول التقسيط 
     return data;
   },
 
+  // حسابات Instagram المهنية المرتبطة بصفحات الحساب بعد OAuth (معرّفات فقط بلا رموز).
+  async getInstagramAccounts() {
+    const res = await fetch('/api/platforms/instagram/accounts', { headers: getAuthHeaders() });
+    const data = await res.json();
+    if (!res.ok || !data.success) throw new Error(data.error || 'تعذر جلب حسابات Instagram');
+    return data;
+  },
+
+  // اختيار حساب Instagram مهني لإتمام الربط (إثبات فعلي + اشتراك في webhook).
+  async selectInstagramAccount(pageId: string) {
+    const res = await fetch('/api/platforms/instagram/select-account', { method:'POST', headers:getAuthHeaders(), body:JSON.stringify({ pageId }) });
+    const data = await res.json();
+    if (!res.ok || !data.success) throw new Error(data.error || 'تعذر ربط حساب Instagram');
+    return data;
+  },
+
+  // إرسال رد حقيقي على تعليق Instagram بعد الموافقة؛ يمر بحارس السلامة ومنع التكرار.
+  async replyInstagram(payload: { externalId: string; text: string; commentText?: string; productId?: string; productName?: string }) {
+    const res = await fetch('/api/platforms/instagram/reply', { method:'POST', headers:getAuthHeaders(), body:JSON.stringify(payload) });
+    const data = await res.json();
+    if (!res.ok || !data.success) throw new Error(data.error || 'تعذر إرسال الرد عبر Instagram');
+    return data;
+  },
+
+  // إرسال رسالة Instagram مباشرة عبر مسار message_reply المنفصل.
+  async messageReplyInstagram(payload: { externalId?: string; recipientId?: string; text: string; commentText?: string }) {
+    const res = await fetch('/api/platforms/instagram/message-reply', { method:'POST', headers:getAuthHeaders(), body:JSON.stringify(payload) });
+    const data = await res.json();
+    if (!res.ok || !data.success) throw new Error(data.error || 'تعذر إرسال الرسالة عبر Instagram');
+    return data;
+  },
+
+  // حالة اشتراك حساب Instagram في webhook (حقيقية من Meta بلا أي سرّ).
+  async getInstagramWebhookInfo() {
+    const res = await fetch('/api/platforms/instagram/webhook-info', { headers: getAuthHeaders() });
+    const data = await res.json();
+    if (!res.ok || !data.success) throw new Error(data.error || 'تعذر جلب حالة webhook من Instagram');
+    return data;
+  },
+
+  // نشر حقيقي على Instagram (حاوية + نشر) — يتطلب رابط صورة/فيديو عاماً.
+  async publishInstagram(payload: { content: string; imageUrl?: string; videoUrl?: string; reel?: boolean; approved: boolean; postId?: string }) {
+    const res = await fetch('/api/platforms/instagram/publish', { method:'POST', headers:getAuthHeaders(), body:JSON.stringify(payload) });
+    const data = await res.json();
+    if (!res.ok || !data.success) throw new Error(data.error || 'تعذر النشر عبر Instagram');
+    return data;
+  },
+
   // إعداد OAuth الدقيق للمنصة (رابط الإرجاع والنطاق المطلوب) — للمالك، بلا أي سرّ.
   async getPlatformOAuthSetup(platform: string) {
     const res = await fetch(`/api/platforms/${encodeURIComponent(platform)}/oauth/setup`, { headers: getAuthHeaders() });

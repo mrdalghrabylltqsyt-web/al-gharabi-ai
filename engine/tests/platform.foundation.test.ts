@@ -54,9 +54,9 @@ function run(): void {
       const spec = PLATFORM_SPECS.find((s) => s.platform === r.platform)!;
       return spec.displayName === r.displayName && spec.credentialMode === r.credentialMode;
     }));
-  // CONNECTOR_READY = موصل منفّذ فعلاً في الكود. Telegram أولاً ثم Facebook.
-  check('الموصلات المنفّذة CONNECTOR_READY = telegram,facebook', PLATFORM_READINESS.filter((r) => r.implementationStatus === 'CONNECTOR_READY').map((r) => r.platform).sort().join(',') === 'facebook,telegram');
-  check('كل بقية المنصات FOUNDATION_READY', PLATFORM_READINESS.filter((r) => !['telegram', 'facebook'].includes(r.platform)).every((r) => r.implementationStatus === 'FOUNDATION_READY'));
+  // CONNECTOR_READY = موصل منفّذ فعلاً في الكود. Telegram أولاً ثم Facebook ثم Instagram.
+  check('الموصلات المنفّذة CONNECTOR_READY = telegram,facebook,instagram', PLATFORM_READINESS.filter((r) => r.implementationStatus === 'CONNECTOR_READY').map((r) => r.platform).sort().join(',') === 'facebook,instagram,telegram');
+  check('كل بقية المنصات FOUNDATION_READY', PLATFORM_READINESS.filter((r) => !['telegram', 'facebook', 'instagram'].includes(r.platform)).every((r) => r.implementationStatus === 'FOUNDATION_READY'));
   check('المصفوفة لا تحمل حالة اتصال تشغيلية', PLATFORM_READINESS.every((r) => !('connected' in r) && !('providerVerified' in r) && ['READY', 'EXTERNAL_SETUP_REQUIRED', 'NOT_SUPPORTED'].includes(r.connection)));
   check('حقول الجاهزية كلها قيم معروفة',
     PLATFORM_READINESS.every((r) => [r.connector, r.oauth, r.connection, r.verification, r.webhook, r.read, r.reply, r.publish, r.schedule, r.analytics].every((v) => ['READY', 'EXTERNAL_SETUP_REQUIRED', 'NOT_SUPPORTED'].includes(v))));
@@ -74,7 +74,7 @@ function run(): void {
   check('كل منصة تدعم الرد يجب أن تدعم القراءة', PLATFORM_READINESS.every((r) => r.reply !== 'READY' || r.read !== 'NOT_SUPPORTED'));
   check('readinessFor يرفض المجهول', readinessFor('myspace') === null);
   const sum = readinessSummary();
-  check('ملخص الجاهزية صحيح', sum.total === 10 && sum.connectorReady === 2 && sum.foundationReady === 8);
+  check('ملخص الجاهزية صحيح', sum.total === 10 && sum.connectorReady === 3 && sum.foundationReady === 7);
 
   // ---------- 2) أساس OAuth ----------
   const s1 = createOAuthState();
