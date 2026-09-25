@@ -204,6 +204,11 @@ async function integrationTests(): Promise<void> {
     check('Facebook يعلن موصلاً حقيقياً', fbBefore.realConnector === true);
     const replyBefore = await fetch(`${BASE}/api/platforms/facebook/reply`, { method: 'POST', headers: auth, body: JSON.stringify({ externalId: 'C1', text: 'مرحباً' }) });
     check('لا رد قبل الاتصال => 409', replyBefore.status === 409);
+    // الصلاحية إلزامية منذ Graph v17 لعرض صفحات Business Manager عبر /me/accounts؛
+    // غيابها يجعل الحساب «يدير صفر صفحات» فيفشل الربط بلا سبب ظاهر. هذا الفحص
+    // يفشل ما لم تُطلب الصلاحية فعلاً في رابط التفويض.
+    const healthBefore = await (await fetch(`${BASE}/api/health`)).json();
+    check('health يعلن طلب business_management لـMeta', healthBefore.metaOAuth?.businessManagementScope === true, JSON.stringify(healthBefore.metaOAuth));
 
     group('5) تكامل: OAuth حقيقي (تبادل + إطالة + اختيار الصفحة)');
     const startRes = await (await fetch(`${BASE}/api/platforms/facebook/oauth/start`, { headers: auth })).json();
@@ -213,11 +218,17 @@ async function integrationTests(): Promise<void> {
     check('redirect_uri المُعاد هو الرابط الفعلي بالضبط', startRes.redirectUri === expectedRedirect, `got=${startRes.redirectUri}`);
     check('rابط التفويض يحمل نفس redirect_uri', new URL(startRes.authorizationUrl).searchParams.get('redirect_uri') === expectedRedirect);
     check('النطاق المُعلن مطابق لمضيف الرابط', startRes.domain === new URL(BASE).hostname);
+    // الصلاحية الحاسمة لتعداد صفحات Business Manager: يجب أن تكون في الرابط والاستجابة.
+    const startedScopes = (new URL(startRes.authorizationUrl).searchParams.get('scope') || '').split(',').filter(Boolean);
+    check('رابط التفويض يطلب business_management', startedScopes.includes('business_management'), `scopes=${startedScopes.join(',')}`);
+    check('الصلاحيات المُعلنة تطابق المُطلب فعلاً', Array.isArray(startRes.scopes) && startRes.scopes.includes('business_management'));
     // إعداد OAuth للمالك يعطي القيم الدقيقة المطلوبة في Meta بلا أي سرّ.
     const setup = await (await fetch(`${BASE}/api/platforms/facebook/oauth/setup`, { headers: auth })).json();
     check('oauth/setup يعيد redirect_uri الدقيق', setup.redirectUri === expectedRedirect, JSON.stringify(setup).slice(0, 200));
     check('oauth/setup يعرض حقل App Domains للعنوان العام فقط', setup.appDomainsValue === null && setup.publicUrlIsPublic === false, `appDomainsValue=${setup.appDomainsValue}`);
     check('oauth/setup يوجّه لحقول Meta Dashboard', Boolean(setup.metaDashboardFields?.validOAuthRedirectUris));
+    check('oauth/setup يعرض الصلاحيات الفعلية بلا سرّ', Array.isArray(setup.scopes) && setup.scopes.includes('business_management'));
+    check('oauth/setup لا يدّعي قراءة وضع التطبيق من API', setup.metaAppModeNotice?.apiReadable === false && Boolean(setup.metaAppModeNotice?.where));
     check('oauth/setup لا يكشف أي سرّ', !JSON.stringify(setup).includes(FB_APP_SECRET) && !JSON.stringify(setup).includes(FB_VERIFY_TOKEN) && !JSON.stringify(setup).includes('PAGE_TOKEN'));
     check('oauth/setup لغير المالك => 403', (await fetch(`${BASE}/api/platforms/facebook/oauth/setup`, { headers: staffAuth })).status === 403);
     const state = new URL(startRes.authorizationUrl).searchParams.get('state') || '';

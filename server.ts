@@ -941,11 +941,25 @@ function clearProviderToken(platform: string) { delete (workspace as any).provid
 function publicBaseUrlNow(): string { return resolvePublicUrl(process.env).baseUrl || `http://localhost:${PORT}`; }
 /** مسار إرجاع OAuth لكل منصة (يُبنى دائماً من العنوان العام المعتمد). */
 function oauthCallbackUrl(platform: string): string { return `${publicBaseUrlNow()}/api/platforms/${platform}/oauth/callback`; }
+/**
+ * صلاحيات Facebook Login الافتراضية. `business_management` إلزامي منذ Graph
+ * v17 لعرض صفحات Business Manager عبر /me/accounts؛ بدونه يظهر الحساب «يدير
+ * صفر صفحات» ويُرفض الربط بلا سبب ظاهر. يمكن تجاوزها من
+ * FACEBOOK_OAUTH_SCOPES (قائمة مفصولة بفواصل) إن رفض Meta صلاحية في وضع Live
+ * بلا مراجعة — فتبقى القدرة على الربط متاحة بلا تعديل كود.
+ */
+const FACEBOOK_DEFAULT_SCOPES = ["business_management", "pages_show_list", "pages_read_engagement", "pages_manage_engagement", "pages_manage_posts", "pages_manage_metadata", "pages_messaging"];
+function facebookOAuthScopes(): string[] {
+  const raw = (process.env.FACEBOOK_OAUTH_SCOPES || "").split(",").map((s) => s.trim()).filter(Boolean);
+  return raw.length ? raw : FACEBOOK_DEFAULT_SCOPES;
+}
 const OAUTH_CONFIG: Record<string, any> = {
   youtube: { provider: "google", auth: "https://accounts.google.com/o/oauth2/v2/auth", token: "https://oauth2.googleapis.com/token", clientId: process.env.GOOGLE_OAUTH_CLIENT_ID || process.env.GOOGLE_CLIENT_ID, clientSecret: process.env.GOOGLE_OAUTH_CLIENT_SECRET, scopes: ["https://www.googleapis.com/auth/youtube.upload"] },
   google_business: { provider: "google", auth: "https://accounts.google.com/o/oauth2/v2/auth", token: "https://oauth2.googleapis.com/token", clientId: process.env.GOOGLE_OAUTH_CLIENT_ID || process.env.GOOGLE_CLIENT_ID, clientSecret: process.env.GOOGLE_OAUTH_CLIENT_SECRET, scopes: ["https://www.googleapis.com/auth/business.manage"] },
   tiktok: { provider: "tiktok", auth: "https://www.tiktok.com/v2/auth/authorize/", token: "https://open.tiktokapis.com/v2/oauth/token/", clientId: process.env.TIKTOK_CLIENT_KEY, clientSecret: process.env.TIKTOK_CLIENT_SECRET, scopes: ["user.info.basic", "video.publish"] },
-  facebook: { provider: "meta", auth: `https://www.facebook.com${FACEBOOK_DIALOG_PATH}`, token: "https://graph.facebook.com/v21.0/oauth/access_token", clientId: process.env.FACEBOOK_OAUTH_CLIENT_ID, clientSecret: process.env.FACEBOOK_OAUTH_CLIENT_SECRET, scopes: ["pages_show_list", "pages_read_engagement", "pages_manage_engagement", "pages_manage_posts", "pages_manage_metadata", "pages_messaging"] },
+  // business_management إلزامي منذ Graph v17 لعرض صفحات Business Manager عبر
+  // /me/accounts؛ بدونه يظهر الحساب «يدير صفر صفحات» فاشلاً بلا سبب واضح.
+  facebook: { provider: "meta", auth: `https://www.facebook.com${FACEBOOK_DIALOG_PATH}`, token: "https://graph.facebook.com/v21.0/oauth/access_token", clientId: process.env.FACEBOOK_OAUTH_CLIENT_ID, clientSecret: process.env.FACEBOOK_OAUTH_CLIENT_SECRET, scopes: facebookOAuthScopes() },
   instagram: { provider: "meta", auth: `https://www.facebook.com${FACEBOOK_DIALOG_PATH}`, token: "https://graph.facebook.com/v21.0/oauth/access_token", clientId: process.env.INSTAGRAM_OAUTH_CLIENT_ID, clientSecret: process.env.INSTAGRAM_OAUTH_CLIENT_SECRET, scopes: ["instagram_basic", "instagram_manage_comments", "instagram_manage_messages", "pages_show_list"] },
   x: { provider: "x", auth: "https://twitter.com/i/oauth2/authorize", token: "https://api.twitter.com/2/oauth2/token", clientId: process.env.X_OAUTH_CLIENT_ID, clientSecret: process.env.X_OAUTH_CLIENT_SECRET, scopes: ["tweet.read", "tweet.write", "users.read", "offline.access"] },
   snapchat: { provider: "snapchat", auth: "https://accounts.snapchat.com/login/oauth2/authorize", token: "https://accounts.snapchat.com/login/oauth2/access_token", clientId: process.env.SNAPCHAT_OAUTH_CLIENT_ID, clientSecret: process.env.SNAPCHAT_OAUTH_CLIENT_SECRET, scopes: ["snapchat-marketing-api"] },
@@ -1447,7 +1461,7 @@ app.get("/api/platforms/:platform/oauth/callback", async (req,res)=>{
       token={access_token:userToken,expires_in:long.data?.expiresIn??short.data.expiresIn};
       // ترشيح الصفحات: صفحة واحدة => ربط مباشر؛ عدة صفحات => اختيار من الواجهة.
       const pages=await client.listManagedPages(userToken);
-      if(!pages.ok || !pages.data?.length) throw new Error(pages.error||"لا توجد صفحة Facebook يديرها هذا الحساب؛ الربط خاص بصفحات لا بالحساب الشخصي.");
+      if(!pages.ok || !pages.data?.length) throw new Error(pages.error||"لم يُعد Meta أي صفحة لهذا الحساب عبر /me/accounts. السبب الأكثر شيوعاً: الصفحة مملوكة لـBusiness Manager فتحتاج صلاحية business_management ورول على الصفحة (تُمنح تلقائياً لرول التطبيق في وضع Development). تحقق أن المستخدم أدمن/محرر على صفحة «معرض الغرابي للتقسيط».");
       if(pages.data.length===1) {
         const fin=await facebookFinalizePageSelection(pages.data[0].pageId,userToken);
         if(!fin.ok) throw new Error(fin.error||"تعذّر إتمام ربط الصفحة.");
@@ -2302,6 +2316,13 @@ app.get("/api/platforms/:platform/oauth/setup", requireOwner, (req,res)=>{
       appDomains:"Settings → Basic → App Domains",
       validOAuthRedirectUris:"Facebook Login → Settings → Client OAuth Settings → Valid OAuth Redirect URIs",
       instructions:"أضف قيمة appDomainsValue إلى App Domains، وأضف redirectUri بالضبط إلى Valid OAuth Redirect URIs، ثم احفظ.",
+    }:undefined,
+    // وضع التطبيق (Development/Live) لا يكشفه Graph API إطلاقاً؛ المصدر الوحيد
+    // هو لوحة Meta. نُعلن ذلك صراحةً بدل الإيهام بفحص آلي لا وجود له.
+    metaAppModeNotice:platform==="facebook"?{
+      apiReadable:false,
+      where:"Meta App Dashboard → الأعلى: مفتاح App Mode (Development/Live)",
+      impact:"في وضع Development يمكن للرولات (المدير/المطوّر/المختبِر) فقط التفويض؛ وأي حساب بلا رول يُرفض على شاشة الموافقة. ولأن صفحة المعرض قد تكون مملوكة لـBusiness Manager، فالمطلوب أيضاً رول على الصفحة وصلاحية business_management (يُطلبها الكود افتراضياً).",
     }:undefined,
     note:"قيَم حقيقية محسوبة من بيئة الخادم بلا أي سرّ. لا يُرسَل أي توكن أو مفتاح هنا.",
   });
@@ -3807,6 +3828,7 @@ app.get("/api/readiness", (_req, res) => {
         userAccessTokenStored: Boolean(getProviderToken("facebook")?.userAccessToken),
         pageAccessTokenStored: Boolean(getProviderToken("facebook")?.pageAccessToken),
         pendingPageSelection: facebookPageSelectionPending(),
+        businessManagementScope: facebookOAuthScopes().includes("business_management"),
       };
     })(),
     timestamp: new Date().toISOString(),
@@ -4142,6 +4164,7 @@ app.get("/api/health", (_req, res) => {
         userAccessTokenStored: Boolean(getProviderToken("facebook")?.userAccessToken),
         pageAccessTokenStored: Boolean(getProviderToken("facebook")?.pageAccessToken),
         pendingPageSelection: facebookPageSelectionPending(),
+        businessManagementScope: facebookOAuthScopes().includes("business_management"),
       };
     })(),
     // العنوان العام المعتمد: يكشف سبب فشل OAuth قبل وقوعه بلا أي سرّ. يبيّن مصدر

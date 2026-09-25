@@ -698,3 +698,31 @@ final-audit الجديدة: `meta-generic-error-classified` … `meta-generic-er
 **ما بقي على المالك (لا يُخفيه الكود):** تأكيد أن `FACEBOOK_OAUTH_CLIENT_ID` هو App ID
 تطبيق Facebook Login نفسه (أرقام فقط، بلا مسافة) و`FACEBOOK_OAUTH_CLIENT_SECRET` هو
 App Secret المطابق. الفحص الآن يُعلن ذلك صراحةً في رد `oauth/start` بدل الصفحة الغامضة.
+
+## صلاحية business_management لصفحات Business Manager — Batch 9 (2026-09-25)
+
+عند محاولة تفعيل Facebook فعلياً (بعد إثبات أن App ID صالح وبيئة Meta مضبوطة) ظهر أن
+الموصل كان يطلب صفحات الحساب عبر `/me/accounts` بلا صلاحية `business_management`.
+وهذه الصلاحية **إلزامية منذ Graph v17**: الصفحة المملوكة لـBusiness Manager لا تظهر في
+`/me/accounts` إطلاقاً بدونها، فيبدو الحساب «يدير صفر صفحات» ويفشل الربط برسالة عامة
+بلا سبب ظاهر — وهذا أسوأ أنواع العطل لأنه يبدو كأن الصفحة غير موجودة.
+
+الإصلاح (بلا أي ادعاء ولا سرّ):
+- `FACEBOOK_DEFAULT_SCOPES` في `server.ts` صار يتصدّر بـ`business_management`، وتُبنى
+  الصلاحيات عبر `facebookOAuthScopes()` الذي يقبل تجاوزاً من `FACEBOOK_OAUTH_SCOPES`
+  (قائمة مفصولة بفواصل) إن رفض Meta صلاحية في وضع Live بلا مراجعة — فيبقى الربط ممكناً
+  بلا تعديل كود.
+- رسالة فشل `/me/accounts` صارت تُعلن السبب الأكثر شيوعاً (صفحة Business Manager + رول
+  على الصفحة) بدل «لا توجد صفحة».
+- `/api/health` و`/api/readiness` يعرضان `metaOAuth.businessManagementScope` (منطقي فقط).
+- `oauth/setup` يعرض قائمة الصلاحيات الفعلية، ويضيف `metaAppModeNotice` الذي يصرّح بأن
+  **وضع التطبيق (Development/Live) لا يكشفه Graph API إطلاقاً**؛ مصدره الوحيد لوحة Meta.
+
+اختبارات: `facebook.connector.test.ts` صار **127 فحصاً** (فحوص تفشل بلا الصلاحية:
+وجودها في رابط التفويض، في `health.metaOAuth.businessManagementScope`، في `oauth/setup`؛
+وفحص أن `oauth/setup` لا يدّعي قراءة وضع التطبيق من API). فحص final-audit:
+`facebook-business-management-scope`.
+
+**حد لا يمكن للكود تجاوزه (نقطة توقف المالك):** وضع تطبيق Meta (Development/Live) —
+يُفحص من لوحة Meta فقط. في Development يمكن للرولات فقط التفويض؛ ولتفويض صفحة Business
+Manager يلزم رول على الصفحة + الصلاحية أعلاه.
