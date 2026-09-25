@@ -512,6 +512,26 @@ async function integrationTests(): Promise<void> {
     check('oauth/setup يُعلن أن الصلاحيات حُلَّت باعتمادياتها', partialSetup.scopeDependenciesResolved === true && partialSetup.scopeOverrideConfigured === true);
     check('oauth/setup يعرض الفارق المُكمَّل بلا سرّ', Array.isArray(partialSetup.scopeDependencyGaps) && partialSetup.scopeDependencyGaps.includes('pages_read_user_content'));
     await scopeMock.stop();
+
+    // تجاوب Render: قد تُلصق قيم البيئة بمسافة/سطر زائد فيبدو الإعداد «صحيحاً»
+    // بينما يرفض Meta السرّ بـinvalid_client_secret فيمنع OAuth بـ409. يجب أن
+    // يُطبَّع المعرّف/السرّ تلقائياً فلا يتوقف الربط بلا سبب ظاهر.
+    group('22) تكامل: تطبيع مسافات/أسطر بيئة Meta يمنع 409 الخاطئ');
+    await stop(currentApp.proc);
+    const wsMock = await startFacebookMockServer(FB_PORT + 4, createFacebookMock());
+    currentApp = startApp(wsMock.base, {
+      FACEBOOK_OAUTH_CLIENT_ID: '145634995501895 ',
+      FACEBOOK_OAUTH_CLIENT_SECRET: 'test-fb-client-secret\n',
+    });
+    check('الخادم يقلع مع قيم بيئة تحمل مسافات', await waitForHealth(), currentApp.log().slice(0, 300));
+    Object.assign(auth, await login());
+    const wsStart = await fetch(`${BASE}/api/platforms/facebook/oauth/start`, { headers: auth });
+    const wsBody: any = await wsStart.json();
+    check('بدء OAuth ينجح رغم المسافات الزائدة (200)', wsStart.status === 200, `status=${wsStart.status} body=${JSON.stringify(wsBody).slice(0, 200)}`);
+    check('يُعاد رابط تفويض صالح بعد التطبيع', typeof wsBody.authorizationUrl === 'string' && wsBody.authorizationUrl.includes('client_id=145634995501895'));
+    check('الفحص استدعى Graph بالسرّ المطبَّع (بلا سطر زائد)', wsMock.state.lastAppTokenCheck?.secretLen === 'test-fb-client-secret'.length);
+    check('لا يُفصح عن أي سرّ في الاستجابة', !JSON.stringify(wsBody).includes('test-fb-client-secret'));
+    await wsMock.stop();
   } finally {
     try { await stop(currentApp.proc); } catch { /* تجاهل */ }
     await mock.stop();

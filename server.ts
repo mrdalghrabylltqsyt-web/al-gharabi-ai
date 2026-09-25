@@ -971,17 +971,31 @@ function facebookOAuthScopes(): string[] {
 function facebookScopeDependencyGaps(): string[] {
   return missingScopeDependenciesFromCsv(process.env.FACEBOOK_OAUTH_SCOPES);
 }
+/**
+ * قراءة قيمة بيئة مع تطبيع المسافات حولها.
+ *
+ * السبب: Render (أو لصق القيمة) قد يضيف سطراً/مسافة زائدة، فتبدو القيمة
+ * «مضبوطة» بينما يرفضها المزود بلا سبب ظاهر — وهذا بالضبط ما كان ينتج
+ * `invalid_client_secret` من Meta فيمنع بدء OAuth بـ409. التطبيع آمن لأنه
+ * لا يغيّر قيمة نظيفة إطلاقاً، والقيمة الفارغة تبقى معتبرة غير مضبوطة.
+ */
+function envSecret(name: string): string | undefined {
+  const v = process.env[name];
+  if (typeof v !== "string") return undefined;
+  return v.trim() || undefined;
+}
+
 const OAUTH_CONFIG: Record<string, any> = {
-  youtube: { provider: "google", auth: "https://accounts.google.com/o/oauth2/v2/auth", token: "https://oauth2.googleapis.com/token", clientId: process.env.GOOGLE_OAUTH_CLIENT_ID || process.env.GOOGLE_CLIENT_ID, clientSecret: process.env.GOOGLE_OAUTH_CLIENT_SECRET, scopes: ["https://www.googleapis.com/auth/youtube.upload"] },
-  google_business: { provider: "google", auth: "https://accounts.google.com/o/oauth2/v2/auth", token: "https://oauth2.googleapis.com/token", clientId: process.env.GOOGLE_OAUTH_CLIENT_ID || process.env.GOOGLE_CLIENT_ID, clientSecret: process.env.GOOGLE_OAUTH_CLIENT_SECRET, scopes: ["https://www.googleapis.com/auth/business.manage"] },
-  tiktok: { provider: "tiktok", auth: "https://www.tiktok.com/v2/auth/authorize/", token: "https://open.tiktokapis.com/v2/oauth/token/", clientId: process.env.TIKTOK_CLIENT_KEY, clientSecret: process.env.TIKTOK_CLIENT_SECRET, scopes: ["user.info.basic", "video.publish"] },
+  youtube: { provider: "google", auth: "https://accounts.google.com/o/oauth2/v2/auth", token: "https://oauth2.googleapis.com/token", clientId: envSecret("GOOGLE_OAUTH_CLIENT_ID") || envSecret("GOOGLE_CLIENT_ID"), clientSecret: envSecret("GOOGLE_OAUTH_CLIENT_SECRET"), scopes: ["https://www.googleapis.com/auth/youtube.upload"] },
+  google_business: { provider: "google", auth: "https://accounts.google.com/o/oauth2/v2/auth", token: "https://oauth2.googleapis.com/token", clientId: envSecret("GOOGLE_OAUTH_CLIENT_ID") || envSecret("GOOGLE_CLIENT_ID"), clientSecret: envSecret("GOOGLE_OAUTH_CLIENT_SECRET"), scopes: ["https://www.googleapis.com/auth/business.manage"] },
+  tiktok: { provider: "tiktok", auth: "https://www.tiktok.com/v2/auth/authorize/", token: "https://open.tiktokapis.com/v2/oauth/token/", clientId: envSecret("TIKTOK_CLIENT_KEY"), clientSecret: envSecret("TIKTOK_CLIENT_SECRET"), scopes: ["user.info.basic", "video.publish"] },
   // business_management إلزامي منذ Graph v17 لعرض صفحات Business Manager عبر
   // /me/accounts؛ بدونه يظهر الحساب «يدير صفر صفحات» فاشلاً بلا سبب واضح.
-  facebook: { provider: "meta", auth: `https://www.facebook.com${FACEBOOK_DIALOG_PATH}`, token: "https://graph.facebook.com/v21.0/oauth/access_token", clientId: process.env.FACEBOOK_OAUTH_CLIENT_ID, clientSecret: process.env.FACEBOOK_OAUTH_CLIENT_SECRET, scopes: facebookOAuthScopes() },
-  instagram: { provider: "meta", auth: `https://www.facebook.com${FACEBOOK_DIALOG_PATH}`, token: "https://graph.facebook.com/v21.0/oauth/access_token", clientId: process.env.INSTAGRAM_OAUTH_CLIENT_ID, clientSecret: process.env.INSTAGRAM_OAUTH_CLIENT_SECRET, scopes: ["instagram_basic", "instagram_manage_comments", "instagram_manage_messages", "pages_show_list"] },
-  x: { provider: "x", auth: "https://twitter.com/i/oauth2/authorize", token: "https://api.twitter.com/2/oauth2/token", clientId: process.env.X_OAUTH_CLIENT_ID, clientSecret: process.env.X_OAUTH_CLIENT_SECRET, scopes: ["tweet.read", "tweet.write", "users.read", "offline.access"] },
-  snapchat: { provider: "snapchat", auth: "https://accounts.snapchat.com/login/oauth2/authorize", token: "https://accounts.snapchat.com/login/oauth2/access_token", clientId: process.env.SNAPCHAT_OAUTH_CLIENT_ID, clientSecret: process.env.SNAPCHAT_OAUTH_CLIENT_SECRET, scopes: ["snapchat-marketing-api"] },
-  threads: { provider: "meta", auth: "https://threads.net/oauth/authorize", token: "https://graph.threads.net/oauth/access_token", clientId: process.env.THREADS_OAUTH_CLIENT_ID, clientSecret: process.env.THREADS_OAUTH_CLIENT_SECRET, scopes: ["threads_basic", "threads_content_publish", "threads_manage_replies"] },
+  facebook: { provider: "meta", auth: `https://www.facebook.com${FACEBOOK_DIALOG_PATH}`, token: "https://graph.facebook.com/v21.0/oauth/access_token", clientId: envSecret("FACEBOOK_OAUTH_CLIENT_ID"), clientSecret: envSecret("FACEBOOK_OAUTH_CLIENT_SECRET"), scopes: facebookOAuthScopes() },
+  instagram: { provider: "meta", auth: `https://www.facebook.com${FACEBOOK_DIALOG_PATH}`, token: "https://graph.facebook.com/v21.0/oauth/access_token", clientId: envSecret("INSTAGRAM_OAUTH_CLIENT_ID"), clientSecret: envSecret("INSTAGRAM_OAUTH_CLIENT_SECRET"), scopes: ["instagram_basic", "instagram_manage_comments", "instagram_manage_messages", "pages_show_list"] },
+  x: { provider: "x", auth: "https://twitter.com/i/oauth2/authorize", token: "https://api.twitter.com/2/oauth2/token", clientId: envSecret("X_OAUTH_CLIENT_ID"), clientSecret: envSecret("X_OAUTH_CLIENT_SECRET"), scopes: ["tweet.read", "tweet.write", "users.read", "offline.access"] },
+  snapchat: { provider: "snapchat", auth: "https://accounts.snapchat.com/login/oauth2/authorize", token: "https://accounts.snapchat.com/login/oauth2/access_token", clientId: envSecret("SNAPCHAT_OAUTH_CLIENT_ID"), clientSecret: envSecret("SNAPCHAT_OAUTH_CLIENT_SECRET"), scopes: ["snapchat-marketing-api"] },
+  threads: { provider: "meta", auth: "https://threads.net/oauth/authorize", token: "https://graph.threads.net/oauth/access_token", clientId: envSecret("THREADS_OAUTH_CLIENT_ID"), clientSecret: envSecret("THREADS_OAUTH_CLIENT_SECRET"), scopes: ["threads_basic", "threads_content_publish", "threads_manage_replies"] },
 };
 function oauthReady(platform: string) { const c = OAUTH_CONFIG[platform]; return Boolean(c?.clientId && c?.clientSecret && resolvePublicUrl(process.env).valid && tokenKeyBytes()); }
 /** هل العنوان العام الحالي عام (https على نطاق غير محلي)؟ يلزم للربط الإنتاجي. */
@@ -1067,6 +1081,12 @@ const META_OAUTH_PLATFORMS = new Set(["facebook", "instagram"]);
 /** تخزين مؤقت قصير لنتيجة فحص بدء OAuth (يمنع إغراق Meta عند كل ضغطة زر). */
 const oauthStartPreflightCache = new Map<string, { at: number; result: any }>();
 const OAUTH_PREFLIGHT_TTL_MS = 5 * 60 * 1000;
+/**
+ * آخر نتيجة فحص لبدء OAuth لكل منصة (نجاح أو فشل). تُعرَض في `oauth/setup`
+ * ليتأكد المالك من سبب الحجب (`appTokenKind`) داخل الواجهة بلا حاجة لسجلات
+ * Render — وبلا أي سرّ ولا استدعاء Graph إضافي.
+ */
+const lastOAuthPreflight = new Map<string, { at: number; code: string | null; appTokenKind: string | null; error?: string; hint?: string }>();
 
 /**
  * سجل بدء OAuth آمن: بلا أي سرّ ولا توكن — فقط المنصة والنتيجة والفاتورة.
@@ -1149,6 +1169,7 @@ async function oauthStartPreflight(platform: string): Promise<OAuthStartPrefligh
     }
     // نُخزّن النجاح فقط. الفشل لا يُخزَّن حتى يستطيع المالك إصلاح البيئة والمحاولة فوراً.
     if (result.ok && !result.code) oauthStartPreflightCache.set(platform, { at: Date.now(), result });
+    lastOAuthPreflight.set(platform, { at: Date.now(), code: result.code ?? null, appTokenKind: result.appToken?.kind ?? null, error: result.error, hint: result.hint });
     return result;
   }
   return { ok: true };
@@ -2339,6 +2360,9 @@ app.get("/api/platforms/:platform/oauth/setup", requireOwner, (req,res)=>{
     }:undefined,
     appSecretConfigured:platform==="facebook"?Boolean(facebookAppSecret()):undefined,
     verifyTokenConfigured:platform==="facebook"?Boolean(facebookVerifyToken()):undefined,
+    // آخر نتيجة فحص بدء OAuth (منطقية فقط، بلا سرّ ولا استدعاء إضافي). تُظهر
+    // للمالك سبب 409 داخل الواجهة: invalid_client_secret / invalid_client_id.
+    lastPreflight:(()=>{ const p=lastOAuthPreflight.get(platform); return p ? { checkedAt:new Date(p.at).toISOString(), code:p.code, appTokenKind:p.appTokenKind, error:p.error??null, hint:p.hint??null } : null; })(),
     webhookUrl:platform==="facebook"?facebookWebhookUrl():undefined,
     metaDashboardFields:platform==="facebook"||platform==="instagram"?{
       appDomains:"Settings → Basic → App Domains",

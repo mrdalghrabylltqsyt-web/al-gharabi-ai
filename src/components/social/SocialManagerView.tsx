@@ -223,7 +223,7 @@ export const SocialManagerView: React.FC = () => {
     } catch (err: any) {
       // عند رفض العنوان العام (localhost/بلا https) أو غياب الإعداد، نُبرز الرابط
       // والنطاق الفعليين ليُسجّلهما المالك لدى Meta بدل رسالة فشل غامضة.
-      showToast(err?.message || 'تعذر بدء ربط Facebook');
+      showToast((err?.code ? `[${err.code}] ` : '') + (err?.message || 'تعذر بدء ربط Facebook'));
       try { const setup = await apiService.getPlatformOAuthSetup('facebook'); setFbSetup(setup); } catch { /* اختياري */ }
     }
     finally { setFbBusy(false); }

@@ -164,7 +164,12 @@ export const PlatformConnectionCenter: React.FC = () => {
       const res = await apiService.startPlatformOAuth(platform);
       if (res?.authorizationUrl) { window.location.href = res.authorizationUrl; return; }
       showToast('تم بدء الربط.');
-    } catch (e: any) { showToast(e?.message || 'تعذر بدء الربط'); }
+    } catch (e: any) {
+      // إظهار رمز الفحص الصريح بدل نص عام: سبب 409 (مثل META_APP_SECRET_INVALID)
+      // يجب أن يظهر للمالك مباشرة، وإلا بدا الزر «لا يفعل شيئاً».
+      const code = e?.code ? `[${e.code}] ` : '';
+      showToast(code + (e?.message || 'تعذر بدء الربط'));
+    }
     finally { setBusy(null); }
   };
 
