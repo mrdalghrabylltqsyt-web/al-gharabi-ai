@@ -363,13 +363,13 @@ add('meta-login-hop-in-probe-hops', /kind: classifyMetaDialogInteraction\(\{ sta
 add('meta-dialog-probe-no-query-leak', /hops\.push\(\{ step, status, host: logicalHost, path: safeUrlPath\(logicalUrl\)/.test(server) && !/hops\.push\([^)]*location/.test(server) && !/mobileFlow\s*[:=][\s\S]{0,80}location:/.test(server), 'قفزات الفحص تحمل المضيف/المسار فقط بلا أي استعلام أو سرّ');
 add('instagram-scope-dependency-gaps-exposed', server.includes('instagramScopeDependencyGaps') && server.includes('scopeOverrideConfigured:platform==="facebook"?facebookScopeOverride().length>0:platform==="instagram"?instagramScopeOverride().length>0'), 'oauth/setup يعرض فارق اعتماديات Instagram وتجاوز الصلاحيات بلا سرّ');
 
-// --- TikTok — رابع موصل اجتماعي حقيقي (OAuth 2.0 + PKCE + Content Posting + Display) ---
+// --- TikTok — رابع موصل اجتماعي حقيقي (OAuth 2.0 + Content Posting + Display) ---
 add('tiktok-connector-module', fs.existsSync(path.join(root, 'engine/social/tiktok.ts')) && read('engine/social/tiktok.ts').includes('export class TikTokClient'), 'وحدة موصل TikTok الحقيقية موجودة');
 add('tiktok-real-connector-registry', /platform: 'tiktok'[\s\S]{0,500}?realConnector:\s*true/.test(read('engine/social/registry.ts')), 'TikTok مُعلن realConnector في السجل');
 add('tiktok-capability-matrix', read('engine/social/tiktok.ts').includes('TIKTOK_CAPABILITY_MATRIX') && read('engine/social/tiktok.ts').includes('NOT_AVAILABLE_BY_PUBLIC_API'), 'مصفوفة قدرات TikTok الرسمية معلنة صراحةً');
 add('tiktok-no-fake-comments-messages', /comments_read[\s\S]{0,400}?NOT_AVAILABLE_BY_PUBLIC_API/.test(read('engine/social/tiktok.ts')) && /direct_messages_reply[\s\S]{0,400}?NOT_AVAILABLE_BY_PUBLIC_API/.test(read('engine/social/tiktok.ts')) && !read('engine/social/registry.ts').match(/platform: 'tiktok'[\s\S]{0,400}?comment_reply/), 'لا تُعلن تعليقات/رسائل TikTok (غير متاحة عبر الواجهة العامة)');
 add('tiktok-required-scopes-official', read('engine/social/tiktok.ts').includes("'user.info.basic'") && read('engine/social/tiktok.ts').includes("'video.publish'") && read('engine/social/tiktok.ts').includes("'video.list'"), 'نطاقات TikTok الرسمية فقط (بلا نطاق بلا استدعاء)');
-add('tiktok-pkce-required', read('engine/social/oauth.ts').includes("platform === 'tiktok' || platform === 'x'") && read('engine/social/oauth.ts').includes('client_key'), 'TikTok يسلك OAuth مع PKCE وclient_key');
+add('tiktok-web-oauth-contract', read('engine/social/oauth.ts').includes("platform === 'x'") && read('engine/social/oauth.ts').includes('client_key'), 'TikTok يسلك OAuth الرسمي للويب بـclient_key (بلا PKCE — PKCE للجوال/سطح المكتب فقط)');
 add('tiktok-oauth-routes', server.includes('/api/platforms/tiktok/oauth/start') === false && server.includes('platform==="tiktok"') && server.includes('function tiktokConnectorConfigured'), 'TikTok يسلك مسار OAuth المشترك (start/callback) بإتمام إثبات الهوية');
 add('tiktok-status-endpoint', server.includes('/api/platforms/tiktok/status') && server.includes('accountVerified') && server.includes('refreshTokenStored'), 'GET /api/platforms/tiktok/status يعرض الحالة الحقيقية بلا سرّ');
 add('tiktok-disconnect-revoke', server.includes('/api/platforms/tiktok/disconnect') === false && /platform === "tiktok"[\s\S]{0,600}?revokeToken/.test(server), 'فصل TikTok يُبطل الرمز لدى المزود ثم يمسح محلياً');
@@ -415,6 +415,16 @@ add('tiktok-readiness-direct-post-field', /tiktokOAuth[\s\S]{0,1800}?directPostC
 add('tiktok-setup-lists-upload-scope', server.includes('video.publish, video.upload, video.list'), 'oauth/setup يوجّه المالك لتفعيل النطاقين معاً');
 add('tiktok-draft-tests', /رفع المسودة نُفِّذ على مسار inbox الرسمي/.test(read('engine/tests/tiktok.connector.test.ts')), 'اختبار يثبت مسار رفع المسودة الرسمي');
 add('tiktok-draft-body-tests', read('engine/tests/tiktok.connector.test.ts').includes('buildVideoDraftBody'), 'اختبارات جسم رفع المسودة (source_info فقط)');
+// تدفّق الويب الرسمي: وثيقة Login Kit for Web تُعرّف خمسة معاملات فقط بلا
+// code_challenge، ووثيقة إدارة الرمز تنصّ على أن code_verifier للجوال/سطح المكتب فقط.
+// إرسال code_challenge في الويب معامل غير موثّق، فإزالته تطابق العقد الرسمي.
+add('tiktok-web-no-pkce', /requiresPkce\(platform: string\): boolean \{\s*return platform === 'x';/.test(read('engine/social/oauth.ts')), 'TikTok لا يسلك PKCE في تدفّق الويب (العقد الرسمي)');
+add('tiktok-web-authorization-params-official', read('engine/social/tiktok.ts').includes('TIKTOK_WEB_AUTHORIZATION_PARAMS') && /'client_key',\s*'response_type',\s*'scope',\s*'redirect_uri',\s*'state'/.test(read('engine/social/tiktok.ts')), 'معاملات تفويض الويب الرسمية الخمسة معلنة كمصدر واحد');
+add('tiktok-web-pkce-flag-honest', read('engine/social/tiktok.ts').includes('TIKTOK_WEB_PKCE_SUPPORTED = false'), 'الحقيقة معلنة: PKCE غير مدعوم لتدفّق TikTok الويب');
+add('tiktok-revoke-endpoint-separate', /TIKTOK_REVOKE_PATH = '\/v2\/oauth\/revoke\/'/.test(read('engine/social/tiktok.ts')) && /revokeToken[\s\S]{0,300}?tiktokRevokeUrl/.test(read('engine/social/tiktok.ts')), 'الإبطال يستخدم المسار الرسمي المنفصل /v2/oauth/revoke/ لا مسار الرمز');
+add('tiktok-revoke-not-token-path', !/revokeToken[\s\S]{0,300}?tiktokTokenUrl/.test(read('engine/social/tiktok.ts')), 'لا يُرسل الإبطال إلى مسار الرمز (أُثبت حياً أنه غير موجود)');
+add('tiktok-setup-exposes-token-endpoints', server.includes('revokeEndpoint') && server.includes('tokenEndpoint') && server.includes('authorizationParams'), 'oauth/setup يعرض مسارات الرمز والإبطال والمعاملات بلا سرّ');
+add('tiktok-web-flow-tests', /تدفّق الويب الرسمي/.test(read('engine/tests/tiktok.connector.test.ts')) && /مسار TikTok الرسمي المنفصل/.test(read('engine/tests/tiktok.connector.test.ts')), 'اختبارات تثبت تدفّق الويب الرسمي ومسار الإبطال المنفصل');
 
 const failed = checks.filter(x => !x.ok);
 console.table(checks);

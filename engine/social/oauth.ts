@@ -2,7 +2,7 @@
  * أساس OAuth المشترك — منطق خالص قابل للاختبار بلا شبكة.
  *
  * سبب الوجود: كان منطق بدء OAuth مبعثراً في مسار الخادم. هنا تُجمع القواعد
- * الحرجة (حماية state من CSRF، PKCE لـTikTok/X، انتهاء الصلاحية، منع إعادة
+ * الحرجة (حماية state من CSRF، PKCE لـX، انتهاء الصلاحية، منع إعادة
  * استخدام state) في دوال حتمية، ويستدعيها الخادم.
  *
  * لا يحتوي هذا الملف أي سرّ ولا يستدعي أي شبكة. تبادل الرمز وتشفيره يبقيان في
@@ -15,7 +15,7 @@ export interface OAuthPendingState {
   platform: string;
   userId: string;
   expiresAt: number;
-  /** مُتحقّق PKCE للمنصات التي تفرضه (TikTok/X). */
+  /** مُتحقّق PKCE للمنصات التي تفرضه في الويب (X). TikTok يستخدمه للجوال/سطح المكتب فقط. */
   codeVerifier?: string;
   /** رابط الإرجاع المستخدم عند البدء للتحقق منه عند العودة. */
   redirectUri: string;
@@ -66,10 +66,16 @@ export function createPkcePair(): { verifier: string; challenge: string } {
 }
 
 /**
- * هل ينطبق PKCE على هذه المنصة؟ (تفرضه TikTok و X عبر OAuth 2.0.)
+ * هل ينطبق PKCE على هذه المنصة؟ (تفرضه X عبر OAuth 2.0.)
+ *
+ * TikTok **مستثنى عن قصد**: وثيقة «Login Kit for Web» الرسمية تُعرّف معاملات
+ * التفويض للويب بخمسة فقط (`client_key, response_type=code, scope, redirect_uri,
+ * state`)، ووثيقة «User Access Token Management» تنصّ على أن `code_verifier`
+ * مطلوب «للتطبيقات الجوالة وسطح المكتب فقط». إرسال `code_challenge` في تدفّق
+ * الويب معامل غير موثّق، فإزالته تجعل الرابط مطابقاً للعقد الرسمي حرفياً.
  */
 export function requiresPkce(platform: string): boolean {
-  return platform === 'tiktok' || platform === 'x';
+  return platform === 'x';
 }
 
 /**
@@ -191,10 +197,8 @@ export function buildAuthorizationParams(input: {
   if (platform === 'tiktok') {
     params.client_key = clientId;
     params.scope = scopes.join(',');
-    if (pkceChallenge) {
-      params.code_challenge = pkceChallenge;
-      params.code_challenge_method = 'S256';
-    }
+    // تدفّق الويب الرسمي لا يستخدم code_challenge (وثيقة Login Kit for Web تُعرّف
+    // خمسة معاملات فقط، وcode_verifier للجوال/سطح المكتب فقط). لا يُرسَل هنا أبداً.
     return params;
   }
   // منصات Meta وThreads تستخدم client_id وscope بفواصل، ولا تتوقّع

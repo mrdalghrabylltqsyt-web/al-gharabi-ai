@@ -44,6 +44,11 @@ import {
   parseTikTokWebhook,
   tiktokApiUrl,
   tiktokTokenUrl,
+  tiktokRevokeUrl,
+  TIKTOK_TOKEN_PATH,
+  TIKTOK_REVOKE_PATH,
+  TIKTOK_WEB_PKCE_SUPPORTED,
+  TIKTOK_WEB_AUTHORIZATION_PARAMS,
 } from '../social/tiktok';
 import { createTikTokMock, startTikTokMockServer } from './helpers/tiktokMock';
 import { signSession } from '../auth/sessions';
@@ -181,7 +186,18 @@ function unitTests(): void {
   check('client_key بمحارف غريبة مرفوض', !isPlausibleTikTokClientKey('abc\u0000def'));
   check('رابط النشر الرسمي صحيح', tiktokApiUrl('/v2/user/info/') === 'https://open.tiktokapis.com/v2/user/info/');
   check('رابط الرمز الرسمي صحيح', tiktokTokenUrl() === 'https://open.tiktokapis.com/v2/oauth/token/');
+  // الإبطال مسار منفصل رسمياً: /v2/oauth/revoke/ (أُثبت حياً أن token/revoke/ يرد no schema found).
+  check('رابط الإبطال الرسمي منفصل عن مسار الرمز', tiktokRevokeUrl() === 'https://open.tiktokapis.com/v2/oauth/revoke/');
+  check('مسار الرمز ومسار الإبطال مختلفان', String(TIKTOK_TOKEN_PATH) !== String(TIKTOK_REVOKE_PATH));
   check('القاعدة قابلة للتجاوز في الاختبار', tiktokApiUrl('/v2/user/info/', 'http://127.0.0.1:9').startsWith('http://127.0.0.1:9/v2/'));
+
+  group('3b) وحدة: تدفّق الويب الرسمي — بلا PKCE (عقد TikTok للويب)');
+  // وثيقة «Login Kit for Web»: خمسة معاملات فقط. و«User Access Token Management»:
+  // code_verifier مطلوب للجوال/سطح المكتب فقط. إرساله في الويب معامل غير موثّق.
+  check('PKCE غير مُعلن مدعوماً للويب', TIKTOK_WEB_PKCE_SUPPORTED === false);
+  check('معاملات الويب الرسمية خمسة بالضبط', TIKTOK_WEB_AUTHORIZATION_PARAMS.length === 5, TIKTOK_WEB_AUTHORIZATION_PARAMS.join(','));
+  check('المعاملات الرسمية تشمل client_key وresponse_type وscope وredirect_uri وstate', ['client_key', 'response_type', 'scope', 'redirect_uri', 'state'].every((p) => TIKTOK_WEB_AUTHORIZATION_PARAMS.includes(p)));
+  check('code_challenge ليس ضمن معاملات الويب الرسمية', !TIKTOK_WEB_AUTHORIZATION_PARAMS.includes('code_challenge'));
 
   group('4) وحدة: بناء طلبات الرمز والنشر');
   const ex = buildTikTokTokenExchangeBody({ clientKey: 'ck', clientSecret: 'cs', code: 'C1', redirectUri: 'https://x/cb', codeVerifier: 'V1' });
@@ -291,21 +307,24 @@ async function integrationTests(): Promise<void> {
     const setup = await (await fetch(`${BASE}/api/platforms/tiktok/oauth/setup`, { headers: auth })).json();
     check('oauth/setup يعلن client_key مضبوطاً', setup.tiktokSetup?.clientKeyConfigured === true);
     check('oauth/setup يعلن client_secret مضبوطاً', setup.tiktokSetup?.clientSecretConfigured === true);
-    check('oauth/setup يعلن PKCE مطلوباً', setup.tiktokSetup?.pkceRequired === true);
+    check('oauth/setup يعلن تدفّق الويب الرسمي بلا PKCE', setup.tiktokSetup?.pkceUsed === false);
+    check('oauth/setup يعرض معاملات الويب الرسمية الخمسة', JSON.stringify(setup.tiktokSetup?.authorizationParams) === JSON.stringify(['client_key', 'response_type', 'scope', 'redirect_uri', 'state']));
+    check('oauth/setup يعرض مسار الإبطال الرسمي المنفصل', String(setup.tiktokSetup?.revokeEndpoint).endsWith('/v2/oauth/revoke/'));
     check('oauth/setup يعرض redirectUri الصحيح', String(setup.redirectUri).endsWith('/api/platforms/tiktok/oauth/callback'));
     check('oauth/setup يعرض النطاقات الرسمية', JSON.stringify(setup.tiktokSetup?.requestedScopes) === JSON.stringify([...TIKTOK_REQUIRED_SCOPES]));
     check('oauth/setup يعلن مراجعة مطلوبة للنشر العام', setup.tiktokSetup?.appReviewRequired === true);
     check('oauth/setup بلا أي سرّ', !JSON.stringify(setup).includes(TT_CLIENT_SECRET));
     check('oauth/setup يعرض مصفوفة القدرات', Array.isArray(setup.tiktokSetup?.capabilityMatrix));
 
-    group('11) تكامل: OAuth start — رابط رسمي + state دائم + PKCE');
+    group('11) تكامل: OAuth start — رابط رسمي + state دائم (بلا PKCE في الويب)');
     const start = await (await fetch(`${BASE}/api/platforms/tiktok/oauth/start`, { headers: auth })).json();
     check('oauth/start ينجح ويُعيد رابط تفويض', start.success === true && typeof start.authorizationUrl === 'string');
     const aurl = new URL(start.authorizationUrl);
     check('الرابط يذهب إلى نقطة TikTok الرسمية', aurl.host === 'www.tiktok.com' && aurl.pathname === '/v2/auth/authorize/');
     check('الرابط يحمل client_key', aurl.searchParams.get('client_key') === TT_CLIENT_KEY);
     check('الرابط يحمل response_type=code', aurl.searchParams.get('response_type') === 'code');
-    check('الرابط يحمل PKCE challenge', (aurl.searchParams.get('code_challenge') || '').length > 0 && aurl.searchParams.get('code_challenge_method') === 'S256');
+    check('الرابط لا يحمل code_challenge (تدفّق الويب الرسمي)', aurl.searchParams.get('code_challenge') === null && aurl.searchParams.get('code_challenge_method') === null);
+    check('معاملات الرابط هي الخمسة الرسمية فقط', [...aurl.searchParams.keys()].every((k) => TIKTOK_WEB_AUTHORIZATION_PARAMS.includes(k)), [...aurl.searchParams.keys()].join(','));
     check('الرابط يحمل state', (aurl.searchParams.get('state') || '').length >= 16);
     check('الرابط يحمل النطاقات الرسمية', (aurl.searchParams.get('scope') || '').includes('video.publish'));
     check('الرابط لا يسرّب client_secret', !start.authorizationUrl.includes(TT_CLIENT_SECRET));
@@ -316,7 +335,7 @@ async function integrationTests(): Promise<void> {
     const cbRes = await fetch(`${BASE}/api/platforms/tiktok/oauth/callback?code=AUTHCODE_TEST&state=${encodeURIComponent(stateVal)}`, { headers: auth });
     check('callback يعيد 200', cbRes.status === 200, `status=${cbRes.status}`);
     check('تبادل الرمز نُفِّذ فعلياً لدى المزوّد', mock.state.lastExchange !== null && mock.state.lastExchange?.redirectUri.endsWith('/api/platforms/tiktok/oauth/callback'));
-    check('code_verifier أُرسل في التبادل (PKCE)', (mock.state.lastExchange?.codeVerifierLen || 0) > 0);
+    check('التبادل بلا code_verifier (تدفّق ويب رسمي)', (mock.state.lastExchange?.codeVerifierLen || 0) === 0);
 
     const status = await (await fetch(`${BASE}/api/platforms/tiktok/status`, { headers: auth })).json();
     check('الحالة متصلة وموثقة (open_id)', status.connected === true && status.providerVerified === true);
@@ -451,9 +470,11 @@ async function integrationTests(): Promise<void> {
     const afterRefresh = await (await fetch(`${BASE}/api/platforms/tiktok/status`, { headers: auth })).json();
     check('بعد التجديد: التوكن الجديد مخزّن ومحدث', afterRefresh.tokenExpired === false);
 
-    group('22) تكامل: الفصل يمسح الاعتماد ويمنع العمليات الخارجية');
+    group('22) تكامل: الفصل يُبطل الرمز لدى المزوّد على مساره الرسمي ثم يمسح الاعتماد');
     const disc = await fetch(`${BASE}/api/platforms/tiktok/disconnect`, { method: 'POST', headers: auth, body: '{}' });
     check('disconnect ينجح', disc.status === 200);
+    check('الإبطال نُفِّذ على مسار TikTok الرسمي المنفصل', mock.state.lastRevoke?.path === '/v2/oauth/revoke/');
+    check('الإبطال حمل client_key والرمز بلا grant_type', mock.state.lastRevoke?.clientKey === TT_CLIENT_KEY && (mock.state.lastRevoke?.tokenLen || 0) > 0);
     const afterDisc = await (await fetch(`${BASE}/api/platforms/tiktok/status`, { headers: auth })).json();
     check('بعد الفصل: غير متصل وغير موثق', afterDisc.connected === false && afterDisc.providerVerified === false);
     check('بعد الفصل: لا توكن', afterDisc.tokenStored === false);

@@ -54,6 +54,8 @@ export interface TikTokMockState {
   lastRefresh: { clientKey: string; secretLen: number; refreshTokenLen: number } | null;
   /** آخر تبادل رمز. */
   lastExchange: { clientKey: string; secretLen: number; codeVerifierLen: number; redirectUri: string } | null;
+  /** آخر إبطال رمز (للتحقق من أن المسار الرسمي المنفصل استُخدم). */
+  lastRevoke: { path: string; clientKey: string; tokenLen: number } | null;
   /** رمز التطبيق المقبول (client_key). */
   validClientKey: string;
   /** السرّ المطابق. */
@@ -81,6 +83,7 @@ export function createTikTokMock(state: Partial<TikTokMockState> = {}): TikTokMo
     lastPublishInit: null,
     lastRefresh: null,
     lastExchange: null,
+    lastRevoke: null,
     validClientKey: state.validClientKey ?? 'test_tiktok_client_key',
     validClientSecret: state.validClientSecret ?? 'test-tiktok-client-secret-not-real',
   };
@@ -130,7 +133,26 @@ export async function startTikTokMockServer(
         token_type: 'Bearer',
       });
     }
-    // revoke: TikTok يُعيد {} عند النجاح.
+    // revoke: مسار منفصل رسمياً. وجود الطلب على /v2/oauth/token/ بلا grant_type
+    // يُرد invalid_request (سلوك TikTok الفعلي) — فلا يُقبل الإبطال من مسار الرمز.
+    return res.status(400).json({ error: 'invalid_request', error_description: 'The request parameters are malformed.' });
+  });
+
+  // إبطال الرمز — المسار الرسمي المنفصل (مطابق لـTIKTOK_REVOKE_PATH).
+  app.post('/v2/oauth/revoke/', (req, res) => {
+    state.calls += 1;
+    const body = req.body || {};
+    const clientKey = String(body.client_key || '');
+    const secret = String(body.client_secret || '');
+    state.lastRevoke = { path: '/v2/oauth/revoke/', clientKey, tokenLen: String(body.token || '').length };
+    if (clientKey !== state.validClientKey || secret !== state.validClientSecret) {
+      return res.status(400).json({ error: 'invalid_client', error_description: 'Client key or secret invalid' });
+    }
+    if (body.grant_type) {
+      // الوثيقة: الإبطال يأخذ client_key + client_secret + token بلا grant_type.
+      return res.status(400).json({ error: 'invalid_request', error_description: 'grant_type not allowed' });
+    }
+    // TikTok يُعيد {} عند نجاح الإبطال.
     return res.json({});
   });
 

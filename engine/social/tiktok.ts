@@ -27,6 +27,35 @@ export const TIKTOK_OAUTH_AUTHORIZE_BASE = 'https://www.tiktok.com';
 export const TIKTOK_OPEN_API_BASE = 'https://open.tiktokapis.com';
 /** مسار التفويض الرسمي (OAuth 2.0) — client_key لا client_id. */
 export const TIKTOK_AUTHORIZE_PATH = '/v2/auth/authorize/';
+/** مسار تبادل/تجديد الرمز الرسمي. */
+export const TIKTOK_TOKEN_PATH = '/v2/oauth/token/';
+/**
+ * مسار إبطال الرمز الرسمي (revoke) — **مختلف** عن مسار الرمز.
+ *
+ * سبب الفصل: أُثبت حياً أن `POST /v2/oauth/token/revoke/` غير موجود لدى TikTok
+ * (يرد `403 {"code":40006,"message":"no schema found"}`)، وأن `POST /v2/oauth/token/`
+ * يرفض طلباً بلا `grant_type` بـ`invalid_request`. المسار الصحيح هو `/v2/oauth/revoke/`
+ * (يرد `invalid_grant` عند رمز وهمي، أي أنه موجود ويقرأ الطلب).
+ */
+export const TIKTOK_REVOKE_PATH = '/v2/oauth/revoke/';
+/**
+ * هل يدعم TikTok PKCE في تدفّق الويب؟ **لا**.
+ *
+ * وثيقة «Login Kit for Web» الرسمية تُعرّف معاملات التفويض بخمسة فقط:
+ * `client_key, response_type=code, scope, redirect_uri, state` — بلا `code_challenge`.
+ * ووثيقة «User Access Token Management» تنصّ على أن `code_verifier` مطلوب
+ * «للتطبيقات الجوالة وسطح المكتب فقط». لذلك إرسال `code_challenge` في تدفّق الويب
+ * معامل غير موثّق؛ إزالته تجعل الرابط مطابقاً للعقد الرسمي حرفياً.
+ */
+export const TIKTOK_WEB_PKCE_SUPPORTED = false;
+/** معاملات التفويض الرسمية لتدفّق الويب (المصدر: Login Kit for Web). */
+export const TIKTOK_WEB_AUTHORIZATION_PARAMS: readonly string[] = Object.freeze([
+  'client_key',
+  'response_type',
+  'scope',
+  'redirect_uri',
+  'state',
+]);
 /** ترويسة توقيع webhooks TikTok. */
 export const TIKTOK_SIGNATURE_HEADER = 'tiktok-signature';
 
@@ -64,7 +93,7 @@ export const TIKTOK_CAPABILITY_MATRIX: readonly TikTokCapabilityRow[] = Object.f
     label: 'Login Kit (OAuth 2.0)',
     status: 'SUPPORTED',
     scope: 'user.info.basic',
-    evidence: 'Web Login Kit رسمي: /v2/auth/authorize/ + تبادل الرمز على /v2/oauth/token/ (client_key).',
+    evidence: 'Web Login Kit رسمي: /v2/auth/authorize/ + تبادل الرمز على /v2/oauth/token/ (client_key). معاملات الويب الرسمية خمسة فقط (client_key, response_type=code, scope, redirect_uri, state) بلا code_challenge — PKCE موثّق للجوال/سطح المكتب فقط.',
   },
   {
     key: 'user_identity',
@@ -226,9 +255,14 @@ export function tiktokAuthorizeBase(override?: string): string {
   return base.replace(/\/+$/, '');
 }
 
-/** رابط تبادل/تجديد/إبطال الرمز الرسمي. */
+/** رابط تبادل/تجديد الرمز الرسمي. */
 export function tiktokTokenUrl(baseOverride?: string): string {
-  return `${tiktokApiBase(baseOverride)}/v2/oauth/token/`;
+  return `${tiktokApiBase(baseOverride)}${TIKTOK_TOKEN_PATH}`;
+}
+
+/** رابط إبطال الرمز الرسمي — منفصل عن مسار الرمز (TIKTOK_REVOKE_PATH). */
+export function tiktokRevokeUrl(baseOverride?: string): string {
+  return `${tiktokApiBase(baseOverride)}${TIKTOK_REVOKE_PATH}`;
 }
 
 /** يبني رابط واجهة مفتوحة كامل بلا أي سرّ في السجل. */
@@ -613,10 +647,10 @@ export class TikTokClient {
     return this.tokenRequest(buildTikTokRefreshBody(input), 'فشل تجديد رمز TikTok.');
   }
 
-  /** يُبطل الرمز لدى TikTok عند فصل المنصة (revoke). */
+  /** يُبطل الرمز لدى TikTok عند فصل المنصة (revoke). المسار منفصل عن مسار الرمز. */
   async revokeToken(input: { clientKey: string; clientSecret: string; token: string }): Promise<TikTokResult<boolean>> {
     try {
-      const res = await this.fetchImpl(tiktokTokenUrl(this.baseUrl), {
+      const res = await this.fetchImpl(tiktokRevokeUrl(this.baseUrl), {
         method: 'POST',
         headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
         body: buildTikTokRevokeBody(input).toString(),

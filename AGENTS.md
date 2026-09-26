@@ -1295,3 +1295,39 @@ Posting API **منفصلان تماماً**، وكان الكود يستخدم �
 **ملاحظة:** مسار رفع المسودة لا ينشر شيئاً عاماً؛ المالك يُكمل النشر داخل التطبيق، فلا
 يُعلن النظام أي «نشر» ولا أي `delivered=true` من هذا المسار (يبقى `publishing` حتى
 استعلام `PUBLISH_COMPLETE` — وهو خاص بالنشر المباشر).
+
+## تصحيح عقد TikTok الرسمي للويب: إزالة PKCE + مسار الإبطال المنفصل (2026-09-26)
+
+**جذران مُثبتان بالوثيقة الرسمية والفحص الحي (لا تخمين):**
+
+1. **PKCE ليس جزءاً من تدفّق TikTok للويب.** وثيقة «Login Kit for Web» تُعرّف معاملات
+   التفويض بخمسة فقط: `client_key, response_type=code, scope, redirect_uri, state` —
+   **بلا `code_challenge`**. ووثيقة «User Access Token Management» تنصّ على أن
+   `code_verifier` مطلوب «**للتطبيقات الجوالة وسطح المكتب فقط**». كان الكود يرسل
+   `code_challenge` + `code_challenge_method=S256` ويُرسل `code_verifier` في التبادل،
+   وهي معاملات غير موثّقة لتدفّق الويب. أُزيلت: `requiresPkce` صار `platform === 'x'`
+   فقط، وفرع TikTok في `buildAuthorizationParams` لا يُرسل `code_challenge` أبداً،
+   والاختبار يثبت أن معاملات الرابط هي الخمسة الرسمية بالضبط.
+
+2. **مسار إبطال الرمز مختلف عن مسار الرمز.** الكود كان يرسل revoke إلى
+   `/v2/oauth/token/` (نفس مسار التبادل). الفحص الحي أثبت أن:
+   `POST /v2/oauth/token/revoke/` → **403 `{"code":40006,"message":"no schema found"}`**
+   (أي المسار غير موجود)، و`POST /v2/oauth/token/` بلا `grant_type` → `invalid_request`.
+   المسار الصحيح `/v2/oauth/revoke/` يرد `invalid_grant` عند رمز وهمي (أي أنه موجود
+   ويقرأ الطلب). أُضيف `TIKTOK_REVOKE_PATH` و`tiktokRevokeUrl()`، و`revokeToken` صار
+   يستخدمه، والاختبار يثبت أن الفصل يُبطل على المسار المنفصل بلا `grant_type`.
+
+**مصدر واحد للحقيقة:** `TIKTOK_WEB_AUTHORIZATION_PARAMS` (الخمسة الرسمية)،
+`TIKTOK_WEB_PKCE_SUPPORTED = false`، `TIKTOK_TOKEN_PATH`، `TIKTOK_REVOKE_PATH`.
+و`oauth/setup` يعرضها كلها (`authorizationParams`، `pkceUsed`، `tokenEndpoint`،
+`revokeEndpoint`) بلا أي سرّ.
+
+اختبارات: `tiktok.connector.test.ts` = **180 فحصاً** (مجموعة `3b` لعقد الويب، وفحوص
+مسار الإبطال في مجموعة الفصل). فحوص final-audit: `tiktok-web-no-pkce`،
+`tiktok-web-authorization-params-official`، `tiktok-web-pkce-flag-honest`،
+`tiktok-revoke-endpoint-separate`، `tiktok-revoke-not-token-path`،
+`tiktok-setup-exposes-token-endpoints`، `tiktok-web-flow-tests` (302 إجمالاً).
+
+**درس عام:** لا تُضاف معاملات OAuth «للأمان» بلا سند من وثيقة المسار نفسه؛ معامل زائد
+في رابط تفويض قد يُرفض بلا سبب ظاهر. والمسار الصحيح لكل عملية يُثبت بفحص حي، لا بالافتراض
+أن كل عمليات المزود على مسار واحد.

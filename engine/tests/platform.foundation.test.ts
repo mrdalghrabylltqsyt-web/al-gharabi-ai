@@ -86,7 +86,7 @@ function run(): void {
   const pkce = createPkcePair();
   check('PKCE: التحدي = sha256(verifier) base64url',
     pkce.challenge === crypto.createHash('sha256').update(pkce.verifier).digest('base64url'));
-  check('PKCE مطلوب لـTikTok وX فقط', requiresPkce('tiktok') && requiresPkce('x') && !requiresPkce('facebook'));
+  check('PKCE مطلوب لـX فقط (TikTok ويب لا يستخدمه)', requiresPkce('x') && !requiresPkce('tiktok') && !requiresPkce('facebook'));
   const pending = { platform: 'facebook', userId: 'owner', expiresAt: Date.now() + 1000, redirectUri: 'https://app/cb' };
   check('state صالح قبل الانتهاء', !isStateExpired(pending));
   check('state منتهٍ بعد الانتهاء', isStateExpired(pending, Date.now() + 5000));
@@ -96,8 +96,9 @@ function run(): void {
   check('callback state مجهول مرفوض', !validateOAuthCallback({ pending: undefined, platform: 'facebook', redirectUri: 'https://app/cb' }).ok);
   check('callback منتهٍ مرفوض', !validateOAuthCallback({ pending, platform: 'facebook', redirectUri: 'https://app/cb', now: Date.now() + 5000 }).ok);
   check('TTL state عشر دقائق', OAUTH_STATE_TTL_MS === 600000);
+  // TikTok: تدفّق الويب الرسمي بلا PKCE (العقد الرسمي للويب) — حتى لو مُرّر تحدٍّ يُهمَل.
   const tkParams = buildAuthorizationParams({ platform: 'tiktok', clientId: 'ck', redirectUri: 'r', scopes: ['a', 'b'], state: 'st', pkceChallenge: 'ch' });
-  check('TikTok: client_key وcode_challenge', tkParams.client_key === 'ck' && tkParams.code_challenge === 'ch' && tkParams.scope === 'a,b');
+  check('TikTok: client_key وscope بفواصل بلا code_challenge', tkParams.client_key === 'ck' && tkParams.scope === 'a,b' && tkParams.code_challenge === undefined);
   const gParams = buildAuthorizationParams({ platform: 'youtube', clientId: 'cid', redirectUri: 'r', scopes: ['s1', 's2'], state: 'st' });
   check('Google: client_id وoffline وconsent', gParams.client_id === 'cid' && gParams.access_type === 'offline' && gParams.prompt === 'consent' && gParams.scope === 's1 s2');
   // Meta: scope بفواصل وبلا access_type/prompt (معاملان خاصان بـGoogle).

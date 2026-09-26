@@ -62,7 +62,7 @@ const ADAPTER_SPECS: AdapterSpec[] = [
     // التعليقات والردود والرسائل المباشرة غير متاحة عبر الواجهة العامة → لا تُعلن.
     capabilities: ['publish', 'analytics', 'scheduling'],
     credentialMode: 'oauth2',
-    // رابع موصل حقيقي منفّذ: OAuth 2.0 + PKCE + Content Posting API + Display API.
+    // رابع موصل حقيقي منفّذ: OAuth 2.0 (تدفّق ويب رسمي بلا PKCE) + Content Posting API + Display API.
     realConnector: true,
   },
   {
