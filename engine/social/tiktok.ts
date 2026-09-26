@@ -337,6 +337,9 @@ export function buildVideoPostBody(input: {
     disable_comment: Boolean(input.disableComment),
     disable_duet: Boolean(input.disableDuet),
     disable_stitch: Boolean(input.disableStitch),
+    // is_aigc حقل رسمي في Content Posting API: يُوسَم المحتوى المولَّد بالذكاء
+    // الاصطناعي. يُرسَل فقط عند التصريح به فلا نُوسم محتوى المعرض خطأً.
+    is_aigc: Boolean(input.isAigc),
   };
   const sourceInfo: Record<string, unknown> = { source: input.source };
   if (input.source === 'PULL_FROM_URL') {
@@ -363,6 +366,7 @@ export function buildPhotoPostBody(input: {
     title: (input.title || '').slice(0, 90),
     privacy_level: input.privacyLevel || 'SELF_ONLY',
     disable_comment: Boolean(input.disableComment),
+    is_aigc: Boolean(input.isAigc),
   };
   return {
     media_type: 'PHOTO',

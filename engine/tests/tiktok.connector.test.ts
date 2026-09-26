@@ -194,6 +194,12 @@ function unitTests(): void {
   check('جسم الفيديو يحمل source=PULL_FROM_URL وvideo_url', (vbody as any).source_info.source === 'PULL_FROM_URL' && (vbody as any).source_info.video_url === 'https://x/v.mp4');
   const pbody = buildPhotoPostBody({ postMode: 'MEDIA_UPLOAD', title: 'عرض', privacyLevel: 'SELF_ONLY', photoUrls: ['https://x/1.jpg'] });
   check('جسم الصور يحمل post_mode وphoto_images', (pbody as any).post_mode === 'MEDIA_UPLOAD' && (pbody as any).source_info.photo_images[0] === 'https://x/1.jpg');
+  // is_aigc حقل رسمي في Content Posting API؛ يُرسَل false افتراضاً فلا نُوسم محتوى
+  // المعرض خطأً، ويُرسَل true عند التصريح بمحتوى مولَّد.
+  check('جسم الفيديو يحمل is_aigc=false افتراضاً', (vbody as any).post_info.is_aigc === false);
+  check('جسم الصور يحمل is_aigc=false افتراضاً', (pbody as any).post_info.is_aigc === false);
+  const aigcBody = buildVideoPostBody({ postMode: 'DIRECT_POST', privacyLevel: 'SELF_ONLY', source: 'PULL_FROM_URL', videoUrl: 'https://x/v.mp4', isAigc: true });
+  check('is_aigc يُرسَل true عند التصريح بمحتوى مولَّد', (aigcBody as any).post_info.is_aigc === true);
   check('جسم استعلام الحالة يحمل publish_id', buildPublishStatusBody('P1').publish_id === 'P1');
 
   group('5) وحدة: تصنيف حالة النشر — لا تسليم بلا PUBLISH_COMPLETE');
