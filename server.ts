@@ -68,6 +68,8 @@ import {
   isPlausibleLoginConfigId,
   LOGIN_CONFIG_ENV_NAMES,
   OAUTH_STATE_TTL_MS,
+  INSTAGRAM_ONBOARDING_EXTRAS,
+  parseInstagramTokenFragment,
 } from "./engine/social/oauth";
 import { PLATFORM_READINESS, readinessFor, readinessSummary } from "./engine/social/readiness";
 import { buildReadinessDetails, computeAllPlatformStatuses, computePlatformStatus, controlSummary, type LiveConnection } from "./engine/social/operations";
@@ -980,6 +982,7 @@ function buildAuthorizationUrlForProbe(platform: string): string {
     scopes,
     state: "probe",
     loginConfigId: META_OAUTH_PLATFORMS.has(platform) ? loginConfigIdFor(platform) : null,
+    instagramOnboarding: platform === "instagram",
   });
   const u = new URL(authEndpointFor(platform));
   for (const [k, v] of Object.entries(params)) u.searchParams.set(k, v);
@@ -1890,7 +1893,7 @@ app.get("/api/platforms/:platform/oauth/start", requireOwner, async (req,res)=>{
   if(requiresPkce(platform)) { const pkce=createPkcePair(); pending.codeVerifier=pkce.verifier; pkceChallenge=pkce.challenge; }
   pendingOAuth.set(state,pending);
   const u=new URL(authEndpointFor(platform));
-  const params=buildAuthorizationParams({platform,clientId:cfg.clientId,redirectUri:callbackUrl,scopes,state,pkceChallenge,loginConfigId});
+  const params=buildAuthorizationParams({platform,clientId:cfg.clientId,redirectUri:callbackUrl,scopes,state,pkceChallenge,loginConfigId,instagramOnboarding:platform==="instagram"});
   for(const [k,v] of Object.entries(params)) u.searchParams.set(k,v);
   // فحص ما قبل التوجيه (Meta فقط): نتحقق أن Meta تقبل الرابط فعلاً، فلا يُرسَل
   // المالك إلى صفحة «حدث خطأ ما» عمياء. تعذّر الفحص لا يحجب (لئلا نكسر التطوير).
@@ -1982,19 +1985,57 @@ app.get("/api/platforms/:platform/oauth/start", requireOwner, async (req,res)=>{
   });
 });
 
+/**
+ * إكمال OAuth عبر POST من الواجهة بعد قراءة مقطع الاستجابة.
+ *
+ * سبب الوجود (تدفّق Meta الرسمي لـInstagram: response_type=token): تُلحق Meta
+ * الرمز في **مقطع** الاستجابة (`#access_token=...`) الذي لا يُرسَل إلى الخادم.
+ * الواجهة تقرأ المقطع ثم ترسله في **جسم** الطلب، فلا يظهر الرمز في سجل الخادم
+ * ولا في محفوظات المتصفح ولا في Referer — بخلاف تمريره في سطر الطلب.
+ */
+app.post("/api/platforms/:platform/oauth/callback", express.json({ limit: "32kb" }), async (req,res)=>{
+  const rawFragment = typeof req.body?.fragment === "string" ? req.body.fragment : "";
+  const rawState = typeof req.body?.state === "string" ? req.body.state : "";
+  const query = rawFragment
+    ? `state=${encodeURIComponent(rawState)}&fragment=${encodeURIComponent(rawFragment)}`
+    : `state=${encodeURIComponent(rawState)}`;
+  return handleOAuthCallback(req, res, query, true);
+});
+
 app.get("/api/platforms/:platform/oauth/callback", async (req,res)=>{
-  const platform=req.params.platform; const state=typeof req.query.state==="string"?req.query.state:""; const pending=pendingOAuth.get(state); const cfg=OAUTH_CONFIG[platform];
+  return handleOAuthCallback(req, res, req.url.includes("?") ? req.url.slice(req.url.indexOf("?") + 1) : "", false);
+});
+
+/**
+ * جسم إكمال OAuth المشترك بين GET (رمز في سطر الطلب) وPOST (مقطع الاستجابة في
+ * الجسم). يستقبل نص الاستعلام صراحةً فيتحقق بنفس القواعد في الحالتين، ولا يعتمد
+ * على req.query كي لا تتسرّب قيم المقطع إلى سجلات الوسيط.
+ */
+async function handleOAuthCallback(req:any, res:any, rawQuery:string, viaPost:boolean){
+  // POST (تدفّق المقطع) يرد JSON لاستدعاء fetch؛ GET (تدفّق code) يرد صفحة HTML
+  // للمتصفح. المنطق واحد، ويختلف شكل الرد فقط.
+  const sendHtml=(html:string)=>viaPost?res.json({success:true}):res.send(html);
+  const failHtml=(status:number,msg:string)=>viaPost?res.status(status).json({success:false,error:msg}):res.status(status).send(msg);
+  const params=new URLSearchParams(rawQuery||"");
+  const platform=String(req.params.platform); const state=params.get("state")||""; const pending=pendingOAuth.get(state); const cfg=OAUTH_CONFIG[platform];
   const redirectUri=oauthCallbackUrl(platform);
   // سجل آمن لعودة Meta: هل وصلت، وبأي رمز خطأ — بلا state ولا code ولا توكن.
-  logOAuthStart(platform, { outcome: "callback_received", hasState: Boolean(state), hasCode: typeof req.query.code === "string", providerError: typeof req.query.error === "string" ? String(req.query.error).slice(0, 60) : null, redirectUri });
+  logOAuthStart(platform, { outcome: "callback_received", viaPost, hasState: Boolean(state), hasCode: Boolean(params.get("code")), providerError: params.get("error") ? String(params.get("error")).slice(0, 60) : null, redirectUri });
   const check=validateOAuthCallback({pending,platform,redirectUri});
-  if(!check.ok || !cfg) { logOAuthStart(platform, { outcome: "callback_rejected", reason: check.reason || "no_config" }); return res.status(400).send(`فشل التحقق من جلسة OAuth: ${check.reason||"مزود غير مُعدّ"}.`); }
+  if(!check.ok || !cfg) { logOAuthStart(platform, { outcome: "callback_rejected", reason: check.reason || "no_config" }); return failHtml(400, `فشل التحقق من جلسة OAuth: ${check.reason||"مزود غير مُعدّ"}.`); }
   // يُستهلك state مرة واحدة فقط (يمنع إعادة الاستخدام)؛ نثبّت الحذف في المخزن
   // الدائم فوراً فلا يُسترجَع عند إعادة تشغيل لاحقة فيُقبل تكرار الطلب.
   pendingOAuth.delete(state);
   await persistCritical();
-  if(req.query.error) return res.status(400).send(`رفض مزود المنصة عملية الربط: ${String(req.query.error_description||req.query.error).slice(0,200)}`);
-  const code=typeof req.query.code==="string"?req.query.code:""; if(!code) return res.status(400).send("لم يتم استلام رمز OAuth.");
+  if(params.get("error")) return failHtml(400, `رفض مزود المنصة عملية الربط: ${String(params.get("error_description")||params.get("error")).slice(0,200)}`);
+  const code=params.get("code")||"";
+  // تدفّق Meta الرسمي لـInstagram (Facebook Login for Business - Instagram API)
+  // يستخدم response_type=token: لا يعود `code` بل رمز المستخدم (والرمز طويل الأجل)
+  // في مقطع الاستجابة الذي يقرأه العميل ويعيده هنا. مسار Facebook لا يتأثّر.
+  const fragmentToken=platform==="instagram"?parseInstagramTokenFragment(params.get("fragment")||""):{} as ReturnType<typeof parseInstagramTokenFragment>;
+  const hasFragmentToken=Boolean(fragmentToken.longLivedToken||fragmentToken.accessToken);
+  if(platform==="instagram"&&hasFragmentToken&&fragmentToken.error) return failHtml(400, `رفض مزود المنصة عملية الربط: ${String(fragmentToken.errorReason||fragmentToken.error).slice(0,200)}`);
+  if(!code&&!hasFragmentToken) return failHtml(400, "لم يتم استلام رمز OAuth.");
   try {
     const body=buildTokenExchangeBody({clientId:cfg.clientId,clientSecret:cfg.clientSecret,code,redirectUri:redirectUri,codeVerifier:pending!.codeVerifier});
     // Facebook يبادل الرمز عبر GET على نقطة oauth/access_token (سلوك Meta الرسمي)
@@ -2017,7 +2058,7 @@ app.get("/api/platforms/:platform/oauth/callback", async (req,res)=>{
         setProviderToken("facebook",{...token,pageId:pages.data[0].pageId,pageName:pages.data[0].pageName||"",pageAccessToken:getProviderToken("facebook")?.pageAccessToken||pages.data[0].pageAccessToken||"",userAccessToken:userToken,expiresAt:parsedTokenExpiry(token)});
         await persistStateDurable();
         audit(pending!.userId,"platform_oauth_connected",`facebook:${pages.data[0].pageId}`);
-        return res.send(`<html lang='ar' dir='rtl'><meta charset='utf-8'><title>تم الربط</title><body style='font-family:sans-serif;padding:40px'><h2>تم ربط صفحة Facebook بنجاح.</h2><p>${escapeHtml(pages.data[0].pageName||"")} — يمكنك إغلاق هذه النافذة والعودة إلى الغرابي AI.</p></body></html>`);
+        return sendHtml(`<html lang='ar' dir='rtl'><meta charset='utf-8'><title>تم الربط</title><body style='font-family:sans-serif;padding:40px'><h2>تم ربط صفحة Facebook بنجاح.</h2><p>${escapeHtml(pages.data[0].pageName||"")} — يمكنك إغلاق هذه النافذة والعودة إلى الغرابي AI.</p></body></html>`);
       }
       // نحفظ رمز المستخدم مؤقتاً (مشفّراً) لاختيار الصفحة، ولا نعلن اتصالاً بعد.
       setProviderToken("facebook",{...token,userAccessToken:userToken,expiresAt:parsedTokenExpiry(token),pendingPageSelection:true});
@@ -2030,11 +2071,21 @@ app.get("/api/platforms/:platform/oauth/callback", async (req,res)=>{
     if(platform==="instagram") {
       const client=instagramClient();
       const fb=facebookClient();
-      const codeRes=await fb.exchangeCode({clientId:cfg.clientId,clientSecret:cfg.clientSecret,code,redirectUri:redirectUri});
-      if(!codeRes.ok || !codeRes.data?.accessToken) throw new Error(codeRes.error||"فشل تبادل رمز Instagram.");
-      const long=await fb.exchangeLongLived({clientId:cfg.clientId,clientSecret:cfg.clientSecret,shortToken:codeRes.data.accessToken});
-      const userToken=long.ok && long.data?.accessToken ? long.data.accessToken : codeRes.data.accessToken;
-      token={access_token:userToken,expires_in:long.data?.expiresIn??codeRes.data.expiresIn};
+      // مساران رسميان: (1) response_type=token يعيد الرمز طويل الأجل جاهزاً في
+      // مقطع الاستجابة فلا حاجة لتبديل الرمز، (2) response_type=code (المسار
+      // القديم) يُبادَل الرمز ثم يُطال. كلاهما ينتهي إلى رمز مستخدم واحد.
+      let userToken=""; let tokenExpiresIn:number|undefined;
+      if(hasFragmentToken) {
+        userToken=fragmentToken.longLivedToken||fragmentToken.accessToken||"";
+        tokenExpiresIn=fragmentToken.expiresIn;
+      } else {
+        const codeRes=await fb.exchangeCode({clientId:cfg.clientId,clientSecret:cfg.clientSecret,code,redirectUri:redirectUri});
+        if(!codeRes.ok || !codeRes.data?.accessToken) throw new Error(codeRes.error||"فشل تبادل رمز Instagram.");
+        const long=await fb.exchangeLongLived({clientId:cfg.clientId,clientSecret:cfg.clientSecret,shortToken:codeRes.data.accessToken});
+        userToken=long.ok && long.data?.accessToken ? long.data.accessToken : codeRes.data.accessToken;
+        tokenExpiresIn=long.data?.expiresIn??codeRes.data.expiresIn;
+      }
+      token={access_token:userToken,expires_in:tokenExpiresIn};
       // نكتشف الصفحات التي تحمل حساب Instagram مهنياً مرتبطاً.
       const pages=await client.listLinkedInstagramAccounts(userToken);
       if(!pages.ok || !pages.data) throw new Error(pages.error||"تعذّر جلب صفحات/حسابات Instagram.");
@@ -2046,7 +2097,7 @@ app.get("/api/platforms/:platform/oauth/callback", async (req,res)=>{
         setProviderToken("instagram",{...getProviderToken("instagram"),expiresAt:parsedTokenExpiry(token),userAccessToken:userToken});
         await persistStateDurable();
         audit(pending!.userId,"platform_oauth_connected",`instagram:${fin.igAccountId}`);
-        return res.send(`<html lang='ar' dir='rtl'><meta charset='utf-8'><title>تم الربط</title><body style='font-family:sans-serif;padding:40px'><h2>تم ربط حساب Instagram بنجاح.</h2><p>${escapeHtml(fin.igUsername?`@${fin.igUsername}`:fin.pageName||"")} — يمكنك إغلاق هذه النافذة والعودة إلى الغرابي AI.</p></body></html>`);
+        return sendHtml(`<html lang='ar' dir='rtl'><meta charset='utf-8'><title>تم الربط</title><body style='font-family:sans-serif;padding:40px'><h2>تم ربط حساب Instagram بنجاح.</h2><p>${escapeHtml(fin.igUsername?`@${fin.igUsername}`:fin.pageName||"")} — يمكنك إغلاق هذه النافذة والعودة إلى الغرابي AI.</p></body></html>`);
       }
       // عدة صفحات تحمل حسابات Instagram: نحفظ رمز المستخدم وننتظر اختيار المالك.
       setProviderToken("instagram",{...token,userAccessToken:userToken,expiresAt:parsedTokenExpiry(token),pendingPageSelection:true});
@@ -2064,9 +2115,9 @@ app.get("/api/platforms/:platform/oauth/callback", async (req,res)=>{
     // يُخزَّن الرمز مع انتهاء مطلق محسوب ومع refresh token إن وُجد.
     const stored={...token, expiresAt: parsedToken.expiresIn ? Date.now()+parsedToken.expiresIn*1000 : null};
     setProviderToken(platform,stored); platformConnections.set(platform,{platform,status:"connected",accountId,accountName,connectedAt:new Date().toISOString(),providerVerified:true}); savePlatformConnections(); audit(pending!.userId,"platform_oauth_connected",`${platform}:${accountId}`);
-    res.send("<html lang='ar' dir='rtl'><meta charset='utf-8'><title>تم الربط</title><body style='font-family:sans-serif;padding:40px'><h2>تم ربط المنصة بنجاح.</h2><p>يمكنك إغلاق هذه النافذة والعودة إلى الغرابي AI.</p></body></html>");
-  } catch(e:any) { audit(pending!.userId,"platform_oauth_failed",platform); res.status(502).send(`فشل إكمال ربط المنصة: ${String(e?.message||e).slice(0,240)}`); }
-});
+    sendHtml("<html lang='ar' dir='rtl'><meta charset='utf-8'><title>تم الربط</title><body style='font-family:sans-serif;padding:40px'><h2>تم ربط المنصة بنجاح.</h2><p>يمكنك إغلاق هذه النافذة والعودة إلى الغرابي AI.</p></body></html>");
+  } catch(e:any) { audit(pending!.userId,"platform_oauth_failed",platform); failHtml(502, `فشل إكمال ربط المنصة: ${String(e?.message||e).slice(0,240)}`); }
+}
 
 app.post("/api/platforms/telegram/configure", requireOwner, async (req,res)=>{
   // رمز البوت من المدخل ثم من بيئة الخادم؛ في الإنتاج يكفي ضبط البيئة
@@ -3174,6 +3225,18 @@ app.get("/api/platforms/:platform/oauth/setup", requireOwner, async (req,res)=>{
     loginConfigIdProblems:(metaScopesResolved&&loginConfigInspection(platform).problems.length)?loginConfigInspection(platform).problems:undefined,
     loginConfigIdUsed:metaScopesResolved?Boolean(loginConfigIdFor(platform)):undefined,
     permissionSource:metaScopesResolved?(loginConfigIdFor(platform)?"facebook_login_for_business_configuration":"oauth_scope_parameter"):undefined,
+    // التدفّق الرسمي لـInstagram: display=page + extras=IG_API_ONBOARDING +
+    // response_type=token، والرمز يعود في مقطع الاستجابة (لا code). يُعلن هنا
+    // ليعرف المالك أن الرابط مطابق لوثيقة Meta حرفياً.
+    instagramOnboardingFlow:platform==="instagram"?{
+      active:true,
+      display:"page",
+      extras:INSTAGRAM_ONBOARDING_EXTRAS,
+      responseType:"token",
+      tokenDelivery:"url_fragment",
+      note:"وفق وثيقة Meta «Facebook Login for Business - Instagram API»: تُلحق Meta الرمز (القصير وطويل الأجل) في مقطع الاستجابة، وتقرأه الواجهة وترسله POST في الجسم لإتمام الربط بلا تبديل رمز.",
+      doc:"https://developers.facebook.com/documentation/instagram-platform/instagram-api-with-facebook-login/business-login-for-instagram",
+    }:undefined,
     loginForBusinessSetup:(platform==="facebook"||platform==="instagram")?{
       where:"Meta App Dashboard → Facebook Login for Business → Configurations",
       steps:[

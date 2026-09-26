@@ -204,7 +204,8 @@ const InstagramWebhookStatus: React.FC = () => {
 };
 
 export const PlatformConnectionCenter: React.FC = () => {
-  const { currentUser, showToast } = useApp();
+  const { currentUser, showToast, oauthReturn, clearOauthReturn } = useApp();
+
   const [loading, setLoading] = useState(false);
   const [control, setControl] = useState<any>(null);
   const [external, setExternal] = useState<any>(null);
@@ -228,6 +229,16 @@ export const PlatformConnectionCenter: React.FC = () => {
     } finally {
       setLoading(false);
     }
+
+  // نتيجة عودة OAuth بتدفّق المقطع (Instagram): تُعرض مرة واحدة ثم تُمسح، وتُحدَّث
+  // الحالة فوراً فلا يظن المالك أن الربط لم يحدث. معرَّفة بعد load لتجنّب استخدامه قبل تعريفه.
+  useEffect(() => {
+    if (!oauthReturn) return;
+    showToast(oauthReturn.ok ? 'تم إكمال ربط Instagram.' : `تعذر إكمال ربط Instagram: ${oauthReturn.message || ''}`);
+    clearOauthReturn();
+    void load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [oauthReturn]);
   }, [showToast]);
 
   useEffect(() => { void load(); }, [load]);

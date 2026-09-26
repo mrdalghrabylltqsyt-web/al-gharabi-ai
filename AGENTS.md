@@ -1056,3 +1056,49 @@ Meta توجّه حسب `User-Agent`:
 
 `dialogPhase` يُثبت موضع الرفض من داخل النظام فلا يعود المالك يرى «حدث خطأ ما» بلا تفسير.
 
+
+## التدفّق الرسمي لـInstagram: Facebook Login for Business - Instagram API (صُحّح 2026-09-26)
+
+**الجذر المُثبت (وثيقة Meta الرسمية):** كنا نستخدم تدفّق OAuth عاماً (`response_type=code`)
+بينما وثيقة «Facebook Login for Business - Instagram API» تفرض رابطاً مختلفاً تماماً:
+
+| المعامل | القيمة الرسمية | حالنا قبل الإصلاح |
+|---|---|---|
+| `display` | `page` | غائب |
+| `extras` | `{"setup":{"channel":"IG_API_ONBOARDING"}}` | غائب |
+| `response_type` | `token` | `code` |
+| تسليم الرمز | مقطع الاستجابة (`#access_token=…&long_lived_token=…`) | سطر الطلب (`?code=…`) |
+
+`extras=IG_API_ONBOARDING` هو ما يفتح **نافذة الإعداد الموحّدة** التي تحوّل حساب Instagram
+إلى مهني وتنشئ/تربط صفحة Facebook في نافذة واحدة. بغيابه يمرّ المالك بمسار عام لا يعرف
+الإعداد، وهو موضع صفحة «حدث خطأ ما». ولا يوجد تجاوز صلاحيات ولا Configuration ID في
+الإنتاج (`loginConfigIdUsed=false`, `permissionSource=oauth_scope_parameter`) — فالتوجيه
+السابق بـ«فعّل الصلاحيات العشر» كان استنتاجاً غير مُثبت.
+
+الإصلاح (Facebook لم يُمسّ: التدفّق مقيّد بـ`platform === 'instagram'`):
+- `engine/social/oauth.ts`: `INSTAGRAM_ONBOARDING_EXTRAS`، ومعامل `instagramOnboarding`
+  في `buildAuthorizationParams` يضيف `display=page` و`extras` و`response_type=token`
+  لـInstagram وحده. و`parseInstagramTokenFragment` يقرأ المقطع (يفضّل `long_lived_token`).
+- `server.ts`: `handleOAuthCallback` مشترك بين GET (تدفّق code، يرد HTML) و
+  `POST /api/platforms/:platform/oauth/callback` (تدفّق المقطع، يرد JSON). الواجهة تقرأ
+  المقطع من الرابط وتمسحه فوراً ثم ترسله **POST في الجسم**، فلا يظهر الرمز في سطر الطلب
+  ولا في سجلات الوسيط ولا في Referer ولا في المحفوظات. مسار code القديم يبقى مدعوماً.
+- `src/context/AppContext.tsx` + `apiService.completePlatformOAuthFragment` +
+  `PlatformConnectionCenter`: يُكمل الربط تلقائياً عند العودة ويعرض النتيجة ويحدّث الحالة.
+- `oauth/setup` يعرض كتلة `instagramOnboardingFlow` (display/extras/responseType/tokenDelivery).
+
+**تصحيح الصلاحيات (Reconcile):** أُزيلت `pages_read_user_content` من مجموعة Instagram
+المطلوبة (صارت 9): هي اعتمادية في «Permissions Reference» العام، لكنها **غير مذكورة** في
+وثيقة هذا المسار، والكود لا يستدعي أي endpoint يتطلبها (لا قراءة تعليقات صفحة Facebook).
+طلب صلاحية بلا استدعاء مقابل يخالف قاعدة المشروع ويزيد سطح الرفض. `pages_manage_metadata`
+بقيت لأن `subscribed_apps` يستدعيها فعلاً. `instagram_basic` تعتمد رسمياً على `pages_show_list`.
+
+اختبارات: `instagram.connector.test.ts` = **169 فحصاً** (مجموعة 6ج تثبت POST بالمقطع،
+استهلاك state مرة واحدة، ورفض غياب الرمز؛ ومجموعة 6 تثبت display/extras/response_type
+في الرابط الفعلي؛ ومجموعة 3 تثبت المجموعة التساعية). `facebook.connector.test.ts` = 231
+(بلا تغيير — إثبات عدم المساس). فحوص final-audit التسعة الجديدة:
+`instagram-onboarding-display-page` … `instagram-onboarding-tests` (239 فحصاً إجمالاً).
+
+**درس عام:** «حدث خطأ ما» قد تأتي من رابط غير مطابق للوثيقة الرسمية للمسار، لا من صلاحية
+ولا من App ID. الفحص بلا كوكيز لا يرى ما بعد شاشة الدخول، فيجب مطابقة الرابط الرسمي حرفياً
+قبل أي تشخيص يعتمد على استجابة الحوار.

@@ -173,13 +173,15 @@ function unitTests(): void {
   check('صلاحيات الصفحة اللازمة موجودة', ['pages_show_list', 'pages_read_engagement', 'pages_manage_metadata'].every((s) => INSTAGRAM_REQUIRED_SCOPES.includes(s)));
   check('المجموعة المطلوبة لا تكرّر أي صلاحية', new Set(INSTAGRAM_REQUIRED_SCOPES).size === INSTAGRAM_REQUIRED_SCOPES.length);
   check('لا صلاحية في المجموعة المطلوبة بلا اعتماديتها', findMissingInstagramScopeDependencies(INSTAGRAM_REQUIRED_SCOPES).length === 0, findMissingInstagramScopeDependencies(INSTAGRAM_REQUIRED_SCOPES).join(','));
-  // الاعتماديات الرسمية من «Permissions Reference»: instagram_basic تعتمد على
-  // pages_read_user_content وpages_show_list، وكل صلاحية instagram_* الأخرى تعتمد
+  // الاعتماديات الرسمية من وثيقة المسار (Instagram API with Facebook Login):
+  // instagram_basic تعتمد على pages_show_list، وكل صلاحية instagram_* الأخرى تعتمد
   // على instagram_basic وpages_read_engagement وpages_show_list — ولا تعتمد على
   // pages_manage_metadata (التي هي شرط مستقل لحقل webhook comments).
-  check('instagram_basic تعتمد رسمياً على pages_read_user_content وpages_show_list',
-    (INSTAGRAM_PERMISSION_DEPENDENCIES['instagram_basic'] || []).includes('pages_read_user_content') &&
+  // pages_read_user_content **ليست** في قائمة هذا المسار (لا استدعاء يقابلها).
+  check('instagram_basic تعتمد رسمياً على pages_show_list',
     (INSTAGRAM_PERMISSION_DEPENDENCIES['instagram_basic'] || []).includes('pages_show_list'));
+  check('instagram_basic لا تعلن pages_read_user_content (غير مطلوبة في هذا المسار)',
+    !(INSTAGRAM_PERMISSION_DEPENDENCIES['instagram_basic'] || []).includes('pages_read_user_content'));
   check('رد التعليقات يعتمد رسمياً على pages_read_engagement وpages_show_list',
     (INSTAGRAM_PERMISSION_DEPENDENCIES['instagram_manage_comments'] || []).includes('pages_read_engagement') &&
     (INSTAGRAM_PERMISSION_DEPENDENCIES['instagram_manage_comments'] || []).includes('pages_show_list'));
@@ -187,16 +189,16 @@ function unitTests(): void {
     !(INSTAGRAM_PERMISSION_DEPENDENCIES['instagram_manage_comments'] || []).includes('pages_manage_metadata'));
   check('pages_manage_metadata تبقى مطلوبة لاشتراك webhook (comments)',
     INSTAGRAM_REQUIRED_SCOPES.includes('pages_manage_metadata'));
-  check('pages_read_user_content مطلوبة كاعتمادية instagram_basic',
-    INSTAGRAM_REQUIRED_SCOPES.includes('pages_read_user_content'));
+  check('pages_read_user_content ليست مطلوبة (لا استدعاء يقابلها في هذا المسار)',
+    !INSTAGRAM_REQUIRED_SCOPES.includes('pages_read_user_content'));
   check('business_management مطلوبة لصفحات Business Manager',
     INSTAGRAM_REQUIRED_SCOPES.includes('business_management'));
-  check('لا صلاحية مطلوبة بلا استدعاء حقيقي (العدد = 10)',
-    INSTAGRAM_REQUIRED_SCOPES.length === 10, INSTAGRAM_REQUIRED_SCOPES.join(','));
+  check('لا صلاحية مطلوبة بلا استدعاء حقيقي (العدد = 9)',
+    INSTAGRAM_REQUIRED_SCOPES.length === 9, INSTAGRAM_REQUIRED_SCOPES.join(','));
   const partial = resolveInstagramScopes(['instagram_manage_comments']);
   check('حلّ مجموعة جزئية يضيف instagram_basic', partial.includes('instagram_basic'));
   check('حلّ مجموعة جزئية يضيف pages_show_list', partial.includes('pages_show_list'));
-  check('حلّ مجموعة جزئية يضيف pages_read_user_content (اعتمادية instagram_basic)', partial.includes('pages_read_user_content'), partial.join(','));
+  check('حلّ مجموعة جزئية لا يضيف pages_read_user_content', !partial.includes('pages_read_user_content'), partial.join(','));
   check('الاعتمادية تأتي قبل التابع', partial.indexOf('instagram_basic') < partial.indexOf('instagram_manage_comments'));
   check('الحلّ بلا تكرار', new Set(partial).size === partial.length);
   check('يُعلن صراحةً أن المسار يحتاج حساباً مهنياً لا شخصياً', INSTAGRAM_REQUIRES_PROFESSIONAL_ACCOUNT === true);
@@ -263,8 +265,14 @@ async function integrationTests(): Promise<void> {
     const expectedRedirect = `${BASE}/api/platforms/instagram/oauth/callback`;
     check('redirect_uri المُعاد هو الرابط الفعلي بالضبط', startRes.redirectUri === expectedRedirect, `got=${startRes.redirectUri}`);
     const startedScopes = (new URL(startRes.authorizationUrl).searchParams.get('scope') || '').split(',').filter(Boolean);
+    const startedParams = new URL(startRes.authorizationUrl).searchParams;
+    // التدفّق الرسمي: display=page + extras=IG_API_ONBOARDING + response_type=token.
+    check('التدفّق الرسمي: display=page', startedParams.get('display') === 'page');
+    check('التدفّق الرسمي: extras=IG_API_ONBOARDING', startedParams.get('extras') === '{"setup":{"channel":"IG_API_ONBOARDING"}}', `extras=${startedParams.get('extras')}`);
+    check('التدفّق الرسمي: response_type=token (لا code)', startedParams.get('response_type') === 'token', `rt=${startedParams.get('response_type')}`);
     check('رابط التفويض يطلب صلاحيات Instagram الحديثة الصحيحة', startedScopes.includes('instagram_basic') && startedScopes.includes('instagram_manage_comments') && startedScopes.includes('instagram_manage_messages') && startedScopes.includes('instagram_content_publish'), startedScopes.join(','));
     check('رابط التفويض يطلب صلاحيات الصفحة اللازمة', ['pages_show_list', 'pages_read_engagement', 'pages_manage_metadata'].every((s) => startedScopes.includes(s)), startedScopes.join(','));
+    check('رابط التفويض لا يطلب pages_read_user_content (غير مطلوبة رسمياً)', !startedScopes.includes('pages_read_user_content'), startedScopes.join(','));
     check('لا اعتمادية صلاحية ناقصة في الرابط الفعلي', findMissingInstagramScopeDependencies(startedScopes).length === 0, findMissingInstagramScopeDependencies(startedScopes).join(','));
     check('لا يستخدم أسماء Instagram Login غير المطابقة للمسار', !startedScopes.some((s) => s.startsWith('instagram_business_')));
     const state = new URL(startRes.authorizationUrl).searchParams.get('state') || '';
@@ -278,9 +286,35 @@ async function integrationTests(): Promise<void> {
     check('Instagram أصبح متصلاً وموثقاً', igAfter.connected === true && igAfter.providerVerified === true);
     check('لا يُعاد أي رمز صفحة في الاستجابة', !JSON.stringify(igAfter).includes('PAGE_TOKEN_TEST') && !JSON.stringify(readinessAfter).includes('IG_USER_TOKEN_TEST_LONG'));
 
+    group('6ج) تكامل: تدفّق Meta الرسمي (response_type=token + مقطع الاستجابة)');
+    // التدفّق الرسمي لـ«Facebook Login for Business - Instagram API» يعيد الرمز في
+    // مقطع الاستجابة (لا يُرسَل إلى الخادم). الواجهة ترسله POST في الجسم، فيُكمل
+    // الربط بلا تبديل رمز (الرمز طويل الأجل جاهز). Facebook لا يتأثّر.
+    const fragStart = await (await fetch(`${BASE}/api/platforms/instagram/oauth/start`, { headers: auth })).json();
+    const fragState = new URL(fragStart.authorizationUrl).searchParams.get('state') || '';
+    const fragPost = await fetch(`${BASE}/api/platforms/instagram/oauth/callback`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ state: fragState, fragment: '#access_token=SHORT_FRAG&data_access_expiration_time=1658889585&expires_in=4815&long_lived_token=IG_USER_TOKEN_TEST_LONG' }),
+    });
+    check('POST بمقطع الاستجابة يُكمل الربط', fragPost.status === 200, `status=${fragPost.status}`);
+    const fragReadiness = await (await fetch(`${BASE}/api/platforms/production-readiness`, { headers: auth })).json();
+    const fragIg = fragReadiness.platforms.find((p: any) => p.platform === 'instagram');
+    check('Instagram متصل وموثق بعد تدفّق المقطع', fragIg.connected === true && fragIg.providerVerified === true);
+    check('الرمز لا يُعاد في أي استجابة', !JSON.stringify(fragReadiness).includes('IG_USER_TOKEN_TEST_LONG'));
+    // حالة OAuth تُستهلك مرة واحدة: إعادة إرسال المقطع نفسه لا تُقبل ثانية.
+    const fragReplay = await fetch(`${BASE}/api/platforms/instagram/oauth/callback`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ state: fragState, fragment: '#access_token=SHORT_FRAG&long_lived_token=IG_USER_TOKEN_TEST_LONG' }),
+    });
+    check('إعادة استخدام state مع المقطع مرفوضة (استهلاك مرة واحدة)', fragReplay.status === 400, `status=${fragReplay.status}`);
+    // GET بلا code وبلا مقطع يُعلن صراحةً بدل نجاح صامت.
+    const fragNoToken = await fetch(`${BASE}/api/platforms/instagram/oauth/callback?state=${encodeURIComponent(fragState)}`);
+    check('لا code ولا مقطع => رفض صريح (400)', fragNoToken.status === 400, `status=${fragNoToken.status}`);
+
     group('6أ) تكامل: مسار Facebook Login for Business (config_id بدل scope)');
     // Configuration ID صالح: يُمرَّر كـconfig_id ويُحذف scope تماماً من رابط التفويض
-    // (إرسالهما معاً يتعارض). يبقى state وredirect_uri وresponse_type صحيحة.
+    // (إرسالهما معاً يتعارض). تدفّق Instagram الرسمي يستخدم response_type=token مع
+    // display=page وextras=IG_API_ONBOARDING؛ يبقى state وredirect_uri صحيحين.
     // كل خادم يستخدم نفس المنفذ، فيُوقف السابق قبل تشغيل التالي.
     const CONFIG_ID = '1003753455711313';
     await stop(app.proc);
@@ -293,7 +327,10 @@ async function integrationTests(): Promise<void> {
     const cfgParams = new URL(cfgStart.authorizationUrl).searchParams;
     check('config_id يُرسَل إلى Meta في رابط التفويض', cfgParams.get('config_id') === CONFIG_ID, `config_id=${cfgParams.get('config_id')}`);
     check('لا يُرسَل scope مع config_id (تعارض)', cfgParams.get('scope') === null, `scope=${cfgParams.get('scope')}`);
-    check('response_type=code وredirect_uri وstate صحيحة', cfgParams.get('response_type') === 'code' && cfgParams.get('redirect_uri') === expectedRedirect && (cfgParams.get('state') || '').length >= 32);
+    check('response_type=token وفق التدفّق الرسمي لـInstagram', cfgParams.get('response_type') === 'token', `response_type=${cfgParams.get('response_type')}`);
+    check('redirect_uri وstate صحيحة', cfgParams.get('redirect_uri') === expectedRedirect && (cfgParams.get('state') || '').length >= 32);
+    check('display=page مطلوب رسمياً', cfgParams.get('display') === 'page');
+    check('extras=IG_API_ONBOARDING مطلوب رسمياً', cfgParams.get('extras') === '{"setup":{"channel":"IG_API_ONBOARDING"}}', `extras=${cfgParams.get('extras')}`);
     check('الاستجابة تُعلن أن الصلاحيات من الConfiguration لا من scope', cfgStart.loginConfigIdUsed === true && cfgStart.permissionSource === 'facebook_login_for_business_configuration');
     check('الاستجابة تذكر أسماء متغيرات config_id بلا قيمة', Array.isArray(cfgStart.loginConfigEnvNames) && cfgStart.loginConfigEnvNames.includes('INSTAGRAM_LOGIN_CONFIG_ID'));
     // config_id يظهر مرة واحدة فقط: داخل authorizationUrl (لأن Meta تستقبله من

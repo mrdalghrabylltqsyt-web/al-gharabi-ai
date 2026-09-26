@@ -54,18 +54,20 @@ export const INSTAGRAM_SIGNATURE_HEADER = 'x-hub-signature-256';
  * في المجموعة الدنيا رغم عدم كونها اعتمادية.
  *
  * تصحيح جذري: كانت `instagram_basic` مُعلنة «بلا اعتماديات»، بينما وثيقة Meta
- * تُسند لها اعتماديتين (pages_read_user_content, pages_show_list). إغفالهما يجعل
- * الرابط غير متماسك مع عقد Meta، وهو أحد أسباب رفض الحوار بمجموعة الصلاحيات.
+ * تُسند لها اعتمادية `pages_show_list` فقط. لم تُضف `pages_read_user_content`:
+ * هي اعتمادية في «Permissions Reference» العام (صفحة كل الصلاحيات)، لكنها **غير
+ * مذكورة** في وثيقة هذا المسار تحديداً (Instagram API with Facebook Login)، والكود
+ * لا يستدعي أي endpoint يتطلبها (لا قراءة تعليقات صفحة Facebook). طلب صلاحية بلا
+ * استدعاء مقابل يخالف قاعدة المشروع ويزيد سطح الرفض في الحوار.
  */
 export const INSTAGRAM_PERMISSION_DEPENDENCIES: Readonly<Record<string, readonly string[]>> = Object.freeze({
-  instagram_basic: ['pages_read_user_content', 'pages_show_list'],
+  instagram_basic: ['pages_show_list'],
   instagram_content_publish: ['instagram_basic', 'pages_read_engagement', 'pages_show_list'],
   instagram_manage_comments: ['instagram_basic', 'pages_read_engagement', 'pages_show_list'],
   instagram_manage_messages: ['instagram_basic', 'pages_read_engagement', 'pages_show_list'],
   instagram_manage_insights: ['instagram_basic', 'pages_read_engagement', 'pages_show_list'],
   pages_show_list: [],
   pages_read_engagement: ['pages_show_list'],
-  pages_read_user_content: ['pages_show_list'],
   pages_manage_metadata: ['pages_show_list'],
   business_management: [],
 });
@@ -79,7 +81,6 @@ export const INSTAGRAM_PERMISSION_DEPENDENCIES: Readonly<Record<string, readonly
  * - instagram_manage_comments → POST /{comment-id}/replies (الرد على التعليق).
  * - instagram_manage_messages → POST /{page-id}/messages (الرسائل).
  * - instagram_manage_insights → قراءة مؤشرات الحساب (analytics).
- * - pages_read_user_content   → اعتمادية instagram_basic (محتوى المستخدم/التعليقات).
  * - pages_manage_metadata     → POST /{page-id}/subscribed_apps (اشتراك webhook).
  * - business_management       → ظهور صفحات Business Manager في /me/accounts.
  */
@@ -91,7 +92,6 @@ export const INSTAGRAM_REQUIRED_SCOPES: readonly string[] = Object.freeze([
   'instagram_manage_insights',
   'pages_show_list',
   'pages_read_engagement',
-  'pages_read_user_content',
   'pages_manage_metadata',
   'business_management',
 ]);

@@ -36,6 +36,9 @@ interface AppContextType {
    * ليست شاشة دخول: الجلسة لم تُرفض، وتُعرض شاشة «إعادة المحاولة» بدلاً منها.
    */
   authUnavailable: boolean;
+  /** نتيجة عودة OAuth بتدفّق المقطع (Instagram) لتُعرض للمالك في مركز الربط. */
+  oauthReturn: { platform: string; ok: boolean; message: string | null } | null;
+  clearOauthReturn: () => void;
   retryAuth: () => void;
   loginWithGoogle: (credential: string) => Promise<void>;
   requestOwnerChallenge: (email: string) => Promise<{ success: boolean; message: string }>;
@@ -105,6 +108,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [currentUser, setCurrentUser] = useState<AppUser | null>(null);
   const [isLoadingAuth, setIsLoadingAuth] = useState<boolean>(true);
   const [authUnavailable, setAuthUnavailable] = useState<boolean>(false);
+  const [oauthReturn, setOauthReturn] = useState<{ platform: string; ok: boolean; message: string | null } | null>(null);
   const [authRetryNonce, setAuthRetryNonce] = useState<number>(0);
   const [users, setUsers] = useState<AppUser[]>([]);
   const [workspaceHydrated, setWorkspaceHydrated] = useState<boolean>(false);
@@ -179,6 +183,23 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           queryParams.delete('preview_token');
           const query = queryParams.toString();
           window.history.replaceState({}, '', `${window.location.pathname}${query ? `?${query}` : ''}${window.location.hash}`);
+        }
+        // عودة OAuth بتدفّق المقطع (Instagram: response_type=token): الرمز يصل في
+        // المقطع فيراه المتصفح وحده. نقرأه ونمسحه من الرابط فوراً ثم نرسله POST في
+        // جسم الطلب — فلا يبقى في المحفوظات ولا في Referer ولا سجلات الوسيط.
+        // Facebook يستخدم response_type=code فلا يدخل هذا الفرع إطلاقاً.
+        const oauthHashParams = new URLSearchParams(window.location.hash.replace(/^#/, ''));
+        if (oauthHashParams.has('access_token') || oauthHashParams.has('long_lived_token')) {
+          const platform = window.location.pathname.match(/^\/api\/platforms\/([^/]+)\/oauth\/callback/)?.[1] || 'instagram';
+          const state = oauthHashParams.get('state') || new URLSearchParams(window.location.search).get('state') || '';
+          const fragment = window.location.hash.replace(/^#/, '');
+          window.history.replaceState({}, '', window.location.pathname);
+          try {
+            const done = await apiService.completePlatformOAuthFragment(platform, state, fragment);
+            setOauthReturn({ platform, ok: true, message: done?.message || null });
+          } catch (e: any) {
+            setOauthReturn({ platform, ok: false, message: e?.message || 'تعذر إكمال ربط المنصة' });
+          }
         }
         const hashParams = new URLSearchParams(window.location.hash.replace(/^#/, ''));
         const previewToken = hashParams.get('preview_token');
@@ -758,6 +779,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         isAuthenticated: Boolean(currentUser),
         isLoadingAuth,
         authUnavailable,
+        oauthReturn,
+        clearOauthReturn: () => setOauthReturn(null),
         retryAuth,
         loginWithGoogle,
         requestOwnerChallenge,

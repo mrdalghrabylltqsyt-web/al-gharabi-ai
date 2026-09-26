@@ -455,6 +455,20 @@ ${payload.topic || payload.productName || 'أنظمة وحلول التقسيط 
 
   async startPlatformOAuth(platform: string) { const res = await fetch(`/api/platforms/${encodeURIComponent(platform)}/oauth/start`, { headers: getAuthHeaders() }); const data = await res.json(); if(!res.ok || !data.success) { const msg = [data.error, data.hint].filter(Boolean).join(' — ') || 'تعذر بدء ربط المنصة'; const err: any = new Error(msg); err.code = data.code; err.redirectUri = data.redirectUri; err.appTokenKind = data.appTokenKind; throw err; } return data; },
 
+  /**
+   * يُكمل OAuth عندما تُلحق Meta الرمز في **مقطع** الاستجابة (تدفّق Instagram
+   * الرسمي: response_type=token). المقطع لا يُرسَل إلى الخادم مع الطلب، فنرسله في
+   * الجسم صراحةً — فلا يظهر الرمز في سطر الطلب ولا في سجلات الوسيط ولا Referer.
+   */
+  async completePlatformOAuthFragment(platform: string, state: string, fragment: string) {
+    const res = await fetch(`/api/platforms/${encodeURIComponent(platform)}/oauth/callback`, {
+      method: 'POST', headers: getAuthHeaders(), body: JSON.stringify({ state, fragment }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) { const err: any = new Error(data?.error || 'تعذر إكمال ربط المنصة'); err.code = data?.code; throw err; }
+    return data;
+  },
+
   // الرمز اختياري: إن غاب يُستخدم TELEGRAM_BOT_TOKEN من بيئة الخادم (لا نطلب نسخ أسرار للواجهة).
   async configureTelegram(botToken?: string) {
     const res = await fetch('/api/platforms/telegram/configure', { method:'POST', headers:getAuthHeaders(), body:JSON.stringify(botToken ? { botToken } : {}) });

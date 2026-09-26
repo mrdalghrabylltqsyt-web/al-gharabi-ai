@@ -24,6 +24,35 @@ export interface OAuthPendingState {
 /** مهلة صلاحية state الافتراضية (10 دقائق) — أقصر ما يسمح به إتمام الربط. */
 export const OAUTH_STATE_TTL_MS = 10 * 60 * 1000;
 
+/**
+ * قيمة `extras` الرسمية لتدفّق «Facebook Login for Business - Instagram API».
+ * المصدر: وثيقة Meta الرسمية (business-login-for-instagram) — تُطلب حرفياً
+ * `{"setup":{"channel":"IG_API_ONBOARDING"}}` لتظهر نافذة الإعداد الموحّدة التي
+ * تحوّل الحساب إلى مهني وتربط صفحة Facebook في نافذة واحدة.
+ */
+export const INSTAGRAM_ONBOARDING_EXTRAS = '{"setup":{"channel":"IG_API_ONBOARDING"}}';
+
+/**
+ * يحلل مقطع الاستجابة الذي تُلحقه Meta بـredirect_uri في تدفّق
+ * «response_type=token»: `#access_token=...&long_lived_token=...&expires_in=...`.
+ * يفضّل الرمز طويل الأجل (المطلوب للاستمرار)، ويرجع الرمز القصير إن غاب.
+ * لا يحتفظ بأي قيمة في السجل ولا يطبعها — التخزين مسؤولية طبقة الخادم المشفّرة.
+ */
+export function parseInstagramTokenFragment(fragment: string): { accessToken?: string; longLivedToken?: string; expiresIn?: number; dataAccessExpirationTime?: number; error?: string; errorReason?: string } {
+  const raw = String(fragment || '').replace(/^#/, '');
+  if (!raw) return {};
+  const p = new URLSearchParams(raw);
+  const num = (v: string | null) => (v && /^\d+$/.test(v) ? Number(v) : undefined);
+  return {
+    accessToken: p.get('access_token') || undefined,
+    longLivedToken: p.get('long_lived_token') || undefined,
+    expiresIn: num(p.get('expires_in')),
+    dataAccessExpirationTime: num(p.get('data_access_expiration_time')),
+    error: p.get('error') || undefined,
+    errorReason: p.get('error_reason') || undefined,
+  };
+}
+
 /** يولّد state عشوائياً قوياً (192 بت) غير قابل للتخمين. */
 export function createOAuthState(): string {
   return crypto.randomBytes(24).toString('hex');
@@ -150,8 +179,10 @@ export function buildAuthorizationParams(input: {
   pkceChallenge?: string;
   /** Configuration ID لـFacebook Login for Business (facebook/instagram فقط). */
   loginConfigId?: string | null;
+  /** تفعيل تدفّق Instagram الرسمي (display/extras/response_type=token) — Instagram فقط. */
+  instagramOnboarding?: boolean;
 }): Record<string, string> {
-  const { platform, clientId, redirectUri, scopes, state, pkceChallenge, loginConfigId } = input;
+  const { platform, clientId, redirectUri, scopes, state, pkceChallenge, loginConfigId, instagramOnboarding } = input;
   const params: Record<string, string> = {
     redirect_uri: redirectUri,
     response_type: 'code',
@@ -171,6 +202,16 @@ export function buildAuthorizationParams(input: {
   // لكن حذفهما يجعل الطلب مطابقاً لعقد Meta الرسمي حرفياً.
   if (platform === 'facebook' || platform === 'instagram' || platform === 'threads') {
     params.client_id = clientId;
+    // Instagram API with Facebook Login → «Facebook Login for Business - Instagram API»:
+    // الوثيقة الرسمية تشترط display=page وextras={"setup":{"channel":"IG_API_ONBOARDING"}}
+    // وresponse_type=token (لا code). بلا هذه المعاملات يمرّ المالك بمسار عام بلا
+    // نافذة الإعداد الموحّدة (تحويل الحساب المهني + ربط الصفحة) — وهو موضع «حدث خطأ ما».
+    // Facebook لا يتأثّر: الفرع خاص بـinstagram وحده.
+    if (platform === 'instagram' && instagramOnboarding) {
+      params.display = 'page';
+      params.extras = INSTAGRAM_ONBOARDING_EXTRAS;
+      params.response_type = 'token';
+    }
     // Facebook Login for Business: config_id يحلّ محل scope، وإرسالهما معاً
     // يتعارض (الConfiguration تحمل الصلاحيات وحقول الوصول). Threads لا يستخدمه.
     if (loginConfigId && (platform === 'facebook' || platform === 'instagram')) {
