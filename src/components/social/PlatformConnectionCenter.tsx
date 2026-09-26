@@ -203,9 +203,95 @@ const InstagramWebhookStatus: React.FC = () => {
   );
 };
 
+/**
+ * لوحة حالة TikTok الحقيقية (للمالك): اتصال + توكنات (منطقية) + قدرات + قيد المراجعة
+ * + معلومات الناشر + استعلام حالة النشر. لا تُعرض أي قيمة سرّية إطلاقاً.
+ */
+const TikTokStatusPanel: React.FC = () => {
+  const [status, setStatus] = useState<any>(null);
+  const [creator, setCreator] = useState<any>(null);
+  const [creatorErr, setCreatorErr] = useState<string>('');
+  const [publishId, setPublishId] = useState('');
+  const [publishStatus, setPublishStatus] = useState<any>(null);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string>('');
+  useEffect(() => {
+    let alive = true;
+    apiService.getTikTokStatus().then((d) => { if (alive) setStatus(d); }).catch((e) => { if (alive) setErr(e?.message || 'تعذر جلب حالة TikTok'); });
+    return () => { alive = false; };
+  }, []);
+  const loadCreator = async () => {
+    setBusy(true); setCreatorErr('');
+    try { setCreator(await apiService.getTikTokCreatorInfo()); }
+    catch (e: any) { setCreatorErr(e?.message || 'تعذر جلب معلومات الناشر'); }
+    finally { setBusy(false); }
+  };
+  const checkStatus = async () => {
+    if (!publishId.trim()) return;
+    setBusy(true);
+    try { setPublishStatus(await apiService.getTikTokPublishStatus(publishId.trim())); }
+    catch (e: any) { setPublishStatus({ error: e?.message || 'تعذر استعلام الحالة' }); }
+    finally { setBusy(false); }
+  };
+  if (err) return <p className="text-[10px] text-amber-300 mt-2">حالة TikTok: {err}</p>;
+  if (!status) return <p className="text-[10px] text-slate-500 mt-2">جارٍ جلب حالة TikTok الحقيقية…</p>;
+  const cap = (v: string) => v === 'SUPPORTED' ? 'bg-emerald-500/10 text-emerald-300 border-emerald-600/30'
+    : v === 'NOT_AVAILABLE_BY_PUBLIC_API' ? 'bg-slate-800 text-slate-500 border-slate-700'
+      : 'bg-amber-500/10 text-amber-300 border-amber-600/30';
+  return (
+    <div className="mt-3 pt-3 border-t border-slate-800/70 text-[10px] space-y-2">
+      <p className="text-slate-500 flex items-center gap-1"><KeyRound className="w-3 h-3" /> حالة موصل TikTok الحقيقية (بلا أي سرّ):</p>
+      <div className="flex flex-wrap gap-1.5">
+        <span className={`px-2 py-0.5 rounded-md border font-bold ${status.providerVerified ? 'bg-emerald-500/10 text-emerald-300 border-emerald-600/30' : status.connected ? 'bg-indigo-500/10 text-indigo-300 border-indigo-600/30' : 'bg-slate-800 text-slate-400 border-slate-700'}`}>
+          {status.providerVerified ? 'متصل وموثق (open_id)' : status.connected ? 'متصل — غير موثق' : 'غير متصل'}
+        </span>
+        <span className={`px-2 py-0.5 rounded-md border font-bold ${status.clientKeyConfigured && status.clientSecretConfigured ? 'bg-emerald-500/10 text-emerald-300 border-emerald-600/30' : 'bg-amber-500/10 text-amber-300 border-amber-600/30'}`}>
+          {status.clientKeyConfigured && status.clientSecretConfigured ? 'بيانات التطبيق مضبوطة' : 'بيانات التطبيق ناقصة'}
+        </span>
+        <span className={`px-2 py-0.5 rounded-md border font-bold ${status.tokenStored ? 'bg-emerald-500/10 text-emerald-300 border-emerald-600/30' : 'bg-slate-800 text-slate-400 border-slate-700'}`}>
+          {status.tokenStored ? 'التوكن مخزّن مشفّراً' : 'لا توكن'}
+        </span>
+        <span className={`px-2 py-0.5 rounded-md border font-bold ${status.refreshTokenStored ? 'bg-emerald-500/10 text-emerald-300 border-emerald-600/30' : 'bg-slate-800 text-slate-400 border-slate-700'}`}>
+          {status.refreshTokenStored ? 'refresh token مخزّن' : 'لا refresh token'}
+        </span>
+        {status.tokenExpired && <span className="px-2 py-0.5 rounded-md border font-bold bg-rose-500/10 text-rose-300 border-rose-600/30">التوكن منتهٍ — يلزم تجديد/إعادة ربط</span>}
+        {status.appReviewRequired && <span className="px-2 py-0.5 rounded-md border font-bold bg-amber-500/10 text-amber-300 border-amber-600/30">النشر العام يحتاج مراجعة TikTok (audit)</span>}
+      </div>
+      <p className="text-slate-500">الحساب: <code className="text-slate-300" dir="ltr">{status.accountName || status.accountId || '—'}</code> • النطاقات: <code className="text-slate-300" dir="ltr">{(status.requestedScopes || []).join(', ')}</code></p>
+      <p className="text-slate-500">رابط الـwebhook: <code className="text-slate-300 break-all" dir="ltr">{status.webhookUrl}</code> • الأحداث: <code className="text-slate-300" dir="ltr">{(status.webhookEvents || []).join(', ')}</code></p>
+      <div className="flex flex-wrap gap-1">
+        {[['نشر مباشر', status.directPostCapability], ['رفع مسودة', status.draftUploadCapability], ['صور', status.photoPublishingCapability], ['تحليلات', status.analyticsCapability], ['webhooks', status.webhookCapability], ['تعليقات', status.commentsCapability], ['رسائل مباشرة', status.directMessagesCapability]].map(([label, v]: any) => (
+          <span key={label} className={`px-1.5 py-0.5 rounded-md border text-[9px] font-semibold ${cap(v)}`} title={String(v)}>{label}: {v === 'SUPPORTED' ? 'مدعوم' : v === 'NOT_AVAILABLE_BY_PUBLIC_API' ? 'غير متاح عام' : 'يحتاج مراجعة'}</span>
+        ))}
+      </div>
+      {status.connected && (
+        <div className="space-y-1.5">
+          <button onClick={() => void loadCreator()} disabled={busy} className="px-2.5 py-1 rounded-lg bg-slate-800 border border-slate-700 text-[10px] font-bold text-white inline-flex items-center gap-1 disabled:opacity-50">
+            {busy ? <Loader2 className="w-3 h-3 animate-spin" /> : <KeyRound className="w-3 h-3" />} جلب معلومات الناشر
+          </button>
+          {creatorErr && <p className="text-amber-300">{creatorErr}</p>}
+          {creator?.creator && (
+            <p className="text-slate-400">الناشر: <code className="text-slate-300">{creator.creator.nickname || creator.creator.username || '—'}</code> • مستويات الخصوصية المتاحة: <code className="text-slate-300" dir="ltr">{(creator.creator.privacyLevelOptions || []).join(', ') || '—'}</code></p>
+          )}
+          <div className="flex items-center gap-1.5">
+            <input value={publishId} onChange={(e) => setPublishId(e.target.value)} placeholder="publish_id" dir="ltr"
+              className="px-2 py-1 rounded-lg bg-slate-950 border border-slate-700 text-[10px] text-white w-48" />
+            <button onClick={() => void checkStatus()} disabled={busy || !publishId.trim()} className="px-2.5 py-1 rounded-lg bg-slate-800 border border-slate-700 text-[10px] font-bold text-white disabled:opacity-50">استعلام حالة النشر</button>
+          </div>
+          {publishStatus && (
+            <p className={publishStatus.error ? 'text-rose-300' : publishStatus.status?.delivered ? 'text-emerald-300' : 'text-slate-400'}>
+              {publishStatus.error || `الحالة: ${publishStatus.status?.rawStatus || '—'} — ${publishStatus.status?.detail || ''}${publishStatus.status?.providerPostId ? ` • معرّف المنشور: ${publishStatus.status.providerPostId}` : ''}`}
+            </p>
+          )}
+        </div>
+      )}
+      <p className="text-slate-600">التعليقات والرسائل المباشرة غير متاحة عبر واجهة TikTok العامة — لا تُعلن المنصة دعمها ولا تُختلق.</p>
+    </div>
+  );
+};
+
 export const PlatformConnectionCenter: React.FC = () => {
   const { currentUser, showToast, oauthReturn, clearOauthReturn } = useApp();
-
   const [loading, setLoading] = useState(false);
   const [control, setControl] = useState<any>(null);
   const [external, setExternal] = useState<any>(null);
@@ -378,7 +464,7 @@ export const PlatformConnectionCenter: React.FC = () => {
                   ) : canOAuth ? (
                     <button onClick={() => void startOAuth(p.platform)} disabled={busy === p.platform}
                       className="px-3 py-1.5 rounded-lg bg-emerald-500 text-slate-950 text-[11px] font-black inline-flex items-center gap-1 disabled:opacity-50">
-                      {busy === p.platform ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <PlugZap className="w-3.5 h-3.5" />} بدء الربط
+                      {busy === p.platform ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <PlugZap className="w-3.5 h-3.5" />} {p.platform === 'tiktok' ? 'ربط TikTok' : 'بدء الربط'}
                     </button>
                   ) : p.platform === 'facebook' ? (
                     // Facebook: الحساب موثوق لكنه يدير أكثر من صفحة؛ إتمام الربط باختيار الصفحة.
@@ -437,6 +523,7 @@ export const PlatformConnectionCenter: React.FC = () => {
               )}
 
               {p.platform === 'instagram' && p.connected && <InstagramWebhookStatus />}
+              {p.platform === 'tiktok' && <TikTokStatusPanel />}
               {['facebook', 'instagram', 'threads'].includes(p.platform) && <OAuthSetupPanel platform={p.platform} />}
 
               {extRow && (

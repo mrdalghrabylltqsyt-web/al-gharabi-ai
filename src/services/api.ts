@@ -571,6 +571,42 @@ ${payload.topic || payload.productName || 'أنظمة وحلول التقسيط 
     return data;
   },
 
+  // ---- TikTok (رابع موصل حقيقي) — كلها بلا أي سرّ في الواجهة ----
+  /** حالة TikTok الحقيقية: اتصال + توكنات (منطقي) + مصفوفة القدرات الرسمية. */
+  async getTikTokStatus() {
+    const res = await fetch('/api/platforms/tiktok/status', { headers: getAuthHeaders() });
+    const data = await res.json();
+    if (!res.ok || !data.success) throw new Error(data.error || 'تعذر جلب حالة TikTok');
+    return data;
+  },
+
+  /** معلومات الناشر الرسمية من TikTok (إلزامية قبل النشر المباشر). */
+  async getTikTokCreatorInfo() {
+    const res = await fetch('/api/platforms/tiktok/creator-info', { headers: getAuthHeaders() });
+    const data = await res.json();
+    if (!res.ok || !data.success) throw new Error(data.error || 'تعذر جلب معلومات الناشر من TikTok');
+    return data;
+  },
+
+  /** استعلام حالة نشر TikTok بـpublish_id (لا يُعلن تسليم إلا بـPUBLISH_COMPLETE). */
+  async getTikTokPublishStatus(publishId: string) {
+    const res = await fetch(`/api/platforms/tiktok/publish-status?publishId=${encodeURIComponent(publishId)}`, { headers: getAuthHeaders() });
+    const data = await res.json();
+    if (!res.ok || !data.success) throw new Error(data.error || 'تعذر استعلام حالة النشر من TikTok');
+    return data;
+  },
+
+  /**
+   * تهيئة نشر TikTok (Direct Post أو رفع مسودة). TikTok لا ينشر نصاً فقط:
+   * يلزم videoUrl أو photoUrls عامة. لا يُعلن التسليم هنا بل بالاستعلام.
+   */
+  async publishTikTok(payload: { content: string; videoUrl?: string; photoUrls?: string[]; postMode?: 'DIRECT_POST' | 'MEDIA_UPLOAD'; privacyLevel?: string; approved: boolean; postId?: string }) {
+    const res = await fetch('/api/platforms/tiktok/publish', { method: 'POST', headers: getAuthHeaders(), body: JSON.stringify(payload) });
+    const data = await res.json();
+    if (!res.ok || !data.success) throw new Error(data.error || 'تعذر تهيئة النشر عبر TikTok');
+    return data;
+  },
+
   // نشر حقيقي على Instagram (حاوية + نشر) — يتطلب رابط صورة/فيديو عاماً.
   async publishInstagram(payload: { content: string; imageUrl?: string; videoUrl?: string; reel?: boolean; approved: boolean; postId?: string }) {
     const res = await fetch('/api/platforms/instagram/publish', { method:'POST', headers:getAuthHeaders(), body:JSON.stringify(payload) });

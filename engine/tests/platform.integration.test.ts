@@ -93,7 +93,7 @@ async function login(): Promise<Record<string, string>> {
     check('المصفوفة بلا جلسة => 401', matrixNoAuth.status === 401);
     const matrix = await (await fetch(`${BASE}/api/platforms/readiness-matrix`, { headers: auth })).json();
     check('المصفوفة تعيد عشر منصات', matrix.platforms.length === 10);
-    check('الملخص: ثلاثة موصلات جاهزة (telegram,facebook,instagram)', matrix.summary.connectorReady === 3 && matrix.summary.foundationReady === 7);
+    check('الملخص: أربعة موصلات جاهزة (telegram,facebook,instagram,tiktok)', matrix.summary.connectorReady === 4 && matrix.summary.foundationReady === 6);
     const fb = matrix.platforms.find((p: any) => p.platform === 'facebook');
     check('facebook: موصل منفّذ وOAuth يحتاج إعداداً خارجياً', fb.implementationStatus === 'CONNECTOR_READY' && fb.oauth === 'EXTERNAL_SETUP_REQUIRED');
     check('facebook: لا اتصال مدّعى', fb.connection.status === 'disconnected' && fb.connection.providerVerified === false);
@@ -123,7 +123,9 @@ async function login(): Promise<Record<string, string>> {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, body: payload,
     });
     check('توقيع غائب => 401', noSig.status === 401);
-    const nonePlatform = await fetch(`${BASE}/api/platforms/tiktok/webhook`, {
+    // TikTok صار له مزود توقيع حقيقي (TikTok-Signature)، فنستخدم منصة بلا
+    // webhook منفّذ (Snapchat) لإثبات أن المنصة بلا مزود توقيع تُرفض 404 صراحةً.
+    const nonePlatform = await fetch(`${BASE}/api/platforms/snapchat/webhook`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, body: payload,
     });
     check('منصة بلا مزود توقيع => 404', nonePlatform.status === 404);

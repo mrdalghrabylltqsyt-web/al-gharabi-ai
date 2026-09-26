@@ -15,6 +15,9 @@ import {
   CheckCircle2,
   Clock,
   XCircle,
+  Music2,
+  PlugZap,
+  Loader2,
 } from 'lucide-react';
 import type {
   SocialManagerStatus,
@@ -251,6 +254,59 @@ export const SocialManagerView: React.FC = () => {
     finally { setFbBusy(false); }
   };
   useEffect(() => { void loadFacebookWebhookInfo(); }, [load]);
+
+  // ---- موصل TikTok الحقيقي: نشر (Direct Post/مسودة) + حالة النشر + معلومات الناشر ----
+  // التعليقات والرسائل المباشرة غير متاحة عبر واجهة TikTok العامة → لا واجهة لها.
+  const tiktok = platforms.find((p) => p.platform === 'tiktok');
+  const [ttBusy, setTtBusy] = useState(false);
+  const [ttStatus, setTtStatus] = useState<any | null>(null);
+  const [ttCreator, setTtCreator] = useState<any | null>(null);
+  const [ttVideoUrl, setTtVideoUrl] = useState('');
+  const [ttCaption, setTtCaption] = useState('');
+  const [ttMode, setTtMode] = useState<'MEDIA_UPLOAD' | 'DIRECT_POST'>('MEDIA_UPLOAD');
+  const [ttPublishId, setTtPublishId] = useState('');
+  const [ttPublishStatus, setTtPublishStatus] = useState<any | null>(null);
+
+  const loadTikTokStatus = useCallback(async () => {
+    try { setTtStatus(await apiService.getTikTokStatus()); }
+    catch { setTtStatus(null); }
+  }, []);
+  useEffect(() => { void loadTikTokStatus(); }, [loadTikTokStatus]);
+
+  const connectTikTok = async () => {
+    setTtBusy(true);
+    try {
+      const res = await apiService.startPlatformOAuth('tiktok');
+      if (res?.authorizationUrl) { window.location.href = res.authorizationUrl; return; }
+      showToast('تم بدء ربط TikTok.');
+    } catch (err: any) {
+      showToast((err?.code ? `[${err.code}] ` : '') + (err?.message || 'تعذر بدء ربط TikTok'));
+    } finally { setTtBusy(false); }
+  };
+  const loadTikTokCreator = async () => {
+    setTtBusy(true);
+    try { setTtCreator(await apiService.getTikTokCreatorInfo()); }
+    catch (err: any) { showToast(err?.message || 'تعذر جلب معلومات الناشر من TikTok'); }
+    finally { setTtBusy(false); }
+  };
+  const initTikTokPublish = async () => {
+    if (!ttVideoUrl.trim()) { showToast('TikTok لا ينشر نصاً فقط؛ أضف رابط فيديو عاماً (videoUrl).'); return; }
+    setTtBusy(true);
+    try {
+      const res = await apiService.publishTikTok({ content: ttCaption.trim(), videoUrl: ttVideoUrl.trim(), postMode: ttMode, approved: true });
+      setTtPublishId(res.providerPublishId || '');
+      showToast(`تمت تهيئة النشر لدى TikTok (${res.postMode}). لا يُعلن التسليم إلا بـPUBLISH_COMPLETE.`);
+      await loadTikTokStatus();
+    } catch (err: any) { showToast(err?.message || 'تعذر تهيئة النشر عبر TikTok'); }
+    finally { setTtBusy(false); }
+  };
+  const checkTikTokPublishStatus = async () => {
+    if (!ttPublishId.trim()) { showToast('أدخل publish_id أولاً.'); return; }
+    setTtBusy(true);
+    try { setTtPublishStatus(await apiService.getTikTokPublishStatus(ttPublishId.trim())); }
+    catch (err: any) { showToast(err?.message || 'تعذر استعلام حالة النشر'); }
+    finally { setTtBusy(false); }
+  };
 
   return (
     <div className="space-y-6">
@@ -736,6 +792,101 @@ export const SocialManagerView: React.FC = () => {
             </div>
           )}
         </div>
+      </div>
+
+
+      {/* TikTok — رابع موصل حقيقي (OAuth + Content Posting API + Display API) */}
+      <div className="p-6 rounded-2xl bg-slate-900 border border-slate-800 space-y-4">
+        <div className="flex items-center justify-between gap-3 border-b border-slate-800 pb-3">
+          <h3 className="text-sm font-bold text-white flex items-center gap-2">
+            <Music2 className="w-4 h-4 text-rose-400" /> موصل TikTok (تكامل خارجي حقيقي)
+          </h3>
+          <button onClick={() => void connectTikTok()} disabled={ttBusy}
+            className="px-4 py-2 rounded-xl bg-rose-600 hover:bg-rose-500 disabled:opacity-50 text-white text-xs font-bold cursor-pointer inline-flex items-center gap-1.5">
+            {ttBusy ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <PlugZap className="w-3.5 h-3.5" />} ربط TikTok
+          </button>
+        </div>
+
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-[11px]">
+          <div className="p-3 rounded-xl bg-slate-950 border border-slate-800 space-y-1">
+            <div>حالة الاتصال: <span className={ttStatus?.providerVerified ? 'text-emerald-400 font-bold' : ttStatus?.connected ? 'text-indigo-300 font-bold' : 'text-slate-400 font-bold'}>
+              {ttStatus?.providerVerified ? 'متصلة وموثقة (open_id)' : ttStatus?.connected ? 'متصلة — بانتظار التوثيق' : 'غير متصلة'}
+            </span></div>
+            {ttStatus?.accountName && <div>الحساب: <span className="font-mono text-slate-200">{ttStatus.accountName}</span></div>}
+            <div>التوكن: <span className={ttStatus?.tokenStored ? 'text-emerald-400 font-bold' : 'text-slate-400 font-bold'}>{ttStatus?.tokenStored ? 'مخزّن مشفّراً' : 'غير مخزّن'}</span></div>
+            <div>refresh token: <span className={ttStatus?.refreshTokenStored ? 'text-emerald-400 font-bold' : 'text-slate-400 font-bold'}>{ttStatus?.refreshTokenStored ? 'موجود' : 'غير موجود'}</span></div>
+            {ttStatus?.tokenExpired && <div className="text-rose-300 font-bold">التوكن منتهٍ — يلزم تجديد تلقائي أو إعادة ربط.</div>}
+          </div>
+          <div className="p-3 rounded-xl bg-slate-950 border border-slate-800 space-y-1">
+            <div>النطاقات المطلوبة: <code dir="ltr" className="text-slate-300">{(ttStatus?.requestedScopes || []).join(', ') || '—'}</code></div>
+            <div>رابط الـwebhook: <code dir="ltr" className="text-slate-300 break-all">{ttStatus?.webhookUrl || '—'}</code></div>
+            <div>أحداث webhook: <code dir="ltr" className="text-slate-300">{(ttStatus?.webhookEvents || []).join(', ') || '—'}</code></div>
+            {ttStatus?.appReviewRequired && <div className="text-amber-300 font-bold">النشر العام (غير SELF_ONLY) يحتاج اجتياز Content Posting audit لدى TikTok.</div>}
+          </div>
+        </div>
+
+        {/* مصفوفة القدرات الرسمية — لا تُعلن قدرة غير مدعومة */}
+        {ttStatus?.capabilityMatrix && (
+          <div className="pt-3 border-t border-slate-800 space-y-2">
+            <h4 className="text-xs font-bold text-slate-200">مصفوفة القدرات الرسمية (لا تُختلق قدرة غير مدعومة)</h4>
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-1.5 text-[10px]">
+              {Object.entries(ttStatus.capabilityMatrix).map(([key, v]: any) => (
+                <div key={key} className="p-2 rounded-lg bg-slate-950 border border-slate-800 flex items-center justify-between gap-2">
+                  <span className="text-slate-300">{v.label || key}</span>
+                  <span className={`font-bold ${v.status === 'SUPPORTED' ? 'text-emerald-400' : v.status === 'NOT_AVAILABLE_BY_PUBLIC_API' ? 'text-slate-500' : 'text-amber-400'}`}>{v.status}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* معلومات الناشر (إلزامية قبل النشر المباشر) */}
+        {ttStatus?.connected && (
+          <div className="pt-3 border-t border-slate-800 space-y-3">
+            <div className="flex items-center gap-2">
+              <button onClick={() => void loadTikTokCreator()} disabled={ttBusy}
+                className="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 text-[11px] font-bold cursor-pointer">
+                جلب معلومات الناشر (query creator info)
+              </button>
+              {ttCreator?.creator && <span className="text-[11px] text-slate-300">الناشر: <span className="font-mono">{ttCreator.creator.nickname || ttCreator.creator.username || '—'}</span> • الخصوصية المتاحة: <code dir="ltr">{(ttCreator.creator.privacyLevelOptions || []).join(', ') || '—'}</code></span>}
+            </div>
+
+            <h4 className="text-xs font-bold text-slate-200">تهيئة نشر TikTok (فيديو عام عبر PULL_FROM_URL)</h4>
+            <p className="text-[10px] text-slate-500">TikTok لا ينشر نصاً فقط. Direct Post ينشر مباشرة، وMedia Upload يرفع مسودة إلى صندوق الناشر للمراجعة داخل التطبيق.</p>
+            <input value={ttVideoUrl} onChange={(e) => setTtVideoUrl(e.target.value)} placeholder="رابط فيديو عام https (videoUrl)"
+              dir="ltr" className="w-full px-3 py-2.5 rounded-xl bg-slate-950 border border-slate-700 text-xs text-white focus:outline-none focus:border-rose-500 box-border" />
+            <textarea rows={2} value={ttCaption} onChange={(e) => setTtCaption(e.target.value)} placeholder="وصف الفيديو (caption)"
+              className="w-full px-3 py-2.5 rounded-xl bg-slate-950 border border-slate-700 text-xs text-white focus:outline-none focus:border-rose-500 box-border" />
+            <div className="flex flex-wrap items-center gap-2">
+              <select value={ttMode} onChange={(e) => setTtMode(e.target.value as any)}
+                className="px-3 py-2 rounded-xl bg-slate-950 border border-slate-700 text-xs text-white">
+                <option value="MEDIA_UPLOAD">رفع مسودة (MEDIA_UPLOAD)</option>
+                <option value="DIRECT_POST">نشر مباشر (DIRECT_POST)</option>
+              </select>
+              <button onClick={() => void initTikTokPublish()} disabled={ttBusy}
+                className="px-4 py-2 rounded-xl bg-rose-600 hover:bg-rose-500 disabled:opacity-50 text-white text-xs font-bold cursor-pointer">
+                تهيئة النشر
+              </button>
+              <span className="text-[10px] text-slate-500">لا يُعلن التسليم إلا بحالة PUBLISH_COMPLETE من TikTok.</span>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-2 pt-2 border-t border-slate-800">
+              <input value={ttPublishId} onChange={(e) => setTtPublishId(e.target.value)} placeholder="publish_id"
+                dir="ltr" className="px-3 py-2 rounded-xl bg-slate-950 border border-slate-700 text-xs text-white w-56" />
+              <button onClick={() => void checkTikTokPublishStatus()} disabled={ttBusy}
+                className="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 text-[11px] font-bold cursor-pointer">استعلام حالة النشر</button>
+              {ttPublishStatus?.status && (
+                <span className={ttPublishStatus.status.delivered ? 'text-emerald-400 font-bold text-[11px]' : 'text-slate-300 text-[11px]'}>
+                  {ttPublishStatus.status.rawStatus} — {ttPublishStatus.status.detail}{ttPublishStatus.status.providerPostId ? ` • معرّف المنشور: ${ttPublishStatus.status.providerPostId}` : ''}
+                </span>
+              )}
+            </div>
+          </div>
+        )}
+
+        <p className="text-[10px] text-slate-500">
+          التعليقات والرسائل المباشرة <span className="font-bold">غير متاحة</span> عبر واجهة TikTok العامة (Display API / Content Posting API) — لا يوفّر النظام أي قراءة أو رد عليها ولا يدّعي ذلك.
+        </p>
       </div>
 
 

@@ -65,10 +65,14 @@ services:
         sync: false
       - key: GOOGLE_OAUTH_CLIENT_SECRET
         sync: false
-      # TikTok:
+      # TikTok (Login Kit + Content Posting API + Display API):
       - key: TIKTOK_CLIENT_KEY
         sync: false
       - key: TIKTOK_CLIENT_SECRET
+        sync: false
+      # Optional comma override of TikTok scopes (only official, implemented
+      # scopes are accepted; the required set is always included).
+      - key: TIKTOK_OAUTH_SCOPES
         sync: false
       # Meta (Facebook):
       - key: FACEBOOK_OAUTH_CLIENT_ID

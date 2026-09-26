@@ -53,7 +53,9 @@ export const CREDENTIAL_SPECS: Record<PlatformId, CredentialSpec> = {
   },
   tiktok: {
     connection: ['TIKTOK_CLIENT_KEY', 'TIKTOK_CLIENT_SECRET'],
-    webhook: [],
+    // توقيع webhooks TikTok يُحسب بـclient_secret نفسه (نمط TikTok-Signature).
+    webhook: ['TIKTOK_CLIENT_SECRET'],
+    optional: ['TIKTOK_OAUTH_SCOPES'],
   },
   facebook: {
     connection: ['FACEBOOK_OAUTH_CLIENT_ID', 'FACEBOOK_OAUTH_CLIENT_SECRET'],

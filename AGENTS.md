@@ -1161,3 +1161,91 @@ Business، (3) حسابك في Roles → Testers إن كان التطبيق Deve
 `instagram-onboarding-env-switch`، `instagram-onboarding-switch-test`،
 `instagram-onboarding-switch-documented` (248 إجمالاً).
 
+
+## موصل TikTok الحقيقي (Login Kit + Content Posting API + Display API) — Batch 12 (2026-09-26)
+
+TikTok صار **رابع موصل اجتماعي حقيقي منفّذ** بعد Telegram وFacebook وInstagram
+(`engine/social/tiktok.ts`). المسار المعتمد هو **Web Login Kit الرسمي** لأن
+al-gharabi-ai تطبيق ويب: `/v2/auth/authorize/` (بـ`client_key` وPKCE إلزامي) ثم
+تبادل الرمز على `/v2/oauth/token/` (x-www-form-urlencoded). لا scraping، ولا
+browser automation، ولا واجهات غير رسمية، ولا تسليم محاكى.
+
+### مصفوفة القدرات الرسمية (لا تُعلن قدرة غير مدعومة)
+`TIKTOK_CAPABILITY_MATRIX` في `engine/social/tiktok.ts` هي المصدر الواحد، بحالات:
+`SUPPORTED` / `REQUIRES_REVIEW` / `REQUIRES_AUDIT` / `SANDBOX_ONLY` / `NOT_AVAILABLE_BY_PUBLIC_API`.
+- **SUPPORTED**: Login Kit، هوية الحساب (`user.info.basic` → `open_id`)، Display API
+  (بيانات الفيديوهات)، رفع مسودة (`MEDIA_UPLOAD`)، معلومات الناشر
+  (`/v2/post/publish/creator_info/query/`)، استعلام حالة النشر
+  (`/v2/post/publish/status/fetch/`)، التحليلات (view/like/comment/share من Display API).
+- **REQUIRES_AUDIT**: النشر المباشر (`DIRECT_POST`)، نشر الفيديو/الصور العام. وثيقة
+  TikTok: كل محتوى من تطبيق غير مُراجَع يبقى `SELF_ONLY` حتى اجتياز Content Posting audit.
+- **REQUIRES_REVIEW**: webhooks (يلزم تسجيل callback URL في Developer Portal).
+- **NOT_AVAILABLE_BY_PUBLIC_API**: قراءة التعليقات، الرد على التعليقات، قراءة الرسائل
+  المباشرة، الرد عليها. لا مسارات لها إطلاقاً، ولا تُعلن في السجل.
+
+### النطاقات (بلا نطاق بلا استدعاء حقيقي)
+`TIKTOK_REQUIRED_SCOPES` = `user.info.basic` (الهوية) + `video.publish` (النشر وحالة النشر
+ومعلومات الناشر) + `video.list` (Display API). `resolveTikTokScopes` تُبقي المجموعة
+المطلوبة دائماً وتُهمل أي نطاق غير رسمي في `TIKTOK_OAUTH_SCOPES`، فلا يُطلب نطاق بلا
+استدعاء ولا يُسقط نطاق تحتاجه قدرة منفّذة.
+
+### OAuth والاعتماد
+- `pendingOAuth`/`createOAuthState` الدائم (نفس أساس Instagram/Facebook): state عشوائي
+  صالح مرة واحدة، مربوط بالمستخدم والمنصة و`redirectUri`، ويصمد بعد restart.
+- PKCE إلزامي لـTikTok (`requiresPkce`)، و`code_verifier` يُرسل في التبادل.
+- التبادل يُثبت `open_id`؛ ولا يُعلن اتصال موثق بلا `getUserInfo` ناجح من TikTok.
+- الاعتماد (access + refresh + openId + الهوية + الانتهاء) يُحفظ **مشفّراً AES-256-GCM**
+  عبر `setProviderToken("tiktok", …)` (نفس المحوّل، بلا مفتاح جديد ولا تدوير).
+- تجديد تلقائي: `ensureTikTokAccessToken` + `withTikTokToken` يجدّدان قبل كل عملية عند
+  الانتهاء؛ وفشل التجديد يُعلن `reauth_needed` صراحةً ولا يدّعي اتصالاً قائماً.
+- الفصل: `POST /api/platforms/:platform/disconnect` يستدعي `revokeToken` لدى TikTok
+  (client_key + client_secret + token، بلا grant_type) ثم يمسح محلياً.
+
+### المسارات (كلها `authenticateToken`، والفعل منها `requireOwner`)
+- `GET /api/platforms/tiktok/oauth/setup` (owner): redirect_uri، النطاقات، PKCE،
+  نمط التوقيع، الأحداث، أوضاع النشر، مستويات الخصوصية، مصفوفة القدرات، خطوات اللوحة — بلا سرّ.
+- `GET /api/platforms/tiktok/oauth/start` (owner): يسلك مسار OAuth المشترك.
+- `GET /api/platforms/tiktok/oauth/callback` (owner): تبادل + إثبات هوية + حفظ مشفّر.
+- `GET /api/platforms/tiktok/status`: الحالة الحقيقية + القدرات (منطقية، بلا سرّ).
+- `POST /api/platforms/tiktok/disconnect` (owner).
+- `POST /api/platforms/tiktok/webhook`: تحقق TikTok-Signature على الجسم الخام ثم حفظ قبل الإقرار.
+- `POST /api/platforms/tiktok/publish` (owner): تهيئة نشر (فيديو/صور)، منع بلا وسائط 422
+  `MEDIA_REQUIRED`، منع تكرار 409 `DUPLICATE_PUBLISH`، ولا يُعلن تسليم.
+- `GET /api/platforms/tiktok/publish-status` (owner): لا تسليم إلا بـ`PUBLISH_COMPLETE`.
+- `GET /api/platforms/tiktok/creator-info` (owner): إلزامية قبل النشر المباشر.
+
+### النشر والصدق
+`buildVideoPostBody`/`buildPhotoPostBody`/`classifyPublishStatus` في `tiktok.ts`.
+لا يُسجَّل نشر بلا `publish_id` من TikTok، والحالة الحقيقية الآن `publishing` لا
+`published`. `PUBLISH_COMPLETE` وحدها تُعلن التسليم مع `providerPostId`؛ وأي حالة أخرى
+تبقى غير مُسلَّمة مع السبب.
+
+### Webhooks
+`TIKTOK_WEBHOOK_EVENTS` = `authorization.removed` + `video.upload.failed` +
+`video.publish.completed` (الأحداث الرسمية الثلاثة فقط). التوقيع
+`TikTok-Signature: t=<ts>,s=<hmac-sha256(client_secret, ts + '.' + rawBody)>` يُتحقق منه
+على **الجسم الخام** (`req.rawBody`) بمقارنة بزمن ثابت. منع التكرار عبر
+`tiktokEventIds` المحفوظة في طَرَفَي الحفظ (يصمد بعد restart)، والكتابة الدائمة تسبق
+الإقرار. `authorization.removed` يُعلن `reauth_needed` فوراً. سجل آمن
+`logTikTokWebhook` (نوع/معرّف/نتيجة فقط، بلا رمز ولا سرّ).
+
+### الواجهة
+بطاقة TikTok في `SocialManagerView` ولوحة `TikTokStatusPanel` في `PlatformConnectionCenter`
+تعرضان الحالة الحقيقية والقدرات ومصفوفة الرسمية، مع زر واحد أساسي **«ربط TikTok»**.
+التعليقات/الرسائل تُعلن **غير متاحة** صراحةً في الواجهة.
+
+اختبارات: `engine/tests/tiktok.connector.test.ts` = **155 فحصاً** (وحدة + تكامل بخادم
+TikTok وهمي محلي عبر `TIKTOK_API_BASE` في `engine/tests/helpers/tiktokMock.ts`، بلا مزود
+حقيقي ولا حصة): OAuth start/callback، رفض state غير صالح/معاد استخدامه، الثبات بعد restart،
+تبادل الرمز، الحفظ المشفّر، التجديد التلقائي، الفصل، اكتشاف الحساب، تهيئة النشر، حالة
+النشر، معرّفات المزود، منع التكرار، حصر owner، إخفاء الأسرار، وحماية عدم اختلاق القدرات.
+فحوص final-audit: `tiktok-connector-module` … `tiktok-no-fake-analytics` (284 إجمالاً).
+
+### نقطة توقف المالك (إجراء خارجي واحد)
+لإتمام CONFIGURED → CONNECTED → VERIFIED → OPERATIONAL يلزم من Zaid:
+1. TikTok for Developers → Manage apps → تطبيقك (أو أنشئ تطبيق Web).
+2. Basic information → انسخ Client key → `TIKTOK_CLIENT_KEY`، وClient secret →
+   `TIKTOK_CLIENT_SECRET` (Render → Environment، بلا مسافات).
+3. Login Kit → Redirect URI: `https://al-gharabi-ai.onrender.com/api/platforms/tiktok/oauth/callback`.
+4. Scopes → فعّل `user.info.basic, video.publish, video.list`.
+5. اضغط «ربط TikTok» ووافق. النشر العام (غير SELF_ONLY) يحتاج Content Posting audit.

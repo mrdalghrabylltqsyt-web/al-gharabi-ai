@@ -46,7 +46,10 @@ interface AdapterSpec {
  * - X: قراءة التعليقات (replies) والرد عليها متاحة عبر API المدفوع.
  * - Facebook/Instagram: التعليقات والردود متاحة عبر Graph API مع صلاحيات.
  * - YouTube: التعليقات والردود متاحة عبر Data API.
- * - TikTok: التعليقات متاحة عبر Display API، والرد عبر واجهة الإدارة.
+ * - TikTok: النشر (Content Posting API) وبيانات الفيديوهات (Display API) متاحان
+ *   رسمياً. **لا** واجهة عامة لقراءة التعليقات ولا للرد عليها ولا للرسائل
+ *   المباشرة (مصفوفة القدرات في engine/social/tiktok.ts تُعلن ذلك صراحةً)،
+ *   لذلك لا تُعلن comment_reply/message_reply إطلاقاً.
  * - Threads: نشر وردود عبر Threads API.
  * - Google Business Profile: تحديثات محلية؛ التعليقات غير متاحة عبر API.
  */
@@ -55,9 +58,12 @@ const ADAPTER_SPECS: AdapterSpec[] = [
     platform: 'tiktok',
     name: 'TikTok',
     displayName: 'TikTok',
-    capabilities: ['publish', 'analytics', 'comments', 'comment_reply', 'scheduling'],
+    // النشر (Direct Post + رفع مسودة) والتحليلات (Display API) والجدولة فقط.
+    // التعليقات والردود والرسائل المباشرة غير متاحة عبر الواجهة العامة → لا تُعلن.
+    capabilities: ['publish', 'analytics', 'scheduling'],
     credentialMode: 'oauth2',
-    realConnector: false,
+    // رابع موصل حقيقي منفّذ: OAuth 2.0 + PKCE + Content Posting API + Display API.
+    realConnector: true,
   },
   {
     platform: 'youtube',

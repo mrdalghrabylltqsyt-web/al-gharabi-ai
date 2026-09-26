@@ -95,11 +95,13 @@ export interface PlatformReadinessDetail extends PlatformReadiness {
 
 /**
  * دعم المنصات للـwebhooks عبر واجهاتها الرسمية. منصات لا تقدم webhooks
- * (Snapchat، Google Business، TikTok Display) تُعلن NOT_SUPPORTED بصراحة.
- * TikTok: webhooks للرسائل متاحة عبر Business API لكن تحتاج مراجعة تطبيق.
+ * (Snapchat، Google Business) تُعلن NOT_SUPPORTED بصراحة.
+ * TikTok: webhooks أحداث التطبيق الرسمية (authorization.removed، video.upload.failed،
+ * video.publish.completed) — التوقيع TikTok-Signature منفّذ، والتسجيل يتم من
+ * Developer Portal (callback URL)، وهو إجراء خارجي.
  */
 const WEBHOOK_SUPPORT: Record<PlatformId, { level: ReadinessLevel; note: string }> = {
-  tiktok: { level: 'EXTERNAL_SETUP_REQUIRED', note: 'webhooks رسائل TikTok تحتاج تطبيق Business معتمداً ومراجعة.' },
+  tiktok: { level: 'EXTERNAL_SETUP_REQUIRED', note: 'webhooks TikTok منفّذة في الكود: تحقق TikTok-Signature على الجسم الخام (timestamp.rawBody) + منع تكرار + حفظ قبل الإقرار. يلزم تسجيل callback URL في TikTok Developer Portal.' },
   youtube: { level: 'EXTERNAL_SETUP_REQUIRED', note: 'إشعارات PubSubHubbub لليوتيوب تحتاج تسجيل تطبيق وتحقق نطاق.' },
   facebook: { level: 'READY', note: 'webhook Facebook منفّذ فعلاً: تحقق challenge + توقيع X-Hub-Signature-256 على الجسم الخام + منع تكرار بمعرّف الحدث.' },
   instagram: { level: 'READY', note: 'webhook إنستغرام منفّذ فعلاً عبر نفس تطبيق Meta: تحقق challenge + توقيع X-Hub-Signature-256 على الجسم الخام + منع تكرار بمعرّف التعليق/الرسالة. تُفعَّل حقول instagram من لوحة تطبيق Meta.' },
@@ -115,7 +117,7 @@ const WEBHOOK_SUPPORT: Record<PlatformId, { level: ReadinessLevel; note: string 
  * المتطلبات الخارجية لكل منصة. لا تحمل أي قيمة سرّية — أسماء متغيرات وخطوات فقط.
  */
 const EXTERNAL_SETUP: Record<PlatformId, string[]> = {
-  tiktok: ['تطبيق TikTok for Developers', 'TIKTOK_CLIENT_KEY / TIKTOK_CLIENT_SECRET', 'مراجعة صلاحيات النشر', 'تسجيل Redirect URI'],
+  tiktok: ['تطبيق TikTok for Developers (Web)', 'TIKTOK_CLIENT_KEY / TIKTOK_CLIENT_SECRET', 'تسجيل Redirect URI: /api/platforms/tiktok/oauth/callback', 'النطاقات: user.info.basic, video.publish, video.list', 'مراجعة Content Posting (audit) لرفع قيد النشر العام (SELF_ONLY قبله)', 'تسجيل callback URL للـwebhooks (اختياري)'],
   youtube: ['Google Cloud Project', 'GOOGLE_OAUTH_CLIENT_ID / GOOGLE_OAUTH_CLIENT_SECRET', 'تمكين YouTube Data API', 'تسجيل Redirect URI', 'مراجعة الصلاحيات الحساسة'],
   facebook: ['Meta App', 'FACEBOOK_OAUTH_CLIENT_ID / FACEBOOK_OAUTH_CLIENT_SECRET', 'App Review لصلاحيات الصفحة', 'تسجيل Redirect URI'],
   instagram: ['Meta App + حساب Instagram Professional (Business/Creator) مرتبط بالصفحة', 'بيانات تطبيق Meta نفسها (FACEBOOK_OAUTH_CLIENT_ID/SECRET) أو INSTAGRAM_* خاصة', 'App Review لصلاحيات instagram_manage_comments/manage_messages (Advanced Access)', 'تسجيل Redirect URI وتفعيل حقول webhook من لوحة Meta'],

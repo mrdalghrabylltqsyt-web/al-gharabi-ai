@@ -55,6 +55,25 @@ import {
   type InstagramLinkedPage,
 } from "./engine/social/instagram";
 import {
+  TikTokClient,
+  TIKTOK_CAPABILITY_MATRIX,
+  TIKTOK_REQUIRED_SCOPES,
+  TIKTOK_SIGNATURE_HEADER,
+  TIKTOK_WEBHOOK_EVENTS,
+  TIKTOK_PRIVACY_LEVELS,
+  resolveTikTokScopes,
+  parseTikTokWebhook,
+  verifyTikTokSignature,
+  buildVideoPostBody,
+  buildPhotoPostBody,
+  isPlausibleTikTokClientKey,
+  tiktokCapabilityStatus,
+  tiktokCapabilityNeedsAudit,
+  type TikTokFetch,
+  type TikTokPostMode,
+  type TikTokPrivacyLevel,
+} from "./engine/social/tiktok";
+import {
   createOAuthState,
   createPkcePair,
   requiresPkce,
@@ -301,7 +320,7 @@ function loadPersistentState(snapshot?: any): any {
     if (!raw.schemaVersion) raw.schemaVersion = 1;
     const users = Array.isArray(raw.users) ? raw.users : [defaultOwner];
     if (!users.some((u: ServerUser) => u.id === "owner")) users.unshift(defaultOwner);
-    return { users, revokedSessions: Array.isArray(raw.revokedSessions) ? raw.revokedSessions : [], userRevocations: Array.isArray(raw.userRevocations) ? raw.userRevocations : [], audit: Array.isArray(raw.audit) ? raw.audit.slice(0, 200) : [], jobs: Array.isArray(raw.jobs) ? raw.jobs.slice(0, 200) : [], platformConnections: Array.isArray(raw.platformConnections) ? raw.platformConnections : [], workspace: raw.workspace && typeof raw.workspace === "object" ? { showroom: raw.workspace.showroom || {}, products: Array.isArray(raw.workspace.products) ? raw.workspace.products.slice(0, 1000) : [], posts: Array.isArray(raw.workspace.posts) ? raw.workspace.posts.slice(0, 1000) : [], conversations: Array.isArray(raw.workspace.conversations) ? raw.workspace.conversations.slice(0, 1000) : [], installmentPlans: Array.isArray(raw.workspace.installmentPlans) ? raw.workspace.installmentPlans.slice(0, 200) : [], leads: Array.isArray(raw.workspace.leads) ? raw.workspace.leads.slice(0, 2000) : [], tasks: Array.isArray(raw.workspace.tasks) ? raw.workspace.tasks.slice(0, 1000) : [], sales: Array.isArray(raw.workspace.sales) ? raw.workspace.sales.slice(0, 5000) : [], payments: Array.isArray(raw.workspace.payments) ? raw.workspace.payments.slice(0, 10000) : [], inventoryMovements: Array.isArray(raw.workspace.inventoryMovements) ? raw.workspace.inventoryMovements.slice(0, 20000) : [], suppliers: Array.isArray(raw.workspace.suppliers) ? raw.workspace.suppliers.slice(0, 1000) : [], purchases: Array.isArray(raw.workspace.purchases) ? raw.workspace.purchases.slice(0, 5000) : [], expenses: Array.isArray(raw.workspace.expenses) ? raw.workspace.expenses.slice(0, 10000) : [], contracts: Array.isArray(raw.workspace.contracts) ? raw.workspace.contracts.slice(0, 5000) : [], installmentSchedules: Array.isArray(raw.workspace.installmentSchedules) ? raw.workspace.installmentSchedules.slice(0, 20000) : [], notifications: Array.isArray(raw.workspace.notifications) ? raw.workspace.notifications.slice(0, 10000) : [], webhookEvents: Array.isArray(raw.workspace.webhookEvents) ? raw.workspace.webhookEvents.slice(0, 10000) : [], providerEvents: Array.isArray(raw.workspace.providerEvents) ? raw.workspace.providerEvents.slice(0, 10000) : [], marketingBriefs: Array.isArray(raw.workspace.marketingBriefs) ? raw.workspace.marketingBriefs.slice(0, 2000) : [], marketingCampaigns: Array.isArray(raw.workspace.marketingCampaigns) ? raw.workspace.marketingCampaigns.slice(0, 1000) : [], socialComments: Array.isArray(raw.workspace.socialComments) ? raw.workspace.socialComments.slice(0, 10000) : [], socialReplies: Array.isArray(raw.workspace.socialReplies) ? raw.workspace.socialReplies.slice(0, 5000) : [], socialApprovals: Array.isArray(raw.workspace.socialApprovals) ? raw.workspace.socialApprovals.slice(0, 5000) : [], publishRecords: Array.isArray(raw.workspace.publishRecords) ? raw.workspace.publishRecords.slice(0, 5000) : [], performanceRecords: Array.isArray(raw.workspace.performanceRecords) ? raw.workspace.performanceRecords.slice(0, 20000) : [], marketingDecisions: Array.isArray(raw.workspace.marketingDecisions) ? raw.workspace.marketingDecisions.slice(0, 2000) : [], strategiesTested: Array.isArray(raw.workspace.strategiesTested) ? raw.workspace.strategiesTested.slice(0, 2000) : [], telegramUpdateIds: Array.isArray(raw.workspace.telegramUpdateIds) ? raw.workspace.telegramUpdateIds.slice(0, 20000) : [], facebookEventIds: Array.isArray(raw.workspace.facebookEventIds) ? raw.workspace.facebookEventIds.slice(0, 20000) : [], instagramEventIds: Array.isArray(raw.workspace.instagramEventIds) ? raw.workspace.instagramEventIds.slice(0, 20000) : [], providerTokens: raw.workspace.providerTokens && typeof raw.workspace.providerTokens === "object" ? raw.workspace.providerTokens : {} } : { showroom: {}, products: [], posts: [], conversations: [], installmentPlans: [], leads: [], tasks: [], sales: [], payments: [], inventoryMovements: [], suppliers: [], purchases: [], expenses: [], contracts: [], installmentSchedules: [], notifications: [], webhookEvents: [], providerEvents: [], marketingBriefs: [], marketingCampaigns: [], socialComments: [], socialReplies: [], socialApprovals: [], publishRecords: [], performanceRecords: [], marketingDecisions: [], strategiesTested: [], telegramUpdateIds: [], facebookEventIds: [], instagramEventIds: [], providerTokens: {} } };
+    return { users, revokedSessions: Array.isArray(raw.revokedSessions) ? raw.revokedSessions : [], userRevocations: Array.isArray(raw.userRevocations) ? raw.userRevocations : [], audit: Array.isArray(raw.audit) ? raw.audit.slice(0, 200) : [], jobs: Array.isArray(raw.jobs) ? raw.jobs.slice(0, 200) : [], platformConnections: Array.isArray(raw.platformConnections) ? raw.platformConnections : [], workspace: raw.workspace && typeof raw.workspace === "object" ? { showroom: raw.workspace.showroom || {}, products: Array.isArray(raw.workspace.products) ? raw.workspace.products.slice(0, 1000) : [], posts: Array.isArray(raw.workspace.posts) ? raw.workspace.posts.slice(0, 1000) : [], conversations: Array.isArray(raw.workspace.conversations) ? raw.workspace.conversations.slice(0, 1000) : [], installmentPlans: Array.isArray(raw.workspace.installmentPlans) ? raw.workspace.installmentPlans.slice(0, 200) : [], leads: Array.isArray(raw.workspace.leads) ? raw.workspace.leads.slice(0, 2000) : [], tasks: Array.isArray(raw.workspace.tasks) ? raw.workspace.tasks.slice(0, 1000) : [], sales: Array.isArray(raw.workspace.sales) ? raw.workspace.sales.slice(0, 5000) : [], payments: Array.isArray(raw.workspace.payments) ? raw.workspace.payments.slice(0, 10000) : [], inventoryMovements: Array.isArray(raw.workspace.inventoryMovements) ? raw.workspace.inventoryMovements.slice(0, 20000) : [], suppliers: Array.isArray(raw.workspace.suppliers) ? raw.workspace.suppliers.slice(0, 1000) : [], purchases: Array.isArray(raw.workspace.purchases) ? raw.workspace.purchases.slice(0, 5000) : [], expenses: Array.isArray(raw.workspace.expenses) ? raw.workspace.expenses.slice(0, 10000) : [], contracts: Array.isArray(raw.workspace.contracts) ? raw.workspace.contracts.slice(0, 5000) : [], installmentSchedules: Array.isArray(raw.workspace.installmentSchedules) ? raw.workspace.installmentSchedules.slice(0, 20000) : [], notifications: Array.isArray(raw.workspace.notifications) ? raw.workspace.notifications.slice(0, 10000) : [], webhookEvents: Array.isArray(raw.workspace.webhookEvents) ? raw.workspace.webhookEvents.slice(0, 10000) : [], providerEvents: Array.isArray(raw.workspace.providerEvents) ? raw.workspace.providerEvents.slice(0, 10000) : [], marketingBriefs: Array.isArray(raw.workspace.marketingBriefs) ? raw.workspace.marketingBriefs.slice(0, 2000) : [], marketingCampaigns: Array.isArray(raw.workspace.marketingCampaigns) ? raw.workspace.marketingCampaigns.slice(0, 1000) : [], socialComments: Array.isArray(raw.workspace.socialComments) ? raw.workspace.socialComments.slice(0, 10000) : [], socialReplies: Array.isArray(raw.workspace.socialReplies) ? raw.workspace.socialReplies.slice(0, 5000) : [], socialApprovals: Array.isArray(raw.workspace.socialApprovals) ? raw.workspace.socialApprovals.slice(0, 5000) : [], publishRecords: Array.isArray(raw.workspace.publishRecords) ? raw.workspace.publishRecords.slice(0, 5000) : [], performanceRecords: Array.isArray(raw.workspace.performanceRecords) ? raw.workspace.performanceRecords.slice(0, 20000) : [], marketingDecisions: Array.isArray(raw.workspace.marketingDecisions) ? raw.workspace.marketingDecisions.slice(0, 2000) : [], strategiesTested: Array.isArray(raw.workspace.strategiesTested) ? raw.workspace.strategiesTested.slice(0, 2000) : [], telegramUpdateIds: Array.isArray(raw.workspace.telegramUpdateIds) ? raw.workspace.telegramUpdateIds.slice(0, 20000) : [], facebookEventIds: Array.isArray(raw.workspace.facebookEventIds) ? raw.workspace.facebookEventIds.slice(0, 20000) : [], instagramEventIds: Array.isArray(raw.workspace.instagramEventIds) ? raw.workspace.instagramEventIds.slice(0, 20000) : [], tiktokEventIds: Array.isArray(raw.workspace.tiktokEventIds) ? raw.workspace.tiktokEventIds.slice(0, 20000) : [], providerTokens: raw.workspace.providerTokens && typeof raw.workspace.providerTokens === "object" ? raw.workspace.providerTokens : {} } : { showroom: {}, products: [], posts: [], conversations: [], installmentPlans: [], leads: [], tasks: [], sales: [], payments: [], inventoryMovements: [], suppliers: [], purchases: [], expenses: [], contracts: [], installmentSchedules: [], notifications: [], webhookEvents: [], providerEvents: [], marketingBriefs: [], marketingCampaigns: [], socialComments: [], socialReplies: [], socialApprovals: [], publishRecords: [], performanceRecords: [], marketingDecisions: [], strategiesTested: [], telegramUpdateIds: [], facebookEventIds: [], instagramEventIds: [], tiktokEventIds: [], providerTokens: {} } };
   } catch {
     return { users: [defaultOwner], revokedSessions: [], userRevocations: [], audit: [], jobs: [], workspace: { showroom: {}, products: [], posts: [], conversations: [], installmentPlans: [], leads: [], tasks: [], sales: [], payments: [], inventoryMovements: [], suppliers: [], purchases: [], expenses: [], contracts: [], installmentSchedules: [], notifications: [], webhookEvents: [], providerEvents: [], marketingBriefs: [], marketingCampaigns: [], socialComments: [], socialReplies: [], socialApprovals: [], publishRecords: [], performanceRecords: [], marketingDecisions: [], strategiesTested: [], telegramUpdateIds: [], providerTokens: {} } };
   }
@@ -356,7 +375,7 @@ const workspace = persisted.workspace;
 for (const key of ["inventoryMovements","suppliers","purchases","expenses","contracts","installmentSchedules","notifications","webhookEvents","providerEvents"]) if (!Array.isArray((workspace as any)[key])) (workspace as any)[key] = [];
 if (!Array.isArray((workspace as any).inventoryMovements)) (workspace as any).inventoryMovements = [];
 for (const key of ["suppliers","purchases","expenses","contracts","installmentSchedules","notifications","webhookEvents","providerEvents","marketingBriefs","marketingCampaigns"]) if (!Array.isArray((workspace as any)[key])) (workspace as any)[key] = [];
-for (const key of ["telegramUpdateIds","facebookEventIds","instagramEventIds"]) if (!Array.isArray((workspace as any)[key])) (workspace as any)[key] = [];
+for (const key of ["telegramUpdateIds","facebookEventIds","instagramEventIds","tiktokEventIds"]) if (!Array.isArray((workspace as any)[key])) (workspace as any)[key] = [];
 if (!(workspace as any).providerTokens || typeof (workspace as any).providerTokens !== "object") (workspace as any).providerTokens = {};
 // سجلات مدير السوشيال ميديا: تعليقات، ردود، نتائج نشر، وقرارات تسويقية.
 // كلها سجلات تشغيلية حقيقية تُبنى من عمليات فعلية فقط.
@@ -1083,7 +1102,7 @@ function loginConfigEnvNames(platform: string): string[] {
 const OAUTH_CONFIG: Record<string, any> = {
   youtube: { provider: "google", auth: "https://accounts.google.com/o/oauth2/v2/auth", token: "https://oauth2.googleapis.com/token", clientId: envSecret("GOOGLE_OAUTH_CLIENT_ID") || envSecret("GOOGLE_CLIENT_ID"), clientSecret: envSecret("GOOGLE_OAUTH_CLIENT_SECRET"), scopes: ["https://www.googleapis.com/auth/youtube.upload"] },
   google_business: { provider: "google", auth: "https://accounts.google.com/o/oauth2/v2/auth", token: "https://oauth2.googleapis.com/token", clientId: envSecret("GOOGLE_OAUTH_CLIENT_ID") || envSecret("GOOGLE_CLIENT_ID"), clientSecret: envSecret("GOOGLE_OAUTH_CLIENT_SECRET"), scopes: ["https://www.googleapis.com/auth/business.manage"] },
-  tiktok: { provider: "tiktok", auth: "https://www.tiktok.com/v2/auth/authorize/", token: "https://open.tiktokapis.com/v2/oauth/token/", clientId: envSecret("TIKTOK_CLIENT_KEY"), clientSecret: envSecret("TIKTOK_CLIENT_SECRET"), scopes: ["user.info.basic", "video.publish"] },
+  tiktok: { provider: "tiktok", auth: `https://www.tiktok.com/v2/auth/authorize/`, token: "https://open.tiktokapis.com/v2/oauth/token/", clientId: envSecret("TIKTOK_CLIENT_KEY"), clientSecret: envSecret("TIKTOK_CLIENT_SECRET"), scopes: [...TIKTOK_REQUIRED_SCOPES] },
   // business_management إلزامي منذ Graph v17 لعرض صفحات Business Manager عبر
   // /me/accounts؛ بدونه يظهر الحساب «يدير صفر صفحات» فاشلاً بلا سبب واضح.
   facebook: { provider: "meta", auth: `https://www.facebook.com${FACEBOOK_DIALOG_PATH}`, token: "https://graph.facebook.com/v21.0/oauth/access_token", clientId: envSecret("FACEBOOK_OAUTH_CLIENT_ID"), clientSecret: envSecret("FACEBOOK_OAUTH_CLIENT_SECRET"), scopes: facebookOAuthScopes() },
@@ -1279,6 +1298,154 @@ function instagramConnectorConfigured(): boolean {
 }
 /** منصات Meta التي يشترك مسار حوارها في نفس القواعد (client_id + scope بفواصل). */
 const META_OAUTH_PLATFORMS = new Set(["facebook", "instagram"]);
+
+// -------------------------------------------------------------
+// TikTok — رابع موصل اجتماعي حقيقي (OAuth 2.0 + PKCE + Content Posting API).
+// لا يُعلن اتصال ولا يُسجَّل نشر بلا استجابة TikTok فعلية ومعرّف من المزود.
+// التعليقات والرسائل المباشرة غير متاحة عبر الواجهة العامة → لا مسارات لها.
+// الأسرار تُقرأ من بيئة الخادم أو تُحفظ مشفّرة عبر محوّل الحالة؛ لا تُسجَّل ولا تُعاد.
+// -------------------------------------------------------------
+const tiktokFetchImpl: TikTokFetch = (url, init) => fetch(url, init as any);
+function tiktokClient(): TikTokClient { return new TikTokClient(tiktokFetchImpl, process.env.TIKTOK_API_BASE); }
+function tiktokOAuthConfig(): any { return OAUTH_CONFIG["tiktok"]; }
+/**
+ * الصلاحيات النهائية التي يطلبها TikTok OAuth. المصدر الواحد هو
+ * `TIKTOK_REQUIRED_SCOPES` (المشتقة من القدرات المنفّذة فعلاً). التجاوز من
+ * `TIKTOK_OAUTH_SCOPES` يُمرّ عبر `resolveTikTokScopes` فلا يُضاف نطاق بلا
+ * استدعاء حقيقي، ولا يُطلب نطاق غير مُنفَّذ.
+ */
+function tiktokScopeOverride(): string[] {
+  return (process.env.TIKTOK_OAUTH_SCOPES || "").split(",").map((s) => s.trim()).filter(Boolean);
+}
+function tiktokOAuthScopes(): string[] {
+  return resolveTikTokScopes(tiktokScopeOverride().length ? tiktokScopeOverride() : TIKTOK_REQUIRED_SCOPES);
+}
+/** هل موصل TikTok مكتمل الإعداد للاتصال؟ (client_key + client_secret + عنوان عام + مفتاح تشفير). */
+function tiktokConnectorConfigured(): boolean {
+  const c = tiktokOAuthConfig();
+  return Boolean(c?.clientId && c?.clientSecret && publicUrlIsPublic() && tokenKeyBytes());
+}
+/** اعتماد TikTok المحفوظ مشفّراً (رمز الوصول + refresh + open_id + الانتهاء). */
+function tiktokStoredCredentials(): any | null { return getProviderToken("tiktok"); }
+function tiktokAccessToken(): string | null {
+  const stored = tiktokStoredCredentials();
+  return stored?.accessToken ? String(stored.accessToken) : null;
+}
+function tiktokOpenId(): string | null {
+  const stored = tiktokStoredCredentials();
+  return stored?.openId ? String(stored.openId) : null;
+}
+/** هل يوجد refresh token محفوظ (لتجديد الاتصال بلا إعادة ربط)؟ */
+function tiktokRefreshToken(): string | null {
+  const stored = tiktokStoredCredentials();
+  return stored?.refreshToken ? String(stored.refreshToken) : null;
+}
+/** هل انتهى رمز الوصول TikTok (بهامش أمان)؟ */
+function tiktokAccessExpired(): boolean {
+  const stored = tiktokStoredCredentials();
+  return isAccessTokenExpired({ expiresAt: stored?.expiresAt ?? null });
+}
+/** رابط استقبال أحداث TikTok لهذا الخادم (يُسجَّل في Developer Portal). */
+function tiktokWebhookUrl(): string { return `${publicBaseUrlNow()}/api/platforms/tiktok/webhook`; }
+/** سرّ توقيع webhooks TikTok هو client_secret نفسه (نمط TikTok-Signature). */
+function tiktokSigningSecret(): string {
+  const stored = tiktokStoredCredentials();
+  if (stored?.clientSecret) return String(stored.clientSecret);
+  return (process.env.TIKTOK_CLIENT_SECRET || "").trim();
+}
+/** تسجيل آمن لحدث TikTok الوارد. ممنوع تسجيل أي سرّ أو محتوى. */
+function logTikTokWebhook(event: { event: string; externalId?: string | null; outcome: "accepted" | "duplicate" | "rejected" | "ignored"; persisted?: boolean }): void {
+  const parts = ["[tiktok-webhook]", "platform=tiktok", `event=${event.event}`, `outcome=${event.outcome}`];
+  if (event.externalId) parts.push(`external=${event.externalId}`);
+  if (typeof event.persisted === "boolean") parts.push(`persisted=${event.persisted}`);
+  console.log(parts.join(" "));
+}
+/** تسجيل آمن لبدء/عودة TikTok OAuth — بلا state ولا code ولا أي سرّ. */
+function logTikTokOAuth(outcome: string, detail: Record<string, unknown> = {}): void {
+  const parts = ["[tiktok-oauth]", `outcome=${outcome}`];
+  for (const [k, v] of Object.entries(detail)) {
+    if (v === undefined || v === null) continue;
+    if (k === "state" || k === "code" || k === "token" || k === "fragment") continue; // حماية صريحة
+    parts.push(`${k}=${String(v).slice(0, 120)}`);
+  }
+  console.log(parts.join(" "));
+}
+/**
+ * يحفظ اعتماد TikTok مشفّراً (رمز الوصول + refresh + open_id + الهوية + الانتهاء).
+ * client_secret يُحفظ أيضاً لأنه سرّ توقيع webhooks، ولا يُعاد في أي استجابة.
+ */
+function saveTikTokCredentials(input: { accessToken: string; refreshToken?: string | null; openId: string; displayName?: string | null; avatarUrl?: string | null; scope?: string[]; expiresAt?: number | null; refreshExpiresAt?: number | null; clientSecret?: string }) {
+  const existing = tiktokStoredCredentials() || {};
+  setProviderToken("tiktok", {
+    ...existing,
+    accessToken: input.accessToken,
+    refreshToken: input.refreshToken || existing.refreshToken || "",
+    openId: input.openId,
+    displayName: input.displayName || existing.displayName || "",
+    avatarUrl: input.avatarUrl || existing.avatarUrl || "",
+    scope: Array.isArray(input.scope) ? input.scope : (existing.scope || []),
+    expiresAt: input.expiresAt ?? existing.expiresAt ?? null,
+    refreshExpiresAt: input.refreshExpiresAt ?? existing.refreshExpiresAt ?? null,
+    clientSecret: input.clientSecret || existing.clientSecret || tiktokOAuthConfig()?.clientSecret || "",
+    connectedAt: existing.connectedAt || new Date().toISOString(),
+  });
+}
+/**
+ * يجدّد رمز الوصول عبر refresh_token عند انتهائه (تلقائياً قبل أي عملية).
+ * إن لم يوجد refresh token أو فشل التجديد، يُعلن الحاجة لإعادة الربط بدل الفشل الصامت.
+ */
+async function ensureTikTokAccessToken(): Promise<{ ok: boolean; token?: string; refreshed?: boolean; error?: string }> {
+  const stored = tiktokStoredCredentials();
+  const token = tiktokAccessToken();
+  if (!token) return { ok: false, error: "لا رمز TikTok محفوظ؛ نفّذ الربط عبر OAuth أولاً." };
+  if (!tiktokAccessExpired()) return { ok: true, token, refreshed: false };
+  const refresh = tiktokRefreshToken();
+  const cfg = tiktokOAuthConfig();
+  if (!refresh || !cfg?.clientId || !cfg?.clientSecret) {
+    platformConnections.set("tiktok", { platform: "tiktok", status: "reauth_needed", accountId: String(stored?.openId || ""), connectedAt: new Date().toISOString() });
+    savePlatformConnections();
+    return { ok: false, error: "انتهى رمز TikTok ولا يوجد refresh token؛ أعد الربط من مركز ربط المنصات." };
+  }
+  const res = await tiktokClient().refreshToken({ clientKey: String(cfg.clientId), clientSecret: String(cfg.clientSecret), refreshToken: refresh });
+  if (!res.ok || !res.data?.accessToken) {
+    // لا فشل صامت: يُعلن أن الاتصال يحتاج إعادة ربط حقيقية بدل ادعاء اتصال قائم.
+    platformConnections.set("tiktok", { platform: "tiktok", status: "reauth_needed", accountId: String(stored?.openId || ""), connectedAt: new Date().toISOString() });
+    savePlatformConnections();
+    await persistStateDurable();
+    audit("system", "tiktok_refresh_failed", res.code || "provider_error");
+    return { ok: false, error: res.error || "فشل تجديد رمز TikTok؛ أعد الربط." };
+  }
+  saveTikTokCredentials({
+    accessToken: res.data.accessToken,
+    refreshToken: res.data.refreshToken || refresh,
+    openId: res.data.openId || String(stored?.openId || ""),
+    scope: res.data.scope,
+    expiresAt: res.data.expiresIn ? Date.now() + res.data.expiresIn * 1000 : null,
+    refreshExpiresAt: res.data.refreshExpiresIn ? Date.now() + res.data.refreshExpiresIn * 1000 : null,
+  });
+  await persistStateDurable();
+  audit("system", "tiktok_token_refreshed", "auto");
+  return { ok: true, token: res.data.accessToken, refreshed: true };
+}
+/**
+ * ينفّذ استدعاءً محمياً برمز TikTok مع تجديد تلقائي عند الانتهاء. غلاف واحد
+ * يمنع تكرار منطق التجديد في كل مسار.
+ */
+async function withTikTokToken<T>(fn: (token: string) => Promise<{ ok: boolean; data: T | null; error?: string; code?: string | null }>): Promise<{ ok: boolean; data: T | null; error?: string; code?: string | null }> {
+  const ensured = await ensureTikTokAccessToken();
+  if (!ensured.ok || !ensured.token) return { ok: false, data: null, error: ensured.error };
+  const result = await fn(ensured.token);
+  return result;
+}
+/** هل موصل TikTok مكتمل ومتصل وموثق الآن؟ */
+function tiktokOperationalNow(): boolean {
+  const conn: any = platformConnections.get("tiktok");
+  return Boolean(conn?.status === "connected" && conn?.providerVerified === true && hasRealConnector("tiktok"));
+}
+/** حالة قيد مراجعة TikTok (audit): النشر المباشر العام محصور حتى الاجتياز. */
+function tiktokAuditRequired(): boolean {
+  return tiktokCapabilityNeedsAudit("content_posting_direct");
+}
 /** تخزين مؤقت قصير لنتيجة فحص بدء OAuth (يمنع إغراق Meta عند كل ضغطة زر). */
 const oauthStartPreflightCache = new Map<string, { at: number; result: any }>();
 const OAUTH_PREFLIGHT_TTL_MS = 5 * 60 * 1000;
@@ -1395,6 +1562,29 @@ async function oauthStartPreflight(platform: string): Promise<OAuthStartPrefligh
     if (result.ok && !result.code) oauthStartPreflightCache.set(platform, { at: Date.now(), result });
     lastOAuthPreflight.set(platform, { at: Date.now(), code: result.code ?? null, appTokenKind: result.appToken?.kind ?? null, error: result.error, hint: result.hint });
     return result;
+  }
+  if (platform === "tiktok") {
+    // TikTok: لا توجد نقطة إثبات تطبيق بلا رمز مستخدم (لا client_credentials).
+    // نتحقق محلياً من صيغة client_key ووجود السرّ فقط، فلا نرسل المالك إلى شاشة
+    // رفض بلا سبب ظاهر. أي مسافة/سطر زائد يُعلن صراحةً.
+    const raw = process.env.TIKTOK_CLIENT_KEY;
+    if (typeof raw === "string" && raw.trim() && raw.trim() !== raw) {
+      const result: OAuthStartPreflight = { ok: false, code: "TIKTOK_CLIENT_KEY_WHITESPACE", error: "TIKTOK_CLIENT_KEY يحمل مسافة/سطراً زائداً؛ TikTok يرفض المفتاح بلا سبب ظاهر. احذف المسافات.", hint: "انسخ Client key من TikTok Developer Portal → App → Basic information بلا مسافات." };
+      lastOAuthPreflight.set(platform, { at: Date.now(), code: result.code ?? null, appTokenKind: null, error: result.error, hint: result.hint });
+      return result;
+    }
+    if (!isPlausibleTikTokClientKey(String(cfg.clientId || ""))) {
+      const result: OAuthStartPreflight = { ok: false, code: "TIKTOK_CLIENT_KEY_INVALID", error: "TIKTOK_CLIENT_KEY غير صالح شكلياً (يجب أن يكون معرّفاً نصياً بلا مسافات).", hint: "انسخ Client key من TikTok Developer Portal → App → Basic information إلى TIKTOK_CLIENT_KEY." };
+      lastOAuthPreflight.set(platform, { at: Date.now(), code: result.code ?? null, appTokenKind: null, error: result.error, hint: result.hint });
+      return result;
+    }
+    if (!cfg.clientSecret) {
+      const result: OAuthStartPreflight = { ok: false, code: "TIKTOK_CLIENT_SECRET_MISSING", error: "يلزم TIKTOK_CLIENT_SECRET لإتمام تبادل رمز TikTok.", hint: "اضبط TIKTOK_CLIENT_SECRET بقيمة Client secret من TikTok Developer Portal." };
+      lastOAuthPreflight.set(platform, { at: Date.now(), code: result.code ?? null, appTokenKind: null, error: result.error, hint: result.hint });
+      return result;
+    }
+    lastOAuthPreflight.set(platform, { at: Date.now(), code: null, appTokenKind: null, error: undefined, hint: undefined });
+    return { ok: true };
   }
   return { ok: true };
 }
@@ -1720,6 +1910,15 @@ async function verifyProviderConnection(platform: string): Promise<{ verified: b
     const stored = getProviderToken("instagram");
     return { verified: true, accountId: proof.data.igAccountId, accountName: proof.data.igUsername ? `@${proof.data.igUsername}` : (stored?.pageName || undefined) };
   }
+  if (platform === "tiktok") {
+    const openId = tiktokOpenId();
+    const token = tiktokAccessToken();
+    if (!openId || !token) return { verified: false, error: "لا اعتماد TikTok محفوظ؛ نفّذ الربط عبر OAuth أولاً." };
+    // إثبات حي: نستعلم عن هوية الحساب فعلياً من TikTok (user.info.basic) بلا أي ادعاء.
+    const proof = await tiktokClient().getUserInfo(token);
+    if (!proof.ok || !proof.data?.openId) return { verified: false, error: proof.error || "تعذر إثبات هوية حساب TikTok." };
+    return { verified: true, accountId: proof.data.openId, accountName: proof.data.displayName || undefined };
+  }
   return { verified: false, error: "لا يوجد موصل إثبات حقيقي لهذه المنصة؛ إتمام الاتصال يحتاج اعتماد تطبيق من المزود." };
 }
 function publicProviderReadiness(platform: string): { configured: boolean; mode: string; action: string; missing?: string[]; invalid?: string[]; next?: string; realConnector?: boolean } {
@@ -1805,6 +2004,32 @@ function publicProviderReadiness(platform: string): { configured: boolean; mode:
           : "الموصل مكتمل الإعداد؛ نفّذ الربط لاختيار حساب Instagram وإثباته ثم اختبر الاستقبال والرد.",
     };
   }
+  if (platform === "tiktok") {
+    // موصل حقيقي: OAuth 2.0 + client_key/secret + مفتاح تشفير + عنوان عام + توكن (يُكتسب).
+    const c = tiktokOAuthConfig();
+    const stored = tiktokStoredCredentials();
+    const missing = [
+      !c?.clientId && "TIKTOK_CLIENT_KEY",
+      !c?.clientSecret && "TIKTOK_CLIENT_SECRET",
+      !stored?.accessToken && "Access Token (يُكتسب عبر OAuth)",
+      tokenMissing,
+      !resolvePublicUrl(process.env).valid && "APP_URL",
+    ].filter((x): x is string => Boolean(x));
+    const invalid = [tokenInvalid].filter((x): x is string => Boolean(x));
+    return {
+      configured: tiktokConnectorConfigured() && Boolean(stored?.accessToken),
+      mode: "oauth2",
+      action: "authorize",
+      missing,
+      invalid,
+      realConnector: true,
+      next: invalid.length
+        ? `استبدل قيمة PLATFORM_TOKEN_ENCRYPTION_KEY بقيمة صالحة (32 بايت hex أو Base64) ثم أعد المحاولة.`
+        : missing.length
+          ? "زوّد البيئة بـTIKTOK_CLIENT_KEY وTIKTOK_CLIENT_SECRET من TikTok Developer Portal ثم نفّذ الربط عبر OAuth."
+          : "الموصل مكتمل الإعداد؛ نفّذ الربط لإثبات هوية الحساب (open_id) ثم اختبر النشر/الحالة.",
+    };
+  }
   const c = OAUTH_CONFIG[platform];
   if (c) return { configured: oauthReady(platform), mode: "oauth2", action: "authorize", next: "ضبط بيانات OAuth وتسجيل Redirect URI", missing: [!c.clientId && "client_id", !c.clientSecret && "client_secret", !resolvePublicUrl(process.env).valid && "APP_URL", tokenMissing].filter((x): x is string => Boolean(x)), invalid: [tokenInvalid].filter((x): x is string => Boolean(x)) };
   return { configured: false, mode: "provider-adapter", action: "configuration-required", next: "إضافة موصل إنتاجي معتمد قبل تفعيل النشر" };
@@ -1847,8 +2072,9 @@ async function fetchProviderAccount(platform: string, accessToken: string): Prom
       const d = await r.json(); if (r.ok && d.items?.[0]) return { accountId: d.items[0].id, accountName: d.items[0].snippet?.title };
     }
     if (platform === "tiktok") {
-      const r = await fetch("https://open.tiktokapis.com/v2/user/info/?fields=open_id,display_name", { headers: { Authorization: `Bearer ${accessToken}` } });
-      const d = await r.json(); if (r.ok && d.data?.user) return { accountId: d.data.user.open_id, accountName: d.data.user.display_name };
+      // الإثبات عبر عميل TikTok نفسه (يحترم TIKTOK_API_BASE في الاختبار) بلا سرّ في السجل.
+      const info = await tiktokClient().getUserInfo(accessToken);
+      if (info.ok && info.data?.openId) return { accountId: info.data.openId, accountName: info.data.displayName || undefined };
     }
     if (platform === "facebook" || platform === "instagram") {
       const r = await fetch(`https://graph.facebook.com/v21.0/me?fields=id,name&access_token=${encodeURIComponent(accessToken)}`);
@@ -2140,6 +2366,32 @@ async function handleOAuthCallback(req:any, res:any, rawQuery:string, viaPost:bo
       await persistStateDurable();
       audit(pending!.userId,"platform_oauth_page_selection_pending",`instagram:${withIg.length}`);
       return res.send(`<html lang='ar' dir='rtl'><meta charset='utf-8'><title>اختيار الحساب</title><body style='font-family:sans-serif;padding:40px'><h2>تم الربط، لكن الحساب يدير أكثر من صفحة لها حساب Instagram.</h2><p>اختر الحساب الذي تريد ربطه من مركز ربط المنصات في الغرابي AI لإتمام الربط.</p></body></html>`);
+    }
+    // TikTok — مسار OAuth 2.0 الرسمي: تبادل الرمز (client_key) ثم إثبات الهوية
+    // (open_id + display_name) ثم حفظ مشفّر مع refresh token والانتهاء.
+    if(platform==="tiktok") {
+      const client=tiktokClient();
+      const exchanged=await client.exchangeCode({clientKey:String(cfg.clientId),clientSecret:String(cfg.clientSecret),code,redirectUri:redirectUri,codeVerifier:pending!.codeVerifier});
+      if(!exchanged.ok || !exchanged.data?.accessToken) throw new Error(exchanged.error||"فشل تبادل رمز TikTok.");
+      // إثبات الهوية فعلياً — لا اتصال موثق بلا open_id من TikTok.
+      const identity=await client.getUserInfo(exchanged.data.accessToken);
+      if(!identity.ok || !identity.data?.openId) throw new Error(identity.error||"تعذّر إثبات هوية حساب TikTok (open_id).");
+      saveTikTokCredentials({
+        accessToken: exchanged.data.accessToken,
+        refreshToken: exchanged.data.refreshToken,
+        openId: identity.data.openId,
+        displayName: identity.data.displayName,
+        avatarUrl: identity.data.avatarUrl,
+        scope: exchanged.data.scope,
+        expiresAt: exchanged.data.expiresIn?Date.now()+exchanged.data.expiresIn*1000:null,
+        refreshExpiresAt: exchanged.data.refreshExpiresIn?Date.now()+exchanged.data.refreshExpiresIn*1000:null,
+      });
+      platformConnections.set("tiktok",{platform:"tiktok",status:"connected",accountId:identity.data.openId,accountName:identity.data.displayName||"TikTok",connectedAt:new Date().toISOString(),providerVerified:true});
+      savePlatformConnections();
+      await persistStateDurable();
+      audit(pending!.userId,"platform_oauth_connected",`tiktok:${identity.data.openId}`);
+      logTikTokOAuth("callback_connected",{openId:identity.data.openId,scopeCount:exchanged.data.scope.length,hasRefreshToken:Boolean(exchanged.data.refreshToken)});
+      return sendHtml(`<html lang='ar' dir='rtl'><meta charset='utf-8'><title>تم الربط</title><body style='font-family:sans-serif;padding:40px'><h2>تم ربط حساب TikTok بنجاح.</h2><p>${escapeHtml(identity.data.displayName||"")} — يمكنك إغلاق هذه النافذة والعودة إلى الغرابي AI.</p></body></html>`);
     }
     const tokenRes=await fetch(cfg.token,{method:"POST",headers:{"Content-Type":"application/x-www-form-urlencoded"},body}); token=await tokenRes.json();
     const parsedToken=parseTokenResponse(token);
@@ -2749,6 +3001,8 @@ function webhookSecretFor(platform: string): string {
   if (platform === "instagram") return (process.env.INSTAGRAM_APP_SECRET || process.env.FACEBOOK_APP_SECRET || "").trim();
   if (platform === "threads") return (process.env.THREADS_APP_SECRET || "").trim();
   if (platform === "whatsapp") return (process.env.WHATSAPP_APP_SECRET || "").trim();
+  // TikTok: سرّ التوقيع هو client_secret نفسه (نمط TikTok-Signature على timestamp.rawBody).
+  if (platform === "tiktok") return tiktokSigningSecret();
   return "";
 }
 
@@ -2838,6 +3092,124 @@ function normalizeMetaEvents(platform: PlatformId, payload: any): NormalizedSoci
   }
   return events;
 }
+
+// -------------------------------------------------------------
+// TikTok — مسارات الموصل الحقيقي (OAuth 2.0 + Content Posting API + Display API).
+// التوقيع: TikTok-Signature (HMAC-SHA256 على `timestamp.rawBody`) بمفتاح client_secret.
+// منع التكرار: معرّف الحدث (اسم+حساب+وقت+معرّف داخلي) محفوظ عبر المحوّل.
+// لا يُقبل حدث بلا توقيع صحيح، ولا يُخزَّن مكرر، ولا يُعلن نشر بلا معرّف من TikTok.
+// التعليقات والرسائل المباشرة غير متاحة عبر الواجهة العامة → لا مسارات لها إطلاقاً.
+// -------------------------------------------------------------
+
+/** حالة اتصال TikTok الحقيقية + قدراتها المنفّذة (بلا أي سرّ). */
+app.get("/api/platforms/tiktok/status", authenticateToken, async (req,res)=>{
+  const stored=tiktokStoredCredentials();
+  const conn:any=platformConnections.get("tiktok");
+  const verified=Boolean(conn?.status==="connected"&&conn?.providerVerified===true&&stored?.openId);
+  res.json({
+    success:true,
+    platform:"tiktok",
+    state: verified ? "OPERATIONAL_READY" : conn?.status==="connected" ? "CONNECTED" : "DISCONNECTED",
+    connected: conn?.status==="connected",
+    providerVerified: verified,
+    accountId: stored?.openId||null,
+    accountName: stored?.displayName||null,
+    // كلها منطقية بلا أي قيمة سرّية.
+    clientKeyConfigured: Boolean(tiktokOAuthConfig()?.clientId),
+    clientSecretConfigured: Boolean(tiktokOAuthConfig()?.clientSecret),
+    redirectUri: oauthCallbackUrl("tiktok"),
+    requestedScopes: tiktokOAuthScopes(),
+    oauthStateDurable: storageStatus().durable,
+    tokenStored: Boolean(stored?.accessToken),
+    refreshTokenStored: Boolean(stored?.refreshToken),
+    tokenExpiryKnown: stored?.expiresAt != null,
+    tokenExpired: Boolean(stored?.accessToken) && tiktokAccessExpired(),
+    refreshExpiresAtKnown: stored?.refreshExpiresAt != null,
+    accountDiscovered: Boolean(stored?.openId),
+    accountVerified: verified,
+    webhookUrl: tiktokWebhookUrl(),
+    webhookEvents: [...TIKTOK_WEBHOOK_EVENTS],
+    postingCapability: tiktokCapabilityStatus("video_publishing"),
+    directPostCapability: tiktokCapabilityStatus("content_posting_direct"),
+    draftUploadCapability: tiktokCapabilityStatus("content_posting_draft"),
+    photoPublishingCapability: tiktokCapabilityStatus("photo_publishing"),
+    analyticsCapability: tiktokCapabilityStatus("analytics"),
+    webhookCapability: tiktokCapabilityStatus("webhooks"),
+    commentsCapability: tiktokCapabilityStatus("comments_read"),
+    directMessagesCapability: tiktokCapabilityStatus("direct_messages_read"),
+    appReviewRequired: tiktokAuditRequired(),
+    capabilityMatrix: TIKTOK_CAPABILITY_MATRIX,
+    checkedAt:new Date().toISOString(),
+    note:"حالة حقيقية من TikTok بلا أي سرّ. لا يُعلن الاتصال موثقاً إلا بمعرّف open_id من TikTok.",
+  });
+});
+
+/**
+ * استقبال أحداث TikTok — تحقق TikTok-Signature على الجسم الخام ثم حفظ دائم قبل الإقرار.
+ * الأحداث الرسمية الثلاثة فقط مدعومة؛ أي حدث آخر يُقبل ويُتجاهل بلا خطأ.
+ */
+app.post("/api/platforms/tiktok/webhook", requireRawBody, async (req,res)=>{
+  const secret=tiktokSigningSecret();
+  const rawBody=String((req as any).rawBody??"");
+  const header=req.headers[TIKTOK_SIGNATURE_HEADER]??req.headers[TIKTOK_SIGNATURE_HEADER.toLowerCase()];
+  const verification=verifyTikTokSignature({header:typeof header==="string"?header:Array.isArray(header)?header[0]:null,rawBody,clientSecret:secret});
+  if(!verification.ok){ logTikTokWebhook({event:"unknown",outcome:"rejected"}); return res.status(401).json({success:false,error:verification.reason||"حدث غير موثوق."}); }
+  if(!isValidWebhookPayload(req.body)) return res.status(400).json({success:false,error:"حمولة webhook غير صالحة."});
+  const parsed=parseTikTokWebhook(req.body);
+  if(!parsed.event) return res.status(200).json({success:true,accepted:true,ignored:parsed.reason||"no_supported_event"});
+  const ev=parsed.event;
+  if(!ev.supported){ logTikTokWebhook({event:ev.event,outcome:"ignored"}); return res.status(200).json({success:true,accepted:true,ignored:"unsupported_event",event:ev.event}); }
+  if(!Array.isArray((workspace as any).tiktokEventIds)) (workspace as any).tiktokEventIds=[];
+  if(!Array.isArray((workspace as any).providerEvents)) (workspace as any).providerEvents=[];
+  if(isReplayOrDuplicate({providerEventId:ev.externalId,externalId:ev.externalId,seenProviderEventIds:(workspace as any).tiktokEventIds,seenExternalIds:[]})){
+    logTikTokWebhook({event:ev.event,externalId:ev.externalId,outcome:"duplicate"});
+    return res.status(200).json({success:true,accepted:true,duplicate:true});
+  }
+  (workspace as any).tiktokEventIds=[...(workspace as any).tiktokEventIds,ev.externalId].slice(-20000);
+  (workspace as any).providerEvents.unshift({id:workspaceId("event"),platform:"tiktok",type:ev.event,externalId:ev.externalId,userOpenId:ev.userOpenId,content:ev.content,receivedAt:new Date().toISOString()});
+  (workspace as any).providerEvents=(workspace as any).providerEvents.slice(0,10000);
+  // حدث إلغاء التفويض يُعلن الحاجة لإعادة الربط فوراً (لا ادعاء اتصال قائم).
+  if(ev.event==="authorization.removed"&&ev.userOpenId&&ev.userOpenId===tiktokOpenId()){
+    platformConnections.set("tiktok",{platform:"tiktok",status:"reauth_needed",accountId:ev.userOpenId,connectedAt:new Date().toISOString()});
+    savePlatformConnections();
+  }
+  // ننتظر الكتابة الدائمة قبل الإقرار: تضمن ثبات الحدث ومعرّف منع التكرار.
+  await persistStateDurable();
+  const persisted=!lastPersistError;
+  logTikTokWebhook({event:ev.event,externalId:ev.externalId,outcome:"accepted",persisted});
+  audit("system","tiktok_inbound_event",ev.event);
+  res.status(200).json({success:true,accepted:true,event:ev.event,persisted});
+});
+
+/**
+ * استعلام حالة نشر TikTok بمفتاح publish_id — للمالك فقط.
+ * لا يُعلن تسليم إلا بحالة PUBLISH_COMPLETE من TikTok، ويُحدَّث سجل النشر.
+ */
+app.get("/api/platforms/tiktok/publish-status", requireOwner, async (req,res)=>{
+  const publishId=typeof req.query.publishId==="string"?req.query.publishId.trim():"";
+  if(!publishId) return res.status(400).json({success:false,error:"publishId مطلوب.",code:"PUBLISH_ID_REQUIRED"});
+  if(!tiktokOperationalNow()) return res.status(409).json({success:false,error:"TikTok غير متصل باتصال موثق؛ لا استعلام حالة خارجي.",code:"NOT_CONNECTED"});
+  const result=await withTikTokToken((token)=>tiktokClient().fetchPublishStatus(token,publishId));
+  if(!result.ok||!result.data) return res.status(502).json({success:false,error:result.error||"تعذّر استعلام حالة النشر.",code:result.code||"PROVIDER_ERROR"});
+  // تحديث سجل النشر المحفوظ إن وُجد (لا إنشاء سجل وهمي).
+  const records=(workspace as any).publishRecords;
+  if(Array.isArray(records)){
+    const rec=records.find((r:any)=>r.platform==="tiktok"&&r.providerPublishId===publishId);
+    if(rec){ rec.state=result.data.delivered?"published":result.data.state==="failed"?"failed":"publishing"; rec.providerPostId=result.data.providerPostId||rec.providerPostId||null; rec.deliveryDetail=result.data.detail; rec.lastCheckedAt=new Date().toISOString(); }
+  }
+  await persistStateDurable();
+  res.json({success:true,status:{...result.data},note:"الحالة حقيقية من TikTok بلا أي سرّ. لا يُعلن التسليم إلا بـPUBLISH_COMPLETE."});
+});
+
+/**
+ * معلومات الناشر (query creator info) — إلزامية قبل أي نشر مباشر. للمالك فقط.
+ */
+app.get("/api/platforms/tiktok/creator-info", requireOwner, async (_req,res)=>{
+  if(!tiktokOperationalNow()) return res.status(409).json({success:false,error:"TikTok غير متصل باتصال موثق؛ لا استعلام خارجي.",code:"NOT_CONNECTED"});
+  const result=await withTikTokToken((token)=>tiktokClient().queryCreatorInfo(token));
+  if(!result.ok||!result.data) return res.status(502).json({success:false,error:result.error||"تعذّر قراءة معلومات الناشر.",code:result.code||"PROVIDER_ERROR"});
+  res.json({success:true,creator:result.data,note:"معلومات الناشر الرسمية من TikTok بلا أي سرّ."});
+});
 
 // اشتراك webhook (GET challenge) — يُقارن رمز التحقق بزمن ثابت.
 app.get("/api/platforms/:platform/webhook", (req, res) => {
@@ -2974,6 +3346,57 @@ app.post("/api/platforms/:platform/publish", requireOwner, async (req, res) => {
       audit(user.id, published.ok ? "platform_publish_published" : "platform_publish_failed", `${platform}`);
       if (!published.ok) return res.status(502).json({ success: false, record, error: published.error, containerId: container.data.containerId, note: "لم يُسجَّل أي نشر بلا معرّف منشور حقيقي من المزود." });
       return res.json({ success: true, record, providerPostId: published.data?.providerPostId, containerId: container.data.containerId, receipt });
+    }
+    if (platform === "tiktok") {
+      // TikTok لا ينشر نصاً فقط: يلزم فيديو (أو صور) عبر رابط عام أو ملف.
+      // لا يُسجَّل أي نشر بلا publish_id من TikTok.
+      const mode: TikTokPostMode = req.body?.postMode === "DIRECT_POST" ? "DIRECT_POST" : "MEDIA_UPLOAD";
+      const privacy: TikTokPrivacyLevel = (TIKTOK_PRIVACY_LEVELS as readonly string[]).includes(String(req.body?.privacyLevel)) ? (req.body.privacyLevel as TikTokPrivacyLevel) : "SELF_ONLY";
+      const videoUrl = typeof req.body?.videoUrl === "string" ? req.body.videoUrl.trim() : "";
+      const photoUrls = Array.isArray(req.body?.photoUrls) ? req.body.photoUrls.map((u: any) => String(u).trim()).filter(Boolean) : [];
+      if (!videoUrl && !photoUrls.length) {
+        return res.status(422).json({ success: false, error: "TikTok لا ينشر نصاً فقط؛ زوّد videoUrl أو photoUrls عامة.", code: "MEDIA_REQUIRED", note: "Content Posting API يلزمه فيديو أو صور عبر PULL_FROM_URL." });
+      }
+      // منع التكرار: بصمة (المحتوى + الوسائط + الوضع) تمنع إنشاء نفس النشر مرتين.
+      const fingerprint = crypto.createHash("sha256").update(JSON.stringify({ content, videoUrl, photoUrls, mode, privacy })).digest("hex");
+      if (!Array.isArray((workspace as any).publishRecords)) (workspace as any).publishRecords = [];
+      const dup = (workspace as any).publishRecords.find((r: any) => r.platform === "tiktok" && r.idempotencyKey === fingerprint && r.state !== "failed");
+      if (dup) return res.status(409).json({ success: false, error: "نفس النشر مُهيّأ سابقاً (منع تكرار).", code: "DUPLICATE_PUBLISH", existing: { providerPublishId: dup.providerPublishId, state: dup.state } });
+      // معلومات الناشر إلزامية قبل أي نشر مباشر (وثيقة TikTok).
+      const creatorInfo = mode === "DIRECT_POST" ? await withTikTokToken((token) => tiktokClient().queryCreatorInfo(token)) : { ok: true as const, data: null };
+      if (mode === "DIRECT_POST" && (!creatorInfo.ok || !creatorInfo.data)) {
+        return res.status(502).json({ success: false, error: (creatorInfo as any).error || "تعذّر قراءة معلومات الناشر قبل النشر المباشر.", code: "CREATOR_INFO_FAILED" });
+      }
+      const initResult = await withTikTokToken((token) => videoUrl
+        ? tiktokClient().initVideoPost(token, buildVideoPostBody({ postMode: mode, title: content, privacyLevel: privacy, source: "PULL_FROM_URL", videoUrl }))
+        : tiktokClient().initPhotoPost(token, buildPhotoPostBody({ postMode: mode, title: content, privacyLevel: privacy, photoUrls })));
+      if (!initResult.ok || !initResult.data) {
+        const record = buildPublishRecord({ platform: platform as any, postId: typeof req.body?.postId === "string" ? req.body.postId : workspaceId("post"), providerPostId: null, simulated: false, error: initResult.error });
+        (workspace as any).publishRecords.unshift({ ...record, id: workspaceId("publish"), createdBy: user.id, idempotencyKey: fingerprint, postMode: mode, receipt: null });
+        persistState();
+        audit(user.id, "platform_publish_failed", "tiktok");
+        return res.status(502).json({ success: false, record, error: initResult.error, code: initResult.code || "PROVIDER_ERROR", note: "لم يُسجَّل أي نشر بلا معرّف نشر من TikTok." });
+      }
+      // التهيئة نجحت: يُحفظ publish_id ويبقى التسليم معلّقاً حتى PUBLISH_COMPLETE.
+      const publishId = initResult.data.publishId;
+      const record = buildPublishRecord({ platform: platform as any, postId: typeof req.body?.postId === "string" ? req.body.postId : workspaceId("post"), providerPostId: null, simulated: false, error: null });
+      (workspace as any).publishRecords.unshift({
+        ...record,
+        // الحالة الحقيقية الآن: تهيئة تمت لكن التسليم لم يُثبت بعد.
+        state: "publishing",
+        id: workspaceId("publish"), createdBy: user.id, idempotencyKey: fingerprint, postMode: mode, privacyLevel: privacy,
+        providerPublishId: publishId, uploadUrl: (initResult.data as any).uploadUrl || null,
+        auditRequired: tiktokAuditRequired(),
+        receipt: { provider: "tiktok", publishId, postMode: mode, createdAt: new Date().toISOString() },
+      });
+      persistState();
+      audit(user.id, "platform_publish_initiated", `tiktok:${mode}`);
+      return res.json({
+        success: true, record, providerPublishId: publishId, postMode: mode,
+        delivered: false,
+        auditRequired: tiktokAuditRequired(),
+        note: "تمت تهيئة النشر لدى TikTok (publish_id). لا يُعلن التسليم إلا بحالة PUBLISH_COMPLETE عبر GET /api/platforms/tiktok/publish-status.",
+      });
     }
     return res.status(501).json({ success: false, error: "الموصل متصل لكن تنفيذ النشر لهذه المنصة يحتاج بيانات المزود ولم يُختلق تنفيذ وهمي.", code: "EXTERNAL_SETUP_REQUIRED", platform });
   } catch (e: any) {
@@ -3203,7 +3626,7 @@ app.get("/api/platforms/:platform/oauth/setup", requireOwner, async (req,res)=>{
   const redirectUri=`${urlInfo.baseUrl||publicBaseUrlNow()}/api/platforms/${platform}/oauth/callback`;
   const publicOk=publicUrlIsPublic();
   // Facebook/Instagram: الصلاحيات النهائية مع الاعتماديات الرسمية + أي فارق في تجاوز البيئة.
-  const resolvedScopes = platform==="facebook" ? facebookOAuthScopes() : platform==="instagram" ? instagramOAuthScopes() : cfg.scopes;
+  const resolvedScopes = platform==="facebook" ? facebookOAuthScopes() : platform==="instagram" ? instagramOAuthScopes() : platform==="tiktok" ? tiktokOAuthScopes() : cfg.scopes;
   const scopeDependencyGaps = platform==="facebook" ? facebookScopeDependencyGaps() : platform==="instagram" ? instagramScopeDependencyGaps() : [];
   const metaScopesResolved = platform==="facebook"||platform==="instagram";
   // فحص حي لسلسلة حوار Meta كما يسلكها متصفح المالك الجوال (www → m.facebook.com).
@@ -3247,6 +3670,32 @@ app.get("/api/platforms/:platform/oauth/setup", requireOwner, async (req,res)=>{
     scopeOverrideConfigured:platform==="facebook"?facebookScopeOverride().length>0:platform==="instagram"?instagramScopeOverride().length>0:undefined,
     scopeDependenciesResolved:metaScopesResolved?true:undefined,
     scopeDependencyGaps:scopeDependencyGaps.length?scopeDependencyGaps:undefined,
+    // TikTok: إعداد OAuth الدقيق + مصفوفة القدرات الرسمية (بلا أي سرّ).
+    tiktokSetup:platform==="tiktok"?{
+      clientKeyConfigured:Boolean(cfg.clientId),
+      clientKeyFormatOk:isPlausibleTikTokClientKey(String(cfg.clientId||"")),
+      clientSecretConfigured:Boolean(cfg.clientSecret),
+      requestedScopes:tiktokOAuthScopes(),
+      scopeOverrideConfigured:tiktokScopeOverride().length>0,
+      pkceRequired:true,
+      webhookUrl:tiktokWebhookUrl(),
+      webhookSignatureStyle:"TikTok-Signature: t=<ts>,s=<hmac-sha256(client_secret, ts + '.' + rawBody)>",
+      webhookEvents:[...TIKTOK_WEBHOOK_EVENTS],
+      postingModes:["DIRECT_POST","MEDIA_UPLOAD"],
+      privacyLevels:[...TIKTOK_PRIVACY_LEVELS],
+      appReviewRequired:tiktokAuditRequired(),
+      capabilityMatrix:TIKTOK_CAPABILITY_MATRIX,
+      dashboardSteps:[
+        "افتح TikTok for Developers → Manage apps → تطبيقك (أو أنشئ تطبيق Web).",
+        "في Basic information انسخ Client key إلى TIKTOK_CLIENT_KEY وClient secret إلى TIKTOK_CLIENT_SECRET.",
+        "في Login Kit → Redirect URI أضف القيمة في redirectUri بالضبط (https).",
+        "في Scopes فعّل: user.info.basic, video.publish, video.list.",
+        "لتفعيل webhooks: أضف Webhook Callback URL (webhookUrl) في إعدادات التطبيق.",
+        "لرفع قيد النشر العام (SELF_ONLY) يجب اجتياز Content Posting audit لدى TikTok.",
+      ],
+      note:"مسار TikTok الرسمي: /v2/auth/authorize/ (client_key) + PKCE، والرمز على /v2/oauth/token/ بصيغة x-www-form-urlencoded. النشر عبر Content Posting API، والبيانات عبر Display API. التعليقات والرسائل المباشرة غير متاحة عبر الواجهة العامة.",
+      doc:"https://developers.tiktok.com/doc/login-kit-web",
+    }:undefined,
     clientIdConfigured:Boolean(cfg.clientId),
     clientSecretConfigured:Boolean(cfg.clientSecret),
     // شكل معرّف التطبيق فقط (منطقي) — لا قيمة سرّية: أي مسافة/حرف يجعل Meta
@@ -3363,6 +3812,14 @@ app.post("/api/platforms/:platform/disconnect", requireOwner, async (req, res) =
     // ثم مسح الاعتماد المشفّر المحلي كي لا يبقى إرسال ممكّن.
     const client = telegramClient();
     if (client) { try { await client.deleteWebhook(); } catch { /* إبطال محلي يكفي */ } }
+  }
+  if (platform === "tiktok") {
+    // إبطال طرف TikTok أيضاً: revoke للرمز لدى المزود قدر الإمكان، ثم مسح محلي.
+    const stored = tiktokStoredCredentials();
+    const cfg = tiktokOAuthConfig();
+    if (stored?.accessToken && cfg?.clientId && cfg?.clientSecret) {
+      try { await tiktokClient().revokeToken({ clientKey: String(cfg.clientId), clientSecret: String(cfg.clientSecret), token: String(stored.accessToken) }); } catch { /* إبطال محلي يكفي */ }
+    }
   }
   platformConnections.set(platform, { platform, status: "disconnected" });
   clearProviderToken(platform); savePlatformConnections(); audit((req as any).user.id, "platform_disconnect", platform);
@@ -4542,6 +4999,7 @@ function buildPersistedState() {
       // معرّفات أحداث Facebook الواردة لصمود منع التكرار بعد restart.
       facebookEventIds: ((workspace as any).facebookEventIds || []).slice(0, 20000),
       instagramEventIds: ((workspace as any).instagramEventIds || []).slice(0, 20000),
+      tiktokEventIds: ((workspace as any).tiktokEventIds || []).slice(0, 20000),
       providerTokens: (workspace as any).providerTokens,
     }
   };
@@ -4867,6 +5325,37 @@ app.get("/api/readiness", (_req, res) => {
         // حالة مفتاح تدفّق الإعداد (منطقي فقط): enabled = extras مفعّل،
         // disabled = التدفّق العادي بلا extras (مخرج عطل Meta 1850019).
         onboardingFlow: instagramOnboardingEnabled() ? "enabled" : "disabled",
+      };
+    })(),
+    // PHASE 7 — حقول TikTok الآمنة (منطقي فقط، بلا أي قيمة سرّية).
+    tiktokOAuth: (() => {
+      const c = tiktokOAuthConfig();
+      const stored = tiktokStoredCredentials();
+      const conn: any = platformConnections.get("tiktok");
+      const verified = Boolean(conn?.status === "connected" && conn?.providerVerified === true && stored?.openId);
+      return {
+        platform: "tiktok",
+        clientKeyConfigured: Boolean(c?.clientId),
+        clientKeyFormatOk: isPlausibleTikTokClientKey(String(c?.clientId || "")),
+        clientSecretConfigured: Boolean(c?.clientSecret),
+        redirectUri: oauthCallbackUrl("tiktok"),
+        requestedScopes: tiktokOAuthScopes(),
+        oauthStateDurable: storageStatus().durable,
+        tokenStored: Boolean(stored?.accessToken),
+        refreshTokenStored: Boolean(stored?.refreshToken),
+        tokenExpiryKnown: stored?.expiresAt != null,
+        tokenExpired: Boolean(stored?.accessToken) && tiktokAccessExpired(),
+        accountDiscovered: Boolean(stored?.openId),
+        accountVerified: verified,
+        postingCapability: tiktokCapabilityStatus("video_publishing"),
+        directPostCapability: tiktokCapabilityStatus("content_posting_direct"),
+        draftUploadCapability: tiktokCapabilityStatus("content_posting_draft"),
+        photoPublishingCapability: tiktokCapabilityStatus("photo_publishing"),
+        webhookCapability: tiktokCapabilityStatus("webhooks"),
+        commentsCapability: tiktokCapabilityStatus("comments_read"),
+        directMessagesCapability: tiktokCapabilityStatus("direct_messages_read"),
+        appReviewRequired: tiktokAuditRequired(),
+        operationalState: verified ? "OPERATIONAL_READY" : conn?.status === "connected" ? "CONNECTED" : "DISCONNECTED",
       };
     })(),
     timestamp: new Date().toISOString(),
@@ -5227,6 +5716,28 @@ app.get("/api/health", (_req, res) => {
         // حالة مفتاح تدفّق الإعداد (منطقي فقط): enabled = extras مفعّل،
         // disabled = التدفّق العادي بلا extras (مخرج عطل Meta 1850019).
         onboardingFlow: instagramOnboardingEnabled() ? "enabled" : "disabled",
+      };
+    })(),
+    // حالة موصل TikTok الحقيقي (منطقي فقط بلا أي سرّ أو رمز).
+    tiktokOAuth: (() => {
+      const c = tiktokOAuthConfig();
+      const stored = tiktokStoredCredentials();
+      return {
+        platform: "tiktok",
+        clientKeyConfigured: Boolean(c?.clientId),
+        clientKeyFormatOk: isPlausibleTikTokClientKey(String(c?.clientId || "")),
+        clientSecretConfigured: Boolean(c?.clientSecret),
+        accessTokenStored: Boolean(stored?.accessToken),
+        refreshTokenStored: Boolean(stored?.refreshToken),
+        openIdStored: Boolean(stored?.openId),
+        tokenExpiryKnown: stored?.expiresAt != null,
+        tokenExpired: Boolean(stored?.accessToken) && tiktokAccessExpired(),
+        scopeCount: tiktokOAuthScopes().length,
+        requestedScopes: tiktokOAuthScopes(),
+        webhookUrl: tiktokWebhookUrl(),
+        webhookEvents: [...TIKTOK_WEBHOOK_EVENTS],
+        appReviewRequired: tiktokAuditRequired(),
+        connectorConfigured: tiktokConnectorConfigured(),
       };
     })(),
     // العنوان العام المعتمد: يكشف سبب فشل OAuth قبل وقوعه بلا أي سرّ. يبيّن مصدر

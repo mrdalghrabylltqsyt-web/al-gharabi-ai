@@ -103,6 +103,8 @@ export function buildPublishRecord(input: {
 
 /** مؤشرات كل منصة كما تسميها واجهتها الرسمية. */
 const PLATFORM_METRIC_SUPPORT: Record<PlatformId, { supported: string[]; unsupported: string[] }> = {
+  // Display API الرسمية تُعيد view_count/like_count/comment_count/share_count.
+  // لا reach ولا saves في واجهة TikTok العامة.
   tiktok: { supported: ['views', 'likes', 'comments', 'shares'], unsupported: ['reach', 'saves'] },
   youtube: { supported: ['views', 'likes', 'comments'], unsupported: ['shares', 'reach', 'saves'] },
   facebook: { supported: ['views', 'likes', 'comments', 'shares', 'reach'], unsupported: ['saves'] },

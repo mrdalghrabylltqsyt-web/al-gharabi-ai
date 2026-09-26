@@ -58,8 +58,9 @@ function run(): void {
   check('productionReady=false دائماً (لا موصل إرسال)', adapters.every((a) => a.describe().productionReady === false));
   const connectedOnly = buildAdapters(() => ({ status: 'connected', providerVerified: true, accountId: 'x' }));
   // الجاهزية الإنتاجية مرتبطة بوجود موصل حقيقي منفّذ AND اتصال موثق.
-  // Telegram ثم Facebook أول موصلين حقيقيين؛ بقية المنصات تبقى غير جاهزة حتى يُنفّذ موصلها.
-  const realConnectorPlatforms = ['telegram', 'facebook', 'instagram'];
+  // Telegram ثم Facebook ثم Instagram ثم TikTok موصلات حقيقية؛ بقية المنصات
+  // تبقى غير جاهزة حتى يُنفّذ موصلها.
+  const realConnectorPlatforms = ['telegram', 'facebook', 'instagram', 'tiktok'];
   check('الجاهزية الإنتاجية = موصل حقيقي + اتصال موثق فقط', connectedOnly.every((a) => a.describe().productionReady === (realConnectorPlatforms.includes(a.platform) && a.describe().providerVerified === true)));
   check('المنصات بلا موصل حقيقي لا تُعلن جاهزية إنتاجية', connectedOnly.filter((a) => !realConnectorPlatforms.includes(a.platform)).every((a) => a.describe().productionReady === false));
   check('المنصات بلا موصل حقيقي تعلن انعدام الموصل', connectedOnly.filter((a) => !realConnectorPlatforms.includes(a.platform)).every((a) => (a.describe() as any).realConnector === false));

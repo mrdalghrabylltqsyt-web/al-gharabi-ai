@@ -28,7 +28,9 @@ function group(title: string): void { console.log(`\n▸ ${title}`); }
 const REPO_ROOT = process.cwd();
 const tsxCli = join(REPO_ROOT, 'node_modules', 'tsx', 'dist', 'cli.mjs');
 const serverEntry = join(REPO_ROOT, 'server.ts');
-const PORT = 6500 + Math.floor(Math.random() * 200);
+// نطاق يتجنّب المنافذ المحظورة في fetch/undici (6000 و6665–6669 و6697)،
+// وإلا فشل الاختبار عشوائياً بـ«bad port» بلا علاقة بالكود.
+const PORT = 6510 + Math.floor(Math.random() * 150);
 const BASE = `http://127.0.0.1:${PORT}`;
 const PREVIEW_TOKEN = randomBytes(24).toString('hex');
 const SESSION_SECRET = 'control-plane-test-secret-not-real';
