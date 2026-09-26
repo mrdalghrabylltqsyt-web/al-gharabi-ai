@@ -958,6 +958,10 @@ webhook. `oauth/setup` يعرض لـInstagram أيضاً `scopeDependencyGaps` �
 | مجموعة Instagram الكاملة (10) | `302 → login.php` |
 | مجموعة Facebook الكاملة (8) | `302 → login.php` |
 | `scope=not_a_real_permission_xyz` (اسم غير معروف) | **`500` صفحة «Sorry, something went wrong»** |
+| `scope=instagram_manage_comment` (خطأ كتابة) | **`500`** |
+| `scope=instagram_manage_comments_v2` (اسم غير قائم) | **`500`** |
+| `scope=pages_manage_engagements` (خطأ كتابة) | **`500`** |
+| تشكيل غير سليم: `instagram_basic,` / `,instagram_basic` / `a,,b` / `a,%20` / قيمة فارغة | `302 → login.php` (يُتسامَح) |
 | صلاحيتان صالحتان معاً | `302 → login.php` |
 
 **النتيجة القاطعة:** HTTP 500 يقع **فقط** عندما تحمل مجموعة `scope` اسماً **لا يتعرّف عليه
