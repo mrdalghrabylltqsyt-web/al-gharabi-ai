@@ -317,6 +317,10 @@ add('meta-dialog-http-error-rejected', read('engine/social/facebook.ts').include
 add('meta-dialog-probe-reads-body', /await res\.text\(\)/.test(server) && /classifyMetaDialogInteraction\(\{ status, location, body:/.test(server), 'الفحص يقرأ الجسم دائماً فيلتقط صفحة «حدث خطأ ما» مع 200 ومع 500');
 add('meta-dialog-http-status-exposed', server.includes('dialogHttpStatus') && server.includes('httpStatus: dialogProbe.httpStatus'), 'رد 409 يعلن HTTP status الفعلي بلا سرّ');
 add('meta-dialog-500-tests', read('engine/tests/facebook.connector.test.ts').includes("dialogOutcome: 'http_500'") && read('engine/tests/instagram.connector.test.ts').includes("dialogOutcome: 'http_500'"), 'اختبار تكاملي يثبت حجب 500 للجانبين');
+// عزل السبب: عندما ترفض Meta المجموعة، يُسمّي التشخيص أصغر مجموعة صلاحيات مسؤولة.
+add('meta-dialog-scope-bisection', server.includes('findMinimalFailingScopeSet') && server.includes('smallestFailingScopeSet') && server.includes('emptyScopeFails'), 'التشخيص يعزل أصغر مجموعة صلاحيات مسبِّبة للرفض بدل «حدث خطأ ما» عامة');
+add('meta-dialog-bisection-on-failure-only', /dialogProbe\.httpStatus >= 500 && scopes\.length/.test(server), 'العزل يُستدعى فقط عند فشل الفحص الكامل (لا يستهلك طلبات Meta في المسار الناجح)');
+add('meta-dialog-bisection-tests', read('engine/tests/facebook.connector.test.ts').includes('failingScope') && read('engine/tests/helpers/facebookMock.ts').includes('failingScope'), 'اختبار تكاملي يثبت أن العزل يسمّي الصلاحية المسبِّبة بالضبط');
 add('instagram-scope-dependency-gaps-exposed', server.includes('instagramScopeDependencyGaps') && server.includes('scopeOverrideConfigured:platform==="facebook"?facebookScopeOverride().length>0:platform==="instagram"?instagramScopeOverride().length>0'), 'oauth/setup يعرض فارق اعتماديات Instagram وتجاوز الصلاحيات بلا سرّ');
 
 const failed = checks.filter(x => !x.ok);

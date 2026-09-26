@@ -59,6 +59,8 @@ export interface FacebookMockState {
   /** سلوك حوار التفويض: consent = تطبيق صالح، invalid_app_id = صفحة «حدث خطأ ما»،
    * http_500 = فشل Meta العام (500 + «حدث خطأ ما») عندما لا تُتحقق مجموعة الصلاحيات. */
   dialogOutcome: 'consent' | 'login' | 'invalid_app_id' | 'opaque_200' | 'http_500';
+  /** إن حُدِّدت: يرد الحوار 500 فقط عندما تحمل مجموعة scope هذه الصلاحية (لعزل السبب). */
+  failingScope?: string | null;
 }
 
 export function createFacebookMock(state: Partial<FacebookMockState> = {}): FacebookMockState {
@@ -83,6 +85,7 @@ export function createFacebookMock(state: Partial<FacebookMockState> = {}): Face
     lastAppTokenCheck: null,
     // استجابة حوار التفويض: consent (تطبيق صالح) | login | invalid_app_id (صفحة «حدث خطأ ما»).
     dialogOutcome: state.dialogOutcome ?? 'consent',
+    failingScope: state.failingScope ?? null,
   };
 }
 
@@ -99,6 +102,14 @@ export async function startFacebookMockServer(
   // حوار التفويض: نُحاكي سلوك Meta الحقيقي بترويسة Location بلا متابعة تحويل.
   app.get('/:version/dialog/oauth', (req, res) => {
     state.calls += 1;
+    // عزل السبب: 500 فقط عندما تحمل المجموعة الصلاحية المسبّبة (كما تفعل Meta فعلاً).
+    if (state.failingScope) {
+      const reqScopes = String(req.query.scope || '').split(',').map((s) => s.trim()).filter(Boolean);
+      if (reqScopes.includes(state.failingScope)) {
+        return res.status(500).send('<html><body>Sorry, something went wrong. We\u2019re working on getting this fixed as soon as we can.</body></html>');
+      }
+      return res.redirect(302, `/v21.0/dialog/oauth?client_id=${String(req.query.client_id || '')}&state=${String(req.query.state || '')}`);
+    }
     if (state.dialogOutcome === 'invalid_app_id') {
       return res.redirect(302, '/oauth/error/?error_code=PLATFORM__INVALID_APP_ID');
     }

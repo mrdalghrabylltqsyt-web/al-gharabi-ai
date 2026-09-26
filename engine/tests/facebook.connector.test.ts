@@ -573,6 +573,25 @@ async function integrationTests(): Promise<void> {
     check('التوجيه بلا state ولا رابط تفويض كامل', !/dialog\/oauth\?/.test(h5Json) && !h5Json.includes('state='));
     await h5Mock.stop();
 
+    // عزل السبب: عندما يرفض Meta المجموعة كاملة، يجب أن يُسمّي التشخيص أصغر مجموعة
+    // صلاحيات مسؤولة — لا أن يترك المالك مع «حدث خطأ ما» عامة.
+    group('20و) تكامل: عزل أصغر مجموعة صلاحيات مسبّبة للرفض (diagnosis)');
+    await stop(currentApp.proc);
+    const isoMock = await startFacebookMockServer(FB_PORT + 9, createFacebookMock({ failingScope: 'pages_messaging' }));
+    currentApp = startApp(isoMock.base);
+    check('الخادم يقلع لعزل الصلاحية', await waitForHealth(), currentApp.log().slice(0, 300));
+    Object.assign(auth, await login());
+    const isoStart = await fetch(`${BASE}/api/platforms/facebook/oauth/start`, { headers: auth });
+    const isoBody: any = await isoStart.json();
+    check('المجموعة الكاملة المسبِّبة للرفض => 409', isoStart.status === 409, `status=${isoStart.status}`);
+    check('التشخيص يُعلن أصغر مجموعة فاشلة = pages_messaging',
+      Array.isArray(isoBody.scopeDiagnosis?.smallestFailingScopeSet) && isoBody.scopeDiagnosis.smallestFailingScopeSet.length === 1 && isoBody.scopeDiagnosis.smallestFailingScopeSet[0] === 'pages_messaging',
+      JSON.stringify(isoBody.scopeDiagnosis));
+    check('التشخيص ينفي أن الفشل بلا صلاحية', isoBody.scopeDiagnosis?.emptyScopeFails === false);
+    check('التشخيص يعلن معنى قابلاً للتنفيذ', typeof isoBody.scopeDiagnosis?.meaning === 'string' && isoBody.scopeDiagnosis.meaning.length > 0);
+    check('التشخيص بلا أي سرّ', !JSON.stringify(isoBody).includes('test-fb-client-secret') && !JSON.stringify(isoBody).includes('state='));
+    await isoMock.stop();
+
     // تجاوز جزئي عبر FACEBOOK_OAUTH_SCOPES يجب ألا يُنتج «Invalid Scopes» ولا
     // صلاحية مُسقَطة: الحلّ يضيف الاعتماديات الناقصة ويُعلن الفارق للتشخيص.
     group('21) تكامل: تجاوز الصلاحيات الجزئي يُكمَّل باعتماديات Meta تلقائياً');

@@ -1401,6 +1401,42 @@ async function probeMetaDialog(input: { authorizationUrl: string }): Promise<{ o
   }
 }
 
+/**
+ * يجد أصغر مجموعة صلاحيات ترفضها Meta (HTTP 500 أو رفض صريح) بحذف تدريجي.
+ *
+ * سبب الوجود: فحص الحوار الكامل يُثبت أن Meta ترفض، لكنه لا يقول أي صلاحية
+ * سبّبت الرفض. هذه الدالة تعزل المجموعة الدنيا المسؤولة، فيصبح التشخيص قابلاً
+ * للتنفيذ بدل «حدث خطأ ما» العامة. تُستدعى **فقط** عند فشل الفحص الكامل، فلا
+ * تستهلك أي طلب Meta في المسار الناجح. لا يُسجَّل الرابط ولا أي سرّ.
+ */
+async function findMinimalFailingScopeSet(input: { authorizationUrl: string; scopes: readonly string[] }): Promise<{ failingScopes: string[]; emptyScopeFails: boolean; attempts: number }> {
+  const base = new URL(input.authorizationUrl);
+  const attempt = async (scopes: string[]): Promise<boolean> => {
+    const t = new URL(base.toString());
+    if (scopes.length) t.searchParams.set("scope", scopes.join(",")); else t.searchParams.delete("scope");
+    try {
+      const r = await fetch(t.toString(), { method: "GET", redirect: "manual" });
+      const body = await r.text().catch(() => "");
+      const c = classifyMetaDialogInteraction({ status: r.status, location: r.headers.get("location"), body: body.slice(0, 4000) });
+      return !c.acceptable && Boolean(c.errorCode);
+    } catch { return false; }
+  };
+  let attempts = 0;
+  const scopes = [...new Set(input.scopes)].slice(0, 20);
+  // هل تفشل Meta حتى بلا أي صلاحية؟ => العطل في التطبيق/المنتج لا في صلاحية بعينها.
+  attempts += 1;
+  const emptyScopeFails = await attempt([]);
+  if (emptyScopeFails) return { failingScopes: [], emptyScopeFails: true, attempts };
+  let current = scopes.slice();
+  for (const s of scopes) {
+    if (current.length <= 1) break;
+    const trial = current.filter((x) => x !== s);
+    attempts += 1;
+    if (await attempt(trial)) current = trial;
+  }
+  return { failingScopes: current, emptyScopeFails: false, attempts };
+}
+
 /** رابط استقبال أحداث Facebook لهذا الخادم. */
 function facebookWebhookUrl(): string { return `${publicBaseUrlNow()}/api/platforms/facebook/webhook`; }
 /** رمز صفحة الاتصال الحالي (Page Access Token) من الاعتماد المشفّر. */
@@ -1715,6 +1751,19 @@ app.get("/api/platforms/:platform/oauth/start", requireOwner, async (req,res)=>{
   if (META_OAUTH_PLATFORMS.has(platform)) {
     dialogProbe = await probeMetaDialog({ authorizationUrl: u.toString() });
     if (!dialogProbe.ok) {
+      // تشخيص قابل للتنفيذ: نعزل أصغر مجموعة صلاحيات ترفضها Meta (فقط عند الفشل).
+      let scopeDiagnosis: { smallestFailingScopeSet: string[]; emptyScopeFails: boolean; probes: number; meaning: string } | null = null;
+      if (dialogProbe.httpStatus && dialogProbe.httpStatus >= 500 && scopes.length) {
+        const diag = await findMinimalFailingScopeSet({ authorizationUrl: u.toString(), scopes });
+        scopeDiagnosis = {
+          smallestFailingScopeSet: diag.failingScopes,
+          emptyScopeFails: diag.emptyScopeFails,
+          probes: diag.attempts,
+          meaning: diag.emptyScopeFails
+            ? "Meta ترفض الحوار حتى بلا أي صلاحية => العطل في التطبيق/المنتج نفسه (App ID أو App Domains أو Use Case) لا في صلاحية بعينها."
+            : "هذه أصغر مجموعة صلاحيات يرفضها الحوار؛ فعّل هذه الصلاحيات تحديداً في Use Case/Configuration.",
+        };
+      }
       logOAuthStart(platform, { outcome: "dialog_rejected", code: `META_DIALOG_${String(dialogProbe.errorCode || dialogProbe.kind).toUpperCase()}`, httpStatus: dialogProbe.httpStatus, dialogKind: dialogProbe.kind, redirectUri: callbackUrl, domain: urlInfo.host, publicUrlIsPublic: publicOk });
       return res.status(409).json({
         success: false,
@@ -1726,6 +1775,7 @@ app.get("/api/platforms/:platform/oauth/start", requireOwner, async (req,res)=>{
         dialogHttpStatus: dialogProbe.httpStatus,
         dialogKind: dialogProbe.kind,
         dialogErrorCode: dialogProbe.errorCode,
+        scopeDiagnosis,
         redirectUri: callbackUrl,
         domain: urlInfo.host,
         appIdFormatOk: isPlausibleMetaAppId(String(cfg.clientId || "")),
