@@ -38,28 +38,34 @@ export const INSTAGRAM_SIGNATURE_HEADER = 'x-hub-signature-256';
  * بـ«Invalid Scopes» (تطبيق Live بلا مراجعة) أو يُسقَط صامتاً من الرمز فتبدو
  * الواجهة قادرة والتنفيذ يفشل بلا سبب ظاهر.
  *
- * نصّ الوثيقة (مجموعة Dependencies لكل صلاحية):
- *   instagram_basic            → (بلا اعتماديات)
+ * نصّ الوثيقة (مجموعة Dependencies لكل صلاحية) — «Permissions Reference»:
+ *   instagram_basic            → pages_read_user_content, pages_show_list
  *   instagram_content_publish  → instagram_basic, pages_read_engagement, pages_show_list
  *   instagram_manage_comments  → instagram_basic, pages_read_engagement, pages_show_list
  *   instagram_manage_messages  → instagram_basic, pages_read_engagement, pages_show_list
  *   instagram_manage_insights  → instagram_basic, pages_read_engagement, pages_show_list
  *   pages_read_engagement      → pages_show_list
+ *   pages_read_user_content    → pages_show_list
  *   pages_manage_metadata      → pages_show_list
  *   business_management        → (بلا اعتماديات)
  *
  * ملاحظة مهمة: `pages_manage_metadata` ليست اعتمادية لأي صلاحية instagram_*، لكنها
  * شرط مستقل لحقل webhook `comments` (وثائق Instagram Webhooks) ولذلك تبقى مطلوبة
  * في المجموعة الدنيا رغم عدم كونها اعتمادية.
+ *
+ * تصحيح جذري: كانت `instagram_basic` مُعلنة «بلا اعتماديات»، بينما وثيقة Meta
+ * تُسند لها اعتماديتين (pages_read_user_content, pages_show_list). إغفالهما يجعل
+ * الرابط غير متماسك مع عقد Meta، وهو أحد أسباب رفض الحوار بمجموعة الصلاحيات.
  */
 export const INSTAGRAM_PERMISSION_DEPENDENCIES: Readonly<Record<string, readonly string[]>> = Object.freeze({
-  instagram_basic: [],
+  instagram_basic: ['pages_read_user_content', 'pages_show_list'],
   instagram_content_publish: ['instagram_basic', 'pages_read_engagement', 'pages_show_list'],
   instagram_manage_comments: ['instagram_basic', 'pages_read_engagement', 'pages_show_list'],
   instagram_manage_messages: ['instagram_basic', 'pages_read_engagement', 'pages_show_list'],
   instagram_manage_insights: ['instagram_basic', 'pages_read_engagement', 'pages_show_list'],
   pages_show_list: [],
   pages_read_engagement: ['pages_show_list'],
+  pages_read_user_content: ['pages_show_list'],
   pages_manage_metadata: ['pages_show_list'],
   business_management: [],
 });
@@ -68,10 +74,12 @@ export const INSTAGRAM_PERMISSION_DEPENDENCIES: Readonly<Record<string, readonly
  * المجموعة الدنيا التي تغطي كل وظائف الموصل فعلاً: النشر + التعليقات + الرسائل +
  * التحليلات + اشتراك webhook + اكتشاف الصفحة + صفحات Business Manager.
  * كل صلاحية هنا يقابلها استدعاء حقيقي في الكود:
+ * - instagram_basic          → قراءة الملف/الوسائط (والاعتماديتان اللازمتان لها).
  * - instagram_content_publish → POST /{ig-id}/media + media_publish (النشر).
  * - instagram_manage_comments → POST /{comment-id}/replies (الرد على التعليق).
  * - instagram_manage_messages → POST /{page-id}/messages (الرسائل).
  * - instagram_manage_insights → قراءة مؤشرات الحساب (analytics).
+ * - pages_read_user_content   → اعتمادية instagram_basic (محتوى المستخدم/التعليقات).
  * - pages_manage_metadata     → POST /{page-id}/subscribed_apps (اشتراك webhook).
  * - business_management       → ظهور صفحات Business Manager في /me/accounts.
  */
@@ -83,6 +91,7 @@ export const INSTAGRAM_REQUIRED_SCOPES: readonly string[] = Object.freeze([
   'instagram_manage_insights',
   'pages_show_list',
   'pages_read_engagement',
+  'pages_read_user_content',
   'pages_manage_metadata',
   'business_management',
 ]);

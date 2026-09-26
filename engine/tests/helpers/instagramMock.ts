@@ -41,7 +41,7 @@ export interface InstagramMockState {
   validAppId: string;
   validAppSecret: string;
   /** سلوك حوار التفويض: consent = تطبيق صالح، invalid_app_id = صفحة «حدث خطأ ما». */
-  dialogOutcome: 'consent' | 'login' | 'invalid_app_id' | 'opaque_200';
+  dialogOutcome: 'consent' | 'login' | 'invalid_app_id' | 'opaque_200' | 'http_500';
 }
 
 export function createInstagramMock(state: Partial<InstagramMockState> = {}): InstagramMockState {
@@ -91,6 +91,10 @@ export async function startInstagramMockServer(
     if (state.dialogOutcome === 'opaque_200') {
       // صفحة غير مفهومة بلا أي دليل رفض: لا يجوز الحجب بلا إثبات.
       return res.status(200).send('<html><body>Consent screen</body></html>');
+    }
+    if (state.dialogOutcome === 'http_500') {
+      // HTTP 500 + «حدث خطأ ما»: رفض صريح لمجموعة الصلاحيات مقابل منتج التطبيق.
+      return res.status(500).send('<html><body>Sorry, something went wrong. We\u2019re working on getting this fixed as soon as we can.</body></html>');
     }
     return res.redirect(302, `/v21.0/dialog/oauth?client_id=${String(req.query.client_id || '')}&state=${String(req.query.state || '')}`);
   });

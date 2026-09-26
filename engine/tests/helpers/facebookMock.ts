@@ -56,8 +56,9 @@ export interface FacebookMockState {
   validAppSecret: string;
   /** آخر فحص رمز تطبيق (بلا سرّ كامل، فقط الطول للتحقق). */
   lastAppTokenCheck: { clientId: string; secretLen: number } | null;
-  /** سلوك حوار التفويض: consent = تطبيق صالح، invalid_app_id = صفحة «حدث خطأ ما». */
-  dialogOutcome: 'consent' | 'login' | 'invalid_app_id' | 'opaque_200';
+  /** سلوك حوار التفويض: consent = تطبيق صالح، invalid_app_id = صفحة «حدث خطأ ما»،
+   * http_500 = فشل Meta العام (500 + «حدث خطأ ما») عندما لا تُتحقق مجموعة الصلاحيات. */
+  dialogOutcome: 'consent' | 'login' | 'invalid_app_id' | 'opaque_200' | 'http_500';
 }
 
 export function createFacebookMock(state: Partial<FacebookMockState> = {}): FacebookMockState {
@@ -107,6 +108,11 @@ export async function startFacebookMockServer(
     if (state.dialogOutcome === 'opaque_200') {
       // صفحة غير مفهومة بلا أي دليل رفض: لا يجوز الحجب بلا إثبات.
       return res.status(200).send('<html><body>Consent screen</body></html>');
+    }
+    if (state.dialogOutcome === 'http_500') {
+      // ما تردّه Meta فعلياً عندما لا تُتحقق مجموعة scope مقابل منتج التطبيق:
+      // HTTP 500 مع الصفحة العامة «حدث خطأ ما» (بلا error_code في الترويسة).
+      return res.status(500).send('<html><body>Sorry, something went wrong. We\u2019re working on getting this fixed as soon as we can.</body></html>');
     }
     return res.redirect(302, `/v21.0/dialog/oauth?client_id=${String(req.query.client_id || '')}&state=${String(req.query.state || '')}`);
   });

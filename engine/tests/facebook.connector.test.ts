@@ -171,6 +171,16 @@ function unitTests(): void {
   const invalidApp = classifyMetaDialogInteraction({ status: 302, location: 'https://www.facebook.com/oauth/error/?error_code=PLATFORM__INVALID_APP_ID' });
   check('PLATFORM__INVALID_APP_ID يُصنَّف معرّف تطبيق غير صالح', invalidApp.kind === 'invalid_app_id' && invalidApp.acceptable === false && invalidApp.errorCode === 'PLATFORM__INVALID_APP_ID');
   check('صفحة «حدث خطأ ما» العامة تُصنَّف عطلاً لا نجاحاً', classifyMetaDialogInteraction({ status: 200, body: 'Sorry, something went wrong. We\u2019re working on getting this fixed.' }).kind === 'dialog_error');
+  // HTTP 500 + «حدث خطأ ما»: رفض صريح (كان يسقط سابقاً كـ«مقبول» فيُرسَل المالك للفشل).
+  const http500 = classifyMetaDialogInteraction({ status: 500, body: 'Sorry, something went wrong. We\u2019re working on getting this fixed.' });
+  check('HTTP 500 + «حدث خطأ ما» = رفض صريح لا قبول', http500.acceptable === false && http500.kind === 'dialog_error');
+  const http500Empty = classifyMetaDialogInteraction({ status: 500, body: '' });
+  check('HTTP 500 بلا جسم = خطأ HTTP صريح (لا تمرير)', http500Empty.acceptable === false && http500Empty.kind === 'http_error' && http500Empty.errorCode === 'HTTP_500');
+  const http403 = classifyMetaDialogInteraction({ status: 403, body: '' });
+  check('HTTP 403 = خطأ HTTP صريح', http403.acceptable === false && http403.kind === 'http_error' && http403.errorCode === 'HTTP_403');
+  const http429 = classifyMetaDialogInteraction({ status: 429, body: '' });
+  check('HTTP 429 (تقييد مؤقت) = غير حاسم لا يُحجب', http429.acceptable === false && http429.errorCode === null && http429.kind === 'unknown');
+  check('HTTP 500 + «حدث خطأ ما» عبر Facebook لا يُصنَّف مقبولاً', classifyMetaDialogInteraction({ status: 500, body: 'Sorry, something went wrong' }).acceptable === false);
   check('إعادة توجيه لتسجيل الدخول = تطبيق مقبول', classifyMetaDialogInteraction({ status: 302, location: 'https://www.facebook.com/login.php?skip_api_login=1&api_key=1' }).kind === 'login');
   check('إعادة توجيه لحوار الموافقة = تطبيق مقبول', classifyMetaDialogInteraction({ status: 302, location: 'https://www.facebook.com/v21.0/dialog/oauth?client_id=1&ret=login' }).kind === 'consent');
   check('بلا توجيه وبلا جسم معروف = غير معروف', classifyMetaDialogInteraction({ status: 200, body: 'x' }).kind === 'unknown');
@@ -538,6 +548,30 @@ async function integrationTests(): Promise<void> {
     const opaqueBody: any = await opaqueStart.json();
     check('استجابة غير حاسمة => 200 (لا حجب بلا إثبات رفض)', opaqueStart.status === 200 && typeof opaqueBody.authorizationUrl === 'string', `status=${opaqueStart.status}`);
     await opaqueMock.stop();
+
+    // الجذر المُثبت للمالك: Meta ترد HTTP 500 مع صفحة «حدث خطأ ما» عندما لا
+    // تُتحقق مجموعة الصلاحيات مقابل منتج التطبيق. يجب ألا يُرسَل المالك إليها.
+    group('20هـ) تكامل: رفض Meta بـHTTP 500 («حدث خطأ ما») يُحجب بتشخيص آمن');
+    await stop(currentApp.proc);
+    const h5Mock = await startFacebookMockServer(FB_PORT + 8, createFacebookMock({ dialogOutcome: 'http_500' }));
+    currentApp = startApp(h5Mock.base);
+    check('الخادم يقلع لفحص 500', await waitForHealth(), currentApp.log().slice(0, 300));
+    Object.assign(auth, await login());
+    const h5Start = await fetch(`${BASE}/api/platforms/facebook/oauth/start`, { headers: auth });
+    const h5Body: any = await h5Start.json();
+    check('HTTP 500 من الحوار => 409 بدل التوجيه', h5Start.status === 409, `status=${h5Start.status} body=${JSON.stringify(h5Body).slice(0, 200)}`);
+    check('الرمز يعلن META_DIALOG_PAGE', h5Body.code === 'META_DIALOG_META_DIALOG_PAGE', `code=${h5Body.code}`);
+    check('التشخيص يحمل HTTP status الفعلي', h5Body.dialogHttpStatus === 500, `dialogHttpStatus=${h5Body.dialogHttpStatus}`);
+    check('التشخيص يحمل dialogKind', typeof h5Body.dialogKind === 'string' && h5Body.dialogKind.length > 0);
+    check('التشخيص يحمل تصنيف خطأ Meta', h5Body.dialogErrorCode === 'META_DIALOG_PAGE', `dialogErrorCode=${h5Body.dialogErrorCode}`);
+    check('التوجيه يحمل سبب الصلاحيات في hint', typeof h5Body.hint === 'string' && /صلاحيات|Use Case|Configuration/.test(h5Body.hint));
+    check('لا يُعاد رابط تفويض عند رفض 500', !h5Body.authorizationUrl);
+    // فحص عدم تسريب الأسرار: لا سرّ التطبيق ولا السرّ ولا state ولا رابط التفويض.
+    const h5Json = JSON.stringify(h5Body);
+    check('التوجيه بلا سرّ التطبيق', !h5Json.includes('test-fb-client-secret'));
+    check('التوجيه بلا App Secret', !h5Json.includes(FB_APP_SECRET));
+    check('التوجيه بلا state ولا رابط تفويض كامل', !/dialog\/oauth\?/.test(h5Json) && !h5Json.includes('state='));
+    await h5Mock.stop();
 
     // تجاوز جزئي عبر FACEBOOK_OAUTH_SCOPES يجب ألا يُنتج «Invalid Scopes» ولا
     // صلاحية مُسقَطة: الحلّ يضيف الاعتماديات الناقصة ويُعلن الفارق للتشخيص.

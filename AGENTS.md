@@ -910,3 +910,38 @@ webhook. `oauth/setup` يعرض لـInstagram أيضاً `scopeDependencyGaps` �
    `subscribed_apps`؛ المصدر لوحة Meta فقط).
 5. اضغط «بدء الربط» ووافق بحساب Instagram **مهني** مرتبط بالصفحة. الشاشة النهائية يجب أن
    تعرض CONNECTED → VERIFIED → OPERATIONAL.
+
+## إصلاح جذر «حدث خطأ ما» قبل شاشة الموافقة + اعتماديتا instagram_basic (2026-09-26)
+
+**الجذر المُثبت حياً (لا تخمين):** عندما لا تستطيع Meta التحقق من مجموعة `scope` مقابل
+منتج التطبيق، فإنها **لا** تعيد 302 إلى `/oauth/error`، بل ترد **HTTP 500** بصفحة
+«Sorry, something went wrong» بلا `error_code`. أُثبت أن طلباً بـ`scope` صالح لمعرّف تطبيق
+صالح يعيد 302 إلى `login.php`، بينما نفس الطلب مع رمز صلاحية غير معروف يعيد 500.
+الطلبان يُخدمان من `www.facebook.com` نفسها، ولا علاقة للمشكلة بـ App ID (فحص
+`client_credentials` ينجح قبلها) ولا بالمسار ولا بإصدار Graph.
+
+**العيب في الكود (كان يمنع ظهور السبب للمالك):** `probeMetaDialog` كان يفحص الجسم **فقط**
+عند `status === 200`، فحالة 500 تسقط إلى «لا دليل رفض» => تُمرَّر => يُرسَل المالك إلى
+صفحة الفشل العامة. الإصلاح:
+- `classifyMetaDialogInteraction` صار يصنّف **4xx/5xx رفضاً صريحاً** (`kind: 'http_error'`,
+  `errorCode: HTTP_<status>`)، مع استثناء 429 (تقييد مؤقت) من الحجب.
+- `probeMetaDialog` يقرأ عيّنة الجسم **دائماً** (200 و500) ويصنّف بـ(status + location + body).
+- رد 409 يحمل تشخيصاً آمناً: `dialogHttpStatus`, `dialogKind`, `dialogErrorCode`, و`hint`
+  يوجّه لتفعيل الصلاحيات في Use Case/Configuration. **بلا** state أو client_id أو سرّ أو
+  رابط تفويض كامل.
+
+**تصحيح اعتماديات Instagram (وثيقة Meta الرسمية):** `instagram_basic` **ليست** بلا
+اعتماديات كما كان مُعلناً؛ وثيقة «Permissions Reference» تُسند لها
+`pages_read_user_content` و`pages_show_list`. أُضيفت الاعتماديتان و`pages_read_user_content`
+إلى المجموعة المطلوبة (10 صلاحيات). هذا يجعل الرابط متماسكاً مع عقد Meta — وعدم التماسك
+أحد أسباب رفض الحوار بمجموعة الصلاحيات.
+
+اختبارات: `facebook.connector.test.ts` = **192 فحصاً**، `instagram.connector.test.ts` =
+**156 فحصاً** (مجموعة 20هـ/22 تثبت حجب 500 بتشخيص آمن للجانبين، ومجموعة 2ب تثبت تصنيف
+4xx/5xx و429). فحوص final-audit الجديدة: `meta-dialog-http-error-rejected`,
+`meta-dialog-probe-reads-body`, `meta-dialog-http-status-exposed`, `meta-dialog-500-tests`,
+`instagram-basic-official-dependency` (219 فحصاً إجمالاً).
+
+**ما بقي على المالك:** تفعيل الصلاحيات العشر كاملةً في Meta App Dashboard → **Use Cases**
+(وليس مجرد إضافتها للتطبيق)، وضبط App Domains + Valid OAuth Redirect URIs. هذا إعداد خارجي
+لا يمكن تنفيذه من الكود ولا يوجد وكيل برمجي يقوم به نيابةً عن المالك.

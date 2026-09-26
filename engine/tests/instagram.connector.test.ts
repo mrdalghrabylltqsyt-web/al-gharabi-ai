@@ -173,9 +173,13 @@ function unitTests(): void {
   check('صلاحيات الصفحة اللازمة موجودة', ['pages_show_list', 'pages_read_engagement', 'pages_manage_metadata'].every((s) => INSTAGRAM_REQUIRED_SCOPES.includes(s)));
   check('المجموعة المطلوبة لا تكرّر أي صلاحية', new Set(INSTAGRAM_REQUIRED_SCOPES).size === INSTAGRAM_REQUIRED_SCOPES.length);
   check('لا صلاحية في المجموعة المطلوبة بلا اعتماديتها', findMissingInstagramScopeDependencies(INSTAGRAM_REQUIRED_SCOPES).length === 0, findMissingInstagramScopeDependencies(INSTAGRAM_REQUIRED_SCOPES).join(','));
-  // الاعتماديات الرسمية من «Permissions Reference»: كل صلاحية instagram_* تعتمد
+  // الاعتماديات الرسمية من «Permissions Reference»: instagram_basic تعتمد على
+  // pages_read_user_content وpages_show_list، وكل صلاحية instagram_* الأخرى تعتمد
   // على instagram_basic وpages_read_engagement وpages_show_list — ولا تعتمد على
   // pages_manage_metadata (التي هي شرط مستقل لحقل webhook comments).
+  check('instagram_basic تعتمد رسمياً على pages_read_user_content وpages_show_list',
+    (INSTAGRAM_PERMISSION_DEPENDENCIES['instagram_basic'] || []).includes('pages_read_user_content') &&
+    (INSTAGRAM_PERMISSION_DEPENDENCIES['instagram_basic'] || []).includes('pages_show_list'));
   check('رد التعليقات يعتمد رسمياً على pages_read_engagement وpages_show_list',
     (INSTAGRAM_PERMISSION_DEPENDENCIES['instagram_manage_comments'] || []).includes('pages_read_engagement') &&
     (INSTAGRAM_PERMISSION_DEPENDENCIES['instagram_manage_comments'] || []).includes('pages_show_list'));
@@ -183,13 +187,16 @@ function unitTests(): void {
     !(INSTAGRAM_PERMISSION_DEPENDENCIES['instagram_manage_comments'] || []).includes('pages_manage_metadata'));
   check('pages_manage_metadata تبقى مطلوبة لاشتراك webhook (comments)',
     INSTAGRAM_REQUIRED_SCOPES.includes('pages_manage_metadata'));
+  check('pages_read_user_content مطلوبة كاعتمادية instagram_basic',
+    INSTAGRAM_REQUIRED_SCOPES.includes('pages_read_user_content'));
   check('business_management مطلوبة لصفحات Business Manager',
     INSTAGRAM_REQUIRED_SCOPES.includes('business_management'));
-  check('لا صلاحية مطلوبة بلا استدعاء حقيقي (العدد = 9)',
-    INSTAGRAM_REQUIRED_SCOPES.length === 9, INSTAGRAM_REQUIRED_SCOPES.join(','));
+  check('لا صلاحية مطلوبة بلا استدعاء حقيقي (العدد = 10)',
+    INSTAGRAM_REQUIRED_SCOPES.length === 10, INSTAGRAM_REQUIRED_SCOPES.join(','));
   const partial = resolveInstagramScopes(['instagram_manage_comments']);
   check('حلّ مجموعة جزئية يضيف instagram_basic', partial.includes('instagram_basic'));
   check('حلّ مجموعة جزئية يضيف pages_show_list', partial.includes('pages_show_list'));
+  check('حلّ مجموعة جزئية يضيف pages_read_user_content (اعتمادية instagram_basic)', partial.includes('pages_read_user_content'), partial.join(','));
   check('الاعتمادية تأتي قبل التابع', partial.indexOf('instagram_basic') < partial.indexOf('instagram_manage_comments'));
   check('الحلّ بلا تكرار', new Set(partial).size === partial.length);
   check('يُعلن صراحةً أن المسار يحتاج حساباً مهنياً لا شخصياً', INSTAGRAM_REQUIRES_PROFESSIONAL_ACCOUNT === true);
@@ -548,6 +555,23 @@ async function integrationTests(): Promise<void> {
     check('حوار مقبول => 200 ورابط تفويض', okStart.status === 200 && typeof okBody.authorizationUrl === 'string', `status=${okStart.status}`);
     check('الفحص استدعى الحوار فعلياً', okMock.state.calls >= 2, `calls=${okMock.state.calls}`);
     await okMock.stop();
+
+    // رفض Meta بـHTTP 500 («حدث خطأ ما»): رفض صريح لمجموعة الصلاحيات مقابل منتج
+    // التطبيق. يُحجب بتشخيص آمن بدل إرسال المالك إلى الفشل العام.
+    group('22) تكامل: رفض Meta بـHTTP 500 يُحجب (Instagram)');
+    await stop(currentApp.proc);
+    const h5Mock = await startInstagramMockServer(IG_PORT + 5, createInstagramMock({ dialogOutcome: 'http_500' }));
+    currentApp = startApp(h5Mock.base);
+    check('الخادم يقلع لفحص 500', await waitForHealth(), currentApp.log().slice(0, 300));
+    Object.assign(auth, await login());
+    const h5Start = await fetch(`${BASE}/api/platforms/instagram/oauth/start`, { headers: auth });
+    const h5Body: any = await h5Start.json();
+    check('HTTP 500 من الحوار => 409 بدل التوجيه', h5Start.status === 409, `status=${h5Start.status} body=${JSON.stringify(h5Body).slice(0, 200)}`);
+    check('التشخيص يحمل HTTP status الفعلي', h5Body.dialogHttpStatus === 500, `dialogHttpStatus=${h5Body.dialogHttpStatus}`);
+    check('التشخيص يحمل تصنيف خطأ Meta', h5Body.dialogErrorCode === 'META_DIALOG_PAGE', `dialogErrorCode=${h5Body.dialogErrorCode}`);
+    check('لا يُعاد رابط تفويض عند رفض 500', !h5Body.authorizationUrl);
+    check('التوجيه بلا أي سرّ', !JSON.stringify(h5Body).includes('test-fb-client-secret'));
+    await h5Mock.stop();
   } finally {
     try { await stop(currentApp.proc); } catch { /* تجاهل */ }
     await mock.stop();

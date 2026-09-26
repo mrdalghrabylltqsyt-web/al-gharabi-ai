@@ -1379,27 +1379,25 @@ function authEndpointFor(platform: string): string {
  * «حدث خطأ ما» عمياء: إن رفض Meta الرابط نُعلن السبب الدقيق أولاً.
  * لا يُسجَّل الرابط (يحمل client_id/state/config_id) ولا يُتبَع أي تحويل.
  */
-async function probeMetaDialog(input: { authorizationUrl: string }): Promise<{ ok: boolean; kind: string; errorCode: string | null; hint?: string }> {
-  const rejectionHint = "رفض Meta رابط التفويض قبل شاشة الموافقة. راجع App ID/App Domains/Valid OAuth Redirect URIs أو صيغة Configuration ID.";
+async function probeMetaDialog(input: { authorizationUrl: string }): Promise<{ ok: boolean; kind: string; errorCode: string | null; httpStatus: number | null; hint?: string }> {
+  const rejectionHint = "رفض Meta رابط التفويض قبل شاشة الموافقة. السبب الأكثر شيوعاً أن مجموعة الصلاحيات المطلوبة غير مفعّلة كاملةً في Use Case أو Configuration الخاص بالتطبيق (App Review permissions and features). راجع أيضاً App ID/App Domains/Valid OAuth Redirect URIs.";
   try {
     const res = await fetch(input.authorizationUrl, { method: "GET", redirect: "manual" });
+    const status = res.status;
     const location = res.headers.get("location");
-    const classified = classifyMetaDialogInteraction({ status: res.status, location });
+    // نقرأ عيّنة الجسم دائماً: صفحة Meta العامة «حدث خطأ ما» قد تأتي مع 200 وقد
+    // تأتي مع 500؛ الحالة لا تُغيّر أنها رفض صريح.
+    const bodySample = await res.text().catch(() => "");
+    const classified = classifyMetaDialogInteraction({ status, location, body: bodySample.slice(0, 4000) });
     // مسار مقبول (login/consent) => لا حجب.
-    if (classified.acceptable) return { ok: true, kind: classified.kind, errorCode: classified.errorCode };
-    // رفض صريح من الترويسة/الحالة => حجب بتشخيص دقيق.
-    if (classified.errorCode) return { ok: false, kind: classified.kind, errorCode: classified.errorCode, hint: rejectionHint };
-    // غير حاسم: نفحص عيّنة من الجسم بحثاً عن دليل رفض صريح فقط (صفحة Meta العامة).
-    if (res.status === 200) {
-      const bodySample = await res.text().catch(() => "");
-      const fromBody = classifyMetaDialogInteraction({ status: 200, location: null, body: bodySample.slice(0, 2000) });
-      if (!fromBody.acceptable && fromBody.errorCode) return { ok: false, kind: fromBody.kind, errorCode: fromBody.errorCode, hint: rejectionHint };
-    }
-    // لا دليل قاطع على الرفض: نمرّر (لا نحجب بلا إثبات).
-    return { ok: true, kind: classified.kind, errorCode: null };
+    if (classified.acceptable) return { ok: true, kind: classified.kind, errorCode: classified.errorCode, httpStatus: status };
+    // أي دليل رفض صريح (رمز خطأ، صفحة عامة، 4xx/5xx) => حجب بتشخيص دقيق.
+    if (classified.errorCode) return { ok: false, kind: classified.kind, errorCode: classified.errorCode, httpStatus: status, hint: rejectionHint };
+    // لا دليل قاطع على الرفض (200 مبهم/429): نمرّر (لا نحجب بلا إثبات).
+    return { ok: true, kind: classified.kind, errorCode: null, httpStatus: status };
   } catch (e: any) {
     // تعذّر الفحص (شبكة): لا نحجب بلا سبب؛ نُعلن أن الإثبات لم يتم.
-    return { ok: true, kind: "unavailable", errorCode: null, hint: String(e?.message || "تعذّر فحص رابط التفويض.") };
+    return { ok: true, kind: "unavailable", errorCode: null, httpStatus: null, hint: String(e?.message || "تعذّر فحص رابط التفويض.") };
   }
 }
 
@@ -1713,24 +1711,26 @@ app.get("/api/platforms/:platform/oauth/start", requireOwner, async (req,res)=>{
   for(const [k,v] of Object.entries(params)) u.searchParams.set(k,v);
   // فحص ما قبل التوجيه (Meta فقط): نتحقق أن Meta تقبل الرابط فعلاً، فلا يُرسَل
   // المالك إلى صفحة «حدث خطأ ما» عمياء. تعذّر الفحص لا يحجب (لئلا نكسر التطوير).
-  let dialogProbe: { ok: boolean; kind: string; errorCode: string | null; hint?: string } | null = null;
+  let dialogProbe: { ok: boolean; kind: string; errorCode: string | null; httpStatus: number | null; hint?: string } | null = null;
   if (META_OAUTH_PLATFORMS.has(platform)) {
     dialogProbe = await probeMetaDialog({ authorizationUrl: u.toString() });
     if (!dialogProbe.ok) {
-      logOAuthStart(platform, { outcome: "dialog_rejected", code: `META_DIALOG_${String(dialogProbe.errorCode || dialogProbe.kind).toUpperCase()}`, redirectUri: callbackUrl, domain: urlInfo.host, publicUrlIsPublic: publicOk });
+      logOAuthStart(platform, { outcome: "dialog_rejected", code: `META_DIALOG_${String(dialogProbe.errorCode || dialogProbe.kind).toUpperCase()}`, httpStatus: dialogProbe.httpStatus, dialogKind: dialogProbe.kind, redirectUri: callbackUrl, domain: urlInfo.host, publicUrlIsPublic: publicOk });
       return res.status(409).json({
         success: false,
         code: `META_DIALOG_${String(dialogProbe.errorCode || dialogProbe.kind).toUpperCase()}`,
         error: "رفض Meta رابط التفويض قبل شاشة الموافقة (صفحة «حدث خطأ ما»). لم يُرسَل المستخدم إلى Meta.",
         hint: dialogProbe.hint,
         platform,
+        // تشخيص آمن بلا أي سرّ: لا state ولا client_id ولا سرّ ولا رابط تفويض كامل.
+        dialogHttpStatus: dialogProbe.httpStatus,
         dialogKind: dialogProbe.kind,
         dialogErrorCode: dialogProbe.errorCode,
         redirectUri: callbackUrl,
         domain: urlInfo.host,
         appIdFormatOk: isPlausibleMetaAppId(String(cfg.clientId || "")),
         loginConfigIdUsed: Boolean(loginConfigId),
-        metaSetupHint: { appDomainsValue: urlInfo.host && !isLocalHost(urlInfo.host) ? `https://${urlInfo.host}` : null, redirectUri: callbackUrl, note: "طابق App ID وApp Domains وValid OAuth Redirect URIs، وتأكد أن Configuration ID صالح إن كنت تستخدم Facebook Login for Business." },
+        metaSetupHint: { appDomainsValue: urlInfo.host && !isLocalHost(urlInfo.host) ? `https://${urlInfo.host}` : null, redirectUri: callbackUrl, note: "طابق App ID وApp Domains وValid OAuth Redirect URIs، وتأكد أن كل صلاحية مطلوبة مفعّلة في Use Case أو Configuration ID." },
       });
     }
   }

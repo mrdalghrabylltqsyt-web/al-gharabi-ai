@@ -179,44 +179,69 @@ export function isPlausibleMetaAppId(value: unknown): boolean {
   return typeof value === 'string' && /^[0-9]{6,20}$/.test(value);
 }
 
-export type MetaDialogInteractionKind = 'login' | 'consent' | 'invalid_app_id' | 'dialog_error' | 'unknown';
+export type MetaDialogInteractionKind = 'login' | 'consent' | 'invalid_app_id' | 'dialog_error' | 'http_error' | 'unknown';
 
 export interface MetaDialogInteraction {
-  /** تصنيف تفاعل Meta: دخول/موافقة/معرّف تطبيق غير صالح/عطل حوار/غير معروف. */
+  /** تصنيف تفاعل Meta: دخول/موافقة/معرّف تطبيق غير صالح/عطل حوار/خطأ HTTP/غير معروف. */
   kind: MetaDialogInteractionKind;
   /** هل يتقدّم الحوار إلى تسجيل الدخول/الموافقة (أي أن التطبيق مقبول)؟ */
   acceptable: boolean;
-  /** رمز خطأ Meta إن وُجد (بلا أي سرّ). */
+  /** رمز خطأ Meta إن وُجد (بلا أي سرّ). `HTTP_<status>` لاستجابات 4xx/5xx. */
   errorCode: string | null;
   /** رابط إعادة التوجيه كما أعاده Meta (بلا جسم الاستجابة). */
   location: string | null;
 }
 
 /**
- * يصنّف استجابة أول طلب لحوار Facebook Login من ترويسة Location والجسم.
+ * يصنّف استجابة أول طلب لحوار Facebook Login من الحالة والترويسة والجسم.
  *
- * سبب الوجود: كانت «حدث خطأ ما» (PLATFORM__INVALID_APP_ID) تظهر للمالك بلا
- * أي تفسير. Meta تردّ على الطلب الأول بـ302 إلى `/oauth/error/?error_code=...`
- * أو بالصفحة نفسها في الجسم؛ هنا نحسم المعنى بدقة بلا افتراض.
+ * سبب الوجود: كانت «حدث خطأ ما» تظهر للمالك بلا أي تفسير. أُثبت حياً أن Meta
+ * تردّ بثلاث صور مختلفة: 302 إلى `/oauth/error/?error_code=...` (معرّف تطبيق
+ * غير صالح)، أو صفحة عامة في الجسم، أو **HTTP 500 مع صفحة «حدث خطأ ما»** عندما
+ * لا تستطيع Meta التحقق من مجموعة `scope` مقابل منتج التطبيق (Use Case /
+ * Configuration). الصورة الثالثة كانت تسقط سابقاً كـ«مقبولة» فيُرسَل المالك إلى
+ * الفشل العام؛ الآن تُصنَّف رفضاً صريحاً.
+ *
+ * القاعدة الحاكمة: أي دليل رفض صريح (رمز خطأ، صفحة عامة، 4xx، 5xx) = رفض.
+ * الاستجابة غير الحاسمة (200 بلا دليل، أو 429 تقييد مؤقت) تُمرَّر بلا حجب.
  */
 export function classifyMetaDialogInteraction(input: { status: number; location?: string | null; body?: string | null }): MetaDialogInteraction {
   const location = (input.location || '').trim() || null;
+  const body = input.body || '';
+  const status = Number(input.status);
   const errorMatch = location ? /[?&]error_code=([A-Za-z0-9_]+)/.exec(location) : null;
   const errorCode = errorMatch ? errorMatch[1] : null;
-  if (errorCode === 'PLATFORM__INVALID_APP_ID' || /PLATFORM__INVALID_APP_ID/.test(input.body || '')) {
+
+  // 1) رمز خطأ صريح: معرّف تطبيق غير صالح أو عطل حوار آخر.
+  if (errorCode === 'PLATFORM__INVALID_APP_ID' || /PLATFORM__INVALID_APP_ID/.test(body)) {
     return { kind: 'invalid_app_id', acceptable: false, errorCode: errorCode || 'PLATFORM__INVALID_APP_ID', location };
   }
   if (errorCode) return { kind: 'dialog_error', acceptable: false, errorCode, location };
+
+  // 2) صفحة Meta العامة في الجسم = عطل صريح، تعمل مع 200 ومع 5xx.
+  if (/something went wrong|Invalid App ID/i.test(body)) {
+    return { kind: 'dialog_error', acceptable: false, errorCode: 'META_DIALOG_PAGE', location };
+  }
+
+  // 3) 5xx = فشل Meta صريح (لا يُمرَّر ولو كان الحوار صالحاً نظرياً).
+  if (Number.isFinite(status) && status >= 500) {
+    return { kind: 'http_error', acceptable: false, errorCode: `HTTP_${status}`, location };
+  }
+
+  // 4) 4xx (غير 429 تقييد مؤقت) = طلب مرفوض صراحةً.
+  if (Number.isFinite(status) && status >= 400 && status !== 429) {
+    return { kind: 'http_error', acceptable: false, errorCode: `HTTP_${status}`, location };
+  }
+
+  // 5) إعادة توجيه مقبولة (بلا رمز خطأ): تسجيل دخول أو شاشة موافقة.
   if (location && /\/(v[0-9.]+\/)?dialog\/oauth\b/.test(location)) {
     return { kind: 'consent', acceptable: true, errorCode: null, location };
   }
   if (location && /\/login\.php\b/.test(location)) {
     return { kind: 'login', acceptable: true, errorCode: null, location };
   }
-  // جسم يحمل صفحة عامة بلا توجيه: نعتبرها عطلاً صريحاً لا نجاحاً.
-  if (/something went wrong|Invalid App ID/i.test(input.body || '')) {
-    return { kind: 'dialog_error', acceptable: false, errorCode: 'META_DIALOG_PAGE', location };
-  }
+
+  // 6) بلا دليل رفض قاطع (200 مبهم أو 429): لا حجب بلا إثبات.
   return { kind: 'unknown', acceptable: false, errorCode: null, location };
 }
 
