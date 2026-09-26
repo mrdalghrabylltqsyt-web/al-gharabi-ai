@@ -1102,3 +1102,45 @@ Meta توجّه حسب `User-Agent`:
 **درس عام:** «حدث خطأ ما» قد تأتي من رابط غير مطابق للوثيقة الرسمية للمسار، لا من صلاحية
 ولا من App ID. الفحص بلا كوكيز لا يرى ما بعد شاشة الدخول، فيجب مطابقة الرابط الرسمي حرفياً
 قبل أي تشخيص يعتمد على استجابة الحوار.
+
+## حسم جذر «حدث خطأ ما» نهائياً — مسار Instagram الرسمي لا يستخدم config_id (2026-09-26)
+
+**الدليل القاطع (تجربة ضابطة، لا تخمين):** سلسلة الفحص بلا كوكيز **متطابقة تماماً** بين
+Facebook (المسار العامل) وInstagram (المسار الفاشل):
+`www/v21.0/dialog/oauth → m.facebook.com/login.php?biz=1 → 400`. وفي اللحظة نفسها يكون
+الطلب **بلا scope** أيضاً 400 بنفس الجسم (3676 بايت). أي أن الفحص بلا كوكيز يتوقّف عند
+شاشة الدخول ولا يرى شيئاً بعدها، ولا يستطيع التمييز بين مسار ناجح ومسار فاشل. لهذا لم
+يظهر 409 محلياً: **لا يوجد رفض قبل الدخول**، والفشل يقع بعد مصادقة المالك.
+
+**تصحيح مسار:** وثيقة Meta الرسمية «Facebook Login for Business - Instagram API» تُعرّف
+الرابط بستة معاملات **إلزامية** فقط:
+`client_id, display=page, extras={"setup":{"channel":"IG_API_ONBOARDING"}}, redirect_uri,
+response_type=token, scope` — و**لا يوجد `config_id`** في مسار Instagram إطلاقاً.
+لذلك `is_business_login=1` الذي تسلكه Meta هو السلوك المطابق للوثيقة، وليس عدم تطابق:
+لا يُضاف `config_id` لمسار Instagram ولا يُطلب من المالك إنشاؤه له.
+
+**الصلاحيات:** المجموعة الرسمية المذكورة في الوثيقة ست فقط
+(`instagram_basic, instagram_content_publish, instagram_manage_comments,
+instagram_manage_insights, pages_show_list, pages_read_engagement`)؛ `business_management`
+شرط خارجي لصفحات Business Portfolio، و`instagram_manage_messages`/`pages_manage_metadata`
+تخدم messaging/webhook. `pages_read_user_content` **أُزيلت** لأنها غير مذكورة في وثيقة
+هذا المسار ولا يقابلها استدعاء في الكود.
+
+**ما أُضيف في الكود (تشخيص بلا حجب كاذب):** `classifyMetaDialogChain` يقرأ علم
+`is_business_login` من قفزات Meta ويعيده في `businessLoginSurface` (منطقي فقط، بلا تسجيل
+رابط يحمل استعلاماً)، ويظهر في رد `oauth/start` (نجاحاً ورفضاً). لا يُحجب الربط بذريعة
+«عدم تطابق الواجهة» لأن مسار Instagram الرسمي يمرّر scope على Business Login عن قصد.
+
+**الخلاصة الصادقة:** الفحص بلا كوكيز يثبت فقط أن Meta تقبل الرابط حتى شاشة الدخول (وهو
+ثابت لكل المسارات). الفشل بعد الدخول لا يُثبت ولا يُنفى من بيئة الوكيل لغياب جلسة المالك.
+لذلك الناتج النهائي هو (B): **إجراء واحد مثبت مطلوب من Zaid**، لا تشخيص آخر:
+راجع قيمة `FACEBOOK_OAUTH_SCOPES` في Render (إن وُجدت) — حقل `scopes` في رد `oauth/start`
+أو `oauth/setup` يعرض القائمة الفعلية؛ أي اسم صلاحية غير قائم ينتج 500 قبل الدخول، وأي
+صلاحية غير مفعّلة في **Use Case** تنتج «Invalid Scopes»/فشل الموافقة بعد الدخول. هذا هو
+الفحص الوحيد الذي يحتاج جلسة المالك.
+
+اختبارات: `instagram.connector.test.ts` = **176 فحصاً** (مجموعة 23 الجديدة: كشف
+`businessLoginSurface` مع Business Login بلا حجب، وانتقاله إلى false مع `config_id`).
+فحوص final-audit الجديدة: `meta-dialog-business-login-surface`,
+`meta-dialog-surface-exposed-safe`, `meta-dialog-surface-no-false-block` (242 إجمالاً).
+

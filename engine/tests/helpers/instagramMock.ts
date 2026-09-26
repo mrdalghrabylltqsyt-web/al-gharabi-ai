@@ -41,7 +41,7 @@ export interface InstagramMockState {
   validAppId: string;
   validAppSecret: string;
   /** سلوك حوار التفويض: consent = تطبيق صالح، invalid_app_id = صفحة «حدث خطأ ما». */
-  dialogOutcome: 'consent' | 'login' | 'invalid_app_id' | 'opaque_200' | 'http_500';
+  dialogOutcome: 'consent' | 'login' | 'invalid_app_id' | 'opaque_200' | 'http_500' | 'business_login_surface' | 'classic_login_surface';
 }
 
 export function createInstagramMock(state: Partial<InstagramMockState> = {}): InstagramMockState {
@@ -79,6 +79,20 @@ export async function startInstagramMockServer(
   app.use(express.json());
   app.use(express.urlencoded({ extended: false }));
 
+  // Meta تحوّل مسار الجوال إلى مضيف الجوال؛ نُحاكي ذلك حتى يسلك الفحص السلسلة
+  // كاملة (www → m) كما يفعل متصفح المالك، فلا يتوقّف التصنيف عند قفزة www.
+  app.get('/mobile/dialog/oauth', (req, res) => {
+    state.calls += 1;
+    return res.redirect(302, `https://www.facebook.com/login.php?is_business_login=${state.dialogOutcome === 'classic_login_surface' ? '0' : '1'}`);
+  });
+
+  // صفحة الدخول: صفحة حقيقية (200) كما تفعل Meta، فلا تُصنَّف 404 خطأً.
+  // قفزتها تحمل علم is_business_login الذي يحدّد واجهة Meta.
+  app.get('/login.php', (req, res) => {
+    state.calls += 1;
+    return res.status(200).send('<html><head><title>Log in to Facebook</title></head><body>Log in</body></html>');
+  });
+
   // حوار التفويض: نُحاكي سلوك Meta الحقيقي بترويسة Location بلا متابعة تحويل.
   app.get('/:version/dialog/oauth', (req, res) => {
     state.calls += 1;
@@ -87,6 +101,14 @@ export async function startInstagramMockServer(
     }
     if (state.dialogOutcome === 'login') {
       return res.redirect(302, `https://www.facebook.com/login.php?next=${encodeURIComponent(String(req.originalUrl || ''))}`);
+    }
+    if (state.dialogOutcome === 'business_login_surface') {
+      // Meta مع تطبيق Business وبلا config_id: قفزة الدخول على واجهة Business Login.
+      return res.redirect(302, `https://www.facebook.com/login.php?is_business_login=1&next=${encodeURIComponent(String(req.originalUrl || ''))}`);
+    }
+    if (state.dialogOutcome === 'classic_login_surface') {
+      // مع config_id: Facebook Login الكلاسيكي.
+      return res.redirect(302, `https://www.facebook.com/login.php?is_business_login=0&next=${encodeURIComponent(String(req.originalUrl || ''))}`);
     }
     if (state.dialogOutcome === 'opaque_200') {
       // صفحة غير مفهومة بلا أي دليل رفض: لا يجوز الحجب بلا إثبات.

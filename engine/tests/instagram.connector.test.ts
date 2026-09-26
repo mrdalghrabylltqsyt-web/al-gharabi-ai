@@ -609,6 +609,36 @@ async function integrationTests(): Promise<void> {
     check('لا يُعاد رابط تفويض عند رفض 500', !h5Body.authorizationUrl);
     check('التوجيه بلا أي سرّ', !JSON.stringify(h5Body).includes('test-fb-client-secret'));
     await h5Mock.stop();
+
+    // واجهة الدخول التي تختارها Meta (is_business_login). الفحص بلا كوكيز يتوقّف
+    // عند شاشة الدخول فلا يرى ما بعدها، لكنه يثبت أي واجهة اختارتها Meta.
+    // وفق وثيقة «Facebook Login for Business - Instagram API» مسار Instagram
+    // الرسمي يعمل على واجهة Business Login ويمرّر الصلاحيات عبر scope (لا config_id).
+    group('23) تكامل: كشف واجهة الدخول التي تسلكها Meta (Instagram)');
+    await stop(currentApp.proc);
+    const bizMock = await startInstagramMockServer(IG_PORT + 6, createInstagramMock({ dialogOutcome: 'business_login_surface' }));
+    currentApp = startApp(bizMock.base);
+    check('الخادم يقلع لكشف واجهة Business Login', await waitForHealth(), currentApp.log().slice(0, 300));
+    Object.assign(auth, await login());
+    const bizStart = await fetch(`${BASE}/api/platforms/instagram/oauth/start`, { headers: auth });
+    const bizBody: any = await bizStart.json();
+    check('الاستجابة تُعلن واجهة Business Login التي تسلكها Meta', bizBody.businessLoginSurface === true, `surface=${bizBody.businessLoginSurface}`);
+    check('الواجهة معلومة تشخيصية لا تحجب', bizStart.status === 200 && typeof bizBody.authorizationUrl === 'string', `status=${bizStart.status}`);
+    check('كشف الواجهة بلا أي سرّ', !JSON.stringify(bizBody).includes('test-fb-client-secret'));
+    await bizMock.stop();
+
+    // config_id (مسار Facebook Login for Business العام) ينقل Meta إلى الواجهة
+    // الكلاسيكية biz=0 — وهو مسار مختلف عن مسار Instagram الرسمي أعلاه.
+    await stop(currentApp.proc);
+    const clsMock = await startInstagramMockServer(IG_PORT + 7, createInstagramMock({ dialogOutcome: 'classic_login_surface' }));
+    currentApp = startApp(clsMock.base, { INSTAGRAM_LOGIN_CONFIG_ID: '1003753455711313' });
+    check('الخادم يقلع بواجهة كلاسيكية + config_id', await waitForHealth(), currentApp.log().slice(0, 300));
+    Object.assign(auth, await login());
+    const clsStart = await fetch(`${BASE}/api/platforms/instagram/oauth/start`, { headers: auth });
+    const clsBody: any = await clsStart.json();
+    check('config_id => الواجهة الكلاسيكية مُعلنة', clsBody.businessLoginSurface === false, `surface=${clsBody.businessLoginSurface}`);
+    check('مصدر الصلاحيات من Configuration عند config_id', clsBody.permissionSource === 'facebook_login_for_business_configuration', `src=${clsBody.permissionSource}`);
+    await clsMock.stop();
   } finally {
     try { await stop(currentApp.proc); } catch { /* تجاهل */ }
     await mock.stop();

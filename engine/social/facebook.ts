@@ -305,6 +305,12 @@ export interface MetaDialogHop {
   kind: MetaDialogInteractionKind;
   /** رمز الخطأ الصريح لهذه القفزة (أو null). */
   errorCode: string | null;
+  /**
+   * واجهة الدخول التي اختارتها Meta لهذه القفزة (من `is_business_login`).
+   * `true` = Business Login (يقرأ الصلاحيات من Configuration عبر config_id)،
+   * `false` = Facebook Login الكلاسيكي (يقرأها من معامل scope)، `null` = غير معلوم.
+   */
+  businessLogin: boolean | null;
 }
 
 export interface MetaDialogChain {
@@ -316,6 +322,12 @@ export interface MetaDialogChain {
   hops: MetaDialogHop[];
   /** هل مرّت السلسلة بمسار الجوال (m.facebook.com)؟ */
   sawMobileHost: boolean;
+  /**
+   * واجهة الدخول النهائية التي تحسمها Meta (آخر قفزة معلنة). القيمة من
+   * `is_business_login`: true = Business Login (الصلاحيات من Configuration عبر
+   * config_id)، false = Facebook Login الكلاسيكي (الصلاحيات من scope).
+   */
+  businessLoginSurface: boolean | null;
 }
 
 /**
@@ -333,17 +345,24 @@ export function classifyMetaDialogChain(hops: ReadonlyArray<{ status: number; lo
   const classified: MetaDialogHop[] = [];
   let rejection: MetaDialogHop | null = null;
   let sawMobileHost = false;
+  let businessLoginSurface: boolean | null = null;
   hops.forEach((h, i) => {
     const interaction = classifyMetaDialogInteraction(h);
     const loc = (h.location || '').trim() || null;
     const host = safeUrlHost(loc);
     const mobile = isMetaMobileHost(host);
     if (mobile) sawMobileHost = true;
-    const hop: MetaDialogHop = { step: i + 1, status: Number(h.status), host, path: safeUrlPath(loc), mobile, kind: interaction.kind, errorCode: interaction.errorCode };
+    // is_business_login معلنة من Meta على قفزة تسجيل الدخول: true يعني أن Meta
+    // وجّهت المالك إلى واجهة Business Login التي تقرأ الصلاحيات من Configuration
+    // (config_id) لا من معامل scope. تُقرأ القيمة فقط (علم منطقي) ولا يُسجَّل الرابط.
+    const bizMatch = loc ? /[?&]is_business_login=(0|1)\b/.exec(loc) : null;
+    const businessLogin = bizMatch ? bizMatch[1] === '1' : null;
+    if (businessLogin !== null) businessLoginSurface = businessLogin;
+    const hop: MetaDialogHop = { step: i + 1, status: Number(h.status), host, path: safeUrlPath(loc), mobile, kind: interaction.kind, errorCode: interaction.errorCode, businessLogin };
     classified.push(hop);
     if (!rejection && !interaction.acceptable && interaction.errorCode) rejection = hop;
   });
-  return { acceptable: !rejection, rejection, hops: classified, sawMobileHost };
+  return { acceptable: !rejection, rejection, hops: classified, sawMobileHost, businessLoginSurface };
 }
 
 /** مسار Graph لرمز التطبيق (client_credentials) — يثبت صحة client_id/secret. */

@@ -1458,6 +1458,12 @@ interface MetaDialogProbeResult {
   rejectionPath?: string | null;
   /** سلسلة القفزات الآمنة (خطوة/حالة/مضيف/مسار/جوال) للتشخيص. */
   hops?: { step: number; status: number; host: string | null; path: string | null; mobile: boolean }[];
+  /**
+   * واجهة الدخول التي تحسمها Meta (من is_business_login): true = Business Login
+   * (الصلاحيات من Configuration عبر config_id)، false = Facebook Login الكلاسيكي
+   * (الصلاحيات من scope)، null = لم تُعلَن في أي قفزة.
+   */
+  businessLoginSurface?: boolean | null;
   hint?: string;
 }
 async function probeMetaDialog(input: { authorizationUrl: string }): Promise<MetaDialogProbeResult> {
@@ -1526,16 +1532,17 @@ async function probeMetaDialog(input: { authorizationUrl: string }): Promise<Met
         mobileHost: chain.sawMobileHost,
         rejectionHost: rejHop?.host ?? null,
         rejectionPath: rejHop?.path ?? null,
+        businessLoginSurface: chain.businessLoginSurface,
         hops,
         hint: rejectionHintFor(firstRejection.kind),
       };
     }
     // لا رفض صريح في السلسلة: نمرّر (لا نحجب بلا إثبات). نُعلن التصنيف النهائي.
     const last = chain.hops[chain.hops.length - 1];
-    return { ok: true, kind: last?.kind || "unknown", errorCode: null, httpStatus: last?.status ?? null, mobileHost: chain.sawMobileHost, hops, hint: rejectionHintFor(last?.kind ?? null) };
+    return { ok: true, kind: last?.kind || "unknown", errorCode: null, httpStatus: last?.status ?? null, mobileHost: chain.sawMobileHost, businessLoginSurface: chain.businessLoginSurface, hops, hint: rejectionHintFor(last?.kind ?? null) };
   } catch (e: any) {
     // تعذّر الفحص (شبكة): لا نحجب بلا سبب؛ نُعلن أن الإثبات لم يتم.
-    return { ok: true, kind: "unavailable", errorCode: null, httpStatus: null, mobileHost: hops.some((h) => h.mobile), hops, hint: String(e?.message || "تعذّر فحص رابط التفويض.") };
+    return { ok: true, kind: "unavailable", errorCode: null, httpStatus: null, mobileHost: hops.some((h) => h.mobile), businessLoginSurface: null, hops, hint: String(e?.message || "تعذّر فحص رابط التفويض.") };
   }
 }
 
@@ -1938,6 +1945,9 @@ app.get("/api/platforms/:platform/oauth/start", requireOwner, async (req,res)=>{
         dialogKind: dialogProbe.kind,
         dialogErrorCode: dialogProbe.errorCode,
         mobileFlow,
+        // واجهة الدخول التي حسمتها Meta: true = Business Login (الصلاحيات من
+        // Configuration عبر config_id لا من scope). معلومة منطقية بلا أي سرّ.
+        businessLoginSurface: dialogProbe.businessLoginSurface ?? null,
         scopeDiagnosis,
         redirectUri: callbackUrl,
         domain: urlInfo.host,
@@ -1982,6 +1992,17 @@ app.get("/api/platforms/:platform/oauth/start", requireOwner, async (req,res)=>{
     loginConfigIdValid:preflight.loginConfig?.valid??false,
     loginConfigEnvNames:META_OAUTH_PLATFORMS.has(platform)?loginConfigEnvNames(platform):undefined,
     permissionSource:loginConfigId?"facebook_login_for_business_configuration":"oauth_scope_parameter",
+    // واجهة الدخول التي سلكها الفحص فعلاً (is_business_login). الفحص بلا كوكيز
+    // يتوقّف عند شاشة الدخول فلا يرى ما بعدها؛ لكنه يثبت **أي** واجهة اختارتها Meta.
+    // عدم تطابق الواجهة مع طريقة تمرير الصلاحيات هو فشل يُرصد قبل الموافقة:
+    //  - Business Login (true) يقرأ الصلاحيات من Configuration عبر config_id،
+    //    فإن مرّرنا scope بدل config_id تُهمَل الصلاحيات => «حدث خطأ ما» بعد الدخول.
+    //  - Facebook Login الكلاسيكي (false) يقرأها من scope، فلا يلزم config_id.
+    // واجهة الدخول التي اختارتها Meta فعلاً (is_business_login). وفق وثيقة
+    // «Facebook Login for Business - Instagram API» فإن مسار Instagram الرسمي
+    // يعمل على واجهة Business Login ويمرّر الصلاحيات عبر scope (لا config_id)،
+    // لذا biz=1 مع scope هو السلوك المطابق للوثيقة لا خطأ. القيمة للتشخيص فقط.
+    businessLoginSurface:dialogProbe?.businessLoginSurface??null,
   });
 });
 

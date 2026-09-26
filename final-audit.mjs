@@ -315,6 +315,11 @@ add('instagram-fragment-parser', read('engine/social/oauth.ts').includes('parseI
 add('instagram-callback-post-no-token-in-url', server.includes('app.post("/api/platforms/:platform/oauth/callback"') && server.includes('handleOAuthCallback(req, res, query, true)') && server.includes('handleOAuthCallback(req, res,'), 'الواجهة ترسل المقطع POST في الجسم فلا يظهر الرمز في سطر الطلب ولا السجلات');
 add('instagram-fragment-no-log', !/logOAuthStart\([^)]*fragment/i.test(server) && !/console\.\w+\([^)]*fragment/i.test(server), 'المقطع (يحمل الرمز) لا يُسجَّل');
 add('instagram-onboarding-tests', /IG_API_ONBOARDING/.test(fs.readFileSync(path.join(root, 'engine/tests/instagram.connector.test.ts'), 'utf8')) && /response_type=token/.test(fs.readFileSync(path.join(root, 'engine/tests/instagram.connector.test.ts'), 'utf8')), 'اختبار تكاملي يثبت display/extras/response_type=token وتدفّق المقطع');
+// واجهة الدخول التي تسلكها Meta (is_business_login) تُعلن للتشخيص بلا أي سرّ:
+// مسار Instagram الرسمي يعمل على Business Login ويمرّر الصلاحيات عبر scope.
+add('meta-dialog-business-login-surface', read('engine/social/facebook.ts').includes('businessLoginSurface') && /is_business_login=\(0\|1\)/.test(read('engine/social/facebook.ts')), 'تصنيف سلسلة الحوار يكشف واجهة الدخول التي تسلكها Meta (Business Login مقابل الكلاسيكي)');
+add('meta-dialog-surface-exposed-safe', server.includes('businessLoginSurface: dialogProbe.businessLoginSurface') && !/console\.\w+\([^)]*is_business_login/i.test(server), 'الواجهة تُعلن في رد الفحص (منطقي) بلا تسجيل رابط يحمل الاستعلام');
+add('meta-dialog-surface-no-false-block', !server.includes('permissionDeliveryMismatch'), 'لا يُحجب الربط بذريعة «عدم تطابق الواجهة»: مسار Instagram الرسمي يمرّر scope على Business Login وهو سلوك مطابق للوثيقة');
 add('instagram-config-id-tests', /INSTAGRAM_LOGIN_CONFIG_ID/.test(fs.readFileSync(path.join(root, 'engine/tests/instagram.connector.test.ts'), 'utf8')), 'اختبار تكاملي يثبت مسار config_id وحجبه عند الصيغة غير الصالحة');
 add('login-config-id-tests-in-suite', typeof pkg.scripts.test === 'string' && pkg.scripts.test.includes('test:instagram') && typeof pkg.scripts.test === 'string' && pkg.scripts.test.includes('test:foundation'), 'اختبارات config_id ضمن npm test (وحدة + تكامل)');
 // --- فحص ما قبل توجيه المالك إلى Meta (منع صفحة «حدث خطأ ما» العمياء) ---

@@ -60,7 +60,7 @@ export interface FacebookMockState {
    * http_500 = فشل Meta العام (500 + «حدث خطأ ما») عندما لا تُتحقق مجموعة الصلاحيات.
    * mobile_redirect_then_fail = مسار الجوال الحقيقي: www → m.facebook.com (encrypted_query_string)
    *   ثم فشل جوال — يُثبت أن الفحص يجب أن يسلك السلسلة لا أول قفزة فقط. */
-  dialogOutcome: 'consent' | 'login' | 'invalid_app_id' | 'opaque_200' | 'http_500' | 'mobile_redirect_then_fail';
+  dialogOutcome: 'consent' | 'login' | 'invalid_app_id' | 'opaque_200' | 'http_500' | 'mobile_redirect_then_fail' | 'business_login_surface' | 'classic_login_surface';
   /** إن حُدِّدت: يرد الحوار 500 فقط عندما تحمل مجموعة scope هذه الصلاحية (لعزل السبب). */
   failingScope?: string | null;
 }
@@ -138,6 +138,16 @@ export async function startFacebookMockServer(
     }
     if (state.dialogOutcome === 'login') {
       return res.redirect(302, `https://www.facebook.com/login.php?next=${encodeURIComponent(String(req.originalUrl || ''))}`);
+    }
+    if (state.dialogOutcome === 'business_login_surface') {
+      // سلوك Meta الحقيقي المُثبت: مع تطبيق Facebook Login for Business وبلا
+      // config_id تُوجَّه قفزة الدخول إلى واجهة Business Login (is_business_login=1)
+      // التي تقرأ الصلاحيات من Configuration لا من scope.
+      return res.redirect(302, `https://www.facebook.com/login.php?is_business_login=1&next=${encodeURIComponent(String(req.originalUrl || ''))}`);
+    }
+    if (state.dialogOutcome === 'classic_login_surface') {
+      // العكس: مع config_id تُوجَّه Meta إلى Facebook Login الكلاسيكي (is_business_login=0).
+      return res.redirect(302, `https://www.facebook.com/login.php?is_business_login=0&next=${encodeURIComponent(String(req.originalUrl || ''))}`);
     }
     if (state.dialogOutcome === 'opaque_200') {
       // صفحة غير مفهومة بلا أي دليل رفض: لا يجوز الحجب بلا إثبات.
