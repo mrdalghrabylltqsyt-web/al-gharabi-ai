@@ -31,6 +31,36 @@ export const FACEBOOK_SIGNATURE_HEADER = 'x-hub-signature-256';
  */
 export const FACEBOOK_DIALOG_PATH = '/v21.0/dialog/oauth';
 
+/**
+ * وكيل مستخدم جوال حقيقي (iPhone Safari).
+ *
+ * سبب الوجود: أُثبت حياً أن `www.facebook.com/vXX/dialog/oauth` يوجّه حسب
+ * User-Agent: مع وكيل سطح مكتب يبقى على `www` (302 إلى `/login.php`)، ومع وكيل
+ * جوال يحوّل إلى `m.facebook.com/vXX/dialog/oauth?encrypted_query_string=...`
+ * ثم إلى `m.facebook.com/login.php` أو إلى صفحة خطأ جوال مختلفة. لذلك فحصٌ
+ * بوكيل الخادم الافتراضي (`node`) لا يرى ما يراه متصفح المالك الجوال: هذا هو
+ * جذر «الفحص يمرّ والمتصفح الجوال يفشل».
+ */
+export const FACEBOOK_MOBILE_UA = 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1';
+
+/** مضيفات مسار Meta الجوال (m/mbasic) — تختلف عن www في مسار الأخطاء. */
+export function isMetaMobileHost(host: string | null | undefined): boolean {
+  const h = String(host || '').toLowerCase();
+  return h === 'm.facebook.com' || h === 'mbasic.facebook.com';
+}
+
+/** يستخرج المضيف بأمان من رابط (بلا أي استعلام) — للتشخيص الآمن فقط. */
+export function safeUrlHost(url: string | null | undefined): string | null {
+  if (!url) return null;
+  try { return new URL(url).host || null; } catch { return null; }
+}
+
+/** يستخرج المسار بأمان من رابط (بلا أي استعلام) — للتشخيص الآمن فقط. */
+export function safeUrlPath(url: string | null | undefined): string | null {
+  if (!url) return null;
+  try { return new URL(url).pathname || null; } catch { return null; }
+}
+
 // ---------------------------------------------------------------------------
 // صلاحيات Facebook Login — المصدر الواحد مع رسم الاعتماديات الرسمي
 // ---------------------------------------------------------------------------
@@ -219,8 +249,17 @@ export function classifyMetaDialogInteraction(input: { status: number; location?
   if (errorCode) return { kind: 'dialog_error', acceptable: false, errorCode, location };
 
   // 2) صفحة Meta العامة في الجسم = عطل صريح، تعمل مع 200 ومع 5xx.
+  // يشمل ذلك صفحات مسار الجوال (m.facebook.com/oauth/error) التي تعرض نصاً
+  // مختلفاً: «Invalid App ID: The provided app ID does not look like a valid
+  // app ID» أو «There is an error in logging you into this application».
+  if (/does not look like a valid app ID/i.test(body)) {
+    return { kind: 'invalid_app_id', acceptable: false, errorCode: errorCode || 'PLATFORM__INVALID_APP_ID', location };
+  }
   if (/something went wrong|Invalid App ID/i.test(body)) {
     return { kind: 'dialog_error', acceptable: false, errorCode: 'META_DIALOG_PAGE', location };
+  }
+  if (/error in logging you into this application|error_logging_into/i.test(body)) {
+    return { kind: 'dialog_error', acceptable: false, errorCode: 'META_DIALOG_MOBILE_ERROR', location };
   }
 
   // 3) 5xx = فشل Meta صريح (لا يُمرَّر ولو كان الحوار صالحاً نظرياً).
@@ -233,7 +272,12 @@ export function classifyMetaDialogInteraction(input: { status: number; location?
     return { kind: 'http_error', acceptable: false, errorCode: `HTTP_${status}`, location };
   }
 
-  // 5) إعادة توجيه مقبولة (بلا رمز خطأ): تسجيل دخول أو شاشة موافقة.
+  // 5) توجيه لصفحة «متصفح غير مدعوم» = مسار مسدود، لا شاشة موافقة.
+  if (location && /\/unsupportedbrowser\b/.test(location)) {
+    return { kind: 'dialog_error', acceptable: false, errorCode: 'META_DIALOG_UNSUPPORTED_BROWSER', location };
+  }
+
+  // 6) إعادة توجيه مقبولة (بلا رمز خطأ): تسجيل دخول أو شاشة موافقة.
   if (location && /\/(v[0-9.]+\/)?dialog\/oauth\b/.test(location)) {
     return { kind: 'consent', acceptable: true, errorCode: null, location };
   }
@@ -241,8 +285,65 @@ export function classifyMetaDialogInteraction(input: { status: number; location?
     return { kind: 'login', acceptable: true, errorCode: null, location };
   }
 
-  // 6) بلا دليل رفض قاطع (200 مبهم أو 429): لا حجب بلا إثبات.
+  // 7) بلا دليل رفض قاطع (200 مبهم أو 429): لا حجب بلا إثبات.
   return { kind: 'unknown', acceptable: false, errorCode: null, location };
+}
+
+/** قفزة واحدة في سلسلة حوار Meta (تشخيص آمن: مضيف/مسار فقط، بلا استعلام). */
+export interface MetaDialogHop {
+  /** ترتيب القفزة (1 = أول طلب). */
+  step: number;
+  /** رمز حالة HTTP الفعلي. */
+  status: number;
+  /** مضيف القفزة (بلا استعلام). */
+  host: string | null;
+  /** مسار القفزة (بلا استعلام). */
+  path: string | null;
+  /** هل هذه القفزة على مسار الجوال (m/mbasic)؟ */
+  mobile: boolean;
+  /** تصنيف هذه القفزة. */
+  kind: MetaDialogInteractionKind;
+  /** رمز الخطأ الصريح لهذه القفزة (أو null). */
+  errorCode: string | null;
+}
+
+export interface MetaDialogChain {
+  /** هل تتقدّم السلسلة فعلاً إلى تسجيل الدخول/الموافقة؟ */
+  acceptable: boolean;
+  /** القفزة التي حسمت الرفض (أول قفزة غير مقبولة). */
+  rejection: MetaDialogHop | null;
+  /** كل القفزات المرصودة بالترتيب. */
+  hops: MetaDialogHop[];
+  /** هل مرّت السلسلة بمسار الجوال (m.facebook.com)؟ */
+  sawMobileHost: boolean;
+}
+
+/**
+ * يصنّف سلسلة قفزات حوار Meta كاملة بدل أول استجابة فقط.
+ *
+ * سبب الوجود: الفحص السابق كان يقرأ **أول** استجابة بوكيل الخادم، فيرى مسار
+ * سطح المكتب (`www` → `/login.php`) ويظنّ الحوار مقبولاً، بينما متصفح المالك
+ * الجوال يُحوَّل إلى `m.facebook.com` حيث تظهر صفحة الخطأ الجوال. تصنيف السلسلة
+ * يجعل الحكم على النتيجة الفعلية التي يصل إليها المتصفح، لا على أول قفزة.
+ *
+ * القاعدة: أول قفزة **غير مقبولة** ولها دليل رفض صريح تُعلن الرفض فوراً؛
+ * قفزة غير حاسمة (بلا دليل) تُمرَّر لأن Meta قد تحسمها في قفزة تالية.
+ */
+export function classifyMetaDialogChain(hops: ReadonlyArray<{ status: number; location?: string | null; body?: string | null }>): MetaDialogChain {
+  const classified: MetaDialogHop[] = [];
+  let rejection: MetaDialogHop | null = null;
+  let sawMobileHost = false;
+  hops.forEach((h, i) => {
+    const interaction = classifyMetaDialogInteraction(h);
+    const loc = (h.location || '').trim() || null;
+    const host = safeUrlHost(loc);
+    const mobile = isMetaMobileHost(host);
+    if (mobile) sawMobileHost = true;
+    const hop: MetaDialogHop = { step: i + 1, status: Number(h.status), host, path: safeUrlPath(loc), mobile, kind: interaction.kind, errorCode: interaction.errorCode };
+    classified.push(hop);
+    if (!rejection && !interaction.acceptable && interaction.errorCode) rejection = hop;
+  });
+  return { acceptable: !rejection, rejection, hops: classified, sawMobileHost };
 }
 
 /** مسار Graph لرمز التطبيق (client_credentials) — يثبت صحة client_id/secret. */

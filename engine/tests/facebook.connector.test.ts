@@ -28,6 +28,11 @@ import {
   facebookTokenUrl,
   isPlausibleMetaAppId,
   classifyMetaDialogInteraction,
+  classifyMetaDialogChain,
+  isMetaMobileHost,
+  safeUrlHost,
+  safeUrlPath,
+  FACEBOOK_MOBILE_UA,
   classifyMetaAppTokenResponse,
   FACEBOOK_REQUIRED_SCOPES,
   FACEBOOK_PERMISSION_DEPENDENCIES,
@@ -189,6 +194,50 @@ function unitTests(): void {
   check('Graph سرّ خاطئ => invalid_client_secret', classifyMetaAppTokenResponse({ status: 400, data: { error: { message: 'Error validating client secret.', code: 1 } } }).kind === 'invalid_client_secret');
   check('Graph نجاح => ok', classifyMetaAppTokenResponse({ status: 200, data: { access_token: 'APP_TOKEN_TEST' } }).kind === 'ok');
   check('Graph رسالة non-JSON => لا ok', classifyMetaAppTokenResponse({ status: 200, data: null }).kind !== 'ok');
+
+  // الجذر المُثبت: Meta توجّه حسب User-Agent. متصفح المالك الجوال يسلك
+  // www → m.facebook.com (encrypted_query_string) → صفحة خطأ جوال، بينما أول
+  // استجابة بوكيل الخادم تبدو مقبولة (www/login.php). لذلك يجب تصنيف السلسلة
+  // كاملةً لا أول قفزة.
+  group('2د) وحدة: تصنيف سلسلة حوار Meta (مسار الجوال مقابل سطح المكتب)');
+  check('وكيل الجوال معرّف وليس وكيل الخادم الافتراضي', FACEBOOK_MOBILE_UA.includes('Mobile') && !/^node$/i.test(FACEBOOK_MOBILE_UA));
+  check('مضيف m.facebook.com يُعرف كمسار جوال', isMetaMobileHost('m.facebook.com') === true && isMetaMobileHost('mbasic.facebook.com') === true);
+  check('مضيف www.facebook.com ليس مسار جوال', isMetaMobileHost('www.facebook.com') === false);
+  check('استخراج المضيف من رابط بلا استعلام', safeUrlHost('https://m.facebook.com/login.php?next=secret') === 'm.facebook.com');
+  check('استخراج المسار من رابط بلا استعلام', safeUrlPath('https://m.facebook.com/login.php?next=secret') === '/login.php');
+
+  // السلسلة الفعلية للجوال: تحويل داخلي مقبول ثم فشل على m.facebook.com.
+  const mobileChain = classifyMetaDialogChain([
+    { status: 302, location: 'https://m.facebook.com/v21.0/dialog/oauth?client_id=1&encrypted_query_string=MOCK' },
+    { status: 200, body: 'Facebook Error Login Error: There is an error in logging you into this application. Please try again later.' },
+  ]);
+  check('سلسلة الجوال تُرفض رغم أن أول قفزة تحويل داخلي', mobileChain.acceptable === false);
+  check('الرفض مُنسَب إلى القفزة الثانية لا الأولى', mobileChain.rejection?.step === 2, JSON.stringify(mobileChain.rejection));
+  check('سلسلة الجوال ترصد مضيف الجوال', mobileChain.sawMobileHost === true);
+  check('رفض الجوال يحمل رمزاً صريحاً', mobileChain.rejection?.errorCode === 'META_DIALOG_MOBILE_ERROR');
+
+  // صفحة «Invalid App ID» بصيغة الجوال (نص مختلف عن www) تُصنَّف رفضاً دقيقاً.
+  const mobileInvalid = classifyMetaDialogChain([
+    { status: 200, body: 'Invalid App ID: The provided app ID does not look like a valid app ID.' },
+  ]);
+  check('صفحة الجوال «Invalid App ID» => invalid_app_id', mobileInvalid.acceptable === false && mobileInvalid.rejection?.kind === 'invalid_app_id');
+
+  // سلسلة سطح مكتب مقبولة (login) لا تُحجب.
+  const desktopChain = classifyMetaDialogChain([
+    { status: 302, location: 'https://www.facebook.com/login.php?skip_api_login=1&api_key=1' },
+  ]);
+  check('سلسلة سطح مكتب (login) مقبولة ولا تُحجب', desktopChain.acceptable === true && desktopChain.rejection === null);
+
+  // «متصفح غير مدعوم» مسار مسدود صريح لا شاشة موافقة.
+  const unsupported = classifyMetaDialogChain([
+    { status: 302, location: 'https://www.facebook.com/unsupportedbrowser' },
+  ]);
+  check('«متصفح غير مدعوم» رفض صريح', unsupported.acceptable === false && unsupported.rejection?.errorCode === 'META_DIALOG_UNSUPPORTED_BROWSER');
+
+  // سلسلة غير حاسمة (200 مبهم) لا تُحجب بلا إثبات.
+  check('سلسلة غير حاسمة لا تُحجب', classifyMetaDialogChain([{ status: 200, body: 'Consent screen' }]).acceptable === true);
+  // القفزات المرصودة آمنة: مضيف/مسار فقط بلا أي استعلام.
+  check('القفزات المرصودة بلا أي استعلام (لا state/client_id)', !JSON.stringify(mobileChain.hops).includes('encrypted_query_string') && !JSON.stringify(mobileChain.hops).includes('client_id'));
 
   group('2ج) وحدة: اعتماديات صلاحيات Facebook — منع «Invalid Scopes» والصلاحية المُسقَطة');
   // الجذر المُثبت: pages_manage_engagement (الرد على التعليقات) تعتمد رسمياً على
@@ -572,6 +621,38 @@ async function integrationTests(): Promise<void> {
     check('التوجيه بلا App Secret', !h5Json.includes(FB_APP_SECRET));
     check('التوجيه بلا state ولا رابط تفويض كامل', !/dialog\/oauth\?/.test(h5Json) && !h5Json.includes('state='));
     await h5Mock.stop();
+
+    // الجذر المُثبت للمالك: الفحص كان يقرأ أول استجابة بوكيل الخادم فيرى مسار
+    // سطح المكتب (www → login.php) ويظنّ الحوار مقبولاً، بينما متصفح المالك الجوال
+    // يُحوَّل إلى m.facebook.com حيث تظهر صفحة الخطأ. يجب أن يسلك الفحص السلسلة
+    // بوكيل جوال ويحجب بتشخيص مسار الجوال.
+    group('20ز) تكامل: الفحص يسلك مسار الجوال الفعلي ويحجب «حدث خطأ ما»');
+    await stop(currentApp.proc);
+    const mobMock = await startFacebookMockServer(FB_PORT + 10, createFacebookMock({ dialogOutcome: 'mobile_redirect_then_fail' }));
+    currentApp = startApp(mobMock.base);
+    check('الخادم يقلع لفحص مسار الجوال', await waitForHealth(), currentApp.log().slice(0, 300));
+    Object.assign(auth, await login());
+    const mobStart = await fetch(`${BASE}/api/platforms/facebook/oauth/start`, { headers: auth });
+    const mobBody: any = await mobStart.json();
+    check('مسار الجوال => 409 بدل إرسال المالك إلى صفحة الخطأ', mobStart.status === 409, `status=${mobStart.status} body=${JSON.stringify(mobBody).slice(0, 200)}`);
+    check('التشخيص يُعلن أن الفحص أُجري بمسار الجوال', mobBody.mobileFlow?.probedAsMobile === true);
+    check('التشخيص يُثبت أن مضيف الجوال رُصد فعلاً', mobBody.mobileFlow?.mobileHostReached === true, JSON.stringify(mobBody.mobileFlow));
+    check('التشخيص يسمّي مضيف الرفض', mobBody.mobileFlow?.rejectionHost === 'm.facebook.com', `host=${mobBody.mobileFlow?.rejectionHost}`);
+    check('التشخيص يسمّي مسار الرفض', mobBody.mobileFlow?.rejectionPath === '/mobile/dialog/oauth', `path=${mobBody.mobileFlow?.rejectionPath}`);
+    check('سلسلة القفزات موثّقة (قفزتان على الأقل)', Array.isArray(mobBody.mobileFlow?.hops) && mobBody.mobileFlow.hops.length >= 2, JSON.stringify(mobBody.mobileFlow?.hops));
+    check('التصنيف يميّز خطأ الجوال', mobBody.dialogErrorCode === 'META_DIALOG_MOBILE_ERROR', `code=${mobBody.dialogErrorCode}`);
+    check('لا يُعاد رابط تفويض عند رفض مسار الجوال', !mobBody.authorizationUrl);
+    // لا سرّ ولا استعلام: لا state ولا client_id ولا encrypted_query_string.
+    const mobJson = JSON.stringify(mobBody);
+    check('التشخيص بلا أي استعلام أو سرّ', !mobJson.includes('encrypted_query_string') && !mobJson.includes('state=') && !mobJson.includes('client_id=') && !mobJson.includes('test-fb-client-secret'));
+    // نفس التشخيص متاح بلا بدء OAuth عبر oauth/setup (للمالك) فلا يضطر لتجربة الربط.
+    const setupProbe = await fetch(`${BASE}/api/platforms/facebook/oauth/setup`, { headers: auth });
+    const setupBody: any = await setupProbe.json();
+    check('oauth/setup يعرض فحص مسار الجوال', setupBody.mobileDialogProbe?.probedAsMobile === true);
+    check('oauth/setup يسمّي مضيف الرفض الجوال', setupBody.mobileDialogProbe?.rejectionHost === 'm.facebook.com', JSON.stringify(setupBody.mobileDialogProbe));
+    check('oauth/setup يُعلن النتيجة rejected', setupBody.mobileDialogProbe?.outcome === 'rejected');
+    check('oauth/setup لا يكشف سرّاً', !JSON.stringify(setupBody).includes('test-fb-client-secret') && !JSON.stringify(setupBody).includes('encrypted_query_string'));
+    await mobMock.stop();
 
     // عزل السبب: عندما يرفض Meta المجموعة كاملة، يجب أن يُسمّي التشخيص أصغر مجموعة
     // صلاحيات مسؤولة — لا أن يترك المالك مع «حدث خطأ ما» عامة.

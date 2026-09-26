@@ -29,6 +29,11 @@ import {
   facebookGraphUrl,
   isPlausibleMetaAppId,
   classifyMetaDialogInteraction,
+  classifyMetaDialogChain,
+  FACEBOOK_MOBILE_UA,
+  safeUrlHost,
+  safeUrlPath,
+  isMetaMobileHost,
   FACEBOOK_REQUIRED_SCOPES,
   resolveFacebookScopes,
   missingScopeDependenciesFromCsv,
@@ -961,6 +966,26 @@ function publicBaseUrlNow(): string { return resolvePublicUrl(process.env).baseU
 /** مسار إرجاع OAuth لكل منصة (يُبنى دائماً من العنوان العام المعتمد). */
 function oauthCallbackUrl(platform: string): string { return `${publicBaseUrlNow()}/api/platforms/${platform}/oauth/callback`; }
 /**
+ * يبني رابط تفويض حقيقي لأغراض الفحص فقط (بلا حفظ state ولا أي أثر). يُستخدم في
+ * `oauth/setup` لعرض سلسلة قفزات Meta الفعلية بمسار الجوال بلا بدء OAuth. الحالة
+ * رمزية ثابتة، ولا يُسجَّل الرابط ولا يُعاد.
+ */
+function buildAuthorizationUrlForProbe(platform: string): string {
+  const cfg = OAUTH_CONFIG[platform];
+  const scopes = platform === "facebook" ? facebookOAuthScopes() : platform === "instagram" ? instagramOAuthScopes() : cfg.scopes;
+  const params = buildAuthorizationParams({
+    platform,
+    clientId: cfg.clientId,
+    redirectUri: oauthCallbackUrl(platform),
+    scopes,
+    state: "probe",
+    loginConfigId: META_OAUTH_PLATFORMS.has(platform) ? loginConfigIdFor(platform) : null,
+  });
+  const u = new URL(authEndpointFor(platform));
+  for (const [k, v] of Object.entries(params)) u.searchParams.set(k, v);
+  return u.toString();
+}
+/**
  * صلاحيات Facebook Login الافتراضية. `business_management` إلزامي منذ Graph
  * v17 لعرض صفحات Business Manager عبر /me/accounts؛ بدونه يظهر الحساب «يدير
  * صفر صفحات» ويُرفض الربط بلا سبب ظاهر. يمكن تجاوزها من
@@ -1367,6 +1392,33 @@ function facebookVerifyToken(): string { return FACEBOOK_VERIFY_TOKEN_ENV; }
 function metaDialogBase(): string {
   return envSecret("FACEBOOK_DIALOG_BASE") || "https://www.facebook.com";
 }
+/**
+ * هل يُتبَع هذا التحويل أثناء فحص الحوار؟ نتبع فقط مضيف Meta الرسمي
+ * (`*.facebook.com`) أو نفس مضيف رابط التفويض الأصلي (الخادم الوهمي في
+ * الاختبار)، فلا يُتبَع redirect_uri ولا أي مضيف خارجي.
+ */
+function isFollowableDialogHost(host: string | null | undefined, originHost: string | null): boolean {
+  const h = String(host || "").toLowerCase();
+  if (!h) return false;
+  if (/(^|\.)facebook\.com$/.test(h)) return true;
+  return Boolean(originHost) && h === String(originHost).toLowerCase();
+}
+/**
+ * يوجّه مضيف Meta إلى `FACEBOOK_DIALOG_BASE` عند ضبطه (اختبار فقط). في الإنتاج
+ * لا يُضبط المتغير، فيُتبَع رابط Meta الحقيقي كما هو (www → m.facebook.com).
+ * يُحافَظ على المسار والاستعلام لأن مسار الجوال يحمل `encrypted_query_string`.
+ */
+function resolveDialogFollowUrl(location: string): string {
+  const base = envSecret("FACEBOOK_DIALOG_BASE");
+  if (!base) return location;
+  const host = String(safeUrlHost(location) || "").toLowerCase();
+  if (!/(^|\.)facebook\.com$/.test(host)) return location;
+  try {
+    const l = new URL(location);
+    const b = new URL(base);
+    return `${b.origin}${l.pathname}${l.search}`;
+  } catch { return location; }
+}
 /** نقطة تفويض المنصة: لـMeta تُبنى من قاعدة الحوار القابلة للتجاوز في الاختبار. */
 function authEndpointFor(platform: string): string {
   const cfg = OAUTH_CONFIG[platform];
@@ -1374,30 +1426,113 @@ function authEndpointFor(platform: string): string {
   return cfg.auth;
 }
 /**
- * فحص ما قبل التوجيه (الاقتراح الثالث): نطلب رابط التفويض فعلاً بلا متابعة
- * إعادة التوجيه، ونصنّف استجابة Meta. الهدف ألا يُرسَل المالك إلى صفحة
- * «حدث خطأ ما» عمياء: إن رفض Meta الرابط نُعلن السبب الدقيق أولاً.
- * لا يُسجَّل الرابط (يحمل client_id/state/config_id) ولا يُتبَع أي تحويل.
+ * فحص ما قبل التوجيه: نطلب رابط التفويض فعلاً بلا متابعة تلقائية، ونسلك سلسلة
+ * تحويلات Meta يدوياً حتى نحسم الوجهة النهائية التي سيصل إليها متصفح المالك.
+ *
+ * سبب المسلك اليدوي (جذر «الفحص يمرّ والمتصفح الجوال يفشل»): أُثبت حياً أن
+ * `www.facebook.com/vXX/dialog/oauth` يوجّه حسب User-Agent. الفحص السابق كان
+ * يقرأ **أول** استجابة فقط بوكيل الخادم الافتراضي (`node`)، فيرى:
+ *   `302 www.facebook.com/login.php`  ← مسار سطح المكتب (يبدو مقبولاً)
+ * بينما متصفح المالك الجوال يُحوَّل إلى:
+ *   `302 m.facebook.com/vXX/dialog/oauth?encrypted_query_string=...`
+ *   ثم إلى صفحة الخطأ الجوال (`m.facebook.com/oauth/error` أو 500 «حدث خطأ ما»).
+ * لذلك صار الفحص يكرّر القفزات (بحد أقصى آمن) ويسجّل مضيف/مسار كل قفزة بلا
+ * استعلام، ويحسم الرفض من أول قفزة تحمل دليلاً صريحاً.
+ *
+ * لا يُسجَّل الرابط ولا أي استعلام (يحمل client_id/state/config_id) — فقط
+ * الحالة والمضيف والمسار والتصنيف. ولا تُنفَّذ شاشة موافقة: الطلبات بلا كوكيز
+ * ولا متابعة تلقائية، فهي تُصادف صفحة تسجيل الدخول لا الموافقة.
  */
-async function probeMetaDialog(input: { authorizationUrl: string }): Promise<{ ok: boolean; kind: string; errorCode: string | null; httpStatus: number | null; hint?: string }> {
-  const rejectionHint = "رفض Meta رابط التفويض قبل شاشة الموافقة. السبب الأكثر شيوعاً أن مجموعة الصلاحيات المطلوبة غير مفعّلة كاملةً في Use Case أو Configuration الخاص بالتطبيق (App Review permissions and features). راجع أيضاً App ID/App Domains/Valid OAuth Redirect URIs.";
+interface MetaDialogProbeResult {
+  ok: boolean;
+  kind: string;
+  errorCode: string | null;
+  httpStatus: number | null;
+  /** هل رُصد مسار الجوال (m.facebook.com) في السلسلة؟ */
+  mobileHost?: boolean;
+  /** رابط الإرجاع الذي ردّت به Meta في قفزة الرفض (بلا استعلام). */
+  rejectionHost?: string | null;
+  rejectionPath?: string | null;
+  /** سلسلة القفزات الآمنة (خطوة/حالة/مضيف/مسار/جوال) للتشخيص. */
+  hops?: { step: number; status: number; host: string | null; path: string | null; mobile: boolean }[];
+  hint?: string;
+}
+async function probeMetaDialog(input: { authorizationUrl: string }): Promise<MetaDialogProbeResult> {
+  // التوجيه حسب فئة الرفض الفعلية لا تخميناً: كل سبب له إجراء مختلف لدى Meta.
+  const rejectionHintFor = (kind: string | null): string => {
+    switch (kind) {
+      case "invalid_app_id": return "Meta ترد «Invalid App ID»: معرّف التطبيق غير مطابق أو يحمل مسافة/سطراً زائداً. طابقه مع Settings → Basic بلا مسافات.";
+      case "unsupported_browser": return "Meta ترفض المتصفح داخل التطبيق (webview). افتح رابط الربط من متصفح الجهاز نفسه (Safari/Chrome) لا من داخل تطبيق.";
+      case "mobile_error": return "Meta ترفض الحوار على مسار الجوال (m.facebook.com) قبل شاشة الموافقة. تحقّق أن كل صلاحية مطلوبة مفعّلة في Use Case/Configuration، وأن App Domains وValid OAuth Redirect URIs مضبوطان.";
+      case "http_error": return "Meta ترد بخطأ HTTP على رابط التفويض. راجع أن كل صلاحية في الحقل scopes مفعّلة في Use Case/Configuration (صلاحية غير مفعّلة أو اسم غير معروف ينتج هذا الرفض).";
+      default: return "رفض Meta رابط التفويض قبل شاشة الموافقة. السبب الأكثر شيوعاً أن مجموعة الصلاحيات المطلوبة غير مفعّلة كاملةً في Use Case أو Configuration الخاص بالتطبيق (App Review permissions and features). راجع أيضاً App ID/App Domains/Valid OAuth Redirect URIs.";
+    }
+  };
+  // حدّ أقصى صغير: سلسلة Meta الفعلية 2–3 قفزات؛ الحد يمنع أي حلقة تحويل.
+  const MAX_HOPS = 5;
+  const hops: { step: number; status: number; host: string | null; path: string | null; mobile: boolean }[] = [];
+  const raw: { status: number; location: string | null; body: string }[] = [];
+  // وكيل جوال حقيقي + ترويسات متصفح كافية لسلك مسار الجوال (sec-fetch-mode).
+  const browserHeaders: Record<string, string> = {
+    "user-agent": FACEBOOK_MOBILE_UA,
+    "accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "accept-language": "ar,en-US;q=0.9,en;q=0.8",
+    "upgrade-insecure-requests": "1",
+    "sec-fetch-dest": "document",
+    "sec-fetch-mode": "navigate",
+    "sec-fetch-site": "none",
+  };
   try {
-    const res = await fetch(input.authorizationUrl, { method: "GET", redirect: "manual" });
-    const status = res.status;
-    const location = res.headers.get("location");
-    // نقرأ عيّنة الجسم دائماً: صفحة Meta العامة «حدث خطأ ما» قد تأتي مع 200 وقد
-    // تأتي مع 500؛ الحالة لا تُغيّر أنها رفض صريح.
-    const bodySample = await res.text().catch(() => "");
-    const classified = classifyMetaDialogInteraction({ status, location, body: bodySample.slice(0, 4000) });
-    // مسار مقبول (login/consent) => لا حجب.
-    if (classified.acceptable) return { ok: true, kind: classified.kind, errorCode: classified.errorCode, httpStatus: status };
-    // أي دليل رفض صريح (رمز خطأ، صفحة عامة، 4xx/5xx) => حجب بتشخيص دقيق.
-    if (classified.errorCode) return { ok: false, kind: classified.kind, errorCode: classified.errorCode, httpStatus: status, hint: rejectionHint };
-    // لا دليل قاطع على الرفض (200 مبهم/429): نمرّر (لا نحجب بلا إثبات).
-    return { ok: true, kind: classified.kind, errorCode: null, httpStatus: status };
+    const originHost = safeUrlHost(input.authorizationUrl);
+    // نميّز الرابط «المنطقي» (ما قالته Meta فعلاً: www/m.facebook.com) عن الرابط
+    // الذي نطلبه (قد يُعاد توجيهه إلى الخادم الوهمي في الاختبار). المضيف/المسار
+    // المُعلنان يأتيان من الرابط المنطقي، فيظهر m.facebook.com كما يراه المالك.
+    let logicalUrl: string | null = input.authorizationUrl;
+    let fetchUrl: string | null = input.authorizationUrl;
+    for (let step = 1; step <= MAX_HOPS && fetchUrl; step++) {
+      const logicalHost = safeUrlHost(logicalUrl);
+      const res = await fetch(fetchUrl, { method: "GET", redirect: "manual", headers: browserHeaders });
+      const status = res.status;
+      const location = res.headers.get("location");
+      // نقرأ عيّنة الجسم دائماً: صفحة Meta العامة «حدث خطأ ما» قد تأتي مع 200 وقد
+      // تأتي مع 500، وصفحة الجوال تحمل نصاً مختلفاً؛ الحالة لا تُغيّر أنها رفض.
+      const bodySample = (await res.text().catch(() => "")).slice(0, 4000);
+      raw.push({ status, location, body: bodySample });
+      hops.push({ step, status, host: logicalHost, path: safeUrlPath(logicalUrl), mobile: isMetaMobileHost(logicalHost) });
+      // دليل رفض صريح في هذه القفزة: لا داعي لمتابعة التحويل (يوفّر طلبات Meta).
+      if (classifyMetaDialogChain([{ status, location, body: bodySample }]).rejection) break;
+      // لا نتّبع إلا تحويلاً إلى مضيف Meta نفسه (www/m/mbasic) أو مضيف رابط
+      // التفويض الأصلي — لا redirect_uri ولا أي مضيف خارجي، فلا يُنفَّذ أي
+      // تنفيذ خارج نطاق الفحص.
+      const loc = (location || "").trim();
+      const followable = status >= 300 && status < 400 && loc && isFollowableDialogHost(safeUrlHost(loc), originHost);
+      logicalUrl = followable ? loc : null;
+      fetchUrl = followable ? resolveDialogFollowUrl(loc) : null;
+    }
+    const chain = classifyMetaDialogChain(raw);
+    const firstRejection = chain.rejection;
+    if (firstRejection) {
+      // المضيف/المسار من القفزة المنطقية (الرابط الذي قالته Meta فعلاً) لا من
+      // ترويسة Location التي قد تكون غائبة عند خطأ في الجسم.
+      const rejHop = hops[firstRejection.step - 1] || hops[hops.length - 1];
+      return {
+        ok: false,
+        kind: firstRejection.kind,
+        errorCode: firstRejection.errorCode,
+        httpStatus: firstRejection.status,
+        mobileHost: chain.sawMobileHost,
+        rejectionHost: rejHop?.host ?? null,
+        rejectionPath: rejHop?.path ?? null,
+        hops,
+        hint: rejectionHintFor(firstRejection.kind),
+      };
+    }
+    // لا رفض صريح في السلسلة: نمرّر (لا نحجب بلا إثبات). نُعلن التصنيف النهائي.
+    const last = chain.hops[chain.hops.length - 1];
+    return { ok: true, kind: last?.kind || "unknown", errorCode: null, httpStatus: last?.status ?? null, mobileHost: chain.sawMobileHost, hops, hint: rejectionHintFor(last?.kind ?? null) };
   } catch (e: any) {
     // تعذّر الفحص (شبكة): لا نحجب بلا سبب؛ نُعلن أن الإثبات لم يتم.
-    return { ok: true, kind: "unavailable", errorCode: null, httpStatus: null, hint: String(e?.message || "تعذّر فحص رابط التفويض.") };
+    return { ok: true, kind: "unavailable", errorCode: null, httpStatus: null, mobileHost: hops.some((h) => h.mobile), hops, hint: String(e?.message || "تعذّر فحص رابط التفويض.") };
   }
 }
 
@@ -1411,15 +1546,27 @@ async function probeMetaDialog(input: { authorizationUrl: string }): Promise<{ o
  */
 async function findMinimalFailingScopeSet(input: { authorizationUrl: string; scopes: readonly string[] }): Promise<{ failingScopes: string[]; emptyScopeFails: boolean; attempts: number }> {
   const base = new URL(input.authorizationUrl);
+  // نفس مسار المالك (وكيل جوال + ترويسات متصفح) ونفس منطق السلسلة، فلا يُعزل
+  // السبب على مسار سطح مكتب لا يسلكه المالك.
+  const headers: Record<string, string> = { "user-agent": FACEBOOK_MOBILE_UA, "accept": "text/html,application/xhtml+xml,*/*;q=0.8", "upgrade-insecure-requests": "1", "sec-fetch-mode": "navigate", "sec-fetch-site": "none" };
   const attempt = async (scopes: string[]): Promise<boolean> => {
     const t = new URL(base.toString());
     if (scopes.length) t.searchParams.set("scope", scopes.join(",")); else t.searchParams.delete("scope");
-    try {
-      const r = await fetch(t.toString(), { method: "GET", redirect: "manual" });
-      const body = await r.text().catch(() => "");
-      const c = classifyMetaDialogInteraction({ status: r.status, location: r.headers.get("location"), body: body.slice(0, 4000) });
-      return !c.acceptable && Boolean(c.errorCode);
-    } catch { return false; }
+    const raw: { status: number; location: string | null; body: string }[] = [];
+    let current: string | null = t.toString();
+    const originHost = safeUrlHost(t.toString());
+    for (let step = 1; step <= 4 && current; step++) {
+      try {
+        const r: any = await fetch(current, { method: "GET", redirect: "manual", headers });
+        const loc = r.headers.get("location");
+        const body = (await r.text().catch(() => "")).slice(0, 4000);
+        raw.push({ status: r.status, location: loc, body });
+        if (classifyMetaDialogChain([{ status: r.status, location: loc, body }]).rejection) { current = null; break; }
+        const followable = r.status >= 300 && r.status < 400 && loc && isFollowableDialogHost(safeUrlHost(loc), originHost);
+        current = followable ? resolveDialogFollowUrl(loc) : null;
+      } catch { current = null; }
+    }
+    return !classifyMetaDialogChain(raw).acceptable;
   };
   let attempts = 0;
   const scopes = [...new Set(input.scopes)].slice(0, 20);
@@ -1747,13 +1894,13 @@ app.get("/api/platforms/:platform/oauth/start", requireOwner, async (req,res)=>{
   for(const [k,v] of Object.entries(params)) u.searchParams.set(k,v);
   // فحص ما قبل التوجيه (Meta فقط): نتحقق أن Meta تقبل الرابط فعلاً، فلا يُرسَل
   // المالك إلى صفحة «حدث خطأ ما» عمياء. تعذّر الفحص لا يحجب (لئلا نكسر التطوير).
-  let dialogProbe: { ok: boolean; kind: string; errorCode: string | null; httpStatus: number | null; hint?: string } | null = null;
+  let dialogProbe: MetaDialogProbeResult | null = null;
   if (META_OAUTH_PLATFORMS.has(platform)) {
     dialogProbe = await probeMetaDialog({ authorizationUrl: u.toString() });
     if (!dialogProbe.ok) {
       // تشخيص قابل للتنفيذ: نعزل أصغر مجموعة صلاحيات ترفضها Meta (فقط عند الفشل).
       let scopeDiagnosis: { smallestFailingScopeSet: string[]; emptyScopeFails: boolean; probes: number; meaning: string } | null = null;
-      if (dialogProbe.httpStatus && dialogProbe.httpStatus >= 500 && scopes.length) {
+      if (scopes.length && (dialogProbe.httpStatus === null || dialogProbe.httpStatus >= 400)) {
         const diag = await findMinimalFailingScopeSet({ authorizationUrl: u.toString(), scopes });
         scopeDiagnosis = {
           smallestFailingScopeSet: diag.failingScopes,
@@ -1764,7 +1911,19 @@ app.get("/api/platforms/:platform/oauth/start", requireOwner, async (req,res)=>{
             : "هذه أصغر مجموعة صلاحيات يرفضها الحوار؛ فعّل هذه الصلاحيات تحديداً في Use Case/Configuration.",
         };
       }
-      logOAuthStart(platform, { outcome: "dialog_rejected", code: `META_DIALOG_${String(dialogProbe.errorCode || dialogProbe.kind).toUpperCase()}`, httpStatus: dialogProbe.httpStatus, dialogKind: dialogProbe.kind, redirectUri: callbackUrl, domain: urlInfo.host, publicUrlIsPublic: publicOk });
+      // تشخيص المسار الجوال: يُعلن صراحةً أن الرفض رُصد على مسار الجوال (m.facebook.com)
+      // لا على مسار سطح المكتب، فلا يُخفي أن الفحص القديم كان يرى مساراً مختلفاً.
+      const mobileFlow = {
+        probedAsMobile: true,
+        mobileHostReached: Boolean(dialogProbe.mobileHost),
+        rejectionHost: dialogProbe.rejectionHost ?? null,
+        rejectionPath: dialogProbe.rejectionPath ?? null,
+        hops: dialogProbe.hops ?? [],
+        meaning: dialogProbe.mobileHost
+          ? "أُعيد إنتاج مسار المالك الجوال فعلاً (www.facebook.com → m.facebook.com) ورُصد الرفض هناك."
+          : "لم يُرصد تحويل إلى مسار الجوال في هذه المحاولة؛ الرفض رُصد على مسار Meta المباشر.",
+      };
+      logOAuthStart(platform, { outcome: "dialog_rejected", code: `META_DIALOG_${String(dialogProbe.errorCode || dialogProbe.kind).toUpperCase()}`, httpStatus: dialogProbe.httpStatus, dialogKind: dialogProbe.kind, mobileHostReached: Boolean(dialogProbe.mobileHost), rejectionHost: dialogProbe.rejectionHost ?? null, rejectionPath: dialogProbe.rejectionPath ?? null, hopCount: (dialogProbe.hops || []).length, redirectUri: callbackUrl, domain: urlInfo.host, publicUrlIsPublic: publicOk });
       return res.status(409).json({
         success: false,
         code: `META_DIALOG_${String(dialogProbe.errorCode || dialogProbe.kind).toUpperCase()}`,
@@ -1775,6 +1934,7 @@ app.get("/api/platforms/:platform/oauth/start", requireOwner, async (req,res)=>{
         dialogHttpStatus: dialogProbe.httpStatus,
         dialogKind: dialogProbe.kind,
         dialogErrorCode: dialogProbe.errorCode,
+        mobileFlow,
         scopeDiagnosis,
         redirectUri: callbackUrl,
         domain: urlInfo.host,
@@ -2948,7 +3108,7 @@ app.get("/api/platforms/:platform/readiness", authenticateToken, (req,res)=>{
  * هذا ما كان ناقصاً فعلاً: الرسالة «النطاق غير مُضمَّن» بلا القيمة الصحيحة
  * تُبقي المالك يدور بلا نهاية.
  */
-app.get("/api/platforms/:platform/oauth/setup", requireOwner, (req,res)=>{
+app.get("/api/platforms/:platform/oauth/setup", requireOwner, async (req,res)=>{
   const platform=String(req.params.platform);
   const cfg=OAUTH_CONFIG[platform];
   if(!cfg) return res.status(404).json({success:false,error:"منصة بلا مسار OAuth مُعرَّف."});
@@ -2959,6 +3119,30 @@ app.get("/api/platforms/:platform/oauth/setup", requireOwner, (req,res)=>{
   const resolvedScopes = platform==="facebook" ? facebookOAuthScopes() : platform==="instagram" ? instagramOAuthScopes() : cfg.scopes;
   const scopeDependencyGaps = platform==="facebook" ? facebookScopeDependencyGaps() : platform==="instagram" ? instagramScopeDependencyGaps() : [];
   const metaScopesResolved = platform==="facebook"||platform==="instagram";
+  // فحص حي لسلسلة حوار Meta كما يسلكها متصفح المالك الجوال (www → m.facebook.com).
+  // الغرض: يرى المالك القفزة التي ترفض بالضبط (مضيف/مسار/حالة) بلا بدء OAuth وبلا
+  // أي سرّ ولا استعلام. لا يُحجب شيء هنا؛ الفحص تشخيصي فقط.
+  let mobileDialogProbe: any = undefined;
+  if (metaScopesResolved) {
+    try {
+      const p = await probeMetaDialog({ authorizationUrl: buildAuthorizationUrlForProbe(platform) });
+      mobileDialogProbe = {
+        probed: true,
+        probedAsMobile: true,
+        mobileHostReached: Boolean(p.mobileHost),
+        outcome: p.ok ? "acceptable" : "rejected",
+        kind: p.kind,
+        errorCode: p.errorCode,
+        httpStatus: p.httpStatus,
+        rejectionHost: p.rejectionHost ?? null,
+        rejectionPath: p.rejectionPath ?? null,
+        hops: p.hops ?? [],
+        note: "فحص بوكيل جوال حقيقي وبلا متابعة تلقائية وبلا كوكيز: لا يُنفَّذ أي موافقة. يعرض المضيف/المسار فقط (بلا استعلام).",
+      };
+    } catch (e: any) {
+      mobileDialogProbe = { probed: false, probedAsMobile: true, error: String(e?.message || "تعذّر الفحص"), note: "تعذّر إجراء الفحص (شبكة)؛ لا يُحجب شيء." };
+    }
+  }
   res.json({
     success:true,
     platform,
@@ -3002,7 +3186,7 @@ app.get("/api/platforms/:platform/oauth/setup", requireOwner, (req,res)=>{
       note:"عند وجود Configuration ID صالح يمرّره الخادم كـconfig_id بدل scope، فلا يتعارض المعاملان.",
     }:undefined,
     genericErrorMeaning:(platform==="facebook"||platform==="instagram")?{
-      message:"صفحة Meta «حدث خطأ ما» (Sorry, something went wrong) تظهر لسببين فقط يمكن فحصهما: (1) معرّف تطبيق غير صالح/غير مطابق، (2) نطاق غير مُضمَّن في App Domains أو رابط إرجاع غير مسجّل.",
+      message:"صفحة Meta «حدث خطأ ما» (Sorry, something went wrong) تظهر لسببين فقط يمكن فحصهما: (1) معرّف تطبيق غير صالح/غير مطابق، (2) نطاق غير مُضمَّن في App Domains أو رابط إرجاع غير مسجّل. وعند فشل الربط من متصفح الجوال تحديداً، تحقّق من حقل mobileDialogProbe: يُظهر القفزة الفعلية على m.facebook.com والحالة والنص.",
       checks:["طابق App ID مع Settings → Basic (أرقام فقط بلا مسافات).","أضف appDomainsValue إلى App Domains بلا https وبلا مسار.","أضف redirectUri بالضبط إلى Valid OAuth Redirect URIs.","تأكد أن Facebook Login product مُضاف وأن التطبيق Live (لا Development لمستخدمين غير مصرّح لهم)."],
     }:undefined,
     appSecretConfigured:(platform==="facebook"||platform==="instagram")?Boolean(platform==="instagram"?instagramAppSecret():facebookAppSecret()):undefined,
@@ -3018,6 +3202,7 @@ app.get("/api/platforms/:platform/oauth/setup", requireOwner, (req,res)=>{
     }:undefined,
     // وضع التطبيق (Development/Live) لا يكشفه Graph API إطلاقاً؛ المصدر الوحيد
     // هو لوحة Meta. نُعلن ذلك صراحةً بدل الإيهام بفحص آلي لا وجود له.
+    mobileDialogProbe,
     metaAppModeNotice:(platform==="facebook"||platform==="instagram")?{
       apiReadable:false,
       where:"Meta App Dashboard → الأعلى: مفتاح App Mode (Development/Live)",

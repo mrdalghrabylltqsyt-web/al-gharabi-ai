@@ -57,8 +57,10 @@ export interface FacebookMockState {
   /** آخر فحص رمز تطبيق (بلا سرّ كامل، فقط الطول للتحقق). */
   lastAppTokenCheck: { clientId: string; secretLen: number } | null;
   /** سلوك حوار التفويض: consent = تطبيق صالح، invalid_app_id = صفحة «حدث خطأ ما»،
-   * http_500 = فشل Meta العام (500 + «حدث خطأ ما») عندما لا تُتحقق مجموعة الصلاحيات. */
-  dialogOutcome: 'consent' | 'login' | 'invalid_app_id' | 'opaque_200' | 'http_500';
+   * http_500 = فشل Meta العام (500 + «حدث خطأ ما») عندما لا تُتحقق مجموعة الصلاحيات.
+   * mobile_redirect_then_fail = مسار الجوال الحقيقي: www → m.facebook.com (encrypted_query_string)
+   *   ثم فشل جوال — يُثبت أن الفحص يجب أن يسلك السلسلة لا أول قفزة فقط. */
+  dialogOutcome: 'consent' | 'login' | 'invalid_app_id' | 'opaque_200' | 'http_500' | 'mobile_redirect_then_fail';
   /** إن حُدِّدت: يرد الحوار 500 فقط عندما تحمل مجموعة scope هذه الصلاحية (لعزل السبب). */
   failingScope?: string | null;
 }
@@ -99,6 +101,19 @@ export async function startFacebookMockServer(
   // قراءة الجسم الخام أيضاً (Meta توقّع الجسم الخام) — غير مطلوب هنا لكنه آمن.
   app.use(express.urlencoded({ extended: false }));
 
+  // مضيف الجوال الوهمي (m.facebook.com): يُسجَّل **قبل** المسار العام
+  // `/:version/dialog/oauth` لأن Express يطابق حسب ترتيب التسجيل، ولولا ذلك
+  // لالتقط المسار العام `:version='mobile'` بدل مسار الجوال المقصود.
+  // الأول يعيد صفحة خطأ الجوال، والثاني صفحة «Invalid App ID» بصيغة الجوال.
+  app.get('/mobile/dialog/oauth', (_req, res) => {
+    state.calls += 1;
+    return res.status(200).send('<html><head><title>Error</title></head><body>Facebook Error Login Error: There is an error in logging you into this application. Please try again later.</body></html>');
+  });
+  app.get('/mobile/oauth/error', (_req, res) => {
+    state.calls += 1;
+    return res.status(200).send('<html><head><title>Error</title></head><body>Invalid App ID: The provided app ID does not look like a valid app ID.</body></html>');
+  });
+
   // حوار التفويض: نُحاكي سلوك Meta الحقيقي بترويسة Location بلا متابعة تحويل.
   app.get('/:version/dialog/oauth', (req, res) => {
     state.calls += 1;
@@ -124,6 +139,18 @@ export async function startFacebookMockServer(
       // ما تردّه Meta فعلياً عندما لا تُتحقق مجموعة scope مقابل منتج التطبيق:
       // HTTP 500 مع الصفحة العامة «حدث خطأ ما» (بلا error_code في الترويسة).
       return res.status(500).send('<html><body>Sorry, something went wrong. We\u2019re working on getting this fixed as soon as we can.</body></html>');
+    }
+    if (state.dialogOutcome === 'mobile_redirect_then_fail') {
+      // يحاكي سلوك Meta الحقيقي حسب User-Agent: مع وكيل جوال يحوّل إلى مضيف
+      // m.facebook.com (كما يفعل www.facebook.com فعلاً) ثم يفشل هناك. هذا هو
+      // الجذر المُثبت: أول قفزة تبدو مقبولة (تحويل داخلي)، والفشل في قفزة تالية.
+      const ua = String(req.headers['user-agent'] || '');
+      if (/iPhone|Android|Mobile/i.test(ua)) {
+        // كل نداء بوكيل جوال يحوّل إلى مضيف الجوال (كما تفعل Meta فعلاً)، والفشل
+        // يُخدم من مسار الجوال لا من www — فلا حلقة لأن مضيف الجوال لا يعيد التحويل.
+        return res.redirect(302, `https://m.facebook.com/mobile/dialog/oauth?client_id=${String(req.query.client_id || '')}&state=${String(req.query.state || '')}&encrypted_query_string=MOCK`);
+      }
+      return res.redirect(302, `https://www.facebook.com/login.php?next=${encodeURIComponent(String(req.originalUrl || ''))}`);
     }
     return res.redirect(302, `/v21.0/dialog/oauth?client_id=${String(req.query.client_id || '')}&state=${String(req.query.state || '')}`);
   });

@@ -80,6 +80,29 @@ const OAuthSetupPanel: React.FC<{ platform: string }> = ({ platform }) => {
         )}
       </div>
       <p className="text-slate-500">مصدر العنوان العام: <span className="text-slate-300">{info.publicUrlSource}</span> • النطاق: <span className="text-slate-300" dir="ltr">{info.domain}</span></p>
+      {info.mobileDialogProbe && (
+        <div className="mt-1.5 pt-1.5 border-t border-slate-800/70 space-y-1">
+          <p className="text-slate-500 flex items-center gap-1"><KeyRound className="w-3 h-3" /> فحص مسار الجوال الفعلي (بلا بدء الربط):</p>
+          {info.mobileDialogProbe.probed === false ? (
+            <p className="text-amber-300">تعذّر الفحص: {info.mobileDialogProbe.error}</p>
+          ) : (
+            <>
+              <span className={`px-2 py-0.5 rounded-md border font-bold inline-block ${info.mobileDialogProbe.outcome === 'acceptable' ? 'bg-emerald-500/10 text-emerald-300 border-emerald-600/30' : 'bg-rose-500/10 text-rose-300 border-rose-600/30'}`}>
+                {info.mobileDialogProbe.outcome === 'acceptable' ? 'المسار مقبول (يصل إلى شاشة الدخول)' : 'المسار مرفوض — هذا سبب «حدث خطأ ما» على الجوال'}
+              </span>
+              <p className="text-slate-500">
+                قفزات: <code dir="ltr" className="text-slate-300">{Array.isArray(info.mobileDialogProbe.hops) ? info.mobileDialogProbe.hops.map((h: any) => `${h.host || '—'}${h.path || ''}:${h.status}`).join(' → ') : '—'}</code>
+              </p>
+              {info.mobileDialogProbe.outcome !== 'acceptable' && (
+                <p className="text-rose-300">
+                  الرفض عند: <code dir="ltr">{info.mobileDialogProbe.rejectionHost || '—'}{info.mobileDialogProbe.rejectionPath || ''}</code> • الحالة: {info.mobileDialogProbe.httpStatus} • النوع: {info.mobileDialogProbe.kind}{info.mobileDialogProbe.errorCode ? ` (${info.mobileDialogProbe.errorCode})` : ''}
+                </p>
+              )}
+              <p className="text-slate-600">فحص حقيقي بوكيل جوال بلا متابعة موافقة وبلا أي سرّ — يعرض المضيف/المسار فقط.</p>
+            </>
+          )}
+        </div>
+      )}
       {Array.isArray(info.loginConfigIdEnvNames) && (
         <div className="mt-1.5 pt-1.5 border-t border-slate-800/70 space-y-1">
           <p className="text-slate-500 flex items-center gap-1"><KeyRound className="w-3 h-3" /> Facebook Login for Business — Configuration:</p>

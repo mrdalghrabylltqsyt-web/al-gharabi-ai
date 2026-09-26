@@ -977,3 +977,62 @@ Meta كصلاحية قائمة** — لا عندما تكون الصلاحيات
 `smallestFailingScopeSet` + `emptyScopeFails` + `meaning`. يُستدعى **فقط عند الفشل** فلا
 يستهلك أي طلب في المسار الناجح. اختبار: مجموعة `20و` في `facebook.connector.test.ts`
 (198 فحصاً) + فحوص final-audit الثلاثة (222 إجمالاً).
+
+## فشل الربط من متصفح الجوال: الفحص كان يسلك مسار سطح المكتب — إصلاح جذر «حدث خطأ ما» (2026-09-26)
+
+**إعادة الإنتاج على الإنتاج الفعلي (بلا أي سرّ):** رابط التفويض الحقيقي لـInstagram
+(10 صلاحيات، بلا `config_id` — `loginConfigIdConfigured=false` في `/api/readiness`)
+مع `redirect_uri=https://al-gharabi-ai.onrender.com/api/platforms/instagram/oauth/callback`
+**يمرّ فعلاً**: `www.facebook.com/v21.0/dialog/oauth` → 302 →
+`m.facebook.com/v21.0/dialog/oauth?encrypted_query_string=…` → 302 →
+`m.facebook.com/login.php` → 200 (شاشة الدخول). وفحص Graph `client_credentials` ينجح
+(`appIdFormatOk=true`, `scopeDependenciesResolved=true`). أي أن الكود كان يرسل رابطاً
+صحيحاً تماماً.
+
+**الجذر المُثبت:** `probeMetaDialog` كان يقرأ **أول** استجابة فقط بوكيل الخادم الافتراضي.
+Meta توجّه حسب `User-Agent`:
+- وكيل سطح المكتب: `www.facebook.com/vXX/dialog/oauth` → 302 → `www.facebook.com/login.php`.
+- وكيل جوال حقيقي (iPhone/Android): `www` → 302 →
+  `m.facebook.com/vXX/dialog/oauth?encrypted_query_string=…` → 302 → `m.facebook.com/login.php`.
+- مسار الجوال يضع كوكيز (`datr`/`fr`/`sb`) ويمرّ بـ`/unified/login_via/app/` مع بعض
+  وكلاء WebView، ورسائل خطئه **مختلفة نصاً** عن سطح المكتب
+  («Invalid App ID: The provided app ID does not look like a valid app ID»،
+  «There is an error in logging you into this application»).
+
+فحصٌ لا يتبع السلسلة لا يرى ما يراه متصفح المالك الجوال، فيحكم «مقبول» على أول قفزة بينما
+المالك يهبط على صفحة خطأ الجوال. (ومسار `encrypted_query_string` نفسه ليس عطلاً: متابعته
+بلا كوكيز تصل إلى شاشة الدخول.)
+
+**الإصلاح:**
+- `engine/social/facebook.ts`: `FACEBOOK_MOBILE_UA` (وكيل جوال حقيقي)، `isMetaMobileHost`
+  (m/mbasic)، `safeUrlHost`/`safeUrlPath` (بلا استعلام)، و`classifyMetaDialogChain` الذي
+  يصنّف **كل قفزات السلسلة** لا الأولى، ويقرأ نصوص خطأ الجوال، ويعلن أول قفزة رفض صريحة.
+- `server.ts`: `probeMetaDialog` يسلك السلسلة بوكيل جوال وترويسات متصفح
+  (`sec-fetch-mode: navigate`)، بلا متابعة تلقائية (manual)، و`isFollowableDialogHost`
+  يمنع مغادرة نطاق Meta (لا يتبع `redirect_uri` ولا أي مضيف خارجي)، وبحدّ `MAX_HOPS=5`
+  يمنع أي حلقة. يفصل بين «الرابط المنطقي» (ما قالته Meta: www/m) والرابط الذي نطلبه
+  (قد يُحوَّل للخادم الوهمي في الاختبار)، فتُعلن مضيفات m.facebook.com كما يراها المالك.
+- **تشخيص صريح بلا سرّ:** رد 409 صار يحمل `mobileFlow`
+  (`probedAsMobile`/`mobileHostReached`/`rejectionHost`/`rejectionPath`/`hops`) حيث
+  `hops` = مضيف+مسار+حالة فقط (لا `location` كاملاً ولا استعلام ولا `state` ولا `client_id`).
+  و`hint` صار حسب فئة الرفض (`invalid_app_id` / `unsupported_browser` / `mobile_error` /
+  `http_error`) لا تخميناً ثابتاً.
+- `GET /api/platforms/:platform/oauth/setup` (للمالك) صار يجري **فحص مسار الجوال نفسه**
+  ويعرضه في `mobileDialogProbe` بلا بدء OAuth، و`OAuthSetupPanel` يعرض القفزات والرفض.
+
+**إزالة اعتمادية غير مطلوبة:** وثيقة Meta «Permissions Reference» **تُسند** لـ`instagram_basic`
+اعتماديتَي `pages_read_user_content` و`pages_show_list` — فبقاؤهما **صحيح وموثّق**، ولا
+يُزال شيء. (أُثبت حياً أيضاً أن الأسماء العشرة كلها صالحة: كل واحدة وحدها والاثنتان معاً
+تُعيد 302 → login.) لا وجود لتجاوز `*_OAUTH_SCOPES` في الإنتاج: `scopeOverrideConfigured`
+كاذب و`scopeCount` = 10 و8، فلا يُحذف متغير غير موجود.
+
+**فحص حرج يبقى ناقصاً ويحتاج جلسة المالك:** إعادة إنتاج «حدث خطأ ما» **بعد** تسجيل الدخول
+(حساب المالك، مع كوكيز `c_user`) — لأن كل فحوص الخادم بلا كوكيز تتوقف عند شاشة الدخول ولا
+تصل إلى مرحلة رفض Use Case. لذلك `mobileDialogProbe` هو المرجع: إن أظهر `acceptable` فالرفض
+يقع **بعد** تسجيل الدخول، وهذا لا يُثبته إلا متصفح المالك.
+
+اختبارات: `facebook.connector.test.ts` = **226 فحصاً** (مجموعة `20ز`: الفحص يسلك مسار
+الجوال ويحجب بتشخيصه؛ وفحوص `oauth/setup` لمسار الجوال). فحوص final-audit الجديدة:
+`meta-dialog-mobile-chain-classifier`, `meta-dialog-mobile-ua-probe`,
+`meta-dialog-mobile-flow-exposed`, `meta-dialog-setup-probe`,
+`meta-dialog-mobile-chain-tests`, `meta-dialog-probe-no-query-leak` (228 إجمالاً).
