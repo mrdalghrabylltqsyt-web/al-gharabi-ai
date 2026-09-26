@@ -5327,6 +5327,17 @@ app.get("/api/readiness", (_req, res) => {
         onboardingFlow: instagramOnboardingEnabled() ? "enabled" : "disabled",
       };
     })(),
+    // دليل النشر: أي إصدار/commit يعمل فعلاً على المنصة (Render). أسماء ومقتطفات
+    // غير سرّية فقط (7 خانات من الـcommit) — تثبت أن الكود المنشور هو المدفوع.
+    deploy: (() => {
+      const sha = (process.env.RENDER_GIT_COMMIT || process.env.GIT_COMMIT || "").trim();
+      return {
+        provider: process.env.RENDER ? "render" : process.env.NETLIFY ? "netlify" : "unknown",
+        commit: sha ? sha.slice(0, 7) : null,
+        branch: (process.env.RENDER_GIT_BRANCH || "").trim() || null,
+        nodeEnv: process.env.NODE_ENV || null,
+      };
+    })(),
     // PHASE 7 — حقول TikTok الآمنة (منطقي فقط، بلا أي قيمة سرّية).
     tiktokOAuth: (() => {
       const c = tiktokOAuthConfig();
