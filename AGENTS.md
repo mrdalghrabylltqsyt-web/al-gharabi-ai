@@ -1370,3 +1370,48 @@ TikTok. أُضيف مصدر واحد صادق للترجمة بين الحقائ
 
 **لم يُمسّ:** Facebook/Instagram/Telegram (تغيّر صفر — انحدارها كلها ناجح)، ولا Gemini،
 ولا مفاتيح التشفير، ولا مسارات OAuth القائمة.
+
+## التحقق من ملكية الرابط (TikTok URL prefix) + الصفحات القانونية العامة (2026-09-26)
+
+**الجذر المُثبت:** TikTok يتحقق من ملكية بادئة الرابط عبر ملف تحقق عام يُخدَم من
+جذر البادئة. وثيقة «Manage URL properties» الرسمية تنصّ على أن اسم الملف = قيمة
+`file_name` (`tiktok<token>.txt`) ومحتواه = قيمة `signature`. قبل الإصلاح كان
+`/tiktokdjxlJcC4WFlCh4OZY8IVHgezp491vPoZ.txt` يسقط إلى واجهة React فيُعاد
+`index.html` بحالة 200 — فيقرأ TikTok HTML بدل سلسلة التوقيع ويفشل التحقق بلا سبب
+ظاهر. (أُثبت حياً من ملفات تحقق حقيقية على GitHub: `tiktok<TOKEN>.txt` محتواه
+`tiktok-developers-site-verification=<TOKEN>`.)
+
+**الإصلاح — مصدر واحد:**
+- `engine/social/siteVerification.ts`: الرمز الرسمي `TIKTOK_VERIFICATION_TOKEN`،
+  الاسم `tiktok<token>.txt`، المحتوى `tiktok-developers-site-verification=<token>`،
+  `buildTikTokVerificationFile` (يرفض الرمز غير الصالح)، `verificationFileForPath`
+  (الجذر فقط)، `SITE_VERIFICATION_PATH_PATTERN`، `verificationFileUrl`.
+- `server.ts`: مسار ثابت `app.get(SITE_VERIFICATION_PATH_PATTERN, …)` يخدم الملف
+  **200 بلا تحويل** بنوع `text/plain; charset=utf-8` (وثيقة TikTok: «Redirections
+  are not followed. URLs that return HTTP 3xx are invalid»)، والاسم البديل
+  `tiktok-developers-site-verification.txt` بالمحتوى نفسه. المسارات عامة بلا مصادقة
+  (المزوّد يطلبها علناً)، وتُسجَّل قبل شبكة أمان `/api`.
+- `public/tiktok<token>.txt` (+ البديل): لخدمته ثابتاً على Netlify (توجيه Netlify
+  يوجّه `/api/*` فقط إلى الدالة؛ الملف يُخدَم من أصول الموقع). Vite ينسخه إلى `dist/`.
+- `/api/health` و`/api/readiness` يعرضان `siteVerification`
+  (`filename`/`url`/`contentType`/`redirects:false`/`legalPages`) بلا أي سرّ.
+
+**الصفحات القانونية (Terms/Privacy/Website URLs):** `engine/social/legalPages.ts`
+يبني صفحات عربية RTL حقيقية تصف ما يفعله النظام فعلاً (رموز المنصّات المشفّرة
+AES-256-GCM، التعليقات/الرسائل الواردة، سجلات النشر). `server.ts` يخدمها من
+`/terms` و`/privacy` (ومرادفات `/terms-of-service`, `/privacy-policy`, …) بحالة 200
+بلا مصادقة. **لا يُخترع بريد/رقم تواصل غير مضبوط**: عند غياب `OWNER_EMAIL` تُذكر
+جملة صريحة بدل بريد وهمي.
+
+اختبارات: `engine/tests/site.verification.test.ts` (`npm run test:site-verification`،
+57 فحصاً: وحدة + خادم حقيقي يثبت 200/text-plain/المحتوى الحرفي/بلا تحويل/بلا HTML،
+والاسم البديل، وصفحات الشروط/الخصوصية، وحالة health/readiness). فحوص final-audit
+الجديدة: `site-verification-module` … `site-verification-tests` (332 إجمالاً).
+
+**نقطة توقف المالك (إجراء خارجي واحد):** بعد النشر، افتح لوحة TikTok for Developers →
+URL properties → اختر **URL prefix** بقيمة `https://al-gharabi-ai.onrender.com/`
+واضغط Verify. الملف متاح الآن على `https://al-gharabi-ai.onrender.com/tiktok<token>.txt`
+بالمحتوى الرسمي، ثم فعّل Terms of Service URL وPrivacy Policy URL وWebsite URL بنفس
+التحقق (الروابط `/terms` و`/privacy` و`/` كلها 200 وعامة). لا يمكن لأي وكيل برمجي
+تنفيذ نقر «Verify» نيابةً عن المالك لأنه يحتاج جلسته على لوحة TikTok.
+

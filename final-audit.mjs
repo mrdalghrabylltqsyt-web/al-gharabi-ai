@@ -447,6 +447,24 @@ add('tiktok-state-no-secret-in-labels', !/Bearer\s/.test(tiktokState) && !/['"]c
 add('tiktok-ui-truthful-state', read('src/components/social/PlatformConnectionCenter.tsx').includes('stateLabelAr') && read('src/components/social/SocialManagerView.tsx').includes('stateLabelAr'), 'الواجهة تعرض الحالة الصادقة (مركز الربط + بطاقة المدير)');
 add('tiktok-state-tests', read('engine/tests/tiktok.connector.test.ts').includes('resolveTikTokState') && read('engine/tests/tiktok.connector.test.ts').includes('الحالة الصادقة'), 'اختبارات تغطي الحالة الصادقة (وحدة + تكامل)');
 
+// التحقق من ملكية الرابط (TikTok URL prefix): ملف تحقق عام يُخدَم من مسار ثابت
+// بمحتوى التوقيع الرسمي، والصفحات القانونية العامة (Terms/Privacy/Website URLs).
+const siteVerification = read('engine/social/siteVerification.ts');
+const legalPages = read('engine/social/legalPages.ts');
+add('site-verification-module', fs.existsSync(path.join(root, 'engine/social/siteVerification.ts')) && siteVerification.includes('export function buildTikTokVerificationFile'), 'وحدة ملف تحقق ملكية الرابط موجودة (مصدر واحد)');
+add('site-verification-content-official', siteVerification.includes("tiktok-developers-site-verification=") && /TIKTOK_VERIFICATION_FILENAME = `tiktok\$\{TIKTOK_VERIFICATION_TOKEN\}\.txt`/.test(siteVerification), 'الاسم والمحتوى يطابقان عقد TikTok الرسمي (file_name + signature)');
+add('site-verification-route-static', server.includes('SITE_VERIFICATION_PATH_PATTERN') && server.includes('app.get(SITE_VERIFICATION_PATH_PATTERN') && server.includes('serveVerificationFile'), 'الخادم يخدم ملف التحقق من مسار ثابت (لا من واجهة React)');
+add('site-verification-no-redirect', /serveVerificationFile[\s\S]{0,400}?res\.status\(200\)/.test(server) && !/serveVerificationFile[\s\S]{0,400}?res\.redirect/.test(server), 'ملف التحقق يُخدَم 200 بلا تحويل (3xx مرفوض لدى TikTok)');
+add('site-verification-plain-text', server.includes('VERIFICATION_CONTENT_TYPE') && siteVerification.includes("text/plain; charset=utf-8"), 'نوع المحتوى نص صريح لا HTML');
+add('site-verification-alt-filename', siteVerification.includes('tiktok-developers-site-verification.txt'), 'اسم بديل شائع لنفس الملف بنفس المحتوى');
+add('site-verification-health-exposed', server.includes('siteVerification: siteVerificationState()') && /function siteVerificationState[\s\S]{0,900}?filename/.test(server), 'الحالة تعرض اسم الملف ورابطه في health/readiness');
+add('site-verification-public-file', fs.existsSync(path.join(root, 'public', 'tiktokdjxlJcC4WFlCh4OZY8IVHgezp491vPoZ.txt')), 'الملف موجود أيضاً في public/ لخدمته ثابتاً على Netlify');
+add('legal-pages-module', fs.existsSync(path.join(root, 'engine/social/legalPages.ts')) && legalPages.includes('export function buildTermsPage') && legalPages.includes('export function buildPrivacyPage'), 'صفحتا الشروط والخصوصية بمحتوى حقيقي (مصدر واحد)');
+add('legal-pages-routes-public', server.includes('app.get(["/terms"') && server.includes('"/privacy"') && server.includes('legalPageForPath'), 'مسارات /terms و/privacy عامة بلا مصادقة');
+add('legal-pages-real-content', legalPages.includes('نطاق الخدمة') && legalPages.includes('البيانات التي نجمعها') && legalPages.includes('AES-256-GCM'), 'المحتوى القانوني يصف ما يفعله النظام فعلاً');
+add('legal-pages-no-fake-contact', legalPages.includes('contactEmail') && legalPages.includes('المنشورة في صفحة الموقع الرسمية'), 'لا يُخترع بريد/رقم تواصل غير مضبوط على الخادم');
+add('site-verification-tests', fs.existsSync(path.join(root, 'engine/tests/site.verification.test.ts')) && typeof pkg.scripts['test:site-verification'] === 'string' && pkg.scripts.test.includes('test:site-verification'), 'اختبار التحقق من الرابط والصفحات القانونية مسجّل وضمن npm test');
+
 const failed = checks.filter(x => !x.ok);
 console.table(checks);
 if (failed.length) {

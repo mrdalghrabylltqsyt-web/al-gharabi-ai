@@ -109,6 +109,16 @@ import { inspectPlatformCredentials, CREDENTIAL_SPECS, GLOBAL_CREDENTIALS } from
 import { decodeTokenKey, inspectTokenKeyFromEnv } from "./engine/social/tokenKey";
 import { resolvePublicUrl, isLocalHost } from "./engine/social/publicUrl";
 import {
+  siteVerificationFiles,
+  verificationFileForPath,
+  SITE_VERIFICATION_PATH_PATTERN,
+  TIKTOK_VERIFICATION_FILENAME,
+  VERIFICATION_CONTENT_TYPE,
+  verificationFileUrl,
+  type SiteVerificationFile,
+} from "./engine/social/siteVerification";
+import { legalPageForPath } from "./engine/social/legalPages";
+import {
   secretHeaderVerifier,
   hmacSignatureVerifier,
   isReplayOrDuplicate,
@@ -1127,6 +1137,31 @@ const OAUTH_CONFIG: Record<string, any> = {
 function oauthReady(platform: string) { const c = OAUTH_CONFIG[platform]; return Boolean(c?.clientId && c?.clientSecret && resolvePublicUrl(process.env).valid && tokenKeyBytes()); }
 /** هل العنوان العام الحالي عام (https على نطاق غير محلي)؟ يلزم للربط الإنتاجي. */
 function publicUrlIsPublic(): boolean { const u = resolvePublicUrl(process.env); return u.valid && u.scheme === 'https' && !!u.host && !isLocalHost(u.host); }
+
+/**
+ * حالة التحقق من ملكية الرابط (TikTok URL prefix) بلا أي سرّ: اسم الملف، الرابط
+ * العام الكامل، ونوع المحتوى. الرمز نفسه عام بطبيعته (TikTok يطلبه علناً)، لذا
+ * يُعرض ليتمكّن المالك من مقارنته بما في لوحة TikTok مباشرةً.
+ */
+function siteVerificationState() {
+  const urlInfo = resolvePublicUrl(process.env);
+  const file = siteVerificationFiles()[0];
+  return {
+    platform: "tiktok",
+    filename: file.filename,
+    contentType: file.contentType,
+    /** الرابط الذي يجب أن يكون عاماً وبلا تحويل (3xx مرفوض لدى TikTok). */
+    url: verificationFileUrl(urlInfo.baseUrl, file.filename),
+    altFilename: siteVerificationFiles()[1].filename,
+    /** الملف يُخدَم من مسار ثابت في الخادم، لا من واجهة React. */
+    servedBy: "static-route",
+    publicUrlValid: urlInfo.valid,
+    publicUrlIsPublic: publicUrlIsPublic(),
+    redirects: false,
+    /** صفحات الشروط/الخصوصية العامة (Terms/Privacy URLs) — بلا مصادقة. */
+    legalPages: ["/terms", "/privacy"],
+  };
+}
 
 // -------------------------------------------------------------
 // Telegram — أول موصل اجتماعي حقيقي (bot-token، بلا OAuth ولا تسجيل تطبيق).
@@ -5363,6 +5398,8 @@ app.get("/api/readiness", (_req, res) => {
       providerReady: aiLiveVerification.state === 'ok',
     },
     geminiConfigured: Boolean(process.env.GEMINI_API_KEY),
+    /** ملف تحقق ملكية الرابط (TikTok URL prefix) + الصفحات القانونية العامة. */
+    siteVerification: siteVerificationState(),
     /** حالة مفتاح تشفير توكنات المنصات بنفس حكم التشفير الفعلي (بلا قيمة). */
     platformTokenKey: (() => { const tk = tokenKeyInspection(); return { state: tk.state, envName: "PLATFORM_TOKEN_ENCRYPTION_KEY", acceptedBytes: 32, reason: tk.reason }; })(),
     /**
@@ -5867,6 +5904,8 @@ app.get("/api/health", (_req, res) => {
         candidates: u.candidates.map((c) => ({ source: c.source, valid: c.valid, present: c.raw !== null, reason: c.reason })),
       };
     })(),
+    // ملف تحقق ملكية الرابط (TikTok URL prefix) والصفحات القانونية العامة.
+    siteVerification: siteVerificationState(),
     // حالة الثبات: تُعلن بصراحة هل تُفقد الجلسات بين العمليات، وهل تنجو بيانات
     // العمل من إعادة النشر. لا تُكشف أي قيمة سرية هنا، ولا يُدّعى الدوام بلا مخزن.
     persistence: (() => {
@@ -7393,6 +7432,53 @@ registerSocialManagerRoutes(app, {
     const product = productId ? workspace.products.find((p: any) => p.id === productId) || null : null;
     return buildFactsForProduct(product, Number(product?.downPaymentPercent || 0), Number(product?.durationMonths || 0));
   },
+});
+
+// -------------------------------------------------------------
+// مسارات عامة حقيقية (بلا مصادقة): ملف تحقق ملكية الرابط + الصفحات القانونية.
+// هذه ليست مسارات API ولا تحتاج جلسة — المزوّد (TikTok/Meta) والمتصفّح العام
+// يطلبانها مباشرة. تُسجَّل قبل شبكة أمان /api لأنها لا تبدأ بـ/api أصلاً.
+// -------------------------------------------------------------
+
+/** سياق الصفحات القانونية: بريد المالك الفعلي إن وُجد + عنوان الموقع العام. */
+function legalPageContext() {
+  return {
+    contactEmail: OWNER_EMAIL || null,
+    publicUrl: resolvePublicUrl(process.env).baseUrl,
+    updatedAt: "2026-09-26T00:00:00.000Z",
+  };
+}
+
+/** يخدم ملف تحقق بلا تحويل (200) بنوع نص صريح، فيقرأ TikTok التوقيع حرفياً. */
+function serveVerificationFile(res: express.Response, file: SiteVerificationFile) {
+  res.status(200);
+  res.setHeader("Content-Type", file.contentType);
+  // بلا تخزين وسيط قد يقدّم نسخة قديمة، وبلا اعتماد على أي وسيط آخر.
+  res.setHeader("Cache-Control", "public, max-age=0, must-revalidate");
+  res.setHeader("X-Content-Type-Options", "nosniff");
+  res.send(file.content);
+}
+
+/**
+ * ملف تحقق ملكية الرابط (URL prefix) الخاص بـTikTok. الاسم `/tiktok<token>.txt`
+ * والمحتوى `tiktok-developers-site-verification=<token>` — كما تطلبه الوثيقة
+ * الرسمية. قبل الإصلاح كان الطلب يسقط إلى index.html بحالة 200 فيفشل التحقق.
+ */
+app.get(SITE_VERIFICATION_PATH_PATTERN, (req, res) => {
+  const file = verificationFileForPath(req.path) || siteVerificationFiles()[0];
+  serveVerificationFile(res, file);
+});
+
+// اسم بديل شائع لنفس الملف (بالمحتوى نفسه)، فلا يفشل التحقق إن غيّر المالك الرمز.
+app.get("/tiktok-developers-site-verification.txt", (_req, res) => {
+  serveVerificationFile(res, siteVerificationFiles()[1]);
+});
+
+/** الصفحات القانونية العامة: شروط الخدمة وسياسة الخصوصية (Terms/Privacy URLs). */
+app.get(["/terms", "/terms-of-service", "/terms-of-use", "/privacy", "/privacy-policy"], (req, res) => {
+  const page = legalPageForPath(req.path, legalPageContext());
+  if (!page) return res.status(404).type("text/plain; charset=utf-8").send("الصفحة غير موجودة.");
+  res.status(200).setHeader("Content-Type", "text/html; charset=utf-8").send(page.html);
 });
 
 // شبكة أمان لمسارات الـAPI: أي مسار تحت /api غير مُعرّف — أو طريقة HTTP غير
