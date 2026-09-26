@@ -639,6 +639,38 @@ async function integrationTests(): Promise<void> {
     check('config_id => الواجهة الكلاسيكية مُعلنة', clsBody.businessLoginSurface === false, `surface=${clsBody.businessLoginSurface}`);
     check('مصدر الصلاحيات من Configuration عند config_id', clsBody.permissionSource === 'facebook_login_for_business_configuration', `src=${clsBody.permissionSource}`);
     await clsMock.stop();
+
+    // oauth/setup: مسار Instagram الرسمي بلا config_id، ويجب ألا يوجّه المالك
+    // لإنشاء Configuration لـInstagram (الوثيقة لا تذكر config_id إطلاقاً).
+    await stop(currentApp.proc);
+    const setupMock = await startInstagramMockServer(IG_PORT + 8, createInstagramMock());
+    currentApp = startApp(setupMock.base);
+    check('الخادم يقلع لفحص oauth/setup', await waitForHealth(), currentApp.log().slice(0, 300));
+    Object.assign(auth, await login());
+    const setupRes = await fetch(`${BASE}/api/platforms/instagram/oauth/setup`, { headers: auth });
+    const setupBody: any = await setupRes.json();
+    check('oauth/setup يعلن أن config_id غير مطلوب لـInstagram', setupBody.instagramOnboardingFlow?.configIdRequired === false, `configIdRequired=${setupBody.instagramOnboardingFlow?.configIdRequired}`);
+    check('oauth/setup لا يطلب Configuration لـInstagram', !setupBody.loginForBusinessSetup);
+    check('oauth/setup يعلن المنتجات المطلوبة', Array.isArray(setupBody.instagramOnboardingFlow?.requiredProducts) && setupBody.instagramOnboardingFlow.requiredProducts.length >= 2);
+    check('oauth/setup بلا أي سرّ', !JSON.stringify(setupBody).includes('test-fb-client-secret'));
+    check('oauth/setup يُعلن مفتاح الإعداد', setupBody.instagramOnboardingFlow?.envSwitch === 'INSTAGRAM_OAUTH_ONBOARDING');
+    await setupMock.stop();
+
+    // مفتاح البيئة INSTAGRAM_OAUTH_ONBOARDING=false يحوّل الرابط إلى التدفّق
+    // العادي (response_type=code) بلا extras — مخرج عطل Meta 1850019 بلا كود جديد.
+    await stop(currentApp.proc);
+    const offMock = await startInstagramMockServer(IG_PORT + 9, createInstagramMock());
+    currentApp = startApp(offMock.base, { INSTAGRAM_OAUTH_ONBOARDING: 'false' });
+    check('الخادم يقلع بتدفّق الإعداد معطّلاً', await waitForHealth(), currentApp.log().slice(0, 300));
+    Object.assign(auth, await login());
+    const offStart = await fetch(`${BASE}/api/platforms/instagram/oauth/start`, { headers: auth });
+    const offBody: any = await offStart.json();
+    const offUrl = new URL(offBody.authorizationUrl);
+    check('تعطيل الإعداد => response_type=code', offUrl.searchParams.get('response_type') === 'code', `rt=${offUrl.searchParams.get('response_type')}`);
+    check('تعطيل الإعداد => لا extras ولا display', !offUrl.searchParams.has('extras') && !offUrl.searchParams.has('display'));
+    const offSetup = await (await fetch(`${BASE}/api/platforms/instagram/oauth/setup`, { headers: auth })).json();
+    check('oauth/setup يعلن المفتاح معطّلاً', offSetup.instagramOnboardingFlow?.active === false && offSetup.instagramOnboardingFlow?.envSwitchValue === 'disabled');
+    await offMock.stop();
   } finally {
     try { await stop(currentApp.proc); } catch { /* تجاهل */ }
     await mock.stop();

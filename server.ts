@@ -1034,6 +1034,21 @@ function instagramScopeDependencyGaps(): string[] {
   return missingInstagramScopeDependenciesFromCsv(process.env.INSTAGRAM_OAUTH_SCOPES);
 }
 /**
+ * مفتاح تشغيل تدفّق الإعداد الموحّد (extras=IG_API_ONBOARDING).
+ *
+ * سبب الوجود: عطل Meta المعروف (GraphQL error 1850019 «error during business
+ * onboarding flow») يظهر بعد تسجيل الدخول ويرتبط بهذا المعامل. جعل المفتاح من
+ * البيئة يحوّل المخرج إلى تغيير إعداد بلا تعديل كود أو إعادة نشر: عند ضبط
+ * `INSTAGRAM_OAUTH_ONBOARDING=false` يمرّ الربط بالتدفّق العادي (response_type=code
+ * عبر /me/accounts?fields=instagram_business_account) الذي يعمل. الافتراضي مفعّل
+ * (التدفّق الرسمي الموثّق) حتى لا يتغيّر السلوك بلا قرار صريح.
+ */
+function instagramOnboardingEnabled(): boolean {
+  const raw = String(process.env.INSTAGRAM_OAUTH_ONBOARDING ?? "").trim().toLowerCase();
+  if (!raw) return true;
+  return !(raw === "false" || raw === "0" || raw === "off" || raw === "no");
+}
+/**
  * قراءة قيمة بيئة مع تطبيع المسافات حولها.
  *
  * السبب: Render (أو لصق القيمة) قد يضيف سطراً/مسافة زائدة، فتبدو القيمة
@@ -1900,7 +1915,7 @@ app.get("/api/platforms/:platform/oauth/start", requireOwner, async (req,res)=>{
   if(requiresPkce(platform)) { const pkce=createPkcePair(); pending.codeVerifier=pkce.verifier; pkceChallenge=pkce.challenge; }
   pendingOAuth.set(state,pending);
   const u=new URL(authEndpointFor(platform));
-  const params=buildAuthorizationParams({platform,clientId:cfg.clientId,redirectUri:callbackUrl,scopes,state,pkceChallenge,loginConfigId,instagramOnboarding:platform==="instagram"});
+  const params=buildAuthorizationParams({platform,clientId:cfg.clientId,redirectUri:callbackUrl,scopes,state,pkceChallenge,loginConfigId,instagramOnboarding:platform==="instagram"&&instagramOnboardingEnabled()});
   for(const [k,v] of Object.entries(params)) u.searchParams.set(k,v);
   // فحص ما قبل التوجيه (Meta فقط): نتحقق أن Meta تقبل الرابط فعلاً، فلا يُرسَل
   // المالك إلى صفحة «حدث خطأ ما» عمياء. تعذّر الفحص لا يحجب (لئلا نكسر التطوير).
@@ -3250,28 +3265,38 @@ app.get("/api/platforms/:platform/oauth/setup", requireOwner, async (req,res)=>{
     // response_type=token، والرمز يعود في مقطع الاستجابة (لا code). يُعلن هنا
     // ليعرف المالك أن الرابط مطابق لوثيقة Meta حرفياً.
     instagramOnboardingFlow:platform==="instagram"?{
-      active:true,
-      display:"page",
+      // active يتبع مفتاح البيئة فعلياً: false يعني أن الرابط يسلك التدفّق العادي
+      // (response_type=code) بلا extras، فلا تُعلن معاملات لا تُرسَل.
+      active:instagramOnboardingEnabled(),
+      display:instagramOnboardingEnabled()?"page":null,
       extras:INSTAGRAM_ONBOARDING_EXTRAS,
       responseType:"token",
       tokenDelivery:"url_fragment",
-      note:"وفق وثيقة Meta «Facebook Login for Business - Instagram API»: تُلحق Meta الرمز (القصير وطويل الأجل) في مقطع الاستجابة، وتقرأه الواجهة وترسله POST في الجسم لإتمام الربط بلا تبديل رمز.",
+      // الوثيقة الرسمية تشترط ستة معاملات ولا تذكر config_id إطلاقاً: مسار
+      // Instagram يمرّر الصلاحيات عبر scope على واجهة Business Login.
+      configIdRequired:false,
+      envSwitch:"INSTAGRAM_OAUTH_ONBOARDING",
+      envSwitchValue:instagramOnboardingEnabled()?"enabled":"disabled",
+      note:"وفق وثيقة Meta «Facebook Login for Business - Instagram API»: الرابط الرسمي يحمل client_id+display=page+extras+redirect_uri+response_type=token+scope فقط، بلا config_id. تُلحق Meta الرمز (القصير وطويل الأجل) في مقطع الاستجابة، وتقرأه الواجهة وترسله POST في الجسم لإتمام الربط بلا تبديل رمز.",
       doc:"https://developers.facebook.com/documentation/instagram-platform/instagram-api-with-facebook-login/business-login-for-instagram",
+      requiredProducts:["Instagram → API setup with Facebook login","Facebook Login for Business","Webhooks"],
+      appType:"Meta Business type app",
+      knownIssue:"عطل معروف لدى Meta في تدفّق الإعداد: يظهر «حدث خطأ ما» بعد تسجيل الدخول (GraphQL error 1850019 «error during business onboarding flow») ويرتبط بمعامل extras=IG_API_ONBOARDING. المخرج الموثّق من مطوّرين: إزالة extras والعمل بالتدفّق العادي عبر /me/accounts?fields=instagram_business_account. لا تُنفَّذ الإزالة إلا بقرار صريح لأنها تُلغي نافذة الإعداد الموحّدة.",
     }:undefined,
-    loginForBusinessSetup:(platform==="facebook"||platform==="instagram")?{
+    loginForBusinessSetup:platform==="facebook"?{
       where:"Meta App Dashboard → Facebook Login for Business → Configurations",
       steps:[
-        "افتح Facebook Login for Business → Configurations واضغط Create configuration (أو أعد استخدام Configuration موجودة لـInstagram).",
-        "اختر نوع الرمز: User access token (المطلوب لمسارات الصفحة/Instagram).",
+        "افتح Facebook Login for Business → Configurations واضغط Create configuration (أو أعد استخدام Configuration موجودة).",
+        "اختر نوع الرمز: User access token (المطلوب لمسارات الصفحة).",
         "أضف الصلاحيات المذكورة في حقل scopes أعلاه بالضبط (نفس أسماء Facebook Login).",
-        "احفظ، ثم انسخ Configuration ID (أرقام فقط) إلى متغير البيئة المذكور في loginConfigIdEnvNames.",
+        "احفظ، ثم انسخ Configuration ID (أرقام فقط) إلى FACEBOOK_LOGIN_CONFIG_ID.",
         "لا تضع القيمة في Git ولا في أي سجل؛ الخادم يقرأها من البيئة فقط.",
       ],
-      note:"عند وجود Configuration ID صالح يمرّره الخادم كـconfig_id بدل scope، فلا يتعارض المعاملان.",
+      note:"عند وجود Configuration ID صالح يمرّره الخادم كـconfig_id بدل scope، فلا يتعارض المعاملان. مسار Instagram لا يستخدم config_id.",
     }:undefined,
     genericErrorMeaning:(platform==="facebook"||platform==="instagram")?{
-      message:"صفحة Meta «حدث خطأ ما» (Sorry, something went wrong) لها ثلاثة مواضع محتملة: (1) قبل تسجيل الدخول: معرّف تطبيق غير مطابق أو نطاق/رابط إرجاع غير مسجّل، (2) بعد تسجيل الدخول: مجموعة الصلاحيات غير مفعّلة كاملةً في Use Case أو Configuration، (3) نوع التطبيق: تطبيق نوعه Business يُوجَّه إلى Facebook Login for Business الذي يقرأ الصلاحيات من Configuration عبر config_id لا من معامل scope. حقل dialogPhase أدناه يحدد الموضع: rejected_before_login مقابل awaiting_owner_login (أي أن الفحص بلا كوكيز توقّف عند شاشة الدخول ولم يرَ مرحلة ما بعدها).",
-      checks:["طابق App ID مع Settings → Basic (أرقام فقط بلا مسافات).","أضف appDomainsValue إلى App Domains بلا https وبلا مسار.","أضف redirectUri بالضبط إلى Valid OAuth Redirect URIs.","فعّل كل صلاحية في scopes داخل Use Case/Configuration — لا يكفي وجودها في الرابط.","إن كان التطبيق من نوع Business فأنشئ Configuration واربط INSTAGRAM_LOGIN_CONFIG_ID/FACEBOOK_LOGIN_CONFIG_ID (config_id بدل scope)."],
+      message:"صفحة Meta «حدث خطأ ما» (Sorry, something went wrong) لها مواضع محتملة: (1) قبل تسجيل الدخول: معرّف تطبيق غير مطابق أو نطاق/رابط إرجاع غير مسجّل، (2) بعد تسجيل الدخول: الصلاحيات غير مفعّلة كاملةً في Use Case أو الحساب ليس ضمن Testers، (3) عطل معروف في تدفّق الإعداد عند استخدام extras=IG_API_ONBOARDING (1850019). حقل dialogPhase يحدد الموضع: rejected_before_login مقابل awaiting_owner_login (أي أن الفحص بلا كوكيز توقّف عند شاشة الدخول ولم يرَ مرحلة ما بعدها).",
+      checks:["طابق App ID مع Settings → Basic (أرقام فقط بلا مسافات).","أضف appDomainsValue إلى App Domains بلا https وبلا مسار.","أضف redirectUri بالضبط إلى Valid OAuth Redirect URIs.","فعّل الصلاحيات المطلوبة داخل Use Case — لا يكفي وجودها في الرابط.","تأكد أن التطبيق يحتوي منتج Instagram → API setup with Facebook login وأن التطبيق من نوع Business.","أضف حساب المالك إلى Roles → Testers إن كان التطبيق في وضع Development.","راجع المتغير FACEBOOK_OAUTH_SCOPES/INSTAGRAM_OAUTH_SCOPES إن وُجد: أي اسم صلاحية غير قائم يُرفض قبل الدخول."],
     }:undefined,
     // موضع الرفض الفعلي: يمنع تشخيصاً خاطئاً لأن فحصاً بلا كوكيز لا يرى ما بعد
     // تسجيل الدخول، فيبدو «مقبولاً» مع أن الرفض يقع في مرحلة Use Case.
@@ -5196,6 +5221,9 @@ app.get("/api/health", (_req, res) => {
         pendingPageSelection: instagramPageSelectionPending(),
         scopeCount: instagramOAuthScopes().length,
         scopesResolvedWithDependencies: true,
+        // حالة مفتاح تدفّق الإعداد (منطقي فقط): enabled = extras مفعّل،
+        // disabled = التدفّق العادي بلا extras (مخرج عطل Meta 1850019).
+        onboardingFlow: instagramOnboardingEnabled() ? "enabled" : "disabled",
       };
     })(),
     // العنوان العام المعتمد: يكشف سبب فشل OAuth قبل وقوعه بلا أي سرّ. يبيّن مصدر

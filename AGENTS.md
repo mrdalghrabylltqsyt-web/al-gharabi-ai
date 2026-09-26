@@ -1133,14 +1133,31 @@ instagram_manage_insights, pages_show_list, pages_read_engagement`)؛ `business_
 
 **الخلاصة الصادقة:** الفحص بلا كوكيز يثبت فقط أن Meta تقبل الرابط حتى شاشة الدخول (وهو
 ثابت لكل المسارات). الفشل بعد الدخول لا يُثبت ولا يُنفى من بيئة الوكيل لغياب جلسة المالك.
-لذلك الناتج النهائي هو (B): **إجراء واحد مثبت مطلوب من Zaid**، لا تشخيص آخر:
-راجع قيمة `FACEBOOK_OAUTH_SCOPES` في Render (إن وُجدت) — حقل `scopes` في رد `oauth/start`
-أو `oauth/setup` يعرض القائمة الفعلية؛ أي اسم صلاحية غير قائم ينتج 500 قبل الدخول، وأي
-صلاحية غير مفعّلة في **Use Case** تنتج «Invalid Scopes»/فشل الموافقة بعد الدخول. هذا هو
-الفحص الوحيد الذي يحتاج جلسة المالك.
 
-اختبارات: `instagram.connector.test.ts` = **176 فحصاً** (مجموعة 23 الجديدة: كشف
-`businessLoginSurface` مع Business Login بلا حجب، وانتقاله إلى false مع `config_id`).
-فحوص final-audit الجديدة: `meta-dialog-business-login-surface`,
-`meta-dialog-surface-exposed-safe`, `meta-dialog-surface-no-false-block` (242 إجمالاً).
+**مفتاح مخرج بلا كود جديد:** `INSTAGRAM_OAUTH_ONBOARDING` (افتراضياً مفعّل) يتحكّم بتدفّق
+الإعداد الموحّد. ضبطه `false` في Render يحوّل الرابط إلى `response_type=code` بلا
+`extras`/`display`، فيمرّ الربط بالتدفّق العادي عبر
+`/me/accounts?fields=instagram_business_account` — وهو المخرج الموثّق من مطوّرين لعطل
+`1850019`. لا يُنفَّذ التحويل افتراضياً لأن الوثيقة الرسمية تطلب التدفّق الموحّد، ولا يُغيّر
+شيء في الكود. يُعلَن في `oauth/setup` (`active`/`envSwitch`/`envSwitchValue`) وفي
+`/api/readiness` (`instagramOAuth.onboardingFlow`). `oauth/setup` لم يعد يوجّه المالك
+لإنشاء Configuration لـInstagram (`configIdRequired:false`، و`loginForBusinessSetup`
+لـFacebook فقط)، ويعرض `requiredProducts` و`appType` وعطل `1850019` المعروف صراحةً.
+
+**الناتج النهائي (B) — إجراء واحد مثبت مطلوب من Zaid:** افتح
+`/api/platforms/instagram/oauth/setup` للمالك وتأكد من: (1) منتج
+«Instagram → API setup with Facebook login» مضاف للتطبيق (وإلا فأضفه)، (2) التطبيق من نوع
+Business، (3) حسابك في Roles → Testers إن كان التطبيق Development، (4) لا يوجد
+`FACEBOOK_OAUTH_SCOPES`/`INSTAGRAM_OAUTH_SCOPES` بقيمة فيها اسم صلاحية غير قائم. إن ظهرت
+«حدث خطأ ما» بعد تسجيل الدخول فقط، اضبط `INSTAGRAM_OAUTH_ONBOARDING=false` وأعد المحاولة —
+بلا نشر جديد.
+
+اختبارات: `instagram.connector.test.ts` = **186 فحصاً** (مجموعة 23 الجديدة: كشف
+`businessLoginSurface` مع Business Login بلا حجب، وانتقاله إلى false مع `config_id`،
+وعدم طلب Configuration لـInstagram، ومفتاح الإعداد معطّلاً => `response_type=code`).
+فحوص final-audit: `meta-dialog-business-login-surface`، `meta-dialog-surface-exposed-safe`،
+`meta-dialog-surface-no-false-block`، `instagram-no-config-id-required`،
+`instagram-known-onboarding-issue-exposed`، `instagram-setup-no-config-id-test`،
+`instagram-onboarding-env-switch`، `instagram-onboarding-switch-test`،
+`instagram-onboarding-switch-documented` (248 إجمالاً).
 

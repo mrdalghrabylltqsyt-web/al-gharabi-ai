@@ -95,7 +95,13 @@ services:
         sync: false
       # Instagram Login for Business Configuration ID (optional; digits only).
       # Highest priority; falls back to FACEBOOK_LOGIN_CONFIG_ID.
+      # Not required by the official Instagram flow (which passes scope, not config_id).
       - key: INSTAGRAM_LOGIN_CONFIG_ID
+        sync: false
+      # Optional switch for Meta's unified onboarding window (extras=IG_API_ONBOARDING).
+      # Leave unset to keep the documented flow. Set to "false" to use the regular
+      # code flow if Meta's onboarding dialog fails after login (error 1850019).
+      - key: INSTAGRAM_OAUTH_ONBOARDING
         sync: false
       # X / Twitter:
       - key: X_OAUTH_CLIENT_ID

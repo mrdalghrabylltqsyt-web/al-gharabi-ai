@@ -320,6 +320,16 @@ add('instagram-onboarding-tests', /IG_API_ONBOARDING/.test(fs.readFileSync(path.
 add('meta-dialog-business-login-surface', read('engine/social/facebook.ts').includes('businessLoginSurface') && /is_business_login=\(0\|1\)/.test(read('engine/social/facebook.ts')), 'تصنيف سلسلة الحوار يكشف واجهة الدخول التي تسلكها Meta (Business Login مقابل الكلاسيكي)');
 add('meta-dialog-surface-exposed-safe', server.includes('businessLoginSurface: dialogProbe.businessLoginSurface') && !/console\.\w+\([^)]*is_business_login/i.test(server), 'الواجهة تُعلن في رد الفحص (منطقي) بلا تسجيل رابط يحمل الاستعلام');
 add('meta-dialog-surface-no-false-block', !server.includes('permissionDeliveryMismatch'), 'لا يُحجب الربط بذريعة «عدم تطابق الواجهة»: مسار Instagram الرسمي يمرّر scope على Business Login وهو سلوك مطابق للوثيقة');
+// مسار Instagram الرسمي لا يستخدم config_id (الوثيقة تشترط ستة معاملات فقط):
+// لا يُوجَّه المالك لإنشاء Configuration لـInstagram في oauth/setup.
+add('instagram-no-config-id-required', /configIdRequired:false/.test(server) && !/loginForBusinessSetup:\(platform==="facebook"\|\|platform==="instagram"\)/.test(server), 'oauth/setup يعلن أن config_id غير مطلوب لـInstagram ولا يطلب Configuration له');
+add('instagram-known-onboarding-issue-exposed', /knownIssue:/.test(server) && /1850019/.test(server), 'يُعلن عطل Meta المعروف في تدفّق الإعداد (1850019) بدل إخفائه');
+add('instagram-setup-no-config-id-test', /oauth\/setup يعلن أن config_id غير مطلوب/.test(fs.readFileSync(path.join(root, 'engine/tests/instagram.connector.test.ts'), 'utf8')), 'اختبار يثبت أن oauth/setup لا يطلب Configuration لـInstagram');
+// مفتاح INSTAGRAM_OAUTH_ONBOARDING يحوّل مخرج عطل Meta 1850019 إلى تغيير إعداد
+// بلا كود جديد: تعطيله يسلك التدفّق العادي (response_type=code بلا extras).
+add('instagram-onboarding-env-switch', server.includes('function instagramOnboardingEnabled') && server.includes('instagramOnboardingEnabled()'), 'مفتاح بيئة يتحكّم بتدفّق الإعداد الموحّد (extras) بلا تعديل كود');
+add('instagram-onboarding-switch-test', /INSTAGRAM_OAUTH_ONBOARDING: 'false'/.test(fs.readFileSync(path.join(root, 'engine/tests/instagram.connector.test.ts'), 'utf8')), 'اختبار يثبت أن تعطيل المفتاح ينتج response_type=code بلا extras');
+add('instagram-onboarding-switch-documented', fs.readFileSync(path.join(root, '.env.example'), 'utf8').includes('INSTAGRAM_OAUTH_ONBOARDING') && fs.readFileSync(path.join(root, 'render.yaml'), 'utf8').includes('INSTAGRAM_OAUTH_ONBOARDING'), 'المفتاح موثّق في .env.example وrender.yaml بلا قيمة سرّية');
 add('instagram-config-id-tests', /INSTAGRAM_LOGIN_CONFIG_ID/.test(fs.readFileSync(path.join(root, 'engine/tests/instagram.connector.test.ts'), 'utf8')), 'اختبار تكاملي يثبت مسار config_id وحجبه عند الصيغة غير الصالحة');
 add('login-config-id-tests-in-suite', typeof pkg.scripts.test === 'string' && pkg.scripts.test.includes('test:instagram') && typeof pkg.scripts.test === 'string' && pkg.scripts.test.includes('test:foundation'), 'اختبارات config_id ضمن npm test (وحدة + تكامل)');
 // --- فحص ما قبل توجيه المالك إلى Meta (منع صفحة «حدث خطأ ما» العمياء) ---
