@@ -1036,3 +1036,23 @@ Meta توجّه حسب `User-Agent`:
 `meta-dialog-mobile-chain-classifier`, `meta-dialog-mobile-ua-probe`,
 `meta-dialog-mobile-flow-exposed`, `meta-dialog-setup-probe`,
 `meta-dialog-mobile-chain-tests`, `meta-dialog-probe-no-query-leak` (228 إجمالاً).
+
+### حسم موضع الرفض: `dialogPhase` (2026-09-26)
+
+فحص الخادم **بلا كوكيز** لا يستطيع رؤية ما بعد تسجيل الدخول، فكان يصنّف الحوار
+«مقبولاً» بينما رفض المالك يقع لاحقاً. لذلك `oauth/setup` يعرض الآن `dialogPhase`:
+
+| القيمة | المعنى | الإجراء |
+|---|---|---|
+| `rejected_before_login` | رفض صريح قبل الدخول | تشخيص الحوار (App ID/نطاق/صلاحية غير معروفة) |
+| `awaiting_owner_login` | توقّف عند شاشة الدخول (لا رفض مُرصود) | **الرفض (إن وُجد) بعد الدخول: فعّل الصلاحيات في Use Case/Configuration** |
+| `acceptable` | وصل إلى الموافقة | — |
+| `probe_unavailable` | تعذّر الفحص (شبكة) | لا حجب |
+
+**نتيجة الإنتاج الحالية:** `dialogPhase=awaiting_owner_login`، و`loginConfigIdUsed=false`،
+و`scopeOverrideConfigured=false`، و`scopeCount=10` — أي أن الرابط يصل إلى شاشة الدخول
+بلا رفض، ولا يوجد تجاوز صلاحيات ولا Configuration ID. فيبقى الإجراء الخارجي الواحد:
+تفعيل الصلاحيات العشر (من حقل `scopes`) في Use Case/Configuration لدى Meta.
+
+`dialogPhase` يُثبت موضع الرفض من داخل النظام فلا يعود المالك يرى «حدث خطأ ما» بلا تفسير.
+
