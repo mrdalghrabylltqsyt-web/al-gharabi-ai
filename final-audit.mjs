@@ -426,6 +426,27 @@ add('tiktok-revoke-not-token-path', !/revokeToken[\s\S]{0,300}?tiktokTokenUrl/.t
 add('tiktok-setup-exposes-token-endpoints', server.includes('revokeEndpoint') && server.includes('tokenEndpoint') && server.includes('authorizationParams'), 'oauth/setup يعرض مسارات الرمز والإبطال والمعاملات بلا سرّ');
 add('tiktok-web-flow-tests', /تدفّق الويب الرسمي/.test(read('engine/tests/tiktok.connector.test.ts')) && /مسار TikTok الرسمي المنفصل/.test(read('engine/tests/tiktok.connector.test.ts')), 'اختبارات تثبت تدفّق الويب الرسمي ومسار الإبطال المنفصل');
 
+// الحالة الصادقة لموصل TikTok (Batch 13): مفردات إحدى عشرة حالة من مصدر واحد،
+// بترتيب أسبقية صريح، وبلا ادعاء اتصال/توثيق/تشغيل بلا دليل.
+const tiktokState = read('engine/social/tiktokState.ts');
+add('tiktok-truthful-state-module', fs.existsSync(path.join(root, 'engine/social/tiktokState.ts')) && tiktokState.includes('export function resolveTikTokState'), 'وحدة الحالة الصادقة لـTikTok موجودة (منطق خالص)');
+add('tiktok-truthful-state-vocabulary', ['NOT_CONFIGURED', 'CODE_READY', 'READY_TO_CONNECT', 'AUTHORIZATION_REQUIRED', 'CONNECTED', 'TOKEN_REFRESH_REQUIRED', 'REVIEW_REQUIRED', 'PUBLISHING_RESTRICTED', 'VERIFIED', 'OPERATIONAL', 'EXTERNAL_BLOCKER'].every((s) => tiktokState.includes(`'${s}'`)), 'المفردات الإحدى عشرة معلنة في المصدر الواحد');
+add('tiktok-state-single-source', server.includes('resolveTikTokState') && /import \{[\s\S]{0,400}?resolveTikTokState[\s\S]{0,200}?\} from "\.\/engine\/social\/tiktokState"/.test(server), 'الخادم يستخدم resolveTikTokState كمصدر واحد (لا منطق حالة موازٍ)');
+add('tiktok-state-no-operational-without-evidence', /operationalEvidence: tiktokOperationalEvidence\(\)/.test(server) && /function tiktokOperationalEvidence[\s\S]{0,400}?state === "published"[\s\S]{0,200}?providerPostId/.test(server), 'لا OPERATIONAL بلا دليل مزود (سجل نشر published بمعرّف منشور)');
+add('tiktok-state-no-connected-without-verify', /providerVerified: verified/.test(server) && tiktokState.includes("state === 'VERIFIED' || state === 'OPERATIONAL' || state === 'PUBLISHING_RESTRICTED'"), 'لا تُعلن حالات الاتصال الموثق بلا providerVerified');
+add('tiktok-state-not-configured-priority', /if \(!input\.clientKeyConfigured \|\| !input\.clientSecretConfigured\)[\s\S]{0,400}?'NOT_CONFIGURED'/.test(tiktokState), 'NOT_CONFIGURED تتقدّم على أي ادعاء اتصال (أسبقية صريحة)');
+add('tiktok-state-code-ready-priority', /!prerequisitesComplete[\s\S]{0,300}?'CODE_READY'/.test(tiktokState), 'CODE_READY تتقدّم على ادعاء الاتصال عند نقص البيئة');
+add('tiktok-state-refresh-required', tiktokState.includes("'reauth_needed'") && tiktokState.includes("'TOKEN_REFRESH_REQUIRED'"), 'TOKEN_REFRESH_REQUIRED معلنة عند reauth/انتهاء بلا refresh');
+add('tiktok-state-review-required', tiktokState.includes("'review_required'") && tiktokState.includes("'REVIEW_REQUIRED'"), 'REVIEW_REQUIRED معلنة من إشارة مراجعة صريحة لا تخمين');
+add('tiktok-state-publishing-restricted', tiktokState.includes('directPostAuditRequired') && tiktokState.includes("'PUBLISHING_RESTRICTED'"), 'PUBLISHING_RESTRICTED معلنة حين يلزم audit للنشر المباشر');
+add('tiktok-state-external-blocker', tiktokState.includes("'EXTERNAL_BLOCKER'") && tiktokState.includes('clientKeyFormatOk'), 'EXTERNAL_BLOCKER معلنة عند صيغة مرفوضة/رفض بيانات التطبيق');
+add('tiktok-state-labels-ar', tiktokState.includes('TIKTOK_STATE_LABELS_AR') && tiktokState.includes('TIKTOK_STATE_TONES'), 'تسميات عربية ودلالات لون للحالات (للعرض)');
+add('tiktok-status-exposes-truthful-state', server.includes('state: truthful.state') && server.includes('stateLabelAr') && server.includes('stateReason') && server.includes('nextAction: truthful.nextAction'), 'GET /api/platforms/tiktok/status يعرض الحالة الصادقة + السبب + الإجراء');
+add('tiktok-readiness-truthful-state', /operationalState: tiktokTruthfulState\(\)\.state/.test(server), 'readiness/health يعكسان الحالة الصادقة الموحّدة');
+add('tiktok-state-no-secret-in-labels', !/Bearer\s/.test(tiktokState) && !/['"]client_secret['"]\s*:/.test(tiktokState) && !/TIKTOK_STATE_LABELS_AR[\s\S]{0,2000}?(eyJ|sk-|re_)/.test(tiktokState), 'وحدة الحالة بلا أي قيمة سرّية (أسماء المتغيرات فقط)');
+add('tiktok-ui-truthful-state', read('src/components/social/PlatformConnectionCenter.tsx').includes('stateLabelAr') && read('src/components/social/SocialManagerView.tsx').includes('stateLabelAr'), 'الواجهة تعرض الحالة الصادقة (مركز الربط + بطاقة المدير)');
+add('tiktok-state-tests', read('engine/tests/tiktok.connector.test.ts').includes('resolveTikTokState') && read('engine/tests/tiktok.connector.test.ts').includes('الحالة الصادقة'), 'اختبارات تغطي الحالة الصادقة (وحدة + تكامل)');
+
 const failed = checks.filter(x => !x.ok);
 console.table(checks);
 if (failed.length) {

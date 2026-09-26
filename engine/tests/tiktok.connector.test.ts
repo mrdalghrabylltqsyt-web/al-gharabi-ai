@@ -51,6 +51,15 @@ import {
   TIKTOK_WEB_AUTHORIZATION_PARAMS,
 } from '../social/tiktok';
 import { createTikTokMock, startTikTokMockServer } from './helpers/tiktokMock';
+import {
+  resolveTikTokState,
+  TIKTOK_TRUTHFUL_STATES,
+  TIKTOK_STATE_LABELS_AR,
+  TIKTOK_STATE_TONES,
+  tiktokStateIsVerified,
+  tiktokStateIsOperational,
+  type TikTokStateInput,
+} from '../social/tiktokState';
 import { signSession } from '../auth/sessions';
 import { PLATFORM_SPECS, hasRealConnector } from '../social/registry';
 
@@ -199,6 +208,60 @@ function unitTests(): void {
   check('المعاملات الرسمية تشمل client_key وresponse_type وscope وredirect_uri وstate', ['client_key', 'response_type', 'scope', 'redirect_uri', 'state'].every((p) => TIKTOK_WEB_AUTHORIZATION_PARAMS.includes(p)));
   check('code_challenge ليس ضمن معاملات الويب الرسمية', !TIKTOK_WEB_AUTHORIZATION_PARAMS.includes('code_challenge'));
 
+  group('3c) وحدة: الحالة الصادقة — مفردة واحدة بترتيب أسبقية صريح');
+  // الأساس: كل الحقائق مكتملة وبيانات التطبيق حاضرة لكن لا ربط بعد.
+  const baseState: TikTokStateInput = {
+    clientKeyConfigured: true, clientSecretConfigured: true, clientKeyFormatOk: true,
+    encryptionKeyValid: true, publicUrlValid: true, pendingAuthorization: false,
+    tokenStored: false, refreshTokenStored: false, tokenExpired: false,
+    connectionStatus: 'disconnected', accountDiscovered: false, providerVerified: false,
+    operationalEvidence: false, directPostAuditRequired: true,
+  };
+  check('المفردات الإحدى عشرة معلنة بالضبط', TIKTOK_TRUTHFUL_STATES.length === 11, TIKTOK_TRUTHFUL_STATES.join(','));
+  check('لكل حالة تسمية عربية', TIKTOK_TRUTHFUL_STATES.every((s) => Boolean(TIKTOK_STATE_LABELS_AR[s])));
+  check('لكل حالة دلالة لون', TIKTOK_TRUTHFUL_STATES.every((s) => Boolean(TIKTOK_STATE_TONES[s])));
+  // 1) NOT_CONFIGURED: بيانات التطبيق ناقصة.
+  check('بلا client_key => NOT_CONFIGURED', resolveTikTokState({ ...baseState, clientKeyConfigured: false }).state === 'NOT_CONFIGURED');
+  check('بلا client_secret => NOT_CONFIGURED', resolveTikTokState({ ...baseState, clientSecretConfigured: false }).state === 'NOT_CONFIGURED');
+  check('NOT_CONFIGURED يذكر اسم المتغير الناقص', /TIKTOK_CLIENT_KEY/.test(resolveTikTokState({ ...baseState, clientKeyConfigured: false }).reason));
+  // 2) EXTERNAL_BLOCKER: صيغة مرفوضة أو رفض صريح لبيانات التطبيق.
+  check('client_key بصيغة غريبة => EXTERNAL_BLOCKER', resolveTikTokState({ ...baseState, clientKeyFormatOk: false }).state === 'EXTERNAL_BLOCKER');
+  check('رفض بيانات التطبيق صراحةً => EXTERNAL_BLOCKER', resolveTikTokState({ ...baseState, providerErrorKind: 'invalid_credentials' }).state === 'EXTERNAL_BLOCKER');
+  // 3) CODE_READY: بيئة ناقصة (تشفير/عنوان عام).
+  check('مفتاح تشفير غير صالح => CODE_READY', resolveTikTokState({ ...baseState, encryptionKeyValid: false }).state === 'CODE_READY');
+  check('APP_URL غير عام => CODE_READY', resolveTikTokState({ ...baseState, publicUrlValid: false }).state === 'CODE_READY');
+  check('CODE_READY يذكر النقص', /PLATFORM_TOKEN_ENCRYPTION_KEY/.test(resolveTikTokState({ ...baseState, encryptionKeyValid: false }).reason));
+  // 4) READY_TO_CONNECT: كل الشروط حاضرة بلا ربط.
+  check('كل الشروط حاضرة => READY_TO_CONNECT', resolveTikTokState(baseState).state === 'READY_TO_CONNECT');
+  check('READY_TO_CONNECT يوجّه لزر الربط', /ربط TikTok/.test(resolveTikTokState(baseState).nextAction));
+  // 5) AUTHORIZATION_REQUIRED: جلسة معلّقة أو رمز محفوظ بلا اتصال.
+  check('جلسة تفويض معلّقة => AUTHORIZATION_REQUIRED', resolveTikTokState({ ...baseState, pendingAuthorization: true }).state === 'AUTHORIZATION_REQUIRED');
+  check('رمز محفوظ بلا اتصال => AUTHORIZATION_REQUIRED', resolveTikTokState({ ...baseState, tokenStored: true }).state === 'AUTHORIZATION_REQUIRED');
+  // 6) TOKEN_REFRESH_REQUIRED: reauth أو انتهاء بلا refresh.
+  check('reauth_needed => TOKEN_REFRESH_REQUIRED', resolveTikTokState({ ...baseState, connectionStatus: 'reauth_needed' }).state === 'TOKEN_REFRESH_REQUIRED');
+  check('انتهاء بلا refresh => TOKEN_REFRESH_REQUIRED', resolveTikTokState({ ...baseState, tokenStored: true, tokenExpired: true, refreshTokenStored: false }).state === 'TOKEN_REFRESH_REQUIRED');
+  check('انتهاء مع refresh لا يستوجب إعادة الربط', resolveTikTokState({ ...baseState, tokenStored: true, tokenExpired: true, refreshTokenStored: true, connectionStatus: 'connected', providerVerified: true }).state !== 'TOKEN_REFRESH_REQUIRED');
+  // 7) CONNECTED: اتصال بلا توثيق.
+  check('متصل بلا توثيق => CONNECTED', resolveTikTokState({ ...baseState, connectionStatus: 'connected', tokenStored: true, accountDiscovered: true, providerVerified: false }).state === 'CONNECTED');
+  // 8) PUBLISHING_RESTRICTED / VERIFIED: اتصال موثق.
+  const verified = resolveTikTokState({ ...baseState, connectionStatus: 'connected', tokenStored: true, accountDiscovered: true, providerVerified: true });
+  check('موثق + audit مطلوب => PUBLISHING_RESTRICTED', verified.state === 'PUBLISHING_RESTRICTED');
+  const verifiedNoAudit = resolveTikTokState({ ...baseState, connectionStatus: 'connected', tokenStored: true, accountDiscovered: true, providerVerified: true, directPostAuditRequired: false });
+  check('موثق بلا قيد => VERIFIED', verifiedNoAudit.state === 'VERIFIED');
+  check('PUBLISHING_RESTRICTED يوجّه لرفع المسودة', /مسودة/.test(verified.nextAction));
+  // 9) OPERATIONAL: دليل مزود على سير عمل رسمي.
+  const op = resolveTikTokState({ ...baseState, connectionStatus: 'connected', tokenStored: true, accountDiscovered: true, providerVerified: true, operationalEvidence: true });
+  check('دليل مزود => OPERATIONAL', op.state === 'OPERATIONAL');
+  check('OPERATIONAL يعني تشغيلاً فعلياً', tiktokStateIsOperational(op.state) && tiktokStateIsVerified(op.state));
+  // 10) REVIEW_REQUIRED: إشارة مراجعة صريحة من المزود.
+  check('إشارة مراجعة صريحة => REVIEW_REQUIRED', resolveTikTokState({ ...baseState, providerErrorKind: 'review_required' }).state === 'REVIEW_REQUIRED');
+  // قواعد الحماية: لا حالة أعلى بلا دليلها.
+  check('لا VERIFIED/OPERATIONAL بلا providerVerified', ['CONNECTED', 'TOKEN_REFRESH_REQUIRED', 'READY_TO_CONNECT'].includes(resolveTikTokState({ ...baseState, connectionStatus: 'connected', tokenStored: true, accountDiscovered: true }).state));
+  check('لا OPERATIONAL بلا دليل مزود', resolveTikTokState({ ...baseState, connectionStatus: 'connected', tokenStored: true, accountDiscovered: true, providerVerified: true }).state !== 'OPERATIONAL');
+  check('لا ادعاء اتصال عندما تكون البيئة ناقصة (أسبقية CODE_READY)', resolveTikTokState({ ...baseState, encryptionKeyValid: false, connectionStatus: 'connected', providerVerified: true, operationalEvidence: true }).state === 'CODE_READY');
+  check('لا ادعاء اتصال عندما تكون بيانات التطبيق ناقصة (أسبقية NOT_CONFIGURED)', resolveTikTokState({ ...baseState, clientKeyConfigured: false, connectionStatus: 'connected', providerVerified: true, operationalEvidence: true }).state === 'NOT_CONFIGURED');
+  check('الحالة الصادقة لا تحمل أي قيمة سرّية', !JSON.stringify(resolveTikTokState(baseState)).match(/secret|token_|Bearer/i));
+
   group('4) وحدة: بناء طلبات الرمز والنشر');
   const ex = buildTikTokTokenExchangeBody({ clientKey: 'ck', clientSecret: 'cs', code: 'C1', redirectUri: 'https://x/cb', codeVerifier: 'V1' });
   check('جسم التبادل يحمل client_key وgrant_type', ex.get('client_key') === 'ck' && ex.get('grant_type') === 'authorization_code');
@@ -345,6 +408,15 @@ async function integrationTests(): Promise<void> {
     check('refresh token مخزّن', status.refreshTokenStored === true);
     check('انتهاء التوكن معلوم', status.tokenExpiryKnown === true);
     check('الحالة بلا أي سرّ', !JSON.stringify(status).includes(TT_CLIENT_SECRET) && !JSON.stringify(status).includes(mock.state.accessToken));
+    // الحالة الصادقة الموحّدة: بعد ربط موثق وقيد audit => PUBLISHING_RESTRICTED
+    // (لا OPERATIONAL بلا دليل مزود على سير عمل رسمي).
+    check('الحالة الصادقة = PUBLISHING_RESTRICTED بعد ربط موثق (audit مطلوب)', status.state === 'PUBLISHING_RESTRICTED', JSON.stringify(status).slice(0, 200));
+    check('الحالة تحمل التسمية العربية', typeof status.stateLabelAr === 'string' && status.stateLabelAr.length > 0);
+    check('الحالة تحمل دلالة لون', ['operational', 'verified', 'transitional', 'blocked', 'unconfigured'].includes(status.stateTone));
+    check('الحالة تحمل سبباً وإجراءً تالياً', typeof status.stateReason === 'string' && typeof status.nextAction === 'string');
+    check('الحالة لا تدّعي OPERATIONAL بلا دليل مزود', status.state !== 'OPERATIONAL');
+    check('مفردات الحالات معلنة في الرد', Array.isArray(status.truthfulStates) && status.truthfulStates.length === 11);
+    check('الحالة الصادقة بلا أي سرّ', !JSON.stringify({ s: status.state, r: status.stateReason, n: status.nextAction }).includes(TT_CLIENT_SECRET));
 
     group('13) تكامل: إعادة استخدام state مرفوضة (منع replay)');
     const replay = await fetch(`${BASE}/api/platforms/tiktok/oauth/callback?code=AUTHCODE_TEST&state=${encodeURIComponent(stateVal)}`, { headers: auth });
@@ -391,6 +463,16 @@ async function integrationTests(): Promise<void> {
     check('جسم المسودة يحمل source_info فقط (بلا post_info)', mock.state.lastPublishInit?.body?.source_info?.video_url === 'https://example.invalid/draft.mp4' && mock.state.lastPublishInit?.body?.post_info === undefined);
     check('رفع المسودة بلا ادعاء تسليم', draftPubBody.delivered === false);
     check('رفع المسودة لا يحتاج audit معلن', draftPubBody.auditRequired === false);
+
+    // دليل المزود على إتمام سير عمل رسمي: استعلام حالة النشر يعيد PUBLISH_COMPLETE
+    // فيُحدَّث السجل إلى published بمعرّف منشور حقيقي => الحالة الصادقة OPERATIONAL.
+    const finalStatus = await (await fetch(`${BASE}/api/platforms/tiktok/publish-status?publishId=${mock.state.publishId}`, { headers: auth })).json();
+    check('استعلام الحالة بعد النشر يعيد PUBLISH_COMPLETE', finalStatus.status?.delivered === true);
+    const opStatus = await (await fetch(`${BASE}/api/platforms/tiktok/status`, { headers: auth })).json();
+    check('دليل مزود على سير عمل رسمي => OPERATIONAL', opStatus.state === 'OPERATIONAL', JSON.stringify({ s: opStatus.state, r: opStatus.stateReason }));
+    const opReadiness = await (await fetch(`${BASE}/api/readiness`)).json();
+    check('readiness يعكس الحالة الصادقة OPERATIONAL بلا ادعاء', opReadiness.tiktokOAuth?.operationalState === 'OPERATIONAL');
+    check('readiness يحمل سبب الحالة بلا سرّ', typeof opReadiness.tiktokOAuth?.operationalStateReason === 'string' && !JSON.stringify(opReadiness).includes(TT_CLIENT_SECRET));
 
     const notApproved = await fetch(`${BASE}/api/platforms/tiktok/publish`, { method: 'POST', headers: auth, body: JSON.stringify({ content: 'عرض', videoUrl: 'https://example.invalid/v.mp4' }) });
     check('نشر بلا موافقة => 409 APPROVAL_REQUIRED', notApproved.status === 409);

@@ -811,6 +811,16 @@ export const SocialManagerView: React.FC = () => {
 
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-[11px]">
           <div className="p-3 rounded-xl bg-slate-950 border border-slate-800 space-y-1">
+            <div>الحالة الصادقة: <span className={
+              ttStatus?.stateTone === 'operational' ? 'text-emerald-400 font-bold'
+                : ttStatus?.stateTone === 'verified' ? 'text-emerald-300 font-bold'
+                  : ttStatus?.stateTone === 'transitional' ? 'text-sky-300 font-bold'
+                    : ttStatus?.stateTone === 'blocked' ? 'text-amber-300 font-bold'
+                      : 'text-slate-400 font-bold'}>
+              {ttStatus?.stateLabelAr || ttStatus?.state || '—'}
+            </span> <code dir="ltr" className="text-slate-500 text-[9px]">{ttStatus?.state || ''}</code></div>
+            {ttStatus?.stateReason && <div className="text-slate-400">{ttStatus.stateReason}</div>}
+            {ttStatus?.nextAction && <div className="text-slate-300">الإجراء التالي: {ttStatus.nextAction}</div>}
             <div>حالة الاتصال: <span className={ttStatus?.providerVerified ? 'text-emerald-400 font-bold' : ttStatus?.connected ? 'text-indigo-300 font-bold' : 'text-slate-400 font-bold'}>
               {ttStatus?.providerVerified ? 'متصلة وموثقة (open_id)' : ttStatus?.connected ? 'متصلة — بانتظار التوثيق' : 'غير متصلة'}
             </span></div>

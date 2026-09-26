@@ -238,9 +238,27 @@ const TikTokStatusPanel: React.FC = () => {
   const cap = (v: string) => v === 'SUPPORTED' ? 'bg-emerald-500/10 text-emerald-300 border-emerald-600/30'
     : v === 'NOT_AVAILABLE_BY_PUBLIC_API' ? 'bg-slate-800 text-slate-500 border-slate-700'
       : 'bg-amber-500/10 text-amber-300 border-amber-600/30';
+  // تلوين الحالة الصادقة حسب دلالتها (تشغيلية/موثقة/انتقالية/محجوبة/غير مُعدّة).
+  const toneCls: Record<string, string> = {
+    operational: 'bg-emerald-500/20 text-emerald-300 border-emerald-600/40',
+    verified: 'bg-emerald-500/10 text-emerald-300 border-emerald-600/30',
+    transitional: 'bg-sky-500/10 text-sky-300 border-sky-600/30',
+    blocked: 'bg-amber-500/10 text-amber-300 border-amber-600/30',
+    unconfigured: 'bg-slate-800 text-slate-400 border-slate-700',
+  };
   return (
     <div className="mt-3 pt-3 border-t border-slate-800/70 text-[10px] space-y-2">
       <p className="text-slate-500 flex items-center gap-1"><KeyRound className="w-3 h-3" /> حالة موصل TikTok الحقيقية (بلا أي سرّ):</p>
+      {/* الحالة الصادقة الموحّدة: مفردة واحدة دقيقة + السبب + الإجراء التالي. */}
+      <div className="p-2 rounded-lg bg-slate-950 border border-slate-800 space-y-1">
+        <div className="flex items-center gap-2 flex-wrap">
+          <span className="text-slate-500">الحالة الصادقة:</span>
+          <span className={`px-2 py-0.5 rounded-md border font-black ${toneCls[status.stateTone] || toneCls.unconfigured}`}>{status.stateLabelAr || status.state}</span>
+          <code className="text-slate-500 text-[9px]" dir="ltr">{status.state}</code>
+        </div>
+        {status.stateReason && <p className="text-slate-400">{status.stateReason}</p>}
+        {status.nextAction && <p className="text-slate-300">الإجراء التالي: {status.nextAction}</p>}
+      </div>
       <div className="flex flex-wrap gap-1.5">
         <span className={`px-2 py-0.5 rounded-md border font-bold ${status.providerVerified ? 'bg-emerald-500/10 text-emerald-300 border-emerald-600/30' : status.connected ? 'bg-indigo-500/10 text-indigo-300 border-indigo-600/30' : 'bg-slate-800 text-slate-400 border-slate-700'}`}>
           {status.providerVerified ? 'متصل وموثق (open_id)' : status.connected ? 'متصل — غير موثق' : 'غير متصل'}

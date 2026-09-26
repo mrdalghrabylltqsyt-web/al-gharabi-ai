@@ -80,6 +80,13 @@ import {
   type TikTokPrivacyLevel,
 } from "./engine/social/tiktok";
 import {
+  resolveTikTokState,
+  TIKTOK_TRUTHFUL_STATES,
+  TIKTOK_STATE_LABELS_AR,
+  TIKTOK_STATE_TONES,
+  type TikTokTruthfulState,
+} from "./engine/social/tiktokState";
+import {
   createOAuthState,
   createPkcePair,
   requiresPkce,
@@ -1451,6 +1458,51 @@ function tiktokOperationalNow(): boolean {
 /** حالة قيد مراجعة TikTok (audit): النشر المباشر العام محصور حتى الاجتياز. */
 function tiktokAuditRequired(): boolean {
   return tiktokCapabilityNeedsAudit("content_posting_direct");
+}
+/**
+ * دليل مزود على إتمام سير عمل رسمي لـTikTok: سجل نشر حُدِّث إلى `published`
+ * بعد استعلام حالة أعاد PUBLISH_COMPLETE (providerPostId حقيقي). لا يُعلن
+ * OPERATIONAL بلا هذا الدليل — لا بالتخمين.
+ */
+function tiktokOperationalEvidence(): boolean {
+  const records = (workspace as any).publishRecords;
+  if (!Array.isArray(records)) return false;
+  return records.some((r: any) => r.platform === "tiktok" && r.state === "published" && Boolean(r.providerPostId));
+}
+/**
+ * هل توجد جلسة تفويض TikTok معلّقة (بدأ المالك الربط ولم تكتمل العودة)؟
+ * تُقرأ من الحالة الذاكرية الصامدة (pendingOAuth) — بلا أي سرّ.
+ */
+function tiktokPendingAuthorization(): boolean {
+  for (const p of pendingOAuth.values()) if (p.platform === "tiktok" && p.expiresAt > Date.now()) return true;
+  return false;
+}
+/**
+ * الحالة الصادقة الموحّدة لموصل TikTok — مصدرها الواحد `resolveTikTokState`.
+ * تُجمّع الحقائق الحية فقط (بلا أي سرّ) وتُترجم إلى مفردة حالة واحدة دقيقة.
+ */
+function tiktokTruthfulState(): ReturnType<typeof resolveTikTokState> {
+  const c = tiktokOAuthConfig();
+  const stored = tiktokStoredCredentials();
+  const conn: any = platformConnections.get("tiktok");
+  const tk = tokenKeyInspection();
+  const verified = Boolean(conn?.status === "connected" && conn?.providerVerified === true && stored?.openId);
+  return resolveTikTokState({
+    clientKeyConfigured: Boolean(c?.clientId),
+    clientSecretConfigured: Boolean(c?.clientSecret),
+    clientKeyFormatOk: isPlausibleTikTokClientKey(String(c?.clientId || "")),
+    encryptionKeyValid: tk.state === "valid",
+    publicUrlValid: resolvePublicUrl(process.env).valid,
+    pendingAuthorization: tiktokPendingAuthorization(),
+    tokenStored: Boolean(stored?.accessToken),
+    refreshTokenStored: Boolean(stored?.refreshToken),
+    tokenExpired: Boolean(stored?.accessToken) && tiktokAccessExpired(),
+    connectionStatus: conn?.status === "connected" ? "connected" : conn?.status === "reauth_needed" ? "reauth_needed" : "disconnected",
+    accountDiscovered: Boolean(stored?.openId),
+    providerVerified: verified,
+    operationalEvidence: tiktokOperationalEvidence(),
+    directPostAuditRequired: tiktokAuditRequired(),
+  });
 }
 /** تخزين مؤقت قصير لنتيجة فحص بدء OAuth (يمنع إغراق Meta عند كل ضغطة زر). */
 const oauthStartPreflightCache = new Map<string, { at: number; result: any }>();
@@ -3112,10 +3164,17 @@ app.get("/api/platforms/tiktok/status", authenticateToken, async (req,res)=>{
   const stored=tiktokStoredCredentials();
   const conn:any=platformConnections.get("tiktok");
   const verified=Boolean(conn?.status==="connected"&&conn?.providerVerified===true&&stored?.openId);
+  // الحالة الصادقة الموحّدة (مصدرها الواحد tiktokState.ts): مفردة واحدة دقيقة
+  // بترتيب أسبقية صريح، مع السبب والإجراء التالي — بلا ادعاء اتصال/تشغيل.
+  const truthful=tiktokTruthfulState();
   res.json({
     success:true,
     platform:"tiktok",
-    state: verified ? "OPERATIONAL_READY" : conn?.status==="connected" ? "CONNECTED" : "DISCONNECTED",
+    state: truthful.state,
+    stateLabelAr: truthful.labelAr,
+    stateTone: truthful.tone,
+    stateReason: truthful.reason,
+    nextAction: truthful.nextAction,
     connected: conn?.status==="connected",
     providerVerified: verified,
     accountId: stored?.openId||null,
@@ -3145,6 +3204,10 @@ app.get("/api/platforms/tiktok/status", authenticateToken, async (req,res)=>{
     directMessagesCapability: tiktokCapabilityStatus("direct_messages_read"),
     appReviewRequired: tiktokAuditRequired(),
     capabilityMatrix: TIKTOK_CAPABILITY_MATRIX,
+    // مفردات الحالات الصادقة (مصدرها الواحد) ليعرضها مركز الربط بلا تخمين.
+    truthfulStates: [...TIKTOK_TRUTHFUL_STATES],
+    truthfulStateLabels: TIKTOK_STATE_LABELS_AR,
+    truthfulStateTones: TIKTOK_STATE_TONES,
     checkedAt:new Date().toISOString(),
     note:"حالة حقيقية من TikTok بلا أي سرّ. لا يُعلن الاتصال موثقاً إلا بمعرّف open_id من TikTok.",
   });
@@ -5397,7 +5460,10 @@ app.get("/api/readiness", (_req, res) => {
         appReviewRequired: tiktokAuditRequired(),
         /** رفع المسودة لا يحتاج audit (video.upload)، والنشر العام يحتاجه (video.publish). */
         draftUploadRequiresAudit: false,
-        operationalState: verified ? "OPERATIONAL_READY" : conn?.status === "connected" ? "CONNECTED" : "DISCONNECTED",
+        // الحالة الصادقة الموحّدة (مصدرها الواحد tiktokState.ts) — بلا ادعاء.
+        operationalState: tiktokTruthfulState().state,
+        operationalStateLabelAr: tiktokTruthfulState().labelAr,
+        operationalStateReason: tiktokTruthfulState().reason,
       };
     })(),
     timestamp: new Date().toISOString(),
@@ -5780,6 +5846,10 @@ app.get("/api/health", (_req, res) => {
         webhookEvents: [...TIKTOK_WEBHOOK_EVENTS],
         appReviewRequired: tiktokAuditRequired(),
         connectorConfigured: tiktokConnectorConfigured(),
+        // الحالة الصادقة الموحّدة (مصدرها الواحد tiktokState.ts) — بلا ادعاء.
+        operationalState: tiktokTruthfulState().state,
+        operationalStateLabelAr: tiktokTruthfulState().labelAr,
+        operationalStateReason: tiktokTruthfulState().reason,
       };
     })(),
     // العنوان العام المعتمد: يكشف سبب فشل OAuth قبل وقوعه بلا أي سرّ. يبيّن مصدر

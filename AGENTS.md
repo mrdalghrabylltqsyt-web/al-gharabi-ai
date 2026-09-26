@@ -1331,3 +1331,42 @@ Posting API **منفصلان تماماً**، وكان الكود يستخدم �
 **درس عام:** لا تُضاف معاملات OAuth «للأمان» بلا سند من وثيقة المسار نفسه؛ معامل زائد
 في رابط تفويض قد يُرفض بلا سبب ظاهر. والمسار الصحيح لكل عملية يُثبت بفحص حي، لا بالافتراض
 أن كل عمليات المزود على مسار واحد.
+
+## الحالة الصادقة لموصل TikTok — مفردات إحدى عشرة حالة من مصدر واحد (Batch 13, 2026-09-26)
+
+كان الموصل يعرض ثلاث حالات محصورة (`OPERATIONAL_READY` / `CONNECTED` / `DISCONNECTED`)
+وهي لا تفصل «غير مُعدّ» عن «منفّذ بالكود» عن «جاهز للربط» عن «يلزم تجديد» عن «قيد مراجعة».
+النتيجة: التباس في واجهة المالك — لا يعرف هل المشكلة في البيئة أم في التفويض أم في مراجعة
+TikTok. أُضيف مصدر واحد صادق للترجمة بين الحقائق الحية والمفردة المعروضة.
+
+**`engine/social/tiktokState.ts`** — منطق خالص قابل للاختبار (بلا شبكة ولا أسرار):
+- `TIKTOK_TRUTHFUL_STATES`: الإحدى عشرة بالضبط — `NOT_CONFIGURED`, `CODE_READY`,
+  `READY_TO_CONNECT`, `AUTHORIZATION_REQUIRED`, `CONNECTED`, `TOKEN_REFRESH_REQUIRED`,
+  `REVIEW_REQUIRED`, `PUBLISHING_RESTRICTED`, `VERIFIED`, `OPERATIONAL`, `EXTERNAL_BLOCKER`.
+- `TIKTOK_STATE_LABELS_AR` و`TIKTOK_STATE_TONES` (operational/verified/transitional/blocked/unconfigured).
+- `resolveTikTokState(input)` يحسم الحالة بترتيب أسبقية صريح:
+  بيانات ناقصة → `NOT_CONFIGURED`؛ صيغة مرفوضة/رفض بيانات التطبيق → `EXTERNAL_BLOCKER`؛
+  `reauth_needed` → `TOKEN_REFRESH_REQUIRED`؛ نقص البيئة (تشفير/عنوان عام) → `CODE_READY`؛
+  انتهاء بلا refresh → `TOKEN_REFRESH_REQUIRED`؛ إشارة مراجعة صريحة → `REVIEW_REQUIRED`؛
+  دليل مزود على سير عمل رسمي → `OPERATIONAL`؛ موثق + audit → `PUBLISHING_RESTRICTED`؛
+  موثق بلا قيد → `VERIFIED`؛ متصل بلا توثيق → `CONNECTED`؛ جلسة/رمز بلا اتصال →
+  `AUTHORIZATION_REQUIRED`؛ وإلا → `READY_TO_CONNECT`.
+
+**قواعد الحماية (مُختبرة):** لا `VERIFIED`/`OPERATIONAL` بلا `providerVerified`، ولا
+`OPERATIONAL` بلا دليل مزود (سجل نشر `published` بمعرّف منشور حقيقي)، و`NOT_CONFIGURED`
+و`CODE_READY` تتقدّمان على أي ادعاء اتصال (فلا يُعلن اتصال مع بيئة ناقصة).
+
+**الربط:** `server.ts` يجمّع الحقائق في `tiktokTruthfulState()` (بلا أي سرّ) ويستدعيه في
+`GET /api/platforms/tiktok/status` (`state`/`stateLabelAr`/`stateTone`/`stateReason`/
+`nextAction` + `truthfulStates`)، وفي `/api/readiness` و`/api/health`
+(`operationalState`/`operationalStateLabelAr`/`operationalStateReason`).
+الواجهة: `TikTokStatusPanel` في `PlatformConnectionCenter` وبطاقة TikTok في
+`SocialManagerView` تعرضان الحالة الصادقة مع سببها وإجراءها التالي بلون دلالتها.
+
+اختبارات: `tiktok.connector.test.ts` = **221 فحصاً** (مجموعة `3c` وحدة تغطي كل حالة
+وأسبقياتها وقواعد الحماية، وفحوص تكامل تثبت `PUBLISHING_RESTRICTED` بعد ربط موثق،
+و`OPERATIONAL` بعد PUBLISH_COMPLETE، وانعكاسها في readiness). فحوص final-audit الستة عشر:
+`tiktok-truthful-state-module` … `tiktok-state-tests` (319 إجمالاً).
+
+**لم يُمسّ:** Facebook/Instagram/Telegram (تغيّر صفر — انحدارها كلها ناجح)، ولا Gemini،
+ولا مفاتيح التشفير، ولا مسارات OAuth القائمة.
