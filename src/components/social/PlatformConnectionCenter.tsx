@@ -83,6 +83,14 @@ const OAuthSetupPanel: React.FC<{ platform: string }> = ({ platform }) => {
       {info.mobileDialogProbe && (
         <div className="mt-1.5 pt-1.5 border-t border-slate-800/70 space-y-1">
           <p className="text-slate-500 flex items-center gap-1"><KeyRound className="w-3 h-3" /> فحص مسار الجوال الفعلي (بلا بدء الربط):</p>
+          {info.dialogPhase && (
+            <p className="text-slate-400">
+              موضع الفحص: {info.dialogPhase === 'rejected_before_login' ? 'رُفض قبل تسجيل الدخول'
+                : info.dialogPhase === 'awaiting_owner_login' ? 'توقّف عند شاشة الدخول — الرفض (إن وُجد) يقع بعد الدخول في Use Case/Configuration'
+                : info.dialogPhase === 'probe_unavailable' ? 'تعذّر الفحص (شبكة)'
+                : 'لا رفض مُرصود'}
+            </p>
+          )}
           {info.mobileDialogProbe.probed === false ? (
             <p className="text-amber-300">تعذّر الفحص: {info.mobileDialogProbe.error}</p>
           ) : (

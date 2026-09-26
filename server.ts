@@ -1470,7 +1470,7 @@ async function probeMetaDialog(input: { authorizationUrl: string }): Promise<Met
   };
   // حدّ أقصى صغير: سلسلة Meta الفعلية 2–3 قفزات؛ الحد يمنع أي حلقة تحويل.
   const MAX_HOPS = 5;
-  const hops: { step: number; status: number; host: string | null; path: string | null; mobile: boolean }[] = [];
+  const hops: { step: number; status: number; host: string | null; path: string | null; mobile: boolean; kind: string | null }[] = [];
   const raw: { status: number; location: string | null; body: string }[] = [];
   // وكيل جوال حقيقي + ترويسات متصفح كافية لسلك مسار الجوال (sec-fetch-mode).
   const browserHeaders: Record<string, string> = {
@@ -1498,7 +1498,7 @@ async function probeMetaDialog(input: { authorizationUrl: string }): Promise<Met
       // تأتي مع 500، وصفحة الجوال تحمل نصاً مختلفاً؛ الحالة لا تُغيّر أنها رفض.
       const bodySample = (await res.text().catch(() => "")).slice(0, 4000);
       raw.push({ status, location, body: bodySample });
-      hops.push({ step, status, host: logicalHost, path: safeUrlPath(logicalUrl), mobile: isMetaMobileHost(logicalHost) });
+      hops.push({ step, status, host: logicalHost, path: safeUrlPath(logicalUrl), mobile: isMetaMobileHost(logicalHost), kind: classifyMetaDialogInteraction({ status, location, body: bodySample }).kind });
       // دليل رفض صريح في هذه القفزة: لا داعي لمتابعة التحويل (يوفّر طلبات Meta).
       if (classifyMetaDialogChain([{ status, location, body: bodySample }]).rejection) break;
       // لا نتّبع إلا تحويلاً إلى مضيف Meta نفسه (www/m/mbasic) أو مضيف رابط
@@ -3186,9 +3186,17 @@ app.get("/api/platforms/:platform/oauth/setup", requireOwner, async (req,res)=>{
       note:"عند وجود Configuration ID صالح يمرّره الخادم كـconfig_id بدل scope، فلا يتعارض المعاملان.",
     }:undefined,
     genericErrorMeaning:(platform==="facebook"||platform==="instagram")?{
-      message:"صفحة Meta «حدث خطأ ما» (Sorry, something went wrong) تظهر لسببين فقط يمكن فحصهما: (1) معرّف تطبيق غير صالح/غير مطابق، (2) نطاق غير مُضمَّن في App Domains أو رابط إرجاع غير مسجّل. وعند فشل الربط من متصفح الجوال تحديداً، تحقّق من حقل mobileDialogProbe: يُظهر القفزة الفعلية على m.facebook.com والحالة والنص.",
-      checks:["طابق App ID مع Settings → Basic (أرقام فقط بلا مسافات).","أضف appDomainsValue إلى App Domains بلا https وبلا مسار.","أضف redirectUri بالضبط إلى Valid OAuth Redirect URIs.","تأكد أن Facebook Login product مُضاف وأن التطبيق Live (لا Development لمستخدمين غير مصرّح لهم)."],
+      message:"صفحة Meta «حدث خطأ ما» (Sorry, something went wrong) لها ثلاثة مواضع محتملة: (1) قبل تسجيل الدخول: معرّف تطبيق غير مطابق أو نطاق/رابط إرجاع غير مسجّل، (2) بعد تسجيل الدخول: مجموعة الصلاحيات غير مفعّلة كاملةً في Use Case أو Configuration، (3) نوع التطبيق: تطبيق نوعه Business يُوجَّه إلى Facebook Login for Business الذي يقرأ الصلاحيات من Configuration عبر config_id لا من معامل scope. حقل dialogPhase أدناه يحدد الموضع: rejected_before_login مقابل awaiting_owner_login (أي أن الفحص بلا كوكيز توقّف عند شاشة الدخول ولم يرَ مرحلة ما بعدها).",
+      checks:["طابق App ID مع Settings → Basic (أرقام فقط بلا مسافات).","أضف appDomainsValue إلى App Domains بلا https وبلا مسار.","أضف redirectUri بالضبط إلى Valid OAuth Redirect URIs.","فعّل كل صلاحية في scopes داخل Use Case/Configuration — لا يكفي وجودها في الرابط.","إن كان التطبيق من نوع Business فأنشئ Configuration واربط INSTAGRAM_LOGIN_CONFIG_ID/FACEBOOK_LOGIN_CONFIG_ID (config_id بدل scope)."],
     }:undefined,
+    // موضع الرفض الفعلي: يمنع تشخيصاً خاطئاً لأن فحصاً بلا كوكيز لا يرى ما بعد
+    // تسجيل الدخول، فيبدو «مقبولاً» مع أن الرفض يقع في مرحلة Use Case.
+    dialogPhase:metaScopesResolved&&mobileDialogProbe?(
+      mobileDialogProbe.probed===false ? "probe_unavailable"
+      : mobileDialogProbe.outcome==="rejected" ? "rejected_before_login"
+      : (mobileDialogProbe.hops||[]).some((h:any)=>h.kind==="login") ? "awaiting_owner_login"
+      : "acceptable"
+    ):undefined,
     appSecretConfigured:(platform==="facebook"||platform==="instagram")?Boolean(platform==="instagram"?instagramAppSecret():facebookAppSecret()):undefined,
     verifyTokenConfigured:(platform==="facebook"||platform==="instagram")?Boolean(platform==="instagram"?instagramVerifyToken():facebookVerifyToken()):undefined,
     // آخر نتيجة فحص بدء OAuth (منطقية فقط، بلا سرّ ولا استدعاء إضافي). تُظهر

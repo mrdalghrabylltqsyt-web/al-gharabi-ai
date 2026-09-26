@@ -652,7 +652,23 @@ async function integrationTests(): Promise<void> {
     check('oauth/setup يسمّي مضيف الرفض الجوال', setupBody.mobileDialogProbe?.rejectionHost === 'm.facebook.com', JSON.stringify(setupBody.mobileDialogProbe));
     check('oauth/setup يُعلن النتيجة rejected', setupBody.mobileDialogProbe?.outcome === 'rejected');
     check('oauth/setup لا يكشف سرّاً', !JSON.stringify(setupBody).includes('test-fb-client-secret') && !JSON.stringify(setupBody).includes('encrypted_query_string'));
+    check('oauth/setup يحدّد موضع الرفض = قبل تسجيل الدخول', setupBody.dialogPhase === 'rejected_before_login', `phase=${setupBody.dialogPhase}`);
     await mobMock.stop();
+
+    // موضع الرفض: فحص بلا كوكيز يتوقّف عند شاشة الدخول، فلا يجوز أن يوهم المالك
+    // بأن المسار «مقبول» بينما الرفض يقع بعد تسجيل الدخول (Use Case/Configuration).
+    group('20ح) تكامل: dialogPhase يفرّق ما قبل الدخول عمّا بعده');
+    await stop(currentApp.proc);
+    const loginMock = await startFacebookMockServer(FB_PORT + 11, createFacebookMock({ dialogOutcome: 'login' }));
+    currentApp = startApp(loginMock.base);
+    check('الخادم يقلع لفحص مرحلة الدخول', await waitForHealth(), currentApp.log().slice(0, 300));
+    Object.assign(auth, await login());
+    const loginSetup = await fetch(`${BASE}/api/platforms/facebook/oauth/setup`, { headers: auth });
+    const loginSetupBody: any = await loginSetup.json();
+    check('حوار ينتهي عند شاشة الدخول => awaiting_owner_login', loginSetupBody.dialogPhase === 'awaiting_owner_login', `phase=${loginSetupBody.dialogPhase} hops=${JSON.stringify(loginSetupBody.mobileDialogProbe?.hops)}`);
+    check('الفحص بلا كوكيز لا يعلن رفضاً قبل الدخول', loginSetupBody.mobileDialogProbe?.outcome === 'acceptable', JSON.stringify(loginSetupBody.mobileDialogProbe));
+    check('التوجيه يذكر أن تفعيل الصلاحيات إجراء لاحق للدخول', JSON.stringify(loginSetupBody.genericErrorMeaning?.checks || []).includes('Use Case'));
+    await loginMock.stop();
 
     // عزل السبب: عندما يرفض Meta المجموعة كاملة، يجب أن يُسمّي التشخيص أصغر مجموعة
     // صلاحيات مسؤولة — لا أن يترك المالك مع «حدث خطأ ما» عامة.

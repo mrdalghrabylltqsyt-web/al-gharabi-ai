@@ -114,6 +114,14 @@ export async function startFacebookMockServer(
     return res.status(200).send('<html><head><title>Error</title></head><body>Invalid App ID: The provided app ID does not look like a valid app ID.</body></html>');
   });
 
+  // صفحة تسجيل الدخول الوهمية: تُسجَّل **قبل** `/:version/dialog/oauth` لأن
+  // Express يطابق حسب الترتيب، ولولا ذلك لالتقطها المسار العام بـ`version='login.php'`.
+  // وجودها يسمح للفحص بسلوك قفزة «login» الفعلية (كما يحدث مع Meta الحقيقي).
+  app.get('/login.php', (req, res) => {
+    state.calls += 1;
+    return res.status(200).send('<html><head><title>Log in to Facebook</title></head><body>Log in</body></html>');
+  });
+
   // حوار التفويض: نُحاكي سلوك Meta الحقيقي بترويسة Location بلا متابعة تحويل.
   app.get('/:version/dialog/oauth', (req, res) => {
     state.calls += 1;

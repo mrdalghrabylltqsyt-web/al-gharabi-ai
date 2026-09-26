@@ -329,7 +329,12 @@ add('meta-dialog-mobile-ua-probe', server.includes('FACEBOOK_MOBILE_UA') && /isF
 add('meta-dialog-mobile-flow-exposed', server.includes('mobileHostReached') && server.includes('rejectionHost') && server.includes('rejectionPath') && server.includes('mobileFlow'), 'رد 409 يعلن مسار الجوال الفعلي (مضيف/مسار) بلا سرّ');
 add('meta-dialog-setup-probe', /mobileDialogProbe/.test(server) && read('src/components/social/PlatformConnectionCenter.tsx').includes('mobileDialogProbe'), 'oauth/setup والواجهة يعرضان فحص مسار الجوال بلا بدء OAuth');
 add('meta-dialog-mobile-chain-tests', read('engine/tests/facebook.connector.test.ts').includes("dialogOutcome: 'mobile_redirect_then_fail'") && read('engine/tests/helpers/facebookMock.ts').includes('m.facebook.com/mobile/dialog/oauth'), 'اختبار تكاملي يثبت أن الفحص يحجب بتشخيص مسار الجوال');
-add('meta-dialog-probe-no-query-leak', /safeUrlPath\(logicalUrl\)/.test(server) && !/hops\.push\(\{[^}]*location/.test(server), 'قفزات الفحص تحمل المضيف/المسار فقط بلا أي استعلام أو سرّ');
+// فحص بلا كوكيز يتوقّف عند شاشة الدخول؛ إعلانه «مقبولاً» يوهم المالك أن المسار
+// سليم بينما الرفض يقع بعد الدخول (Use Case/Configuration) — لذا dialogPhase.
+add('meta-dialog-phase-exposed', server.includes('dialogPhase') && /"rejected_before_login"/.test(server) && /"awaiting_owner_login"/.test(server), 'oauth/setup يعلن موضع الرفض (قبل الدخول/بانتظار الدخول) بدل «مقبول» مضلِّل');
+add('meta-dialog-phase-tests', read('engine/tests/facebook.connector.test.ts').includes('awaiting_owner_login') && read('engine/tests/facebook.connector.test.ts').includes('rejected_before_login'), 'اختبار تكاملي يثبت التمييز بين المرحلتين');
+add('meta-login-hop-in-probe-hops', /kind: classifyMetaDialogInteraction\(\{ status, location, body: bodySample \}\)\.kind/.test(server), 'قفزات الفحص تحمل تصنيفها فلا يضيع نوع قفزة الدخول');
+add('meta-dialog-probe-no-query-leak', /hops\.push\(\{ step, status, host: logicalHost, path: safeUrlPath\(logicalUrl\)/.test(server) && !/hops\.push\([^)]*location/.test(server) && !/mobileFlow\s*[:=][\s\S]{0,80}location:/.test(server), 'قفزات الفحص تحمل المضيف/المسار فقط بلا أي استعلام أو سرّ');
 add('instagram-scope-dependency-gaps-exposed', server.includes('instagramScopeDependencyGaps') && server.includes('scopeOverrideConfigured:platform==="facebook"?facebookScopeOverride().length>0:platform==="instagram"?instagramScopeOverride().length>0'), 'oauth/setup يعرض فارق اعتماديات Instagram وتجاوز الصلاحيات بلا سرّ');
 
 const failed = checks.filter(x => !x.ok);
