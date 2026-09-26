@@ -400,6 +400,21 @@ add('tiktok-test-in-suite', typeof pkg.scripts.test === 'string' && pkg.scripts.
 add('tiktok-regression-telegram-facebook-instagram', typeof pkg.scripts.test === 'string' && pkg.scripts.test.includes('test:telegram') && pkg.scripts.test.includes('test:facebook') && pkg.scripts.test.includes('test:instagram'), 'فيروس انحدار Telegram/Facebook/Instagram باقية ضمن npm test');
 add('tiktok-no-scraping-or-unofficial', !/puppeteer|playwright|selenium/i.test(read('engine/social/tiktok.ts')) && !/scrap/i.test(read('engine/social/tiktok.ts')), 'لا استخدام لأدوات كشط أو واجهات غير رسمية في موصل TikTok');
 add('tiktok-no-fake-analytics', read('engine/social/publishing.ts').includes('tiktok'), 'publishing.ts يعرّف مؤشرات TikTok المدعومة بلا اختراع قيم');
+// --- TikTok: مطابقة المسار الرسمي — رفع المسودة منفصل عن النشر المباشر ---
+// وثيقة TikTok الرسمية: رفع المسودة يستخدم /v2/post/publish/inbox/video/init/
+// بنطاق video.upload (بجسم source_info فقط)، والنشر المباشر /v2/post/publish/video/init/
+// بنطاق video.publish. طلب نطاق واحد لكليهما يُفشل أحد المسارين بـscope_not_authorized.
+add('tiktok-upload-scope-present', /TIKTOK_REQUIRED_SCOPES[\s\S]{0,300}?'video\.upload'/.test(read('engine/social/tiktok.ts')), 'نطاق video.upload مطلوب (مسار رفع المسودة الرسمي)');
+add('tiktok-inbox-endpoint-used', read('engine/social/tiktok.ts').includes('/v2/post/publish/inbox/video/init/'), 'رفع مسودة الفيديو يستخدم مسار inbox الرسمي');
+add('tiktok-draft-body-source-only', /buildVideoDraftBody[\s\S]{0,600}?return \{ source_info: sourceInfo \}/.test(read('engine/social/tiktok.ts')), 'جسم رفع المسودة source_info فقط بلا post_info');
+add('tiktok-draft-no-privacy', /input\.postMode === 'DIRECT_POST'[\s\S]{0,200}?privacy_level/.test(read('engine/social/tiktok.ts')), 'privacy_level للصور يُرسل في DIRECT_POST فقط لا في المسودة');
+add('tiktok-publish-routes-draft-separately', /mode === "DIRECT_POST"[\s\S]{0,900}?initVideoDraft/.test(server), 'مسار النشر يوجّه MEDIA_UPLOAD إلى initVideoDraft والصور للوضع الصحيح');
+add('tiktok-draft-audit-honest', /modeRequiresAudit = mode === "DIRECT_POST"/.test(server), 'auditRequired معلن حسب الوضع: DIRECT_POST فقط، لا المسودة');
+add('tiktok-draft-capability-honest', /content_posting_draft[\s\S]{0,300}?scope: 'video\.upload'/.test(read('engine/social/tiktok.ts')), 'قدرة رفع المسودة معلنة بنطاق video.upload لا video.publish');
+add('tiktok-readiness-direct-post-field', /tiktokOAuth[\s\S]{0,1800}?directPostCapability/.test(server), 'readiness يعرض directPostCapability منفصلاً عن postingCapability');
+add('tiktok-setup-lists-upload-scope', server.includes('video.publish, video.upload, video.list'), 'oauth/setup يوجّه المالك لتفعيل النطاقين معاً');
+add('tiktok-draft-tests', /رفع المسودة نُفِّذ على مسار inbox الرسمي/.test(read('engine/tests/tiktok.connector.test.ts')), 'اختبار يثبت مسار رفع المسودة الرسمي');
+add('tiktok-draft-body-tests', read('engine/tests/tiktok.connector.test.ts').includes('buildVideoDraftBody'), 'اختبارات جسم رفع المسودة (source_info فقط)');
 
 const failed = checks.filter(x => !x.ok);
 console.table(checks);

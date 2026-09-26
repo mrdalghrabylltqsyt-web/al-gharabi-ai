@@ -82,10 +82,10 @@ export const TIKTOK_CAPABILITY_MATRIX: readonly TikTokCapabilityRow[] = Object.f
   },
   {
     key: 'content_posting_draft',
-    label: 'رفع كمسودة (MEDIA_UPLOAD → صندوق TikTok)',
+    label: 'رفع كمسودة (صندوق TikTok — الإكمال في التطبيق)',
     status: 'SUPPORTED',
-    scope: 'video.publish',
-    evidence: 'Content Posting API: post_mode=MEDIA_UPLOAD يضع المحتوى في صندوق TikTok لإكماله.',
+    scope: 'video.upload',
+    evidence: 'Content Posting API - Upload: الفيديو عبر POST /v2/post/publish/inbox/video/init/ بنطاق video.upload (جسمه source_info فقط)، والصور عبر POST /v2/post/publish/content/init/ بـpost_mode=MEDIA_UPLOAD. لا يحتاج audit.',
   },
   {
     key: 'content_posting_direct',
@@ -96,17 +96,17 @@ export const TIKTOK_CAPABILITY_MATRIX: readonly TikTokCapabilityRow[] = Object.f
   },
   {
     key: 'video_publishing',
-    label: 'نشر فيديو',
+    label: 'نشر فيديو عام (Direct Post)',
     status: 'REQUIRES_AUDIT',
     scope: 'video.publish',
-    evidence: 'POST /v2/post/publish/video/init/ (FILE_UPLOAD أو PULL_FROM_URL) ثم GET /v2/post/publish/status/fetch/.',
+    evidence: 'POST /v2/post/publish/video/init/ (FILE_UPLOAD أو PULL_FROM_URL) ثم POST /v2/post/publish/status/fetch/. النشر العام يتطلب اجتياز Content Posting audit؛ الرفع كمسودة متاح بلا audit.',
   },
   {
     key: 'photo_publishing',
     label: 'نشر صور (Photo Post)',
     status: 'REQUIRES_AUDIT',
     scope: 'video.publish',
-    evidence: 'POST /v2/post/publish/content/init/ بـmedia_type=PHOTO (منشور صور/كاروسيل).',
+    evidence: 'POST /v2/post/publish/content/init/ بـmedia_type=PHOTO (صور/كاروسيل). النشر العام (DIRECT_POST) يحتاج audit؛ الرفع كمسودة يستخدم post_mode=MEDIA_UPLOAD بنطاق video.upload.',
   },
   {
     key: 'creator_info',
@@ -181,13 +181,18 @@ export function tiktokCapabilityNeedsAudit(key: string): boolean {
 /**
  * النطاقات المطلوبة — مشتقة من القدرات المنفّذة فعلاً فقط:
  * - user.info.basic  → هوية الحساب (إثبات الاتصال والتحقق).
- * - video.publish    → Content Posting API (نشر مباشر + رفع مسودة + حالة النشر).
+ * - video.publish    → Content Posting API — Direct Post (النشر المباشر + حالة النشر).
+ * - video.upload     → Content Posting API — Upload (رفع مسودة إلى صندوق TikTok).
  * - video.list       → Display API (بيانات الفيديوهات للتحليلات).
  * لا يُطلب نطاق لا يقابله استدعاء حقيقي في الكود.
+ *
+ * ملاحظة رسمية: مسار رفع المسودة يستخدم `video.upload` لا `video.publish`؛ طلب
+ * نطاق واحد لكليهما يُفشل أحد المسارين بـscope_not_authorized.
  */
 export const TIKTOK_REQUIRED_SCOPES: readonly string[] = Object.freeze([
   'user.info.basic',
   'video.publish',
+  'video.upload',
   'video.list',
 ]);
 
@@ -352,10 +357,35 @@ export function buildVideoPostBody(input: {
   return { post_info: postInfo, source_info: sourceInfo, post_mode: input.postMode };
 }
 
-/** يبني جسم تهيئة نشر الصور (PHOTO) — صور متعددة = كاروسيل. */
+/** يبني جسم تهيئة رفع مسودة الفيديو (Upload API) — بلا post_info (تختاره في التطبيق). */
+export function buildVideoDraftBody(input: {
+  source: 'FILE_UPLOAD' | 'PULL_FROM_URL';
+  videoUrl?: string;
+  fileSize?: number;
+  chunkSize?: number;
+  totalChunkCount?: number;
+}): Record<string, unknown> {
+  const sourceInfo: Record<string, unknown> = { source: input.source };
+  if (input.source === 'PULL_FROM_URL') {
+    sourceInfo.video_url = input.videoUrl || '';
+  } else {
+    sourceInfo.video_size = input.fileSize ?? 0;
+    sourceInfo.chunk_size = input.chunkSize ?? 0;
+    sourceInfo.total_chunk_count = input.totalChunkCount ?? 0;
+  }
+  // وثيقة Upload الرسمية: الجسم يحتوي `source_info` فقط بلا post_info.
+  return { source_info: sourceInfo };
+}
+
+/**
+ * يبني جسم تهيئة نشر الصور (PHOTO) — صور متعددة = كاروسيل.
+ * `privacy_level` و`disable_comment` مخصّصان لـDIRECT_POST فقط (الوثيقة الرسمية)،
+ * فلا يُرسلان في وضع رفع المسودة (MEDIA_UPLOAD) لتفادي invalid_param.
+ */
 export function buildPhotoPostBody(input: {
   postMode: TikTokPostMode;
   title?: string;
+  description?: string;
   privacyLevel?: TikTokPrivacyLevel;
   photoUrls: string[];
   photoCoverIndex?: number;
@@ -364,10 +394,13 @@ export function buildPhotoPostBody(input: {
 }): Record<string, unknown> {
   const postInfo: Record<string, unknown> = {
     title: (input.title || '').slice(0, 90),
-    privacy_level: input.privacyLevel || 'SELF_ONLY',
-    disable_comment: Boolean(input.disableComment),
     is_aigc: Boolean(input.isAigc),
   };
+  if (input.description) postInfo.description = input.description.slice(0, 4000);
+  if (input.postMode === 'DIRECT_POST') {
+    postInfo.privacy_level = input.privacyLevel || 'SELF_ONLY';
+    postInfo.disable_comment = Boolean(input.disableComment);
+  }
   return {
     media_type: 'PHOTO',
     post_mode: input.postMode,
@@ -702,6 +735,31 @@ export class TikTokClient {
       const errorCode = tiktokErrorCode(data);
       if (!res.ok || errorCode || !publishId) {
         return { ok: false, data: null, error: tiktokError(data, 'تعذّر تهيئة نشر الفيديو على TikTok.'), code: errorCode };
+      }
+      return { ok: true, data: { publishId, uploadUrl: data?.data?.upload_url ? String(data.data.upload_url) : null } };
+    } catch (e: any) {
+      return { ok: false, data: null, error: String(e?.message || 'فشل الاتصال بـTikTok.') };
+    }
+  }
+
+  /**
+   * يهيّئ رفع مسودة فيديو إلى صندوق TikTok (Upload API، نطاق video.upload).
+   * المسار مختلف عن Direct Post: /v2/post/publish/inbox/video/init/ بجسم
+   * `source_info` فقط. لا نشر عام هنا؛ المالك يُكمل النشر داخل التطبيق.
+   */
+  async initVideoDraft(accessToken: string, body: Record<string, unknown>): Promise<TikTokResult<{ publishId: string; uploadUrl: string | null }>> {
+    if (!accessToken) return { ok: false, data: null, error: 'رمز الوصول غير متوفر.' };
+    try {
+      const res = await this.fetchImpl(tiktokApiUrl('/v2/post/publish/inbox/video/init/', this.baseUrl), {
+        method: 'POST',
+        headers: tiktokAuthHeaders(accessToken),
+        body: JSON.stringify(body),
+      });
+      const data = await res.json().catch(() => null);
+      const publishId = data?.data?.publish_id ? String(data.data.publish_id) : '';
+      const errorCode = tiktokErrorCode(data);
+      if (!res.ok || errorCode || !publishId) {
+        return { ok: false, data: null, error: tiktokError(data, 'تعذّر تهيئة رفع مسودة TikTok.'), code: errorCode };
       }
       return { ok: true, data: { publishId, uploadUrl: data?.data?.upload_url ? String(data.data.upload_url) : null } };
     } catch (e: any) {

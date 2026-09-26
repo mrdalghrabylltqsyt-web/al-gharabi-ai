@@ -295,7 +295,9 @@ export const SocialManagerView: React.FC = () => {
     try {
       const res = await apiService.publishTikTok({ content: ttCaption.trim(), videoUrl: ttVideoUrl.trim(), postMode: ttMode, approved: true });
       setTtPublishId(res.providerPublishId || '');
-      showToast(`تمت تهيئة النشر لدى TikTok (${res.postMode}). لا يُعلن التسليم إلا بـPUBLISH_COMPLETE.`);
+      showToast(res.postMode === 'DIRECT_POST'
+        ? `تمت تهيئة النشر المباشر (${res.postMode}). لا يُعلن التسليم إلا بـPUBLISH_COMPLETE.`
+        : `تم رفع المسودة إلى صندوق TikTok (${res.postMode}). أكمل النشر من التطبيق.`);
       await loadTikTokStatus();
     } catch (err: any) { showToast(err?.message || 'تعذر تهيئة النشر عبر TikTok'); }
     finally { setTtBusy(false); }
@@ -851,8 +853,8 @@ export const SocialManagerView: React.FC = () => {
               {ttCreator?.creator && <span className="text-[11px] text-slate-300">الناشر: <span className="font-mono">{ttCreator.creator.nickname || ttCreator.creator.username || '—'}</span> • الخصوصية المتاحة: <code dir="ltr">{(ttCreator.creator.privacyLevelOptions || []).join(', ') || '—'}</code></span>}
             </div>
 
-            <h4 className="text-xs font-bold text-slate-200">تهيئة نشر TikTok (فيديو عام عبر PULL_FROM_URL)</h4>
-            <p className="text-[10px] text-slate-500">TikTok لا ينشر نصاً فقط. Direct Post ينشر مباشرة، وMedia Upload يرفع مسودة إلى صندوق الناشر للمراجعة داخل التطبيق.</p>
+            <h4 className="text-xs font-bold text-slate-200">تهيئة نشر TikTok (فيديو عبر PULL_FROM_URL)</h4>
+            <p className="text-[10px] text-slate-500">TikTok لا ينشر نصاً فقط. «رفع مسودة» يرسل الفيديو إلى صندوق TikTok (Upload API، نطاق video.upload) بلا مراجعة، والناشر يُكمل النشر في التطبيق. «نشر مباشر» ينشر على الحساب (Direct Post، نطاق video.publish) ويبقى عاماً فقط بعد اجتياز مراجعة TikTok (audit)؛ وقبله يكون SELF_ONLY.</p>
             <input value={ttVideoUrl} onChange={(e) => setTtVideoUrl(e.target.value)} placeholder="رابط فيديو عام https (videoUrl)"
               dir="ltr" className="w-full px-3 py-2.5 rounded-xl bg-slate-950 border border-slate-700 text-xs text-white focus:outline-none focus:border-rose-500 box-border" />
             <textarea rows={2} value={ttCaption} onChange={(e) => setTtCaption(e.target.value)} placeholder="وصف الفيديو (caption)"

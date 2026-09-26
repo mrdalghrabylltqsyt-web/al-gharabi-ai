@@ -171,6 +171,17 @@ export async function startTikTokMockServer(
     });
   });
 
+  // Upload API الرسمي (رفع مسودة): مسار مختلف عن Direct Post وبجسم source_info فقط.
+  app.post('/v2/post/publish/inbox/video/init/', (req, res) => {
+    state.calls += 1;
+    state.lastPublishInit = { path: 'inbox', body: req.body, token: String(req.headers.authorization || '') };
+    if (state.failPublishInit) return res.status(400).json({ error: { code: 'spam_risk_too_many_pending_share', message: 'upload cap reached' } });
+    return res.json({
+      data: { publish_id: state.publishId, upload_url: 'https://open-upload.tiktokapis.com/upload/test' },
+      error: { code: 'ok', message: '', log_id: 'log_test' },
+    });
+  });
+
   app.post('/v2/post/publish/content/init/', (req, res) => {
     state.calls += 1;
     state.lastPublishInit = { path: 'content', body: req.body, token: String(req.headers.authorization || '') };

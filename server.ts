@@ -65,6 +65,7 @@ import {
   parseTikTokWebhook,
   verifyTikTokSignature,
   buildVideoPostBody,
+  buildVideoDraftBody,
   buildPhotoPostBody,
   isPlausibleTikTokClientKey,
   tiktokCapabilityStatus,
@@ -3362,14 +3363,27 @@ app.post("/api/platforms/:platform/publish", requireOwner, async (req, res) => {
       if (!Array.isArray((workspace as any).publishRecords)) (workspace as any).publishRecords = [];
       const dup = (workspace as any).publishRecords.find((r: any) => r.platform === "tiktok" && r.idempotencyKey === fingerprint && r.state !== "failed");
       if (dup) return res.status(409).json({ success: false, error: "نفس النشر مُهيّأ سابقاً (منع تكرار).", code: "DUPLICATE_PUBLISH", existing: { providerPublishId: dup.providerPublishId, state: dup.state } });
-      // معلومات الناشر إلزامية قبل أي نشر مباشر (وثيقة TikTok).
+      // معلومات الناشر إلزامية قبل أي نشر مباشر (وثيقة TikTok) — لا تُطلب في رفع المسودة.
       const creatorInfo = mode === "DIRECT_POST" ? await withTikTokToken((token) => tiktokClient().queryCreatorInfo(token)) : { ok: true as const, data: null };
       if (mode === "DIRECT_POST" && (!creatorInfo.ok || !creatorInfo.data)) {
         return res.status(502).json({ success: false, error: (creatorInfo as any).error || "تعذّر قراءة معلومات الناشر قبل النشر المباشر.", code: "CREATOR_INFO_FAILED" });
       }
-      const initResult = await withTikTokToken((token) => videoUrl
-        ? tiktokClient().initVideoPost(token, buildVideoPostBody({ postMode: mode, title: content, privacyLevel: privacy, source: "PULL_FROM_URL", videoUrl }))
-        : tiktokClient().initPhotoPost(token, buildPhotoPostBody({ postMode: mode, title: content, privacyLevel: privacy, photoUrls })));
+      // المسار الرسمي يختلف حسب الوضع:
+      //  - DIRECT_POST: فيديو عبر /v2/post/publish/video/init/ (نطاق video.publish)
+      //    أو صور عبر /v2/post/publish/content/init/ بـmedia_type=PHOTO.
+      //  - MEDIA_UPLOAD (مسودة): فيديو عبر /v2/post/publish/inbox/video/init/
+      //    (نطاق video.upload، بجسم source_info فقط) أو صور عبر content/init/
+      //    بـpost_mode=MEDIA_UPLOAD. لا يُرسل privacy_level في وضع المسودة.
+      const initResult = await withTikTokToken((token) => {
+        if (mode === "DIRECT_POST") {
+          return videoUrl
+            ? tiktokClient().initVideoPost(token, buildVideoPostBody({ postMode: mode, title: content, privacyLevel: privacy, source: "PULL_FROM_URL", videoUrl }))
+            : tiktokClient().initPhotoPost(token, buildPhotoPostBody({ postMode: mode, title: content, privacyLevel: privacy, photoUrls }));
+        }
+        return videoUrl
+          ? tiktokClient().initVideoDraft(token, buildVideoDraftBody({ source: "PULL_FROM_URL", videoUrl }))
+          : tiktokClient().initPhotoPost(token, buildPhotoPostBody({ postMode: mode, title: content, photoUrls }));
+      });
       if (!initResult.ok || !initResult.data) {
         const record = buildPublishRecord({ platform: platform as any, postId: typeof req.body?.postId === "string" ? req.body.postId : workspaceId("post"), providerPostId: null, simulated: false, error: initResult.error });
         (workspace as any).publishRecords.unshift({ ...record, id: workspaceId("publish"), createdBy: user.id, idempotencyKey: fingerprint, postMode: mode, receipt: null });
@@ -3379,6 +3393,8 @@ app.post("/api/platforms/:platform/publish", requireOwner, async (req, res) => {
       }
       // التهيئة نجحت: يُحفظ publish_id ويبقى التسليم معلّقاً حتى PUBLISH_COMPLETE.
       const publishId = initResult.data.publishId;
+      // رفع المسودة لا يحتاج audit (video.upload)؛ النشر العام يحتاجه (video.publish).
+      const modeRequiresAudit = mode === "DIRECT_POST" ? tiktokAuditRequired() : false;
       const record = buildPublishRecord({ platform: platform as any, postId: typeof req.body?.postId === "string" ? req.body.postId : workspaceId("post"), providerPostId: null, simulated: false, error: null });
       (workspace as any).publishRecords.unshift({
         ...record,
@@ -3386,7 +3402,7 @@ app.post("/api/platforms/:platform/publish", requireOwner, async (req, res) => {
         state: "publishing",
         id: workspaceId("publish"), createdBy: user.id, idempotencyKey: fingerprint, postMode: mode, privacyLevel: privacy,
         providerPublishId: publishId, uploadUrl: (initResult.data as any).uploadUrl || null,
-        auditRequired: tiktokAuditRequired(),
+        auditRequired: modeRequiresAudit,
         receipt: { provider: "tiktok", publishId, postMode: mode, createdAt: new Date().toISOString() },
       });
       persistState();
@@ -3394,8 +3410,10 @@ app.post("/api/platforms/:platform/publish", requireOwner, async (req, res) => {
       return res.json({
         success: true, record, providerPublishId: publishId, postMode: mode,
         delivered: false,
-        auditRequired: tiktokAuditRequired(),
-        note: "تمت تهيئة النشر لدى TikTok (publish_id). لا يُعلن التسليم إلا بحالة PUBLISH_COMPLETE عبر GET /api/platforms/tiktok/publish-status.",
+        auditRequired: modeRequiresAudit,
+        note: mode === "DIRECT_POST"
+          ? "تمت تهيئة النشر المباشر لدى TikTok (publish_id). لا يُعلن التسليم إلا بحالة PUBLISH_COMPLETE عبر GET /api/platforms/tiktok/publish-status."
+          : "تمت تهيئة رفع المسودة لدى TikTok (publish_id). المحتوى في صندوق TikTok وينشره المالك من التطبيق؛ لا يُعلن أي نشر عام.",
       });
     }
     return res.status(501).json({ success: false, error: "الموصل متصل لكن تنفيذ النشر لهذه المنصة يحتاج بيانات المزود ولم يُختلق تنفيذ وهمي.", code: "EXTERNAL_SETUP_REQUIRED", platform });
@@ -3689,9 +3707,10 @@ app.get("/api/platforms/:platform/oauth/setup", requireOwner, async (req,res)=>{
         "افتح TikTok for Developers → Manage apps → تطبيقك (أو أنشئ تطبيق Web).",
         "في Basic information انسخ Client key إلى TIKTOK_CLIENT_KEY وClient secret إلى TIKTOK_CLIENT_SECRET.",
         "في Login Kit → Redirect URI أضف القيمة في redirectUri بالضبط (https).",
-        "في Scopes فعّل: user.info.basic, video.publish, video.list.",
+        "في Scopes فعّل: user.info.basic, video.publish, video.upload, video.list.",
+        "video.publish للنشر المباشر (Direct Post) وvideo.upload لرفع المسودة — مساران منفصلان فالنطاقان معاً مطلوبان.",
         "لتفعيل webhooks: أضف Webhook Callback URL (webhookUrl) في إعدادات التطبيق.",
-        "لرفع قيد النشر العام (SELF_ONLY) يجب اجتياز Content Posting audit لدى TikTok.",
+        "لرفع قيد النشر المباشر العام (SELF_ONLY) يجب اجتياز Content Posting audit لدى TikTok؛ رفع المسودة لا يحتاجه.",
       ],
       note:"مسار TikTok الرسمي: /v2/auth/authorize/ (client_key) + PKCE، والرمز على /v2/oauth/token/ بصيغة x-www-form-urlencoded. النشر عبر Content Posting API، والبيانات عبر Display API. التعليقات والرسائل المباشرة غير متاحة عبر الواجهة العامة.",
       doc:"https://developers.tiktok.com/doc/login-kit-web",
@@ -5366,6 +5385,8 @@ app.get("/api/readiness", (_req, res) => {
         commentsCapability: tiktokCapabilityStatus("comments_read"),
         directMessagesCapability: tiktokCapabilityStatus("direct_messages_read"),
         appReviewRequired: tiktokAuditRequired(),
+        /** رفع المسودة لا يحتاج audit (video.upload)، والنشر العام يحتاجه (video.publish). */
+        draftUploadRequiresAudit: false,
         operationalState: verified ? "OPERATIONAL_READY" : conn?.status === "connected" ? "CONNECTED" : "DISCONNECTED",
       };
     })(),

@@ -35,6 +35,7 @@ import {
   buildTikTokRevokeBody,
   parseTikTokTokenResponse,
   buildVideoPostBody,
+  buildVideoDraftBody,
   buildPhotoPostBody,
   buildPublishStatusBody,
   classifyPublishStatus,
@@ -161,12 +162,15 @@ function unitTests(): void {
   check('قدرة غير معروفة تُعيد null لا ادعاء', tiktokCapabilityStatus('does_not_exist') === null && !tiktokCapabilitySupported('does_not_exist'));
 
   group('2) وحدة: الصلاحيات الرسمية وحلّ الاعتماديات');
-  check('النطاقات الرسمية الثلاثة مطلوبة', ['user.info.basic', 'video.publish', 'video.list'].every((s) => TIKTOK_REQUIRED_SCOPES.includes(s)));
-  check('لا نطاق بلا استدعاء حقيقي في المجموعة المطلوبة', TIKTOK_REQUIRED_SCOPES.length === 3, TIKTOK_REQUIRED_SCOPES.join(','));
+  // النطاقات الرسمية: video.publish (Direct Post) وvideo.upload (رفع المسودة) مساران
+  // منفصلان في وثيقة TikTok، فيجب طلب النطاقين معاً وإلا فشل أحد المسارين.
+  check('النطاقات الرسمية الأربعة مطلوبة', ['user.info.basic', 'video.publish', 'video.upload', 'video.list'].every((s) => TIKTOK_REQUIRED_SCOPES.includes(s)));
+  check('لا نطاق بلا استدعاء حقيقي في المجموعة المطلوبة', TIKTOK_REQUIRED_SCOPES.length === 4, TIKTOK_REQUIRED_SCOPES.join(','));
   check('المجموعة بلا تكرار', new Set(TIKTOK_REQUIRED_SCOPES).size === TIKTOK_REQUIRED_SCOPES.length);
   const partial = resolveTikTokScopes(['video.publish']);
   check('حلّ مجموعة جزئية يضيف user.info.basic', partial.includes('user.info.basic'));
   check('حلّ مجموعة جزئية يضيف video.list', partial.includes('video.list'));
+  check('حلّ مجموعة جزئية يضيف video.upload (مسار المسودة)', partial.includes('video.upload'));
   check('الحلّ بلا تكرار', new Set(partial).size === partial.length);
   check('لا نطاق غير رسمي في الحلّ', resolveTikTokScopes(['not_a_real_scope']).includes('not_a_real_scope') === false);
 
@@ -194,6 +198,15 @@ function unitTests(): void {
   check('جسم الفيديو يحمل source=PULL_FROM_URL وvideo_url', (vbody as any).source_info.source === 'PULL_FROM_URL' && (vbody as any).source_info.video_url === 'https://x/v.mp4');
   const pbody = buildPhotoPostBody({ postMode: 'MEDIA_UPLOAD', title: 'عرض', privacyLevel: 'SELF_ONLY', photoUrls: ['https://x/1.jpg'] });
   check('جسم الصور يحمل post_mode وphoto_images', (pbody as any).post_mode === 'MEDIA_UPLOAD' && (pbody as any).source_info.photo_images[0] === 'https://x/1.jpg');
+  // وثيقة الصور: privacy_level/disable_comment مخصّصان لـDIRECT_POST فقط.
+  check('صور المسودة بلا privacy_level (تختاره في التطبيق)', (pbody as any).post_info.privacy_level === undefined);
+  const pDirect = buildPhotoPostBody({ postMode: 'DIRECT_POST', title: 'عرض', privacyLevel: 'PUBLIC_TO_EVERYONE', photoUrls: ['https://x/1.jpg'] });
+  check('صور النشر المباشر تحمل privacy_level', (pDirect as any).post_info.privacy_level === 'PUBLIC_TO_EVERYONE');
+  // مسار رفع المسودة الرسمي: /v2/post/publish/inbox/video/init/ بجسم source_info فقط.
+  const draftBody = buildVideoDraftBody({ source: 'PULL_FROM_URL', videoUrl: 'https://x/v.mp4' });
+  check('جسم المسودة يحمل source_info.video_url فقط', (draftBody as any).source_info.video_url === 'https://x/v.mp4');
+  check('جسم المسودة بلا post_info (الوثيقة الرسمية)', (draftBody as any).post_info === undefined);
+  check('رابط رفع المسودة الرسمي صحيح', tiktokApiUrl('/v2/post/publish/inbox/video/init/') === 'https://open.tiktokapis.com/v2/post/publish/inbox/video/init/');
   // is_aigc حقل رسمي في Content Posting API؛ يُرسَل false افتراضاً فلا نُوسم محتوى
   // المعرض خطأً، ويُرسَل true عند التصريح بمحتوى مولَّد.
   check('جسم الفيديو يحمل is_aigc=false افتراضاً', (vbody as any).post_info.is_aigc === false);
@@ -349,6 +362,16 @@ async function integrationTests(): Promise<void> {
     const dup = await fetch(`${BASE}/api/platforms/tiktok/publish`, { method: 'POST', headers: auth, body: JSON.stringify({ content: 'عرض تقسيط جديد', approved: true, videoUrl: 'https://example.invalid/video.mp4', postMode: 'DIRECT_POST' }) });
     const dupBody = await dup.json();
     check('نفس النشر مرتين => 409 DUPLICATE_PUBLISH (منع تكرار)', dup.status === 409 && dupBody.code === 'DUPLICATE_PUBLISH');
+
+    // رفع المسودة: مسار رسمي مختلف (/v2/post/publish/inbox/video/init/) بجسم
+    // source_info فقط، ولا يحتاج audit (نطاق video.upload لا video.publish).
+    const draftPub = await fetch(`${BASE}/api/platforms/tiktok/publish`, { method: 'POST', headers: auth, body: JSON.stringify({ content: 'مسودة عرض', approved: true, videoUrl: 'https://example.invalid/draft.mp4', postMode: 'MEDIA_UPLOAD' }) });
+    const draftPubBody = await draftPub.json();
+    check('رفع المسودة ينجح ويُعيد publish_id', draftPub.status === 200 && draftPubBody.providerPublishId === mock.state.publishId);
+    check('رفع المسودة نُفِّذ على مسار inbox الرسمي', mock.state.lastPublishInit?.path === 'inbox');
+    check('جسم المسودة يحمل source_info فقط (بلا post_info)', mock.state.lastPublishInit?.body?.source_info?.video_url === 'https://example.invalid/draft.mp4' && mock.state.lastPublishInit?.body?.post_info === undefined);
+    check('رفع المسودة بلا ادعاء تسليم', draftPubBody.delivered === false);
+    check('رفع المسودة لا يحتاج audit معلن', draftPubBody.auditRequired === false);
 
     const notApproved = await fetch(`${BASE}/api/platforms/tiktok/publish`, { method: 'POST', headers: auth, body: JSON.stringify({ content: 'عرض', videoUrl: 'https://example.invalid/v.mp4' }) });
     check('نشر بلا موافقة => 409 APPROVAL_REQUIRED', notApproved.status === 409);

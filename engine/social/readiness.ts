@@ -117,7 +117,7 @@ const WEBHOOK_SUPPORT: Record<PlatformId, { level: ReadinessLevel; note: string 
  * المتطلبات الخارجية لكل منصة. لا تحمل أي قيمة سرّية — أسماء متغيرات وخطوات فقط.
  */
 const EXTERNAL_SETUP: Record<PlatformId, string[]> = {
-  tiktok: ['تطبيق TikTok for Developers (Web)', 'TIKTOK_CLIENT_KEY / TIKTOK_CLIENT_SECRET', 'تسجيل Redirect URI: /api/platforms/tiktok/oauth/callback', 'النطاقات: user.info.basic, video.publish, video.list', 'مراجعة Content Posting (audit) لرفع قيد النشر العام (SELF_ONLY قبله)', 'تسجيل callback URL للـwebhooks (اختياري)'],
+  tiktok: ['تطبيق TikTok for Developers (Web)', 'TIKTOK_CLIENT_KEY / TIKTOK_CLIENT_SECRET', 'تسجيل Redirect URI: /api/platforms/tiktok/oauth/callback', 'النطاقات: user.info.basic, video.publish, video.upload, video.list', 'مراجعة Content Posting (audit) للنشر المباشر العام (SELF_ONLY قبله)؛ رفع المسودة بلا audit', 'تسجيل callback URL للـwebhooks (اختياري)'],
   youtube: ['Google Cloud Project', 'GOOGLE_OAUTH_CLIENT_ID / GOOGLE_OAUTH_CLIENT_SECRET', 'تمكين YouTube Data API', 'تسجيل Redirect URI', 'مراجعة الصلاحيات الحساسة'],
   facebook: ['Meta App', 'FACEBOOK_OAUTH_CLIENT_ID / FACEBOOK_OAUTH_CLIENT_SECRET', 'App Review لصلاحيات الصفحة', 'تسجيل Redirect URI'],
   instagram: ['Meta App + حساب Instagram Professional (Business/Creator) مرتبط بالصفحة', 'بيانات تطبيق Meta نفسها (FACEBOOK_OAUTH_CLIENT_ID/SECRET) أو INSTAGRAM_* خاصة', 'App Review لصلاحيات instagram_manage_comments/manage_messages (Advanced Access)', 'تسجيل Redirect URI وتفعيل حقول webhook من لوحة Meta'],

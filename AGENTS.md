@@ -1234,7 +1234,7 @@ browser automation، ولا واجهات غير رسمية، ولا تسليم �
 تعرضان الحالة الحقيقية والقدرات ومصفوفة الرسمية، مع زر واحد أساسي **«ربط TikTok»**.
 التعليقات/الرسائل تُعلن **غير متاحة** صراحةً في الواجهة.
 
-اختبارات: `engine/tests/tiktok.connector.test.ts` = **158 فحصاً** (وحدة + تكامل بخادم
+اختبارات: `engine/tests/tiktok.connector.test.ts` = **169 فحصاً** (وحدة + تكامل بخادم
 TikTok وهمي محلي عبر `TIKTOK_API_BASE` في `engine/tests/helpers/tiktokMock.ts`، بلا مزود
 حقيقي ولا حصة): OAuth start/callback، رفض state غير صالح/معاد استخدامه، الثبات بعد restart،
 تبادل الرمز، الحفظ المشفّر، التجديد التلقائي، الفصل، اكتشاف الحساب، تهيئة النشر، حالة
@@ -1247,5 +1247,51 @@ TikTok وهمي محلي عبر `TIKTOK_API_BASE` في `engine/tests/helpers/tik
 2. Basic information → انسخ Client key → `TIKTOK_CLIENT_KEY`، وClient secret →
    `TIKTOK_CLIENT_SECRET` (Render → Environment، بلا مسافات).
 3. Login Kit → Redirect URI: `https://al-gharabi-ai.onrender.com/api/platforms/tiktok/oauth/callback`.
-4. Scopes → فعّل `user.info.basic, video.publish, video.list`.
-5. اضغط «ربط TikTok» ووافق. النشر العام (غير SELF_ONLY) يحتاج Content Posting audit.
+4. Scopes → فعّل `user.info.basic, video.publish, video.upload, video.list`.
+5. اضغط «ربط TikTok» ووافق. النشر المباشر العام (غير SELF_ONLY) يحتاج Content Posting audit.
+
+## تصحيح مسار رفع المسودة مقابل النشر المباشر — مطابقة الوثيقة الرسمية (2026-09-26)
+
+**الجذر المُثبت من وثائق TikTok for Developers (لا تخمين):** مسارا النشر في Content
+Posting API **منفصلان تماماً**، وكان الكود يستخدم مسار النشر المباشر ونطاقه في وضع رفع
+المسودة:
+
+| الوضع | المسار الرسمي | النطاق | الجسم |
+|---|---|---|---|
+| النشر المباشر (Direct Post) — فيديو | `/v2/post/publish/video/init/` | `video.publish` | `post_info` + `source_info` |
+| النشر المباشر — صور | `/v2/post/publish/content/init/` بـ`media_type=PHOTO` | `video.publish` | `post_info` + `source_info` |
+| رفع مسودة (Upload) — فيديو | `/v2/post/publish/inbox/video/init/` | `video.upload` | `source_info` **فقط** |
+| رفع مسودة — صور | `/v2/post/publish/content/init/` بـ`post_mode=MEDIA_UPLOAD` | `video.upload` | `post_info` بلا `privacy_level` |
+
+الأثر الفعلي قبل الإصلاح: (1) `MEDIA_UPLOAD` كان يُرسل إلى `/v2/post/publish/video/init/`
+بجسم يحمل `post_info` كامل، فيرد TikTok بـ`invalid_param` أو `scope_not_authorized` لأن
+الرمز يحمل `video.publish` لا `video.upload`؛ (2) لم يكن `video.upload` مطلوباً في
+الصلاحيات أصلاً، فرفع المسودة لا يمكن أن ينجح على الإنتاج أبداً.
+
+الإصلاح:
+- `TIKTOK_REQUIRED_SCOPES` صار أربعة: `user.info.basic`, `video.publish`,
+  **`video.upload`**, `video.list`. رفع المسودة يحتاج `video.upload` (مذكور صراحةً في
+  وثيقة Upload)، والنشر المباشر يحتاج `video.publish` — فلا يعمل أحدهما بلا الآخر.
+- `buildVideoDraftBody` جديد: جسم رفع مسودة الفيديو `source_info` **فقط** بلا `post_info`
+  (تختاره الناشرة في التطبيق).
+- `TikTokClient.initVideoDraft`: POST إلى `/v2/post/publish/inbox/video/init/`، ولا
+  يُسجَّل نجاح بلا `publish_id`.
+- `buildPhotoPostBody`: `privacy_level` و`disable_comment` يُرسلان في `DIRECT_POST` فقط
+  (الوثيقة: «Only works for post_mode = DIRECT_POST»)، فلا يُرسلان في المسودة.
+- مسار النشر في `server.ts` يوجّه: `DIRECT_POST` → video/init أو content/init مع
+  `privacy_level`، و`MEDIA_UPLOAD` → inbox/init (فيديو) أو content/init (صور) بلا
+  `privacy_level`. و`auditRequired` صار **حسب الوضع**: صحيح للنشر المباشر فقط، لأن رفع
+  المسودة لا يحتاج audit (وُثّق: «The inbox path … is not gated behind the audit»).
+- `readiness.tiktokOAuth.directPostCapability` منفصل عن `postingCapability`،
+  و`draftUploadRequiresAudit: false` معلنة صراحةً.
+- الواجهة توضح الفرق: «رفع مسودة» (صندوق TikTok، بلا مراجعة) مقابل «نشر مباشر» (عام فقط
+  بعد audit، وقبله SELF_ONLY).
+
+الاختبارات: `engine/tests/tiktok.connector.test.ts` = **169 فحصاً** (وحدة لجسم المسودة
+و`source_info` فقط و`privacy_level` حسب الوضع، وتكامل يثبت أن `MEDIA_UPLOAD` يُنفَّذ على
+مسار inbox الرسمي وأن `auditRequired=false`). فحوص final-audit الجديدة:
+`tiktok-upload-scope-present` … `tiktok-draft-body-tests` (295 إجمالاً).
+
+**ملاحظة:** مسار رفع المسودة لا ينشر شيئاً عاماً؛ المالك يُكمل النشر داخل التطبيق، فلا
+يُعلن النظام أي «نشر» ولا أي `delivered=true` من هذا المسار (يبقى `publishing` حتى
+استعلام `PUBLISH_COMPLETE` — وهو خاص بالنشر المباشر).
