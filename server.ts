@@ -4864,6 +4864,9 @@ app.get("/api/readiness", (_req, res) => {
         permissionSource: loginConfigIdFor("instagram") ? "facebook_login_for_business_configuration" : "oauth_scope_parameter",
         subscribedWebhookFields: [...INSTAGRAM_SUBSCRIBED_FIELDS],
         webhookFieldsNeedDashboard: true,
+        // حالة مفتاح تدفّق الإعداد (منطقي فقط): enabled = extras مفعّل،
+        // disabled = التدفّق العادي بلا extras (مخرج عطل Meta 1850019).
+        onboardingFlow: instagramOnboardingEnabled() ? "enabled" : "disabled",
       };
     })(),
     timestamp: new Date().toISOString(),
