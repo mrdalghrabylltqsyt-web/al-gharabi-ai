@@ -6718,6 +6718,14 @@ app.get("/api/health", (_req, res) => {
         pendingPageSelection: instagramPageSelectionPending(),
         scopeCount: instagramOAuthScopes().length,
         scopesResolvedWithDependencies: true,
+        // متطلب Facebook Login for Business لتطبيق Meta من نوع Business: بلا
+        // Configuration ID (config_id) يوجّه Meta الحوار إلى Business Login الذي
+        // يقرأ الصلاحيات من الConfiguration لا من scope، فيظهر «حدث خطأ ما» بعد
+        // تسجيل الدخول. يُعلن فوراً في /api/health ليراه المالك بلا تخمين.
+        loginConfigIdConfigured: loginConfigInspection("instagram").configured,
+        loginConfigIdValid: loginConfigInspection("instagram").valid,
+        loginConfigIdUsed: Boolean(effectiveLoginConfigIdFor("instagram")),
+        configurationReady: Boolean(effectiveLoginConfigIdFor("instagram")),
         // حالة مفتاح تدفّق الإعداد (منطقي فقط): enabled = extras مفعّل،
         // disabled = التدفّق العادي بلا extras (مخرج عطل Meta 1850019).
         onboardingFlow: instagramOnboardingEnabled() ? "enabled" : "disabled",

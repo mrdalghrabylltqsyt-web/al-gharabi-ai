@@ -390,9 +390,29 @@ async function integrationTests(): Promise<void> {
     check('config_id غير صالح => 409 بلا إرسال المالك إلى Meta', badCfg.status === 409 && badCfgBody.code === 'LOGIN_CONFIG_ID_INVALID', JSON.stringify(badCfgBody).slice(0, 200));
     check('رسالة 409 توجّه للوحة Meta بلا قيمة سرّية', typeof badCfgBody.hint === 'string' && badCfgBody.hint.includes('Configurations') && !JSON.stringify(badCfgBody).includes('not-a-number'));
     check('الاستجابة تُعلن فحص config_id منطقياً', badCfgBody.loginConfigIdConfigured === true && badCfgBody.loginConfigIdValid === false);
+    await stop(badCfgApp.proc);
+    // المسار الكامل الحقيقي للمالك مع Configuration ID: config_id => Business Login
+    // => response_type=code => callback بسطر الطلب => تبادل الرمز => اكتشاف الحساب
+    // المهني => اشتراك الصفحة => CONNECTED + VERIFIED. كان الفحص يقف عند توليد
+    // الرابط فقط، فلا يثبت أن الإكمال يعمل فعلاً بعد ضبط Configuration ID.
+    const cfgFlowApp = startApp(mock.base, { INSTAGRAM_LOGIN_CONFIG_ID: CONFIG_ID });
+    currentApp = cfgFlowApp;
+    check('الخادم يقلع لمسار config_id الكامل', await waitForHealth(), cfgFlowApp.log().slice(0, 400));
+    const cfgFlowAuth = { 'Content-Type': 'application/json' } as Record<string, string>;
+    Object.assign(cfgFlowAuth, await login());
+    const cfgFlowStart = await (await fetch(`${BASE}/api/platforms/instagram/oauth/start`, { headers: cfgFlowAuth })).json();
+    const cfgFlowState = new URL(cfgFlowStart.authorizationUrl).searchParams.get('state') || '';
+    check('الرابط الكامل يحمل config_id بلا scope', new URL(cfgFlowStart.authorizationUrl).searchParams.get('config_id') === CONFIG_ID && !new URL(cfgFlowStart.authorizationUrl).searchParams.has('scope'));
+    const cfgFlowCb = await fetch(`${BASE}/api/platforms/instagram/oauth/callback?state=${encodeURIComponent(cfgFlowState)}&code=CFGFLOWCODE`);
+    check('callback مع config_id يُكمل الربط (200)', cfgFlowCb.status === 200, `status=${cfgFlowCb.status}`);
+    check('اكتشاف الحساب المهني تم فعلياً عبر Graph', mock.state.calls > 0 && mock.state.lastSubscribe?.pageId === 'PAGE_IG_1');
+    const cfgFlowReady = await (await fetch(`${BASE}/api/platforms/production-readiness`, { headers: cfgFlowAuth })).json();
+    const igCfgFlow = cfgFlowReady.platforms.find((p: any) => p.platform === 'instagram');
+    check('Instagram متصل وموثق بحالة config_id', igCfgFlow.connected === true && igCfgFlow.providerVerified === true, JSON.stringify(igCfgFlow).slice(0, 200));
+    check('لا يُعاد أي رمز في حالة config_id', !JSON.stringify(cfgFlowReady).includes('IG_USER_TOKEN_TEST_LONG') && !JSON.stringify(cfgFlowReady).includes('PAGE_TOKEN_TEST'));
+    await stop(cfgFlowApp.proc);
     // نُعيد الخادم الأصلي (بلا config_id) لبقية الاختبارات، ونُحدّث المرجعين
     // حتى يستخدم الإغلاق في النهاية العملية الصحيحة.
-    await stop(badCfgApp.proc);
     app = startApp(mock.base);
     currentApp = app;
     check('الخادم يعود للعمل بعد مسار config_id', await waitForHealth(), app.log().slice(0, 400));

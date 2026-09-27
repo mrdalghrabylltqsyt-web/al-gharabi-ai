@@ -347,6 +347,12 @@ add('instagram-onboarding-env-switch', server.includes('function instagramOnboar
 add('instagram-onboarding-switch-test', /INSTAGRAM_OAUTH_ONBOARDING: 'false'/.test(fs.readFileSync(path.join(root, 'engine/tests/instagram.connector.test.ts'), 'utf8')), 'اختبار يثبت أن تعطيل المفتاح ينتج response_type=code بلا extras');
 add('instagram-onboarding-switch-documented', fs.readFileSync(path.join(root, '.env.example'), 'utf8').includes('INSTAGRAM_OAUTH_ONBOARDING') && fs.readFileSync(path.join(root, 'render.yaml'), 'utf8').includes('INSTAGRAM_OAUTH_ONBOARDING'), 'المفتاح موثّق في .env.example وrender.yaml بلا قيمة سرّية');
 add('instagram-config-id-tests', /INSTAGRAM_LOGIN_CONFIG_ID/.test(fs.readFileSync(path.join(root, 'engine/tests/instagram.connector.test.ts'), 'utf8')), 'اختبار تكاملي يثبت مسار config_id وحجبه عند الصيغة غير الصالحة');
+// الحالة التشخيصية لـConfiguration ID تظهر في /api/health أيضاً (لا في readiness
+// وحده) ليراها المالك مباشرة عند فتح بوابة الصحة.
+add('instagram-config-ready-in-health', /insta[g]ramOAuth: \(\(\) => \{[\s\S]{0,1500}?configurationReady: Boolean\(effectiveLoginConfigIdFor\("instagram"\)\)/.test(server) && /configurationReady: Boolean\(effectiveLoginConfigIdFor\("instagram"\)\)[\s\S]{0,1500}?onboardingFlow: instagramOnboardingEnabled\(\)/.test(server), '/api/health.instagramOAuth يعرض Configuration Ready بلا أي سرّ');
+// المسار الكامل للمالك بعد ضبط Configuration ID: config_id => callback => تبادل
+// => اكتشاف الحساب المهني => CONNECTED + VERIFIED (لا يتوقف الفحص عند توليد الرابط).
+add('instagram-config-id-full-flow-test', /مسار config_id الكامل/.test(fs.readFileSync(path.join(root, 'engine/tests/instagram.connector.test.ts'), 'utf8')) && /callback مع config_id يُكمل الربط/.test(fs.readFileSync(path.join(root, 'engine/tests/instagram.connector.test.ts'), 'utf8')), 'اختبار تكاملي يثبت الاتصال الكامل بوجود config_id');
 add('login-config-id-tests-in-suite', typeof pkg.scripts.test === 'string' && pkg.scripts.test.includes('test:instagram') && typeof pkg.scripts.test === 'string' && pkg.scripts.test.includes('test:foundation'), 'اختبارات config_id ضمن npm test (وحدة + تكامل)');
 // --- فحص ما قبل توجيه المالك إلى Meta (منع صفحة «حدث خطأ ما» العمياء) ---
 add('meta-dialog-preprobe', server.includes('async function probeMetaDialog') && server.includes('META_DIALOG_') && server.includes('dialogKind'), 'بدء OAuth لـMeta يفحص رابط التفويض فعلياً قبل التوجيه');
