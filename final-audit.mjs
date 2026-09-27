@@ -447,6 +447,19 @@ add('tiktok-state-no-secret-in-labels', !/Bearer\s/.test(tiktokState) && !/['"]c
 add('tiktok-ui-truthful-state', read('src/components/social/PlatformConnectionCenter.tsx').includes('stateLabelAr') && read('src/components/social/SocialManagerView.tsx').includes('stateLabelAr'), 'الواجهة تعرض الحالة الصادقة (مركز الربط + بطاقة المدير)');
 add('tiktok-state-tests', read('engine/tests/tiktok.connector.test.ts').includes('resolveTikTokState') && read('engine/tests/tiktok.connector.test.ts').includes('الحالة الصادقة'), 'اختبارات تغطي الحالة الصادقة (وحدة + تكامل)');
 
+// تشخيص مفتاح تطبيق TikTok (client_key): يُثبت المفتاح لدى المزود بلا كشفه،
+// فيُنسب خطأ «correct the following: client_key» إلى سببه بدل التخمين.
+const tiktokModule = read('engine/social/tiktok.ts');
+add('tiktok-clientkey-fingerprint-single-source', tiktokModule.includes('export function clientKeyFingerprint') && tiktokModule.includes('export function maskSecretValue'), 'بصمة المفتاح وإخفاؤه مصدر واحد في وحدة TikTok');
+add('tiktok-clientkey-mask-first-last-4', /maskSecretValue[\s\S]{0,300}?slice\(0, 4\)[\s\S]{0,120}?slice\(-4\)/.test(tiktokModule), 'الإخفاء يُظهر أول 4 وآخر 4 فقط (القيم القصيرة تُخفى كاملة)');
+add('tiktok-clientkey-provider-proof', /async verifyClientKey/.test(tiktokModule) && tiktokModule.includes("body.set('grant_type', 'client_credentials')"), 'إثبات المفتاح لدى TikTok عبر طلب client_credentials فعلي واحد');
+add('tiktok-clientkey-error-classified', tiktokModule.includes('export function classifyTikTokClientKeyError') && tiktokModule.includes("'invalid_client'") && tiktokModule.includes("'unsupported_grant_type'"), 'تصنيف خطأ المفتاح يميّز المفتاح المجهول عن الناقص');
+add('tiktok-clientkey-diagnosis-endpoint', server.includes('/api/platforms/tiktok/client-key-diagnosis') && /client-key-diagnosis", requireOwner/.test(server), 'مسار تشخيص المفتاح للمالك فقط (requireOwner)');
+add('tiktok-clientkey-diagnosis-masked-only', server.includes('tiktokClientKeyDiagnosis') && server.includes('configuredValueMasked') && !/tiktokClientKeyDiagnosis[\s\S]{0,3000}?process\.env\.TIKTOK_CLIENT_KEY\)/.test(server), 'التشخيص يعرض القيمة مُخفاة ولا يطبع المفتاح أو السرّ');
+add('tiktok-clientkey-oauth-start-log', server.includes('logTikTokOAuthStart') && server.includes('tiktok-oauth-start'), 'سجل آمن عند بدء OAuth يُثبت المفتاح المستخدم فعلاً (مُخفى + بصمة)');
+add('tiktok-clientkey-setup-exposed', server.includes('clientKeyDiagnosis'), 'oauth/setup يعرض تشخيص المفتاح بلا سرّ');
+add('tiktok-clientkey-tests', read('engine/tests/tiktok.connector.test.ts').includes('clientKeyFingerprint') && read('engine/tests/tiktok.connector.test.ts').includes('classifyTikTokClientKeyError') && read('engine/tests/tiktok.connector.test.ts').includes('client-key-diagnosis'), 'اختبارات تغطي البصمة والإخفاء والتصنيف ومسار التشخيص');
+
 // التحقق من ملكية الرابط (TikTok URL prefix): ملف تحقق عام يُخدَم من مسار ثابت
 // بمحتوى التوقيع الرسمي، والصفحات القانونية العامة (Terms/Privacy/Website URLs).
 const siteVerification = read('engine/social/siteVerification.ts');
