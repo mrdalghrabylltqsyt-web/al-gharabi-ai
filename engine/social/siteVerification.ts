@@ -25,10 +25,23 @@ export const TIKTOK_SITE_VERIFICATION_PREFIX = 'tiktok-developers-site-verificat
  * يمكن تجاوزه من البيئة عبر `TIKTOK_VERIFICATION_TOKEN` إن ولّد TikTok رمزاً
  * جديداً عند إعادة إضافة الخاصية، فيُخدَم الرمز الصحيح بلا تعديل كود.
  */
-export const DEFAULT_TIKTOK_VERIFICATION_TOKEN = 'djxlJcC4WFlCh4OZY8IVHgezp491vPoZ';
+export const DEFAULT_TIKTOK_VERIFICATION_TOKEN = 'djxlJcC4WFlCh4OZY8iVHgezp491vPoZ';
 
 /** اسم متغير البيئة الذي يتجاوز الرمز المدموج. */
 export const TIKTOK_VERIFICATION_TOKEN_ENV_NAME = 'TIKTOK_VERIFICATION_TOKEN';
+
+/**
+ * مفتاح إيقاف خدمة الصدّى (echo). افتراضياً **معطّل**: يُخدَم الرمز المرجعي فقط
+ * (المدموج أو من البيئة)، وأي اسم رمز آخر يُرفض 404. هذا الوضع الصارم يُثبت أن
+ * الرمز المرجعي وحده يُرضي TikTok. لتفعيل غطاء الرمز المُعاد توليده مؤقتاً:
+ * `TIKTOK_VERIFICATION_ECHO=true`.
+ */
+export const TIKTOK_VERIFICATION_ECHO_ENV_NAME = 'TIKTOK_VERIFICATION_ECHO';
+
+/** هل خدمة الصدّى مفعّلة الآن؟ (الافتراضي: معطّلة — وضع صارم) */
+export function echoFallbackEnabled(): boolean {
+  return String(process.env[TIKTOK_VERIFICATION_ECHO_ENV_NAME] || '').trim().toLowerCase() === 'true';
+}
 
 /** الرمز الفعّال المحسوب من البيئة عند كل استخدام (لا يُلتقط وقت الإقلاع). */
 export function effectiveTikTokVerificationToken(): string {
@@ -115,6 +128,8 @@ export function verificationFileForPath(pathname: string): SiteVerificationFile 
   if (!name) return null;
   const known = siteVerificationFiles().find((file) => file.filename === name);
   if (known) return known;
+  // الوضع الصارم (الافتراضي): الرمز المرجعي فقط. الصدّى يُفعَّل صراحةً فقط.
+  if (!echoFallbackEnabled()) return null;
   const requestedToken = parseTikTokVerificationToken(name);
   if (requestedToken) return buildTikTokVerificationFile(requestedToken);
   return null;
@@ -231,8 +246,9 @@ export function captureVerificationRequest(input: {
   const rootLevel = pathname === `/${filename}`;
   const matchedExpected = filename === expected.filename;
   const served = !!verificationFileForPath(pathname);
-  // صدّى: اسم رمز صحيح لكن مختلف عن الرمز الفعّال — نخدم توقيعه المطابق فلا يفشل.
-  const servedViaEcho = served && !matchedExpected;
+  // صدّى = خُدِم رمز **مختلف عن الرمز الفعّال** (لا مجرّد اسم مختلف مثل الاسم البديل).
+  const requestedToken = parseTikTokVerificationToken(filename);
+  const servedViaEcho = served && !!requestedToken && requestedToken !== effectiveTikTokVerificationToken();
 
   let mismatchReason = '';
   if (!served) {

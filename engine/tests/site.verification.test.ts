@@ -30,6 +30,7 @@ import {
   captureVerificationRequest,
   effectiveVerificationFilename,
   effectiveTikTokVerificationToken,
+  echoFallbackEnabled,
   DEFAULT_TIKTOK_VERIFICATION_TOKEN,
   TIKTOK_VERIFICATION_TOKEN_ENV_NAME,
   TIKTOK_VERIFICATION_FILENAME,
@@ -96,11 +97,11 @@ async function stop(proc: ChildProcess): Promise<void> {
 // -------------------------------------------------------------
 function unitTests(): void {
   group('بناء ملف التحقق (وحدة)');
-  const file = buildTikTokVerificationFile('djxlJcC4WFlCh4OZY8IVHgezp491vPoZ');
-  check('اسم الملف بصيغة tiktok<token>.txt', file.filename === 'tiktokdjxlJcC4WFlCh4OZY8IVHgezp491vPoZ.txt', file.filename);
-  check('المحتوى سلسلة التوقيع الرسمية', file.content === 'tiktok-developers-site-verification=djxlJcC4WFlCh4OZY8IVHgezp491vPoZ', file.content);
+  const file = buildTikTokVerificationFile('djxlJcC4WFlCh4OZY8iVHgezp491vPoZ');
+  check('اسم الملف بصيغة tiktok<token>.txt', file.filename === 'tiktokdjxlJcC4WFlCh4OZY8iVHgezp491vPoZ.txt', file.filename);
+  check('المحتوى سلسلة التوقيع الرسمية', file.content === 'tiktok-developers-site-verification=djxlJcC4WFlCh4OZY8iVHgezp491vPoZ', file.content);
   check('نوع المحتوى نص صريح', file.contentType.startsWith('text/plain'), file.contentType);
-  check('الثابت الرسمي هو الرمز المطلوب', TIKTOK_VERIFICATION_TOKEN === 'djxlJcC4WFlCh4OZY8IVHgezp491vPoZ');
+  check('الثابت الرسمي هو الرمز المطلوب', TIKTOK_VERIFICATION_TOKEN === 'djxlJcC4WFlCh4OZY8iVHgezp491vPoZ');
   check('اسم الملف الثابت مطابق للمبني', TIKTOK_VERIFICATION_FILENAME === file.filename);
   check('محتوى الثابت مطابق للمبني', TIKTOK_VERIFICATION_CONTENT === file.content);
   check('البادئة الرسمية صحيحة', TIKTOK_SITE_VERIFICATION_PREFIX === 'tiktok-developers-site-verification=');
@@ -117,7 +118,7 @@ function unitTests(): void {
   try { buildTikTokVerificationFile(''); } catch { rejected3 = true; }
   check('رمز فارغ يُرفض', rejected3);
 
-  check('استخراج الرمز من الاسم', parseTikTokVerificationToken(file.filename) === 'djxlJcC4WFlCh4OZY8IVHgezp491vPoZ');
+  check('استخراج الرمز من الاسم', parseTikTokVerificationToken(file.filename) === 'djxlJcC4WFlCh4OZY8iVHgezp491vPoZ');
   check('رفض اسم غير مطابق', parseTikTokVerificationToken('other.txt') === null);
 
   const files = siteVerificationFiles();
@@ -138,25 +139,38 @@ function unitTests(): void {
 // 1ب) وحدة: لا يُخدَم توقيع رمز لاسم رمز آخر (جوهر فشل TikTok)
 // -------------------------------------------------------------
 function mismatchUnitTests(): void {
-  group('خدمة التوقيع المطابق للاسم المطلوب (صدّى/echo) (وحدة)');
+  group('الوضع الصارم: الرمز المرجعي فقط + الصدّى عند تفعيله (وحدة)');
+  const echoEnv = 'TIKTOK_VERIFICATION_ECHO';
+  const prevEcho = process.env[echoEnv];
+  delete process.env[echoEnv];
   // الملف الرسمي المطابق يُخدَم، والاسم البديل يُخدَم.
   check('الاسم المطابق يُطابق', verificationFileForPath('/' + TIKTOK_VERIFICATION_FILENAME)?.filename === TIKTOK_VERIFICATION_FILENAME);
   check('الاسم البديل يُطابق', verificationFileForPath('/tiktok-developers-site-verification.txt')?.filename === 'tiktok-developers-site-verification.txt');
-  // صدّى: اسم رمز صحيح لكن مختلف يُخدَم بتوقيع **مطابق لاسمه هو** لا بتوقيع الرمز المدموج.
+
+  // الوضع الصارم (الافتراضي): أي رمز آخر لا يُخدَم إطلاقاً (لا توقيع رمز آخر).
   const other = '/tiktokZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZ.txt';
-  const otherFile = verificationFileForPath(other);
-  check('رمز مختلف صحيح الصيغة يُخدَم (صدّى)', otherFile !== null && otherFile.filename === 'tiktokZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZ.txt', String(otherFile?.filename));
-  check('محتوى الصدّى يطابق الرمز المطلوب', otherFile?.content === 'tiktok-developers-site-verification=ZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZ', String(otherFile?.content));
-  check('محتوى الصدّى ليس توقيع الرمز المدموج', otherFile?.content !== TIKTOK_VERIFICATION_CONTENT);
-  // اسم بصيغة tiktok*.txt لكن رمزه أقصر من المسموح لا يُخدَم (لا توقيع وهمي).
-  check('اسم بلا رمز صالح لا يُخدَم', verificationFileForPath('/tiktok.txt') === null);
+  check('صرّم: رمز مختلف لا يُخدَم', verificationFileForPath(other) === null);
+  check('صرّم: الصدّى معطّل افتراضياً', echoFallbackEnabled() === false);
+  check('صرّم: اسم بلا رمز صالح لا يُخدَم', verificationFileForPath('/tiktok.txt') === null);
   check('رمز مختلف يُكتشف كطلب تحقق', isVerificationFileRequest(other));
   check('مسار فرعي لملف تحقق يُكتشف', isVerificationFileRequest('/sub/tiktokabc12345.txt'));
   check('شرطة مائلة زائدة تُكتشف', isVerificationFileRequest('/' + TIKTOK_VERIFICATION_FILENAME + '/'));
   check('مسار عادي لا يُكتشف كطلب تحقق', !isVerificationFileRequest('/dashboard'));
   check('ملف نصي آخر لا يُكتشف', !isVerificationFileRequest('/robots.txt'));
 
-  // تجاوز الرمز من البيئة: يُخدَم الرمز الصحيح واسمه، ويبقى المدموج هو الافتراضي.
+  // تفعيل الصدّى صراحةً: يُخدَم توقيع الرمز المطلوب بدل 404.
+  process.env[echoEnv] = 'true';
+  try {
+    check('صدّى مفعّل: معلن', echoFallbackEnabled() === true);
+    const otherFile = verificationFileForPath(other);
+    check('صدّى مفعّل: رمز مختلف يُخدَم', otherFile !== null && otherFile.filename === 'tiktokZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZ.txt', String(otherFile?.filename));
+    check('صدّى مفعّل: المحتوى يطابق الرمز المطلوب', otherFile?.content === 'tiktok-developers-site-verification=ZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZ', String(otherFile?.content));
+    check('صدّى مفعّل: الاسم غير الصالح يبقى 404', verificationFileForPath('/tiktok.txt') === null);
+  } finally {
+    if (prevEcho === undefined) delete process.env[echoEnv]; else process.env[echoEnv] = prevEcho;
+  }
+
+  // تجاوز الرمز من البيئة: يُخدَم الرمز الصحيح واسمه، والمدموج يبقى مخدوماً.
   const overridden = 'AbCdEf0123456789AbCdEf0123456789';
   const previous = process.env[TIKTOK_VERIFICATION_TOKEN_ENV_NAME];
   process.env[TIKTOK_VERIFICATION_TOKEN_ENV_NAME] = overridden;
@@ -164,12 +178,12 @@ function mismatchUnitTests(): void {
     check('الرمز الفعّال يأتي من البيئة', effectiveTikTokVerificationToken() === overridden);
     check('اسم الملف الفعّال يتبع البيئة', effectiveVerificationFilename() === `tiktok${overridden}.txt`);
     check('الملف الفعّال يُطابق', verificationFileForPath(`/tiktok${overridden}.txt`) !== null);
-    check('المدموج يظل مخدوماً بالصدّى', verificationFileForPath(`/tiktok${DEFAULT_TIKTOK_VERIFICATION_TOKEN}.txt`)?.content === TIKTOK_VERIFICATION_CONTENT);
+    check('تجاوز البيئة: المدموج لا يُخدَم (صرّم)', verificationFileForPath(`/tiktok${DEFAULT_TIKTOK_VERIFICATION_TOKEN}.txt`) === null);
   } finally {
     if (previous === undefined) delete process.env[TIKTOK_VERIFICATION_TOKEN_ENV_NAME];
     else process.env[TIKTOK_VERIFICATION_TOKEN_ENV_NAME] = previous;
   }
-  check('القيمة المدموجة الافتراضية ثابتة', DEFAULT_TIKTOK_VERIFICATION_TOKEN === 'djxlJcC4WFlCh4OZY8IVHgezp491vPoZ');
+  check('القيمة المدموجة الافتراضية ثابتة', DEFAULT_TIKTOK_VERIFICATION_TOKEN === 'djxlJcC4WFlCh4OZY8iVHgezp491vPoZ');
   check('بلا تجاوز يعود للرمز المدموج', effectiveTikTokVerificationToken() === DEFAULT_TIKTOK_VERIFICATION_TOKEN);
 }
 
@@ -189,10 +203,17 @@ function captureUnitTests(): void {
   check('التقاط الطلب المطابق: بلا سبب انحراف', match.mismatchReason === '');
 
   const other = captureVerificationRequest({ pathname: '/tiktokZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZ.txt', userAgent: 'TikTokBot/1.0', method: 'GET', at });
-  check('التقاط رمز مختلف: مخدوم بالصدّى', other.served === true && other.servedViaEcho === true);
-  check('التقاط رمز مختلف: سبب = صدّى مطابق', other.mismatchReason === 'served_echo_match', other.mismatchReason);
+  check('التقاط رمز مختلف (صرّم): غير مخدوم', other.served === false && !other.servedViaEcho);
+  check('التقاط رمز مختلف: سبب = رمز مختلف', other.mismatchReason === 'token_differs_from_served', other.mismatchReason);
   check('التقاط رمز مختلف: الرمز المطلوب مسجّل', other.token === 'ZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZ', other.token);
   check('التقاط رمز مختلف: اسم الملف المتوقع معلن', other.expectedFilename === TIKTOK_VERIFICATION_FILENAME, other.expectedFilename);
+  // مع تفعيل الصدّى صراحةً: نفس الاسم يُخدَم بتوقيعه.
+  process.env.TIKTOK_VERIFICATION_ECHO = 'true';
+  try {
+    const echoed = captureVerificationRequest({ pathname: '/tiktokZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZ.txt', method: 'GET', at });
+    check('التقاط رمز مختلف (صدّى): مخدوم بالصدّى', echoed.served === true && echoed.servedViaEcho === true);
+    check('التقاط رمز مختلف (صدّى): سبب = صدّى مطابق', echoed.mismatchReason === 'served_echo_match', echoed.mismatchReason);
+  } finally { delete process.env.TIKTOK_VERIFICATION_ECHO; }
 
   const sub = captureVerificationRequest({ pathname: `/sub/${TIKTOK_VERIFICATION_FILENAME}`, userAgent: '', method: 'GET', at });
   check('مسار فرعي: سبب = ليس الجذر', sub.mismatchReason === 'not_at_root_path', sub.mismatchReason);
@@ -262,14 +283,13 @@ async function integrationTests(): Promise<void> {
     check('nosniff معلن', vres.headers.get('x-content-type-options') === 'nosniff');
     check('طول المحتوى بالبايت دقيق', vres.headers.get('content-length') === String(Buffer.byteLength(TIKTOK_VERIFICATION_CONTENT, 'utf8')), vres.headers.get('content-length') || '');
 
-    // جوهر الإصلاح: اسم برمز مختلف يُخدَم بتوقيع **مطابق لاسمه هو** (صدّى)،
-    // فلا يستلم توقيع الرمز المدموج ولا يفشل تحقق TikTok.
+    // الوضع الصارم (الافتراضي): اسم برمز مختلف يُرفض 404 — لا يُخدَم أي توقيع
+    // لرمز لا يطابق الرمز المرجعي، فيُثبت أن الرمز المرجعي وحده يخدم التحقق.
     const mism = await fetch(`${BASE}/tiktokZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZ.txt`, { redirect: 'manual' });
     const mismBody = await mism.text();
-    check('اسم برمز مختلف يُخدَم 200 (صدّى)', mism.status === 200, String(mism.status));
-    check('اسم برمز مختلف يعيد توقيعه هو', mismBody === 'tiktok-developers-site-verification=ZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZ', JSON.stringify(mismBody));
-    check('اسم برمز مختلف لا يعيد التوقيع المدموج', mismBody !== TIKTOK_VERIFICATION_CONTENT);
-    check('اسم برمز مختلف لا يعيد HTML', !mismBody.toLowerCase().includes('<!doctype'));
+    check('صرّم: اسم برمز مختلف يُرفض 404', mism.status === 404, String(mism.status));
+    check('صرّم: لم يُخدَم أي توقيع', !mismBody.startsWith('tiktok-developers-site-verification='), mismBody.slice(0, 120));
+    check('صرّم: لا يعيد HTML', !mismBody.toLowerCase().includes('<!doctype'));
 
     // مسار فرعي لملف تحقق لا يسقط إلى واجهة React.
     const sub = await fetch(`${BASE}/sub/${TIKTOK_VERIFICATION_FILENAME}`, { redirect: 'manual' });
@@ -325,17 +345,18 @@ async function integrationTests(): Promise<void> {
     const sv2 = health2?.siteVerification;
     check('آخر طلب يعكس الطلب الأخير (الرمز الآخر)', sv2?.lastRequest?.filename === otherName, sv2?.lastRequest?.filename);
     check('آخر طلب يحمل وكيل المستخدم', sv2?.lastRequest?.userAgent === 'TikTok-Verify/Probe', sv2?.lastRequest?.userAgent);
-    check('آخر طلب رمز آخر: خُدِم بالصدّى', sv2?.lastRequest?.served === true && sv2?.lastRequest?.servedViaEcho === true);
-    check('سبب آخر طلب = صدّى مطابق', sv2?.lastRequest?.mismatchReason === 'served_echo_match', sv2?.lastRequest?.mismatchReason);
-    check('آخر طلب مطابق محفوظ منفصلاً', sv2?.lastServedRequest?.served === true, String(sv2?.lastServedRequest?.filename));
-    check('آخر طلب صدّى محفوظ منفصلاً', sv2?.lastEchoRequest?.filename === otherName, sv2?.lastEchoRequest?.filename);
+    check('صرّم: آخر طلب رمز آخر غير مخدوم', sv2?.lastRequest?.served === false && !sv2?.lastRequest?.servedViaEcho);
+    check('صرّم: سبب آخر طلب = رمز مختلف', sv2?.lastRequest?.mismatchReason === 'token_differs_from_served', sv2?.lastRequest?.mismatchReason);
+    check('آخر طلب منحرف محفوظ منفصلاً', sv2?.lastMismatchedRequest?.filename === otherName, String(sv2?.lastMismatchedRequest?.filename));
+    check('صرّم: لا طلب صدّى', !sv2?.lastEchoRequest, String(sv2?.lastEchoRequest));
     check('recentRequests سجل تراكمي', Array.isArray(sv2?.recentRequests) && sv2.recentRequests.length >= 2, String(sv2?.recentRequests?.length));
     check('الاسم المتوقع معلن في الطلب', sv2?.lastRequest?.expectedFilename === TIKTOK_VERIFICATION_FILENAME);
-    check('حكم الصحة = صدّى مطابق', sv2?.diagnosis === 'served_echo_match', String(sv2?.diagnosis));
+    check('صرّم: حكم الصحة = رمز مختلف', sv2?.diagnosis === 'token_differs_from_served', String(sv2?.diagnosis));
 
-    // الصدّى يخدم التوقيع المطابق للاسم المطلوب (لا 404).
-    const mismatchBody = await (await fetch(`${BASE}/${otherName}`)).text();
-    check('الصدّى يعيد توقيع الاسم المطلوب', mismatchBody === 'tiktok-developers-site-verification=ZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZ', mismatchBody.slice(0, 200));
+    // إعادة فحص الرمز المرجعي ثم الصحة: يُعاد إلى حالة served_ok.
+    await fetch(`${BASE}/${TIKTOK_VERIFICATION_FILENAME}`, { redirect: 'manual' });
+    const sv3 = (await (await fetch(`${BASE}/api/health`)).json() as any)?.siteVerification;
+    check('بعد الرمز المرجعي: حكم = مخدوم', sv3?.diagnosis === 'served_ok', String(sv3?.diagnosis));
 
     const readiness = await (await fetch(`${BASE}/api/readiness`)).json() as any;
     check('الجاهزية تعرض siteVerification', readiness?.siteVerification?.filename === TIKTOK_VERIFICATION_FILENAME);
@@ -348,6 +369,32 @@ async function integrationTests(): Promise<void> {
     rmSync(stateDir, { recursive: true, force: true });
   }
 }
+// -------------------------------------------------------------
+// 4) تكامل: الصدّى عند تفعيله صراحةً
+// -------------------------------------------------------------
+async function echoIntegrationTests(): Promise<void> {
+  if (!existsSync(tsxCli)) return;
+  const app = startApp({ TIKTOK_VERIFICATION_ECHO: 'true' });
+  try {
+    group('تكامل: الصدّى مفعّل صراحةً');
+    const up = await waitForHealth();
+    check('الصدّى: الخادم يقلع', up, app.log().slice(0, 400));
+    if (!up) return;
+    const other = 'tiktokZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZ.txt';
+    const res = await fetch(`${BASE}/${other}`, { headers: { 'user-agent': 'Go-http-client/1.1' }, redirect: 'manual' });
+    const body = await res.text();
+    check('الصدّى: رمز مختلف يُخدَم 200', res.status === 200, String(res.status));
+    check('الصدّى: يعيد توقيع الاسم المطلوب', body === 'tiktok-developers-site-verification=ZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZ', body.slice(0, 120));
+    const sv = (await (await fetch(`${BASE}/api/health`)).json() as any)?.siteVerification;
+    check('الصدّى: الحالة تعلن served_echo_match', sv?.diagnosis === 'served_echo_match', String(sv?.diagnosis));
+    check('الصدّى: lastEchoRequest معلن', sv?.lastEchoRequest?.filename === other, String(sv?.lastEchoRequest?.filename));
+  } finally {
+    await stop(app.proc);
+    rmSync(stateDir, { recursive: true, force: true });
+  }
+}
+
+
 
 async function main(): Promise<void> {
   unitTests();
@@ -355,6 +402,7 @@ async function main(): Promise<void> {
   captureUnitTests();
   legalUnitTests();
   await integrationTests();
+  await echoIntegrationTests();
 
   console.log(`\nنتيجة: ${passed} ناجح، ${failures.length} فاشل.`);
   if (failures.length) {

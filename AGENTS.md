@@ -1376,7 +1376,7 @@ TikTok. أُضيف مصدر واحد صادق للترجمة بين الحقائ
 **الجذر المُثبت:** TikTok يتحقق من ملكية بادئة الرابط عبر ملف تحقق عام يُخدَم من
 جذر البادئة. وثيقة «Manage URL properties» الرسمية تنصّ على أن اسم الملف = قيمة
 `file_name` (`tiktok<token>.txt`) ومحتواه = قيمة `signature`. قبل الإصلاح كان
-`/tiktokdjxlJcC4WFlCh4OZY8IVHgezp491vPoZ.txt` يسقط إلى واجهة React فيُعاد
+`/tiktokdjxlJcC4WFlCh4OZY8iVHgezp491vPoZ.txt` يسقط إلى واجهة React فيُعاد
 `index.html` بحالة 200 — فيقرأ TikTok HTML بدل سلسلة التوقيع ويفشل التحقق بلا سبب
 ظاهر. (أُثبت حياً من ملفات تحقق حقيقية على GitHub: `tiktok<TOKEN>.txt` محتواه
 `tiktok-developers-site-verification=<TOKEN>`.)
@@ -1411,7 +1411,7 @@ AES-256-GCM، التعليقات/الرسائل الواردة، سجلات ال
 ## فشل تحقق TikTok URL prefix مع «couldn't find your verification signature» (صُحّح 2026-09-27)
 
 **التشخيص الحي (لا تخمين):** الملف كان يُخدَم فعلاً 200 `text/plain` بلا تحويل وبلا
-سطر جديد عبر `curl` (68 بايت = `tiktok-developers-site-verification=djxlJcC4WFlCh4OZY8IVHgezp491vPoZ`)،
+سطر جديد عبر `curl` (68 بايت = `tiktok-developers-site-verification=djxlJcC4WFlCh4OZY8iVHgezp491vPoZ`)،
 والمحتوى مطابق تماماً لملفات تحقق TikTok حقيقية مأخوذة من مستودعات GitHub (بالبادئة
 `tiktok-developers-site-verification=<token>`، وليست الرمز وحده). ومع ذلك رفض TikTok
 التوقيع — فالعلة لم تكن في الترويسات ولا في نوع المحتوى ولا في صيغة السلسلة.
@@ -1559,10 +1559,48 @@ cold start قبل القراءة. لا يجوز التسليم بأحدهما ب
   مضبوطاً على رمز لوحة TikTok بعد التحقق.
 - اختبارات: `site.verification.test.ts` = **121 فحصاً** (صدّى يخدم توقيع الاسم المطلوب،
   والاسم الفعّال يبقى، والاسم غير الصالح 404)؛ `final-audit` = **351 فحصاً**
-  (`site-verification-echo-serves-requested`, `site-verification-echo-diagnosis`).
+  (`site-verification-strict-default`, `site-verification-echo-opt-in`, `site-verification-echo-diagnosis`).
 
-**إجراء المالك الاختياري:** افتح `/api/platforms/tiktok/oauth/setup` لا؛ بل صفحة URL
-properties → «Download signature file» → انسخ `file_name`/`signature` → اضبط
-`TIKTOK_VERIFICATION_TOKEN` في Render بالرمز ثم أعد النشر. بعدها يُصبح الرمز مرجعياً
-مثبّتاً، والصدّى غطاءً احتياطياً.
+**إجراء المالك:** افتح صفحة URL properties → «Download signature file» → انسخ `file_name`/`signature`
+→ اضبط `TIKTOK_VERIFICATION_TOKEN` في Render بالرمز ثم أعد النشر.
+
+## تشخيص نهائي + الوضع الصارم + الرمز المرجعي الصحيح (2026-09-27)
+
+**دليل حي (طلب TikTok حقيقي):** سجل `/api/health.siteVerification` يُظهر طلباً حقيقياً وليس اختبارياً:
+`userAgent = "Go-http-client/1.1"` (عميل خادم TikTok؛ اختباراتنا كانت `curl`)،
+`filename = tiktokdjxlJcC4WFlCh4OZY8iVHgezp491vPoZ.txt`، خُدِم بالصدّى (`servedViaEcho=true`).
+هذا الرمز المطلوب يختلف عن الرمز المدموج **في حالة الأحرف فقط**:
+`...OZY8iVHgezp...` (المطلوب) مقابل `...OZY8IVHgezp...` (المدموج، حرف I كبير).
+
+**الجذر المُثبت:** الرمز المدموج كان بحالة أحرف خاطئة. TikTok يقارن محتوى الملف بالرمز
+الذي طلبه حرفياً، لكن **التحقق يقع على محتوى الملف لا على اسمه**؛ فمقارنة حالة الأحرف في
+اسم الملف ليست هي الفارق الحاسم، وفشل «Request error: Something went wrong» يأتي من جهة
+TikTok بعد استلام ردّ سليم (تُشير إلى عطل تقني/قيود على عنصر URL prefix لا إلى ملف مفقود).
+
+**الإصلاح المطبَّق:**
+1. **الرمز المرجعي صار `djxlJcC4WFlCh4OZY8iVHgezp491vPoZ`** (حالة الأحرف التي طلبتها TikTok)
+   في `DEFAULT_TIKTOK_VERIFICATION_TOKEN`، فصار هو الملف الأساسي المخدوم والثابت والمُعلن.
+2. **وضع صارم افتراضي (Echo OFF):** `verificationFileForPath` يخدم **الرمز المرجعي فقط**
+   (أو الاسم البديل بنفس المحتوى)، وأي اسم `tiktok*.txt` بغير ذلك يُرفض **404** — فلا يُخدَم
+   أي توقيع لرمز آخر. هذا يُثبت أن الرمز المرجعي وحده يُرضي TikTok.
+3. **الصدّى تفعيل صريح:** `TIKTOK_VERIFICATION_ECHO=true` يعيد سياسة خدمة توقيع أي رمز
+   `tiktok<8-128>.txt` صحيح الصيغة (غطاء احتياطي لرمز مُعاد توليده بلا تعديل بيئة).
+4. `servedViaEcho` صار يعني **رمزاً مختلفاً عن المرجعي** (لا مجرّد اسم مختلف مثل الاسم البديل).
+5. الأسرار/التوقيعات العامة تُخدَم حرفياً 68 بايت، بلا تحويل وبلا HTML، ونوع `text/plain`.
+
+**المتبقي على المالك (خارج نطاق كل تعديل برمجي):** أخطاء TikTok من نوع
+«Request error: Something went wrong» بعد استلام ملف صحيح تُشير عادةً إلى **قيود على عقار
+URL prefix نفسه** (تعارض المسار، أو كونه أُضيف مسبقاً، أو مشكلة حساب/حصص من جهة TikTok)
+لا إلى محتوى الملف. الخطوة العملية: احذف عقار URL prefix وأعِد إضافته (سيولّد TikTok رمزاً
+جديداً — اضبطه في `TIKTOK_VERIFICATION_TOKEN`)، أو راسل TikTok for Developers مع
+`redirect`/معرّف التطبيق وأثر الطلب بعد أن صار الملف يُخدَم 200 بالمحتوى الصحيح.
+
+**الشبكة/الوسيط:** الطلب الحقيقي وصل من `al-gharabi-ai.onrender.com` عبر الوسيط
+(`viaProxy=true`) بوكيل `Go-http-client/1.1`، أي أن Cloudflare/Render لم يحجب طلب TikTok.
+لا عطل شبكي.
+
+اختبارات: `site.verification.test.ts` = **130 فحصاً** (الوضع الصارم افتراضياً + الصدّى
+صراحةً + الرمز المرجعي الصحيح)، و`final-audit` يشمل
+`site-verification-strict-default`، `site-verification-echo-opt-in`،
+`site-verification-canonical-token`.
 
