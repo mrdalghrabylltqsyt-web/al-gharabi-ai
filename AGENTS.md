@@ -1885,3 +1885,25 @@ final-audit = **426 فحصاً** (`meta-business-login-requires-config-block` �
 (أرقام فقط) → Render → Environment → `INSTAGRAM_LOGIN_CONFIG_ID` → أعد النشر. بعد ذلك
 يحلّ `config_id` محل `scope` ويُكمل الربط ويُحفظ مشفّراً. (المتطلب الأساسي المتبقي بالضبط:
 مُعرّف Configuration واحد من جلسة مالك Meta — لا يمكن لأي وكيل برمجي إنشاؤه نيابةً عنه.)
+
+## إثبات المسار الكامل بعد Configuration ID + إظهار الحالة في /api/health (2026-09-27)
+
+إكمال مباشر للبند أعلاه في نفس يوم الإصلاح (دفعة على `main` بعد `d1721a7`):
+- **إظهار جاهزية Configuration في `/api/health`** بجانب `/api/readiness`:
+  `instagramOAuth.loginConfigId{Configured,Valid,Used}` و`configurationReady`. سبب الوجود:
+  كانت الحالة التشخيصية في `readiness` فقط، فيجب أن يرى المالك فوراً من بوابة الصحة أن
+  `INSTAGRAM_LOGIN_CONFIG_ID` غير مضبوط (`configurationReady=false`) والإجراء المطلوب.
+- **اختبار تكاملي للمسار الكامل** في `instagram.connector.test.ts` (المجموعة `6أ` الفرعية):
+  `config_id => /oauth/start (config_id بلا scope) => callback بسطر الطلب => تبادل الرمز
+  => اكتشاف الحساب المهني => اشتراك الصفحة => CONNECTED + VERIFIED`. كان الفحص يقف عند
+  توليد الرابط فقط، فلا يُثبت أن الإكمال يعمل فعلاً بعد ضبط Configuration ID.
+- فحصا final-audit: `instagram-config-ready-in-health` و`instagram-config-id-full-flow-test`.
+
+**حالة الإنتاج قبل تدخل المالك (مؤكدة بعد النشر `62aa2fa`):**
+`https://al-gharabi-ai.onrender.com/api/health` → `instagramOAuth`:
+`clientIdConfigured=true`, `clientSecretConfigured=true`, `appSecretConfigured=true`,
+`scopeCount=9`, `loginConfigIdConfigured=false`, `configurationReady=false`,
+`onboardingFlow=disabled`؛ و`readiness.instagramOAuth.nextAction` يوجّه لإنشاء Configuration.
+أي أن الإصلاح البرمجي كامل، والمتبقي الوحيد هو إدخال Configuration ID من جلسة المالك.
+(Render ينشر تلقائياً عند الدفع لأن `autoDeploy: true`؛ لا وكيل برمجي يوافق على شاشة Meta
+نيابةً عن المالك، وهو حد خارجي لا يمكن تجاوزه من الكود.)
