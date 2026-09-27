@@ -1693,3 +1693,62 @@ final-audit: `tiktok-clientkey-fingerprint-single-source` … `tiktok-clientkey-
 **نقطة توقف المالك (لاحقاً):** أُنجزت هذه الدفعة لتثبيت الاتصال الدائم؛ وظائف YouTube الفعلية
 (رفع/نشر/تعليقات/تحليلات) تبقى مؤجّلة ولم تُعلن.
 
+## إصلاح جذري: وجهة إعادة التوجيه في تدفّق Instagram الرسمي + صدق config_id (2026-09-27)
+
+### السبب الحقيقي لعطل «لم يُربط بعد» — ليس Meta config_id
+مسار Instagram الرسمي (وثيقة «Facebook Login for Business - Instagram API») يستخدم
+`response_type=token`، وMeta تُلحق الرمز في **مقطع الاستجابة** (`#access_token=...`).
+المقطع لا يُرسَل إلى الخادم إطلاقاً. فطلب GET الواصل إلى
+`/api/platforms/instagram/oauth/callback` **بلا state وبلا code** هو وجهة إعادة التوجيه
+الحقيقية التي يفتحها المتصفح — وقد كان يرد **400** («جلسة OAuth غير معروفة») فيتوقف
+إكمال الربط تماماً، ويبقى Instagram «لم يُربط بعد» رغم أن Meta أرجعت الرمز فعلاً.
+
+الدليل الحي على الإنتاج: طلب GET للمسار أرجع `HTTP/2 400` بنص «فشل التحقق من جلسة OAuth».
+وتدفّق Facebook لم يتأثّر لأنه `response_type=code` (يحمل `?code=` في سطر الطلب).
+
+**الإصلاح:** `platformOauthFragmentReturn(req)` يكتشف GET بلا state/code/error لمسار
+إرجاع OAuth معروف، و`serveSpaIndex(res)` يخدم `dist/index.html` كي يقرأ تطبيق React
+المقطع ويرسله POST في الجسم (`completePlatformOAuthFragment`). الطلب الذي يحمل
+state/code/error يبقى للمعالجة العادية (لا يخدم React)، فلا تُضعَف أي حماية.
+
+### خطأ ثانٍ مُثبت: رابط هجين غير موثّق (config_id + extras)
+`buildAuthorizationParams` كان يرسل `config_id` مع `display=page` و`extras=IG_API_ONBOARDING`
+و`response_type=token` في الوقت نفسه لـInstagram. وثيقة مسار Instagram تُعرّف الرابط
+بستة معاملات **بلا config_id**؛ الروابط الهجينة تردّها Meta بـ500 «حدث خطأ ما» (وأي
+`config_id` وهمي/غير موجود يُعيد 500 أيضاً — مُثبت حياً). الإصلاح: `instagramOnboardingFlow`
+بوابة واحدة؛ في تدفّق الإعداد الموحّد **يُتجاهَل config_id ويُبقى scope**، وفي التدفّق
+العادي (`INSTAGRAM_OAUTH_ONBOARDING=false`) يُطبَّق config_id مع `response_type=code`
+والحذف الكامل لـscope. Facebook لا يتأثّر.
+
+### صدق الإعلان (بلا إيهام)
+- `effectiveLoginConfigIdFor(platform)` يحسب config_id **المُطبَّق فعلاً**، و
+  `loginConfigIdUsed`/`permissionSource`/`instagramOnboardingFlow` في `oauth/start`
+  و`oauth/setup` تعكسها، فلا يُعلن استخدام Configuration بينما الرابط يحمل scope.
+- فحص الحوار في `oauth/setup` (`buildAuthorizationUrlForProbe`) كان يفرض التدفّق
+  الموحّد مفعّلاً دائماً، فيعرض مساراً مختلفاً عن الحقيقي عندما يعطّل المالك المفتاح.
+  الآن يحترم `instagramOnboardingEnabled()`.
+- `authorizationUrlParams` في رد `oauth/start` يُعلن **معاملات الرابط النهائي** الفعلية
+  (بلا سرّ) للتحقق بلا تخمين (config_id عام، وclient_id/redirect_uri معلنان أصلاً).
+- الرفض الذي تعيده Meta في **المقطع** (`error=...`) صار يُعرض في الواجهة بدل إهماله صامتاً.
+
+### ما لم يتغيّر (عن قصد)
+- `INSTAGRAM_REQUIRED_SCOPES` تبقى 9 بلا `pages_read_user_content`: لا استدعاء في الكود
+  يقابلها في هذا المسار، وإضافة صلاحية بلا استدعاء تزيد سطح الرفض — قرار موثّق مسبقاً.
+- `business_management` مطلوبة (صفحات Business Manager)، وFacebook/YouTube/Telegram
+  بلا أي تغيير (انحدارها كلها ناجح).
+
+اختبارات: `instagram.connector.test.ts` = **196 فحصاً**: مجموعة `6د` تثبت أن وجهة
+المقطع تخدم React (200 + عنصر الجذر) وأن مسار Facebook كذلك وأن الطلب الذي يحمل
+state يبقى 400؛ ومجموعة `6أ` تثبت config_id في التدفّق العادي، وتجاهله مع extras في
+التدفّق الموحّد، و`loginConfigIdUsed=false` مع `loginConfigIdConfigured=true`، والمعاملات
+الرسمية الستة. فحوص final-audit الجديدة: `instagram-fragment-return-serves-spa`,
+`instagram-fragment-return-no-state-only`, `instagram-fragment-return-spa-safe`,
+`instagram-fragment-return-tests`, إضافةً إلى `oauth-config-id-effective-honest` و
+`instagram-probe-matches-real-flow` (396 فحصاً إجمالاً).
+
+**ما بقي على المالك (إجراء خارجي واحد لا ينفّذه أي وكيل):** بعد نشر هذا الإصلاح، اضغط
+«بدء الربط» وأكمل الموافقة بحساب Instagram **مهني** مرتبط بالصفحة. سيقرأ المتصفح الآن
+المقطع ويُكمل الربط تلقائياً. إن ظهر «حدث خطأ ما» **بعد** تسجيل الدخول، فاضبط
+`INSTAGRAM_OAUTH_ONBOARDING=false` في Render وأعد المحاولة (يتحوّل للتدفّق العادي بلا
+`extras` — مخرج عطل Meta 1850019) بلا نشر جديد.
+

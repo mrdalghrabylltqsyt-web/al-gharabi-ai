@@ -211,14 +211,23 @@ export function buildAuthorizationParams(input: {
     // وresponse_type=token (لا code). بلا هذه المعاملات يمرّ المالك بمسار عام بلا
     // نافذة الإعداد الموحّدة (تحويل الحساب المهني + ربط الصفحة) — وهو موضع «حدث خطأ ما».
     // Facebook لا يتأثّر: الفرع خاص بـinstagram وحده.
-    if (platform === 'instagram' && instagramOnboarding) {
+    const instagramOnboardingFlow = platform === 'instagram' && Boolean(instagramOnboarding);
+    if (instagramOnboardingFlow) {
       params.display = 'page';
       params.extras = INSTAGRAM_ONBOARDING_EXTRAS;
       params.response_type = 'token';
     }
     // Facebook Login for Business: config_id يحلّ محل scope، وإرسالهما معاً
     // يتعارض (الConfiguration تحمل الصلاحيات وحقول الوصول). Threads لا يستخدمه.
-    if (loginConfigId && (platform === 'facebook' || platform === 'instagram')) {
+    //
+    // Instagram في تدفّق الإعداد الموحّد: وثيقة «business-login-for-instagram»
+    // تُعرّف الرابط بستة معاملات (بلا config_id)؛ إرسال config_id مع
+    // display/extras/response_type=token يُنتج رابطاً هجيناً غير موثّق ترده Meta
+    // بـ500 «حدث خطأ ما» (مُثبت حياً ومن منتدى Meta). لذلك يُتجاهَل config_id هنا
+    // وتُبقى الصلاحيات على scope — مطابقةً للوثيقة، وبلا كسر مسار Facebook.
+    if (loginConfigId && platform === 'facebook') {
+      params.config_id = loginConfigId;
+    } else if (loginConfigId && platform === 'instagram' && !instagramOnboardingFlow) {
       params.config_id = loginConfigId;
     } else {
       params.scope = scopes.join(',');

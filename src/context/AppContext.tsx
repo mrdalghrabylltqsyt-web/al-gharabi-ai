@@ -200,6 +200,13 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           } catch (e: any) {
             setOauthReturn({ platform, ok: false, message: e?.message || 'تعذر إكمال ربط المنصة' });
           }
+        } else if (oauthHashParams.has('error')) {
+          // تشمل Meta حالة الرفض في المقطع أيضاً (مثل error=access_denied). كان
+          // ذلك يُهمَل صامتاً بعد عودة المتصفح، فيظن المالك أن الربط «لم يبدأ».
+          const platform = window.location.pathname.match(/^\/api\/platforms\/([^/]+)\/oauth\/callback/)?.[1] || 'instagram';
+          const reason = oauthHashParams.get('error_description') || oauthHashParams.get('error') || 'رفض مزود المنصة عملية الربط';
+          window.history.replaceState({}, '', window.location.pathname);
+          setOauthReturn({ platform, ok: false, message: reason });
         }
         const hashParams = new URLSearchParams(window.location.hash.replace(/^#/, ''));
         const previewToken = hashParams.get('preview_token');

@@ -1043,7 +1043,10 @@ function buildAuthorizationUrlForProbe(platform: string): string {
     scopes,
     state: "probe",
     loginConfigId: META_OAUTH_PLATFORMS.has(platform) ? loginConfigIdFor(platform) : null,
-    instagramOnboarding: platform === "instagram",
+    // يجب أن يطابق الفحص الرابط الذي سيُولَّد فعلاً في /oauth/start: كان يفرض
+    // تدفّق الإعداد مفعّلاً دائماً، فيُظهر `oauth/setup` و`dialogPhase` مساراً
+    // مختلفاً عن المسار الحقيقي عندما يضبط المالك INSTAGRAM_OAUTH_ONBOARDING=false.
+    instagramOnboarding: platform === "instagram" && instagramOnboardingEnabled(),
   });
   const u = new URL(authEndpointFor(platform));
   for (const [k, v] of Object.entries(params)) u.searchParams.set(k, v);
@@ -1131,6 +1134,20 @@ function envSecret(name: string): string | undefined {
  */
 function loginConfigIdFor(platform: string): string | null {
   return resolveLoginConfigId(platform, process.env);
+}
+/**
+ * Configuration ID **المُطبَّق فعلاً** في رابط التفويض (قد يكون null رغم ضبط
+ * المتغير). سبب الوجود: مسار Instagram الرسمي (تدفّق الإعداد الموحّد
+ * display/extras/response_type=token) لا يستخدم config_id إطلاقاً، فإرساله
+ * يُنتج رابطاً هجيناً ترده Meta بـ500 «حدث خطأ ما». لذلك يجب أن تكون القيم
+ * المُعلنة (`used`/`permissionSource`) مطابقة لما يُرسَل فعلاً لا لما هو مضبوط.
+ */
+function effectiveLoginConfigIdFor(platform: string): string | null {
+  const configured = loginConfigIdFor(platform);
+  if (!configured) return null;
+  // Instagram: يُتجاهَل في تدفّق الإعداد الموحّد المفعّل، ويُطبَّق في التدفّق العادي.
+  if (platform === "instagram" && instagramOnboardingEnabled()) return null;
+  return configured;
 }
 /** فحص الغياب/الصيغة غير الصالحة للConfiguration (بلا أي قيمة) للعرض التشخيصي. */
 function loginConfigInspection(platform: string) {
@@ -2166,6 +2183,33 @@ function facebookPageSelectionPending(): boolean {
 function escapeHtml(value: string): string {
   return String(value).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c] as string));
 }
+/**
+ * هل هذا طلب GET على مسار إرجاع OAuth لا يحمل أي رمز/خطأ؟
+ *
+ * سبب الوجود: تدفّق Meta الرسمي لـInstagram (response_type=token) يُلحق الرمز في
+ * **مقطع** الاستجابة، والمقطع لا يُرسَل إلى الخادم أبداً. فالطلب الواصل هنا GET
+ * بلا state/code وبلا error — وهو **وجهة إعادة التوجيه الحقيقية** للمتصفح، لا
+ * خطأ. يُستخدم لخدمة تطبيق React (ليقرأ المقطع ويرسله POST) بدل رد 400 الذي كان
+ * يوقف إكمال الربط تماماً. أي طلب يحمل state/code/error يبقى للمعالجة المعتادة.
+ */
+function platformOauthFragmentReturn(req: any): boolean {
+  if (req.method !== "GET") return false;
+  const query = req.url && req.url.includes("?") ? req.url.slice(req.url.indexOf("?") + 1) : "";
+  const p = new URLSearchParams(query);
+  if (p.get("state") || p.get("code") || p.get("error") || p.get("fragment")) return false;
+  return Boolean(OAUTH_CONFIG[String(req.params?.platform || "")]);
+}
+/** يخدم واجهة React أحادية الصفحة (dist/index.html) بأمان؛ يعيد false إن تعذّر. */
+function serveSpaIndex(res: any): boolean {
+  try {
+    const indexPath = path.join(process.cwd(), "dist", "index.html");
+    if (fs.existsSync(indexPath)) {
+      res.status(200).setHeader("Content-Type", "text/html; charset=utf-8").send(fs.readFileSync(indexPath, "utf8"));
+      return true;
+    }
+  } catch { /* تعذّر القراءة: نُكمل المسار العادي */ }
+  return false;
+}
 /** انتهاء مطلق للرمز من expires_in (ثوانٍ) أو null عند غيابه. */
 function parsedTokenExpiry(token: any): number | null {
   const n = Number(token?.expires_in);
@@ -2617,7 +2661,9 @@ app.get("/api/platforms/:platform/oauth/start", requireOwner, async (req,res)=>{
   }
   // مسار Facebook Login for Business: عند وجود Configuration ID صالح نمرّره
   // كـconfig_id بدل scope (الConfiguration تحمل الصلاحيات وحقول الوصول).
-  const loginConfigId = META_OAUTH_PLATFORMS.has(platform) ? loginConfigIdFor(platform) : null;
+  // لـInstagram في تدفّق الإعداد الموحّد يُتجاهَل config_id (الوثيقة الرسمية
+  // تعرّف الرابط بستة معاملات بلا config_id)، فنستخدم القيمة المُطبَّقة فعلاً.
+  const loginConfigId = META_OAUTH_PLATFORMS.has(platform) ? effectiveLoginConfigIdFor(platform) : null;
   const state=createOAuthState();
   const pending:OAuthPending={platform,userId:(req as any).user.id,expiresAt:Date.now()+OAUTH_STATE_TTL_MS,redirectUri:callbackUrl};
   let pkceChallenge:string|undefined;
@@ -2727,6 +2773,10 @@ app.get("/api/platforms/:platform/oauth/start", requireOwner, async (req,res)=>{
     loginConfigIdConfigured:preflight.loginConfig?.configured??false,
     loginConfigIdValid:preflight.loginConfig?.valid??false,
     loginConfigEnvNames:META_OAUTH_PLATFORMS.has(platform)?loginConfigEnvNames(platform):undefined,
+    // القيمة الفعلية التي أُرسلت إلى Meta (أسماء وقيم غير سرّية). تُعرَض ليتحقق
+    // المالك من الرابط النهائي بلا تخمين، وبلا كشف أي سرّ (Config ID ليس سرّاً،
+    // وكلا المعرّفين العامّين redirect_uri/client_id مُعلنان أصلاً في الاستجابة).
+    authorizationUrlParams:Object.fromEntries(u.searchParams.entries()),
     permissionSource:loginConfigId?"facebook_login_for_business_configuration":"oauth_scope_parameter",
     // واجهة الدخول التي سلكها الفحص فعلاً (is_business_login). الفحص بلا كوكيز
     // يتوقّف عند شاشة الدخول فلا يرى ما بعدها؛ لكنه يثبت **أي** واجهة اختارتها Meta.
@@ -2760,6 +2810,14 @@ app.post("/api/platforms/:platform/oauth/callback", express.json({ limit: "32kb"
 });
 
 app.get("/api/platforms/:platform/oauth/callback", async (req,res)=>{
+  // تدفّق Meta الرسمي لـInstagram (Facebook Login for Business - Instagram API)
+  // يعيد الرمز في **مقطع** الاستجابة (`#access_token=...`). المقطع لا يُرسَل إلى
+  // الخادم أبداً، لذا هذا الطلب GET لا يحمل state/code ويرد 400 — لكنه **وجهة
+  // إعادة التوجيه الحقيقية** التي يفتحها المتصفح. يجب أن يُخدم هنا تطبيق React
+  // نفسه ليقرأ المقطع من الرابط ويرسله POST إلى نفس المسار بإكمال الربط.
+  // بلا هذا الاستثناء كان المتصفح يرى 400 ولا يُنفَّذ أي إكمال => «لم يُربط بعد»
+  // رغم أن Meta أرجعت الرمز بالفعل.
+  if (platformOauthFragmentReturn(req)) return serveSpaIndex(res);
   return handleOAuthCallback(req, res, req.url.includes("?") ? req.url.slice(req.url.indexOf("?") + 1) : "", false);
 });
 
@@ -4307,8 +4365,8 @@ app.get("/api/platforms/:platform/oauth/setup", requireOwner, async (req,res)=>{
     loginConfigIdConfigured:metaScopesResolved?loginConfigInspection(platform).configured:undefined,
     loginConfigIdValid:metaScopesResolved?loginConfigInspection(platform).valid:undefined,
     loginConfigIdProblems:(metaScopesResolved&&loginConfigInspection(platform).problems.length)?loginConfigInspection(platform).problems:undefined,
-    loginConfigIdUsed:metaScopesResolved?Boolean(loginConfigIdFor(platform)):undefined,
-    permissionSource:metaScopesResolved?(loginConfigIdFor(platform)?"facebook_login_for_business_configuration":"oauth_scope_parameter"):undefined,
+    loginConfigIdUsed:metaScopesResolved?Boolean(effectiveLoginConfigIdFor(platform)):undefined,
+    permissionSource:metaScopesResolved?(effectiveLoginConfigIdFor(platform)?"facebook_login_for_business_configuration":"oauth_scope_parameter"):undefined,
     // التدفّق الرسمي لـInstagram: display=page + extras=IG_API_ONBOARDING +
     // response_type=token، والرمز يعود في مقطع الاستجابة (لا code). يُعلن هنا
     // ليعرف المالك أن الرابط مطابق لوثيقة Meta حرفياً.
@@ -4317,15 +4375,20 @@ app.get("/api/platforms/:platform/oauth/setup", requireOwner, async (req,res)=>{
       // (response_type=code) بلا extras، فلا تُعلن معاملات لا تُرسَل.
       active:instagramOnboardingEnabled(),
       display:instagramOnboardingEnabled()?"page":null,
-      extras:INSTAGRAM_ONBOARDING_EXTRAS,
-      responseType:"token",
-      tokenDelivery:"url_fragment",
-      // الوثيقة الرسمية تشترط ستة معاملات ولا تذكر config_id إطلاقاً: مسار
-      // Instagram يمرّر الصلاحيات عبر scope على واجهة Business Login.
-      configIdRequired:false,
+      extras:instagramOnboardingEnabled()?INSTAGRAM_ONBOARDING_EXTRAS:null,
+      responseType:instagramOnboardingEnabled()?"token":"code",
+      tokenDelivery:instagramOnboardingEnabled()?"url_fragment":"query_code",
       envSwitch:"INSTAGRAM_OAUTH_ONBOARDING",
       envSwitchValue:instagramOnboardingEnabled()?"enabled":"disabled",
-      note:"وفق وثيقة Meta «Facebook Login for Business - Instagram API»: الرابط الرسمي يحمل client_id+display=page+extras+redirect_uri+response_type=token+scope فقط، بلا config_id. تُلحق Meta الرمز (القصير وطويل الأجل) في مقطع الاستجابة، وتقرأه الواجهة وترسله POST في الجسم لإتمام الربط بلا تبديل رمز.",
+      // الوثيقة الرسمية لتدفّق الإعداد الموحّد لا تذكر config_id إطلاقاً: الرابط
+      // يحمل scope. ويُعلن صراحةً أن config_id المضبوط في البيئة يُتجاهَل في هذا
+      // التدفّق (لأن إرساله مع display/extras/response_type=token يُنتج رابطاً
+      // هجيناً ترده Meta بـ500 «حدث خطأ ما»). في التدفّق العادي (active=false)
+      // يُطبَّق config_id إن وُجد لأن الرابط حينها كلاسيكي (code).
+      configIdRequired:false,
+      configIdIgnoredInThisFlow:instagramOnboardingEnabled(),
+      permissionSource:effectiveLoginConfigIdFor("instagram")?"facebook_login_for_business_configuration":"oauth_scope_parameter",
+      note:"وفق وثيقة Meta «Facebook Login for Business - Instagram API»: الرابط الرسمي (active=true) يحمل client_id+display=page+extras+redirect_uri+response_type=token+scope فقط، بلا config_id. في التدفّق العادي (active=false) يصبح الرابط client_id+redirect_uri+response_type=code+scope بلا extras. تُلحق Meta الرمز في مقطع الاستجابة في التدفّق الموحّد، وتقرأه الواجهة وترسله POST في الجسم لإتمام الربط بلا تبديل رمز.",
       doc:"https://developers.facebook.com/documentation/instagram-platform/instagram-api-with-facebook-login/business-login-for-instagram",
       requiredProducts:["Instagram → API setup with Facebook login","Facebook Login for Business","Webhooks"],
       appType:"Meta Business type app",
