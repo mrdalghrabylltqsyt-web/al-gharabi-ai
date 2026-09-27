@@ -1658,3 +1658,38 @@ Developers → Basic information:
 final-audit: `tiktok-clientkey-fingerprint-single-source` … `tiktok-clientkey-tests`
 (362 فحصاً إجمالاً).
 
+## دفعة YouTube — فحص القناة (قراءة فقط) من الواجهة + تجديد access token (Batch 15, 2026-09-27)
+
+بعد إثبات الربط الحقيقي (commit `382e424`)، أُغلقت فجوتان عمليتان قبل اعتماد YouTube:
+
+1. **الفحص لم يكن متاحاً من الواجهة.** `GET /api/platforms/youtube/health` كان يستدعي
+   `channels.list?mine=true` (قراءة فقط) لكنه بلا سطح واجهة (`getPlatformHealth` مُعرّفة
+   وغير مستدعاة من أي مكوّن).
+2. **لا مسار تجديد لرمز Google.** `youtubeRefreshToken()` و`YouTubeClient.refreshAccessToken`
+   كانا معرّفين وغير مستدعيين، فانتهاء access token (عمره ~ساعة) يسقط الاتصال إلى
+   `reauth_needed` رغم وجود refresh token صالح.
+
+الإصلاح (بلا لمس Google Cloud/Render، وبلا توسيع نطاق YouTube):
+- `server.ts`: `ensureYouTubeAccessToken()` يجدّد عبر `refresh_token` المخزّن مشفّراً بنفس
+  مبدأ TikTok — لا يعيد OAuth ما دام الرمز صالحاً أو refresh متاحاً، ويُعلن `reauth_needed`
+  **فقط** عند فشل تجديد فعلي. كل الكتابات تمر عبر `persistStateDurable()`، ولا يُسجَّل أي رمز.
+- `fetchYouTubeChannelResilient()` غلاف واحد يجدّد ثم يقرأ القناة، ويُستخدم في
+  `verifyProviderConnection` ومسار `/api/platforms/youtube/health`، فيصمد الفحص بعد انتهاء الرمز.
+- استجابة health تحمل `tokenRefreshed`، و`/api/health.youtubeOAuth` يعلن `tokenRefreshable`
+  (منطقي فقط بلا قيمة).
+- واجهة: `YouTubeStatusPanel` في `PlatformConnectionCenter` (للمالك): زر «فحص القناة — قراءة
+  فقط» يستدعي `apiService.getPlatformHealth('youtube')`، ويعرض `accountName`/`accountId`/
+  `checkedAt` وحالة «ناجح»، وعند 409 يعرض «إعادة ربط Google مطلوبة» مع زر OAuth. لا يُعرض أي
+  token/secret.
+- **القدرات لم تتغيّر:** `video_upload`/`comments_read`/`comment_reply`/`analytics`/
+  `scheduling` تبقى NOT_IMPLEMENTED، و`webhook_pubsub` REQUIRES_REVIEW.
+
+اختبارات: `youtube.connector.test.ts` = **94 فحصاً** (كان 73): رمز صالح بلا تجديد، رمز منتهٍ
++ refresh صالح => الفحص ينجح ويُعلن `tokenRefreshed`، فشل refresh => reauth_needed، لا تسريب
+أي token/secret، وربط الواجهة. final-audit = **390 فحصاً** (`youtube-token-refresh-single-source`
+… `youtube-refresh-tests`). النشر: `0294132` — تأكد أن `/api/health.youtubeOAuth.connected:true`
+و`providerVerified:true` و`tokenRefreshable:true`.
+
+**نقطة توقف المالك (لاحقاً):** أُنجزت هذه الدفعة لتثبيت الاتصال الدائم؛ وظائف YouTube الفعلية
+(رفع/نشر/تعليقات/تحليلات) تبقى مؤجّلة ولم تُعلن.
+
