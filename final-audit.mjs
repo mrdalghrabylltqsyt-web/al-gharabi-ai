@@ -499,6 +499,54 @@ add('legal-pages-real-content', legalPages.includes('نطاق الخدمة') && 
 add('legal-pages-no-fake-contact', legalPages.includes('contactEmail') && legalPages.includes('المنشورة في صفحة الموقع الرسمية'), 'لا يُخترع بريد/رقم تواصل غير مضبوط على الخادم');
 add('site-verification-tests', fs.existsSync(path.join(root, 'engine/tests/site.verification.test.ts')) && typeof pkg.scripts['test:site-verification'] === 'string' && pkg.scripts.test.includes('test:site-verification'), 'اختبار التحقق من الرابط والصفحات القانونية مسجّل وضمن npm test');
 
+// YouTube — خامس موصل اجتماعي حقيقي (Google OAuth 2.0 + Data API v3).
+// القاعدة: لا اتصال موثق بلا قناة حقيقية، لا قدرة بلا استدعاء، ولا حصة تُخلط
+// بعطل عام. الحالة الصادقة من مصدر واحد، والأسرار في الخادم فقط.
+const youtubeModule = read('engine/social/youtube.ts');
+const youtubeState = read('engine/social/youtubeState.ts');
+const youtubeTest = read('engine/tests/youtube.connector.test.ts');
+add('youtube-connector-module', fs.existsSync(path.join(root, 'engine/social/youtube.ts')) && youtubeModule.includes('export class YouTubeClient'), 'وحدة موصل YouTube موجودة (عميل شبكة + دوال حتمية)');
+add('youtube-registry-real-connector', read('engine/social/registry.ts').includes("platform: 'youtube'") && /platform: 'youtube'[\s\S]{0,600}?realConnector: true/.test(read('engine/social/registry.ts')), 'YouTube مسجّل كموصل حقيقي في السجل');
+add('youtube-required-scopes-single-source', youtubeModule.includes('YOUTUBE_REQUIRED_SCOPES') && youtubeModule.includes('youtube.readonly') && youtubeModule.includes('youtube.force-ssl'), 'النطاقات الرسمية مصدر واحد (readonly + force-ssl للرد)');
+add('youtube-no-scope-without-call', youtubeModule.includes('export function resolveYouTubeScopes') && youtubeModule.includes('YOUTUBE_KNOWN_SCOPES') && youtubeModule.includes('youtubeExtraScopes'), 'حلّ النطاقات يُبقي المطلوب ويهمّل غير الرسمي (لا نطاق بلا استدعاء)');
+add('youtube-client-id-format', youtubeModule.includes('export function isPlausibleYouTubeClientId') && youtubeModule.includes('apps.googleusercontent.com'), 'صيغة معرّف عميل Google تُفحص محلياً (مسافة/لاحقة)');
+add('youtube-oauth-offline-consent', youtubeModule.includes('buildYouTubeAuthorizationUrl') && /access_type'[\s\S]{0,40}?'offline'/.test(youtubeModule) && /'prompt'[\s\S]{0,20}?'consent'/.test(youtubeModule), 'رابط التفويض يطلب refresh token (offline + consent)');
+add('youtube-quota-classified', youtubeModule.includes('export const YOUTUBE_QUOTA_COST') && youtubeModule.includes('export function quotaUnitsFor') && youtubeModule.includes("'quota_exceeded'") && youtubeModule.includes('quotaExceeded'), 'الحصة فئة خطأ مستقلة (quotaExceeded) لا عطل عام، وتكلفة كل استدعاء معلنة');
+add('youtube-quota-costs-official', /search_list:\s*100/.test(youtubeModule) && /videos_insert:\s*1600/.test(youtubeModule) && /comments_insert:\s*50/.test(youtubeModule), 'تكاليف الحصة الرسمية معلنة (search=100، insert الفيديو=1600، رد=50)');
+add('youtube-refresh-keeps-refresh-token', /Google .لا يعيد refresh_token عند التجديد|لا يعيد refresh_token/.test(read('server.ts')) || /refreshToken: refresh/.test(read('server.ts')), 'التجديد يُبقي refresh token القديم (Google لا يعيده)');
+add('youtube-verify-live-channel', /async fetchMyChannel/.test(youtubeModule) && /channels\?part=snippet,statistics,contentDetails&mine=true/.test(youtubeModule), 'إثبات القناة من channels.list?mine=true (لا اتصال بلا استجابة قناة)');
+add('youtube-server-verify-branch', /platform === "youtube"[\s\S]{0,700}?fetchMyChannel/.test(server) && server.includes('youtubeChannelId()'), 'verifyProviderConnection يثبت قناة YouTube فعلياً');
+add('youtube-oauth-callback-branch', /platform==="youtube"[\s\S]{0,900}?saveYouTubeCredentials/.test(server), 'callback يبادل الرمز ويحفظ اعتماد YouTube مشفّراً');
+add('youtube-status-endpoint', server.includes('/api/platforms/youtube/status') && server.includes('youtubeTruthfulState'), 'مسار حالة YouTube يعرض الحالة الصادقة');
+add('youtube-read-endpoints', server.includes('/api/platforms/youtube/channel') && server.includes('/api/platforms/youtube/playlists') && server.includes('/api/platforms/youtube/videos') && server.includes('/api/platforms/youtube/comments') && server.includes('/api/platforms/youtube/analytics'), 'مسارات قراءة القناة/القوائم/الفيديوهات/التعليقات/التحليلات');
+add('youtube-reply-real', server.includes('/api/platforms/youtube/reply') && /replyToComment/.test(server) && server.includes('providerReplyId'), 'الرد على التعليق حقيقي ولا يُسجَّل تسليم بلا معرّف من YouTube');
+add('youtube-webhook-hmac-raw', server.includes('youtubeRawBodyParser') && server.includes('createHmac("sha1"') && server.includes('youtubePubSubSecret'), 'تحقق توقيع PubSubHubbub (HMAC-SHA1) على الجسم الخام');
+add('youtube-webhook-write-before-ack', /youtubeEventIds[\s\S]{0,2000}?await persistStateDurable\(\)[\s\S]{0,400}?res\.status\(200\)/.test(server), 'الكتابة الدائمة تسبق الإقرار (200) في webhook YouTube');
+add('youtube-webhook-replay-guard', server.includes('youtubePushExternalId') && server.includes('isReplayOrDuplicate') && server.includes('youtubeEventIds'), 'منع تكرار إشعارات YouTube بمعرّف حدث حقيقي');
+add('youtube-event-ids-persisted', server.includes('youtubeEventIds') && /buildPersistedState[\s\S]*?youtubeEventIds/.test(server), 'معرّفات أحداث YouTube في طرفَي الحفظ (تصمد بعد restart)');
+add('youtube-disconnect-revokes', /platform === "youtube"[\s\S]{0,500}?revokeToken/.test(server), 'الفصل يُبطل الرمز لدى Google ثم يمسح محلياً');
+add('youtube-capability-matrix', youtubeModule.includes('YOUTUBE_CAPABILITY_MATRIX') && youtubeModule.includes('REQUIRES_REVIEW') && youtubeModule.includes("key: 'video_upload'"), 'مصفوفة قدرات رسمية معلنة');
+add('youtube-upload-not-implemented', youtubeModule.includes("status: 'NOT_IMPLEMENTED'") && !youtubeModule.includes('buildVideoUploadMetadata') && !youtubeModule.includes('videos?uploadType'), 'رفع الفيديو غير منفّذ صراحةً (لا videos.insert ولا دالة رفع ميتة)');
+add('youtube-no-publish-capability', !/platform: 'youtube'[\s\S]{0,600}?'publish'/.test(read('engine/social/registry.ts')) && !read('engine/social/registry.ts').includes("capabilities: ['publish', 'analytics', 'comments', 'comment_reply', 'scheduling', 'audience_insights']"), 'YouTube لا يعلن قدرة publish غير منفّذة في السجل');
+add('youtube-operational-evidence-reachable', server.includes("r.platform === \"youtube\" && r.delivered === true") && /youtubeOperationalEvidence[\s\S]{0,300}?socialReplies/.test(server) && !/publishRecords\)\) return false;\n  return \(workspace as any\)\.publishRecords\.some\(\(r: any\) => r\.platform === "youtube"/.test(server), 'دليل OPERATIONAL لـYouTube مبني على رد مُسلَّم فعلاً (حالة قابلة للوصول، لا نشر غير منفّذ)');
+add('youtube-one-button-oauth-return', server.includes('oauthAutoReturnHtml') && server.includes('oauth_return=') && appContext.includes("get('oauth_return')"), 'عودة OAuth تلقائية للواجهة (زر واحد لـYouTube)');
+add('youtube-oauth-return-no-secret', /location\.replace\(\$\{JSON\.stringify\(target\)\}\)/.test(server) && !/oauthAutoReturnHtml[\s\S]{0,400}?access_token/.test(server), 'صفحة العودة تحمل وسم النتيجة فقط (لا سرّ في المقطع)');
+add('youtube-attack-tests', youtubeTest.includes('هجومي: أخطاء OAuth') && youtubeTest.includes('هجومي: أخطاء Data API') && youtubeTest.includes('بيانات حقيقية ناقصة'), 'اختبارات هجومية لأخطاء OAuth/API والبيانات الناقصة (لا اختراع)');
+add('youtube-truthful-state-module', fs.existsSync(path.join(root, 'engine/social/youtubeState.ts')) && youtubeState.includes('export function resolveYouTubeState'), 'وحدة الحالة الصادقة لـYouTube موجودة (منطق خالص)');
+add('youtube-state-vocabulary', ['NOT_CONFIGURED', 'CODE_READY', 'READY_TO_CONNECT', 'AUTHORIZATION_REQUIRED', 'CONNECTED', 'TOKEN_REFRESH_REQUIRED', 'QUOTA_EXCEEDED', 'REVIEW_REQUIRED', 'VERIFIED', 'OPERATIONAL', 'EXTERNAL_BLOCKER'].every((s) => youtubeState.includes(`'${s}'`)), 'المفردات الإحدى عشرة معلنة في المصدر الواحد');
+add('youtube-state-no-operational-without-verify', /if \(verified && input\.operationalEvidence\)/.test(youtubeState), 'لا OPERATIONAL بلا اتصال موثق ودليل مزود');
+add('youtube-state-no-verified-without-provider', /const verified = connected && input\.providerVerified/.test(youtubeState), 'لا VERIFIED بلا providerVerified');
+add('youtube-state-quota-priority', /quotaExceeded === true[\s\S]{0,120}?'QUOTA_EXCEEDED'/.test(youtubeState), 'QUOTA_EXCEEDED معلنة من خطأ حصة حقيقي');
+add('youtube-state-single-source', server.includes('resolveYouTubeState') && /from "\.\/engine\/social\/youtubeState"/.test(server), 'الخادم يستخدم resolveYouTubeState كمصدر واحد');
+add('youtube-ui-panel', read('src/components/social/PlatformConnectionCenter.tsx').includes('YouTubeStatusPanel') && read('src/components/social/SocialManagerView.tsx').includes('موصل YouTube'), 'لوحة YouTube في مركز الربط وبطاقة المدير');
+add('youtube-ui-reply-routing', read('src/components/social/SocialHubView.tsx').includes('isYouTubeComment') && read('src/components/social/SocialHubView.tsx').includes('replyYouTube'), 'واجهة الرد توجّه تعليقات YouTube إلى مسارها الحقيقي');
+add('youtube-api-service', read('src/services/api.ts').includes('getYouTubeStatus') && read('src/services/api.ts').includes('replyYouTube'), 'خدمة API للواجهة تغطي حالة/قناة/فيديو/تعليق/رد YouTube');
+add('youtube-health-non-secret', server.includes('youtubeOAuth: (() => {') && server.includes('clientSecretConfigured: Boolean(c?.clientSecret)') && !server.includes('clientSecret: c?.clientSecret'), 'health/readiness يعرضان حالة YouTube بأعلام منطقية بلا أي سرّ');
+add('youtube-oauth-info-no-secret', server.includes('/api/platforms/youtube/oauth-info') && !/oauth-info[\s\S]{0,1200}?clientSecret:\s*cfg\.clientSecret/.test(server), 'oauth-info لا يعرض أي قيمة سرّية');
+add('youtube-test-registered', fs.existsSync(path.join(root, 'engine/tests/youtube.connector.test.ts')) && typeof pkg.scripts['test:youtube'] === 'string' && pkg.scripts.test.includes('test:youtube'), 'اختبار YouTube مسجّل وضمن npm test');
+add('youtube-test-mock', fs.existsSync(path.join(root, 'engine/tests/helpers/youtubeMock.ts')) && read('engine/tests/helpers/youtubeMock.ts').includes('startYouTubeMockServer'), 'خادم Google/YouTube وهمي محلي للاختبار (بلا مزود أو حصة)');
+add('youtube-no-secret-logging', !/logYouTube[A-Za-z]*\([^)]*access_token/.test(server) && !/youtube-oauth[\s\S]{0,200}?refresh_token=/.test(server), 'سجل YouTube آمن (بلا رمز أو سرّ)');
+
 const failed = checks.filter(x => !x.ok);
 console.table(checks);
 if (failed.length) {

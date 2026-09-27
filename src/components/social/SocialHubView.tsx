@@ -161,6 +161,8 @@ export const SocialHubView: React.FC = () => {
     // الرسائل (message_reply). نفس الفصل المطبَّق في Facebook/Telegram.
     const isInstagramComment = comment.platform === 'instagram' && comment.kind !== 'message';
     const isInstagramMessage = comment.platform === 'instagram' && comment.kind === 'message';
+    // YouTube: تعليق فيديو يُرد عبر مسار التعليقات الحقيقي (comments.insert).
+    const isYouTubeComment = comment.platform === 'youtube';
     try {
       if (isTelegramMessage) {
         const res = await apiService.replyTelegram({
@@ -191,6 +193,11 @@ export const SocialHubView: React.FC = () => {
         showToast(res.delivered
           ? `أُرسلت الرسالة فعلياً عبر Instagram (معرّف ${res.providerReplyId || '—'}).`
           : 'لم يُسجَّل تسليم من Instagram.');
+      } else if (isYouTubeComment) {
+        const res = await apiService.replyYouTube({ externalId: comment.externalId, text, commentText: comment.text });
+        showToast(res.delivered
+          ? `أُرسل الرد فعلياً عبر YouTube (معرّف ${res.providerReplyId || '—'}).`
+          : 'لم يُسجَّل تسليم من YouTube.');
       } else {
         await apiService.replyToSocialComment({ platform: comment.platform, externalId: comment.externalId, text, commentText: comment.text, authorName: comment.authorName || undefined });
         showToast('تم تسجيل الرد داخلياً. لا يُرسل إلى المنصة (لا يوجد موصل إرسال إنتاجي).');

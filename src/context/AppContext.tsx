@@ -201,6 +201,19 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             setOauthReturn({ platform, ok: false, message: e?.message || 'تعذر إكمال ربط المنصة' });
           }
         }
+        // عودة OAuth المستضافة (YouTube: تدفّق code): الخادم أعاد المالك إلى
+        // `#oauth_return=<platform>:ok|fail` بعد إتمام الربط، فنعرض النتيجة ونفتح
+        // تبويب ربط المنصات — زر واحد بلا فحص يدوي. المقطع لا يُرسل للخادم.
+        const returnMarker = new URLSearchParams(window.location.hash.replace(/^#/, '')).get('oauth_return');
+        if (returnMarker) {
+          const [rp, rok] = returnMarker.split(':');
+          const cleanedHash = window.location.hash.replace(/^#/, '').split('&').filter((p) => !p.startsWith('oauth_return=')).join('&');
+          window.history.replaceState({}, '', `${window.location.pathname}${window.location.search}${cleanedHash ? `#${cleanedHash}` : ''}`);
+          if (rp) {
+            setOauthReturn({ platform: rp, ok: rok === 'ok', message: rok === 'ok' ? null : 'فشل إكمال الربط؛ راجع التفاصيل في مركز الربط.' });
+            setActiveTab('platform_connections');
+          }
+        }
         const hashParams = new URLSearchParams(window.location.hash.replace(/^#/, ''));
         const previewToken = hashParams.get('preview_token');
         if (previewToken) {

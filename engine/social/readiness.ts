@@ -102,7 +102,7 @@ export interface PlatformReadinessDetail extends PlatformReadiness {
  */
 const WEBHOOK_SUPPORT: Record<PlatformId, { level: ReadinessLevel; note: string }> = {
   tiktok: { level: 'EXTERNAL_SETUP_REQUIRED', note: 'webhooks TikTok منفّذة في الكود: تحقق TikTok-Signature على الجسم الخام (timestamp.rawBody) + منع تكرار + حفظ قبل الإقرار. يلزم تسجيل callback URL في TikTok Developer Portal.' },
-  youtube: { level: 'EXTERNAL_SETUP_REQUIRED', note: 'إشعارات PubSubHubbub لليوتيوب تحتاج تسجيل تطبيق وتحقق نطاق.' },
+  youtube: { level: 'EXTERNAL_SETUP_REQUIRED', note: 'إشعارات PubSubHubbub: تحقق X-Hub-Signature (HMAC-SHA1) على الجسم الخام منفّذ + منع تكرار؛ يلزم اشتراك خارجي على topic القناة مع callback URL عام.' },
   facebook: { level: 'READY', note: 'webhook Facebook منفّذ فعلاً: تحقق challenge + توقيع X-Hub-Signature-256 على الجسم الخام + منع تكرار بمعرّف الحدث.' },
   instagram: { level: 'READY', note: 'webhook إنستغرام منفّذ فعلاً عبر نفس تطبيق Meta: تحقق challenge + توقيع X-Hub-Signature-256 على الجسم الخام + منع تكرار بمعرّف التعليق/الرسالة. تُفعَّل حقول instagram من لوحة تطبيق Meta.' },
   whatsapp: { level: 'EXTERNAL_SETUP_REQUIRED', note: 'WhatsApp Cloud API تدعم webhooks بعد ربط رقم أعمال معتمد.' },

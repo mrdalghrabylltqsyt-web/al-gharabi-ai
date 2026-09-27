@@ -44,8 +44,12 @@ export const CREDENTIAL_SPECS: Record<PlatformId, CredentialSpec> = {
     publish: ['TELEGRAM_DEFAULT_CHAT_ID'],
   },
   youtube: {
+    // بيانات OAuth من Google Cloud (OAuth 2.0 Client ID). يُقبل أيضاً GOOGLE_CLIENT_ID
+    // كبديل للمعرّف (نفس ما يقرأه OAUTH_CONFIG)، فلا يُعلن «ناقص» عند وجود البديل.
     connection: ['GOOGLE_OAUTH_CLIENT_ID', 'GOOGLE_OAUTH_CLIENT_SECRET'],
-    webhook: [],
+    webhook: ['YOUTUBE_PUBSUB_SECRET'],
+    optional: ['GOOGLE_CLIENT_ID', 'YOUTUBE_OAUTH_SCOPES', 'YOUTUBE_API_BASE'],
+    alternatives: [['GOOGLE_OAUTH_CLIENT_ID', 'GOOGLE_CLIENT_ID']],
   },
   google_business: {
     connection: ['GOOGLE_OAUTH_CLIENT_ID', 'GOOGLE_OAUTH_CLIENT_SECRET'],

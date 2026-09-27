@@ -308,6 +308,100 @@ const TikTokStatusPanel: React.FC = () => {
   );
 };
 
+/**
+ * لوحة حالة YouTube الحقيقية (للمالك): اتصال + قناة + قدرات + حصة + تحليلات.
+ * لا تُعرض أي قيمة سرّية، والحالة صادقة (لا ادعاء اتصال/تشغيل).
+ */
+const YouTubeStatusPanel: React.FC = () => {
+  const [status, setStatus] = useState<any>(null);
+  const [channel, setChannel] = useState<any>(null);
+  const [videos, setVideos] = useState<any[] | null>(null);
+  const [analytics, setAnalytics] = useState<any>(null);
+  const [ingestMsg, setIngestMsg] = useState<string>('');
+  const [videoId, setVideoId] = useState('');
+  const [busy, setBusy] = useState<string | null>(null);
+  const [err, setErr] = useState<string>('');
+  useEffect(() => {
+    let alive = true;
+    apiService.getYouTubeStatus().then((d) => { if (alive) setStatus(d); }).catch((e) => { if (alive) setErr(e?.message || 'تعذر جلب حالة YouTube'); });
+    return () => { alive = false; };
+  }, []);
+  const loadChannel = async () => { setBusy('channel'); try { setChannel(await apiService.getYouTubeChannel()); } catch (e: any) { setErr(e?.message || 'تعذر جلب القناة'); } finally { setBusy(null); } };
+  const loadVideos = async () => { setBusy('videos'); try { const r = await apiService.getYouTubeVideos(10); setVideos(r.videos || []); } catch (e: any) { setErr(e?.message || 'تعذر جلب الفيديوهات'); } finally { setBusy(null); } };
+  const loadAnalytics = async () => { setBusy('analytics'); try { setAnalytics(await apiService.getYouTubeAnalytics()); } catch (e: any) { setErr(e?.message || 'تعذر جلب التحليلات'); } finally { setBusy(null); } };
+  const ingest = async () => { if (!videoId.trim()) return; setBusy('ingest'); setIngestMsg(''); try { const r = await apiService.ingestYouTubeComments(videoId.trim()); setIngestMsg(`سُجّل ${r.ingested} تعليقاً حقيقياً (مكرر: ${r.duplicates}).`); } catch (e: any) { setIngestMsg(e?.message || 'تعذر التسجيل'); } finally { setBusy(null); } };
+  if (err) return <p className="text-[10px] text-amber-300 mt-2">حالة YouTube: {err}</p>;
+  if (!status) return <p className="text-[10px] text-slate-500 mt-2">جارٍ جلب حالة YouTube الحقيقية…</p>;
+  const toneCls: Record<string, string> = {
+    operational: 'bg-emerald-500/20 text-emerald-300 border-emerald-600/40',
+    verified: 'bg-emerald-500/10 text-emerald-300 border-emerald-600/30',
+    transitional: 'bg-sky-500/10 text-sky-300 border-sky-600/30',
+    blocked: 'bg-amber-500/10 text-amber-300 border-amber-600/30',
+    unconfigured: 'bg-slate-800 text-slate-400 border-slate-700',
+  };
+  const cap = (v: string) => v === 'SUPPORTED' ? 'bg-emerald-500/10 text-emerald-300 border-emerald-600/30' : v === 'NOT_AVAILABLE_BY_PUBLIC_API' ? 'bg-slate-800 text-slate-500 border-slate-700' : 'bg-amber-500/10 text-amber-300 border-amber-600/30';
+  return (
+    <div className="mt-3 pt-3 border-t border-slate-800/70 text-[10px] space-y-2">
+      <p className="text-slate-500 flex items-center gap-1"><KeyRound className="w-3 h-3" /> حالة موصل YouTube الحقيقية (بلا أي سرّ):</p>
+      <div className="p-2 rounded-lg bg-slate-950 border border-slate-800 space-y-1">
+        <div className="flex items-center gap-2 flex-wrap">
+          <span className="text-slate-500">الحالة الصادقة:</span>
+          <span className={`px-2 py-0.5 rounded-md border font-black ${toneCls[status.stateTone] || toneCls.unconfigured}`}>{status.stateLabelAr || status.state}</span>
+          <code className="text-slate-500 text-[9px]" dir="ltr">{status.state}</code>
+        </div>
+        {status.stateReason && <p className="text-slate-400">{status.stateReason}</p>}
+        {status.nextAction && <p className="text-slate-300">الإجراء التالي: {status.nextAction}</p>}
+      </div>
+      <div className="flex flex-wrap gap-1.5">
+        <span className={`px-2 py-0.5 rounded-md border font-bold ${status.providerVerified ? 'bg-emerald-500/10 text-emerald-300 border-emerald-600/30' : status.connected ? 'bg-indigo-500/10 text-indigo-300 border-indigo-600/30' : 'bg-slate-800 text-slate-400 border-slate-700'}`}>
+          {status.providerVerified ? 'متصل وموثق (channelId)' : status.connected ? 'متصل — غير موثق' : 'غير متصل'}
+        </span>
+        <span className={`px-2 py-0.5 rounded-md border font-bold ${status.clientIdConfigured && status.clientSecretConfigured ? 'bg-emerald-500/10 text-emerald-300 border-emerald-600/30' : 'bg-amber-500/10 text-amber-300 border-amber-600/30'}`}>
+          {status.clientIdConfigured && status.clientSecretConfigured ? 'بيانات تطبيق Google مضبوطة' : 'بيانات تطبيق Google ناقصة'}
+        </span>
+        <span className={`px-2 py-0.5 rounded-md border font-bold ${status.tokenStored ? 'bg-emerald-500/10 text-emerald-300 border-emerald-600/30' : 'bg-slate-800 text-slate-400 border-slate-700'}`}>{status.tokenStored ? 'التوكن مخزّن مشفّراً' : 'لا توكن'}</span>
+        <span className={`px-2 py-0.5 rounded-md border font-bold ${status.refreshTokenStored ? 'bg-emerald-500/10 text-emerald-300 border-emerald-600/30' : 'bg-slate-800 text-slate-400 border-slate-700'}`}>{status.refreshTokenStored ? 'refresh token مخزّن' : 'لا refresh token'}</span>
+        {status.tokenExpired && <span className="px-2 py-0.5 rounded-md border font-bold bg-rose-500/10 text-rose-300 border-rose-600/30">التوكن منتهٍ — يلزم تجديد/إعادة ربط</span>}
+        {status.quotaExceeded && <span className="px-2 py-0.5 rounded-md border font-bold bg-amber-500/10 text-amber-300 border-amber-600/30">حصة YouTube مستهلكة اليوم (quotaExceeded)</span>}
+        {status.publishCapability === 'NOT_IMPLEMENTED' && <span className="px-2 py-0.5 rounded-md border font-bold bg-slate-800 text-slate-400 border-slate-700">رفع الفيديو غير منفّذ بعد</span>}
+      </div>
+      <p className="text-slate-500">القناة: <code className="text-slate-300" dir="ltr">{status.channelTitle || status.channelId || '—'}</code> • النطاقات: <code className="text-slate-300" dir="ltr">{(status.requestedScopes || []).join(', ')}</code></p>
+      <p className="text-slate-500">رابط إشعارات PubSubHubbub: <code className="text-slate-300 break-all" dir="ltr">{status.webhookUrl}</code> • الحصة اليومية: <code className="text-slate-300" dir="ltr">{status.dailyQuotaUnits}</code></p>
+      <div className="flex flex-wrap gap-1">
+        {[['رفع فيديو', status.publishCapability], ['تعليقات', status.commentsCapability], ['رد', status.replyCapability], ['تحليلات', status.analyticsCapability], ['إشعارات', status.webhookCapability]].map(([label, v]: any) => (
+          <span key={label} className={`px-1.5 py-0.5 rounded-md border text-[9px] font-semibold ${v === 'NOT_IMPLEMENTED' ? 'bg-slate-800 text-slate-500 border-slate-700' : cap(v)}`} title={String(v)}>{label}: {v === 'SUPPORTED' ? 'مدعوم' : v === 'NOT_AVAILABLE_BY_PUBLIC_API' ? 'غير متاح عام' : v === 'NOT_IMPLEMENTED' ? 'غير منفّذ' : 'يحتاج مراجعة'}</span>
+        ))}
+      </div>
+      {status.connected && (
+        <div className="space-y-1.5">
+          <div className="flex flex-wrap gap-1.5">
+            <button onClick={() => void loadChannel()} disabled={busy === 'channel'} className="px-2.5 py-1 rounded-lg bg-slate-800 border border-slate-700 text-[10px] font-bold text-white inline-flex items-center gap-1 disabled:opacity-50">{busy === 'channel' ? <Loader2 className="w-3 h-3 animate-spin" /> : <KeyRound className="w-3 h-3" />} جلب القناة</button>
+            <button onClick={() => void loadVideos()} disabled={busy === 'videos'} className="px-2.5 py-1 rounded-lg bg-slate-800 border border-slate-700 text-[10px] font-bold text-white inline-flex items-center gap-1 disabled:opacity-50">{busy === 'videos' ? <Loader2 className="w-3 h-3 animate-spin" /> : <KeyRound className="w-3 h-3" />} جلب الفيديوهات</button>
+            <button onClick={() => void loadAnalytics()} disabled={busy === 'analytics'} className="px-2.5 py-1 rounded-lg bg-slate-800 border border-slate-700 text-[10px] font-bold text-white inline-flex items-center gap-1 disabled:opacity-50">{busy === 'analytics' ? <Loader2 className="w-3 h-3 animate-spin" /> : <KeyRound className="w-3 h-3" />} التحليلات</button>
+          </div>
+          {channel?.channel && (
+            <p className="text-slate-400">القناة: <code className="text-slate-300">{channel.channel.title || channel.channel.channelId}</code> • مشاهدات: <code className="text-slate-300">{channel.channel.statistics?.viewCount ?? '—'}</code> • مشتركون: <code className="text-slate-300">{channel.channel.statistics?.hiddenSubscriberCount ? 'مخفي' : (channel.channel.statistics?.subscriberCount ?? '—')}</code> • فيديوهات: <code className="text-slate-300">{channel.channel.statistics?.videoCount ?? '—'}</code></p>
+          )}
+          {analytics && <p className="text-slate-400">تحليلات القناة: مشاهدات <code className="text-slate-300">{analytics.channelStatistics?.viewCount ?? '—'}</code> • فيديوهات <code className="text-slate-300">{analytics.channelStatistics?.videoCount ?? '—'}</code></p>}
+          {videos && Array.isArray(videos) && videos.length > 0 && (
+            <div className="space-y-0.5">
+              {videos.slice(0, 5).map((v: any) => (
+                <p key={v.videoId} className="text-slate-400 truncate">🎬 <code className="text-slate-300" dir="ltr">{v.videoId}</code> — {v.title} • مشاهدات: {v.statistics?.viewCount ?? '—'} • إعجابات: {v.statistics?.likeCount ?? '—'} • تعليقات: {v.statistics?.commentCount ?? '—'}</p>
+              ))}
+            </div>
+          )}
+          <div className="flex items-center gap-1.5 flex-wrap">
+            <input value={videoId} onChange={(e) => setVideoId(e.target.value)} placeholder="videoId" dir="ltr" className="px-2 py-1 rounded-lg bg-slate-950 border border-slate-700 text-[10px] text-white w-48" />
+            <button onClick={() => void ingest()} disabled={busy === 'ingest' || !videoId.trim()} className="px-2.5 py-1 rounded-lg bg-slate-800 border border-slate-700 text-[10px] font-bold text-white disabled:opacity-50">تسجيل تعليقات الفيديو</button>
+          </div>
+          {ingestMsg && <p className="text-slate-300">{ingestMsg}</p>}
+        </div>
+      )}
+      <p className="text-slate-600">القناة/القوائم/الفيديوهات/التعليقات/الرد/التحليلات كلها من YouTube Data API v3 الرسمي. رفع الفيديو غير منفّذ في النظام بعد (لا videos.insert).</p>
+    </div>
+  );
+};
+
 export const PlatformConnectionCenter: React.FC = () => {
   const { currentUser, showToast, oauthReturn, clearOauthReturn } = useApp();
   const [loading, setLoading] = useState(false);
@@ -333,17 +427,18 @@ export const PlatformConnectionCenter: React.FC = () => {
     } finally {
       setLoading(false);
     }
+  }, [showToast]);
 
-  // نتيجة عودة OAuth بتدفّق المقطع (Instagram): تُعرض مرة واحدة ثم تُمسح، وتُحدَّث
-  // الحالة فوراً فلا يظن المالك أن الربط لم يحدث. معرَّفة بعد load لتجنّب استخدامه قبل تعريفه.
+  // نتيجة عودة OAuth (مقطع Instagram أو عودة YouTube المستضافة): تُعرض مرة واحدة
+  // ثم تُمسح، وتُحدَّث الحالة فوراً فلا يظن المالك أن الربط لم يحدث. معرَّفة بعد load.
   useEffect(() => {
     if (!oauthReturn) return;
-    showToast(oauthReturn.ok ? 'تم إكمال ربط Instagram.' : `تعذر إكمال ربط Instagram: ${oauthReturn.message || ''}`);
+    const name = oauthReturn.platform === 'youtube' ? 'YouTube' : oauthReturn.platform === 'facebook' ? 'Facebook' : oauthReturn.platform === 'tiktok' ? 'TikTok' : 'Instagram';
+    showToast(oauthReturn.ok ? `تم إكمال ربط ${name}.` : `تعذر إكمال ربط ${name}: ${oauthReturn.message || ''}`);
     clearOauthReturn();
     void load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [oauthReturn]);
-  }, [showToast]);
 
   useEffect(() => { void load(); }, [load]);
 
@@ -482,7 +577,7 @@ export const PlatformConnectionCenter: React.FC = () => {
                   ) : canOAuth ? (
                     <button onClick={() => void startOAuth(p.platform)} disabled={busy === p.platform}
                       className="px-3 py-1.5 rounded-lg bg-emerald-500 text-slate-950 text-[11px] font-black inline-flex items-center gap-1 disabled:opacity-50">
-                      {busy === p.platform ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <PlugZap className="w-3.5 h-3.5" />} {p.platform === 'tiktok' ? 'ربط TikTok' : 'بدء الربط'}
+                      {busy === p.platform ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <PlugZap className="w-3.5 h-3.5" />} {p.platform === 'tiktok' ? 'ربط TikTok' : p.platform === 'youtube' ? 'ربط YouTube' : 'بدء الربط'}
                     </button>
                   ) : p.platform === 'facebook' ? (
                     // Facebook: الحساب موثوق لكنه يدير أكثر من صفحة؛ إتمام الربط باختيار الصفحة.
@@ -542,6 +637,8 @@ export const PlatformConnectionCenter: React.FC = () => {
 
               {p.platform === 'instagram' && p.connected && <InstagramWebhookStatus />}
               {p.platform === 'tiktok' && <TikTokStatusPanel />}
+              {p.platform === 'youtube' && <YouTubeStatusPanel />}
+              {p.platform === 'youtube' && <OAuthSetupPanel platform={p.platform} />}
               {['facebook', 'instagram', 'threads'].includes(p.platform) && <OAuthSetupPanel platform={p.platform} />}
 
               {extRow && (

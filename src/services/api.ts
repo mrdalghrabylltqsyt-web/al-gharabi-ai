@@ -615,6 +615,95 @@ ${payload.topic || payload.productName || 'أنظمة وحلول التقسيط 
     return data;
   },
 
+  // ---- YouTube (خامس موصل حقيقي) — كلها بلا أي سرّ في الواجهة ----
+  /** حالة YouTube الحقيقية: اتصال + قناة + قدرات + حصة (منطقية). */
+  async getYouTubeStatus() {
+    const res = await fetch('/api/platforms/youtube/status', { headers: getAuthHeaders() });
+    const data = await res.json();
+    if (!res.ok || !data.success) throw new Error(data.error || 'تعذر جلب حالة YouTube');
+    return data;
+  },
+
+  /** معلومات القناة والإحصاءات الحقيقية. */
+  async getYouTubeChannel() {
+    const res = await fetch('/api/platforms/youtube/channel', { headers: getAuthHeaders() });
+    const data = await res.json();
+    if (!res.ok || !data.success) throw new Error(data.error || 'تعذر جلب قناة YouTube');
+    return data;
+  },
+
+  /** قوائم تشغيل القناة. */
+  async getYouTubePlaylists(maxResults = 25) {
+    const res = await fetch(`/api/platforms/youtube/playlists?maxResults=${encodeURIComponent(String(maxResults))}`, { headers: getAuthHeaders() });
+    const data = await res.json();
+    if (!res.ok || !data.success) throw new Error(data.error || 'تعذر جلب قوائم التشغيل');
+    return data;
+  },
+
+  /** فيديوهات القناة (search يستهلك 100 وحدة حصة). */
+  async getYouTubeVideos(maxResults = 25) {
+    const res = await fetch(`/api/platforms/youtube/videos?maxResults=${encodeURIComponent(String(maxResults))}`, { headers: getAuthHeaders() });
+    const data = await res.json();
+    if (!res.ok || !data.success) throw new Error(data.error || 'تعذر جلب فيديوهات YouTube');
+    return data;
+  },
+
+  /** بيانات فيديو واحد. */
+  async getYouTubeVideo(videoId: string) {
+    const res = await fetch(`/api/platforms/youtube/video?videoId=${encodeURIComponent(videoId)}`, { headers: getAuthHeaders() });
+    const data = await res.json();
+    if (!res.ok || !data.success) throw new Error(data.error || 'تعذر جلب بيانات الفيديو');
+    return data;
+  },
+
+  /** قراءة تعليقات فيديو (بلا تسجيل). */
+  async getYouTubeComments(videoId: string, maxResults = 50) {
+    const res = await fetch(`/api/platforms/youtube/comments?videoId=${encodeURIComponent(videoId)}&maxResults=${encodeURIComponent(String(maxResults))}`, { headers: getAuthHeaders() });
+    const data = await res.json();
+    if (!res.ok || !data.success) throw new Error(data.error || 'تعذر جلب تعليقات YouTube');
+    return data;
+  },
+
+  /** تحليلات القناة الحقيقية. */
+  async getYouTubeAnalytics() {
+    const res = await fetch('/api/platforms/youtube/analytics', { headers: getAuthHeaders() });
+    const data = await res.json();
+    if (!res.ok || !data.success) throw new Error(data.error || 'تعذر جلب تحليلات YouTube');
+    return data;
+  },
+
+  /** فحص صحة YouTube الحقيقي (يستهلك 1 وحدة حصة). */
+  async getYouTubeHealth() {
+    const res = await fetch('/api/platforms/youtube/health', { headers: getAuthHeaders() });
+    const data = await res.json();
+    if (!res.ok || !data.success) throw new Error(data.error || 'تعذر فحص YouTube');
+    return data;
+  },
+
+  /** إعداد OAuth/اللوحة الدقيق لـYouTube — للمالك، بلا أي سرّ. */
+  async getYouTubeOAuthInfo() {
+    const res = await fetch('/api/platforms/youtube/oauth-info', { headers: getAuthHeaders() });
+    const data = await res.json();
+    if (!res.ok || !data.success) throw new Error(data.error || 'تعذر جلب إعداد YouTube');
+    return data;
+  },
+
+  /** تسجيل تعليقات فيديو YouTube ليصبح قابلاً للتصنيف/الرد. */
+  async ingestYouTubeComments(videoId: string) {
+    const res = await fetch('/api/platforms/youtube/ingest-comment', { method: 'POST', headers: getAuthHeaders(), body: JSON.stringify({ videoId }) });
+    const data = await res.json();
+    if (!res.ok || !data.success) throw new Error(data.error || 'تعذر تسجيل تعليقات YouTube');
+    return data;
+  },
+
+  /** إرسال رد حقيقي على تعليق YouTube بعد الموافقة. */
+  async replyYouTube(payload: { externalId: string; text: string; commentText?: string; productId?: string; productName?: string }) {
+    const res = await fetch('/api/platforms/youtube/reply', { method: 'POST', headers: getAuthHeaders(), body: JSON.stringify(payload) });
+    const data = await res.json();
+    if (!res.ok || !data.success) throw new Error(data.error || 'تعذر إرسال الرد عبر YouTube');
+    return data;
+  },
+
   // إعداد OAuth الدقيق للمنصة (رابط الإرجاع والنطاق المطلوب) — للمالك، بلا أي سرّ.
   async getPlatformOAuthSetup(platform: string) {
     const res = await fetch(`/api/platforms/${encodeURIComponent(platform)}/oauth/setup`, { headers: getAuthHeaders() });

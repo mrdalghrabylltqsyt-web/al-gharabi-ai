@@ -93,7 +93,7 @@ async function login(): Promise<Record<string, string>> {
     check('المصفوفة بلا جلسة => 401', matrixNoAuth.status === 401);
     const matrix = await (await fetch(`${BASE}/api/platforms/readiness-matrix`, { headers: auth })).json();
     check('المصفوفة تعيد عشر منصات', matrix.platforms.length === 10);
-    check('الملخص: أربعة موصلات جاهزة (telegram,facebook,instagram,tiktok)', matrix.summary.connectorReady === 4 && matrix.summary.foundationReady === 6);
+    check('الملخص: خمسة موصلات جاهزة (telegram,facebook,instagram,tiktok,youtube)', matrix.summary.connectorReady === 5 && matrix.summary.foundationReady === 5);
     const fb = matrix.platforms.find((p: any) => p.platform === 'facebook');
     check('facebook: موصل منفّذ وOAuth يحتاج إعداداً خارجياً', fb.implementationStatus === 'CONNECTOR_READY' && fb.oauth === 'EXTERNAL_SETUP_REQUIRED');
     check('facebook: لا اتصال مدّعى', fb.connection.status === 'disconnected' && fb.connection.providerVerified === false);

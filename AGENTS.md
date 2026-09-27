@@ -1658,3 +1658,57 @@ Developers → Basic information:
 final-audit: `tiktok-clientkey-fingerprint-single-source` … `tiktok-clientkey-tests`
 (362 فحصاً إجمالاً).
 
+
+## موصل YouTube الحقيقي — تصحيح الصدق + زر واحد (Batch 14, 2026-09-27)
+
+YouTube صار **خامس موصل اجتماعي حقيقي** (`engine/social/youtube.ts`)، مبنيّ على **Google
+OAuth 2.0 + YouTube Data API v3**. بعد التدقيق صُحّحت ثلاث مغالطات في القدرات كانت
+تُوهم المالك بقدرات غير قائمة، وصار الربط بزر واحد حقيقي.
+
+**لا نشر فيديو — والتصحيح الصادق:** لا `videos.insert` ولا مسار نشر لـYouTube إطلاقاً.
+كانت المصفوفة تُعلن `video_upload` بحالة `REQUIRES_AUDIT` (توهم بوجود تنفيذ ينتظر مراجعة)،
+وأُزيلت دالة بناء بيانات الرفع الميتة. الآن:
+- حالة جديدة `NOT_IMPLEMENTED` في `YouTubeCapabilityStatus`، و`video_upload` عليها.
+- `youtubeCapabilityImplemented` تُعلن المنفّذ فعلاً؛ و`youtubeCapabilityNeedsAudit` لا
+  تعتبر `NOT_IMPLEMENTED` «ينتظر مراجعة».
+- **أُزيلت `publish` من `capabilities` في `engine/social/registry.ts`**، فتشتق الجاهزية
+  (`readiness.ts`/`operations.ts`) `NOT_SUPPORTED` بدل `READY` وهمي، ونطاق `youtube.upload`
+  لم يعد يُطلب.
+- `/api/platforms/youtube/upload-info` يعلن `implemented:false` بلا نقطة اتصال ولا ادعاء.
+- الواجهة (`PlatformConnectionCenter`/`SocialManagerView`) تعرض «رفع الفيديو غير منفّذ بعد».
+
+**`OPERATIONAL` صار قابلاً للوصول فعلاً:** كانت `youtubeOperationalEvidence` تقرأ سجلات نشر
+لا يمكن أن توجد (لا نشر) فتبقى الحالة العليا **حالة ميتة**. الآن الدليل الوحيد الحقيقي
+المتاح هو **رد تعليق مُسلَّم فعلاً بمعرّف من YouTube** (`socialReplies` بحقل
+`providerReplyId`)، وهو مسار منفّذ فعلاً. فالسقف `OPERATIONAL` يُثبت حياة تشغيلية حقيقية
+بلا اختلاق نشر. اختبار المجموعة 15 يثبت الانتقال، والمجموعة 22 تثبت صموده بعد restart
+(الحالة تصبح OPERATIONAL في نفس مجلد الحالة بدليل الرد المُسلَّم).
+
+**زر واحد لربط YouTube:** تدفّق code كامل الاستضافة، فبعد موافقة Google يعيد الخادم
+الواجهة تلقائياً إلى تبويب «ربط المنصات» عبر `oauthAutoReturnHtml`
+(`#oauth_return=youtube:ok|fail`). عند الفشل يعيد أيضاً (`failPage`) فيرى المالك السبب
+بدل صفحة نصية. المقطع لا يحمل أي سرّ (وسم النتيجة فقط)، و`AppContext` يقرأه ويعرض Toast
+لأي منصة (YouTube/Facebook/Instagram/TikTok) ويفتح التبويب الصحيح.
+
+**اختبارات هجومية (الحقيقة لا تُخترع):**
+- أخطاء OAuth الحقيقية (`invalid_grant`/`invalid_client`/`redirect_uri_mismatch`/
+  `access_denied`) لا تُنشئ اتصالاً ولا تستبدل الرمز المخزّن.
+- أخطاء Data API تُصنَّف (`rate_limit`/`permission_denied`/`not_found`/`provider_error`).
+- بيانات ناقصة (قناة بلا فيديوهات/فيديو بلا تعليقات/فيديو محذوف) لا تُختلق منها بيانات.
+- الخادم الوهمي يقبل حقن الأخطاء (`apiError`/`videosEmpty`/`commentsEmpty`/رموز OAuth)
+  عبر `engine/tests/helpers/youtubeMock.ts` بلا مزود حقيقي ولا حصة.
+
+الاختبارات: `engine/tests/youtube.connector.test.ts` = **202 فحصاً**. فحوص final-audit:
+`youtube-upload-not-implemented`, `youtube-no-publish-capability`,
+`youtube-operational-evidence-reachable`, `youtube-one-button-oauth-return`,
+`youtube-oauth-return-no-secret`, `youtube-attack-tests` (403 فحصاً إجمالاً).
+
+**درس عام:** حالة عليا في آلة الحالة يجب أن يكون لها **دليل قابل للتحقق فعلياً**؛ وإلا
+فهي حالة ميتة تُوهم بالجاهزية. ولا تُصنَّف قدرة «ينتظر مراجعة» إن لم يكن هناك تنفيذ يُراجَع
+أصلاً — التصنيف الصادق `NOT_IMPLEMENTED`.
+
+**نقطة توقف المالك:** اضبط `GOOGLE_OAUTH_CLIENT_ID` و`GOOGLE_OAUTH_CLIENT_SECRET`
+(أو البديلين `GOOGLE_CLIENT_ID`/`GOOGLE_CLIENT_SECRET`) في Render، وأضف
+`https://<النطاق>/api/platforms/youtube/oauth/callback` في Authorized redirect URIs في
+Google Cloud Console، ثم اضغط «ربط YouTube». رفع الفيديو يبقى غير متاح في النظام كله بغضّ
+النظر عن أي نطاق أو مراجعة.
