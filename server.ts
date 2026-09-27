@@ -1143,6 +1143,22 @@ function oauthReady(platform: string) { const c = OAUTH_CONFIG[platform]; return
 function publicUrlIsPublic(): boolean { const u = resolvePublicUrl(process.env); return u.valid && u.scheme === 'https' && !!u.host && !isLocalHost(u.host); }
 
 /**
+ * دليل النشر: أي commit/فرع يعمل فعلاً الآن. Render يضبط RENDER_GIT_COMMIT في
+ * بيئة الخدمة، فتُقارَن هذه القيمة بما هو مطلوب نشره لإثبات التطابق أو كشف انحراف
+ * النشر. مقتطف 7 خانات فقط، بلا أي سرّ. تُعرض في /api/health و/api/readiness معاً
+ * حتى لا يكون دليل النشر حبيس مسار واحد.
+ */
+function deploymentInfo() {
+  const sha = (process.env.RENDER_GIT_COMMIT || process.env.GIT_COMMIT || "").trim();
+  return {
+    provider: process.env.RENDER ? "render" : process.env.NETLIFY ? "netlify" : "unknown",
+    commit: sha ? sha.slice(0, 7) : null,
+    branch: (process.env.RENDER_GIT_BRANCH || "").trim() || null,
+    nodeEnv: process.env.NODE_ENV || null,
+  };
+}
+
+/**
  * سجل طلبات ملف تحقق TikTok الواصلة (في الذاكرة فقط، بلا أي سرّ). TikTok يطلب
  * الملف علناً من الإنترنت، فيجوز إظهار الاسم/الرمز/وكيل المستخدم/الوقت. الغرض:
  * عند فشل التحقق نرى **بالضبط** ما طلبه TikTok فعلاً (اسم الملف ورمزه) ونقارنه
@@ -5539,15 +5555,7 @@ app.get("/api/readiness", (_req, res) => {
     })(),
     // دليل النشر: أي إصدار/commit يعمل فعلاً على المنصة (Render). أسماء ومقتطفات
     // غير سرّية فقط (7 خانات من الـcommit) — تثبت أن الكود المنشور هو المدفوع.
-    deploy: (() => {
-      const sha = (process.env.RENDER_GIT_COMMIT || process.env.GIT_COMMIT || "").trim();
-      return {
-        provider: process.env.RENDER ? "render" : process.env.NETLIFY ? "netlify" : "unknown",
-        commit: sha ? sha.slice(0, 7) : null,
-        branch: (process.env.RENDER_GIT_BRANCH || "").trim() || null,
-        nodeEnv: process.env.NODE_ENV || null,
-      };
-    })(),
+    deploy: deploymentInfo(),
     // PHASE 7 — حقول TikTok الآمنة (منطقي فقط، بلا أي قيمة سرّية).
     tiktokOAuth: (() => {
       const c = tiktokOAuthConfig();
@@ -5987,6 +5995,9 @@ app.get("/api/health", (_req, res) => {
     })(),
     // ملف تحقق ملكية الرابط (TikTok URL prefix) والصفحات القانونية العامة.
     siteVerification: siteVerificationState(),
+    // دليل النشر: أي commit يعمل فعلاً (Render يضبط RENDER_GIT_COMMIT). يُقرأ هنا
+    // مباشرةً لإثبات أن الكود المنشور هو المدفوع، لا استنتاجاً من السلوك.
+    deploy: deploymentInfo(),
     // حالة الثبات: تُعلن بصراحة هل تُفقد الجلسات بين العمليات، وهل تنجو بيانات
     // العمل من إعادة النشر. لا تُكشف أي قيمة سرية هنا، ولا يُدّعى الدوام بلا مخزن.
     persistence: (() => {
