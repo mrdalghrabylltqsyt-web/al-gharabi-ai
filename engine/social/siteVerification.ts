@@ -178,6 +178,10 @@ export interface VerificationRequestSnapshot {
   expectedFilename: string;
   /** سبب صريح لعدم التطابق (فارغ عند الخدمة الناجحة)، للتشخيص المباشر. */
   mismatchReason: string;
+  /** المضيف كما وصل (Host / X-Forwarded-Host) بلا استعلام ولا سرّ. */
+  host?: string;
+  /** هل الطلب وصل من وراء وسيط (وجود ترويسة X-Forwarded-For/Proto)؟ */
+  viaProxy?: boolean;
 }
 
 /** يزيل أي استعلام وشرطة مائلة زائدة ويستخرج آخر مقطع مسار. */
@@ -199,6 +203,10 @@ export function captureVerificationRequest(input: {
   userAgent?: string;
   method?: string;
   at: string;
+  host?: string;
+  forwardedHost?: string;
+  forwardedProto?: string;
+  forwardedFor?: string;
 }): VerificationRequestSnapshot {
   const pathname = String(input.pathname || '');
   const originalUrl = String(input.originalUrl ?? pathname);
@@ -219,6 +227,8 @@ export function captureVerificationRequest(input: {
     else mismatchReason = 'token_differs_from_served';
   }
 
+  const host = String(input.forwardedHost || input.host || '').split(',')[0].trim();
+
   return {
     filename,
     token,
@@ -232,5 +242,7 @@ export function captureVerificationRequest(input: {
     served,
     expectedFilename: expected.filename,
     mismatchReason,
+    host: host.slice(0, 200),
+    viaProxy: Boolean(input.forwardedFor || input.forwardedProto || input.forwardedHost),
   };
 }

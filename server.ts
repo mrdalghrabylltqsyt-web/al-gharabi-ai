@@ -1176,6 +1176,11 @@ interface VerificationRequestLog {
 const verificationRequestLog: VerificationRequestLog = {
   count: 0, firstAt: null, lastAt: null, last: null, lastServed: null, lastMismatch: null, recent: [],
 };
+/** عدّاد ذاكرة فقط منذ إقلاع هذه العملية (يُصفَّر عند كل cold start) — يميّز
+ * «لم يصل شيء منذ الإقلاع» عن «وصل سابقاً وضاعت الذاكرة»، فيصير الصفر واضحاً. */
+let verificationRequestBootCount = 0;
+/** لحظة إقلاع العملية الحالية (ISO) — مرجع تفسير العدّاد والبصمة الزمنية. */
+const PROCESS_STARTED_AT = new Date().toISOString();
 const VERIFICATION_REQUEST_LOG_MAX = 20;
 
 /** آخر طلب وصل برمز مختلف (للتوافق مع التشخيص السابق) — مشتقّ من السجل. */
@@ -1188,15 +1193,21 @@ let lastVerificationMismatch: { requestedToken: string; requestedFilename: strin
  * العملية (الحالة في الذاكرة تُفقد عند cold start).
  */
 function recordVerificationRequest(req: express.Request): VerificationRequestSnapshot {
+  const h = (name: string) => (typeof req.headers[name] === 'string' ? String(req.headers[name]) : '');
   const snapshot = captureVerificationRequest({
     pathname: req.path,
     originalUrl: req.originalUrl,
     userAgent: typeof req.headers['user-agent'] === 'string' ? req.headers['user-agent'] : '',
     method: req.method,
     at: new Date().toISOString(),
+    host: h('host'),
+    forwardedHost: h('x-forwarded-host'),
+    forwardedProto: h('x-forwarded-proto'),
+    forwardedFor: h('x-forwarded-for'),
   });
 
   verificationRequestLog.count += 1;
+  verificationRequestBootCount += 1;
   if (!verificationRequestLog.firstAt) verificationRequestLog.firstAt = snapshot.at;
   verificationRequestLog.lastAt = snapshot.at;
   verificationRequestLog.last = snapshot;
@@ -1206,11 +1217,15 @@ function recordVerificationRequest(req: express.Request): VerificationRequestSna
     lastVerificationMismatch = { requestedToken: snapshot.token, requestedFilename: snapshot.filename, at: snapshot.at };
   }
   verificationRequestLog.recent = [snapshot, ...verificationRequestLog.recent].slice(0, VERIFICATION_REQUEST_LOG_MAX);
+  // الثبات عبر المخزن (Postgres/ملف) قبل الإقرار: على Render Free قد يُطفأ الخادم
+  // بعد الرد فتضيع الذاكرة وحدها، فيظن المالك أن TikTok لم يطلب الملف إطلاقاً وهو
+  // قد طلبه فعلًا قبل إعادة التشغيل. لا سرّ هنا (اسم/رمز عامان) فلا خطر بكتابته.
+  saveControlState();
 
   const outcome = snapshot.served ? 'served' : (snapshot.mismatchReason || 'not-served');
   console.log(
     `[الغرابي AI] tiktok-verification-request file=${snapshot.filename} token=${snapshot.token || '-'} ` +
-    `served=${snapshot.served ? 1 : 0} outcome=${outcome} ua=${snapshot.userAgent || '-'}`,
+    `served=${snapshot.served ? 1 : 0} outcome=${outcome} host=${snapshot.host || '-'} proxy=${snapshot.viaProxy ? 1 : 0} ua=${snapshot.userAgent || '-'}`,
   );
   return snapshot;
 }
@@ -1248,6 +1263,29 @@ function siteVerificationState() {
     lastRequestAt: verificationRequestLog.lastAt,
     /** آخر N طلب وصل (الأحدث أولاً) للفحص التفصيلي. */
     recentRequests: verificationRequestLog.recent,
+    /**
+     * وضوح الصفر: العدّاد المُثبت (postgres/ملف) يبقى بعد إعادة التشغيل، وهذا
+     * عدّاد الذاكرة منذ إقلاع العملية الحالية. إن كان المثبت = 0 والمُقلع = 0 فلم
+     * يطلب TikTok الملف إطلاقاً منذ آخر نشر؛ وإن كان المثبت > 0 والمُقلع = 0 فقد
+     * طلبه سابقاً وضاعت الذاكرة فقط (cold start) — لا يعني غياب الطلب.
+     */
+    requestCountDurable: verificationRequestLog.count,
+    requestCountSinceBoot: verificationRequestBootCount,
+    processStartedAt: PROCESS_STARTED_AT,
+    /** هل السجل محفوظ فعلاً في المخزن الدائم (postgres/ملف) لا في الذاكرة فقط؟ */
+    logPersisted: storageAdapter.backend !== "file" || storageReady,
+    /**
+     * حكم صريح على معنى الحالة الآن، لتفسير `requestCount=0` بلا لبس:
+     * - no_request_observed: لم يصل أي طلب لملف تحقق إطلاقاً (المشكلة/TikTok لم يجلب).
+     * - served_ok: آخر طلب خُدِم بنجاح (200) بالاسم المطابق.
+     * - token_differs: آخر طلب باسم رمز مختلف عمّا نخدمه (اضبط TIKTOK_VERIFICATION_TOKEN).
+     * - path_mismatch: وصل من مسار فرعي/غير جذري.
+     */
+    diagnosis: !verificationRequestLog.last
+      ? "no_request_observed"
+      : verificationRequestLog.last.served
+        ? "served_ok"
+        : verificationRequestLog.last.mismatchReason || "not_served",
     /** حقل توافق قديم: ملخّص آخر انحراف (طلب/رمز/وقت) أو null. */
     lastMismatch: lastVerificationMismatch,
     /** الملف يُخدَم من مسار ثابت في الخادم، لا من واجهة React. */
@@ -5079,6 +5117,18 @@ function applyControlSnapshot(control: any): void {
       }
     }
   }
+  // استرجاع سجل طلبات ملف تحقق TikTok: يصمد بعد إعادة التشغيل/cold start، فلا
+  // يظن المالك أن TikTok لم يطلب الملف إطلاقاً وهو قد طلبه قبل الإطفاء.
+  const vr = control.verificationRequests;
+  if (vr && typeof vr === "object") {
+    verificationRequestLog.count = Number.isFinite(vr.count) ? Math.max(0, Number(vr.count)) : 0;
+    verificationRequestLog.firstAt = typeof vr.firstAt === "string" ? vr.firstAt : null;
+    verificationRequestLog.lastAt = typeof vr.lastAt === "string" ? vr.lastAt : null;
+    verificationRequestLog.last = vr.last && typeof vr.last === "object" ? vr.last : null;
+    verificationRequestLog.lastServed = vr.lastServed && typeof vr.lastServed === "object" ? vr.lastServed : null;
+    verificationRequestLog.lastMismatch = vr.lastMismatch && typeof vr.lastMismatch === "object" ? vr.lastMismatch : null;
+    verificationRequestLog.recent = Array.isArray(vr.recent) ? vr.recent.slice(0, VERIFICATION_REQUEST_LOG_MAX) : [];
+  }
 }
 
 /** يقرأ حالة التحكّم متزامناً (backend الملف) عند الإقلاع. */
@@ -5099,6 +5149,17 @@ function buildControlState() {
       .filter(([, p]) => p.expiresAt > Date.now())
       .slice(-200)
       .map(([state, p]) => ({ state, platform: p.platform, userId: p.userId, expiresAt: p.expiresAt, redirectUri: p.redirectUri, codeVerifier: p.codeVerifier })),
+    // سجل طلبات ملف تحقق TikTok: يبقى بعد إعادة التشغيل/cold start فلا يظن المالك
+    // أن TikTok لم يطلب الملف إطلاقاً وهو قد طلبه. اسم/رمز عامان بلا سرّ.
+    verificationRequests: {
+      count: verificationRequestLog.count,
+      firstAt: verificationRequestLog.firstAt,
+      lastAt: verificationRequestLog.lastAt,
+      last: verificationRequestLog.last,
+      lastServed: verificationRequestLog.lastServed,
+      lastMismatch: verificationRequestLog.lastMismatch,
+      recent: verificationRequestLog.recent.slice(0, VERIFICATION_REQUEST_LOG_MAX),
+    },
   };
 }
 

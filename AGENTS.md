@@ -1493,3 +1493,42 @@ URL properties → اختر **URL prefix** بقيمة `https://al-gharabi-ai.onr
 وسُجّل في `lastServedRequest.matchedExpected = true`. فصارت معرفة ما يطلبه TikTok فعلاً
 ممكنة بمجرد إعادة النقر على Verify ثم قراءة `/api/health.siteVerification.lastRequest`.
 
+### ثبات السجل + وضوح الصفر + الطب الشرعي (2026-09-27، بعد `requestCount=0` حقيقي)
+
+ظهر على الإنتاج `requestCount = 0` و`lastRequest = null` بعد محاولة تحقق. كان في الأمر
+احتمالان متعارضان: (أ) TikTok لم يطلب الملف إطلاقاً، (ب) طلبه ثم **ضاعت الذاكرة** عند
+cold start قبل القراءة. لا يجوز التسليم بأحدهما بلا تمييز، فأُصلح الجذر:
+
+- **السجل صار دائماً (durable):** يُحفظ في مفتاح `control.verificationRequests` عبر
+  المحوّل (Postgres/ملف) **قبل الإقرار** ويُسترجع في `applyControlSnapshot`، فلا يضيع
+  بعد إعادة التشغيل/الإطفاء. أُثبت حياً: عملية أولى تستقبل طلباً (count=1, boot=1)، ثم
+  عملية جديدة بنفس مجلد الحالة تُظهر (count=1, boot=0) مع الاسم والتشخيص محفوظين.
+- **وضوح الصفر:** `requestCountDurable` (المثبت) و`requestCountSinceBoot` (الذاكرة منذ
+  الإقلاع) و`processStartedAt` و`logPersisted`. القاعدة: إذا كان المثبت=0 والمقلع=0 فلم
+  يطلب TikTok الملف إطلاقاً؛ وإذا كان المثبت>0 والمقلع=0 فقد طلبه وضاعت الذاكرة فقط.
+- **حكم صريح `diagnosis`:** `no_request_observed` / `served_ok` / `token_differs_from_served`
+  / `not_at_root_path` / `filename_not_in_tiktok_token_format` / `not_served`.
+- **طب شرعي للوسيط:** `host` (من `X-Forwarded-Host` مقدَّماً على `Host`) و`viaProxy` —
+  لكشف اعتراض Edge (Cloudflare أمام Render) أو وصول الطلب لمضيف/دومين غير متوقع.
+- اختبارات: `site.verification.test.ts` صار **114 فحصاً**؛ `final-audit` **349 فحصاً**
+  (`site-verification-capture-durable`, `site-verification-zero-unambiguous`,
+  `site-verification-diagnosis-field`, `site-verification-host-forensics`).
+
+**حدود TikTok المؤكدة من الوثائق الرسمية (تفسّر فشلاً بلا أي GET):**
+- طريقة **Domain** في URL properties تُتحقق بإضافة **سجل DNS TXT**، ولا تُجلب أي ملف —
+  فطلب GET لملف `tiktok*.txt` لا يقع أصلاً. أما طريقة **URL prefix** فهي التي ترفع ملف
+  توقيع. (developers.tiktok.com/doc/getting-started-create-an-app).
+- TikTok يوجّه: «للملفات، تأكد أن الملف **متاح علناً**» وإن كان للاسم امتداد `.txt`
+  إضافي فيجب إزالته ليطابق `file_name` بامتداد واحد.
+- تحقق URL prefix قد يتأثر مبكراً بـ: **إصدار التطبيق (Draft) مقابل Production**،
+  و**Terms/Privacy/Website URLs** غير المتحققة، ووضع Sandbox (فيه التحقق مطلوب لـContent
+  Posting فقط) — أي أن الفشل قد يقع **قبل** جلب الملف.
+- TikTok **لا يتبع التحويلات** ويعتبر أي 3xx باطلاً؛ وقد يخضع الطلب لتحدي Cloudflare
+  (Bot Fight Mode) فلا يصل إلى الأصل إطلاقاً — وهذا ينتج `requestCount=0` بعينه.
+
+**استنتاج تشخيصي (يحتاج إثباتاً بقرار المالك):** بما أن الملف يُخدَم 200 بلا تحويل وبمحتوى
+مطابق، و`requestCount` (سواء المثبت أو المقلع) = 0، فالأرجح أن الطلب **لم يصل إلى Render**:
+إمّا أن TikTok استخدم طريقة Domain (DNS) بلا ملف، أو أن Edge (Cloudflare) حجب/تحدّى الوكيل،
+أو أن التحقق مُنع قبل الجلب بسبب حالة التطبيق/الروابط. الفحص اللاحق (`host`/`viaProxy`/
+`diagnosis`) يحسم أيها بمجرد نقر Verify مرة أخرى.
+

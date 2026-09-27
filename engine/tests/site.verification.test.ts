@@ -200,6 +200,15 @@ function captureUnitTests(): void {
   const badName = captureVerificationRequest({ pathname: '/tiktok.txt', userAgent: '', method: 'GET', at });
   check('اسم لا يطابق الصيغة: سبب صريح', badName.mismatchReason === 'filename_not_in_tiktok_token_format', badName.mismatchReason);
   check('طريقة HEAD مسجّلة', captureVerificationRequest({ pathname: `/${TIKTOK_VERIFICATION_FILENAME}`, method: 'head', at }).method === 'HEAD');
+
+  // حقول الطب الشرعي: المضيف ووسيط الشبكة (يكشفان اعتراض الوسيط/الدومين الخطأ).
+  const withHost = captureVerificationRequest({ pathname: `/${TIKTOK_VERIFICATION_FILENAME}`, at, host: 'al-gharabi-ai.onrender.com', forwardedProto: 'https', forwardedFor: '1.2.3.4' });
+  check('المضيف مسجّل', withHost.host === 'al-gharabi-ai.onrender.com', String(withHost.host));
+  check('مرور الوسيط معلن', withHost.viaProxy === true);
+  const fwdHost = captureVerificationRequest({ pathname: '/tiktok.txt', at, host: 'origin.internal', forwardedHost: 'public.example.com, edge' });
+  check('X-Forwarded-Host مقدَّم على Host', fwdHost.host === 'public.example.com', String(fwdHost.host));
+  const noProxy = captureVerificationRequest({ pathname: `/${TIKTOK_VERIFICATION_FILENAME}`, at, host: 'localhost' });
+  check('بلا وسيط: viaProxy=false', noProxy.viaProxy === false);
 }
 
 // -------------------------------------------------------------
