@@ -101,10 +101,20 @@ services:
         sync: false
       - key: INSTAGRAM_VERIFY_TOKEN
         sync: false
-      # Instagram Login for Business Configuration ID (optional; digits only).
+      # Instagram Login for Business Configuration ID (digits only).
+      # REQUIRED when the Meta app is a Business app: the dialog then uses the
+      # Business Login surface, which reads permissions from a Configuration
+      # (config_id) instead of scope. With scope and no config_id Meta shows
+      # "Sorry, something went wrong" after login and returns no code.
       # Highest priority; falls back to FACEBOOK_LOGIN_CONFIG_ID.
-      # Not required by the official Instagram flow (which passes scope, not config_id).
+      # Copy it from Meta App Dashboard → Facebook Login for Business →
+      # Configurations. Never put the value in the repository or logs.
       - key: INSTAGRAM_LOGIN_CONFIG_ID
+        sync: false
+      # Optional explicit bypass of the "Business Login requires config_id" block.
+      # Leave unset (safe default: block with an actionable 409). Set to "true"
+      # only if Meta is proven to cover the permissions via the Use Case instead.
+      - key: META_ALLOW_SCOPE_WITHOUT_CONFIG
         sync: false
       # Optional switch for Meta's unified onboarding window (extras=IG_API_ONBOARDING).
       # Leave unset to keep the documented flow. Set to "false" to use the regular

@@ -1138,8 +1138,19 @@ function envSecret(name: string): string | undefined {
  * Instagram: INSTAGRAM_LOGIN_CONFIG_ID ثم FACEBOOK_LOGIN_CONFIG_ID؛ Facebook:
  * FACEBOOK_LOGIN_CONFIG_ID. يُقرأ عند كل استخدام (لا وقت الإقلاع) ليعكس البيئة.
  */
-function loginConfigIdFor(platform: string): string | null {
-  return resolveLoginConfigId(platform, process.env);
+function loginConfigIdFor(platform: string): string | null { return resolveLoginConfigId(platform, process.env); }
+/**
+ * مفتاح تجاوز صريح للحجب عند رصد Business Login بلا config_id.
+ *
+ * سبب الوجود: قاعدة «لا حجب بلا إثبات» تمنع حجباً مزمناً عند احتمال أن بعض
+ * تطبيقات Business تغطّي الصلاحيات في Use Case وتقبل scope. حين يكون دليل الرفض
+ * المتوقع قوياً (Business Login + بلا config_id) نُوقف افتراضياً بإجراء دقيق،
+ * ونوفّر هذا المفتاح كي يُكمل المالك بلا تعديل كود إن ثبت أن متطلبه يُوفَّر بطريقة
+ * أخرى (تطوير/Use Case). الافتراضي: الحجب. الضبط بـtrue/1/on/yes يعطّله.
+ */
+function metaScopeWithoutConfigOverride(): boolean {
+  const raw = String(process.env.META_ALLOW_SCOPE_WITHOUT_CONFIG ?? "").trim().toLowerCase();
+  return raw === "true" || raw === "1" || raw === "on" || raw === "yes";
 }
 /**
  * Configuration ID **المُطبَّق فعلاً** في رابط التفويض (قد يكون null رغم ضبط
@@ -2728,6 +2739,38 @@ app.get("/api/platforms/:platform/oauth/start", requireOwner, async (req,res)=>{
         appIdFormatOk: isPlausibleMetaAppId(String(cfg.clientId || "")),
         loginConfigIdUsed: Boolean(loginConfigId),
         metaSetupHint: { appDomainsValue: urlInfo.host && !isLocalHost(urlInfo.host) ? `https://${urlInfo.host}` : null, redirectUri: callbackUrl, note: "طابق App ID وApp Domains وValid OAuth Redirect URIs، وتأكد أن كل صلاحية مطلوبة مفعّلة في Use Case أو Configuration ID." },
+      });
+    }
+    // فصل صريح أثبتته استجابة Meta الحيّة: في تطبيق من نوع Business، إرسال
+    // `scope` (بلا config_id) يجعل Meta تسلك **Business Login** (is_business_login=1)،
+    // وهذه الواجهة تقرأ الصلاحيات من Configuration عبر config_id لا من scope، فيعرض
+    // الحوار بعد تسجيل الدخول «Sorry, something went wrong» بلا إرجاع رمز. الفحص
+    // رصد هذه الواجهة فعلاً ⇒ نتوقف بإجراء دقيق بدل إرسال المالك إلى صفحة فشل مضمونة.
+    // لا نحجب عند businessLoginSurface=null (تعذّر الفحص) ولا عند Business Login **مع**
+    // config_id (هو التصحيح نفسه).
+    if (dialogProbe.businessLoginSurface === true && !loginConfigId && !metaScopeWithoutConfigOverride()) {
+      logOAuthStart(platform, { outcome: "business_login_without_config", businessLoginSurface: true, loginConfigIdConfigured: preflight.loginConfig?.configured ?? false, redirectUri: callbackUrl, domain: urlInfo.host, scopeCount: scopes.length });
+      const result: OAuthStartPreflight = {
+        ok: false,
+        code: "META_BUSINESS_LOGIN_REQUIRES_CONFIG_ID",
+        error: "تطبيق Meta من نوع Business: الحوار يسلك واجهة Business Login التي تقرأ الصلاحيات من Configuration (config_id) لا من scope، فسيعرض «حدث خطأ ما» بعد تسجيل الدخول ولا يعيد رمزاً.",
+        hint: `أنشئ Configuration في Meta App Dashboard → Facebook Login for Business → Configurations (نوع User access token) بالصلاحيات التي يعرضها GET /api/platforms/${platform}/oauth/setup في حقل scopes، ثم ضع معرّفه الرقمي في INSTAGRAM_LOGIN_CONFIG_ID (أو FACEBOOK_LOGIN_CONFIG_ID) في بيئة الخادم وأعد التشغيل.`,
+      };
+      lastOAuthPreflight.set(platform, { at: Date.now(), code: result.code ?? null, appTokenKind: preflight.appToken?.kind ?? null, error: result.error, hint: result.hint });
+      return res.status(409).json({
+        success: false,
+        code: "META_BUSINESS_LOGIN_REQUIRES_CONFIG_ID",
+        error: result.error,
+        hint: result.hint,
+        platform,
+        businessLoginSurface: true,
+        loginConfigIdConfigured: preflight.loginConfig?.configured ?? false,
+        loginConfigEnvNames: loginConfigEnvNames(platform),
+        scopes: platform === "instagram" ? instagramOAuthScopes() : facebookOAuthScopes(),
+        redirectUri: callbackUrl,
+        domain: urlInfo.host,
+        bypassEnv: "META_ALLOW_SCOPE_WITHOUT_CONFIG",
+        setupUrl: `${publicBaseUrlNow()}/api/platforms/${platform}/oauth/setup`,
       });
     }
   }
@@ -4414,6 +4457,15 @@ app.get("/api/platforms/:platform/oauth/setup", requireOwner, async (req,res)=>{
         "لا تضع القيمة في Git ولا في أي سجل؛ الخادم يقرأها من البيئة فقط.",
       ],
       note:"عند وجود Configuration ID صالح يمرّره الخادم كـconfig_id بدل scope ولا يُرسَل extras/display، فلا يتعارض المعاملان ويقرأ Business Login الصلاحيات من الConfiguration.",
+    }:undefined,
+    // روابط Meta Dashboard المباشرة (بلا أي سرّ): App ID معرّف عام معلن أصلاً في
+    // رابط التفويض، فلا كشف جديد — والغرض إعطاء المالك المسار الدقيق بنقرة واحدة
+    // لإنشاء Configuration، لأن هذه الخطوة تتطلب جلسته ولا ينفّذها أي وكيل.
+    metaDashboardUrls:metaScopesResolved&&cfg.clientId?{
+      appDashboard:`https://developers.facebook.com/apps/${String(cfg.clientId)}/`,
+      configurations:`https://developers.facebook.com/apps/${String(cfg.clientId)}/fb-login-for-business/configurations/`,
+      basicSettings:`https://developers.facebook.com/apps/${String(cfg.clientId)}/settings/basic/`,
+      roles:`https://developers.facebook.com/apps/${String(cfg.clientId)}/roles/`,
     }:undefined,
     genericErrorMeaning:(platform==="facebook"||platform==="instagram")?{
       message:"صفحة Meta «حدث خطأ ما» (Sorry, something went wrong) لها مواضع محتملة: (1) قبل تسجيل الدخول: معرّف تطبيق غير مطابق أو نطاق/رابط إرجاع غير مسجّل، (2) بعد تسجيل الدخول: تطبيق من نوع Business يوجّه الحوار إلى Business Login الذي يقرأ الصلاحيات من Configuration لا من scope، فإن غاب config_id بقيت الصلاحيات فارغة وظهر الرفض، (3) عطل معروف في تدفّق الإعداد عند استخدام extras=IG_API_ONBOARDING (1850019). حقل dialogPhase يحدد الموضع.",

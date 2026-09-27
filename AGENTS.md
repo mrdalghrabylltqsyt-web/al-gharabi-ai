@@ -1849,3 +1849,39 @@ Redirect URIs، ثم أعد النشر واضغط «بدء الربط». بعد 
 `providers`) بلا أي سرّ. اختبار: `engine/tests/agent.central.test.ts` (`npm run test:agent`،
 71 فحصاً). فحوص final-audit الجديدة: `agent-module-structure` … `agent-tests-cover-critical`
 (422 فحصاً إجمالاً).
+
+## إيقاف التوجيه إلى «حدث خطأ ما» عند رصد Business Login بلا config_id (2026-09-27)
+
+**الجذر المُثبت حياً (لا تخمين):** رابط حوار Meta لمعرّف تطبيق صالح بلا `scope` يعيد
+`is_business_login=0`، وبـ`scope` يعيد **`is_business_login=1`** (واجهة Business Login)،
+وبـ`config_id` يعيد `is_business_login=0` + `config_id`. واجهة Business Login تقرأ
+الصلاحيات من **Configuration** عبر `config_id` لا من `scope`، فتكون الصلاحيات فارغة
+«This app needs at least one supported permission» => «Sorry, something went wrong» بعد
+تسجيل الدخول بلا إرجاع رمز. (أُعيد إنتاجه بوكيل سطح مكتب وبوكيل جوال iPhone على `www`
+و`m.facebook.com` عبر `curl`/`node fetch`.)
+
+**الفجوة البرمجية الحقيقية:** `probeMetaDialog` كان **يكشف** `businessLoginSurface`
+لكنه لا يفعل بها شيئاً؛ فيُمرَّر الربط ويُرسَل المالك إلى فشل مضمون. أُصلح:
+- `server.ts` (`/oauth/start`): بعد الفحص، إن رُصد `businessLoginSurface === true` مع
+  غياب `config_id` يُرد **409 `META_BUSINESS_LOGIN_REQUIRES_CONFIG_ID`** بإجراء دقيق
+  (`loginConfigEnvNames`، `scopes` المطلوبة للConfiguration، `redirectUri`، `setupUrl`)
+  وسطر سجل آمن `business_login_without_config` — بلا أي سرّ. **لا حجب** عند
+  `businessLoginSurface=null` (تعذّر الفحص) ولا عند Business Login **مع** config_id.
+- `metaScopeWithoutConfigOverride()`: مفتاح تجاوز صريح `META_ALLOW_SCOPE_WITHOUT_CONFIG`
+  يمنع حجباً مزمناً بلا تعديل كود إن ثبت أن المتطلب يُوفَّر بطريقة أخرى (Use Case). الافتراضي: الحجب.
+- `oauth/setup`: يُضاف `metaDashboardUrls` (روابط مباشرة لـApp Dashboard/Configurations/
+  Basic Settings/Roles عبر App ID **العام** المعلن أصلاً في رابط التفويض) بلا أي سرّ.
+- `.env.example` و`render.yaml`: توثيق `INSTAGRAM_LOGIN_CONFIG_ID` كـ**مطلوب** لتطبيق
+  Business، وإضافة `META_ALLOW_SCOPE_WITHOUT_CONFIG` (`sync: false`).
+
+اختبارات: `instagram.connector.test.ts` = **209 فحصاً** (المجموعة 23: حجب 409 بالإجراء
+الدقيق، ومفتاح التجاوز يعيد 200). `facebook.connector.test.ts` = 231 (بلا تغيير).
+final-audit = **426 فحصاً** (`meta-business-login-requires-config-block` … `-block-tests`).
+
+**نقطة توقف المالك (نقرة واحدة لا ينفّذها أي وكيل):** افتح
+`https://developers.facebook.com/apps/<APP_ID>/fb-login-for-business/configurations/`
+(الرابط الدقيق في `oauth/setup.metaDashboardUrls.configurations`) → Create configuration →
+نوع **User access token** → أضف الصلاحيات في حقل `scopes` → انسخ **Configuration ID**
+(أرقام فقط) → Render → Environment → `INSTAGRAM_LOGIN_CONFIG_ID` → أعد النشر. بعد ذلك
+يحلّ `config_id` محل `scope` ويُكمل الربط ويُحفظ مشفّراً. (المتطلب الأساسي المتبقي بالضبط:
+مُعرّف Configuration واحد من جلسة مالك Meta — لا يمكن لأي وكيل برمجي إنشاؤه نيابةً عنه.)

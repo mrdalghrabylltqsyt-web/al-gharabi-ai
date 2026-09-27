@@ -330,6 +330,10 @@ add('instagram-probe-matches-real-flow', /instagramOnboarding: platform === "ins
 // تطبيق Business + scope بلا config_id يُوجَّه لـBusiness Login فيفشل بعد الدخول.
 add('meta-dialog-business-login-surface', read('engine/social/facebook.ts').includes('businessLoginSurface') && /is_business_login=\(0\|1\)/.test(read('engine/social/facebook.ts')), 'تصنيف سلسلة الحوار يكشف واجهة الدخول التي تسلكها Meta (Business Login مقابل الكلاسيكي)');
 add('meta-dialog-surface-exposed-safe', server.includes('businessLoginSurface: dialogProbe.businessLoginSurface') && !/console\.\w+\([^)]*is_business_login/i.test(server), 'الواجهة تُعلن في رد الفحص (منطقي) بلا تسجيل رابط يحمل الاستعلام');
+add('meta-business-login-requires-config-block', server.includes('businessLoginSurface === true && !loginConfigId') && server.includes('META_BUSINESS_LOGIN_REQUIRES_CONFIG_ID'), 'رصد Business Login بلا config_id يُحجب بـ409 بإجراء دقيق بدل إرسال المالك إلى «حدث خطأ ما» مضمونة');
+add('meta-business-login-block-bypass-env', server.includes('function metaScopeWithoutConfigOverride') && server.includes('META_ALLOW_SCOPE_WITHOUT_CONFIG'), 'مفتاح تجاوز صريح يمنع حجباً مزمناً بلا تعديل كود (الافتراضي: الحجب)');
+add('meta-business-login-block-no-secret', !/META_BUSINESS_LOGIN_REQUIRES_CONFIG_ID[\s\S]{0,900}clientSecret/.test(server), 'رد الحجب لا يحمل أي سرّ (لا clientSecret في كتلته)');
+add('meta-business-login-block-tests', read('engine/tests/instagram.connector.test.ts').includes('META_BUSINESS_LOGIN_REQUIRES_CONFIG_ID') && read('engine/tests/instagram.connector.test.ts').includes('META_ALLOW_SCOPE_WITHOUT_CONFIG'), 'اختبار يثبت الحجب ومفتاح التجاوز لـBusiness Login بلا config_id');
 add('meta-dialog-surface-no-false-block', !server.includes('permissionDeliveryMismatch'), 'لا يُحجب الربط بذريعة «عدم تطابق الواجهة»؛ الإصلاح هو تمرير config_id الصحيح لا الحجب');
 // الجذر المُثبت: تطبيق Business يوجّه الحوار إلى Business Login الذي يقرأ الصلاحيات
 // من Configuration (config_id) لا من scope. oauth/setup يوجّه لإنشاء Configuration.
