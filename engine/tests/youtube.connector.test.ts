@@ -342,6 +342,10 @@ async function integrationTests(): Promise<void> {
     group('12) تكامل: callback — تبادل الرمز + إثبات القناة + حفظ مشفّر');
     const cbRes = await fetch(`${BASE}/api/platforms/youtube/oauth/callback?code=AUTHCODE_TEST&state=${encodeURIComponent(stateVal)}`, { headers: auth });
     check('callback يعيد 200', cbRes.status === 200, `status=${cbRes.status}`);
+    const cbHtml = await cbRes.text();
+    // زر واحد: صفحة العودة تُحوّل المالك تلقائياً إلى الواجهة بوسم النتيجة فقط (بلا سرّ).
+    check('صفحة العودة تُعيد المالك تلقائياً للواجهة (#oauth_return=youtube:ok)', cbHtml.includes('oauth_return=youtube%3Aok') && cbHtml.includes('location.replace'), cbHtml.slice(0, 160));
+    check('صفحة العودة لا تحمل أي رمز أو سرّ', !cbHtml.includes(mock.state.accessToken) && !cbHtml.includes(GOOGLE_CLIENT_SECRET) && !cbHtml.includes('refresh_token'));
     check('تبادل الرمز نُفِّذ فعلياً لدى المزوّد', mock.state.lastExchange !== null && mock.state.lastExchange?.redirectUri.endsWith('/api/platforms/youtube/oauth/callback'));
     check('التبادل أرسل client_id الصحيح', mock.state.lastExchange?.clientId === GOOGLE_CLIENT_ID);
 
