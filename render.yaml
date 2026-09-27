@@ -74,6 +74,10 @@ services:
       # scopes are accepted; the required set is always included).
       - key: TIKTOK_OAUTH_SCOPES
         sync: false
+      # Optional: override the TikTok URL-prefix verification token if TikTok
+      # issues a new one (public by design; served at /tiktok<token>.txt).
+      - key: TIKTOK_VERIFICATION_TOKEN
+        sync: false
       # Meta (Facebook):
       - key: FACEBOOK_OAUTH_CLIENT_ID
         sync: false

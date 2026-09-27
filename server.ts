@@ -111,8 +111,10 @@ import { resolvePublicUrl, isLocalHost } from "./engine/social/publicUrl";
 import {
   siteVerificationFiles,
   verificationFileForPath,
+  isVerificationFileRequest,
+  effectiveVerificationFile,
   SITE_VERIFICATION_PATH_PATTERN,
-  TIKTOK_VERIFICATION_FILENAME,
+  TIKTOK_VERIFICATION_TOKEN_ENV_NAME,
   VERIFICATION_CONTENT_TYPE,
   verificationFileUrl,
   type SiteVerificationFile,
@@ -1139,9 +1141,23 @@ function oauthReady(platform: string) { const c = OAUTH_CONFIG[platform]; return
 function publicUrlIsPublic(): boolean { const u = resolvePublicUrl(process.env); return u.valid && u.scheme === 'https' && !!u.host && !isLocalHost(u.host); }
 
 /**
- * حالة التحقق من ملكية الرابط (TikTok URL prefix) بلا أي سرّ: اسم الملف، الرابط
- * العام الكامل، ونوع المحتوى. الرمز نفسه عام بطبيعته (TikTok يطلبه علناً)، لذا
- * يُعرض ليتمكّن المالك من مقارنته بما في لوحة TikTok مباشرةً.
+ * آخر طلب ملف تحقق وصل برمز مختلف (إن وُجد). في الذاكرة فقط وبلا أي سرّ:
+ * الرمز عام بطبيعته، ووجوده هنا يكشف انحراف الرمز فوراً بدل خدمة توقيع خطأ
+ * صامتاً فيبدو الملف «موجوداً» بينما TikTok يبحث عن رمز آخر.
+ */
+let lastVerificationMismatch: { requestedToken: string; requestedFilename: string; at: string } | null = null;
+
+/** يسجّل طلباً لملف تحقق برمز لا يطابق الرمز الفعّال (بلا سرّ). */
+function recordVerificationMismatch(pathname: string): void {
+  const name = String(pathname || "").replace(/^\//, "");
+  const token = /^tiktok([A-Za-z0-9]{8,128})\.txt$/.exec(name)?.[1] || "";
+  lastVerificationMismatch = { requestedToken: token, requestedFilename: name, at: new Date().toISOString() };
+}
+
+/**
+ * حالة التحقق من ملكية الرابط (TikTok URL prefix): الملف الرسمي الفعّال (اسم +
+ * رابط + نوع) مبنياً من الرمز الفعّال، ومصدر الرمز (بيئة/مدموج) ليُقارَن بما في
+ * لوحة TikTok، وآخر طلب وصل برمز مختلف — كلها بلا أي سرّ (الرمز عام بطبيعته).
  */
 function siteVerificationState() {
   const urlInfo = resolvePublicUrl(process.env);
@@ -1153,6 +1169,14 @@ function siteVerificationState() {
     /** الرابط الذي يجب أن يكون عاماً وبلا تحويل (3xx مرفوض لدى TikTok). */
     url: verificationFileUrl(urlInfo.baseUrl, file.filename),
     altFilename: siteVerificationFiles()[1].filename,
+    /** الرمز الفعّال (عام) ومصدره: متغير بيئة أم القيمة المدموجة. */
+    token: file.filename.replace(/^tiktok/, "").replace(/\.txt$/, ""),
+    tokenSource: (process.env[TIKTOK_VERIFICATION_TOKEN_ENV_NAME] || "").trim()
+      ? `env:${TIKTOK_VERIFICATION_TOKEN_ENV_NAME}`
+      : "default",
+    tokenEnvName: TIKTOK_VERIFICATION_TOKEN_ENV_NAME,
+    /** آخر طلب وصل برمز مختلف — دليل التشخيص عند فشل التحقق لدى TikTok. */
+    lastMismatch: lastVerificationMismatch,
     /** الملف يُخدَم من مسار ثابت في الخادم، لا من واجهة React. */
     servedBy: "static-route",
     publicUrlValid: urlInfo.valid,
@@ -7449,27 +7473,40 @@ function legalPageContext() {
   };
 }
 
-/** يخدم ملف تحقق بلا تحويل (200) بنوع نص صريح، فيقرأ TikTok التوقيع حرفياً. */
+/** يخدم ملف تحقق بلا تحويل (200) بنوع نص صريح وبطول بايت دقيق. */
 function serveVerificationFile(res: express.Response, file: SiteVerificationFile) {
+  // Buffer صريح يضمن طول بايت دقيقاً وبلا محرف سطر جديد مضاف وبلا تحويل charset.
+  const body = Buffer.from(file.content, "utf8");
   res.status(200);
   res.setHeader("Content-Type", file.contentType);
-  // بلا تخزين وسيط قد يقدّم نسخة قديمة، وبلا اعتماد على أي وسيط آخر.
-  res.setHeader("Cache-Control", "public, max-age=0, must-revalidate");
+  res.setHeader("Content-Length", String(body.length));
+  // بلا تخزين وسيط قد يقدّم نسخة قديمة، وبلا تحويل (no-transform) يغيّر البايتات.
+  res.setHeader("Cache-Control", "public, max-age=0, must-revalidate, no-transform");
   res.setHeader("X-Content-Type-Options", "nosniff");
-  res.send(file.content);
+  res.end(body);
 }
 
 /**
  * ملف تحقق ملكية الرابط (URL prefix) الخاص بـTikTok. الاسم `/tiktok<token>.txt`
  * والمحتوى `tiktok-developers-site-verification=<token>` — كما تطلبه الوثيقة
  * الرسمية. قبل الإصلاح كان الطلب يسقط إلى index.html بحالة 200 فيفشل التحقق.
+ *
+ * الأهم: الاسم المتغيّر جزء من الملف، فيجب ألا يُخدَم توقيع الرمز المدموج لأي
+ * اسم `tiktok*.txt` (وإلا استلم TikTok توقيعاً لا يطابق الرمز الذي ولّده بلا
+ * سبب ظاهر). لذلك: الاسم المطابق للرمز الفعّال يُخدَم، والملف البديل يُخدَم،
+ * وأي رمز آخر يُرفض 404 ويُسجَّل انحراف الرمز لتشخيص فوري.
  */
 app.get(SITE_VERIFICATION_PATH_PATTERN, (req, res) => {
-  const file = verificationFileForPath(req.path) || siteVerificationFiles()[0];
-  serveVerificationFile(res, file);
+  const file = verificationFileForPath(req.path);
+  if (file) return serveVerificationFile(res, file);
+  recordVerificationMismatch(req.path);
+  res.status(404).type(VERIFICATION_CONTENT_TYPE).send(
+    `ملف تحقق TikTok غير موجود: ${String(req.path || "").replace(/^\//, "")}\n` +
+    `الملف الصحيح لهذا النشر: ${effectiveVerificationFile().filename}\n`,
+  );
 });
 
-// اسم بديل شائع لنفس الملف (بالمحتوى نفسه)، فلا يفشل التحقق إن غيّر المالك الرمز.
+// اسم بديل شائع لنفس الملف (بالمحتوى نفسه)، فلا يفشل التحقق إن جُرّب.
 app.get("/tiktok-developers-site-verification.txt", (_req, res) => {
   serveVerificationFile(res, siteVerificationFiles()[1]);
 });
@@ -7531,7 +7568,16 @@ async function startServer() {
     const distPath = path.join(process.cwd(), "dist");
     app.use(express.static(distPath));
     // مسارات الـAPI غير المعروفة تُعالَج في الشبكة أعلاه بـJSON 404، وليست هنا.
-    app.get(/^\/(?!api\/).*/, (_req, res) => {
+    // أي مسار يشبه ملف تحقق TikTok (ولو بمسار فرعي أو شرطة مائلة زائدة) لا
+    // يُخدَم كواجهة React: HTML بحالة 200 يجعل TikTok يقرأ صفحة بدل التوقيع.
+    app.get(/^\/(?!api\/).*/, (req, res) => {
+      if (isVerificationFileRequest(req.path)) {
+        recordVerificationMismatch(req.path);
+        return res.status(404).type(VERIFICATION_CONTENT_TYPE).send(
+          `ملف تحقق TikTok غير موجود في هذا المسار: ${String(req.path || "")}\n` +
+          `الملف الصحيح على الجذر: /${effectiveVerificationFile().filename}\n`,
+        );
+      }
       res.sendFile(path.join(distPath, "index.html"));
     });
   }

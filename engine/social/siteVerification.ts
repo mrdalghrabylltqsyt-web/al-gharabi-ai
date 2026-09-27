@@ -20,13 +20,29 @@
 /** بادئة سلسلة التوقيع الرسمية كما يعيدها TikTok في `signature`. */
 export const TIKTOK_SITE_VERIFICATION_PREFIX = 'tiktok-developers-site-verification=';
 
-/** الرمز الذي ولّده TikTok لهذا التطبيق (public by design، ليس سرّاً). */
-export const TIKTOK_VERIFICATION_TOKEN = 'djxlJcC4WFlCh4OZY8IVHgezp491vPoZ';
+/**
+ * الرمز الافتراضي الذي ولّده TikTok لهذا التطبيق (public by design، ليس سرّاً).
+ * يمكن تجاوزه من البيئة عبر `TIKTOK_VERIFICATION_TOKEN` إن ولّد TikTok رمزاً
+ * جديداً عند إعادة إضافة الخاصية، فيُخدَم الرمز الصحيح بلا تعديل كود.
+ */
+export const DEFAULT_TIKTOK_VERIFICATION_TOKEN = 'djxlJcC4WFlCh4OZY8IVHgezp491vPoZ';
 
-/** اسم الملف الرسمي الذي طلبه TikTok = `tiktok<token>.txt`. */
+/** اسم متغير البيئة الذي يتجاوز الرمز المدموج. */
+export const TIKTOK_VERIFICATION_TOKEN_ENV_NAME = 'TIKTOK_VERIFICATION_TOKEN';
+
+/** الرمز الفعّال المحسوب من البيئة عند كل استخدام (لا يُلتقط وقت الإقلاع). */
+export function effectiveTikTokVerificationToken(): string {
+  const override = String(process.env[TIKTOK_VERIFICATION_TOKEN_ENV_NAME] || '').trim();
+  return TOKEN_PATTERN.test(override) ? override : DEFAULT_TIKTOK_VERIFICATION_TOKEN;
+}
+
+/** الرمز المدموج مرجعياً (الاختبارات/الأدوات التي تحتاجه في السياق الافتراضي). */
+export const TIKTOK_VERIFICATION_TOKEN = DEFAULT_TIKTOK_VERIFICATION_TOKEN;
+
+/** اسم الملف الرسمي الافتراضي = `tiktok<token>.txt`. */
 export const TIKTOK_VERIFICATION_FILENAME = `tiktok${TIKTOK_VERIFICATION_TOKEN}.txt`;
 
-/** محتوى الملف الرسمي = سلسلة التوقيع كاملة. */
+/** محتوى الملف الرسمي الافتراضي = سلسلة التوقيع كاملة. */
 export const TIKTOK_VERIFICATION_CONTENT = `${TIKTOK_SITE_VERIFICATION_PREFIX}${TIKTOK_VERIFICATION_TOKEN}`;
 
 /** نوع المحتوى الذي يخدمه الخادم: نص صريح، بلا HTML وبلا أي تفاوض. */
@@ -66,16 +82,22 @@ export function parseTikTokVerificationToken(filename: string): string | null {
 }
 
 /**
- * كل ملفات التحقق التي يخدمها الخادم. الملف الرسمي أولاً، ثم اسم بديل شائع
- * يستخدمه كثير من المطوّرين (`tiktok-developers-site-verification.txt`) بالمحتوى
- * نفسه، فلا يفشل التحقق إن غيّر المالك الرمز لاحقاً بنفس الطريقة.
+ * كل ملفات التحقق التي يخدمها الخادم، محسوبة من الرمز الفعّال للبيئة:
+ *   - الملف الرسمي `tiktok<token>.txt` (ما يطلبه TikTok عادةً)،
+ *   - الاسم البديل الشائع `tiktok-developers-site-verification.txt` بالمحتوى نفسه،
+ *     فلا يفشل التحقق إن جُرّب هذا الاسم.
  */
 export function siteVerificationFiles(): SiteVerificationFile[] {
-  const official = buildTikTokVerificationFile(TIKTOK_VERIFICATION_TOKEN);
+  const official = buildTikTokVerificationFile(effectiveTikTokVerificationToken());
   return [
     official,
     { filename: 'tiktok-developers-site-verification.txt', content: official.content, contentType: VERIFICATION_CONTENT_TYPE },
   ];
+}
+
+/** اسم الملف الرسمي الفعّال الآن (حسب البيئة) = `tiktok<token>.txt`. */
+export function effectiveVerificationFilename(): string {
+  return siteVerificationFiles()[0].filename;
 }
 
 /**
@@ -83,10 +105,34 @@ export function siteVerificationFiles(): SiteVerificationFile[] {
  * المطابقة حرفية على الجذر فقط، فلا يُخدَم الملف من مسار فرعي.
  */
 export function verificationFileForPath(pathname: string): SiteVerificationFile | null {
+  const name = rootLevelFileName(pathname);
+  if (!name) return null;
+  return siteVerificationFiles().find((file) => file.filename === name) || null;
+}
+
+/**
+ * هل هذا المسار (في الجذر أو مسار فرعي) يشبه ملف تحقق TikTok؟ يُستخدم لتمييز
+ * «طلب TikTok وصل لكن الرمز/المسار مختلف» عن مسار لا علاقة له — فلا يُخدَم توقيع
+ * خطأ صامت ولا واجهة React بدل التوقيع.
+ */
+export function isVerificationFileRequest(pathname: string): boolean {
+  const raw = String(pathname || '').trim().replace(/\/+$/, '');
+  if (!raw.startsWith('/')) return false;
+  const base = raw.slice(raw.lastIndexOf('/') + 1);
+  return SITE_VERIFICATION_PATH_PATTERN.test(`/${base}`);
+}
+
+/** اسم ملف في الجذر فقط (بلا مسار فرعي)، أو null. */
+function rootLevelFileName(pathname: string): string | null {
   const raw = String(pathname || '').trim();
   if (!raw.startsWith('/') || raw.slice(1).includes('/')) return null;
   const name = raw.slice(1);
-  return siteVerificationFiles().find((file) => file.filename === name) || null;
+  return SITE_VERIFICATION_PATH_PATTERN.test(raw) ? name : null;
+}
+
+/** يخدم الملف الرسمي الفعّال بغضّ النظر عن الرمز في الطلب (الاسم متغيّر). */
+export function effectiveVerificationFile(): SiteVerificationFile {
+  return siteVerificationFiles()[0];
 }
 
 /**

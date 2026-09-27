@@ -1408,6 +1408,50 @@ AES-256-GCM، التعليقات/الرسائل الواردة، سجلات ال
 والاسم البديل، وصفحات الشروط/الخصوصية، وحالة health/readiness). فحوص final-audit
 الجديدة: `site-verification-module` … `site-verification-tests` (332 إجمالاً).
 
+## فشل تحقق TikTok URL prefix مع «couldn't find your verification signature» (صُحّح 2026-09-27)
+
+**التشخيص الحي (لا تخمين):** الملف كان يُخدَم فعلاً 200 `text/plain` بلا تحويل وبلا
+سطر جديد عبر `curl` (68 بايت = `tiktok-developers-site-verification=djxlJcC4WFlCh4OZY8IVHgezp491vPoZ`)،
+والمحتوى مطابق تماماً لملفات تحقق TikTok حقيقية مأخوذة من مستودعات GitHub (بالبادئة
+`tiktok-developers-site-verification=<token>`، وليست الرمز وحده). ومع ذلك رفض TikTok
+التوقيع — فالعلة لم تكن في الترويسات ولا في نوع المحتوى ولا في صيغة السلسلة.
+
+**الجذر المُثبت:** كان مسار الخادم
+`app.get(SITE_VERIFICATION_PATH_PATTERN, (req,res) => verificationFileForPath(req.path) || siteVerificationFiles()[0])`
+يخدم **الرمز المدموج** لأي اسم `tiktok*.txt`. فإذا ولّد TikTok **رمزاً جديداً** عند
+إعادة إضافة خاصية URL prefix (أو كان الرمز الحقيقي مختلفاً عن المدموج)، فإن طلب
+TikTok لـ`tiktok<new-token>.txt` يستلم **200 مع توقيع الرمز القديم** — فتبدو الملف
+«موجودة» بينما لا تطابق قيمة `signature` التي يبحث عنها TikTok، وهذا بالضبط معنى
+«couldn't find your verification signature». فحص حي على الإنتاج:
+`/tiktokZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZ.txt` أرجع 200 بنفس التوقيع المدموج.
+
+**الإصلاح (بلا أي توقيع خاطئ صامت):**
+- `engine/social/siteVerification.ts`: الرمز الفعّال صار محسوباً من البيئة عبر
+  `effectiveTikTokVerificationToken()` (يقرأ `TIKTOK_VERIFICATION_TOKEN` عند كل
+  استخدام، ويقبل صيغة أبجدية رقمية فقط، ويسقط للرمز المدموج إن غاب/فسد). كل بناء
+  الملف يمر عبره، فلا نظير مدموج يُخدَم لاسم رمز آخر.
+- `server.ts`: المسار يخدم الملف **فقط إن طابق اسمه الرمز الفعّال** (أو الاسم البديل)،
+  وأي رمز آخر يُرفض **404** بنص صريح يذكر الاسم الصحيح، ويُسجَّل `lastMismatch`
+  (الرمز المطلوب والوقت، بلا سرّ) فيظهر في `/api/health.siteVerification.lastMismatch`
+  فيُكشف الانحراف فوراً.
+- **حرس SPA:** أي مسار يشبه ملف تحقق (`/sub/tiktok*.txt`، `/tiktok*.txt/`) لم يكن
+  يسقط إلى واجهة React بحالة 200 — الآن يُرد 404 نصياً بدل HTML.
+- الإرسال صار **Buffer بطول بايت دقيق** مع `Content-Length` صريح و`no-transform`
+  في `Cache-Control`، فلا يُضاف سطر ولا يُعاد ترميز البايتات.
+
+**العلاج على الإنتاج (إجراء المالك):** إن كان TikTok قد ولّد رمزاً جديداً، اضبط
+`TIKTOK_VERIFICATION_TOKEN` في Render بقيمة `signature`/`file_name` الجديدتين من
+لوحة TikTok وأعد النشر — بلا تعديل كود. تحقّق أولاً من
+`/api/health.siteVerification.token` أنه يطابق رمز لوحة TikTok؛ وإن ظهر `lastMismatch`
+فالرمز المطلوب مختلف ويجب ضبطه.
+
+اختبارات: `engine/tests/site.verification.test.ts` صار **77 فحصاً** (مجموعة 1ب:
+رفض الرمز المختلف، كشف المسارات الشبيهة، تجاوز البيئة، وعدم السقوط إلى HTML؛ وتكامل:
+404 لاسم رمز آخر، 404 لمسار فرعي، وطول بايت دقيق). فحوص final-audit الجديدة:
+`site-verification-mismatch-rejected`, `site-verification-env-overridable`,
+`site-verification-spa-guard`, `site-verification-exact-length`,
+`site-verification-mismatch-tests`.
+
 **نقطة توقف المالك (إجراء خارجي واحد):** بعد النشر، افتح لوحة TikTok for Developers →
 URL properties → اختر **URL prefix** بقيمة `https://al-gharabi-ai.onrender.com/`
 واضغط Verify. الملف متاح الآن على `https://al-gharabi-ai.onrender.com/tiktok<token>.txt`

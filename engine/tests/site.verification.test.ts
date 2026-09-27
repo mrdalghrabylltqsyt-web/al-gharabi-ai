@@ -26,6 +26,11 @@ import {
   siteVerificationFiles,
   verificationFileUrl,
   SITE_VERIFICATION_PATH_PATTERN,
+  isVerificationFileRequest,
+  effectiveVerificationFilename,
+  effectiveTikTokVerificationToken,
+  DEFAULT_TIKTOK_VERIFICATION_TOKEN,
+  TIKTOK_VERIFICATION_TOKEN_ENV_NAME,
   TIKTOK_VERIFICATION_FILENAME,
   TIKTOK_VERIFICATION_CONTENT,
   TIKTOK_VERIFICATION_TOKEN,
@@ -129,6 +134,39 @@ function unitTests(): void {
 }
 
 // -------------------------------------------------------------
+// 1ب) وحدة: لا يُخدَم توقيع رمز لاسم رمز آخر (جوهر فشل TikTok)
+// -------------------------------------------------------------
+function mismatchUnitTests(): void {
+  group('عدم خدمة توقيع رمز لاسم رمز آخر (وحدة)');
+  // الملف الرسمي المطابق يُخدَم، والاسم البديل يُخدَم.
+  check('الاسم المطابق يُطابق', verificationFileForPath('/' + TIKTOK_VERIFICATION_FILENAME)?.filename === TIKTOK_VERIFICATION_FILENAME);
+  check('الاسم البديل يُطابق', verificationFileForPath('/tiktok-developers-site-verification.txt')?.filename === 'tiktok-developers-site-verification.txt');
+  // أي رمز آخر لا يُخدَم إطلاقاً (لا 200 بتوقيع خاطئ).
+  const other = '/tiktokZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZ.txt';
+  check('رمز مختلف لا يُخدَم', verificationFileForPath(other) === null, other);
+  check('رمز مختلف يُكتشف كطلب تحقق', isVerificationFileRequest(other));
+  check('مسار فرعي لملف تحقق يُكتشف', isVerificationFileRequest('/sub/tiktokabc12345.txt'));
+  check('شرطة مائلة زائدة تُكتشف', isVerificationFileRequest('/' + TIKTOK_VERIFICATION_FILENAME + '/'));
+  check('مسار عادي لا يُكتشف كطلب تحقق', !isVerificationFileRequest('/dashboard'));
+  check('ملف نصي آخر لا يُكتشف', !isVerificationFileRequest('/robots.txt'));
+
+  // تجاوز الرمز من البيئة: يُخدَم الرمز الصحيح واسمه، ويبقى المدموج هو الافتراضي.
+  const overridden = 'AbCdEf0123456789AbCdEf0123456789';
+  const previous = process.env[TIKTOK_VERIFICATION_TOKEN_ENV_NAME];
+  process.env[TIKTOK_VERIFICATION_TOKEN_ENV_NAME] = overridden;
+  try {
+    check('الرمز الفعّال يأتي من البيئة', effectiveTikTokVerificationToken() === overridden);
+    check('اسم الملف الفعّال يتبع البيئة', effectiveVerificationFilename() === `tiktok${overridden}.txt`);
+    check('الملف الفعّال يُطابق', verificationFileForPath(`/tiktok${overridden}.txt`) !== null);
+  } finally {
+    if (previous === undefined) delete process.env[TIKTOK_VERIFICATION_TOKEN_ENV_NAME];
+    else process.env[TIKTOK_VERIFICATION_TOKEN_ENV_NAME] = previous;
+  }
+  check('القيمة المدموجة الافتراضية ثابتة', DEFAULT_TIKTOK_VERIFICATION_TOKEN === 'djxlJcC4WFlCh4OZY8IVHgezp491vPoZ');
+  check('بلا تجاوز يعود للرمز المدموج', effectiveTikTokVerificationToken() === DEFAULT_TIKTOK_VERIFICATION_TOKEN);
+}
+
+// -------------------------------------------------------------
 // 2) وحدة: الصفحات القانونية
 // -------------------------------------------------------------
 function legalUnitTests(): void {
@@ -171,6 +209,19 @@ async function integrationTests(): Promise<void> {
     check('المحتوى ليس HTML', !vbody.toLowerCase().includes('<!doctype') && !vbody.includes('<html'));
     check('لا محارف زائدة (سطر جديد)', vbody.trim() === vbody && !vbody.includes('\n'));
     check('nosniff معلن', vres.headers.get('x-content-type-options') === 'nosniff');
+    check('طول المحتوى بالبايت دقيق', vres.headers.get('content-length') === String(Buffer.byteLength(TIKTOK_VERIFICATION_CONTENT, 'utf8')), vres.headers.get('content-length') || '');
+
+    // جوهر فشل TikTok: اسم برمز آخر يجب ألا يستلم توقيع الرمز المدموج بحالة 200.
+    const mism = await fetch(`${BASE}/tiktokZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZ.txt`, { redirect: 'manual' });
+    const mismBody = await mism.text();
+    check('اسم برمز مختلف لا يُخدَم 200', mism.status === 404, String(mism.status));
+    check('اسم برمز مختلف لا يعيد التوقيع المدموج', mismBody !== TIKTOK_VERIFICATION_CONTENT);
+    check('اسم برمز مختلف لا يعيد HTML', !mismBody.toLowerCase().includes('<!doctype'));
+
+    // مسار فرعي لملف تحقق لا يسقط إلى واجهة React.
+    const sub = await fetch(`${BASE}/sub/${TIKTOK_VERIFICATION_FILENAME}`, { redirect: 'manual' });
+    const subBody = await sub.text();
+    check('مسار فرعي لملف تحقق لا يعيد HTML', sub.status === 404 && !subBody.toLowerCase().includes('<!doctype'), String(sub.status));
 
     // الاسم البديل بنفس المحتوى.
     const ares = await fetch(`${BASE}/tiktok-developers-site-verification.txt`, { redirect: 'manual' });
@@ -197,6 +248,8 @@ async function integrationTests(): Promise<void> {
     check('الصحة تعرض siteVerification', !!sv && sv.filename === TIKTOK_VERIFICATION_FILENAME, JSON.stringify(sv));
     check('الصحة تعرض رابط الملف العام', typeof sv?.url === 'string' && sv.url.endsWith(TIKTOK_VERIFICATION_FILENAME), sv?.url);
     check('redirects=false معلنة', sv?.redirects === false);
+    check('الصحة تعرض مصدر الرمز', sv?.tokenSource === 'default' || String(sv?.tokenSource).startsWith('env:'), String(sv?.tokenSource));
+    check('الصحة تعرض رمز التحقق العام', sv?.token === TIKTOK_VERIFICATION_TOKEN, String(sv?.token));
     check('الصفحات القانونية معلنة', Array.isArray(sv?.legalPages) && sv.legalPages.includes('/terms') && sv.legalPages.includes('/privacy'));
 
     const readiness = await (await fetch(`${BASE}/api/readiness`)).json() as any;
@@ -213,6 +266,7 @@ async function integrationTests(): Promise<void> {
 
 async function main(): Promise<void> {
   unitTests();
+  mismatchUnitTests();
   legalUnitTests();
   await integrationTests();
 
