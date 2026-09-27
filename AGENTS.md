@@ -1459,37 +1459,37 @@ URL properties → اختر **URL prefix** بقيمة `https://al-gharabi-ai.onr
 التحقق (الروابط `/terms` و`/privacy` و`/` كلها 200 وعامة). لا يمكن لأي وكيل برمجي
 تنفيذ نقر «Verify» نيابةً عن المالك لأنه يحتاج جلسته على لوحة TikTok.
 
+## التقاط طلب تحقق TikTok الحقيقي + دليل النشر في /api/health (2026-09-27)
 
-## التقاط طلب تحقق TikTok الحقيقي — تشخيص «couldn't find your verification signature» (2026-09-27)
+كان فشل تحقق URL prefix («couldn't find your verification signature») بلا وسيلة لمعرفة
+**أي اسم ملف** يطلبه TikTok فعلاً. المطلوب إثبات الاسم/الرمز الواصلين لا تخمينهما.
 
-رغم أن `/api/health.siteVerification.token` يطابق الملف المخدوم ورغم أن الملف عام
-وبلا تحويل، ظلّ TikTok يعيد «couldn't find your verification signature». التخمين
-غير كافٍ: يلزم رؤية **الاسم الذي يطلبه TikTok فعلاً**. أُضيف التقاط كامل لطلبات
-ملف التحقق.
+- `engine/social/siteVerification.ts`: `captureVerificationRequest(input)` +
+  `VerificationRequestSnapshot` (مصدر واحد). يلتقط `method, path, rootLevel, hasQuery,
+  token, filename, expectedFilename, matchedExpected, served, mismatchReason, userAgent, at`.
+  سبب الانحراف صريح: `token_differs_from_served` / `not_at_root_path` /
+  `filename_not_in_tiktok_token_format`. وكيل المستخدم مقطوع 300 محرف. **لا سرّ** هنا:
+  الاسم/الرمز يُطلبان علناً من الإنترنت.
+- `server.ts`: وسيط `app.use` قبل المسار يلتقط **كل** طلب `/tiktok*.txt` (أي طريقة HTTP)،
+  وسجل آمن `[الغرابي AI] tiktok-verification-request …` يُقرأ من سجلات Render بعد
+  انتهاء العملية (الذاكرة تُفقد عند cold start، فالسجل هو شبكة الأمان).
+- `/api/health.siteVerification` يعرض الآن: `lastRequest`, `lastServedRequest`,
+  `lastMismatchedRequest`, `requestCount`, `firstRequestAt`, `lastRequestAt`,
+  `recentRequests` (آخر 20).
+- **دليل النشر صار في `/api/health` أيضاً** (`deploy: {provider, commit, branch, nodeEnv}`)
+  لا في `/api/readiness` وحده، عبر `deploymentInfo()` المشتركة. Render يضبط
+  `RENDER_GIT_COMMIT`، فيُقارَن بالـcommit المدفوع لإثبات التطابق أو كشف انحراف النشر
+  **بلا استنتاج من السلوك**.
+- اختبارات: `site.verification.test.ts` صار **110 فحوص**؛ `final-audit` **344 فحصاً**
+  (`deploy-info-health` + فحوص الالتقاط).
 
-- `engine/social/siteVerification.ts`: `captureVerificationRequest` و
-  `VerificationRequestSnapshot` — منطق خالص قابل للاختبار. يلتقط اسم الملف، الرمز
-  المستخرج، وكيل المستخدم (مقطوع 300 محرف)، الوقت، الطريقة، المسار، هل في الجذر،
-  هل حمل استعلاماً، هل طابق الاسم الفعّال، هل خُدِم فعلاً، و`mismatchReason` صريح
-  (`token_differs_from_served` / `not_at_root_path` / `filename_not_in_tiktok_token_format`).
-- `server.ts`: وسيط `app.use` يلتقط **كل** طلب يشبه `/tiktok*.txt` (أي طريقة HTTP)
-  قبل معالجته، ويحوّله إلى `recordVerificationRequest` الذي يحفظ سجلاً محصوراً
-  (آخر 20) ويطبع سطراً آمناً `tiktok-verification-request` يُقرأ من سجلات الاستضافة
-  بعد انتهاء العملية (الحالة في الذاكرة تُفقد عند cold start).
-- `/api/health.siteVerification` صار يعرض `lastRequest` (آخر طلب وصل: الاسم/الرمز/
-  وكيل المستخدم/الوقت/سبب الانحراف)، و`lastServedRequest`، و`lastMismatchedRequest`،
-  و`requestCount`، و`recentRequests` — وكلها بلا سرّ (اسم الملف ورمزه عامان بطبيعتهما،
-  ويطلبهما TikTok علناً). `lastMismatch` باقٍ للتوافق.
+**درس تشخيصي (مُثبت على الإنتاج):** لا تستنتج الكود العامل من وجود/غياب حقول، بل اقرأ
+`deploy.commit` من الصحة/الجهوزية. أثناء هذا العمل أظهر `/api/readiness.deploy.commit`
+`414623e` بينما `main` كان عند `09d5faf` — دليل قاطع على أن النشر لم يلحق الدفع بعد،
+لا أن الكود خطأ. بعد دفع لاحق صار `commit=0477341` وظهرت الحقول فوراً.
 
-اختبارات: `engine/tests/site.verification.test.ts` صار **110 فحوص** (مجموعة 1ج وحدة
-لتصنيف الانحراف، وتكامل يثبت `lastRequest` بعد طلب حقيقي وحمله لوكيل المستخدم
-والسبب). فحوص final-audit الجديدة: `site-verification-request-capture`,
-`site-verification-capture-middleware`, `site-verification-last-request-exposed`,
-`site-verification-capture-no-secrets`, `site-verification-capture-safe-log`,
-`site-verification-capture-tests` (343 إجمالاً).
-
-**الاستخدام:** بعد النشر اضغط Verify في لوحة TikTok ثم افتح
-`/api/health.siteVerification.lastRequest` — إن كان `filename` أو `token` مختلفاً
-عمّا نخدمه فالتشخيص قاطع، وإن كان مطابقاً و`served=true` فالمشكلة في مرحلة تحقق
-TikTok نفسها (توقيت/اقتراع DNS/نطاق) لا في الملف.
+**التحقق الحي النهائي:** إرسال طلب لاسم رمز مختلف أعاد 404 وسُجّل في
+`lastRequest.mismatchReason = token_differs_from_served`، وطلب الاسم الصحيح أعاد 200
+وسُجّل في `lastServedRequest.matchedExpected = true`. فصارت معرفة ما يطلبه TikTok فعلاً
+ممكنة بمجرد إعادة النقر على Verify ثم قراءة `/api/health.siteVerification.lastRequest`.
 
