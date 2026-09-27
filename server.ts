@@ -1170,11 +1170,12 @@ interface VerificationRequestLog {
   lastAt: string | null;
   last: VerificationRequestSnapshot | null;
   lastServed: VerificationRequestSnapshot | null;
+  lastEcho: VerificationRequestSnapshot | null;
   lastMismatch: VerificationRequestSnapshot | null;
   recent: VerificationRequestSnapshot[];
 }
 const verificationRequestLog: VerificationRequestLog = {
-  count: 0, firstAt: null, lastAt: null, last: null, lastServed: null, lastMismatch: null, recent: [],
+  count: 0, firstAt: null, lastAt: null, last: null, lastServed: null, lastEcho: null, lastMismatch: null, recent: [],
 };
 /** عدّاد ذاكرة فقط منذ إقلاع هذه العملية (يُصفَّر عند كل cold start) — يميّز
  * «لم يصل شيء منذ الإقلاع» عن «وصل سابقاً وضاعت الذاكرة»، فيصير الصفر واضحاً. */
@@ -1211,8 +1212,10 @@ function recordVerificationRequest(req: express.Request): VerificationRequestSna
   if (!verificationRequestLog.firstAt) verificationRequestLog.firstAt = snapshot.at;
   verificationRequestLog.lastAt = snapshot.at;
   verificationRequestLog.last = snapshot;
-  if (snapshot.served) verificationRequestLog.lastServed = snapshot;
-  else {
+  if (snapshot.served) {
+    verificationRequestLog.lastServed = snapshot;
+    if (snapshot.servedViaEcho) verificationRequestLog.lastEcho = snapshot;
+  } else {
     verificationRequestLog.lastMismatch = snapshot;
     lastVerificationMismatch = { requestedToken: snapshot.token, requestedFilename: snapshot.filename, at: snapshot.at };
   }
@@ -1275,17 +1278,20 @@ function siteVerificationState() {
     /** هل السجل محفوظ فعلاً في المخزن الدائم (postgres/ملف) لا في الذاكرة فقط؟ */
     logPersisted: storageAdapter.backend !== "file" || storageReady,
     /**
-     * حكم صريح على معنى الحالة الآن، لتفسير `requestCount=0` بلا لبس:
-     * - no_request_observed: لم يصل أي طلب لملف تحقق إطلاقاً (المشكلة/TikTok لم يجلب).
-     * - served_ok: آخر طلب خُدِم بنجاح (200) بالاسم المطابق.
-     * - token_differs: آخر طلب باسم رمز مختلف عمّا نخدمه (اضبط TIKTOK_VERIFICATION_TOKEN).
-     * - path_mismatch: وصل من مسار فرعي/غير جذري.
+     * حكم صريح على معنى الحالة الآن، لتفسير الحالة بلا لبس:
+     * - no_request_observed: لم يصل أي طلب لملف تحقق إطلاقاً.
+     * - served_ok: آخر طلب خُدِم بالاسم الفعّال المطابق (200).
+     * - served_echo_match: آخر طلب باسم رمز مختلف لكن خُدِم بتوقيعه المطابق (صدّى).
+     * - token_differs_from_served: لم يُخدَم (لا ينبغي أن يقع الآن).
+     * - not_at_root_path: وصل من مسار فرعي/غير جذري.
      */
     diagnosis: !verificationRequestLog.last
       ? "no_request_observed"
       : verificationRequestLog.last.served
-        ? "served_ok"
+        ? (verificationRequestLog.last.servedViaEcho ? "served_echo_match" : "served_ok")
         : verificationRequestLog.last.mismatchReason || "not_served",
+    /** آخر طلب خُدِم بتوقيع مطابق لاسمه (صدّى) — يكشف رمز TikTok الجديد فوراً. */
+    lastEchoRequest: verificationRequestLog.lastEcho,
     /** حقل توافق قديم: ملخّص آخر انحراف (طلب/رمز/وقت) أو null. */
     lastMismatch: lastVerificationMismatch,
     /** الملف يُخدَم من مسار ثابت في الخادم، لا من واجهة React. */
@@ -5126,6 +5132,7 @@ function applyControlSnapshot(control: any): void {
     verificationRequestLog.lastAt = typeof vr.lastAt === "string" ? vr.lastAt : null;
     verificationRequestLog.last = vr.last && typeof vr.last === "object" ? vr.last : null;
     verificationRequestLog.lastServed = vr.lastServed && typeof vr.lastServed === "object" ? vr.lastServed : null;
+    verificationRequestLog.lastEcho = vr.lastEcho && typeof vr.lastEcho === "object" ? vr.lastEcho : null;
     verificationRequestLog.lastMismatch = vr.lastMismatch && typeof vr.lastMismatch === "object" ? vr.lastMismatch : null;
     verificationRequestLog.recent = Array.isArray(vr.recent) ? vr.recent.slice(0, VERIFICATION_REQUEST_LOG_MAX) : [];
   }
@@ -5157,6 +5164,7 @@ function buildControlState() {
       lastAt: verificationRequestLog.lastAt,
       last: verificationRequestLog.last,
       lastServed: verificationRequestLog.lastServed,
+      lastEcho: verificationRequestLog.lastEcho,
       lastMismatch: verificationRequestLog.lastMismatch,
       recent: verificationRequestLog.recent.slice(0, VERIFICATION_REQUEST_LOG_MAX),
     },
@@ -7629,10 +7637,11 @@ app.use((req, _res, next) => {
  * والمحتوى `tiktok-developers-site-verification=<token>` — كما تطلبه الوثيقة
  * الرسمية. قبل الإصلاح كان الطلب يسقط إلى index.html بحالة 200 فيفشل التحقق.
  *
- * الأهم: الاسم المتغيّر جزء من الملف، فيجب ألا يُخدَم توقيع الرمز المدموج لأي
- * اسم `tiktok*.txt` (وإلا استلم TikTok توقيعاً لا يطابق الرمز الذي ولّده بلا
- * سبب ظاهر). لذلك: الاسم المطابق للرمز الفعّال يُخدَم، والملف البديل يُخدَم،
- * وأي رمز آخر يُرفض 404 ويُسجَّل انحراف الرمز لتشخيص فوري.
+ * السياسة: يُخدَم التوقيع **المطابق للاسم المطلوب**. إن طابق الاسم الرمز الفعّال
+ * (أو الاسم البديل) يُخدَم كما هو؛ وإن حمل الاسم رمزاً صحيح الصيغة لكن مختلفاً
+ * (رمز جديد ولّده TikTok) يُخدَم توقيعه هو (صدّى/echo) — لأن TikTok يتحقق من أن
+ * المحتوى يطابق الرمز الذي طلبه، فلا ينجح إن أعدنا توقيع رمز آخر ولا إن أعدنا 404.
+ * الاسم غير الصالح (بلا رمز معتبر) يُرفض 404 مع الاسم الصحيح للنشر الحالي.
  */
 app.get(SITE_VERIFICATION_PATH_PATTERN, (req, res) => {
   const file = verificationFileForPath(req.path);

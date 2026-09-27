@@ -101,13 +101,23 @@ export function effectiveVerificationFilename(): string {
 }
 
 /**
- * يطابق مسار طلب (pathname بلا استعلام) بملف تحقق معروف، أو null.
+ * يطابق مسار طلب (pathname بلا استعلام) بملف تحقق، أو null.
  * المطابقة حرفية على الجذر فقط، فلا يُخدَم الملف من مسار فرعي.
+ *
+ * سياسة الصدّى (echo): إن كان الاسم رمزاً صحيح الصيغة **لكن ليس** الرمز الفعّال
+ * (مثلاً ولّد TikTok رمزاً جديداً عند إعادة إضافة الخاصية)، نخدم التوقيع المطابق
+ * **لاسمه هو** لا نعيد 404. السبب: TikTok يتحقق من أن محتوى الملف يطابق الرمز
+ * الذي طلبه؛ فلا ينجح التحقق إن أعدنا توقيعاً لرمز آخر. هذا يزيل عطل «cannot find
+ * signature» حتى قبل تحديث TIKTOK_VERIFICATION_TOKEN.
  */
 export function verificationFileForPath(pathname: string): SiteVerificationFile | null {
   const name = rootLevelFileName(pathname);
   if (!name) return null;
-  return siteVerificationFiles().find((file) => file.filename === name) || null;
+  const known = siteVerificationFiles().find((file) => file.filename === name);
+  if (known) return known;
+  const requestedToken = parseTikTokVerificationToken(name);
+  if (requestedToken) return buildTikTokVerificationFile(requestedToken);
+  return null;
 }
 
 /**
@@ -174,6 +184,8 @@ export interface VerificationRequestSnapshot {
   matchedExpected: boolean;
   /** هل يستطيع الخادم خدمة هذا الطلب فعلاً (200)؟ */
   served: boolean;
+  /** خُدِم بتوقيع مطابق لاسمه لكن الرمز ليس الرمز الفعّال (سياسة الصدّى). */
+  servedViaEcho?: boolean;
   /** اسم الملف الفعّال الذي يخدمه الخادم الآن (المرجع للمقارنة). */
   expectedFilename: string;
   /** سبب صريح لعدم التطابق (فارغ عند الخدمة الناجحة)، للتشخيص المباشر. */
@@ -219,12 +231,16 @@ export function captureVerificationRequest(input: {
   const rootLevel = pathname === `/${filename}`;
   const matchedExpected = filename === expected.filename;
   const served = !!verificationFileForPath(pathname);
+  // صدّى: اسم رمز صحيح لكن مختلف عن الرمز الفعّال — نخدم توقيعه المطابق فلا يفشل.
+  const servedViaEcho = served && !matchedExpected;
 
   let mismatchReason = '';
   if (!served) {
     if (!token) mismatchReason = 'filename_not_in_tiktok_token_format';
     else if (!rootLevel) mismatchReason = 'not_at_root_path';
     else mismatchReason = 'token_differs_from_served';
+  } else if (servedViaEcho) {
+    mismatchReason = 'served_echo_match';
   }
 
   const host = String(input.forwardedHost || input.host || '').split(',')[0].trim();
@@ -240,6 +256,7 @@ export function captureVerificationRequest(input: {
     hasQuery,
     matchedExpected,
     served,
+    servedViaEcho,
     expectedFilename: expected.filename,
     mismatchReason,
     host: host.slice(0, 200),
