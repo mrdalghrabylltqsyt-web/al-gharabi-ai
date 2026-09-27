@@ -363,13 +363,13 @@ const YouTubeStatusPanel: React.FC = () => {
         <span className={`px-2 py-0.5 rounded-md border font-bold ${status.refreshTokenStored ? 'bg-emerald-500/10 text-emerald-300 border-emerald-600/30' : 'bg-slate-800 text-slate-400 border-slate-700'}`}>{status.refreshTokenStored ? 'refresh token مخزّن' : 'لا refresh token'}</span>
         {status.tokenExpired && <span className="px-2 py-0.5 rounded-md border font-bold bg-rose-500/10 text-rose-300 border-rose-600/30">التوكن منتهٍ — يلزم تجديد/إعادة ربط</span>}
         {status.quotaExceeded && <span className="px-2 py-0.5 rounded-md border font-bold bg-amber-500/10 text-amber-300 border-amber-600/30">حصة YouTube مستهلكة اليوم (quotaExceeded)</span>}
-        {status.publishCapability === 'REQUIRES_AUDIT' && <span className="px-2 py-0.5 rounded-md border font-bold bg-amber-500/10 text-amber-300 border-amber-600/30">رفع الفيديو يحتاج مراجعة Google (audit)</span>}
+        {status.publishCapability === 'NOT_IMPLEMENTED' && <span className="px-2 py-0.5 rounded-md border font-bold bg-slate-800 text-slate-400 border-slate-700">رفع الفيديو غير منفّذ بعد</span>}
       </div>
       <p className="text-slate-500">القناة: <code className="text-slate-300" dir="ltr">{status.channelTitle || status.channelId || '—'}</code> • النطاقات: <code className="text-slate-300" dir="ltr">{(status.requestedScopes || []).join(', ')}</code></p>
       <p className="text-slate-500">رابط إشعارات PubSubHubbub: <code className="text-slate-300 break-all" dir="ltr">{status.webhookUrl}</code> • الحصة اليومية: <code className="text-slate-300" dir="ltr">{status.dailyQuotaUnits}</code></p>
       <div className="flex flex-wrap gap-1">
-        {[['نشر فيديو', status.publishCapability], ['تعليقات', status.commentsCapability], ['رد', status.replyCapability], ['تحليلات', status.analyticsCapability], ['إشعارات', status.webhookCapability]].map(([label, v]: any) => (
-          <span key={label} className={`px-1.5 py-0.5 rounded-md border text-[9px] font-semibold ${cap(v)}`} title={String(v)}>{label}: {v === 'SUPPORTED' ? 'مدعوم' : v === 'NOT_AVAILABLE_BY_PUBLIC_API' ? 'غير متاح عام' : 'يحتاج مراجعة'}</span>
+        {[['رفع فيديو', status.publishCapability], ['تعليقات', status.commentsCapability], ['رد', status.replyCapability], ['تحليلات', status.analyticsCapability], ['إشعارات', status.webhookCapability]].map(([label, v]: any) => (
+          <span key={label} className={`px-1.5 py-0.5 rounded-md border text-[9px] font-semibold ${v === 'NOT_IMPLEMENTED' ? 'bg-slate-800 text-slate-500 border-slate-700' : cap(v)}`} title={String(v)}>{label}: {v === 'SUPPORTED' ? 'مدعوم' : v === 'NOT_AVAILABLE_BY_PUBLIC_API' ? 'غير متاح عام' : v === 'NOT_IMPLEMENTED' ? 'غير منفّذ' : 'يحتاج مراجعة'}</span>
         ))}
       </div>
       {status.connected && (
@@ -397,7 +397,7 @@ const YouTubeStatusPanel: React.FC = () => {
           {ingestMsg && <p className="text-slate-300">{ingestMsg}</p>}
         </div>
       )}
-      <p className="text-slate-600">القناة/القوائم/الفيديوهات/التعليقات/الرد/التحليلات كلها من YouTube Data API v3 الرسمي. رفع الفيديو يحتاج نطاق youtube.upload ومراجعة Google.</p>
+      <p className="text-slate-600">القناة/القوائم/الفيديوهات/التعليقات/الرد/التحليلات كلها من YouTube Data API v3 الرسمي. رفع الفيديو غير منفّذ في النظام بعد (لا videos.insert).</p>
     </div>
   );
 };
@@ -427,17 +427,18 @@ export const PlatformConnectionCenter: React.FC = () => {
     } finally {
       setLoading(false);
     }
+  }, [showToast]);
 
-  // نتيجة عودة OAuth بتدفّق المقطع (Instagram): تُعرض مرة واحدة ثم تُمسح، وتُحدَّث
-  // الحالة فوراً فلا يظن المالك أن الربط لم يحدث. معرَّفة بعد load لتجنّب استخدامه قبل تعريفه.
+  // نتيجة عودة OAuth (مقطع Instagram أو عودة YouTube المستضافة): تُعرض مرة واحدة
+  // ثم تُمسح، وتُحدَّث الحالة فوراً فلا يظن المالك أن الربط لم يحدث. معرَّفة بعد load.
   useEffect(() => {
     if (!oauthReturn) return;
-    showToast(oauthReturn.ok ? 'تم إكمال ربط Instagram.' : `تعذر إكمال ربط Instagram: ${oauthReturn.message || ''}`);
+    const name = oauthReturn.platform === 'youtube' ? 'YouTube' : oauthReturn.platform === 'facebook' ? 'Facebook' : oauthReturn.platform === 'tiktok' ? 'TikTok' : 'Instagram';
+    showToast(oauthReturn.ok ? `تم إكمال ربط ${name}.` : `تعذر إكمال ربط ${name}: ${oauthReturn.message || ''}`);
     clearOauthReturn();
     void load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [oauthReturn]);
-  }, [showToast]);
 
   useEffect(() => { void load(); }, [load]);
 

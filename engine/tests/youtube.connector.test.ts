@@ -31,6 +31,7 @@ import {
   youtubeCapabilityStatus,
   youtubeCapabilitySupported,
   youtubeCapabilityNeedsAudit,
+  youtubeCapabilityImplemented,
   resolveYouTubeScopes,
   youtubeExtraScopes,
   isPlausibleYouTubeClientId,
@@ -50,7 +51,6 @@ import {
   buildYouTubeTokenExchangeBody,
   buildYouTubeRefreshBody,
   buildCommentReplyBody,
-  buildVideoUploadMetadata,
   parseYouTubePushNotification,
   youtubePushExternalId,
   youtubeApiUrl,
@@ -158,9 +158,10 @@ function unitTests(): void {
   check('التعليقات مدعومة (بخلاف TikTok)', youtubeCapabilitySupported('comments_read'));
   check('الرد على التعليق مدعوم', youtubeCapabilitySupported('comment_reply'));
   check('التحليلات مدعومة', youtubeCapabilitySupported('analytics_read'));
-  check('رفع الفيديو منفّذ ويحتاج مراجعة Google (audit)', byKey['video_upload']?.status === 'REQUIRES_AUDIT' && youtubeCapabilityNeedsAudit('video_upload'));
+  check('رفع الفيديو غير منفّذ صراحةً (لا ادعاء تنفيذ)', byKey['video_upload']?.status === 'NOT_IMPLEMENTED' && !youtubeCapabilityImplemented('video_upload'));
+  check('رفع الفيديو لا يُصنَّف «ينتظر مراجعة» لعدم وجود تنفيذ', !youtubeCapabilityNeedsAudit('video_upload'));
   check('إشعارات PubSubHubbub تحتاج مراجعة/تسجيل خارجي', youtubeCapabilityNeedsAudit('push_notifications'));
-  check('لا قدرة بحالة غير معروفة', YOUTUBE_CAPABILITY_MATRIX.every((r) => ['SUPPORTED', 'REQUIRES_REVIEW', 'REQUIRES_AUDIT', 'NOT_AVAILABLE_BY_PUBLIC_API'].includes(r.status)));
+  check('لا قدرة بحالة غير معروفة', YOUTUBE_CAPABILITY_MATRIX.every((r) => ['SUPPORTED', 'REQUIRES_REVIEW', 'REQUIRES_AUDIT', 'NOT_AVAILABLE_BY_PUBLIC_API', 'NOT_IMPLEMENTED'].includes(r.status)));
   check('قدرة غير معروفة تُعيد null لا ادعاء', youtubeCapabilityStatus('does_not_exist') === null);
 
   group('2) وحدة: النطاقات الرسمية — لا نطاق بلا استدعاء');
@@ -218,10 +219,6 @@ function unitTests(): void {
   check('جسم التجديد يحمل grant_type=refresh_token', rf.get('grant_type') === 'refresh_token' && rf.get('refresh_token') === 'rt');
   const reply = buildCommentReplyBody({ parentId: 'Ugz1', text: 'شكراً' });
   check('جسم الرد يستخدم textOriginal وparentId', (reply as any).snippet.parentId === 'Ugz1' && (reply as any).snippet.textOriginal === 'شكراً');
-  const up = buildVideoUploadMetadata({ title: 'اختبار', privacyStatus: 'public' }) as any;
-  check('بيانات الرفع تحمل privacyStatus', up.status.privacyStatus === 'public');
-  check('الخصوصية الافتراضية private (آمنة)', (buildVideoUploadMetadata({ title: 't' }) as any).status.privacyStatus === 'private');
-  check('الافتراضي ليس للأطفال', (buildVideoUploadMetadata({ title: 't' }) as any).status.selfDeclaredMadeForKids === false);
   const tok = parseYouTubeTokenResponse({ access_token: 'a', refresh_token: 'r', scope: 's1 s2', expires_in: 3600 });
   check('تحليل الرمز يقرأ access/refresh/scope/expires', tok.accessToken === 'a' && tok.refreshToken === 'r' && tok.scope.length === 2 && tok.expiresIn === 3600);
   check('تحليل الرمز بلا access => null', parseYouTubeTokenResponse({}).accessToken === null);
@@ -276,7 +273,8 @@ function unitTests(): void {
   const yt = PLATFORM_SPECS.find((p) => p.platform === 'youtube');
   check('YouTube مسجّل كموصل حقيقي', Boolean(yt) && hasRealConnector('youtube'));
   check('YouTube يعلن comment_reply صراحةً', Boolean(yt?.capabilities.includes('comment_reply')));
-  check('YouTube يعلن publish (رفع الفيديو منفّذ)', Boolean(yt?.capabilities.includes('publish')));
+  check('YouTube لا يعلن publish (الرفع غير منفّذ)', Boolean(yt) && !yt!.capabilities.includes('publish'));
+  check('YouTube يعلن القناة/التعليقات/الرد/الجدولة', Boolean(yt) && ['comments', 'comment_reply', 'scheduling', 'analytics'].every((c) => yt!.capabilities.includes(c as any)));
   check('YouTube لا يعلن messages (غير منفّذ)', Boolean(yt) && !yt!.capabilities.includes('messages'));
 }
 
@@ -390,6 +388,9 @@ async function integrationTests(): Promise<void> {
     check('reply يحمل معرّف تعليق من المزود', reply.providerReplyId === mock.state.replyCommentId);
     check('comments.insert نُفِّذ فعلياً', mock.state.lastReply?.parentId === 'Ugz_comment_top_1');
     check('reply ليس محاكاة', reply.simulated === false);
+    // D2: بعد رد مُسلَّم فعلاً (دليل مزود حقيقي) يبلغ YouTube السقف الصادق OPERATIONAL.
+    const statusOperational = await (await fetch(`${BASE}/api/platforms/youtube/status`, { headers: auth })).json();
+    check('رد مُسلَّم => الحالة الصادقة OPERATIONAL (سقف قابل للوصول)', statusOperational.state === 'OPERATIONAL', JSON.stringify(statusOperational).slice(0, 200));
     // منع الرد المكرر على نفس التعليق.
     const dup = await (await fetch(`${BASE}/api/platforms/youtube/reply`, { method: 'POST', headers: auth, body: JSON.stringify({ externalId: 'Ugz_comment_top_1', text: 'نص مختلف تماماً للرد.', commentText: 'بكم سعر الغسالة بالتقسيط؟' }) })).json();
     check('الرد المكرر على نفس التعليق مرفوض (409)', dup.success === false);
@@ -430,6 +431,75 @@ async function integrationTests(): Promise<void> {
     const statusReauth = await (await fetch(`${BASE}/api/platforms/youtube/status`, { headers: auth })).json();
     check('الحالة الصادقة = TOKEN_REFRESH_REQUIRED بعد رفض الرمز', statusReauth.state === 'TOKEN_REFRESH_REQUIRED');
     mock.state.failChannelsAuth = false;
+
+    group('19b) تكامل هجومي: أخطاء OAuth الحقيقية لا تُنشئ اتصالاً وهمياً');
+    async function oauthStartThenCallback(querySuffix: string): Promise<{ status: number; body: any }> {
+      const s = await (await fetch(`${BASE}/api/platforms/youtube/oauth/start`, { headers: auth })).json();
+      const stv = new URL(s.authorizationUrl).searchParams.get('state')!;
+      const r = await fetch(`${BASE}/api/platforms/youtube/oauth/callback?state=${encodeURIComponent(stv)}${querySuffix}`, { headers: auth });
+      let body: any = null; try { body = await r.json(); } catch { /* HTML */ }
+      return { status: r.status, body };
+    }
+    // نعيد الاتصال أولاً (المجموعة 19 وضعته reauth_needed) لنختبر أخطاء API على اتصال قائم.
+    {
+      const s = await (await fetch(`${BASE}/api/platforms/youtube/oauth/start`, { headers: auth })).json();
+      const stv = new URL(s.authorizationUrl).searchParams.get('state')!;
+      await fetch(`${BASE}/api/platforms/youtube/oauth/callback?code=RE_CONNECT&state=${encodeURIComponent(stv)}`, { headers: auth });
+    }
+    const beforeConn = await (await fetch(`${BASE}/api/platforms/youtube/status`, { headers: auth })).json();
+    check('أُعيد الاتصال قبل الاختبارات الهجومية', beforeConn.providerVerified === true);
+    // code منتهٍ => invalid_grant (فشل المزود => 4xx/5xx بلا اتصال وهمي)
+    mock.state.failTokenExchange = true; mock.state.tokenExchangeError = 'invalid_grant';
+    const expired = await oauthStartThenCallback('&code=EXPIRED_CODE');
+    check('code منتهٍ (invalid_grant) => فشل بلا اتصال', expired.status >= 400, `status=${expired.status}`);
+    // secret خاطئ => invalid_client
+    mock.state.tokenExchangeError = 'invalid_client';
+    const badSecret = await oauthStartThenCallback('&code=CODE');
+    check('secret خاطئ (invalid_client) => فشل', badSecret.status >= 400);
+    // redirect_uri_mismatch
+    mock.state.tokenExchangeError = 'redirect_uri_mismatch';
+    const mismatch = await oauthStartThenCallback('&code=CODE');
+    check('redirect_uri_mismatch => فشل', mismatch.status >= 400);
+    mock.state.failTokenExchange = false;
+    // access_denied من المزود (رفض المالك على شاشة الموافقة)
+    const denied = await oauthStartThenCallback('&error=access_denied&error_description=user%20denied');
+    check('access_denied => فشل بلا اتصال', denied.status >= 400);
+    const afterConn = await (await fetch(`${BASE}/api/platforms/youtube/status`, { headers: auth })).json();
+    check('لا اتصال وهمي بعد كل محاولات OAuth الفاشلة', afterConn.connected === beforeConn.connected && afterConn.providerVerified === beforeConn.providerVerified);
+    check('الرمز المخزّن لم يُستبدل بمحاولة فاشلة', afterConn.channelId === beforeConn.channelId);
+
+    group('19c) تكامل هجومي: أخطاء Data API تُصنَّف ولا تُخترع بيانات');
+    // rate limit لحظي (429/rateLimitExceeded) — قابل للإعادة
+    mock.state.apiError = { status: 403, reason: 'rateLimitExceeded', message: 'rate' };
+    const rate = await fetch(`${BASE}/api/platforms/youtube/channel`, { headers: auth });
+    const rateBody = await rate.json();
+    check('rate limit => 502 بوسم rate_limit', rate.status === 502 && rateBody.code === 'rate_limit', JSON.stringify(rateBody).slice(0, 160));
+    // 403 صلاحية
+    mock.state.apiError = { status: 403, reason: 'insufficientPermissions', message: 'forbidden' };
+    const forb = await (await fetch(`${BASE}/api/platforms/youtube/channel`, { headers: auth })).json();
+    check('403 صلاحية => code=permission_denied', forb.code === 'permission_denied', JSON.stringify(forb).slice(0, 160));
+    // 404
+    mock.state.apiError = { status: 404, message: 'not found' };
+    const nf = await (await fetch(`${BASE}/api/platforms/youtube/video?videoId=missing`, { headers: auth })).json();
+    check('404 => code=not_found', nf.code === 'not_found', JSON.stringify(nf).slice(0, 160));
+    // 500
+    mock.state.apiError = { status: 500, message: 'server error' };
+    const srv = await (await fetch(`${BASE}/api/platforms/youtube/channel`, { headers: auth })).json();
+    check('500 => code=provider_error (قابل للإعادة)', srv.code === 'provider_error');
+    mock.state.apiError = null;
+
+    group('19d) تكامل هجومي: بيانات حقيقية ناقصة لا تُختلق');
+    mock.state.videosEmpty = true;
+    const noVideos = await (await fetch(`${BASE}/api/platforms/youtube/videos?maxResults=10`, { headers: auth })).json();
+    check('قناة بلا فيديوهات => مصفوفة فارغة لا أرقام مخترعة', noVideos.success === true && Array.isArray(noVideos.videos) && noVideos.videos.length === 0);
+    mock.state.videosEmpty = false;
+    mock.state.commentsEmpty = true;
+    const noComments = await (await fetch(`${BASE}/api/platforms/youtube/comments?videoId=vid_aaa111`, { headers: auth })).json();
+    check('فيديو بلا تعليقات => مصفوفة فارغة لا تعليقات مخترعة', noComments.success === true && Array.isArray(noComments.comments) && noComments.comments.length === 0);
+    mock.state.commentsEmpty = false;
+    // فيديو محذوف: video.list بلا عناصر => لا ادعاء
+    const gone = await (await fetch(`${BASE}/api/platforms/youtube/video?videoId=deleted_video_id`, { headers: auth })).json();
+    check('فيديو محذوف (بلا عنصر) => لا بيانات مخترعة', gone.success === false || gone.video === null || gone.video?.videoId !== 'deleted_video_id');
 
     group('20) تكامل: الفصل الحقيقي — disconnect يُبطل ويُعلن انقطاعاً');
     const disc = await (await fetch(`${BASE}/api/platforms/youtube/disconnect`, { method: 'POST', headers: auth, body: JSON.stringify({}) })).json();
@@ -479,7 +549,11 @@ async function integrationTests(): Promise<void> {
       const after = await (await fetch(`${BASE}/api/platforms/youtube/status`, { headers: auth3 })).json();
       check('التوكن صمد بعد إعادة التشغيل', after.tokenStored === true);
       check('القناة صمدت بعد إعادة التشغيل', after.channelId === mock2.state.channelId);
-      check('الاتصال الموثق صمد بعد إعادة التشغيل', after.providerVerified === true && after.state === 'VERIFIED');
+      // الرد المُسلَّم سابقاً (المجموعة 15) صمد في نفس مجلد الحالة، فهو دليل مزود
+      // حقيقي يجعل السقف الصادق OPERATIONAL (وليس VERIFIED) — وهذا يثبت أن الحالة
+      // العليا قابلة للوصول فعلاً ولا تبقى حالة ميتة.
+      check('الاتصال الموثق صمد بعد إعادة التشغيل', after.providerVerified === true);
+      check('السقف الصادق بعد إعادة التشغيل = OPERATIONAL (دليل رد مسلّم صمد)', after.state === 'OPERATIONAL', JSON.stringify(after).slice(0, 200));
     } finally {
       await stop(proc2.proc);
       await mock2.stop();

@@ -31,10 +31,22 @@ export interface YouTubeMockState {
   replyCommentId: string;
   /** يفشل تبادل الرمز. */
   failTokenExchange: boolean;
+  /** رمز خطأ OAuth المُعاد عند فشل التبادل (invalid_grant/access_denied/redirect_uri_mismatch). */
+  tokenExchangeError: string;
+  /** رمز خطأ OAuth المُعاد عند فشل التجديد. */
+  refreshError: string;
+  /** رمز خطأ OAuth المُعاد عند التبادل (error_description). */
+  tokenExchangeErrorDescription: string;
   /** يفشل التجديد. */
   failRefresh: boolean;
   /** يفشل channels.list بـ401 لاختبار reauth. */
   failChannelsAuth: boolean;
+  /** حقن خطأ عام على استدعاءات Data API (رمز HTTP + سبب Google + وصف). */
+  apiError: { status: number; reason?: string; message?: string } | null;
+  /** يجعل القناة بلا فيديوهات (search يعيد []). */
+  videosEmpty: boolean;
+  /** يجعل الفيديو بلا تعليقات (commentThreads يعيد []). */
+  commentsEmpty: boolean;
   /** يفشل أي استدعاء Data API بخطأ حصة quotaExceeded حقيقي. */
   quotaExceeded: boolean;
   /** عدد استدعاءات Data API. */
@@ -64,8 +76,14 @@ export function createYouTubeMock(state: Partial<YouTubeMockState> = {}): YouTub
     scope: state.scope ?? ['https://www.googleapis.com/auth/youtube.readonly', 'https://www.googleapis.com/auth/youtube.force-ssl'],
     replyCommentId: state.replyCommentId ?? 'Ugz_reply_comment_id_123',
     failTokenExchange: state.failTokenExchange ?? false,
+    tokenExchangeError: state.tokenExchangeError ?? 'invalid_grant',
+    tokenExchangeErrorDescription: state.tokenExchangeErrorDescription ?? 'code expired',
     failRefresh: state.failRefresh ?? false,
+    refreshError: state.refreshError ?? 'invalid_grant',
     failChannelsAuth: state.failChannelsAuth ?? false,
+    apiError: state.apiError ?? null,
+    videosEmpty: state.videosEmpty ?? false,
+    commentsEmpty: state.commentsEmpty ?? false,
     quotaExceeded: state.quotaExceeded ?? false,
     apiCalls: 0,
     lastApiPath: null,
@@ -104,12 +122,12 @@ export async function startYouTubeMockServer(
     const grantType = String(body.grant_type || '');
     if (grantType === 'authorization_code') {
       state.lastExchange = { clientId: String(body.client_id || ''), secretLen: String(body.client_secret || '').length, redirectUri: String(body.redirect_uri || ''), code: String(body.code || '') };
-      if (state.failTokenExchange) return res.status(400).json({ error: 'invalid_grant', error_description: 'code expired' });
+      if (state.failTokenExchange) return res.status(400).json({ error: state.tokenExchangeError, error_description: state.tokenExchangeErrorDescription });
       return res.json({ access_token: state.accessToken, refresh_token: state.refreshToken, scope: state.scope.join(' '), expires_in: 3600, token_type: 'Bearer' });
     }
     if (grantType === 'refresh_token') {
       state.lastRefresh = { clientId: String(body.client_id || ''), refreshTokenLen: String(body.refresh_token || '').length };
-      if (state.failRefresh) return res.status(400).json({ error: 'invalid_grant', error_description: 'Token has been expired or revoked.' });
+      if (state.failRefresh) return res.status(400).json({ error: state.refreshError, error_description: 'Token has been expired or revoked.' });
       // Google لا يُعيد refresh_token عند التجديد.
       return res.json({ access_token: `${state.accessToken}_refreshed`, scope: state.scope.join(' '), expires_in: 3600, token_type: 'Bearer' });
     }
@@ -134,6 +152,12 @@ export async function startYouTubeMockServer(
       res.status(401).json({ error: { code: 401, message: 'Invalid Credentials', errors: [{ reason: 'authError', message: 'invalid token' }] } });
       return;
     }
+    // حقن خطأ عام محكوم للاختبار الهجومي: rate limit / 403 / 404 / 500 / صلاحية.
+    if (state.apiError) {
+      const { status, reason, message } = state.apiError;
+      res.status(status).json({ error: { code: status, message: message || `injected ${status}`, errors: reason ? [{ reason, message: message || `injected ${status}` }] : [] } });
+      return;
+    }
     handler(req, res);
   };
 
@@ -154,7 +178,8 @@ export async function startYouTubeMockServer(
   }));
 
   app.get('/youtube/v3/search', guard('/youtube/v3/search', (_req, res) => {
-    res.json({ items: state.videos.map((v) => ({ id: { kind: 'youtube#video', videoId: v.videoId }, snippet: { title: v.title, channelId: state.channelId, channelTitle: state.channelTitle, publishedAt: '2022-01-01T00:00:00Z' } })) });
+    const videos = state.videosEmpty ? [] : state.videos;
+    res.json({ items: videos.map((v) => ({ id: { kind: 'youtube#video', videoId: v.videoId }, snippet: { title: v.title, channelId: state.channelId, channelTitle: state.channelTitle, publishedAt: '2022-01-01T00:00:00Z' } })) });
   }));
 
   app.get('/youtube/v3/videos', guard('/youtube/v3/videos', (req, res) => {
@@ -170,7 +195,7 @@ export async function startYouTubeMockServer(
 
   app.get('/youtube/v3/commentThreads', guard('/youtube/v3/commentThreads', (req, res) => {
     const videoId = String(req.query.videoId || '');
-    const items = state.comments.filter((c) => !videoId || c.videoId === videoId);
+    const items = state.commentsEmpty ? [] : state.comments.filter((c) => !videoId || c.videoId === videoId);
     res.json({ items: items.map((c) => ({
       snippet: { topLevelComment: { id: c.commentId, snippet: { videoId: c.videoId, authorDisplayName: c.authorName, textOriginal: c.text, likeCount: 3, publishedAt: '2022-02-01T00:00:00Z' } } },
     })) });

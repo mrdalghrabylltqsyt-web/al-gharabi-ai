@@ -504,6 +504,7 @@ add('site-verification-tests', fs.existsSync(path.join(root, 'engine/tests/site.
 // بعطل عام. الحالة الصادقة من مصدر واحد، والأسرار في الخادم فقط.
 const youtubeModule = read('engine/social/youtube.ts');
 const youtubeState = read('engine/social/youtubeState.ts');
+const youtubeTest = read('engine/tests/youtube.connector.test.ts');
 add('youtube-connector-module', fs.existsSync(path.join(root, 'engine/social/youtube.ts')) && youtubeModule.includes('export class YouTubeClient'), 'وحدة موصل YouTube موجودة (عميل شبكة + دوال حتمية)');
 add('youtube-registry-real-connector', read('engine/social/registry.ts').includes("platform: 'youtube'") && /platform: 'youtube'[\s\S]{0,600}?realConnector: true/.test(read('engine/social/registry.ts')), 'YouTube مسجّل كموصل حقيقي في السجل');
 add('youtube-required-scopes-single-source', youtubeModule.includes('YOUTUBE_REQUIRED_SCOPES') && youtubeModule.includes('youtube.readonly') && youtubeModule.includes('youtube.force-ssl'), 'النطاقات الرسمية مصدر واحد (readonly + force-ssl للرد)');
@@ -524,7 +525,13 @@ add('youtube-webhook-write-before-ack', /youtubeEventIds[\s\S]{0,2000}?await per
 add('youtube-webhook-replay-guard', server.includes('youtubePushExternalId') && server.includes('isReplayOrDuplicate') && server.includes('youtubeEventIds'), 'منع تكرار إشعارات YouTube بمعرّف حدث حقيقي');
 add('youtube-event-ids-persisted', server.includes('youtubeEventIds') && /buildPersistedState[\s\S]*?youtubeEventIds/.test(server), 'معرّفات أحداث YouTube في طرفَي الحفظ (تصمد بعد restart)');
 add('youtube-disconnect-revokes', /platform === "youtube"[\s\S]{0,500}?revokeToken/.test(server), 'الفصل يُبطل الرمز لدى Google ثم يمسح محلياً');
-add('youtube-capability-matrix', youtubeModule.includes('YOUTUBE_CAPABILITY_MATRIX') && youtubeModule.includes('REQUIRES_AUDIT') && youtubeModule.includes("key: 'video_upload'"), 'مصفوفة قدرات رسمية (رفع الفيديو REQUIRES_AUDIT)');
+add('youtube-capability-matrix', youtubeModule.includes('YOUTUBE_CAPABILITY_MATRIX') && youtubeModule.includes('REQUIRES_REVIEW') && youtubeModule.includes("key: 'video_upload'"), 'مصفوفة قدرات رسمية معلنة');
+add('youtube-upload-not-implemented', youtubeModule.includes("status: 'NOT_IMPLEMENTED'") && !youtubeModule.includes('buildVideoUploadMetadata') && !youtubeModule.includes('videos?uploadType'), 'رفع الفيديو غير منفّذ صراحةً (لا videos.insert ولا دالة رفع ميتة)');
+add('youtube-no-publish-capability', !/platform: 'youtube'[\s\S]{0,600}?'publish'/.test(read('engine/social/registry.ts')) && !read('engine/social/registry.ts').includes("capabilities: ['publish', 'analytics', 'comments', 'comment_reply', 'scheduling', 'audience_insights']"), 'YouTube لا يعلن قدرة publish غير منفّذة في السجل');
+add('youtube-operational-evidence-reachable', server.includes("r.platform === \"youtube\" && r.delivered === true") && /youtubeOperationalEvidence[\s\S]{0,300}?socialReplies/.test(server) && !/publishRecords\)\) return false;\n  return \(workspace as any\)\.publishRecords\.some\(\(r: any\) => r\.platform === "youtube"/.test(server), 'دليل OPERATIONAL لـYouTube مبني على رد مُسلَّم فعلاً (حالة قابلة للوصول، لا نشر غير منفّذ)');
+add('youtube-one-button-oauth-return', server.includes('oauthAutoReturnHtml') && server.includes('oauth_return=') && appContext.includes("get('oauth_return')"), 'عودة OAuth تلقائية للواجهة (زر واحد لـYouTube)');
+add('youtube-oauth-return-no-secret', /location\.replace\(\$\{JSON\.stringify\(target\)\}\)/.test(server) && !/oauthAutoReturnHtml[\s\S]{0,400}?access_token/.test(server), 'صفحة العودة تحمل وسم النتيجة فقط (لا سرّ في المقطع)');
+add('youtube-attack-tests', youtubeTest.includes('هجومي: أخطاء OAuth') && youtubeTest.includes('هجومي: أخطاء Data API') && youtubeTest.includes('بيانات حقيقية ناقصة'), 'اختبارات هجومية لأخطاء OAuth/API والبيانات الناقصة (لا اختراع)');
 add('youtube-truthful-state-module', fs.existsSync(path.join(root, 'engine/social/youtubeState.ts')) && youtubeState.includes('export function resolveYouTubeState'), 'وحدة الحالة الصادقة لـYouTube موجودة (منطق خالص)');
 add('youtube-state-vocabulary', ['NOT_CONFIGURED', 'CODE_READY', 'READY_TO_CONNECT', 'AUTHORIZATION_REQUIRED', 'CONNECTED', 'TOKEN_REFRESH_REQUIRED', 'QUOTA_EXCEEDED', 'REVIEW_REQUIRED', 'VERIFIED', 'OPERATIONAL', 'EXTERNAL_BLOCKER'].every((s) => youtubeState.includes(`'${s}'`)), 'المفردات الإحدى عشرة معلنة في المصدر الواحد');
 add('youtube-state-no-operational-without-verify', /if \(verified && input\.operationalEvidence\)/.test(youtubeState), 'لا OPERATIONAL بلا اتصال موثق ودليل مزود');

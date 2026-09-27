@@ -1046,6 +1046,21 @@ function clearProviderToken(platform: string) { delete (workspace as any).provid
 function publicBaseUrlNow(): string { return resolvePublicUrl(process.env).baseUrl || `http://localhost:${PORT}`; }
 /** مسار إرجاع OAuth لكل منصة (يُبنى دائماً من العنوان العام المعتمد). */
 function oauthCallbackUrl(platform: string): string { return `${publicBaseUrlNow()}/api/platforms/${platform}/oauth/callback`; }
+
+/**
+ * صفحة عودة OAuth التي تُعيد المالك تلقائياً إلى الغرابي AI (تبويب ربط المنصات)
+ * مع نتيجة الربط — فلا يبقى معلّقاً على صفحة نصية ولا يحتاج خطوة يدوية. تُستخدم
+ * لـYouTube (تدفّق code كامل الاستضافة). الإرجاع عبر مقطع الرابط (#oauth_return)
+ * فلا يظهر أي سرّ في سطر الطلب ولا في سجلات الوسيط. الرابط اليدوي بديل احتياطي.
+ */
+function oauthAutoReturnHtml(platform: string, ok: boolean, message: string): string {
+  const target = `${publicBaseUrlNow()}/#oauth_return=${encodeURIComponent(`${platform}:${ok ? 'ok' : 'fail'}`)}`;
+  const title = ok ? 'تم الربط' : 'تعذّر الربط';
+  const heading = ok ? `تم ربط ${escapeHtml(platform)} بنجاح.` : `تعذّر إكمال ربط ${escapeHtml(platform)}.`;
+  const detail = message ? `<p>${escapeHtml(message.slice(0, 240))}</p>` : '';
+  // auto-return فوري؛ النص يظهر لحظة الانتقال فقط.
+  return `<!doctype html><html lang='ar' dir='rtl'><meta charset='utf-8'><title>${title}</title><body style='font-family:sans-serif;padding:40px'><h2>${heading}</h2>${detail}<p>جارٍ العودة إلى الغرابي AI… إن لم تُحوَّل تلقائياً افتح <a href='${escapeHtml(target)}'>هذا الرابط</a>.</p><script>try{location.replace(${JSON.stringify(target)});}catch(e){}</script></body></html>`;
+}
 /**
  * يبني رابط تفويض حقيقي لأغراض الفحص فقط (بلا حفظ state ولا أي أثر). يُستخدم في
  * `oauth/setup` لعرض سلسلة قفزات Meta الفعلية بمسار الجوال بلا بدء OAuth. الحالة
@@ -1931,10 +1946,17 @@ function youtubeOperationalNow(): boolean {
   const conn: any = platformConnections.get("youtube");
   return Boolean(conn?.status === "connected" && conn?.providerVerified === true && hasRealConnector("youtube"));
 }
-/** دليل مزود على إتمام سير عمل رسمي: نشر/رد بمعرّف حقيقي من YouTube. */
+/**
+ * دليل مزود على إتمام سير عمل رسمي. YouTube لا ينفّذ النشر (لا videos.insert)،
+ * فالدليل الحقيقي الوحيد المتاح هو **رد على تعليق مُسلَّم فعلاً بمعرّف تعليق من
+ * YouTube** (comments.insert). بدون هذا الدليل تبقى الحالة VERIFIED فحسب، فلا
+ * تُوصف حياة تشغيل غير مثبتة. (السقف الرسمي اليوم = OPERATIONAL عبر الرد الموثق.)
+ */
 function youtubeOperationalEvidence(): boolean {
-  if (!Array.isArray((workspace as any).publishRecords)) return false;
-  return (workspace as any).publishRecords.some((r: any) => r.platform === "youtube" && r.state === "published" && Boolean(r.providerPostId));
+  if (!Array.isArray((workspace as any).socialReplies)) return false;
+  return (workspace as any).socialReplies.some((r: any) =>
+    r.platform === "youtube" && r.delivered === true && Boolean(r.providerReplyId),
+  );
 }
 /** هل توجد جلسة تفويض YouTube معلّقة (بدأ المالك الربط ولم تكتمل العودة)؟ */
 function youtubePendingAuthorization(): boolean {
@@ -2897,24 +2919,26 @@ async function handleOAuthCallback(req:any, res:any, rawQuery:string, viaPost:bo
   const failHtml=(status:number,msg:string)=>viaPost?res.status(status).json({success:false,error:msg}):res.status(status).send(msg);
   const params=new URLSearchParams(rawQuery||"");
   const platform=String(req.params.platform); const state=params.get("state")||""; const pending=pendingOAuth.get(state); const cfg=OAUTH_CONFIG[platform];
+  // YouTube: عودة تلقائية للواجهة عند أي فشل أيضاً (زر واحد بلا خطوة يدوية).
+  const failPage=(status:number,msg:string)=>platform==="youtube"&&!viaPost?res.status(status).send(oauthAutoReturnHtml("youtube",false,msg)):failHtml(status,msg);
   const redirectUri=oauthCallbackUrl(platform);
   // سجل آمن لعودة Meta: هل وصلت، وبأي رمز خطأ — بلا state ولا code ولا توكن.
   logOAuthStart(platform, { outcome: "callback_received", viaPost, hasState: Boolean(state), hasCode: Boolean(params.get("code")), providerError: params.get("error") ? String(params.get("error")).slice(0, 60) : null, redirectUri });
   const check=validateOAuthCallback({pending,platform,redirectUri});
-  if(!check.ok || !cfg) { logOAuthStart(platform, { outcome: "callback_rejected", reason: check.reason || "no_config" }); return failHtml(400, `فشل التحقق من جلسة OAuth: ${check.reason||"مزود غير مُعدّ"}.`); }
+  if(!check.ok || !cfg) { logOAuthStart(platform, { outcome: "callback_rejected", reason: check.reason || "no_config" }); return failPage(400, `فشل التحقق من جلسة OAuth: ${check.reason||"مزود غير مُعدّ"}.`); }
   // يُستهلك state مرة واحدة فقط (يمنع إعادة الاستخدام)؛ نثبّت الحذف في المخزن
-  // الدائم فوراً فلا يُسترجَع عند إعادة تشغيل لاحقة فيُقبل تكرار الطلب.
+  // الدائم فوراً فلا يُسترجع عند إعادة تشغيل لاحقة فيُقبل تكرار الطلب.
   pendingOAuth.delete(state);
   await persistCritical();
-  if(params.get("error")) return failHtml(400, `رفض مزود المنصة عملية الربط: ${String(params.get("error_description")||params.get("error")).slice(0,200)}`);
+  if(params.get("error")) return failPage(400, `رفض مزود المنصة عملية الربط: ${String(params.get("error_description")||params.get("error")).slice(0,200)}`);
   const code=params.get("code")||"";
   // تدفّق Meta الرسمي لـInstagram (Facebook Login for Business - Instagram API)
   // يستخدم response_type=token: لا يعود `code` بل رمز المستخدم (والرمز طويل الأجل)
   // في مقطع الاستجابة الذي يقرأه العميل ويعيده هنا. مسار Facebook لا يتأثّر.
   const fragmentToken=platform==="instagram"?parseInstagramTokenFragment(params.get("fragment")||""):{} as ReturnType<typeof parseInstagramTokenFragment>;
   const hasFragmentToken=Boolean(fragmentToken.longLivedToken||fragmentToken.accessToken);
-  if(platform==="instagram"&&hasFragmentToken&&fragmentToken.error) return failHtml(400, `رفض مزود المنصة عملية الربط: ${String(fragmentToken.errorReason||fragmentToken.error).slice(0,200)}`);
-  if(!code&&!hasFragmentToken) return failHtml(400, "لم يتم استلام رمز OAuth.");
+  if(platform==="instagram"&&hasFragmentToken&&fragmentToken.error) return failPage(400, `رفض مزود المنصة عملية الربط: ${String(fragmentToken.errorReason||fragmentToken.error).slice(0,200)}`);
+  if(!code&&!hasFragmentToken) return failPage(400, "لم يتم استلام رمز OAuth.");
   try {
     const body=buildTokenExchangeBody({clientId:cfg.clientId,clientSecret:cfg.clientSecret,code,redirectUri:redirectUri,codeVerifier:pending!.codeVerifier});
     // Facebook يبادل الرمز عبر GET على نقطة oauth/access_token (سلوك Meta الرسمي)
@@ -3035,7 +3059,8 @@ async function handleOAuthCallback(req:any, res:any, rawQuery:string, viaPost:bo
       await persistStateDurable();
       audit(pending!.userId,"platform_oauth_connected",`youtube:${identity.data.channelId}`);
       logYouTubeOAuth("callback_connected",{channelId:identity.data.channelId,scopeCount:exchanged.data.scope.length,hasRefreshToken:Boolean(exchanged.data.refreshToken)});
-      return sendHtml(`<html lang='ar' dir='rtl'><meta charset='utf-8'><title>تم الربط</title><body style='font-family:sans-serif;padding:40px'><h2>تم ربط قناة YouTube بنجاح.</h2><p>${escapeHtml(identity.data.title||"")} — يمكنك إغلاق هذه النافذة والعودة إلى الغرابي AI.</p></body></html>`);
+      // عودة تلقائية إلى الغرابي AI (زر واحد بلا خطوة يدوية): تدفّق code كامل الاستضافة.
+      return sendHtml(oauthAutoReturnHtml("youtube", true, identity.data.title||""));
     }
     const tokenRes=await fetch(cfg.token,{method:"POST",headers:{"Content-Type":"application/x-www-form-urlencoded"},body}); token=await tokenRes.json();
     const parsedToken=parseTokenResponse(token);
@@ -3048,7 +3073,7 @@ async function handleOAuthCallback(req:any, res:any, rawQuery:string, viaPost:bo
     const stored={...token, expiresAt: parsedToken.expiresIn ? Date.now()+parsedToken.expiresIn*1000 : null};
     setProviderToken(platform,stored); platformConnections.set(platform,{platform,status:"connected",accountId,accountName,connectedAt:new Date().toISOString(),providerVerified:true}); savePlatformConnections(); audit(pending!.userId,"platform_oauth_connected",`${platform}:${accountId}`);
     sendHtml("<html lang='ar' dir='rtl'><meta charset='utf-8'><title>تم الربط</title><body style='font-family:sans-serif;padding:40px'><h2>تم ربط المنصة بنجاح.</h2><p>يمكنك إغلاق هذه النافذة والعودة إلى الغرابي AI.</p></body></html>");
-  } catch(e:any) { audit(pending!.userId,"platform_oauth_failed",platform); failHtml(502, `فشل إكمال ربط المنصة: ${String(e?.message||e).slice(0,240)}`); }
+  } catch(e:any) { audit(pending!.userId,"platform_oauth_failed",platform); failPage(502, `فشل إكمال ربط المنصة: ${String(e?.message||e).slice(0,240)}`); }
 }
 
 app.post("/api/platforms/telegram/configure", requireOwner, async (req,res)=>{
@@ -4025,16 +4050,18 @@ app.get("/api/platforms/youtube/analytics", authenticateToken, async (_req,res)=
   });
 });
 
-/** معلومات الناشر/القناة لتفعيل قوائم الرفع (تشخيص قبل النشر). */
+/**
+ * معلومات قدرة الرفع — تشخيص صريح **بلا ادعاء وجود تنفيذ**. الرفع غير منفّذ في
+ * النظام اليوم، فلا يُعرض نقطة اتصال ولا يُوهم المالك بقدرة قائمة.
+ */
 app.get("/api/platforms/youtube/upload-info", requireOwner, async (_req,res)=>{
-  if(!youtubeOperationalNow()) return res.status(409).json({success:false,error:"YouTube غير متصل باتصال موثق؛ لا استعلام خارجي.",code:"NOT_CONNECTED"});
   res.json({
     success:true,
-    uploadEndpoint:`${YOUTUBE_DATA_API_BASE}/videos?uploadType=resumable&part=snippet,status`,
+    implemented:false,
+    capabilityStatus:youtubeCapabilityStatus("video_upload"),
     requiredScope:"https://www.googleapis.com/auth/youtube.upload",
-    auditRequired:youtubeCapabilityNeedsAudit("video_upload"),
-    quotaUnits:quotaUnitsFor("videos_insert"),
-    note:"رفع الفيديو يحتاج نطاق youtube.upload ومراجعة Google للتطبيق (app verification). النشر العام غير مضمون قبل المراجعة.",
+    auditRequired:false,
+    note:"رفع الفيديو غير منفّذ في النظام (لا videos.insert ولا مسار نشر). الواجهة الرسمية توفّره بنطاق youtube.upload ومراجعة Google عند تنفيذه لاحقاً.",
   });
 });
 

@@ -69,10 +69,11 @@ const ADAPTER_SPECS: AdapterSpec[] = [
     platform: 'youtube',
     name: 'YouTube',
     displayName: 'YouTube',
-    // القناة/القوائم/الفيديوهات/التعليقات/الرد/التحليلات كلها منفّذة فعلاً عبر
-    // YouTube Data API v3. رفع الفيديو منفّذ لكنه يحتاج مراجعة Google (audit)،
-    // فنعلن publish صراحةً (الموصل ينفّذه) مع وجوده ضمن قيد المراجعة.
-    capabilities: ['publish', 'analytics', 'comments', 'comment_reply', 'scheduling', 'audience_insights'],
+    // القناة/القوائم/الفيديوهات/التعليقات/الرد/التحليلات منفّذة فعلاً عبر YouTube
+    // Data API v3. **لا يُعلن `publish`**: لا يوجد أي مسار رفع فيديو منفّذ
+    // (videos.insert غير مُستدعى، ولا مسار /publish لـYouTube)، ورفع الفيديو
+    // يحتاج نطاق youtube.upload ومراجعة Google — فلا تُعلن قدرة غير منفّذة.
+    capabilities: ['analytics', 'comments', 'comment_reply', 'scheduling', 'audience_insights'],
     credentialMode: 'oauth2',
     // خامس موصل حقيقي منفّذ: Google OAuth 2.0 + Data API v3 (قناة/قوائم/فيديوهات/تعليقات/رد/إحصاءات).
     realConnector: true,

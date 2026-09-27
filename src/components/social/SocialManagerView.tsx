@@ -897,7 +897,7 @@ export const SocialManagerView: React.FC = () => {
               {Object.entries(ttStatus.capabilityMatrix).map(([key, v]: any) => (
                 <div key={key} className="p-2 rounded-lg bg-slate-950 border border-slate-800 flex items-center justify-between gap-2">
                   <span className="text-slate-300">{v.label || key}</span>
-                  <span className={`font-bold ${v.status === 'SUPPORTED' ? 'text-emerald-400' : v.status === 'NOT_AVAILABLE_BY_PUBLIC_API' ? 'text-slate-500' : 'text-amber-400'}`}>{v.status}</span>
+                  <span className={`font-bold ${v.status === 'SUPPORTED' ? 'text-emerald-400' : v.status === 'NOT_AVAILABLE_BY_PUBLIC_API' || v.status === 'NOT_IMPLEMENTED' ? 'text-slate-500' : 'text-amber-400'}`}>{v.status}</span>
                 </div>
               ))}
             </div>
@@ -991,7 +991,7 @@ export const SocialManagerView: React.FC = () => {
             <div>النطاقات المطلوبة: <code dir="ltr" className="text-slate-300">{(ytStatus?.requestedScopes || []).join(', ') || '—'}</code></div>
             <div>رابط إشعارات PubSubHubbub: <code dir="ltr" className="text-slate-300 break-all">{ytStatus?.webhookUrl || '—'}</code></div>
             <div>الحصة اليومية (وحدات): <code dir="ltr" className="text-slate-300">{ytStatus?.dailyQuotaUnits ?? '—'}</code></div>
-            {ytStatus?.publishCapability === 'REQUIRES_AUDIT' && <div className="text-amber-300 font-bold">رفع الفيديو يحتاج مراجعة Google (app verification).</div>}
+            {ytStatus?.publishCapability === 'NOT_IMPLEMENTED' && <div className="text-slate-400 font-bold">رفع الفيديو غير منفّذ في النظام بعد (لا videos.insert).</div>}
           </div>
         </div>
 
@@ -1003,7 +1003,7 @@ export const SocialManagerView: React.FC = () => {
               {Object.entries(ytStatus.capabilityMatrix).map(([key, v]: any) => (
                 <div key={key} className="p-2 rounded-lg bg-slate-950 border border-slate-800 flex items-center justify-between gap-2">
                   <span className="text-slate-300">{v.label || key}</span>
-                  <span className={`font-bold ${v.status === 'SUPPORTED' ? 'text-emerald-400' : v.status === 'NOT_AVAILABLE_BY_PUBLIC_API' ? 'text-slate-500' : 'text-amber-400'}`}>{v.status}</span>
+                  <span className={`font-bold ${v.status === 'SUPPORTED' ? 'text-emerald-400' : v.status === 'NOT_AVAILABLE_BY_PUBLIC_API' || v.status === 'NOT_IMPLEMENTED' ? 'text-slate-500' : 'text-amber-400'}`}>{v.status}</span>
                 </div>
               ))}
             </div>
@@ -1044,7 +1044,7 @@ export const SocialManagerView: React.FC = () => {
         )}
 
         <p className="text-[10px] text-slate-500">
-          القناة/القوائم/الفيديوهات/التعليقات/الرد/التحليلات كلها من YouTube Data API v3 الرسمي. رفع الفيديو <span className="font-bold">يحتاج مراجعة Google</span> (نطاق youtube.upload) قبل النشر العام.
+          القناة/القوائم/الفيديوهات/التعليقات/الرد/التحليلات كلها من YouTube Data API v3 الرسمي. رفع الفيديو <span className="font-bold">غير منفّذ</span> في النظام بعد.
         </p>
       </div>
 

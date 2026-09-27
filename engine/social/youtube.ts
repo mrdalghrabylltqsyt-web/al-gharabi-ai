@@ -75,7 +75,12 @@ export type YouTubeCapabilityStatus =
   | 'SUPPORTED'
   | 'REQUIRES_REVIEW'
   | 'REQUIRES_AUDIT'
-  | 'NOT_AVAILABLE_BY_PUBLIC_API';
+  | 'NOT_AVAILABLE_BY_PUBLIC_API'
+  /**
+   * الواجهة الرسمية توفّرها، لكن النظام لا ينفّذها بعد. تُعلن بهذا الوصف
+   * الصريح بدل ادعاء SUPPORTED أو حذف المعلومة — فلا تُعلن قدرة غير منفّذة.
+   */
+  | 'NOT_IMPLEMENTED';
 
 export interface YouTubeCapabilityRow {
   /** معرّف القدرة التقني. */
@@ -154,9 +159,14 @@ export const YOUTUBE_CAPABILITY_MATRIX: readonly YouTubeCapabilityRow[] = Object
   {
     key: 'video_upload',
     label: 'رفع فيديو',
-    status: 'REQUIRES_AUDIT',
+    // الواجهة الرسمية توفّر رفع الفيديو (videos.insert مع نطاق youtube.upload
+    // ومراجعة Google)، لكن **النظام لا ينفّذ أي مسار رفع بعد** — لا استدعاء
+    // videos.insert في العميل ولا مسار /publish لـYouTube. لذلك تُعلن صريحةً
+    // NOT_IMPLEMENTED بدل REQUIRES_AUDIT التي كانت تُوهم بوجود تنفيذ ينتظر المراجعة.
+    // عند تنفيذ الرفع فعلاً تُرقّى إلى REQUIRES_AUDIT مع النطاق أدناه.
+    status: 'NOT_IMPLEMENTED',
     scope: 'https://www.googleapis.com/auth/youtube.upload',
-    evidence: 'POST /videos?uploadType=resumable يتطلب نطاق youtube.upload ومراجعة Google للتطبيق قبل الاستخدام الإنتاجي (unverified apps محصورة بقنوات test users).',
+    evidence: 'لم يُنفَّذ في الكود: لا يوجد videos.insert ولا مسار نشر لـYouTube. الواجهة الرسمية توفّره بنطاق youtube.upload ومراجعة Google، ويُضاف لاحقاً.',
   },
   {
     key: 'push_notifications',
@@ -175,9 +185,15 @@ export function youtubeCapabilitySupported(key: string): boolean {
   return youtubeCapabilityStatus(key) === 'SUPPORTED';
 }
 
+/** يحتاج إجراءً خارجياً من المزود (مراجعة/تدقيق) بعد وجود تنفيذ. */
 export function youtubeCapabilityNeedsAudit(key: string): boolean {
   const s = youtubeCapabilityStatus(key);
   return s === 'REQUIRES_AUDIT' || s === 'REQUIRES_REVIEW';
+}
+
+/** منفّذة فعلاً في الكود (لا تُعلن قدرة غير منفّذة كمتاحة). */
+export function youtubeCapabilityImplemented(key: string): boolean {
+  return youtubeCapabilityStatus(key) === 'SUPPORTED';
 }
 
 // ---------------------------------------------------------------------------
@@ -578,28 +594,6 @@ export function buildYouTubeRefreshBody(input: { clientId: string; clientSecret:
 /** يبني جسم الرد على تعليق: parentId + النص الأصلي (textOriginal). */
 export function buildCommentReplyBody(input: { parentId: string; text: string }): Record<string, unknown> {
   return { snippet: { parentId: input.parentId, textOriginal: String(input.text).slice(0, 10000) } };
-}
-
-/**
- * بيانات رفع فيديو (resumable). تُبنى هنا حتمياً فلا تُرسل حقول مخترعة:
- * العنوان إلزامي، والخصوصية (`privacyStatus`) تُمرَّر صراحةً.
- */
-export function buildVideoUploadMetadata(input: { title: string; description?: string; tags?: string[]; privacyStatus?: string; categoryId?: string; madeForKids?: boolean }): Record<string, unknown> {
-  const allowed = new Set(['public', 'private', 'unlisted']);
-  const privacy = allowed.has(String(input.privacyStatus)) ? String(input.privacyStatus) : 'private';
-  return {
-    snippet: {
-      title: String(input.title).slice(0, 100),
-      description: String(input.description || '').slice(0, 5000),
-      tags: Array.isArray(input.tags) ? input.tags.map((t) => String(t)).slice(0, 30) : undefined,
-      categoryId: input.categoryId ? String(input.categoryId) : '22',
-    },
-    status: {
-      privacyStatus: privacy,
-      // الإعلان الصريح إلزامي لدى YouTube؛ الافتراضي الآمن: ليس للأطفال.
-      selfDeclaredMadeForKids: input.madeForKids === true,
-    },
-  };
 }
 
 // ---------------------------------------------------------------------------
