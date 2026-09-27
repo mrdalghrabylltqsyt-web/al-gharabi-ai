@@ -1042,7 +1042,7 @@ function buildAuthorizationUrlForProbe(platform: string): string {
     redirectUri: oauthCallbackUrl(platform),
     scopes,
     state: "probe",
-    loginConfigId: META_OAUTH_PLATFORMS.has(platform) ? loginConfigIdFor(platform) : null,
+    loginConfigId: META_OAUTH_PLATFORMS.has(platform) ? effectiveLoginConfigIdFor(platform) : null,
     // يجب أن يطابق الفحص الرابط الذي سيُولَّد فعلاً في /oauth/start: كان يفرض
     // تدفّق الإعداد مفعّلاً دائماً، فيُظهر `oauth/setup` و`dialogPhase` مساراً
     // مختلفاً عن المسار الحقيقي عندما يضبط المالك INSTAGRAM_OAUTH_ONBOARDING=false.
@@ -1137,17 +1137,13 @@ function loginConfigIdFor(platform: string): string | null {
 }
 /**
  * Configuration ID **المُطبَّق فعلاً** في رابط التفويض (قد يكون null رغم ضبط
- * المتغير). سبب الوجود: مسار Instagram الرسمي (تدفّق الإعداد الموحّد
- * display/extras/response_type=token) لا يستخدم config_id إطلاقاً، فإرساله
- * يُنتج رابطاً هجيناً ترده Meta بـ500 «حدث خطأ ما». لذلك يجب أن تكون القيم
- * المُعلنة (`used`/`permissionSource`) مطابقة لما يُرسَل فعلاً لا لما هو مضبوط.
+ * المتغير). Configuration ID هو مطلب Facebook Login for Business: عند وجوده
+ * يحلّ محل scope ويُلغي extras/display معاً (الConfiguration تحدّد الصلاحيات
+ * وتجربة الدخول). لذلك يُطبَّق لـInstagram أيضاً متى كان مضبوطاً صالحاً، ويُعلن
+ * `loginConfigIdUsed`/`permissionSource` مطابقاً لما يُرسَل فعلاً لا لما هو مضبوط.
  */
 function effectiveLoginConfigIdFor(platform: string): string | null {
-  const configured = loginConfigIdFor(platform);
-  if (!configured) return null;
-  // Instagram: يُتجاهَل في تدفّق الإعداد الموحّد المفعّل، ويُطبَّق في التدفّق العادي.
-  if (platform === "instagram" && instagramOnboardingEnabled()) return null;
-  return configured;
+  return loginConfigIdFor(platform);
 }
 /** فحص الغياب/الصيغة غير الصالحة للConfiguration (بلا أي قيمة) للعرض التشخيصي. */
 function loginConfigInspection(platform: string) {
@@ -4367,47 +4363,55 @@ app.get("/api/platforms/:platform/oauth/setup", requireOwner, async (req,res)=>{
     loginConfigIdProblems:(metaScopesResolved&&loginConfigInspection(platform).problems.length)?loginConfigInspection(platform).problems:undefined,
     loginConfigIdUsed:metaScopesResolved?Boolean(effectiveLoginConfigIdFor(platform)):undefined,
     permissionSource:metaScopesResolved?(effectiveLoginConfigIdFor(platform)?"facebook_login_for_business_configuration":"oauth_scope_parameter"):undefined,
-    // التدفّق الرسمي لـInstagram: display=page + extras=IG_API_ONBOARDING +
-    // response_type=token، والرمز يعود في مقطع الاستجابة (لا code). يُعلن هنا
-    // ليعرف المالك أن الرابط مطابق لوثيقة Meta حرفياً.
-    instagramOnboardingFlow:platform==="instagram"?{
-      // active يتبع مفتاح البيئة فعلياً: false يعني أن الرابط يسلك التدفّق العادي
-      // (response_type=code) بلا extras، فلا تُعلن معاملات لا تُرسَل.
-      active:instagramOnboardingEnabled(),
-      display:instagramOnboardingEnabled()?"page":null,
-      extras:instagramOnboardingEnabled()?INSTAGRAM_ONBOARDING_EXTRAS:null,
-      responseType:instagramOnboardingEnabled()?"token":"code",
-      tokenDelivery:instagramOnboardingEnabled()?"url_fragment":"query_code",
-      envSwitch:"INSTAGRAM_OAUTH_ONBOARDING",
-      envSwitchValue:instagramOnboardingEnabled()?"enabled":"disabled",
-      // الوثيقة الرسمية لتدفّق الإعداد الموحّد لا تذكر config_id إطلاقاً: الرابط
-      // يحمل scope. ويُعلن صراحةً أن config_id المضبوط في البيئة يُتجاهَل في هذا
-      // التدفّق (لأن إرساله مع display/extras/response_type=token يُنتج رابطاً
-      // هجيناً ترده Meta بـ500 «حدث خطأ ما»). في التدفّق العادي (active=false)
-      // يُطبَّق config_id إن وُجد لأن الرابط حينها كلاسيكي (code).
-      configIdRequired:false,
-      configIdIgnoredInThisFlow:instagramOnboardingEnabled(),
-      permissionSource:effectiveLoginConfigIdFor("instagram")?"facebook_login_for_business_configuration":"oauth_scope_parameter",
-      note:"وفق وثيقة Meta «Facebook Login for Business - Instagram API»: الرابط الرسمي (active=true) يحمل client_id+display=page+extras+redirect_uri+response_type=token+scope فقط، بلا config_id. في التدفّق العادي (active=false) يصبح الرابط client_id+redirect_uri+response_type=code+scope بلا extras. تُلحق Meta الرمز في مقطع الاستجابة في التدفّق الموحّد، وتقرأه الواجهة وترسله POST في الجسم لإتمام الربط بلا تبديل رمز.",
-      doc:"https://developers.facebook.com/documentation/instagram-platform/instagram-api-with-facebook-login/business-login-for-instagram",
-      requiredProducts:["Instagram → API setup with Facebook login","Facebook Login for Business","Webhooks"],
-      appType:"Meta Business type app",
-      knownIssue:"عطل معروف لدى Meta في تدفّق الإعداد: يظهر «حدث خطأ ما» بعد تسجيل الدخول (GraphQL error 1850019 «error during business onboarding flow») ويرتبط بمعامل extras=IG_API_ONBOARDING. المخرج الموثّق من مطوّرين: إزالة extras والعمل بالتدفّق العادي عبر /me/accounts?fields=instagram_business_account. لا تُنفَّذ الإزالة إلا بقرار صريح لأنها تُلغي نافذة الإعداد الموحّدة.",
-    }:undefined,
-    loginForBusinessSetup:platform==="facebook"?{
+    // التدفّق الرسمي لـInstagram (Instagram API with Facebook Login). عند وجود
+    // Configuration ID صالح (config_id) يمرّ المسار عبر Business Login بصلاحيات
+    // الConfiguration — وهو المطلب المُثبت لتطبيق Meta من نوع Business؛ وفيه لا
+    // يُرسَل extras/display ويُقرأ الرمز من سطر الطلب (response_type=code). وبلا
+    // config_id يبقى التدفّق الموثّق (display/extras/response_type=token عبر scope).
+    instagramOnboardingFlow:platform==="instagram"?(()=>{
+      const cfgUsed = Boolean(effectiveLoginConfigIdFor("instagram"));
+      const onboarding = !cfgUsed && instagramOnboardingEnabled();
+      return {
+        // active = التدفّق الموحّد (extras)؛ يُلغى عند وجود config_id لأن الConfiguration
+        // تحدّد تجربة الدخول والصلاحيات بنفسها.
+        active:onboarding,
+        display:onboarding?"page":null,
+        extras:onboarding?INSTAGRAM_ONBOARDING_EXTRAS:null,
+        responseType:onboarding?"token":"code",
+        tokenDelivery:onboarding?"url_fragment":"query_code",
+        envSwitch:"INSTAGRAM_OAUTH_ONBOARDING",
+        envSwitchValue:instagramOnboardingEnabled()?"enabled":"disabled",
+        // Configuration ID: مطلوب لتطبيق Meta من نوع Business (واجهة Business Login).
+        // عند ضبطه صالحاً يحلّ محل scope ويُلغي extras، ويصبح المسار الكامل عبر
+        // Business Login بصلاحيات الConfiguration.
+        configIdRequired:cfgUsed,
+        configIdUsed:cfgUsed,
+        configIdSource:cfgUsed?loginConfigEnvNames("instagram").find((n:string)=>envSecret(n))??null:null,
+        permissionSource:cfgUsed?"facebook_login_for_business_configuration":"oauth_scope_parameter",
+        note:cfgUsed
+          ? "Configuration ID مضبوط: الرابط يحمل config_id فقط (بلا scope وبلا extras/display) ويقرأ الصلاحيات من الConfiguration، والرمز يعود في سطر الطلب (response_type=code). هذا هو المخرج المُثبت لتطبيق Meta من نوع Business الذي يوجّه الحوار إلى Business Login فيرفض scope بلا Configuration."
+          : "بلا Configuration ID: الرابط يمرّر scope (التدفّق الموثّق display/extras/response_type=token). إن كان تطبيقك من نوع Business فتظهر صفحة Meta العامة «حدث خطأ ما» بعد تسجيل الدخول لأن Business Login يقرأ الصلاحيات من Configuration لا من scope — الحل هو ضبط Configuration ID.",
+        doc:"https://developers.facebook.com/documentation/instagram-platform/instagram-api-with-facebook-login/business-login-for-instagram",
+        requiredProducts:["Instagram → API setup with Facebook login","Facebook Login for Business","Webhooks"],
+        appType:"Meta Business type app",
+        knownIssue:"عطل معروف لدى Meta في تدفّق الإعداد: يظهر «حدث خطأ ما» بعد تسجيل الدخول (GraphQL error 1850019 «error during business onboarding flow») ويرتبط بمعامل extras=IG_API_ONBOARDING. المخرج: إمّا ضبط Configuration ID (config_id) وإمّا تعطيل extras بالتدفّق العادي عبر /me/accounts?fields=instagram_business_account.",
+      };
+    })():undefined,
+    // دليل إنشاء Configuration ID — يصحّ لـFacebook وInstagram (كلاهما Facebook Login for Business).
+    loginForBusinessSetup:(platform==="facebook"||platform==="instagram")?{
       where:"Meta App Dashboard → Facebook Login for Business → Configurations",
       steps:[
         "افتح Facebook Login for Business → Configurations واضغط Create configuration (أو أعد استخدام Configuration موجودة).",
         "اختر نوع الرمز: User access token (المطلوب لمسارات الصفحة).",
         "أضف الصلاحيات المذكورة في حقل scopes أعلاه بالضبط (نفس أسماء Facebook Login).",
-        "احفظ، ثم انسخ Configuration ID (أرقام فقط) إلى FACEBOOK_LOGIN_CONFIG_ID.",
+        "احفظ، ثم انسخ Configuration ID (أرقام فقط) إلى "+(platform==="instagram"?"INSTAGRAM_LOGIN_CONFIG_ID (أو FACEBOOK_LOGIN_CONFIG_ID)":"FACEBOOK_LOGIN_CONFIG_ID")+" في Render.",
         "لا تضع القيمة في Git ولا في أي سجل؛ الخادم يقرأها من البيئة فقط.",
       ],
-      note:"عند وجود Configuration ID صالح يمرّره الخادم كـconfig_id بدل scope، فلا يتعارض المعاملان. مسار Instagram لا يستخدم config_id.",
+      note:"عند وجود Configuration ID صالح يمرّره الخادم كـconfig_id بدل scope ولا يُرسَل extras/display، فلا يتعارض المعاملان ويقرأ Business Login الصلاحيات من الConfiguration.",
     }:undefined,
     genericErrorMeaning:(platform==="facebook"||platform==="instagram")?{
-      message:"صفحة Meta «حدث خطأ ما» (Sorry, something went wrong) لها مواضع محتملة: (1) قبل تسجيل الدخول: معرّف تطبيق غير مطابق أو نطاق/رابط إرجاع غير مسجّل، (2) بعد تسجيل الدخول: الصلاحيات غير مفعّلة كاملةً في Use Case أو الحساب ليس ضمن Testers، (3) عطل معروف في تدفّق الإعداد عند استخدام extras=IG_API_ONBOARDING (1850019). حقل dialogPhase يحدد الموضع: rejected_before_login مقابل awaiting_owner_login (أي أن الفحص بلا كوكيز توقّف عند شاشة الدخول ولم يرَ مرحلة ما بعدها).",
-      checks:["طابق App ID مع Settings → Basic (أرقام فقط بلا مسافات).","أضف appDomainsValue إلى App Domains بلا https وبلا مسار.","أضف redirectUri بالضبط إلى Valid OAuth Redirect URIs.","فعّل الصلاحيات المطلوبة داخل Use Case — لا يكفي وجودها في الرابط.","تأكد أن التطبيق يحتوي منتج Instagram → API setup with Facebook login وأن التطبيق من نوع Business.","أضف حساب المالك إلى Roles → Testers إن كان التطبيق في وضع Development.","راجع المتغير FACEBOOK_OAUTH_SCOPES/INSTAGRAM_OAUTH_SCOPES إن وُجد: أي اسم صلاحية غير قائم يُرفض قبل الدخول."],
+      message:"صفحة Meta «حدث خطأ ما» (Sorry, something went wrong) لها مواضع محتملة: (1) قبل تسجيل الدخول: معرّف تطبيق غير مطابق أو نطاق/رابط إرجاع غير مسجّل، (2) بعد تسجيل الدخول: تطبيق من نوع Business يوجّه الحوار إلى Business Login الذي يقرأ الصلاحيات من Configuration لا من scope، فإن غاب config_id بقيت الصلاحيات فارغة وظهر الرفض، (3) عطل معروف في تدفّق الإعداد عند استخدام extras=IG_API_ONBOARDING (1850019). حقل dialogPhase يحدد الموضع.",
+      checks:["طابق App ID مع Settings → Basic (أرقام فقط بلا مسافات).","أضف appDomainsValue إلى App Domains بلا https وبلا مسار.","أضف redirectUri بالضبط إلى Valid OAuth Redirect URIs.","إن كان التطبيق من نوع Business: أنشئ Configuration في Facebook Login for Business → Configurations واضبط معرّفها في INSTAGRAM_LOGIN_CONFIG_ID / FACEBOOK_LOGIN_CONFIG_ID (config_id يحلّ محل scope في Business Login).","فعّل الصلاحيات المطلوبة داخل Use Case — لا يكفي وجودها في الرابط.","تأكد أن التطبيق يحتوي منتج Instagram → API setup with Facebook login وأن التطبيق من نوع Business.","أضف حساب المالك إلى Roles → Testers إن كان التطبيق في وضع Development.","راجع المتغير FACEBOOK_OAUTH_SCOPES/INSTAGRAM_OAUTH_SCOPES إن وُجد: أي اسم صلاحية غير قائم يُرفض قبل الدخول."],
     }:undefined,
     // موضع الرفض الفعلي: يمنع تشخيصاً خاطئاً لأن فحصاً بلا كوكيز لا يرى ما بعد
     // تسجيل الدخول، فيبدو «مقبولاً» مع أن الرفض يقع في مرحلة Use Case.
@@ -6019,9 +6023,18 @@ app.get("/api/readiness", (_req, res) => {
         scopesResolvedWithDependencies: instagramScopeDependencyGaps().length === 0,
         loginConfigIdConfigured: loginConfigInspection("instagram").configured,
         loginConfigIdValid: loginConfigInspection("instagram").valid,
-        loginConfigIdUsed: Boolean(loginConfigIdFor("instagram")),
+        loginConfigIdUsed: Boolean(effectiveLoginConfigIdFor("instagram")),
         loginConfigEnvNames: loginConfigEnvNames("instagram"),
-        permissionSource: loginConfigIdFor("instagram") ? "facebook_login_for_business_configuration" : "oauth_scope_parameter",
+        permissionSource: effectiveLoginConfigIdFor("instagram") ? "facebook_login_for_business_configuration" : "oauth_scope_parameter",
+        // الجذر المُثبت لعطل «حدث خطأ ما»: تطبيق Meta من نوع Business يوجّه الحوار
+        // الذي يحمل scope إلى واجهة Business Login التي تقرأ الصلاحيات من Configuration
+        // (config_id) لا من scope. بلا config_id تبقى الصلاحيات فارغة ويظهر الرفض
+        // بعد تسجيل الدخول. لذا نُعلن صراحةً هل Configuration مضبوط أم لا والإجراء.
+        configurationRequired: true,
+        configurationReady: Boolean(effectiveLoginConfigIdFor("instagram")),
+        nextAction: effectiveLoginConfigIdFor("instagram")
+          ? "اضبط الحساب المهني واربطه بالصفحة ثم ابدأ الربط؛ الصلاحيات تُقرأ من Configuration."
+          : "أنشئ Configuration في Meta App Dashboard → Facebook Login for Business → Configurations (نوع User access token) بنفس حقل scopes، ثم ضع معرّفه الرقمي في INSTAGRAM_LOGIN_CONFIG_ID (أو FACEBOOK_LOGIN_CONFIG_ID) في Render وأعد النشر.",
         subscribedWebhookFields: [...INSTAGRAM_SUBSCRIBED_FIELDS],
         webhookFieldsNeedDashboard: true,
         // حالة مفتاح تدفّق الإعداد (منطقي فقط): enabled = extras مفعّل،

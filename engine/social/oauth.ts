@@ -206,32 +206,33 @@ export function buildAuthorizationParams(input: {
   // لكن حذفهما يجعل الطلب مطابقاً لعقد Meta الرسمي حرفياً.
   if (platform === 'facebook' || platform === 'instagram' || platform === 'threads') {
     params.client_id = clientId;
-    // Instagram API with Facebook Login → «Facebook Login for Business - Instagram API»:
-    // الوثيقة الرسمية تشترط display=page وextras={"setup":{"channel":"IG_API_ONBOARDING"}}
-    // وresponse_type=token (لا code). بلا هذه المعاملات يمرّ المالك بمسار عام بلا
-    // نافذة الإعداد الموحّدة (تحويل الحساب المهني + ربط الصفحة) — وهو موضع «حدث خطأ ما».
-    // Facebook لا يتأثّر: الفرع خاص بـinstagram وحده.
+    // Facebook Login for Business: Configuration (config_id) هو المطلب لمَن يستخدم
+    // مسار Business Login. عند وجوده يحلّ محل scope **تماماً** (إرسال الاثنين معاً
+    // يتعارض)، ويُلغي extras/display لأن الConfiguration تحدّد تجربة الدخول والصلاحيات
+    // بنفسها. جذره المُثبت حياً: تطبيق من نوع Business يوجّه الحوار الذي يحمل scope إلى
+    // واجهة Business Login (is_business_login=1) التي تقرأ الصلاحيات من Configuration
+    // لا من scope؛ فإن غاب config_id بقيت الصلاحيات فارغة وظهرت صفحة Meta العامة
+    // «حدث خطأ ما» **بعد** تسجيل الدخول. Amا المسار الكلاسيكي (بلا config_id) فيبقى
+    // يمرّر scope كما كان. Threads لا يستخدم config_id.
+    if (loginConfigId && (platform === 'facebook' || platform === 'instagram')) {
+      params.config_id = loginConfigId;
+      if (pkceChallenge) {
+        params.code_challenge = pkceChallenge;
+        params.code_challenge_method = 'S256';
+      }
+      return params;
+    }
+    // بلا config_id: Instagram API with Facebook Login → «Facebook Login for
+    // Business - Instagram API»: الوثيقة الرسمية تشترط display=page و
+    // extras={"setup":{"channel":"IG_API_ONBOARDING"}} وresponse_type=token (لا code)
+    // مع scope. بلا هذه المعاملات يمرّ المالك بمسار عام. Facebook لا يتأثّر.
     const instagramOnboardingFlow = platform === 'instagram' && Boolean(instagramOnboarding);
     if (instagramOnboardingFlow) {
       params.display = 'page';
       params.extras = INSTAGRAM_ONBOARDING_EXTRAS;
       params.response_type = 'token';
     }
-    // Facebook Login for Business: config_id يحلّ محل scope، وإرسالهما معاً
-    // يتعارض (الConfiguration تحمل الصلاحيات وحقول الوصول). Threads لا يستخدمه.
-    //
-    // Instagram في تدفّق الإعداد الموحّد: وثيقة «business-login-for-instagram»
-    // تُعرّف الرابط بستة معاملات (بلا config_id)؛ إرسال config_id مع
-    // display/extras/response_type=token يُنتج رابطاً هجيناً غير موثّق ترده Meta
-    // بـ500 «حدث خطأ ما» (مُثبت حياً ومن منتدى Meta). لذلك يُتجاهَل config_id هنا
-    // وتُبقى الصلاحيات على scope — مطابقةً للوثيقة، وبلا كسر مسار Facebook.
-    if (loginConfigId && platform === 'facebook') {
-      params.config_id = loginConfigId;
-    } else if (loginConfigId && platform === 'instagram' && !instagramOnboardingFlow) {
-      params.config_id = loginConfigId;
-    } else {
-      params.scope = scopes.join(',');
-    }
+    params.scope = scopes.join(',');
     if (pkceChallenge) {
       params.code_challenge = pkceChallenge;
       params.code_challenge_method = 'S256';

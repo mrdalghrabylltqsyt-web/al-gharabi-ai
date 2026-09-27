@@ -328,10 +328,10 @@ async function integrationTests(): Promise<void> {
     check('طلب يحمل state يبقى للمعالجة العادية (ليس React)', withState.status === 400, `status=${withState.status}`);
 
     group('6أ) تكامل: مسار Facebook Login for Business (config_id بدل scope)');
-    // Configuration ID صالح: في **التدفّق العادي** (INSTAGRAM_OAUTH_ONBOARDING=false)
-    // يُمرَّر كـconfig_id ويُحذف scope تماماً من رابط التفويض (إرسالهما معاً يتعارض).
-    // أما في تدفّق الإعداد الموحّد الرسمي (display/extras/response_type=token) فيُتجاهَل
-    // config_id لأن إرساله مع extras يُنتج رابطاً هجيناً ترده Meta بـ500 «حدث خطأ ما».
+    // Configuration ID صالح يُمرَّر كـconfig_id ويُحذف scope تماماً من رابط
+    // التفويض (إرسال الاثنين معاً يتعارض). config_id هو المخرج المُثبت لتطبيق
+    // Meta من نوع Business: واجهة Business Login تقرأ الصلاحيات من Configuration
+    // لا من scope، وبلا config_id تبقى الصلاحيات فارغة ويظهر «حدث خطأ ما» بعد الدخول.
     const CONFIG_ID = '1003753455711313';
     await stop(app.proc);
     let cfgApp = startApp(mock.base, { INSTAGRAM_LOGIN_CONFIG_ID: CONFIG_ID, INSTAGRAM_OAUTH_ONBOARDING: 'false' });
@@ -341,11 +341,11 @@ async function integrationTests(): Promise<void> {
     Object.assign(cfgAuth, await login());
     const cfgStart = await (await fetch(`${BASE}/api/platforms/instagram/oauth/start`, { headers: cfgAuth })).json();
     const cfgParams = new URL(cfgStart.authorizationUrl).searchParams;
-    check('config_id يُرسَل إلى Meta في رابط التفويض (التدفّق العادي)', cfgParams.get('config_id') === CONFIG_ID, `config_id=${cfgParams.get('config_id')}`);
+    check('config_id يُرسَل إلى Meta في رابط التفويض', cfgParams.get('config_id') === CONFIG_ID, `config_id=${cfgParams.get('config_id')}`);
     check('لا يُرسَل scope مع config_id (تعارض)', cfgParams.get('scope') === null, `scope=${cfgParams.get('scope')}`);
-    check('التدفّق العادي يستخدم response_type=code', cfgParams.get('response_type') === 'code', `response_type=${cfgParams.get('response_type')}`);
+    check('يستخدم response_type=code مع config_id', cfgParams.get('response_type') === 'code', `response_type=${cfgParams.get('response_type')}`);
     check('redirect_uri وstate صحيحة', cfgParams.get('redirect_uri') === expectedRedirect && (cfgParams.get('state') || '').length >= 32);
-    check('لا extras ولا display في التدفّق العادي', !cfgParams.has('extras') && !cfgParams.has('display'));
+    check('لا extras ولا display مع config_id', !cfgParams.has('extras') && !cfgParams.has('display'));
     check('الاستجابة تُعلن أن الصلاحيات من الConfiguration لا من scope', cfgStart.loginConfigIdUsed === true && cfgStart.permissionSource === 'facebook_login_for_business_configuration');
     check('الاستجابة تذكر أسماء متغيرات config_id بلا قيمة', Array.isArray(cfgStart.loginConfigEnvNames) && cfgStart.loginConfigEnvNames.includes('INSTAGRAM_LOGIN_CONFIG_ID'));
     // config_id يظهر في مكانين مقصودين فقط: داخل authorizationUrl (لأن Meta
@@ -364,20 +364,20 @@ async function integrationTests(): Promise<void> {
     Object.assign(prioAuth, await login());
     const prioStart = await (await fetch(`${BASE}/api/platforms/instagram/oauth/start`, { headers: prioAuth })).json();
     check('أولوية Instagram Configuration ID على Facebook', new URL(prioStart.authorizationUrl).searchParams.get('config_id') === CONFIG_ID);
-    // تدفّق الإعداد الموحّد (الافتراضي، مفتاح غير مضبوط) + config_id مضبوط:
-    // يجب أن يُتجاهَل config_id ويُبقى scope، فلا ينتج رابط هجين يُرفض بـ500.
+    // config_id يحلّ محل extras حتى مع التدفّق الموحّد المفعّل افتراضياً: لا يُنتج
+    // رابطاً هجيناً (config_id + extras) بل رابطاً نظيفاً بconfig_id وحده.
     await stop(prioApp.proc);
     const hybridApp = startApp(mock.base, { INSTAGRAM_LOGIN_CONFIG_ID: CONFIG_ID });
     currentApp = hybridApp;
-    check('الخادم يقلع لفحص التدفّق الموحّد + config_id', await waitForHealth(), hybridApp.log().slice(0, 400));
+    check('الخادم يقلع لفحص config_id مع مفتاح الإعداد مفعّلاً', await waitForHealth(), hybridApp.log().slice(0, 400));
     const hybridAuth = { 'Content-Type': 'application/json' } as Record<string, string>;
     Object.assign(hybridAuth, await login());
     const hybridStart = await (await fetch(`${BASE}/api/platforms/instagram/oauth/start`, { headers: hybridAuth })).json();
     const hybridParams = new URL(hybridStart.authorizationUrl).searchParams;
-    check('تدفّق الإعداد الموحّد لا يُرسل config_id إطلاقاً', hybridParams.get('config_id') === null, `config_id=${hybridParams.get('config_id')}`);
-    check('تدفّق الإعداد الموحّد يُبقي scope', (hybridParams.get('scope') || '').includes('instagram_basic'));
-    check('تدفّق الإعداد الموحّد يحمل المعاملات الرسمية الستة', hybridParams.get('display') === 'page' && hybridParams.get('extras') === '{"setup":{"channel":"IG_API_ONBOARDING"}}' && hybridParams.get('response_type') === 'token');
-    check('لا يُعلن استخدام config_id في التدفّق الموحّد', hybridStart.loginConfigIdUsed === false && hybridStart.loginConfigIdConfigured === true && hybridStart.permissionSource === 'oauth_scope_parameter');
+    check('config_id مضبوط => يُرسَل config_id لا extras', hybridParams.get('config_id') === CONFIG_ID, `config_id=${hybridParams.get('config_id')}`);
+    check('config_id مضبوط => لا scope ولا extras ولا display', !hybridParams.has('scope') && !hybridParams.has('extras') && !hybridParams.has('display'));
+    check('config_id مضبوط => response_type=code (لا token)', hybridParams.get('response_type') === 'code');
+    check('يُعلن استخدام config_id ومصدر الصلاحيات من الConfiguration', hybridStart.loginConfigIdUsed === true && hybridStart.loginConfigIdConfigured === true && hybridStart.permissionSource === 'facebook_login_for_business_configuration');
     await stop(hybridApp.proc);
     // config_id غير صالح (مسافة/حروف) => 409 تشخيصي بلا إرسال المالك إلى Meta.
     const badCfgApp = startApp(mock.base, { INSTAGRAM_LOGIN_CONFIG_ID: 'not-a-number ', INSTAGRAM_OAUTH_ONBOARDING: 'false' });
@@ -674,8 +674,8 @@ async function integrationTests(): Promise<void> {
     check('مصدر الصلاحيات من Configuration عند config_id', clsBody.permissionSource === 'facebook_login_for_business_configuration', `src=${clsBody.permissionSource}`);
     await clsMock.stop();
 
-    // oauth/setup: مسار Instagram الرسمي بلا config_id، ويجب ألا يوجّه المالك
-    // لإنشاء Configuration لـInstagram (الوثيقة لا تذكر config_id إطلاقاً).
+    // oauth/setup بلا config_id: يعلن أن Configuration مطلوب لتطبيق Business
+    // ويوجّه المالك لإنشائه (config_id هو المخرج المُثبت لعطل «حدث خطأ ما»).
     await stop(currentApp.proc);
     const setupMock = await startInstagramMockServer(IG_PORT + 8, createInstagramMock());
     currentApp = startApp(setupMock.base);
@@ -683,12 +683,27 @@ async function integrationTests(): Promise<void> {
     Object.assign(auth, await login());
     const setupRes = await fetch(`${BASE}/api/platforms/instagram/oauth/setup`, { headers: auth });
     const setupBody: any = await setupRes.json();
-    check('oauth/setup يعلن أن config_id غير مطلوب لـInstagram', setupBody.instagramOnboardingFlow?.configIdRequired === false, `configIdRequired=${setupBody.instagramOnboardingFlow?.configIdRequired}`);
-    check('oauth/setup لا يطلب Configuration لـInstagram', !setupBody.loginForBusinessSetup);
+    check('oauth/setup يعلن أن Configuration مطلوب بلا config_id مضبوط', setupBody.instagramOnboardingFlow?.configIdRequired === false && setupBody.instagramOnboardingFlow?.configIdUsed === false, `configIdRequired=${setupBody.instagramOnboardingFlow?.configIdRequired}`);
+    check('oauth/setup يوجّه لإنشاء Configuration لـInstagram', Boolean(setupBody.loginForBusinessSetup?.where?.includes('Configurations')));
     check('oauth/setup يعلن المنتجات المطلوبة', Array.isArray(setupBody.instagramOnboardingFlow?.requiredProducts) && setupBody.instagramOnboardingFlow.requiredProducts.length >= 2);
     check('oauth/setup بلا أي سرّ', !JSON.stringify(setupBody).includes('test-fb-client-secret'));
     check('oauth/setup يُعلن مفتاح الإعداد', setupBody.instagramOnboardingFlow?.envSwitch === 'INSTAGRAM_OAUTH_ONBOARDING');
+    check('oauth/setup يعلن مخرج عطل 1850019', typeof setupBody.instagramOnboardingFlow?.knownIssue === 'string');
     await setupMock.stop();
+
+    // Configuration ID مضبوط: oauth/setup يعلن config_idUsed ومصدر الصلاحيات من
+    // الConfiguration، ولا يُعلن extras (الConfiguration تحدّد تجربة الدخول).
+    await stop(currentApp.proc);
+    const cfgSetupMock = await startInstagramMockServer(IG_PORT + 10, createInstagramMock());
+    currentApp = startApp(cfgSetupMock.base, { INSTAGRAM_LOGIN_CONFIG_ID: '1003753455711313' });
+    check('الخادم يقلع لفحص oauth/setup مع config_id', await waitForHealth(), currentApp.log().slice(0, 300));
+    Object.assign(auth, await login());
+    const cfgSetupBody: any = await (await fetch(`${BASE}/api/platforms/instagram/oauth/setup`, { headers: auth })).json();
+    check('oauth/setup يعلن استخدام config_id', cfgSetupBody.instagramOnboardingFlow?.configIdUsed === true && cfgSetupBody.instagramOnboardingFlow?.configIdRequired === true);
+    check('oauth/setup مع config_id يُلغي extras', cfgSetupBody.instagramOnboardingFlow?.extras === null && cfgSetupBody.instagramOnboardingFlow?.display === null);
+    check('oauth/setup مع config_id: الرمز يعود في سطر الطلب', cfgSetupBody.instagramOnboardingFlow?.responseType === 'code' && cfgSetupBody.instagramOnboardingFlow?.tokenDelivery === 'query_code');
+    check('oauth/setup مع config_id بلا أي سرّ', !JSON.stringify(cfgSetupBody).includes('test-fb-client-secret'));
+    await cfgSetupMock.stop();
 
     // مفتاح البيئة INSTAGRAM_OAUTH_ONBOARDING=false يحوّل الرابط إلى التدفّق
     // العادي (response_type=code) بلا extras — مخرج عطل Meta 1850019 بلا كود جديد.

@@ -112,6 +112,12 @@ function run(): void {
   check('config_id لا يُخِلّ بـresponse_type/state/redirect_uri', cfgParams.response_type === 'code' && cfgParams.state === 'st' && cfgParams.redirect_uri === 'r');
   const igNoCfg = buildAuthorizationParams({ platform: 'instagram', clientId: '145634995501895', redirectUri: 'r', scopes: ['instagram_basic'], state: 'st' });
   check('بلا config_id يبقى scope لـInstagram', igNoCfg.scope === 'instagram_basic' && igNoCfg.config_id === undefined);
+  // config_id مُطبَّق: يحلّ محل scope **و**يُلغي extras/display (الConfiguration تحدّد
+  // الصلاحيات وتجربة الدخول). هذا هو المخرج المُثبت لتطبيق Meta من نوع Business.
+  const igCfg = buildAuthorizationParams({ platform: 'instagram', clientId: '145634995501895', redirectUri: 'r', scopes: ['instagram_basic'], state: 'st', loginConfigId: '1003753455711313', instagramOnboarding: true });
+  check('Instagram: config_id يحلّ محل scope', igCfg.config_id === '1003753455711313' && igCfg.scope === undefined);
+  check('Instagram: config_id يُلغي extras/display أيضاً', igCfg.extras === undefined && igCfg.display === undefined && igCfg.response_type === 'code');
+  check('Instagram: config_id لا يُخِلّ بـstate/redirect_uri', igCfg.state === 'st' && igCfg.redirect_uri === 'r' && igCfg.client_id === '145634995501895');
   const threadsParams = buildAuthorizationParams({ platform: 'threads', clientId: 'c', redirectUri: 'r', scopes: ['threads_basic'], state: 'st', loginConfigId: '1003753455711313' });
   check('Threads لا يستخدم config_id (ليس مسار Facebook Login)', threadsParams.config_id === undefined && threadsParams.scope === 'threads_basic');
   // صيغة Configuration ID: أرقام فقط؛ أي مسافة/حرف يُرفض.

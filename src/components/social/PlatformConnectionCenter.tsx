@@ -86,7 +86,7 @@ const OAuthSetupPanel: React.FC<{ platform: string }> = ({ platform }) => {
           {info.dialogPhase && (
             <p className="text-slate-400">
               موضع الفحص: {info.dialogPhase === 'rejected_before_login' ? 'رُفض قبل تسجيل الدخول'
-                : info.dialogPhase === 'awaiting_owner_login' ? 'توقّف عند شاشة الدخول — الرفض (إن وُجد) يقع بعد الدخول في Use Case/Configuration'
+                : info.dialogPhase === 'awaiting_owner_login' ? 'توقّف عند شاشة الدخول — الرفض (إن وُجد) يقع بعد الدخول: لتطبيق Business اضبط Configuration ID (config_id)، وفعّل الصلاحيات في Use Case'
                 : info.dialogPhase === 'probe_unavailable' ? 'تعذّر الفحص (شبكة)'
                 : 'لا رفض مُرصود'}
             </p>
@@ -117,6 +117,11 @@ const OAuthSetupPanel: React.FC<{ platform: string }> = ({ platform }) => {
           <span className={`px-2 py-0.5 rounded-md border font-bold inline-block ${info.loginConfigIdUsed ? 'bg-emerald-500/10 text-emerald-300 border-emerald-600/30' : info.loginConfigIdConfigured ? 'bg-rose-500/10 text-rose-300 border-rose-600/30' : 'bg-amber-500/10 text-amber-300 border-amber-600/30'}`}>
             {info.loginConfigIdUsed ? 'config_id مُفعَّل (يُرسَل بدل scope)' : info.loginConfigIdConfigured ? 'config_id مضبوط لكن غير صالح' : 'config_id غير مضبوط (يُستخدم scope)'}
           </span>
+          {!info.loginConfigIdUsed && (
+            <p className="text-amber-200">
+              إن كان تطبيق Meta من نوع Business فالحوار يُوجَّه إلى Business Login الذي يقرأ الصلاحيات من Configuration لا من scope، فتظهر صفحة «حدث خطأ ما» <span className="font-bold">بعد</span> تسجيل الدخول. الحل المُثبت: أنشئ Configuration واضبط معرّفها في <code dir="ltr" className="text-amber-100">{info.loginConfigIdEnvNames?.[0]}</code>.
+            </p>
+          )}
           {Array.isArray(info.loginConfigIdProblems) && info.loginConfigIdProblems.length > 0 && (
             <p className="text-rose-300">{info.loginConfigIdProblems.join(' ')}</p>
           )}

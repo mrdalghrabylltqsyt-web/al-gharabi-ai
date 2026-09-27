@@ -1752,3 +1752,57 @@ state يبقى 400؛ ومجموعة `6أ` تثبت config_id في التدفّق
 `INSTAGRAM_OAUTH_ONBOARDING=false` في Render وأعد المحاولة (يتحوّل للتدفّق العادي بلا
 `extras` — مخرج عطل Meta 1850019) بلا نشر جديد.
 
+
+
+## الجذر المُثبت لعطل «حدث خطأ ما» في Instagram — config_id إلزامي لتطبيق Business (2026-09-27)
+
+**السؤال المطروح:** هل يجب إضافة `config_id`؟ نعم — أُثبت ذلك بالكود والسلوك الحي ووثيقة Meta،
+لا بالتخمين.
+
+**الدليل الحي (بلا أي سرّ):** رابط حوار Meta لمعرّفات تطبيق صالحة متعددة (`145634995501895`
+و`124024574287414` و`442224939723604`) أعاد:
+- بلا `scope`: 302 إلى `login.php` مع `is_business_login=0`.
+- مع `scope` (أي صلاحية): 302 إلى `login.php` مع **`is_business_login=1`**.
+- مع `config_id`: 302 إلى `login.php` مع `is_business_login=0`.
+
+أي أن Meta توجّه الحوار الذي يحمل `scope` إلى **واجهة Business Login**. وهذه الواجهة تقرأ
+الصلاحيات من **Configuration عبر `config_id`** لا من `scope` (وثيقة Facebook Login for
+Business: «Business Login uses a Configuration and a config_id instead of scope»).
+فإن غاب `config_id` بقيت الصلاحيات **فارغة**، فيعرض الحوار بعد تسجيل الدخول صفحة Meta
+العامة «Sorry, something went wrong» («This app needs at least one supported permission»)
+ولا يعود أي `code`/رمز — وهو بالضبط عطل الإنتاج.
+
+**الوضع في الإنتاج قبل الإصلاح:** `loginConfigIdUsed=false` و`permissionSource=oauth_scope_parameter`
+(لا Configuration ID مضبوط)، والرابط يحمل `scope` على واجهة Business Login => لا صلاحيات =>
+رفض بعد الدخول. كان ادّعاء `oauth/setup` أن config_id «غير مطلوب لـInstagram» **خطأً**.
+
+**الإصلاح (مصدر واحد):**
+- `engine/social/oauth.ts`: عند وجود `config_id` صالح لـFacebook **أو Instagram** يُمرَّر
+  `config_id` **بدل** `scope`، ويُعاد **قبل** فرع `extras/display` فلا يُنتج رابط هجين
+  (`config_id` + `extras`) أبداً. بلا `config_id` يبقى المسار الموثّق (`scope` + extras).
+- `server.ts`: `effectiveLoginConfigIdFor` يعيد المعرّف المضبوط الصالح لأي من المنصتين (لم
+  يعد يُتجاهل لـInstagram)، ودليل `loginForBusinessSetup` يُعرض لـFacebook وInstagram معاً.
+  `oauth/setup` يعلن `configIdRequired`/`configIdUsed`/`configIdSource`، وreadiness/health
+  يعلنان `configurationRequired`/`configurationReady`/`nextAction` بصراحة.
+- الواجهة: `PlatformConnectionCenter` يعرض تنبيهاً صريحاً عندما لا يكون `config_id` مفعّلاً،
+  ويشرح أن تطبيق Business يرفض `scope` بلا Configuration، مع خطوات الإنشاء.
+- `.env.example` و`render.yaml` يوثّقان أن `INSTAGRAM_LOGIN_CONFIG_ID` **مطلوب** لتطبيق Business.
+
+**ما لم يتغيّر:** التدفّق الموثّق بلا config_id (display/extras/response_type=token + scope)
+يبقى كما هو ويُستخدم حين لا يوجد config_id؛ `INSTAGRAM_REQUIRED_SCOPES` تبقى 9؛ Facebook/YouTube/
+Telegram/TikTok بلا تغيير (انحدارها ناجح).
+
+اختبارات: `instagram.connector.test.ts` = **202 فحصاً** (مجموعة `6أ` تثبت أن config_id يحلّ محل
+`scope` ويُلغي extras/display حتى مع المفتاح مفعّلاً، وأن الرابط النهائي نظيف بلا `scope`،
+و`oauth/setup` يعلن config_id المُطبَّق ومصدر الصلاحيات من الConfiguration). `platform.foundation.test.ts`
+= 94 فحصاً (وحدة: config_id لـInstagram يحلّ محل scope ويُلغي extras). `final-audit` = **398 فحصاً**
+(`oauth-config-id-overrides-extras`, `instagram-config-id-required`, `instagram-config-ready-flag`،
+وحذف الفحص القديم الذي كان يؤكّد «config_id غير مطلوب»).
+
+**نقطة توقف المالك (إجراء خارجي واحد لا ينفّذه أي وكيل):** في Meta App Dashboard →
+**Facebook Login for Business → Configurations** أنشئ Configuration (نوع User access token)
+بالصلاحيات الثمانية التي يعرضها `/api/platforms/instagram/oauth/setup` في حقل `scopes`، ثم انسخ
+**Configuration ID** (أرقام فقط) وضعه في Render → Environment باسم `INSTAGRAM_LOGIN_CONFIG_ID`
+(أو `FACEBOOK_LOGIN_CONFIG_ID`)، وأضف Redirect URI المسجّل في `oauth/setup` إلى Valid OAuth
+Redirect URIs، ثم أعد النشر واضغط «بدء الربط». بعد الإصلاح يقرأ الرمز من سطر الطلب
+(`response_type=code`) ويُكمل الربط ويُحفظ مشفّراً في Postgres.
