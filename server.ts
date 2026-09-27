@@ -1152,6 +1152,9 @@ function recordVerificationMismatch(pathname: string): void {
   const name = String(pathname || "").replace(/^\//, "");
   const token = /^tiktok([A-Za-z0-9]{8,128})\.txt$/.exec(name)?.[1] || "";
   lastVerificationMismatch = { requestedToken: token, requestedFilename: name, at: new Date().toISOString() };
+  // سطر آمن (بلا سرّ) يبقى في سجلات الاستضافة بعد انتهاء العملية، فيُقرأ انحراف
+  // الرمز من السجلات مباشرة عند فشل تحقق TikTok رغم وجود الملف.
+  console.warn(`[الغرابي AI] tiktok-verification-mismatch requested=${name} served=${effectiveVerificationFile().filename}`);
 }
 
 /**
