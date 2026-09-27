@@ -16,6 +16,7 @@ import {
   Clock,
   XCircle,
   Music2,
+  Youtube,
   PlugZap,
   Loader2,
 } from 'lucide-react';
@@ -308,6 +309,57 @@ export const SocialManagerView: React.FC = () => {
     try { setTtPublishStatus(await apiService.getTikTokPublishStatus(ttPublishId.trim())); }
     catch (err: any) { showToast(err?.message || 'تعذر استعلام حالة النشر'); }
     finally { setTtBusy(false); }
+  };
+
+  // ---- موصل YouTube الحقيقي: اتصال + قناة/فيديوهات/تحليلات + تعليقات/رد ----
+  const [ytBusy, setYtBusy] = useState(false);
+  const [ytStatus, setYtStatus] = useState<any | null>(null);
+  const [ytChannel, setYtChannel] = useState<any | null>(null);
+  const [ytVideos, setYtVideos] = useState<any[] | null>(null);
+  const [ytAnalytics, setYtAnalytics] = useState<any | null>(null);
+  const [ytVideoId, setYtVideoId] = useState('');
+  const [ytIngestMsg, setYtIngestMsg] = useState('');
+
+  const loadYouTubeStatus = useCallback(async () => {
+    try { setYtStatus(await apiService.getYouTubeStatus()); }
+    catch { setYtStatus(null); }
+  }, []);
+  useEffect(() => { void loadYouTubeStatus(); }, [loadYouTubeStatus]);
+
+  const connectYouTube = async () => {
+    setYtBusy(true);
+    try {
+      const res = await apiService.startPlatformOAuth('youtube');
+      if (res?.authorizationUrl) { window.location.href = res.authorizationUrl; return; }
+      showToast('تم بدء ربط YouTube.');
+    } catch (err: any) {
+      showToast((err?.code ? `[${err.code}] ` : '') + (err?.message || 'تعذر بدء ربط YouTube'));
+    } finally { setYtBusy(false); }
+  };
+  const loadYouTubeChannel = async () => {
+    setYtBusy(true);
+    try { setYtChannel(await apiService.getYouTubeChannel()); }
+    catch (err: any) { showToast(err?.message || 'تعذر جلب قناة YouTube'); }
+    finally { setYtBusy(false); }
+  };
+  const loadYouTubeVideos = async () => {
+    setYtBusy(true);
+    try { const r = await apiService.getYouTubeVideos(10); setYtVideos(r.videos || []); }
+    catch (err: any) { showToast(err?.message || 'تعذر جلب فيديوهات YouTube'); }
+    finally { setYtBusy(false); }
+  };
+  const loadYouTubeAnalytics = async () => {
+    setYtBusy(true);
+    try { setYtAnalytics(await apiService.getYouTubeAnalytics()); }
+    catch (err: any) { showToast(err?.message || 'تعذر جلب تحليلات YouTube'); }
+    finally { setYtBusy(false); }
+  };
+  const ingestYouTubeComments = async () => {
+    if (!ytVideoId.trim()) { showToast('أدخل معرّف الفيديو (videoId) أولاً.'); return; }
+    setYtBusy(true); setYtIngestMsg('');
+    try { const r = await apiService.ingestYouTubeComments(ytVideoId.trim()); setYtIngestMsg(`سُجّل ${r.ingested} تعليقاً حقيقياً (مكرر: ${r.duplicates}).`); }
+    catch (err: any) { showToast(err?.message || 'تعذر تسجيل تعليقات YouTube'); }
+    finally { setYtBusy(false); }
   };
 
   return (
@@ -898,6 +950,101 @@ export const SocialManagerView: React.FC = () => {
 
         <p className="text-[10px] text-slate-500">
           التعليقات والرسائل المباشرة <span className="font-bold">غير متاحة</span> عبر واجهة TikTok العامة (Display API / Content Posting API) — لا يوفّر النظام أي قراءة أو رد عليها ولا يدّعي ذلك.
+        </p>
+      </div>
+
+
+      {/* YouTube — خامس موصل حقيقي (Google OAuth 2.0 + Data API v3) */}
+      <div className="p-6 rounded-2xl bg-slate-900 border border-slate-800 space-y-4">
+        <div className="flex items-center justify-between gap-3 border-b border-slate-800 pb-3">
+          <h3 className="text-sm font-bold text-white flex items-center gap-2">
+            <Youtube className="w-4 h-4 text-red-500" /> موصل YouTube (تكامل خارجي حقيقي)
+          </h3>
+          <button onClick={() => void connectYouTube()} disabled={ytBusy}
+            className="px-4 py-2 rounded-xl bg-red-600 hover:bg-red-500 disabled:opacity-50 text-white text-xs font-bold cursor-pointer inline-flex items-center gap-1.5">
+            {ytBusy ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <PlugZap className="w-3.5 h-3.5" />} ربط YouTube
+          </button>
+        </div>
+
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-[11px]">
+          <div className="p-3 rounded-xl bg-slate-950 border border-slate-800 space-y-1">
+            <div>الحالة الصادقة: <span className={
+              ytStatus?.stateTone === 'operational' ? 'text-emerald-400 font-bold'
+                : ytStatus?.stateTone === 'verified' ? 'text-emerald-300 font-bold'
+                  : ytStatus?.stateTone === 'transitional' ? 'text-sky-300 font-bold'
+                    : ytStatus?.stateTone === 'blocked' ? 'text-amber-300 font-bold'
+                      : 'text-slate-400 font-bold'}>
+              {ytStatus?.stateLabelAr || ytStatus?.state || '—'}
+            </span> <code dir="ltr" className="text-slate-500 text-[9px]">{ytStatus?.state || ''}</code></div>
+            {ytStatus?.stateReason && <div className="text-slate-400">{ytStatus.stateReason}</div>}
+            {ytStatus?.nextAction && <div className="text-slate-300">الإجراء التالي: {ytStatus.nextAction}</div>}
+            <div>حالة الاتصال: <span className={ytStatus?.providerVerified ? 'text-emerald-400 font-bold' : ytStatus?.connected ? 'text-indigo-300 font-bold' : 'text-slate-400 font-bold'}>
+              {ytStatus?.providerVerified ? 'متصلة وموثقة (channelId)' : ytStatus?.connected ? 'متصلة — بانتظار التوثيق' : 'غير متصلة'}
+            </span></div>
+            {ytStatus?.channelTitle && <div>القناة: <span className="font-mono text-slate-200">{ytStatus.channelTitle}</span></div>}
+            <div>التوكن: <span className={ytStatus?.tokenStored ? 'text-emerald-400 font-bold' : 'text-slate-400 font-bold'}>{ytStatus?.tokenStored ? 'مخزّن مشفّراً' : 'غير مخزّن'}</span></div>
+            <div>refresh token: <span className={ytStatus?.refreshTokenStored ? 'text-emerald-400 font-bold' : 'text-slate-400 font-bold'}>{ytStatus?.refreshTokenStored ? 'موجود' : 'غير موجود'}</span></div>
+            {ytStatus?.tokenExpired && <div className="text-rose-300 font-bold">التوكن منتهٍ — يلزم تجديد تلقائي أو إعادة ربط.</div>}
+            {ytStatus?.quotaExceeded && <div className="text-amber-300 font-bold">استُهلكت حصة YouTube Data API اليومية (quotaExceeded).</div>}
+          </div>
+          <div className="p-3 rounded-xl bg-slate-950 border border-slate-800 space-y-1">
+            <div>النطاقات المطلوبة: <code dir="ltr" className="text-slate-300">{(ytStatus?.requestedScopes || []).join(', ') || '—'}</code></div>
+            <div>رابط إشعارات PubSubHubbub: <code dir="ltr" className="text-slate-300 break-all">{ytStatus?.webhookUrl || '—'}</code></div>
+            <div>الحصة اليومية (وحدات): <code dir="ltr" className="text-slate-300">{ytStatus?.dailyQuotaUnits ?? '—'}</code></div>
+            {ytStatus?.publishCapability === 'REQUIRES_AUDIT' && <div className="text-amber-300 font-bold">رفع الفيديو يحتاج مراجعة Google (app verification).</div>}
+          </div>
+        </div>
+
+        {/* مصفوفة القدرات الرسمية */}
+        {ytStatus?.capabilityMatrix && (
+          <div className="pt-3 border-t border-slate-800 space-y-2">
+            <h4 className="text-xs font-bold text-slate-200">مصفوفة القدرات الرسمية (لا تُختلق قدرة غير مدعومة)</h4>
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-1.5 text-[10px]">
+              {Object.entries(ytStatus.capabilityMatrix).map(([key, v]: any) => (
+                <div key={key} className="p-2 rounded-lg bg-slate-950 border border-slate-800 flex items-center justify-between gap-2">
+                  <span className="text-slate-300">{v.label || key}</span>
+                  <span className={`font-bold ${v.status === 'SUPPORTED' ? 'text-emerald-400' : v.status === 'NOT_AVAILABLE_BY_PUBLIC_API' ? 'text-slate-500' : 'text-amber-400'}`}>{v.status}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* القناة/الفيديوهات/التحليلات/التعليقات */}
+        {ytStatus?.connected && (
+          <div className="pt-3 border-t border-slate-800 space-y-3">
+            <div className="flex flex-wrap items-center gap-2">
+              <button onClick={() => void loadYouTubeChannel()} disabled={ytBusy} className="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 text-[11px] font-bold cursor-pointer">جلب القناة والإحصاءات</button>
+              <button onClick={() => void loadYouTubeVideos()} disabled={ytBusy} className="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 text-[11px] font-bold cursor-pointer">جلب الفيديوهات</button>
+              <button onClick={() => void loadYouTubeAnalytics()} disabled={ytBusy} className="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 text-[11px] font-bold cursor-pointer">التحليلات</button>
+            </div>
+            {ytChannel?.channel && (
+              <div className="text-[11px] text-slate-300">القناة: <span className="font-mono">{ytChannel.channel.title || ytChannel.channel.channelId}</span> • مشاهدات: <span className="font-mono">{ytChannel.channel.statistics?.viewCount ?? '—'}</span> • مشتركون: <span className="font-mono">{ytChannel.channel.statistics?.hiddenSubscriberCount ? 'مخفي' : (ytChannel.channel.statistics?.subscriberCount ?? '—')}</span> • فيديوهات: <span className="font-mono">{ytChannel.channel.statistics?.videoCount ?? '—'}</span></div>
+            )}
+            {ytAnalytics?.channelStatistics && (
+              <div className="text-[11px] text-slate-300">تحليلات القناة: مشاهدات <span className="font-mono">{ytAnalytics.channelStatistics.viewCount ?? '—'}</span> • فيديوهات <span className="font-mono">{ytAnalytics.channelStatistics.videoCount ?? '—'}</span></div>
+            )}
+            {ytVideos && Array.isArray(ytVideos) && ytVideos.length > 0 && (
+              <div className="space-y-1">
+                {ytVideos.slice(0, 6).map((v: any) => (
+                  <div key={v.videoId} className="text-[11px] text-slate-300 truncate">🎬 <code dir="ltr" className="text-slate-400">{v.videoId}</code> — {v.title} • مشاهدات: {v.statistics?.viewCount ?? '—'} • إعجابات: {v.statistics?.likeCount ?? '—'} • تعليقات: {v.statistics?.commentCount ?? '—'}</div>
+                ))}
+                <p className="text-[10px] text-slate-500">search يستهلك 100 وحدة حصة لكل نداء.</p>
+              </div>
+            )}
+            <div className="flex flex-wrap items-center gap-2 pt-2 border-t border-slate-800">
+              <input value={ytVideoId} onChange={(e) => setYtVideoId(e.target.value)} placeholder="videoId"
+                dir="ltr" className="px-3 py-2 rounded-xl bg-slate-950 border border-slate-700 text-xs text-white w-64" />
+              <button onClick={() => void ingestYouTubeComments()} disabled={ytBusy}
+                className="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 text-[11px] font-bold cursor-pointer">تسجيل تعليقات الفيديو</button>
+              {ytIngestMsg && <span className="text-[11px] text-slate-300">{ytIngestMsg}</span>}
+            </div>
+            <p className="text-[10px] text-slate-500">بعد تسجيل التعليقات تظهر في «التعليقات» ويمكن الرد عليها فعلياً عبر comments.insert (بعد حارس السلامة والموافقة).</p>
+          </div>
+        )}
+
+        <p className="text-[10px] text-slate-500">
+          القناة/القوائم/الفيديوهات/التعليقات/الرد/التحليلات كلها من YouTube Data API v3 الرسمي. رفع الفيديو <span className="font-bold">يحتاج مراجعة Google</span> (نطاق youtube.upload) قبل النشر العام.
         </p>
       </div>
 

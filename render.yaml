@@ -65,6 +65,15 @@ services:
         sync: false
       - key: GOOGLE_OAUTH_CLIENT_SECRET
         sync: false
+      # YouTube (Google OAuth 2.0 + Data API v3):
+      # Optional comma override of YouTube scopes (only official, implemented
+      # scopes are accepted; the required set is always included).
+      - key: YOUTUBE_OAUTH_SCOPES
+        sync: false
+      # PubSubHubbub webhook HMAC-SHA1 secret. While unset, inbound YouTube
+      # notifications are rejected (503) to protect the system.
+      - key: YOUTUBE_PUBSUB_SECRET
+        sync: false
       # TikTok (Login Kit + Content Posting API + Display API):
       - key: TIKTOK_CLIENT_KEY
         sync: false

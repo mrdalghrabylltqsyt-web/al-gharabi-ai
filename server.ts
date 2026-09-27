@@ -90,6 +90,36 @@ import {
   type TikTokTruthfulState,
 } from "./engine/social/tiktokState";
 import {
+  YouTubeClient,
+  YOUTUBE_CAPABILITY_MATRIX,
+  YOUTUBE_REQUIRED_SCOPES,
+  YOUTUBE_DEFAULT_DAILY_QUOTA_UNITS,
+  YOUTUBE_QUOTA_COST,
+  YOUTUBE_PUBSUB_SIGNATURE_HEADER,
+  resolveYouTubeScopes,
+  youtubeExtraScopes,
+  isPlausibleYouTubeClientId,
+  fingerprintValue,
+  quotaUnitsFor,
+  youtubeCapabilityStatus,
+  youtubeCapabilityNeedsAudit,
+  classifyYouTubeError,
+  describeYouTubeErrorKind,
+  parseYouTubePushNotification,
+  youtubePushExternalId,
+  buildYouTubeAuthorizationUrl,
+  YOUTUBE_API_BASE as YOUTUBE_DATA_API_BASE,
+  type YouTubeFetch,
+  type YouTubeErrorKind,
+} from "./engine/social/youtube";
+import {
+  resolveYouTubeState,
+  YOUTUBE_TRUTHFUL_STATES,
+  YOUTUBE_STATE_LABELS_AR,
+  YOUTUBE_STATE_TONES,
+  type YouTubeTruthfulState,
+} from "./engine/social/youtubeState";
+import {
   createOAuthState,
   createPkcePair,
   requiresPkce,
@@ -350,7 +380,7 @@ function loadPersistentState(snapshot?: any): any {
     if (!raw.schemaVersion) raw.schemaVersion = 1;
     const users = Array.isArray(raw.users) ? raw.users : [defaultOwner];
     if (!users.some((u: ServerUser) => u.id === "owner")) users.unshift(defaultOwner);
-    return { users, revokedSessions: Array.isArray(raw.revokedSessions) ? raw.revokedSessions : [], userRevocations: Array.isArray(raw.userRevocations) ? raw.userRevocations : [], audit: Array.isArray(raw.audit) ? raw.audit.slice(0, 200) : [], jobs: Array.isArray(raw.jobs) ? raw.jobs.slice(0, 200) : [], platformConnections: Array.isArray(raw.platformConnections) ? raw.platformConnections : [], workspace: raw.workspace && typeof raw.workspace === "object" ? { showroom: raw.workspace.showroom || {}, products: Array.isArray(raw.workspace.products) ? raw.workspace.products.slice(0, 1000) : [], posts: Array.isArray(raw.workspace.posts) ? raw.workspace.posts.slice(0, 1000) : [], conversations: Array.isArray(raw.workspace.conversations) ? raw.workspace.conversations.slice(0, 1000) : [], installmentPlans: Array.isArray(raw.workspace.installmentPlans) ? raw.workspace.installmentPlans.slice(0, 200) : [], leads: Array.isArray(raw.workspace.leads) ? raw.workspace.leads.slice(0, 2000) : [], tasks: Array.isArray(raw.workspace.tasks) ? raw.workspace.tasks.slice(0, 1000) : [], sales: Array.isArray(raw.workspace.sales) ? raw.workspace.sales.slice(0, 5000) : [], payments: Array.isArray(raw.workspace.payments) ? raw.workspace.payments.slice(0, 10000) : [], inventoryMovements: Array.isArray(raw.workspace.inventoryMovements) ? raw.workspace.inventoryMovements.slice(0, 20000) : [], suppliers: Array.isArray(raw.workspace.suppliers) ? raw.workspace.suppliers.slice(0, 1000) : [], purchases: Array.isArray(raw.workspace.purchases) ? raw.workspace.purchases.slice(0, 5000) : [], expenses: Array.isArray(raw.workspace.expenses) ? raw.workspace.expenses.slice(0, 10000) : [], contracts: Array.isArray(raw.workspace.contracts) ? raw.workspace.contracts.slice(0, 5000) : [], installmentSchedules: Array.isArray(raw.workspace.installmentSchedules) ? raw.workspace.installmentSchedules.slice(0, 20000) : [], notifications: Array.isArray(raw.workspace.notifications) ? raw.workspace.notifications.slice(0, 10000) : [], webhookEvents: Array.isArray(raw.workspace.webhookEvents) ? raw.workspace.webhookEvents.slice(0, 10000) : [], providerEvents: Array.isArray(raw.workspace.providerEvents) ? raw.workspace.providerEvents.slice(0, 10000) : [], marketingBriefs: Array.isArray(raw.workspace.marketingBriefs) ? raw.workspace.marketingBriefs.slice(0, 2000) : [], marketingCampaigns: Array.isArray(raw.workspace.marketingCampaigns) ? raw.workspace.marketingCampaigns.slice(0, 1000) : [], socialComments: Array.isArray(raw.workspace.socialComments) ? raw.workspace.socialComments.slice(0, 10000) : [], socialReplies: Array.isArray(raw.workspace.socialReplies) ? raw.workspace.socialReplies.slice(0, 5000) : [], socialApprovals: Array.isArray(raw.workspace.socialApprovals) ? raw.workspace.socialApprovals.slice(0, 5000) : [], publishRecords: Array.isArray(raw.workspace.publishRecords) ? raw.workspace.publishRecords.slice(0, 5000) : [], performanceRecords: Array.isArray(raw.workspace.performanceRecords) ? raw.workspace.performanceRecords.slice(0, 20000) : [], marketingDecisions: Array.isArray(raw.workspace.marketingDecisions) ? raw.workspace.marketingDecisions.slice(0, 2000) : [], strategiesTested: Array.isArray(raw.workspace.strategiesTested) ? raw.workspace.strategiesTested.slice(0, 2000) : [], telegramUpdateIds: Array.isArray(raw.workspace.telegramUpdateIds) ? raw.workspace.telegramUpdateIds.slice(0, 20000) : [], facebookEventIds: Array.isArray(raw.workspace.facebookEventIds) ? raw.workspace.facebookEventIds.slice(0, 20000) : [], instagramEventIds: Array.isArray(raw.workspace.instagramEventIds) ? raw.workspace.instagramEventIds.slice(0, 20000) : [], tiktokEventIds: Array.isArray(raw.workspace.tiktokEventIds) ? raw.workspace.tiktokEventIds.slice(0, 20000) : [], providerTokens: raw.workspace.providerTokens && typeof raw.workspace.providerTokens === "object" ? raw.workspace.providerTokens : {} } : { showroom: {}, products: [], posts: [], conversations: [], installmentPlans: [], leads: [], tasks: [], sales: [], payments: [], inventoryMovements: [], suppliers: [], purchases: [], expenses: [], contracts: [], installmentSchedules: [], notifications: [], webhookEvents: [], providerEvents: [], marketingBriefs: [], marketingCampaigns: [], socialComments: [], socialReplies: [], socialApprovals: [], publishRecords: [], performanceRecords: [], marketingDecisions: [], strategiesTested: [], telegramUpdateIds: [], facebookEventIds: [], instagramEventIds: [], tiktokEventIds: [], providerTokens: {} } };
+    return { users, revokedSessions: Array.isArray(raw.revokedSessions) ? raw.revokedSessions : [], userRevocations: Array.isArray(raw.userRevocations) ? raw.userRevocations : [], audit: Array.isArray(raw.audit) ? raw.audit.slice(0, 200) : [], jobs: Array.isArray(raw.jobs) ? raw.jobs.slice(0, 200) : [], platformConnections: Array.isArray(raw.platformConnections) ? raw.platformConnections : [], workspace: raw.workspace && typeof raw.workspace === "object" ? { showroom: raw.workspace.showroom || {}, products: Array.isArray(raw.workspace.products) ? raw.workspace.products.slice(0, 1000) : [], posts: Array.isArray(raw.workspace.posts) ? raw.workspace.posts.slice(0, 1000) : [], conversations: Array.isArray(raw.workspace.conversations) ? raw.workspace.conversations.slice(0, 1000) : [], installmentPlans: Array.isArray(raw.workspace.installmentPlans) ? raw.workspace.installmentPlans.slice(0, 200) : [], leads: Array.isArray(raw.workspace.leads) ? raw.workspace.leads.slice(0, 2000) : [], tasks: Array.isArray(raw.workspace.tasks) ? raw.workspace.tasks.slice(0, 1000) : [], sales: Array.isArray(raw.workspace.sales) ? raw.workspace.sales.slice(0, 5000) : [], payments: Array.isArray(raw.workspace.payments) ? raw.workspace.payments.slice(0, 10000) : [], inventoryMovements: Array.isArray(raw.workspace.inventoryMovements) ? raw.workspace.inventoryMovements.slice(0, 20000) : [], suppliers: Array.isArray(raw.workspace.suppliers) ? raw.workspace.suppliers.slice(0, 1000) : [], purchases: Array.isArray(raw.workspace.purchases) ? raw.workspace.purchases.slice(0, 5000) : [], expenses: Array.isArray(raw.workspace.expenses) ? raw.workspace.expenses.slice(0, 10000) : [], contracts: Array.isArray(raw.workspace.contracts) ? raw.workspace.contracts.slice(0, 5000) : [], installmentSchedules: Array.isArray(raw.workspace.installmentSchedules) ? raw.workspace.installmentSchedules.slice(0, 20000) : [], notifications: Array.isArray(raw.workspace.notifications) ? raw.workspace.notifications.slice(0, 10000) : [], webhookEvents: Array.isArray(raw.workspace.webhookEvents) ? raw.workspace.webhookEvents.slice(0, 10000) : [], providerEvents: Array.isArray(raw.workspace.providerEvents) ? raw.workspace.providerEvents.slice(0, 10000) : [], marketingBriefs: Array.isArray(raw.workspace.marketingBriefs) ? raw.workspace.marketingBriefs.slice(0, 2000) : [], marketingCampaigns: Array.isArray(raw.workspace.marketingCampaigns) ? raw.workspace.marketingCampaigns.slice(0, 1000) : [], socialComments: Array.isArray(raw.workspace.socialComments) ? raw.workspace.socialComments.slice(0, 10000) : [], socialReplies: Array.isArray(raw.workspace.socialReplies) ? raw.workspace.socialReplies.slice(0, 5000) : [], socialApprovals: Array.isArray(raw.workspace.socialApprovals) ? raw.workspace.socialApprovals.slice(0, 5000) : [], publishRecords: Array.isArray(raw.workspace.publishRecords) ? raw.workspace.publishRecords.slice(0, 5000) : [], performanceRecords: Array.isArray(raw.workspace.performanceRecords) ? raw.workspace.performanceRecords.slice(0, 20000) : [], marketingDecisions: Array.isArray(raw.workspace.marketingDecisions) ? raw.workspace.marketingDecisions.slice(0, 2000) : [], strategiesTested: Array.isArray(raw.workspace.strategiesTested) ? raw.workspace.strategiesTested.slice(0, 2000) : [], telegramUpdateIds: Array.isArray(raw.workspace.telegramUpdateIds) ? raw.workspace.telegramUpdateIds.slice(0, 20000) : [], facebookEventIds: Array.isArray(raw.workspace.facebookEventIds) ? raw.workspace.facebookEventIds.slice(0, 20000) : [], instagramEventIds: Array.isArray(raw.workspace.instagramEventIds) ? raw.workspace.instagramEventIds.slice(0, 20000) : [], tiktokEventIds: Array.isArray(raw.workspace.tiktokEventIds) ? raw.workspace.tiktokEventIds.slice(0, 20000) : [], youtubeEventIds: Array.isArray(raw.workspace.youtubeEventIds) ? raw.workspace.youtubeEventIds.slice(0, 20000) : [], providerTokens: raw.workspace.providerTokens && typeof raw.workspace.providerTokens === "object" ? raw.workspace.providerTokens : {} } : { showroom: {}, products: [], posts: [], conversations: [], installmentPlans: [], leads: [], tasks: [], sales: [], payments: [], inventoryMovements: [], suppliers: [], purchases: [], expenses: [], contracts: [], installmentSchedules: [], notifications: [], webhookEvents: [], providerEvents: [], marketingBriefs: [], marketingCampaigns: [], socialComments: [], socialReplies: [], socialApprovals: [], publishRecords: [], performanceRecords: [], marketingDecisions: [], strategiesTested: [], telegramUpdateIds: [], facebookEventIds: [], instagramEventIds: [], tiktokEventIds: [], providerTokens: {} } };
   } catch {
     return { users: [defaultOwner], revokedSessions: [], userRevocations: [], audit: [], jobs: [], workspace: { showroom: {}, products: [], posts: [], conversations: [], installmentPlans: [], leads: [], tasks: [], sales: [], payments: [], inventoryMovements: [], suppliers: [], purchases: [], expenses: [], contracts: [], installmentSchedules: [], notifications: [], webhookEvents: [], providerEvents: [], marketingBriefs: [], marketingCampaigns: [], socialComments: [], socialReplies: [], socialApprovals: [], publishRecords: [], performanceRecords: [], marketingDecisions: [], strategiesTested: [], telegramUpdateIds: [], providerTokens: {} } };
   }
@@ -1130,7 +1160,7 @@ function loginConfigEnvNames(platform: string): string[] {
 }
 
 const OAUTH_CONFIG: Record<string, any> = {
-  youtube: { provider: "google", auth: "https://accounts.google.com/o/oauth2/v2/auth", token: "https://oauth2.googleapis.com/token", clientId: envSecret("GOOGLE_OAUTH_CLIENT_ID") || envSecret("GOOGLE_CLIENT_ID"), clientSecret: envSecret("GOOGLE_OAUTH_CLIENT_SECRET"), scopes: ["https://www.googleapis.com/auth/youtube.upload"] },
+  youtube: { provider: "google", auth: "https://accounts.google.com/o/oauth2/v2/auth", token: "https://oauth2.googleapis.com/token", clientId: envSecret("GOOGLE_OAUTH_CLIENT_ID") || envSecret("GOOGLE_CLIENT_ID"), clientSecret: envSecret("GOOGLE_OAUTH_CLIENT_SECRET") || envSecret("GOOGLE_CLIENT_SECRET"), scopes: [...YOUTUBE_REQUIRED_SCOPES] },
   google_business: { provider: "google", auth: "https://accounts.google.com/o/oauth2/v2/auth", token: "https://oauth2.googleapis.com/token", clientId: envSecret("GOOGLE_OAUTH_CLIENT_ID") || envSecret("GOOGLE_CLIENT_ID"), clientSecret: envSecret("GOOGLE_OAUTH_CLIENT_SECRET"), scopes: ["https://www.googleapis.com/auth/business.manage"] },
   tiktok: { provider: "tiktok", auth: `https://www.tiktok.com/v2/auth/authorize/`, token: "https://open.tiktokapis.com/v2/oauth/token/", clientId: envSecret("TIKTOK_CLIENT_KEY"), clientSecret: envSecret("TIKTOK_CLIENT_SECRET"), scopes: [...TIKTOK_REQUIRED_SCOPES] },
   // business_management إلزامي منذ Graph v17 لعرض صفحات Business Manager عبر
@@ -1764,6 +1794,189 @@ async function tiktokClientKeyDiagnosis(): Promise<any> {
   };
 }
 
+// -------------------------------------------------------------
+// YouTube — خامس موصل اجتماعي حقيقي (Google OAuth 2.0 + Data API v3).
+// المسارات الرسمية: القناة/القوائم/الفيديوهات/التعليقات/الرد/التحليلات.
+// الحصة (quota) تُصنَّف صريحةً (لا تُخلط بعطل عارض)، والتوكن يُجدَّد تلقائياً.
+// الأسرار تُقرأ من بيئة الخادم أو تُحفظ مشفّرة عبر محوّل الحالة؛ لا تُسجَّل ولا تُعاد.
+// -------------------------------------------------------------
+const youtubeFetchImpl: YouTubeFetch = (url, init) => fetch(url, init as any);
+function youtubeClient(): YouTubeClient { return new YouTubeClient(youtubeFetchImpl, process.env.YOUTUBE_API_BASE); }
+function youtubeOAuthConfig(): any { return OAUTH_CONFIG["youtube"]; }
+/** تجاوز النطاقات من البيئة (تُمرَّر عبر resolveYouTubeScopes فلا يُطلب نطاق بلا استدعاء). */
+function youtubeScopeOverride(): string[] {
+  return (process.env.YOUTUBE_OAUTH_SCOPES || "").split(",").map((s) => s.trim()).filter(Boolean);
+}
+function youtubeOAuthScopes(): string[] {
+  return resolveYouTubeScopes(youtubeScopeOverride());
+}
+/** هل موصل YouTube مكتمل الإعداد للاتصال؟ (client_id + secret + عنوان عام + مفتاح تشفير). */
+function youtubeConnectorConfigured(): boolean {
+  const c = youtubeOAuthConfig();
+  return Boolean(c?.clientId && c?.clientSecret && publicUrlIsPublic() && tokenKeyBytes());
+}
+function youtubeStoredCredentials(): any | null { return getProviderToken("youtube"); }
+function youtubeAccessToken(): string | null {
+  const stored = youtubeStoredCredentials();
+  return stored?.accessToken ? String(stored.accessToken) : null;
+}
+function youtubeChannelId(): string | null {
+  const stored = youtubeStoredCredentials();
+  return stored?.channelId ? String(stored.channelId) : null;
+}
+function youtubeRefreshToken(): string | null {
+  const stored = youtubeStoredCredentials();
+  return stored?.refreshToken ? String(stored.refreshToken) : null;
+}
+/** هل انتهى رمز الوصول YouTube (بهامش أمان)؟ */
+function youtubeAccessExpired(): boolean {
+  const stored = youtubeStoredCredentials();
+  return isAccessTokenExpired({ expiresAt: stored?.expiresAt ?? null });
+}
+/** رابط استقبال إشعارات PubSubHubbub لهذا الخادم. */
+function youtubeWebhookUrl(): string { return `${publicBaseUrlNow()}/api/platforms/youtube/webhook`; }
+/** سرّ توقيع إشعارات PubSubHubbub من البيئة فقط (لا يُحفظ في الاعتماد). */
+function youtubePubSubSecret(): string { return envSecret("YOUTUBE_PUBSUB_SECRET") || ""; }
+/** تسجيل آمن لحدث YouTube الوارد. ممنوع تسجيل أي سرّ أو محتوى. */
+function logYouTubeWebhook(event: { kind: string; externalId?: string | null; outcome: "accepted" | "duplicate" | "rejected" | "ignored"; persisted?: boolean }): void {
+  const parts = ["[youtube-webhook]", "platform=youtube", `kind=${event.kind}`, `outcome=${event.outcome}`];
+  if (event.externalId) parts.push(`external=${event.externalId}`);
+  if (typeof event.persisted === "boolean") parts.push(`persisted=${event.persisted}`);
+  console.log(parts.join(" "));
+}
+/** تسجيل آمن لبدء/عودة YouTube OAuth — بلا state ولا code ولا أي سرّ. */
+function logYouTubeOAuth(outcome: string, detail: Record<string, unknown> = {}): void {
+  const parts = ["[youtube-oauth]", `outcome=${outcome}`];
+  for (const [k, v] of Object.entries(detail)) {
+    if (v === undefined || v === null) continue;
+    if (k === "state" || k === "code" || k === "token" || k === "access_token" || k === "refresh_token") continue; // حماية صريحة
+    parts.push(`${k}=${String(v).slice(0, 120)}`);
+  }
+  console.log(parts.join(" "));
+}
+/**
+ * يحفظ اعتماد YouTube مشفّراً (رمز الوصول + refresh + القناة + الإحصاءات + الانتهاء).
+ * لا يُعاد في أي استجابة، ولا يُسجَّل.
+ */
+function saveYouTubeCredentials(input: { accessToken: string; refreshToken?: string | null; channelId: string; channelTitle?: string | null; scope?: string[]; expiresAt?: number | null; statistics?: any }) {
+  const existing = youtubeStoredCredentials() || {};
+  setProviderToken("youtube", {
+    ...existing,
+    accessToken: input.accessToken,
+    refreshToken: input.refreshToken || existing.refreshToken || "",
+    channelId: input.channelId,
+    channelTitle: input.channelTitle || existing.channelTitle || "",
+    scope: Array.isArray(input.scope) ? input.scope : (existing.scope || []),
+    expiresAt: input.expiresAt ?? existing.expiresAt ?? null,
+    statistics: input.statistics ?? existing.statistics ?? null,
+    connectedAt: existing.connectedAt || new Date().toISOString(),
+  });
+}
+/**
+ * يجدّد رمز الوصول عبر refresh_token عند انتهائه (تلقائياً قبل أي عملية).
+ * إن غاب refresh token أو فشل التجديد، يُعلن الحاجة لإعادة الربط بدل فشل صامت.
+ * ملاحظة: Google **لا يعيد refresh_token** عند التجديد، لذا يُحتفظ بالقديم.
+ */
+async function ensureYouTubeAccessToken(): Promise<{ ok: boolean; token?: string; refreshed?: boolean; error?: string; errorKind?: YouTubeErrorKind; requiresReauth?: boolean }> {
+  const stored = youtubeStoredCredentials();
+  const token = youtubeAccessToken();
+  if (!token) return { ok: false, error: "لا رمز YouTube محفوظ؛ نفّذ الربط عبر OAuth أولاً." };
+  if (!youtubeAccessExpired()) return { ok: true, token, refreshed: false };
+  const refresh = youtubeRefreshToken();
+  const cfg = youtubeOAuthConfig();
+  if (!refresh || !cfg?.clientId || !cfg?.clientSecret) {
+    platformConnections.set("youtube", { platform: "youtube", status: "reauth_needed", accountId: String(stored?.channelId || ""), connectedAt: new Date().toISOString() });
+    savePlatformConnections();
+    return { ok: false, error: "انتهى رمز YouTube ولا يوجد refresh token؛ أعد الربط من مركز ربط المنصات.", requiresReauth: true };
+  }
+  const res = await youtubeClient().refreshAccessToken({ clientId: String(cfg.clientId), clientSecret: String(cfg.clientSecret), refreshToken: refresh });
+  if (!res.ok || !res.data?.accessToken) {
+    platformConnections.set("youtube", { platform: "youtube", status: "reauth_needed", accountId: String(stored?.channelId || ""), connectedAt: new Date().toISOString() });
+    savePlatformConnections();
+    await persistStateDurable();
+    audit("system", "youtube_refresh_failed", res.errorKind || "provider_error");
+    return { ok: false, error: res.error || "فشل تجديد رمز YouTube؛ أعد الربط.", errorKind: res.errorKind, requiresReauth: true };
+  }
+  saveYouTubeCredentials({
+    accessToken: res.data.accessToken,
+    refreshToken: refresh, // Google لا يعيد refresh_token عند التجديد
+    channelId: String(stored?.channelId || ""),
+    channelTitle: stored?.channelTitle || "",
+    scope: res.data.scope,
+    expiresAt: res.data.expiresIn ? Date.now() + res.data.expiresIn * 1000 : null,
+  });
+  await persistStateDurable();
+  audit("system", "youtube_token_refreshed", "auto");
+  return { ok: true, token: res.data.accessToken, refreshed: true };
+}
+/**
+ * ينفّذ استدعاءً محمياً برمز YouTube مع تجديد تلقائي عند الانتهاء.
+ * إن فشلت العملية بخطأ مصادقة (401/invalid_grant)، يُعلن الحاجة لإعادة الربط
+ * ويُحدَّث الاتصال إلى reauth_needed — لا ادعاء اتصال قائم بعد رفض المزود.
+ */
+async function withYouTubeToken<T>(operation: string, fn: (token: string) => Promise<{ ok: boolean; data: T | null; error?: string; errorKind?: YouTubeErrorKind; httpStatus?: number | null; retryable?: boolean; requiresReauth?: boolean }>): Promise<{ ok: boolean; data: T | null; error?: string; errorKind?: YouTubeErrorKind; retryable?: boolean; requiresReauth?: boolean; quotaUnits?: number }> {
+  const ensured = await ensureYouTubeAccessToken();
+  if (!ensured.ok || !ensured.token) return { ok: false, data: null, error: ensured.error, errorKind: ensured.errorKind, requiresReauth: ensured.requiresReauth };
+  const result = await fn(ensured.token);
+  if (!result.ok && result.requiresReauth) {
+    // رمز مرفوض من Google: نُعلن reauth_needed ولا ندّعي اتصالاً قائماً.
+    platformConnections.set("youtube", { platform: "youtube", status: "reauth_needed", accountId: String(youtubeChannelId() || ""), connectedAt: new Date().toISOString() });
+    savePlatformConnections();
+    await persistStateDurable();
+  }
+  return { ...result, quotaUnits: quotaUnitsFor(operation) };
+}
+/** هل موصل YouTube مكتمل ومتصل وموثق الآن؟ */
+function youtubeOperationalNow(): boolean {
+  const conn: any = platformConnections.get("youtube");
+  return Boolean(conn?.status === "connected" && conn?.providerVerified === true && hasRealConnector("youtube"));
+}
+/** دليل مزود على إتمام سير عمل رسمي: نشر/رد بمعرّف حقيقي من YouTube. */
+function youtubeOperationalEvidence(): boolean {
+  if (!Array.isArray((workspace as any).publishRecords)) return false;
+  return (workspace as any).publishRecords.some((r: any) => r.platform === "youtube" && r.state === "published" && Boolean(r.providerPostId));
+}
+/** هل توجد جلسة تفويض YouTube معلّقة (بدأ المالك الربط ولم تكتمل العودة)؟ */
+function youtubePendingAuthorization(): boolean {
+  for (const p of pendingOAuth.values()) if (p.platform === "youtube" && p.expiresAt > Date.now()) return true;
+  return false;
+}
+/** هل رُصد خطأ quotaExceeded حقيقي من Google مؤخراً (بلا تخمين)؟ */
+function youtubeQuotaExceededFlag(): boolean {
+  return (workspace as any).youtubeQuotaExceeded === true;
+}
+/**
+ * الحالة الصادقة الموحّدة لموصل YouTube — مصدرها الواحد `resolveYouTubeState`.
+ */
+function youtubeTruthfulState(): ReturnType<typeof resolveYouTubeState> {
+  const c = youtubeOAuthConfig();
+  const stored = youtubeStoredCredentials();
+  const conn: any = platformConnections.get("youtube");
+  const tk = tokenKeyInspection();
+  const verified = Boolean(conn?.status === "connected" && conn?.providerVerified === true && stored?.channelId);
+  return resolveYouTubeState({
+    clientIdConfigured: Boolean(c?.clientId),
+    clientSecretConfigured: Boolean(c?.clientSecret),
+    clientIdFormatOk: isPlausibleYouTubeClientId(String(c?.clientId || "")),
+    encryptionKeyValid: tk.state === "valid",
+    publicUrlValid: resolvePublicUrl(process.env).valid,
+    pendingAuthorization: youtubePendingAuthorization(),
+    tokenStored: Boolean(stored?.accessToken),
+    refreshTokenStored: Boolean(stored?.refreshToken),
+    tokenExpired: Boolean(stored?.accessToken) && youtubeAccessExpired(),
+    connectionStatus: conn?.status === "connected" ? "connected" : conn?.status === "reauth_needed" ? "reauth_needed" : "disconnected",
+    accountDiscovered: Boolean(stored?.channelId),
+    providerVerified: verified,
+    operationalEvidence: youtubeOperationalEvidence(),
+    quotaExceeded: youtubeQuotaExceededFlag(),
+  });
+}
+/** يعبّئ علامة استهلاك الحصة عند خطأ quotaExceeded حقيقي (لا يُخترع). */
+async function markYouTubeQuotaExceeded(kind?: YouTubeErrorKind): Promise<void> {
+  (workspace as any).youtubeQuotaExceeded = kind === "quota_exceeded";
+  await persistStateDurable();
+}
+
 /** تخزين مؤقت قصير لنتيجة فحص بدء OAuth (يمنع إغراق Meta عند كل ضغطة زر). */
 const oauthStartPreflightCache = new Map<string, { at: number; result: any }>();
 const OAUTH_PREFLIGHT_TTL_MS = 5 * 60 * 1000;
@@ -1898,6 +2111,29 @@ async function oauthStartPreflight(platform: string): Promise<OAuthStartPrefligh
     }
     if (!cfg.clientSecret) {
       const result: OAuthStartPreflight = { ok: false, code: "TIKTOK_CLIENT_SECRET_MISSING", error: "يلزم TIKTOK_CLIENT_SECRET لإتمام تبادل رمز TikTok.", hint: "اضبط TIKTOK_CLIENT_SECRET بقيمة Client secret من TikTok Developer Portal." };
+      lastOAuthPreflight.set(platform, { at: Date.now(), code: result.code ?? null, appTokenKind: null, error: result.error, hint: result.hint });
+      return result;
+    }
+    lastOAuthPreflight.set(platform, { at: Date.now(), code: null, appTokenKind: null, error: undefined, hint: undefined });
+    return { ok: true };
+  }
+  if (platform === "youtube") {
+    // YouTube: لا توجد نقطة إثبات تطبيق بلا رمز مستخدم (`tokeninfo` يثبت id_token لا
+    // تطبيق الويب). نتحقق محلياً من صيغة معرّف عميل Google ووجود السرّ، فلا يُرسل
+    // المالك إلى شاشة رفض بلا سبب ظاهر.
+    const raw = process.env.GOOGLE_OAUTH_CLIENT_ID || process.env.GOOGLE_CLIENT_ID;
+    if (typeof raw === "string" && raw.trim() && raw.trim() !== raw) {
+      const result: OAuthStartPreflight = { ok: false, code: "GOOGLE_CLIENT_ID_WHITESPACE", error: "GOOGLE_OAUTH_CLIENT_ID يحمل مسافة/سطراً زائداً؛ Google يرفض الرابط بلا سبب ظاهر. احذف المسافات.", hint: "انسخ Client ID من Google Cloud Console → APIs & Services → Credentials بلا مسافات." };
+      lastOAuthPreflight.set(platform, { at: Date.now(), code: result.code ?? null, appTokenKind: null, error: result.error, hint: result.hint });
+      return result;
+    }
+    if (!isPlausibleYouTubeClientId(String(cfg.clientId || ""))) {
+      const result: OAuthStartPreflight = { ok: false, code: "GOOGLE_CLIENT_ID_INVALID", error: "GOOGLE_OAUTH_CLIENT_ID ليس معرّف عميل ويب صالحاً (يجب أن ينتهي بـ.apps.googleusercontent.com بلا مسافات).", hint: "أنشئ OAuth 2.0 Client ID (نوع Web application) من Google Cloud Console وانقل القيمة إلى GOOGLE_OAUTH_CLIENT_ID." };
+      lastOAuthPreflight.set(platform, { at: Date.now(), code: result.code ?? null, appTokenKind: null, error: result.error, hint: result.hint });
+      return result;
+    }
+    if (!cfg.clientSecret) {
+      const result: OAuthStartPreflight = { ok: false, code: "GOOGLE_CLIENT_SECRET_MISSING", error: "يلزم GOOGLE_OAUTH_CLIENT_SECRET لإتمام تبادل رمز Google.", hint: "انسخ Client secret من Google Cloud Console → Credentials إلى GOOGLE_OAUTH_CLIENT_SECRET." };
       lastOAuthPreflight.set(platform, { at: Date.now(), code: result.code ?? null, appTokenKind: null, error: result.error, hint: result.hint });
       return result;
     }
@@ -2247,6 +2483,15 @@ async function verifyProviderConnection(platform: string): Promise<{ verified: b
     if (!proof.ok || !proof.data?.openId) return { verified: false, error: proof.error || "تعذر إثبات هوية حساب TikTok." };
     return { verified: true, accountId: proof.data.openId, accountName: proof.data.displayName || undefined };
   }
+  if (platform === "youtube") {
+    const channelId = youtubeChannelId();
+    const token = youtubeAccessToken();
+    if (!channelId || !token) return { verified: false, error: "لا اعتماد YouTube محفوظ؛ نفّذ الربط عبر OAuth أولاً." };
+    // إثبات حي: نستعلم عن القناة فعلياً من Data API (channels.list) بلا أي ادعاء.
+    const proof = await youtubeClient().fetchMyChannel(token);
+    if (!proof.ok || !proof.data?.channelId) return { verified: false, error: proof.error || "تعذر إثبات هوية قناة YouTube." };
+    return { verified: true, accountId: proof.data.channelId, accountName: proof.data.title || undefined };
+  }
   return { verified: false, error: "لا يوجد موصل إثبات حقيقي لهذه المنصة؛ إتمام الاتصال يحتاج اعتماد تطبيق من المزود." };
 }
 function publicProviderReadiness(platform: string): { configured: boolean; mode: string; action: string; missing?: string[]; invalid?: string[]; next?: string; realConnector?: boolean } {
@@ -2356,6 +2601,32 @@ function publicProviderReadiness(platform: string): { configured: boolean; mode:
         : missing.length
           ? "زوّد البيئة بـTIKTOK_CLIENT_KEY وTIKTOK_CLIENT_SECRET من TikTok Developer Portal ثم نفّذ الربط عبر OAuth."
           : "الموصل مكتمل الإعداد؛ نفّذ الربط لإثبات هوية الحساب (open_id) ثم اختبر النشر/الحالة.",
+    };
+  }
+  if (platform === "youtube") {
+    // موصل حقيقي: Google OAuth 2.0 + client_id/secret + مفتاح تشفير + عنوان عام + توكن (يُكتسب).
+    const c = youtubeOAuthConfig();
+    const stored = youtubeStoredCredentials();
+    const missing = [
+      !c?.clientId && "GOOGLE_OAUTH_CLIENT_ID",
+      !c?.clientSecret && "GOOGLE_OAUTH_CLIENT_SECRET",
+      !stored?.accessToken && "Access Token (يُكتسب عبر OAuth)",
+      tokenMissing,
+      !resolvePublicUrl(process.env).valid && "APP_URL",
+    ].filter((x): x is string => Boolean(x));
+    const invalid = [tokenInvalid].filter((x): x is string => Boolean(x));
+    return {
+      configured: youtubeConnectorConfigured() && Boolean(stored?.accessToken),
+      mode: "oauth2",
+      action: "authorize",
+      missing,
+      invalid,
+      realConnector: true,
+      next: invalid.length
+        ? `استبدل قيمة PLATFORM_TOKEN_ENCRYPTION_KEY بقيمة صالحة (32 بايت hex أو Base64) ثم أعد المحاولة.`
+        : missing.length
+          ? "زوّد البيئة بـGOOGLE_OAUTH_CLIENT_ID وGOOGLE_OAUTH_CLIENT_SECRET من Google Cloud Console ثم نفّذ الربط عبر OAuth."
+          : "الموصل مكتمل الإعداد؛ نفّذ الربط لإثبات قناة YouTube (channelId) ثم اختبر القراءة/الرد.",
     };
   }
   const c = OAUTH_CONFIG[platform];
@@ -2468,9 +2739,15 @@ app.get("/api/platforms/:platform/oauth/start", requireOwner, async (req,res)=>{
   let pkceChallenge:string|undefined;
   if(requiresPkce(platform)) { const pkce=createPkcePair(); pending.codeVerifier=pkce.verifier; pkceChallenge=pkce.challenge; }
   pendingOAuth.set(state,pending);
-  const u=new URL(authEndpointFor(platform));
-  const params=buildAuthorizationParams({platform,clientId:cfg.clientId,redirectUri:callbackUrl,scopes,state,pkceChallenge,loginConfigId,instagramOnboarding:platform==="instagram"&&instagramOnboardingEnabled()});
-  for(const [k,v] of Object.entries(params)) u.searchParams.set(k,v);
+  // YouTube يسلك رابط Google القياسي مع access_type=offline وprompt=consent
+  // (لا بديل عن ذلك للاحتفاظ بـrefresh token)، فلا يصلح له المسار العام.
+  const u = platform === "youtube"
+    ? new URL(buildYouTubeAuthorizationUrl({ clientId: String(cfg.clientId), redirectUri: callbackUrl, scopes, state }))
+    : new URL(authEndpointFor(platform));
+  if (platform !== "youtube") {
+    const params=buildAuthorizationParams({platform,clientId:cfg.clientId,redirectUri:callbackUrl,scopes,state,pkceChallenge,loginConfigId,instagramOnboarding:platform==="instagram"&&instagramOnboardingEnabled()});
+    for(const [k,v] of Object.entries(params)) u.searchParams.set(k,v);
+  }
   // سجل آمن لـTikTok: يُثبت المفتاح المستخدم فعلاً في الرابط (مُخفى + بصمة).
   if (platform === "tiktok") logTikTokOAuthStart(u);
   // فحص ما قبل التوجيه (Meta فقط): نتحقق أن Meta تقبل الرابط فعلاً، فلا يُرسَل
@@ -2732,6 +3009,33 @@ async function handleOAuthCallback(req:any, res:any, rawQuery:string, viaPost:bo
       audit(pending!.userId,"platform_oauth_connected",`tiktok:${identity.data.openId}`);
       logTikTokOAuth("callback_connected",{openId:identity.data.openId,scopeCount:exchanged.data.scope.length,hasRefreshToken:Boolean(exchanged.data.refreshToken)});
       return sendHtml(`<html lang='ar' dir='rtl'><meta charset='utf-8'><title>تم الربط</title><body style='font-family:sans-serif;padding:40px'><h2>تم ربط حساب TikTok بنجاح.</h2><p>${escapeHtml(identity.data.displayName||"")} — يمكنك إغلاق هذه النافذة والعودة إلى الغرابي AI.</p></body></html>`);
+    }
+    // YouTube — مسار Google OAuth 2.0: تبادل الرمز (نفس شكل المزود العام) ثم
+    // إثبات القناة فعلياً (channels.list?mine=true) ثم حفظ مشفّر مع refresh token.
+    // لا يُعلن اتصال موثق بلا استجابة قناة حقيقية من YouTube.
+    if(platform==="youtube") {
+      const client=youtubeClient();
+      const exchanged=await client.exchangeCode({clientId:String(cfg.clientId),clientSecret:String(cfg.clientSecret),code,redirectUri:redirectUri});
+      if(!exchanged.ok || !exchanged.data?.accessToken) throw new Error(exchanged.error||"فشل تبادل رمز YouTube.");
+      // إثبات القناة فعلياً — لا اتصال موثق بلا channelId من YouTube.
+      const identity=await client.fetchMyChannel(exchanged.data.accessToken);
+      if(!identity.ok || !identity.data?.channelId) throw new Error(identity.error||"تعذّر إثبات هوية قناة YouTube (channels.list).");
+      saveYouTubeCredentials({
+        accessToken: exchanged.data.accessToken,
+        refreshToken: exchanged.data.refreshToken,
+        channelId: identity.data.channelId,
+        channelTitle: identity.data.title,
+        scope: exchanged.data.scope,
+        expiresAt: exchanged.data.expiresIn?Date.now()+exchanged.data.expiresIn*1000:null,
+        statistics: identity.data.statistics,
+      });
+      (workspace as any).youtubeQuotaExceeded = false;
+      platformConnections.set("youtube",{platform:"youtube",status:"connected",accountId:identity.data.channelId,accountName:identity.data.title||"YouTube",connectedAt:new Date().toISOString(),providerVerified:true});
+      savePlatformConnections();
+      await persistStateDurable();
+      audit(pending!.userId,"platform_oauth_connected",`youtube:${identity.data.channelId}`);
+      logYouTubeOAuth("callback_connected",{channelId:identity.data.channelId,scopeCount:exchanged.data.scope.length,hasRefreshToken:Boolean(exchanged.data.refreshToken)});
+      return sendHtml(`<html lang='ar' dir='rtl'><meta charset='utf-8'><title>تم الربط</title><body style='font-family:sans-serif;padding:40px'><h2>تم ربط قناة YouTube بنجاح.</h2><p>${escapeHtml(identity.data.title||"")} — يمكنك إغلاق هذه النافذة والعودة إلى الغرابي AI.</p></body></html>`);
     }
     const tokenRes=await fetch(cfg.token,{method:"POST",headers:{"Content-Type":"application/x-www-form-urlencoded"},body}); token=await tokenRes.json();
     const parsedToken=parseTokenResponse(token);
@@ -3578,6 +3882,377 @@ app.get("/api/platforms/tiktok/creator-info", requireOwner, async (_req,res)=>{
   res.json({success:true,creator:result.data,note:"معلومات الناشر الرسمية من TikTok بلا أي سرّ."});
 });
 
+// -------------------------------------------------------------
+// YouTube — مسارات الموصل الحقيقي (Google OAuth 2.0 + Data API v3).
+// القناة/القوائم/الفيديوهات/التعليقات/الرد/التحليلات. لا يُعلن نشر/رد بلا
+// معرّف حقيقي من YouTube، والحصة تُصنَّف صريحةً (quotaExceeded) لا كعطل عام.
+// الأسرار تُحفظ مشفّرة عبر محوّل الحالة؛ لا تُسجَّل ولا تُعاد.
+// -------------------------------------------------------------
+
+/** حالة اتصال YouTube الحقيقية + قدراتها المنفّذة (بلا أي سرّ). */
+app.get("/api/platforms/youtube/status", authenticateToken, async (_req,res)=>{
+  const stored=youtubeStoredCredentials();
+  const conn:any=platformConnections.get("youtube");
+  const verified=Boolean(conn?.status==="connected"&&conn?.providerVerified===true&&stored?.channelId);
+  const truthful=youtubeTruthfulState();
+  const scopes=youtubeOAuthScopes();
+  const over=youtubeScopeOverride();
+  res.json({
+    success:true,
+    platform:"youtube",
+    state: truthful.state,
+    stateLabelAr: truthful.labelAr,
+    stateTone: truthful.tone,
+    stateReason: truthful.reason,
+    nextAction: truthful.nextAction,
+    connected: conn?.status==="connected",
+    providerVerified: verified,
+    channelId: stored?.channelId||null,
+    channelTitle: stored?.channelTitle||null,
+    channelStatistics: stored?.statistics||null,
+    clientIdConfigured: Boolean(youtubeOAuthConfig()?.clientId),
+    clientIdFormatOk: isPlausibleYouTubeClientId(String(youtubeOAuthConfig()?.clientId||"")),
+    clientSecretConfigured: Boolean(youtubeOAuthConfig()?.clientSecret),
+    redirectUri: oauthCallbackUrl("youtube"),
+    requestedScopes: scopes,
+    scopeOverrideConfigured: over.length>0,
+    scopeExtra: youtubeExtraScopes(over),
+    oauthStateDurable: storageStatus().durable,
+    tokenStored: Boolean(stored?.accessToken),
+    refreshTokenStored: Boolean(stored?.refreshToken),
+    tokenExpiryKnown: stored?.expiresAt != null,
+    tokenExpired: Boolean(stored?.accessToken) && youtubeAccessExpired(),
+    accountDiscovered: Boolean(stored?.channelId),
+    accountVerified: verified,
+    quotaExceeded: youtubeQuotaExceededFlag(),
+    dailyQuotaUnits: YOUTUBE_DEFAULT_DAILY_QUOTA_UNITS,
+    quotaCosts: YOUTUBE_QUOTA_COST,
+    webhookUrl: youtubeWebhookUrl(),
+    publishCapability: youtubeCapabilityStatus("video_upload"),
+    commentsCapability: youtubeCapabilityStatus("comments_read"),
+    replyCapability: youtubeCapabilityStatus("comment_reply"),
+    analyticsCapability: youtubeCapabilityStatus("analytics_read"),
+    webhookCapability: youtubeCapabilityStatus("push_notifications"),
+    capabilityMatrix: YOUTUBE_CAPABILITY_MATRIX,
+    truthfulStates: [...YOUTUBE_TRUTHFUL_STATES],
+    truthfulStateLabels: YOUTUBE_STATE_LABELS_AR,
+    truthfulStateTones: YOUTUBE_STATE_TONES,
+    checkedAt:new Date().toISOString(),
+    note:"حالة حقيقية من YouTube بلا أي سرّ. لا يُعلن الاتصال موثقاً إلا بمعرّف قناة (channelId) من YouTube.",
+  });
+});
+
+/** معلومات القناة الحقيقية + إحصاءاتها الأساسية (للمالك). */
+app.get("/api/platforms/youtube/channel", authenticateToken, async (_req,res)=>{
+  if(!youtubeOperationalNow()) return res.status(409).json({success:false,error:"YouTube غير متصل باتصال موثق؛ لا استعلام خارجي.",code:"NOT_CONNECTED"});
+  const result=await withYouTubeToken("channels_list",(token)=>youtubeClient().fetchMyChannel(token));
+  if(!result.ok||!result.data) { if(result.errorKind) await markYouTubeQuotaExceeded(result.errorKind); if(result.requiresReauth) return res.status(409).json({success:false,error:result.error||"رمز YouTube مرفوض؛ يلزم إعادة الربط.",code:"REAUTH_NEEDED",status:"reauth_needed"}); return res.status(502).json({success:false,error:result.error||"تعذّر جلب قناة YouTube.",code:result.errorKind||"PROVIDER_ERROR",quotaUnits:result.quotaUnits}); }
+  // تحديث الإحصاءات المحفوظة (لا إنشاء ادعاء جديد).
+  const stored=youtubeStoredCredentials()||{};
+  setProviderToken("youtube",{...stored,statistics:result.data.statistics});
+  await persistStateDurable();
+  res.json({success:true,channel:result.data,quotaUnits:result.quotaUnits,note:"القناة والإحصاءات الحقيقية من YouTube Data API بلا أي سرّ."});
+});
+
+/** قوائم تشغيل القناة (للمالك). */
+app.get("/api/platforms/youtube/playlists", authenticateToken, async (req,res)=>{
+  if(!youtubeOperationalNow()) return res.status(409).json({success:false,error:"YouTube غير متصل باتصال موثق؛ لا استعلام خارجي.",code:"NOT_CONNECTED"});
+  const channelId=youtubeChannelId();
+  if(!channelId) return res.status(409).json({success:false,error:"لا معرّف قناة محفوظ.",code:"NO_CHANNEL"});
+  const max=Math.min(50,Math.max(1,Number(req.query.maxResults||25)));
+  const result=await withYouTubeToken("playlists_list",(token)=>youtubeClient().listPlaylists(token,channelId,max));
+  if(!result.ok||!result.data) { if(result.errorKind) await markYouTubeQuotaExceeded(result.errorKind); return res.status(502).json({success:false,error:result.error||"تعذّر جلب قوائم التشغيل.",code:result.errorKind||"PROVIDER_ERROR"}); }
+  res.json({success:true,playlists:result.data,quotaUnits:result.quotaUnits,note:"قوائم التشغيل الحقيقية من YouTube Data API."});
+});
+
+/** فيديوهات القناة (search = 100 وحدة حصة، ثم تفاصيلها). */
+app.get("/api/platforms/youtube/videos", authenticateToken, async (req,res)=>{
+  if(!youtubeOperationalNow()) return res.status(409).json({success:false,error:"YouTube غير متصل باتصال موثق؛ لا استعلام خارجي.",code:"NOT_CONNECTED"});
+  const channelId=youtubeChannelId();
+  if(!channelId) return res.status(409).json({success:false,error:"لا معرّف قناة محفوظ.",code:"NO_CHANNEL"});
+  const max=Math.min(50,Math.max(1,Number(req.query.maxResults||25)));
+  // search يستهلك 100 وحدة لكل نداء — نُعلن ذلك ونُنفّذه مرة واحدة بلا تكرار.
+  const result=await withYouTubeToken("search_list",(token)=>youtubeClient().searchChannelVideos(token,channelId,max));
+  if(!result.ok||!result.data) { if(result.errorKind) await markYouTubeQuotaExceeded(result.errorKind); return res.status(502).json({success:false,error:result.error||"تعذّر جلب فيديوهات القناة.",code:result.errorKind||"PROVIDER_ERROR"}); }
+  // إثراء بالتفاصيل/الإحصاءات الحقيقية (1 وحدة لكل نداء) — بلا اختراع قيم.
+  const ids=(result.data||[]).map((v:any)=>v.videoId).filter(Boolean).slice(0,50);
+  let videos:any[]=result.data;
+  if(ids.length){
+    const details=await withYouTubeToken("videos_list",(token)=>youtubeClient().listVideosByIds(token,ids));
+    if(details.ok&&details.data) videos=details.data;
+  }
+  res.json({success:true,videos,quotaUnits:result.quotaUnits,note:"فيديوهات حقيقية من YouTube Data API. search يستهلك 100 وحدة حصة لكل نداء."});
+});
+
+/** بيانات فيديو واحد بالمعرّف (1 وحدة حصة). */
+app.get("/api/platforms/youtube/video", authenticateToken, async (req,res)=>{
+  if(!youtubeOperationalNow()) return res.status(409).json({success:false,error:"YouTube غير متصل باتصال موثق؛ لا استعلام خارجي.",code:"NOT_CONNECTED"});
+  const videoId=typeof req.query.videoId==="string"?req.query.videoId.trim():"";
+  if(!videoId) return res.status(400).json({success:false,error:"videoId مطلوب.",code:"VIDEO_ID_REQUIRED"});
+  const result=await withYouTubeToken("videos_list",(token)=>youtubeClient().listVideosByIds(token,[videoId]));
+  if(!result.ok||!result.data) { if(result.errorKind) await markYouTubeQuotaExceeded(result.errorKind); return res.status(502).json({success:false,error:result.error||"تعذّر جلب بيانات الفيديو.",code:result.errorKind||"PROVIDER_ERROR"}); }
+  if(!result.data.length) return res.status(404).json({success:false,error:"الفيديو غير موجود.",code:"NOT_FOUND"});
+  res.json({success:true,video:result.data[0],quotaUnits:result.quotaUnits});
+});
+
+/** قراءة تعليقات فيديو — تصنيفها يتم عبر مسار التعليقات الموحّد لاحقاً. */
+app.get("/api/platforms/youtube/comments", authenticateToken, async (req,res)=>{
+  if(!youtubeOperationalNow()) return res.status(409).json({success:false,error:"YouTube غير متصل باتصال موثق؛ لا استعلام خارجي.",code:"NOT_CONNECTED"});
+  const videoId=typeof req.query.videoId==="string"?req.query.videoId.trim():"";
+  if(!videoId) return res.status(400).json({success:false,error:"videoId مطلوب لقراءة التعليقات.",code:"VIDEO_ID_REQUIRED"});
+  const max=Math.min(100,Math.max(1,Number(req.query.maxResults||50)));
+  const result=await withYouTubeToken("commentThreads_list",(token)=>youtubeClient().listCommentThreads(token,videoId,max));
+  if(!result.ok||!result.data) { if(result.errorKind) await markYouTubeQuotaExceeded(result.errorKind); return res.status(502).json({success:false,error:result.error||"تعذّر جلب التعليقات.",code:result.errorKind||"PROVIDER_ERROR"}); }
+  res.json({success:true,comments:result.data,quotaUnits:result.quotaUnits,note:"تعليقات حقيقية من YouTube Data API (بلا اختراع)."});
+});
+
+/** معلومات الإحصاءات/التحليلات الحقيقية (لا ادعاء). */
+app.get("/api/platforms/youtube/analytics", authenticateToken, async (_req,res)=>{
+  if(!youtubeOperationalNow()) return res.status(409).json({success:false,error:"YouTube غير متصل باتصال موثق؛ لا استعلام خارجي.",code:"NOT_CONNECTED"});
+  const channelId=youtubeChannelId();
+  const channelResult=await withYouTubeToken("channels_list",(token)=>youtubeClient().fetchMyChannel(token));
+  if(!channelResult.ok||!channelResult.data) { if(channelResult.errorKind) await markYouTubeQuotaExceeded(channelResult.errorKind); return res.status(502).json({success:false,error:channelResult.error||"تعذّر جلب تحليلات القناة.",code:channelResult.errorKind||"PROVIDER_ERROR"}); }
+  // نُنشئ غلافاً موحّداً من الإحصاءات الحقيقية فقط (لا قيم مخترعة).
+  const stats=channelResult.data.statistics;
+  const raw:Record<string,unknown>={views:stats.viewCount??undefined,comments:undefined,likes:undefined};
+  res.json({
+    success:true,
+    channelId,
+    channelStatistics:stats,
+    metrics:raw,
+    quotaUnits:channelResult.quotaUnits,
+    note:"إحصاءات القناة الحقيقية من YouTube Data API. المؤشر على مستوى القناة (views/subscribers/videos) — قيم غير متاحة تبقى غير متاحة لا صفراً.",
+  });
+});
+
+/** معلومات الناشر/القناة لتفعيل قوائم الرفع (تشخيص قبل النشر). */
+app.get("/api/platforms/youtube/upload-info", requireOwner, async (_req,res)=>{
+  if(!youtubeOperationalNow()) return res.status(409).json({success:false,error:"YouTube غير متصل باتصال موثق؛ لا استعلام خارجي.",code:"NOT_CONNECTED"});
+  res.json({
+    success:true,
+    uploadEndpoint:`${YOUTUBE_DATA_API_BASE}/videos?uploadType=resumable&part=snippet,status`,
+    requiredScope:"https://www.googleapis.com/auth/youtube.upload",
+    auditRequired:youtubeCapabilityNeedsAudit("video_upload"),
+    quotaUnits:quotaUnitsFor("videos_insert"),
+    note:"رفع الفيديو يحتاج نطاق youtube.upload ومراجعة Google للتطبيق (app verification). النشر العام غير مضمون قبل المراجعة.",
+  });
+});
+
+/** فحص صحة YouTube (يستهلك 1 وحدة حصة). */
+app.get("/api/platforms/youtube/health", authenticateToken, async (_req,res)=>{
+  if(!youtubeOperationalNow()) return res.status(409).json({success:false,platform:"youtube",healthy:false,error:"YouTube غير متصل باتصال موثق."});
+  const result=await withYouTubeToken("channels_list",(token)=>youtubeClient().fetchMyChannel(token));
+  if(!result.ok||!result.data){
+    if(result.errorKind) await markYouTubeQuotaExceeded(result.errorKind);
+    if(result.requiresReauth) return res.status(409).json({success:false,platform:"youtube",healthy:false,status:"reauth_needed",error:result.error});
+    return res.status(502).json({success:false,platform:"youtube",healthy:false,error:result.error,errorKind:result.errorKind});
+  }
+  (workspace as any).youtubeQuotaExceeded = false;
+  res.json({success:true,platform:"youtube",healthy:true,provider:"youtube",channelId:result.data.channelId,channelTitle:result.data.title,statistics:result.data.statistics,quotaUnits:result.quotaUnits,checkedAt:new Date().toISOString()});
+});
+
+/** معلومات إعداد YouTube للتشخيص (للمالك، بلا أي سرّ). */
+app.get("/api/platforms/youtube/oauth-info", requireOwner, async (_req,res)=>{
+  const cfg=youtubeOAuthConfig();
+  const over=youtubeScopeOverride();
+  const truthful=youtubeTruthfulState();
+  res.json({
+    success:true,
+    platform:"youtube",
+    provider:cfg?.provider||"google",
+    authorizationEndpoint:cfg?.auth,
+    tokenEndpoint:cfg?.token,
+    revokeEndpoint:"https://oauth2.googleapis.com/revoke",
+    redirectUri:oauthCallbackUrl("youtube"),
+    clientIdConfigured:Boolean(cfg?.clientId),
+    clientIdFormatOk:isPlausibleYouTubeClientId(String(cfg?.clientId||"")),
+    clientIdFingerprint:cfg?.clientId?fingerprintValue(cfg.clientId):null,
+    clientSecretConfigured:Boolean(cfg?.clientSecret),
+    requestedScopes:youtubeOAuthScopes(),
+    requiredScopes:[...YOUTUBE_REQUIRED_SCOPES],
+    scopeOverrideConfigured:over.length>0,
+    scopeExtra:youtubeExtraScopes(over),
+    webhookUrl:youtubeWebhookUrl(),
+    pubsubSignatureHeader:YOUTUBE_PUBSUB_SIGNATURE_HEADER,
+    dailyQuotaUnits:YOUTUBE_DEFAULT_DAILY_QUOTA_UNITS,
+    quotaCosts:YOUTUBE_QUOTA_COST,
+    operationalState:truthful.state,
+    operationalStateLabelAr:truthful.labelAr,
+    operationalStateReason:truthful.reason,
+    capabilityMatrix:YOUTUBE_CAPABILITY_MATRIX,
+    dashboardSteps:[
+      "افتح Google Cloud Console → أنشئ مشروعاً (أو استخدم مشروعاً قائماً).",
+      "APIs & Services → Library → فعّل YouTube Data API v3.",
+      "OAuth consent screen → أضف بريد المالك كـTest user (وضع Testing) أو أكمل Verification للنشر العام.",
+      "Credentials → Create credentials → OAuth client ID → نوع Web application.",
+      "في Authorized redirect URIs أضف القيمة في redirectUri بالضبط (https).",
+      "انسخ Client ID إلى GOOGLE_OAUTH_CLIENT_ID وClient secret إلى GOOGLE_OAUTH_CLIENT_SECRET (بلا مسافات).",
+      "لإشعارات PubSubHubbub: اضبط YOUTUBE_PUBSUB_SECRET ثم اشترك على topic القناة بـcallback URL (webhookUrl).",
+    ],
+    note:"مسارات YouTube الرسمية: القناة/القوائم/الفيديوهات/التعليقات عبر youtube/v3، والرمز على oauth2.googleapis.com/token، والإبطال على oauth2.googleapis.com/revoke. رفع الفيديو يحتاج نطاق youtube.upload ومراجعة Google.",
+    doc:"https://developers.google.com/youtube/v3/docs",
+  });
+});
+
+app.get("/api/platforms/youtube/client-diagnosis", requireOwner, async (_req,res)=>{
+  const cfg=youtubeOAuthConfig();
+  const raw=process.env.GOOGLE_OAUTH_CLIENT_ID||process.env.GOOGLE_CLIENT_ID;
+  const used=String(cfg?.clientId||"");
+  res.json({
+    success:true,
+    platform:"youtube",
+    envVarNames:["GOOGLE_OAUTH_CLIENT_ID","GOOGLE_CLIENT_ID"],
+    configuredValueLength:used.length,
+    configuredValueFingerprint:used?fingerprintValue(used):null,
+    hadSurroundingWhitespace:typeof raw==="string"&&raw.length>0&&raw.trim()!==raw,
+    formatOk:isPlausibleYouTubeClientId(used),
+    clientSecretConfigured:Boolean(cfg?.clientSecret),
+    verdict: !used ? "credentials_missing" : !isPlausibleYouTubeClientId(used) ? "invalid_format" : "format_ok",
+    note:"معرّف عميل العميل عام (يظهر في رابط التفويض)؛ يُعرض طوله وبصمة SHA-256 مقتطعة فقط بلا قيمة كاملة. Google لا يوفر نقطة إثبات تطبيق بلا رمز مستخدم.",
+  });
+});
+
+/** استقبال إشعارات PubSubHubbub — تحقق X-Hub-Signature (HMAC-SHA1) على الجسم الخام ثم حفظ قبل الإقرار. */
+app.get("/api/platforms/youtube/webhook", (req,res)=>{
+  // PubSubHubbub لا يستخدم challenge رمز تحقق؛ نُعلن أن التسجيل إجراء خارجي.
+  res.status(200).json({success:true,platform:"youtube",note:"استقبال إشعارات PubSubHubbub عبر POST. اشتراك topic القناة إجراء خارجي يُنفَّذ مرة واحدة لدى Google."});
+});
+
+// PubSubHubbub يدفع تغذية Atom بـContent-Type=application/atom+xml، وexpress.json
+// العام لا يقرأها فلا يُملأ req.rawBody. هذا المحلّل يقرأ الجسم الخام نصاً على
+// مسار YouTube وحده قبل التحقق من التوقيع، فلا يمكن تجاوز HMAC بإعادة التسلسل.
+const youtubeRawBodyParser = express.text({ type: () => true, limit: "256kb", verify: (req: any, _res, buf: Buffer) => { req.rawBody = buf?.toString("utf8") ?? ""; } });
+app.post("/api/platforms/youtube/webhook", youtubeRawBodyParser, requireRawBody, async (req,res)=>{
+  const secret=youtubePubSubSecret();
+  if(!secret) return res.status(503).json({success:false,error:"YOUTUBE_PUBSUB_SECRET غير مضبوط؛ استقبال الإشعارات معطّل لحماية النظام."});
+  const rawBody=String((req as any).rawBody??"");
+  const header=req.headers[YOUTUBE_PUBSUB_SIGNATURE_HEADER]??req.headers[YOUTUBE_PUBSUB_SIGNATURE_HEADER.toLowerCase()];
+  const provided=typeof header==="string"?header:Array.isArray(header)?header[0]:null;
+  // التوقيع بصيغة sha1=<hex> على الجسم الخام بمفتاح السرّ (نمط PubSubHubbub الرسمي).
+  const expected="sha1="+crypto.createHmac("sha1",secret).update(rawBody,"utf8").digest("hex");
+  const providedHex=provided&&String(provided).includes("=")?String(provided).split("=").pop()||"":String(provided||"");
+  if(!provided||!constantTimeEqual(providedHex.toLowerCase(),expected.split("=").pop()!.toLowerCase())){
+    logYouTubeWebhook({kind:"push",outcome:"rejected"});
+    return res.status(401).json({success:false,error:"توقيع الإشعار غير صالح؛ الحدث غير موثوق."});
+  }
+  // PubSubHubbub يدفع تغذية Atom (XML) — لكن Express JSON parser يفكّ JSON فقط.
+  // نتعامل مع الجسم كنص: نحاول JSON ثم نستخرج حقول Atom الأساسية من النص بلا تخمين.
+  let parsed:any=null;
+  try{ parsed=JSON.parse(rawBody); }catch{ parsed=null; }
+  let notification=(parsed&&typeof parsed==="object")?parseYouTubePushNotification(parsed):null;
+  if(!notification){
+    // استخراج yt:videoId وyt:channelId من XML مباشرةً (PubSubHubbub يدفع Atom).
+    const videoId=(rawBody.match(/<yt:videoId>([^<]+)<\/yt:videoId>/)||[])[1];
+    const channelId=(rawBody.match(/<yt:channelId>([^<]+)<\/yt:channelId>/)||[])[1];
+    const updated=(rawBody.match(/<updated>([^<]+)<\/updated>/)||[])[1]||null;
+    if(videoId&&channelId) notification={videoId:String(videoId),channelId:String(channelId),title:null,publishedAt:null,updatedAt:updated};
+  }
+  if(!notification){ logYouTubeWebhook({kind:"push",outcome:"ignored"}); return res.status(200).json({success:true,accepted:true,ignored:"unrecognized_payload"}); }
+  if(!Array.isArray((workspace as any).youtubeEventIds)) (workspace as any).youtubeEventIds=[];
+  const externalId=youtubePushExternalId(notification.videoId,notification.updatedAt);
+  if(isReplayOrDuplicate({providerEventId:externalId,externalId,seenProviderEventIds:(workspace as any).youtubeEventIds,seenExternalIds:[]})){
+    logYouTubeWebhook({kind:"push",externalId,outcome:"duplicate"});
+    return res.status(200).json({success:true,accepted:true,duplicate:true});
+  }
+  (workspace as any).youtubeEventIds=[...(workspace as any).youtubeEventIds,externalId].slice(-20000);
+  if(!Array.isArray((workspace as any).providerEvents)) (workspace as any).providerEvents=[];
+  (workspace as any).providerEvents.unshift({id:workspaceId("event"),platform:"youtube",type:"push",videoId:notification.videoId,channelId:notification.channelId,receivedAt:new Date().toISOString()});
+  (workspace as any).providerEvents=(workspace as any).providerEvents.slice(0,10000);
+  await persistStateDurable();
+  logYouTubeWebhook({kind:"push",externalId,outcome:"accepted",persisted:!lastPersistError});
+  audit("system","youtube_inbound_event","push");
+  res.status(200).json({success:true,accepted:true,event:"push",persisted:!lastPersistError});
+});
+
+/**
+ * تسجيل تعليق YouTube وارد ليصبح قابلاً للتصنيف/الرد — من قراءة حقيقية فقط.
+ * لا يُنشأ تعليق وهمي: يلزم معرّف تعليق حقيقي من YouTube (commentId).
+ */
+app.post("/api/platforms/youtube/ingest-comment", requireOwner, async (req,res)=>{
+  const videoId=typeof req.body?.videoId==="string"?req.body.videoId.trim():"";
+  if(!videoId) return res.status(400).json({success:false,error:"videoId مطلوب لقراءة التعليقات.",code:"VIDEO_ID_REQUIRED"});
+  if(!youtubeOperationalNow()) return res.status(409).json({success:false,error:"YouTube غير متصل باتصال موثق؛ لا جلب خارجي.",code:"NOT_CONNECTED"});
+  const result=await withYouTubeToken("commentThreads_list",(t)=>youtubeClient().listCommentThreads(t,videoId,50));
+  if(!result.ok||!result.data){ if(result.errorKind) await markYouTubeQuotaExceeded(result.errorKind); return res.status(502).json({success:false,error:result.error||"تعذّر جلب التعليقات.",code:result.errorKind||"PROVIDER_ERROR"}); }
+  if(!Array.isArray((workspace as any).socialComments)) (workspace as any).socialComments=[];
+  let ingested=0, duplicates=0;
+  for(const c of result.data){
+    if(!c.commentId) continue;
+    if((workspace as any).socialComments.some((x:any)=>x.platform==="youtube"&&x.externalId===c.commentId)){ duplicates++; continue; }
+    const classification=classifyComment(c.text);
+    (workspace as any).socialComments.unshift({
+      id:workspaceId("cm"), platform:"youtube", externalId:c.commentId,
+      postExternalId:c.videoId||videoId, authorName:c.authorName||"", text:c.text,
+      createdAt:c.publishedAt||new Date().toISOString(), ingestSource:"youtube_commentThreads",
+      classification, requiresHumanReview:!canAutoReply(classification),
+      // هدف الرد الحقيقي: معرّف التعليق لدى YouTube (posts/comments.insert يحتاجه).
+      replyTarget:{commentId:c.commentId, videoId:c.videoId||videoId},
+    });
+    ingested++;
+  }
+  (workspace as any).socialComments=(workspace as any).socialComments.slice(0,10000);
+  await persistStateDurable();
+  res.json({success:true,ingested,duplicates,quotaUnits:result.quotaUnits,note:"تعليقات حقيقية من YouTube Data API؛ لا يُنشأ أي تعليق وهمي."});
+});
+
+/**
+ * الرد الحقيقي على تعليق YouTube بعد الموافقة. يمر بحارس السلامة وبوابة منع
+ * التكرار، ولا يُسجَّل تسليم بلا معرّف تعليق من YouTube. للمالك فقط.
+ */
+app.post("/api/platforms/youtube/reply", requireOwner, async (req,res)=>{
+  const user=(req as any).user as {id:string};
+  const externalId=typeof req.body?.externalId==="string"?req.body.externalId.trim():"";
+  const text=typeof req.body?.text==="string"?req.body.text.trim():"";
+  const commentText=typeof req.body?.commentText==="string"?req.body.commentText:"";
+  if(!externalId) return res.status(400).json({success:false,error:"معرّف التعليق لدى YouTube مطلوب لمنع الرد المكرر."});
+  if(!text) return res.status(400).json({success:false,error:"نص الرد مطلوب."});
+  if(!youtubeOperationalNow()) return res.status(409).json({success:false,error:"YouTube غير متصل باتصال موثق؛ لا يمكن إرسال أي رد خارجي.",code:"NOT_CONNECTED"});
+  const comment=(workspace as any).socialComments.find((c:any)=>c.platform==="youtube"&&c.externalId===externalId);
+  if(!comment) return res.status(404).json({success:false,error:"لا يوجد تعليق وارد بهذا المعرّف؛ لا إرسال بلا تعليق حقيقي."});
+
+  // 1) لا رد على الحالات الحساسة/السبام/تعليقنا (نفس حمايات التعليقات).
+  const classification=classifyComment(commentText||text);
+  if(!canAutoReply(classification)) return res.status(422).json({success:false,error:classification.reviewReason||"هذا التعليق يستوجب مراجعة بشرية قبل أي رد.",classification,requiresHumanReview:true});
+  const ownNames=[String(workspace.showroom?.name||""),"معرض الغرابي"];
+  if(isSelfAuthored(comment.authorName,ownNames)) return res.status(409).json({success:false,error:"التعليق صادر من حساب المعرض؛ لا يُرد عليه لتجنب حلقة ردود."});
+
+  // 2) حارس سلامة المحتوى: لا عرض/سعر/رابط غير مسجّل يخرج للمنصة.
+  const productId=typeof req.body?.productId==="string"?req.body.productId.trim():"";
+  const productName=typeof req.body?.productName==="string"?req.body.productName.trim():"";
+  const product=(workspace.products||[]).find((p:any)=>(productId&&p.id===productId)||(productName&&p.name===productName))||null;
+  const replyFacts=buildFactsForProduct(product,Number(product?.downPaymentPercent||0),Number(product?.durationMonths||0));
+  const safety=analyzeBusinessClaims(text,replyFacts);
+  if(!safety.safe) return res.status(422).json({success:false,error:"نص الرد يحمل عرضاً تجارياً غير مسجّل، وتم إيقافه قبل أي إرسال.",contentSafety:{safe:false,violations:safety.blocked.map((v)=>v.detail),codes:safety.blocked.map((v)=>v.code)}});
+
+  // 3) بوابة الرد المكرر (على معرّف التعليق الخارجي).
+  const history:ReplyRecord[]=(workspace as any).socialReplies.filter((r:any)=>r.platform==="youtube").map((r:any)=>({externalId:r.externalId,replyFingerprint:r.replyFingerprint,repliedAt:r.repliedAt}));
+  const decision=evaluateReplyGuard({externalId,replyText:text,history});
+  if(!decision.allowed) return res.status(409).json({success:false,error:decision.reason,guard:decision});
+
+  // 4) إرسال حقيقي عبر YouTube comments.insert. لا تسجيل تسليم بلا معرّف من المزود.
+  const parentId=String(comment.replyTarget?.commentId||externalId);
+  const result=await withYouTubeToken("comments_insert",(t)=>youtubeClient().replyToComment(t,parentId,text));
+  if(result.errorKind) await markYouTubeQuotaExceeded(result.errorKind);
+  const record={
+    id:workspaceId("reply"), platform:"youtube", externalId, text, kind:"comment",
+    replyFingerprint:decision.fingerprint, classification,
+    contentSafety:{safe:true,violations:[] as string[],codes:[] as string[]},
+    repliedAt:new Date().toISOString(), createdBy:user.id, simulated:false,
+    delivered:result.ok, providerReplyId:result.data?.commentId||null,
+    receipt:result.ok?{provider:"youtube",commentId:result.data?.commentId,sentAt:new Date().toISOString()}:null,
+    deliveryError:result.ok?null:(result.error||"فشل الرد على التعليق عبر YouTube."),
+    reviewStatus:result.ok?"delivered":"failed",
+    note:result.ok?"أُرسل الرد فعلياً عبر YouTube وثُبّت بمعرّف تعليق من المزود.":"فشل الإرسال عبر YouTube؛ لم يُسجَّل أي تسليم.",
+  };
+  if(!Array.isArray((workspace as any).socialReplies)) (workspace as any).socialReplies=[];
+  (workspace as any).socialReplies.unshift(record);
+  if((workspace as any).socialReplies.length>5000) (workspace as any).socialReplies.pop();
+  audit(user.id,result.ok?"social_youtube_comment_reply_sent":"social_youtube_comment_reply_failed",`${externalId}:${result.ok?"delivered":"failed"}`);
+  await persistStateDurable();
+  if(!result.ok) return res.status(502).json({success:false,delivered:false,simulated:false,reply:record,error:record.deliveryError,code:result.errorKind});
+  res.json({success:true,delivered:true,simulated:false,providerReplyId:record.providerReplyId,reply:record});
+});
+
 // اشتراك webhook (GET challenge) — يُقارن رمز التحقق بزمن ثابت.
 app.get("/api/platforms/:platform/webhook", (req, res) => {
   const platform = req.params.platform;
@@ -3903,9 +4578,16 @@ app.get("/api/platforms/:platform/health", authenticateToken, async (req,res)=>{
       return res.json({success:true,platform,healthy:true,provider:"telegram",accountId:me.botId,accountName:me.username?`@${me.username}`:me.firstName||c.accountName,webhookConfigured:Boolean(telegramWebhookSecret()),checkedAt:new Date().toISOString()});
     }
     if(platform==="youtube") {
-      if(!token?.access_token) throw new Error("رمز YouTube غير متوفر.");
-      const r=await fetch("https://www.googleapis.com/youtube/v3/channels?part=snippet&mine=true",{headers:{Authorization:`Bearer ${token.access_token}`}}); const d=await r.json();
-      return res.status(r.ok&&Array.isArray(d.items)?200:502).json({success:r.ok&&Array.isArray(d.items),platform,healthy:r.ok&&Array.isArray(d.items),provider:"youtube",accountId:d.items?.[0]?.id||c.accountId,accountName:d.items?.[0]?.snippet?.title||c.accountName,checkedAt:new Date().toISOString()});
+      // فحص حقيقي عبر موصل YouTube (يحترم YOUTUBE_API_BASE في الاختبار): القناة
+      // تُثبت بـchannels.list، ويُرصد quotaExceeded صراحةً بدل تحويله إلى 502 عام.
+      const result=await withYouTubeToken("channels_list",(t)=>youtubeClient().fetchMyChannel(t));
+      if(!result.ok||!result.data) {
+        if(result.errorKind) await markYouTubeQuotaExceeded(result.errorKind);
+        if(result.requiresReauth) return res.status(409).json({success:false,platform,healthy:false,provider:"youtube",status:"reauth_needed",error:result.error});
+        return res.status(502).json({success:false,platform,healthy:false,provider:"youtube",error:result.error,errorKind:result.errorKind});
+      }
+      (workspace as any).youtubeQuotaExceeded = false;
+      return res.json({success:true,platform,healthy:true,provider:"youtube",accountId:result.data.channelId,accountName:result.data.title||c.accountName,statistics:result.data.statistics,checkedAt:new Date().toISOString()});
     }
     if(platform==="tiktok") {
       if(!token?.access_token) throw new Error("رمز TikTok غير متوفر.");
@@ -4010,7 +4692,7 @@ app.get("/api/platforms/:platform/oauth/setup", requireOwner, async (req,res)=>{
   const redirectUri=`${urlInfo.baseUrl||publicBaseUrlNow()}/api/platforms/${platform}/oauth/callback`;
   const publicOk=publicUrlIsPublic();
   // Facebook/Instagram: الصلاحيات النهائية مع الاعتماديات الرسمية + أي فارق في تجاوز البيئة.
-  const resolvedScopes = platform==="facebook" ? facebookOAuthScopes() : platform==="instagram" ? instagramOAuthScopes() : platform==="tiktok" ? tiktokOAuthScopes() : cfg.scopes;
+  const resolvedScopes = platform==="facebook" ? facebookOAuthScopes() : platform==="instagram" ? instagramOAuthScopes() : platform==="tiktok" ? tiktokOAuthScopes() : platform==="youtube" ? youtubeOAuthScopes() : cfg.scopes;
   const scopeDependencyGaps = platform==="facebook" ? facebookScopeDependencyGaps() : platform==="instagram" ? instagramScopeDependencyGaps() : [];
   const metaScopesResolved = platform==="facebook"||platform==="instagram";
   // فحص حي لسلسلة حوار Meta كما يسلكها متصفح المالك الجوال (www → m.facebook.com).
@@ -4170,6 +4852,34 @@ app.get("/api/platforms/:platform/oauth/setup", requireOwner, async (req,res)=>{
         ? "في وضع Development يمكن للرولات (المدير/المطوّر/المختبِر) فقط التفويض، ويلزم رول على الصفحة المرتبطة بحساب Instagram. ولتفعيل استقبال تعليقات/رسائل Instagram يجب تفعيل حقول webhook (comments/messages) لكائن instagram من لوحة Meta (Graph API لا يسمح بضبط حقول Instagram عبر subscribed_apps)."
         : "في وضع Development يمكن للرولات (المدير/المطوّر/المختبِر) فقط التفويض؛ وأي حساب بلا رول يُرفض على شاشة الموافقة. ولأن صفحة المعرض قد تكون مملوكة لـBusiness Manager، فالمطلوب أيضاً رول على الصفحة وصلاحية business_management (يُطلبها الكود افتراضياً).",
     }:undefined,
+    // YouTube: إعداد OAuth الدقيق + مصفوفة القدرات + الحصة (بلا أي سرّ).
+    youtubeSetup:platform==="youtube"?{
+      clientIdConfigured:Boolean(cfg.clientId),
+      clientIdFormatOk:isPlausibleYouTubeClientId(String(cfg.clientId||"")),
+      clientIdFingerprint:cfg.clientId?fingerprintValue(cfg.clientId):null,
+      clientSecretConfigured:Boolean(cfg.clientSecret),
+      requestedScopes:youtubeOAuthScopes(),
+      requiredScopes:[...YOUTUBE_REQUIRED_SCOPES],
+      scopeOverrideConfigured:youtubeScopeOverride().length>0,
+      scopeExtra:youtubeExtraScopes(youtubeScopeOverride()),
+      tokenEndpoint:cfg.token,
+      revokeEndpoint:"https://oauth2.googleapis.com/revoke",
+      webhookUrl:youtubeWebhookUrl(),
+      pubsubSignatureHeader:YOUTUBE_PUBSUB_SIGNATURE_HEADER,
+      dailyQuotaUnits:YOUTUBE_DEFAULT_DAILY_QUOTA_UNITS,
+      quotaCosts:YOUTUBE_QUOTA_COST,
+      auditRequired:youtubeCapabilityNeedsAudit("video_upload"),
+      capabilityMatrix:YOUTUBE_CAPABILITY_MATRIX,
+      dashboardSteps:[
+        "Google Cloud Console → APIs & Services → Library → فعّل YouTube Data API v3.",
+        "OAuth consent screen → أضف بريد المالك كـTest user (Testing) أو أكمل Verification للنشر العام.",
+        "Credentials → OAuth client ID → Web application، وأضف redirectUri إلى Authorized redirect URIs.",
+        "انسخ Client ID/secret إلى GOOGLE_OAUTH_CLIENT_ID وGOOGLE_OAUTH_CLIENT_SECRET (بلا مسافات).",
+        "لإشعارات PubSubHubbub اضبط YOUTUBE_PUBSUB_SECRET واشترك على topic القناة.",
+      ],
+      note:"مسار YouTube الرسمي: OAuth 2.0 قياسي (access_type=offline + prompt=consent) على accounts.google.com، والرمز على oauth2.googleapis.com/token، والبيانات على youtube/v3. رفع الفيديو يحتاج youtube.upload ومراجعة Google.",
+      doc:"https://developers.google.com/youtube/v3/docs",
+    }:undefined,
     note:"قيَم حقيقية محسوبة من بيئة الخادم بلا أي سرّ. لا يُرسَل أي توكن أو مفتاح هنا.",
   });
 });
@@ -4214,6 +4924,13 @@ app.post("/api/platforms/:platform/disconnect", requireOwner, async (req, res) =
     if (stored?.accessToken && cfg?.clientId && cfg?.clientSecret) {
       try { await tiktokClient().revokeToken({ clientKey: String(cfg.clientId), clientSecret: String(cfg.clientSecret), token: String(stored.accessToken) }); } catch { /* إبطال محلي يكفي */ }
     }
+  }
+  if (platform === "youtube") {
+    // إبطال طرف Google أيضاً: revoke للرمز لدى Google قدر الإمكان، ثم مسح محلي.
+    const stored = youtubeStoredCredentials();
+    const token = stored?.refreshToken || stored?.accessToken;
+    if (token) { try { await youtubeClient().revokeToken(String(token)); } catch { /* إبطال محلي يكفي */ } }
+    (workspace as any).youtubeQuotaExceeded = false;
   }
   platformConnections.set(platform, { platform, status: "disconnected" });
   clearProviderToken(platform); savePlatformConnections(); audit((req as any).user.id, "platform_disconnect", platform);
@@ -5419,6 +6136,7 @@ function buildPersistedState() {
       facebookEventIds: ((workspace as any).facebookEventIds || []).slice(0, 20000),
       instagramEventIds: ((workspace as any).instagramEventIds || []).slice(0, 20000),
       tiktokEventIds: ((workspace as any).tiktokEventIds || []).slice(0, 20000),
+      youtubeEventIds: ((workspace as any).youtubeEventIds || []).slice(0, 20000),
       providerTokens: (workspace as any).providerTokens,
     }
   };
@@ -5785,6 +6503,40 @@ app.get("/api/readiness", (_req, res) => {
         operationalState: tiktokTruthfulState().state,
         operationalStateLabelAr: tiktokTruthfulState().labelAr,
         operationalStateReason: tiktokTruthfulState().reason,
+      };
+    })(),
+    // حقول YouTube الآمنة (منطقي فقط، بلا أي قيمة سرّية).
+    youtubeOAuth: (() => {
+      const c = youtubeOAuthConfig();
+      const stored = youtubeStoredCredentials();
+      const conn: any = platformConnections.get("youtube");
+      const verified = Boolean(conn?.status === "connected" && conn?.providerVerified === true && stored?.channelId);
+      const truthful = youtubeTruthfulState();
+      return {
+        platform: "youtube",
+        clientIdConfigured: Boolean(c?.clientId),
+        clientIdFormatOk: isPlausibleYouTubeClientId(String(c?.clientId || "")),
+        clientSecretConfigured: Boolean(c?.clientSecret),
+        redirectUri: oauthCallbackUrl("youtube"),
+        requestedScopes: youtubeOAuthScopes(),
+        oauthStateDurable: storageStatus().durable,
+        tokenStored: Boolean(stored?.accessToken),
+        refreshTokenStored: Boolean(stored?.refreshToken),
+        tokenExpiryKnown: stored?.expiresAt != null,
+        tokenExpired: Boolean(stored?.accessToken) && youtubeAccessExpired(),
+        accountDiscovered: Boolean(stored?.channelId),
+        accountVerified: verified,
+        quotaExceeded: youtubeQuotaExceededFlag(),
+        dailyQuotaUnits: YOUTUBE_DEFAULT_DAILY_QUOTA_UNITS,
+        publishCapability: youtubeCapabilityStatus("video_upload"),
+        commentsCapability: youtubeCapabilityStatus("comments_read"),
+        replyCapability: youtubeCapabilityStatus("comment_reply"),
+        analyticsCapability: youtubeCapabilityStatus("analytics_read"),
+        webhookCapability: youtubeCapabilityStatus("push_notifications"),
+        appReviewRequired: youtubeCapabilityNeedsAudit("video_upload"),
+        operationalState: truthful.state,
+        operationalStateLabelAr: truthful.labelAr,
+        operationalStateReason: truthful.reason,
       };
     })(),
     timestamp: new Date().toISOString(),
@@ -6171,6 +6923,32 @@ app.get("/api/health", (_req, res) => {
         operationalState: tiktokTruthfulState().state,
         operationalStateLabelAr: tiktokTruthfulState().labelAr,
         operationalStateReason: tiktokTruthfulState().reason,
+      };
+    })(),
+    // حالة موصل YouTube الحقيقي (منطقي فقط بلا أي سرّ أو رمز).
+    youtubeOAuth: (() => {
+      const c = youtubeOAuthConfig();
+      const stored = youtubeStoredCredentials();
+      const truthful = youtubeTruthfulState();
+      return {
+        platform: "youtube",
+        clientIdConfigured: Boolean(c?.clientId),
+        clientIdFormatOk: isPlausibleYouTubeClientId(String(c?.clientId || "")),
+        clientSecretConfigured: Boolean(c?.clientSecret),
+        accessTokenStored: Boolean(stored?.accessToken),
+        refreshTokenStored: Boolean(stored?.refreshToken),
+        channelIdStored: Boolean(stored?.channelId),
+        tokenExpiryKnown: stored?.expiresAt != null,
+        tokenExpired: Boolean(stored?.accessToken) && youtubeAccessExpired(),
+        scopeCount: youtubeOAuthScopes().length,
+        requestedScopes: youtubeOAuthScopes(),
+        webhookUrl: youtubeWebhookUrl(),
+        quotaExceeded: youtubeQuotaExceededFlag(),
+        appReviewRequired: youtubeCapabilityNeedsAudit("video_upload"),
+        connectorConfigured: youtubeConnectorConfigured(),
+        operationalState: truthful.state,
+        operationalStateLabelAr: truthful.labelAr,
+        operationalStateReason: truthful.reason,
       };
     })(),
     // العنوان العام المعتمد: يكشف سبب فشل OAuth قبل وقوعه بلا أي سرّ. يبيّن مصدر
