@@ -117,7 +117,9 @@ import {
   TIKTOK_VERIFICATION_TOKEN_ENV_NAME,
   VERIFICATION_CONTENT_TYPE,
   verificationFileUrl,
+  captureVerificationRequest,
   type SiteVerificationFile,
+  type VerificationRequestSnapshot,
 } from "./engine/social/siteVerification";
 import { legalPageForPath } from "./engine/social/legalPages";
 import {
@@ -1141,26 +1143,67 @@ function oauthReady(platform: string) { const c = OAUTH_CONFIG[platform]; return
 function publicUrlIsPublic(): boolean { const u = resolvePublicUrl(process.env); return u.valid && u.scheme === 'https' && !!u.host && !isLocalHost(u.host); }
 
 /**
- * آخر طلب ملف تحقق وصل برمز مختلف (إن وُجد). في الذاكرة فقط وبلا أي سرّ:
- * الرمز عام بطبيعته، ووجوده هنا يكشف انحراف الرمز فوراً بدل خدمة توقيع خطأ
- * صامتاً فيبدو الملف «موجوداً» بينما TikTok يبحث عن رمز آخر.
+ * سجل طلبات ملف تحقق TikTok الواصلة (في الذاكرة فقط، بلا أي سرّ). TikTok يطلب
+ * الملف علناً من الإنترنت، فيجوز إظهار الاسم/الرمز/وكيل المستخدم/الوقت. الغرض:
+ * عند فشل التحقق نرى **بالضبط** ما طلبه TikTok فعلاً (اسم الملف ورمزه) ونقارنه
+ * بما نخدمه، بدل التخمين. السجل محصور (آخر N طلب) فلا ينمو بلا حدّ.
  */
+interface VerificationRequestLog {
+  count: number;
+  firstAt: string | null;
+  lastAt: string | null;
+  last: VerificationRequestSnapshot | null;
+  lastServed: VerificationRequestSnapshot | null;
+  lastMismatch: VerificationRequestSnapshot | null;
+  recent: VerificationRequestSnapshot[];
+}
+const verificationRequestLog: VerificationRequestLog = {
+  count: 0, firstAt: null, lastAt: null, last: null, lastServed: null, lastMismatch: null, recent: [],
+};
+const VERIFICATION_REQUEST_LOG_MAX = 20;
+
+/** آخر طلب وصل برمز مختلف (للتوافق مع التشخيص السابق) — مشتقّ من السجل. */
 let lastVerificationMismatch: { requestedToken: string; requestedFilename: string; at: string } | null = null;
 
-/** يسجّل طلباً لملف تحقق برمز لا يطابق الرمز الفعّال (بلا سرّ). */
-function recordVerificationMismatch(pathname: string): void {
-  const name = String(pathname || "").replace(/^\//, "");
-  const token = /^tiktok([A-Za-z0-9]{8,128})\.txt$/.exec(name)?.[1] || "";
-  lastVerificationMismatch = { requestedToken: token, requestedFilename: name, at: new Date().toISOString() };
-  // سطر آمن (بلا سرّ) يبقى في سجلات الاستضافة بعد انتهاء العملية، فيُقرأ انحراف
-  // الرمز من السجلات مباشرة عند فشل تحقق TikTok رغم وجود الملف.
-  console.warn(`[الغرابي AI] tiktok-verification-mismatch requested=${name} served=${effectiveVerificationFile().filename}`);
+/**
+ * يسجّل **كل** طلب لملف تحقق (مطابقاً كان أو منحرفاً). اسم الملف والرمز عامان
+ * بطبيعتهما فلا سرّ هنا، ووكيل المستخدم يُقطع عند حدّ آمن. سطر السجل يحمل الاسم
+ * المطلوب والمخدوم فقط، فيُقرأ الانحراف مباشرة من سجلات الاستضافة بعد انتهاء
+ * العملية (الحالة في الذاكرة تُفقد عند cold start).
+ */
+function recordVerificationRequest(req: express.Request): VerificationRequestSnapshot {
+  const snapshot = captureVerificationRequest({
+    pathname: req.path,
+    originalUrl: req.originalUrl,
+    userAgent: typeof req.headers['user-agent'] === 'string' ? req.headers['user-agent'] : '',
+    method: req.method,
+    at: new Date().toISOString(),
+  });
+
+  verificationRequestLog.count += 1;
+  if (!verificationRequestLog.firstAt) verificationRequestLog.firstAt = snapshot.at;
+  verificationRequestLog.lastAt = snapshot.at;
+  verificationRequestLog.last = snapshot;
+  if (snapshot.served) verificationRequestLog.lastServed = snapshot;
+  else {
+    verificationRequestLog.lastMismatch = snapshot;
+    lastVerificationMismatch = { requestedToken: snapshot.token, requestedFilename: snapshot.filename, at: snapshot.at };
+  }
+  verificationRequestLog.recent = [snapshot, ...verificationRequestLog.recent].slice(0, VERIFICATION_REQUEST_LOG_MAX);
+
+  const outcome = snapshot.served ? 'served' : (snapshot.mismatchReason || 'not-served');
+  console.log(
+    `[الغرابي AI] tiktok-verification-request file=${snapshot.filename} token=${snapshot.token || '-'} ` +
+    `served=${snapshot.served ? 1 : 0} outcome=${outcome} ua=${snapshot.userAgent || '-'}`,
+  );
+  return snapshot;
 }
 
 /**
  * حالة التحقق من ملكية الرابط (TikTok URL prefix): الملف الرسمي الفعّال (اسم +
  * رابط + نوع) مبنياً من الرمز الفعّال، ومصدر الرمز (بيئة/مدموج) ليُقارَن بما في
- * لوحة TikTok، وآخر طلب وصل برمز مختلف — كلها بلا أي سرّ (الرمز عام بطبيعته).
+ * لوحة TikTok، وسجل طلبات TikTok الواصلة (آخرها + آخر مطابق + آخر منحرف) — كلها
+ * بلا أي سرّ (الاسم والرمز عامان بطبيعتهما).
  */
 function siteVerificationState() {
   const urlInfo = resolvePublicUrl(process.env);
@@ -1178,7 +1221,18 @@ function siteVerificationState() {
       ? `env:${TIKTOK_VERIFICATION_TOKEN_ENV_NAME}`
       : "default",
     tokenEnvName: TIKTOK_VERIFICATION_TOKEN_ENV_NAME,
-    /** آخر طلب وصل برمز مختلف — دليل التشخيص عند فشل التحقق لدى TikTok. */
+    /** آخر طلب تحقق وصل فعلاً: الاسم/الرمز/وكيل المستخدم/الوقت + هل طابق ما نخدمه. */
+    lastRequest: verificationRequestLog.last,
+    /** آخر طلب تمكّن الخادم من خدمته (200) — دليل أن TikTok وصل وجُرِّب بنجاح. */
+    lastServedRequest: verificationRequestLog.lastServed,
+    /** آخر طلب لم يُخدَم (رمز مختلف/مسار فرعي/استعلام) — دليل الانحراف. */
+    lastMismatchedRequest: verificationRequestLog.lastMismatch,
+    requestCount: verificationRequestLog.count,
+    firstRequestAt: verificationRequestLog.firstAt,
+    lastRequestAt: verificationRequestLog.lastAt,
+    /** آخر N طلب وصل (الأحدث أولاً) للفحص التفصيلي. */
+    recentRequests: verificationRequestLog.recent,
+    /** حقل توافق قديم: ملخّص آخر انحراف (طلب/رمز/وقت) أو null. */
     lastMismatch: lastVerificationMismatch,
     /** الملف يُخدَم من مسار ثابت في الخادم، لا من واجهة React. */
     servedBy: "static-route",
@@ -7490,6 +7544,15 @@ function serveVerificationFile(res: express.Response, file: SiteVerificationFile
 }
 
 /**
+ * يُلتقط **كل** طلب لملف تحقق TikTok (أي طريقة HTTP) مرة واحدة قبل معالجته،
+ * فيكون السجل كاملاً حتى لو جاء الطلب بمسار فرعي أو استعلام أو طريقة غير GET.
+ */
+app.use((req, _res, next) => {
+  if (isVerificationFileRequest(req.path)) recordVerificationRequest(req);
+  next();
+});
+
+/**
  * ملف تحقق ملكية الرابط (URL prefix) الخاص بـTikTok. الاسم `/tiktok<token>.txt`
  * والمحتوى `tiktok-developers-site-verification=<token>` — كما تطلبه الوثيقة
  * الرسمية. قبل الإصلاح كان الطلب يسقط إلى index.html بحالة 200 فيفشل التحقق.
@@ -7502,7 +7565,6 @@ function serveVerificationFile(res: express.Response, file: SiteVerificationFile
 app.get(SITE_VERIFICATION_PATH_PATTERN, (req, res) => {
   const file = verificationFileForPath(req.path);
   if (file) return serveVerificationFile(res, file);
-  recordVerificationMismatch(req.path);
   res.status(404).type(VERIFICATION_CONTENT_TYPE).send(
     `ملف تحقق TikTok غير موجود: ${String(req.path || "").replace(/^\//, "")}\n` +
     `الملف الصحيح لهذا النشر: ${effectiveVerificationFile().filename}\n`,
@@ -7575,7 +7637,6 @@ async function startServer() {
     // يُخدَم كواجهة React: HTML بحالة 200 يجعل TikTok يقرأ صفحة بدل التوقيع.
     app.get(/^\/(?!api\/).*/, (req, res) => {
       if (isVerificationFileRequest(req.path)) {
-        recordVerificationMismatch(req.path);
         return res.status(404).type(VERIFICATION_CONTENT_TYPE).send(
           `ملف تحقق TikTok غير موجود في هذا المسار: ${String(req.path || "")}\n` +
           `الملف الصحيح على الجذر: /${effectiveVerificationFile().filename}\n`,

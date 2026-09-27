@@ -27,6 +27,7 @@ import {
   verificationFileUrl,
   SITE_VERIFICATION_PATH_PATTERN,
   isVerificationFileRequest,
+  captureVerificationRequest,
   effectiveVerificationFilename,
   effectiveTikTokVerificationToken,
   DEFAULT_TIKTOK_VERIFICATION_TOKEN,
@@ -167,6 +168,41 @@ function mismatchUnitTests(): void {
 }
 
 // -------------------------------------------------------------
+// 1ج) وحدة: التقاط طلب التحقق وتصنيف الانحراف
+// -------------------------------------------------------------
+function captureUnitTests(): void {
+  group('التقاط طلب التحقق (وحدة)');
+  const at = '2026-09-27T00:00:00.000Z';
+  const match = captureVerificationRequest({ pathname: `/${TIKTOK_VERIFICATION_FILENAME}`, userAgent: 'TikTokBot/1.0', method: 'GET', at });
+  check('التقاط الطلب المطابق: الاسم', match.filename === TIKTOK_VERIFICATION_FILENAME, match.filename);
+  check('التقاط الطلب المطابق: الرمز', match.token === TIKTOK_VERIFICATION_TOKEN, match.token);
+  check('التقاط الطلب المطابق: وكيل المستخدم', match.userAgent === 'TikTokBot/1.0', match.userAgent);
+  check('التقاط الطلب المطابق: الوقت', match.at === at, match.at);
+  check('التقاط الطلب المطابق: مخدوم', match.served === true && match.matchedExpected === true);
+  check('التقاط الطلب المطابق: في الجذر', match.rootLevel === true);
+  check('التقاط الطلب المطابق: بلا سبب انحراف', match.mismatchReason === '');
+
+  const other = captureVerificationRequest({ pathname: '/tiktokZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZ.txt', userAgent: 'TikTokBot/1.0', method: 'GET', at });
+  check('التقاط رمز مختلف: غير مخدوم', other.served === false);
+  check('التقاط رمز مختلف: سبب = رمز مختلف', other.mismatchReason === 'token_differs_from_served', other.mismatchReason);
+  check('التقاط رمز مختلف: الرمز المطلوب مسجّل', other.token === 'ZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZ', other.token);
+  check('التقاط رمز مختلف: اسم الملف المتوقع معلن', other.expectedFilename === TIKTOK_VERIFICATION_FILENAME, other.expectedFilename);
+
+  const sub = captureVerificationRequest({ pathname: `/sub/${TIKTOK_VERIFICATION_FILENAME}`, userAgent: '', method: 'GET', at });
+  check('مسار فرعي: سبب = ليس الجذر', sub.mismatchReason === 'not_at_root_path', sub.mismatchReason);
+  check('مسار فرعي: مخدوم=false', sub.served === false);
+
+  const withQuery = captureVerificationRequest({ pathname: `/${TIKTOK_VERIFICATION_FILENAME}`, originalUrl: `/${TIKTOK_VERIFICATION_FILENAME}?x=1`, userAgent: '', method: 'GET', at });
+  check('استعلام: مخدوم (req.path بلا استعلام)', withQuery.served === true);
+  check('استعلام: hasQuery معلن', withQuery.hasQuery === true);
+  check('استعلام: في الجذر', withQuery.rootLevel === true);
+
+  const badName = captureVerificationRequest({ pathname: '/tiktok.txt', userAgent: '', method: 'GET', at });
+  check('اسم لا يطابق الصيغة: سبب صريح', badName.mismatchReason === 'filename_not_in_tiktok_token_format', badName.mismatchReason);
+  check('طريقة HEAD مسجّلة', captureVerificationRequest({ pathname: `/${TIKTOK_VERIFICATION_FILENAME}`, method: 'head', at }).method === 'HEAD');
+}
+
+// -------------------------------------------------------------
 // 2) وحدة: الصفحات القانونية
 // -------------------------------------------------------------
 function legalUnitTests(): void {
@@ -243,6 +279,9 @@ async function integrationTests(): Promise<void> {
     check('الصفحات القانونية بلا مصادقة (بلا توكن)', tres.status === 200 && pres.status === 200);
 
     // حالة التحقق معلنة في الصحة والجاهزية بلا سرّ.
+    // أُعيد فحص الملف الرسمي ليصبح آخر طلب واصلاً هو المطابق، فيقرأ فحص الصحة
+    // السجل في حالته المتوقّعة بلا افتراض ترتيب الطلبات السابقة.
+    await fetch(`${BASE}/${TIKTOK_VERIFICATION_FILENAME}`, { redirect: 'manual' });
     const health = await (await fetch(`${BASE}/api/health`)).json() as any;
     const sv = health?.siteVerification;
     check('الصحة تعرض siteVerification', !!sv && sv.filename === TIKTOK_VERIFICATION_FILENAME, JSON.stringify(sv));
@@ -251,6 +290,33 @@ async function integrationTests(): Promise<void> {
     check('الصحة تعرض مصدر الرمز', sv?.tokenSource === 'default' || String(sv?.tokenSource).startsWith('env:'), String(sv?.tokenSource));
     check('الصحة تعرض رمز التحقق العام', sv?.token === TIKTOK_VERIFICATION_TOKEN, String(sv?.token));
     check('الصفحات القانونية معلنة', Array.isArray(sv?.legalPages) && sv.legalPages.includes('/terms') && sv.legalPages.includes('/privacy'));
+
+    // السجل يلتقط طلب التحقق المطابق أخيراً (الاسم/الرمز/وكيل المستخدم/الوقت).
+    const lr = sv?.lastRequest;
+    check('الصحة تعرض lastRequest', !!lr, JSON.stringify(lr));
+    check('lastRequest يحمل اسم الملف', lr?.filename === TIKTOK_VERIFICATION_FILENAME, lr?.filename);
+    check('lastRequest يحمل الرمز', lr?.token === TIKTOK_VERIFICATION_TOKEN, lr?.token);
+    check('lastRequest يحمل وقتاً', typeof lr?.at === 'string' && !Number.isNaN(Date.parse(lr.at)), lr?.at);
+    check('lastRequest يحمل userAgent (قد يكون فارغاً)', typeof lr?.userAgent === 'string');
+    check('lastRequest مخدوم=true للاسم الصحيح', lr?.served === true);
+    check('عدّاد الطلبات موجب', typeof sv?.requestCount === 'number' && sv.requestCount >= 1, String(sv?.requestCount));
+
+    // طلب رمز مختلف يُحدّث السجل ويكشف سبب الانحراف بدقة.
+    const otherName = 'tiktokZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZ.txt';
+    await fetch(`${BASE}/${otherName}`, { headers: { 'user-agent': 'TikTok-Verify/Probe' }, redirect: 'manual' });
+    const health2 = await (await fetch(`${BASE}/api/health`)).json() as any;
+    const sv2 = health2?.siteVerification;
+    check('آخر طلب يعكس الطلب الأخير (الرمز الآخر)', sv2?.lastRequest?.filename === otherName, sv2?.lastRequest?.filename);
+    check('آخر طلب يحمل وكيل المستخدم', sv2?.lastRequest?.userAgent === 'TikTok-Verify/Probe', sv2?.lastRequest?.userAgent);
+    check('سبب الانحراف معلن = رمز مختلف', sv2?.lastRequest?.mismatchReason === 'token_differs_from_served', sv2?.lastRequest?.mismatchReason);
+    check('آخر طلب مطابق محفوظ منفصلاً', sv2?.lastServedRequest?.filename === TIKTOK_VERIFICATION_FILENAME, sv2?.lastServedRequest?.filename);
+    check('آخر طلب منحرف محفوظ منفصلاً', sv2?.lastMismatchedRequest?.filename === otherName, sv2?.lastMismatchedRequest?.filename);
+    check('recentRequests سجل تراكمي', Array.isArray(sv2?.recentRequests) && sv2.recentRequests.length >= 2, String(sv2?.recentRequests?.length));
+    check('الاسم المتوقع معلن في الطلب', sv2?.lastRequest?.expectedFilename === TIKTOK_VERIFICATION_FILENAME);
+
+    // خطأ الانحراف يُظهر اسم الملف الصحيح في الجسم (تشخيص للمالك).
+    const mismatchBody = await (await fetch(`${BASE}/${otherName}`)).text();
+    check('جسم 404 يذكر الاسم الصحيح', mismatchBody.includes(TIKTOK_VERIFICATION_FILENAME), mismatchBody.slice(0, 200));
 
     const readiness = await (await fetch(`${BASE}/api/readiness`)).json() as any;
     check('الجاهزية تعرض siteVerification', readiness?.siteVerification?.filename === TIKTOK_VERIFICATION_FILENAME);
@@ -267,6 +333,7 @@ async function integrationTests(): Promise<void> {
 async function main(): Promise<void> {
   unitTests();
   mismatchUnitTests();
+  captureUnitTests();
   legalUnitTests();
   await integrationTests();
 
