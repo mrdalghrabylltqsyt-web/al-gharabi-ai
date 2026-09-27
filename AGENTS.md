@@ -1806,3 +1806,46 @@ Telegram/TikTok بلا تغيير (انحدارها ناجح).
 (أو `FACEBOOK_LOGIN_CONFIG_ID`)، وأضف Redirect URI المسجّل في `oauth/setup` إلى Valid OAuth
 Redirect URIs، ثم أعد النشر واضغط «بدء الربط». بعد الإصلاح يقرأ الرمز من سطر الطلب
 (`response_type=code`) ويُكمل الربط ويُحفظ مشفّراً في Postgres.
+
+## العقل المركزي التنفيذي (Central AI Agent) — Batch 16 (2026-09-27)
+
+العقل المركزي لم يكن كافياً كواجهة «مستشار»: أُضيف **منسّق تنفيذي حقيقي** يدير دورة
+كاملة (فهم → تخطيط → أدوات → تنفيذ → تحقق → سجل) بصلاحيات مفروضة على الخادم، وسجل
+تنفيذ مفصّل، ودوام بعد إعادة التشغيل، وربط ببوابات النشر القائمة بلا تجاوز.
+
+**الوحدات الجديدة (`engine/agent/`، منطق خالص قابل للاختبار):**
+- `permissions.ts`: مستويات الصلاحية الخمسة (`READ`/`WRITE`/`EXECUTE`/`EXTERNAL_ACTION`/
+  `SENSITIVE`) + مصفوفة `staff`/`owner`/`system` + `canUseTool` + `toolRequiresApproval`.
+  **staff يقرأ وينفّذ فقط؛ الكتابة والحساس والخارجي للمالك وحده.**
+- `tools.ts`: سجل **19 أداة** (مصدر واحد) كل واحدة: معرّف + وصف عربي + صلاحية + معاملات +
+  منفّذ حقيقي مربوط بوظائف الخادم عبر `AgentToolContext`. لا قدرة غير موجودة.
+- `planner.ts`: تصنيف نية **حتمي** (`diagnose`/`status`/`content`/`analysis`/`verification`/
+  `jobs`/`report`) + كشف المنصات + بناء خطة خطوات. العمليات الحتمية `requiresAi:false`.
+- `orchestrator.ts`: المنسّق — `createTask`/`run`/`replay`/`snapshot`/`restore`، مهلة لكل
+  خطوة (`withTimeout`)، إعادة محاولة محدودة للأخطاء القابلة للإصلاح فقط، `setToolContext`
+  لمنع تطاير السياق بين المستخدمين، وحماية من التنفيذ المتزامن المزدوج.
+- `providerRouter.ts`: موجّه المزوّدين (Gemini أساسي، ثانوي/مستشار اختياري) + `shouldUseCouncil`
+  (لا يُفعّل بلا مزوّد ثانوي مضبوط — لا مزوّد وهمي) + `primaryProvider`.
+- `routes.ts`: مسارات `/api/agent/*` المحمية (`health`/`tools`/`providers`/`tasks` CRUD + replay).
+
+**قواعد ملزمة مطبَّقة:**
+- **لا تنفيذ خارجي تلقائي**: أي أداة `EXTERNAL_ACTION` تُحجب داخل المهمة و`task.status='waiting'`
+  (`EXTERNAL_APPROVAL_REQUIRED`)، ولا تُنفَّذ إلا بموافقة صريحة.
+- **العمل الخارجي يمر بنفس البوابات**: `executeApprovedJob` (مستخرجة من مسار
+  `/api/control/jobs/:id/execute`) تشترط جاهزية المهمة + اتصالاً موثقاً + موصلاً حقيقياً.
+- **لا نجاح وهمي**: `task.verified` يُحسم من نجاح خطوات فعلية؛ فشل أداة ذات أثر يُوقف المهمة
+  بحالة `failed` وكود فشل صريح.
+- **إخفاء الأسرار**: `sanitizeContext` يُسقط أي مفتاح سرّي (token/secret/key/otp...) قبل
+  حفظ لقطة السياق، ولا تُسجَّل ولا تُعاد أي قيمة سرّية.
+- **الدوام**: سجل المهام يُحفظ في المخزن عبر `STORAGE_KEY_AGENT` (`loadAgentStateSync`/
+  `saveAgentState`) ويُسترجع عند الإقلاع — يصمد بعد restart/cold start.
+- **إعادة استخدام محرك AI القائم** (`aiEngine.run`) لا مزوّد ثانٍ ولا مفاتيح جديدة.
+
+**الواجهة**: `src/components/agent/CentralAgentConsole.tsx` — تبويب «العقل المركزي»
+(`central_agent`): إرسال مهمة، عرض حالتها/خطتها/سجل خطواتها/نتائجها، إعادة تشغيل، مرجع
+الأدوات. تعرض نتيجة الخادم الفعلية فقط بلا أي ادّعاء نجاح محلي.
+
+`/api/health` يعرض `centralAgent` (`enabled`/`tools`/`tasks`/`lastStatus`/`lastVerified`/
+`providers`) بلا أي سرّ. اختبار: `engine/tests/agent.central.test.ts` (`npm run test:agent`،
+71 فحصاً). فحوص final-audit الجديدة: `agent-module-structure` … `agent-tests-cover-critical`
+(422 فحصاً إجمالاً).

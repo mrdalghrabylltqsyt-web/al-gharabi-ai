@@ -550,6 +550,42 @@ add('youtube-status-panel-mounted', /platform === 'youtube'[\s\S]{0,120}?YouTube
 add('youtube-no-new-capability', !/platform: 'youtube',[\s\S]{0,400}?capabilities: \[[^\]]*(publish|comments|analytics|scheduling)/.test(ytRegistry), 'قدرات YouTube بقيت بلا أي قدرة محتوى (لا رفع/نشر/تعليقات/جدولة/تحليلات)');
 add('youtube-refresh-tests', youtubeUi.length > 0 && /11b\)/.test(read('engine/tests/youtube.connector.test.ts')), 'اختبارات التجديد (صالح/منتهٍ/فشل/لا تسريب) موجودة');
 
+// -------------------------------------------------------------
+// العقل المركزي (Central AI Agent)
+// -------------------------------------------------------------
+const agentOrch = read('engine/agent/orchestrator.ts');
+const agentTools = read('engine/agent/tools.ts');
+const agentPlanner = read('engine/agent/planner.ts');
+const agentPerms = read('engine/agent/permissions.ts');
+const agentRoutes = read('engine/agent/routes.ts');
+const agentRouter = read('engine/agent/providerRouter.ts');
+const agentTest = read('engine/tests/agent.central.test.ts');
+const agentUi = read('src/components/agent/CentralAgentConsole.tsx');
+add('agent-module-structure', ['engine/agent/orchestrator.ts', 'engine/agent/tools.ts', 'engine/agent/planner.ts', 'engine/agent/permissions.ts', 'engine/agent/routes.ts', 'engine/agent/providerRouter.ts'].every((f) => fs.existsSync(path.join(root, f))), 'طبقة العقل المركزي بوحداتها الست موجودة');
+add('agent-uses-existing-ai-engine', agentRoutes.length > 0 && server.includes('aiEngine.run') && !read('engine/agent/orchestrator.ts').includes('@google/genai'), 'المحرك يعيد استخدام محرك AI القائم ولا ينشئ مزوّداً ثانياً');
+add('agent-permission-levels', agentPerms.includes("'READ'") && agentPerms.includes("'WRITE'") && agentPerms.includes("'EXECUTE'") && agentPerms.includes("'EXTERNAL_ACTION'") && agentPerms.includes("'SENSITIVE'"), 'مستويات الصلاحية الخمسة معرّفة');
+add('agent-no-external-from-task', agentOrch.includes("EXTERNAL_APPROVAL_REQUIRED") && agentPerms.includes('toolRequiresApproval'), 'الأدوات الخارجية محجوبة داخل المهمة ولا تُنفَّذ تلقائياً');
+add('agent-rbac', agentPerms.includes("staff: ['READ', 'EXECUTE']") && agentPerms.includes("owner: ['READ', 'WRITE', 'EXECUTE', 'EXTERNAL_ACTION', 'SENSITIVE']"), 'فصل صلاحيات staff/owner صريح');
+add('agent-planner-deterministic', agentPlanner.includes('classifyIntent') && agentPlanner.includes('requiresAi: false'), 'التخطيط حتمي محلي ولا يستهلك AI في العمليات الحتمية');
+add('agent-idempotency', agentOrch.includes('findIdempotent') && agentRoutes.includes('duplicate: true'), 'منع التنفيذ المزدوج بمفتاح idempotency');
+add('agent-execution-journal', agentOrch.includes('journal') && agentOrch.includes('AgentJournalEntry'), 'سجل تنفيذ مفصّل لكل خطوة');
+add('agent-failure-recovery', agentOrch.includes('maxAttempts') && agentOrch.includes('attemptsAllowed'), 'إعادة محاولة محدودة للأخطاء القابلة للإصلاح');
+add('agent-step-timeout', agentOrch.includes('withTimeout') && agentOrch.includes('TIMEOUT'), 'مهلة لكل خطوة تمنع الحلقة المعلّقة');
+add('agent-no-secret-in-context', agentOrch.includes('sanitizeContext') && agentOrch.includes('SECRET_KEY_RE'), 'إسقاط أي سرّ من لقطة السياق قبل الحفظ');
+add('agent-verified-flag', agentOrch.includes('task.verified') && agentOrch.includes('anyOk'), 'التحقق النهائي مبني على نجاح خطوات فعلية لا على ادّعاء');
+add('agent-router-council', agentRouter.includes('PROVIDER_CATALOG') && agentRouter.includes('shouldUseCouncil') && agentRouter.includes('COUNCIL_PIPELINE'), 'موجّه المزوّدين وأساس AI Council موجودان');
+add('agent-no-fake-provider', agentRouter.includes('configured') && !/(sk-[A-Za-z0-9]{20,}|AIzaSy[A-Za-z0-9_\-]{10,})/.test(agentRouter), 'لا مفاتيح وهمية ولا مزوّد غير مضبوط يُدّعى');
+add('agent-endpoints', server.includes('registerAgentRoutes') && agentRoutes.includes("app.post('/api/agent/tasks'") && agentRoutes.includes("app.get('/api/agent/tasks/:id'") && agentRoutes.includes("app.get('/api/agent/health'") && agentRoutes.includes("app.get('/api/agent/tools'") && agentRoutes.includes("app.get('/api/agent/providers'"), 'مسارات العقل المركزي مسجّلة');
+add('agent-endpoints-authz', (agentRoutes.match(/authenticateToken/g) || []).length >= 5, 'كل مسارات العقل محمية بالمصادقة');
+add('agent-persistence', server.includes('STORAGE_KEY_AGENT') && server.includes('loadAgentStateSync') && server.includes('saveAgentState'), 'سجل مهام العقل يُحفظ ويُسترجع (يصمد بعد إعادة التشغيل)');
+add('agent-execution-reuses-gates', server.includes('executeApprovedJob') && server.includes('agentJobExecutor'), 'التنفيذ الخارجي يمر بنفس بوابات النشر');
+add('agent-health-exposed', server.includes('centralAgent:') && server.includes('describeProvidersForHealth'), 'حالة العقل معروضة في /api/health بلا أسرار');
+add('agent-ui-console', agentUi.includes('agentCreateTask') && agentUi.includes('agentReplay') && agentUi.includes('سجل المهام السابقة'), 'واجهة العقل المركزي (إرسال + حالة + سجل + أدوات)');
+add('agent-ui-no-fake-success', agentUi.includes("res.task") && !/fake success|نجاح وهمي/.test(agentUi), 'الواجهة تعرض نتيجة الخادم الفعلية لا نجاحاً محلياً');
+add('agent-nav-entry', app.includes('central_agent') && read('src/components/common/Sidebar.tsx').includes("id: 'central_agent'"), 'تبويب العقل المركزي في الواجهة');
+add('agent-test-script', pkg.scripts['test:agent'] === 'tsx engine/tests/agent.central.test.ts', 'سكربت اختبار العقل مضاف إلى package.json');
+add('agent-tests-cover-critical', ['idempotency', 'PERMISSION_DENIED', 'TIMEOUT', 'restore'].every((k) => agentTest.includes(k)) && agentTest.includes('job_execute') && (agentTest.includes('clientSecret') || agentTest.includes('sanitize')), 'اختبارات العقل تغطي idempotency/RBAC/مهلة/أمان/دوام');
+
 const failed = checks.filter(x => !x.ok);
 console.table(checks);
 if (failed.length) {

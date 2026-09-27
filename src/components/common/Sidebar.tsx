@@ -131,9 +131,17 @@ export const Sidebar: React.FC<SidebarProps> = ({ mobileOpen, onCloseMobile }) =
       desc: 'أعطِ الوكيل مهمة واحصل على محتوى عربي جاهز',
     },
     {
+      id: 'central_agent',
+      label: 'العقل المركزي',
+      icon: Bot,
+      badge: currentUser?.role === 'owner' ? 'Owner' : null,
+      badgeColor: 'bg-purple-500/20 text-purple-300 border-purple-500/30',
+      desc: 'مهمة → تخطيط → أدوات → تنفيذ → تحقق → سجل',
+    },
+    {
       id: 'agent',
       label: 'الوكيل الذكي المركزي',
-      icon: Bot,
+      icon: Sparkles,
       badge: 'مستشار',
       badgeColor: 'bg-purple-500/20 text-purple-300 border-purple-500/30',
       desc: 'استراتيجيات التسويق والأداء',

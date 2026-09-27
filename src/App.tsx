@@ -16,6 +16,7 @@ import { ApprovalWorkflowView } from './components/approval/ApprovalWorkflowView
 import { CustomerCenterView } from './components/customers/CustomerCenterView';
 import { ShowroomDatabaseView } from './components/database/ShowroomDatabaseView';
 import { CentralAgentView } from './components/agent/CentralAgentView';
+import { CentralAgentConsole } from './components/agent/CentralAgentConsole';
 import { BrainCommandView } from './components/agent/BrainCommandView';
 import { MarketingAgentView } from './components/agent/MarketingAgentView';
 import { ContentCalendarView } from './components/calendar/ContentCalendarView';
@@ -90,6 +91,7 @@ const AppContent: React.FC = () => {
       case 'customers': return <CustomerCenterView />;
       case 'database': return <ShowroomDatabaseView />;
       case 'agent': return <CentralAgentView />;
+      case 'central_agent': return <CentralAgentConsole />;
       case 'brain_manager': return <BrainCommandView />;
       case 'marketing_agent': return <MarketingAgentView />;
       case 'calendar': return <ContentCalendarView />;

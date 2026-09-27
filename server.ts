@@ -9,6 +9,12 @@ import { resolveModelCandidates, describeModelPolicy, PRODUCTION_MODEL } from ".
 import { classifyAiError, diagnosticLabel, type AiErrorInfo } from "./engine/ai/errors";
 import { CircuitBreaker } from "./engine/ai/retry";
 import { registerSocialManagerRoutes } from "./engine/social/routes";
+import { AgentOrchestrator } from "./engine/agent/orchestrator";
+import { registerAgentRoutes } from "./engine/agent/routes";
+import type { AgentOperator } from "./engine/agent/permissions";
+import type { AgentToolContext } from "./engine/agent/tools";
+import { AGENT_TOOLS } from "./engine/agent/tools";
+import { describeProviders } from "./engine/agent/providerRouter";
 import { PLATFORM_SPECS, platformSupports, hasRealConnector, credentialModeOf, isSupportedPlatform, buildAdapters } from "./engine/social/registry";
 import type { PlatformId } from "./engine/social/adapter";
 import { fetchPostMetrics } from "./engine/social/analytics";
@@ -4736,22 +4742,36 @@ function runSafeJobPreflight() {
 const safeJobWorkerTimer = setInterval(runSafeJobPreflight, 60 * 1000);
 (safeJobWorkerTimer as any).unref?.();
 
-app.post("/api/control/jobs/:id/execute", requireOwner, async (req,res)=>{
-  const job=automationJobs.find((j:any)=>j.id===req.params.id); if(!job) return res.status(404).json({success:false,error:"المهمة غير موجودة."});
-  if(job.status!=="ready") return res.status(409).json({success:false,error:"المهمة ليست جاهزة للتنفيذ."});
-  const platform=String(job.payload?.platform||""); const content=String(job.payload?.content||"").trim(); const conn:any=platformConnections.get(platform);
-  if(!conn || conn.status!=="connected" || conn.providerVerified!==true) return res.status(409).json({success:false,error:"المنصة غير موثقة باتصال حقيقي."});
+/**
+ * ينفّذ مهمة داخلية **معتمدة وجاهزة** عبر الوصلات الحقيقية فقط، بمرور نفس
+ * بوابات النشر (جاهزية + اتصال موثق). لا يختلق تنفيذاً: أي نوع غير مدعوم يعيد
+ * فشلاً صريحاً. سُحبت من المسار كي يستخدمها العقل المركزي بلا تكرار ولا تجاوز.
+ */
+async function executeApprovedJob(job: any, userId: string): Promise<{ status: number; body: any }> {
+  if (!job) return { status: 404, body: { success: false, error: "المهمة غير موجودة." } };
+  if (job.status !== "ready") return { status: 409, body: { success: false, error: "المهمة ليست جاهزة للتنفيذ." } };
+  const platform = String(job.payload?.platform || ""); const content = String(job.payload?.content || "").trim(); const conn: any = platformConnections.get(platform);
+  if (!conn || conn.status !== "connected" || conn.providerVerified !== true) return { status: 409, body: { success: false, error: "المنصة غير موثقة باتصال حقيقي." } };
   try {
-    if(platform==="telegram") {
-      const client=telegramClient(); if(!client) return res.status(503).json({success:false,error:"موصل Telegram غير مهيأ (رمز بوت غير متوفر)."});
-      const chatId=String(process.env.TELEGRAM_DEFAULT_CHAT_ID||job.payload?.chatId||""); if(!chatId) return res.status(503).json({success:false,error:"Telegram يحتاج TELEGRAM_DEFAULT_CHAT_ID أو chatId في المهمة."});
-      // إرسال حقيقي عبر نفس عميل الموصل (مصدر واحد)؛ لا نشر بلا استجابة مزود.
-      const sent=await client.sendMessage({chatId,text:content});
-      if(!sent.ok) throw new Error(sent.error||"فشل إرسال Telegram");
-      job.status="executed"; job.executedAt=new Date().toISOString(); job.providerVerified=true; job.providerReceipt={provider:"telegram",messageId:sent.providerMessageId,executedAt:new Date().toISOString()}; persistState(); audit((req as any).user.id,"job_executed",`${job.id}:telegram`); return res.json({success:true,job,receipt:job.providerReceipt});
+    if (platform === "telegram") {
+      const client = telegramClient(); if (!client) return { status: 503, body: { success: false, error: "موصل Telegram غير مهيأ (رمز بوت غير متوفر)." } };
+      const chatId = String(process.env.TELEGRAM_DEFAULT_CHAT_ID || job.payload?.chatId || ""); if (!chatId) return { status: 503, body: { success: false, error: "Telegram يحتاج TELEGRAM_DEFAULT_CHAT_ID أو chatId في المهمة." } };
+      const sent = await client.sendMessage({ chatId, text: content });
+      if (!sent.ok) throw new Error(sent.error || "فشل إرسال Telegram");
+      job.status = "executed"; job.executedAt = new Date().toISOString(); job.providerVerified = true; job.providerReceipt = { provider: "telegram", messageId: sent.providerMessageId, executedAt: new Date().toISOString() }; persistState(); audit(userId, "job_executed", `${job.id}:telegram`);
+      return { status: 200, body: { success: true, job, receipt: job.providerReceipt } };
     }
-    return res.status(501).json({success:false,error:"الموصل متصل ومتحقق، لكن تنفيذ هذا النوع من النشر يحتاج بيانات الوسائط/العملية الخاصة بالمزود ولم يتم اختلاق تنفيذ وهمي."});
-  } catch(e:any) { job.status="failed"; job.lastError=String(e?.message||e).slice(0,500); persistState(); audit((req as any).user.id,"job_execution_failed",`${job.id}:${platform}`); return res.status(502).json({success:false,error:job.lastError,job}); }
+    return { status: 501, body: { success: false, error: "الموصل متصل ومتحقق، لكن تنفيذ هذا النوع من النشر يحتاج بيانات الوسائط/العملية الخاصة بالمزود ولم يتم اختلاق تنفيذ وهمي." } };
+  } catch (e: any) {
+    job.status = "failed"; job.lastError = String(e?.message || e).slice(0, 500); persistState(); audit(userId, "job_execution_failed", `${job.id}:${platform}`);
+    return { status: 502, body: { success: false, error: job.lastError, job } };
+  }
+}
+
+app.post("/api/control/jobs/:id/execute", requireOwner, async (req,res)=>{
+  const job=automationJobs.find((j:any)=>j.id===req.params.id);
+  const result=await executeApprovedJob(job,(req as any).user.id);
+  return res.status(result.status).json(result.body);
 });
 
 app.post("/api/publish/preflight", authenticateToken, (req, res) => {
@@ -5486,6 +5506,8 @@ async function bootstrapStorage(): Promise<void> {
       if (usage?.day === geminiUsageDay && Number.isFinite(usage?.count)) geminiUsageCount = Math.max(0, Number(usage.count));
       const control = await storageAdapter.read<any>(STORAGE_KEY_CONTROL);
       if (control) applyControlSnapshot(control);
+      const agentState = await storageAdapter.read<any>(STORAGE_KEY_AGENT);
+      if (agentState && Array.isArray(agentState.tasks)) agentOrchestrator.restore(agentState.tasks);
     } catch (error: any) {
       storageInitError = String(error?.code || error?.name || "state_read_failed").slice(0, 60);
       return;
@@ -5493,6 +5515,7 @@ async function bootstrapStorage(): Promise<void> {
   } else {
     // للملف المحلي: القراءة متزامنة عند الإقلاع كما في لقطة الحالة.
     loadControlStateSync();
+    loadAgentStateSync();
   }
   // الجهوزية تُعلن قبل مزامنة البصمة كي تُحفظ حالة التحكّم فعلاً عند أول إقلاع.
   storageReady = true;
@@ -5593,6 +5616,210 @@ function saveControlState(): void {
     .catch((error: any) => {
       lastPersistError = String(error?.code || error?.name || "persist_failed").slice(0, 60);
       console.warn("Could not persist control state:", lastPersistError);
+    });
+}
+
+/**
+ * مفتاح تخزين سجل مهام العقل المركزي. مستقل عن حالة التحكّم كي لا يختلط
+ * (الجداول key/value تُتيح مفتاحاً ثالثاً دون migration). لا يحمل أي سرّ.
+ */
+const STORAGE_KEY_AGENT = "agent";
+
+/**
+ * العقل المركزي: المنسّق الوحيد. مهامه تُنفَّذ بأدوات حقيقية محقونة من الخادم،
+ * وتُحفظ في المخزن الدائم فتصمد بعد إعادة التشغيل/cold start، فلا تُفقد مهام
+ * المالك ولا نتائج التحقق.
+ */
+const agentOrchestrator = new AgentOrchestrator({
+  toolContext: {} as AgentToolContext,
+  newId: () => workspaceId("atask"),
+});
+
+/** سياق الأدوات الحقيقي لكل مُشغّل: أدوات مسموحة فقط، ونتائج فعلية بلا أسرار. */
+function buildAgentToolContext(operator: AgentOperator, userId: string): AgentToolContext {
+  return {
+    operator,
+    userId,
+    healthSnapshot: () => agentHealthSnapshot(),
+    platformStatuses: () => {
+      const liveFor = (p: string) => { const c: any = platformConnections.get(p); return { status: c?.status || "disconnected", providerVerified: Boolean(c?.providerVerified), accountName: c?.accountName || null }; };
+      return computeAllPlatformStatuses(liveFor, process.env);
+    },
+    readinessMatrix: () => buildReadinessDetails((p: string) => { const c: any = platformConnections.get(p); return { status: c?.status || "disconnected", providerVerified: Boolean(c?.providerVerified), accountName: c?.accountName || null }; }, process.env),
+    connectionStatus: () => SUPPORTED_PLATFORMS.map((p: any) => {
+      const c: any = platformConnections.get(p.id);
+      const r = publicProviderReadiness(p.id);
+      return {
+        platform: p.id,
+        name: p.name,
+        status: c?.status || "disconnected",
+        providerVerified: Boolean(c?.providerVerified),
+        configured: r.configured,
+        credentialMode: credentialModeOf(p.id),
+        realConnector: hasRealConnector(p.id),
+      };
+    }),
+    credentialIntrospection: (platform: string) => {
+      if (!isSupportedPlatform(platform)) return { platform, supported: false };
+      const r = publicProviderReadiness(platform);
+      return { platform, supported: true, configured: r.configured, mode: r.mode, missing: r.missing || [], invalid: r.invalid || [], realConnector: hasRealConnector(platform) };
+    },
+    workspaceSummary: () => {
+      const connected = connectedPlatformIds();
+      return {
+        products: workspace.products.length,
+        inStockProducts: workspace.products.filter((p: any) => p.inStock !== false).length,
+        installmentPlans: workspace.installmentPlans.length,
+        posts: workspace.posts.length,
+        conversations: workspace.conversations.length,
+        leads: workspace.leads.length,
+        tasks: workspace.tasks.length,
+        pendingJobs: automationJobs.filter((j: any) => ["queued", "approved", "ready"].includes(j.status)).length,
+        connectedPlatformIds: connected,
+        showroomConfigured: Boolean(workspace.showroom?.name && workspace.showroom?.name.trim()),
+      };
+    },
+    listJobs: () => (operator === "owner" ? automationJobs : automationJobs.filter((j: any) => j.createdBy === userId)).slice(0, 100),
+    createJob: (input) => {
+      const job = {
+        id: workspaceId("job"),
+        type: String(input.type || "general"),
+        status: "queued" as const,
+        createdAt: new Date().toISOString(),
+        createdBy: userId,
+        payload: { ...(input.payload || {}), title: input.title || input.type, platform: input.platform, source: "agent" },
+        requiresExternalConnection: true,
+        scheduledFor: input.scheduledFor,
+      };
+      automationJobs.unshift(job as any);
+      if (automationJobs.length > 200) automationJobs.pop();
+      audit(userId, "agent_job_created", `type=${job.type} platform=${input.platform || "-"}`);
+      persistState();
+      return job;
+    },
+    approveJob: (id) => {
+      const job = automationJobs.find((j: any) => j.id === id);
+      if (!job) return { ok: false, error: "مهمة غير موجودة." };
+      job.status = "approved";
+      audit(userId, "agent_job_approved", `id=${id}`);
+      persistState();
+      return { ok: true, id, status: job.status };
+    },
+    cancelJob: (id) => {
+      const job = automationJobs.find((j: any) => j.id === id);
+      if (!job) return { ok: false, error: "مهمة غير موجودة." };
+      job.status = "failed";
+      job.lastError = "أُلغيت بواسطة العقل المركزي";
+      audit(userId, "agent_job_cancelled", `id=${id}`);
+      persistState();
+      return { ok: true, id, status: job.status };
+    },
+    retryJob: (id) => {
+      const job = automationJobs.find((j: any) => j.id === id);
+      if (!job) return { ok: false, error: "مهمة غير موجودة." };
+      job.status = "queued";
+      job.lastError = undefined;
+      audit(userId, "agent_job_retried", `id=${id}`);
+      persistState();
+      return { ok: true, id, status: job.status };
+    },
+    executeJob: async (id) => {
+      // التنفيذ الخارجي الحقيقي يمر بمسار النشر الفعلي ذي البوابات في server.ts
+      // (يُربط أدناه). لا يُنفَّذ هنا مباشرة لئلا يُتجاوز أي بوابة.
+      if (!agentJobExecutor) throw new Error("منفّذ المهام الخارجي غير مهيّأ.");
+      return agentJobExecutor(id, userId);
+    },
+    listComments: (platform?: string) => {
+      const items: any[] = (workspace as any).socialComments || [];
+      const filtered = platform ? items.filter((c: any) => c.platform === platform) : items;
+      return filtered.slice(0, 200).map((c: any) => ({
+        platform: c.platform,
+        externalId: c.externalId,
+        classification: c.classification?.category || c.category || null,
+        ingestSource: c.ingestSource || null,
+        reviewStatus: c.reviewStatus || null,
+        at: c.receivedAt || c.at || null,
+      }));
+    },
+    listCampaigns: () => ((workspace as any).marketingCampaigns || []).slice(0, 100).map((c: any) => ({ id: c.id, title: c.title, platforms: c.platforms, status: c.status, createdAt: c.createdAt })),
+    buildWeekPlan: (platforms: string[], focus: string) => {
+      const days = ["السبت", "الأحد", "الاثنين", "الثلاثاء", "الأربعاء", "الخميس", "الجمعة"];
+      return { plan: days.map((day, i) => ({ day, objective: i % 2 === 0 ? "عرض منتج وفائدة عملية" : "توعية بشروط التقسيط وخدمة العملاء", focus, platforms, requiresApproval: true, usesGemini: false })), generatedBy: "deterministic-planner" };
+    },
+    marketingDecision: (input?: any) => {
+      const platforms = SUPPORTED_PLATFORMS.map((p: any) => p.id) as any[];
+      const memory = buildMemorySnapshot({
+        posts: (workspace.posts || []).slice(0, 500).map((p: any) => ({ status: p.status, targetPlatforms: p.targetPlatforms || p.platforms, tags: p.tags, campaignName: p.campaignName, metrics: p.metrics })),
+        comments: ((workspace as any).socialComments || []).slice(0, 500).map((c: any) => ({ text: String(c.text || ""), intent: c.classification?.category || c.intent })),
+        decisions: ((workspace as any).marketingDecisions || []).slice(0, 200),
+        strategies: ((workspace as any).strategiesTested || []).slice(0, 200).map((s: any) => ({ strategy: s.strategy, outcome: s.outcome, at: s.at })),
+      });
+      return buildMarketingDecision({
+        objective: String(input?.objective || "تنمية تفاعل حقيقي وتحويلات مباشرة"),
+        platforms,
+        performance: ((workspace as any).performanceRecords || []).slice(0, 200) as any,
+        memory,
+      });
+    },
+    memorySnapshot: () => buildMemorySnapshot({
+      posts: (workspace.posts || []).slice(0, 500).map((p: any) => ({ status: p.status, targetPlatforms: p.targetPlatforms || p.platforms, tags: p.tags, campaignName: p.campaignName, metrics: p.metrics })),
+      comments: ((workspace as any).socialComments || []).slice(0, 500).map((c: any) => ({ text: String(c.text || ""), intent: c.classification?.category || c.intent })),
+      decisions: ((workspace as any).marketingDecisions || []).slice(0, 200),
+      strategies: ((workspace as any).strategiesTested || []).slice(0, 200).map((s: any) => ({ strategy: s.strategy, outcome: s.outcome, at: s.at })),
+    }),
+    systemVerification: () => ({
+      version: PROJECT_VERSION,
+      storage: { backend: storageAdapter.backend, healthy: storageStatus().healthy, durable: storageAdapter.backend === "postgres" || storageStatus().writable, writable: storageStatus().writable },
+      platforms: { total: SUPPORTED_PLATFORMS.length, connected: connectedPlatformIds().length },
+      ai: { enabled: geminiStatus().enabled, configured: geminiStatus().configured },
+      timestamp: new Date().toISOString(),
+    }),
+    aiGenerate: async (prompt: string) => {
+      const cacheKey = `agent:${Buffer.from(prompt).toString("base64").slice(0, 64)}`;
+      const result = await aiEngine.run({ cacheKey, prompt, deterministicFallback: () => "تعذر توليد نص من المزود الآن؛ يلزم إعادة المحاولة أو صياغة يدوية." });
+      return { text: result.text, usedProvider: result.usedProvider, source: result.source };
+    },
+  };
+}
+
+/** سياق الصحة الآمن للعقل (بلا أسرار) — مستقل عن مسار /api/health الكامل. */
+function agentHealthSnapshot() {
+  return {
+    version: PROJECT_VERSION,
+    uptimeSeconds: Math.round(process.uptime()),
+    storage: { backend: storageAdapter.backend, healthy: storageStatus().healthy, writable: storageStatus().writable },
+    platforms: { total: SUPPORTED_PLATFORMS.length, connected: connectedPlatformIds().length },
+    jobs: { total: automationJobs.length, queued: automationJobs.filter((j: any) => j.status === "queued").length, failed: automationJobs.filter((j: any) => j.status === "failed").length },
+    ai: geminiStatus(),
+    timestamp: new Date().toISOString(),
+  };
+}
+
+/** يُربط بمسار التنفيذ الخارجي الفعلي بعد تعريفه (يمنع تجاوز البوابات). */
+let agentJobExecutor: ((id: string, userId: string) => Promise<any>) | null = null;
+
+/** عدد أدوات العقل — المصدر الواحد هو سجل الأدوات (لا رقم مكتوب يدوياً). */
+const AGENT_TOOLS_COUNT_FOR_HEALTH = AGENT_TOOLS.length;
+
+/** أسماء المزوّدين وحالة ضبطهم فقط (بلا أي قيمة سرّية) لكتلة الصحة. */
+function describeProvidersForHealth(): Array<{ id: string; role: string; configured: boolean }> {
+  return describeProviders(process.env).map((p) => ({ id: p.id, role: p.role, configured: p.configured }));
+}
+
+/** يسترجع سجل مهام العقل من المخزن الدائم (يصمد بعد إعادة التشغيل). */
+function loadAgentStateSync(): void {
+  const raw = storageAdapter.readSync<any>(STORAGE_KEY_AGENT);
+  if (raw && Array.isArray(raw.tasks)) agentOrchestrator.restore(raw.tasks);
+}
+
+/** يحفظ سجل مهام العقل (بلا أسرار؛ السياق منقّى في طبقة المنسّق). */
+function saveAgentState(): void {
+  if (!storageReady) return;
+  persistQueue = persistQueue
+    .then(() => storageAdapter.write(STORAGE_KEY_AGENT, { tasks: agentOrchestrator.snapshot() }))
+    .catch((error: any) => {
+      lastPersistError = String(error?.code || error?.name || "persist_failed").slice(0, 60);
+      console.warn("Could not persist agent state:", lastPersistError);
     });
 }
 
@@ -6490,6 +6717,19 @@ app.get("/api/health", (_req, res) => {
     })(),
     // ملف تحقق ملكية الرابط (TikTok URL prefix) والصفحات القانونية العامة.
     siteVerification: siteVerificationState(),
+    // العقل المركزي: عدد المهام وآخر حالة — منطقي حتمي بلا أي سرّ.
+    centralAgent: (() => {
+      const tasks = agentOrchestrator.snapshot();
+      const last = tasks[tasks.length - 1];
+      return {
+        enabled: true,
+        tools: AGENT_TOOLS_COUNT_FOR_HEALTH,
+        tasks: tasks.length,
+        lastStatus: last ? last.status : null,
+        lastVerified: last ? Boolean(last.verified) : null,
+        providers: describeProvidersForHealth(),
+      };
+    })(),
     // دليل النشر: أي commit يعمل فعلاً (Render يضبط RENDER_GIT_COMMIT). يُقرأ هنا
     // مباشرةً لإثبات أن الكود المنشور هو المدفوع، لا استنتاجاً من السلوك.
     deploy: deploymentInfo(),
@@ -8019,6 +8259,25 @@ registerSocialManagerRoutes(app, {
     const product = productId ? workspace.products.find((p: any) => p.id === productId) || null : null;
     return buildFactsForProduct(product, Number(product?.downPaymentPercent || 0), Number(product?.durationMonths || 0));
   },
+});
+
+// العقل المركزي: يُربط بمنفّذ التنفيذ الخارجي الفعلي (نفس بوابات النشر) وبسياق
+// الأدوات الحقيقي، ثم تُسجَّل مساراته. لا مسار خارجي يتجاوز بوابات المشروع.
+agentOrchestrator.setToolContext(buildAgentToolContext("system", "system"));
+agentJobExecutor = async (id: string, userId: string) => {
+  const job = automationJobs.find((j: any) => j.id === id);
+  const result = await executeApprovedJob(job, userId);
+  if (result.status >= 400) throw new Error(result.body?.error || "فشل تنفيذ المهمة الخارجية.");
+  return result.body;
+};
+registerAgentRoutes(app, {
+  authenticateToken,
+  requireOwner,
+  orchestrator: agentOrchestrator,
+  toolContextFor: (operator, userId) => buildAgentToolContext(operator, userId),
+  persistState: () => { persistState(); saveAgentState(); },
+  projectVersion: PROJECT_VERSION,
+  env: process.env,
 });
 
 // -------------------------------------------------------------

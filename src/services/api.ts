@@ -426,6 +426,58 @@ ${payload.topic || payload.productName || 'أنظمة وحلول التقسيط 
       };
     }
   },
+  // --- Central AI Agent (العقل المركزي) ---
+  // كل الاستدعاءات تُعيد استجابة الخادم الحقيقية؛ والواجهة لا تدّعي نجاحاً قبل
+  // أن يرجع الـbackend نتيجة فعلية (لا fake success في الواجهة).
+  async agentHealth(): Promise<any> {
+    const res = await fetch('/api/agent/health', { headers: getAuthHeaders() });
+    const data = await res.json().catch(() => ({ success: false }));
+    if (!res.ok || !data.success) throw new Error(data.error || 'تعذر تحميل حالة العقل المركزي');
+    return data;
+  },
+  async agentTools(): Promise<any> {
+    const res = await fetch('/api/agent/tools', { headers: getAuthHeaders() });
+    const data = await res.json().catch(() => ({ success: false }));
+    if (!res.ok || !data.success) throw new Error(data.error || 'تعذر تحميل أدوات العقل');
+    return data;
+  },
+  async agentProviders(): Promise<any> {
+    const res = await fetch('/api/agent/providers', { headers: getAuthHeaders() });
+    const data = await res.json().catch(() => ({ success: false }));
+    if (!res.ok || !data.success) throw new Error(data.error || 'تعذر تحميل مزوّدي العقل');
+    return data;
+  },
+  async agentCreateTask(task: string, opts?: { mode?: string; idempotencyKey?: string; context?: any }): Promise<any> {
+    const headers = getAuthHeaders();
+    if (opts?.idempotencyKey) headers['X-Idempotency-Key'] = opts.idempotencyKey;
+    const res = await fetch('/api/agent/tasks', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ task, mode: opts?.mode || 'auto', idempotencyKey: opts?.idempotencyKey, context: opts?.context }),
+    });
+    const data = await res.json().catch(() => ({ success: false }));
+    if (!res.ok || !data.success) throw new Error(data.error || 'تعذر إنشاء مهمة العقل');
+    return data;
+  },
+  async agentTask(id: string): Promise<any> {
+    const res = await fetch(`/api/agent/tasks/${encodeURIComponent(id)}`, { headers: getAuthHeaders() });
+    const data = await res.json().catch(() => ({ success: false }));
+    if (!res.ok || !data.success) throw new Error(data.error || 'تعذر تحميل المهمة');
+    return data;
+  },
+  async agentTasks(): Promise<any> {
+    const res = await fetch('/api/agent/tasks', { headers: getAuthHeaders() });
+    const data = await res.json().catch(() => ({ success: false }));
+    if (!res.ok || !data.success) throw new Error(data.error || 'تعذر تحميل سجل المهام');
+    return data;
+  },
+  async agentReplay(id: string): Promise<any> {
+    const res = await fetch(`/api/agent/tasks/${encodeURIComponent(id)}/replay`, { method: 'POST', headers: getAuthHeaders() });
+    const data = await res.json().catch(() => ({ success: false }));
+    if (!res.ok || !data.success) throw new Error(data.error || 'تعذر إعادة تشغيل المهمة');
+    return data;
+  },
+
   async getPlatformCapabilities() {
     const res = await fetch('/api/platforms/capabilities', { headers: getAuthHeaders() });
     if (!res.ok) throw new Error('Failed to fetch platform capabilities');
