@@ -1604,3 +1604,57 @@ URL prefix نفسه** (تعارض المسار، أو كونه أُضيف مسب
 `site-verification-strict-default`، `site-verification-echo-opt-in`،
 `site-verification-canonical-token`.
 
+
+## تشخيص رفض مفتاح تطبيق TikTok — «correct the following: client_key» (2026-09-27)
+
+**الرسالة الحقيقية من TikTok للحوار:** «We couldn't log in with TikTok … If you're a
+developer, correct the following and try again: client_key». أُثبت أنها تعني **رفض قيمة
+`client_key`** لا `redirect_uri` (رفض `redirect_uri` يعود بصيغة منفصلة
+`error=param_error&error_type=redirect_uri&errCode=10006`).
+
+**السبب الجذري المُثبت حياً (لا تخمين):** المفتاح المُرسل غير مطابق لبيئة التطبيق — أشهر
+حالة: **خلط مفتاح Sandbox مع Production** (أو العكس). تعليق في وثائق Postiz: «Creating an
+organization and then activating Sandbox Mode … **Note that the Client_ID and Secret are
+different for the Sandbox environment!**»، وهو نفس عطل `#167`/`#1161` في مجتمعهم.
+
+**إثبات حي للمزود (2026-09-27) — يميّز الحالات بدقة عبر `client_credentials`:**
+
+| الطلب | استجابة TikTok |
+|---|---|
+| مفتاح مجهول (`abcINVALIDkey123`) | `400 {"error":"invalid_client","error_description":"Client info is illegal or malformed."}` |
+| مفتاح بصيغة سليمة لكن غير مسجّل (`awzzz…`) | `invalid_client` (نفسه) |
+| مفتاح فارغ | `invalid_request` — `The request parameters are malformed.` |
+| مفتاح/سرّ مقبولان (أي حساب حقيقي) | `unsupported_grant_type` — `Grant type in request is unsupported.` |
+
+الخلاصة: `invalid_client` = **TikTok لا يعرف هذا المفتاح** (بيئة/تطبيق مختلف)؛
+`unsupported_grant_type` = **المفتاح والسرّ مقبولان**. أما حوار `/v2/auth/authorize/`
+بمفتاح مجهول فيُعيد 302 إلى شاشة دخول `enter_from=dev_<client_key>` بلا رفض (الفحص بلا
+كوكيز لا يفصل)، فالاعتماد على فحص `client_credentials` هو الحكم.
+
+**الإصلاح البرمجي (يمنع التخمين ويثبت التطابق بلا كشف أي سرّ):**
+- `engine/social/tiktok.ts`: `clientKeyFingerprint` (طول + قيمة مُخفاة أول4/آخر4 + بصمة
+  SHA-256 مقتطعة)، `maskSecretValue`، و`classifyTikTokClientKeyError` (يفرّق
+  `invalid_client` عن `invalid_request` عن `unsupported_grant_type` عن `network`).
+- `TikTokClient.verifyClientKey` يطلب `client_credentials` فعلياً (بلا رمز مستخدم وبلا
+  حصة تفاعل) ويترجم النتيجة إلى `recognized: true|false`.
+- `server.ts`: `tiktokClientKeyDiagnosis()` يجمع: أي متغيّر بيئة يُقرأ، القيمة مُخفاة،
+  هل البيئة تحمل مسافة زائدة، **ما يظهر فعلاً في رابط التفويض** (نفس القناة
+  `envSecret`→`buildAuthorizationParams`)، المفتاح المطلوب في لوحة TikTok بنفس البصمة،
+  والحكم من مزود TikTok. يُعرض في `oauth/setup` (كتلة `clientKeyDiagnosis`) وفي مسار
+  جديد **`GET /api/platforms/tiktok/client-key-diagnosis` (للمالك فقط)**، ويُسجَّل سطر آمن
+  `tiktok-oauth-start` عند كل بدء OAuth. `oauth/start` يعيد `tiktokClientKey` (مُخفى +
+  بصمة فقط). **لا يُطبع المفتاح ولا السرّ كاملين في أي مكان.**
+
+**إجراء المالك المباشر:** افتح `/api/platforms/tiktok/client-key-diagnosis` (للمالك)
+واقرأ `configuredValueMasked`/`configuredValueLength` ثم قارنهما بـClient key في TikTok
+Developers → Basic information:
+- إن ظهر `verdict=not_recognized_by_tiktok` فالمفتاح إمّا من بيئة Sandbox/تطبيق آخر أو
+  منسوخ خطأً → انسخ Client key الصحيح لنفس التطبيق إلى `TIKTOK_CLIENT_KEY` وأعد النشر.
+- إن ظهر `verdict=recognized_by_tiktok` فالمفتاح مقبول على مستوى Open API، ويبقى فحص
+  شاشة الحوار (وضع التطبيق Sandbox/Production + Redirect URI المسجّل بالضبط).
+
+اختبارات: `tiktok.connector.test.ts` = **255 فحصاً** (مجموعة `3d` وحدة للإخفاء/البصمة/التصنيف،
+وفحوص تكامل تثبت `recognized_by_tiktok` عبر الخادم الوهمي والتصريح على مسار التشخيص).
+final-audit: `tiktok-clientkey-fingerprint-single-source` … `tiktok-clientkey-tests`
+(362 فحصاً إجمالاً).
+

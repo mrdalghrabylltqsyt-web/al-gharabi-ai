@@ -30,6 +30,9 @@ import {
   tiktokCapabilitySupported,
   tiktokCapabilityNeedsAudit,
   isPlausibleTikTokClientKey,
+  clientKeyFingerprint,
+  maskSecretValue,
+  classifyTikTokClientKeyError,
   buildTikTokTokenExchangeBody,
   buildTikTokRefreshBody,
   buildTikTokRevokeBody,
@@ -208,6 +211,26 @@ function unitTests(): void {
   check('المعاملات الرسمية تشمل client_key وresponse_type وscope وredirect_uri وstate', ['client_key', 'response_type', 'scope', 'redirect_uri', 'state'].every((p) => TIKTOK_WEB_AUTHORIZATION_PARAMS.includes(p)));
   check('code_challenge ليس ضمن معاملات الويب الرسمية', !TIKTOK_WEB_AUTHORIZATION_PARAMS.includes('code_challenge'));
 
+  group('3d) وحدة: تشخيص client_key — الإخفاء والبصمة وتصنيف خطأ المزود');
+  // الإخفاء: أول 4 وآخر 4 فقط، والقيم القصيرة تُخفى كاملة.
+  check('maskSecretValue يُظهر أول 4 وآخر 4', maskSecretValue('aw1234567890abcdef') === 'aw12…cdef');
+  check('maskSecretValue يُخفي القصير كاملاً', maskSecretValue('short') === '•••••');
+  check('maskSecretValue للفراغ سلسلة فارغة', maskSecretValue('') === '');
+  const fp = clientKeyFingerprint('aw1234567890abcdef');
+  check('البصمة تعلن الطول الصحيح', fp.length === 18 && fp.configured === true);
+  check('البصمة تُخفي القيمة وتُبقي أول4/آخر4', fp.masked === 'aw12…cdef');
+  check('البصمة تُنتج sha256 مقتطعة ثابتة', /^[0-9a-f]{12}$/.test(fp.sha256Prefix));
+  check('البصمة حتمية لنفس القيمة', clientKeyFingerprint('aw1234567890abcdef').sha256Prefix === fp.sha256Prefix);
+  check('بصمتان مختلفتان لقيمتين مختلفتين', clientKeyFingerprint('aw1234567890abcdef').sha256Prefix !== clientKeyFingerprint('aw9999999999abcdef').sha256Prefix);
+  check('بصمة القيمة الفارغة بلا sha', clientKeyFingerprint('').sha256Prefix === '' && clientKeyFingerprint('').configured === false);
+  // تصنيف خطأ المزود: invalid_client = مفتاح غير معروف، invalid_request = ناقص.
+  check('invalid_client يصنَّف كمفتاح مجهول', classifyTikTokClientKeyError('invalid_client', 'Client info is illegal or malformed.').kind === 'invalid_client');
+  check('وصف "client key" يُصنَّف invalid_client', classifyTikTokClientKeyError('', 'client key is invalid').kind === 'invalid_client');
+  check('invalid_request يُصنَّف كنقص معطيات', classifyTikTokClientKeyError('invalid_request', '').kind === 'invalid_request');
+  check('unsupported_grant_type يُصنَّف منفصلاً', classifyTikTokClientKeyError('unsupported_grant_type', '').kind === 'unsupported_grant_type');
+  check('خطأ الشبكة يُصنَّف شبكةً', classifyTikTokClientKeyError('', 'fetch failed').kind === 'network');
+  check('توجيه invalid_client يذكر Sandbox/Production', /Sandbox/.test(classifyTikTokClientKeyError('invalid_client', '').hintAr));
+
   group('3c) وحدة: الحالة الصادقة — مفردة واحدة بترتيب أسبقية صريح');
   // الأساس: كل الحقائق مكتملة وبيانات التطبيق حاضرة لكن لا ربط بعد.
   const baseState: TikTokStateInput = {
@@ -378,6 +401,18 @@ async function integrationTests(): Promise<void> {
     check('oauth/setup يعلن مراجعة مطلوبة للنشر العام', setup.tiktokSetup?.appReviewRequired === true);
     check('oauth/setup بلا أي سرّ', !JSON.stringify(setup).includes(TT_CLIENT_SECRET));
     check('oauth/setup يعرض مصفوفة القدرات', Array.isArray(setup.tiktokSetup?.capabilityMatrix));
+    // تشخيص المفتاح: نفس قيمة البيئة، مُخفاة، ويُثبته TikTok فعلاً عبر الخادم الوهمي.
+    const diag = setup.tiktokSetup?.clientKeyDiagnosis;
+    check('oauth/setup يعرض تشخيص المفتاح', Boolean(diag) && diag.envVarName === 'TIKTOK_CLIENT_KEY');
+    check('التشخيص يقرأ قيمة البيئة مُخفاة (أول4/آخر4)', diag?.configuredValueMasked === clientKeyFingerprint(TT_CLIENT_KEY).masked);
+    check('التشخيص يعلن طول المفتاح الصحيح', diag?.configuredValueLength === TT_CLIENT_KEY.length);
+    check('التشخيص بلا مسافات زائدة', diag?.hadSurroundingWhitespace === false);
+    check('التشخيص يعلن أن المفتاح المستخدم في الرابط يطابق البيئة', diag?.authorizationClientKeyMatchesEnv === true);
+    check('التشخيص يعلن المفتاح المطلوب في لوحة TikTok بنفس البصمة', String(diag?.expectedDevelopersPortalClientKey).includes(clientKeyFingerprint(TT_CLIENT_KEY).sha256Prefix));
+    check('التشخيص يُثبت المفتاح لدى TikTok (recognized_by_tiktok)', diag?.verdict === 'recognized_by_tiktok');
+    check('إثبات المفتاح استدعى client_credentials فعلاً', mock.state.lastClientKeyProof?.clientKey === TT_CLIENT_KEY);
+    check('التشخيص لا يسرّب أي سرّ', !JSON.stringify(diag).includes(TT_CLIENT_SECRET));
+    check('التشخيص لا يكشف client_key كاملاً', !JSON.stringify(diag).includes(TT_CLIENT_KEY));
 
     group('11) تكامل: OAuth start — رابط رسمي + state دائم (بلا PKCE في الويب)');
     const start = await (await fetch(`${BASE}/api/platforms/tiktok/oauth/start`, { headers: auth })).json();
@@ -391,6 +426,10 @@ async function integrationTests(): Promise<void> {
     check('الرابط يحمل state', (aurl.searchParams.get('state') || '').length >= 16);
     check('الرابط يحمل النطاقات الرسمية', (aurl.searchParams.get('scope') || '').includes('video.publish'));
     check('الرابط لا يسرّب client_secret', !start.authorizationUrl.includes(TT_CLIENT_SECRET));
+    // المفتاح المستخدم في الرابط مُخفى ومطابق للبيئة (نفس القناة).
+    check('الاستجابة تعرض المفتاح المُستخدم في الرابط مُخفىً', start.tiktokClientKey?.usedInAuthorizationUrlMasked === clientKeyFingerprint(TT_CLIENT_KEY).masked);
+    check('الاستجابة تُعلن أن مفتاح الرابط يطابق البيئة', start.tiktokClientKey?.matchesConfiguredEnv === true);
+    check('الاستجابة لا تكشف المفتاح كاملاً', !JSON.stringify(start.tiktokClientKey).includes(TT_CLIENT_KEY));
     const stateVal = aurl.searchParams.get('state')!;
 
     group('12) تكامل: callback — تبادل الرمز + إثبات الهوية + حفظ مشفّر');
@@ -580,6 +619,17 @@ async function integrationTests(): Promise<void> {
 
     group('24) تكامل: تصريح owner على مسار الفحص (POST فقط لمسارات الفعل)');
     check('oauth/start بطريقة POST غير مسموح أو 404 صريح', [404, 405].includes((await fetch(`${BASE}/api/platforms/tiktok/oauth/start`, { method: 'POST', headers: auth, body: '{}' })).status));
+
+    group('25) تكامل: مسار تشخيص المفتاح — owner فقط، ويُثبت المفتاح بلا كشفه');
+    const diagAnon = await fetch(`${BASE}/api/platforms/tiktok/client-key-diagnosis`);
+    check('تشخيص المفتاح بلا جلسة => 401', diagAnon.status === 401);
+    const diagStaff = await fetch(`${BASE}/api/platforms/tiktok/client-key-diagnosis`, { headers: auth });
+    check('تشخيص المفتاح للمالك => 200', diagStaff.status === 200);
+    const diagBody = await diagStaff.json();
+    check('تشخيص المفتاح يُعلن المفتاح مُخفىً ومطابقاً', diagBody.diagnosis?.authorizationClientKeyMatchesEnv === true);
+    check('تشخيص المفتاح يُثبته لدى TikTok', ['recognized_by_tiktok', 'provider_unreachable'].includes(diagBody.diagnosis?.verdict));
+    check('تشخيص المفتاح بلا أي سرّ', !JSON.stringify(diagBody).includes(TT_CLIENT_SECRET));
+    check('تشخيص المفتاح لا يكشف المفتاح كاملاً', !JSON.stringify(diagBody).includes(TT_CLIENT_KEY));
   } finally {
     try { await stop(currentApp.proc); } catch { /* تجاهل */ }
     await mock.stop();

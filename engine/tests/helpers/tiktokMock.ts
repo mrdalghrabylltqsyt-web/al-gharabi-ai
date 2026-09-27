@@ -56,6 +56,8 @@ export interface TikTokMockState {
   lastExchange: { clientKey: string; secretLen: number; codeVerifierLen: number; redirectUri: string } | null;
   /** آخر إبطال رمز (للتحقق من أن المسار الرسمي المنفصل استُخدم). */
   lastRevoke: { path: string; clientKey: string; tokenLen: number } | null;
+  /** آخر إثبات مفتاح تطبيق (client_credentials) — للتحقق من التشخيص. */
+  lastClientKeyProof: { clientKey: string; secretLen: number } | null;
   /** رمز التطبيق المقبول (client_key). */
   validClientKey: string;
   /** السرّ المطابق. */
@@ -84,6 +86,7 @@ export function createTikTokMock(state: Partial<TikTokMockState> = {}): TikTokMo
     lastRefresh: null,
     lastExchange: null,
     lastRevoke: null,
+    lastClientKeyProof: null,
     validClientKey: state.validClientKey ?? 'test_tiktok_client_key',
     validClientSecret: state.validClientSecret ?? 'test-tiktok-client-secret-not-real',
   };
@@ -132,6 +135,14 @@ export async function startTikTokMockServer(
         refresh_expires_in: 31536000,
         token_type: 'Bearer',
       });
+    }
+    // client_credentials: يُستخدم لإثبات مفتاح التطبيق. السلوك الفعلي المُثبت حياً
+    // (2026-09-27): مفتاح غير معروف => invalid_client، ومفتاح/سرّ مقبولان =>
+    // unsupported_grant_type (Grant type in request is unsupported). فيُعزل
+    // "المفتاح مجهول" عن "المفتاح مقبول".
+    if (grantType === 'client_credentials') {
+      state.lastClientKeyProof = { clientKey, secretLen: secret.length };
+      return res.status(400).json({ error: 'unsupported_grant_type', error_description: 'Grant type in request is unsupported.' });
     }
     // revoke: مسار منفصل رسمياً. وجود الطلب على /v2/oauth/token/ بلا grant_type
     // يُرد invalid_request (سلوك TikTok الفعلي) — فلا يُقبل الإبطال من مسار الرمز.

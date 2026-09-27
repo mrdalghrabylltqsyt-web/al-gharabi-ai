@@ -68,6 +68,9 @@ import {
   buildVideoDraftBody,
   buildPhotoPostBody,
   isPlausibleTikTokClientKey,
+  clientKeyFingerprint,
+  maskSecretValue,
+  classifyTikTokClientKeyError,
   tiktokCapabilityStatus,
   tiktokCapabilityNeedsAudit,
   TIKTOK_OPEN_API_BASE,
@@ -1680,6 +1683,87 @@ function tiktokTruthfulState(): ReturnType<typeof resolveTikTokState> {
     directPostAuditRequired: tiktokAuditRequired(),
   });
 }
+/**
+ * تشخيص مفتاح تطبيق TikTok: أي متغيّر بيئة يُقرأ فعلاً، بأي قيمة (مُخفاة)، وأي
+ * `client_key` يظهر في رابط التفويض المولَّد، ونتيجة إثبات المفتاح لدى TikTok.
+ * الـclient_key ليس سرّاً (يظهر علناً في الرابط)، والمقارنة تجري ببصمة وطول
+ * وقيمة مُخفاة (أول 4 وآخر 4) فيُثبت التطابق أو يكشف الانحراف بلا كشف أي سرّ.
+ * يُقرأ من البيئة عند كل نداء (لا وقت الإقلاع) ليعكس القيمة الفعلية المنشورة.
+ */
+async function tiktokClientKeyDiagnosis(): Promise<any> {
+  const cfg = tiktokOAuthConfig();
+  const rawEnv = process.env.TIKTOK_CLIENT_KEY;
+  // القيمة الفعلية المستخدمة في بناء الرابط هي cfg.clientId (مُطبَّعة عبر envSecret).
+  const usedKey = String(cfg?.clientId || "");
+  const envFp = clientKeyFingerprint(rawEnv);
+  const usedFp = clientKeyFingerprint(usedKey);
+
+  // الرابط الفعلي كما سيُولَّد الآن لـOAuth (نفس buildAuthorizationUrlForProbe).
+  let authorizationClientKey = "";
+  let authorizationUrlHost = "";
+  try {
+    const probeUrl = buildAuthorizationUrlForProbe("tiktok");
+    const parsed = new URL(probeUrl);
+    authorizationClientKey = parsed.searchParams.get("client_key") || "";
+    authorizationUrlHost = parsed.host;
+  } catch { /* لا يُحجب التشخيص إن تعذّر بناء الرابط */ }
+  const urlFp = clientKeyFingerprint(authorizationClientKey);
+
+  // إثبات المفتاح لدى TikTok بطلب عميل واحد فعلي (client_credentials) — بلا رمز
+  // مستخدم وبلا جلسة. يُنفَّذ فقط إن وُجد مفتاح وسرّ، وإلا يُعلن السبب صريحاً.
+  let providerProof: any = { attempted: false, reason: "credentials_missing" };
+  if (usedKey && cfg?.clientSecret) {
+    try {
+      const res = await tiktokClient().verifyClientKey({ clientKey: usedKey, clientSecret: String(cfg.clientSecret) });
+      providerProof = {
+        attempted: true,
+        reachable: res.ok,
+        recognized: res.data?.recognized ?? null,
+        kind: res.data?.classified?.kind ?? res.code ?? null,
+        hint: res.data?.classified?.hintAr ?? res.error ?? null,
+        rawError: res.data?.rawError ?? null,
+        rawDescription: res.data?.rawDescription ?? null,
+      };
+    } catch (e: any) {
+      providerProof = { attempted: true, reachable: false, recognized: null, kind: "network", hint: String(e?.message || "تعذّر الاتصال بـTikTok.") };
+    }
+  }
+
+  const credentialsMatchUrl = Boolean(urlFp.configured) && envFp.sha256Prefix === urlFp.sha256Prefix;
+  const expectedOnDevelopersPortal = usedFp.configured
+    ? `${usedFp.masked} (length ${usedFp.length}, sha256:${usedFp.sha256Prefix})`
+    : null;
+
+  return {
+    envVarName: "TIKTOK_CLIENT_KEY",
+    // القيمة المُخفاة (أول 4 وآخر 4) للبيئة وللقيمة المستخدَمة في الرابط.
+    configuredValueMasked: envFp.masked,
+    configuredValueLength: envFp.length,
+    configuredValueSha256Prefix: envFp.sha256Prefix,
+    configuredFormatOk: envFp.formatOk,
+    // هل البيئة تحمل مسافة/سطراً زائداً اكتُشف قبل التطبيع؟
+    hadSurroundingWhitespace: typeof rawEnv === "string" && rawEnv.length > 0 && rawEnv.trim() !== rawEnv,
+    // نفس القيمة تستخدمها القناة الوحيدة (envSecret) في buildAuthorizationParams.
+    usedInAuthorizationUrlMasked: urlFp.masked,
+    usedInAuthorizationUrlLength: urlFp.length,
+    usedInAuthorizationUrlSha256Prefix: urlFp.sha256Prefix,
+    authorizationUrlHost,
+    authorizationClientKeyMatchesEnv: credentialsMatchUrl,
+    // ما يجب أن يطابقه Client key في لوحة TikTok Developers (نفس البصمة).
+    expectedDevelopersPortalClientKey: expectedOnDevelopersPortal,
+    providerProof,
+    // الحكم: نفس القيمة في البيئة والرابط (القناة واحدة)، ويُثبته مزود TikTok.
+    verdict: providerProof.attempted
+      ? providerProof.recognized === true
+        ? "recognized_by_tiktok"
+        : providerProof.reachable === false
+          ? "provider_unreachable"
+          : "not_recognized_by_tiktok"
+      : "credentials_missing",
+    note: "الـclient_key عام (يظهر في رابط التفويض) فلا يُسرّب شيئاً؛ ومع ذلك يُعرض مُخفىً (أول 4 وآخر 4) مع بصمة SHA-256 مقتطعة للمقارنة مع لوحة TikTok Developers.",
+  };
+}
+
 /** تخزين مؤقت قصير لنتيجة فحص بدء OAuth (يمنع إغراق Meta عند كل ضغطة زر). */
 const oauthStartPreflightCache = new Map<string, { at: number; result: any }>();
 const OAUTH_PREFLIGHT_TTL_MS = 5 * 60 * 1000;
@@ -1821,6 +1905,16 @@ async function oauthStartPreflight(platform: string): Promise<OAuthStartPrefligh
     return { ok: true };
   }
   return { ok: true };
+}
+/**
+ * سجل آمن لبدء OAuth TikTok: يُثبت أي `client_key` استُخدم فعلاً في الرابط
+ * (مُخفى + بصمة) بلا أي سرّ، فيُقارَن مباشرةً مع لوحة TikTok Developers من سجلات
+ * Render عند رسالة «correct the following: client_key».
+ */
+function logTikTokOAuthStart(url: URL): void {
+  const used = url.searchParams.get("client_key") || "";
+  const fp = clientKeyFingerprint(used);
+  console.log(`[الغرابي AI] tiktok-oauth-start host=${url.host} client_key=${fp.masked} len=${fp.length} sha256=${fp.sha256Prefix} scope=${url.searchParams.get("scope") || ""}`);
 }
 /** سرّ توقيع webhook: من اعتماد الصفحة المحفوظ ثم البيئة. */
 function facebookAppSecret(): string {
@@ -2377,6 +2471,8 @@ app.get("/api/platforms/:platform/oauth/start", requireOwner, async (req,res)=>{
   const u=new URL(authEndpointFor(platform));
   const params=buildAuthorizationParams({platform,clientId:cfg.clientId,redirectUri:callbackUrl,scopes,state,pkceChallenge,loginConfigId,instagramOnboarding:platform==="instagram"&&instagramOnboardingEnabled()});
   for(const [k,v] of Object.entries(params)) u.searchParams.set(k,v);
+  // سجل آمن لـTikTok: يُثبت المفتاح المستخدم فعلاً في الرابط (مُخفى + بصمة).
+  if (platform === "tiktok") logTikTokOAuthStart(u);
   // فحص ما قبل التوجيه (Meta فقط): نتحقق أن Meta تقبل الرابط فعلاً، فلا يُرسَل
   // المالك إلى صفحة «حدث خطأ ما» عمياء. تعذّر الفحص لا يحجب (لئلا نكسر التطوير).
   let dialogProbe: MetaDialogProbeResult | null = null;
@@ -2460,6 +2556,16 @@ app.get("/api/platforms/:platform/oauth/start", requireOwner, async (req,res)=>{
   // سجل آمن: الروابط والنطاق والفاتورة فقط — بلا client_id ولا أي سرّ.
   logOAuthStart(platform, { outcome: "authorized_url_issued", redirectUri: callbackUrl, domain: urlInfo.host, publicUrlSource: urlInfo.source, publicUrlIsPublic: publicOk, appTokenKind: preflight.appToken?.kind ?? null, scopeCount: scopes.length, authEndpoint: authEndpointFor(platform), domainWarning: Boolean(domainWarning), metaSetupHint: Boolean(metaSetupHint), scopeDependencyGaps: scopeGaps, loginConfigIdUsed: Boolean(loginConfigId) });
   res.json({success:true,platform,authorizationUrl:u.toString(),authEndpoint:authEndpointFor(platform),expiresAt:pending.expiresAt,redirectUri:callbackUrl,domain:urlInfo.host,publicUrlSource:urlInfo.source,publicUrlIsPublic:publicOk,scopes,appIdFormatOk:isPlausibleMetaAppId(String(cfg.clientId || "")),appTokenKind:preflight.appToken?.kind ?? null,domainWarning,metaSetupHint,scopeDependencyGaps:scopeGaps.length?scopeGaps:undefined,
+    // TikTok: المفتاح المستخدم فعلاً في الرابط (مُخفى + بصمة) بلا أي سرّ، ليُقارَن
+    // مباشرةً مع Client key في لوحة TikTok Developers عند رسالة رفض المفتاح.
+    tiktokClientKey:(platform==="tiktok")?{
+      envVarName:"TIKTOK_CLIENT_KEY",
+      usedInAuthorizationUrlMasked:clientKeyFingerprint(u.searchParams.get("client_key")||"").masked,
+      usedInAuthorizationUrlLength:clientKeyFingerprint(u.searchParams.get("client_key")||"").length,
+      usedInAuthorizationUrlSha256Prefix:clientKeyFingerprint(u.searchParams.get("client_key")||"").sha256Prefix,
+      matchesConfiguredEnv:clientKeyFingerprint(u.searchParams.get("client_key")||"").sha256Prefix===clientKeyFingerprint(process.env.TIKTOK_CLIENT_KEY).sha256Prefix,
+      authorizationUrlHost:u.host,
+    }:undefined,
     // Facebook Login for Business: عند استخدام config_id تُذكر الصلاحيات كالمجموعة
     // المتوقعة في الConfiguration، ويُعلن صراحةً أن الطلب لم يحمل scope.
     loginConfigIdUsed:Boolean(loginConfigId),
@@ -3390,6 +3496,22 @@ app.get("/api/platforms/tiktok/status", authenticateToken, async (req,res)=>{
 });
 
 /**
+ * تشخيص مفتاح تطبيق TikTok (للمالك): يُقارن مفتاح البيئة الفعلي بما يظهر في رابط
+ * التفويض، ويُثبته لدى TikTok بطلب عميل واحد — فيُعزل سبب رسالة
+ * «We couldn't log in with TikTok … correct the following: client_key» إلى:
+ *   - مفتاح غير مضبوط/فارغ،
+ *   - مفتاح بصيغة مرفوضة،
+ *   - مفتاح لا يتعرّف عليه TikTok (أو مفتاح Sandbox مقابل Production)،
+ *   - مفتاح مقبول (الحكم من مزود TikTok لا من التخمين).
+ * الـclient_key عام فلا يُسرّب شيئاً، ومع ذلك يُعرض مُخفىً (أول 4 وآخر 4) مع بصمة.
+ */
+app.get("/api/platforms/tiktok/client-key-diagnosis", requireOwner, async (req,res)=>{
+  const diagnosis = await tiktokClientKeyDiagnosis();
+  logOAuthStart("tiktok", { outcome: "client_key_diagnosis", verdict: diagnosis.verdict, providerKind: diagnosis.providerProof?.kind ?? null, clientKeyLen: diagnosis.configuredValueLength, sha256: diagnosis.configuredValueSha256Prefix });
+  res.json({ success: true, platform: "tiktok", diagnosis, checkedAt: new Date().toISOString() });
+});
+
+/**
  * استقبال أحداث TikTok — تحقق TikTok-Signature على الجسم الخام ثم حفظ دائم قبل الإقرار.
  * الأحداث الرسمية الثلاثة فقط مدعومة؛ أي حدث آخر يُقبل ويُتجاهل بلا خطأ.
  */
@@ -3937,6 +4059,10 @@ app.get("/api/platforms/:platform/oauth/setup", requireOwner, async (req,res)=>{
       clientKeyConfigured:Boolean(cfg.clientId),
       clientKeyFormatOk:isPlausibleTikTokClientKey(String(cfg.clientId||"")),
       clientSecretConfigured:Boolean(cfg.clientSecret),
+      // تشخيص مفتاح التطبيق: القيمة المُخفاة (أول 4 وآخر 4) + البصمة للمقارنة مع
+      // لوحة TikTok Developers، وما يظهر فعلاً في رابط التفويض، وإثبات المفتاح
+      // لدى TikTok. يُنفَّذ طلب عميل واحد فقط (client_credentials) بلا أي سرّ معروض.
+      clientKeyDiagnosis:await tiktokClientKeyDiagnosis(),
       requestedScopes:tiktokOAuthScopes(),
       scopeOverrideConfigured:tiktokScopeOverride().length>0,
       // تدفّق الويب الرسمي لا يستخدم PKCE (code_challenge غير موثّق للويب)،

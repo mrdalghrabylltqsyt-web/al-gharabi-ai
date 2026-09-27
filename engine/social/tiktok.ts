@@ -587,6 +587,79 @@ export function isPlausibleTikTokClientKey(value: unknown): boolean {
 }
 
 // ---------------------------------------------------------------------------
+// تشخيص مفتاح التطبيق (client_key) — بلا كشف أي سرّ
+// ---------------------------------------------------------------------------
+
+/**
+ * بصمة حتمية لمفتاح التطبيق (client_key). الـclient_key **ليس سرّاً** (يظهر
+ * علناً في رابط التفويض)، لكنه يُقارَن بين البيئة ولوحة المطوّر بلا كشف القيمة
+ * كاملة: نُظهر أول 4 وآخر 4 محارف فقط مع طوله وبصمة SHA-256 مقتطعة. هذا يمكّن
+ * المالك من إثبات «نفس المفتاح» أو «مفتاح مختلف» بمقارنة بصرية بلا طباعة السرّ.
+ */
+export function clientKeyFingerprint(value: unknown): {
+  configured: boolean;
+  length: number;
+  masked: string;
+  sha256Prefix: string;
+  formatOk: boolean;
+} {
+  const s = typeof value === 'string' ? value : '';
+  const sha256Prefix = s ? crypto.createHash('sha256').update(s).digest('hex').slice(0, 12) : '';
+  return {
+    configured: s.length > 0,
+    length: s.length,
+    masked: maskSecretValue(s),
+    sha256Prefix,
+    formatOk: isPlausibleTikTokClientKey(s),
+  };
+}
+
+/**
+ * يخفي قيمة حساسة ويُظهر أول 4 وآخر 4 محارف فقط. القيم القصيرة (≤8) تُخفى
+ * كاملة حتى لا تُكشف عملياً. تُستخدم لـclient_key (عام) وللاستدلال على تطابق
+ * السرّ بلا إظهاره.
+ */
+export function maskSecretValue(value: unknown): string {
+  const s = typeof value === 'string' ? value : '';
+  if (!s) return '';
+  if (s.length <= 8) return '•'.repeat(s.length);
+  return `${s.slice(0, 4)}…${s.slice(-4)}`;
+}
+
+/**
+ * يصنّف خطأ مفتاح التطبيق كما يُبلّغ عنه TikTok Open API، ليُترجم إلى إجراء دقيق
+ * بدل رسالة عامة. أُثبت حياً (2026-09-27) أن `client_credentials` بمفتاح وهمي
+ * يعيد `invalid_client`، وأن مفتاحاً فارغاً يعيد `invalid_request`. رسالة الحوار
+ * «We couldn't log in with TikTok … correct the following: client_key» هي الشكل
+ * الأمامي لخطأ معرّف التطبيق نفسه.
+ */
+export function classifyTikTokClientKeyError(error: unknown, description: unknown): {
+  kind: 'invalid_client' | 'invalid_request' | 'unsupported_grant_type' | 'network' | 'unknown';
+  hintAr: string;
+} {
+  const e = String(error || '').toLowerCase();
+  const d = String(description || '').toLowerCase();
+  if (e === 'invalid_client' || d.includes('client info is illegal') || d.includes('client key')) {
+    return {
+      kind: 'invalid_client',
+      hintAr:
+        'TikTok لا يعرف هذا client_key: تأكد أن TIKTOK_CLIENT_KEY هو Client key لنفس التطبيق المعروض في TikTok Developers، وأنك لم تنسخ مفتاح بيئة Sandbox في مفتاح Production (أو العكس).',
+    };
+  }
+  if (e === 'invalid_request') {
+    return { kind: 'invalid_request', hintAr: 'الطلب غير مكتمل: يُرجّح أن TIKTOK_CLIENT_KEY غير مضبوط أو فارغ في بيئة Render.' };
+  }
+  if (e === 'unsupported_grant_type') {
+    return { kind: 'unsupported_grant_type', hintAr: 'مسار تبادل الرمز لا يطابق نمط التحقق؛ تحقّق من أن المسار الرسمي /v2/oauth/token/ هو المستخدَم.' };
+  }
+  const hay = `${e} ${d}`;
+  if (hay.includes('fetch') || hay.includes('network') || hay.includes('timeout') || hay.includes('connect') || hay.includes('econn')) {
+    return { kind: 'network', hintAr: 'تعذّر الوصول إلى TikTok (شبكة)؛ لا يُحكم على المفتاح من هذا الفشل.' };
+  }
+  return { kind: 'unknown', hintAr: 'لم يُصنَّف خطأ TikTok؛ راجع الوصف الخام المسجَّل.' };
+}
+
+// ---------------------------------------------------------------------------
 // عميل TikTok Open API
 // ---------------------------------------------------------------------------
 
@@ -645,6 +718,45 @@ export class TikTokClient {
   /** يجدّد رمز الوصول عبر refresh_token (صالح 365 يوماً). */
   async refreshToken(input: { clientKey: string; clientSecret: string; refreshToken: string }): Promise<TikTokResult<{ accessToken: string; refreshToken: string | null; openId: string; scope: string[]; expiresIn: number | null; refreshExpiresIn: number | null }>> {
     return this.tokenRequest(buildTikTokRefreshBody(input), 'فشل تجديد رمز TikTok.');
+  }
+
+  /**
+   * يثبت مفتاح التطبيق (`client_key`) لدى TikTok عبر طلب `client_credentials`
+   * فعلي واحد. لا يحمل رمز مستخدم ولا ينشئ جلسة ولا يستهلك حصة تفاعل. الهدف
+   * الوحيد: التمييز بين مفتاح يتعرّف عليه TikTok (`invalid_grant` على `code`
+   * وهمي = المفتاح/السرّ مقبولان) ومفتاح لا يعرفه (`invalid_client`) — فتُنسب
+   * رسالة «correct the following: client_key» إلى سببها بدل التخمين.
+   */
+  async verifyClientKey(input: { clientKey: string; clientSecret: string }): Promise<TikTokResult<{ recognized: boolean; classified: ReturnType<typeof classifyTikTokClientKeyError>; rawError: string | null; rawDescription: string | null }>> {
+    if (!input.clientKey || !input.clientSecret) {
+      return { ok: false, data: null, error: 'يلزم client_key وclient_secret لإثبات بيانات التطبيق.', code: 'credentials_missing' };
+    }
+    const body = new URLSearchParams();
+    body.set('client_key', input.clientKey);
+    body.set('client_secret', input.clientSecret);
+    body.set('grant_type', 'client_credentials');
+    try {
+      const res = await this.fetchImpl(tiktokTokenUrl(this.baseUrl), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: body.toString(),
+      });
+      const data = await res.json().catch(() => null);
+      const rawError = data?.error != null ? String(data.error) : null;
+      const rawDescription = data?.error_description != null ? String(data.error_description) : null;
+      const classified = classifyTikTokClientKeyError(rawError, rawDescription);
+      // إن نجح الطلب فعلاً فهذا يعني أن TikTok تعرّف على المفتاح والسرّ.
+      if (res.ok && !rawError) {
+        return { ok: true, data: { recognized: true, classified, rawError, rawDescription }, code: null };
+      }
+      // Mفتاح غير معروف = invalid_client. أما invalid_grant فيعني أن المفتاح
+      // تعرّف عليه TikTok لكن طُلب منه grant لا يمنحه نمط client_credentials —
+      // أي أن المفتاح والسرّ مقبولان.
+      const recognized = classified.kind !== 'invalid_client' && classified.kind !== 'invalid_request';
+      return { ok: true, data: { recognized, classified, rawError, rawDescription }, code: rawError };
+    } catch (e: any) {
+      return { ok: false, data: null, error: String(e?.message || 'تعذّر الاتصال بـTikTok.'), code: 'network' };
+    }
   }
 
   /** يُبطل الرمز لدى TikTok عند فصل المنصة (revoke). المسار منفصل عن مسار الرمز. */
