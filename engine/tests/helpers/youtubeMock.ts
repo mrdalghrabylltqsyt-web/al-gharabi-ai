@@ -21,6 +21,8 @@ export interface YouTubeMockState {
   scope: string[];
   failTokenExchange: boolean;
   failRefresh: boolean;
+  /** عمر رمز الوصول بالثواني (اختبار الانتهاء: قيمة < 60 تُعتبر منتهية فوراً بسبب هامش الأمان). */
+  tokenExpiresInSeconds: number;
   /** يفشل قراءة القناة بـ403 insufficientPermissions (يحاكي غياب youtube.readonly). */
   failChannelsInsufficient: boolean;
   /** يعيد items فارغة (حساب بلا قناة YouTube). */
@@ -51,6 +53,7 @@ export function createYouTubeMock(): YouTubeMockState {
     ],
     failTokenExchange: false,
     failRefresh: false,
+    tokenExpiresInSeconds: 3600,
     failChannelsInsufficient: false,
     emptyChannel: false,
     hasReadonlyScope: true,
@@ -76,13 +79,13 @@ export function startYouTubeMockServer(state: YouTubeMockState, port: number): P
       state.lastRefresh = { clientId: String(req.body?.client_id || ''), secretLen: String(req.body?.client_secret || '').length };
       if (state.failRefresh) return res.status(400).json({ error: 'invalid_grant', error_description: 'Token has been expired or revoked.' });
       // التجديد يعيد access_token بلا refresh_token جديد (سلوك Google).
-      return res.json({ access_token: state.accessToken, expires_in: 3600, scope: state.scope.join(' ') });
+      return res.json({ access_token: state.accessToken, expires_in: state.tokenExpiresInSeconds, scope: state.scope.join(' ') });
     }
     // authorization_code
     state.lastExchange = { clientId: String(req.body?.client_id || ''), secretLen: String(req.body?.client_secret || '').length, redirectUri: String(req.body?.redirect_uri || '') };
     if (state.failTokenExchange) return res.status(400).json({ error: 'invalid_grant', error_description: 'Bad Request' });
     state.lastGrantedScope = state.scope;
-    return res.json({ access_token: state.accessToken, refresh_token: state.refreshToken, expires_in: 3600, token_type: 'Bearer', scope: state.scope.join(' ') });
+    return res.json({ access_token: state.accessToken, refresh_token: state.refreshToken, expires_in: state.tokenExpiresInSeconds, token_type: 'Bearer', scope: state.scope.join(' ') });
   });
 
   // إثبات هوية القناة: channels.list?mine=true (نطاق youtube.readonly).

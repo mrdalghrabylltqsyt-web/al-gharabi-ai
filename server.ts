@@ -2263,11 +2263,10 @@ async function verifyProviderConnection(platform: string): Promise<{ verified: b
     return { verified: true, accountId: proof.data.openId, accountName: proof.data.displayName || undefined };
   }
   if (platform === "youtube") {
-    const token = youtubeAccessToken();
-    if (!token) return { verified: false, error: "لا اعتماد YouTube محفوظ؛ نفّذ الربط عبر OAuth أولاً." };
-    // إثبات حي: channels.list?mine=true يحتاج نطاق youtube.readonly. لا يُعلن
-    // اتصال موثق بلا معرّف قناة حقيقي من Google، ولا يُختلق اسم قناة.
-    const proof = await youtubeClient().fetchMyChannel(token);
+    // إثبات حي مع تجديد تلقائي عند انتهاء الرمز: لا يُعلن اتصال موثق بلا معرّف
+    // قناة حقيقي من Google، ولا يُختلق اسم قناة، ولا يُطلب إعادة OAuth إن كان
+    // refresh token صالحاً.
+    const proof = await fetchYouTubeChannelResilient();
     if (!proof.ok || !proof.data?.channelId) return { verified: false, error: proof.error || "تعذّر إثبات هوية قناة YouTube." };
     return { verified: true, accountId: proof.data.channelId, accountName: proof.data.title || undefined };
   }
@@ -2445,6 +2444,54 @@ function youtubeAccessExpired(): boolean {
   const stored = youtubeStoredCredentials();
   return isAccessTokenExpired({ expiresAt: stored?.expiresAt ?? null });
 }
+/**
+ * يجدّد رمز الوصول عبر refresh_token عند انتهائه (تلقائياً قبل أي عملية)، بنفس
+ * مبدأ TikTok. لا يُطلب من المالك إعادة OAuth ما دام refresh token صالحاً؛ وإذا
+ * فشل التجديد فعلاً يُعلن الحاجة لإعادة الربط بدل فشل صامت. لا يُسجَّل أي رمز.
+ */
+async function ensureYouTubeAccessToken(): Promise<{ ok: boolean; token?: string; refreshed?: boolean; error?: string; code?: string | null }> {
+  const stored = youtubeStoredCredentials();
+  const token = youtubeAccessToken();
+  if (!token) return { ok: false, error: "لا اعتماد YouTube محفوظ؛ نفّذ الربط عبر OAuth أولاً." };
+  // ضمن صلاحيته (بهامش أمان 60 ثانية في isAccessTokenExpired): لا نجدّد بلا داع.
+  if (!youtubeAccessExpired() || !youtubeRefreshToken()) return { ok: true, token, refreshed: false };
+  const refresh = youtubeRefreshToken() as string;
+  const cfg = youtubeOAuthConfig();
+  if (!cfg?.clientId || !cfg?.clientSecret) {
+    return { ok: false, error: "انتهى رمز YouTube ولا بيانات تطبيق Google متوفرة للتجديد؛ أعد الربط.", code: "invalid_client" };
+  }
+  const res = await youtubeClient().refreshAccessToken({ clientId: String(cfg.clientId), clientSecret: String(cfg.clientSecret), refreshToken: refresh });
+  if (!res.ok || !res.data?.accessToken) {
+    // لا فشل صامت: يُعلن أن الاتصال يحتاج إعادة ربط حقيقية بدل ادعاء اتصال قائم.
+    platformConnections.set("youtube", { platform: "youtube", status: "reauth_needed", accountId: String(stored?.channelId || ""), connectedAt: stored?.connectedAt || new Date().toISOString() });
+    savePlatformConnections();
+    await persistStateDurable();
+    audit("system", "youtube_refresh_failed", res.code || "provider_error");
+    logYouTube("refresh_failed", { code: res.code || "provider_error" });
+    return { ok: false, error: res.error || "فشل تجديد رمز Google؛ أعد الربط.", code: res.code ?? null };
+  }
+  saveYouTubeCredentials({
+    accessToken: res.data.accessToken,
+    refreshToken: res.data.refreshToken || refresh,
+    expiresAt: res.data.expiresIn ? Date.now() + res.data.expiresIn * 1000 : null,
+    scope: res.data.scope,
+  });
+  await persistStateDurable();
+  audit("system", "youtube_token_refreshed", "auto");
+  logYouTube("token_refreshed", { scopeCount: res.data.scope.length });
+  return { ok: true, token: res.data.accessToken, refreshed: true };
+}
+/**
+ * ينفّذ قراءة القناة برمز YouTube مع تجديد تلقائي عند الانتهاء — فلا يسقط الفحص
+ * بعد انتهاء access token ما دام refresh token صالحاً. غلاف واحد يمنع تكرار
+ * منطق التجديد في كل مسار.
+ */
+async function fetchYouTubeChannelResilient(): Promise<{ ok: boolean; data: any | null; error?: string; code?: string | null; refreshed?: boolean }> {
+  const ensured = await ensureYouTubeAccessToken();
+  if (!ensured.ok || !ensured.token) return { ok: false, data: null, error: ensured.error, code: ensured.code ?? null };
+  const proof = await youtubeClient().fetchMyChannel(ensured.token);
+  return { ok: proof.ok, data: proof.data, error: proof.error, code: proof.code ?? null, refreshed: ensured.refreshed };
+}
 /** يحفظ اعتماد YouTube مشفّراً بلا كشفه. */
 function saveYouTubeCredentials(input: { accessToken: string; refreshToken?: string | null; expiresAt?: number | null; scope?: string[]; channelId?: string; channelTitle?: string | null; uploadsPlaylistId?: string | null }) {
   const existing = youtubeStoredCredentials() || {};
@@ -2486,6 +2533,8 @@ function youtubeHealthState() {
     refreshTokenStored: Boolean(stored?.refresh_token),
     channelStored: Boolean(stored?.channelId),
     tokenExpired: Boolean(stored?.access_token) && youtubeAccessExpired(),
+    // التجديد التلقائي متاح فعلاً (رمز منتهٍ + refresh token صالح => يُجدَّد بلا إعادة ربط).
+    tokenRefreshable: Boolean(stored?.access_token) && Boolean(stored?.refresh_token) && Boolean(youtubeOAuthConfig()?.clientId && youtubeOAuthConfig()?.clientSecret),
     connectorConfigured: youtubeConnectorConfigured(),
     realConnector: hasRealConnector("youtube"),
     connected: conn?.status === "connected",
@@ -4035,15 +4084,17 @@ app.get("/api/platforms/:platform/health", authenticateToken, async (req,res)=>{
     }
     if(platform==="youtube") {
       if(!token?.access_token) throw new Error("رمز YouTube غير متوفر.");
-      // فحص حقيقي فعلي عبر عميل YouTube (يحترم YOUTUBE_API_BASE في الاختبار).
-      const proof=await youtubeClient().fetchMyChannel(String(token.access_token));
+      // فحص حقيقي فعلي عبر عميل YouTube (يحترم YOUTUBE_API_BASE في الاختبار)، مع
+      // تجديد تلقائي عند انتهاء الرمز. الرمز يُرفض/تنقص صلاحيته فقط عندها يُعلن
+      // reauth_needed بلا ادعاء صحة؛ أما انتهاء access token فيُجدَّد بلا إزعاج.
+      const proof=await fetchYouTubeChannelResilient();
       if(!proof.ok||!proof.data?.channelId){
         // رمز مرفوض/صلاحية ناقصة = الاتصال لم يعد صالحاً؛ نُعلن reauth_needed بلا ادعاء صحة.
         platformConnections.set("youtube",{...(c||{}),platform:"youtube",status:"reauth_needed"});
         savePlatformConnections();
         return res.status(409).json({success:false,platform,healthy:false,provider:"youtube",status:"reauth_needed",error:proof.error||"تعذّر إثبات هوية قناة YouTube.",errorKind:proof.code??null});
       }
-      return res.json({success:true,platform,healthy:true,provider:"youtube",accountId:proof.data.channelId,accountName:proof.data.title||c.accountName,checkedAt:new Date().toISOString()});
+      return res.json({success:true,platform,healthy:true,provider:"youtube",accountId:proof.data.channelId,accountName:proof.data.title||c.accountName,checkedAt:new Date().toISOString(),tokenRefreshed:Boolean(proof.refreshed)});
     }
     if(platform==="tiktok") {
       if(!token?.access_token) throw new Error("رمز TikTok غير متوفر.");

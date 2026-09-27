@@ -14,7 +14,7 @@
  */
 
 import { spawn, type ChildProcess } from 'node:child_process';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { randomBytes } from 'node:crypto';
@@ -146,6 +146,21 @@ function unitTests(): void {
   group('4) وحدة: عميل YouTube بخادم وهمي (لا شبكة حقيقية)');
   // يُختبر العميل وحده عبر mock مدمج في نفس الدالة أدناه (integrationTests) لأن
   // العميل يحتاج fetchImpl فقط — نحن نمرّره هنا بعميل حقيقي لخادم الوهم.
+
+  group('4b) وحدة: واجهة YouTube تستدعي health وتعرض القناة بلا أي سرّ');
+  const ui = readFileSync(join(REPO_ROOT, 'src/components/social/PlatformConnectionCenter.tsx'), 'utf8');
+  check('الواجهة تستدعي getPlatformHealth(\'youtube\')', ui.includes("getPlatformHealth('youtube')"));
+  check('الواجهة تعرض زر «فحص القناة — قراءة فقط»', ui.includes('فحص القناة — قراءة فقط'));
+  check('الواجهة تعرض اسم القناة accountName', ui.includes('accountName'));
+  check('الواجهة تعرض معرّف القناة accountId', ui.includes('accountId'));
+  check('الواجهة تعرض وقت آخر فحص checkedAt', ui.includes('checkedAt'));
+  check('الواجهة تُعلن نجاح الفحص', ui.includes('حالة الفحص: ناجح'));
+  check('الواجهة تُظهر إعادة ربط عند 409', ui.includes('إعادة ربط Google مطلوبة') && ui.includes('إعادة ربط OAuth'));
+  check('لوحة YouTube تُعرض للمالك فقط في مركز الربط', /platform === 'youtube'[\s\S]{0,120}?YouTubeStatusPanel/.test(ui));
+  check('الواجهة تُعلن أن الرفع/النشر غير منفّذ', /الرفع[\s\S]{0,80}?غير منفّذة/.test(ui));
+  check('الواجهة لا تطبع token/secret', !/access_token|refresh_token|clientSecret\}/.test(ui));
+  const apiSrc = readFileSync(join(REPO_ROOT, 'src/services/api.ts'), 'utf8');
+  check('طبقة API تصل health بالمسار الصحيح', apiSrc.includes('/api/platforms/${encodeURIComponent(platform)}/health'));
 }
 
 // ---------------------------------------------------------------------------
@@ -235,6 +250,43 @@ async function integrationTests(): Promise<void> {
     check('بلا youtube.readonly: الصحة تُعلن reauth_needed', phBad.healthy === false && phBad.status === 'reauth_needed');
     check('الصحة تُعلن insufficientPermissions', phBad.errorKind === 'insufficient_permissions');
     mock.state.hasReadonlyScope = true;
+
+    group('11b) تكامل: تجديد access token المنتهي تلقائياً والتقاط فشل التجديد');
+    // إعادة الربط لاستعادة حالة connected (فحص 11 أسقطها إلى reauth_needed عمداً) برمز طويل العمر.
+    const reconnect = async (expiresIn: number, code: string): Promise<void> => {
+      mock.state.tokenExpiresInSeconds = expiresIn;
+      const s = await (await fetch(`${BASE}/api/platforms/youtube/oauth/start`, { headers: auth })).json();
+      const st = new URL(s.authorizationUrl).searchParams.get('state') as string;
+      await fetch(`${BASE}/api/platforms/youtube/oauth/callback?state=${encodeURIComponent(st)}&code=${encodeURIComponent(code)}`);
+    };
+    await reconnect(3600, 'reconnect-fresh');
+    // (أ) الرمز الحالي صالح => لا تجديد، والفحص ينجح.
+    mock.state.lastRefresh = null;
+    const phFresh = await (await fetch(`${BASE}/api/platforms/youtube/health`, { headers: auth })).json();
+    check('رمز صالح: الفحص ينجح بلا تجديد', phFresh.success === true && phFresh.healthy === true && phFresh.tokenRefreshed === false);
+    check('رمز صالح: لم يُطلب تجديد', mock.state.lastRefresh === null);
+    // (ب) نجبر انتهاء الرمز: نعيد الربط برمز قصير العمر (< هامش الأمان 60) ثم نفحص.
+    await reconnect(30, 'reconnect-short');
+    mock.state.lastRefresh = null;
+    const phExpired = await (await fetch(`${BASE}/api/platforms/youtube/health`, { headers: auth })).json();
+    check('رمز منتهٍ + refresh صالح: الفحص ينجح', phExpired.success === true && phExpired.healthy === true && phExpired.accountId === mock.state.channelId);
+    check('رمز منتهٍ: التجديد نُفِّذ فعلاً', mock.state.lastRefresh !== null && mock.state.lastRefresh?.clientId === GO_CLIENT_ID);
+    check('الفحص يعلن أنه جدّد الرمز', phExpired.tokenRefreshed === true);
+    // (ج) فشل التجديد فعلاً => reauth_needed (لا ادعاء صحة).
+    await reconnect(30, 'reconnect-short-2');
+    mock.state.failRefresh = true;
+    const phFail = await (await fetch(`${BASE}/api/platforms/youtube/health`, { headers: auth })).json();
+    check('فشل التجديد => reauth_needed', phFail.success === false && phFail.healthy === false && phFail.status === 'reauth_needed');
+    check('فشل التجديد: لا يُسرّب أي رمز', !JSON.stringify(phFail).includes(mock.state.accessToken) && !JSON.stringify(phFail).includes(mock.state.refreshToken));
+    mock.state.failRefresh = false;
+    // (د) لا أسرار في سجل health العام، ويُعلن تجديد الرمز متاحاً.
+    const healthSec = await (await fetch(`${BASE}/api/health`)).json();
+    check('health لا يسرّب access token', !JSON.stringify(healthSec).includes(mock.state.accessToken));
+    check('health لا يسرّب refresh token', !JSON.stringify(healthSec).includes(mock.state.refreshToken));
+    check('health يعلن تجديد الرمز متاحاً', healthSec.youtubeOAuth?.tokenRefreshable === true);
+    // استعادة الاتصال الموثق لبقيّة الفحوص.
+    mock.state.tokenExpiresInSeconds = 3600;
+    await reconnect(3600, 'reconnect-final');
 
     group('12) تكامل: لا قدرة محتوى في السجل العام (لا ادعاء غير منفّذ)');
     check('YouTube بلا أي قدرة محتوى', ['publish', 'analytics', 'comments', 'comment_reply', 'scheduling', 'audience_insights'].every((c) => !platformSupports('youtube', c)));
