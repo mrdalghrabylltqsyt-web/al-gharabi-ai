@@ -93,7 +93,7 @@ async function login(): Promise<Record<string, string>> {
     check('المصفوفة بلا جلسة => 401', matrixNoAuth.status === 401);
     const matrix = await (await fetch(`${BASE}/api/platforms/readiness-matrix`, { headers: auth })).json();
     check('المصفوفة تعيد عشر منصات', matrix.platforms.length === 10);
-    check('الملخص: أربعة موصلات جاهزة (telegram,facebook,instagram,tiktok)', matrix.summary.connectorReady === 4 && matrix.summary.foundationReady === 6);
+    check('الملخص: خمسة موصلات جاهزة (telegram,facebook,instagram,tiktok,youtube)', matrix.summary.connectorReady === 5 && matrix.summary.foundationReady === 5);
     const fb = matrix.platforms.find((p: any) => p.platform === 'facebook');
     check('facebook: موصل منفّذ وOAuth يحتاج إعداداً خارجياً', fb.implementationStatus === 'CONNECTOR_READY' && fb.oauth === 'EXTERNAL_SETUP_REQUIRED');
     check('facebook: لا اتصال مدّعى', fb.connection.status === 'disconnected' && fb.connection.providerVerified === false);
@@ -175,8 +175,13 @@ async function login(): Promise<Record<string, string>> {
     check('بلا موافقة => APPROVAL_REQUIRED', noApproval.status === 409);
 
     group('6) المؤشرات — NOT_SUPPORTED بلا صفر وهمي');
-    const metrics = await (await fetch(`${BASE}/api/platforms/youtube/metrics?externalId=p1`, { headers: auth })).json();
+    // منصة تدعم التحليلات لكنها غير متصلة => لا جلب خارجي (YouTube لم تعد تعلن
+    // تحليلات في مرحلتها الحالية، فنستخدم Facebook لذلك).
+    const metrics = await (await fetch(`${BASE}/api/platforms/facebook/metrics?externalId=p1`, { headers: auth })).json();
     check('غير متصل => لا جلب خارجي', metrics.externalFetchAvailable === false);
+    // YouTube لا تعلن تحليلات => بلا جلب خارجي وبلا قيم مختلقة.
+    const ytMetrics = await (await fetch(`${BASE}/api/platforms/youtube/metrics?externalId=p1`, { headers: auth })).json();
+    check('YouTube بلا تحليلات => كلها NOT_SUPPORTED', ytMetrics.envelope.metrics.every((m: any) => m.status === 'NOT_SUPPORTED'));
     check('لا قيمة وهمية صفرية', metrics.envelope.metrics.every((m: any) => m.status === 'NOT_SUPPORTED' ? m.value === undefined : true));
     const waMetrics = await (await fetch(`${BASE}/api/platforms/whatsapp/metrics`, { headers: auth })).json();
     check('whatsapp بلا تحليلات => كلها NOT_SUPPORTED', waMetrics.envelope.metrics.every((m: any) => m.status === 'NOT_SUPPORTED'));

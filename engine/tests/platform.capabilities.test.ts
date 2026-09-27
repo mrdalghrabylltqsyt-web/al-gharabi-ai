@@ -43,7 +43,9 @@ function run(): void {
   check('سناب شات بلا تعليقات', !platformSupports('snapchat', 'comments'));
   check('Google Business بلا تعليقات', !platformSupports('google_business', 'comments'));
   check('فيسبوك يدعم النشر والرسائل والتعليقات', ['publish', 'messages', 'comments'].every((c) => platformSupports('facebook', c)));
-  check('يوتيوب يدعم التعليقات', platformSupports('youtube', 'comments'));
+  // YouTube في مرحلته الحالية: OAuth + إثبات هوية القناة فقط. لا تُعلن أي قدرة
+  // محتوى (تعليقات/رد/نشر/تحليلات/جدولة) لأن مسارها غير منفّذ — يُعلن عدم الدعم.
+  check('يوتيوب لا يعلن أي قدرة محتوى غير منفّذة', ['publish', 'analytics', 'comments', 'comment_reply', 'scheduling', 'audience_insights'].every((c) => !platformSupports('youtube', c)));
   check('telegram ينشر ويراسل بلا تعليقات', platformSupports('telegram', 'publish') && platformSupports('telegram', 'messages') && !platformSupports('telegram', 'comments'));
   check('telegram يعلن message_reply لا comment_reply', platformSupports('telegram', 'message_reply') && !platformSupports('telegram', 'comment_reply'));
 
@@ -60,7 +62,7 @@ function run(): void {
   // الجاهزية الإنتاجية مرتبطة بوجود موصل حقيقي منفّذ AND اتصال موثق.
   // Telegram ثم Facebook ثم Instagram ثم TikTok موصلات حقيقية؛ بقية المنصات
   // تبقى غير جاهزة حتى يُنفّذ موصلها.
-  const realConnectorPlatforms = ['telegram', 'facebook', 'instagram', 'tiktok'];
+  const realConnectorPlatforms = ['telegram', 'facebook', 'instagram', 'tiktok', 'youtube'];
   check('الجاهزية الإنتاجية = موصل حقيقي + اتصال موثق فقط', connectedOnly.every((a) => a.describe().productionReady === (realConnectorPlatforms.includes(a.platform) && a.describe().providerVerified === true)));
   check('المنصات بلا موصل حقيقي لا تُعلن جاهزية إنتاجية', connectedOnly.filter((a) => !realConnectorPlatforms.includes(a.platform)).every((a) => a.describe().productionReady === false));
   check('المنصات بلا موصل حقيقي تعلن انعدام الموصل', connectedOnly.filter((a) => !realConnectorPlatforms.includes(a.platform)).every((a) => (a.describe() as any).realConnector === false));

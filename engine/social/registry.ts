@@ -69,9 +69,13 @@ const ADAPTER_SPECS: AdapterSpec[] = [
     platform: 'youtube',
     name: 'YouTube',
     displayName: 'YouTube',
-    capabilities: ['publish', 'analytics', 'comments', 'comment_reply', 'scheduling', 'audience_insights'],
+    // المرحلة الحالية: OAuth + إثبات هوية القناة فقط (channels.list?mine=true بنطاق
+    // youtube.readonly). لا مسار منفّذ للنشر أو التعليقات أو الرد أو التحليلات أو
+    // الجدولة، فلا تُعلن أي قدرة محتوى — يُعلن عدم الدعم صراحةً بدل ادعاء غير منفّذ.
+    capabilities: [],
     credentialMode: 'oauth2',
-    realConnector: false,
+    // موصل حقيقي منفّذ وقابل للاختبار: اتصال + إثبات هوية قناة فعلية من Google.
+    realConnector: true,
   },
   {
     platform: 'facebook',

@@ -153,6 +153,18 @@ import {
   type PublishState,
 } from "./engine/social/publishing";
 import {
+  YOUTUBE_REQUIRED_SCOPES,
+  YOUTUBE_UPLOAD_SCOPE,
+  YOUTUBE_READONLY_SCOPE,
+  YOUTUBE_CAPABILITY_MATRIX,
+  resolveYouTubeScopes,
+  YouTubeClient,
+  youtubeCapabilityImplemented,
+  youtubeApiBase,
+  youtubeTokenUrl,
+  type YouTubeFetch,
+} from "./engine/social/youtube";
+import {
   buildMarketingDecision,
   buildMemorySnapshot,
   type PerformanceRecord,
@@ -1130,7 +1142,10 @@ function loginConfigEnvNames(platform: string): string[] {
 }
 
 const OAUTH_CONFIG: Record<string, any> = {
-  youtube: { provider: "google", auth: "https://accounts.google.com/o/oauth2/v2/auth", token: "https://oauth2.googleapis.com/token", clientId: envSecret("GOOGLE_OAUTH_CLIENT_ID") || envSecret("GOOGLE_CLIENT_ID"), clientSecret: envSecret("GOOGLE_OAUTH_CLIENT_SECRET"), scopes: ["https://www.googleapis.com/auth/youtube.upload"] },
+  // youtube.readonly يقابل استدعاءً حقيقياً منفّذاً (channels.list?mine=true) لإثبات
+  // هوية القناة، وyoutube.upload بقي مطلوباً بقرار المالك تمهيداً لرفع الفيديو.
+  // لا تُعلن قدرة نشر/تعليقات ما لم يُنفَّذ مسارها فعلاً (انظر YOUTUBE_CAPABILITY_MATRIX).
+  youtube: { provider: "google", auth: "https://accounts.google.com/o/oauth2/v2/auth", token: "https://oauth2.googleapis.com/token", clientId: envSecret("GOOGLE_OAUTH_CLIENT_ID") || envSecret("GOOGLE_CLIENT_ID"), clientSecret: envSecret("GOOGLE_OAUTH_CLIENT_SECRET"), scopes: [...YOUTUBE_REQUIRED_SCOPES] },
   google_business: { provider: "google", auth: "https://accounts.google.com/o/oauth2/v2/auth", token: "https://oauth2.googleapis.com/token", clientId: envSecret("GOOGLE_OAUTH_CLIENT_ID") || envSecret("GOOGLE_CLIENT_ID"), clientSecret: envSecret("GOOGLE_OAUTH_CLIENT_SECRET"), scopes: ["https://www.googleapis.com/auth/business.manage"] },
   tiktok: { provider: "tiktok", auth: `https://www.tiktok.com/v2/auth/authorize/`, token: "https://open.tiktokapis.com/v2/oauth/token/", clientId: envSecret("TIKTOK_CLIENT_KEY"), clientSecret: envSecret("TIKTOK_CLIENT_SECRET"), scopes: [...TIKTOK_REQUIRED_SCOPES] },
   // business_management إلزامي منذ Graph v17 لعرض صفحات Business Manager عبر
@@ -2247,6 +2262,15 @@ async function verifyProviderConnection(platform: string): Promise<{ verified: b
     if (!proof.ok || !proof.data?.openId) return { verified: false, error: proof.error || "تعذر إثبات هوية حساب TikTok." };
     return { verified: true, accountId: proof.data.openId, accountName: proof.data.displayName || undefined };
   }
+  if (platform === "youtube") {
+    const token = youtubeAccessToken();
+    if (!token) return { verified: false, error: "لا اعتماد YouTube محفوظ؛ نفّذ الربط عبر OAuth أولاً." };
+    // إثبات حي: channels.list?mine=true يحتاج نطاق youtube.readonly. لا يُعلن
+    // اتصال موثق بلا معرّف قناة حقيقي من Google، ولا يُختلق اسم قناة.
+    const proof = await youtubeClient().fetchMyChannel(token);
+    if (!proof.ok || !proof.data?.channelId) return { verified: false, error: proof.error || "تعذّر إثبات هوية قناة YouTube." };
+    return { verified: true, accountId: proof.data.channelId, accountName: proof.data.title || undefined };
+  }
   return { verified: false, error: "لا يوجد موصل إثبات حقيقي لهذه المنصة؛ إتمام الاتصال يحتاج اعتماد تطبيق من المزود." };
 }
 function publicProviderReadiness(platform: string): { configured: boolean; mode: string; action: string; missing?: string[]; invalid?: string[]; next?: string; realConnector?: boolean } {
@@ -2388,6 +2412,88 @@ function hasCapability(platform: string, capability: string) { return platformSu
 // Central control-plane endpoints (deterministic, no Gemini cost)
 // -------------------------------------------------------------
 
+// -------------------------------------------------------------
+// YouTube — خامس موصل اجتماعي حقيقي منفّذ (Google OAuth 2.0 + YouTube Data API v3).
+// المرحلة الحالية: اتصال + إثبات هوية قناة حقيقية عبر channels.list?mine=true
+// (نطاق youtube.readonly). لا ادعاء نشر/تعليقات/تحليلات/جدولة — لا مسار لها منفّذ.
+// الأسرار تُقرأ من بيئة الخادم أو تُحفظ مشفّرة؛ لا تُسجَّل ولا تُعاد.
+// -------------------------------------------------------------
+const youtubeFetchImpl: YouTubeFetch = (url, init) => fetch(url, init as any);
+function youtubeClient(): YouTubeClient { return new YouTubeClient(youtubeFetchImpl, youtubeApiBase(), youtubeTokenUrl()); }
+function youtubeOAuthConfig(): any { return OAUTH_CONFIG["youtube"]; }
+/** النطاقات النهائية: المطلوبة دائماً + أي تجاوز رسمي محدود من البيئة. */
+function youtubeOAuthScopes(): string[] {
+  const override = (process.env.YOUTUBE_OAUTH_SCOPES || "").split(/[\s,]+/).map((s) => s.trim()).filter(Boolean);
+  return resolveYouTubeScopes(override.length ? override : YOUTUBE_REQUIRED_SCOPES);
+}
+/** هل موصل YouTube مكتمل الإعداد للاتصال؟ (clientId + clientSecret + عنوان عام + مفتاح تشفير). */
+function youtubeConnectorConfigured(): boolean {
+  const c = youtubeOAuthConfig();
+  return Boolean(c?.clientId && c?.clientSecret && publicUrlIsPublic() && tokenKeyBytes());
+}
+/** اعتماد YouTube المحفوظ مشفّراً (رمز الوصول + refresh + انتهاء). */
+function youtubeStoredCredentials(): any | null { return getProviderToken("youtube"); }
+function youtubeAccessToken(): string | null {
+  const stored = youtubeStoredCredentials();
+  return stored?.access_token ? String(stored.access_token) : null;
+}
+function youtubeRefreshToken(): string | null {
+  const stored = youtubeStoredCredentials();
+  return stored?.refresh_token ? String(stored.refresh_token) : null;
+}
+function youtubeAccessExpired(): boolean {
+  const stored = youtubeStoredCredentials();
+  return isAccessTokenExpired({ expiresAt: stored?.expiresAt ?? null });
+}
+/** يحفظ اعتماد YouTube مشفّراً بلا كشفه. */
+function saveYouTubeCredentials(input: { accessToken: string; refreshToken?: string | null; expiresAt?: number | null; scope?: string[]; channelId?: string; channelTitle?: string | null; uploadsPlaylistId?: string | null }) {
+  const existing = youtubeStoredCredentials() || {};
+  setProviderToken("youtube", {
+    ...existing,
+    access_token: input.accessToken,
+    refresh_token: input.refreshToken || existing.refresh_token || "",
+    expiresAt: input.expiresAt ?? existing.expiresAt ?? null,
+    scope: Array.isArray(input.scope) ? input.scope : (existing.scope || []),
+    channelId: input.channelId || existing.channelId || "",
+    channelTitle: input.channelTitle || existing.channelTitle || "",
+    uploadsPlaylistId: input.uploadsPlaylistId || existing.uploadsPlaylistId || "",
+    connectedAt: existing.connectedAt || new Date().toISOString(),
+  });
+}
+/** يسجّل حدث YouTube آمن بلا أي سرّ. */
+function logYouTube(outcome: string, detail: Record<string, unknown> = {}): void {
+  const parts = ["[youtube-oauth]", `outcome=${outcome}`];
+  for (const [k, v] of Object.entries(detail)) {
+    if (v === undefined || v === null) continue;
+    if (k === "code" || k === "token" || k === "state" || k === "access_token") continue; // حماية صريحة
+    parts.push(`${k}=${String(v).slice(0, 120)}`);
+  }
+  console.log(parts.join(" "));
+}
+/** حالة YouTube غير السرّية (منطقي فقط) — تُعرض في /api/health و/api/readiness. */
+function youtubeHealthState() {
+  const stored = youtubeStoredCredentials();
+  const conn: any = platformConnections.get("youtube");
+  return {
+    platform: "youtube",
+    clientIdConfigured: Boolean(youtubeOAuthConfig()?.clientId),
+    clientSecretConfigured: Boolean(youtubeOAuthConfig()?.clientSecret),
+    requestedScopes: youtubeOAuthScopes(),
+    readonlyScopePresent: youtubeOAuthScopes().includes(YOUTUBE_READONLY_SCOPE),
+    uploadScopePresent: youtubeOAuthScopes().includes(YOUTUBE_UPLOAD_SCOPE),
+    channelIdentityCallImplemented: youtubeCapabilityImplemented("channel_identity"),
+    accessTokenStored: Boolean(stored?.access_token),
+    refreshTokenStored: Boolean(stored?.refresh_token),
+    channelStored: Boolean(stored?.channelId),
+    tokenExpired: Boolean(stored?.access_token) && youtubeAccessExpired(),
+    connectorConfigured: youtubeConnectorConfigured(),
+    realConnector: hasRealConnector("youtube"),
+    connected: conn?.status === "connected",
+    providerVerified: conn?.providerVerified === true,
+    capabilityMatrix: YOUTUBE_CAPABILITY_MATRIX,
+  };
+}
+
 /**
  * إثبات الحساب لدى المزود بعد تبادل الرمز. لا نختلق هوية: إن لم تدعم الواجهة
  * استعلاماً مباشراً أو فشل، نُبقي المعرّف العام ونعتمد الإثبات على نجاح التبادل.
@@ -2396,8 +2502,8 @@ function hasCapability(platform: string, capability: string) { return platformSu
 async function fetchProviderAccount(platform: string, accessToken: string): Promise<{ accountId?: string; accountName?: string } | null> {
   try {
     if (platform === "youtube") {
-      const r = await fetch("https://www.googleapis.com/youtube/v3/channels?part=snippet&mine=true", { headers: { Authorization: `Bearer ${accessToken}` } });
-      const d = await r.json(); if (r.ok && d.items?.[0]) return { accountId: d.items[0].id, accountName: d.items[0].snippet?.title };
+      const info = await youtubeClient().fetchMyChannel(accessToken);
+      if (info.ok && info.data?.channelId) return { accountId: info.data.channelId, accountName: info.data.title || undefined };
     }
     if (platform === "tiktok") {
       // الإثبات عبر عميل TikTok نفسه (يحترم TIKTOK_API_BASE في الاختبار) بلا سرّ في السجل.
@@ -2439,7 +2545,7 @@ app.get("/api/platforms/:platform/oauth/start", requireOwner, async (req,res)=>{
   // الصلاحيات تُحسَب عند كل بدء (لا وقت الإقلاع) لتعكس البيئة الفعلية وتضمن
   // إضافة اعتماديات Meta الناقصة، فلا ينتج «Invalid Scopes» أو صلاحية مُسقَطة.
   const scopeGaps = platform==="facebook" ? facebookScopeDependencyGaps() : [];
-  const scopes = platform==="facebook" ? facebookOAuthScopes() : platform==="instagram" ? instagramOAuthScopes() : (Array.isArray(cfg.scopes) ? cfg.scopes : []);
+  const scopes = platform==="facebook" ? facebookOAuthScopes() : platform==="instagram" ? instagramOAuthScopes() : platform==="youtube" ? youtubeOAuthScopes() : (Array.isArray(cfg.scopes) ? cfg.scopes : []);
   // فحص ما قبل الحوار: يمنع إرسال المالك إلى صفحة «حدث خطأ ما» بلا تفسير.
   // عند الفشل نُعلن السبب والإجراء الدقيق بدل توليد رابط سيفشل حتماً لدى Meta.
   const preflight = await oauthStartPreflight(platform);
@@ -2732,6 +2838,31 @@ async function handleOAuthCallback(req:any, res:any, rawQuery:string, viaPost:bo
       audit(pending!.userId,"platform_oauth_connected",`tiktok:${identity.data.openId}`);
       logTikTokOAuth("callback_connected",{openId:identity.data.openId,scopeCount:exchanged.data.scope.length,hasRefreshToken:Boolean(exchanged.data.refreshToken)});
       return sendHtml(`<html lang='ar' dir='rtl'><meta charset='utf-8'><title>تم الربط</title><body style='font-family:sans-serif;padding:40px'><h2>تم ربط حساب TikTok بنجاح.</h2><p>${escapeHtml(identity.data.displayName||"")} — يمكنك إغلاق هذه النافذة والعودة إلى الغرابي AI.</p></body></html>`);
+    }
+    // YouTube — مسار Google OAuth 2.0: تبادل الرمز ثم إثبات هوية القناة فعلياً
+    // عبر channels.list?mine=true (نطاق youtube.readonly). لا يُعلن اتصال موثق
+    // بلا قناة حقيقية من Google، فلا تُبنى حالة على اسم قناة مُختلق.
+    if(platform==="youtube") {
+      const client=youtubeClient();
+      const exchanged=await client.exchangeCode({clientId:String(cfg.clientId),clientSecret:String(cfg.clientSecret),code,redirectUri:redirectUri});
+      if(!exchanged.ok || !exchanged.data?.accessToken) throw new Error(exchanged.error||"فشل تبادل رمز Google.");
+      const channel=await client.fetchMyChannel(exchanged.data.accessToken);
+      if(!channel.ok || !channel.data?.channelId) throw new Error(channel.error||"تعذّر إثبات هوية قناة YouTube.");
+      saveYouTubeCredentials({
+        accessToken: exchanged.data.accessToken,
+        refreshToken: exchanged.data.refreshToken,
+        expiresAt: exchanged.data.expiresIn?Date.now()+exchanged.data.expiresIn*1000:null,
+        scope: exchanged.data.scope,
+        channelId: channel.data.channelId,
+        channelTitle: channel.data.title,
+        uploadsPlaylistId: channel.data.uploadsPlaylistId,
+      });
+      platformConnections.set("youtube",{platform:"youtube",status:"connected",accountId:channel.data.channelId,accountName:channel.data.title||"YouTube",connectedAt:new Date().toISOString(),providerVerified:true});
+      savePlatformConnections();
+      await persistStateDurable();
+      audit(pending!.userId,"platform_oauth_connected",`youtube:${channel.data.channelId}`);
+      logYouTube("callback_connected",{channelId:channel.data.channelId,scopeCount:exchanged.data.scope.length,hasRefreshToken:Boolean(exchanged.data.refreshToken)});
+      return sendHtml(`<html lang='ar' dir='rtl'><meta charset='utf-8'><title>تم الربط</title><body style='font-family:sans-serif;padding:40px'><h2>تم ربط قناة YouTube بنجاح.</h2><p>${escapeHtml(channel.data.title||"")} — يمكنك إغلاق هذه النافذة والعودة إلى الغرابي AI.</p></body></html>`);
     }
     const tokenRes=await fetch(cfg.token,{method:"POST",headers:{"Content-Type":"application/x-www-form-urlencoded"},body}); token=await tokenRes.json();
     const parsedToken=parseTokenResponse(token);
@@ -3904,8 +4035,15 @@ app.get("/api/platforms/:platform/health", authenticateToken, async (req,res)=>{
     }
     if(platform==="youtube") {
       if(!token?.access_token) throw new Error("رمز YouTube غير متوفر.");
-      const r=await fetch("https://www.googleapis.com/youtube/v3/channels?part=snippet&mine=true",{headers:{Authorization:`Bearer ${token.access_token}`}}); const d=await r.json();
-      return res.status(r.ok&&Array.isArray(d.items)?200:502).json({success:r.ok&&Array.isArray(d.items),platform,healthy:r.ok&&Array.isArray(d.items),provider:"youtube",accountId:d.items?.[0]?.id||c.accountId,accountName:d.items?.[0]?.snippet?.title||c.accountName,checkedAt:new Date().toISOString()});
+      // فحص حقيقي فعلي عبر عميل YouTube (يحترم YOUTUBE_API_BASE في الاختبار).
+      const proof=await youtubeClient().fetchMyChannel(String(token.access_token));
+      if(!proof.ok||!proof.data?.channelId){
+        // رمز مرفوض/صلاحية ناقصة = الاتصال لم يعد صالحاً؛ نُعلن reauth_needed بلا ادعاء صحة.
+        platformConnections.set("youtube",{...(c||{}),platform:"youtube",status:"reauth_needed"});
+        savePlatformConnections();
+        return res.status(409).json({success:false,platform,healthy:false,provider:"youtube",status:"reauth_needed",error:proof.error||"تعذّر إثبات هوية قناة YouTube.",errorKind:proof.code??null});
+      }
+      return res.json({success:true,platform,healthy:true,provider:"youtube",accountId:proof.data.channelId,accountName:proof.data.title||c.accountName,checkedAt:new Date().toISOString()});
     }
     if(platform==="tiktok") {
       if(!token?.access_token) throw new Error("رمز TikTok غير متوفر.");
@@ -4010,9 +4148,11 @@ app.get("/api/platforms/:platform/oauth/setup", requireOwner, async (req,res)=>{
   const redirectUri=`${urlInfo.baseUrl||publicBaseUrlNow()}/api/platforms/${platform}/oauth/callback`;
   const publicOk=publicUrlIsPublic();
   // Facebook/Instagram: الصلاحيات النهائية مع الاعتماديات الرسمية + أي فارق في تجاوز البيئة.
-  const resolvedScopes = platform==="facebook" ? facebookOAuthScopes() : platform==="instagram" ? instagramOAuthScopes() : platform==="tiktok" ? tiktokOAuthScopes() : cfg.scopes;
+  const resolvedScopes = platform==="facebook" ? facebookOAuthScopes() : platform==="instagram" ? instagramOAuthScopes() : platform==="tiktok" ? tiktokOAuthScopes() : platform==="youtube" ? youtubeOAuthScopes() : cfg.scopes;
   const scopeDependencyGaps = platform==="facebook" ? facebookScopeDependencyGaps() : platform==="instagram" ? instagramScopeDependencyGaps() : [];
   const metaScopesResolved = platform==="facebook"||platform==="instagram";
+  // YouTube: نطاق القراءة المطلوب لإثبات القناة + مصفوفة القدرات (بلا سرّ).
+  const youtubeReadonlyPresent = platform==="youtube" && youtubeOAuthScopes().includes(YOUTUBE_READONLY_SCOPE);
   // فحص حي لسلسلة حوار Meta كما يسلكها متصفح المالك الجوال (www → m.facebook.com).
   // الغرض: يرى المالك القفزة التي ترفض بالضبط (مضيف/مسار/حالة) بلا بدء OAuth وبلا
   // أي سرّ ولا استعلام. لا يُحجب شيء هنا؛ الفحص تشخيصي فقط.
@@ -4089,6 +4229,20 @@ app.get("/api/platforms/:platform/oauth/setup", requireOwner, async (req,res)=>{
       ],
       note:"مسار TikTok الرسمي: /v2/auth/authorize/ (client_key) بمعاملات الويب الخمسة الرسمية بلا PKCE، والرمز على /v2/oauth/token/ بصيغة x-www-form-urlencoded، والإبطال على /v2/oauth/revoke/. النشر عبر Content Posting API، والبيانات عبر Display API. التعليقات والرسائل المباشرة غير متاحة عبر الواجهة العامة.",
       doc:"https://developers.tiktok.com/doc/login-kit-web",
+    }:undefined,
+    // YouTube: نطاق القراءة المطلوب لإثبات القناة + ما هو منفّذ فعلاً (بلا أي سرّ).
+    youtubeSetup:platform==="youtube"?{
+      readonlyScope:YOUTUBE_READONLY_SCOPE,
+      uploadScope:YOUTUBE_UPLOAD_SCOPE,
+      readonlyScopePresent:youtubeReadonlyPresent,
+      requestedScopes:youtubeOAuthScopes(),
+      channelIdentityEndpoint:`${youtubeApiBase()}/youtube/v3/channels?part=snippet,contentDetails&mine=true`,
+      capabilityMatrix:YOUTUBE_CAPABILITY_MATRIX,
+      implementedCapabilities:YOUTUBE_CAPABILITY_MATRIX.filter(r=>r.status==="SUPPORTED").map(r=>r.key),
+      notImplementedCapabilities:YOUTUBE_CAPABILITY_MATRIX.filter(r=>r.status!=="SUPPORTED").map(r=>r.key),
+      refreshTokenSupported:true,
+      note:"هذه المرحلة تُنفّذ OAuth + إثبات هوية القناة (channels.list?mine=true). يوفر نطاق youtube.readonly لذلك؛ وyoutube.upload مطلوب بقرار المالك تمهيداً لرفع الفيديو لكن مسار الرفع لم يُنفَّذ بعد، فلا تُعلن قدرة نشر/تعليقات/تحليلات/جدولة.",
+      doc:"https://developers.google.com/youtube/v3/docs/channels/list",
     }:undefined,
     clientIdConfigured:Boolean(cfg.clientId),
     clientSecretConfigured:Boolean(cfg.clientSecret),
@@ -4213,6 +4367,19 @@ app.post("/api/platforms/:platform/disconnect", requireOwner, async (req, res) =
     const cfg = tiktokOAuthConfig();
     if (stored?.accessToken && cfg?.clientId && cfg?.clientSecret) {
       try { await tiktokClient().revokeToken({ clientKey: String(cfg.clientId), clientSecret: String(cfg.clientSecret), token: String(stored.accessToken) }); } catch { /* إبطال محلي يكفي */ }
+    }
+  }
+  if (platform === "youtube") {
+    // إبطال طرف Google أيضاً: revoke للرمز/refresh_token لدى Google قدر الإمكان،
+    // ثم مسح الاعتماد المشفّر محلياً كي لا يبقى رمز صالح.
+    const stored = youtubeStoredCredentials();
+    const revocable = stored?.refresh_token || stored?.access_token;
+    if (revocable) {
+      try {
+        await fetch(`https://oauth2.googleapis.com/revoke?token=${encodeURIComponent(String(revocable))}`, {
+          method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        });
+      } catch { /* إبطال محلي يكفي */ }
     }
   }
   platformConnections.set(platform, { platform, status: "disconnected" });
@@ -5751,6 +5918,9 @@ app.get("/api/readiness", (_req, res) => {
     // دليل النشر: أي إصدار/commit يعمل فعلاً على المنصة (Render). أسماء ومقتطفات
     // غير سرّية فقط (7 خانات من الـcommit) — تثبت أن الكود المنشور هو المدفوع.
     deploy: deploymentInfo(),
+    // حقول YouTube الآمنة (منطقي فقط، بلا أي قيمة سرّية): تفصل وجود بيانات
+    // Google عن نطاق القراءة المطلوب لإثبات القناة وعن الاتصال الفعلي.
+    youtubeOAuth: youtubeHealthState(),
     // PHASE 7 — حقول TikTok الآمنة (منطقي فقط، بلا أي قيمة سرّية).
     tiktokOAuth: (() => {
       const c = tiktokOAuthConfig();
@@ -6147,6 +6317,9 @@ app.get("/api/health", (_req, res) => {
         onboardingFlow: instagramOnboardingEnabled() ? "enabled" : "disabled",
       };
     })(),
+    // حالة موصل YouTube الحقيقي (منطقي فقط بلا أي سرّ أو رمز): تفصل وجود بيانات
+    // Google عن نطاق القراءة المطلوب لإثبات القناة وعن حالة الاتصال الفعلية.
+    youtubeOAuth: youtubeHealthState(),
     // حالة موصل TikTok الحقيقي (منطقي فقط بلا أي سرّ أو رمز).
     tiktokOAuth: (() => {
       const c = tiktokOAuthConfig();

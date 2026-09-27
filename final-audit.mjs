@@ -499,6 +499,26 @@ add('legal-pages-real-content', legalPages.includes('نطاق الخدمة') && 
 add('legal-pages-no-fake-contact', legalPages.includes('contactEmail') && legalPages.includes('المنشورة في صفحة الموقع الرسمية'), 'لا يُخترع بريد/رقم تواصل غير مضبوط على الخادم');
 add('site-verification-tests', fs.existsSync(path.join(root, 'engine/tests/site.verification.test.ts')) && typeof pkg.scripts['test:site-verification'] === 'string' && pkg.scripts.test.includes('test:site-verification'), 'اختبار التحقق من الرابط والصفحات القانونية مسجّل وضمن npm test');
 
+// ---------------------------------------------------------------------------
+// YouTube connector (Batch 14) — OAuth + إثبات هوية القناة عبر youtube.readonly
+// ---------------------------------------------------------------------------
+const youtubeModule = read('engine/social/youtube.ts');
+const ytRegistry = read('engine/social/registry.ts');
+add('youtube-connector-module', fs.existsSync(path.join(root, 'engine/social/youtube.ts')) && youtubeModule.includes('class YouTubeClient') && youtubeModule.includes('YOUTUBE_CAPABILITY_MATRIX'), 'موصل YouTube الحقيقي منفّذ في وحدة مستقلة');
+add('youtube-readonly-scope-required', youtubeModule.includes('YOUTUBE_READONLY_SCOPE') && youtubeModule.includes('https://www.googleapis.com/auth/youtube.readonly') && youtubeModule.includes('YOUTUBE_REQUIRED_SCOPES'), 'youtube.readonly مطلوب (يغطّي channels.list?mine=true لإثبات القناة)');
+add('youtube-upload-scope-retained', youtubeModule.includes('YOUTUBE_UPLOAD_SCOPE') && server.includes('YOUTUBE_REQUIRED_SCOPES'), 'youtube.upload باقٍ في النطاقات المطلوبة بقرار المالك');
+add('youtube-no-force-ssl-yet', !/YOUTUBE_REQUIRED_SCOPES[\s\S]{0,200}?force-ssl/.test(youtubeModule) && !/resolveYouTubeScopes[\s\S]{0,300}?force-ssl/.test(youtubeModule), 'لا يُطلب youtube.force-ssl (التعليقات/الردود مؤجّلة؛ يُذكر في المصفوفة كشرح فقط)');
+add('youtube-channel-identity-impl', youtubeModule.includes('channels?part=snippet,contentDetails&mine=true') && server.includes('youtubeClient().fetchMyChannel'), 'إثبات هوية القناة يستدعي channels.list?mine=true فعلاً');
+add('youtube-capability-matrix-honest', youtubeModule.includes("NOT_IMPLEMENTED") && youtubeModule.includes("'video_upload'") || /video_upload[\s\S]{0,400}?NOT_IMPLEMENTED/.test(youtubeModule), 'مصفوفة القدرات تُعلن رفع الفيديو غير منفّذ (لا ادعاء نشر)');
+add('youtube-registry-real-connector', /platform: 'youtube',[\s\S]{0,600}?realConnector: true/.test(ytRegistry), 'YouTube مُعلن موصلاً حقيقياً في السجل');
+add('youtube-no-content-capability-claimed', !/platform: 'youtube',[\s\S]{0,400}?capabilities: \[[^\]]*(publish|comments|analytics|scheduling)/.test(ytRegistry), 'لا تُعلن أي قدرة محتوى غير منفّذة لـYouTube');
+add('youtube-callback-verifies-channel', /platform==="youtube"[\s\S]{0,900}?fetchMyChannel/.test(server) && /platform==="youtube"[\s\S]{0,1400}?saveYouTubeCredentials/.test(server), 'callback يبادل الرمز ثم يثبت القناة فعلًا قبل إعلان الاتصال');
+add('youtube-health-block', server.includes('youtubeOAuth: youtubeHealthState()') && server.includes('readonlyScopePresent'), 'health/readiness يكشفان حالة YouTube الآمنة (نطاق القراءة + الاتصال)');
+add('youtube-setup-block', server.includes('youtubeSetup:platform==="youtube"') && server.includes('channelIdentityEndpoint'), 'oauth/setup يعرض إعداد YouTube (النطاقان + القدرات) بلا سرّ');
+add('youtube-disconnect-revokes', /platform === "youtube"[\s\S]{0,600}?oauth2\.googleapis\.com\/revoke/.test(server), 'الفصل يُبطل الرمز لدى Google ثم يمسح الاعتماد المشفّر');
+add('youtube-secrets-server-only', !/VITE_[A-Z_]*GOOGLE/.test(server) && !youtubeModule.includes('GOOGLE_OAUTH_CLIENT_SECRET'), 'لا مفتاح Google في الواجهة ولا سرّ مكتوب في الوحدة');
+add('youtube-tests', fs.existsSync(path.join(root, 'engine/tests/youtube.connector.test.ts')) && typeof pkg.scripts['test:youtube'] === 'string' && pkg.scripts.test.includes('test:youtube'), 'اختبار موصل YouTube مسجّل وضمن npm test');
+
 const failed = checks.filter(x => !x.ok);
 console.table(checks);
 if (failed.length) {
