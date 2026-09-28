@@ -445,7 +445,7 @@ async function unitTests() {
     const rc = await cycleOrch.run(tc.id);
     check('K: الدورة اكتملت مع تفويض فعّال', rc.status === 'completed', rc.status);
     check('K: معرّف التعليق الحقيقي وصل لمنفّذ الرد', seenReplyArgs?.commentId === 'rc1', JSON.stringify(seenReplyArgs));
-    check('K: نص الرد المقترح فعلاً وصل لمنفّذ الرد (لا نص مُختلق)', typeof seenReplyArgs?.text === 'string' && seenReplyArgs.text.length > 0 && seenReplyArgs.text.includes('أهلاً بك'), String(seenReplyArgs?.text));
+    check('K: نص الرد المقترح فعلاً وصل لمنفّذ الرد (لهجة عراقية)', typeof seenReplyArgs?.text === 'string' && seenReplyArgs.text.length > 0 && seenReplyArgs.text.includes('هلا بيك'), String(seenReplyArgs?.text));
     const verifyEntry = rc.journal.find((e) => e.toolId === 'youtube_reply_verify');
     check('K: خطوة التحقق نُفّذت بنجاح', verifyEntry?.ok === true, JSON.stringify(verifyEntry));
     const replyOut = (rc.result?.data || []).find((d: any) => d.toolId === 'youtube_reply');
@@ -518,6 +518,10 @@ async function unitTests() {
     check('H: النشر المجدول يحتاج publish+schedule', requiredDelegationActions('youtube_publish', { publishAt: '2027-01-01T10:00' }).join(',') === 'publish,schedule');
     check('H: نشر مجدول بتفويض publish فقط يُمنع', evaluateYouTubeDelegation({ delegation: granted, toolId: 'youtube_publish', operator: 'owner', args: { publishAt: '2027-01-01T10:00' }, now: 2000 }).allowed === false);
     check('H: staff لا يستفيد من التفويض', evaluateYouTubeDelegation({ delegation: granted, toolId: 'youtube_reply', operator: 'staff', now: 2000 }).code === 'DELEGATION_OPERATOR_NOT_OWNER');
+    // العقل المركزي (المشغّل system) ينفّذ التفويض الممنوح من المالك نيابةً عنه — لمهام داخلية كمراقب 24/7.
+    check('H: التفويض يُنفَّذ بواسطة العقل المركزي (system)', evaluateYouTubeDelegation({ delegation: granted, toolId: 'youtube_reply', operator: 'system', now: 2000 }).allowed === true);
+    check('H: العقل المركزي لا يتجاوز نطاق YouTube', evaluateYouTubeDelegation({ delegation: granted, toolId: 'job_execute', operator: 'system', now: 2000 }).code === 'TOOL_NOT_DELEGATABLE');
+    check('H: system بلا تفويض فعّال يُمنع', evaluateYouTubeDelegation({ delegation: base, toolId: 'youtube_reply', operator: 'system', now: 2000 }).allowed === false);
     check('H: أداة غير YouTube قابلة للتفويض => مرفوضة', evaluateYouTubeDelegation({ delegation: granted, toolId: 'job_execute', operator: 'owner', now: 2000 }).code === 'TOOL_NOT_DELEGATABLE');
     const revoked = revokeYouTubeDelegation(granted, 3000);
     check('H: الإيقاف يبقي الأثر ويُعلن revoked', revoked.granted === false && evaluateYouTubeDelegation({ delegation: revoked, toolId: 'youtube_reply', operator: 'owner', now: 4000 }).code === 'DELEGATION_REVOKED');

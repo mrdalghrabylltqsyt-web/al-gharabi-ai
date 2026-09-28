@@ -2108,3 +2108,45 @@ final-audit الستة عشر: `youtube-watcher-module` … `youtube-watcher-tes
 **نقطة توقف المالك:** لتشغيل الرد الآلي فعلياً: من تبويب «مدير تشغيل YouTube» فعّل
 «الرد الآلي» (مع بقاء تفويض YouTube `reply` فعّالاً). بلا التمكين تبقى القناة تحت المراقبة
 والتصعيد فقط — وهي الحالة الافتراضية الآمنة.
+
+## إصلاح جذر «التصعيد الكاذب وتوقف الرد الآلي» في مراقب YouTube 24/7 (Batch 20, 2026-09-28)
+
+**الدليل الحي من الإنتاج (`2f080a6`، بلا تخمين):** `youtubeWatcher.controls.autoReply=true`
+و`autoReplyEffective=true` و`youtubeDelegation.granted=true, active=true, actions: reply/publish/
+schedule/update_video` و`youtubeOAuth.connected/verified/forceSsl=true`، ومع ذلك العدّادات
+`detected=7, replied=0, verified=0, escalated=6, skipped=1`. أي أن كل شيء «مفعّل» لكن **لا رد
+يُرسَل إطلاقاً**، وأمثلة التصعيد كانت `'كم السعر؟'` (صحيح) و`'المعرض مرتب ما شاء الله ❤️'`
+(خطأ: تفاعل إيجابي بسيط كان يجب أن يُردّ عليه).
+
+**جذران مُثبتان:**
+1. **عدم تطابق المشغّل في بوابة التفويض:** دورة المراقب تنفّذ الردة بمشغّل `system`
+   (`youtubeDelegationCheck("system", …)`) و`watcherReplyExecutionReady()` كذلك، لكن
+   `evaluateYouTubeDelegation` كان يشترط `operator === 'owner'` فقط ⇒ كل رد يُحجب
+   بـ`DELEGATION_OPERATOR_NOT_OWNER` ويُصعَّد. التفويض صحيح، والقاطع خاطئ.
+2. **تصنيف وصفات تفضيل خاطئ:** `PATTERNS.praise` لم يكن يحوي العبارات العراقية العفوية
+   («مرتب»، «ما شاء الله»، «تسلمون») ولا الإيموجي الإيجابي، فيُصنَّف التعليق `other`
+   بدل `praise`، ويُصعَّد بدل أن يُردّ عليه.
+
+**الإصلاح (بلا لمس أي سرّ/مصادقة/منصة أخرى):**
+- `engine/social/youtubeDelegation.ts`: `evaluateYouTubeDelegation` يقبل `owner` و`system`
+  (العقل المركزي/المراقب الداخلي) ويُبقي `staff` ممنوعاً؛ النطاق يبقى YouTube فقط.
+- `engine/social/comments.ts`: توسيع `praise` بالعبارات العراقية العفوية، وإضافة
+  `POSITIVE_EMOJI_RE` + `EMOJI_ONLY_RE`؛ التعليق الإيجابي بالإيموجي (قلوب/إعجاب) صار
+  `intent='praise'` و`sentiment='positive'` و`isPraise=true` بدل `other`. الردود الحتمية
+  أُعيدت لصياغة عراقية عفوية قصيرة («هلا بيك»، «نورتنا»، «تدلل») بلا أي معلومة مُختلقة.
+- `engine/social/youtubeWatcher.ts`: `decideCommentAction` صار يُصعَّد **بسبب حقيقي مرتبط
+  بالمضمون** فقط (استفسار سعر/شكوى/حساس) مع رسالة محددة، أما تعذّر الرد بسبب **إعداد
+  المالك** (autoReply مُطفأ/إيقاف مؤقت) فيُرجع `skip` لا `escalate` — فلا تصعيد كاذب.
+- `server.ts`: كشف حلقات القناة نفسها بالمعرّف الحقيقي `authorChannelId === channelId`
+  إضافةً للاسم، فلا يُصعَّد/يُردّ على ردود المعرض نفسه.
+
+**القاعدة:** «مفعّل» في الإعداد لا يعني أن التنفيذ يعمل؛ يجب مطابقة المشغّل في **كل** بوابة
+(هنا التفويض) مع المشغّل المستخدم فعلاً في نقطة التنفيذ. اختبارات: `youtube.watcher.test.ts`
+= 97، `agent.central.test.ts` = 191، `youtube.connector.test.ts` = 215، وfinal-audit = 547
+(`youtube-praise-iraqi-phrases`، `youtube-positive-emoji-interaction`، `youtube-iraqi-reply-dialect`،
+`youtube-escalation-specific-reason`، `youtube-escalation-not-config-noise`،
+`youtube-self-authored-by-channel-id`، `youtube-delegation-owner-only` أُثرِي بـsystem).
+
+**ملاحظة إثبات حي (north star):** إثبات أن الرد يصل فعلاً إلى YouTube يحتاج قراءة تعليق حقيقي
+(`commentThreads.list`) ثم تنفيذ `executeYouTubeReply` في نفس الجلسة القائمة على قناة المعرض؛
+الرد الحقيقي لا يمكن اختلاقه، ولا يُنفَّذ أي رد/نشر/جدولة في دفعات الكود.

@@ -141,14 +141,16 @@ export function decideCommentAction(input: {
   if (input.isSelfAuthored) return { action: 'skip', reason: 'التعليق صادر من حساب المعرض؛ لا حلقة ردود.', requiresHuman: false };
   if (input.alreadyReplied) return { action: 'skip', reason: 'سبق الرد على هذا التعليق (منع التكرار).', requiresHuman: false };
   if (input.isSpam) return { action: 'skip', reason: 'تعليق مصنّف سبام؛ لا رد آلي.', requiresHuman: false };
-  // التصعيد: لا معلومة موثوقة كافية (سعر/تقسيط/شكوى/قانوني/حساس) أو requireHumanReview.
-  const escalateIntent = input.intent === 'complaint' || input.intent === 'business_inquiry';
-  if (input.requiresHumanReview || escalateIntent) {
-    return { action: 'escalate', reason: 'حالة تستوجب مراجعة المالك قبل أي رد (شكوى/استفسار تجاري/حساس) — لا تُخترع معلومات.', requiresHuman: true };
+  // التصعيد بسبب حقيقي مرتبط بمضمون التعليق (لا بسبب حالة إعداد فقط):
+  if (input.intent === 'business_inquiry') {
+    return { action: 'escalate', reason: 'استفسار عن السعر/التقسيط — يحتاج بيانات المنتج المؤكدة قبل الرد، ولا تُخترع أسعار.', requiresHuman: true };
   }
-  if (c.humanReviewMode) return { action: 'escalate', reason: 'وضع المراجعة البشرية مفعّل؛ لا رد آلي.', requiresHuman: true };
+  if (input.intent === 'complaint' || input.requiresHumanReview) {
+    return { action: 'escalate', reason: 'شكوى/حالة حساسة تستوجب متابعة المالك مباشرة قبل أي رد.', requiresHuman: true };
+  }
+  if (c.humanReviewMode) return { action: 'escalate', reason: 'وضع المراجعة البشرية مفعّل من المالك؛ تُحوَّل كل التعليقات للمراجعة.', requiresHuman: true };
   if (!c.enabled || c.paused || !c.autoReply) {
-    return { action: 'escalate', reason: 'الرد الآلي غير ممكّن حالياً؛ سُجّل التعليق للمالك بلا إرسال.', requiresHuman: true };
+    return { action: 'skip', reason: 'الرد الآلي غير ممكّن حالياً (إعداد المالك)؛ سُجّل التعليق بلا إرسال ولم يُصعَّد.', requiresHuman: false };
   }
   return { action: 'reply', reason: 'تعليق قابل للرد الآلي من بيانات موثوقة (سؤال عام/مدح/تفاعل بسيط).', requiresHuman: false };
 }

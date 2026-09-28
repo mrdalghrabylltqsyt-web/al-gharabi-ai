@@ -526,9 +526,9 @@ async function integrationTests(): Promise<void> {
     check('الدورة: youtube_reply نُفّذت بنجاح', cycleReply?.ok === true, JSON.stringify(cycleReply));
     check('الدورة: commentThreads.insert استُدعي فعلاً على Data API', (mock.state.lastInsertPath || '').includes('/youtube/v3/comments'));
     check('الدورة: الرد أُرسل إلى نفس التعليق الحقيقي (parentId)', String(mock.state.lastCommentBody?.snippet?.parentId || '') === 'cmt_cycle', JSON.stringify(mock.state.lastCommentBody));
-    // نص الرد المُرسل هو الرد المقترح فعلاً (وليس نصاً مُختلقاً): أهلاً بك...
+    // نص الرد المُرسل هو الرد المقترح فعلاً (وليس نصاً مُختلقاً): بصياغة عراقية...
     const sentText = String(mock.state.lastCommentBody?.snippet?.textOriginal || '');
-    check('الدورة: نص الرد هو المقترح باللهجة العراقية (لا نص مُختلق)', sentText.includes('أهلاً بك') && sentText.length > 0, sentText);
+    check('الدورة: نص الرد هو المقترح باللهجة العراقية (لا نص مُختلق)', sentText.includes('هلا بيك') && sentText.length > 0, sentText);
     const cycleVerify = (cycleTask.task?.journal || []).find((e: any) => e.toolId === 'youtube_reply_verify');
     check('الدورة: خطوة التحقق نُفّذت بنجاح', cycleVerify?.ok === true, JSON.stringify(cycleVerify));
     const cycleReplyOut = (cycleTask.task?.result?.data || []).find((d: any) => d.toolId === 'youtube_reply');

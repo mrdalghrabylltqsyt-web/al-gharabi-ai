@@ -94,8 +94,18 @@ function entry(partial: Partial<WatcherProcessedEntry>): WatcherProcessedEntry {
   check('D: السبام => تجاهل لا تصعيد', decideCommentAction({ intent: 'spam', requiresHumanReview: true, isSpam: true, isSelfAuthored: false, alreadyReplied: false, controls: on }).action === 'skip');
   check('D: حساب المعرض => تجاهل', decideCommentAction({ intent: 'other', requiresHumanReview: false, isSpam: false, isSelfAuthored: true, alreadyReplied: false, controls: on }).action === 'skip');
   check('D: تعليق مُعالَج => تجاهل (منع التكرار)', decideCommentAction({ intent: 'other', requiresHumanReview: false, isSpam: false, isSelfAuthored: false, alreadyReplied: true, controls: on }).action === 'skip');
-  check('D: بلا تمكين => تصعيد لا إرسال', decideCommentAction({ intent: 'other', requiresHumanReview: false, isSpam: false, isSelfAuthored: false, alreadyReplied: false, controls: defaultWatcherControls() }).action === 'escalate');
-  check('D: وضع المراجعة => تصعيد', decideCommentAction({ intent: 'other', requiresHumanReview: false, isSpam: false, isSelfAuthored: false, alreadyReplied: false, controls: { ...on, humanReviewMode: true } }).action === 'escalate');
+  check('D: بلا تمكين => تجاهل لا تصعيد كاذب', decideCommentAction({ intent: 'other', requiresHumanReview: false, isSpam: false, isSelfAuthored: false, alreadyReplied: false, controls: defaultWatcherControls() }).action === 'skip');
+  check('D: وضع المراجعة => تصعيد بسبب إعداد', decideCommentAction({ intent: 'other', requiresHumanReview: false, isSpam: false, isSelfAuthored: false, alreadyReplied: false, controls: { ...on, humanReviewMode: true } }).action === 'escalate');
+  // سبب التصعيد يجب أن يكون حقيقياً ومرتبطاً بالمضمون:
+  check('D: سبب تصعيد السعر حقيقي', (decideCommentAction({ intent: 'business_inquiry', requiresHumanReview: false, isSpam: false, isSelfAuthored: false, alreadyReplied: false, controls: on }).reason || '').includes('السعر'));
+  check('D: سبب تصعيد الشكوى حقيقي', (decideCommentAction({ intent: 'complaint', requiresHumanReview: true, isSpam: false, isSelfAuthored: false, alreadyReplied: false, controls: on }).reason || '').includes('شكوى'));
+  // تعليق إيجابي «مرتب/قلوب» لا يُصعَّد مع autoReply مفعّل:
+  const praiseCls = classifyComment('المعرض مرتب ما شاء الله ❤️');
+  check('D: «مرتب ما شاء الله ❤️» مدح معلن', praiseCls.intent === 'praise' && praiseCls.sentiment === 'positive' && praiseCls.isPraise === true, JSON.stringify(praiseCls));
+  check('D: المدح الإيجابي => رد لا تصعيد', decideCommentAction({ intent: praiseCls.intent, requiresHumanReview: praiseCls.requiresHumanReview, isSpam: praiseCls.isSpam, isSelfAuthored: false, alreadyReplied: false, controls: on }).action === 'reply');
+  const heartOnly = classifyComment('❤❤');
+  check('D: تعليق القلوب => تفاعل إيجابي', heartOnly.intent === 'praise' && heartOnly.sentiment === 'positive', JSON.stringify(heartOnly));
+  check('D: القلوب => رد لا تصعيد', decideCommentAction({ intent: heartOnly.intent, requiresHumanReview: heartOnly.requiresHumanReview, isSpam: heartOnly.isSpam, isSelfAuthored: false, alreadyReplied: false, controls: on }).action === 'reply');
 }
 
 // --- E) تصنيف التعليق الحقيقي «جيد» و«شكراً» ---

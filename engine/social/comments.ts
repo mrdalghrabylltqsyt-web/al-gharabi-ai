@@ -41,12 +41,19 @@ export interface ClassifiedComment {
 
 const PATTERNS = {
   complaint: /شكوى|شاكي|زعلان|تأخير|تاخير|سيء|سيئ|مشكلة|مشكله|غاضب|احتيال|نصب|وعد|كذب|مو زين|تعبت/,
-  praise: /شكرا|شكراً|ممتاز|رائع|جميل|بارك الله|احسن|أحسن|تسلم|الله يوفق|خدمة طيبة|تعامل راقي/,
-  business: /كم سعر|بكم|السعر|قسط|اقساط|أقساط|دفعة|مقدم|تقسيط|متوفر|متوفرة|مطلوب|اشتري|ابي|أريد|اريد|حجز|حاسبة|شروط|مستندات|راتب|ماستر/,
+  // تشمل العبارات العراقية والعفوية الشائعة (مدح/شكر/ترحيب) لا الفصحى وحدها،
+  // كي لا يُصنَّف تعليق إيجابي واضح («مرتب»، «ما شاء الله»، «تسلمون») كأنه مجهول.
+  praise: /شكرا|شكراً|ممتاز|رائع|جميل|حلو|مرتب|منظم|ما شاء الله|ماشاء الله|الله يوفق|الله يبارك|تسلم|تسلمون|تسلموا|يعطيك|خدمة طيبة|تعامل راقي|احسن|أحسن|هلا|أهلا|اهلا|حياك|نورت|تدلل|عاشت ايدك|عاشت إيدك|بالتوفيق|موفقين|تمام|زين|طيب/,
+  business: /كم سعر|بكم|السعر|سعرها|سعره|شكد|قسط|اقساط|أقساط|دفعة|مقدم|تقسيط|متوفر|متوفرة|مطلوب|اشتري|ابي|أريد|اريد|حجز|حاسبة|شروط|مستندات|راتب|ماستر/,
   question: /هل |كيف|وين|متى|ليش|شلون|أين|اين|ماذا|شنو|بكم/,
   spam: /https?:\/\/|www\.|ربح|استثمار|عملة|بيتكوين|كازينو|قرض سريع|متابعة مقابل|فولو/,
   contactLeak: /\b07\d{8}\b|\b\d{10,}\b/,
 };
+
+/** تفاعل إيجابي صريح بالإيموجي (قلوب/إعجاب/تصفيق...) — تفاعل اجتماعي حميد. */
+const POSITIVE_EMOJI_RE = /[❤♥💙💚💛🧡💜🤍🖤💕💞💓💗❣😍🥰😘😊🙂👏👍🙏🌹✨🎉]/u;
+/** تعليق يتكوّن من إيموجي/رموز فقط (بلا نص): يُعامل كتفاعل إيجابي بسيط. */
+const EMOJI_ONLY_RE = /^[\s\u{1F000}-\u{1FAFF}\u{2190}-\u{2BFF}\u{2600}-\u{27BF}\u{FE0F}\u{200D}]+$/u;
 
 /** كلمات تستوجب مراجعة بشرية دائماً: لا يجوز الرد الآلي عليها. */
 const HUMAN_REVIEW_PATTERNS = /شكوى|شاكي|غاضب|احتيال|نصب|محامي|قانوني|قضية|استرجاع|فسخ|تعويض|تسريب|بياناتي|خصوصية/;
@@ -73,15 +80,22 @@ export function classifyComment(text: string): ClassifiedComment {
   const hasContact = PATTERNS.contactLeak.test(raw);
   /** علامة استفهام صريحة ترفع أولوية السؤال على المجاملة. */
   const explicitQuestion = /[?؟]/.test(raw);
+  /** تعليق إيموجي فقط أو يحمل إيموجي إيجابياً صريحاً = تفاعل اجتماعي إيجابي. */
+  const emojiOnly = EMOJI_ONLY_RE.test(raw);
+  const positiveEmoji = POSITIVE_EMOJI_RE.test(raw);
+  /** لا يوجد نص عربي حقيقي (رسالة إيموجي/رموز فقط). */
+  const noArabicText = !/[\u0600-\u06FF]/.test(raw);
 
   if (hasComplaint) signals.push('complaint');
   if (hasPraise) signals.push('praise');
   if (hasBusiness) signals.push('business');
   if (hasQuestion) signals.push('question');
   if (hasContact) signals.push('contact_info');
+  if (positiveEmoji) signals.push('positive_emoji');
 
   // الترتيب مقصود: الشكوى، ثم المدح الصريح (لأن عبارات المجاملة مثل "شكراً لكم"
   // تتضمن كلمة "كم" ولا يجوز اعتبارها سؤالاً)، ثم الاستفسار التجاري، ثم السؤال.
+  // التعليق الإيموجي فقط (بلا نص عربي) = تفاعل إيجابي بسيط، لا سؤال ولا مجهول.
   let intent: CommentIntent = 'other';
   if (isSpam) intent = 'spam';
   else if (hasComplaint) intent = 'complaint';
@@ -89,10 +103,12 @@ export function classifyComment(text: string): ClassifiedComment {
   else if (hasBusiness) intent = 'business_inquiry';
   else if (hasQuestion || explicitQuestion) intent = 'question';
   else if (hasPraise) intent = 'praise';
+  else if (emojiOnly || (positiveEmoji && noArabicText)) intent = 'praise';
 
+  const isPraise = intent === 'praise';
   let sentiment: CommentSentiment = 'neutral';
   if (hasComplaint) sentiment = 'negative';
-  else if (hasPraise) sentiment = 'positive';
+  else if (isPraise) sentiment = 'positive';
 
   const requiresHumanReview = HUMAN_REVIEW_PATTERNS.test(raw) || isSpam;
   const reviewReason = isSpam
@@ -106,7 +122,7 @@ export function classifyComment(text: string): ClassifiedComment {
     sentiment,
     isQuestion: hasQuestion || explicitQuestion,
     isComplaint: hasComplaint,
-    isPraise: hasPraise,
+    isPraise,
     isBusinessInquiry: hasBusiness,
     isSpam,
     requiresHumanReview,
@@ -186,21 +202,25 @@ export function evaluateReplyGuard(input: {
   return { allowed: true, fingerprint };
 }
 
-/** صياغة رد حتمي عند تعذر استخدام مزود الذكاء الاصطناعي. */
+/**
+ * صياغة رد حتمي عند تعذر استخدام مزود الذكاء الاصطناعي.
+ * الأسلوب عراقي عفوي قصير مناسب لتعليقات YouTube — بلا فصحى جامدة ولا عبارات روبوتية.
+ * لا يحمل أي معلومة غير موثّقة (سعر/رقم/رابط/عرض) فلا يُخترع شيء.
+ */
 export function buildDeterministicReply(comment: ClassifiedComment, productHint?: string): string {
   const product = productHint?.trim();
   switch (comment.intent) {
     case 'business_inquiry':
       return product
-        ? `أهلاً بك، نشكر تواصلك معنا بخصوص ${product}. يسعد فريق المعرض بتزويدك بالتفاصيل وخطة التقسيط المناسبة.`
-        : 'أهلاً بك، نشكر تواصلك معنا. يسعد فريق المعرض بتزويدك بتفاصيل التقسيط وخطة السداد المناسبة لك.';
+        ? `هلا بيك، نورتنا. بخصوص ${product}، فريق المعرض راح يوافيك بكل التفاصيل وأحسن خطة تقسيط تناسبك.`
+        : 'هلا بيك، نورتنا. فريق المعرض راح يوافيك بكل تفاصيل التقسيط وأحسن خطة تناسبك.';
     case 'question':
-      return 'أهلاً بك، شكراً لسؤالك. فريق المعرض جاهز لتزويدك بالإجابة التفصيلية عبر الرسائل الخاصة.';
+      return 'هلا بيك، نورتنا. فريق المعرض راح يوافيك بالتفاصيل كاملة.';
     case 'praise':
-      return 'شكراً لك على كلماتك الطيبة، سعادتنا بخدمتك. نبقى في خدمتك دائماً.';
+      return 'تسلم حبيبنا ❤️ هذا من ذوقك، نورتنا.';
     case 'complaint':
-      return 'نعتذر عن أي إزعاج، وسيتواصل معك فريق خدمة العملاء لمتابعة الموضوع بشكل مباشر.';
+      return 'نعتذر منك حبيبنا، وسيتواصل وياك فريق المعرض لمتابعة الموضوع مباشرة.';
     default:
-      return 'أهلاً بك، شكراً لتواصلك معنا. فريق المعرض في خدمتك لأي استفسار.';
+      return 'هلا بيك، تسلم على تواصلك ويا حنا. فريق المعرض بخدمتك لأي استفسار.';
   }
 }

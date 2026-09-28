@@ -4553,8 +4553,11 @@ async function runYouTubeWatcherCycle(trigger: "schedule" | "manual" = "schedule
     }
     const comments: any[] = commentsRes.comments || [];
     const replyReady = watcherReplyExecutionReady();
-    const expectedChannelId = String(youtubeStoredCredentials()?.channelId || "");
-    const ownNames = [String(workspace.showroom?.name || ""), "معرض الغرابي"];
+    const storedYt = youtubeStoredCredentials();
+    const expectedChannelId = String(storedYt?.channelId || "");
+    // كشف حلقات الرد من حساب القناة نفسه: المعرّف الحقيقي للقناة المتصلة أولاً،
+    // ثم الاسم/عنوان القناة المخزّنان، فأسماء المعرض المعروفة.
+    const ownNames = [String(storedYt?.channelTitle || ""), String(workspace.showroom?.name || ""), "معرض الغرابي"].filter(Boolean);
     const history = ((workspace as any).socialReplies || []).map((r: any) => ({ externalId: r.externalId, replyFingerprint: r.replyFingerprint, repliedAt: r.repliedAt }));
     const latestFirst = [...comments].sort((a, b) => String(b.publishedAt || "").localeCompare(String(a.publishedAt || "")));
     const pendingBefore = latestFirst.filter((c) => !hasProcessed(watcherState.processed, c.commentId));
@@ -4567,7 +4570,9 @@ async function runYouTubeWatcherCycle(trigger: "schedule" | "manual" = "schedule
       newDetected += 1;
       const cls = classifyComment(String(c.text || ""));
       const alreadyReplied = history.some((h: any) => h.externalId === c.commentId);
-      const selfAuthored = isSelfAuthored(c.authorName, ownNames);
+      // حساب القناة نفسه: بالمعرّف الحقيقي للقناة (أدق) أو بالاسم المخزّن.
+      const selfAuthored = isSelfAuthored(c.authorName, ownNames)
+        || Boolean(expectedChannelId && c.authorChannelId && String(c.authorChannelId) === expectedChannelId);
       // قرار حتمي (لا AI): رد / تجاهل / تصعيد للمالك مع سبب صريح.
       const decision = decideCommentAction({
         intent: cls.intent, requiresHumanReview: cls.requiresHumanReview, isSpam: cls.isSpam, isSelfAuthored: selfAuthored, alreadyReplied, controls,

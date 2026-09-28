@@ -189,8 +189,11 @@ export function evaluateYouTubeDelegation(input: {
   if (!isDelegatableYouTubeTool(input.toolId)) {
     return { allowed: false, code: 'TOOL_NOT_DELEGATABLE', reason: `الأداة ${input.toolId} ليست عملية YouTube قابلة للتفويض؛ تبقى خاضعة للموافقة اليدوية.` };
   }
-  if (input.operator !== 'owner') {
-    return { allowed: false, code: 'DELEGATION_OPERATOR_NOT_OWNER', reason: 'التفويض خاص بالمالك؛ المشغّل الحالي لا يملك صلاحية تنفيذ عمليات خارجية.' };
+  // المالك يمنح التفويض و«العقل المركزي» ينفّذه نيابةً عنه لمهام داخلية غير مرتبطة
+  // بجلسة (المشغّل system، مثل مراقب YouTube 24/7). كلاهما مقبول؛ الموظف العادي (staff)
+  // يبقى ممنوعاً. الفصل محصور بـYouTube دائماً ولا يُلغي أي حارس آخر.
+  if (input.operator !== 'owner' && input.operator !== 'system') {
+    return { allowed: false, code: 'DELEGATION_OPERATOR_NOT_OWNER', reason: 'التفويض خاص بالمالك/العقل المركزي؛ المشغّل الحالي لا يملك صلاحية تنفيذ عمليات خارجية.' };
   }
   const required = requiredDelegationActions(input.toolId, input.args || {});
   const status = youtubeDelegationStatus(input.delegation, now);
