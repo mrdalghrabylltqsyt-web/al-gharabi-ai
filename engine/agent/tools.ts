@@ -66,6 +66,21 @@ export interface AgentToolContext {
   systemVerification: () => any;
   /** استدعاء مزود الذكاء الاصطناعي عند الحاجة فقط (محمي بالحصة والذاكرة). */
   aiGenerate: (prompt: string, opts?: { json?: boolean }) => Promise<{ text: string; usedProvider: boolean; source: string }>;
+  // --- YouTube (المنصة التشغيلية الأساسية) ---
+  /** حالة YouTube الصادقة (حالة/سبب/إجراء تالٍ/وضع YouTube-only). */
+  youtubeStatus: () => any;
+  /** قائمة فيديوهات القناة الحقيقية (playlistItems + videos). */
+  youtubeVideos: () => Promise<{ ok: boolean; videos?: any[]; error?: string; code?: string | null }>;
+  /** إحصاءات القناة والفيديو + تحليل جمهور من المؤشرات المتاحة فعلاً. */
+  youtubeAnalytics: () => Promise<{ ok: boolean; summary?: any; audience?: any; channel?: any; error?: string; code?: string | null }>;
+  /** قراءة تعليقات فيديو حقيقي (commentThreads.list) وتخزينها. */
+  youtubeComments: (videoId: string) => Promise<{ ok: boolean; comments?: any[]; inserted?: number; duplicates?: number; error?: string; code?: string | null }>;
+  /** حلقة التعلّم لـYouTube (دروس مع مصدرها وحدودها). */
+  youtubeLearning: () => Promise<{ ok: boolean; learning?: any; error?: string; code?: string | null }>;
+  /** الرد الحقيقي على تعليق YouTube (comments.insert) — عملية خارجية تتطلب موافقة. */
+  youtubeReply: (input: { commentId: string; text: string; commentText?: string }) => Promise<any>;
+  /** رفع فيديو حقيقي إلى YouTube (videos.insert) — عملية خارجية تتطلب موافقة. */
+  youtubePublish: (input: { title: string; description?: string; tags?: string[]; privacyStatus?: string; publishAt?: string | null; videoBase64?: string; mimeType?: string; approved?: boolean }) => Promise<any>;
 }
 
 export interface AgentTool {
@@ -293,6 +308,102 @@ export const AGENT_TOOLS: ReadonlyArray<AgentTool> = [
       } catch (e: any) {
         return { ok: false, code: 'AI_PROVIDER_FAILED', error: String(e?.message || e).slice(0, 200) };
       }
+    },
+  },
+  // --- أدوات YouTube التشغيلية (المنصة الأساسية) ---
+  {
+    id: 'youtube_status',
+    name: 'حالة YouTube',
+    description: 'الحالة الصادقة لموصل YouTube (حالة/سبب/إجراء تالٍ) ووضع YOUTUBE_ONLY_OPERATIONAL — بلا أي سرّ.',
+    permission: 'READ',
+    parameters: [],
+    run: (_args, ctx) => read(() => ctx.youtubeStatus()),
+  },
+  {
+    id: 'youtube_videos',
+    name: 'قائمة فيديوهات YouTube',
+    description: 'قائمة فيديوهات القناة الحقيقية مع الإحصاءات (playlistItems + videos.list) من YouTube Data API.',
+    permission: 'READ',
+    parameters: [],
+    run: async (_args, ctx) => {
+      try {
+        const r = await ctx.youtubeVideos();
+        return r.ok ? { ok: true, data: { count: r.videos?.length || 0, videos: r.videos || [] } } : { ok: false, code: r.code || 'YOUTUBE_FETCH_FAILED', error: r.error };
+      } catch (e: any) { return { ok: false, code: 'TOOL_EXECUTION_FAILED', error: String(e?.message || e).slice(0, 200) }; }
+    },
+  },
+  {
+    id: 'youtube_analytics',
+    name: 'تحليلات YouTube',
+    description: 'إحصاءات القناة والفيديو + تحليل جمهور من المؤشرات المتاحة فعلاً فقط (بلا بيانات سكانية مُختلقة).',
+    permission: 'READ',
+    parameters: [],
+    run: async (_args, ctx) => {
+      try {
+        const r = await ctx.youtubeAnalytics();
+        return r.ok ? { ok: true, data: { summary: r.summary, audience: r.audience, channel: r.channel } } : { ok: false, code: r.code || 'YOUTUBE_ANALYTICS_FAILED', error: r.error };
+      } catch (e: any) { return { ok: false, code: 'TOOL_EXECUTION_FAILED', error: String(e?.message || e).slice(0, 200) }; }
+    },
+  },
+  {
+    id: 'youtube_comments',
+    name: 'تعليقات YouTube',
+    description: 'قراءة تعليقات فيديو حقيقية (commentThreads.list) وتخزينها كتعليقات حقيقية مع تصنيفها الحتمي.',
+    permission: 'READ',
+    parameters: [{ name: 'videoId', type: 'string', required: true, description: 'معرّف الفيديو.' }],
+    run: async (args, ctx) => {
+      if (!args.videoId) return { ok: false, code: 'MISSING_ARGUMENT', error: 'videoId مطلوب.' };
+      try {
+        const r = await ctx.youtubeComments(String(args.videoId));
+        return r.ok ? { ok: true, data: { count: r.comments?.length || 0, inserted: r.inserted || 0, duplicates: r.duplicates || 0 } } : { ok: false, code: r.code || 'YOUTUBE_COMMENTS_FAILED', error: r.error };
+      } catch (e: any) { return { ok: false, code: 'TOOL_EXECUTION_FAILED', error: String(e?.message || e).slice(0, 200) }; }
+    },
+  },
+  {
+    id: 'youtube_learning',
+    name: 'تعلّم YouTube',
+    description: 'حلقة تعلّم: تقارن أداء الفيديوهات وتُنتج دروساً مع مصدرها وحجم عيّنتها وحدودها.',
+    permission: 'READ',
+    parameters: [],
+    run: async (_args, ctx) => {
+      try {
+        const r = await ctx.youtubeLearning();
+        return r.ok ? { ok: true, data: r.learning } : { ok: false, code: r.code || 'YOUTUBE_LEARNING_FAILED', error: r.error };
+      } catch (e: any) { return { ok: false, code: 'TOOL_EXECUTION_FAILED', error: String(e?.message || e).slice(0, 200) }; }
+    },
+  },
+  {
+    id: 'youtube_reply',
+    name: 'الرد على تعليق YouTube',
+    description: 'رد حقيقي على تعليق YouTube (comments.insert). عملية خارجية تتطلب موافقة صريحة ولا تُنفَّذ من مهمة تلقائية.',
+    permission: 'EXTERNAL_ACTION',
+    parameters: [
+      { name: 'commentId', type: 'string', required: true, description: 'معرّف التعليق لدى YouTube.' },
+      { name: 'text', type: 'string', required: true, description: 'نص الرد.' },
+    ],
+    run: async (args, ctx) => {
+      if (!args.commentId || !args.text) return { ok: false, code: 'MISSING_ARGUMENT', error: 'commentId وtext مطلوبان.' };
+      try {
+        return { ok: true, data: await ctx.youtubeReply({ commentId: String(args.commentId), text: String(args.text) }) };
+      } catch (e: any) { return { ok: false, code: 'TOOL_EXECUTION_FAILED', error: String(e?.message || e).slice(0, 200) }; }
+    },
+  },
+  {
+    id: 'youtube_publish',
+    name: 'رفع فيديو إلى YouTube',
+    description: 'رفع فيديو حقيقي (videos.insert) أو جدولته. عملية خارجية تتطلب موافقة صريحة ولا تُنفَّذ من مهمة تلقائية.',
+    permission: 'EXTERNAL_ACTION',
+    parameters: [
+      { name: 'title', type: 'string', required: true, description: 'عنوان الفيديو.' },
+      { name: 'description', type: 'string', required: false, description: 'الوصف.' },
+      { name: 'privacyStatus', type: 'string', required: false, description: 'public/private/unlisted.' },
+      { name: 'publishAt', type: 'string', required: false, description: 'وقت الجدولة.' },
+    ],
+    run: async (args, ctx) => {
+      if (!args.title) return { ok: false, code: 'MISSING_ARGUMENT', error: 'title مطلوب.' };
+      try {
+        return { ok: true, data: await ctx.youtubePublish({ title: String(args.title), description: args.description, privacyStatus: args.privacyStatus, publishAt: args.publishAt, approved: true }) };
+      } catch (e: any) { return { ok: false, code: 'TOOL_EXECUTION_FAILED', error: String(e?.message || e).slice(0, 200) }; }
     },
   },
 ];

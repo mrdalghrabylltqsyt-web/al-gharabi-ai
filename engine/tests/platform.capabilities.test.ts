@@ -43,9 +43,11 @@ function run(): void {
   check('سناب شات بلا تعليقات', !platformSupports('snapchat', 'comments'));
   check('Google Business بلا تعليقات', !platformSupports('google_business', 'comments'));
   check('فيسبوك يدعم النشر والرسائل والتعليقات', ['publish', 'messages', 'comments'].every((c) => platformSupports('facebook', c)));
-  // YouTube في مرحلته الحالية: OAuth + إثبات هوية القناة فقط. لا تُعلن أي قدرة
-  // محتوى (تعليقات/رد/نشر/تحليلات/جدولة) لأن مسارها غير منفّذ — يُعلن عدم الدعم.
-  check('يوتيوب لا يعلن أي قدرة محتوى غير منفّذة', ['publish', 'analytics', 'comments', 'comment_reply', 'scheduling', 'audience_insights'].every((c) => !platformSupports('youtube', c)));
+  // YouTube صار موصلاً تشغيلياً كاملاً: نشر/تحليلات/تعليقات/رد/جدولة منفّذة
+  // فعلاً على YouTube Data API v3. لا تُعلن تركيبة سكانية (تحتاج Analytics API).
+  check('يوتيوب يعلن قدرات المحتوى المنفّذة فعلاً', ['publish', 'analytics', 'comments', 'comment_reply', 'scheduling'].every((c) => platformSupports('youtube', c)));
+  check('يوتيوب لا يعلن تركيبة سكانية (غير متاحة عبر Data API)', !platformSupports('youtube', 'audience_insights'));
+  check('يوتيوب لا يعلن رسائل مباشرة (لا واجهة عامة)', !platformSupports('youtube', 'messages') && !platformSupports('youtube', 'message_reply'));
   check('telegram ينشر ويراسل بلا تعليقات', platformSupports('telegram', 'publish') && platformSupports('telegram', 'messages') && !platformSupports('telegram', 'comments'));
   check('telegram يعلن message_reply لا comment_reply', platformSupports('telegram', 'message_reply') && !platformSupports('telegram', 'comment_reply'));
 

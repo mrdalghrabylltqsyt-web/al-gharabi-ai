@@ -23,6 +23,7 @@ import {
   YOUTUBE_REQUIRED_SCOPES,
   YOUTUBE_READONLY_SCOPE,
   YOUTUBE_UPLOAD_SCOPE,
+  YOUTUBE_FORCE_SSL_SCOPE,
   resolveYouTubeScopes,
   youtubeCapabilityStatus,
   youtubeCapabilityImplemented,
@@ -32,6 +33,8 @@ import {
   buildChannelsMineUrl,
   YouTubeClient,
 } from '../social/youtube';
+import { resolveYouTubeState, youtubeOnlyModeEnabled, guardExternalOperationPlatform, YOUTUBE_TRUTHFUL_STATES, type YouTubeStateInput } from '../social/youtubeState';
+import { summarizeChannelAnalytics, analyzeYouTubeAudience, buildYouTubeLearning } from '../social/youtubeLearning';
 import { createYouTubeMock, startYouTubeMockServer } from './helpers/youtubeMock';
 import { PLATFORM_SPECS, hasRealConnector, platformSupports } from '../social/registry';
 
@@ -70,6 +73,7 @@ function startApp(ytBase: string, extraEnv: Record<string, string> = {}): { proc
     SESSION_SECRET,
     // خادم Google/YouTube وهمي محلي: لا اتصال بمزود حقيقي في الاختبارات.
     YOUTUBE_API_BASE: ytBase,
+    YOUTUBE_UPLOAD_BASE: ytBase,
     YOUTUBE_TOKEN_BASE: `${ytBase}/token`,
     GOOGLE_OAUTH_CLIENT_ID: GO_CLIENT_ID,
     GOOGLE_OAUTH_CLIENT_SECRET: GO_CLIENT_SECRET,
@@ -109,35 +113,38 @@ async function login(): Promise<Record<string, string>> {
 // 1) وحدة
 // ---------------------------------------------------------------------------
 function unitTests(): void {
-  group('1) وحدة: مصفوفة القدرات — لا تُعلن قدرة محتوى غير منفّذة');
+  group('1) وحدة: مصفوفة القدرات — كل قدرة مُعلنة SUPPORTED لها استدعاء منفّذ فعلاً');
   const byKey = Object.fromEntries(YOUTUBE_CAPABILITY_MATRIX.map((r) => [r.key, r]));
   check('OAuth Login مدعوم', youtubeCapabilityImplemented('oauth_login'));
   check('إثبات هوية القناة مدعوم', youtubeCapabilityImplemented('channel_identity') && byKey['channel_identity'].status === 'SUPPORTED');
   check('حفظ الاتصال المشفّر مدعوم', youtubeCapabilityImplemented('connection_persistence'));
-  check('رفع الفيديو غير منفّذ', byKey['video_upload'].status === 'NOT_IMPLEMENTED');
-  check('قراءة التعليقات غير منفّذة', byKey['comments_read'].status === 'NOT_IMPLEMENTED');
-  check('الرد على التعليقات غير منفّذ', byKey['comment_reply'].status === 'NOT_IMPLEMENTED');
-  check('التحليلات غير منفّذة', byKey['analytics'].status === 'NOT_IMPLEMENTED');
-  check('الجدولة غير منفّذة', byKey['scheduling'].status === 'NOT_IMPLEMENTED');
+  check('رفع الفيديو منفّذ (videos.insert resumable)', byKey['video_upload'].status === 'SUPPORTED');
+  check('تحديث الفيديو منفّذ (videos.update)', byKey['video_update'].status === 'SUPPORTED');
+  check('قراءة التعليقات منفّذة (commentThreads.list)', byKey['comments_read'].status === 'SUPPORTED');
+  check('الرد على التعليقات منفّذ (comments.insert)', byKey['comment_reply'].status === 'SUPPORTED');
+  check('التحليلات منفّذة (part=statistics)', byKey['analytics'].status === 'SUPPORTED');
+  check('الجدولة منفّذة (status.publishAt)', byKey['scheduling'].status === 'SUPPORTED');
+  check('النشر منفّذ (privacyStatus)', byKey['publishing'].status === 'SUPPORTED');
+  check('التركيبة السكانية غير متاحة صراحةً', byKey['audience_demographics'].status === 'NOT_AVAILABLE');
   check('webhooks تحتاج مراجعة', byKey['webhook_pubsub'].status === 'REQUIRES_REVIEW');
   check('قدرة غير معروفة تُعيد null لا ادعاء', youtubeCapabilityStatus('nope') === null && !youtubeCapabilityImplemented('nope'));
-  check('لا قدرة بحالة غير معروفة', YOUTUBE_CAPABILITY_MATRIX.every((r) => ['SUPPORTED', 'NOT_IMPLEMENTED', 'REQUIRES_REVIEW'].includes(r.status)));
+  check('لا قدرة بحالة غير معروفة', YOUTUBE_CAPABILITY_MATRIX.every((r) => ['SUPPORTED', 'NOT_IMPLEMENTED', 'REQUIRES_REVIEW', 'NOT_AVAILABLE'].includes(r.status)));
 
   group('2) وحدة: النطاقات الرسمية');
   check('youtube.readonly مطلوب (يغطّي channels.list)', YOUTUBE_REQUIRED_SCOPES.includes(YOUTUBE_READONLY_SCOPE));
-  check('youtube.upload باقٍ بقرار المالك', YOUTUBE_REQUIRED_SCOPES.includes(YOUTUBE_UPLOAD_SCOPE));
-  check('لا force-ssl الآن (التعليقات مؤجّلة)', !YOUTUBE_REQUIRED_SCOPES.some((s) => s.includes('force-ssl')));
+  check('youtube.upload مطلوب (الرفع/التحديث/النشر/الجدولة)', YOUTUBE_REQUIRED_SCOPES.includes(YOUTUBE_UPLOAD_SCOPE));
+  check('youtube.force-ssl مطلوب (التعليقات/الرد)', YOUTUBE_REQUIRED_SCOPES.includes(YOUTUBE_FORCE_SSL_SCOPE));
   check('المجموعة بلا تكرار', new Set(YOUTUBE_REQUIRED_SCOPES).size === YOUTUBE_REQUIRED_SCOPES.length);
   const partial = resolveYouTubeScopes(['https://www.googleapis.com/auth/youtube.readonly']);
-  check('حلّ مجموعة جزئية يعيد النطاقين دائماً', partial.includes(YOUTUBE_READONLY_SCOPE) && partial.includes(YOUTUBE_UPLOAD_SCOPE));
-  const junk = resolveYouTubeScopes(['https://www.googleapis.com/auth/youtube.force-ssl', 'not-a-scope']);
-  check('حلّ مجموعة يُهمل أي نطاق غير رسمي', !junk.includes('https://www.googleapis.com/auth/youtube.force-ssl') && !junk.includes('not-a-scope') && junk.length === 2);
+  check('حلّ مجموعة جزئية يعيد النطاقات الثلاثة دائماً', partial.includes(YOUTUBE_READONLY_SCOPE) && partial.includes(YOUTUBE_UPLOAD_SCOPE) && partial.includes(YOUTUBE_FORCE_SSL_SCOPE));
+  const junk = resolveYouTubeScopes(['https://www.googleapis.com/auth/yt-analytics.readonly', 'not-a-scope']);
+  check('حلّ مجموعة يُهمل أي نطاق غير مطلوب', !junk.includes('https://www.googleapis.com/auth/yt-analytics.readonly') && !junk.includes('not-a-scope') && junk.length === 3);
 
   group('3) وحدة: قراءة القناة وتصنيف الأخطاء');
   const parsed = parseChannelListResponse({ items: [{ id: 'UC_1', snippet: { title: 'قناة' }, contentDetails: { relatedPlaylists: { uploads: 'UU_1' } } }] });
   check('يستخرج هوية القناة', parsed?.channelId === 'UC_1' && parsed?.title === 'قناة' && parsed?.uploadsPlaylistId === 'UU_1');
   check('لا يختلق هوية عند غياب items', parseChannelListResponse({ items: [] }) === null && parseChannelListResponse(null) === null);
-  check('مسار القناة الرسمي صحيح', buildChannelsMineUrl('http://x').endsWith('/youtube/v3/channels?part=snippet,contentDetails&mine=true'));
+  check('مسار القناة الرسمي صحيح', buildChannelsMineUrl('http://x').endsWith('/youtube/v3/channels?part=snippet,contentDetails,statistics&mine=true'));
   check('تصنيف invalid_grant', classifyYouTubeTokenError({ error: 'invalid_grant' }) === 'invalid_grant');
   check('تصنيف invalid_client', classifyYouTubeTokenError({ error: 'invalid_client' }) === 'invalid_client');
   check('تصنيف insufficientPermissions لقناة', classifyYouTubeApiError({ error: { errors: [{ reason: 'insufficientPermissions' }] } }) === 'insufficient_permissions');
@@ -147,20 +154,71 @@ function unitTests(): void {
   // يُختبر العميل وحده عبر mock مدمج في نفس الدالة أدناه (integrationTests) لأن
   // العميل يحتاج fetchImpl فقط — نحن نمرّره هنا بعميل حقيقي لخادم الوهم.
 
-  group('4b) وحدة: واجهة YouTube تستدعي health وتعرض القناة بلا أي سرّ');
+  group('4a) وحدة: الحالة الصادقة + حارس YouTube-only + حلقة التعلّم (منطق خالص)');
+  const baseState: YouTubeStateInput = {
+    clientIdConfigured: true, clientSecretConfigured: true, encryptionKeyValid: true, publicUrlValid: true,
+    pendingAuthorization: false, tokenStored: false, refreshTokenStored: false, tokenExpired: false,
+    forceSslGranted: false, connectionStatus: 'disconnected', channelDiscovered: false, providerVerified: false,
+    operationalEvidence: false, providerErrorKind: null,
+  };
+  check('بيانات ناقصة => NOT_CONFIGURED', resolveYouTubeState({ ...baseState, clientIdConfigured: false }).state === 'NOT_CONFIGURED');
+  check('بيئة ناقصة (مفتاح تشفير) => CODE_READY', resolveYouTubeState({ ...baseState, encryptionKeyValid: false }).state === 'CODE_READY');
+  check('كل شيء حاضر بلا توكن => READY_TO_CONNECT', resolveYouTubeState(baseState).state === 'READY_TO_CONNECT');
+  check('جلسة معلّقة => AUTHORIZATION_REQUIRED', resolveYouTubeState({ ...baseState, pendingAuthorization: true }).state === 'AUTHORIZATION_REQUIRED');
+  check('متصل بلا توثيق => CONNECTED', resolveYouTubeState({ ...baseState, connectionStatus: 'connected', tokenStored: true, refreshTokenStored: true }).state === 'CONNECTED');
+  check('فشل التجديد => TOKEN_REFRESH_REQUIRED', resolveYouTubeState({ ...baseState, connectionStatus: 'reauth_needed' }).state === 'TOKEN_REFRESH_REQUIRED');
+  check('موثق بلا force-ssl => SCOPE_UPGRADE_REQUIRED', resolveYouTubeState({ ...baseState, connectionStatus: 'connected', providerVerified: true, forceSslGranted: false }).state === 'SCOPE_UPGRADE_REQUIRED');
+  check('نص إعادة الربط للتعليقات موجود', resolveYouTubeState({ ...baseState, connectionStatus: 'connected', providerVerified: true, forceSslGranted: false }).labelAr.includes('إعادة ربط YouTube مطلوبة لتفعيل إدارة التعليقات'));
+  check('موثق بلا دليل محتوى => PUBLISHING_RESTRICTED', resolveYouTubeState({ ...baseState, connectionStatus: 'connected', providerVerified: true, forceSslGranted: true }).state === 'PUBLISHING_RESTRICTED');
+  check('موثق بدليل مزود => OPERATIONAL', resolveYouTubeState({ ...baseState, connectionStatus: 'connected', providerVerified: true, forceSslGranted: true, operationalEvidence: true }).state === 'OPERATIONAL');
+  check('لا OPERATIONAL بلا توثيق', resolveYouTubeState({ ...baseState, operationalEvidence: true }).state !== 'OPERATIONAL');
+  check('اتصال موثق قائم لا يُخفَض لغياب العنوان العام', resolveYouTubeState({ ...baseState, publicUrlValid: false, connectionStatus: 'connected', providerVerified: true, forceSslGranted: true, operationalEvidence: true }).state === 'OPERATIONAL');
+  check('مفردات الحالات إحدى عشرة بالضبط', YOUTUBE_TRUTHFUL_STATES.length === 11);
+  check('وضع YouTube-only معطّل افتراضياً', youtubeOnlyModeEnabled({}) === false);
+  check('وضع YouTube-only مفعّل بالعلم', youtubeOnlyModeEnabled({ YOUTUBE_ONLY_OPERATIONAL: 'true' }) === true);
+  check('حارس YouTube-only يسمح لـYouTube', guardExternalOperationPlatform('youtube', { YOUTUBE_ONLY_OPERATIONAL: '1' }).allowed === true);
+  const blocked = guardExternalOperationPlatform('facebook', { YOUTUBE_ONLY_OPERATIONAL: '1' });
+  check('حارس YouTube-only يحجب غير YouTube', blocked.allowed === false && blocked.code === 'PLATFORM_NOT_ALLOWED_IN_YOUTUBE_ONLY');
+  check('الحارس لا يحجب شيئاً حين الوضع معطّل', guardExternalOperationPlatform('facebook', {}).allowed === true);
+
+  group('4a-2) وحدة: تحليل الجمهور وحلقة التعلّم بلا اختراع بيانات');
+  const recs = [
+    { videoId: 'v1', title: 'أ', publishedAt: '2026-09-01T00:00:00Z', viewCount: 100, likeCount: 10, commentCount: 5, at: '2026-09-11T00:00:00Z' },
+    { videoId: 'v2', title: 'ب', publishedAt: '2026-09-05T00:00:00Z', viewCount: 200, likeCount: 20, commentCount: 8, at: '2026-09-11T00:00:00Z' },
+    { videoId: 'v3', title: 'ج', publishedAt: '2026-09-10T00:00:00Z', viewCount: 300, likeCount: 30, commentCount: 12, at: '2026-09-11T00:00:00Z' },
+  ];
+  const summary = summarizeChannelAnalytics(recs);
+  check('ملخص التحليلات يجمع القيم الحقيقية', summary.totalViews === 600 && summary.totalLikes === 60 && summary.totalComments === 25);
+  check('التحليلات تُعلن المؤشرات غير المتاحة', summary.unavailable.some((u: any) => u.metric === 'impressions'));
+  const audience = analyzeYouTubeAudience(recs, summary);
+  check('تحليل الجمهور يعلن غياب البيانات السكانية صراحةً', audience.demographicsAvailable === false);
+  check('كل رؤية جمهور تحمل مصدرها', audience.insights.every((i: any) => Boolean(i.basis)));
+  const learning = buildYouTubeLearning({ records: recs });
+  check('التعلّم يحمل دروساً من بيانات كافية', learning.insights.every((i: any) => i.source && typeof i.sampleSize === 'number'));
+  check('التعلّم لا يدّعي دلالة بلا عيّنة كافية', buildYouTubeLearning({ records: recs.slice(0, 1) }).statisticallyValid === false);
+
+  group('4b) وحدة: واجهة YouTube تستدعي health وتعرض الحالة التشغيلية بلا أي سرّ');
   const ui = readFileSync(join(REPO_ROOT, 'src/components/social/PlatformConnectionCenter.tsx'), 'utf8');
   check('الواجهة تستدعي getPlatformHealth(\'youtube\')', ui.includes("getPlatformHealth('youtube')"));
-  check('الواجهة تعرض زر «فحص القناة — قراءة فقط»', ui.includes('فحص القناة — قراءة فقط'));
+  check('الواجهة تعرض زر الفحص التشغيلي', ui.includes('فحص القناة والحالة'));
   check('الواجهة تعرض اسم القناة accountName', ui.includes('accountName'));
   check('الواجهة تعرض معرّف القناة accountId', ui.includes('accountId'));
   check('الواجهة تعرض وقت آخر فحص checkedAt', ui.includes('checkedAt'));
   check('الواجهة تُعلن نجاح الفحص', ui.includes('حالة الفحص: ناجح'));
   check('الواجهة تُظهر إعادة ربط عند 409', ui.includes('إعادة ربط Google مطلوبة') && ui.includes('إعادة ربط OAuth'));
+  check('الواجهة تُعلن إعادة الربط لتفعيل التعليقات', ui.includes('إعادة ربط YouTube مطلوبة لتفعيل إدارة التعليقات'));
+  check('الواجهة تعرض القدرات المنفّذة فعلاً', ui.includes('القدرات المنفّذة فعلاً'));
+  check('الواجهة تجلب الفيديوهات الحقيقية', ui.includes('getYouTubeVideos('));
+  check('الواجهة تجلب التشخيص', ui.includes('getYouTubeDiagnostics('));
+  check('الواجهة تُعلن أن التركيبة السكانية غير متاحة', ui.includes('غير متاحة عبر Data API'));
   check('لوحة YouTube تُعرض للمالك فقط في مركز الربط', /platform === 'youtube'[\s\S]{0,120}?YouTubeStatusPanel/.test(ui));
-  check('الواجهة تُعلن أن الرفع/النشر غير منفّذ', /الرفع[\s\S]{0,80}?غير منفّذة/.test(ui));
   check('الواجهة لا تطبع token/secret', !/access_token|refresh_token|clientSecret\}/.test(ui));
   const apiSrc = readFileSync(join(REPO_ROOT, 'src/services/api.ts'), 'utf8');
   check('طبقة API تصل health بالمسار الصحيح', apiSrc.includes('/api/platforms/${encodeURIComponent(platform)}/health'));
+  check('طبقة API تحمل مسار رفع YouTube المخصص', apiSrc.includes('/api/platforms/youtube/publish'));
+  check('طبقة API تحمل مسار رد YouTube المخصص', apiSrc.includes('/api/platforms/youtube/reply'));
+  check('طبقة API تحمل مسار تعليقات YouTube', apiSrc.includes('/api/platforms/youtube/comments'));
+  check('طبقة API تحمل مسار تحليلات YouTube', apiSrc.includes('/api/platforms/youtube/analytics'));
 }
 
 // ---------------------------------------------------------------------------
@@ -179,10 +237,12 @@ async function integrationTests(): Promise<void> {
     check('health: clientId configured', health.youtubeOAuth?.clientIdConfigured === true);
     check('health: clientSecret configured (بلا قيمة)', health.youtubeOAuth?.clientSecretConfigured === true);
     check('health: youtube.readonly مطلوب', health.youtubeOAuth?.readonlyScopePresent === true);
-    check('health: youtube.upload باقٍ', health.youtubeOAuth?.uploadScopePresent === true);
-    check('health: لا force-ssl', !JSON.stringify(health.youtubeOAuth?.requestedScopes || []).includes('force-ssl'));
+    check('health: youtube.upload مطلوب', health.youtubeOAuth?.uploadScopePresent === true);
+    check('health: youtube.force-ssl مطلوب', health.youtubeOAuth?.forceSslScopePresent === true);
+    check('health: force-ssl غير ممنوح قبل الربط', health.youtubeOAuth?.forceSslGranted === false);
     check('health: إثبات القناة منفّذ', health.youtubeOAuth?.channelIdentityCallImplemented === true);
     check('health: موصل حقيقي', health.youtubeOAuth?.realConnector === true);
+    check('health: حالة صادقة معلنة', typeof health.youtubeOAuth?.operationalState === 'string');
     check('health لا يسرّب السرّ', !JSON.stringify(health).includes(GO_CLIENT_SECRET));
     check('health لا يسرّب معرّف العميل كاملاً', !JSON.stringify(health).includes(GO_CLIENT_ID));
     const readiness = await (await fetch(`${BASE}/api/readiness`)).json();
@@ -201,9 +261,13 @@ async function integrationTests(): Promise<void> {
     check('redirectUri مطابق تماماً', setup.redirectUri === `${BASE}/api/platforms/youtube/oauth/callback`);
     check('النطاقات تتضمن youtube.readonly', (setup.scopes || []).includes(YOUTUBE_READONLY_SCOPE));
     check('النطاقات تتضمن youtube.upload', (setup.scopes || []).includes(YOUTUBE_UPLOAD_SCOPE));
+    check('النطاقات تتضمن youtube.force-ssl', (setup.scopes || []).includes(YOUTUBE_FORCE_SSL_SCOPE));
     check('oauth/setup لا يكشف السرّ', !JSON.stringify(setup).includes(GO_CLIENT_SECRET));
-    check('youtubeSetup يعلن النطاقين والقدرات', setup.youtubeSetup?.readonlyScopePresent === true && Array.isArray(setup.youtubeSetup?.notImplementedCapabilities));
-    check('youtubeSetup يعلن رفع الفيديو غير منفّذ', (setup.youtubeSetup?.notImplementedCapabilities || []).includes('video_upload'));
+    check('youtubeSetup يعلن النطاقات والقدرات', setup.youtubeSetup?.readonlyScopePresent === true && Array.isArray(setup.youtubeSetup?.notImplementedCapabilities));
+    check('youtubeSetup يعلن رفع الفيديو منفّذاً', (setup.youtubeSetup?.implementedCapabilities || []).includes('video_upload'));
+    check('youtubeSetup يعلن التعليقات والرد منفّذة', (setup.youtubeSetup?.implementedCapabilities || []).includes('comments_read') && (setup.youtubeSetup?.implementedCapabilities || []).includes('comment_reply'));
+    check('youtubeSetup يعلن إعادة الربط مطلوبة للتعليقات قبل الربط (force-ssl غير ممنوح)', setup.youtubeSetup?.scopeUpgradeRequiredForComments === true);
+    check('youtubeSetup يعرض خطوات Google Cloud', Array.isArray(setup.youtubeSetup?.dashboardSteps) && setup.youtubeSetup.dashboardSteps.length >= 4);
 
     group('7) تكامل: oauth/start (owner) يبني رابط Google الصحيح');
     const startAnon = await fetch(`${BASE}/api/platforms/youtube/oauth/start`);
@@ -214,6 +278,7 @@ async function integrationTests(): Promise<void> {
     check('redirect_uri المُرسل إلى Google مطابق تماماً', authUrl.searchParams.get('redirect_uri') === `${BASE}/api/platforms/youtube/oauth/callback`);
     check('scope يحمل youtube.readonly', (authUrl.searchParams.get('scope') || '').includes(YOUTUBE_READONLY_SCOPE));
     check('scope يحمل youtube.upload', (authUrl.searchParams.get('scope') || '').includes(YOUTUBE_UPLOAD_SCOPE));
+    check('scope يحمل youtube.force-ssl', (authUrl.searchParams.get('scope') || '').includes(YOUTUBE_FORCE_SSL_SCOPE));
     check('access_type=offline للحصول على refresh_token', authUrl.searchParams.get('access_type') === 'offline');
     check('state موجود', Boolean(authUrl.searchParams.get('state')));
     const oauthState = authUrl.searchParams.get('state') as string;
@@ -288,9 +353,89 @@ async function integrationTests(): Promise<void> {
     mock.state.tokenExpiresInSeconds = 3600;
     await reconnect(3600, 'reconnect-final');
 
-    group('12) تكامل: لا قدرة محتوى في السجل العام (لا ادعاء غير منفّذ)');
-    check('YouTube بلا أي قدرة محتوى', ['publish', 'analytics', 'comments', 'comment_reply', 'scheduling', 'audience_insights'].every((c) => !platformSupports('youtube', c)));
+    group('12) تكامل: قدرات المحتوى الحقيقية في السجل العام (بلا ادعاء غير منفّذ)');
+    check('YouTube يعلن النشر والتحليلات والجدولة', ['publish', 'analytics', 'scheduling'].every((c) => platformSupports('youtube', c)));
+    check('YouTube يعلن التعليقات والرد', platformSupports('youtube', 'comments') && platformSupports('youtube', 'comment_reply'));
+    check('YouTube لا يعلن رسائل مباشرة', !platformSupports('youtube', 'messages') && !platformSupports('youtube', 'message_reply'));
+    check('YouTube لا يعلن تركيبة سكانية (غير متاحة)', !platformSupports('youtube', 'audience_insights'));
     check('YouTube مُعلن موصلاً حقيقياً في السجل', hasRealConnector('youtube') && PLATFORM_SPECS.find((s) => s.platform === 'youtube')?.realConnector === true);
+
+    group('12b) تكامل: قائمة الفيديوهات الحقيقية (playlistItems + videos)');
+    const vids = await (await fetch(`${BASE}/api/platforms/youtube/videos`, { headers: auth })).json();
+    check('قائمة الفيديوهات تنجح', vids.success === true && vids.count === mock.state.videos.length);
+    check('الفيديوهات تحمل إحصاءات حقيقية من المزود', vids.videos?.[0]?.viewCount === mock.state.videos[0].viewCount);
+    check('المسار الرسمي playlistItems مُستخدم', (mock.state.lastChannelsPath || '').includes('/youtube/v3/channels'));
+
+    group('12c) تكامل: التحليلات الحقيقية + تحليل الجمهور بلا اختراع بيانات سكانية');
+    const analytics = await (await fetch(`${BASE}/api/platforms/youtube/analytics`, { headers: auth })).json();
+    check('التحليلات تنجح', analytics.success === true);
+    check('ملخص القناة من الإحصاءات الحقيقية', analytics.summary?.totalViews === mock.state.videos.reduce((s: number, v: any) => s + v.viewCount, 0));
+    check('تحليل الجمهور يعلن غياب البيانات السكانية', analytics.audience?.demographicsAvailable === false);
+
+    group('12d) تكامل: حلقة التعلّم من الأداء الحقيقي');
+    const learning = await (await fetch(`${BASE}/api/platforms/youtube/learning`, { headers: auth })).json();
+    check('التعلّم ينجح', learning.success === true);
+    check('كل درس يحمل مصدره وعيّنته', Array.isArray(learning.learning?.insights) && learning.learning.insights.every((i: any) => i.source && typeof i.sampleSize === 'number'));
+
+    group('12e) تكامل: قراءة التعليقات الحقيقية وتخزينها ومنع تكرارها');
+    const comments1 = await (await fetch(`${BASE}/api/platforms/youtube/comments?videoId=vid_alpha`, { headers: auth })).json();
+    check('قراءة التعليقات تنجح', comments1.success === true && comments1.fetched === mock.state.comments.length);
+    check('التعليقات أُدخلت فعلاً', comments1.inserted === mock.state.comments.length);
+    const comments2 = await (await fetch(`${BASE}/api/platforms/youtube/comments?videoId=vid_alpha`, { headers: auth })).json();
+    check('إعادة القراءة لا تُنشئ تكراراً', comments2.duplicates === mock.state.comments.length && comments2.inserted === 0);
+
+    group('12f) تكامل: الرد الحقيقي (comments.insert) ومنع الرد المكرر');
+    const reply1 = await (await fetch(`${BASE}/api/platforms/youtube/reply`, { method: 'POST', headers: auth, body: JSON.stringify({ commentId: 'cmt_1', text: 'أهلاً، سعر التقسيط متاح في الفرع.' }) })).json();
+    check('الرد الحقيقي نجح', reply1.success === true && reply1.delivered === true && reply1.externalReplyId === 'reply_0001');
+    check('المسار الرسمي comments.insert مُستخدم', (mock.state.lastInsertPath || '').includes('/youtube/v3/comments'));
+    const reply2 = await (await fetch(`${BASE}/api/platforms/youtube/reply`, { method: 'POST', headers: auth, body: JSON.stringify({ commentId: 'cmt_1', text: 'أهلاً، سعر التقسيط متاح في الفرع.' }) })).json();
+    check('الرد المكرر مرفوض', reply2.success !== true && (reply2.code === 'DUPLICATE_REPLY' || reply2.success === false));
+
+    group('12g) تكامل: رفع فيديو حقيقي + جدولة publishAt + منع التكرار');
+    const publishNow = await (await fetch(`${BASE}/api/platforms/youtube/publish`, { method: 'POST', headers: auth, body: JSON.stringify({ title: 'فيديو جديد', description: 'وصف', approved: true, privacyStatus: 'public', videoBase64: Buffer.from('fake-video-bytes').toString('base64') }) })).json();
+    check('الرفع الفوري نجح', publishNow.success === true && publishNow.externalVideoId === mock.state.uploadedVideoId);
+    check('المسار الرسمي uploadType=resumable مُستخدم', (mock.state.lastUploadPath || '').includes('uploadType=resumable'));
+    const publishDup = await (await fetch(`${BASE}/api/platforms/youtube/publish`, { method: 'POST', headers: auth, body: JSON.stringify({ title: 'فيديو جديد', description: 'وصف', approved: true, privacyStatus: 'public', videoBase64: Buffer.from('fake-video-bytes').toString('base64') }) })).json();
+    check('الرفع المكرر مرفوض بـDUPLICATE_PUBLISH', publishDup.code === 'DUPLICATE_PUBLISH');
+    const schedule = await (await fetch(`${BASE}/api/platforms/youtube/publish`, { method: 'POST', headers: auth, body: JSON.stringify({ title: 'فيديو مجدول', description: 'وصف', approved: true, publishAt: '2027-01-01T10:00', videoBase64: Buffer.from('scheduled-bytes').toString('base64') }) })).json();
+    check('الجدولة نجحت بحالة scheduled', schedule.success === true && schedule.scheduled === true);
+    check('publishAt مُرسل إلى YouTube بحالة private', mock.state.lastUploadBody?.status?.publishAt && mock.state.lastUploadBody?.status?.privacyStatus === 'private');
+    const publishNoMedia = await (await fetch(`${BASE}/api/platforms/youtube/publish`, { method: 'POST', headers: auth, body: JSON.stringify({ title: 'بلا مادة', approved: true }) })).json();
+    check('لا رفع بلا مادة فعلية => MEDIA_REQUIRED', publishNoMedia.code === 'MEDIA_REQUIRED');
+
+    group('12h) تكامل: تحديث فيديو حقيقي (videos.update)');
+    const upd = await (await fetch(`${BASE}/api/platforms/youtube/video-update`, { method: 'POST', headers: auth, body: JSON.stringify({ videoId: 'vid_alpha', title: 'عنوان محدّث', description: 'وصف محدّث' }) })).json();
+    check('تحديث الفيديو نجح', upd.success === true);
+    check('المسار الرسمي videos.update مُستخدم', (mock.state.lastUpdatePath || '').includes('/youtube/v3/videos'));
+
+    group('12i) تكامل: حارس النطاق — إدارة التعليقات تتطلب force-ssl الممنوح فعلاً');
+    mock.state.hasForceSslScope = false;
+    mock.state.scope = ['https://www.googleapis.com/auth/youtube.readonly', 'https://www.googleapis.com/auth/youtube.upload'];
+    await reconnect(3600, 'reconnect-no-force-ssl');
+    const commentsNoScope = await (await fetch(`${BASE}/api/platforms/youtube/comments?videoId=vid_alpha`, { headers: auth })).json();
+    check('بلا force-ssl: التعليقات ترفض بـSCOPE_UPGRADE_REQUIRED', commentsNoScope.code === 'SCOPE_UPGRADE_REQUIRED');
+    check('الرسالة تطلب إعادة الربط صراحةً', String(commentsNoScope.error || '').includes('إعادة ربط YouTube'));
+    mock.state.hasForceSslScope = true;
+    mock.state.scope = ['https://www.googleapis.com/auth/youtube.readonly', 'https://www.googleapis.com/auth/youtube.upload', 'https://www.googleapis.com/auth/youtube.force-ssl'];
+    await reconnect(3600, 'reconnect-force-ssl');
+
+    group('12j) تكامل: الحالة الصادقة بعد دليل مزود (رفع/رد) => OPERATIONAL');
+    const diag = await (await fetch(`${BASE}/api/platforms/youtube/diagnostics`, { headers: auth })).json();
+    check('التشخيص للمالك فقط ويعمل', diag.success === true);
+    check('التشخيص لا يكشف أي سرّ', !JSON.stringify(diag).includes(GO_CLIENT_SECRET) && !JSON.stringify(diag).includes(mock.state.accessToken));
+    check('الحالة الصادقة بعد دليل مزود', diag.state?.state === 'OPERATIONAL');
+
+    group('12k) تكامل: حارس YOUTUBE_ONLY_OPERATIONAL مربوط بمسارات التنفيذ الخارجي');
+    // الحارس منطقياً مُختبر في 4a؛ هنا نثبت أنه مربوط فعلاً بمسارات التنفيذ الخارجي
+    // في الخادم ووحدة المسارات الاجتماعية (لا مجرد تعريف غير مستخدم).
+    const serverSrc = readFileSync(join(REPO_ROOT, 'server.ts'), 'utf8');
+    const socialSrc = readFileSync(join(REPO_ROOT, 'engine/social/routes.ts'), 'utf8');
+    check('الحارس معرّف في الخادم', serverSrc.includes('function youtubeOnlyBlock('));
+    check('الحارس يُستدعى في النشر الموحّد', /app\.post\("\/api\/platforms\/:platform\/publish"[\s\S]{0,900}?youtubeOnlyBlock\(platform\)/.test(serverSrc));
+    check('الحارس يُستدعى في رد Telegram', /\/api\/platforms\/telegram\/reply"[\s\S]{0,900}?youtubeOnlyBlock\("telegram"\)/.test(serverSrc));
+    check('الحارس يُستدعى في تنفيذ المهام المعتمدة', /async function executeApprovedJob[\s\S]{0,1200}?youtubeOnlyBlock\(platform\)/.test(serverSrc));
+    check('الحارس يُحقن في مسارات السوشيال', serverSrc.includes('platformOperationGuard:') && socialSrc.includes('deps.platformOperationGuard'));
+    check('وحدة المسارات تمنع عند الحجب', /platformOperationGuard\(platform\)[\s\S]{0,200}?blocked/.test(socialSrc));
 
     group('13) تكامل: الفصل يمسح الاعتماد المشفّر');
     const disc = await fetch(`${BASE}/api/platforms/youtube/disconnect`, { method: 'POST', headers: auth, body: '{}' });

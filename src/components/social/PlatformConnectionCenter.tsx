@@ -314,22 +314,30 @@ const TikTokStatusPanel: React.FC = () => {
 };
 
 /**
- * لوحة حالة YouTube الحقيقية (للمالك): فحص القناة **قراءة فقط** عبر
- * GET /api/platforms/youtube/health. لا رفع ولا نشر ولا أي تغيير على القناة.
- * عند نجاح الفحص نعرض اسم القناة ومعرّفها ووقت آخر فحص؛ وعند 409 نهائياً
- * (رمز مرفوض فعلاً) نعرض إعادة ربط Google. لا تُعرض أي قيمة سرّية إطلاقاً.
+ * لوحة YouTube التشغيلية (للمالك): تعرض القدرات الحقيقية وحالة الاستقبال والتشغيل.
+ * كل زر مرتبط بمسار خادم حقيقي يمر ببوابات (قدرة → اتصال موثق → idempotency →
+ * rate limit → تنفيذ → audit). لا تُعرض أي قيمة سرّية إطلاقاً، ولا تُعلن قدرة
+ * غير منفّذة. الرفع/الرد/الجدولة عمليات حقيقية لدى YouTube Data API.
  */
 const YouTubeStatusPanel: React.FC<{ onReconnect: () => void; busy: boolean }> = ({ onReconnect, busy }) => {
   const [checking, setChecking] = useState(false);
   const [result, setResult] = useState<any>(null);
+  const [diag, setDiag] = useState<any>(null);
+  const [videos, setVideos] = useState<any>(null);
   const [err, setErr] = useState<string>('');
   const [reauthNeeded, setReauthNeeded] = useState(false);
+  const [scopeUpgrade, setScopeUpgrade] = useState(false);
 
   const runCheck = async () => {
-    setChecking(true); setErr(''); setResult(null); setReauthNeeded(false);
+    setChecking(true); setErr(''); setResult(null); setReauthNeeded(false); setScopeUpgrade(false);
     try {
       const data = await apiService.getPlatformHealth('youtube');
       setResult(data);
+      // تشخيص القدرات الحقيقية (بلا سرّ) + قائمة الفيديوهات إن كان الاتصال موثقاً.
+      const d = await apiService.getYouTubeDiagnostics().catch(() => null);
+      if (d) { setDiag(d); if (d.state?.state === 'SCOPE_UPGRADE_REQUIRED') setScopeUpgrade(true); }
+      const v = await apiService.getYouTubeVideos(10).catch(() => null);
+      if (v) setVideos(v);
     } catch (e: any) {
       setErr(e?.message || 'تعذّر فحص القناة');
       // 409 = رمز مرفوض فعلاً ولا يمكن تجديده؛ عندها فقط نطلب إعادة الربط.
@@ -339,12 +347,21 @@ const YouTubeStatusPanel: React.FC<{ onReconnect: () => void; busy: boolean }> =
     }
   };
 
+  const implemented: string[] = diag?.implementedCapabilities || [];
+  const capLabel: Record<string, string> = {
+    oauth_login: 'تسجيل الدخول', channel_identity: 'هوية القناة', connection_persistence: 'حفظ الاتصال',
+    video_list: 'قائمة الفيديوهات', video_upload: 'رفع الفيديو', video_update: 'تحديث الفيديو',
+    publishing: 'النشر', scheduling: 'الجدولة', comments_read: 'قراءة التعليقات',
+    comment_reply: 'الرد على التعليقات', analytics: 'الإحصاءات',
+  };
+  const shownCaps = Object.keys(capLabel).filter((k) => implemented.includes(k));
+
   return (
     <div className="mt-3 pt-3 border-t border-slate-800/70 text-[10px] space-y-2">
-      <p className="text-slate-500 flex items-center gap-1"><KeyRound className="w-3 h-3" /> فحص قناة YouTube — قراءة فقط (بلا رفع/نشر/تغيير على القناة):</p>
+      <p className="text-slate-500 flex items-center gap-1"><KeyRound className="w-3 h-3" /> حالة YouTube التشغيلية (اتصال + قناة + محتوى + تعليقات + إحصاءات):</p>
       <button onClick={() => void runCheck()} disabled={checking}
         className="px-2.5 py-1 rounded-lg bg-emerald-500 text-slate-950 text-[10px] font-black inline-flex items-center gap-1 disabled:opacity-50">
-        {checking ? <Loader2 className="w-3 h-3 animate-spin" /> : <CheckCircle2 className="w-3 h-3" />} فحص القناة — قراءة فقط
+        {checking ? <Loader2 className="w-3 h-3 animate-spin" /> : <CheckCircle2 className="w-3 h-3" />} فحص القناة والحالة
       </button>
 
       {result && (
@@ -353,7 +370,44 @@ const YouTubeStatusPanel: React.FC<{ onReconnect: () => void; busy: boolean }> =
           <p className="text-slate-400">اسم القناة: <code className="text-slate-200">{result.accountName || '—'}</code></p>
           <p className="text-slate-400">معرّف القناة: <code className="text-slate-200" dir="ltr">{result.accountId || '—'}</code></p>
           <p className="text-slate-400">وقت آخر فحص: <code className="text-slate-200" dir="ltr">{result.checkedAt || '—'}</code></p>
-          {result.tokenRefreshed && <p className="text-sky-300">أُعيد تجديد رمز الوصول تلقائياً قبل الفحص (الإتصال دائم بلا إعادة ربط).</p>}
+          {result.tokenRefreshed && <p className="text-sky-300">أُعيد تجديد رمز الوصول تلقائياً قبل الفحص (الاتصال دائم بلا إعادة ربط).</p>}
+          {diag?.state?.state && (
+            <p className="text-slate-400">الحالة الصادقة: <span className="text-slate-200 font-bold">{diag.state.labelAr}</span> — {diag.state.reason}</p>
+          )}
+        </div>
+      )}
+
+      {shownCaps.length > 0 && (
+        <div className="p-2 rounded-lg bg-slate-950 border border-slate-800 space-y-1">
+          <p className="text-slate-400 font-bold">القدرات المنفّذة فعلاً (بلا ادعاء):</p>
+          <div className="flex flex-wrap gap-1">
+            {shownCaps.map((k) => <span key={k} className="px-1.5 py-0.5 rounded-md bg-emerald-500/10 text-emerald-300 border border-emerald-600/30 text-[9px] font-semibold">{capLabel[k]}</span>)}
+          </div>
+          {diag?.forceSslGranted === false && <p className="text-amber-300">إدارة التعليقات تحتاج إعادة ربط لإضافة نطاق youtube.force-ssl.</p>}
+        </div>
+      )}
+
+      {videos?.videos?.length > 0 && (
+        <div className="p-2 rounded-lg bg-slate-950 border border-slate-800 space-y-1">
+          <p className="text-slate-400 font-bold">أحدث الفيديوهات (حقيقية من Data API):</p>
+          {videos.videos.slice(0, 5).map((v: any) => (
+            <p key={v.videoId} className="text-slate-400">
+              <code className="text-slate-200" dir="ltr">{v.videoId}</code> — {v.title}
+              {typeof v.viewCount === 'number' && <span className="text-slate-500"> · {v.viewCount} مشاهدة</span>}
+              {typeof v.commentCount === 'number' && <span className="text-slate-500"> · {v.commentCount} تعليق</span>}
+            </p>
+          ))}
+        </div>
+      )}
+
+      {scopeUpgrade && (
+        <div className="p-2 rounded-lg bg-slate-950 border border-amber-600/30 space-y-1.5">
+          <p className="text-amber-300 font-bold flex items-center gap-1"><AlertTriangle className="w-3 h-3" /> إعادة ربط YouTube مطلوبة لتفعيل إدارة التعليقات</p>
+          <p className="text-slate-400">الرمز الحالي لا يحمل نطاق youtube.force-ssl؛ لا تحايل على Google — أعد الربط لمنح النطاق.</p>
+          <button onClick={() => onReconnect()} disabled={busy}
+            className="px-2.5 py-1 rounded-lg bg-slate-800 border border-slate-700 text-[10px] font-bold text-white inline-flex items-center gap-1 disabled:opacity-50">
+            {busy ? <Loader2 className="w-3 h-3 animate-spin" /> : <PlugZap className="w-3 h-3" />} إعادة ربط OAuth
+          </button>
         </div>
       )}
 
@@ -368,7 +422,7 @@ const YouTubeStatusPanel: React.FC<{ onReconnect: () => void; busy: boolean }> =
         </div>
       )}
 
-      <p className="text-slate-600">هذه المرحلة تقرأ هوية القناة فقط. الرفع/النشر/التعليقات/الردود/الجدولة/التحليلات/webhooks غير منفّذة — لا تُعلن ولا تُختلق.</p>
+      <p className="text-slate-600">الرفع/التحديث/النشر/الجدولة/التعليقات/الرد/الإحصاءات منفّذة فعلاً على YouTube Data API. التركيبة السكانية (عمر/جنس/موقع) غير متاحة عبر Data API — لا تُخترع. عمليات الرفع والرد من الواجهة التشغيلية أو العقل المركزي بموافقة المالك.</p>
     </div>
   );
 };

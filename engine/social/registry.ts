@@ -69,12 +69,15 @@ const ADAPTER_SPECS: AdapterSpec[] = [
     platform: 'youtube',
     name: 'YouTube',
     displayName: 'YouTube',
-    // المرحلة الحالية: OAuth + إثبات هوية القناة فقط (channels.list?mine=true بنطاق
-    // youtube.readonly). لا مسار منفّذ للنشر أو التعليقات أو الرد أو التحليلات أو
-    // الجدولة، فلا تُعلن أي قدرة محتوى — يُعلن عدم الدعم صراحةً بدل ادعاء غير منفّذ.
-    capabilities: [],
+    // YouTube صار موصلاً تشغيلياً كاملاً: رفع/تحديث الفيديو والنشر والجدولة
+    // (videos.insert/update بنطاق youtube.upload)، قراءة التعليقات والرد عليها
+    // (commentThreads.list/comments.insert بنطاق youtube.force-ssl)، والإحصاءات
+    // الحقيقية (videos.list/channels.list part=statistics بنطاق youtube.readonly).
+    // لا تُعلن message_reply (لا واجهة رسائل مباشرة عامة) ولا audience_insights
+    // (التركيبة السكانية تحتاج YouTube Analytics API ولم تُطلب).
+    capabilities: ['publish', 'comments', 'comment_reply', 'analytics', 'scheduling'],
     credentialMode: 'oauth2',
-    // موصل حقيقي منفّذ وقابل للاختبار: اتصال + إثبات هوية قناة فعلية من Google.
+    // موصل حقيقي منفّذ وقابل للاختبار: اتصال + قناة + محتوى + تعليقات + إحصاءات.
     realConnector: true,
   },
   {

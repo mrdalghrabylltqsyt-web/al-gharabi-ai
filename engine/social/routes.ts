@@ -53,10 +53,31 @@ export interface SocialRoutesDeps {
    * المعرض العامة فقط، فيُحجب أي ادعاء غير مسجّل بدل تمريره.
    */
   buildFacts?: (productId?: string | null) => BusinessFacts;
+  /**
+   * حارس وضع التشغيل المركّز (YOUTUBE_ONLY_OPERATIONAL). عند تفعيله يمنع أي
+   * عملية خارجية على منصة غير YouTube في مسارات التسجيل/النشر الداخلية.
+   * يُحقن من الخادم حتى يبقى المنطق خالصاً قابلاً للاختبار.
+   */
+  platformOperationGuard?: (platform: string) => { blocked: boolean; body?: any };
+  /**
+   * جالب تعليقات YouTube الحقيقي (commentThreads.list). يُحقن من الخادم ليبقى
+   * هذا الملف بلا شبكة. يُستخدم في مسار `/comments?platform=youtube` لجلب
+   * تعليقات حقيقية بدل الاكتفاء بالسجلات المحلية.
+   */
+  fetchYouTubeComments?: (videoId: string) => Promise<{ ok: boolean; comments?: any[]; inserted?: number; duplicates?: number; error?: string; code?: string | null }>;
+  /**
+   * جالب إحصاءات YouTube الحقيقية (channels.list/videos.list part=statistics).
+   * يُستخدم في مسار `/analytics?platform=youtube` لعرض قيم حقيقية بدل NOT_SUPPORTED.
+   */
+  fetchYouTubeAnalytics?: () => Promise<{ ok: boolean; summary?: any; audience?: any; channel?: any; videoCount?: number; error?: string; code?: string | null }>;
 }
 
 export function registerSocialManagerRoutes(app: express.Express, deps: SocialRoutesDeps): void {
   const { authenticateToken, requireOwner, workspace, platformConnections, persistState, audit, workspaceId } = deps;
+
+  /** يطبّق حارس وضع التشغيل المركّز إن حُقن (يمنع غير YouTube عند تفعيله). */
+  const guardBlocked = (platform: string): { blocked: boolean; body?: any } =>
+    deps.platformOperationGuard ? deps.platformOperationGuard(platform) : { blocked: false };
 
   /**
    * يبني حقائق المعرض التجارية من البيانات المسجّلة فعلاً. بلا `buildFacts`
@@ -188,6 +209,10 @@ export function registerSocialManagerRoutes(app: express.Express, deps: SocialRo
 
     if (!isSupportedPlatform(platform)) return res.status(400).json({ success: false, error: 'منصة غير معروفة.' });
     if (!externalId) return res.status(400).json({ success: false, error: 'معرّف التعليق لدى المنصة مطلوب لمنع الرد المكرر.' });
+
+    // وضع YOUTUBE_ONLY_OPERATIONAL: لا تسجيل/إرسال رد لمنصة غير YouTube عند تفعيله.
+    const onlyBlock = guardBlocked(platform);
+    if (onlyBlock.blocked) return res.status(409).json(onlyBlock.body || { success: false, error: 'محجوب في وضع YOUTUBE_ONLY_OPERATIONAL.' });
 
     const adapter = findAdapter(platform);
     if (!adapter) return res.status(400).json({ success: false, error: 'لا يوجد موصل لهذه المنصة.' });
@@ -401,8 +426,23 @@ export function registerSocialManagerRoutes(app: express.Express, deps: SocialRo
     res.json({ success: true, approval: record, delivered: false, simulated: true, note: record.note });
   });
 
-  app.get('/api/social/manager/comments', authenticateToken, (req, res) => {
+  app.get('/api/social/manager/comments', authenticateToken, async (req, res) => {
     const platform = typeof req.query?.platform === 'string' ? req.query.platform : '';
+    const videoId = typeof req.query?.videoId === 'string' ? req.query.videoId.trim() : '';
+    const fetchRequested = req.query?.fetch === 'true' || req.query?.fetch === '1';
+    // جلب حقيقي من YouTube عند الطلب: يمر بالبوابات في الخادم، ويعيد تعليقات
+    // حقيقية من commentThreads.list بدل الاكتفاء بالسجلات المحلية.
+    let externalFetch: any = null;
+    if (platform === 'youtube' && fetchRequested && videoId && deps.fetchYouTubeComments) {
+      externalFetch = await deps.fetchYouTubeComments(videoId);
+      if (!externalFetch?.ok) {
+        return res.status(externalFetch?.code === 'SCOPE_UPGRADE_REQUIRED' ? 409 : 502).json({
+          success: false, platform, error: externalFetch?.error || 'تعذّر جلب تعليقات YouTube.',
+          code: externalFetch?.code || null,
+          comments: [], count: 0,
+        });
+      }
+    }
     const comments = (workspace.socialComments || []) as any[];
     const filtered = platform ? comments.filter((c) => c.platform === platform) : comments;
     const canFetch = Boolean(platform && isVerifiedConnected(platform));
@@ -410,11 +450,14 @@ export function registerSocialManagerRoutes(app: express.Express, deps: SocialRo
       success: true,
       platform: platform || null,
       externalFetchAvailable: canFetch,
+      externalFetch: externalFetch ? { fetched: externalFetch.comments?.length || 0, inserted: externalFetch.inserted || 0, duplicates: externalFetch.duplicates || 0 } : null,
       comments: filtered.slice(0, 200),
       count: filtered.length,
-      note: canFetch
-        ? 'التعليقات المعروضة مسجلة محلياً. جلب التعليقات من المنصة يتطلب تنفيذ موصل الإنتاج المعتمد.'
-        : 'لا يمكن جلب تعليقات من منصة غير متصلة باتصال موثق.',
+      note: platform === 'youtube'
+        ? 'تعليقات YouTube حقيقية من commentThreads.list (youtube.force-ssl). التعليقات المعروضة مسجّلة من جلب فعلي فقط — لا بيانات مُختلقة.'
+        : canFetch
+          ? 'التعليقات المعروضة مسجلة محلياً. جلب التعليقات من المنصة يتطلب تنفيذ موصل الإنتاج المعتمد.'
+          : 'لا يمكن جلب تعليقات من منصة غير متصلة باتصال موثق.',
     });
   });
 
@@ -426,6 +469,10 @@ export function registerSocialManagerRoutes(app: express.Express, deps: SocialRo
     const text = typeof req.body?.text === 'string' ? req.body.text.trim() : '';
     if (!isSupportedPlatform(platform)) return res.status(400).json({ success: false, error: 'منصة غير معروفة.' });
     if (!externalId || !text) return res.status(400).json({ success: false, error: 'معرّف التعليق ونصه مطلوبان.' });
+
+    // وضع YOUTUBE_ONLY_OPERATIONAL: لا إدخال خارجي لمنصة غير YouTube عند تفعيله.
+    const onlyBlock = guardBlocked(platform);
+    if (onlyBlock.blocked) return res.status(409).json(onlyBlock.body || { success: false, error: 'محجوب في وضع YOUTUBE_ONLY_OPERATIONAL.' });
 
     if (!Array.isArray(workspace.socialComments)) workspace.socialComments = [];
     const existing = workspace.socialComments.find((c: any) => c.platform === platform && c.externalId === externalId);
@@ -475,6 +522,10 @@ export function registerSocialManagerRoutes(app: express.Express, deps: SocialRo
     const postId = typeof req.body?.postId === 'string' ? req.body.postId : '';
     const post = (workspace.posts || []).find((p: any) => p.id === postId);
     if (!post) return res.status(404).json({ success: false, error: 'المنشور غير موجود في مساحة العمل.' });
+
+    // وضع YOUTUBE_ONLY_OPERATIONAL: لا نشر لمنصة غير YouTube عند تفعيله.
+    const onlyBlock = guardBlocked(platform);
+    if (onlyBlock.blocked) return res.status(409).json(onlyBlock.body || { success: false, error: 'محجوب في وضع YOUTUBE_ONLY_OPERATIONAL.' });
 
     const adapter = findAdapter(platform);
     const preflight = publishPreflight({
@@ -533,11 +584,22 @@ export function registerSocialManagerRoutes(app: express.Express, deps: SocialRo
     });
   });
 
-  app.get('/api/social/manager/analytics', authenticateToken, (req, res) => {
+  app.get('/api/social/manager/analytics', authenticateToken, async (req, res) => {
     const platform = typeof req.query?.platform === 'string' ? req.query.platform : '';
     if (!isSupportedPlatform(platform)) return res.status(400).json({ success: false, error: 'منصة غير معروفة.' });
     const adapter = findAdapter(platform)!;
     const availability = metricAvailability(platform);
+    // YouTube: جلب إحصاءات حقيقية من Data API عند الطلب (بدل الاعتماد على سجلات فقط).
+    const liveRequested = req.query?.live === 'true' || req.query?.live === '1';
+    let live: any = null;
+    if (platform === 'youtube' && liveRequested && deps.fetchYouTubeAnalytics) {
+      live = await deps.fetchYouTubeAnalytics();
+      if (!live?.ok) {
+        return res.status(live?.code === 'SCOPE_UPGRADE_REQUIRED' ? 409 : 502).json({
+          success: false, platform, error: live?.error || 'تعذّر جلب إحصاءات YouTube.', code: live?.code || null,
+        });
+      }
+    }
     const records = (workspace.performanceRecords || []).filter((r: any) => r.platform === platform);
 
     const aggregated: Record<string, number> = {};
@@ -555,9 +617,13 @@ export function registerSocialManagerRoutes(app: express.Express, deps: SocialRo
       engagementRate: engagementRate(aggregated),
       sampleSize: records.length,
       externalFetchAvailable: Boolean(isVerifiedConnected(platform) && adapter.supports('analytics')),
-      note: records.length
-        ? 'القيم مجمّعة من سجلات أداء فعلية. المؤشرات غير المدعومة من المنصة تظهر كغير متاحة.'
-        : 'لا توجد سجلات أداء لهذه المنصة بعد. المؤشرات غير المتاحة لا تُخترع.',
+      // قيم حقيقية مباشرة من YouTube (channels/videos part=statistics) عند الطلب.
+      live: live ? { summary: live.summary, audience: live.audience, channel: live.channel, videoCount: live.videoCount } : null,
+      note: platform === 'youtube'
+        ? 'إحصاءات YouTube من Data API (videos.list/channels.list part=statistics). لا تُخترع بيانات سكانية (عمر/جنس/موقع) — تتطلب YouTube Analytics API ولم تُطلب.'
+        : records.length
+          ? 'القيم مجمّعة من سجلات أداء فعلية. المؤشرات غير المدعومة من المنصة تظهر كغير متاحة.'
+          : 'لا توجد سجلات أداء لهذه المنصة بعد. المؤشرات غير المتاحة لا تُخترع.',
     });
   });
 
