@@ -139,6 +139,14 @@ export const Sidebar: React.FC<SidebarProps> = ({ mobileOpen, onCloseMobile }) =
       desc: 'مهمة → تخطيط → أدوات → تنفيذ → تحقق → سجل',
     },
     {
+      id: 'youtube_operations',
+      label: 'مدير تشغيل YouTube',
+      icon: Bot,
+      badge: currentUser?.role === 'owner' ? '24/7' : null,
+      badgeColor: 'bg-red-500/20 text-red-300 border-red-500/30',
+      desc: 'مراقبة القناة والتعليقات والرد الآلي والتحكم',
+    },
+    {
       id: 'agent',
       label: 'الوكيل الذكي المركزي',
       icon: Sparkles,

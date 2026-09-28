@@ -1338,5 +1338,42 @@ ${payload.topic || payload.productName || 'أنظمة وحلول التقسيط 
       throw error;
     }
     return data;
+  },
+
+  // --- YouTube Operations Manager (مدير تشغيل YouTube 24/7) ---
+  /** لقطة حالة المراقبة الحقيقية (نشاط/إيقاع/آخر فحص/رد/معلّق/أخطاء) بلا سرّ. */
+  async getYouTubeWatcher(): Promise<any> {
+    const res = await fetch('/api/agent/youtube/watcher', { headers: getAuthHeaders() });
+    const data = await res.json();
+    if (!res.ok || !data.success) throw new Error(data.error || 'تعذر تحميل حالة مراقبة YouTube');
+    return data.watcher;
+  },
+  /** تحديث عناصر التحكم (Kill Switch/الرد/النشر/المراجعة) — للمالك فقط. */
+  async setYouTubeWatcherControls(controls: Record<string, boolean>): Promise<any> {
+    const res = await fetch('/api/agent/youtube/watcher/controls', { method: 'POST', headers: getAuthHeaders(), body: JSON.stringify(controls) });
+    const data = await res.json();
+    if (!res.ok || !data.success) throw new Error(data.error || 'تعذر تحديث إعدادات الأتمتة');
+    return data;
+  },
+  /** تشغيل دورة مراقبة يدوية فوراً (للمالك) — للاختبار/التشغيل الفوري. */
+  async pollYouTubeWatcher(): Promise<any> {
+    const res = await fetch('/api/agent/youtube/watcher/poll', { method: 'POST', headers: getAuthHeaders() });
+    const data = await res.json();
+    if (!res.ok || !data.success) throw new Error(data.error || 'تعذر تشغيل دورة المراقبة');
+    return data;
+  },
+  /** التقرير اليومي الحتمي لـYouTube من بيانات حقيقية. */
+  async getYouTubeDailyBrief(): Promise<any> {
+    const res = await fetch('/api/agent/youtube/watcher/brief', { headers: getAuthHeaders() });
+    const data = await res.json();
+    if (!res.ok || !data.success) throw new Error(data.error || 'تعذر تحميل التقرير اليومي');
+    return data.brief;
+  },
+  /** سجل عمليات الأتمتة (بلا أسرار). */
+  async getYouTubeWatcherAudit(limit = 50): Promise<any[]> {
+    const res = await fetch(`/api/agent/youtube/watcher/audit?limit=${limit}`, { headers: getAuthHeaders() });
+    const data = await res.json();
+    if (!res.ok || !data.success) throw new Error(data.error || 'تعذر تحميل سجل الأتمتة');
+    return data.audit || [];
   }
 };

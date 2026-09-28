@@ -207,6 +207,28 @@ import {
   type YouTubeDelegation,
 } from "./engine/social/youtubeDelegation";
 import {
+  defaultWatcherControls,
+  normalizeWatcherControls,
+  watcherGate,
+  watcherControlsView,
+  decideCommentAction,
+  computeCommentVelocity,
+  computePeakHours,
+  buildDailyBrief,
+  detectOpportunities,
+  isPollDue,
+  nextPollAt,
+  normalizeCadenceMs,
+  advanceCheckpoint,
+  hasProcessed,
+  YOUTUBE_COMMENT_STAGES,
+  YOUTUBE_COMMENT_STAGE_LABELS_AR,
+  type YouTubeWatcherControls,
+  type WatcherProcessedEntry,
+  type YouTubeCommentStage,
+  type WatcherOpportunity,
+} from "./engine/social/youtubeWatcher";
+import {
   summarizeChannelAnalytics,
   analyzeYouTubeAudience,
   buildYouTubeLearning,
@@ -4346,6 +4368,458 @@ async function executeYouTubeReply(input: { commentId: string; text: string; com
   return { status: 200, body: { success: true, reply: replyRecord, delivered: true, externalReplyId, state: replyState, ...youtubeStateBlock() } };
 }
 
+// -------------------------------------------------------------
+// YouTube Comment Watcher — مدير تشغيل YouTube 24/7 (العقل المركزي).
+// مراقبة مستمرة مستقلة عن المتصفح: job داخلي على الخادم (Render web process)
+// يقرأ التعليقات الحقيقية، يحلّلها حتمياً، يقرّر الرد/التصعيد، ويرد فعلياً عبر
+// نفس executeYouTubeReply عند تمكين المالك ووجود تفويض فعّال. كل حالة تُحفظ عبر
+// محوّل الحالة (Postgres) فتصمد بعد restart/deploy. لا سرّ في أي منها.
+// -------------------------------------------------------------
+const WATCHER_STATE_KEY = "youtubeWatcher";
+
+interface WatcherState {
+  controls: YouTubeWatcherControls;
+  processed: WatcherProcessedEntry[];
+  processedWindow: number[];
+  opportunities: WatcherOpportunity[];
+  audit: any[];
+  lastPollAt: string | null;
+  lastCommentId: string | null;
+  lastCommentAt: string | null;
+  lastError: string | null;
+  consecutiveErrors: number;
+  pollCount: number;
+  brief: any | null;
+  briefDate: string | null;
+  lastScanned: number;
+}
+
+let watcherState: WatcherState = {
+  controls: defaultWatcherControls(),
+  processed: [],
+  processedWindow: [],
+  opportunities: [],
+  audit: [],
+  lastPollAt: null,
+  lastCommentId: null,
+  lastCommentAt: null,
+  lastError: null,
+  consecutiveErrors: 0,
+  pollCount: 0,
+  brief: null,
+  briefDate: null,
+  lastScanned: 0,
+};
+let watcherRunning = false;
+let watcherStartedAt: string | null = null;
+let watcherLastRun: { newDetected: number; replied: number; escalated: number; skipped: number; verified: number; failed: number; at: string } | null = null;
+
+const WATCHER_MAX_PROCESSED = 5000;
+const WATCHER_MAX_AUDIT = 500;
+
+/** يسجّل عملية أتمتة واحدة بلا أي سرّ (timestamp/source/action/معرّفات/قرار/نتيجة). */
+function watcherAudit(entry: {
+  action: string; commentId?: string | null; videoId?: string | null; reason?: string | null; decision?: string | null;
+  generatedText?: string | null; sent?: boolean | null; providerId?: string | null; verification?: string | null;
+  error?: string | null; actor?: string | null;
+}): void {
+  watcherState.audit.unshift({
+    id: crypto.randomUUID(),
+    at: new Date().toISOString(),
+    source: "youtube_watcher",
+    actor: entry.actor || "watcher",
+    action: entry.action,
+    commentId: entry.commentId || null,
+    videoId: entry.videoId || null,
+    reason: entry.reason || null,
+    decision: entry.decision || null,
+    generatedText: entry.generatedText || null,
+    sent: entry.sent ?? null,
+    providerId: entry.providerId || null,
+    verification: entry.verification || null,
+    error: entry.error || null,
+  });
+  if (watcherState.audit.length > WATCHER_MAX_AUDIT) watcherState.audit.length = WATCHER_MAX_AUDIT;
+}
+
+/** يحفظ حالة الـwatcher عبر المحوّل (تصمد بعد restart) — كتابة دائمة. */
+async function persistWatcherState(): Promise<void> {
+  if (!storageReady) return;
+  try {
+    await storageAdapter.write(WATCHER_STATE_KEY, {
+      controls: watcherState.controls,
+      processed: watcherState.processed.slice(0, WATCHER_MAX_PROCESSED),
+      processedWindow: watcherState.processedWindow.slice(-2000),
+      opportunities: watcherState.opportunities.slice(0, 200),
+      audit: watcherState.audit.slice(0, WATCHER_MAX_AUDIT),
+      lastPollAt: watcherState.lastPollAt,
+      lastCommentId: watcherState.lastCommentId,
+      lastCommentAt: watcherState.lastCommentAt,
+      lastError: watcherState.lastError,
+      consecutiveErrors: watcherState.consecutiveErrors,
+      pollCount: watcherState.pollCount,
+      brief: watcherState.brief,
+      briefDate: watcherState.briefDate,
+      lastScanned: watcherState.lastScanned,
+    });
+  } catch (error: any) {
+    lastPersistError = String(error?.code || error?.name || "persist_failed").slice(0, 60);
+  }
+}
+
+/** يسترجع حالة الـwatcher (بعد restart/cold start) — بلا طمس الحالة القائمة. */
+function applyWatcherStateSnapshot(raw: any): void {
+  if (!raw || typeof raw !== "object") return;
+  watcherState.controls = normalizeWatcherControls(raw.controls);
+  watcherState.processed = Array.isArray(raw.processed) ? raw.processed.filter((p: any) => p?.commentId).slice(0, WATCHER_MAX_PROCESSED) : [];
+  watcherState.processedWindow = Array.isArray(raw.processedWindow) ? raw.processedWindow.filter((n: any) => Number.isFinite(n)).slice(-2000) : [];
+  watcherState.opportunities = Array.isArray(raw.opportunities) ? raw.opportunities.slice(0, 200) : [];
+  watcherState.audit = Array.isArray(raw.audit) ? raw.audit.slice(0, WATCHER_MAX_AUDIT) : [];
+  watcherState.lastPollAt = typeof raw.lastPollAt === "string" ? raw.lastPollAt : null;
+  watcherState.lastCommentId = typeof raw.lastCommentId === "string" ? raw.lastCommentId : null;
+  watcherState.lastCommentAt = typeof raw.lastCommentAt === "string" ? raw.lastCommentAt : null;
+  watcherState.lastError = typeof raw.lastError === "string" ? raw.lastError : null;
+  watcherState.consecutiveErrors = Number.isFinite(raw.consecutiveErrors) ? Number(raw.consecutiveErrors) : 0;
+  watcherState.pollCount = Number.isFinite(raw.pollCount) ? Number(raw.pollCount) : 0;
+  watcherState.brief = raw.brief && typeof raw.brief === "object" ? raw.brief : null;
+  watcherState.briefDate = typeof raw.briefDate === "string" ? raw.briefDate : null;
+  watcherState.lastScanned = Number.isFinite(raw.lastScanned) ? Number(raw.lastScanned) : 0;
+}
+
+/** إيقاع المراقبة الفعلي (قابل للضبط بحدود آمنة، بلا polling عدواني). */
+function watcherCadenceMs(): number {
+  return normalizeCadenceMs(process.env.YOUTUBE_WATCHER_CADENCE_MS ?? null);
+}
+
+/** هل يمكن للـwatcher تنفيذ الرد فعلياً الآن؟ (مصدر الحقيقة الوحيد للحكم). */
+function watcherReplyExecutionReady(): { ready: boolean; code?: string; reason?: string } {
+  const g = youtubeOperationGuard();
+  if (!g.ok) return { ready: false, code: g.code, reason: g.error };
+  if (!youtubeForceSslGranted()) return { ready: false, code: "SCOPE_UPGRADE_REQUIRED", reason: "إعادة ربط YouTube مطلوبة (force-ssl)." };
+  const d = youtubeDelegationCheck("system", { toolId: "youtube_reply", args: {} });
+  if (!d.allowed) return { ready: false, code: d.code || "DELEGATION_REQUIRED", reason: d.reason };
+  return { ready: true };
+}
+
+/**
+ * دورة مراقبة واحدة: تقرأ أحدث الفيديوهات والتعليقات الحقيقية، تعالج كل تعليق
+ * جديد (تجاهل/تصعيد/رد حقيقي)، وتحفظ الحالة. **لا تختلق تعليقاً ولا رداً**،
+ * ولا تُعلن نجاحاً بلا معرّف رد من YouTube. لا تفقد شيئاً عند الانقطاع: التقدّم
+ * يُحفظ بعد كل معالجة، وكل تعليق معلّق يُعالَج في الدورة التالية.
+ */
+async function runYouTubeWatcherCycle(trigger: "schedule" | "manual" = "schedule"): Promise<{ ok: boolean; error?: string; [k: string]: any }> {
+  if (watcherRunning) return { ok: false, error: "دورة مراقبة قيد التنفيذ." };
+  watcherRunning = true;
+  const now = Date.now();
+  let newDetected = 0, replied = 0, escalated = 0, skipped = 0, verified = 0, failed = 0;
+  try {
+    const controls = normalizeWatcherControls(watcherState.controls);
+    const readGate = watcherGate(controls, "read");
+    if (!readGate.allowed) {
+      watcherState.lastPollAt = new Date(now).toISOString();
+      watcherAudit({ action: "poll_skipped", reason: readGate.reason, decision: readGate.code });
+      await persistWatcherState();
+      return { ok: true, skippedPoll: true, gate: readGate.code, newDetected, replied, escalated, skipped, verified, failed };
+    }
+    const guard = youtubeOperationGuard();
+    if (!guard.ok) {
+      watcherState.lastError = guard.code || "CONNECTOR_NOT_READY";
+      watcherState.consecutiveErrors += 1;
+      watcherState.lastPollAt = new Date(now).toISOString();
+      watcherAudit({ action: "poll_error", error: watcherState.lastError, reason: guard.error });
+      await persistWatcherState();
+      return { ok: false, error: guard.error, code: guard.code, newDetected, replied, escalated, skipped, verified, failed };
+    }
+    const videosRes = await youtubeClient().listMyVideos((await ensureYouTubeAccessToken()).token!, {
+      uploadsPlaylistId: String(youtubeStoredCredentials()?.uploadsPlaylistId || ""), maxResults: 25,
+    });
+    if (!videosRes.ok || !videosRes.data) {
+      watcherState.lastError = String(videosRes.code || "VIDEO_LIST_FAILED");
+      watcherState.consecutiveErrors += 1;
+      watcherState.lastPollAt = new Date(now).toISOString();
+      watcherAudit({ action: "poll_error", error: watcherState.lastError, reason: videosRes.error });
+      await persistWatcherState();
+      return { ok: false, error: videosRes.error, code: videosRes.code, newDetected, replied, escalated, skipped, verified, failed };
+    }
+    const videoIds = videosRes.data.videos.map((v: any) => v.videoId).filter(Boolean).slice(0, YOUTUBE_COMMENT_SCAN_VIDEO_LIMIT);
+    const commentsRes = await buildAgentToolContext("system", "system").youtubeComments(videoIds);
+    if (!commentsRes.ok) {
+      watcherState.lastError = String(commentsRes.code || "COMMENTS_FETCH_FAILED");
+      watcherState.consecutiveErrors += 1;
+      watcherState.lastPollAt = new Date(now).toISOString();
+      watcherAudit({ action: "poll_error", error: watcherState.lastError, reason: commentsRes.error });
+      await persistWatcherState();
+      return { ok: false, error: commentsRes.error, code: commentsRes.code, newDetected, replied, escalated, skipped, verified, failed };
+    }
+    const comments: any[] = commentsRes.comments || [];
+    const replyReady = watcherReplyExecutionReady();
+    const expectedChannelId = String(youtubeStoredCredentials()?.channelId || "");
+    const ownNames = [String(workspace.showroom?.name || ""), "معرض الغرابي"];
+    const history = ((workspace as any).socialReplies || []).map((r: any) => ({ externalId: r.externalId, replyFingerprint: r.replyFingerprint, repliedAt: r.repliedAt }));
+    const latestFirst = [...comments].sort((a, b) => String(b.publishedAt || "").localeCompare(String(a.publishedAt || "")));
+    const pendingBefore = latestFirst.filter((c) => !hasProcessed(watcherState.processed, c.commentId));
+    const budget = Math.min(10, pendingBefore.length);
+    let analysed = 0;
+    for (const c of latestFirst) {
+      if (analysed >= budget) break;
+      if (hasProcessed(watcherState.processed, c.commentId)) continue;
+      analysed += 1;
+      newDetected += 1;
+      const cls = classifyComment(String(c.text || ""));
+      const alreadyReplied = history.some((h: any) => h.externalId === c.commentId);
+      const selfAuthored = isSelfAuthored(c.authorName, ownNames);
+      // قرار حتمي (لا AI): رد / تجاهل / تصعيد للمالك مع سبب صريح.
+      const decision = decideCommentAction({
+        intent: cls.intent, requiresHumanReview: cls.requiresHumanReview, isSpam: cls.isSpam, isSelfAuthored: selfAuthored, alreadyReplied, controls,
+      });
+      const baseEntry: WatcherProcessedEntry = {
+        commentId: c.commentId, stage: "ANALYZED", action: decision.action, reason: decision.reason,
+        videoId: c.videoId ?? null, authorName: c.authorName ?? null, text: String(c.text || ""), at: new Date().toISOString(),
+        publishedAt: c.publishedAt ?? null,
+      };
+      // حماية من ردٍّ على تعليق لا يخص القناة المتصلة (سياق القناة الموثّق).
+      const commentVideoId = String(c.videoId || "");
+      const belongsToChannel = !expectedChannelId || !commentVideoId || videoIds.includes(commentVideoId);
+      if (decision.action === "reply" && !belongsToChannel) {
+        baseEntry.stage = "SKIPPED"; baseEntry.action = "skip"; baseEntry.reason = "التعليق لا يخص سياق القناة الموثّقة.";
+        skipped += 1;
+        watcherState.processed.unshift(baseEntry);
+        watcherAudit({ action: "comment_skipped", commentId: c.commentId, videoId: c.videoId, reason: baseEntry.reason, decision: "skip" });
+        continue;
+      }
+      if (decision.action !== "reply") {
+        baseEntry.stage = decision.action === "escalate" ? "ESCALATED" : "SKIPPED";
+        if (decision.action === "escalate") escalated += 1; else skipped += 1;
+        watcherState.processed.unshift(baseEntry);
+        watcherAudit({ action: decision.action === "escalate" ? "comment_escalated" : "comment_skipped", commentId: c.commentId, videoId: c.videoId, reason: decision.reason, decision: decision.action });
+        { const cp = advanceCheckpoint({ lastCommentId: watcherState.lastCommentId, lastCommentAt: watcherState.lastCommentAt }, c.commentId, c.publishedAt || baseEntry.at); watcherState.lastCommentId = cp.lastCommentId; watcherState.lastCommentAt = cp.lastCommentAt; }
+        await persistWatcherState();
+        continue;
+      }
+      // الرد الحقيقي: يمر بنفس executeYouTubeReply (كل البوابات) — أو يُصعَّد بصراحة.
+      // إعادة فرض بوابة الأتمتة عند نقطة التنفيذ نفسها (دفاع مزدوج): يُمنع أي إرسال
+      // رغم قرار «رد» إن غُيّرت الإعدادات أو فُعّل الـKill Switch في هذه اللحظة.
+      const replyGate = watcherGate(controls, "reply");
+      if (!replyReady.ready || !replyGate.allowed) {
+        const code = !replyGate.allowed ? replyGate.code : (replyReady.code || "REPLY_NOT_READY");
+        baseEntry.stage = "ESCALATED";
+        baseEntry.reason = `الرد غير ممكن الآن: ${!replyGate.allowed ? replyGate.reason : (replyReady.reason || replyReady.code)}`;
+        escalated += 1;
+        watcherState.processed.unshift(baseEntry);
+        watcherAudit({ action: "reply_blocked", commentId: c.commentId, videoId: c.videoId, reason: baseEntry.reason, decision: "escalate", error: code });
+      } else {
+        const replyText = watcherIraqiReply(String(c.text || ''));
+        const result = await executeYouTubeReply({ commentId: String(c.commentId), text: replyText, commentText: String(c.text || "") }, "watcher");
+        const delivered = Boolean(result.body?.delivered && result.body?.externalReplyId);
+        if (delivered) {
+          replied += 1;
+          baseEntry.stage = "REPLIED"; baseEntry.replyText = replyText; baseEntry.externalReplyId = String(result.body.externalReplyId);
+          baseEntry.reason = "أُرسل الرد الحقيقي وردّ YouTube بمعرّف رد.";
+          watcherAudit({ action: "reply_sent", commentId: c.commentId, videoId: c.videoId, reason: baseEntry.reason, decision: "reply", generatedText: replyText, sent: true, providerId: String(result.body.externalReplyId), verification: String(result.body.state || "sent") });
+          // التحقق الحقيقي من التسليم من سجل الردود الفعلي (بلا إرسال ثانٍ).
+          const vr = await buildAgentToolContext("system", "system").youtubeReplyVerify({ commentId: String(c.commentId), externalReplyId: String(result.body.externalReplyId) });
+          if (vr.real) { verified += 1; baseEntry.stage = "VERIFIED"; baseEntry.reason = "تم التحقق من تسجيل الرد المُسلَّم."; }
+          else { baseEntry.reason = "أُرسل الرد لكن لم يُثبَّت التحقق من سجل التسليم."; }
+        } else {
+          failed += 1;
+          baseEntry.stage = "FAILED";
+          baseEntry.reason = `فشل إرسال الرد: ${result.body?.code || result.status}`;
+          watcherAudit({ action: "reply_failed", commentId: c.commentId, videoId: c.videoId, reason: baseEntry.reason, decision: "fail", sent: false, error: String(result.body?.code || result.status) });
+        }
+      }
+      watcherState.processed.unshift(baseEntry);
+      if (watcherState.processed.length > WATCHER_MAX_PROCESSED) watcherState.processed.length = WATCHER_MAX_PROCESSED;
+    { const cp = advanceCheckpoint({ lastCommentId: watcherState.lastCommentId, lastCommentAt: watcherState.lastCommentAt }, c.commentId, c.publishedAt || baseEntry.at); watcherState.lastCommentId = cp.lastCommentId; watcherState.lastCommentAt = cp.lastCommentAt; }
+      await persistWatcherState();
+    }
+    watcherState.lastScanned = videoIds.length;
+    watcherState.lastPollAt = new Date(now).toISOString();
+    watcherState.pollCount += 1;
+    watcherState.consecutiveErrors = 0;
+    watcherState.lastError = null;
+    watcherState.processedWindow = [...watcherState.processedWindow, now].slice(-2000);
+    // الفرص: أسئلة متكررة/قفزة تفاعل — تسجيل بلا تنفيذ.
+    const questionCounts = new Map<string, number>();
+    for (const p of watcherState.processed) {
+      if (p.stage === 'SKIPPED' || p.stage === 'ESCALATED') continue;
+      const t = String(p.text || '').trim();
+      if (t && (p.action === 'reply' || p.action === 'escalate')) questionCounts.set(t, (questionCounts.get(t) || 0) + 1);
+    }
+    const repeated = [...questionCounts.entries()].filter(([, n]) => n >= 3).map(([text, count]) => ({ text, count }));
+    const opps = detectOpportunities({ repeatedQuestions: repeated, newScanned: newDetected, previousScanned: 0, now });
+    if (opps.length) {
+      for (const o of opps) if (!watcherState.opportunities.some((x) => x.id === o.id)) watcherState.opportunities.unshift(o);
+      watcherState.opportunities = watcherState.opportunities.slice(0, 200);
+    }
+    watcherLastRun = { newDetected, replied, escalated, skipped, verified, failed, at: new Date(now).toISOString() };
+    watcherAudit({ action: "poll_complete", reason: trigger, decision: "ok" });
+    await persistWatcherState();
+    return { ok: true, newDetected, replied, escalated, skipped, verified, failed };
+  } catch (error: any) {
+    watcherState.lastError = String(error?.code || error?.message || "watcher_cycle_failed").slice(0, 120);
+    watcherState.consecutiveErrors += 1;
+    watcherState.lastPollAt = new Date(now).toISOString();
+    watcherAudit({ action: "poll_error", error: watcherState.lastError });
+    await persistWatcherState();
+    return { ok: false, error: watcherState.lastError, newDetected, replied, escalated, skipped, verified, failed };
+  } finally {
+    watcherRunning = false;
+  }
+}
+
+/** لقطة حالة المراقبة الكاملة للواجهة/الصحة (بلا أي سرّ). */
+function watcherStatusBlock() {
+  const cadence = watcherCadenceMs();
+  const processed = watcherState.processed;
+  const now = Date.now();
+  // الزخم من زمن نشر التعليق الحقيقي (publishedAt) لا من وقت معالجتنا، مع fallback
+  // إلى وقت المعالجة فقط إن غاب الزمن الحقيقي. حجم العيّنة يُعلن صراحةً.
+  const velocity = computeCommentVelocity(processed.map((p) => p.publishedAt || p.at), now);
+  const peakHours = computePeakHours(processed.map((p) => p.publishedAt));
+  const stageCount = (s: YouTubeCommentStage) => processed.filter((p) => p.stage === s).length;
+  // عدّادات حقيقية لكل الأنظمة (لا تُصفَّر مع نافذة الـ24 ساعة).
+  const counters = {
+    detected: processed.length,
+    replied: stageCount("REPLIED") + stageCount("VERIFIED"),
+    verified: stageCount("VERIFIED"),
+    escalated: stageCount("ESCALATED"),
+    skipped: stageCount("SKIPPED"),
+    failed: stageCount("FAILED"),
+  };
+  const lastReply = processed.find((p) => p.externalReplyId) || null;
+  const lastVerified = processed.find((p) => p.stage === "VERIFIED") || null;
+  const lastPublish = ((workspace as any).publishRecords || []).find((r: any) => r.platform === "youtube") || null;
+  const attentionIds = new Set(processed.filter((p) => p.stage === "ESCALATED").map((p) => p.commentId));
+  const attention = processed.filter((p) => p.stage === "ESCALATED").slice(0, 50).map((p) => ({
+    commentId: p.commentId, videoId: p.videoId, authorName: p.authorName, text: p.text, reason: p.reason, at: p.at,
+  }));
+  return {
+    watcherActive: Boolean(watcherState.controls.enabled && !watcherState.controls.paused && watcherStartedAt),
+    controls: watcherControlsView(watcherState.controls),
+    cadenceMs: cadence,
+    lastPollAt: watcherState.lastPollAt,
+    nextPollAt: nextPollAt(watcherState.lastPollAt, cadence),
+    pollCount: watcherState.pollCount,
+    lastNewCommentAt: watcherState.lastCommentAt,
+    lastCommentId: watcherState.lastCommentId,
+    processedCount: processed.length,
+    lastReply: lastReply ? { commentId: lastReply.commentId, externalReplyId: lastReply.externalReplyId, replyText: lastReply.replyText, at: lastReply.at } : null,
+    lastVerifiedReply: lastVerified ? { commentId: lastVerified.commentId, at: lastVerified.at } : null,
+    lastPublish: lastPublish ? { externalVideoId: lastPublish.externalVideoId || null, state: lastPublish.state, at: lastPublish.executedAt } : null,
+    lastError: watcherState.lastError,
+    consecutiveErrors: watcherState.consecutiveErrors,
+    queueSize: 0,
+    failedCount: processed.filter((p) => p.stage === "FAILED").length,
+    escalatedCount: attentionIds.size,
+    counters,
+    attentionRequired: attention,
+    velocity,
+    peakHours,
+    byStage: YOUTUBE_COMMENT_STAGES.reduce((acc: Record<string, number>, s) => { acc[s] = processed.filter((p) => p.stage === s).length; return acc; }, {}),
+    opportunities: watcherState.opportunities.slice(0, 50),
+    brief: watcherState.brief,
+    lastRun: watcherLastRun,
+    note: "مراقبة حقيقية لتعليقات YouTube — كل الحالات من سجلات فعلية، لا بيانات مُختلقة.",
+  };
+}
+
+/** تقرير YouTube اليومي الحتمي من السجلات الحقيقية (بلا استهلاك AI). */
+function buildWatcherDailyBrief(): any {
+  const processed = watcherState.processed;
+  const dayAgo = Date.now() - 24 * 3_600_000;
+  const recent = processed.filter((p) => Date.parse(p.at) >= dayAgo);
+  const sentiment = { positive: 0, negative: 0, neutral: 0 };
+  const questions = new Map<string, number>();
+  for (const p of recent) {
+    const cls = classifyComment(p.text);
+    if (cls.sentiment === 'positive') sentiment.positive += 1;
+    else if (cls.sentiment === 'negative') sentiment.negative += 1;
+    else sentiment.neutral += 1;
+    if (cls.intent === 'question' || cls.intent === 'business_inquiry') {
+      const key = p.text.trim().slice(0, 120);
+      questions.set(key, (questions.get(key) || 0) + 1);
+    }
+  }
+  const topQuestions = [...questions.entries()].sort((a, b) => b[1] - a[1]).map(([text, count]) => ({ text, count }));
+  const videos = ((workspace as any).youtubeLastAnalytics?.videos || []) as any[];
+  const sorted = [...videos].sort((a, b) => Number(b.viewCount || 0) - Number(a.viewCount || 0));
+  return buildDailyBrief({
+    date: new Date().toISOString().slice(0, 10),
+    newComments: recent.length,
+    replies: recent.filter((p) => p.stage === 'REPLIED' || p.stage === 'VERIFIED').length,
+    skipped: recent.filter((p) => p.stage === 'SKIPPED').length,
+    escalated: recent.filter((p) => p.stage === 'ESCALATED').length,
+    verifiedReplies: recent.filter((p) => p.stage === 'VERIFIED').length,
+    failedReplies: recent.filter((p) => p.stage === 'FAILED').length,
+    sentiment,
+    topQuestions,
+    velocity: computeCommentVelocity(recent.map((p) => p.publishedAt || p.at), Date.now()),
+    peakHours: computePeakHours(processed.map((p) => p.publishedAt)),
+    videos: {
+      total: videos.length,
+      bestPerforming: sorted.slice(0, 3).map((v) => ({ videoId: v.videoId, title: v.title ?? null, metric: Number(v.viewCount || 0) })),
+      weakPerforming: sorted.slice(-3).filter((v) => v && v.videoId).map((v) => ({ videoId: v.videoId, title: v.title ?? null, metric: Number(v.viewCount || 0) })),
+    },
+    attentionRequired: recent.filter((p) => p.stage === 'ESCALATED').map((p) => ({ commentId: p.commentId, reason: p.reason, text: p.text })),
+    sampleNotes: [`عيّنة اليوم: ${recent.length} تعليقاً حقيقياً من آخر 24 ساعة.`, videos.length ? `عدد الفيديوهات في أحدث قراءة: ${videos.length}.` : 'لم تُقرأ فيديوهات بعد.'],
+  });
+}
+
+/** صياغة الرد العراقي الحتمي للـwatcher (نفس صياغة العقل، بلا AI). */
+function watcherIraqiReply(text: string): string {
+  const cls = classifyComment(String(text || ""));
+  return buildDeterministicReply(cls);
+}
+
+/**
+ * حلقة المراقبة المستمرة (24/7): job داخلي يعمل داخل عملية Render الدائمة
+ * (web process) مستقل تماماً عن المتصفح — إغلاق المتصفح/الهاتف لا يؤثر. كل
+ * دورة تُنفَّذ إن حان وقتها وفق الإيقاع المضبوط، وتحفظ حالتها عبر المحوّل
+ * (Postgres) فتصمد بعد restart/deploy. `.unref()` يمنع منع الخروج النظيف.
+ */
+function startYouTubeWatcher(): void {
+  if (watcherStartedAt) return;
+  watcherStartedAt = new Date().toISOString();
+  const tick = () => {
+    const cadence = watcherCadenceMs();
+    if (!isPollDue(watcherState.lastPollAt, Date.now(), cadence)) return;
+    runYouTubeWatcherCycle("schedule").catch(() => { /* الخطأ مسجَّل داخل الدورة */ });
+  };
+  const timer = setInterval(tick, Math.min(60_000, watcherCadenceMs()));
+  (timer as any).unref?.();
+  // دورة إقلاع أولى بعد مهلة قصيرة (تسمح باكتمال تجهيز المخزن).
+  const boot = setTimeout(tick, 15_000);
+  (boot as any).unref?.();
+}
+
+// --- مسارات التحكم بالمراقبة (Owner Controls + Kill Switch) — للمالك فقط ---
+app.get("/api/agent/youtube/watcher", authenticateToken, (_req, res) => {
+  res.json({ success: true, watcher: watcherStatusBlock() });
+});
+
+app.post("/api/agent/youtube/watcher/controls", requireOwner, async (req, res) => {
+  const body = req.body || {};
+  watcherState.controls = normalizeWatcherControls({ ...watcherState.controls, ...body });
+  audit((req as any).user.id, "youtube_watcher_controls_updated", JSON.stringify({ ...watcherState.controls }));
+  await persistWatcherState();
+  res.json({ success: true, controls: watcherControlsView(watcherState.controls), note: "حُدِّثت إعدادات الأتمتة؛ تسري فوراً على الدورة التالية." });
+});
+
+app.post("/api/agent/youtube/watcher/poll", requireOwner, async (req, res) => {
+  const result = await runYouTubeWatcherCycle("manual");
+  res.json({ success: result.ok, result, watcher: watcherStatusBlock() });
+});
+
+app.get("/api/agent/youtube/watcher/brief", authenticateToken, (_req, res) => {
+  const brief = buildWatcherDailyBrief();
+  res.json({ success: true, brief });
+});
+
+app.get("/api/agent/youtube/watcher/audit", authenticateToken, (req, res) => {
+  const limit = Math.max(1, Math.min(200, Number(req.query.limit || 50)));
+  res.json({ success: true, audit: watcherState.audit.slice(0, limit), count: watcherState.audit.length });
+});
+
 /**
  * منفّذ الرفع الحقيقي للفيديو (videos.insert resumable) — مصدر واحد يمر بكل
  * البوابات: موافقة صريحة → سلامة المحتوى → مادة فعلية → اتصال موثق → idempotency
@@ -6238,6 +6712,10 @@ async function bootstrapStorage(): Promise<void> {
       if (control) applyControlSnapshot(control);
       const agentState = await storageAdapter.read<any>(STORAGE_KEY_AGENT);
       if (agentState && Array.isArray(agentState.tasks)) agentOrchestrator.restore(agentState.tasks);
+      // حالة مدير تشغيل YouTube (المراقبة/التحكم/سجل المعالجة): تُقرأ قبل بدء
+      // الخدمة فيصمد الـcheckpoint وسجل منع التكرار وإعدادات الأتمتة بعد restart.
+      const watcher = await storageAdapter.read<any>(WATCHER_STATE_KEY);
+      if (watcher) applyWatcherStateSnapshot(watcher);
     } catch (error: any) {
       storageInitError = String(error?.code || error?.name || "state_read_failed").slice(0, 60);
       return;
@@ -6246,6 +6724,8 @@ async function bootstrapStorage(): Promise<void> {
     // للملف المحلي: القراءة متزامنة عند الإقلاع كما في لقطة الحالة.
     loadControlStateSync();
     loadAgentStateSync();
+    const watcher = storageAdapter.readSync<any>(WATCHER_STATE_KEY);
+    if (watcher) applyWatcherStateSnapshot(watcher);
   }
   // الجهوزية تُعلن قبل مزامنة البصمة كي تُحفظ حالة التحكّم فعلاً عند أول إقلاع.
   storageReady = true;
@@ -7569,6 +8049,9 @@ app.get("/api/health", (_req, res) => {
     // تفويض تشغيل YouTube (نطاق YouTube فقط): منطقي بلا أي سرّ، ويُعلن الإجراء
     // التالي — منح التفويض يسمح للعقل بتنفيذ عمليات YouTube المحدّدة تلقائياً.
     youtubeDelegation: youtubeDelegationBlock(),
+    // مدير تشغيل YouTube 24/7: حالة المراقبة المستقلة عن المتصفح (منطقي بلا سرّ).
+    // يُعلن كل الحقائق: نشاط المراقبة، الإيقاع، آخر فحص/تعليق/رد، المعلّق، الأخطاء.
+    youtubeWatcher: watcherStatusBlock(),
     // حالة موصل TikTok الحقيقي (منطقي فقط بلا أي سرّ أو رمز).
     tiktokOAuth: (() => {
       const c = tiktokOAuthConfig();
@@ -9350,6 +9833,10 @@ async function startServer() {
   app.listen(PORT, "0.0.0.0", () => {
     console.log(`[الغرابي AI Server] running on http://0.0.0.0:${PORT}`);
   });
+
+  // مدير تشغيل YouTube 24/7: يبدأ حلقة المراقبة الداخلية بعد جهوزية المخزن
+  // والاستماع. مستقلة عن المتصفح تماماً، وتصمد بعد restart/deploy بحفظ حالتها.
+  startYouTubeWatcher();
 
   // إغلاق نظيف: ينتظر تفريغ طابور الكتابة (مع مهلة صارمة ≤ 10 ثوانٍ) ثم يُنهي
   // اتصال قاعدة البيانات ويخرج. المهلة تمنع تعليق العملية إن تجمّد المخزن.

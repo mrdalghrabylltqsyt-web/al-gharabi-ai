@@ -17,6 +17,7 @@ import { CustomerCenterView } from './components/customers/CustomerCenterView';
 import { ShowroomDatabaseView } from './components/database/ShowroomDatabaseView';
 import { CentralAgentView } from './components/agent/CentralAgentView';
 import { CentralAgentConsole } from './components/agent/CentralAgentConsole';
+import { YouTubeOperationsView } from './components/agent/YouTubeOperationsView';
 import { BrainCommandView } from './components/agent/BrainCommandView';
 import { MarketingAgentView } from './components/agent/MarketingAgentView';
 import { ContentCalendarView } from './components/calendar/ContentCalendarView';
@@ -92,6 +93,7 @@ const AppContent: React.FC = () => {
       case 'database': return <ShowroomDatabaseView />;
       case 'agent': return <CentralAgentView />;
       case 'central_agent': return <CentralAgentConsole />;
+      case 'youtube_operations': return <YouTubeOperationsView />;
       case 'brain_manager': return <BrainCommandView />;
       case 'marketing_agent': return <MarketingAgentView />;
       case 'calendar': return <ContentCalendarView />;

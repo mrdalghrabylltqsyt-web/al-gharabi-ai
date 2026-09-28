@@ -725,10 +725,40 @@ add('youtube-cycle-platform-agnostic', agentPlanner.includes('wantsYouTubeCommen
 add('youtube-cycle-owner-phrase-test', agentTest.includes('صياغة المالك => youtube_cycle') && agentTest.includes('ولّد') && agentTest.includes('نفّذ'), 'اختبار انحدار يثبت صياغة المالك الفعلية (ولّد/نفّذ/تحقق) => youtube_cycle');
 add('youtube-cycle-no-missing-arg-regression', agentTest.includes("seenReplyArgs?.commentId === 'rc1'") && agentTest.includes('iraqiSuggestedReply') && agentTest.includes('replyCalledNoComment') && agentTest.includes('replyCalledNoText'), 'اختبار يمنع رجوع MISSING_ARGUMENT: commentId/نص الرد يُمرَّران من المخرَجات الحقيقية');
 
+// -------------------------------------------------------------
+// YouTube 24/7 Autonomous Operations Manager (مدير تشغيل YouTube)
+// -------------------------------------------------------------
+const watcherModule = read('engine/social/youtubeWatcher.ts');
+const watcherTest = read('engine/tests/youtube.watcher.test.ts');
+const watcherUi = read('src/components/agent/YouTubeOperationsView.tsx');
+add('youtube-watcher-module', watcherModule.includes('defaultWatcherControls') && watcherModule.includes('watcherGate') && watcherModule.includes('decideCommentAction') && watcherModule.includes('computeCommentVelocity') && watcherModule.includes('buildDailyBrief'), 'وحدة مدير تشغيل YouTube (منطق خالص: تحكم/بوابة/قرار/زخم/تقرير) موجودة');
+add('youtube-watcher-safe-default', watcherModule.includes('autoReply: false') && watcherModule.includes('autoPublish: false') && watcherModule.includes("return { enabled: true, autoReply: false"), 'الأتمتة آمنة افتراضياً: الرد/النشر/الجدولة معطّلة حتى يمكّنها المالك');
+add('youtube-watcher-kill-switch', watcherModule.includes('paused') && watcherModule.includes('AUTOMATION_PAUSED') && watcherModule.includes('killSwitchActive'), 'Kill Switch يوقف كل الإرسال فوراً مع إبقاء القراءة/التحليل');
+add('youtube-watcher-lifecycle', watcherModule.includes('YOUTUBE_COMMENT_STAGES') && watcherModule.includes("'ESCALATED'") && watcherModule.includes("'VERIFIED'"), 'دورة حياة التعليق (NEW→…→REPLIED→VERIFIED + SKIPPED/ESCALATED/FAILED) معرّفة');
+add('youtube-watcher-escalation', watcherModule.includes('requiresHumanReview || escalateIntent') && /business_inquiry/.test(watcherModule) && /complaint/.test(watcherModule), 'الشكاوى/الاستفسارات التجارية/الحساسة تُصعَّد للمالك بلا رد آلي');
+add('youtube-watcher-no-fake-data', watcherModule.includes('sampleSize') && watcherModule.includes('sampleNotes') && watcherModule.includes("= 'insufficient'"), 'لا اختراع أرقام: حجم العيّنة والقيود تُعلن، والاتجاه لا يُعلن بلا عيّنة كافية');
+add('youtube-watcher-peak-hours-honest', watcherModule.includes('computePeakHours') && watcherModule.includes('total >= 6') && watcherModule.includes('peakHour: number | null = null'), 'وقت الذروة لا يُعلن بلا عيّنة كافية (≥6 تعليقات حقيقية)');
+add('youtube-watcher-velocity-real-published', watcherModule.includes('publishedAt') && server.includes('computeCommentVelocity(processed.map((p) => p.publishedAt || p.at)') && server.includes('publishedAt: c.publishedAt ?? null'), 'الزخم وأوقات الذروة من publishedAt الحقيقي لا من وقت المعالجة');
+add('youtube-watcher-ui-counters', watcherUi.includes('counters?.detected') && watcherUi.includes('counters?.replied') && watcherUi.includes('counters?.escalated') && watcherUi.includes('counters?.skipped') && watcherUi.includes('Running') && watcherUi.includes('Paused'), 'الواجهة تعرض بوضوح: يعمل/موقوف، المكتشفة، الردود، التصعيدات، التجاهلات، الأخطاء');
+add('youtube-watcher-worker-in-process', server.includes('function startYouTubeWatcher') && server.includes('setInterval(tick') && server.includes('startYouTubeWatcher();'), 'حلقة المراقبة تعمل داخل عملية الخادم الدائمة (مستقلة عن المتصفح)');
+add('youtube-watcher-cycle-real-executor', server.includes('await executeYouTubeReply({ commentId: String(c.commentId), text: replyText, commentText: String(c.text || "") }, "watcher")'), 'دورة المراقبة تنفّذ الرد عبر منفّذ الرد الحقيقي الموحّد (لا مسار جانبي)');
+add('youtube-watcher-delegation-gated', server.includes('watcherReplyExecutionReady') && server.includes('youtubeDelegationCheck') && server.includes('DELEGATION_REQUIRED'), 'الرد الآلي محجوب بلا تفويض فعّال (delegation gate محفوظ)');
+add('youtube-watcher-double-gate', server.includes('const replyGate = watcherGate(controls, "reply")') && server.includes('if (!replyReady.ready || !replyGate.allowed)'), 'فرض مزدوج: بوابة الأتمتة تُعاد فحصها عند نقطة التنفيذ نفسها (لا تجاوز)');
+add('youtube-watcher-no-fake-arg', !/commentId:\s*"[a-zA-Z0-9_-]+"/.test(server.slice(server.indexOf('async function runYouTubeWatcherCycle'), server.indexOf('function startYouTubeWatcher'))), 'لا معرّف تعليق مُختلق في دورة المراقبة (commentId يأتي من YouTube فقط)');
+add('youtube-watcher-honest-delivery', server.includes("const delivered = Boolean(result.body?.delivered && result.body?.externalReplyId);") && server.includes("baseEntry.stage = \"REPLIED\""), 'لا يُسجَّل رد مُسلَّم بلا معرّف رد حقيقي من YouTube');
+add('youtube-watcher-durable-state', server.includes('WATCHER_STATE_KEY') && server.includes('persistWatcherState') && server.includes('applyWatcherStateSnapshot') && server.includes('storageAdapter.read<any>(WATCHER_STATE_KEY)') && server.includes('storageAdapter.readSync<any>(WATCHER_STATE_KEY)'), 'حالة المراقبة تُحفظ/تُسترجع عبر المحوّل فتصمد بعد restart/deploy');
+add('youtube-watcher-owner-controls', server.includes('/api/agent/youtube/watcher/controls') && server.includes('requireOwner') && server.includes('/api/agent/youtube/watcher/poll') && server.includes('/api/agent/youtube/watcher/brief'), 'مسارات التحكم/التشغيل/التقرير للمالك فقط');
+add('youtube-watcher-health-block', server.includes('youtubeWatcher: watcherStatusBlock()'), 'حالة مدير YouTube تُعلن في /api/health (نشاط/إيقاع/آخر رد/معلّق)');
+add('youtube-watcher-ui-tab', app.includes('YouTubeOperationsView') && app.includes("case 'youtube_operations'") && read('src/components/common/Sidebar.tsx').includes("id: 'youtube_operations'"), 'واجهة مدير تشغيل YouTube مرتبطة بتبويب فعّال في القائمة');
+add('youtube-watcher-ui-honest', watcherUi.includes('getYouTubeWatcher') && watcherUi.includes('setYouTubeWatcherControls') && watcherUi.includes('pollYouTubeWatcher') && watcherUi.includes('lastReply') && watcherUi.includes('attentionRequired'), 'الواجهة تعرض الحالة الحقيقية من الخادم وتتيح التحكم (Kill Switch) للمالك');
+add('youtube-watcher-tests', watcherTest.includes('watcherGate') && watcherTest.includes('decideCommentAction') && watcherTest.includes('computeCommentVelocity') && watcherTest.includes('watcherReplyExecutionReady') && watcherTest.includes('executeYouTubeReply'), 'اختبارات مدير YouTube تثبت البوابة/القرار/الزخم/بوابة التفويض/الربط بالمنفّذ الحقيقي');
+
+
 const failed = checks.filter(x => !x.ok);
 console.table(checks);
 if (failed.length) {
   console.error(`FINAL AUDIT FAILED: ${failed.length} checks`);
+  for (const f of failed) console.error(`  - ${f.id}: ${f.detail}`);
   process.exit(1);
 }
 console.log(`FINAL AUDIT PASSED: ${checks.length} checks`);

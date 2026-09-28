@@ -1,0 +1,287 @@
+/**
+ * اختبارات مدير تشغيل YouTube 24/7 (YouTube Comment Watcher).
+ *
+ * منطق خالص بلا شبكة وبلا أسرار: عناصر التحكم/Kill Switch، بوابة الأتمتة، قرار
+ * الرد/التصعيد، دورة حياة التعليق، منع التكرار، الإيقاع، checkpoint، الزخم،
+ * التقرير اليومي، والفرص. يثبت أيضاً أن commentId ونص الرد الحقيقيين ينتقلان
+ * إلى منفّذ الرد، وأن غياب أحدهما يمنع الإرسال، وأن غياب التفويض يحجب الرد.
+ */
+
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import {
+  defaultWatcherControls,
+  normalizeWatcherControls,
+  watcherGate,
+  watcherControlsView,
+  decideCommentAction,
+  computeCommentVelocity,
+  computePeakHours,
+  buildDailyBrief,
+  detectOpportunities,
+  isPollDue,
+  nextPollAt,
+  normalizeCadenceMs,
+  advanceCheckpoint,
+  hasProcessed,
+  YOUTUBE_COMMENT_STAGES,
+  YOUTUBE_COMMENT_STAGE_LABELS_AR,
+  type YouTubeWatcherControls,
+  WATCHER_DEFAULT_CADENCE_MS,
+  WATCHER_MIN_CADENCE_MS,
+  WATCHER_MAX_CADENCE_MS,
+  type WatcherProcessedEntry,
+} from '../social/youtubeWatcher';
+import { classifyComment } from '../social/comments';
+
+let passed = 0;
+const failures: string[] = [];
+function check(name: string, condition: boolean, detail = ''): void {
+  if (condition) passed += 1;
+  else failures.push(`${name}${detail ? ` — ${detail}` : ''}`);
+}
+
+function entry(partial: Partial<WatcherProcessedEntry>): WatcherProcessedEntry {
+  return {
+    commentId: 'c0', stage: 'ANALYZED', action: 'reply', reason: 'r', videoId: 'v1', authorName: 'a', text: 't', at: new Date().toISOString(),
+    ...partial,
+  };
+}
+
+// --- A) عناصر التحكم والافتراضي الآمن + Kill Switch ---
+{
+  const d = defaultWatcherControls();
+  check('A: المراقبة مفعّلة افتراضياً (قراءة/تحليل)', d.enabled === true);
+  check('A: الرد الآلي معطّل افتراضياً', d.autoReply === false);
+  check('A: النشر الآلي معطّل افتراضياً', d.autoPublish === false);
+  check('A: الجدولة معطّلة افتراضياً', d.autoSchedule === false);
+  check('A: لا إيقاف افتراضي', d.paused === false && d.humanReviewMode === false);
+  const n = normalizeWatcherControls({ enabled: 'yes', autoReply: true, paused: true, unknown: 5 } as any);
+  check('A: التطبيع يقبل المنطقي فقط', n.autoReply === true && n.paused === true && n.enabled === true);
+  const view = watcherControlsView({ ...d, autoReply: true, paused: true });
+  check('A: Kill Switch يُعلن صراحةً', view.killSwitchActive === true);
+  check('A: الرد الفعّال يُحسب من كل الشروط', view.autoReplyEffective === false, JSON.stringify(view));
+}
+
+// --- B) بوابة الأتمتة: لا عملية تتجاوزها ---
+{
+  const c = defaultWatcherControls();
+  check('B: قراءة مسموحة افتراضياً', watcherGate(c, 'read').allowed === true);
+  check('B: الرد محجوب افتراضياً', watcherGate(c, 'reply').allowed === false && watcherGate(c, 'reply').code === 'AUTO_REPLY_DISABLED');
+  check('B: النشر محجوب افتراضياً', watcherGate(c, 'publish').code === 'AUTO_PUBLISH_DISABLED');
+  check('B: الجدولة محجوبة افتراضياً', watcherGate(c, 'schedule').code === 'AUTO_SCHEDULE_DISABLED');
+  const on = { ...c, autoReply: true };
+  check('B: الرد مسموح بعد التمكين', watcherGate(on, 'reply').allowed === true);
+  check('B: Kill Switch يوقف كل شيء', watcherGate({ ...on, paused: true }, 'reply').code === 'AUTOMATION_PAUSED');
+  check('B: Kill Switch يوقف القراءة أيضاً', watcherGate({ ...on, paused: true }, 'read').allowed === false);
+  check('B: التعطيل الكامل يمنع حتى القراءة', watcherGate({ ...on, enabled: false }, 'read').code === 'WATCHER_DISABLED');
+  check('B: وضع المراجعة يحجب الرد', watcherGate({ ...on, humanReviewMode: true }, 'reply').code === 'HUMAN_REVIEW_MODE');
+}
+
+// --- C) دورة حياة التعليق ---
+{
+  check('C: الحالات الإحدى عشرة متسقة مع المطلوب', YOUTUBE_COMMENT_STAGES.includes('NEW') && YOUTUBE_COMMENT_STAGES.includes('FETCHED') && YOUTUBE_COMMENT_STAGES.includes('ANALYZED') && YOUTUBE_COMMENT_STAGES.includes('REPLY_DECISION') && YOUTUBE_COMMENT_STAGES.includes('REPLIED') && YOUTUBE_COMMENT_STAGES.includes('VERIFIED') && YOUTUBE_COMMENT_STAGES.includes('SKIPPED') && YOUTUBE_COMMENT_STAGES.includes('ESCALATED'));
+  check('C: تسميات عربية لكل حالة', YOUTUBE_COMMENT_STAGES.every((s) => typeof YOUTUBE_COMMENT_STAGE_LABELS_AR[s] === 'string' && YOUTUBE_COMMENT_STAGE_LABELS_AR[s].length > 0));
+}
+
+// --- D) قرار الرد/التصعيد (حتمي) ---
+{
+  const on = { ...defaultWatcherControls(), autoReply: true };
+  const reply = decideCommentAction({ intent: 'other', requiresHumanReview: false, isSpam: false, isSelfAuthored: false, alreadyReplied: false, controls: on });
+  check('D: «جيد» (سؤال/تفاعل بسيط) => رد عند التمكين', reply.action === 'reply', reply.reason);
+  check('D: الشكوى => تصعيد للمالك بلا رد', decideCommentAction({ intent: 'complaint', requiresHumanReview: true, isSpam: false, isSelfAuthored: false, alreadyReplied: false, controls: on }).action === 'escalate');
+  check('D: الاستفسار التجاري (سعر/تقسيط) => تصعيد بلا اختراع معلومات', decideCommentAction({ intent: 'business_inquiry', requiresHumanReview: false, isSpam: false, isSelfAuthored: false, alreadyReplied: false, controls: on }).action === 'escalate');
+  check('D: السبام => تجاهل لا تصعيد', decideCommentAction({ intent: 'spam', requiresHumanReview: true, isSpam: true, isSelfAuthored: false, alreadyReplied: false, controls: on }).action === 'skip');
+  check('D: حساب المعرض => تجاهل', decideCommentAction({ intent: 'other', requiresHumanReview: false, isSpam: false, isSelfAuthored: true, alreadyReplied: false, controls: on }).action === 'skip');
+  check('D: تعليق مُعالَج => تجاهل (منع التكرار)', decideCommentAction({ intent: 'other', requiresHumanReview: false, isSpam: false, isSelfAuthored: false, alreadyReplied: true, controls: on }).action === 'skip');
+  check('D: بلا تمكين => تصعيد لا إرسال', decideCommentAction({ intent: 'other', requiresHumanReview: false, isSpam: false, isSelfAuthored: false, alreadyReplied: false, controls: defaultWatcherControls() }).action === 'escalate');
+  check('D: وضع المراجعة => تصعيد', decideCommentAction({ intent: 'other', requiresHumanReview: false, isSpam: false, isSelfAuthored: false, alreadyReplied: false, controls: { ...on, humanReviewMode: true } }).action === 'escalate');
+}
+
+// --- E) تصنيف التعليق الحقيقي «جيد» و«شكراً» ---
+{
+  const good = classifyComment('جيد');
+  check('E: «جيد» ليس سباماً ولا حساساً', !good.isSpam && !good.requiresHumanReview);
+  const thanks = classifyComment('شكراً لكم على الخدمة');
+  check('E: المدح => إيجابي', thanks.sentiment === 'positive' && thanks.intent === 'praise');
+  const price = classifyComment('كم سعر التقسيط؟');
+  check('E: سؤال السعر => استفسار تجاري/سؤال', price.intent === 'business_inquiry' || price.intent === 'question');
+}
+
+// --- F) منع التكرار + checkpoint (يصمد بعد restart) ---
+{
+  const processed = [entry({ commentId: 'c1', stage: 'VERIFIED' })];
+  check('F: تعليق مُعالَج يُكتشف', hasProcessed(processed, 'c1') === true);
+  check('F: تعليق جديد لا يُعتبر مُعالجاً', hasProcessed(processed, 'c2') === false);
+  check('F: حالة NEW لا تُعدّ معالجة', hasProcessed([entry({ commentId: 'c3', stage: 'NEW' })], 'c3') === false);
+  const cp1 = advanceCheckpoint({ lastCommentId: null, lastCommentAt: null }, 'c1', '2026-09-28T10:00:00.000Z');
+  check('F: checkpoint يُحدَّث', cp1.lastCommentId === 'c1' && cp1.lastCommentAt === '2026-09-28T10:00:00.000Z');
+  const cp2 = advanceCheckpoint(cp1, null, null);
+  check('F: checkpoint لا يُمحى بقيمة غائبة', cp2.lastCommentId === 'c1');
+  const cp3 = advanceCheckpoint(cp1, 'c2', '2026-09-28T11:00:00.000Z');
+  check('F: checkpoint يتقدّم لتعليق أحدث', cp3.lastCommentId === 'c2');
+}
+
+// --- G) الإيقاع (cadence) بحدود آمنة + الجدولة ---
+{
+  check('G: الافتراضي 5 دقائق', normalizeCadenceMs(null) === WATCHER_DEFAULT_CADENCE_MS);
+  check('G: حد أدنى دقيقة (لا polling عدواني)', normalizeCadenceMs(1) === WATCHER_MIN_CADENCE_MS);
+  check('G: حدّ أقصى ساعة', normalizeCadenceMs(99 * 3_600_000) === WATCHER_MAX_CADENCE_MS);
+  check('G: قيمة صالحة تمرّ', normalizeCadenceMs(120000) === 120000);
+  const now = Date.parse('2026-09-28T12:00:00.000Z');
+  check('G: بلا فحص سابق => مستحق', isPollDue(null, now, 300000) === true);
+  check('G: فحص قريب => غير مستحق', isPollDue('2026-09-28T11:59:30.000Z', now, 300000) === false);
+  check('G: فحص قديم => مستحق', isPollDue('2026-09-28T11:50:00.000Z', now, 300000) === true);
+  check('G: الفحص التالي محسوب', nextPollAt('2026-09-28T12:00:00.000Z', 300000) === '2026-09-28T12:05:00.000Z');
+}
+
+// --- H) الزخم (velocity) مع إعلان حجم العيّنة ---
+{
+  const now = Date.parse('2026-09-28T12:00:00.000Z');
+  const ts = [
+    '2026-09-28T11:50:00.000Z', '2026-09-28T11:40:00.000Z', '2026-09-28T11:20:00.000Z', '2026-09-28T11:00:00.000Z',
+    '2026-09-27T20:00:00.000Z', '2026-09-26T12:00:00.000Z',
+  ];
+  const v = computeCommentVelocity(ts, now);
+  check('H: عدد آخر ساعة صحيح', v.lastHour.count === 4, String(v.lastHour.count));
+  check('H: عدد آخر 24 ساعة صحيح', v.last24h.count === 5, String(v.last24h.count));
+  check('H: عدد آخر 7 أيام صحيح', v.last7d.count === 6, String(v.last7d.count));
+  check('H: حجم العيّنة مُعلن', v.sampleSize === 6);
+  check('H: الاتجاه لا يُعلن بلا عيّنة كافية', computeCommentVelocity(['2026-09-28T11:59:00.000Z'], now).trend === 'insufficient');
+  check('H: العيّنة الكافية تُنتج اتجاهاً', ['rising', 'steady', 'falling'].includes(v.trend), v.trend);
+  check('H: طابع غير صالح لا يُحسب', computeCommentVelocity(['bad', null, undefined], now).sampleSize === 0);
+}
+
+// --- I) التقرير اليومي + الفرص ---
+{
+  const now = Date.parse('2026-09-28T12:00:00.000Z');
+  const brief = buildDailyBrief({
+    date: '2026-09-28', newComments: 3, replies: 2, skipped: 1, escalated: 1, verifiedReplies: 2, failedReplies: 0,
+    sentiment: { positive: 1, negative: 0, neutral: 2 }, topQuestions: [{ text: 'كم السعر؟', count: 3 }],
+    velocity: computeCommentVelocity(['2026-09-28T11:00:00.000Z', '2026-09-28T11:30:00.000Z'], now),
+    videos: { total: 2, bestPerforming: [{ videoId: 'v1', metric: 100 }], weakPerforming: [{ videoId: 'v2', metric: 1 }] },
+    attentionRequired: [{ commentId: 'c9', reason: 'شكوى', text: 'متأخر' }],
+    sampleNotes: ['عيّنة 3'],
+  });
+  check('I: التقرير حتمي المصدر', brief.source === 'deterministic');
+  check('I: الأرقام كما هي بلا اختراع', brief.newComments === 3 && brief.escalated === 1);
+  check('I: توصية لوجود تصعيد', brief.recommendations.some((r) => r.includes('تدخلاً')));
+  check('I: حجم العيّنة يُعلن في التقرير', Array.isArray(brief.sampleNotes) && brief.sampleNotes.length > 0);
+
+  const opps = detectOpportunities({ repeatedQuestions: [{ text: 'كم السعر؟', count: 4 }], newScanned: 8, previousScanned: 3, now });
+  check('I: فرصة سؤال متكرر تُسجَّل', opps.some((o) => o.kind === 'repeated_question'));
+  check('I: فرصة قفزة تفاعل تُسجَّل', opps.some((o) => o.kind === 'engagement_spike'));
+  check('I: لا فرصة بلا تكرار كافٍ', detectOpportunities({ repeatedQuestions: [{ text: 'x', count: 1 }], newScanned: 1, previousScanned: 1, now }).length === 0);
+}
+
+// --- J) دورة كاملة محاكاة: commentId + نص الرد الحقيقيان يصلان للمنفّذ، ولا رد بلا قيم ---
+{
+  // محاكاة معالج دورة الـwatcher بمنطق القرار نفسه (بلا شبكة).
+  const on = { ...defaultWatcherControls(), autoReply: true };
+  const seen: Array<{ commentId: string; text: string; commentText?: string }> = [];
+  const executor = async (input: { commentId: string; text: string; commentText?: string }) => { seen.push(input); return { delivered: true, externalReplyId: 'yt-r-1', state: 'sent' }; };
+  const process = async (c: { commentId: string; text: string }) => {
+    const cls = classifyComment(c.text);
+    const decision = decideCommentAction({ intent: cls.intent, requiresHumanReview: cls.requiresHumanReview, isSpam: cls.isSpam, isSelfAuthored: false, alreadyReplied: false, controls: on });
+    if (decision.action !== 'reply') return { sent: false, decision: decision.action };
+    const text = 'أهلاً بك، شكراً لتواصلك معنا. فريق المعرض في خدمتك لأي استفسار.';
+    const r = await executor({ commentId: c.commentId, text, commentText: c.text });
+    return { sent: Boolean(r.externalReplyId && r.delivered), externalReplyId: r.externalReplyId };
+  };
+  const res = await process({ commentId: 'real-cm-1', text: 'جيد' });
+  check('J: الرد أُرسل للمنفّذ بمعرّف التعليق الحقيقي', seen[0]?.commentId === 'real-cm-1', JSON.stringify(seen));
+  check('J: النص الحقيقي وصل للمنفّذ', typeof seen[0]?.text === 'string' && seen[0].text.length > 0);
+  check('J: نص التعليق الأصلي وصل للتصنيف', seen[0]?.commentText === 'جيد');
+  check('J: النجاح يُقاس بمعرّف رد حقيقي', res.sent === true && res.externalReplyId === 'yt-r-1');
+  // بلا نص رد شخصي: منفّذ يرفض نصاً فارغاً — لا إرسال.
+  const calls: number[] = [];
+  const strictExecutor = async (input: { commentId: string; text: string }) => { if (!input.commentId || !input.text) return { delivered: false }; calls.push(1); return { delivered: true, externalReplyId: 'x' }; };
+  const bad = await strictExecutor({ commentId: '', text: 'نص' });
+  check('J: بلا commentId حقيقي لا إرسال', bad.delivered === false && calls.length === 0);
+  const bad2 = await strictExecutor({ commentId: 'c1', text: '' });
+  check('J: بلا نص رد حقيقي لا إرسال', bad2.delivered === false && calls.length === 0);
+}
+
+// --- K) تأكيد ربط الـwatcher بالخادم + بوابة التفويض (فحص الملف الفعلي) ---
+{
+  const server = readFileSync(join(process.cwd(), 'server.ts'), 'utf8');
+  check('K: الـwatcher يعمل داخل الخادم الدائم', server.includes('startYouTubeWatcher') && server.includes('app.listen'));
+  check('K: الـwatcher يمر بمنفّذ الرد الحقيقي الموحّد', server.includes('await executeYouTubeReply({ commentId: String(c.commentId), text: replyText, commentText: String(c.text || "") }, "watcher")'));
+  check('K: بوابة التفويض محفوظة (youtube_reply خارجي)', server.includes('watcherReplyExecutionReady') && server.includes('youtubeDelegationCheck'));
+  check('K: لا إرسال بلا معرّف رد حقيقي', server.includes('externalReplyId') && server.includes('delivered'));
+  check('K: حالة الـwatcher تُحفَظ عبر المحوّل (تصمد بعد restart)', server.includes('WATCHER_STATE_KEY') && server.includes('persistWatcherState'));
+  check('K: مسارات التحكم/Kill Switch للمالك موجودة', server.includes('/api/agent/youtube/watcher/controls') && server.includes('/api/agent/youtube/watcher/poll'));
+  check('K: حالة الـwatcher تُعلن في الصحة', server.includes('youtubeWatcher: watcherStatusBlock()'));
+}
+
+// --- L) أوقات الذروة: من زمن النشر الحقيقي، ولا تُعلن بلا عيّنة كافية ---
+{
+  const baghdadHour = (hour: number) => new Date(Date.UTC(2026, 8, 28, (hour - 3 + 24) % 24, 0, 0)).toISOString();
+  check('L: عيّنة صغيرة => لا ذروة معلنة', computePeakHours([baghdadHour(9), baghdadHour(9), baghdadHour(20)]).sufficient === false);
+  check('L: عيّنة صغيرة => peakHour=null', computePeakHours([baghdadHour(9), baghdadHour(9)]).peakHour === null);
+  const many = [baghdadHour(20), baghdadHour(20), baghdadHour(20), baghdadHour(20), baghdadHour(9), baghdadHour(10), baghdadHour(11)];
+  const peak = computePeakHours(many);
+  check('L: عيّنة كافية => ذروة معلنة', peak.sufficient === true && peak.peakHour !== null);
+  check('L: الذروة = الساعة 20 بغداد', peak.peakHour === 20, String(peak.peakHour));
+  check('L: حجم العيّنة مُعلن', peak.sampleSize === 7);
+  check('L: طابع غير صالح لا يُحسب', computePeakHours(['bad', null]).sampleSize === 0);
+}
+
+// --- M) الزخم يعتمد على زمن النشر الحقيقي لا وقت المعالجة ---
+{
+  const now = Date.parse('2026-09-28T12:00:00.000Z');
+  // تعليق نُشر قبل 10 دقائق لكن عولج قبل 5 ساعات: الزخم يجب أن يحسبه في آخر ساعة.
+  const published = new Date(now - 10 * 60_000).toISOString();
+  const processedAt = new Date(now - 5 * 3_600_000).toISOString();
+  const byPublished = computeCommentVelocity([published], now);
+  const byProcessed = computeCommentVelocity([processedAt], now);
+  check('M: الزخم من publishedAt يضعه في آخر ساعة', byPublished.lastHour.count === 1);
+  check('M: وقت المعالجة كان سيُخرجه من آخر ساعة (فارق حقيقي)', byProcessed.lastHour.count === 0);
+}
+
+// --- N) لا يمكن لأي تفعيل أن يتجاوز البوابات: القرار + بوابة الأتمتة + المنفّذ ---
+{
+  const base = defaultWatcherControls();
+  const comment = { intent: 'question', requiresHumanReview: false, isSpam: false, isSelfAuthored: false, alreadyReplied: false };
+  // منفّذ وهمي عدّاد فقط (لا إرسال حقيقي) — نتحقق هل يُستدعى.
+  let executorCalls = 0;
+  const run = (controls: YouTubeWatcherControls) => {
+    const d = decideCommentAction({ ...comment, controls });
+    const gate = watcherGate(controls, 'reply');
+    if (d.action === 'reply' && gate.allowed) executorCalls += 1;
+    return d.action;
+  };
+  executorCalls = 0;
+  run({ ...base, autoReply: false });
+  check('N: autoReply مغلق => لا استدعاء للمنفّذ', executorCalls === 0);
+  run({ ...base, autoReply: true, paused: true });
+  check('N: Kill Switch => لا استدعاء للمنفّذ', executorCalls === 0);
+  run({ ...base, autoReply: true, humanReviewMode: true });
+  check('N: وضع المراجعة البشرية => لا استدعاء للمنفّذ', executorCalls === 0);
+  run({ ...base, enabled: false, autoReply: true });
+  check('N: المراقبة معطّلة => لا استدعاء للمنفّذ', executorCalls === 0);
+  run({ ...base, autoReply: true });
+  check('N: autoReply مفعّل بلا عوائق => استدعاء واحد للمنفّذ', executorCalls === 1);
+  // بوابة الأتمتة مغلقة افتراضياً للرد.
+  check('N: بوابة الرد مغلقة افتراضياً', watcherGate(defaultWatcherControls(), 'reply').allowed === false);
+  check('N: بوابة القراءة مفتوحة افتراضياً', watcherGate(defaultWatcherControls(), 'read').allowed === true);
+}
+
+// --- O) فرض مزدوج في الخادم: بوابة الأتمتة عند نقطة التنفيذ + منع مسار جانبي ---
+{
+  const server = readFileSync(join(process.cwd(), 'server.ts'), 'utf8');
+  check('O: إعادة فرض بوابة الرد عند نقطة التنفيذ', server.includes('const replyGate = watcherGate(controls, "reply")'));
+  check('O: الشرط يجمع جاهزية التنفيذ والبوابة', server.includes('if (!replyReady.ready || !replyGate.allowed)'));
+  check('O: no fake commentId (لا اختلاق)', !/commentId:\s*["'][^"']+["']/.test(server.slice(server.indexOf('async function runYouTubeWatcherCycle'), server.indexOf('function startYouTubeWatcher'))));
+  check('O: الرد يُسجَّل مُسلَّماً فقط بمعرّف رد حقيقي', server.includes('const delivered = Boolean(result.body?.delivered && result.body?.externalReplyId);'));
+}
+
+// --- الخلاصة ---
+console.log('='.repeat(60));
+if (failures.length) {
+  console.error(`FAILED: ${failures.length} checks`);
+  for (const f of failures) console.error(`  - ${f}`);
+  process.exit(1);
+} else {
+  console.log(`PASSED: ${passed} youtube watcher checks`);
+}

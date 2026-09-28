@@ -2044,3 +2044,67 @@ YouTube؛ إيقاف ⇒ حجب فوري). final-audit = **500 فحص** (`youtub
 ونصه الرد العراقي المقترح، ثم الحجب بلا تفويض). فحوص final-audit: `youtube-cycle-*`،
 `argref-nested-output-path`، `youtube-reply-verify-*`، `youtube-reply-honest-delivery`،
 `agent-console-delivery-state`.
+
+## مدير تشغيل YouTube المستقل 24/7 (YouTube Autonomous Operations Manager) — Batch 18 (2026-09-28)
+
+تحويل العقل المركزي من وكيل ينفّذ مهمة يدوية فقط إلى **مدير تشغيل حقيقي لقناة YouTube
+يعمل 24/7** داخل خدمة Render (web process) **بلا أي اعتماد على المتصفح** — إغلاق
+المتصفح/الهاتف لا يوقف المراقبة، لأنها job داخلي في الخادم.
+
+**آلية العمل غير المتزامنة (لماذا هذا التصميم):** اختيرت مراقبة في نفس عملية الخادم
+بدل Webhook لأن استقبال تعليقات YouTube webhook يستلزم Google Cloud Pub/Sub + endpoint
+عام + قناة نشر — بنية خارجية جديدة وليست تحويلاً استباقياً حقيقياً. المراقبة الدورية
+(كل 5 دقائق افتراضياً، قابلة للضبط بحدود آمنة 1–60 دقيقة) تستخدم نفس الأدوات الحقيقية
+الموجودة، بدون أي تعديل OAuth/scopes أو منصة أخرى.
+
+**وحدة المنطق الخالص `engine/social/youtubeWatcher.ts` (بلا شبكة وبلا أسرار):**
+- `YouTubeWatcherControls` + `defaultWatcherControls` (**آمن افتراضياً**: المراقبة قراءة/
+  تحليل فقط؛ `autoReply`/`autoPublish`/`autoSchedule` معطّلة حتى يمكّنها المالك) + Kill
+  Switch (`paused`).
+- `watcherGate(controls, action)` — بوابة موحّدة لا تُتجاوز: القراءة مسموحة ما لم يكن
+  `paused`، والإرسال يحتاج `enabled && !paused && !humanReviewMode && <الإذن>`.
+- `decideCommentAction` — قرار حتمي: تعليق حساب المعرض/سبام/مُعالَج ⇒ تجاهل؛ شكوى/
+  استفسار تجاري/حساس ⇒ **تصعيد للمالك بلا رد** (لا اختراع معلومات سعر/تقسيط)؛ سؤال عام/
+  مدح/تفاعل بسيط ⇒ رد عند التمكين.
+- `YOUTUBE_COMMENT_STAGES` (NEW→FETCHED→ANALYZED→REPLY_DECISION→REPLIED→VERIFIED +
+  SKIPPED/ESCALATED/FAILED)، `hasProcessed`، `advanceCheckpoint` (منع المعالجة المزدوجة
+  يصمد بعد restart).
+- `computeCommentVelocity` (نوافذ ساعة/6/24/7أيام + اتجاه لا يُعلن بلا عيّنة كافية ≥4/24س)،
+  `buildDailyBrief` (تقرير حتمي بلا AI)، `detectOpportunities` (أسئلة متكررة/قفزة تفاعل).
+
+**دمج الخادم (`server.ts`):**
+- حالة المراقبة تُحفظ عبر محوّل الحالة في مفتاح `youtubeWatcher`
+  (`persistWatcherState`/`applyWatcherStateSnapshot`) وتُقرأ عند الإقلاع (file + Postgres)
+  فتصمد بعد restart/deploy/cold start.
+- `runYouTubeWatcherCycle` تقرأ الفيديوهات والتعليقات الحقيقية عبر نفس أدوات العقل، تعالج
+  كل تعليق جديد (بحدٍّ ثابت 10 لكل دورة)، وتنفّذ الرد عبر **نفس `executeYouTubeReply`**
+  (كل البوابات: اتصال موثق → force-ssl → سلامة محتوى → منع تكرار → منع الرد على حساب
+  المعرض → rate limit → idempotency). لا مسار إرسال جانبي إطلاقاً.
+- **بوابة التفويض محفوظة:** `watcherReplyExecutionReady()` تشترط اتصالاً موثقاً +
+  `force-ssl` + تفويض `youtube_reply` فعّال؛ بلا ذلك يُصعَّد التعليق ولا يُرسَل شيء.
+- **صدق التسليم:** لا يُسجَّل `REPLIED` ولا تُزاد عدّادات الرد/التحقق إلا بـ`externalReplyId`
+  حقيقي من YouTube وحالة `sent`، ثم يُتحقَّق من سجل التسليم الفعلي → `VERIFIED`.
+- `startYouTubeWatcher()` تُستدعى بعد `app.listen` (job داخلي مستقل عن المتصفح).
+- مسارات المالك: `GET /api/agent/youtube/watcher` (حالة)،
+  `POST .../watcher/controls` (Kill Switch/التمكين — `requireOwner`)،
+  `POST .../watcher/poll` (دورة يدوية)، `GET .../watcher/brief` (التقرير)،
+  `GET .../watcher/audit` (السجل). كلها عبر `authenticateToken`.
+- `/api/health.youtubeWatcher` يعلن: النشاط، الإيقاع، آخر فحص/تعليق/رد/تحقق، المعلّق،
+  الأخطاء، الزخم، الفرص — بلا أي سرّ.
+
+**الواجهة:** `src/components/agent/YouTubeOperationsView.tsx` (تبويب
+`youtube_operations` = «مدير تشغيل YouTube» في Sidebar) — تعرض الحالة الحقيقية من الخادم
+فقط: التشغيل المباشر، عناصر التحكم/Kill Switch (للمالك)، التعليقات التي تحتاج تدخلاً،
+الزخم، التقرير اليومي، وسجل الأتمتة.
+
+**اختبارات:** `engine/tests/youtube.watcher.test.ts` (`npm run test:watcher`، **71 فحصاً**):
+الافتراضي الآمن، البوابة، Kill Switch، دورة الحياة، القرار/التصعيد، منع التكرار،
+الإيقاع، الزخم، التقرير، دورة محاكاة تثبت وصول `commentId`/نص الرد الحقيقيين للمنفّذ
+ومنع الإرسال بلا أحدهما، وربط الـwatcher بالخادم/المنفّذ الحقيقي/بوابة التفويض. فحوص
+final-audit الستة عشر: `youtube-watcher-module` … `youtube-watcher-tests` (**535 فحصاً**
+إجمالاً).
+
+**لا يُمسّ:** OAuth/credentials/scopes، Facebook/Instagram/TikTok/Telegram، Gemini، أي سرّ.
+**نقطة توقف المالك:** لتشغيل الرد الآلي فعلياً: من تبويب «مدير تشغيل YouTube» فعّل
+«الرد الآلي» (مع بقاء تفويض YouTube `reply` فعّالاً). بلا التمكين تبقى القناة تحت المراقبة
+والتصعيد فقط — وهي الحالة الافتراضية الآمنة.
