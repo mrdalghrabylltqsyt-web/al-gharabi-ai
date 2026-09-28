@@ -73,8 +73,11 @@ export interface AgentToolContext {
   youtubeVideos: () => Promise<{ ok: boolean; videos?: any[]; error?: string; code?: string | null }>;
   /** إحصاءات القناة والفيديو + تحليل جمهور من المؤشرات المتاحة فعلاً. */
   youtubeAnalytics: () => Promise<{ ok: boolean; summary?: any; audience?: any; channel?: any; error?: string; code?: string | null }>;
-  /** قراءة تعليقات فيديو حقيقي (commentThreads.list) وتخزينها. */
-  youtubeComments: (videoId: string) => Promise<{ ok: boolean; comments?: any[]; inserted?: number; duplicates?: number; error?: string; code?: string | null }>;
+  /**
+   * قراءة تعليقات فيديو/فيديوهات حقيقية (commentThreads.list - order=time) وتخزينها.
+   * تقبل معرّفاً أو مجموعة معرّفات، وتبحث عن أحدث تعليق فعلي بينها بحدّ ثابت.
+   */
+  youtubeComments: (videoIds: string | string[]) => Promise<{ ok: boolean; comments?: any[]; latestComment?: any | null; scannedVideoIds?: string[]; videosScanned?: number; inserted?: number; duplicates?: number; error?: string; code?: string | null }>;
   /** حلقة التعلّم لـYouTube (دروس مع مصدرها وحدودها). */
   youtubeLearning: () => Promise<{ ok: boolean; learning?: any; error?: string; code?: string | null }>;
   /** الرد الحقيقي على تعليق YouTube (comments.insert) — عملية خارجية تتطلب موافقة. */
@@ -322,13 +325,17 @@ export const AGENT_TOOLS: ReadonlyArray<AgentTool> = [
   {
     id: 'youtube_videos',
     name: 'قائمة فيديوهات YouTube',
-    description: 'قائمة فيديوهات القناة الحقيقية مع الإحصاءات (playlistItems + videos.list) من YouTube Data API.',
+    description: 'قائمة فيديوهات القناة الحقيقية مع الإحصاءات (playlistItems + videos.list) من YouTube Data API. تُعيد أحدث معرّف فيديو حقيقي لتمريره لخطوة التعليقات.',
     permission: 'READ',
     parameters: [],
     run: async (_args, ctx) => {
       try {
         const r = await ctx.youtubeVideos();
-        return r.ok ? { ok: true, data: { count: r.videos?.length || 0, videos: r.videos || [] } } : { ok: false, code: r.code || 'YOUTUBE_FETCH_FAILED', error: r.error };
+        if (!r.ok) return { ok: false, code: r.code || 'YOUTUBE_FETCH_FAILED', error: r.error };
+        const videos = r.videos || [];
+        // أحدث فيديو حقيقي فقط — لا معرّف مُختلق عند غياب الفيديوهات.
+        const latest = videos.find((v: any) => v && v.videoId) || null;
+        return { ok: true, data: { count: videos.length, latestVideoId: latest ? latest.videoId : null, latestVideoTitle: latest ? latest.title ?? null : null, videos } };
       } catch (e: any) { return { ok: false, code: 'TOOL_EXECUTION_FAILED', error: String(e?.message || e).slice(0, 200) }; }
     },
   },
@@ -348,14 +355,34 @@ export const AGENT_TOOLS: ReadonlyArray<AgentTool> = [
   {
     id: 'youtube_comments',
     name: 'تعليقات YouTube',
-    description: 'قراءة تعليقات فيديو حقيقية (commentThreads.list) وتخزينها كتعليقات حقيقية مع تصنيفها الحتمي.',
+    description: 'قراءة تعليقات حقيقية (commentThreads.list - order=time) لمجموعة من أحدث الفيديوهات الحقيقية، ثم إرجاع أحدث تعليق فعلي بينها. لا تعليق مُختلق.',
     permission: 'READ',
-    parameters: [{ name: 'videoId', type: 'string', required: true, description: 'معرّف الفيديو.' }],
+    parameters: [
+      { name: 'videoId', type: 'string', required: false, description: 'معرّف فيديو واحد (اختياري).' },
+      { name: 'videoIds', type: 'string', required: false, description: 'معرّفات فيديوهات مفصولة بفواصل (اختياري — يُفحَص بحدّ ثابت للعثور على أحدث تعليق).' },
+    ],
     run: async (args, ctx) => {
-      if (!args.videoId) return { ok: false, code: 'MISSING_ARGUMENT', error: 'videoId مطلوب.' };
+      // نقبل معرّفاً واحداً أو مجموعة؛ لا قيمة مُصنّعة عند غياب المعرّفات.
+      const ids: string[] = Array.isArray(args.videoIds)
+        ? args.videoIds.map((v: any) => String(v)).filter(Boolean)
+        : String(args.videoIds || args.videoId || '').split(',').map((s) => s.trim()).filter(Boolean);
+      if (!ids.length) return { ok: false, code: 'MISSING_ARGUMENT', error: 'videoId/videoIds مطلوب.' };
       try {
-        const r = await ctx.youtubeComments(String(args.videoId));
-        return r.ok ? { ok: true, data: { count: r.comments?.length || 0, inserted: r.inserted || 0, duplicates: r.duplicates || 0 } } : { ok: false, code: r.code || 'YOUTUBE_COMMENTS_FAILED', error: r.error };
+        const r = await ctx.youtubeComments(ids);
+        if (!r.ok) return { ok: false, code: r.code || 'YOUTUBE_COMMENTS_FAILED', error: r.error };
+        return {
+          ok: true,
+          data: {
+            scannedVideoIds: r.scannedVideoIds || ids,
+            videosScanned: r.videosScanned ?? ids.length,
+            count: r.comments?.length || 0,
+            inserted: r.inserted || 0,
+            duplicates: r.duplicates || 0,
+            // أحدث تعليق حقيقي عبر كل الفيديوهات المفحوصة (مرتّب زمنياً عند المصدر).
+            latestComment: r.latestComment || null,
+            comments: (r.comments || []).slice(0, 50).map((c: any) => ({ commentId: c.commentId, videoId: c.videoId ?? null, text: c.text, authorName: c.authorName ?? null, publishedAt: c.publishedAt ?? null })),
+          },
+        };
       } catch (e: any) { return { ok: false, code: 'TOOL_EXECUTION_FAILED', error: String(e?.message || e).slice(0, 200) }; }
     },
   },

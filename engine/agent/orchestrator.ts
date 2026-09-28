@@ -11,7 +11,7 @@
  * منطق خالص بلا express وبلا شبكة: يُختبر بخادم أدوات وهمي.
  */
 
-import { buildAgentPlan, normalizeTask, type AgentPlan, type AgentPlanKind } from './planner';
+import { buildAgentPlan, normalizeTask, type AgentPlan, type AgentPlanKind, type AgentArgRef } from './planner';
 import { getAgentTool, type AgentToolContext, type AgentToolResult } from './tools';
 import { canUseTool, toolRequiresApproval, type AgentOperator } from './permissions';
 
@@ -106,6 +106,39 @@ function defaultSummary(toolId: string, result: AgentToolResult): string {
   if (typeof d === 'string') return d.slice(0, 120);
   if (d === undefined || d === null) return 'تم';
   return String(d).slice(0, 120);
+}
+
+/** هل القيمة مرجع مخرَج خطوة سابقة؟ (شكل صريح، بلا تخمين). */
+function isArgRef(v: any): v is AgentArgRef {
+  return Boolean(v) && typeof v === 'object' && typeof v.fromTool === 'string' && typeof v.field === 'string';
+}
+
+/**
+ * يحلّ قيمة معامل من مخرَجات الخطوات السابقة **وقت التنفيذ**.
+ * لا يختلق قيمة: إن غابت القائمة/العنصر/الحقل يُعيد undefined لتفشل الخطوة
+ * برسالة نقص معامل صريحة (`MISSING_ARGUMENT`) بدل تمرير معرّف وهمي.
+ */
+export function resolveArgValue(arg: any, outputs: Record<string, any>): any {
+  if (!isArgRef(arg)) return arg;
+  const output = outputs[arg.fromTool];
+  if (!output) return undefined;
+  let list: any = output;
+  if (arg.listPath) list = output?.[arg.listPath];
+  if (!Array.isArray(list) || !list.length) return undefined;
+  const values = list
+    .filter((it) => it && it[arg.field] !== undefined && it[arg.field] !== null && it[arg.field] !== '')
+    .map((it) => it[arg.field]);
+  if (!values.length) return undefined;
+  // `all` يُعيد كل القيم الحقيقية (بترتيب المصدر) ليحدّد منفّذ الأداة الحدّ الأقصى؛
+  // غيره (الافتراضي) يُعيد أول قيمة فقط. لا توليد قيمة عند غياب البيانات.
+  return arg.pick === 'all' ? values : values[0];
+}
+
+/** يحلّ كل معاملات الخطوة من مخرَجات الخطوات السابقة (لا يُعدّل المرجع، يبني نسخة). */
+function resolveArgs(args: Record<string, any>, outputs: Record<string, any>): Record<string, any> {
+  const out: Record<string, any> = {};
+  for (const [k, v] of Object.entries(args || {})) out[k] = resolveArgValue(v, outputs);
+  return out;
 }
 
 /** وقت التنفيذ بمهلة (لا يترك أداة معلّقة توقف العقل). */
@@ -228,6 +261,9 @@ export class AgentOrchestrator {
     task.status = 'executing';
     task.startedAt = new Date(this.now()).toISOString();
     const journal = task.journal;
+    // مخرَجات الخطوات الناجحة — تُغذّي المراجع (`AgentArgRef`) في الخطوات التالية
+    // بلا اختلاق قيم: يُمرَّر معرّف حقيقي فقط من نتيجة أداة سابقة فعلية.
+    const outputs: Record<string, any> = {};
 
     for (let i = 0; i < task.plan.steps.length; i += 1) {
       const stepDef = task.plan.steps[i];
@@ -253,13 +289,15 @@ export class AgentOrchestrator {
       // تنفيذ مع إعادة محدودة للأخطاء القابلة للإصلاح فقط.
       const idempotent = tool.permission === 'READ' || tool.permission === 'EXECUTE';
       const attemptsAllowed = idempotent ? this.maxAttempts : 1;
+      // حلّ المراجع من مخرَجات الخطوات السابقة قبل التنفيذ (بلا اختلاق قيم).
+      const resolvedArgs = resolveArgs(stepDef.args, outputs);
       let result: AgentToolResult = { ok: false, code: 'TOOL_EXECUTION_FAILED', error: 'لم يُنفَّذ' };
       let attempts = 0;
       let failureCode: AgentFailureCode = 'TOOL_EXECUTION_FAILED';
       for (let attempt = 1; attempt <= attemptsAllowed; attempt += 1) {
         attempts = attempt;
         try {
-          result = await withTimeout(Promise.resolve(tool.run(stepDef.args, toolContext)), this.stepTimeoutMs, 'TIMEOUT');
+          result = await withTimeout(Promise.resolve(tool.run(resolvedArgs, toolContext)), this.stepTimeoutMs, 'TIMEOUT');
         } catch (e: any) {
           const timedOut = e?.code === 'TIMEOUT';
           result = { ok: false, code: timedOut ? 'TIMEOUT' : 'TOOL_EXECUTION_FAILED', error: String(e?.message || e).slice(0, 200) };
@@ -272,6 +310,8 @@ export class AgentOrchestrator {
 
       const summary = result.ok ? this.summarize(stepDef.toolId, result) : `فشل بعد ${attempts} محاولة: ${result.error || failureCode}`;
       journal.push(this.entry(i, stepDef, tool.permission, failureCode, result.error, result.ok, started, attempts, summary));
+      // مخرَج الخطوة الناجحة فقط يُتاح للمراجع في الخطوات التالية (لا بيانات فاشلة).
+      if (result.ok) outputs[stepDef.toolId] = result.data;
 
       // أي فشل في أداة ذات أثر (WRITE/SENSITIVE/EXECUTE) يوقف المهمة بحالة
       // واضحة. فشل أدوات القراءة يُسجَّل ويُكمل (قد تكون خطوة سياق اختيارية).

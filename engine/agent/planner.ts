@@ -21,9 +21,28 @@ export type AgentPlanKind =
   | 'youtube'
   | 'general';
 
+/**
+ * مرجع حتمي إلى مخرَج خطوة سابقة. يُحلّ في المنسّق **وقت التنفيذ** من نتيجة
+ * الخطوة الفعلية، فلا يُختلق videoId (أو أي معرّف) قبل وجود بيانات حقيقية.
+ */
+export interface AgentArgRef {
+  /** معرّف أداة الخطوة السابقة التي يُقرأ مخرَجها. */
+  fromTool: string;
+  /** القائمة داخل مخرَجها (مثل videos). */
+  listPath?: string;
+  /** الحقل داخل العنصر (مثل videoId). */
+  field: string;
+  /**
+   * `first` = أول قيمة غير فارغة فقط. `all` = كل القيم غير الفارغة (بترتيب
+   * المصدر). القيمة الفعلية يحدّدها منفّذ الأداة بحدّ أقصى صريح لمنع أي استهلاك
+   * غير محدود للـAPI. لا قيمة مُصنّعة عند غياب البيانات في الحالتين.
+   */
+  pick?: 'first' | 'all';
+}
+
 export interface AgentPlanStep {
   toolId: string;
-  /** معاملات الأداة (تُمرَّر كما هي للمنفّذ). */
+  /** معاملات الأداة (قد تحمل مراجع تُحلّ من مخرَجات خطوات سابقة). */
   args: Record<string, any>;
   /** ما تمثله الخطوة بالعربية. */
   label: string;
@@ -51,6 +70,16 @@ const VERIFY_RE = /(تحقق|فحص النظام|جاهز|سلامة|استمر�
 const STATUS_RE = /(حالة|وضع|المنصات|متصل|الاتصال|ربط|oauth)/;
 /** نية تشغيل YouTube الصريحة (اسم المنصة بالعربية أو الإنجليزية أو كلمات التشغيل). */
 const YOUTUBE_RE = /(يوتيوب|قناة يوتيوب|فيديو يوتيوب|رفع فيديو|تعليقات يوتيوب)/;
+/**
+ * نية جلب/قراءة تعليقات YouTube الصريحة. نطلب كلمة تعليق (أو مرادفها) مع سياق
+ * YouTube (عربي/إنجليزي) حتى لا تُشغَّل خطوة التعليقات في كل مهمة YouTube عامة
+ * (توفيراً لاستدعاءات Data API).
+ */
+const YOUTUBE_COMMENTS_RE = /(اجلب|اقرأ|اعرض|حلل|راجع|اقترح|أظهر)?[^.]{0,30}(تعليق|تعليقات|ردود)[^.]{0,30}(يوتيوب|قناتي|الفيديو|فيديوهات|youtube)|(تعليقات\s*youtube)|(youtube)[^.]{0,30}(comments?)/i;
+/** هل المهمة تطلب صراحةً جلب/قراءة تعليقات YouTube؟ (حتمي، بلا AI) */
+export function wantsYouTubeComments(task: string): boolean {
+  return YOUTUBE_COMMENTS_RE.test(String(task || ''));
+}
 const PLATFORM_IDS = ['tiktok', 'youtube', 'facebook', 'instagram', 'whatsapp', 'telegram', 'x', 'snapchat', 'threads', 'google_business'];
 const PLATFORM_AR: Record<string, string> = {
   tiktok: 'تيك توك', youtube: 'يوتيوب', facebook: 'فيسبوك', instagram: 'انستغرام',
@@ -215,19 +244,30 @@ export function buildAgentPlan(rawTask: string, options: { explicitKind?: AgentP
       });
     }
     case 'youtube': {
+      // طلب صريح للتعليقات: نضيف مسار قراءة حقيقي عبر videoId يُستخرج من نتيجة
+      // youtube_videos الفعلية (مرجع وقت التنفيذ)، ثم نحلّل ونقترح رداً بلا إرسال.
+      const wantsComments = wantsYouTubeComments(task);
+      const steps: AgentPlanStep[] = [
+        step('youtube_status'),
+        step('youtube_videos'),
+        ...(wantsComments
+          ? [step('youtube_comments', { videoId: { fromTool: 'youtube_videos', listPath: 'videos', field: 'videoId', pick: 'all' } as AgentArgRef })]
+          : []),
+        step('youtube_analytics'),
+        step('youtube_learning'),
+        step('ai_draft', { prompt: task }),
+      ];
       return ensureKnown({
         kind,
-        summary: 'تشغيل YouTube: الحالة الصادقة → الفيديوهات → التحليلات → التعلّم، ثم مسودة محتوى واحدة عند الحاجة.',
-        steps: [
-          step('youtube_status'),
-          step('youtube_videos'),
-          step('youtube_analytics'),
-          step('youtube_learning'),
-          step('ai_draft', { prompt: task }),
-        ],
+        summary: wantsComments
+          ? 'تشغيل YouTube: الحالة → الفيديوهات → تعليقات الفيديو الأحدث (commentThreads.list) → التحليلات → التعلّم، ثم تحليل واقتراح رد بلا إرسال.'
+          : 'تشغيل YouTube: الحالة الصادقة → الفيديوهات → التحليلات → التعلّم، ثم مسودة محتوى واحدة عند الحاجة.',
+        steps,
         requiresAi: true,
         requiresApproval: false,
-        reason: 'نية YouTube: قراءة حقيقية من Data API ثم مسودة نصية واحدة؛ أي رفع/رد خارجي يبقى بموافقة صريحة.',
+        reason: wantsComments
+          ? 'طلب صريح لتعليقات YouTube: قراءة حقيقية عبر commentThreads.list بمعرّف فيديو مستخرج من البيانات الفعلية (لا تعليق داخلي/وهمي)؛ أي رد خارجي يبقى EXTERNAL_ACTION بموافقة صريحة.'
+          : 'نية YouTube: قراءة حقيقية من Data API ثم مسودة نصية واحدة؛ أي رفع/رد خارجي يبقى بموافقة صريحة.',
       });
     }
     default: {

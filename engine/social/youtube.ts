@@ -26,6 +26,12 @@ import {
 } from './oauth';
 
 export const YOUTUBE_API_BASE = 'https://www.googleapis.com';
+
+/**
+ * حدّ أقصى لعدد الفيديوهات التي تُفحص عند البحث عن أحدث تعليقات القناة.
+ * يمنع أي استهلاك غير محدود لـcommentThreads.list: طلب واحد لكل فيديو، وبحدّ ثابت.
+ */
+export const YOUTUBE_COMMENT_SCAN_VIDEO_LIMIT = 5;
 export const YOUTUBE_UPLOAD_BASE = 'https://www.googleapis.com';
 export const YOUTUBE_TOKEN_ENDPOINT = 'https://oauth2.googleapis.com/token';
 

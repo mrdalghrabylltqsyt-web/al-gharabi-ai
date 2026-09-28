@@ -47,6 +47,9 @@ export interface YouTubeMockState {
   comments: Array<{ id: string; threadId: string; videoId: string; author: string; text: string; publishedAt: string; likeCount: number }>;
   /** يفشل قراءة الفيديوهات بـ403. */
   failVideos: boolean;
+  /** آخر مسار/معرّف فيديو طُلب من commentThreads — يثبت أن Data API استُدعي فعلاً. */
+  lastCommentsPath: string | null;
+  lastCommentsVideoId: string | null;
   /** التعليقات معطّلة على الفيديو (403 commentsDisabled). */
   commentsDisabled: boolean;
   /** يفشل إدراج الرد (يحاكي فشل provider). */
@@ -101,6 +104,8 @@ export function createYouTubeMock(): YouTubeMockState {
       { id: 'cmt_2', threadId: 'thr_2', videoId: 'vid_alpha', author: 'زينب', text: 'خدمة رائعة، شكراً', publishedAt: '2026-09-03T09:00:00Z', likeCount: 1 },
     ],
     failVideos: false,
+    lastCommentsPath: null,
+    lastCommentsVideoId: null,
     commentsDisabled: false,
     failReply: false,
     failUpload: false,
@@ -192,6 +197,8 @@ export function startYouTubeMockServer(state: YouTubeMockState, port: number): P
       return res.status(403).json({ error: { code: 403, message: 'The video does not allow comments.', errors: [{ reason: 'commentsDisabled' }] } });
     }
     const videoId = String(req.query?.videoId || '');
+    state.lastCommentsPath = req.originalUrl;
+    state.lastCommentsVideoId = videoId;
     const items = state.comments.filter((c) => !videoId || c.videoId === videoId).map((c) => ({
       kind: 'youtube#commentThread',
       id: c.threadId,

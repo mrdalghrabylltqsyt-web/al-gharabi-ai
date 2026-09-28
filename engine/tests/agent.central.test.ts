@@ -11,9 +11,10 @@
 import express from 'express';
 import { AgentOrchestrator } from '../agent/orchestrator';
 import { registerAgentRoutes } from '../agent/routes';
-import { buildAgentPlan, classifyIntent, detectPlatforms } from '../agent/planner';
+import { buildAgentPlan, classifyIntent, detectPlatforms, wantsYouTubeComments } from '../agent/planner';
 import { canUseTool, toolRequiresApproval } from '../agent/permissions';
 import { AGENT_TOOLS, getAgentTool } from '../agent/tools';
+import { resolveArgValue } from '../agent/orchestrator';
 import { describeProviders, shouldUseCouncil, primaryProvider } from '../agent/providerRouter';
 import type { AgentToolContext } from '../agent/tools';
 
@@ -95,6 +96,25 @@ async function unitTests() {
   check('خطة YouTube لا تضع أي عملية خارجية بلا موافقة', ytPlan.steps.every((s) => { const t = getAgentTool(s.toolId); return !t || t.permission !== 'EXTERNAL_ACTION'; }));
   check('أدوات الرد/الرفع في YouTube خارجية وتتطلب موافقة', getAgentTool('youtube_reply')?.permission === 'EXTERNAL_ACTION' && getAgentTool('youtube_publish')?.permission === 'EXTERNAL_ACTION');
   check('staff لا يملك أدوات YouTube الخارجية', canUseTool('staff', getAgentTool('youtube_reply')!.permission).allowed === false);
+
+  // --- A) المخطّط: نية التعليقات الصريحة تُضيف المسار الحقيقي فقط عند الطلب ---
+  check('A: مهمة YouTube عامة لا تطلب التعليقات', wantsYouTubeComments('حلل أداء قناة يوتيوب') === false);
+  check('A: مهمة صريحة تطلب التعليقات', wantsYouTubeComments('اجلب أحدث تعليقات يوتيوب') === true);
+  check('A: صيغة إنجليزية تطلب التعليقات', wantsYouTubeComments('fetch youtube comments') === true);
+  const ytGeneral = buildAgentPlan('حلل أداء قناة يوتيوب');
+  check('A: خطة YouTube العامة لا تتضمن youtube_comments', !ytGeneral.steps.some((s) => s.toolId === 'youtube_comments'));
+  const ytCommentsPlan = buildAgentPlan('اجلب أحدث التعليقات الحقيقية من قناة يوتيوب وحللها واقترح رداً');
+  const commentStep = ytCommentsPlan.steps.find((s) => s.toolId === 'youtube_comments');
+  check('A: خطة طلب التعليقات تتضمن youtube_comments', Boolean(commentStep));
+  check('A: youtube_comments تأتي بعد youtube_videos', ytCommentsPlan.steps.findIndex((s) => s.toolId === 'youtube_videos') < ytCommentsPlan.steps.findIndex((s) => s.toolId === 'youtube_comments'));
+  check('A: videoId ليس نصاً ثابتاً بل مرجع من youtube_videos', Boolean(commentStep && (commentStep.args.videoId as any)?.fromTool === 'youtube_videos'));
+  check('A: لا خطوة يوتيوب خارجية في خطة التعليقات', ytCommentsPlan.steps.every((s) => { const t = getAgentTool(s.toolId); return !t || t.permission !== 'EXTERNAL_ACTION'; }));
+
+  // --- حلّ المراجع حتمياً بلا اختلاق قيمة ---
+  check('حلّ المرجع يقرأ القيمة الحقيقية', resolveArgValue({ fromTool: 'youtube_videos', listPath: 'videos', field: 'videoId', pick: 'first' }, { youtube_videos: { videos: [{ videoId: 'abc' }] } }) === 'abc');
+  check('حلّ المرجع بلا فيديوهات يعيد undefined (لا قيمة مُختلقة)', resolveArgValue({ fromTool: 'youtube_videos', listPath: 'videos', field: 'videoId' }, { youtube_videos: { videos: [] } }) === undefined);
+  check('حلّ المرجع بلا مخرَج سابق يعيد undefined', resolveArgValue({ fromTool: 'youtube_videos', listPath: 'videos', field: 'videoId' }, {}) === undefined);
+  check('القيمة غير المرجعية تمر كما هي', resolveArgValue('literal', {}) === 'literal');
 
   // --- الصلاحيات ---
   check('staff يقرأ', canUseTool('staff', 'READ').allowed === true);
@@ -223,6 +243,65 @@ async function unitTests() {
   const aiStep = rAi.journal.find((e) => e.toolId === 'ai_draft');
   check('fallback: خطوة AI نجحت بلا مزود', aiStep?.ok === true);
   check('fallback: النص البديل محفوظ', (rAi.result?.data || []).some((d: any) => d.toolId === 'ai_draft'));
+
+  // --- B) تنفيذ المسار الحقيقي: youtubeVideos → استخراج videoIds → youtubeComments ---
+  // نتتبّع المعرّفات الواصلة فعلاً إلى youtubeComments عبر التقاط الوسيط.
+  let capturedVideoIds: string[] | null = null;
+  let capturedArgs: any = null;
+  const trackCtx = fakeCtx({
+    youtubeVideos: async () => ({ ok: true, videos: [
+      { videoId: 'vid-newest', title: 'أحدث فيديو حقيقي', viewCount: 7, likeCount: 1, commentCount: 0 },
+      { videoId: 'vid-middle', title: 'فيديو أقدم', viewCount: 5, likeCount: 1, commentCount: 1 },
+      { videoId: 'vid-oldest', title: 'فيديو قديم', viewCount: 3, likeCount: 0, commentCount: 1 },
+    ] }),
+    youtubeComments: async (videoIds: string | string[]) => {
+      capturedVideoIds = Array.isArray(videoIds) ? videoIds : [videoIds];
+      // التعليق الحقيقي موجود في فيديو غير أول فيديو — نُعيده فقط إن فُحص ذلك الفيديو.
+      const comments = capturedVideoIds.includes('vid-middle') ? [{ commentId: 'yt-c-mid', videoId: 'vid-middle', text: 'سعر التقسيط كام؟', authorName: 'عميل', publishedAt: '2026-09-27T10:00:00Z' }] : [];
+      const top = comments.find((c) => c.commentId) || null;
+      return { ok: true, comments, latestComment: top, scannedVideoIds: capturedVideoIds, videosScanned: capturedVideoIds.length, inserted: comments.length, duplicates: 0 };
+    },
+  });
+  const commentOrch = makeOrch(trackCtx);
+  const tComments = commentOrch.createTask({ task: 'اجلب أحدث تعليقات YouTube وحللها واقترح رداً باللهجة العراقية', operator: 'owner', userId: 'owner' });
+  const tCommentsPlan = tComments.plan!;
+  // نلتقط الوسيط الفعلي عبر تغليف الأداة (للإثبات فقط، بلا تعديل المنفّذ).
+  const commentsTool = getAgentTool('youtube_comments')!;
+  const originalRun = commentsTool.run;
+  (commentsTool as any).run = async (args: any, ctx: any) => { capturedArgs = args; return originalRun(args, ctx); };
+  const rComments = await commentOrch.run(tComments.id);
+  (commentsTool as any).run = originalRun;
+
+  check('B: خطة التعليقات تضم youtube_comments', tCommentsPlan.steps.some((s) => s.toolId === 'youtube_comments'));
+  check('B: مرجع الفيديو pick=all (لا فيديو واحد)', (tCommentsPlan.steps.find((s) => s.toolId === 'youtube_comments')?.args.videoId as any)?.pick === 'all');
+  check('B: الوسيط الواصل ليس مرجعاً بل قيم حقيقية', Array.isArray(capturedArgs?.videoId) && capturedArgs.videoId.every((v: string) => typeof v === 'string'), JSON.stringify(capturedArgs));
+  check('B: المعرّفات الواصلة هي كل معرّفات youtubeVideos الحقيقية', Array.isArray(capturedVideoIds) && capturedVideoIds.join(',') === 'vid-newest,vid-middle,vid-oldest', JSON.stringify(capturedVideoIds));
+  const jComments = rComments.journal.find((e) => e.toolId === 'youtube_comments');
+  check('B: journal يسجّل youtube_comments ناجحة', jComments?.ok === true, JSON.stringify(jComments));
+  check('B: الخطوة ليست خارجية (قراءة)', jComments?.permission === 'READ');
+  check('B: لا خطوة رد خارجية أُرسلت', !rComments.journal.some((e) => e.toolId === 'youtube_reply'));
+  const commentsOut = rComments.result?.data?.find((d: any) => d.toolId === 'youtube_comments');
+  check('B: ملخّص نتيجة التعليقات مسجّل', Boolean(commentsOut));
+
+  // --- C) التعليق الحقيقي على فيديو غير أول فيديو: العقل يصل إليه ---
+  const returnedLatest = await originalRun({ videoId: ['vid-newest', 'vid-middle', 'vid-oldest'] } as any, trackCtx);
+  check('C: العقل يفحص كل الفيديوهات المحدودة', (returnedLatest.data as any)?.videosScanned === 3);
+  check('C: أحدث تعليق حقيقي يعود حتى لو كان في فيديو غير الأول', (returnedLatest.data as any)?.latestComment?.videoId === 'vid-middle' && (returnedLatest.data as any)?.latestComment?.commentId === 'yt-c-mid');
+  const commaRun = await originalRun({ videoIds: 'vid-newest,vid-middle' } as any, trackCtx);
+  check('C: الوسيط مجموعة مفصولة تُقبل أيضاً', Boolean((commaRun.data as any)?.latestComment));
+
+  // لا فيديوهات => لا videoId مُختلق => الخطوة تفشل بـMISSING_ARGUMENT بوضوح.
+  let fabricatedCalls = 0;
+  const emptyCtx = fakeCtx({
+    youtubeVideos: async () => ({ ok: true, videos: [] }),
+    youtubeComments: async () => { fabricatedCalls += 1; return { ok: true, comments: [] }; },
+  });
+  const emptyOrch = makeOrch(emptyCtx);
+  const tEmpty = emptyOrch.createTask({ task: 'اجلب أحدث تعليقات YouTube', operator: 'owner', userId: 'owner' });
+  const rEmpty = await emptyOrch.run(tEmpty.id);
+  const emptyEntry = rEmpty.journal.find((e) => e.toolId === 'youtube_comments');
+  check('B: بلا فيديوهات لا يُستدعى youtubeComments إطلاقاً', fabricatedCalls === 0);
+  check('B: بلا فيديوهات تسجّل MISSING_ARGUMENT صراحةً', emptyEntry?.ok === false && emptyEntry?.code === 'MISSING_ARGUMENT', JSON.stringify(emptyEntry));
 }
 
 /** تكامل: خادم Express حقيقي بمسار العقل + تصريح فعلي. */
@@ -302,6 +381,11 @@ async function integrationTests() {
     check('تكامل: staff (jobs) تنتظر ولا تنفّذ خارجياً', jobTask.task.status === 'waiting' || jobTask.task.status === 'completed', jobTask.task.status);
     const writeEntry = jobTask.task.journal.find((e: any) => e.toolId === 'job_create');
     check('تكامل: staff لا ينشئ مهمة داخلية (صلاحية)', writeEntry?.ok === false && writeEntry?.code === 'PERMISSION_DENIED');
+
+    // طلب تعليقات YouTube عبر HTTP: الخطة تحمل المسار الحقيقي والتنفيذ ينجح.
+    const ytTask = await (await post('/api/agent/tasks', { task: 'اجلب أحدث تعليقات يوتيوب الحقيقية' }, 'owner')).json();
+    check('تكامل: خطة التعليقات معروضة في الواجهة', ytTask.task.plan.steps.some((s: any) => s.toolId === 'youtube_comments'));
+    check('تكامل: youtube_comments نُفّذت بنجاح', ytTask.task.journal.some((e: any) => e.toolId === 'youtube_comments' && e.ok === true));
 
     // مهمة بلا نص => 400
     check('تكامل: مهمة بلا نص => 400', (await post('/api/agent/tasks', { task: '' }, 'owner')).status === 400);

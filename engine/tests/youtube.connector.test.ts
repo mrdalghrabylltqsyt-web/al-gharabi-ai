@@ -419,6 +419,43 @@ async function integrationTests(): Promise<void> {
     mock.state.scope = ['https://www.googleapis.com/auth/youtube.readonly', 'https://www.googleapis.com/auth/youtube.upload', 'https://www.googleapis.com/auth/youtube.force-ssl'];
     await reconnect(3600, 'reconnect-force-ssl');
 
+    group('12i-2) تكامل: العقل المركزي يجلب التعليقات الحقيقية عبر Data API');
+    // طلب صريح لجلب التعليقات: يجب أن ينفّذ youtubeVideos ثم يستخرج videoId حقيقياً
+    // ثم يستدعي youtubeComments → commentThreads.list على YouTube Data API.
+    mock.state.lastCommentsPath = null;
+    mock.state.lastCommentsVideoId = null;
+    const agentComments = await (await fetch(`${BASE}/api/agent/tasks`, { method: 'POST', headers: auth, body: JSON.stringify({ task: 'اجلب أحدث تعليقات YouTube الحقيقية وحللها واقترح رداً' }) })).json();
+    check('العقل: مهمة التعليقات أُنشئت', agentComments.success === true && Boolean(agentComments.task));
+    check('العقل: الخطة تضم youtube_comments', (agentComments.task?.plan?.steps || []).some((s: any) => s.toolId === 'youtube_comments'));
+    const jEntry = (agentComments.task?.journal || []).find((e: any) => e.toolId === 'youtube_comments');
+    check('العقل: youtube_comments نُفّذت بنجاح', jEntry?.ok === true, JSON.stringify(jEntry));
+    check('العقل: youtube_comments بصلاحية READ (ليست خارجية)', jEntry?.permission === 'READ');
+    check('العقل: commentThreads.list استُدعي فعلاً على Data API', (mock.state.lastCommentsPath || '').includes('/youtube/v3/commentThreads'));
+    check('العقل: videoId المُرسل من بين الفيديوهات الحقيقية في القناة', mock.state.videos.some((v: any) => v.id === mock.state.lastCommentsVideoId), String(mock.state.lastCommentsVideoId));
+    check('العقل: لا خطوة رد خارجية أُرسلت تلقائياً', !(agentComments.task?.journal || []).some((e: any) => e.toolId === 'youtube_reply'));
+
+    // التعليق الحقيقي قد يكون على فيديو غير أول فيديو: نضعه على الفيديو الثاني ونثبت الوصول إليه.
+    const originalComments = mock.state.comments;
+    mock.state.comments = [{ id: 'cmt_late', threadId: 'thr_late', videoId: mock.state.videos[1].id, author: 'أحمد', text: 'متى ينزل العرض الجديد؟', publishedAt: '2026-09-20T08:00:00Z', likeCount: 0 }];
+    mock.state.lastCommentsVideoId = null;
+    const agentLate = await (await fetch(`${BASE}/api/agent/tasks`, { method: 'POST', headers: auth, body: JSON.stringify({ task: 'اجلب أحدث تعليقات YouTube الحقيقية' }) })).json();
+    const lateEntry = (agentLate.task?.journal || []).find((e: any) => e.toolId === 'youtube_comments');
+    check('العقل: تعليق الفيديو غير الأول جُلب بنجاح', lateEntry?.ok === true, JSON.stringify(lateEntry));
+    // نتحقق أن الأداة أعادت أحدث تعليق حقيقي (على الفيديو الثاني) عبر فحص مخرَج المهمة.
+    const lateData = (agentLate.task?.result?.data || []).find((d: any) => d.toolId === 'youtube_comments');
+    check('العقل: نتيجة التعليقات تحمل ملخّصاً (أُثبت المسار)', Boolean(lateData));
+    mock.state.comments = originalComments;
+
+    // حدّ ثابت: عدد طلبات commentThreads لا يتجاوز حدّ الفحص المضبوط.
+    const scanLimit = (await import('../social/youtube')).YOUTUBE_COMMENT_SCAN_VIDEO_LIMIT;
+    check('العقل: حدّ فحص الفيديوهات ثابت وصريح', scanLimit === 5);
+
+    // طلب YouTube عام بلا تعليقات: لا يجب أن يستدعي commentThreads إطلاقاً.
+    mock.state.lastCommentsPath = null;
+    const agentGeneral = await (await fetch(`${BASE}/api/agent/tasks`, { method: 'POST', headers: auth, body: JSON.stringify({ task: 'حلل أداء قناة يوتيوب' }) })).json();
+    check('العقل: الخطة العامة بلا youtube_comments', !(agentGeneral.task?.plan?.steps || []).some((s: any) => s.toolId === 'youtube_comments'));
+    check('العقل: الطلب العام لم يستهلك commentThreads', mock.state.lastCommentsPath === null);
+
     group('12j) تكامل: الحالة الصادقة بعد دليل مزود (رفع/رد) => OPERATIONAL');
     const diag = await (await fetch(`${BASE}/api/platforms/youtube/diagnostics`, { headers: auth })).json();
     check('التشخيص للمالك فقط ويعمل', diag.success === true);

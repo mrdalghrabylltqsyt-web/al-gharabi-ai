@@ -60,7 +60,7 @@ function taskView(t: any) {
     startedAt: t.startedAt,
     finishedAt: t.finishedAt,
     error: t.error,
-    plan: t.plan ? { kind: t.plan.kind, summary: t.plan.summary, requiresAi: t.plan.requiresAi, requiresApproval: t.plan.requiresApproval, reason: t.plan.reason, steps: t.plan.steps.map((s: any) => ({ toolId: s.toolId, label: s.label })) } : null,
+    plan: t.plan ? { kind: t.plan.kind, summary: t.plan.summary, requiresAi: t.plan.requiresAi, requiresApproval: t.plan.requiresApproval, reason: t.plan.reason, steps: t.plan.steps.map((s: any) => ({ toolId: s.toolId, label: s.label, args: s.args })) } : null,
     journal: t.journal,
     result: t.result,
     contextSummary: t.contextSnapshot ? Object.keys(t.contextSnapshot) : [],

@@ -623,6 +623,21 @@ add('agent-ui-no-fake-success', agentUi.includes("res.task") && !/fake success|�
 add('agent-nav-entry', app.includes('central_agent') && read('src/components/common/Sidebar.tsx').includes("id: 'central_agent'"), 'تبويب العقل المركزي في الواجهة');
 add('agent-test-script', pkg.scripts['test:agent'] === 'tsx engine/tests/agent.central.test.ts', 'سكربت اختبار العقل مضاف إلى package.json');
 add('agent-tests-cover-critical', ['idempotency', 'PERMISSION_DENIED', 'TIMEOUT', 'restore'].every((k) => agentTest.includes(k)) && agentTest.includes('job_execute') && (agentTest.includes('clientSecret') || agentTest.includes('sanitize')), 'اختبارات العقل تغطي idempotency/RBAC/مهلة/أمان/دوام');
+// --- العقل المركزي: تمرير بيانات بين الخطوات وجلب تعليقات YouTube الحقيقية ---
+add('agent-output-passing-refs', agentPlanner.includes('AgentArgRef') && agentOrch.includes('resolveArgValue') && agentOrch.includes('outputs[stepDef.toolId]'), 'المنسّق يمرّر مخرَجات الخطوات السابقة عبر مراجع محسوبة وقت التنفيذ');
+add('agent-no-fabricated-id', /function resolveArgValue[\s\S]{0,700}?return undefined/.test(agentOrch) && agentPlanner.includes("pick: 'all'"), 'المرجع يُعيد undefined عند غياب البيانات (لا معرّف مُختلق)');
+add('planner-youtube-comments-explicit', agentPlanner.includes('wantsYouTubeComments') && /wantsComments[\s\S]{0,400}?youtube_comments/.test(agentPlanner), 'خطة YouTube تضيف مسار التعليقات فقط عند طلب صريح');
+add('planner-youtube-no-comments-default', /const wantsComments = wantsYouTubeComments\(task\)/.test(agentPlanner), 'طلب YouTube العام لا يجلب التعليقات افتراضياً (توفير استدعاءات API)');
+add('youtube-comments-tool-real-data', /id: 'youtube_comments'[\s\S]{0,1600}?latestComment:/.test(agentTools), 'أداة youtube_comments تُعيد أحدث تعليق حقيقي ومعرّفه للتحليل التالي');
+add('youtube-videos-tool-latest-id', /id: 'youtube_videos'[\s\S]{0,900}?latestVideoId/.test(agentTools), 'أداة youtube_videos تُعلن أحدث معرّف فيديو حقيقي ناتج من playlistItems+videos');
+const youtubeModuleSrc = read('engine/social/youtube.ts');
+add('youtube-comment-scan-bounded', youtubeModuleSrc.includes('YOUTUBE_COMMENT_SCAN_VIDEO_LIMIT') && server.includes('slice(0, YOUTUBE_COMMENT_SCAN_VIDEO_LIMIT)'), 'حدّ ثابت لعدد الفيديوهات المفحوصة يمنع استهلاكاً غير محدود للـAPI');
+add('youtube-comments-multi-video', /for \(const videoId of scannedVideoIds\)/.test(server) && server.includes('order=time'), 'قراءة التعليقات تفحص مجموعة أحدث الفيديوهات مرتّبة زمنياً لا فيديو واحداً');
+add('youtube-comments-latest-by-time', /all\.sort\(\(a, b\) => String\(b\.publishedAt/.test(server), 'أحدث تعليق فعلي يُختار بترتيب زمني تنازلي حقيقي');
+const youtubeTest = read('engine/tests/youtube.connector.test.ts');
+add('agent-youtube-comments-e2e-test', youtubeTest.includes('commentThreads') && youtubeTest.includes('lastCommentsVideoId') && youtubeTest.includes('/api/agent/tasks'), 'اختبار تكامل يثبت العقل → youtubeVideos → videoId → youtubeComments → commentThreads.list');
+add('agent-youtube-comment-non-first-video-test', youtubeTest.includes('cmt_late') && youtubeTest.includes('videos[1]'), 'اختبار يثبت الوصول لتعليق موجود على فيديو غير أول فيديو');
+add('agent-youtube-comments-no-external', agentTest.includes('youtube_comments') && agentTest.includes('EXTERNAL_ACTION'), 'اختبارات العقل تثبت التعليقات قراءة والرد يبقى خارجياً بموافقة');
 
 const failed = checks.filter(x => !x.ok);
 console.table(checks);

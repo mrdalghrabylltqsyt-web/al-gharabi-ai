@@ -165,6 +165,7 @@ import {
   YOUTUBE_FORCE_SSL_SCOPE,
   YOUTUBE_CAPABILITY_MATRIX,
   YOUTUBE_PRIVACY_STATUSES,
+  YOUTUBE_COMMENT_SCAN_VIDEO_LIMIT,
   resolveYouTubeScopes,
   YouTubeClient,
   youtubeCapabilityImplemented,
@@ -6402,19 +6403,43 @@ function buildAgentToolContext(operator: AgentOperator, userId: string): AgentTo
       clearYouTubeProviderError();
       return { ok: true, summary, audience, channel: channelRes.data };
     },
-    youtubeComments: async (videoId: string) => {
+    youtubeComments: async (videoIds: string | string[]) => {
       const guard = youtubeOperationGuard();
       if (!guard.ok) return { ok: false, error: guard.error, code: guard.code as any };
       if (!youtubeForceSslGranted()) return { ok: false, error: "إعادة ربط YouTube مطلوبة لتفعيل إدارة التعليقات (نطاق youtube.force-ssl).", code: "SCOPE_UPGRADE_REQUIRED" };
       const ensured = await ensureYouTubeAccessToken();
       if (!ensured.ok || !ensured.token) return { ok: false, error: ensured.error, code: ensured.code ?? null };
-      const res = await youtubeClient().listCommentThreads(ensured.token, { videoId });
-      if (!res.ok || !res.data) { noteYouTubeProviderError(res.code as any); return { ok: false, error: res.error, code: res.code ?? null }; }
-      let inserted = 0; let duplicates = 0;
-      for (const c of res.data.comments) { const ing = ingestYouTubeComment(c, videoId); if (ing.duplicate) duplicates += 1; else inserted += 1; }
+      // نفحص مجموعة محدودة من أحدث الفيديوهات الحقيقية (حدّ ثابت يمنع استهلاكاً غير محدود):
+      // طلب commentThreads.list واحد لكل فيديو، وorder=time من الموصل يعطي الأحدث أولاً.
+      const list = (Array.isArray(videoIds) ? videoIds : String(videoIds || '').split(',')).map((v) => String(v).trim()).filter(Boolean);
+      const scannedVideoIds = [...new Set(list)].slice(0, YOUTUBE_COMMENT_SCAN_VIDEO_LIMIT);
+      if (!scannedVideoIds.length) return { ok: false, error: "لم تُقدَّم أي معرّفات فيديو حقيقية.", code: "MISSING_ARGUMENT" };
+      const all: any[] = [];
+      let inserted = 0; let duplicates = 0; let lastError: { error: string; code: string | null } | null = null; let okCount = 0;
+      for (const videoId of scannedVideoIds) {
+        const res = await youtubeClient().listCommentThreads(ensured.token, { videoId, maxResults: 25 });
+        if (!res.ok || !res.data) { lastError = { error: res.error, code: (res.code as string) ?? null }; continue; }
+        okCount += 1;
+        for (const c of res.data.comments) {
+          const ing = ingestYouTubeComment(c, videoId);
+          if (ing.duplicate) duplicates += 1; else inserted += 1;
+          all.push({ ...c, videoId: c.videoId ?? videoId });
+        }
+      }
+      if (!okCount) { if (lastError) noteYouTubeProviderError(lastError.code as any); return { ok: false, error: lastError?.error || "تعذّر قراءة تعليقات الفيديوهات المفحوصة.", code: lastError?.code ?? null }; }
+      // أحدث تعليق فعلي بين كل الفيديوهات المفحوصة (ترتيب زمني تنازلي حقيقي).
+      all.sort((a, b) => String(b.publishedAt || "").localeCompare(String(a.publishedAt || "")));
+      const top = all.find((c) => c && c.commentId) || null;
       await persistStateDurable();
       clearYouTubeProviderError();
-      return { ok: true, comments: res.data.comments, inserted, duplicates };
+      return {
+        ok: true,
+        comments: all,
+        scannedVideoIds,
+        videosScanned: scannedVideoIds.length,
+        latestComment: top ? { commentId: top.commentId, videoId: top.videoId ?? null, text: top.text, authorName: top.authorName ?? null, publishedAt: top.publishedAt ?? null } : null,
+        inserted, duplicates,
+      };
     },
     youtubeLearning: async () => {
       const guard = youtubeOperationGuard();
