@@ -27,8 +27,17 @@ type AgentTask = {
   error: string | null;
   plan: { kind: string; summary: string; requiresAi: boolean; requiresApproval: boolean; reason: string; steps: Array<{ toolId: string; label: string }> } | null;
   journal: Array<{ step: number; toolId: string; label: string; permission: string; ok: boolean; code?: string; error?: string; summary: string; durationMs: number; attempts: number }>;
-  result: { summary: string; data: any[] } | null;
+  result: { summary: string; data: AgentResultItem[] } | null;
   contextSummary: string[];
+};
+
+/** عنصر نتيجة مهمة: ملخّص كل خطوة + مخرجها الحقيقي المنقّى (قد يحمل تحليل تعليقات). */
+type AgentResultItem = {
+  step: number;
+  toolId: string;
+  ok: boolean;
+  summary: string;
+  output?: any;
 };
 
 type AgentTool = {
@@ -62,6 +71,63 @@ function StatusBadge({ status }: { status: string }) {
     <span className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full border text-[11px] font-bold ${meta.tone}`}>
       {meta.icon}{meta.label}
     </span>
+  );
+}
+
+/**
+ * يقرأ مخرجات task.result.data الحقيقية ويعرض تحليل التعليقات إن وُجد:
+ * نص أحدث تعليق + نوعه + مشاعره + الرد المقترح باللهجة العراقية + وسم «لم يُرسل».
+ * كل القيم من الخادم؛ لا حساب محلي ولا ادّعاء إرسال.
+ */
+function CommentAnalysisPanel({ data }: { data: AgentResultItem[] }) {
+  const commentsItem = data.find((d) => d.toolId === 'youtube_comments' && d.ok && d.output);
+  const aiItem = data.find((d) => d.toolId === 'ai_draft' && d.ok && d.output);
+  if (!commentsItem && !(aiItem && aiItem.output?.kind === 'comment_analysis')) return null;
+
+  const latest = commentsItem?.output?.latestComment || null;
+  const comments: any[] = Array.isArray(commentsItem?.output?.comments) ? commentsItem.output.comments : [];
+  const analyzed: any[] = Array.isArray(aiItem?.output?.analyzed) ? aiItem.output.analyzed : [];
+  const latestAnalysis = aiItem?.output?.latestAnalysis || analyzed[0] || null;
+  const willAutoSend = aiItem?.output?.willAutoSend === true;
+
+  // اسم الفيديو إن توفّر: يُشتق من مخرج youtube_videos الحقيقي بمطابقة videoId.
+  const videos: any[] = (data.find((d) => d.toolId === 'youtube_videos' && d.ok && d.output)?.output?.videos) || [];
+  const videoId = latest?.videoId ?? latestAnalysis?.videoId ?? null;
+  const videoTitle = videoId ? (videos.find((v) => v && v.videoId === videoId)?.title ?? null) : null;
+
+  const typeAr = latestAnalysis?.typeAr ?? latestAnalysis?.type ?? null;
+  const sentimentAr = latestAnalysis?.sentimentAr ?? latestAnalysis?.sentiment ?? null;
+  const reply = latestAnalysis?.iraqiSuggestedReply ?? null;
+
+  return (
+    <div className="mt-3 p-3 rounded-xl bg-slate-950/60 border border-emerald-900/40 space-y-2">
+      <p className="text-[11px] font-bold text-emerald-300">تحليل أحدث تعليق (بيانات حقيقية من المصدر)</p>
+
+      <div className="text-[11px] text-slate-300 space-y-1">
+        <p><span className="text-slate-500">نص التعليق: </span>{latest?.text ?? latestAnalysis?.text ?? '—'}</p>
+        {videoTitle && <p><span className="text-slate-500">الفيديو: </span>{videoTitle}</p>}
+        {latest?.authorName && <p><span className="text-slate-500">الكاتب: </span>{latest.authorName}</p>}
+        {latest?.publishedAt && <p><span className="text-slate-500">التاريخ: </span>{latest.publishedAt}</p>}
+        <div className="flex flex-wrap gap-2 pt-1">
+          {typeAr && <span className="text-[10px] px-2 py-0.5 rounded-full bg-sky-900/40 text-sky-200 border border-sky-500/40">النوع: {typeAr}</span>}
+          {sentimentAr && <span className="text-[10px] px-2 py-0.5 rounded-full bg-amber-900/40 text-amber-200 border border-amber-500/40">المشاعر: {sentimentAr}</span>}
+          <span className={`text-[10px] px-2 py-0.5 rounded-full border ${willAutoSend ? 'bg-rose-900/40 text-rose-200 border-rose-500/40' : 'bg-emerald-900/40 text-emerald-200 border-emerald-500/40'}`}>
+            {willAutoSend ? 'يُرسل تلقائياً' : 'لم يُرسل'}
+          </span>
+        </div>
+      </div>
+
+      {reply && (
+        <div className="p-2.5 rounded-lg bg-slate-900 border border-slate-800">
+          <p className="text-[10px] font-bold text-slate-400 mb-1">الرد المقترح باللهجة العراقية (لم يُرسل)</p>
+          <p className="text-[11px] text-slate-200 leading-relaxed">{reply}</p>
+        </div>
+      )}
+
+      {comments.length > 1 && (
+        <p className="text-[10px] text-slate-500">تعليقات تم تحليلها: {analyzed.length || comments.length}</p>
+      )}
+    </div>
   );
 }
 
@@ -119,6 +185,7 @@ function TaskCard({ task, onReplay, replaying }: { task: AgentTask; onReplay: (i
             <div className="p-3 rounded-xl bg-slate-950/60 border border-slate-800">
               <p className="text-[11px] font-bold text-emerald-300">النتيجة</p>
               <p className="text-[11px] text-slate-300 mt-1">{task.result.summary}</p>
+              <CommentAnalysisPanel data={Array.isArray(task.result.data) ? task.result.data : []} />
             </div>
           )}
 

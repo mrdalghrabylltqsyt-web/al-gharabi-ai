@@ -9,12 +9,14 @@
  */
 
 import express from 'express';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { AgentOrchestrator } from '../agent/orchestrator';
 import { registerAgentRoutes } from '../agent/routes';
 import { buildAgentPlan, classifyIntent, detectPlatforms, wantsYouTubeComments } from '../agent/planner';
 import { canUseTool, toolRequiresApproval } from '../agent/permissions';
 import { AGENT_TOOLS, getAgentTool } from '../agent/tools';
-import { resolveArgValue } from '../agent/orchestrator';
+import { resolveArgValue, sanitizeOutput } from '../agent/orchestrator';
 import { describeProviders, shouldUseCouncil, primaryProvider } from '../agent/providerRouter';
 import type { AgentToolContext } from '../agent/tools';
 
@@ -302,6 +304,93 @@ async function unitTests() {
   const emptyEntry = rEmpty.journal.find((e) => e.toolId === 'youtube_comments');
   check('B: بلا فيديوهات لا يُستدعى youtubeComments إطلاقاً', fabricatedCalls === 0);
   check('B: بلا فيديوهات تسجّل MISSING_ARGUMENT صراحةً', emptyEntry?.ok === false && emptyEntry?.code === 'MISSING_ARGUMENT', JSON.stringify(emptyEntry));
+
+  // --- A') task.result.data.output يحمل المخرَج الحقيقي (لا أسماء مفاتيح فقط) ---
+  {
+    const richCtx = fakeCtx({
+      youtubeVideos: async () => ({ ok: true, videos: [{ videoId: 'v1', title: 'فيديو' }] }),
+      youtubeComments: async () => ({
+        ok: true,
+        comments: [{ commentId: 'c1', videoId: 'v1', text: 'سعر التقسيط كام؟', authorName: 'علي', publishedAt: '2026-09-27T10:00:00Z' }],
+        latestComment: { commentId: 'c1', videoId: 'v1', text: 'سعر التقسيط كام؟', authorName: 'علي', publishedAt: '2026-09-27T10:00:00Z' },
+        scannedVideoIds: ['v1'], videosScanned: 1, inserted: 1, duplicates: 0,
+      }),
+    });
+    const orch = makeOrch(richCtx);
+    const t = orch.createTask({ task: 'اجلب أحدث تعليقات YouTube وحللها واقترح رداً', operator: 'owner', userId: 'owner' });
+    const r = await orch.run(t.id);
+    const cItem = (r.result?.data || []).find((d: any) => d.toolId === 'youtube_comments');
+    const aiItem = (r.result?.data || []).find((d: any) => d.toolId === 'ai_draft');
+    check('A: result.data[youtube_comments].output يحمل latestComment.text', cItem?.output?.latestComment?.text === 'سعر التقسيط كام؟', JSON.stringify(cItem?.output));
+    check('A: result.data[youtube_comments].output يحمل comments[].text', Array.isArray(cItem?.output?.comments) && cItem.output.comments[0]?.text === 'سعر التقسيط كام؟');
+    check('A: result.data[ai_draft].output موجود (لا أسماء مفاتيح فقط)', Boolean(aiItem?.output));
+
+    // --- B') ai_draft استلم نص التعليق الحقيقي (لا نص المهمة) ---
+    check('B: ai_draft صنّف التعليق الحقيقي (kind=comment_analysis)', aiItem?.output?.kind === 'comment_analysis');
+    check('B: ai_draft latestCommentText = نص التعليق الحقيقي', aiItem?.output?.latestCommentText === 'سعر التقسيط كام؟');
+    check('B: ai_draft لم يستخدم نص المهمة كمصدر للتعليق', aiItem?.output?.latestCommentText !== t.task);
+
+    // --- C) مخرج ai_draft يحمل النوع والمشاعر والرد العراقي وwillAutoSend:false ---
+    const la = aiItem?.output?.latestAnalysis;
+    check('C: نوع التعليق موجود (business_inquiry)', la?.type === 'business_inquiry' && la?.typeAr === 'استفسار تجاري');
+    check('C: المشاعر موجودة (محايدة)', la?.sentiment === 'neutral' && la?.sentimentAr === 'محايدة');
+    check('C: الرد المقترح باللهجة العراقية موجود', typeof la?.iraqiSuggestedReply === 'string' && la.iraqiSuggestedReply.length > 0);
+    check('C: willAutoSend=false صريح', aiItem?.output?.willAutoSend === false && la?.willAutoSend === false);
+    check('C: لا خطوة youtube_reply في الخطة', !r.journal.some((e: any) => e.toolId === 'youtube_reply'));
+
+    // --- E) أكثر من تعليق: تحليل كل تعليق ---
+    const multiCtx = fakeCtx({
+      youtubeVideos: async () => ({ ok: true, videos: [{ videoId: 'v1' }] }),
+      youtubeComments: async () => ({
+        ok: true,
+        comments: [
+          { commentId: 'c1', videoId: 'v1', text: 'سعر التقسيط كام؟', authorName: 'أ', publishedAt: '2026-09-27T10:00:00Z' },
+          { commentId: 'c2', videoId: 'v1', text: 'خدمة رائعة شكراً', authorName: 'ب', publishedAt: '2026-09-26T10:00:00Z' },
+        ],
+        latestComment: { commentId: 'c1', videoId: 'v1', text: 'سعر التقسيط كام؟', authorName: 'أ', publishedAt: '2026-09-27T10:00:00Z' },
+        scannedVideoIds: ['v1'], videosScanned: 1, inserted: 2, duplicates: 0,
+      }),
+    });
+    const multiOrch = makeOrch(multiCtx);
+    const tm = multiOrch.createTask({ task: 'اجلب أحدث تعليقات YouTube وحللها', operator: 'owner', userId: 'owner' });
+    const rm = await multiOrch.run(tm.id);
+    const aiM = (rm.result?.data || []).find((d: any) => d.toolId === 'ai_draft');
+    check('E: تحليل أكثر من تعليق', Array.isArray(aiM?.output?.analyzed) && aiM.output.analyzed.length === 2);
+    check('E: كل تعليق له نوع ومشاعر ورد', aiM.output.analyzed.every((a: any) => a.type && a.sentiment && a.iraqiSuggestedReply));
+
+    // --- D) بلا تعليقات: لا تحليل ولا رد مُختلق ---
+    const noCommentCtx = fakeCtx({
+      youtubeVideos: async () => ({ ok: true, videos: [{ videoId: 'v1' }] }),
+      youtubeComments: async () => ({ ok: true, comments: [], latestComment: null, scannedVideoIds: ['v1'], videosScanned: 1, inserted: 0, duplicates: 0 }),
+    });
+    const ncOrch = makeOrch(noCommentCtx);
+    const tn = ncOrch.createTask({ task: 'اجلب أحدث تعليقات YouTube', operator: 'owner', userId: 'owner' });
+    const rn = await ncOrch.run(tn.id);
+    const aiN = (rn.result?.data || []).find((d: any) => d.toolId === 'ai_draft');
+    check('D: بلا تعليقات لا يوجد تحليل مُختلق', !aiN?.output?.analyzed && !aiN?.output?.latestAnalysis);
+    check('D: مخرج ai_draft بلا تعليقات ليس comment_analysis', aiN?.output?.kind !== 'comment_analysis');
+
+    // --- F) youtube_reply لا يدخل خطة المهمة ولا يُنفّذ ---
+    check('F: خطة المهمة لا تضم youtube_reply', !t.plan!.steps.some((s) => s.toolId === 'youtube_reply'));
+    check('F: youtube_reply خارجي ويُحجب داخل المهمة', getAgentTool('youtube_reply')?.permission === 'EXTERNAL_ACTION' && toolRequiresApproval('EXTERNAL_ACTION'));
+
+    // --- sanitizeOutput: يحفظ النص ويُسقط السرّ ---
+    check('sanitize: يحفظ text', sanitizeOutput({ text: 'مرحبا', token: 'SECRET', keep: 1 }).text === 'مرحبا');
+    check('sanitize: يُسقط المفتاح السرّي', !('token' in sanitizeOutput({ text: 'x', token: 'SECRET' })));
+    check('sanitize: يحفظ النوع والمشاعر والرد', (() => { const s = sanitizeOutput(la); return s.type === la.type && s.sentiment === la.sentiment && s.iraqiSuggestedReply === la.iraqiSuggestedReply; })());
+  }
+
+  // --- G) الواجهة تعرض المخرجات الفعلية من task.result.data (فحص مصدر ثابت) ---
+  {
+    const root = process.cwd();
+    const ui = readFileSync(join(root, 'src/components/agent/CentralAgentConsole.tsx'), 'utf8');
+    check('G: الواجهة تقرأ task.result.data فعلياً', /task\.result\.data/.test(ui));
+    check('G: الواجهة تمرّر result.data إلى لوحة تحليل التعليقات', /CommentAnalysisPanel[\s\S]{0,120}?task\.result\.data/.test(ui));
+    check('G: الواجهة تقرأ latestComment/comments من output', ui.includes('output?.latestComment') && ui.includes('output?.comments'));
+    check('G: الواجهة تقرأ الحقول المطلوبة نص/نوع/مشاعر/رد', ['latestComment', 'typeAr', 'sentimentAr', 'iraqiSuggestedReply'].every((k) => ui.includes(k)));
+    check('G: الواجهة تعرض وسم «لم يُرسل»', ui.includes('لم يُرسل'));
+    check('G: الواجهة لا تعرض أي token/secret', !/token|secret|apiKey/i.test(ui.replace(/\/\/[^\n]*/g, '')));
+  }
 }
 
 /** تكامل: خادم Express حقيقي بمسار العقل + تصريح فعلي. */

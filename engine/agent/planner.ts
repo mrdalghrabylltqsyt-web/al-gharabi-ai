@@ -34,10 +34,12 @@ export interface AgentArgRef {
   field: string;
   /**
    * `first` = أول قيمة غير فارغة فقط. `all` = كل القيم غير الفارغة (بترتيب
-   * المصدر). القيمة الفعلية يحدّدها منفّذ الأداة بحدّ أقصى صريح لمنع أي استهلاك
-   * غير محدود للـAPI. لا قيمة مُصنّعة عند غياب البيانات في الحالتين.
+   * المصدر). `list` = تمرير العناصر الحقيقية كاملة (لتسليم نص التعليق لأداة
+   * تحليل، بلا اختلاق عنصر). القيمة الفعلية يحدّدها منفّذ الأداة بحدّ أقصى صريح
+   * لمنع أي استهلاك غير محدود للـAPI. لا قيمة مُصنّعة عند غياب البيانات.
    */
   pick?: 'first' | 'all';
+  mode?: 'first' | 'all' | 'list';
 }
 
 export interface AgentPlanStep {
@@ -251,16 +253,20 @@ export function buildAgentPlan(rawTask: string, options: { explicitKind?: AgentP
         step('youtube_status'),
         step('youtube_videos'),
         ...(wantsComments
-          ? [step('youtube_comments', { videoId: { fromTool: 'youtube_videos', listPath: 'videos', field: 'videoId', pick: 'all' } as AgentArgRef })]
-          : []),
+          ? [
+              step('youtube_comments', { videoId: { fromTool: 'youtube_videos', listPath: 'videos', field: 'videoId', pick: 'all' } as AgentArgRef }),
+              // نص التعليقات الحقيقي يُمرَّر إلى ai_draft عبر مرجع list من مخرَج
+              // youtube_comments.comments (لا من نص المهمة) — بلا اختلاق عند غيابه.
+              step('ai_draft', { prompt: task, comments: { fromTool: 'youtube_comments', listPath: 'comments', field: 'text', mode: 'list' } as AgentArgRef }),
+            ]
+          : [step('ai_draft', { prompt: task })]),
         step('youtube_analytics'),
         step('youtube_learning'),
-        step('ai_draft', { prompt: task }),
       ];
       return ensureKnown({
         kind,
         summary: wantsComments
-          ? 'تشغيل YouTube: الحالة → الفيديوهات → تعليقات الفيديو الأحدث (commentThreads.list) → التحليلات → التعلّم، ثم تحليل واقتراح رد بلا إرسال.'
+          ? 'تشغيل YouTube: الحالة → الفيديوهات → تعليقات الفيديو الأحدث (commentThreads.list) → تحليل نوع/مشاعر واقتراح رد عراقي عبر ai_draft → التحليلات → التعلّم، بلا إرسال.'
           : 'تشغيل YouTube: الحالة الصادقة → الفيديوهات → التحليلات → التعلّم، ثم مسودة محتوى واحدة عند الحاجة.',
         steps,
         requiresAi: true,

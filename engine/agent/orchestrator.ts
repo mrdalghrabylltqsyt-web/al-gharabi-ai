@@ -125,10 +125,12 @@ export function resolveArgValue(arg: any, outputs: Record<string, any>): any {
   let list: any = output;
   if (arg.listPath) list = output?.[arg.listPath];
   if (!Array.isArray(list) || !list.length) return undefined;
-  const values = list
-    .filter((it) => it && it[arg.field] !== undefined && it[arg.field] !== null && it[arg.field] !== '')
-    .map((it) => it[arg.field]);
-  if (!values.length) return undefined;
+  const present = list.filter((it) => it && it[arg.field] !== undefined && it[arg.field] !== null && it[arg.field] !== '');
+  if (!present.length) return undefined;
+  // `list` يُمرّر العناصر الحقيقية كاملة (مثل تعليقات لها text) لتمريرها لأداة
+  // تحليل، بلا اختلاق أي عنصر. منفّذ الأداة يفرض الحدّ الأقصى بنفسه.
+  if (arg.mode === 'list') return present;
+  const values = present.map((it) => it[arg.field]);
   // `all` يُعيد كل القيم الحقيقية (بترتيب المصدر) ليحدّد منفّذ الأداة الحدّ الأقصى؛
   // غيره (الافتراضي) يُعيد أول قيمة فقط. لا توليد قيمة عند غياب البيانات.
   return arg.pick === 'all' ? values : values[0];
@@ -340,7 +342,9 @@ export class AgentOrchestrator {
     }
     task.result = {
       summary: buildResultSummary(task),
-      data: journal.map((e) => ({ step: e.step + 1, toolId: e.toolId, ok: e.ok, summary: e.summary })),
+      // مخرَج كل خطوة الحقيقي (منقّى ومحدود الحجم/العمق) — لا أسماء مفاتيح فقط.
+      // المخرَج يُقرأ من outputs للخطوات الناجحة، فلا يضيع ولا يُختلق عند الفشل.
+      data: journal.map((e) => ({ step: e.step + 1, toolId: e.toolId, ok: e.ok, summary: e.summary, output: e.ok ? sanitizeOutput(outputs[e.toolId]) : null })),
     };
     task.finishedAt = new Date(this.now()).toISOString();
     return task;
@@ -388,4 +392,38 @@ function sanitizeContext(context: Record<string, any> | undefined): Record<strin
     out[k] = v;
   }
   return out;
+}
+
+/** حدّ حجم نص واحد داخل مخرَج الأداة (يمنع تضخّم النتيجة). */
+const MAX_OUTPUT_STRING = 4000;
+/** حدّ عمق التداخل في المخرَج (يمنع البنى العميقة/الحلقية). */
+const MAX_OUTPUT_DEPTH = 8;
+/** حدّ عدد عناصر أي مصفوفة في المخرَج. */
+const MAX_OUTPUT_ARRAY = 50;
+
+/**
+ * ينقّي مخرَج أداة للحفظ في task.result.data: يُسقط أي مفتاح يبدو سرّياً،
+ * ويحدّ الحجم والعمق وعدد العناصر، ويحوّل الدوال/القيم غير القابلة للتسلسل.
+ * لا يحذف نص التعليقات/التحليل (داخل الحدود) فلا يفقد التحليل الحاجة إليه.
+ */
+export function sanitizeOutput(value: any, depth = 0): any {
+  if (value === null || value === undefined) return value;
+  const t = typeof value;
+  if (t === 'string') return value.length > MAX_OUTPUT_STRING ? value.slice(0, MAX_OUTPUT_STRING) : value;
+  if (t === 'number' || t === 'boolean') return value;
+  if (t === 'function' || t === 'symbol' || t === 'bigint') return null;
+  if (depth >= MAX_OUTPUT_DEPTH) return '[deep]';
+  if (Array.isArray(value)) {
+    return value.slice(0, MAX_OUTPUT_ARRAY).map((v) => sanitizeOutput(v, depth + 1));
+  }
+  if (t === 'object') {
+    const out: Record<string, any> = {};
+    for (const [k, v] of Object.entries(value)) {
+      if (SECRET_KEY_RE.test(k)) continue;
+      const sv = sanitizeOutput(v, depth + 1);
+      if (sv !== undefined) out[k] = sv;
+    }
+    return out;
+  }
+  return null;
 }

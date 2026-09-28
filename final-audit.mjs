@@ -638,6 +638,21 @@ const youtubeTest = read('engine/tests/youtube.connector.test.ts');
 add('agent-youtube-comments-e2e-test', youtubeTest.includes('commentThreads') && youtubeTest.includes('lastCommentsVideoId') && youtubeTest.includes('/api/agent/tasks'), 'اختبار تكامل يثبت العقل → youtubeVideos → videoId → youtubeComments → commentThreads.list');
 add('agent-youtube-comment-non-first-video-test', youtubeTest.includes('cmt_late') && youtubeTest.includes('videos[1]'), 'اختبار يثبت الوصول لتعليق موجود على فيديو غير أول فيديو');
 add('agent-youtube-comments-no-external', agentTest.includes('youtube_comments') && agentTest.includes('EXTERNAL_ACTION'), 'اختبارات العقل تثبت التعليقات قراءة والرد يبقى خارجياً بموافقة');
+// --- إصلاح: مخرَج الخطوات يُحفظ في result.data + نص التعليق يصل لـai_draft + الواجهة تعرضه ---
+add('agent-result-data-carries-output', /data:\s*journal\.map\(\(e\)\s*=>\s*\([\s\S]{0,220}?output:/.test(agentOrch), 'task.result.data يحمل مخرَج كل خطوة لا ملخّصها فقط');
+add('agent-sanitize-output-exists', /function sanitizeOutput/.test(agentOrch) && agentOrch.includes('MAX_OUTPUT_DEPTH') && agentOrch.includes('MAX_OUTPUT_ARRAY'), 'sanitizeOutput موجود فعلاً بحدود حجم/عمق ويُسقط المفاتيح السرّية');
+add('agent-sanitize-output-used', agentOrch.includes('sanitizeOutput(outputs[') , 'المنسّق يستخدم sanitizeOutput على مخرَجات الخطوات قبل الحفظ');
+add('planner-comments-feed-ai-draft', /step\('ai_draft'[\s\S]{0,200}?fromTool: 'youtube_comments'[\s\S]{0,80}?mode: 'list'/.test(agentPlanner), 'خطوة ai_draft تستلم تعليقات حقيقية من youtube_comments.comments (لا نص المهمة)');
+add('argref-list-mode', agentPlanner.includes("mode?: 'first' | 'all' | 'list'") && agentOrch.includes("arg.mode === 'list'"), 'آلية AgentArgRef موسّعة بوضع list لتمرير عناصر حقيقية كاملة');
+add('ai-draft-analyzes-comments', agentTools.includes('normalizeCommentsInput') && agentTools.includes('analyzeCommentInput') && agentTools.includes('classifyComment') && agentTools.includes('buildDeterministicReply'), 'ai_draft يصنّف التعليق ويحدّد المشاعر ويقترح رداً حتمياً');
+add('ai-draft-no-auto-send', /willAutoSend:\s*false/.test(agentTools), 'ai_draft يعلن willAutoSend:false صراحةً (لا إرسال)');
+add('ai-draft-deterministic-not-blocked', agentTools.includes('kind: \'comment_analysis\''), 'تحليل التعليقات حتمي ولا يعتمد على مزوّد AI قد يفشل');
+add('console-reads-result-data', agentUi.includes('task.result.data') && agentUi.includes('CommentAnalysisPanel'), 'CentralAgentConsole يقرأ result.data ويعرض لوحة تحليل التعليقات');
+add('console-comment-fields', ['latestComment', 'typeAr', 'sentimentAr', 'iraqiSuggestedReply'].every((k) => agentUi.includes(k)) && agentUi.includes('لم يُرسل'), 'الواجهة تعرض النص والنوع والمشاعر والرد العراقي ووسم «لم يُرسل»');
+add('console-video-title-optional', agentUi.includes('videoTitle') && agentUi.includes("toolId === 'youtube_videos'"), 'الواجهة تعرض اسم الفيديو إن توفّر (من مخرج youtube_videos الحقيقي)');
+add('console-no-secret-display', !/(apiKey|accessToken|clientSecret)/.test(agentUi), 'الواجهة لا تعرض أي سرّ/توكن');
+add('agent-output-passing-tests', agentTest.includes('result.data[youtube_comments].output') && agentTest.includes('willAutoSend') && agentTest.includes('iraqiSuggestedReply'), 'اختبارات تثبت وصول نص التعليق والتحليل إلى result.data.output');
+add('agent-ui-real-data-test', agentTest.includes('CommentAnalysisPanel') && agentTest.includes('task.result.data'), 'اختبار يثبت أن الواجهة تقرأ المخرجات الفعلية من result.data');
 
 const failed = checks.filter(x => !x.ok);
 console.table(checks);

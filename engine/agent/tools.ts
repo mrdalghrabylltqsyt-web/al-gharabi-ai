@@ -10,6 +10,7 @@
  */
 
 import type { ToolPermission } from './permissions';
+import { classifyComment, buildDeterministicReply, type ClassifiedComment } from '../social/comments';
 
 export interface AgentToolParameter {
   name: string;
@@ -102,6 +103,73 @@ function read<T>(fn: () => T): AgentToolResult {
   } catch (e: any) {
     return { ok: false, code: 'TOOL_EXECUTION_FAILED', error: String(e?.message || e).slice(0, 200) };
   }
+}
+
+/** عنصر تعليق حقيقي وحيد الشكل لدخول التحليل (لا اختلاق عند غياب الحقول). */
+interface CommentInput {
+  commentId: string | null;
+  videoId: string | null;
+  text: string;
+  authorName: string | null;
+  publishedAt: string | null;
+}
+
+/** يحوّل مدخل التعليقات (نصوص أو كائنات) إلى عناصر وحيدة الشكل، ويُسقط الفارغ. */
+function normalizeCommentsInput(input: any): CommentInput[] {
+  const arr = Array.isArray(input) ? input : (input ? [input] : []);
+  const out: CommentInput[] = [];
+  for (const it of arr) {
+    if (typeof it === 'string') {
+      if (it.trim()) out.push({ commentId: null, videoId: null, text: it, authorName: null, publishedAt: null });
+      continue;
+    }
+    if (it && typeof it === 'object') {
+      const text = String(it.text || '').trim();
+      if (text) out.push({
+        commentId: it.commentId ? String(it.commentId) : null,
+        videoId: it.videoId ? String(it.videoId) : null,
+        text,
+        authorName: it.authorName ? String(it.authorName) : null,
+        publishedAt: it.publishedAt ? String(it.publishedAt) : null,
+      });
+    }
+  }
+  return out;
+}
+
+/** تصنيف حتمي: نوع التعليق + المشاعر + رد مقترح باللهجة العراقية (بلا إرسال). */
+function analyzeCommentInput(c: CommentInput): {
+  commentId: string | null; videoId: string | null; text: string; authorName: string | null; publishedAt: string | null;
+  type: string; typeAr: string; sentiment: string; sentimentAr: string;
+  requiresHumanReview: boolean; iraqiSuggestedReply: string; willAutoSend: false;
+} {
+  const cls: ClassifiedComment = classifyComment(c.text);
+  return {
+    commentId: c.commentId, videoId: c.videoId, text: c.text, authorName: c.authorName, publishedAt: c.publishedAt,
+    type: cls.intent, typeAr: TYPE_AR[cls.intent] || cls.intent,
+    sentiment: cls.sentiment, sentimentAr: SENTIMENT_AR[cls.sentiment] || cls.sentiment,
+    requiresHumanReview: cls.requiresHumanReview,
+    iraqiSuggestedReply: iraqiReply(cls),
+    willAutoSend: false,
+  };
+}
+
+const TYPE_AR: Record<string, string> = {
+  question: 'سؤال', complaint: 'شكوى', praise: 'مدح', business_inquiry: 'استفسار تجاري', spam: 'سبام', other: 'أخرى',
+};
+const SENTIMENT_AR: Record<string, string> = { positive: 'إيجابية', negative: 'سلبية', neutral: 'محايدة' };
+
+/**
+ * صياغة الرد المقترح باللهجة العراقية — حتمية بالكامل من `buildDeterministicReply`
+ * (يُضاف إليه خِتام عراقي). لا تُرسل أي رد ولا تعتمد على مزود خارجي، فلا يتأثر
+ * التحليل بفشل المزود ولا يُختلق نص بلا بيانات.
+ */
+function iraqiReply(cls: ClassifiedComment): string {
+  const base = buildDeterministicReply(cls);
+  const closure = cls.sentiment === 'negative'
+    ? 'وأكيد نتعامل وياك بجدية.'
+    : 'وتدلل، آني بخدمتك.';
+  return `${base} ${closure}`;
 }
 
 export const AGENT_TOOLS: ReadonlyArray<AgentTool> = [
@@ -300,11 +368,33 @@ export const AGENT_TOOLS: ReadonlyArray<AgentTool> = [
   {
     id: 'ai_draft',
     name: 'توليد محتوى بالذكاء الاصطناعي',
-    description: 'استدعاء مزود AI عند الحاجة فقط (محمي بالحصة والذاكرة) لصياغة مسودة. لا يُستخدم للعمليات الحتمية.',
+    description: 'يولّد مسودة نصية، وعند تلقّي تعليقات حقيقية يصنّفها ويحدّد المشاعر ويقترح رداً باللهجة العراقية (بلا إرسال). لا يُستخدم للعمليات الحتمية.',
     permission: 'EXECUTE',
-    parameters: [{ name: 'prompt', type: 'string', required: true, description: 'نص الطلب.' }],
+    parameters: [
+      { name: 'prompt', type: 'string', required: false, description: 'نص الطلب.' },
+      { name: 'comments', type: 'string', required: false, description: 'تعليقات حقيقية (عناصر أو نصوص) للتحليل واقتراح الرد.' },
+    ],
     run: async (args, ctx) => {
-      if (!args.prompt) return { ok: false, code: 'MISSING_ARGUMENT', error: 'prompt مطلوب.' };
+      // مسار تحليل التعليقات: حتمي بالكامل (تصنيف + مشاعر + رد عراقي مقترح)،
+      // ولا يُرسل أي شيء ولا يستهلك مزود AI، فلا يمنع فشل المزود التحليل.
+      const comments = normalizeCommentsInput(args.comments);
+      if (comments.length) {
+        const analyzed = comments.map((c) => analyzeCommentInput(c));
+        const latest = analyzed[0] || null;
+        return {
+          ok: true,
+          data: {
+            kind: 'comment_analysis',
+            count: analyzed.length,
+            analyzed,
+            latestCommentText: latest?.text ?? null,
+            latestAnalysis: latest ?? null,
+            willAutoSend: false,
+            note: 'تصنيف ومشاعر ورد مقترح باللهجة العراقية — لم يُرسل أي رد؛ الإرسال عملية خارجية تتطلب موافقة صريحة عبر بوابة youtube_reply.',
+          },
+        };
+      }
+      if (!args.prompt) return { ok: false, code: 'MISSING_ARGUMENT', error: 'prompt أو comments مطلوب.' };
       try {
         const res = await ctx.aiGenerate(String(args.prompt).slice(0, 4000));
         return { ok: true, data: res };
