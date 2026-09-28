@@ -157,7 +157,8 @@ export function decideCommentAction(input: {
 // الإيقاع (cadence) + حالة الـcheckpoint
 // -------------------------------------------------------------
 
-export const WATCHER_DEFAULT_CADENCE_MS = 5 * 60 * 1000;
+/** الإيقاع الافتراضي: فحص كل دقيقة (60,000ms) لمراقبة 24/7. */
+export const WATCHER_DEFAULT_CADENCE_MS = 60 * 1000;
 export const WATCHER_MIN_CADENCE_MS = 60 * 1000;
 export const WATCHER_MAX_CADENCE_MS = 60 * 60 * 1000;
 

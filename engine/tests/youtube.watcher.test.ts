@@ -124,8 +124,9 @@ function entry(partial: Partial<WatcherProcessedEntry>): WatcherProcessedEntry {
 
 // --- G) الإيقاع (cadence) بحدود آمنة + الجدولة ---
 {
-  check('G: الافتراضي 5 دقائق', normalizeCadenceMs(null) === WATCHER_DEFAULT_CADENCE_MS);
+  check('G: الافتراضي دقيقة واحدة (60,000ms)', normalizeCadenceMs(null) === WATCHER_DEFAULT_CADENCE_MS && WATCHER_DEFAULT_CADENCE_MS === 60000);
   check('G: حد أدنى دقيقة (لا polling عدواني)', normalizeCadenceMs(1) === WATCHER_MIN_CADENCE_MS);
+  check('G: الافتراضي = الحد الأدنى (دقيقة)', WATCHER_DEFAULT_CADENCE_MS === WATCHER_MIN_CADENCE_MS);
   check('G: حدّ أقصى ساعة', normalizeCadenceMs(99 * 3_600_000) === WATCHER_MAX_CADENCE_MS);
   check('G: قيمة صالحة تمرّ', normalizeCadenceMs(120000) === 120000);
   const now = Date.parse('2026-09-28T12:00:00.000Z');
