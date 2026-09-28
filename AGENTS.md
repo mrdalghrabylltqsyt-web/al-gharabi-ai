@@ -1966,3 +1966,41 @@ YouTube؛ إيقاف ⇒ حجب فوري). final-audit = **500 فحص** (`youtub
 **نقطة توقف المالك (اختيارية):** التفويض يبدأ غير ممنوح (آمن افتراضياً). لمنح العقل إدارة
 قناة YouTube فعلياً: افتح مركز ربط المنصات → بطاقة YouTube → «منح/تحديث التفويض» واختر
 العمليات (الرد/النشر/الجدولة/التحديث). لا يمكن لأي وكيل برمجي منح تفويض نيابةً عن المالك.
+
+## دورة YouTube الكاملة في مهمة واحدة — تمرير القيم الحقيقية من مخرَجات الخطوات (Batch 18, 2026-09-28)
+
+**الجذر المُثبت:** مهمة تحليل تعليق YouTube كانت تعمل فعلاً (قراءة حقيقية عبر
+`commentThreads.list` + `ai_draft` يولّد الرد العراقي)، لكن عند إنشاء مهمة رد مستقلة
+تظهر `MISSING_ARGUMENT: commentId وtext مطلوبان`، لأن خطة `youtube_reply` كانت تقرأ
+`commentId`/`replyText` من **سياق المهمة** فقط، ونتيجة مهمة التحليل السابقة لا تُحقن
+تلقائياً في المهمة التالية. فالمستخدم مضطر لنسخ القيم يدوياً بين مهمتين، وإن لم يفعل
+لا يُرسل الرد إطلاقاً.
+
+الإصلاح — **دورة واحدة متكاملة** بلا نسخ يدوي:
+- `planner.ts`: نية جديدة `youtube_cycle` تُكتشف حتمياً عبر `wantsYouTubeFullCycle`
+  (طلب صريح يجمع: اقرأ/حلل/اقترح **وأرسل** الرد المقترح). لا تُصنَّف دورةً بلا فعل إرسال
+  صريح، فمهام «اقترح رداً» تبقى في نية `youtube` بلا عملية خارجية. ترتيب الخطوات:
+  `youtube_status → youtube_videos → youtube_comments → ai_draft → youtube_reply →
+  youtube_reply_verify`.
+- توسيع `AgentArgRef` بمسار متداخل `outputPath`: يُقرأ الحقل من كائن داخل مخرَج الخطوة
+  السابقة، فيصل `youtube_comments.latestComment.commentId` و
+  `ai_draft.latestAnalysis.iraqiSuggestedReply` حقيقيَّين إلى خطوة الرد. `resolveArgValue`
+  يعيد `undefined` عند غياب القيمة فتفشل الخطوة بـ`MISSING_ARGUMENT` — **لا fake
+  commentId ولا fake reply**.
+- أداة جديدة `youtube_reply_verify` (**READ**): تتأكد من تسجيل رد مُسلَّم فعلياً على
+  التعليق (بمعرّف رد من المزوّد) من سجل الردود الفعلي، وتُستخدم كخطوة تحقق أخيرة.
+- **صدق التسليم**: `youtube_reply` ومنفّذ الرد `executeYouTubeReply` لا يعلنان
+  `delivered=true` بلا `externalReplyId` حقيقي (كود `PROVIDER_NO_REPLY_ID`)، وأداة الرد
+  ترفض النجاح بلا معرّف (`REPLY_NOT_DELIVERED`).
+- **gates محفوظة**: `youtube_reply` تبقى `EXTERNAL_ACTION`؛ بلا تفويض تشغيل YouTube فعّال
+  تُحجب الخطوة وتبقى المهمة `waiting` ولا يُستدعى المنفّذ إطلاقاً. مع التفويض يُنفَّذ عبر
+  **نفس** `executeYouTubeReply` (سلامة المحتوى + منع التكرار + rate limit + idempotency).
+  لم يُمسّ OAuth/scopes ولا أي منصة أخرى ولا Gemini ولا أي سرّ.
+
+اختبارات: `agent.central.test.ts` = **183 فحصاً** (مجموعة K: التصنيف، ترتيب الخطة، حلّ
+المسار المتداخل، وصول commentId/نص الرد الحقيقيين، منع الإرسال بلا commentId، منع الإرسال
+بلا نص رد، الحجب بلا تفويض، حصر أدوات التنفيذ الخارجي) و`youtube.connector.test.ts` =
+**215 فحصاً** (مجموعة 12k-3: دورة كاملة عبر HTTP تنتهي برد حقيقي `parentId=cmt_cycle`
+ونصه الرد العراقي المقترح، ثم الحجب بلا تفويض). فحوص final-audit: `youtube-cycle-*`،
+`argref-nested-output-path`، `youtube-reply-verify-*`، `youtube-reply-honest-delivery`،
+`agent-console-delivery-state`.

@@ -134,6 +134,15 @@ export function resolveArgValue(arg: any, outputs: Record<string, any>, context:
   if (!isArgRef(arg)) return arg;
   const output = outputs[arg.fromTool];
   if (!output) return undefined;
+  // مسار متداخل: يُقرأ الحقل من كائن داخل مخرَج الخطوة (مثل latestComment.commentId
+  // أو latestAnalysis.iraqiSuggestedReply). الحقل الوحيد يُقرأ مباشرة من الجذر.
+  if (arg.outputPath && !arg.listPath) {
+    const container = output?.[arg.outputPath];
+    if (!container || typeof container !== 'object') return undefined;
+    const v = container[arg.field];
+    if (v === undefined || v === null || v === '') return undefined;
+    return v;
+  }
   let list: any = output;
   if (arg.listPath) list = output?.[arg.listPath];
   if (!Array.isArray(list) || !list.length) return undefined;

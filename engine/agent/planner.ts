@@ -19,6 +19,7 @@ export type AgentPlanKind =
   | 'comments'
   | 'verification'
   | 'youtube'
+  | 'youtube_cycle'
   | 'youtube_reply'
   | 'youtube_publish'
   | 'youtube_video_update'
@@ -33,7 +34,13 @@ export interface AgentArgRef {
   fromTool: string;
   /** القائمة داخل مخرَجها (مثل videos). */
   listPath?: string;
-  /** الحقل داخل العنصر (مثل videoId). */
+  /**
+   * مسار متداخل داخل مخرَج الخطوة السابقة (مثل `latestComment` في مخرَج
+   * youtube_comments، أو `latestAnalysis` في مخرَج ai_draft). يُقرأ الحقل
+   * (`field`) من هذا الكائن مباشرة. إن غاب المسار يُقرأ الحقل من جذر المخرَج.
+   */
+  outputPath?: string;
+  /** الحقل داخل العنصر (مثل videoId) أو داخل كائن `outputPath`. */
   field: string;
   /**
    * `first` = أول قيمة غير فارغة فقط. `all` = كل القيم غير الفارغة (بترتيب
@@ -98,8 +105,20 @@ export function wantsYouTubeComments(task: string): boolean {
  * ذلك في نية التعليقات (تحليل + مسودة) بلا عملية خارجية.
  */
 const YOUTUBE_REPLY_RE = /(أرسل|ارسل|ابعث|ابعت|انشر\s*رد|ردّ\s*على|ردّ\s*علي|رد\s*على|رد\s*علي|علّق\s*على|علّق\s*علي|reply\s*to|send\s+(?:a\s+)?reply)[^.]{0,40}(يوتيوب|youtube|تعليق|تعليقات)|(يوتيوب|youtube)[^.]{0,30}(أرسل|ارسل|ابعث|انشر|ردّ|reply)/i;
-/** أنماط الإعداد/الاقتراح: لا تُعتبر إرسالاً خارجياً. */
+/** أنماط الإعداد/الاقتراح: لا تُعتبر إرسالاً خارجياً (الدورة الكاملة تُكتشف قبلها). */
 const YOUTUBE_DRAFT_ONLY_RE = /(اقترح|اقترح\s*رد|صياغة|صغ|اكتب\s*رد|مسودة|جهّز\s*رد|جهز\s*رد|draft|suggest)/i;
+/**
+ * نية الدورة الكاملة: طلب صريح لقراءة تعليق حقيقي ثم تحليله ثم اقتراح رد ثم
+ * **إرسال** الرد المقترح إلى نفس التعليق. لا تُصنَّف دورةً بلا فعل إرسال صريح
+ * (كي لا تُحوَّل مهام «اقترح رداً» إلى عملية خارجية).
+ */
+const YOUTUBE_FULL_CYCLE_RE = /(اقرأ|اجلب|اعرض|حلل|راجع)[^.]{0,50}(تعليق|تعليقات)[^.]{0,80}(اقترح|اقتراح|صيغ|صياغ)[^.]{0,80}(أرسل|ارسل|ابعث|ابعت|انشر|send)/i;
+const YOUTUBE_SEND_SUGGESTED_RE = /(أرسل|ارسل|ابعث|ابعت|انشر)[^.]{0,40}(الرد|رد)[^.]{0,25}(المقترح|المقترحة|الناتج|المولَّد|الذي\s*اقترحت)|(أرسل|ارسل)[^.]{0,40}نفس\s*التعليق/i;
+/** هل المهمة تطلب دورة YouTube كاملة: اقرأ → حلل → اقترح → أرسل الرد المقترح؟ */
+export function wantsYouTubeFullCycle(task: string): boolean {
+  const t = String(task || '');
+  return YOUTUBE_FULL_CYCLE_RE.test(t) || YOUTUBE_SEND_SUGGESTED_RE.test(t);
+}
 /** نية رفع/نشر فيديو YouTube الصريحة (تشمل الجدولة). */
 const YOUTUBE_PUBLISH_RE = /(ارفع|حمّل|حمل|انشر|نشر|جدول|جدولة|publish|upload)[^.]{0,40}(فيديو|مقطع|video)[^.]{0,40}(يوتيوب|youtube)?|(يوتيوب|youtube)[^.]{0,40}(فيديو|video)[^.]{0,20}(ارفع|انشر|جدول|upload|publish)?/i;
 /** نية تحديث بيانات فيديو YouTube الصريحة. */
@@ -162,6 +181,7 @@ const labels: Record<string, string> = {
   youtube_comments: 'قراءة تعليقات YouTube الحقيقية',
   youtube_learning: 'استخراج دروس التعلّم من أداء YouTube',
   youtube_reply: 'الرد الحقيقي على تعليق YouTube',
+  youtube_reply_verify: 'التحقق من تسليم الرد على YouTube',
   youtube_publish: 'رفع فيديو حقيقي إلى YouTube',
   youtube_video_update: 'تحديث بيانات فيديو YouTube',
 };
@@ -293,6 +313,41 @@ export function buildAgentPlan(rawTask: string, options: { explicitKind?: AgentP
         reason: 'حالة المنصات حتمية ولا تكلف حصة.',
       });
     }
+    case 'youtube_cycle': {
+      // دورة YouTube الكاملة في مهمة واحدة: قراءة التعليق الحقيقي → تحليله →
+      // اقتراح رد عراقي → إرسال الرد المقترح إلى **نفس** التعليق → التحقق من
+      // التسليم. معرّف التعليق ونص الرد يُحلّان وقت التنفيذ من مخرَجات الخطوات
+      // السابقة الفعلية (لا من نص المهمة ولا اختلاق). الإرسال يبقى EXTERNAL_ACTION
+      // فيُحجب داخل المهمة بلا تفويض تشغيل فعّال.
+      const steps: AgentPlanStep[] = [
+        step('youtube_status'),
+        step('youtube_videos'),
+        step('youtube_comments', { videoId: { fromTool: 'youtube_videos', listPath: 'videos', field: 'videoId', pick: 'all' } as AgentArgRef }),
+        // التحليل حتمي من نص التعليق الحقيقي — بلا prompt فلا استهلاك AI ولا رد مُختلق
+        // عند غياب تعليق (تفشل الخطوة بـMISSING_ARGUMENT صراحةً بدل توليد نص بلا مصدر).
+        step('ai_draft', { comments: { fromTool: 'youtube_comments', listPath: 'comments', field: 'text', mode: 'list' } as AgentArgRef }),
+        step('youtube_reply', {
+          // معرّف التعليق الحقيقي فقط من أحدث تعليق جلبته youtube_comments.
+          commentId: { fromTool: 'youtube_comments', outputPath: 'latestComment', field: 'commentId' } as AgentArgRef,
+          // نص الرد المقترح فعلاً من مخرَج ai_draft (الرد العراقي الحتمي).
+          text: { fromTool: 'ai_draft', outputPath: 'latestAnalysis', field: 'iraqiSuggestedReply' } as AgentArgRef,
+          // نص التعليق الأصلي للتصنيف في السجل (من المصدر الحقيقي).
+          commentText: { fromTool: 'youtube_comments', outputPath: 'latestComment', field: 'text' } as AgentArgRef,
+        }),
+        step('youtube_reply_verify', {
+          commentId: { fromTool: 'youtube_comments', outputPath: 'latestComment', field: 'commentId' } as AgentArgRef,
+          externalReplyId: { fromTool: 'youtube_reply', field: 'externalReplyId' } as AgentArgRef,
+        }),
+      ];
+      return ensureKnown({
+        kind,
+        summary: 'دورة YouTube كاملة: الحالة → الفيديوهات → أحدث تعليق حقيقي (commentThreads.list) → تحليل واقتراح رد عراقي (ai_draft) → إرسال الرد المقترح إلى نفس التعليق (comments.insert) → التحقق من التسليم بمعرّف رد حقيقي.',
+        steps,
+        requiresAi: false,
+        requiresApproval: true,
+        reason: 'الرد الإرسالي عملية خارجية (comments.insert): معرّف التعليق ونص الرد يُحلّان من مخرَجات الخطوات الحقيقية، ويُحجب الإرسال بلا تفويض تشغيل YouTube فعّال، ولا يُعدّ الرد مُسلَّماً بلا معرّف رد من Google.',
+      });
+    }
     case 'youtube': {
       // طلب صريح للتعليقات: نضيف مسار قراءة حقيقي عبر videoId يُستخرج من نتيجة
       // youtube_videos الفعلية (مرجع وقت التنفيذ)، ثم نحلّل ونقترح رداً بلا إرسال.
@@ -387,6 +442,8 @@ export function classifyIntent(task: string): AgentPlanKind {
   // تُوجَّه لأدواتها الحقيقية (تبقى محجوبة داخل المهمة بلا موافقة/تفويض).
   if (YOUTUBE_UPDATE_RE.test(task) && (t.includes('youtube') || task.includes('يوتيوب'))) return 'youtube_video_update';
   if (YOUTUBE_PUBLISH_RE.test(task) && (t.includes('youtube') || task.includes('يوتيوب'))) return 'youtube_publish';
+  // الدورة الكاملة تتقدّم على «رد» المنفرد: تطلب قراءة+تحليل+اقتراح+إرسال معاً.
+  if (wantsYouTubeFullCycle(task) && (t.includes('youtube') || task.includes('يوتيوب'))) return 'youtube_cycle';
   if (wantsYouTubeReply(task) && (t.includes('youtube') || task.includes('يوتيوب'))) return 'youtube_reply';
   // نية YouTube الصريحة تتقدّم على التصنيف العام: المستخدم يريد تشغيل/تحليل يوتيوب.
   if (YOUTUBE_RE.test(task) || t.includes('youtube') || task.includes('يوتيوب')) return 'youtube';

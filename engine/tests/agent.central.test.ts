@@ -13,7 +13,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { AgentOrchestrator } from '../agent/orchestrator';
 import { registerAgentRoutes } from '../agent/routes';
-import { buildAgentPlan, classifyIntent, detectPlatforms, wantsYouTubeComments, wantsYouTubeReply, wantsYouTubePublish, wantsYouTubeVideoUpdate } from '../agent/planner';
+import { buildAgentPlan, classifyIntent, detectPlatforms, wantsYouTubeComments, wantsYouTubeReply, wantsYouTubePublish, wantsYouTubeVideoUpdate, wantsYouTubeFullCycle } from '../agent/planner';
 import { canUseTool, toolRequiresApproval } from '../agent/permissions';
 import { AGENT_TOOLS, getAgentTool } from '../agent/tools';
 import { resolveArgValue, sanitizeOutput } from '../agent/orchestrator';
@@ -69,6 +69,7 @@ function fakeCtx(overrides: Partial<AgentToolContext> = {}): AgentToolContext {
     youtubeComments: async () => ({ ok: true, comments: [], inserted: 0, duplicates: 0 }),
     youtubeLearning: async () => ({ ok: true, learning: { insights: [], sampleSize: 0 } }),
     youtubeReply: async (input) => ({ delivered: true, externalReplyId: 'yt-reply-1', state: 'sent', reply: { externalId: input.commentId } }),
+    youtubeReplyVerify: async (input) => ({ real: Boolean(input.commentId), record: input.commentId ? { externalId: input.commentId, externalReplyId: input.externalReplyId ?? 'yt-reply-1', delivered: true, state: 'sent' } : undefined, note: 'تحقق وهمي' }),
     youtubePublish: async (input) => ({ record: { state: 'published' }, externalVideoId: 'yt-vid-1', url: 'https://www.youtube.com/watch?v=yt-vid-1', state: 'published', title: input.title }),
     youtubeVideoUpdate: async (input) => ({ video: { id: input.videoId, snippet: { title: input.title } } }),
   };
@@ -390,6 +391,109 @@ async function unitTests() {
     check('sanitize: يحفظ text', sanitizeOutput({ text: 'مرحبا', token: 'SECRET', keep: 1 }).text === 'مرحبا');
     check('sanitize: يُسقط المفتاح السرّي', !('token' in sanitizeOutput({ text: 'x', token: 'SECRET' })));
     check('sanitize: يحفظ النوع والمشاعر والرد', (() => { const s = sanitizeOutput(la); return s.type === la.type && s.sentiment === la.sentiment && s.iraqiSuggestedReply === la.iraqiSuggestedReply; })());
+  }
+
+  // --- K) الدورة الكاملة: قراءة تعليق حقيقي → تحليل → اقتراح رد → إرسال حقيقي → تحقق ---
+  {
+    // تصنيف: طلب «اقرأ+حلل+اقترح+أرسل» يُصنَّف دورة كاملة لا رداً منفرداً.
+    check('K: تصنيف الدورة الكاملة يوتيوب', classifyIntent('اقرأ أحدث تعليق حقيقي من يوتيوب، حلله، اقترح رداً باللهجة العراقية، ثم أرسل الرد المقترح إلى نفس التعليق') === 'youtube_cycle');
+    check('K: طلب «اقترح رداً» وحده ليس دورة كاملة', wantsYouTubeFullCycle('اجلب أحدث تعليقات يوتيوب واقترح رداً') === false);
+    check('K: الدورة الكاملة تطلب إرسالاً صريحاً', wantsYouTubeFullCycle('اقرأ تعليق يوتيوب وحلله واقترح رداً ثم أرسل الرد المقترح') === true);
+
+    const cyclePlan = buildAgentPlan('اقرأ أحدث تعليق حقيقي من يوتيوب، حلله، اقترح رداً باللهجة العراقية، ثم أرسل الرد المقترح إلى نفس التعليق');
+    check('K: الخطة دورة كاملة', cyclePlan.kind === 'youtube_cycle');
+    const ids = cyclePlan.steps.map((s) => s.toolId);
+    check('K: ترتيب الخطة الحقيقي', ids.join(',') === 'youtube_status,youtube_videos,youtube_comments,ai_draft,youtube_reply,youtube_reply_verify', ids.join(','));
+    check('K: حارس موافقة/تفويض قائم (requiresApproval)', cyclePlan.requiresApproval === true);
+    const replyStep = cyclePlan.steps.find((s) => s.toolId === 'youtube_reply')!;
+    check('K: commentId مرجع من youtube_comments.latestComment (لا نص)', (replyStep.args.commentId as any)?.fromTool === 'youtube_comments' && (replyStep.args.commentId as any)?.outputPath === 'latestComment' && (replyStep.args.commentId as any)?.field === 'commentId');
+    check('K: text مرجع من ai_draft.latestAnalysis (لا نص مُختلق)', (replyStep.args.text as any)?.fromTool === 'ai_draft' && (replyStep.args.text as any)?.outputPath === 'latestAnalysis' && (replyStep.args.text as any)?.field === 'iraqiSuggestedReply');
+    check('K: youtube_reply تبقى EXTERNAL_ACTION', getAgentTool('youtube_reply')?.permission === 'EXTERNAL_ACTION');
+    check('K: أداة التحقق قراءة فقط', getAgentTool('youtube_reply_verify')?.permission === 'READ');
+
+    // حلّ المسار المتداخل: القيم الحقيقية تُقرأ من مخرَجات الخطوات الفعلية.
+    check('K: حلّ latestComment.commentId', resolveArgValue({ fromTool: 'youtube_comments', outputPath: 'latestComment', field: 'commentId' }, { youtube_comments: { latestComment: { commentId: 'c9' } } }) === 'c9');
+    check('K: حلّ latestAnalysis.iraqiSuggestedReply', resolveArgValue({ fromTool: 'ai_draft', outputPath: 'latestAnalysis', field: 'iraqiSuggestedReply' }, { ai_draft: { latestAnalysis: { iraqiSuggestedReply: 'أهلاً بك' } } }) === 'أهلاً بك');
+    check('K: غياب latestComment => undefined (لا اختلاق)', resolveArgValue({ fromTool: 'youtube_comments', outputPath: 'latestComment', field: 'commentId' }, { youtube_comments: { latestComment: null } }) === undefined);
+    check('K: غياب مخرَج ai_draft => undefined', resolveArgValue({ fromTool: 'ai_draft', outputPath: 'latestAnalysis', field: 'iraqiSuggestedReply' }, {}) === undefined);
+
+    // سياق حقيقي: تعليق حقيقي يعود من youtube_comments ويصل لخطوة الرد.
+    let seenReplyArgs: any = null;
+    const cycleCtx = fakeCtx({
+      youtubeVideos: async () => ({ ok: true, videos: [{ videoId: 'v1', title: 'فيديو' }] }),
+      youtubeComments: async () => ({
+        ok: true,
+        comments: [{ commentId: 'rc1', videoId: 'v1', text: 'كم سعر التقسيط؟', authorName: 'علي', publishedAt: '2026-09-27T10:00:00Z' }],
+        latestComment: { commentId: 'rc1', videoId: 'v1', text: 'كم سعر التقسيط؟', authorName: 'علي', publishedAt: '2026-09-27T10:00:00Z' },
+        scannedVideoIds: ['v1'], videosScanned: 1, inserted: 1, duplicates: 0,
+      }),
+      youtubeReply: async (input) => { seenReplyArgs = input; return { delivered: true, externalReplyId: 'real-reply-1', state: 'sent', reply: { externalId: input.commentId } }; },
+      delegationCheck: () => ({ allowed: true }),
+    });
+    const cycleOrch = makeOrch(cycleCtx);
+    const tc = cycleOrch.createTask({ task: 'اقرأ أحدث تعليق حقيقي من يوتيوب، حلله، اقترح رداً باللهجة العراقية، ثم أرسل الرد المقترح إلى نفس التعليق', operator: 'owner', userId: 'owner' });
+    const rc = await cycleOrch.run(tc.id);
+    check('K: الدورة اكتملت مع تفويض فعّال', rc.status === 'completed', rc.status);
+    check('K: معرّف التعليق الحقيقي وصل لمنفّذ الرد', seenReplyArgs?.commentId === 'rc1', JSON.stringify(seenReplyArgs));
+    check('K: نص الرد المقترح فعلاً وصل لمنفّذ الرد (لا نص مُختلق)', typeof seenReplyArgs?.text === 'string' && seenReplyArgs.text.length > 0 && seenReplyArgs.text.includes('أهلاً بك'), String(seenReplyArgs?.text));
+    const verifyEntry = rc.journal.find((e) => e.toolId === 'youtube_reply_verify');
+    check('K: خطوة التحقق نُفّذت بنجاح', verifyEntry?.ok === true, JSON.stringify(verifyEntry));
+    const replyOut = (rc.result?.data || []).find((d: any) => d.toolId === 'youtube_reply');
+    check('K: مخرَج الرد يحمل معرّفاً حقيقياً وحالة sent', replyOut?.output?.externalReplyId === 'real-reply-1' && replyOut?.output?.state === 'sent');
+
+    // بلا تعليق حقيقي: لا إرسال إطلاقاً (مmissing argument صريح على خطوة الرد).
+    let replyCalledNoComment = 0;
+    const noCommentCycle = fakeCtx({
+      youtubeVideos: async () => ({ ok: true, videos: [{ videoId: 'v1' }] }),
+      youtubeComments: async () => ({ ok: true, comments: [], latestComment: null, scannedVideoIds: ['v1'], videosScanned: 1, inserted: 0, duplicates: 0 }),
+      youtubeReply: async () => { replyCalledNoComment += 1; return { delivered: true, externalReplyId: 'x' }; },
+      delegationCheck: () => ({ allowed: true }),
+    });
+    const ncOrch = makeOrch(noCommentCycle);
+    const tn = ncOrch.createTask({ task: 'اقرأ أحدث تعليق حقيقي من يوتيوب، حلله، اقترح رداً باللهجة العراقية، ثم أرسل الرد المقترح إلى نفس التعليق', operator: 'owner', userId: 'owner' });
+    await ncOrch.run(tn.id);
+    check('K: بلا commentId حقيقي لا يُستدعى منفّذ الرد', replyCalledNoComment === 0);
+
+    // بلا نص رد حقيقي (مخرج ai_draft بلا latestAnalysis): لا إرسال.
+    let replyCalledNoText = 0;
+    const noTextCycle = fakeCtx({
+      youtubeVideos: async () => ({ ok: true, videos: [{ videoId: 'v1' }] }),
+      youtubeComments: async () => ({ ok: true, comments: [{ commentId: 'c1', videoId: 'v1', text: 'x' }], latestComment: { commentId: 'c1', videoId: 'v1', text: 'x' }, scannedVideoIds: ['v1'], videosScanned: 1, inserted: 1, duplicates: 0 }),
+      // نُلغي مخرَج التحليل: latestAnalysis غائب.
+      aiGenerate: async () => ({ text: 'نص بلا تحليل', usedProvider: false, source: 'fallback' }),
+      youtubeReply: async () => { replyCalledNoText += 1; return { delivered: true, externalReplyId: 'x' }; },
+      delegationCheck: () => ({ allowed: true }),
+    });
+    // نُعيد تعريف أداة ai_draft مؤقتاً لتُعيد مخرَجاً بلا latestAnalysis (محاكاة غياب نص الرد).
+    const aiTool = getAgentTool('ai_draft')!;
+    const origAiRun = aiTool.run;
+    (aiTool as any).run = async () => ({ ok: true, data: { kind: 'comment_analysis', count: 1, analyzed: [], latestAnalysis: null, willAutoSend: false } });
+    const ntOrch = makeOrch(noTextCycle);
+    const tt = ntOrch.createTask({ task: 'اقرأ أحدث تعليق حقيقي من يوتيوب، حلله، اقترح رداً باللهجة العراقية، ثم أرسل الرد المقترح إلى نفس التعليق', operator: 'owner', userId: 'owner' });
+    await ntOrch.run(tt.id);
+    (aiTool as any).run = origAiRun;
+    check('K: بلا نص رد حقيقي لا يُستدعى منفّذ الرد', replyCalledNoText === 0);
+
+    // بلا تفويض: خطوة الرد تُحجب وتبقى المهمة waiting، ولا يُستدعى المنفّذ.
+    let replyCalledNoDel = 0;
+    const noDelCycle = fakeCtx({
+      youtubeVideos: async () => ({ ok: true, videos: [{ videoId: 'v1' }] }),
+      youtubeComments: async () => ({ ok: true, comments: [{ commentId: 'c1', videoId: 'v1', text: 'كم السعر؟' }], latestComment: { commentId: 'c1', videoId: 'v1', text: 'كم السعر؟' }, scannedVideoIds: ['v1'], videosScanned: 1, inserted: 1, duplicates: 0 }),
+      youtubeReply: async () => { replyCalledNoDel += 1; return { delivered: true, externalReplyId: 'x' }; },
+      delegationCheck: () => ({ allowed: false, code: 'DELEGATION_NOT_GRANTED', reason: 'لا تفويض تشغيل YouTube فعّال.' }),
+    });
+    const ndOrch = makeOrch(noDelCycle);
+    const td = ndOrch.createTask({ task: 'اقرأ أحدث تعليق حقيقي من يوتيوب، حلله، اقترح رداً باللهجة العراقية، ثم أرسل الرد المقترح إلى نفس التعليق', operator: 'owner', userId: 'owner' });
+    const rd = await ndOrch.run(td.id);
+    const replyEntryD = rd.journal.find((e) => e.toolId === 'youtube_reply');
+    check('K: بلا تفويض يُحجب الرد بكود صريح', replyEntryD?.ok === false && replyEntryD?.code === 'DELEGATION_NOT_GRANTED', JSON.stringify(replyEntryD));
+    check('K: بلا تفويض لا يُستدعى منفّذ الرد إطلاقاً', replyCalledNoDel === 0);
+    check('K: بلا تفويض تبقى المهمة waiting', rd.status === 'waiting', rd.status);
+
+    // لا مسار إرسال جانبي: الأداة الوحيدة التي تنفّذ الإرسال هي youtube_reply (EXTERNAL_ACTION).
+    const externalTools = AGENT_TOOLS.filter((t) => t.permission === 'EXTERNAL_ACTION').map((t) => t.id).sort();
+    check('K: أدوات التنفيذ الخارجي معروفة ومحصورة', externalTools.join(',') === 'job_execute,youtube_publish,youtube_reply,youtube_video_update', externalTools.join(','));
+    check('K: youtube_reply_verify قراءة لا تنفّذ شيئاً', getAgentTool('youtube_reply_verify')?.permission === 'READ');
   }
 
   // --- H) تفويض تشغيل YouTube: منح/إيقاف/انتهاء + تقييم العمليات ---

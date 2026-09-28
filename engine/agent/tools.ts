@@ -83,6 +83,8 @@ export interface AgentToolContext {
   youtubeLearning: () => Promise<{ ok: boolean; learning?: any; error?: string; code?: string | null }>;
   /** الرد الحقيقي على تعليق YouTube (comments.insert) — عملية خارجية تتطلب موافقة. */
   youtubeReply: (input: { commentId: string; text: string; commentText?: string }) => Promise<any>;
+  /** التحقق من تسجيل رد حقيقي مُسلَّم على تعليق (من سجل الردود الفعلي، بلا سرّ). */
+  youtubeReplyVerify: (input: { commentId: string; externalReplyId?: string | null }) => Promise<{ real: boolean; record?: any; note: string }>;
   /** رفع فيديو حقيقي إلى YouTube (videos.insert) — عملية خارجية تتطلب موافقة. */
   youtubePublish: (input: { title: string; description?: string; tags?: string[]; privacyStatus?: string; publishAt?: string | null; videoBase64?: string; mimeType?: string; approved?: boolean }) => Promise<any>;
   /** تحديث بيانات فيديو مملوك للقناة (videos.update) — عملية خارجية تتطلب موافقة. */
@@ -509,7 +511,31 @@ export const AGENT_TOOLS: ReadonlyArray<AgentTool> = [
     run: async (args, ctx) => {
       if (!args.commentId || !args.text) return { ok: false, code: 'MISSING_ARGUMENT', error: 'commentId وtext مطلوبان.' };
       try {
-        return { ok: true, data: await ctx.youtubeReply({ commentId: String(args.commentId), text: String(args.text), commentText: args.commentText }) };
+        const data = await ctx.youtubeReply({ commentId: String(args.commentId), text: String(args.text), commentText: args.commentText });
+        // لا يُعدّ الرد مُسلَّماً بلا معرّف رد حقيقي من YouTube وحالة sent.
+        if (!data?.externalReplyId || !data?.delivered) {
+          return { ok: false, code: 'REPLY_NOT_DELIVERED', error: 'لم يُعِد YouTube معرّف رد حقيقي؛ لا يُسجَّل تسليم.' };
+        }
+        return { ok: true, data };
+      } catch (e: any) { return { ok: false, code: 'TOOL_EXECUTION_FAILED', error: String(e?.message || e).slice(0, 200) }; }
+    },
+  },
+  {
+    id: 'youtube_reply_verify',
+    name: 'التحقق من تسليم الرد على YouTube',
+    description: 'يتحقّق من أن رداً حقيقياً سُجِّل مُسلَّماً على تعليق محدد (بمعرّف رد حقيقي من المزوّد) بمقارنة معرّف التعليق ومعرّف الرد من سجل الردود الفعلي. قراءة فقط بلا سرّ.',
+    permission: 'READ',
+    parameters: [
+      { name: 'commentId', type: 'string', required: true, description: 'معرّف التعليق الذي رُدّ عليه.' },
+      { name: 'externalReplyId', type: 'string', required: false, description: 'معرّف الرد المتوقّع من المزوّد (لمطابقته مع السجل).' },
+    ],
+    run: async (args, ctx) => {
+      if (!args.commentId) return { ok: false, code: 'MISSING_ARGUMENT', error: 'commentId مطلوب للتحقق.' };
+      try {
+        const r = await ctx.youtubeReplyVerify({ commentId: String(args.commentId), externalReplyId: args.externalReplyId ? String(args.externalReplyId) : null });
+        // لا نجاح بلا سجل رد حقيقي مُسلَّم؛ وإلا فشل صريح (لا ادّعاء تسليم).
+        if (!r.real) return { ok: false, code: 'REPLY_NOT_VERIFIED', error: r.note };
+        return { ok: true, data: { verified: true, record: r.record, note: r.note } };
       } catch (e: any) { return { ok: false, code: 'TOOL_EXECUTION_FAILED', error: String(e?.message || e).slice(0, 200) }; }
     },
   },

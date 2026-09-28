@@ -82,7 +82,9 @@ function StatusBadge({ status }: { status: string }) {
 function CommentAnalysisPanel({ data }: { data: AgentResultItem[] }) {
   const commentsItem = data.find((d) => d.toolId === 'youtube_comments' && d.ok && d.output);
   const aiItem = data.find((d) => d.toolId === 'ai_draft' && d.ok && d.output);
-  if (!commentsItem && !(aiItem && aiItem.output?.kind === 'comment_analysis')) return null;
+  const replyItem = data.find((d) => d.toolId === 'youtube_reply');
+  const verifyItem = data.find((d) => d.toolId === 'youtube_reply_verify');
+  if (!commentsItem && !(aiItem && aiItem.output?.kind === 'comment_analysis') && !replyItem) return null;
 
   const latest = commentsItem?.output?.latestComment || null;
   const comments: any[] = Array.isArray(commentsItem?.output?.comments) ? commentsItem.output.comments : [];
@@ -98,6 +100,11 @@ function CommentAnalysisPanel({ data }: { data: AgentResultItem[] }) {
   const typeAr = latestAnalysis?.typeAr ?? latestAnalysis?.type ?? null;
   const sentimentAr = latestAnalysis?.sentimentAr ?? latestAnalysis?.sentiment ?? null;
   const reply = latestAnalysis?.iraqiSuggestedReply ?? null;
+  // نتيجة الإرسال الحقيقية: لا «مُسلَّم» إلا بمعرّف رد من YouTube (لا ادّعاء محلي).
+  const externalReplyId = replyItem?.ok ? (replyItem.output?.externalReplyId ?? null) : null;
+  const deliveredReal = Boolean(replyItem?.ok && replyItem.output?.delivered === true && externalReplyId);
+  const replyBlocked = Boolean(replyItem && !replyItem.ok);
+  const verifiedReal = Boolean(verifyItem?.ok && verifyItem.output?.verified === true);
 
   return (
     <div className="mt-3 p-3 rounded-xl bg-slate-950/60 border border-emerald-900/40 space-y-2">
@@ -111,17 +118,29 @@ function CommentAnalysisPanel({ data }: { data: AgentResultItem[] }) {
         <div className="flex flex-wrap gap-2 pt-1">
           {typeAr && <span className="text-[10px] px-2 py-0.5 rounded-full bg-sky-900/40 text-sky-200 border border-sky-500/40">النوع: {typeAr}</span>}
           {sentimentAr && <span className="text-[10px] px-2 py-0.5 rounded-full bg-amber-900/40 text-amber-200 border border-amber-500/40">المشاعر: {sentimentAr}</span>}
-          <span className={`text-[10px] px-2 py-0.5 rounded-full border ${willAutoSend ? 'bg-rose-900/40 text-rose-200 border-rose-500/40' : 'bg-emerald-900/40 text-emerald-200 border-emerald-500/40'}`}>
-            {willAutoSend ? 'يُرسل تلقائياً' : 'لم يُرسل'}
-          </span>
+          {deliveredReal && (
+            <span className="text-[10px] px-2 py-0.5 rounded-full bg-emerald-900/40 text-emerald-200 border border-emerald-500/40">الرد مُسلَّم فعلياً{verifiedReal ? ' ومُتحقَّق' : ''}</span>
+          )}
+          {replyBlocked && (
+            <span className="text-[10px] px-2 py-0.5 rounded-full bg-amber-900/40 text-amber-200 border border-amber-500/40">حُجب الإرسال</span>
+          )}
+          {!deliveredReal && !replyBlocked && (
+            <span className={`text-[10px] px-2 py-0.5 rounded-full border ${willAutoSend ? 'bg-rose-900/40 text-rose-200 border-rose-500/40' : 'bg-emerald-900/40 text-emerald-200 border-emerald-500/40'}`}>
+              {willAutoSend ? 'يُرسل تلقائياً' : 'لم يُرسل'}
+            </span>
+          )}
         </div>
       </div>
 
       {reply && (
         <div className="p-2.5 rounded-lg bg-slate-900 border border-slate-800">
-          <p className="text-[10px] font-bold text-slate-400 mb-1">الرد المقترح باللهجة العراقية (لم يُرسل)</p>
+          <p className="text-[10px] font-bold text-slate-400 mb-1">{deliveredReal ? 'الرد المُرسَل باللهجة العراقية' : 'الرد المقترح باللهجة العراقية (لم يُرسل)'}</p>
           <p className="text-[11px] text-slate-200 leading-relaxed">{reply}</p>
         </div>
+      )}
+
+      {externalReplyId && (
+        <p className="text-[10px] text-emerald-300">معرّف الرد من YouTube: <span className="text-slate-300">{externalReplyId}</span></p>
       )}
 
       {comments.length > 1 && (

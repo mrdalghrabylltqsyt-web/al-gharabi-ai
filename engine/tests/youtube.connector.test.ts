@@ -505,6 +505,49 @@ async function integrationTests(): Promise<void> {
     check('بعد الإيقاف: مهمة الرد تنتظر مجدداً', agentAfterRevoke.task?.status === 'waiting');
     check('بعد الإيقاف: لم يُستدعَ comments.insert', mock.state.lastInsertPath === null);
 
+    group('12k-3) تكامل: دورة YouTube الكاملة في مهمة واحدة (قراءة → تحليل → اقتراح → إرسال → تحقق)');
+    // نحفظ التعليقات الأصلية ثم نضع تعليقاً حقيقياً واحداً ليصل إلى خطوة الرد.
+    const cycleOriginalComments = mock.state.comments;
+    mock.state.comments = [{ id: 'cmt_cycle', threadId: 'thr_cycle', videoId: 'vid_alpha', author: 'مروان', text: 'كم سعر التقسيط؟', publishedAt: '2026-09-27T12:00:00Z', likeCount: 0 }];
+    // المجموعة السابقة أنهت بإيقاف التفويض؛ نمنح تفويض الرد من جديد (المالك وحده).
+    const cycleGrant = await (await fetch(`${BASE}/api/platforms/youtube/delegation`, { method: 'POST', headers: auth, body: JSON.stringify({ actions: ['reply'] }) })).json();
+    check('الدورة: منح تفويض الرد', cycleGrant.success === true && cycleGrant.delegation?.active === true);
+
+    // الطلب يُصنَّف دورة كاملة: الخطة تضم youtube_comments + ai_draft + youtube_reply + التحقق.
+    mock.state.lastInsertPath = null;
+    mock.state.lastCommentBody = null;
+    const cycleTask = await (await fetch(`${BASE}/api/agent/tasks`, { method: 'POST', headers: auth, body: JSON.stringify({ task: 'اقرأ أحدث تعليق حقيقي من يوتيوب، حلله، اقترح رداً باللهجة العراقية، ثم أرسل الرد المقترح إلى نفس التعليق' }) })).json();
+    const cycleSteps = (cycleTask.task?.plan?.steps || []).map((s: any) => s.toolId);
+    check('الدورة: النية youtube_cycle', cycleTask.task?.plan?.kind === 'youtube_cycle', String(cycleTask.task?.plan?.kind));
+    check('الدورة: ترتيب الخطوات الحقيقي', cycleSteps.join(',') === 'youtube_status,youtube_videos,youtube_comments,ai_draft,youtube_reply,youtube_reply_verify', cycleSteps.join(','));
+    const cycleComments = (cycleTask.task?.journal || []).find((e: any) => e.toolId === 'youtube_comments');
+    check('الدورة: youtube_comments نُفّذت (تعليق حقيقي)', cycleComments?.ok === true, JSON.stringify(cycleComments));
+    const cycleReply = (cycleTask.task?.journal || []).find((e: any) => e.toolId === 'youtube_reply');
+    check('الدورة: youtube_reply نُفّذت بنجاح', cycleReply?.ok === true, JSON.stringify(cycleReply));
+    check('الدورة: commentThreads.insert استُدعي فعلاً على Data API', (mock.state.lastInsertPath || '').includes('/youtube/v3/comments'));
+    check('الدورة: الرد أُرسل إلى نفس التعليق الحقيقي (parentId)', String(mock.state.lastCommentBody?.snippet?.parentId || '') === 'cmt_cycle', JSON.stringify(mock.state.lastCommentBody));
+    // نص الرد المُرسل هو الرد المقترح فعلاً (وليس نصاً مُختلقاً): أهلاً بك...
+    const sentText = String(mock.state.lastCommentBody?.snippet?.textOriginal || '');
+    check('الدورة: نص الرد هو المقترح باللهجة العراقية (لا نص مُختلق)', sentText.includes('أهلاً بك') && sentText.length > 0, sentText);
+    const cycleVerify = (cycleTask.task?.journal || []).find((e: any) => e.toolId === 'youtube_reply_verify');
+    check('الدورة: خطوة التحقق نُفّذت بنجاح', cycleVerify?.ok === true, JSON.stringify(cycleVerify));
+    const cycleReplyOut = (cycleTask.task?.result?.data || []).find((d: any) => d.toolId === 'youtube_reply');
+    check('الدورة: مخرَج الرد يحمل معرّفاً حقيقياً من المزوّد + حالة sent', Boolean(cycleReplyOut?.output?.externalReplyId) && cycleReplyOut?.output?.state === 'sent', JSON.stringify(cycleReplyOut?.output));
+    const cycleVerifyOut = (cycleTask.task?.result?.data || []).find((d: any) => d.toolId === 'youtube_reply_verify');
+    check('الدورة: التحقق يثبت تسليماً حقيقياً مُسجَّلاً', cycleVerifyOut?.output?.verified === true && Boolean(cycleVerifyOut?.output?.record?.externalReplyId), JSON.stringify(cycleVerifyOut?.output));
+    check('الدورة: المهمة اكتملت', cycleTask.task?.status === 'completed', cycleTask.task?.status);
+
+    // بلا تفويض: نوقف التفويض ثم نكرّر — يجب أن يُحجب الإرسال ولا يُستدعى comments.insert.
+    await fetch(`${BASE}/api/platforms/youtube/delegation`, { method: 'DELETE', headers: auth });
+    mock.state.lastInsertPath = null;
+    const cycleNoDel = await (await fetch(`${BASE}/api/agent/tasks`, { method: 'POST', headers: auth, body: JSON.stringify({ task: 'اقرأ أحدث تعليق حقيقي من يوتيوب، حلله، اقترح رداً، ثم أرسل الرد المقترح إلى نفس التعليق' }) })).json();
+    const cycleNoDelEntry = (cycleNoDel.task?.journal || []).find((e: any) => e.toolId === 'youtube_reply');
+    check('الدورة بلا تفويض: الرد محجوب بكود صريح', cycleNoDelEntry?.ok === false && String(cycleNoDelEntry?.code || '').startsWith('DELEGATION'), JSON.stringify(cycleNoDelEntry));
+    check('الدورة بلا تفويض: لم يُستدعَ comments.insert', mock.state.lastInsertPath === null);
+    check('الدورة بلا تفويض: المهمة تنتظر', cycleNoDel.task?.status === 'waiting', cycleNoDel.task?.status);
+    // نعيد التعليقات الأصلية (لا نحتاج إعادة التفويض — بقية المجموعات تعيد ضبطه).
+    mock.state.comments = cycleOriginalComments;
+
     group('12k) تكامل: حارس YOUTUBE_ONLY_OPERATIONAL مربوط بمسارات التنفيذ الخارجي');
     // الحارس منطقياً مُختبر في 4a؛ هنا نثبت أنه مربوط فعلاً بمسارات التنفيذ الخارجي
     // في الخادم ووحدة المسارات الاجتماعية (لا مجرد تعريف غير مستخدم).

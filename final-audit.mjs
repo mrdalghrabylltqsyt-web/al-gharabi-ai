@@ -686,6 +686,30 @@ add('youtube-delegation-tests', youtubeTest.includes('12k-2') && youtubeTest.inc
 add('agent-delegation-tests', agentTest.includes('evaluateYouTubeDelegation') && agentTest.includes('DELEGATION_ACTION_NOT_GRANTED') && agentTest.includes('resolveYouTubeReplyState'), 'اختبارات وحدة للتفويض ودورة حياة الرد');
 add('agent-delegation-gate-tests', agentTest.includes('delegationCheck') && agentTest.includes('DELEGATION_NOT_GRANTED') && agentTest.includes('c1'), 'اختبارات المنطوق: بلا تفويض يُحجب، ومع التفويض تُنفَّذ بقيم سياق حقيقية');
 
+// -------------------------------------------------------------
+// دورة YouTube الكاملة في العقل المركزي: قراءة تعليق حقيقي → تحليل → اقتراح → إرسال → تحقق
+// -------------------------------------------------------------
+add('youtube-cycle-intent', agentPlanner.includes('youtube_cycle') && agentPlanner.includes('wantsYouTubeFullCycle'), 'نية الدورة الكاملة (youtube_cycle) معرّفة ومكتشفة حتمياً من نص المهمة');
+add('youtube-cycle-plan-order', (() => {
+  const i = agentPlanner.indexOf("case 'youtube_cycle'");
+  if (i < 0) return false;
+  const seg = agentPlanner.slice(i, i + 2600);
+  const order = ['youtube_status', 'youtube_videos', 'youtube_comments', 'ai_draft', 'youtube_reply', 'youtube_reply_verify'].map((t) => seg.indexOf(`step('${t}'`));
+  return order.every((p, k) => p >= 0) && order.every((p, k) => k === 0 || p > order[k - 1]);
+})(), 'الخطة الحقيقية مرتبة: status → videos → comments → ai_draft → reply → verify');
+add('argref-nested-output-path', agentPlanner.includes('outputPath?: string') && agentOrch.includes("arg.outputPath && !arg.listPath"), 'آلية AgentArgRef موسّعة بمسار متداخل لتمرير latestComment.commentId وlatestAnalysis.iraqiSuggestedReply');
+add('youtube-cycle-real-commentid', /commentId:\s*\{\s*fromTool:\s*'youtube_comments',\s*outputPath:\s*'latestComment',\s*field:\s*'commentId'/.test(agentPlanner), 'يوتيوب الرد يحصل على commentId حقيقي من مخرَج youtube_comments (لا اختلاق)');
+add('youtube-cycle-real-replytext', /text:\s*\{\s*fromTool:\s*'ai_draft',\s*outputPath:\s*'latestAnalysis',\s*field:\s*'iraqiSuggestedReply'/.test(agentPlanner), 'يوتيوب الرد يحصل على نص الرد المقترح من مخرَج ai_draft (لا اختلاق)');
+add('youtube-cycle-reply-external', /case 'youtube_cycle'[\s\S]{0,2600}?reason:\s*'الرد الإرسالي عملية خارجية/.test(agentPlanner) && /id: 'youtube_reply'[\s\S]{0,400}?permission: 'EXTERNAL_ACTION'/.test(agentTools), 'الرد يبقى خاضعاً لبوابة التفويض (EXTERNAL_ACTION)');
+add('youtube-reply-verify-tool', agentTools.includes("id: 'youtube_reply_verify'") && /youtubeReplyVerify: async/.test(server), 'أداة التحقق youtube_reply_verify (قراءة) مربوطة بالخادم من سجل الردود الفعلي');
+add('youtube-reply-verify-read-only', /id: 'youtube_reply_verify'[\s\S]{0,400}?permission: 'READ'/.test(agentTools), 'التحقق قراءة فقط لا ينفّذ عملية خارجية');
+add('youtube-reply-honest-delivery', /PROVIDER_NO_REPLY_ID/.test(server) && /delivered === true && Boolean\(result\.body\?\.externalReplyId\)/.test(server), 'لا تسليم بلا معرّف رد حقيقي من YouTube (لا delivered=true مُختلق)');
+add('youtube-reply-tool-honest', /REPLY_NOT_DELIVERED/.test(agentTools), 'أداة الرد ترفض النجاح بلا معرّف رد حقيقي');
+add('youtube-cycle-test-unit', agentTest.includes('youtube_cycle') && agentTest.includes('latestComment') && agentTest.includes('iraqiSuggestedReply') && agentTest.includes('wantsYouTubeFullCycle'), 'اختبارات وحدة تثبت تمرير commentId/نص الرد الحقيقيين ومنع الإرسال بلا قيم');
+add('youtube-cycle-test-integration', youtubeTest.includes('12k-3') && youtubeTest.includes('cmt_cycle') && youtubeTest.includes("startsWith('DELEGATION')"), 'اختبار تكامل يثبت الدورة الكاملة بمعرّف تعليق/رد حقيقيين ثم الحجب بلا تفويض');
+add('youtube-cycle-no-side-channel', /externalTools\.join\(','\) === 'job_execute,youtube_publish,youtube_reply,youtube_video_update'/.test(agentTest), 'اختبار يثبت حصر أدوات التنفيذ الخارجي (لا مسار إرسال جانبي)');
+add('agent-console-delivery-state', agentUi.includes('deliveredReal') && agentUi.includes('externalReplyId') && agentUi.includes('youtube_reply_verify'), 'الواجهة تعرض نتيجة التسليم الحقيقية (معرّف رد + مُتحقَّق) من الخادم');
+
 const failed = checks.filter(x => !x.ok);
 console.table(checks);
 if (failed.length) {

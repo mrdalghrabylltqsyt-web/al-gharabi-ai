@@ -4337,8 +4337,13 @@ async function executeYouTubeReply(input: { commentId: string; text: string; com
     noteYouTubeProviderError(result.code as any);
     return { status: 502, body: { success: false, code: result.code || "PROVIDER_ERROR", error: result.error, reply: replyRecord, delivered: false, state: replyState, note: "لم يُسجَّل الرد مُسلَّماً بلا معرّف تعليق من Google.", ...youtubeStateBlock() } };
   }
+  // الحكم على التسليم من معرّف الرد الحقيقي لا من نجاح الطلب فقط: لا `sent` ولا
+  // delivered=true بلا معرّف تعليق فعلي من Google.
+  if (!delivered || !externalReplyId) {
+    return { status: 502, body: { success: false, code: "PROVIDER_NO_REPLY_ID", error: "لم يُعِد YouTube معرّف رد حقيقي؛ لا يُسجَّل تسليم.", reply: replyRecord, delivered: false, state: replyState, ...youtubeStateBlock() } };
+  }
   clearYouTubeProviderError();
-  return { status: 200, body: { success: true, reply: replyRecord, delivered: true, externalReplyId: result.data!.commentId, state: replyState, ...youtubeStateBlock() } };
+  return { status: 200, body: { success: true, reply: replyRecord, delivered: true, externalReplyId, state: replyState, ...youtubeStateBlock() } };
 }
 
 /**
@@ -6596,7 +6601,39 @@ function buildAgentToolContext(operator: AgentOperator, userId: string): AgentTo
       // التنفيذ الخارجي يمر بمنفّذ الرد الحقيقي نفسه (كل البوابات سارية، لا تجاوز).
       const result = await executeYouTubeReply({ commentId: input.commentId, text: input.text, commentText: input.commentText }, userId);
       if (result.status >= 400) throw new Error(result.body?.error || "فشل الرد على تعليق YouTube.");
-      return { delivered: true, externalReplyId: result.body.externalReplyId, state: result.body.state, reply: result.body.reply };
+      // لا تسليم بلا معرّف رد حقيقي من YouTube (منفّذ الرد يضمن ذلك؛ نتحقّق هنا أيضاً).
+      const delivered = result.body?.delivered === true && Boolean(result.body?.externalReplyId);
+      // `state` يحمل دورة حياة الرد الفعلية (sent) لا حالة المنصة العامة، ليكون
+      // الحكم على التسليم صريحاً في مخرَج الخطوة.
+      const replyState = result.body.reply?.state ?? null;
+      return { delivered, externalReplyId: result.body.externalReplyId || null, state: replyState, youtubeState: result.body.state, reply: result.body.reply };
+    },
+    /**
+     * التحقق من تسجيل رد حقيقي مُسلَّم على تعليق: يقرأ سجل الردود الفعلي (workspace)
+     * ويطابق معرّف التعليق ومعرّف الرد الحقيقي من المزوّد. بلا سرّ ولا اختلاق —
+     * غياب السجل يعني عدم التسليم صراحةً.
+     */
+    youtubeReplyVerify: async (input: { commentId: string; externalReplyId?: string | null }) => {
+      const commentId = String(input.commentId || "").trim();
+      if (!commentId) return { real: false, note: "معرّف التعليق مطلوب للتحقق." };
+      const replies = ((workspace as any).socialReplies || []) as any[];
+      const record = replies.find((r) => r.platform === "youtube" && r.externalId === commentId && r.delivered === true && r.externalReplyId);
+      if (!record) return { real: false, note: "لا يوجد سجل رد مُسلَّم على هذا التعليق بمعرّف من YouTube." };
+      if (input.externalReplyId && String(record.externalReplyId) !== String(input.externalReplyId)) {
+        return { real: false, note: "معرّف الرد المتوقّع لا يطابق السجل الفعلي." };
+      }
+      return {
+        real: true,
+        record: {
+          externalId: record.externalId,
+          externalReplyId: record.externalReplyId,
+          state: record.state ?? null,
+          delivered: record.delivered === true,
+          sentAt: record.sentAt ?? null,
+          repliedAt: record.repliedAt ?? null,
+        },
+        note: "رُدّ فعلاً على هذا التعليق بمعرّف رد حقيقي من YouTube.",
+      };
     },
     youtubePublish: async (input) => {
       // التنفيذ الخارجي يمر بمنفّذ الرفع الحقيقي نفسه (كل البوابات سارية، لا تجاوز).
