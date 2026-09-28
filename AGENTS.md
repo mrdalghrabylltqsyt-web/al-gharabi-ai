@@ -1967,6 +1967,46 @@ YouTube؛ إيقاف ⇒ حجب فوري). final-audit = **500 فحص** (`youtub
 قناة YouTube فعلياً: افتح مركز ربط المنصات → بطاقة YouTube → «منح/تحديث التفويض» واختر
 العمليات (الرد/النشر/الجدولة/التحديث). لا يمكن لأي وكيل برمجي منح تفويض نيابةً عن المالك.
 
+## إصلاح جذري: طلب الدورة الكاملة كان يُختزل إلى مهمة «تحقق» (Batch 19, 2026-09-28)
+
+**Root Cause المُثبت بإعادة إنتاج فعلية:** `classifyIntent` كان يفحص `VERIFY_RE`
+(`/(تحقق|فحص النظام|جاهز|سلامة|استمراري|persistence|صحة النظام)/`) **قبل** أي معالجة
+لـYouTube. وصياغة المالك الحقيقية تنتهي بـ«**وتحقق من وصوله من YouTube**»، فيلتقط
+`VERIFY_RE` الطلب فوراً ويُعيد `verification` بخطتين فقط
+(`system_health, system_verification`) — أي خطة قراءة/فحص بلا `youtube_reply`، فيظهر
+`MISSING_ARGUMENT` عند فقدان commentId/text، أو لا يظهر مسار الرد أصلاً. وعامل ثانٍ:
+مفردات التوليد/الإرسال كانت ضيّقة («اقترح» فقط) فلا تتعرّف على «**ولّد** رداً» ولا على
+«**نفّذ** الرد» ولا على المرادفات.
+
+**الإصلاح (بلا workaround):**
+- مصادر مفردات واحدة في `planner.ts`: `YT_READ_VERB` (اقرأ/اجلب/حلّل/...) و
+  `YT_COMMENT_WORD` و`YT_GEN_VERB` (اقترح/**ولّد**/صيغ/أنشئ/اكتب/جهّز/...) و
+  `YT_SEND_VERB` (**أرسل**/ابعث/انشر/**نفّذ**/send/reply). يُبنى منها
+  `YOUTUBE_FULL_CYCLE_RE` (قراءة+تعليق+توليد+إرسال) و`YOUTUBE_SEND_SUGGESTED_RE` و
+  `YOUTUBE_REPLY_RE`، فيُكتشف الطلب حتى بصيغ المالك المرادفة.
+- `wantsYouTubeReply` يمنح فعل الإرسال/التنفيذ الصريح أولوية (`YOUTUBE_EXPLICIT_SEND_RE`)
+  فلا يُسقَط طلب إرسال لأنه يحوي «اقترح» عرضاً.
+- **ترتيب `classifyIntent` صار:** YouTube update → publish → **cycle** → reply → youtube
+  → **ثم** verification/diagnose. فالمذكور يوتيوب صراحةً يُوجَّه لمساره الحقيقي قبل أي
+  التقاط عام لكلمة «تحقق».
+- **دورة بلا ذكر المنصة** (`wantsYouTubeCommentCycle`): طلب تنفيذي صريح
+  (اقرأ+تعليق+ولّد+أرسل) بلا «يوتيوب» يُوجَّه أيضاً إلى الدورة الكاملة، فلا يُختزل إلى
+  قراءة/تحقق (حسب الشرط: لا تحويل طلب إرسال صريح إلى مهمة قراءة فقط).
+
+**انتقال القيم (داخل نفس التنفيذ):** خطة `youtube_cycle` تمرّر
+`youtube_comments.latestComment.commentId → youtube_reply.commentId` و
+`ai_draft.latestAnalysis.iraqiSuggestedReply → youtube_reply.text` عبر `AgentArgRef.outputPath`
+(محلولة في `orchestrator.resolveArgValue` من مخرَجات الخطوات الفعلية)، ثم
+`youtube_reply_verify` يتأكد من تسجيل رد مُسلَّم بمعرّف من Google. لا يبقى أي `MISSING_ARGUMENT`
+دائم لأن القيم تُقرأ آلياً من نتائج الخطوات السابقة، وفشلها الصريح يعني غياب تعليق حقيقي
+(لا قيمة افتراضية).
+
+اختبارات: `agent.central.test.ts` = **188 فحصاً** (منها فحوص الانحدار: صياغة المالك =>
+`youtube_cycle` وليس `verification`؛ «تحقق من جاهزية النظام» يبقى `verification`؛ دورة بلا
+منصة => `youtube_cycle`). final-audit = **519 فحصاً** (`youtube-cycle-before-verify`،
+`youtube-cycle-synonyms`، `youtube-cycle-platform-agnostic`، `youtube-cycle-owner-phrase-test`،
+`youtube-cycle-no-missing-arg-regression`).
+
 ## دورة YouTube الكاملة في مهمة واحدة — تمرير القيم الحقيقية من مخرَجات الخطوات (Batch 18, 2026-09-28)
 
 **الجذر المُثبت:** مهمة تحليل تعليق YouTube كانت تعمل فعلاً (قراءة حقيقية عبر

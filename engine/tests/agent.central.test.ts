@@ -13,7 +13,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { AgentOrchestrator } from '../agent/orchestrator';
 import { registerAgentRoutes } from '../agent/routes';
-import { buildAgentPlan, classifyIntent, detectPlatforms, wantsYouTubeComments, wantsYouTubeReply, wantsYouTubePublish, wantsYouTubeVideoUpdate, wantsYouTubeFullCycle } from '../agent/planner';
+import { buildAgentPlan, classifyIntent, detectPlatforms, wantsYouTubeComments, wantsYouTubeReply, wantsYouTubePublish, wantsYouTubeVideoUpdate, wantsYouTubeFullCycle, wantsYouTubeCommentCycle } from '../agent/planner';
 import { canUseTool, toolRequiresApproval } from '../agent/permissions';
 import { AGENT_TOOLS, getAgentTool } from '../agent/tools';
 import { resolveArgValue, sanitizeOutput } from '../agent/orchestrator';
@@ -397,6 +397,16 @@ async function unitTests() {
   {
     // تصنيف: طلب «اقرأ+حلل+اقترح+أرسل» يُصنَّف دورة كاملة لا رداً منفرداً.
     check('K: تصنيف الدورة الكاملة يوتيوب', classifyIntent('اقرأ أحدث تعليق حقيقي من يوتيوب، حلله، اقترح رداً باللهجة العراقية، ثم أرسل الرد المقترح إلى نفس التعليق') === 'youtube_cycle');
+    // انحدار (Root Cause): صياغة المالك الفعلية فيها «ولّد» و«نفّذ» و«تحقق» —
+    // كان VERIFY_RE يسبق YouTube فيُختزل الطلب إلى مهمة تحقق من النظام.
+    const ownerTask = 'اقرأ أحدث تعليق حقيقي من قناة YouTube المرتبطة، حلّل التعليق، ولّد رداً مناسباً باللهجة العراقية، ثم نفّذ الرد الحقيقي على نفس التعليق عبر YouTube، وتحقق من وصوله من YouTube.';
+    const ownerPlan = buildAgentPlan(ownerTask);
+    check('K: صياغة المالك => youtube_cycle (لا verification)', ownerPlan.kind === 'youtube_cycle', ownerPlan.kind);
+    check('K: صياغة المالك => خطة الدورة الكاملة', ownerPlan.steps.map((s) => s.toolId).join(',') === 'youtube_status,youtube_videos,youtube_comments,ai_draft,youtube_reply,youtube_reply_verify', ownerPlan.steps.map((s) => s.toolId).join(','));
+    check('K: صياغة المالك => فعل توليد مرادف «ولّد» يُكتشف', wantsYouTubeFullCycle(ownerTask) === true);
+    // الترتيب: التحقق العام لا يسرق الدورة، لكنه يبقى سليماً عند غياب مسار التنفيذ.
+    check('K: طلب تحقق بلا منصة يبقى verification', classifyIntent('تحقق من جاهزية النظام') === 'verification');
+    check('K: دورة بلا ذكر المنصة تُوجَّه للدورة الكاملة', buildAgentPlan('اقرأ أحدث تعليق، حلله، ولّد رداً، ثم أرسله وتحقق منه').kind === 'youtube_cycle');
     check('K: طلب «اقترح رداً» وحده ليس دورة كاملة', wantsYouTubeFullCycle('اجلب أحدث تعليقات يوتيوب واقترح رداً') === false);
     check('K: الدورة الكاملة تطلب إرسالاً صريحاً', wantsYouTubeFullCycle('اقرأ تعليق يوتيوب وحلله واقترح رداً ثم أرسل الرد المقترح') === true);
 

@@ -710,6 +710,21 @@ add('youtube-cycle-test-integration', youtubeTest.includes('12k-3') && youtubeTe
 add('youtube-cycle-no-side-channel', /externalTools\.join\(','\) === 'job_execute,youtube_publish,youtube_reply,youtube_video_update'/.test(agentTest), 'اختبار يثبت حصر أدوات التنفيذ الخارجي (لا مسار إرسال جانبي)');
 add('agent-console-delivery-state', agentUi.includes('deliveredReal') && agentUi.includes('externalReplyId') && agentUi.includes('youtube_reply_verify'), 'الواجهة تعرض نتيجة التسليم الحقيقية (معرّف رد + مُتحقَّق) من الخادم');
 
+// -------------------------------------------------------------
+// انحدار: طلب الدورة الكاملة لا يُختزل إلى «تحقق» — ترتيب التصنيف + مرادفات الأفعال
+// -------------------------------------------------------------
+add('youtube-cycle-before-verify', (() => {
+  const i = agentPlanner.indexOf('export function classifyIntent');
+  const seg = agentPlanner.slice(i, i + 1500);
+  const pCycle = seg.indexOf("return 'youtube_cycle'");
+  const pVerify = seg.indexOf("if (VERIFY_RE.test(task)) return 'verification'");
+  return pCycle >= 0 && pVerify >= 0 && pCycle < pVerify;
+})(), 'الدورة الكاملة تُفحص قبل VERIFY_RE فلا يُختزل طلب «تحقق من وصول الرد» إلى مهمة تحقق');
+add('youtube-cycle-synonyms', agentPlanner.includes('YT_GEN_VERB') && agentPlanner.includes('YT_SEND_VERB') && /ولّد/.test(agentPlanner) && /نفّذ/.test(agentPlanner), 'مرادفات التوليد (ولّد/صيغ/أنشئ) والإرسال (أرسل/نفّذ/ابعث) معرّفة كمصدر واحد');
+add('youtube-cycle-platform-agnostic', agentPlanner.includes('wantsYouTubeCommentCycle') && agentPlanner.includes('YOUTUBE_READ_CYCLE_RE'), 'دورة كاملة بلا ذكر المنصة تُوجَّه للدورة الكاملة لا للقراءة/التحقق');
+add('youtube-cycle-owner-phrase-test', agentTest.includes('صياغة المالك => youtube_cycle') && agentTest.includes('ولّد') && agentTest.includes('نفّذ'), 'اختبار انحدار يثبت صياغة المالك الفعلية (ولّد/نفّذ/تحقق) => youtube_cycle');
+add('youtube-cycle-no-missing-arg-regression', agentTest.includes("seenReplyArgs?.commentId === 'rc1'") && agentTest.includes('iraqiSuggestedReply') && agentTest.includes('replyCalledNoComment') && agentTest.includes('replyCalledNoText'), 'اختبار يمنع رجوع MISSING_ARGUMENT: commentId/نص الرد يُمرَّران من المخرَجات الحقيقية');
+
 const failed = checks.filter(x => !x.ok);
 console.table(checks);
 if (failed.length) {

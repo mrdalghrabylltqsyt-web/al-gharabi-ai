@@ -104,20 +104,39 @@ export function wantsYouTubeComments(task: string): boolean {
  * YouTube. لا يكفي «اقترح رداً» أو «اكتب رداً» لأنهما إعداد محتوى لا إرسال، فيبقى
  * ذلك في نية التعليقات (تحليل + مسودة) بلا عملية خارجية.
  */
-const YOUTUBE_REPLY_RE = /(أرسل|ارسل|ابعث|ابعت|انشر\s*رد|ردّ\s*على|ردّ\s*علي|رد\s*على|رد\s*علي|علّق\s*على|علّق\s*علي|reply\s*to|send\s+(?:a\s+)?reply)[^.]{0,40}(يوتيوب|youtube|تعليق|تعليقات)|(يوتيوب|youtube)[^.]{0,30}(أرسل|ارسل|ابعث|انشر|ردّ|reply)/i;
-/** أنماط الإعداد/الاقتراح: لا تُعتبر إرسالاً خارجياً (الدورة الكاملة تُكتشف قبلها). */
-const YOUTUBE_DRAFT_ONLY_RE = /(اقترح|اقترح\s*رد|صياغة|صغ|اكتب\s*رد|مسودة|جهّز\s*رد|جهز\s*رد|draft|suggest)/i;
+// مصادر مفردات النية (مصدر واحد): القراءة والتحليل، توليد الرد، ثم التنفيذ/الإرسال.
+// توسيعها ضروري كي لا يُحوَّل طلب صريح فيه «تحقق» أو «ولّد/نفّذ» إلى خطة قراءة فقط.
+const YT_READ_VERB = 'اقرأ|اقرا|اجلب|أجلب|اعرض|راجع|حلّل|حلل|افحص|افتح';
+const YT_COMMENT_WORD = 'تعليق|تعليقات|تعليقا|ردود|comment';
+const YT_GEN_VERB = 'اقترح|أقترح|اقتراح|صيغ|صياغة|ولّد|ولد|أنشئ|انشئ|اكتب|جهّز|جهز|generate|draft|suggest';
+const YT_SEND_VERB = 'أرسل|ارسل|ابعث|ابعت|انشر|نفّذ|نفذ|send|reply';
+const YOUTUBE_REPLY_RE = new RegExp(`(${YT_SEND_VERB})[^.]{0,40}(يوتيوب|youtube|${YT_COMMENT_WORD})|(يوتيوب|youtube)[^.]{0,30}(أرسل|ارسل|ابعث|ابعث|انشر|نفّذ|نفذ|ردّ|reply)`, 'i');
+/** أنماط الإعداد/الاقتراح: لا تُعتبر إرسالاً خارجياً بذاتها (الدورة الكاملة تُكتشف قبلها). */
+const YOUTUBE_DRAFT_ONLY_RE = /(اقترح|اقتراح|صياغة|صغ|اكتب\s*رد|مسودة|جهّز\s*رد|جهز\s*رد|draft|suggest)/i;
+/** فعل إرسال/تنفيذ صريح — وجوده يمنع اعتبار الطلب «اقتراحاً فقط». */
+const YOUTUBE_EXPLICIT_SEND_RE = new RegExp(`(${YT_SEND_VERB})`, 'i');
 /**
- * نية الدورة الكاملة: طلب صريح لقراءة تعليق حقيقي ثم تحليله ثم اقتراح رد ثم
- * **إرسال** الرد المقترح إلى نفس التعليق. لا تُصنَّف دورةً بلا فعل إرسال صريح
- * (كي لا تُحوَّل مهام «اقترح رداً» إلى عملية خارجية).
+ * نية الدورة الكاملة: طلب صريح لقراءة تعليق حقيقي ثم تحليله ثم توليد/اقتراح رد ثم
+ * **إرسال/تنفيذ** الرد على نفس التعليق. تشمل صيغاً متعددة (اقترح/ولّد/صيغ) وأفعال
+ * إرسال متعددة (أرسل/نفّذ/ابعث/انشر) كي لا تُفلت صياغة المالك الفعلية.
  */
-const YOUTUBE_FULL_CYCLE_RE = /(اقرأ|اجلب|اعرض|حلل|راجع)[^.]{0,50}(تعليق|تعليقات)[^.]{0,80}(اقترح|اقتراح|صيغ|صياغ)[^.]{0,80}(أرسل|ارسل|ابعث|ابعت|انشر|send)/i;
-const YOUTUBE_SEND_SUGGESTED_RE = /(أرسل|ارسل|ابعث|ابعت|انشر)[^.]{0,40}(الرد|رد)[^.]{0,25}(المقترح|المقترحة|الناتج|المولَّد|الذي\s*اقترحت)|(أرسل|ارسل)[^.]{0,40}نفس\s*التعليق/i;
-/** هل المهمة تطلب دورة YouTube كاملة: اقرأ → حلل → اقترح → أرسل الرد المقترح؟ */
+const YOUTUBE_FULL_CYCLE_RE = new RegExp(`(${YT_READ_VERB})[^.]{0,60}(${YT_COMMENT_WORD})[^.]{0,120}(${YT_GEN_VERB})[^.]{0,120}(${YT_SEND_VERB})|(${YT_COMMENT_WORD})[^.]{0,120}(${YT_GEN_VERB})[^.]{0,120}(${YT_SEND_VERB})`, 'i');
+const YOUTUBE_SEND_SUGGESTED_RE = /(أرسل|ارسل|ابعث|ابعت|انشر|نفّذ|نفذ)[^.]{0,60}(الرد|رد)[^.]{0,30}(المقترح|المقترحة|الناتج|المولَّد|المولّد|الذي\s*اقترحت)|(أرسل|ارسل|ابعث|نفّذ|نفذ)[^.]{0,60}نفس\s*التعليق|(أرسل|ارسل|نفّذ|نفذ)[^.]{0,60}(الرد|رد)[^.]{0,60}على\s*(نفس\s*)?التعليق/i;
+/** هل المهمة تطلب دورة YouTube كاملة: اقرأ → حلل → ولّد/اقترح → أرسل/نفّذ الرد؟ */
 export function wantsYouTubeFullCycle(task: string): boolean {
   const t = String(task || '');
   return YOUTUBE_FULL_CYCLE_RE.test(t) || YOUTUBE_SEND_SUGGESTED_RE.test(t);
+}
+/**
+ * دورة تعليق كاملة **بلا ذكر المنصّة** (اقرأ تعليقاً + حلّله + ولّد رداً + أرسل/
+ * نفّذ الرد). تُوجَّه إلى دورة YouTube لأنها المسار التنفيذي الكامل المتاح، كي لا
+ * يُختزل طلب تنفيذي صريح إلى مهمة قراءة/تحقق. تشترط فعل قراءة + تعليق + توليد +
+ * إرسال معاً (لا يكفي «أرسل رداً» مجرّداً).
+ */
+const YOUTUBE_READ_CYCLE_RE = new RegExp(`(${YT_READ_VERB})[^.]{0,60}(${YT_COMMENT_WORD})[^.]{0,120}(${YT_GEN_VERB})[^.]{0,120}(${YT_SEND_VERB})`, 'i');
+export function wantsYouTubeCommentCycle(task: string): boolean {
+  const t = String(task || '');
+  return YOUTUBE_READ_CYCLE_RE.test(t) && YOUTUBE_EXPLICIT_SEND_RE.test(t);
 }
 /** نية رفع/نشر فيديو YouTube الصريحة (تشمل الجدولة). */
 const YOUTUBE_PUBLISH_RE = /(ارفع|حمّل|حمل|انشر|نشر|جدول|جدولة|publish|upload)[^.]{0,40}(فيديو|مقطع|video)[^.]{0,40}(يوتيوب|youtube)?|(يوتيوب|youtube)[^.]{0,40}(فيديو|video)[^.]{0,20}(ارفع|انشر|جدول|upload|publish)?/i;
@@ -127,6 +146,9 @@ const YOUTUBE_UPDATE_RE = /(حدّث|حدث|عدّل|عدل|غيّر|غير|upda
 /** هل المهمة تطلب صراحةً إرسال رد حقيقي على تعليق YouTube؟ */
 export function wantsYouTubeReply(task: string): boolean {
   const t = String(task || '');
+  // فعل إرسال/تنفيذ صريح يسبق أي اعتبار «اقتراح فقط» — فلا يُسقَط طلب الإرسال
+  // لأنه يحتوي كلمة «اقترح» عرضاً.
+  if (YOUTUBE_EXPLICIT_SEND_RE.test(t)) return true;
   if (YOUTUBE_DRAFT_ONLY_RE.test(t)) return false;
   return YOUTUBE_REPLY_RE.test(t);
 }
@@ -436,17 +458,23 @@ export function buildAgentPlan(rawTask: string, options: { explicitKind?: AgentP
 /** تصنيف النية حتمياً من النص (بلا AI). */
 export function classifyIntent(task: string): AgentPlanKind {
   const t = task.toLowerCase();
+  const isYt = t.includes('youtube') || task.includes('يوتيوب');
+  // عمليات YouTube الخاصة تتقدّم على التصنيف العام **قبل** فحص «تحقق/تشخيص»، لأن
+  // طلب الدورة الكاملة يحمل كلمة «تحقق» عرضاً (تحقق من وصول الرد) فلا يجوز أن
+  // يُختزل إلى مهمة تحقق من النظام. الرد/الدورة صريحان (فعل إرسال/تنفيذ).
+  if (YOUTUBE_UPDATE_RE.test(task) && isYt) return 'youtube_video_update';
+  if (YOUTUBE_PUBLISH_RE.test(task) && isYt) return 'youtube_publish';
+  if (wantsYouTubeFullCycle(task) && isYt) return 'youtube_cycle';
+  if (wantsYouTubeReply(task) && isYt) return 'youtube_reply';
+  // نية YouTube الصريحة (تعليقات/تحليل/حالة) قبل «تحقق النظام»: المذكور يوتيوب صراحةً.
+  if (YOUTUBE_RE.test(task) || isYt) return 'youtube';
+  // دورة تعليق كاملة بلا ذكر المنصّة: طلب تنفيذي صريح (اقرأ+تعليق+ولّد+أرسل) لا
+  // يجوز اختزاله إلى «تحقق/تشخيص». تُوجَّه لدورة YouTube الكاملة.
+  if (wantsYouTubeCommentCycle(task)) return 'youtube_cycle';
+  // دورة كاملة بلا ذكر المنصّة لكن بذكر «يوتيوب» غائب: لا تُختزل إلى قراءة.
+  if (wantsYouTubeFullCycle(task) && !VERIFY_RE.test(task)) return 'youtube_cycle';
   if (VERIFY_RE.test(task)) return 'verification';
   if (DIAGNOSE_RE.test(task)) return 'diagnose';
-  // عمليات YouTube الخارجية الصريحة تتقدّم على النية العامة: نية رد/نشر/تحديث
-  // تُوجَّه لأدواتها الحقيقية (تبقى محجوبة داخل المهمة بلا موافقة/تفويض).
-  if (YOUTUBE_UPDATE_RE.test(task) && (t.includes('youtube') || task.includes('يوتيوب'))) return 'youtube_video_update';
-  if (YOUTUBE_PUBLISH_RE.test(task) && (t.includes('youtube') || task.includes('يوتيوب'))) return 'youtube_publish';
-  // الدورة الكاملة تتقدّم على «رد» المنفرد: تطلب قراءة+تحليل+اقتراح+إرسال معاً.
-  if (wantsYouTubeFullCycle(task) && (t.includes('youtube') || task.includes('يوتيوب'))) return 'youtube_cycle';
-  if (wantsYouTubeReply(task) && (t.includes('youtube') || task.includes('يوتيوب'))) return 'youtube_reply';
-  // نية YouTube الصريحة تتقدّم على التصنيف العام: المستخدم يريد تشغيل/تحليل يوتيوب.
-  if (YOUTUBE_RE.test(task) || t.includes('youtube') || task.includes('يوتيوب')) return 'youtube';
   if (COMMENTS_RE.test(task)) return 'comments';
   if (CONTENT_RE.test(task)) return 'content';
   if (ANALYSIS_RE.test(task)) return 'analysis';
