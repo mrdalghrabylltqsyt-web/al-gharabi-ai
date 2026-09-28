@@ -48,6 +48,14 @@ function fakeCtx(overrides: Partial<AgentToolContext> = {}): AgentToolContext {
     memorySnapshot: () => ({ publishedCount: 0 }),
     systemVerification: () => ({ version: '13.0.0', storage: { durable: true } }),
     aiGenerate: async () => ({ text: 'نص بديل حتمي', usedProvider: false, source: 'fallback' }),
+    // أدوات YouTube التشغيلية (وهمية آمنة: لا شبكة ولا أسرار) — تُستبدل في اختبارات الوحدة.
+    youtubeStatus: () => ({ state: 'READY_TO_CONNECT', labelAr: 'جاهز للربط', tone: 'transitional', reason: 'لا اعتماد محفوظ', nextAction: 'ربط YouTube', youtubeOnlyMode: true }),
+    youtubeVideos: async () => ({ ok: true, videos: [{ videoId: 'vid1', title: 'فيديو', viewCount: 10, likeCount: 2, commentCount: 1 }] }),
+    youtubeAnalytics: async () => ({ ok: true, summary: { sampleSize: 1, totalViews: 10 }, audience: { basis: 'public_metrics' }, channel: { channelId: 'ch1' } }),
+    youtubeComments: async () => ({ ok: true, comments: [], inserted: 0, duplicates: 0 }),
+    youtubeLearning: async () => ({ ok: true, learning: { insights: [], sampleSize: 0 } }),
+    youtubeReply: async (input) => ({ delivered: true, externalReplyId: 'yt-reply-1', reply: { externalId: input.commentId } }),
+    youtubePublish: async (input) => ({ record: { state: 'published' }, externalVideoId: 'yt-vid-1', url: 'https://www.youtube.com/watch?v=yt-vid-1', state: 'published', title: input.title }),
   };
   return { ...base, ...overrides };
 }
@@ -79,6 +87,14 @@ async function unitTests() {
   check('خطة المحتوى تستهلك AI مرة واحدة', buildAgentPlan('اكتب منشوراً').requiresAi === true);
   check('خطة المحتوى تتطلب موافقة', buildAgentPlan('اكتب منشوراً').requiresApproval === true);
   check('لا خطوات لأدوات غير مسجّلة', buildAgentPlan('أي شيء').steps.every((s) => Boolean(getAgentTool(s.toolId))));
+
+  // --- نية YouTube الصريحة: تُوجّه لخطة تشغيل حقيقية بلا عقل ثانٍ ---
+  check('تصنيف: يوتيوب', classifyIntent('حلل أداء قناة يوتيوب') === 'youtube');
+  const ytPlan = buildAgentPlan('حلل أداء قناة يوتيوب');
+  check('خطة YouTube تقرأ الحالة والفيديوهات والتحليلات والتعلّم', ['youtube_status', 'youtube_videos', 'youtube_analytics', 'youtube_learning'].every((t) => ytPlan.steps.some((s) => s.toolId === t)));
+  check('خطة YouTube لا تضع أي عملية خارجية بلا موافقة', ytPlan.steps.every((s) => { const t = getAgentTool(s.toolId); return !t || t.permission !== 'EXTERNAL_ACTION'; }));
+  check('أدوات الرد/الرفع في YouTube خارجية وتتطلب موافقة', getAgentTool('youtube_reply')?.permission === 'EXTERNAL_ACTION' && getAgentTool('youtube_publish')?.permission === 'EXTERNAL_ACTION');
+  check('staff لا يملك أدوات YouTube الخارجية', canUseTool('staff', getAgentTool('youtube_reply')!.permission).allowed === false);
 
   // --- الصلاحيات ---
   check('staff يقرأ', canUseTool('staff', 'READ').allowed === true);

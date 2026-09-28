@@ -529,11 +529,11 @@ const ytRegistry = read('engine/social/registry.ts');
 add('youtube-connector-module', fs.existsSync(path.join(root, 'engine/social/youtube.ts')) && youtubeModule.includes('class YouTubeClient') && youtubeModule.includes('YOUTUBE_CAPABILITY_MATRIX'), 'موصل YouTube الحقيقي منفّذ في وحدة مستقلة');
 add('youtube-readonly-scope-required', youtubeModule.includes('YOUTUBE_READONLY_SCOPE') && youtubeModule.includes('https://www.googleapis.com/auth/youtube.readonly') && youtubeModule.includes('YOUTUBE_REQUIRED_SCOPES'), 'youtube.readonly مطلوب (يغطّي channels.list?mine=true لإثبات القناة)');
 add('youtube-upload-scope-retained', youtubeModule.includes('YOUTUBE_UPLOAD_SCOPE') && server.includes('YOUTUBE_REQUIRED_SCOPES'), 'youtube.upload باقٍ في النطاقات المطلوبة بقرار المالك');
-add('youtube-no-force-ssl-yet', !/YOUTUBE_REQUIRED_SCOPES[\s\S]{0,200}?force-ssl/.test(youtubeModule) && !/resolveYouTubeScopes[\s\S]{0,300}?force-ssl/.test(youtubeModule), 'لا يُطلب youtube.force-ssl (التعليقات/الردود مؤجّلة؛ يُذكر في المصفوفة كشرح فقط)');
-add('youtube-channel-identity-impl', youtubeModule.includes('channels?part=snippet,contentDetails&mine=true') && server.includes('youtubeClient().fetchMyChannel'), 'إثبات هوية القناة يستدعي channels.list?mine=true فعلاً');
-add('youtube-capability-matrix-honest', youtubeModule.includes("NOT_IMPLEMENTED") && youtubeModule.includes("'video_upload'") || /video_upload[\s\S]{0,400}?NOT_IMPLEMENTED/.test(youtubeModule), 'مصفوفة القدرات تُعلن رفع الفيديو غير منفّذ (لا ادعاء نشر)');
-add('youtube-registry-real-connector', /platform: 'youtube',[\s\S]{0,600}?realConnector: true/.test(ytRegistry), 'YouTube مُعلن موصلاً حقيقياً في السجل');
-add('youtube-no-content-capability-claimed', !/platform: 'youtube',[\s\S]{0,400}?capabilities: \[[^\]]*(publish|comments|analytics|scheduling)/.test(ytRegistry), 'لا تُعلن أي قدرة محتوى غير منفّذة لـYouTube');
+add('youtube-force-ssl-scope-required', /YOUTUBE_REQUIRED_SCOPES[\s\S]{0,200}?YOUTUBE_FORCE_SSL_SCOPE,/.test(youtubeModule) && youtubeModule.includes("https://www.googleapis.com/auth/youtube.force-ssl"), 'youtube.force-ssl مطلوب لإدارة التعليقات والردود (إضافة مقصودة بقرار المالك)');
+add('youtube-channel-identity-impl', /channels\?part=snippet,contentDetails(,statistics)?&mine=true/.test(youtubeModule) && server.includes('youtubeClient().fetchMyChannel'), 'إثبات هوية القناة يستدعي channels.list?mine=true فعلاً');
+add('youtube-capability-matrix-honest', /audience_demographics[\s\S]{0,200}?NOT_AVAILABLE/.test(youtubeModule) && /webhook_pubsub[\s\S]{0,200}?REQUIRES_REVIEW/.test(youtubeModule), 'مصفوفة القدرات تُعلن ما ليس منفّذاً/متاحاً صراحةً (تركيبة سكانية NOT_AVAILABLE، PubSub REQUIRES_REVIEW) — لا ادعاء');
+add('youtube-registry-real-connector', /platform: 'youtube',[\s\S]{0,900}?realConnector: true/.test(ytRegistry), 'YouTube مُعلن موصلاً حقيقياً في السجل');
+add('youtube-content-capabilities-declared', /platform: 'youtube',[\s\S]{0,900}?capabilities: \[[^\]]*'publish'[\s\S]{0,120}?'comments'[\s\S]{0,120}?'comment_reply'[\s\S]{0,120}?'analytics'[\s\S]{0,120}?'scheduling'/.test(ytRegistry), 'قدرات المحتوى المنفّذة مُعلنة صراحةً في السجل (نشر/تعليقات/رد/تحليلات/جدولة)');
 add('youtube-callback-verifies-channel', /platform==="youtube"[\s\S]{0,900}?fetchMyChannel/.test(server) && /platform==="youtube"[\s\S]{0,1400}?saveYouTubeCredentials/.test(server), 'callback يبادل الرمز ثم يثبت القناة فعلًا قبل إعلان الاتصال');
 add('youtube-health-block', server.includes('youtubeOAuth: youtubeHealthState()') && server.includes('readonlyScopePresent'), 'health/readiness يكشفان حالة YouTube الآمنة (نطاق القراءة + الاتصال)');
 add('youtube-setup-block', server.includes('youtubeSetup:platform==="youtube"') && server.includes('channelIdentityEndpoint'), 'oauth/setup يعرض إعداد YouTube (النطاقان + القدرات) بلا سرّ');
@@ -552,13 +552,41 @@ add('youtube-refresh-no-oauth-when-valid', /if \(!youtubeAccessExpired\(\) \|\| 
 add('youtube-refresh-fail-reauth', /youtube_refresh_failed[\s\S]{0,400}?reauth_needed|reauth_needed[\s\S]{0,400}?youtube_refresh_failed/.test(server), 'فشل التجديد الفعلي فقط يُعلن reauth_needed');
 add('youtube-health-exposes-token-refreshed', server.includes('tokenRefreshed:Boolean(proof.refreshed)'), 'استجابة health تُعلن إن جُدِّد الرمز (بلا أي قيمة سرّية)');
 add('youtube-health-exposes-refreshable', server.includes('tokenRefreshable:'), 'health يُعلن أن التجديد متاح (منطقي فقط)');
-add('youtube-ui-readonly-check', youtubeUi.includes("getPlatformHealth('youtube')") && youtubeUi.includes('فحص القناة — قراءة فقط'), 'لوحة YouTube تستدعي health بزر فحص قراءة فقط');
+add('youtube-ui-operational-check', youtubeUi.includes("getPlatformHealth('youtube')") && youtubeUi.includes('فحص القناة والحالة'), 'لوحة YouTube تستدعي health بزر الفحص التشغيلي');
 add('youtube-ui-shows-channel', youtubeUi.includes('اسم القناة') && youtubeUi.includes('معرّف القناة') && youtubeUi.includes('accountId'), 'اللوحة تعرض اسم القناة ومعرّفها ووقت الفحص');
 add('youtube-ui-reconnect-on-409', youtubeUi.includes('إعادة ربط Google مطلوبة') && youtubeUi.includes('إعادة ربط OAuth'), '409 يُعرض كإعادة ربط مطلوبة مع زر');
 add('youtube-ui-no-secret', !/access_token|refresh_token/.test(youtubeUi), 'لوحة YouTube لا تعرض أي access/refresh token');
 add('youtube-status-panel-mounted', /platform === 'youtube'[\s\S]{0,120}?YouTubeStatusPanel/.test(youtubeUi), 'لوحة YouTube مركّبة في مركز ربط المنصات');
-add('youtube-no-new-capability', !/platform: 'youtube',[\s\S]{0,400}?capabilities: \[[^\]]*(publish|comments|analytics|scheduling)/.test(ytRegistry), 'قدرات YouTube بقيت بلا أي قدرة محتوى (لا رفع/نشر/تعليقات/جدولة/تحليلات)');
+add('youtube-ui-operational-capabilities', youtubeUi.includes('قائمة الفيديوهات') && youtubeUi.includes('قراءة التعليقات') && youtubeUi.includes('الإحصاءات') && youtubeUi.includes('الرد على التعليقات'), 'اللوحة تعرض قدرات YouTube التشغيلية الحقيقية فقط');
 add('youtube-refresh-tests', youtubeUi.length > 0 && /11b\)/.test(read('engine/tests/youtube.connector.test.ts')), 'اختبارات التجديد (صالح/منتهٍ/فشل/لا تسريب) موجودة');
+
+// ---------------------------------------------------------------------------
+// YouTube FULL OPERATION (Batch 16) — تشغيل المحتوى الكامل عبر Data API v3
+// ---------------------------------------------------------------------------
+const youtubeStateModule = read('engine/social/youtubeState.ts');
+const youtubeLearningModule = read('engine/social/youtubeLearning.ts');
+const youtubeRoutes = read('engine/social/routes.ts');
+add('youtube-full-operation-modules', fs.existsSync(path.join(root, 'engine/social/youtubeState.ts')) && fs.existsSync(path.join(root, 'engine/social/youtubeLearning.ts')), 'وحدات الحالة الصادقة والتعلّم منفّذة في وحدات مستقلة قابلة للاختبار');
+add('youtube-video-upload-real', youtubeModule.includes('uploadVideo(') && /upload\/youtube\/v3\/videos\?uploadType=resumable/.test(youtubeModule) && server.includes('youtubeClient().uploadVideo('), 'رفع الفيديو حقيقي عبر videos.insert resumable (لا محاكاة)');
+add('youtube-video-update-real', youtubeModule.includes('async updateVideo(') && server.includes('/api/platforms/youtube/video-update'), 'تحديث الفيديو حقيقي عبر videos.update');
+add('youtube-publish-schedule-real', server.includes('buildVideoInsertMetadata') && /publishAt/.test(server) && youtubeModule.includes('publishAt'), 'النشر والجدولة عبر publishAt الحقيقي لدى YouTube (لا حقل داخلي)');
+add('youtube-comments-read-real', youtubeModule.includes('listCommentThreads(') && server.includes('ingestYouTubeComment'), 'قراءة التعليقات الحقيقية عبر commentThreads.list مع تطبيع وتخزين');
+add('youtube-comment-reply-real', youtubeModule.includes('replyToComment(') && /comments\?part=snippet/.test(youtubeModule) && server.includes('/api/platforms/youtube/reply'), 'الرد الحقيقي عبر comments.insert بلا تسجيل تسليم بلا معرّف من Google');
+add('youtube-idempotency-single-source', server.includes('youtubeUploadFingerprint(') && server.includes('youtubeOperationKeySeen(') && server.includes('recordYouTubeOperationKey('), 'idempotency موحّد يمنع الرفع/الرد/النشر المزدوج');
+add('youtube-rate-limit-enforced', youtubeModule.includes('checkOperationRateLimit(') && /youtubeRateLimit\(/.test(server) && server.includes('RATE_LIMITED'), 'حدّ معدّل العمليات مفروض (لا ردود/رفع غير محدود)');
+add('youtube-operation-guard-single-source', server.includes('function youtubeOperationGuard(') && /CONNECTOR_NOT_READY/.test(server) && /NOT_CONNECTED/.test(server), 'بوابة تشغيل موحّدة تمنع التنفيذ بلا اعتماد/اتصال موثق');
+add('youtube-only-guard-module', youtubeStateModule.includes('guardExternalOperationPlatform') && youtubeStateModule.includes('YOUTUBE_ONLY_PLATFORM') && server.includes('youtubeOnlyBlock('), 'حارس YOUTUBE_ONLY_OPERATIONAL مصدر واحد يمنع أي منصة غير YouTube');
+add('youtube-truthful-state-module', youtubeStateModule.includes('resolveYouTubeState') && youtubeStateModule.includes('SCOPE_UPGRADE_REQUIRED') && server.includes('youtubeTruthfulState()'), 'الحالة الصادقة مفردات موحّدة (منها SCOPE_UPGRADE_REQUIRED) بلا ادعاء');
+add('youtube-scope-upgrade-honest', /youtubeForceSslGranted\(/.test(server) && /إعادة ربط YouTube مطلوبة لتفعيل إدارة التعليقات/.test(server), 'غياب force-ssl يُعلن SCOPE_UPGRADE_REQUIRED بلا تحايل على Google');
+add('youtube-learning-loop-module', youtubeLearningModule.includes('buildYouTubeLearning') && youtubeLearningModule.includes('summarizeChannelAnalytics') && server.includes('/api/platforms/youtube/learning'), 'حلقة تعلّم من الأداء الحقيقي مع مصدر وحجم عيّنة وحدود');
+add('youtube-audience-no-fabrication', youtubeLearningModule.includes('demographicsAvailable: false') && youtubeLearningModule.includes('analyzeYouTubeAudience'), 'تحليل الجمهور يعلن غياب البيانات السكانية صراحةً ولا يخترعها');
+add('youtube-operation-observability', server.includes('function logYouTubeOperation(') && /logYouTubeOperation\("video_upload"/.test(server) && /logYouTubeOperation\("comment_reply"/.test(server), 'كل عملية خارجية تُسجَّل (عملية/معرّف/نتيجة/مدة/idempotency) بلا أي سرّ');
+add('youtube-no-secret-logging', server.includes('function logYouTube(') && /k === "token"/.test(server) && !/console\.log\([^)]*access_token/.test(server), 'لا يُسجَّل أي رمز/سرّ في سجلات YouTube');
+add('youtube-central-brain-tools', read('engine/agent/tools.ts').includes("id: 'youtube_publish'") && read('engine/agent/tools.ts').includes("id: 'youtube_analytics'") && read('engine/agent/tools.ts').includes("id: 'youtube_reply'"), 'العقل المركزي يملك أدوات YouTube الحقيقية (لا عقل ثانٍ)');
+add('youtube-external-tools-approval', /id: 'youtube_reply'[\s\S]{0,400}?permission: 'EXTERNAL_ACTION'/.test(read('engine/agent/tools.ts')) && /id: 'youtube_publish'[\s\S]{0,400}?permission: 'EXTERNAL_ACTION'/.test(read('engine/agent/tools.ts')), 'أدوات الرد/الرفع خارجية وتتطلب موافقة صريحة (لا تنفيذ تلقائي)');
+add('youtube-social-manager-real', youtubeRoutes.includes('fetchYouTubeComments') && youtubeRoutes.includes('fetchYouTubeAnalytics'), 'مدير السوشيال يربط YouTube بجلبه الحقيقي لا ببيانات داخلية');
+add('youtube-dedicated-publish-route', /app\.post\("\/api\/platforms\/youtube\/publish"/.test(server) && server.indexOf('app.post("/api/platforms/youtube/publish"') < server.indexOf('app.post("/api/platforms/:platform/publish"'), 'مسار رفع YouTube المخصص مسجّل قبل المسار العام (لا يلتقطه العام)');
+add('youtube-full-operation-tests', /12g\)/.test(read('engine/tests/youtube.connector.test.ts')) && /12i\)/.test(read('engine/tests/youtube.connector.test.ts')) && /4a\)/.test(read('engine/tests/youtube.connector.test.ts')), 'اختبارات الرفع/الجدولة/حارس النطاق/الحالة/التعلّم موجودة');
 
 // -------------------------------------------------------------
 // العقل المركزي (Central AI Agent)

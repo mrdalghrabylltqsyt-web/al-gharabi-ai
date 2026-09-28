@@ -501,6 +501,57 @@ ${payload.topic || payload.productName || 'أنظمة وحلول التقسيط 
 
   async getPlatformHealth(platform: string) { const res = await fetch(`/api/platforms/${encodeURIComponent(platform)}/health`, { headers: getAuthHeaders() }); const data = await res.json(); if(!res.ok || !data.success) throw new Error(data.error || 'تعذر فحص المنصة'); return data; },
 
+  // --- YouTube FULL OPERATION (كلها تمر ببوابات الخادم؛ لا أسرار في الواجهة) ---
+  /** قائمة فيديوهات القناة الحقيقية مع الإحصاءات. */
+  async getYouTubeVideos(maxResults = 25) {
+    const res = await fetch(`/api/platforms/youtube/videos?maxResults=${maxResults}`, { headers: getAuthHeaders() });
+    const data = await res.json();
+    if (!res.ok || !data.success) { const err: any = new Error(data.error || 'تعذر جلب فيديوهات YouTube'); err.code = data.code; throw err; }
+    return data;
+  },
+  /** إحصاءات القناة والفيديو + تحليل الجمهور (بلا بيانات سكانية مُختلقة). */
+  async getYouTubeAnalytics() {
+    const res = await fetch('/api/platforms/youtube/analytics', { headers: getAuthHeaders() });
+    const data = await res.json();
+    if (!res.ok || !data.success) { const err: any = new Error(data.error || 'تعذر جلب تحليلات YouTube'); err.code = data.code; throw err; }
+    return data;
+  },
+  /** حلقة تعلّم YouTube (دروس مع مصدرها وحدودها). */
+  async getYouTubeLearning() {
+    const res = await fetch('/api/platforms/youtube/learning', { headers: getAuthHeaders() });
+    const data = await res.json();
+    if (!res.ok || !data.success) { const err: any = new Error(data.error || 'تعذر جلب تعلّم YouTube'); err.code = data.code; throw err; }
+    return data;
+  },
+  /** قراءة تعليقات فيديو حقيقية وتخزينها (commentThreads.list). */
+  async fetchYouTubeComments(videoId: string, maxResults = 100) {
+    const res = await fetch(`/api/platforms/youtube/comments?videoId=${encodeURIComponent(videoId)}&maxResults=${maxResults}`, { headers: getAuthHeaders() });
+    const data = await res.json();
+    if (!res.ok || !data.success) { const err: any = new Error(data.error || 'تعذر جلب تعليقات YouTube'); err.code = data.code; throw err; }
+    return data;
+  },
+  /** رد حقيقي على تعليق YouTube (comments.insert) — للمالك فقط. */
+  async replyYouTube(payload: { commentId: string; text: string; commentText?: string }) {
+    const res = await fetch('/api/platforms/youtube/reply', { method: 'POST', headers: getAuthHeaders(), body: JSON.stringify(payload) });
+    const data = await res.json();
+    if (!res.ok || !data.success) { const err: any = new Error(data.error || 'تعذر إرسال الرد عبر YouTube'); err.code = data.code; throw err; }
+    return data;
+  },
+  /** رفع فيديو حقيقي أو جدولته (videos.insert resumable) — للمالك فقط. */
+  async publishYouTube(payload: { title: string; description?: string; tags?: string[]; privacyStatus?: string; publishAt?: string | null; videoBase64: string; mimeType?: string }) {
+    const res = await fetch('/api/platforms/youtube/publish', { method: 'POST', headers: getAuthHeaders(), body: JSON.stringify({ ...payload, approved: true }) });
+    const data = await res.json();
+    if (!res.ok || !data.success) { const err: any = new Error(data.error || 'تعذر رفع الفيديو إلى YouTube'); err.code = data.code; throw err; }
+    return data;
+  },
+  /** تشخيص إعداد YouTube (نطاقات/قدرات/حالة صادقة) — للمالك فقط، بلا سرّ. */
+  async getYouTubeDiagnostics() {
+    const res = await fetch('/api/platforms/youtube/diagnostics', { headers: getAuthHeaders() });
+    const data = await res.json();
+    if (!res.ok || !data.success) throw new Error(data.error || 'تعذر جلب تشخيص YouTube');
+    return data;
+  },
+
   async getProductionReadiness() { const res = await fetch('/api/platforms/production-readiness', { headers: getAuthHeaders() }); const data = await res.json(); if(!res.ok || !data.success) throw new Error(data.error || 'تعذر تحميل الجاهزية الإنتاجية'); return data; },
 
   async getFinalReadiness() { const res = await fetch('/api/system/final-readiness', { headers: getAuthHeaders() }); const data = await res.json(); if(!res.ok && !data) throw new Error('تعذر تحميل فحص الجاهزية النهائية'); return data; },

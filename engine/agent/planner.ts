@@ -18,6 +18,7 @@ export type AgentPlanKind =
   | 'jobs'
   | 'comments'
   | 'verification'
+  | 'youtube'
   | 'general';
 
 export interface AgentPlanStep {
@@ -48,6 +49,8 @@ const JOBS_RE = /(مهمة|مهام|جدول|جدولة|مجدول|طابور|ن
 const COMMENTS_RE = /(تعليق|تعليقات|رد|رسالة|رسائل|تفاعل العملاء|استفسار)/;
 const VERIFY_RE = /(تحقق|فحص النظام|جاهز|سلامة|استمراري|persistence|صحة النظام)/;
 const STATUS_RE = /(حالة|وضع|المنصات|متصل|الاتصال|ربط|oauth)/;
+/** نية تشغيل YouTube الصريحة (اسم المنصة بالعربية أو الإنجليزية أو كلمات التشغيل). */
+const YOUTUBE_RE = /(يوتيوب|قناة يوتيوب|فيديو يوتيوب|رفع فيديو|تعليقات يوتيوب)/;
 const PLATFORM_IDS = ['tiktok', 'youtube', 'facebook', 'instagram', 'whatsapp', 'telegram', 'x', 'snapchat', 'threads', 'google_business'];
 const PLATFORM_AR: Record<string, string> = {
   tiktok: 'تيك توك', youtube: 'يوتيوب', facebook: 'فيسبوك', instagram: 'انستغرام',
@@ -75,6 +78,13 @@ const labels: Record<string, string> = {
   job_retry: 'إعادة محاولة مهمة',
   job_execute: 'تنفيذ خارجي عبر البوابات',
   ai_draft: 'توليد مسودة نصية بالذكاء الاصطناعي',
+  youtube_status: 'قراءة حالة YouTube الصادقة',
+  youtube_videos: 'قراءة فيديوهات YouTube الحقيقية',
+  youtube_analytics: 'قراءة تحليلات YouTube الحقيقية',
+  youtube_comments: 'قراءة تعليقات YouTube الحقيقية',
+  youtube_learning: 'استخراج دروس التعلّم من أداء YouTube',
+  youtube_reply: 'الرد الحقيقي على تعليق YouTube',
+  youtube_publish: 'رفع فيديو حقيقي إلى YouTube',
 };
 
 function step(toolId: string, args: Record<string, any> = {}): AgentPlanStep {
@@ -120,6 +130,8 @@ export function buildAgentPlan(rawTask: string, options: { explicitKind?: AgentP
         ...platforms.map((p) => step('oauth_config', { platform: p })),
         step('connection_status'),
         step('system_verification'),
+        // عند ذكر YouTube صراحةً نضيف أدواته التشغيلية الحقيقية للتشخيص الكامل.
+        ...(platforms.includes('youtube') ? [step('youtube_status'), step('youtube_videos')] : []),
       ];
       return ensureKnown({
         kind,
@@ -174,7 +186,14 @@ export function buildAgentPlan(rawTask: string, options: { explicitKind?: AgentP
       return ensureKnown({
         kind,
         summary: 'تحليل حتمي من السجلات الحقيقية + قرار تسويقي + خطة محتوى، بلا استهلاك AI إن كفى الواقع.',
-        steps: [step('platform_status'), step('memory_snapshot'), step('marketing_decision', { objective: task }), step('content_plan', { platforms: platforms.join(','), focus: task })],
+        steps: [
+          step('platform_status'),
+          step('memory_snapshot'),
+          // عند تحليل YouTube نضيف إحصاءاته ودروس تعلّمه الحقيقية.
+          ...(platforms.includes('youtube') ? [step('youtube_analytics'), step('youtube_learning')] : []),
+          step('marketing_decision', { objective: task }),
+          step('content_plan', { platforms: platforms.join(','), focus: task }),
+        ],
         requiresAi: false,
         requiresApproval: false,
         reason: 'قرارات التسويق مبنية على بيانات مسجّلة؛ لا نستهلك AI لتجنّب تكرار غير ضروري.',
@@ -184,10 +203,31 @@ export function buildAgentPlan(rawTask: string, options: { explicitKind?: AgentP
       return ensureKnown({
         kind,
         summary: 'قراءة حالة المنصات وجاهزية الكود وملخّص مساحة العمل.',
-        steps: [step('platform_status'), step('platform_readiness'), step('workspace_summary')],
+        steps: [
+          step('platform_status'),
+          step('platform_readiness'),
+          step('workspace_summary'),
+          ...(platforms.includes('youtube') ? [step('youtube_status')] : []),
+        ],
         requiresAi: false,
         requiresApproval: false,
         reason: 'حالة المنصات حتمية ولا تكلف حصة.',
+      });
+    }
+    case 'youtube': {
+      return ensureKnown({
+        kind,
+        summary: 'تشغيل YouTube: الحالة الصادقة → الفيديوهات → التحليلات → التعلّم، ثم مسودة محتوى واحدة عند الحاجة.',
+        steps: [
+          step('youtube_status'),
+          step('youtube_videos'),
+          step('youtube_analytics'),
+          step('youtube_learning'),
+          step('ai_draft', { prompt: task }),
+        ],
+        requiresAi: true,
+        requiresApproval: false,
+        reason: 'نية YouTube: قراءة حقيقية من Data API ثم مسودة نصية واحدة؛ أي رفع/رد خارجي يبقى بموافقة صريحة.',
       });
     }
     default: {
@@ -208,6 +248,8 @@ export function classifyIntent(task: string): AgentPlanKind {
   const t = task.toLowerCase();
   if (VERIFY_RE.test(task)) return 'verification';
   if (DIAGNOSE_RE.test(task)) return 'diagnose';
+  // نية YouTube الصريحة تتقدّم على التصنيف العام: المستخدم يريد تشغيل/تحليل يوتيوب.
+  if (YOUTUBE_RE.test(task) || t.includes('youtube') || task.includes('يوتيوب')) return 'youtube';
   if (COMMENTS_RE.test(task)) return 'comments';
   if (CONTENT_RE.test(task)) return 'content';
   if (ANALYSIS_RE.test(task)) return 'analysis';
