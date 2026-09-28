@@ -423,6 +423,94 @@ const YouTubeStatusPanel: React.FC<{ onReconnect: () => void; busy: boolean }> =
       )}
 
       <p className="text-slate-600">الرفع/التحديث/النشر/الجدولة/التعليقات/الرد/الإحصاءات منفّذة فعلاً على YouTube Data API. التركيبة السكانية (عمر/جنس/موقع) غير متاحة عبر Data API — لا تُخترع. عمليات الرفع والرد من الواجهة التشغيلية أو العقل المركزي بموافقة المالك.</p>
+
+      <YouTubeDelegationPanel />
+    </div>
+  );
+};
+
+/**
+ * لوحة تفويض تشغيل YouTube (للمالك): تمنح العقل المركزي تنفيذ عمليات YouTube
+ * المحدّدة بلا موافقة منفصلة لكل عملية، مع إمكانية الإيقاف الفوري. النطاق YouTube
+ * فقط؛ لا تُلغى المصادقة/الملكية/التدقيق/سلامة المحتوى. لا تُعرض أي قيمة سرّية.
+ */
+const YouTubeDelegationPanel: React.FC = () => {
+  const [state, setState] = useState<any>(null);
+  const [loading, setLoading] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [selected, setSelected] = useState<string[]>(['reply', 'publish', 'schedule', 'update_video']);
+  const [err, setErr] = useState('');
+  const actions: Array<{ id: string; label: string }> = [
+    { id: 'reply', label: 'الرد على التعليقات' },
+    { id: 'publish', label: 'رفع/نشر فيديو' },
+    { id: 'schedule', label: 'جدولة فيديو' },
+    { id: 'update_video', label: 'تحديث بيانات فيديو' },
+  ];
+
+  const load = useCallback(async () => {
+    setLoading(true); setErr('');
+    try {
+      const d = await apiService.getYouTubeDelegation();
+      setState(d.delegation || null);
+      if (Array.isArray(d.delegation?.actions) && d.delegation.actions.length) setSelected(d.delegation.actions);
+    } catch (e: any) { setErr(e?.message || 'تعذّر تحميل التفويض'); }
+    finally { setLoading(false); }
+  }, []);
+
+  useEffect(() => { void load(); }, [load]);
+
+  const toggle = (id: string) => setSelected((prev) => prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]);
+  const grant = async () => {
+    setSaving(true); setErr('');
+    try { const d = await apiService.grantYouTubeDelegation({ actions: selected }); setState(d.delegation || null); }
+    catch (e: any) { setErr(e?.message || 'تعذّر منح التفويض'); }
+    finally { setSaving(false); }
+  };
+  const revoke = async () => {
+    setSaving(true); setErr('');
+    try { const d = await apiService.revokeYouTubeDelegation(); setState(d.delegation || null); }
+    catch (e: any) { setErr(e?.message || 'تعذّر إيقاف التفويض'); }
+    finally { setSaving(false); }
+  };
+
+  const active = state?.active === true;
+  const tone = active ? 'text-emerald-300 border-emerald-600/30' : 'text-amber-300 border-amber-600/30';
+
+  return (
+    <div className="p-2 rounded-lg bg-slate-950 border border-slate-800 space-y-2">
+      <p className="text-slate-400 font-bold flex items-center gap-1"><ShieldCheck className="w-3 h-3" /> تفويض تشغيل YouTube للعقل المركزي (نطاق YouTube فقط)</p>
+      {loading && <p className="text-slate-500 flex items-center gap-1"><Loader2 className="w-3 h-3 animate-spin" /> تحميل حالة التفويض…</p>}
+      {state && (
+        <>
+          <p className={`font-bold ${tone.split(' ')[0]}`}>
+            {active ? 'التفويض فعّال — العقل ينفّذ العمليات الممنوحة تلقائياً' : `التفويض غير فعّال (${state.state})`}
+          </p>
+          <p className="text-slate-400">{state.reason}</p>
+          {Array.isArray(state.actionsLabelAr) && state.actionsLabelAr.length > 0 && (
+            <p className="text-slate-400">العمليات الممنوحة: <span className="text-slate-200">{state.actionsLabelAr.join('، ')}</span></p>
+          )}
+        </>
+      )}
+      <div className="flex flex-wrap gap-1">
+        {actions.map((a) => (
+          <button key={a.id} onClick={() => toggle(a.id)} disabled={saving}
+            className={`px-2 py-0.5 rounded-md text-[9px] font-semibold border ${selected.includes(a.id) ? 'bg-emerald-500/15 text-emerald-300 border-emerald-600/40' : 'bg-slate-900 text-slate-400 border-slate-700'}`}>
+            {a.label}
+          </button>
+        ))}
+      </div>
+      <div className="flex flex-wrap gap-2">
+        <button onClick={() => void grant()} disabled={saving || !selected.length}
+          className="px-2.5 py-1 rounded-lg bg-emerald-500 text-slate-950 text-[10px] font-black inline-flex items-center gap-1 disabled:opacity-50">
+          {saving ? <Loader2 className="w-3 h-3 animate-spin" /> : <ShieldCheck className="w-3 h-3" />} منح/تحديث التفويض
+        </button>
+        <button onClick={() => void revoke()} disabled={saving || !state?.granted}
+          className="px-2.5 py-1 rounded-lg bg-slate-800 border border-slate-700 text-[10px] font-bold text-white inline-flex items-center gap-1 disabled:opacity-50">
+          إيقاف التفويض
+        </button>
+      </div>
+      {err && <p className="text-rose-300">{err}</p>}
+      <p className="text-slate-600">التفويض خاص بـYouTube فقط ولا يمنح أي منصة أخرى. لا يُلغي المصادقة ولا الملكية ولا سجل التدقيق ولا حارس سلامة المحتوى ولا منع التكرار. كل عملية تبقى مسجّلة، ويمكن إيقاف التفويض فوراً.</p>
     </div>
   );
 };

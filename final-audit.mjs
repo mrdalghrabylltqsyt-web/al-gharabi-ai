@@ -654,6 +654,38 @@ add('console-no-secret-display', !/(apiKey|accessToken|clientSecret)/.test(agent
 add('agent-output-passing-tests', agentTest.includes('result.data[youtube_comments].output') && agentTest.includes('willAutoSend') && agentTest.includes('iraqiSuggestedReply'), 'اختبارات تثبت وصول نص التعليق والتحليل إلى result.data.output');
 add('agent-ui-real-data-test', agentTest.includes('CommentAnalysisPanel') && agentTest.includes('task.result.data'), 'اختبار يثبت أن الواجهة تقرأ المخرجات الفعلية من result.data');
 
+// -------------------------------------------------------------
+// تفويض تشغيل YouTube (من المالك إلى العقل المركزي) + دورة حياة الرد
+// -------------------------------------------------------------
+const ytDelegation = read('engine/social/youtubeDelegation.ts');
+const ytModuleSrc = read('engine/social/youtube.ts');
+const pcc = read('src/components/social/PlatformConnectionCenter.tsx');
+add('youtube-delegation-module', fs.existsSync(path.join(root, 'engine/social/youtubeDelegation.ts')) && ytDelegation.includes('evaluateYouTubeDelegation') && ytDelegation.includes('buildYouTubeDelegation'), 'وحدة تفويض تشغيل YouTube موجودة بمنح/إيقاف/تقييم');
+add('youtube-delegation-scope-only', ytDelegation.includes("YOUTUBE_DELEGATION_SCOPE = 'youtube'") && ytDelegation.includes("String(raw.scope || YOUTUBE_DELEGATION_SCOPE) === YOUTUBE_DELEGATION_SCOPE"), 'التفويض محصور بنطاق YouTube فقط (لا يمنح أي منصة أخرى)');
+add('youtube-delegation-owner-only', ytDelegation.includes("input.operator !== 'owner'") && ytDelegation.includes('DELEGATION_OPERATOR_NOT_OWNER'), 'المالك وحده يستفيد من التفويض؛ المشغّل staff ممنوع');
+add('youtube-delegation-no-default-grant', ytDelegation.includes('granted: false') && ytDelegation.includes('defaultYouTubeDelegation'), 'لا تفويض افتراضي: يبدأ غير ممنوح حتى قرار المالك');
+add('youtube-delegation-schedule-needs-both', ytDelegation.includes('requiredDelegationActions') && /return \['publish', 'schedule'\]/.test(ytDelegation), 'النشر المجدول يحتاج publish+schedule معاً (لا جدولة غير مفوّضة)');
+add('youtube-delegation-tool-map', ytDelegation.includes("youtube_reply: 'reply'") && ytDelegation.includes("youtube_publish: 'publish'") && ytDelegation.includes("youtube_video_update: 'update_video'"), 'خريطة الأداة→العملية مصدر واحد للتفويض');
+add('orchestrator-delegation-gate', agentOrch.includes('delegationCheck') && agentOrch.includes('DELEGATION_NOT_GRANTED') && agentOrch.includes("task.status = 'waiting'"), 'المنسّق يسمح بالتنفيذ الخارجي فقط عبر تقييم التفويض المحقون، وإلا ينتظر');
+add('orchestrator-external-failure-halts', agentOrch.includes("tool.permission === 'EXTERNAL_ACTION'") && /!result\.ok[\s\S]{0,200}?EXTERNAL_ACTION/.test(agentOrch), 'فشل أداة خارجية مفوّضة يوقف المهمة بحالة failed (لا تجاهل)');
+add('server-delegation-endpoints', server.includes('"/api/platforms/youtube/delegation"') && /app\.post\("\/api\/platforms\/youtube\/delegation"[\s\S]{0,200}?requireOwner/.test(server) && /app\.delete\("\/api\/platforms\/youtube\/delegation"[\s\S]{0,200}?requireOwner/.test(server), 'مسارات منح/إيقاف التفويض محمية بالمالك');
+add('server-delegation-persisted', server.includes('youtubeDelegation: youtubeDelegationState') && server.includes('normalizeYouTubeDelegation(control.youtubeDelegation)'), 'التفويض يُحفظ ويُسترجع (يصمد بعد إعادة التشغيل/cold start)');
+add('server-delegation-health', server.includes('youtubeDelegation: youtubeDelegationBlock()'), 'حالة التفويض معروضة في /api/health و/readiness بلا سرّ');
+add('server-delegation-audit', server.includes('youtube_delegation_granted') && server.includes('youtube_delegation_revoked'), 'منح/إيقاف التفويض مسجّلان في التدقيق');
+add('youtube-reply-lifecycle-module', ytModuleSrc.includes('resolveYouTubeReplyState') && ytModuleSrc.includes("'draft' | 'approved' | 'sent' | 'failed'"), 'دورة حياة الرد (draft/approved/sent/failed) معرّفة كمصدر واحد');
+add('youtube-reply-no-sent-without-id', /if \(input\.delivered && input\.externalReplyId\) return 'sent'/.test(ytModuleSrc), 'لا حالة sent بلا معرّف رد حقيقي من YouTube');
+add('server-reply-uses-lifecycle', server.includes('resolveYouTubeReplyState(') && server.includes('YOUTUBE_REPLY_LIFECYCLE_LABELS_AR'), 'مسار الرد الحقيقي يسجّل دورة الحياة الصريحة');
+add('youtube-shared-reply-executor', server.includes('async function executeYouTubeReply(') && /executeYouTubeReply\(\{ commentId/.test(server) && /youtubeReply: async[\s\S]{0,300}?executeYouTubeReply/.test(server), 'الرد الحقيقي منفّذ واحد يمرّ بكل البوابات (المسار الخارجي والعقل معاً — لا تجاوز)');
+add('youtube-shared-publish-executor', server.includes('async function executeYouTubePublish(') && /executeYouTubePublish\(\{/.test(server) && /youtubePublish: async[\s\S]{0,400}?executeYouTubePublish/.test(server), 'الرفع الحقيقي منفّذ واحد يمرّ بكل البوابات (لا تجاوز للسلامة/idempotency/rate limit)');
+add('youtube-video-update-tool', agentTools.includes("id: 'youtube_video_update'") && /youtubeVideoUpdate: async/.test(server), 'أداة تحديث بيانات فيديو YouTube منفّذة ومربوطة بالخادم');
+add('youtube-delegation-no-secret', !/(accessToken|refreshToken|clientSecret|GEMINI_API_KEY|apiKey)/.test(ytDelegation) && !/(accessToken|clientSecret)/.test(read('engine/social/youtubeDelegation.ts')), 'وحدة التفويض بلا أي سرّ/توكن');
+add('youtube-delegation-ui', pcc.includes('YouTubeDelegationPanel') && pcc.includes('grantYouTubeDelegation') && pcc.includes('revokeYouTubeDelegation'), 'لوحة منح/إيقاف تفويض YouTube في مركز ربط المنصات');
+add('agent-console-delegation-badge', agentUi.includes('getYouTubeDelegation') && agentUi.includes('تفويض YouTube'), 'واجهة العقل المركزي تعرض حالة تفويض YouTube');
+add('youtube-delegation-api-client', read('src/services/api.ts').includes('grantYouTubeDelegation') && read('src/services/api.ts').includes('revokeYouTubeDelegation') && read('src/services/api.ts').includes('getYouTubeDelegation'), 'طبقة API تحمل مسارات التفويض الثلاثة');
+add('youtube-delegation-tests', youtubeTest.includes('12k-2') && youtubeTest.includes('DELEGATION') && youtubeTest.includes('youtube/delegation'), 'اختبار تكامل يثبت منح التفويض ثم تنفيذ رد حقيقي ثم الحجب بعد الإيقاف');
+add('agent-delegation-tests', agentTest.includes('evaluateYouTubeDelegation') && agentTest.includes('DELEGATION_ACTION_NOT_GRANTED') && agentTest.includes('resolveYouTubeReplyState'), 'اختبارات وحدة للتفويض ودورة حياة الرد');
+add('agent-delegation-gate-tests', agentTest.includes('delegationCheck') && agentTest.includes('DELEGATION_NOT_GRANTED') && agentTest.includes('c1'), 'اختبارات المنطوق: بلا تفويض يُحجب، ومع التفويض تُنفَّذ بقيم سياق حقيقية');
+
 const failed = checks.filter(x => !x.ok);
 console.table(checks);
 if (failed.length) {

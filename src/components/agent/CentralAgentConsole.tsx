@@ -218,11 +218,14 @@ export const CentralAgentConsole: React.FC = () => {
   const [tools, setTools] = useState<AgentTool[]>([]);
   const [replayingId, setReplayingId] = useState<string | null>(null);
   const [current, setCurrent] = useState<AgentTask | null>(null);
+  const [delegation, setDelegation] = useState<any>(null);
 
   const loadAll = useCallback(async () => {
     try {
       const [h, t, ts] = await Promise.all([apiService.agentHealth(), apiService.agentTools(), apiService.agentTasks()]);
       setHealth(h); setTools(t.tools || []); setTasks(ts.tasks || []);
+      // حالة تفويض تشغيل YouTube (نطاق YouTube فقط) — للعرض لا للتنفيذ.
+      apiService.getYouTubeDelegation().then((d) => setDelegation(d.delegation || null)).catch(() => setDelegation(null));
     } catch (e: any) {
       showToast(e?.message || 'تعذر تحميل بيانات العقل المركزي');
     }
@@ -283,6 +286,9 @@ export const CentralAgentConsole: React.FC = () => {
               AI Council: {health.councilEnabled ? 'مفعّل' : 'جاهز للتوسعة'}
             </span>
             <span className="text-[11px] px-2.5 py-1 rounded-full border bg-slate-800/60 text-slate-300 border-slate-700 font-bold">الإصدار {health.version}</span>
+            <span className={`text-[11px] px-2.5 py-1 rounded-full border font-bold ${delegation?.active ? 'bg-emerald-900/40 text-emerald-200 border-emerald-500/40' : 'bg-slate-800/60 text-slate-300 border-slate-700'}`}>
+              تفويض YouTube: {delegation?.active ? `فعّال (${(delegation.actionsLabelAr || []).join('، ')})` : 'غير فعّال — يلزم منحه من مركز الربط'}
+            </span>
           </div>
         )}
       </div>

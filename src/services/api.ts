@@ -552,6 +552,28 @@ ${payload.topic || payload.productName || 'أنظمة وحلول التقسيط 
     return data;
   },
 
+  /** تفويض تشغيل YouTube (للمالك): حالة التفويض الحالية (نطاق YouTube فقط، بلا سرّ). */
+  async getYouTubeDelegation() {
+    const res = await fetch('/api/platforms/youtube/delegation', { headers: getAuthHeaders() });
+    const data = await res.json();
+    if (!res.ok || !data.success) { const err: any = new Error(data.error || 'تعذر جلب تفويض YouTube'); err.code = data.code; throw err; }
+    return data;
+  },
+  /** منح تفويض تشغيل YouTube للعمليات المحدّدة (للمالك فقط). */
+  async grantYouTubeDelegation(payload: { actions: string[]; expiresInHours?: number | null; note?: string }) {
+    const res = await fetch('/api/platforms/youtube/delegation', { method: 'POST', headers: getAuthHeaders(), body: JSON.stringify(payload) });
+    const data = await res.json();
+    if (!res.ok || !data.success) { const err: any = new Error(data.error || 'تعذر منح تفويض YouTube'); err.code = data.code; throw err; }
+    return data;
+  },
+  /** إيقاف تفويض تشغيل YouTube (للمالك فقط) — يعود كل تنفيذ خارجي ليتطلب موافقة. */
+  async revokeYouTubeDelegation() {
+    const res = await fetch('/api/platforms/youtube/delegation', { method: 'DELETE', headers: getAuthHeaders() });
+    const data = await res.json();
+    if (!res.ok || !data.success) { const err: any = new Error(data.error || 'تعذر إيقاف تفويض YouTube'); err.code = data.code; throw err; }
+    return data;
+  },
+
   async getProductionReadiness() { const res = await fetch('/api/platforms/production-readiness', { headers: getAuthHeaders() }); const data = await res.json(); if(!res.ok || !data.success) throw new Error(data.error || 'تعذر تحميل الجاهزية الإنتاجية'); return data; },
 
   async getFinalReadiness() { const res = await fetch('/api/system/final-readiness', { headers: getAuthHeaders() }); const data = await res.json(); if(!res.ok && !data) throw new Error('تعذر تحميل فحص الجاهزية النهائية'); return data; },

@@ -179,6 +179,9 @@ import {
   classifyVideoUploadResult,
   checkOperationRateLimit,
   YOUTUBE_DEFAULT_CATEGORY_ID,
+  resolveYouTubeReplyState,
+  YOUTUBE_REPLY_LIFECYCLE_LABELS_AR,
+  type YouTubeReplyLifecycleState,
   type YouTubeFetch,
   type YouTubeVideo,
   type YouTubeComment,
@@ -191,6 +194,18 @@ import {
   type YouTubeStateInput,
   type YouTubeTruthfulState,
 } from "./engine/social/youtubeState";
+import {
+  defaultYouTubeDelegation,
+  normalizeYouTubeDelegation,
+  youtubeDelegationStatus,
+  summarizeYouTubeDelegation,
+  buildYouTubeDelegation,
+  revokeYouTubeDelegation,
+  evaluateYouTubeDelegation,
+  YOUTUBE_DELEGATION_ACTIONS,
+  YOUTUBE_DELEGATION_ACTION_LABELS_AR,
+  type YouTubeDelegation,
+} from "./engine/social/youtubeDelegation";
 import {
   summarizeChannelAnalytics,
   analyzeYouTubeAudience,
@@ -4072,6 +4087,35 @@ function youtubeOnlyBlock(platform: string): { blocked: boolean; status?: number
   if (g.allowed) return { blocked: false };
   return { blocked: true, status: 409, body: { success: false, code: g.code, error: g.reason, platform, youtubeOnlyMode: true } };
 }
+
+// -------------------------------------------------------------
+// تفويض تشغيل YouTube من المالك إلى العقل المركزي.
+// نطاق YouTube فقط؛ يُمنح/يُوقف من المالك؛ يبقى سجل التدقيق وإمكانية الإيقاف.
+// لا يُلغي أي حارس (اتصال موثق/سلامة/تكرار/rate limit/audit). بلا أي سرّ.
+// -------------------------------------------------------------
+let youtubeDelegationState: YouTubeDelegation = defaultYouTubeDelegation();
+
+/** يحفظ التفويض عبر محوّل الحالة (يصمد بعد restart) — كتابة تُنتظر عند التغيير. */
+async function saveYouTubeDelegationState(): Promise<void> {
+  if (!storageReady) return;
+  await storageAdapter.write(STORAGE_KEY_CONTROL, buildControlState());
+}
+
+/** يقرّر هل تسمح عملية خارجية لأداة عقل بموجب التفويض الحالي (نطاق YouTube فقط). */
+function youtubeDelegationCheck(operator: AgentOperator, input: { toolId: string; args: Record<string, any> }): { allowed: boolean; code?: string; reason?: string } {
+  const decision = evaluateYouTubeDelegation({ delegation: youtubeDelegationState, toolId: input.toolId, args: input.args, operator });
+  return { allowed: decision.allowed, code: decision.code, reason: decision.reason };
+}
+
+/** تفاصيل التفويض للعرض في الصحة/الجاهزية/الواجهة (بلا أي سرّ). */
+function youtubeDelegationBlock() {
+  return {
+    ...summarizeYouTubeDelegation(youtubeDelegationState),
+    scopeOnly: "youtube",
+    note: "التفويض خاص بـYouTube فقط؛ لا يمنح أي منصة أخرى، ولا يُلغي المصادقة/الملكية/التدقيق/سلامة المحتوى.",
+  };
+}
+
 /** يبني تفاصيل الحالة الصادقة لاستجابة API (بلا أي سرّ). */
 function youtubeStateBlock() {
   const t = youtubeTruthfulState();
@@ -4219,140 +4263,148 @@ app.get("/api/platforms/youtube/comments", authenticateToken, async (req, res) =
   });
 });
 
-/** الرد الحقيقي على تعليق YouTube (comments.insert) عبر البوابات كاملة. */
-app.post("/api/platforms/youtube/reply", requireOwner, async (req, res) => {
-  const user = (req as any).user as { id: string };
+/**
+ * منفّذ الرد الحقيقي على تعليق YouTube — مصدر واحد يمر بكل البوابات:
+ * الاتصال الموثق → نطاق force-ssl → سلامة المحتوى → منع التكرار → منع الرد على
+ * حساب المعرض → rate limit → comments.insert. يستخدمه المسار الخارجي والعقل
+ * المركزي معاً فلا يوجد مسار يتجاوز بوابة. لا يُسجَّل `sent` بلا معرّف من Google.
+ */
+async function executeYouTubeReply(input: { commentId: string; text: string; commentText?: string; productId?: string }, actor: string): Promise<{ status: number; body: any }> {
   const started = Date.now();
-  const parentCommentId = typeof req.body?.commentId === "string" ? req.body.commentId.trim() : (typeof req.body?.externalId === "string" ? req.body.externalId.trim() : "");
-  const text = typeof req.body?.text === "string" ? req.body.text.trim() : "";
-  const commentText = typeof req.body?.commentText === "string" ? req.body.commentText : "";
-  if (!parentCommentId) return res.status(400).json({ success: false, error: "معرّف التعليق (commentId) مطلوب لمنع الرد المكرر." });
-  if (!text) return res.status(400).json({ success: false, error: "نص الرد مطلوب." });
+  const parentCommentId = String(input.commentId || "").trim();
+  const text = String(input.text || "").trim();
+  const commentText = String(input.commentText || "");
+  if (!parentCommentId) return { status: 400, body: { success: false, error: "معرّف التعليق (commentId) مطلوب لمنع الرد المكرر." } };
+  if (!text) return { status: 400, body: { success: false, error: "نص الرد مطلوب." } };
   const guard = youtubeOperationGuard();
-  if (!guard.ok) return res.status(guard.status!).json({ success: false, code: guard.code, error: guard.error, ...youtubeStateBlock() });
+  if (!guard.ok) return { status: guard.status!, body: { success: false, code: guard.code, error: guard.error, ...youtubeStateBlock() } };
   if (!youtubeForceSslGranted()) {
-    return res.status(409).json({ success: false, code: "SCOPE_UPGRADE_REQUIRED", error: "إعادة ربط YouTube مطلوبة لتفعيل إدارة التعليقات (نطاق youtube.force-ssl).", ...youtubeStateBlock() });
+    return { status: 409, body: { success: false, code: "SCOPE_UPGRADE_REQUIRED", error: "إعادة ربط YouTube مطلوبة لتفعيل إدارة التعليقات (نطاق youtube.force-ssl).", ...youtubeStateBlock() } };
   }
   // حارس سلامة المحتوى من جهة الخادم قبل أي إرسال: لا نص رد يحمل عرضاً غير مسجّل.
-  const product = workspace.products.find((p: any) => p.id === String(req.body?.productId || "")) || null;
+  const product = workspace.products.find((p: any) => p.id === String(input.productId || "")) || null;
   const replyFacts = buildFactsForProduct(product, Number(product?.downPaymentPercent || 0), Number(product?.durationMonths || 0));
   const safety = analyzeBusinessClaims(text, replyFacts);
   if (!safety.safe) {
-    return res.status(422).json({ success: false, error: "نص الرد يحمل عرضاً تجارياً غير مسجّل، وتم إيقافه قبل الإرسال.", contentSafety: { violations: safety.blocked.map((v) => v.detail), codes: safety.blocked.map((v) => v.code) } });
+    return { status: 422, body: { success: false, error: "نص الرد يحمل عرضاً تجارياً غير مسجّل، وتم إيقافه قبل الإرسال.", contentSafety: { violations: safety.blocked.map((v) => v.detail), codes: safety.blocked.map((v) => v.code) } } };
   }
   // منع الرد المكرر عبر معرّف التعليق + بصمة النص (حماية replay/retry).
   const history: ReplyRecord[] = ((workspace as any).socialReplies || []).map((r: any) => ({ externalId: r.externalId, replyFingerprint: r.replyFingerprint, repliedAt: r.repliedAt }));
   const decision = evaluateReplyGuard({ externalId: parentCommentId, replyText: text, history });
-  if (!decision.allowed) return res.status(409).json({ success: false, code: "DUPLICATE_REPLY", error: decision.reason, guard: decision });
+  if (!decision.allowed) return { status: 409, body: { success: false, code: "DUPLICATE_REPLY", error: decision.reason, guard: decision } };
   // منع حلقات الرد على حساب المعرض نفسه.
   const ownNames = [String(workspace.showroom?.name || ""), "معرض الغرابي"];
   const knownComment = ((workspace as any).socialComments || []).find((c: any) => c.platform === "youtube" && c.externalId === parentCommentId);
   if (isSelfAuthored(knownComment?.authorName, ownNames)) {
-    return res.status(409).json({ success: false, error: "التعليق صادر من حساب المعرض؛ لا يُرد عليه لتجنب حلقة ردود." });
+    return { status: 409, body: { success: false, error: "التعليق صادر من حساب المعرض؛ لا يُرد عليه لتجنب حلقة ردود." } };
   }
-  // rate limit: لا إغراق للردود.
   const rl = youtubeRateLimit("reply");
   if (!rl.allowed) {
-    return res.status(429).json({ success: false, code: "RATE_LIMITED", error: "تم بلوغ حد معدّل الردود؛ العملية قابلة لإعادة المحاولة لاحقاً بلا إنشاء نسخة مكررة.", retryAfterMs: rl.retryAfterMs, limit: rl.limit });
+    return { status: 429, body: { success: false, code: "RATE_LIMITED", error: "تم بلوغ حد معدّل الردود؛ العملية قابلة لإعادة المحاولة لاحقاً بلا إنشاء نسخة مكررة.", retryAfterMs: rl.retryAfterMs, limit: rl.limit } };
   }
   const ensured = await ensureYouTubeAccessToken();
-  if (!ensured.ok || !ensured.token) return res.status(409).json({ success: false, code: ensured.code || "TOKEN_UNAVAILABLE", error: ensured.error, ...youtubeStateBlock() });
+  if (!ensured.ok || !ensured.token) return { status: 409, body: { success: false, code: ensured.code || "TOKEN_UNAVAILABLE", error: ensured.error, ...youtubeStateBlock() } };
   const result = await youtubeClient().replyToComment(ensured.token, { parentCommentId, text });
+  const delivered = Boolean(result.ok && result.data?.commentId);
+  const externalReplyId = result.ok && result.data?.commentId ? result.data.commentId : null;
+  // دورة الحياة: لا `sent` بلا معرّف رد حقيقي من YouTube. الفشل يُعلن failed صراحةً.
+  const replyState: YouTubeReplyLifecycleState = resolveYouTubeReplyState({ delivered, externalReplyId, approved: true, failed: !result.ok });
+  const nowIso = new Date().toISOString();
   const replyRecord = {
     id: workspaceId("reply"), platform: "youtube", externalId: parentCommentId,
     text, replyFingerprint: decision.fingerprint, commentText,
     classification: classifyComment(commentText || text),
     contentSafety: { safe: true, violations: [] as string[], codes: [] as string[] },
-    repliedAt: new Date().toISOString(), createdBy: user.id,
+    repliedAt: nowIso, createdBy: actor,
     simulated: false,
-    delivered: Boolean(result.ok && result.data?.commentId),
-    externalReplyId: result.ok && result.data?.commentId ? result.data.commentId : null,
-    reviewStatus: result.ok ? "delivered" : "failed",
+    state: replyState,
+    stateLabelAr: YOUTUBE_REPLY_LIFECYCLE_LABELS_AR[replyState],
+    approvedAt: nowIso,
+    sentAt: delivered ? nowIso : null,
+    failedAt: !result.ok ? nowIso : null,
+    delivered,
+    externalReplyId,
+    reviewStatus: delivered ? "sent" : "failed",
     deliveryError: result.ok ? null : (result.error || "فشل الإرسال إلى YouTube"),
   };
   if (!Array.isArray((workspace as any).socialReplies)) (workspace as any).socialReplies = [];
   (workspace as any).socialReplies.unshift(replyRecord);
   if ((workspace as any).socialReplies.length > 5000) (workspace as any).socialReplies.pop();
   await persistStateDurable();
-  logYouTubeOperation("comment_reply", { externalId: parentCommentId, outcome: result.ok ? "delivered" : "failed", errorCode: result.ok ? null : (result.code as any) || null, durationMs: Date.now() - started, actor: user.id });
-  audit(user.id, result.ok ? "youtube_reply_delivered" : "youtube_reply_failed", `youtube:${parentCommentId}`);
+  logYouTubeOperation("comment_reply", { externalId: parentCommentId, outcome: result.ok ? "delivered" : "failed", errorCode: result.ok ? null : (result.code as any) || null, durationMs: Date.now() - started, actor });
+  audit(actor, result.ok ? "youtube_reply_delivered" : "youtube_reply_failed", `youtube:${parentCommentId}`);
   if (!result.ok) {
     noteYouTubeProviderError(result.code as any);
-    return res.status(502).json({ success: false, code: result.code || "PROVIDER_ERROR", error: result.error, reply: replyRecord, delivered: false, note: "لم يُسجَّل الرد مُسلَّماً بلا معرّف تعليق من Google.", ...youtubeStateBlock() });
+    return { status: 502, body: { success: false, code: result.code || "PROVIDER_ERROR", error: result.error, reply: replyRecord, delivered: false, state: replyState, note: "لم يُسجَّل الرد مُسلَّماً بلا معرّف تعليق من Google.", ...youtubeStateBlock() } };
   }
   clearYouTubeProviderError();
-  res.json({ success: true, reply: replyRecord, delivered: true, externalReplyId: result.data!.commentId, ...youtubeStateBlock() });
-});
+  return { status: 200, body: { success: true, reply: replyRecord, delivered: true, externalReplyId: result.data!.commentId, state: replyState, ...youtubeStateBlock() } };
+}
 
 /**
- * الرفع الحقيقي للفيديو (videos.insert resumable) — نشر فوري أو جدولة حقيقية.
- * المحتوى (base64) أو رابط عام للفيديو، مع idempotency وrate limit وحارس سلامة.
+ * منفّذ الرفع الحقيقي للفيديو (videos.insert resumable) — مصدر واحد يمر بكل
+ * البوابات: موافقة صريحة → سلامة المحتوى → مادة فعلية → اتصال موثق → idempotency
+ * → rate limit → videos.insert. يستخدمه المسار الخارجي والعقل المركزي معاً.
  */
-app.post("/api/platforms/youtube/publish", requireOwner, async (req, res) => {
-  const user = (req as any).user as { id: string };
+async function executeYouTubePublish(input: {
+  title: string; description?: string; tags?: string[]; privacyStatus?: string; publishAt?: string;
+  categoryId?: string; videoBase64?: string; videoUrl?: string; mimeType?: string; postId?: string; approved?: boolean;
+}, actor: string): Promise<{ status: number; body: any }> {
   const started = Date.now();
-  const title = typeof req.body?.title === "string" ? req.body.title.trim() : "";
-  const description = typeof req.body?.description === "string" ? req.body.description : "";
-  const tags = Array.isArray(req.body?.tags) ? req.body.tags.map((t: any) => String(t).trim()).filter(Boolean) : [];
-  const privacyStatus = typeof req.body?.privacyStatus === "string" ? req.body.privacyStatus : "private";
-  const publishAtRaw = typeof req.body?.publishAt === "string" ? req.body.publishAt.trim() : "";
-  const categoryId = typeof req.body?.categoryId === "string" ? req.body.categoryId : YOUTUBE_DEFAULT_CATEGORY_ID;
-  const approved = req.body?.approved === true;
-  const mediaBase64 = typeof req.body?.videoBase64 === "string" ? req.body.videoBase64 : "";
-  const videoUrl = typeof req.body?.videoUrl === "string" ? req.body.videoUrl.trim() : "";
-  const mimeType = typeof req.body?.mimeType === "string" ? req.body.mimeType : "video/mp4";
+  const title = String(input.title || "").trim();
+  const description = typeof input.description === "string" ? input.description : "";
+  const tags = Array.isArray(input.tags) ? input.tags.map((t) => String(t).trim()).filter(Boolean) : [];
+  const privacyStatus = typeof input.privacyStatus === "string" ? input.privacyStatus : "private";
+  const publishAtRaw = typeof input.publishAt === "string" ? input.publishAt.trim() : "";
+  const categoryId = typeof input.categoryId === "string" ? input.categoryId : YOUTUBE_DEFAULT_CATEGORY_ID;
+  const approved = input.approved === true;
+  const mediaBase64 = typeof input.videoBase64 === "string" ? input.videoBase64 : "";
+  const videoUrl = typeof input.videoUrl === "string" ? input.videoUrl.trim() : "";
+  const mimeType = typeof input.mimeType === "string" ? input.mimeType : "video/mp4";
 
-  if (!approved) return res.status(409).json({ success: false, code: "APPROVAL_REQUIRED", error: "الرفع يحتاج موافقة صريحة (approved=true)." });
-  // حارس سلامة المحتوى على العنوان والوصف قبل أي رفع.
+  if (!approved) return { status: 409, body: { success: false, code: "APPROVAL_REQUIRED", error: "الرفع يحتاج موافقة صريحة (approved=true)." } };
   const safety = analyzeBusinessClaims(`${title}\n${description}`, buildFactsForProduct(null, 0, 0));
   if (!safety.safe) {
-    return res.status(422).json({ success: false, code: "CONTENT_SAFETY_BLOCKED", error: "المحتوى يحمل عرضاً تجارياً غير مسجّل، وتم إيقافه قبل الرفع.", contentSafety: { violations: safety.blocked.map((v) => v.detail), codes: safety.blocked.map((v) => v.code) } });
+    return { status: 422, body: { success: false, code: "CONTENT_SAFETY_BLOCKED", error: "المحتوى يحمل عرضاً تجارياً غير مسجّل، وتم إيقافه قبل الرفع.", contentSafety: { violations: safety.blocked.map((v) => v.detail), codes: safety.blocked.map((v) => v.code) } } };
   }
-  // لا رفع بلا مادة فعلية: بايتات (base64) أو رابط عام. لا fake video.
   const bytes = mediaBase64 ? Uint8Array.from(Buffer.from(mediaBase64, "base64")) : null;
   if (!bytes && !videoUrl) {
-    return res.status(422).json({ success: false, code: "MEDIA_REQUIRED", error: "لا توجد مادة فعلية للرفع: زوّد videoBase64 (بايتات الملف) أو videoUrl عاماً. لا يُولّد النظام فيديو وهمياً." });
+    return { status: 422, body: { success: false, code: "MEDIA_REQUIRED", error: "لا توجد مادة فعلية للرفع: زوّد videoBase64 (بايتات الملف) أو videoUrl عاماً. لا يُولّد النظام فيديو وهمياً." } };
   }
   if (videoUrl) {
-    // رابط عام (PULL_FROM_URL) يحتاج أن يجلب النظام البايتات نفسها لرفعها إلى YouTube.
-    return res.status(422).json({ success: false, code: "MEDIA_REQUIRED", error: "الرفع الرسمي (videos.insert resumable) يحتاج بايتات الملف؛ زوّد videoBase64. الرابط العام وحده لا يكفي لرفع YouTube." });
+    return { status: 422, body: { success: false, code: "MEDIA_REQUIRED", error: "الرفع الرسمي (videos.insert resumable) يحتاج بايتات الملف؛ زوّد videoBase64. الرابط العام وحده لا يكفي لرفع YouTube." } };
   }
   const validation = validateVideoUploadInput({ title, privacyStatus, publishAt: publishAtRaw || null, categoryId, hasMedia: Boolean(bytes && bytes.length) });
-  if (!validation.ok) return res.status(422).json({ success: false, code: validation.code, error: validation.reasons.join(' '), reasons: validation.reasons });
+  if (!validation.ok) return { status: 422, body: { success: false, code: validation.code, error: validation.reasons.join(' '), reasons: validation.reasons } };
   const guard = youtubeOperationGuard();
-  if (!guard.ok) return res.status(guard.status!).json({ success: false, code: guard.code, error: guard.error, ...youtubeStateBlock() });
-  // جدولة حقيقية: publishAt RFC3339 UTC. نقبل جداراً زمنياً محلياً (Asia/Baghdad) ونحوّله.
+  if (!guard.ok) return { status: guard.status!, body: { success: false, code: guard.code, error: guard.error, ...youtubeStateBlock() } };
   let publishAtIso: string | null = null;
   if (publishAtRaw) {
     const epoch = wallClockToEpoch(publishAtRaw);
-    if (!Number.isFinite(epoch)) return res.status(422).json({ success: false, code: "PUBLISH_AT_INVALID", error: "صيغة وقت الجدولة غير صالحة (يلزم جدار زمني محلي أو RFC3339)." });
+    if (!Number.isFinite(epoch)) return { status: 422, body: { success: false, code: "PUBLISH_AT_INVALID", error: "صيغة وقت الجدولة غير صالحة (يلزم جدار زمني محلي أو RFC3339)." } };
     publishAtIso = new Date(epoch).toISOString();
   }
-  // idempotency: بصمة (العنوان+الوصف+الوسوم+الخصوصية+الجدولة+بصمة المادة) تمنع الرفع المزدوج.
   const mediaRef = crypto.createHash("sha256").update(bytes!).digest("hex").slice(0, 32);
   const fingerprint = youtubeUploadFingerprint({ title, description, tags, privacyStatus, publishAt: publishAtIso, mediaRef });
   if (youtubeOperationKeySeen(fingerprint)) {
     const existing = ((workspace as any).publishRecords || []).find((r: any) => r.platform === "youtube" && r.idempotencyKey === fingerprint);
-    return res.status(409).json({ success: false, code: "DUPLICATE_PUBLISH", error: "نفس الفيديو مُهيّأ سابقاً (منع تكرار الرفع).", existing: existing ? { externalVideoId: existing.externalVideoId, state: existing.state } : null });
+    return { status: 409, body: { success: false, code: "DUPLICATE_PUBLISH", error: "نفس الفيديو مُهيّأ سابقاً (منع تكرار الرفع).", existing: existing ? { externalVideoId: existing.externalVideoId, state: existing.state } : null } };
   }
-  // rate limit للرفع.
   const rl = youtubeRateLimit("upload");
-  if (!rl.allowed) return res.status(429).json({ success: false, code: "RATE_LIMITED", error: "تم بلوغ حد معدّل الرفع؛ أعد المحاولة لاحقاً بلا إنشاء نسخة مكررة.", retryAfterMs: rl.retryAfterMs, limit: rl.limit });
+  if (!rl.allowed) return { status: 429, body: { success: false, code: "RATE_LIMITED", error: "تم بلوغ حد معدّل الرفع؛ أعد المحاولة لاحقاً بلا إنشاء نسخة مكررة.", retryAfterMs: rl.retryAfterMs, limit: rl.limit } };
   const ensured = await ensureYouTubeAccessToken();
-  if (!ensured.ok || !ensured.token) return res.status(409).json({ success: false, code: ensured.code || "TOKEN_UNAVAILABLE", error: ensured.error, ...youtubeStateBlock() });
-  const metadata = buildVideoInsertMetadata({ title, description, tags, categoryId, privacyStatus, publishAt: publishAtIso });
+  if (!ensured.ok || !ensured.token) return { status: 409, body: { success: false, code: ensured.code || "TOKEN_UNAVAILABLE", error: ensured.error, ...youtubeStateBlock() } };
   const result = await youtubeClient().uploadVideo(ensured.token, { bytes: bytes!, mimeType, metadata: { title, description, tags, categoryId, privacyStatus, publishAt: publishAtIso } });
-  // سجل النشر: لا يُسجَّل published/scheduled بلا معرّف فيديو حقيقي من Google.
   const externalVideoId = result.ok && result.data?.externalVideoId ? result.data.externalVideoId : null;
   const record = {
     id: workspaceId("publish"), platform: "youtube",
-    postId: typeof req.body?.postId === "string" ? req.body.postId : workspaceId("post"),
+    postId: typeof input.postId === "string" ? input.postId : workspaceId("post"),
     state: externalVideoId ? (publishAtIso ? "scheduled" : "published") : "failed",
     scheduledFor: publishAtIso, executedAt: new Date().toISOString(),
     providerPostId: externalVideoId, externalVideoId,
     url: youtubeWatchUrl(externalVideoId),
     privacyStatus: publishAtIso ? "private" : privacyStatus,
-    title, idempotencyKey: fingerprint, createdBy: user.id,
+    title, idempotencyKey: fingerprint, createdBy: actor,
     simulated: false,
     error: result.ok ? null : (result.error || "فشل الرفع إلى YouTube"),
     receipt: result.ok ? { provider: "youtube", videoId: externalVideoId, state: result.data?.state, at: new Date().toISOString() } : null,
@@ -4362,24 +4414,62 @@ app.post("/api/platforms/youtube/publish", requireOwner, async (req, res) => {
   if ((workspace as any).publishRecords.length > 5000) (workspace as any).publishRecords.pop();
   recordYouTubeOperationKey(fingerprint);
   await persistStateDurable();
-  logYouTubeOperation("video_upload", { externalId: externalVideoId, outcome: record.state, errorCode: result.ok ? null : (result.code as any) || null, durationMs: Date.now() - started, idempotencyKey: fingerprint, actor: user.id });
-  audit(user.id, result.ok ? "youtube_video_uploaded" : "youtube_video_upload_failed", `youtube:${externalVideoId || "none"}`);
+  logYouTubeOperation("video_upload", { externalId: externalVideoId, outcome: record.state, errorCode: result.ok ? null : (result.code as any) || null, durationMs: Date.now() - started, idempotencyKey: fingerprint, actor });
+  audit(actor, result.ok ? "youtube_video_uploaded" : "youtube_video_upload_failed", `youtube:${externalVideoId || "none"}`);
   if (!result.ok || !externalVideoId) {
     noteYouTubeProviderError(result.code as any);
-    return res.status(502).json({ success: false, code: result.code || "PROVIDER_ERROR", error: result.error || "لم يُعد YouTube معرّف فيديو؛ لم يُسجَّل أي نشر.", record, delivered: false, ...youtubeStateBlock() });
+    return { status: 502, body: { success: false, code: result.code || "PROVIDER_ERROR", error: result.error || "لم يُعد YouTube معرّف فيديو؛ لم يُسجَّل أي نشر.", record, delivered: false, ...youtubeStateBlock() } };
   }
   clearYouTubeProviderError();
-  res.json({
-    success: true, record,
-    externalVideoId, url: record.url,
-    delivered: record.state === "published",
-    scheduled: record.state === "scheduled",
-    state: record.state,
-    note: publishAtIso
-      ? "تم الرفع مع جدولة حقيقية (publishAt) لدى YouTube بحالة private حتى الموعد."
-      : "تم الرفع وأعاد YouTube معرّف فيديو حقيقي؛ النشر مُثبت من المزود.",
-    ...youtubeStateBlock(),
-  });
+  return {
+    status: 200,
+    body: {
+      success: true, record,
+      externalVideoId, url: record.url,
+      delivered: record.state === "published",
+      scheduled: record.state === "scheduled",
+      state: record.state,
+      note: publishAtIso
+        ? "تم الرفع مع جدولة حقيقية (publishAt) لدى YouTube بحالة private حتى الموعد."
+        : "تم الرفع وأعاد YouTube معرّف فيديو حقيقي؛ النشر مُثبت من المزود.",
+      ...youtubeStateBlock(),
+    },
+  };
+}
+
+/** الرد الحقيقي على تعليق YouTube (comments.insert) عبر البوابات كاملة. */
+app.post("/api/platforms/youtube/reply", requireOwner, async (req, res) => {
+  const user = (req as any).user as { id: string };
+  const result = await executeYouTubeReply({
+    commentId: typeof req.body?.commentId === "string" ? req.body.commentId : (typeof req.body?.externalId === "string" ? req.body.externalId : ""),
+    text: typeof req.body?.text === "string" ? req.body.text : "",
+    commentText: typeof req.body?.commentText === "string" ? req.body.commentText : "",
+    productId: typeof req.body?.productId === "string" ? req.body.productId : "",
+  }, user.id);
+  return res.status(result.status).json(result.body);
+});
+
+
+/**
+ * الرفع الحقيقي للفيديو (videos.insert resumable) — نشر فوري أو جدولة حقيقية.
+ * المحتوى (base64) أو رابط عام للفيديو، مع idempotency وrate limit وحارس سلامة.
+ */
+app.post("/api/platforms/youtube/publish", requireOwner, async (req, res) => {
+  const user = (req as any).user as { id: string };
+  const result = await executeYouTubePublish({
+    title: typeof req.body?.title === "string" ? req.body.title : "",
+    description: typeof req.body?.description === "string" ? req.body.description : "",
+    tags: Array.isArray(req.body?.tags) ? req.body.tags : [],
+    privacyStatus: typeof req.body?.privacyStatus === "string" ? req.body.privacyStatus : undefined,
+    publishAt: typeof req.body?.publishAt === "string" ? req.body.publishAt : undefined,
+    categoryId: typeof req.body?.categoryId === "string" ? req.body.categoryId : undefined,
+    videoBase64: typeof req.body?.videoBase64 === "string" ? req.body.videoBase64 : undefined,
+    videoUrl: typeof req.body?.videoUrl === "string" ? req.body.videoUrl : undefined,
+    mimeType: typeof req.body?.mimeType === "string" ? req.body.mimeType : undefined,
+    postId: typeof req.body?.postId === "string" ? req.body.postId : undefined,
+    approved: req.body?.approved === true,
+  }, user.id);
+  return res.status(result.status).json(result.body);
 });
 
 /** تحديث بيانات فيديو مملوك للقناة (videos.update) — عنوان/وصف/وسوم/خصوصية. */
@@ -4421,6 +4511,46 @@ app.get("/api/platforms/youtube/diagnostics", requireOwner, async (_req, res) =>
     note: "إدارة التعليقات تحتاج نطاق youtube.force-ssl الممنوح فعلاً؛ عند غيابه يُعلن النظام SCOPE_UPGRADE_REQUIRED ويطلب إعادة ربط — بلا تحايل على Google.",
   });
 });
+
+// -------------------------------------------------------------
+// تفويض تشغيل YouTube (للمالك فقط): يمنح العقل المركزي تنفيذ عمليات YouTube
+// المحدّدة بلا موافقة منفصلة لكل عملية، مع سجل تدقيق وإمكانية إيقاف فورية.
+// النطاق YouTube فقط؛ لا يُلغي المصادقة/الملكية/سلامة المحتوى/منع التكرار/audit.
+// -------------------------------------------------------------
+app.get("/api/platforms/youtube/delegation", requireOwner, (_req, res) => {
+  res.json({
+    success: true,
+    delegation: youtubeDelegationBlock(),
+    availableActions: [...YOUTUBE_DELEGATION_ACTIONS],
+    availableActionsLabelAr: YOUTUBE_DELEGATION_ACTIONS.map((a) => YOUTUBE_DELEGATION_ACTION_LABELS_AR[a]),
+    scopeOnly: "youtube",
+    note: "التفويض خاص بـYouTube فقط. لا يمنح أي منصة أخرى، ولا يتجاوز المصادقة أو الملكية أو سجل التدقيق أو حارس سلامة المحتوى.",
+  });
+});
+
+app.post("/api/platforms/youtube/delegation", requireOwner, async (req, res) => {
+  const user = (req as any).user as { id: string };
+  const actions = Array.isArray(req.body?.actions) ? req.body.actions : [];
+  if (!actions.length) return res.status(422).json({ success: false, code: "DELEGATION_ACTIONS_REQUIRED", error: "حدّد عملية واحدة على الأقل لتفويضها (reply/publish/schedule/update_video)." });
+  const expiresInHours = req.body?.expiresInHours;
+  const built = buildYouTubeDelegation({ actions, grantedBy: user.id, expiresInHours: Number.isFinite(Number(expiresInHours)) ? Number(expiresInHours) : null, note: typeof req.body?.note === "string" ? req.body.note : null });
+  if (!built.actions.length) return res.status(422).json({ success: false, code: "DELEGATION_ACTIONS_INVALID", error: "لا عملية صالحة في الطلب؛ العمليات المتاحة: " + YOUTUBE_DELEGATION_ACTIONS.join(", ") + "." });
+  youtubeDelegationState = built;
+  await saveYouTubeDelegationState();
+  audit(user.id, "youtube_delegation_granted", `actions=${built.actions.join(",")}`);
+  logYouTube("delegation_granted", { actionCount: built.actions.length });
+  res.json({ success: true, delegation: youtubeDelegationBlock(), note: "تم منح تفويض تشغيل YouTube للعمليات المحدّدة فقط. يمكن إيقافه فوراً، وكل عملية تبقى مسجّلة في التدقيق." });
+});
+
+app.delete("/api/platforms/youtube/delegation", requireOwner, async (req, res) => {
+  const user = (req as any).user as { id: string };
+  youtubeDelegationState = revokeYouTubeDelegation(youtubeDelegationState);
+  await saveYouTubeDelegationState();
+  audit(user.id, "youtube_delegation_revoked", "youtube");
+  logYouTube("delegation_revoked", {});
+  res.json({ success: true, delegation: youtubeDelegationBlock(), note: "تم إيقاف تفويض تشغيل YouTube؛ عاد كل تنفيذ خارجي ليتطلب موافقة صريحة منفصلة." });
+});
+
 
 
 // -------------------------------------------------------------
@@ -6165,6 +6295,9 @@ function applyControlSnapshot(control: any): void {
     verificationRequestLog.lastMismatch = vr.lastMismatch && typeof vr.lastMismatch === "object" ? vr.lastMismatch : null;
     verificationRequestLog.recent = Array.isArray(vr.recent) ? vr.recent.slice(0, VERIFICATION_REQUEST_LOG_MAX) : [];
   }
+  // استرجاع تفويض تشغيل YouTube: يصمد بعد إعادة التشغيل/cold start، فلا يُفقد
+  // منح المالك ولا إيقافه. يُطبَّع (نطاق YouTube فقط) قبل الاستخدام.
+  if (control.youtubeDelegation) youtubeDelegationState = normalizeYouTubeDelegation(control.youtubeDelegation);
 }
 
 /** يقرأ حالة التحكّم متزامناً (backend الملف) عند الإقلاع. */
@@ -6197,6 +6330,9 @@ function buildControlState() {
       lastMismatch: verificationRequestLog.lastMismatch,
       recent: verificationRequestLog.recent.slice(0, VERIFICATION_REQUEST_LOG_MAX),
     },
+    // تفويض تشغيل YouTube (نطاق YouTube فقط): يُحفظ لتصمد فعالية التفويض/الإيقاف
+    // بعد إعادة التشغيل/cold start. لا يحمل أي سرّ (عمليات + طوابع + من منحه).
+    youtubeDelegation: youtubeDelegationState,
   };
 }
 
@@ -6235,6 +6371,8 @@ function buildAgentToolContext(operator: AgentOperator, userId: string): AgentTo
   return {
     operator,
     userId,
+    // تقييم تفويض تشغيل YouTube: مصدره الخادم (الحالة الممنوحة من المالك).
+    delegationCheck: (input) => youtubeDelegationCheck(operator, input),
     healthSnapshot: () => agentHealthSnapshot(),
     platformStatuses: () => {
       const liveFor = (p: string) => { const c: any = platformConnections.get(p); return { status: c?.status || "disconnected", providerVerified: Boolean(c?.providerVerified), accountName: c?.accountName || null }; };
@@ -6455,45 +6593,31 @@ function buildAgentToolContext(operator: AgentOperator, userId: string): AgentTo
       return { ok: true, learning };
     },
     youtubeReply: async (input: { commentId: string; text: string; commentText?: string }) => {
-      // التنفيذ الخارجي يمر بنفس مسار الرد الحقيقي عبر HTTP في الخادم (لا تجاوز للبوابات).
-      const guard = youtubeOperationGuard();
-      if (!guard.ok) throw new Error(guard.error);
-      if (!youtubeForceSslGranted()) throw new Error("إعادة ربط YouTube مطلوبة لتفعيل إدارة التعليقات (نطاق youtube.force-ssl).");
-      const ensured = await ensureYouTubeAccessToken();
-      if (!ensured.ok || !ensured.token) throw new Error(ensured.error);
-      const res = await youtubeClient().replyToComment(ensured.token, { parentCommentId: input.commentId, text: input.text });
-      const replyRecord = {
-        id: workspaceId("reply"), platform: "youtube", externalId: input.commentId, text: input.text,
-        commentText: input.commentText || "", classification: classifyComment(input.commentText || input.text),
-        repliedAt: new Date().toISOString(), createdBy: userId, simulated: false,
-        delivered: Boolean(res.ok && res.data?.commentId),
-        externalReplyId: res.ok && res.data?.commentId ? res.data.commentId : null,
-        reviewStatus: res.ok ? "delivered" : "failed", deliveryError: res.ok ? null : (res.error || "فشل الإرسال"),
-      };
-      if (!Array.isArray((workspace as any).socialReplies)) (workspace as any).socialReplies = [];
-      (workspace as any).socialReplies.unshift(replyRecord);
-      if ((workspace as any).socialReplies.length > 5000) (workspace as any).socialReplies.pop();
-      await persistStateDurable();
-      audit(userId, res.ok ? "youtube_reply_delivered" : "youtube_reply_failed", `youtube:${input.commentId}`);
-      if (!res.ok) throw new Error(res.error || "لم يُسجَّل الرد مُسلَّماً بلا معرّف تعليق من Google.");
-      return { delivered: true, externalReplyId: res.data!.commentId, reply: replyRecord };
+      // التنفيذ الخارجي يمر بمنفّذ الرد الحقيقي نفسه (كل البوابات سارية، لا تجاوز).
+      const result = await executeYouTubeReply({ commentId: input.commentId, text: input.text, commentText: input.commentText }, userId);
+      if (result.status >= 400) throw new Error(result.body?.error || "فشل الرد على تعليق YouTube.");
+      return { delivered: true, externalReplyId: result.body.externalReplyId, state: result.body.state, reply: result.body.reply };
     },
     youtubePublish: async (input) => {
+      // التنفيذ الخارجي يمر بمنفّذ الرفع الحقيقي نفسه (كل البوابات سارية، لا تجاوز).
+      const result = await executeYouTubePublish({
+        title: input.title, description: input.description, tags: input.tags,
+        privacyStatus: input.privacyStatus, publishAt: input.publishAt || undefined,
+        videoBase64: input.videoBase64, mimeType: input.mimeType, approved: true,
+      }, userId);
+      if (result.status >= 400) throw new Error(result.body?.error || "فشل رفع الفيديو إلى YouTube.");
+      return { record: result.body.record, externalVideoId: result.body.externalVideoId, url: result.body.url, state: result.body.state };
+    },
+    youtubeVideoUpdate: async (input: { videoId: string; title: string; description?: string; tags?: string[]; privacyStatus?: string }) => {
       const guard = youtubeOperationGuard();
       if (!guard.ok) throw new Error(guard.error);
-      const bytes = input.videoBase64 ? Uint8Array.from(Buffer.from(input.videoBase64, "base64")) : null;
-      if (!bytes || !bytes.length) throw new Error("لا توجد بايتات فيديو للرفع (videoBase64 مطلوب).");
       const ensured = await ensureYouTubeAccessToken();
       if (!ensured.ok || !ensured.token) throw new Error(ensured.error);
-      const result = await youtubeClient().uploadVideo(ensured.token, { bytes, mimeType: input.mimeType || "video/mp4", metadata: { title: input.title, description: input.description, tags: input.tags, privacyStatus: input.privacyStatus, publishAt: input.publishAt || null } });
-      const externalVideoId = result.ok && result.data?.externalVideoId ? result.data.externalVideoId : null;
-      const record = { id: workspaceId("publish"), platform: "youtube", state: externalVideoId ? (input.publishAt ? "scheduled" : "published") : "failed", externalVideoId, url: youtubeWatchUrl(externalVideoId), providerPostId: externalVideoId, scheduledFor: input.publishAt || null, executedAt: new Date().toISOString(), createdBy: userId, simulated: false, error: result.ok ? null : (result.error || "فشل الرفع") };
-      if (!Array.isArray((workspace as any).publishRecords)) (workspace as any).publishRecords = [];
-      (workspace as any).publishRecords.unshift(record);
-      await persistStateDurable();
-      audit(userId, result.ok ? "youtube_video_uploaded" : "youtube_video_upload_failed", `youtube:${externalVideoId || "none"}`);
-      if (!result.ok || !externalVideoId) throw new Error(result.error || "لم يُعد YouTube معرّف فيديو؛ لم يُسجَّل أي نشر.");
-      return { record, externalVideoId, url: record.url, state: record.state };
+      const metadata = { title: input.title, description: input.description || "", tags: Array.isArray(input.tags) ? input.tags : [], categoryId: YOUTUBE_DEFAULT_CATEGORY_ID, privacyStatus: input.privacyStatus };
+      const result = await youtubeClient().updateVideo(ensured.token, { videoId: input.videoId, metadata: metadata as any });
+      audit(userId, result.ok ? "youtube_video_updated" : "youtube_video_update_failed", `youtube:${input.videoId}`);
+      if (!result.ok) throw new Error(result.error || "فشل تحديث بيانات الفيديو.");
+      return { video: result.data };
     },
   };
 }
@@ -6995,6 +7119,9 @@ app.get("/api/readiness", (_req, res) => {
     // حقول YouTube الآمنة (منطقي فقط، بلا أي قيمة سرّية): تفصل وجود بيانات
     // Google عن نطاق القراءة المطلوب لإثبات القناة وعن الاتصال الفعلي.
     youtubeOAuth: youtubeHealthState(),
+    // تفويض تشغيل YouTube: حالة التفويض الممنوح من المالك للعقل المركزي (نطاق
+    // YouTube فقط) — منطقي بلا أي سرّ، ليتأكد المالك من الفعالية/الإيقاف.
+    youtubeDelegation: youtubeDelegationBlock(),
     // PHASE 7 — حقول TikTok الآمنة (منطقي فقط، بلا أي قيمة سرّية).
     tiktokOAuth: (() => {
       const c = tiktokOAuthConfig();
@@ -7402,6 +7529,9 @@ app.get("/api/health", (_req, res) => {
     // حالة موصل YouTube الحقيقي (منطقي فقط بلا أي سرّ أو رمز): تفصل وجود بيانات
     // Google عن نطاق القراءة المطلوب لإثبات القناة وعن حالة الاتصال الفعلية.
     youtubeOAuth: youtubeHealthState(),
+    // تفويض تشغيل YouTube (نطاق YouTube فقط): منطقي بلا أي سرّ، ويُعلن الإجراء
+    // التالي — منح التفويض يسمح للعقل بتنفيذ عمليات YouTube المحدّدة تلقائياً.
+    youtubeDelegation: youtubeDelegationBlock(),
     // حالة موصل TikTok الحقيقي (منطقي فقط بلا أي سرّ أو رمز).
     tiktokOAuth: (() => {
       const c = tiktokOAuthConfig();

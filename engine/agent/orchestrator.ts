@@ -30,6 +30,7 @@ export type AgentFailureCode =
   | 'MISSING_ARGUMENT'
   | 'TOOL_EXECUTION_FAILED'
   | 'EXTERNAL_APPROVAL_REQUIRED'
+  | 'DELEGATION_NOT_GRANTED'
   | 'TIMEOUT'
   | 'NONE';
 
@@ -113,12 +114,23 @@ function isArgRef(v: any): v is AgentArgRef {
   return Boolean(v) && typeof v === 'object' && typeof v.fromTool === 'string' && typeof v.field === 'string';
 }
 
+/** هل القيمة مرجع سياق مهمة؟ (مثل commentId/text المُزوّدين صراحةً من المالك). */
+function isContextRef(v: any): v is AgentArgRef {
+  return Boolean(v) && typeof v === 'object' && typeof v.fromContext === 'string';
+}
+
 /**
  * يحلّ قيمة معامل من مخرَجات الخطوات السابقة **وقت التنفيذ**.
  * لا يختلق قيمة: إن غابت القائمة/العنصر/الحقل يُعيد undefined لتفشل الخطوة
  * برسالة نقص معامل صريحة (`MISSING_ARGUMENT`) بدل تمرير معرّف وهمي.
  */
-export function resolveArgValue(arg: any, outputs: Record<string, any>): any {
+export function resolveArgValue(arg: any, outputs: Record<string, any>, context: Record<string, any> = {}): any {
+  // مرجع سياق: قيمة حقيقية يزوّدها المالك في جسم المهمة (لا مخرَج خطوة).
+  if (isContextRef(arg)) {
+    const v = context ? context[arg.fromContext] : undefined;
+    if (v === undefined || v === null || v === '') return undefined;
+    return v;
+  }
   if (!isArgRef(arg)) return arg;
   const output = outputs[arg.fromTool];
   if (!output) return undefined;
@@ -137,9 +149,9 @@ export function resolveArgValue(arg: any, outputs: Record<string, any>): any {
 }
 
 /** يحلّ كل معاملات الخطوة من مخرَجات الخطوات السابقة (لا يُعدّل المرجع، يبني نسخة). */
-function resolveArgs(args: Record<string, any>, outputs: Record<string, any>): Record<string, any> {
+function resolveArgs(args: Record<string, any>, outputs: Record<string, any>, context: Record<string, any> = {}): Record<string, any> {
   const out: Record<string, any> = {};
-  for (const [k, v] of Object.entries(args || {})) out[k] = resolveArgValue(v, outputs);
+  for (const [k, v] of Object.entries(args || {})) out[k] = resolveArgValue(v, outputs, context);
   return out;
 }
 
@@ -281,18 +293,25 @@ export class AgentOrchestrator {
         journal.push(this.entry(i, stepDef, tool.permission, 'PERMISSION_DENIED', perm.reason, false, started, 1));
         continue;
       }
-      // بوابة الموافقة: لا تنفيذ خارجي حقيقي من داخل مهمة تلقائية.
+      // بوابة الموافقة: لا تنفيذ خارجي حقيقي من داخل مهمة تلقائية، إلا بعملية
+      // YouTube مفوّضة صراحةً من المالك. حلّ المراجع أولاً لأن النشر المجدول
+      // يحتاج `publish` و`schedule` معاً (قرار التفويض يعتمد على المعاملات).
+      const resolvedArgs = resolveArgs(stepDef.args, outputs, task.contextSnapshot || {});
       if (toolRequiresApproval(tool.permission)) {
-        journal.push(this.entry(i, stepDef, tool.permission, 'EXTERNAL_APPROVAL_REQUIRED', 'أداة خارجية تتطلب موافقة صريحة ولا تُنفَّذ من داخل مهمة تلقائية.', false, started, 1));
-        task.status = 'waiting';
-        continue;
+        const delegation = toolContext.delegationCheck
+          ? toolContext.delegationCheck({ toolId: tool.id, args: resolvedArgs })
+          : { allowed: false, code: 'DELEGATION_NOT_GRANTED', reason: 'لا يوجد تفويض تشغيل مفعّل لهذه العملية الخارجية.' };
+        if (!delegation.allowed) {
+          journal.push(this.entry(i, stepDef, tool.permission, (delegation.code as AgentFailureCode) || 'EXTERNAL_APPROVAL_REQUIRED', delegation.reason || 'أداة خارجية تتطلب موافقة صريحة أو تفويض تشغيل فعّال.', false, started, 1));
+          task.status = 'waiting';
+          continue;
+        }
+        // العملية مفوّضة: تُنفَّذ عبر نفس المنفّذ الحقيقي (بوابات المشروع سارية داخل المنفّذ).
       }
 
       // تنفيذ مع إعادة محدودة للأخطاء القابلة للإصلاح فقط.
       const idempotent = tool.permission === 'READ' || tool.permission === 'EXECUTE';
       const attemptsAllowed = idempotent ? this.maxAttempts : 1;
-      // حلّ المراجع من مخرَجات الخطوات السابقة قبل التنفيذ (بلا اختلاق قيم).
-      const resolvedArgs = resolveArgs(stepDef.args, outputs);
       let result: AgentToolResult = { ok: false, code: 'TOOL_EXECUTION_FAILED', error: 'لم يُنفَّذ' };
       let attempts = 0;
       let failureCode: AgentFailureCode = 'TOOL_EXECUTION_FAILED';
@@ -315,9 +334,10 @@ export class AgentOrchestrator {
       // مخرَج الخطوة الناجحة فقط يُتاح للمراجع في الخطوات التالية (لا بيانات فاشلة).
       if (result.ok) outputs[stepDef.toolId] = result.data;
 
-      // أي فشل في أداة ذات أثر (WRITE/SENSITIVE/EXECUTE) يوقف المهمة بحالة
-      // واضحة. فشل أدوات القراءة يُسجَّل ويُكمل (قد تكون خطوة سياق اختيارية).
-      if (!result.ok && (tool.permission === 'WRITE' || tool.permission === 'SENSITIVE' || tool.permission === 'EXECUTE')) {
+      // أي فشل في أداة ذات أثر (WRITE/SENSITIVE/EXECUTE/EXTERNAL_ACTION) يوقف
+      // المهمة بحالة واضحة. فشل أدوات القراءة يُسجَّل ويُكمل (قد تكون خطوة سياق
+      // اختيارية). أداة خارجية فشلت بعد تفويض فعّال = فشل حقيقي، لا يُتجاهل.
+      if (!result.ok && (tool.permission === 'WRITE' || tool.permission === 'SENSITIVE' || tool.permission === 'EXECUTE' || tool.permission === 'EXTERNAL_ACTION')) {
         task.status = 'failed';
         task.failureCode = failureCode;
         task.error = `فشلت الخطوة «${stepDef.label}»: ${result.error || failureCode}`;

@@ -454,6 +454,49 @@ export function youtubeWatchUrl(videoId: string | null): string | null {
 }
 
 // ---------------------------------------------------------------------------
+// دورة حياة الرد على التعليق (draft → approved → sent / failed)
+// ---------------------------------------------------------------------------
+
+/** حالات دورة حياة الرد — مفردات صريحة بلا لبس بين «مسودة» و«مُرسل». */
+export type YouTubeReplyLifecycleState = 'draft' | 'approved' | 'sent' | 'failed';
+
+export const YOUTUBE_REPLY_LIFECYCLE_STATES: readonly YouTubeReplyLifecycleState[] = Object.freeze([
+  'draft',
+  'approved',
+  'sent',
+  'failed',
+]);
+
+export const YOUTUBE_REPLY_LIFECYCLE_LABELS_AR: Record<YouTubeReplyLifecycleState, string> = Object.freeze({
+  draft: 'مسودة (لم تُعتمد)',
+  approved: 'معتمد (بانتظار الإرسال)',
+  sent: 'أُرسل فعلاً (أثبته YouTube)',
+  failed: 'فشل الإرسال',
+});
+
+/**
+ * يحسم حالة دورة حياة الرد من الحقائق الفعلية فقط. القاعدة الحاكمة:
+ * **لا `sent` بلا معرّف رد حقيقي من YouTube**. ترتيب الأسبقية: دليل الإرسال >
+ * فشل الإرسال > قرار الاعتماد > مسودة.
+ */
+export function resolveYouTubeReplyState(input: {
+  delivered: boolean;
+  externalReplyId: string | null;
+  approved?: boolean;
+  failed?: boolean;
+}): YouTubeReplyLifecycleState {
+  if (input.delivered && input.externalReplyId) return 'sent';
+  if (input.failed) return 'failed';
+  if (input.approved) return 'approved';
+  return 'draft';
+}
+
+/** هل الحالة تعني إرسالاً مُثبتاً من YouTube؟ */
+export function youtubeReplyIsSent(state: YouTubeReplyLifecycleState): boolean {
+  return state === 'sent';
+}
+
+// ---------------------------------------------------------------------------
 // تصنيف الأخطاء (بلا كشف أي قيمة)
 // ---------------------------------------------------------------------------
 

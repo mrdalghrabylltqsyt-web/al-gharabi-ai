@@ -43,6 +43,11 @@ export function canUseTool(operator: AgentOperator, permission: ToolPermission):
  * قيد صريح: الأدوات ذات المستوى EXTERNAL_ACTION (نشر/رد/رسالة حقيقية) تتطلب
  * موافقة صريحة ولا تُنفَّذ من داخل مهمة تلقائية، لأن بوابات المشروع
  * (Capability → Connection → Verification → Approval) لا تُتجاوز من العقل.
+ *
+ * استثناء واحد مضبوط: **تفويض تشغيل YouTube** الذي يمنحه المالك صراحةً للعقل
+ * (engine/social/youtubeDelegation.ts). عند فعاليته يُسمح بتنفيذ عمليات YouTube
+ * الممنوحة فقط؛ ويُحسم القرار في المنسّق عبر `delegationCheck` المحقون من الخادم.
+ * التفويض لا يمنح أي منصة أخرى، ولا يلغي أي حارس (اتصال موثق/سلامة/تكرار/audit).
  */
 export function toolRequiresApproval(permission: ToolPermission): boolean {
   return permission === 'EXTERNAL_ACTION';

@@ -13,11 +13,22 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { AgentOrchestrator } from '../agent/orchestrator';
 import { registerAgentRoutes } from '../agent/routes';
-import { buildAgentPlan, classifyIntent, detectPlatforms, wantsYouTubeComments } from '../agent/planner';
+import { buildAgentPlan, classifyIntent, detectPlatforms, wantsYouTubeComments, wantsYouTubeReply, wantsYouTubePublish, wantsYouTubeVideoUpdate } from '../agent/planner';
 import { canUseTool, toolRequiresApproval } from '../agent/permissions';
 import { AGENT_TOOLS, getAgentTool } from '../agent/tools';
 import { resolveArgValue, sanitizeOutput } from '../agent/orchestrator';
 import { describeProviders, shouldUseCouncil, primaryProvider } from '../agent/providerRouter';
+import { resolveYouTubeReplyState, YOUTUBE_REPLY_LIFECYCLE_STATES, YOUTUBE_REPLY_LIFECYCLE_LABELS_AR } from '../social/youtube';
+import {
+  defaultYouTubeDelegation,
+  buildYouTubeDelegation,
+  revokeYouTubeDelegation,
+  normalizeYouTubeDelegation,
+  summarizeYouTubeDelegation,
+  evaluateYouTubeDelegation,
+  requiredDelegationActions,
+  YOUTUBE_DELEGATION_ACTIONS,
+} from '../social/youtubeDelegation';
 import type { AgentToolContext } from '../agent/tools';
 
 let passed = 0;
@@ -57,8 +68,9 @@ function fakeCtx(overrides: Partial<AgentToolContext> = {}): AgentToolContext {
     youtubeAnalytics: async () => ({ ok: true, summary: { sampleSize: 1, totalViews: 10 }, audience: { basis: 'public_metrics' }, channel: { channelId: 'ch1' } }),
     youtubeComments: async () => ({ ok: true, comments: [], inserted: 0, duplicates: 0 }),
     youtubeLearning: async () => ({ ok: true, learning: { insights: [], sampleSize: 0 } }),
-    youtubeReply: async (input) => ({ delivered: true, externalReplyId: 'yt-reply-1', reply: { externalId: input.commentId } }),
+    youtubeReply: async (input) => ({ delivered: true, externalReplyId: 'yt-reply-1', state: 'sent', reply: { externalId: input.commentId } }),
     youtubePublish: async (input) => ({ record: { state: 'published' }, externalVideoId: 'yt-vid-1', url: 'https://www.youtube.com/watch?v=yt-vid-1', state: 'published', title: input.title }),
+    youtubeVideoUpdate: async (input) => ({ video: { id: input.videoId, snippet: { title: input.title } } }),
   };
   return { ...base, ...overrides };
 }
@@ -378,6 +390,68 @@ async function unitTests() {
     check('sanitize: يحفظ text', sanitizeOutput({ text: 'مرحبا', token: 'SECRET', keep: 1 }).text === 'مرحبا');
     check('sanitize: يُسقط المفتاح السرّي', !('token' in sanitizeOutput({ text: 'x', token: 'SECRET' })));
     check('sanitize: يحفظ النوع والمشاعر والرد', (() => { const s = sanitizeOutput(la); return s.type === la.type && s.sentiment === la.sentiment && s.iraqiSuggestedReply === la.iraqiSuggestedReply; })());
+  }
+
+  // --- H) تفويض تشغيل YouTube: منح/إيقاف/انتهاء + تقييم العمليات ---
+  {
+    const base = defaultYouTubeDelegation();
+    check('H: التفويض الافتراضي غير ممنوح', base.granted === false && evaluateYouTubeDelegation({ delegation: base, toolId: 'youtube_reply', operator: 'owner' }).allowed === false);
+    const granted = buildYouTubeDelegation({ actions: ['reply', 'publish'], grantedBy: 'owner-1', now: 1000 });
+    check('H: التفويض الممنوح يحمل العمليات المطلوبة فقط', granted.granted === true && granted.actions.join(',') === 'reply,publish');
+    check('H: رد مفوّض يُسمح به للمالك', evaluateYouTubeDelegation({ delegation: granted, toolId: 'youtube_reply', operator: 'owner', now: 2000 }).allowed === true);
+    check('H: نشر مفوّض يُسمح به', evaluateYouTubeDelegation({ delegation: granted, toolId: 'youtube_publish', operator: 'owner', args: { title: 'x' }, now: 2000 }).allowed === true);
+    check('H: عملية غير مفوّضة (تحديث) تُمنع بكود صريح', evaluateYouTubeDelegation({ delegation: granted, toolId: 'youtube_video_update', operator: 'owner', now: 2000 }).code === 'DELEGATION_ACTION_NOT_GRANTED');
+    check('H: النشر المجدول يحتاج publish+schedule', requiredDelegationActions('youtube_publish', { publishAt: '2027-01-01T10:00' }).join(',') === 'publish,schedule');
+    check('H: نشر مجدول بتفويض publish فقط يُمنع', evaluateYouTubeDelegation({ delegation: granted, toolId: 'youtube_publish', operator: 'owner', args: { publishAt: '2027-01-01T10:00' }, now: 2000 }).allowed === false);
+    check('H: staff لا يستفيد من التفويض', evaluateYouTubeDelegation({ delegation: granted, toolId: 'youtube_reply', operator: 'staff', now: 2000 }).code === 'DELEGATION_OPERATOR_NOT_OWNER');
+    check('H: أداة غير YouTube قابلة للتفويض => مرفوضة', evaluateYouTubeDelegation({ delegation: granted, toolId: 'job_execute', operator: 'owner', now: 2000 }).code === 'TOOL_NOT_DELEGATABLE');
+    const revoked = revokeYouTubeDelegation(granted, 3000);
+    check('H: الإيقاف يبقي الأثر ويُعلن revoked', revoked.granted === false && evaluateYouTubeDelegation({ delegation: revoked, toolId: 'youtube_reply', operator: 'owner', now: 4000 }).code === 'DELEGATION_REVOKED');
+    const expired = buildYouTubeDelegation({ actions: ['reply'], grantedBy: 'owner-1', now: 1000, expiresInHours: 1 });
+    check('H: الانتهاء يُمنع', evaluateYouTubeDelegation({ delegation: expired, toolId: 'youtube_reply', operator: 'owner', now: 1000 + 2 * 60 * 60 * 1000 }).code === 'DELEGATION_EXPIRED');
+    check('H: النطاق محصور بـYouTube دائماً', normalizeYouTubeDelegation({ granted: true, scope: 'facebook', actions: ['reply'] }).granted === false);
+    check('H: تُسقَط العمليات غير المعروفة', normalizeYouTubeDelegation({ granted: true, actions: ['reply', 'hack'] }).actions.join(',') === 'reply');
+    check('H: الملخّص بلا سرّ ويعلن المتاح', summarizeYouTubeDelegation(granted, 2000).active === true && summarizeYouTubeDelegation(granted, 2000).availableActions.length === YOUTUBE_DELEGATION_ACTIONS.length);
+    check('H: حالة التفويض تظهر في health-style block', summarizeYouTubeDelegation(base).state === 'not_granted');
+  }
+
+  // --- I) دورة حياة الرد: لا sent بلا معرّف رد حقيقي من YouTube ---
+  {
+    check('I: لا sent بلا معرّف رد', resolveYouTubeReplyState({ delivered: true, externalReplyId: null }) !== 'sent');
+    check('I: sent فقط بمعرّف رد حقيقي', resolveYouTubeReplyState({ delivered: true, externalReplyId: 'r1' }) === 'sent');
+    check('I: الفشل يُعلن failed', resolveYouTubeReplyState({ delivered: false, externalReplyId: null, failed: true }) === 'failed');
+    check('I: المعتمد بلا إرسال = approved', resolveYouTubeReplyState({ delivered: false, externalReplyId: null, approved: true }) === 'approved');
+    check('I: بلا اعتماد = draft', resolveYouTubeReplyState({ delivered: false, externalReplyId: null }) === 'draft');
+    check('I: المفردات الأربع صريحة', YOUTUBE_REPLY_LIFECYCLE_STATES.join(',') === 'draft,approved,sent,failed' && Boolean(YOUTUBE_REPLY_LIFECYCLE_LABELS_AR.sent));
+  }
+
+  // --- J) المنسّق: أداة خارجية بلا تفويض => waiting؛ مع تفويض فعّال => تنفيذ ---
+  {
+    const blocked = fakeCtx({ delegationCheck: () => ({ allowed: false, code: 'DELEGATION_NOT_GRANTED', reason: 'لا تفويض تشغيل YouTube فعّال.' }) });
+    const ob = makeOrch(blocked);
+    const tb = ob.createTask({ task: 'رد على تعليق يوتيوب', mode: 'youtube_reply', operator: 'owner', userId: 'owner', context: { commentId: 'c1', replyText: 'أهلاً بك' } });
+    const rb = await ob.run(tb.id);
+    const entryB = rb.journal.find((e) => e.toolId === 'youtube_reply');
+    check('J: بلا تفويض الأداة الخارجية محجوبة بكود صريح', entryB?.ok === false && entryB?.code === 'DELEGATION_NOT_GRANTED', JSON.stringify(entryB));
+    check('J: المهمة تنتظر عند غياب التفويض', rb.status === 'waiting', rb.status);
+
+    let seenArgs: any = null;
+    const allowed = fakeCtx({ delegationCheck: (i) => { seenArgs = i; return { allowed: true }; } });
+    const oa = makeOrch(allowed);
+    const ta = oa.createTask({ task: 'رد على تعليق يوتيوب', mode: 'youtube_reply', operator: 'owner', userId: 'owner', context: { commentId: 'c1', replyText: 'أهلاً بك' } });
+    const ra = await oa.run(ta.id);
+    const entryA = ra.journal.find((e) => e.toolId === 'youtube_reply');
+    check('J: مع تفويض فعّال تُنفَّذ الأداة الخارجية', entryA?.ok === true, JSON.stringify(entryA));
+    check('J: قيمة السياق الحقيقية وصلت للأداة (commentId)', seenArgs?.args?.commentId === 'c1');
+    check('J: نص الرد الحقيقي وصل للأداة', seenArgs?.args?.text === 'أهلاً بك');
+    check('J: المهمة اكتملت بعد التنفيذ المفوّض', ra.status === 'completed', ra.status);
+
+    // أداة خارجية غير YouTube (job_execute) تبقى محجوبة بلا تفويض حتى لو أُريد تمريرها.
+    const jobCtx = fakeCtx({ delegationCheck: () => ({ allowed: false, code: 'TOOL_NOT_DELEGATABLE', reason: 'ليست عملية YouTube.' }) });
+    const oj = makeOrch(jobCtx);
+    const tj = oj.createTask({ task: 'نفّذ مهمة', mode: 'jobs', operator: 'owner', userId: 'owner' });
+    const rj = await oj.run(tj.id);
+    check('J: مهمة jobs تنتظر ولا تنفّذ خارجياً بلا تفويض', rj.status === 'waiting' && !rj.journal.some((e) => e.toolId === 'job_execute' && e.ok === true));
   }
 
   // --- G) الواجهة تعرض المخرجات الفعلية من task.result.data (فحص مصدر ثابت) ---

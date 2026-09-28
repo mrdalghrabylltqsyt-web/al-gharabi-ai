@@ -85,6 +85,13 @@ export interface AgentToolContext {
   youtubeReply: (input: { commentId: string; text: string; commentText?: string }) => Promise<any>;
   /** رفع فيديو حقيقي إلى YouTube (videos.insert) — عملية خارجية تتطلب موافقة. */
   youtubePublish: (input: { title: string; description?: string; tags?: string[]; privacyStatus?: string; publishAt?: string | null; videoBase64?: string; mimeType?: string; approved?: boolean }) => Promise<any>;
+  /** تحديث بيانات فيديو مملوك للقناة (videos.update) — عملية خارجية تتطلب موافقة. */
+  youtubeVideoUpdate: (input: { videoId: string; title: string; description?: string; tags?: string[]; privacyStatus?: string }) => Promise<any>;
+  /**
+   * تقييم تفويض تشغيل YouTube لعملية خارجية. يعيد السماح فقط إن كان التفويض
+   * فعّالاً ويشمل العملية المطلوبة. يُحقن من الخادم (مصدر التفويض) ولا يُختلق هنا.
+   */
+  delegationCheck?: (input: { toolId: string; args: Record<string, any> }) => { allowed: boolean; code?: string; reason?: string };
 }
 
 export interface AgentTool {
@@ -492,34 +499,53 @@ export const AGENT_TOOLS: ReadonlyArray<AgentTool> = [
   {
     id: 'youtube_reply',
     name: 'الرد على تعليق YouTube',
-    description: 'رد حقيقي على تعليق YouTube (comments.insert). عملية خارجية تتطلب موافقة صريحة ولا تُنفَّذ من مهمة تلقائية.',
+    description: 'رد حقيقي على تعليق YouTube (comments.insert). عملية خارجية تتطلب موافقة صريحة أو تفويض تشغيل فعّال، ولا تُنفَّذ من مهمة تلقائية بلا ذلك.',
     permission: 'EXTERNAL_ACTION',
     parameters: [
       { name: 'commentId', type: 'string', required: true, description: 'معرّف التعليق لدى YouTube.' },
       { name: 'text', type: 'string', required: true, description: 'نص الرد.' },
+      { name: 'commentText', type: 'string', required: false, description: 'نص التعليق الأصلي (لتصنيفه في السجل).' },
     ],
     run: async (args, ctx) => {
       if (!args.commentId || !args.text) return { ok: false, code: 'MISSING_ARGUMENT', error: 'commentId وtext مطلوبان.' };
       try {
-        return { ok: true, data: await ctx.youtubeReply({ commentId: String(args.commentId), text: String(args.text) }) };
+        return { ok: true, data: await ctx.youtubeReply({ commentId: String(args.commentId), text: String(args.text), commentText: args.commentText }) };
       } catch (e: any) { return { ok: false, code: 'TOOL_EXECUTION_FAILED', error: String(e?.message || e).slice(0, 200) }; }
     },
   },
   {
     id: 'youtube_publish',
     name: 'رفع فيديو إلى YouTube',
-    description: 'رفع فيديو حقيقي (videos.insert) أو جدولته. عملية خارجية تتطلب موافقة صريحة ولا تُنفَّذ من مهمة تلقائية.',
+    description: 'رفع فيديو حقيقي (videos.insert) أو جدولته. عملية خارجية تتطلب موافقة صريحة أو تفويض تشغيل فعّال، ولا تُنفَّذ من مهمة تلقائية بلا ذلك.',
     permission: 'EXTERNAL_ACTION',
     parameters: [
       { name: 'title', type: 'string', required: true, description: 'عنوان الفيديو.' },
       { name: 'description', type: 'string', required: false, description: 'الوصف.' },
       { name: 'privacyStatus', type: 'string', required: false, description: 'public/private/unlisted.' },
       { name: 'publishAt', type: 'string', required: false, description: 'وقت الجدولة.' },
+      { name: 'videoBase64', type: 'string', required: false, description: 'بايتات الفيديو base64 (مطلوبة فعلياً للرفع).' },
     ],
     run: async (args, ctx) => {
       if (!args.title) return { ok: false, code: 'MISSING_ARGUMENT', error: 'title مطلوب.' };
       try {
-        return { ok: true, data: await ctx.youtubePublish({ title: String(args.title), description: args.description, privacyStatus: args.privacyStatus, publishAt: args.publishAt, approved: true }) };
+        return { ok: true, data: await ctx.youtubePublish({ title: String(args.title), description: args.description, privacyStatus: args.privacyStatus, publishAt: args.publishAt, videoBase64: args.videoBase64, approved: true }) };
+      } catch (e: any) { return { ok: false, code: 'TOOL_EXECUTION_FAILED', error: String(e?.message || e).slice(0, 200) }; }
+    },
+  },
+  {
+    id: 'youtube_video_update',
+    name: 'تحديث بيانات فيديو YouTube',
+    description: 'تحديث عنوان/وصف فيديو مملوك للقناة (videos.update). عملية خارجية تتطلب موافقة صريحة أو تفويض تشغيل فعّال.',
+    permission: 'EXTERNAL_ACTION',
+    parameters: [
+      { name: 'videoId', type: 'string', required: true, description: 'معرّف الفيديو لدى YouTube.' },
+      { name: 'title', type: 'string', required: true, description: 'العنوان الجديد.' },
+      { name: 'description', type: 'string', required: false, description: 'الوصف الجديد.' },
+    ],
+    run: async (args, ctx) => {
+      if (!args.videoId || !args.title) return { ok: false, code: 'MISSING_ARGUMENT', error: 'videoId وtitle مطلوبان.' };
+      try {
+        return { ok: true, data: await ctx.youtubeVideoUpdate({ videoId: String(args.videoId), title: String(args.title), description: args.description, tags: Array.isArray(args.tags) ? args.tags : undefined, privacyStatus: args.privacyStatus }) };
       } catch (e: any) { return { ok: false, code: 'TOOL_EXECUTION_FAILED', error: String(e?.message || e).slice(0, 200) }; }
     },
   },

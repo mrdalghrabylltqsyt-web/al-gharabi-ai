@@ -462,6 +462,49 @@ async function integrationTests(): Promise<void> {
     check('التشخيص لا يكشف أي سرّ', !JSON.stringify(diag).includes(GO_CLIENT_SECRET) && !JSON.stringify(diag).includes(mock.state.accessToken));
     check('الحالة الصادقة بعد دليل مزود', diag.state?.state === 'OPERATIONAL');
 
+    group('12k-2) تكامل: تفويض تشغيل YouTube — العقل ينفّذ رداً حقيقياً بلا موافقة منفصلة');
+    // الحالة الافتراضية: لا تفويض => العقل يحجب العملية الخارجية.
+    const delGet0 = await (await fetch(`${BASE}/api/platforms/youtube/delegation`, { headers: auth })).json();
+    check('التفويض الافتراضي غير ممنوح', delGet0.success === true && delGet0.delegation?.active === false && delGet0.delegation?.state === 'not_granted');
+    check('الصحة تعرض كتلة التفويض', (await (await fetch(`${BASE}/api/health`)).json()).youtubeDelegation?.scope === 'youtube');
+    const delAnon = await fetch(`${BASE}/api/platforms/youtube/delegation`);
+    check('التفويض محمي بالتصريح (401 بلا جلسة)', delAnon.status === 401);
+
+    const delBad = await (await fetch(`${BASE}/api/platforms/youtube/delegation`, { method: 'POST', headers: auth, body: JSON.stringify({ actions: [] }) })).json();
+    check('تفويض بلا عمليات => 422', delBad.code === 'DELEGATION_ACTIONS_REQUIRED');
+
+    // بلا تفويض: مهمة رد صريحة => تنتظر ولا تُنفّذ (لا رد فعلي).
+    mock.state.lastInsertPath = null;
+    const agentNoDel = await (await fetch(`${BASE}/api/agent/tasks`, { method: 'POST', headers: auth, body: JSON.stringify({ task: 'أرسل رداً على تعليق يوتيوب', context: { commentId: 'cmt_agent_blocked', replyText: 'أهلاً بك في معرض الغرابي.' } }) })).json();
+    check('بلا تفويض: مهمة الرد تنتظر', agentNoDel.task?.status === 'waiting', agentNoDel.task?.status);
+    check('بلا تفويض: لم يُستدعَ comments.insert', mock.state.lastInsertPath === null);
+    const noDelEntry = (agentNoDel.task?.journal || []).find((e: any) => e.toolId === 'youtube_reply');
+    check('بلا تفويض: الحجب بكود تفويض صريح', noDelEntry?.ok === false && noDelEntry?.code === 'DELEGATION_REQUIRED', JSON.stringify(noDelEntry));
+
+    // منح تفويض الرد للمالك.
+    const delGrant = await (await fetch(`${BASE}/api/platforms/youtube/delegation`, { method: 'POST', headers: auth, body: JSON.stringify({ actions: ['reply'] }) })).json();
+    check('منح التفويض نجح ويفعّل الرد فقط', delGrant.success === true && delGrant.delegation?.active === true && delGrant.delegation?.actions.join(',') === 'reply');
+    check('الصحة تعكس التفويض الفعّال', (await (await fetch(`${BASE}/api/health`)).json()).youtubeDelegation?.active === true);
+
+    // مع تفويض فعّال: مهمة الرد تُنفّذ رداً حقيقياً وتُسجَّل بحالة sent.
+    mock.state.lastInsertPath = null;
+    const agentDel = await (await fetch(`${BASE}/api/agent/tasks`, { method: 'POST', headers: auth, body: JSON.stringify({ task: 'أرسل رداً على تعليق يوتيوب', context: { commentId: 'cmt_agent_ok', replyText: 'أهلاً بك في معرض الغرابي، سعر التقسيط متاح في الفرع.' } }) })).json();
+    const delEntry = (agentDel.task?.journal || []).find((e: any) => e.toolId === 'youtube_reply');
+    check('مع التفويض: youtube_reply نُفّذت بنجاح', delEntry?.ok === true, JSON.stringify(delEntry));
+    check('مع التفويض: commentThreads.insert استُدعي فعلاً', (mock.state.lastInsertPath || '').includes('/youtube/v3/comments'));
+    check('مع التفويض: المهمة اكتملت', agentDel.task?.status === 'completed', agentDel.task?.status);
+    // السجل يحمل دورة الحياة sent بمعرّف رد حقيقي (من مخرَج الأداة).
+    const replyOut = (agentDel.task?.result?.data || []).find((d: any) => d.toolId === 'youtube_reply');
+    check('مع التفويض: مخرَج الرد يحمل state=sent ومعرّفاً حقيقياً', replyOut?.output?.reply?.state === 'sent' && Boolean(replyOut?.output?.externalReplyId), JSON.stringify(replyOut?.output));
+
+    // إيقاف التفويض: العودة الفورية لحجب العمليات الخارجية.
+    const delRevoke = await (await fetch(`${BASE}/api/platforms/youtube/delegation`, { method: 'DELETE', headers: auth })).json();
+    check('إيقاف التفويض نجح', delRevoke.success === true && delRevoke.delegation?.active === false && delRevoke.delegation?.state === 'revoked');
+    mock.state.lastInsertPath = null;
+    const agentAfterRevoke = await (await fetch(`${BASE}/api/agent/tasks`, { method: 'POST', headers: auth, body: JSON.stringify({ task: 'أرسل رداً على تعليق يوتيوب', context: { commentId: 'cmt_after_revoke', replyText: 'نص.' } }) })).json();
+    check('بعد الإيقاف: مهمة الرد تنتظر مجدداً', agentAfterRevoke.task?.status === 'waiting');
+    check('بعد الإيقاف: لم يُستدعَ comments.insert', mock.state.lastInsertPath === null);
+
     group('12k) تكامل: حارس YOUTUBE_ONLY_OPERATIONAL مربوط بمسارات التنفيذ الخارجي');
     // الحارس منطقياً مُختبر في 4a؛ هنا نثبت أنه مربوط فعلاً بمسارات التنفيذ الخارجي
     // في الخادم ووحدة المسارات الاجتماعية (لا مجرد تعريف غير مستخدم).

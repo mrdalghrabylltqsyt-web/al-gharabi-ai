@@ -1907,3 +1907,62 @@ final-audit = **426 فحصاً** (`meta-business-login-requires-config-block` �
 أي أن الإصلاح البرمجي كامل، والمتبقي الوحيد هو إدخال Configuration ID من جلسة المالك.
 (Render ينشر تلقائياً عند الدفع لأن `autoDeploy: true`؛ لا وكيل برمجي يوافق على شاشة Meta
 نيابةً عن المالك، وهو حد خارجي لا يمكن تجاوزه من الكود.)
+
+
+## تفويض تشغيل YouTube من المالك إلى العقل المركزي (Batch 17, 2026-09-28)
+
+كانت بوابات المشروع تمنع **كل** عملية خارجية (EXTERNAL_ACTION) من داخل مهمة العقل، فتصبح
+مهام الرد/الرفع على YouTube بلا نتيجة (تُحجب وتبقى `waiting`). هذا صحيح أمنياً لكنه يجعل
+العقل عاجزاً عن إدارة القناة فعلياً. الحل: **تفويض تشغيل صريح محدود النطاق** يمنحه المالك
+للعقل، بلا إلغاء أي حارس أمني.
+
+**وحدة `engine/social/youtubeDelegation.ts` (منطق خالص قابل للاختبار):**
+- `YOUTUBE_DELEGATION_ACTIONS` = `reply` / `publish` / `schedule` / `update_video`، والنطاق
+  محصور بـ`youtube` دائماً (`YOUTUBE_DELEGATION_SCOPE`)؛ أي نطاق آخر يُسقَط في التطبيع.
+- `buildYouTubeDelegation` / `revokeYouTubeDelegation` / `normalizeYouTubeDelegation` /
+  `youtubeDelegationStatus` (حالات: `not_granted` / `active` / `expired` / `revoked`) /
+  `evaluateYouTubeDelegation` (يسمح فقط للمالك + التفويض الفعّال + العملية الممنوحة).
+- `requiredDelegationActions`: النشر المجدول (`publishAt`) يحتاج `publish` **و**`schedule`
+  معاً، فلا جدولة غير مفوّضة. `YOUTUBE_TOOL_DELEGATION` خريطة الأداة→العملية (مصدر واحد).
+- **لا تفويض افتراضي**: يبدأ `granted:false`. **لا سرّ** في الوحدة إطلاقاً.
+
+**بوابة المنسّق (`engine/agent/orchestrator.ts`):** عند خطوة `EXTERNAL_ACTION` تُحلّ
+المعاملات أولاً ثم يُستدعى `delegationCheck` المحقون من الخادم:
+- مسموح ⇒ تُنفَّذ عبر **نفس المنفّذ الحقيقي** (كل بوابات المشروع سارية داخله).
+- ممنوع ⇒ الخطوة تُسجَّل بكود التفويض الصريح والمهمة تبقى `waiting` (لا تنفيذ).
+- فشل أداة خارجية **مفوّضة** يوقف المهمة بحالة `failed` (لا يُتجاهل) — أُضيف
+  `EXTERNAL_ACTION` إلى قائمة الأدوات ذات الأثر التي تُوقف عند الفشل.
+- مراجع السياق (`fromContext`) جديدة: تسمح بتمرير `commentId`/`replyText`/`videoId` الحقيقية
+  من جسم المهمة، وإن غابت تفشل الخطوة بـ`MISSING_ARGUMENT` (لا معرّف مُختلق).
+
+**منفّذات مشتركة (مصدر واحد، بلا تجاوز):** `executeYouTubeReply` و`executeYouTubePublish`
+في `server.ts` تمرّ بكل البوابات (اتصال موثق → force-ssl → سلامة المحتوى → منع التكرار →
+منع الرد على حساب المعرض → rate limit → idempotency → التنفيذ). يستخدمها **المسار الخارجي
+والعقل المركزي معاً**، فلم يعد للعقل مسار يتجاوز بوابة. كان `youtubeReply` في سياق الأدوات
+يستدعي `comments.insert` مباشرة بلا سلامة محتوى/منع تكرار — أُصلح.
+
+**دورة حياة الرد (`engine/social/youtube.ts`):** `resolveYouTubeReplyState` +
+`YOUTUBE_REPLY_LIFECYCLE_STATES` = `draft` / `approved` / `sent` / `failed`.
+**لا `sent` بلا معرّف رد حقيقي من YouTube**؛ الفشل يُعلن `failed` صراحةً مع `deliveryError`.
+السجل يحمل `state`/`stateLabelAr`/`approvedAt`/`sentAt`/`failedAt` بجانب الحقول القديمة.
+
+**مسارات الخادم (للمالك):** `GET/POST/DELETE /api/platforms/youtube/delegation` (منح/عرض/
+إيقاف). كل تغيير يُسجَّل في التدقيق (`youtube_delegation_granted`/`_revoked`) ويُحفظ عبر
+المحوّل في `control.youtubeDelegation` فيصمد بعد إعادة التشغيل/cold start. `/api/health`
+و`/api/readiness` يعرضان `youtubeDelegation` (منطقي بلا سرّ). **العمليات على غير YouTube
+ممنوعة** (`TOOL_NOT_DELEGATABLE`) — لا Facebook/Instagram/TikTok/Telegram/X/أي منصة.
+
+**أداة جديدة:** `youtube_video_update` (videos.update) خارجية وتخضع للتفويض.
+
+**الواجهة:** `YouTubeDelegationPanel` في `PlatformConnectionCenter` (منح/إيقاف + عرض الحالة)
+ووسم حالة التفويض في `CentralAgentConsole`.
+
+اختبارات: `agent.central.test.ts` = **157 فحصاً** (مجموعات H/I/J للتفويض ودورة الحياة وبوابة
+المنسّق) و`youtube.connector.test.ts` = **200 فحص** (مجموعة `12k-2`: لا تفويض ⇒ حجب و`waiting`
+بلا `comments.insert`؛ منح `reply` ⇒ مهمة رد حقيقية `completed` بـ`state=sent` ومعرّف من
+YouTube؛ إيقاف ⇒ حجب فوري). final-audit = **500 فحص** (`youtube-delegation-*`،
+`youtube-reply-lifecycle-*`، `youtube-shared-*-executor`، `orchestrator-delegation-*`).
+
+**نقطة توقف المالك (اختيارية):** التفويض يبدأ غير ممنوح (آمن افتراضياً). لمنح العقل إدارة
+قناة YouTube فعلياً: افتح مركز ربط المنصات → بطاقة YouTube → «منح/تحديث التفويض» واختر
+العمليات (الرد/النشر/الجدولة/التحديث). لا يمكن لأي وكيل برمجي منح تفويض نيابةً عن المالك.

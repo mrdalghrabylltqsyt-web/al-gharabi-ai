@@ -19,6 +19,9 @@ export type AgentPlanKind =
   | 'comments'
   | 'verification'
   | 'youtube'
+  | 'youtube_reply'
+  | 'youtube_publish'
+  | 'youtube_video_update'
   | 'general';
 
 /**
@@ -40,6 +43,13 @@ export interface AgentArgRef {
    */
   pick?: 'first' | 'all';
   mode?: 'first' | 'all' | 'list';
+  /**
+   * مرجع إلى قيمة حقيقية من سياق المهمة (لا من مخرَج خطوة سابقة). يُستخدم في
+   * المهام الصريحة التي يزوّد فيها المالك معرّفاً/نصاً فعلياً في جسم المهمة
+   * (مثل commentId وtext لعملية رد مفوّضة). إن غابت القيمة يُعيد undefined
+   * فتفشل الخطوة بـMISSING_ARGUMENT بدل تنفيذ عملية بمعرّف مُختلق.
+   */
+  fromContext?: string;
 }
 
 export interface AgentPlanStep {
@@ -82,6 +92,43 @@ const YOUTUBE_COMMENTS_RE = /(اجلب|اقرأ|اعرض|حلل|راجع|اقت�
 export function wantsYouTubeComments(task: string): boolean {
   return YOUTUBE_COMMENTS_RE.test(String(task || ''));
 }
+/**
+ * نية رد YouTube الصريحة: فعل **إرسال** (أرسل/انشر/ردّ على/علّق على) مع سياق
+ * YouTube. لا يكفي «اقترح رداً» أو «اكتب رداً» لأنهما إعداد محتوى لا إرسال، فيبقى
+ * ذلك في نية التعليقات (تحليل + مسودة) بلا عملية خارجية.
+ */
+const YOUTUBE_REPLY_RE = /(أرسل|ارسل|ابعث|ابعت|انشر\s*رد|ردّ\s*على|ردّ\s*علي|رد\s*على|رد\s*علي|علّق\s*على|علّق\s*علي|reply\s*to|send\s+(?:a\s+)?reply)[^.]{0,40}(يوتيوب|youtube|تعليق|تعليقات)|(يوتيوب|youtube)[^.]{0,30}(أرسل|ارسل|ابعث|انشر|ردّ|reply)/i;
+/** أنماط الإعداد/الاقتراح: لا تُعتبر إرسالاً خارجياً. */
+const YOUTUBE_DRAFT_ONLY_RE = /(اقترح|اقترح\s*رد|صياغة|صغ|اكتب\s*رد|مسودة|جهّز\s*رد|جهز\s*رد|draft|suggest)/i;
+/** نية رفع/نشر فيديو YouTube الصريحة (تشمل الجدولة). */
+const YOUTUBE_PUBLISH_RE = /(ارفع|حمّل|حمل|انشر|نشر|جدول|جدولة|publish|upload)[^.]{0,40}(فيديو|مقطع|video)[^.]{0,40}(يوتيوب|youtube)?|(يوتيوب|youtube)[^.]{0,40}(فيديو|video)[^.]{0,20}(ارفع|انشر|جدول|upload|publish)?/i;
+/** نية تحديث بيانات فيديو YouTube الصريحة. */
+const YOUTUBE_UPDATE_RE = /(حدّث|حدث|عدّل|عدل|غيّر|غير|update)[^.]{0,40}(بيانات|عنوان|وصف|وسوم|فيديو)[^.]{0,30}(يوتيوب|youtube)|(يوتيوب|youtube)[^.]{0,30}(update)/i;
+
+/** هل المهمة تطلب صراحةً إرسال رد حقيقي على تعليق YouTube؟ */
+export function wantsYouTubeReply(task: string): boolean {
+  const t = String(task || '');
+  if (YOUTUBE_DRAFT_ONLY_RE.test(t)) return false;
+  return YOUTUBE_REPLY_RE.test(t);
+}
+/** هل المهمة تطلب صراحةً رفع/نشر/جدولة فيديو YouTube؟ */
+export function wantsYouTubePublish(task: string): boolean {
+  return YOUTUBE_PUBLISH_RE.test(String(task || ''));
+}
+/** هل المهمة تطلب صراحةً تحديث بيانات فيديو YouTube؟ */
+export function wantsYouTubeVideoUpdate(task: string): boolean {
+  return YOUTUBE_UPDATE_RE.test(String(task || ''));
+}
+/** استخراج معرّف تعليق YouTube من نص المهمة (يلزم وسم صريح: commentId أو «معرّف التعليق»). */
+export function extractYouTubeCommentId(task: string): string | null {
+  const m = String(task || '').match(/(?:commentId|معرّف\s*التعليق)\s*[:=]\s*([A-Za-z0-9_\-]{6,})/i);
+  return m ? m[1] : null;
+}
+/** استخراج معرّف فيديو YouTube من نص المهمة (يلزم وسم صريح: videoId أو «معرّف الفيديو»). */
+export function extractYouTubeVideoId(task: string): string | null {
+  const m = String(task || '').match(/(?:videoId|معرّف\s*الفيديو)\s*[:=]\s*([A-Za-z0-9_\-]{6,})/i);
+  return m ? m[1] : null;
+}
 const PLATFORM_IDS = ['tiktok', 'youtube', 'facebook', 'instagram', 'whatsapp', 'telegram', 'x', 'snapchat', 'threads', 'google_business'];
 const PLATFORM_AR: Record<string, string> = {
   tiktok: 'تيك توك', youtube: 'يوتيوب', facebook: 'فيسبوك', instagram: 'انستغرام',
@@ -116,6 +163,7 @@ const labels: Record<string, string> = {
   youtube_learning: 'استخراج دروس التعلّم من أداء YouTube',
   youtube_reply: 'الرد الحقيقي على تعليق YouTube',
   youtube_publish: 'رفع فيديو حقيقي إلى YouTube',
+  youtube_video_update: 'تحديث بيانات فيديو YouTube',
 };
 
 function step(toolId: string, args: Record<string, any> = {}): AgentPlanStep {
@@ -276,6 +324,47 @@ export function buildAgentPlan(rawTask: string, options: { explicitKind?: AgentP
           : 'نية YouTube: قراءة حقيقية من Data API ثم مسودة نصية واحدة؛ أي رفع/رد خارجي يبقى بموافقة صريحة.',
       });
     }
+    case 'youtube_reply': {
+      // رد حقيقي على تعليق YouTube: يمر عبر أداة EXTERNAL_ACTION. لا يُنفَّذ إلا
+      // بموافقة صريحة أو تفويض تشغيل YouTube فعّال (يُحسم في المنسّق/الصلاحيات).
+      // معرّف التعليق/نص الرد إما صريحان في نص المهمة أو من سياقها — لا اختلاق.
+      const explicitCommentId = extractYouTubeCommentId(task);
+      const args: Record<string, any> = { text: { fromContext: 'replyText' } as AgentArgRef };
+      if (explicitCommentId) args.commentId = explicitCommentId;
+      else args.commentId = { fromContext: 'commentId' } as AgentArgRef;
+      return ensureKnown({
+        kind,
+        steps: [step('youtube_status'), step('youtube_reply', args)],
+        summary: 'رد حقيقي على تعليق YouTube (comments.insert) عبر بوابة خارجية؛ لا يُنفَّذ إلا بموافقة صريحة أو تفويض تشغيل فعّال.',
+        requiresAi: false,
+        requiresApproval: true,
+        reason: 'العملية خارجية (comments.insert)؛ النص ومعرّف التعليق يجب أن يكونا حقيقيين من نص المهمة أو سياقها، ولا إرسال بلا معرّف رد من YouTube.',
+      });
+    }
+    case 'youtube_publish': {
+      return ensureKnown({
+        kind,
+        steps: [step('youtube_status'), step('youtube_publish', { title: { fromContext: 'videoTitle' } as AgentArgRef, description: { fromContext: 'videoDescription' } as AgentArgRef, publishAt: { fromContext: 'publishAt' } as AgentArgRef, videoBase64: { fromContext: 'videoBase64' } as AgentArgRef })],
+        summary: 'رفع فيديو حقيقي إلى YouTube (videos.insert resumable) — نشر فوري أو جدولة؛ بوابة خارجية بموافقة/تفويض.',
+        requiresAi: false,
+        requiresApproval: true,
+        reason: 'العملية خارجية (videos.insert)؛ تحتاج بايتات فيديو فعلية، ولا تُسجَّل نشراً بلا معرّف فيديو من YouTube.',
+      });
+    }
+    case 'youtube_video_update': {
+      const explicitVideoId = extractYouTubeVideoId(task);
+      const args: Record<string, any> = { title: { fromContext: 'videoTitle' } as AgentArgRef, description: { fromContext: 'videoDescription' } as AgentArgRef };
+      if (explicitVideoId) args.videoId = explicitVideoId;
+      else args.videoId = { fromContext: 'videoId' } as AgentArgRef;
+      return ensureKnown({
+        kind,
+        steps: [step('youtube_status'), step('youtube_video_update', args)],
+        summary: 'تحديث بيانات فيديو YouTube (videos.update) — عنوان/وصف؛ بوابة خارجية بموافقة/تفويض.',
+        requiresAi: false,
+        requiresApproval: true,
+        reason: 'العملية خارجية (videos.update) على فيديو مملوك للقناة؛ تحتاج معرّف فيديو وعنواناً حقيقيين.',
+      });
+    }
     default: {
       return ensureKnown({
         kind: 'general',
@@ -294,6 +383,11 @@ export function classifyIntent(task: string): AgentPlanKind {
   const t = task.toLowerCase();
   if (VERIFY_RE.test(task)) return 'verification';
   if (DIAGNOSE_RE.test(task)) return 'diagnose';
+  // عمليات YouTube الخارجية الصريحة تتقدّم على النية العامة: نية رد/نشر/تحديث
+  // تُوجَّه لأدواتها الحقيقية (تبقى محجوبة داخل المهمة بلا موافقة/تفويض).
+  if (YOUTUBE_UPDATE_RE.test(task) && (t.includes('youtube') || task.includes('يوتيوب'))) return 'youtube_video_update';
+  if (YOUTUBE_PUBLISH_RE.test(task) && (t.includes('youtube') || task.includes('يوتيوب'))) return 'youtube_publish';
+  if (wantsYouTubeReply(task) && (t.includes('youtube') || task.includes('يوتيوب'))) return 'youtube_reply';
   // نية YouTube الصريحة تتقدّم على التصنيف العام: المستخدم يريد تشغيل/تحليل يوتيوب.
   if (YOUTUBE_RE.test(task) || t.includes('youtube') || task.includes('يوتيوب')) return 'youtube';
   if (COMMENTS_RE.test(task)) return 'comments';
