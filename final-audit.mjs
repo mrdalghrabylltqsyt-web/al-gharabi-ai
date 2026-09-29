@@ -1092,6 +1092,161 @@ add('central-brain-ui-no-publish',
   !/\/api\/platforms\/[^'"`]*\/publish|executeJob|replyTelegram|replyFacebook|replyInstagram|publishTikTok/.test(read('src/components/agent/CentralBrainView.tsx')),
   'سطح العقل لا ينفّذ أي نشر أو رد خارجي من الواجهة');
 
+// --- Central Brain upgrade (طبقة العقل المركزي المُطوَّرة) ---
+const brainDir = (p) => read(path.join('engine/brain', p));
+const brainState = brainDir('state.ts');
+const brainCaps = brainDir('strategy/capabilityMatrix.ts');
+const brainTruth = brainDir('knowledge/truth.ts');
+const brainMemory = brainDir('memory/longTerm.ts');
+const brainAudience = brainDir('audience/audienceModel.ts');
+const brainMarket = brainDir('market/commercialRelevance.ts');
+const brainExp = brainDir('experiments/experimentEngine.ts');
+const brainTiming = brainDir('timing/timingModel.ts');
+const brainDecisions = brainDir('decisions/decisionEngine.ts');
+const brainLearning = brainDir('learning/learningLoop.ts');
+const brainPerception = brainDir('perception/signals.ts');
+const brainConversation = brainDir('audience/conversationIntelligence.ts');
+const brainContent = brainDir('strategy/contentIntelligence.ts');
+const brainCycles = brainDir('cycles.ts');
+const brainDryRun = brainDir('dryRun.ts');
+const brainRoutes = brainDir('routes.ts');
+const brainUpgradeTest = read('engine/tests/central.brain.upgrade.test.ts');
+const brainIntegrationTest = read('engine/tests/brain.integration.test.ts');
+
+add('brain-perception-single-source',
+  brainPerception.includes('SIGNAL_SPECS') && brainPerception.includes('NOT_AVAILABLE') &&
+  brainPerception.includes('hasValidSource') && !/aiEngine\.run|GoogleGenAI/.test(brainPerception),
+  'طبقة الإدراك مصدر واحد للإشارات، والمؤشر غير المتاح يُعلن بلا قيمة مُختلقة');
+
+add('brain-truth-five-states',
+  ['VERIFIED_FACT', 'DERIVED_FACT', 'HYPOTHESIS', 'UNKNOWN', 'UNAVAILABLE', 'HUMAN_INPUT_REQUIRED', 'INSUFFICIENT_DATA'].every((s) => brainTruth.includes(s)) &&
+  brainTruth.includes('classifyClaim') && brainTruth.includes('MIN_SAMPLE_FOR_VERIFIED'),
+  'طبقة الحقيقة تفرّق بين موثّق/استنتاج/فرضية/مجهول/غير متاح/يحتاج مالك/بيانات ناقصة');
+
+add('brain-no-fabricated-commercial-fact',
+  brainTruth.includes('commercialFact') && brainTruth.includes('requiresHumanInput') &&
+  brainTruth.includes('لا مصدر مسجّل'),
+  'الحقائق التجارية بلا مصدر => HUMAN_INPUT_REQUIRED (لا سعر مُختلق)');
+
+add('brain-memory-provenance',
+  brainMemory.includes('MemoryOrigin') && brainMemory.includes('ai_statement') &&
+  brainMemory.includes('isAiStatementTrusted') && brainMemory.includes('previouslyFailed'),
+  'الذاكرة تحفظ الأصل والثقة، وقول AI لا يصبح حقيقة، والإخفاق السابق يُتذكّر');
+
+add('brain-goals-with-signals',
+  brainDir('goals/goalEngine.ts').includes('GOAL_SUCCESS_SIGNALS') &&
+  brainDir('goals/goalEngine.ts').includes('UNAVAILABLE_SUCCESS_SIGNALS') &&
+  brainDir('goals/goalEngine.ts').includes('DEFAULT_HARD_CONSTRAINTS'),
+  'محرّك الأهداف يعلن إشارات نجاح متاحة/غير متاحة وقيوداً صلبة');
+
+add('brain-audience-no-demographics',
+  brainAudience.includes('AUDIENCE_NOT_AVAILABLE_FIELDS') && brainAudience.includes('demographicsAvailable: false') &&
+  brainAudience.includes('لا تُخترع') && !/age.*=.*Math\.random|gender.*guess/.test(brainAudience),
+  'نموذج الجمهور لا يستنتج سمات حساسة، والحقول غير المتاحة معلنة');
+
+add('brain-commercial-funnel',
+  brainMarket.includes('FUNNEL_ORDER') && brainMarket.includes('BUYING_SIGNAL') &&
+  brainMarket.includes('compareByCommercialRelevance') && brainMarket.includes('RELEVANT_VIEW'),
+  'الأهمية التجارية تُقاس بمراحل القُمع لا بالمشاهدات وحدها');
+
+add('brain-experiment-single-variable',
+  brainExp.includes('MIN_EXPERIMENT_EVIDENCE') && brainExp.includes('inconclusive') &&
+  brainExp.includes('variable: string') && brainExp.includes('supports_hypothesis'),
+  'التجارب بمتغيّر واحد، ولا حكم بلا عيّنة كافية (inconclusive)');
+
+add('brain-timing-baghdad-single-source',
+  brainTiming.includes('APP_TIMEZONE') && brainTiming.includes('TIMING_MIN_SAMPLE') &&
+  brainTiming.includes('insufficient_sample') && brainTiming.includes("from '../../../src/utils/scheduleTime'"),
+  'التوقيت يعتمد المصدر الواحد Asia/Baghdad، ولا «أفضل وقت» بلا عيّنة');
+
+add('brain-capability-matrix-five-states',
+  ['AVAILABLE', 'PARTIAL', 'REQUIRES_REVIEW', 'NOT_AVAILABLE', 'OWNER_ONLY'].every((s) => brainCaps.includes(s)) &&
+  brainCaps.includes('PLATFORM_SPECS') && brainCaps.includes('CAPABILITY_KEYS'),
+  'مصفوفة القدرات خمس حالات صريحة ومشتقة من السجل');
+
+add('brain-tiktok-comments-not-available',
+  brainCaps.includes('comments: \'NOT_AVAILABLE\'') && brainCaps.includes('messaging: \'NOT_AVAILABLE\'') &&
+  brainCaps.includes("publish: 'REQUIRES_REVIEW'"),
+  'TikTok: التعليقات والرسائل NOT_AVAILABLE، والنشر REQUIRES_REVIEW — بلا ادعاء');
+
+add('brain-decisions-autonomy-levels',
+  brainDecisions.includes('L5') && brainDecisions.includes('human_required') &&
+  brainDecisions.includes('not_available') && brainDecisions.includes('SAFE_LOCAL_KINDS') &&
+  brainDecisions.includes('reversible'),
+  'محرّك القرارات يفصل آلي/مقترح/بشري/محجوب/غير متاح مع مستويات L0..L5');
+
+add('brain-no-autonomous-external-execution',
+  !/fetch\(|axios|http\.request|executeJob|publishTikTok|replyTelegram/.test(brainDecisions) &&
+  !/fetch\(|axios/.test(brainCycles) && !/fetch\(|axios/.test(brainDryRun),
+  'العقل لا ينفّذ أي إجراء خارجي (لا شبكة في القرار/الدورات/dry-run)');
+
+add('brain-learning-owner-preference-not-fact',
+  brainLearning.includes('OwnerPreference') && brainLearning.includes('isCommercialFact: false') &&
+  brainLearning.includes('OWNER_PREFERENCE_MIN_EVIDENCE') && brainLearning.includes('LEARNING_MIN_SAMPLE'),
+  'التعلّم من أحداث حقيقية، وتفضيل المالك ليس حقيقة تجارية');
+
+add('brain-conversation-loops',
+  brainConversation.includes('proposeContentFromNeed') && brainConversation.includes('runSalesLoop') &&
+  brainConversation.includes('escalate_owner') && brainConversation.includes('aggregateRepeatedNeeds'),
+  'حلقات comment→content وcomment→sales مع تصعيد السعر غير الموثّق للمالك');
+
+add('brain-video-quality-no-invented-cause',
+  brainContent.includes('analyzeVideoQuality') && brainContent.includes('possibleCause') &&
+  brainContent.includes('retentionAvailable') && brainContent.includes('PERFORMANCE_DIMENSION_LABELS_AR'),
+  'تحليل جودة الفيديو يعطي احتمال سبب لا يقيناً، ولا يحلّل بلا بيانات احتفاظ');
+
+add('brain-state-aggregates-layers',
+  brainState.includes('buildCentralBrainState') && brainState.includes('brainDiagnostics') &&
+  brainState.includes('brainIsPlatformAgnostic') && brainState.includes('buildCrossPlatformAudienceModel'),
+  'اللقطة الموحّدة تجمع الطبقات وتجيب اختبار منصة #11');
+
+add('brain-cycles-no-external-action',
+  brainCycles.includes('runDailyBrainCycle') && brainCycles.includes('runWeeklyBrainReview') &&
+  brainCycles.includes('externalAction: false'),
+  'الدورة اليومية/الأسبوعية تحليلية فقط بلا إجراء خارجي');
+
+add('brain-dry-run-honest',
+  brainDryRun.includes('externalActionTaken: false') && brainDryRun.includes('whatIKnow') &&
+  brainDryRun.includes('whatIDontKnow') && brainDryRun.includes('whatRequiresOwnerApproval'),
+  'dry-run يفصل المعروف/المجهول/الموافقة ويتوقف قبل أي إجراء');
+
+add('brain-routes-read-only',
+  brainRoutes.includes("app.get('/api/agent/brain/state'") &&
+  brainRoutes.includes("app.get('/api/agent/brain/capabilities'") &&
+  brainRoutes.includes('deps.requireOwner') && !/app\.post\(|app\.put\(|app\.delete\(/.test(brainRoutes),
+  'مسارات العقل قراءة فقط (GET)، وdry-run للمالك — بلا أي مسار كتابة');
+
+add('brain-server-registered',
+  server.includes('registerBrainRoutes(app, {') && server.includes('brain: (() =>') &&
+  server.includes('executesExternalActions: false') && server.includes('audienceDemographicsAvailable'),
+  'مسارات العقل مسجّلة في الخادم وكتلة brain في /api/readiness صادقة');
+
+add('brain-tests-registered',
+  fs.existsSync(path.join(root, 'engine/tests/central.brain.upgrade.test.ts')) &&
+  fs.existsSync(path.join(root, 'engine/tests/brain.integration.test.ts')) &&
+  pkg.scripts['test:brain-upgrade'] && pkg.scripts['test:brain-integration'] &&
+  pkg.scripts.test.includes('test:brain-upgrade') && pkg.scripts.test.includes('test:brain-integration'),
+  'اختبارات العقل المُطوَّرة مسجّلة وضمن npm test');
+
+add('brain-tests-antifabrication',
+  brainUpgradeTest.includes('لا صفر مُختلق') && brainUpgradeTest.includes('demographicsAvailable === false') &&
+  brainUpgradeTest.includes('لا SALE بلا مصدر') && brainUpgradeTest.includes('سعر غير موثّق => تصعيد للمالك') &&
+  brainUpgradeTest.includes('noSALE') === false,
+  'اختبارات العقل تثبت منع الاختراع وتصعيد الحقائق التجارية غير الموثّقة');
+
+add('brain-tests-no-external-execution',
+  brainUpgradeTest.includes('dry-run بلا إجراء خارجي') && brainUpgradeTest.includes('دورة يومية بلا إجراء خارجي') &&
+  brainIntegrationTest.includes('externalActionTaken === false') && brainIntegrationTest.includes('لا تنفيذ خارجي'),
+  'الاختبارات تثبت أن العقل لا ينفّذ إجراءً خارجياً');
+
+add('brain-ui-panel',
+  read('src/components/agent/CentralBrainView.tsx').includes('getBrainCapabilities') &&
+  read('src/components/agent/CentralBrainView.tsx').includes('getBrainDryRun') &&
+  read('src/components/agent/CentralBrainView.tsx').includes('مصفوفة قدرات المنصات') &&
+  read('src/services/api.ts').includes('/api/agent/brain/state') &&
+  read('src/services/api.ts').includes('/api/agent/brain/dry-run'),
+  'واجهة العقل تعرض مصفوفة القدرات وصناديق الصدق وسيناريو dry-run');
+
 const failed = checks.filter(x => !x.ok);
 console.table(checks);
 if (failed.length) {

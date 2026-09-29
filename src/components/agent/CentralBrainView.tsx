@@ -45,22 +45,42 @@ export const CentralBrainView: React.FC = () => {
   const [commentForm, setCommentForm] = useState<{ platform: string; text: string }>({ platform: 'tiktok', text: '' });
   const [commentResult, setCommentResult] = useState<any>(null);
 
+  // طبقة العقل المُطوَّرة (Central Brain upgrade): قراءة/تحليل فقط.
+  const [brainState, setBrainState] = useState<any>(null);
+  const [brainCaps, setBrainCaps] = useState<any>(null);
+  const [brainDryRun, setBrainDryRun] = useState<any>(null);
+
   const loadAll = useCallback(async () => {
     setLoading(true);
     try {
-      const [d, l, r, a] = await Promise.all([
+      const [d, l, r, a, bs, bc] = await Promise.all([
         apiService.getBrainDiagnostics(),
         apiService.getBrainLearning(),
         apiService.getBrainRecommendations(),
         apiService.getBrainAudience(),
+        apiService.getBrainState(),
+        apiService.getBrainCapabilities(),
       ]);
       setDiag(d); setLearning(l.learning); setRecommendations(r.recommendations); setAudience(a.audience);
+      setBrainState(bs.state); setBrainCaps(bc.rows);
     } catch (e: any) {
       showToast(e?.message || 'تعذر تحميل بيانات العقل المركزي.');
     } finally {
       setLoading(false);
     }
   }, [showToast]);
+
+  const loadDryRun = async () => {
+    setLoading(true);
+    try {
+      const res = await apiService.getBrainDryRun();
+      setBrainDryRun(res.report);
+    } catch (e: any) {
+      showToast(e?.message || 'تعذر جلب سيناريو dry-run.');
+    } finally {
+      setLoading(false);
+    }
+  };
 
   useEffect(() => { loadAll(); }, [loadAll]);
 
@@ -280,6 +300,100 @@ export const CentralBrainView: React.FC = () => {
             {commentResult.proposedReply ? (
               <div className="text-emerald-300 mt-1">رد مقترح: {commentResult.proposedReply}</div>
             ) : <div className="text-amber-300 mt-1">لا رد مقترح (يتطلب مراجعة بشرية أو المنصة لا تدعم الرد).</div>}
+          </div>
+        ) : null}
+      </Card>
+
+      <Card title="مصفوفة قدرات المنصات العشر (خمس حالات صريحة)" hint="مشتقة من سجل المنصات؛ القدرة غير المنفّذة = NOT_AVAILABLE صراحةً. لا قدرة مُختلقة.">
+        <div className="overflow-x-auto">
+          <table className="w-full text-[11px]">
+            <thead>
+              <tr className="text-slate-500 text-right">
+                <th className="p-2">المنصة</th>
+                <th className="p-2">الاتصال</th>
+                <th className="p-2">القراءة</th>
+                <th className="p-2">التعليقات</th>
+                <th className="p-2">الرد</th>
+                <th className="p-2">النشر</th>
+                <th className="p-2">التحليلات</th>
+                <th className="p-2">الجمهور</th>
+                <th className="p-2">الموقع</th>
+              </tr>
+            </thead>
+            <tbody>
+              {(brainCaps || []).map((row: any) => {
+                const cell = (v: string) => {
+                  const map: Record<string, string> = { AVAILABLE: 'text-emerald-300', PARTIAL: 'text-amber-300', REQUIRES_REVIEW: 'text-amber-300', OWNER_ONLY: 'text-blue-300', NOT_AVAILABLE: 'text-slate-600' };
+                  const label: Record<string, string> = { AVAILABLE: 'متاحة', PARTIAL: 'جزئية', REQUIRES_REVIEW: 'مراجعة', OWNER_ONLY: 'مالك', NOT_AVAILABLE: 'غير متاحة' };
+                  return <span className={map[v] || 'text-slate-400'}>{label[v] || v}</span>;
+                };
+                return (
+                  <tr key={row.platform} className="border-t border-slate-800 text-slate-300">
+                    <td className="p-2 font-bold text-white">{PLATFORM_LABELS[row.platform] || row.platform}{row.realConnector ? <span className="text-[9px] text-emerald-400 mr-1"> • موصل حقيقي</span> : null}</td>
+                    <td className="p-2">{cell(row.states.connection)}</td>
+                    <td className="p-2">{cell(row.states.read)}</td>
+                    <td className="p-2">{cell(row.states.comments)}</td>
+                    <td className="p-2">{cell(row.states.reply)}</td>
+                    <td className="p-2">{cell(row.states.publish)}</td>
+                    <td className="p-2">{cell(row.states.analytics)}</td>
+                    <td className="p-2">{cell(row.states.audience)}</td>
+                    <td className="p-2">{cell(row.states.geography)}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      </Card>
+
+      <Card title="صحة العقل وصناديق الصدق" hint="أعداد حالات المعرفة وطزاجة الإشارات والقرارات المعلّقة — بلا أي سرّ.">
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-xs">
+          <Stat label="حالة العقل" value={brainState?.signalFreshness?.fresh > 0 || (brainState?.knowledge?.verifiedCount || 0) > 0 ? 'نشط' : 'محدود'} />
+          <Stat label="حقائق موثّقة" value={brainState?.knowledge?.verifiedCount ?? 0} />
+          <Stat label="استنتاجات" value={brainState?.knowledge?.derivedCount ?? 0} />
+          <Stat label="فرضيات" value={brainState?.knowledge?.hypothesisCount ?? 0} />
+          <Stat label="مجهول" value={brainState?.knowledge?.unknownCount ?? 0} />
+          <Stat label="غير متاح" value={brainState?.knowledge?.unavailableCount ?? 0} />
+          <Stat label="يحتاج المالك" value={brainState?.knowledge?.humanInputRequiredCount ?? 0} />
+          <Stat label="قرارات معلّقة" value={brainState?.pendingDecisions?.length ?? 0} />
+          <Stat label="إشارات طازجة" value={brainState?.signalFreshness?.fresh ?? 0} />
+          <Stat label="إشارات قديمة" value={brainState?.signalFreshness?.stale ?? 0} />
+          <Stat label="مقاطع جمهور" value={brainState?.audience?.segments?.length ?? 0} />
+          <Stat label="دليل تجاري" value={brainState?.market?.hasCommercialEvidence ? 'موجود' : 'لا يوجد'} />
+        </div>
+        {brainState?.audience?.demographicsAvailable === false ? (
+          <p className="text-[11px] text-amber-300/90 mt-3">
+            السمات السكانية (عمر/جنس/مدينة/دخل) غير متاحة عبر الواجهات الرسمية الحالية — معلنة صراحةً ولا تُستنتج.
+          </p>
+        ) : null}
+      </Card>
+
+      <Card title="سيناريو تجريبي (Dry-run) — يتوقف قبل أي إجراء خارجي" hint="يثبت أن العقل يدرك ويحلّل ويوصي ثم يتوقف: لا نشر ولا رد ولا جدولة.">
+        <button onClick={loadDryRun} disabled={loading}
+          className="px-4 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 disabled:bg-slate-700 text-white text-xs font-bold mb-3">
+          تشغيل السيناريو التجريبي
+        </button>
+        {brainDryRun ? (
+          <div className="space-y-3 text-xs">
+            <div className="p-2 rounded-lg bg-emerald-950/40 border border-emerald-800 text-emerald-200">
+              تم التنفيذ التحليلي فقط — لا إجراء خارجي: {brainDryRun.externalActionTaken === false ? 'مؤكد' : 'تحذير'}
+            </div>
+            {[
+              ['ما أعرفه', brainDryRun.whatIKnow],
+              ['ما أستنتجه', brainDryRun.whatIInfer],
+              ['ما أجهله', brainDryRun.whatIDontKnow],
+              ['ما أوصي به', brainDryRun.whatIRecommend],
+              ['لماذا', brainDryRun.why],
+              ['ما سأختبره', brainDryRun.whatIWouldTest],
+              ['ما يحتاج موافقة المالك', brainDryRun.whatRequiresOwnerApproval],
+            ].map(([label, list]: any) => (
+              <div key={label} className="p-3 rounded-xl bg-slate-950 border border-slate-800">
+                <div className="font-bold text-white mb-1">{label}</div>
+                {list?.length ? (
+                  <ul className="text-slate-300 list-disc pr-4 space-y-0.5">{list.map((x: string, i: number) => <li key={i}>{x}</li>)}</ul>
+                ) : <div className="text-slate-500">لا عناصر.</div>}
+              </div>
+            ))}
           </div>
         ) : null}
       </Card>

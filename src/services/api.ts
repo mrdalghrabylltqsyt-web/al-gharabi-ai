@@ -657,6 +657,45 @@ ${payload.topic || payload.productName || 'أنظمة وحلول التقسيط 
     return data;
   },
 
+  // طبقة العقل المركزي المُطوَّرة (Central Brain upgrade): قراءة/تحليل فقط بلا تنفيذ.
+  async getBrainState() {
+    const res = await fetch('/api/agent/brain/state', { headers: getAuthHeaders() });
+    const data = await res.json();
+    if (!res.ok || !data.success) throw new Error(data.error || 'تعذر جلب لقطة العقل المركزي');
+    return data;
+  },
+  async getBrainCapabilities() {
+    const res = await fetch('/api/agent/brain/capabilities', { headers: getAuthHeaders() });
+    const data = await res.json();
+    if (!res.ok || !data.success) throw new Error(data.error || 'تعذر جلب مصفوفة قدرات المنصات');
+    return data;
+  },
+  async getBrainDiagnosticsV2() {
+    const res = await fetch('/api/agent/brain/diagnostics', { headers: getAuthHeaders() });
+    const data = await res.json();
+    if (!res.ok || !data.success) throw new Error(data.error || 'تعذر جلب تشخيص العقل');
+    return data;
+  },
+  async getBrainDailyCycle() {
+    const res = await fetch('/api/agent/brain/cycles/daily', { headers: getAuthHeaders() });
+    const data = await res.json();
+    if (!res.ok || !data.success) throw new Error(data.error || 'تعذر جلب الدورة اليومية');
+    return data;
+  },
+  async getBrainWeeklyReview() {
+    const res = await fetch('/api/agent/brain/cycles/weekly', { headers: getAuthHeaders() });
+    const data = await res.json();
+    if (!res.ok || !data.success) throw new Error(data.error || 'تعذر جلب المراجعة الأسبوعية');
+    return data;
+  },
+  async getBrainDryRun(platform?: string) {
+    const qs = platform ? `?platform=${encodeURIComponent(platform)}` : '';
+    const res = await fetch(`/api/agent/brain/dry-run${qs}`, { headers: getAuthHeaders() });
+    const data = await res.json();
+    if (!res.ok || !data.success) throw new Error(data.error || 'تعذر جلب سيناريو dry-run');
+    return data;
+  },
+
   // صفحات Facebook التي يديرها الحساب بعد OAuth (معرّفات وأسماء فقط بلا رموز).
   async getFacebookPages() {
     const res = await fetch('/api/platforms/facebook/pages', { headers: getAuthHeaders() });

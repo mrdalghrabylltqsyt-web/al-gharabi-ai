@@ -19,6 +19,10 @@ import {
 import { registerSocialManagerRoutes } from "./engine/social/routes";
 import { AgentOrchestrator } from "./engine/agent/orchestrator";
 import { registerAgentRoutes } from "./engine/agent/routes";
+import { registerBrainRoutes } from "./engine/brain/routes";
+import { buildCentralBrainState, brainDiagnostics } from "./engine/brain/state";
+import { capabilityMatrix } from "./engine/brain/strategy/capabilityMatrix";
+import { defineGoal } from "./engine/brain/goals/goalEngine";
 import type { AgentOperator } from "./engine/agent/permissions";
 import type { AgentToolContext } from "./engine/agent/tools";
 import { AGENT_TOOLS } from "./engine/agent/tools";
@@ -9411,6 +9415,51 @@ app.get("/api/readiness", (_req, res) => {
         limitations: snap.limitations,
       };
     })(),
+    /**
+     * طبقة العقل المركزي المُطوَّرة (Central Brain upgrade) — حقول آمنة بلا أي سرّ.
+     * تُثبت أن العقل يعمل على كل المنصات العشر بقدرات حقيقية، وأنه لا يدّعي
+     * مؤشرات/سمات غير متاحة، وأنه لا ينفّذ إجراءً خارجياً بنفسه.
+     */
+    brain: (() => {
+      const platforms = SUPPORTED_PLATFORMS.map((p: any) => p.id) as PlatformId[];
+      const live: Partial<Record<PlatformId, { connected: boolean; verified: boolean }>> = {};
+      for (const p of SUPPORTED_PLATFORMS) {
+        const st = platformConnections.get(p.id) || ({ status: "disconnected", providerVerified: false } as any);
+        live[p.id as PlatformId] = { connected: st.status === "connected", verified: st.providerVerified === true };
+      }
+      const state = buildCentralBrainState({
+        platforms,
+        now: Date.now(),
+        goals: defineGoal({ primary: "SALES", secondary: "TRUST" }),
+        records: performanceRecordsForBrain(),
+        commentsByPlatform: commentsByPlatformForBrain(platforms),
+        liveConnections: live,
+        aiCounters: brainAiCounters(),
+      });
+      const diag = brainDiagnostics(state);
+      return {
+        platformAgnostic: true,
+        platformsCovered: state.platformStates.length,
+        realConnectors: state.platformStates.filter((p) => p.realConnector).map((p) => p.platform),
+        connectedVerified: state.platformStates.filter((p) => p.connected && p.verified).map((p) => p.platform),
+        capabilityStates: state.platformStates.reduce((acc: Record<string, number>, p) => {
+          for (const v of Object.values(p.capabilities)) acc[v] = (acc[v] || 0) + 1;
+          return acc;
+        }, {}),
+        audienceDemographicsAvailable: state.audience?.demographicsAvailable ?? false,
+        audienceSegments: state.audience?.segments.length ?? 0,
+        commercialEvidence: state.market?.hasCommercialEvidence ?? false,
+        knowledgeHealth: diag.knowledgeHealth,
+        signalFreshness: diag.signalFreshness,
+        pendingDecisions: diag.pendingDecisionCount,
+        blockedActions: diag.blockedActionCount,
+        brainHealth: diag.brainHealth,
+        executesExternalActions: false,
+        geminiUsedOnReads: false,
+        geminiProviderCallsToday: state.ai.providerCalls,
+        limitations: state.limitations,
+      };
+    })(),
     timestamp: new Date().toISOString(),
   });
 });
@@ -11597,6 +11646,25 @@ registerAgentRoutes(app, {
   persistState: () => { persistState(); saveAgentState(); },
   projectVersion: PROJECT_VERSION,
   env: process.env,
+});
+
+// مسارات العقل المركزي (Central Brain) — قراءة/تحليل فقط، بلا أي تنفيذ خارجي.
+// تعمل على كل المنصات المسجّلة (بلا منطق خاص بمنصة)، وتقرأ بيانات حقيقية فقط.
+registerBrainRoutes(app, {
+  authenticateToken,
+  requireOwner,
+  platforms: () => SUPPORTED_PLATFORMS.map((p: any) => p.id) as PlatformId[],
+  performanceRecords: () => performanceRecordsForBrain(),
+  commentsByPlatform: () => commentsByPlatformForBrain(SUPPORTED_PLATFORMS.map((p: any) => p.id) as PlatformId[]),
+  liveConnections: () => {
+    const out: Partial<Record<PlatformId, { connected: boolean; verified: boolean }>> = {};
+    for (const p of SUPPORTED_PLATFORMS) {
+      const state = platformConnections.get(p.id) || { status: "disconnected" as const, providerVerified: false };
+      out[p.id as PlatformId] = { connected: state.status === "connected", verified: (state as any).providerVerified === true };
+    }
+    return out;
+  },
+  aiCounters: () => brainAiCounters(),
 });
 
 // -------------------------------------------------------------

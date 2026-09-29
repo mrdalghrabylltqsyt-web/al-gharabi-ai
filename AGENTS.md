@@ -2661,3 +2661,80 @@ Telegram/TikTok، أو أي سرّ. الوصف لا يُنشر تلقائياً 
 **لا تغيير في:** Gemini، OAuth/الصلاحيات/الاعتمادات، Facebook/Instagram/Telegram،
 نموذج الجدولة، أو أي سرّ.
 
+
+## العقل المركزي المُطوَّر — من تنفيذ العمليات إلى وكيل مركزي ذكي (Batch 13, 2026-09-29)
+
+ترقية جوهرية لطبقة العقل: من «تنفيذ عمليات سوشيال» إلى **عقل مركزي واحد** يُدرك
+ويحلّل ويخطّط ويقرّر ويجرّب ويتعلّم ويُحسّن — مع بقاء **الفصل الصارم** بين التحليل
+(آمن، آلي) والتنفيذ الخارجي (لا يقع من العقل نفسه؛ يمر ببوابات الصلاحيات القائمة).
+
+**قواعد ملزمة غير قابلة للتفاوض في هذه الطبقة:**
+1. **لا خلط مع أي نظام سابق** ولا تغيير لهوية المشروع/بنيته الأساسية.
+2. **عقل مركزي واحد فقط** — ممنوع عقل منفصل لكل منصة. كل شيء يعمل على `PlatformId`
+   + مصفوفة القدرات المشتقة من السجل، فيدخل أي منصة #11 بصفّ في السجل بلا إعادة كتابة.
+3. **الفصل الصريح**: `Capability ≠ Connection ≠ Verification ≠ Delivery` باقٍ،
+   ويُضاف إليه `Knowledge ≠ Inference ≠ Hypothesis` و`Analysis ≠ Execution`.
+4. **لا اختراع ولا ادّعاء**: كل مخرَج يحمل مصدره وعيّنته وثقته وحدوده، وغير المتاح
+   يُعلن صراحةً (`UNKNOWN` / `UNAVAILABLE` / `INSUFFICIENT_DATA` / `HUMAN_INPUT_REQUIRED`).
+
+### الوحدات الجديدة (منطق خالص، بلا شبكة وبلا أسرار)
+```
+engine/brain/perception/signals.ts            الإدراك: مواصفات إشارة واحدة لكل مؤشر،
+                                              مصدر/طزاجة/تطبيع، والمؤشر غير المتاح بلا قيمة
+engine/brain/knowledge/truth.ts               طبقة الحقيقة: VERIFIED_FACT/DERIVED_FACT/
+                                              HYPOTHESIS/UNKNOWN/UNAVAILABLE/HUMAN_INPUT_REQUIRED/
+                                              INSUFFICIENT_DATA + الحقائق التجارية
+engine/brain/memory/longTerm.ts               ذاكرة طويلة المدى بعشرة أنواع، أصل المعرفة،
+                                              وقول AI لا يصبح حقيقة
+engine/brain/goals/goalEngine.ts              الأهداف + إشارات نجاح متاحة/غير متاحة + قيود صلبة
+engine/brain/audience/audienceModel.ts        نموذج جمهور من تفاعل حقيقي فقط، بلا سمات حساسة
+engine/brain/audience/conversationIntelligence.ts  تصنيف التعليقات + حلقات comment→content و→sales
+engine/brain/market/commercialRelevance.ts    قُمع تجاري: VIEW→ENGAGED→RELEVANT→BUYING_SIGNAL→LEAD→SALE
+engine/brain/experiments/experimentEngine.ts  تجارب بمتغيّر واحد + حكم inconclusive بلا عيّنة
+engine/brain/timing/timingModel.ts            توقيت Asia/Baghdad عبر المصدر الواحد scheduleTime
+engine/brain/strategy/capabilityMatrix.ts     مصفوفة القدرات: AVAILABLE/PARTIAL/REQUIRES_REVIEW/
+                                              NOT_AVAILABLE/OWNER_ONLY (مشتقة من PLATFORM_SPECS)
+engine/brain/strategy/strategyEngine.ts       توصيات قابلة للتفسير (recommendation/reason/evidence/
+                                              source/sampleSize/confidence/limitations/risk/nextTest)
+engine/brain/strategy/contentIntelligence.ts  مسار المحتوى + جودة الفيديو (احتمال سبب لا يقين) +
+                                              نموذج أداء متعدد الأبعاد (لا views فقط)
+engine/brain/decisions/decisionEngine.ts      آلي/مقترح/بشري/محجوب/غير متاح + مستويات L0..L5
+engine/brain/learning/learningLoop.ts         التعلّم من الأحداث + تفضيل المالك (ليس حقيقة تجارية)
+engine/brain/state.ts                         اللقطة الموحّدة + brainDiagnostics + اختبار منصة #11
+engine/brain/cycles.ts                        دورة يومية/مراجعة أسبوعية (بلا تنفيذ خارجي)
+engine/brain/dryRun.ts                        سيناريو تجريبي يتوقف قبل أي إجراء خارجي
+engine/brain/routes.ts                        مسارات GET للقراءة فقط (dry-run للمالك)
+```
+
+### المسارات الجديدة (كلها `authenticateToken`، والـdry-run `requireOwner`)
+`GET /api/agent/brain/state` | `.../diagnostics` | `.../capabilities` |
+`.../cycles/daily` | `.../cycles/weekly` | `.../dry-run` — **قراءة/تحليل فقط، بلا أي مسار كتابة**.
+
+### قرارات معمارية جوهرية
+- **القدرات مشتقة من السجل لا مكتوبة يدوياً**: `capabilityMatrix` يقرأ `PLATFORM_SPECS`
+  ويطبّق قيوداً صريحة موثّقة. TikTok: التعليقات/الرسائل/الجمهور/الموقع `NOT_AVAILABLE`،
+  والنشر `REQUIRES_REVIEW` (نشر عام يحتاج audit). لا قدرة مُعلنة بلا تنفيذ.
+- **القرار لا يُنفّذ**: `decide()` يوجّه فقط. النشر/الحذف/تغيير الإعدادات => `human_required`
+  دائماً؛ والإجراء الخارجي منخفض الخطورة يبقى `L4` (موافقة المالك) لا `L5`.
+- **الاستقلالية L0..L5**: L0 إدراك، L1 تحليل، L2 توصية، L3 مسودة، L4 تنفيذ بموافقة،
+  L5 تنفيذ آمن مستقل — وL5 لا يُفعَّل افتراضياً.
+- **الحقائق التجارية لا تُخترع**: `commercialFact` بلا مصدر => `HUMAN_INPUT_REQUIRED`،
+  وحلقة البيع `runSalesLoop` تصعّد سؤال السعر غير الموثّق للمالك بدل توليد رقم.
+- **لا سمات حساسة**: العمر/الجنس/المدينة/الدخل/الهوية `NOT_AVAILABLE` معلنة، والجمهور
+  يُبنى من تفاعل حقيقي (موضوعات/أسئلة/أوقات) لا من تخمين.
+- **مؤشرات الأداء متعددة الأبعاد**: الوصول/التفاعل/الاحتفاظ/ملاءمة الجمهور/الملاءمة
+  المحلية/إشارات الشراء/نمو المتابعين/جودة المحادثة/دليل التحويل — بلا score واحد كحقيقة،
+  والمعروف/المستنتج/المجهول مفصولة صراحةً.
+- **/api/readiness كتلة `brain`**: `executesExternalActions: false`, `geminiUsedOnReads: false`,
+  `platformsCovered`, `realConnectors`, `capabilityStates`, `knowledgeHealth`, `signalFreshness`,
+  `audienceDemographicsAvailable: false` — بلا أي سرّ.
+
+اختبارات: `engine/tests/central.brain.upgrade.test.ts` (**108 فحوص** وحدة) و
+`engine/tests/brain.integration.test.ts` (**45 فحصاً** خادم حقيقي عبر HTTP: تصريح 401،
+اللقطة، القدرات، الدورات، dry-run للمالك فقط، كتلة readiness، ولا تسريب أسرار).
+فحوص final-audit الـ26 الجديدة: `brain-perception-single-source` … `brain-ui-panel`
+(**754 إجمالاً**). سكربتات: `npm run test:brain-upgrade` و`test:brain-integration`
+(مضافان إلى `npm test`).
+
+**درس معماري:** العقل المركزي يجب أن يكون **مصدر حقيقة واحداً** يفصل التحليل عن التنفيذ،
+ويشتقّ قدراته من سجل المنصات لا من فروع مكتوبة يدوياً — فيبقى صادقاً وقابلاً للتوسّع معاً.
