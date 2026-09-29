@@ -473,6 +473,41 @@ export function classifyPublishStatus(input: { status?: string; failReason?: str
   return { state: 'pending', delivered: false, providerPostId: null, detail: 'حالة النشر لم تُحسم بعد؛ لا يُعلن أي تسليم.' };
 }
 
+/** حالة سجل النشر المحلي كما تُخزَّن في `publishRecords`. */
+export type TikTokRecordState = 'initiated' | 'publishing' | 'published' | 'failed';
+
+/**
+ * يحدّد إن كان سجل نشر TikTok يستحق استعلام حالة من المزود الآن. لا استعلام على
+ * سجل منتهٍ (published/failed) ولا على سجل بلا `providerPublishId` — فلا نستهلك
+ * حصة TikTok بلا فائدة، ولا نعيد كتابة حالة حُسمت.
+ */
+export function shouldReconcileTikTokRecord(
+  record: { state?: string | null; providerPublishId?: string | null },
+  inFlight: boolean,
+): boolean {
+  if (inFlight) return false;
+  if (!String(record.providerPublishId || '').trim()) return false;
+  return record.state !== 'published' && record.state !== 'failed';
+}
+
+/**
+ * يحوّل نتيجة `classifyPublishStatus` إلى تحديث سجل محلي — **بلا ادعاء**:
+ * لا `published` ولا `providerPostId` إلا حين يُعلن TikTok حالة PUBLISH_COMPLETE.
+ * أي حالة أخرى تبقى غير مُسلَّمة مع السبب الحقيقي.
+ */
+export function applyTikTokPublishStatus(
+  record: { state?: string | null; providerPostId?: string | null },
+  status: { state: 'pending' | 'processing' | 'delivered' | 'failed'; delivered: boolean; providerPostId: string | null; detail: string },
+): { state: TikTokRecordState; providerPostId: string | null; delivered: boolean; detail: string } {
+  if (status.delivered && status.state === 'delivered') {
+    return { state: 'published', providerPostId: status.providerPostId || record.providerPostId || null, delivered: true, detail: status.detail };
+  }
+  if (status.state === 'failed') {
+    return { state: 'failed', providerPostId: record.providerPostId || null, delivered: false, detail: status.detail };
+  }
+  return { state: 'publishing', providerPostId: record.providerPostId || null, delivered: false, detail: status.detail };
+}
+
 // ---------------------------------------------------------------------------
 // Webhooks — فحص التوقيع (نمط TikTok) + تطبيع الحدث
 // ---------------------------------------------------------------------------

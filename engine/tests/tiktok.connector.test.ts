@@ -42,6 +42,8 @@ import {
   buildPhotoPostBody,
   buildPublishStatusBody,
   classifyPublishStatus,
+  shouldReconcileTikTokRecord,
+  applyTikTokPublishStatus,
   parseTikTokSignatureHeader,
   verifyTikTokSignature,
   parseTikTokWebhook,
@@ -103,6 +105,8 @@ function startApp(ttBase: string, extraEnv: Record<string, string> = {}): { proc
     SESSION_SECRET,
     // خادم TikTok وهمي محلي: لا اتصال بمزود حقيقي في الاختبارات.
     TIKTOK_API_BASE: ttBase,
+    // مصالحة نشر TikTok دورية سريعة في الاختبار فقط (بلا انتظار دقيقة).
+    TIKTOK_RECONCILE_INTERVAL_MS: '1000',
     TIKTOK_CLIENT_KEY: TT_CLIENT_KEY,
     TIKTOK_CLIENT_SECRET: TT_CLIENT_SECRET,
     PLATFORM_TOKEN_ENCRYPTION_KEY: TOKEN_KEY,
@@ -327,6 +331,22 @@ function unitTests(): void {
   check('حالة غير معروفة لا تُعلن تسليماً', classifyPublishStatus({ status: 'SOMETHING' }).delivered === false);
   check('حالة بلا status لا تُعلن تسليماً', classifyPublishStatus({}).delivered === false);
 
+  group('5b) وحدة: مصالحة سجل النشر — لا published بلا تأكيد المزود');
+  check('سجل publishing له publish_id يستحق الاستعلام', shouldReconcileTikTokRecord({ state: 'publishing', providerPublishId: 'P1' }, false) === true);
+  check('سجل published لا يُستعلم ثانيةً', shouldReconcileTikTokRecord({ state: 'published', providerPublishId: 'P1' }, false) === false);
+  check('سجل failed لا يُستعلم ثانيةً', shouldReconcileTikTokRecord({ state: 'failed', providerPublishId: 'P1' }, false) === false);
+  check('سجل بلا publish_id لا يُستعلم', shouldReconcileTikTokRecord({ state: 'publishing' }, false) === false);
+  check('لا استعلام مكرر أثناء استعلام جارٍ', shouldReconcileTikTokRecord({ state: 'publishing', providerPublishId: 'P1' }, true) === false);
+  const appliedComplete = applyTikTokPublishStatus({ state: 'publishing' }, classifyPublishStatus({ status: 'PUBLISH_COMPLETE', publiclyAvailablePostIds: ['VID9'] }));
+  check('PUBLISH_COMPLETE => published + معرّف المزود', appliedComplete.state === 'published' && appliedComplete.delivered === true && appliedComplete.providerPostId === 'VID9');
+  const appliedProcessing = applyTikTokPublishStatus({ state: 'publishing' }, classifyPublishStatus({ status: 'PROCESSING_UPLOAD' }));
+  check('قيد المعالجة => يبقى publishing بلا تسليم', appliedProcessing.state === 'publishing' && appliedProcessing.delivered === false && appliedProcessing.providerPostId === null);
+  const appliedFailed = applyTikTokPublishStatus({ state: 'publishing' }, classifyPublishStatus({ status: 'FAILED', failReason: 'x' }));
+  check('FAILED => failed بلا تسليم', appliedFailed.state === 'failed' && appliedFailed.delivered === false);
+  const appliedPending = applyTikTokPublishStatus({ state: 'publishing' }, classifyPublishStatus({ status: 'PROCESSING_DOWNLOAD' }));
+  check('PROCESSING_DOWNLOAD => publishing بلا تسليم', appliedPending.state === 'publishing' && appliedPending.delivered === false);
+  check('PUBLISH_COMPLETE بلا معرّف منشور لا يختلق معرّفاً', applyTikTokPublishStatus({ state: 'publishing' }, classifyPublishStatus({ status: 'PUBLISH_COMPLETE' })).providerPostId === null);
+
   group('6) وحدة: TikTok-Signature (توقيع الجسم الخام)');
   const raw = JSON.stringify({ event: 'video.publish.completed', client_key: 'ck' });
   const good = tiktokSignature(raw, TT_CLIENT_SECRET, '1700000000');
@@ -515,6 +535,48 @@ async function integrationTests(): Promise<void> {
 
     const notApproved = await fetch(`${BASE}/api/platforms/tiktok/publish`, { method: 'POST', headers: auth, body: JSON.stringify({ content: 'عرض', videoUrl: 'https://example.invalid/v.mp4' }) });
     check('نشر بلا موافقة => 409 APPROVAL_REQUIRED', notApproved.status === 409);
+
+    // --- مصالحة تلقائية للتسليم بلا تدخّل المالك ---
+    const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+    group('16b) تكامل: مصالحة تلقائية — لا published بلا تأكيد المزود');
+    // سجل بانتظار التسليم: نضع المزود على حالة قيد المعالجة.
+    mock.state.publishStatus = 'PROCESSING_UPLOAD';
+    mock.state.publishId = 'publish_recon_pending';
+    const pubPending = await (await fetch(`${BASE}/api/platforms/tiktok/publish`, { method: 'POST', headers: auth, body: JSON.stringify({ content: 'انتظار التسليم', approved: true, videoUrl: 'https://example.invalid/pending.mp4', postMode: 'DIRECT_POST' }) })).json();
+    check('تهيئة سجل الانتظار تنجح', pubPending.providerPublishId === 'publish_recon_pending');
+    const histPending = await (await fetch(`${BASE}/api/platforms/tiktok/publishes`, { headers: auth })).json();
+    const pendingRec = (histPending.publishes || []).find((r: any) => r.providerPublishId === 'publish_recon_pending');
+    check('السجل المحفوظ في حالة publishing بلا تسليم', pendingRec?.state === 'publishing' && pendingRec?.delivered === false);
+    // دورة مصالحة: المزود ما زال يعالج => يبقى publishing (لا ادعاء).
+    await sleep(1600);
+    const histStill = await (await fetch(`${BASE}/api/platforms/tiktok/publishes`, { headers: auth })).json();
+    const stillRec = (histStill.publishes || []).find((r: any) => r.providerPublishId === 'publish_recon_pending');
+    check('قيد المعالجة => يبقى publishing بلا تسليم', stillRec?.state === 'publishing' && stillRec?.delivered === false);
+    check('سجل الانتظار استُعلم عنه فعلاً (lastCheckedAt)', typeof stillRec?.lastCheckedAt === 'string');
+    // الآن يُعلن المزود PUBLISH_COMPLETE => مصالحة تلقائية تُثبت التسليم بمعرّف المزود.
+    mock.state.publishStatus = 'PUBLISH_COMPLETE';
+    mock.state.publiclyAvailablePostId = 'video_recon_delivered_1';
+    await sleep(1600);
+    const histDone = await (await fetch(`${BASE}/api/platforms/tiktok/publishes`, { headers: auth })).json();
+    const doneRec = (histDone.publishes || []).find((r: any) => r.providerPublishId === 'publish_recon_pending');
+    check('PUBLISH_COMPLETE => published تلقائياً بلا تدخّل', doneRec?.state === 'published' && doneRec?.delivered === true);
+    check('معرّف المنشور من المزود مثبت في السجل', doneRec?.providerPostId === 'video_recon_delivered_1');
+    check('سجل النشر بلا أي سرّ', !JSON.stringify(histDone).includes(TT_CLIENT_SECRET));
+    const pubAnon = await fetch(`${BASE}/api/platforms/tiktok/publishes`);
+    check('سجل النشر بلا جلسة => 401', pubAnon.status === 401);
+    // إعادة الفشل: سجل جديد يبقى غير مُسلَّم عند فشل المزود.
+    mock.state.publishStatus = 'FAILED';
+    mock.state.failReason = 'video_too_long';
+    mock.state.publishId = 'publish_recon_failed';
+    await fetch(`${BASE}/api/platforms/tiktok/publish`, { method: 'POST', headers: auth, body: JSON.stringify({ content: 'فشل متوقع', approved: true, videoUrl: 'https://example.invalid/fail.mp4', postMode: 'DIRECT_POST' }) });
+    await sleep(1600);
+    const histFail = await (await fetch(`${BASE}/api/platforms/tiktok/publishes`, { headers: auth })).json();
+    const failRec = (histFail.publishes || []).find((r: any) => r.providerPublishId === 'publish_recon_failed');
+    check('FAILED => failed بلا ادعاء تسليم', failRec?.state === 'failed' && failRec?.delivered === false);
+    // نُعيد المزود إلى النجاح قبل بقية الاختبارات.
+    mock.state.publishStatus = 'PUBLISH_COMPLETE';
+    mock.state.publiclyAvailablePostId = 'video_post_id_9876543210';
+    mock.state.publishId = 'publish_id_test_abc123';
 
     group('17) تكامل: حارس سلامة المحتوى يمنع عرضاً غير مسجّل');
     const unsafe = await fetch(`${BASE}/api/platforms/tiktok/publish`, { method: 'POST', headers: auth, body: JSON.stringify({ content: 'خصم 50% مجاناً بدون دفعة أولى', approved: true, videoUrl: 'https://example.invalid/v2.mp4' }) });

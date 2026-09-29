@@ -762,6 +762,14 @@ ${payload.topic || payload.productName || 'أنظمة وحلول التقسيط 
     return data;
   },
 
+  /** سجل عمليات نشر TikTok المحفوظ (بلا سرّ) — التسليم يُحسم تلقائياً من دليل المزود. */
+  async getTikTokPublishes() {
+    const res = await fetch('/api/platforms/tiktok/publishes', { headers: getAuthHeaders() });
+    const data = await res.json();
+    if (!res.ok || !data.success) throw new Error(data.error || 'تعذر جلب سجل عمليات النشر');
+    return data;
+  },
+
   /**
    * تهيئة نشر TikTok (Direct Post أو رفع مسودة). TikTok لا ينشر نصاً فقط:
    * يلزم videoUrl أو photoUrls عامة. لا يُعلن التسليم هنا بل بالاستعلام.

@@ -218,11 +218,17 @@ const TikTokStatusPanel: React.FC = () => {
   const [creatorErr, setCreatorErr] = useState<string>('');
   const [publishId, setPublishId] = useState('');
   const [publishStatus, setPublishStatus] = useState<any>(null);
+  const [publishes, setPublishes] = useState<any>(null);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string>('');
+  const loadPublishes = async () => {
+    try { setPublishes(await apiService.getTikTokPublishes()); }
+    catch (e: any) { setPublishes({ error: e?.message || 'تعذر جلب سجل العمليات' }); }
+  };
   useEffect(() => {
     let alive = true;
     apiService.getTikTokStatus().then((d) => { if (alive) setStatus(d); }).catch((e) => { if (alive) setErr(e?.message || 'تعذر جلب حالة TikTok'); });
+    apiService.getTikTokPublishes().then((d) => { if (alive) setPublishes(d); }).catch(() => { /* السجل اختياري للعرض */ });
     return () => { alive = false; };
   }, []);
   const loadCreator = async () => {
@@ -309,6 +315,28 @@ const TikTokStatusPanel: React.FC = () => {
         </div>
       )}
       <p className="text-slate-600">التعليقات والرسائل المباشرة غير متاحة عبر واجهة TikTok العامة — لا تُعلن المنصة دعمها ولا تُختلق.</p>
+      {/* سجل عمليات النشر الحقيقي: يُثبت أن التسليم يُحسم تلقائياً من دليل المزود. */}
+      <div className="space-y-1">
+        <div className="flex items-center gap-2">
+          <span className="text-slate-500">سجل عمليات النشر (يُحدَّث تلقائياً من TikTok):</span>
+          <button onClick={() => void loadPublishes()} className="px-2 py-0.5 rounded-md bg-slate-800 border border-slate-700 text-[9px] font-bold text-slate-300">تحديث</button>
+        </div>
+        {publishes?.error && <p className="text-amber-300">{publishes.error}</p>}
+        {Array.isArray(publishes?.publishes) && publishes.publishes.length === 0 && (
+          <p className="text-slate-600">لا عمليات نشر بعد. بعد تهيئة أي نشر يُستعلم عن حالته من TikTok تلقائياً حتى تُحسم.</p>
+        )}
+        {Array.isArray(publishes?.publishes) && publishes.publishes.slice(0, 5).map((r: any) => (
+          <div key={r.id} className="p-1.5 rounded-md bg-slate-950 border border-slate-800 flex flex-wrap items-center gap-2">
+            <span className={`px-1.5 py-0.5 rounded-md border text-[9px] font-black ${r.state === 'published' ? 'bg-emerald-500/10 text-emerald-300 border-emerald-600/30' : r.state === 'failed' ? 'bg-rose-500/10 text-rose-300 border-rose-600/30' : 'bg-sky-500/10 text-sky-300 border-sky-600/30'}`}>
+              {r.state === 'published' ? 'مُسلَّم (PUBLISH_COMPLETE)' : r.state === 'failed' ? 'فشل' : 'بانتظار تأكيد المزود'}
+            </span>
+            <span className="text-slate-500">{r.postMode === 'MEDIA_UPLOAD' ? 'رفع مسودة' : 'نشر مباشر'}</span>
+            {r.providerPublishId && <code className="text-slate-400 text-[9px]" dir="ltr">publish_id: {r.providerPublishId}</code>}
+            {r.providerPostId && <code className="text-emerald-300 text-[9px]" dir="ltr">post_id: {r.providerPostId}</code>}
+            {r.deliveryDetail && <span className="text-slate-500">{r.deliveryDetail}</span>}
+          </div>
+        ))}
+      </div>
     </div>
   );
 };

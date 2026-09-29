@@ -469,6 +469,18 @@ add('tiktok-state-no-secret-in-labels', !/Bearer\s/.test(tiktokState) && !/['"]c
 add('tiktok-ui-truthful-state', read('src/components/social/PlatformConnectionCenter.tsx').includes('stateLabelAr') && read('src/components/social/SocialManagerView.tsx').includes('stateLabelAr'), 'الواجهة تعرض الحالة الصادقة (مركز الربط + بطاقة المدير)');
 add('tiktok-state-tests', read('engine/tests/tiktok.connector.test.ts').includes('resolveTikTokState') && read('engine/tests/tiktok.connector.test.ts').includes('الحالة الصادقة'), 'اختبارات تغطي الحالة الصادقة (وحدة + تكامل)');
 
+// مصالحة حالة نشر TikTok تلقائياً: التسليم يُحسم من دليل المزود بلا تدخّل المالك.
+const tiktokPublishRecon = read('engine/social/tiktok.ts');
+add('tiktok-publish-reconcile-single-source', tiktokPublishRecon.includes('export function shouldReconcileTikTokRecord') && tiktokPublishRecon.includes('export function applyTikTokPublishStatus'), 'منطق المصالحة مصدر واحد قابل للاختبار في وحدة TikTok');
+add('tiktok-publish-reconcile-no-claim', /export function applyTikTokPublishStatus[\s\S]{0,900}?status\.delivered && status\.state === 'delivered'/.test(tiktokPublishRecon), 'لا published بلا delivered الحقيقي من المزود');
+add('tiktok-publish-reconcile-server-sweep', server.includes('reconcileTikTokPublishes') && /fetchPublishStatus\(ensured\.token, publishId\)/.test(server), 'الخادم يستعلم حالة النشر فعلياً من TikTok ويحدّث السجل');
+add('tiktok-publish-reconcile-timer', /tiktokReconcileTimer = setInterval\(\(\) => \{ void reconcileTikTokPublishes\(\); \}/.test(server), 'مصالحة دورية داخل عملية الخادم (بلا تدخّل المالك)');
+add('tiktok-publish-reconcile-verified-only', /async function reconcileTikTokPublishes[\s\S]{0,400}?if \(!tiktokOperationalNow\(\)\) return result;/.test(server), 'لا مصالحة بلا اتصال موثق (لا استعلام خارجي بلا توثيق)');
+add('tiktok-publish-history-endpoint', /app\.get\("\/api\/platforms\/tiktok\/publishes", requireOwner/.test(server), 'سجل عمليات النشر للمالك فقط (requireOwner)');
+add('tiktok-publish-history-no-secret', /app\.get\("\/api\/platforms\/tiktok\/publishes"[\s\S]{0,1200}?res\.json/.test(server) && !/tiktok\/publishes"[\s\S]{0,1500}?providerTokens/.test(server), 'سجل النشر لا يكشف أي اعتماد أو سرّ');
+add('tiktok-publish-reconcile-tests', read('engine/tests/tiktok.connector.test.ts').includes('shouldReconcileTikTokRecord') && read('engine/tests/tiktok.connector.test.ts').includes('مصالحة تلقائية'), 'اختبارات تغطي المصالحة (وحدة + تكامل تلقائي)');
+add('tiktok-publish-history-ui', read('src/components/social/PlatformConnectionCenter.tsx').includes('getTikTokPublishes') && read('src/services/api.ts').includes('/api/platforms/tiktok/publishes'), 'الواجهة تعرض سجل عمليات النشر الحقيقي من مسار المالك');
+
 // تشخيص مفتاح تطبيق TikTok (client_key): يُثبت المفتاح لدى المزود بلا كشفه،
 // فيُنسب خطأ «correct the following: client_key» إلى سببه بدل التخمين.
 const tiktokModule = read('engine/social/tiktok.ts');

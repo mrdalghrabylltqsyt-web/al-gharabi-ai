@@ -2629,3 +2629,35 @@ Telegram/TikTok، أو أي سرّ. الوصف لا يُنشر تلقائياً 
 
 **لا تغيير في:** Gemini، OAuth/الصلاحيات/الاعتمادات، Facebook/Instagram/Telegram/TikTok،
 نموذج الجدولة، مكوّن الوقت على الجوال، أو أي سرّ.
+
+## مصالحة تسليم TikTok تلقائياً — إغلاق حلقة publishing → published (2026-09-29)
+
+الفجوة الحقيقية: `fetchPublishStatus` كان يُستدعى من مسار المالك اليدوي فقط
+(`GET /api/platforms/tiktok/publish-status`)، فلا يوجد أي استعلام دوري. النتيجة أن سجل
+نشر TikTok يبقى `publishing` للأبد ما لم يضغط المالك «استعلام الحالة» بنفسه، مع أن
+التسليم من جهة TikTok يكتمل تلقائياً. والحالة الصادقة `OPERATIONAL` تحتاج دليلاً
+(`publishRecords` بحالة `published` + `providerPostId`)، فكانت لا تتحقق بلا تدخّل يدوي.
+
+الإصلاح — بلا أي ادعاء ولا حصة مهدرة:
+- `engine/social/tiktok.ts`: `shouldReconcileTikTokRecord` (لا استعلام على سجل منتهٍ
+  `published`/`failed`، ولا على سجل بلا `providerPublishId`، ولا استعلام مكرر أثناء جارٍ)
+  و`applyTikTokPublishStatus` (لا `published` ولا `providerPostId` إلا بحالة
+  `PUBLISH_COMPLETE`؛ غير ذلك يبقى `publishing`، والفشل `failed`، بلا اختراع معرّف).
+- `server.ts`: `reconcileTikTokPublishes` يستعلم حالة كل سجل غير محسوم من TikTok
+  (`status/fetch`) ويحدّث السجل بالدليل الفعلي، بحدّ 5 سجلات/دورة، ويشترط اتصالاً موثقاً
+  (`tiktokOperationalNow`) فلا استعلام خارجي بلا توثيق. مؤقّت `setInterval` داخل عملية
+  Render الدائمة (`.unref()`)، والفترة من `TIKTOK_RECONCILE_INTERVAL_MS` (افتراضياً 60
+  ثانية، وأدنى 1s — يُضبط في الاختبار فقط).
+- `GET /api/platforms/tiktok/publishes` (للمالك): سجل عمليات حقيقي بلا أي سرّ
+  (`state`/`providerPublishId`/`providerPostId`/`delivered`/`lastCheckedAt`)، ويُثبت أن
+  التسليم يُحسم تلقائياً.
+
+اختبارات: `tiktok.connector.test.ts` صار **274 فحصاً** (مجموعة `5b` وحدة للمصالحة،
+ومجموعة `16b` تكامل: قيد المعالجة ⇒ يبقى `publishing`، ثم `PUBLISH_COMPLETE` ⇒
+`published` تلقائياً بمعرّف المزود، ثم `FAILED` ⇒ `failed` بلا ادعاء). فحوص final-audit
+الثمانية: `tiktok-publish-reconcile-single-source` … `tiktok-publish-reconcile-tests`
+(728 إجمالاً).
+
+**لا تغيير في:** Gemini، OAuth/الصلاحيات/الاعتمادات، Facebook/Instagram/Telegram،
+نموذج الجدولة، أو أي سرّ.
+

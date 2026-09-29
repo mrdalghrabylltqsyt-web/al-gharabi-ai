@@ -95,6 +95,8 @@ import {
   type TikTokFetch,
   type TikTokPostMode,
   type TikTokPrivacyLevel,
+  shouldReconcileTikTokRecord,
+  applyTikTokPublishStatus,
 } from "./engine/social/tiktok";
 import {
   resolveTikTokState,
@@ -1899,6 +1901,54 @@ function tiktokTruthfulState(): ReturnType<typeof resolveTikTokState> {
     directPostAuditRequired: tiktokAuditRequired(),
   });
 }
+
+/**
+ * مصالحة حالة نشر TikTok تلقائياً: أي سجل غير محسوم (`publishing`) له
+ * `providerPublishId` يُستعلم عنه من TikTok (`status/fetch`) ويُحدَّث وفق الدليل
+ * الفعلي. لا يُعلن `published` ولا يثبت `providerPostId` إلا بحالة PUBLISH_COMPLETE.
+ * لا استعلام على سجل منتهٍ، ولا تكرار لاستعلام جارٍ، والحد 5 سجلات لكل دورة.
+ * هذا يجعل التسليم يُحسم تلقائياً بلا تدخّل المالك — والعكس صحيح: بلا تأكيد المزود
+ * يبقى السجل `publishing` صراحةً.
+ */
+const tiktokReconcileInFlight = new Set<string>();
+async function reconcileTikTokPublishes(): Promise<{ checked: number; delivered: number; failed: number; stillPending: number }> {
+  const result = { checked: 0, delivered: 0, failed: 0, stillPending: 0 };
+  if (!tiktokOperationalNow()) return result;
+  const records = (workspace as any).publishRecords;
+  if (!Array.isArray(records)) return result;
+  const due = records
+    .filter((r: any) => r.platform === "tiktok" && shouldReconcileTikTokRecord(r, tiktokReconcileInFlight.has(String(r.providerPublishId))))
+    .slice(0, 5);
+  if (!due.length) return result;
+  const ensured = await ensureTikTokAccessToken();
+  if (!ensured.ok || !ensured.token) return result;
+  let changed = false;
+  for (const rec of due) {
+    const publishId = String(rec.providerPublishId);
+    tiktokReconcileInFlight.add(publishId);
+    result.checked += 1;
+    try {
+      const res = await tiktokClient().fetchPublishStatus(ensured.token, publishId);
+      if (!res.ok || !res.data) continue;
+      const applied = applyTikTokPublishStatus(rec, res.data);
+      rec.state = applied.state;
+      rec.providerPostId = applied.providerPostId;
+      rec.deliveryDetail = applied.detail;
+      rec.lastCheckedAt = new Date().toISOString();
+      if (applied.delivered) result.delivered += 1;
+      else if (applied.state === "failed") result.failed += 1;
+      else result.stillPending += 1;
+      changed = true;
+    } catch {
+      /* تعذّر الاستعلام: يبقى السجل غير محسوم بلا ادعاء */
+    } finally {
+      tiktokReconcileInFlight.delete(publishId);
+    }
+  }
+  if (changed) await persistStateDurable();
+  return result;
+}
+
 /**
  * تشخيص مفتاح تطبيق TikTok: أي متغيّر بيئة يُقرأ فعلاً، بأي قيمة (مُخفاة)، وأي
  * `client_key` يظهر في رابط التفويض المولَّد، ونتيجة إثبات المفتاح لدى TikTok.
@@ -4218,6 +4268,32 @@ app.get("/api/platforms/tiktok/publish-status", requireOwner, async (req,res)=>{
   }
   await persistStateDurable();
   res.json({success:true,status:{...result.data},note:"الحالة حقيقية من TikTok بلا أي سرّ. لا يُعلن التسليم إلا بـPUBLISH_COMPLETE."});
+});
+
+/**
+ * سجل عمليات نشر TikTok المحفوظ (للمالك) — بلا أي سرّ. يُثبت المسار الحقيقي:
+ * تهيئة → publish_id من المزود → حالة التسليم (لا `published` بلا PUBLISH_COMPLETE).
+ * التسليم يُحسم تلقائياً عبر مصالحة دورية بلا تدخّل المالك.
+ */
+app.get("/api/platforms/tiktok/publishes", requireOwner, async (req,res)=>{
+  const limit = Math.min(50, Math.max(1, Number(req.query.limit || 20)));
+  const records = Array.isArray((workspace as any).publishRecords) ? (workspace as any).publishRecords : [];
+  const publishes = records
+    .filter((r: any) => r.platform === "tiktok")
+    .slice(0, limit)
+    .map((r: any) => ({
+      id: r.id,
+      state: r.state,
+      postMode: r.postMode || null,
+      providerPublishId: r.providerPublishId || null,
+      providerPostId: r.providerPostId || null,
+      delivered: r.state === "published" && Boolean(r.providerPostId),
+      auditRequired: r.auditRequired === true,
+      createdAt: r.createdAt || null,
+      lastCheckedAt: r.lastCheckedAt || null,
+      deliveryDetail: r.deliveryDetail || null,
+    }));
+  res.json({ success: true, publishes, count: publishes.length, note: "سجل حقيقي بلا أي سرّ؛ لا يُعلن التسليم إلا بـPUBLISH_COMPLETE من TikTok." });
 });
 
 /**
@@ -7490,6 +7566,20 @@ function runSafeJobPreflight() {
 }
 const safeJobWorkerTimer = setInterval(runSafeJobPreflight, 60 * 1000);
 (safeJobWorkerTimer as any).unref?.();
+
+/**
+ * مصالحة دورية لحالة نشر TikTok (status/fetch) — تسدّ فجوة أن التسليم كان
+ * يُحسم يدوياً فقط. تعمل داخل عملية Render الدائمة، بلا AI، ولا تكتب حالة بلا
+ * تأكيد من المزود. الفترة 60 ثانية كافية ولا تستهلك حصة TikTok بلا داعٍ لأن
+ * السجلات المحسومة تُستثنى. قابلة للضبط من البيئة للاختبار فقط (بحدّ أدنى 1s).
+ */
+function tiktokReconcileIntervalMs(): number {
+  const raw = Number(process.env.TIKTOK_RECONCILE_INTERVAL_MS);
+  if (Number.isFinite(raw) && raw >= 1000) return raw;
+  return 60 * 1000;
+}
+const tiktokReconcileTimer = setInterval(() => { void reconcileTikTokPublishes(); }, tiktokReconcileIntervalMs());
+(tiktokReconcileTimer as any).unref?.();
 
 /**
  * ينفّذ مهمة داخلية **معتمدة وجاهزة** عبر الوصلات الحقيقية فقط، بمرور نفس
