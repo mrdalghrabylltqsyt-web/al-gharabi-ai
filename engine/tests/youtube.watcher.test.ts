@@ -34,6 +34,8 @@ import {
   WATCHER_MAX_CADENCE_MS,
   type WatcherProcessedEntry,
 } from '../social/youtubeWatcher';
+import { validateCadenceMinutes, cadenceMinutesToMs } from '../social/youtubeWatcher';
+import { createWatcherScheduler } from '../social/youtubeWatcherScheduler';
 import { classifyComment } from '../social/comments';
 
 let passed = 0;
@@ -306,6 +308,56 @@ function entry(partial: Partial<WatcherProcessedEntry>): WatcherProcessedEntry {
   check('O: الشرط يجمع جاهزية التنفيذ والبوابة', server.includes('if (!replyReady.ready || !replyGate.allowed)'));
   check('O: no fake commentId (لا اختلاق)', !/commentId:\s*["'][^"']+["']/.test(server.slice(server.indexOf('async function runYouTubeWatcherCycle'), server.indexOf('function startYouTubeWatcher'))));
   check('O: الرد يُسجَّل مُسلَّماً فقط بمعرّف رد حقيقي', server.includes('const delivered = Boolean(result.body?.delivered && result.body?.externalReplyId);'));
+}
+
+// --- P) فاصل الأتمتة (وقت الأتمتة): تحقق الحدود + الانعكاس في العرض ---
+{
+  const d = defaultWatcherControls();
+  check('P: الافتراضي/الحالي = 1 دقيقة', d.cadenceMinutes === 1);
+  for (const m of [1, 2, 3, 4, 5]) {
+    const v = validateCadenceMinutes(m);
+    check(`P: القيمة ${m} مقبولة`, v.ok === true && v.minutes === m);
+  }
+  check('P: 0 مرفوض', validateCadenceMinutes(0).ok === false);
+  check('P: السالب مرفوض', validateCadenceMinutes(-3).ok === false);
+  check('P: العشري مرفوض', validateCadenceMinutes(2.5).ok === false);
+  check('P: الأكبر من 5 مرفوض', validateCadenceMinutes(6).ok === false && validateCadenceMinutes(99).ok === false);
+  check('P: NaN/اللانهاية مرفوضة', validateCadenceMinutes(NaN).ok === false && validateCadenceMinutes(Infinity).ok === false);
+  check('P: النص غير الرقمي مرفوض', validateCadenceMinutes('abc').ok === false && validateCadenceMinutes('2.5').ok === false);
+  check('P: النص الرقمي الصحيح مقبول', validateCadenceMinutes('4').ok === true && validateCadenceMinutes('4').minutes === 4);
+  check('P: التحويل إلى ms بعد التحقق فقط', cadenceMinutesToMs(5) === 300_000 && cadenceMinutesToMs(1) === 60_000);
+  check('P: التحويل يرفض غير الصالح ويُعيد الافتراضي', cadenceMinutesToMs(0 as any) === 60_000);
+  check('P: تطبيع قيمة محفوظة صالحة', normalizeWatcherControls({ cadenceMinutes: 3 }).cadenceMinutes === 3);
+  check('P: تطبيع قيمة محفوظة غير صالحة => الافتراضي', normalizeWatcherControls({ cadenceMinutes: 9 }).cadenceMinutes === 1);
+  check('P: توافق خلفي مع cadenceMs المحفوظ', normalizeWatcherControls({ cadenceMs: 240_000 }).cadenceMinutes === 4);
+  check('P: العرض يكشف cadenceMs الصحيح', watcherControlsView({ ...d, cadenceMinutes: 5 }).cadenceMs === 300_000);
+  check('P: العرض يكشف الفاصل الفعلي عند Kill Switch = 0', watcherControlsView({ ...d, cadenceMinutes: 3, paused: true }).cadenceMs === 0);
+}
+
+// --- Q) أمان الجدولة: مؤقّت واحد فقط عند تغيير الفاصل + Kill Switch يوقف كل شيء ---
+{
+  // مؤقّتات وهمية قابلة للتتبع: تثبت أن reschedule يُبطل القديم قبل إنشاء الجديد.
+  const live = new Set<object>();
+  const hooks = {
+    setTimer: (_fn: () => void, _ms: number) => { const h = {}; live.add(h); return { clear: () => { live.delete(h); } }; },
+    setTimeoutOnce: (_fn: () => void, _ms: number) => { const h = {}; live.add(h); return { clear: () => { live.delete(h); } }; },
+    getCadenceMs: () => 60_000,
+    isDue: () => false,
+    runCycle: () => {},
+  };
+  const s = createWatcherScheduler(hooks);
+  s.start();
+  check('Q: بعد البدء عند 1 دقيقة يوجد مؤقّت واحد نشط', s.status().activeTimers === 1 && live.size <= 2);
+  s.reschedule();
+  check('Q: التغيير إلى 5 دقائق يُبقي مؤقّتاً واحداً', s.status().activeTimers === 1);
+  s.reschedule();
+  check('Q: التغيير إلى 2 دقيقة يُبقي مؤقّتاً واحداً', s.status().activeTimers === 1);
+  check('Q: عدد إعادة الجدولة مُتتبَّع', s.status().reschedules === 2);
+  s.stop();
+  check('Q: Kill Switch/الإيقاف يُلغي كل المؤقّتات', s.status().active === false && s.status().activeTimers === 0);
+  // إعادة الجدولة بعد الإيقاف تُنشئ مؤقّتاً واحداً فقط (لا يتراكم).
+  s.reschedule();
+  check('Q: إعادة التشغيل بعد الإيقاف = مؤقّت واحد', s.status().activeTimers === 1);
 }
 
 // --- الخلاصة ---

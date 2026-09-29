@@ -1348,8 +1348,8 @@ ${payload.topic || payload.productName || 'أنظمة وحلول التقسيط 
     if (!res.ok || !data.success) throw new Error(data.error || 'تعذر تحميل حالة مراقبة YouTube');
     return data.watcher;
   },
-  /** تحديث عناصر التحكم (Kill Switch/الرد/النشر/المراجعة) — للمالك فقط. */
-  async setYouTubeWatcherControls(controls: Record<string, boolean>): Promise<any> {
+  /** تحديث عناصر التحكم (Kill Switch/الرد/النشر/المراجعة/فاصل الأتمتة cadenceMinutes) — للمالك فقط. */
+  async setYouTubeWatcherControls(controls: Record<string, boolean | number>): Promise<any> {
     const res = await fetch('/api/agent/youtube/watcher/controls', { method: 'POST', headers: getAuthHeaders(), body: JSON.stringify(controls) });
     const data = await res.json();
     if (!res.ok || !data.success) throw new Error(data.error || 'تعذر تحديث إعدادات الأتمتة');

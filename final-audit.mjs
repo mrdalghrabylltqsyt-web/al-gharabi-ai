@@ -741,7 +741,7 @@ add('youtube-watcher-cadence-1min-default', watcherModule.includes('WATCHER_DEFA
 add('youtube-watcher-peak-hours-honest', watcherModule.includes('computePeakHours') && watcherModule.includes('total >= 6') && watcherModule.includes('peakHour: number | null = null'), 'وقت الذروة لا يُعلن بلا عيّنة كافية (≥6 تعليقات حقيقية)');
 add('youtube-watcher-velocity-real-published', watcherModule.includes('publishedAt') && server.includes('computeCommentVelocity(processed.map((p) => p.publishedAt || p.at)') && server.includes('publishedAt: c.publishedAt ?? null'), 'الزخم وأوقات الذروة من publishedAt الحقيقي لا من وقت المعالجة');
 add('youtube-watcher-ui-counters', watcherUi.includes('counters?.detected') && watcherUi.includes('counters?.replied') && watcherUi.includes('counters?.escalated') && watcherUi.includes('counters?.skipped') && watcherUi.includes('Running') && watcherUi.includes('Paused'), 'الواجهة تعرض بوضوح: يعمل/موقوف، المكتشفة، الردود، التصعيدات، التجاهلات، الأخطاء');
-add('youtube-watcher-worker-in-process', server.includes('function startYouTubeWatcher') && server.includes('setInterval(tick') && server.includes('startYouTubeWatcher();'), 'حلقة المراقبة تعمل داخل عملية الخادم الدائمة (مستقلة عن المتصفح)');
+add('youtube-watcher-worker-in-process', server.includes('function startYouTubeWatcher') && server.includes('watcherScheduler = createWatcherScheduler') && server.includes('startYouTubeWatcher();'), 'حلقة المراقبة تعمل داخل عملية الخادم الدائمة (مستقلة عن المتصفح)');
 add('youtube-watcher-cycle-real-executor', server.includes('await executeYouTubeReply({ commentId: String(c.commentId), text: replyText, commentText: String(c.text || "") }, "watcher")'), 'دورة المراقبة تنفّذ الرد عبر منفّذ الرد الحقيقي الموحّد (لا مسار جانبي)');
 add('youtube-watcher-delegation-gated', server.includes('watcherReplyExecutionReady') && server.includes('youtubeDelegationCheck') && server.includes('DELEGATION_REQUIRED'), 'الرد الآلي محجوب بلا تفويض فعّال (delegation gate محفوظ)');
 add('youtube-watcher-double-gate', server.includes('const replyGate = watcherGate(controls, "reply")') && server.includes('if (!replyReady.ready || !replyGate.allowed)'), 'فرض مزدوج: بوابة الأتمتة تُعاد فحصها عند نقطة التنفيذ نفسها (لا تجاوز)');
@@ -766,6 +766,25 @@ add('youtube-decision-code-honest', watcherModule.includes('CommentDecisionCode'
 add('youtube-watcher-deferred-counter', server.includes('deferred: processed.filter((p) => p.deferred).length') && server.includes('deferred,'), 'عدّاد المؤجَّل يُعلن في حالة المراقبة (شفافية الحالة بلا خلط مع التصعيد/التجاهل)');
 add('youtube-watcher-defer-cycle-test', read('engine/tests/youtube.connector.test.ts').includes('12k-5') && read('engine/tests/youtube.connector.test.ts').includes('releasedDeferred') && read('engine/tests/youtube.watcher.test.ts').includes('releaseDeferredEntries'), 'اختبار تكامل يثبت: تعطيل => تأجيل بلا إرسال، تمكين => تحرير + رد حقيقي، Kill Switch => لا إرسال');
 add('youtube-self-authored-by-channel-id', server.includes('c.authorChannelId') && server.includes('expectedChannelId'), 'كشف ردود القناة نفسها بالمعرّف الحقيقي (authorChannelId) لا بالاسم فقط');
+
+// --- وقت الأتمتة: فاصل فحص تعليقات YouTube يتحكم به المالك (1..5 دقائق) ---
+const watcherModuleText = read('engine/social/youtubeWatcher.ts');
+const schedulerModuleText = read('engine/social/youtubeWatcherScheduler.ts');
+add('youtube-cadence-owner-control', watcherModuleText.includes('cadenceMinutes') && watcherModuleText.includes("'cadenceMinutes'"), 'فاصل الأتمتة حقل تحكم مملوك (cadenceMinutes) في وحدة الـwatcher');
+add('youtube-cadence-validate-single-source', watcherModuleText.includes('export function validateCadenceMinutes') && watcherModuleText.includes('WATCHER_MIN_CADENCE_MINUTES') && watcherModuleText.includes('WATCHER_MAX_CADENCE_MINUTES'), 'تحقق الفاصل (1..5 فقط) مصدر واحد في الوحدة');
+add('youtube-cadence-reject-invalid', /validateCadenceMinutes[\s\S]{0,600}?!Number\.isInteger/.test(watcherModuleText) && /validateCadenceMinutes[\s\S]{0,900}?input > WATCHER_MAX_CADENCE_MINUTES/.test(watcherModuleText), 'يرفض العشري والأكبر من الحد صراحةً (لا تقريب صامت)');
+add('youtube-cadence-ms-after-validate', /export function cadenceMinutesToMs[\s\S]{0,200}?validateCadenceMinutes/.test(watcherModuleText), 'التحويل إلى ms يقع بعد التحقق فقط');
+add('youtube-cadence-server-enforced', server.includes('validateCadenceMinutes(requested)') && server.includes('INVALID_CADENCE') && server.includes('status(400)'), 'الخادم يفرض نفس الحدود ويرد 400 صراحةً حتى لو تجاوز أحد الواجهة');
+add('youtube-cadence-owner-only', /youtube\/watcher\/controls", requireOwner/.test(server), 'تعديل الفاصل محصور بالمالك (requireOwner)');
+add('youtube-cadence-single-timer', schedulerModuleText.includes('export function createWatcherScheduler') && schedulerModuleText.includes('clearTimer()') && /reschedule\(\)[\s\S]{0,300}?clearTimer\(\)[\s\S]{0,200}?createTimer\(\)/.test(schedulerModuleText), 'إعادة الجدولة تُبطل المؤقّت القديم قبل إنشاء الجديد (لا تكرار)');
+add('youtube-cadence-reschedule-server', server.includes('function applyWatcherCadence') && server.includes('createWatcherScheduler') && server.includes('reschedule()'), 'الخادم يمتلك جدولة واحدة ويعيد الجدولة عند تغيير الفاصل/Kill Switch');
+add('youtube-cadence-persisted', server.includes('cadenceMinutes') && watcherModuleText.includes('cadenceMinutes: cadence.ok ? cadence.minutes : d.cadenceMinutes'), 'الفاصل يُحفظ/يُسترجَع عبر آلية الـwatcher نفسها (بلا مخزن جديد)');
+add('youtube-cadence-killswitch-zero', /watcherControlsView[\s\S]{0,400}?cadenceMs: cadencePaused \? 0/.test(watcherModuleText), 'عند Kill Switch لا فحص: الفاصل الفعلي 0');
+add('youtube-cadence-ui-selector', read('src/components/agent/YouTubeOperationsView.tsx').includes('yt-cadence') && read('src/components/agent/YouTubeOperationsView.tsx').includes('وقت الأتمتة') && read('src/components/agent/YouTubeOperationsView.tsx').includes('فاصل المراقبة'), 'واجهة وقت الأتمتة: قائمة اختيار واضحة 1..5');
+add('youtube-cadence-ui-api', read('src/services/api.ts').includes('cadenceMinutes') && read('src/services/api.ts').includes('boolean | number'), 'خدمة الـAPI تمرّر cadenceMinutes للمالك');
+add('youtube-cadence-tests', fs.existsSync(path.join(root, 'engine/tests/youtube.interval.test.ts')) && pkg.scripts['test:youtube-interval'], 'اختبار فاصل الأتمتة مسجّل');
+add('youtube-cadence-test-in-suite', typeof pkg.scripts.test === 'string' && pkg.scripts.test.includes('test:youtube-interval'), 'اختبار فاصل الأتمتة ضمن npm test');
+add('youtube-cadence-no-secret', !/client_secret|Bearer\s|eyJ/.test(schedulerModuleText), 'وحدة الجدولة بلا أي سرّ');
 
 // --- Reply Intelligence: ردود عراقية طبيعية واعية بالسياق ---
 // كان buildDeterministicReply قالباً واحداً لكل نية (4-5 جمل ثابتة)، فتبدو الردود

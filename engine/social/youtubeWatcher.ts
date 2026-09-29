@@ -29,24 +29,71 @@ export interface YouTubeWatcherControls {
   paused: boolean;
   /** فرض مراجعة بشرية: يمنع أي إرسال آلي ويحوّل القابل للرد إلى تصعيد. */
   humanReviewMode: boolean;
+  /** فاصل فحص تعليقات YouTube بالدقائق (قيمة المالك: 1..5 فقط). الافتراضي 1. */
+  cadenceMinutes: number;
 }
 
 export const YOUTUBE_WATCHER_CONTROL_KEYS: ReadonlyArray<keyof YouTubeWatcherControls> = [
-  'enabled', 'autoReply', 'autoPublish', 'autoSchedule', 'paused', 'humanReviewMode',
+  'enabled', 'autoReply', 'autoPublish', 'autoSchedule', 'paused', 'humanReviewMode', 'cadenceMinutes',
 ];
+
+/** نطاق فاصل الأتمتة المسموح (بالدقائق) — لا polling عدواني ولا تعطيل طويل. */
+export const WATCHER_MIN_CADENCE_MINUTES = 1;
+export const WATCHER_MAX_CADENCE_MINUTES = 5;
+export const WATCHER_DEFAULT_CADENCE_MINUTES = 1;
+
+/**
+ * يتحقق من قيمة فاصل (دقائق) قادمة من المستخدم/البيئة. يقبل عدداً صحيحاً
+ * فقط ضمن [1..5]، ويرفض صراحةً: NaN، العشري، 0 والسالب، والأكبر من 5،
+ * والنصوص غير الرقمية. لا يُقرَّب ولا يُقصّ صامتاً — الرفض معلن.
+ */
+export function validateCadenceMinutes(input: unknown): { ok: boolean; minutes: number; reason: string } {
+  if (typeof input === 'number') {
+    if (!Number.isFinite(input)) return { ok: false, minutes: WATCHER_DEFAULT_CADENCE_MINUTES, reason: 'قيمة غير رقمية (NaN/لانهاية).' };
+    if (!Number.isInteger(input)) return { ok: false, minutes: WATCHER_DEFAULT_CADENCE_MINUTES, reason: 'لا يُقبل العشري؛ اختر دقيقة كاملة.' };
+    if (input < WATCHER_MIN_CADENCE_MINUTES) return { ok: false, minutes: WATCHER_DEFAULT_CADENCE_MINUTES, reason: `أصغر فاصل مسموح ${WATCHER_MIN_CADENCE_MINUTES} دقيقة.` };
+    if (input > WATCHER_MAX_CADENCE_MINUTES) return { ok: false, minutes: WATCHER_DEFAULT_CADENCE_MINUTES, reason: `أكبر فاصل مسموح ${WATCHER_MAX_CADENCE_MINUTES} دقائق.` };
+    return { ok: true, minutes: input, reason: 'قيمة صحيحة.' };
+  }
+  if (typeof input === 'string') {
+    const s = input.trim();
+    if (!s) return { ok: false, minutes: WATCHER_DEFAULT_CADENCE_MINUTES, reason: 'قيمة فارغة.' };
+    if (!/^-?\d+$/.test(s)) return { ok: false, minutes: WATCHER_DEFAULT_CADENCE_MINUTES, reason: 'النص ليس عدداً صحيحاً.' };
+    return validateCadenceMinutes(Number(s));
+  }
+  return { ok: false, minutes: WATCHER_DEFAULT_CADENCE_MINUTES, reason: 'نوع قيمة غير مدعوم.' };
+}
+
+/** يحوّل الدقائق إلى ميلي ثانية بعد التحقق فقط (لا قبل). */
+export function cadenceMinutesToMs(minutes: number): number {
+  const v = validateCadenceMinutes(minutes);
+  return v.minutes * 60 * 1000;
+}
+
+/** يشتقّ الدقائق الصحيحة من ميلي ثانية (لقراءة الحالة المحفوظة قديماً). */
+export function cadenceMsToMinutes(ms: unknown): number {
+  const n = typeof ms === 'string' ? Number(ms) : ms;
+  if (!Number.isFinite(n)) return WATCHER_DEFAULT_CADENCE_MINUTES;
+  const minutes = Math.round(Number(n) / 60000);
+  const v = validateCadenceMinutes(minutes);
+  return v.ok ? v.minutes : WATCHER_DEFAULT_CADENCE_MINUTES;
+}
 
 /**
  * الافتراضي آمن: المراقبة مفعّلة (قراءة/تحليل فقط) وكل الإرسال معطّل حتى
  * يمكّنه المالك. هذا يمنع أي رد أو نشر غير مقصود.
  */
 export function defaultWatcherControls(): YouTubeWatcherControls {
-  return { enabled: true, autoReply: false, autoPublish: false, autoSchedule: false, paused: false, humanReviewMode: false };
+  return { enabled: true, autoReply: false, autoPublish: false, autoSchedule: false, paused: false, humanReviewMode: false, cadenceMinutes: WATCHER_DEFAULT_CADENCE_MINUTES };
 }
 
 /** تطبيع آمن لحالة محفوظة (تصمد بعد restart) — بلا أي قيمة غير منطقية. */
 export function normalizeWatcherControls(raw: any): YouTubeWatcherControls {
   const d = defaultWatcherControls();
   if (!raw || typeof raw !== 'object') return d;
+  // الفاصل: يسبق التحقق قيمة قديمة محفوظة كـ cadenceMs (توافق خلفي) قبل الافتراضي.
+  const cadenceSource = raw.cadenceMinutes ?? (raw.cadenceMs != null ? cadenceMsToMinutes(raw.cadenceMs) : d.cadenceMinutes);
+  const cadence = validateCadenceMinutes(cadenceSource);
   return {
     enabled: typeof raw.enabled === 'boolean' ? raw.enabled : d.enabled,
     autoReply: typeof raw.autoReply === 'boolean' ? raw.autoReply : d.autoReply,
@@ -54,6 +101,7 @@ export function normalizeWatcherControls(raw: any): YouTubeWatcherControls {
     autoSchedule: typeof raw.autoSchedule === 'boolean' ? raw.autoSchedule : d.autoSchedule,
     paused: typeof raw.paused === 'boolean' ? raw.paused : d.paused,
     humanReviewMode: typeof raw.humanReviewMode === 'boolean' ? raw.humanReviewMode : d.humanReviewMode,
+    cadenceMinutes: cadence.ok ? cadence.minutes : d.cadenceMinutes,
   };
 }
 
@@ -85,8 +133,12 @@ export function watcherGate(controls: YouTubeWatcherControls, action: WatcherAct
 /** ملخص للعرض في الصحة/الواجهة (بلا أي سرّ). */
 export function watcherControlsView(controls: YouTubeWatcherControls) {
   const c = normalizeWatcherControls(controls);
+  const cadencePaused = c.enabled && c.paused;
   return {
     ...c,
+    /** الفاصل الفعلي المطبَّق على الجدولة (ميلي ثانية). عند Kill Switch لا فحص. */
+    cadenceMs: cadencePaused ? 0 : cadenceMinutesToMs(c.cadenceMinutes),
+    cadenceEffectiveMinutes: c.cadenceMinutes,
     killSwitchActive: c.paused,
     autoReplyEffective: c.enabled && !c.paused && !c.humanReviewMode && c.autoReply,
     note: 'الأتمتة آمنة افتراضياً: المراقبة قراءة/تحليل فقط حتى يمكّن المالك الرد الآلي صراحةً.',

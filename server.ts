@@ -223,6 +223,11 @@ import {
   hasProcessed,
   isDeferredDecision,
   releaseDeferredEntries,
+  validateCadenceMinutes,
+  cadenceMinutesToMs,
+  WATCHER_DEFAULT_CADENCE_MINUTES,
+  WATCHER_MIN_CADENCE_MINUTES,
+  WATCHER_MAX_CADENCE_MINUTES,
   YOUTUBE_COMMENT_STAGES,
   YOUTUBE_COMMENT_STAGE_LABELS_AR,
   type YouTubeWatcherControls,
@@ -230,6 +235,7 @@ import {
   type YouTubeCommentStage,
   type WatcherOpportunity,
 } from "./engine/social/youtubeWatcher";
+import { createWatcherScheduler, type WatcherScheduler } from "./engine/social/youtubeWatcherScheduler";
 import {
   summarizeChannelAnalytics,
   analyzeYouTubeAudience,
@@ -4413,7 +4419,7 @@ let watcherState: WatcherState = {
   lastScanned: 0,
 };
 let watcherRunning = false;
-let watcherStartedAt: string | null = null;
+let watcherScheduler: WatcherScheduler | null = null;
 let watcherLastRun: { newDetected: number; replied: number; escalated: number; skipped: number; verified: number; failed: number; deferred: number; at: string } | null = null;
 
 const WATCHER_MAX_PROCESSED = 5000;
@@ -4495,9 +4501,24 @@ function applyWatcherStateSnapshot(raw: any): void {
   }
 }
 
-/** إيقاع المراقبة الفعلي (قابل للضبط بحدود آمنة، بلا polling عدواني). */
+/**
+ * الإيقاع الفعلي للجدولة (ميلي ثانية). مصدر الحقيقة هو إعداد المالك المحفوظ
+ * (`controls.cadenceMinutes`، 1..5)، مع احترام Kill Switch (0 = لا فحص).
+ * متغيّر البيئة `YOUTUBE_WATCHER_CADENCE_MS` يبقى احتياطياً فقط عند غياب الإعداد.
+ */
 function watcherCadenceMs(): number {
+  const c = normalizeWatcherControls(watcherState.controls);
+  if (c.enabled && c.paused) return 0;
+  const hasOwnerSetting = typeof (watcherState.controls as any)?.cadenceMinutes === 'number';
+  if (hasOwnerSetting) return cadenceMinutesToMs(c.cadenceMinutes);
   return normalizeCadenceMs(process.env.YOUTUBE_WATCHER_CADENCE_MS ?? null);
+}
+
+/** هل حان وقت الفحص وفق الإيقاع الحالي؟ Kill Switch ⇒ لا فحص. */
+function watcherPollDue(): boolean {
+  const cadence = watcherCadenceMs();
+  if (cadence <= 0) return false;
+  return isPollDue(watcherState.lastPollAt, Date.now(), cadence);
 }
 
 /** هل يمكن للـwatcher تنفيذ الرد فعلياً الآن؟ (مصدر الحقيقة الوحيد للحكم). */
@@ -4696,7 +4717,8 @@ async function runYouTubeWatcherCycle(trigger: "schedule" | "manual" = "schedule
 
 /** لقطة حالة المراقبة الكاملة للواجهة/الصحة (بلا أي سرّ). */
 function watcherStatusBlock() {
-  const cadence = watcherCadenceMs();
+  const controlsView = watcherControlsView(watcherState.controls);
+  const cadence = controlsView.cadenceMs && controlsView.cadenceMs > 0 ? controlsView.cadenceMs : watcherCadenceMs();
   const processed = watcherState.processed;
   const now = Date.now();
   // الزخم من زمن نشر التعليق الحقيقي (publishedAt) لا من وقت معالجتنا، مع fallback
@@ -4722,11 +4744,14 @@ function watcherStatusBlock() {
     commentId: p.commentId, videoId: p.videoId, authorName: p.authorName, text: p.text, reason: p.reason, at: p.at,
   }));
   return {
-    watcherActive: Boolean(watcherState.controls.enabled && !watcherState.controls.paused && watcherStartedAt),
-    controls: watcherControlsView(watcherState.controls),
+    watcherActive: Boolean(watcherState.controls.enabled && !watcherState.controls.paused && watcherScheduler?.status().active),
+    controls: controlsView,
     cadenceMs: cadence,
+    cadenceMinutes: controlsView.cadenceMinutes,
+    cadenceEffectiveMinutes: controlsView.cadenceEffectiveMinutes,
+    scheduler: watcherScheduler?.status() ?? { active: false, activeTimers: 0, cadenceMs: cadence, startedAt: null, reschedules: 0 },
     lastPollAt: watcherState.lastPollAt,
-    nextPollAt: nextPollAt(watcherState.lastPollAt, cadence),
+    nextPollAt: cadence > 0 ? nextPollAt(watcherState.lastPollAt, cadence) : null,
     pollCount: watcherState.pollCount,
     lastNewCommentAt: watcherState.lastCommentAt,
     lastCommentId: watcherState.lastCommentId,
@@ -4806,18 +4831,45 @@ function watcherIraqiReply(text: string): string {
  * (Postgres) فتصمد بعد restart/deploy. `.unref()` يمنع منع الخروج النظيف.
  */
 function startYouTubeWatcher(): void {
-  if (watcherStartedAt) return;
-  watcherStartedAt = new Date().toISOString();
-  const tick = () => {
-    const cadence = watcherCadenceMs();
-    if (!isPollDue(watcherState.lastPollAt, Date.now(), cadence)) return;
-    runYouTubeWatcherCycle("schedule").catch(() => { /* الخطأ مسجَّل داخل الدورة */ });
-  };
-  const timer = setInterval(tick, Math.min(60_000, watcherCadenceMs()));
-  (timer as any).unref?.();
-  // دورة إقلاع أولى بعد مهلة قصيرة (تسمح باكتمال تجهيز المخزن).
-  const boot = setTimeout(tick, 15_000);
-  (boot as any).unref?.();
+  if (watcherScheduler) { watcherScheduler.start(); return; }
+  watcherScheduler = createWatcherScheduler({
+    setTimer: (fn, ms) => {
+      const t = setInterval(fn, ms);
+      (t as any).unref?.();
+      return { clear: () => clearInterval(t) };
+    },
+    setTimeoutOnce: (fn, ms) => {
+      const t = setTimeout(fn, ms);
+      (t as any).unref?.();
+      return { clear: () => clearTimeout(t) };
+    },
+    getCadenceMs: () => Math.max(1, watcherCadenceMs()),
+    isDue: () => watcherPollDue(),
+    runCycle: () => { runYouTubeWatcherCycle("schedule").catch(() => { /* الخطأ مسجَّل داخل الدورة */ }); },
+  });
+  // Kill Switch عند الإقلاع: لا نبضات. تُستأنف عند رفع الإيقاف من الواجهة.
+  const c = normalizeWatcherControls(watcherState.controls);
+  if (c.enabled && c.paused) {
+    watcherScheduler.stop();
+    return;
+  }
+  watcherScheduler.start();
+}
+
+/**
+ * يُعيد جدولة الـwatcher بالإيقاع الجديد بلا تكرار: يُبطل المؤقّت القديم ويُنشئ
+ * واحداً جديداً. Kill Switch ⇒ يوقف الجدولة كلياً (لا نبضات). إن كان متوقفاً
+ * ويعود مفعّلاً ⇒ يبدأ الجدولة من جديد.
+ */
+function applyWatcherCadence(): { activeTimers: number; cadenceMs: number; active: boolean } {
+  if (!watcherScheduler) startYouTubeWatcher();
+  const c = normalizeWatcherControls(watcherState.controls);
+  if (c.enabled && c.paused) {
+    watcherScheduler?.stop();
+    return { activeTimers: 0, cadenceMs: 0, active: false };
+  }
+  const r = watcherScheduler!.reschedule();
+  return { ...r, active: true };
 }
 
 // --- مسارات التحكم بالمراقبة (Owner Controls + Kill Switch) — للمالك فقط ---
@@ -4828,6 +4880,24 @@ app.get("/api/agent/youtube/watcher", authenticateToken, (_req, res) => {
 app.post("/api/agent/youtube/watcher/controls", requireOwner, async (req, res) => {
   const body = req.body || {};
   const prevControls = normalizeWatcherControls(watcherState.controls);
+  // الفاصل (الدقائق): تحقق صريح على الخادم — نفس حدود الواجهة، ورفض بأي طريقة
+  // تجاوزت الواجهة. لا يُطبَّق أي تغيير على الفاصل إن كانت القيمة غير صالحة.
+  if (body.cadenceMinutes !== undefined || body.cadenceMs !== undefined) {
+    const requested = body.cadenceMinutes !== undefined ? body.cadenceMinutes : undefined;
+    const v = validateCadenceMinutes(requested);
+    if (!v.ok) {
+      audit((req as any).user.id, "youtube_watcher_cadence_rejected", JSON.stringify({ requested: String(requested), reason: v.reason }));
+      return res.status(400).json({
+        success: false,
+        error: `قيمة فاصل غير صالحة: ${v.reason}`,
+        code: "INVALID_CADENCE",
+        allowedMinutes: { min: WATCHER_MIN_CADENCE_MINUTES, max: WATCHER_MAX_CADENCE_MINUTES, values: [1, 2, 3, 4, 5] },
+        controls: watcherControlsView(watcherState.controls),
+      });
+    }
+    body.cadenceMinutes = v.minutes;
+    delete body.cadenceMs;
+  }
   watcherState.controls = normalizeWatcherControls({ ...watcherState.controls, ...body });
   audit((req as any).user.id, "youtube_watcher_controls_updated", JSON.stringify({ ...watcherState.controls }));
   // عند الانتقال من «الرد معطّل» إلى «الرد ممكّن» نحرّر التعليقات المؤجَّلة (التي
@@ -4842,7 +4912,24 @@ app.post("/api/agent/youtube/watcher/controls", requireOwner, async (req, res) =
     if (released) watcherAudit({ action: "deferred_released", decision: "reevaluate", reason: `حُرِّر ${released} تعليقاً مؤجَّلاً لإعادة التقييم بعد تمكين الرد الآلي.` });
   }
   await persistWatcherState();
-  res.json({ success: true, controls: watcherControlsView(watcherState.controls), releasedDeferred: released, note: "حُدِّثت إعدادات الأتمتة؛ تسري فوراً على الدورة التالية." });
+  // إعادة الجدولة بأمان: يُبطل المؤقّت القديم ويُنشئ واحداً جديداً (لا تكرار).
+  const schedulerInfo = applyWatcherCadence();
+  const cadenceChanged = prevControls.cadenceMinutes !== watcherState.controls.cadenceMinutes;
+  if (cadenceChanged) {
+    watcherAudit({ action: "cadence_updated", decision: "reschedule", reason: `فاصل الأتمتة: ${prevControls.cadenceMinutes} → ${watcherState.controls.cadenceMinutes} دقيقة.`, actor: (req as any).user.id });
+  }
+  res.json({
+    success: true,
+    controls: watcherControlsView(watcherState.controls),
+    cadenceMinutes: watcherState.controls.cadenceMinutes,
+    cadenceMs: watcherControlsView(watcherState.controls).cadenceMs,
+    cadenceChanged,
+    scheduler: schedulerInfo,
+    releasedDeferred: released,
+    note: cadenceChanged
+      ? `حُدِّث فاصل الأتمتة إلى ${watcherState.controls.cadenceMinutes} دقيقة؛ يسري على الدورة التالية.`
+      : "حُدِّثت إعدادات الأتمتة؛ تسري فوراً على الدورة التالية.",
+  });
 });
 
 app.post("/api/agent/youtube/watcher/poll", requireOwner, async (req, res) => {

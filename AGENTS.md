@@ -2242,3 +2242,30 @@ replied=0, escalated=6` **سجلات تاريخية** أُنتجت قبل الإ
 
 **لم يُمسّ:** Facebook/Instagram/Telegram/TikTok، ولا Gemini، ولا مفاتيح التشفير، ولا
 مسارات OAuth، ولا أي سرّ.
+
+## التحكم بفاصل أتمتة YouTube (وقت الأتمتة) — 1..5 دقائق (2026-09-26)
+
+الفاصل كان ثابتاً من البيئة (`YOUTUBE_WATCHER_CADENCE_MS`) بلا وسيلة للمالك لتغييره
+من الواجهة. أُضيف تحكم حقيقي بفاصل فحص تعليقات YouTube ضمن نطاق آمن [1..5] دقائق.
+
+- **مصدر واحد للتحقق:** `validateCadenceMinutes` في `engine/social/youtubeWatcher.ts`
+  يقبل عدداً صحيحاً فقط ضمن [1..5] ويرفض صراحةً: 0، السالب، العشري، الأكبر من 5، NaN،
+  والنصوص غير الرقمية — بلا تقريب أو قصّ صامت. `cadenceMinutesToMs` يحوّل بعد التحقق
+  فقط، و`cadenceMsToMinutes` يقرأ الحالة القديمة (توافق خلفي مع `cadenceMs`).
+- **حقل مملوك:** `cadenceMinutes` صار جزءاً من `YouTubeWatcherControls`، يُحفظ ويُسترجَع
+  عبر آلية الـwatcher نفسها (`WATCHER_STATE_KEY`) فيصمد بعد restart/deploy. الافتراضي 1.
+- **فرض على الخادم:** مسار `/api/agent/youtube/watcher/controls` (للمالك) يتحقق من الفاصل
+  ويرد **400 `INVALID_CADENCE`** بأي قيمة غير صالحة، فلا يكفي إخفاء الخيار في الواجهة.
+- **جدولة بمؤقّت واحد:** `engine/social/youtubeWatcherScheduler.ts` مصدر واحد يضمن أن
+  `reschedule()` يُبطل المؤقّت القديم **قبل** إنشاء الجديد، فلا تتراكم المؤقّتات عند تغيير
+  الفاصل. عند Kill Switch يتوقف المؤقّت كلياً (الفاصل الفعلي 0). تغيير الفاصل لا يمسّ
+  autoReply/autoPublish/autoSchedule/humanReviewMode، ولا منطق الرد أو التصنيف.
+- **الواجهة:** قسم «وقت الأتمتة» في `YouTubeOperationsView` بقائمة 1..5 دقائق (للمالك فقط)،
+  ويعرض القيمة الرسمية بعد الحفظ؛ القيمة المرسلة الخاطئة تُرفض ولا تُغيّر المحفوظ.
+- اختبارات: `engine/tests/youtube.interval.test.ts` (`npm run test:youtube-interval`، 28
+  فحصاً على خادم حقيقي: الافتراضي 1، قبول 1..5، رفض 0/سالب/عشري/>5/نص، 401 بلا جلسة،
+  الثبات بعد إعادة التشغيل)، ومجموعتا P/Q في `youtube.watcher.test.ts` (تحقق الحدود +
+  سلامة الجدولة بمؤقّت واحد). فحوص final-audit الـ15: `youtube-cadence-*` (585 إجمالاً).
+
+**لم يُمسّ:** YouTube OAuth/التفويض/الرد/التصنيف/`executeYouTubeReply`، ولا Facebook/
+Instagram/Telegram/TikTok، ولا Gemini، ولا مفاتيح التشفير، ولا أي سرّ.

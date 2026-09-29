@@ -61,16 +61,30 @@ export function YouTubeOperationsView() {
     return () => clearInterval(t);
   }, [load]);
 
-  const setControls = async (patch: Record<string, boolean>) => {
+  const setControls = async (patch: Record<string, boolean | number>) => {
     setBusy(true); setNote(null);
     try {
       const res = await apiService.setYouTubeWatcherControls(patch);
-      setNote('حُدِّثت الإعدادات — تسري على الدورة التالية.');
+      setNote(res?.note || 'حُدِّثت الإعدادات — تسري على الدورة التالية.');
       await load();
       return res;
     } catch (e: any) {
       setError(e?.message || 'تعذر التحديث');
     } finally { setBusy(false); }
+  };
+
+  /** تغيير فاصل الأتمتة (دقائق): يُرسل القيمة للمالك فقط، ويعرض القيمة الرسمية بعد الحفظ. */
+  const changeCadence = async (minutes: number) => {
+    setBusy(true); setNote(null); setError(null);
+    try {
+      const res = await apiService.setYouTubeWatcherControls({ cadenceMinutes: minutes });
+      setNote(res?.note || `حُدِّث فاصل الأتمتة إلى ${minutes} دقيقة.`);
+    } catch (e: any) {
+      setError(e?.message || 'تعذر تغيير فاصل الأتمتة — أُبقيت القيمة السابقة.');
+    } finally {
+      await load();
+      setBusy(false);
+    }
   };
 
   const poll = async () => {
@@ -154,6 +168,30 @@ export function YouTubeOperationsView() {
         {c.killSwitchActive ? (
           <p className="text-xs text-rose-300 mt-2">Kill Switch فعّال: توقّفت الردود/النشر/الجدولة الآلية، وبقيت القراءة والتحليل.</p>
         ) : null}
+      </section>
+
+      {/* Automation interval (وقت الأتمتة) */}
+      <section>
+        <h2 className="text-sm font-semibold text-slate-300 mb-2">وقت الأتمتة</h2>
+        <div className="bg-slate-900 border border-slate-800 rounded-2xl p-4 flex flex-wrap items-center gap-3">
+          <label htmlFor="yt-cadence" className="text-sm text-slate-300">فاصل المراقبة:</label>
+          <select
+            id="yt-cadence"
+            disabled={!isOwner || busy}
+            value={String(c.cadenceMinutes ?? 1)}
+            onChange={(e) => changeCadence(Number(e.target.value))}
+            className="bg-slate-800 border border-slate-700 text-slate-100 rounded-lg px-3 py-1.5 text-sm disabled:opacity-50"
+          >
+            {[1, 2, 3, 4, 5].map((m) => (
+              <option key={m} value={m}>{m === 1 ? '1 دقيقة' : m === 2 ? '2 دقيقة' : `${m} دقائق`}</option>
+            ))}
+          </select>
+          <span className="text-xs text-slate-400">
+            القيمة الحالية: <span className="text-slate-200 font-semibold">{c.cadenceMinutes ?? 1} دقيقة</span>
+          </span>
+          {!isOwner ? <span className="text-xs text-amber-300">للمالك فقط</span> : null}
+        </div>
+        <p className="text-xs text-slate-500 mt-2">يتحكم هذا الوقت بفاصل فحص تعليقات YouTube.</p>
       </section>
 
       {/* Attention Required */}
