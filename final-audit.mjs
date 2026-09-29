@@ -631,7 +631,7 @@ add('planner-youtube-no-comments-default', /const wantsComments = wantsYouTubeCo
 add('youtube-comments-tool-real-data', /id: 'youtube_comments'[\s\S]{0,1600}?latestComment:/.test(agentTools), 'أداة youtube_comments تُعيد أحدث تعليق حقيقي ومعرّفه للتحليل التالي');
 add('youtube-videos-tool-latest-id', /id: 'youtube_videos'[\s\S]{0,900}?latestVideoId/.test(agentTools), 'أداة youtube_videos تُعلن أحدث معرّف فيديو حقيقي ناتج من playlistItems+videos');
 const youtubeModuleSrc = read('engine/social/youtube.ts');
-add('youtube-comment-scan-bounded', youtubeModuleSrc.includes('YOUTUBE_COMMENT_SCAN_VIDEO_LIMIT') && server.includes('slice(0, YOUTUBE_COMMENT_SCAN_VIDEO_LIMIT)'), 'حدّ ثابت لعدد الفيديوهات المفحوصة يمنع استهلاكاً غير محدود للـAPI');
+add('youtube-comment-scan-bounded', youtubeModuleSrc.includes('YOUTUBE_COMMENT_SCAN_VIDEO_LIMIT') && server.includes('slice(0, commentScanVideoLimitFromEnv())'), 'حدّ لف عدد الفيديوهات المفحوصة (افتراضي ثابت + قابل للضبط بحدّ أقصى) يمنع استهلاكاً غير محدود للـAPI');
 add('youtube-comments-multi-video', /for \(const videoId of scannedVideoIds\)/.test(server) && server.includes('order=time'), 'قراءة التعليقات تفحص مجموعة أحدث الفيديوهات مرتّبة زمنياً لا فيديو واحداً');
 add('youtube-comments-latest-by-time', /all\.sort\(\(a, b\) => String\(b\.publishedAt/.test(server), 'أحدث تعليق فعلي يُختار بترتيب زمني تنازلي حقيقي');
 const youtubeTest = read('engine/tests/youtube.connector.test.ts');
@@ -909,6 +909,25 @@ add('content-pipeline-tests', fs.existsSync(path.join(root, 'engine/tests/conten
 add('content-pipeline-integration-tests', fs.existsSync(path.join(root, 'engine/tests/content.pipeline.integration.test.ts')) && pkg.scripts['test:content-integration-ep'], 'اختبار تكاملي لطابور المحتوى مسجّل');
 add('content-pipeline-tests-in-suite', pkgTest.includes('test:content-pipeline') && pkgTest.includes('test:content-integration-ep'), 'اختبارا المحتوى ضمن npm test');
 add('content-ui-queue-panel', contentPanel.includes('getYouTubeContentQueue') && contentPanel.includes('reviewYouTubeContentItem') && contentPanel.includes('getYouTubeScheduleSuggestion'), 'لوحة طابور المحتوى موصولة بمسارات الخادم');
+const decisionTest = read('engine/tests/youtube.decision.test.ts');
+
+// --- دقة قرارات الـwatcher وتفسير التعليقات الحقيقية (Batch 23) ---
+add('youtube-decision-code-stage-map', watcherModule.includes('YOUTUBE_DECISION_CODE_STAGES') && watcherModule.includes('isExplicitTerminalDecision'), 'خريطة صريحة بين كود القرار والمرحلة الطرفية');
+add('youtube-terminal-decision-forced', watcherModule.includes('stage: YouTubeCommentStage, code: string | null | undefined') && watcherModule.includes('return allowed.includes(stage)'), 'لا «معالجة بلا قرار»: المرحلة يجب أن تطابق الكود');
+add('youtube-channel-skip-has-code', server.includes('SKIP_OUT_OF_CHANNEL_CONTEXT'), 'تجاهل خارج سياق القناة يحمل كوداً صريحاً');
+add('youtube-reply-blocked-has-code', server.includes('ESCALATE_REPLY_NOT_READY'), 'حجب الرد يحمل كود تصعيد صريح لا REPLY_ALLOWED');
+add('youtube-reconcile-endpoint', server.includes('/api/agent/youtube/watcher/reconcile') && server.includes('buildWatcherReconciliation'), 'مسار مطابقة تشخيصي للتعليقات الحقيقية');
+add('youtube-reconcile-read-only', /function buildWatcherReconciliation[\s\S]*?readOnly: true/.test(server) && !server.slice(server.indexOf('function buildWatcherReconciliation'), server.indexOf('app.get("/api/agent/youtube/watcher/reconcile"')).includes('executeYouTubeReply'), 'المطابقة قراءة فقط بلا أي إرسال رد');
+add('youtube-reconcile-owner-only', /app.get\("\/api\/agent\/youtube\/watcher\/reconcile", requireOwner/.test(server), 'المطابقة للمالك فقط');
+add('youtube-reconcile-reports-undetected', server.includes('undetectedReason') && server.includes('terminalDecisionViolations'), 'تُعلن التعليقات غير المكتشفة والمخالفات بلا اختلاق');
+add('youtube-scan-window-configurable', server.includes('commentScanVideoLimitFromEnv()') && read('engine/social/youtube.ts').includes('resolveCommentScanVideoLimit'), 'نافذة فحص التعليقات قابلة للضبط بحدود آمنة');
+add('youtube-scan-window-bounded', read('engine/social/youtube.ts').includes('YOUTUBE_COMMENT_SCAN_MAX_VIDEOS = 25'), 'حد أقصى صريح لنافذة الفحص (لا استهلاك غير محدود)');
+add('youtube-decision-tests', fs.existsSync(path.join(root, 'engine/tests/youtube.decision.test.ts')) && pkg.scripts['test:youtube-decision'], 'اختبار انحدار قرارات الـwatcher مسجّل');
+add('youtube-decision-tests-in-suite', typeof pkg.scripts.test === 'string' && pkg.scripts.test.includes('test:youtube-decision'), 'اختبار القرارات ضمن npm test');
+add('youtube-praise-real-comment', decisionTest.includes('عاشت إيدكم') && decisionTest.includes("c.intent === 'praise'"), '«عاشت إيدكم» تُصنَّف مدحاً في الاختبار');
+add('youtube-inquiry-real-comment', decisionTest.includes('شنو نوع الموبايل'), '«شنو نوع الموبايل» مغطّى في الاختبار بلا اختراع');
+add('youtube-no-fake-reply-claim', decisionTest.includes('externalReplyId') && decisionTest.includes('FAILED'), 'لا ادعاء تسليم بلا معرّف رد حقيقي');
+add('youtube-decision-no-ai', !/GoogleGenAI|generateContent/.test(watcherModule) && !/from ['"]\\.\\.\/ai\//.test(watcherModule), 'محرك القرارات حتمي بلا أي نداء AI (صفر حصة)');
 
 const failed = checks.filter(x => !x.ok);
 console.table(checks);

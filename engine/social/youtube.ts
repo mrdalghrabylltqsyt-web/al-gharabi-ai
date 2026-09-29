@@ -32,6 +32,29 @@ export const YOUTUBE_API_BASE = 'https://www.googleapis.com';
  * يمنع أي استهلاك غير محدود لـcommentThreads.list: طلب واحد لكل فيديو، وبحدّ ثابت.
  */
 export const YOUTUBE_COMMENT_SCAN_VIDEO_LIMIT = 5;
+
+/** حدود نافذة فحص التعليقات (عدد الفيديوهات) — أوسع من الافتراضي وأقل من استهلاك غير محدود. */
+export const YOUTUBE_COMMENT_SCAN_MIN_VIDEOS = 1;
+export const YOUTUBE_COMMENT_SCAN_MAX_VIDEOS = 25;
+
+/**
+ * نافذة الفحص الفعلية: تُقرأ من البيئة `YOUTUBE_COMMENT_SCAN_VIDEO_LIMIT` ضمن حدود
+ * آمنة [1..25]، وإلا الافتراضي 5. الغرض: ضمان عدم إغفال تعليقات حقيقية على فيديو
+ * أقدم بقليل، بضبط المالك بدل تثبيت النافذة في الكود. لا تقريب صامت — القيمة غير
+ * الصالحة تُستبدل بالافتراضي.
+ */
+export function resolveCommentScanVideoLimit(input?: string | number | null): number {
+  const raw = typeof input === 'string' ? Number(input.trim()) : input;
+  const n = Number.isFinite(raw as number) ? Math.floor(Number(raw)) : YOUTUBE_COMMENT_SCAN_VIDEO_LIMIT;
+  if (n < YOUTUBE_COMMENT_SCAN_MIN_VIDEOS) return YOUTUBE_COMMENT_SCAN_VIDEO_LIMIT;
+  if (n > YOUTUBE_COMMENT_SCAN_MAX_VIDEOS) return YOUTUBE_COMMENT_SCAN_MAX_VIDEOS;
+  return n;
+}
+
+/** النافذة الفعلية من البيئة الحالية. */
+export function commentScanVideoLimitFromEnv(): number {
+  return resolveCommentScanVideoLimit(process.env.YOUTUBE_COMMENT_SCAN_VIDEO_LIMIT ?? null);
+}
 export const YOUTUBE_UPLOAD_BASE = 'https://www.googleapis.com';
 export const YOUTUBE_TOKEN_ENDPOINT = 'https://oauth2.googleapis.com/token';
 

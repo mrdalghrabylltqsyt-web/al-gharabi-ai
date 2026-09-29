@@ -174,6 +174,7 @@ import {
   YOUTUBE_CAPABILITY_MATRIX,
   YOUTUBE_PRIVACY_STATUSES,
   YOUTUBE_COMMENT_SCAN_VIDEO_LIMIT,
+  commentScanVideoLimitFromEnv,
   resolveYouTubeScopes,
   YouTubeClient,
   youtubeCapabilityImplemented,
@@ -238,6 +239,9 @@ import {
   WATCHER_MAX_CADENCE_MINUTES,
   YOUTUBE_COMMENT_STAGES,
   YOUTUBE_COMMENT_STAGE_LABELS_AR,
+  isExplicitTerminalDecision,
+  repairProcessedDecisionCodes,
+  type CommentDecisionCode,
   type YouTubeWatcherControls,
   type WatcherProcessedEntry,
   type YouTubeCommentStage,
@@ -4784,6 +4788,10 @@ function applyWatcherStateSnapshot(raw: any): void {
     const r = releaseDeferredEntries(watcherState.processed);
     watcherState.processed = r.processed;
   }
+  // ترميم غير حذفي: أي سجل قديم مُعالج بلا كود (أو بكود متناقض) يُمنح كوداً طرفياً
+  // صريحاً — مع الحفاظ الكامل على السجل. يمنع بقاء أي «معالجة بلا قرار» في التاريخ.
+  const repair = repairProcessedDecisionCodes(watcherState.processed);
+  watcherState.processed = repair.entries;
 }
 
 /**
@@ -4897,7 +4905,7 @@ async function runYouTubeWatcherCycle(trigger: "schedule" | "manual" = "schedule
       await persistWatcherState();
       return { ok: false, error: videosRes.error, code: videosRes.code, newDetected, replied, escalated, skipped, verified, failed };
     }
-    const videoIds = videosRes.data.videos.map((v: any) => v.videoId).filter(Boolean).slice(0, YOUTUBE_COMMENT_SCAN_VIDEO_LIMIT);
+    const videoIds = videosRes.data.videos.map((v: any) => v.videoId).filter(Boolean).slice(0, commentScanVideoLimitFromEnv());
     const commentsRes = await buildAgentToolContext("system", "system").youtubeComments(videoIds);
     if (!commentsRes.ok) {
       watcherState.lastError = String(commentsRes.code || "COMMENTS_FETCH_FAILED");
@@ -4973,10 +4981,10 @@ async function runYouTubeWatcherCycle(trigger: "schedule" | "manual" = "schedule
       const commentVideoId = String(c.videoId || "");
       const belongsToChannel = !expectedChannelId || !commentVideoId || videoIds.includes(commentVideoId);
       if (decision.action === "reply" && !belongsToChannel) {
-        baseEntry.stage = "SKIPPED"; baseEntry.action = "skip"; baseEntry.reason = "التعليق لا يخص سياق القناة الموثّقة.";
+        baseEntry.stage = "SKIPPED"; baseEntry.action = "skip"; baseEntry.code = "SKIP_OUT_OF_CHANNEL_CONTEXT"; baseEntry.reason = "التعليق لا يخص سياق القناة الموثّقة.";
         skipped += 1;
         watcherState.processed.unshift(baseEntry);
-        watcherAudit({ action: "comment_skipped", commentId: c.commentId, videoId: c.videoId, reason: baseEntry.reason, decision: "skip" });
+        watcherAudit({ action: "comment_skipped", commentId: c.commentId, videoId: c.videoId, reason: baseEntry.reason, decision: "skip", error: baseEntry.code });
         continue;
       }
       if (decision.action !== "reply") {
@@ -4995,6 +5003,7 @@ async function runYouTubeWatcherCycle(trigger: "schedule" | "manual" = "schedule
       if (!replyReady.ready || !replyGate.allowed) {
         const code = !replyGate.allowed ? replyGate.code : (replyReady.code || "REPLY_NOT_READY");
         baseEntry.stage = "ESCALATED";
+        baseEntry.code = "ESCALATE_REPLY_NOT_READY";
         baseEntry.reason = `الرد غير ممكن الآن: ${!replyGate.allowed ? replyGate.reason : (replyReady.reason || replyReady.code)}`;
         escalated += 1;
         watcherState.processed.unshift(baseEntry);
@@ -5310,6 +5319,73 @@ app.post("/api/agent/youtube/watcher/poll", requireOwner, async (req, res) => {
   const result = await runYouTubeWatcherCycle("manual");
   res.json({ success: result.ok, result, watcher: watcherStatusBlock() });
 });
+
+/**
+ * مطابقة تشخيصية **قراءة فقط** (للقراءة/التحليل فقط، بلا رد وبلا تعديل سجلات):
+ * تقرأ تعليقات YouTube الحقيقية من نفس نافذة الفحص وتقابلها بسجل المعالجة، فتُعلن
+ * لكل تعليق: هل اكتُشف؟ ما مرحلته/قراره/سببه؟ وما معرّف الرد الحقيقي إن وُجد؟
+ * وتُعلن التعليقات **غير المكتشفة** مع سبب صريح (خارج نافذة الفحص) بلا اختلاق.
+ * الغرض: تفسير أي تعليق حقيقي بلا رد بلا أي إرسال ولا كتابة.
+ */
+async function buildWatcherReconciliation(): Promise<any> {
+  const guard = youtubeOperationGuard();
+  const readGate = watcherGate(normalizeWatcherControls(watcherState.controls), "read");
+  if (!guard.ok) return { ok: false, code: guard.code, error: guard.error };
+  if (!readGate.allowed) return { ok: false, code: readGate.code, error: readGate.reason };
+  if (!youtubeForceSslGranted()) return { ok: false, code: "SCOPE_UPGRADE_REQUIRED", error: "إعادة ربط YouTube مطلوبة (force-ssl)." };
+  const videosRes = await youtubeClient().listMyVideos((await ensureYouTubeAccessToken()).token!, {
+    uploadsPlaylistId: String(youtubeStoredCredentials()?.uploadsPlaylistId || ""), maxResults: 25,
+  });
+  if (!videosRes.ok || !videosRes.data) return { ok: false, code: videosRes.code, error: videosRes.error };
+  const scanLimit = commentScanVideoLimitFromEnv();
+  const videoIds = videosRes.data.videos.map((v: any) => v.videoId).filter(Boolean).slice(0, scanLimit);
+  // قراءة مباشرة بلا أي استيعاب/كتابة: نفس نقطة YouTube الرسمية (commentThreads.list)
+  // دون تمرير عبر أداة الاستيعاب، فالفحص **قراءة فقط** فعلاً ولا يمسّ أي سجل.
+  const ensured = await ensureYouTubeAccessToken();
+  if (!ensured.ok || !ensured.token) return { ok: false, code: ensured.code, error: ensured.error };
+  const comments: any[] = [];
+  for (const videoId of videoIds) {
+    const res = await youtubeClient().listCommentThreads(ensured.token, { videoId, maxResults: 25 });
+    if (!res.ok || !res.data) continue;
+    for (const c of res.data.comments) comments.push({ ...c, videoId: c.videoId ?? videoId });
+  }
+  const codeOf = (p: WatcherProcessedEntry) => p?.code || null;
+  const rows = comments.map((c) => {
+    const entries = watcherState.processed.filter((p) => p.commentId === c.commentId);
+    const entry = entries[0] || null;
+    return {
+      commentId: c.commentId, videoId: c.videoId ?? null, authorName: c.authorName ?? null,
+      text: String(c.text || ''), publishedAt: c.publishedAt ?? null,
+      detected: Boolean(entry),
+      detectedAt: entry?.at ?? null,
+      stage: entry?.stage ?? null, decision: entry?.action ?? null, code: codeOf(entry),
+      reason: entry?.reason ?? null, deferred: Boolean(entry?.deferred),
+      externalReplyId: entry?.externalReplyId ?? null,
+      terminalDecisionExplicit: entry ? isExplicitTerminalDecision(entry.stage, codeOf(entry)) : null,
+      undetectedReason: entry ? null : 'خارج نافذة الفحص الحالية (لم يُقرأ ضمن أحدث الفيديوهات المفحوصة).',
+    };
+  });
+  rows.sort((a, b) => String(b.publishedAt || '').localeCompare(String(a.publishedAt || '')));
+  const violations = watcherState.processed
+    .filter((p) => p.stage !== 'NEW' && !isExplicitTerminalDecision(p.stage, codeOf(p)))
+    .map((p) => ({ commentId: p.commentId, stage: p.stage, code: codeOf(p), reason: p.reason, at: p.at }));
+  return {
+    ok: true, readOnly: true, scannedVideoIds: videoIds, scanVideoLimit: scanLimit,
+    commentsRead: comments.length, detected: rows.filter((r) => r.detected).length,
+    undetected: rows.filter((r) => !r.detected).length,
+    terminalDecisionViolations: violations, rows,
+  };
+}
+
+app.get("/api/agent/youtube/watcher/reconcile", requireOwner, async (_req, res) => {
+  try {
+    const report = await buildWatcherReconciliation();
+    res.status(report.ok ? 200 : 503).json({ success: report.ok, report });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: String(error?.message || 'تعذّر بناء تقرير المطابقة.').slice(0, 200) });
+  }
+});
+
 
 app.get("/api/agent/youtube/watcher/brief", authenticateToken, (_req, res) => {
   const brief = buildWatcherDailyBrief();
@@ -7996,7 +8072,7 @@ function buildAgentToolContext(operator: AgentOperator, userId: string): AgentTo
       // نفحص مجموعة محدودة من أحدث الفيديوهات الحقيقية (حدّ ثابت يمنع استهلاكاً غير محدود):
       // طلب commentThreads.list واحد لكل فيديو، وorder=time من الموصل يعطي الأحدث أولاً.
       const list = (Array.isArray(videoIds) ? videoIds : String(videoIds || '').split(',')).map((v) => String(v).trim()).filter(Boolean);
-      const scannedVideoIds = [...new Set(list)].slice(0, YOUTUBE_COMMENT_SCAN_VIDEO_LIMIT);
+      const scannedVideoIds = [...new Set(list)].slice(0, commentScanVideoLimitFromEnv());
       if (!scannedVideoIds.length) return { ok: false, error: "لم تُقدَّم أي معرّفات فيديو حقيقية.", code: "MISSING_ARGUMENT" };
       const all: any[] = [];
       let inserted = 0; let duplicates = 0; let lastError: { error: string; code: string | null } | null = null; let okCount = 0;

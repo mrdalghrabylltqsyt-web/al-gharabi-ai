@@ -2474,4 +2474,47 @@ allowedActions)، `youtube.connector.test.ts` 227 (تحقق المادة في م
 **لم يُمسّ:** OAuth/scopes/refresh token، ولا تفويض YouTube (reply/publish/schedule/
 update_video)، ولا دورة المراقب (cadence/تصنيف/autoReply/escalation/التقرير)، ولا حماية
 Gemini (كل التحقق أعلاه حتمي بلا AI)، ولا Facebook/Instagram/TikTok/Telegram.
+## تفسير تعليقات YouTube الحقيقية: قرار صريح لكل تعليق + مطابقة قراءة فقط (Batch 23, 2026-09-29)
+
+**الجذر المُثبت (بلا تخمين):** تعليقان حقيقيان على القناة بلا رد. التشخيص من الحالة
+الحيّة (`/api/health`) أثبت **لا عطل اكتشاف**: `controls.humanReviewMode = true` مع
+`autoReplyEffective = false`، والمراقب يعمل (`activeTimers = 1`, `pollCount` يتقدّم,
+`lastError = null`, `consecutiveErrors = 0`).
+
+- التصنيف الحتمي صحيح تماماً: «عاشت إيدكم» ⇒ `praise/thanks/positive`، و«شنو نوع الموبايل»
+  ⇒ `question`. أي أن الإصلاح السابق للمدح العراقي يعمل.
+- **القاعدة الحاكمة (المقصودة):** في `decideCommentAction`، الحالات **الآمنة الواضحة**
+  (`praise` فقط عبر `isSafeForAutoReply`) تُرد آلياً حتى مع `humanReviewMode`، أما
+  **غير الواضحة** (سؤال/مجهول) فتُحوَّل إلى `ESCALATE_HUMAN_REVIEW_MODE`. لذا:
+  «عاشت إيدكم» (مدح) **يُرد عليها آلياً**، و«شنو نوع الموبايل» (سؤال) **يُصعَّد للمراجعة
+  بلا رد** — وهذا سلوك مقصود لا عطل. التعليقان إذن اكتُشفا وصُنِّفا وقُرِّرا صراحةً.
+- لا علاقة للسبب بـdelegation (`active`) ولا autoReply (`true`) ولا Kill Switch (`false`).
+
+**الفجوات الحقيقية في الكود (أُصلحت):**
+
+1. **تناقض كود/مرحلة + «معالجة بلا قرار».** `server.ts` كان يكتب `stage: ESCALATED`
+   مع الاحتفاظ بكود `REPLY_ALLOWED` عند حجب الرد، ويكتب `stage: SKIPPED` **بلا كود**
+   عند تجاهل تعليق خارج سياق القناة. أُضيفت خريطة صريحة
+   `YOUTUBE_DECISION_CODE_STAGES` + `isExplicitTerminalDecision` تضمن أن كل (مرحلة، كود)
+   متّسق: `SKIP_OUT_OF_CHANNEL_CONTEXT` و`ESCALATE_REPLY_NOT_READY` صارا كودين صريحين.
+2. **ترميم غير حذفي للتاريخ.** `repairProcessedDecisionCodes` يُمنح أي سجل قديم مُعالج
+   بكود مفقود/متناقض كوداً طرفياً (`SKIP_LEGACY_UNCLASSIFIED` / `ESCALATE_LEGACY_UNCLASSIFIED`
+   / `REPLY_ALLOWED`) — **بلا حذف أي سجل** ولا تغيير مرحلته. يُطبَّق عند تحميل الحالة.
+3. **نافذة فحص قابلة للضبط.** `commentScanVideoLimitFromEnv` تقرأ
+   `YOUTUBE_COMMENT_SCAN_VIDEO_LIMIT` ضمن [1..25] (افتراضي 5)، فلا تُغفل تعليقات حقيقية
+   على فيديو أقدم بقليل، بضبط المالك لا بتثبيت في الكود.
+4. **مسار مطابقة تشخيصي قراءة فقط** `GET /api/agent/youtube/watcher/reconcile`
+   (للمالك فقط): يقرأ التعليقات الحقيقية مباشرة (`commentThreads.list` بلا استيعاب ولا
+   كتابة) ويقابلها بسجل المعالجة، فيُعلن لكل تعليق: هل اكتُشف؟ مرحلته/قراره/سببه؟ معرّف
+   الرد الحقيقي؟ ولماذا لم يُكتشف غير المكتشَف — **بلا اختلاق** وبلا أي إرسال رد.
+
+الوضع الصادق: «عاشت إيدكم» (مدح) يُرد عليه آلياً في الوضع الحالي؛ «شنو نوع الموبايل»
+(سؤال) يُصعَّد للمراجعة بلا رد لأن `humanReviewMode` يحوّل غير الواضح للمراجعة. لا
+يُدَّعى أي رد لم يقع، ومسار المطابقة يثبت لكل تعليق حقيقٍ هل اكتُشف وما قراره.
+
+اختبارات: `engine/tests/youtube.decision.test.ts` (`npm run test:youtube-decision`، 60
+فحصاً): تصنيف «عاشت إيدكم» مدحاً، «شنو نوع الموبايل» بلا اختراع مع قرار صريح، خريطة
+القرار/المرحلة، الفشل يبقى FAILED، منع التكرار، ثبات سلوك autoReply/humanReview/Kill
+Switch (مدح⇒رد، سؤال⇒تصعيد)، الترميم غير الحذفي، وصفر نداء AI. فحوص final-audit
+(`youtube-decision-*`، `youtube-reconcile-*`، `youtube-scan-window-*`، 668 إجمالاً).
 

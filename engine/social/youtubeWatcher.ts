@@ -190,11 +190,67 @@ export type CommentDecisionCode =
   | 'SKIP_SELF_AUTHORED'
   | 'SKIP_ALREADY_REPLIED'
   | 'SKIP_SPAM'
+  | 'SKIP_OUT_OF_CHANNEL_CONTEXT'
   | 'ESCALATE_BUSINESS_INQUIRY'
   | 'ESCALATE_SENSITIVE'
   | 'ESCALATE_HUMAN_REVIEW_MODE'
+  | 'ESCALATE_REPLY_NOT_READY'
+  | 'ESCALATE_LEGACY_UNCLASSIFIED'
+  | 'SKIP_LEGACY_UNCLASSIFIED'
   | 'DEFER_AUTOREPLY_DISABLED'
   | 'REPLY_ALLOWED';
+
+/**
+ * ربط صريح بين كل كود قرار والمراحل الطرفية المسموح بها. يمنع أي «معالجة بلا
+ * قرار»: أي سجل محفوظ يجب أن تكون مرحلته الطرفية مطابقة لكوده (رد/تجاهل/تصعيد/فشل).
+ * يمنع أيضاً تناقضاً كان قائماً: سجل ESCALATED كان يحمل كود REPLY_ALLOWED.
+ */
+export const YOUTUBE_DECISION_CODE_STAGES: Record<CommentDecisionCode, ReadonlyArray<YouTubeCommentStage>> = {
+  SKIP_SELF_AUTHORED: ['SKIPPED'],
+  SKIP_ALREADY_REPLIED: ['SKIPPED'],
+  SKIP_SPAM: ['SKIPPED'],
+  SKIP_OUT_OF_CHANNEL_CONTEXT: ['SKIPPED'],
+  ESCALATE_BUSINESS_INQUIRY: ['ESCALATED'],
+  ESCALATE_SENSITIVE: ['ESCALATED'],
+  ESCALATE_HUMAN_REVIEW_MODE: ['ESCALATED'],
+  ESCALATE_REPLY_NOT_READY: ['ESCALATED'],
+  ESCALATE_LEGACY_UNCLASSIFIED: ['ESCALATED'],
+  SKIP_LEGACY_UNCLASSIFIED: ['SKIPPED'],
+  DEFER_AUTOREPLY_DISABLED: ['SKIPPED'],
+  // رد ناجح (REPLIED/VERIFIED) أو فشل إرسال (FAILED) — كلها انطلاقاً من قرار «رد».
+  REPLY_ALLOWED: ['REPLIED', 'VERIFIED', 'FAILED'],
+};
+
+/** هل (المرحلة، الكود) قرار طرفي صريح ومتّسق؟ أي تعليق مُعالج يجب أن يحقّقه. */
+export function isExplicitTerminalDecision(stage: YouTubeCommentStage, code: string | null | undefined): boolean {
+  if (!code) return false;
+  const allowed = YOUTUBE_DECISION_CODE_STAGES[code as CommentDecisionCode];
+  if (!allowed) return false;
+  return allowed.includes(stage);
+}
+
+/**
+ * ترميم **غير حذفي** لسجلات قديمة معالجة بلا كود (أو بكود متناقض مع المرحلة) —
+ * يُضيف/يصحّح الكود فقط ولا يحذف أي سجل ولا يغيّر مرحلته أو سببه. الغرض: ألا يبقى
+ * أي «معالجة بلا قرار» في التاريخ الحقيقي، مع الحفاظ الكامل على السجلات.
+ */
+export function repairProcessedDecisionCodes(entries: WatcherProcessedEntry[]): { entries: WatcherProcessedEntry[]; repaired: number } {
+  let repaired = 0;
+  const out = (entries || []).map((p) => {
+    if (!p || p.stage === 'NEW') return p;
+    if (isExplicitTerminalDecision(p.stage, p.code || null)) return p;
+    // كود بديل مشتق من المرحلة فقط — الاسم يحمل "legacy" صراحةً ليعرف المشغّل مصدره.
+    let code: CommentDecisionCode;
+    if (p.stage === 'SKIPPED') code = p.deferred ? 'DEFER_AUTOREPLY_DISABLED' : 'SKIP_LEGACY_UNCLASSIFIED';
+    else if (p.stage === 'ESCALATED') code = 'ESCALATE_LEGACY_UNCLASSIFIED';
+    else code = 'REPLY_ALLOWED';
+    repaired += 1;
+    return { ...p, code };
+  });
+  return { entries: out, repaired };
+}
+
+
 
 export interface CommentDecision {
   action: WatcherReplyAction;
