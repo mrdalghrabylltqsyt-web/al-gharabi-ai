@@ -552,6 +552,24 @@ export interface SocialCommentClassification {
   requiresHumanReview: boolean;
   reviewReason?: string;
   signals: string[];
+  /** موضوع السؤال الدقيق (موقع/سعر/توفر/دوام). */
+  topic?: string;
+  /** النية الثانوية الدقيقة (شكر/دعاء/تحية/إعجاب/إيموجي). */
+  subIntent?: string;
+  /** تعليق بإيموجي/رموز فقط. */
+  isEmojiOnly?: boolean;
+  /** النص بعد التطبيع. */
+  normalized?: string;
+}
+
+/** تشخيص توليد الرد: الاستراتيجية والحقائق الموثوقة والإحالة للمعلومة. */
+export interface ReplyIntelligence {
+  strategy: string;
+  usedFacts: string[];
+  needsInfo: boolean;
+  escalate: boolean;
+  reason: string;
+  blockedBySafety: boolean;
 }
 
 export interface SocialCommentClassificationResult {
@@ -562,6 +580,8 @@ export interface SocialCommentClassificationResult {
   suggestedDeterministicReply: string | null;
   /** نتيجة حارس سلامة المحتوى على الرد المقترح؛ null إن لم يوجد رد مقترح. */
   contentSafety: { safe: boolean; violations: string[]; codes: string[] } | null;
+  /** تشخيص توليد الرد (Reply Intelligence)؛ null عند عدم السماح برد آلي. */
+  replyIntelligence?: ReplyIntelligence | null;
   note: string;
 }
 

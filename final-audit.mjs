@@ -767,6 +767,29 @@ add('youtube-watcher-deferred-counter', server.includes('deferred: processed.fil
 add('youtube-watcher-defer-cycle-test', read('engine/tests/youtube.connector.test.ts').includes('12k-5') && read('engine/tests/youtube.connector.test.ts').includes('releasedDeferred') && read('engine/tests/youtube.watcher.test.ts').includes('releaseDeferredEntries'), 'اختبار تكامل يثبت: تعطيل => تأجيل بلا إرسال، تمكين => تحرير + رد حقيقي، Kill Switch => لا إرسال');
 add('youtube-self-authored-by-channel-id', server.includes('c.authorChannelId') && server.includes('expectedChannelId'), 'كشف ردود القناة نفسها بالمعرّف الحقيقي (authorChannelId) لا بالاسم فقط');
 
+// --- Reply Intelligence: ردود عراقية طبيعية واعية بالسياق ---
+// كان buildDeterministicReply قالباً واحداً لكل نية (4-5 جمل ثابتة)، فتبدو الردود
+// شبه ثابتة مهما اختلف نص التعليق. الآن يوجد محرّك generateReply يشتق الرد من
+// النص + المعنى + النبرة + النوع + الموضوع + السياق + حقائق المعرض الموثوقة،
+// ويمتنع عن اختراع أي معلومة غير مسجّلة. حتمي بالكامل بلا استهلاك حصة.
+const replyComments = read('engine/social/comments.ts');
+add('reply-intelligence-engine', replyComments.includes('export function generateReply') && replyComments.includes('export interface GeneratedReply'), 'محرّك Reply Intelligence (generateReply) موجود بمنطق صافٍ');
+add('reply-intelligence-topic', replyComments.includes('CommentTopic') && replyComments.includes('detectTopic') && /Topic:\s*'location'/.test(replyComments) === false, 'تصنيف الموضوع (موقع/سعر/توفر/دوام) مستخرج من النص');
+add('reply-intelligence-subintent', replyComments.includes('CommentSubIntent') && replyComments.includes('detectSubIntent'), 'النية الثانوية (شكر/دعاء/تحية/إعجاب/إيموجي) مستخرجة من النص');
+add('reply-intelligence-no-template', replyComments.includes('pickVariant') && replyComments.includes('stableHash') && replyComments.includes('previousReplies'), 'الردود تتنوّع حسب المدخل والسياق لا قالباً واحداً (pickVariant + منع التكرار الميكانيكي)');
+add('reply-intelligence-no-invented-facts', replyComments.includes('needsInfo') && replyComments.includes('price_needs_info') && replyComments.includes('location_needs_info') && replyComments.includes('availability_needs_info'), 'لا اختراع سعر/موقع/توفر: إحالة للمعلومة الحقيقية عند غيابها');
+add('reply-intelligence-trusted-facts', replyComments.includes('price_trusted') && replyComments.includes('location_trusted') && replyComments.includes('hours_trusted') && replyComments.includes('usedFacts'), 'يُستخدم السعر/الموقع/الدوام الموثوق فقط ويُوسَم في usedFacts');
+add('reply-intelligence-delegates', /export function buildDeterministicReply[\s\S]{0,600}?generateReply\(/.test(replyComments), 'buildDeterministicReply يفوّض إلى محرّك واحد (مصدر واحد للصياغة)');
+add('reply-intelligence-context', replyComments.includes('videoTitle') && replyComments.includes('authorName'), 'السياق (الفيديو/المؤلف) يدخل في صياغة الرد');
+add('reply-intelligence-route-wired', /generateReply\(classification, replyFacts, replyContext\)/.test(read('engine/social/routes.ts')), 'مسار التصنيف يمر عبر محرّك الرد الجديد');
+add('reply-intelligence-route-diagnostic', read('engine/social/routes.ts').includes('replyIntelligence') && read('engine/social/routes.ts').includes('needsInfo'), 'الاستجابة تعرض تشخيص الرد الصادق (استراتيجية/حقائق/إحالة)');
+add('reply-intelligence-reply-facts-dep', read('engine/social/routes.ts').includes('buildReplyFacts') && server.includes('buildReplyFacts:'), 'حقائق الرد الموثوقة تُحقن من الخادم (بيانات مسجّلة فقط)');
+add('reply-intelligence-no-fake-marketing', !/عرض خاص.{0,40}احجز الآن/.test(replyComments), 'لا عبارات إعلانية جاهزة في محرّك الرد');
+add('reply-intelligence-types', read('src/types/index.ts').includes('ReplyIntelligence') && read('src/types/index.ts').includes('subIntent'), 'أنواع Reply Intelligence معلنة ومطابقة للخادم');
+add('reply-intelligence-ui', read('src/components/social/SocialManagerView.tsx').includes('replyIntelligence') && read('src/components/social/SocialManagerView.tsx').includes('استراتيجية الرد'), 'واجهة التصنيف تعرض الاستراتيجية والحقائق الموثوقة');
+add('reply-intelligence-tests', fs.existsSync(path.join(root, 'engine/tests/reply.intelligence.test.ts')) && pkg.scripts['test:reply-intelligence'], 'اختبار Reply Intelligence مسجّل');
+add('reply-intelligence-test-in-suite', typeof pkg.scripts.test === 'string' && pkg.scripts.test.includes('test:reply-intelligence'), 'اختبار Reply Intelligence ضمن npm test');
+add('reply-intelligence-no-ai-quota', !/aiEngine|gemini|fetch\(|https?:/.test(replyComments), 'محرّك الرد حتمي بالكامل: لا مزود ولا شبكة ولا استهلاك حصة');
 
 const failed = checks.filter(x => !x.ok);
 console.table(checks);

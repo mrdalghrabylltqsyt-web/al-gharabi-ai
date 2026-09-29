@@ -926,6 +926,22 @@ export const SocialManagerView: React.FC = () => {
                 <span className="text-slate-400">النية</span>
                 <span className="text-white font-bold">{INTENT_LABELS[classification.classification.intent] || classification.classification.intent}</span>
               </div>
+              {(classification.classification.topic && classification.classification.topic !== 'general') && (
+                <div className="flex justify-between">
+                  <span className="text-slate-400">الموضوع</span>
+                  <span className="text-white font-bold">
+                    {{ location: 'الموقع', price: 'السعر', availability: 'التوفر', hours: 'الدوام' }[classification.classification.topic as string] || classification.classification.topic}
+                  </span>
+                </div>
+              )}
+              {(classification.classification.subIntent && classification.classification.subIntent !== 'none') && (
+                <div className="flex justify-between">
+                  <span className="text-slate-400">النبرة</span>
+                  <span className="text-white font-bold">
+                    {{ thanks: 'شكر', blessing: 'دعاء/ذكر', greeting: 'تحية', appreciation: 'إعجاب', emoji: 'إيموجي' }[classification.classification.subIntent as string] || classification.classification.subIntent}
+                  </span>
+                </div>
+              )}
               <div className="flex justify-between">
                 <span className="text-slate-400">الرد الآلي</span>
                 <span className={classification.autoReplyAllowed ? 'text-emerald-400 font-bold' : 'text-amber-400 font-bold'}>
@@ -935,6 +951,22 @@ export const SocialManagerView: React.FC = () => {
               {classification.suggestedDeterministicReply && (
                 <div className="pt-2 border-t border-slate-800 text-slate-300 leading-relaxed">
                   {classification.suggestedDeterministicReply}
+                </div>
+              )}
+              {classification.replyIntelligence && (
+                <div className="pt-2 border-t border-slate-800 text-[11px] space-y-1">
+                  <div className="text-slate-400">
+                    استراتيجية الرد: <span className="text-white font-bold" dir="ltr">{classification.replyIntelligence.strategy}</span>
+                    {classification.replyIntelligence.usedFacts.length > 0 && (
+                      <> · حقائق موثوقة: <span className="text-emerald-300" dir="ltr">{classification.replyIntelligence.usedFacts.join(', ')}</span></>
+                    )}
+                  </div>
+                  {classification.replyIntelligence.needsInfo && (
+                    <div className="text-amber-300">يحتاج معلومة حقيقية غير مسجّلة ⇒ لا يخترعها، ويحيل للرسائل.</div>
+                  )}
+                  {classification.replyIntelligence.escalate && (
+                    <div className="text-amber-300">يُحوَّل لتواصل بشري مباشر.</div>
+                  )}
                 </div>
               )}
               {classification.contentSafety && (

@@ -9717,6 +9717,27 @@ registerSocialManagerRoutes(app, {
     const product = productId ? workspace.products.find((p: any) => p.id === productId) || null : null;
     return buildFactsForProduct(product, Number(product?.downPaymentPercent || 0), Number(product?.durationMonths || 0));
   },
+  // حقائق الرد الموثوقة: قيم مسجّلة فعلاً فقط. أي حقل غير مسجّل يبقى غائباً
+  // فيمتنع محرّك الرد عن ذكره بدل اختراعه (سعر/موقع/دوام/توفر/اسم منتج).
+  buildReplyFacts: (productId?: string | null, productName?: string | null) => {
+    const products: any[] = Array.isArray(workspace.products) ? workspace.products : [];
+    const product = productId
+      ? products.find((p: any) => p.id === String(productId)) || null
+      : productName
+        ? products.find((p: any) => p.name === String(productName)) || null
+        : null;
+    const showroom: any = workspace.showroom || {};
+    const price = Number(product?.cashPrice);
+    const address = [showroom.address, showroom.city].map((x: any) => cleanText(x, 200)).filter(Boolean).join(' - ');
+    return {
+      productName: product?.name ? cleanText(product.name, 120) : undefined,
+      priceText: Number.isFinite(price) && price > 0 ? `${Math.round(price).toLocaleString('en-US')} د.ع` : undefined,
+      locationText: address || undefined,
+      hoursText: showroom.workingHours ? cleanText(showroom.workingHours, 120) : undefined,
+      inStock: typeof product?.inStock === 'boolean' ? product.inStock : null,
+      hasRecordedPromotion: [showroom.promotions, showroom.activeOffer].some((x: any) => cleanText(x, 300).length > 0),
+    };
+  },
 });
 
 // العقل المركزي: يُربط بمنفّذ التنفيذ الخارجي الفعلي (نفس بوابات النشر) وبسياق

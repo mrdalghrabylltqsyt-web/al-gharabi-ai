@@ -13,11 +13,13 @@
 import type express from 'express';
 import { buildAdapters, hasRealConnector, isSupportedPlatform } from './registry';
 import {
-  buildDeterministicReply,
   canAutoReply,
   classifyComment,
   evaluateReplyGuard,
+  generateReply,
   isSelfAuthored,
+  type ReplyContext,
+  type ReplyFactSet,
   type ReplyRecord,
 } from './comments';
 import { analyzeBusinessClaims, type BusinessFacts } from './contentSafety';
@@ -70,6 +72,11 @@ export interface SocialRoutesDeps {
    * يُستخدم في مسار `/analytics?platform=youtube` لعرض قيم حقيقية بدل NOT_SUPPORTED.
    */
   fetchYouTubeAnalytics?: () => Promise<{ ok: boolean; summary?: any; audience?: any; channel?: any; videoCount?: number; error?: string; code?: string | null }>;
+  /**
+   * حقائق صياغة الرد الموثوقة (سعر/موقع/دوام/توفر/اسم منتج) من بيانات مسجّلة
+   * فعلاً فقط. غيابها يمنع الرد من ذكر أي معلومة غير مثبتة (لا اختراع).
+   */
+  buildReplyFacts?: (productId?: string | null, productName?: string | null) => ReplyFactSet;
 }
 
 export function registerSocialManagerRoutes(app: express.Express, deps: SocialRoutesDeps): void {
@@ -112,6 +119,38 @@ export function registerSocialManagerRoutes(app: express.Express, deps: SocialRo
       if (byName) return { product: byName, facts: factsFor(byName.id) };
     }
     return { product: null, facts: factsFor(null) };
+  };
+
+  /**
+   * حقائق الرد الموثوقة: قيم مسجّلة فعلاً فقط. أي حقل غير مسجّل يبقى غائباً،
+   * فيمتنع المحرّك عن ذكره بدل اختراعه.
+   */
+  const replyFactsFor = (productId?: string | null, productName?: string | null): ReplyFactSet => {
+    if (deps.buildReplyFacts) return deps.buildReplyFacts(productId, productName);
+    const { product } = resolveProduct(productId, productName);
+    if (!product) return {};
+    const price = Number(product?.cashPrice);
+    return {
+      productName: typeof product?.name === 'string' ? product.name : undefined,
+      priceText: Number.isFinite(price) && price > 0 ? `${Math.round(price).toLocaleString('en-US')} د.ع` : undefined,
+      inStock: typeof product?.inStock === 'boolean' ? product.inStock : null,
+    };
+  };
+
+  /** سياق المحادثة/الفيديو: عنوان المنشور وردودنا السابقة لنفس المنشور/المنصة. */
+  const replyContextFor = (input: {
+    platform?: string; externalId?: string; postExternalId?: string | null;
+    authorName?: string; videoTitle?: string;
+  }): ReplyContext => {
+    const prior: string[] = [];
+    const postId = input.postExternalId || null;
+    for (const r of (workspace.socialReplies || []) as any[]) {
+      if (!r || typeof r.text !== 'string') continue;
+      // نعتبر الردود على نفس المنشور أو نفس المنصة «سياقاً» لمنع التكرار الميكانيكي.
+      if (postId && r.postExternalId === postId) { prior.push(r.text); continue; }
+      if (!postId && input.platform && r.platform === input.platform) prior.push(r.text);
+    }
+    return { authorName: input.authorName, videoTitle: input.videoTitle, platform: input.platform, previousReplies: prior.slice(0, 50) };
   };
 
   const connectionFor = (platform: string) => {
@@ -181,8 +220,16 @@ export function registerSocialManagerRoutes(app: express.Express, deps: SocialRo
     const classification = classifyComment(text);
     const autoReplyAllowed = canAutoReply(classification);
     // الرد المقترح يمر عبر حارس سلامة المحتوى قبل عرضه للمراجعة البشرية.
-    // المسار: تعليق → توليد رد مقترح → contentSafety → مراجعة/عرض.
-    const rawSuggestion = autoReplyAllowed ? buildDeterministicReply(classification) : null;
+    // المسار: تعليق → تصنيف → توليد رد (Reply Intelligence) → contentSafety → عرض.
+    const replyFacts = replyFactsFor(req.body?.productId, req.body?.productName);
+    const replyContext = replyContextFor({
+      platform: isSupportedPlatform(platform) ? platform : undefined,
+      postExternalId: typeof req.body?.postExternalId === 'string' ? req.body.postExternalId : null,
+      authorName: typeof req.body?.authorName === 'string' ? req.body.authorName : undefined,
+      videoTitle: typeof req.body?.videoTitle === 'string' ? req.body.videoTitle : undefined,
+    });
+    const generated = autoReplyAllowed ? generateReply(classification, replyFacts, replyContext) : null;
+    const rawSuggestion = generated && generated.text ? generated.text : null;
     const { facts } = resolveProduct(req.body?.productId, req.body?.productName);
     const safety = rawSuggestion ? analyzeBusinessClaims(rawSuggestion, facts) : null;
     const suggestedReply = rawSuggestion && safety?.safe ? rawSuggestion : null;
@@ -192,6 +239,18 @@ export function registerSocialManagerRoutes(app: express.Express, deps: SocialRo
       classification,
       autoReplyAllowed,
       suggestedDeterministicReply: suggestedReply,
+      // تشخيص الرد الصادق: الاستراتيجية والحقائق المستخدمة والإحالة للمعلومة.
+      replyIntelligence: generated
+        ? {
+            strategy: generated.strategy,
+            usedFacts: generated.usedFacts,
+            needsInfo: generated.needsInfo,
+            escalate: generated.escalate,
+            reason: generated.reason,
+            /** هل جُرِّب الرد لكن حجبه حارس سلامة المحتوى؟ */
+            blockedBySafety: Boolean(rawSuggestion) && safety?.safe === false,
+          }
+        : null,
       contentSafety: safety
         ? { safe: safety.safe, violations: safety.blocked.map((v) => v.detail), codes: safety.blocked.map((v) => v.code) }
         : null,
