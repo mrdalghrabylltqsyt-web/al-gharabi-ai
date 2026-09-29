@@ -318,6 +318,24 @@ import {
   type PerformanceRecord,
 } from "./engine/social/brain";
 import {
+  buildContentPlan,
+  adaptForPlatform,
+  type ContentBrief,
+} from "./engine/social/contentIntelligence";
+import {
+  analyzePlatformLearning,
+  summarizeCrossPlatformLearning,
+  type PlatformMetricRecord,
+} from "./engine/social/platformLearning";
+import { buildRecommendationBundle } from "./engine/social/recommendationEngine";
+import { analyzeCrossPlatformAudience } from "./engine/social/audienceIntelligence";
+import {
+  buildCentralBrainSnapshot,
+  buildCommentIntelligence,
+  proposeCommentReply,
+  platformCapabilities,
+} from "./engine/social/centralBrain";
+import {
   analyzeBusinessClaims,
   analyzeRequestClaims,
   buildBusinessFacts,
@@ -2828,6 +2846,103 @@ function youtubeVideoMetricRecords(videos: YouTubeVideo[]): YouTubeVideoMetricRe
     topic: (v.tags && v.tags.length ? v.tags[0] : (v.title || "").trim().slice(0, 40)) || null,
     at,
   }));
+}
+
+/**
+ * يحوّل سجلات الأداء الحقيقية المحفوظة (performanceRecords) إلى سجلات العقل
+ * المركزي العامة. لا يخترع قيمة: المؤشرات الغائبة تبقى غائبة.
+ */
+function performanceRecordsForBrain(): PlatformMetricRecord[] {
+  const rows = ((workspace as any).performanceRecords || []) as any[];
+  return rows
+    .map((r) => {
+      const platform = String(r?.platform || "") as PlatformId;
+      if (!isSupportedPlatform(platform)) return null;
+      const values: Record<string, number> = {};
+      const raw = r?.values && typeof r.values === "object" ? r.values : {};
+      for (const k of ["views", "likes", "comments", "shares", "reach", "saves"]) {
+        const n = Number((raw as any)[k]);
+        if (Number.isFinite(n) && n >= 0) values[k] = n;
+      }
+      return {
+        platform,
+        externalId: String(r?.postExternalId || r?.id || ""),
+        productCategory: r?.productCategory ?? null,
+        contentType: r?.contentType ?? null,
+        title: r?.title ?? null,
+        hashtags: Array.isArray(r?.hashtags) ? r.hashtags : [],
+        ctaType: r?.ctaType ?? null,
+        publishedAt: r?.at ?? r?.publishedAt ?? null,
+        values,
+      } as PlatformMetricRecord;
+    })
+    .filter((x): x is PlatformMetricRecord => Boolean(x) && Boolean(x.externalId));
+}
+
+/** تعليقات فعلية محفوظة بحسب المنصة (لتحليل الجمهور/التعليقات)، بلا أي سرّ. */
+function commentsByPlatformForBrain(platforms: PlatformId[]): Partial<Record<PlatformId, Array<{ text: string; authorName?: string }>>> {
+  const out: Partial<Record<PlatformId, Array<{ text: string; authorName?: string }>>> = {};
+  const rows = ((workspace as any).socialComments || []) as any[];
+  for (const p of platforms) {
+    const items = rows.filter((c) => String(c?.platform) === p).slice(0, 500).map((c) => ({ text: String(c?.text || ""), authorName: c?.authorName }));
+    if (items.length) out[p] = items;
+  }
+  return out;
+}
+
+/** عدّادات حماية Gemini من السجل المركزي (أرقام فقط، بلا prompt ولا سرّ). */
+function brainAiCounters() {
+  const s = aiEngine.usageLedger().snapshot();
+  return {
+    providerCalls: s.providerCalls,
+    cacheHits: s.cacheHits,
+    inflightJoins: s.inflightJoins,
+    guardBlocked: s.guardBlocked,
+    deterministic: s.deterministic,
+    fallback: s.fallback,
+    providerErrors: s.providerErrors,
+  };
+}
+
+/** وقت النشر المقترح من أوقات تفاعل حقيقية فقط (بلا اختراع). */
+function brainScheduleSuggestion() {
+  const timestamps = (watcherState.processed || []).map((p: any) => p.publishedAt || p.at);
+  return suggestScheduleTime({ engagementTimestamps: timestamps });
+}
+
+/** يبني ContentBrief من بيانات المعرض الحقيقية لمنتج/حملة. */
+function buildContentBriefForBrain(productId?: string | null, productName?: string | null, platforms?: PlatformId[], objective?: string | null, extraInstructions?: string | null): ContentBrief {
+  const product = resolveContentProduct(productId, productName);
+  const showroom: any = workspace.showroom || {};
+  const targetPlatforms = (Array.isArray(platforms) && platforms.length ? platforms : SUPPORTED_PLATFORMS.map((p: any) => p.id)) as PlatformId[];
+  const cashPrice = Number(product?.cashPrice);
+  return {
+    objective: cleanText(objective, 200) || null,
+    product: product
+      ? {
+          id: product.id,
+          name: cleanText(product.name, 120),
+          category: cleanText(product.category, 40) || null,
+          specs: Array.isArray(product.specs) ? product.specs.map((s: any) => cleanText(s, 200)).filter(Boolean) : [],
+          installmentOptions: Array.isArray(product.installmentOptions) ? product.installmentOptions.map((s: any) => cleanText(s, 200)).filter(Boolean) : [],
+          inStock: typeof product.inStock === "boolean" ? product.inStock : null,
+          priceText: Number.isFinite(cashPrice) && cashPrice > 0 ? `${cashPrice.toLocaleString("en-US")} د.ع` : null,
+        }
+      : null,
+    showroom: {
+      name: cleanText(showroom.name, 80) || null,
+      tagline: cleanText(showroom.tagline, 160) || null,
+      about: cleanText(showroom.about, 400) || null,
+      city: cleanText(showroom.city, 60) || null,
+      phone: cleanText(showroom.phoneUnified, 40) || null,
+      whatsapp: cleanText(showroom.whatsappSales, 40) || null,
+      locationText: cleanText(showroom.address || showroom.city, 120) || null,
+      hoursText: cleanText(showroom.hours, 80) || null,
+    },
+    platforms: targetPlatforms,
+    campaign: cleanText((product as any)?.campaign, 60) || null,
+    extraInstructions: cleanText(extraInstructions, 400) || null,
+  };
 }
 /** حارس معدّل العمليات الخارجية لـYouTube (يمنع الإغراق؛ pending/retryable عند الحد). */
 const youtubeOperationWindows = new Map<string, number[]>();
@@ -6256,6 +6371,145 @@ app.delete("/api/platforms/youtube/delegation", requireOwner, async (req, res) =
   res.json({ success: true, delegation: youtubeDelegationBlock(), note: "تم إيقاف تفويض تشغيل YouTube؛ عاد كل تنفيذ خارجي ليتطلب موافقة صريحة منفصلة." });
 });
 
+// -------------------------------------------------------------
+// Central Brain (Batch 26) — عقل مركزي عام لكل المنصات.
+// تخطيط وتوصيات وتعلّم قابل للتفسير فقط؛ لا تنفيذ خارجي ولا تجاوز لأي بوابة.
+// كل المسارات محمية: القراءة للمستخدمين، والعمليات الحسّاسة للمالك.
+// -------------------------------------------------------------
+
+/** تشخيص العقل المركزي (للمالك): حالة، قدرات، تعلّم، توصيات، عدّادات Gemini — بلا أسرار. */
+app.get("/api/brain/diagnostics", requireOwner, (_req, res) => {
+  const platforms = SUPPORTED_PLATFORMS.map((p: any) => p.id) as PlatformId[];
+  const records = performanceRecordsForBrain();
+  const snap = buildCentralBrainSnapshot({
+    platforms,
+    records,
+    commentsByPlatform: commentsByPlatformForBrain(platforms),
+    aiCounters: brainAiCounters(),
+  });
+  const sampleByPlatform = Object.fromEntries(snap.learning.byPlatform.map((s) => [s.platform, { sampleSize: s.sampleSize, sufficientSample: s.sufficientSample }]));
+  res.json({
+    success: true,
+    brainStatus: "operational_planning_only",
+    platforms: snap.platforms,
+    connectedPlatformIds: connectedPlatformIds(),
+    learning: snap.learning,
+    recommendations: snap.recommendations,
+    audience: snap.audience,
+    ai: snap.ai,
+    caps: { geminiUsedOnReads: false },
+    sampleByPlatform,
+    limitations: snap.limitations,
+    note: snap.note + " هذا المسار لا يستهلك Gemini ولا يكشف أي سرّ.",
+  });
+});
+
+/** خطة محتوى عامة لمنتج/حملة عبر كل المنصات (قراءة، بلا استهلاك AI). لا تنفيذ نشر. */
+app.post("/api/brain/content-plan", authenticateToken, (req, res) => {
+  const user = (req as any).user as { id: string };
+  const productId = typeof req.body?.productId === "string" ? req.body.productId : null;
+  const productName = typeof req.body?.productName === "string" ? req.body.productName : null;
+  if (!productId && !cleanText(productName, 160)) {
+    return res.status(400).json({ success: false, error: "يلزم productId أو productName لبناء خطة حقيقية بلا اختراع." });
+  }
+  const platforms = (Array.isArray(req.body?.platforms) ? req.body.platforms : []).filter((p: any) => isSupportedPlatform(String(p))) as PlatformId[];
+  const brief = buildContentBriefForBrain(productId, productName, platforms, req.body?.objective, req.body?.extraInstructions);
+  const sched = brainScheduleSuggestion();
+  const plan = buildContentPlan({
+    brief,
+    recommendedPublishTime: sched.action === "use_data" ? sched.suggestedAt : null,
+    schedulingReason: sched.note,
+  });
+  audit(user.id, "brain_content_plan", `product:${brief.product?.id || productName || "general"}:platforms=${plan.platformAdaptations.length}`);
+  res.json({
+    success: true,
+    plan,
+    scheduling: sched,
+    note: "خطة محتوى مبنية من بيانات حقيقية فقط عبر العقل المركزي. لا تُنفّذ نشراً؛ التنفيذ يخضع لبوابات الصلاحيات والمراجعة البشرية.",
+  });
+});
+
+/** تكييف المحتوى لمنصة واحدة (قراءة، حتمي، بلا استهلاك AI). */
+app.post("/api/brain/platform-adaptation", authenticateToken, (req, res) => {
+  const platform = String(req.body?.platform || "");
+  if (!isSupportedPlatform(platform)) return res.status(404).json({ success: false, error: "المنصة غير مدعومة." });
+  const productId = typeof req.body?.productId === "string" ? req.body.productId : null;
+  const productName = typeof req.body?.productName === "string" ? req.body.productName : null;
+  if (!productId && !cleanText(productName, 160)) {
+    return res.status(400).json({ success: false, error: "يلزم productId أو productName لتكييف حقيقي بلا اختراع." });
+  }
+  const brief = buildContentBriefForBrain(productId, productName, [platform as PlatformId], req.body?.objective, req.body?.extraInstructions);
+  const plan = buildContentPlan({ brief });
+  const adaptation = plan.platformAdaptations[0];
+  res.json({ success: true, platform, adaptation, note: "تكييف حتمي من بيانات حقيقية؛ لا استهلاك AI ولا نشر." });
+});
+
+/** تعلّم منصة واحدة من أدائها الحقيقي (قراءة، بلا استهلاك AI). */
+app.get("/api/brain/learning/:platform", authenticateToken, (req, res) => {
+  const platform = String(req.params.platform);
+  if (!isSupportedPlatform(platform)) return res.status(404).json({ success: false, error: "المنصة غير مدعومة." });
+  const records = performanceRecordsForBrain().filter((r) => r.platform === platform);
+  const analysis = analyzePlatformLearning({ platform: platform as PlatformId, records });
+  res.json({
+    success: true,
+    platform,
+    sample: analysis.sample,
+    insights: analysis.insights,
+    note: analysis.note + " المؤشرات غير المتاحة تُعلن صراحةً ولا تُخترع قيمتها.",
+  });
+});
+
+/** تعلّم عام عبر كل المنصات (قراءة، بلا استهلاك AI). */
+app.get("/api/brain/learning", authenticateToken, (_req, res) => {
+  const platforms = SUPPORTED_PLATFORMS.map((p: any) => p.id) as PlatformId[];
+  const summary = summarizeCrossPlatformLearning(performanceRecordsForBrain(), platforms);
+  res.json({ success: true, learning: summary, note: summary.note });
+});
+
+/** توصيات عامة عبر كل المنصات، مبنية على بيانات حقيقية (قراءة، بلا استهلاك AI). */
+app.get("/api/brain/recommendations", authenticateToken, (_req, res) => {
+  const platforms = SUPPORTED_PLATFORMS.map((p: any) => p.id) as PlatformId[];
+  const timestamps = (watcherState.processed || []).map((p: any) => p.publishedAt || p.at);
+  const bundle = buildRecommendationBundle({ platforms, records: performanceRecordsForBrain(), engagementTimestamps: timestamps });
+  res.json({ success: true, recommendations: bundle, note: bundle.note });
+});
+
+/** تحليل جمهور عام (مؤشرات + مواضيع تعليقات فعلية) بلا سمات شخصية حساسة. */
+app.get("/api/brain/audience", authenticateToken, (_req, res) => {
+  const platforms = SUPPORTED_PLATFORMS.map((p: any) => p.id) as PlatformId[];
+  const audience = analyzeCrossPlatformAudience({ platforms, records: performanceRecordsForBrain(), commentsByPlatform: commentsByPlatformForBrain(platforms) });
+  res.json({ success: true, audience, note: audience.note });
+});
+
+/** تحليل تعليق واحد عبر العقل (classify → priority → policy → reply مقترح). حتمي بلا AI. */
+app.post("/api/brain/comment-intelligence", authenticateToken, (req, res) => {
+  const platform = String(req.body?.platform || "");
+  const text = typeof req.body?.text === "string" ? req.body.text : "";
+  if (!isSupportedPlatform(platform)) return res.status(404).json({ success: false, error: "المنصة غير مدعومة." });
+  if (!text.trim()) return res.status(400).json({ success: false, error: "نص التعليق مطلوب." });
+  const intel = buildCommentIntelligence({ platform: platform as PlatformId, text: text.slice(0, 2000) });
+  const product = resolveContentProduct(req.body?.productId, req.body?.productName);
+  const facts: any = {};
+  if (product) facts.productName = cleanText(product.name, 120) || undefined;
+  const showroom: any = workspace.showroom || {};
+  if (cleanText(showroom.phoneUnified, 40)) facts.phone = cleanText(showroom.phoneUnified, 40);
+  const proposal = proposeCommentReply(intel, facts, product ? cleanText(product.name, 120) : undefined);
+  res.json({
+    success: true,
+    platform,
+    classification: intel.classification,
+    priority: intel.priority,
+    policy: intel.policy,
+    decision: intel.decision,
+    platformReadsComments: intel.platformReadsComments,
+    platformReplies: intel.platformReplies,
+    proposedReply: proposal.reply,
+    reason: intel.reason,
+    capabilities: { supported: platformCapabilities(platform as PlatformId) },
+    note: "وحدة التعليقات العامة حتمية (بلا AI). المنصة التي لا توفّر تعليقات تُعلن unsupported، ولا يُدَّعى رد على تعليق لم يُقرأ.",
+  });
+});
+
 
 
 // -------------------------------------------------------------
@@ -8226,6 +8480,25 @@ function buildAgentToolContext(operator: AgentOperator, userId: string): AgentTo
       decisions: ((workspace as any).marketingDecisions || []).slice(0, 200),
       strategies: ((workspace as any).strategiesTested || []).slice(0, 200).map((s: any) => ({ strategy: s.strategy, outcome: s.outcome, at: s.at })),
     }),
+    brainSnapshot: () => {
+      const platforms = SUPPORTED_PLATFORMS.map((p: any) => p.id) as PlatformId[];
+      return buildCentralBrainSnapshot({
+        platforms,
+        records: performanceRecordsForBrain(),
+        commentsByPlatform: commentsByPlatformForBrain(platforms),
+        aiCounters: brainAiCounters(),
+      });
+    },
+    brainContentPlan: (input: { productId?: string | null; productName?: string | null; platforms?: string[]; objective?: string | null }) => {
+      const platforms = (Array.isArray(input.platforms) ? input.platforms : []).filter((p) => isSupportedPlatform(String(p))) as PlatformId[];
+      const brief = buildContentBriefForBrain(input.productId || null, input.productName || null, platforms, input.objective || null, null);
+      const sched = brainScheduleSuggestion();
+      return buildContentPlan({
+        brief,
+        recommendedPublishTime: sched.action === "use_data" ? sched.suggestedAt : null,
+        schedulingReason: sched.note,
+      });
+    },
     systemVerification: () => ({
       version: PROJECT_VERSION,
       storage: { backend: storageAdapter.backend, healthy: storageStatus().healthy, durable: storageAdapter.backend === "postgres" || storageStatus().writable, writable: storageStatus().writable },
@@ -8952,6 +9225,32 @@ app.get("/api/readiness", (_req, res) => {
         operationalState: tiktokTruthfulState().state,
         operationalStateLabelAr: tiktokTruthfulState().labelAr,
         operationalStateReason: tiktokTruthfulState().reason,
+      };
+    })(),
+    // العقل المركزي العام (Batch 26): حقول آمنة منطقية فقط، بلا أي سرّ. توضح أن
+    // التخطيط/التعلّم/التوصيات تغطي كل المنصات العشر، وأن القراءة لا تستهلك Gemini.
+    centralBrain: (() => {
+      const platforms = SUPPORTED_PLATFORMS.map((p: any) => p.id) as PlatformId[];
+      const records = performanceRecordsForBrain();
+      const snap = buildCentralBrainSnapshot({
+        platforms,
+        records,
+        commentsByPlatform: commentsByPlatformForBrain(platforms),
+        aiCounters: brainAiCounters(),
+      });
+      const insufficient = snap.learning.byPlatform.filter((s) => !s.sufficientSample).map((s) => s.platform);
+      return {
+        platformAgnostic: true,
+        platformsCovered: snap.platforms.length,
+        learningPlatforms: snap.learning.byPlatform.length,
+        learningSampleSize: records.length,
+        insufficientSamplePlatforms: insufficient,
+        recommendationsCount: snap.recommendations?.recommendations.length ?? 0,
+        audienceDemographicsAvailable: false,
+        commentsCapablePlatforms: snap.platforms.filter((p) => p.readsComments).map((p) => p.platform),
+        geminiUsedOnReads: false,
+        geminiProviderCallsToday: snap.ai.providerCalls,
+        limitations: snap.limitations,
       };
     })(),
     timestamp: new Date().toISOString(),

@@ -60,6 +60,8 @@ function fakeCtx(overrides: Partial<AgentToolContext> = {}): AgentToolContext {
     buildWeekPlan: (platforms, focus) => ({ plan: [{ day: 'السبت', focus }], platforms }),
     marketingDecision: () => ({ objective: 'x', plan: [], dataGaps: [] }),
     memorySnapshot: () => ({ publishedCount: 0 }),
+    brainSnapshot: () => ({ platforms: [{ platform: 'telegram', capabilities: ['publish'], readsComments: false, repliesToComments: false, publishes: true, realConnector: true }], learning: { byPlatform: [] }, recommendations: null, audience: null, contentPlan: null, ai: { providerCalls: 0 }, limitations: [], note: 'لقطة وهمية' }),
+    brainContentPlan: (input) => ({ objective: input.objective || 'x', title: 'خطة', description: 'وصف', cta: 'تواصل', hashtags: [], keywords: [], platformAdaptations: [{ platform: 'telegram', withinLimit: true }], recommendedPublishTime: null, schedulingReason: 'عيّنة غير كافية', confidence: 'low', sourceData: [], limitations: [], requiresHumanReview: false, recommendedAction: 'مراجعة', complete: false }),
     systemVerification: () => ({ version: '13.0.0', storage: { durable: true } }),
     aiGenerate: async () => ({ text: 'نص بديل حتمي', usedProvider: false, source: 'fallback' }),
     // أدوات YouTube التشغيلية (وهمية آمنة: لا شبكة ولا أسرار) — تُستبدل في اختبارات الوحدة.

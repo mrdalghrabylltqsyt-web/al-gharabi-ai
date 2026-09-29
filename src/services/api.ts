@@ -619,6 +619,44 @@ ${payload.topic || payload.productName || 'أنظمة وحلول التقسيط 
     return data;
   },
 
+  // العقل المركزي العام (Batch 26): قراءات حتمية بلا استهلاك AI وبلا أسرار.
+  async getBrainDiagnostics() {
+    const res = await fetch('/api/brain/diagnostics', { headers: getAuthHeaders() });
+    const data = await res.json();
+    if (!res.ok || !data.success) throw new Error(data.error || 'تعذر جلب تشخيص العقل المركزي');
+    return data;
+  },
+  async getBrainLearning() {
+    const res = await fetch('/api/brain/learning', { headers: getAuthHeaders() });
+    const data = await res.json();
+    if (!res.ok || !data.success) throw new Error(data.error || 'تعذر جلب تعلّم العقل المركزي');
+    return data;
+  },
+  async getBrainRecommendations() {
+    const res = await fetch('/api/brain/recommendations', { headers: getAuthHeaders() });
+    const data = await res.json();
+    if (!res.ok || !data.success) throw new Error(data.error || 'تعذر جلب توصيات العقل المركزي');
+    return data;
+  },
+  async getBrainAudience() {
+    const res = await fetch('/api/brain/audience', { headers: getAuthHeaders() });
+    const data = await res.json();
+    if (!res.ok || !data.success) throw new Error(data.error || 'تعذر جلب تحليل الجمهور');
+    return data;
+  },
+  async buildBrainContentPlan(payload: { productId?: string; productName?: string; platforms?: string[]; objective?: string; extraInstructions?: string }) {
+    const res = await fetch('/api/brain/content-plan', { method: 'POST', headers: getAuthHeaders(), body: JSON.stringify(payload) });
+    const data = await res.json();
+    if (!res.ok || !data.success) throw new Error(data.error || 'تعذر بناء خطة المحتوى');
+    return data;
+  },
+  async analyzeBrainComment(payload: { platform: string; text: string; productName?: string }) {
+    const res = await fetch('/api/brain/comment-intelligence', { method: 'POST', headers: getAuthHeaders(), body: JSON.stringify(payload) });
+    const data = await res.json();
+    if (!res.ok || !data.success) throw new Error(data.error || 'تعذر تحليل التعليق');
+    return data;
+  },
+
   // صفحات Facebook التي يديرها الحساب بعد OAuth (معرّفات وأسماء فقط بلا رموز).
   async getFacebookPages() {
     const res = await fetch('/api/platforms/facebook/pages', { headers: getAuthHeaders() });

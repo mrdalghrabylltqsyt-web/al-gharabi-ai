@@ -179,6 +179,14 @@ export const Sidebar: React.FC<SidebarProps> = ({ mobileOpen, onCloseMobile }) =
       desc: 'تحليل المواقف الميدانية واستنتاج القرار',
     },
     {
+      id: 'central_brain',
+      label: 'العقل المركزي متعدد المنصات',
+      icon: Brain,
+      badge: 'ذكاء',
+      badgeColor: 'bg-indigo-500/20 text-indigo-300 border-indigo-500/30',
+      desc: 'ذكاء محتوى وتعلّم وتوصيات لكل المنصات العشر',
+    },
+    {
       id: 'calendar',
       label: 'تقويم المحتوى',
       icon: Calendar,

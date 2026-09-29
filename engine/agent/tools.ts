@@ -63,6 +63,10 @@ export interface AgentToolContext {
   marketingDecision: (input?: any) => any;
   /** لقطة الذاكرة التشغيلية. */
   memorySnapshot: () => any;
+  /** لقطة العقل المركزي العامة (قدرات/تعلّم/توصيات/جمهور) — حتمية بلا AI وبلا أسرار. */
+  brainSnapshot: () => any;
+  /** خطة محتوى عامة لمنتج عبر المنصات (حتمية، بلا AI). */
+  brainContentPlan: (input: { productId?: string | null; productName?: string | null; platforms?: string[]; objective?: string | null }) => any;
   /** حالة نظام التحقق/الجاهزية العامة. */
   systemVerification: () => any;
   /** استدعاء مزود الذكاء الاصطناعي عند الحاجة فقط (محمي بالحصة والذاكرة). */
@@ -301,6 +305,33 @@ export const AGENT_TOOLS: ReadonlyArray<AgentTool> = [
     permission: 'READ',
     parameters: [],
     run: (_args, ctx) => read(() => ctx.memorySnapshot()),
+  },
+  {
+    id: 'brain_snapshot',
+    name: 'لقطة العقل المركزي',
+    description: 'قدرات المنصات + التعلّم + التوصيات + الجمهور عبر كل المنصات — تحليل حتمي بلا استهلاك AI وبلا أسرار.',
+    permission: 'READ',
+    parameters: [],
+    run: (_args, ctx) => read(() => ctx.brainSnapshot()),
+  },
+  {
+    id: 'brain_content_plan',
+    name: 'خطة محتوى عامة (كل المنصات)',
+    description: 'خطة محتوى حتمية لمنتج/حملة مكيّفة لكل منصة، من بيانات حقيقية فقط، بلا استهلاك AI وبلا نشر.',
+    permission: 'READ',
+    parameters: [
+      { name: 'productId', type: 'string', required: false, description: 'معرّف المنتج.' },
+      { name: 'productName', type: 'string', required: false, description: 'اسم المنتج.' },
+      { name: 'platforms', type: 'string', required: false, description: 'قائمة منصات مفصولة بفواصل (افتراضياً الكل).' },
+      { name: 'objective', type: 'string', required: false, description: 'هدف الحملة.' },
+    ],
+    run: (args, ctx) =>
+      read(() => ctx.brainContentPlan({
+        productId: args.productId ? String(args.productId) : null,
+        productName: args.productName ? String(args.productName) : null,
+        platforms: typeof args.platforms === 'string' && args.platforms.trim() ? args.platforms.split(',').map((s: string) => s.trim()).filter(Boolean) : [],
+        objective: args.objective ? String(args.objective) : null,
+      })),
   },
   {
     id: 'system_verification',

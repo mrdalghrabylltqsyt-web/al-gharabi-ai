@@ -964,6 +964,118 @@ add('youtube-inquiry-real-comment', decisionTest.includes('شنو نوع الم�
 add('youtube-no-fake-reply-claim', decisionTest.includes('externalReplyId') && decisionTest.includes('FAILED'), 'لا ادعاء تسليم بلا معرّف رد حقيقي');
 add('youtube-decision-no-ai', !/GoogleGenAI|generateContent/.test(watcherModule) && !/from ['"]\\.\\.\/ai\//.test(watcherModule), 'محرك القرارات حتمي بلا أي نداء AI (صفر حصة)');
 
+// ============================================================================
+// Batch 26 — العقل المركزي العام (Platform-Agnostic) لكل المنصات.
+// ============================================================================
+const contentIntelligence = read('engine/social/contentIntelligence.ts');
+const platformLearning = read('engine/social/platformLearning.ts');
+const recommendationEngine = read('engine/social/recommendationEngine.ts');
+const audienceIntelligence = read('engine/social/audienceIntelligence.ts');
+const centralBrain = read('engine/social/centralBrain.ts');
+const centralBrainTest = read('engine/tests/central.brain.test.ts');
+
+add('central-brain-modules-exist',
+  ['contentIntelligence', 'platformLearning', 'recommendationEngine', 'audienceIntelligence', 'centralBrain']
+    .every((m) => fs.existsSync(path.join(root, `engine/social/${m}.ts`))),
+  'وحدات العقل المركزي العامة موجودة');
+
+add('content-intelligence-platform-agnostic',
+  contentIntelligence.includes('PLATFORM_CONTENT_PROFILES') &&
+  contentIntelligence.includes("'tiktok'") && contentIntelligence.includes("'google_business'") &&
+  contentIntelligence.includes('adaptForPlatforms'),
+  'طبقة ذكاء المحتوى تعرّف المنصات العشر بلا منطق خاص بمنصة واحدة');
+
+add('content-plan-covers-ten-platforms',
+  contentIntelligence.includes('adaptForPlatforms') && contentIntelligence.includes('platformAdaptations'),
+  'ContentPlan ينتج تكييفاً لكل المنصات العشر');
+
+add('platform-adaptation-deterministic-no-ai',
+  !/GoogleGenAI|aiEngine|generateContent/.test(contentIntelligence) &&
+  !/GoogleGenAI|aiEngine|generateContent/.test(recommendationEngine) &&
+  !/GoogleGenAI|aiEngine|generateContent/.test(platformLearning),
+  'التكييف والتوصيات والتعلّم حتمية بلا أي نداء AI (صفر حصة)');
+
+add('learning-engine-general-not-youtube-only',
+  platformLearning.includes('buildLearningSample') && platformLearning.includes('analyzePlatformLearning') &&
+  platformLearning.includes('summarizeCrossPlatformLearning') && platformLearning.includes('metricAvailability'),
+  'محرك التعلّم عام لكل المنصات ويقرأ توفر المؤشرات من جدول القدرات');
+
+add('learning-no-fake-metrics',
+  platformLearning.includes('unavailableMetrics') && platformLearning.includes('لا تُخترع قيمة بديلة لمؤشر غير متاح'),
+  'التعلّم يعلن المؤشرات غير المتاحة بلا اختراع قيمة');
+
+add('audience-intelligence-no-sensitive',
+  audienceIntelligence.includes('demographicsAvailable: false') && audienceIntelligence.includes('سمات شخصية'),
+  'تحليل الجمهور لا يستنتج سمات شخصية حساسة');
+
+add('recommendation-explainable',
+  recommendationEngine.includes('insufficient_sample') && recommendationEngine.includes('reason:') &&
+  recommendationEngine.includes('limitations') && recommendationEngine.includes('sampleSize'),
+  'كل توصية قابلة للتفسير (سبب/مصدر/عيّنة/حدود) وتعلن نقص العيّنة');
+
+add('central-brain-platform-agnostic',
+  centralBrain.includes('platformCapabilities') && centralBrain.includes('PLATFORM_SPECS') &&
+  centralBrain.includes('buildCentralBrainSnapshot') && !/youtubeWatcher/.test(centralBrain),
+  'المنسّق المركزي يعمل على PlatformId وقدرات السجل بلا اعتماد خاص بمنصة');
+
+add('central-brain-comment-policy-respects-capability',
+  centralBrain.includes('platformReadsComments') && centralBrain.includes('unsupported') &&
+  centralBrain.includes("caps.includes('comments')"),
+  'وحدة التعليقات تحترم قدرة المنصة وتعلن unsupported بدل ادعاء قراءة');
+
+add('central-brain-endpoints',
+  server.includes('app.get("/api/brain/diagnostics", requireOwner') &&
+  server.includes('app.post("/api/brain/content-plan", authenticateToken') &&
+  server.includes('app.get("/api/brain/learning", authenticateToken') &&
+  server.includes('app.get("/api/brain/recommendations", authenticateToken') &&
+  server.includes('app.get("/api/brain/audience", authenticateToken') &&
+  server.includes('app.post("/api/brain/comment-intelligence", authenticateToken'),
+  'مسارات العقل المركزي مسجّلة ومحمية');
+
+add('central-brain-diagnostics-owner-only',
+  /app\.get\("\/api\/brain\/diagnostics", requireOwner/.test(server),
+  'تشخيص العقل المركزي محصور بالمالك');
+
+add('central-brain-reads-no-gemini',
+  !/aiEngine\.run|GoogleGenAI/.test(centralBrain) && server.includes('geminiUsedOnReads: false'),
+  'قراءات العقل المركزي لا تستهلك Gemini');
+
+add('central-brain-readiness-block',
+  server.includes('centralBrain: (() =>') && server.includes('platformAgnostic: true') &&
+  server.includes('audienceDemographicsAvailable: false'),
+  'الجاهزية تعرض كتلة العقل المركزي الآمنة (بلا أسرار)');
+
+add('central-brain-agent-tools',
+  read('engine/agent/tools.ts').includes("id: 'brain_snapshot'") &&
+  read('engine/agent/tools.ts').includes("id: 'brain_content_plan'") &&
+  read('engine/agent/planner.ts').includes("step('brain_snapshot')"),
+  'الوكيل المركزي يملك أدوات العقل ووظّفها في خطة التحليل');
+
+add('central-brain-test-registered',
+  fs.existsSync(path.join(root, 'engine/tests/central.brain.test.ts')) && pkg.scripts['test:central-brain'] &&
+  typeof pkg.scripts.test === 'string' && pkg.scripts.test.includes('test:central-brain'),
+  'اختبار العقل المركزي مسجّل وضمن npm test');
+
+add('central-brain-test-antifabrication',
+  centralBrainTest.includes('لا سعر مختلق') && centralBrainTest.includes('demographicsAvailable === false') &&
+  centralBrainTest.includes('unsupported') && centralBrainTest.includes('tiktok reach غير متاح'),
+  'اختبار العقل المركزي يثبت منع الاختراع واحترام القدرات');
+
+add('central-brain-future-platform',
+  centralBrainTest.includes('linkedin') && centralBrainTest.includes('المنصة 11'),
+  'اختبار يثبت أن منصة مستقبلية تدخل بلا إعادة بناء العقل');
+
+add('central-brain-ui-surface',
+  fs.existsSync(path.join(root, 'src/components/agent/CentralBrainView.tsx')) &&
+  app.includes("case 'central_brain': return <CentralBrainView />") &&
+  read('src/components/common/Sidebar.tsx').includes("id: 'central_brain'") &&
+  read('src/services/api.ts').includes('/api/brain/diagnostics'),
+  'سطح العقل المركزي معروض في الواجهة وقائمة الجانب ومربوط بالـAPI');
+
+add('central-brain-ui-no-publish',
+  !/\/api\/platforms\/[^'"`]*\/publish|executeJob|replyTelegram|replyFacebook|replyInstagram|publishTikTok/.test(read('src/components/agent/CentralBrainView.tsx')),
+  'سطح العقل لا ينفّذ أي نشر أو رد خارجي من الواجهة');
+
 const failed = checks.filter(x => !x.ok);
 console.table(checks);
 if (failed.length) {

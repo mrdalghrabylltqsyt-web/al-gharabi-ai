@@ -306,10 +306,12 @@ export function buildAgentPlan(rawTask: string, options: { explicitKind?: AgentP
     case 'analysis': {
       return ensureKnown({
         kind,
-        summary: 'تحليل حتمي من السجلات الحقيقية + قرار تسويقي + خطة محتوى، بلا استهلاك AI إن كفى الواقع.',
+        summary: 'تحليل حتمي من السجلات الحقيقية + لقطة العقل المركزي + قرار تسويقي + خطة محتوى، بلا استهلاك AI إن كفى الواقع.',
         steps: [
           step('platform_status'),
           step('memory_snapshot'),
+          // لقطة العقل المركزي العامة (تعلّم + توصيات + جمهور لكل المنصات) — حتمية بلا AI.
+          step('brain_snapshot'),
           // عند تحليل YouTube نضيف إحصاءاته ودروس تعلّمه الحقيقية.
           ...(platforms.includes('youtube') ? [step('youtube_analytics'), step('youtube_learning')] : []),
           step('marketing_decision', { objective: task }),
