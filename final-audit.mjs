@@ -767,6 +767,31 @@ add('youtube-watcher-deferred-counter', server.includes('deferred: processed.fil
 add('youtube-watcher-defer-cycle-test', read('engine/tests/youtube.connector.test.ts').includes('12k-5') && read('engine/tests/youtube.connector.test.ts').includes('releasedDeferred') && read('engine/tests/youtube.watcher.test.ts').includes('releaseDeferredEntries'), 'اختبار تكامل يثبت: تعطيل => تأجيل بلا إرسال، تمكين => تحرير + رد حقيقي، Kill Switch => لا إرسال');
 add('youtube-self-authored-by-channel-id', server.includes('c.authorChannelId') && server.includes('expectedChannelId'), 'كشف ردود القناة نفسها بالمعرّف الحقيقي (authorChannelId) لا بالاسم فقط');
 
+// --- مركز مراجعة التقرير اليومي: من الرقم إلى التعليق الحقيقي ---
+const watcherReview = read('engine/social/watcherReview.ts');
+const watcherReviewTest = read('engine/tests/watcher.review.test.ts');
+const watcherReviewInt = read('engine/tests/watcher.review.integration.test.ts');
+const reviewUi = read('src/components/agent/YouTubeBriefReview.tsx');
+add('brief-review-module', fs.existsSync(path.join(root, 'engine/social/watcherReview.ts')) && watcherReview.includes('WATCHER_BRIEF_METRICS') && watcherReview.includes('selectMetricEntries') && watcherReview.includes('computeBriefCounts'), 'وحدة مركز مراجعة التقرير (محدّدات/حساب/فلاتر/قرارات) موجودة');
+add('brief-review-single-source-selector', server.includes('const counts = computeBriefCounts(processed, now)') && server.includes("selectMetricEntries(processed, 'escalated', now)"), 'أرقام التقرير تُحسب من نفس مُحدِّدات شاشة التفاصيل (مصدر واحد ⇒ لا discrepancy)');
+add('brief-review-details-endpoint', server.includes('/api/agent/youtube/watcher/details') && server.includes('selectMetricEntries(watcherState.processed, metric') && server.includes('applyDetailFilters'), 'مسار التفاصيل يُرجع نفس سجلات الرقم مع الفلاتر ويُعيد 400 لبطاقة غير معروفة');
+add('brief-review-comment-endpoint', server.includes('/api/agent/youtube/watcher/comment/:commentId') && server.includes('404') && server.includes('تعليق غير موجود'), 'مسار تفاصيل تعليق واحد بمعرّفه (404 إن غير موجود)');
+add('brief-review-open-is-readonly', server.includes('فتح التفاصيل لا يغيّر أي حالة') && /app\.get\("\/api\/agent\/youtube\/watcher\/details"[\s\S]{0,1200}?res\.json/.test(server), 'فتح التفاصيل للقراءة فقط ولا يغيّر أي حالة');
+add('brief-review-owner-action', server.includes('app.post("/api/agent/youtube/watcher/review", requireOwner'), 'قرارات المراجعة للمالك فقط (requireOwner)');
+add('brief-review-uses-central-executor', /app\.post\("\/api\/agent\/youtube\/watcher\/review", requireOwner[\s\S]{0,1600}?await executeYouTubeReply\(/.test(server), 'إرسال الرد من المراجعة يمر بالمنفّذ المركزي executeYouTubeReply (لا مسار جانبي)');
+add('brief-review-actions-explicit', watcherReview.includes("'allow_reply'") && watcherReview.includes("'reprocess'") && watcherReview.includes("'ignore'") && watcherReview.includes("'escalate'") && watcherReview.includes("'block_reply'") && watcherReview.includes('isValidReviewAction'), 'الإجراءات المعروفة فقط مسموحة (allow_reply/reprocess/ignore/escalate/block_reply)');
+add('brief-review-no-send-without-provider-id', server.includes('if (result.status !== 200 || !result.body?.delivered)') && server.includes('sent: false') && server.includes('externalReplyId: result.body.externalReplyId'), 'لا يُسجَّل قرار ناجح/تسليم إلا بمعرّف رد حقيقي من YouTube');
+add('brief-review-overrides-durable', server.includes('reviewOverrides: watcherState.reviewOverrides.slice(0, 5000)') && server.includes('normalizeReviewOverrides(raw.reviewOverrides)'), 'قرارات المراجعة تُحفظ/تُسترجع عبر المحوّل فتصمد بعد restart');
+add('brief-review-override-respected-in-cycle', server.includes('const ownerOverride = overrideMap[c.commentId]') && server.includes('overrideForcesReply(ownerOverride)') && server.includes('overrideForcedStage(override)') && server.includes('review_override_applied'), 'قرار المالك (منع/تجاهل/تصعيد) يُحترم في دورة المراقبة التالية');
+add('brief-review-zero-honest', watcherReview.includes('return recent.filter') && watcherReview.includes("case 'verifiedReplies'"), 'البطاقة الصفر تُرجع قائمة فارغة صحيحة (لا اختراع سجلات)');
+add('brief-review-no-secret', !/(accessToken|refreshToken|clientSecret|GEMINI_API_KEY)/.test(watcherReview) && !/(accessToken|clientSecret)/.test(reviewUi), 'وحدة/واجهة المراجعة بلا أي سرّ/توكن');
+add('brief-review-ui-clickable', watcherUi.includes('setActiveMetric') && watcherUi.includes('brief.metrics') && reviewUi.includes('getYouTubeWatcherDetails') && reviewUi.includes('reviewYouTubeWatcherComment'), 'البطاقات قابلة للنقر وتفتح شاشة المراجعة الحقيقية');
+add('brief-review-ui-suggested-reply', reviewUi.includes('suggestedReply') && reviewUi.includes('allow_reply') && reviewUi.includes('block_reply'), 'شاشة المراجعة تعرض الرد المقترح وتتيح الإجراءات الصريحة');
+add('brief-review-ui-owner-only', reviewUi.includes("currentUser?.role === 'owner'") && reviewUi.includes('للمالك فقط'), 'أزرار المراجعة تظهر للمالك فقط في الواجهة');
+add('brief-review-api-client', read('src/services/api.ts').includes('/api/agent/youtube/watcher/details') && read('src/services/api.ts').includes('/api/agent/youtube/watcher/review'), 'طبقة API تحمل مساري التفاصيل والمراجعة');
+add('brief-review-tests', fs.existsSync(path.join(root, 'engine/tests/watcher.review.test.ts')) && watcherReviewTest.includes('computeBriefCounts') && watcherReviewTest.includes('selectMetricEntries') && watcherReviewTest.includes('overrideForcesReply'), 'اختبار وحدة يثبت: العدد=السجلات، الفلاتر لا تُنشئ بيانات، الصفر صادق، القرارات');
+add('brief-review-integration-tests', fs.existsSync(path.join(root, 'engine/tests/watcher.review.integration.test.ts')) && watcherReviewInt.includes('watcher/review') && watcherReviewInt.includes('allow_reply') && watcherReviewInt.includes('comments.insert'), 'اختبار تكامل حقيقي: قراءة → تقرير → تفاصيل → قرار رد → comments.insert → معرّف حقيقي');
+
 // --- وقت الأتمتة: فاصل فحص تعليقات YouTube يتحكم به المالك (1..5 دقائق) ---
 const watcherModuleText = read('engine/social/youtubeWatcher.ts');
 const schedulerModuleText = read('engine/social/youtubeWatcherScheduler.ts');

@@ -9,6 +9,7 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { apiService } from '../../services/api';
 import { useApp } from '../../context/AppContext';
+import { YouTubeBriefReview } from './YouTubeBriefReview';
 
 const tone = (s?: string) => {
   switch (s) {
@@ -38,6 +39,7 @@ export function YouTubeOperationsView() {
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [note, setNote] = useState<string | null>(null);
+  const [activeMetric, setActiveMetric] = useState<{ key: string; labelAr: string; count: number } | null>(null);
 
   const load = useCallback(async () => {
     try {
@@ -229,16 +231,16 @@ export function YouTubeOperationsView() {
       {/* Daily Brief */}
       {brief ? (
         <section>
-          <h2 className="text-sm font-semibold text-slate-300 mb-2">تقرير اليوم ({brief.date})</h2>
+          <h2 className="text-sm font-semibold text-slate-300 mb-2">تقرير اليوم ({brief.date}) — اضغط أي رقم لعرض التعليقات الحقيقية</h2>
           <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-            <Stat label="تعليقات جديدة" value={brief.newComments} />
-            <Stat label="ردود" value={brief.replies} />
-            <Stat label="مُتجاهَلة" value={brief.skipped} />
-            <Stat label="مُصعَّدة" value={brief.escalated} />
-            <Stat label="ردود مُتحقَّقة" value={brief.verifiedReplies} />
-            <Stat label="ردود فاشلة" value={brief.failedReplies} />
-            <Stat label="مشاعر +" value={brief.sentiment?.positive ?? 0} />
-            <Stat label="مشاعر −" value={brief.sentiment?.negative ?? 0} />
+            {(brief.metrics || []).map((m: any) => (
+              <button key={m.key} onClick={() => setActiveMetric({ key: m.key, labelAr: m.labelAr, count: m.count })}
+                className="text-right bg-slate-900 border border-slate-800 hover:border-cyan-500/50 hover:bg-slate-800/60 rounded-2xl p-4 transition-colors">
+                <div className="text-xs text-slate-400 mb-1">{m.labelAr}</div>
+                <div className="text-lg font-semibold text-slate-100">{m.count}</div>
+                <div className="text-[11px] text-cyan-400 mt-1">عرض التفاصيل ←</div>
+              </button>
+            ))}
           </div>
           <ul className="mt-3 space-y-1 text-sm text-slate-300 list-disc pr-5">
             {(brief.recommendations || []).map((r: string, i: number) => <li key={i}>{r}</li>)}
@@ -275,6 +277,10 @@ export function YouTubeOperationsView() {
       <p className="text-xs text-slate-500 border-t border-slate-800 pt-3">
         كل الأرقام من بيانات YouTube الحقيقية وسجلات النظام — لا بيانات مُختلقة. الرد لا يُعتبر ناجحاً إلا بمعرّف رد حقيقي من YouTube.
       </p>
+
+      {activeMetric ? (
+        <YouTubeBriefReview metric={activeMetric} onClose={() => setActiveMetric(null)} onChanged={load} />
+      ) : null}
     </div>
   );
 }

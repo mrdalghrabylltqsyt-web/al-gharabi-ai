@@ -1378,5 +1378,22 @@ ${payload.topic || payload.productName || 'أنظمة وحلول التقسيط 
     const data = await res.json();
     if (!res.ok || !data.success) throw new Error(data.error || 'تعذر تحميل سجل الأتمتة');
     return data.audit || [];
+  },
+  /** تفاصيل رقم من التقرير اليومي: نفس السجلات التي كوّنته (بلا اختلاق). */
+  async getYouTubeWatcherDetails(metric: string, filters: Record<string, string> = {}): Promise<any> {
+    const qs = new URLSearchParams({ metric, ...filters }).toString();
+    const res = await fetch(`/api/agent/youtube/watcher/details?${qs}`, { headers: getAuthHeaders() });
+    const data = await res.json();
+    if (!res.ok || !data.success) throw new Error(data.error || 'تعذر تحميل تفاصيل التقرير');
+    return data;
+  },
+  /** قرار مراجعة المالك على تعليق (للمالك فقط). */
+  async reviewYouTubeWatcherComment(payload: { commentId: string; action: string; text?: string; note?: string }): Promise<any> {
+    const res = await fetch('/api/agent/youtube/watcher/review', {
+      method: 'POST', headers: { ...getAuthHeaders(), 'Content-Type': 'application/json' }, body: JSON.stringify(payload),
+    });
+    const data = await res.json();
+    if (!res.ok || !data.success) throw new Error(data.error || 'تعذر تنفيذ قرار المراجعة');
+    return data;
   }
 };

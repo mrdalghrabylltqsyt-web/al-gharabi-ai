@@ -245,6 +245,24 @@ import {
 } from "./engine/social/youtubeWatcher";
 import { createWatcherScheduler, type WatcherScheduler } from "./engine/social/youtubeWatcherScheduler";
 import {
+  computeBriefCounts,
+  buildMetricViews,
+  selectMetricEntries,
+  toDetailRecord,
+  applyDetailFilters,
+  normalizeReviewOverrides,
+  latestOverridesByComment,
+  overrideForcesReply,
+  overrideForcedStage,
+  isValidReviewAction,
+  WATCHER_BRIEF_METRIC_LABELS_AR,
+  WATCHER_REVIEW_ACTION_LABELS_AR,
+  WATCHER_BRIEF_WINDOW_MS,
+  type WatcherReviewOverride,
+  type WatcherReviewAction,
+  type WatcherBriefMetric,
+} from "./engine/social/watcherReview";
+import {
   summarizeChannelAnalytics,
   analyzeYouTubeAudience,
   buildYouTubeLearning,
@@ -4408,6 +4426,8 @@ interface WatcherState {
   brief: any | null;
   briefDate: string | null;
   lastScanned: number;
+  /** قرارات مراجعة المالك (Override) — آخر قرار لكل تعليق، تصمد بعد restart. */
+  reviewOverrides: WatcherReviewOverride[];
 }
 
 let watcherState: WatcherState = {
@@ -4425,6 +4445,7 @@ let watcherState: WatcherState = {
   brief: null,
   briefDate: null,
   lastScanned: 0,
+  reviewOverrides: [],
 };
 let watcherRunning = false;
 let watcherScheduler: WatcherScheduler | null = null;
@@ -4477,6 +4498,7 @@ async function persistWatcherState(): Promise<void> {
       brief: watcherState.brief,
       briefDate: watcherState.briefDate,
       lastScanned: watcherState.lastScanned,
+      reviewOverrides: watcherState.reviewOverrides.slice(0, 5000),
     });
   } catch (error: any) {
     lastPersistError = String(error?.code || error?.name || "persist_failed").slice(0, 60);
@@ -4500,6 +4522,7 @@ function applyWatcherStateSnapshot(raw: any): void {
   watcherState.brief = raw.brief && typeof raw.brief === "object" ? raw.brief : null;
   watcherState.briefDate = typeof raw.briefDate === "string" ? raw.briefDate : null;
   watcherState.lastScanned = Number.isFinite(raw.lastScanned) ? Number(raw.lastScanned) : 0;
+  watcherState.reviewOverrides = normalizeReviewOverrides(raw.reviewOverrides);
   // لو كان الرد الآلي ممكّناً أصلاً (مثلاً نُشِر الإصلاح بعد تمكينه)، تُحرَّر
   // التعليقات المؤجَّلة القديمة (التي تعذّرت سابقاً بسبب الإعداد) لإعادة تقييمها.
   const c = watcherState.controls;
@@ -4597,6 +4620,8 @@ async function runYouTubeWatcherCycle(trigger: "schedule" | "manual" = "schedule
     // ثم الاسم/عنوان القناة المخزّنان، فأسماء المعرض المعروفة.
     const ownNames = [String(storedYt?.channelTitle || ""), String(workspace.showroom?.name || ""), "معرض الغرابي"].filter(Boolean);
     const history = ((workspace as any).socialReplies || []).map((r: any) => ({ externalId: r.externalId, replyFingerprint: r.replyFingerprint, repliedAt: r.repliedAt }));
+    // قرارات المالك من مراجعة التقرير — تُطبَّق على القرار الحتمي (لا تُنقض).
+    const overrideMap = watcherOverrideMap();
     const latestFirst = [...comments].sort((a, b) => String(b.publishedAt || "").localeCompare(String(a.publishedAt || "")));
     const pendingBefore = latestFirst.filter((c) => !hasProcessed(watcherState.processed, c.commentId));
     const budget = Math.min(10, pendingBefore.length);
@@ -4620,6 +4645,22 @@ async function runYouTubeWatcherCycle(trigger: "schedule" | "manual" = "schedule
         videoId: c.videoId ?? null, authorName: c.authorName ?? null, text: String(c.text || ""), at: new Date().toISOString(),
         publishedAt: c.publishedAt ?? null,
       };
+      // قرار المالك من مراجعة التقرير يتقدّم على القرار الحتمي (لا يُنقض):
+      // منع/تجاهل ⇒ لا رد، تصعيد ⇒ للمالك. (allow_reply/reprocess يعالجهما مسار المراجعة.)
+      const ownerOverride = overrideMap[c.commentId];
+      if (ownerOverride && !overrideForcesReply(ownerOverride)) {
+        const forcedStage = overrideForcedStage(ownerOverride) || "SKIPPED";
+        baseEntry.stage = forcedStage;
+        baseEntry.action = forcedStage === "ESCALATED" ? "escalate" : "skip";
+        baseEntry.reason = `قرار المالك من مراجعة التقرير: ${WATCHER_REVIEW_ACTION_LABELS_AR[ownerOverride.action]}.`;
+        if (forcedStage === "ESCALATED") escalated += 1; else skipped += 1;
+        watcherState.processed.unshift(baseEntry);
+        if (watcherState.processed.length > WATCHER_MAX_PROCESSED) watcherState.processed.length = WATCHER_MAX_PROCESSED;
+        watcherAudit({ action: "review_override_applied", commentId: c.commentId, videoId: c.videoId, reason: baseEntry.reason, decision: baseEntry.action, actor: ownerOverride.by });
+        { const cp = advanceCheckpoint({ lastCommentId: watcherState.lastCommentId, lastCommentAt: watcherState.lastCommentAt }, c.commentId, c.publishedAt || baseEntry.at); watcherState.lastCommentId = cp.lastCommentId; watcherState.lastCommentAt = cp.lastCommentAt; }
+        await persistWatcherState();
+        continue;
+      }
       // تعذّر بسبب إعداد المالك (الرد الآلي معطّل/موقوف): قرار غير نهائي. نُسجّله
       // موسوماً `deferred` (فيمنع التكرار داخل الدورة) لكنه ليس نهائياً — يُحرَّر
       // ويُعاد تقييمه تلقائياً عند تمكين الرد، فلا يُفقد أي تعليق قابل للرد.
@@ -4787,15 +4828,15 @@ function watcherStatusBlock() {
 /** تقرير YouTube اليومي الحتمي من السجلات الحقيقية (بلا استهلاك AI). */
 function buildWatcherDailyBrief(): any {
   const processed = watcherState.processed;
-  const dayAgo = Date.now() - 24 * 3_600_000;
-  const recent = processed.filter((p) => Date.parse(p.at) >= dayAgo);
-  const sentiment = { positive: 0, negative: 0, neutral: 0 };
+  const now = Date.now();
+  const recent = processed.filter((p) => Date.parse(p.at) >= now - WATCHER_BRIEF_WINDOW_MS);
+  // الأرقام تُحسب من نفس المُحدِّدات المستخدمة في شاشة التفاصيل (مصدر واحد)
+  // فيستحيل أن يختلف الرقم عن قائمة السجلات التي فتحها المالك.
+  const counts = computeBriefCounts(processed, now);
+  const sentiment = { positive: counts.positive, negative: counts.negative, neutral: recent.length - counts.positive - counts.negative };
   const questions = new Map<string, number>();
   for (const p of recent) {
     const cls = classifyComment(p.text);
-    if (cls.sentiment === 'positive') sentiment.positive += 1;
-    else if (cls.sentiment === 'negative') sentiment.negative += 1;
-    else sentiment.neutral += 1;
     if (cls.intent === 'question' || cls.intent === 'business_inquiry') {
       const key = p.text.trim().slice(0, 120);
       questions.set(key, (questions.get(key) || 0) + 1);
@@ -4806,25 +4847,55 @@ function buildWatcherDailyBrief(): any {
   const sorted = [...videos].sort((a, b) => Number(b.viewCount || 0) - Number(a.viewCount || 0));
   return buildDailyBrief({
     date: new Date().toISOString().slice(0, 10),
-    newComments: recent.length,
-    replies: recent.filter((p) => p.stage === 'REPLIED' || p.stage === 'VERIFIED').length,
-    skipped: recent.filter((p) => p.stage === 'SKIPPED').length,
-    escalated: recent.filter((p) => p.stage === 'ESCALATED').length,
-    verifiedReplies: recent.filter((p) => p.stage === 'VERIFIED').length,
-    failedReplies: recent.filter((p) => p.stage === 'FAILED').length,
+    newComments: counts.newComments,
+    replies: counts.replies,
+    skipped: counts.skipped,
+    escalated: counts.escalated,
+    verifiedReplies: counts.verifiedReplies,
+    failedReplies: counts.failedReplies,
     sentiment,
     topQuestions,
-    velocity: computeCommentVelocity(recent.map((p) => p.publishedAt || p.at), Date.now()),
+    velocity: computeCommentVelocity(recent.map((p) => p.publishedAt || p.at), now),
     peakHours: computePeakHours(processed.map((p) => p.publishedAt)),
     videos: {
       total: videos.length,
       bestPerforming: sorted.slice(0, 3).map((v) => ({ videoId: v.videoId, title: v.title ?? null, metric: Number(v.viewCount || 0) })),
       weakPerforming: sorted.slice(-3).filter((v) => v && v.videoId).map((v) => ({ videoId: v.videoId, title: v.title ?? null, metric: Number(v.viewCount || 0) })),
     },
-    attentionRequired: recent.filter((p) => p.stage === 'ESCALATED').map((p) => ({ commentId: p.commentId, reason: p.reason, text: p.text })),
-    sampleNotes: [`عيّنة اليوم: ${recent.length} تعليقاً حقيقياً من آخر 24 ساعة.`, videos.length ? `عدد الفيديوهات في أحدث قراءة: ${videos.length}.` : 'لم تُقرأ فيديوهات بعد.'],
+    attentionRequired: selectMetricEntries(processed, 'escalated', now).map((p) => ({ commentId: p.commentId, reason: p.reason, text: p.text })),
+    sampleNotes: [`عيّنة اليوم: ${counts.newComments} تعليقاً حقيقياً من آخر 24 ساعة.`, videos.length ? `عدد الفيديوهات في أحدث قراءة: ${videos.length}.` : 'لم تُقرأ فيديوهات بعد.'],
   });
 }
+
+/** عناوين الفيديوهات من أحدث قراءة تحليلات (لعرض عنوان حقيقي بجانب التعليق). */
+function watcherVideoTitles(): Record<string, string | null> {
+  const videos = ((workspace as any).youtubeLastAnalytics?.videos || []) as any[];
+  const map: Record<string, string | null> = {};
+  for (const v of videos) if (v?.videoId) map[String(v.videoId)] = v.title ?? null;
+  return map;
+}
+
+/** بطاقات التقرير اليومي (كل رقم + مسمّاه) — مصدر واحد للواجهة. */
+function watcherBriefMetricsView(now: number) {
+  return buildMetricViews(watcherState.processed, now).map((m) => ({ ...m, labelAr: m.labelAr }));
+}
+
+/** آخر override فعّال لكل تعليق (مصدر واحد عند القراءة والحساب). */
+function watcherOverrideMap(): Record<string, WatcherReviewOverride> {
+  return latestOverridesByComment(watcherState.reviewOverrides);
+}
+
+/** يبني السجلات التفصيلية لمجموعة سجلات (بلا تغيير أي حالة). */
+function watcherDetailRecords(entries: WatcherProcessedEntry[]) {
+  const titles = watcherVideoTitles();
+  const overrides = watcherOverrideMap();
+  return entries.map((e) => {
+    const rec = toDetailRecord(e, { videoTitles: titles });
+    const ov = overrides[e.commentId];
+    return { ...rec, override: ov ? { action: ov.action, at: ov.at, by: ov.by } : null, overrideLabelAr: ov ? WATCHER_REVIEW_ACTION_LABELS_AR[ov.action] : null };
+  });
+}
+
 
 /** صياغة الرد العراقي الحتمي للـwatcher (نفس صياغة العقل، بلا AI). */
 function watcherIraqiReply(text: string): string {
@@ -4947,12 +5018,129 @@ app.post("/api/agent/youtube/watcher/poll", requireOwner, async (req, res) => {
 
 app.get("/api/agent/youtube/watcher/brief", authenticateToken, (_req, res) => {
   const brief = buildWatcherDailyBrief();
-  res.json({ success: true, brief });
+  const now = Date.now();
+  // البطاقات القابلة للنقر: نفس الرقم + مفتاحه، ليربط الرقم بقائمته بلا discrepancy.
+  res.json({ success: true, brief: { ...brief, metrics: watcherBriefMetricsView(now) } });
+});
+
+/**
+ * تفاصيل رقم من التقرير: يُعيد **نفس السجلات** التي كوّنت الرقم (بلا اختلاق).
+ * للقراءة فقط: فتح التفاصيل لا يغيّر أي حالة. الفلاتر اختيارية.
+ */
+app.get("/api/agent/youtube/watcher/details", authenticateToken, (req, res) => {
+  const metric = String(req.query.metric || "");
+  if (!WATCHER_BRIEF_METRIC_LABELS_AR[metric as WatcherBriefMetric]) {
+    return res.status(400).json({ success: false, error: "بطاقة غير معروفة.", metrics: Object.keys(WATCHER_BRIEF_METRIC_LABELS_AR) });
+  }
+  const now = Date.now();
+  const entries = selectMetricEntries(watcherState.processed, metric as WatcherBriefMetric, now);
+  let records = watcherDetailRecords(entries);
+  records = applyDetailFilters(records as any, {
+    stage: typeof req.query.stage === 'string' && req.query.stage ? String(req.query.stage) : undefined,
+    intent: typeof req.query.intent === 'string' && req.query.intent ? String(req.query.intent) : undefined,
+    sentiment: typeof req.query.sentiment === 'string' && req.query.sentiment ? String(req.query.sentiment) : undefined,
+    delivered: req.query.delivered === 'true' ? true : req.query.delivered === 'false' ? false : undefined,
+    needsReview: req.query.needsReview === 'true' ? true : req.query.needsReview === 'false' ? false : undefined,
+    q: typeof req.query.q === 'string' ? String(req.query.q) : undefined,
+  }) as any;
+  res.json({
+    success: true,
+    metric,
+    labelAr: WATCHER_BRIEF_METRIC_LABELS_AR[metric as WatcherBriefMetric],
+    count: records.length,
+    total: entries.length,
+    windowHours: WATCHER_BRIEF_WINDOW_MS / 3_600_000,
+    records,
+    filtersApplied: {
+      stage: req.query.stage || null, intent: req.query.intent || null, sentiment: req.query.sentiment || null,
+      delivered: req.query.delivered ?? null, needsReview: req.query.needsReview ?? null, q: req.query.q || null,
+    },
+    note: "السجلات هي نفسها التي كوّنت الرقم — لا بيانات مُختلقة. فتح التفاصيل لا يغيّر أي حالة.",
+  });
+});
+
+/** تفاصيل تعليق واحد بمعرّفه (للمراجعة قبل أي قرار). */
+app.get("/api/agent/youtube/watcher/comment/:commentId", authenticateToken, (req, res) => {
+  const entry = watcherState.processed.find((p) => p.commentId === req.params.commentId);
+  if (!entry) return res.status(404).json({ success: false, error: "تعليق غير موجود في سجلات المعالجة." });
+  res.json({ success: true, record: watcherDetailRecords([entry])[0] });
 });
 
 app.get("/api/agent/youtube/watcher/audit", authenticateToken, (req, res) => {
   const limit = Math.max(1, Math.min(200, Number(req.query.limit || 50)));
   res.json({ success: true, audit: watcherState.audit.slice(0, limit), count: watcherState.audit.length });
+});
+
+/**
+ * قرار مراجعة المالك على تعليق — لا يُغيّر الحالة إلا بفعل صريح هنا.
+ * - allow_reply: يمر بـexecuteYouTubeReply الحقيقي (كل البوابات سارية، بلا تجاوز).
+ * - reprocess: يحرّر التعليق لإعادة تقييمه في الدورة التالية (بلا إرسال فوري).
+ * - ignore/escalate/block_reply: قرار حالة فقط (بلا إرسال).
+ * لا يُكشف أي سرّ، وكل قرار يُسجَّل في التدقيق ويُحفظ (يصمد بعد restart).
+ */
+app.post("/api/agent/youtube/watcher/review", requireOwner, async (req, res) => {
+  const user = (req as any).user;
+  const commentId = String(req.body?.commentId || "").trim();
+  const action = String(req.body?.action || "");
+  if (!commentId) return res.status(400).json({ success: false, error: "معرّف التعليق مطلوب." });
+  if (!isValidReviewAction(action)) {
+    return res.status(400).json({ success: false, error: "إجراء غير معروف.", actions: Object.keys(WATCHER_REVIEW_ACTION_LABELS_AR) });
+  }
+  const entry = watcherState.processed.find((p) => p.commentId === commentId);
+  if (!entry) return res.status(404).json({ success: false, error: "تعليق غير موجود في سجلات المعالجة." });
+
+  const now = Date.now();
+  const override: WatcherReviewOverride = { commentId, action, at: new Date().toISOString(), by: user.id, note: req.body?.note ? String(req.body.note).slice(0, 300) : null };
+
+  // allow_reply: الإرسال الفعلي يمر بالمنفّذ المركزي نفسه (كل الحمايات).
+  if (action === "allow_reply") {
+    const text = String(req.body?.text || "").trim() || watcherIraqiReply(String(entry.text || ""));
+    const result = await executeYouTubeReply({ commentId, text, commentText: String(entry.text || "") }, user.id);
+    if (result.status !== 200 || !result.body?.delivered) {
+      // لا نُسجّل قراراً ناجحاً ولا نغيّر الحالة عند فشل الإرسال — نُبلّغ السبب الدقيق.
+      audit(user.id, "youtube_watcher_review_allow_reply_failed", `youtube:${commentId}:${result.body?.code || result.status}`);
+      return res.status(result.status || 502).json({ success: false, action, commentId, sent: false, code: result.body?.code || "REPLY_FAILED", error: result.body?.error || "تعذّر إرسال الرد.", reply: result.body?.reply ?? null });
+    }
+    // نجح الإرسال: نُسجّل القرار ونحدّث السجل بنفس بيانات المنفّذ الحقيقية.
+    entry.stage = "REPLIED";
+    entry.action = "reply";
+    entry.reason = "أُرسل الرد بقرار المالك (مراجعة التقرير) عبر المنفّذ المركزي.";
+    entry.replyText = text;
+    entry.externalReplyId = String(result.body.externalReplyId);
+    watcherState.reviewOverrides.unshift(override);
+    watcherState.reviewOverrides = watcherState.reviewOverrides.slice(0, 5000);
+    watcherAudit({ action: "review_allow_reply", commentId, videoId: entry.videoId, reason: entry.reason, decision: "reply", generatedText: text, sent: true, providerId: String(result.body.externalReplyId), actor: user.id });
+    audit(user.id, "youtube_watcher_review_allow_reply", `youtube:${commentId}`);
+    await persistWatcherState();
+    await persistStateDurable();
+    return res.json({ success: true, action, commentId, sent: true, externalReplyId: result.body.externalReplyId, state: result.body.reply?.state, record: watcherDetailRecords([entry])[0] });
+  }
+
+  // reprocess: تحرير التعليق من سجلات المعالجة ليُعاد تقييمه في الدورة التالية.
+  if (action === "reprocess") {
+    const before = watcherState.processed.length;
+    watcherState.processed = watcherState.processed.filter((p) => p.commentId !== commentId);
+    watcherState.reviewOverrides.unshift(override);
+    watcherState.reviewOverrides = watcherState.reviewOverrides.slice(0, 5000);
+    watcherAudit({ action: "review_reprocess", commentId, videoId: entry.videoId, reason: "أعاد المالك التعليق إلى مسار المعالجة.", decision: "reprocess", actor: user.id });
+    audit(user.id, "youtube_watcher_review_reprocess", `youtube:${commentId}`);
+    await persistWatcherState();
+    return res.json({ success: true, action, commentId, released: before - watcherState.processed.length, note: "سيُعاد تقييم التعليق في دورة المراقبة القادمة (بلا إرسال فوري)." });
+  }
+
+  // ignore / escalate / block_reply: قرار حالة صريح، بلا إرسال خارجي.
+  const forced = overrideForcedStage(override) || (action === 'escalate' ? 'ESCALATED' : 'SKIPPED');
+  entry.stage = forced as YouTubeCommentStage;
+  entry.action = action === 'escalate' ? 'escalate' : 'skip';
+  entry.reason = action === 'block_reply' ? 'منع المالك الرد على هذا التعليق.'
+    : action === 'ignore' ? 'تجاهل بقرار المالك من مراجعة التقرير.'
+    : 'صُعِّد للمراجعة البشرية بقرار المالك.';
+  watcherState.reviewOverrides.unshift(override);
+  watcherState.reviewOverrides = watcherState.reviewOverrides.slice(0, 5000);
+  watcherAudit({ action: `review_${action}`, commentId, videoId: entry.videoId, reason: entry.reason, decision: entry.action, actor: user.id });
+  audit(user.id, `youtube_watcher_review_${action}`, `youtube:${commentId}`);
+  await persistWatcherState();
+  return res.json({ success: true, action, commentId, sent: false, record: watcherDetailRecords([entry])[0] });
 });
 
 /**

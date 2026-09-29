@@ -2323,3 +2323,54 @@ Instagram/Telegram/TikTok، ولا Gemini، ولا مفاتيح التشفير،
 
 **لم يُمسّ:** Facebook/Instagram/Telegram/YouTube (OAuth/التفويض/الرد/المراقب/الوكيل)، ولا
 سياسة الموديلات، ولا مفاتيح التشفير، ولا أي سرّ، ولا أي منطق سوشيال حتمي.
+
+## مركز مراجعة التقرير اليومي: من الرقم إلى التعليق الحقيقي (Batch 18, 2026-09-28)
+
+كان التقرير اليومي يعرض أرقاماً غير قابلة للتتبع (تعليقات جديدة 22، ردود 8، مؤجلة 10،
+مصعدة 3، ردود متحققة 8، ردود فاشلة 1، مشاعر +15 / −0) فلا يعرف المالك **أي** تعليق كوّن
+كل رقم. المطلوب ربط كل رقم بالسجلات الحقيقية ومراجعتها واحداً واحداً.
+
+**تتبع المصادر (بلا افتراض):** كل الأرقام مشتقّة من `watcherState.processed`
+(`WatcherProcessedEntry[]` المحفوظة عبر المحوّل فتصمد بعد restart). العدّادات = نفس أرقام
+المستخدم بالضبط: `detected=22`, `replied=REPLIED|VERIFIED=8`, `skipped=10`, `escalated=3`,
+`verifiedReplies=8`, `failedReplies=1`، والمشاعر من `classifyComment`. **لا فجوة بيانات
+ولا رقم بلا سجلات retrievable.**
+
+**وحدة `engine/social/watcherReview.ts` (منطق خالص، بلا شبكة/أسرار):**
+- `WATCHER_BRIEF_METRICS` + `WATCHER_BRIEF_METRIC_LABELS_AR`: مصدر واحد يربط الرقم بقائمته.
+- `selectMetricEntries(entries, metric, now)` + `computeBriefCounts`: كل بطاقة لها **شرط
+  واحد واضح**، ونفس المُحدِّد يُستخدم لحساب الرقم ولإرجاع سجلاته ⇒ **يستحيل discrepancy**.
+- `toDetailRecord`: سجل تفصيلي حقيقي (نص/حساب/فيديو+رابط/حالة+مسمّى/سبب/كود/تصنيف
+  بمسمّيات عربية/الرد المقترح الحتمي/التسليم بمعرّف رد).
+- `applyDetailFilters`: فلاتر (stage/intent/sentiment/delivered/needsReview/q) **لا تنشئ
+  بيانات**؛ الصفر يُعيد حالة فارغة صحيحة.
+- قرارات المراجعة: `WATCHER_REVIEW_ACTIONS` (`allow_reply`/`reprocess`/`ignore`/`escalate`/
+  `block_reply`) + `isValidReviewAction` + `overrideForcesReply`/`overrideForcedStage`
+  + `normalizeReviewOverrides`/`latestOverridesByComment`.
+
+**الخادم:**
+- `buildWatcherDailyBrief` صار يحسب الأرقام عبر `computeBriefCounts` (مصدر واحد مع التفاصيل).
+- `GET /api/agent/youtube/watcher/brief` أُثرِي بحقل `metrics` (بطاقات قابلة للنقر).
+- `GET /api/agent/youtube/watcher/details?metric=…&filters` — **قراءة فقط**، يُرجع نفس
+  سجلات الرقم + الفلاتر، 400 لبطاقة غير معروفة، 401 بلا جلسة.
+- `GET /api/agent/youtube/watcher/comment/:commentId` — تفاصيل تعليق واحد (404 إن غاب).
+- `POST /api/agent/youtube/watcher/review` (**requireOwner**): `allow_reply` يمر
+  بـ`executeYouTubeReply` المركزي نفسه (كل البوابات سارية، لا تجاوز) ولا يُسجَّل تسليم بلا
+  معرّف رد حقيقي؛ `reprocess` يحرّر التعليق لإعادة تقييمه؛ `ignore/escalate/block_reply`
+  قرار حالة بلا إرسال. لا تغيير حالة عند فشل الإرسال.
+- `reviewOverrides` تُحفظ/تُسترجع عبر المحوّل (تصمد بعد restart)، ودورة المراقبة تحترم قرار
+  المالك (منع/تجاهل/تصعيد) فلا يُنقض في الدورة التالية.
+
+**الواجهة:** `YouTubeBriefReview` (جديد) — كل بطاقة تُفتح بنقرة وتعرض التعليقات الحقيقية
+بنصها وصنفها وسبب قرارها والرد المقترح، مع فلاتر وإجراءات مراجعة (للمالك فقط). البطاقات في
+`YouTubeOperationsView` صارت أزراراً تستدعي التفاصيل. لا يُعرض أي سرّ.
+
+اختبارات: `engine/tests/watcher.review.test.ts` (**58 فحصاً** وحدة: العدد=السجلات، الفلاتر
+لا تُنشئ بيانات، الصفر صادق، تمييز المؤجَّل، قرارات المراجعة، الـoverrides) و
+`engine/tests/watcher.review.integration.test.ts` (**52 فحصاً** خادم حقيقي + خادم YouTube
+وهمي: قراءة → تقرير → تفاصيل كل بطاقة = عددها → قرار رد → `comments.insert` → معرّف رد
+حقيقي/`sent` → منع التكرار 409 → تجاهل/تصعيد بلا إرسال → لا تسريب سرّ). فحوص final-audit
+الجديدة (626 إجمالاً): `brief-review-*`.
+
+**لم يُمسّ:** OAuth/scopes/الأسرار، ولا Facebook/Instagram/TikTok/Telegram/Gemini، ولا
+تفويض YouTube ولا المراقب 24/7 ولا المنفّذ المركزي (المراجعة تستخدمه كما هو).
