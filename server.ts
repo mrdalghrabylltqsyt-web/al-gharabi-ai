@@ -280,6 +280,7 @@ import {
   summarizeContentQueue,
   computeContentBriefCounts,
   isVerificationSubstantiated,
+  evaluateDueScheduledContent,
   reviewActionToState,
   contentManualReadiness,
   classifyContentRecord,
@@ -4841,6 +4842,70 @@ function contentQueueSummary() {
   return summarizeContentQueue(contentQueue.map((i) => ({ state: i.state, publishAt: i.publishAt, verified: i.verified, externalVideoId: i.externalVideoId, verifiedVideoId: i.verifiedVideoId })));
 }
 
+/** يحوّل `publishAt` (جدار محلي بغدادي أو لحظة ISO) إلى epoch صالح للفحص. */
+function contentPublishAtEpoch(value: string | null): number {
+  if (!value) return NaN;
+  const wall = wallClockToEpoch(value);
+  return Number.isFinite(wall) ? wall : Date.parse(value);
+}
+
+/**
+ * فحص **قراءة فقط** لعناصر الطابور المجدولة التي حلّ موعدها: يقرأ حالة كل فيديو
+ * الحقيقية من YouTube (videos.list) ويُحدّث العنصر وفق الدليل الفعلي:
+ * - `public` فعلاً ⇒ VERIFIED مع معرّف الفيديو ووقت التحقق (لا ادعاء بلا دليل).
+ * - `private`/`unlisted` بعد الموعد ⇒ يبقى SCHEDULED بسبب صريح (لم يصبح عاماً بعد).
+ * - تعذّر القراءة/الفيديو غير موجود ⇒ يبقى SCHEDULED بسبب صريح بلا اختراع حالة.
+ * لا يستهلك AI ولا يُنشئ حالة بلا قراءة مزود. يعمل داخل دورة المراقبة الدائمة.
+ */
+async function verifyDueScheduledContent(): Promise<{ checked: number; verified: number; stillPrivate: number; unreadable: number }> {
+  const result = { checked: 0, verified: 0, stillPrivate: 0, unreadable: 0 };
+  const guard = youtubeOperationGuard();
+  if (!guard.ok) return result;
+  const now = Date.now();
+  const due = contentQueue.filter((it) =>
+    it.state === "SCHEDULED" && it.externalVideoId &&
+    Number.isFinite(contentPublishAtEpoch(it.publishAt)) && contentPublishAtEpoch(it.publishAt) <= now,
+  ).slice(0, 10);
+  if (!due.length) return result;
+  const ensured = await ensureYouTubeAccessToken();
+  if (!ensured.ok || !ensured.token) return result;
+  let changed = false;
+  for (const item of due) {
+    result.checked += 1;
+    const externalVideoId = String(item.externalVideoId);
+    try {
+      const fetched = await youtubeClient().getVideos(ensured.token, [externalVideoId]);
+      const row = fetched.ok && fetched.data?.length === 1 ? fetched.data[0] : null;
+      const actual = row ? (row.privacyStatus ?? null) : null;
+      const verdict = evaluateDueScheduledContent(item, contentPublishAtEpoch(item.publishAt), actual, now);
+      if (!verdict) continue;
+      if (verdict.action === "verify") {
+        item.state = verdict.state;
+        item.verified = true;
+        item.verifiedVideoId = externalVideoId;
+        item.verifiedPrivacyStatus = "public";
+        item.stateReason = verdict.reason;
+        item.code = verdict.code;
+        item.updatedAt = new Date().toISOString();
+        pushContentHistory(item, { action: "verified", actor: "system", detail: verdict.reason, externalVideoId, result: "ok_verified" });
+        logYouTubeOperation("scheduled_verified_public", { externalId: externalVideoId, outcome: "public", errorCode: null, durationMs: 0, actor: "system" });
+        result.verified += 1;
+        changed = true;
+      } else {
+        item.stateReason = verdict.reason;
+        item.code = verdict.code;
+        item.updatedAt = new Date().toISOString();
+        if (verdict.action === "unreadable") result.unreadable += 1; else result.stillPrivate += 1;
+        changed = true;
+      }
+    } catch {
+      result.unreadable += 1;
+    }
+  }
+  if (changed) await persistWatcherState();
+  return result;
+}
+
 
 const WATCHER_MAX_PROCESSED = 5000;
 const WATCHER_MAX_AUDIT = 500;
@@ -5187,6 +5252,9 @@ async function runYouTubeWatcherCycle(trigger: "schedule" | "manual" = "schedule
       await persistWatcherState();
     }
     watcherState.lastScanned = videoIds.length;
+    // فحص المجدولات التي حلّ موعدها (قراءة فقط من المزود) — يُغلق دورة
+    // SCHEDULED → VERIFIED بدليل حقيقي بلا ادعاء، داخل نفس الدورة الدائمة.
+    const scheduledCheck = await verifyDueScheduledContent();
     watcherState.lastPollAt = new Date(now).toISOString();
     watcherState.pollCount += 1;
     watcherState.consecutiveErrors = 0;
@@ -5208,7 +5276,7 @@ async function runYouTubeWatcherCycle(trigger: "schedule" | "manual" = "schedule
     watcherLastRun = { newDetected, replied, escalated, skipped, verified, failed, deferred, at: new Date(now).toISOString() };
     watcherAudit({ action: "poll_complete", reason: trigger, decision: "ok" });
     await persistWatcherState();
-    return { ok: true, newDetected, replied, escalated, skipped, verified, failed, deferred };
+    return { ok: true, newDetected, replied, escalated, skipped, verified, failed, deferred, scheduledCheck };
   } catch (error: any) {
     watcherState.lastError = String(error?.code || error?.message || "watcher_cycle_failed").slice(0, 120);
     watcherState.consecutiveErrors += 1;

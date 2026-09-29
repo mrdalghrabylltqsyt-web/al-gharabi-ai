@@ -7,12 +7,12 @@
  */
 
 import { spawn, type ChildProcess } from 'node:child_process';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { randomBytes } from 'node:crypto';
 import { createYouTubeMock, startYouTubeMockServer, type YouTubeMockState } from './helpers/youtubeMock';
-import { toScheduleDisplay } from '../../src/utils/scheduleTime';
+import { toScheduleDisplay, formatWallClock, epochToZonedWallClock } from '../../src/utils/scheduleTime';
 
 let passed = 0;
 const failures: string[] = [];
@@ -384,7 +384,47 @@ async function main(): Promise<void> {
   const health2 = await (await fetch(`${BASE}/api/health`)).json();
   check('لا يُعلن تحقق بلا معرّف مزود بعد restart', (queue2.items || []).every((i: any) => !(i.verified === true && !i.externalVideoId)), JSON.stringify((queue2.items || []).filter((i: any) => i.verified && !i.externalVideoId)));
   check('الملخص لا يعدّ تحققاً بلا دليل', (health2?.youtubeContent?.summary?.verified ?? 0) === (queue2.items || []).filter((i: any) => i.verified === true && i.externalVideoId && ['PUBLISHED', 'SCHEDULED', 'VERIFIED'].includes(i.state)).length, JSON.stringify({ summaryVerified: health2?.youtubeContent?.summary?.verified, items: (queue2.items || []).map((i: any) => ({ t: i.title, s: i.state, v: i.verified, ext: i.externalVideoId, vv: i.verifiedVideoId })) }));
-  check('مخزن المادة صمد بعد restart', health2.youtubeContent?.mediaStored > 0);
+  check('المخزن صمد بعد restart', health2.youtubeContent?.mediaStored > 0);
+
+  group('13ب) فحص المجدولات مدمج في الدورة بلا تحقق سابق لأوانه');
+  await setControls(auth2, { enabled: true, paused: false, autoReply: false });
+  const polled = await (await fetch(`${BASE}/api/agent/youtube/watcher/poll`, { method: 'POST', headers: auth2 })).json();
+  check('نتيجة الدورة تُعلن فحص المجدولات', polled?.result?.scheduledCheck && typeof polled.result.scheduledCheck.checked === 'number', JSON.stringify(polled?.result?.scheduledCheck));
+  check('لا فحص قبل حلول الموعد', polled?.result?.scheduledCheck?.checked === 0 && polled?.result?.scheduledCheck?.verified === 0);
+  const afterPoll = await (await fetch(`${BASE}/api/platforms/youtube/content/queue`, { headers: auth2 })).json();
+  const stillScheduled = (afterPoll.items || []).filter((i: any) => i.state === 'SCHEDULED');
+  check('العنصر المجدول لم يُعلن تحققاً بلا دليل', stillScheduled.every((i: any) => i.verified !== true), JSON.stringify(stillScheduled.map((i: any) => ({ v: i.verified, vv: i.verifiedVideoId }))));
+
+  group('13ج) حلول الموعد + public فعلي => VERIFIED بدليل مزود (إغلاق الدورة)');
+  // نُزحزح موعد الجدولة في حالة الـwatcher المحفوظة إلى الماضي (بلا لمس الكود)
+  // ثم نُشغّل دورة حقيقية: تُقرأ الحالة الفعلية من المزود ويُثبت التحقق.
+  const watcherPath = join(stateDir, 'youtubeWatcher.json');
+  const wState = JSON.parse(readFileSync(watcherPath, 'utf8'));
+  const dueItem = (wState?.contentQueue || []).find((i: any) => i.state === 'SCHEDULED');
+  check('عنصر مجدول موجود في الحالة المحفوظة', Boolean(dueItem));
+  if (dueItem) {
+    dueItem.publishAt = formatWallClock(epochToZonedWallClock(Date.now() - 60_000));
+    // الحالة الفعلية لدى المزود: الفيديو المجدول نفسه صار public فعلاً.
+    mockState.uploadedVideoId = String(dueItem.externalVideoId);
+    mockState.verifyPrivacyOverride = 'public';
+    mockState.uploadedPrivacyStatus = 'public';
+    writeFileSync(watcherPath, JSON.stringify(wState, null, 2));
+    proc?.kill('SIGTERM');
+    await new Promise((r) => setTimeout(r, 1500));
+    startApp(yt.base);
+    if (!(await waitForHealth())) throw new Error('الخادم لم يعد يقلع');
+    const auth3 = await login();
+    await setControls(auth3, { enabled: true, paused: false, autoReply: false });
+    const poll3 = await (await fetch(`${BASE}/api/agent/youtube/watcher/poll`, { method: 'POST', headers: auth3 })).json();
+    check('الفحص قرأ العنصر المستحق', poll3?.result?.scheduledCheck?.checked === 1, JSON.stringify(poll3?.result?.scheduledCheck));
+    check('public فعلي => تحقق واحد', poll3?.result?.scheduledCheck?.verified === 1, JSON.stringify(poll3?.result?.scheduledCheck));
+    const verifiedQueue = await (await fetch(`${BASE}/api/platforms/youtube/content/queue`, { headers: auth3 })).json();
+    const verifiedItem = (verifiedQueue.items || []).find((i: any) => i.id === dueItem.id);
+    check('العنصر صار VERIFIED', verifiedItem?.state === 'VERIFIED', JSON.stringify(verifiedItem?.state));
+    check('التحقق يحمل معرّف الفيديو الحقيقي', verifiedItem?.verifiedVideoId === dueItem.externalVideoId, JSON.stringify(verifiedItem?.verifiedVideoId));
+    check('حالة الخصوصية المؤكدة public', verifiedItem?.verifiedPrivacyStatus === 'public', JSON.stringify(verifiedItem?.verifiedPrivacyStatus));
+    check('الملخص يعدّه متحققاً بدليل', (verifiedQueue.summary?.verified ?? 0) >= 1, JSON.stringify(verifiedQueue.summary));
+  }
 
   group('14) الواجهة: طابور المحتوى موصول بالمسارات الصحيحة');
   const apiSrc = readFileSync(join(REPO_ROOT, 'src/services/api.ts'), 'utf8');

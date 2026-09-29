@@ -927,6 +927,10 @@ add('content-test-cleanup-proof-based', contentPipeline.includes('classifyConten
 add('content-test-cleanup-protects-real', server.includes('keptRealVideo') && /filter\(\(c\) => !c\.externalVideoId\)/.test(server), 'بيانات الاختبار المرتبطة بفيديو حقيقي لا تُحذف مطلقاً');
 add('content-manual-mode-tests', contentPipelineTest.includes('contentManualReadiness') && contentPipelineTest.includes('classifyContentRecord'), 'اختبارات وحدة لجاهزية القرار المباشر وتصنيف بيانات الاختبار');
 add('content-manual-integration-tests', read('engine/tests/content.pipeline.integration.test.ts').includes('يمكن نشر الآن يدوياً رغم تعطيل autoPublish'), 'اختبار تكاملي يثبت استقلال القرار المباشر عن الأتمتة');
+add('content-scheduled-due-evaluator', contentPipeline.includes('evaluateDueScheduledContent') && contentPipeline.includes('VERIFIED_PUBLIC_ON_YOUTUBE') && contentPipeline.includes('SCHEDULED_STILL_NOT_PUBLIC'), 'حكم حتمي لعنصر مجدول حلّ موعده: لا VERIFIED إلا بحالة public فعلية من المزود');
+add('content-scheduled-due-sweep-reads-provider', server.includes('verifyDueScheduledContent') && /getVideos\(ensured\.token, \[externalVideoId\]\)/.test(server) && server.includes('evaluateDueScheduledContent('), 'دورة المراقبة تقرأ حالة المجدول الحقيقية من YouTube وتُغلق SCHEDULED→VERIFIED بدليل');
+add('content-scheduled-due-in-cycle', /const scheduledCheck = await verifyDueScheduledContent\(\);/.test(server) && server.includes('scheduledCheck'), 'فحص المجدولات مدمج في دورة المراقبة الدائمة ويُعلن نتيجته');
+add('content-scheduled-due-tests', contentPipelineTest.includes('evaluateDueScheduledContent') && read('engine/tests/content.pipeline.integration.test.ts').includes('public فعلي => تحقق واحد'), 'اختبارات وحدة وتكامل لفحص المجدولات عند حلول الموعد');
 
 // --- Batch 25: وصف YouTube عبر العقل المركزي + إلغاء مؤكَّد + عقد وقت النشر (عقد الجوال) ---
 const youtubeDescModule = fs.existsSync(path.join(root, 'engine/social/youtubeDescription.ts')) ? fs.readFileSync(path.join(root, 'engine/social/youtubeDescription.ts'), 'utf8') : '';

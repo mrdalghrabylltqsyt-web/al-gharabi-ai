@@ -16,6 +16,7 @@ import {
   summarizeContentQueue,
   computeContentBriefCounts,
   isVerificationSubstantiated,
+  evaluateDueScheduledContent,
   reviewActionToState,
   contentManualReadiness,
   classifyContentRecord,
@@ -203,6 +204,24 @@ const on: YouTubeWatcherControls = { ...defaultWatcherControls(), enabled: true,
   check('10د: بلا verified => غير مُدعَّم', isVerificationSubstantiated({ externalVideoId: 'v4', state: 'PUBLISHED' }) === false);
   check('10د: الملخص لا يعدّ تحققاً بلا دليل', summarizeContentQueue([{ state: 'PUBLISHED' as const, verified: true }, { state: 'PUBLISHED' as const, verified: true, externalVideoId: 'vr' }]).verified === 1);
   check('10د: بطاقة المحتوى المتحقق تتبع الدليل', computeContentBriefCounts([{ state: 'PUBLISHED' as const, verified: true }]).contentVerified === 0);
+}
+
+// --- 10هـ) فحص المجدول الذي حلّ موعده: لا VERIFIED بلا public فعلي ---
+{
+  const DUE = 1_000_000;
+  const base = { state: 'SCHEDULED' as const, externalVideoId: 'vid_sched_1' };
+  const now = DUE + 60_000;
+  const pub = evaluateDueScheduledContent(base, DUE, 'public', now);
+  check('10هـ: public فعلي => VERIFIED بمعرّف المزود', pub?.action === 'verify' && pub?.state === 'VERIFIED' && pub?.code === 'VERIFIED_PUBLIC_ON_YOUTUBE');
+  const priv = evaluateDueScheduledContent(base, DUE, 'private', now);
+  check('10هـ: ما زال private => يبقى SCHEDULED بسبب صريح', priv?.action === 'hold' && priv?.state === 'SCHEDULED' && priv?.code === 'SCHEDULED_STILL_NOT_PUBLIC');
+  const unread = evaluateDueScheduledContent(base, DUE, null, now);
+  check('10هـ: تعذّرت القراءة => SCHEDULED بلا ادعاء', unread?.action === 'unreadable' && unread?.state === 'SCHEDULED' && unread?.code === 'SCHEDULED_VERIFY_UNREADABLE');
+  check('10هـ: لم يحل الموعد بعد => لا حكم', evaluateDueScheduledContent(base, DUE, 'public', DUE - 1) === null);
+  check('10هـ: غير مجدول => لا حكم', evaluateDueScheduledContent({ state: 'PUBLISHED' as const, externalVideoId: 'v' }, DUE, 'public', now) === null);
+  check('10هـ: بلا معرّف مزود => لا حكم', evaluateDueScheduledContent({ state: 'SCHEDULED' as const, externalVideoId: null }, DUE, 'public', now) === null);
+  check('10هـ: موعد غير صالح => لا حكم', evaluateDueScheduledContent(base, NaN, 'public', now) === null);
+  check('10هـ: unlisted ليس تحققاً', evaluateDueScheduledContent(base, DUE, 'unlisted', now)?.state === 'SCHEDULED');
 }
 
 // --- 11) ذكاء الجدولة: لا ادعاء بلا عيّنة كافية ---

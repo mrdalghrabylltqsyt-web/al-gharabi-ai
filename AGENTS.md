@@ -2600,3 +2600,32 @@ Switch (مدح⇒رد، سؤال⇒تصعيد)، الترميم غير الحذ�
 
 **لا تغيير في:** Gemini/الـFirewall، نموذج الجدولة، مكوّن الوقت على الجوال، Facebook/Instagram/
 Telegram/TikTok، أو أي سرّ. الوصف لا يُنشر تلقائياً ولا يستهلك حصة في أي قراءة.
+
+## إغلاق دورة التحقق للمحتوى المجدول (SCHEDULED → VERIFIED بدليل مزود) — 2026-09-29
+
+**الفجوة الحقيقية المُثبتة:** `isVerificationSubstantiated` كان يعتبر عنصر `SCHEDULED`
+متحققاً بمجرد وجود معرّف الفيديو، لكن **لا إعادة قراءة من YouTube تحدث بعد حلول `publishAt`**.
+النتيجة: عنصر جدولناه على YouTube بحالة `private` + `publishAt` قد يصبح `public` فعلاً
+(أو لا يصبح أبداً)، ويبقى النظام يعدّه `SCHEDULED` بلا أي إثبات للحالة النهائية — أي أن
+دورة الجدولة لم تكن مغلقة بدليل حقيقي.
+
+**الإصلاح (قراءة فقط، بلا مساس بنموذج الجدولة ولا بمكوّن الوقت على الجوال):**
+- `engine/social/contentPipeline.ts`: `evaluateDueScheduledContent(item, publishAtEpoch,
+  actualPrivacyStatus, nowMs)` — منطق صافٍ قابل للاختبار. لا يُعلن `VERIFIED` إلا بحالة
+  `public` **فعلية مقروءة من المزود**؛ `private`/`unlisted` ⇒ يبقى `SCHEDULED` بسبب صريح؛
+  تعذّر القراءة ⇒ `SCHEDULED` بلا ادعاء. `publishAtEpoch` يُمرَّر محسوباً مسبقاً بسياسة
+  المنطقة الموحّدة (لا `Date.parse` داخل الدالة) لئلا يُزحزح الجدار المحلي.
+- `server.ts`: `verifyDueScheduledContent()` تُستدعى داخل دورة المراقبة الدائمة
+  (`runYouTubeWatcherCycle`)، تقرأ حالة كل مجدول حلّ موعده عبر `videos.list` الحقيقي
+  وتُغلق الدورة: `public` ⇒ `VERIFIED` + `verifiedVideoId` + `verifiedPrivacyStatus` +
+  سجل تاريخي؛ وإلا فسبب صريح (`SCHEDULED_STILL_NOT_PUBLIC` / `SCHEDULED_VERIFY_UNREADABLE`).
+  النتيجة تُعلن في رد الدورة (`result.scheduledCheck`). لا AI، ولا كتابة بلا دليل،
+  والحد 10 عناصر لكل دورة.
+- فحوص final-audit: `content-scheduled-due-evaluator`, `content-scheduled-due-sweep-reads-provider`,
+  `content-scheduled-due-in-cycle`, `content-scheduled-due-tests` (720 إجمالاً).
+- اختبارات: `content.pipeline.test.ts` (94 فحصاً، مجموعة 10هـ) و`content.pipeline.integration.test.ts`
+  (130 فحصاً، مجموعتا 13ب/13ج: لا فحص قبل الموعد، ثم حلول الموعد + `public` فعلي ⇒ `VERIFIED`
+  بمعرّف المزود، عبر restart حقيقي وخادم Google وهمي).
+
+**لا تغيير في:** Gemini، OAuth/الصلاحيات/الاعتمادات، Facebook/Instagram/Telegram/TikTok،
+نموذج الجدولة، مكوّن الوقت على الجوال، أو أي سرّ.

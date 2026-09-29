@@ -446,6 +446,32 @@ export function isVerificationSubstantiated(item: { verified?: boolean; external
 }
 
 /**
+ * حكم حتمي على عنصر مجدول حلّ موعده، بناءً على الحالة الحقيقية المقروءة من
+ * المزود. لا يُعلن VERIFIED إلا بحالة `public` فعلية؛ وأي حالة أخرى تبقى SCHEDULED
+ * بسبب صريح بلا اختراع. منطق صافٍ قابل للاختبار (بلا شبكة).
+ *
+ * `publishAtEpoch` يُمرَّر محسوباً مسبقاً بسياسة المنطقة الموحّدة (لا `Date.parse`
+ * هنا) لئلا يُفسَّر الجدار المحلي بتوقيت المضيف فيُزحزح الموعد.
+ */
+export function evaluateDueScheduledContent(
+  item: { state: ContentState; externalVideoId?: string | null },
+  publishAtEpoch: number,
+  actualPrivacyStatus: string | null,
+  nowMs: number,
+): { action: 'verify' | 'hold' | 'unreadable'; state: ContentState; code: string; reason: string } | null {
+  if (item.state !== 'SCHEDULED') return null;
+  if (!String(item.externalVideoId || '').trim()) return null;
+  if (!Number.isFinite(publishAtEpoch) || publishAtEpoch > nowMs) return null;
+  if (actualPrivacyStatus === 'public') {
+    return { action: 'verify', state: 'VERIFIED', code: 'VERIFIED_PUBLIC_ON_YOUTUBE', reason: 'أثبت YouTube أن الفيديو أصبح عاماً فعلاً بعد موعد الجدولة.' };
+  }
+  if (actualPrivacyStatus === null) {
+    return { action: 'unreadable', state: 'SCHEDULED', code: 'SCHEDULED_VERIFY_UNREADABLE', reason: 'موعد الجدولة حلّ لكن تعذّر تأكيد الحالة من YouTube الآن؛ بقي مجدولاً بلا ادعاء.' };
+  }
+  return { action: 'hold', state: 'SCHEDULED', code: 'SCHEDULED_STILL_NOT_PUBLIC', reason: `موعد الجدولة حلّ والحالة الفعلية لدى YouTube (${actualPrivacyStatus}) ليست public بعد؛ بقي مجدولاً.` };
+}
+
+/**
  * تصنيف حتمي لبيانات الاختبار التجريبية — بلا تخمين. لا يُصنّف «اختباراً» إلا
  * بدليل مقصود وموثّق (مصدر `test`)، أو بوسم صريح داخل السجل/السجل التاريخي.
  * العناصر المُنشأة عبر الواجهة (source='owner') **لا** تُصنّف اختباراً أبداً،
