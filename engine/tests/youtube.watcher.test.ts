@@ -79,7 +79,7 @@ function entry(partial: Partial<WatcherProcessedEntry>): WatcherProcessedEntry {
   check('B: Kill Switch يوقف كل شيء', watcherGate({ ...on, paused: true }, 'reply').code === 'AUTOMATION_PAUSED');
   check('B: Kill Switch يوقف القراءة أيضاً', watcherGate({ ...on, paused: true }, 'read').allowed === false);
   check('B: التعطيل الكامل يمنع حتى القراءة', watcherGate({ ...on, enabled: false }, 'read').code === 'WATCHER_DISABLED');
-  check('B: وضع المراجعة يحجب الرد', watcherGate({ ...on, humanReviewMode: true }, 'reply').code === 'HUMAN_REVIEW_MODE');
+  check('B: وضع المراجعة لا يحجب كل الردود (الحالات الواضحة تمر)', watcherGate({ ...on, humanReviewMode: true }, 'reply').allowed === true);
 }
 
 // --- C) دورة حياة التعليق ---
@@ -291,7 +291,7 @@ function entry(partial: Partial<WatcherProcessedEntry>): WatcherProcessedEntry {
   run({ ...base, autoReply: true, paused: true });
   check('N: Kill Switch => لا استدعاء للمنفّذ', executorCalls === 0);
   run({ ...base, autoReply: true, humanReviewMode: true });
-  check('N: وضع المراجعة البشرية => لا استدعاء للمنفّذ', executorCalls === 0);
+  check('N: وضع المراجعة البشرية لا يعطّل كل الأتمتة (البوابة تسمح)', watcherGate({ ...base, autoReply: true, humanReviewMode: true }, 'reply').allowed === true);
   run({ ...base, enabled: false, autoReply: true });
   check('N: المراقبة معطّلة => لا استدعاء للمنفّذ', executorCalls === 0);
   run({ ...base, autoReply: true });

@@ -1395,5 +1395,45 @@ ${payload.topic || payload.productName || 'أنظمة وحلول التقسيط 
     const data = await res.json();
     if (!res.ok || !data.success) throw new Error(data.error || 'تعذر تنفيذ قرار المراجعة');
     return data;
+  },
+
+  // --- طابور محتوى YouTube (نشر/جدولة/مراجعة بشرية) ---
+  async getYouTubeContentQueue(): Promise<any> {
+    const res = await fetch('/api/platforms/youtube/content/queue', { headers: getAuthHeaders() });
+    const data = await res.json();
+    if (!res.ok || !data.success) throw new Error(data.error || 'تعذر جلب طابور المحتوى');
+    return data;
+  },
+
+  async getYouTubeContentDetails(metric: string): Promise<any> {
+    const res = await fetch(`/api/platforms/youtube/content/details?metric=${encodeURIComponent(metric)}`, { headers: getAuthHeaders() });
+    const data = await res.json();
+    if (!res.ok || !data.success) throw new Error(data.error || 'تعذر جلب تفاصيل المحتوى');
+    return data;
+  },
+
+  async createYouTubeContentDraft(payload: Record<string, any>): Promise<any> {
+    const res = await fetch('/api/platforms/youtube/content/drafts', {
+      method: 'POST', headers: { ...getAuthHeaders(), 'Content-Type': 'application/json' }, body: JSON.stringify(payload),
+    });
+    const data = await res.json();
+    if (!res.ok || !data.success) throw new Error(data.error || data.code || 'تعذر إنشاء عنصر المحتوى');
+    return data;
+  },
+
+  async reviewYouTubeContentItem(id: string, payload: Record<string, any>): Promise<any> {
+    const res = await fetch(`/api/platforms/youtube/content/queue/${encodeURIComponent(id)}/review`, {
+      method: 'POST', headers: { ...getAuthHeaders(), 'Content-Type': 'application/json' }, body: JSON.stringify(payload),
+    });
+    const data = await res.json();
+    if (!res.ok || !data.success) throw new Error(data.error || data.code || 'تعذر تنفيذ قرار المحتوى');
+    return data;
+  },
+
+  async getYouTubeScheduleSuggestion(): Promise<any> {
+    const res = await fetch('/api/platforms/youtube/content/schedule-suggestion', { headers: getAuthHeaders() });
+    const data = await res.json();
+    if (!res.ok || !data.success) throw new Error(data.error || 'تعذر جلب اقتراح الجدولة');
+    return data;
   }
 };

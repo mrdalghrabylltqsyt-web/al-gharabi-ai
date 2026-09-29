@@ -263,6 +263,33 @@ import {
   type WatcherBriefMetric,
 } from "./engine/social/watcherReview";
 import {
+  contentGate,
+  classifyContentForReview,
+  decisionToState,
+  contentFingerprint,
+  fingerprintTag,
+  matchVideoByFingerprint,
+  reconcileUnknownUpload,
+  isFutureSchedule,
+  canTransitionContent,
+  isTerminalContentState,
+  summarizeContentQueue,
+  computeContentBriefCounts,
+  reviewActionToState,
+  isValidContentReviewAction,
+  suggestScheduleTime,
+  CONTENT_STATE_LABELS_AR,
+  CONTENT_STATE_TONES,
+  CONTENT_BRIEF_METRIC_LABELS_AR,
+  CONTENT_BRIEF_METRICS,
+  CONTENT_REVIEW_ACTION_LABELS_AR,
+  CONTENT_STATES,
+  type ContentState,
+  type ContentDraftInput,
+  type ContentBriefMetric,
+  type ContentReviewAction,
+} from "./engine/social/contentPipeline";
+import {
   summarizeChannelAnalytics,
   analyzeYouTubeAudience,
   buildYouTubeLearning,
@@ -4451,6 +4478,130 @@ let watcherRunning = false;
 let watcherScheduler: WatcherScheduler | null = null;
 let watcherLastRun: { newDetected: number; replied: number; escalated: number; skipped: number; verified: number; failed: number; deferred: number; at: string } | null = null;
 
+// -------------------------------------------------------------
+// طابور محتوى YouTube (Auto Publish + Auto Schedule + Human Review).
+// تُحفظ العناصر عبر المحوّل (تصمد بعد restart/deploy) — بلا أي سرّ.
+// -------------------------------------------------------------
+interface ContentQueueItem {
+  id: string;
+  fingerprint: string;
+  title: string;
+  description: string;
+  tags: string[];
+  categoryId: string;
+  privacyStatus: string;
+  publishAt: string | null;
+  mediaRef: string;
+  source: string;
+  state: ContentState;
+  stateReason: string;
+  code: string;
+  sensitivity: string;
+  externalVideoId: string | null;
+  url: string | null;
+  verified: boolean;
+  createdAt: string;
+  updatedAt: string;
+  createdBy: string;
+  reviewedBy: string | null;
+  reviewedAt: string | null;
+  reviewNote: string | null;
+  history: Array<{ at: string; action: string; actor: string; detail?: string | null; externalVideoId?: string | null; result?: string | null }>;
+}
+
+let contentQueue: ContentQueueItem[] = [];
+const CONTENT_QUEUE_MAX = 5000;
+
+// -------------------------------------------------------------
+// مخزن مادة الفيديو (بايتات حقيقية مرجعها mediaRef) — بلا اختلاق أي فيديو.
+// يُحفظ عبر المحوّل فيصمد بعد restart، ويُقيَّد بحجم كي لا يتضخّم المخزن.
+// -------------------------------------------------------------
+interface ContentMedia {
+  mimeType: string;
+  base64: string;
+  bytes: number;
+  sha256: string;
+  createdAt: string;
+}
+let contentMedia = new Map<string, ContentMedia>();
+const CONTENT_MEDIA_KEY = "youtubeMedia";
+const CONTENT_MEDIA_MAX_ITEM_BYTES = 12 * 1024 * 1024; // 12MB لكل مادة
+const CONTENT_MEDIA_MAX_TOTAL_BYTES = 60 * 1024 * 1024; // 60MB إجمالاً
+let contentMediaTotalBytes = 0;
+
+/** يُسجّل مادة فيديو حقيقية بمعرّف مرجع (mediaRef) — يرفض ما هو أكبر من الحد. */
+function registerContentMedia(input: { mimeType: string; base64: string }): { ok: boolean; mediaRef?: string; code?: string; error?: string; bytes?: number } {
+  const base64 = String(input.base64 || "");
+  if (!base64) return { ok: false, code: "MEDIA_REQUIRED", error: "لا بايتات فيديو." };
+  // الحد على البايتات الفعلية لا على طول نص base64.
+  const approxBytes = Math.floor((base64.length * 3) / 4);
+  if (approxBytes > CONTENT_MEDIA_MAX_ITEM_BYTES) {
+    return { ok: false, code: "MEDIA_TOO_LARGE", error: `مادة الفيديو أكبر من الحد (${Math.floor(CONTENT_MEDIA_MAX_ITEM_BYTES / 1048576)}MB).` };
+  }
+  let bytes: Buffer;
+  try { bytes = Buffer.from(base64, "base64"); } catch { return { ok: false, code: "MEDIA_INVALID", error: "base64 غير صالح." }; }
+  if (!bytes.length) return { ok: false, code: "MEDIA_REQUIRED", error: "بايتات فارغة." };
+  const sha256 = crypto.createHash("sha256").update(bytes).digest("hex");
+  const mediaRef = `m-${sha256.slice(0, 16)}`;
+  const prev = contentMedia.get(mediaRef);
+  if (prev) contentMediaTotalBytes -= prev.bytes;
+  contentMedia.set(mediaRef, { mimeType: String(input.mimeType || "video/mp4"), base64, bytes: bytes.length, sha256, createdAt: new Date().toISOString() });
+  contentMediaTotalBytes += bytes.length;
+  // تقييد الحجم الإجمالي: نحذف الأقدم عند التجاوز.
+  while (contentMediaTotalBytes > CONTENT_MEDIA_MAX_TOTAL_BYTES && contentMedia.size > 1) {
+    const oldest = [...contentMedia.entries()].sort((a, b) => String(a[1].createdAt).localeCompare(String(b[1].createdAt)))[0];
+    if (!oldest) break;
+    contentMediaTotalBytes -= oldest[1].bytes;
+    contentMedia.delete(oldest[0]);
+  }
+  return { ok: true, mediaRef, bytes: bytes.length };
+}
+
+function contentMediaBytes(mediaRef: string): { bytes: Buffer; mimeType: string } | null {
+  const m = contentMedia.get(String(mediaRef || ""));
+  if (!m) return null;
+  try { return { bytes: Buffer.from(m.base64, "base64"), mimeType: m.mimeType }; } catch { return null; }
+}
+
+function buildContentMediaState() {
+  return { totalBytes: contentMediaTotalBytes, items: [...contentMedia.entries()].map(([ref, m]) => ({ ref, ...m })) };
+}
+function applyContentMediaState(raw: any): void {
+  contentMedia = new Map();
+  contentMediaTotalBytes = 0;
+  if (!raw || typeof raw !== "object" || !Array.isArray(raw.items)) return;
+  for (const it of raw.items) {
+    if (!it?.ref || typeof it.base64 !== "string") continue;
+    contentMedia.set(String(it.ref), { mimeType: String(it.mimeType || "video/mp4"), base64: it.base64, bytes: Number(it.bytes) || 0, sha256: String(it.sha256 || ""), createdAt: String(it.createdAt || new Date().toISOString()) });
+    contentMediaTotalBytes += Number(it.bytes) || 0;
+  }
+}
+
+/** يسجّل حدثاً في تاريخ عنصر المحتوى (تدقيق مصغّر بلا سرّ). */
+function pushContentHistory(item: ContentQueueItem, entry: { action: string; actor: string; detail?: string | null; externalVideoId?: string | null; result?: string | null }): void {
+  item.history.unshift({ at: new Date().toISOString(), action: entry.action, actor: entry.actor, detail: entry.detail ?? null, externalVideoId: entry.externalVideoId ?? null, result: entry.result ?? null });
+  if (item.history.length > 100) item.history.length = 100;
+}
+
+/** لقطة طابور المحتوى للعرض (بلا أي سرّ). */
+function contentQueueView() {
+  return contentQueue.slice(0, 500).map((it) => ({
+    id: it.id, fingerprint: it.fingerprint, title: it.title, description: it.description, tags: it.tags,
+    privacyStatus: it.privacyStatus, publishAt: it.publishAt, source: it.source,
+    state: it.state, stateLabelAr: CONTENT_STATE_LABELS_AR[it.state], stateTone: CONTENT_STATE_TONES[it.state],
+    stateReason: it.stateReason, code: it.code, sensitivity: it.sensitivity,
+    externalVideoId: it.externalVideoId, url: it.url, verified: it.verified,
+    createdAt: it.createdAt, updatedAt: it.updatedAt, reviewedBy: it.reviewedBy, reviewedAt: it.reviewedAt, reviewNote: it.reviewNote,
+    history: it.history.slice(0, 10),
+  }));
+}
+
+/** ملخص الطابور (أرقام حقيقية من نفس السجلات). */
+function contentQueueSummary() {
+  return summarizeContentQueue(contentQueue.map((i) => ({ state: i.state, publishAt: i.publishAt, verified: i.verified })));
+}
+
+
 const WATCHER_MAX_PROCESSED = 5000;
 const WATCHER_MAX_AUDIT = 500;
 
@@ -4499,10 +4650,19 @@ async function persistWatcherState(): Promise<void> {
       briefDate: watcherState.briefDate,
       lastScanned: watcherState.lastScanned,
       reviewOverrides: watcherState.reviewOverrides.slice(0, 5000),
+      // طابور المحتوى (نشر/جدولة/مراجعة) يُحفظ ضمن حالة الـwatcher فيصمد بعد restart.
+      contentQueue: contentQueue.slice(0, CONTENT_QUEUE_MAX),
+      contentMediaTotalBytes,
     });
   } catch (error: any) {
     lastPersistError = String(error?.code || error?.name || "persist_failed").slice(0, 60);
   }
+}
+
+/** يحفظ مخزن مادة الفيديو عبر المحوّل (يحفظ بايتات حقيقية حصراً). */
+async function persistContentMedia(): Promise<void> {
+  if (!storageReady) return;
+  try { await storageAdapter.write(CONTENT_MEDIA_KEY, buildContentMediaState()); } catch { /* يُعلن خطأ الحفظ العام */ }
 }
 
 /** يسترجع حالة الـwatcher (بعد restart/cold start) — بلا طمس الحالة القائمة. */
@@ -4523,13 +4683,56 @@ function applyWatcherStateSnapshot(raw: any): void {
   watcherState.briefDate = typeof raw.briefDate === "string" ? raw.briefDate : null;
   watcherState.lastScanned = Number.isFinite(raw.lastScanned) ? Number(raw.lastScanned) : 0;
   watcherState.reviewOverrides = normalizeReviewOverrides(raw.reviewOverrides);
+  // استرجاع طابور المحتوى: يصمد بعد restart/deploy فلا تُفقد الموافقات/الجدولة/الرفض.
+  contentQueue = normalizeContentQueue(raw.contentQueue);
   // لو كان الرد الآلي ممكّناً أصلاً (مثلاً نُشِر الإصلاح بعد تمكينه)، تُحرَّر
   // التعليقات المؤجَّلة القديمة (التي تعذّرت سابقاً بسبب الإعداد) لإعادة تقييمها.
   const c = watcherState.controls;
-  if (c.enabled && !c.paused && !c.humanReviewMode && c.autoReply) {
+  if (c.enabled && !c.paused && c.autoReply) {
     const r = releaseDeferredEntries(watcherState.processed);
     watcherState.processed = r.processed;
   }
+}
+
+/**
+ * يطبّع طابور المحتوى المقروء من المخزن: يحصر الحالات على المفردات الرسمية،
+ * ويُسقط العناصر بلا معرّف/بصمة، ويحافظ على الحقول بأمان. لا يختلق عناصر.
+ */
+function normalizeContentQueue(raw: any): ContentQueueItem[] {
+  if (!Array.isArray(raw)) return [];
+  const out: ContentQueueItem[] = [];
+  for (const r of raw) {
+    if (!r || typeof r !== "object") continue;
+    if (!r.id || typeof r.id !== "string") continue;
+    const state = (CONTENT_STATES as readonly string[]).includes(String(r.state)) ? (String(r.state) as ContentState) : "DRAFT";
+    out.push({
+      id: String(r.id),
+      fingerprint: typeof r.fingerprint === "string" ? r.fingerprint : "",
+      title: typeof r.title === "string" ? r.title : "",
+      description: typeof r.description === "string" ? r.description : "",
+      tags: Array.isArray(r.tags) ? r.tags.map((t: any) => String(t)).filter(Boolean) : [],
+      categoryId: typeof r.categoryId === "string" ? r.categoryId : YOUTUBE_DEFAULT_CATEGORY_ID,
+      privacyStatus: typeof r.privacyStatus === "string" ? r.privacyStatus : "private",
+      publishAt: typeof r.publishAt === "string" ? r.publishAt : null,
+      mediaRef: typeof r.mediaRef === "string" ? r.mediaRef : "",
+      source: typeof r.source === "string" ? r.source : "owner",
+      state,
+      stateReason: typeof r.stateReason === "string" ? r.stateReason : "",
+      code: typeof r.code === "string" ? r.code : "",
+      sensitivity: typeof r.sensitivity === "string" ? r.sensitivity : "low",
+      externalVideoId: typeof r.externalVideoId === "string" ? r.externalVideoId : null,
+      url: typeof r.url === "string" ? r.url : null,
+      verified: r.verified === true,
+      createdAt: typeof r.createdAt === "string" ? r.createdAt : new Date().toISOString(),
+      updatedAt: typeof r.updatedAt === "string" ? r.updatedAt : new Date().toISOString(),
+      createdBy: typeof r.createdBy === "string" ? r.createdBy : "owner",
+      reviewedBy: typeof r.reviewedBy === "string" ? r.reviewedBy : null,
+      reviewedAt: typeof r.reviewedAt === "string" ? r.reviewedAt : null,
+      reviewNote: typeof r.reviewNote === "string" ? r.reviewNote : null,
+      history: Array.isArray(r.history) ? r.history.slice(0, 100) : [],
+    });
+  }
+  return out.slice(0, CONTENT_QUEUE_MAX);
 }
 
 /**
@@ -5020,7 +5223,14 @@ app.get("/api/agent/youtube/watcher/brief", authenticateToken, (_req, res) => {
   const brief = buildWatcherDailyBrief();
   const now = Date.now();
   // البطاقات القابلة للنقر: نفس الرقم + مفتاحه، ليربط الرقم بقائمته بلا discrepancy.
-  res.json({ success: true, brief: { ...brief, metrics: watcherBriefMetricsView(now) } });
+  res.json({ success: true, brief: { ...brief, metrics: watcherBriefMetricsView(now), contentMetrics: contentBriefMetricsView(), contentSummary: contentQueueSummary() } });
+});
+
+/** اقتراح وقت جدولة من تفاعل حقيقي فقط (بلا اختراع «أفضل وقت» بلا عيّنة). */
+app.get("/api/platforms/youtube/content/schedule-suggestion", authenticateToken, (_req, res) => {
+  const timestamps = watcherState.processed.map((p) => p.publishedAt || p.at);
+  const suggestion = suggestScheduleTime({ engagementTimestamps: timestamps });
+  res.json({ success: true, suggestion, note: "الاقتراح مبني على أوقات التفاعل الحقيقية فقط؛ عند نقص العيّنة يُعلن ذلك بصراحة ولا يُدّعى أفضل وقت." });
 });
 
 /**
@@ -5151,6 +5361,7 @@ app.post("/api/agent/youtube/watcher/review", requireOwner, async (req, res) => 
 async function executeYouTubePublish(input: {
   title: string; description?: string; tags?: string[]; privacyStatus?: string; publishAt?: string;
   categoryId?: string; videoBase64?: string; videoUrl?: string; mimeType?: string; postId?: string; approved?: boolean;
+  mediaRef?: string; queueItemId?: string;
 }, actor: string): Promise<{ status: number; body: any }> {
   const started = Date.now();
   const title = String(input.title || "").trim();
@@ -5160,9 +5371,14 @@ async function executeYouTubePublish(input: {
   const publishAtRaw = typeof input.publishAt === "string" ? input.publishAt.trim() : "";
   const categoryId = typeof input.categoryId === "string" ? input.categoryId : YOUTUBE_DEFAULT_CATEGORY_ID;
   const approved = input.approved === true;
-  const mediaBase64 = typeof input.videoBase64 === "string" ? input.videoBase64 : "";
+  let mediaBase64 = typeof input.videoBase64 === "string" ? input.videoBase64 : "";
   const videoUrl = typeof input.videoUrl === "string" ? input.videoUrl.trim() : "";
-  const mimeType = typeof input.mimeType === "string" ? input.mimeType : "video/mp4";
+  let mimeType = typeof input.mimeType === "string" ? input.mimeType : "video/mp4";
+  // المادة قد تأتي من مخزن المحتوى بمرجع (mediaRef) — بلا اختلاق أي فيديو.
+  if (!mediaBase64 && input.mediaRef) {
+    const m = contentMediaBytes(input.mediaRef);
+    if (m) { mediaBase64 = m.bytes.toString("base64"); mimeType = m.mimeType; }
+  }
 
   if (!approved) return { status: 409, body: { success: false, code: "APPROVAL_REQUIRED", error: "الرفع يحتاج موافقة صريحة (approved=true)." } };
   const safety = analyzeBusinessClaims(`${title}\n${description}`, buildFactsForProduct(null, 0, 0));
@@ -5171,7 +5387,7 @@ async function executeYouTubePublish(input: {
   }
   const bytes = mediaBase64 ? Uint8Array.from(Buffer.from(mediaBase64, "base64")) : null;
   if (!bytes && !videoUrl) {
-    return { status: 422, body: { success: false, code: "MEDIA_REQUIRED", error: "لا توجد مادة فعلية للرفع: زوّد videoBase64 (بايتات الملف) أو videoUrl عاماً. لا يُولّد النظام فيديو وهمياً." } };
+    return { status: 422, body: { success: false, code: "MEDIA_REQUIRED", error: "لا توجد مادة فعلية للرفع: زوّد videoBase64 (بايتات الملف) أو mediaRef أو videoUrl عاماً. لا يُولّد النظام فيديو وهمياً." } };
   }
   if (videoUrl) {
     return { status: 422, body: { success: false, code: "MEDIA_REQUIRED", error: "الرفع الرسمي (videos.insert resumable) يحتاج بايتات الملف؛ زوّد videoBase64. الرابط العام وحده لا يكفي لرفع YouTube." } };
@@ -5182,7 +5398,12 @@ async function executeYouTubePublish(input: {
   if (!guard.ok) return { status: guard.status!, body: { success: false, code: guard.code, error: guard.error, ...youtubeStateBlock() } };
   let publishAtIso: string | null = null;
   if (publishAtRaw) {
-    const epoch = wallClockToEpoch(publishAtRaw);
+    // يقبل جداراً محلياً (من datetime-local) أو لحظة ISO (RFC3339) — بلا زحزحة صامتة.
+    let epoch = wallClockToEpoch(publishAtRaw);
+    if (!Number.isFinite(epoch)) {
+      const parsed = Date.parse(publishAtRaw);
+      if (Number.isFinite(parsed)) epoch = parsed;
+    }
     if (!Number.isFinite(epoch)) return { status: 422, body: { success: false, code: "PUBLISH_AT_INVALID", error: "صيغة وقت الجدولة غير صالحة (يلزم جدار زمني محلي أو RFC3339)." } };
     publishAtIso = new Date(epoch).toISOString();
   }
@@ -5196,41 +5417,87 @@ async function executeYouTubePublish(input: {
   if (!rl.allowed) return { status: 429, body: { success: false, code: "RATE_LIMITED", error: "تم بلوغ حد معدّل الرفع؛ أعد المحاولة لاحقاً بلا إنشاء نسخة مكررة.", retryAfterMs: rl.retryAfterMs, limit: rl.limit } };
   const ensured = await ensureYouTubeAccessToken();
   if (!ensured.ok || !ensured.token) return { status: 409, body: { success: false, code: ensured.code || "TOKEN_UNAVAILABLE", error: ensured.error, ...youtubeStateBlock() } };
-  const result = await youtubeClient().uploadVideo(ensured.token, { bytes: bytes!, mimeType, metadata: { title, description, tags, categoryId, privacyStatus, publishAt: publishAtIso } });
-  const externalVideoId = result.ok && result.data?.externalVideoId ? result.data.externalVideoId : null;
+  // وسم البصمة يُحقن في الفيديو ليتيح المطابقة الحقيقية عند إعادة المزامنة (بلا سرّ).
+  const uploadTags = [...tags, fingerprintTag(fingerprint)].slice(0, 30);
+  const result = await youtubeClient().uploadVideo(ensured.token, { bytes: bytes!, mimeType, metadata: { title, description, tags: uploadTags, categoryId, privacyStatus, publishAt: publishAtIso } });
+
+  // حالة عدم يقين خارجي: فشل شبكي بعد إرسال الطلب ⇒ إعادة مزامنة قراءة-فقط قبل أي
+  // إعادة نشر، فلا يُنشأ فيديو مكرر إذا نجح الطلب لدى YouTube ولم تصل الاستجابة.
+  let reconciled: { status: string; videoId: string | null; note: string } | null = null;
+  let externalVideoId = result.ok && result.data?.externalVideoId ? result.data.externalVideoId : null;
+  if (!result.ok && (result.code === "network" || result.code === "timeout")) {
+    try {
+      const found = await findYouTubeVideoByFingerprint(fingerprint);
+      const rec = reconcileUnknownUpload(found, publishAtIso);
+      reconciled = { status: rec.status, videoId: rec.videoId, note: rec.note };
+      if (rec.status === "FOUND" && rec.videoId) externalVideoId = rec.videoId;
+    } catch { /* تبقى الحالة غير مؤكدة بصراحة */ }
+  }
+  const delivered = Boolean(externalVideoId && !publishAtIso);
+  const recordState = externalVideoId ? (publishAtIso ? "scheduled" : "published") : "failed";
   const record = {
     id: workspaceId("publish"), platform: "youtube",
     postId: typeof input.postId === "string" ? input.postId : workspaceId("post"),
-    state: externalVideoId ? (publishAtIso ? "scheduled" : "published") : "failed",
+    state: recordState,
     scheduledFor: publishAtIso, executedAt: new Date().toISOString(),
     providerPostId: externalVideoId, externalVideoId,
     url: youtubeWatchUrl(externalVideoId),
     privacyStatus: publishAtIso ? "private" : privacyStatus,
     title, idempotencyKey: fingerprint, createdBy: actor,
     simulated: false,
-    error: result.ok ? null : (result.error || "فشل الرفع إلى YouTube"),
-    receipt: result.ok ? { provider: "youtube", videoId: externalVideoId, state: result.data?.state, at: new Date().toISOString() } : null,
+    reconciled: reconciled ? reconciled.status : null,
+    error: result.ok || externalVideoId ? null : (result.error || "فشل الرفع إلى YouTube"),
+    receipt: (result.ok || externalVideoId) ? { provider: "youtube", videoId: externalVideoId, state: result.data?.state ?? recordState, at: new Date().toISOString() } : null,
   };
   if (!Array.isArray((workspace as any).publishRecords)) (workspace as any).publishRecords = [];
   (workspace as any).publishRecords.unshift(record);
   if ((workspace as any).publishRecords.length > 5000) (workspace as any).publishRecords.pop();
-  recordYouTubeOperationKey(fingerprint);
+  if (externalVideoId) recordYouTubeOperationKey(fingerprint);
+
+  // تحديث عنصر الطابور المرتبط (إن وُجد) بحالة النشر الحقيقية.
+  let queueItem: ContentQueueItem | null = null;
+  if (input.queueItemId) {
+    queueItem = contentQueue.find((i) => i.id === input.queueItemId) || null;
+    if (queueItem) {
+      if (externalVideoId) {
+        queueItem.state = publishAtIso ? "SCHEDULED" : "PUBLISHED";
+        queueItem.externalVideoId = externalVideoId;
+        queueItem.url = youtubeWatchUrl(externalVideoId);
+        queueItem.verified = !publishAtIso;
+        queueItem.stateReason = publishAtIso ? "جدول YouTube النشر (publishAt) بحالة private حتى الموعد." : "أعاد YouTube معرّف فيديو حقيقي؛ النشر مُثبت.";
+        queueItem.code = publishAtIso ? "SCHEDULED_ON_YOUTUBE" : "PUBLISHED_ON_YOUTUBE";
+        pushContentHistory(queueItem, { action: publishAtIso ? "scheduled" : "published", actor, detail: queueItem.stateReason, externalVideoId, result: "ok" });
+      } else if (reconciled) {
+        queueItem.stateReason = `حالة خارجية غير مؤكدة: ${reconciled.note}`;
+        queueItem.code = "UNKNOWN_EXTERNAL_STATE";
+        pushContentHistory(queueItem, { action: "reconcile_unknown", actor, detail: reconciled.note, result: reconciled.status });
+      } else {
+        queueItem.state = "FAILED";
+        queueItem.stateReason = result.error || "فشل الرفع إلى YouTube.";
+        queueItem.code = String(result.code || "PROVIDER_ERROR");
+        pushContentHistory(queueItem, { action: "publish_failed", actor, detail: queueItem.stateReason, result: "failed" });
+      }
+      queueItem.updatedAt = new Date().toISOString();
+    }
+  }
+
   await persistStateDurable();
   logYouTubeOperation("video_upload", { externalId: externalVideoId, outcome: record.state, errorCode: result.ok ? null : (result.code as any) || null, durationMs: Date.now() - started, idempotencyKey: fingerprint, actor });
-  audit(actor, result.ok ? "youtube_video_uploaded" : "youtube_video_upload_failed", `youtube:${externalVideoId || "none"}`);
-  if (!result.ok || !externalVideoId) {
+  audit(actor, externalVideoId ? (publishAtIso ? "youtube_video_scheduled" : "youtube_video_uploaded") : "youtube_video_upload_failed", `youtube:${externalVideoId || "none"}`);
+  if (!externalVideoId) {
     noteYouTubeProviderError(result.code as any);
-    return { status: 502, body: { success: false, code: result.code || "PROVIDER_ERROR", error: result.error || "لم يُعد YouTube معرّف فيديو؛ لم يُسجَّل أي نشر.", record, delivered: false, ...youtubeStateBlock() } };
+    return { status: 502, body: { success: false, code: result.code || "PROVIDER_ERROR", error: result.error || "لم يُعد YouTube معرّف فيديو؛ لم يُسجَّل أي نشر.", record, reconciled, delivered: false, ...youtubeStateBlock() } };
   }
   clearYouTubeProviderError();
   return {
     status: 200,
     body: {
-      success: true, record,
+      success: true, record, queueItem: queueItem ? contentQueueView().find((q) => q.id === queueItem!.id) : null,
       externalVideoId, url: record.url,
-      delivered: record.state === "published",
+      delivered,
       scheduled: record.state === "scheduled",
       state: record.state,
+      reconciled,
       note: publishAtIso
         ? "تم الرفع مع جدولة حقيقية (publishAt) لدى YouTube بحالة private حتى الموعد."
         : "تم الرفع وأعاد YouTube معرّف فيديو حقيقي؛ النشر مُثبت من المزود.",
@@ -5238,6 +5505,22 @@ async function executeYouTubePublish(input: {
     },
   };
 }
+
+/**
+ * يبحث عن فيديو حقيقي لدى YouTube ببصمة المحتوى المحقونة (وسم gharabiai-…).
+ * قراءة فقط — تُستخدم لإعادة المزامنة عند انقطاع الاتصال بعد الرفع، فلا نشر مكرر.
+ */
+async function findYouTubeVideoByFingerprint(fingerprint: string): Promise<{ videoId: string | null; title: string | null } | null> {
+  const stored = youtubeStoredCredentials();
+  const uploadsPlaylistId = String(stored?.uploadsPlaylistId || "");
+  if (!uploadsPlaylistId || !fingerprint) return null;
+  const ensured = await ensureYouTubeAccessToken();
+  if (!ensured.ok || !ensured.token) return null;
+  const res = await youtubeClient().listMyVideos(ensured.token, { uploadsPlaylistId, maxResults: 50 });
+  if (!res.ok || !res.data) return null;
+  return matchVideoByFingerprint(res.data.videos as any, fingerprint);
+}
+
 
 /** الرد الحقيقي على تعليق YouTube (comments.insert) عبر البوابات كاملة. */
 app.post("/api/platforms/youtube/reply", requireOwner, async (req, res) => {
@@ -5270,6 +5553,8 @@ app.post("/api/platforms/youtube/publish", requireOwner, async (req, res) => {
     mimeType: typeof req.body?.mimeType === "string" ? req.body.mimeType : undefined,
     postId: typeof req.body?.postId === "string" ? req.body.postId : undefined,
     approved: req.body?.approved === true,
+    mediaRef: typeof req.body?.mediaRef === "string" ? req.body.mediaRef : undefined,
+    queueItemId: typeof req.body?.queueItemId === "string" ? req.body.queueItemId : undefined,
   }, user.id);
   return res.status(result.status).json(result.body);
 });
@@ -5291,6 +5576,224 @@ app.post("/api/platforms/youtube/video-update", requireOwner, async (req, res) =
   if (!result.ok) { noteYouTubeProviderError(result.code as any); return res.status(502).json({ success: false, code: result.code || "PROVIDER_ERROR", error: result.error }); }
   clearYouTubeProviderError();
   res.json({ success: true, video: result.data, note: "تم التحديث فعلياً لدى YouTube وأعاد بيانات الفيديو المحدّثة." });
+});
+
+// -------------------------------------------------------------
+// طابور محتوى YouTube — فكرة → تحضير → فحص → مراجعة → نشر/جدولة → تحقق → تقرير.
+// كل العمليات الحساسة للمالك فقط. لا نشر آلي بلا إذن، ولا نشر بلا معرّف من Google.
+// -------------------------------------------------------------
+
+/**
+ * إنشاء عنصر محتوى (فكرة/تحضير). يمر بفحص الحماية ويُصنّف حتمياً:
+ * آمن وواضح ⇒ APPROVED إن كان الإذن ممنوحاً؛ تجاري غير موثّق ⇒ REVIEW_REQUIRED؛
+ * غير ذلك ⇒ DRAFT/blocked. لا يُنشر شيء في هذه الخطوة.
+ */
+app.post("/api/platforms/youtube/content/drafts", requireOwner, async (req, res) => {
+  const user = (req as any).user;
+  const title = typeof req.body?.title === "string" ? req.body.title.trim() : "";
+  const description = typeof req.body?.description === "string" ? req.body.description : "";
+  const tags = Array.isArray(req.body?.tags) ? req.body.tags.map((t: any) => String(t).trim()).filter(Boolean) : [];
+  const privacyStatus = typeof req.body?.privacyStatus === "string" ? req.body.privacyStatus : "private";
+  const categoryId = typeof req.body?.categoryId === "string" ? req.body.categoryId : YOUTUBE_DEFAULT_CATEGORY_ID;
+  const publishAtRaw = typeof req.body?.publishAt === "string" ? req.body.publishAt.trim() : "";
+  const source = typeof req.body?.source === "string" ? req.body.source : "owner";
+
+  let mediaRef = typeof req.body?.mediaRef === "string" ? req.body.mediaRef : "";
+  // مادة جديدة (base64) تُسجّل حقيقية في المخزن وتُعطى مرجعاً — لا فيديو وهمي.
+  if (!mediaRef && typeof req.body?.videoBase64 === "string" && req.body.videoBase64) {
+    const reg = registerContentMedia({ mimeType: typeof req.body?.mimeType === "string" ? req.body.mimeType : "video/mp4", base64: req.body.videoBase64 });
+    if (!reg.ok) return res.status(422).json({ success: false, code: reg.code, error: reg.error });
+    mediaRef = reg.mediaRef!;
+    await persistContentMedia();
+  }
+  const hasMedia = Boolean(mediaRef && contentMediaBytes(mediaRef));
+
+  let publishAtIso: string | null = null;
+  if (publishAtRaw) {
+    let epoch = wallClockToEpoch(publishAtRaw);
+    if (!Number.isFinite(epoch)) { const p = Date.parse(publishAtRaw); if (Number.isFinite(p)) epoch = p; }
+    if (!Number.isFinite(epoch)) return res.status(422).json({ success: false, code: "PUBLISH_AT_INVALID", error: "صيغة وقت الجدولة غير صالحة." });
+    const fut = isFutureSchedule(new Date(epoch).toISOString(), Date.now());
+    if (!fut.ok) return res.status(422).json({ success: false, code: "PUBLISH_AT_NOT_FUTURE", error: fut.reason });
+    publishAtIso = new Date(epoch).toISOString();
+  }
+
+  const safety = analyzeBusinessClaims(`${title}\n${description}`, buildFactsForProduct(null, 0, 0));
+  const decision = classifyContentForReview({
+    hasMedia,
+    title,
+    publishAt: publishAtIso,
+    safety: { safe: safety.safe, blockedCount: safety.blocked.length, warnCount: safety.warnings.length, hasCommercialClaim: /سعر|خصم|عرض|تقسيط|متوفر|دفعة/i.test(`${title}\n${description}`) },
+  });
+  const controls = normalizeWatcherControls(watcherState.controls);
+  const mapped = decisionToState(decision, controls);
+  const input: ContentDraftInput = { title, description, tags, privacyStatus, publishAt: publishAtIso, mediaRef, source, categoryId };
+  const fingerprint = contentFingerprint(input);
+  const dup = contentQueue.find((i) => i.fingerprint === fingerprint && !isTerminalContentState(i.state) && i.state !== "FAILED");
+  if (dup) return res.status(409).json({ success: false, code: "DUPLICATE_CONTENT", error: "محتوى مطابق موجود بالفعل في الطابور (منع التكرار).", existing: { id: dup.id, state: dup.state } });
+
+  const nowIso = new Date().toISOString();
+  const item: ContentQueueItem = {
+    id: workspaceId("content"), fingerprint, title, description, tags, categoryId, privacyStatus,
+    publishAt: publishAtIso, mediaRef, source,
+    state: mapped.state, stateReason: mapped.reason, code: mapped.code, sensitivity: decision.sensitivity,
+    externalVideoId: null, url: null, verified: false,
+    createdAt: nowIso, updatedAt: nowIso, createdBy: user.id, reviewedBy: null, reviewedAt: null, reviewNote: null,
+    history: [{ at: nowIso, action: "created", actor: user.id, detail: `${decision.kind} — ${decision.reason}`, externalVideoId: null, result: mapped.state }],
+  };
+  contentQueue.unshift(item);
+  if (contentQueue.length > CONTENT_QUEUE_MAX) contentQueue.length = CONTENT_QUEUE_MAX;
+  audit(user.id, "youtube_content_draft_created", `content:${item.id}:${mapped.state}`);
+  await persistWatcherState();
+
+  // تنفيذ آلي فوري للمحتوى المعتمد إن كان الإذن ممنوحاً وليس Kill Switch.
+  let autoExecuted: any = null;
+  if (mapped.state === "APPROVED") {
+    autoExecuted = await autoExecuteContentItem(item, user.id);
+  }
+  res.status(201).json({ success: true, item: contentQueueView().find((q) => q.id === item.id), decision, autoExecuted });
+});
+
+/** يجلب عناصر الطابور + الملخص (محمي). */
+app.get("/api/platforms/youtube/content/queue", authenticateToken, (_req, res) => {
+  res.json({ success: true, items: contentQueueView(), summary: contentQueueSummary(), states: CONTENT_STATES.map((s) => ({ state: s, labelAr: CONTENT_STATE_LABELS_AR[s] })), note: "كل عنصر يمثّل محتوى حقيقياً؛ لا عناصر مُختلقة." });
+});
+
+/** تفاصيل عنصر واحد + إمكانية النقر من التقرير. */
+app.get("/api/platforms/youtube/content/queue/:id", authenticateToken, (req, res) => {
+  const it = contentQueue.find((i) => i.id === req.params.id);
+  if (!it) return res.status(404).json({ success: false, error: "عنصر محتوى غير موجود." });
+  res.json({ success: true, item: contentQueueView().find((q) => q.id === it.id) });
+});
+
+/**
+ * ينفّذ عنصر محتوى معتمداً (نشر الآن أو جدولة) عبر المنفّذ المركزي نفسه.
+ * يعيد نتيجة المنفّذ الحقيقية (بلا ادعاء نجاح). يُستخدم للتنفيذ الآلي ولقرار المالك.
+ */
+async function autoExecuteContentItem(item: ContentQueueItem, actor: string): Promise<any> {
+  const controls = normalizeWatcherControls(watcherState.controls);
+  const action = item.publishAt ? "schedule" : "publish";
+  const gate = contentGate(controls, action as any);
+  if (!gate.allowed) {
+    item.stateReason = `التنفيذ الآلي متعذّر: ${gate.reason}`;
+    item.code = gate.code;
+    item.state = "REVIEW_REQUIRED";
+    item.updatedAt = new Date().toISOString();
+    pushContentHistory(item, { action: "auto_blocked", actor, detail: gate.reason, result: gate.code });
+    await persistWatcherState();
+    return { status: 409, code: gate.code, error: gate.reason };
+  }
+  const result = await executeYouTubePublish({
+    title: item.title, description: item.description, tags: item.tags, privacyStatus: item.privacyStatus,
+    publishAt: item.publishAt || undefined, categoryId: item.categoryId, mediaRef: item.mediaRef,
+    approved: true, queueItemId: item.id,
+  }, actor);
+  return { status: result.status, code: result.body?.code, externalVideoId: result.body?.externalVideoId, state: item.state, error: result.body?.error };
+}
+
+/**
+ * قرار المالك على عنصر محتوى: موافقة/رفض/تعديل/نشر الآن/جدولة/إلغاء.
+ * النشر/الجدولة يمرّان بالمنفّذ المركزي وكل البوابات. المرفوض نهائي ولا يُنشر تلقائياً.
+ */
+app.post("/api/platforms/youtube/content/queue/:id/review", requireOwner, async (req, res) => {
+  const user = (req as any).user;
+  const action = String(req.body?.action || "");
+  if (!isValidContentReviewAction(action)) {
+    return res.status(400).json({ success: false, error: "إجراء مراجعة غير معروف.", actions: CONTENT_REVIEW_ACTION_LABELS_AR });
+  }
+  const item = contentQueue.find((i) => i.id === req.params.id);
+  if (!item) return res.status(404).json({ success: false, error: "عنصر محتوى غير موجود." });
+  if (isTerminalContentState(item.state) && action !== "edit") {
+    return res.status(409).json({ success: false, code: "TERMINAL_STATE", error: `الحالة ${item.state} نهائية؛ أنشئ قراراً/عنصراً جديداً بدل نقضها.` });
+  }
+
+  const note = typeof req.body?.note === "string" ? req.body.note.slice(0, 300) : null;
+  item.reviewedBy = user.id;
+  item.reviewedAt = new Date().toISOString();
+  if (note) item.reviewNote = note;
+
+  // تعديل: يحدّث المحتوى ويعيد التصنيف.
+  if (action === "edit") {
+    if (typeof req.body?.title === "string") item.title = req.body.title.trim();
+    if (typeof req.body?.description === "string") item.description = req.body.description;
+    if (Array.isArray(req.body?.tags)) item.tags = req.body.tags.map((t: any) => String(t).trim()).filter(Boolean);
+    if (typeof req.body?.publishAt === "string" && req.body.publishAt.trim()) {
+      const epoch = wallClockToEpoch(req.body.publishAt.trim());
+      if (Number.isFinite(epoch)) item.publishAt = new Date(epoch).toISOString();
+    }
+    item.fingerprint = contentFingerprint({ title: item.title, description: item.description, tags: item.tags, privacyStatus: item.privacyStatus, publishAt: item.publishAt, mediaRef: item.mediaRef });
+    item.state = "REVIEW_REQUIRED";
+    item.code = "OWNER_EDITED";
+    item.stateReason = "عدّل المالك المحتوى؛ أُعيد للمراجعة قبل النشر.";
+    item.updatedAt = new Date().toISOString();
+    pushContentHistory(item, { action: "edited", actor: user.id, detail: note, result: "REVIEW_REQUIRED" });
+    audit(user.id, "youtube_content_edited", `content:${item.id}`);
+    await persistWatcherState();
+    return res.json({ success: true, action, item: contentQueueView().find((q) => q.id === item.id) });
+  }
+
+  // رفض/إلغاء: نهائي بلا نشر.
+  if (action === "reject" || action === "cancel") {
+    item.state = action === "reject" ? "REJECTED" : "CANCELLED";
+    item.code = action === "reject" ? "OWNER_REJECTED" : "OWNER_CANCELLED";
+    item.stateReason = action === "reject" ? "رفض المالك المحتوى؛ لا نشر آلي بعد الآن." : "ألغى المالك عنصر المحتوى.";
+    item.updatedAt = new Date().toISOString();
+    pushContentHistory(item, { action, actor: user.id, detail: note, result: item.state });
+    audit(user.id, `youtube_content_${action}`, `content:${item.id}`);
+    await persistWatcherState();
+    return res.json({ success: true, action, item: contentQueueView().find((q) => q.id === item.id) });
+  }
+
+  // موافقة صرفة: حالة APPROVED بلا تنفيذ (ينتظر قراراً/تنفيذاً آلياً لاحقاً).
+  if (action === "approve") {
+    const mapped = reviewActionToState("approve", normalizeWatcherControls(watcherState.controls), item.publishAt);
+    item.state = mapped.state; item.code = mapped.code; item.stateReason = mapped.reason;
+    item.updatedAt = new Date().toISOString();
+    pushContentHistory(item, { action: "approved", actor: user.id, detail: note, result: item.state });
+    audit(user.id, "youtube_content_approved", `content:${item.id}`);
+    await persistWatcherState();
+    return res.json({ success: true, action, item: contentQueueView().find((q) => q.id === item.id) });
+  }
+
+  // نشر الآن / جدولة: تنفيذ حقيقي عبر المنفّذ المركزي (كل البوابات).
+  const mapped = reviewActionToState(action as ContentReviewAction, normalizeWatcherControls(watcherState.controls), item.publishAt);
+  if (mapped.state !== "APPROVED") {
+    item.state = mapped.state; item.code = mapped.code; item.stateReason = mapped.reason;
+    item.updatedAt = new Date().toISOString();
+    pushContentHistory(item, { action: `review_${action}_blocked`, actor: user.id, detail: mapped.reason, result: mapped.code });
+    await persistWatcherState();
+    return res.status(409).json({ success: false, action, code: mapped.code, error: mapped.reason, item: contentQueueView().find((q) => q.id === item.id) });
+  }
+  item.state = "APPROVED"; item.code = mapped.code; item.stateReason = mapped.reason; item.updatedAt = new Date().toISOString();
+  if (action === "publish_now") item.publishAt = null; // نشر فوري
+  const exec = await autoExecuteContentItem(item, user.id);
+  return res.status(exec.status || 200).json({ success: exec.status === 200, action, exec, item: contentQueueView().find((q) => q.id === item.id) });
+});
+
+/** بطاقات المحتوى القابلة للنقر في التقرير اليومي (مصدر واحد). */
+function contentBriefMetricsView() {
+  const counts = computeContentBriefCounts(contentQueue.map((i) => ({ state: i.state, verified: i.verified })));
+  return CONTENT_BRIEF_METRICS.map((key) => ({ key, labelAr: CONTENT_BRIEF_METRIC_LABELS_AR[key], count: counts[key] }));
+}
+
+/** تفاصيل بطاقة محتوى: السجلات التي كوّنت الرقم (بلا اختلاق). */
+app.get("/api/platforms/youtube/content/details", authenticateToken, (req, res) => {
+  const metric = String(req.query.metric || "") as ContentBriefMetric;
+  if (!CONTENT_BRIEF_METRICS.includes(metric)) {
+    return res.status(400).json({ success: false, error: "بطاقة محتوى غير معروفة.", metrics: CONTENT_BRIEF_METRICS });
+  }
+  const filtered = contentQueue.filter((i) => {
+    switch (metric) {
+      case "contentPublished": return i.state === "PUBLISHED" || i.state === "VERIFIED";
+      case "contentScheduled": return i.state === "SCHEDULED";
+      case "contentAwaitingReview": return i.state === "REVIEW_REQUIRED";
+      case "contentRejected": return i.state === "REJECTED";
+      case "contentFailed": return i.state === "FAILED";
+      case "contentVerified": return i.verified || i.state === "VERIFIED";
+      default: return false;
+    }
+  });
+  res.json({ success: true, metric, labelAr: CONTENT_BRIEF_METRIC_LABELS_AR[metric], count: filtered.length, total: filtered.length, records: filtered.slice(0, 200).map((i) => contentQueueView().find((q) => q.id === i.id)), note: "السجلات هي نفسها التي كوّنت الرقم — لا بيانات مُختلقة." });
 });
 
 /** تشخيص إعداد YouTube (للمالك): النطاقات، القدرات، والحالة الصادقة — بلا سرّ. */
@@ -7050,6 +7553,8 @@ async function bootstrapStorage(): Promise<void> {
       // الخدمة فيصمد الـcheckpoint وسجل منع التكرار وإعدادات الأتمتة بعد restart.
       const watcher = await storageAdapter.read<any>(WATCHER_STATE_KEY);
       if (watcher) applyWatcherStateSnapshot(watcher);
+      const media = await storageAdapter.read<any>(CONTENT_MEDIA_KEY);
+      if (media) applyContentMediaState(media);
     } catch (error: any) {
       storageInitError = String(error?.code || error?.name || "state_read_failed").slice(0, 60);
       return;
@@ -7060,6 +7565,8 @@ async function bootstrapStorage(): Promise<void> {
     loadAgentStateSync();
     const watcher = storageAdapter.readSync<any>(WATCHER_STATE_KEY);
     if (watcher) applyWatcherStateSnapshot(watcher);
+    const media = storageAdapter.readSync<any>(CONTENT_MEDIA_KEY);
+    if (media) applyContentMediaState(media);
   }
   // الجهوزية تُعلن قبل مزامنة البصمة كي تُحفظ حالة التحكّم فعلاً عند أول إقلاع.
   storageReady = true;
@@ -8009,6 +8516,8 @@ app.get("/api/readiness", (_req, res) => {
     // تفويض تشغيل YouTube: حالة التفويض الممنوح من المالك للعقل المركزي (نطاق
     // YouTube فقط) — منطقي بلا أي سرّ، ليتأكد المالك من الفعالية/الإيقاف.
     youtubeDelegation: youtubeDelegationBlock(),
+    // طابور المحتوى (نشر/جدولة/مراجعة): ملخص حقيقي بلا أي سرّ.
+    youtubeContent: { summary: contentQueueSummary(), mediaStored: contentMedia.size, mediaTotalBytes: contentMediaTotalBytes },
     // PHASE 7 — حقول TikTok الآمنة (منطقي فقط، بلا أي قيمة سرّية).
     tiktokOAuth: (() => {
       const c = tiktokOAuthConfig();
@@ -8443,6 +8952,8 @@ app.get("/api/health", (_req, res) => {
     // مدير تشغيل YouTube 24/7: حالة المراقبة المستقلة عن المتصفح (منطقي بلا سرّ).
     // يُعلن كل الحقائق: نشاط المراقبة، الإيقاع، آخر فحص/تعليق/رد، المعلّق، الأخطاء.
     youtubeWatcher: watcherStatusBlock(),
+    // طابور المحتوى (نشر/جدولة/مراجعة): ملخص حقيقي بلا أي سرّ.
+    youtubeContent: { summary: contentQueueSummary(), mediaStored: contentMedia.size, mediaTotalBytes: contentMediaTotalBytes },
     // حالة موصل TikTok الحقيقي (منطقي فقط بلا أي سرّ أو رمز).
     tiktokOAuth: (() => {
       const c = tiktokOAuthConfig();

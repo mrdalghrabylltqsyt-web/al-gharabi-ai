@@ -875,6 +875,35 @@ add('gemini-firewall-no-direct-provider', (() => {
   return files.every((f) => !/new GoogleGenAI\(/.test(fs.readFileSync(f, 'utf8')) || f.endsWith('engine/ai/provider.ts'));
 })(), 'لا إنشاء عميل Gemini خارج الموصل المركزي (لا تجاوز للجدار)');
 
+// -------------------------------------------------------------
+// طابور محتوى YouTube — نشر/جدولة/مراجعة بشرية (دفعة الاكتمال التشغيلي)
+// -------------------------------------------------------------
+const contentPipeline = read('engine/social/contentPipeline.ts');
+const contentPanel = read('src/components/agent/YouTubeContentQueuePanel.tsx');
+const apiSrc = read('src/services/api.ts');
+add('content-pipeline-module', fs.existsSync(path.join(root, 'engine/social/contentPipeline.ts')) && contentPipeline.includes('contentGate') && contentPipeline.includes('classifyContentForReview') && contentPipeline.includes('decisionToState'), 'مسار المحتوى الموحّد (بوابة→تصنيف→قرار) موجود كمصدر واحد');
+add('content-state-separation', contentPipeline.includes('CONTENT_STATES') && contentPipeline.includes("'APPROVED'") && contentPipeline.includes("'SCHEDULED'") && contentPipeline.includes("'PUBLISHED'") && contentPipeline.includes("'REVIEW_REQUIRED'"), 'فصل الحالات صريح (APPROVED/SCHEDULED/PUBLISHED/REVIEW_REQUIRED)');
+add('content-idempotency-fingerprint', contentPipeline.includes('contentFingerprint') && contentPipeline.includes('fingerprintTag') && contentPipeline.includes('matchVideoByFingerprint'), 'بصمة idempotency + وسم مطابقة حقيقي لإعادة المزامنة');
+add('content-reconcile-unknown', contentPipeline.includes('reconcileUnknownUpload') && server.includes('UNKNOWN_EXTERNAL_STATE') && server.includes('findYouTubeVideoByFingerprint'), 'إعادة مزامنة الحالة غير المؤكدة بعد فشل شبكي (لا نشر مكرر)');
+add('content-schedule-no-fabrication', contentPipeline.includes('suggestScheduleTime') && contentPipeline.includes('sampleInsufficient'), 'ذكاء الجدولة لا يدّعي «أفضل وقت» بلا عيّنة كافية');
+add('content-no-fake-publish-guard', server.includes('QUEUE_PUBLISH_REQUIRES_MEDIA') === false && server.includes('MEDIA_REQUIRED') && server.includes('CONTENT_SAFETY_BLOCKED'), 'الرفع يحتاج مادة حقيقية وسلامة محتوى قبل التنفيذ');
+add('content-publish-central-executor', server.includes('async function executeYouTubePublish') && server.includes('queueItemId') && /executeYouTubePublish\(\{[\s\S]{0,400}approved: true, queueItemId/.test(server), 'النشر يستخدم المنفّذ المركزي executeYouTubePublish مع معرّف عنصر الطابور (لا مسار جانبي)');
+add('content-publish-state-honest', server.includes("queueItem.verified = !publishAtIso") && server.includes("publishAtIso ? \"SCHEDULED\" : \"PUBLISHED\""), 'لا يُعلن PUBLISHED بلا معرّف فيديو حقيقي؛ المجدول يبقى SCHEDULED');
+add('content-media-store-real-bytes', server.includes('registerContentMedia') && server.includes('contentMediaBytes') && server.includes('CONTENT_MEDIA_MAX'), 'مخزن المادة يحفظ بايتات حقيقية فقط ويعيد ref');
+add('content-queue-persistence', server.includes('contentQueue.slice(0, CONTENT_QUEUE_MAX)') && server.includes('applyContentMediaState'), 'طابور المحتوى ومخزن المادة يُحفظان ويُسترجعان بعد restart');
+add('content-brief-metrics-clickable', server.includes('contentBriefMetricsView') && server.includes('computeContentBriefCounts') && contentPipeline.includes('CONTENT_BRIEF_METRICS'), 'بطاقات المحتوى في التقرير قابلة للنقر بمصدر واحد');
+add('content-brief-details-same-records', server.includes('/api/platforms/youtube/content/details') && server.includes('total: filtered.length'), 'تفاصيل بطاقة المحتوى = نفس السجلات التي كوّنت الرقم (بلا discrepancy)');
+add('content-reject-terminal', server.includes("action === \"reject\" || action === \"cancel\"") && contentPipeline.includes('isTerminalContentState'), 'الرفض/الإلغاء نهائي ولا يُنشر تلقائياً');
+add('content-kill-switch-blocks', contentPipeline.includes('AUTOMATION_PAUSED') && contentPipeline.includes('AUTO_PUBLISH_DISABLED') && contentPipeline.includes('AUTO_SCHEDULE_DISABLED'), 'Kill Switch وحده يمنع النشر والجدولة قبل أي تنفيذ');
+add('content-owner-only', server.includes('app.post("/api/platforms/youtube/content/drafts", requireOwner') && server.includes('app.post("/api/platforms/youtube/content/queue/:id/review", requireOwner'), 'إنشاء/قرار المحتوى محصور بالمالك');
+add('content-firewall-untouched', server.includes('youtubeOnlyModeEnabled') && server.includes('aiUsageGuard'), 'لم تُمَسّ حماية Gemini ولا نمط YouTube-only');
+add('content-no-secret', !/(accessToken|refreshToken|clientSecret|GEMINI_API_KEY|apiKey)\s*[:=]/.test(contentPipeline), 'وحدة مسار المحتوى بلا أي سرّ/توكن');
+const pkgTest = typeof pkg.scripts.test === 'string' ? pkg.scripts.test : '';
+add('content-pipeline-tests', fs.existsSync(path.join(root, 'engine/tests/content.pipeline.test.ts')) && pkg.scripts['test:content-pipeline'], 'اختبار وحدة مسار المحتوى مسجّل');
+add('content-pipeline-integration-tests', fs.existsSync(path.join(root, 'engine/tests/content.pipeline.integration.test.ts')) && pkg.scripts['test:content-integration-ep'], 'اختبار تكاملي لطابور المحتوى مسجّل');
+add('content-pipeline-tests-in-suite', pkgTest.includes('test:content-pipeline') && pkgTest.includes('test:content-integration-ep'), 'اختبارا المحتوى ضمن npm test');
+add('content-ui-queue-panel', contentPanel.includes('getYouTubeContentQueue') && contentPanel.includes('reviewYouTubeContentItem') && contentPanel.includes('getYouTubeScheduleSuggestion'), 'لوحة طابور المحتوى موصولة بمسارات الخادم');
+
 const failed = checks.filter(x => !x.ok);
 console.table(checks);
 if (failed.length) {

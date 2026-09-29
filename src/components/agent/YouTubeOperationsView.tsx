@@ -10,6 +10,7 @@ import React, { useCallback, useEffect, useState } from 'react';
 import { apiService } from '../../services/api';
 import { useApp } from '../../context/AppContext';
 import { YouTubeBriefReview } from './YouTubeBriefReview';
+import { YouTubeContentQueuePanel } from './YouTubeContentQueuePanel';
 
 const tone = (s?: string) => {
   switch (s) {
@@ -277,6 +278,9 @@ export function YouTubeOperationsView() {
       <p className="text-xs text-slate-500 border-t border-slate-800 pt-3">
         كل الأرقام من بيانات YouTube الحقيقية وسجلات النظام — لا بيانات مُختلقة. الرد لا يُعتبر ناجحاً إلا بمعرّف رد حقيقي من YouTube.
       </p>
+
+      {/* طابور المحتوى: نشر/جدولة/مراجعة بشرية */}
+      <YouTubeContentQueuePanel />
 
       {activeMetric ? (
         <YouTubeBriefReview metric={activeMetric} onClose={() => setActiveMetric(null)} onChanged={load} />

@@ -2374,3 +2374,66 @@ Instagram/Telegram/TikTok، ولا Gemini، ولا مفاتيح التشفير،
 
 **لم يُمسّ:** OAuth/scopes/الأسرار، ولا Facebook/Instagram/TikTok/Telegram/Gemini، ولا
 تفويض YouTube ولا المراقب 24/7 ولا المنفّذ المركزي (المراجعة تستخدمه كما هو).
+
+## طابور محتوى YouTube — نشر آلي + جدولة + مراجعة بشرية (Batch 18, 2026-09-28)
+
+إكمال ثلاثية (نشر آلي + جدولة آلية + مراجعة بشرية) في مسار واحد موحّد سياسةً، بلا
+تعارض حالات وبلا نشر وهمي. المعمارية: **بوابة → تصنيف → قرار → تنفيذ مركزي → تحقق**.
+
+### وحدة `engine/social/contentPipeline.ts` (منطق خالص قابل للاختبار)
+- `contentGate(controls, action)`: بوابة حتمية بترتيب أسبقية صريح
+  (WATCHER_DISABLED → AUTOMATION_PAUSED → AUTO_*_DISABLED). Kill Switch وحده يمنع الكل.
+- `classifyContentForReview`: آمن وواضح ⇒ `auto_publish`/`auto_schedule`؛ تجاري بمعلومة
+  غير مؤكدة ⇒ `review_required` (حساسية عالية)؛ مخالفة حاجبة أو بلا مادة/عنوان ⇒ `blocked`.
+- `decisionToState` يُترجم القرار إلى حالة الطابور مع تصريح بسبب الحجب (AUTO_PUBLISH_DISABLED
+  ⇒ REVIEW_REQUIRED لا APPROVED).
+- `CONTENT_STATES` = DRAFT/APPROVED/SCHEDULED/PUBLISHED/VERIFIED/REVIEW_REQUIRED/REJECTED/
+  CANCELLED/FAILED، وانتقالات صريحة (`canTransitionContent`) وحالات نهائية لا تُنقض.
+- `contentFingerprint` (FNV) + `fingerprintTag` (وسم قناة `gharabiai-…` يُحقن في الفيديو)
+  + `matchVideoByFingerprint` + `reconcileUnknownUpload`: مطابقة حقيقية لقراءة-فقط بعد فشل
+  شبكي، فلا نشر مكرر عند نجاح الطلب لدى YouTube وضياع الاستجابة.
+- `suggestScheduleTime`: ساعة الذروة من أوقات تفاعل حقيقية فقط؛ العيّنة غير الكافية تُعلَن
+  `sampleInsufficient` ولا يُدّعى «أفضل وقت» إطلاقاً.
+
+### الخادم (`server.ts`)
+- `ContentQueueItem` + `contentQueue` (حد 5000) + مخزن مادة `contentMedia` يحفظ **بايتات
+  حقيقية فقط** بمرجع `mediaRef` (بلا فيديو وهمي، حد 5 ميجابايت/عنصر و25 ميجابايت إجمالي).
+  كلاهما يُحفظ/يُسترجع عبر المحوّل (`persistContentMedia`/`applyContentMediaState`) فيصمد
+  بعد restart/cold start.
+- `executeYouTubePublish` وُسّع ليقبل `mediaRef` (من المخزن) و`queueItemId`، ويكتب حالة
+  الطابور من نتيجة YouTube الحقيقية: `PUBLISHED` فقط بمعرّف فيديو حقيقي، و`SCHEDULED` مع
+  `publishAt` (private حتى الموعد)، و`UNKNOWN_EXTERNAL_STATE` عند عدم التأكد. يقبل وقت
+  الجدولة كجدار محلي (datetime-local) **أو** لحظة ISO بلا زحزحة صامتة.
+- المسارات: `POST /api/platforms/youtube/content/drafts` (**owner**)،
+  `POST /api/platforms/youtube/content/queue/:id/review` (**owner**: approve/reject/edit/
+  publish_now/schedule/cancel)، `GET /api/platforms/youtube/content/queue` و`/:id` و
+  `GET /api/platforms/youtube/content/details?metric=` (محميّة)، و
+  `GET /api/platforms/youtube/content/schedule-suggestion` (محميّة).
+- التنفيذ الآلي واليدوي يمرّان بـ`autoExecuteContentItem` → `executeYouTubePublish` المركزي
+  نفسه (كل البوابات: إذن → سلامة محتوى → مادة حقيقية → اتصال موثق → idempotency → rate limit)
+  — **لا مسار جانبي**. الرفض/الإلغاء نهائي ولا يُنقض.
+- بطاقات المحتوى الست في التقرير اليومي (`contentMetrics`) قابلة للنقر وتفاصيلها = نفس
+  السجلات التي كوّنت الرقم (`total`). `/api/health.youtubeContent` يعرض الملخص وحجم المخزن.
+
+### الواجهة
+`src/components/agent/YouTubeContentQueuePanel.tsx`: طابور المحتوى بحالاته الصادقة، إنشاء
+محتوى (عنوان/وصف/وسوم/وقت جدولة/بايتات base64)، اقتراح وقت الجدولة، وأزرار القرار للمالك.
+مدمج في `YouTubeOperationsView`. تُعرض نتيجة الخادم الفعلية فقط بلا أي ادّعاء نجاح محلي.
+
+### قواعد ملزمة (مُختبرة)
+- **لا نشر آلي بلا إذن صريح** (autoPublish/autoSchedule)، وKill Switch يمنع الكل.
+- **لا PUBLISHED بلا معرّف فيديو حقيقي من YouTube**؛ المجدول يبقى SCHEDULED.
+- **حتى قرار المالك لا يجيز نشر ادعاء تجاري غير مسجّل** (حارس سلامة المحتوى يرفض 422).
+- **الرفض نهائي** (REJECTED/CANCELLED) بلا نشر تلقائي لاحق.
+- **لا فيديو وهمي**: الرفع بلا بايتات مرفوض (MEDIA_REQUIRED).
+- **العمليات الحتمية لا تستهلك Gemini** (الطابور والتصنيف والجدولة حتمية).
+
+اختبارات: `engine/tests/content.pipeline.test.ts` (**51 فحصاً** وحدة) و
+`engine/tests/content.pipeline.integration.test.ts` (**45 فحصاً** خادم حقيقي + خادم Google
+وهمي: نشر تجاري→مراجعة، آمن→نشر حقيقي بمعرّف، جدولة→SCHEDULED+private، رفض نهائي، Kill
+Switch، تصريح 401، منع تكرار، ثبات بعد restart، بلا تسريب سرّ، Gemini=0). فحوص final-audit
+الجديدة (`content-*`، **647 إجمالاً**).
+
+**لم يُمسّ:** OAuth/scopes/الأسرار، ولا تفويض YouTube ولا المراقب 24/7 ولا `executeYouTubeReply`
+ولا Gemini ولا أي منصة أخرى (Facebook/Instagram/TikTok/Telegram). دورة الرد القائمة تستخدم
+المنفّذ المركزي كما هو.

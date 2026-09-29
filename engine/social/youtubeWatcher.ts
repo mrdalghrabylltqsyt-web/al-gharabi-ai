@@ -116,18 +116,31 @@ export interface WatcherGateDecision {
 /**
  * بوابة الأتمتة الموحّدة. لا يجوز لأي عملية أن تتجاوزها:
  * - القراءة/التحليل مسموحة ما لم يكن paused.
- * - الإرسال (رد/نشر/جدولة) يحتاج enabled + non-paused + الإذن الخاص + لا humanReviewMode.
+ * - الإرسال (رد/نشر/جدولة) يحتاج enabled + non-paused + الإذن الخاص.
+ *
+ * ملاحظة مهمة: `humanReviewMode` لا يُعطّل كل الأتمتة. الحالات الآمنة والواضحة
+ * تُنفَّذ آلياً؛ أما غير الواضحة/الحساسة فتُوجَّه إلى المراجعة عبر قرار التصنيف
+ * (`decideCommentAction`) لا عبر بوابة عامة. لذا لا تُحجب كل الردود هنا.
  */
 export function watcherGate(controls: YouTubeWatcherControls, action: WatcherAction): WatcherGateDecision {
   const c = normalizeWatcherControls(controls);
   if (!c.enabled) return { allowed: false, code: 'WATCHER_DISABLED', reason: 'مراقبة YouTube معطّلة من المالك.' };
   if (c.paused) return { allowed: false, code: 'AUTOMATION_PAUSED', reason: 'الأتمتة موقوفة مؤقتاً (Kill Switch)؛ القراءة والتحليل فقط.' };
   if (action === 'read') return { allowed: true, code: 'ALLOWED', reason: 'قراءة/تحليل مسموحان.' };
-  if (c.humanReviewMode) return { allowed: false, code: 'HUMAN_REVIEW_MODE', reason: 'وضع المراجعة البشرية مفعّل؛ لا إرسال آلي ويُصار إلى تصعيد.' };
   if (action === 'reply' && !c.autoReply) return { allowed: false, code: 'AUTO_REPLY_DISABLED', reason: 'الرد الآلي معطّل من المالك.' };
   if (action === 'publish' && !c.autoPublish) return { allowed: false, code: 'AUTO_PUBLISH_DISABLED', reason: 'النشر الآلي معطّل من المالك.' };
   if (action === 'schedule' && !c.autoSchedule) return { allowed: false, code: 'AUTO_SCHEDULE_DISABLED', reason: 'الجدولة الآلية معطّلة من المالك.' };
   return { allowed: true, code: 'ALLOWED', reason: 'مسموح بموجب تفويض المالك وإعدادات الأتمتة.' };
+}
+
+/**
+ * هل هذا النوع من التعليقات آمن وواضح بما يكفي للتنفيذ الآلي حتى في وضع
+ * المراجعة البشرية؟ المدح/التفاعل الإيجابي/الشكر لا يحمل ادعاءً ولا يخترع
+ * بيانات، فيُسمح بالرد الآلي عليه. الأسئلة/الاستفسارات التجارية/الشكاوى
+ * والمجهول غير الواضح تذهب إلى المراجعة.
+ */
+export function isSafeForAutoReply(intent: string): boolean {
+  return intent === 'praise';
 }
 
 /** ملخص للعرض في الصحة/الواجهة (بلا أي سرّ). */
@@ -218,7 +231,11 @@ export function decideCommentAction(input: {
   if (input.intent === 'complaint' || input.requiresHumanReview) {
     return { action: 'escalate', code: 'ESCALATE_SENSITIVE', reason: 'شكوى/حالة حساسة تستوجب متابعة المالك مباشرة قبل أي رد.', requiresHuman: true };
   }
-  if (c.humanReviewMode) return { action: 'escalate', code: 'ESCALATE_HUMAN_REVIEW_MODE', reason: 'وضع المراجعة البشرية مفعّل من المالك؛ تُحوَّل كل التعليقات للمراجعة.', requiresHuman: true };
+  // وضع المراجعة البشرية: الحالات الآمنة والواضحة (مدح/تفاعل إيجابي) تُنفَّذ
+  // آلياً، وغير الواضحة (سؤال/مجهول) تُوجَّه للمراجعة. لا إيقاف شامل للأتمتة.
+  if (c.humanReviewMode && !isSafeForAutoReply(input.intent)) {
+    return { action: 'escalate', code: 'ESCALATE_HUMAN_REVIEW_MODE', reason: 'وضع المراجعة البشرية مفعّل: الحالات غير الواضحة تُحوَّل للمراجعة، والحالات الواضحة تُرد آلياً.', requiresHuman: true };
+  }
   if (!c.enabled || c.paused || !c.autoReply) {
     // تعذّر بسبب إعداد المالك: قرار غير نهائي — لا يُوسَم مُعالَجاً لئلا يُفقد عند
     // تمكين الرد لاحقاً. لا تصعيد (ليس حالة حساسة) ولا رد (الأتمتة معطّلة).
