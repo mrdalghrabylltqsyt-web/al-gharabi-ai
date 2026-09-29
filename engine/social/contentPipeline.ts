@@ -90,6 +90,13 @@ export function canTransitionContent(from: ContentState, to: ContentState): bool
 
 export type ContentAction = 'publish' | 'schedule';
 
+/**
+ * مصدر القرار: `manual` قرار مباشر من المالك (نشر الآن/جدولة الآن)، و`auto`
+ * أتمتة وفق إعدادات المالك. الفصل إلزامي — لا يجوز أن يُقفل مفتاح الأتمتة
+ * (`autoPublish`/`autoSchedule`) قرار المالك اليدوي بعد استيفاء شروط الحالة.
+ */
+export type ContentActionMode = 'manual' | 'auto';
+
 export interface ContentGateDecision {
   allowed: boolean;
   code: string;
@@ -97,16 +104,20 @@ export interface ContentGateDecision {
 }
 
 /**
- * بوابة موحّدة للنشر/الجدولة الآليين. القاعدة: Kill Switch (`paused`) يمنع
- * الاثنين، وكل عملية تحتاج إذنها الخاص. `humanReviewMode` لا يمنع هنا — بل
- * يوجّه المحتوى غير الواضح إلى المراجعة عبر قرار التصنيف.
+ * بوابة موحّدة للنشر/الجدولة. Kill Switch (`paused`) وتعطيل المراقبة يمنعان
+ * الاثنين (قرار المالك والأتمتة) لأنهما يوقفان التشغيل كله. أما `autoPublish`
+ * و`autoSchedule` فيخصّان الأتمتة فقط (`mode='auto'`) ولا يقفلان قرار المالك
+ * اليدوي (`mode='manual'`). `humanReviewMode` لا يمنع هنا إطلاقاً — بل يوجّه
+ * المحتوى غير الواضح إلى المراجعة عبر قرار التصنيف.
  */
-export function contentGate(controls: YouTubeWatcherControls, action: ContentAction): ContentGateDecision {
+export function contentGate(controls: YouTubeWatcherControls, action: ContentAction, mode: ContentActionMode = 'auto'): ContentGateDecision {
   if (!controls.enabled) return { allowed: false, code: 'WATCHER_DISABLED', reason: 'مراقبة YouTube معطّلة من المالك.' };
-  if (controls.paused) return { allowed: false, code: 'AUTOMATION_PAUSED', reason: 'Kill Switch فعّال: توقّف النشر والجدولة الآليان.' };
-  if (action === 'publish' && !controls.autoPublish) return { allowed: false, code: 'AUTO_PUBLISH_DISABLED', reason: 'النشر الآلي معطّل من المالك.' };
-  if (action === 'schedule' && !controls.autoSchedule) return { allowed: false, code: 'AUTO_SCHEDULE_DISABLED', reason: 'الجدولة الآلية معطّلة من المالك.' };
-  return { allowed: true, code: 'ALLOWED', reason: 'مسموح بموجب إعدادات المالك.' };
+  if (controls.paused) return { allowed: false, code: 'AUTOMATION_PAUSED', reason: 'Kill Switch فعّال: توقّف النشر والجدولة.' };
+  if (mode === 'auto') {
+    if (action === 'publish' && !controls.autoPublish) return { allowed: false, code: 'AUTO_PUBLISH_DISABLED', reason: 'النشر الآلي معطّل من المالك.' };
+    if (action === 'schedule' && !controls.autoSchedule) return { allowed: false, code: 'AUTO_SCHEDULE_DISABLED', reason: 'الجدولة الآلية معطّلة من المالك.' };
+  }
+  return { allowed: true, code: 'ALLOWED', reason: mode === 'manual' ? 'مسموح بقرار المالك المباشر بعد استيفاء شروط الحالة.' : 'مسموح بموجب إعدادات المالك.' };
 }
 
 // ---------------------------------------------------------------------------
@@ -294,7 +305,7 @@ export function isFutureSchedule(publishAt: string | null | undefined, now: numb
 }
 
 /** ملخّص المحتوى للعرض (بلا أي سرّ). */
-export function summarizeContentQueue(items: Array<{ state: ContentState; publishAt?: string | null; verified?: boolean }>) {
+export function summarizeContentQueue(items: Array<{ state: ContentState; publishAt?: string | null; verified?: boolean; externalVideoId?: string | null; verifiedVideoId?: string | null }>) {
   const byState: Record<string, number> = {};
   for (const s of CONTENT_STATES) byState[s] = 0;
   for (const it of items) byState[it.state] = (byState[it.state] || 0) + 1;
@@ -303,7 +314,8 @@ export function summarizeContentQueue(items: Array<{ state: ContentState; publis
     byState,
     scheduled: items.filter((i) => i.state === 'SCHEDULED').length,
     published: items.filter((i) => i.state === 'PUBLISHED' || i.state === 'VERIFIED').length,
-    verified: items.filter((i) => i.verified || i.state === 'VERIFIED').length,
+    // التحقق يُعدّ فقط عند وجود دليل فعلي (معرّف مزود + حالة نشر/جدولة).
+    verified: items.filter((i) => isVerificationSubstantiated(i as any)).length,
     awaitingReview: items.filter((i) => i.state === 'REVIEW_REQUIRED').length,
     rejected: items.filter((i) => i.state === 'REJECTED').length,
     failed: items.filter((i) => i.state === 'FAILED').length,
@@ -332,14 +344,14 @@ export const CONTENT_BRIEF_METRIC_LABELS_AR: Record<ContentBriefMetric, string> 
 });
 
 /** يحسب عدّاد كل بطاقة محتوى من نفس السجلات (مصدر واحد ⇒ لا discrepancy). */
-export function computeContentBriefCounts(items: Array<{ state: ContentState; verified?: boolean }>): Record<ContentBriefMetric, number> {
+export function computeContentBriefCounts(items: Array<{ state: ContentState; verified?: boolean; externalVideoId?: string | null; verifiedVideoId?: string | null }>): Record<ContentBriefMetric, number> {
   return {
     contentPublished: items.filter((i) => i.state === 'PUBLISHED' || i.state === 'VERIFIED').length,
     contentScheduled: items.filter((i) => i.state === 'SCHEDULED').length,
     contentAwaitingReview: items.filter((i) => i.state === 'REVIEW_REQUIRED').length,
     contentRejected: items.filter((i) => i.state === 'REJECTED').length,
     contentFailed: items.filter((i) => i.state === 'FAILED').length,
-    contentVerified: items.filter((i) => i.verified || i.state === 'VERIFIED').length,
+    contentVerified: items.filter((i) => isVerificationSubstantiated(i as any)).length,
   };
 }
 
@@ -384,9 +396,10 @@ export function contentItemMediaState(item: { mediaRef?: string | null; hasMedia
 }
 
 /**
- * يحوّل قرار المالك إلى الحالة الهدف (حتمي). `publish_now`/`schedule` يحتاجان
- * تمكين الإذن والابتعاد عن Kill Switch (تُفحص بالبوابة في الخادم قبل التنفيذ).
- * ويحتاجان أيضًا مادة فيديو حقيقية: بلا مادة لا موافقة/نشر/جدولة (MEDIA_REQUIRED).
+ * يحوّل قرار المالك إلى الحالة الهدف (حتمي). `publish_now`/`schedule` قرار
+ * مالك مباشر (`mode='manual'`): لا يحتاج `autoPublish`/`autoSchedule`، لكنه
+ * يُمنع بـKill Switch/تعطيل المراقبة (بوابة `manual`) ويحتاج مادة فيديو حقيقية.
+ * `humanReviewMode` لا يقفل النشر بعد الموافقة — إنه سياسة مراجعة لا قفل تنفيذ.
  */
 export function reviewActionToState(action: ContentReviewAction, controls: YouTubeWatcherControls, publishAt?: string | null, hasMedia = true): { state: ContentState; code: string; reason: string } {
   // لا موافقة/نشر/جدولة بلا مادة فعلية — لا يُولّد النظام فيديو وهمياً.
@@ -400,24 +413,96 @@ export function reviewActionToState(action: ContentReviewAction, controls: YouTu
     case 'approve': return { state: 'APPROVED', code: 'OWNER_APPROVED', reason: 'اعتمد المالك المحتوى للنشر/الجدولة.' };
     case 'schedule': {
       if (!publishAt) return { state: 'APPROVED', code: 'SCHEDULE_TIME_REQUIRED', reason: 'الجدولة تحتاج وقت publishAt صالحاً.' };
-      const gate = contentGate(controls, 'schedule');
+      const gate = contentGate(controls, 'schedule', 'manual');
       if (!gate.allowed) return { state: 'REVIEW_REQUIRED', code: gate.code, reason: gate.reason };
-      return { state: 'APPROVED', code: 'OWNER_SCHEDULED', reason: 'اعتمد المالك الجدولة؛ ستُنفَّذ على YouTube.' };
+      return { state: 'APPROVED', code: 'OWNER_SCHEDULED', reason: 'اعتمد المالك الجدولة يدوياً؛ ستُنفَّذ على YouTube (private حتى الموعد).' };
     }
     case 'publish_now': {
-      const gate = contentGate(controls, 'publish');
+      const gate = contentGate(controls, 'publish', 'manual');
       if (!gate.allowed) return { state: 'REVIEW_REQUIRED', code: gate.code, reason: gate.reason };
-      return { state: 'APPROVED', code: 'OWNER_PUBLISH_NOW', reason: 'طلب المالك النشر الآن.' };
+      return { state: 'APPROVED', code: 'OWNER_PUBLISH_NOW', reason: 'طلب المالك النشر الآن (public).' };
     }
     default: return { state: 'REVIEW_REQUIRED', code: 'UNKNOWN_ACTION', reason: 'إجراء غير معروف.' };
   }
 }
 
-/** هل يمكن نشر عنصر تلقائياً الآن؟ (بوابة + حالة) */
+/** هل يمكن نشر عنصر تلقائياً الآن؟ (بوابة أتمتة + حالة) */
 export function canAutoPublish(item: { state: ContentState; publishAt?: string | null }, controls: YouTubeWatcherControls): ContentGateDecision {
   if (item.state !== 'APPROVED') return { allowed: false, code: 'NOT_APPROVED', reason: 'العنصر ليس في حالة APPROVED.' };
   const action: ContentAction = item.publishAt ? 'schedule' : 'publish';
-  return contentGate(controls, action);
+  return contentGate(controls, action, 'auto');
+}
+
+/**
+ * هل التحقق مُدعَّم بدليل فعلي؟ لا يُقبل `verified=true` إلا مع معرّف فيديو حقيقي
+ * من المزود وحالة نشر/جدولة. أي تحقق بلا معرّف (بيانات قديمة/مخزّنة يدوياً) يُسقَط
+ * عند التحميل حتى لا يُعلن تحقق بلا دليل — قاعدة المشروع: لا ادعاء بلا إثبات.
+ */
+export function isVerificationSubstantiated(item: { verified?: boolean; externalVideoId?: string | null; verifiedVideoId?: string | null; state?: string | null }): boolean {
+  if (item.verified !== true) return false;
+  const vid = String(item.verifiedVideoId || item.externalVideoId || '').trim();
+  if (!vid) return false;
+  return item.state === 'PUBLISHED' || item.state === 'SCHEDULED' || item.state === 'VERIFIED';
+}
+
+/**
+ * تصنيف حتمي لبيانات الاختبار التجريبية — بلا تخمين. لا يُصنّف «اختباراً» إلا
+ * بدليل مقصود وموثّق (مصدر `test`)، أو بوسم صريح داخل السجل/السجل التاريخي.
+ * العناصر المُنشأة عبر الواجهة (source='owner') **لا** تُصنّف اختباراً أبداً،
+ * حتى لا تُحذف بيانات حقيقية. أي عنصر لا يُطابق دليلاً يبقى production.
+ */
+export const TEST_MARKER_RE = /\b(test|dummy|sample|smoke|e2e|qa)\b|اختبار|تجريب/i;
+
+export function classifyContentRecord(
+  item: { source?: string | null; title?: string | null; description?: string | null; history?: Array<{ action?: string }> },
+): { classification: 'test' | 'production'; reason: string } {
+  if (String(item.source || '') === 'test') return { classification: 'test', reason: 'مصدر موثّق: test.' };
+  if (TEST_MARKER_RE.test(`${item.title || ''} ${item.description || ''}`)) return { classification: 'test', reason: 'وسم اختبار صريح في العنوان/الوصف.' };
+  const hist = Array.isArray(item.history) ? item.history : [];
+  if (hist.some((h) => String(h?.action || '') === 'test_marker')) return { classification: 'test', reason: 'وسم اختبار صريح في السجل.' };
+  return { classification: 'production', reason: 'لا دليل اختبار؛ يُعامَل كبيانات إنتاج.' };
+}
+
+/**
+ * هل يسمح قرار مالك مباشر (نشر الآن/جدولة) على هذا العنصر الآن؟ حتمي ويجمع:
+ * الحالة (ليست نهائية) + المادة (فعلية) + البوابة اليدوية (Kill Switch/تعطيل).
+ * يُستخدم لعرض الأزرار في الواجهة ولمنع التنفيذ في الخادم بنفس المنطق.
+ * النشر الآن يفترض `public`، والجدولة تفترض `private` حتى الموعد.
+ */
+export function contentManualReadiness(
+  item: { state: ContentState; hasMedia?: boolean; mediaRef?: string | null; publishAt?: string | null },
+  controls: YouTubeWatcherControls,
+): {
+  canPublishNow: boolean; canSchedule: boolean;
+  publishBlockedCode: string | null; publishBlockedReason: string | null;
+  scheduleBlockedCode: string | null; scheduleBlockedReason: string | null;
+  publishPrivacyStatus: 'public'; schedulePrivacyStatus: 'private';
+  scheduleRequiresPublishAt: true;
+} {
+  const hasMedia = item.hasMedia === true || Boolean(String(item.mediaRef || '').trim());
+  const terminal = isTerminalContentState(item.state);
+  let publishBlockedCode: string | null = null;
+  let publishBlockedReason: string | null = null;
+  let scheduleBlockedCode: string | null = null;
+  let scheduleBlockedReason: string | null = null;
+  if (terminal) {
+    publishBlockedCode = scheduleBlockedCode = 'TERMINAL_STATE';
+    publishBlockedReason = scheduleBlockedReason = `الحالة ${item.state} نهائية؛ لا نشر ولا جدولة.`;
+  } else if (!hasMedia) {
+    publishBlockedCode = scheduleBlockedCode = 'MEDIA_REQUIRED';
+    publishBlockedReason = scheduleBlockedReason = 'لا توجد مادة فيديو حقيقية؛ أضف الفيديو أولاً.';
+  } else {
+    const pg = contentGate(controls, 'publish', 'manual');
+    if (!pg.allowed) { publishBlockedCode = pg.code; publishBlockedReason = pg.reason; }
+    const sg = contentGate(controls, 'schedule', 'manual');
+    if (!sg.allowed) { scheduleBlockedCode = sg.code; scheduleBlockedReason = sg.reason; }
+  }
+  return {
+    canPublishNow: publishBlockedCode === null,
+    canSchedule: scheduleBlockedCode === null,
+    publishBlockedCode, publishBlockedReason, scheduleBlockedCode, scheduleBlockedReason,
+    publishPrivacyStatus: 'public', schedulePrivacyStatus: 'private', scheduleRequiresPublishAt: true,
+  };
 }
 
 // ---------------------------------------------------------------------------

@@ -58,6 +58,10 @@ export interface YouTubeMockState {
   failUpload: boolean;
   /** معرّف الفيديو الناتج عن الرفع (حقيقي من المزود الوهمي). */
   uploadedVideoId: string;
+  /** حالة الخصوصية الفعلية للفيديو المرفوع (يعكسها videos.list كما يفعل YouTube). */
+  uploadedPrivacyStatus: 'public' | 'private' | 'unlisted';
+  /** تجاوز اختياري لحالة التحقق (لمحاكاة عدم تطابق فعلي من المزود). */
+  verifyPrivacyOverride: 'public' | 'private' | 'unlisted' | null;
   /** آخر مسار رفع/إدراج/تحديث — يثبت أن المسار الرسمي هو المستخدم. */
   lastUploadPath: string | null;
   lastInsertPath: string | null;
@@ -110,6 +114,8 @@ export function createYouTubeMock(): YouTubeMockState {
     failReply: false,
     failUpload: false,
     uploadedVideoId: 'vid_uploaded_0001',
+    uploadedPrivacyStatus: 'public',
+    verifyPrivacyOverride: null,
     lastUploadPath: null,
     lastInsertPath: null,
     lastUpdatePath: null,
@@ -177,13 +183,21 @@ export function startYouTubeMockServer(state: YouTubeMockState, port: number): P
     state.calls += 1;
     if (state.failVideos) return res.status(403).json({ error: { code: 403, message: 'Forbidden', errors: [{ reason: 'forbidden' }] } });
     const ids = String(req.query?.id || '').split(',').filter(Boolean);
-    const items = state.videos.filter((v) => !ids.length || ids.includes(v.id)).map((v) => ({
-      kind: 'youtube#video',
-      id: v.id,
-      snippet: { title: v.title, publishedAt: v.publishedAt, tags: v.tags || [] },
-      statistics: { viewCount: String(v.viewCount), likeCount: String(v.likeCount), commentCount: String(v.commentCount) },
-      status: { privacyStatus: 'public', uploadStatus: 'processed' },
-    }));
+    const items = state.videos
+      .filter((v) => !ids.length || ids.includes(v.id))
+      .concat(
+        // الفيديو المرفوع حديثاً يظهر في videos.list بحالته الفعلية كما لدى YouTube.
+        ids.includes(state.uploadedVideoId)
+          ? [{ id: state.uploadedVideoId, title: state.lastUploadBody?.snippet?.title || '', publishedAt: '2026-09-25T10:00:00Z', viewCount: 0, likeCount: 0, commentCount: 0, tags: [] }]
+          : [],
+      )
+      .map((v) => ({
+        kind: 'youtube#video',
+        id: v.id,
+        snippet: { title: v.title, publishedAt: v.publishedAt, tags: v.tags || [] },
+        statistics: { viewCount: String(v.viewCount), likeCount: String(v.likeCount), commentCount: String(v.commentCount) },
+        status: { privacyStatus: v.id === state.uploadedVideoId ? (state.verifyPrivacyOverride || state.uploadedPrivacyStatus) : 'public', uploadStatus: 'processed' },
+      }));
     return res.json({ kind: 'youtube#videoListResponse', items });
   });
 
@@ -248,7 +262,7 @@ export function startYouTubeMockServer(state: YouTubeMockState, port: number): P
   });
   app.put('/upload/session/fake-1', express.raw({ type: '*/*', limit: '20mb' }), (req, res) => {
     state.calls += 1;
-    return res.json({ kind: 'youtube#video', id: state.uploadedVideoId, snippet: { title: state.lastUploadBody?.snippet?.title || '' }, status: { privacyStatus: state.lastUploadBody?.status?.privacyStatus || 'private', uploadStatus: 'uploaded' } });
+    return res.json({ kind: 'youtube#video', id: state.uploadedVideoId, snippet: { title: state.lastUploadBody?.snippet?.title || '' }, status: { privacyStatus: state.uploadedPrivacyStatus, uploadStatus: 'uploaded' } });
   });
 
   // تحديث فيديو (videos.update).

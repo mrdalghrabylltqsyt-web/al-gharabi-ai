@@ -879,6 +879,7 @@ add('gemini-firewall-no-direct-provider', (() => {
 // طابور محتوى YouTube — نشر/جدولة/مراجعة بشرية (دفعة الاكتمال التشغيلي)
 // -------------------------------------------------------------
 const contentPipeline = read('engine/social/contentPipeline.ts');
+const contentPipelineTest = read('engine/tests/content.pipeline.test.ts');
 const contentPanel = read('src/components/agent/YouTubeContentQueuePanel.tsx');
 const apiSrc = read('src/services/api.ts');
 add('content-pipeline-module', fs.existsSync(path.join(root, 'engine/social/contentPipeline.ts')) && contentPipeline.includes('contentGate') && contentPipeline.includes('classifyContentForReview') && contentPipeline.includes('decisionToState'), 'مسار المحتوى الموحّد (بوابة→تصنيف→قرار) موجود كمصدر واحد');
@@ -888,7 +889,7 @@ add('content-reconcile-unknown', contentPipeline.includes('reconcileUnknownUploa
 add('content-schedule-no-fabrication', contentPipeline.includes('suggestScheduleTime') && contentPipeline.includes('sampleInsufficient'), 'ذكاء الجدولة لا يدّعي «أفضل وقت» بلا عيّنة كافية');
 add('content-no-fake-publish-guard', server.includes('QUEUE_PUBLISH_REQUIRES_MEDIA') === false && server.includes('MEDIA_REQUIRED') && server.includes('CONTENT_SAFETY_BLOCKED'), 'الرفع يحتاج مادة حقيقية وسلامة محتوى قبل التنفيذ');
 add('content-publish-central-executor', server.includes('async function executeYouTubePublish') && server.includes('queueItemId') && /executeYouTubePublish\(\{[\s\S]{0,400}approved: true, queueItemId/.test(server), 'النشر يستخدم المنفّذ المركزي executeYouTubePublish مع معرّف عنصر الطابور (لا مسار جانبي)');
-add('content-publish-state-honest', server.includes("queueItem.verified = !publishAtIso") && server.includes("publishAtIso ? \"SCHEDULED\" : \"PUBLISHED\""), 'لا يُعلن PUBLISHED بلا معرّف فيديو حقيقي؛ المجدول يبقى SCHEDULED');
+add('content-publish-state-honest', server.includes('queueItem.verified = delivered && Boolean(privacyVerification?.verified)') && server.includes('publishAtIso ? "SCHEDULED" : "PUBLISHED"'), 'لا يُعلن PUBLISHED/verified بلا معرّف فيديو حقيقي وتحقق فعلي؛ المجدول يبقى SCHEDULED');
 add('content-media-store-real-bytes', server.includes('registerContentMedia') && server.includes('contentMediaBytes') && server.includes('CONTENT_MEDIA_MAX'), 'مخزن المادة يحفظ بايتات حقيقية فقط ويعيد ref');
 add('content-queue-persistence', server.includes('contentQueue.slice(0, CONTENT_QUEUE_MAX)') && server.includes('applyContentMediaState'), 'طابور المحتوى ومخزن المادة يُحفظان ويُسترجعان بعد restart');
 add('content-brief-metrics-clickable', server.includes('contentBriefMetricsView') && server.includes('computeContentBriefCounts') && contentPipeline.includes('CONTENT_BRIEF_METRICS'), 'بطاقات المحتوى في التقرير قابلة للنقر بمصدر واحد');
@@ -909,6 +910,23 @@ add('content-pipeline-tests', fs.existsSync(path.join(root, 'engine/tests/conten
 add('content-pipeline-integration-tests', fs.existsSync(path.join(root, 'engine/tests/content.pipeline.integration.test.ts')) && pkg.scripts['test:content-integration-ep'], 'اختبار تكاملي لطابور المحتوى مسجّل');
 add('content-pipeline-tests-in-suite', pkgTest.includes('test:content-pipeline') && pkgTest.includes('test:content-integration-ep'), 'اختبارا المحتوى ضمن npm test');
 add('content-ui-queue-panel', contentPanel.includes('getYouTubeContentQueue') && contentPanel.includes('reviewYouTubeContentItem') && contentPanel.includes('getYouTubeScheduleSuggestion'), 'لوحة طابور المحتوى موصولة بمسارات الخادم');
+
+// --- قرار المالك المباشر: نشر الآن public + جدولة private + تحقق حقيقي (Batch 24) ---
+add('content-manual-mode-explicit', contentPipeline.includes("ContentActionMode = 'manual' | 'auto'") && contentPipeline.includes("mode: ContentActionMode = 'auto'"), 'فصل صريح بين قرار المالك المباشر والأتمتة في بوابة المحتوى');
+add('content-manual-independent-of-automation', /if \(mode === 'auto'\) \{[\s\S]*?AUTO_PUBLISH_DISABLED[\s\S]*?AUTO_SCHEDULE_DISABLED[\s\S]*?\n  \}/.test(contentPipeline) && /export function reviewActionToState[\s\S]{0,2500}contentGate\(controls, 'publish', 'manual'\)/.test(contentPipeline), 'قرار المالك المباشر (mode=manual) يتجاوز autoPublish/autoSchedule؛ فحص الأتمتة داخل فرع auto فقط');
+add('content-publish-now-public', server.includes('const privacyDefault = mode === "manual" ? "public" : "private"'), 'النشر الآن (قرار مالك) => public افتراضاً، والأتمتة => private');
+add('content-schedule-private', server.includes('item.privacyStatus = "private"') && server.includes('(publishAtIso ? "private" : "public")'), 'الجدولة تُبقي الفيديو private حتى الموعد (خادم + إنشاء)');
+add('content-privacy-verified-real', server.includes('privacyVerification') && /getVideos\(ensured\.token, \[externalVideoId\]\)/.test(server), 'يُقرأ الفيديو من YouTube للتأكد من الخصوصية الفعلية (لا ادعاء)');
+add('content-privacy-mismatch-honest', server.includes('privacyActual') && server.includes('video_privacy_mismatch'), 'عدم تطابق الخصوصية لا يُسجَّل تحققاً كاملاً ويُسجَّل بأمان');
+add('content-verified-only-with-provider', server.includes('verified: delivered && Boolean(privacyVerification?.verified)'), 'verified لا تُعلن إلا بتحقق فعلي من المزود');
+add('content-verification-substantiated', contentPipeline.includes('isVerificationSubstantiated') && server.includes('isVerificationSubstantiated({') && server.includes('case "contentVerified": return isVerificationSubstantiated(i)'), 'لا يُعلن تحقق بلا دليل فعلي (معرّف مزود + حالة نشر/جدولة) في الملخص والبطاقات والتحميل');
+add('content-verification-load-guard', /verified: isVerificationSubstantiated\(\{/.test(server), 'التحقق غير المُدعَّم بدليل يُسقَط عند تحميل الحالة (بيانات قديمة لا تدّعي تحققاً)');
+add('content-manual-readiness-exposed', contentPipeline.includes('contentManualReadiness') && contentPanel.includes('canPublishNow') && contentPanel.includes('publishPrivacyStatus'), 'جاهزية القرار المباشر والخصوصية المتوقعة معروضة في الواجهة');
+add('content-test-cleanup-owner-only', /app\.post\("\/api\/platforms\/youtube\/content\/cleanup-test-data", requireOwner/.test(server), 'تنظيف بيانات الاختبار محصور بالمالك');
+add('content-test-cleanup-proof-based', contentPipeline.includes('classifyContentRecord') && server.includes('classifyContentRecord(i)'), 'التصنيف اختبار/إنتاج بدليل موثّق لا بتخمين');
+add('content-test-cleanup-protects-real', server.includes('keptRealVideo') && /filter\(\(c\) => !c\.externalVideoId\)/.test(server), 'بيانات الاختبار المرتبطة بفيديو حقيقي لا تُحذف مطلقاً');
+add('content-manual-mode-tests', contentPipelineTest.includes('contentManualReadiness') && contentPipelineTest.includes('classifyContentRecord'), 'اختبارات وحدة لجاهزية القرار المباشر وتصنيف بيانات الاختبار');
+add('content-manual-integration-tests', read('engine/tests/content.pipeline.integration.test.ts').includes('يمكن نشر الآن يدوياً رغم تعطيل autoPublish'), 'اختبار تكاملي يثبت استقلال القرار المباشر عن الأتمتة');
 const decisionTest = read('engine/tests/youtube.decision.test.ts');
 
 // --- دقة قرارات الـwatcher وتفسير التعليقات الحقيقية (Batch 23) ---

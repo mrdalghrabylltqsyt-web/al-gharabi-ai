@@ -2518,3 +2518,41 @@ Gemini (كل التحقق أعلاه حتمي بلا AI)، ولا Facebook/Insta
 Switch (مدح⇒رد، سؤال⇒تصعيد)، الترميم غير الحذفي، وصفر نداء AI. فحوص final-audit
 (`youtube-decision-*`، `youtube-reconcile-*`، `youtube-scan-window-*`، 668 إجمالاً).
 
+
+## قرار المالك المباشر + الخصوصية الصادقة + تنظيف بيانات الاختبار (Batch 24، 2026-09-26)
+
+إكمال دورة محتوى YouTube: كان قرار المالك المباشر (نشر الآن/جدولة) **مقفولاً بالأتمتة**،
+وكان «نشر الآن» قد يُرفع `private` فيبدو منشوراً بينما هو غير مرئي، ولم يكن هناك تحقق
+فعلي من الخصوصية من YouTube ولا وسيلة آمنة لإزالة بيانات الاختبار. الإصلاح:
+
+1. **فصل صريح `manual` ≠ `auto` في بوابة المحتوى.** `contentGate(controls, action, mode)`
+   صار يستقبل `ContentActionMode = 'manual' | 'auto'`. `autoPublish`/`autoSchedule` تُفحص
+   داخل فرع `auto` فقط، فلا تُقفل **قرار المالك اليدوي** بعد استيفاء شروط الحالة. Kill
+   Switch (`paused`) وتعطيل المراقبة يمنعان الاثنين (توقف التشغيل كله). `humanReviewMode`
+   سياسة مراجعة لا قفل تنفيذ. مصدر واحد: `reviewActionToState` (يدوي) و`canAutoPublish`
+   (آلي)، و`contentManualReadiness` يحسب جاهزية القرار المباشر للواجهة والخادم معاً.
+2. **الخصوصية الصادقة.** «نشر الآن» (قرار مالك) => `public` افتراضاً، والجدولة => `private`
+   حتى موعد `publishAt` (تُفرض في إنشاء المسودة وفي مسار القرار). المسار القديم
+   `/api/platforms/youtube/publish` يفترض `manual=>public`. أي قيمة صريحة من المالك تتقدّم.
+3. **تحقق فعلي من YouTube.** بعد نجاح الرفع يُقرأ الفيديو عبر `videos.list` وتُقارَن
+   `status.privacyStatus` بالمطلوب. `verified` لا تُعلن إلا عند تطابق مؤكد (`delivered &&
+   privacyVerification.verified`)؛ عدم التطابق/التعذّر يبقى **غير مؤكد بصراحة** مع
+   `privacyActual`، ويُسجَّل `video_privacy_mismatch` بلا أي سرّ. حقول جديدة في عنصر
+   الطابور: `verifiedVideoId` و`verifiedPrivacyStatus`.
+4. **تنظيف بيانات الاختبار بدليل موثّق (owner فقط).**
+   `POST /api/platforms/youtube/content/cleanup-test-data` (+ زر «تنظيف بيانات الاختبار»).
+   `classifyContentRecord` لا يصنّف اختباراً إلا بدليل مقصود (`source='test'` أو وسم
+   test/dummy/sample/smoke/e2e/qa/اختبار/تجريب في العنوان/الوصف أو سجل `test_marker`)،
+   والعناصر المُنشأة عبر الواجهة (`source='owner'`) تبقى إنتاجاً. `dryRun` افتراضي (عرض
+   فقط)، ولا يُحذف **أبداً** عنصر له معرّف فيديو حقيقي من YouTube.
+
+**درس عام:** «نشر الآن» يجب أن يعني `public` فعلاً، لا أن يُخفي الفيديو بـ`private`
+افتراضي؛ وأي ادعاء تحقق يجب أن يُقرأ من المزود لا من نجاح الطلب. وقرار المالك بعد
+استيفاء شروط الحالة لا يجوز أن يعتمد على مفاتيح الأتمتة — الأتمتة سياسة تلقائية، لا قفل يدوي.
+
+اختبارات: `engine/tests/content.pipeline.test.ts` (79 فحصاً وحدة، منها جاهزية القرار
+المباشر وتصنيف بيانات الاختبار) و`content.pipeline.integration.test.ts` (91 فحصاً تكاملياً:
+استقلال القرار المباشر عن autoPublish/autoSchedule/humanReviewMode، `public` عند النشر الآن،
+`private`+`publishAt` عند الجدولة، تحقق فعلي وإعلان عدم التطابق، تنظيف آمن). فحوص final-audit
+الجديدة `content-manual-*`, `content-publish-now-public`, `content-schedule-private`,
+`content-privacy-*`, `content-verified-only-with-provider`, `content-test-cleanup-*` (681 إجمالاً).

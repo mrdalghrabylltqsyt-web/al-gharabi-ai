@@ -236,6 +236,74 @@ async function main(): Promise<void> {
   check('Gemini لم يُستهلك في عملية حتمية', (health.geminiUsage?.firewall?.providerCallsToday ?? 0) === 0);
   check('ملخص المحتوى في الصحة', health.youtubeContent?.summary?.total >= 1);
 
+  group('15) قرار المالك المباشر مستقل عن autoPublish/autoSchedule/humanReviewMode + خصوصية صادقة + تحقق');
+  // نُعطّل الأتمتة ونفعّل المراجعة البشرية: يجب أن يبقى القرار اليدوي ممكناً.
+  await setControls(auth, { autoPublish: false, autoSchedule: false, humanReviewMode: true, enabled: true, paused: false });
+  const manualReady = await createDraft(auth, { title: 'نظرة عامة على أقسام المعرض ٣', description: 'وصف تعريف الجولة', videoBase64: VIDEO_B64 });
+  check('بلا أتمتة + مراجعة بشرية => عند المراجعة', manualReady.item?.state === 'REVIEW_REQUIRED', String(manualReady.item?.state));
+  check('لا رفع آلي', manualReady.autoExecuted === null);
+  check('يمكن نشر الآن يدوياً رغم تعطيل autoPublish', manualReady.item?.canPublishNow === true, JSON.stringify(manualReady.item?.publishBlockedReason));
+  check('الخصوصية المتوقعة للنشر الآن = public', manualReady.item?.publishPrivacyStatus === 'public');
+  check('الخصوصية المتوقعة للجدولة = private', manualReady.item?.schedulePrivacyStatus === 'private');
+  mockState.uploadedVideoId = 'vid_manual_public';
+  mockState.verifyPrivacyOverride = null;
+  mockState.lastUploadBody = null;
+  const manualPublish = await review(auth, manualReady.item.id, { action: 'publish_now' });
+  const manualPublishBody = await manualPublish.json();
+  check('نشر الآن يدوي نجح بمعرّف حقيقي', manualPublish.status === 200 && manualPublishBody.exec?.externalVideoId === 'vid_manual_public', JSON.stringify(manualPublishBody.exec));
+  check('الرفع الحقيقي استُدعي', (mockState.lastUploadPath || '').includes('/upload/youtube/v3/videos'));
+  check('privacyStatus=public فعلاً في الرفع (قرار مالك)', mockState.lastUploadBody?.status?.privacyStatus === 'public', JSON.stringify(mockState.lastUploadBody?.status));
+  check('تحقق الخصوصية أُثبت من YouTube', manualPublishBody.exec?.verified === true && manualPublishBody.exec?.privacyVerification?.actual === 'public', JSON.stringify(manualPublishBody.exec?.privacyVerification));
+  const pubItem = (await (await fetch(`${BASE}/api/platforms/youtube/content/queue/${manualReady.item.id}`, { headers: auth })).json()).item;
+  check('العنصر PUBLISHED ومُتحقَّق', pubItem?.state === 'PUBLISHED' && pubItem?.verified === true && pubItem?.verifiedPrivacyStatus === 'public', JSON.stringify({ s: pubItem?.state, v: pubItem?.verified, p: pubItem?.verifiedPrivacyStatus }));
+
+  group('15ب) عدم تطابق فعلي من المزود => لا ادعاء تحقق');
+  const mismatch = await createDraft(auth, { title: 'نظرة عامة على أقسام المعرض ٤', description: 'وصف', videoBase64: VIDEO_B64 });
+  mockState.uploadedVideoId = 'vid_manual_mismatch';
+  mockState.verifyPrivacyOverride = 'private'; // YouTube يعيد حالة مختلفة عن المطلوب
+  mockState.lastUploadBody = null;
+  const mismatchRes = await review(auth, mismatch.item.id, { action: 'publish_now' });
+  const mismatchBody = await mismatchRes.json();
+  check('الرفع نجح (معرّف حقيقي)', mismatchRes.status === 200 && mismatchBody.exec?.externalVideoId === 'vid_manual_mismatch');
+  check('لم يُعلن التحقق عند عدم التطابق', mismatchBody.exec?.verified === false, JSON.stringify(mismatchBody.exec?.privacyVerification));
+  const mismatchItem = (await (await fetch(`${BASE}/api/platforms/youtube/content/queue/${mismatch.item.id}`, { headers: auth })).json()).item;
+  check('العنصر غير مُتحقَّق رغم النشر', mismatchItem?.state === 'PUBLISHED' && mismatchItem?.verified === false);
+  mockState.verifyPrivacyOverride = null;
+
+  group('15ج) جدولة يدوية => private + publishAt حتى الموعد');
+  const future2 = new Date(Date.now() + 5 * 86400000).toISOString().slice(0, 16);
+  const manualSched = await createDraft(auth, { title: 'مقطع يدوي مجدول', description: 'وصف', videoBase64: VIDEO_B64, publishAt: future2 });
+  mockState.uploadedVideoId = 'vid_manual_sched';
+  mockState.lastUploadBody = null;
+  check('يمكن جدولة يدوياً رغم تعطيل autoSchedule', manualSched.item?.canSchedule === true, JSON.stringify(manualSched.item?.scheduleBlockedReason));
+  const manualSchedRes = await review(auth, manualSched.item.id, { action: 'schedule' });
+  const manualSchedBody = await manualSchedRes.json();
+  check('جدولة يدوية نجحت بمعرّف حقيقي', manualSchedRes.status === 200 && manualSchedBody.exec?.externalVideoId === 'vid_manual_sched', JSON.stringify(manualSchedBody.exec));
+  check('جدولة => privacyStatus=private', mockState.lastUploadBody?.status?.privacyStatus === 'private', JSON.stringify(mockState.lastUploadBody?.status));
+  check('جدولة => publishAt حقيقي', Boolean(mockState.lastUploadBody?.status?.publishAt));
+
+  group('15د) تنظيف بيانات الاختبار (بلا حذف إنتاج أو فيديو حقيقي)');
+  // 1) عنصر بوسم اختبار لكنه نُشر فعلياً (معرّف حقيقي) => يجب ألا يُحذف أبداً.
+  await setControls(auth, { autoPublish: true, autoSchedule: true, humanReviewMode: false });
+  mockState.uploadedVideoId = 'vid_test_sample_published';
+  mockState.lastUploadBody = null;
+  const publishedTest = await createDraft(auth, { title: 'sample clip demo', description: 'مقطع تعريفي', videoBase64: VIDEO_B64 });
+  check('عنصر بوسم اختبار نُشر بمعرّف حقيقي', (publishedTest.item?.externalVideoId === 'vid_test_sample_published') || (publishedTest.autoExecuted?.externalVideoId === 'vid_test_sample_published'), JSON.stringify(publishedTest.autoExecuted));
+  // 2) عنصر اختباري غير منشور => قابل للحذف.
+  await setControls(auth, { autoPublish: false, autoSchedule: false, humanReviewMode: true });
+  const testItem = await createDraft(auth, { title: 'اختبار تجريبي للتنظيف', description: 'بيانات اختبار', videoBase64: VIDEO_B64 });
+  check('عنصر اختباري بلا نشر', testItem.item?.state === 'REVIEW_REQUIRED' && !testItem.item?.externalVideoId);
+  const previewRes = await (await fetch(`${BASE}/api/platforms/youtube/content/cleanup-test-data`, { method: 'POST', headers: auth, body: JSON.stringify({ dryRun: true }) })).json();
+  check('المعاينة تُظهر عنصراً اختبارياً قابلاً للحذف', previewRes.dryRun === true && previewRes.deletableCount >= 1, JSON.stringify({ t: previewRes.testCount, d: previewRes.deletableCount }));
+  check('عنصر اختباري منشور فعلياً (فيديو حقيقي) لا يُحذف', previewRes.keptRealVideoCount >= 1, JSON.stringify({ kept: previewRes.keptRealVideoCount }));
+  const cleanupRes = await (await fetch(`${BASE}/api/platforms/youtube/content/cleanup-test-data`, { method: 'POST', headers: auth, body: JSON.stringify({ dryRun: false }) })).json();
+  check('التنظيف الفعلي حذف العنصر الاختباري', cleanupRes.success === true && cleanupRes.removed >= 1, JSON.stringify(cleanupRes));
+  const afterCleanup = await (await fetch(`${BASE}/api/platforms/youtube/content/queue`, { headers: auth })).json();
+  check('لم يُحذف أي منشور بمعرّف حقيقي', (afterCleanup.items || []).some((i: any) => i.externalVideoId === 'vid_test_sample_published'));
+  check('العنصر الاختباري غير المنشور أُزيل', !(afterCleanup.items || []).some((i: any) => i.title === 'اختبار تجريبي للتنظيف'));
+  check('تنظيف البيانات محصور بالمالك (401 بلا جلسة)', (await fetch(`${BASE}/api/platforms/youtube/content/cleanup-test-data`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' })).status === 401);
+  await setControls(auth, { autoPublish: true, autoSchedule: true, humanReviewMode: true });
+
   group('13) الثبات: إعادة التشغيل تُبقي الموافقات/الجدولة/الرفض');
   proc?.kill('SIGTERM');
   await new Promise((r) => setTimeout(r, 1500));
@@ -248,6 +316,8 @@ async function main(): Promise<void> {
   check('المجدول محفوظ بعد restart', (queue2.items || []).some((i: any) => i.state === 'SCHEDULED'));
   check('المنشور محفوظ بعد restart', (queue2.items || []).some((i: any) => i.state === 'PUBLISHED' && i.externalVideoId));
   const health2 = await (await fetch(`${BASE}/api/health`)).json();
+  check('لا يُعلن تحقق بلا معرّف مزود بعد restart', (queue2.items || []).every((i: any) => !(i.verified === true && !i.externalVideoId)), JSON.stringify((queue2.items || []).filter((i: any) => i.verified && !i.externalVideoId)));
+  check('الملخص لا يعدّ تحققاً بلا دليل', (health2?.youtubeContent?.summary?.verified ?? 0) === (queue2.items || []).filter((i: any) => i.verified === true && i.externalVideoId && ['PUBLISHED', 'SCHEDULED', 'VERIFIED'].includes(i.state)).length, JSON.stringify({ summaryVerified: health2?.youtubeContent?.summary?.verified, items: (queue2.items || []).map((i: any) => ({ t: i.title, s: i.state, v: i.verified, ext: i.externalVideoId, vv: i.verifiedVideoId })) }));
   check('مخزن المادة صمد بعد restart', health2.youtubeContent?.mediaStored > 0);
 
   group('14) الواجهة: طابور المحتوى موصول بالمسارات الصحيحة');

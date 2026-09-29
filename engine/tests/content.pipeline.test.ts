@@ -15,7 +15,10 @@ import {
   isTerminalContentState,
   summarizeContentQueue,
   computeContentBriefCounts,
+  isVerificationSubstantiated,
   reviewActionToState,
+  contentManualReadiness,
+  classifyContentRecord,
   isValidContentReviewAction,
   suggestScheduleTime,
   filterContentActions,
@@ -124,8 +127,15 @@ const on: YouTubeWatcherControls = { ...defaultWatcherControls(), enabled: true,
   check('9: موافقة => APPROVED', reviewActionToState('approve', on).state === 'APPROVED');
   check('9: جدولة بلا وقت => لا تنفيذ', reviewActionToState('schedule', on, null).state === 'APPROVED');
   check('9: جدولة بوقت + إذن => APPROVED', reviewActionToState('schedule', on, '2030-01-01T00:00:00Z').state === 'APPROVED');
-  check('9: جدولة بوقت + جدولة معطّلة => REVIEW_REQUIRED', reviewActionToState('schedule', { ...on, autoSchedule: false }, '2030-01-01T00:00:00Z').state === 'REVIEW_REQUIRED');
+  // قرار المالك المباشر لا يعتمد على autoSchedule/autoPublish (فصل صريح).
+  check('9: جدولة يدوية بوقت مع تعطيل الأتمتة => APPROVED (لا تعتمد على autoSchedule)', reviewActionToState('schedule', { ...on, autoSchedule: false }, '2030-01-01T00:00:00Z').state === 'APPROVED');
+  check('9: نشر الآن يدوي مع تعطيل autoPublish => APPROVED (لا تعتمد على autoPublish)', reviewActionToState('publish_now', { ...on, autoPublish: false }).state === 'APPROVED');
+  check('9: نشر الآن يدوي مع humanReviewMode => APPROVED (لا تعتمد على المراجعة)', reviewActionToState('publish_now', { ...on, humanReviewMode: true }).state === 'APPROVED');
   check('9: نشر الآن + Kill Switch => REVIEW_REQUIRED', reviewActionToState('publish_now', { ...on, paused: true }).state === 'REVIEW_REQUIRED');
+  check('9: بوابة auto تحترم autoPublish', contentGate({ ...on, autoPublish: false }, 'publish', 'auto').code === 'AUTO_PUBLISH_DISABLED');
+  check('9: بوابة manual تتجاوز autoPublish', contentGate({ ...on, autoPublish: false }, 'publish', 'manual').allowed === true);
+  check('9: بوابة manual تتجاوز autoSchedule', contentGate({ ...on, autoSchedule: false }, 'schedule', 'manual').allowed === true);
+  check('9: بوابة manual تُمنع بـKill Switch', contentGate({ ...on, paused: true }, 'publish', 'manual').code === 'AUTOMATION_PAUSED');
   check('9: إجراءات المراجعة الست صالحة', ['approve', 'reject', 'edit', 'publish_now', 'schedule', 'cancel'].every(isValidContentReviewAction));
   check('9: إجراء مجهول مرفوض', isValidContentReviewAction('hack') === false);
   // حجب العمليات التي تحتاج مادة عند غياب الفيديو (مصدر واحد للواجهة والخادم).
@@ -142,7 +152,7 @@ const on: YouTubeWatcherControls = { ...defaultWatcherControls(), enabled: true,
 // --- 10) الملخص والبطاقات (مصدر واحد) ---
 {
   const items = [
-    { state: 'PUBLISHED' as const, verified: true },
+    { state: 'PUBLISHED' as const, verified: true, externalVideoId: 'vid-real-1', verifiedVideoId: 'vid-real-1' },
     { state: 'SCHEDULED' as const, verified: false },
     { state: 'REVIEW_REQUIRED' as const, verified: false },
     { state: 'REJECTED' as const, verified: false },
@@ -154,6 +164,45 @@ const on: YouTubeWatcherControls = { ...defaultWatcherControls(), enabled: true,
   check('10: بطاقة منشور = منشور+متحقق', c.contentPublished === 1);
   check('10: بطاقة مجدول', c.contentScheduled === 1);
   check('10: بطاقة مراجعة', c.contentAwaitingReview === 1);
+}
+
+// --- 10ب) جاهزية قرار المالك المباشر (حتمية) ---
+{
+  const withMedia = { state: 'REVIEW_REQUIRED' as const, hasMedia: true, mediaRef: 'm1' };
+  const noMedia = { state: 'REVIEW_REQUIRED' as const, hasMedia: false, mediaRef: '' };
+  const ready = contentManualReadiness(withMedia, { ...on, autoPublish: false, autoSchedule: false });
+  check('10ب: نشر الآن متاح رغم تعطيل autoPublish', ready.canPublishNow === true);
+  check('10ب: جدولة متاحة رغم تعطيل autoSchedule', ready.canSchedule === true);
+  check('10ب: خصوصية النشر الآن = public', ready.publishPrivacyStatus === 'public');
+  check('10ب: خصوصية الجدولة = private', ready.schedulePrivacyStatus === 'private');
+  check('10ب: الجدولة تتطلب publishAt', ready.scheduleRequiresPublishAt === true);
+  const blockedMedia = contentManualReadiness(noMedia, on);
+  check('10ب: بلا مادة => نشر الآن محجوب MEDIA_REQUIRED', blockedMedia.canPublishNow === false && blockedMedia.publishBlockedCode === 'MEDIA_REQUIRED');
+  check('10ب: بلا مادة => جدولة محجوبة MEDIA_REQUIRED', blockedMedia.canSchedule === false && blockedMedia.scheduleBlockedCode === 'MEDIA_REQUIRED');
+  const terminal = contentManualReadiness({ state: 'REJECTED' as const, hasMedia: true }, on);
+  check('10ب: حالة نهائية => النشر والجدولة محجوبان TERMINAL_STATE', terminal.canPublishNow === false && terminal.canSchedule === false && terminal.publishBlockedCode === 'TERMINAL_STATE');
+  const paused = contentManualReadiness(withMedia, { ...on, paused: true });
+  check('10ب: Kill Switch يحجب القرار المباشر', paused.canPublishNow === false && paused.publishBlockedCode === 'AUTOMATION_PAUSED');
+}
+
+// --- 10ج) تصنيف بيانات الاختبار بدليل فقط (بلا تخمين) ---
+{
+  check('10ج: مصدر test => اختبار', classifyContentRecord({ source: 'test' }).classification === 'test');
+  check('10ج: وسم اختبار في العنوان => اختبار', classifyContentRecord({ source: 'owner', title: 'smoke test clip' }).classification === 'test');
+  check('10ج: سجل test_marker => اختبار', classifyContentRecord({ source: 'owner', history: [{ action: 'test_marker' }] }).classification === 'test');
+  check('10ج: عنصر إنتاج حقيقي لا يُصنّف اختباراً', classifyContentRecord({ source: 'owner', title: 'جولة في معرض الغرابي', description: 'نظرة عامة' }).classification === 'production');
+  check('10ج: بلا عنوان/مصدر يبقى إنتاجاً', classifyContentRecord({}).classification === 'production');
+}
+
+// --- 10د) التحقق لا يُدَّعى بلا دليل فعلي (معرّف مزود + حالة نشر/جدولة) ---
+{
+  check('10د: verified + معرّف + PUBLISHED => مُدعَّم', isVerificationSubstantiated({ verified: true, externalVideoId: 'v1', state: 'PUBLISHED' }));
+  check('10د: verified + verifiedVideoId + SCHEDULED => مُدعَّم', isVerificationSubstantiated({ verified: true, verifiedVideoId: 'v2', state: 'SCHEDULED' }));
+  check('10د: verified بلا معرّف => غير مُدعَّم', isVerificationSubstantiated({ verified: true, state: 'PUBLISHED' }) === false);
+  check('10د: verified في حالة DRAFT => غير مُدعَّم', isVerificationSubstantiated({ verified: true, externalVideoId: 'v3', state: 'DRAFT' }) === false);
+  check('10د: بلا verified => غير مُدعَّم', isVerificationSubstantiated({ externalVideoId: 'v4', state: 'PUBLISHED' }) === false);
+  check('10د: الملخص لا يعدّ تحققاً بلا دليل', summarizeContentQueue([{ state: 'PUBLISHED' as const, verified: true }, { state: 'PUBLISHED' as const, verified: true, externalVideoId: 'vr' }]).verified === 1);
+  check('10د: بطاقة المحتوى المتحقق تتبع الدليل', computeContentBriefCounts([{ state: 'PUBLISHED' as const, verified: true }]).contentVerified === 0);
 }
 
 // --- 11) ذكاء الجدولة: لا ادعاء بلا عيّنة كافية ---

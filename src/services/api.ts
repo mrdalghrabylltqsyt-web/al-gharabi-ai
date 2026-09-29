@@ -1430,6 +1430,16 @@ ${payload.topic || payload.productName || 'أنظمة وحلول التقسيط 
     return data;
   },
 
+  /** تنظيف بيانات الاختبار (owner): عرض افتراضاً، أو حذف تجريبي غير مرتبط بفيديو حقيقي. */
+  async cleanupYouTubeContentTestData(dryRun = true): Promise<any> {
+    const res = await fetch('/api/platforms/youtube/content/cleanup-test-data', {
+      method: 'POST', headers: { ...getAuthHeaders(), 'Content-Type': 'application/json' }, body: JSON.stringify({ dryRun }),
+    });
+    const data = await res.json();
+    if (!res.ok || !data.success) throw new Error(data.error || 'تعذر تنظيف بيانات الاختبار');
+    return data;
+  },
+
   async getYouTubeScheduleSuggestion(): Promise<any> {
     const res = await fetch('/api/platforms/youtube/content/schedule-suggestion', { headers: getAuthHeaders() });
     const data = await res.json();

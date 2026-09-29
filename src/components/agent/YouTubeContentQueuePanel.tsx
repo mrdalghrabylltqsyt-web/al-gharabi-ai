@@ -58,7 +58,7 @@ export function YouTubeContentQueuePanel() {
   const [note, setNote] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [showCreate, setShowCreate] = useState(false);
-  const [form, setForm] = useState({ title: '', description: '', tags: '', publishAt: '' });
+  const [form, setForm] = useState({ title: '', description: '', tags: '', publishAt: '', privacyStatus: 'public' });
   const [video, setVideo] = useState<{ name: string; size: number; type: string; base64: string } | null>(null);
   const [mediaError, setMediaError] = useState<string | null>(null);
 
@@ -94,12 +94,13 @@ export function YouTubeContentQueuePanel() {
         title: form.title, description: form.description,
         tags: form.tags ? form.tags.split(',').map((t) => t.trim()).filter(Boolean) : [],
         publishAt: form.publishAt || undefined,
+        privacyStatus: form.privacyStatus,
         mimeType: video.type || 'video/mp4', filename: video.name, videoBase64: video.base64,
       };
       const res = await apiService.createYouTubeContentDraft(payload);
       setNote(`أُضيف عنصر المحتوى بحالة: ${res?.item?.stateLabelAr || res?.item?.state}${res?.decision?.reason ? ` — ${res.decision.reason}` : ''}`);
       setShowCreate(false);
-      setForm({ title: '', description: '', tags: '', publishAt: '' });
+      setForm({ title: '', description: '', tags: '', publishAt: '', privacyStatus: 'public' });
       setVideo(null); setMediaError(null);
       await load();
     } catch (e: any) {
@@ -139,12 +140,33 @@ export function YouTubeContentQueuePanel() {
     } finally { setBusy(false); }
   };
 
+  // تنظيف بيانات الاختبار: عرض أولاً (dry-run)، ثم تأكيد المستخدم يحذف التجريبي
+  // غير المرتبط بفيديو حقيقي فقط. لا يُحذف أي عنصر إنتاج أو منشور فعلي.
+  const cleanupTestData = async () => {
+    setBusy(true); setNote(null); setError(null);
+    try {
+      const preview = await apiService.cleanupYouTubeContentTestData(true);
+      if (!preview.deletableCount) {
+        setNote(`لا بيانات اختبار قابلة للحذف (إجمالي الاختبار: ${preview.testCount} • محفوظ لفيديو حقيقي: ${preview.keptRealVideoCount}).`);
+        return;
+      }
+      const ok = window.confirm(`عناصر اختبار قابلة للحذف: ${preview.deletableCount}. (محفوظ لفيديو حقيقي: ${preview.keptRealVideoCount}). تنفيذ الحذف؟`);
+      if (!ok) { setNote('أُلغي التنظيف.'); return; }
+      const done = await apiService.cleanupYouTubeContentTestData(false);
+      setNote(`حُذف ${done.removed} عنصر اختباري؛ بقي ${done.keptRealVideoCount} عنصراً له فيديو حقيقي.`);
+      await load();
+    } catch (e: any) {
+      setError(e?.message || 'تعذر تنظيف بيانات الاختبار');
+    } finally { setBusy(false); }
+  };
+
   return (
     <section className="space-y-3">
       <div className="flex items-center justify-between flex-wrap gap-2">
         <h2 className="text-sm font-semibold text-slate-300">طابور المحتوى — نشر/جدولة/مراجعة</h2>
         <div className="flex gap-2">
           <button disabled={!isOwner || busy} onClick={suggestTime} className="px-3 py-1.5 rounded-lg text-xs bg-slate-800 border border-slate-700 text-slate-200 disabled:opacity-50">اقتراح وقت جدولة</button>
+          <button disabled={!isOwner || busy} onClick={cleanupTestData} className="px-3 py-1.5 rounded-lg text-xs bg-slate-800 border border-slate-700 text-amber-200 disabled:opacity-50">تنظيف بيانات الاختبار</button>
           <button disabled={!isOwner || busy} onClick={() => setShowCreate((v) => !v)} className="px-3 py-1.5 rounded-lg text-xs bg-emerald-600 hover:bg-emerald-500 text-white disabled:opacity-50">+ محتوى جديد</button>
         </div>
       </div>
@@ -168,6 +190,15 @@ export function YouTubeContentQueuePanel() {
           <div>
             <label className="block text-xs text-slate-400 mb-1">وقت النشر (اتركه فارغاً للنشر الفوري)</label>
             <input className="w-full bg-slate-800 border border-slate-700 text-slate-100 rounded-lg px-3 py-2 text-sm" type="datetime-local" value={form.publishAt} onChange={(e) => setForm({ ...form, publishAt: e.target.value })} />
+          </div>
+          <div>
+            <label className="block text-xs text-slate-400 mb-1">الخصوصية الافتراضية (يمكن تغييرها عند القرار)</label>
+            <select className="w-full bg-slate-800 border border-slate-700 text-slate-100 rounded-lg px-3 py-2 text-sm" value={form.privacyStatus} onChange={(e) => setForm({ ...form, privacyStatus: e.target.value })}>
+              <option value="public">عام (public) — الافتراضي للنشر الآن</option>
+              <option value="unlisted">غير مدرج (unlisted)</option>
+              <option value="private">خاص (private) — الافتراضي للجدولة حتى الموعد</option>
+            </select>
+            <p className="text-[11px] text-slate-500 mt-1">«نشر الآن» يجعل الفيديو <span className="text-slate-300">عاماً (public)</span> افتراضاً، و«جدولة» تبقيه <span className="text-slate-300">خاصاً (private)</span> حتى موعد النشر — إلا إذا اخترت غير ذلك صراحةً.</p>
           </div>
           {/* اختيار فيديو حقيقي من الجهاز (يعمل على الجوال والكمبيوتر) — بلا كتابة base64 يدوياً. */}
           <div className="space-y-2">
@@ -221,22 +252,38 @@ export function YouTubeContentQueuePanel() {
                 {it.externalVideoId ? ` • معرّف: ${it.externalVideoId}` : ''}
                 {it.url ? ` • ${it.url}` : ''}
               </div>
+              {/* حالة التحقق الحقيقية من YouTube: لا ندّعي تحققاً لم يُثبته المزود. */}
+              <div className="text-[11px] mt-1">
+                <span className="text-slate-500">الخصوصية المتوقعة: </span>
+                <span className="text-slate-300">نشر الآن = {it.publishPrivacyStatus || 'public'}</span>
+                <span className="text-slate-500"> • جدولة = {it.schedulePrivacyStatus || 'private'}</span>
+                {it.verifiedPrivacyStatus ? <span className="text-emerald-300"> • أثبت YouTube: {it.verifiedPrivacyStatus}{it.verified ? ' ✓ مُتحقَّق' : ' (غير مطابق)'}</span> : null}
+                {!it.verified && it.externalVideoId ? <span className="text-amber-300"> • لم تُؤكَّد الحالة من YouTube بعد</span> : null}
+              </div>
               {!it.hasMedia && !['REJECTED', 'CANCELLED'].includes(it.state) ? (
                 <div className="text-[11px] text-amber-300 mt-1">لا توجد مادة فيديو فعلية؛ لا يُسمح بالاعتماد/النشر/الجدولة حتى إضافة فيديو.</div>
               ) : null}
+              {/* Badge الحالة أعلاه عرض فقط. «إلغاء» زر فعلي ضمن القرارات أدناه. */}
               {isOwner && Array.isArray(it.allowedActions) && it.allowedActions.length ? (
                 <div className="flex flex-wrap gap-1.5 mt-2">
                   {it.allowedActions.map((a: string) => {
                     const b = REVIEW_BUTTONS.find((x) => x.action === a);
                     if (!b) return null;
+                    // لا نُظهر «نشر الآن»/«جدولة» كزرين قابلين للنقر إن كانت جاهزية
+                    // القرار المباشر تمنعهما (بلا مادة/نهائي/Kill Switch).
+                    const blocked = (a === 'publish_now' && it.canPublishNow === false) || (a === 'schedule' && it.canSchedule === false);
                     return (
-                      <button key={b.action} disabled={busy} onClick={() => act(it.id, b.action)}
-                        className={`px-2.5 py-1 rounded-lg text-xs border disabled:opacity-50 ${b.danger ? 'bg-rose-600/20 text-rose-200 border-rose-600/40' : 'bg-slate-800 text-slate-200 border-slate-700'}`}>
+                      <button key={b.action} disabled={busy || blocked} onClick={() => act(it.id, b.action)}
+                        title={blocked ? ((a === 'publish_now' ? it.publishBlockedReason : it.scheduleBlockedReason) || '') : ''}
+                        className={`px-2.5 py-1 rounded-lg text-xs border disabled:opacity-40 disabled:cursor-not-allowed ${b.danger ? 'bg-rose-600/20 text-rose-200 border-rose-600/40' : 'bg-slate-800 text-slate-200 border-slate-700'}`}>
                         {b.label}
                       </button>
                     );
                   })}
                 </div>
+              ) : null}
+              {isOwner && it.canPublishNow === false && it.publishBlockedReason ? (
+                <div className="text-[10px] text-slate-500 mt-1">نشر الآن محجوب: {it.publishBlockedReason}</div>
               ) : null}
             </div>
           ))}
