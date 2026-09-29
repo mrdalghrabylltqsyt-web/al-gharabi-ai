@@ -1440,6 +1440,16 @@ ${payload.topic || payload.productName || 'أنظمة وحلول التقسيط 
     return data;
   },
 
+  /** توليد وصف تسويقي عبر العقل المركزي (owner) — من بيانات منتج/معرض حقيقية فقط. */
+  async generateYouTubeContentDescription(payload: { productId?: string; productName?: string; extraInstructions?: string }): Promise<any> {
+    const res = await fetch('/api/platforms/youtube/content/generate-description', {
+      method: 'POST', headers: { ...getAuthHeaders(), 'Content-Type': 'application/json' }, body: JSON.stringify(payload),
+    });
+    const data = await res.json();
+    if (!res.ok || !data.success) throw new Error(data.error || data.code || 'تعذر توليد الوصف');
+    return data;
+  },
+
   async getYouTubeScheduleSuggestion(): Promise<any> {
     const res = await fetch('/api/platforms/youtube/content/schedule-suggestion', { headers: getAuthHeaders() });
     const data = await res.json();

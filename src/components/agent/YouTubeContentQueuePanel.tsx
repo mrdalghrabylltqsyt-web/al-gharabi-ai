@@ -9,6 +9,7 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { apiService } from '../../services/api';
 import { useApp } from '../../context/AppContext';
+import { toScheduleDisplay, wallClockInputValue, isScheduleInFuture } from '../../utils/scheduleTime';
 
 const tone = (s?: string) => {
   switch (s) {
@@ -61,6 +62,10 @@ export function YouTubeContentQueuePanel() {
   const [form, setForm] = useState({ title: '', description: '', tags: '', publishAt: '', privacyStatus: 'public' });
   const [video, setVideo] = useState<{ name: string; size: number; type: string; base64: string } | null>(null);
   const [mediaError, setMediaError] = useState<string | null>(null);
+  const [products, setProducts] = useState<any[]>([]);
+  const [productId, setProductId] = useState('');
+  const [generating, setGenerating] = useState(false);
+  const [genMeta, setGenMeta] = useState<any>(null);
 
   const load = useCallback(async () => {
     try {
@@ -73,9 +78,37 @@ export function YouTubeContentQueuePanel() {
     }
   }, []);
 
+  // قائمة المنتجات الحقيقية لاختيار أساس الوصف (لا منتج وهمي).
+  const loadProducts = useCallback(async () => {
+    try {
+      const data = await apiService.getWorkspaceProducts();
+      setProducts(Array.isArray(data?.products) ? data.products : []);
+    } catch { /* تبقى القائمة فارغة بلا اختراع */ }
+  }, []);
+
   useEffect(() => { load(); const t = setInterval(load, 30_000); return () => clearInterval(t); }, [load]);
+  useEffect(() => { if (showCreate && !products.length) loadProducts(); }, [showCreate, products.length, loadProducts]);
+
+  // توليد الوصف: عملية AI واحدة عبر العقل المركزي على الخادم (من بيانات حقيقية).
+  const generateDescription = async () => {
+    if (!productId) { setGenMeta({ error: 'اختر منتجاً حقيقياً ليُبنى الوصف من بياناته الفعلية.' }); return; }
+    setGenerating(true); setGenMeta(null); setError(null);
+    try {
+      const res = await apiService.generateYouTubeContentDescription({ productId });
+      setForm((f) => ({ ...f, description: res.description || '' }));
+      setGenMeta({ source: res.source, usedProvider: res.usedProvider, safetyReplaced: res.safetyReplaced, factsUsed: res.factsUsed || [], note: res.note });
+    } catch (e: any) {
+      setGenMeta({ error: e?.message || 'تعذر توليد الوصف' });
+    } finally { setGenerating(false); }
+  };
 
   const act = async (id: string, action: string, extra: Record<string, any> = {}) => {
+    // الرفض/الإلغاء نهائيان (لا نقض بعدهما): تأكيد صريح من المالك قبل التنفيذ.
+    if (action === 'reject' || action === 'cancel') {
+      const label = action === 'reject' ? 'رفض' : 'إلغاء';
+      const ok = window.confirm(`${label} هذا العنصر نهائياً؟ لا يمكن التراجع ولا يُنشر بعده.`);
+      if (!ok) return;
+    }
     setBusy(true); setNote(null); setError(null);
     try {
       const res = await apiService.reviewYouTubeContentItem(id, { action, ...extra });
@@ -101,7 +134,7 @@ export function YouTubeContentQueuePanel() {
       setNote(`أُضيف عنصر المحتوى بحالة: ${res?.item?.stateLabelAr || res?.item?.state}${res?.decision?.reason ? ` — ${res.decision.reason}` : ''}`);
       setShowCreate(false);
       setForm({ title: '', description: '', tags: '', publishAt: '', privacyStatus: 'public' });
-      setVideo(null); setMediaError(null);
+      setVideo(null); setMediaError(null); setProductId(''); setGenMeta(null);
       await load();
     } catch (e: any) {
       setError(e?.message || 'تعذر إنشاء العنصر');
@@ -186,6 +219,28 @@ export function YouTubeContentQueuePanel() {
         <div className="bg-slate-900 border border-slate-800 rounded-2xl p-4 space-y-2">
           <input className="w-full bg-slate-800 border border-slate-700 text-slate-100 rounded-lg px-3 py-2 text-sm" placeholder="العنوان (مطلوب)" value={form.title} onChange={(e) => setForm({ ...form, title: e.target.value })} />
           <textarea className="w-full bg-slate-800 border border-slate-700 text-slate-100 rounded-lg px-3 py-2 text-sm" rows={3} placeholder="الوصف" value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} />
+          {/* صياغة الوصف عبر العقل المركزي من بيانات منتج حقيقية (لا اختراع). */}
+          <div className="bg-slate-800/50 border border-slate-700 rounded-xl p-2 space-y-1.5">
+            <div className="flex flex-wrap items-center gap-2">
+              <select className="flex-1 min-w-[180px] bg-slate-800 border border-slate-700 text-slate-100 rounded-lg px-3 py-2 text-xs" value={productId} onChange={(e) => setProductId(e.target.value)}>
+                <option value="">— اختر منتجاً حقيقياً (لبناء الوصف من بياناته) —</option>
+                {products.map((p: any) => <option key={p.id} value={p.id}>{p.name}</option>)}
+              </select>
+              <button type="button" disabled={generating || !productId} onClick={generateDescription}
+                className="px-3 py-2 rounded-lg text-xs bg-indigo-600 hover:bg-indigo-500 text-white disabled:opacity-50">
+                {generating ? 'يُصاغ…' : '✨ صياغة الوصف بالعقل المركزي'}
+              </button>
+            </div>
+            {genMeta?.error ? <div className="text-[11px] text-rose-300">{genMeta.error}</div> : null}
+            {genMeta && !genMeta.error ? (
+              <div className="text-[11px] text-slate-400">
+                {genMeta.usedProvider ? 'صياغة عبر مزود AI' : 'صياغة حتمية آمنة (مزود غير متاح)'} • المصدر: {genMeta.source}
+                {genMeta.safetyReplaced ? ' • استُبدل نص يحمل ادعاءً غير مسجّل' : ''}
+                {genMeta.factsUsed?.length ? ` • حقائق مستخدمة: ${genMeta.factsUsed.join('، ')}` : ''}
+              </div>
+            ) : null}
+            <p className="text-[10px] text-slate-500">الوصف مبني من بيانات المنتج/المعرض الفعلية فقط، ويمر بحارس المحتوى قبل النشر. لا أسعار/عروض/أرقام غير مسجّلة.</p>
+          </div>
           <input className="w-full bg-slate-800 border border-slate-700 text-slate-100 rounded-lg px-3 py-2 text-sm" placeholder="وسوم مفصولة بفواصل" value={form.tags} onChange={(e) => setForm({ ...form, tags: e.target.value })} />
           <div>
             <label className="block text-xs text-slate-400 mb-1">وقت النشر (اتركه فارغاً للنشر الفوري)</label>
@@ -247,7 +302,7 @@ export function YouTubeContentQueuePanel() {
               </div>
               {it.stateReason ? <div className="text-xs text-slate-400 mt-1">السبب: {it.stateReason}</div> : null}
               <div className="text-[11px] text-slate-500 mt-1">
-                الحساسية: {it.sensitivity} • المصدر: {it.source} • {it.publishAt ? `جدولة: ${new Date(it.publishAt).toLocaleString('ar-IQ')}` : 'نشر فوري'}
+                الحساسية: {it.sensitivity} • المصدر: {it.source} • {it.publishAt ? `جدولة: ${toScheduleDisplay(it.publishAt) || it.publishAt}` : 'نشر فوري'}
                 {it.mediaState ? ` • المادة: ${it.mediaStateLabelAr}${it.mediaBytes ? ` (${fmtBytes(it.mediaBytes)})` : ''}` : ''}
                 {it.externalVideoId ? ` • معرّف: ${it.externalVideoId}` : ''}
                 {it.url ? ` • ${it.url}` : ''}
@@ -258,6 +313,7 @@ export function YouTubeContentQueuePanel() {
                 <span className="text-slate-300">نشر الآن = {it.publishPrivacyStatus || 'public'}</span>
                 <span className="text-slate-500"> • جدولة = {it.schedulePrivacyStatus || 'private'}</span>
                 {it.verifiedPrivacyStatus ? <span className="text-emerald-300"> • أثبت YouTube: {it.verifiedPrivacyStatus}{it.verified ? ' ✓ مُتحقَّق' : ' (غير مطابق)'}</span> : null}
+                {it.descriptionPresent ? (it.verifiedDescription ? <span className="text-emerald-300"> • الوصف: أُثبت وصوله</span> : (it.externalVideoId ? <span className="text-amber-300"> • الوصف: لم يُثبَت وصوله بعد</span> : null)) : null}
                 {!it.verified && it.externalVideoId ? <span className="text-amber-300"> • لم تُؤكَّد الحالة من YouTube بعد</span> : null}
               </div>
               {!it.hasMedia && !['REJECTED', 'CANCELLED'].includes(it.state) ? (

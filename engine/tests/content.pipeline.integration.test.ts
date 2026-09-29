@@ -12,6 +12,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { randomBytes } from 'node:crypto';
 import { createYouTubeMock, startYouTubeMockServer, type YouTubeMockState } from './helpers/youtubeMock';
+import { toScheduleDisplay } from '../../src/utils/scheduleTime';
 
 let passed = 0;
 const failures: string[] = [];
@@ -304,6 +305,71 @@ async function main(): Promise<void> {
   check('تنظيف البيانات محصور بالمالك (401 بلا جلسة)', (await fetch(`${BASE}/api/platforms/youtube/content/cleanup-test-data`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' })).status === 401);
   await setControls(auth, { autoPublish: true, autoSchedule: true, humanReviewMode: true });
 
+  group('15هـ) وقت النشر: المحفوظ == المعروض (لا زحزحة UTC على الجوال)');
+  // العقد: قيمة datetime-local تُحفظ كما اختارها المالك وتُعاد معروضة بنفس الساعة
+  // (سياسة Asia/Baghdad). لا تغيير في مكوّن الوقت نفسه — تحقق من العقد فقط.
+  const picked = '2027-03-15T21:30';
+  const schedContract = await createDraft(auth, { title: 'تحقق عقد وقت النشر ١', description: 'نظرة عامة', videoBase64: VIDEO_B64, publishAt: picked });
+  const storedAt = schedContract.item?.publishAt;
+  check('الموعد حُفظ فعلاً', typeof storedAt === 'string' && storedAt.length > 0, JSON.stringify(storedAt));
+  check('المعروض يطابق ما اختاره المالك (٢١:٣٠)', toScheduleDisplay(storedAt) === picked, JSON.stringify({ stored: storedAt, shown: toScheduleDisplay(storedAt) }));
+  const laterRead = (await (await fetch(`${BASE}/api/platforms/youtube/content/queue/${schedContract.item.id}`, { headers: auth })).json()).item;
+  check('المعنى المحلي محفوظ بعد إعادة القراءة', toScheduleDisplay(laterRead?.publishAt) === picked, JSON.stringify(toScheduleDisplay(laterRead?.publishAt)));
+  check('لا فرق ٣ ساعات (لا تحويل UTC)', toScheduleDisplay(storedAt) !== '2027-03-16T00:30', JSON.stringify(toScheduleDisplay(storedAt)));
+
+  group('16) وصف YouTube: صياغة بالعقل المركزي + تحقق وصول الوصف فعلاً من YouTube');
+  // الوصف جزء من دورة النشر: لا يُعلن تحقق كامل إن لم يثبت وصول الوصف المعتمد.
+  await setControls(auth, { autoPublish: false, autoSchedule: false, humanReviewMode: true });
+  const descGenRes = await fetch(`${BASE}/api/platforms/youtube/content/generate-description`, { method: 'POST', headers: auth, body: JSON.stringify({ productName: 'منتج غير مسجّل للاختبار' }) });
+  const descGenBody = await descGenRes.json();
+  check('توليد الوصف متاح للمالك (200)', descGenRes.status === 200 && descGenBody.success === true, JSON.stringify({ s: descGenRes.status }));
+  check('الوصف نصي غير فارغ', typeof descGenBody.description === 'string' && descGenBody.description.length > 0);
+  check('مصدر الوصف حتمي بلا مزود (قيد الاختبار)', descGenBody.usedProvider === false && descGenBody.source === 'fallback', JSON.stringify({ src: descGenBody.source }));
+  check('توليد الوصف محصور بالمالك (401 بلا جلسة)', (await fetch(`${BASE}/api/platforms/youtube/content/generate-description`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{"productName":"x"}' })).status === 401);
+  check('توليد الوصف بلا منتج => 400', (await fetch(`${BASE}/api/platforms/youtube/content/generate-description`, { method: 'POST', headers: auth, body: '{}' })).status === 400);
+
+  // نشر بوصف معتمد: YouTube يعيد نفس الوصف => يُثبت وصوله.
+  mockState.uploadedVideoId = 'vid_desc_ok';
+  mockState.uploadedDescriptionOverride = null;
+  mockState.lastUploadBody = null;
+  const descPublish = await createDraft(auth, { title: 'مقطع بوصف معتمد', description: 'وصف تسويقي معتمد للحملة', videoBase64: VIDEO_B64 });
+  const descPubRes = await review(auth, descPublish.item.id, { action: 'publish_now' });
+  const descPubBody = await descPubRes.json();
+  check('نشر بوصف معتمد نجح بمعرّف حقيقي', descPubRes.status === 200 && descPubBody.exec?.externalVideoId === 'vid_desc_ok', JSON.stringify(descPubBody.exec));
+  check('الوصف أُرسل فعلاً في رفع YouTube', mockState.lastUploadBody?.snippet?.description === 'وصف تسويقي معتمد للحملة', JSON.stringify(mockState.lastUploadBody?.snippet));
+  check('تحقق الوصف مُثبت من YouTube', descPubBody.exec?.descriptionVerified === true && descPubBody.exec?.verified === true, JSON.stringify(descPubBody.exec?.descriptionVerification));
+  const descPubItem = (await (await fetch(`${BASE}/api/platforms/youtube/content/queue/${descPublish.item.id}`, { headers: auth })).json()).item;
+  check('العنصر يحمل verifiedDescription=true', descPubItem?.verifiedDescription === true);
+
+  group('16ب) وصف مفقود على YouTube => لا ادعاء تحقق');
+  mockState.uploadedVideoId = 'vid_desc_missing';
+  mockState.uploadedDescriptionOverride = ''; // YouTube لم يعكس الوصف المعتمد
+  mockState.lastUploadBody = null;
+  const descMissing = await createDraft(auth, { title: 'مقطع بوصف مفقود', description: 'وصف يجب أن يفشل تحققه', videoBase64: VIDEO_B64 });
+  const missRes = await review(auth, descMissing.item.id, { action: 'publish_now' });
+  const missBody = await missRes.json();
+  check('الرفع نجح بمعرّف حقيقي', missRes.status === 200 && missBody.exec?.externalVideoId === 'vid_desc_missing');
+  check('لم يُعلن التحقق عند غياب الوصف', missBody.exec?.descriptionVerified === false && missBody.exec?.verified === false, JSON.stringify(missBody.exec?.descriptionVerification));
+  check('سبب عدم التحقق = DESCRIPTION_MISSING', missBody.exec?.descriptionVerification?.code === 'DESCRIPTION_MISSING', JSON.stringify(missBody.exec?.descriptionVerification));
+  const missItem = (await (await fetch(`${BASE}/api/platforms/youtube/content/queue/${descMissing.item.id}`, { headers: auth })).json()).item;
+  check('العنصر PUBLISHED بلا verifiedDescription', missItem?.state === 'PUBLISHED' && missItem?.verifiedDescription === false);
+  mockState.uploadedDescriptionOverride = null;
+
+  group('17) إلغاء عنصر المحتوى: زر مستقل + حالة CANCELLED نهائية');
+  await setControls(auth, { autoPublish: false, autoSchedule: false, humanReviewMode: true });
+  const cancelable = await createDraft(auth, { title: 'عنصر قابل للإلغاء', description: 'نظرة عامة', videoBase64: VIDEO_B64 });
+  check('الإلغاء متاح ضمن العمليات المسموحة', cancelable.item?.allowedActions?.includes('cancel'), JSON.stringify(cancelable.item?.allowedActions));
+  mockState.lastUploadPath = null;
+  const cancelRes = await review(auth, cancelable.item.id, { action: 'cancel', note: 'تراجع المالك' });
+  const cancelBody = await cancelRes.json();
+  check('الإلغاء نجح => CANCELLED', cancelRes.status === 200 && cancelBody.item?.state === 'CANCELLED');
+  check('لا رفع عند الإلغاء', mockState.lastUploadPath === null);
+  const cancelItem = (await (await fetch(`${BASE}/api/platforms/youtube/content/queue/${cancelable.item.id}`, { headers: auth })).json()).item;
+  check('الحالة النهائية تُظهر زر التعديل فقط', JSON.stringify(cancelItem?.allowedActions) === JSON.stringify(['edit']), JSON.stringify(cancelItem?.allowedActions));
+  const afterCancel = await review(auth, cancelable.item.id, { action: 'publish_now' });
+  check('لا نقض بعد الإلغاء (TERMINAL_STATE)', afterCancel.status === 409, String(afterCancel.status));
+  await setControls(auth, { autoPublish: true, autoSchedule: true, humanReviewMode: true });
+
   group('13) الثبات: إعادة التشغيل تُبقي الموافقات/الجدولة/الرفض');
   proc?.kill('SIGTERM');
   await new Promise((r) => setTimeout(r, 1500));
@@ -333,6 +399,12 @@ async function main(): Promise<void> {
   check('الواجهة تتحقق من الحجم والنوع قبل الإرسال', panelSrc.includes('CONTENT_UPLOAD_MAX_BYTES') && panelSrc.includes('ALLOWED_VIDEO_TYPES'));
   check('الواجهة ترسل base64 داخلياً مع اسم الملف والنوع', panelSrc.includes('videoBase64: video.base64') && panelSrc.includes('filename: video.name'));
   check('الواجهة تحترم allowedActions من الخادم', panelSrc.includes('allowedActions'));
+  // الوصف عبر العقل المركزي + إلغاء مؤكَّد + عرض الوقت بسياسة المنطقة نفسها.
+  check('الواجهة توفّر صياغة الوصف عبر العقل المركزي', panelSrc.includes('generateYouTubeContentDescription'));
+  check('الواجهة تعرض حالة إثبات الوصف', panelSrc.includes('verifiedDescription'));
+  check('الإلغاء/الرفض بتأكيد صريح قبل التنفيذ', panelSrc.includes("action === 'cancel'") && panelSrc.includes('window.confirm'));
+  check('عرض وقت الجدولة بسياسة المنطقة الموحّدة (لا زحزحة UTC)', panelSrc.includes('toScheduleDisplay') && !panelSrc.includes('new Date(it.publishAt).toLocaleString'));
+  check('API يستدعي مسار توليد الوصف', apiSrc.includes('/api/platforms/youtube/content/generate-description'));
 }
 
 main()

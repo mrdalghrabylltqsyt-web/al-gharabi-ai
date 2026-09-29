@@ -300,6 +300,13 @@ import {
   type ContentReviewAction,
 } from "./engine/social/contentPipeline";
 import {
+  buildDeterministicYouTubeDescription,
+  buildYouTubeDescriptionPrompt,
+  verifyUploadedDescription,
+  buildDescriptionHashtags,
+  type YouTubeDescriptionInput,
+} from "./engine/social/youtubeDescription";
+import {
   summarizeChannelAnalytics,
   analyzeYouTubeAudience,
   buildYouTubeLearning,
@@ -4523,6 +4530,8 @@ interface ContentQueueItem {
   /** معرّف الفيديو الذي أُثبتت حالته من YouTube فعلياً، وحالته المؤكدة. */
   verifiedVideoId: string | null;
   verifiedPrivacyStatus: string | null;
+  /** هل أُثبت وصول الوصف المعتمد إلى YouTube فعلاً؟ */
+  verifiedDescription?: boolean;
   createdAt: string;
   updatedAt: string;
   createdBy: string;
@@ -4704,6 +4713,8 @@ function contentQueueView() {
       stateReason: it.stateReason, code: it.code, sensitivity: it.sensitivity,
       externalVideoId: it.externalVideoId, url: it.url, verified: it.verified,
       verifiedVideoId: it.verifiedVideoId, verifiedPrivacyStatus: it.verifiedPrivacyStatus,
+      verifiedDescription: it.verifiedDescription === true,
+      descriptionPresent: String(it.description || "").trim().length > 0,
       createdAt: it.createdAt, updatedAt: it.updatedAt, reviewedBy: it.reviewedBy, reviewedAt: it.reviewedAt, reviewNote: it.reviewNote,
       history: it.history.slice(0, 10),
     };
@@ -4849,6 +4860,7 @@ function normalizeContentQueue(raw: any): ContentQueueItem[] {
       }),
       verifiedVideoId: typeof r.verifiedVideoId === "string" ? r.verifiedVideoId : null,
       verifiedPrivacyStatus: typeof r.verifiedPrivacyStatus === "string" ? r.verifiedPrivacyStatus : null,
+      verifiedDescription: r.verifiedDescription === true,
       createdAt: typeof r.createdAt === "string" ? r.createdAt : new Date().toISOString(),
       updatedAt: typeof r.updatedAt === "string" ? r.updatedAt : new Date().toISOString(),
       createdBy: typeof r.createdBy === "string" ? r.createdBy : "owner",
@@ -5639,14 +5651,17 @@ async function executeYouTubePublish(input: {
   }
   const delivered = Boolean(externalVideoId && !publishAtIso);
 
-  // تحقق حقيقي من الخصوصية من YouTube نفسه (لا نكتفي بنجاح الطلب): نشر الآن يجب
-  // أن يكون public فعلاً، والجدولة private+(publishAt). يُتحقق بعد نجاح الرفع فقط.
+  // تحقق حقيقي من المزود (لا نكتفي بنجاح الطلب): نشر الآن يجب أن يكون public
+  // فعلاً، والجدولة private+(publishAt)، **والوصف المعتمد يجب أن يصل فعلاً**.
+  // يُقرأ الفيديو مرة واحدة من YouTube وتُشتق منه الحالتان (بلا نداء إضافي).
   let privacyVerification: { requested: string; actual: string | null; verified: boolean; note: string } | null = null;
+  let descriptionVerification: { required: boolean; verified: boolean; code: string; expectedLength: number; actualLength: number | null; note: string } | null = null;
   if (externalVideoId && result.ok) {
     const expected = publishAtIso ? "private" : privacyStatus;
     try {
       const fetched = await youtubeClient().getVideos(ensured.token, [externalVideoId]);
-      const actual = fetched.ok && fetched.data?.length === 1 ? (fetched.data[0].privacyStatus ?? null) : null;
+      const row = fetched.ok && fetched.data?.length === 1 ? fetched.data[0] : null;
+      const actual = row ? (row.privacyStatus ?? null) : null;
       const verified = actual === expected;
       privacyVerification = {
         requested: expected, actual, verified,
@@ -5659,8 +5674,17 @@ async function executeYouTubePublish(input: {
       if (!verified && actual !== null) {
         logYouTubeOperation("video_privacy_mismatch", { externalId: externalVideoId, outcome: actual, errorCode: null, durationMs: Date.now() - started, idempotencyKey: fingerprint, actor });
       }
-    } catch { /* تبقى الخصوصية غير مؤكدة بصراحة */ }
+      // الوصف: يلزم وصول الوصف المعتمد غير الفارغ إلى YouTube فعلاً، وإلا فلا
+      // تُعتبر دورة النشر مُتحقَّقة. أي عدم تطابق يُسجَّل بأمان (بلا محتوى سرّي).
+      const dv = verifyUploadedDescription(description, row ? row.description : null);
+      descriptionVerification = { required: dv.required, verified: dv.verified, code: dv.code, expectedLength: dv.expectedLength, actualLength: dv.actualLength, note: dv.note };
+      if (dv.required && !dv.verified) {
+        logYouTubeOperation("video_description_mismatch", { externalId: externalVideoId, outcome: dv.code, errorCode: null, durationMs: Date.now() - started, idempotencyKey: fingerprint, actor });
+      }
+    } catch { /* تبقى الخصوصية/الوصف غير مؤكدين بصراحة */ }
   }
+  // لا يُعلن التحقق الكامل إلا باجتماع الخصوصية والوصف فعلاً من YouTube.
+  const fullyVerified = delivered && Boolean(privacyVerification?.verified) && (!descriptionVerification?.required || Boolean(descriptionVerification?.verified));
 
   const recordState = externalVideoId ? (publishAtIso ? "scheduled" : "published") : "failed";
   const record = {
@@ -5673,7 +5697,9 @@ async function executeYouTubePublish(input: {
     privacyStatus: publishAtIso ? "private" : privacyStatus,
     privacyVerified: privacyVerification ? privacyVerification.verified : false,
     privacyActual: privacyVerification ? privacyVerification.actual : null,
-    verified: delivered && Boolean(privacyVerification?.verified),
+    descriptionVerified: descriptionVerification ? descriptionVerification.verified : false,
+    descriptionVerification: descriptionVerification,
+    verified: fullyVerified,
     title, idempotencyKey: fingerprint, createdBy: actor,
     simulated: false,
     reconciled: reconciled ? reconciled.status : null,
@@ -5696,12 +5722,17 @@ async function executeYouTubePublish(input: {
         queueItem.url = youtubeWatchUrl(externalVideoId);
         queueItem.verifiedVideoId = externalVideoId;
         queueItem.verifiedPrivacyStatus = privacyVerification ? privacyVerification.actual : null;
-        queueItem.verified = delivered && Boolean(privacyVerification?.verified);
+        queueItem.verifiedDescription = Boolean(descriptionVerification?.required && descriptionVerification?.verified);
+        queueItem.verified = fullyVerified;
+        const privacyNote = privacyVerification?.verified ? " — أُثبت من YouTube." : " (لم تُؤكَّد الحالة من YouTube بعد).";
+        const descNote = descriptionVerification?.required
+          ? (descriptionVerification.verified ? " وأُثبت وصول الوصف المعتمد." : ` لكن الوصف المعتمد لم يُثبَت على YouTube (${descriptionVerification.code}).`)
+          : "";
         queueItem.stateReason = publishAtIso
-          ? `جدول YouTube النشر (publishAt) بحالة private حتى الموعد${privacyVerification?.verified ? " — أُثبت من YouTube." : " (لم تُؤكَّد الحالة من YouTube بعد)."}`
-          : `نشر فوري؛ أعاد YouTube معرّف فيديو حقيقي${privacyVerification?.verified ? " وأثبت الحالة الفعلية: " + privacyVerification.actual + "." : " (لم تُؤكَّد الخصوصية من YouTube بعد)."}`;
+          ? `جدول YouTube النشر (publishAt) بحالة private حتى الموعد${privacyNote}${descNote}`
+          : `نشر فوري؛ أعاد YouTube معرّف فيديو حقيقي${privacyVerification?.verified ? " وأثبت الحالة الفعلية: " + privacyVerification.actual : " (لم تُؤكَّد الخصوصية من YouTube بعد)"}.${descNote}`;
         queueItem.code = publishAtIso ? "SCHEDULED_ON_YOUTUBE" : "PUBLISHED_ON_YOUTUBE";
-        pushContentHistory(queueItem, { action: publishAtIso ? "scheduled" : "published", actor, detail: queueItem.stateReason, externalVideoId, result: privacyVerification?.verified ? "ok_verified" : "ok_unverified" });
+        pushContentHistory(queueItem, { action: publishAtIso ? "scheduled" : "published", actor, detail: queueItem.stateReason, externalVideoId, result: fullyVerified ? "ok_verified" : "ok_unverified" });
       } else if (reconciled) {
         queueItem.stateReason = `حالة خارجية غير مؤكدة: ${reconciled.note}`;
         queueItem.code = "UNKNOWN_EXTERNAL_STATE";
@@ -5733,12 +5764,14 @@ async function executeYouTubePublish(input: {
       verified: record.verified === true,
       privacyStatus: record.privacyStatus,
       privacyVerification,
+      descriptionVerification,
+      descriptionVerified: record.descriptionVerified === true,
       scheduled: record.state === "scheduled",
       state: record.state,
       reconciled,
       note: publishAtIso
-        ? `تم الرفع مع جدولة حقيقية (publishAt) لدى YouTube بحالة private حتى الموعد${privacyVerification?.verified ? " — أثبت YouTube الحالة الفعلية." : " (لم تُؤكَّد الحالة من YouTube بعد)."}`
-        : `تم الرفع وأعاد YouTube معرّف فيديو حقيقي${privacyVerification?.verified ? " وأثبت الخصوصية الفعلية: " + privacyVerification.actual + "." : " (لم تُؤكَّد الخصوصية من YouTube بعد)."}`,
+        ? `تم الرفع مع جدولة حقيقية (publishAt) لدى YouTube بحالة private حتى الموعد${privacyVerification?.verified ? " — أثبت YouTube الحالة الفعلية." : " (لم تُؤكَّد الحالة من YouTube بعد)."}${descriptionVerification?.required ? (descriptionVerification.verified ? " وأُثبت وصول الوصف المعتمد." : " لكن لم يُثبَت وصول الوصف المعتمد إلى YouTube.") : ""}`
+        : `تم الرفع وأعاد YouTube معرّف فيديو حقيقي${privacyVerification?.verified ? " وأثبت الخصوصية الفعلية: " + privacyVerification.actual + "." : " (لم تُؤكَّد الخصوصية من YouTube بعد)."}${descriptionVerification?.required ? (descriptionVerification.verified ? " وأُثبت وصول الوصف المعتمد." : " لكن لم يُثبَت وصول الوصف المعتمد إلى YouTube.") : ""}`,
       ...youtubeStateBlock(),
     },
   };
@@ -5929,7 +5962,9 @@ function summarizePublishExec(exec: { status: number; body: any }, item: Content
     verified: b.verified === true,
     privacyStatus: b.privacyStatus ?? null,
     privacyVerification: b.privacyVerification ?? null,
-    unverifiedReason: b.privacyVerification && b.privacyVerification.verified === false ? b.privacyVerification.note : undefined,
+    descriptionVerification: b.descriptionVerification ?? null,
+    descriptionVerified: b.descriptionVerified === true,
+    unverifiedReason: (b.privacyVerification && b.privacyVerification.verified === false) ? b.privacyVerification.note : (b.descriptionVerification && b.descriptionVerification.required && b.descriptionVerification.verified === false ? b.descriptionVerification.note : undefined),
   };
 }
 
@@ -6128,6 +6163,37 @@ app.post("/api/platforms/youtube/content/cleanup-test-data", requireOwner, async
   audit(user.id, "youtube_content_test_cleanup", `removed:${before - contentQueue.length}`);
   await persistWatcherState();
   res.json({ success: true, dryRun: false, removed: before - contentQueue.length, keptRealVideoCount: keptPublished.length, keptRealVideo: keptPublished.slice(0, 200), note: "حُذفت العناصر الاختبارية غير المرتبطة بفيديو حقيقي فقط؛ بقي كل الإنتاج والفيديوهات الحقيقية." });
+});
+
+/**
+ * توليد وصف YouTube التسويقي عبر العقل المركزي (owner فقط). عملية AI واحدة
+ * تمر Central Agent → AiEngine → Gemini Firewall (cache/dedup/quota/breaker/
+ * fallback). لا تُستدعى في أي قراءة/عرض/refresh. لا تُعاد أي أسرار.
+ */
+app.post("/api/platforms/youtube/content/generate-description", requireOwner, async (req, res) => {
+  const user = (req as any).user;
+  const productId = typeof req.body?.productId === "string" ? req.body.productId : null;
+  const productName = typeof req.body?.productName === "string" ? req.body.productName : null;
+  const extraInstructions = typeof req.body?.extraInstructions === "string" ? req.body.extraInstructions : null;
+  if (!productId && !cleanText(productName, 160)) {
+    return res.status(400).json({ success: false, error: "يلزم productId أو productName لصياغة وصف حقيقي بلا اختراع." });
+  }
+  const gen = await generateYouTubeContentDescription({ productId, productName, extraInstructions });
+  const product = resolveContentProduct(productId, productName);
+  audit(user.id, "youtube_content_description_generated", `product:${product?.id || productName || "unknown"}:${gen.source}`);
+  res.json({
+    success: true,
+    product: product ? { id: product.id, name: product.name, category: product.category } : null,
+    description: gen.description,
+    hashtags: gen.hashtags,
+    factsUsed: gen.factsUsed,
+    source: gen.source,
+    usedProvider: gen.usedProvider,
+    safetyReplaced: gen.safetyReplaced,
+    note: gen.usedProvider
+      ? "صياغة الوصف تمت عبر العقل المركزي (مزود AI) بعد فحص السلامة."
+      : "مزود AI غير متاح؛ استُخدمت صياغة حتمية آمنة من البيانات الفعلية فقط (بلا اختراع).",
+  });
 });
 
 /** تشخيص إعداد YouTube (للمالك): النطاقات، القدرات، والحالة الصادقة — بلا سرّ. */
@@ -9959,6 +10025,83 @@ function buildShowroomFacts(): BusinessFacts {
       cleanText(showroom.tagline, 240),
     ],
   });
+}
+
+/**
+ * حسم المنتج من معرّف/اسم موثّق. لا يُنشئ منتجاً وهمياً: غياب المطابقة يعني null.
+ */
+function resolveContentProduct(productId?: string | null, productName?: string | null): any | null {
+  const id = cleanText(productId, 80);
+  const name = cleanText(productName, 160);
+  if (!id && !name) return null;
+  return (workspace.products || []).find((p: any) => (id && p.id === id) || (name && p.name === name)) || null;
+}
+
+/** يبني مدخلات وصف YouTube من بيانات المعرض الحقيقية فقط (بلا أي معلومة مُختلقة). */
+function buildYouTubeDescriptionInput(productId?: string | null, productName?: string | null, extraInstructions?: string | null): YouTubeDescriptionInput {
+  const product = resolveContentProduct(productId, productName);
+  const showroom: any = workspace.showroom || {};
+  return {
+    product: product
+      ? {
+          name: cleanText(product.name, 120),
+          category: cleanText(product.category, 40) || null,
+          specs: Array.isArray(product.specs) ? product.specs : [],
+          installmentOptions: Array.isArray(product.installmentOptions) ? product.installmentOptions : [],
+          inStock: typeof product.inStock === 'boolean' ? product.inStock : null,
+        }
+      : null,
+    showroomName: cleanText(showroom.name, 80) || null,
+    tagline: cleanText(showroom.tagline, 160) || null,
+    about: cleanText(showroom.about, 400) || null,
+    city: cleanText(showroom.city, 60) || null,
+    contact: { phone: cleanText(showroom.phoneUnified, 40) || null, whatsapp: cleanText(showroom.whatsappSales, 40) || null },
+    extraInstructions: cleanText(extraInstructions, 400) || null,
+  };
+}
+
+/**
+ * يبني وصف YouTube التسويقي الإداري عبر العقل المركزي → AiEngine → Gemini Firewall.
+ * الاستدعاء الوحيد المسموح لعملية AI على مسار المحتوى. مضمون بالبديل الحتمي
+ * وبحارس سلامة المحتوى (لا وصف يحمل ادعاءً تجارياً غير مسجّل). بلا أي سرّ.
+ */
+async function generateYouTubeContentDescription(input: { productId?: string | null; productName?: string | null; extraInstructions?: string | null }): Promise<{
+  description: string;
+  source: string;
+  usedProvider: boolean;
+  safetyReplaced: boolean;
+  factsUsed: string[];
+  hashtags: string[];
+}> {
+  const descInput = buildYouTubeDescriptionInput(input.productId, input.productName, input.extraInstructions);
+  if (!descInput.product && cleanText(input.productName, 160)) {
+    descInput.product = { name: cleanText(input.productName, 120), category: null, specs: [], installmentOptions: [], inStock: null };
+  }
+  const deterministic = buildDeterministicYouTubeDescription(descInput);
+  const fallbackText = () => buildDeterministicYouTubeDescription(descInput).description;
+  const resolved = resolveContentProduct(input.productId, input.productName);
+  const facts = resolved
+    ? buildFactsForProduct(resolved, Number(resolved.downPaymentPercent || 0), Number(resolved.durationMonths || 0))
+    : buildShowroomFacts();
+  const cacheKey = `youtube:description:${JSON.stringify({ p: input.productId || null, n: input.productName || null, x: input.extraInstructions || null })}`;
+  const result = await aiEngine.run({
+    cacheKey,
+    prompt: buildYouTubeDescriptionPrompt(descInput),
+    deterministicFallback: fallbackText,
+    meta: { platform: 'youtube', operation: 'youtube_description' },
+  });
+  // حارس السلامة على النص الفعلي (سواء من المزود أو البديل) عبر المصدر الواحد نفسه،
+  // فلا يخرج وصف يحمل ادعاءً تجارياً غير مسجّل حتى لو كان البديل نفسه غير سليم.
+  const safe = ensureSafeBusinessText(result.text, facts, () => deterministic.description);
+  const description = safe.text.trim() || deterministic.description;
+  return {
+    description,
+    source: result.source,
+    usedProvider: result.usedProvider,
+    safetyReplaced: safe.replaced,
+    factsUsed: deterministic.factsUsed,
+    hashtags: deterministic.hashtags,
+  };
 }
 
 /**

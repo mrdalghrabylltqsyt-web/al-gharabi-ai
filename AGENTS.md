@@ -2556,3 +2556,47 @@ Switch (مدح⇒رد، سؤال⇒تصعيد)، الترميم غير الحذ�
 `private`+`publishAt` عند الجدولة، تحقق فعلي وإعلان عدم التطابق، تنظيف آمن). فحوص final-audit
 الجديدة `content-manual-*`, `content-publish-now-public`, `content-schedule-private`,
 `content-privacy-*`, `content-verified-only-with-provider`, `content-test-cleanup-*` (681 إجمالاً).
+
+## وصف YouTube عبر العقل المركزي + إلغاء مؤكَّد + عقد وقت النشر (Batch 25 — 2026-09-26)
+
+إكمال دورة المحتوى بثلاث إضافات صادقة، بلا مساس بـGemini/الأتمتة/مكوّن الوقت/بقية المنصات:
+
+### 1) وصف YouTube تسويقي بالعقل المركزي + تحقق وصوله فعلاً
+- `engine/social/youtubeDescription.ts` (منطق خالص): `buildDeterministicYouTubeDescription`
+  (صياغة حتمية من **الحقائق المُمرَّرة فقط**: اسم المنتج/المواصفات/خيارات التقسيط/بيانات
+  تواصل المعرض — لا سعر ولا خصم ولا ضمان إلا إن وُجد صراحةً)، `buildYouTubeDescriptionPrompt`
+  (برومبت يُلزم بالمصدر الواحد ويستثني كل ادعاء غير مسجّل)، `buildDescriptionHashtags`
+  (وسوم حسب التصنيف المسجّل، ووسم عام عند الجهل)، `normalizeDescriptionForMatch`
+  (تطبيع عربي/مسافات/أسطر)، و`verifyUploadedDescription` (لا يُعلن وصول الوصف بلا دليل).
+- المسار `POST /api/platforms/youtube/content/generate-description` (**owner فقط**): عملية
+  AI **واحدة** تمر `Central Agent → AiEngine → Gemini Firewall` (cache/dedup/quota/breaker/
+  fallback)، والنص الفعلي (مزود أو بديل) يمر `ensureSafeBusinessText` (المصدر الواحد
+  `buildSafeBusinessReply` من `contentSafety.ts`). بلا أي سرّ في الاستجابة.
+- **الوصف جزء من دورة النشر**: `executeYouTubePublish` يقرأ الفيديو **مرة واحدة** من
+  YouTube (`videos.list`) ويشتق منها الخصوصية **و** الوصف (بلا نداء إضافي). لا تُعلن
+  `verified` إلا باجتماع: معرّف حقيقي + خصوصية مؤكدة + وصول الوصف إن كان مطلوباً.
+  أكواد الوصف: `DESCRIPTION_CONFIRMED` / `DESCRIPTION_MISSING` / `DESCRIPTION_MISMATCH` /
+  `DESCRIPTION_UNREADABLE` / `DESCRIPTION_NOT_REQUIRED`. عدم التطابق يُسجَّل
+  `video_description_mismatch` بأمان، ويظهر `unverifiedReason` صريحاً.
+- حقل جديد في عنصر الطابور: `verifiedDescription` (منطقي) + `descriptionVerification` في
+  نتيجة النشر، ويُعرضان في الواجهة («الوصف: أُثبت وصوله» / «لم يُثبَت وصوله بعد»).
+- **الواجهة**: `YouTubeContentQueuePanel` يضيف اختيار منتج حقيقي وزر «✨ صياغة الوصف بالعقل
+  المركزي» (يُظهر إن كانت الصياغة عبر مزود أم حتمية، وهل استُبدل نص غير آمن، والحقائق المستخدمة).
+
+### 2) زر الإلغاء فعلي ومؤكَّد
+- بوجود شارة الحالة (عرض)، `reject`/`cancel` زرّان ضمن `allowedActions` مع تأكيد
+  `window.confirm` قبل التنفيذ (لأن الحالة نهائية لا تُنقض). اختبار تكاملي يثبت الإلغاء
+  (`CANCELLED`) ورفض النقض (`TERMINAL_STATE` 409) وعدم أي رفع.
+
+### 3) عقد وقت النشر (فحص فقط — المكوّن لم يُمَسّ)
+- عرض `publishAt` في اللوحة صار عبر `toScheduleDisplay` (سياسة Asia/Baghdad الموحّدة) بدل
+  `Date.toLocaleString` غير المحدد، فلا زحزحة ساعة على الجوال. اختبار تكاملي يثبت أن
+  المعروض == ما اختاره المالك بعد الحفظ وإعادة القراءة (٢١:٣٠ تبقى ٢١:٣٠، لا ٠٠:٣٠).
+
+اختبارات: `engine/tests/youtube.description.test.ts` (29 فحصاً وحدة) و`content.pipeline.integration.test.ts`
+صار **116 فحصاً** (مجموعة 15هـ عقد الوقت، مجموعة 16/16ب الوصف، مجموعة 17 الإلغاء).
+فحوص final-audit الجديدة: `youtube-description-*`, `content-cancel-*`,
+`content-publish-time-wallclock-contract` (696 إجمالاً).
+
+**لا تغيير في:** Gemini/الـFirewall، نموذج الجدولة، مكوّن الوقت على الجوال، Facebook/Instagram/
+Telegram/TikTok، أو أي سرّ. الوصف لا يُنشر تلقائياً ولا يستهلك حصة في أي قراءة.

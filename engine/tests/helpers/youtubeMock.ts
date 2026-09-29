@@ -68,6 +68,8 @@ export interface YouTubeMockState {
   lastUpdatePath: string | null;
   /** آخر جسم رفع (metadata) لإثبات publishAt/privacyStatus. */
   lastUploadBody: any;
+  /** الوصف الفعلي الذي يعيده videos.list للفيديو المرفوع (لمحاكاة وصول/عدم وصول الوصف). */
+  uploadedDescriptionOverride: string | null;
   /** آخر جسم إدراج تعليق. */
   lastCommentBody: any;
   /** آخر جسم تحديث فيديو. */
@@ -120,6 +122,7 @@ export function createYouTubeMock(): YouTubeMockState {
     lastInsertPath: null,
     lastUpdatePath: null,
     lastUploadBody: null,
+    uploadedDescriptionOverride: null,
     lastCommentBody: null,
     lastUpdateBody: null,
   };
@@ -194,7 +197,14 @@ export function startYouTubeMockServer(state: YouTubeMockState, port: number): P
       .map((v) => ({
         kind: 'youtube#video',
         id: v.id,
-        snippet: { title: v.title, publishedAt: v.publishedAt, tags: v.tags || [] },
+        snippet: {
+          title: v.title,
+          description: v.id === state.uploadedVideoId
+            ? (state.uploadedDescriptionOverride != null ? state.uploadedDescriptionOverride : String(state.lastUploadBody?.snippet?.description || ''))
+            : ((v as any).description || ''),
+          publishedAt: v.publishedAt,
+          tags: v.tags || [],
+        },
         statistics: { viewCount: String(v.viewCount), likeCount: String(v.likeCount), commentCount: String(v.commentCount) },
         status: { privacyStatus: v.id === state.uploadedVideoId ? (state.verifyPrivacyOverride || state.uploadedPrivacyStatus) : 'public', uploadStatus: 'processed' },
       }));

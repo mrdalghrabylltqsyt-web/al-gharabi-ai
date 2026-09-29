@@ -889,7 +889,7 @@ add('content-reconcile-unknown', contentPipeline.includes('reconcileUnknownUploa
 add('content-schedule-no-fabrication', contentPipeline.includes('suggestScheduleTime') && contentPipeline.includes('sampleInsufficient'), 'ذكاء الجدولة لا يدّعي «أفضل وقت» بلا عيّنة كافية');
 add('content-no-fake-publish-guard', server.includes('QUEUE_PUBLISH_REQUIRES_MEDIA') === false && server.includes('MEDIA_REQUIRED') && server.includes('CONTENT_SAFETY_BLOCKED'), 'الرفع يحتاج مادة حقيقية وسلامة محتوى قبل التنفيذ');
 add('content-publish-central-executor', server.includes('async function executeYouTubePublish') && server.includes('queueItemId') && /executeYouTubePublish\(\{[\s\S]{0,400}approved: true, queueItemId/.test(server), 'النشر يستخدم المنفّذ المركزي executeYouTubePublish مع معرّف عنصر الطابور (لا مسار جانبي)');
-add('content-publish-state-honest', server.includes('queueItem.verified = delivered && Boolean(privacyVerification?.verified)') && server.includes('publishAtIso ? "SCHEDULED" : "PUBLISHED"'), 'لا يُعلن PUBLISHED/verified بلا معرّف فيديو حقيقي وتحقق فعلي؛ المجدول يبقى SCHEDULED');
+add('content-publish-state-honest', server.includes('queueItem.verified = fullyVerified') && server.includes('publishAtIso ? "SCHEDULED" : "PUBLISHED"') && server.includes('queueItem.verifiedDescription'), 'لا يُعلن PUBLISHED/verified بلا معرّف فيديو حقيقي وتحقق فعلي (خصوصية+وصف)؛ المجدول يبقى SCHEDULED');
 add('content-media-store-real-bytes', server.includes('registerContentMedia') && server.includes('contentMediaBytes') && server.includes('CONTENT_MEDIA_MAX'), 'مخزن المادة يحفظ بايتات حقيقية فقط ويعيد ref');
 add('content-queue-persistence', server.includes('contentQueue.slice(0, CONTENT_QUEUE_MAX)') && server.includes('applyContentMediaState'), 'طابور المحتوى ومخزن المادة يُحفظان ويُسترجعان بعد restart');
 add('content-brief-metrics-clickable', server.includes('contentBriefMetricsView') && server.includes('computeContentBriefCounts') && contentPipeline.includes('CONTENT_BRIEF_METRICS'), 'بطاقات المحتوى في التقرير قابلة للنقر بمصدر واحد');
@@ -918,7 +918,7 @@ add('content-publish-now-public', server.includes('const privacyDefault = mode =
 add('content-schedule-private', server.includes('item.privacyStatus = "private"') && server.includes('(publishAtIso ? "private" : "public")'), 'الجدولة تُبقي الفيديو private حتى الموعد (خادم + إنشاء)');
 add('content-privacy-verified-real', server.includes('privacyVerification') && /getVideos\(ensured\.token, \[externalVideoId\]\)/.test(server), 'يُقرأ الفيديو من YouTube للتأكد من الخصوصية الفعلية (لا ادعاء)');
 add('content-privacy-mismatch-honest', server.includes('privacyActual') && server.includes('video_privacy_mismatch'), 'عدم تطابق الخصوصية لا يُسجَّل تحققاً كاملاً ويُسجَّل بأمان');
-add('content-verified-only-with-provider', server.includes('verified: delivered && Boolean(privacyVerification?.verified)'), 'verified لا تُعلن إلا بتحقق فعلي من المزود');
+add('content-verified-only-with-provider', server.includes('const fullyVerified = delivered && Boolean(privacyVerification?.verified)'), 'verified لا تُعلن إلا بتحقق فعلي من المزود (خصوصية + وصف)');
 add('content-verification-substantiated', contentPipeline.includes('isVerificationSubstantiated') && server.includes('isVerificationSubstantiated({') && server.includes('case "contentVerified": return isVerificationSubstantiated(i)'), 'لا يُعلن تحقق بلا دليل فعلي (معرّف مزود + حالة نشر/جدولة) في الملخص والبطاقات والتحميل');
 add('content-verification-load-guard', /verified: isVerificationSubstantiated\(\{/.test(server), 'التحقق غير المُدعَّم بدليل يُسقَط عند تحميل الحالة (بيانات قديمة لا تدّعي تحققاً)');
 add('content-manual-readiness-exposed', contentPipeline.includes('contentManualReadiness') && contentPanel.includes('canPublishNow') && contentPanel.includes('publishPrivacyStatus'), 'جاهزية القرار المباشر والخصوصية المتوقعة معروضة في الواجهة');
@@ -927,6 +927,23 @@ add('content-test-cleanup-proof-based', contentPipeline.includes('classifyConten
 add('content-test-cleanup-protects-real', server.includes('keptRealVideo') && /filter\(\(c\) => !c\.externalVideoId\)/.test(server), 'بيانات الاختبار المرتبطة بفيديو حقيقي لا تُحذف مطلقاً');
 add('content-manual-mode-tests', contentPipelineTest.includes('contentManualReadiness') && contentPipelineTest.includes('classifyContentRecord'), 'اختبارات وحدة لجاهزية القرار المباشر وتصنيف بيانات الاختبار');
 add('content-manual-integration-tests', read('engine/tests/content.pipeline.integration.test.ts').includes('يمكن نشر الآن يدوياً رغم تعطيل autoPublish'), 'اختبار تكاملي يثبت استقلال القرار المباشر عن الأتمتة');
+
+// --- Batch 25: وصف YouTube عبر العقل المركزي + إلغاء مؤكَّد + عقد وقت النشر (عقد الجوال) ---
+const youtubeDescModule = fs.existsSync(path.join(root, 'engine/social/youtubeDescription.ts')) ? fs.readFileSync(path.join(root, 'engine/social/youtubeDescription.ts'), 'utf8') : '';
+const contentIntegrationTest = read('engine/tests/content.pipeline.integration.test.ts');
+add('youtube-description-module', youtubeDescModule.includes('buildDeterministicYouTubeDescription') && youtubeDescModule.includes('verifyUploadedDescription'), 'وحدة وصف YouTube (صياغة حتمية + تحقق وصول) موجودة');
+add('youtube-description-deterministic-honest', youtubeDescModule.includes('buildDeterministicYouTubeDescription') && youtubeDescModule.includes('factsUsed') && !/cashPrice|سعر\s*[:=]\s*\d/.test(youtubeDescModule), 'الصياغة الحتمية مبنية على الحقائق المُمرَّرة فقط بلا اختراع سعر');
+add('youtube-description-central-brain', server.includes('generateYouTubeContentDescription') && /aiEngine\.run\(\{[\s\S]{0,400}youtube_description/.test(server), 'توليد الوصف يمر بالعقل المركزي AiEngine (Gemini Firewall: cache/quota/breaker/fallback)');
+add('youtube-description-owner-only', /app\.post\("\/api\/platforms\/youtube\/content\/generate-description", requireOwner/.test(server), 'توليد الوصف محصور بالمالك');
+add('youtube-description-safety-guard', /generateYouTubeContentDescription[\s\S]{0,1600}ensureSafeBusinessText\(result\.text, facts/.test(server), 'نص الوصف يمر بحارس السلامة على النص الفعلي عبر المصدر الواحد (مزود أو بديل)');
+add('youtube-description-verify-real', server.includes('verifyUploadedDescription') && /verifyUploadedDescription\(description, row \? row\.description : null\)/.test(server), 'تحقق وصول الوصف يُقرأ من YouTube فعلاً (لا ادعاء)');
+add('youtube-description-verified-composed', server.includes('const fullyVerified = delivered && Boolean(privacyVerification?.verified)'), 'verified لا تُعلن إلا باجتماع الخصوصية والوصف فعلاً');
+add('youtube-description-mismatch-honest', server.includes('video_description_mismatch') && server.includes('descriptionVerified'), 'عدم تطابق/غياب الوصف لا يُسجَّل تحققاً ويُسجَّل بأمان');
+add('youtube-description-ui', panelTsx.includes('generateYouTubeContentDescription') && panelTsx.includes('verifiedDescription'), 'الواجهة توفّر صياغة الوصف وتعرض حالة إثباته');
+add('youtube-description-test', fs.existsSync(path.join(root, 'engine/tests/youtube.description.test.ts')) && Boolean(pkg.scripts['test:youtube-description']) && pkgTest.includes('test:youtube-description'), 'اختبار وصف YouTube مسجّل وضمن npm test');
+add('content-cancel-action-confirmed', panelTsx.includes("action === 'cancel'") && panelTsx.includes('window.confirm'), 'زر الإلغاء فعلي ومؤكَّد قبل التنفيذ (منفصل عن شارة الحالة)');
+add('content-cancel-terminal-verified', contentIntegrationTest.includes('لا نقض بعد الإلغاء') && contentIntegrationTest.includes('الإلغاء متاح ضمن العمليات المسموحة'), 'اختبار تكاملي يثبت الإلغاء وحالة CANCELLED النهائية');
+add('content-publish-time-wallclock-contract', contentIntegrationTest.includes('المعروض يطابق ما اختاره المالك') && panelTsx.includes('toScheduleDisplay(it.publishAt)') && !panelTsx.includes('new Date(it.publishAt).toLocaleString'), 'وقت النشر: المحفوظ == المعروض بسياسة المنطقة (لا زحزحة UTC ولا تغيير لمكوّن الوقت)');
 const decisionTest = read('engine/tests/youtube.decision.test.ts');
 
 // --- دقة قرارات الـwatcher وتفسير التعليقات الحقيقية (Batch 23) ---
