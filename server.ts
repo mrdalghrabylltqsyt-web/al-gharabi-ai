@@ -8,6 +8,14 @@ import { createGeminiProvider } from "./engine/ai/provider";
 import { resolveModelCandidates, describeModelPolicy, PRODUCTION_MODEL } from "./engine/ai/models";
 import { classifyAiError, diagnosticLabel, type AiErrorInfo } from "./engine/ai/errors";
 import { CircuitBreaker } from "./engine/ai/retry";
+import {
+  AiUsageLedger,
+  buildUsageDiagnostics,
+  normalizePlatformLabel,
+  KNOWN_AI_PLATFORMS,
+  DEFAULT_MAX_PROMPT_CHARS,
+  DEFAULT_MAX_OUTPUT_TOKENS,
+} from "./engine/ai/firewall";
 import { registerSocialManagerRoutes } from "./engine/social/routes";
 import { AgentOrchestrator } from "./engine/agent/orchestrator";
 import { registerAgentRoutes } from "./engine/agent/routes";
@@ -6765,9 +6773,20 @@ app.post("/api/control/jobs/preflight-all", requireOwner, (req, res) => {
 
 // Gemini usage guard: protects the project from accidental loops/retries and
 // prevents fake/demo counters from being mistaken for real provider quota.
+//
+// جدار حماية الحصة المجانية **مركزي واحد للمشروع كله**: لا يوجد أي تفريع على
+// اسم منصة هنا. كل منصة (حالية أو مستقبلية) تمرّ عبر نفس المحرك ونفس الحارس،
+// فميزانية Gemini واحدة تشاركها كل المنصات والوكيل المركزي وتوليد المحتوى.
 const GEMINI_DAILY_LIMIT = Math.min(6, Math.max(1, Number(process.env.GEMINI_DAILY_LIMIT || 4)));
+/** وضع الحماية: مفعّل افتراضياً. تعطيله تغيير إعداد صريح من المالك، لا ضمني. */
+const GEMINI_FREE_TIER_PROTECTION = (() => {
+  const raw = String(process.env.GEMINI_FREE_TIER_PROTECTION ?? "true").trim().toLowerCase();
+  return !(raw === "false" || raw === "0" || raw === "no" || raw === "off");
+})();
 let geminiUsageDay = new Date().toISOString().slice(0, 10);
 let geminiUsageCount = 0;
+/** سجل استخدام مركزي للتشخيص (عدّادات فقط، بلا أي prompt أو سرّ). */
+const aiLedger = new AiUsageLedger();
 const requestWindow = new Map<string, { startedAt: number; count: number }>();
 // مهلة صريحة لكل طلب مزود: لا يبقى أي طلب معلقاً بلا نهاية.
 const AI_TIMEOUT_MS = Math.min(60_000, Math.max(5_000, Number(process.env.AI_TIMEOUT_MS || 20_000)));
@@ -7121,7 +7140,7 @@ function buildAgentToolContext(operator: AgentOperator, userId: string): AgentTo
     }),
     aiGenerate: async (prompt: string) => {
       const cacheKey = `agent:${Buffer.from(prompt).toString("base64").slice(0, 64)}`;
-      const result = await aiEngine.run({ cacheKey, prompt, deterministicFallback: () => "تعذر توليد نص من المزود الآن؛ يلزم إعادة المحاولة أو صياغة يدوية." });
+      const result = await aiEngine.run({ cacheKey, prompt, deterministicFallback: () => "تعذر توليد نص من المزود الآن؛ يلزم إعادة المحاولة أو صياغة يدوية.", meta: { platform: 'general', operation: 'agent_tool_generate' } });
       return { text: result.text, usedProvider: result.usedProvider, source: result.source };
     },
     // --- أدوات YouTube الحقيقية (المنصة التشغيلية الأساسية) ---
@@ -7490,16 +7509,23 @@ function rollUsageDayIfNeeded(): void {
   if (today !== geminiUsageDay) {
     geminiUsageDay = today;
     geminiUsageCount = 0;
+    aiLedger.resetDaily();
     saveUsage();
   }
 }
 
+/**
+ * هل يُسمح بطلب مزود الآن؟ **جدار الحماية المركزي**:
+ * - عند إيقاف الحماية صراحةً من المالك (`GEMINI_FREE_TIER_PROTECTION=false`)
+ *   يبقى الحارس اليومي فعّالاً أيضاً: لا مسار يستهلك حصة بلا حد.
+ * - عند تفعيل الحماية (الافتراضي) الحد المحلي الصارم مطبَّق على كل المنصات.
+ */
 function canUseGemini(): boolean {
   rollUsageDayIfNeeded();
   return geminiUsageCount < GEMINI_DAILY_LIMIT;
 }
 
-/** الحارس المحلي الذي يستهلكه محرك الذكاء الاصطناعي. */
+/** الحارس المحلي الذي يستهلكه محرك الذكاء الاصطناعي — واحد للمشروع كله. */
 const aiUsageGuard: AiUsageGuard = {
   canConsume: () => canUseGemini(),
   consume: () => {
@@ -7518,6 +7544,7 @@ const aiUsageGuard: AiUsageGuard = {
     limit: GEMINI_DAILY_LIMIT,
     remaining: Math.max(0, GEMINI_DAILY_LIMIT - geminiUsageCount),
     enabled: Boolean(process.env.GEMINI_API_KEY),
+    protectionEnabled: GEMINI_FREE_TIER_PROTECTION,
   }),
 };
 
@@ -7532,6 +7559,9 @@ const aiEngine = new AiEngine({
   cacheTtlMs: 10 * 60 * 1000,
   timeoutMs: AI_TIMEOUT_MS,
   breaker: new CircuitBreaker(3, 60_000),
+  ledger: aiLedger,
+  maxPromptChars: DEFAULT_MAX_PROMPT_CHARS,
+  maxOutputTokens: DEFAULT_MAX_OUTPUT_TOKENS,
   onEvent: (event) => { aiEvents.push({ at: new Date().toISOString(), ...event }); if (aiEvents.length > 200) aiEvents.shift(); },
 });
 
@@ -7570,7 +7600,7 @@ function aiProviderState() {
 
 /** نتيجة آخر تحقق حي من المزود — لا تُعلن نجاحاً بدون طلب فعلي. */
 const aiLiveVerification: {
-  state: 'not_attempted' | 'ok' | 'failed' | 'skipped_no_key';
+  state: 'not_attempted' | 'ok' | 'failed' | 'skipped_no_key' | 'blocked_by_guard';
   detail: string | null;
   model: string | null;
   at: string | null;
@@ -7620,12 +7650,23 @@ function geminiStatus() {
     usedToday: status.usedToday,
     dailyGuard: status.limit,
     remainingByGuard: status.remaining,
+    /** حالة جدار الحماية المركزي وعدّادات التشخيص (بلا أي سرّ). */
+    firewall: buildUsageDiagnostics({
+      counters: aiLedger.snapshot(),
+      last: aiLedger.lastProvider(),
+      usedToday: status.usedToday,
+      limit: status.limit,
+      protectionEnabled: Boolean(status.protectionEnabled),
+      providerConfigured: aiEngine.providerConfigured,
+      providerVerified: aiLiveVerification.state === 'ok',
+    }),
     // سياسة الموديل كاملة: موديل الإنتاج، المرشحون، وموديل البيئة المرفوض إن وُجد.
     modelPolicy: describeModelPolicy(process.env.GEMINI_MODEL),
     modelCandidates: resolveModelCandidates(process.env.GEMINI_MODEL),
     breaker: aiEngineBreakerSnapshot(),
     cachedEntries: aiEngine.cacheSize,
     timeoutMs: AI_TIMEOUT_MS,
+    promptLimit: { maxPromptChars: DEFAULT_MAX_PROMPT_CHARS, maxOutputTokens: DEFAULT_MAX_OUTPUT_TOKENS },
     note: "أرقام حماية محلية داخل هذا الخادم وليست حصة مزود الخدمة.",
   };
 }
@@ -7688,6 +7729,20 @@ app.get("/api/readiness", (_req, res) => {
       ...aiProviderState(),
       /** المزود لا يُعتبر جاهزاً للإنتاج بمجرد وجود مفتاح؛ يلزم إثبات حي. */
       providerReady: aiLiveVerification.state === 'ok',
+      /**
+       * جدار حماية الحصة المجانية — مركزي واحد لكل المنصات (بلا أي اسم منصة هنا).
+       * يُعلن الحالة والعدّادات بلا أي سرّ، ويسمّي الحد «حد الحماية المحلي للمشروع».
+       */
+      freeTierFirewall: buildUsageDiagnostics({
+        counters: aiLedger.snapshot(),
+        last: aiLedger.lastProvider(),
+        usedToday: aiUsageGuard.status().usedToday,
+        limit: aiUsageGuard.status().limit,
+        protectionEnabled: GEMINI_FREE_TIER_PROTECTION,
+        providerConfigured: aiEngine.providerConfigured,
+        providerVerified: aiLiveVerification.state === 'ok',
+      }),
+      promptLimit: { maxPromptChars: DEFAULT_MAX_PROMPT_CHARS, maxOutputTokens: DEFAULT_MAX_OUTPUT_TOKENS },
     },
     geminiConfigured: Boolean(process.env.GEMINI_API_KEY),
     /** ملف تحقق ملكية الرابط (TikTok URL prefix) + الصفحات القانونية العامة. */
@@ -7861,6 +7916,22 @@ app.post("/api/ai/verify-provider", requireOwner, async (_req, res) => {
     return res.status(200).json({ success: false, verified: false, state: 'failed', model, detail: aiLiveVerification.detail, errorKind: aiLiveVerification.errorKind, hint: aiLiveVerification.hint });
   }
 
+  // الفحص الإداري يستهلك من **نفس الميزانية المركزية** — لا مسار يتجاوز جدار
+  // الحماية. عند نفاد الحصة يُعلن ذلك صراحةً بدل إرسال طلب مزود بلا رصيد.
+  if (!aiUsageGuard.consume()) {
+    aiLiveVerification.state = 'blocked_by_guard';
+    aiLiveVerification.detail = 'تم بلوغ حد الحماية اليومي المحلي؛ لم يُرسل أي طلب للمزود.';
+    aiLiveVerification.model = null;
+    aiLiveVerification.at = new Date().toISOString();
+    aiLiveVerification.errorKind = 'quota_guard';
+    aiLiveVerification.hint = 'انتظر تجدّد اليوم أو ارفع GEMINI_DAILY_LIMIT صراحةً؛ الفحص الحي يستهلك طلباً واحداً من نفس ميزانية المشروع.';
+    return res.status(200).json({
+      success: false, verified: false, state: aiLiveVerification.state, model,
+      detail: aiLiveVerification.detail, errorKind: aiLiveVerification.errorKind, hint: aiLiveVerification.hint,
+      note: 'NOT VERIFIED — LOCAL FREE-TIER GUARD BLOCKED THE REQUEST',
+    });
+  }
+
 
   const started = Date.now();
   // مهلة واحدة مشتركة لكل محاولات المرشحين حتى لا يتضاعف زمن الفحص الإداري.
@@ -7910,6 +7981,8 @@ app.post("/api/ai/verify-provider", requireOwner, async (_req, res) => {
   if (servedModel) {
     const usedProduction = servedModel === model;
     aiLiveVerification.state = 'ok';
+    // نداء مزود حقيقي واحد ضمن الميزانية المركزية — يُسجَّل للتشخيص.
+    aiLedger.recordProviderCall({ platform: 'general', operation: 'provider_verification' }, servedModel);
     aiLiveVerification.detail = usedProduction
       ? `تم إثبات الاتصال بالموديل الإنتاجي ${servedModel} بطلب حقيقي واحد.`
       : `الموديل الإنتاجي ${model} غير متاح مؤقتاً (ضغط)، وأُثبت الاتصال بمرشح GA شقيق ${servedModel} بطلب حقيقي.`;
@@ -7947,6 +8020,9 @@ app.post("/api/ai/verify-provider", requireOwner, async (_req, res) => {
   aiLiveVerification.at = new Date().toISOString();
   aiLiveVerification.errorKind = info.kind;
   aiLiveVerification.hint = verificationHintFor(info);
+  // فشل الفحص: نُعيد الحجز حتى لا يُحسب طلب فاشل على ميزانية المشروع.
+  aiUsageGuard.release();
+  aiLedger.recordProviderError();
   return res.status(200).json({
     success: false,
     verified: false,
@@ -8274,6 +8350,33 @@ app.get("/api/ai/status", authenticateToken, (_req, res) => {
   res.json({ success: true, gemini: geminiStatus(), note: "هذه أرقام حماية محلية وليست حصة مزود الخدمة." });
 });
 
+/**
+ * جدار حماية حصة Gemini المجاني — تشخيص للمالك فقط.
+ * مركزي واحد للمشروع: لا يُفرّق بين المنصات في الحماية، واسم المنصة تشخيص فقط.
+ * لا يُعيد أي مفتاح ولا prompt ولا استجابة، والحد المُعلن «حد الحماية المحلي للمشروع».
+ */
+app.get("/api/ai/firewall", requireOwner, (_req, res) => {
+  const status = aiUsageGuard.status();
+  res.json({
+    success: true,
+    firewall: buildUsageDiagnostics({
+      counters: aiLedger.snapshot(),
+      last: aiLedger.lastProvider(),
+      usedToday: status.usedToday,
+      limit: status.limit,
+      protectionEnabled: GEMINI_FREE_TIER_PROTECTION,
+      providerConfigured: aiEngine.providerConfigured,
+      providerVerified: aiLiveVerification.state === 'ok',
+    }),
+    /** المنصات المعروفة للتشخيص فقط — كلها تشترك في الميزانية نفسها. */
+    knownPlatforms: [...KNOWN_AI_PLATFORMS],
+    scope: 'project-wide',
+    platformSpecificQuota: false,
+    promptLimit: { maxPromptChars: DEFAULT_MAX_PROMPT_CHARS, maxOutputTokens: DEFAULT_MAX_OUTPUT_TOKENS },
+    note: 'حماية مركزية واحدة لكل المنصات (الحالية والمستقبلية) — لا يوجد حد منصة منفصل، والحد المُعلن حد حماية محلي للمشروع لا حصة Google.',
+  });
+});
+
 // Central orchestration: deterministic routing first, without consuming Gemini quota
 app.post("/api/ai/orchestrate", authenticateToken, (req, res) => {
   const message = typeof req.body?.message === "string" ? req.body.message.trim() : "";
@@ -8375,6 +8478,8 @@ app.post("/api/ai/generate-content", authenticateToken, async (req, res) => {
       cacheKey,
       prompt: systemPrompt,
       deterministicFallback: () => generateSmartFallbackContent(platform, contentType, topic || productName, installmentDetails),
+      // بيانات تشخيصية فقط: لا تُغيّر أي قرار حماية، والميزانية مشتركة للمشروع.
+      meta: { platform: normalizePlatformLabel(platform), operation: 'content_generation' },
     });
 
     // حارس المخارج: يُفحص النص الفعلي (سواء من المزود أو البديل) مقابل بيانات
@@ -8388,6 +8493,20 @@ app.post("/api/ai/generate-content", authenticateToken, async (req, res) => {
       ? result.text
       : generateSmartFallbackContent(platform, contentType, topic || productName, "");
 
+    // تكييف حتمي لكل منصة إضافية مطلوبة من **نفس النص المُتحقَّق منه** — بلا أي
+    // نداء مزود إضافي. طلب واحد لعشر منصات = نداء Gemini واحد + عشرة تكييفات
+    // حتمية. هذا جوهر حماية الحصة في توليد المحتوى متعدد المنصات.
+    const requestedPlatforms: string[] = Array.isArray(req.body?.platforms)
+      ? Array.from(new Set<string>(req.body.platforms.map((p: any) => cleanText(p, 40)).filter((v: string) => Boolean(v))))
+      : [];
+    const adaptationTargets = Array.from(new Set([
+      "tiktok", "instagram", "x", "snapchat", "facebook", "whatsapp", "telegram", "threads", "google_business",
+      ...requestedPlatforms,
+    ]));
+    const adaptedVersions = Object.fromEntries(
+      adaptationTargets.map((p) => [p, adaptContentForPlatform(p, safeContent)]),
+    );
+
     return res.json({
       success: true,
       content: safeContent,
@@ -8395,10 +8514,7 @@ app.post("/api/ai/generate-content", authenticateToken, async (req, res) => {
       contentType,
       // نسخ المنصات تُبنى حتمياً من النص المُتحقَّق منه، فلا تُضاف أي معلومة جديدة
       // (سعر/دفعة/ضمان/رقم) خارج ما تم فحصه.
-      adaptedVersions: Object.fromEntries(
-        ["tiktok", "instagram", "x", "snapchat", "facebook", "whatsapp"]
-          .map((p) => [p, adaptContentForPlatform(p, safeContent)]),
-      ),
+      adaptedVersions,
       generatedBy: outputCheck.safe
         ? result.usedProvider
           ? (result.model || PRODUCTION_MODEL)
@@ -8501,6 +8617,8 @@ ${showroomInfo ? JSON.stringify(showroomInfo) : 'معرض الغرابي للت�
       prompt,
       json: true,
       deterministicFallback: () => JSON.stringify(deterministicClassification),
+      // بيانات تشخيصية فقط — نفس الميزانية المشتركة للمشروع.
+      meta: { platform: normalizePlatformLabel(channel), operation: 'message_classification' },
     });
 
     let parsed: any = deterministicClassification;
@@ -8641,6 +8759,8 @@ app.post("/api/ai/agent-chat", authenticateToken, async (req, res) => {
       cacheKey,
       prompt: systemPrompt,
       deterministicFallback: () => buildDeterministicAgentReply(message, context),
+      // بيانات تشخيصية فقط (وكيل مركزي) — الميزانية مشتركة مع كل المنصات.
+      meta: { platform: normalizePlatformLabel(context?.platform), operation: 'agent_reasoning' },
     });
 
     // لا يعود للمستخدم نص يدّعي عرضاً أو رقماً غير مسجّل، حتى من المزود.

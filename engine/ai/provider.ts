@@ -31,12 +31,14 @@ export class GeminiProvider implements AiProvider {
     });
   }
 
-  async generate(input: { model: string; prompt: string; json?: boolean; signal?: AbortSignal }): Promise<string> {
+  async generate(input: { model: string; prompt: string; json?: boolean; signal?: AbortSignal; maxOutputTokens?: number }): Promise<string> {
     const response = await this.client.models.generateContent({
       model: input.model,
       contents: input.prompt,
       config: {
         ...(input.json ? { responseMimeType: 'application/json' } : {}),
+        // سقف مخرجات صريح: يمنع استجابة ضخمة تستهلك الحصة بلا داع.
+        ...(input.maxOutputTokens ? { maxOutputTokens: input.maxOutputTokens } : {}),
         // تمرير إشارة الإلغاء يحرّر الطلب المعلّق محلياً عند انتهاء مهلة المحرك.
         // ملاحظة من الـSDK: الإلغاء لا يوقف المعالجة على خدمة المزود، لذا يبقى
         // تقليل عدد الطلبات (حارس الحصة + قاطع الدائرة) هو خط الدفاع عن الحصة.

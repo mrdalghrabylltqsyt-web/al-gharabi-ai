@@ -36,6 +36,12 @@ services:
         sync: false
       - key: GEMINI_MODEL
         sync: false
+      # جدار حماية الحصة المجانية: حد محلي يومي (1-6) ووضع حماية مركزي واحد
+      # لكل المنصات. ليسا سرّين، ويُعلنان في /api/health و/api/readiness.
+      - key: GEMINI_DAILY_LIMIT
+        value: "4"
+      - key: GEMINI_FREE_TIER_PROTECTION
+        value: "true"
       - key: RESEND_API_KEY
         sync: false
       - key: RESEND_FROM_EMAIL

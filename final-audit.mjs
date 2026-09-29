@@ -810,6 +810,46 @@ add('reply-intelligence-tests', fs.existsSync(path.join(root, 'engine/tests/repl
 add('reply-intelligence-test-in-suite', typeof pkg.scripts.test === 'string' && pkg.scripts.test.includes('test:reply-intelligence'), 'اختبار Reply Intelligence ضمن npm test');
 add('reply-intelligence-no-ai-quota', !/aiEngine|gemini|fetch\(|https?:/.test(replyComments), 'محرّك الرد حتمي بالكامل: لا مزود ولا شبكة ولا استهلاك حصة');
 
+// ===== جدار حماية حصة Gemini المجاني — مركزي واحد للمشروع كله =====
+const firewall = read('engine/ai/firewall.ts');
+const aiEngineSrc = read('engine/ai/engine.ts');
+const aiProviderSrc = read('engine/ai/provider.ts');
+add('gemini-firewall-module', firewall.includes('export class AiUsageLedger') && firewall.includes('export function buildUsageDiagnostics') && firewall.includes('export function enforcePromptLimit'), 'وحدة جدار الحماية المركزية موجودة');
+add('gemini-firewall-project-scope', server.includes("scope: 'project-wide'") && server.includes('platformSpecificQuota: false') && !/perPlatformQuota|platformDailyLimit/i.test(server + firewall), 'النطاق مشروع كامل ولا حد منصة منفصل');
+add('gemini-firewall-no-platform-branch', !/if\s*\(\s*platform\s*===/.test(firewall) && !/if\s*\(\s*platform\s*===/.test(aiEngineSrc), 'قرار الحماية بلا أي تفريع على اسم منصة');
+add('gemini-firewall-future-platform', firewall.includes('KNOWN_AI_PLATFORMS') && firewall.includes('normalizePlatformLabel') && /return \(KNOWN_AI_PLATFORMS as readonly string\[\]\)\.includes\(s\) \? s : 'unknown'/.test(firewall), 'المنصة غير المعروفة تُقبل وتُحسب (لا استبعاد)');
+add('gemini-firewall-ledger-sources', firewall.includes('providerCalls') && firewall.includes('cacheHits') && firewall.includes('inflightJoins') && firewall.includes('guardBlocked') && firewall.includes('deterministic') && firewall.includes('fallback') && firewall.includes('providerErrors'), 'العدّادات تميّز نداء المزود عن الكاش/الحتمي/الحجب');
+add('gemini-firewall-only-provider-consumes', /providerCalls \+= 1/.test(firewall) && !/cacheHits \+= 1[\s\S]{0,80}usedToday/.test(firewall), 'نداء المزود وحده يستهلك الميزانية اليومية');
+add('gemini-firewall-guard-single-source', server.includes('const aiUsageGuard: AiUsageGuard') && (server.match(/aiUsageGuard/g) || []).length >= 4, 'حارس واحد مركزي يستهلكه المحرك وكل المسارات');
+add('gemini-firewall-limit-default-4', server.includes('process.env.GEMINI_DAILY_LIMIT || 4') && firewall.includes('localDailyLimit'), 'الحد المحلي الافتراضي 4 طلبات/يوم');
+add('gemini-firewall-protection-flag', server.includes('GEMINI_FREE_TIER_PROTECTION') && server.includes('protectionEnabled'), 'وضع الحماية معلن ومفعّل افتراضياً');
+add('gemini-firewall-no-paid-provider', !/openai|anthropic|claude|deepseek|kimi/i.test(firewall) && !/openai|anthropic|claude|deepseek/i.test(server), 'لا مزود مدفوع ولا مزود بديل مُضاف');
+add('gemini-firewall-quota-guard-reason', aiEngineSrc.includes("'quota_guard'") && aiEngineSrc.includes("source: 'fallback'"), 'الحجب يعيد بديلاً حتمياً صريحاً (quota_guard/fallback)');
+add('gemini-firewall-prompt-limit', aiEngineSrc.includes('enforcePromptLimit') && aiEngineSrc.includes('maxPromptChars') && aiProviderSrc.includes('maxOutputTokens'), 'حدود حجم الـprompt والمخرجات مطبَّقة قبل النداء');
+add('gemini-firewall-owner-endpoint', server.includes('app.get("/api/ai/firewall", requireOwner'), 'مسار تشخيص الجدار للمالك فقط');
+add('gemini-firewall-readiness-block', server.includes('freeTierFirewall') && server.includes('promptLimit'), 'الجاهزية تعرض كتلة الجدار وحدود الـprompt');
+add('gemini-firewall-health-block', server.includes('firewall: buildUsageDiagnostics'), 'الصحة تعرض تشخيص الجدار');
+add('gemini-firewall-verify-uses-guard', /aiUsageGuard\.consume\(\)[\s\S]{0,400}blocked_by_guard/.test(server), 'الفحص الحي يستهلك من نفس الميزانية المركزية');
+add('gemini-firewall-no-google-quota-claim', server.includes('حد الحماية المحلي للمشروع') && firewall.includes('حد الحماية المحلي للمشروع') && !/Google quota/i.test(firewall), 'الحد مُسمّى حماية محلية للمشروع لا حصة Google');
+add('gemini-firewall-multi-platform-one-call', server.includes('adaptContentForPlatform(p, safeContent)') && /adaptationTargets/.test(server), 'طلب محتوى واحد لعشر منصات = نداء واحد + تكييف حتمي');
+add('gemini-firewall-tests', fs.existsSync(path.join(root, 'engine/tests/gemini.firewall.test.ts')) && pkg.scripts['test:gemini-firewall'], 'اختبار جدار الحماية (وحدة) مسجّل');
+add('gemini-firewall-server-tests', fs.existsSync(path.join(root, 'engine/tests/gemini.firewall.server.test.ts')) && pkg.scripts['test:gemini-firewall-server'], 'اختبار جدار الحماية (خادم حقيقي) مسجّل');
+add('gemini-firewall-tests-in-suite', typeof pkg.scripts.test === 'string' && pkg.scripts.test.includes('test:gemini-firewall') && pkg.scripts.test.includes('test:gemini-firewall-server'), 'اختبارا الجدار ضمن npm test');
+add('gemini-firewall-no-direct-provider', (() => {
+  const walk = (dir, out = []) => {
+    for (const name of fs.readdirSync(dir)) {
+      if (['node_modules', 'dist', '.git', 'coverage'].includes(name)) continue;
+      const full = path.join(dir, name);
+      const st = fs.statSync(full);
+      if (st.isDirectory()) walk(full, out);
+      else if (/\.(ts|tsx|mjs|cjs)$/.test(name)) out.push(full);
+    }
+    return out;
+  };
+  const files = walk(root);
+  return files.every((f) => !/new GoogleGenAI\(/.test(fs.readFileSync(f, 'utf8')) || f.endsWith('engine/ai/provider.ts'));
+})(), 'لا إنشاء عميل Gemini خارج الموصل المركزي (لا تجاوز للجدار)');
+
 const failed = checks.filter(x => !x.ok);
 console.table(checks);
 if (failed.length) {

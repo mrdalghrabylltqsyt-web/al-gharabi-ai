@@ -17,12 +17,19 @@
 import { classifyAiError, diagnosticLabel, type AiErrorInfo } from './errors';
 import { CircuitBreaker, DEFAULT_RETRY_POLICY, withRetry, type RetryPolicy } from './retry';
 import { DEFAULT_MODEL_CANDIDATES, PRODUCTION_MODEL } from './models';
+import {
+  AiUsageLedger,
+  enforcePromptLimit,
+  DEFAULT_MAX_PROMPT_CHARS,
+  DEFAULT_MAX_OUTPUT_TOKENS,
+  type AiCallMeta,
+} from './firewall';
 
 export interface AiProvider {
   /** اسم المزود للتشخيص الآمن (بدون مفاتيح). */
   readonly name: string;
   /** ينفذ توليد نص. يجب أن يرمي خطأ عند الفشل. */
-  generate(input: { model: string; prompt: string; json?: boolean; signal?: AbortSignal }): Promise<string>;
+  generate(input: { model: string; prompt: string; json?: boolean; signal?: AbortSignal; maxOutputTokens?: number }): Promise<string>;
 }
 
 export interface AiUsageGuard {
@@ -33,7 +40,7 @@ export interface AiUsageGuard {
   /** يعيد الحجز عند فشل الطلب حتى لا تُحسب محاولة فاشلة على الحصة. */
   release(): void;
   /** حالة الحارس للتشخيص. */
-  status(): { usedToday: number; limit: number; remaining: number; enabled: boolean };
+  status(): { usedToday: number; limit: number; remaining: number; enabled: boolean; protectionEnabled?: boolean };
 }
 
 export interface AiCacheEntry {
@@ -55,6 +62,12 @@ export interface AiEngineOptions {
   now?: () => number;
   sleep?: (ms: number) => Promise<void>;
   random?: () => number;
+  /** سجل استخدام مركزي للعدّادات التشخيصية (بلا أسرار). يُنشأ داخلياً إن غاب. */
+  ledger?: AiUsageLedger;
+  /** سقف حجم الـprompt قبل أي نداء مزود. */
+  maxPromptChars?: number;
+  /** سقف حجم مخرجات المزود. */
+  maxOutputTokens?: number;
 }
 
 export type AiSource = 'provider' | 'cache' | 'fallback' | 'deterministic' | 'breaker';
@@ -118,6 +131,7 @@ async function generateWithTimeout(
   prompt: string,
   json: boolean,
   timeoutMs: number,
+  maxOutputTokens?: number,
 ): Promise<string> {
   const controller = new AbortController();
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -133,7 +147,7 @@ async function generateWithTimeout(
   });
   try {
     return await Promise.race([
-      provider.generate({ model, prompt, json, signal: controller.signal }),
+      provider.generate({ model, prompt, json, signal: controller.signal, maxOutputTokens }),
       timeoutPromise,
     ]);
   } finally {
@@ -154,6 +168,10 @@ export class AiEngine {
   private readonly now: () => number;
   private readonly sleep?: (ms: number) => Promise<void>;
   private readonly random?: () => number;
+  /** سجل استخدام مركزي: عدّادات تشخيصية فقط، بلا أي نص أو سرّ. */
+  private readonly ledger: AiUsageLedger;
+  private readonly maxPromptChars: number;
+  private readonly maxOutputTokens: number;
   /** دمج الطلبات المتزامنة المتطابقة في تنفيذ واحد. */
   private readonly inFlight = new Map<string, Promise<AiResult>>();
 
@@ -170,7 +188,13 @@ export class AiEngine {
     this.now = options.now ?? (() => Date.now());
     this.sleep = options.sleep;
     this.random = options.random;
+    this.ledger = options.ledger ?? new AiUsageLedger(this.now);
+    this.maxPromptChars = options.maxPromptChars ?? DEFAULT_MAX_PROMPT_CHARS;
+    this.maxOutputTokens = options.maxOutputTokens ?? DEFAULT_MAX_OUTPUT_TOKENS;
   }
+
+  /** سجل الاستخدام المركزي للتشخيص (بلا أسرار). */
+  usageLedger(): AiUsageLedger { return this.ledger; }
 
   /** هل المزود مهيأ؟ (وجود مفتاح صالح على الخادم) */
   get providerConfigured(): boolean {
@@ -218,24 +242,29 @@ export class AiEngine {
     json?: boolean;
     /** بديل حتمي آمن — لا يعتمد على أي خدمة خارجية. */
     deterministicFallback: () => string;
+    /** وصف تشخيصي فقط (منصة/عملية) — لا يغيّر أي قرار حماية. */
+    meta?: AiCallMeta;
   }): Promise<AiResult> {
     const { cacheKey, prompt, json, deterministicFallback } = input;
+    const meta: AiCallMeta = input.meta ?? {};
 
     // 1) التخزين المؤقت: لا يستهلك حصة ولا يلمس الشبكة.
     const hit = this.cached(cacheKey);
     if (hit !== null) {
+      this.ledger.recordCacheHit();
       this.onEvent({ type: 'cache_hit', detail: cacheKey });
       return { text: hit, source: 'cache', model: null, usedProvider: false, attempts: 0, cacheKey };
     }
 
-    // 2) دمج الطلبات المتزامنة المتطابقة.
+    // 2) دمج الطلبات المتزامنة المتطابقة (لا استهلاك إضافي).
     const running = this.inFlight.get(cacheKey);
     if (running) {
+      this.ledger.recordInflightJoin();
       this.onEvent({ type: 'in_flight_join', detail: cacheKey });
       return running;
     }
 
-    const task = this.execute({ cacheKey, prompt, json, deterministicFallback })
+    const task = this.execute({ cacheKey, prompt, json, deterministicFallback, meta })
       .finally(() => this.inFlight.delete(cacheKey));
     this.inFlight.set(cacheKey, task);
     return task;
@@ -246,8 +275,9 @@ export class AiEngine {
     prompt: string;
     json?: boolean;
     deterministicFallback: () => string;
+    meta: AiCallMeta;
   }): Promise<AiResult> {
-    const { cacheKey, prompt, json, deterministicFallback } = input;
+    const { cacheKey, prompt, json, deterministicFallback, meta } = input;
     const fallbackResult = (
       notice: string,
       reason: AiFallbackReason,
@@ -267,21 +297,32 @@ export class AiEngine {
 
     // 3) لا مزود مهيأ → تنفيذ حتمي فوري بدون أي استهلاك.
     if (!this.provider) {
+      this.ledger.recordDeterministic();
       this.onEvent({ type: 'provider_absent', detail: cacheKey });
       return fallbackResult('محرك الذكاء الاصطناعي غير مهيأ على الخادم؛ تم استخدام المحرك المحلي الحتمي.', 'provider_not_configured');
     }
 
-    // 4) قاطع الدائرة مفتوح → لا نغرق مزوداً متعطلاً.
+    // 4) قاطع الدائرة مفتوح → لا نغرق مزوداً متعطلاً (ولا نستهلك حصة).
     if (this.breaker.isOpen(this.now())) {
+      this.ledger.recordDeterministic();
       this.onEvent({ type: 'breaker_open', detail: cacheKey });
       return fallbackResult('مزود الذكاء الاصطناعي في فترة تعافٍ مؤقتة؛ تم استخدام المحرك المحلي الحتمي.', 'circuit_open', 'unavailable');
     }
 
-    // 5) الحارس: لا استهلاك بدون رصيد.
+    // 5) الحارس المركزي: لا استهلاك بدون رصيد. هذا هو خط الدفاع الوحيد المشترك
+    // لكل المنصات (الحالية والمستقبلية) ولا يمكن لأي مسار منصة تجاوزه.
     if (!this.guard.canConsume() || !this.guard.consume()) {
+      this.ledger.recordGuardBlocked();
       this.onEvent({ type: 'guard_blocked', detail: cacheKey });
       return fallbackResult('تم بلوغ حد الحماية اليومي المحلي للذكاء الاصطناعي؛ تم استخدام المحرك المحلي الحتمي.', 'quota_guard', 'rate_limited');
     }
+
+    // 6) حماية حجم الـprompt: لا يُرسل طلب ضخم للمزود (حماية حصة، لا ميزة).
+    const bounded = enforcePromptLimit(prompt, this.maxPromptChars);
+    if (bounded.truncated) {
+      this.onEvent({ type: 'prompt_truncated', detail: `from=${bounded.originalChars}:to=${bounded.prompt.length}` });
+    }
+    const boundedPrompt = bounded.prompt;
 
     let consumed = true;
     const releaseSlot = () => {
@@ -305,7 +346,7 @@ export class AiEngine {
         let lastError: any = null;
         for (const model of this.models) {
           try {
-            const text = await generateWithTimeout(this.provider as AiProvider, model, prompt, Boolean(json), this.timeoutMs);
+            const text = await generateWithTimeout(this.provider as AiProvider, model, boundedPrompt, Boolean(json), this.timeoutMs, this.maxOutputTokens);
             const trimmed = (text || '').trim();
             if (!trimmed) throw new Error('empty response from provider');
             servedModel = model;
@@ -340,6 +381,8 @@ export class AiEngine {
         const info = outcome.error;
         this.breaker.recordFailure(this.now());
         releaseSlot();
+        this.ledger.recordProviderError();
+        this.ledger.recordFallback();
         this.onEvent({ type: 'provider_failed', detail: info ? diagnosticLabel(info) : 'unknown' });
         return fallbackResult(
           info?.safeMessage || 'تعذر إكمال طلب الذكاء الاصطناعي؛ تم استخدام المحرك المحلي.',
@@ -351,6 +394,7 @@ export class AiEngine {
 
       this.breaker.recordSuccess();
       this.store(cacheKey, outcome.value);
+      this.ledger.recordProviderCall(meta, servedModel);
       this.onEvent({ type: 'provider_ok', detail: `model=${servedModel ?? 'unknown'}:attempts=${outcome.attempts}` });
       return {
         text: outcome.value,
@@ -366,6 +410,8 @@ export class AiEngine {
       const info: AiErrorInfo = classifyAiError(err);
       this.breaker.recordFailure(this.now());
       releaseSlot();
+      this.ledger.recordProviderError();
+      this.ledger.recordFallback();
       this.onEvent({ type: 'engine_error', detail: diagnosticLabel(info) });
       return fallbackResult(info.safeMessage, fallbackReasonFor(info), info.kind);
     } finally {

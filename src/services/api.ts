@@ -8,8 +8,11 @@ export interface GenerateContentRequest {
   topic?: string;
   tone?: string;
   productName?: string;
+  productId?: string;
   installmentDetails?: string;
   customInstructions?: string;
+  /** منصات إضافية مطلوب تكييف حتمي لها من نفس النص الأساسي (نداء مزود واحد فقط). */
+  platforms?: string[];
 }
 
 export interface ClassifyMessageRequest {
