@@ -2238,7 +2238,7 @@ replied=0, escalated=6` **سجلات تاريخية** أُنتجت قبل الإ
 شكوى/سبام/غامض)، وثبات الصيغة لنفس المدخل، وتنوّعها عبر السياق، وطول الردود القصيرة،
 وغياب العبارات الإعلانية، وعدم اختراع أي رقم بلا حقائق، وتكامل على خادم حقيقي ببيانات
 موثوقة (يذكر السعر/الموقع المسجّلين فعلاً ويمرّان حارس السلامة). فحوص final-audit الـ17:
-`reply-intelligence-engine` … `reply-intelligence-no-ai-quota` (336 إجمالاً).
+`reply-intelligence-engine` … `reply-intelligence-no-ai-quota` (570 إجمالاً).
 
 **لم يُمسّ:** Facebook/Instagram/Telegram/TikTok، ولا Gemini، ولا مفاتيح التشفير، ولا
 مسارات OAuth، ولا أي سرّ.
