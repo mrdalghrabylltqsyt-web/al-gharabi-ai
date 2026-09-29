@@ -78,7 +78,7 @@ export function YouTubeOperationsView() {
     try {
       const res = await apiService.pollYouTubeWatcher();
       const r = res?.result || {};
-      setNote(`الدورة اكتملت — جديد: ${r.newDetected ?? 0}، رد: ${r.replied ?? 0}، تصعيد: ${r.escalated ?? 0}، تجاهل: ${r.skipped ?? 0}، تحقق: ${r.verified ?? 0}.`);
+      setNote(`الدورة اكتملت — جديد: ${r.newDetected ?? 0}، رد: ${r.replied ?? 0}، تصعيد: ${r.escalated ?? 0}، تجاهل: ${r.skipped ?? 0}، مؤجَّل: ${r.deferred ?? 0}، تحقق: ${r.verified ?? 0}.`);
       await load();
     } catch (e: any) {
       setError(e?.message || 'تعذر تشغيل الدورة');
@@ -122,6 +122,7 @@ export function YouTubeOperationsView() {
           <Stat label="الردود" value={state?.counters?.replied ?? 0} sub={`مُتحقَّق: ${state?.counters?.verified ?? 0}`} />
           <Stat label="التصعيدات" value={state?.counters?.escalated ?? 0} sub="تحتاج تدخلك" />
           <Stat label="التجاهلات" value={state?.counters?.skipped ?? 0} sub="سبام/حسابنا/مكرر" />
+          <Stat label="مؤجَّلة" value={state?.counters?.deferred ?? 0} sub="تعذّرت بسبب إعداد الرد" />
           <Stat label="ردود فاشلة" value={state?.counters?.failed ?? 0} />
           <Stat label="الأخطاء المتتالية" value={state?.consecutiveErrors ?? 0} sub={state?.lastError || undefined} />
           <Stat label="عدد الدورات" value={state?.pollCount ?? 0} />

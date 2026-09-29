@@ -548,6 +548,41 @@ async function integrationTests(): Promise<void> {
     // نعيد التعليقات الأصلية (لا نحتاج إعادة التفويض — بقية المجموعات تعيد ضبطه).
     mock.state.comments = cycleOriginalComments;
 
+    // --- مراقب 24/7: تعذّر بسبب إعداد المالك ليس نهائياً (تأجيل/تحرير/رد) ---
+    group('12k-5) تكامل: المراقب يؤجّل عند تعطيل الرد ويحرّر ويرد عند تمكينه');
+    await fetch(`${BASE}/api/platforms/youtube/delegation`, { method: 'POST', headers: auth, body: JSON.stringify({ actions: ['reply'] }) });
+    const wComments = mock.state.comments;
+    // تعليق مدح إيجابي حقيقي واحد فقط (قابل للرد) — بلا استفسار تجاري.
+    mock.state.comments = [{ id: 'cmt_watcher_praise', threadId: 'thr_w', videoId: 'vid_alpha', author: 'حسين', text: 'عاشت إيدكم، خدمة ممتازة', publishedAt: '2026-09-28T09:00:00Z', likeCount: 0 }];
+    // 1) الرد معطّل (الافتراضي): لا إرسال، ويُسجَّل مؤجَّلاً لا نهائياً.
+    await fetch(`${BASE}/api/agent/youtube/watcher/controls`, { method: 'POST', headers: auth, body: JSON.stringify({ enabled: true, autoReply: false, paused: false, humanReviewMode: false }) });
+    mock.state.lastInsertPath = null;
+    const pollOff = await (await fetch(`${BASE}/api/agent/youtube/watcher/poll`, { method: 'POST', headers: auth })).json();
+    check('المراقب: بلا تمكين الرد => لا إرسال', mock.state.lastInsertPath === null);
+    check('المراقب: التعليق مؤجَّل لا مُصعَّد', (pollOff.watcher?.counters?.deferred || 0) >= 1 && (pollOff.watcher?.counters?.replied || 0) === 0, JSON.stringify(pollOff.watcher?.counters));
+    const deferredEntry = (pollOff.watcher?.attentionRequired || []).find((a: any) => a.commentId === 'cmt_watcher_praise');
+    check('المراقب: التعليق المؤجَّل ليس في قائمة التصعيد', !deferredEntry, JSON.stringify(deferredEntry));
+    // 2) تمكين الرد => يُحرَّر المؤجَّل تلقائياً (بلا فقدان).
+    const ctrlOn = await (await fetch(`${BASE}/api/agent/youtube/watcher/controls`, { method: 'POST', headers: auth, body: JSON.stringify({ autoReply: true }) })).json();
+    check('المراقب: التمكين يحرّر التعليق المؤجَّل', (ctrlOn.releasedDeferred || 0) >= 1, JSON.stringify(ctrlOn));
+    check('المراقب: autoReplyEffective صادق بعد التمكين', ctrlOn.controls?.autoReplyEffective === true);
+    // 3) الدورة التالية ترد فعلياً على نفس التعليق الحقيقي.
+    mock.state.lastInsertPath = null; mock.state.lastCommentBody = null;
+    const pollOn = await (await fetch(`${BASE}/api/agent/youtube/watcher/poll`, { method: 'POST', headers: auth })).json();
+    check('المراقب: comments.insert استُدعي فعلاً', (mock.state.lastInsertPath || '').includes('/youtube/v3/comments'));
+    check('المراقب: الرد على نفس التعليق الحقيقي (parentId)', String(mock.state.lastCommentBody?.snippet?.parentId || '') === 'cmt_watcher_praise', JSON.stringify(mock.state.lastCommentBody));
+    check('المراقب: الرد مُسلَّم بمعرّف من المزوّد', Boolean(pollOn.watcher?.lastReply?.externalReplyId), JSON.stringify(pollOn.watcher?.lastReply));
+    check('المراقب: عدّاد الردود > 0', (pollOn.watcher?.counters?.replied || 0) >= 1, JSON.stringify(pollOn.watcher?.counters));
+    // 4) Kill Switch: لا إرسال خارجي إطلاقاً.
+    mock.state.comments = [{ id: 'cmt_watcher_kill', threadId: 'thr_k', videoId: 'vid_alpha', author: 'سعد', text: 'خدمة رائعة جداً', publishedAt: '2026-09-28T09:30:00Z', likeCount: 0 }];
+    await fetch(`${BASE}/api/agent/youtube/watcher/controls`, { method: 'POST', headers: auth, body: JSON.stringify({ autoReply: true, paused: true }) });
+    mock.state.lastInsertPath = null;
+    const pollKill = await (await fetch(`${BASE}/api/agent/youtube/watcher/poll`, { method: 'POST', headers: auth })).json();
+    check('Kill Switch: لا إرسال خارجي', mock.state.lastInsertPath === null, String(pollKill.result?.skippedPoll));
+    // استعادة الإعداد الافتراضي الآمن + التعليقات الأصلية.
+    await fetch(`${BASE}/api/agent/youtube/watcher/controls`, { method: 'POST', headers: auth, body: JSON.stringify({ autoReply: false, paused: false }) });
+    mock.state.comments = wComments;
+
     group('12k) تكامل: حارس YOUTUBE_ONLY_OPERATIONAL مربوط بمسارات التنفيذ الخارجي');
     // الحارس منطقياً مُختبر في 4a؛ هنا نثبت أنه مربوط فعلاً بمسارات التنفيذ الخارجي
     // في الخادم ووحدة المسارات الاجتماعية (لا مجرد تعريف غير مستخدم).

@@ -116,10 +116,26 @@ export const YOUTUBE_COMMENT_STAGE_LABELS_AR: Record<YouTubeCommentStage, string
 
 export type WatcherReplyAction = 'reply' | 'skip' | 'escalate';
 
+/**
+ * كود حتمي لكل قرار — يجعل القرار قابلاً للتصنيف الآلي (تشخيص/إحصاء/إعادة تقييم)
+ * بلا الاعتماد على نص السبب. مهم: يميّز «تعذّر بسبب إعداد المالك» (غير نهائي،
+ * قابل لإعادة التقييم لاحقاً) عن القرارات النهائية (رد/تصعيد مضمون/تجاهل).
+ */
+export type CommentDecisionCode =
+  | 'SKIP_SELF_AUTHORED'
+  | 'SKIP_ALREADY_REPLIED'
+  | 'SKIP_SPAM'
+  | 'ESCALATE_BUSINESS_INQUIRY'
+  | 'ESCALATE_SENSITIVE'
+  | 'ESCALATE_HUMAN_REVIEW_MODE'
+  | 'DEFER_AUTOREPLY_DISABLED'
+  | 'REPLY_ALLOWED';
+
 export interface CommentDecision {
   action: WatcherReplyAction;
   reason: string;
   requiresHuman: boolean;
+  code: CommentDecisionCode;
 }
 
 /**
@@ -128,6 +144,8 @@ export interface CommentDecision {
  * - شكوى/حساس/استفسار تجاري/طلب سعر/تقسيط/شكوى مالية/قانوني ⇒ تصعيد للمالك بلا رد.
  * - سؤال عام أو مدح أو تفاعل بسيط وقد مرّت كل الحمايات ⇒ رد.
  * - وضع المراجعة البشرية يحوّل أي «رد» إلى تصعيد.
+ * - تعطيل الرد الآلي (إعداد المالك) ⇒ تأجيل غير نهائي (DEFER) لا تجاهل ولا تصعيد،
+ *   فيُعاد تقييم التعليق تلقائياً عند تمكين الرد لاحقاً بلا فقدان.
  */
 export function decideCommentAction(input: {
   intent: string;
@@ -138,21 +156,28 @@ export function decideCommentAction(input: {
   controls: YouTubeWatcherControls;
 }): CommentDecision {
   const c = normalizeWatcherControls(input.controls);
-  if (input.isSelfAuthored) return { action: 'skip', reason: 'التعليق صادر من حساب المعرض؛ لا حلقة ردود.', requiresHuman: false };
-  if (input.alreadyReplied) return { action: 'skip', reason: 'سبق الرد على هذا التعليق (منع التكرار).', requiresHuman: false };
-  if (input.isSpam) return { action: 'skip', reason: 'تعليق مصنّف سبام؛ لا رد آلي.', requiresHuman: false };
+  if (input.isSelfAuthored) return { action: 'skip', code: 'SKIP_SELF_AUTHORED', reason: 'التعليق صادر من حساب المعرض؛ لا حلقة ردود.', requiresHuman: false };
+  if (input.alreadyReplied) return { action: 'skip', code: 'SKIP_ALREADY_REPLIED', reason: 'سبق الرد على هذا التعليق (منع التكرار).', requiresHuman: false };
+  if (input.isSpam) return { action: 'skip', code: 'SKIP_SPAM', reason: 'تعليق مصنّف سبام؛ لا رد آلي.', requiresHuman: false };
   // التصعيد بسبب حقيقي مرتبط بمضمون التعليق (لا بسبب حالة إعداد فقط):
   if (input.intent === 'business_inquiry') {
-    return { action: 'escalate', reason: 'استفسار عن السعر/التقسيط — يحتاج بيانات المنتج المؤكدة قبل الرد، ولا تُخترع أسعار.', requiresHuman: true };
+    return { action: 'escalate', code: 'ESCALATE_BUSINESS_INQUIRY', reason: 'استفسار عن السعر/التقسيط — يحتاج بيانات المنتج المؤكدة قبل الرد، ولا تُخترع أسعار.', requiresHuman: true };
   }
   if (input.intent === 'complaint' || input.requiresHumanReview) {
-    return { action: 'escalate', reason: 'شكوى/حالة حساسة تستوجب متابعة المالك مباشرة قبل أي رد.', requiresHuman: true };
+    return { action: 'escalate', code: 'ESCALATE_SENSITIVE', reason: 'شكوى/حالة حساسة تستوجب متابعة المالك مباشرة قبل أي رد.', requiresHuman: true };
   }
-  if (c.humanReviewMode) return { action: 'escalate', reason: 'وضع المراجعة البشرية مفعّل من المالك؛ تُحوَّل كل التعليقات للمراجعة.', requiresHuman: true };
+  if (c.humanReviewMode) return { action: 'escalate', code: 'ESCALATE_HUMAN_REVIEW_MODE', reason: 'وضع المراجعة البشرية مفعّل من المالك؛ تُحوَّل كل التعليقات للمراجعة.', requiresHuman: true };
   if (!c.enabled || c.paused || !c.autoReply) {
-    return { action: 'skip', reason: 'الرد الآلي غير ممكّن حالياً (إعداد المالك)؛ سُجّل التعليق بلا إرسال ولم يُصعَّد.', requiresHuman: false };
+    // تعذّر بسبب إعداد المالك: قرار غير نهائي — لا يُوسَم مُعالَجاً لئلا يُفقد عند
+    // تمكين الرد لاحقاً. لا تصعيد (ليس حالة حساسة) ولا رد (الأتمتة معطّلة).
+    return { action: 'skip', code: 'DEFER_AUTOREPLY_DISABLED', reason: 'الرد الآلي غير ممكّن حالياً (إعداد المالك)؛ أُجّل التعليق بلا إرسال وسيُعاد تقييمه عند التمكين.', requiresHuman: false };
   }
-  return { action: 'reply', reason: 'تعليق قابل للرد الآلي من بيانات موثوقة (سؤال عام/مدح/تفاعل بسيط).', requiresHuman: false };
+  return { action: 'reply', code: 'REPLY_ALLOWED', reason: 'تعليق قابل للرد الآلي من بيانات موثوقة (سؤال عام/مدح/تفاعل بسيط).', requiresHuman: false };
+}
+
+/** هل القرار غير نهائي (تعذّر بسبب إعداد المالك) ويجب إعادة تقييمه لاحقاً؟ */
+export function isDeferredDecision(code: CommentDecisionCode): boolean {
+  return code === 'DEFER_AUTOREPLY_DISABLED';
 }
 
 // -------------------------------------------------------------
@@ -203,10 +228,30 @@ export interface WatcherProcessedEntry {
   publishedAt?: string | null;
   externalReplyId?: string | null;
   replyText?: string | null;
+  /** كود القرار الحتمي (لتصنيف آلي بلا نص). */
+  code?: string | null;
+  /**
+   * مؤجَّل بسبب إعداد المالك (الرد الآلي معطّل/موقوف): ليس قراراً نهائياً،
+   * ويُعاد تقييمه تلقائياً عند تمكين الرد — بلا فقدان التعليق.
+   */
+  deferred?: boolean;
 }
 
 export function hasProcessed(processed: WatcherProcessedEntry[], commentId: string): boolean {
   return processed.some((p) => p.commentId === commentId && p.stage !== 'NEW');
+}
+
+/**
+ * يحرّر التعليقات المؤجَّلة (تعذّر بسبب إعداد المالك) لإعادة تقييمها مرة واحدة عند
+ * تمكين الرد الآلي. لا يمسّ أي قرار نهائي (رد/تصعيد/تجاهل حقيقي). يغطّي أيضاً
+ * السجلات القديمة التي وُسمت «الرد الآلي غير ممكّن» قبل إدخال حقل deferred.
+ */
+export function releaseDeferredEntries(processed: WatcherProcessedEntry[]): { processed: WatcherProcessedEntry[]; released: number } {
+  const isDeferred = (p: WatcherProcessedEntry) => Boolean(p?.deferred)
+    || p?.code === 'DEFER_AUTOREPLY_DISABLED'
+    || (typeof p?.reason === 'string' && p.reason.includes('الرد الآلي غير ممكّن'));
+  const kept = (processed || []).filter((p) => !isDeferred(p));
+  return { processed: kept, released: (processed || []).length - kept.length };
 }
 
 /** آخر checkpoint: معرّف آخر تعليق عُولج ووقته (للاستئناف بعد الانقطاع). */

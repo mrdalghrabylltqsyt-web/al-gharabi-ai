@@ -221,6 +221,8 @@ import {
   normalizeCadenceMs,
   advanceCheckpoint,
   hasProcessed,
+  isDeferredDecision,
+  releaseDeferredEntries,
   YOUTUBE_COMMENT_STAGES,
   YOUTUBE_COMMENT_STAGE_LABELS_AR,
   type YouTubeWatcherControls,
@@ -4412,7 +4414,7 @@ let watcherState: WatcherState = {
 };
 let watcherRunning = false;
 let watcherStartedAt: string | null = null;
-let watcherLastRun: { newDetected: number; replied: number; escalated: number; skipped: number; verified: number; failed: number; at: string } | null = null;
+let watcherLastRun: { newDetected: number; replied: number; escalated: number; skipped: number; verified: number; failed: number; deferred: number; at: string } | null = null;
 
 const WATCHER_MAX_PROCESSED = 5000;
 const WATCHER_MAX_AUDIT = 500;
@@ -4484,6 +4486,13 @@ function applyWatcherStateSnapshot(raw: any): void {
   watcherState.brief = raw.brief && typeof raw.brief === "object" ? raw.brief : null;
   watcherState.briefDate = typeof raw.briefDate === "string" ? raw.briefDate : null;
   watcherState.lastScanned = Number.isFinite(raw.lastScanned) ? Number(raw.lastScanned) : 0;
+  // لو كان الرد الآلي ممكّناً أصلاً (مثلاً نُشِر الإصلاح بعد تمكينه)، تُحرَّر
+  // التعليقات المؤجَّلة القديمة (التي تعذّرت سابقاً بسبب الإعداد) لإعادة تقييمها.
+  const c = watcherState.controls;
+  if (c.enabled && !c.paused && !c.humanReviewMode && c.autoReply) {
+    const r = releaseDeferredEntries(watcherState.processed);
+    watcherState.processed = r.processed;
+  }
 }
 
 /** إيقاع المراقبة الفعلي (قابل للضبط بحدود آمنة، بلا polling عدواني). */
@@ -4511,7 +4520,7 @@ async function runYouTubeWatcherCycle(trigger: "schedule" | "manual" = "schedule
   if (watcherRunning) return { ok: false, error: "دورة مراقبة قيد التنفيذ." };
   watcherRunning = true;
   const now = Date.now();
-  let newDetected = 0, replied = 0, escalated = 0, skipped = 0, verified = 0, failed = 0;
+  let newDetected = 0, replied = 0, escalated = 0, skipped = 0, verified = 0, failed = 0, deferred = 0;
   try {
     const controls = normalizeWatcherControls(watcherState.controls);
     const readGate = watcherGate(controls, "read");
@@ -4578,10 +4587,23 @@ async function runYouTubeWatcherCycle(trigger: "schedule" | "manual" = "schedule
         intent: cls.intent, requiresHumanReview: cls.requiresHumanReview, isSpam: cls.isSpam, isSelfAuthored: selfAuthored, alreadyReplied, controls,
       });
       const baseEntry: WatcherProcessedEntry = {
-        commentId: c.commentId, stage: "ANALYZED", action: decision.action, reason: decision.reason,
+        commentId: c.commentId, stage: "ANALYZED", action: decision.action, reason: decision.reason, code: decision.code,
         videoId: c.videoId ?? null, authorName: c.authorName ?? null, text: String(c.text || ""), at: new Date().toISOString(),
         publishedAt: c.publishedAt ?? null,
       };
+      // تعذّر بسبب إعداد المالك (الرد الآلي معطّل/موقوف): قرار غير نهائي. نُسجّله
+      // موسوماً `deferred` (فيمنع التكرار داخل الدورة) لكنه ليس نهائياً — يُحرَّر
+      // ويُعاد تقييمه تلقائياً عند تمكين الرد، فلا يُفقد أي تعليق قابل للرد.
+      if (isDeferredDecision(decision.code)) {
+        baseEntry.stage = "SKIPPED";
+        baseEntry.deferred = true;
+        deferred += 1;
+        watcherState.processed.unshift(baseEntry);
+        if (watcherState.processed.length > WATCHER_MAX_PROCESSED) watcherState.processed.length = WATCHER_MAX_PROCESSED;
+        watcherAudit({ action: "comment_deferred", commentId: c.commentId, videoId: c.videoId, reason: decision.reason, decision: "defer", error: decision.code });
+        await persistWatcherState();
+        continue;
+      }
       // حماية من ردٍّ على تعليق لا يخص القناة المتصلة (سياق القناة الموثّق).
       const commentVideoId = String(c.videoId || "");
       const belongsToChannel = !expectedChannelId || !commentVideoId || videoIds.includes(commentVideoId);
@@ -4656,10 +4678,10 @@ async function runYouTubeWatcherCycle(trigger: "schedule" | "manual" = "schedule
       for (const o of opps) if (!watcherState.opportunities.some((x) => x.id === o.id)) watcherState.opportunities.unshift(o);
       watcherState.opportunities = watcherState.opportunities.slice(0, 200);
     }
-    watcherLastRun = { newDetected, replied, escalated, skipped, verified, failed, at: new Date(now).toISOString() };
+    watcherLastRun = { newDetected, replied, escalated, skipped, verified, failed, deferred, at: new Date(now).toISOString() };
     watcherAudit({ action: "poll_complete", reason: trigger, decision: "ok" });
     await persistWatcherState();
-    return { ok: true, newDetected, replied, escalated, skipped, verified, failed };
+    return { ok: true, newDetected, replied, escalated, skipped, verified, failed, deferred };
   } catch (error: any) {
     watcherState.lastError = String(error?.code || error?.message || "watcher_cycle_failed").slice(0, 120);
     watcherState.consecutiveErrors += 1;
@@ -4690,6 +4712,7 @@ function watcherStatusBlock() {
     escalated: stageCount("ESCALATED"),
     skipped: stageCount("SKIPPED"),
     failed: stageCount("FAILED"),
+    deferred: processed.filter((p) => p.deferred).length,
   };
   const lastReply = processed.find((p) => p.externalReplyId) || null;
   const lastVerified = processed.find((p) => p.stage === "VERIFIED") || null;
@@ -4804,10 +4827,22 @@ app.get("/api/agent/youtube/watcher", authenticateToken, (_req, res) => {
 
 app.post("/api/agent/youtube/watcher/controls", requireOwner, async (req, res) => {
   const body = req.body || {};
+  const prevControls = normalizeWatcherControls(watcherState.controls);
   watcherState.controls = normalizeWatcherControls({ ...watcherState.controls, ...body });
   audit((req as any).user.id, "youtube_watcher_controls_updated", JSON.stringify({ ...watcherState.controls }));
+  // عند الانتقال من «الرد معطّل» إلى «الرد ممكّن» نحرّر التعليقات المؤجَّلة (التي
+  // تعذّرت بسبب إعداد المالك) ليُعاد تقييمها في الدورة التالية — بلا فقدان تعليق.
+  const wasReplyOn = prevControls.enabled && !prevControls.paused && !prevControls.humanReviewMode && prevControls.autoReply;
+  const nowReplyOn = watcherState.controls.enabled && !watcherState.controls.paused && !watcherState.controls.humanReviewMode && watcherState.controls.autoReply;
+  let released = 0;
+  if (!wasReplyOn && nowReplyOn) {
+    const r = releaseDeferredEntries(watcherState.processed);
+    watcherState.processed = r.processed;
+    released = r.released;
+    if (released) watcherAudit({ action: "deferred_released", decision: "reevaluate", reason: `حُرِّر ${released} تعليقاً مؤجَّلاً لإعادة التقييم بعد تمكين الرد الآلي.` });
+  }
   await persistWatcherState();
-  res.json({ success: true, controls: watcherControlsView(watcherState.controls), note: "حُدِّثت إعدادات الأتمتة؛ تسري فوراً على الدورة التالية." });
+  res.json({ success: true, controls: watcherControlsView(watcherState.controls), releasedDeferred: released, note: "حُدِّثت إعدادات الأتمتة؛ تسري فوراً على الدورة التالية." });
 });
 
 app.post("/api/agent/youtube/watcher/poll", requireOwner, async (req, res) => {

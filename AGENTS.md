@@ -2150,3 +2150,54 @@ schedule/update_video` و`youtubeOAuth.connected/verified/forceSsl=true`، وم�
 **ملاحظة إثبات حي (north star):** إثبات أن الرد يصل فعلاً إلى YouTube يحتاج قراءة تعليق حقيقي
 (`commentThreads.list`) ثم تنفيذ `executeYouTubeReply` في نفس الجلسة القائمة على قناة المعرض؛
 الرد الحقيقي لا يمكن اختلاقه، ولا يُنفَّذ أي رد/نشر/جدولة في دفعات الكود.
+
+## Batch 22 — جذر «المراقب يقرأ ولا يرد»: قرار غير نهائي + تحرير تلقائي (2026-09-29)
+
+**التتبّع الفعلي للقيمة (لا أسماء متغيرات):** مسار الدورة
+`runYouTubeWatcherCycle` → `const controls = normalizeWatcherControls(watcherState.controls)`
+→ `decideCommentAction({ ..., controls })`. القيمة التي تصل إلى القرار **هي
+`watcherState.controls` المطبَّعة عند لحظة الدورة**، و`autoReplyEffective` المعروض في
+الصحة/الواجهة محسوب من `watcherState.controls` نفسه — فلا انحراف بين الاثنين.
+
+**جذر الالتباس المُثبت (زمني، لا منطقي):** كل سجلات المراقب على الإنتاج كانت بتوقيت
+16:07–18:01Z، وcommit الإصلاح السابق `b4301bf` دخل الإنتاج ~19:11Z. أي أن `detected=7,
+replied=0, escalated=6` **سجلات تاريخية** أُنتجت قبل الإصلاح: عندها كان `autoReply` الافتراضي
+`false`، وكان فرع «الرد الآلي غير ممكّن» يُنتج **تصعيداً** (`requiresHuman: true`) بنص قديم
+«الرد الآلي غير ممكّن حالياً؛ سُجّل التعليق للمالك بلا إرسال.» — وهو نص **لم يعد موجوداً في
+الكود الحالي**. فالصحة أظهرت `autoReply=true` (الإعداد الحالي) بينما القرار التاريخي تعامل
+مع `false` (الإعداد القديم). أُثبت حياً أن الكود الحالي (HEAD) يرد فعلاً: تعليق «عاشت إيدكم»
+=> `comments.insert` بمعرّف رد، و«كم السعر؟» => تصعيد بلا اختراع.
+
+**العيب الحقيقي الباقي في الكود:** حتى مع `autoReply=false`، كان التعليق القابل للرد يُوسَم
+`SKIPPED` **نهائياً** في `watcherState.processed`، و`hasProcessed` يمنع إعادة معالجته. فلو
+قرأ المراقب تعليقاً والأتمتة معطّلة ثم مكّنها المالك، **يُفقد التعليق للأبد** بلا رد.
+
+**الإصلاح (بلا workaround ولا كسر أي حارس):**
+- `engine/social/youtubeWatcher.ts`: `CommentDecisionCode` (8 أكواد حتمية) + `code` في
+  `CommentDecision`؛ فرع تعذّر الإعداد صار `DEFER_AUTOREPLY_DISABLED` (skip غير نهائي) لا
+  تصعيداً ولا تجاهلاً دائماً. `isDeferredDecision` و`releaseDeferredEntries` (يُزيل المؤجَّل
+  فقط ويحفظ الرد/التصعيد/السبام/المكرر)، وحقل `deferred` في `WatcherProcessedEntry`.
+- `server.ts`: عند `isDeferredDecision` تُسجَّل الحالة `SKIPPED + deferred:true` (تظهر
+  كتأجيل إعداد لا كتصعيد)، وعند الانتقال «الرد معطّل → ممكّن» عبر
+  `POST /api/agent/youtube/watcher/controls` تُحرَّر المؤجَّلة (`releasedDeferred`) فتُعاد
+  تقييمها في الدورة التالية؛ وكذلك عند الإقلاع إن كان الرد ممكّناً أصلاً. عدّاد `deferred`
+  يُعلن في `watcherStatusBlock` و`watcherLastRun`.
+- توافق رجعي: التحرير يغطّي السجلات القديمة بنص «الرد الآلي غير ممكّن» فلا تبقى عالقة.
+- الواجهة: `YouTubeOperationsView` تعرض عدّاد «مؤجَّلة» ونتيجة الدورة تشمل `deferred`.
+
+**الحمايات لم تُمسّ:** التصعيد الحقيقي (سعر/شكوى/حساس) كما هو، Kill Switch، `humanReviewMode`،
+بوابة التفويض `watcherReplyExecutionReady`، force-ssl، منع التكرار، والمنفّذ الموحّد
+`executeYouTubeReply` وحده. **لا تعليق «عاشت إيدكم» خاص، ولا رد على كل التعليقات، ولا مساس
+بأي OAuth/سرّ/منصة أخرى.**
+
+اختبارات: `youtube.watcher.test.ts` = **105 فحوص** (مجموعة D2: أكواد القرار + التأجيل/التحرير
++ التوافق الرجعي)، `youtube.connector.test.ts` = **225 فحصاً** (مجموعة 12k-5 تكامل: تعطيل =>
+تأجيل بلا إرسال؛ تمكين => `releasedDeferred` + رد حقيقي بـ`parentId` صحيح؛ Kill Switch =>
+لا إرسال). فحوص final-audit: `youtube-escalation-not-config-noise` (مُحدَّث)،
+`youtube-defer-release-on-enable`, `youtube-defer-release-legacy`, `youtube-defer-not-escalated`,
+`youtube-decision-code-honest`, `youtube-watcher-deferred-counter`, `youtube-watcher-defer-cycle-test`
+(553 إجمالاً). `npm run lint` + `npm run build` + `npm test` (EXIT=0) + `final-audit` كلها ناجحة.
+
+**الإثبات الحقيقي المتبقي على المالك فقط:** إن كان الرد الآلي مفعّلاً، تُحرَّر التعليقات
+المؤجَّلة تلقائياً بعد النشر ويبدأ الرد الفعلي في الدورة التالية؛ وإن كان معطّلاً، شغّله من
+مركز «مدير تشغيل YouTube» (Owner) فيُحرَّر كل مؤجَّل ويُرد عليه فعلياً.

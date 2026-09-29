@@ -24,6 +24,8 @@ import {
   normalizeCadenceMs,
   advanceCheckpoint,
   hasProcessed,
+  isDeferredDecision,
+  releaseDeferredEntries,
   YOUTUBE_COMMENT_STAGES,
   YOUTUBE_COMMENT_STAGE_LABELS_AR,
   type YouTubeWatcherControls,
@@ -106,6 +108,25 @@ function entry(partial: Partial<WatcherProcessedEntry>): WatcherProcessedEntry {
   const heartOnly = classifyComment('❤❤');
   check('D: تعليق القلوب => تفاعل إيجابي', heartOnly.intent === 'praise' && heartOnly.sentiment === 'positive', JSON.stringify(heartOnly));
   check('D: القلوب => رد لا تصعيد', decideCommentAction({ intent: heartOnly.intent, requiresHumanReview: heartOnly.requiresHumanReview, isSpam: heartOnly.isSpam, isSelfAuthored: false, alreadyReplied: false, controls: on }).action === 'reply');
+}
+
+// --- D2) كود القرار + التأجيل/التحرير (تعذّر بسبب إعداد المالك ليس نهائياً) ---
+{
+  const off = defaultWatcherControls();
+  const dOff = decideCommentAction({ intent: 'praise', requiresHumanReview: false, isSpam: false, isSelfAuthored: false, alreadyReplied: false, controls: off });
+  check('D2: تعطيل الرد => كود DEFER لا تجاهل نهائي', dOff.code === 'DEFER_AUTOREPLY_DISABLED' && dOff.action === 'skip');
+  check('D2: DEFER غير نهائي', isDeferredDecision(dOff.code) === true);
+  check('D2: قرار الرد كود REPLY_ALLOWED', decideCommentAction({ intent: 'praise', requiresHumanReview: false, isSpam: false, isSelfAuthored: false, alreadyReplied: false, controls: { ...off, autoReply: true } }).code === 'REPLY_ALLOWED');
+  check('D2: تصعيد السعر كود صريح', decideCommentAction({ intent: 'business_inquiry', requiresHumanReview: false, isSpam: false, isSelfAuthored: false, alreadyReplied: false, controls: { ...off, autoReply: true } }).code === 'ESCALATE_BUSINESS_INQUIRY');
+  check('D2: السبام كود صريح', decideCommentAction({ intent: 'other', requiresHumanReview: true, isSpam: true, isSelfAuthored: false, alreadyReplied: false, controls: { ...off, autoReply: true } }).code === 'SKIP_SPAM');
+  // التحرير: السجل المؤجَّل يُزال، والنهائي يبقى.
+  const deferred = [entry({ commentId: 'p1', stage: 'SKIPPED', code: 'DEFER_AUTOREPLY_DISABLED', deferred: true }), entry({ commentId: 's1', stage: 'SKIPPED', code: 'SKIP_SPAM' }), entry({ commentId: 'e1', stage: 'ESCALATED', code: 'ESCALATE_BUSINESS_INQUIRY' }), entry({ commentId: 'r1', stage: 'REPLIED', code: 'REPLY_ALLOWED' })];
+  const rel = releaseDeferredEntries(deferred);
+  check('D2: التحرير يُزيل المؤجَّل فقط', rel.released === 1 && rel.processed.length === 3);
+  check('D2: التحرير يحفظ التصعيد/الرد/السبام', rel.processed.some((p) => p.commentId === 'e1') && rel.processed.some((p) => p.commentId === 'r1') && rel.processed.some((p) => p.commentId === 's1'));
+  // توافق رجعي: سجل قديم بنص السبب القديم (قبل إدخال deferred) يُحرَّر أيضاً.
+  const legacy = [entry({ commentId: 'old', stage: 'SKIPPED', reason: 'الرد الآلي غير ممكّن حالياً؛ سُجّل التعليق للمالك بلا إرسال.' })];
+  check('D2: التحرير يغطّي السجلات القديمة', releaseDeferredEntries(legacy).released === 1);
 }
 
 // --- E) تصنيف التعليق الحقيقي «جيد» و«شكراً» ---
