@@ -277,6 +277,9 @@ import {
   computeContentBriefCounts,
   reviewActionToState,
   isValidContentReviewAction,
+  filterContentActions,
+  contentItemMediaState,
+  CONTENT_REVIEW_ACTIONS,
   suggestScheduleTime,
   CONTENT_STATE_LABELS_AR,
   CONTENT_STATE_TONES,
@@ -338,12 +341,22 @@ const STATE_SCHEMA_VERSION = 16;
 // هذا ضروري للتحقق من توقيع HMAC (X-Hub-Signature-256) على الجسم الخام تماماً
 // كما أرسله Meta، لا على إعادة تسلسل req.body (قد تختلف المسافات/ترتيب المفاتيح).
 // كونه الوسيط الأول يعني أنه يقرأ التدفق الوحيد نفسه، فلا يجد أي محلّل لاحق شيئاً.
-app.use(express.json({
-  limit: "256kb",
-  verify: (req: any, _res: unknown, buf: Buffer) => {
-    if (typeof req.rawBody !== "string") req.rawBody = buf?.toString("utf8") ?? "";
-  },
-}));
+//
+// استثناء مضبوط: مسار رفع مادة المحتوى (فيديو base64) قد يتجاوز 256kb بكثير،
+// فنترك تدفقه لمحلّل خاص بالمسار بحد أعلى معلن — مع بقاء الحد الصغير هنا وحماية
+// التحقق من التوقيع (rawBody) كما هي لكل المسارات الأخرى.
+const CONTENT_UPLOAD_PATH = "/api/platforms/youtube/content/drafts";
+const CONTENT_UPLOAD_JSON_LIMIT = "20mb";
+app.use((req: any, res, next) => {
+  const path = String(req.path || req.url || "").split("?")[0];
+  if (path === CONTENT_UPLOAD_PATH) return next();
+  return express.json({
+    limit: "256kb",
+    verify: (req: any, _res: unknown, buf: Buffer) => {
+      if (typeof req.rawBody !== "string") req.rawBody = buf?.toString("utf8") ?? "";
+    },
+  })(req, res, next);
+});
 
 // Request correlation: every API response receives a short trace id. It is safe
 // to expose and contains no credentials; it helps the owner match UI errors to
@@ -4527,10 +4540,71 @@ let contentMedia = new Map<string, ContentMedia>();
 const CONTENT_MEDIA_KEY = "youtubeMedia";
 const CONTENT_MEDIA_MAX_ITEM_BYTES = 12 * 1024 * 1024; // 12MB لكل مادة
 const CONTENT_MEDIA_MAX_TOTAL_BYTES = 60 * 1024 * 1024; // 60MB إجمالاً
+// الأنواع المسموح بها لمادة الفيديو (منفّذة فعلياً في uploadVideo عبر videos.insert).
+const CONTENT_ALLOWED_MIME = new Set(["video/mp4", "video/webm", "video/quicktime", "video/x-matroska", "video/x-msvideo"]);
+// امتدادات الملف المرسلة مع نوعها — لتقاطع MIME مع الامتداد (يرفض عدم التطابق).
+const CONTENT_MIME_BY_EXT: Record<string, string> = {
+  mp4: "video/mp4", m4v: "video/mp4", webm: "video/webm", mov: "video/quicktime", mkv: "video/x-matroska", avi: "video/x-msvideo",
+};
 let contentMediaTotalBytes = 0;
 
-/** يُسجّل مادة فيديو حقيقية بمعرّف مرجع (mediaRef) — يرفض ما هو أكبر من الحد. */
-function registerContentMedia(input: { mimeType: string; base64: string }): { ok: boolean; mediaRef?: string; code?: string; error?: string; bytes?: number } {
+/**
+ * يتحقق من بايتات مادة الفيديو فعلياً (لا على تصريح العميل): طول كافٍ، توقيع
+ * الملف (magic bytes) يطابق نوعاً مسموحاً. الهدف: رفض النص العادي/payload وهمي/
+ * MIME غير صحيح قبل التسجيل.
+ */
+function validateMediaBytes(bytes: Buffer, mimeType: string, filename?: string): { ok: boolean; code?: string; error?: string } {
+  if (!bytes.length) return { ok: false, code: "MEDIA_REQUIRED", error: "بايتات فارغة." };
+  if (bytes.length < 12) return { ok: false, code: "MEDIA_INVALID", error: "الملف أصغر من أن يكون فيديو صالحاً." };
+  // توقيع الملف الحقيقي: MP4/MOV/M4V = 'ftyp' عند الإزاحة 4؛ WebM/MKV = EBML
+  // (0x1A45DFA3)؛ AVI = 'RIFF'…'AVI '. أي شيء آخر يُرفض (نص/وهمي/WEBP).
+  const b = bytes;
+  const four = b.toString("latin1", 0, 4);
+  const eight = b.length >= 12 ? b.toString("latin1", 8, 12) : "";
+  const isEbml = b[0] === 0x1a && b[1] === 0x45 && b[2] === 0xdf && b[3] === 0xa3;
+  const detected: string | null = (b.length >= 12 && b.toString("latin1", 4, 8) === "ftyp") ? "video/mp4"
+    : isEbml ? "video/webm"
+    : (four === "RIFF" && eight === "AVI ") ? "video/x-msvideo"
+    : null;
+  if (!detected) return { ok: false, code: "MEDIA_INVALID", error: "محتوى الملف ليس فيديو صالحاً (توقيع الملف غير معروف)." };
+  const declared = String(mimeType || "").toLowerCase().split(";")[0].trim();
+  // نوع مُصرَّح به لكنه غير مسموح ⇒ رفض صريح (لا رجوع صامت للنوع المكتشف).
+  if (declared && declared !== "video/quicktime" && !CONTENT_ALLOWED_MIME.has(declared)) {
+    return { ok: false, code: "MEDIA_INVALID", error: `نوع الفيديو غير مدعوم (${declared}).` };
+  }
+  const declaredAllowed = declared === "video/quicktime" ? "video/mp4" : declared;
+  const effective = CONTENT_ALLOWED_MIME.has(declaredAllowed) ? declaredAllowed : detected;
+  // تقاطع: التوقيع المكتشف يجب أن يتوافق مع النوع الفعّال (لا تنكّر بالنوع).
+  const compatible = effective === detected
+    || (detected === "video/mp4" && effective === "video/mp4")
+    || (detected === "video/webm" && effective === "video/x-matroska")
+    || (detected === "video/x-matroska" && effective === "video/webm");
+  if (!compatible) return { ok: false, code: "MEDIA_INVALID", error: `نوع الفيديو (${declared || "غير محدّد"}) لا يطابق محتوى الملف.` };
+  // تطابق الامتداد مع النوع إن أُرسل اسم ملف. mkv/webm وmov/mp4 يُعدّان متوافقين.
+  if (filename) {
+    const ext = String(filename).toLowerCase().split(".").pop() || "";
+    const byExt = CONTENT_MIME_BY_EXT[ext];
+    const extFamily = byExt === "video/x-matroska" ? "video/webm" : byExt;
+    const effFamily = effective === "video/x-matroska" ? "video/webm" : effective;
+    if (byExt && extFamily !== effFamily) return { ok: false, code: "MEDIA_INVALID", error: `امتداد الملف (${ext}) لا يطابق نوعه (${effective}).` };
+  }
+  return { ok: true };
+}
+
+/** فكّ base64 صارم: يرفض المحارف غير الصالحة والطول المشوّه (لا تسامح صامت). */
+function decodeStrictBase64(base64: string): Buffer | null {
+  const clean = String(base64 || "").replace(/\s+/g, "");
+  if (!clean || clean.length % 4 !== 0) return null;
+  if (!/^[A-Za-z0-9+/]*={0,2}$/.test(clean)) return null;
+  const bytes = Buffer.from(clean, "base64");
+  if (!bytes.length) return null;
+  // إعادة الترميز يجب أن تطابق المدخل (يكشف النص المزيف/القطع).
+  if (bytes.toString("base64").replace(/=+$/, "") !== clean.replace(/=+$/, "")) return null;
+  return bytes;
+}
+
+/** يُسجّل مادة فيديو حقيقية بمعرّف مرجع (mediaRef) — يرفض ما هو أكبر/غير صالح. */
+function registerContentMedia(input: { mimeType: string; base64: string; filename?: string }): { ok: boolean; mediaRef?: string; code?: string; error?: string; bytes?: number; mimeType?: string } {
   const base64 = String(input.base64 || "");
   if (!base64) return { ok: false, code: "MEDIA_REQUIRED", error: "لا بايتات فيديو." };
   // الحد على البايتات الفعلية لا على طول نص base64.
@@ -4538,14 +4612,17 @@ function registerContentMedia(input: { mimeType: string; base64: string }): { ok
   if (approxBytes > CONTENT_MEDIA_MAX_ITEM_BYTES) {
     return { ok: false, code: "MEDIA_TOO_LARGE", error: `مادة الفيديو أكبر من الحد (${Math.floor(CONTENT_MEDIA_MAX_ITEM_BYTES / 1048576)}MB).` };
   }
-  let bytes: Buffer;
-  try { bytes = Buffer.from(base64, "base64"); } catch { return { ok: false, code: "MEDIA_INVALID", error: "base64 غير صالح." }; }
-  if (!bytes.length) return { ok: false, code: "MEDIA_REQUIRED", error: "بايتات فارغة." };
+  const bytes = decodeStrictBase64(base64);
+  if (!bytes) return { ok: false, code: "MEDIA_INVALID", error: "base64 غير صالح (نص مزيف أو مشوّه)." };
+  const validation = validateMediaBytes(bytes, input.mimeType, input.filename);
+  if (!validation.ok) return { ok: false, code: validation.code, error: validation.error };
+  const effectiveMime = CONTENT_ALLOWED_MIME.has(String(input.mimeType || "").toLowerCase().split(";")[0].trim())
+    ? String(input.mimeType).toLowerCase().split(";")[0].trim() : "video/mp4";
   const sha256 = crypto.createHash("sha256").update(bytes).digest("hex");
   const mediaRef = `m-${sha256.slice(0, 16)}`;
   const prev = contentMedia.get(mediaRef);
   if (prev) contentMediaTotalBytes -= prev.bytes;
-  contentMedia.set(mediaRef, { mimeType: String(input.mimeType || "video/mp4"), base64, bytes: bytes.length, sha256, createdAt: new Date().toISOString() });
+  contentMedia.set(mediaRef, { mimeType: effectiveMime, base64, bytes: bytes.length, sha256, createdAt: new Date().toISOString() });
   contentMediaTotalBytes += bytes.length;
   // تقييد الحجم الإجمالي: نحذف الأقدم عند التجاوز.
   while (contentMediaTotalBytes > CONTENT_MEDIA_MAX_TOTAL_BYTES && contentMedia.size > 1) {
@@ -4554,7 +4631,7 @@ function registerContentMedia(input: { mimeType: string; base64: string }): { ok
     contentMediaTotalBytes -= oldest[1].bytes;
     contentMedia.delete(oldest[0]);
   }
-  return { ok: true, mediaRef, bytes: bytes.length };
+  return { ok: true, mediaRef, bytes: bytes.length, mimeType: effectiveMime };
 }
 
 function contentMediaBytes(mediaRef: string): { bytes: Buffer; mimeType: string } | null {
@@ -4585,15 +4662,30 @@ function pushContentHistory(item: ContentQueueItem, entry: { action: string; act
 
 /** لقطة طابور المحتوى للعرض (بلا أي سرّ). */
 function contentQueueView() {
-  return contentQueue.slice(0, 500).map((it) => ({
-    id: it.id, fingerprint: it.fingerprint, title: it.title, description: it.description, tags: it.tags,
-    privacyStatus: it.privacyStatus, publishAt: it.publishAt, source: it.source,
-    state: it.state, stateLabelAr: CONTENT_STATE_LABELS_AR[it.state], stateTone: CONTENT_STATE_TONES[it.state],
-    stateReason: it.stateReason, code: it.code, sensitivity: it.sensitivity,
-    externalVideoId: it.externalVideoId, url: it.url, verified: it.verified,
-    createdAt: it.createdAt, updatedAt: it.updatedAt, reviewedBy: it.reviewedBy, reviewedAt: it.reviewedAt, reviewNote: it.reviewNote,
-    history: it.history.slice(0, 10),
-  }));
+  return contentQueue.slice(0, 500).map((it) => {
+    const hasMedia = Boolean(it.mediaRef && contentMediaBytes(it.mediaRef));
+    const mediaState = contentItemMediaState({ mediaRef: it.mediaRef, hasMedia });
+    const terminal = isTerminalContentState(it.state);
+    // العمليات المتاحة: تُحجب الموافقة/النشر/الجدولة بلا مادة حقيقية، وتُحجب كل
+    // القرارات على الحالات النهائية (لا نقض) إلا التعديل.
+    const baseActions: ContentReviewAction[] = terminal
+      ? ["edit"]
+      : filterContentActions(CONTENT_REVIEW_ACTIONS, hasMedia);
+    return {
+      id: it.id, fingerprint: it.fingerprint, title: it.title, description: it.description, tags: it.tags,
+      privacyStatus: it.privacyStatus, publishAt: it.publishAt, source: it.source,
+      hasMedia, mediaState, mediaStateLabelAr: mediaState === "COMPLETE" ? "المادة جاهزة" : "المادة مطلوبة",
+      mediaBytes: hasMedia ? contentMediaBytes(it.mediaRef)?.bytes.length ?? 0 : 0,
+      mediaMimeType: hasMedia ? contentMediaBytes(it.mediaRef)?.mimeType ?? null : null,
+      allowedActions: baseActions,
+      allowedActionsLabelAr: baseActions.map((a) => CONTENT_REVIEW_ACTION_LABELS_AR[a]),
+      state: it.state, stateLabelAr: CONTENT_STATE_LABELS_AR[it.state], stateTone: CONTENT_STATE_TONES[it.state],
+      stateReason: it.stateReason, code: it.code, sensitivity: it.sensitivity,
+      externalVideoId: it.externalVideoId, url: it.url, verified: it.verified,
+      createdAt: it.createdAt, updatedAt: it.updatedAt, reviewedBy: it.reviewedBy, reviewedAt: it.reviewedAt, reviewNote: it.reviewNote,
+      history: it.history.slice(0, 10),
+    };
+  });
 }
 
 /** ملخص الطابور (أرقام حقيقية من نفس السجلات). */
@@ -5392,6 +5484,11 @@ async function executeYouTubePublish(input: {
   if (videoUrl) {
     return { status: 422, body: { success: false, code: "MEDIA_REQUIRED", error: "الرفع الرسمي (videos.insert resumable) يحتاج بايتات الملف؛ زوّد videoBase64. الرابط العام وحده لا يكفي لرفع YouTube." } };
   }
+  // تحقق فعلي من المادة قبل الرفع (لا نص عادي/وهمي/نوع غير مطابق).
+  if (bytes && bytes.length) {
+    const mediaCheck = validateMediaBytes(Buffer.from(bytes), mimeType);
+    if (!mediaCheck.ok) return { status: 422, body: { success: false, code: mediaCheck.code, error: mediaCheck.error } };
+  }
   const validation = validateVideoUploadInput({ title, privacyStatus, publishAt: publishAtRaw || null, categoryId, hasMedia: Boolean(bytes && bytes.length) });
   if (!validation.ok) return { status: 422, body: { success: false, code: validation.code, error: validation.reasons.join(' '), reasons: validation.reasons } };
   const guard = youtubeOperationGuard();
@@ -5588,7 +5685,7 @@ app.post("/api/platforms/youtube/video-update", requireOwner, async (req, res) =
  * آمن وواضح ⇒ APPROVED إن كان الإذن ممنوحاً؛ تجاري غير موثّق ⇒ REVIEW_REQUIRED؛
  * غير ذلك ⇒ DRAFT/blocked. لا يُنشر شيء في هذه الخطوة.
  */
-app.post("/api/platforms/youtube/content/drafts", requireOwner, async (req, res) => {
+app.post("/api/platforms/youtube/content/drafts", express.json({ limit: CONTENT_UPLOAD_JSON_LIMIT }), requireOwner, async (req, res) => {
   const user = (req as any).user;
   const title = typeof req.body?.title === "string" ? req.body.title.trim() : "";
   const description = typeof req.body?.description === "string" ? req.body.description : "";
@@ -5601,7 +5698,11 @@ app.post("/api/platforms/youtube/content/drafts", requireOwner, async (req, res)
   let mediaRef = typeof req.body?.mediaRef === "string" ? req.body.mediaRef : "";
   // مادة جديدة (base64) تُسجّل حقيقية في المخزن وتُعطى مرجعاً — لا فيديو وهمي.
   if (!mediaRef && typeof req.body?.videoBase64 === "string" && req.body.videoBase64) {
-    const reg = registerContentMedia({ mimeType: typeof req.body?.mimeType === "string" ? req.body.mimeType : "video/mp4", base64: req.body.videoBase64 });
+    const reg = registerContentMedia({
+      mimeType: typeof req.body?.mimeType === "string" ? req.body.mimeType : "video/mp4",
+      base64: req.body.videoBase64,
+      filename: typeof req.body?.filename === "string" ? req.body.filename : undefined,
+    });
     if (!reg.ok) return res.status(422).json({ success: false, code: reg.code, error: reg.error });
     mediaRef = reg.mediaRef!;
     await persistContentMedia();
@@ -5712,8 +5813,19 @@ app.post("/api/platforms/youtube/content/queue/:id/review", requireOwner, async 
   item.reviewedAt = new Date().toISOString();
   if (note) item.reviewNote = note;
 
-  // تعديل: يحدّث المحتوى ويعيد التصنيف.
+  // تعديل: يحدّث المحتوى ويعيد التصنيف. يسمح أيضًا بإرفاق مادة الفيديو الفعلية
+  // (base64) لتتحوّل المسودة الناقصة إلى قابلة للاعتماد/النشر.
   if (action === "edit") {
+    if (typeof req.body?.videoBase64 === "string" && req.body.videoBase64) {
+      const reg = registerContentMedia({
+        mimeType: typeof req.body?.mimeType === "string" ? req.body.mimeType : "video/mp4",
+        base64: req.body.videoBase64,
+        filename: typeof req.body?.filename === "string" ? req.body.filename : undefined,
+      });
+      if (!reg.ok) return res.status(422).json({ success: false, code: reg.code, error: reg.error });
+      item.mediaRef = reg.mediaRef!;
+      await persistContentMedia();
+    }
     if (typeof req.body?.title === "string") item.title = req.body.title.trim();
     if (typeof req.body?.description === "string") item.description = req.body.description;
     if (Array.isArray(req.body?.tags)) item.tags = req.body.tags.map((t: any) => String(t).trim()).filter(Boolean);
@@ -5746,7 +5858,14 @@ app.post("/api/platforms/youtube/content/queue/:id/review", requireOwner, async 
 
   // موافقة صرفة: حالة APPROVED بلا تنفيذ (ينتظر قراراً/تنفيذاً آلياً لاحقاً).
   if (action === "approve") {
-    const mapped = reviewActionToState("approve", normalizeWatcherControls(watcherState.controls), item.publishAt);
+    const hasMedia = Boolean(item.mediaRef && contentMediaBytes(item.mediaRef));
+    const mapped = reviewActionToState("approve", normalizeWatcherControls(watcherState.controls), item.publishAt, hasMedia);
+    if (mapped.state !== "APPROVED") {
+      item.stateReason = mapped.reason; item.code = mapped.code; item.updatedAt = new Date().toISOString();
+      pushContentHistory(item, { action: "review_approve_blocked", actor: user.id, detail: mapped.reason, result: mapped.code });
+      await persistWatcherState();
+      return res.status(409).json({ success: false, action, code: mapped.code, error: mapped.reason, item: contentQueueView().find((q) => q.id === item.id) });
+    }
     item.state = mapped.state; item.code = mapped.code; item.stateReason = mapped.reason;
     item.updatedAt = new Date().toISOString();
     pushContentHistory(item, { action: "approved", actor: user.id, detail: note, result: item.state });
@@ -5755,8 +5874,9 @@ app.post("/api/platforms/youtube/content/queue/:id/review", requireOwner, async 
     return res.json({ success: true, action, item: contentQueueView().find((q) => q.id === item.id) });
   }
 
-  // نشر الآن / جدولة: تنفيذ حقيقي عبر المنفّذ المركزي (كل البوابات).
-  const mapped = reviewActionToState(action as ContentReviewAction, normalizeWatcherControls(watcherState.controls), item.publishAt);
+  // نشر الآن / جدولة: تنفيذ حقيقي عبر المنفّذ المركزي (كل البوابات + مادة فعلية).
+  const hasMedia = Boolean(item.mediaRef && contentMediaBytes(item.mediaRef));
+  const mapped = reviewActionToState(action as ContentReviewAction, normalizeWatcherControls(watcherState.controls), item.publishAt, hasMedia);
   if (mapped.state !== "APPROVED") {
     item.state = mapped.state; item.code = mapped.code; item.stateReason = mapped.reason;
     item.updatedAt = new Date().toISOString();

@@ -37,7 +37,7 @@ const stateDir = mkdtempSync(join(tmpdir(), 'gharabi-content-'));
 let proc: ChildProcess | null = null;
 let log = '';
 let ytServer: { stop: () => Promise<void> } | null = null;
-const VIDEO_B64 = Buffer.from('FAKE-MP4-BYTES-'.repeat(64)).toString('base64');
+const VIDEO_B64 = Buffer.concat([Buffer.from([0, 0, 0, 0x20]), Buffer.from('ftypisom'), Buffer.alloc(256, 7)]).toString('base64');
 
 function startApp(ytBase: string): void {
   log = '';
@@ -105,6 +105,39 @@ async function main(): Promise<void> {
   const noMedia = await createDraft(auth, { title: 'مقطع بلا مادة' });
   check('بلا مادة => العنصر ليس APPROVED', noMedia.item?.state !== 'APPROVED', String(noMedia.item?.state));
   check('بلا مادة => لا رفع', mockState.lastUploadPath === null);
+  check('بلا مادة => hasMedia=false صريح', noMedia.item?.hasMedia === false && noMedia.item?.mediaState === 'MEDIA_REQUIRED');
+  check('بلا مادة => العمليات المتاحة بلا موافقة/نشر/جدولة', Array.isArray(noMedia.item?.allowedActions) && !noMedia.item.allowedActions.includes('approve') && !noMedia.item.allowedActions.includes('publish_now') && !noMedia.item.allowedActions.includes('schedule'));
+  check('بلا مادة => الرفض/التعديل/الإلغاء متاحة', ['reject', 'edit', 'cancel'].every((a) => noMedia.item?.allowedActions?.includes(a)));
+  const noMediaApprove = await review(auth, noMedia.item.id, { action: 'approve' });
+  check('موافقة بلا مادة => 409 MEDIA_REQUIRED', noMediaApprove.status === 409 && (await noMediaApprove.json()).code === 'MEDIA_REQUIRED', String(noMediaApprove.status));
+  const noMediaPublish = await review(auth, noMedia.item.id, { action: 'publish_now' });
+  check('نشر بلا مادة => 409', noMediaPublish.status === 409, String(noMediaPublish.status));
+  const noMediaSchedule = await review(auth, noMedia.item.id, { action: 'schedule' });
+  check('جدولة بلا مادة => 409', noMediaSchedule.status === 409, String(noMediaSchedule.status));
+  check('لا رفع بعد محاولات النشر بلا مادة', mockState.lastUploadPath === null);
+
+  group('2ب) ضوابط المادة: رفض الفيديو الوهمي/غير الصالح/الكبير');
+  const emptyB64 = await createDraft(auth, { title: 'فارغ', videoBase64: '' });
+  check('base64 فارغ => لا مادة (DRAFT)', emptyB64.item?.hasMedia === false, String(emptyB64.item?.state));
+  const invalidB64 = await fetch(`${BASE}/api/platforms/youtube/content/drafts`, { method: 'POST', headers: auth, body: JSON.stringify({ title: 'مزيف', videoBase64: '!!!not-base64!!!' }) });
+  check('base64 غير صالح => 422 MEDIA_INVALID', invalidB64.status === 422 && (await invalidB64.json()).code === 'MEDIA_INVALID', String(invalidB64.status));
+  const textAsVideo = await fetch(`${BASE}/api/platforms/youtube/content/drafts`, { method: 'POST', headers: auth, body: JSON.stringify({ title: 'نص كفيديو', videoBase64: Buffer.from('hello this is plain text not a video').toString('base64') }) });
+  check('نص عادي كفيديو => 422 MEDIA_INVALID', textAsVideo.status === 422 && (await textAsVideo.json()).code === 'MEDIA_INVALID', String(textAsVideo.status));
+  const wrongMime = await fetch(`${BASE}/api/platforms/youtube/content/drafts`, { method: 'POST', headers: auth, body: JSON.stringify({ title: 'نوع خاطئ', mimeType: 'application/json', videoBase64: VIDEO_B64 }) });
+  check('نوع غير مطابق => 422 MEDIA_INVALID', wrongMime.status === 422 && (await wrongMime.json()).code === 'MEDIA_INVALID', String(wrongMime.status));
+  const wrongExt = await fetch(`${BASE}/api/platforms/youtube/content/drafts`, { method: 'POST', headers: auth, body: JSON.stringify({ title: 'امتداد خاطئ', filename: 'clip.webm', mimeType: 'video/mp4', videoBase64: VIDEO_B64 }) });
+  check('امتداد لا يطابق النوع => 422 MEDIA_INVALID', wrongExt.status === 422, String(wrongExt.status));
+  const bigBytes = Buffer.concat([Buffer.from([0, 0, 0, 0x20]), Buffer.from('ftypisom'), Buffer.alloc(13 * 1024 * 1024, 7)]);
+  const oversized = await fetch(`${BASE}/api/platforms/youtube/content/drafts`, { method: 'POST', headers: auth, body: JSON.stringify({ title: 'كبير', videoBase64: bigBytes.toString('base64') }) });
+  check('فيديو أكبر من الحد => 422 MEDIA_TOO_LARGE', oversized.status === 422 && (await oversized.json()).code === 'MEDIA_TOO_LARGE', String(oversized.status));
+
+  group('2ج) إرفاق مادة عبر التعديل => يصبح قابلاً للاعتماد');
+  const incomplete = await createDraft(auth, { title: 'محتوى ناقص للاستكمال' });
+  check('عنصر ناقص عند DRAFT', incomplete.item?.hasMedia === false);
+  const attachRes = await review(auth, incomplete.item.id, { action: 'edit', videoBase64: VIDEO_B64, mimeType: 'video/mp4', filename: 'clip.mp4' });
+  const attachBody = await attachRes.json();
+  check('التعديل بإرفاق مادة نجح', attachRes.status === 200 && attachBody.item?.hasMedia === true, JSON.stringify(attachBody.item?.hasMedia));
+  check('بعد الإرفاق تُتاح الموافقة/النشر', attachBody.item?.allowedActions?.includes('approve') && attachBody.item?.allowedActions?.includes('publish_now'));
 
   group('3) محتوى آمن وواضح + نشر آلي ممنوح => نشر حقيقي عبر YouTube');
   mockState.uploadedVideoId = 'vid_content_0001';
@@ -224,6 +257,12 @@ async function main(): Promise<void> {
   check('API فيه مسارات المحتوى', apiSrc.includes('/api/platforms/youtube/content/queue') && apiSrc.includes('/review') && apiSrc.includes('/drafts'));
   check('لوحة الطابور تستدعيها', panelSrc.includes('getYouTubeContentQueue') && panelSrc.includes('reviewYouTubeContentItem'));
   check('اللوحة مدمجة في مدير التشغيل', opsSrc.includes('YouTubeContentQueuePanel'));
+  // لا كتابة base64 يدوياً: المدخل الآن اختيار ملف حقيقي من الجهاز.
+  check('لا حقل base64 يدوي في الواجهة', !panelSrc.includes('بايتات الفيديو base64') && !panelSrc.includes('placeholder="بايتات'));
+  check('الواجهة توفّر اختيار ملف فيديو حقيقي', panelSrc.includes('type="file"') && panelSrc.includes('accept="video/*"') && panelSrc.includes('اختيار فيديو'));
+  check('الواجهة تتحقق من الحجم والنوع قبل الإرسال', panelSrc.includes('CONTENT_UPLOAD_MAX_BYTES') && panelSrc.includes('ALLOWED_VIDEO_TYPES'));
+  check('الواجهة ترسل base64 داخلياً مع اسم الملف والنوع', panelSrc.includes('videoBase64: video.base64') && panelSrc.includes('filename: video.name'));
+  check('الواجهة تحترم allowedActions من الخادم', panelSrc.includes('allowedActions'));
 }
 
 main()

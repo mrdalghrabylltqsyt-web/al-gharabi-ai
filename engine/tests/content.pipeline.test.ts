@@ -18,8 +18,11 @@ import {
   reviewActionToState,
   isValidContentReviewAction,
   suggestScheduleTime,
+  filterContentActions,
+  contentItemMediaState,
   CONTENT_STATES,
   CONTENT_STATE_LABELS_AR,
+  CONTENT_REVIEW_ACTIONS,
 } from '../social/contentPipeline';
 import { defaultWatcherControls, type YouTubeWatcherControls } from '../social/youtubeWatcher';
 
@@ -125,6 +128,15 @@ const on: YouTubeWatcherControls = { ...defaultWatcherControls(), enabled: true,
   check('9: نشر الآن + Kill Switch => REVIEW_REQUIRED', reviewActionToState('publish_now', { ...on, paused: true }).state === 'REVIEW_REQUIRED');
   check('9: إجراءات المراجعة الست صالحة', ['approve', 'reject', 'edit', 'publish_now', 'schedule', 'cancel'].every(isValidContentReviewAction));
   check('9: إجراء مجهول مرفوض', isValidContentReviewAction('hack') === false);
+  // حجب العمليات التي تحتاج مادة عند غياب الفيديو (مصدر واحد للواجهة والخادم).
+  check('9: موافقة بلا مادة => MEDIA_REQUIRED', reviewActionToState('approve', on, null, false).code === 'MEDIA_REQUIRED');
+  check('9: نشر الآن بلا مادة => مرفوض', reviewActionToState('publish_now', on, null, false).state === 'REVIEW_REQUIRED');
+  check('9: جدولة بلا مادة => مرفوض', reviewActionToState('schedule', on, '2030-01-01T00:00:00Z', false).state === 'REVIEW_REQUIRED');
+  check('9: الرفض يبقى مسموحاً بلا مادة', reviewActionToState('reject', on, null, false).state === 'REJECTED');
+  check('9: التعديل يبقى مسموحاً بلا مادة', reviewActionToState('edit', on, null, false).state === 'DRAFT');
+  check('9: filterContentActions بلا مادة يخفي الموافقة/النشر/الجدولة', JSON.stringify(filterContentActions(CONTENT_REVIEW_ACTIONS, false)) === JSON.stringify(['reject', 'edit', 'cancel']));
+  check('9: filterContentActions مع مادة يُبقي الكل', filterContentActions(CONTENT_REVIEW_ACTIONS, true).length === 6);
+  check('9: contentItemMediaState يعلن المادة المطلوبة بصدق', contentItemMediaState({ mediaRef: '', hasMedia: false }) === 'MEDIA_REQUIRED' && contentItemMediaState({ hasMedia: true }) === 'COMPLETE');
 }
 
 // --- 10) الملخص والبطاقات (مصدر واحد) ---

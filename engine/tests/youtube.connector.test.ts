@@ -392,16 +392,21 @@ async function integrationTests(): Promise<void> {
     check('الرد المكرر مرفوض', reply2.success !== true && (reply2.code === 'DUPLICATE_REPLY' || reply2.success === false));
 
     group('12g) تكامل: رفع فيديو حقيقي + جدولة publishAt + منع التكرار');
-    const publishNow = await (await fetch(`${BASE}/api/platforms/youtube/publish`, { method: 'POST', headers: auth, body: JSON.stringify({ title: 'فيديو جديد', description: 'وصف', approved: true, privacyStatus: 'public', videoBase64: Buffer.from('fake-video-bytes').toString('base64') }) })).json();
+    const MP4_B64 = Buffer.concat([Buffer.from([0, 0, 0, 0x20]), Buffer.from('ftypisom'), Buffer.alloc(256, 7)]).toString('base64');
+    const publishNow = await (await fetch(`${BASE}/api/platforms/youtube/publish`, { method: 'POST', headers: auth, body: JSON.stringify({ title: 'فيديو جديد', description: 'وصف', approved: true, privacyStatus: 'public', videoBase64: MP4_B64 }) })).json();
     check('الرفع الفوري نجح', publishNow.success === true && publishNow.externalVideoId === mock.state.uploadedVideoId);
     check('المسار الرسمي uploadType=resumable مُستخدم', (mock.state.lastUploadPath || '').includes('uploadType=resumable'));
-    const publishDup = await (await fetch(`${BASE}/api/platforms/youtube/publish`, { method: 'POST', headers: auth, body: JSON.stringify({ title: 'فيديو جديد', description: 'وصف', approved: true, privacyStatus: 'public', videoBase64: Buffer.from('fake-video-bytes').toString('base64') }) })).json();
+    const publishDup = await (await fetch(`${BASE}/api/platforms/youtube/publish`, { method: 'POST', headers: auth, body: JSON.stringify({ title: 'فيديو جديد', description: 'وصف', approved: true, privacyStatus: 'public', videoBase64: MP4_B64 }) })).json();
     check('الرفع المكرر مرفوض بـDUPLICATE_PUBLISH', publishDup.code === 'DUPLICATE_PUBLISH');
-    const schedule = await (await fetch(`${BASE}/api/platforms/youtube/publish`, { method: 'POST', headers: auth, body: JSON.stringify({ title: 'فيديو مجدول', description: 'وصف', approved: true, publishAt: '2027-01-01T10:00', videoBase64: Buffer.from('scheduled-bytes').toString('base64') }) })).json();
+    const schedule = await (await fetch(`${BASE}/api/platforms/youtube/publish`, { method: 'POST', headers: auth, body: JSON.stringify({ title: 'فيديو مجدول', description: 'وصف', approved: true, publishAt: '2027-01-01T10:00', videoBase64: MP4_B64 }) })).json();
     check('الجدولة نجحت بحالة scheduled', schedule.success === true && schedule.scheduled === true);
     check('publishAt مُرسل إلى YouTube بحالة private', mock.state.lastUploadBody?.status?.publishAt && mock.state.lastUploadBody?.status?.privacyStatus === 'private');
     const publishNoMedia = await (await fetch(`${BASE}/api/platforms/youtube/publish`, { method: 'POST', headers: auth, body: JSON.stringify({ title: 'بلا مادة', approved: true }) })).json();
     check('لا رفع بلا مادة فعلية => MEDIA_REQUIRED', publishNoMedia.code === 'MEDIA_REQUIRED');
+    const publishFakeMedia = await (await fetch(`${BASE}/api/platforms/youtube/publish`, { method: 'POST', headers: auth, body: JSON.stringify({ title: 'نص وهمي', description: 'وصف', approved: true, videoBase64: Buffer.from('this is not a video at all').toString('base64') }) })).json();
+    check('رفض مادة وهمية (نص عادي ليس فيديو) => MEDIA_INVALID', publishFakeMedia.code === 'MEDIA_INVALID');
+    const publishBadMime = await (await fetch(`${BASE}/api/platforms/youtube/publish`, { method: 'POST', headers: auth, body: JSON.stringify({ title: 'نوع خاطئ', description: 'وصف', approved: true, mimeType: 'application/json', videoBase64: MP4_B64 }) })).json();
+    check('رفض فيديو بنوع غير مطابق => MEDIA_INVALID', publishBadMime.code === 'MEDIA_INVALID');
 
     group('12h) تكامل: تحديث فيديو حقيقي (videos.update)');
     const upd = await (await fetch(`${BASE}/api/platforms/youtube/video-update`, { method: 'POST', headers: auth, body: JSON.stringify({ videoId: 'vid_alpha', title: 'عنوان محدّث', description: 'وصف محدّث' }) })).json();

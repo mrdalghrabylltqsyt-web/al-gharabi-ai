@@ -28,6 +28,27 @@ const REVIEW_BUTTONS: Array<{ action: string; label: string; danger?: boolean }>
   { action: 'cancel', label: 'إلغاء', danger: true },
 ];
 
+const MAX_VIDEO_MB = 12;
+const ALLOWED_VIDEO_TYPES = ['video/mp4', 'video/webm', 'video/quicktime', 'video/x-matroska', 'video/x-msvideo'];
+const CONTENT_UPLOAD_MAX_BYTES = MAX_VIDEO_MB * 1024 * 1024;
+
+const fmtBytes = (n: number) => {
+  if (!n) return '0';
+  if (n >= 1048576) return `${(n / 1048576).toFixed(2)} MB`;
+  if (n >= 1024) return `${(n / 1024).toFixed(1)} KB`;
+  return `${n} B`;
+};
+// يقرأ الملف فعلياً ويحوّله base64 داخلياً (النقل الداخلي) — المستخدم لا يرى base64 إطلاقاً.
+const fileToBase64 = (file: File) => new Promise<string>((resolve, reject) => {
+  const reader = new FileReader();
+  reader.onerror = () => reject(new Error('تعذر قراءة الملف'));
+  reader.onload = () => {
+    const s = String(reader.result || '');
+    resolve(s.includes(',') ? s.slice(s.indexOf(',') + 1) : s);
+  };
+  reader.readAsDataURL(file);
+});
+
 export function YouTubeContentQueuePanel() {
   const { currentUser } = useApp() as any;
   const isOwner = currentUser?.role === 'owner';
@@ -37,7 +58,9 @@ export function YouTubeContentQueuePanel() {
   const [note, setNote] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [showCreate, setShowCreate] = useState(false);
-  const [form, setForm] = useState({ title: '', description: '', tags: '', publishAt: '', videoBase64: '', mimeType: 'video/mp4' });
+  const [form, setForm] = useState({ title: '', description: '', tags: '', publishAt: '' });
+  const [video, setVideo] = useState<{ name: string; size: number; type: string; base64: string } | null>(null);
+  const [mediaError, setMediaError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     try {
@@ -66,21 +89,44 @@ export function YouTubeContentQueuePanel() {
   const create = async () => {
     setBusy(true); setNote(null); setError(null);
     try {
+      if (!video) { setMediaError('اختر ملف فيديو حقيقي أولاً — لا يمكن إنشاء محتوى بلا مادة.'); return; }
       const payload: Record<string, any> = {
         title: form.title, description: form.description,
         tags: form.tags ? form.tags.split(',').map((t) => t.trim()).filter(Boolean) : [],
-        publishAt: form.publishAt || undefined, mimeType: form.mimeType || undefined,
+        publishAt: form.publishAt || undefined,
+        mimeType: video.type || 'video/mp4', filename: video.name, videoBase64: video.base64,
       };
-      if (form.videoBase64.trim()) payload.videoBase64 = form.videoBase64.trim();
       const res = await apiService.createYouTubeContentDraft(payload);
       setNote(`أُضيف عنصر المحتوى بحالة: ${res?.item?.stateLabelAr || res?.item?.state}${res?.decision?.reason ? ` — ${res.decision.reason}` : ''}`);
       setShowCreate(false);
-      setForm({ title: '', description: '', tags: '', publishAt: '', videoBase64: '', mimeType: 'video/mp4' });
+      setForm({ title: '', description: '', tags: '', publishAt: '' });
+      setVideo(null); setMediaError(null);
       await load();
     } catch (e: any) {
       setError(e?.message || 'تعذر إنشاء العنصر');
     } finally { setBusy(false); }
   };
+
+  const onPickVideo = async (file: File | null | undefined) => {
+    setMediaError(null); setError(null);
+    if (!file) { setVideo(null); return; }
+    if (!ALLOWED_VIDEO_TYPES.includes(file.type) && file.type !== '') {
+      setVideo(null); setMediaError(`نوع الفيديو غير مدعوم (${file.type}). المسموح: MP4/WebM/MOV/MKV/AVI.`); return;
+    }
+    if (file.size > CONTENT_UPLOAD_MAX_BYTES) {
+      setVideo(null); setMediaError(`حجم الفيديو أكبر من الحد (${MAX_VIDEO_MB}MB). اختر ملفاً أصغر.`); return;
+    }
+    if (file.size < 12) { setVideo(null); setMediaError('الملف أصغر من أن يكون فيديو صالحاً.'); return; }
+    try {
+      const base64 = await fileToBase64(file);
+      if (!base64) { setVideo(null); setMediaError('تعذر قراءة محتوى الملف.'); return; }
+      setVideo({ name: file.name, size: file.size, type: file.type || 'video/mp4', base64 });
+    } catch (e: any) {
+      setVideo(null); setMediaError(e?.message || 'تعذر قراءة الملف.');
+    }
+  };
+
+  const clearVideo = () => { setVideo(null); setMediaError(null); };
 
   const suggestTime = async () => {
     setBusy(true); setNote(null); setError(null);
@@ -119,11 +165,39 @@ export function YouTubeContentQueuePanel() {
           <input className="w-full bg-slate-800 border border-slate-700 text-slate-100 rounded-lg px-3 py-2 text-sm" placeholder="العنوان (مطلوب)" value={form.title} onChange={(e) => setForm({ ...form, title: e.target.value })} />
           <textarea className="w-full bg-slate-800 border border-slate-700 text-slate-100 rounded-lg px-3 py-2 text-sm" rows={3} placeholder="الوصف" value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} />
           <input className="w-full bg-slate-800 border border-slate-700 text-slate-100 rounded-lg px-3 py-2 text-sm" placeholder="وسوم مفصولة بفواصل" value={form.tags} onChange={(e) => setForm({ ...form, tags: e.target.value })} />
-          <input className="w-full bg-slate-800 border border-slate-700 text-slate-100 rounded-lg px-3 py-2 text-sm" type="datetime-local" value={form.publishAt} onChange={(e) => setForm({ ...form, publishAt: e.target.value })} />
-          <textarea className="w-full bg-slate-800 border border-slate-700 text-slate-100 rounded-lg px-3 py-2 text-sm font-mono" rows={2} placeholder="بايتات الفيديو base64 (مطلوبة فعلياً للرفع — لا يُولّد النظام فيديو وهمياً)" value={form.videoBase64} onChange={(e) => setForm({ ...form, videoBase64: e.target.value })} />
+          <div>
+            <label className="block text-xs text-slate-400 mb-1">وقت النشر (اتركه فارغاً للنشر الفوري)</label>
+            <input className="w-full bg-slate-800 border border-slate-700 text-slate-100 rounded-lg px-3 py-2 text-sm" type="datetime-local" value={form.publishAt} onChange={(e) => setForm({ ...form, publishAt: e.target.value })} />
+          </div>
+          {/* اختيار فيديو حقيقي من الجهاز (يعمل على الجوال والكمبيوتر) — بلا كتابة base64 يدوياً. */}
+          <div className="space-y-2">
+            <label className="block text-xs text-slate-400">الفيديو (مطلوب فعلياً للرفع — لا يُولّد النظام فيديو وهمياً)</label>
+            <input id="youtube-content-video-input" type="file" accept="video/*" className="hidden"
+              onChange={(e) => onPickVideo(e.target.files?.[0])} />
+            {!video ? (
+              <div className="flex flex-wrap items-center gap-2">
+                <label htmlFor="youtube-content-video-input"
+                  className="inline-flex items-center gap-2 px-4 py-2 rounded-lg text-sm bg-slate-800 border border-slate-700 text-slate-100 cursor-pointer hover:bg-slate-700">
+                  📹 اختيار فيديو
+                </label>
+                <span className="text-[11px] text-slate-500">MP4/MOV/WebM/MKV/AVI — حتى {MAX_VIDEO_MB}MB</span>
+              </div>
+            ) : (
+              <div className="bg-slate-800/60 border border-slate-700 rounded-xl p-3 text-xs text-slate-300 space-y-1">
+                <div>الفيديو: <span className="font-semibold text-slate-100">{video.name}</span></div>
+                <div>الحجم: {fmtBytes(video.size)} • النوع: {video.type}</div>
+                <div className="text-emerald-300">✓ جاهز للرفع</div>
+                <div className="flex gap-2 mt-1">
+                  <label htmlFor="youtube-content-video-input" className="px-3 py-1 rounded-lg text-xs bg-slate-700 text-slate-100 cursor-pointer">استبدال</label>
+                  <button onClick={clearVideo} className="px-3 py-1 rounded-lg text-xs bg-rose-600/20 text-rose-200 border border-rose-600/40">إلغاء الاختيار</button>
+                </div>
+              </div>
+            )}
+            {mediaError ? <div className="text-[11px] text-rose-300">{mediaError}</div> : null}
+          </div>
           <div className="flex gap-2">
-            <button disabled={busy || !form.title.trim()} onClick={create} className="px-4 py-1.5 rounded-lg text-sm bg-emerald-600 hover:bg-emerald-500 text-white disabled:opacity-50">إنشاء وتصنيف</button>
-            <button disabled={busy} onClick={() => setShowCreate(false)} className="px-4 py-1.5 rounded-lg text-sm bg-slate-800 border border-slate-700 text-slate-200">إلغاء</button>
+            <button disabled={busy || !form.title.trim() || !video} onClick={create} className="px-4 py-1.5 rounded-lg text-sm bg-emerald-600 hover:bg-emerald-500 text-white disabled:opacity-50">إنشاء وتصنيف</button>
+            <button disabled={busy} onClick={() => { setShowCreate(false); clearVideo(); }} className="px-4 py-1.5 rounded-lg text-sm bg-slate-800 border border-slate-700 text-slate-200">إلغاء</button>
           </div>
           <p className="text-[11px] text-slate-500">المحتوى التجاري بمعلومة غير موثّقة يذهب للمراجعة البشرية ولا يُنشر آلياً. الرفع بلا بايتات يُرفض (MEDIA_REQUIRED).</p>
         </div>
@@ -143,17 +217,25 @@ export function YouTubeContentQueuePanel() {
               {it.stateReason ? <div className="text-xs text-slate-400 mt-1">السبب: {it.stateReason}</div> : null}
               <div className="text-[11px] text-slate-500 mt-1">
                 الحساسية: {it.sensitivity} • المصدر: {it.source} • {it.publishAt ? `جدولة: ${new Date(it.publishAt).toLocaleString('ar-IQ')}` : 'نشر فوري'}
+                {it.mediaState ? ` • المادة: ${it.mediaStateLabelAr}${it.mediaBytes ? ` (${fmtBytes(it.mediaBytes)})` : ''}` : ''}
                 {it.externalVideoId ? ` • معرّف: ${it.externalVideoId}` : ''}
                 {it.url ? ` • ${it.url}` : ''}
               </div>
-              {isOwner && !['REJECTED', 'CANCELLED', 'PUBLISHED', 'VERIFIED', 'SCHEDULED'].includes(it.state) ? (
+              {!it.hasMedia && !['REJECTED', 'CANCELLED'].includes(it.state) ? (
+                <div className="text-[11px] text-amber-300 mt-1">لا توجد مادة فيديو فعلية؛ لا يُسمح بالاعتماد/النشر/الجدولة حتى إضافة فيديو.</div>
+              ) : null}
+              {isOwner && Array.isArray(it.allowedActions) && it.allowedActions.length ? (
                 <div className="flex flex-wrap gap-1.5 mt-2">
-                  {REVIEW_BUTTONS.map((b) => (
-                    <button key={b.action} disabled={busy} onClick={() => act(it.id, b.action)}
-                      className={`px-2.5 py-1 rounded-lg text-xs border disabled:opacity-50 ${b.danger ? 'bg-rose-600/20 text-rose-200 border-rose-600/40' : 'bg-slate-800 text-slate-200 border-slate-700'}`}>
-                      {b.label}
-                    </button>
-                  ))}
+                  {it.allowedActions.map((a: string) => {
+                    const b = REVIEW_BUTTONS.find((x) => x.action === a);
+                    if (!b) return null;
+                    return (
+                      <button key={b.action} disabled={busy} onClick={() => act(it.id, b.action)}
+                        className={`px-2.5 py-1 rounded-lg text-xs border disabled:opacity-50 ${b.danger ? 'bg-rose-600/20 text-rose-200 border-rose-600/40' : 'bg-slate-800 text-slate-200 border-slate-700'}`}>
+                        {b.label}
+                      </button>
+                    );
+                  })}
                 </div>
               ) : null}
             </div>

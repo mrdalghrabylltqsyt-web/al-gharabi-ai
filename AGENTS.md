@@ -2437,3 +2437,41 @@ Switch، تصريح 401، منع تكرار، ثبات بعد restart، بلا �
 **لم يُمسّ:** OAuth/scopes/الأسرار، ولا تفويض YouTube ولا المراقب 24/7 ولا `executeYouTubeReply`
 ولا Gemini ولا أي منصة أخرى (Facebook/Instagram/TikTok/Telegram). دورة الرد القائمة تستخدم
 المنفّذ المركزي كما هو.
+
+## رفع فيديو حقيقي في طابور المحتوى + حجب النشر بلا مادة (Batch 19, 2026-09-28)
+
+ملاحظات المالك الفعلي من واجهة الإنتاج كشفت فجوتين حقيقيتين في Batch 18:
+
+1. **الواجهة كانت تطلب كتابة base64 يدوياً.** حقل «بيانات الفيديو base64» كان نصاً حراً؛
+   مستحيل عملياً من الجوال. أُزيل تماماً واستُبدل بزر **«📹 اختيار فيديو»**
+   (`input type=file` بـ`accept="video/*"`) يعمل على Android والكمبيوتر: يقرأ الملف الحقيقي،
+   يتحقق من النوع والحجم (≤12MB) محلياً، يحوّله base64 **داخلياً**، ويعرض الاسم/الحجم/النوع/
+   «✓ جاهز للرفع» مع إمكانية الاستبدال/الإلغاء. المستخدم لا يرى base64 إطلاقاً.
+2. **Draft بلا مادة كانت تُعرض بأزرار نشر/جدولة/موافقة.** الآن المصدر الواحد
+   `filterContentActions`/`contentItemMediaState` في `contentPipeline.ts` يحجب
+   `approve`/`publish_now`/`schedule` بلا مادة حقيقية، ويُعلن `hasMedia`/`mediaState:
+   MEDIA_REQUIRED`/`allowedActions` في `contentQueueView`. الواجهة تعرض الأزرار من
+   `allowedActions` فقط (تبقى: تعديل/رفض/إلغاء)، والخادم يفرض الحجب فعلاً (409
+   `MEDIA_REQUIRED`) فلا يكفي إخفاء الأزرار.
+
+**تحقق فعلي من المادة (خادم):** `validateMediaBytes` + `decodeStrictBase64` يرفضان النص
+العادي/base64 المزيف/payload الفارغ/النوع المصرّح غير المدعوم/عدم تطابق الامتداد مع النوع/
+الحجم > الحد، ويقارنان **توقيع الملف** (ftyp للـMP4/MOV، EBML للـWebM/MKV، RIFF…AVI).
+يُطبَّق في مساري الإنشاء **والتعديل** (لإرفاق فيديو بمسودة ناقصة) وفي `executeYouTubePublish`
+(دفاع مزدوج). أُضيف تقاطع mkv≈webm وmov≈mp4.
+
+**حد الجسم:** `express.json({limit:"256kb"})` العام كان يرفض أي فيديو (16MB base64) قبل
+الوصول للمسار. أُضيف استثناء مضبوط: مسار `/api/platforms/youtube/content/drafts` وحده
+يُترك لمحلّل به حد `20mb` (لا يتجاوز 12MB مادة + base64 ≈16MB)، مع بقاء الحد الصغير
+وحماية `req.rawBody` (توقيع HMAC) كما هي لكل المسارات الأخرى.
+
+اختبارات: `content.pipeline.test.ts` 59 (حجب العمليات بلا مادة)،
+`content.pipeline.integration.test.ts` 66 (بلا مادة/وهمي/نوع خاطئ/حجم/إرفاق عبر تعديل/
+allowedActions)، `youtube.connector.test.ts` 227 (تحقق المادة في مسار النشر). final-audit
+**652**. الرفض نهائي (`REJECTED`) ولا يُنشر/يُجدول آلياً، وREJECTED لا تُقبل قرارات جديدة
+غير التعديل. الواجهة تفصل بوضوح «تعليق يحتاج مراجعة» عن «محتوى يحتاج مراجعة».
+
+**لم يُمسّ:** OAuth/scopes/refresh token، ولا تفويض YouTube (reply/publish/schedule/
+update_video)، ولا دورة المراقب (cadence/تصنيف/autoReply/escalation/التقرير)، ولا حماية
+Gemini (كل التحقق أعلاه حتمي بلا AI)، ولا Facebook/Instagram/TikTok/Telegram.
+

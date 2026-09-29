@@ -362,10 +362,37 @@ export function isValidContentReviewAction(action: unknown): action is ContentRe
 }
 
 /**
+ * العمليات التي لا يجوز أن تُتاح أو تُنفَّذ بلا مادة فيديو حقيقية.
+ * الموافقة/النشر/الجدولة تحتاج بايتات فعلية؛ الرفض/التعديل/الإلغاء لا.
+ * مصدر واحد تستخدمه الواجهة (لإخفاء الأزرار) والخادم (لمنع التنفيذ فعلاً).
+ */
+export const CONTENT_MEDIA_REQUIRED_ACTIONS: ReadonlyArray<ContentReviewAction> = Object.freeze(['approve', 'publish_now', 'schedule']);
+
+export function contentActionRequiresMedia(action: ContentReviewAction): boolean {
+  return (CONTENT_MEDIA_REQUIRED_ACTIONS as readonly string[]).includes(action);
+}
+
+/** يُخفي عمليات النشر/الجدولة/الموافقة حين لا توجد مادة حقيقية (يبقي الرفض/التعديل/الإلغاء). */
+export function filterContentActions(actions: ReadonlyArray<ContentReviewAction>, hasMedia: boolean): ContentReviewAction[] {
+  return actions.filter((a) => hasMedia || !contentActionRequiresMedia(a));
+}
+
+/** حالة المادة الصادقة لعنصر محتوى: COMPLETE فقط عند وجود مادة فعلية (بلا اختلاق). */
+export function contentItemMediaState(item: { mediaRef?: string | null; hasMedia?: boolean }): 'COMPLETE' | 'MEDIA_REQUIRED' {
+  const ok = item.hasMedia === true || Boolean(String(item.mediaRef || '').trim());
+  return ok ? 'COMPLETE' : 'MEDIA_REQUIRED';
+}
+
+/**
  * يحوّل قرار المالك إلى الحالة الهدف (حتمي). `publish_now`/`schedule` يحتاجان
  * تمكين الإذن والابتعاد عن Kill Switch (تُفحص بالبوابة في الخادم قبل التنفيذ).
+ * ويحتاجان أيضًا مادة فيديو حقيقية: بلا مادة لا موافقة/نشر/جدولة (MEDIA_REQUIRED).
  */
-export function reviewActionToState(action: ContentReviewAction, controls: YouTubeWatcherControls, publishAt?: string | null): { state: ContentState; code: string; reason: string } {
+export function reviewActionToState(action: ContentReviewAction, controls: YouTubeWatcherControls, publishAt?: string | null, hasMedia = true): { state: ContentState; code: string; reason: string } {
+  // لا موافقة/نشر/جدولة بلا مادة فعلية — لا يُولّد النظام فيديو وهمياً.
+  if (!hasMedia && contentActionRequiresMedia(action)) {
+    return { state: 'REVIEW_REQUIRED', code: 'MEDIA_REQUIRED', reason: 'لا يمكن اعتماد/نشر/جدولة محتوى بلا مادة فيديو حقيقية؛ أضف الفيديو أولاً.' };
+  }
   switch (action) {
     case 'reject': return { state: 'REJECTED', code: 'OWNER_REJECTED', reason: 'رفض المالك المحتوى؛ لا نشر آلي بعد الآن.' };
     case 'cancel': return { state: 'CANCELLED', code: 'OWNER_CANCELLED', reason: 'ألغى المالك عنصر المحتوى.' };
