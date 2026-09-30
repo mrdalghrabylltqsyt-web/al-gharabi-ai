@@ -27,6 +27,7 @@ import {
   buildSourceBundle,
   verifySourceBundle,
   listSourceBundleFiles,
+  classifyDbDump,
   SOURCE_BUNDLE_NAME,
   DB_DUMP_NAME,
 } from '../../../tools/dr/cloud-lib.mjs';
@@ -36,6 +37,22 @@ const failures: string[] = [];
 function check(name: string, condition: boolean, detail = ''): void {
   if (condition) passed += 1;
   else failures.push(`${name}${detail ? ` — ${detail}` : ''}`);
+}
+
+/** هل يُقبل المحتوى كنسخة قاعدة بيانات مشفّرة صحيحة؟ */
+function classifyOk(content: any): boolean {
+  return classifyDbDump(content).allowed === true;
+}
+
+/** هل يُرفض المحتوى كنسخة مشفّرة (خام/تالف/قصير)؟ */
+function classifyRaw(content: any): boolean {
+  return classifyDbDump(content).allowed === false;
+}
+
+/** طول سطر `data:` الوحيد في نسخة مشفّرة (لكشف أن الحِمل سطر واحد ضخم). */
+function singleDataLineLength(payload: string): number {
+  const line = String(payload ?? '').split(/\r?\n/).find((l) => l.startsWith('data:'));
+  return line ? line.length : 0;
 }
 
 const ENV = { DRIVE_DB_BACKUP_KEY: 'd'.repeat(64) };
@@ -325,6 +342,43 @@ async function main() {
     check('403-safe: verified false', r.verified !== true);
     check('403-safe: nothing uploaded', r.uploaded === 0);
     check('403-safe: google detail surfaced', r.errorDetails && r.errorDetails.googleReason === 'insufficientPermissions');
+  }
+
+  // ============ 17) السبب الجذري: نسخة DB كبيرة لا تُسقط المكدس ============
+  // السطر `data:` في النسخة المشفّرة سطر base64 واحد طويل ينمو مع حجم القاعدة.
+  // النمط السابق للتحقق منه استخدم كمّية regex غير محدودة `{16,}` فاستنفد المكدس
+  // (RangeError: Maximum call stack size exceeded) عند بضعة ميغابايت. هذه المجموعة
+  // تعيد إنتاج الشرط الحقيقي وتثبت أن الإصلاح يتعامل مع أحجام إنتاجية فعلاً.
+  {
+    // 5MB نص خام => سطر base64 واحد ~7MB: كان يكفي سابقاً لإسقاط المكدس.
+    const bigSql = JSON.stringify({ backend: 'postgres', rows: [{ blob: 'y'.repeat(5 * 1024 * 1024) }] });
+    let encryptThrew = false;
+    let encrypted = null as any;
+    try { encrypted = encrypt(bigSql); } catch { encryptThrew = true; }
+    check('bigdb: encryption does not overflow the stack', encryptThrew === false);
+    check('bigdb: encryption succeeds', Boolean(encrypted && encrypted.ok));
+    check('bigdb: encrypted dump accepted (no stack overflow)', encrypted && classifyOk(encrypted.payload));
+    check('bigdb: single-line payload really is multi-MB', encrypted && singleDataLineLength(encrypted.payload) > 5 * 1024 * 1024);
+
+    // النسخة الكاملة عبر المسار الحقيقي (runBackup) بحجم قاعدة إنتاجي.
+    const state = createFakeDriveState();
+    const store = makeStore(state);
+    const files = [{ path: 'server.ts', content: 'export const x = 1;' }];
+    const r = await runBackup({
+      store,
+      files,
+      dumpDatabase: async () => bigSql,
+      encryptDatabase: encrypt,
+      meta: { commit: 'big1', branch: 'main', repository: 'r/al-gharabi-ai', project: 'al-gharabi-ai' },
+      now: new Date().toISOString(),
+    });
+    check('bigdb: full backup succeeds with production-scale DB', r.state === 'backed_up' && r.verified === true);
+    check('bigdb: no failure reason from overflow', r.reason !== 'Maximum call stack size exceeded' && r.reason !== 'RangeError');
+
+    // الحمايات تبقى صارمة بعد الإصلاح: البيانات الخام وقيمة data القصيرة مرفوضتان.
+    check('bigdb: raw SQL still rejected', classifyRaw('CREATE TABLE t(id int);\nINSERT INTO t VALUES (1);'));
+    check('bigdb: short data line still rejected', classifyRaw('GHARABI-DB-DUMP-V1\nencrypted: true\ncipher: aes-256-gcm\ndata: abc\n'));
+    check('bigdb: data line with trailing junk still rejected', classifyRaw('GHARABI-DB-DUMP-V1\nencrypted: true\ncipher: aes-256-gcm\ndata: ' + 'A'.repeat(40) + ' ; DROP TABLE t\n'));
   }
 
   // ============ 16) الهوية المحفوظة تُستخدم بلا إعادة إنشاء ============

@@ -442,6 +442,44 @@ export function listSourceBundleFiles(buffer) {
 // قاعدة البيانات: رفض الخام، قبول المشفّر فقط
 // ---------------------------------------------------------------------------
 
+/** محارف قيمة base64/base64url المسموح بها في سطر `data:` (‎[A-Za-z0-9+/=_-]). */
+function isBase64ishChar(code) {
+  return (
+    (code >= 48 && code <= 57) || // 0-9
+    (code >= 65 && code <= 90) || // A-Z
+    (code >= 97 && code <= 122) || // a-z
+    code === 43 || code === 47 || code === 45 || code === 95 || code === 61 // + / - _ =
+  );
+}
+
+function isAsciiWhitespace(code) {
+  return code <= 32;
+}
+
+/**
+ * يتحقق من وجود سطر `data:` يحمل قيمة مشفّرة (≥16 محرفاً) بلا أي محارف أخرى.
+ *
+ * **لا يستخدم regex**: النمط السابق `/^data:\s*[A-Za-z0-9+/=_-]{16,}\s*$/m`
+ * يُنفّذ الكمّية غير المحدودة `{16,}` على السطر كاملاً داخل محرّك V8، فيستنفد
+ * المكدس C++ عند حِمل ciphertext بmulti-ميغابايت (سطر base64 واحد طويل جداً)
+ * ويُنتج `RangeError: Maximum call stack size exceeded`. الفحص الخطّي هنا
+ * O(n) بالرموز المحلية ولا يلمس مكدس المحرّك، فيتحمّل أي حجم واقعي.
+ */
+function hasValidDataLine(text) {
+  const lines = String(text ?? '').split(/\r?\n/);
+  for (const line of lines) {
+    if (!line.startsWith('data:')) continue;
+    let i = 5;
+    while (i < line.length && isAsciiWhitespace(line.charCodeAt(i))) i += 1;
+    const start = i;
+    while (i < line.length && isBase64ishChar(line.charCodeAt(i))) i += 1;
+    const valueLength = i - start;
+    while (i < line.length && isAsciiWhitespace(line.charCodeAt(i))) i += 1;
+    if (valueLength >= 16 && i === line.length) return true;
+  }
+  return false;
+}
+
 /**
  * يصنّف ملف نسخة قاعدة البيانات: مشفّر مسموح، أو خام مرفوض.
  * الشكل المطلوب: سطر `GHARABI-DB-DUMP-V1` + `encrypted: true` + كتلة ciphertext.
@@ -452,7 +490,7 @@ export function classifyDbDump(content) {
   const hasMagic = lines[0]?.trim() === DB_DUMP_MAGIC;
   const hasEncrypted = /^encrypted:\s*true\s*$/m.test(text);
   const hasCipher = /^cipher:\s*aes-256-gcm\s*$/m.test(text);
-  const hasData = /^data:\s*[A-Za-z0-9+/=_-]{16,}\s*$/m.test(text);
+  const hasData = hasValidDataLine(text);
   const encrypted = hasMagic && hasEncrypted && hasCipher && hasData;
   // إشارات قاعدة بيانات خام (SQL/نسخة نصية) => مرفوضة دائماً.
   const rawSignals = [
