@@ -54,6 +54,30 @@ export interface MemoryEntry {
   limitations: string;
   /** معرّفات مرتبطة (منصة/تجربة/قرار) للربط. */
   refs?: Record<string, string | null>;
+  /** المنصة المرتبطة (أو null للذاكرة العامة). */
+  platform?: string | null;
+  /** مراجع المصادر (أسماء واجهات/سجلات) — بلا أي سرّ. */
+  sourceRefs?: string[];
+  /** خلاصة قصيرة تُستخدم كحقيقة/ملخّص في السجل الدائم. */
+  summary?: string;
+  relatedGoal?: string | null;
+  relatedExperiment?: string | null;
+}
+
+/**
+ * عقد أدنى لعنصر معرفة قابل للتحويل إلى طبقة الحقيقة (`makeKnowledgeItem`)،
+ * يُستخدم لتفادي استيراد دوري بين الذاكرة وطبقة الحقيقة.
+ */
+export interface KnowledgeItemLike {
+  id: string;
+  statement: string;
+  source: string | null;
+  sampleSize: number;
+  derived?: boolean;
+  hypothesis?: boolean;
+  requiresHumanInput?: boolean;
+  confidence?: 'low' | 'medium' | 'high';
+  limitations?: string;
 }
 
 /** قول AI لا يصبح حقيقة تجارية أبداً؛ يُخزَّن كفرضية/ملاحظة قابلة للمراجعة. */
@@ -77,11 +101,19 @@ export function makeMemoryEntry(input: {
   limitations?: string;
   refs?: Record<string, string | null>;
   lastValidatedAt?: string | null;
+  platform?: string | null;
+  sourceRefs?: string[];
+  summary?: string;
+  relatedGoal?: string | null;
+  relatedExperiment?: string | null;
 }): MemoryEntry {
   const trusted = isAiStatementTrusted(input.origin);
   const confidence = trusted
     ? (input.confidence || (input.sampleSize >= 3 ? 'medium' : 'low'))
     : 'low';
+  const sourceRefs = input.sourceRefs && input.sourceRefs.length
+    ? input.sourceRefs
+    : (input.source ? [input.source] : []);
   return {
     id: input.id,
     kind: input.kind,
@@ -99,6 +131,11 @@ export function makeMemoryEntry(input: {
         : 'قول مولَّد بالذكاء الاصطناعي؛ لا يُعتبر حقيقة — يحتاج تأكيداً ببيانات أو مالك.'
     ),
     refs: input.refs,
+    platform: input.platform ?? (input.refs?.platform ?? null),
+    sourceRefs,
+    summary: input.summary || input.statement,
+    relatedGoal: input.relatedGoal ?? null,
+    relatedExperiment: input.relatedExperiment ?? null,
   };
 }
 

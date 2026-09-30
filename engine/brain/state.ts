@@ -17,17 +17,18 @@
 import type { PlatformId } from '../social/adapter';
 import { PLATFORM_SPECS } from '../social/registry';
 import type { BrainDiagnosticsCounters } from '../social/centralBrain';
-import { type GoalDefinition } from './goals/goalEngine';
+import { defineGoal, type GoalDefinition, type GoalKind as GoalType } from './goals/goalEngine';
 import { type KnowledgeItem, summarizeKnowledge, type KnowledgeBase } from './knowledge/truth';
 import { type AudienceModel } from './audience/audienceModel';
 import { type CommercialRelevance } from './market/commercialRelevance';
 import { type Experiment, describeExperiment } from './experiments/experimentEngine';
 import { type TimingRecommendation, describeTimingRecommendation } from './timing/timingModel';
-import { type ExplainableRecommendation } from './strategy/strategyEngine';
+import { type ExplainableRecommendation, type StrategyPlan } from './strategy/strategyEngine';
 import { capabilityMatrix, type PlatformCapabilityRow } from './strategy/capabilityMatrix';
 import { type DecisionExplanation } from './decisions/decisionEngine';
 import { type LearningResult, type OwnerPreference } from './learning/learningLoop';
 import { type Signal, isFresh } from './perception/signals';
+import { type ContentPath } from './strategy/contentIntelligence';
 import { buildCrossPlatformAudienceModel } from './audience/audienceModel';
 import { computeCommercialRelevance } from './market/commercialRelevance';
 import { classifyConversation } from './audience/conversationIntelligence';
@@ -66,6 +67,10 @@ export interface CentralBrainState {
   market: CommercialRelevance | null;
   activeExperiments: Array<{ id: string; description: string; status: Experiment['status']; verdict: Experiment['verdict'] | null }>;
   contentStrategy: ExplainableRecommendation[];
+  /** خطط استراتيجية نطاقية (يومي/أسبوعي/حملة/منصة/جمهور/منتج). */
+  strategies: StrategyPlan[];
+  /** مسار المحتوى الكامل (حاجة → تكييف المنصة) إن توفّرت حاجة ودليل. */
+  contentPath: ContentPath | null;
   timingStrategy: TimingRecommendation | null;
   platformStates: BrainPlatformState[];
   recentOutcomes: string[];
@@ -77,6 +82,10 @@ export interface CentralBrainState {
   limitations: string[];
   signalFreshness: { total: number; fresh: number; stale: number };
   ai: BrainDiagnosticsCounters;
+  /** سجلات الأداء الحقيقية التي حلّلها العقل (للاشتقاق التوافقي، بلا إعادة جمع). */
+  records: PlatformMetricRecord[];
+  /** تعليقات حقيقية بحسب المنصة (المصدر الخام لتحليل الجمهور). */
+  commentsByPlatform: Partial<Record<PlatformId, Array<{ text: string; authorName?: string }>>>;
   note: string;
 }
 
@@ -84,11 +93,18 @@ export interface BuildCentralBrainStateInput {
   platforms: PlatformId[];
   now: number;
   goals?: GoalDefinition | null;
+  /** هدف مختصر يُبنى داخلياً إن لم يُمرَّر `goals` جاهزاً. */
+  goalPrimary?: string | null;
+  goalSecondary?: string | null;
   knowledge?: KnowledgeItem[];
   audience?: AudienceModel | null;
   market?: CommercialRelevance | null;
   experiments?: Experiment[];
   contentStrategy?: ExplainableRecommendation[];
+  /** خطط استراتيجية نطاقية جاهزة من المُجمِّع. */
+  strategies?: StrategyPlan[];
+  /** مسار المحتوى الجاهز من المُجمِّع. */
+  contentPath?: ContentPath | null;
   timing?: TimingRecommendation | null;
   /** سجلات أداء حقيقية (تُقرأ للتحليل فقط). */
   records?: PlatformMetricRecord[];
@@ -96,6 +112,8 @@ export interface BuildCentralBrainStateInput {
   commentsByPlatform?: Partial<Record<PlatformId, Array<{ text: string; authorName?: string }>>>;
   /** اتصال تشغيلي حقيقي لكل منصة (من الخادم). */
   liveConnections?: Partial<Record<PlatformId, { connected: boolean; verified: boolean }>>;
+  /** حالات منصات جاهزة (إن مرّرها المُجمِّع؛ وإلا تُشتق من القدرات + الاتصال). */
+  platformStates?: BrainPlatformState[];
   recentOutcomes?: string[];
   learning?: LearningResult | null;
   ownerPreferences?: OwnerPreference[];
@@ -117,13 +135,18 @@ const EMPTY_COUNTERS: BrainDiagnosticsCounters = {
 export function buildCentralBrainState(input: BuildCentralBrainStateInput): CentralBrainState {
   const matrix = capabilityMatrix(input.platforms);
   const live = input.liveConnections || {};
-  const platformStates: BrainPlatformState[] = matrix.map((row) => ({
+  const platformStates: BrainPlatformState[] = input.platformStates || matrix.map((row) => ({
     platform: row.platform,
     capabilities: row.states,
     realConnector: row.realConnector,
     connected: Boolean(live[row.platform]?.connected),
     verified: Boolean(live[row.platform]?.verified),
   }));
+
+  // الهدف: يُبنى داخلياً من الاسم إن لم يُمرَّر تعريف جاهز — فلا يبقى فارغاً بلا سبب.
+  const goals = input.goals ?? (input.goalPrimary
+    ? defineGoal({ primary: input.goalPrimary as GoalType, secondary: (input.goalSecondary || null) as GoalType | null })
+    : null);
 
   const records = input.records || [];
   const commentsByPlatform = input.commentsByPlatform || {};
@@ -175,7 +198,7 @@ export function buildCentralBrainState(input: BuildCentralBrainStateInput): Cent
 
   return {
     generatedAt: new Date(input.now).toISOString(),
-    goals: input.goals ?? null,
+    goals,
     knowledge: knowledgeBase,
     audience: audience,
     market: market,
@@ -186,6 +209,8 @@ export function buildCentralBrainState(input: BuildCentralBrainStateInput): Cent
       verdict: e.verdict ?? null,
     })),
     contentStrategy: input.contentStrategy || [],
+    strategies: input.strategies || [],
+    contentPath: input.contentPath ?? null,
     timingStrategy: input.timing ?? null,
     platformStates,
     recentOutcomes: input.recentOutcomes || [],
@@ -197,6 +222,8 @@ export function buildCentralBrainState(input: BuildCentralBrainStateInput): Cent
     limitations,
     signalFreshness: { total: signals.length, fresh, stale: signals.length - fresh },
     ai: input.aiCounters || { ...EMPTY_COUNTERS },
+    records: input.records || [],
+    commentsByPlatform: input.commentsByPlatform || {},
     note: 'لقطة العقل المركزي: تحليل وتخطيط وتوصيات قابلة للتفسير فقط — بلا تنفيذ خارجي وبلا أسرار.',
   };
 }

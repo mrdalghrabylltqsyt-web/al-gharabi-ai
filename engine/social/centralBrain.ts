@@ -176,6 +176,11 @@ export interface BuildCentralBrainSnapshotInput {
 /**
  * يبني لقطة العقل المركزي: قدرات المنصات + التعلّم + التوصيات + الجمهور + خطة
  * المحتوى + عدّادات الحماية. لا تنفيذ ولا أسررا؛ فقط تحليل وتخطيط قابل للتفسير.
+ *
+ * ملاحظة معمارية: هذا ليس مصدر الحقيقة. الحالة canonical الوحيدة هي ناتج
+ * `buildRuntimeBrain` في `engine/brain/runtime.ts`، والشكل القديم يُشتق منها عبر
+ * `engine/brain/compat.ts` (`toCentralBrainSnapshot`). تبقى هذه الدالة مُتاحة
+ * للاختبارات والاستخدام المستقل فقط، ولا تُستدعى من مسارات الخادم ولا من الواجهة.
  */
 export function buildCentralBrainSnapshot(input: BuildCentralBrainSnapshotInput): CentralBrainSnapshot {
   const platforms = input.platforms;

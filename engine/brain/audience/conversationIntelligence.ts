@@ -46,23 +46,46 @@ export interface ClassifiedConversation {
   text: string;
   externalId: string;
   platform: PlatformId;
+  /** إشارة واضحة دعمت التصنيف (للتفسير). */
+  signal?: string;
 }
 
-/** يصنّف تعليقاً حقيقياً إلى فئة محادثة واحدة (حتمي محلي، بلا حصة AI). */
+// ---------------------------------------------------------------------------
+// أنماط حتمية عراقية/عربية للفئات التي لا يوفّرها مصنّف التعليقات العام.
+// تُطبَّق على النص المطبَّع لتوحيد الألف/التاء/الهمزات. لا AI هنا.
+// ---------------------------------------------------------------------------
+
+/** اعتراض: رفض/تحفّظ على السعر أو الجودة أو الثقة بلا شكوى صريحة. */
+const OBJECTION_PATTERNS = /غالي|غاليه|مبالغ|مبالغه|مو زين|مب زين|مادري|ما ادري|مو متأكد|ما اثق|مو واثق|بس مشكل|لكن مشكل|زحمه|بعيد|صعب|مو سهل|يحتاج وقت|ما يستاهل|مو مستاهل|خاف|اخاف|يخوف|مو مضمون|بدون ضمان|بدون كفاله/;
+/** طلب ميزة: يريد خدمة/إمكانية غير موجودة في العرض الحالي. */
+const FEATURE_REQUEST_PATTERNS = /سوو|سولنا|اعملوا|عملوا|اضيفوا|ضيفوا|زيدوا|خلوا|سوولي|ابغى خدمه|نريد خدمه|ياريت تسوون|ليش ماكو|ليش ما عندكم|ماكو خدمه|ماكو خاصيه|ماكو ميزه|اضافه خدمه|افتحوا|افتحولنا|طوروا|حدثوا/;
+/** طلب محتوى: يطلب فيديو/شرح/مقارنة عن موضوع معيّن. */
+const CONTENT_REQUEST_PATTERNS = /سوي فيديو|سووا فيديو|نريد فيديو|اريد فيديو|شرح|اشرح|وضح|وضحوا|مقارنه|قارنوا|نزلوا|انزلوا|سوو شرح|سوي شرح|حطوا فيديو|فيديو عن|موضوع عن|تكلموا عن|احكي عن|عرض تفصيلي/;
+
+/**
+ * يصنّف تعليقاً حقيقياً إلى فئة محادثة واحدة (حتمي محلي، بلا حصة AI).
+ * ترتيب الأولوية: سبام ← شكوى ← نية شراء ← اعتراض ← طلب ميزة ← طلب محتوى ←
+ * سؤال ← مدح. عند غياب أي دليل واضح يُستخدم «سؤال» (أأمن تصنيف عام) لا فئة مُختلقة.
+ */
 export function classifyConversation(input: {
   platform: PlatformId;
   externalId: string;
   text: string;
 }): ClassifiedConversation {
   const cls: ClassifiedComment = classifyComment(input.text || '');
+  const normalized = cls.normalized || '';
   let category: ConversationCategory;
-  if (cls.isSpam) category = 'spam';
-  else if (cls.isBusinessInquiry) category = 'purchase_intent';
-  else if (cls.isComplaint) category = 'complaint';
-  else if (cls.isPraise) category = 'praise';
-  else if (cls.isQuestion) category = 'question';
-  else category = 'question';
-  return { category, topic: cls.topic, text: input.text, externalId: input.externalId, platform: input.platform };
+  let signal = 'general';
+  if (cls.isSpam) { category = 'spam'; signal = 'spam'; }
+  else if (cls.isComplaint) { category = 'complaint'; signal = 'complaint'; }
+  else if (OBJECTION_PATTERNS.test(normalized)) { category = 'objection'; signal = 'objection'; }
+  else if (CONTENT_REQUEST_PATTERNS.test(normalized)) { category = 'content_request'; signal = 'content_request'; }
+  else if (FEATURE_REQUEST_PATTERNS.test(normalized)) { category = 'feature_request'; signal = 'feature_request'; }
+  else if (cls.isBusinessInquiry) { category = 'purchase_intent'; signal = 'business_inquiry'; }
+  else if (cls.isQuestion) { category = 'question'; signal = 'question'; }
+  else if (cls.isPraise) { category = 'praise'; signal = 'praise'; }
+  else { category = 'question'; signal = 'general_fallback'; }
+  return { category, topic: cls.topic, text: input.text, externalId: input.externalId, platform: input.platform, signal };
 }
 
 export interface RepeatedNeed {

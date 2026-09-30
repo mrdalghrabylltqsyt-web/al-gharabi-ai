@@ -4,20 +4,18 @@
  * كل المسارات محمية بـ`authenticateToken`. **لا يوجد أي مسار تنفيذ خارجي هنا**:
  * العقل يعرض حالته وتحليله وتوصياته، والتنفيذ يبقى في مساراته المحكومة القائمة.
  *
- * لا تُعاد أي أسرار: المخرجات كلها أعداد/نصوص تحليلية، والأسرار محجوبة من
- * المصدر (لا تُمرَّر أصلاً إلى العقل).
- *
- * الحقن عبر `deps` يجعل الوحدة قابلة للاختبار ببيانات proof-based.
+ * الحقن عبر `deps` يجعل الوحدة قابلة للاختبار ببيانات proof-based. البيانات
+ * الحقيقية تُجمَّع في `engine/brain/runtime.ts` (بلا شبكة وبلا أسرار).
  */
 
 import type express from 'express';
 import type { PlatformId } from '../social/adapter';
-import type { PlatformMetricRecord } from '../social/platformLearning';
-import { capabilityMatrix, CAPABILITY_KEYS } from './strategy/capabilityMatrix';
-import { buildCentralBrainState, brainDiagnostics, brainIsPlatformAgnostic, type BuildCentralBrainStateInput } from './state';
+import { CAPABILITY_KEYS } from './strategy/capabilityMatrix';
+import { brainDiagnostics, brainIsPlatformAgnostic } from './state';
 import { runDailyBrainCycle, runWeeklyBrainReview } from './cycles';
+import { buildRuntimeBrain, type RuntimeBrainInput } from './runtime';
 import { buildBrainDryRun } from './dryRun';
-import { defineGoal, GOAL_LABELS_AR, type GoalKind } from './goals/goalEngine';
+import { GOAL_LABELS_AR, type GoalKind } from './goals/goalEngine';
 import { AUDIENCE_NOT_AVAILABLE_FIELDS } from './audience/audienceModel';
 import { AUTONOMY_LABELS_AR, DECISION_KIND_LABELS_AR } from './decisions/decisionEngine';
 import { TRUTH_STATE_LABELS_AR } from './knowledge/truth';
@@ -30,16 +28,10 @@ export interface BrainRoutesDeps {
   requireOwner: express.RequestHandler;
   /** المنصات المعروفة في النظام. */
   platforms: () => PlatformId[];
-  /** سجلات أداء حقيقية للعقل (تُقرأ فقط). */
-  performanceRecords: () => PlatformMetricRecord[];
-  /** تعليقات حقيقية لكل منصة (تُقرأ فقط). */
-  commentsByPlatform: () => any;
-  /** اتصال تشغيلي حقيقي لكل منصة (من الخادم؛ لا يُدَّعى). */
-  liveConnections: () => BuildCentralBrainStateInput['liveConnections'];
-  /** عدّادات حماية Gemini الحالية (بلا أسرار). */
-  aiCounters: () => BuildCentralBrainStateInput['aiCounters'];
-  /** الحقائق التجارية المسجّلة (نصوص فقط، بلا اختراع). */
-  verifiedFacts?: () => string[];
+  /** يجمع مدخلات العقل الحقيقية من التطبيق (سجلات/تعليقات/ردود/نشر/اتصال/ذاكرة). */
+  runtimeInput: () => Omit<RuntimeBrainInput, 'now'>;
+  /** يحفظ سجلات الذاكرة الدائمة الجديدة (بلا تكرار). لا يرمي. */
+  persistMemory?: (records: import('./memory/store').BrainMemoryRecord[]) => void;
   now?: () => number;
 }
 
@@ -58,22 +50,21 @@ export function brainLabels() {
 export function registerBrainRoutes(app: express.Express, deps: BrainRoutesDeps): void {
   const now = deps.now || (() => Date.now());
 
-  const buildState = () => buildCentralBrainState({
-    platforms: deps.platforms(),
-    now: now(),
-    goals: defineGoal({ primary: 'SALES', secondary: 'TRUST' }),
-    records: deps.performanceRecords(),
-    commentsByPlatform: deps.commentsByPlatform(),
-    liveConnections: deps.liveConnections(),
-    aiCounters: deps.aiCounters(),
-  });
+  /** يبني اللقطة ثم يحفظ أي سجلات ذاكرة جديدة (بلا تكرار). */
+  const buildAndPersist = () => {
+    const out = buildRuntimeBrain({ ...deps.runtimeInput(), now: now() });
+    if (out.newMemoryRecords.length && deps.persistMemory) {
+      try { deps.persistMemory(out.newMemoryRecords); } catch { /* الحفظ أفضل جهد */ }
+    }
+    return out;
+  };
 
   // لقطة العقل الموحّدة (قراءة فقط).
   app.get('/api/agent/brain/state', deps.authenticateToken, (_req, res) => {
-    const state = buildState();
+    const out = buildAndPersist();
     res.json({
       success: true,
-      state,
+      state: out.state,
       labels: brainLabels(),
       audienceNotAvailableFields: AUDIENCE_NOT_AVAILABLE_FIELDS,
       timezone: TIMING_TIMEZONE,
@@ -84,43 +75,58 @@ export function registerBrainRoutes(app: express.Express, deps: BrainRoutesDeps)
 
   // تشخيص العقل (صحة الذاكرة/المعرفة/الطزاجة/القرارات/حصة AI) بلا أسرار.
   app.get('/api/agent/brain/diagnostics', deps.authenticateToken, (_req, res) => {
-    const state = buildState();
-    res.json({ success: true, diagnostics: brainDiagnostics(state), note: 'تشخيص بلا أسرار.' });
+    const out = buildAndPersist();
+    const diag = brainDiagnostics(out.state);
+    res.json({
+      success: true,
+      diagnostics: diag,
+      counts: {
+        recommendations: out.recommendations.length,
+        supportedRecommendations: out.recommendations.filter((r) => r.status === 'supported').length,
+        experiments: out.experiments.length,
+        strategies: out.strategies.length,
+        learningEvents: out.learningEvents.length,
+        ownerPreferences: out.ownerPreferences.length,
+        risks: out.risks.length,
+      },
+      note: 'تشخيص بلا أسرار: أعداد الحالات والتوصيات والقرارات المعلّقة.',
+    });
   });
 
   // مصفوفة قدرات المنصات (خمس حالات صريحة).
   app.get('/api/agent/brain/capabilities', deps.authenticateToken, (_req, res) => {
+    const out = buildAndPersist();
     res.json({
       success: true,
       keys: CAPABILITY_KEYS,
-      rows: capabilityMatrix(deps.platforms()),
+      rows: out.state.platformStates.map((p) => ({ platform: p.platform, states: p.capabilities, realConnector: p.realConnector })),
       labels: CAPABILITY_STATE_LABELS_AR,
       note: 'حالات القدرات من السجل؛ القدرة غير المعلنة = NOT_AVAILABLE صراحةً.',
     });
   });
 
-  // دورة يومية تحليلية (لا تنفيذ خارجي).
+  // دورة يومية تحليلية (لا تنفيذ خارجي) — على بيانات حقيقية.
   app.get('/api/agent/brain/cycles/daily', deps.authenticateToken, (_req, res) => {
-    const state = buildState();
+    const out = buildAndPersist();
     const daily = runDailyBrainCycle({
       now: now(),
       signals: [],
-      recommendations: state.recommendations,
-      experiments: [],
-      decisions: state.pendingDecisions,
-      commercialOpportunities: state.market?.hasCommercialEvidence ? ['إشارات شراء موثّقة تستحق محتوى موجّهاً.'] : [],
+      recommendations: out.recommendations,
+      experiments: out.experiments,
+      decisions: out.state.pendingDecisions,
+      commercialOpportunities: out.state.market?.hasCommercialEvidence ? ['إشارات شراء موثّقة تستحق محتوى موجّهاً.'] : [],
     });
     res.json({ success: true, cycle: daily, note: 'دورة يومية تحليلية: لا نشر ولا رد ولا تعديل.' });
   });
 
-  // مراجعة أسبوعية استراتيجية (لا تنفيذ خارجي).
+  // مراجعة أسبوعية استراتيجية (لا تنفيذ خارجي) — على بيانات حقيقية.
   app.get('/api/agent/brain/cycles/weekly', deps.authenticateToken, (_req, res) => {
-    const state = buildState();
+    const out = buildAndPersist();
     const weekly = runWeeklyBrainReview({
-      experiments: [],
-      recommendations: state.recommendations,
-      topics: (state.audience?.segments || []).flatMap((s) => s.interests.map((i) => ({ topic: i, count: s.sampleSize }))),
-      buyingSignals: (state.market?.stages || []).filter((s) => s.stage === 'BUYING_SIGNAL' && s.available).map((s) => `إشارات شراء: ${s.value}`),
+      experiments: out.experiments,
+      recommendations: out.recommendations,
+      topics: (out.state.audience?.segments || []).flatMap((s) => s.interests.map((i) => ({ topic: i, count: s.sampleSize }))),
+      buyingSignals: (out.state.market?.stages || []).filter((s) => s.stage === 'BUYING_SIGNAL' && s.available).map((s) => `إشارات شراء: ${s.value}`),
       platforms: deps.platforms(),
     });
     res.json({ success: true, review: weekly, note: 'مراجعة أسبوعية صادقة: المجهول معلن.' });
@@ -133,15 +139,39 @@ export function registerBrainRoutes(app: express.Express, deps: BrainRoutesDeps)
       ? req.query.platform as PlatformId
       : platforms[0]) || 'youtube';
     const goal = (typeof req.query.goal === 'string' ? req.query.goal : 'SALES') as GoalKind;
+    const input = deps.runtimeInput();
+    const records = input.records.filter((r) => r.platform === platform);
+    const comments = input.comments.filter((c) => c.platform === platform);
     const report = buildBrainDryRun({
       platforms: [platform],
       now: now(),
       goal: GOAL_LABELS_AR[goal] || 'مبيعات',
-      records: deps.performanceRecords().filter((r: any) => r.platform === platform),
-      comments: (deps.commentsByPlatform()?.[platform] || []).map((c: any, i: number) => ({ platform, externalId: c.externalId || `idx-${i}`, text: String(c.text || '') })),
-      verifiedFacts: deps.verifiedFacts ? deps.verifiedFacts() : [],
+      records,
+      comments: comments.map((c, i) => ({ platform, externalId: c.externalId || `idx-${i}`, text: String(c.text || '') })),
+      timingObservations: records.filter((r) => r.publishedAt).map((r) => ({ platform, at: String(r.publishedAt), performance: Number(r.values?.views) || 0 })),
+      verifiedFacts: (input.verifiedFacts || []).map((f) => f.statement),
       readOnly: true,
     });
     res.json({ success: true, report, note: 'تقرير dry-run: لا يُنفَّذ أي إجراء خارجي — يتوقف عند التوصية.' });
+  });
+
+  // مسار المحتوى الحقيقي الكامل (حاجة → تكييف المنصة) للمالك — قراءة فقط.
+  app.get('/api/agent/brain/content-path', deps.requireOwner, (req, res) => {
+    const platforms = deps.platforms();
+    const platform = (typeof req.query.platform === 'string' && platforms.includes(req.query.platform as PlatformId)
+      ? req.query.platform as PlatformId
+      : platforms[0]) || 'youtube';
+    const input = deps.runtimeInput();
+    const commentSample = input.comments.filter((c) => c.platform === platform).length;
+    const out = buildRuntimeBrain({ ...input, now: now() });
+    res.json({
+      success: true,
+      platform,
+      contentPath: out.contentPath,
+      commentSample,
+      note: out.contentPath
+        ? 'مسار محتوى من حاجة جمهور ملاحَظة وحقائق مسجّلة فقط؛ أي عنصر بلا بيانات يُعلن غير متاح.'
+        : 'لا حاجة جمهور متكرّرة بدليل كافٍ على هذه المنصة؛ لا يُخترع مسار محتوى.',
+    });
   });
 }

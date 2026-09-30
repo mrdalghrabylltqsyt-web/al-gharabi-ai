@@ -1247,6 +1247,112 @@ add('brain-ui-panel',
   read('src/services/api.ts').includes('/api/agent/brain/dry-run'),
   'واجهة العقل تعرض مصفوفة القدرات وصناديق الصدق وسيناريو dry-run');
 
+// --- ربط العقل بالتشغيل + الذاكرة الدائمة (Batch 2) ---
+const brainRuntime = read('engine/brain/runtime.ts');
+const brainMemoryStore = read('engine/brain/memory/store.ts');
+const brainCompat = read('engine/brain/compat.ts');
+const brainMemoryTest = read('engine/tests/brain.memory.persistence.test.ts');
+const brainRuntimeTest = read('engine/tests/brain.runtime.test.ts');
+const brainRuntimeServerTest = read('engine/tests/brain.runtime.server.test.ts');
+
+add('brain-runtime-aggregates-real-data',
+  brainRuntime.includes('buildRuntimeBrain') && brainRuntime.includes('buildLearningEvents') &&
+  brainRuntime.includes('performanceRecordsForBrain') === false &&
+  brainRuntime.includes('records: PlatformMetricRecord[]') && brainRuntime.includes('comments: RuntimeComment[]') &&
+  brainRuntime.includes('replies: RuntimeReply[]') && brainRuntime.includes('publishes: RuntimePublish[]') &&
+  brainRuntime.includes('watcher: RuntimeWatcherEntry[]'),
+  'طبقة التشغيل تجمع بيانات حقيقية (سجلات/تعليقات/ردود/نشر/مراقب) بلا شبكة');
+
+add('brain-runtime-no-invention',
+  brainRuntime.includes('observedProviderIds') &&
+  brainRuntime.includes('providerId = r.providerReplyId || null') && brainRuntime.includes('dedupeLearningEvents'),
+  'التشغيل لا يخترع معرّفات؛ providerId يُشتق من النتيجة الفعلية فقط');
+
+add('brain-memory-store-persistent',
+  brainMemoryStore.includes('BrainMemoryRecord') && brainMemoryStore.includes('upsertMemoryRecord') &&
+  brainMemoryStore.includes('memoryToKnowledge') && brainMemoryStore.includes('summarizeBrainMemory') &&
+  brainMemoryStore.includes('ai_statement') && brainMemoryStore.includes('staleReason'),
+  'مخزن الذاكرة يحمل الأصل والثقة والتقادم، ويحوّل قول AI إلى فرضية لا حقيقة');
+
+add('brain-memory-server-wired',
+  server.includes('STORAGE_KEY_BRAIN_MEMORY') && server.includes('loadBrainMemorySync') &&
+  server.includes('persistBrainMemory') && server.includes('normalizeBrainMemory') &&
+  server.includes('storageAdapter.write(STORAGE_KEY_BRAIN_MEMORY'),
+  'الذاكرة الدائمة مربوطة بمحوّل الحالة القائم (ملف/Postgres) وتُحمّل عند الإقلاع');
+
+add('brain-runtime-input-real-sources',
+  server.includes('brainRuntimeInput') && server.includes('brainRuntimeComments') &&
+  server.includes('brainRuntimeReplies') && server.includes('brainRuntimePublishes') &&
+  server.includes('brainRuntimeWatcher') && server.includes('brainVerifiedFacts') &&
+  server.includes('brainProductFacts') && server.includes('performanceRecordsForBrain()'),
+  'مدخلات العقل تُجمع من مصادر التطبيق الحقيقية (سوشيال/نشر/مراقب/بيانات المعرض)');
+
+add('brain-routes-use-runtime',
+  brainRoutes.includes('buildRuntimeBrain') && brainRoutes.includes('runtimeInput') &&
+  brainRoutes.includes('persistMemory') && brainRoutes.includes('/api/agent/brain/content-path'),
+  'مسارات العقل تستخدم طبقة التشغيل وتحفظ الذاكرة الدائمة');
+
+add('brain-readiness-runtime-honest',
+  server.includes('memoryHealth') && server.includes('memoryDurable') &&
+  server.includes('contentPathAvailable') && server.includes('supportedRecommendations'),
+  '/api/readiness يعرض صحة الذاكرة وتوفر مسار المحتوى بلا أي سرّ');
+
+add('brain-runtime-tests-registered',
+  fs.existsSync(path.join(root, 'engine/tests/brain.runtime.test.ts')) &&
+  fs.existsSync(path.join(root, 'engine/tests/brain.runtime.server.test.ts')) &&
+  fs.existsSync(path.join(root, 'engine/tests/brain.memory.persistence.test.ts')) &&
+  pkg.scripts['test:brain-runtime'] && pkg.scripts['test:brain-runtime-server'] &&
+  pkg.scripts['test:brain-memory'] &&
+  pkg.scripts.test.includes('test:brain-runtime') && pkg.scripts.test.includes('test:brain-runtime-server') &&
+  pkg.scripts.test.includes('test:brain-memory'),
+  'اختبارات طبقة التشغيل والذاكرة (بما فيها ثبات Postgres) مسجّلة وضمن npm test');
+
+// --- التوحيد canonical: مصدر حالة واحد (Batch 2 final fix) ---
+add('brain-canonical-single-source',
+  brainCompat.includes('toCentralBrainSnapshot') &&
+  brainCompat.includes('summarizeCrossPlatformLearning') &&
+  brainCompat.includes('buildRecommendationBundle') &&
+  brainCompat.includes('analyzeCrossPlatformAudience') &&
+  !brainCompat.includes('buildCentralBrainSnapshot'),
+  'الشكل القديم يُشتق من الحالة canonical عبر facade توافقية بلا مُجمِّع عقلي ثانٍ');
+
+add('brain-canonical-readiness-reuses',
+  /app\.get\("\/api\/readiness"[\s\S]{0,400}buildRuntimeBrain/.test(server) &&
+  server.includes('const readinessBrain = buildRuntimeBrain') &&
+  server.includes('toCentralBrainSnapshot(readinessBrain.state)'),
+  '/api/readiness يبني العقل canonical مرة واحدة وتُشتق منه centralBrain + brain');
+
+add('brain-canonical-legacy-routes-use-facade',
+  server.includes('canonicalBrainSnapshot') &&
+  server.includes('toCentralBrainSnapshot(canonical.state') &&
+  server.includes('toCentralBrainSnapshot(canonical.state, { engagementTimestamps'),
+  'مسارات /api/brain/* وأداة brain_snapshot تستخدم facade من الحالة canonical لا بناءً مستقلاً');
+
+add('brain-canonical-legacy-not-a-source',
+  server.includes('canonicalBrainSnapshot') &&
+  /app\.get\("\/api\/brain\/diagnostics"[\s\S]{0,300}canonicalBrainSnapshot|app\.get\("\/api\/brain\/diagnostics"[\s\S]{0,300}buildRuntimeBrain/.test(server) &&
+  centralBrain.includes('هذا ليس مصدر الحقيقة'),
+  'مُنشئ اللقطة القديم موثّق كغير مصدر، والمسارات كلها من الحالة canonical');
+
+add('brain-memory-postgres-test-real',
+  brainMemoryTest.includes('REAL INTEGRATION') && brainMemoryTest.includes('GHARABI_TEST_DATABASE_URL') &&
+  brainMemoryTest.includes('SKIPPED') && brainMemoryTest.includes('التكرار لا يُضاف') &&
+  brainMemoryTest.includes('الأصل محفوظ') && brainMemoryTest.includes('تصمد بعد إعادة إنشاء الطبقة'),
+  'اختبار ثبات ذاكرة العقل على Postgres حقيقي (تكامل) أو تخطٍّ صريح، مع منع تكرار وحفظ الأصل');
+
+add('brain-memory-postgres-harness',
+  fs.existsSync(path.join(root, 'tools/local-verification/verify-brain-memory.mjs')) &&
+  read('tools/local-verification/package.json').includes('verify:brain-memory'),
+  'أداة تحقق محلية لتشغيل اختبار Postgres الحقيقي بلا قاعدة إنتاج');
+
+add('brain-runtime-tests-honest',
+  brainRuntimeTest.includes('لا معرّفات مُختلقة') && brainRuntimeTest.includes('قول AI يُصنّف فرضية') &&
+  brainRuntimeTest.includes('الذاكرة الدائمة تصمد') && brainRuntimeTest.includes('إعادة البناء بلا سجلات جديدة') &&
+  brainRuntimeServerTest.includes('الذاكرة صمدت بعد إعادة التشغيل') &&
+  brainRuntimeServerTest.includes('الذاكرة لا تتضاعف عند إعادة القراءة') &&
+  brainRuntimeServerTest.includes('لا تسريب رمز البوت'),
+  'اختبارات التشغيل تثبت منع الاختراع ومنع التكرار وثبات الذاكرة وعدم تسريب الأسرار');
+
 const failed = checks.filter(x => !x.ok);
 console.table(checks);
 if (failed.length) {

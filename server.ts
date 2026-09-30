@@ -23,6 +23,9 @@ import { registerBrainRoutes } from "./engine/brain/routes";
 import { buildCentralBrainState, brainDiagnostics } from "./engine/brain/state";
 import { capabilityMatrix } from "./engine/brain/strategy/capabilityMatrix";
 import { defineGoal } from "./engine/brain/goals/goalEngine";
+import { emptyBrainMemory, upsertMemoryRecord, summarizeBrainMemory, type BrainMemoryStoreState, type BrainMemoryRecord } from "./engine/brain/memory/store";
+import { buildRuntimeBrain, type RuntimeBrainInput, type RuntimeComment, type RuntimeReply, type RuntimePublish, type RuntimeWatcherEntry, type RuntimeConnection, type RuntimeVerifiedFact } from "./engine/brain/runtime";
+import { toCentralBrainSnapshot } from "./engine/brain/compat";
 import type { AgentOperator } from "./engine/agent/permissions";
 import type { AgentToolContext } from "./engine/agent/tools";
 import { AGENT_TOOLS } from "./engine/agent/tools";
@@ -331,13 +334,9 @@ import {
 } from "./engine/social/contentIntelligence";
 import {
   analyzePlatformLearning,
-  summarizeCrossPlatformLearning,
   type PlatformMetricRecord,
 } from "./engine/social/platformLearning";
-import { buildRecommendationBundle } from "./engine/social/recommendationEngine";
-import { analyzeCrossPlatformAudience } from "./engine/social/audienceIntelligence";
 import {
-  buildCentralBrainSnapshot,
   buildCommentIntelligence,
   proposeCommentReply,
   platformCapabilities,
@@ -2944,6 +2943,7 @@ function commentsByPlatformForBrain(platforms: PlatformId[]): Partial<Record<Pla
   }
   return out;
 }
+void commentsByPlatformForBrain;
 
 /** عدّادات حماية Gemini من السجل المركزي (أرقام فقط، بلا prompt ولا سرّ). */
 function brainAiCounters() {
@@ -2963,6 +2963,120 @@ function brainAiCounters() {
 function brainScheduleSuggestion() {
   const timestamps = (watcherState.processed || []).map((p: any) => p.publishedAt || p.at);
   return suggestScheduleTime({ engagementTimestamps: timestamps });
+}
+
+/** حالة اتصال كل منصة (حقيقية من السجل؛ لا يُدَّعى اتصال). */
+function brainConnections(): RuntimeConnection[] {
+  return SUPPORTED_PLATFORMS.map((p: any) => {
+    const c: any = platformConnections.get(p.id);
+    return { platform: p.id as PlatformId, connected: c?.status === "connected", verified: c?.providerVerified === true, accountName: c?.accountName ?? null };
+  });
+}
+
+/** تعليقات حقيقية من مخزن السوشيال (كل المنصات) للعقل. */
+function brainRuntimeComments(): RuntimeComment[] {
+  const rows = ((workspace as any).socialComments || []) as any[];
+  return rows
+    .filter((c) => c && isSupportedPlatform(String(c.platform)) && typeof c.text === "string" && c.text.trim())
+    .slice(0, 1000)
+    .map((c) => ({ platform: String(c.platform) as PlatformId, externalId: String(c.externalId || c.id || ""), text: String(c.text), authorName: c.authorName ?? null, at: c.createdAt ?? null }));
+}
+
+/** ردود حقيقية مُسجَّلة (نجاح/فشل) مع معرّف المزوّد إن وُجد. */
+function brainRuntimeReplies(): RuntimeReply[] {
+  const rows = ((workspace as any).socialReplies || []) as any[];
+  return rows
+    .filter((r) => r && isSupportedPlatform(String(r.platform)))
+    .slice(0, 1000)
+    .map((r) => ({
+      platform: String(r.platform) as PlatformId,
+      externalId: String(r.externalId || r.id || ""),
+      delivered: r.delivered === true,
+      providerReplyId: r.providerReplyId ?? r.externalReplyId ?? null,
+      reviewStatus: r.reviewStatus ?? null,
+      deliveryError: r.deliveryError ?? null,
+      repliedAt: r.repliedAt ?? null,
+      parentExternalId: r.replyTarget?.commentId ?? null,
+    }));
+}
+
+/** سجلات نشر حقيقية (نجاح/فشل/تحقق) مع معرّف المنشور من المزود. */
+function brainRuntimePublishes(): RuntimePublish[] {
+  const rows = ((workspace as any).publishRecords || []) as any[];
+  return rows
+    .filter((r) => r && isSupportedPlatform(String(r.platform)))
+    .slice(0, 1000)
+    .map((r) => ({
+      platform: String(r.platform) as PlatformId,
+      externalId: r.externalVideoId ?? r.receipt?.videoId ?? null,
+      state: r.state ?? r.reconciled ?? null,
+      verified: r.verified === true,
+      error: r.error ?? null,
+      createdAt: r.at ?? r.createdAt ?? null,
+    }));
+}
+
+/** سجل معالجة مراقب YouTube الحقيقي (نجاح/تخطٍّ/إحالة) — بلا اختراع. */
+function brainRuntimeWatcher(): RuntimeWatcherEntry[] {
+  return (watcherState.processed || [])
+    .slice(0, 1000)
+    .map((p: any) => ({ commentId: String(p.commentId || ""), stage: String(p.stage || ""), action: p.action ?? null, code: p.code ?? null, videoId: p.videoId ?? null, publishedAt: p.publishedAt ?? null, at: p.at ?? null, externalReplyId: p.externalReplyId ?? null }))
+    .filter((p) => p.commentId && p.stage);
+}
+
+/** حقائق تجارية مسجّلة من بيانات المعرض الحقيقية فقط (بلا أي رقم مُختلق). */
+function brainVerifiedFacts(): RuntimeVerifiedFact[] {
+  const facts: RuntimeVerifiedFact[] = [];
+  const showroom: any = workspace.showroom || {};
+  if (cleanText(showroom.phoneUnified, 40)) facts.push({ id: "showroom_phone", statement: `هاتف المعرض: ${cleanText(showroom.phoneUnified, 40)}`, source: "بيانات المعرض المسجّلة" });
+  if (cleanText(showroom.whatsappSales, 40)) facts.push({ id: "showroom_whatsapp", statement: `واتساب المبيعات: ${cleanText(showroom.whatsappSales, 40)}`, source: "بيانات المعرض المسجّلة" });
+  const location = cleanText(showroom.address || showroom.city, 120);
+  if (location) facts.push({ id: "showroom_location", statement: `موقع المعرض: ${location}`, source: "بيانات المعرض المسجّلة" });
+  if (cleanText(showroom.hours, 80)) facts.push({ id: "showroom_hours", statement: `أوقات الدوام: ${cleanText(showroom.hours, 80)}`, source: "بيانات المعرض المسجّلة" });
+  return facts;
+}
+
+/** بيانات منتج حقيقية (أول منتج مسجّل) لمسار المحتوى — بلا اختراع. */
+function brainProductFacts(): RuntimeBrainInput["productFacts"] {
+  const showroom: any = workspace.showroom || {};
+  const product: any = (workspace.products || [])[0] || null;
+  const cashPrice = Number(product?.cashPrice);
+  return {
+    productName: product ? (cleanText(product.name, 120) || null) : null,
+    priceText: Number.isFinite(cashPrice) && cashPrice > 0 ? `${cashPrice.toLocaleString("en-US")} د.ع` : null,
+    specs: product && Array.isArray(product.specs) ? product.specs.map((s: any) => cleanText(s, 200)).filter(Boolean) : [],
+    inStock: product && typeof product.inStock === "boolean" ? product.inStock : null,
+    showroomPhone: cleanText(showroom.phoneUnified, 40) || null,
+    showroomLocation: cleanText(showroom.address || showroom.city, 120) || null,
+  };
+}
+
+/** يجمع مدخلات العقل الحقيقية كاملة (قراءة فقط، بلا شبكة وبلا أسرار). */
+function brainRuntimeInput(): Omit<RuntimeBrainInput, "now"> {
+  const platforms = SUPPORTED_PLATFORMS.map((p: any) => p.id) as PlatformId[];
+  return {
+    platforms,
+    goalPrimary: "SALES",
+    goalSecondary: "TRUST",
+    records: performanceRecordsForBrain(),
+    comments: brainRuntimeComments(),
+    replies: brainRuntimeReplies(),
+    publishes: brainRuntimePublishes(),
+    watcher: brainRuntimeWatcher(),
+    connections: brainConnections(),
+    verifiedFacts: brainVerifiedFacts(),
+    productFacts: brainProductFacts(),
+    memory: brainMemoryStore,
+    aiCounters: brainAiCounters(),
+  };
+}
+
+/**
+ * الشكل القديم للقطة العقل مُشتقاً من الحالة canonical (`buildRuntimeBrain`) —
+ * للتوافق مع `/api/brain/*` وأداة الوكيل `brain_snapshot` فقط. لا يبني عقلاً ثانياً.
+ */
+function canonicalBrainSnapshot(extras: Parameters<typeof toCentralBrainSnapshot>[1] = {}) {
+  return toCentralBrainSnapshot(buildRuntimeBrain({ ...brainRuntimeInput(), now: Date.now() }).state, extras);
 }
 
 /** يبني ContentBrief من بيانات المعرض الحقيقية لمنتج/حملة. */
@@ -6527,14 +6641,9 @@ app.delete("/api/platforms/youtube/delegation", requireOwner, async (req, res) =
 
 /** تشخيص العقل المركزي (للمالك): حالة، قدرات، تعلّم، توصيات، عدّادات Gemini — بلا أسرار. */
 app.get("/api/brain/diagnostics", requireOwner, (_req, res) => {
-  const platforms = SUPPORTED_PLATFORMS.map((p: any) => p.id) as PlatformId[];
-  const records = performanceRecordsForBrain();
-  const snap = buildCentralBrainSnapshot({
-    platforms,
-    records,
-    commentsByPlatform: commentsByPlatformForBrain(platforms),
-    aiCounters: brainAiCounters(),
-  });
+  // facade توافقية: الشكل القديم من الحالة canonical (buildRuntimeBrain)، لا بناء عقل ثانٍ.
+  const canonical = buildRuntimeBrain({ ...brainRuntimeInput(), now: Date.now() });
+  const snap = toCentralBrainSnapshot(canonical.state, { engagementTimestamps: (watcherState.processed || []).map((p: any) => p.publishedAt || p.at) });
   const sampleByPlatform = Object.fromEntries(snap.learning.byPlatform.map((s) => [s.platform, { sampleSize: s.sampleSize, sufficientSample: s.sufficientSample }]));
   res.json({
     success: true,
@@ -6592,11 +6701,11 @@ app.post("/api/brain/platform-adaptation", authenticateToken, (req, res) => {
   res.json({ success: true, platform, adaptation, note: "تكييف حتمي من بيانات حقيقية؛ لا استهلاك AI ولا نشر." });
 });
 
-/** تعلّم منصة واحدة من أدائها الحقيقي (قراءة، بلا استهلاك AI). */
+/** تعلّم منصة واحدة من أدائها الحقيقي (قراءة، بلا استهلاك AI) — من الحالة canonical. */
 app.get("/api/brain/learning/:platform", authenticateToken, (req, res) => {
   const platform = String(req.params.platform);
   if (!isSupportedPlatform(platform)) return res.status(404).json({ success: false, error: "المنصة غير مدعومة." });
-  const records = performanceRecordsForBrain().filter((r) => r.platform === platform);
+  const records = buildRuntimeBrain({ ...brainRuntimeInput(), now: Date.now() }).state.records.filter((r) => r.platform === platform);
   const analysis = analyzePlatformLearning({ platform: platform as PlatformId, records });
   res.json({
     success: true,
@@ -6607,26 +6716,23 @@ app.get("/api/brain/learning/:platform", authenticateToken, (req, res) => {
   });
 });
 
-/** تعلّم عام عبر كل المنصات (قراءة، بلا استهلاك AI). */
+/** تعلّم عام عبر كل المنصات (قراءة، بلا استهلاك AI) — من الحالة canonical. */
 app.get("/api/brain/learning", authenticateToken, (_req, res) => {
-  const platforms = SUPPORTED_PLATFORMS.map((p: any) => p.id) as PlatformId[];
-  const summary = summarizeCrossPlatformLearning(performanceRecordsForBrain(), platforms);
+  const summary = canonicalBrainSnapshot().learning;
   res.json({ success: true, learning: summary, note: summary.note });
 });
 
-/** توصيات عامة عبر كل المنصات، مبنية على بيانات حقيقية (قراءة، بلا استهلاك AI). */
+/** توصيات عامة عبر كل المنصات، مبنية على بيانات حقيقية (قراءة، بلا استهلاك AI) — من الحالة canonical. */
 app.get("/api/brain/recommendations", authenticateToken, (_req, res) => {
-  const platforms = SUPPORTED_PLATFORMS.map((p: any) => p.id) as PlatformId[];
   const timestamps = (watcherState.processed || []).map((p: any) => p.publishedAt || p.at);
-  const bundle = buildRecommendationBundle({ platforms, records: performanceRecordsForBrain(), engagementTimestamps: timestamps });
-  res.json({ success: true, recommendations: bundle, note: bundle.note });
+  const bundle = canonicalBrainSnapshot({ engagementTimestamps: timestamps }).recommendations;
+  res.json({ success: true, recommendations: bundle, note: bundle?.note ?? "لا منصات مُدخَلة." });
 });
 
-/** تحليل جمهور عام (مؤشرات + مواضيع تعليقات فعلية) بلا سمات شخصية حساسة. */
+/** تحليل جمهور عام (مؤشرات + مواضيع تعليقات فعلية) بلا سمات شخصية حساسة — من الحالة canonical. */
 app.get("/api/brain/audience", authenticateToken, (_req, res) => {
-  const platforms = SUPPORTED_PLATFORMS.map((p: any) => p.id) as PlatformId[];
-  const audience = analyzeCrossPlatformAudience({ platforms, records: performanceRecordsForBrain(), commentsByPlatform: commentsByPlatformForBrain(platforms) });
-  res.json({ success: true, audience, note: audience.note });
+  const audience = canonicalBrainSnapshot().audience;
+  res.json({ success: true, audience, note: audience?.note ?? "لا منصات مُدخَلة." });
 });
 
 /** تحليل تعليق واحد عبر العقل (classify → priority → policy → reply مقترح). حتمي بلا AI. */
@@ -8365,6 +8471,9 @@ async function bootstrapStorage(): Promise<void> {
       if (control) applyControlSnapshot(control);
       const agentState = await storageAdapter.read<any>(STORAGE_KEY_AGENT);
       if (agentState && Array.isArray(agentState.tasks)) agentOrchestrator.restore(agentState.tasks);
+      // ذاكرة العقل الدائمة: تُقرأ قبل بدء الخدمة فتصمد بعد restart/cold start.
+      const brainMemory = await storageAdapter.read<any>(STORAGE_KEY_BRAIN_MEMORY);
+      brainMemoryStore = normalizeBrainMemory(brainMemory);
       // حالة مدير تشغيل YouTube (المراقبة/التحكم/سجل المعالجة): تُقرأ قبل بدء
       // الخدمة فيصمد الـcheckpoint وسجل منع التكرار وإعدادات الأتمتة بعد restart.
       const watcher = await storageAdapter.read<any>(WATCHER_STATE_KEY);
@@ -8379,6 +8488,7 @@ async function bootstrapStorage(): Promise<void> {
     // للملف المحلي: القراءة متزامنة عند الإقلاع كما في لقطة الحالة.
     loadControlStateSync();
     loadAgentStateSync();
+    loadBrainMemorySync();
     const watcher = storageAdapter.readSync<any>(WATCHER_STATE_KEY);
     if (watcher) applyWatcherStateSnapshot(watcher);
     const media = storageAdapter.readSync<any>(CONTENT_MEDIA_KEY);
@@ -8497,6 +8607,14 @@ function saveControlState(): void {
  * (الجداول key/value تُتيح مفتاحاً ثالثاً دون migration). لا يحمل أي سرّ.
  */
 const STORAGE_KEY_AGENT = "agent";
+
+/**
+ * مفتاح ذاكرة العقل الدائمة. مستقل عن لقطة العمل ومهام العقل؛ يحمل سجلات
+ * الذاكرة (بلا أي سرّ) ويصمد بعد إعادة التشغيل/إعادة النشر.
+ */
+const STORAGE_KEY_BRAIN_MEMORY = "brainMemory";
+/** سقف سجلات الذاكرة لمنع التضخّم (الأحدث يُبقى). */
+const BRAIN_MEMORY_MAX = 5000;
 
 /**
  * العقل المركزي: المنسّق الوحيد. مهامه تُنفَّذ بأدوات حقيقية محقونة من الخادم،
@@ -8643,13 +8761,9 @@ function buildAgentToolContext(operator: AgentOperator, userId: string): AgentTo
       strategies: ((workspace as any).strategiesTested || []).slice(0, 200).map((s: any) => ({ strategy: s.strategy, outcome: s.outcome, at: s.at })),
     }),
     brainSnapshot: () => {
-      const platforms = SUPPORTED_PLATFORMS.map((p: any) => p.id) as PlatformId[];
-      return buildCentralBrainSnapshot({
-        platforms,
-        records: performanceRecordsForBrain(),
-        commentsByPlatform: commentsByPlatformForBrain(platforms),
-        aiCounters: brainAiCounters(),
-      });
+      // facade توافقية من الحالة canonical (لا مُجمِّع عقلي مستقل).
+      const canonical = buildRuntimeBrain({ ...brainRuntimeInput(), now: Date.now() });
+      return toCentralBrainSnapshot(canonical.state);
     },
     brainContentPlan: (input: { productId?: string | null; productName?: string | null; platforms?: string[]; objective?: string | null }) => {
       const platforms = (Array.isArray(input.platforms) ? input.platforms : []).filter((p) => isSupportedPlatform(String(p))) as PlatformId[];
@@ -8853,6 +8967,66 @@ function saveAgentState(): void {
     .catch((error: any) => {
       lastPersistError = String(error?.code || error?.name || "persist_failed").slice(0, 60);
       console.warn("Could not persist agent state:", lastPersistError);
+    });
+}
+
+/**
+ * الذاكرة الدائمة للعقل المركزي. تُحفظ في مفتاح تخزين مستقل (`brainMemory`)
+ * عبر محوّل الحالة القائم نفسه (ملف/Postgres) — لا قاعدة بيانات ثانية ولا سرّ.
+ */
+let brainMemoryStore: BrainMemoryStoreState = emptyBrainMemory();
+
+/** يسترجع ذاكرة العقل الدائمة عند الإقلاع (تصمد بعد restart/cold start). */
+function loadBrainMemorySync(): void {
+  const raw = storageAdapter.readSync<any>(STORAGE_KEY_BRAIN_MEMORY);
+  brainMemoryStore = normalizeBrainMemory(raw);
+}
+
+/** يوحّد لقطة الذاكرة المحمّلة (يتجاهل أي شكل غير صالح بلا إسقاط). */
+function normalizeBrainMemory(raw: any): BrainMemoryStoreState {
+  const records = Array.isArray(raw?.records) ? raw.records : [];
+  const valid: BrainMemoryRecord[] = records.filter((r: any) =>
+    r && typeof r.id === 'string' && typeof r.kind === 'string' && typeof r.summary === 'string'
+    && ['active', 'superseded', 'retracted'].includes(r.status),
+  ).map((r: any) => ({
+    id: r.id,
+    kind: r.kind,
+    platform: r.platform ?? null,
+    origin: r.origin || 'derived',
+    createdAt: r.createdAt || new Date().toISOString(),
+    lastValidatedAt: r.lastValidatedAt ?? null,
+    confidence: r.confidence || 'low',
+    status: r.status,
+    sampleSize: Number.isFinite(r.sampleSize) ? r.sampleSize : 0,
+    sourceRefs: Array.isArray(r.sourceRefs) ? r.sourceRefs.slice(0, 20) : [],
+    summary: r.summary,
+    relatedGoal: r.relatedGoal ?? null,
+    relatedExperiment: r.relatedExperiment ?? null,
+    stale: Boolean(r.stale),
+    staleReason: r.staleReason ?? null,
+  }));
+  return { records: valid.slice(0, BRAIN_MEMORY_MAX) };
+}
+
+/** يدرج سجلات ذاكرة جديدة (بلا تكرار) ثم يحفظها دائمياً. */
+function persistBrainMemory(records: BrainMemoryRecord[]): void {
+  let added = 0;
+  for (const record of records) {
+    const res = upsertMemoryRecord(brainMemoryStore, record);
+    brainMemoryStore = res.store;
+    if (res.added) added += 1;
+  }
+  if (!added) return;
+  if (brainMemoryStore.records.length > BRAIN_MEMORY_MAX) {
+    brainMemoryStore = { records: brainMemoryStore.records.slice(-BRAIN_MEMORY_MAX) };
+  }
+  if (!storageReady) return;
+  const snapshot = { records: brainMemoryStore.records };
+  persistQueue = persistQueue
+    .then(() => storageAdapter.write(STORAGE_KEY_BRAIN_MEMORY, snapshot))
+    .catch((error: any) => {
+      lastPersistError = String(error?.code || error?.name || "persist_failed").slice(0, 60);
+      console.warn("Could not persist brain memory:", lastPersistError);
     });
 }
 
@@ -9237,6 +9411,9 @@ app.get("/api/system/email-status", requireOwner, (_req, res) => {
 // Readiness is deterministic and does not call Gemini. It helps deployment systems
 // distinguish a running process from a fully initialized application.
 app.get("/api/readiness", (_req, res) => {
+  // العقل المركزي canonical يُبنى مرة واحدة لكل طلب؛ كل كتل العقل أدناه
+  // (centralBrain التوافقية + brain) تُشتق من نفس اللقطة بلا إعادة جمع.
+  const readinessBrain = buildRuntimeBrain({ ...brainRuntimeInput(), now: Date.now() });
   // الجاهزية التطبيقية منفصلة تماماً عن جاهزية مزود الذكاء الاصطناعي:
   // التطبيق جاهز للعمل حتى لو لم يُضبط المفتاح، لأن البديل الحتمي متاح دائماً.
   res.json({
@@ -9392,20 +9569,14 @@ app.get("/api/readiness", (_req, res) => {
     // العقل المركزي العام (Batch 26): حقول آمنة منطقية فقط، بلا أي سرّ. توضح أن
     // التخطيط/التعلّم/التوصيات تغطي كل المنصات العشر، وأن القراءة لا تستهلك Gemini.
     centralBrain: (() => {
-      const platforms = SUPPORTED_PLATFORMS.map((p: any) => p.id) as PlatformId[];
-      const records = performanceRecordsForBrain();
-      const snap = buildCentralBrainSnapshot({
-        platforms,
-        records,
-        commentsByPlatform: commentsByPlatformForBrain(platforms),
-        aiCounters: brainAiCounters(),
-      });
+      // facade توافقية: الشكل القديم مُشتق من الحالة canonical نفسها (لا بناء مستقل).
+      const snap = toCentralBrainSnapshot(readinessBrain.state);
       const insufficient = snap.learning.byPlatform.filter((s) => !s.sufficientSample).map((s) => s.platform);
       return {
         platformAgnostic: true,
         platformsCovered: snap.platforms.length,
         learningPlatforms: snap.learning.byPlatform.length,
-        learningSampleSize: records.length,
+        learningSampleSize: readinessBrain.state.records.length,
         insufficientSamplePlatforms: insufficient,
         recommendationsCount: snap.recommendations?.recommendations.length ?? 0,
         audienceDemographicsAvailable: false,
@@ -9421,22 +9592,10 @@ app.get("/api/readiness", (_req, res) => {
      * مؤشرات/سمات غير متاحة، وأنه لا ينفّذ إجراءً خارجياً بنفسه.
      */
     brain: (() => {
-      const platforms = SUPPORTED_PLATFORMS.map((p: any) => p.id) as PlatformId[];
-      const live: Partial<Record<PlatformId, { connected: boolean; verified: boolean }>> = {};
-      for (const p of SUPPORTED_PLATFORMS) {
-        const st = platformConnections.get(p.id) || ({ status: "disconnected", providerVerified: false } as any);
-        live[p.id as PlatformId] = { connected: st.status === "connected", verified: st.providerVerified === true };
-      }
-      const state = buildCentralBrainState({
-        platforms,
-        now: Date.now(),
-        goals: defineGoal({ primary: "SALES", secondary: "TRUST" }),
-        records: performanceRecordsForBrain(),
-        commentsByPlatform: commentsByPlatformForBrain(platforms),
-        liveConnections: live,
-        aiCounters: brainAiCounters(),
-      });
+      const out = readinessBrain;
+      const state = out.state;
       const diag = brainDiagnostics(state);
+      const memSummary = summarizeBrainMemory(brainMemoryStore);
       return {
         platformAgnostic: true,
         platformsCovered: state.platformStates.length,
@@ -9448,11 +9607,24 @@ app.get("/api/readiness", (_req, res) => {
         }, {}),
         audienceDemographicsAvailable: state.audience?.demographicsAvailable ?? false,
         audienceSegments: state.audience?.segments.length ?? 0,
+        audienceEvidence: (state.audience?.segments || []).reduce((s, seg) => s + seg.evidence.length, 0),
         commercialEvidence: state.market?.hasCommercialEvidence ?? false,
         knowledgeHealth: diag.knowledgeHealth,
+        knowledgeItems: state.knowledge.items.length,
         signalFreshness: diag.signalFreshness,
         pendingDecisions: diag.pendingDecisionCount,
         blockedActions: diag.blockedActionCount,
+        recommendations: out.recommendations.length,
+        supportedRecommendations: out.recommendations.filter((r) => r.status === 'supported').length,
+        experiments: out.experiments.length,
+        strategies: out.strategies.length,
+        contentPathAvailable: Boolean(out.contentPath),
+        timingStatus: out.timing ? out.timing.status : 'no_observations',
+        learningEvents: out.learningEvents.length,
+        ownerPreferences: out.ownerPreferences.length,
+        risks: out.risks.length,
+        memoryHealth: memSummary,
+        memoryDurable: storageStatus().durable,
         brainHealth: diag.brainHealth,
         executesExternalActions: false,
         geminiUsedOnReads: false,
@@ -11654,17 +11826,8 @@ registerBrainRoutes(app, {
   authenticateToken,
   requireOwner,
   platforms: () => SUPPORTED_PLATFORMS.map((p: any) => p.id) as PlatformId[],
-  performanceRecords: () => performanceRecordsForBrain(),
-  commentsByPlatform: () => commentsByPlatformForBrain(SUPPORTED_PLATFORMS.map((p: any) => p.id) as PlatformId[]),
-  liveConnections: () => {
-    const out: Partial<Record<PlatformId, { connected: boolean; verified: boolean }>> = {};
-    for (const p of SUPPORTED_PLATFORMS) {
-      const state = platformConnections.get(p.id) || { status: "disconnected" as const, providerVerified: false };
-      out[p.id as PlatformId] = { connected: state.status === "connected", verified: (state as any).providerVerified === true };
-    }
-    return out;
-  },
-  aiCounters: () => brainAiCounters(),
+  runtimeInput: () => brainRuntimeInput(),
+  persistMemory: (records) => persistBrainMemory(records),
 });
 
 // -------------------------------------------------------------

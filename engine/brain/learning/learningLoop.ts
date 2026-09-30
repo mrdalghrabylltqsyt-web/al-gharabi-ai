@@ -20,7 +20,10 @@ export type LearningEventKind =
   | 'OWNER_REJECTION'
   | 'OWNER_EDIT'
   | 'AUDIENCE_RESPONSE'
-  | 'PLATFORM_RESPONSE';
+  | 'PLATFORM_RESPONSE'
+  | 'PROVIDER_RESPONSE'
+  | 'VERIFICATION'
+  | 'OUTCOME';
 
 export const LEARNING_EVENT_LABELS_AR: Record<LearningEventKind, string> = Object.freeze({
   SUCCESS: 'نجاح',
@@ -31,6 +34,9 @@ export const LEARNING_EVENT_LABELS_AR: Record<LearningEventKind, string> = Objec
   OWNER_EDIT: 'تعديل المالك',
   AUDIENCE_RESPONSE: 'استجابة جمهور',
   PLATFORM_RESPONSE: 'استجابة منصة',
+  PROVIDER_RESPONSE: 'استجابة مزوّد',
+  VERIFICATION: 'تحقق من مزوّد',
+  OUTCOME: 'نتيجة فعلية',
 });
 
 export interface LearningEvent {
@@ -45,15 +51,25 @@ export interface LearningEvent {
   /** هل يمكن اعتبار هذا التعلّم حقيقة، أم ملاحظة/فرضية؟ */
   isFact: boolean;
   at: string;
+  /** المنصة المرتبطة (اختياري). */
+  platform?: string | null;
+  /**
+   * معرّف المزوّد الحقيقي (تعليق/منشور/رسالة) — لا يُخترع أبداً. يُحفظ إن وُجد
+   * من استجابة مزوّد فعلية، ويُستبعد كلياً إن غاب.
+   */
+  providerId?: string | null;
+  /** مرجع المصدر (سجل/واجهة) للتدقيق. */
+  sourceRef?: string | null;
 }
 
 /** يحوّل حدث تعلّم إلى عنصر ذاكرة (بأصل صحيح، بلا ترقية AI إلى حقيقة). */
 export function learningEventToMemory(event: LearningEvent, now: number): { store: (s: MemoryStore) => MemoryStore; entry: ReturnType<typeof makeMemoryEntry> } {
   const kind: MemoryKind = event.kind === 'FAILURE' || event.kind === 'OWNER_REJECTION' ? 'failure'
     : event.kind === 'OWNER_EDIT' ? 'decision'
-      : event.kind === 'SUCCESS' ? 'outcome'
+      : event.kind === 'SUCCESS' || event.kind === 'OUTCOME' ? 'outcome'
         : event.kind === 'AUDIENCE_RESPONSE' ? 'audience'
-          : 'platform';
+          : event.kind === 'PROVIDER_RESPONSE' || event.kind === 'VERIFICATION' ? 'platform'
+            : 'platform';
   const origin = event.kind === 'OWNER_EDIT' || event.kind === 'OWNER_REJECTION' ? 'owner_input' : 'derived';
   const entry = makeMemoryEntry({
     id: event.id,
@@ -64,7 +80,10 @@ export function learningEventToMemory(event: LearningEvent, now: number): { stor
     now,
     sampleSize: event.sampleSize,
     confidence: event.confidence,
-    refs: { subject: event.subject },
+    refs: { subject: event.subject, providerId: event.providerId ?? null },
+    platform: event.platform ?? null,
+    sourceRefs: event.sourceRef ? [event.source, event.sourceRef] : [event.source],
+    summary: `${LEARNING_EVENT_LABELS_AR[event.kind]}: ${event.detail}`.slice(0, 300),
   });
   return { store: (s) => remember(s, entry), entry };
 }
@@ -80,6 +99,26 @@ export interface LearningResult {
 export const LEARNING_MIN_SAMPLE = 3;
 
 /**
+ * يمنع تكرار أحداث التعلّم: نفس المعرّف أو نفس (kind + subject + providerId)
+ * يُعتبر حدثاً واحداً. هذا يمنع استجابة مزوّد مُعادة (retry/webhook replay) من
+ * إنشاء تعلّم مكرر. الأحداث الجديدة تحتفظ بترتيبها (الأحدث أولاً عند التمرير).
+ */
+export function dedupeLearningEvents(events: LearningEvent[]): LearningEvent[] {
+  const seenId = new Set<string>();
+  const seenKey = new Set<string>();
+  const out: LearningEvent[] = [];
+  for (const e of events || []) {
+    if (!e || !e.id) continue;
+    const key = `${e.kind}|${e.subject}|${e.providerId || ''}`;
+    if (seenId.has(e.id) || seenKey.has(key)) continue;
+    seenId.add(e.id);
+    seenKey.add(key);
+    out.push(e);
+  }
+  return out;
+}
+
+/**
  * يبني حلقة تعلّم من أحداث حقيقية فقط. عند نقص العيّنة يُعلن ذلك ويصف التعلّم
  * كمؤشر مبدئي لا حقيقة.
  */
@@ -87,7 +126,7 @@ export function buildLearningLoop(input: {
   events: LearningEvent[];
   now: number;
 }): LearningResult {
-  const events = input.events || [];
+  const events = dedupeLearningEvents(input.events || []);
   const facts = events.filter((e) => e.isFact);
   const lessons = facts.map((e) => ({
     statement: `${LEARNING_EVENT_LABELS_AR[e.kind]} على «${e.subject}»: ${e.detail}`,
