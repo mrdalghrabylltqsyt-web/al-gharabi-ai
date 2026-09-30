@@ -21,6 +21,7 @@ import { AgentOrchestrator } from "./engine/agent/orchestrator";
 import { registerAgentRoutes } from "./engine/agent/routes";
 import { registerBrainRoutes } from "./engine/brain/routes";
 import { registerDriveRoutes } from "./engine/dr/routes";
+import { collectRepoFiles } from "./tools/dr/cloud-sync.mjs";
 import { buildCentralBrainState, brainDiagnostics } from "./engine/brain/state";
 import { capabilityMatrix } from "./engine/brain/strategy/capabilityMatrix";
 import { defineGoal } from "./engine/brain/goals/goalEngine";
@@ -4520,10 +4521,11 @@ let youtubeDelegationState: YouTubeDelegation = defaultYouTubeDelegation();
 // المنظومة. لا تُقرأ DATABASE_URL ولا تُرفع قاعدة بيانات خام. تُحفظ هنا فقط
 // حالات CSRF ورمز التجديد المشفّر وآخر خطأ — كلها عبر محوّل الحالة.
 // -------------------------------------------------------------
-const drControl: { driveOAuthStates: any[]; driveRefreshToken: any; driveLastError: string | null } = {
+const drControl: { driveOAuthStates: any[]; driveRefreshToken: any; driveLastError: string | null; driveBackup: any } = {
   driveOAuthStates: [],
   driveRefreshToken: null,
   driveLastError: null,
+  driveBackup: null,
 };
 
 /** يحفظ التفويض عبر محوّل الحالة (يصمد بعد restart) — كتابة تُنتظر عند التغيير. */
@@ -8566,6 +8568,7 @@ function applyControlSnapshot(control: any): void {
   drControl.driveOAuthStates = Array.isArray(control.driveOAuthStates) ? control.driveOAuthStates.slice(-200) : [];
   drControl.driveRefreshToken = control.driveRefreshToken && typeof control.driveRefreshToken === "object" ? control.driveRefreshToken : null;
   drControl.driveLastError = typeof control.driveLastError === "string" ? control.driveLastError : null;
+  drControl.driveBackup = control.driveBackup && typeof control.driveBackup === "object" ? control.driveBackup : null;
 }
 
 /** يقرأ حالة التحكّم متزامناً (backend الملف) عند الإقلاع. */
@@ -8606,6 +8609,7 @@ function buildControlState() {
     driveOAuthStates: drControl.driveOAuthStates.slice(-200),
     driveRefreshToken: drControl.driveRefreshToken,
     driveLastError: drControl.driveLastError,
+    driveBackup: drControl.driveBackup,
   };
 }
 
@@ -11851,6 +11855,14 @@ registerDriveRoutes(app, {
     Object.assign(drControl, partial);
     saveControlState();
   },
+  collectSourceFiles: () => collectRepoFiles(process.cwd()),
+  dumpDatabase: () => storageAdapter.dump(),
+  gitMeta: () => ({
+    commit: process.env.RENDER_GIT_COMMIT || process.env.GIT_COMMIT || null,
+    branch: process.env.RENDER_GIT_BRANCH || process.env.GIT_BRANCH || "main",
+    repository: process.env.GHARABI_REPOSITORY || "mrdalghrabylltqsyt-web/al-gharabi-ai",
+    project: "al-gharabi-ai",
+  }),
 });
 
 // مسارات العقل المركزي (Central Brain) — قراءة/تحليل فقط، بلا أي تنفيذ خارجي.

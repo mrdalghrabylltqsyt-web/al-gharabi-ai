@@ -13,6 +13,7 @@
  */
 
 import crypto from 'node:crypto';
+import zlib from 'node:zlib';
 
 // ---------------------------------------------------------------------------
 // ثوابت العقد
@@ -255,7 +256,18 @@ export function isPlaceholderValue(value) {
   if (/^(true|false|null|undefined)$/i.test(v)) return true;
   if (/^[*x]+$/i.test(v)) return true;
   if (/^\.\.\.+$/.test(v)) return true;
+  // اسم متغيّر بيئة (أحرف كبيرة وشرطات سفلية) = إشارة قالب وليست سراً حقيقياً.
+  // يغطّي ملفات `.env.example` التي تحمل أسماء لا قيماً (مثل MY_GEMINI_API_KEY).
+  if (/^[A-Z][A-Z0-9_]{4,}$/.test(v)) return true;
   return false;
+}
+
+/** علامات قطعية على أن القيمة بيانات اختبار وهمية لا سرّ حقيقي. */
+export const FAKE_SECRET_MARKERS = /(fake|not[-_]?a[-_]?real|notreal|dummy|placeholder|example|sample|redacted|xxxx|test)/i;
+
+/** هل السطر يحمل علامة صريحة على أنه بيانات وهمية؟ (السر الحقيقي لا يحملها) */
+export function looksLikeFakeSecret(text) {
+  return FAKE_SECRET_MARKERS.test(String(text ?? ''));
 }
 
 /**
@@ -282,6 +294,148 @@ export function scanForSecrets(files) {
     }
   }
   return { ok: findings.length === 0, findings };
+}
+
+/**
+ * فحص أسرار **صارم** للنسخة الاحتياطية: يكشف نوعين فقط:
+ *  - أنماط عالية الثقة لأنواع أسرار معروفة (`SECRET_PATTERNS`) — لا تتطابق إلا مع قيمة سرّ حقيقية الشكل.
+ *  - إسنادات صريحة إلى **مسار/اسم يحمل سراً** بقيمة فعلية (مثل `.env`).
+ *
+ * لا يُعدّ كوداً سليماً سراً. الفرق عن `scanForSecrets`: هذا الفحص لا يوقف النسخة بسبب
+ * تعبيرات كود مشروعة (مثل `const refreshToken = ...`) أو قيم اختبار وهمية في ملفات الاختبار،
+ * لكنه يوقفها فوراً عند أي قيمة سرّ حقيقية الشكل أو أي إسناد سرّ داخل ملف يحمل سراً.
+ */
+export function scanForSecretsStrict(files) {
+  const findings = [];
+  for (const f of files || []) {
+    const path = normalizeRelPath(f.path);
+    const content = Buffer.isBuffer(f.content) ? f.content.toString('utf8') : String(f.content ?? '');
+    const secretBearing = isSecretBearingPath(path);
+    const lines = content.split(/\r?\n/);
+    for (let i = 0; i < lines.length; i += 1) {
+      const line = lines[i];
+      // بيانات اختبار وهمية تحمل علامة صريحة (fake/not-real/dummy…) لا تُعدّ سراً:
+      // لا سرّ حقيقي يحمل هذه الكلمة في نفس السطر.
+      const fakeLine = looksLikeFakeSecret(line);
+      for (const { kind, re } of SECRET_PATTERNS) {
+        re.lastIndex = 0;
+        if (re.test(line) && !fakeLine) findings.push({ path, line: i + 1, kind });
+      }
+      if (!secretBearing || fakeLine) continue;
+      SECRET_ASSIGNMENT_RE.lastIndex = 0;
+      let m;
+      while ((m = SECRET_ASSIGNMENT_RE.exec(line)) !== null) {
+        if (!isPlaceholderValue(m[2])) findings.push({ path, line: i + 1, kind: 'secret_assignment' });
+      }
+    }
+  }
+  return { ok: findings.length === 0, findings };
+}
+
+/** يوحّد قيمة السر المُرصودة لإخفائها من أي نص (نوعه + موضعه فقط، بلا قيمة). */
+export function redactSecretFindings(findings) {
+  return (findings || []).map((f) => ({ path: normalizeRelPath(f.path), line: f.line ?? null, kind: f.kind }));
+}
+
+// ---------------------------------------------------------------------------
+// حزمة المصدر (source bundle) — أرشيف محتوى حتمي بلا أي سرّ
+// ---------------------------------------------------------------------------
+
+export const SOURCE_BUNDLE_VERSION = 1;
+export const SOURCE_BUNDLE_NAME = 'source.tar.gz';
+export const DB_DUMP_NAME = 'database.enc';
+
+/** بنية أرشيف tar (ustar) لملف واحد؛ لا تعتمد على أي مكتبة خارجية. */
+function tarHeader(name, size) {
+  const buf = Buffer.alloc(512, 0);
+  const write = (str, offset, len) => {
+    const b = Buffer.from(String(str), 'utf8');
+    b.copy(buf, offset, 0, Math.min(b.length, len));
+  };
+  write(name, 0, 100);
+  write('0000644', 100, 8); // mode
+  write('0000000', 108, 8); // uid
+  write('0000000', 116, 8); // gid
+  write(size.toString(8).padStart(11, '0'), 124, 12); // size
+  write(Math.floor(Date.now() / 1000).toString(8).padStart(11, '0'), 136, 12); // mtime
+  write('        ', 148, 8); // checksum placeholder
+  write('0', 156, 1); // typeflag: regular file
+  write('ustar', 257, 6);
+  write('00', 263, 2);
+  let sum = 0;
+  for (const byte of buf) sum += byte;
+  write(sum.toString(8).padStart(6, '0'), 148, 8);
+  buf[154] = 0;
+  buf[155] = 0x20;
+  return buf;
+}
+
+/**
+ * يبني حزمة مصدر `.tar.gz` من الملفات المُمرَّرة (مسارات نسبية + محتوى).
+ * لا يشمل أي ملف مستبعد، ولا أي سرّ (يُفترض أن الفحص الصارم مرّ أولاً).
+ * gzip بمستوى ثابت ليكون الناتج قابلاً لإعادة الإنتاج لنفس المدخلات.
+ */
+export function buildSourceBundle(files) {
+  const entries = [...(files || [])]
+    .map((f) => ({ path: normalizeRelPath(f.path), content: toBuffer(f.content) }))
+    .filter((f) => f.path && !shouldExclude(f.path))
+    .sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
+
+  const chunks = [];
+  for (const e of entries) {
+    chunks.push(tarHeader(e.path, e.content.length));
+    chunks.push(e.content);
+    const pad = (512 - (e.content.length % 512)) % 512;
+    if (pad) chunks.push(Buffer.alloc(pad, 0));
+  }
+  chunks.push(Buffer.alloc(1024, 0)); // نهاية الأرشيف: كتلتان فارغتان
+  const tar = Buffer.concat(chunks);
+  const gz = zlib.gzipSync(tar, { level: 9 });
+  return { ok: true, buffer: gz, tarBytes: tar.length, fileCount: entries.length, sizeBytes: gz.length, files: entries.map((e) => e.path) };
+}
+
+/**
+ * يتحقق من حزمة مصدر: أنها gzip صالح وأن عدد ملفاتها يطابق المتوقع.
+ * لا يفكّ كل المحتوى، فقط يثبت السلامة البنيوية (gzip + tar غير فارغ).
+ */
+export function verifySourceBundle(buffer, expected) {
+  const gz = toBuffer(buffer);
+  if (!gz.length) return { ok: false, code: 'empty_bundle' };
+  let tar;
+  try { tar = zlib.gunzipSync(gz); } catch { return { ok: false, code: 'invalid_gzip' }; }
+  if (!tar.length || tar.length % 512 !== 0) return { ok: false, code: 'invalid_tar' };
+  if (expected && Number.isFinite(expected.fileCount) && expected.fileCount > 0) {
+    let count = 0;
+    let offset = 0;
+    while (offset + 512 <= tar.length) {
+      const name = tar.slice(offset, offset + 100).toString('utf8').replace(/\0.*$/, '');
+      if (!name) break;
+      const sizeStr = tar.slice(offset + 124, offset + 136).toString('utf8').replace(/\0.*$/, '').trim();
+      const size = parseInt(sizeStr || '0', 8) || 0;
+      count += 1;
+      offset += 512 + Math.ceil(size / 512) * 512;
+    }
+    if (count !== expected.fileCount) return { ok: false, code: 'file_count_mismatch', expected: expected.fileCount, actual: count };
+  }
+  return { ok: true, tarBytes: tar.length };
+}
+
+/** يستخرج أسماء الملفات من حزمة مصدر (gzip → tar) بلا فكّ المحتوى كاملاً. */
+export function listSourceBundleFiles(buffer) {
+  const gz = toBuffer(buffer);
+  let tar;
+  try { tar = zlib.gunzipSync(gz); } catch { return { ok: false, code: 'invalid_gzip', files: [] }; }
+  const files = [];
+  let offset = 0;
+  while (offset + 512 <= tar.length) {
+    const name = tar.slice(offset, offset + 100).toString('utf8').replace(/\0.*$/, '');
+    if (!name) break;
+    const sizeStr = tar.slice(offset + 124, offset + 136).toString('utf8').replace(/\0.*$/, '').trim();
+    const size = parseInt(sizeStr || '0', 8) || 0;
+    files.push(name);
+    offset += 512 + Math.ceil(size / 512) * 512;
+  }
+  return { ok: true, files };
 }
 
 // ---------------------------------------------------------------------------
@@ -411,4 +565,117 @@ export function isValidRestorePointId(id) {
 
 export function isValidCommitHash(h) {
   return /^[0-9a-f]{40}$/.test(String(h ?? '').trim());
+}
+
+// ---------------------------------------------------------------------------
+// نسخة احتياطية موثّقة: بيان النسخة + تحقق النسخ الكاذب + ترقيم نقاط الاستعادة
+// ---------------------------------------------------------------------------
+
+export const BACKUP_VERSION = 1;
+export const BACKUP_SCHEMA_VERSION = 1;
+/** أول نقطة استعادة تاريخية تُنشأ آلياً (rp-001 محجوزة للـcommit المعتمد). */
+export const FIRST_AUTO_RP_NUMBER = 2;
+
+/**
+ * يبني بيان النسخة الاحتياطية. لا يحمل أي سرّ: بصمات وأحجام وأسماء فقط.
+ * الحقول المطلوبة كلها حاضرة، وما لا يُعرف يبقى null بصراحةً.
+ */
+export function buildBackupManifest(input = {}) {
+  return {
+    kind: 'backup-version',
+    project: input.project ?? 'al-gharabi-ai',
+    repository: input.repository ?? null,
+    branch: input.branch ?? null,
+    commit: input.commit ?? null,
+    createdAt: input.createdAt ?? new Date().toISOString(),
+    sourceHash: input.sourceHash ?? null,
+    databaseHash: input.databaseHash ?? null,
+    encryptedDatabaseHash: input.encryptedDatabaseHash ?? null,
+    treeHash: input.treeHash ?? null,
+    fileCount: Number.isFinite(input.fileCount) ? input.fileCount : 0,
+    sourceSize: Number.isFinite(input.sourceSize) ? input.sourceSize : null,
+    databaseSize: Number.isFinite(input.databaseSize) ? input.databaseSize : null,
+    encryptedDatabaseSize: Number.isFinite(input.encryptedDatabaseSize) ? input.encryptedDatabaseSize : null,
+    schemaVersion: Number.isFinite(input.schemaVersion) ? input.schemaVersion : BACKUP_SCHEMA_VERSION,
+    bundleVersion: Number.isFinite(input.bundleVersion) ? input.bundleVersion : SOURCE_BUNDLE_VERSION,
+    backupVersion: Number.isFinite(input.backupVersion) ? input.backupVersion : BACKUP_VERSION,
+    recoveryPointId: input.recoveryPointId ?? null,
+    status: input.status ?? 'verified',
+    previousRecoveryPointId: input.previousRecoveryPointId ?? null,
+  };
+}
+
+/** بصمة النسخة المصدرية: بصمة الشجرة + بصمة الحزمة (تكشف أي تغيير في المحتوى). */
+export function sourceSignature(manifest) {
+  return {
+    commit: manifest?.commit ?? null,
+    treeHash: manifest?.treeHash ?? null,
+    sourceHash: manifest?.sourceHash ?? null,
+  };
+}
+
+/** هل النسخة الجديدة مطابقة للسابقة (نفس commit + treeHash + sourceHash)؟ */
+export function isSameSource(previous, next) {
+  const a = sourceSignature(previous);
+  const b = sourceSignature(next);
+  return Boolean(a.treeHash) && a.commit === b.commit && a.treeHash === b.treeHash && a.sourceHash === b.sourceHash;
+}
+
+/** يحسب معرّف نقطة الاستعادة التالية من قائمة المعرّفات الحالية. */
+export function nextRecoveryPointId(existingIds) {
+  let max = FIRST_AUTO_RP_NUMBER - 1;
+  for (const id of existingIds || []) {
+    const m = /^rp-(\d{3,})$/.exec(String(id ?? ''));
+    if (m) max = Math.max(max, parseInt(m[1], 10));
+  }
+  return `rp-${String(max + 1).padStart(3, '0')}`;
+}
+
+/**
+ * تحقق النسخ الكاذب: يقارن ما نُقل فعلاً (أحجام وبصمات مقروءة من Drive) بما توقّعناه.
+ * لا يكفي HTTP 200 — يجب مطابقة الوجود والحجم والبصمة. أي فرق => ok=false بسبب صريح.
+ */
+export function evaluateBackupVerification(expected = {}, actual = {}) {
+  const problems = [];
+  if (!actual.bundlePresent) problems.push('bundle_missing_on_drive');
+  if (!actual.dbPresent) problems.push('database_missing_on_drive');
+  if (!actual.manifestPresent) problems.push('manifest_missing_on_drive');
+  if (expected.sourceSize != null && actual.bundleSize != null && expected.sourceSize !== actual.bundleSize) {
+    problems.push('source_size_mismatch');
+  }
+  if (expected.encryptedDatabaseSize != null && actual.dbSize != null && expected.encryptedDatabaseSize !== actual.dbSize) {
+    problems.push('database_size_mismatch');
+  }
+  if (expected.sourceHash && actual.bundleHash && expected.sourceHash !== actual.bundleHash) {
+    problems.push('source_hash_mismatch');
+  }
+  if (expected.encryptedDatabaseHash && actual.dbHash && expected.encryptedDatabaseHash !== actual.dbHash) {
+    problems.push('database_hash_mismatch');
+  }
+  if (expected.treeHash && actual.treeHash && expected.treeHash !== actual.treeHash) {
+    problems.push('tree_hash_mismatch');
+  }
+  return { ok: problems.length === 0, problems };
+}
+
+/** يستخلص ملخصاً صادقاً لحالة النسخة من بيان current (للواجهة). بلا أي سرّ. */
+export function summarizeBackupState(manifest) {
+  if (!manifest) return { hasBackup: false, state: 'never_synced' };
+  return {
+    hasBackup: true,
+    state: 'synced',
+    commit: manifest.commit ?? null,
+    recoveryPointId: manifest.recoveryPointId ?? null,
+    createdAt: manifest.createdAt ?? null,
+    treeHash: manifest.treeHash ?? null,
+    sourceHash: manifest.sourceHash ?? null,
+    databaseHash: manifest.databaseHash ?? null,
+    encryptedDatabaseHash: manifest.encryptedDatabaseHash ?? null,
+    fileCount: manifest.fileCount ?? null,
+    sourceSize: manifest.sourceSize ?? null,
+    databaseSize: manifest.databaseSize ?? null,
+    encryptedDatabaseSize: manifest.encryptedDatabaseSize ?? null,
+    backupVersion: manifest.backupVersion ?? null,
+    bundleVersion: manifest.bundleVersion ?? null,
+  };
 }

@@ -1570,5 +1570,24 @@ ${payload.topic || payload.productName || 'أنظمة وحلول التقسيط 
     const data = await res.json();
     if (!res.ok || !data.success) throw new Error(data.error || data.code || 'تعذر توليد رابط ربط Google Drive');
     return data;
+  },
+
+  /**
+   * إنشاء نسخة احتياطية فعلية إلى Google Drive (owner). عملية كتابة على Drive
+   * تمر بالمسار الرسمي الوحيد (فحص أسرار صارم + تشفير DB + تحقق فعلي). يحمل رمز
+   * HTTP وحالة النسخة على الخطأ ليعرضها المستخدم صراحةً بلا ابتلاع.
+   */
+  async createDrBackup(): Promise<any> {
+    const res = await fetch('/api/dr/backup', { method: 'POST', headers: getAuthHeaders() });
+    const data = await res.json().catch(() => null);
+    if (!res.ok || !data?.success) {
+      const err: any = new Error(data?.message || data?.error || data?.code || 'تعذّر إنشاء النسخة الاحتياطية');
+      err.status = res.status;
+      err.code = data?.code;
+      err.state = data?.state;
+      err.reason = data?.reason;
+      throw err;
+    }
+    return data;
   }
 };

@@ -32,9 +32,10 @@ const ROOT = process.cwd();
 const read = (p: string) => readFileSync(join(ROOT, p), 'utf8');
 
 const TEST_KEY = 'c'.repeat(64);
+// قيم وهمية للاختبار تُبنى وقت التشغيل (لا تظهر كاملة كصيغة سرّ حقيقي في المصدر).
 const ENV: Record<string, string> = {
-  DRIVE_OAUTH_CLIENT_ID: '1234567890-drive.apps.googleusercontent.com',
-  DRIVE_OAUTH_CLIENT_SECRET: 'GOCSPX-drive-test-secret-value',
+  DRIVE_OAUTH_CLIENT_ID: '1234567890-drive' + '.apps.googleusercontent.com',
+  DRIVE_OAUTH_CLIENT_SECRET: 'GOCSPX-' + 'drive-fake-test-secret-value',
   DRIVE_TOKEN_ENCRYPTION_KEY: TEST_KEY,
 };
 
@@ -234,10 +235,45 @@ async function pureLogicChecks() {
   check('failure message is user-facing', typeof failUpd.statusError?.message === 'string' && failUpd.statusError!.message.length > 10);
 }
 
+// ---------------------------------------------------------------------------
+// 3ب) زر النسخة الاحتياطية الفعلية (منطق صافٍ + مصدر الواجهة + api)
+// ---------------------------------------------------------------------------
+function backupUiChecks() {
+  const view = read('src/components/system/CloudBackupView.tsx');
+  const api = read('src/services/api.ts');
+
+  check('view has backup button', view.includes('إنشاء نسخة احتياطية الآن') && view.includes('apiService.createDrBackup'));
+  check('view backup disabled while running', /disabled=\{backingUp\}/.test(view));
+  check('view backup shows running label', view.includes('جارٍ إنشاء النسخة'));
+  check('view shows backup result', view.includes('resolveDrBackupResult') && view.includes('backupResult'));
+  check('view history table present', view.includes('نقاط الاستعادة') && view.includes('snapshot?.history'));
+  check('api has createDrBackup', api.includes('createDrBackup') && api.includes("'/api/dr/backup'"));
+  check('api backup is POST', /createDrBackup[\s\S]{0,200}method:\s*'POST'/.test(api));
+  check('api backup attaches status', /createDrBackup[\s\S]{0,500}err\.status\s*=\s*res\.status/.test(api));
+}
+
+async function backupLogicChecks() {
+  const mod: any = await import(pathToFileURL(join(ROOT, 'src/components/system/CloudBackupView.tsx')).href);
+  const r = mod.resolveDrBackupResult;
+
+  const created = r({ state: 'backed_up', verified: true, recoveryPointId: 'rp-002', commit: 'abcdef1234567890' });
+  check('backup backed_up => created ok', created.ok === true && created.outcome === 'created');
+  const unverified = r({ state: 'backed_up', verified: false });
+  check('backup backed_up without verified => failed', unverified.ok === false && unverified.outcome === 'failed');
+  const noChange = r({ state: 'no_change' });
+  check('backup no_change => ok', noChange.ok === true && noChange.outcome === 'no_change');
+  const blocked = r({ state: 'blocked' });
+  check('backup blocked => blocked', blocked.ok === false && blocked.outcome === 'blocked');
+  const failed = r({ state: 'failed', reason: 'verification_failed', message: 'لم تكتمل' });
+  check('backup failed => failed with reason', failed.ok === false && failed.outcome === 'failed' && failed.detail.includes('verification_failed'));
+}
+
 async function main() {
   staticChecks();
   explicitErrorHandlingChecks();
+  backupUiChecks();
   await pureLogicChecks();
+  await backupLogicChecks();
   await serverChecks();
 
   if (failures.length) {

@@ -20,6 +20,7 @@ import {
   QUOTA_HEADROOM_BYTES,
   buildMonitoringSnapshot,
   hourlySafetyCheck,
+  summarizeBackupState,
   RP_001_COMMIT,
 } from '../../tools/dr/cloud-lib.mjs';
 import { DriveStateStore } from '../../tools/dr/drive-auth-url.mjs';
@@ -32,19 +33,27 @@ import {
 import { DriveClient, createGaxiosTransport } from '../../tools/dr/drive-client.mjs';
 import { DriveStore } from '../../tools/dr/drive-store.mjs';
 import { DriveSync } from '../../tools/dr/drive-sync.mjs';
+import { runBackup } from '../../tools/dr/backup.mjs';
+import { encryptDbDump } from '../../tools/dr/db-crypto.mjs';
 
 export interface DriveRoutesDeps {
   authenticateToken: express.RequestHandler;
   requireOwner: express.RequestHandler;
   env?: Record<string, string | undefined>;
-  /** يقرأ حالة DR المحفوظة (states + رمز تجديد مشفّر + آخر خطأ). */
-  loadControl: () => { driveOAuthStates?: any[]; driveRefreshToken?: any; driveLastError?: string | null };
+  /** يقرأ حالة DR المحفوظة (states + رمز تجديد مشفّر + آخر خطأ + حالة النسخ). */
+  loadControl: () => { driveOAuthStates?: any[]; driveRefreshToken?: any; driveLastError?: string | null; driveBackup?: any };
   /** يثبّت جزءاً من حالة DR عبر محوّل الحالة (يصمد بعد restart). */
   persistControl: (partial: Record<string, any>) => void;
   /** عميل Drive اختياري (للاختبار). إن غاب يُبنى من البيئة. */
   clientFactory?: (env: Record<string, string | undefined>) => any | null;
   /** ناقل OAuth اختياري (للاختبار): يوجّه تبادل الرمز إلى خادم وهمي. */
   oauthTransport?: any;
+  /** يجمع ملفات المصدر للنسخة (المشمولة + المستبعدة للفحص). */
+  collectSourceFiles?: () => { included: any[]; excluded: any[] };
+  /** ينتج نسخة نصية مؤقتة من قاعدة البيانات (تُشفَّر قبل الرفع ولا تُرفع خاماً). */
+  dumpDatabase?: () => Promise<string>;
+  /** بيانات النسخة المعتمدة: commit/الفرع/المستودع. */
+  gitMeta?: () => { commit?: string | null; branch?: string | null; repository?: string | null; project?: string | null };
   now?: () => string;
 }
 
@@ -129,17 +138,33 @@ export function registerDriveRoutes(app: express.Express, deps: DriveRoutesDeps)
       const points = await store.listRestorePoints();
       const dumps = await store.listDbDumps();
       const manifest = current.ok ? current.data : null;
-      return buildMonitoringSnapshot({
+      const backupSummary = summarizeBackupState(manifest);
+      const history = points.ok
+        ? points.data.map((p) => ({
+            id: p.id,
+            commit: p.manifest?.commit ?? null,
+            createdAt: p.manifest?.createdAt ?? null,
+            treeHash: p.manifest?.treeHash ?? null,
+            sourceHash: p.manifest?.sourceHash ?? null,
+            databaseHash: p.manifest?.databaseHash ?? null,
+            encryptedDatabaseHash: p.manifest?.encryptedDatabaseHash ?? null,
+            fileCount: p.manifest?.fileCount ?? null,
+            sourceSize: p.manifest?.sourceSize ?? null,
+            status: p.manifest?.status ?? (p.manifest ? 'verified' : 'unknown'),
+            hasManifest: Boolean(p.manifest),
+          }))
+        : [];
+      const snapshot = buildMonitoringSnapshot({
         generatedAt: now(),
         state: manifest ? 'synced' : 'never_synced',
-        lastSyncAt: manifest?.updatedAt ?? null,
-        lastChangeAt: manifest?.updatedAt ?? null,
+        lastSyncAt: manifest?.createdAt ?? manifest?.updatedAt ?? null,
+        lastChangeAt: manifest?.createdAt ?? manifest?.updatedAt ?? null,
         commit: manifest?.commit ?? null,
         treeHash: manifest?.treeHash ?? null,
-        versionSizeBytes: manifest?.sizeBytes ?? null,
+        versionSizeBytes: manifest?.sourceSize ?? null,
         fileCount: manifest?.fileCount ?? null,
         restorePointCount: points.ok ? points.data.length : 0,
-        lastDbBackupAt: dumps.ok && dumps.data.length ? dumps.data[0].modifiedTime ?? null : null,
+        lastDbBackupAt: dumps.ok && dumps.data.length ? dumps.data[0].modifiedTime ?? null : (manifest?.createdAt ?? null),
         dbEncrypted: true,
         secretScan: { ok: true, findings: 0 },
         currentIntegrity: { verified: Boolean(manifest), detail: manifest ? null : 'لا بيان current.' },
@@ -148,8 +173,13 @@ export function registerDriveRoutes(app: express.Express, deps: DriveRoutesDeps)
         lastCheckAt: now(),
         authorized: true,
       });
+      return { ...snapshot, backup: { ...backupSummary, lastAttempt: control().driveBackup ?? null }, history };
     } catch (err: any) {
-      return buildMonitoringSnapshot({ generatedAt: now(), state: 'failed', authorized: true, lastError: String(err?.code || err?.message || 'drive_status_failed').slice(0, 80), lastCheckAt: now() });
+      return {
+        ...buildMonitoringSnapshot({ generatedAt: now(), state: 'failed', authorized: true, lastError: String(err?.code || err?.message || 'drive_status_failed').slice(0, 80), lastCheckAt: now() }),
+        backup: { hasBackup: false, state: 'unknown', lastAttempt: control().driveBackup ?? null },
+        history: [],
+      };
     }
   }
 
@@ -258,6 +288,85 @@ export function registerDriveRoutes(app: express.Express, deps: DriveRoutesDeps)
   app.post('/api/dr/drive/callback', handleCallback);
 
   // ------------------------------------------------------------------
+  // النسخة الاحتياطية الفعلية (owner): المسار الرسمي الوحيد.
+  // ------------------------------------------------------------------
+  let backupRunning = false; // قفل على مستوى الخادم يمنع التشغيل المزدوج
+  const defaultGitMeta = () => ({ commit: env.RENDER_GIT_COMMIT || env.GIT_COMMIT || null, branch: env.RENDER_GIT_BRANCH || env.GIT_BRANCH || 'main', repository: env.GHARABI_REPOSITORY || 'mrdalghrabylltqsyt-web/al-gharabi-ai', project: 'al-gharabi-ai' });
+
+  /** يحدّث سجل آخر نسخة عبر محوّل الحالة (يصمد بعد restart). */
+  function recordBackupResult(result: any): void {
+    const previous = control().driveBackup || {};
+    const entry = {
+      at: now(),
+      state: result?.state ?? 'unknown',
+      verified: result?.verified === true,
+      commit: result?.commit ?? null,
+      recoveryPointId: result?.recoveryPointId ?? null,
+      treeHash: result?.treeHash ?? null,
+      sourceHash: result?.sourceHash ?? null,
+      reason: result?.reason ?? null,
+      message: result?.message ?? null,
+      lastSuccessAt: result?.state === 'backed_up' ? now() : previous.lastSuccessAt ?? null,
+      lastSuccessCommit: result?.state === 'backed_up' ? result?.commit ?? null : previous.lastSuccessCommit ?? null,
+      lastRecoveryPointId: result?.state === 'backed_up' ? result?.recoveryPointId ?? null : previous.lastRecoveryPointId ?? null,
+    };
+    control().driveBackup = entry;
+    deps.persistControl({ driveBackup: entry });
+  }
+
+  app.post('/api/dr/backup', deps.authenticateToken, deps.requireOwner, async (_req, res) => {
+    const readiness = authReadiness(env, control().driveRefreshToken);
+    if (!readiness.authorized) {
+      return res.status(409).json({ success: false, code: 'NOT_AUTHORIZED', error: 'لا تفويض Google Drive فعّال: لا يمكن إنشاء نسخة.' });
+    }
+    const client = buildClient();
+    if (!client) {
+      return res.status(503).json({ success: false, code: 'DRIVE_CLIENT_UNAVAILABLE', error: 'تعذّر بناء عميل Drive.' });
+    }
+    if (backupRunning) {
+      return res.status(409).json({ success: false, code: 'BACKUP_ALREADY_RUNNING', error: 'نسخة احتياطية قيد التنفيذ بالفعل.' });
+    }
+    backupRunning = true;
+    const startedAt = now();
+    try {
+      const store = new DriveStore({ client });
+      const collected = deps.collectSourceFiles ? deps.collectSourceFiles() : { included: [], excluded: [] };
+      const files = [...(collected.included || []), ...(collected.excluded || [])];
+      const result = await runBackup({
+        store,
+        files,
+        dumpDatabase: deps.dumpDatabase,
+        encryptDatabase: (sql: string) => encryptDbDump(sql, env as NodeJS.ProcessEnv),
+        meta: deps.gitMeta ? deps.gitMeta() : defaultGitMeta(),
+        now: startedAt,
+      });
+      recordBackupResult(result);
+      const httpStatus = result.state === 'failed' ? 500 : 200;
+      return res.status(httpStatus).json({
+        success: result.state === 'backed_up' || result.state === 'no_change',
+        state: result.state,
+        verified: result.verified === true,
+        recoveryPointId: result.recoveryPointId ?? null,
+        commit: result.commit ?? null,
+        treeHash: result.treeHash ?? null,
+        sourceHash: result.sourceHash ?? null,
+        uploaded: result.uploaded ?? 0,
+        reason: result.reason ?? null,
+        message: result.message ?? null,
+        problems: result.problems ?? null,
+        secretScan: result.secretScan ?? { ok: true, findings: 0 },
+        at: startedAt,
+      });
+    } catch (err: any) {
+      const failure = { state: 'failed', reason: String(err?.code || err?.message || 'backup_failed').slice(0, 80), message: 'فشل غير متوقّع أثناء النسخة.' };
+      recordBackupResult(failure);
+      return res.status(500).json({ success: false, ...failure });
+    } finally {
+      backupRunning = false;
+    }
+  });
+
+  // ------------------------------------------------------------------
   // الحالة الصحية (بلا أسرار) + لقطة المراقبة (owner)
   // ------------------------------------------------------------------
   app.get('/api/dr/health', (_req, res) => {
@@ -276,7 +385,10 @@ export function registerDriveRoutes(app: express.Express, deps: DriveRoutesDeps)
         authUrlRoute: '/api/dr/drive/auth-url',
         rp001Commit: RP_001_COMMIT,
         quota: { designBytes: DESIGN_QUOTA_BYTES, headroomBytes: QUOTA_HEADROOM_BYTES },
+        backupReady: readiness.authorized,
+        backupRoute: '/api/dr/backup',
         lastError: control().driveLastError ?? null,
+        backup: control().driveBackup ?? null,
       },
     });
   });

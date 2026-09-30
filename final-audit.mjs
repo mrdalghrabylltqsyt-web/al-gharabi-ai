@@ -1398,8 +1398,8 @@ add('brain-runtime-tests-honest',
 // عدم قراءة DATABASE_URL، رفض قاعدة البيانات الخام، وحماية الأسرار.
 // ---------------------------------------------------------------------------
 const drDir = path.join(root, 'tools/dr');
-const drFiles = ['cloud-lib.mjs', 'cloud-sync.mjs', 'cloud-status.mjs', 'drive-client.mjs', 'drive-auth.mjs', 'drive-auth-url.mjs', 'drive-store.mjs', 'drive-sync.mjs', 'db-crypto.mjs', 'dump-db.mjs', 'restore-db.mjs'];
-const drTests = ['dr.core.test.ts', 'dr.store.test.ts', 'dr.sync.test.ts', 'dr.auth.test.ts', 'dr.db.test.ts', 'dr.routes.test.ts'];
+const drFiles = ['cloud-lib.mjs', 'cloud-sync.mjs', 'cloud-status.mjs', 'drive-client.mjs', 'drive-auth.mjs', 'drive-auth-url.mjs', 'drive-store.mjs', 'drive-sync.mjs', 'db-crypto.mjs', 'dump-db.mjs', 'restore-db.mjs', 'backup.mjs'];
+const drTests = ['dr.core.test.ts', 'dr.store.test.ts', 'dr.sync.test.ts', 'dr.auth.test.ts', 'dr.db.test.ts', 'dr.routes.test.ts', 'dr.backup.test.ts'];
 const drSources = drFiles.map((f) => (fs.existsSync(path.join(drDir, f)) ? read(path.join('tools/dr', f)) : ''));
 const drRoutes = fs.existsSync(path.join(root, 'engine/dr/routes.ts')) ? read('engine/dr/routes.ts') : '';
 
@@ -1446,6 +1446,30 @@ add('dr-ui-return-handling', /params\.get\('dr'\)/.test(app) && app.includes("dr
 add('dr-ui-oauth-redirect', drRoutes.includes("res.redirect(302") && drRoutes.includes('/?dr=authorized') && drRoutes.includes('dr=error&reason='), 'فرع المتصفح في callback يعيد التوجيه إلى الواجهة (بلا سرّ)');
 add('dr-ui-oauth-json-preserved', drRoutes.includes("String(req.headers.accept || '').includes('application/json')") && drRoutes.includes('res.status(status).json(payload)'), 'فرع JSON في callback باقٍ كما هو');
 add('dr-ui-test-present', fs.existsSync(path.join(root, 'engine/tests/dr/dr.ui.test.ts')) && (pkg.scripts['test:dr'] || '').includes('test:dr-ui') && pkg.scripts.test.includes('test:dr-ui'), 'اختبار واجهة DR مضمّن في test:dr وnpm test');
+
+// --- النسخة الاحتياطية الفعلية (رفع حقيقي إلى Drive) ---
+const drBackup = fs.existsSync(path.join(drDir, 'backup.mjs')) ? read('tools/dr/backup.mjs') : '';
+const drAdapter = read('engine/storage/adapter.ts');
+add('dr-backup-module', fs.existsSync(path.join(drDir, 'backup.mjs')) && drBackup.includes('export async function runBackup') && drBackup.includes('readBackCurrent'), 'وحدة النسخة الاحتياطية الفعلية موجودة (runBackup + تحقق)');
+add('dr-backup-route', drRoutes.includes("'/api/dr/backup'") && drRoutes.includes('runBackup') && drRoutes.includes('deps.requireOwner') && drRoutes.includes('encryptDbDump'), 'مسار POST /api/dr/backup للمالك يمر بالمسار الرسمي وبتشفير DB');
+add('dr-backup-secret-scan-before-upload', drBackup.indexOf('scanForSecretsStrict(files)') > -1 && drBackup.indexOf('scanForSecretsStrict(files)') < drBackup.indexOf('createVersionedRestorePoint'), 'فحص الأسرار الصارم يقع قبل أي رفع (لا سرّ يصل إلى Drive)');
+add('dr-backup-strict-gate-single-source', drSources[0].includes('export function scanForSecretsStrict') && drSources[0].includes('FAKE_SECRET_MARKERS') && read('tools/dr/drive-sync.mjs').includes('scanForSecretsStrict'), 'بوابة الأسرار الصارمة مصدر واحد وتُستخدم في المزامنة والنسخة');
+add('dr-backup-strict-blocks-real-secret', drSources[0].includes('looksLikeFakeSecret') && drSources[0].includes('isPlaceholderValue'), 'البوابة الصارمة تميّز السر الحقيقي من القيم الوهمية/القوالب');
+add('dr-backup-no-raw-db', read('tools/dr/drive-store.mjs').includes('writeCurrentVersion') && read('tools/dr/drive-store.mjs').includes('createVersionedRestorePoint') && drSources[0].includes('raw_database_dump_forbidden'), 'لا رفع لنسخة DB خام في current أو history');
+add('dr-backup-atomic-current', drBackup.indexOf('createVersionedRestorePoint') < drBackup.indexOf('writeCurrentVersion'), 'نقطة الاستعادة تُكتب قبل ترقية current (فشل جزئي لا يترك current نصف مكتمل)');
+add('dr-backup-verify', drBackup.includes('evaluateBackupVerification') && drSources[0].includes('export function evaluateBackupVerification') && drBackup.includes('verification_failed'), 'النجاح يتطلّب تحققاً فعلياً من Drive (لا نسخة كاذبة)');
+add('dr-backup-no-change', drSources[0].includes('export function isSameSource') && drBackup.includes("state: 'no_change'"), 'لا نسخة تاريخية مكررة عند عدم تغيّر (commit + treeHash + sourceHash)');
+add('dr-backup-rp-numbering', drSources[0].includes('export function nextRecoveryPointId') && drSources[0].includes('FIRST_AUTO_RP_NUMBER'), 'ترقيم نقاط الاستعادة من قائمة النقاط الحالية (rp-001 محجوزة)');
+add('dr-backup-db-source', drAdapter.includes('dump(): Promise<string>') && drAdapter.includes('async dump()') && drRoutes.includes('deps.dumpDatabase') && server.includes('storageAdapter.dump'), 'نسخة DB تأتي من محوّل التخزين (بلا DATABASE_URL) وتُشفَّر قبل الرفع');
+add('dr-backup-encrypted-only', drSources.some((s) => s.includes('GHARABI-DB-DUMP-V1')) && drRoutes.includes('encryptDbDump'), 'قاعدة البيانات تُشفَّر AES-256-GCM قبل أي رفع');
+add('dr-backup-single-path', drBackup.includes('inProcessLock') && drRoutes.includes('backupRunning'), 'قفل مزدوج (عملية + خادم) يمنع تشغيل نسختين متزامنتين');
+add('dr-backup-last-attempt-persisted', server.includes('driveBackup') && drRoutes.includes('persistControl') && drRoutes.includes('recordBackupResult'), 'نتيجة آخر نسخة تُحفظ عبر محوّل الحالة (تصمد بعد restart)');
+add('dr-backup-health-exposes', drRoutes.includes('backupReady') && drRoutes.includes('backupRoute') && drRoutes.includes('backup: control().driveBackup'), 'health يعرض جاهزية النسخة وآخر محاولة بلا أسرار');
+add('dr-backup-status-history', drRoutes.includes('summarizeBackupState') && drRoutes.includes('history') && drRoutes.includes('restorePointCount'), 'status يعرض ملخص النسخة وسجل نقاط الاستعادة');
+add('dr-backup-tests-present', fs.existsSync(path.join(root, 'engine/tests/dr/dr.backup.test.ts')) && (pkg.scripts['test:dr'] || '').includes('test:dr-backup') && pkg.scripts.test.includes('test:dr'), 'اختبار النسخة الاحتياطية مضمّن في test:dr وnpm test');
+add('dr-backup-api-post', /createDrBackup[\s\S]{0,200}method:\s*'POST'/.test(read('src/services/api.ts')), 'واجهة API تُنشئ النسخة عبر POST');
+add('dr-backup-ui-button', cloudView.includes('apiService.createDrBackup') && cloudView.includes('إنشاء نسخة احتياطية الآن') && cloudView.includes('resolveDrBackupResult'), 'زر النسخة الاحتياطية الفعلي موجود ويعرض نتيجة الخادم الصادقة');
+add('dr-backup-ui-history', cloudView.includes('snapshot?.history') && cloudView.includes('نقاط الاستعادة'), 'واجهة نقاط الاستعادة الحقيقية معروضة');
 
 const failed = checks.filter(x => !x.ok);
 console.table(checks);

@@ -173,6 +173,9 @@ export async function fakeDriveTransport(state: FakeDriveState, opts: any): Prom
   }
   if (path.endsWith('/drive/v3/files') && method === 'POST') {
     const body = typeof opts.body === 'string' ? JSON.parse(opts.body) : opts.body;
+    if (body.mimeType === FOLDER_MIME && state.failCreateNames.has(String(body.name || ''))) {
+      return { status: 500, headers: {}, data: { error: { code: 500, message: 'injected folder create failure' } } };
+    }
     const file: FakeDriveFile = {
       id: nextId(state),
       name: String(body.name || ''),

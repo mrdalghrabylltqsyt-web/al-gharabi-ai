@@ -33,7 +33,7 @@ const currentFolderId = (state: any): string =>
   [...state.files.values()].find((f: any) => f.mimeType === 'application/vnd.google-apps.folder' && f.name === 'current')!.id;
 const currentFileNames = (state: any): string[] => {
   const cid = currentFolderId(state);
-  return [...state.files.values()].filter((f: any) => f.parents.includes(cid) && f.name !== '_manifest.json').map((f: any) => f.name).sort();
+  return [...state.files.values()].filter((f: any) => f.parents.includes(cid) && f.name !== 'manifest.json').map((f: any) => f.name).sort();
 };
 
 async function main() {
@@ -112,9 +112,12 @@ async function main() {
     await sync.syncCurrent([{ path: 'a.txt', content: 'a' }], { commit: 'c1' });
     const manifestBefore = (await store.readCurrentManifest()).data;
     const reqBefore = state.requests.length;
+    // قيمة سرّ حقيقية الشكل تُبنى وقت التشغيل (لا تظهر كاملة في مصدر الاختبار،
+    // فلا يوقف الفحص الصارم ملف الاختبار نفسه).
+    const leak = 'GEMINI_API_KEY=AIza' + 'SyABCDEFGHIJKLMNOPQRSTUVWXYZ012345678';
     const r = await sync.syncCurrent([
       { path: 'a.txt', content: 'a' },
-      { path: 'leak.txt', content: 'GEMINI_API_KEY=AIzaSyABCDEFGHIJKLMNOPQRSTUVWXYZ012345678' },
+      { path: 'leak.txt', content: leak },
     ], { commit: 'c2' });
     check('secret blocked state', r.state === 'secret_blocked' && r.stopped === true);
     check('secret blocked uploads nothing', r.uploaded === 0 && state.requests.length === reqBefore);

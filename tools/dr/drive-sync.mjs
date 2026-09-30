@@ -18,7 +18,7 @@
 import {
   computeTreeHash,
   diffSnapshots,
-  scanForSecrets,
+  scanForSecretsStrict,
   withinQuota,
   encodeFileName,
   normalizeRelPath,
@@ -97,7 +97,7 @@ export class DriveSync {
     const { entries, contents, treeHash } = buildSnapshot(files, { include });
 
     // 2) secret scan — يفحص كل الملفات المُمرَّرة بما فيها المستبعدة
-    const secretScan = scanForSecrets(files);
+    const secretScan = scanForSecretsStrict(files);
     if (!secretScan.ok) {
       return {
         state: 'secret_blocked',

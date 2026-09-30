@@ -18,11 +18,15 @@ import {
   isValidRestorePointId,
   classifyDbDump,
   encodeFileName,
+  toBuffer,
+  SOURCE_BUNDLE_NAME,
+  SOURCE_BUNDLE_VERSION,
+  DB_DUMP_NAME,
 } from './cloud-lib.mjs';
 
-export const CURRENT_MANIFEST_NAME = '_manifest.json';
-export const RESTORE_MANIFEST_NAME = '_manifest.json';
-export const HISTORY_INDEX_NAME = '_history.json';
+export const CURRENT_MANIFEST_NAME = 'manifest.json';
+export const RESTORE_MANIFEST_NAME = 'manifest.json';
+export const HISTORY_INDEX_NAME = 'history.json';
 
 function md5Hex(content) {
   return crypto.createHash('md5').update(Buffer.isBuffer(content) ? content : Buffer.from(String(content), 'utf8')).digest('hex');
@@ -228,6 +232,89 @@ export class DriveStore {
     const res = await this.upsertFile(dbId, name, content, 'application/octet-stream');
     if (!res.ok) return res;
     return { ok: true, data: { id: res.data.id, name, encrypted: true } };
+  }
+
+  /** يحذف نسخة DB مشفّرة (تنظيف نسخة مؤقتة بعد ترقيتها إلى current). */
+  async removeDbDump(name) {
+    const dbId = await this.subdirId('db');
+    if (!dbId) return { ok: false, code: 'no_structure' };
+    return this.removeChild(dbId, name);
+  }
+
+  // ------------------------------------------------------------------
+  // current/ + history/ — ملفات النسخة (source.tar.gz + database.enc)
+  // ------------------------------------------------------------------
+
+  /**
+   * يرفع ملفات النسخة (الحزمة المصدرية + قاعدة البيانات المشفّرة) إلى مجلد
+   * `current/`. يرفض أي قاعدة بيانات خام قبل أي رفع. يكتب الملفات أولاً ثم البيان
+   * آخراً، فلا يُعلَن `current` مكتملاً قبل وجود ملفاته فعلاً.
+   * @param {{ bundle?: Buffer|string, bundleName?: string, dbEncrypted?: Buffer|string, dbName?: string, manifest?: object }} payload
+   */
+  async writeCurrentVersion({ bundle, bundleName = SOURCE_BUNDLE_NAME, dbEncrypted, dbName = DB_DUMP_NAME, manifest } = {}) {
+    const currentId = await this.subdirId('current');
+    if (!currentId) return { ok: false, code: 'no_structure' };
+    const bundleBuf = Buffer.isBuffer(bundle) ? bundle : Buffer.from(bundle ?? '');
+    if (!bundleBuf.length) return { ok: false, code: 'missing_bundle' };
+    const dbBuf = Buffer.isBuffer(dbEncrypted) ? dbEncrypted : Buffer.from(dbEncrypted ?? '');
+    const verdict = classifyDbDump(dbBuf);
+    if (!verdict.allowed) return { ok: false, code: verdict.reason || 'not_an_encrypted_dump', message: 'المسموح فقط DB encrypted dump في current.' };
+
+    const b = await this.upsertFile(currentId, bundleName, bundleBuf, 'application/gzip');
+    if (!b.ok) return b;
+    const d = await this.upsertFile(currentId, dbName, dbBuf, 'application/octet-stream');
+    if (!d.ok) return d;
+    const w = await this.writeJson(currentId, CURRENT_MANIFEST_NAME, manifest);
+    if (!w.ok) return w;
+    return { ok: true, data: { bundleId: b.data.id, dbId: d.data.id, manifestId: w.data.id } };
+  }
+
+  /** يقرأ ملف نسخة من مجلد (current أو نقطة استعادة) ويعيد محتواه الخام. */
+  async readVersionFile(parentId, name) {
+    const found = await this.findChild(parentId, name);
+    if (!found.ok) return found;
+    if (!found.data) return { ok: true, data: null };
+    const dl = await this.readFile(found.data.id);
+    if (!dl.ok) return dl;
+    return { ok: true, data: toBuffer(dl.data), fileId: found.data.id };
+  }
+
+  /**
+   * ينشئ نقطة استعادة تاريخية غير قابلة للتعديل: مجلد `history/<id>/` يحوي
+   * `source.tar.gz` و`database.enc` و`manifest.json` (يُكتب أخيراً كدليل اكتمال).
+   * يرفض إن وُجدت النقطة (immutability).
+   * @param {string} id
+   * @param {{ commit?: string, bundle?: Buffer|string, dbEncrypted?: Buffer|string, manifest?: object }} payload
+   */
+  async createVersionedRestorePoint(id, { commit, bundle, dbEncrypted, manifest } = {}) {
+    if (!isValidRestorePointId(id)) return { ok: false, code: 'invalid_id', message: `معرّف نقطة استعادة غير صالح: ${id}` };
+    const historyId = await this.subdirId('history');
+    if (!historyId) return { ok: false, code: 'no_structure' };
+    const existing = await this.findChild(historyId, id);
+    if (!existing.ok) return existing;
+    if (existing.data) return { ok: false, code: 'immutable_restore_point', message: `نقطة الاستعادة ${id} موجودة: لا يجوز تعديل نقطة موجودة.` };
+
+    const bundleBuf = Buffer.isBuffer(bundle) ? bundle : Buffer.from(bundle ?? '');
+    if (!bundleBuf.length) return { ok: false, code: 'missing_bundle' };
+    const dbBuf = Buffer.isBuffer(dbEncrypted) ? dbEncrypted : Buffer.from(dbEncrypted ?? '');
+    const verdict = classifyDbDump(dbBuf);
+    if (!verdict.allowed) return { ok: false, code: verdict.reason || 'not_an_encrypted_dump', message: 'المسموح فقط DB encrypted dump في نقطة الاستعادة.' };
+
+    if (id === RP_001_ID) {
+      const check = assertRp001Manifest({ ...(manifest || {}), id: RP_001_ID });
+      if (!check.ok) return { ok: false, code: check.reason, message: `rp-001 يجب أن يمثل الـcommit ${RP_001_COMMIT}.` };
+    }
+
+    const created = await this.client.createFolder(id, historyId);
+    if (!created.ok) return created;
+    const folderId = created.data?.id;
+    const b = await this.upsertFile(folderId, SOURCE_BUNDLE_NAME, bundleBuf, 'application/gzip');
+    if (!b.ok) return b;
+    const d = await this.upsertFile(folderId, DB_DUMP_NAME, dbBuf, 'application/octet-stream');
+    if (!d.ok) return d;
+    const w = await this.writeJson(folderId, RESTORE_MANIFEST_NAME, manifest);
+    if (!w.ok) return w;
+    return { ok: true, data: { id, folderId, manifest } };
   }
 
   async listDbDumps() {

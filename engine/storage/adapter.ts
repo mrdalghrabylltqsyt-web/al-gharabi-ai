@@ -44,6 +44,11 @@ export interface StorageAdapter {
   read<T>(key: string): Promise<T | null>;
   /** كتابة ذرّية: upsert واحد لPostgres، أو tmp + rename للملف. */
   write<T>(key: string, value: T): Promise<void>;
+  /**
+   * نسخة نصية من حالة قاعدة البيانات (JSON) لأغراض النسخ الاحتياطي فقط.
+   * لا تتصل بأي قاعدة خارجية ولا تُظهر رابط الاتصال؛ ولا تُرفع إلا **مشفّرة**.
+   */
+  dump(): Promise<string>;
   status(): StorageStatus;
   listBackups(): BackupInfo[];
   /** إغلاق الموارد (اتصال قاعدة البيانات) عند الإيقاف. */
@@ -145,6 +150,23 @@ class FileStorageAdapter implements StorageAdapter {
     fs.writeFileSync(tmp, JSON.stringify(value, null, 2), { encoding: "utf8", mode: 0o600 });
     fs.renameSync(tmp, target);
     this.writable = true;
+  }
+
+  /**
+   * نسخة نصية من ملفات الحالة المحلية. لا تشمل ملفات مفاتيح/أسرار، لأن حالة
+   * التطبيق (state/usage/control) تحمل توكنات مشفّرة بالفعل وليس أسراراً صريحة.
+   * تُرفع هذه النسخة **مشفّرة** فقط (AES-256-GCM) ولا تصل إلى Drive خاماً.
+   */
+  async dump(): Promise<string> {
+    const out: Record<string, unknown> = { backend: this.backend, exportedAt: new Date().toISOString(), keys: {} };
+    for (const key of Object.keys(FILE_NAMES)) {
+      try {
+        out.keys[key] = JSON.parse(fs.readFileSync(this.fileFor(key), "utf8"));
+      } catch {
+        out.keys[key] = null;
+      }
+    }
+    return JSON.stringify(out, null, 2);
   }
 
   status(): StorageStatus {
@@ -257,6 +279,21 @@ class PostgresStorageAdapter implements StorageAdapter {
       [key, JSON.stringify(value)],
     );
     this.healthy = true;
+  }
+
+  /**
+   * نسخة منطقية من حالة قاعدة البيانات (كل صفوف gharabi_state). لا تُظهر رابط
+   * الاتصال ولا أي سرّ، ولا تُرفع إلا مشفّرة. عند تعذّر القراءة تُرمى لتُعلَن
+   * النسخة فاشلة بدل نسخة ناقصة كاذبة.
+   */
+  async dump(): Promise<string> {
+    if (!this.pool || !this.healthy) throw new Error("database_unavailable");
+    const result = await this.pool.query("SELECT key, value, updated_at FROM gharabi_state ORDER BY key");
+    return JSON.stringify(
+      { backend: this.backend, exportedAt: new Date().toISOString(), rows: result.rows ?? [] },
+      null,
+      2,
+    );
   }
 
   status(): StorageStatus {

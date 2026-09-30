@@ -71,6 +71,32 @@ export function resolveDrStatusUpdate(
   return { ok: false, statusError: classifyDrStatusError(statusRes.reason) };
 }
 
+export type DrBackupOutcome = 'created' | 'no_change' | 'blocked' | 'failed';
+
+export interface DrBackupResultInfo {
+  ok: boolean;
+  outcome: DrBackupOutcome;
+  title: string;
+  detail: string;
+}
+
+// ترجمة نتيجة إنشاء النسخة إلى رسالة عربية صادقة. لا نُعلن نجاحاً إلا بحالة
+// `backed_up` مؤكدة؛ و`no_change` و`blocked` و`failed` تظهر بسببها الصريح.
+export function resolveDrBackupResult(data: any): DrBackupResultInfo {
+  const state = data?.state;
+  if (state === 'backed_up' && data?.verified === true) {
+    return { ok: true, outcome: 'created', title: 'تم إنشاء النسخة الاحتياطية والتحقق منها', detail: `نقطة الاستعادة: ${data?.recoveryPointId || '—'} • الالتزام: ${(data?.commit || '—').slice(0, 12)}` };
+  }
+  if (state === 'no_change') {
+    return { ok: true, outcome: 'no_change', title: 'لا تغيير منذ آخر نسخة', detail: 'نفس الالتزام وبصمة المحتوى: لم تُنشأ نسخة تاريخية مكررة.' };
+  }
+  if (state === 'blocked') {
+    return { ok: false, outcome: 'blocked', title: 'النسخة قيد التنفيذ', detail: 'نسخة احتياطية تعمل بالفعل. انتظر قليلاً ثم حدّث الحالة.' };
+  }
+  const reason = data?.reason ? ` (${data.reason})` : '';
+  return { ok: false, outcome: 'failed', title: 'فشل إنشاء النسخة الاحتياطية', detail: `${data?.message || 'لم تكتمل النسخة.'}${reason}` };
+}
+
 export const CloudBackupView: React.FC = () => {
   const { currentUser, showToast } = useApp();
   const isOwner = currentUser?.role === 'owner';
@@ -78,6 +104,8 @@ export const CloudBackupView: React.FC = () => {
   const [snapshot, setSnapshot] = useState<any>(null);
   const [loading, setLoading] = useState(false);
   const [connecting, setConnecting] = useState(false);
+  const [backingUp, setBackingUp] = useState(false);
+  const [backupResult, setBackupResult] = useState<DrBackupResultInfo | null>(null);
   const [statusError, setStatusError] = useState<DrStatusErrorInfo | null>(null);
   const [lastUpdatedAt, setLastUpdatedAt] = useState<string | null>(null);
 
@@ -133,6 +161,27 @@ export const CloudBackupView: React.FC = () => {
     }
   };
 
+  // إنشاء نسخة احتياطية فعلية: يعرض نتيجة الخادم الفعلية فقط، ثم يُحدّث الحالة
+  // ليظهر عدد نقاط الاستعادة والنسخة الحالية الحقيقية.
+  const createBackup = async () => {
+    if (backingUp) return;
+    setBackingUp(true);
+    setBackupResult(null);
+    try {
+      const data = await apiService.createDrBackup();
+      const info = resolveDrBackupResult(data);
+      setBackupResult(info);
+      showToast(info.title);
+      await load();
+    } catch (e: any) {
+      const info = resolveDrBackupResult({ state: e?.state, reason: e?.reason, message: e?.message });
+      setBackupResult(info);
+      showToast(info.title);
+    } finally {
+      setBackingUp(false);
+    }
+  };
+
   const quota = snapshot?.quota || health?.quota || {};
   const designBytes = quota.designBytes ?? 0;
   const usageBytes = quota.usageBytes ?? null;
@@ -150,9 +199,14 @@ export const CloudBackupView: React.FC = () => {
       <div className="p-6 rounded-2xl bg-gradient-to-l from-slate-900 to-sky-950/50 border border-sky-500/20 flex flex-col md:flex-row justify-between gap-4">
         <div>
           <h2 className="text-xl font-black text-white flex items-center gap-2"><CloudUpload className="w-5 h-5 text-sky-400" /> النسخ السحابي والاستعادة</h2>
-          <p className="text-xs text-slate-400 mt-1">حالة ربط Google Drive، النسخة الحالية، نقاط الاستعادة، ونسخة قاعدة البيانات المشفّرة. عرض وربط فقط — لا رفع ولا استعادة في هذه المرحلة.</p>
+          <p className="text-xs text-slate-400 mt-1">حالة ربط Google Drive، النسخة الحالية، نقاط الاستعادة، ونسخة قاعدة البيانات المشفّرة. يمكنك إنشاء نسخة احتياطية فعلية بعد الربط.</p>
         </div>
-        <div className="flex gap-2">
+        <div className="flex gap-2 flex-wrap">
+          {authorized && (
+            <button onClick={() => void createBackup()} disabled={backingUp} className="px-4 py-2 rounded-xl bg-emerald-500 text-slate-950 text-xs font-black flex items-center gap-2 disabled:opacity-60">
+              {backingUp ? <Loader2 className="w-4 h-4 animate-spin" /> : <CloudUpload className="w-4 h-4" />} {backingUp ? 'جارٍ إنشاء النسخة…' : 'إنشاء نسخة احتياطية الآن'}
+            </button>
+          )}
           <button onClick={() => void load()} disabled={loading} className="px-4 py-2 rounded-xl bg-slate-800 border border-slate-700 text-xs font-bold text-white flex items-center gap-2 disabled:opacity-60">
             <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} /> {loading ? 'جارٍ التحديث…' : 'تحديث الحالة'}
           </button>
@@ -163,6 +217,16 @@ export const CloudBackupView: React.FC = () => {
           )}
         </div>
       </div>
+
+      {backupResult && (
+        <section className={`p-4 rounded-2xl border flex items-start gap-2 ${backupResult.ok ? 'bg-emerald-500/10 border-emerald-500/30' : (backupResult.outcome === 'blocked' ? 'bg-sky-500/10 border-sky-500/30' : 'bg-rose-500/10 border-rose-500/30')}`}>
+          {backupResult.ok ? <CheckCircle2 className="w-4 h-4 text-emerald-400 mt-0.5 shrink-0" /> : <TriangleAlert className={`w-4 h-4 mt-0.5 shrink-0 ${backupResult.outcome === 'blocked' ? 'text-sky-400' : 'text-rose-400'}`} />}
+          <div>
+            <p className={`text-xs font-bold ${backupResult.ok ? 'text-emerald-200' : (backupResult.outcome === 'blocked' ? 'text-sky-200' : 'text-rose-200')}`}>{backupResult.title}</p>
+            <p className="text-[10px] text-slate-400 mt-1">{backupResult.detail}</p>
+          </div>
+        </section>
+      )}
 
       {statusError && (
         <section className="p-4 rounded-2xl bg-amber-500/10 border border-amber-500/30 flex items-start justify-between gap-3 flex-wrap">
@@ -213,6 +277,41 @@ export const CloudBackupView: React.FC = () => {
           </div>
         ))}
       </div>
+
+      {/* نقاط الاستعادة الحقيقية (history) */}
+      <section className="p-5 rounded-2xl bg-slate-900 border border-slate-800">
+        <h3 className="font-bold text-white flex items-center gap-2 mb-4"><History className="w-4 h-4 text-sky-400" /> نقاط الاستعادة</h3>
+        {Array.isArray(snapshot?.history) && snapshot.history.length > 0 ? (
+          <div className="overflow-x-auto">
+            <table className="w-full text-xs">
+              <thead>
+                <tr className="text-slate-400 text-right">
+                  <th className="py-2 px-2 font-bold">المعرّف</th>
+                  <th className="py-2 px-2 font-bold">الالتزام</th>
+                  <th className="py-2 px-2 font-bold">التاريخ</th>
+                  <th className="py-2 px-2 font-bold">عدد الملفات</th>
+                  <th className="py-2 px-2 font-bold">الحجم</th>
+                  <th className="py-2 px-2 font-bold">الحالة</th>
+                </tr>
+              </thead>
+              <tbody>
+                {snapshot.history.map((h: any) => (
+                  <tr key={h.id} className="border-t border-slate-800 text-slate-300">
+                    <td className="py-2 px-2 font-mono">{h.id}</td>
+                    <td className="py-2 px-2 font-mono text-[10px]">{h.commit ? String(h.commit).slice(0, 10) : '—'}</td>
+                    <td className="py-2 px-2">{fmtTime(h.createdAt)}</td>
+                    <td className="py-2 px-2">{h.fileCount ?? '—'}</td>
+                    <td className="py-2 px-2">{fmtBytes(h.sourceSize)}</td>
+                    <td className="py-2 px-2">{h.hasManifest ? <span className="text-emerald-400">مكتملة</span> : <span className="text-amber-400">ناقصة</span>}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        ) : (
+          <p className="text-xs text-slate-500">لا توجد نقاط استعادة بعد. اضغط «إنشاء نسخة احتياطية الآن» لإنشاء أول نقطة حقيقية.</p>
+        )}
+      </section>
 
       <div className="grid lg:grid-cols-2 gap-6">
         {/* قاعدة البيانات + الالتزام */}

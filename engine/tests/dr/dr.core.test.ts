@@ -78,9 +78,9 @@ check('keep normal source', !shouldExclude('server.ts') && !shouldExclude('tools
 // --- فحص الأسرار: يشمل المستبعدة ---
 const secret = scanForSecrets([
   { path: 'src/ok.ts', content: 'const x = 1;' },
-  { path: '.env', content: 'GEMINI_API_KEY=AIzaSyABCDEFGHIJKLMNOPQRSTUVWXYZ012345678' },
-  { path: 'a/b.key', content: '-----BEGIN PRIVATE KEY-----\nMIIabc\n-----END PRIVATE KEY-----' },
-  { path: 'conf.json', content: '{"refresh_token":"1//0abcdefghijklmnopqrstuvwxyzABCDEFGHIJ"}' },
+  { path: '.env', content: 'GEMINI_API_KEY=AIzaSyABCDEFGHIJKLMNOPQRSTUVWXYZ012345678FAKE' },
+  { path: 'a/b.key', content: '-----BEGIN PRIVATE KEY-----\nMIIabc-fake-not-real\n-----END PRIVATE KEY-----' },
+  { path: 'conf.json', content: '{"refresh_token":"1//0abcdefghijklmnopqrstuvwxyzABCDEFGH-fake"}' },
 ]);
 check('secret scan detects (incl excluded)', !secret.ok && secret.findings.length >= 3);
 check('secret scan no value leaked', secret.findings.every((f) => !('value' in f)));

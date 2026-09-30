@@ -74,7 +74,8 @@
     "test:dr-auth": "tsx engine/tests/dr/dr.auth.test.ts",
     "test:dr-db": "tsx engine/tests/dr/dr.db.test.ts",
     "test:dr-routes": "tsx engine/tests/dr/dr.routes.test.ts",
-    "test:dr": "npm run test:dr-core && npm run test:dr-store && npm run test:dr-sync && npm run test:dr-auth && npm run test:dr-db && npm run test:dr-routes && npm run test:dr-ui",
+    "test:dr-backup": "tsx engine/tests/dr/dr.backup.test.ts",
+    "test:dr": "npm run test:dr-core && npm run test:dr-store && npm run test:dr-sync && npm run test:dr-auth && npm run test:dr-db && npm run test:dr-routes && npm run test:dr-backup && npm run test:dr-ui",
     "test:dr-ui": "tsx engine/tests/dr/dr.ui.test.ts"
   },
   "dependencies": {

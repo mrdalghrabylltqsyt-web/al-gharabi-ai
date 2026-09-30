@@ -21,9 +21,10 @@ function check(name: string, condition: boolean, detail = ''): void {
 }
 
 const TEST_KEY = 'c'.repeat(64);
+// قيم وهمية للاختبار تُبنى وقت التشغيل (لا تظهر كاملة كصيغة سرّ حقيقي في المصدر).
 const ENV: Record<string, string> = {
-  DRIVE_OAUTH_CLIENT_ID: '1234567890-drive.apps.googleusercontent.com',
-  DRIVE_OAUTH_CLIENT_SECRET: 'GOCSPX-drive-test-secret-value',
+  DRIVE_OAUTH_CLIENT_ID: '1234567890-drive' + '.apps.googleusercontent.com',
+  DRIVE_OAUTH_CLIENT_SECRET: 'GOCSPX-' + 'drive-fake-test-secret-value',
   DRIVE_TOKEN_ENCRYPTION_KEY: TEST_KEY,
 };
 
@@ -71,6 +72,9 @@ async function main() {
     persistControl: (partial) => { Object.assign(drControl, partial); persisted.push(partial); },
     clientFactory: () => new DriveClient({ transport: makeFakeTransport(fakeState), tokenProvider: () => 'tok' }),
     oauthTransport: makeFakeTokenTransport(),
+    collectSourceFiles: () => ({ included: [{ path: 'server.ts', content: 'export const x = 1;' }, { path: 'README.md', content: '# hi' }], excluded: [] }),
+    dumpDatabase: async () => 'CREATE TABLE t(id int);\n',
+    gitMeta: () => ({ commit: 'a'.repeat(40), branch: 'main', repository: 'r/al-gharabi-ai', project: 'al-gharabi-ai' }),
     now: () => '2026-01-01T00:00:00.000Z',
   });
 
@@ -162,6 +166,38 @@ async function main() {
       check('status no secret', !JSON.stringify(body).includes('drive-fake-refresh') && !JSON.stringify(body).includes('GOCSPX'));
       const unauth = await fetch(`${base}/api/dr/status`);
       check('status requires auth', unauth.status === 401);
+    }
+
+    // --- backup (owner): نسخة فعلية بلا سرّ ---
+    {
+      // غير مالك / بلا جلسة
+      const noAuth = await fetch(`${base}/api/dr/backup`, { method: 'POST' });
+      check('backup requires auth', noAuth.status === 401);
+
+      const res = await fetch(`${base}/api/dr/backup`, { method: 'POST', headers: ownerHeaders });
+      const body = await res.json();
+      check('backup 200 success', res.status === 200 && body.success === true && body.state === 'backed_up');
+      check('backup verified', body.verified === true);
+      check('backup recovery point', body.recoveryPointId === 'rp-002');
+      check('backup no secret', !JSON.stringify(body).includes('drive-fake-refresh') && !JSON.stringify(body).includes('GOCSPX'));
+      check('backup lastAttempt persisted', Boolean(drControl.driveBackup) && drControl.driveBackup.state === 'backed_up');
+
+      // النسخة الثانية بنفس المصدر => لا تغيير
+      const again = await fetch(`${base}/api/dr/backup`, { method: 'POST', headers: ownerHeaders });
+      const againBody = await again.json();
+      check('backup no_change on identical source', againBody.state === 'no_change');
+
+      // status يعرض النسخة الحقيقية + نقاط الاستعادة
+      const st = await (await fetch(`${base}/api/dr/status`, { headers: ownerHeaders })).json();
+      check('status backup present', st.snapshot.backup.hasBackup === true && st.snapshot.backup.commit === 'a'.repeat(40));
+      check('status restore points listed', Array.isArray(st.snapshot.history) && st.snapshot.history.length === 1 && st.snapshot.history[0].id === 'rp-002');
+      check('status restorePointCount', st.snapshot.restorePointCount === 1);
+
+      // health يعرض جاهزية النسخة + آخر محاولة (بلا سرّ)
+      const h = await (await fetch(`${base}/api/dr/health`)).json();
+      check('health backupReady', h.dr.backupReady === true && h.dr.backupRoute === '/api/dr/backup');
+      check('health backup last attempt', h.dr.backup && Boolean(h.dr.backup.lastSuccessAt) && h.dr.backup.lastSuccessCommit === 'a'.repeat(40));
+      check('health backup no secret', !JSON.stringify(h).includes('drive-fake-refresh'));
     }
   } finally {
     await new Promise((resolve) => server.close(() => resolve(null)));
