@@ -26,6 +26,10 @@ import {
   scanForSecretsStrict,
   redactSecretFindings,
   buildBackupManifest,
+  buildCurrentState,
+  buildLatestRecovery,
+  buildRecoveryInformation,
+  buildRecoveryInstructions,
   isSameSource,
   nextRecoveryPointId,
   evaluateBackupVerification,
@@ -33,9 +37,13 @@ import {
   normalizeRelPath,
   SOURCE_BUNDLE_NAME,
   DB_DUMP_NAME,
+  SECRETS_PACKAGE_NAME,
+  RECOVERY_INFO_NAME,
+  RECOVERY_INSTRUCTIONS_NAME,
   SOURCE_BUNDLE_VERSION,
   BACKUP_VERSION,
 } from './cloud-lib.mjs';
+import { buildSecretsBundle } from './secret-crypto.mjs';
 import { CURRENT_MANIFEST_NAME } from './drive-store.mjs';
 
 /** قفل تشغيل على مستوى العملية (حماية ثانية فوق قفل الخادم). */
@@ -64,6 +72,10 @@ export function computeSourceTree(files) {
  * @param {object[]} options.files ملفات المصدر `{path, content}` (المشمولة والمستبعدة).
  * @param {() => Promise<string|null>|string|null} [options.dumpDatabase] ينتج نص SQL خام (مؤقت).
  * @param {(sql:string)=>object} options.encryptDatabase يشفر نص SQL إلى DB encrypted dump.
+ * @param {() => Promise<object>|object} [options.buildSecrets] يبني حزمة الأسرار المشفّرة من البيئة.
+ * @param {object} [options.secrets] أسرار صريحة (للاختبار) تُشفَّر بالمفتاح الرئيسي.
+ * @param {Record<string,string>} [options.env] بيئة المفتاح الرئيسي.
+ * @param {(ctx:object)=>({information?:string,instructions?:string})|Promise<{information?:string,instructions?:string}>} [options.recoveryInfo] وثائق التعافي.
  * @param {object} [options.meta] { commit, branch, repository, project }
  * @param {string} [options.now]
  * @returns {Promise<object>} نتيجة صادقة (state: no_change|backed_up|failed|secret_blocked|blocked)
@@ -85,7 +97,7 @@ export async function runBackup(options = {}) {
   }
 }
 
-async function runBackupInner({ store, files, dumpDatabase, encryptDatabase, meta, now }) {
+async function runBackupInner({ store, files, dumpDatabase, encryptDatabase, meta, now, env, secrets, buildSecrets, recoveryInfo }) {
   // 1) البنية
   const structure = await store.ensureStructure();
   if (!structure.ok) return { state: 'failed', uploaded: 0, reason: structure.code || 'no_structure', message: structure.message || 'تعذّر تجهيز بنية Drive.', errorDetails: structure.errorDetails || null };
@@ -143,6 +155,35 @@ async function runBackupInner({ store, files, dumpDatabase, encryptDatabase, met
     encryptedDatabaseSize = Buffer.byteLength(dbEncrypted);
   }
 
+  // 4ب) حزمة الأسرار المشفّرة (secrets.enc) — منفصلة عن المصدر وعن قاعدة البيانات.
+  //     تُبنى من البيئة الفعلية (أسماء موجودة فقط)، وتُشفَّر بالمفتاح الرئيسي.
+  //     لا سرّ مكشوف: الحزمة مشفّرة والبيان يحمل أسماءً وبصمات فقط.
+  let secretsPayload = null;
+  let secretsManifest = null;
+  let encryptedSecretsHash = null;
+  let encryptedSecretsSize = null;
+  let secretsSkipped = null;
+  if (typeof buildSecrets === 'function') {
+    const built = await buildSecrets();
+    // غياب أي سرّ مضبوط في البيئة ليس فشلاً: نُعلنها صراحةً ونُكمل (لا حزمة فارغة).
+    if (!built || !built.ok) {
+      if (built?.code === 'no_secrets_found') secretsSkipped = 'no_secrets_found';
+      else return { state: 'failed', reason: built?.code || 'secrets_build_failed', message: built?.message || 'تعذّر بناء حزمة الأسرار المشفّرة.', treeHash, sourceHash, at: now };
+    } else {
+      secretsPayload = built.payload;
+      secretsManifest = built.manifest;
+      encryptedSecretsHash = built.manifest?.encryptedSecretsHash ?? hashContent(built.payload);
+      encryptedSecretsSize = Buffer.byteLength(built.payload);
+    }
+  } else if (secrets && typeof secrets === 'object') {
+    const built = buildSecretsBundle({ ...(env || process.env), ...secrets }, { now });
+    if (!built.ok) return { state: 'failed', reason: built.code, message: built.message, treeHash, sourceHash, at: now };
+    secretsPayload = built.payload;
+    secretsManifest = built.manifest;
+    encryptedSecretsHash = built.manifest.encryptedSecretsHash;
+    encryptedSecretsSize = Buffer.byteLength(built.payload);
+  }
+
   // 5) مقارنة مع النسخة الحالية => منع التكرار بلا تغيير
   const currentRead = await store.readCurrentManifest();
   const previousManifest = currentRead.ok ? currentRead.data : null;
@@ -157,6 +198,9 @@ async function runBackupInner({ store, files, dumpDatabase, encryptDatabase, met
     databaseSize,
     encryptedDatabaseHash,
     encryptedDatabaseSize,
+    encryptedSecretsHash,
+    encryptedSecretsSize,
+    secretsCount: secretsManifest?.includedCount ?? null,
     schemaVersion: undefined,
     bundleVersion: SOURCE_BUNDLE_VERSION,
     backupVersion: BACKUP_VERSION,
@@ -192,6 +236,8 @@ async function runBackupInner({ store, files, dumpDatabase, encryptDatabase, met
     sourceHash: manifest.sourceHash,
     databaseHash: manifest.databaseHash,
     encryptedDatabaseHash: manifest.encryptedDatabaseHash,
+    encryptedSecretsHash: manifest.encryptedSecretsHash,
+    secretsCount: manifest.secretsCount,
     fileCount: manifest.fileCount,
     sourceSize: manifest.sourceSize,
     databaseSize: manifest.databaseSize,
@@ -207,21 +253,23 @@ async function runBackupInner({ store, files, dumpDatabase, encryptDatabase, met
     commit: manifest.commit,
     bundle: bundle.buffer,
     dbEncrypted,
+    secrets: secretsPayload,
+    secretsManifest,
     manifest: recoveryManifest,
   });
   if (!rp.ok) {
     return { state: 'failed', reason: rp.code || 'history_write_failed', message: rp.message || 'تعذّر إنشاء نقطة الاستعادة.', treeHash, sourceHash, at: now };
   }
 
-  const promoted = await store.writeCurrentVersion({ bundle: bundle.buffer, dbEncrypted, manifest });
+  const promoted = await store.writeCurrentVersion({ bundle: bundle.buffer, dbEncrypted, secrets: secretsPayload, secretsManifest, manifest });
   if (!promoted.ok) {
     return { state: 'failed', reason: promoted.code || 'current_write_failed', message: promoted.message || 'تعذّر ترقية current (نقطة الاستعادة أُنشئت).', treeHash, sourceHash, recoveryPointId, at: now };
   }
 
-  // 8) تحقق فعلي: إعادة قراءة ما على Drive ومقارنة الأحجام والبصمات
-  const actual = await readBackCurrent(store, { bundleName: SOURCE_BUNDLE_NAME, dbName: DB_DUMP_NAME });
+  // 8) تحقق فعلي: إعادة قراءة ما على Drive ومقارنة الأحجام والبصمات (المصدر + DB + الأسرار)
+  const actual = await readBackCurrent(store, { bundleName: SOURCE_BUNDLE_NAME, dbName: DB_DUMP_NAME, secretsName: SECRETS_PACKAGE_NAME });
   const verification = evaluateBackupVerification(
-    { sourceSize: bundle.sizeBytes, encryptedDatabaseSize, sourceHash, encryptedDatabaseHash, treeHash },
+    { sourceSize: bundle.sizeBytes, encryptedDatabaseSize, encryptedSecretsSize, sourceHash, encryptedDatabaseHash, encryptedSecretsHash, treeHash },
     actual,
   );
   if (!verification.ok) {
@@ -237,22 +285,77 @@ async function runBackupInner({ store, files, dumpDatabase, encryptDatabase, met
     };
   }
 
-  // 9) حذف نسخة DB المؤقتة من db/ (بعد الترقية) — لا تبقى نسخة مكررة.
-  if (dbEncrypted) { try { await store.removeDbDump(DB_DUMP_NAME); } catch { /* تنظيف أفضل جهد */ } }
+  // 8ب) وثائق التعافي المستقلة + current-state + أحدث نقطة استعادة (بلا أسرار)
+  const requiredEnvNames = secretsManifest?.includedNames || [];
+  const currentState = buildCurrentState({
+    updatedAt: now,
+    commit: manifest.commit,
+    branch: meta.branch ?? null,
+    repository: meta.repository ?? null,
+    treeHash,
+    sourceHash,
+    fileCount: manifest.fileCount,
+    sizeBytes: manifest.sourceSize,
+    lastRecoveryPointId: recoveryPointId,
+    recoveryPointCount: (points.ok ? points.data.length : 0) + 1,
+    database: { present: Boolean(dbEncrypted), encrypted: true, hash: encryptedDatabaseHash, size: encryptedDatabaseSize },
+    secrets: { present: Boolean(secretsPayload), encrypted: true, count: secretsManifest?.includedCount ?? 0, hash: encryptedSecretsHash, size: encryptedSecretsSize, names: requiredEnvNames },
+    deploy: { provider: 'render', service: meta.project ?? 'al-gharabi-ai', commit: manifest.commit, branch: meta.branch ?? null },
+    requiredEnvNames,
+    restoreTargets: { render: meta.project ?? 'al-gharabi-ai', github: meta.repository ?? null },
+  });
+  const latestRecovery = buildLatestRecovery({
+    updatedAt: now,
+    latestRecoveryPointId: recoveryPointId,
+    commit: manifest.commit,
+    createdAt: now,
+    treeHash,
+    sourceHash,
+    databaseHash,
+    encryptedDatabaseHash,
+    encryptedSecretsHash,
+    fileCount: manifest.fileCount,
+    sourceSize: manifest.sourceSize,
+    secretsCount: secretsManifest?.includedCount ?? null,
+  });
+  try {
+    await store.writeCurrentState(currentState);
+    await store.writeRecoveryManifest(recoveryManifest);
+    await store.writeLatestRecovery(latestRecovery);
+    if (typeof recoveryInfo === 'function') {
+      const info = await recoveryInfo({ recoveryPointId, repository: meta.repository, now });
+      if (info?.information) await store.writeRecoveryDoc(RECOVERY_INFO_NAME, info.information);
+      if (info?.instructions) await store.writeRecoveryDoc(RECOVERY_INSTRUCTIONS_NAME, info.instructions);
+    } else {
+      await store.writeRecoveryDoc(RECOVERY_INFO_NAME, buildRecoveryInformation({ repository: meta.repository, createdAt: now }));
+      await store.writeRecoveryDoc(RECOVERY_INSTRUCTIONS_NAME, buildRecoveryInstructions({ latestRecoveryPointId: recoveryPointId }));
+    }
+  } catch { /* وثائق التعافي أفضل جهد: لا تُسقط نسخة مكتملة ومتحقّقة */ }
+
+  // 9) نسخة DB في db/ (مستقلة) + حزمة الأسرار في secrets/ (مستقلة).
+  //    لا حذف: نسخة db/ هي مرجع مستقل يُبقى حتى بعد ترقية current.
+  if (dbEncrypted) {
+    try { await store.keepAliveDbDump(DB_DUMP_NAME, dbEncrypted); } catch { /* أفضل جهد */ }
+  }
+  if (secretsPayload) {
+    try { await store.writeSecretsPackage(secretsPayload, secretsManifest); } catch { /* أفضل جهد */ }
+  }
 
   return {
     state: 'backed_up',
-    uploaded: 2 + (dbEncrypted ? 1 : 0),
+    uploaded: 2 + (dbEncrypted ? 1 : 0) + (secretsPayload ? 1 : 0),
     verified: true,
     changed: true,
     commit: manifest.commit,
     treeHash,
     sourceHash,
     recoveryPointId,
+    secretsCount: secretsManifest?.includedCount ?? null,
+    secretsSkipped,
     manifest,
     verification,
     at: now,
-    message: 'اكتملت النسخة الاحتياطية بنجاح وتم التحقق منها فعلاً على Google Drive.',
+    message: 'اكتملت النسخة الاحتياطية بنجاح وتم التحقق منها فعلاً على Google Drive (المصدر + قاعدة البيانات المشفّرة + الأسرار المشفّرة).',
   };
 }
 
@@ -260,19 +363,24 @@ async function runBackupInner({ store, files, dumpDatabase, encryptDatabase, met
 export async function readBackCurrent(store, names = {}) {
   const bundleName = names.bundleName || SOURCE_BUNDLE_NAME;
   const dbName = names.dbName || DB_DUMP_NAME;
+  const secretsName = names.secretsName || SECRETS_PACKAGE_NAME;
   const currentId = await store.subdirId('current');
-  if (!currentId) return { bundlePresent: false, dbPresent: false, manifestPresent: false };
+  if (!currentId) return { bundlePresent: false, dbPresent: false, manifestPresent: false, secretsPresent: false };
   const bundle = await store.readVersionFile(currentId, bundleName);
   const db = await store.readVersionFile(currentId, dbName);
+  const secrets = await store.readVersionFile(currentId, secretsName);
   const manifest = await store.readJsonChild(currentId, CURRENT_MANIFEST_NAME);
   return {
     bundlePresent: Boolean(bundle.ok && bundle.data),
     dbPresent: Boolean(db.ok && db.data),
+    secretsPresent: Boolean(secrets.ok && secrets.data),
     manifestPresent: Boolean(manifest.ok && manifest.data),
     bundleSize: bundle.ok && bundle.data ? bundle.data.length : null,
     dbSize: db.ok && db.data ? db.data.length : null,
+    secretsSize: secrets.ok && secrets.data ? secrets.data.length : null,
     bundleHash: bundle.ok && bundle.data ? hashContent(bundle.data) : null,
     dbHash: db.ok && db.data ? hashContent(db.data) : null,
+    secretsHash: secrets.ok && secrets.data ? hashContent(secrets.data) : null,
     treeHash: manifest.ok && manifest.data ? manifest.data.treeHash : null,
   };
 }

@@ -111,7 +111,10 @@ async function main() {
     check('happy: manifest fields', manifest.commit === 'c1' && manifest.fileCount === 2 && manifest.recoveryPointId === 'rp-002');
     check('happy: manifest sourceSize>0', manifest.sourceSize > 0);
     check('happy: manifest backupVersion', manifest.backupVersion === 1 && manifest.bundleVersion === 1);
-    check('happy: manifest no secret keys', !/token|secret|refresh|password|DATABASE_URL/i.test(JSON.stringify(manifest)));
+    // البيان لا يحمل أي **قيمة** سرّية: فقط حقول metadata (encryptedSecretsHash/hash).
+    // نميّز بدقّة: كلمة "secret"/"token" قد تظهر كاسم حقل metadata، لكن لا يجوز أن
+    // تحمل قيمة سرّية أو أن تظهر كلمة قيمة مكشوفة (refresh token / password / DATABASE_URL).
+    check('happy: manifest no secret values', !/refresh[_-]?token|password|DATABASE_URL|api[_-]?key|client[_-]?secret/i.test(JSON.stringify(manifest)));
   }
 
   // ============ 2) لا أسرار في الحزمة ============
@@ -395,6 +398,60 @@ async function main() {
     const s = await second.ensureStructure();
     const after = [...state.files.values()].filter((f: any) => f.name === 'al-gharabi-ai-dr').length;
     check('identity: reuse no duplicate root', s.ok && before === 1 && after === 1 && s.data.rootId === identity.rootId);
+  }
+
+  // ============ 17) الأسرار المشفّرة + وثائق التعافي + المجلدات المستقلة ============
+  {
+    const state = createFakeDriveState();
+    const store = makeStore(state);
+    const SECRET_ENV = {
+      DR_RECOVERY_MASTER_KEY: '5a'.repeat(32),
+      GEMINI_API_KEY: 'AIzaSy' + 'q'.repeat(33),
+      SESSION_SECRET: 'sess-' + 'v'.repeat(30),
+    };
+    const { buildSecretsBundle, decryptSecretsPackage } = await import('../../../tools/dr/secret-crypto.mjs');
+    const r = await runBackup({
+      store,
+      files: [{ path: 'server.ts', content: 'export const x = 1;' }],
+      dumpDatabase: async () => SQL,
+      encryptDatabase: encrypt,
+      buildSecrets: () => buildSecretsBundle(SECRET_ENV, { now: '2026-01-01T00:00:00.000Z' }),
+      meta: { commit: 'c1', branch: 'main', repository: 'r/al-gharabi-ai', project: 'al-gharabi-ai' },
+      now: '2026-01-01T00:00:00.000Z',
+    });
+    check('secrets: backup backed_up', r.state === 'backed_up' && r.verified === true);
+    check('secrets: manifest has encryptedSecretsHash', /^[0-9a-f]{64}$/.test(r.manifest.encryptedSecretsHash));
+    check('secrets: count reported', r.secretsCount === 2);
+
+    // حزمة الأسرار موجودة في مجلد secrets/ ومشفّرة وقابلة للفكّ.
+    const pkg = await store.readSecretsPackage();
+    check('secrets: package uploaded to secrets dir', pkg.ok === true && String(pkg.data ?? '').includes('GHARABI-SECRETS-V1'));
+    check('secrets: package not plaintext', !String(pkg.data ?? '').includes('AIzaSy') && !String(pkg.data ?? '').includes('sess-'));
+    const dec = decryptSecretsPackage(pkg.data, SECRET_ENV);
+    check('secrets: decrypts with master key', dec.ok === true && dec.secrets.GEMINI_API_KEY === SECRET_ENV.GEMINI_API_KEY);
+    const secManifest = await store.readSecretsManifest();
+    check('secrets: manifest names only', secManifest.ok && secManifest.data.includedNames.includes('GEMINI_API_KEY') && !JSON.stringify(secManifest.data).includes('AIzaSy'));
+
+    // نسخة قاعدة البيانات في db/ (مستقلة، مشفّرة).
+    const dbDumps = await store.listDbDumps();
+    check('db: encrypted dump present in db dir', dbDumps.ok && dbDumps.data.length >= 1);
+    check('db: db dir holds only encrypted dump', dbDumps.ok && dbDumps.data.every((d: any) => d.name.endsWith('.enc')));
+
+    // وثائق التعافي المستقلة في recovery/ بلا أسرار.
+    const info = await store.readRecoveryDoc('recovery-information.md');
+    const instr = await store.readRecoveryDoc('recovery-instructions.md');
+    check('recovery: information doc uploaded', info.ok && String(info.data).includes('معلومات التعافي'));
+    check('recovery: instructions doc uploaded', instr.ok && String(instr.data).includes('تعليمات الاستعادة'));
+    check('recovery: docs have no secret values', !String(info.data).includes('AIzaSy') && !String(instr.data).includes('sess-'));
+
+    // current-state يحمل حالة الأسرار بأسماء فقط.
+    const cs = await store.readCurrentState();
+    check('current-state: secrets metadata present', cs.ok && cs.data.secrets.present === true && cs.data.secrets.names.includes('GEMINI_API_KEY'));
+    check('current-state: no secret values', !JSON.stringify(cs.data).includes('AIzaSy'));
+
+    // النسخة في current مشفّرة (لا SQL خام): الشكل المقبول فقط.
+    const cur = await store.readVersionFile(await store.subdirId('current'), DB_DUMP_NAME);
+    check('secrets: current db is encrypted (not raw SQL)', cur.ok && classifyOk(cur.data) && !String(cur.data).includes('CREATE TABLE'));
   }
 
   if (failures.length) {

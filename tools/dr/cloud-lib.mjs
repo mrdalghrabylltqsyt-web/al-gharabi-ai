@@ -20,8 +20,23 @@ import zlib from 'node:zlib';
 // ---------------------------------------------------------------------------
 
 export const DR_FOLDER_NAME = 'al-gharabi-ai-dr';
-export const DR_SUBDIRS = ['current', 'history', 'db'];
+/**
+ * البنية الكاملة: current (مرآة الملفات الحقيقية) + history (نقاط استعادة كاملة)
+ * + db (نسخة مشفّرة مستقلة) + secrets (حزمة أسرار مشفّرة) + recovery (معلومات
+ * التعافي المستقلة القابلة للقراءة بلا تشغيل الغرابي) + staging (منطقة ذرّية
+ * للترقية). المجلدات الثلاثة الأولى مطلوبة للتوافق الرجعي مع النقاط القائمة.
+ */
+export const DR_SUBDIRS = ['current', 'history', 'db', 'secrets', 'recovery', 'staging'];
 export const DR_ROOT_DIR = '.dr-recovery';
+
+/** أسماء ملفات العقد داخل المجلدات. */
+export const CURRENT_STATE_NAME = 'current-state.json';
+export const RECOVERY_MANIFEST_NAME = 'recovery-manifest.json';
+export const SECRETS_PACKAGE_NAME = 'secrets.enc';
+export const RECOVERY_INFO_NAME = 'recovery-information.md';
+export const RECOVERY_INSTRUCTIONS_NAME = 'recovery-instructions.md';
+export const LATEST_RECOVERY_NAME = 'latest-recovery.json';
+export const MIRROR_MANIFEST_NAME = 'mirror-manifest.json';
 
 export const DRIVE_FILE_SCOPE = 'https://www.googleapis.com/auth/drive.file';
 /** نطاقات ممنوعة صراحةً: صلاحية Drive الكاملة أو القراءة العامة. */
@@ -268,6 +283,23 @@ export const FAKE_SECRET_MARKERS = /(fake|not[-_]?a[-_]?real|notreal|dummy|place
 /** هل السطر يحمل علامة صريحة على أنه بيانات وهمية؟ (السر الحقيقي لا يحملها) */
 export function looksLikeFakeSecret(text) {
   return FAKE_SECRET_MARKERS.test(String(text ?? ''));
+}
+
+/** نوع محتوى الملف من امتداده (يُستخدم عند رفع المرآة الفردية). */
+export function mimeTypeForPath(path) {
+  if (/\.json$/i.test(path)) return 'application/json';
+  if (/\.md$/i.test(path)) return 'text/markdown';
+  if (/\.(mjs|js|cjs|ts|tsx|jsx)$/i.test(path)) return 'text/javascript';
+  if (/\.(html|css|txt|yml|yaml|toml|env)$/i.test(path)) return 'text/plain';
+  if (/\.(png|jpg|jpeg|gif|svg|webp|ico)$/i.test(path)) return 'application/octet-stream';
+  return 'application/octet-stream';
+}
+
+/** يقسّم مساراً نسبياً إلى مقاطع مجلدات (بلا اسم الملف). */
+export function dirSegments(relPath) {
+  const p = normalizeRelPath(relPath);
+  const parts = p.split('/').filter(Boolean);
+  return parts.slice(0, -1);
 }
 
 /**
@@ -576,6 +608,9 @@ export function buildRecoveryManifest(input = {}) {
     note: input.note ?? null,
     dbBackupId: input.dbBackupId ?? null,
     dbEncrypted: input.dbEncrypted === true,
+    encryptedSecretsHash: input.encryptedSecretsHash ?? null,
+    encryptedSecretsSize: Number.isFinite(input.encryptedSecretsSize) ? input.encryptedSecretsSize : null,
+    secretsCount: Number.isFinite(input.secretsCount) ? input.secretsCount : null,
   };
 }
 
@@ -634,6 +669,9 @@ export function buildBackupManifest(input = {}) {
     sourceSize: Number.isFinite(input.sourceSize) ? input.sourceSize : null,
     databaseSize: Number.isFinite(input.databaseSize) ? input.databaseSize : null,
     encryptedDatabaseSize: Number.isFinite(input.encryptedDatabaseSize) ? input.encryptedDatabaseSize : null,
+    encryptedSecretsHash: input.encryptedSecretsHash ?? null,
+    encryptedSecretsSize: Number.isFinite(input.encryptedSecretsSize) ? input.encryptedSecretsSize : null,
+    secretsCount: Number.isFinite(input.secretsCount) ? input.secretsCount : null,
     schemaVersion: Number.isFinite(input.schemaVersion) ? input.schemaVersion : BACKUP_SCHEMA_VERSION,
     bundleVersion: Number.isFinite(input.bundleVersion) ? input.bundleVersion : SOURCE_BUNDLE_VERSION,
     backupVersion: Number.isFinite(input.backupVersion) ? input.backupVersion : BACKUP_VERSION,
@@ -678,17 +716,25 @@ export function evaluateBackupVerification(expected = {}, actual = {}) {
   if (!actual.bundlePresent) problems.push('bundle_missing_on_drive');
   if (!actual.dbPresent) problems.push('database_missing_on_drive');
   if (!actual.manifestPresent) problems.push('manifest_missing_on_drive');
+  // حزمة الأسرار المشفّرة إلزامية إن توقّعناها (لا نسخة تعافٍ كاملة بلا أسرار).
+  if (expected.encryptedSecretsHash && !actual.secretsPresent) problems.push('secrets_missing_on_drive');
   if (expected.sourceSize != null && actual.bundleSize != null && expected.sourceSize !== actual.bundleSize) {
     problems.push('source_size_mismatch');
   }
   if (expected.encryptedDatabaseSize != null && actual.dbSize != null && expected.encryptedDatabaseSize !== actual.dbSize) {
     problems.push('database_size_mismatch');
   }
+  if (expected.encryptedSecretsSize != null && actual.secretsSize != null && expected.encryptedSecretsSize !== actual.secretsSize) {
+    problems.push('secrets_size_mismatch');
+  }
   if (expected.sourceHash && actual.bundleHash && expected.sourceHash !== actual.bundleHash) {
     problems.push('source_hash_mismatch');
   }
   if (expected.encryptedDatabaseHash && actual.dbHash && expected.encryptedDatabaseHash !== actual.dbHash) {
     problems.push('database_hash_mismatch');
+  }
+  if (expected.encryptedSecretsHash && actual.secretsHash && expected.encryptedSecretsHash !== actual.secretsHash) {
+    problems.push('secrets_hash_mismatch');
   }
   if (expected.treeHash && actual.treeHash && expected.treeHash !== actual.treeHash) {
     problems.push('tree_hash_mismatch');
@@ -717,3 +763,226 @@ export function summarizeBackupState(manifest) {
     bundleVersion: manifest.bundleVersion ?? null,
   };
 }
+
+// ---------------------------------------------------------------------------
+// حزمة الأسرار المشفّرة (secrets.enc) — بيان وكشف الشكل فقط (التشفير في secret-crypto.mjs)
+// ---------------------------------------------------------------------------
+
+export const SECRETS_PACKAGE_MAGIC = 'GHARABI-SECRETS-V1';
+export const SECRETS_PACKAGE_VERSION = 1;
+
+/**
+ * هل النص حزمة أسرار مشفّرة بالشكل الصحيح؟ (بلا فكّ — التحقق من البنية فقط).
+ * خطّي O(n) بلا regex غير محدود، فلا يستنفد المكدس مع ciphertext كبير.
+ */
+export function isEncryptedSecretsPackage(content) {
+  const text = Buffer.isBuffer(content) ? content.toString('utf8') : String(content ?? '');
+  const lines = text.split(/\r?\n/);
+  if (lines[0]?.trim() !== SECRETS_PACKAGE_MAGIC) return false;
+  const hasEncrypted = lines.some((l) => /^encrypted:\s*true\s*$/.test(l));
+  const hasCipher = lines.some((l) => /^cipher:\s*aes-256-gcm\s*$/.test(l));
+  const hasData = hasValidDataLine(text);
+  return hasEncrypted && hasCipher && hasData;
+}
+
+/**
+ * بيان حزمة الأسرار: أسماء المتغيّرات المشمولة فقط + عددها وبصمة الحزمة المشفّرة.
+ * **لا يحمل أي قيمة سرّية إطلاقاً** — أسماء فقط + بصمات.
+ */
+export function buildSecretsPackageManifest(input = {}) {
+  return {
+    kind: 'secrets-package',
+    version: Number.isFinite(input.version) ? input.version : SECRETS_PACKAGE_VERSION,
+    createdAt: input.createdAt ?? new Date().toISOString(),
+    includedNames: Array.isArray(input.includedNames) ? [...input.includedNames].sort() : [],
+    skippedNames: Array.isArray(input.skippedNames) ? [...input.skippedNames].sort() : [],
+    includedCount: Number.isFinite(input.includedCount) ? input.includedCount : (input.includedNames || []).length,
+    encrypted: true,
+    cipher: 'aes-256-gcm',
+    kdf: input.kdf ?? 'scrypt',
+    keyFingerprint: input.keyFingerprint ?? null,
+    encryptedSecretsHash: input.encryptedSecretsHash ?? null,
+    encryptedSecretsSize: Number.isFinite(input.encryptedSecretsSize) ? input.encryptedSecretsSize : null,
+    masterKeyRequired: true,
+    masterKeyEnvNames: Array.isArray(input.masterKeyEnvNames) ? input.masterKeyEnvNames : [],
+  };
+}
+
+// ---------------------------------------------------------------------------
+// مرآة CURRENT (ملفات فردية ببنية مجلدات) — بيان الحالة
+// ---------------------------------------------------------------------------
+
+export const MIRROR_DIR_NAME = 'files';
+export const MIRROR_MANIFEST_VERSION = 1;
+
+/** يبني بيان المرآة (ملفات فردية داخل current/files/**). بلا أي سرّ. */
+export function buildMirrorManifest(input = {}) {
+  return {
+    kind: 'current-mirror',
+    version: Number.isFinite(input.version) ? input.version : MIRROR_MANIFEST_VERSION,
+    commit: input.commit ?? null,
+    treeHash: input.treeHash ?? null,
+    updatedAt: input.updatedAt ?? new Date().toISOString(),
+    fileCount: Number.isFinite(input.fileCount) ? input.fileCount : 0,
+    sizeBytes: Number.isFinite(input.sizeBytes) ? input.sizeBytes : 0,
+    files: Array.isArray(input.files) ? input.files : [], // [{ path, sha256, driveId, size }]
+  };
+}
+
+/**
+ * حالة المزامنة الحالية (current-state.json): ملخص صادق للواجهة والاستعادة.
+ * لا يحمل أي قيمة سرّية، بل حالات وأعداد وأسماء متغيّرات فقط.
+ */
+export function buildCurrentState(input = {}) {
+  return {
+    kind: 'current-state',
+    updatedAt: input.updatedAt ?? new Date().toISOString(),
+    commit: input.commit ?? null,
+    branch: input.branch ?? null,
+    repository: input.repository ?? null,
+    treeHash: input.treeHash ?? null,
+    sourceHash: input.sourceHash ?? null,
+    fileCount: Number.isFinite(input.fileCount) ? input.fileCount : 0,
+    sizeBytes: Number.isFinite(input.sizeBytes) ? input.sizeBytes : 0,
+    lastRecoveryPointId: input.lastRecoveryPointId ?? null,
+    recoveryPointCount: Number.isFinite(input.recoveryPointCount) ? input.recoveryPointCount : 0,
+    database: input.database ?? { present: false, encrypted: true, hash: null, size: null },
+    secrets: input.secrets ?? { present: false, encrypted: true, count: 0, hash: null, size: null, names: [] },
+    schemaVersion: Number.isFinite(input.schemaVersion) ? input.schemaVersion : BACKUP_SCHEMA_VERSION,
+    deploy: input.deploy ?? null,
+    requiredEnvNames: Array.isArray(input.requiredEnvNames) ? input.requiredEnvNames : [],
+    restoreTargets: input.restoreTargets ?? { render: 'al-gharabi-ai', github: input.repository ?? null },
+  };
+}
+
+// ---------------------------------------------------------------------------
+// وثائق التعافي المستقلة (تُقرأ بلا تشغيل الغرابي)
+// ---------------------------------------------------------------------------
+
+/**
+ * وثيقة معلومات التعافي: تصف البنية والحدود دون أي سرّ. تُرفع إلى
+ * `recovery/recovery-information.md` لتكون قابلة للقراءة من Google Drive مباشرة.
+ */
+export function buildRecoveryInformation(input = {}) {
+  const repository = input.repository ?? 'mrdalghrabylltqsyt-web/al-gharabi-ai';
+  const renderService = input.renderService ?? 'al-gharabi-ai';
+  const publicUrl = input.publicUrl ?? 'https://al-gharabi-ai.onrender.com';
+  return `# الغرابي AI — معلومات التعافي (Recovery Information)
+
+> هذه الوثيقة مستقلة: يمكن قراءتها من Google Drive **بلا تشغيل الغرابي**.
+> لا تحتوي أي قيمة سرّية. الأسرار موجودة فقط داخل \`secrets.enc\` المشفّرة.
+
+## 1) أين تقع مكوّنات التعافي
+- \`CURRENT/files/**\`  — مرآة الملفات الحقيقية (كل ملف بمكانه داخل المجلدات).
+- \`CURRENT/manifest.json\` — بيان النسخة (بصمات/أحجام/التزام) بلا أسرار.
+- \`CURRENT/current-state.json\` — ملخص حالة المزامنة الحالية.
+- \`CURRENT/recovery-manifest.json\` — بيان آخر نقطة استعادة مرتبطة بـCURRENT.
+- \`HISTORY/rp-XXX/\` — نقاط استعادة كاملة مستقلة (source.tar.gz + database.enc + secrets.enc + manifest.json). لا تُعدّل أبداً.
+- \`DATABASE/\` — نسخ قاعدة بيانات مشفّرة مستقلة (\`database.enc\`).
+- \`SECRETS/\` — حزمة الأسرار المشفّرة (\`secrets.enc\` + \`manifest.json\`).
+- \`RECOVERY/latest-recovery.json\` — أحدث نقطة استعادة سليمة + خطوات الاستعادة.
+
+## 2) ما يحتاجه الاسترداد
+1. وصول إلى Google Drive (حساب المالك) لمجلد \`al-gharabi-ai-dr\`.
+2. **Recovery Master Key** (مفتاح فكّ الأسرار) — لا يوجد داخل أي ملف في Drive.
+3. حساب Render لخدمة \`${renderService}\` (لإعادة ضبط متغيّرات البيئة والنشر).
+4. المستودع على GitHub: \`${repository}\` (اختياري إن استُخدم المصدر من HISTORY).
+
+## 3) متغيّرات البيئة المطلوبة للتشغيل
+تُقرأ أسماؤها من \`CURRENT/current-state.json\` (حقل \`requiredEnvNames\`) ومن
+\`SECRETS/manifest.json\` (حقل \`includedNames\`). **لا توجد أي قيمة هنا.**
+القيم تُستعاد من \`secrets.enc\` بعد فكّها بالمفتاح الرئيسي.
+
+## 4) كيفية بدء الاستعادة (يدوياً بلا الغرابي)
+1. نزّل \`HISTORY/rp-XXX/source.tar.gz\` و\`database.enc\` و\`secrets.enc\` و\`manifest.json\`.
+2. تحقّق من البصمات مقابل \`manifest.json\` (sourceHash / encryptedDatabaseHash / encryptedSecretsHash / treeHash).
+3. فكّ \`secrets.enc\` بالمفتاح الرئيسي (سكربت \`tools/dr/secrets-restore.mjs\`).
+4. فكّ \`database.enc\` إلى SQL (سكربت \`tools/dr/restore-db.mjs\`)، ثم شغّله على قاعدة استعادة معزولة.
+5. فكّ \`source.tar.gz\` إلى مجلد عمل، ثم \`npm ci && npm run build\`.
+6. اضبط متغيّرات البيئة من الأسرار المفكوكة (في Render أو ملف \`.env\` محلي)، واضبط \`DATABASE_URL\` لقاعدة الاستعادة.
+7. شغّل الخادم وافحص \`/api/health\` ثم \`/api/readiness\`.
+
+## 5) التحقق من نجاح الاستعادة
+- \`/api/health\` => \`success: true\` و\`persistence.healthy\`.
+- \`/api/readiness\` => \`applicationReady\` وكتلة \`brain\`.
+- وجود بيانات أساسية (المستخدمون/المنصات/workspace) في قاعدة الاستعادة.
+- عدم ظهور أي سرّ في سجلات الخادم.
+
+## 6) حدود الأتمتة
+- **AUTOMATIC**: النسخ، المزامنة، إنشاء نقاط الاستعادة، التحقق، فكّ التشفير، تحميل القاعدة، تشغيل الخادم في اختبار معزول.
+- **OWNER CONFIRMATION**: أي استعادة فوق الإنتاج، وأي حذف تاريخي.
+- **EXTERNAL PLATFORM REQUIREMENT**: إعادة النشر على Render وضبط متغيّراتها، وتفويض Google OAuth.
+- **MANUAL FALLBACK**: إن تعذّر الاتصال بـDrive، تُستعاد الحزمة يدوياً من الملفات المنزّلة.
+
+## 7) المفتاح الرئيسي
+- اسم المتغيّر الموصى به: \`DR_RECOVERY_MASTER_KEY\` (وإن غاب يُقبل \`DRIVE_DB_BACKUP_KEY\`).
+- إن فُقد المفتاح: **لا يمكن فكّ الأسرار** (AES-256-GCM). تبقى المصدر وقاعدة البيانات
+  قابلين للاستعادة، وتُعاد الأسرار يدوياً من لوحات المزوّدين (Render/Meta/Google/…).
+- تدوير المفتاح: أنشئ حزمة أسرار جديدة بالمفتاح الجديد ثم نقطة استعادة جديدة.
+- التحقق من عدم فقدان المفتاح: شغّل \`GET /api/dr/secrets/status\` (للمالك) — يجب أن
+  يظهر \`masterKey.state = valid\` و\`canDecrypt = true\`.
+
+---
+تاريخ التوليد: ${input.createdAt ?? new Date().toISOString()}
+`;
+}
+
+/** تعليمات مختصرة للاستعادة السريعة. */
+export function buildRecoveryInstructions(input = {}) {
+  const latest = input.latestRecoveryPointId ?? 'rp-XXX';
+  return `# الغرابي AI — تعليمات الاستعادة السريعة
+
+آخر نقطة استعادة سليمة: **${latest}**
+
+1. من Google Drive → \`al-gharabi-ai-dr/HISTORY/${latest}/\` نزّل:
+   \`source.tar.gz\`, \`database.enc\`, \`secrets.enc\`, \`manifest.json\`.
+2. تحقّق من البصمات (SHA-256) مقابل \`manifest.json\`.
+3. فكّ الأسرار: \`node tools/dr/secrets-restore.mjs --in secrets.enc --out .env.restored\`
+   (يحتاج \`DR_RECOVERY_MASTER_KEY\` في البيئة).
+4. فكّ قاعدة البيانات: \`node tools/dr/restore-db.mjs --in database.enc --out restored.sql\`.
+5. استعادة المصدر: \`tar -xzf source.tar.gz -C <workdir>\` ثم \`npm ci && npm run build\`.
+6. اضبط متغيّرات البيئة + \`DATABASE_URL\`، ثم \`npm run start\`.
+7. تحقّق: \`/api/health\` و\`/api/readiness\`.
+
+تفاصيل كاملة: انظر \`recovery-information.md\`.
+`;
+}
+
+/** أحدث نقطة استعادة + ملخص خطوات الاستعادة (بلا أسرار). */
+export function buildLatestRecovery(input = {}) {
+  return {
+    kind: 'latest-recovery',
+    updatedAt: input.updatedAt ?? new Date().toISOString(),
+    latestRecoveryPointId: input.latestRecoveryPointId ?? null,
+    commit: input.commit ?? null,
+    createdAt: input.createdAt ?? null,
+    treeHash: input.treeHash ?? null,
+    sourceHash: input.sourceHash ?? null,
+    databaseHash: input.databaseHash ?? null,
+    encryptedDatabaseHash: input.encryptedDatabaseHash ?? null,
+    encryptedSecretsHash: input.encryptedSecretsHash ?? null,
+    fileCount: Number.isFinite(input.fileCount) ? input.fileCount : null,
+    sourceSize: Number.isFinite(input.sourceSize) ? input.sourceSize : null,
+    secretsCount: Number.isFinite(input.secretsCount) ? input.secretsCount : null,
+    status: input.status ?? 'verified',
+    restoreSteps: [
+      'اختيار نقطة الاستعادة',
+      'التحقق من manifest',
+      'التحقق من البصمات',
+      'فكّ تشفير الأسرار',
+      'فكّ تشفير قاعدة البيانات',
+      'استعادة المصدر',
+      'استعادة قاعدة البيانات',
+      'استعادة إعدادات التشغيل والأسرار',
+      'إعادة النشر (خارجي)',
+      'فحص health/readiness',
+    ],
+    automationBoundaries: {
+      automatic: ['backup', 'sync', 'recovery_point', 'verify', 'decrypt', 'db_load', 'boot'],
+      ownerConfirmation: ['restore_production', 'history_delete'],
+      externalPlatformRequirement: ['render_redeploy', 'env_var_set', 'google_oauth'],
+      manualFallback: ['drive_offline_download'],
+    },
+  };
+}
+

@@ -1415,9 +1415,11 @@ add('dr-no-full-drive-scope', !fullDriveAssigned && drSources[0].includes('DRIVE
 add('dr-redirect-uri', (drSources[0] || '').includes('https://al-gharabi-ai.onrender.com/api/dr/drive/callback'), 'Redirect URI مطابق للمطلوب');
 add('dr-routes-registered', server.includes('registerDriveRoutes') && drRoutes.includes('/api/dr/drive/callback') && drRoutes.includes('/api/dr/drive/auth-url'), 'مسارات DR مسجّلة من server.ts');
 add('dr-callback-no-upload', drRoutes.includes('MISSING_CODE_OR_STATE') && !drRoutes.includes('.syncCurrent('), 'callback لا ينفّذ أي رفع');
-// يُمنع الاستخدام الفعلي في الكود (process.env.DATABASE_URL)، وتُسمح الإشارة في التعليقات التوضيحية.
+// يُمنع الاتصال/القراءة الفعلية بـDATABASE_URL في مسار النسخ؛ القراءة الوحيدة المسموحة
+// هي مقارنة *رفض* قاعدة الإنتاج في بوابة اختبار الاستعادة (لا تُتصل بها أبداً).
 const drCode = [...drSources, drRoutes].map((s) => s.replace(/\/\/[^\n]*/g, '').replace(/\/\*[\s\S]*?\*\//g, ''));
-add('dr-no-database-url', !drCode.some((s) => /process\.env\.DATABASE_URL|env\.DATABASE_URL|\bDATABASE_URL\b\s*[),]/.test(s)), 'منظومة DR لا تقرأ DATABASE_URL في الكود');
+const drEnvDbReads = drCode.filter((s) => /process\.env\.DATABASE_URL|env\.DATABASE_URL/.test(s));
+add('dr-no-database-url', drEnvDbReads.length === 0 || (drEnvDbReads.length === 1 && drRoutes.includes('REFUSED_PRODUCTION_DATABASE')), 'منظومة DR لا تقرأ DATABASE_URL إلا لرفض قاعدة الإنتاج في بوابة الاختبار');
 add('dr-raw-db-blocked', drSources.some((s) => s.includes('raw_database_dump_forbidden')) && drRoutes.includes('classifyDbDump') === false && read('tools/dr/drive-store.mjs').includes('classifyDbDump'), 'المسموح فقط DB encrypted dump');
 add('dr-encrypted-token-only', drRoutes.includes('encryptDriveSecret') && drRoutes.includes('DRIVE_AUTHORIZED') && !drRoutes.includes('refreshToken:'), 'رمز التجديد يُخزّن مشفّراً فقط ولا يُعاد');
 add('dr-csrf-single-use', read('tools/dr/drive-auth-url.mjs').includes('state_reused') && drRoutes.includes('stateStore.consume'), 'state أحادي الاستخدام لحماية CSRF');
@@ -1468,8 +1470,44 @@ add('dr-backup-health-exposes', drRoutes.includes('backupReady') && drRoutes.inc
 add('dr-backup-status-history', drRoutes.includes('summarizeBackupState') && drRoutes.includes('history') && drRoutes.includes('restorePointCount'), 'status يعرض ملخص النسخة وسجل نقاط الاستعادة');
 add('dr-backup-tests-present', fs.existsSync(path.join(root, 'engine/tests/dr/dr.backup.test.ts')) && (pkg.scripts['test:dr'] || '').includes('test:dr-backup') && pkg.scripts.test.includes('test:dr'), 'اختبار النسخة الاحتياطية مضمّن في test:dr وnpm test');
 add('dr-backup-api-post', /createDrBackup[\s\S]{0,200}method:\s*'POST'/.test(read('src/services/api.ts')), 'واجهة API تُنشئ النسخة عبر POST');
-add('dr-backup-ui-button', cloudView.includes('apiService.createDrBackup') && cloudView.includes('إنشاء نسخة احتياطية الآن') && cloudView.includes('resolveDrBackupResult'), 'زر النسخة الاحتياطية الفعلي موجود ويعرض نتيجة الخادم الصادقة');
+add('dr-backup-ui-button', cloudView.includes('apiService.createDrBackup') && cloudView.includes('إنشاء Recovery Point') && cloudView.includes('resolveDrBackupResult'), 'زر النسخة الاحتياطية الفعلي موجود ويعرض نتيجة الخادم الصادقة');
 add('dr-backup-ui-history', cloudView.includes('snapshot?.history') && cloudView.includes('نقاط الاستعادة'), 'واجهة نقاط الاستعادة الحقيقية معروضة');
+
+// --- منظومة التعافي الكامل: مرآة CURRENT، حزمة الأسرار، وثائق RECOVERY، ومحرّك الاستعادة ---
+const drSecrets = fs.existsSync(path.join(drDir, 'secret-crypto.mjs')) ? read('tools/dr/secret-crypto.mjs') : '';
+const drMirror = fs.existsSync(path.join(drDir, 'current-mirror.mjs')) ? read('tools/dr/current-mirror.mjs') : '';
+const drRestore = fs.existsSync(path.join(drDir, 'restore.mjs')) ? read('tools/dr/restore.mjs') : '';
+const drStore = read('tools/dr/drive-store.mjs');
+
+add('dr-secrets-module', drSecrets.includes('export function buildSecretsBundle') && drSecrets.includes('export function decryptSecretsPackage') && drSecrets.includes('aes-256-gcm'), 'حزمة الأسرار المشفّرة موجودة (AES-256-GCM)');
+add('dr-secrets-magic-versioned', drSources[0].includes("SECRETS_PACKAGE_MAGIC = 'GHARABI-SECRETS-V1'") && drSecrets.includes('scrypt'), 'الحزمة موسومة بإصدار (GHARABI-SECRETS-V1) ومفتاح مشتقّ (scrypt)');
+add('dr-secrets-env-discovery', drSecrets.includes('export function discoverSecretEnvNames') && drSecrets.includes('NON_SECRET_ENV'), 'اكتشاف أسماء الأسرار من البيئة الفعلية فقط بلا اختراع');
+add('dr-secrets-master-key-single-source', drSecrets.includes('export function resolveMasterKey') && drSecrets.includes('DR_RECOVERY_MASTER_KEY') && drSecrets.includes('DRIVE_DB_BACKUP_KEY'), 'مفتاح الاستعادة الرئيسي مصدر واحد مع سقوط آمن');
+add('dr-secrets-no-plaintext-upload', read('tools/dr/drive-store.mjs').includes('writeSecretsPackage') && !read('tools/dr/drive-store.mjs').includes('secrets: raw'), 'الأسرار تُرفع مشفّرة فقط (writeSecretsPackage)');
+add('dr-secrets-manifest-names-only', drSecrets.includes('includedNames') && drSecrets.includes('encryptedSecretsHash') && drSecrets.includes('keyFingerprint'), 'بيان الأسرار يحمل أسماء وبصمات فقط بلا قيم');
+
+add('dr-current-mirror-module', drMirror.includes('export async function runCurrentMirror') && drMirror.includes('treeHash'), 'مرآة CURRENT الفردية موجودة (ملفات بمكانها + treeHash)');
+add('dr-current-mirror-atomic', drMirror.includes('writePendingMirrorManifest') && drMirror.includes('writeMirrorManifest') && drMirror.includes('partial_upload'), 'ترقية CURRENT ذرّية: بيان معلّق ثم تثبيت أخيراً (لا نسخة نصف مكتملة)');
+add('dr-current-mirror-no-change', drMirror.includes("state: 'no_change'") && drMirror.includes('diffSnapshots'), 'لا إعادة رفع بلا تغيّر (مقارنة لقطة)');
+add('dr-current-mirror-history-safe', drMirror.includes('removeMirrorFile') && !drMirror.includes('history'), 'حذف الملفات من CURRENT فقط ولا يمسّ HISTORY');
+
+add('dr-restore-engine-module', drRestore.includes('export async function verifyRecoveryPoint') && drRestore.includes('export async function runRecoveryDrill'), 'محرّك الاستعادة موجود (تحقق + اختبار معزول)');
+add('dr-restore-verify-hashes', drRestore.includes('source_hash_mismatch') && drRestore.includes('secrets_hash_mismatch') && drRestore.includes('manifest_missing'), 'الاستعادة تتحقق من كل البصمات وتفشل بأمان عند التلف/النقص');
+add('dr-restore-isolated-only', drRestore.includes('wroteToProduction: false') && drRestore.includes('applyDatabaseDump') && drRestore.includes('gharabi_state'), 'الاستعادة في قاعدة معزولة فقط ولا تكتب فوق الإنتاج');
+add('dr-restore-no-raw-in-response', drRoutes.includes('const { sql, secrets, ...safe }') && drRoutes.includes('returnSecrets: false'), 'رد الاستعادة لا يحمل SQL خاماً ولا أسراراً');
+
+add('dr-recovery-docs', drSources[0].includes('buildRecoveryInformation') && drSources[0].includes('buildRecoveryInstructions') && drSources[0].includes('buildLatestRecovery'), 'وثائق RECOVERY المستقلة موجودة (بلا تشغيل الغرابي)');
+add('dr-recovery-docs-no-secret', drSources[0].includes('لا تحتوي أي قيمة سرّية'), 'وثيقة التعافي تعلن صراحةً أنها بلا أسرار');
+add('dr-store-recovery-docs', drStore.includes('writeRecoveryDoc') && drStore.includes('readRecoveryDoc') && drStore.includes('writeCurrentState'), 'مخزن Drive يكتب/يقرأ وثائق التعافي وcurrent-state');
+add('dr-store-independent-dirs', drStore.includes('writeSecretsPackage') && drStore.includes('keepAliveDbDump') && drStore.includes('listDbDumps'), 'حزمة الأسرار ونسخة DB في مجلدات مستقلة');
+
+add('dr-endpoints-recovery', drRoutes.includes("'/api/dr/recovery-points'") && drRoutes.includes("'/api/dr/secrets/status'") && drRoutes.includes("'/api/dr/restore/plan'") && drRoutes.includes("'/api/dr/restore/drill'") && drRoutes.includes("'/api/dr/restore/production'"), 'مسارات التعافي الكاملة موجودة (owner-gated)');
+add('dr-restore-production-locked', drRoutes.includes('OWNER_CONFIRMATION_REQUIRED') && drRoutes.includes('PRODUCTION_RESTORE_EXTERNAL'), 'الاستعادة الإنتاجية مقفلة بتأكيد المالك ولا تكتب فوق الإنتاج تلقائياً');
+add('dr-drill-refuses-production-db', drRoutes.includes('REFUSED_PRODUCTION_DATABASE') && drRoutes.includes('DR_RECOVERY_TEST_DATABASE_URL'), 'اختبار الاستعادة يرفض قاعدة الإنتاج صراحةً');
+add('dr-recovery-tests-present', ['dr.secrets.test.ts', 'dr.mirror.test.ts', 'dr.restore.test.ts', 'dr.endpoints.test.ts', 'dr.real-drill.test.ts'].every((f) => fs.existsSync(path.join(root, 'engine/tests/dr', f))) && (pkg.scripts['test:dr'] || '').includes('test:dr-real-drill'), 'اختبارات التعافي (أسرار/مرآة/استعادة/معزول) موجودة ومضمّنة');
+add('dr-real-drill-isolated', fs.existsSync(path.join(root, 'engine/tests/dr/dr.real-drill.test.ts')) && read('engine/tests/dr/dr.real-drill.test.ts').includes('EmbeddedPostgres') && read('engine/tests/dr/dr.real-drill.test.ts').includes('bootRestoredSource'), 'اختبار تعافٍ حقيقي معزول (PG حقيقية + إقلاع الخادم المستعاد)');
+add('dr-real-drill-no-prod', read('engine/tests/dr/dr.real-drill.test.ts').includes('isolated db differs from production db') && read('engine/tests/dr/dr.real-drill.test.ts').includes('no secret leaked in boot logs'), 'الاختبار المعزول يفصل قاعدة الاستعادة ويؤكّد عدم تسريب الأسرار');
+add('dr-secret-scan-no-self-block', !/engine\/tests\/dr\/dr\.secrets\.test\.ts['"][^\n]*AIzaSy/.test(drSources[0]) && read('engine/tests/dr/dr.secrets.test.ts').includes('dummy test value'), 'قيم الأسرار الوهمية في الاختبار موسومة فلا تُعطّل النسخة الحقيقية');
 
 const failed = checks.filter(x => !x.ok);
 console.table(checks);

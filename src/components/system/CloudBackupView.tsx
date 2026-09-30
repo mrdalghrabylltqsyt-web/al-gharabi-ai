@@ -108,18 +108,36 @@ export const CloudBackupView: React.FC = () => {
   const [backupResult, setBackupResult] = useState<DrBackupResultInfo | null>(null);
   const [statusError, setStatusError] = useState<DrStatusErrorInfo | null>(null);
   const [lastUpdatedAt, setLastUpdatedAt] = useState<string | null>(null);
+  // منظومة التعافي الكامل
+  const [recoveryPoints, setRecoveryPoints] = useState<any[]>([]);
+  const [currentState, setCurrentState] = useState<any>(null);
+  const [mirror, setMirror] = useState<any>(null);
+  const [secretsStatus, setSecretsStatus] = useState<any>(null);
+  const [syncing, setSyncing] = useState(false);
+  const [drilling, setDrilling] = useState(false);
+  const [drillReport, setDrillReport] = useState<any>(null);
+  const [selectedPoint, setSelectedPoint] = useState<string>('');
+  const [restorePlan, setRestorePlan] = useState<any>(null);
 
   const load = useCallback(async () => {
     if (!isOwner) return;
     setLoading(true);
     try {
       // الصحة عامة؛ الحالة محمية بالمالك. نعالج كل فشل صراحةً بدل ابتلاعه.
-      const [healthRes, statusRes] = await Promise.allSettled([
+      const [healthRes, statusRes, pointsRes, secretsRes] = await Promise.allSettled([
         apiService.getDrHealth(),
         apiService.getDrStatus(),
+        apiService.getDrRecoveryPoints(),
+        apiService.getDrSecretsStatus(),
       ]);
 
       if (healthRes.status === 'fulfilled') setHealth(healthRes.value?.dr || null);
+      if (pointsRes.status === 'fulfilled') {
+        setRecoveryPoints(Array.isArray(pointsRes.value?.recoveryPoints) ? pointsRes.value.recoveryPoints : []);
+        setCurrentState(pointsRes.value?.currentState ?? null);
+        setMirror(pointsRes.value?.mirror ?? null);
+      }
+      if (secretsRes.status === 'fulfilled') setSecretsStatus(secretsRes.value ?? null);
 
       const update = resolveDrStatusUpdate(statusRes, new Date().toISOString());
       if (update.ok) {
@@ -187,6 +205,69 @@ export const CloudBackupView: React.FC = () => {
   const usageBytes = quota.usageBytes ?? null;
   const usagePct = designBytes > 0 && Number.isFinite(usageBytes) ? Math.min(100, Math.round((Number(usageBytes) / designBytes) * 100)) : 0;
 
+  // مزامنة CURRENT الفعلية (ملفات فردية ببنية المجلدات).
+  const syncCurrent = async () => {
+    if (syncing) return;
+    setSyncing(true);
+    try {
+      const data = await apiService.syncDrCurrent();
+      const title = data?.state === 'no_change' ? 'CURRENT محدّثة مسبقاً (لا تغيير)' : 'تمت مزامنة CURRENT';
+      showToast(`${title} • ${data?.fileCount ?? 0} ملف`);
+      await load();
+    } catch (e: any) {
+      showToast(e?.message || 'تعذّرت مزامنة CURRENT');
+    } finally {
+      setSyncing(false);
+    }
+  };
+
+  // اختبار الاستعادة المعزول — لا يلمس الإنتاج.
+  const runDrill = async (point?: string) => {
+    if (drilling) return;
+    setDrilling(true);
+    setDrillReport(null);
+    try {
+      const data = await apiService.drillDrRestore(point || selectedPoint || undefined);
+      setDrillReport(data?.report ?? null);
+      showToast(data?.report?.ok ? 'نجح اختبار الاستعادة المعزول' : 'فشل اختبار الاستعادة — راجع التفاصيل');
+    } catch (e: any) {
+      setDrillReport({ ok: false, state: 'error', problems: [e?.code || 'request_failed'], message: e?.message });
+      showToast(e?.message || 'تعذّر تنفيذ اختبار الاستعادة');
+    } finally {
+      setDrilling(false);
+    }
+  };
+
+  const loadPlan = async (point: string) => {
+    setSelectedPoint(point);
+    setRestorePlan(null);
+    try {
+      const data = await apiService.getDrRestorePlan(point);
+      setRestorePlan(data?.plan ?? null);
+    } catch (e: any) {
+      showToast(e?.message || 'تعذّر بناء خطة الاستعادة');
+    }
+  };
+
+  // استعادة الإنتاج: تتطلّب تأكيداً صريحاً، وتُعلن حدود الأتمتة بصدق.
+  const requestProductionRestore = async (point: string) => {
+    const confirmed = window.confirm(`استعادة الإنتاج من ${point}؟\n\nتنبيه: الاستعادة الإنتاجية تتطلّب خطوات خارجية (إعادة نشر Render + متغيّرات البيئة) ولا تُكتب فوق الإنتاج تلقائياً.`);
+    if (!confirmed) return;
+    try {
+      const data = await apiService.requestProductionRestore(point);
+      showToast(data?.message || 'راجع خطوات الاستعادة الموثّقة');
+      setRestorePlan({ ...(restorePlan || {}), productionSteps: data?.steps || [] });
+    } catch (e: any) {
+      // 501 = حدود أتمتة معلنة بصدق، لا فشل.
+      if (e?.status === 501 && Array.isArray(e?.steps)) {
+        setRestorePlan({ ...(restorePlan || {}), productionSteps: e.steps, productionExternal: true });
+        showToast(e?.message || 'الاستعادة الإنتاجية تتطلّب خطوات خارجية موثّقة');
+      } else {
+        showToast(e?.message || 'تعذّر بدء الاستعادة الإنتاجية');
+      }
+    }
+  };
+
   const cards: Array<[string, string, any]> = [
     ['حالة Google Drive', DR_STATE_LABELS[stateKey] || stateKey, HardDrive],
     ['آخر مزامنة', fmtTime(snapshot?.lastSyncAt), Clock],
@@ -204,7 +285,17 @@ export const CloudBackupView: React.FC = () => {
         <div className="flex gap-2 flex-wrap">
           {authorized && (
             <button onClick={() => void createBackup()} disabled={backingUp} className="px-4 py-2 rounded-xl bg-emerald-500 text-slate-950 text-xs font-black flex items-center gap-2 disabled:opacity-60">
-              {backingUp ? <Loader2 className="w-4 h-4 animate-spin" /> : <CloudUpload className="w-4 h-4" />} {backingUp ? 'جارٍ إنشاء النسخة…' : 'إنشاء نسخة احتياطية الآن'}
+              {backingUp ? <Loader2 className="w-4 h-4 animate-spin" /> : <CloudUpload className="w-4 h-4" />} {backingUp ? 'جارٍ إنشاء النسخة…' : 'إنشاء Recovery Point'}
+            </button>
+          )}
+          {authorized && (
+            <button onClick={() => void syncCurrent()} disabled={syncing} className="px-4 py-2 rounded-xl bg-sky-500 text-slate-950 text-xs font-black flex items-center gap-2 disabled:opacity-60">
+              {syncing ? <Loader2 className="w-4 h-4 animate-spin" /> : <RefreshCw className="w-4 h-4" />} {syncing ? 'جارٍ المزامنة…' : 'مزامنة الآن'}
+            </button>
+          )}
+          {authorized && (
+            <button onClick={() => void runDrill()} disabled={drilling} className="px-4 py-2 rounded-xl bg-violet-500 text-slate-950 text-xs font-black flex items-center gap-2 disabled:opacity-60">
+              {drilling ? <Loader2 className="w-4 h-4 animate-spin" /> : <ShieldCheck className="w-4 h-4" />} {drilling ? 'جارٍ الاختبار…' : 'اختبار الاستعادة'}
             </button>
           )}
           <button onClick={() => void load()} disabled={loading} className="px-4 py-2 rounded-xl bg-slate-800 border border-slate-700 text-xs font-bold text-white flex items-center gap-2 disabled:opacity-60">
@@ -278,10 +369,46 @@ export const CloudBackupView: React.FC = () => {
         ))}
       </div>
 
-      {/* نقاط الاستعادة الحقيقية (history) */}
+      {/* نقاط الاستعادة الكاملة (recovery points) */}
       <section className="p-5 rounded-2xl bg-slate-900 border border-slate-800">
-        <h3 className="font-bold text-white flex items-center gap-2 mb-4"><History className="w-4 h-4 text-sky-400" /> نقاط الاستعادة</h3>
-        {Array.isArray(snapshot?.history) && snapshot.history.length > 0 ? (
+        <h3 className="font-bold text-white flex items-center gap-2 mb-4"><History className="w-4 h-4 text-sky-400" /> نقاط الاستعادة الكاملة</h3>
+        {recoveryPoints.length > 0 ? (
+          <div className="overflow-x-auto">
+            <table className="w-full text-xs">
+              <thead>
+                <tr className="text-slate-400 text-right">
+                  <th className="py-2 px-2 font-bold">المعرّف</th>
+                  <th className="py-2 px-2 font-bold">الالتزام</th>
+                  <th className="py-2 px-2 font-bold">التاريخ</th>
+                  <th className="py-2 px-2 font-bold">ملفات</th>
+                  <th className="py-2 px-2 font-bold">DB مشفّرة</th>
+                  <th className="py-2 px-2 font-bold">أسرار مشفّرة</th>
+                  <th className="py-2 px-2 font-bold">التحقق</th>
+                  <th className="py-2 px-2 font-bold">استعادة</th>
+                </tr>
+              </thead>
+              <tbody>
+                {recoveryPoints.map((h: any) => (
+                  <tr key={h.id} className={`border-t border-slate-800 text-slate-300 ${selectedPoint === h.id ? 'bg-violet-500/10' : ''}`}>
+                    <td className="py-2 px-2 font-mono">{h.id}</td>
+                    <td className="py-2 px-2 font-mono text-[10px]">{h.commit ? String(h.commit).slice(0, 10) : '—'}</td>
+                    <td className="py-2 px-2">{fmtTime(h.createdAt)}</td>
+                    <td className="py-2 px-2">{h.fileCount ?? '—'}</td>
+                    <td className="py-2 px-2">{h.database?.hash ? <span className="text-emerald-400">نعم</span> : <span className="text-amber-400">لا</span>}</td>
+                    <td className="py-2 px-2">{h.secrets?.hash ? <span className="text-emerald-400">نعم ({h.secrets.count ?? '—'})</span> : <span className="text-amber-400">لا</span>}</td>
+                    <td className="py-2 px-2">{h.status === 'verified' ? <span className="text-emerald-400">مكتملة</span> : <span className="text-amber-400">ناقصة</span>}</td>
+                    <td className="py-2 px-2">
+                      <div className="flex gap-1">
+                        <button onClick={() => void loadPlan(h.id)} className="px-2 py-1 rounded bg-slate-800 border border-slate-700 text-[10px] font-bold text-white">خطة</button>
+                        <button onClick={() => void runDrill(h.id)} disabled={drilling} className="px-2 py-1 rounded bg-violet-500/20 border border-violet-500/40 text-[10px] font-bold text-violet-100 disabled:opacity-60">اختبار</button>
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        ) : Array.isArray(snapshot?.history) && snapshot.history.length > 0 ? (
           <div className="overflow-x-auto">
             <table className="w-full text-xs">
               <thead>
@@ -290,7 +417,6 @@ export const CloudBackupView: React.FC = () => {
                   <th className="py-2 px-2 font-bold">الالتزام</th>
                   <th className="py-2 px-2 font-bold">التاريخ</th>
                   <th className="py-2 px-2 font-bold">عدد الملفات</th>
-                  <th className="py-2 px-2 font-bold">الحجم</th>
                   <th className="py-2 px-2 font-bold">الحالة</th>
                 </tr>
               </thead>
@@ -301,7 +427,6 @@ export const CloudBackupView: React.FC = () => {
                     <td className="py-2 px-2 font-mono text-[10px]">{h.commit ? String(h.commit).slice(0, 10) : '—'}</td>
                     <td className="py-2 px-2">{fmtTime(h.createdAt)}</td>
                     <td className="py-2 px-2">{h.fileCount ?? '—'}</td>
-                    <td className="py-2 px-2">{fmtBytes(h.sourceSize)}</td>
                     <td className="py-2 px-2">{h.hasManifest ? <span className="text-emerald-400">مكتملة</span> : <span className="text-amber-400">ناقصة</span>}</td>
                   </tr>
                 ))}
@@ -309,7 +434,7 @@ export const CloudBackupView: React.FC = () => {
             </table>
           </div>
         ) : (
-          <p className="text-xs text-slate-500">لا توجد نقاط استعادة بعد. اضغط «إنشاء نسخة احتياطية الآن» لإنشاء أول نقطة حقيقية.</p>
+          <p className="text-xs text-slate-500">لا توجد نقاط استعادة بعد. اضغط «إنشاء Recovery Point» لإنشاء أول نقطة حقيقية كاملة (مصدر + قاعدة بيانات مشفّرة + أسرار مشفّرة).</p>
         )}
       </section>
 
@@ -354,6 +479,77 @@ export const CloudBackupView: React.FC = () => {
           ? <p className="text-xs text-rose-300 font-mono break-all">{String(snapshot.lastError)}</p>
           : <p className="text-xs text-slate-500">لا يوجد خطأ مسجّل.</p>}
       </section>
+
+      {/* CURRENT — مرآة الملفات الفعلية + حزمة الأسرار */}
+      <div className="grid lg:grid-cols-2 gap-6">
+        <section className="p-5 rounded-2xl bg-slate-900 border border-slate-800">
+          <h3 className="font-bold text-white flex items-center gap-2 mb-4"><HardDrive className="w-4 h-4 text-sky-400" /> CURRENT — مرآة الملفات الفعلية</h3>
+          <div className="space-y-2 text-xs">
+            <div className="p-3 rounded-xl bg-slate-950/60 border border-slate-800 flex justify-between"><span className="text-slate-400">حالة المزامنة</span><span className={mirror?.treeHash ? 'text-emerald-400' : 'text-slate-300'}>{mirror?.treeHash ? 'مُزامَنة' : 'لا مرآة بعد'}</span></div>
+            <div className="p-3 rounded-xl bg-slate-950/60 border border-slate-800 flex justify-between"><span className="text-slate-400">عدد الملفات</span><span className="text-slate-300">{currentState?.fileCount ?? (Array.isArray(mirror?.files) ? mirror.files.length : '—')}</span></div>
+            <div className="p-3 rounded-xl bg-slate-950/60 border border-slate-800 flex justify-between"><span className="text-slate-400">حجم المرآة</span><span className="text-slate-300">{fmtBytes(currentState?.sizeBytes)}</span></div>
+            <div className="p-3 rounded-xl bg-slate-950/60 border border-slate-800 flex justify-between"><span className="text-slate-400">بصمة الشجرة (treeHash)</span><span className="text-slate-300 font-mono text-[10px]">{mirror?.treeHash ? String(mirror.treeHash).slice(0, 16) : '—'}</span></div>
+            <div className="p-3 rounded-xl bg-slate-950/60 border border-slate-800 flex justify-between"><span className="text-slate-400">آخر مزامنة</span><span className="text-slate-300">{fmtTime(mirror?.updatedAt || currentState?.updatedAt)}</span></div>
+          </div>
+        </section>
+
+        <section className="p-5 rounded-2xl bg-slate-900 border border-slate-800">
+          <h3 className="font-bold text-white flex items-center gap-2 mb-4"><ShieldCheck className="w-4 h-4 text-emerald-400" /> الأسرار المشفّرة</h3>
+          <div className="space-y-2 text-xs">
+            <div className="p-3 rounded-xl bg-slate-950/60 border border-slate-800 flex justify-between"><span className="text-slate-400">مفتاح الاستعادة الرئيسي</span><span className={secretsStatus?.masterKey?.state === 'valid' ? 'text-emerald-400' : 'text-amber-400'}>{secretsStatus?.masterKey?.state === 'valid' ? 'صالح' : (secretsStatus?.masterKey?.state === 'invalid' ? 'مضبوط لكن غير صالح' : 'غير مضبوط')}</span></div>
+            <div className="p-3 rounded-xl bg-slate-950/60 border border-slate-800 flex justify-between"><span className="text-slate-400">حزمة secrets.enc</span><span className={secretsStatus?.package?.present ? 'text-emerald-400' : 'text-amber-400'}>{secretsStatus?.package?.present ? 'موجودة (مشفّرة)' : 'لا توجد'}</span></div>
+            <div className="p-3 rounded-xl bg-slate-950/60 border border-slate-800 flex justify-between"><span className="text-slate-400">عدد الأسرار المحفوظة</span><span className="text-slate-300">{secretsStatus?.package?.count ?? '—'}</span></div>
+            <div className="p-3 rounded-xl bg-slate-950/60 border border-slate-800 flex justify-between"><span className="text-slate-400">قابلة للفكّ بالمفتاح الحالي</span><span className={secretsStatus?.canDecrypt ? 'text-emerald-400' : 'text-amber-400'}>{secretsStatus?.canDecrypt ? 'نعم' : 'لا'}</span></div>
+          </div>
+          <p className="text-[10px] text-slate-500 mt-3 leading-relaxed">لا تُعرض أي قيمة سرّية: أسماء وحالات وبصمات فقط. الحزمة تُشفَّر AES-256-GCM قبل الرفع.</p>
+        </section>
+      </div>
+
+      {/* خطة الاستعادة + اختبار الاستعادة */}
+      {restorePlan && (
+        <section className="p-5 rounded-2xl bg-slate-900 border border-violet-500/30">
+          <h3 className="font-bold text-white flex items-center gap-2 mb-4"><ShieldCheck className="w-4 h-4 text-violet-400" /> خطة الاستعادة — {restorePlan.recoveryPointId}</h3>
+          <div className="grid md:grid-cols-3 gap-2 text-xs mb-3">
+            <div className="p-3 rounded-xl bg-slate-950/60 border border-slate-800 flex justify-between"><span className="text-slate-400">التحقق</span><span className={restorePlan.verification?.ok ? 'text-emerald-400' : 'text-rose-400'}>{restorePlan.verification?.ok ? 'سليم' : 'فشل'}</span></div>
+            <div className="p-3 rounded-xl bg-slate-950/60 border border-slate-800 flex justify-between"><span className="text-slate-400">قاعدة البيانات</span><span className={restorePlan.database?.present ? 'text-emerald-400' : 'text-amber-400'}>{restorePlan.database?.present ? 'مشفّرة ومتاحة' : 'غير متاحة'}</span></div>
+            <div className="p-3 rounded-xl bg-slate-950/60 border border-slate-800 flex justify-between"><span className="text-slate-400">الأسرار</span><span className={restorePlan.secrets?.present ? 'text-emerald-400' : 'text-amber-400'}>{restorePlan.secrets?.present ? 'مشفّرة ومتاحة' : 'غير متاحة'}</span></div>
+          </div>
+          {Array.isArray(restorePlan.verification?.problems) && restorePlan.verification.problems.length > 0 && (
+            <p className="text-[10px] text-rose-300 mb-2">مشكلات: {restorePlan.verification.problems.join('، ')}</p>
+          )}
+          <div className="flex gap-2 flex-wrap">
+            <button onClick={() => void runDrill(restorePlan.recoveryPointId)} disabled={drilling} className="px-3 py-1.5 rounded-lg bg-violet-500 text-slate-950 text-[11px] font-black disabled:opacity-60">اختبار معزول</button>
+            <button onClick={() => void requestProductionRestore(restorePlan.recoveryPointId)} className="px-3 py-1.5 rounded-lg bg-amber-500/20 border border-amber-500/40 text-[11px] font-bold text-amber-100">استعادة الإنتاج (تأكيد مطلوب)</button>
+          </div>
+          {Array.isArray(restorePlan.productionSteps) && restorePlan.productionSteps.length > 0 && (
+            <ol className="mt-3 space-y-1 text-[11px] text-slate-300 list-decimal list-inside">
+              {restorePlan.productionSteps.map((s: string, i: number) => <li key={i}>{s}</li>)}
+            </ol>
+          )}
+        </section>
+      )}
+
+      {/* تقرير اختبار الاستعادة */}
+      {drillReport && (
+        <section className={`p-5 rounded-2xl border ${drillReport.ok ? 'bg-emerald-500/10 border-emerald-500/30' : 'bg-rose-500/10 border-rose-500/30'}`}>
+          <h3 className="font-bold text-white flex items-center gap-2 mb-3">
+            {drillReport.ok ? <CheckCircle2 className="w-4 h-4 text-emerald-400" /> : <TriangleAlert className="w-4 h-4 text-rose-400" />}
+            تقرير اختبار الاستعادة المعزول — {drillReport.ok ? 'نجح' : 'فشل'}
+          </h3>
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-2 text-[11px]">
+            {Object.entries(drillReport.checks || {}).map(([k, v]) => (
+              <div key={k} className="p-2 rounded-lg bg-slate-950/60 border border-slate-800 flex justify-between gap-2">
+                <span className="text-slate-400 truncate" title={k}>{k}</span>
+                <span className={v ? 'text-emerald-400' : 'text-rose-400'}>{v ? 'PASS' : 'FAIL'}</span>
+              </div>
+            ))}
+          </div>
+          {Array.isArray(drillReport.problems) && drillReport.problems.length > 0 && (
+            <p className="text-[10px] text-rose-300 mt-2">مشكلات: {drillReport.problems.join('، ')}</p>
+          )}
+          <p className="text-[10px] text-slate-400 mt-2">استُخدمت قاعدة معزولة: {drillReport.isolatedDatabaseUsed ? 'نعم' : 'لا (اختبار مصدر/أسرار/DB دون كتابة قاعدة)'} • لم تُكتب أي بيانات إلى الإنتاج: {drillReport.wroteToProduction ? 'لا' : 'مؤكّد'}.</p>
+        </section>
+      )}
 
       <p className="text-[10px] text-slate-500 text-center">لا تُعرض هنا أي أسرار: لا state ولا authorization code ولا refresh token. رمز التجديد يبقى مشفّراً على الخادم فقط.</p>
     </div>
