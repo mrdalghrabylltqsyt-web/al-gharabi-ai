@@ -1540,5 +1540,30 @@ ${payload.topic || payload.productName || 'أنظمة وحلول التقسيط 
     const data = await res.json();
     if (!res.ok || !data.success) throw new Error(data.error || 'تعذر جلب اقتراح الجدولة');
     return data;
+  },
+
+  // --- النسخ السحابي والاستعادة (Google Drive / DR) — قراءة فقط ---
+  /** صحة منظومة DR بلا أسرار (عام). */
+  async getDrHealth(): Promise<any> {
+    const res = await fetch('/api/dr/health');
+    const data = await res.json();
+    if (!res.ok || !data.success) throw new Error(data.error || 'تعذر قراءة حالة النسخ السحابي');
+    return data;
+  },
+
+  /** لقطة مراقبة DR (owner) — بلا رفع/حذف. */
+  async getDrStatus(): Promise<any> {
+    const res = await fetch('/api/dr/status', { headers: getAuthHeaders() });
+    const data = await res.json();
+    if (!res.ok || !data.success) throw new Error(data.error || data.code || 'تعذر قراءة حالة النسخ السحابي');
+    return data;
+  },
+
+  /** رابط تفويض Google Drive (owner). لا يُعاد أي سرّ؛ تُستهلك الحالة على الخادم. */
+  async getDrAuthUrl(): Promise<{ success: boolean; url: string; scope: string; redirectUri: string; ttlMs: number; expiresAt: string; authorized: boolean }> {
+    const res = await fetch('/api/dr/drive/auth-url', { headers: getAuthHeaders() });
+    const data = await res.json();
+    if (!res.ok || !data.success) throw new Error(data.error || data.code || 'تعذر توليد رابط ربط Google Drive');
+    return data;
   }
 };

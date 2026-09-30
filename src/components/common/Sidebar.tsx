@@ -25,6 +25,7 @@ import {
   Activity,
   Brain,
   PlugZap,
+  CloudUpload,
 } from 'lucide-react';
 
 interface SidebarProps {
@@ -210,6 +211,16 @@ export const Sidebar: React.FC<SidebarProps> = ({ mobileOpen, onCloseMobile }) =
       desc: 'سلامة النظام والنسخ وسجل العمليات',
     },
     {
+      // النسخ السحابي خاص بالمالك: لا يظهر للموظف إطلاقاً (وتبقى حماية الخادم requireOwner).
+      id: 'cloud_backup',
+      label: 'النسخ السحابي والاستعادة',
+      icon: CloudUpload,
+      ownerOnly: true,
+      badge: currentUser?.role === 'owner' ? 'Owner' : null,
+      badgeColor: 'bg-sky-500/20 text-sky-300 border-sky-500/30',
+      desc: 'حالة Google Drive والنسخة الحالية ونقاط الاستعادة',
+    },
+    {
       id: 'users',
       label: 'المستخدمين والصلاحيات',
       icon: Users,
@@ -270,7 +281,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ mobileOpen, onCloseMobile }) =
             أقسام النظام
           </div>
 
-          {navigationItems.map((item) => {
+          {navigationItems.filter((item: any) => !item.ownerOnly || currentUser?.role === 'owner').map((item) => {
             const Icon = item.icon;
             const isActive = activeTab === item.id;
 

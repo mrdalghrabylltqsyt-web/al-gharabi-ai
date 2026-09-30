@@ -35,11 +35,47 @@ import { SalesCenterView } from './components/sales/SalesCenterView';
 import { ExecutiveCommandView } from './components/executive/ExecutiveCommandView';
 import { BusinessSuiteView } from './components/business/BusinessSuiteView';
 import { OperationsControlView } from './components/control/OperationsControlView';
+import { CloudBackupView } from './components/system/CloudBackupView';
 import { CheckCircle2, ShieldCheck } from 'lucide-react';
 
+// رسائل عودة تفويض Google Drive (بلا أي سرّ): تُقرأ من معامل dr في الرابط.
+const DR_RETURN_MESSAGES: Record<string, string> = {
+  authorized: 'تم ربط Google Drive بنجاح.',
+  error: 'تعذّر إكمال ربط Google Drive.',
+  OAUTH_DENIED: 'رُفض التفويض من Google.',
+  MISSING_CODE_OR_STATE: 'عودة التفويض بلا code/state صالحين.',
+  UNKNOWN_STATE: 'جلسة التفويض غير معروفة أو منتهية. أعد المحاولة.',
+  STATE_REUSED: 'استُخدم رابط التفويض مسبقاً. أعد المحاولة.',
+  STATE_EXPIRED: 'انتهت صلاحية رابط التفويض. أعد المحاولة.',
+  NO_REFRESH_TOKEN: 'لم تُعد Google رمز تجديد (offline). أعد التفويض.',
+  TOKEN_KEY_MISSING: 'مفتاح تشفير رمز التجديد غير مضبوط على الخادم.',
+};
+
 const AppContent: React.FC = () => {
-  const { activeTab, toastMessage, isAuthenticated, isLoadingAuth, authUnavailable, retryAuth } = useApp();
+  const { activeTab, setActiveTab, toastMessage, showToast, isAuthenticated, isLoadingAuth, authUnavailable, retryAuth } = useApp();
   const [mobileOpen, setMobileOpen] = useState(false);
+
+  // عودة تفويض Google Drive: الخادم يحوّل المتصفح إلى /?dr=authorized أو
+  // /?dr=error&reason=<code>. نقرأ النتيجة، نفتح تبويب النسخ السحابي، ثم ننظّف
+  // المعلمات من الرابط. لا نعرض أي سرّ (reason رمز آمن فقط).
+  React.useEffect(() => {
+    if (!isAuthenticated) return;
+    const params = new URLSearchParams(window.location.search);
+    const dr = params.get('dr');
+    if (!dr) return;
+    if (dr === 'authorized') {
+      setActiveTab('cloud_backup');
+      showToast(DR_RETURN_MESSAGES.authorized);
+    } else {
+      const reason = params.get('reason') || 'error';
+      setActiveTab('cloud_backup');
+      showToast(DR_RETURN_MESSAGES[reason] || DR_RETURN_MESSAGES.error);
+    }
+    params.delete('dr');
+    params.delete('reason');
+    const q = params.toString();
+    window.history.replaceState({}, '', `${window.location.pathname}${q ? `?${q}` : ''}${window.location.hash}`);
+  }, [isAuthenticated, setActiveTab, showToast]);
 
   // Authentication Gate: Block dashboard and admin data for unauthenticated users
   if (isLoadingAuth) {
@@ -110,6 +146,7 @@ const AppContent: React.FC = () => {
       case 'reports': return <ReportsView />;
       case 'business': return <BusinessSuiteView />;
       case 'control': return <OperationsControlView />;
+      case 'cloud_backup': return <CloudBackupView />;
       default: return <DashboardView />;
     }
   };

@@ -195,7 +195,11 @@ export function registerDriveRoutes(app: express.Express, deps: DriveRoutesDeps)
     const wantsJson = String(req.headers.accept || '').includes('application/json') || req.method === 'POST';
     const respond = (status: number, payload: Record<string, any>) => {
       if (wantsJson) return res.status(status).json(payload);
-      return res.status(status).type('text/html; charset=utf-8').send(driveResultPage(payload));
+      // فرع المتصفح: نعيد المالك إلى الواجهة بدل صفحة HTML منفصلة. لا نمرّر أي
+      // سرّ في الرابط — فقط معنى النتيجة ورمز سبب آمن (حروف/أرقام/_).
+      const reason = String(payload.code || 'error').replace(/[^A-Za-z0-9_]/g, '').slice(0, 40) || 'error';
+      const target = payload.success === true ? '/?dr=authorized' : `/?dr=error&reason=${encodeURIComponent(reason)}`;
+      return res.redirect(302, target);
     };
 
     if (params.error) {
@@ -290,15 +294,4 @@ export function registerDriveRoutes(app: express.Express, deps: DriveRoutesDeps)
 
   // مرجع مخزن الحالة للاختبار/الصحة العامة.
   (app as any).drStateStore = stateStore;
-}
-
-/** صفحة نتيجة بسيطة (بلا أي سرّ) تُعرض في المتصفح بعد العودة من Google. */
-function driveResultPage(payload: Record<string, any>): string {
-  const ok = payload.success === true;
-  const title = ok ? 'تم تفويض Google Drive' : 'تعذّر إكمال التفويض';
-  return `<!doctype html><html lang="ar" dir="rtl"><head><meta charset="utf-8"><title>${title}</title></head>` +
-    `<body style="font-family:system-ui;background:#0f172a;color:#e2e8f0;padding:32px">` +
-    `<h1>${title}</h1><p>${String(payload.message || payload.error || '')}</p>` +
-    (ok ? '<p>لم يُرفع أي ملف في هذه الخطوة.</p>' : '') +
-    `</body></html>`;
 }

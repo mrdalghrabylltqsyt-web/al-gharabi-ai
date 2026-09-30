@@ -1429,6 +1429,21 @@ add('dr-secret-scan-excluded', drSources[0].includes('scanForSecrets') && drSour
 add('dr-tests-in-package', (pkg.scripts['test:dr'] || '').includes('test:dr-core') && pkg.scripts.test.includes('test:dr'), 'اختبارات DR مضافة إلى npm test');
 add('dr-client-deps', Boolean(pkg.dependencies.gaxios) && Boolean(pkg.dependencies['google-auth-library']), 'gaxios وgoogle-auth-library مضافتان (بلا googleapis)');
 
+// --- واجهة النسخ السحابي (DR) + العودة الآمنة من OAuth ---
+const cloudView = read('src/components/system/CloudBackupView.tsx');
+const sidebar = read('src/components/common/Sidebar.tsx');
+add('dr-ui-view-exists', fs.existsSync(path.join(root, 'src/components/system/CloudBackupView.tsx')), 'مكوّن واجهة النسخ السحابي موجود');
+add('dr-ui-tab-owner-only', sidebar.includes("id: 'cloud_backup'") && /id:\s*'cloud_backup'[\s\S]{0,220}ownerOnly:\s*true/.test(sidebar) && /ownerOnly[\s\S]{0,80}currentUser\?\.role\s*===\s*'owner'/.test(sidebar), 'تبويب النسخ السحابي يظهر للمالك فقط');
+add('dr-ui-app-case', app.includes("case 'cloud_backup': return <CloudBackupView />"), 'حالة cloud_backup مضافة في App.tsx');
+add('dr-ui-api-methods', read('src/services/api.ts').includes('getDrStatus') && read('src/services/api.ts').includes('getDrHealth') && read('src/services/api.ts').includes('getDrAuthUrl'), 'دوال DR مضافة إلى apiService');
+add('dr-ui-api-uses-authheaders', /getDrStatus[\s\S]{0,220}getAuthHeaders\(\)/.test(read('src/services/api.ts')) && /getDrAuthUrl[\s\S]{0,220}getAuthHeaders\(\)/.test(read('src/services/api.ts')), 'دوال DR تستخدم getAuthHeaders الحالي (بلا نظام جلسات جديد)');
+add('dr-ui-connect-button-gated', /!authorized\s*&&\s*configured/.test(cloudView) && cloudView.includes('apiService.getDrAuthUrl') && cloudView.includes('window.location.assign'), 'زر الربط يظهر فقط عند الإعداد الجاهز وعدم الربط، وينتقل لرابط الخادم');
+add('dr-ui-no-secret-in-frontend', !cloudView.includes('authorizationCode') && !/localStorage[\s\S]{0,40}(state|token|code)/i.test(cloudView), 'الواجهة لا تخزّن/تعرض state أو code أو refresh token');
+add('dr-ui-return-handling', /params\.get\('dr'\)/.test(app) && app.includes("dr === 'authorized'") && /params\.get\('reason'\)/.test(app) && /params\.delete\('dr'\)/.test(app), 'App.tsx يقرأ dr ويعالج النجاح/الفشل وينظّف الرابط');
+add('dr-ui-oauth-redirect', drRoutes.includes("res.redirect(302") && drRoutes.includes('/?dr=authorized') && drRoutes.includes('dr=error&reason='), 'فرع المتصفح في callback يعيد التوجيه إلى الواجهة (بلا سرّ)');
+add('dr-ui-oauth-json-preserved', drRoutes.includes("String(req.headers.accept || '').includes('application/json')") && drRoutes.includes('res.status(status).json(payload)'), 'فرع JSON في callback باقٍ كما هو');
+add('dr-ui-test-present', fs.existsSync(path.join(root, 'engine/tests/dr/dr.ui.test.ts')) && (pkg.scripts['test:dr'] || '').includes('test:dr-ui') && pkg.scripts.test.includes('test:dr-ui'), 'اختبار واجهة DR مضمّن في test:dr وnpm test');
+
 const failed = checks.filter(x => !x.ok);
 console.table(checks);
 if (failed.length) {
