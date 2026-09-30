@@ -1310,11 +1310,51 @@ add('brain-runtime-tests-registered',
 // --- التوحيد canonical: مصدر حالة واحد (Batch 2 final fix) ---
 add('brain-canonical-single-source',
   brainCompat.includes('toCentralBrainSnapshot') &&
-  brainCompat.includes('summarizeCrossPlatformLearning') &&
-  brainCompat.includes('buildRecommendationBundle') &&
-  brainCompat.includes('analyzeCrossPlatformAudience') &&
-  !brainCompat.includes('buildCentralBrainSnapshot'),
-  'الشكل القديم يُشتق من الحالة canonical عبر facade توافقية بلا مُجمِّع عقلي ثانٍ');
+  !brainCompat.includes('buildRecommendationBundle') &&
+  !brainCompat.includes('analyzeCrossPlatformAudience') &&
+  !brainCompat.includes('summarizeCrossPlatformLearning') &&
+  !brainCompat.includes('buildCentralBrainSnapshot') &&
+  brainCompat.includes('state.recommendations') &&
+  brainCompat.includes('state.crossPlatformLearning'),
+  'الشكل القديم يُشتق من الحالة canonical عبر facade توافقية لا تُعيد تشغيل أي محرّك توصية/جمهور/تعلّم مستقل');
+
+// --- إزالة العقل الموازي: مصدر قرار/ذاكرة واحد (REMOVE-LAST-PARALLEL-BRAIN) ---
+const brainProjections = read('engine/brain/projections.ts');
+const socialRoutesSrc = read('engine/social/routes.ts');
+const socialBrain = read('engine/social/brain.ts');
+
+add('brain-projections-single-source',
+  fs.existsSync(path.join(root, 'engine/brain/projections.ts')) &&
+  brainProjections.includes('toMarketingDecisionProjection') &&
+  brainProjections.includes('toOperationalMemoryProjection') &&
+  brainProjections.includes('CentralBrainState'),
+  'إسقاطات القرار/الذاكرة التوافقية موجودة في engine/brain/projections.ts وتُشتق من الحالة canonical');
+
+add('brain-projections-no-independent-logic',
+  !/buildRecommendationBundle|recommendPlatformFocus|analyzeCrossPlatformAudience|buildLearningLoop|buildStrategyPlan|aiEngine|GoogleGenAI|generateContent/.test(brainProjections),
+  'إسقاطات القرار/الذاكرة لا تُعيد تشغيل أي محرّك توصية/جمهور/تعلّم/استراتيجية ولا تستهلك AI');
+
+add('brain-no-runtime-consumers',
+  !/social\/brain|from '\.\/brain'/.test(server) &&
+  !/social\/brain|from '\.\/brain'/.test(socialRoutes),
+  'engine/social/brain.ts بلا أي مستهلك runtime (لا الخادم ولا مسارات السوشيال)');
+
+add('social-brain-marked-legacy',
+  socialBrain.includes('LEGACY') && socialBrain.includes('TEST-ONLY'),
+  'engine/social/brain.ts موثّق صراحةً LEGACY / TEST-ONLY');
+
+add('marketing-decision-canonical-projection',
+  socialRoutesSrc.includes('toMarketingDecisionProjection') &&
+  socialRoutesSrc.includes('centralBrainState') &&
+  server.includes('toMarketingDecisionProjection') &&
+  !socialRoutesSrc.includes('buildMarketingDecision'),
+  'مسار /api/social/manager/brain/decision وأداة marketing_decision إسقاط من الحالة canonical (لا مُنتِج قرار ثانٍ)');
+
+add('memory-snapshot-canonical-projection',
+  socialRoutesSrc.includes('toOperationalMemoryProjection') &&
+  server.includes('toOperationalMemoryProjection') &&
+  !socialRoutesSrc.includes('buildMemorySnapshot'),
+  'مسار /api/social/manager/memory وأداة memory_snapshot إسقاط من الحالة canonical (لا بناء ذاكرة مستقل)');
 
 add('brain-canonical-readiness-reuses',
   /app\.get\("\/api\/readiness"[\s\S]{0,400}buildRuntimeBrain/.test(server) &&

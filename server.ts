@@ -323,10 +323,9 @@ import {
   type YouTubeVideoMetricRecord,
 } from "./engine/social/youtubeLearning";
 import {
-  buildMarketingDecision,
-  buildMemorySnapshot,
-  type PerformanceRecord,
-} from "./engine/social/brain";
+  toMarketingDecisionProjection,
+  toOperationalMemoryProjection,
+} from "./engine/brain/projections";
 import {
   buildContentPlan,
   adaptForPlatform,
@@ -8740,26 +8739,22 @@ function buildAgentToolContext(operator: AgentOperator, userId: string): AgentTo
       return { plan: days.map((day, i) => ({ day, objective: i % 2 === 0 ? "عرض منتج وفائدة عملية" : "توعية بشروط التقسيط وخدمة العملاء", focus, platforms, requiresApproval: true, usesGemini: false })), generatedBy: "deterministic-planner" };
     },
     marketingDecision: (input?: any) => {
-      const platforms = SUPPORTED_PLATFORMS.map((p: any) => p.id) as any[];
-      const memory = buildMemorySnapshot({
-        posts: (workspace.posts || []).slice(0, 500).map((p: any) => ({ status: p.status, targetPlatforms: p.targetPlatforms || p.platforms, tags: p.tags, campaignName: p.campaignName, metrics: p.metrics })),
-        comments: ((workspace as any).socialComments || []).slice(0, 500).map((c: any) => ({ text: String(c.text || ""), intent: c.classification?.category || c.intent })),
+      // إسقاط توافقي من الحالة canonical (buildRuntimeBrain) — لا مُنتِج قرار مستقل.
+      const canonicalState = buildRuntimeBrain({ ...brainRuntimeInput(), now: Date.now() }).state;
+      const memory = toOperationalMemoryProjection(canonicalState, {
         decisions: ((workspace as any).marketingDecisions || []).slice(0, 200),
-        strategies: ((workspace as any).strategiesTested || []).slice(0, 200).map((s: any) => ({ strategy: s.strategy, outcome: s.outcome, at: s.at })),
+        strategiesTested: ((workspace as any).strategiesTested || []).slice(0, 200).map((s: any) => ({ strategy: s.strategy, outcome: s.outcome, at: s.at })),
       });
-      return buildMarketingDecision({
-        objective: String(input?.objective || "تنمية تفاعل حقيقي وتحويلات مباشرة"),
-        platforms,
-        performance: ((workspace as any).performanceRecords || []).slice(0, 200) as any,
-        memory,
+      return toMarketingDecisionProjection({ state: canonicalState, objective: input?.objective, memory });
+    },
+    memorySnapshot: () => {
+      // إسقاط توافقي من الحالة canonical نفسها — لا بناء ذاكرة مستقل.
+      const canonicalState = buildRuntimeBrain({ ...brainRuntimeInput(), now: Date.now() }).state;
+      return toOperationalMemoryProjection(canonicalState, {
+        decisions: ((workspace as any).marketingDecisions || []).slice(0, 200),
+        strategiesTested: ((workspace as any).strategiesTested || []).slice(0, 200).map((s: any) => ({ strategy: s.strategy, outcome: s.outcome, at: s.at })),
       });
     },
-    memorySnapshot: () => buildMemorySnapshot({
-      posts: (workspace.posts || []).slice(0, 500).map((p: any) => ({ status: p.status, targetPlatforms: p.targetPlatforms || p.platforms, tags: p.tags, campaignName: p.campaignName, metrics: p.metrics })),
-      comments: ((workspace as any).socialComments || []).slice(0, 500).map((c: any) => ({ text: String(c.text || ""), intent: c.classification?.category || c.intent })),
-      decisions: ((workspace as any).marketingDecisions || []).slice(0, 200),
-      strategies: ((workspace as any).strategiesTested || []).slice(0, 200).map((s: any) => ({ strategy: s.strategy, outcome: s.outcome, at: s.at })),
-    }),
     brainSnapshot: () => {
       // facade توافقية من الحالة canonical (لا مُجمِّع عقلي مستقل).
       const canonical = buildRuntimeBrain({ ...brainRuntimeInput(), now: Date.now() });
@@ -11799,6 +11794,9 @@ registerSocialManagerRoutes(app, {
       hasRecordedPromotion: [showroom.promotions, showroom.activeOffer].some((x: any) => cleanText(x, 300).length > 0),
     };
   },
+  // المصدر الوحيد للحقيقة للقرار/الذاكرة: الحالة canonical للعقل المركزي.
+  // مسارات /api/social/manager/{brain/decision,memory} إسقاط توافقي منها فقط.
+  centralBrainState: () => buildRuntimeBrain({ ...brainRuntimeInput(), now: Date.now() }).state,
 });
 
 // العقل المركزي: يُربط بمنفّذ التنفيذ الخارجي الفعلي (نفس بوابات النشر) وبسياق

@@ -32,7 +32,10 @@ import { type ContentPath } from './strategy/contentIntelligence';
 import { buildCrossPlatformAudienceModel } from './audience/audienceModel';
 import { computeCommercialRelevance } from './market/commercialRelevance';
 import { classifyConversation } from './audience/conversationIntelligence';
-import type { PlatformMetricRecord } from '../social/platformLearning';
+import { summarizeCrossPlatformLearning, type PlatformMetricRecord } from '../social/platformLearning';
+
+/** ملخّص التعلّم عبر المنصات — يُشتق من سجلات الحالة نفسها (لا مصدر ثانٍ). */
+export type CrossPlatformLearningSummary = ReturnType<typeof summarizeCrossPlatformLearning>;
 
 export interface BrainPlatformState {
   platform: PlatformId;
@@ -75,6 +78,10 @@ export interface CentralBrainState {
   platformStates: BrainPlatformState[];
   recentOutcomes: string[];
   learning: LearningResult | null;
+  /** ملخّص التعلّم عبر المنصات — مُشتق من `records` (مصدر واحد للتوافق). */
+  crossPlatformLearning: CrossPlatformLearningSummary;
+  /** ملخّص سجلات النشر الحقيقية (منشور/مجدول) — يُشتق من سجلات النشر الفعلية. */
+  publishSummary: { published: number; scheduled: number };
   ownerPreferences: OwnerPreference[];
   recommendations: ExplainableRecommendation[];
   pendingDecisions: PendingDecision[];
@@ -106,6 +113,8 @@ export interface BuildCentralBrainStateInput {
   /** مسار المحتوى الجاهز من المُجمِّع. */
   contentPath?: ContentPath | null;
   timing?: TimingRecommendation | null;
+  /** سجلات نشر حقيقية (تُقرأ للملخّص فقط). */
+  publishes?: Array<{ state?: string | null; externalId?: string | null; verified?: boolean }>;
   /** سجلات أداء حقيقية (تُقرأ للتحليل فقط). */
   records?: PlatformMetricRecord[];
   /** تعليقات حقيقية لكل منصة (تُقرأ للتحليل فقط). */
@@ -175,6 +184,13 @@ export function buildCentralBrainState(input: BuildCentralBrainStateInput): Cent
   const signals = input.signals || [];
   const fresh = signals.filter((s) => isFresh(s, input.now)).length;
 
+  // ملخّص النشر من سجلات النشر الفعلية (لا من سجلات الأداء).
+  const publishRecords = input.publishes || [];
+  const publishSummary = {
+    published: publishRecords.filter((p) => p.verified || ['PUBLISHED', 'VERIFIED'].includes(String(p.state || ''))).length,
+    scheduled: publishRecords.filter((p) => String(p.state || '') === 'SCHEDULED').length,
+  };
+
   const knowledgeBase = summarizeKnowledge(input.knowledge || []);
 
   const pendingDecisions: PendingDecision[] = (input.decisions || [])
@@ -215,6 +231,8 @@ export function buildCentralBrainState(input: BuildCentralBrainStateInput): Cent
     platformStates,
     recentOutcomes: input.recentOutcomes || [],
     learning: input.learning ?? null,
+    crossPlatformLearning: summarizeCrossPlatformLearning(records, input.platforms),
+    publishSummary,
     ownerPreferences: input.ownerPreferences || [],
     recommendations: input.recommendations || [],
     pendingDecisions,

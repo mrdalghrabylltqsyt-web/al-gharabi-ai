@@ -251,10 +251,12 @@ group('11) التوحيد canonical — لا عقل ثانٍ، والشكل ال
   check('اللقطة القديمة تحمل نفس عدّادات AI', snap.ai.providerCalls === out.state.ai.providerCalls);
   check('اللقطة القديمة تحمل نفس حدود الحالة', snap.limitations.length === out.state.limitations.length);
   check('اللقطة القديمة تعكس القدرات من السجل', snap.platforms.length === out.state.platformStates.length);
-  // تعديل سجلات الحالة canonical ينعكس مباشرةً على الشكل القديم (مصدر واحد).
-  const mutated = { ...out.state, records: [...out.state.records, { platform: 'youtube' as PlatformId, externalId: 'VID_EXTRA', values: { views: 10, likes: 1 } }] };
-  const snap2 = toCentralBrainSnapshot(mutated);
-  check('زيادة سجلات الحالة تظهر في الشكل القديم', snap2.learning.byPlatform.find((s) => s.platform === 'youtube')!.sampleSize > snap.learning.byPlatform.find((s) => s.platform === 'youtube')!.sampleSize);
+  // إضافة سجل أداء عبر المصدر canonical (`buildRuntimeBrain`) تنعكس مباشرةً على
+  // الشكل القديم — مصدر واحد: لا compat تُعيد الحساب ولا حالة تُعدّل يدوياً.
+  const extra = { platform: 'youtube' as PlatformId, externalId: 'VID_EXTRA', values: { views: 10, likes: 1 } };
+  const rebuilt = buildRuntimeBrain({ ...baseInput(), records: [...baseInput().records, extra] });
+  const snap2 = toCentralBrainSnapshot(rebuilt.state);
+  check('زيادة سجلات canonical تظهر في الشكل القديم', snap2.learning.byPlatform.find((s) => s.platform === 'youtube')!.sampleSize > snap.learning.byPlatform.find((s) => s.platform === 'youtube')!.sampleSize);
 }
 
 // --- 12) الفئات الثمانية كلها — تصنيف حتمي بأمثلة عراقية، وبلا سعر مُختلق ---

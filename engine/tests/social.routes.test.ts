@@ -7,6 +7,7 @@
 
 import express from 'express';
 import { registerSocialManagerRoutes } from '../social/routes';
+import { buildRuntimeBrain } from '../brain/runtime';
 
 let passed = 0;
 const failures: string[] = [];
@@ -41,6 +42,21 @@ function buildApp(connections: Map<string, any>, workspace: any) {
     persistState: () => {},
     audit: () => {},
     workspaceId: (prefix: string) => `${prefix}-test-${Math.random().toString(16).slice(2, 8)}`,
+    // القرار/الذاكرة إسقاط من الحالة canonical للعقل المركزي (لا مُنتِج قرار مستقل).
+    // تُغذّى من نفس سجلات مساحة العمل الفعلية، كما يفعل الخادم في brainRuntimeInput.
+    centralBrainState: () => buildRuntimeBrain({
+      platforms: ['tiktok', 'youtube', 'facebook', 'instagram', 'whatsapp', 'telegram', 'x', 'snapchat', 'threads', 'google_business'] as any,
+      now: Date.now(),
+      goalPrimary: 'SALES',
+      goalSecondary: 'TRUST',
+      records: (workspace.performanceRecords || []).map((r: any) => ({ platform: r.platform, externalId: r.postExternalId || r.id || 'perf', contentType: r.contentType, values: r.values || {}, publishedAt: r.at })),
+      comments: (workspace.socialComments || []).map((c: any) => ({ platform: c.platform, externalId: c.externalId || c.id || 'c', text: String(c.text || ''), authorName: c.authorName, at: c.receivedAt || c.at })),
+      replies: [],
+      publishes: (workspace.publishRecords || []).map((r: any) => ({ state: r.state || r.status, externalId: r.externalId || r.postExternalId, verified: Boolean(r.delivered || r.verified) })),
+      watcher: [],
+      connections: [],
+      verifiedFacts: [],
+    }).state,
   });
   return app;
 }

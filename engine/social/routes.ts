@@ -30,7 +30,8 @@ import {
   metricAvailability,
   publishPreflight,
 } from './publishing';
-import { buildMarketingDecision, buildMemorySnapshot, type PerformanceRecord } from './brain';
+import { toMarketingDecisionProjection, toOperationalMemoryProjection } from '../brain/projections';
+import type { CentralBrainState } from '../brain/state';
 
 export interface PlatformConnectionLike {
   status: 'connected' | 'reauth_needed' | 'disconnected';
@@ -77,6 +78,12 @@ export interface SocialRoutesDeps {
    * فعلاً فقط. غيابها يمنع الرد من ذكر أي معلومة غير مثبتة (لا اختراع).
    */
   buildReplyFacts?: (productId?: string | null, productName?: string | null) => ReplyFactSet;
+  /**
+   * حالة العقل المركزي canonical (`buildRuntimeBrain`) — المصدر الوحيد للقرار
+   * والذاكرة. تُحقن من الخادم؛ مسارات القرار/الذاكرة هنا إسقاط توافقي منها فقط،
+   * بلا أي مُنتِج قرار مستقل.
+   */
+  centralBrainState?: () => CentralBrainState;
 }
 
 export function registerSocialManagerRoutes(app: express.Express, deps: SocialRoutesDeps): void {
@@ -690,48 +697,48 @@ export function registerSocialManagerRoutes(app: express.Express, deps: SocialRo
     const objective = typeof req.query?.objective === 'string' && req.query.objective.trim()
       ? req.query.objective.trim()
       : 'زيادة استفسارات التقسيط من منصات التواصل';
-    const requested = typeof req.query?.platforms === 'string'
-      ? req.query.platforms.split(',').map((x) => x.trim()).filter((x) => isSupportedPlatform(x))
-      : [];
 
     const list = adapters();
     const connectedPlatforms = list.filter((a) => a.describe().connection === 'connected').map((a) => a.platform);
-    // المنصات المطلوبة إن حُددت، وإلا المتصلة، وإلا كل المنصات المدعومة.
-    const platforms = requested.length ? requested : connectedPlatforms.length ? connectedPlatforms : list.map((a) => a.platform);
 
-    const performance: PerformanceRecord[] = (workspace.performanceRecords || []).map((r: any) => ({
-      platform: r.platform,
-      contentType: r.contentType,
-      values: r.values || {},
-      at: r.at,
-    }));
+    // المصدر الوحيد للحقيقة: الحالة canonical للعقل المركزي. لا قرار مستقل هنا.
+    const state = deps.centralBrainState ? deps.centralBrainState() : null;
+    if (!state) {
+      return res.status(503).json({
+        success: false,
+        error: 'العقل المركزي غير مُهيّأ في هذه البيئة؛ لا قرار تسويقي مستقل.',
+        code: 'CENTRAL_BRAIN_NOT_AVAILABLE',
+      });
+    }
 
-    const memory = buildMemorySnapshot({
-      posts: workspace.posts || [],
-      comments: (workspace.socialComments || []).map((c: any) => ({ text: c.text, intent: c.classification?.intent })),
+    // الذاكرة التشغيلية إسقاط من الحالة canonical نفسها (سجلاتها القديمة تُمرَّر كما هي).
+    const memory = toOperationalMemoryProjection(state, {
       decisions: workspace.marketingDecisions || [],
-      strategies: workspace.strategiesTested || [],
+      strategiesTested: workspace.strategiesTested || [],
     });
+    const decision = toMarketingDecisionProjection({ state, objective, memory });
 
     res.json({
       success: true,
-      generatedAt: new Date().toISOString(),
+      generatedAt: state.generatedAt,
       objective,
       connectedPlatforms,
-      decision: buildMarketingDecision({ objective, platforms: platforms as any, performance, memory }),
+      decision,
       memory,
-      note: 'التوصيات مبنية على بيانات النظام الفعلية. أي فجوة بيانات تُعلن صراحة ولا تُستبدل بتقدير مضلل.',
+      note: 'القرار والذاكرة إسقاط توافقي من حالة العقل المركزي canonical نفسها (لا حساب مستقل). أي فجوة بيانات تُعلن صراحة.',
     });
   });
 
   app.get('/api/social/manager/memory', authenticateToken, (_req, res) => {
-    const memory = buildMemorySnapshot({
-      posts: workspace.posts || [],
-      comments: (workspace.socialComments || []).map((c: any) => ({ text: c.text, intent: c.classification?.intent })),
+    const state = deps.centralBrainState ? deps.centralBrainState() : null;
+    if (!state) {
+      return res.status(503).json({ success: false, error: 'العقل المركزي غير مُهيّأ.', code: 'CENTRAL_BRAIN_NOT_AVAILABLE' });
+    }
+    const memory = toOperationalMemoryProjection(state, {
       decisions: workspace.marketingDecisions || [],
-      strategies: workspace.strategiesTested || [],
+      strategiesTested: workspace.strategiesTested || [],
     });
-    res.json({ success: true, memory, note: 'الذاكرة مبنية على سجلات تشغيلية فعلية فقط.' });
+    res.json({ success: true, memory, note: 'الذاكرة إسقاط من حالة العقل المركزي canonical (سجلات حقيقية فقط).' });
   });
 
   app.post('/api/social/manager/analytics/record', requireOwner, (req, res) => {

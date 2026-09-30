@@ -564,6 +564,7 @@ export function buildRuntimeBrain(input: RuntimeBrainInput): RuntimeBrainOutput 
     timing,
     signals,
     records,
+    publishes: input.publishes,
     commentsByPlatform,
     liveConnections,
     platformStates,
