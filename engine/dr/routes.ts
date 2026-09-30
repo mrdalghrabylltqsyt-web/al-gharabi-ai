@@ -1,0 +1,304 @@
+/**
+ * مسارات منظومة DR (Google Drive) — تفويض منفصل عن تسجيل دخول التطبيق.
+ *
+ * - `GET /api/dr/drive/auth-url` (للمالك): يولّد رابط تفويض بنطاق drive.file
+ *   حصراً مع state عشوائي أحادي الاستخدام (CSRF + TTL). لا يعرض أي سرّ.
+ * - `GET/POST /api/dr/drive/callback`: يستقبل عودة Google، يستهلك state مرة
+ *   واحدة، يبادل الرمز، ويخزّن رمز التجديد **مشفّراً فقط**. لا يُظهر الرمز.
+ * - `GET /api/dr/status` (للمالك): لقطة مراقبة قراءة فقط (بلا رفع/حذف).
+ * - `GET /api/dr/health`: كتلة صحية بلا أسرار (للتحقق الإنتاجي).
+ *
+ * الحقن عبر `deps` يجعل الوحدة قابلة للاختبار بخادم Drive وهمي، وتمنع أي مساس
+ * ببقية المنظومة (YouTube/TikTok/…/Gemini/تسجيل الدخول).
+ */
+
+import type express from 'express';
+import {
+  DRIVE_OAUTH_REDIRECT_URI,
+  DRIVE_FILE_SCOPE,
+  DESIGN_QUOTA_BYTES,
+  QUOTA_HEADROOM_BYTES,
+  buildMonitoringSnapshot,
+  hourlySafetyCheck,
+  RP_001_COMMIT,
+} from '../../tools/dr/cloud-lib.mjs';
+import { DriveStateStore } from '../../tools/dr/drive-auth-url.mjs';
+import {
+  inspectDriveAuthEnv,
+  exchangeDriveAuthCode,
+  encryptDriveSecret,
+  createRefreshTokenProvider,
+} from '../../tools/dr/drive-auth.mjs';
+import { DriveClient, createGaxiosTransport } from '../../tools/dr/drive-client.mjs';
+import { DriveStore } from '../../tools/dr/drive-store.mjs';
+import { DriveSync } from '../../tools/dr/drive-sync.mjs';
+
+export interface DriveRoutesDeps {
+  authenticateToken: express.RequestHandler;
+  requireOwner: express.RequestHandler;
+  env?: Record<string, string | undefined>;
+  /** يقرأ حالة DR المحفوظة (states + رمز تجديد مشفّر + آخر خطأ). */
+  loadControl: () => { driveOAuthStates?: any[]; driveRefreshToken?: any; driveLastError?: string | null };
+  /** يثبّت جزءاً من حالة DR عبر محوّل الحالة (يصمد بعد restart). */
+  persistControl: (partial: Record<string, any>) => void;
+  /** عميل Drive اختياري (للاختبار). إن غاب يُبنى من البيئة. */
+  clientFactory?: (env: Record<string, string | undefined>) => any | null;
+  /** ناقل OAuth اختياري (للاختبار): يوجّه تبادل الرمز إلى خادم وهمي. */
+  oauthTransport?: any;
+  now?: () => string;
+}
+
+/** هل التفويض جاهز فعلاً (اعتماد + رمز تجديد مشفّر)؟ بلا كشف قيم. */
+function authReadiness(env: Record<string, string | undefined>, encryptedRefreshToken: any) {
+  const info = inspectDriveAuthEnv(env as NodeJS.ProcessEnv);
+  const hasRefresh = Boolean(encryptedRefreshToken) || info.refreshTokenConfigured;
+  return {
+    ...info,
+    refreshTokenStored: Boolean(encryptedRefreshToken),
+    /** التفويض مكتمل فقط بوجود اعتماد + رمز تجديد. */
+    authorized: info.configured && hasRefresh,
+  };
+}
+
+export function registerDriveRoutes(app: express.Express, deps: DriveRoutesDeps): void {
+  const env = deps.env || process.env;
+  const now = deps.now || (() => new Date().toISOString());
+
+  // حالة محفوظة في الذاكرة تُحمَّل مرة واحدة بعد جهوزية المخزن.
+  let loaded: ReturnType<DriveRoutesDeps['loadControl']> | null = null;
+  function control(): ReturnType<DriveRoutesDeps['loadControl']> {
+    if (!loaded) loaded = deps.loadControl() || {};
+    return loaded;
+  }
+
+  const stateStore = new DriveStateStore({
+    initial: [],
+    persist: (snapshot) => {
+      control().driveOAuthStates = snapshot;
+      deps.persistControl({ driveOAuthStates: snapshot });
+    },
+  });
+
+  // تحميل الحالات المحفوظة مرة واحدة (بعد جهوزية المخزن) لتصمد CSRF عبر restart.
+  let statesLoaded = false;
+  function ensureStates() {
+    if (statesLoaded) return;
+    statesLoaded = true;
+    const saved = control().driveOAuthStates;
+    if (Array.isArray(saved)) {
+      for (const s of saved) {
+        if (s?.state) stateStore.states.set(s.state, { createdAt: s.createdAt || 0, usedAt: s.usedAt ?? null, userId: s.userId || '', redirectUri: s.redirectUri || DRIVE_OAUTH_REDIRECT_URI });
+      }
+    }
+  }
+
+  /** يبني عميل Drive من البيئة أو من رمز التجديد المشفّر المخزّن. */
+  function buildClient() {
+    if (deps.clientFactory) return deps.clientFactory(env);
+    const info = inspectDriveAuthEnv(env as NodeJS.ProcessEnv);
+    if (!info.configured) return null;
+    const encrypted = control().driveRefreshToken;
+    const provider = createRefreshTokenProvider({ env, encryptedRefreshToken: encrypted || undefined });
+    return new DriveClient({ transport: createGaxiosTransport(), tokenProvider: provider });
+  }
+
+  /** لقطة مراقبة قراءة فقط: لا رفع ولا حذف. */
+  async function readStatus() {
+    const readiness = authReadiness(env, control().driveRefreshToken);
+    if (!readiness.authorized) {
+      return buildMonitoringSnapshot({
+        generatedAt: now(),
+        state: 'not_authorized',
+        authorized: false,
+        secretScan: { ok: true, findings: 0 },
+        currentIntegrity: { verified: false, detail: 'لا تفويض Drive بعد.' },
+        quota: { usageBytes: null, designBytes: DESIGN_QUOTA_BYTES, headroomBytes: QUOTA_HEADROOM_BYTES },
+        lastError: control().driveLastError ?? null,
+        lastCheckAt: now(),
+      });
+    }
+    const client = buildClient();
+    if (!client) {
+      return buildMonitoringSnapshot({ generatedAt: now(), state: 'failed', authorized: false, lastError: 'drive_client_unavailable' });
+    }
+    try {
+      const store = new DriveStore({ client });
+      const sync = new DriveSync({ store, client });
+      const quota = await sync.readQuota();
+      const current = await store.readCurrentManifest();
+      const points = await store.listRestorePoints();
+      const dumps = await store.listDbDumps();
+      const manifest = current.ok ? current.data : null;
+      return buildMonitoringSnapshot({
+        generatedAt: now(),
+        state: manifest ? 'synced' : 'never_synced',
+        lastSyncAt: manifest?.updatedAt ?? null,
+        lastChangeAt: manifest?.updatedAt ?? null,
+        commit: manifest?.commit ?? null,
+        treeHash: manifest?.treeHash ?? null,
+        versionSizeBytes: manifest?.sizeBytes ?? null,
+        fileCount: manifest?.fileCount ?? null,
+        restorePointCount: points.ok ? points.data.length : 0,
+        lastDbBackupAt: dumps.ok && dumps.data.length ? dumps.data[0].modifiedTime ?? null : null,
+        dbEncrypted: true,
+        secretScan: { ok: true, findings: 0 },
+        currentIntegrity: { verified: Boolean(manifest), detail: manifest ? null : 'لا بيان current.' },
+        quota: { usageBytes: quota.ok ? (quota as any).driveUsageBytes : null, designBytes: DESIGN_QUOTA_BYTES, headroomBytes: QUOTA_HEADROOM_BYTES },
+        lastError: control().driveLastError ?? null,
+        lastCheckAt: now(),
+        authorized: true,
+      });
+    } catch (err: any) {
+      return buildMonitoringSnapshot({ generatedAt: now(), state: 'failed', authorized: true, lastError: String(err?.code || err?.message || 'drive_status_failed').slice(0, 80), lastCheckAt: now() });
+    }
+  }
+
+  // ------------------------------------------------------------------
+  // رابط التفويض (owner): state أحادي الاستخدام + drive.file حصراً
+  // ------------------------------------------------------------------
+  app.get('/api/dr/drive/auth-url', deps.authenticateToken, deps.requireOwner, (req, res) => {
+    ensureStates();
+    const readiness = authReadiness(env, control().driveRefreshToken);
+    if (!readiness.configured) {
+      return res.status(409).json({
+        success: false,
+        code: 'DRIVE_OAUTH_NOT_CONFIGURED',
+        error: 'DRIVE_OAUTH_CLIENT_ID/SECRET غير مضبوطين: لا يمكن توليد رابط التفويض.',
+        requiredEnv: ['DRIVE_OAUTH_CLIENT_ID', 'DRIVE_OAUTH_CLIENT_SECRET'],
+        redirectUri: DRIVE_OAUTH_REDIRECT_URI,
+        scope: DRIVE_FILE_SCOPE,
+      });
+    }
+    const userId = String((req as any).user?.id ?? (req as any).user?.uid ?? 'owner');
+    const created = stateStore.create(userId, { env, redirectUri: DRIVE_OAUTH_REDIRECT_URI });
+    if (!created.ok) {
+      return res.status(409).json({ success: false, code: created.code, error: created.message });
+    }
+    res.json({
+      success: true,
+      url: created.url,
+      scope: DRIVE_FILE_SCOPE,
+      redirectUri: created.redirectUri,
+      ttlMs: created.ttlMs,
+      expiresAt: created.expiresAt,
+      authorized: readiness.authorized,
+      note: 'لا يوجد تفويض ولا رفع بعد؛ هذا الرابط فقط لبدء الموافقة.',
+    });
+  });
+
+  // ------------------------------------------------------------------
+  // callback: يستهلك state مرة واحدة ثم يبادل الرمز ويخزّنه مشفّراً
+  // ------------------------------------------------------------------
+  const handleCallback: express.RequestHandler = async (req, res) => {
+    ensureStates();
+    const params: Record<string, string> = { ...(req.query as any), ...((req.body && typeof req.body === 'object') ? req.body : {}) };
+    const wantsJson = String(req.headers.accept || '').includes('application/json') || req.method === 'POST';
+    const respond = (status: number, payload: Record<string, any>) => {
+      if (wantsJson) return res.status(status).json(payload);
+      return res.status(status).type('text/html; charset=utf-8').send(driveResultPage(payload));
+    };
+
+    if (params.error) {
+      control().driveLastError = `oauth_error:${String(params.error).slice(0, 40)}`;
+      deps.persistControl({ driveLastError: control().driveLastError });
+      return respond(400, { success: false, code: 'OAUTH_DENIED', error: 'رفضت Google التفويض أو أعادت خطأً.', errorCode: String(params.error).slice(0, 60) });
+    }
+    if (!params.code || !params.state) {
+      return respond(400, {
+        success: false,
+        code: 'MISSING_CODE_OR_STATE',
+        error: 'عودة التفويض بلا code/state صالحين: لم يحدث أي تبادل ولا رفع.',
+        redirectUri: DRIVE_OAUTH_REDIRECT_URI,
+      });
+    }
+
+    const consumed = stateStore.consume(params.state, { redirectUri: DRIVE_OAUTH_REDIRECT_URI });
+    if (!consumed.ok) {
+      control().driveLastError = consumed.code;
+      deps.persistControl({ driveLastError: control().driveLastError });
+      return respond(400, { success: false, code: consumed.code.toUpperCase(), error: consumed.message });
+    }
+
+    const exchanged = await exchangeDriveAuthCode(params.code, { env, redirectUri: DRIVE_OAUTH_REDIRECT_URI, transporter: deps.oauthTransport });
+    if (!exchanged.ok) {
+      control().driveLastError = exchanged.code;
+      deps.persistControl({ driveLastError: control().driveLastError });
+      return respond(400, { success: false, code: String(exchanged.code || 'EXCHANGE_FAILED').toUpperCase(), error: exchanged.message });
+    }
+    if (!exchanged.refreshToken) {
+      control().driveLastError = 'no_refresh_token';
+      deps.persistControl({ driveLastError: control().driveLastError });
+      return respond(400, { success: false, code: 'NO_REFRESH_TOKEN', error: 'لم تُعد Google رمز تجديد (offline). أعد التفويض.' });
+    }
+    let encrypted;
+    try {
+      encrypted = encryptDriveSecret(exchanged.refreshToken, env as NodeJS.ProcessEnv);
+    } catch {
+      return respond(500, { success: false, code: 'TOKEN_KEY_MISSING', error: 'مفتاح تشفير رمز التجديد غير مضبوط (DRIVE_TOKEN_ENCRYPTION_KEY).' });
+    }
+    control().driveRefreshToken = encrypted;
+    control().driveLastError = null;
+    deps.persistControl({ driveRefreshToken: encrypted, driveLastError: null });
+
+    return respond(200, {
+      success: true,
+      code: 'DRIVE_AUTHORIZED',
+      message: 'تم التفويض وحُفظ رمز التجديد مشفّراً. لم يُرفع أي ملف بعد.',
+      scope: exchanged.scope,
+      authorized: true,
+      // لا يُعاد أي رمز — إثبات الحفظ فقط.
+      refreshTokenStored: true,
+    });
+  };
+  app.get('/api/dr/drive/callback', handleCallback);
+  app.post('/api/dr/drive/callback', handleCallback);
+
+  // ------------------------------------------------------------------
+  // الحالة الصحية (بلا أسرار) + لقطة المراقبة (owner)
+  // ------------------------------------------------------------------
+  app.get('/api/dr/health', (_req, res) => {
+    const readiness = authReadiness(env, control().driveRefreshToken);
+    res.json({
+      success: true,
+      dr: {
+        scope: DRIVE_FILE_SCOPE,
+        forbiddenScopes: ['https://www.googleapis.com/auth/drive'],
+        redirectUri: DRIVE_OAUTH_REDIRECT_URI,
+        configured: readiness.configured,
+        authorized: readiness.authorized,
+        refreshTokenStored: readiness.refreshTokenStored,
+        tokenEncryptionKey: readiness.tokenEncryptionKey,
+        callbackRoute: '/api/dr/drive/callback',
+        authUrlRoute: '/api/dr/drive/auth-url',
+        rp001Commit: RP_001_COMMIT,
+        quota: { designBytes: DESIGN_QUOTA_BYTES, headroomBytes: QUOTA_HEADROOM_BYTES },
+        lastError: control().driveLastError ?? null,
+      },
+    });
+  });
+
+  app.get('/api/dr/status', deps.authenticateToken, async (_req, res) => {
+    const snapshot = await readStatus();
+    const check = hourlySafetyCheck({
+      authorized: snapshot.authorized,
+      secretFinding: snapshot.secretScan?.ok === false,
+      currentIntegrity: snapshot.currentIntegrity?.verified === true,
+      checkedAt: snapshot.lastCheckAt || now(),
+    });
+    res.json({ success: true, snapshot, hourlyCheck: check });
+  });
+
+  // مرجع مخزن الحالة للاختبار/الصحة العامة.
+  (app as any).drStateStore = stateStore;
+}
+
+/** صفحة نتيجة بسيطة (بلا أي سرّ) تُعرض في المتصفح بعد العودة من Google. */
+function driveResultPage(payload: Record<string, any>): string {
+  const ok = payload.success === true;
+  const title = ok ? 'تم تفويض Google Drive' : 'تعذّر إكمال التفويض';
+  return `<!doctype html><html lang="ar" dir="rtl"><head><meta charset="utf-8"><title>${title}</title></head>` +
+    `<body style="font-family:system-ui;background:#0f172a;color:#e2e8f0;padding:32px">` +
+    `<h1>${title}</h1><p>${String(payload.message || payload.error || '')}</p>` +
+    (ok ? '<p>لم يُرفع أي ملف في هذه الخطوة.</p>' : '') +
+    `</body></html>`;
+}

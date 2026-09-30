@@ -1393,6 +1393,42 @@ add('brain-runtime-tests-honest',
   brainRuntimeServerTest.includes('لا تسريب رمز البوت'),
   'اختبارات التشغيل تثبت منع الاختراع ومنع التكرار وثبات الذاكرة وعدم تسريب الأسرار');
 
+// ---------------------------------------------------------------------------
+// منظومة DR (Google Drive): وجود الملفات، نطاق drive.file، غياب الصلاحية الكاملة،
+// عدم قراءة DATABASE_URL، رفض قاعدة البيانات الخام، وحماية الأسرار.
+// ---------------------------------------------------------------------------
+const drDir = path.join(root, 'tools/dr');
+const drFiles = ['cloud-lib.mjs', 'cloud-sync.mjs', 'cloud-status.mjs', 'drive-client.mjs', 'drive-auth.mjs', 'drive-auth-url.mjs', 'drive-store.mjs', 'drive-sync.mjs', 'db-crypto.mjs', 'dump-db.mjs', 'restore-db.mjs'];
+const drTests = ['dr.core.test.ts', 'dr.store.test.ts', 'dr.sync.test.ts', 'dr.auth.test.ts', 'dr.db.test.ts', 'dr.routes.test.ts'];
+const drSources = drFiles.map((f) => (fs.existsSync(path.join(drDir, f)) ? read(path.join('tools/dr', f)) : ''));
+const drRoutes = fs.existsSync(path.join(root, 'engine/dr/routes.ts')) ? read('engine/dr/routes.ts') : '';
+
+add('dr-files-present', drFiles.every((f) => fs.existsSync(path.join(drDir, f))), 'ملفات منظومة DR كلها موجودة في tools/dr');
+add('dr-tests-present', drTests.every((f) => fs.existsSync(path.join(root, 'engine/tests/dr', f))), 'اختبارات DR الستة موجودة');
+add('dr-fake-drive-only', fs.existsSync(path.join(root, 'engine/tests/dr/helpers/fakeDrive.ts')) && read('engine/tests/dr/helpers/fakeDrive.ts').includes('createFakeDriveState'), 'اختبارات DR تستخدم Drive وهمياً بالكامل');
+add('dr-scope-drive-file', drSources[0].includes('drive.file') && read('tools/dr/drive-auth.mjs').includes('drive.file') && drRoutes.includes('drive.file'), 'نطاق drive.file هو المصدر الوحيد للصلاحية');
+// الصلاحية الكاملة قد تُذكر فقط في قائمة المنع؛ لا تُسنَد كـ scope فعلي.
+const fullDriveLiteral = 'https://www.googleapis.com/auth/drive';
+const scopeAssignments = drSources.map((s) => s.replace(/\/\/[^\n]*/g, '').replace(/\/\*[\s\S]*?\*\//g, ''));
+const fullDriveAssigned = scopeAssignments.some((s) => new RegExp(`scopes?\\s*[:=]\\s*\\[[^\\]]*['"\`]${fullDriveLiteral}['"\`]`).test(s));
+add('dr-no-full-drive-scope', !fullDriveAssigned && drSources[0].includes('DRIVE_FORBIDDEN_SCOPES'), 'لا تُسنَد صلاحية Drive الكاملة؛ وهي في قائمة المنع');
+add('dr-redirect-uri', (drSources[0] || '').includes('https://al-gharabi-ai.onrender.com/api/dr/drive/callback'), 'Redirect URI مطابق للمطلوب');
+add('dr-routes-registered', server.includes('registerDriveRoutes') && drRoutes.includes('/api/dr/drive/callback') && drRoutes.includes('/api/dr/drive/auth-url'), 'مسارات DR مسجّلة من server.ts');
+add('dr-callback-no-upload', drRoutes.includes('MISSING_CODE_OR_STATE') && !drRoutes.includes('.syncCurrent('), 'callback لا ينفّذ أي رفع');
+// يُمنع الاستخدام الفعلي في الكود (process.env.DATABASE_URL)، وتُسمح الإشارة في التعليقات التوضيحية.
+const drCode = [...drSources, drRoutes].map((s) => s.replace(/\/\/[^\n]*/g, '').replace(/\/\*[\s\S]*?\*\//g, ''));
+add('dr-no-database-url', !drCode.some((s) => /process\.env\.DATABASE_URL|env\.DATABASE_URL|\bDATABASE_URL\b\s*[),]/.test(s)), 'منظومة DR لا تقرأ DATABASE_URL في الكود');
+add('dr-raw-db-blocked', drSources.some((s) => s.includes('raw_database_dump_forbidden')) && drRoutes.includes('classifyDbDump') === false && read('tools/dr/drive-store.mjs').includes('classifyDbDump'), 'المسموح فقط DB encrypted dump');
+add('dr-encrypted-token-only', drRoutes.includes('encryptDriveSecret') && drRoutes.includes('DRIVE_AUTHORIZED') && !drRoutes.includes('refreshToken:'), 'رمز التجديد يُخزّن مشفّراً فقط ولا يُعاد');
+add('dr-csrf-single-use', read('tools/dr/drive-auth-url.mjs').includes('state_reused') && drRoutes.includes('stateStore.consume'), 'state أحادي الاستخدام لحماية CSRF');
+add('dr-rp001-canonical', drSources[0].includes('dd09c32077e2cc3cc326345e8bbc740c025c14e2') && drSources.some((s) => s.includes('immutable_restore_point')), 'rp-001 مرتبط بالـcommit المعتمد ونقاط الاستعادة غير قابلة للتعديل');
+add('dr-quota-gate', drSources[0].includes('DESIGN_QUOTA_BYTES') && drSources[0].includes('quota_exceeded') && drSources.some((s) => s.includes('withinQuota')), 'بوابة المساحة 15GiB + هامش 512MiB بلا شراء/تجاوز');
+add('dr-hourly-readonly', read('tools/dr/cloud-status.mjs').includes('runHourlyCheck') && drSources[0].includes('hourlySafetyCheck'), 'الفحص الساعي قراءة فقط');
+add('dr-monitoring-snapshot', drSources[0].includes('buildMonitoringSnapshot') && read('tools/dr/cloud-status.mjs').includes('buildStatus'), 'لقطة المراقبة الكاملة موجودة');
+add('dr-secret-scan-excluded', drSources[0].includes('scanForSecrets') && drSources[0].includes('shouldExclude') && read('tools/dr/cloud-sync.mjs').includes('excluded'), 'فحص الأسرار يشمل الملفات المستبعدة');
+add('dr-tests-in-package', (pkg.scripts['test:dr'] || '').includes('test:dr-core') && pkg.scripts.test.includes('test:dr'), 'اختبارات DR مضافة إلى npm test');
+add('dr-client-deps', Boolean(pkg.dependencies.gaxios) && Boolean(pkg.dependencies['google-auth-library']), 'gaxios وgoogle-auth-library مضافتان (بلا googleapis)');
+
 const failed = checks.filter(x => !x.ok);
 console.table(checks);
 if (failed.length) {

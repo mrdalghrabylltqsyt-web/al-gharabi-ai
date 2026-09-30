@@ -20,6 +20,7 @@ import { registerSocialManagerRoutes } from "./engine/social/routes";
 import { AgentOrchestrator } from "./engine/agent/orchestrator";
 import { registerAgentRoutes } from "./engine/agent/routes";
 import { registerBrainRoutes } from "./engine/brain/routes";
+import { registerDriveRoutes } from "./engine/dr/routes";
 import { buildCentralBrainState, brainDiagnostics } from "./engine/brain/state";
 import { capabilityMatrix } from "./engine/brain/strategy/capabilityMatrix";
 import { defineGoal } from "./engine/brain/goals/goalEngine";
@@ -4514,6 +4515,17 @@ function youtubeOnlyBlock(platform: string): { blocked: boolean; status?: number
 // -------------------------------------------------------------
 let youtubeDelegationState: YouTubeDelegation = defaultYouTubeDelegation();
 
+// -------------------------------------------------------------
+// منظومة DR (Google Drive): تفويض منفصل تماماً عن تسجيل الدخول وعن بقية
+// المنظومة. لا تُقرأ DATABASE_URL ولا تُرفع قاعدة بيانات خام. تُحفظ هنا فقط
+// حالات CSRF ورمز التجديد المشفّر وآخر خطأ — كلها عبر محوّل الحالة.
+// -------------------------------------------------------------
+const drControl: { driveOAuthStates: any[]; driveRefreshToken: any; driveLastError: string | null } = {
+  driveOAuthStates: [],
+  driveRefreshToken: null,
+  driveLastError: null,
+};
+
 /** يحفظ التفويض عبر محوّل الحالة (يصمد بعد restart) — كتابة تُنتظر عند التغيير. */
 async function saveYouTubeDelegationState(): Promise<void> {
   if (!storageReady) return;
@@ -8549,6 +8561,11 @@ function applyControlSnapshot(control: any): void {
   // استرجاع تفويض تشغيل YouTube: يصمد بعد إعادة التشغيل/cold start، فلا يُفقد
   // منح المالك ولا إيقافه. يُطبَّع (نطاق YouTube فقط) قبل الاستخدام.
   if (control.youtubeDelegation) youtubeDelegationState = normalizeYouTubeDelegation(control.youtubeDelegation);
+  // استرجاع حالة DR (Google Drive): حالات CSRF ورمز التجديد المشفّر وآخر خطأ.
+  // لا يُعاد أي سرّ للعرض؛ رمز التجديد يبقى مشفّراً كما هو.
+  drControl.driveOAuthStates = Array.isArray(control.driveOAuthStates) ? control.driveOAuthStates.slice(-200) : [];
+  drControl.driveRefreshToken = control.driveRefreshToken && typeof control.driveRefreshToken === "object" ? control.driveRefreshToken : null;
+  drControl.driveLastError = typeof control.driveLastError === "string" ? control.driveLastError : null;
 }
 
 /** يقرأ حالة التحكّم متزامناً (backend الملف) عند الإقلاع. */
@@ -8584,6 +8601,11 @@ function buildControlState() {
     // تفويض تشغيل YouTube (نطاق YouTube فقط): يُحفظ لتصمد فعالية التفويض/الإيقاف
     // بعد إعادة التشغيل/cold start. لا يحمل أي سرّ (عمليات + طوابع + من منحه).
     youtubeDelegation: youtubeDelegationState,
+    // منظومة DR: حالات CSRF (عشوائية عابرة، بلا سرّ) + رمز تجديد Drive **مشفّر
+    // فقط** + آخر خطأ. لا يُكتب رمز نصي صريح في أي ملف ولا Git ولا log.
+    driveOAuthStates: drControl.driveOAuthStates.slice(-200),
+    driveRefreshToken: drControl.driveRefreshToken,
+    driveLastError: drControl.driveLastError,
   };
 }
 
@@ -11816,6 +11838,19 @@ registerAgentRoutes(app, {
   persistState: () => { persistState(); saveAgentState(); },
   projectVersion: PROJECT_VERSION,
   env: process.env,
+});
+
+// مسارات منظومة DR (Google Drive): تفويض منفصل عن تسجيل الدخول، ونطاق
+// drive.file حصراً. مسارات قراءة/تفويض فقط — لا رفع في هذه المرحلة.
+registerDriveRoutes(app, {
+  authenticateToken,
+  requireOwner,
+  env: process.env,
+  loadControl: () => drControl,
+  persistControl: (partial) => {
+    Object.assign(drControl, partial);
+    saveControlState();
+  },
 });
 
 // مسارات العقل المركزي (Central Brain) — قراءة/تحليل فقط، بلا أي تنفيذ خارجي.

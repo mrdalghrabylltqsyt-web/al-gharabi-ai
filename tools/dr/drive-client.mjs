@@ -1,0 +1,271 @@
+/**
+ * عميل Google Drive REST (v3) — عبر gaxios فقط، بلا googleapis.
+ *
+ * لماذا REST مباشر: نحتاج عمليات قليلة (إنشاء مجلد، رفع، استبدال، حذف، قراءة
+ * مساحة)؛ googleapis حزمة ضخمة بلا داعٍ. gaxios كافٍ ويسمح بحقن ناقل (transport)
+ * كامل، فتُختبر المنظومة بخادم Drive وهمي محلي بلا مزود حقيقي.
+ *
+ * العقد مع الناقل (transport): دالة تأخذ `{url, method, headers, body, responseType}`
+ * وتعيد `{status, headers, data}`. أي رمي منها يُصنَّف network_error.
+ *
+ * لا يُسجَّل ولا يُعاد أي سرّ. الرمز يُمرَّر عبر `tokenProvider` عند كل طلب.
+ */
+
+import crypto from 'node:crypto';
+import { Gaxios } from 'gaxios';
+import { DR_FOLDER_NAME as DR_FOLDER, toBuffer } from './cloud-lib.mjs';
+
+export const DRIVE_API_BASE = 'https://www.googleapis.com';
+
+/** حدود إعادة المحاولة: أخطاء عابرة فقط (429/5xx/شبكة). */
+export const DEFAULT_MAX_RETRIES = 2;
+export const DEFAULT_RETRY_BASE_MS = 200;
+
+// ---------------------------------------------------------------------------
+// ناقل حقيقي مبني على gaxios
+// ---------------------------------------------------------------------------
+
+export function createGaxiosTransport(instance = new Gaxios()) {
+  return async function gaxiosTransport(opts) {
+    const res = await instance.request({
+      url: opts.url,
+      method: opts.method,
+      headers: opts.headers,
+      body: opts.body,
+      responseType: opts.responseType || 'json',
+      validateStatus: () => true,
+      retry: false,
+    });
+    // gaxios يعيد ArrayBuffer لـresponseType=arraybuffer؛ نوحّده إلى Buffer.
+    const data = opts.responseType === 'arraybuffer' ? toBuffer(res.data) : res.data;
+    return { status: res.status, headers: res.headers || {}, data };
+  };
+}
+
+// ---------------------------------------------------------------------------
+// بناء/تحليل multipart/related (رفع Drive القياسي)
+// ---------------------------------------------------------------------------
+
+export function buildMultipartRelated(metadata, content, mimeType, boundary) {
+  const b = boundary || `gharabi-${crypto.randomBytes(12).toString('hex')}`;
+  const head = Buffer.from(
+    `--${b}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n${JSON.stringify(metadata)}\r\n` +
+      `--${b}\r\nContent-Type: ${mimeType || 'application/octet-stream'}\r\n\r\n`,
+    'utf8',
+  );
+  const body = Buffer.concat([
+    head,
+    Buffer.isBuffer(content) ? content : Buffer.from(content ?? '', 'utf8'),
+    Buffer.from(`\r\n--${b}--\r\n`, 'utf8'),
+  ]);
+  return { body, boundary: b, contentType: `multipart/related; boundary=${b}` };
+}
+
+export function parseMultipartRelated(body, contentType) {
+  const buf = Buffer.isBuffer(body) ? body : Buffer.from(body ?? '');
+  const m = /boundary=([^;]+)/.exec(String(contentType || ''));
+  const boundary = m ? m[1].trim().replace(/^"|"$/g, '') : '';
+  if (!boundary) return { metadata: null, content: Buffer.alloc(0) };
+  const delimiter = Buffer.from(`--${boundary}`, 'utf8');
+  const parts = [];
+  let idx = buf.indexOf(delimiter);
+  while (idx !== -1) {
+    const start = idx + delimiter.length;
+    if (buf.slice(start, start + 2).toString('utf8') === '--') break; // الخاتمة
+    const next = buf.indexOf(delimiter, start);
+    if (next === -1) break;
+    let part = buf.slice(start, next);
+    // إزالة CRLF المحيطة
+    if (part.slice(0, 2).toString('utf8') === '\r\n') part = part.slice(2);
+    if (part.slice(-2).toString('utf8') === '\r\n') part = part.slice(0, -2);
+    parts.push(part);
+    idx = next;
+  }
+  // عقد Drive: الجزء الأول دائماً الميتاداتا (JSON)، والثاني المحتوى. لا نعتمد
+  // على Content-Type لأن محتوى الملف نفسه قد يكون JSON فيلتبس بالأول.
+  const payloads = parts.map((part) => {
+    const sep = part.indexOf(Buffer.from('\r\n\r\n', 'utf8'));
+    return sep === -1 ? part : part.slice(sep + 4);
+  });
+  let metadata = null;
+  let content = Buffer.alloc(0);
+  if (payloads.length >= 2) {
+    try { metadata = JSON.parse(payloads[0].toString('utf8')); } catch { metadata = null; }
+    content = payloads[1];
+  } else if (payloads.length === 1) {
+    content = payloads[0];
+  }
+  return { metadata, content };
+}
+
+// ---------------------------------------------------------------------------
+// تصنيف الأخطاء
+// ---------------------------------------------------------------------------
+
+export function classifyDriveError(err) {
+  const status = Number(err?.status ?? err?.response?.status ?? 0);
+  if (!status) return { ok: false, status: 0, code: 'network_error', message: 'تعذّر الوصول إلى Google Drive.' };
+  if (status === 401) return { ok: false, status, code: 'unauthorized', message: 'رمز Drive غير صالح (401).' };
+  if (status === 403) return { ok: false, status, code: 'forbidden', message: 'صلاحية Drive مرفوضة (403).' };
+  if (status === 429) return { ok: false, status, code: 'rate_limited', message: 'تجاوز حد الطلبات (429).' };
+  if (status === 404) return { ok: false, status, code: 'not_found', message: 'العنصر غير موجود (404).' };
+  if (status >= 500) return { ok: false, status, code: 'server_error', message: `عطل مؤقت لدى Drive (${status}).` };
+  return { ok: false, status, code: 'client_error', message: `طلب Drive مرفوض (${status}).` };
+}
+
+export function isTransient(code) {
+  return code === 'rate_limited' || code === 'server_error' || code === 'network_error';
+}
+
+// ---------------------------------------------------------------------------
+// العميل
+// ---------------------------------------------------------------------------
+
+export class DriveClient {
+  constructor(options = {}) {
+    this.apiBase = options.apiBase || DRIVE_API_BASE;
+    this.transport = options.transport;
+    if (!this.transport) throw new Error('DriveClient يحتاج ناقلاً (transport).');
+    this.tokenProvider = options.tokenProvider || (() => options.accessToken || null);
+    this.maxRetries = Number.isFinite(options.maxRetries) ? options.maxRetries : DEFAULT_MAX_RETRIES;
+    this.retryBaseMs = Number.isFinite(options.retryBaseMs) ? options.retryBaseMs : DEFAULT_RETRY_BASE_MS;
+    this.sleep = options.sleep || ((ms) => new Promise((r) => setTimeout(r, ms)));
+    this.calls = [];
+  }
+
+  async authHeaders() {
+    const token = await this.tokenProvider();
+    if (!token) throw Object.assign(new Error('no_token'), { code: 'unauthorized' });
+    return { Authorization: `Bearer ${token}` };
+  }
+
+  /** طلب واحد مع إعادة محاولة للأخطاء العابرة فقط. لا يعيد رمياً أبداً. */
+  async request(opts) {
+    const attempt = async () => {
+      const headers = { ...(opts.headers || {}) };
+      if (!opts.skipAuth) Object.assign(headers, await this.authHeaders());
+      const started = Date.now();
+      try {
+        const res = await this.transport({ ...opts, headers });
+        this.calls.push({ method: opts.method, url: opts.url, status: res.status, ms: Date.now() - started });
+        if (res.status >= 200 && res.status < 300) return { ok: true, status: res.status, data: res.data, headers: res.headers };
+        return classifyDriveError({ status: res.status });
+      } catch (err) {
+        this.calls.push({ method: opts.method, url: opts.url, status: 0, ms: Date.now() - started });
+        return classifyDriveError({ status: err?.response?.status ?? 0, response: err?.response });
+      }
+    };
+    let result = await attempt();
+    let retries = 0;
+    while (!result.ok && isTransient(result.code) && retries < this.maxRetries) {
+      retries += 1;
+      await this.sleep(this.retryBaseMs * retries);
+      result = await attempt();
+    }
+    return { ...result, retries };
+  }
+
+  // ---- قراءة ----
+
+  async getAbout() {
+    const url = `${this.apiBase}/drive/v3/about?fields=storageQuota,user`;
+    return this.request({ url, method: 'GET' });
+  }
+
+  async listChildren(parentId) {
+    const q = `'${parentId}' in parents and trashed = false`;
+    const fields = 'files(id,name,mimeType,size,md5Checksum,parents,modifiedTime),nextPageToken';
+    const url = `${this.apiBase}/drive/v3/files?q=${encodeURIComponent(q)}&fields=${encodeURIComponent(fields)}&pageSize=1000`;
+    return this.request({ url, method: 'GET' });
+  }
+
+  async findFolder(name, parentId) {
+    const q = `name = '${name.replace(/'/g, "\\'")}' and '${parentId}' in parents and mimeType = 'application/vnd.google-apps.folder' and trashed = false`;
+    const url = `${this.apiBase}/drive/v3/files?q=${encodeURIComponent(q)}&fields=${encodeURIComponent('files(id,name)')}`;
+    const res = await this.request({ url, method: 'GET' });
+    if (!res.ok) return res;
+    const files = res.data?.files || [];
+    return { ok: true, status: res.status, data: files[0] || null };
+  }
+
+  async getFile(fileId) {
+    const url = `${this.apiBase}/drive/v3/files/${encodeURIComponent(fileId)}?fields=id,name,mimeType,size,md5Checksum,parents,modifiedTime`;
+    return this.request({ url, method: 'GET' });
+  }
+
+  async downloadFile(fileId) {
+    const url = `${this.apiBase}/drive/v3/files/${encodeURIComponent(fileId)}?alt=media`;
+    return this.request({ url, method: 'GET', responseType: 'arraybuffer' });
+  }
+
+  // ---- كتابة ----
+
+  async createFolder(name, parentId) {
+    const url = `${this.apiBase}/drive/v3/files?fields=id,name,mimeType`;
+    return this.request({
+      url,
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name, mimeType: 'application/vnd.google-apps.folder', parents: [parentId] }),
+    });
+  }
+
+  /** إنشاء ملف بمحتواه في نداء واحد (multipart/related). */
+  async createFile({ name, parentId, content, mimeType }) {
+    const { body, contentType } = buildMultipartRelated(
+      { name, parents: parentId ? [parentId] : undefined },
+      content,
+      mimeType || 'application/octet-stream',
+    );
+    const url = `${this.apiBase}/upload/drive/v3/files?uploadType=multipart&fields=id,name,size,md5Checksum`;
+    return this.request({ url, method: 'POST', headers: { 'Content-Type': contentType }, body });
+  }
+
+  /** استبدال محتوى ملف قائم (media) ثم مطابقة الاسم/الأب إن لزم (metadata). */
+  async updateFileContent(fileId, content, mimeType) {
+    const url = `${this.apiBase}/upload/drive/v3/files/${encodeURIComponent(fileId)}?uploadType=media&fields=id,name,size,md5Checksum`;
+    return this.request({
+      url,
+      method: 'PATCH',
+      headers: { 'Content-Type': mimeType || 'application/octet-stream' },
+      body: Buffer.isBuffer(content) ? content : Buffer.from(content ?? '', 'utf8'),
+    });
+  }
+
+  async updateFileMetadata(fileId, metadata) {
+    const url = `${this.apiBase}/drive/v3/files/${encodeURIComponent(fileId)}?fields=id,name,parents`;
+    return this.request({ url, method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(metadata) });
+  }
+
+  async deleteFile(fileId) {
+    const url = `${this.apiBase}/drive/v3/files/${encodeURIComponent(fileId)}`;
+    return this.request({ url, method: 'DELETE' });
+  }
+
+  // ---- تركيب عالٍ ----
+
+  /** يضمن وجود المجلد الجذري والمجلدات الفرعية الثلاثة. */
+  async ensureStructure() {
+    const root = await this.findFolder(DR_FOLDER, 'root');
+    if (!root.ok) return root;
+    let rootId = root.data?.id;
+    if (!rootId) {
+      const created = await this.createFolder(DR_FOLDER, 'root');
+      if (!created.ok) return created;
+      rootId = created.data?.id;
+    }
+    const ids = {};
+    for (const sub of ['current', 'history', 'db']) {
+      const found = await this.findFolder(sub, rootId);
+      if (!found.ok) return found;
+      let id = found.data?.id;
+      if (!id) {
+        const created = await this.createFolder(sub, rootId);
+        if (!created.ok) return created;
+        id = created.data?.id;
+      }
+      ids[sub] = id;
+    }
+    return { ok: true, status: 200, data: { rootId, subdirs: ids } };
+  }
+}
