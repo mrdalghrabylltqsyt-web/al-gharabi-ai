@@ -40,8 +40,8 @@ export interface DriveRoutesDeps {
   authenticateToken: express.RequestHandler;
   requireOwner: express.RequestHandler;
   env?: Record<string, string | undefined>;
-  /** يقرأ حالة DR المحفوظة (states + رمز تجديد مشفّر + آخر خطأ + حالة النسخ). */
-  loadControl: () => { driveOAuthStates?: any[]; driveRefreshToken?: any; driveLastError?: string | null; driveBackup?: any };
+  /** يقرأ حالة DR المحفوظة (states + رمز تجديد مشفّر + آخر خطأ + حالة النسخ + هوية مجلدات Drive). */
+  loadControl: () => { driveOAuthStates?: any[]; driveRefreshToken?: any; driveLastError?: string | null; driveBackup?: any; driveFolderIdentity?: any };
   /** يثبّت جزءاً من حالة DR عبر محوّل الحالة (يصمد بعد restart). */
   persistControl: (partial: Record<string, any>) => void;
   /** عميل Drive اختياري (للاختبار). إن غاب يُبنى من البيئة. */
@@ -111,6 +111,27 @@ export function registerDriveRoutes(app: express.Express, deps: DriveRoutesDeps)
     return new DriveClient({ transport: createGaxiosTransport(), tokenProvider: provider });
   }
 
+  /**
+   * يبني مخزن Drive بهوية المجلدات المحفوظة (منع 403 تحت drive.file).
+   * لا نعتمد على مرجع root أبداً؛ المعرّفات المحفوظة هي المصدر الأول.
+   */
+  function buildStore(client: any, options: { readOnlyStructure?: boolean } = {}) {
+    return new DriveStore({ client, storedIdentity: control().driveFolderIdentity || null, readOnlyStructure: options.readOnlyStructure === true });
+  }
+
+  /** يثبّت هوية المجلدات بعد تجهيز البنية (تُحفظ مشفّرة عبر محوّل الحالة). */
+  function rememberStructure(store: any): void {
+    try {
+      const identity = store.structureIdentity();
+      if (!identity || !identity.rootId) return;
+      const prev = control().driveFolderIdentity || null;
+      const same = prev && prev.rootId === identity.rootId && JSON.stringify(prev.subdirs || {}) === JSON.stringify(identity.subdirs || {});
+      if (same) return;
+      control().driveFolderIdentity = identity;
+      deps.persistControl({ driveFolderIdentity: identity });
+    } catch { /* أفضل جهد: لا يُسقط النسخة لتعذّر حفظ الهوية */ }
+  }
+
   /** لقطة مراقبة قراءة فقط: لا رفع ولا حذف. */
   async function readStatus() {
     const readiness = authReadiness(env, control().driveRefreshToken);
@@ -131,7 +152,7 @@ export function registerDriveRoutes(app: express.Express, deps: DriveRoutesDeps)
       return buildMonitoringSnapshot({ generatedAt: now(), state: 'failed', authorized: false, lastError: 'drive_client_unavailable' });
     }
     try {
-      const store = new DriveStore({ client });
+      const store = buildStore(client, { readOnlyStructure: true });
       const sync = new DriveSync({ store, client });
       const quota = await sync.readQuota();
       const current = await store.readCurrentManifest();
@@ -306,6 +327,7 @@ export function registerDriveRoutes(app: express.Express, deps: DriveRoutesDeps)
       sourceHash: result?.sourceHash ?? null,
       reason: result?.reason ?? null,
       message: result?.message ?? null,
+      errorDetails: result?.state === 'backed_up' || result?.state === 'no_change' ? null : (result?.errorDetails ?? previous.errorDetails ?? null),
       lastSuccessAt: result?.state === 'backed_up' ? now() : previous.lastSuccessAt ?? null,
       lastSuccessCommit: result?.state === 'backed_up' ? result?.commit ?? null : previous.lastSuccessCommit ?? null,
       lastRecoveryPointId: result?.state === 'backed_up' ? result?.recoveryPointId ?? null : previous.lastRecoveryPointId ?? null,
@@ -328,8 +350,9 @@ export function registerDriveRoutes(app: express.Express, deps: DriveRoutesDeps)
     }
     backupRunning = true;
     const startedAt = now();
+    let store: any = null;
     try {
-      const store = new DriveStore({ client });
+      store = buildStore(client);
       const collected = deps.collectSourceFiles ? deps.collectSourceFiles() : { included: [], excluded: [] };
       const files = [...(collected.included || []), ...(collected.excluded || [])];
       const result = await runBackup({
@@ -340,6 +363,7 @@ export function registerDriveRoutes(app: express.Express, deps: DriveRoutesDeps)
         meta: deps.gitMeta ? deps.gitMeta() : defaultGitMeta(),
         now: startedAt,
       });
+      rememberStructure(store);
       recordBackupResult(result);
       const httpStatus = result.state === 'failed' ? 500 : 200;
       return res.status(httpStatus).json({
@@ -353,6 +377,7 @@ export function registerDriveRoutes(app: express.Express, deps: DriveRoutesDeps)
         uploaded: result.uploaded ?? 0,
         reason: result.reason ?? null,
         message: result.message ?? null,
+        errorDetails: result.errorDetails ?? null,
         problems: result.problems ?? null,
         secretScan: result.secretScan ?? { ok: true, findings: 0 },
         at: startedAt,

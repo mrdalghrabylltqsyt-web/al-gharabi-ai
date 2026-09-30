@@ -88,7 +88,7 @@ export async function runBackup(options = {}) {
 async function runBackupInner({ store, files, dumpDatabase, encryptDatabase, meta, now }) {
   // 1) البنية
   const structure = await store.ensureStructure();
-  if (!structure.ok) return { state: 'failed', reason: structure.code || 'no_structure', message: structure.message || 'تعذّر تجهيز بنية Drive.' };
+  if (!structure.ok) return { state: 'failed', uploaded: 0, reason: structure.code || 'no_structure', message: structure.message || 'تعذّر تجهيز بنية Drive.', errorDetails: structure.errorDetails || null };
 
   // 2) حزمة المصدر + بصمة الشجرة
   const { entries, treeHash } = computeSourceTree(files);

@@ -32,6 +32,12 @@ export interface FakeDriveState {
   alwaysNetworkError: boolean;
   /** أسماء ملفات يفشل إنشاؤها (لمحاكاة رفع جزئي). */
   failCreateNames: Set<string>;
+  /**
+   * يحاكي فرض `drive.file`: أي طلب يشير إلى مرجع `root` (في q أو parents)
+   * يُرفض 403 insufficientPermissions، تماماً كما يفعل Google للمجلد الجذر
+   * الذي لم يُنشئه التطبيق.
+   */
+  forbidRootReference: boolean;
   usageBytes: number;
   limitBytes: number;
 }
@@ -46,6 +52,7 @@ export function createFakeDriveState(): FakeDriveState {
     failOnceNetwork: false,
     alwaysNetworkError: false,
     failCreateNames: new Set<string>(),
+    forbidRootReference: false,
     usageBytes: 0,
     limitBytes: 15 * 1024 * 1024 * 1024,
   };
@@ -114,14 +121,28 @@ export async function fakeDriveTransport(state: FakeDriveState, opts: any): Prom
   if (state.failOnceStatus) {
     const s = state.failOnceStatus;
     state.failOnceStatus = 0;
-    return { status: s, headers: {}, data: { error: { code: s, message: `injected ${s}` } } };
+    return { status: s, headers: {}, data: { error: { code: s, message: `injected ${s}`, errors: [{ domain: 'global', reason: s === 403 ? 'insufficientPermissions' : 'injected', message: `injected ${s}` }] } } };
   }
   if (state.forcedStatus) {
-    return { status: state.forcedStatus, headers: {}, data: { error: { code: state.forcedStatus, message: `forced ${state.forcedStatus}` } } };
+    return { status: state.forcedStatus, headers: {}, data: { error: { code: state.forcedStatus, message: `forced ${state.forcedStatus}`, errors: [{ domain: 'global', reason: state.forcedStatus === 403 ? 'insufficientPermissions' : 'forced', message: `forced ${state.forcedStatus}` }] } } };
   }
 
   const { path, query } = splitUrl(String(opts.url || ''));
   const method = String(opts.method || 'GET').toUpperCase();
+
+  // فرض `drive.file`: مرجع `root` ليس ملفاً أنشأه التطبيق => يُرفض كما عند Google.
+  if (state.forbidRootReference) {
+    const qHasRoot = /'root'\s+in\s+parents/.test(String(query.q || ''));
+    const bodyStr = opts.body == null ? '' : String(opts.body);
+    const bodyHasRootParent = /"parents"\s*:\s*\[\s*"root"/.test(bodyStr);
+    if (qHasRoot || bodyHasRootParent) {
+      return {
+        status: 403,
+        headers: {},
+        data: { error: { code: 403, message: 'The user does not have sufficient permissions for this file.', errors: [{ domain: 'global', reason: 'insufficientPermissions', message: 'The user does not have sufficient permissions for this file.' }] } },
+      };
+    }
+  }
 
   // about
   if (path.endsWith('/drive/v3/about')) {

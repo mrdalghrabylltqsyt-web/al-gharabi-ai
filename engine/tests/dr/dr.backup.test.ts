@@ -270,6 +270,79 @@ async function main() {
     check('restore: bundle verifies', vb.ok === true);
   }
 
+  // ============ 13) السبب الجذري للـ403: عدم استخدام مرجع root ============
+  {
+    // خادم Drive يفرض `drive.file`: أي إشارة إلى مرجع `root` تُرفض 403.
+    // المسار الجديد يجب أن ينجح كاملاً دون أي إشارة إلى root.
+    const state = createFakeDriveState();
+    state.forbidRootReference = true;
+    const store = makeStore(state);
+    const files = [{ path: 'server.ts', content: 'export const x = 1;' }];
+    const r = await backupOnce(store, files);
+    check('403-fix: backup succeeds under drive.file', r.state === 'backed_up' && r.verified === true);
+    check('403-fix: no request referenced root', state.requests.every((q: any) => !/root/.test(q.url)));
+    // لا يُعلن نجاح وهمي: الملفات موجودة فعلاً في current
+    const names = currentNames(state);
+    check('403-fix: current files real', names.includes(SOURCE_BUNDLE_NAME) && names.includes(DB_DUMP_NAME) && names.includes('manifest.json'));
+    // الجذر أُنشئ بلا أب (لا مرجع root)
+    const root = [...state.files.values()].find((f: any) => f.name === 'al-gharabi-ai-dr');
+    check('403-fix: root created without parent', root && root.parents.length === 0);
+  }
+
+  // ============ 14) التقاط خطأ Google الحقيقي عند 403 ============
+  {
+    const state = createFakeDriveState();
+    state.forbidRootReference = true;
+    // نُجبر الفشل بمحاكاة خادم يرفض كل إنشاء مجلد (بدون مرجع root) بـ403
+    // لنثبت أن سبب Google يُستخرج ويُعاد، لا مجرّد "403 forbidden".
+    const client = new DriveClient({ transport: makeFakeTransport(state), tokenProvider: () => 'tok' });
+    const res = await client.request({ url: 'https://www.googleapis.com/drive/v3/files', method: 'GET' });
+    // طلب عادي بلا root => ينجح
+    check('403-detail: plain list ok', res.ok === true);
+    // نستخرج سبب Google مباشرة من مصنّف الخطأ
+    const { classifyDriveError } = await import('../../../tools/dr/drive-client.mjs');
+    const classified = classifyDriveError({
+      status: 403,
+      response: { status: 403, data: { error: { code: 403, message: 'The user does not have sufficient permissions for this file.', errors: [{ domain: 'global', reason: 'insufficientPermissions' }] } } },
+    });
+    check('403-detail: code forbidden', classified.code === 'forbidden');
+    check('403-detail: google reason captured', classified.errorDetails.googleReason === 'insufficientPermissions');
+    check('403-detail: google domain captured', classified.errorDetails.googleDomain === 'global');
+    check('403-detail: google code captured', classified.errorDetails.googleCode === 403);
+    check('403-detail: message mentions reason', /insufficientPermissions/.test(classified.message));
+    check('403-detail: no secret in details', !/token|Bearer|secret/i.test(JSON.stringify(classified.errorDetails)));
+  }
+
+  // ============ 15) فشل آمن عند فقدان الصلاحية (403) ============
+  {
+    const state = createFakeDriveState();
+    const store = makeStore(state);
+    // فشل دائم 403 على كل الطلبات => لا نجاح وهمي ولا رفع.
+    state.forcedStatus = 403;
+    const r = await backupOnce(store, [{ path: 'a.ts', content: 'a' }]);
+    check('403-safe: state failed', r.state === 'failed');
+    check('403-safe: reason forbidden', r.reason === 'forbidden');
+    check('403-safe: verified false', r.verified !== true);
+    check('403-safe: nothing uploaded', r.uploaded === 0);
+    check('403-safe: google detail surfaced', r.errorDetails && r.errorDetails.googleReason === 'insufficientPermissions');
+  }
+
+  // ============ 16) الهوية المحفوظة تُستخدم بلا إعادة إنشاء ============
+  {
+    const state = createFakeDriveState();
+    state.forbidRootReference = true;
+    const first = makeStore(state);
+    await first.ensureStructure();
+    const identity = first.structureIdentity();
+    check('identity: has rootId + subdirs', Boolean(identity && identity.rootId && identity.subdirs.current));
+    // مخزن ثانٍ بنفس الهوية المحفوظة: لا ينشئ جذراً جديداً.
+    const before = [...state.files.values()].filter((f: any) => f.name === 'al-gharabi-ai-dr').length;
+    const second = new DriveStore({ client: new DriveClient({ transport: makeFakeTransport(state), tokenProvider: () => 'tok' }), storedIdentity: identity });
+    const s = await second.ensureStructure();
+    const after = [...state.files.values()].filter((f: any) => f.name === 'al-gharabi-ai-dr').length;
+    check('identity: reuse no duplicate root', s.ok && before === 1 && after === 1 && s.data.rootId === identity.rootId);
+  }
+
   if (failures.length) {
     console.error(`DR BACKUP TESTS FAILED (${failures.length}):`);
     for (const f of failures) console.error(`  - ${f}`);

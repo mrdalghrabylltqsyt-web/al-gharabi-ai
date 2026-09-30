@@ -33,10 +33,12 @@ function md5Hex(content) {
 }
 
 export class DriveStore {
-  constructor({ client, folderName = DR_FOLDER_NAME }) {
+  constructor({ client, folderName = DR_FOLDER_NAME, storedIdentity = null, readOnlyStructure = false }) {
     if (!client) throw new Error('DriveStore يحتاج DriveClient.');
     this.client = client;
     this.folderName = folderName;
+    this.storedIdentity = storedIdentity || null;
+    this.readOnlyStructure = readOnlyStructure === true;
     this.structure = null;
   }
 
@@ -46,10 +48,19 @@ export class DriveStore {
 
   async ensureStructure() {
     if (this.structure) return { ok: true, data: this.structure };
-    const res = await this.client.ensureStructure();
+    const res = await this.client.ensureStructure(this.storedIdentity, { create: !this.readOnlyStructure });
     if (!res.ok) return res;
     this.structure = res.data;
     return { ok: true, data: this.structure };
+  }
+
+  /**
+   * هوية البنية المحفوظة: معرّفات الجذر والمجلدات الفرعية. تُخزَّن مشفّرة في
+   * حالة الخادم فلا نعتمد على مجلد موجود مسبقاً ولا على مرجع root.
+   */
+  structureIdentity() {
+    if (!this.structure) return null;
+    return { rootId: this.structure.rootId, subdirs: { ...this.structure.subdirs } };
   }
 
   async subdirId(name) {

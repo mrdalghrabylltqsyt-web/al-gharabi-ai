@@ -13,7 +13,7 @@
 
 import crypto from 'node:crypto';
 import { Gaxios } from 'gaxios';
-import { DR_FOLDER_NAME as DR_FOLDER, toBuffer } from './cloud-lib.mjs';
+import { DR_FOLDER_NAME as DR_FOLDER, DR_SUBDIRS, toBuffer } from './cloud-lib.mjs';
 
 export const DRIVE_API_BASE = 'https://www.googleapis.com';
 
@@ -102,15 +102,45 @@ export function parseMultipartRelated(body, contentType) {
 // تصنيف الأخطاء
 // ---------------------------------------------------------------------------
 
+/**
+ * يستخرج حقول خطأ Google الأصلية من جسم الاستجابة — **بلا أي سرّ**.
+ * Google يعيد: { error: { code, message, errors:[{ reason, domain }], status } }.
+ * رسالة Google آمنة (لا تحمل رمزاً ولا سرّاً) لكن نقصّها وننقّيها احتياطاً.
+ */
+export function extractDriveError(err) {
+  const resp = err?.response;
+  const data = resp?.data ?? err?.data ?? null;
+  const gErr = data && typeof data === 'object' ? (data.error || data) : null;
+  const first = Array.isArray(gErr?.errors) ? gErr.errors[0] : null;
+  const message = typeof gErr?.message === 'string' ? gErr.message : null;
+  const sanitize = (s) => String(s ?? '').replace(/[\r\n]+/g, ' ').trim().slice(0, 300) || null;
+  return {
+    googleCode: Number(gErr?.code ?? resp?.status ?? err?.status ?? 0) || null,
+    googleMessage: sanitize(message),
+    googleReason: sanitize(first?.reason) || sanitize(gErr?.status) || null,
+    googleDomain: sanitize(first?.domain) || null,
+  };
+}
+
 export function classifyDriveError(err) {
   const status = Number(err?.status ?? err?.response?.status ?? 0);
-  if (!status) return { ok: false, status: 0, code: 'network_error', message: 'تعذّر الوصول إلى Google Drive.' };
-  if (status === 401) return { ok: false, status, code: 'unauthorized', message: 'رمز Drive غير صالح (401).' };
-  if (status === 403) return { ok: false, status, code: 'forbidden', message: 'صلاحية Drive مرفوضة (403).' };
-  if (status === 429) return { ok: false, status, code: 'rate_limited', message: 'تجاوز حد الطلبات (429).' };
-  if (status === 404) return { ok: false, status, code: 'not_found', message: 'العنصر غير موجود (404).' };
-  if (status >= 500) return { ok: false, status, code: 'server_error', message: `عطل مؤقت لدى Drive (${status}).` };
-  return { ok: false, status, code: 'client_error', message: `طلب Drive مرفوض (${status}).` };
+  const details = extractDriveError(err);
+  if (!status) return { ok: false, status: 0, code: 'network_error', message: 'تعذّر الوصول إلى Google Drive.', errorDetails: details };
+  if (status === 401) return { ok: false, status, code: 'unauthorized', message: 'رمز Drive غير صالح (401).', errorDetails: details };
+  if (status === 403) {
+    const reason = details.googleReason ? ` [${details.googleReason}]` : '';
+    return {
+      ok: false,
+      status,
+      code: 'forbidden',
+      message: `صلاحية Drive مرفوضة (403)${reason}.`,
+      errorDetails: details,
+    };
+  }
+  if (status === 429) return { ok: false, status, code: 'rate_limited', message: 'تجاوز حد الطلبات (429).', errorDetails: details };
+  if (status === 404) return { ok: false, status, code: 'not_found', message: 'العنصر غير موجود (404).', errorDetails: details };
+  if (status >= 500) return { ok: false, status, code: 'server_error', message: `عطل مؤقت لدى Drive (${status}).`, errorDetails: details };
+  return { ok: false, status, code: 'client_error', message: `طلب Drive مرفوض (${status}).`, errorDetails: details };
 }
 
 export function isTransient(code) {
@@ -149,7 +179,7 @@ export class DriveClient {
         const res = await this.transport({ ...opts, headers });
         this.calls.push({ method: opts.method, url: opts.url, status: res.status, ms: Date.now() - started });
         if (res.status >= 200 && res.status < 300) return { ok: true, status: res.status, data: res.data, headers: res.headers };
-        return classifyDriveError({ status: res.status });
+        return classifyDriveError({ status: res.status, response: { status: res.status, data: res.data } });
       } catch (err) {
         this.calls.push({ method: opts.method, url: opts.url, status: 0, ms: Date.now() - started });
         return classifyDriveError({ status: err?.response?.status ?? 0, response: err?.response });
@@ -188,6 +218,24 @@ export class DriveClient {
     return { ok: true, status: res.status, data: files[0] || null };
   }
 
+  /**
+   * يبحث عن مجلد باسمه فقط (بلا شرط الأب). مع `drive.file` يُعيد فقط المجلدات
+   * التي أنشأها التطبيق. لا نستخدم أبداً مجلداً موجوداً مسبقاً لم ينشئه التطبيق.
+   * **لا يُستدعى بمرجع `root` أبداً.**
+   */
+  async listFoldersByName(name) {
+    const q = `name = '${name.replace(/'/g, "\\'")}' and mimeType = 'application/vnd.google-apps.folder' and trashed = false`;
+    const url = `${this.apiBase}/drive/v3/files?q=${encodeURIComponent(q)}&fields=${encodeURIComponent('files(id,name)')}&pageSize=100`;
+    const res = await this.request({ url, method: 'GET' });
+    if (!res.ok) return res;
+    return { ok: true, status: res.status, data: res.data?.files || [] };
+  }
+
+  /** يقرأ بيانات عنصر بمعرّفه (لإثبات أن المجلد المحفوظ ما زال موجوداً). */
+  async getFolder(fileId) {
+    return this.getFile(fileId);
+  }
+
   async getFile(fileId) {
     const url = `${this.apiBase}/drive/v3/files/${encodeURIComponent(fileId)}?fields=id,name,mimeType,size,md5Checksum,parents,modifiedTime`;
     return this.request({ url, method: 'GET' });
@@ -202,11 +250,15 @@ export class DriveClient {
 
   async createFolder(name, parentId) {
     const url = `${this.apiBase}/drive/v3/files?fields=id,name,mimeType`;
+    const metadata = { name, mimeType: 'application/vnd.google-apps.folder' };
+    // بلا أب => ينشئه Drive في My Drive (وهذا مسموح بـdrive.file).
+    // **لا نستخدم مرجع `root` أبداً** لأنه ليس ملفاً أنشأه التطبيق.
+    if (parentId) metadata.parents = [parentId];
     return this.request({
       url,
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name, mimeType: 'application/vnd.google-apps.folder', parents: [parentId] }),
+      body: JSON.stringify(metadata),
     });
   }
 
@@ -244,22 +296,51 @@ export class DriveClient {
 
   // ---- تركيب عالٍ ----
 
-  /** يضمن وجود المجلد الجذري والمجلدات الفرعية الثلاثة. */
-  async ensureStructure() {
-    const root = await this.findFolder(DR_FOLDER, 'root');
-    if (!root.ok) return root;
-    let rootId = root.data?.id;
+  /** هل المجلد بمعرّفه موجود فعلاً؟ (لإثبات صلاحية معرّف محفوظ). */
+  async folderExists(fileId) {
+    if (!fileId) return false;
+    const res = await this.getFile(fileId);
+    return Boolean(res.ok && res.data && res.data.id);
+  }
+
+  /**
+   * يضمن وجود المجلد الجذري والمجلدات الفرعية الثلاثة، **متوافقاً مع `drive.file`**.
+   *
+   * القواعد الملزمة (منع 403):
+   *  - لا نستخدم أبداً مرجع `root` (ليس ملفاً أنشأه التطبيق => مرفوض بـdrive.file).
+   *  - الجذر يُنشأ **بلا أب** (Drive يضعه في My Drive) ما لم نكن نحفظ معرّفه.
+   *  - نعتمد أولاً على المعرّفات المحفوظة، ثم مجرد البحث بالاسم (بلا شرط أب)،
+   *    وأخيراً الإنشاء. الفشل يوقف بوضوح، ولا يُلمس أي عنصر غير مملوك للتطبيق.
+   *
+   * @param {{ rootId?: string, subdirs?: Record<string,string> } | null} [stored]
+   * @param {{ create?: boolean }} [options] create=false => بحث فقط بلا إنشاء (قراءة آمنة).
+   */
+  async ensureStructure(stored = null, options = {}) {
+    const create = options.create !== false;
+    let rootId = stored?.rootId || null;
+    if (rootId && !(await this.folderExists(rootId))) rootId = null;
     if (!rootId) {
-      const created = await this.createFolder(DR_FOLDER, 'root');
+      const found = await this.listFoldersByName(DR_FOLDER);
+      if (!found.ok) return found;
+      if (found.data.length) rootId = found.data[0].id;
+    }
+    if (!rootId) {
+      if (!create) return { ok: false, status: 0, code: 'no_structure', message: 'بنية Drive غير موجودة بعد.' };
+      const created = await this.createFolder(DR_FOLDER, null);
       if (!created.ok) return created;
       rootId = created.data?.id;
     }
     const ids = {};
-    for (const sub of ['current', 'history', 'db']) {
-      const found = await this.findFolder(sub, rootId);
-      if (!found.ok) return found;
-      let id = found.data?.id;
+    for (const sub of DR_SUBDIRS) {
+      let id = stored?.subdirs?.[sub] || null;
+      if (id && !(await this.folderExists(id))) id = null;
       if (!id) {
+        const found = await this.findFolder(sub, rootId);
+        if (!found.ok) return found;
+        id = found.data?.id || null;
+      }
+      if (!id) {
+        if (!create) return { ok: false, status: 0, code: 'no_structure', message: 'بنية Drive غير مكتملة بعد.' };
         const created = await this.createFolder(sub, rootId);
         if (!created.ok) return created;
         id = created.data?.id;

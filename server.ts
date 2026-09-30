@@ -4521,11 +4521,12 @@ let youtubeDelegationState: YouTubeDelegation = defaultYouTubeDelegation();
 // المنظومة. لا تُقرأ DATABASE_URL ولا تُرفع قاعدة بيانات خام. تُحفظ هنا فقط
 // حالات CSRF ورمز التجديد المشفّر وآخر خطأ — كلها عبر محوّل الحالة.
 // -------------------------------------------------------------
-const drControl: { driveOAuthStates: any[]; driveRefreshToken: any; driveLastError: string | null; driveBackup: any } = {
+const drControl: { driveOAuthStates: any[]; driveRefreshToken: any; driveLastError: string | null; driveBackup: any; driveFolderIdentity: any } = {
   driveOAuthStates: [],
   driveRefreshToken: null,
   driveLastError: null,
   driveBackup: null,
+  driveFolderIdentity: null,
 };
 
 /** يحفظ التفويض عبر محوّل الحالة (يصمد بعد restart) — كتابة تُنتظر عند التغيير. */
@@ -8569,6 +8570,7 @@ function applyControlSnapshot(control: any): void {
   drControl.driveRefreshToken = control.driveRefreshToken && typeof control.driveRefreshToken === "object" ? control.driveRefreshToken : null;
   drControl.driveLastError = typeof control.driveLastError === "string" ? control.driveLastError : null;
   drControl.driveBackup = control.driveBackup && typeof control.driveBackup === "object" ? control.driveBackup : null;
+  drControl.driveFolderIdentity = control.driveFolderIdentity && typeof control.driveFolderIdentity === "object" ? control.driveFolderIdentity : null;
 }
 
 /** يقرأ حالة التحكّم متزامناً (backend الملف) عند الإقلاع. */
@@ -8610,6 +8612,7 @@ function buildControlState() {
     driveRefreshToken: drControl.driveRefreshToken,
     driveLastError: drControl.driveLastError,
     driveBackup: drControl.driveBackup,
+    driveFolderIdentity: drControl.driveFolderIdentity,
   };
 }
 
