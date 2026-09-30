@@ -1551,11 +1551,16 @@ ${payload.topic || payload.productName || 'أنظمة وحلول التقسيط 
     return data;
   },
 
-  /** لقطة مراقبة DR (owner) — بلا رفع/حذف. */
+  /** لقطة مراقبة DR (owner) — بلا رفع/حذف. يحمل رمز HTTP على الخطأ لتصنيفه في الواجهة. */
   async getDrStatus(): Promise<any> {
     const res = await fetch('/api/dr/status', { headers: getAuthHeaders() });
-    const data = await res.json();
-    if (!res.ok || !data.success) throw new Error(data.error || data.code || 'تعذر قراءة حالة النسخ السحابي');
+    const data = await res.json().catch(() => null);
+    if (!res.ok || !data?.success) {
+      const err: any = new Error(data?.error || data?.code || 'تعذر قراءة حالة النسخ السحابي');
+      err.status = res.status;
+      err.code = data?.code;
+      throw err;
+    }
     return data;
   },
 

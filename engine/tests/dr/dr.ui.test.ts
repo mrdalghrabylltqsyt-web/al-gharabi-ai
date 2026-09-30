@@ -15,6 +15,7 @@ import express from 'express';
 import type { Server } from 'node:http';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { createFakeDriveState, makeFakeTransport } from './helpers/fakeDrive';
 import { registerDriveRoutes } from '../../dr/routes';
 import { DriveClient } from '../../../tools/dr/drive-client.mjs';
@@ -83,7 +84,7 @@ function staticChecks() {
   check('api dr auth-url uses getAuthHeaders', /getDrAuthUrl[\s\S]{0,220}getAuthHeaders\(\)/.test(api));
 
   // CloudBackupView: الحماية + زر الربط + عدم كشف الأسرار
-  check('view owner gate', view.includes("currentUser?.role !== 'owner'"));
+  check('view owner gate', view.includes("currentUser?.role === 'owner'") && view.includes('if (!isOwner)'));
   check('view connect only when !authorized && configured', /!authorized\s*&&\s*configured/.test(view));
   check('view calls getDrAuthUrl', view.includes('apiService.getDrAuthUrl'));
   check('view navigates to server url', view.includes('window.location.assign'));
@@ -188,8 +189,55 @@ async function serverChecks() {
   }
 }
 
+// ---------------------------------------------------------------------------
+// 3) المعالجة الصريحة لفشل /api/dr/status (منطق صافٍ + مصدر الواجهة)
+// ---------------------------------------------------------------------------
+function explicitErrorHandlingChecks() {
+  const view = read('src/components/system/CloudBackupView.tsx');
+  const api = read('src/services/api.ts');
+
+  // لا ابتلاع للخطأ
+  check('view no silent catch-null', !view.includes('.catch(() => null)'));
+  check('view uses allSettled', view.includes('Promise.allSettled'));
+  check('view has error state', view.includes('statusError') && view.includes('DrStatusErrorInfo'));
+  check('view shows toast on failure', /showToast\(/.test(view));
+
+  // زر التحديث: حالة تحميل + عودة للحالة الطبيعية
+  check('view refresh shows loading label', view.includes('جارٍ التحديث') && /loading\s*\?\s*'جارٍ التحديث/.test(view));
+  check('view refresh disabled while loading', /disabled=\{loading\}/.test(view));
+  check('view retry button present', view.includes('إعادة المحاولة'));
+
+  // api يحمل رمز HTTP للتصنيف
+  check('api getDrStatus attaches status', /getDrStatus[\s\S]{0,400}err\.status\s*=\s*res\.status/.test(api));
+
+  // لا تسريب أسرار في الواجهة
+  check('view no secret display', !view.includes('authorizationCode') && !/localStorage[\s\S]{0,40}(state|token|code)/i.test(view));
+}
+
+// فحوص المنطق الصافي: تُستورد الوحدة فعلاً (سايد-إفكتات فقط عند التركيب) وتُختبر الدوال.
+async function pureLogicChecks() {
+  const mod: any = await import(pathToFileURL(join(ROOT, 'src/components/system/CloudBackupView.tsx')).href);
+  const c = mod.classifyDrStatusError;
+  const r = mod.resolveDrStatusUpdate;
+
+  check('classify 401 => session', c({ status: 401 }).kind === 'session' && /إعادة تسجيل الدخول/.test(c({ status: 401 }).message));
+  check('classify 403 => forbidden', c({ status: 403 }).kind === 'forbidden' && /مالك/.test(c({ status: 403 }).message));
+  check('classify 500 => unavailable', c({ status: 500 }).kind === 'unavailable');
+  check('classify network => unavailable', c(new Error('network')).kind === 'unavailable');
+
+  // النجاح يعرض البيانات، والفشل يُبقي السابقة
+  const okUpd = r({ status: 'fulfilled', value: { snapshot: { state: 'synced' } } } as any, '2026-01-01T00:00:00.000Z');
+  check('success exposes snapshot', okUpd.ok === true && okUpd.snapshot.state === 'synced' && okUpd.statusError === null);
+  check('success sets updatedAt', okUpd.updatedAt === '2026-01-01T00:00:00.000Z');
+  const failUpd = r({ status: 'rejected', reason: { status: 401 } } as any, 'x');
+  check('failure preserves previous (no snapshot key)', failUpd.ok === false && !('snapshot' in failUpd) && failUpd.statusError?.kind === 'session');
+  check('failure message is user-facing', typeof failUpd.statusError?.message === 'string' && failUpd.statusError!.message.length > 10);
+}
+
 async function main() {
   staticChecks();
+  explicitErrorHandlingChecks();
+  await pureLogicChecks();
   await serverChecks();
 
   if (failures.length) {

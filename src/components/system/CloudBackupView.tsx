@@ -30,31 +30,88 @@ const fmtTime = (iso: string | null | undefined): string => {
   return Number.isFinite(t) ? new Date(t).toLocaleString('ar-IQ') : String(iso);
 };
 
+export type DrStatusErrorKind = 'session' | 'forbidden' | 'unavailable';
+
+export interface DrStatusErrorInfo {
+  kind: DrStatusErrorKind;
+  message: string;
+}
+
+// تصنيف فشل جلب حالة DR إلى رسالة عربية صريحة (منطق صافٍ قابل للاختبار).
+// 401 => جلسة منتهية، 403 => مقتصر على المالك، غير ذلك => تعذّر الجلب/الشبكة.
+export function classifyDrStatusError(err: any): DrStatusErrorInfo {
+  const status = Number(err?.status);
+  if (status === 401) {
+    return { kind: 'session', message: 'انتهت جلسة المالك. يرجى إعادة تسجيل الدخول ثم تحديث الحالة.' };
+  }
+  if (status === 403) {
+    return { kind: 'forbidden', message: 'هذا القسم مقتصر على مالك النظام (Owner) فقط.' };
+  }
+  return { kind: 'unavailable', message: 'تعذّر جلب حالة النسخ السحابي من الخادم. تحقّق من الاتصال وأعد المحاولة.' };
+}
+
+export interface DrStatusUpdate {
+  ok: boolean;
+  /** عند النجاح فقط: اللقطة الجديدة. عند الفشل undefined فلا تُمسح اللقطة السابقة. */
+  snapshot?: any;
+  statusError: DrStatusErrorInfo | null;
+  /** وقت آخر تحديث ناجح (ISO) عند النجاح فقط. */
+  updatedAt?: string;
+}
+
+// يحوّل نتيجة getDrStatus إلى تحديث حالة الواجهة. منطق صافٍ قابل للاختبار:
+// النجاح يعرض البيانات، والفشل يُبقي البيانات السابقة ويعطي رسالة صريحة.
+export function resolveDrStatusUpdate(
+  statusRes: PromiseSettledResult<any>,
+  nowIso: string,
+): DrStatusUpdate {
+  if (statusRes.status === 'fulfilled') {
+    return { ok: true, snapshot: statusRes.value?.snapshot ?? null, statusError: null, updatedAt: nowIso };
+  }
+  return { ok: false, statusError: classifyDrStatusError(statusRes.reason) };
+}
+
 export const CloudBackupView: React.FC = () => {
   const { currentUser, showToast } = useApp();
+  const isOwner = currentUser?.role === 'owner';
   const [health, setHealth] = useState<any>(null);
   const [snapshot, setSnapshot] = useState<any>(null);
   const [loading, setLoading] = useState(false);
   const [connecting, setConnecting] = useState(false);
+  const [statusError, setStatusError] = useState<DrStatusErrorInfo | null>(null);
+  const [lastUpdatedAt, setLastUpdatedAt] = useState<string | null>(null);
 
   const load = useCallback(async () => {
+    if (!isOwner) return;
     setLoading(true);
     try {
-      const [h, s] = await Promise.all([
-        apiService.getDrHealth().catch(() => null),
-        apiService.getDrStatus().catch(() => null),
+      // الصحة عامة؛ الحالة محمية بالمالك. نعالج كل فشل صراحةً بدل ابتلاعه.
+      const [healthRes, statusRes] = await Promise.allSettled([
+        apiService.getDrHealth(),
+        apiService.getDrStatus(),
       ]);
-      setHealth(h?.dr || null);
-      setSnapshot(s?.snapshot || null);
+
+      if (healthRes.status === 'fulfilled') setHealth(healthRes.value?.dr || null);
+
+      const update = resolveDrStatusUpdate(statusRes, new Date().toISOString());
+      if (update.ok) {
+        setSnapshot(update.snapshot);
+        setStatusError(null);
+        setLastUpdatedAt(update.updatedAt || null);
+      } else {
+        // لا نمسح البيانات السابقة: نُبقي آخر لقطة معروفة ونعرض تنبيهاً صريحاً.
+        setStatusError(update.statusError);
+        showToast(update.statusError?.message || 'تعذّر جلب حالة النسخ السحابي.');
+      }
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [isOwner, showToast]);
 
   useEffect(() => { void load(); }, [load]);
 
   // الحماية الحقيقية على الخادم (requireOwner)؛ هنا إخفاء الصفحة عن غير المالك.
-  if (currentUser?.role !== 'owner') {
+  if (!isOwner) {
     return <div className="p-8 rounded-2xl bg-slate-900 border border-slate-800 text-center text-slate-300">هذا القسم مخصص لمالك النظام فقط.</div>;
   }
 
@@ -96,8 +153,8 @@ export const CloudBackupView: React.FC = () => {
           <p className="text-xs text-slate-400 mt-1">حالة ربط Google Drive، النسخة الحالية، نقاط الاستعادة، ونسخة قاعدة البيانات المشفّرة. عرض وربط فقط — لا رفع ولا استعادة في هذه المرحلة.</p>
         </div>
         <div className="flex gap-2">
-          <button onClick={() => void load()} disabled={loading} className="px-4 py-2 rounded-xl bg-slate-800 border border-slate-700 text-xs font-bold text-white flex items-center gap-2">
-            <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} /> تحديث الحالة
+          <button onClick={() => void load()} disabled={loading} className="px-4 py-2 rounded-xl bg-slate-800 border border-slate-700 text-xs font-bold text-white flex items-center gap-2 disabled:opacity-60">
+            <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} /> {loading ? 'جارٍ التحديث…' : 'تحديث الحالة'}
           </button>
           {!authorized && configured && (
             <button onClick={() => void connectDrive()} disabled={connecting} className="px-4 py-2 rounded-xl bg-sky-500 text-slate-950 text-xs font-black flex items-center gap-2 disabled:opacity-60">
@@ -106,6 +163,23 @@ export const CloudBackupView: React.FC = () => {
           )}
         </div>
       </div>
+
+      {statusError && (
+        <section className="p-4 rounded-2xl bg-amber-500/10 border border-amber-500/30 flex items-start justify-between gap-3 flex-wrap">
+          <div className="flex items-start gap-2">
+            <TriangleAlert className="w-4 h-4 text-amber-400 mt-0.5 shrink-0" />
+            <div>
+              <p className="text-xs font-bold text-amber-200">{statusError.message}</p>
+              <p className="text-[10px] text-amber-200/70 mt-1">
+                {snapshot
+                  ? `آخر حالة معروفة معروضة أدناه${lastUpdatedAt ? ` (آخر تحديث ناجح: ${fmtTime(lastUpdatedAt)})` : ''}.`
+                  : 'لم تُجلب أي حالة من الخادم بعد.'}
+              </p>
+            </div>
+          </div>
+          <button onClick={() => void load()} disabled={loading} className="px-3 py-1.5 rounded-lg bg-amber-500/20 border border-amber-500/40 text-[11px] font-bold text-amber-100 disabled:opacity-60 shrink-0">إعادة المحاولة</button>
+        </section>
+      )}
 
       {/* حالة الإعداد / الربط */}
       <section className="p-5 rounded-2xl bg-slate-900 border border-slate-800">
