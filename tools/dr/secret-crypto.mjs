@@ -131,12 +131,13 @@ export function inspectMasterKey(env = process.env) {
   const resolved = resolveMasterKey(env);
   const perKey = inspectMasterKeyNames(env);
   const anySet = perKey.some((p) => p.present);
-  const primary = perKey[0];
+  // التوجيه يخصّ أي مفتاح مضبوط لكن غير صالح — حتى لو نجح الحلّ عبر مفتاح بديل،
+  // لأن المالك يجب أن يعرف أن قيمته الجديدة بصيغة خاطئة.
+  const badKey = perKey.find((p) => p.present && !p.valid);
   let hint = null;
-  if (resolved.ok) hint = null;
+  if (badKey) hint = `${badKey.name} مضبوط لكن غير صالح: طول القيمة ${badKey.length} محرفاً. الصيغة المقبولة: 64 محرفاً hex أو Base64 يمثّل 32 بايت بالضبط (مثال: openssl rand -hex 32). ملاحظة: 32 محرفاً ASCII = 24 بايت فقط وتُرفض.`;
   else if (!anySet) hint = `غير مضبوط: اضبط ${MASTER_KEY_ENV} بقيمة 32 بايت (مثال: openssl rand -hex 32).`;
-  else if (primary.present && !primary.valid) hint = `المفتاح مضبوط لكن غير صالح: طول القيمة ${primary.length} محرفاً. الصيغة المقبولة: 64 محرفاً hex أو Base64 يمثّل 32 بايت بالضبط (مثال: openssl rand -hex 32). ملاحظة: 32 محرفاً ASCII = 24 بايت فقط وتُرفض.`;
-  else hint = `مفتاح بديل غير صالح: اضبط ${MASTER_KEY_ENV} بقيمة 32 بايت.`;
+  else if (!resolved.ok) hint = `مفتاح بديل غير صالح: اضبط ${MASTER_KEY_ENV} بقيمة 32 بايت.`;
   return {
     state: resolved.ok ? 'valid' : (anySet ? 'invalid' : 'missing'),
     envNames: MASTER_KEY_ENV_NAMES,
