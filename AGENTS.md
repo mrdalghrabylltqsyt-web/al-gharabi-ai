@@ -3027,3 +3027,40 @@ restart/idempotency، وثائق RECOVERY، وحالة health بلا أسرار.
 `dr-lostkeys-drill`، `dr-lostkeys-honest-classification`، `dr-lostkeys-no-production`
 (**934 فحصاً** إجمالاً). لم يُمسّ أي سرّ/مفتاح/إعداد Render، ولم يُنفَّذ أي نشر أو دمج PR #9.
 
+
+## حالة إغلاق DR (2026-10-01): تحقق محلي كامل + نقطة توقف على صلاحيات المالك
+
+أُنجزت كل خطوات التحقق الممكنة **محلياً** بنجاح؛ وما تبقّى (دمج/نشر/rp-004 حقيقي/فحص
+الإنتاج) موقوف على صلاحيات غير متوفّرة في بيئة الوكيل — أُعلن صراحةً لا يُدّعى إنجازه.
+
+**بيئة الوكيل (مُثبت):** الإنتاج `bca35d9` يعمل و`/api/health` يرد 200، لكن **لا اعتماد
+Drive/DR في البيئة** (كل `DRIVE_*`/`DR_*`/`DATABASE_URL` غير مضبوطة)، وGitHub API يرد 401،
+و`git push` يطلب كلمة مرور (لا صلاحية كتابة)، ولا أداة نشر/إعادة تشغيل Render. لذا لا يمكن
+إنشاء rp-004 حقيقي ولا دمج PR #9 ولا النشر ولا فحص DR على الإنتاج من هنا.
+
+**ما أُثبت محلياً (كل شيء PASS):**
+- `npm run test:dr` = 18 مجموعة (CORE 51, SOURCE 23, STORE 33, SYNC 38, AUTH 82, DB 17,
+  ROUTES 48, BACKUP 104, SECRETS 34, MIRROR 48, KEY VAULT 70, KEY RELATIONS 35,
+  RECONCILIATION 48, RESTORE 28, ENDPOINTS 70, REAL DRILL 34, LOST-KEYS 30, UI 81).
+- اختبار جديد `dr.keyrelations.test.ts` (**35 فحصاً**): يثبت أن المفاتيح الأربعة
+  (`DR_RECOVERY_VAULT_KEY`/`DR_RECOVERY_MASTER_KEY`/`DRIVE_DB_BACKUP_KEY`/
+  `DRIVE_TOKEN_ENCRYPTION_KEY`) **مستقلة تماماً** (لا مفتاح يفتح عمل آخر)، وأن master/db/token
+  تُستعاد من الخزنة، وأن مفتاح الخزنة لا يُخزَّن داخلها، وأن مفتاح التوكنات يصلح بديلاً
+  لنسخة القاعدة فقط. بلا تغيير أي قيمة إنتاجية.
+- `dr.real-drill.test.ts` (**34 فحصاً**): يستعيد فعلياً من نقطة استعادة إلى **Postgres مدمجة
+  معزولة**، يُقلع نسخة من المصدر المستعاد ويفحص `/api/health` (backend=postgres) و
+  `/api/readiness` (applicationReady) وكتلة `brain`، ويثبت أن المفتاح الخاطئ يفشل بأمان وأن
+  النسخة السليمة تبقى تُفكّ. **هذا إثبات استعادة فعلي في بيئة معزولة.**
+- `dr.stage4.evidence.ts` (15 خطوة) يمرّ بـ0 فشل على Drive **وهمي محلي** (عقد REST نفسه)،
+  ويشمل: مرآة CURRENT فردية، حذف ينعكس في CURRENT ويبقى في HISTORY، «لا تغيير» لا يُنشئ نقطة،
+  دورة استعادة معزولة، كشف عبث، rp-002 سليمة، خطة استعادة «بنقرة» بلا استعادة إنتاجية.
+- `npm test` كامل ✅ (EXIT=0، 72 مجموعة، بلا فشل) · `lint` ✅ · `build` ✅ ·
+  `final-audit` ✅ (**935 فحصاً**) · secret scan على الملفات المتتبَّعة = نظيف (كل المطابقات
+  قيم وهمية في الاختبارات).
+
+**نقطة توقف المالك (لا ينفّذها أي وكيل):** (1) صلاحية كتابة GitHub لدمج PR #9 (الفرع
+`dr/trusted-source-and-incomplete-guard`، head المحلي `29830da`، head المدفوع لـPR=`cc475fd`)
+— لا دمج بلا موافقة صريحة. (2) Render auto-deploy بعد الدفع. (3) من جلسة المالك على الإنتاج:
+`POST /api/dr/backup` لإنشاء **rp-004 الحقيقي**، ثم فحص CURRENT/DATABASE/SECRETS/KEY-VAULT/
+RECOVERY وRecovery Drill المعزول من rp-004. لا حذف/تعديل لـrp-002/rp-003، ولا تغيير أي مفتاح.
+
