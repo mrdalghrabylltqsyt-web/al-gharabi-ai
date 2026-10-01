@@ -72,7 +72,7 @@ async function main() {
     persistControl: (partial) => { Object.assign(drControl, partial); persisted.push(partial); },
     clientFactory: () => new DriveClient({ transport: makeFakeTransport(fakeState), tokenProvider: () => 'tok' }),
     oauthTransport: makeFakeTokenTransport(),
-    collectSourceFiles: () => ({ included: [{ path: 'server.ts', content: 'export const x = 1;' }, { path: 'README.md', content: '# hi' }], excluded: [] }),
+    collectSourceFiles: () => ({ included: [{ path: 'server.ts', content: 'export const x = 1;' }, { path: 'README.md', content: '# hi' }], excluded: [], complete: true, source: 'test', fileCount: 2 }),
     dumpDatabase: async () => 'CREATE TABLE t(id int);\n',
     gitMeta: () => ({ commit: 'a'.repeat(40), branch: 'main', repository: 'r/al-gharabi-ai', project: 'al-gharabi-ai' }),
     now: () => '2026-01-01T00:00:00.000Z',
@@ -98,6 +98,8 @@ async function main() {
       check('health no secret values', !json.includes('GOCSPX') && !json.includes('googleusercontent') && !json.includes(TEST_KEY));
       check('health not authorized yet', body.dr.authorized === false && body.dr.refreshTokenStored === false);
       check('health rp001 commit', body.dr.rp001Commit === 'dd09c32077e2cc3cc326345e8bbc740c025c14e2');
+      check('health exposes sourceCollection complete', body.dr.sourceCollection && body.dr.sourceCollection.complete === true && body.dr.sourceCollection.source === 'test');
+      check('health sourceCollection no secret', !JSON.stringify(body.dr.sourceCollection || {}).includes('GOCSPX'));
     }
 
     // --- auth-url محصور بالمالك ---

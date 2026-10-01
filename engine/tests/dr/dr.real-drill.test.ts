@@ -100,6 +100,7 @@ async function main() {
   const { buildSecretsBundle, decryptSecretsPackage } = await import('../../../tools/dr/secret-crypto.mjs');
   const restoreMod = await import('../../../tools/dr/restore.mjs');
   const { collectRepoFiles } = await import('../../../tools/dr/cloud-sync.mjs');
+  const { runKeyVaultSync, recoverKeyVault } = await import('../../dr/recoveryVault/vault');
 
   const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gharabi-real-drill-pg-'));
   const port = await freePort(55700 + Math.floor(Math.random() * 200));
@@ -139,6 +140,8 @@ async function main() {
       // مفتاح نسخة القاعدة منفصل عن مفتاح الأسرار في الإنتاج (يُسقط على مفتاح
       // تشفير التوكنات عند غيابه). هنا نفس القيمة لتبسيط الفحص فقط.
       DRIVE_DB_BACKUP_KEY: MASTER_KEY,
+      DRIVE_TOKEN_ENCRYPTION_KEY: MASTER_KEY,
+      DR_RECOVERY_VAULT_KEY: MASTER_KEY,
       GEMINI_API_KEY: 'AIzaSy' + 'k'.repeat(33),
       SESSION_SECRET: 'sess-' + 'r'.repeat(40),
       TELEGRAM_BOT_TOKEN: '123456:AA' + 't'.repeat(33),
@@ -221,6 +224,22 @@ async function main() {
     check('drill: wrong db key fails safely', wrongDb.ok === false);
     // النسخة السليمة ما زالت تُفكّ (لم تُتلف) — لا استبدال بنسخة فاسدة.
     check('drill: healthy copy still decrypts after wrong-key attempt', decryptDbDump(arts.db, secretEnv).ok === true);
+
+    // --- 8) خزنة مفاتيح الطوارئ: مزامنة + تشفير فعلي + استعادة بالمفتاح ---
+    const vault = await runKeyVaultSync({ store, env: secretEnv, now: new Date().toISOString() });
+    check('drill: key vault synced', vault.state === 'synced' && vault.version === 1);
+    // الحزمة على Drive مشفّرة ولا تحمل أي قيمة سرّية نصية.
+    const vaultPkg = await store.readKeyVaultVersion(1);
+    const vaultText = vaultPkg.ok ? Buffer.from(vaultPkg.data).toString('utf8') : '';
+    check('drill: key vault package encrypted', vaultText.startsWith('GHARABI-KEY-VAULT-V1'));
+    check('drill: key vault no plaintext secret', !vaultText.includes(secretEnv.DR_RECOVERY_MASTER_KEY) && !vaultText.includes(secretEnv.GEMINI_API_KEY) && !vaultText.includes('DR_RECOVERY_MASTER_KEY'));
+    const recVault = await recoverKeyVault(store, secretEnv);
+    check('drill: key vault recoverable', recVault.ok === true && recVault.integrity.recordsMatch === true);
+    check('drill: key vault returns master key for restore', recVault.values.DR_RECOVERY_MASTER_KEY === secretEnv.DR_RECOVERY_MASTER_KEY);
+    check('drill: key vault includes gemini key', recVault.values.GEMINI_API_KEY === secretEnv.GEMINI_API_KEY);
+    // مفتاح خاطئ يفشل بأمان (لا يفتح الخزنة).
+    const wrongVault = await recoverKeyVault(store, { ...secretEnv, DR_RECOVERY_VAULT_KEY: '99'.repeat(32) });
+    check('drill: wrong vault key fails safely', wrongVault.ok === false && wrongVault.code === 'decrypt_failed');
   } finally {
     await db.stop().catch(() => { /* تجاهل */ });
     fs.rmSync(dataDir, { recursive: true, force: true });

@@ -26,7 +26,7 @@ export const DR_FOLDER_NAME = 'al-gharabi-ai-dr';
  * التعافي المستقلة القابلة للقراءة بلا تشغيل الغرابي) + staging (منطقة ذرّية
  * للترقية). المجلدات الثلاثة الأولى مطلوبة للتوافق الرجعي مع النقاط القائمة.
  */
-export const DR_SUBDIRS = ['current', 'history', 'db', 'secrets', 'recovery', 'staging'];
+export const DR_SUBDIRS = ['current', 'history', 'db', 'secrets', 'recovery', 'staging', 'key-vault'];
 export const DR_ROOT_DIR = '.dr-recovery';
 
 /** أسماء ملفات العقد داخل المجلدات. */
@@ -771,6 +771,9 @@ export function summarizeBackupState(manifest) {
 // ---------------------------------------------------------------------------
 
 export const SECRETS_PACKAGE_MAGIC = 'GHARABI-SECRETS-V1';
+
+/** اسم متغيّر مفتاح خزنة الطوارئ (مفتاح فتح الخزنة — لا يُحفظ داخل Drive). */
+export const VAULT_KEY_ENV = 'DR_RECOVERY_VAULT_KEY';
 export const SECRETS_PACKAGE_VERSION = 1;
 
 /**
@@ -817,18 +820,161 @@ export function buildSecretsPackageManifest(input = {}) {
 export const MIRROR_DIR_NAME = 'files';
 export const MIRROR_MANIFEST_VERSION = 1;
 
-/** يبني بيان المرآة (ملفات فردية داخل current/files/**). بلا أي سرّ. */
-export function buildMirrorManifest(input = {}) {
+// ---------------------------------------------------------------------------
+// مرآة مُرقّمة + مرجع اعتماد واحد (نسخة CURRENT آمنة ضد الانقطاع)
+// البنية: current/versions/v<N>/{files/**, manifest.json}، والاعتماد في
+// current/HEAD.json فقط. لا تُعدَّل النسخة المُعتمَدة أبداً؛ كل مزامنة تبني
+// نسخة جديدة مستقلة، والترقية = كتابة مرجع واحد (تبديل مؤشر) لا حذف/استبدال.
+// ---------------------------------------------------------------------------
+export const MIRROR_VERSIONS_DIR = 'versions';
+export const MIRROR_MANIFEST_NAME_V2 = 'manifest.json';
+export const MIRROR_HEAD_NAME = 'HEAD.json';
+export const MIRROR_HEAD_VERSION = 1;
+
+// ---------------------------------------------------------------------------
+// خزنة مفاتيح الطوارئ (Emergency Key Vault) — نموذج مُرقّم + مرجع اعتماد واحد
+// البنية: KEY-VAULT/current.enc (حزمة مشفّرة) + KEY-VAULT/HEAD.json (مرجع)
+//          + KEY-VAULT/versions/KV-<N>/{current.enc, manifest.json} + KEY-VAULT/history/
+// نفس مبدأ CURRENT: نسخ مستقلة، لا تعديل في المكان، الترقية = كتابة HEAD فقط.
+// مفتاح الخزنة (DR_RECOVERY_VAULT_KEY) **لا يوجد داخل Drive أبداً**.
+// ---------------------------------------------------------------------------
+export const KEY_VAULT_DIR = 'key-vault';
+export const KEY_VAULT_VERSIONS_DIR = 'versions';
+export const KEY_VAULT_HISTORY_DIR = 'history';
+export const KEY_VAULT_PACKAGE_NAME = 'current.enc';
+export const KEY_VAULT_HEAD_NAME = 'HEAD.json';
+export const KEY_VAULT_MANIFEST_NAME = 'manifest.json';
+export const KEY_VAULT_MAGIC = 'GHARABI-KEY-VAULT-V1';
+export const KEY_VAULT_HEAD_VERSION = 1;
+
+/** اسم مجلد نسخة الخزنة من رقمها: KV-1, KV-2, ... (يرفض غير الصحيح). */
+export function keyVaultVersionDirName(version) {
+  const n = Number(version);
+  if (!Number.isFinite(n) || n < 1 || Math.floor(n) !== n) return null;
+  return `KV-${n}`;
+}
+
+/** يحلّل اسم مجلد نسخة خزنة `KV-N` إلى رقم، أو null. */
+export function parseKeyVaultVersionDir(name) {
+  const m = /^KV-(\d+)$/.exec(String(name || ''));
+  if (!m) return null;
+  const n = Number(m[1]);
+  return Number.isFinite(n) && n >= 1 ? n : null;
+}
+
+/** هل النص حزمة خزنة مشفّرة بالشكل المقبول؟ (لا قيمة سرّية — شكل فقط). */
+export function isEncryptedKeyVaultPackage(content) {
+  const text = Buffer.isBuffer(content) ? content.toString('utf8') : String(content ?? '');
+  const lines = text.split(/\r?\n/);
+  if (lines[0]?.trim() !== KEY_VAULT_MAGIC) return false;
+  const hasEncrypted = lines.some((l) => /^encrypted:\s*true\s*$/.test(l));
+  const hasCipher = lines.some((l) => /^cipher:\s*aes-256-gcm\s*$/.test(l));
+  const hasData = hasValidDataLine(text);
+  return hasEncrypted && hasCipher && hasData;
+}
+
+/** بيان الخزنة: أسماء/حالات/بصمات فقط — **لا قيمة سرّية إطلاقاً**. */
+export function buildKeyVaultManifest(input = {}) {
   return {
-    kind: 'current-mirror',
-    version: Number.isFinite(input.version) ? input.version : MIRROR_MANIFEST_VERSION,
+    kind: 'key-vault',
+    version: Number.isFinite(input.version) ? input.version : 0,
+    dirName: input.dirName ?? keyVaultVersionDirName(input.version),
+    createdAt: input.createdAt ?? new Date().toISOString(),
+    updatedAt: input.updatedAt ?? input.createdAt ?? new Date().toISOString(),
+    encrypted: true,
+    cipher: 'aes-256-gcm',
+    kdf: input.kdf ?? 'scrypt',
+    keyFingerprint: input.keyFingerprint ?? null,
+    recordCount: Number.isFinite(input.recordCount) ? input.recordCount : 0,
+    encryptedVaultHash: input.encryptedVaultHash ?? null,
+    encryptedVaultSize: Number.isFinite(input.encryptedVaultSize) ? input.encryptedVaultSize : null,
+    // بصمة حتمية لمحتوى الخزنة (أسماء + بصمات القيم) لكشف «لا تغيير» بلا كشف قيمة.
+    contentHash: input.contentHash ?? null,
+    // كل سجل: metadata غير سرية فقط (بلا قيمة).
+    records: Array.isArray(input.records) ? input.records : [],
+    vaultKeyRequired: true,
+    vaultKeyEnvName: input.vaultKeyEnvName ?? null,
+  };
+}
+
+/** مرجع اعتماد الخزنة (KEY-VAULT/HEAD.json) — يحدد النسخة الفعلية. */
+export function buildKeyVaultHead(input = {}) {
+  return {
+    kind: 'key-vault-head',
+    headVersion: KEY_VAULT_HEAD_VERSION,
+    version: Number.isFinite(input.version) ? input.version : null,
+    dirName: input.dirName ?? keyVaultVersionDirName(input.version),
+    encryptedVaultHash: input.encryptedVaultHash ?? null,
+    recordCount: Number.isFinite(input.recordCount) ? input.recordCount : 0,
+    createdAt: input.createdAt ?? new Date().toISOString(),
+    pendingCleanup: Array.isArray(input.pendingCleanup) ? input.pendingCleanup : [],
+    cleanupPending: Boolean(input.cleanupPending),
+  };
+}
+
+/** يتحقق من سلامة مرجع اعتماد الخزنة شكلياً. */
+export function isKeyVaultHeadValid(head) {
+  if (!head || typeof head !== 'object') return false;
+  if (head.kind !== 'key-vault-head') return false;
+  if (!Number.isFinite(head.version) || head.version < 1) return false;
+  if (keyVaultVersionDirName(head.version) !== head.dirName) return false;
+  return typeof head.encryptedVaultHash === 'string' && head.encryptedVaultHash.length === 64;
+}
+
+/** اسم مجلد النسخة من رقمها: v1, v2, ... (يرفض غير الصحيح). */
+export function mirrorVersionDirName(version) {
+  const n = Number(version);
+  if (!Number.isFinite(n) || n < 1 || Math.floor(n) !== n) return null;
+  return `v${n}`;
+}
+
+/** يحلّل اسم مجلد نسخة `vN` إلى رقم، أو null. */
+export function parseMirrorVersionDir(name) {
+  const m = /^v(\d+)$/.exec(String(name || ''));
+  if (!m) return null;
+  const n = Number(m[1]);
+  return Number.isFinite(n) && n >= 1 ? n : null;
+}
+
+/** يبني بيان نسخة مرآة كاملة (بلا أي سرّ). */
+export function buildVersionManifest(input = {}) {
+  return {
+    kind: 'current-version',
+    version: Number.isFinite(input.version) ? input.version : 0,
+    dirName: input.dirName ?? mirrorVersionDirName(input.version),
     commit: input.commit ?? null,
     treeHash: input.treeHash ?? null,
     updatedAt: input.updatedAt ?? new Date().toISOString(),
     fileCount: Number.isFinite(input.fileCount) ? input.fileCount : 0,
     sizeBytes: Number.isFinite(input.sizeBytes) ? input.sizeBytes : 0,
-    files: Array.isArray(input.files) ? input.files : [], // [{ path, sha256, driveId, size }]
+    files: Array.isArray(input.files) ? input.files : [], // [{ path, sha256, size }]
   };
+}
+
+/** يبني مرجع الاعتماد (HEAD.json) — يحدد أي نسخة هي CURRENT الفعلية. */
+export function buildMirrorHead(input = {}) {
+  return {
+    kind: 'current-head',
+    headVersion: MIRROR_HEAD_VERSION,
+    version: Number.isFinite(input.version) ? input.version : null,
+    dirName: input.dirName ?? mirrorVersionDirName(input.version),
+    treeHash: input.treeHash ?? null,
+    commit: input.commit ?? null,
+    fileCount: Number.isFinite(input.fileCount) ? input.fileCount : 0,
+    sizeBytes: Number.isFinite(input.sizeBytes) ? input.sizeBytes : 0,
+    updatedAt: input.updatedAt ?? new Date().toISOString(),
+    pendingCleanup: Array.isArray(input.pendingCleanup) ? input.pendingCleanup : [],
+    cleanupPending: Boolean(input.cleanupPending),
+  };
+}
+
+/** يتحقق من سلامة مرجع الاعتماد شكلياً. */
+export function isMirrorHeadValid(head) {
+  if (!head || typeof head !== 'object') return false;
+  if (head.kind !== 'current-head') return false;
+  if (!Number.isFinite(head.version) || head.version < 1) return false;
+  if (mirrorVersionDirName(head.version) !== head.dirName) return false;
+  return typeof head.treeHash === 'string' && head.treeHash.length === 64;
 }
 
 /**
@@ -986,5 +1132,234 @@ export function buildLatestRecovery(input = {}) {
       manualFallback: ['drive_offline_download'],
     },
   };
+}
+
+// ---------------------------------------------------------------------------
+// وثائق RECOVERY الموحّدة (أسماء ثابتة تُقرأ مباشرة من Google Drive بلا الغرابي)
+// START-HERE.md · RECOVERY-GUIDE.md · RECOVERY-MANIFEST.json
+// لا تحتوي أي قيمة سرّية — أسماء/بصمات/خطوات فقط.
+// ---------------------------------------------------------------------------
+
+/** الاسم الموحّد لوثيقة نقطة البداية. */
+export function buildStartHereDoc(input = {}) {
+  const repo = input.repository ?? 'mrdalghrabylltqsyt-web/al-gharabi-ai';
+  const service = input.renderService ?? 'al-gharabi-ai';
+  const latest = input.latestRecoveryPointId ?? 'rp-XXX';
+  return `# START HERE — الغرابي AI (Disaster Recovery)
+
+> اقرأ هذه الوثيقة **مباشرة من Google Drive** في مجلد \`al-gharabi-ai-dr/RECOVERY/\`.
+> لا تحتاج تشغيل الغرابي AI إطلاقاً. لا تحتوي أي قيمة سرّية.
+
+## ما هذا؟
+نسخة تعافٍ كاملة ومستقلة لتطبيق الغرابي AI: المصدر + قاعدة البيانات المشفّرة + الأسرار
+المشفّرة + وثائق الاستعادة، كلها في Google Drive لتبقى حتى لو اختفى Render أو GitHub
+أو قاعدة بيانات الإنتاج أو التطبيق نفسه.
+
+## أين كل شيء؟
+- \`CURRENT/HEAD.json\` — **مرجع الاعتماد الوحيد**: يحدد أي نسخة هي CURRENT الفعلية.
+- \`CURRENT/versions/v<N>/files/**\` — نسخة مرآة كاملة مستقلة (كل ملف بمكانه).
+- \`CURRENT/versions/v<N>/manifest.json\` — بيان النسخة (بصمة شجرة + كل ملف و sha256).
+- \`HISTORY/rp-XXX/\` — نقاط استعادة كاملة مستقلة (لا تُعدّل أبداً).
+- \`DATABASE/database.enc\` — نسخة قاعدة البيانات **مشفّرة فقط** (لا يوجد SQL خام).
+- \`SECRETS/secrets.enc\` — حزمة الأسرار **مشفّرة فقط** + \`manifest.json\` (أسماء وبصمات).
+- \`KEY-VAULT/current.enc\` — خزنة مفاتيح الطوارئ (مشفّرة AES-256-GCM) + \`KEY-VAULT/HEAD.json\`.
+  مفتاح فتحها (\`DR_RECOVERY_VAULT_KEY\`) **لا يوجد هنا أبداً** — نسخة المالك مستقلة.
+- \`RECOVERY/\` — هذا الدليل + \`RECOVERY-GUIDE.md\` + \`RECOVERY-MANIFEST.json\`.
+
+## كيف تُدار CURRENT (آمن ضد الانقطاع)
+- كل مزامنة تبني **نسخة جديدة مستقلة** \`v<N+1>\`؛ لا تُعدَّل النسخة المُعتمَدة أبداً.
+- الترقية = كتابة \`CURRENT/HEAD.json\` نحو النسخة الجديدة فقط (نقطة الالتزام الوحيدة).
+- إن فشل أي شيء قبل الاعتماد ⇒ CURRENT السابقة تبقى صالحة بالكامل.
+- حذف النسخ القديمة يجري **بعد** الاعتماد؛ وفشله لا يُسقط الاعتماد (يُعاد لاحقاً).
+
+## ابدأ من هنا
+1. اقرأ \`RECOVERY-GUIDE.md\` (الخطوات الكاملة).
+2. **حدّد CURRENT من \`CURRENT/HEAD.json\` وحده** (الحقل \`version\` ⇒ \`CURRENT/versions/v<N>/\`).
+   إن غاب HEAD فالنظام لم يعتمد نسخة بعد.
+3. اختر آخر نقطة استعادة سليمة من \`RECOVERY-MANIFEST.json\` (الحقل \`latestRecoveryPointId\`)
+   أو الأحدث في \`HISTORY/\`.
+4. **مهم:** مفتاح الاستعادة الرئيسي (\`DR_RECOVERY_MASTER_KEY\`) **لا يُحفظ داخل النسخة**؛
+   احتفظ به في مكان آمن منفصل. بدونه لا يمكن فكّ الأسرار.
+5. **خزنة الطوارئ** \`KEY-VAULT/\` تحوي نسخة مُرقّمة من مفاتيح الاستعادة الأساسية، تُفتح
+   بمفتاح مستقل (\`DR_RECOVERY_VAULT_KEY\`) لا يوجد داخل Drive. فكّها يدوياً:
+   \`node tools/dr/vault-restore.mjs --in current.enc --out .env.vault\`.
+
+## هل تحتاج حساباً؟
+- Google Drive: نعم (للوصول للملفات).
+- Render: نعم (لإعادة النشر وضبط متغيّرات البيئة) — خطوة خارجية.
+- GitHub: اختياري (المصدر موجود في \`HISTORY/rp-XXX/source.tar.gz\`).
+
+## آخر نقطة استعادة سليمة
+- المعرّف: \`${latest}\`
+- التزام المصدر: \`${input.commit ?? 'غير معروف'}\`
+
+التفاصيل الكاملة: \`RECOVERY-GUIDE.md\`. البيان الآلي: \`RECOVERY-MANIFEST.json\`.
+المستودع: \`${repo}\` · خدمة Render: \`${service}\`.
+
+---
+تاريخ التوليد: ${input.createdAt ?? new Date().toISOString()}
+`;
+}
+
+/** دليل الاستعادة الكامل (ترتيب + حدود الأتمتة + التحقق). */
+export function buildRecoveryGuideDoc(input = {}) {
+  const latest = input.latestRecoveryPointId ?? 'rp-XXX';
+  const repo = input.repository ?? 'mrdalghrabylltqsyt-web/al-gharabi-ai';
+  const service = input.renderService ?? 'al-gharabi-ai';
+  return `# RECOVERY GUIDE — الغرابي AI
+
+> دليل الاستعادة الكامل. يُقرأ مباشرة من Google Drive بلا تشغيل الغرابي. بلا أي سرّ.
+
+## 1) خريطة المجلدات
+- \`CURRENT/HEAD.json\` — **مرجع الاعتماد**: يحدد النسخة المعتمدة (\`version\` ⇒ \`versions/v<N>/\`).
+- \`CURRENT/versions/v<N>/files/**\` — نسخة مرآة كاملة مستقلة (كل ملف بمكانه).
+- \`CURRENT/versions/v<N>/manifest.json\` — بيان النسخة (treeHash + sha256 لكل ملف).
+- \`HISTORY/rp-XXX/\` — نقطة استعادة مستقلة: \`source.tar.gz\`, \`database.enc\`, \`secrets.enc\`, \`manifest.json\`.
+- \`DATABASE/database.enc\` — نسخة قاعدة بيانات مشفّرة (لا SQL خام في Drive إطلاقاً).
+- \`SECRETS/secrets.enc\` — حزمة أسرار مشفّرة (AES-256-GCM) + \`SECRETS/manifest.json\`.
+- \`KEY-VAULT/current.enc\` — خزنة مفاتيح الطوارئ (مشفّرة) + \`KEY-VAULT/HEAD.json\` (مرجع الاعتماد)
+  + \`KEY-VAULT/versions/KV-<N>/\` (نسخ مستقلة) + \`KEY-VAULT/history/\`.
+  تُفتح بمفتاح \`DR_RECOVERY_VAULT_KEY\` المستقل (لا يوجد داخل Drive).
+- \`RECOVERY/\` — START-HERE.md, RECOVERY-GUIDE.md, RECOVERY-MANIFEST.json, latest-recovery.json.
+
+## 1ب) تحديد CURRENT المُعتمدة (من HEAD وحده)
+1. اقرأ \`CURRENT/HEAD.json\` ⇒ \`version\`, \`treeHash\`, \`fileCount\`, \`cleanupPending\`.
+2. النسخة الفعلية هي \`CURRENT/versions/v<version>/\`؛ بيانها \`manifest.json\` يجب أن يطابق \`treeHash\`.
+3. إن وُجد \`cleanupPending\` فهذا **تنظيف لاحق** فقط (حذف نسخ قديمة فشل) — **لا يؤثر على صحة CURRENT**.
+4. لا تعتمد على أي مجلد نسخة آخر غير المُشار إليه في HEAD.
+
+## 2) كيف نختار آخر نقطة استعادة سليمة
+1. افتح \`RECOVERY-MANIFEST.json\` واقرأ \`latestRecoveryPointId\` و\`recoveryPoints[]\`.
+2. اختر النقطة التي \`status = verified\` والأحدث \`createdAt\`.
+3. تحقّق من البصمات: \`sourceHash\`, \`treeHash\`, \`encryptedDatabaseHash\`, \`encryptedSecretsHash\`, \`fileCount\`.
+4. إن فشل أي تحقق ⇒ تجاوزها إلى النقطة السليمة الأسبق (لا تستعد نسخة تالفة).
+
+## 3) ترتيب الاستعادة (إلزامي)
+1. اختر نقطة الاستعادة (\`HISTORY/${latest}/\`).
+2. تحقّق من \`manifest.json\` والبصمات (SHA-256).
+3. فكّ \`secrets.enc\` بالمفتاح الرئيسي → \`node tools/dr/secrets-restore.mjs --in secrets.enc --out .env.restored\`.
+4. فكّ \`database.enc\` → \`node tools/dr/restore-db.mjs --in database.enc --out restored.sql\`.
+5. استعادة المصدر: \`tar -xzf source.tar.gz -C <workdir>\` ثم \`npm ci && npm run build\`.
+6. استعادة قاعدة البيانات على قاعدة معزولة أولاً (اختبار)، ثم الإنتاج عند التأكيد.
+7. اضبط متغيّرات البيئة من الأسرار المفكوكة + \`DATABASE_URL\`.
+8. \`npm run start\`، ثم افحص \`/api/health\` و\`/api/readiness\`.
+
+## 4) ما يمكن استعادته تلقائياً
+- فكّ التشفير (أسرار + قاعدة بيانات)، استخراج المصدر، تحميل القاعدة في بيئة معزولة،
+  إقلاع الخادم وفحص الصحة. (سكربتات \`tools/dr/\`).
+
+## 5) ما يحتاج تدخّل المالك (خارجي)
+- إنشاء/إعادة نشر خدمة Render وضبط متغيّراتها.
+- ربط GitHub (اختياري) وإعادة تفويض Google/Meta/… إن لزم.
+- **المفتاح الرئيسي**: إدخاله يدوياً من مكانه الآمن (لا يوجد داخل النسخة).
+- أي استعادة فوق الإنتاج: تحتاج تأكيداً صريحاً.
+
+## 6) حدود المنصات الخارجية
+- لا يمكن للنظام إنشاء خدمة Render أو إعادة OAuth تلقائياً (بلا واجهة برمجية للمالك).
+- Google Drive هو مدخل الطوارئ الخارجي؛ يجب أن يبقى متاحاً من حساب المالك.
+
+## 7) التحقق من سلامة النسخة قبل الاستخدام
+- طابق كل ملف مع بصمته في \`manifest.json\`.
+- افتح \`secrets.enc\` بالمفتاح الرئيسي وتأكد أنه يُفكّ.
+- اختبر الاستعادة في بيئة معزولة (Recovery Drill) قبل أي استعادة إنتاجية.
+
+## 8) المفتاح الرئيسي وخزنة الطوارئ
+- \`DR_RECOVERY_MASTER_KEY\` (أو \`DRIVE_DB_BACKUP_KEY\` احتياطاً) — **لا يُحفظ داخل النسخة**.
+- فقدانه ⇒ لا يمكن فكّ الأسرار (تبقى المصدر والقاعدة قابلين للاستعادة).
+- \`DR_RECOVERY_VAULT_KEY\` — مفتاح **خزنة الطوارئ** \`KEY-VAULT/\`، مستقل تماماً ولا يُحفظ داخل Drive.
+- خزنة الطوارئ تحوي كل الأسرار الأساسية المشفّرة كتسجيل واحد \`KEY-VAULT/current.enc\`
+  (أو النسخة المعتمدة \`KEY-VAULT/versions/KV-<N>/\` بحسب \`KEY-VAULT/HEAD.json\`).
+- فكّها يدوياً عند الكارثة:
+  \`node tools/dr/vault-restore.mjs --in current.enc --out .env.vault\`
+  (يطبع الأسماء فقط افتراضياً؛ القيم تُكتب في ملف بصلاحيات 0600 عند \`--out\`).
+
+المستودع: \`${repo}\` · خدمة Render: \`${service}\`.
+
+---
+تاريخ التوليد: ${input.createdAt ?? new Date().toISOString()}
+`;
+}
+
+/** بيان RECOVERY الآلي (بلا أسرار): أحدث نقطة + قائمة النقاط + البصمات. */
+export function buildRecoveryManifestDoc(input = {}) {
+  const points = Array.isArray(input.recoveryPoints) ? input.recoveryPoints : [];
+  const latest = input.latestRecoveryPointId ?? (points.length ? points[points.length - 1]?.id ?? null : null);
+  const latestPoint = points.find((p) => p && p.id === latest) || null;
+  return {
+    kind: 'recovery-manifest',
+    schemaVersion: input.schemaVersion ?? BACKUP_SCHEMA_VERSION,
+    runtimeVersion: input.runtimeVersion ?? null,
+    project: input.project ?? 'al-gharabi-ai',
+    repository: input.repository ?? 'mrdalghrabylltqsyt-web/al-gharabi-ai',
+    renderService: input.renderService ?? 'al-gharabi-ai',
+    updatedAt: input.updatedAt ?? new Date().toISOString(),
+    commit: input.commit ?? latestPoint?.commit ?? null,
+    latestRecoveryPointId: latest,
+    // CURRENT المُعتمدة (نسخة المرآة الفردية) — تُحدَّد من CURRENT/HEAD.json وحده.
+    currentMirrorVersion: input.currentMirrorVersion ?? null,
+    currentMirrorTreeHash: input.currentMirrorTreeHash ?? null,
+    currentMirrorSource: 'HEAD.json',
+    currentMirrorPath: input.currentMirrorVersion ? `CURRENT/versions/v${input.currentMirrorVersion}/` : null,
+    // خزنة مفاتيح الطوارئ: نسخة مُرقّمة مستقلة تُفتح بمفتاح DR_RECOVERY_VAULT_KEY.
+    keyVaultVersion: input.keyVaultVersion ?? null,
+    keyVaultHash: input.keyVaultHash ?? null,
+    keyVaultPath: input.keyVaultVersion ? `KEY-VAULT/versions/KV-${input.keyVaultVersion}/` : 'KEY-VAULT/current.enc',
+    fileCount: Number.isFinite(input.fileCount) ? input.fileCount : latestPoint?.fileCount ?? null,
+    treeHash: input.treeHash ?? latestPoint?.treeHash ?? null,
+    sourceHash: input.sourceHash ?? latestPoint?.sourceHash ?? null,
+    databaseHash: input.databaseHash ?? latestPoint?.databaseHash ?? null,
+    secretsHash: input.secretsHash ?? latestPoint?.encryptedSecretsHash ?? null,
+    recoveryPoints: points.map((p) => ({
+      id: p?.id ?? null,
+      createdAt: p?.createdAt ?? null,
+      commit: p?.commit ?? null,
+      treeHash: p?.treeHash ?? null,
+      sourceHash: p?.sourceHash ?? null,
+      fileCount: Number.isFinite(p?.fileCount) ? p.fileCount : null,
+      status: p?.status ?? 'unknown',
+    })),
+    restoreOrder: [
+      'select_recovery_point',
+      'verify_manifest',
+      'verify_hashes',
+      'decrypt_secrets',
+      'decrypt_database',
+      'restore_source',
+      'restore_database',
+      'apply_runtime_config',
+      'redeploy_external',
+      'verify_health_readiness',
+    ],
+    automationBoundaries: {
+      automatic: ['decrypt', 'extract_source', 'db_load_isolated', 'boot_verify'],
+      ownerConfirmation: ['restore_production', 'history_delete'],
+      externalPlatformRequirement: ['render_redeploy', 'env_var_set', 'google_oauth', 'github_link'],
+      manualFallback: ['drive_offline_download'],
+    },
+    notes: [
+      'لا تحتوي هذه الوثيقة أي قيمة سرّية — أسماء/بصمات/خطوات فقط.',
+      'المفتاح الرئيسي DR_RECOVERY_MASTER_KEY لا يُحفظ داخل النسخة.',
+      'DATABASE/database.enc و SECRETS/secrets.enc مشفّرة فقط؛ لا SQL خام في Drive.',
+    ],
+  };
+}
+
+/**
+ * يكتب وثائق RECOVERY الموحّدة الثلاث (START-HERE.md, RECOVERY-GUIDE.md,
+ * RECOVERY-MANIFEST.json) في مجلد recovery عبر مخزن Drive. لا سرّ.
+ */
+export async function writeRecoveryDocs(store, input = {}) {
+  const startHere = buildStartHereDoc(input);
+  const guide = buildRecoveryGuideDoc(input);
+  const manifest = buildRecoveryManifestDoc(input);
+  const results = [];
+  if (typeof store?.writeRecoveryDoc === 'function') {
+    results.push(await store.writeRecoveryDoc('START-HERE.md', startHere));
+    results.push(await store.writeRecoveryDoc('RECOVERY-GUIDE.md', guide));
+  }
+  if (typeof store?.writeRecoveryJson === 'function') {
+    results.push(await store.writeRecoveryJson('RECOVERY-MANIFEST.json', manifest));
+  }
+  return { ok: results.every((r) => r?.ok !== false), results, manifest };
 }
 

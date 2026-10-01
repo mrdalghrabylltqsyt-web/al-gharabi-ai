@@ -2856,3 +2856,211 @@ access token (بلا أي عملية Drive كتابة، بلا تغيير الر
 تتطلّب تفعيل النسخة من جلسة المالك على الإنتاج (`/api/dr/backup`)، ثم إعادة تشغيل السكربت
 بـ`--real` مع توفّر `DRIVE_OAUTH_*` في البيئة. لا يُعلن أي وكيل برمجي إنشاء rp-003 على Drive
 بلا هذا الدليل. rp-002 لا تُحذف ولا تُعدّل (نقاط الاستعادة غير قابلة للتعديل).
+
+## جذر «نسخة الملفين» في CURRENT — مصدر موثوق من Git + حماية المصدر الناقص (2026-10-01)
+
+**الدليل القاطع (لا تخمين):** CURRENT في Google Drive كان يحوي ملفين فقط
+(`package.json`, `package-lock.json`)، وبصمته تطابق تلك المجموعة حرفياً:
+`treeHash 2f70746bab8e18fe7f00ba7094730c913d1d03a91ebc32147290c167152e6f28` و
+`sourceHash df9c0d09fe584ab79c6d41e53177a89e839829bfa122b88476a621f4dc66cb81`
+(أُعيد إنتاجهما محلياً لمجموعة الملفين بالضبط؛ الشجرة الكاملة 243 ملفاً تعطي بصمة مختلفة).
+
+**السبب الحقيقي:** `collectRepoFiles(process.cwd())` كان يمشي على مجلد التشغيل. لكن
+مستودع المشروع يحوي **`Dockerfile`** (مرحلة runtime تنسخ فقط `package.json`+`package-lock.json`+
+`dist/`)، و`render.yaml` يقول `runtime: node` لكن **خدمة Render مضبوطة فعلياً على Docker**
+(يُثبت بوجود `.dockerignore` + Dockerfile منذ 2026-09-21 + البصمة المطابقة تماماً لمجموعة
+الملفين). أي أن `process.cwd()` على الإنتاج = مجلد الصورة = ملفان فقط. لا fallback ولا allowlist
+في الكود، والمشي يعمل كما هو مُبرمَج؛ المدخل نفسه كان ناقصاً.
+
+**الإصلاح:**
+- `tools/dr/cloud-sync.mjs`: `collectGitTrackedFiles(rootDir)` (عبر `git ls-files -z`) و
+  `collectTrustedSourceTree(rootDir)` — يفضّل **الشجرة المتتبَّعة في Git** (المشروع المعتمد
+  الكامل، 243 ملفاً)، ويسقط صراحةً إلى المشي على المجلد عند غياب Git مع وسم `source: git|walk`.
+  لا يُستبعد ملف مهم لمجرد حجمه (الحد 8MiB فقط لملفات ضخمة جداً).
+- `assessSourceCompleteness(files)` — مصدر واحد: حد أدنى `SOURCE_MIN_FILES=10` + ملفات إلزامية
+  `SOURCE_REQUIRED_FILES=[server.ts, package.json, package-lock.json]`. يعيد `complete` و`reason`.
+- `server.ts`: `collectSourceFiles: () => collectTrustedSourceTree(process.cwd())`.
+- `engine/dr/routes.ts`: **حماية صريحة** في `/api/dr/backup` و`/api/dr/sync` — إن كان
+  `collected.complete === false` يُرد **409 `SOURCE_INCOMPLETE`** (بلا أي رفع ولا ترقية)، مع
+  تفاصيل `sourceCollection` (source/fileCount/minFiles/missingRequired/reason) بلا محتوى ولا سرّ.
+- `/api/dr/health`: كتلة `sourceCollection` (مخبّأة 5 دقائق) تُعلن فوراً مصدر الجمع واكتماله
+  وعدد ملفاته — فيُكشف أي مجلد تشغيل ناقص قبل أي نسخة.
+- اختبار `engine/tests/dr/dr.source.test.ts` (`npm run test:dr-source`، 23 فحصاً): الشجرة الموثوقة
+  كاملة محلياً (تضم server.ts/engine/src، وتستبعد node_modules/dist/.env)، رفض مجموعة الملفين،
+  ورفض `/api/dr/backup` و`/api/dr/sync` بـ409 بلا رفع. final-audit = **889 فحصاً**.
+
+**درس عام:** لا تُبنَ النسخة من `process.cwd()` بلا إثبات محتواه على بيئة التشغيل. على Docker
+يكون مجلد العمل صورة مصغّرة، فيجب الجمع من مصدر موثوق (Git) + حماية اكتمال صريحة تمنع
+«نسخة سليمة» من شجرة ناقصة.
+
+**ما بقي على المالك (إجراء خارجي لا ينفّذه أي وكيل):**
+1. على Render، تأكد أن خدمة `al-gharabi-ai` إمّا Runtime=Node (لا Docker)، أو أن صورة Docker
+   تنسخ الشجرة الكاملة. بدونه يعمل `collectTrustedSourceTree` عبر Git فقط إن وُجد `.git`،
+   وإلا يُرفض بـ`SOURCE_INCOMPLETE` (وهذا مقصود: لا نسخة ناقصة).
+2. نفّذ `/api/dr/sync` ثم `/api/dr/backup` من جلسة المالك بعد النشر لإصلاح CURRENT (مرآة 243
+   ملفاً) وإنشاء نقطة استعادة كاملة جديدة. لا تُحذف rp-002/rp-003.
+3. شغّل `/api/dr/restore/drill` و`dr.stage4.evidence.ts --real` مع `DRIVE_OAUTH_*` لإثبات
+   الاستعادة الحقيقية من Drive خارج الغرابي.
+
+
+## المزامنة التلقائية + الفحص الساعي + وثائق RECOVERY الموحّدة (2026-10-01)
+
+إكمال دورة CURRENT بلا اعتماد على تفاعل المستخدم، على نفس فرع PR #9.
+
+### 1) مشغّل التغيّر (change-trigger)
+`runReconciliationCycle` في `engine/dr/routes.ts` يقارن **بصمة شجرة المصدر الحالية**
+(عبر `buildMirrorSnapshot`) مع بصمة CURRENT المحفوظة في `control.driveMirror.treeHash`.
+- تطابق ⇒ `no_op` (لا رفع، لا كتابة).
+- اختلاف ⇒ مزامنة CURRENT عبر **نفس** مسار `/api/dr/sync` (`runSync`) بكل بواباته.
+- المصدر ناقص (`complete === false`) ⇒ `source_incomplete` بلا أي تغيير.
+- يُكتشف تغيّر `commit` أيضاً (`commitChanged`) ويُعلن في health. لا نقطة استعادة لكل
+  تعديل ملف: CURRENT يتحدث فقط؛ HISTORY/Recovery Point وفق سياسة النقاط.
+
+### 2) الفحص الساعي (hourly reconciliation)
+مؤقّت داخلي `setInterval(..., 60*60*1000)` يُبدأ في `server.ts` **بعد** `app.listen`
+(لا يعتمد على المتصفح)، ويُخزَّن في `(app as any).drReconciliation`. `.unref()` فلا يمنع
+الإغلاق النظيف. **لا يستدعي Gemini ولا أي AI** (كل شيء حتمي: جمع + بصمة + مزامنة).
+- **منع التزامن**: `reconciliationRunning` يمنع دورة متوازية؛ والمؤقّت يتخطّى الدورة إن
+  كان `backupRunning` (نسخة/مزامنة جارية). `runSync` نفسه محمي بـ`backupRunning`.
+- **idempotency/restart**: نتيجة آخر فحص تُحفظ في `control.driveReconciliation` عبر
+  المحوّل (`loadControl`/`buildControlState`/`applyControlSnapshot`) فتصمد بعد
+  restart/cold start، والفحص التالي على نفس المصدر يعطي `no_op` بلا رفع مكرّر.
+- مسار يدوي للمالك `POST /api/dr/reconcile` (تشخيص) بلا AI.
+
+### 3) الصدق في /api/dr/health
+`changeTrigger` (enabled/detection/lastCommit/currentMirrorCommit/commitChanged)،
+`hourlyReconciliation` (enabled/intervalMinutes/running/scheduled/lastReconciliationAt/
+lastReconciliationResult/lastReconciliationTrigger/lastReconciliationReason/count)،
+`lastReconciliationAt`، `lastReconciliationResult`، و`currentMirror` — كلها بلا أي سرّ.
+
+### 4) وثائق RECOVERY الموحّدة (تُقرأ من Google Drive مباشرة)
+`RECOVERY/START-HERE.md` و`RECOVERY-GUIDE.md` و`RECOVERY-MANIFEST.json` (مصدر واحد في
+`cloud-lib.mjs`: `buildStartHereDoc`/`buildRecoveryGuideDoc`/`buildRecoveryManifestDoc` +
+`writeRecoveryDocs`). تُكتب عند كل نسخة (`backup.mjs`) عبر `store.writeRecoveryDoc/
+writeRecoveryJson`. تشرح: أين CURRENT/HISTORY/القاعدة المشفّرة/الأسرار المشفّرة، كيف نختار
+آخر نقطة سليمة، ترتيب الاستعادة، ما يُستعاد تلقائياً، ما يحتاج المالك، وأن المفتاح الرئيسي
+**لا يُحفظ داخل النسخة**. الأسماء القديمة (`recovery-information.md`/`recovery-instructions.md`/
+`latest-recovery.json`) تبقى للتوافق.
+
+### 5) اختبارات
+`engine/tests/dr/dr.reconciliation.test.ts` (`npm run test:dr-reconciliation`، 48 فحصاً):
+المؤقّت 60 دقيقة، أول تشغيل synced، no-op، تغيّر يُزامَن، مصدر ناقص، قفل التزامن،
+restart/idempotency، وثائق RECOVERY، وحالة health بلا أسرار. `dr.backup.test.ts` صار 104
+(أسماء الوثائق الموحّدة). final-audit = **903 فحصاً**. `npm run lint/build/test` ناجحة.
+
+**لم يُمسّ:** لا رفع إلى Drive، لا rp-004، لا تعديل Render، لا سرّ/مفتاح، لا rp-002/rp-003.
+
+
+## خزنة مفاتيح الطوارئ (Emergency Key Vault) + تشخيص DR OAuth redirect — Batch DR (2026-10-01)
+
+### خزنة مفاتيح الطوارئ `KEY-VAULT/` — إكمال وتوثيق واختبار
+استُكملت خزنة الطوارئ (كانت الكود فقط) ببيئة/توثيق/واجهة/اختبارات:
+- `tools/dr/key-vault-crypto.mjs`: مصدر واحد (`buildVaultRecords`، `encryptKeyVault`،
+  `decryptKeyVault`، `inspectVaultKey`، `decodeVaultKey`). تُفتح بمفتاح **مستقل تماماً**
+  `DR_RECOVERY_VAULT_KEY` (64 hex أو Base64 لـ32 بايت) — لا بالمفتاح الرئيسي.
+- `tools/dr/vault-restore.mjs`: أداة فكّ يدوية عند الكارثة (بلا تشغيل الغرابي): تطبع
+  الأسماء فقط افتراضياً، وتكتب القيم في `--out` بصلاحيات 0600، ولا تطبع أي قيمة سرّية.
+- `engine/dr/recoveryVault/{inventory.ts,vault.ts}`: الجرد schema-based بلا أسرار، والمنطق
+  المُرقّم (HEAD واحد + نسخ `KV-<N>` + `current.enc`) مع كشف «لا تغيير» ببصمة المحتوى،
+  وإصلاح جذر: التنظيف المعلّق يُعاد بلا إنشاء نسخة جديدة ولا `no_change` كاذب.
+- `engine/dr/routes.ts`: مسارات owner (`status`/`sync`/`backup`/`verify`/`drill`)، والنسخة
+  الاحتياطية تُزامن الخزنة تلقائياً (غير قاتلة)، و`/api/health.dr.keyVault` بلا أي سرّ.
+- `.env.example` و`render.yaml` و`scripts/generate-secrets.mjs`: `DR_RECOVERY_VAULT_KEY`
+  (بلا قيمة في Git). الواجهة: قسم «خزنة مفاتيح الطوارئ» في `CloudBackupView`.
+- اختبار: `engine/tests/dr/dr.keyvault.test.ts` (`npm run test:dr-keyvault`، **63 فحصاً**)
+  + فحوص خزنة في `dr.endpoints.test.ts` (70) و`dr.real-drill.test.ts` (34). final-audit
+  صار **929 فحصاً** (`dr-keyvault-*`).
+
+### تشخيص `redirect_uri_mismatch` في إعادة ربط Google Drive (تشخيص فقط، بلا تعديل)
+- قيمة `redirectUri` الفعلية التي ينتجها `/api/dr/drive/auth-url` هي **ثابت صريح**:
+  `https://al-gharabi-ai.onrender.com/api/dr/drive/callback`
+  (`DRIVE_OAUTH_REDIRECT_URI` في `tools/dr/cloud-lib.mjs`) — **لا تُشتق من `APP_URL`**
+  ولا من أي متغيّر بيئة، فلا يوجد أي انحراف بمصدر مختلف.
+- لا شرطة مائلة زائدة، ولا نطاق مختلف: المسار `/api/dr/drive/callback` هو نفسه في
+  التسجيل والتفويض والتبادل (`stateStore.consume` يقارن `redirectUri` بالضبط).
+- `DRIVE_OAUTH_CLIENT_ID` مُضبوط فعلاً في الإنتاج (`oauthClient.clientIdPresent=true`,
+  `effectiveClientIdSource=drive`, صيغة `google_client_id` صحيحة، بلا مسافات، بصمة
+  `7d755d3442b7`) — **لا يُعرض السرّ ولا الرمز**.
+- الوضع الحالي على الإنتاج: `configured=true`, `authorized=true`, `reauthorizationNeeded=false`,
+  `refreshTokenUsable=true`, `nextAction=none` — أي أن الربط **قائم وسليم الآن**، وفحص
+  `/api/dr/drive/callback` بلا `state` يرد **302** إلى `/?dr=error&reason=MISSING_CODE_OR_STATE`
+  (لا 500). فالعطل السابق كان `redirect_uri` مسجّلاً خطأً في Google Cloud Console فقط.
+- **الشرط الخارجي الوحيد المتبقي (لا ينفّذه أي وكيل):** أن يطابق المسجّل في
+  Google Cloud Console → OAuth Client (نفس `client_id` بالبصمة أعلاه) → Authorized redirect
+  URIs القيمة أعلاه **حرفياً**. لو ظهر `redirect_uri_mismatch` مستقبلاً فسببه أن المسجّل
+  هناك مختلف (شرطة مائلة/نطاق/http) وليس الكود.
+
+
+## إغلاق DR: منع الاحتواء الدائري لمفتاح الخزنة + إثبات «فقدان كل المفاتيح» (2026-10-01)
+
+**العطل المُثبت (لا تخمين):** `DR_RECOVERY_VAULT_KEY` — المفتاح الذي **يفتح** خزنة مفاتيح
+الطوارئ — كان **يُخزَّن داخل الخزنة نفسها** لأن `presentInventoryNames()` كانت تُرجعه (فهو
+في الجرد كي يظهر للمالك في واجهة الجرد)، فيشفّره `encryptKeyVault` ضمن الحمولة. أُثبت حياً:
+`buildVaultSnapshot(env).names` كان يحوي `DR_RECOVERY_VAULT_KEY`، و`decryptKeyVault`
+يعيده بين القيم. هذا يخالف توثيق الوحدة صراحةً («المفتاح لا يُحفظ داخل Drive أبداً») ويخلق
+احتواءً دائرياً: من يفتح الخزنة يسترجع مفتاح فتحها، فتنهار قيمة «مفتاح مستقل خارج النظام».
+
+**الإصلاح (مصدر واحد + دفاع مزدوج، بلا أي سرّ):**
+- `engine/dr/recoveryVault/inventory.ts`: ثابت `VAULT_SELF_KEY_ENV`، و`presentInventoryNames`
+  تستبعده فلا يدخل الخزنة (يبقى في الجرد ليُعرض تصنيفه).
+- `tools/dr/key-vault-crypto.mjs`: `buildVaultRecords` و`encryptKeyVault` يُسقطان
+  `VAULT_KEY_ENV` دفاعاً مزدوجاً حتى لو وصل خطأً.
+- تصنيف الاستعادة الجديد `engine/dr/recoveryVault/recoveryReport.ts`
+  (`RESTORABLE`/`REGENERATABLE`/`REQUIRES_OWNER_ACTION`/`NOT_RECOVERABLE`) يوسم مفتاح الخزنة
+  `REQUIRES_OWNER_ACTION` صراحةً، ويعرض ملخّصه في `keyVaultStatus` (`recovery.summary` +
+  `vaultSelfKeyStored`) بلا أي قيمة. **قيمة حرجة مفقودة تُعلن `NOT_RECOVERABLE` لا تُخفى.**
+
+**إثبات «فقدان كل المفاتيح» (All-Keys-Lost Drill):** `engine/tests/dr/dr.lostkeys.test.ts`
+(`npm run test:dr-lostkeys`، 30 فحصاً، مضاف إلى `test:dr`): يبني نسخة + خزنة على Drive وهمي،
+ثم **يُسقط كل مفاتيح بيئة التشغيل** ويُبقي فقط مفتاح الخزنة، ويثبت: فتح الخزنة بالمفتاح
+وحده، رفض المفتاح الخطأ، كشف عبث الحزمة، فكّ `database.enc` و`secrets.enc` بمفاتيح
+**مُستعادة من الخزنة** (لا من بيئة التشغيل)، استخراج المصدر، وإقلاع نسخة معزولة
+(health/readiness/dr). لا يلمس الإنتاج، ولا يطبع أي سرّ.
+
+**سلامة CURRENT ضد الانقطاع (مُتحقّقة ومُختبرة):** `runCurrentMirror` يكتب البيان ثم
+`HEAD.json` (نقطة الالتزام الوحيدة) **قبل** حذف النسخ القديمة؛ فشل الكتابة/البيان/الاعتماد
+يُبقي CURRENT السابقة سليمة، وفشل التنظيف = `cleanupPending` بلا إسقاط الاعتماد. أُضيف
+اختبار تزامن متوازٍ (`dr.mirror.test.ts`) يثبت أن مزامنتين متزامنتين لا تُنتجان اعتماداً
+على بصمة غير صحيحة ولا نسخة بلا بيان (48 فحصاً).
+
+فحوص final-audit الجديدة: `dr-keyvault-no-self-key`، `dr-keyvault-self-key-test`،
+`dr-lostkeys-drill`، `dr-lostkeys-honest-classification`، `dr-lostkeys-no-production`
+(**934 فحصاً** إجمالاً). لم يُمسّ أي سرّ/مفتاح/إعداد Render، ولم يُنفَّذ أي نشر أو دمج PR #9.
+
+
+## حالة إغلاق DR (2026-10-01): تحقق محلي كامل + نقطة توقف على صلاحيات المالك
+
+أُنجزت كل خطوات التحقق الممكنة **محلياً** بنجاح؛ وما تبقّى (دمج/نشر/rp-004 حقيقي/فحص
+الإنتاج) موقوف على صلاحيات غير متوفّرة في بيئة الوكيل — أُعلن صراحةً لا يُدّعى إنجازه.
+
+**بيئة الوكيل (مُثبت):** الإنتاج `bca35d9` يعمل و`/api/health` يرد 200، لكن **لا اعتماد
+Drive/DR في البيئة** (كل `DRIVE_*`/`DR_*`/`DATABASE_URL` غير مضبوطة)، وGitHub API يرد 401،
+و`git push` يطلب كلمة مرور (لا صلاحية كتابة)، ولا أداة نشر/إعادة تشغيل Render. لذا لا يمكن
+إنشاء rp-004 حقيقي ولا دمج PR #9 ولا النشر ولا فحص DR على الإنتاج من هنا.
+
+**ما أُثبت محلياً (كل شيء PASS):**
+- `npm run test:dr` = 18 مجموعة (CORE 51, SOURCE 23, STORE 33, SYNC 38, AUTH 82, DB 17,
+  ROUTES 48, BACKUP 104, SECRETS 34, MIRROR 48, KEY VAULT 70, KEY RELATIONS 35,
+  RECONCILIATION 48, RESTORE 28, ENDPOINTS 70, REAL DRILL 34, LOST-KEYS 30, UI 81).
+- اختبار جديد `dr.keyrelations.test.ts` (**35 فحصاً**): يثبت أن المفاتيح الأربعة
+  (`DR_RECOVERY_VAULT_KEY`/`DR_RECOVERY_MASTER_KEY`/`DRIVE_DB_BACKUP_KEY`/
+  `DRIVE_TOKEN_ENCRYPTION_KEY`) **مستقلة تماماً** (لا مفتاح يفتح عمل آخر)، وأن master/db/token
+  تُستعاد من الخزنة، وأن مفتاح الخزنة لا يُخزَّن داخلها، وأن مفتاح التوكنات يصلح بديلاً
+  لنسخة القاعدة فقط. بلا تغيير أي قيمة إنتاجية.
+- `dr.real-drill.test.ts` (**34 فحصاً**): يستعيد فعلياً من نقطة استعادة إلى **Postgres مدمجة
+  معزولة**، يُقلع نسخة من المصدر المستعاد ويفحص `/api/health` (backend=postgres) و
+  `/api/readiness` (applicationReady) وكتلة `brain`، ويثبت أن المفتاح الخاطئ يفشل بأمان وأن
+  النسخة السليمة تبقى تُفكّ. **هذا إثبات استعادة فعلي في بيئة معزولة.**
+- `dr.stage4.evidence.ts` (15 خطوة) يمرّ بـ0 فشل على Drive **وهمي محلي** (عقد REST نفسه)،
+  ويشمل: مرآة CURRENT فردية، حذف ينعكس في CURRENT ويبقى في HISTORY، «لا تغيير» لا يُنشئ نقطة،
+  دورة استعادة معزولة، كشف عبث، rp-002 سليمة، خطة استعادة «بنقرة» بلا استعادة إنتاجية.
+- `npm test` كامل ✅ (EXIT=0، 72 مجموعة، بلا فشل) · `lint` ✅ · `build` ✅ ·
+  `final-audit` ✅ (**935 فحصاً**) · secret scan على الملفات المتتبَّعة = نظيف (كل المطابقات
+  قيم وهمية في الاختبارات).
+
+**نقطة توقف المالك (لا ينفّذها أي وكيل):** (1) صلاحية كتابة GitHub لدمج PR #9 (الفرع
+`dr/trusted-source-and-incomplete-guard`، head المحلي `29830da`، head المدفوع لـPR=`cc475fd`)
+— لا دمج بلا موافقة صريحة. (2) Render auto-deploy بعد الدفع. (3) من جلسة المالك على الإنتاج:
+`POST /api/dr/backup` لإنشاء **rp-004 الحقيقي**، ثم فحص CURRENT/DATABASE/SECRETS/KEY-VAULT/
+RECOVERY وRecovery Drill المعزول من rp-004. لا حذف/تعديل لـrp-002/rp-003، ولا تغيير أي مفتاح.
+

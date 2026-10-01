@@ -1398,7 +1398,7 @@ add('brain-runtime-tests-honest',
 // عدم قراءة DATABASE_URL، رفض قاعدة البيانات الخام، وحماية الأسرار.
 // ---------------------------------------------------------------------------
 const drDir = path.join(root, 'tools/dr');
-const drFiles = ['cloud-lib.mjs', 'cloud-sync.mjs', 'cloud-status.mjs', 'drive-client.mjs', 'drive-auth.mjs', 'drive-auth-url.mjs', 'drive-store.mjs', 'drive-sync.mjs', 'db-crypto.mjs', 'dump-db.mjs', 'restore-db.mjs', 'backup.mjs'];
+const drFiles = ['cloud-lib.mjs', 'cloud-sync.mjs', 'cloud-status.mjs', 'drive-client.mjs', 'drive-auth.mjs', 'drive-auth-url.mjs', 'drive-store.mjs', 'drive-sync.mjs', 'db-crypto.mjs', 'dump-db.mjs', 'restore-db.mjs', 'backup.mjs', 'key-vault-crypto.mjs', 'vault-restore.mjs'];
 const drTests = ['dr.core.test.ts', 'dr.store.test.ts', 'dr.sync.test.ts', 'dr.auth.test.ts', 'dr.db.test.ts', 'dr.routes.test.ts', 'dr.backup.test.ts'];
 const drSources = drFiles.map((f) => (fs.existsSync(path.join(drDir, f)) ? read(path.join('tools/dr', f)) : ''));
 const drRoutes = fs.existsSync(path.join(root, 'engine/dr/routes.ts')) ? read('engine/dr/routes.ts') : '';
@@ -1457,6 +1457,7 @@ add('dr-ui-test-present', fs.existsSync(path.join(root, 'engine/tests/dr/dr.ui.t
 
 // --- النسخة الاحتياطية الفعلية (رفع حقيقي إلى Drive) ---
 const drBackup = fs.existsSync(path.join(drDir, 'backup.mjs')) ? read('tools/dr/backup.mjs') : '';
+const drCloudLib = fs.existsSync(path.join(drDir, 'cloud-lib.mjs')) ? read('tools/dr/cloud-lib.mjs') : '';
 const drAdapter = read('engine/storage/adapter.ts');
 add('dr-backup-module', fs.existsSync(path.join(drDir, 'backup.mjs')) && drBackup.includes('export async function runBackup') && drBackup.includes('readBackCurrent'), 'وحدة النسخة الاحتياطية الفعلية موجودة (runBackup + تحقق)');
 add('dr-backup-route', drRoutes.includes("'/api/dr/backup'") && drRoutes.includes('runBackup') && drRoutes.includes('deps.requireOwner') && drRoutes.includes('encryptDbDump'), 'مسار POST /api/dr/backup للمالك يمر بالمسار الرسمي وبتشفير DB');
@@ -1518,9 +1519,14 @@ add('dr-secrets-no-plaintext-upload', read('tools/dr/drive-store.mjs').includes(
 add('dr-secrets-manifest-names-only', drSecrets.includes('includedNames') && drSecrets.includes('encryptedSecretsHash') && drSecrets.includes('keyFingerprint'), 'بيان الأسرار يحمل أسماء وبصمات فقط بلا قيم');
 
 add('dr-current-mirror-module', drMirror.includes('export async function runCurrentMirror') && drMirror.includes('treeHash'), 'مرآة CURRENT الفردية موجودة (ملفات بمكانها + treeHash)');
-add('dr-current-mirror-atomic', drMirror.includes('writePendingMirrorManifest') && drMirror.includes('writeMirrorManifest') && drMirror.includes('partial_upload'), 'ترقية CURRENT ذرّية: بيان معلّق ثم تثبيت أخيراً (لا نسخة نصف مكتملة)');
+add('dr-current-mirror-atomic', drMirror.includes('writeVersionManifest') && drMirror.includes('writeMirrorHead') && drMirror.includes('partial_upload'), 'ترقية CURRENT ذرّية: بناء نسخة مستقلة + التحقق ثم اعتماد HEAD أخيراً (لا نسخة نصف مكتملة)');
 add('dr-current-mirror-no-change', drMirror.includes("state: 'no_change'") && drMirror.includes('diffSnapshots'), 'لا إعادة رفع بلا تغيّر (مقارنة لقطة)');
-add('dr-current-mirror-history-safe', drMirror.includes('removeMirrorFile') && !drMirror.includes('history'), 'حذف الملفات من CURRENT فقط ولا يمسّ HISTORY');
+add('dr-current-mirror-history-safe', drMirror.includes('deleteVersionDir') && !drMirror.includes('history'), 'حذف النسخ القديمة من CURRENT فقط ولا يمسّ HISTORY');
+// نموذج النسخة المُرقّمة: نسخ مستقلة + مرجع اعتماد واحد (HEAD.json) + تنظيف لاحق.
+add('dr-current-mirror-versioned', drStore.includes('writeMirrorHead') && drStore.includes('readMirrorHead') && drStore.includes('writeVersionManifest') && drStore.includes('listVersions') && drSources[0].includes('MIRROR_HEAD_NAME'), 'نسخ CURRENT مُرقّمة مستقلة + مرجع اعتماد واحد (HEAD.json)');
+add('dr-current-mirror-head-single-commit', drMirror.indexOf('writeVersionManifest(newVersion') > -1 && drMirror.indexOf('writeVersionManifest(newVersion') < drMirror.indexOf('writeMirrorHead(head)'), 'الاعتماد (HEAD) يجري بعد كتابة البيان والتحقق — نقطة التزام واحدة');
+add('dr-current-mirror-cleanup-pending', drMirror.includes('export async function cleanupOldVersions') && drMirror.includes('cleanupPending') && drMirror.includes('export async function resolveCurrentMirror'), 'التنظيف لاحق لا يُسقط الاعتماد؛ فشله يُعلَن cleanupPending ويُعاد، وCURRENT تُحسم من HEAD');
+add('dr-current-mirror-read-via-head', drStore.includes('readCurrentMirrorManifest') && drStore.includes('listCurrentFiles') && drStore.includes('readCurrentFile'), 'قراءة CURRENT تمرّ من HEAD.json مع رجوع للبنية القديمة للقراءة فقط');
 
 add('dr-restore-engine-module', drRestore.includes('export async function verifyRecoveryPoint') && drRestore.includes('export async function runRecoveryDrill'), 'محرّك الاستعادة موجود (تحقق + اختبار معزول)');
 add('dr-restore-verify-hashes', drRestore.includes('source_hash_mismatch') && drRestore.includes('secrets_hash_mismatch') && drRestore.includes('manifest_missing'), 'الاستعادة تتحقق من كل البصمات وتفشل بأمان عند التلف/النقص');
@@ -1539,6 +1545,75 @@ add('dr-recovery-tests-present', ['dr.secrets.test.ts', 'dr.mirror.test.ts', 'dr
 add('dr-real-drill-isolated', fs.existsSync(path.join(root, 'engine/tests/dr/dr.real-drill.test.ts')) && read('engine/tests/dr/dr.real-drill.test.ts').includes('EmbeddedPostgres') && read('engine/tests/dr/dr.real-drill.test.ts').includes('bootRestoredSource'), 'اختبار تعافٍ حقيقي معزول (PG حقيقية + إقلاع الخادم المستعاد)');
 add('dr-real-drill-no-prod', read('engine/tests/dr/dr.real-drill.test.ts').includes('isolated db differs from production db') && read('engine/tests/dr/dr.real-drill.test.ts').includes('no secret leaked in boot logs'), 'الاختبار المعزول يفصل قاعدة الاستعادة ويؤكّد عدم تسريب الأسرار');
 add('dr-secret-scan-no-self-block', !/engine\/tests\/dr\/dr\.secrets\.test\.ts['"][^\n]*AIzaSy/.test(drSources[0]) && read('engine/tests/dr/dr.secrets.test.ts').includes('dummy test value'), 'قيم الأسرار الوهمية في الاختبار موسومة فلا تُعطّل النسخة الحقيقية');
+
+// --- مصدر DR الموثوق + حماية «المصدر الناقص» (جذر نسخة الملفين على Docker) ---
+const drCloudSync = fs.existsSync(path.join(drDir, 'cloud-sync.mjs')) ? read('tools/dr/cloud-sync.mjs') : '';
+add('dr-source-git-tracked', drCloudSync.includes('export function collectGitTrackedFiles') && drCloudSync.includes("'ls-files'") && drCloudSync.includes('export function collectTrustedSourceTree'), 'مصدر DR يجمع الشجرة المتتبَّعة في Git (لا مجرد مشي على المجلد)');
+add('dr-source-walk-fallback', drCloudSync.includes("source: 'git'") && drCloudSync.includes("source: 'walk'"), 'سقوط صريح إلى المشي على المجلد عند غياب Git مع وسم المصدر');
+add('dr-source-completeness-single-source', drCloudSync.includes('export function assessSourceCompleteness') && drCloudSync.includes('SOURCE_MIN_FILES') && drCloudSync.includes('SOURCE_REQUIRED_FILES'), 'فحص اكتمال المصدر مصدر واحد (حد أدنى + ملفات إلزامية)');
+add('dr-server-uses-trusted-collector', server.includes('collectTrustedSourceTree') && !server.includes('collectRepoFiles(process.cwd())'), 'server.ts يستخدم جامع الشجرة الموثوق (لا مشي مجلد ناقص)');
+add('dr-backup-guards-incomplete', drRoutes.includes('SOURCE_INCOMPLETE') && drRoutes.indexOf('SOURCE_INCOMPLETE') < drRoutes.indexOf('await runBackup('), 'مسار النسخة يرفض المصدر الناقص (SOURCE_INCOMPLETE) قبل أي رفع');
+const drIncompleteGuards = (drRoutes.match(/code: 'SOURCE_INCOMPLETE'/g) || []).length;
+const drSecondIncompleteGuard = drRoutes.indexOf("code: 'SOURCE_INCOMPLETE'", drRoutes.indexOf("code: 'SOURCE_INCOMPLETE'") + 1);
+add('dr-sync-guards-incomplete', drIncompleteGuards >= 2 && drSecondIncompleteGuard > -1 && drSecondIncompleteGuard < drRoutes.lastIndexOf('await runCurrentMirror('), 'مسارا النسخة والمزامنة يرفضان المصدر الناقص (لا نسخة سليمة من شجرة ناقصة)');
+add('dr-health-source-collection', /sourceCollection:\s*sourceCollectionStatus\(\)/.test(drRoutes) && drRoutes.includes('function sourceCollectionStatus'), 'health يعرض حالة جمع المصدر (اكتمال + مصدر + عدد) بلا محتوى');
+add('dr-source-collection-no-secret', !/sourceCollection[\s\S]{0,400}(clientSecret|refreshToken|GOCSPX|masterKey)/.test(drRoutes), 'حالة جمع المصدر لا تحمل أي قيمة سرّية');
+add('dr-source-test-present', fs.existsSync(path.join(root, 'engine/tests/dr/dr.source.test.ts')) && (pkg.scripts['test:dr'] || '').includes('test:dr-source'), 'اختبار مصدر DR الموثوق + حماية النقص مضمّن في test:dr');
+// الفحص الساعي (reconciliation) + مشغّل التغيّر + وثائق RECOVERY الموحّدة.
+add('dr-hourly-reconciliation-single-source', drRoutes.includes('runReconciliationCycle') && drRoutes.includes('startDriveReconciliation') && /RECONCILE_INTERVAL_MS = 60 \* 60 \* 1000/.test(drRoutes), 'الفحص الساعي مصدر واحد بمؤقّت داخلي كل ساعة');
+add('dr-reconciliation-no-op-on-match', drRoutes.includes("outcome = 'no_op'") && /prevMirror\.treeHash === sourceTreeHash/.test(drRoutes), 'التطابق ⇒ no-op بلا رفع (كشف «لا تغيير» قبل المزامنة)');
+add('dr-reconciliation-no-false-no-op-on-pending', /prevMirror\.treeHash === sourceTreeHash && !prevMirror\.cleanupPending/.test(drRoutes) && drRoutes.includes('result.headVersion = sync.body?.headVersion') && drRoutes.includes('result.cleanupPending = sync.body?.cleanupPending'), 'no-op صادق: لا يُعلن «لا تغيير» عند وجود تنظيف معلّق، والرد يحمل نسخة الاعتماد');
+add('dr-reconciliation-incomplete-guard', drRoutes.includes("outcome = 'source_incomplete'"), 'المصدر الناقص ⇒ source_incomplete بلا تغيير');
+add('dr-reconciliation-concurrency-lock', drRoutes.includes('reconciliationRunning') && drRoutes.includes("reason: 'already_running'"), 'قفل يمنع تشغيل دورة متوازية لنفس العملية');
+add('dr-reconciliation-unref', /reconciliationTimer as any\)\.unref/.test(drRoutes), 'المؤقّت .unref() فلا يمنع الإغلاق النظيف/persist');
+add('dr-reconciliation-started-after-listen', /startYouTubeWatcher\(\);[\s\S]{0,400}drReconciliation\?\.start\?\.\(\)/.test(server), 'الخادم يبدأ الفحص الساعي بعد الاستماع (مستقل عن المتصفح)');
+add('dr-reconciliation-health-fields', drRoutes.includes('changeTrigger:') && drRoutes.includes('hourlyReconciliation: reconciliationStatus()') && drRoutes.includes('lastReconciliationAt:') && drRoutes.includes('lastReconciliationResult:'), 'health يعرض changeTrigger/hourlyReconciliation/lastReconciliationAt/lastReconciliationResult');
+add('dr-reconciliation-no-ai', !/reconciliation[\s\S]{0,2000}aiEngine|aiEngine[\s\S]{0,2000}reconciliation/.test(drRoutes), 'الفحص الساعي لا يستدعي Gemini/أي ذكاء اصطناعي');
+add('dr-reconciliation-persisted', server.includes('driveReconciliation: drControl.driveReconciliation') && drRoutes.includes("lastReconciliationResult: result.outcome"), 'نتيجة الفحص تُحفظ وتصمد بعد restart');
+add('dr-recovery-docs-unified-names', drCloudLib.includes('START-HERE.md') && drCloudLib.includes('RECOVERY-GUIDE.md') && drCloudLib.includes('RECOVERY-MANIFEST.json'), 'أسماء وثائق RECOVERY موحّدة: START-HERE/RECOVERY-GUIDE/RECOVERY-MANIFEST');
+add('dr-recovery-docs-written-on-backup', drBackup.includes('writeRecoveryDocs'), 'النسخة تكتب وثائق RECOVERY الموحّدة');
+add('dr-recovery-docs-no-secret', !/START-HERE[\s\S]{0,400}(GOCSPX|refreshToken|masterKey)/.test(drCloudLib), 'وثائق RECOVERY بلا أي قيمة سرّية');
+add('dr-recovery-docs-explains-key-not-stored', drCloudLib.includes('لا يُحفظ داخل النسخة'), 'الوثائق تشرح أن المفتاح الرئيسي لا يُحفظ داخل النسخة');
+add('dr-reconciliation-test-present', fs.existsSync(path.join(root, 'engine/tests/dr/dr.reconciliation.test.ts')) && (pkg.scripts['test:dr'] || '').includes('test:dr-reconciliation'), 'اختبار الفحص الساعي/مشغّل التغيّر/الوثائق مضمّن في test:dr');
+
+// --- خزنة مفاتيح الطوارئ (Emergency Key Vault): تشفير مستقل + نموذج مُرقّم + استعادة يدوية ---
+const drVaultCrypto = fs.existsSync(path.join(drDir, 'key-vault-crypto.mjs')) ? read('tools/dr/key-vault-crypto.mjs') : '';
+const drVaultRestore = fs.existsSync(path.join(drDir, 'vault-restore.mjs')) ? read('tools/dr/vault-restore.mjs') : '';
+const drVaultEngine = fs.existsSync(path.join(root, 'engine/dr/recoveryVault/vault.ts')) ? read('engine/dr/recoveryVault/vault.ts') : '';
+const drVaultInventory = fs.existsSync(path.join(root, 'engine/dr/recoveryVault/inventory.ts')) ? read('engine/dr/recoveryVault/inventory.ts') : '';
+const drVaultTest = fs.existsSync(path.join(root, 'engine/tests/dr/dr.keyvault.test.ts')) ? read('engine/tests/dr/dr.keyvault.test.ts') : '';
+const drVaultRecoveryReport = fs.existsSync(path.join(root, 'engine/dr/recoveryVault/recoveryReport.ts')) ? read('engine/dr/recoveryVault/recoveryReport.ts') : '';
+const drLostKeysTest = fs.existsSync(path.join(root, 'engine/tests/dr/dr.lostkeys.test.ts')) ? read('engine/tests/dr/dr.lostkeys.test.ts') : '';
+add('dr-keyvault-single-source', drVaultCrypto.includes('export function buildVaultRecords') && drVaultCrypto.includes('export function encryptKeyVault') && drVaultCrypto.includes('export function decryptKeyVault') && drVaultCrypto.includes('export function inspectVaultKey'), 'خزنة المفاتيح مصدر واحد (بناء/تشفير/فكّ/فحص المفتاح)');
+add('dr-keyvault-independent-key', drVaultCrypto.includes('VAULT_KEY_ENV') && drVaultCrypto.includes('env[VAULT_KEY_ENV]') && !drVaultCrypto.includes('resolveMasterKey'), 'الخزنة تُفتح بمفتاح مستقل (DR_RECOVERY_VAULT_KEY) لا بالمفتاح الرئيسي');
+add('dr-keyvault-aes-gcm', drVaultCrypto.includes('aes-256-gcm') && drVaultCrypto.includes('scrypt'), 'الخزنة مشفّرة AES-256-GCM بمفتاح مشتقّ scrypt');
+add('dr-keyvault-magic-versioned', drCloudLib.includes('KEY_VAULT_PACKAGE_NAME') && drCloudLib.includes('GHARABI-KEY-VAULT-V1'), 'حزمة الخزنة موسومة بإصدار GHARABI-KEY-VAULT-V1');
+add('dr-keyvault-manifest-names-only', drVaultEngine.includes('vaultContentHash') && drVaultCrypto.includes('fingerprint') && !/records[\s\S]{0,120}\bvalue\s*:/.test(drVaultCrypto.split('export function buildVaultRecords')[1] || ''), 'سجلات الخزنة تحمل أسماء/بصمات بلا أي قيمة سرّية');
+add('dr-keyvault-inventory-schema', drVaultInventory.includes('RECOVERY_SECRET_INVENTORY') && drVaultInventory.includes('presentInventoryNames') && drVaultInventory.includes('criticalInventoryNames'), 'جرد الأسرار مبني على schema ثابت بلا اختراع أسماء');
+add('dr-keyvault-no-unrelated-secret', drVaultInventory.includes('RECOVERY_SECRET_INVENTORY') && !/SOME_UNRELATED|Math\.random|Object\.keys\(process\.env\)/.test(drVaultInventory), 'الخزنة لا تشمل أي اسم خارج الجرد المعتمد');
+add('dr-keyvault-versioned-head', drVaultEngine.includes('resolveCurrentKeyVault') && drVaultEngine.includes('buildKeyVaultHead') && drCloudLib.includes('KEY_VAULT_HEAD_NAME'), 'الخزنة بنموذج مُرقّم بمرجع اعتماد واحد (HEAD)');
+add('dr-keyvault-no-change', drVaultEngine.includes("state: 'no_change'") && drVaultEngine.includes('vaultContentHash'), 'لا نسخة جديدة عند عدم تغيّر بصمة المحتوى');
+add('dr-keyvault-commit-after-verify', drVaultEngine.includes('verify_hash_mismatch') && drVaultEngine.indexOf('verify_hash_mismatch') < drVaultEngine.indexOf('writeKeyVaultHead(head)'), 'لا اعتماد (HEAD) قبل التحقق الفعلي من الحزمة المرفوعة');
+add('dr-keyvault-cleanup-pending', drVaultEngine.includes('cleanupPending') && drVaultEngine.includes('cleanupOldKeyVaultVersions'), 'فشل التنظيف = cleanupPending بلا إسقاط الاعتماد');
+add('dr-keyvault-recover-readonly', drVaultEngine.includes('export async function recoverKeyVault') && drRoutes.includes('wroteToProduction: false') && drRoutes.includes('/api/dr/key-vault/drill'), 'استعادة الخزنة قراءة فقط (لا كتابة إنتاجية)');
+add('dr-keyvault-restore-cli', drVaultRestore.includes('decryptKeyVault') && drVaultRestore.includes('0600') && !/console\.log\([^)]*values/.test(drVaultRestore), 'أداة فكّ يدوية (vault-restore) بلا طباعة أي قيمة سرّية وملف بإذن 0600');
+add('dr-keyvault-routes', drRoutes.includes('/api/dr/key-vault/status') && drRoutes.includes('/api/dr/key-vault/sync') && drRoutes.includes('/api/dr/key-vault/verify') && drRoutes.includes('/api/dr/key-vault/drill'), 'مسارات الخزنة (حالة/مزامنة/فحص/اختبار) مسجّلة');
+add('dr-keyvault-owner-only', /'\/api\/dr\/key-vault\/sync'[\s\S]{0,120}requireOwner/.test(drRoutes) && /'\/api\/dr\/key-vault\/backup'[\s\S]{0,120}requireOwner/.test(drRoutes), 'عمليات الكتابة على الخزنة للمالك فقط');
+add('dr-keyvault-backup-autosync', drRoutes.includes('runKeyVaultSync') && /keyVault[\s\S]{0,40}(state|error)/.test(drRoutes), 'النسخة الاحتياطية تُزامن الخزنة تلقائياً وتُعلن النتيجة');
+add('dr-keyvault-health-no-secret', /keyVault:\s*\{[\s\S]{0,600}inventoryCount/.test(drRoutes) && !/keyVault[\s\S]{0,600}(clientSecret|refreshToken|GOCSPX|AIzaSy)/.test(drRoutes), 'health يعرض كتلة الخزنة بلا أي قيمة سرّية');
+add('dr-keyvault-env-documented', read('.env.example').includes('DR_RECOVERY_VAULT_KEY') && read('render.yaml').includes('DR_RECOVERY_VAULT_KEY'), 'DR_RECOVERY_VAULT_KEY موثّق في .env.example وrender.yaml (بلا قيمة)');
+add('dr-keyvault-ui', cloudView.includes('خزنة مفاتيح الطوارئ') && cloudView.includes('apiService.syncDrKeyVault') && cloudView.includes('apiService.getDrKeyVaultStatus'), 'واجهة خزنة المفاتيح موجودة وتستدعي الخادم الفعلي');
+add('dr-keyvault-ui-no-values', !/keyVault[^\n]{0,80}\.value\b/.test(cloudView), 'واجهة الخزنة لا تعرض أي قيمة سرّية');
+add('dr-keyvault-tests', drVaultTest.includes('decrypt fails with wrong key') && drVaultTest.includes('tampered package detected') && drVaultTest.includes('cleanup retried and clears pending') && (pkg.scripts['test:dr'] || '').includes('test:dr-keyvault'), 'اختبار الخزنة يغطّي المفتاح الخاطئ/العبث/التنظيف ومضمّن في test:dr');
+// منع الاحتواء الدائري: مفتاح فتح الخزنة لا يُدرج داخل الخزنة أبداً.
+add('dr-keyvault-no-self-key', drVaultInventory.includes('VAULT_SELF_KEY_ENV') && /presentInventoryNames[\s\S]{0,220}VAULT_SELF_KEY_ENV/.test(drVaultInventory) && /buildVaultRecords[\s\S]{0,260}name !== VAULT_KEY_ENV/.test(drVaultCrypto), 'مفتاح فتح الخزنة مستبعد من الخزنة (لا احتواء دائري) في الجرد والمشفّر');
+add('dr-keyvault-self-key-test', drVaultTest.includes('present excludes vault self key') && drVaultTest.includes('decrypted values exclude vault self key') && drVaultTest.includes('encryptKeyVault never stores vault key'), 'اختبار يثبت أن مفتاح الخزنة لا يدخل الخزنة');
+add('dr-lostkeys-drill', drLostKeysTest.includes('vault opens with owner key alone') && drLostKeysTest.includes('database decrypts with vault-recovered key') && drLostKeysTest.includes('secrets decrypt with vault-recovered master key') && drLostKeysTest.includes('isolated restored app boots') && (pkg.scripts['test:dr'] || '').includes('test:dr-lostkeys'), 'اختبار فقدان كل المفاتيح: فتح الخزنة والاستعادة والإقلاع المعزول ومضمّن في test:dr');
+add('dr-lostkeys-honest-classification', drLostKeysTest.includes('missing critical key => NOT_RECOVERABLE') && drVaultRecoveryReport.includes('NOT_RECOVERABLE') && drVaultRecoveryReport.includes('REQUIRES_OWNER_ACTION'), 'تصنيف الاستعادة صادق: قيمة حرجة مفقودة تُعلن NOT_RECOVERABLE لا تُخفى');
+add('dr-lostkeys-no-production', !drLostKeysTest.includes('restore/production') && !drLostKeysTest.includes('runProductionRestore') && drLostKeysTest.includes('fakeDrive'), 'اختبار فقدان المفاتيح لا ينفّذ أي استعادة إنتاجية (معزول بالكامل)');
+// علاقة المفاتيح الأربعة: استقلال كامل + استعادة master/db/token من الخزنة دون مفتاح الخزنة.
+const drKeyRelTest = fs.existsSync(path.join(root, 'engine/tests/dr/dr.keyrelations.test.ts')) ? read('engine/tests/dr/dr.keyrelations.test.ts') : '';
+add('dr-keyrelations-test', drKeyRelTest.includes('secrets NOT decryptable with vault key') && drKeyRelTest.includes('vault restores master key') && drKeyRelTest.includes('vault does NOT store its own key') && (pkg.scripts['test:dr'] || '').includes('test:dr-keyrelations'), 'اختبار علاقة المفاتيح الأربعة (استقلال + استعادة من الخزنة) مضمّن في test:dr');
 
 const failed = checks.filter(x => !x.ok);
 console.table(checks);

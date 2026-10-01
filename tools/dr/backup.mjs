@@ -40,6 +40,7 @@ import {
   SECRETS_PACKAGE_NAME,
   RECOVERY_INFO_NAME,
   RECOVERY_INSTRUCTIONS_NAME,
+  writeRecoveryDocs,
   SOURCE_BUNDLE_VERSION,
   BACKUP_VERSION,
 } from './cloud-lib.mjs';
@@ -226,6 +227,12 @@ async function runBackupInner({ store, files, dumpDatabase, encryptDatabase, met
   const existingIds = points.ok ? points.data.map((p) => p.id) : [];
   const recoveryPointId = nextRecoveryPointId(existingIds);
   const manifest = buildBackupManifest({ ...candidateManifest, recoveryPointId, previousRecoveryPointId: previousManifest?.recoveryPointId ?? null });
+  // CURRENT المُعتمدة (نسخة المرآة الفردية) من مرجع الاعتماد HEAD.json وحده (قراءة فقط).
+  let currentMirror = null;
+  try {
+    const headRes = await store.readMirrorHead();
+    if (headRes.ok && headRes.data && Number.isFinite(headRes.data.version)) currentMirror = headRes.data;
+  } catch { /* لا مرجع اعتماد بعد: نكمل بلا ادّعاء */ }
   const recoveryManifest = {
     kind: 'recovery-point',
     id: recoveryPointId,
@@ -244,6 +251,9 @@ async function runBackupInner({ store, files, dumpDatabase, encryptDatabase, met
     encryptedDatabaseSize: manifest.encryptedDatabaseSize,
     bundleVersion: manifest.bundleVersion,
     backupVersion: manifest.backupVersion,
+    currentMirrorVersion: currentMirror?.version ?? null,
+    currentMirrorTreeHash: currentMirror?.treeHash ?? null,
+    currentMirrorSource: 'HEAD.json',
     note: meta.note ?? null,
   };
 
@@ -330,6 +340,32 @@ async function runBackupInner({ store, files, dumpDatabase, encryptDatabase, met
       await store.writeRecoveryDoc(RECOVERY_INFO_NAME, buildRecoveryInformation({ repository: meta.repository, createdAt: now }));
       await store.writeRecoveryDoc(RECOVERY_INSTRUCTIONS_NAME, buildRecoveryInstructions({ latestRecoveryPointId: recoveryPointId }));
     }
+    // الأسماء الموحّدة المطلوبة (تُقرأ مباشرة من Google Drive): START-HERE / RECOVERY-GUIDE / RECOVERY-MANIFEST.
+    try {
+      const pointsRes = await store.listRestorePoints();
+      const points = pointsRes?.ok ? pointsRes.data : [];
+      // خزنة الطوارئ (أفضل جهد): إن كانت مُزامنة، تشير الوثيقة إلى نسختها المعتمدة.
+      let vaultHead = null;
+      try { const vh = await store.readKeyVaultHead(); if (vh?.ok) vaultHead = vh.data; } catch { /* تجاهل */ }
+      await writeRecoveryDocs(store, {
+        repository: meta.repository,
+        project: meta.project,
+        commit: meta.commit ?? null,
+        runtimeVersion: meta.runtimeVersion ?? null,
+        createdAt: now,
+        latestRecoveryPointId: recoveryPointId,
+        recoveryPoints: points,
+        fileCount: manifest.fileCount,
+        treeHash,
+        sourceHash,
+        databaseHash,
+        secretsHash: encryptedSecretsHash,
+        currentMirrorVersion: currentMirror?.version ?? null,
+        currentMirrorTreeHash: currentMirror?.treeHash ?? null,
+        keyVaultVersion: vaultHead?.version ?? null,
+        keyVaultHash: vaultHead?.encryptedVaultHash ?? null,
+      });
+    } catch { /* أفضل جهد */ }
   } catch { /* وثائق التعافي أفضل جهد: لا تُسقط نسخة مكتملة ومتحقّقة */ }
 
   // 9) نسخة DB في db/ (مستقلة) + حزمة الأسرار في secrets/ (مستقلة).

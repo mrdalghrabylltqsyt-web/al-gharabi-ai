@@ -118,17 +118,23 @@ export const CloudBackupView: React.FC = () => {
   const [drillReport, setDrillReport] = useState<any>(null);
   const [selectedPoint, setSelectedPoint] = useState<string>('');
   const [restorePlan, setRestorePlan] = useState<any>(null);
+  // خزنة مفاتيح الطوارئ (Emergency Key Vault)
+  const [keyVault, setKeyVault] = useState<any>(null);
+  const [keyVaultInventory, setKeyVaultInventory] = useState<any[]>([]);
+  const [vaultBusy, setVaultBusy] = useState(false);
+  const [vaultResult, setVaultResult] = useState<any>(null);
 
   const load = useCallback(async () => {
     if (!isOwner) return;
     setLoading(true);
     try {
       // الصحة عامة؛ الحالة محمية بالمالك. نعالج كل فشل صراحةً بدل ابتلاعه.
-      const [healthRes, statusRes, pointsRes, secretsRes] = await Promise.allSettled([
+      const [healthRes, statusRes, pointsRes, secretsRes, vaultRes] = await Promise.allSettled([
         apiService.getDrHealth(),
         apiService.getDrStatus(),
         apiService.getDrRecoveryPoints(),
         apiService.getDrSecretsStatus(),
+        apiService.getDrKeyVaultStatus(),
       ]);
 
       if (healthRes.status === 'fulfilled') setHealth(healthRes.value?.dr || null);
@@ -138,6 +144,10 @@ export const CloudBackupView: React.FC = () => {
         setMirror(pointsRes.value?.mirror ?? null);
       }
       if (secretsRes.status === 'fulfilled') setSecretsStatus(secretsRes.value ?? null);
+      if (vaultRes.status === 'fulfilled') {
+        setKeyVault(vaultRes.value?.keyVault ?? null);
+        setKeyVaultInventory(Array.isArray(vaultRes.value?.inventory) ? vaultRes.value.inventory : []);
+      }
 
       const update = resolveDrStatusUpdate(statusRes, new Date().toISOString());
       if (update.ok) {
@@ -270,6 +280,28 @@ export const CloudBackupView: React.FC = () => {
       } else {
         showToast(e?.message || 'تعذّر بدء الاستعادة الإنتاجية');
       }
+    }
+  };
+
+  // خزنة مفاتيح الطوارئ: كل زر يستدعي الخادم الفعلي ويعرض نتيجته فقط (بلا قيم سرّية).
+  const runVault = async (action: 'sync' | 'backup' | 'verify' | 'drill') => {
+    if (vaultBusy) return;
+    setVaultBusy(true);
+    setVaultResult(null);
+    try {
+      const fn = action === 'sync' ? apiService.syncDrKeyVault
+        : action === 'backup' ? apiService.backupDrKeyVault
+        : action === 'verify' ? apiService.verifyDrKeyVault
+        : apiService.drillDrKeyVault;
+      const data = await fn();
+      setVaultResult({ action, ok: true, data });
+      showToast(action === 'verify' || action === 'drill' ? 'نجح فحص/استعادة خزنة المفاتيح' : 'تمت مزامنة خزنة المفاتيح');
+      await load();
+    } catch (e: any) {
+      setVaultResult({ action, ok: false, message: e?.message || 'فشل تنفيذ العملية', code: e?.code });
+      showToast(e?.message || 'فشل تنفيذ العملية على خزنة المفاتيح');
+    } finally {
+      setVaultBusy(false);
     }
   };
 
@@ -565,7 +597,52 @@ export const CloudBackupView: React.FC = () => {
         </section>
       )}
 
-      <p className="text-[10px] text-slate-500 text-center">لا تُعرض هنا أي أسرار: لا state ولا authorization code ولا refresh token. رمز التجديد يبقى مشفّراً على الخادم فقط.</p>
+      {/* خزنة مفاتيح الطوارئ (Emergency Key Vault) — بلا أي قيمة سرّية معروضة */}
+      <section className="p-5 rounded-2xl bg-slate-900 border border-emerald-500/30">
+        <h3 className="font-bold text-white flex items-center gap-2 mb-4"><ShieldCheck className="w-4 h-4 text-emerald-400" /> خزنة مفاتيح الطوارئ (KEY-VAULT)</h3>
+        <p className="text-[11px] text-slate-400 mb-4 leading-relaxed">
+          نسخة مُرقّمة مستقلّة من مفاتيح الاستعادة الأساسية، مشفّرة AES-256-GCM، تُفتح بمفتاح
+          مستقل (<span className="font-mono text-slate-300">DR_RECOVERY_VAULT_KEY</span>) لا يوجد داخل Google Drive.
+          لا تُعرض أي قيمة سرّية هنا — أسماء وحالات وبصمات فقط.
+        </p>
+        <div className="grid md:grid-cols-4 gap-2 text-xs mb-4">
+          <div className="p-3 rounded-xl bg-slate-950/60 border border-slate-800 flex justify-between"><span className="text-slate-400">مفتاح الخزنة</span><span className={keyVault?.vaultKey?.state === 'valid' ? 'text-emerald-400' : 'text-amber-400'}>{keyVault?.vaultKey?.state === 'valid' ? 'صالح' : (keyVault?.vaultKey?.state === 'invalid' ? 'مضبوط لكن غير صالح' : 'غير مضبوط')}</span></div>
+          <div className="p-3 rounded-xl bg-slate-950/60 border border-slate-800 flex justify-between"><span className="text-slate-400">الإصدار المعتمد</span><span className="text-slate-300">{keyVault?.state === 'present' ? `KV-${keyVault.version}` : 'لا يوجد'}</span></div>
+          <div className="p-3 rounded-xl bg-slate-950/60 border border-slate-800 flex justify-between"><span className="text-slate-400">عدد السجلات</span><span className="text-slate-300">{keyVault?.recordCount ?? '—'}</span></div>
+          <div className="p-3 rounded-xl bg-slate-950/60 border border-slate-800 flex justify-between"><span className="text-slate-400">قابلة للفكّ بالمفتاح</span><span className={keyVault?.canDecrypt ? 'text-emerald-400' : 'text-amber-400'}>{keyVault?.canDecrypt ? 'نعم' : 'لا'}</span></div>
+        </div>
+        {keyVault?.cleanupPending && (
+          <p className="text-[10px] text-amber-300 mb-3">تنظيف معلّق: {(keyVault.pendingCleanup || []).length} نسخة قديمة — يُعاد تلقائياً بلا إسقاط الاعتماد.</p>
+        )}
+        <div className="flex gap-2 flex-wrap mb-4">
+          <button onClick={() => void runVault('sync')} disabled={vaultBusy} className="px-3 py-1.5 rounded-lg bg-sky-500/20 border border-sky-500/40 text-[11px] font-bold text-sky-100 disabled:opacity-60">مزامنة الخزنة</button>
+          <button onClick={() => void runVault('backup')} disabled={vaultBusy} className="px-3 py-1.5 rounded-lg bg-emerald-500/20 border border-emerald-500/40 text-[11px] font-bold text-emerald-100 disabled:opacity-60">إنشاء نسخة طوارئ</button>
+          <button onClick={() => void runVault('verify')} disabled={vaultBusy} className="px-3 py-1.5 rounded-lg bg-violet-500/20 border border-violet-500/40 text-[11px] font-bold text-violet-100 disabled:opacity-60">فحص الخزنة</button>
+          <button onClick={() => void runVault('drill')} disabled={vaultBusy} className="px-3 py-1.5 rounded-lg bg-amber-500/20 border border-amber-500/40 text-[11px] font-bold text-amber-100 disabled:opacity-60">اختبار استعادة الخزنة</button>
+        </div>
+        {vaultResult && (
+          <div className={`p-3 rounded-xl mb-4 text-[11px] ${vaultResult.ok ? 'bg-emerald-500/10 border border-emerald-500/30 text-emerald-100' : 'bg-rose-500/10 border border-rose-500/30 text-rose-100'}`}>
+            {vaultResult.ok
+              ? (vaultResult.data?.message || (vaultResult.data?.verified ? 'الخزنة تُفكّ وتكاملها سليم.' : 'تمت العملية بنجاح.'))
+              : (vaultResult.message || 'فشلت العملية.')}
+          </div>
+        )}
+        {keyVaultInventory.length > 0 && (
+          <details className="mt-2">
+            <summary className="text-[11px] text-slate-400 cursor-pointer">الجرد المعتمد للأسرار ({keyVaultInventory.length}) — أسماء وحالات فقط</summary>
+            <div className="mt-3 grid md:grid-cols-2 gap-2">
+              {keyVaultInventory.map((e: any) => (
+                <div key={e.name} className="p-2 rounded-lg bg-slate-950/60 border border-slate-800 flex justify-between gap-2 text-[10px]">
+                  <span className="font-mono text-slate-300 truncate" title={e.name}>{e.name}</span>
+                  <span className={e.recoveryCritical ? 'text-rose-300' : 'text-slate-500'}>{e.recoveryCritical ? 'حرج' : 'ثانوي'} • {e.service}</span>
+                </div>
+              ))}
+            </div>
+          </details>
+        )}
+      </section>
+
+      <p className="text-[10px] text-slate-500 text-center">لا تُعرض هنا أي أسرار: لا state ولا authorization code ولا refresh token ولا أي قيمة مفتاح. رمز التجديد ومفاتيح الخزنة تبقى مشفّرة على الخادم فقط.</p>
     </div>
   );
 };
