@@ -277,9 +277,11 @@ function classifyTokenError(err) {
   const data = err?.response?.data || {};
   const error = data.error || err?.code || '';
   const status = Number(err?.response?.status ?? err?.status ?? 0);
-  if (String(error) === 'invalid_grant') return { ok: false, code: 'invalid_grant', status, message: 'رمز التجديد مرفوض (invalid_grant): يلزم تفويض جديد.' };
-  if (String(error) === 'invalid_client') return { ok: false, code: 'invalid_client', status, message: 'بيانات اعتماد Google Drive غير متطابقة مع التفويض الحالي.' };
-  if (status === 401) return { ok: false, code: 'token_refresh_unauthorized', status, message: 'رفض Google طلب التجديد (401).' };
+  const providerCode = String(error || '').slice(0, 60) || null;
+  if (String(error) === 'invalid_grant') return { ok: false, code: 'invalid_grant', status, providerCode, message: 'رمز التجديد مرفوض (invalid_grant): يلزم تفويض جديد.' };
+  if (String(error) === 'invalid_client') return { ok: false, code: 'invalid_client', status, providerCode, message: 'بيانات اعتماد Google Drive غير متطابقة مع التفويض الحالي.' };
+  if (String(error) === 'invalid_request') return { ok: false, code: 'invalid_request', status, providerCode, message: 'طلب تجديد غير سليم لدى Google (invalid_request).' };
+  if (status === 401) return { ok: false, code: 'token_refresh_unauthorized', status, providerCode, message: `رفض Google طلب التجديد (401${providerCode ? ` — ${providerCode}` : ''}).` };
   if (status >= 500) return { ok: false, code: 'server_error', status, message: 'عطل مؤقت لدى Google.' };
   if (!status) return { ok: false, code: 'network_error', status: 0, message: 'تعذّر الوصول إلى Google.' };
   return { ok: false, code: 'token_refresh_other_error', status, message: 'فشل تبادل/تجديد الرمز.' };
@@ -321,7 +323,16 @@ export async function diagnoseDriveRefreshToken(options = {}) {
   if (refreshed.ok && refreshed.accessToken) {
     return { stored: true, decryptable, providerRefresh: 'ok', reason: 'token_refresh_ok', message: 'جلب Google رمز وصول بنجاح.' };
   }
-  return { stored: true, decryptable, providerRefresh: 'failed', reason: refreshed.code || 'token_refresh_other_error', message: refreshed.message || 'فشل تجديد الرمز.' };
+  return {
+    stored: true,
+    decryptable,
+    providerRefresh: 'failed',
+    reason: refreshed.code || 'token_refresh_other_error',
+    // كود المزوّد ورمز HTTP (بلا أي قيمة سرّية) لتحديد السبب الدقيق بلا تخمين.
+    providerCode: refreshed.providerCode ?? null,
+    httpStatus: refreshed.status ?? null,
+    message: refreshed.message || 'فشل تجديد الرمز.',
+  };
 }
 
 /** يبادل authorization code برموز (offline => refresh_token). لا يخزّن شيئاً. */

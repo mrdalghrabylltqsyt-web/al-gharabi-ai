@@ -483,6 +483,8 @@ export function registerDriveRoutes(app: express.Express, deps: DriveRoutesDeps)
           decryptable: refreshTokenDiagnostic.decryptable,
           providerRefresh: refreshTokenDiagnostic.providerRefresh,
           reason: refreshTokenDiagnostic.reason,
+          providerCode: refreshTokenDiagnostic.providerCode ?? null,
+          httpStatus: refreshTokenDiagnostic.httpStatus ?? null,
         },
         // اعتماد OAuth Client: وجود/طول/صيغة/بصمة آمنة + هل كانت مسافة زائدة (بلا أي قيمة).
         oauthClient: inspectDriveOAuthClient(env as Record<string, string | undefined>),
