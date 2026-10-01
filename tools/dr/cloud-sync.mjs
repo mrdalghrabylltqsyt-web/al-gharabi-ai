@@ -24,6 +24,7 @@ import { DriveClient, createGaxiosTransport } from './drive-client.mjs';
 import { DriveStore } from './drive-store.mjs';
 import { DriveSync } from './drive-sync.mjs';
 import { createRefreshTokenProvider, inspectDriveAuthEnv } from './drive-auth.mjs';
+import { readTrustedSourceBundle } from './source-bundle.mjs';
 
 const REPO_ROOT = process.cwd();
 const MAX_FILE_BYTES = 8 * 1024 * 1024; // تجاهل الملفات الضخمة جداً من النسخة
@@ -100,14 +101,62 @@ export function assessSourceCompleteness(files, options = {}) {
  * المشي على المجلد شجرة ناقصة. الشجرة المتتبَّعة تمثّل المشروع المعتمد فعلاً.
  */
 export function collectTrustedSourceTree(rootDir = REPO_ROOT, options = {}) {
+  const env = options.env || process.env;
+
+  // 1) الشجرة المتتبَّعة في Git — المصدر الحي في التطوير/CI (إن كانت **كاملة**).
   const git = collectGitTrackedFiles(rootDir);
   if (git.ok && git.files.length) {
     const assessment = assessSourceCompleteness(git.files, options);
-    return { included: git.files, excluded: [], source: 'git', gitAvailable: true, ...assessment };
+    if (assessment.complete) {
+      return { included: git.files, excluded: [], source: 'git', gitAvailable: true, ...assessment };
+    }
+    // Git موجود لكن الشجرة ناقصة ⇒ نجرّب الحزمة قبل الرفض (لا رفض فوري).
   }
+
+  // 2) حزمة المصدر الموثوقة المُجمَّعة زمن البناء — المصدر المعتمد في بيئة الإنتاج
+  //    التي لا تحوي `.git` (صورة Docker). الشجرة كاملة + مرتبطة بالـcommit المبنيّ.
+  const bundle = readTrustedSourceBundle({ env, rootDir });
+  if (bundle.ok) {
+    const assessment = assessSourceCompleteness(bundle.included, options);
+    const bound = bindBundleCommit(bundle, env, options);
+    return {
+      included: bundle.included,
+      excluded: [],
+      source: 'bundle',
+      gitAvailable: Boolean(git.ok && git.files.length),
+      bundle: {
+        dir: bundle.bundleDir,
+        bundleSource: bundle.bundleSource,
+        commit: bundle.commit,
+        treeHash: bundle.treeHash,
+        manifestTreeHash: bundle.manifestTreeHash,
+        treeMatchesManifest: bundle.treeMatches,
+        boundToCommit: bound.bound,
+        commitBinding: bound.reason,
+      },
+      ...assessment,
+    };
+  }
+
+  // 3) المشي على نظام الملفات — آخر خيار (بيئة بلا Git وبلا حزمة). يُرفض إن كان ناقصاً.
   const { included, excluded } = collectRepoFiles(rootDir, options);
   const assessment = assessSourceCompleteness(included, options);
-  return { included, excluded, source: 'walk', gitAvailable: false, gitError: git.error ?? null, ...assessment };
+  return { included, excluded, source: 'walk', gitAvailable: false, gitError: git.error ?? null, bundleError: bundle.code ?? null, ...assessment };
+}
+
+/**
+ * يربط حزمة المصدر بالـcommit المُعلن في البيئة (RENDER_GIT_COMMIT/GIT_COMMIT).
+ * لا ادّعاء commit لا يُثبت محتواه: عند وجود commit مُعلن يختلف عن commit الحزمة
+ * يُعلَن عدم التطابق صراحةً (فيراه الـcollector والـhealth) — بلا تعديل الشجرة.
+ */
+export function bindBundleCommit(bundle, env = process.env, options = {}) {
+  const declared = String(env?.RENDER_GIT_COMMIT || env?.GIT_COMMIT || '').trim().toLowerCase();
+  const bundleCommit = String(bundle?.commit || '').trim().toLowerCase();
+  if (!declared) return { bound: null, reason: 'no_declared_commit' };
+  if (!bundleCommit) return { bound: false, reason: 'bundle_commit_missing' };
+  if (declared === bundleCommit) return { bound: true, reason: 'commit_matches' };
+  // داخل الصورة قد يُبنى التطبيق من commit أحدث/أقدم قليلاً؛ نُعلن الفرق بدقة.
+  return { bound: false, reason: `commit_mismatch:${bundleCommit.slice(0, 7)}!=${declared.slice(0, 7)}` };
 }
 
 /**

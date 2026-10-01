@@ -2,14 +2,11 @@ node_modules
 dist
 build
 coverage
-.git
-.gitignore
 *.log
 .env*
 !.env.example
-tools/local-verification
+tools/local-verification/node_modules
 .gharabi-*.json
 .gharabi-backups
 .gharabi-preview.env
 .gharabi-*.local.env
-docs

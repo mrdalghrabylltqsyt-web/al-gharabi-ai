@@ -3064,3 +3064,45 @@ Drive/DR في البيئة** (كل `DRIVE_*`/`DR_*`/`DATABASE_URL` غير مضب
 `POST /api/dr/backup` لإنشاء **rp-004 الحقيقي**، ثم فحص CURRENT/DATABASE/SECRETS/KEY-VAULT/
 RECOVERY وRecovery Drill المعزول من rp-004. لا حذف/تعديل لـrp-002/rp-003، ولا تغيير أي مفتاح.
 
+## إغلاق فجوة SOURCE_INCOMPLETE في الإنتاج — حزمة مصدر موثوقة زمن البناء (2026-10-01)
+
+**الجذر المُثبت:** صورة الإنتاج (Docker) النهائية تحوي `dist/` و`package.json` فقط — بلا
+`.git` وبلا `server.ts` (وسيط متعدد المراحل ينسخ `dist` فقط). فجمع المصدر وقت التشغيل
+يسقط إلى مشي نظام الملفات فيجد ملفين، ويرفضه حرس `SOURCE_INCOMPLETE`
+(`missingRequired=['server.ts']`) فيمنع `POST /api/dr/backup` (rp-004). الإصلاح لا يعطّل
+الحرس إطلاقاً، بل يُغذّيه بشجرة مصدر **موثوقة كاملة**.
+
+**الوحدة الجديدة `tools/dr/source-bundle.mjs` (منطق صافٍ قابل للاختبار):**
+- `buildTrustedSourceBundle` يبني `tar.gz` حتمياً من **الشجرة المتتبَّعة في Git**
+  (`git ls-files -z`) — لا `dist`/`node_modules`/`.env`/`.git`، مع احتياطي مشي الشجرة
+  عند غياب git زمن البناء. **بوابة أسرار صارمة fail-closed** (`scanForSecretsStrict`):
+  لا تُشحن حزمة تحمل سرّاً حقيقياً الشكل.
+- حتمية: mtime ثابت (epoch 0) + gzip مستوى ثابت ⇒ نفس الشجرة = نفس `treeHash` ونفس
+  الأرشيف بالبايت.
+- ربط بالـcommit: يُسجَّل `commit` من `git rev-parse HEAD`، و`bindBundleCommit` يقارنه
+  بـ`RENDER_GIT_COMMIT` ويُعلن التطابق/الاختلاف صراحةً (لا ادّعاء commit).
+- `readTrustedSourceBundle` يفكّ إلى ذاكرة فقط ويتحقق من `treeHash` مقابل البيان.
+
+**الـcollector (`tools/dr/cloud-sync.mjs`) — بترتيب أسبقية بلا تعطيل الحرس:**
+`git` (إن كانت الشجرة **كاملة**) ثم **`bundle`** (بيئة الإنتاج بلا `.git`) ثم `walk` (آخر
+خيار، يُرفض إن كان ناقصاً). `assessSourceCompleteness` تُطبَّق على الحزمة أيضاً، فالحرس
+`SOURCE_INCOMPLETE` باقٍ كما هو.
+
+**البناء والنشر:** `npm run build` صار `vite build` ثم `node tools/dr/source-bundle.mjs
+dist/dr-source` ثم `esbuild`، فتُشحن الحزمة داخل `dist/dr-source` وتنسخها الصورة مع `dist`.
+`.dockerignore` لم يعد يستبعد `.git` (ليبني الـcommit)، و`git` يُثبَّت في **مرحلة البناء
+فقط** (`node:20-slim` لا يحوي git)، فالصورة النهائية بلا git وبلا مصدر — فقط الحزمة + `dist`.
+
+**إثبات حي (صورة فعلية):** بناء الصورة ثم تشغيل `dist/server.cjs` داخلها أعطى
+`/api/dr/health.dr.sourceCollection = { complete:true, source:'bundle', fileCount:253,
+missingRequired:[], bundle:{ commit:'05c18e9…', treeMatchesManifest:true } }`. أي أن
+`SOURCE_INCOMPLETE` اختفى **بشجرة كاملة**، بلا تعطيل الحرس.
+
+اختبارات: `engine/tests/dr/dr.source.bundle.test.ts` (`npm run test:dr-source-bundle`،
+35 فحصاً): حتمية البناء، فكّ الأرشيف، قراءة الحزمة في بيئة شبيهة بـDocker (complete=true +
+`server.ts`)، رفض الحزمة عند حذف `server.ts` (الحرس)، ربط/عدم تطابق الـcommit، و**عدم
+تأثّر CURRENT عند فشل الجمع (crash-safe)**. فحوص final-audit الجديدة `dr-source-bundle-*`
+(950 إجمالاً). `npm test` كامل ناجح · `lint` ناجح · `build` ناجح.
+
+**لا تغيير في:** Gemini، OAuth/الاعتمادات/المفاتيح، سوشيال المنصات، Central Brain، أو أي سرّ.
+
