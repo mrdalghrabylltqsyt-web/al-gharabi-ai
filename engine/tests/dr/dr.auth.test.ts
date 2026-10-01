@@ -18,6 +18,7 @@ import {
   decodeTokenEncryptionKey,
   inspectTokenEncryptionKey,
   inspectDriveAuthEnv,
+  diagnoseDriveRefreshToken,
 } from '../../../tools/dr/drive-auth.mjs';
 import { DriveStateStore } from '../../../tools/dr/drive-auth-url.mjs';
 import { DRIVE_FILE_SCOPE, DRIVE_OAUTH_REDIRECT_URI } from '../../../tools/dr/cloud-lib.mjs';
@@ -139,10 +140,47 @@ async function main() {
     check('refresh failure classified', bad.ok === false && bad.code === 'refresh_failure');
     const unauth: any = { fail: 'invalid_client', status: 401 };
     const u = await refreshDriveAccessToken('1//refresh', { env: AUTH_ENV, transporter: makeFakeTokenTransport(unauth) });
-    check('refresh unauthorized classified', u.code === 'unauthorized');
+    check('invalid_client distinct from unauthorized', u.code === 'invalid_client');
     const srv: any = { fail: 'backend_error', status: 503 };
     const s = await refreshDriveAccessToken('1//refresh', { env: AUTH_ENV, transporter: makeFakeTokenTransport(srv) });
     check('refresh server_error classified', s.code === 'server_error');
+    // 401 بلا invalid_client => كود دقيق لا `unauthorized` عام
+    const plain401: any = { fail: 'unauthorized', status: 401 };
+    const p401 = await refreshDriveAccessToken('1//refresh', { env: AUTH_ENV, transporter: makeFakeTokenTransport(plain401) });
+    check('token_refresh_unauthorized distinct', p401.code === 'token_refresh_unauthorized');
+    // أي خطأ آخر => token_refresh_other_error لا unauthorized
+    const other: any = { fail: 'weird_error', status: 400 };
+    const o = await refreshDriveAccessToken('1//refresh', { env: AUTH_ENV, transporter: makeFakeTokenTransport(other) });
+    check('token_refresh_other_error distinct', o.code === 'token_refresh_other_error');
+    check('no token error collapses to unauthorized', [bad.code, u.code, s.code, p401.code, o.code].every((c) => c !== 'unauthorized'));
+  }
+
+  // --- تشخيص رمز التجديد (قراءة فقط، بلا كشف قيمة) ---
+  {
+    const enc = encryptDriveSecret('1//diag-refresh-token-secret', AUTH_ENV as any);
+    // 1) فكّ تشفير صحيح + تجديد ناجح
+    const okDiag = await diagnoseDriveRefreshToken({ encrypted: enc, env: AUTH_ENV, transporter: makeFakeTokenTransport({}) });
+    check('diagnose stored+decryptable+refresh ok', okDiag.stored === true && okDiag.decryptable === true && okDiag.providerRefresh === 'ok' && okDiag.reason === 'token_refresh_ok');
+    check('diagnose no secret leak (ok)', !JSON.stringify(okDiag).includes('diag-refresh-token-secret') && !JSON.stringify(okDiag).includes('ya29.'));
+    // 2) مفتاح خاطئ => غير قابل للفك، بلا تجديد
+    const wrongKeyDiag = await diagnoseDriveRefreshToken({ encrypted: enc, env: { ...AUTH_ENV, DRIVE_TOKEN_ENCRYPTION_KEY: 'b'.repeat(64) } as any, transporter: makeFakeTokenTransport({}) });
+    check('diagnose wrong key undecryptable', wrongKeyDiag.stored === true && wrongKeyDiag.decryptable === false && wrongKeyDiag.providerRefresh === 'not_tested' && wrongKeyDiag.reason === 'refresh_token_undecryptable');
+    check('diagnose no secret leak (wrong key)', !JSON.stringify(wrongKeyDiag).includes('diag-refresh-token-secret'));
+    // 3) رمز مفقود
+    const missingDiag = await diagnoseDriveRefreshToken({ encrypted: null, env: AUTH_ENV });
+    check('diagnose missing token', missingDiag.stored === false && missingDiag.reason === 'no_refresh_token' && missingDiag.providerRefresh === 'not_tested');
+    // 4) invalid_client من Google
+    const badClientDiag = await diagnoseDriveRefreshToken({ encrypted: enc, env: AUTH_ENV, transporter: makeFakeTokenTransport({ fail: 'invalid_client', status: 401 }) });
+    check('diagnose invalid_client', badClientDiag.decryptable === true && badClientDiag.providerRefresh === 'failed' && badClientDiag.reason === 'invalid_client');
+    // 5) token refresh unauthorized (401 عام)
+    const unauthDiag = await diagnoseDriveRefreshToken({ encrypted: enc, env: AUTH_ENV, transporter: makeFakeTokenTransport({ fail: 'unauthorized', status: 401 }) });
+    check('diagnose token_refresh_unauthorized', unauthDiag.providerRefresh === 'failed' && unauthDiag.reason === 'token_refresh_unauthorized');
+    // 6) اعتماد غير مضبوط => بلا محاولة شبكة
+    const noCfgDiag = await diagnoseDriveRefreshToken({ encrypted: enc, env: { DRIVE_TOKEN_ENCRYPTION_KEY: TEST_KEY } as any });
+    check('diagnose oauth_client_not_configured', noCfgDiag.decryptable === true && noCfgDiag.providerRefresh === 'failed' && noCfgDiag.reason === 'oauth_client_not_configured');
+    // 7) لا سرّ في أي حقل من الحقول التشخيصية
+    const allReasons = [okDiag, wrongKeyDiag, missingDiag, badClientDiag, unauthDiag, noCfgDiag].map((d) => JSON.stringify(d)).join(' ');
+    check('diagnose never leaks token/secret', !allReasons.includes('diag-refresh-token-secret') && !allReasons.includes('GOCSPX') && !allReasons.includes('ya29.'));
   }
 
   // --- مزوّد الرمز ---

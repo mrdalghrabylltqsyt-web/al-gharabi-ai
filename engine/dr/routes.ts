@@ -29,6 +29,7 @@ import {
   exchangeDriveAuthCode,
   encryptDriveSecret,
   createRefreshTokenProvider,
+  diagnoseDriveRefreshToken,
 } from '../../tools/dr/drive-auth.mjs';
 import { DriveClient, createGaxiosTransport } from '../../tools/dr/drive-client.mjs';
 import { DriveStore } from '../../tools/dr/drive-store.mjs';
@@ -96,6 +97,10 @@ export function registerDriveRoutes(app: express.Express, deps: DriveRoutesDeps)
     if (!loaded) loaded = deps.loadControl() || {};
     return loaded;
   }
+
+  // ذاكرة تشخيص الرمز: تمنع طلب تجديد متكرراً عند كل نداء صحة (الفحص العام).
+  let refreshDiagCache: { at: number; value: any } | null = null;
+  const REFRESH_DIAG_TTL_MS = 5 * 60 * 1000;
 
   const stateStore = new DriveStateStore({
     initial: [],
@@ -437,10 +442,30 @@ export function registerDriveRoutes(app: express.Express, deps: DriveRoutesDeps)
   // ------------------------------------------------------------------
   // الحالة الصحية (بلا أسرار) + لقطة المراقبة (owner)
   // ------------------------------------------------------------------
-  app.get('/api/dr/health', (_req, res) => {
+  app.get('/api/dr/health', async (_req, res) => {
     const readiness = authReadiness(env, control().driveRefreshToken);
     const masterKey = inspectMasterKey(env as NodeJS.ProcessEnv);
     const mirror = control().driveMirror;
+    // فحص تشخيصي قراءة-فقط لرمز التجديد (بلا كتابة إلى Drive، بلا كشف قيمة).
+    // لا يُنفَّذ طلب تجديد فعلي إلا عند وجود اعتماد كامل ورمز مخزّن، ونتيجته مُخبَّأة 5 دقائق.
+    let refreshTokenDiagnostic: any = { stored: false, decryptable: false, providerRefresh: 'not_tested', reason: 'no_refresh_token' };
+    if (readiness.configured && readiness.refreshTokenStored) {
+      const fresh = refreshDiagCache && (Date.now() - refreshDiagCache.at) < REFRESH_DIAG_TTL_MS;
+      if (fresh) {
+        refreshTokenDiagnostic = refreshDiagCache!.value;
+      } else {
+        try {
+          refreshTokenDiagnostic = await diagnoseDriveRefreshToken({
+            encrypted: control().driveRefreshToken,
+            env: env as Record<string, string | undefined>,
+            transporter: deps.oauthTransport,
+          });
+        } catch (e: any) {
+          refreshTokenDiagnostic = { stored: true, decryptable: false, providerRefresh: 'failed', reason: String(e?.code || e?.message || 'diagnostic_failed').slice(0, 60) };
+        }
+        refreshDiagCache = { at: Date.now(), value: refreshTokenDiagnostic };
+      }
+    }
     res.json({
       success: true,
       dr: {
@@ -451,6 +476,13 @@ export function registerDriveRoutes(app: express.Express, deps: DriveRoutesDeps)
         authorized: readiness.authorized,
         refreshTokenStored: readiness.refreshTokenStored,
         tokenEncryptionKey: readiness.tokenEncryptionKey,
+        // تشخيص مختصر (بلا أي قيمة سرّية): هل الرمز مفكوك؟ وهل نجح التجديد؟
+        refreshToken: {
+          stored: refreshTokenDiagnostic.stored,
+          decryptable: refreshTokenDiagnostic.decryptable,
+          providerRefresh: refreshTokenDiagnostic.providerRefresh,
+          reason: refreshTokenDiagnostic.reason,
+        },
         // مفتاح الاستعادة الرئيسي (بلا قيمة): هل يفتح الأسرار فعلاً؟
         recoveryMasterKey: masterKey,
         callbackRoute: '/api/dr/drive/callback',

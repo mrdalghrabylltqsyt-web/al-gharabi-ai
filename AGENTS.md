@@ -2833,6 +2833,24 @@ rp-002 سليمة · خطة استعادة «بنقرة واحدة» بلا اس
 فحوص final-audit: `dr-stage4-*` و`dr-source-bundle-deterministic` و`dr-no-change-deterministic`
 و`dr-mirror-no-silent-failure` و`dr-mirror-error-exposed-health` (**862 فحصاً**). DR = 543 فحصاً.
 
+**إصلاح ثالث — لا يُجمع سبب فشل الرمز تحت `unauthorized` (2026-10-01):** كان
+`classifyTokenError` في `tools/dr/drive-auth.mjs` يطوي `invalid_client` و401 العام تحت كود
+`unauthorized` واحد، وكان `createRefreshTokenProvider` يرمي `no_refresh_token` بكود
+`unauthorized` أيضاً. النتيجة: فشل `POST /api/dr/backup` ظهر «فشل غير متوقّع (unauthorized)»
+بلا تمييز السبب الحقيقي. الآن الأكواد منفصلة تماماً ولا يُصدر مسار OAuth كود `unauthorized`
+إطلاقاً: `no_refresh_token` / `refresh_token_undecryptable` / `invalid_client` /
+`token_refresh_unauthorized` (401 عام) / `token_refresh_other_error`.
+
+**فحص تشخيصي قراءة-فقط (`diagnoseDriveRefreshToken`):** يثبت أن رمز التجديد المخزّن موجود
+و**يُفكّ بالمفتاح الحالي**، ثم — فقط عند وجود اعتماد كامل — ينفّذ **طلب تجديد واحد** لجلب
+access token (بلا أي عملية Drive كتابة، بلا تغيير الرمز، بلا إعادة تفويض). لا يُعيد أي قيمة
+سرّية أبداً، فقط: `stored` / `decryptable` / `providerRefresh` (`ok|failed|not_tested`) /
+`reason`. `/api/dr/health` يعرضها في كتلة `refreshToken` (مع تخبئة 5 دقائق تمنع تكرار طلب
+التجديد عند كل نداء). اختبارات في `dr.auth.test.ts` (60 فحصاً: فكّ صحيح، مفتاح خاطئ، رمز
+مفقود، `invalid_client`، 401 عام، اعتماد غير مضبوط، وعدم تسريب أي سرّ) و`dr.endpoints.test.ts`
+(41 فحصاً). فحوص final-audit الجديدة: `dr-token-errors-distinct` … `dr-refresh-diagnostic-tests`
+(**868 فحصاً**). DR = 565 فحصاً.
+
 **حد صادق:** لا يوجد اعتماد Drive في بيئة التطوير هذه، ولا تُشغَّل النسخة تلقائياً (لا
 `setInterval`؛ المسار `POST /api/dr/backup` للمالك فقط). لذا «rp-003 حقيقية على Google Drive»
 تتطلّب تفعيل النسخة من جلسة المالك على الإنتاج (`/api/dr/backup`)، ثم إعادة تشغيل السكربت

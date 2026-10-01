@@ -178,15 +178,56 @@ export function buildDriveAuthorizationUrl(options = {}) {
 // تبادل الرمز وتجديده
 // ---------------------------------------------------------------------------
 
+/**
+ * تصنيف خطأ التجديد/التبادل إلى كود دقيق (بلا خلط).
+ * ملاحظة: لا يُعاد كود `unauthorized` هنا إطلاقاً — كان يخفي السبب الحقيقي.
+ */
 function classifyTokenError(err) {
   const data = err?.response?.data || {};
   const error = data.error || err?.code || '';
   const status = Number(err?.response?.status ?? err?.status ?? 0);
   if (String(error) === 'invalid_grant') return { ok: false, code: 'refresh_failure', status, message: 'رمز التجديد مرفوض (invalid_grant): يلزم تفويض جديد.' };
-  if (status === 401 || String(error) === 'invalid_client') return { ok: false, code: 'unauthorized', status, message: 'اعتماد OAuth مرفوض.' };
+  if (String(error) === 'invalid_client') return { ok: false, code: 'invalid_client', status, message: 'اعتماد OAuth مرفوض (invalid_client): عدم تطابق client_id/client_secret.' };
+  if (status === 401) return { ok: false, code: 'token_refresh_unauthorized', status, message: 'رفض Google طلب التجديد (401).' };
   if (status >= 500) return { ok: false, code: 'server_error', status, message: 'عطل مؤقت لدى Google.' };
   if (!status) return { ok: false, code: 'network_error', status: 0, message: 'تعذّر الوصول إلى Google.' };
-  return { ok: false, code: 'token_error', status, message: 'فشل تبادل/تجديد الرمز.' };
+  return { ok: false, code: 'token_refresh_other_error', status, message: 'فشل تبادل/تجديد الرمز.' };
+}
+
+/**
+ * فحص تشخيصي للقراءة فقط لرمز التجديد — لا يكتب شيئاً إلى Google Drive،
+ * ولا يغيّر الرمز، ولا يُعيد أي قيمة سرّية. يوضّح سبب الفشل بدقة.
+ *
+ * @param {{ encrypted?: any, env?: Record<string,string|undefined>, refreshToken?: string, transporter?: any }} options
+ */
+export async function diagnoseDriveRefreshToken(options = {}) {
+  const env = options.env || process.env;
+  const encrypted = options.encrypted ?? null;
+  const stored = Boolean(encrypted);
+  const configured = inspectDriveAuthEnv(env).configured;
+  if (!stored) {
+    return { stored: false, decryptable: false, providerRefresh: 'not_tested', reason: 'no_refresh_token', message: 'لا رمز تجديد مخزّن.' };
+  }
+  let plain = options.refreshToken ?? null;
+  let decryptable = false;
+  if (!plain) {
+    plain = decryptDriveSecret(encrypted, env);
+    decryptable = typeof plain === 'string' && plain.length > 0;
+    if (!decryptable) {
+      return { stored: true, decryptable: false, providerRefresh: 'not_tested', reason: 'refresh_token_undecryptable', message: 'رمز التجديد المخزّن لا يُفكّ بالمفتاح الحالي.' };
+    }
+  } else {
+    decryptable = true;
+  }
+  if (!configured) {
+    return { stored: true, decryptable, providerRefresh: 'failed', reason: 'oauth_client_not_configured', message: 'اعتماد OAuth غير مضبوط (client_id/secret).' };
+  }
+  // طلب تجديد واحد فعلي (بلا أي عملية Drive، بلا كتابة، بلا تغيير الرمز).
+  const refreshed = await refreshDriveAccessToken(plain, { env, transporter: options.transporter });
+  if (refreshed.ok && refreshed.accessToken) {
+    return { stored: true, decryptable, providerRefresh: 'ok', reason: 'token_refresh_ok', message: 'جلب Google رمز وصول بنجاح.' };
+  }
+  return { stored: true, decryptable, providerRefresh: 'failed', reason: refreshed.code || 'token_refresh_other_error', message: refreshed.message || 'فشل تجديد الرمز.' };
 }
 
 /** يبادل authorization code برموز (offline => refresh_token). لا يخزّن شيئاً. */
@@ -249,7 +290,7 @@ export function createRefreshTokenProvider(options = {}) {
       ?? (options.encryptedRefreshToken ? decryptDriveSecret(options.encryptedRefreshToken, env) : null)
       ?? env[DRIVE_OAUTH_REFRESH_TOKEN_ENV]
       ?? null;
-    if (!plain) throw Object.assign(new Error('no_refresh_token'), { code: 'unauthorized' });
+    if (!plain) throw Object.assign(new Error('no_refresh_token'), { code: 'no_refresh_token' });
     const refreshed = await refreshDriveAccessToken(plain, options);
     if (!refreshed.ok || !refreshed.accessToken) throw Object.assign(new Error(refreshed.code || 'refresh_failure'), { code: refreshed.code });
     cached = { token: refreshed.accessToken, expiry: refreshed.expiryDate || now + 3_600_000 };

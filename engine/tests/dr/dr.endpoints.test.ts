@@ -9,6 +9,7 @@
 import express from 'express';
 import type { Server } from 'node:http';
 import { createFakeDriveState, makeFakeTransport } from './helpers/fakeDrive';
+import { makeFakeTokenTransport } from './helpers/fakeTokenTransport';
 import { registerDriveRoutes } from '../../dr/routes';
 import { DriveClient } from '../../../tools/dr/drive-client.mjs';
 import { encryptDbDump } from '../../../tools/dr/db-crypto.mjs';
@@ -61,6 +62,7 @@ async function main() {
     loadControl: () => drControl,
     persistControl: (partial) => { Object.assign(drControl, partial); },
     clientFactory: () => new DriveClient({ transport: makeFakeTransport(fakeState), tokenProvider: () => 'tok' }),
+    oauthTransport: makeFakeTokenTransport(),
     collectSourceFiles: () => ({ included: FILES, excluded: [] }),
     dumpDatabase: async () => SQL,
     buildSecrets: () => buildSecretsBundle(ENV, { now: '2026-01-01T00:00:00.000Z' }),
@@ -100,6 +102,9 @@ async function main() {
       const health = await (await fetch(`${base}/api/dr/health`)).json();
       check('health currentMirror synced', health.dr.currentMirror.synced === true && /^[0-9a-f]{64}$/.test(health.dr.currentMirror.treeHash));
       check('health currentMirror no error', health.dr.currentMirror.error === null && health.dr.recoverySystem.currentMirror === true);
+      // تشخيص رمز التجديد: مخزّن، مفكوك، والتجديد نجح (عبر ناقل وهمي) — بلا سرّ.
+      check('health refreshToken diagnostic ok', health.dr.refreshToken.stored === true && health.dr.refreshToken.decryptable === true && health.dr.refreshToken.providerRefresh === 'ok' && health.dr.refreshToken.reason === 'token_refresh_ok');
+      check('health refreshToken no secret', !JSON.stringify(health.dr.refreshToken).includes('1//') && !JSON.stringify(health.dr.refreshToken).includes('ya29.'));
     }
 
     // --- فشل المرآة يُعلن صراحةً (لا فشل صامت) ---
@@ -114,6 +119,7 @@ async function main() {
         authenticateToken, requireOwner, env: ENV,
         loadControl: () => ctrlF, persistControl: (p) => { Object.assign(ctrlF, p); },
         clientFactory: () => new DriveClient({ transport: makeFakeTransport(failState), tokenProvider: () => 'tok' }),
+        oauthTransport: makeFakeTokenTransport(),
         collectSourceFiles: () => ({ included: FILES, excluded: [] }),
         dumpDatabase: async () => SQL,
         buildSecrets: () => buildSecretsBundle(ENV, { now: '2026-01-01T00:00:00.000Z' }),
@@ -209,6 +215,7 @@ async function main() {
         authenticateToken, requireOwner, env: { ...ENV, DR_RECOVERY_TEST_DATABASE_URL: ENV.DATABASE_URL },
         loadControl: () => drControl, persistControl: () => {},
         clientFactory: () => new DriveClient({ transport: makeFakeTransport(fakeState), tokenProvider: () => 'tok' }),
+        oauthTransport: makeFakeTokenTransport(),
         collectSourceFiles: () => ({ included: FILES, excluded: [] }),
         dumpDatabase: async () => SQL,
         buildSecrets: () => buildSecretsBundle(ENV, {}),
