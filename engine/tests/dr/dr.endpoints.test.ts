@@ -102,6 +102,12 @@ async function main() {
       const health = await (await fetch(`${base}/api/dr/health`)).json();
       check('health currentMirror synced', health.dr.currentMirror.synced === true && /^[0-9a-f]{64}$/.test(health.dr.currentMirror.treeHash));
       check('health currentMirror no error', health.dr.currentMirror.error === null && health.dr.recoverySystem.currentMirror === true);
+      // نموذج النسخة المُرقّمة: currentVersion + مرجع الاعتماد + سلامة + لا تنظيف معلّق.
+      check('health currentVersion from HEAD', health.dr.currentVersion === 1 && health.dr.currentTreeHash === health.dr.currentMirror.treeHash);
+      check('health currentFileCount', health.dr.currentFileCount === FILES.length);
+      check('health cleanupPending false', health.dr.cleanupPending === false && Array.isArray(health.dr.pendingCleanup) && health.dr.pendingCleanup.length === 0);
+      check('health integrity from HEAD.json', health.dr.integrity.source === 'HEAD.json' && health.dr.integrity.headVersion === 1 && health.dr.integrity.verified === true);
+      check('health versioned fields no secret', !JSON.stringify({ v: health.dr.currentVersion, i: health.dr.integrity, c: health.dr.pendingCleanup }).includes('AIzaSy'));
       // تشخيص رمز التجديد: مخزّن، مفكوك، والتجديد نجح (عبر ناقل وهمي) — بلا سرّ.
       check('health refreshToken diagnostic ok', health.dr.refreshToken.stored === true && health.dr.refreshToken.decryptable === true && health.dr.refreshToken.providerRefresh === 'ok' && health.dr.refreshToken.reason === 'token_refresh_ok');
       check('health refreshToken no secret', !JSON.stringify(health.dr.refreshToken).includes('1//') && !JSON.stringify(health.dr.refreshToken).includes('ya29.'));
@@ -116,8 +122,8 @@ async function main() {
     // --- فشل المرآة يُعلن صراحةً (لا فشل صامت) ---
     {
       const failState = createFakeDriveState();
-      // نمنع إنشاء ملف المرآة => تفشل المزامنة، ويجب أن يظهر سببها في health.
-      failState.failCreateNames.add('mirror-manifest.json');
+      // نمنع إنشاء بيان النسخة الجديدة => تفشل المزامنة قبل الاعتماد، ويظهر سببها في health.
+      failState.failCreateNames.add('manifest.json');
       const appF = express();
       appF.use(express.json());
       const ctrlF: any = { driveOAuthStates: [], driveRefreshToken: null, driveLastError: null, driveMirror: null };

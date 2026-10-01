@@ -1519,9 +1519,14 @@ add('dr-secrets-no-plaintext-upload', read('tools/dr/drive-store.mjs').includes(
 add('dr-secrets-manifest-names-only', drSecrets.includes('includedNames') && drSecrets.includes('encryptedSecretsHash') && drSecrets.includes('keyFingerprint'), 'بيان الأسرار يحمل أسماء وبصمات فقط بلا قيم');
 
 add('dr-current-mirror-module', drMirror.includes('export async function runCurrentMirror') && drMirror.includes('treeHash'), 'مرآة CURRENT الفردية موجودة (ملفات بمكانها + treeHash)');
-add('dr-current-mirror-atomic', drMirror.includes('writePendingMirrorManifest') && drMirror.includes('writeMirrorManifest') && drMirror.includes('partial_upload'), 'ترقية CURRENT ذرّية: بيان معلّق ثم تثبيت أخيراً (لا نسخة نصف مكتملة)');
+add('dr-current-mirror-atomic', drMirror.includes('writeVersionManifest') && drMirror.includes('writeMirrorHead') && drMirror.includes('partial_upload'), 'ترقية CURRENT ذرّية: بناء نسخة مستقلة + التحقق ثم اعتماد HEAD أخيراً (لا نسخة نصف مكتملة)');
 add('dr-current-mirror-no-change', drMirror.includes("state: 'no_change'") && drMirror.includes('diffSnapshots'), 'لا إعادة رفع بلا تغيّر (مقارنة لقطة)');
-add('dr-current-mirror-history-safe', drMirror.includes('removeMirrorFile') && !drMirror.includes('history'), 'حذف الملفات من CURRENT فقط ولا يمسّ HISTORY');
+add('dr-current-mirror-history-safe', drMirror.includes('deleteVersionDir') && !drMirror.includes('history'), 'حذف النسخ القديمة من CURRENT فقط ولا يمسّ HISTORY');
+// نموذج النسخة المُرقّمة: نسخ مستقلة + مرجع اعتماد واحد (HEAD.json) + تنظيف لاحق.
+add('dr-current-mirror-versioned', drStore.includes('writeMirrorHead') && drStore.includes('readMirrorHead') && drStore.includes('writeVersionManifest') && drStore.includes('listVersions') && drSources[0].includes('MIRROR_HEAD_NAME'), 'نسخ CURRENT مُرقّمة مستقلة + مرجع اعتماد واحد (HEAD.json)');
+add('dr-current-mirror-head-single-commit', drMirror.indexOf('writeVersionManifest(newVersion') > -1 && drMirror.indexOf('writeVersionManifest(newVersion') < drMirror.indexOf('writeMirrorHead(head)'), 'الاعتماد (HEAD) يجري بعد كتابة البيان والتحقق — نقطة التزام واحدة');
+add('dr-current-mirror-cleanup-pending', drMirror.includes('export async function cleanupOldVersions') && drMirror.includes('cleanupPending') && drMirror.includes('export async function resolveCurrentMirror'), 'التنظيف لاحق لا يُسقط الاعتماد؛ فشله يُعلَن cleanupPending ويُعاد، وCURRENT تُحسم من HEAD');
+add('dr-current-mirror-read-via-head', drStore.includes('readCurrentMirrorManifest') && drStore.includes('listCurrentFiles') && drStore.includes('readCurrentFile'), 'قراءة CURRENT تمرّ من HEAD.json مع رجوع للبنية القديمة للقراءة فقط');
 
 add('dr-restore-engine-module', drRestore.includes('export async function verifyRecoveryPoint') && drRestore.includes('export async function runRecoveryDrill'), 'محرّك الاستعادة موجود (تحقق + اختبار معزول)');
 add('dr-restore-verify-hashes', drRestore.includes('source_hash_mismatch') && drRestore.includes('secrets_hash_mismatch') && drRestore.includes('manifest_missing'), 'الاستعادة تتحقق من كل البصمات وتفشل بأمان عند التلف/النقص');
@@ -1556,7 +1561,8 @@ add('dr-source-collection-no-secret', !/sourceCollection[\s\S]{0,400}(clientSecr
 add('dr-source-test-present', fs.existsSync(path.join(root, 'engine/tests/dr/dr.source.test.ts')) && (pkg.scripts['test:dr'] || '').includes('test:dr-source'), 'اختبار مصدر DR الموثوق + حماية النقص مضمّن في test:dr');
 // الفحص الساعي (reconciliation) + مشغّل التغيّر + وثائق RECOVERY الموحّدة.
 add('dr-hourly-reconciliation-single-source', drRoutes.includes('runReconciliationCycle') && drRoutes.includes('startDriveReconciliation') && /RECONCILE_INTERVAL_MS = 60 \* 60 \* 1000/.test(drRoutes), 'الفحص الساعي مصدر واحد بمؤقّت داخلي كل ساعة');
-add('dr-reconciliation-no-op-on-match', drRoutes.includes("outcome = 'no_op'") && drRoutes.includes('prevMirror.treeHash === snapshot.treeHash'), 'التطابق ⇒ no-op بلا رفع (كشف «لا تغيير» قبل المزامنة)');
+add('dr-reconciliation-no-op-on-match', drRoutes.includes("outcome = 'no_op'") && /prevMirror\.treeHash === sourceTreeHash/.test(drRoutes), 'التطابق ⇒ no-op بلا رفع (كشف «لا تغيير» قبل المزامنة)');
+add('dr-reconciliation-no-false-no-op-on-pending', /prevMirror\.treeHash === sourceTreeHash && !prevMirror\.cleanupPending/.test(drRoutes) && drRoutes.includes('result.headVersion = sync.body?.headVersion') && drRoutes.includes('result.cleanupPending = sync.body?.cleanupPending'), 'no-op صادق: لا يُعلن «لا تغيير» عند وجود تنظيف معلّق، والرد يحمل نسخة الاعتماد');
 add('dr-reconciliation-incomplete-guard', drRoutes.includes("outcome = 'source_incomplete'"), 'المصدر الناقص ⇒ source_incomplete بلا تغيير');
 add('dr-reconciliation-concurrency-lock', drRoutes.includes('reconciliationRunning') && drRoutes.includes("reason: 'already_running'"), 'قفل يمنع تشغيل دورة متوازية لنفس العملية');
 add('dr-reconciliation-unref', /reconciliationTimer as any\)\.unref/.test(drRoutes), 'المؤقّت .unref() فلا يمنع الإغلاق النظيف/persist');

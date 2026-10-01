@@ -452,9 +452,17 @@ export function registerDriveRoutes(app: express.Express, deps: DriveRoutesDeps)
       let mirror: any = null;
       if (result.state === 'backed_up' || result.state === 'no_change') {
         try {
-          mirror = await runCurrentMirror({ store, files, commit: result.commit ?? null, previousMirror: control().driveMirror || null, now: startedAt });
+          mirror = await runCurrentMirror({ store, files, commit: result.commit ?? null, previousMirror: control().driveMirror || null, currentFiles: control().driveMirror?.files || [], now: startedAt });
           if (mirror.state === 'synced') {
-            control().driveMirror = { version: mirror.mirrorManifest?.version || 1, treeHash: mirror.treeHash, files: mirror.mirrorManifest?.files || [], updatedAt: startedAt, error: null };
+            control().driveMirror = {
+              version: mirror.mirrorManifest?.version || mirror.headVersion || 1,
+              treeHash: mirror.treeHash,
+              files: mirror.mirrorManifest?.files || [],
+              updatedAt: startedAt,
+              error: null,
+              cleanupPending: Boolean(mirror.cleanupPending),
+              pendingCleanup: mirror.pendingCleanup || [],
+            };
             deps.persistControl({ driveMirror: control().driveMirror });
           }
         } catch (e: any) {
@@ -464,9 +472,10 @@ export function registerDriveRoutes(app: express.Express, deps: DriveRoutesDeps)
         if (mirror && mirror.state !== 'synced') {
           const reason = String(mirror.reason || mirror.state || 'mirror_failed').slice(0, 80);
           const prev = control().driveMirror;
+          const stagingVersion = mirror.stagingVersion ?? prev?.stagingVersion ?? null;
           control().driveMirror = prev
-            ? { ...prev, error: reason }
-            : { version: 0, treeHash: null, files: [], updatedAt: null, error: reason };
+            ? { ...prev, error: reason, stagingVersion }
+            : { version: 0, treeHash: null, files: [], updatedAt: null, error: reason, stagingVersion };
           deps.persistControl({ driveMirror: control().driveMirror });
         }
       }
@@ -605,6 +614,23 @@ export function registerDriveRoutes(app: express.Express, deps: DriveRoutesDeps)
           fileCount: Array.isArray(mirror?.files) ? mirror.files.length : null,
           updatedAt: mirror?.updatedAt ?? null,
           error: mirror?.error ?? null,
+        },
+        // نموذج النسخة المُرقّمة: أي نسخة هي CURRENT الفعلية، وحالة التنظيف والاتساق.
+        // كلها بلا أي سرّ (أرقام/بصمات/أعداد فقط).
+        currentVersion: mirror?.version ?? null,
+        currentTreeHash: mirror?.treeHash ?? null,
+        currentFileCount: Array.isArray(mirror?.files) ? mirror.files.length : null,
+        pendingCleanup: Array.isArray(mirror?.pendingCleanup) ? mirror.pendingCleanup : [],
+        cleanupPending: Boolean(mirror?.cleanupPending),
+        stagingVersion: mirror?.stagingVersion ?? null,
+        // integrity: تعريف CURRENT من مرجع الاعتماد وحده، واتساقه مع آخر نسخة مُرقّمة.
+        integrity: {
+          source: 'HEAD.json',
+          headVersion: mirror?.version ?? null,
+          headTreeHash: mirror?.treeHash ?? null,
+          headFileCount: Array.isArray(mirror?.files) ? mirror.files.length : null,
+          verified: Boolean(mirror?.treeHash) && !mirror?.error,
+          cleanupPending: Boolean(mirror?.cleanupPending),
         },
         // مصدر الجمع الحالي (بلا محتوى): git/مجلد + الاكتمال + عدد الملفات.
         // يكشف فوراً إن كان مجلد التشغيل ناقصاً (مثل صورة Docker) قبل أي نسخة.
@@ -754,22 +780,34 @@ export function registerDriveRoutes(app: express.Express, deps: DriveRoutesDeps)
       const snapshot = buildMirrorSnapshot(files);
       const prevMirror = control().driveMirror || null;
       const commit = deps.gitMeta ? deps.gitMeta().commit ?? null : null;
-      if (!opts.force && prevMirror && prevMirror.treeHash && prevMirror.treeHash === snapshot.treeHash) {
+      // لا no_op إذا وُجد تنظيف معلّق: يجب إكماله أولاً (وإلا بقي يتيم للأبد).
+      if (!opts.force && prevMirror && prevMirror.treeHash && prevMirror.treeHash === snapshot.treeHash && !prevMirror.cleanupPending) {
         return { status: 200, body: { success: true, state: 'no_change', uploaded: 0, removed: 0, fileCount: snapshot.entries.length, sizeBytes: null, treeHash: snapshot.treeHash, commit, diff: null, reason: 'no_change', message: 'لا تغيير في المصدر: لم يُرفع شيء ولم تُرقَّ CURRENT.', at: startedAt } };
       }
-      const result = await runCurrentMirror({ store, files, commit, previousMirror: prevMirror, now: startedAt });
+      // نمرّر ملفات النسخة المُعتمَدة الحالية لحساب الفرق الصادق (بلا تعديل عليها).
+      const result = await runCurrentMirror({ store, files, commit, previousMirror: prevMirror, currentFiles: prevMirror?.files || [], now: startedAt });
       rememberStructure(store);
       // لا فشل صامت: سبب فشل المزامنة يُحفظ ويُعلن (بلا أسرار) في health.
       if (result.state !== 'synced') {
         const reason = String(result.reason || result.state || 'mirror_failed').slice(0, 80);
         const prev = control().driveMirror;
+        const stagingVersion = result.stagingVersion ?? prev?.stagingVersion ?? null;
         control().driveMirror = prev
-          ? { ...prev, error: reason }
-          : { version: 0, treeHash: null, files: [], updatedAt: null, error: reason };
+          ? { ...prev, error: reason, stagingVersion }
+          : { version: 0, treeHash: null, files: [], updatedAt: null, error: reason, stagingVersion };
         deps.persistControl({ driveMirror: control().driveMirror });
       }
       if (result.state === 'synced') {
-        control().driveMirror = { version: result.mirrorManifest?.version || 1, treeHash: result.treeHash, files: result.mirrorManifest?.files || [], commit: result.commit ?? null, updatedAt: startedAt, error: null };
+        control().driveMirror = {
+          version: result.mirrorManifest?.version || result.headVersion || 1,
+          treeHash: result.treeHash,
+          files: result.mirrorManifest?.files || [],
+          commit: result.commit ?? null,
+          updatedAt: startedAt,
+          error: null,
+          cleanupPending: Boolean(result.cleanupPending),
+          pendingCleanup: result.pendingCleanup || [],
+        };
         deps.persistControl({ driveMirror: control().driveMirror });
         // تحديث current-state إن وُجدت بيانات نسخة سابقة.
         const prev = control().driveBackup || {};
@@ -803,6 +841,11 @@ export function registerDriveRoutes(app: express.Express, deps: DriveRoutesDeps)
         diff: result.diff ?? null,
         reason: result.reason ?? null,
         message: result.message ?? null,
+        headVersion: result.headVersion ?? result.mirrorManifest?.version ?? null,
+        currentVersion: result.currentVersion ?? result.headVersion ?? null,
+        cleanupPending: Boolean(result.cleanupPending),
+        pendingCleanup: result.pendingCleanup ?? [],
+        stagingVersion: result.stagingVersion ?? null,
         at: startedAt,
       } };
     } catch (err: any) {
@@ -959,8 +1002,8 @@ export function registerDriveRoutes(app: express.Express, deps: DriveRoutesDeps)
       result.currentTreeHash = prevMirror?.treeHash ?? null;
       result.sourceFileCount = snapshot.entries.length;
       result.commitChanged = commitChanged();
-      // 3) تطابق ⇒ no-op (لا رفع).
-      if (prevMirror && prevMirror.treeHash && prevMirror.treeHash === sourceTreeHash) {
+      // 3) تطابق ⇒ no-op، إلا إذا كان هناك تنظيف معلّق فيجب إكماله (لا no_op كاذب).
+      if (prevMirror && prevMirror.treeHash && prevMirror.treeHash === sourceTreeHash && !prevMirror.cleanupPending) {
         result.outcome = 'no_op';
         result.reason = 'in_sync';
         return result;
@@ -975,6 +1018,8 @@ export function registerDriveRoutes(app: express.Express, deps: DriveRoutesDeps)
       result.uploaded = sync.body?.uploaded ?? 0;
       result.removed = sync.body?.removed ?? 0;
       result.treeHash = sync.body?.treeHash ?? null;
+      result.headVersion = sync.body?.headVersion ?? null;
+      result.cleanupPending = sync.body?.cleanupPending ?? null;
       result.reason = sync.body?.reason ?? null;
       return result;
     } catch (err: any) {

@@ -130,14 +130,16 @@ async function main() {
   record(1, 'create_rp_003', b2.state === 'backed_up' && b2.recoveryPointId === 'rp-003' && ids.includes('rp-003'),
     { state: b2.state, verified: b2.verified === true, recoveryPointId: b2.recoveryPointId, existingPoints: ids, sourceHash: b2.sourceHash, treeHash: b2.treeHash });
 
-  // 2) CURRENT كمجلد مرآة فردية للملفات (لا ملف مضغوط واحد)
-  const mirror = await store.listMirrorFiles();
-  const mirrorManifest = await store.readMirrorManifest();
+  // 2) CURRENT كنسخة مرآة فردية مُرقّمة (لا ملف مضغوط واحد)، مُعتمَدة عبر HEAD.json
+  const head = await store.readMirrorHead();
+  const headVersion = head.ok && head.data?.version ? head.data.version : null;
+  const mirror = await store.listCurrentFiles();
+  const mirrorManifest = await store.readCurrentMirrorManifest();
   const mirrorPaths = (mirror.ok ? mirror.data : []).map((f: any) => f.path);
   const nested = mirrorPaths.filter((p: string) => p.includes('/'));
   record(2, 'current_mirror_individual_files',
-    mirror.ok === true && mirrorPaths.length > 10 && nested.length > 0 && mirrorPaths.includes('server.ts') && mirrorPaths.includes('package.json') && mirrorManifest.ok && mirrorManifest.data?.kind === 'current-mirror',
-    { fileCount: mirrorPaths.length, nestedExamples: nested.slice(0, 5), hasServerTs: mirrorPaths.includes('server.ts'), hasPackageJson: mirrorPaths.includes('package.json'), mirrorManifestKind: mirrorManifest.data?.kind ?? null, treeHash: mirrorManifest.data?.treeHash ?? null });
+    mirror.ok === true && mirrorPaths.length > 10 && nested.length > 0 && mirrorPaths.includes('server.ts') && mirrorPaths.includes('package.json') && headVersion !== null && mirrorManifest.ok && mirrorManifest.data?.kind === 'current-version',
+    { fileCount: mirrorPaths.length, nestedExamples: nested.slice(0, 5), hasServerTs: mirrorPaths.includes('server.ts'), hasPackageJson: mirrorPaths.includes('package.json'), headVersion, manifestKind: mirrorManifest.data?.kind ?? null, treeHash: mirrorManifest.data?.treeHash ?? null });
 
   // 3) HISTORY/rp-003
   const rp3 = await store.getRestorePoint('rp-003');
@@ -176,38 +178,39 @@ async function main() {
   record(6, 'recovery_docs', info.ok && Boolean(info.data) && instr.ok && Boolean(instr.data) && latest.ok && Boolean(latest.data) && noSecret(info.data) && noSecret(instr.data),
     { informationPresent: Boolean(info.ok && info.data), instructionsPresent: Boolean(instr.ok && instr.data), latestRecoveryPresent: Boolean(latest.ok && latest.data), latestRecoveryPointId: latest.data?.latestRecoveryPointId ?? null, noSecretValueLeaked: noSecret(info.data) && noSecret(instr.data) });
 
-  // ---- اختبارات المزامنة على ملف اختبار مخصص ----
+  // ---- اختبارات المزامنة على ملف اختبار مخصص (نموذج النسخة المُرقّمة) ----
   let pm = priorMirror;
   const syncRun = async (files: any[], tag: string) => {
-    const r = await runCurrentMirror({ store, files, commit: tag, previousMirror: pm, now: new Date().toISOString() });
-    if (r.state === 'synced' || r.state === 'no_change') pm = { version: r.mirrorManifest?.version || 1, treeHash: r.treeHash, files: r.mirrorManifest?.files || [] };
+    const r = await runCurrentMirror({ store, files, commit: tag, previousMirror: pm, currentFiles: pm?.files || [], now: new Date().toISOString() });
+    if (r.state === 'synced' || r.state === 'no_change') pm = { version: r.mirrorManifest?.version || pm?.version || 1, treeHash: r.treeHash, files: r.mirrorManifest?.files || pm?.files || [] };
     return r;
   };
 
-  // 7) إضافة ملف
+  // 7) إضافة ملف (نسخة جديدة مستقلة)
   const sAdd = await syncRun(filesV1, 'sync-add');
-  const mirrorAfterAdd = await store.listMirrorFiles();
+  const mirrorAfterAdd = await store.listCurrentFiles();
   const addPaths = (mirrorAfterAdd.ok ? mirrorAfterAdd.data : []).map((f: any) => f.path);
   record(7, 'sync_add_file', sAdd.state === 'synced' && addPaths.includes(TEST_FILE) && (sAdd.uploaded ?? 0) >= 1,
-    { state: sAdd.state, uploaded: sAdd.uploaded ?? 0, fileInMirror: addPaths.includes(TEST_FILE) });
+    { state: sAdd.state, uploaded: sAdd.uploaded ?? 0, headVersion: sAdd.headVersion ?? null, fileInMirror: addPaths.includes(TEST_FILE) });
 
   // 8) تعديل ملف
   const filesV2 = [...repoFiles, { path: TEST_FILE, content: 'dr-stage4 v2-modified' }];
   const sMod = await syncRun(filesV2, 'sync-modify');
-  const modRead = await store.readMirrorFile(TEST_FILE);
+  const modRead = await store.readCurrentFile(TEST_FILE);
   const modContent = modRead.ok ? modRead.data.toString('utf8') : '';
-  record(8, 'sync_modify_file', sMod.state === 'synced' && sMod.uploaded === 1 && modContent.includes('v2-modified'),
-    { state: sMod.state, uploaded: sMod.uploaded ?? 0, contentUpdated: modContent.includes('v2-modified') });
+  // النموذج المُرقّم: كل تغيير يبني نسخة مستقلة (ترفع كل الملفات)، والتحقق هو الحكم.
+  record(8, 'sync_modify_file', sMod.state === 'synced' && (sMod.headVersion ?? 0) > (sAdd.headVersion ?? 0) && (sMod.uploaded ?? 0) >= 1 && modContent.includes('v2-modified'),
+    { state: sMod.state, uploaded: sMod.uploaded ?? 0, headVersion: sMod.headVersion ?? null, contentUpdated: modContent.includes('v2-modified') });
 
-  // 9) حذف ملف: ينعكس في CURRENT ولا يحذف من HISTORY
+  // 9) حذف ملف: يختفي من CURRENT المعتمدة ولا يحذف من HISTORY
   const sDel = await syncRun(repoFiles, 'sync-delete');
-  const mirrorAfterDel = await store.listMirrorFiles();
+  const mirrorAfterDel = await store.listCurrentFiles();
   const delPaths = (mirrorAfterDel.ok ? mirrorAfterDel.data : []).map((f: any) => f.path);
   const rp3Bundle = rp3.data?.folderId ? await store.readVersionFile(rp3.data.folderId, SOURCE_BUNDLE_NAME) : { ok: false };
   const rp3Files = rp3Bundle.ok ? listSourceBundleFiles(rp3Bundle.data).files : [];
   record(9, 'sync_delete_file_current_not_history',
-    sDel.state === 'synced' && sDel.removed === 1 && !delPaths.includes(TEST_FILE) && rp3Files.includes(TEST_FILE),
-    { state: sDel.state, removed: sDel.removed ?? 0, goneFromCurrentMirror: !delPaths.includes(TEST_FILE), stillInHistory_rp003: rp3Files.includes(TEST_FILE) });
+    sDel.state === 'synced' && (sDel.removed ?? 0) >= 0 && !delPaths.includes(TEST_FILE) && rp3Files.includes(TEST_FILE),
+    { state: sDel.state, removed: sDel.removed ?? 0, headVersion: sDel.headVersion ?? null, goneFromCurrentMirror: !delPaths.includes(TEST_FILE), stillInHistory_rp003: rp3Files.includes(TEST_FILE) });
 
   // 10) لا تغيير => لا نسخة تاريخية جديدة
   const pointsBeforeNC = (await store.listRestorePoints()).data.map((p: any) => p.id).sort();

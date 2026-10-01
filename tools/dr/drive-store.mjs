@@ -32,6 +32,12 @@ import {
   LATEST_RECOVERY_NAME,
   MIRROR_MANIFEST_NAME,
   MIRROR_DIR_NAME,
+  MIRROR_VERSIONS_DIR,
+  MIRROR_MANIFEST_NAME_V2,
+  MIRROR_HEAD_NAME,
+  mirrorVersionDirName,
+  parseMirrorVersionDir,
+  isMirrorHeadValid,
 } from './cloud-lib.mjs';
 
 export const CURRENT_MANIFEST_NAME = 'manifest.json';
@@ -52,6 +58,9 @@ export class DriveStore {
     this.structure = null;
     this._mirrorRootId = null;
     this._mirrorDirs = new Map();
+    this._versionsRootId = null;
+    this._versionRoots = new Map(); // version -> filesRoot folder id
+    this._versionDirs = new Map();  // `${version}:${key}` -> folder id
   }
 
   // ------------------------------------------------------------------
@@ -524,6 +533,211 @@ export class DriveStore {
     const id = await this.subdirId('staging');
     if (!id) return { ok: false, code: 'no_structure' };
     return this.removeChild(id, MIRROR_MANIFEST_NAME);
+  }
+
+  // ------------------------------------------------------------------
+  // واجهة توافقية: تقرأ CURRENT عبر مرجع الاعتماد HEAD.json وحده، مع رجوع
+  // للبنية القديمة `current/files/**` للقراءة فقط (لمنظومات نُسخت قبل الترقية).
+  // كل ما يخص القراءة/التحقق يمرّ من هنا، فلا يعتمد أي شيء على مسار قديم.
+  // ------------------------------------------------------------------
+
+  /** بيان CURRENT المُعتمدة من HEAD.json (أو null). */
+  async readCurrentMirrorManifest() {
+    const head = await this.readMirrorHead();
+    if (head.ok && isMirrorHeadValid(head.data)) {
+      const v = await this.readVersionManifest(head.data.version);
+      return { ok: true, data: v.ok ? v.data : null };
+    }
+    return this.readMirrorManifest();
+  }
+
+  /** كل ملفات CURRENT المُعتمدة بمسار نسبي: `[{ path, driveId, size }]`. */
+  async listCurrentFiles() {
+    const head = await this.readMirrorHead();
+    if (head.ok && isMirrorHeadValid(head.data)) return this.listVersionFiles(head.data.version);
+    return this.listMirrorFiles();
+  }
+
+  /** يقرأ ملفاً من CURRENT المُعتمدة بالمسار النسبي. */
+  async readCurrentFile(relPath) {
+    const head = await this.readMirrorHead();
+    if (head.ok && isMirrorHeadValid(head.data)) return this.readVersionPathFile(head.data.version, relPath);
+    return this.readMirrorFile(relPath);
+  }
+
+  // ------------------------------------------------------------------
+  // current/versions/v<N>/** — مرآة مُرقّمة + مرجع اعتماد واحد (HEAD.json)
+  // كل نسخة مجلد مستقل؛ لا تُعدَّل نسخة مُعتمَدة أبداً. الاعتماد = كتابة
+  // HEAD.json فقط. التنظيف لاحق ولا يمسّ النسخة المُعتمَدة.
+  // ------------------------------------------------------------------
+
+  /** يضمن وجود مجلد الجذر `current/versions`. */
+  async ensureVersionsRoot() {
+    if (this._versionsRootId) return { ok: true, data: this._versionsRootId };
+    const currentId = await this.subdirId('current');
+    if (!currentId) return { ok: false, code: 'no_structure' };
+    const ensured = await this.ensureFolder(currentId, MIRROR_VERSIONS_DIR);
+    if (!ensured.ok) return ensured;
+    this._versionsRootId = ensured.data;
+    return { ok: true, data: ensured.data };
+  }
+
+  /** يضمن وجود مجلد نسخة `v<N>` ويعيد معرّفه. */
+  async ensureVersionDir(version) {
+    const name = mirrorVersionDirName(version);
+    if (!name) return { ok: false, code: 'invalid_version' };
+    const root = await this.ensureVersionsRoot();
+    if (!root.ok) return root;
+    const ensured = await this.ensureFolder(root.data, name);
+    if (!ensured.ok) return ensured;
+    return { ok: true, data: ensured.data };
+  }
+
+  /** يضمن جذر ملفات النسخة `versions/v<N>/files` ويعيد معرّفه. */
+  async ensureVersionFilesRoot(version) {
+    const cached = this._versionRoots.get(version);
+    if (cached) return { ok: true, data: cached };
+    const vdir = await this.ensureVersionDir(version);
+    if (!vdir.ok) return vdir;
+    const ensured = await this.ensureFolder(vdir.data, MIRROR_DIR_NAME);
+    if (!ensured.ok) return ensured;
+    this._versionRoots.set(version, ensured.data);
+    return { ok: true, data: ensured.data };
+  }
+
+  /** يضمن سلسلة مجلدات داخل ملفات نسخة محدّدة. */
+  async ensureVersionDirPath(version, segments) {
+    const root = await this.ensureVersionFilesRoot(version);
+    if (!root.ok) return root;
+    let parentId = root.data;
+    let key = '';
+    for (const seg of segments || []) {
+      key = key ? `${key}/${seg}` : seg;
+      const cacheKey = `${version}:${key}`;
+      const cachedDir = this._versionDirs.get(cacheKey);
+      if (cachedDir) { parentId = cachedDir; continue; }
+      const ensured = await this.ensureFolder(parentId, seg);
+      if (!ensured.ok) return ensured;
+      parentId = ensured.data;
+      this._versionDirs.set(cacheKey, parentId);
+    }
+    return { ok: true, data: parentId };
+  }
+
+  /** يرفع/يحدّث ملفاً داخل نسخة محدّدة (بمسار نسبي). */
+  async upsertVersionFile(version, relPath, content, mimeType) {
+    const path = normalizeRelPath(relPath);
+    const dir = await this.ensureVersionDirPath(version, dirSegments(path));
+    if (!dir.ok) return dir;
+    const name = path.split('/').pop();
+    const buf = toBuffer(content);
+    const res = await this.upsertFile(dir.data, name, buf, mimeType || mimeTypeForPath(path));
+    if (!res.ok) return res;
+    return { ok: true, data: { id: res.data?.id, name, size: buf.length } };
+  }
+
+  /** يقرأ ملفاً من نسخة محدّدة بالمسار النسبي. */
+  async readVersionPathFile(version, relPath) {
+    const path = normalizeRelPath(relPath);
+    const dir = await this.ensureVersionDirPath(version, dirSegments(path));
+    if (!dir.ok) return dir;
+    return this.readVersionFile(dir.data, path.split('/').pop());
+  }
+
+  /** يسرد كل ملفات نسخة محدّدة: `[{ path, driveId, size }]`. */
+  async listVersionFiles(version) {
+    const root = await this.ensureVersionFilesRoot(version);
+    if (!root.ok) return root;
+    const out = [];
+    const walk = async (folderId, prefix) => {
+      const list = await this.listChildren(folderId);
+      if (!list.ok) return list;
+      for (const item of list.data) {
+        const rel = prefix ? `${prefix}/${item.name}` : item.name;
+        if (item.mimeType === 'application/vnd.google-apps.folder') {
+          const res = await walk(item.id, rel);
+          if (!res.ok) return res;
+        } else {
+          out.push({ path: rel, driveId: item.id, size: Number(item.size ?? 0) });
+        }
+      }
+      return { ok: true };
+    };
+    const res = await walk(root.data, '');
+    if (!res.ok) return res;
+    out.sort((a, b) => (a.path < b.path ? -1 : 1));
+    return { ok: true, data: out };
+  }
+
+  /** يكتب بيان نسخة `versions/v<N>/manifest.json`. */
+  async writeVersionManifest(version, manifest) {
+    const vdir = await this.ensureVersionDir(version);
+    if (!vdir.ok) return vdir;
+    return this.writeJson(vdir.data, MIRROR_MANIFEST_NAME_V2, manifest);
+  }
+
+  /** يقرأ بيان نسخة. */
+  async readVersionManifest(version) {
+    const vdir = await this.ensureVersionDir(version);
+    if (!vdir.ok) return vdir;
+    return this.readJsonChild(vdir.data, MIRROR_MANIFEST_NAME_V2);
+  }
+
+  /** يسرد أرقام النسخ الموجودة فعلاً في `versions/`. */
+  async listVersions() {
+    const root = await this.ensureVersionsRoot();
+    if (!root.ok) return root;
+    const list = await this.listChildren(root.data);
+    if (!list.ok) return list;
+    const versions = list.data
+      .filter((f) => f.mimeType === 'application/vnd.google-apps.folder')
+      .map((f) => parseMirrorVersionDir(f.name))
+      .filter((n) => n !== null)
+      .sort((a, b) => a - b);
+    return { ok: true, data: versions };
+  }
+
+  /** يقرأ مرجع الاعتماد `current/HEAD.json` (المصدر الوحيد لتعريف CURRENT). */
+  async readMirrorHead() {
+    const id = await this.subdirId('current');
+    if (!id) return { ok: false, code: 'no_structure' };
+    return this.readJsonChild(id, MIRROR_HEAD_NAME);
+  }
+
+  /** يكتب مرجع الاعتماد `current/HEAD.json` (نقطة الالتزام الوحيدة). */
+  async writeMirrorHead(head) {
+    const id = await this.subdirId('current');
+    if (!id) return { ok: false, code: 'no_structure' };
+    return this.writeJson(id, MIRROR_HEAD_NAME, head);
+  }
+
+  /** يحذف مجلد نسخة تعاودياً (بعد اعتماد نسخة أحدث فقط). لا يمسّ HISTORY. */
+  async deleteVersionDir(version) {
+    const vdir = await this.ensureVersionDir(version);
+    if (!vdir.ok) return vdir;
+    const removed = await this.deleteFolderRecursive(vdir.data);
+    this._versionRoots.delete(version);
+    for (const key of [...this._versionDirs.keys()]) if (key.startsWith(`${version}:`)) this._versionDirs.delete(key);
+    return removed;
+  }
+
+  /** يحذف مجلداً وكل محتواه تعاودياً. */
+  async deleteFolderRecursive(folderId) {
+    if (!folderId) return { ok: false, code: 'no_folder' };
+    const list = await this.listChildren(folderId);
+    if (!list.ok) return list;
+    for (const item of list.data) {
+      if (item.mimeType === 'application/vnd.google-apps.folder') {
+        const child = await this.deleteFolderRecursive(item.id);
+        if (!child.ok) return child;
+      } else {
+        const del = await this.client.deleteFile(item.id);
+        if (!del.ok) return del;
+      }
+    }
+    const del = await this.client.deleteFile(folderId);
+    if (!del.ok) return del;
+    return { ok: true, data: { removed: true } };
   }
 
   // ------------------------------------------------------------------

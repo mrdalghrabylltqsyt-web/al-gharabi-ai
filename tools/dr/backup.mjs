@@ -227,6 +227,12 @@ async function runBackupInner({ store, files, dumpDatabase, encryptDatabase, met
   const existingIds = points.ok ? points.data.map((p) => p.id) : [];
   const recoveryPointId = nextRecoveryPointId(existingIds);
   const manifest = buildBackupManifest({ ...candidateManifest, recoveryPointId, previousRecoveryPointId: previousManifest?.recoveryPointId ?? null });
+  // CURRENT المُعتمدة (نسخة المرآة الفردية) من مرجع الاعتماد HEAD.json وحده (قراءة فقط).
+  let currentMirror = null;
+  try {
+    const headRes = await store.readMirrorHead();
+    if (headRes.ok && headRes.data && Number.isFinite(headRes.data.version)) currentMirror = headRes.data;
+  } catch { /* لا مرجع اعتماد بعد: نكمل بلا ادّعاء */ }
   const recoveryManifest = {
     kind: 'recovery-point',
     id: recoveryPointId,
@@ -245,6 +251,9 @@ async function runBackupInner({ store, files, dumpDatabase, encryptDatabase, met
     encryptedDatabaseSize: manifest.encryptedDatabaseSize,
     bundleVersion: manifest.bundleVersion,
     backupVersion: manifest.backupVersion,
+    currentMirrorVersion: currentMirror?.version ?? null,
+    currentMirrorTreeHash: currentMirror?.treeHash ?? null,
+    currentMirrorSource: 'HEAD.json',
     note: meta.note ?? null,
   };
 
@@ -348,6 +357,8 @@ async function runBackupInner({ store, files, dumpDatabase, encryptDatabase, met
         sourceHash,
         databaseHash,
         secretsHash: encryptedSecretsHash,
+        currentMirrorVersion: currentMirror?.version ?? null,
+        currentMirrorTreeHash: currentMirror?.treeHash ?? null,
       });
     } catch { /* أفضل جهد */ }
   } catch { /* وثائق التعافي أفضل جهد: لا تُسقط نسخة مكتملة ومتحقّقة */ }

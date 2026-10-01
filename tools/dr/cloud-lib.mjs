@@ -817,18 +817,71 @@ export function buildSecretsPackageManifest(input = {}) {
 export const MIRROR_DIR_NAME = 'files';
 export const MIRROR_MANIFEST_VERSION = 1;
 
-/** يبني بيان المرآة (ملفات فردية داخل current/files/**). بلا أي سرّ. */
-export function buildMirrorManifest(input = {}) {
+// ---------------------------------------------------------------------------
+// مرآة مُرقّمة + مرجع اعتماد واحد (نسخة CURRENT آمنة ضد الانقطاع)
+// البنية: current/versions/v<N>/{files/**, manifest.json}، والاعتماد في
+// current/HEAD.json فقط. لا تُعدَّل النسخة المُعتمَدة أبداً؛ كل مزامنة تبني
+// نسخة جديدة مستقلة، والترقية = كتابة مرجع واحد (تبديل مؤشر) لا حذف/استبدال.
+// ---------------------------------------------------------------------------
+export const MIRROR_VERSIONS_DIR = 'versions';
+export const MIRROR_MANIFEST_NAME_V2 = 'manifest.json';
+export const MIRROR_HEAD_NAME = 'HEAD.json';
+export const MIRROR_HEAD_VERSION = 1;
+
+/** اسم مجلد النسخة من رقمها: v1, v2, ... (يرفض غير الصحيح). */
+export function mirrorVersionDirName(version) {
+  const n = Number(version);
+  if (!Number.isFinite(n) || n < 1 || Math.floor(n) !== n) return null;
+  return `v${n}`;
+}
+
+/** يحلّل اسم مجلد نسخة `vN` إلى رقم، أو null. */
+export function parseMirrorVersionDir(name) {
+  const m = /^v(\d+)$/.exec(String(name || ''));
+  if (!m) return null;
+  const n = Number(m[1]);
+  return Number.isFinite(n) && n >= 1 ? n : null;
+}
+
+/** يبني بيان نسخة مرآة كاملة (بلا أي سرّ). */
+export function buildVersionManifest(input = {}) {
   return {
-    kind: 'current-mirror',
-    version: Number.isFinite(input.version) ? input.version : MIRROR_MANIFEST_VERSION,
+    kind: 'current-version',
+    version: Number.isFinite(input.version) ? input.version : 0,
+    dirName: input.dirName ?? mirrorVersionDirName(input.version),
     commit: input.commit ?? null,
     treeHash: input.treeHash ?? null,
     updatedAt: input.updatedAt ?? new Date().toISOString(),
     fileCount: Number.isFinite(input.fileCount) ? input.fileCount : 0,
     sizeBytes: Number.isFinite(input.sizeBytes) ? input.sizeBytes : 0,
-    files: Array.isArray(input.files) ? input.files : [], // [{ path, sha256, driveId, size }]
+    files: Array.isArray(input.files) ? input.files : [], // [{ path, sha256, size }]
   };
+}
+
+/** يبني مرجع الاعتماد (HEAD.json) — يحدد أي نسخة هي CURRENT الفعلية. */
+export function buildMirrorHead(input = {}) {
+  return {
+    kind: 'current-head',
+    headVersion: MIRROR_HEAD_VERSION,
+    version: Number.isFinite(input.version) ? input.version : null,
+    dirName: input.dirName ?? mirrorVersionDirName(input.version),
+    treeHash: input.treeHash ?? null,
+    commit: input.commit ?? null,
+    fileCount: Number.isFinite(input.fileCount) ? input.fileCount : 0,
+    sizeBytes: Number.isFinite(input.sizeBytes) ? input.sizeBytes : 0,
+    updatedAt: input.updatedAt ?? new Date().toISOString(),
+    pendingCleanup: Array.isArray(input.pendingCleanup) ? input.pendingCleanup : [],
+    cleanupPending: Boolean(input.cleanupPending),
+  };
+}
+
+/** يتحقق من سلامة مرجع الاعتماد شكلياً. */
+export function isMirrorHeadValid(head) {
+  if (!head || typeof head !== 'object') return false;
+  if (head.kind !== 'current-head') return false;
+  if (!Number.isFinite(head.version) || head.version < 1) return false;
+  if (mirrorVersionDirName(head.version) !== head.dirName) return false;
+  return typeof head.treeHash === 'string' && head.treeHash.length === 64;
 }
 
 /**
@@ -1010,17 +1063,27 @@ export function buildStartHereDoc(input = {}) {
 أو قاعدة بيانات الإنتاج أو التطبيق نفسه.
 
 ## أين كل شيء؟
-- \`CURRENT/\` — مرآة الملفات الحقيقية للمشروع (كل ملف بمكانه) + \`manifest.json\`.
+- \`CURRENT/HEAD.json\` — **مرجع الاعتماد الوحيد**: يحدد أي نسخة هي CURRENT الفعلية.
+- \`CURRENT/versions/v<N>/files/**\` — نسخة مرآة كاملة مستقلة (كل ملف بمكانه).
+- \`CURRENT/versions/v<N>/manifest.json\` — بيان النسخة (بصمة شجرة + كل ملف و sha256).
 - \`HISTORY/rp-XXX/\` — نقاط استعادة كاملة مستقلة (لا تُعدّل أبداً).
 - \`DATABASE/database.enc\` — نسخة قاعدة البيانات **مشفّرة فقط** (لا يوجد SQL خام).
 - \`SECRETS/secrets.enc\` — حزمة الأسرار **مشفّرة فقط** + \`manifest.json\` (أسماء وبصمات).
 - \`RECOVERY/\` — هذا الدليل + \`RECOVERY-GUIDE.md\` + \`RECOVERY-MANIFEST.json\`.
 
+## كيف تُدار CURRENT (آمن ضد الانقطاع)
+- كل مزامنة تبني **نسخة جديدة مستقلة** \`v<N+1>\`؛ لا تُعدَّل النسخة المُعتمَدة أبداً.
+- الترقية = كتابة \`CURRENT/HEAD.json\` نحو النسخة الجديدة فقط (نقطة الالتزام الوحيدة).
+- إن فشل أي شيء قبل الاعتماد ⇒ CURRENT السابقة تبقى صالحة بالكامل.
+- حذف النسخ القديمة يجري **بعد** الاعتماد؛ وفشله لا يُسقط الاعتماد (يُعاد لاحقاً).
+
 ## ابدأ من هنا
 1. اقرأ \`RECOVERY-GUIDE.md\` (الخطوات الكاملة).
-2. اختر آخر نقطة استعادة سليمة من \`RECOVERY-MANIFEST.json\` (الحقل \`latestRecoveryPointId\`)
+2. **حدّد CURRENT من \`CURRENT/HEAD.json\` وحده** (الحقل \`version\` ⇒ \`CURRENT/versions/v<N>/\`).
+   إن غاب HEAD فالنظام لم يعتمد نسخة بعد.
+3. اختر آخر نقطة استعادة سليمة من \`RECOVERY-MANIFEST.json\` (الحقل \`latestRecoveryPointId\`)
    أو الأحدث في \`HISTORY/\`.
-3. **مهم:** مفتاح الاستعادة الرئيسي (\`DR_RECOVERY_MASTER_KEY\`) **لا يُحفظ داخل النسخة**؛
+4. **مهم:** مفتاح الاستعادة الرئيسي (\`DR_RECOVERY_MASTER_KEY\`) **لا يُحفظ داخل النسخة**؛
    احتفظ به في مكان آمن منفصل. بدونه لا يمكن فكّ الأسرار.
 
 ## هل تحتاج حساباً؟
@@ -1050,11 +1113,19 @@ export function buildRecoveryGuideDoc(input = {}) {
 > دليل الاستعادة الكامل. يُقرأ مباشرة من Google Drive بلا تشغيل الغرابي. بلا أي سرّ.
 
 ## 1) خريطة المجلدات
-- \`CURRENT/files/**\` — مرآة الملفات (كل ملف بمكانه). \`CURRENT/manifest.json\` بيانها.
+- \`CURRENT/HEAD.json\` — **مرجع الاعتماد**: يحدد النسخة المعتمدة (\`version\` ⇒ \`versions/v<N>/\`).
+- \`CURRENT/versions/v<N>/files/**\` — نسخة مرآة كاملة مستقلة (كل ملف بمكانه).
+- \`CURRENT/versions/v<N>/manifest.json\` — بيان النسخة (treeHash + sha256 لكل ملف).
 - \`HISTORY/rp-XXX/\` — نقطة استعادة مستقلة: \`source.tar.gz\`, \`database.enc\`, \`secrets.enc\`, \`manifest.json\`.
 - \`DATABASE/database.enc\` — نسخة قاعدة بيانات مشفّرة (لا SQL خام في Drive إطلاقاً).
 - \`SECRETS/secrets.enc\` — حزمة أسرار مشفّرة (AES-256-GCM) + \`SECRETS/manifest.json\`.
 - \`RECOVERY/\` — START-HERE.md, RECOVERY-GUIDE.md, RECOVERY-MANIFEST.json, latest-recovery.json.
+
+## 1ب) تحديد CURRENT المُعتمدة (من HEAD وحده)
+1. اقرأ \`CURRENT/HEAD.json\` ⇒ \`version\`, \`treeHash\`, \`fileCount\`, \`cleanupPending\`.
+2. النسخة الفعلية هي \`CURRENT/versions/v<version>/\`؛ بيانها \`manifest.json\` يجب أن يطابق \`treeHash\`.
+3. إن وُجد \`cleanupPending\` فهذا **تنظيف لاحق** فقط (حذف نسخ قديمة فشل) — **لا يؤثر على صحة CURRENT**.
+4. لا تعتمد على أي مجلد نسخة آخر غير المُشار إليه في HEAD.
 
 ## 2) كيف نختار آخر نقطة استعادة سليمة
 1. افتح \`RECOVERY-MANIFEST.json\` واقرأ \`latestRecoveryPointId\` و\`recoveryPoints[]\`.
@@ -1117,6 +1188,11 @@ export function buildRecoveryManifestDoc(input = {}) {
     updatedAt: input.updatedAt ?? new Date().toISOString(),
     commit: input.commit ?? latestPoint?.commit ?? null,
     latestRecoveryPointId: latest,
+    // CURRENT المُعتمدة (نسخة المرآة الفردية) — تُحدَّد من CURRENT/HEAD.json وحده.
+    currentMirrorVersion: input.currentMirrorVersion ?? null,
+    currentMirrorTreeHash: input.currentMirrorTreeHash ?? null,
+    currentMirrorSource: 'HEAD.json',
+    currentMirrorPath: input.currentMirrorVersion ? `CURRENT/versions/v${input.currentMirrorVersion}/` : null,
     fileCount: Number.isFinite(input.fileCount) ? input.fileCount : latestPoint?.fileCount ?? null,
     treeHash: input.treeHash ?? latestPoint?.treeHash ?? null,
     sourceHash: input.sourceHash ?? latestPoint?.sourceHash ?? null,
