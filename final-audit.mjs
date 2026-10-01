@@ -1611,6 +1611,9 @@ add('dr-keyvault-self-key-test', drVaultTest.includes('present excludes vault se
 add('dr-lostkeys-drill', drLostKeysTest.includes('vault opens with owner key alone') && drLostKeysTest.includes('database decrypts with vault-recovered key') && drLostKeysTest.includes('secrets decrypt with vault-recovered master key') && drLostKeysTest.includes('isolated restored app boots') && (pkg.scripts['test:dr'] || '').includes('test:dr-lostkeys'), 'اختبار فقدان كل المفاتيح: فتح الخزنة والاستعادة والإقلاع المعزول ومضمّن في test:dr');
 add('dr-lostkeys-honest-classification', drLostKeysTest.includes('missing critical key => NOT_RECOVERABLE') && drVaultRecoveryReport.includes('NOT_RECOVERABLE') && drVaultRecoveryReport.includes('REQUIRES_OWNER_ACTION'), 'تصنيف الاستعادة صادق: قيمة حرجة مفقودة تُعلن NOT_RECOVERABLE لا تُخفى');
 add('dr-lostkeys-no-production', !drLostKeysTest.includes('restore/production') && !drLostKeysTest.includes('runProductionRestore') && drLostKeysTest.includes('fakeDrive'), 'اختبار فقدان المفاتيح لا ينفّذ أي استعادة إنتاجية (معزول بالكامل)');
+// علاقة المفاتيح الأربعة: استقلال كامل + استعادة master/db/token من الخزنة دون مفتاح الخزنة.
+const drKeyRelTest = fs.existsSync(path.join(root, 'engine/tests/dr/dr.keyrelations.test.ts')) ? read('engine/tests/dr/dr.keyrelations.test.ts') : '';
+add('dr-keyrelations-test', drKeyRelTest.includes('secrets NOT decryptable with vault key') && drKeyRelTest.includes('vault restores master key') && drKeyRelTest.includes('vault does NOT store its own key') && (pkg.scripts['test:dr'] || '').includes('test:dr-keyrelations'), 'اختبار علاقة المفاتيح الأربعة (استقلال + استعادة من الخزنة) مضمّن في test:dr');
 
 const failed = checks.filter(x => !x.ok);
 console.table(checks);
