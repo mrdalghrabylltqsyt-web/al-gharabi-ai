@@ -69,6 +69,7 @@
     "test:brain-memory": "tsx engine/tests/brain.memory.persistence.test.ts",
     "test:architecture-brain": "tsx engine/tests/architecture.parallel.brain.test.ts",
     "test:dr-core": "tsx engine/tests/dr/dr.core.test.ts",
+    "test:dr-source": "tsx engine/tests/dr/dr.source.test.ts",
     "test:dr-store": "tsx engine/tests/dr/dr.store.test.ts",
     "test:dr-sync": "tsx engine/tests/dr/dr.sync.test.ts",
     "test:dr-auth": "tsx engine/tests/dr/dr.auth.test.ts",
@@ -80,7 +81,7 @@
     "test:dr-restore": "tsx engine/tests/dr/dr.restore.test.ts",
     "test:dr-endpoints": "tsx engine/tests/dr/dr.endpoints.test.ts",
     "test:dr-real-drill": "tsx engine/tests/dr/dr.real-drill.test.ts",
-    "test:dr": "npm run test:dr-core && npm run test:dr-store && npm run test:dr-sync && npm run test:dr-auth && npm run test:dr-db && npm run test:dr-routes && npm run test:dr-backup && npm run test:dr-secrets && npm run test:dr-mirror && npm run test:dr-restore && npm run test:dr-endpoints && npm run test:dr-real-drill && npm run test:dr-ui",
+    "test:dr": "npm run test:dr-core && npm run test:dr-source && npm run test:dr-store && npm run test:dr-sync && npm run test:dr-auth && npm run test:dr-db && npm run test:dr-routes && npm run test:dr-backup && npm run test:dr-secrets && npm run test:dr-mirror && npm run test:dr-restore && npm run test:dr-endpoints && npm run test:dr-real-drill && npm run test:dr-ui",
     "test:dr-ui": "tsx engine/tests/dr/dr.ui.test.ts",
     "test:dr-stage4": "tsx engine/tests/dr/dr.stage4.evidence.ts"
   },

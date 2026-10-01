@@ -60,7 +60,17 @@ export interface DriveRoutesDeps {
   /** ناقل OAuth اختياري (للاختبار): يوجّه تبادل الرمز إلى خادم وهمي. */
   oauthTransport?: any;
   /** يجمع ملفات المصدر للنسخة (المشمولة + المستبعدة للفحص). */
-  collectSourceFiles?: () => { included: any[]; excluded: any[] };
+  collectSourceFiles?: () => {
+    included: any[];
+    excluded: any[];
+    /** false = شجرة ناقصة (تمنع النسخة/الترقية). غيابها يعني عدم إجراء فحص اكتمال. */
+    complete?: boolean;
+    source?: string | null;
+    fileCount?: number | null;
+    minFiles?: number | null;
+    missingRequired?: string[] | null;
+    reason?: string | null;
+  };
   /** ينتج نسخة نصية مؤقتة من قاعدة البيانات (تُشفَّر قبل الرفع ولا تُرفع خاماً). */
   dumpDatabase?: () => Promise<string>;
   /** يبني حزمة الأسرار المشفّرة من البيئة الفعلية (أسماء موجودة فقط). */
@@ -102,6 +112,31 @@ export function registerDriveRoutes(app: express.Express, deps: DriveRoutesDeps)
   // ذاكرة تشخيص الرمز: تمنع طلب تجديد متكرراً عند كل نداء صحة (الفحص العام).
   let refreshDiagCache: { at: number; value: any } | null = null;
   const REFRESH_DIAG_TTL_MS = 5 * 60 * 1000;
+
+  // ذاكرة حالة جمع المصدر (بلا قراءة المستودع عند كل نداء صحة) — تلخيص فقط بلا محتوى.
+  let sourceCollectionCache: { at: number; value: any } | null = null;
+  const SOURCE_COLLECTION_TTL_MS = 5 * 60 * 1000;
+  function sourceCollectionStatus(): any {
+    if (!deps.collectSourceFiles) return null;
+    const fresh = sourceCollectionCache && (Date.now() - sourceCollectionCache.at) < SOURCE_COLLECTION_TTL_MS;
+    if (fresh) return sourceCollectionCache!.value;
+    let value: any;
+    try {
+      const c = deps.collectSourceFiles();
+      value = {
+        complete: c.complete ?? null,
+        source: (c as any).source ?? null,
+        fileCount: (c as any).fileCount ?? (Array.isArray(c.included) ? c.included.length : null),
+        minFiles: (c as any).minFiles ?? null,
+        missingRequired: (c as any).missingRequired ?? null,
+        reason: (c as any).reason ?? null,
+      };
+    } catch (e: any) {
+      value = { complete: null, source: null, fileCount: null, reason: String(e?.code || e?.message || 'collect_failed').slice(0, 60) };
+    }
+    sourceCollectionCache = { at: Date.now(), value };
+    return value;
+  }
 
   const stateStore = new DriveStateStore({
     initial: [],
@@ -379,6 +414,22 @@ export function registerDriveRoutes(app: express.Express, deps: DriveRoutesDeps)
     try {
       store = buildStore(client);
       const collected = deps.collectSourceFiles ? deps.collectSourceFiles() : { included: [], excluded: [] };
+      // حماية صريحة: لا نسخة ولا ترقية من شجرة ناقصة (منعت سابقاً "نسخة سليمة"
+      // من مجلد Docker يحوي ملفين فقط). لا رفع ولا نقطة استعادة عند النقص.
+      if (collected.complete === false) {
+        return res.status(409).json({
+          success: false,
+          code: 'SOURCE_INCOMPLETE',
+          error: 'المصدر المُجمَّع ناقص: رُفض إنشاء نسخة/ترقية CURRENT (لا نسخة سليمة من شجرة ناقصة).',
+          sourceCollection: {
+            source: (collected as any).source ?? null,
+            fileCount: (collected as any).fileCount ?? null,
+            minFiles: (collected as any).minFiles ?? null,
+            missingRequired: (collected as any).missingRequired ?? null,
+            reason: (collected as any).reason ?? null,
+          },
+        });
+      }
       const files = [...(collected.included || []), ...(collected.excluded || [])];
       const result = await runBackup({
         store,
@@ -549,6 +600,9 @@ export function registerDriveRoutes(app: express.Express, deps: DriveRoutesDeps)
           updatedAt: mirror?.updatedAt ?? null,
           error: mirror?.error ?? null,
         },
+        // مصدر الجمع الحالي (بلا محتوى): git/مجلد + الاكتمال + عدد الملفات.
+        // يكشف فوراً إن كان مجلد التشغيل ناقصاً (مثل صورة Docker) قبل أي نسخة.
+        sourceCollection: sourceCollectionStatus(),
         // منظومة التعافي: نقاط الاستعادة تُقرأ من /api/dr/recovery-points (owner).
         recoverySystem: {
           currentMirror: Boolean(mirror?.treeHash),
@@ -671,6 +725,21 @@ export function registerDriveRoutes(app: express.Express, deps: DriveRoutesDeps)
     try {
       const store = buildStore(client);
       const collected = deps.collectSourceFiles ? deps.collectSourceFiles() : { included: [], excluded: [] };
+      // نفس الحماية: لا مزامنة CURRENT من شجرة ناقصة.
+      if (collected.complete === false) {
+        return res.status(409).json({
+          success: false,
+          code: 'SOURCE_INCOMPLETE',
+          error: 'المصدر المُجمَّع ناقص: رُفضت مزامنة CURRENT (لا مرآة من شجرة ناقصة).',
+          sourceCollection: {
+            source: (collected as any).source ?? null,
+            fileCount: (collected as any).fileCount ?? null,
+            minFiles: (collected as any).minFiles ?? null,
+            missingRequired: (collected as any).missingRequired ?? null,
+            reason: (collected as any).reason ?? null,
+          },
+        });
+      }
       const files = [...(collected.included || []), ...(collected.excluded || [])];
       const result = await runCurrentMirror({ store, files, commit: deps.gitMeta ? deps.gitMeta().commit ?? null : null, previousMirror: control().driveMirror || null, now: startedAt });
       rememberStructure(store);

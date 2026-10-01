@@ -23,7 +23,7 @@ import { registerBrainRoutes } from "./engine/brain/routes";
 import { registerDriveRoutes } from "./engine/dr/routes";
 import { buildSecretsBundle } from "./tools/dr/secret-crypto.mjs";
 import { buildRecoveryInformation, buildRecoveryInstructions } from "./tools/dr/cloud-lib.mjs";
-import { collectRepoFiles } from "./tools/dr/cloud-sync.mjs";
+import { collectTrustedSourceTree } from "./tools/dr/cloud-sync.mjs";
 import { buildCentralBrainState, brainDiagnostics } from "./engine/brain/state";
 import { capabilityMatrix } from "./engine/brain/strategy/capabilityMatrix";
 import { defineGoal } from "./engine/brain/goals/goalEngine";
@@ -11864,7 +11864,7 @@ registerDriveRoutes(app, {
     Object.assign(drControl, partial);
     saveControlState();
   },
-  collectSourceFiles: () => collectRepoFiles(process.cwd()),
+  collectSourceFiles: () => collectTrustedSourceTree(process.cwd()),
   dumpDatabase: () => storageAdapter.dump(),
   buildSecrets: () => buildSecretsBundle(process.env),
   recoveryInfo: (ctx) => ({

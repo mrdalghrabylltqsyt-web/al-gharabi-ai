@@ -13,8 +13,10 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
+import { execFileSync } from 'node:child_process';
 import {
   shouldExclude,
+  normalizeRelPath,
   DR_ROOT_DIR,
   RP_001_COMMIT,
 } from './cloud-lib.mjs';
@@ -25,6 +27,11 @@ import { createRefreshTokenProvider, inspectDriveAuthEnv } from './drive-auth.mj
 
 const REPO_ROOT = process.cwd();
 const MAX_FILE_BYTES = 8 * 1024 * 1024; // تجاهل الملفات الضخمة جداً من النسخة
+
+/** ملفات يجب وجودها في أي مصدر سليم (تمنع ترقية/نقطة استعادة من شجرة ناقصة). */
+export const SOURCE_REQUIRED_FILES = ['server.ts', 'package.json', 'package-lock.json'];
+/** أدنى عدد ملفات مقبول كمصدر كامل — يحمي من "شجرة ملفين" (حالة إنتاج سابقة). */
+export const SOURCE_MIN_FILES = 10;
 
 /** يجمع ملفات المستودع: المحتوى للمشمولة، والمحتوى للفحص فقط للمستبعدة. */
 export function collectRepoFiles(rootDir = REPO_ROOT, options = {}) {
@@ -56,6 +63,83 @@ export function collectRepoFiles(rootDir = REPO_ROOT, options = {}) {
   included.sort((a, b) => (a.path < b.path ? -1 : 1));
   excluded.sort((a, b) => (a.path < b.path ? -1 : 1));
   return { included, excluded };
+}
+
+/**
+ * يقيس اكتمال المصدر المُجمَّع. الحالة الحقيقية على الإنتاج (Render Docker) كانت
+ * `process.cwd()` = مجلد الصورة يحوي ملفين فقط (package.json/package-lock.json)،
+ * فسُجّلت نسخة "سليمة" وهي ناقصة. هذا الفحص يمنع ذلك صراحةً.
+ */
+export function assessSourceCompleteness(files, options = {}) {
+  const minFiles = Number.isFinite(options.minFiles) ? options.minFiles : SOURCE_MIN_FILES;
+  const required = Array.isArray(options.requiredFiles) ? options.requiredFiles : SOURCE_REQUIRED_FILES;
+  const paths = new Set(
+    (files || []).map((f) => normalizeRelPath(f?.path)).filter(Boolean),
+  );
+  const missingRequired = required.filter((p) => !paths.has(p));
+  const complete = paths.size >= minFiles && missingRequired.length === 0;
+  return {
+    complete,
+    fileCount: paths.size,
+    minFiles,
+    requiredFiles: required,
+    missingRequired,
+    reason: complete
+      ? null
+      : missingRequired.length
+        ? `required_files_missing:${missingRequired.join(',')}`
+        : `too_few_files:${paths.size}<${minFiles}`,
+  };
+}
+
+/**
+ * يجمع المصدر من **الشجرة المتتبَّعة في Git** (مصدر موثوق كامل) عند توفّر Git
+ * ووجود المستودع في مجلد العمل، وإلا يرجع إلى المشي على نظام الملفات.
+ *
+ * السبب: على بيئة تشغيل لا تحتوي المستودع (صورة Docker تحوي dist فقط) يعطي
+ * المشي على المجلد شجرة ناقصة. الشجرة المتتبَّعة تمثّل المشروع المعتمد فعلاً.
+ */
+export function collectTrustedSourceTree(rootDir = REPO_ROOT, options = {}) {
+  const git = collectGitTrackedFiles(rootDir);
+  if (git.ok && git.files.length) {
+    const assessment = assessSourceCompleteness(git.files, options);
+    return { included: git.files, excluded: [], source: 'git', gitAvailable: true, ...assessment };
+  }
+  const { included, excluded } = collectRepoFiles(rootDir, options);
+  const assessment = assessSourceCompleteness(included, options);
+  return { included, excluded, source: 'walk', gitAvailable: false, gitError: git.error ?? null, ...assessment };
+}
+
+/**
+ * يقرأ قائمة الملفات المتتبَّعة عبر `git ls-files`، ثم يقرأ محتوى الملفات
+ * الموجودة فقط (يتخطى المحذوف/غير المقروء/الأكبر من الحد). آمن بلا أسرار.
+ */
+export function collectGitTrackedFiles(rootDir = REPO_ROOT, options = {}) {
+  const maxBytes = Number.isFinite(options.maxFileBytes) ? options.maxFileBytes : MAX_FILE_BYTES;
+  let out;
+  try {
+    out = execFileSync('git', ['-C', rootDir, 'ls-files', '-z'], {
+      encoding: 'utf8',
+      maxBuffer: 32 * 1024 * 1024,
+      stdio: ['ignore', 'pipe', 'ignore'],
+    });
+  } catch (err) {
+    return { ok: false, files: [], error: String(err?.code || err?.message || 'git_unavailable').slice(0, 80) };
+  }
+  const included = [];
+  for (const raw of String(out).split('\0')) {
+    const rel = normalizeRelPath(raw);
+    if (!rel || shouldExclude(rel)) continue;
+    const abs = path.join(rootDir, rel);
+    let stat;
+    try { stat = fs.statSync(abs); } catch { continue; } // محذوف في العمل لكن متتبَّع
+    if (!stat.isFile() || stat.size > maxBytes) continue;
+    let content;
+    try { content = fs.readFileSync(abs); } catch { continue; }
+    included.push({ path: rel, content });
+  }
+  included.sort((a, b) => (a.path < b.path ? -1 : 1));
+  return { ok: true, files: included };
 }
 
 function buildClientFromEnv(env = process.env) {

@@ -2856,3 +2856,49 @@ access token (بلا أي عملية Drive كتابة، بلا تغيير الر
 تتطلّب تفعيل النسخة من جلسة المالك على الإنتاج (`/api/dr/backup`)، ثم إعادة تشغيل السكربت
 بـ`--real` مع توفّر `DRIVE_OAUTH_*` في البيئة. لا يُعلن أي وكيل برمجي إنشاء rp-003 على Drive
 بلا هذا الدليل. rp-002 لا تُحذف ولا تُعدّل (نقاط الاستعادة غير قابلة للتعديل).
+
+## جذر «نسخة الملفين» في CURRENT — مصدر موثوق من Git + حماية المصدر الناقص (2026-10-01)
+
+**الدليل القاطع (لا تخمين):** CURRENT في Google Drive كان يحوي ملفين فقط
+(`package.json`, `package-lock.json`)، وبصمته تطابق تلك المجموعة حرفياً:
+`treeHash 2f70746bab8e18fe7f00ba7094730c913d1d03a91ebc32147290c167152e6f28` و
+`sourceHash df9c0d09fe584ab79c6d41e53177a89e839829bfa122b88476a621f4dc66cb81`
+(أُعيد إنتاجهما محلياً لمجموعة الملفين بالضبط؛ الشجرة الكاملة 243 ملفاً تعطي بصمة مختلفة).
+
+**السبب الحقيقي:** `collectRepoFiles(process.cwd())` كان يمشي على مجلد التشغيل. لكن
+مستودع المشروع يحوي **`Dockerfile`** (مرحلة runtime تنسخ فقط `package.json`+`package-lock.json`+
+`dist/`)، و`render.yaml` يقول `runtime: node` لكن **خدمة Render مضبوطة فعلياً على Docker**
+(يُثبت بوجود `.dockerignore` + Dockerfile منذ 2026-09-21 + البصمة المطابقة تماماً لمجموعة
+الملفين). أي أن `process.cwd()` على الإنتاج = مجلد الصورة = ملفان فقط. لا fallback ولا allowlist
+في الكود، والمشي يعمل كما هو مُبرمَج؛ المدخل نفسه كان ناقصاً.
+
+**الإصلاح:**
+- `tools/dr/cloud-sync.mjs`: `collectGitTrackedFiles(rootDir)` (عبر `git ls-files -z`) و
+  `collectTrustedSourceTree(rootDir)` — يفضّل **الشجرة المتتبَّعة في Git** (المشروع المعتمد
+  الكامل، 243 ملفاً)، ويسقط صراحةً إلى المشي على المجلد عند غياب Git مع وسم `source: git|walk`.
+  لا يُستبعد ملف مهم لمجرد حجمه (الحد 8MiB فقط لملفات ضخمة جداً).
+- `assessSourceCompleteness(files)` — مصدر واحد: حد أدنى `SOURCE_MIN_FILES=10` + ملفات إلزامية
+  `SOURCE_REQUIRED_FILES=[server.ts, package.json, package-lock.json]`. يعيد `complete` و`reason`.
+- `server.ts`: `collectSourceFiles: () => collectTrustedSourceTree(process.cwd())`.
+- `engine/dr/routes.ts`: **حماية صريحة** في `/api/dr/backup` و`/api/dr/sync` — إن كان
+  `collected.complete === false` يُرد **409 `SOURCE_INCOMPLETE`** (بلا أي رفع ولا ترقية)، مع
+  تفاصيل `sourceCollection` (source/fileCount/minFiles/missingRequired/reason) بلا محتوى ولا سرّ.
+- `/api/dr/health`: كتلة `sourceCollection` (مخبّأة 5 دقائق) تُعلن فوراً مصدر الجمع واكتماله
+  وعدد ملفاته — فيُكشف أي مجلد تشغيل ناقص قبل أي نسخة.
+- اختبار `engine/tests/dr/dr.source.test.ts` (`npm run test:dr-source`، 23 فحصاً): الشجرة الموثوقة
+  كاملة محلياً (تضم server.ts/engine/src، وتستبعد node_modules/dist/.env)، رفض مجموعة الملفين،
+  ورفض `/api/dr/backup` و`/api/dr/sync` بـ409 بلا رفع. final-audit = **889 فحصاً**.
+
+**درس عام:** لا تُبنَ النسخة من `process.cwd()` بلا إثبات محتواه على بيئة التشغيل. على Docker
+يكون مجلد العمل صورة مصغّرة، فيجب الجمع من مصدر موثوق (Git) + حماية اكتمال صريحة تمنع
+«نسخة سليمة» من شجرة ناقصة.
+
+**ما بقي على المالك (إجراء خارجي لا ينفّذه أي وكيل):**
+1. على Render، تأكد أن خدمة `al-gharabi-ai` إمّا Runtime=Node (لا Docker)، أو أن صورة Docker
+   تنسخ الشجرة الكاملة. بدونه يعمل `collectTrustedSourceTree` عبر Git فقط إن وُجد `.git`،
+   وإلا يُرفض بـ`SOURCE_INCOMPLETE` (وهذا مقصود: لا نسخة ناقصة).
+2. نفّذ `/api/dr/sync` ثم `/api/dr/backup` من جلسة المالك بعد النشر لإصلاح CURRENT (مرآة 243
+   ملفاً) وإنشاء نقطة استعادة كاملة جديدة. لا تُحذف rp-002/rp-003.
+3. شغّل `/api/dr/restore/drill` و`dr.stage4.evidence.ts --real` مع `DRIVE_OAUTH_*` لإثبات
+   الاستعادة الحقيقية من Drive خارج الغرابي.
+

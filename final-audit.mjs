@@ -1540,6 +1540,18 @@ add('dr-real-drill-isolated', fs.existsSync(path.join(root, 'engine/tests/dr/dr.
 add('dr-real-drill-no-prod', read('engine/tests/dr/dr.real-drill.test.ts').includes('isolated db differs from production db') && read('engine/tests/dr/dr.real-drill.test.ts').includes('no secret leaked in boot logs'), 'الاختبار المعزول يفصل قاعدة الاستعادة ويؤكّد عدم تسريب الأسرار');
 add('dr-secret-scan-no-self-block', !/engine\/tests\/dr\/dr\.secrets\.test\.ts['"][^\n]*AIzaSy/.test(drSources[0]) && read('engine/tests/dr/dr.secrets.test.ts').includes('dummy test value'), 'قيم الأسرار الوهمية في الاختبار موسومة فلا تُعطّل النسخة الحقيقية');
 
+// --- مصدر DR الموثوق + حماية «المصدر الناقص» (جذر نسخة الملفين على Docker) ---
+const drCloudSync = fs.existsSync(path.join(drDir, 'cloud-sync.mjs')) ? read('tools/dr/cloud-sync.mjs') : '';
+add('dr-source-git-tracked', drCloudSync.includes('export function collectGitTrackedFiles') && drCloudSync.includes("'ls-files'") && drCloudSync.includes('export function collectTrustedSourceTree'), 'مصدر DR يجمع الشجرة المتتبَّعة في Git (لا مجرد مشي على المجلد)');
+add('dr-source-walk-fallback', drCloudSync.includes("source: 'git'") && drCloudSync.includes("source: 'walk'"), 'سقوط صريح إلى المشي على المجلد عند غياب Git مع وسم المصدر');
+add('dr-source-completeness-single-source', drCloudSync.includes('export function assessSourceCompleteness') && drCloudSync.includes('SOURCE_MIN_FILES') && drCloudSync.includes('SOURCE_REQUIRED_FILES'), 'فحص اكتمال المصدر مصدر واحد (حد أدنى + ملفات إلزامية)');
+add('dr-server-uses-trusted-collector', server.includes('collectTrustedSourceTree') && !server.includes('collectRepoFiles(process.cwd())'), 'server.ts يستخدم جامع الشجرة الموثوق (لا مشي مجلد ناقص)');
+add('dr-backup-guards-incomplete', drRoutes.includes('SOURCE_INCOMPLETE') && drRoutes.indexOf('SOURCE_INCOMPLETE') < drRoutes.indexOf('await runBackup('), 'مسار النسخة يرفض المصدر الناقص (SOURCE_INCOMPLETE) قبل أي رفع');
+add('dr-sync-guards-incomplete', (drRoutes.match(/SOURCE_INCOMPLETE/g) || []).length >= 2 && drRoutes.lastIndexOf('SOURCE_INCOMPLETE') < drRoutes.lastIndexOf('await runCurrentMirror('), 'مسارا النسخة والمزامنة يرفضان المصدر الناقص (لا نسخة سليمة من شجرة ناقصة)');
+add('dr-health-source-collection', /sourceCollection:\s*sourceCollectionStatus\(\)/.test(drRoutes) && drRoutes.includes('function sourceCollectionStatus'), 'health يعرض حالة جمع المصدر (اكتمال + مصدر + عدد) بلا محتوى');
+add('dr-source-collection-no-secret', !/sourceCollection[\s\S]{0,400}(clientSecret|refreshToken|GOCSPX|masterKey)/.test(drRoutes), 'حالة جمع المصدر لا تحمل أي قيمة سرّية');
+add('dr-source-test-present', fs.existsSync(path.join(root, 'engine/tests/dr/dr.source.test.ts')) && (pkg.scripts['test:dr'] || '').includes('test:dr-source'), 'اختبار مصدر DR الموثوق + حماية النقص مضمّن في test:dr');
+
 const failed = checks.filter(x => !x.ok);
 console.table(checks);
 if (failed.length) {
