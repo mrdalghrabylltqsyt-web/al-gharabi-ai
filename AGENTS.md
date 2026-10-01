@@ -2990,3 +2990,40 @@ restart/idempotency، وثائق RECOVERY، وحالة health بلا أسرار.
   URIs القيمة أعلاه **حرفياً**. لو ظهر `redirect_uri_mismatch` مستقبلاً فسببه أن المسجّل
   هناك مختلف (شرطة مائلة/نطاق/http) وليس الكود.
 
+
+## إغلاق DR: منع الاحتواء الدائري لمفتاح الخزنة + إثبات «فقدان كل المفاتيح» (2026-10-01)
+
+**العطل المُثبت (لا تخمين):** `DR_RECOVERY_VAULT_KEY` — المفتاح الذي **يفتح** خزنة مفاتيح
+الطوارئ — كان **يُخزَّن داخل الخزنة نفسها** لأن `presentInventoryNames()` كانت تُرجعه (فهو
+في الجرد كي يظهر للمالك في واجهة الجرد)، فيشفّره `encryptKeyVault` ضمن الحمولة. أُثبت حياً:
+`buildVaultSnapshot(env).names` كان يحوي `DR_RECOVERY_VAULT_KEY`، و`decryptKeyVault`
+يعيده بين القيم. هذا يخالف توثيق الوحدة صراحةً («المفتاح لا يُحفظ داخل Drive أبداً») ويخلق
+احتواءً دائرياً: من يفتح الخزنة يسترجع مفتاح فتحها، فتنهار قيمة «مفتاح مستقل خارج النظام».
+
+**الإصلاح (مصدر واحد + دفاع مزدوج، بلا أي سرّ):**
+- `engine/dr/recoveryVault/inventory.ts`: ثابت `VAULT_SELF_KEY_ENV`، و`presentInventoryNames`
+  تستبعده فلا يدخل الخزنة (يبقى في الجرد ليُعرض تصنيفه).
+- `tools/dr/key-vault-crypto.mjs`: `buildVaultRecords` و`encryptKeyVault` يُسقطان
+  `VAULT_KEY_ENV` دفاعاً مزدوجاً حتى لو وصل خطأً.
+- تصنيف الاستعادة الجديد `engine/dr/recoveryVault/recoveryReport.ts`
+  (`RESTORABLE`/`REGENERATABLE`/`REQUIRES_OWNER_ACTION`/`NOT_RECOVERABLE`) يوسم مفتاح الخزنة
+  `REQUIRES_OWNER_ACTION` صراحةً، ويعرض ملخّصه في `keyVaultStatus` (`recovery.summary` +
+  `vaultSelfKeyStored`) بلا أي قيمة. **قيمة حرجة مفقودة تُعلن `NOT_RECOVERABLE` لا تُخفى.**
+
+**إثبات «فقدان كل المفاتيح» (All-Keys-Lost Drill):** `engine/tests/dr/dr.lostkeys.test.ts`
+(`npm run test:dr-lostkeys`، 30 فحصاً، مضاف إلى `test:dr`): يبني نسخة + خزنة على Drive وهمي،
+ثم **يُسقط كل مفاتيح بيئة التشغيل** ويُبقي فقط مفتاح الخزنة، ويثبت: فتح الخزنة بالمفتاح
+وحده، رفض المفتاح الخطأ، كشف عبث الحزمة، فكّ `database.enc` و`secrets.enc` بمفاتيح
+**مُستعادة من الخزنة** (لا من بيئة التشغيل)، استخراج المصدر، وإقلاع نسخة معزولة
+(health/readiness/dr). لا يلمس الإنتاج، ولا يطبع أي سرّ.
+
+**سلامة CURRENT ضد الانقطاع (مُتحقّقة ومُختبرة):** `runCurrentMirror` يكتب البيان ثم
+`HEAD.json` (نقطة الالتزام الوحيدة) **قبل** حذف النسخ القديمة؛ فشل الكتابة/البيان/الاعتماد
+يُبقي CURRENT السابقة سليمة، وفشل التنظيف = `cleanupPending` بلا إسقاط الاعتماد. أُضيف
+اختبار تزامن متوازٍ (`dr.mirror.test.ts`) يثبت أن مزامنتين متزامنتين لا تُنتجان اعتماداً
+على بصمة غير صحيحة ولا نسخة بلا بيان (48 فحصاً).
+
+فحوص final-audit الجديدة: `dr-keyvault-no-self-key`، `dr-keyvault-self-key-test`،
+`dr-lostkeys-drill`، `dr-lostkeys-honest-classification`، `dr-lostkeys-no-production`
+(**934 فحصاً** إجمالاً). لم يُمسّ أي سرّ/مفتاح/إعداد Render، ولم يُنفَّذ أي نشر أو دمج PR #9.
+

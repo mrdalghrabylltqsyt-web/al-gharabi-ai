@@ -72,7 +72,9 @@ async function main() {
     check('critical names subset', criticalInventoryNames().every((n) => names.includes(n)));
     check('vault key in inventory', names.includes('DR_RECOVERY_VAULT_KEY'));
     check('present excludes unrelated', !presentInventoryNames(ENV).includes('SOME_UNRELATED_VAR'));
-    check('present includes configured', presentInventoryNames(ENV).includes('DR_RECOVERY_VAULT_KEY') && presentInventoryNames(ENV).includes('GEMINI_API_KEY'));
+    // مفتاح فتح الخزنة **لا يدخل الخزنة** أبداً (منع الاحتواء الدائري) — رغم كونه في الجرد.
+    check('present excludes vault self key', !presentInventoryNames(ENV).includes('DR_RECOVERY_VAULT_KEY'));
+    check('present includes configured', presentInventoryNames(ENV).includes('DR_RECOVERY_MASTER_KEY') && presentInventoryNames(ENV).includes('GEMINI_API_KEY'));
     // كل اسم في الجرد مُصنّف (نوع/خدمة/غرض).
     check('every entry classified', RECOVERY_SECRET_INVENTORY.every((e) => Boolean(e.kind) && Boolean(e.service) && Boolean(e.purpose)));
   }
@@ -83,6 +85,9 @@ async function main() {
   {
     const snapshot = buildVaultSnapshot(ENV, '2026-01-01T00:00:00.000Z');
     check('snapshot has records', snapshot.records.length >= 5);
+    // منع الاحتواء الدائري: مفتاح فتح الخزنة ليس سجلاً ولا قيمة داخلها.
+    check('snapshot excludes vault self key record', !snapshot.records.some((r: any) => r.name === 'DR_RECOVERY_VAULT_KEY'));
+    check('snapshot excludes vault self key value', !('DR_RECOVERY_VAULT_KEY' in snapshot.values));
     check('snapshot record carries no value', snapshot.records.every((r: any) => typeof r.value === 'undefined'));
     check('snapshot record has fingerprint', snapshot.records.every((r: any) => typeof r.fingerprint === 'string' && r.fingerprint.length === 16));
     const enc = encryptKeyVault(snapshot.records, snapshot.values, ENV);
@@ -95,6 +100,12 @@ async function main() {
     // فكّ صحيح بالمفتاح الصحيح.
     const dec = decryptKeyVault(enc.payload, ENV);
     check('decrypt ok with correct key', dec.ok === true && dec.values.DR_RECOVERY_MASTER_KEY === ENV.DR_RECOVERY_MASTER_KEY);
+    // المفتاح الذي فتح الخزنة لا يُعاد بين قيمها (لا احتواء دائري).
+    check('decrypted values exclude vault self key', dec.ok === true && !('DR_RECOVERY_VAULT_KEY' in dec.values));
+    // دفاع مزدوج في المشفّر نفسه: حتى لو مُرّر المفتاح خطأً لا يُدرج.
+    const forced = encryptKeyVault([], { DR_RECOVERY_VAULT_KEY: 'zz'.repeat(32), SESSION_SECRET: 'sess' }, ENV);
+    const forcedDec = forced.ok ? decryptKeyVault(forced.payload, ENV) : { ok: false } as any;
+    check('encryptKeyVault never stores vault key', forcedDec.ok === true && !('DR_RECOVERY_VAULT_KEY' in forcedDec.values));
     // مفتاح خاطئ => فشل بأمان.
     const wrong = decryptKeyVault(enc.payload, { ...ENV, DR_RECOVERY_VAULT_KEY: 'e'.repeat(64) });
     check('decrypt fails with wrong key', wrong.ok === false && wrong.code === 'decrypt_failed');
@@ -136,6 +147,9 @@ async function main() {
     const status = await keyVaultStatus(store, ENV);
     check('status present + canDecrypt', status.state === 'present' && status.canDecrypt === true && status.version === 1);
     check('status exposes no values', typeof status.records !== 'undefined' && status.records.every((r: any) => typeof r.value === 'undefined'));
+    // تصنيف الاستعادة معروض بلا قيم، ويؤكد أن مفتاح الخزنة ليس داخلها.
+    check('status exposes recovery summary', Boolean(status.recovery?.summary) && typeof status.recovery.summary.RESTORABLE === 'number');
+    check('status confirms vault key not self-stored', status.vaultSelfKeyStored === false);
   }
 
   // ------------------------------------------------------------------

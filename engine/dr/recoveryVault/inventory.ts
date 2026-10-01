@@ -109,6 +109,13 @@ export const INVENTORY_BY_NAME: Map<string, SecretInventoryEntry> = new Map(
   RECOVERY_SECRET_INVENTORY.map((e) => [e.name, e]),
 );
 
+/**
+ * مفتاح فتح الخزنة نفسه. **ممنوع إدراجه داخل الخزنة**: الخزنة تُشفَّر بهذا المفتاح،
+ * فحفظه داخلها يجعله دائرياً ويُفقد شرط «المفتاح المستقل خارج النظام». يُوزَّع على
+ * المالك خارج المشروع فقط.
+ */
+export const VAULT_SELF_KEY_ENV = 'DR_RECOVERY_VAULT_KEY';
+
 /** الأسماء المعتمدة فقط (للتقاطع مع البيئة). */
 export function inventoryNames(): string[] {
   return RECOVERY_SECRET_INVENTORY.map((e) => e.name);
@@ -122,9 +129,11 @@ export function criticalInventoryNames(): string[] {
 /**
  * الأسماء الموجودة فعلاً في البيئة وضمن الجرد المعتمد (بلا قيم).
  * لا نُدرج أي متغيّر غير موجود، ولا أي اسم خارج الجرد.
+ * **يُستبعد مفتاح فتح الخزنة نفسه** فلا يدخل الخزنة أبداً (منع الاحتواء الدائري).
  */
 export function presentInventoryNames(env: Record<string, string | undefined> = {}): string[] {
   return RECOVERY_SECRET_INVENTORY
+    .filter((e) => e.name !== VAULT_SELF_KEY_ENV)
     .filter((e) => env[e.name] != null && String(env[e.name]).length > 0)
     .map((e) => e.name);
 }

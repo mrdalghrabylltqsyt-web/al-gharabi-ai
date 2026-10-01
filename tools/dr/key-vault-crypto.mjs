@@ -88,7 +88,8 @@ export function inspectVaultKey(env = process.env) {
  */
 export function buildVaultRecords(values = {}, classify = (_name) => ({}), options = {}) {
   const now = options.now || new Date().toISOString();
-  return Object.keys(values).sort().map((name) => {
+  // منع الاحتواء الدائري: مفتاح فتح الخزنة لا يُدرج داخل الخزنة أبداً.
+  return Object.keys(values).filter((name) => name !== VAULT_KEY_ENV).sort().map((name) => {
     const meta = classify(name) || {};
     const value = String(values[name]);
     return {
@@ -114,7 +115,13 @@ export function buildVaultRecords(values = {}, classify = (_name) => ({}), optio
 export function encryptKeyVault(records, values, env = process.env) {
   const resolved = resolveVaultKey(env);
   if (!resolved.ok) return { ok: false, code: resolved.reason, message: resolved.message };
-  const payloadObj = { records: Array.isArray(records) ? records : [], values: values && typeof values === 'object' ? values : {} };
+  // دفاع مزدوج: لا يُشفَّر مفتاح الخزنة داخل حمولتها حتى لو وصل خطأً.
+  const safeValues = {};
+  for (const [name, value] of Object.entries(values && typeof values === 'object' ? values : {})) {
+    if (name === VAULT_KEY_ENV) continue;
+    safeValues[name] = value;
+  }
+  const payloadObj = { records: Array.isArray(records) ? records : [], values: safeValues };
   const plain = JSON.stringify(payloadObj);
   const salt = crypto.randomBytes(16);
   const iv = crypto.randomBytes(12);

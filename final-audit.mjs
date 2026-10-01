@@ -1582,6 +1582,8 @@ const drVaultRestore = fs.existsSync(path.join(drDir, 'vault-restore.mjs')) ? re
 const drVaultEngine = fs.existsSync(path.join(root, 'engine/dr/recoveryVault/vault.ts')) ? read('engine/dr/recoveryVault/vault.ts') : '';
 const drVaultInventory = fs.existsSync(path.join(root, 'engine/dr/recoveryVault/inventory.ts')) ? read('engine/dr/recoveryVault/inventory.ts') : '';
 const drVaultTest = fs.existsSync(path.join(root, 'engine/tests/dr/dr.keyvault.test.ts')) ? read('engine/tests/dr/dr.keyvault.test.ts') : '';
+const drVaultRecoveryReport = fs.existsSync(path.join(root, 'engine/dr/recoveryVault/recoveryReport.ts')) ? read('engine/dr/recoveryVault/recoveryReport.ts') : '';
+const drLostKeysTest = fs.existsSync(path.join(root, 'engine/tests/dr/dr.lostkeys.test.ts')) ? read('engine/tests/dr/dr.lostkeys.test.ts') : '';
 add('dr-keyvault-single-source', drVaultCrypto.includes('export function buildVaultRecords') && drVaultCrypto.includes('export function encryptKeyVault') && drVaultCrypto.includes('export function decryptKeyVault') && drVaultCrypto.includes('export function inspectVaultKey'), 'خزنة المفاتيح مصدر واحد (بناء/تشفير/فكّ/فحص المفتاح)');
 add('dr-keyvault-independent-key', drVaultCrypto.includes('VAULT_KEY_ENV') && drVaultCrypto.includes('env[VAULT_KEY_ENV]') && !drVaultCrypto.includes('resolveMasterKey'), 'الخزنة تُفتح بمفتاح مستقل (DR_RECOVERY_VAULT_KEY) لا بالمفتاح الرئيسي');
 add('dr-keyvault-aes-gcm', drVaultCrypto.includes('aes-256-gcm') && drVaultCrypto.includes('scrypt'), 'الخزنة مشفّرة AES-256-GCM بمفتاح مشتقّ scrypt');
@@ -1603,6 +1605,12 @@ add('dr-keyvault-env-documented', read('.env.example').includes('DR_RECOVERY_VAU
 add('dr-keyvault-ui', cloudView.includes('خزنة مفاتيح الطوارئ') && cloudView.includes('apiService.syncDrKeyVault') && cloudView.includes('apiService.getDrKeyVaultStatus'), 'واجهة خزنة المفاتيح موجودة وتستدعي الخادم الفعلي');
 add('dr-keyvault-ui-no-values', !/keyVault[^\n]{0,80}\.value\b/.test(cloudView), 'واجهة الخزنة لا تعرض أي قيمة سرّية');
 add('dr-keyvault-tests', drVaultTest.includes('decrypt fails with wrong key') && drVaultTest.includes('tampered package detected') && drVaultTest.includes('cleanup retried and clears pending') && (pkg.scripts['test:dr'] || '').includes('test:dr-keyvault'), 'اختبار الخزنة يغطّي المفتاح الخاطئ/العبث/التنظيف ومضمّن في test:dr');
+// منع الاحتواء الدائري: مفتاح فتح الخزنة لا يُدرج داخل الخزنة أبداً.
+add('dr-keyvault-no-self-key', drVaultInventory.includes('VAULT_SELF_KEY_ENV') && /presentInventoryNames[\s\S]{0,220}VAULT_SELF_KEY_ENV/.test(drVaultInventory) && /buildVaultRecords[\s\S]{0,260}name !== VAULT_KEY_ENV/.test(drVaultCrypto), 'مفتاح فتح الخزنة مستبعد من الخزنة (لا احتواء دائري) في الجرد والمشفّر');
+add('dr-keyvault-self-key-test', drVaultTest.includes('present excludes vault self key') && drVaultTest.includes('decrypted values exclude vault self key') && drVaultTest.includes('encryptKeyVault never stores vault key'), 'اختبار يثبت أن مفتاح الخزنة لا يدخل الخزنة');
+add('dr-lostkeys-drill', drLostKeysTest.includes('vault opens with owner key alone') && drLostKeysTest.includes('database decrypts with vault-recovered key') && drLostKeysTest.includes('secrets decrypt with vault-recovered master key') && drLostKeysTest.includes('isolated restored app boots') && (pkg.scripts['test:dr'] || '').includes('test:dr-lostkeys'), 'اختبار فقدان كل المفاتيح: فتح الخزنة والاستعادة والإقلاع المعزول ومضمّن في test:dr');
+add('dr-lostkeys-honest-classification', drLostKeysTest.includes('missing critical key => NOT_RECOVERABLE') && drVaultRecoveryReport.includes('NOT_RECOVERABLE') && drVaultRecoveryReport.includes('REQUIRES_OWNER_ACTION'), 'تصنيف الاستعادة صادق: قيمة حرجة مفقودة تُعلن NOT_RECOVERABLE لا تُخفى');
+add('dr-lostkeys-no-production', !drLostKeysTest.includes('restore/production') && !drLostKeysTest.includes('runProductionRestore') && drLostKeysTest.includes('fakeDrive'), 'اختبار فقدان المفاتيح لا ينفّذ أي استعادة إنتاجية (معزول بالكامل)');
 
 const failed = checks.filter(x => !x.ok);
 console.table(checks);

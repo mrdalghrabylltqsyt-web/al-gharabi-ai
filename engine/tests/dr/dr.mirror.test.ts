@@ -276,6 +276,33 @@ async function main() {
     check('tree hash order-independent', a === b);
   }
 
+  // --- تزامن متوازٍ: لا نسختان متعارضتان ولا اعتماد خاطئ ---
+  {
+    const state = createFakeDriveState();
+    const store = makeStore(state);
+    const s1 = snapshotOf(FILES);
+    await runCurrentMirror({ store, files: FILES, commit: 'c1' });
+    const filesV2 = FILES.map((f) => f.path === 'server.ts' ? { ...f, content: 'parallel-v2' } : f);
+    // نُطلق مزامنتين متزامنتين لنفس المصدر: كلتاهما يجب أن تنتج نفس بصمة الشجرة،
+    // ولا ينتهي أيٌّ منهما بـsynced على بصمة غير بصمة المحتوى الفعلي.
+    const [ra, rb] = await Promise.all([
+      runCurrentMirror({ store, files: filesV2, commit: 'c2', previousMirror: { version: 1, treeHash: s1.treeHash, files: s1.entries }, currentFiles: s1.entries }),
+      runCurrentMirror({ store, files: filesV2, commit: 'c2', previousMirror: { version: 1, treeHash: s1.treeHash, files: s1.entries }, currentFiles: s1.entries }),
+    ]);
+    const okStates = [ra, rb].every((r) => r.state === 'synced' || r.state === 'no_change');
+    check('parallel syncs never fail with wrong state', okStates, `a=${ra.state} b=${rb.state}`);
+    const expectedTree = buildMirrorSnapshot(filesV2).treeHash;
+    check('parallel sync treeHash matches content', [ra, rb].every((r) => r.treeHash === expectedTree));
+    // CURRENT النهائي يجب أن يشير لبصمة صحيحة ومتّسقة مع بيان النسخة.
+    const resolved = await resolveCurrentMirror(store);
+    check('post-parallel CURRENT consistent', resolved.ok === true && resolved.data.consistent === true && resolved.data.treeHash === expectedTree);
+    // لا نسخة "معلّقة" بلا بيان: كل مجلد نسخة له بيان صالح.
+    const vlist = await listVersions(store);
+    let allHaveManifest = true;
+    for (const v of vlist) { const m = await store.readVersionManifest(v); if (!m.ok || !m.data) allHaveManifest = false; }
+    check('every version dir has a manifest', allHaveManifest);
+  }
+
   if (failures.length) {
     console.error(`DR MIRROR TESTS FAILED (${failures.length}):`);
     for (const f of failures) console.error(`  - ${f}`);

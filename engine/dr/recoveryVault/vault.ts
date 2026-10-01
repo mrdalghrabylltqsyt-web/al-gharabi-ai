@@ -22,7 +22,8 @@ import {
   VAULT_KEY_ENV,
 } from '../../../tools/dr/cloud-lib.mjs';
 import { buildVaultRecords, encryptKeyVault, decryptKeyVault, resolveVaultKey, inspectVaultKey } from '../../../tools/dr/key-vault-crypto.mjs';
-import { INVENTORY_BY_NAME, RECOVERY_SECRET_INVENTORY, presentInventoryNames } from './inventory';
+import { INVENTORY_BY_NAME, RECOVERY_SECRET_INVENTORY, presentInventoryNames, VAULT_SELF_KEY_ENV } from './inventory';
+import { classifyInventoryForRecovery, summarizeRecovery } from './recoveryReport';
 
 export { VAULT_KEY_ENV };
 
@@ -320,6 +321,13 @@ export async function keyVaultStatus(store: any, env: Record<string, string | un
     out.consistent = current.data.consistent;
     out.canDecrypt = canDecrypt;
     out.records = current.data.manifest?.records || [];
+    // تصنيف الاستعادة (أسماء/تصنيفات فقط بلا قيم): يوضّح للمالك ما يُستعاد حرفياً
+    // وما يلزم إجراء مالك/مزوّد — بلا أي قيمة سرّية.
+    const vaultRecordNames = new Set((current.data.manifest?.records || []).map((r: any) => r.name));
+    const classes = classifyInventoryForRecovery(RECOVERY_SECRET_INVENTORY, Object.fromEntries([...vaultRecordNames].map((n) => [n, ''])) as Record<string, string>);
+    out.recovery = { summary: summarizeRecovery(classes), items: classes };
+    // صدق صريح: مفتاح فتح الخزنة **لا** يجب أن يكون داخلها.
+    out.vaultSelfKeyStored = vaultRecordNames.has(VAULT_SELF_KEY_ENV);
     return out;
   } catch (e: any) {
     out.state = 'error';
