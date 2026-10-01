@@ -18,10 +18,20 @@ import {
   isValidRestorePointId,
   classifyDbDump,
   encodeFileName,
+  normalizeRelPath,
   toBuffer,
+  mimeTypeForPath,
+  dirSegments,
+  isEncryptedSecretsPackage,
   SOURCE_BUNDLE_NAME,
   SOURCE_BUNDLE_VERSION,
   DB_DUMP_NAME,
+  CURRENT_STATE_NAME,
+  RECOVERY_MANIFEST_NAME,
+  SECRETS_PACKAGE_NAME,
+  LATEST_RECOVERY_NAME,
+  MIRROR_MANIFEST_NAME,
+  MIRROR_DIR_NAME,
 } from './cloud-lib.mjs';
 
 export const CURRENT_MANIFEST_NAME = 'manifest.json';
@@ -40,6 +50,8 @@ export class DriveStore {
     this.storedIdentity = storedIdentity || null;
     this.readOnlyStructure = readOnlyStructure === true;
     this.structure = null;
+    this._mirrorRootId = null;
+    this._mirrorDirs = new Map();
   }
 
   // ------------------------------------------------------------------
@@ -262,7 +274,7 @@ export class DriveStore {
    * آخراً، فلا يُعلَن `current` مكتملاً قبل وجود ملفاته فعلاً.
    * @param {{ bundle?: Buffer|string, bundleName?: string, dbEncrypted?: Buffer|string, dbName?: string, manifest?: object }} payload
    */
-  async writeCurrentVersion({ bundle, bundleName = SOURCE_BUNDLE_NAME, dbEncrypted, dbName = DB_DUMP_NAME, manifest } = {}) {
+  async writeCurrentVersion({ bundle, bundleName = SOURCE_BUNDLE_NAME, dbEncrypted, dbName = DB_DUMP_NAME, secrets, secretsManifest, manifest } = {}) {
     const currentId = await this.subdirId('current');
     if (!currentId) return { ok: false, code: 'no_structure' };
     const bundleBuf = Buffer.isBuffer(bundle) ? bundle : Buffer.from(bundle ?? '');
@@ -270,11 +282,23 @@ export class DriveStore {
     const dbBuf = Buffer.isBuffer(dbEncrypted) ? dbEncrypted : Buffer.from(dbEncrypted ?? '');
     const verdict = classifyDbDump(dbBuf);
     if (!verdict.allowed) return { ok: false, code: verdict.reason || 'not_an_encrypted_dump', message: 'المسموح فقط DB encrypted dump في current.' };
+    const secretsBuf = Buffer.isBuffer(secrets) ? secrets : Buffer.from(secrets ?? '');
+    if (secretsBuf.length && !isEncryptedSecretsPackage(secretsBuf)) {
+      return { ok: false, code: 'not_an_encrypted_secrets_package', message: 'المسموح فقط حزمة أسرار مشفّرة في current.' };
+    }
 
     const b = await this.upsertFile(currentId, bundleName, bundleBuf, 'application/gzip');
     if (!b.ok) return b;
     const d = await this.upsertFile(currentId, dbName, dbBuf, 'application/octet-stream');
     if (!d.ok) return d;
+    if (secretsBuf.length) {
+      const s = await this.upsertFile(currentId, SECRETS_PACKAGE_NAME, secretsBuf, 'application/octet-stream');
+      if (!s.ok) return s;
+      if (secretsManifest) {
+        const sm = await this.writeJson(currentId, 'secrets-manifest.json', secretsManifest);
+        if (!sm.ok) return sm;
+      }
+    }
     const w = await this.writeJson(currentId, CURRENT_MANIFEST_NAME, manifest);
     if (!w.ok) return w;
     return { ok: true, data: { bundleId: b.data.id, dbId: d.data.id, manifestId: w.data.id } };
@@ -297,7 +321,7 @@ export class DriveStore {
    * @param {string} id
    * @param {{ commit?: string, bundle?: Buffer|string, dbEncrypted?: Buffer|string, manifest?: object }} payload
    */
-  async createVersionedRestorePoint(id, { commit, bundle, dbEncrypted, manifest } = {}) {
+  async createVersionedRestorePoint(id, { commit, bundle, dbEncrypted, secrets, secretsManifest, manifest } = {}) {
     if (!isValidRestorePointId(id)) return { ok: false, code: 'invalid_id', message: `معرّف نقطة استعادة غير صالح: ${id}` };
     const historyId = await this.subdirId('history');
     if (!historyId) return { ok: false, code: 'no_structure' };
@@ -310,6 +334,10 @@ export class DriveStore {
     const dbBuf = Buffer.isBuffer(dbEncrypted) ? dbEncrypted : Buffer.from(dbEncrypted ?? '');
     const verdict = classifyDbDump(dbBuf);
     if (!verdict.allowed) return { ok: false, code: verdict.reason || 'not_an_encrypted_dump', message: 'المسموح فقط DB encrypted dump في نقطة الاستعادة.' };
+    const secretsBuf = Buffer.isBuffer(secrets) ? secrets : Buffer.from(secrets ?? '');
+    if (secretsBuf.length && !isEncryptedSecretsPackage(secretsBuf)) {
+      return { ok: false, code: 'not_an_encrypted_secrets_package', message: 'المسموح فقط حزمة أسرار مشفّرة في نقطة الاستعادة.' };
+    }
 
     if (id === RP_001_ID) {
       const check = assertRp001Manifest({ ...(manifest || {}), id: RP_001_ID });
@@ -323,6 +351,15 @@ export class DriveStore {
     if (!b.ok) return b;
     const d = await this.upsertFile(folderId, DB_DUMP_NAME, dbBuf, 'application/octet-stream');
     if (!d.ok) return d;
+    if (secretsBuf.length) {
+      const s = await this.upsertFile(folderId, SECRETS_PACKAGE_NAME, secretsBuf, 'application/octet-stream');
+      if (!s.ok) return s;
+      if (secretsManifest) {
+        const sm = await this.writeJson(folderId, 'secrets-manifest.json', secretsManifest);
+        if (!sm.ok) return sm;
+      }
+    }
+    // البيان يُكتب **أخيراً** كدليل على اكتمال النقطة.
     const w = await this.writeJson(folderId, RESTORE_MANIFEST_NAME, manifest);
     if (!w.ok) return w;
     return { ok: true, data: { id, folderId, manifest } };
@@ -332,6 +369,218 @@ export class DriveStore {
     const dbId = await this.subdirId('db');
     if (!dbId) return { ok: false, code: 'no_structure' };
     return this.listChildren(dbId);
+  }
+
+  /** يرفع/يحدّث نسخة DB مشفّرة مستقلة في `db/` (تبقى كمرجع حتى بعد ترقيتها). */
+  async keepAliveDbDump(name, content) {
+    return this.uploadDbDump(name, content);
+  }
+
+  // ------------------------------------------------------------------
+  // current-state.json — ملخص المزامنة الحالية (بلا أسرار)
+  // ------------------------------------------------------------------
+
+  async writeCurrentState(state) {
+    const id = await this.subdirId('current');
+    if (!id) return { ok: false, code: 'no_structure' };
+    return this.writeJson(id, CURRENT_STATE_NAME, state);
+  }
+
+  async readCurrentState() {
+    const id = await this.subdirId('current');
+    if (!id) return { ok: false, code: 'no_structure' };
+    return this.readJsonChild(id, CURRENT_STATE_NAME);
+  }
+
+  /** بيان آخر نقطة استعادة مرتبطة بـcurrent (recovery-manifest.json). */
+  async writeRecoveryManifest(manifest) {
+    const id = await this.subdirId('current');
+    if (!id) return { ok: false, code: 'no_structure' };
+    return this.writeJson(id, RECOVERY_MANIFEST_NAME, manifest);
+  }
+
+  async readRecoveryManifest() {
+    const id = await this.subdirId('current');
+    if (!id) return { ok: false, code: 'no_structure' };
+    return this.readJsonChild(id, RECOVERY_MANIFEST_NAME);
+  }
+
+  // ------------------------------------------------------------------
+  // current/files/** — مرآة الملفات الحقيقية ببنية المجلدات
+  // ------------------------------------------------------------------
+
+  /** يضمن وجود مجلد داخل أب (بحث بالاسم ثم إنشاء). */
+  async ensureFolder(parentId, name) {
+    const found = await this.findChild(parentId, name);
+    if (!found.ok) return found;
+    if (found.data && found.data.mimeType === 'application/vnd.google-apps.folder') return { ok: true, data: found.data.id };
+    const created = await this.client.createFolder(name, parentId);
+    if (!created.ok) return created;
+    return { ok: true, data: created.data?.id };
+  }
+
+  /** يضمن سلسلة مجلدات تحت `current/files` ويعيد معرّف المجلد الورقي. */
+  async ensureMirrorDir(segments) {
+    const root = await this.ensureMirrorRoot();
+    if (!root.ok) return root;
+    let parentId = root.data;
+    let key = '';
+    for (const seg of segments || []) {
+      key = key ? `${key}/${seg}` : seg;
+      const cached = this._mirrorDirs.get(key);
+      if (cached) { parentId = cached; continue; }
+      const ensured = await this.ensureFolder(parentId, seg);
+      if (!ensured.ok) return ensured;
+      parentId = ensured.data;
+      this._mirrorDirs.set(key, parentId);
+    }
+    return { ok: true, data: parentId };
+  }
+
+  /** يضمن وجود مجلد المرآة `current/files`. */
+  async ensureMirrorRoot() {
+    if (this._mirrorRootId) return { ok: true, data: this._mirrorRootId };
+    const currentId = await this.subdirId('current');
+    if (!currentId) return { ok: false, code: 'no_structure' };
+    const ensured = await this.ensureFolder(currentId, MIRROR_DIR_NAME);
+    if (!ensured.ok) return ensured;
+    this._mirrorRootId = ensured.data;
+    return { ok: true, data: ensured.data };
+  }
+
+  /** يرفع/يحدّث ملفاً في المرآة بالمسار النسبي نفسه (بلا ترميز الاسم). */
+  async upsertMirrorFile(relPath, content, mimeType) {
+    const path = normalizeRelPath(relPath);
+    const dir = await this.ensureMirrorDir(dirSegments(path));
+    if (!dir.ok) return dir;
+    const name = path.split('/').pop();
+    const buf = toBuffer(content);
+    const res = await this.upsertFile(dir.data, name, buf, mimeType || mimeTypeForPath(path));
+    if (!res.ok) return res;
+    return { ok: true, data: { id: res.data?.id, name, size: buf.length } };
+  }
+
+  /** يقرأ ملفاً من المرآة بمساره النسبي. */
+  async readMirrorFile(relPath) {
+    const path = normalizeRelPath(relPath);
+    const dir = await this.ensureMirrorDir(dirSegments(path));
+    if (!dir.ok) return dir;
+    return this.readVersionFile(dir.data, path.split('/').pop());
+  }
+
+  /** يحذف ملفاً من المرآة بمساره النسبي. */
+  async removeMirrorFile(relPath) {
+    const path = normalizeRelPath(relPath);
+    const dir = await this.ensureMirrorDir(dirSegments(path));
+    if (!dir.ok) return dir;
+    return this.removeChild(dir.data, path.split('/').pop());
+  }
+
+  /** يسرد كل ملفات المرآة بشكل تعاودي: `[{ path, driveId, size }]`. */
+  async listMirrorFiles() {
+    const root = await this.ensureMirrorRoot();
+    if (!root.ok) return root;
+    const out = [];
+    const walk = async (folderId, prefix) => {
+      const list = await this.listChildren(folderId);
+      if (!list.ok) return list;
+      for (const item of list.data) {
+        const rel = prefix ? `${prefix}/${item.name}` : item.name;
+        if (item.mimeType === 'application/vnd.google-apps.folder') {
+          const res = await walk(item.id, rel);
+          if (!res.ok) return res;
+        } else {
+          out.push({ path: rel, driveId: item.id, size: Number(item.size ?? 0) });
+        }
+      }
+      return { ok: true };
+    };
+    const res = await walk(root.data, '');
+    if (!res.ok) return res;
+    out.sort((a, b) => (a.path < b.path ? -1 : 1));
+    return { ok: true, data: out };
+  }
+
+  async writeMirrorManifest(manifest) {
+    const id = await this.subdirId('current');
+    if (!id) return { ok: false, code: 'no_structure' };
+    return this.writeJson(id, MIRROR_MANIFEST_NAME, manifest);
+  }
+
+  async readMirrorManifest() {
+    const id = await this.subdirId('current');
+    if (!id) return { ok: false, code: 'no_structure' };
+    return this.readJsonChild(id, MIRROR_MANIFEST_NAME);
+  }
+
+  /** بيان مرآة معلّق (staging) — يُكتب قبل التحقق ثم يُرقّى أو يُزال. */
+  async writePendingMirrorManifest(manifest) {
+    const id = await this.subdirId('staging');
+    if (!id) return { ok: false, code: 'no_structure' };
+    return this.writeJson(id, MIRROR_MANIFEST_NAME, manifest);
+  }
+
+  async removePendingMirrorManifest() {
+    const id = await this.subdirId('staging');
+    if (!id) return { ok: false, code: 'no_structure' };
+    return this.removeChild(id, MIRROR_MANIFEST_NAME);
+  }
+
+  // ------------------------------------------------------------------
+  // secrets/ — حزمة الأسرار المشفّرة (secrets.enc) + بيانها
+  // ------------------------------------------------------------------
+
+  async writeSecretsPackage(payload, manifest) {
+    const id = await this.subdirId('secrets');
+    if (!id) return { ok: false, code: 'no_structure' };
+    if (!isEncryptedSecretsPackage(payload)) {
+      return { ok: false, code: 'not_an_encrypted_secrets_package', message: 'المسموح فقط حزمة أسرار مشفّرة.' };
+    }
+    const p = await this.upsertFile(id, SECRETS_PACKAGE_NAME, payload, 'application/octet-stream');
+    if (!p.ok) return p;
+    const m = await this.writeJson(id, CURRENT_MANIFEST_NAME, manifest);
+    if (!m.ok) return m;
+    return { ok: true, data: { id: p.data?.id, name: SECRETS_PACKAGE_NAME, size: Buffer.byteLength(payload) } };
+  }
+
+  async readSecretsPackage() {
+    const id = await this.subdirId('secrets');
+    if (!id) return { ok: false, code: 'no_structure' };
+    return this.readVersionFile(id, SECRETS_PACKAGE_NAME);
+  }
+
+  async readSecretsManifest() {
+    const id = await this.subdirId('secrets');
+    if (!id) return { ok: false, code: 'no_structure' };
+    return this.readJsonChild(id, CURRENT_MANIFEST_NAME);
+  }
+
+  // ------------------------------------------------------------------
+  // recovery/ — وثائق التعافي المستقلة (تُقرأ بلا تشغيل الغرابي)
+  // ------------------------------------------------------------------
+
+  async writeRecoveryDoc(name, text) {
+    const id = await this.subdirId('recovery');
+    if (!id) return { ok: false, code: 'no_structure' };
+    return this.upsertFile(id, name, text, 'text/markdown');
+  }
+
+  async readRecoveryDoc(name) {
+    const id = await this.subdirId('recovery');
+    if (!id) return { ok: false, code: 'no_structure' };
+    return this.readVersionFile(id, name);
+  }
+
+  async writeLatestRecovery(obj) {
+    const id = await this.subdirId('recovery');
+    if (!id) return { ok: false, code: 'no_structure' };
+    return this.writeJson(id, LATEST_RECOVERY_NAME, obj);
+  }
+
+  async readLatestRecovery() {
+    const id = await this.subdirId('recovery');
+    if (!id) return { ok: false, code: 'no_structure' };
+    return this.readJsonChild(id, LATEST_RECOVERY_NAME);
   }
 }
 

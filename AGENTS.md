@@ -2738,3 +2738,64 @@ engine/brain/routes.ts                        مسارات GET للقراءة ف
 
 **درس معماري:** العقل المركزي يجب أن يكون **مصدر حقيقة واحداً** يفصل التحليل عن التنفيذ،
 ويشتقّ قدراته من سجل المنصات لا من فروع مكتوبة يدوياً — فيبقى صادقاً وقابلاً للتوسّع معاً.
+
+
+## منظومة التعافي الكامل من الكوارث (Google Drive DR) — Batch 26 (2026-09-30)
+
+تحويل النسخ الاحتياطي إلى **نظام تعافٍ كامل**: مخزن Google Drive مستقل يحتوي مرآة ملفات
+حقيقية + نقاط استعادة كاملة (مصدر + قاعدة بيانات مشفّرة + أسرار مشفّرة + وثائق تعافٍ)،
+مع محرّك استعادة واختبار تعافٍ معزول حقيقي. نطاق OAuth يبقى `drive.file` حصراً،
+وتفويض Drive منفصل عن تسجيل الدخول، والمفاتيح القائمة لم تُدوَّر.
+
+**البنية على Drive** (`al-gharabi-ai-dr`): `CURRENT/` (مرآة الملفات الفردية + manifest +
+current-state)، `HISTORY/rp-XXX/` (نقاط مستقلة غير قابلة للتعديل)، `DATABASE/`، `SECRETS/`،
+`RECOVERY/` (وثائق مستقلة تُقرأ بلا تشغيل الغرابي).
+
+**الوحدات الجديدة (`tools/dr/`):**
+- `secret-crypto.mjs`: حزمة `secrets.enc` موسومة `GHARABI-SECRETS-V1`، AES-256-GCM بمفتاح
+  مشتقّ scrypt (N=16384,r=8,p=1)، `buildSecretsBundle`/`decryptSecretsPackage`،
+  `discoverSecretEnvNames` (يكتشف الأسماء الفعلية من البيئة فقط، بلا اختراع)،
+  `resolveMasterKey` (`DR_RECOVERY_MASTER_KEY` ثم `DRIVE_DB_BACKUP_KEY` ثم مفتاح التوكنات).
+  البيان يحمل **أسماء وبصمات فقط** (includedNames/encryptedSecretsHash/keyFingerprint).
+- `current-mirror.mjs`: `runCurrentMirror` — مرآة فردية متداخلة، رفع المتغيّر فقط، حذف
+  المتقادم من CURRENT (لا من HISTORY)، **ترقية ذرّية** (بيان معلّق ثم تثبيت أخيراً)،
+  لا تغيير => `no_change` بلا رفع، تحقق فعلي بإعادة قراءة كل ملف من Drive.
+- `restore.mjs`: `verifyRecoveryPoint` (بصمات source/db/secrets/manifest، فشل آمن عند
+  التلف/النقص/المفتاح الخاطئ) و`runRecoveryDrill` (تنزيل → تحقق → فكّ → استخراج مصدر →
+  استعادة قاعدة في قاعدة **معزولة** فقط، `wroteToProduction:false`).
+- `secrets-restore.mjs`: أداة فكّ الأسرار يدوياً عند الكارثة (بلا تشغيل الغرابي).
+- `cloud-lib.mjs`: `buildRecoveryInformation`/`buildRecoveryInstructions`/`buildLatestRecovery`
+  (وثائق RECOVERY)، `scanForSecretsStrict` (بوابة صارمة تميّز السر الحقيقي من الوهمي/القالب).
+
+**المسارات (`engine/dr/routes.ts`، كلها `authenticateToken` والفعل منها `requireOwner`):**
+`/api/dr/drive/auth-url`, `/callback` (GET+POST)، `/api/dr/backup`, `/api/dr/sync`,
+`/api/dr/health`, `/api/dr/status`, `/api/dr/secrets/status`, `/api/dr/recovery-points`,
+`/api/dr/restore/plan`, `/api/dr/restore/drill`, `/api/dr/restore/production`.
+
+**حمايات ملزمة (مُختبرة):**
+- **لا استعادة إنتاجية تلقائية**: `/restore/production` يرد 428 بلا `confirm:true`، ثم 501
+  بخطوات خارجية موثّقة (Render redeploy + env vars) — لا كتابة فوق الإنتاج من الكود.
+- **اختبار الاستعادة يرفض قاعدة الإنتاج** صراحةً (`REFUSED_PRODUCTION_DATABASE` عند تطابق
+  `DR_RECOVERY_TEST_DATABASE_URL` مع `DATABASE_URL`)، ولا يُعيد SQL خاماً ولا أسراراً.
+- **الأسرار لا تظهر** في manifest/الواجهة/السجلات/الردود — أسماء وبصمات فقط، وفكّ تجريبي
+  يثبت أن المفتاح يفتح الحزمة بلا كشف أي قيمة.
+- **لا حذف HISTORY تلقائياً**، وفشل جزئي لا يرقّي CURRENT ولا يحذف نسخة سليمة.
+- **لا تُقرأ DATABASE_URL** في منظومة النسخ إلا لمقارنة *رفض* قاعدة الإنتاج.
+
+**اختبارات:** `engine/tests/dr/` = 13 مجموعة، **537 فحصاً** كلها ناجحة (CORE 48, STORE 33,
+SYNC 38, AUTH 48, DB 17, ROUTES 46, BACKUP 98, SECRETS 29, MIRROR 20, RESTORE 28,
+ENDPOINTS 33, REAL-DRILL 27, UI 72). `final-audit` = **853 فحصاً**. اختبار التعافي الحقيقي
+`dr.real-drill.test.ts` يشغّل Postgres مدمجة **معزولة** (بلا شبكة/إنتاج)، ينشئ نقطة استعادة
+على fakeDrive، يتحقق من البصمات، يفكّ التشفير، يستعيد المصدر، يقلع الخادم المستعاد فعلياً
+على القاعدة المعزولة ويفحص health/readiness/brain، ويثبت أن المفتاح الخاطئ يفشل بأمان.
+هارنس `tools/local-verification/recovery-drill.mjs` يقرأ **نقطة استعادة حقيقية من Google Drive**
+حين تتوفر اعتماداته في البيئة (يفشل بأمان `drive_not_configured` بلا اعتماد).
+
+**حدود الأتمتة (صادقة):** AUTOMATIC = النسخ/المزامنة/نقاط الاستعادة/التحقق/فكّ التشفير/
+الاستعادة في بيئة معزولة. OWNER CONFIRMATION = أي استعادة إنتاجية وأي حذف تاريخي.
+EXTERNAL PLATFORM REQUIREMENT = إعادة نشر Render وضبط متغيّراتها وتفويض Google OAuth.
+MANUAL FALLBACK = الاستعادة اليدوية من الحزمة عند تعذّر Drive.
+
+**لا تغيير في:** YouTube/TikTok/Instagram/Facebook/Telegram، Gemini firewall، Central Brain،
+قاعدة البيانات، Authentication، OAuth، Content Pipeline، YouTube watcher، التعليقات/الردود/
+النشر/الجدولة. لا تدوير لأي مفتاح، ولا توسيع `drive.file`.

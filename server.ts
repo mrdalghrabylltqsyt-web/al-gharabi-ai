@@ -21,6 +21,8 @@ import { AgentOrchestrator } from "./engine/agent/orchestrator";
 import { registerAgentRoutes } from "./engine/agent/routes";
 import { registerBrainRoutes } from "./engine/brain/routes";
 import { registerDriveRoutes } from "./engine/dr/routes";
+import { buildSecretsBundle } from "./tools/dr/secret-crypto.mjs";
+import { buildRecoveryInformation, buildRecoveryInstructions } from "./tools/dr/cloud-lib.mjs";
 import { collectRepoFiles } from "./tools/dr/cloud-sync.mjs";
 import { buildCentralBrainState, brainDiagnostics } from "./engine/brain/state";
 import { capabilityMatrix } from "./engine/brain/strategy/capabilityMatrix";
@@ -4521,12 +4523,13 @@ let youtubeDelegationState: YouTubeDelegation = defaultYouTubeDelegation();
 // المنظومة. لا تُقرأ DATABASE_URL ولا تُرفع قاعدة بيانات خام. تُحفظ هنا فقط
 // حالات CSRF ورمز التجديد المشفّر وآخر خطأ — كلها عبر محوّل الحالة.
 // -------------------------------------------------------------
-const drControl: { driveOAuthStates: any[]; driveRefreshToken: any; driveLastError: string | null; driveBackup: any; driveFolderIdentity: any } = {
+const drControl: { driveOAuthStates: any[]; driveRefreshToken: any; driveLastError: string | null; driveBackup: any; driveFolderIdentity: any; driveMirror: any } = {
   driveOAuthStates: [],
   driveRefreshToken: null,
   driveLastError: null,
   driveBackup: null,
   driveFolderIdentity: null,
+  driveMirror: null,
 };
 
 /** يحفظ التفويض عبر محوّل الحالة (يصمد بعد restart) — كتابة تُنتظر عند التغيير. */
@@ -8571,6 +8574,7 @@ function applyControlSnapshot(control: any): void {
   drControl.driveLastError = typeof control.driveLastError === "string" ? control.driveLastError : null;
   drControl.driveBackup = control.driveBackup && typeof control.driveBackup === "object" ? control.driveBackup : null;
   drControl.driveFolderIdentity = control.driveFolderIdentity && typeof control.driveFolderIdentity === "object" ? control.driveFolderIdentity : null;
+  drControl.driveMirror = control.driveMirror && typeof control.driveMirror === "object" ? control.driveMirror : null;
 }
 
 /** يقرأ حالة التحكّم متزامناً (backend الملف) عند الإقلاع. */
@@ -8613,6 +8617,8 @@ function buildControlState() {
     driveLastError: drControl.driveLastError,
     driveBackup: drControl.driveBackup,
     driveFolderIdentity: drControl.driveFolderIdentity,
+    // مرآة CURRENT: بصمة الشجرة + سجل الملفات الفردية (بلا أسرار) — تصمد بعد restart.
+    driveMirror: drControl.driveMirror,
   };
 }
 
@@ -11860,6 +11866,12 @@ registerDriveRoutes(app, {
   },
   collectSourceFiles: () => collectRepoFiles(process.cwd()),
   dumpDatabase: () => storageAdapter.dump(),
+  buildSecrets: () => buildSecretsBundle(process.env),
+  recoveryInfo: (ctx) => ({
+    information: buildRecoveryInformation({ repository: ctx.repository, createdAt: ctx.now }),
+    instructions: buildRecoveryInstructions({ latestRecoveryPointId: ctx.recoveryPointId }),
+  }),
+  isolatedDatabaseUrl: process.env.DR_RECOVERY_TEST_DATABASE_URL || null,
   gitMeta: () => ({
     commit: process.env.RENDER_GIT_COMMIT || process.env.GIT_COMMIT || null,
     branch: process.env.RENDER_GIT_BRANCH || process.env.GIT_BRANCH || "main",

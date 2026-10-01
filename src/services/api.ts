@@ -1589,5 +1589,79 @@ ${payload.topic || payload.productName || 'أنظمة وحلول التقسيط 
       throw err;
     }
     return data;
+  },
+
+  // --- منظومة التعافي الكامل (DR): مزامنة CURRENT + نقاط استعادة + استعادة ---
+  /** مزامنة CURRENT الفعلية: مرآة الملفات الفردية ببنية المجلدات (owner). */
+  async syncDrCurrent(): Promise<any> {
+    const res = await fetch('/api/dr/sync', { method: 'POST', headers: getAuthHeaders() });
+    const data = await res.json().catch(() => null);
+    if (!res.ok || !data?.success) {
+      const err: any = new Error(data?.message || data?.error || data?.code || 'تعذّرت مزامنة CURRENT');
+      err.status = res.status; err.code = data?.code; err.state = data?.state;
+      throw err;
+    }
+    return data;
+  },
+
+  /** نقاط الاستعادة الكاملة + حالة CURRENT + حالة حزمة الأسرار (owner). */
+  async getDrRecoveryPoints(): Promise<any> {
+    const res = await fetch('/api/dr/recovery-points', { headers: getAuthHeaders() });
+    const data = await res.json().catch(() => null);
+    if (!res.ok || !data?.success) {
+      const err: any = new Error(data?.error || data?.code || 'تعذّر قراءة نقاط الاستعادة');
+      err.status = res.status; err.code = data?.code;
+      throw err;
+    }
+    return data;
+  },
+
+  /** حالة المفتاح الرئيسي وحزمة الأسرار (owner) — أسماء وحالات بلا قيم سرّية. */
+  async getDrSecretsStatus(): Promise<any> {
+    const res = await fetch('/api/dr/secrets/status', { headers: getAuthHeaders() });
+    const data = await res.json().catch(() => null);
+    if (!res.ok || !data?.success) {
+      const err: any = new Error(data?.error || data?.code || 'تعذّر قراءة حالة الأسرار');
+      err.status = res.status; err.code = data?.code;
+      throw err;
+    }
+    return data;
+  },
+
+  /** خطة الاستعادة (owner): عرض صادق قبل أي تنفيذ — بلا كتابة. */
+  async getDrRestorePlan(point?: string): Promise<any> {
+    const q = point ? `?point=${encodeURIComponent(point)}` : '';
+    const res = await fetch(`/api/dr/restore/plan${q}`, { headers: getAuthHeaders() });
+    const data = await res.json().catch(() => null);
+    if (!res.ok || !data?.success) {
+      const err: any = new Error(data?.error || data?.code || 'تعذّر بناء خطة الاستعادة');
+      err.status = res.status; err.code = data?.code;
+      throw err;
+    }
+    return data;
+  },
+
+  /** اختبار الاستعادة المعزول (owner): لا يلمس الإنتاج. */
+  async drillDrRestore(point?: string): Promise<any> {
+    const res = await fetch('/api/dr/restore/drill', { method: 'POST', headers: getAuthHeaders(), body: JSON.stringify(point ? { point } : {}) });
+    const data = await res.json().catch(() => null);
+    if (!res.ok || !data?.success) {
+      const err: any = new Error(data?.error || data?.code || 'تعذّر تنفيذ اختبار الاستعادة');
+      err.status = res.status; err.code = data?.code;
+      throw err;
+    }
+    return data;
+  },
+
+  /** استعادة الإنتاج (owner): تتطلّب تأكيداً صريحاً؛ لا تُكتب فوق الإنتاج تلقائياً. */
+  async requestProductionRestore(point?: string): Promise<any> {
+    const res = await fetch('/api/dr/restore/production', { method: 'POST', headers: getAuthHeaders(), body: JSON.stringify({ ...(point ? { point } : {}), confirm: true }) });
+    const data = await res.json().catch(() => null);
+    if (!res.ok || !data?.success) {
+      const err: any = new Error(data?.error || data?.code || 'تعذّر بدء الاستعادة الإنتاجية');
+      err.status = res.status; err.code = data?.code; err.steps = data?.steps;
+      throw err;
+    }
+    return data;
   }
 };

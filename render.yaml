@@ -51,6 +51,22 @@ services:
       # DATABASE_URL: اتصال Neon Free. بدونه يكون التخزين عابراً (ephemeral).
       - key: DATABASE_URL
         sync: false
+      # --- منظومة التعافي الكامل (DR) — Google Drive (نطاق drive.file حصراً) ---
+      # اعتماد OAuth لتطبيق Drive المستقل + مفتاح تشفير رمز التجديد + المفتاح
+      # الرئيسي لفكّ الأسرار ونسخة قاعدة البيانات. كلها أسرار: sync: false.
+      - key: DRIVE_OAUTH_CLIENT_ID
+        sync: false
+      - key: DRIVE_OAUTH_CLIENT_SECRET
+        sync: false
+      - key: DRIVE_TOKEN_ENCRYPTION_KEY
+        sync: false
+      - key: DR_RECOVERY_MASTER_KEY
+        sync: false
+      - key: DRIVE_DB_BACKUP_KEY
+        sync: false
+      # قاعدة بيانات معزولة لاختبار الاستعادة فقط (لا تستخدم الإنتاج).
+      - key: DR_RECOVERY_TEST_DATABASE_URL
+        sync: false
       # اختياري: معطّل افتراضياً. لا تضبطه إلا لقصد الدخول المباشر.
       - key: GHARABI_PREVIEW_TOKEN
         sync: false

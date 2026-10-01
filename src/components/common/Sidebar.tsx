@@ -213,12 +213,12 @@ export const Sidebar: React.FC<SidebarProps> = ({ mobileOpen, onCloseMobile }) =
     {
       // النسخ السحابي خاص بالمالك: لا يظهر للموظف إطلاقاً (وتبقى حماية الخادم requireOwner).
       id: 'cloud_backup',
-      label: 'النسخ السحابي والاستعادة',
+      label: 'التعافي والنسخ السحابي',
       icon: CloudUpload,
       ownerOnly: true,
       badge: currentUser?.role === 'owner' ? 'Owner' : null,
       badgeColor: 'bg-sky-500/20 text-sky-300 border-sky-500/30',
-      desc: 'حالة Google Drive والنسخة الحالية ونقاط الاستعادة',
+      desc: 'منظومة تعافٍ كاملة: CURRENT + نقاط استعادة + استعادة معزولة',
     },
     {
       id: 'users',

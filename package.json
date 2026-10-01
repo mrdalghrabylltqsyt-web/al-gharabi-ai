@@ -75,7 +75,12 @@
     "test:dr-db": "tsx engine/tests/dr/dr.db.test.ts",
     "test:dr-routes": "tsx engine/tests/dr/dr.routes.test.ts",
     "test:dr-backup": "tsx engine/tests/dr/dr.backup.test.ts",
-    "test:dr": "npm run test:dr-core && npm run test:dr-store && npm run test:dr-sync && npm run test:dr-auth && npm run test:dr-db && npm run test:dr-routes && npm run test:dr-backup && npm run test:dr-ui",
+    "test:dr-secrets": "tsx engine/tests/dr/dr.secrets.test.ts",
+    "test:dr-mirror": "tsx engine/tests/dr/dr.mirror.test.ts",
+    "test:dr-restore": "tsx engine/tests/dr/dr.restore.test.ts",
+    "test:dr-endpoints": "tsx engine/tests/dr/dr.endpoints.test.ts",
+    "test:dr-real-drill": "tsx engine/tests/dr/dr.real-drill.test.ts",
+    "test:dr": "npm run test:dr-core && npm run test:dr-store && npm run test:dr-sync && npm run test:dr-auth && npm run test:dr-db && npm run test:dr-routes && npm run test:dr-backup && npm run test:dr-secrets && npm run test:dr-mirror && npm run test:dr-restore && npm run test:dr-endpoints && npm run test:dr-real-drill && npm run test:dr-ui",
     "test:dr-ui": "tsx engine/tests/dr/dr.ui.test.ts"
   },
   "dependencies": {

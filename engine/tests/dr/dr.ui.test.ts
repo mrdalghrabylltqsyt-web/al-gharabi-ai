@@ -242,11 +242,20 @@ function backupUiChecks() {
   const view = read('src/components/system/CloudBackupView.tsx');
   const api = read('src/services/api.ts');
 
-  check('view has backup button', view.includes('إنشاء نسخة احتياطية الآن') && view.includes('apiService.createDrBackup'));
+  check('view has backup button', view.includes('إنشاء Recovery Point') && view.includes('apiService.createDrBackup'));
   check('view backup disabled while running', /disabled=\{backingUp\}/.test(view));
   check('view backup shows running label', view.includes('جارٍ إنشاء النسخة'));
   check('view shows backup result', view.includes('resolveDrBackupResult') && view.includes('backupResult'));
   check('view history table present', view.includes('نقاط الاستعادة') && view.includes('snapshot?.history'));
+  // منظومة التعافي الكامل في الواجهة
+  check('view has sync button', view.includes('مزامنة الآن') && view.includes('apiService.syncDrCurrent'));
+  check('view has drill button', view.includes('اختبار الاستعادة') && view.includes('apiService.drillDrRestore'));
+  check('view lists recovery points', view.includes('نقاط الاستعادة الكاملة') && view.includes('recoveryPoints'));
+  check('view has restore plan', view.includes('apiService.getDrRestorePlan') && view.includes('restorePlan'));
+  check('view has production restore (confirmed)', view.includes('apiService.requestProductionRestore') && view.includes('window.confirm'));
+  check('view shows secrets status', view.includes('apiService.getDrSecretsStatus') && view.includes('secretsStatus'));
+  check('view shows drill report', view.includes('drillReport') && view.includes('تقرير اختبار الاستعادة'));
+  check('view never renders secret values', !/AIzaSy|GOCSPX|refresh_token=|access_token=/.test(view));
   check('api has createDrBackup', api.includes('createDrBackup') && api.includes("'/api/dr/backup'"));
   check('api backup is POST', /createDrBackup[\s\S]{0,200}method:\s*'POST'/.test(api));
   check('api backup attaches status', /createDrBackup[\s\S]{0,500}err\.status\s*=\s*res\.status/.test(api));

@@ -35,13 +35,22 @@ import { DriveStore } from '../../tools/dr/drive-store.mjs';
 import { DriveSync } from '../../tools/dr/drive-sync.mjs';
 import { runBackup } from '../../tools/dr/backup.mjs';
 import { encryptDbDump } from '../../tools/dr/db-crypto.mjs';
+import { runCurrentMirror } from '../../tools/dr/current-mirror.mjs';
+import { buildSecretsBundle, inspectMasterKey } from '../../tools/dr/secret-crypto.mjs';
+import { buildRestorePlan, runRecoveryDrill, verifyRecoveryPoint, applyDatabaseDump } from '../../tools/dr/restore.mjs';
+import {
+  buildRecoveryInformation,
+  buildRecoveryInstructions,
+  buildLatestRecovery,
+  buildCurrentState,
+} from '../../tools/dr/cloud-lib.mjs';
 
 export interface DriveRoutesDeps {
   authenticateToken: express.RequestHandler;
   requireOwner: express.RequestHandler;
   env?: Record<string, string | undefined>;
   /** يقرأ حالة DR المحفوظة (states + رمز تجديد مشفّر + آخر خطأ + حالة النسخ + هوية مجلدات Drive). */
-  loadControl: () => { driveOAuthStates?: any[]; driveRefreshToken?: any; driveLastError?: string | null; driveBackup?: any; driveFolderIdentity?: any };
+  loadControl: () => { driveOAuthStates?: any[]; driveRefreshToken?: any; driveLastError?: string | null; driveBackup?: any; driveFolderIdentity?: any; driveMirror?: any };
   /** يثبّت جزءاً من حالة DR عبر محوّل الحالة (يصمد بعد restart). */
   persistControl: (partial: Record<string, any>) => void;
   /** عميل Drive اختياري (للاختبار). إن غاب يُبنى من البيئة. */
@@ -52,8 +61,16 @@ export interface DriveRoutesDeps {
   collectSourceFiles?: () => { included: any[]; excluded: any[] };
   /** ينتج نسخة نصية مؤقتة من قاعدة البيانات (تُشفَّر قبل الرفع ولا تُرفع خاماً). */
   dumpDatabase?: () => Promise<string>;
+  /** يبني حزمة الأسرار المشفّرة من البيئة الفعلية (أسماء موجودة فقط). */
+  buildSecrets?: () => Promise<any> | any;
+  /** وثائق التعافي المستقلة (نصّان بلا أسرار). */
+  recoveryInfo?: (ctx: { recoveryPointId?: string | null; repository?: string | null; now: string }) => { information?: string; instructions?: string } | Promise<{ information?: string; instructions?: string }>;
   /** بيانات النسخة المعتمدة: commit/الفرع/المستودع. */
   gitMeta?: () => { commit?: string | null; branch?: string | null; repository?: string | null; project?: string | null };
+  /** مجلد مؤقت للاختبار المعزول (drill). */
+  drillDir?: string;
+  /** رابط قاعدة بيانات معزولة لاختبار الاستعادة (تُرفض إن طابقت الإنتاج). */
+  isolatedDatabaseUrl?: string | null;
   now?: () => string;
 }
 
@@ -360,10 +377,25 @@ export function registerDriveRoutes(app: express.Express, deps: DriveRoutesDeps)
         files,
         dumpDatabase: deps.dumpDatabase,
         encryptDatabase: (sql: string) => encryptDbDump(sql, env as NodeJS.ProcessEnv),
+        buildSecrets: deps.buildSecrets || (() => buildSecretsBundle(env as NodeJS.ProcessEnv, { now: startedAt })),
+        recoveryInfo: deps.recoveryInfo,
         meta: deps.gitMeta ? deps.gitMeta() : defaultGitMeta(),
         now: startedAt,
       });
       rememberStructure(store);
+      // مزامنة المرآة الفردية (current/files/**) — ملفات حقيقية بمكانها.
+      let mirror: any = null;
+      if (result.state === 'backed_up' || result.state === 'no_change') {
+        try {
+          mirror = await runCurrentMirror({ store, files, commit: result.commit ?? null, previousMirror: control().driveMirror || null, now: startedAt });
+          if (mirror.state === 'synced') {
+            control().driveMirror = { version: mirror.mirrorManifest?.version || 1, treeHash: mirror.treeHash, files: mirror.mirrorManifest?.files || [], updatedAt: startedAt };
+            deps.persistControl({ driveMirror: control().driveMirror });
+          }
+        } catch (e: any) {
+          mirror = { state: 'failed', reason: String(e?.code || e?.message || 'mirror_failed').slice(0, 80) };
+        }
+      }
       recordBackupResult(result);
       const httpStatus = result.state === 'failed' ? 500 : 200;
       return res.status(httpStatus).json({
@@ -375,6 +407,8 @@ export function registerDriveRoutes(app: express.Express, deps: DriveRoutesDeps)
         treeHash: result.treeHash ?? null,
         sourceHash: result.sourceHash ?? null,
         uploaded: result.uploaded ?? 0,
+        secretsCount: result.secretsCount ?? null,
+        mirror,
         reason: result.reason ?? null,
         message: result.message ?? null,
         errorDetails: result.errorDetails ?? null,
@@ -396,6 +430,8 @@ export function registerDriveRoutes(app: express.Express, deps: DriveRoutesDeps)
   // ------------------------------------------------------------------
   app.get('/api/dr/health', (_req, res) => {
     const readiness = authReadiness(env, control().driveRefreshToken);
+    const masterKey = inspectMasterKey(env as NodeJS.ProcessEnv);
+    const mirror = control().driveMirror;
     res.json({
       success: true,
       dr: {
@@ -406,12 +442,28 @@ export function registerDriveRoutes(app: express.Express, deps: DriveRoutesDeps)
         authorized: readiness.authorized,
         refreshTokenStored: readiness.refreshTokenStored,
         tokenEncryptionKey: readiness.tokenEncryptionKey,
+        // مفتاح الاستعادة الرئيسي (بلا قيمة): هل يفتح الأسرار فعلاً؟
+        recoveryMasterKey: masterKey,
         callbackRoute: '/api/dr/drive/callback',
         authUrlRoute: '/api/dr/drive/auth-url',
         rp001Commit: RP_001_COMMIT,
         quota: { designBytes: DESIGN_QUOTA_BYTES, headroomBytes: QUOTA_HEADROOM_BYTES },
         backupReady: readiness.authorized,
         backupRoute: '/api/dr/backup',
+        // مرآة CURRENT (بلا أسرار): بصمة الشجرة + عدد الملفات + وقت آخر مزامنة.
+        currentMirror: mirror
+          ? { synced: true, treeHash: mirror.treeHash ?? null, fileCount: Array.isArray(mirror.files) ? mirror.files.length : null, updatedAt: mirror.updatedAt ?? null }
+          : { synced: false, treeHash: null, fileCount: null, updatedAt: null },
+        // منظومة التعافي: نقاط الاستعادة تُقرأ من /api/dr/recovery-points (owner).
+        recoverySystem: {
+          currentMirror: Boolean(mirror?.treeHash),
+          secretsEncryptionRequired: true,
+          databaseEncryptionRequired: true,
+          recoveryPointsRoute: '/api/dr/recovery-points',
+          restorePlanRoute: '/api/dr/restore/plan',
+          drillRoute: '/api/dr/restore/drill',
+          productionRestoreRoute: '/api/dr/restore/production',
+        },
         lastError: control().driveLastError ?? null,
         backup: control().driveBackup ?? null,
       },
@@ -427,6 +479,246 @@ export function registerDriveRoutes(app: express.Express, deps: DriveRoutesDeps)
       checkedAt: snapshot.lastCheckAt || now(),
     });
     res.json({ success: true, snapshot, hourlyCheck: check });
+  });
+
+  // ------------------------------------------------------------------
+  // حالة حزمة الأسرار (owner): هل المفتاح الرئيسي صالح؟ هل الحزمة قابلة للفك؟
+  // لا تُعاد أي قيمة سرّية — أسماء وحالات وبصمات فقط.
+  // ------------------------------------------------------------------
+  app.get('/api/dr/secrets/status', deps.authenticateToken, deps.requireOwner, async (_req, res) => {
+    const masterKey = inspectMasterKey(env as NodeJS.ProcessEnv);
+    let packageInfo: any = { present: false, encrypted: true };
+    let canDecrypt = false;
+    const readiness = authReadiness(env, control().driveRefreshToken);
+    if (readiness.authorized) {
+      try {
+        const store = buildStore(buildClient(), { readOnlyStructure: true });
+        const pkg = await store.readSecretsPackage();
+        const manifest = await store.readSecretsManifest();
+        if (pkg.ok && pkg.data) {
+          packageInfo = {
+            present: true,
+            encrypted: true,
+            size: pkg.data.length,
+            count: manifest.ok && manifest.data ? manifest.data.includedCount ?? null : null,
+            names: manifest.ok && manifest.data ? manifest.data.includedNames ?? [] : [],
+            hash: manifest.ok && manifest.data ? manifest.data.encryptedSecretsHash ?? null : null,
+            keyFingerprint: manifest.ok && manifest.data ? manifest.data.keyFingerprint ?? null : null,
+          };
+          // فكّ تجريبي للتأكد أن المفتاح الحالي يفتح الحزمة فعلاً (بلا كشف القيم).
+          try {
+            const { decryptSecretsPackage } = await import('../../tools/dr/secret-crypto.mjs');
+            const dec = decryptSecretsPackage(pkg.data, env as NodeJS.ProcessEnv);
+            canDecrypt = dec.ok;
+            if (dec.ok) packageInfo.decryptedCount = Object.keys(dec.secrets || {}).length;
+          } catch { canDecrypt = false; }
+        }
+      } catch { /* تعذّر القراءة: نُعلنها صراحةً */ }
+    }
+    res.json({ success: true, masterKey, package: packageInfo, canDecrypt, authorized: readiness.authorized });
+  });
+
+  // ------------------------------------------------------------------
+  // نقاط الاستعادة الكاملة (owner): قراءة فقط — بيان كل نقطة وحالة تحققها.
+  // ------------------------------------------------------------------
+  app.get('/api/dr/recovery-points', deps.authenticateToken, deps.requireOwner, async (_req, res) => {
+    const readiness = authReadiness(env, control().driveRefreshToken);
+    if (!readiness.authorized) {
+      return res.status(409).json({ success: false, code: 'NOT_AUTHORIZED', error: 'لا تفويض Google Drive فعّال.' });
+    }
+    try {
+      const store = buildStore(buildClient(), { readOnlyStructure: true });
+      const points = await store.listRestorePoints();
+      const latest = await store.readLatestRecovery();
+      const currentState = await store.readCurrentState();
+      const list = [];
+      for (const p of (points.ok ? points.data : [])) {
+        const v = await verifyRecoveryPoint(store, p);
+        list.push({
+          id: p.id,
+          commit: p.manifest?.commit ?? null,
+          createdAt: p.manifest?.createdAt ?? null,
+          fileCount: p.manifest?.fileCount ?? null,
+          sourceSize: p.manifest?.sourceSize ?? null,
+          database: { encrypted: true, hash: p.manifest?.encryptedDatabaseHash ?? null, size: p.manifest?.encryptedDatabaseSize ?? null },
+          secrets: { encrypted: true, hash: p.manifest?.encryptedSecretsHash ?? null, size: p.manifest?.encryptedSecretsSize ?? null, count: p.manifest?.secretsCount ?? null },
+          hashes: { treeHash: p.manifest?.treeHash ?? null, sourceHash: p.manifest?.sourceHash ?? null },
+          verification: { ok: v.ok, checks: v.checks, problems: v.problems },
+          status: v.ok ? 'verified' : 'incomplete',
+        });
+      }
+      res.json({
+        success: true,
+        recoveryPoints: list,
+        latestRecovery: latest.ok ? latest.data : null,
+        currentState: currentState.ok ? currentState.data : null,
+        mirror: control().driveMirror ?? null,
+        secretsStatus: { masterKey: inspectMasterKey(env as NodeJS.ProcessEnv) },
+      });
+    } catch (err: any) {
+      res.status(502).json({ success: false, code: 'DRIVE_READ_FAILED', error: String(err?.code || err?.message || 'drive_read_failed').slice(0, 80) });
+    }
+  });
+
+  // ------------------------------------------------------------------
+  // مزامنة CURRENT الفعلية (owner): مرآة الملفات الفردية ببنية المجلدات.
+  // ------------------------------------------------------------------
+  app.post('/api/dr/sync', deps.authenticateToken, deps.requireOwner, async (_req, res) => {
+    const readiness = authReadiness(env, control().driveRefreshToken);
+    if (!readiness.authorized) {
+      return res.status(409).json({ success: false, code: 'NOT_AUTHORIZED', error: 'لا تفويض Google Drive فعّال: لا يمكن المزامنة.' });
+    }
+    const client = buildClient();
+    if (!client) return res.status(503).json({ success: false, code: 'DRIVE_CLIENT_UNAVAILABLE', error: 'تعذّر بناء عميل Drive.' });
+    if (backupRunning) return res.status(409).json({ success: false, code: 'SYNC_ALREADY_RUNNING', error: 'عملية نسخ/مزامنة قيد التنفيذ بالفعل.' });
+    backupRunning = true;
+    const startedAt = now();
+    try {
+      const store = buildStore(client);
+      const collected = deps.collectSourceFiles ? deps.collectSourceFiles() : { included: [], excluded: [] };
+      const files = [...(collected.included || []), ...(collected.excluded || [])];
+      const result = await runCurrentMirror({ store, files, commit: deps.gitMeta ? deps.gitMeta().commit ?? null : null, previousMirror: control().driveMirror || null, now: startedAt });
+      rememberStructure(store);
+      if (result.state === 'synced') {
+        control().driveMirror = { version: result.mirrorManifest?.version || 1, treeHash: result.treeHash, files: result.mirrorManifest?.files || [], updatedAt: startedAt };
+        deps.persistControl({ driveMirror: control().driveMirror });
+        // تحديث current-state إن وُجدت بيانات نسخة سابقة.
+        const prev = control().driveBackup || {};
+        try {
+          const secretsManifest = await store.readSecretsManifest();
+          await store.writeCurrentState(buildCurrentState({
+            updatedAt: startedAt,
+            commit: result.commit ?? prev.commit ?? null,
+            branch: (deps.gitMeta?.().branch) ?? null,
+            repository: (deps.gitMeta?.().repository) ?? null,
+            treeHash: result.treeHash,
+            fileCount: result.fileCount,
+            sizeBytes: result.sizeBytes,
+            lastRecoveryPointId: prev.lastRecoveryPointId ?? null,
+            recoveryPointCount: null,
+            database: { present: false, encrypted: true, hash: null, size: null },
+            secrets: { present: Boolean(secretsManifest.ok && secretsManifest.data), encrypted: true, count: secretsManifest.ok && secretsManifest.data ? secretsManifest.data.includedCount ?? 0 : 0, hash: secretsManifest.ok && secretsManifest.data ? secretsManifest.data.encryptedSecretsHash ?? null : null, names: secretsManifest.ok && secretsManifest.data ? secretsManifest.data.includedNames ?? [] : [] },
+            requiredEnvNames: secretsManifest.ok && secretsManifest.data ? secretsManifest.data.includedNames ?? [] : [],
+          }));
+        } catch { /* best effort */ }
+      }
+      res.status(result.state === 'failed' ? 500 : 200).json({
+        success: result.state === 'synced' || result.state === 'no_change',
+        state: result.state,
+        uploaded: result.uploaded ?? 0,
+        removed: result.removed ?? 0,
+        fileCount: result.fileCount ?? null,
+        sizeBytes: result.sizeBytes ?? null,
+        treeHash: result.treeHash ?? null,
+        commit: result.commit ?? null,
+        diff: result.diff ?? null,
+        reason: result.reason ?? null,
+        message: result.message ?? null,
+        at: startedAt,
+      });
+    } catch (err: any) {
+      res.status(500).json({ success: false, state: 'failed', reason: String(err?.code || err?.message || 'sync_failed').slice(0, 80) });
+    } finally {
+      backupRunning = false;
+    }
+  });
+
+  // ------------------------------------------------------------------
+  // خطة الاستعادة (owner): عرض صادق قبل أي تنفيذ — بلا كتابة.
+  // ------------------------------------------------------------------
+  async function resolvePoint(store: any, id: string | null) {
+    if (id) return store.getRestorePoint(id);
+    const points = await store.listRestorePoints();
+    if (!points.ok || !points.data.length) return { ok: false, code: 'no_recovery_points', message: 'لا توجد نقاط استعادة.' };
+    return { ok: true, data: points.data[points.data.length - 1] };
+  }
+
+  app.get('/api/dr/restore/plan', deps.authenticateToken, deps.requireOwner, async (req, res) => {
+    const readiness = authReadiness(env, control().driveRefreshToken);
+    if (!readiness.authorized) return res.status(409).json({ success: false, code: 'NOT_AUTHORIZED', error: 'لا تفويض Google Drive فعّال.' });
+    const id = typeof req.query.point === 'string' && req.query.point ? req.query.point : null;
+    try {
+      const store = buildStore(buildClient(), { readOnlyStructure: true });
+      const point = await resolvePoint(store, id);
+      if (!point.ok || !point.data) return res.status(404).json({ success: false, code: 'RECOVERY_POINT_NOT_FOUND', error: point.message || 'نقطة الاستعادة غير موجودة.' });
+      const plan = await buildRestorePlan(store, point.data, { mode: 'isolated', env: env as NodeJS.ProcessEnv });
+      res.json({ success: true, plan });
+    } catch (err: any) {
+      res.status(502).json({ success: false, code: 'DRIVE_READ_FAILED', error: String(err?.code || err?.message || 'drive_read_failed').slice(0, 80) });
+    }
+  });
+
+  // ------------------------------------------------------------------
+  // اختبار الاستعادة المعزول (owner): تنزيل → تحقق → فكّ تشفير → استخراج مصدر
+  // → استعادة قاعدة بيانات في قاعدة معزولة (إن مُرِّرت). **لا يلمس الإنتاج أبداً.**
+  // ------------------------------------------------------------------
+  app.post('/api/dr/restore/drill', deps.authenticateToken, deps.requireOwner, async (req, res) => {
+    const readiness = authReadiness(env, control().driveRefreshToken);
+    if (!readiness.authorized) return res.status(409).json({ success: false, code: 'NOT_AUTHORIZED', error: 'لا تفويض Google Drive فعّال.' });
+    const id = (req.body && typeof req.body.point === 'string' && req.body.point) ? req.body.point : null;
+    try {
+      const store = buildStore(buildClient(), { readOnlyStructure: true });
+      const point = await resolvePoint(store, id);
+      if (!point.ok || !point.data) return res.status(404).json({ success: false, code: 'RECOVERY_POINT_NOT_FOUND', error: point.message || 'نقطة الاستعادة غير موجودة.' });
+
+      const isolatedUrl = deps.isolatedDatabaseUrl || env.DR_RECOVERY_TEST_DATABASE_URL || null;
+      const productionUrl = env.DATABASE_URL || null;
+      // حماية صريحة: لا نستخدم قاعدة الإنتاج في اختبار الاستعادة.
+      if (isolatedUrl && productionUrl && isolatedUrl === productionUrl) {
+        return res.status(409).json({ success: false, code: 'REFUSED_PRODUCTION_DATABASE', error: 'DR_RECOVERY_TEST_DATABASE_URL يطابق DATABASE_URL الإنتاجي: رُفض الاختبار.' });
+      }
+
+      const fsMod = await import('node:fs');
+      const osMod = await import('node:os');
+      const pathMod = await import('node:path');
+      const workDir = deps.drillDir || fsMod.mkdtempSync(pathMod.join(osMod.tmpdir(), 'gharabi-drill-'));
+
+      const report = await runRecoveryDrill({ store, point: point.data, env: env as NodeJS.ProcessEnv, workDir, returnSql: true, returnSecrets: false, now: now() });
+
+      // استعادة قاعدة البيانات في قاعدة معزولة (إن مُرِّرت ولم تكن الإنتاج).
+      let databaseRestore: any = { attempted: false, reason: isolatedUrl ? 'no_sql' : 'no_isolated_database' };
+      if (isolatedUrl && report.sql) {
+        try {
+          const pg: any = await import('pg');
+          const pool = new pg.default.Pool({ connectionString: isolatedUrl, max: 2 });
+          try {
+            databaseRestore = await applyDatabaseDump(report.sql, pool);
+          } finally {
+            await pool.end().catch(() => {});
+          }
+        } catch (e: any) {
+          databaseRestore = { ok: false, code: String(e?.code || e?.message || 'db_restore_failed').slice(0, 80) };
+        }
+      }
+      // لا نُعيد الأسرار ولا SQL في الاستجابة (سرّية).
+      const { sql, secrets, ...safe } = report as any;
+      res.json({ success: report.ok === true, report: { ...safe, databaseRestore, isolatedDatabaseUsed: Boolean(isolatedUrl && isolatedUrl !== productionUrl) } });
+    } catch (err: any) {
+      res.status(500).json({ success: false, code: 'DRILL_FAILED', error: String(err?.code || err?.message || 'drill_failed').slice(0, 120) });
+    }
+  });
+
+  // ------------------------------------------------------------------
+  // استعادة الإنتاج (owner): **مقفلة** بلا تأكيد صريح. لا نكتب فوق الإنتاج
+  // تلقائياً — نُعلن أن الاستعادة الإنتاجية تتطلّب تأكيداً وخطوات خارجية.
+  // ------------------------------------------------------------------
+  app.post('/api/dr/restore/production', deps.authenticateToken, deps.requireOwner, async (req, res) => {
+    const confirmed = req.body && req.body.confirm === true;
+    if (!confirmed) {
+      return res.status(428).json({
+        success: false,
+        code: 'OWNER_CONFIRMATION_REQUIRED',
+        error: 'الاستعادة الإنتاجية تتطلّب تأكيداً صريحاً (confirm: true) بعد نجاح اختبار معزول.',
+        requires: ['confirm: true', 'successful isolated drill'],
+      });
+    }
+    return res.status(501).json({
+      success: false,
+      code: 'PRODUCTION_RESTORE_EXTERNAL',
+      error: 'الاستعادة الإنتاجية تُنفَّذ بخطوات خارجية موثّقة (Render redeploy + env vars) عبر وثائق التعافي؛ لا نكتب فوق الإنتاج تلقائياً.',
+      documentation: 'al-gharabi-ai-dr/RECOVERY/recovery-information.md',
+      steps: buildLatestRecovery({}).restoreSteps,
+    });
   });
 
   // مرجع مخزن الحالة للاختبار/الصحة العامة.
