@@ -122,8 +122,17 @@ async function main() {
   const noDeclared = bindBundleCommit({ commit: built.commit }, {});
   check('no declared commit => bound null', noDeclared.bound === null);
 
-  // --- 7) RENDER_GIT_COMMIT: المصدر الوحيد للـcommit في بيئة Render (بلا .git) ---
+  // --- 5ب) الربط وقت التشغيل: الحزمة بلا commit زمن البناء + RENDER_GIT_COMMIT وقت التشغيل ---
+  // (Render لا يوفّر RENDER_* أثناء البناء لهذه الخدمة، لكنه يوفّرها وقت التشغيل.)
   const RENDER_SHA = 'a1b2c3d4e5f60718293a4b5c6d7e8f9012345678';
+  const rtBind: any = bindBundleCommit({ commit: null }, { RENDER_GIT_COMMIT: RENDER_SHA });
+  check('runtime commit binds when bundle has none', rtBind.bound === true && rtBind.reason === 'runtime_commit_matches' && rtBind.commit === RENDER_SHA);
+  const rtNoEnv: any = bindBundleCommit({ commit: null }, {});
+  check('no env at all => not bound (null)', rtNoEnv.bound === null && rtNoEnv.reason === 'no_declared_commit');
+  const rtBadEnv: any = bindBundleCommit({ commit: null }, { RENDER_GIT_COMMIT: 'nope' });
+  check('invalid runtime commit => not bound (null, no invention)', rtBadEnv.bound === null && rtBadEnv.commit === null);
+
+  // --- 7) RENDER_GIT_COMMIT: المصدر الوحيد للـcommit في بيئة Render (بلا .git) ---
   // (أ) عند وجود RENDER_GIT_COMMIT تُسجَّل نفس القيمة تماماً.
   const withEnv = buildTrustedSourceBundle(repoRoot, { env: { RENDER_GIT_COMMIT: RENDER_SHA }, generatedAt: null });
   check('RENDER_GIT_COMMIT is recorded verbatim', withEnv.commit === RENDER_SHA, `commit=${withEnv.commit}`);

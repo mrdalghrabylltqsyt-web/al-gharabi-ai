@@ -127,8 +127,12 @@ export function collectTrustedSourceTree(rootDir = REPO_ROOT, options = {}) {
       bundle: {
         dir: bundle.bundleDir,
         bundleSource: bundle.bundleSource,
-        commit: bundle.commit,
+        // القيمة الفعّالة: commit زمن البناء إن وُجد، وإلا الـcommit المنشور وقت التشغيل.
+        commit: bound.commit ?? bundle.commit ?? null,
+        buildCommit: bundle.commit ?? null,
         commitSource: bundle.commitSource ?? null,
+        resolvedCommit: bound.commit ?? null,
+        boundVia: bound.bound ? bound.reason : null,
         buildEnv: bundle.buildEnv ?? null,
         treeHash: bundle.treeHash,
         manifestTreeHash: bundle.manifestTreeHash,
@@ -153,12 +157,21 @@ export function collectTrustedSourceTree(rootDir = REPO_ROOT, options = {}) {
  */
 export function bindBundleCommit(bundle, env = process.env, options = {}) {
   const declared = String(env?.RENDER_GIT_COMMIT || env?.GIT_COMMIT || '').trim().toLowerCase();
+  const declaredValid = /^[0-9a-f]{40}$/.test(declared);
   const bundleCommit = String(bundle?.commit || '').trim().toLowerCase();
-  if (!declared) return { bound: null, reason: 'no_declared_commit' };
-  if (!bundleCommit) return { bound: false, reason: 'bundle_commit_missing' };
-  if (declared === bundleCommit) return { bound: true, reason: 'commit_matches' };
-  // داخل الصورة قد يُبنى التطبيق من commit أحدث/أقدم قليلاً؛ نُعلن الفرق بدقة.
-  return { bound: false, reason: `commit_mismatch:${bundleCommit.slice(0, 7)}!=${declared.slice(0, 7)}` };
+  // حزمة تحمل commit زمن البناء: يُقارَن بالـcommit المُعلن (تطابق/عدم تطابق صريح).
+  if (bundleCommit) {
+    if (!declaredValid) return { bound: null, reason: 'no_declared_commit', commit: bundleCommit };
+    if (declared === bundleCommit) return { bound: true, reason: 'commit_matches', commit: bundleCommit };
+    // داخل الصورة قد يُبنى التطبيق من commit أحدث/أقدم قليلاً؛ نُعلن الفرق بدقة.
+    return { bound: false, reason: `commit_mismatch:${bundleCommit.slice(0, 7)}!=${declared.slice(0, 7)}`, commit: bundleCommit };
+  }
+  // حزمة بلا commit زمن البناء (Render لا يوفّر RENDER_* أثناء البناء لهذه الخدمة).
+  // الربط بالـcommit المنشور وقت التشغيل صادق: الحزمة تُبنى في نفس نشر هذه العملية
+  // (dist/dr-source يُنتَج في خطوة البناء لنفس الـdeploy)، وRENDER_GIT_COMMIT يعطي
+  // الـcommit المنشور فعلاً. لا اختراع: القيمة تأتي من البيئة، لا من تخمين.
+  if (declaredValid) return { bound: true, reason: 'runtime_commit_matches', commit: declared };
+  return { bound: null, reason: 'no_declared_commit', commit: null };
 }
 
 /**
