@@ -356,9 +356,8 @@ export const CloudBackupView: React.FC = () => {
         </div>
         {reauthorizationNeeded && (
           <p className="text-[11px] text-amber-300/90 mt-3 leading-relaxed">
-            رمز التجديد المخزّن رفضه Google فعلاً
-            {health?.refreshToken?.providerCode ? ` (${health.refreshToken.providerCode})` : ''}
-            {' '}— غالباً لأن التفويض أُلغي أو أن التطبيق/الصلاحيات تغيّرت. اضغط «إعادة الربط بنقرة واحدة» أعلاه ثم وافق بحساب Google نفسه.
+            {health?.nextActionMessage || 'رمز التجديد المخزّن رفضه Google فعلاً.'}
+            {health?.refreshToken?.providerCode ? ` (كود Google: ${health.refreshToken.providerCode})` : ''}
           </p>
         )}
         <div className="grid md:grid-cols-2 gap-2 mt-4 text-xs">

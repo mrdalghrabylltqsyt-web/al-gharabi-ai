@@ -106,6 +106,8 @@ async function main() {
       check('health refreshToken diagnostic ok', health.dr.refreshToken.stored === true && health.dr.refreshToken.decryptable === true && health.dr.refreshToken.providerRefresh === 'ok' && health.dr.refreshToken.reason === 'token_refresh_ok');
       check('health refreshToken no secret', !JSON.stringify(health.dr.refreshToken).includes('1//') && !JSON.stringify(health.dr.refreshToken).includes('ya29.'));
       check('health refreshToken exposes providerCode/httpStatus keys', 'providerCode' in health.dr.refreshToken && 'httpStatus' in health.dr.refreshToken);
+      check('health exposes single nextAction', typeof health.dr.nextAction === 'string' && typeof health.dr.nextActionMessage === 'string' && !health.dr.nextActionMessage.includes('GOCSPX'));
+      check('health exposes refresh truth flags', health.dr.refreshTokenTested === true && health.dr.refreshTokenUsable === true && health.dr.reauthorizationNeeded === false);
       // اعتماد OAuth Client: يظهر وجود/صيغة/بصمة آمنة بلا أي قيمة سرّية.
       check('health oauthClient safe', health.dr.oauthClient.clientIdPresent === true && health.dr.oauthClient.clientSecretPresent === true && /^[0-9a-f]{12}$/.test(health.dr.oauthClient.clientIdFingerprint));
       check('health oauthClient no secret', !JSON.stringify(health.dr.oauthClient).includes('apps.googleusercontent.com') && !JSON.stringify(health.dr.oauthClient).includes('GOCSPX'));

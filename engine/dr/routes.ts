@@ -488,6 +488,22 @@ export function registerDriveRoutes(app: express.Express, deps: DriveRoutesDeps)
     const refreshTested = refreshTokenDiagnostic.providerRefresh === 'ok';
     const refreshFailed = refreshTokenDiagnostic.providerRefresh === 'failed';
     const reauthorizationNeeded = refreshFailed;
+    const oauthDiag = inspectDriveOAuthClient(env as Record<string, string | undefined>);
+    // إجراء واحد صريح بلا أي سرّ: ما الذي يمنع النسخة الآن، وماذا يفعل المالك بالضبط.
+    let nextAction = 'none';
+    let nextActionMessage = 'منظومة النسخ جاهزة: رمز التفويض مُثبت فعلاً لدى Google.';
+    if (!readiness.configured) {
+      nextAction = 'configure_oauth';
+      nextActionMessage = 'اضبط اعتماد OAuth لتطبيق Drive (متغيّرَي العميل) على الخادم ثم أعد الربط.';
+    } else if (reauthorizationNeeded) {
+      nextAction = 'reauthorize_drive';
+      nextActionMessage = oauthDiag.driveClientIdIgnored
+        ? 'رمز التفويض المخزّن رفضه Google، وقيمة عميل DRIVE غير صالحة (ليست معرّف Google). اضبط معرّف عميل Google الصحيح (ينتهي بـ .apps.googleusercontent.com) أو تأكّد أن عنوان عودة Drive مسجّل في عميل Google المستخدم، ثم اضغط «إعادة الربط بنقرة واحدة».'
+        : 'رمز التفويض المخزّن رفضه Google (أُلغي/تغيّر العميل). اضغط «إعادة الربط بنقرة واحدة» ووافق بحساب Google نفسه.';
+    } else if (!readiness.refreshTokenStored) {
+      nextAction = 'connect_drive';
+      nextActionMessage = 'لم يُربط Google Drive بعد: اضغط «ربط Google Drive» ووافق.';
+    }
     res.json({
       success: true,
       dr: {
@@ -511,8 +527,10 @@ export function registerDriveRoutes(app: express.Express, deps: DriveRoutesDeps)
         refreshTokenTested: refreshTested,
         refreshTokenUsable: refreshTested,
         reauthorizationNeeded,
+        nextAction,
+        nextActionMessage,
         // اعتماد OAuth Client: وجود/طول/صيغة/بصمة آمنة + هل كانت مسافة زائدة (بلا أي قيمة).
-        oauthClient: inspectDriveOAuthClient(env as Record<string, string | undefined>),
+        oauthClient: oauthDiag,
         // مفتاح الاستعادة الرئيسي (بلا قيمة): هل يفتح الأسرار فعلاً؟
         recoveryMasterKey: masterKey,
         callbackRoute: '/api/dr/drive/callback',
