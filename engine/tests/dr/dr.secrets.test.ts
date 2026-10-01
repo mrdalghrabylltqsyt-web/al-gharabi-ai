@@ -113,6 +113,14 @@ async function main() {
     check('inspect invalid', inspectMasterKey({ [MASTER_KEY_ENV]: 'short' }).state === 'invalid');
     check('inspect valid', inspectMasterKey(ENV).state === 'valid' && inspectMasterKey(ENV).source === MASTER_KEY_ENV);
     check('resolve key bytes', resolveMasterKey(ENV).key.length === 32);
+    // تشخيص لكل متغيّر: يميّز الغياب عن عدم الصلاحية بلا كشف أي قيمة.
+    const perKey = inspectMasterKey({ [MASTER_KEY_ENV]: 'short' }).perKey;
+    check('perKey distinguishes present-invalid', Array.isArray(perKey) && perKey.length === 3
+      && perKey[0].name === MASTER_KEY_ENV && perKey[0].present === true && perKey[0].valid === false && perKey[0].length === 5
+      && perKey[1].present === false && perKey[1].valid === false
+      && perKey[0].fingerprint === null);
+    const perKeyValid = inspectMasterKey(ENV).perKey.find((p) => p.name === MASTER_KEY_ENV);
+    check('perKey exposes valid fingerprint', perKeyValid.valid === true && /^[0-9a-f]{12}$/.test(perKeyValid.fingerprint) && perKeyValid.length === 64);
   }
 
   if (failures.length) {
