@@ -30,6 +30,7 @@ import {
   encryptDriveSecret,
   createRefreshTokenProvider,
   diagnoseDriveRefreshToken,
+  inspectDriveOAuthClient,
 } from '../../tools/dr/drive-auth.mjs';
 import { DriveClient, createGaxiosTransport } from '../../tools/dr/drive-client.mjs';
 import { DriveStore } from '../../tools/dr/drive-store.mjs';
@@ -483,6 +484,8 @@ export function registerDriveRoutes(app: express.Express, deps: DriveRoutesDeps)
           providerRefresh: refreshTokenDiagnostic.providerRefresh,
           reason: refreshTokenDiagnostic.reason,
         },
+        // اعتماد OAuth Client: وجود/طول/صيغة/بصمة آمنة + هل كانت مسافة زائدة (بلا أي قيمة).
+        oauthClient: inspectDriveOAuthClient(env as Record<string, string | undefined>),
         // مفتاح الاستعادة الرئيسي (بلا قيمة): هل يفتح الأسرار فعلاً؟
         recoveryMasterKey: masterKey,
         callbackRoute: '/api/dr/drive/callback',

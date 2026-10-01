@@ -20,9 +20,25 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import net from 'node:net';
 import { spawn } from 'node:child_process';
 import crypto from 'node:crypto';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+
+/**
+ * يختار منفذاً حراً فعلياً (نطاق معيّن) لتفادي تصادم عشوائي مع اختبارات أخرى
+ * عند تشغيل npm test كاملاً. لا يستهلك المنفذ بعد التحرير.
+ */
+function freePort(preferred: number): Promise<number> {
+  return new Promise((resolve) => {
+    const srv = net.createServer();
+    srv.once('error', () => resolve(freePort(0)));
+    srv.listen(preferred, '127.0.0.1', () => {
+      const port = (srv.address() as net.AddressInfo).port;
+      srv.close(() => resolve(port));
+    });
+  });
+}
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(HERE, '..', '..', '..');
@@ -86,7 +102,7 @@ async function main() {
   const { collectRepoFiles } = await import('../../../tools/dr/cloud-sync.mjs');
 
   const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gharabi-real-drill-pg-'));
-  const port = 55700 + Math.floor(Math.random() * 200);
+  const port = await freePort(55700 + Math.floor(Math.random() * 200));
   const password = crypto.randomBytes(12).toString('hex');
   const db = new EmbeddedPostgres({ databaseDir: dataDir, user: 'postgres', password, port, persistent: false });
   const prodUrl = `postgresql://postgres:${password}@127.0.0.1:${port}/gharabi_prod?sslmode=disable`;
@@ -228,7 +244,8 @@ async function bootRestoredSource(workDir: string, extraEnv: Record<string, stri
   // ربط node_modules فقط ليجد tsx/التبعيات؛ الكود المُنفَّذ هو المستعاد فعلاً.
   const nm = path.join(workDir, 'node_modules');
   try { if (!fs.existsSync(nm)) fs.symlinkSync(path.join(REPO_ROOT, 'node_modules'), nm, 'dir'); } catch { /* تجاهل */ }
-  const env: Record<string, string> = { ...process.env, ...extraEnv, PORT: String(55900 + Math.floor(Math.random() * 80)) } as Record<string, string>;
+  const bootPort = await freePort(55900 + Math.floor(Math.random() * 80));
+  const env: Record<string, string> = { ...process.env, ...extraEnv, PORT: String(bootPort) } as Record<string, string>;
   // استدعاء tsx مباشرة (لا npx) + detached حتى تُقتل الشجرة كلها بلا عمليات يتيمة تُبقي الأنبوب مفتوحاً.
   const tsxCli = path.join(REPO_ROOT, 'node_modules/tsx/dist/cli.mjs');
   const child = spawn(process.execPath, [tsxCli, 'server.ts'], { cwd: workDir, env, stdio: ['ignore', 'pipe', 'pipe'], detached: true });

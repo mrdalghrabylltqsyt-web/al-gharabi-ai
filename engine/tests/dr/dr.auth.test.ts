@@ -19,6 +19,8 @@ import {
   inspectTokenEncryptionKey,
   inspectDriveAuthEnv,
   diagnoseDriveRefreshToken,
+  inspectDriveOAuthClient,
+  trimmedEnvValue,
 } from '../../../tools/dr/drive-auth.mjs';
 import { DriveStateStore } from '../../../tools/dr/drive-auth-url.mjs';
 import { DRIVE_FILE_SCOPE, DRIVE_OAUTH_REDIRECT_URI } from '../../../tools/dr/cloud-lib.mjs';
@@ -137,7 +139,7 @@ async function main() {
     check('refresh ok', res.ok === true && Boolean(res.accessToken));
     const fail: any = { fail: 'invalid_grant', status: 400 };
     const bad = await refreshDriveAccessToken('1//refresh', { env: AUTH_ENV, transporter: makeFakeTokenTransport(fail) });
-    check('refresh failure classified', bad.ok === false && bad.code === 'refresh_failure');
+    check('refresh invalid_grant classified', bad.ok === false && bad.code === 'invalid_grant');
     const unauth: any = { fail: 'invalid_client', status: 401 };
     const u = await refreshDriveAccessToken('1//refresh', { env: AUTH_ENV, transporter: makeFakeTokenTransport(unauth) });
     check('invalid_client distinct from unauthorized', u.code === 'invalid_client');
@@ -175,12 +177,37 @@ async function main() {
     // 5) token refresh unauthorized (401 عام)
     const unauthDiag = await diagnoseDriveRefreshToken({ encrypted: enc, env: AUTH_ENV, transporter: makeFakeTokenTransport({ fail: 'unauthorized', status: 401 }) });
     check('diagnose token_refresh_unauthorized', unauthDiag.providerRefresh === 'failed' && unauthDiag.reason === 'token_refresh_unauthorized');
-    // 6) اعتماد غير مضبوط => بلا محاولة شبكة
+    // 6) اعتماد غير مضبوط => client_missing بلا محاولة شبكة
     const noCfgDiag = await diagnoseDriveRefreshToken({ encrypted: enc, env: { DRIVE_TOKEN_ENCRYPTION_KEY: TEST_KEY } as any });
-    check('diagnose oauth_client_not_configured', noCfgDiag.decryptable === true && noCfgDiag.providerRefresh === 'failed' && noCfgDiag.reason === 'oauth_client_not_configured');
+    check('diagnose client_missing', noCfgDiag.decryptable === true && noCfgDiag.providerRefresh === 'failed' && noCfgDiag.reason === 'client_missing');
+    // 6ب) سرّ مفقود فقط => client_secret_missing
+    const noSecretDiag = await diagnoseDriveRefreshToken({ encrypted: enc, env: { ...AUTH_ENV, DRIVE_OAUTH_CLIENT_SECRET: '' } as any });
+    check('diagnose client_secret_missing', noSecretDiag.reason === 'client_secret_missing');
     // 7) لا سرّ في أي حقل من الحقول التشخيصية
-    const allReasons = [okDiag, wrongKeyDiag, missingDiag, badClientDiag, unauthDiag, noCfgDiag].map((d) => JSON.stringify(d)).join(' ');
+    const allReasons = [okDiag, wrongKeyDiag, missingDiag, badClientDiag, unauthDiag, noCfgDiag, noSecretDiag].map((d) => JSON.stringify(d)).join(' ');
     check('diagnose never leaks token/secret', !allReasons.includes('diag-refresh-token-secret') && !allReasons.includes('GOCSPX') && !allReasons.includes('ya29.'));
+  }
+
+  // --- قصّ المسافات/التنصيص + فحص اعتماد العميل (بلا كشف قيمة) ---
+  {
+    check('trim whitespace', trimmedEnvValue('  abc  ') === 'abc');
+    check('trim quotes', trimmedEnvValue('"abc"') === 'abc');
+    check('trim newline', trimmedEnvValue('abc\n') === 'abc');
+    check('trim non-string passthrough', trimmedEnvValue(undefined as any) === undefined);
+    const clean = inspectDriveOAuthClient(AUTH_ENV as any);
+    check('oauth client present + no whitespace', clean.clientIdPresent === true && clean.clientSecretPresent === true && clean.clientIdHadWhitespace === false && clean.clientSecretHadWhitespace === false);
+    check('oauth client google format', clean.clientIdFormat === 'google_client_id');
+    check('oauth client fingerprint safe', /^[0-9a-f]{12}$/.test(clean.clientIdFingerprint || '') && !JSON.stringify(clean).includes('apps.googleusercontent.com'));
+    const padded = inspectDriveOAuthClient({ ...AUTH_ENV, DRIVE_OAUTH_CLIENT_ID: AUTH_ENV.DRIVE_OAUTH_CLIENT_ID + ' ', DRIVE_OAUTH_CLIENT_SECRET: ' ' + AUTH_ENV.DRIVE_OAUTH_CLIENT_SECRET } as any);
+    check('oauth client whitespace detected', padded.clientIdHadWhitespace === true && padded.clientSecretHadWhitespace === true);
+    // العميل يقصّ فعلاً: نفس البصمة مع/بلا مسافة => التطابق مضمون
+    check('oauth client trims to same fingerprint', padded.clientIdFingerprint === clean.clientIdFingerprint && padded.clientIdLength === clean.clientIdLength);
+    // createDriveOAuthClient يقصّ القيم فعلاً
+    const created = await import('../../../tools/dr/drive-auth.mjs');
+    const oc = created.createDriveOAuthClient({ env: { ...AUTH_ENV, DRIVE_OAUTH_CLIENT_ID: AUTH_ENV.DRIVE_OAUTH_CLIENT_ID + '\n' } as any });
+    check('createDriveOAuthClient ok after trim', oc.ok === true);
+    check('createDriveOAuthClient client_missing', created.createDriveOAuthClient({ env: {} as any }).code === 'client_missing');
+    check('createDriveOAuthClient secret_missing', created.createDriveOAuthClient({ env: { DRIVE_OAUTH_CLIENT_ID: 'x' } as any }).code === 'client_secret_missing');
   }
 
   // --- مزوّد الرمز ---

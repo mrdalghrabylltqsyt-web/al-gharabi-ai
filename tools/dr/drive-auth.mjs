@@ -107,11 +107,21 @@ export function decryptDriveSecret(record, env = process.env) {
   }
 }
 
-/** يقرأ إعداد التفويض من البيئة (بلا كشف أي قيمة). */
+/**
+ * يقصّ المسافات/الأسطر/علامات التنصيص من قيمة بيئة.
+ * Render قد يُدخل مسافة أو سطراً زائداً، والمكتبة ترسل القيمة حرفياً فتنتج
+ * `client_id=...com+` أو إسقاط `client_secret` — وكلاهما يرد `invalid_client`.
+ */
+export function trimmedEnvValue(value) {
+  if (typeof value !== 'string') return value;
+  return value.trim().replace(/^["']|["']$/g, '').trim();
+}
+
+/** يقرأ إعداد التفويض من البيئة (بلا كشف أي قيمة، بعد قصّ المسافات). */
 export function inspectDriveAuthEnv(env = process.env) {
-  const clientId = env[DRIVE_OAUTH_CLIENT_ID_ENV];
-  const clientSecret = env[DRIVE_OAUTH_CLIENT_SECRET_ENV];
-  const refreshToken = env[DRIVE_OAUTH_REFRESH_TOKEN_ENV];
+  const clientId = trimmedEnvValue(env[DRIVE_OAUTH_CLIENT_ID_ENV]);
+  const clientSecret = trimmedEnvValue(env[DRIVE_OAUTH_CLIENT_SECRET_ENV]);
+  const refreshToken = trimmedEnvValue(env[DRIVE_OAUTH_REFRESH_TOKEN_ENV]);
   return {
     clientIdConfigured: Boolean(clientId),
     clientSecretConfigured: Boolean(clientSecret),
@@ -124,6 +134,30 @@ export function inspectDriveAuthEnv(env = process.env) {
   };
 }
 
+/**
+ * فحص آمن لاعتماد OAuth Client (بلا كشف أي قيمة سرّية):
+ * الوجود، الطول، هل كانت هناك مسافة زائدة، صيغة المعرّف، وبصمة SHA-256 مقتطعة.
+ */
+export function inspectDriveOAuthClient(env = process.env) {
+  const rawId = env[DRIVE_OAUTH_CLIENT_ID_ENV];
+  const rawSecret = env[DRIVE_OAUTH_CLIENT_SECRET_ENV];
+  const id = trimmedEnvValue(rawId);
+  const secret = trimmedEnvValue(rawSecret);
+  const idLooksLikeGoogle = typeof id === 'string' && /\.apps\.googleusercontent\.com$/.test(id);
+  const idIsNumeric = typeof id === 'string' && /^\d{6,25}$/.test(id);
+  const clientIdFormat = !id ? 'missing' : idLooksLikeGoogle ? 'google_client_id' : idIsNumeric ? 'numeric_app_id' : 'unknown_format';
+  return {
+    clientIdPresent: Boolean(id),
+    clientSecretPresent: Boolean(secret),
+    clientIdHadWhitespace: typeof rawId === 'string' && rawId !== id,
+    clientSecretHadWhitespace: typeof rawSecret === 'string' && rawSecret !== secret,
+    clientIdLength: id ? id.length : 0,
+    clientSecretLength: secret ? secret.length : 0,
+    clientIdFormat,
+    clientIdFingerprint: id ? crypto.createHash('sha256').update(id).digest('hex').slice(0, 12) : null,
+  };
+}
+
 // ---------------------------------------------------------------------------
 // عميل OAuth
 // ---------------------------------------------------------------------------
@@ -133,11 +167,17 @@ export function inspectDriveAuthEnv(env = process.env) {
  */
 export function createDriveOAuthClient(options = {}) {
   const env = options.env || process.env;
-  const clientId = options.clientId ?? env[DRIVE_OAUTH_CLIENT_ID_ENV];
-  const clientSecret = options.clientSecret ?? env[DRIVE_OAUTH_CLIENT_SECRET_ENV];
+  const clientId = trimmedEnvValue(options.clientId ?? env[DRIVE_OAUTH_CLIENT_ID_ENV]);
+  const clientSecret = trimmedEnvValue(options.clientSecret ?? env[DRIVE_OAUTH_CLIENT_SECRET_ENV]);
   const redirectUri = options.redirectUri ?? DRIVE_OAUTH_REDIRECT_URI;
-  if (!clientId || !clientSecret) {
-    return { ok: false, code: 'not_configured', message: 'DRIVE_OAUTH_CLIENT_ID/SECRET غير مضبوطين.' };
+  if (!clientId && !clientSecret) {
+    return { ok: false, code: 'client_missing', message: 'DRIVE_OAUTH_CLIENT_ID و DRIVE_OAUTH_CLIENT_SECRET غير مضبوطين.' };
+  }
+  if (!clientId) {
+    return { ok: false, code: 'client_missing', message: 'DRIVE_OAUTH_CLIENT_ID غير مضبوط.' };
+  }
+  if (!clientSecret) {
+    return { ok: false, code: 'client_secret_missing', message: 'DRIVE_OAUTH_CLIENT_SECRET غير مضبوط.' };
   }
   const endpoints = options.endpoints ? { ...options.endpoints } : undefined;
   if (options.tokenUrl) endpoints.oauth2TokenUrl = options.tokenUrl;
@@ -186,8 +226,8 @@ function classifyTokenError(err) {
   const data = err?.response?.data || {};
   const error = data.error || err?.code || '';
   const status = Number(err?.response?.status ?? err?.status ?? 0);
-  if (String(error) === 'invalid_grant') return { ok: false, code: 'refresh_failure', status, message: 'رمز التجديد مرفوض (invalid_grant): يلزم تفويض جديد.' };
-  if (String(error) === 'invalid_client') return { ok: false, code: 'invalid_client', status, message: 'اعتماد OAuth مرفوض (invalid_client): عدم تطابق client_id/client_secret.' };
+  if (String(error) === 'invalid_grant') return { ok: false, code: 'invalid_grant', status, message: 'رمز التجديد مرفوض (invalid_grant): يلزم تفويض جديد.' };
+  if (String(error) === 'invalid_client') return { ok: false, code: 'invalid_client', status, message: 'بيانات اعتماد Google Drive غير متطابقة مع التفويض الحالي.' };
   if (status === 401) return { ok: false, code: 'token_refresh_unauthorized', status, message: 'رفض Google طلب التجديد (401).' };
   if (status >= 500) return { ok: false, code: 'server_error', status, message: 'عطل مؤقت لدى Google.' };
   if (!status) return { ok: false, code: 'network_error', status: 0, message: 'تعذّر الوصول إلى Google.' };
@@ -204,7 +244,7 @@ export async function diagnoseDriveRefreshToken(options = {}) {
   const env = options.env || process.env;
   const encrypted = options.encrypted ?? null;
   const stored = Boolean(encrypted);
-  const configured = inspectDriveAuthEnv(env).configured;
+  const clientInfo = inspectDriveOAuthClient(env);
   if (!stored) {
     return { stored: false, decryptable: false, providerRefresh: 'not_tested', reason: 'no_refresh_token', message: 'لا رمز تجديد مخزّن.' };
   }
@@ -219,8 +259,11 @@ export async function diagnoseDriveRefreshToken(options = {}) {
   } else {
     decryptable = true;
   }
-  if (!configured) {
-    return { stored: true, decryptable, providerRefresh: 'failed', reason: 'oauth_client_not_configured', message: 'اعتماد OAuth غير مضبوط (client_id/secret).' };
+  if (!clientInfo.clientIdPresent) {
+    return { stored: true, decryptable, providerRefresh: 'failed', reason: 'client_missing', message: 'DRIVE_OAUTH_CLIENT_ID غير مضبوط.' };
+  }
+  if (!clientInfo.clientSecretPresent) {
+    return { stored: true, decryptable, providerRefresh: 'failed', reason: 'client_secret_missing', message: 'DRIVE_OAUTH_CLIENT_SECRET غير مضبوط.' };
   }
   // طلب تجديد واحد فعلي (بلا أي عملية Drive، بلا كتابة، بلا تغيير الرمز).
   const refreshed = await refreshDriveAccessToken(plain, { env, transporter: options.transporter });
@@ -292,7 +335,7 @@ export function createRefreshTokenProvider(options = {}) {
       ?? null;
     if (!plain) throw Object.assign(new Error('no_refresh_token'), { code: 'no_refresh_token' });
     const refreshed = await refreshDriveAccessToken(plain, options);
-    if (!refreshed.ok || !refreshed.accessToken) throw Object.assign(new Error(refreshed.code || 'refresh_failure'), { code: refreshed.code });
+    if (!refreshed.ok || !refreshed.accessToken) throw Object.assign(new Error(refreshed.code || 'token_refresh_other_error'), { code: refreshed.code });
     cached = { token: refreshed.accessToken, expiry: refreshed.expiryDate || now + 3_600_000 };
     return cached.token;
   };
