@@ -5,11 +5,15 @@
 FROM node:20-slim AS build
 WORKDIR /app
 ENV NODE_ENV=development
+# git مطلوب **زمن البناء** فقط: تبني حزمة المصدر الموثوقة من الشجرة المتتبَّعة
+# (`git ls-files`) وتربطها بالـcommit (`git rev-parse HEAD`). الصورة النهائية بلا git.
+RUN apt-get update && apt-get install -y --no-install-recommends git \
+    && rm -rf /var/lib/apt/lists/*
 # الاعتماديات أولاً ليبقى هذا الملف الطبقي مُخزَّناً بين البناءات.
 COPY package.json package-lock.json ./
 RUN npm ci --no-audit --no-fund
 COPY . .
-# vite build ثم تجميع server.ts إلى dist/server.cjs (نفس خطوة npm run build).
+# vite build ثم حزمة المصدر الموثوقة ثم تجميع server.ts إلى dist/server.cjs.
 RUN npm run build
 
 FROM node:20-slim AS runtime
@@ -19,6 +23,9 @@ ENV NODE_ENV=production
 COPY package.json package-lock.json ./
 RUN npm ci --omit=dev --no-audit --no-fund && npm cache clean --force
 COPY --from=build /app/dist ./dist
+# حزمة المصدر الموثوقة المُجمَّعة زمن البناء (شجرة المشروع الكاملة + commit + بصمة)
+# موجودة داخل dist/dr-source أصلاً، فهي منسوخة مع dist. لا .git ولا سرّ داخل الصورة.
+# نظام DR يقرأها وقت التشغيل ليبني نسخة مصدر كاملة (SOURCE_INCOMPLETE لا يُخفَّف).
 # مجلد حالة افتراضي يُستبدل بقرص دائم عند توفره؛ Postgres هو المخزن الدائم.
 ENV STATE_DIR=/data
 RUN mkdir -p /data && chown -R node:node /data

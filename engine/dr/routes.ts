@@ -134,6 +134,9 @@ export function registerDriveRoutes(app: express.Express, deps: DriveRoutesDeps)
         minFiles: (c as any).minFiles ?? null,
         missingRequired: (c as any).missingRequired ?? null,
         reason: (c as any).reason ?? null,
+        gitAvailable: (c as any).gitAvailable ?? null,
+        // حزمة المصدر المُجمَّعة زمن البناء (بيئة الإنتاج بلا .git): بلا أي سرّ.
+        bundle: (c as any).bundle ?? null,
       };
     } catch (e: any) {
       value = { complete: null, source: null, fileCount: null, reason: String(e?.code || e?.message || 'collect_failed').slice(0, 60) };
@@ -189,6 +192,7 @@ export function registerDriveRoutes(app: express.Express, deps: DriveRoutesDeps)
       minFiles: collected?.minFiles ?? null,
       missingRequired: collected?.missingRequired ?? null,
       reason: collected?.reason ?? null,
+      bundle: collected?.bundle ?? null,
     };
   }
 

@@ -11868,7 +11868,7 @@ registerDriveRoutes(app, {
     Object.assign(drControl, partial);
     saveControlState();
   },
-  collectSourceFiles: () => collectTrustedSourceTree(process.cwd()),
+  collectSourceFiles: () => collectTrustedSourceTree(process.cwd(), { env: process.env }),
   dumpDatabase: () => storageAdapter.dump(),
   buildSecrets: () => buildSecretsBundle(process.env),
   recoveryInfo: (ctx) => ({
