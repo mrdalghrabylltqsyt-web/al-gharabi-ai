@@ -128,6 +128,8 @@ export function collectTrustedSourceTree(rootDir = REPO_ROOT, options = {}) {
         dir: bundle.bundleDir,
         bundleSource: bundle.bundleSource,
         commit: bundle.commit,
+        commitSource: bundle.commitSource ?? null,
+        buildEnv: bundle.buildEnv ?? null,
         treeHash: bundle.treeHash,
         manifestTreeHash: bundle.manifestTreeHash,
         treeMatchesManifest: bundle.treeMatches,
