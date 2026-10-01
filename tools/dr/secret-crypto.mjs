@@ -110,6 +110,22 @@ export function resolveMasterKey(env = process.env) {
   };
 }
 
+/** حالة كل متغيّر مفتاح على حدة (بلا أي قيمة سرّية): مضبوط؟ صالح؟ طوله؟ بصمته؟ */
+export function inspectMasterKeyNames(env = process.env) {
+  return MASTER_KEY_ENV_NAMES.map((name) => {
+    const raw = env[name];
+    const present = raw != null && String(raw).length > 0;
+    const bytes = present ? decodeMasterKey(raw) : null;
+    return {
+      name,
+      present,
+      valid: Boolean(bytes),
+      length: present ? String(raw).trim().length : 0,
+      fingerprint: bytes ? keyFingerprint(bytes) : null,
+    };
+  });
+}
+
 /** حالة المفتاح الرئيسي (بلا أي قيمة سرّية). */
 export function inspectMasterKey(env = process.env) {
   const resolved = resolveMasterKey(env);
@@ -117,6 +133,8 @@ export function inspectMasterKey(env = process.env) {
   return {
     state: resolved.ok ? 'valid' : (anySet ? 'invalid' : 'missing'),
     envNames: MASTER_KEY_ENV_NAMES,
+    // تشخيص صريح لكل متغيّر (غياب vs عدم صلاحية) بلا كشف أي قيمة.
+    perKey: inspectMasterKeyNames(env),
     source: resolved.ok ? resolved.source : null,
     acceptedBytes: 32,
     reason: resolved.ok ? null : resolved.reason,
