@@ -157,6 +157,29 @@ export function resolveGitCommit(rootDir = process.cwd()) {
   }
 }
 
+/**
+ * يحسم commit البناء بترتيب أسبقية صريح — بلا أي تخمين:
+ *   1) `options.commit` (يُمرَّر صراحةً من المستدعي).
+ *   2) `RENDER_GIT_COMMIT` من البيئة — القيمة التي توفّرها Render أثناء البناء
+ *      (Render يبني بلا `.git`، فهذا هو المصدر الوحيد للـcommit هناك).
+ *   3) `git rev-parse HEAD` (بيئة التطوير/CI التي تحوي المستودع).
+ *   4) وإلا: null — لا يُخترع commit، ويبقى المصدر غير مربوط.
+ */
+export function resolveBuildCommit(rootDir = process.cwd(), env = process.env, options = {}) {
+  if (options.commit) {
+    const sha = String(options.commit).trim().toLowerCase();
+    if (/^[0-9a-f]{40}$/.test(sha)) return { ok: true, commit: sha, source: 'provided' };
+  }
+  const fromEnv = String(env?.RENDER_GIT_COMMIT || '').trim().toLowerCase();
+  if (fromEnv) {
+    return /^[0-9a-f]{40}$/.test(fromEnv)
+      ? { ok: true, commit: fromEnv, source: 'RENDER_GIT_COMMIT' }
+      : { ok: false, commit: null, source: 'RENDER_GIT_COMMIT', error: 'bad_sha' };
+  }
+  const git = resolveGitCommit(rootDir);
+  return git.ok ? { ok: true, commit: git.commit, source: 'git' } : { ok: false, commit: null, source: 'none', error: git.error };
+}
+
 // مجلدات غير مصدرية تُقلَّم في مسار المشي (احتياطي عند غياب Git زمن البناء).
 const NON_SOURCE_DIRS = new Set(['node_modules', 'dist', 'build', 'coverage', '.git', '.gharabi-backups']);
 
@@ -199,6 +222,7 @@ export function walkProjectSource(rootDir = process.cwd()) {
  * يرفض البناء (fail-closed) عند: غياب Git، شجرة فارغة، أو أي سرّ مرصود.
  */
 export function buildTrustedSourceBundle(rootDir = process.cwd(), options = {}) {
+  const env = options.env || process.env;
   const git = listGitTrackedPaths(rootDir);
   let sourceMode = 'git';
   let included = [];
@@ -234,7 +258,7 @@ export function buildTrustedSourceBundle(rootDir = process.cwd(), options = {}) 
     };
   }
 
-  const commitRes = options.commit ? { ok: true, commit: options.commit } : resolveGitCommit(rootDir);
+  const commitRes = resolveBuildCommit(rootDir, env, options);
   const commit = commitRes.commit ?? null;
 
   const entries = included.map((f) => ({ path: f.path, sha256: hashContent(f.content), size: f.content.length }));
@@ -246,7 +270,7 @@ export function buildTrustedSourceBundle(rootDir = process.cwd(), options = {}) 
     format: SOURCE_BUNDLE_FORMAT,
     archive: buffer,
     commit,
-    commitSource: commitRes.ok ? (options.commit ? 'provided' : 'git') : 'none',
+    commitSource: commitRes.ok ? commitRes.source : 'none',
     sourceMode,
     treeHash,
     fileCount: included.length,

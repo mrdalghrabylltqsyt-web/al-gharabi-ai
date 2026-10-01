@@ -3106,3 +3106,30 @@ missingRequired:[], bundle:{ commit:'05c18e9…', treeMatchesManifest:true } }`.
 
 **لا تغيير في:** Gemini، OAuth/الاعتمادات/المفاتيح، سوشيال المنصات، Central Brain، أو أي سرّ.
 
+## ربط حزمة المصدر بـcommit النشر في Render — `RENDER_GIT_COMMIT` (2026-10-01)
+
+**الجذر المُثبت:** Render يبني عبر `runtime: node` (`buildCommand: npm ci && npm run build`)
+بلا `.git` في خطوة البناء (يستخرج ملفات الـcommit فقط). فكان `resolveGitCommit` يفشل،
+ويُكتب `source-commit.txt` فارغاً، فتظهر الحزمة كاملة (`complete:true`) لكن
+`bundle.commit=null` و`boundToCommit=false` و`commitBinding=bundle_commit_missing` —
+أي أن `SOURCE_INCOMPLETE` مُغلق فعلاً لكن الربط بالـcommit غير محقّق في الإنتاج.
+
+**الإصلاح (محدود بـ`tools/dr/source-bundle.mjs` فقط):** دالة `resolveBuildCommit` بترتيب
+أسبقية صريح **بلا أي تخمين**: `options.commit` (مُمرَّر صراحةً) ← **`RENDER_GIT_COMMIT`**
+(القيمة التي توفّرها Render زمن البناء) ← `git rev-parse HEAD` ← وإلا `null`. القيمة
+تُقبل فقط بصيغة sha 40-محرفاً؛ أي قيمة غير صالحة **تُرفض** ولا تُخترع. و`buildTrustedSourceBundle`
+صار يقبل `options.env`. `SOURCE_INCOMPLETE` وCURRENT والنسخ التاريخية وGoogle Drive/OAuth
+والمفاتيح لم تُمسّ. CLI (`node tools/dr/source-bundle.mjs`) يقرأ `process.env` تلقائياً.
+
+اختبارات: `engine/tests/dr/dr.source.bundle.test.ts` صار **54 فحصاً** (مجموعتا 7/8:
+`RENDER_GIT_COMMIT` موجود يُسجَّل حرفياً، غائب ⇒ `null` بلا اختراع، صيغة غير صالحة تُرفض،
+الأسبقية، وبيئة شبيهة بـRender بلا `.git` ⇒ حزمة كاملة ومربوطة `commit_matches`).
+فحوص final-audit الجديدة `dr-source-bundle-render-commit-*` (954 إجمالاً).
+
+**النتيجة الإنتاجية بعد النشر:** `sourceCollection.complete=true, source=bundle,
+missingRequired=[], bundle.commit=<merge commit>, boundToCommit=true,
+commitBinding=commit_matches, treeMatchesManifest=true`.
+
+**لا تغيير في:** rp-002/rp-003، `DR_RECOVERY_VAULT_KEY`، أي مفتاح/OAuth/Drive، Gemini،
+سوشيال المنصات. لم تُنشأ rp-004.
+

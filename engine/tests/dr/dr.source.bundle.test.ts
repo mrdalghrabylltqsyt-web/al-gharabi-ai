@@ -29,6 +29,8 @@ import {
   readTrustedSourceBundle,
   buildDeterministicTarGz,
   extractTarGz,
+  resolveBuildCommit,
+  walkProjectSource,
   SOURCE_BUNDLE_ARCHIVE_NAME,
   SOURCE_BUNDLE_MANIFEST_NAME,
 } from '../../../tools/dr/source-bundle.mjs';
@@ -119,6 +121,55 @@ async function main() {
   check('commit match is bound', match.bound === true);
   const noDeclared = bindBundleCommit({ commit: built.commit }, {});
   check('no declared commit => bound null', noDeclared.bound === null);
+
+  // --- 7) RENDER_GIT_COMMIT: المصدر الوحيد للـcommit في بيئة Render (بلا .git) ---
+  const RENDER_SHA = 'a1b2c3d4e5f60718293a4b5c6d7e8f9012345678';
+  // (أ) عند وجود RENDER_GIT_COMMIT تُسجَّل نفس القيمة تماماً.
+  const withEnv = buildTrustedSourceBundle(repoRoot, { env: { RENDER_GIT_COMMIT: RENDER_SHA }, generatedAt: null });
+  check('RENDER_GIT_COMMIT is recorded verbatim', withEnv.commit === RENDER_SHA, `commit=${withEnv.commit}`);
+  check('commitSource reports RENDER_GIT_COMMIT', withEnv.commitSource === 'RENDER_GIT_COMMIT', withEnv.commitSource);
+  // (ب) بلا RENDER_GIT_COMMIT وبلا Git: لا يُخترع commit (null).
+  const noGitDir = tmpDir('nogit');
+  const noGitNoEnv: any = resolveBuildCommit(noGitDir, {}, {});
+  check('no env + no git => commit null', noGitNoEnv.ok === false && noGitNoEnv.commit === null && noGitNoEnv.source === 'none');
+  // (ج) RENDER_GIT_COMMIT بصيغة غير صالحة: يُرفض ولا يُخترع.
+  const badEnv: any = resolveBuildCommit(repoRoot, { RENDER_GIT_COMMIT: 'not-a-sha' }, {});
+  check('invalid RENDER_GIT_COMMIT rejected (no invention)', badEnv.ok === false && badEnv.commit === null, badEnv.error || '');
+  // (د) الأسبقية: options.commit يتقدّم على البيئة.
+  const explicit = resolveBuildCommit(repoRoot, { RENDER_GIT_COMMIT: RENDER_SHA }, { commit: 'f'.repeat(40) });
+  check('explicit options.commit has priority', explicit.ok === true && explicit.commit === 'f'.repeat(40) && explicit.source === 'provided');
+
+  // --- 8) بيئة شبيهة بـRender (بلا .git، RENDER_GIT_COMMIT موجود) ⇒ حزمة كاملة ومربوطة ---
+  // نُقلّد Render بالضبط: شجرة المصدر موجودة لكن بلا `.git`، ويُمرَّر RENDER_GIT_COMMIT.
+  const renderSimDir = tmpDir('render-sim');
+  for (const f of walkProjectSource(repoRoot)) {
+    const abs = path.join(renderSimDir, f.path);
+    fs.mkdirSync(path.dirname(abs), { recursive: true });
+    fs.writeFileSync(abs, f.content);
+  }
+  const renderBuilt = buildTrustedSourceBundle(renderSimDir, { env: { RENDER_GIT_COMMIT: RENDER_SHA }, generatedAt: null });
+  check('render-like build succeeds without .git', renderBuilt.ok === true, renderBuilt.message || '');
+  check('render-like sourceMode is walk (no .git)', renderBuilt.sourceMode === 'walk', renderBuilt.sourceMode);
+  check('render-like commit = RENDER_GIT_COMMIT', renderBuilt.commit === RENDER_SHA, `commit=${renderBuilt.commit}`);
+  check('render-like bundle complete', renderBuilt.fileCount >= SOURCE_MIN_FILES && renderBuilt.files.some((f: any) => f.path === 'server.ts'), `fileCount=${renderBuilt.fileCount}`);
+  const renderBundleDir = tmpDir('render-bundle');
+  writeSourceBundle(renderBundleDir, renderBuilt);
+  const renderCollected: any = collectTrustedSourceTree(renderSimDir, { env: { DR_SOURCE_BUNDLE_DIR: renderBundleDir, RENDER_GIT_COMMIT: RENDER_SHA } });
+  check('render-like collector uses bundle', renderCollected.source === 'bundle', renderCollected.source);
+  check('render-like collector complete', renderCollected.complete === true, renderCollected.reason || '');
+  check('render-like bundle.commit = RENDER_GIT_COMMIT', renderCollected.bundle?.commit === RENDER_SHA, renderCollected.bundle?.commit);
+  check('render-like boundToCommit true', renderCollected.bundle?.boundToCommit === true, renderCollected.bundle?.commitBinding);
+  check('render-like commitBinding commit_matches', renderCollected.bundle?.commitBinding === 'commit_matches', renderCollected.bundle?.commitBinding);
+  check('render-like treeMatchesManifest true', renderCollected.bundle?.treeMatchesManifest === true);
+  // (هـ) بيئة شبيهة بـRender بلا RENDER_GIT_COMMIT ⇒ حزمة كاملة لكن **غير** مربوطة (null).
+  const renderNoEnv: any = buildTrustedSourceBundle(renderSimDir, { env: {}, generatedAt: null });
+  check('render-like without env => commit null (not bound)', renderNoEnv.commit === null && renderNoEnv.ok === true);
+  const renderNoEnvDir = tmpDir('render-noenv');
+  writeSourceBundle(renderNoEnvDir, renderNoEnv);
+  const renderNoEnvCollected: any = collectTrustedSourceTree(renderSimDir, { env: { DR_SOURCE_BUNDLE_DIR: renderNoEnvDir } });
+  check('render-like without env => not bound (null)', renderNoEnvCollected.bundle?.boundToCommit === null, renderNoEnvCollected.bundle?.commitBinding);
+  check('render-like without env => commitBinding no_declared_commit', renderNoEnvCollected.bundle?.commitBinding === 'no_declared_commit', renderNoEnvCollected.bundle?.commitBinding);
+  check('render-like without env => complete still true (guard intact)', renderNoEnvCollected.complete === true, renderNoEnvCollected.reason || '');
 
   // --- 6) فشل جمع المصدر لا يمسّ CURRENT المعتمدة (crash-safe) ---
   {
