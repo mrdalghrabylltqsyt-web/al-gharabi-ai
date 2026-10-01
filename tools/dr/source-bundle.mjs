@@ -260,6 +260,16 @@ export function buildTrustedSourceBundle(rootDir = process.cwd(), options = {}) 
 
   const commitRes = resolveBuildCommit(rootDir, env, options);
   const commit = commitRes.commit ?? null;
+  // تشخيص بيئة البناء (بلا أي سرّ): هل وصلت قيم Render إلى خطوة البناء فعلاً؟
+  // الرمز/الفرع معلومات عامة، والأسماء فقط. الغرض: كشف سبب غياب commit بدل تخمينه.
+  const buildEnv = {
+    renderGitCommitPresent: Boolean(String(env?.RENDER_GIT_COMMIT || '').trim()),
+    renderGitCommitLength: String(env?.RENDER_GIT_COMMIT || '').trim().length,
+    renderPresent: Boolean(String(env?.RENDER || '').trim()),
+    renderGitBranch: String(env?.RENDER_GIT_BRANCH || '').trim() || null,
+    renderVarNames: Object.keys(env || {}).filter((k) => k.startsWith('RENDER_')).sort(),
+    commitSource: commitRes.ok ? commitRes.source : 'none',
+  };
 
   const entries = included.map((f) => ({ path: f.path, sha256: hashContent(f.content), size: f.content.length }));
   const treeHash = computeTreeHash(entries);
@@ -271,6 +281,7 @@ export function buildTrustedSourceBundle(rootDir = process.cwd(), options = {}) 
     archive: buffer,
     commit,
     commitSource: commitRes.ok ? commitRes.source : 'none',
+    buildEnv,
     sourceMode,
     treeHash,
     fileCount: included.length,
@@ -296,6 +307,7 @@ export function writeSourceBundle(outDir, built) {
     generatedAt: built.generatedAt ?? null,
     commit: built.commit,
     commitSource: built.commitSource,
+    buildEnv: built.buildEnv ?? null,
     treeHash: built.treeHash,
     fileCount: built.fileCount,
     sizeBytes: built.sizeBytes,
@@ -392,6 +404,8 @@ export function readTrustedSourceBundle(options = {}) {
     bundleSource: resolved.source,
     manifest: man.manifest,
     commit: man.manifest.commit ?? null,
+    commitSource: man.manifest.commitSource ?? null,
+    buildEnv: man.manifest.buildEnv ?? null,
     treeHash,
     manifestTreeHash,
     treeMatches,
@@ -420,6 +434,7 @@ async function main() {
     dir: outDir,
     commit: built.commit,
     commitSource: built.commitSource,
+    buildEnv: built.buildEnv ?? null,
     treeHash: built.treeHash,
     fileCount: built.fileCount,
     sizeBytes: built.sizeBytes,

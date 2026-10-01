@@ -138,6 +138,11 @@ async function main() {
   // (د) الأسبقية: options.commit يتقدّم على البيئة.
   const explicit = resolveBuildCommit(repoRoot, { RENDER_GIT_COMMIT: RENDER_SHA }, { commit: 'f'.repeat(40) });
   check('explicit options.commit has priority', explicit.ok === true && explicit.commit === 'f'.repeat(40) && explicit.source === 'provided');
+  // (و) تشخيص بيئة البناء (بلا أي سرّ): يُكشف هل وصل RENDER_GIT_COMMIT فعلاً.
+  check('buildEnv exposes renderGitCommitPresent', withEnv.buildEnv?.renderGitCommitPresent === true && withEnv.buildEnv?.renderGitCommitLength === RENDER_SHA.length);
+  const emptyEnvBuild = buildTrustedSourceBundle(repoRoot, { env: {}, generatedAt: null });
+  check('buildEnv reports absence honestly', emptyEnvBuild.buildEnv?.renderGitCommitPresent === false && emptyEnvBuild.buildEnv?.renderGitCommitLength === 0);
+  check('buildEnv carries no secret value', !JSON.stringify(withEnv.buildEnv).includes(TEST_KEY) && !('RENDER_GIT_COMMIT' in (withEnv.buildEnv || {})));
 
   // --- 8) بيئة شبيهة بـRender (بلا .git، RENDER_GIT_COMMIT موجود) ⇒ حزمة كاملة ومربوطة ---
   // نُقلّد Render بالضبط: شجرة المصدر موجودة لكن بلا `.git`، ويُمرَّر RENDER_GIT_COMMIT.
