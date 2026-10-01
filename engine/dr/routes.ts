@@ -389,11 +389,20 @@ export function registerDriveRoutes(app: express.Express, deps: DriveRoutesDeps)
         try {
           mirror = await runCurrentMirror({ store, files, commit: result.commit ?? null, previousMirror: control().driveMirror || null, now: startedAt });
           if (mirror.state === 'synced') {
-            control().driveMirror = { version: mirror.mirrorManifest?.version || 1, treeHash: mirror.treeHash, files: mirror.mirrorManifest?.files || [], updatedAt: startedAt };
+            control().driveMirror = { version: mirror.mirrorManifest?.version || 1, treeHash: mirror.treeHash, files: mirror.mirrorManifest?.files || [], updatedAt: startedAt, error: null };
             deps.persistControl({ driveMirror: control().driveMirror });
           }
         } catch (e: any) {
           mirror = { state: 'failed', reason: String(e?.code || e?.message || 'mirror_failed').slice(0, 80) };
+        }
+        // لا فشل صامت: سبب فشل المرآة يُحفظ ويُعلن (بلا أسرار) ليعرف المالك لماذا synced=false.
+        if (mirror && mirror.state !== 'synced') {
+          const reason = String(mirror.reason || mirror.state || 'mirror_failed').slice(0, 80);
+          const prev = control().driveMirror;
+          control().driveMirror = prev
+            ? { ...prev, error: reason }
+            : { version: 0, treeHash: null, files: [], updatedAt: null, error: reason };
+          deps.persistControl({ driveMirror: control().driveMirror });
         }
       }
       recordBackupResult(result);
@@ -450,10 +459,15 @@ export function registerDriveRoutes(app: express.Express, deps: DriveRoutesDeps)
         quota: { designBytes: DESIGN_QUOTA_BYTES, headroomBytes: QUOTA_HEADROOM_BYTES },
         backupReady: readiness.authorized,
         backupRoute: '/api/dr/backup',
-        // مرآة CURRENT (بلا أسرار): بصمة الشجرة + عدد الملفات + وقت آخر مزامنة.
-        currentMirror: mirror
-          ? { synced: true, treeHash: mirror.treeHash ?? null, fileCount: Array.isArray(mirror.files) ? mirror.files.length : null, updatedAt: mirror.updatedAt ?? null }
-          : { synced: false, treeHash: null, fileCount: null, updatedAt: null },
+        // مرآة CURRENT (بلا أسرار): synced تتطلّب بصمة شجرة فعلية، لا مجرد سجل موجود.
+        // سبب آخر فشل يُعلن صراحةً (لا فشل صامت).
+        currentMirror: {
+          synced: Boolean(mirror?.treeHash),
+          treeHash: mirror?.treeHash ?? null,
+          fileCount: Array.isArray(mirror?.files) ? mirror.files.length : null,
+          updatedAt: mirror?.updatedAt ?? null,
+          error: mirror?.error ?? null,
+        },
         // منظومة التعافي: نقاط الاستعادة تُقرأ من /api/dr/recovery-points (owner).
         recoverySystem: {
           currentMirror: Boolean(mirror?.treeHash),
@@ -579,8 +593,17 @@ export function registerDriveRoutes(app: express.Express, deps: DriveRoutesDeps)
       const files = [...(collected.included || []), ...(collected.excluded || [])];
       const result = await runCurrentMirror({ store, files, commit: deps.gitMeta ? deps.gitMeta().commit ?? null : null, previousMirror: control().driveMirror || null, now: startedAt });
       rememberStructure(store);
+      // لا فشل صامت: سبب فشل المزامنة يُحفظ ويُعلن (بلا أسرار) في health.
+      if (result.state !== 'synced') {
+        const reason = String(result.reason || result.state || 'mirror_failed').slice(0, 80);
+        const prev = control().driveMirror;
+        control().driveMirror = prev
+          ? { ...prev, error: reason }
+          : { version: 0, treeHash: null, files: [], updatedAt: null, error: reason };
+        deps.persistControl({ driveMirror: control().driveMirror });
+      }
       if (result.state === 'synced') {
-        control().driveMirror = { version: result.mirrorManifest?.version || 1, treeHash: result.treeHash, files: result.mirrorManifest?.files || [], updatedAt: startedAt };
+        control().driveMirror = { version: result.mirrorManifest?.version || 1, treeHash: result.treeHash, files: result.mirrorManifest?.files || [], updatedAt: startedAt, error: null };
         deps.persistControl({ driveMirror: control().driveMirror });
         // تحديث current-state إن وُجدت بيانات نسخة سابقة.
         const prev = control().driveBackup || {};

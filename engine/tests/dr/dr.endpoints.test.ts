@@ -96,6 +96,44 @@ async function main() {
       const mirrorNames = [...fakeState.files.values()].filter((f: any) => f.mimeType !== 'application/vnd.google-apps.folder').map((f: any) => f.name);
       check('mirror has App.tsx file', mirrorNames.includes('App.tsx'));
       check('mirror has server.ts file', mirrorNames.includes('server.ts'));
+      // health يعلن المرآة متزامنة (بصمة شجرة فعلية) وبلا خطأ — لا فشل صامت.
+      const health = await (await fetch(`${base}/api/dr/health`)).json();
+      check('health currentMirror synced', health.dr.currentMirror.synced === true && /^[0-9a-f]{64}$/.test(health.dr.currentMirror.treeHash));
+      check('health currentMirror no error', health.dr.currentMirror.error === null && health.dr.recoverySystem.currentMirror === true);
+    }
+
+    // --- فشل المرآة يُعلن صراحةً (لا فشل صامت) ---
+    {
+      const failState = createFakeDriveState();
+      // نمنع إنشاء ملف المرآة => تفشل المزامنة، ويجب أن يظهر سببها في health.
+      failState.failCreateNames.add('mirror-manifest.json');
+      const appF = express();
+      appF.use(express.json());
+      const ctrlF: any = { driveOAuthStates: [], driveRefreshToken: null, driveLastError: null, driveMirror: null };
+      registerDriveRoutes(appF, {
+        authenticateToken, requireOwner, env: ENV,
+        loadControl: () => ctrlF, persistControl: (p) => { Object.assign(ctrlF, p); },
+        clientFactory: () => new DriveClient({ transport: makeFakeTransport(failState), tokenProvider: () => 'tok' }),
+        collectSourceFiles: () => ({ included: FILES, excluded: [] }),
+        dumpDatabase: async () => SQL,
+        buildSecrets: () => buildSecretsBundle(ENV, { now: '2026-01-01T00:00:00.000Z' }),
+        gitMeta: () => ({ commit: 'a'.repeat(40), branch: 'main', repository: 'r/al-gharabi-ai', project: 'al-gharabi-ai' }),
+        now: () => '2026-01-01T00:00:00.000Z',
+      });
+      const sF: Server = await new Promise((resolve) => { const s = appF.listen(0, '127.0.0.1', () => resolve(s)); });
+      const portF = (sF.address() as any).port;
+      const { encryptDriveSecret } = await import('../../../tools/dr/drive-auth.mjs');
+      ctrlF.driveRefreshToken = encryptDriveSecret('1//fake-refresh-token', ENV);
+      try {
+        const sync = await fetch(`http://127.0.0.1:${portF}/api/dr/sync`, { method: 'POST', headers: ownerHeaders });
+        check('sync fails when mirror blocked', sync.status === 500);
+        const health = await (await fetch(`http://127.0.0.1:${portF}/api/dr/health`)).json();
+        check('health currentMirror synced false on failure', health.dr.currentMirror.synced === false);
+        check('health exposes mirror error (no silent failure)', typeof health.dr.currentMirror.error === 'string' && health.dr.currentMirror.error.length > 0);
+        check('health mirror error has no secret', !health.dr.currentMirror.error.includes('AIzaSy') && !health.dr.currentMirror.error.includes('sess-'));
+      } finally {
+        await new Promise((r) => sF.close(r));
+      }
     }
 
     // --- backup (owner) => نقطة استعادة كاملة بالأسرار ---

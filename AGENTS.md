@@ -2822,8 +2822,16 @@ rp-002 سليمة · خطة استعادة «بنقرة واحدة» بلا اس
 بلا تغيير حقيقي (والاختبار القديم كان يمرّ فقط عندما تقع النسختان في الثانية نفسها).
 الإصلاح: mtime ثابت (`00000000000`) فتصبح الحزمة قابلة لإعادة الإنتاج لنفس المدخلات.
 اختبار انحدار في `dr.core.test.ts` (تطابق البصمة + ثبات حقل mtime + تغيّرها مع المحتوى).
+
+**إصلاح ثانٍ — لا فشل صامت في المرآة:** كان `currentMirror` في `/api/dr/health` يعرض
+`synced: true` بمجرد وجود كائن `driveMirror`، حتى لو فشلت المزامنة (بلا `treeHash`)، ولا
+يُحفظ سبب الفشل إطلاقاً. الآن `synced` تتطلّب **بصمة شجرة فعلية** (`Boolean(mirror?.treeHash)`)،
+وسبب آخر فشل للمرآة (من مساري `/api/dr/backup` و`/api/dr/sync`) يُحفظ في `driveMirror.error`
+ويُعلن في `health.dr.currentMirror.error` بلا أي سرّ. اختبارات في `dr.endpoints.test.ts`
+(39 فحصاً): صحة المرآة بعد المزامنة + فشل مزامنة مُعلن بسببه بلا سرّ.
+
 فحوص final-audit: `dr-stage4-*` و`dr-source-bundle-deterministic` و`dr-no-change-deterministic`
-(**860 فحصاً**). DR = 538 فحصاً.
+و`dr-mirror-no-silent-failure` و`dr-mirror-error-exposed-health` (**862 فحصاً**). DR = 543 فحصاً.
 
 **حد صادق:** لا يوجد اعتماد Drive في بيئة التطوير هذه، ولا تُشغَّل النسخة تلقائياً (لا
 `setInterval`؛ المسار `POST /api/dr/backup` للمالك فقط). لذا «rp-003 حقيقية على Google Drive»
