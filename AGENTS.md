@@ -3126,10 +3126,39 @@ missingRequired:[], bundle:{ commit:'05c18e9…', treeMatchesManifest:true } }`.
 الأسبقية، وبيئة شبيهة بـRender بلا `.git` ⇒ حزمة كاملة ومربوطة `commit_matches`).
 فحوص final-audit الجديدة `dr-source-bundle-render-commit-*` (954 إجمالاً).
 
-**النتيجة الإنتاجية بعد النشر:** `sourceCollection.complete=true, source=bundle,
-missingRequired=[], bundle.commit=<merge commit>, boundToCommit=true,
-commitBinding=commit_matches, treeMatchesManifest=true`.
+**النتيجة الإنتاجية بعد نشر ذلك الإصلاح (مُصحَّحة أدناه):** تبيّن أن
+`bundle.commit` بقي `null` فعلاً (`commitBinding=bundle_commit_missing`) لأن
+`RENDER_GIT_COMMIT` غير متاح زمن البناء — التفصيل والإصلاح النهائي في القسم التالي.
 
 **لا تغيير في:** rp-002/rp-003، `DR_RECOVERY_VAULT_KEY`، أي مفتاح/OAuth/Drive، Gemini،
 سوشيال المنصات. لم تُنشأ rp-004.
+
+### تصحيح حاسم: Render لا يوفّر `RENDER_*` زمن البناء لهذه الخدمة (2026-10-01)
+الافتراض السابق بأن `RENDER_GIT_COMMIT` متاح زمن البناء **خطأ مُثبت تجريبياً**. أُضيف
+تشخيص بلا سرّ إلى بيان الحزمة (`buildEnv`: وجود/طول `RENDER_GIT_COMMIT`، `RENDER`،
+`RENDER_GIT_BRANCH`، وأسماء متغيّرات `RENDER_*` فقط — بلا أي قيمة سرّية) ونُشر فعلياً.
+النتيجة على الإنتاج: `renderVarNames: []`, `renderGitCommitPresent: false`,
+`renderPresent: false` — أي **لا وجود لأي متغيّر `RENDER_*` زمن البناء** لهذه الخدمة
+(خدمة أُنشئت قبل تاريخ القطع المذكور في وثائق Render: «At build time … created before
+the cutoff date, this value is empty»). في الوقت نفسه `RENDER_GIT_COMMIT` **موجود وقت
+التشغيل** ويساوي الـcommit المنشور بالضبط (`/api/dr/health.changeTrigger.lastCommit` =
+sha كامل). لذلك `git` زمن البناء لا يساعد (لا `.git`)، و`RENDER_GIT_COMMIT` زمن البناء
+غائب — فلا يمكن للحزمة أن تحمل commit من البناء إطلاقاً.
+
+**الإصلاح النهائي (الربط وقت التشغيل):** `bindBundleCommit` يربط الحزمة التي **بلا** commit
+زمن البناء بـ`RENDER_GIT_COMMIT` المنشور وقت التشغيل (`commitBinding: 'runtime_commit_matches'`)،
+لأن `dist/dr-source` يُنتَج في **نفس** نشر هذه العملية. لا اختراع: القيمة من البيئة،
+وتُقبل فقط بصيغة sha 40-محرفاً؛ غائبة/فسادة ⇒ `bound:null` بلا تخمين. صراحةً:
+- حزمة تحمل commit زمن البناء ⇒ مقارنة صريحة (`commit_matches` / `commit_mismatch:...`).
+- حزمة بلا commit + `RENDER_GIT_COMMIT` صالح وقت التشغيل ⇒ `runtime_commit_matches` (مرتبطة).
+- لا بيئة ⇒ `no_declared_commit` (`bound:null`).
+
+`/api/dr/health` يعرض الآن: `bundle.commit` (الفاعل)، `bundle.buildCommit` (زمن البناء أو
+null)، `bundle.resolvedCommit`، `bundle.boundVia`، و`bundle.buildEnv`. اختبارات:
+`dr.source.bundle.test.ts` = **60 فحصاً** (مجموعة 5ب للربط وقت التشغيل + التشخيص).
+final-audit = **961** (`dr-runtime-commit-*`، `dr-source-bundle-build-env-*`).
+
+**الدرس العام:** لا تفترض توفّر متغيّر بيئة زمن البناء من الوثائق؛ أثبته بتشخيص بلا سرّ
+من داخل خطوة البناء نفسها. وفي بيئة لا يوفّر المزوّد فيها الـcommit زمن البناء، الربط
+بالـcommit المنشور وقت التشغيل صادق لأن الحزمة تُبنى في نفس النشر.
 
