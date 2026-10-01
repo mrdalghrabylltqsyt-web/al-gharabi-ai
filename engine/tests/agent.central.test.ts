@@ -9,6 +9,7 @@
  */
 
 import express from 'express';
+import net from 'node:net';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { AgentOrchestrator } from '../agent/orchestrator';
@@ -30,6 +31,18 @@ import {
   YOUTUBE_DELEGATION_ACTIONS,
 } from '../social/youtubeDelegation';
 import type { AgentToolContext } from '../agent/tools';
+
+/** يختار منفذاً حراً فعلياً (نطاق معيّن) لتفادي تصادم عشوائي عند npm test كاملاً. */
+function freePort(preferred: number): Promise<number> {
+  return new Promise((resolve) => {
+    const srv = net.createServer();
+    srv.once('error', () => resolve(freePort(0)));
+    srv.listen(preferred, '127.0.0.1', () => {
+      const port = (srv.address() as net.AddressInfo).port;
+      srv.close(() => resolve(port));
+    });
+  });
+}
 
 let passed = 0;
 const failures: string[] = [];
@@ -589,7 +602,8 @@ async function unitTests() {
 
 /** تكامل: خادم Express حقيقي بمسار العقل + تصريح فعلي. */
 async function integrationTests() {
-  const PORT = 4819 + Math.floor(Math.random() * 300);
+  // منفذ حر فعلي: يمنع تصادم عشوائي مع اختبارات أخرى عند تشغيل npm test كاملاً.
+  const PORT = await freePort(4819 + Math.floor(Math.random() * 300));
   const BASE = `http://127.0.0.1:${PORT}`;
   const app = express();
   app.use(express.json());

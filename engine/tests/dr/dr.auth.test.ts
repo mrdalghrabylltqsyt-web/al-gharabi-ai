@@ -210,6 +210,33 @@ async function main() {
     check('createDriveOAuthClient secret_missing', created.createDriveOAuthClient({ env: { DRIVE_OAUTH_CLIENT_ID: 'x' } as any }).code === 'client_secret_missing');
   }
 
+  // --- تجاوز قيمة DRIVE غير الصالحة إلى اعتماد Google القائم (منع invalid_client) ---
+  {
+    const created = await import('../../../tools/dr/drive-auth.mjs');
+    const googleId = '999888777666-google.apps.googleusercontent.com';
+    const envBadDrive = {
+      DRIVE_OAUTH_CLIENT_ID: 'a'.repeat(64), // قيمة بطول 64 (ليست معرّف Google)
+      DRIVE_OAUTH_CLIENT_SECRET: 'drive-secret',
+      GOOGLE_OAUTH_CLIENT_ID: googleId,
+      GOOGLE_OAUTH_CLIENT_SECRET: 'google-secret',
+    } as any;
+    const res = created.resolveDriveClientCredentials(envBadDrive);
+    check('fallback uses google id', res.clientId === googleId && res.clientIdSource === 'google_fallback');
+    check('fallback flags ignored drive id', res.driveClientIdIgnored === true);
+    const info = created.inspectDriveOAuthClient(envBadDrive);
+    check('inspect reports unknown_format for bad drive id', info.clientIdFormat === 'unknown_format' && info.clientIdLength === 64);
+    check('inspect effective source google_fallback', info.effectiveClientIdSource === 'google_fallback' && info.effectiveClientIdLooksLikeGoogle === true && info.driveClientIdIgnored === true);
+    check('inspect google fallback available', info.googleFallbackAvailable === true);
+    const oc = created.createDriveOAuthClient({ env: envBadDrive });
+    check('createDriveOAuthClient ok via fallback', oc.ok === true);
+    // عندما يكون معرّف DRIVE صالحاً، لا يُستخدم Google
+    const resGood = created.resolveDriveClientCredentials({ ...AUTH_ENV, GOOGLE_OAUTH_CLIENT_ID: googleId, GOOGLE_OAUTH_CLIENT_SECRET: 'g' } as any);
+    check('drive id wins when valid', resGood.clientIdSource === 'drive' && resGood.clientId === AUTH_ENV.DRIVE_OAUTH_CLIENT_ID);
+    // بلا أي معرّف Google صالح: يُبقي قيمة DRIVE (لا كسر)
+    const resNoGoogle = created.resolveDriveClientCredentials({ DRIVE_OAUTH_CLIENT_ID: '123456789012', DRIVE_OAUTH_CLIENT_SECRET: 's' } as any);
+    check('numeric drive id retained without google', resNoGoogle.clientId === '123456789012' && resNoGoogle.clientIdSource === 'drive');
+  }
+
   // --- مزوّد الرمز ---
   {
     const state: any = {};

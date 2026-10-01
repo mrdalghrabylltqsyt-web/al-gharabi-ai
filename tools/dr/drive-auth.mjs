@@ -134,18 +134,56 @@ export function inspectDriveAuthEnv(env = process.env) {
   };
 }
 
+/** هل القيمة تبدو معرّف عميل Google OAuth فعلاً؟ */
+export function looksLikeGoogleClientId(value) {
+  return typeof value === 'string' && /\.apps\.googleusercontent\.com$/.test(value);
+}
+
+/**
+ * يحسم اعتماد عميل OAuth المستخدم فعلاً. الأولوية لـDRIVE_*، وإن كان معرّفها
+ * مفقوداً أو ليس معرّف Google صالحاً (وُجد خطأ شائع: قيمة مشروع آخر بطول 64)،
+ * يُستخدم اعتماد Google القائم (نفس تطبيق Cloud: GOOGLE_OAUTH_*). هذا يمنع
+ * `invalid_client` من قيمة بيئة ملوّثة بلا مطالبة المالك بأي سرّ.
+ * يعيد أيضاً مصدر كل قيمة (drive/google) وبصمة المعرّف — بلا أي قيمة سرّية.
+ */
+export function resolveDriveClientCredentials(env = process.env) {
+  const driveId = trimmedEnvValue(env[DRIVE_OAUTH_CLIENT_ID_ENV]);
+  const driveSecret = trimmedEnvValue(env[DRIVE_OAUTH_CLIENT_SECRET_ENV]);
+  const googleId = trimmedEnvValue(env.GOOGLE_OAUTH_CLIENT_ID);
+  const googleSecret = trimmedEnvValue(env.GOOGLE_OAUTH_CLIENT_SECRET);
+  const driveIdValid = looksLikeGoogleClientId(driveId);
+  if (driveId && driveIdValid) {
+    return { clientId: driveId, clientSecret: driveSecret, clientIdSource: 'drive', clientSecretSource: 'drive' };
+  }
+  if (googleId && looksLikeGoogleClientId(googleId)) {
+    // معرّف DRIVE إمّا مفقود أو غير صالح => نتبنّى اعتماد Google القائم.
+    return {
+      clientId: googleId,
+      clientSecret: googleSecret || driveSecret || null,
+      clientIdSource: 'google_fallback',
+      clientSecretSource: googleSecret ? 'google_fallback' : (driveSecret ? 'drive' : 'missing'),
+      driveClientIdIgnored: Boolean(driveId),
+    };
+  }
+  // لا يوجد معرّف Google صالح في أي منهما => نُبقي قيمة DRIVE كما هي (قد تكون معرّفاً رقمياً).
+  return { clientId: driveId || null, clientSecret: driveSecret || null, clientIdSource: driveId ? 'drive' : 'missing', clientSecretSource: driveSecret ? 'drive' : 'missing' };
+}
+
 /**
  * فحص آمن لاعتماد OAuth Client (بلا كشف أي قيمة سرّية):
- * الوجود، الطول، هل كانت هناك مسافة زائدة، صيغة المعرّف، وبصمة SHA-256 مقتطعة.
+ * الوجود، الطول، هل كانت هناك مسافة زائدة، صيغة المعرّف، وبصمة SHA-256 مقتطعة،
+ * ومصدر المعرّف المستخدم فعلاً (drive/google_fallback) ومقارنة البصمات.
  */
 export function inspectDriveOAuthClient(env = process.env) {
   const rawId = env[DRIVE_OAUTH_CLIENT_ID_ENV];
   const rawSecret = env[DRIVE_OAUTH_CLIENT_SECRET_ENV];
   const id = trimmedEnvValue(rawId);
   const secret = trimmedEnvValue(rawSecret);
-  const idLooksLikeGoogle = typeof id === 'string' && /\.apps\.googleusercontent\.com$/.test(id);
+  const resolved = resolveDriveClientCredentials(env);
+  const idLooksLikeGoogle = looksLikeGoogleClientId(id);
   const idIsNumeric = typeof id === 'string' && /^\d{6,25}$/.test(id);
   const clientIdFormat = !id ? 'missing' : idLooksLikeGoogle ? 'google_client_id' : idIsNumeric ? 'numeric_app_id' : 'unknown_format';
+  const fp = (v) => (v ? crypto.createHash('sha256').update(v).digest('hex').slice(0, 12) : null);
   return {
     clientIdPresent: Boolean(id),
     clientSecretPresent: Boolean(secret),
@@ -154,7 +192,13 @@ export function inspectDriveOAuthClient(env = process.env) {
     clientIdLength: id ? id.length : 0,
     clientSecretLength: secret ? secret.length : 0,
     clientIdFormat,
-    clientIdFingerprint: id ? crypto.createHash('sha256').update(id).digest('hex').slice(0, 12) : null,
+    clientIdFingerprint: fp(id),
+    /** المعرّف المستخدم فعلاً + مصدره (قد يكون Google عند تجاهل قيمة DRIVE غير الصالحة). */
+    effectiveClientIdSource: resolved.clientIdSource,
+    effectiveClientIdFingerprint: fp(resolved.clientId),
+    driveClientIdIgnored: Boolean(resolved.driveClientIdIgnored),
+    googleFallbackAvailable: looksLikeGoogleClientId(trimmedEnvValue(env.GOOGLE_OAUTH_CLIENT_ID)),
+    effectiveClientIdLooksLikeGoogle: looksLikeGoogleClientId(resolved.clientId),
   };
 }
 
@@ -167,8 +211,15 @@ export function inspectDriveOAuthClient(env = process.env) {
  */
 export function createDriveOAuthClient(options = {}) {
   const env = options.env || process.env;
-  const clientId = trimmedEnvValue(options.clientId ?? env[DRIVE_OAUTH_CLIENT_ID_ENV]);
-  const clientSecret = trimmedEnvValue(options.clientSecret ?? env[DRIVE_OAUTH_CLIENT_SECRET_ENV]);
+  // القيم الصريحة (اختبار/حقن) تُقدَّم كما هي؛ وإلا يُحسم الاعتماد الفعّال من البيئة
+  // (مع تجاوز قيمة DRIVE غير الصالحة إلى اعتماد Google القائم بلا مطالبة بأي سرّ).
+  const explicitId = options.clientId != null ? trimmedEnvValue(options.clientId) : null;
+  const explicitSecret = options.clientSecret != null ? trimmedEnvValue(options.clientSecret) : null;
+  const resolved = (explicitId || explicitSecret)
+    ? { clientId: explicitId ?? trimmedEnvValue(env[DRIVE_OAUTH_CLIENT_ID_ENV]), clientSecret: explicitSecret ?? trimmedEnvValue(env[DRIVE_OAUTH_CLIENT_SECRET_ENV]) }
+    : resolveDriveClientCredentials(env);
+  const clientId = resolved.clientId;
+  const clientSecret = resolved.clientSecret;
   const redirectUri = options.redirectUri ?? DRIVE_OAUTH_REDIRECT_URI;
   if (!clientId && !clientSecret) {
     return { ok: false, code: 'client_missing', message: 'DRIVE_OAUTH_CLIENT_ID و DRIVE_OAUTH_CLIENT_SECRET غير مضبوطين.' };
