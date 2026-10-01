@@ -2902,3 +2902,51 @@ access token (بلا أي عملية Drive كتابة، بلا تغيير الر
 3. شغّل `/api/dr/restore/drill` و`dr.stage4.evidence.ts --real` مع `DRIVE_OAUTH_*` لإثبات
    الاستعادة الحقيقية من Drive خارج الغرابي.
 
+
+## المزامنة التلقائية + الفحص الساعي + وثائق RECOVERY الموحّدة (2026-10-01)
+
+إكمال دورة CURRENT بلا اعتماد على تفاعل المستخدم، على نفس فرع PR #9.
+
+### 1) مشغّل التغيّر (change-trigger)
+`runReconciliationCycle` في `engine/dr/routes.ts` يقارن **بصمة شجرة المصدر الحالية**
+(عبر `buildMirrorSnapshot`) مع بصمة CURRENT المحفوظة في `control.driveMirror.treeHash`.
+- تطابق ⇒ `no_op` (لا رفع، لا كتابة).
+- اختلاف ⇒ مزامنة CURRENT عبر **نفس** مسار `/api/dr/sync` (`runSync`) بكل بواباته.
+- المصدر ناقص (`complete === false`) ⇒ `source_incomplete` بلا أي تغيير.
+- يُكتشف تغيّر `commit` أيضاً (`commitChanged`) ويُعلن في health. لا نقطة استعادة لكل
+  تعديل ملف: CURRENT يتحدث فقط؛ HISTORY/Recovery Point وفق سياسة النقاط.
+
+### 2) الفحص الساعي (hourly reconciliation)
+مؤقّت داخلي `setInterval(..., 60*60*1000)` يُبدأ في `server.ts` **بعد** `app.listen`
+(لا يعتمد على المتصفح)، ويُخزَّن في `(app as any).drReconciliation`. `.unref()` فلا يمنع
+الإغلاق النظيف. **لا يستدعي Gemini ولا أي AI** (كل شيء حتمي: جمع + بصمة + مزامنة).
+- **منع التزامن**: `reconciliationRunning` يمنع دورة متوازية؛ والمؤقّت يتخطّى الدورة إن
+  كان `backupRunning` (نسخة/مزامنة جارية). `runSync` نفسه محمي بـ`backupRunning`.
+- **idempotency/restart**: نتيجة آخر فحص تُحفظ في `control.driveReconciliation` عبر
+  المحوّل (`loadControl`/`buildControlState`/`applyControlSnapshot`) فتصمد بعد
+  restart/cold start، والفحص التالي على نفس المصدر يعطي `no_op` بلا رفع مكرّر.
+- مسار يدوي للمالك `POST /api/dr/reconcile` (تشخيص) بلا AI.
+
+### 3) الصدق في /api/dr/health
+`changeTrigger` (enabled/detection/lastCommit/currentMirrorCommit/commitChanged)،
+`hourlyReconciliation` (enabled/intervalMinutes/running/scheduled/lastReconciliationAt/
+lastReconciliationResult/lastReconciliationTrigger/lastReconciliationReason/count)،
+`lastReconciliationAt`، `lastReconciliationResult`، و`currentMirror` — كلها بلا أي سرّ.
+
+### 4) وثائق RECOVERY الموحّدة (تُقرأ من Google Drive مباشرة)
+`RECOVERY/START-HERE.md` و`RECOVERY-GUIDE.md` و`RECOVERY-MANIFEST.json` (مصدر واحد في
+`cloud-lib.mjs`: `buildStartHereDoc`/`buildRecoveryGuideDoc`/`buildRecoveryManifestDoc` +
+`writeRecoveryDocs`). تُكتب عند كل نسخة (`backup.mjs`) عبر `store.writeRecoveryDoc/
+writeRecoveryJson`. تشرح: أين CURRENT/HISTORY/القاعدة المشفّرة/الأسرار المشفّرة، كيف نختار
+آخر نقطة سليمة، ترتيب الاستعادة، ما يُستعاد تلقائياً، ما يحتاج المالك، وأن المفتاح الرئيسي
+**لا يُحفظ داخل النسخة**. الأسماء القديمة (`recovery-information.md`/`recovery-instructions.md`/
+`latest-recovery.json`) تبقى للتوافق.
+
+### 5) اختبارات
+`engine/tests/dr/dr.reconciliation.test.ts` (`npm run test:dr-reconciliation`، 48 فحصاً):
+المؤقّت 60 دقيقة، أول تشغيل synced، no-op، تغيّر يُزامَن، مصدر ناقص، قفل التزامن،
+restart/idempotency، وثائق RECOVERY، وحالة health بلا أسرار. `dr.backup.test.ts` صار 104
+(أسماء الوثائق الموحّدة). final-audit = **903 فحصاً**. `npm run lint/build/test` ناجحة.
+
+**لم يُمسّ:** لا رفع إلى Drive، لا rp-004، لا تعديل Render، لا سرّ/مفتاح، لا rp-002/rp-003.
+

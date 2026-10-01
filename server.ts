@@ -4523,13 +4523,14 @@ let youtubeDelegationState: YouTubeDelegation = defaultYouTubeDelegation();
 // المنظومة. لا تُقرأ DATABASE_URL ولا تُرفع قاعدة بيانات خام. تُحفظ هنا فقط
 // حالات CSRF ورمز التجديد المشفّر وآخر خطأ — كلها عبر محوّل الحالة.
 // -------------------------------------------------------------
-const drControl: { driveOAuthStates: any[]; driveRefreshToken: any; driveLastError: string | null; driveBackup: any; driveFolderIdentity: any; driveMirror: any } = {
+const drControl: { driveOAuthStates: any[]; driveRefreshToken: any; driveLastError: string | null; driveBackup: any; driveFolderIdentity: any; driveMirror: any; driveReconciliation: any } = {
   driveOAuthStates: [],
   driveRefreshToken: null,
   driveLastError: null,
   driveBackup: null,
   driveFolderIdentity: null,
   driveMirror: null,
+  driveReconciliation: null,
 };
 
 /** يحفظ التفويض عبر محوّل الحالة (يصمد بعد restart) — كتابة تُنتظر عند التغيير. */
@@ -8575,6 +8576,7 @@ function applyControlSnapshot(control: any): void {
   drControl.driveBackup = control.driveBackup && typeof control.driveBackup === "object" ? control.driveBackup : null;
   drControl.driveFolderIdentity = control.driveFolderIdentity && typeof control.driveFolderIdentity === "object" ? control.driveFolderIdentity : null;
   drControl.driveMirror = control.driveMirror && typeof control.driveMirror === "object" ? control.driveMirror : null;
+  drControl.driveReconciliation = control.driveReconciliation && typeof control.driveReconciliation === "object" ? control.driveReconciliation : null;
 }
 
 /** يقرأ حالة التحكّم متزامناً (backend الملف) عند الإقلاع. */
@@ -8619,6 +8621,8 @@ function buildControlState() {
     driveFolderIdentity: drControl.driveFolderIdentity,
     // مرآة CURRENT: بصمة الشجرة + سجل الملفات الفردية (بلا أسرار) — تصمد بعد restart.
     driveMirror: drControl.driveMirror,
+    // نتيجة آخر فحص ساعي (reconciliation): طابع/نتيجة/سبب فقط — تصمد بعد restart.
+    driveReconciliation: drControl.driveReconciliation,
   };
 }
 
@@ -12029,6 +12033,15 @@ async function startServer() {
   // مدير تشغيل YouTube 24/7: يبدأ حلقة المراقبة الداخلية بعد جهوزية المخزن
   // والاستماع. مستقلة عن المتصفح تماماً، وتصمد بعد restart/deploy بحفظ حالتها.
   startYouTubeWatcher();
+
+  // الفحص الساعي لمنظومة DR: مؤقّت داخلي مستقل عن المتصفح (لا يعتمد على تفاعل
+  // المستخدم). يقارن مصدر المشروع مع CURRENT ويزامن عند التغيّر فقط. `.unref()`
+  // داخلياً فلا يمنع الإغلاق النظيف، والقفل يمنع التشغيل المتوازي.
+  try {
+    (app as any).drReconciliation?.start?.();
+  } catch (e: any) {
+    console.error("[الغرابي AI] failed to start DR hourly reconciliation:", String(e?.message || e).slice(0, 120));
+  }
 
   // إغلاق نظيف: ينتظر تفريغ طابور الكتابة (مع مهلة صارمة ≤ 10 ثوانٍ) ثم يُنهي
   // اتصال قاعدة البيانات ويخرج. المهلة تمنع تعليق العملية إن تجمّد المخزن.

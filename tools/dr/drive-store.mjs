@@ -571,6 +571,19 @@ export class DriveStore {
     return this.readVersionFile(id, name);
   }
 
+  /** يكتب وثيقة RECOVERY بصيغة JSON (مثل RECOVERY-MANIFEST.json). */
+  async writeRecoveryJson(name, obj) {
+    const id = await this.subdirId('recovery');
+    if (!id) return { ok: false, code: 'no_structure' };
+    return this.writeJson(id, name, obj);
+  }
+
+  async readRecoveryJson(name) {
+    const id = await this.subdirId('recovery');
+    if (!id) return { ok: false, code: 'no_structure' };
+    return this.readJsonChild(id, name);
+  }
+
   async writeLatestRecovery(obj) {
     const id = await this.subdirId('recovery');
     if (!id) return { ok: false, code: 'no_structure' };

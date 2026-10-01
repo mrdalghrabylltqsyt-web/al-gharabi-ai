@@ -988,3 +988,191 @@ export function buildLatestRecovery(input = {}) {
   };
 }
 
+// ---------------------------------------------------------------------------
+// وثائق RECOVERY الموحّدة (أسماء ثابتة تُقرأ مباشرة من Google Drive بلا الغرابي)
+// START-HERE.md · RECOVERY-GUIDE.md · RECOVERY-MANIFEST.json
+// لا تحتوي أي قيمة سرّية — أسماء/بصمات/خطوات فقط.
+// ---------------------------------------------------------------------------
+
+/** الاسم الموحّد لوثيقة نقطة البداية. */
+export function buildStartHereDoc(input = {}) {
+  const repo = input.repository ?? 'mrdalghrabylltqsyt-web/al-gharabi-ai';
+  const service = input.renderService ?? 'al-gharabi-ai';
+  const latest = input.latestRecoveryPointId ?? 'rp-XXX';
+  return `# START HERE — الغرابي AI (Disaster Recovery)
+
+> اقرأ هذه الوثيقة **مباشرة من Google Drive** في مجلد \`al-gharabi-ai-dr/RECOVERY/\`.
+> لا تحتاج تشغيل الغرابي AI إطلاقاً. لا تحتوي أي قيمة سرّية.
+
+## ما هذا؟
+نسخة تعافٍ كاملة ومستقلة لتطبيق الغرابي AI: المصدر + قاعدة البيانات المشفّرة + الأسرار
+المشفّرة + وثائق الاستعادة، كلها في Google Drive لتبقى حتى لو اختفى Render أو GitHub
+أو قاعدة بيانات الإنتاج أو التطبيق نفسه.
+
+## أين كل شيء؟
+- \`CURRENT/\` — مرآة الملفات الحقيقية للمشروع (كل ملف بمكانه) + \`manifest.json\`.
+- \`HISTORY/rp-XXX/\` — نقاط استعادة كاملة مستقلة (لا تُعدّل أبداً).
+- \`DATABASE/database.enc\` — نسخة قاعدة البيانات **مشفّرة فقط** (لا يوجد SQL خام).
+- \`SECRETS/secrets.enc\` — حزمة الأسرار **مشفّرة فقط** + \`manifest.json\` (أسماء وبصمات).
+- \`RECOVERY/\` — هذا الدليل + \`RECOVERY-GUIDE.md\` + \`RECOVERY-MANIFEST.json\`.
+
+## ابدأ من هنا
+1. اقرأ \`RECOVERY-GUIDE.md\` (الخطوات الكاملة).
+2. اختر آخر نقطة استعادة سليمة من \`RECOVERY-MANIFEST.json\` (الحقل \`latestRecoveryPointId\`)
+   أو الأحدث في \`HISTORY/\`.
+3. **مهم:** مفتاح الاستعادة الرئيسي (\`DR_RECOVERY_MASTER_KEY\`) **لا يُحفظ داخل النسخة**؛
+   احتفظ به في مكان آمن منفصل. بدونه لا يمكن فكّ الأسرار.
+
+## هل تحتاج حساباً؟
+- Google Drive: نعم (للوصول للملفات).
+- Render: نعم (لإعادة النشر وضبط متغيّرات البيئة) — خطوة خارجية.
+- GitHub: اختياري (المصدر موجود في \`HISTORY/rp-XXX/source.tar.gz\`).
+
+## آخر نقطة استعادة سليمة
+- المعرّف: \`${latest}\`
+- التزام المصدر: \`${input.commit ?? 'غير معروف'}\`
+
+التفاصيل الكاملة: \`RECOVERY-GUIDE.md\`. البيان الآلي: \`RECOVERY-MANIFEST.json\`.
+المستودع: \`${repo}\` · خدمة Render: \`${service}\`.
+
+---
+تاريخ التوليد: ${input.createdAt ?? new Date().toISOString()}
+`;
+}
+
+/** دليل الاستعادة الكامل (ترتيب + حدود الأتمتة + التحقق). */
+export function buildRecoveryGuideDoc(input = {}) {
+  const latest = input.latestRecoveryPointId ?? 'rp-XXX';
+  const repo = input.repository ?? 'mrdalghrabylltqsyt-web/al-gharabi-ai';
+  const service = input.renderService ?? 'al-gharabi-ai';
+  return `# RECOVERY GUIDE — الغرابي AI
+
+> دليل الاستعادة الكامل. يُقرأ مباشرة من Google Drive بلا تشغيل الغرابي. بلا أي سرّ.
+
+## 1) خريطة المجلدات
+- \`CURRENT/files/**\` — مرآة الملفات (كل ملف بمكانه). \`CURRENT/manifest.json\` بيانها.
+- \`HISTORY/rp-XXX/\` — نقطة استعادة مستقلة: \`source.tar.gz\`, \`database.enc\`, \`secrets.enc\`, \`manifest.json\`.
+- \`DATABASE/database.enc\` — نسخة قاعدة بيانات مشفّرة (لا SQL خام في Drive إطلاقاً).
+- \`SECRETS/secrets.enc\` — حزمة أسرار مشفّرة (AES-256-GCM) + \`SECRETS/manifest.json\`.
+- \`RECOVERY/\` — START-HERE.md, RECOVERY-GUIDE.md, RECOVERY-MANIFEST.json, latest-recovery.json.
+
+## 2) كيف نختار آخر نقطة استعادة سليمة
+1. افتح \`RECOVERY-MANIFEST.json\` واقرأ \`latestRecoveryPointId\` و\`recoveryPoints[]\`.
+2. اختر النقطة التي \`status = verified\` والأحدث \`createdAt\`.
+3. تحقّق من البصمات: \`sourceHash\`, \`treeHash\`, \`encryptedDatabaseHash\`, \`encryptedSecretsHash\`, \`fileCount\`.
+4. إن فشل أي تحقق ⇒ تجاوزها إلى النقطة السليمة الأسبق (لا تستعد نسخة تالفة).
+
+## 3) ترتيب الاستعادة (إلزامي)
+1. اختر نقطة الاستعادة (\`HISTORY/${latest}/\`).
+2. تحقّق من \`manifest.json\` والبصمات (SHA-256).
+3. فكّ \`secrets.enc\` بالمفتاح الرئيسي → \`node tools/dr/secrets-restore.mjs --in secrets.enc --out .env.restored\`.
+4. فكّ \`database.enc\` → \`node tools/dr/restore-db.mjs --in database.enc --out restored.sql\`.
+5. استعادة المصدر: \`tar -xzf source.tar.gz -C <workdir>\` ثم \`npm ci && npm run build\`.
+6. استعادة قاعدة البيانات على قاعدة معزولة أولاً (اختبار)، ثم الإنتاج عند التأكيد.
+7. اضبط متغيّرات البيئة من الأسرار المفكوكة + \`DATABASE_URL\`.
+8. \`npm run start\`، ثم افحص \`/api/health\` و\`/api/readiness\`.
+
+## 4) ما يمكن استعادته تلقائياً
+- فكّ التشفير (أسرار + قاعدة بيانات)، استخراج المصدر، تحميل القاعدة في بيئة معزولة،
+  إقلاع الخادم وفحص الصحة. (سكربتات \`tools/dr/\`).
+
+## 5) ما يحتاج تدخّل المالك (خارجي)
+- إنشاء/إعادة نشر خدمة Render وضبط متغيّراتها.
+- ربط GitHub (اختياري) وإعادة تفويض Google/Meta/… إن لزم.
+- **المفتاح الرئيسي**: إدخاله يدوياً من مكانه الآمن (لا يوجد داخل النسخة).
+- أي استعادة فوق الإنتاج: تحتاج تأكيداً صريحاً.
+
+## 6) حدود المنصات الخارجية
+- لا يمكن للنظام إنشاء خدمة Render أو إعادة OAuth تلقائياً (بلا واجهة برمجية للمالك).
+- Google Drive هو مدخل الطوارئ الخارجي؛ يجب أن يبقى متاحاً من حساب المالك.
+
+## 7) التحقق من سلامة النسخة قبل الاستخدام
+- طابق كل ملف مع بصمته في \`manifest.json\`.
+- افتح \`secrets.enc\` بالمفتاح الرئيسي وتأكد أنه يُفكّ.
+- اختبر الاستعادة في بيئة معزولة (Recovery Drill) قبل أي استعادة إنتاجية.
+
+## 8) المفتاح الرئيسي
+- \`DR_RECOVERY_MASTER_KEY\` (أو \`DRIVE_DB_BACKUP_KEY\` احتياطاً) — **لا يُحفظ داخل النسخة**.
+- فقدانه ⇒ لا يمكن فكّ الأسرار (تبقى المصدر والقاعدة قابلين للاستعادة).
+
+المستودع: \`${repo}\` · خدمة Render: \`${service}\`.
+
+---
+تاريخ التوليد: ${input.createdAt ?? new Date().toISOString()}
+`;
+}
+
+/** بيان RECOVERY الآلي (بلا أسرار): أحدث نقطة + قائمة النقاط + البصمات. */
+export function buildRecoveryManifestDoc(input = {}) {
+  const points = Array.isArray(input.recoveryPoints) ? input.recoveryPoints : [];
+  const latest = input.latestRecoveryPointId ?? (points.length ? points[points.length - 1]?.id ?? null : null);
+  const latestPoint = points.find((p) => p && p.id === latest) || null;
+  return {
+    kind: 'recovery-manifest',
+    schemaVersion: input.schemaVersion ?? BACKUP_SCHEMA_VERSION,
+    runtimeVersion: input.runtimeVersion ?? null,
+    project: input.project ?? 'al-gharabi-ai',
+    repository: input.repository ?? 'mrdalghrabylltqsyt-web/al-gharabi-ai',
+    renderService: input.renderService ?? 'al-gharabi-ai',
+    updatedAt: input.updatedAt ?? new Date().toISOString(),
+    commit: input.commit ?? latestPoint?.commit ?? null,
+    latestRecoveryPointId: latest,
+    fileCount: Number.isFinite(input.fileCount) ? input.fileCount : latestPoint?.fileCount ?? null,
+    treeHash: input.treeHash ?? latestPoint?.treeHash ?? null,
+    sourceHash: input.sourceHash ?? latestPoint?.sourceHash ?? null,
+    databaseHash: input.databaseHash ?? latestPoint?.databaseHash ?? null,
+    secretsHash: input.secretsHash ?? latestPoint?.encryptedSecretsHash ?? null,
+    recoveryPoints: points.map((p) => ({
+      id: p?.id ?? null,
+      createdAt: p?.createdAt ?? null,
+      commit: p?.commit ?? null,
+      treeHash: p?.treeHash ?? null,
+      sourceHash: p?.sourceHash ?? null,
+      fileCount: Number.isFinite(p?.fileCount) ? p.fileCount : null,
+      status: p?.status ?? 'unknown',
+    })),
+    restoreOrder: [
+      'select_recovery_point',
+      'verify_manifest',
+      'verify_hashes',
+      'decrypt_secrets',
+      'decrypt_database',
+      'restore_source',
+      'restore_database',
+      'apply_runtime_config',
+      'redeploy_external',
+      'verify_health_readiness',
+    ],
+    automationBoundaries: {
+      automatic: ['decrypt', 'extract_source', 'db_load_isolated', 'boot_verify'],
+      ownerConfirmation: ['restore_production', 'history_delete'],
+      externalPlatformRequirement: ['render_redeploy', 'env_var_set', 'google_oauth', 'github_link'],
+      manualFallback: ['drive_offline_download'],
+    },
+    notes: [
+      'لا تحتوي هذه الوثيقة أي قيمة سرّية — أسماء/بصمات/خطوات فقط.',
+      'المفتاح الرئيسي DR_RECOVERY_MASTER_KEY لا يُحفظ داخل النسخة.',
+      'DATABASE/database.enc و SECRETS/secrets.enc مشفّرة فقط؛ لا SQL خام في Drive.',
+    ],
+  };
+}
+
+/**
+ * يكتب وثائق RECOVERY الموحّدة الثلاث (START-HERE.md, RECOVERY-GUIDE.md,
+ * RECOVERY-MANIFEST.json) في مجلد recovery عبر مخزن Drive. لا سرّ.
+ */
+export async function writeRecoveryDocs(store, input = {}) {
+  const startHere = buildStartHereDoc(input);
+  const guide = buildRecoveryGuideDoc(input);
+  const manifest = buildRecoveryManifestDoc(input);
+  const results = [];
+  if (typeof store?.writeRecoveryDoc === 'function') {
+    results.push(await store.writeRecoveryDoc('START-HERE.md', startHere));
+    results.push(await store.writeRecoveryDoc('RECOVERY-GUIDE.md', guide));
+  }
+  if (typeof store?.writeRecoveryJson === 'function') {
+    results.push(await store.writeRecoveryJson('RECOVERY-MANIFEST.json', manifest));
+  }
+  return { ok: results.every((r) => r?.ok !== false), results, manifest };
+}
+

@@ -40,6 +40,7 @@ import {
   SECRETS_PACKAGE_NAME,
   RECOVERY_INFO_NAME,
   RECOVERY_INSTRUCTIONS_NAME,
+  writeRecoveryDocs,
   SOURCE_BUNDLE_VERSION,
   BACKUP_VERSION,
 } from './cloud-lib.mjs';
@@ -330,6 +331,25 @@ async function runBackupInner({ store, files, dumpDatabase, encryptDatabase, met
       await store.writeRecoveryDoc(RECOVERY_INFO_NAME, buildRecoveryInformation({ repository: meta.repository, createdAt: now }));
       await store.writeRecoveryDoc(RECOVERY_INSTRUCTIONS_NAME, buildRecoveryInstructions({ latestRecoveryPointId: recoveryPointId }));
     }
+    // الأسماء الموحّدة المطلوبة (تُقرأ مباشرة من Google Drive): START-HERE / RECOVERY-GUIDE / RECOVERY-MANIFEST.
+    try {
+      const pointsRes = await store.listRestorePoints();
+      const points = pointsRes?.ok ? pointsRes.data : [];
+      await writeRecoveryDocs(store, {
+        repository: meta.repository,
+        project: meta.project,
+        commit: meta.commit ?? null,
+        runtimeVersion: meta.runtimeVersion ?? null,
+        createdAt: now,
+        latestRecoveryPointId: recoveryPointId,
+        recoveryPoints: points,
+        fileCount: manifest.fileCount,
+        treeHash,
+        sourceHash,
+        databaseHash,
+        secretsHash: encryptedSecretsHash,
+      });
+    } catch { /* أفضل جهد */ }
   } catch { /* وثائق التعافي أفضل جهد: لا تُسقط نسخة مكتملة ومتحقّقة */ }
 
   // 9) نسخة DB في db/ (مستقلة) + حزمة الأسرار في secrets/ (مستقلة).

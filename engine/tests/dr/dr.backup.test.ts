@@ -444,6 +444,17 @@ async function main() {
     check('recovery: instructions doc uploaded', instr.ok && String(instr.data).includes('تعليمات الاستعادة'));
     check('recovery: docs have no secret values', !String(info.data).includes('AIzaSy') && !String(instr.data).includes('sess-'));
 
+    // الأسماء الموحّدة المطلوبة (تُقرأ مباشرة من Google Drive بلا الغرابي).
+    const startHere = await store.readRecoveryDoc('START-HERE.md');
+    const guide = await store.readRecoveryDoc('RECOVERY-GUIDE.md');
+    const manifest = await store.readRecoveryJson('RECOVERY-MANIFEST.json');
+    check('recovery: START-HERE.md uploaded', startHere.ok && String(startHere.data).includes('START HERE'));
+    check('recovery: RECOVERY-GUIDE.md uploaded', guide.ok && String(guide.data).includes('RECOVERY GUIDE'));
+    check('recovery: RECOVERY-MANIFEST.json uploaded', manifest.ok && manifest.data?.kind === 'recovery-manifest');
+    check('recovery: guide explains master key not stored', String(guide.data).includes('لا يُحفظ داخل النسخة'));
+    check('recovery: manifest lists recovery points', Array.isArray(manifest.data?.recoveryPoints) && manifest.data.recoveryPoints.length >= 1);
+    check('recovery: unified docs have no secret values', !(String(startHere.data) + String(guide.data) + JSON.stringify(manifest.data)).includes('AIzaSy'));
+
     // current-state يحمل حالة الأسرار بأسماء فقط.
     const cs = await store.readCurrentState();
     check('current-state: secrets metadata present', cs.ok && cs.data.secrets.present === true && cs.data.secrets.names.includes('GEMINI_API_KEY'));

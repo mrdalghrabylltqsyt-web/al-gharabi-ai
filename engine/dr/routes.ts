@@ -21,6 +21,7 @@ import {
   buildMonitoringSnapshot,
   hourlySafetyCheck,
   summarizeBackupState,
+  writeRecoveryDocs,
   RP_001_COMMIT,
 } from '../../tools/dr/cloud-lib.mjs';
 import { DriveStateStore } from '../../tools/dr/drive-auth-url.mjs';
@@ -37,7 +38,7 @@ import { DriveStore } from '../../tools/dr/drive-store.mjs';
 import { DriveSync } from '../../tools/dr/drive-sync.mjs';
 import { runBackup } from '../../tools/dr/backup.mjs';
 import { encryptDbDump } from '../../tools/dr/db-crypto.mjs';
-import { runCurrentMirror } from '../../tools/dr/current-mirror.mjs';
+import { runCurrentMirror, buildMirrorSnapshot } from '../../tools/dr/current-mirror.mjs';
 import { buildSecretsBundle, inspectMasterKey } from '../../tools/dr/secret-crypto.mjs';
 import { buildRestorePlan, runRecoveryDrill, verifyRecoveryPoint, applyDatabaseDump } from '../../tools/dr/restore.mjs';
 import {
@@ -52,7 +53,7 @@ export interface DriveRoutesDeps {
   requireOwner: express.RequestHandler;
   env?: Record<string, string | undefined>;
   /** يقرأ حالة DR المحفوظة (states + رمز تجديد مشفّر + آخر خطأ + حالة النسخ + هوية مجلدات Drive). */
-  loadControl: () => { driveOAuthStates?: any[]; driveRefreshToken?: any; driveLastError?: string | null; driveBackup?: any; driveFolderIdentity?: any; driveMirror?: any };
+  loadControl: () => { driveOAuthStates?: any[]; driveRefreshToken?: any; driveLastError?: string | null; driveBackup?: any; driveFolderIdentity?: any; driveMirror?: any; driveReconciliation?: any };
   /** يثبّت جزءاً من حالة DR عبر محوّل الحالة (يصمد بعد restart). */
   persistControl: (partial: Record<string, any>) => void;
   /** عميل Drive اختياري (للاختبار). إن غاب يُبنى من البيئة. */
@@ -175,6 +176,17 @@ export function registerDriveRoutes(app: express.Express, deps: DriveRoutesDeps)
    */
   function buildStore(client: any, options: { readOnlyStructure?: boolean } = {}) {
     return new DriveStore({ client, storedIdentity: control().driveFolderIdentity || null, readOnlyStructure: options.readOnlyStructure === true });
+  }
+
+  /** ملخّص جمع المصدر بلا محتوى ولا سرّ (يُعاد في ردود الرفض والصحة). */
+  function sourceCollectionOf(collected: any): any {
+    return {
+      source: collected?.source ?? null,
+      fileCount: collected?.fileCount ?? (Array.isArray(collected?.included) ? collected.included.length : null),
+      minFiles: collected?.minFiles ?? null,
+      missingRequired: collected?.missingRequired ?? null,
+      reason: collected?.reason ?? null,
+    };
   }
 
   /** يثبّت هوية المجلدات بعد تجهيز البنية (تُحفظ مشفّرة عبر محوّل الحالة). */
@@ -421,13 +433,7 @@ export function registerDriveRoutes(app: express.Express, deps: DriveRoutesDeps)
           success: false,
           code: 'SOURCE_INCOMPLETE',
           error: 'المصدر المُجمَّع ناقص: رُفض إنشاء نسخة/ترقية CURRENT (لا نسخة سليمة من شجرة ناقصة).',
-          sourceCollection: {
-            source: (collected as any).source ?? null,
-            fileCount: (collected as any).fileCount ?? null,
-            minFiles: (collected as any).minFiles ?? null,
-            missingRequired: (collected as any).missingRequired ?? null,
-            reason: (collected as any).reason ?? null,
-          },
+          sourceCollection: sourceCollectionOf(collected),
         });
       }
       const files = [...(collected.included || []), ...(collected.excluded || [])];
@@ -603,6 +609,18 @@ export function registerDriveRoutes(app: express.Express, deps: DriveRoutesDeps)
         // مصدر الجمع الحالي (بلا محتوى): git/مجلد + الاكتمال + عدد الملفات.
         // يكشف فوراً إن كان مجلد التشغيل ناقصاً (مثل صورة Docker) قبل أي نسخة.
         sourceCollection: sourceCollectionStatus(),
+        // مشغّل التغيّر: يعمل عند الإقلاع والفحص الساعي؛ يكتشف تغيّر بصمة الشجرة/الالتزام.
+        changeTrigger: {
+          enabled: true,
+          detection: 'source_tree_hash_and_commit',
+          lastCommit: deps.gitMeta ? deps.gitMeta().commit ?? null : null,
+          currentMirrorCommit: mirror?.commit ?? control().driveBackup?.commit ?? null,
+          commitChanged: commitChanged(),
+        },
+        // الفحص الساعي: مؤقّت داخلي يزامن CURRENT عند التغيّر فقط، ولا يستدعي AI.
+        hourlyReconciliation: reconciliationStatus(),
+        lastReconciliationAt: control().driveReconciliation?.lastReconciliationAt ?? null,
+        lastReconciliationResult: control().driveReconciliation?.lastReconciliationResult ?? null,
         // منظومة التعافي: نقاط الاستعادة تُقرأ من /api/dr/recovery-points (owner).
         recoverySystem: {
           currentMirror: Boolean(mirror?.treeHash),
@@ -710,38 +728,36 @@ export function registerDriveRoutes(app: express.Express, deps: DriveRoutesDeps)
   });
 
   // ------------------------------------------------------------------
-  // مزامنة CURRENT الفعلية (owner): مرآة الملفات الفردية ببنية المجلدات.
+  // المزامنة الفعلية (owner + الفحص الساعي): مرآة CURRENT فردية.
+  // كشف «لا تغيير» قبل أي رفع، وحماية المصدر الناقص، وstaging/atomic داخل
+  // runCurrentMirror. القفل `backupRunning` يمنع التشغيل المتوازي.
   // ------------------------------------------------------------------
-  app.post('/api/dr/sync', deps.authenticateToken, deps.requireOwner, async (_req, res) => {
+  async function runSync(opts: { force?: boolean } = {}): Promise<{ status: number; body: any }> {
     const readiness = authReadiness(env, control().driveRefreshToken);
     if (!readiness.authorized) {
-      return res.status(409).json({ success: false, code: 'NOT_AUTHORIZED', error: 'لا تفويض Google Drive فعّال: لا يمكن المزامنة.' });
+      return { status: 409, body: { success: false, code: 'NOT_AUTHORIZED', error: 'لا تفويض Google Drive فعّال: لا يمكن المزامنة.' } };
     }
     const client = buildClient();
-    if (!client) return res.status(503).json({ success: false, code: 'DRIVE_CLIENT_UNAVAILABLE', error: 'تعذّر بناء عميل Drive.' });
-    if (backupRunning) return res.status(409).json({ success: false, code: 'SYNC_ALREADY_RUNNING', error: 'عملية نسخ/مزامنة قيد التنفيذ بالفعل.' });
+    if (!client) return { status: 503, body: { success: false, code: 'DRIVE_CLIENT_UNAVAILABLE', error: 'تعذّر بناء عميل Drive.' } };
+    if (backupRunning) return { status: 409, body: { success: false, code: 'SYNC_ALREADY_RUNNING', error: 'عملية نسخ/مزامنة قيد التنفيذ بالفعل.' } };
     backupRunning = true;
     const startedAt = now();
     try {
       const store = buildStore(client);
       const collected = deps.collectSourceFiles ? deps.collectSourceFiles() : { included: [], excluded: [] };
-      // نفس الحماية: لا مزامنة CURRENT من شجرة ناقصة.
+      // حماية المصدر الناقص: لا مرآة من شجرة ناقصة.
       if (collected.complete === false) {
-        return res.status(409).json({
-          success: false,
-          code: 'SOURCE_INCOMPLETE',
-          error: 'المصدر المُجمَّع ناقص: رُفضت مزامنة CURRENT (لا مرآة من شجرة ناقصة).',
-          sourceCollection: {
-            source: (collected as any).source ?? null,
-            fileCount: (collected as any).fileCount ?? null,
-            minFiles: (collected as any).minFiles ?? null,
-            missingRequired: (collected as any).missingRequired ?? null,
-            reason: (collected as any).reason ?? null,
-          },
-        });
+        return { status: 409, body: { success: false, code: 'SOURCE_INCOMPLETE', error: 'المصدر المُجمَّع ناقص: رُفضت مزامنة CURRENT (لا مرآة من شجرة ناقصة).', sourceCollection: sourceCollectionOf(collected) } };
       }
       const files = [...(collected.included || []), ...(collected.excluded || [])];
-      const result = await runCurrentMirror({ store, files, commit: deps.gitMeta ? deps.gitMeta().commit ?? null : null, previousMirror: control().driveMirror || null, now: startedAt });
+      // كشف «لا تغيير» قبل أي رفع: طابق بصمة الشجرة الحالية مع المرآة السابقة.
+      const snapshot = buildMirrorSnapshot(files);
+      const prevMirror = control().driveMirror || null;
+      const commit = deps.gitMeta ? deps.gitMeta().commit ?? null : null;
+      if (!opts.force && prevMirror && prevMirror.treeHash && prevMirror.treeHash === snapshot.treeHash) {
+        return { status: 200, body: { success: true, state: 'no_change', uploaded: 0, removed: 0, fileCount: snapshot.entries.length, sizeBytes: null, treeHash: snapshot.treeHash, commit, diff: null, reason: 'no_change', message: 'لا تغيير في المصدر: لم يُرفع شيء ولم تُرقَّ CURRENT.', at: startedAt } };
+      }
+      const result = await runCurrentMirror({ store, files, commit, previousMirror: prevMirror, now: startedAt });
       rememberStructure(store);
       // لا فشل صامت: سبب فشل المزامنة يُحفظ ويُعلن (بلا أسرار) في health.
       if (result.state !== 'synced') {
@@ -753,7 +769,7 @@ export function registerDriveRoutes(app: express.Express, deps: DriveRoutesDeps)
         deps.persistControl({ driveMirror: control().driveMirror });
       }
       if (result.state === 'synced') {
-        control().driveMirror = { version: result.mirrorManifest?.version || 1, treeHash: result.treeHash, files: result.mirrorManifest?.files || [], updatedAt: startedAt, error: null };
+        control().driveMirror = { version: result.mirrorManifest?.version || 1, treeHash: result.treeHash, files: result.mirrorManifest?.files || [], commit: result.commit ?? null, updatedAt: startedAt, error: null };
         deps.persistControl({ driveMirror: control().driveMirror });
         // تحديث current-state إن وُجدت بيانات نسخة سابقة.
         const prev = control().driveBackup || {};
@@ -775,7 +791,7 @@ export function registerDriveRoutes(app: express.Express, deps: DriveRoutesDeps)
           }));
         } catch { /* best effort */ }
       }
-      res.status(result.state === 'failed' ? 500 : 200).json({
+      return { status: result.state === 'failed' ? 500 : 200, body: {
         success: result.state === 'synced' || result.state === 'no_change',
         state: result.state,
         uploaded: result.uploaded ?? 0,
@@ -788,12 +804,17 @@ export function registerDriveRoutes(app: express.Express, deps: DriveRoutesDeps)
         reason: result.reason ?? null,
         message: result.message ?? null,
         at: startedAt,
-      });
+      } };
     } catch (err: any) {
-      res.status(500).json({ success: false, state: 'failed', reason: String(err?.code || err?.message || 'sync_failed').slice(0, 80) });
+      return { status: 500, body: { success: false, state: 'failed', reason: String(err?.code || err?.message || 'sync_failed').slice(0, 80) } };
     } finally {
       backupRunning = false;
     }
+  }
+
+  app.post('/api/dr/sync', deps.authenticateToken, deps.requireOwner, async (_req, res) => {
+    const { status, body } = await runSync();
+    res.status(status).json(body);
   });
 
   // ------------------------------------------------------------------
@@ -889,11 +910,152 @@ export function registerDriveRoutes(app: express.Express, deps: DriveRoutesDeps)
       success: false,
       code: 'PRODUCTION_RESTORE_EXTERNAL',
       error: 'الاستعادة الإنتاجية تُنفَّذ بخطوات خارجية موثّقة (Render redeploy + env vars) عبر وثائق التعافي؛ لا نكتب فوق الإنتاج تلقائياً.',
-      documentation: 'al-gharabi-ai-dr/RECOVERY/recovery-information.md',
+      documentation: 'al-gharabi-ai-dr/RECOVERY/START-HERE.md',
       steps: buildLatestRecovery({}).restoreSteps,
     });
   });
 
-  // مرجع مخزن الحالة للاختبار/الصحة العامة.
+  // ------------------------------------------------------------------
+  // الفحص الساعي (reconciliation) — مؤقّت داخلي آمن في الإنتاج.
+  // يقارن مصدر المشروع الحالي مع CURRENT: تطابق ⇒ no-op، اختلاف ⇒ مزامنة بعد
+  // التحقق من اكتمال المصدر، نقص ⇒ SOURCE_INCOMPLETE بلا تغيير. لا AI، لا حلقات.
+  // ------------------------------------------------------------------
+  let reconciliationRunning = false;        // منع التشغيل المتوازي لنفس العملية
+  let reconciliationTimer: NodeJS.Timeout | null = null;
+  let reconciliationInFlight: Promise<any> | null = null;
+  const RECONCILE_INTERVAL_MS = 60 * 60 * 1000; // كل ساعة
+
+  /** هل التزام المصدر (commit) تغيّر عن آخر نقطة استعادة؟ يُتجاهل عند غياب commit. */
+  function commitChanged(): boolean {
+    try {
+      const commit = deps.gitMeta ? deps.gitMeta().commit ?? null : null;
+      if (!commit) return false;
+      const known = control().driveBackup?.commit ?? null;
+      return Boolean(known) && known !== commit;
+    } catch { return false; }
+  }
+
+  /** دورة reconciliation واحدة: قرار صادق بلا أي ادّعاء. */
+  async function runReconciliationCycle(trigger: string): Promise<any> {
+    const startedAt = now();
+    const result: any = { trigger, at: startedAt, outcome: 'unknown' };
+    if (reconciliationRunning) return { ...result, outcome: 'skipped', reason: 'already_running', at: startedAt };
+    reconciliationRunning = true;
+    try {
+      // 1) جمع المصدر (حتمي، بلا شبكة ولا AI).
+      const collected = deps.collectSourceFiles ? deps.collectSourceFiles() : { included: [], excluded: [] };
+      if (collected.complete === false) {
+        result.outcome = 'source_incomplete';
+        result.sourceCollection = sourceCollectionOf(collected);
+        result.reason = 'source_incomplete';
+        return result;
+      }
+      // 2) مقارنة المصدر مع CURRENT (بصمة شجرة).
+      const files = [...(collected.included || []), ...(collected.excluded || [])];
+      const snapshot = buildMirrorSnapshot(files);
+      const prevMirror = control().driveMirror || null;
+      const sourceTreeHash = snapshot.treeHash;
+      result.sourceTreeHash = sourceTreeHash;
+      result.currentTreeHash = prevMirror?.treeHash ?? null;
+      result.sourceFileCount = snapshot.entries.length;
+      result.commitChanged = commitChanged();
+      // 3) تطابق ⇒ no-op (لا رفع).
+      if (prevMirror && prevMirror.treeHash && prevMirror.treeHash === sourceTreeHash) {
+        result.outcome = 'no_op';
+        result.reason = 'in_sync';
+        return result;
+      }
+      // 4) اختلاف ⇒ مزامنة CURRENT بعد التحقق (نفس مسار /api/dr/sync).
+      const readiness = authReadiness(env, control().driveRefreshToken);
+      if (!readiness.authorized) { result.outcome = 'skipped'; result.reason = 'not_authorized'; return result; }
+      const sync = await runSync();
+      result.outcome = sync.status >= 200 && sync.status < 300 ? 'synced' : 'sync_failed';
+      result.syncState = sync.body?.state ?? null;
+      result.syncCode = sync.body?.code ?? null;
+      result.uploaded = sync.body?.uploaded ?? 0;
+      result.removed = sync.body?.removed ?? 0;
+      result.treeHash = sync.body?.treeHash ?? null;
+      result.reason = sync.body?.reason ?? null;
+      return result;
+    } catch (err: any) {
+      result.outcome = 'error';
+      result.reason = String(err?.code || err?.message || 'reconcile_failed').slice(0, 120);
+      return result;
+    } finally {
+      reconciliationRunning = false;
+      // تثبيت نتيجة آخر فحص (بلا أسرار) في الحالة، فتصمد بعد restart وتُعلن في health.
+      try {
+        const prev = control().driveReconciliation || {};
+        control().driveReconciliation = {
+          lastReconciliationAt: now(),
+          lastReconciliationResult: result.outcome,
+          lastReconciliationTrigger: trigger,
+          lastReconciliationReason: result.reason ?? null,
+          lastReconciliationTreeHash: result.treeHash ?? result.sourceTreeHash ?? null,
+          reconciliationCount: (prev.reconciliationCount || 0) + 1,
+        };
+        deps.persistControl({ driveReconciliation: control().driveReconciliation });
+      } catch { /* أفضل جهد */ }
+    }
+  }
+
+  /** الفحص الساعي المُهيّأ (متاح للاختبار مباشرة). */
+  const hourlyReconciliation = {
+    intervalMs: RECONCILE_INTERVAL_MS,
+    runCycle: (trigger = 'manual') => runReconciliationCycle(trigger),
+    isRunning: () => reconciliationRunning,
+    start: () => startDriveReconciliation(),
+    stop: () => stopDriveReconciliation(),
+    lastResult: () => control().driveReconciliation || null,
+  };
+
+  /** يبدأ المؤقّت الداخلي (مرة واحدة). `.unref()` يمنع تعليق الإغلاق النظيف. */
+  function startDriveReconciliation(): void {
+    if (reconciliationTimer) return;
+    reconciliationTimer = setInterval(() => {
+      // لا نبدأ دورة إن كانت هناك دورة جارية أو نسخة/مزامنة قيد التنفيذ.
+      if (reconciliationRunning || backupRunning) return;
+      reconciliationInFlight = runReconciliationCycle('hourly').catch(() => { /* لا يُسقط العملية */ });
+    }, RECONCILE_INTERVAL_MS);
+    if (typeof (reconciliationTimer as any).unref === 'function') (reconciliationTimer as any).unref();
+    console.log(`[الغرابي AI] DR hourly reconciliation scheduled every ${Math.round(RECONCILE_INTERVAL_MS / 60000)} min`);
+  }
+
+  function stopDriveReconciliation(): void {
+    if (reconciliationTimer) { clearInterval(reconciliationTimer); reconciliationTimer = null; }
+  }
+
+  /** حالة تشغيل صادقة للواجهة/الصحة: بلا أي سرّ. */
+  function reconciliationStatus(): any {
+    const last = control().driveReconciliation || null;
+    return {
+      enabled: true,
+      intervalMinutes: Math.round(RECONCILE_INTERVAL_MS / 60000),
+      running: reconciliationRunning,
+      scheduled: reconciliationTimer !== null,
+      lastReconciliationAt: last?.lastReconciliationAt ?? null,
+      lastReconciliationResult: last?.lastReconciliationResult ?? null,
+      lastReconciliationTrigger: last?.lastReconciliationTrigger ?? null,
+      lastReconciliationReason: last?.lastReconciliationReason ?? null,
+      lastReconciliationTreeHash: last?.lastReconciliationTreeHash ?? null,
+      reconciliationCount: last?.reconciliationCount ?? 0,
+    };
+  }
+
+  // مسار يدوي للمالك لتشغيل دورة فحص الآن (تشخيص) — بلا AI.
+  app.post('/api/dr/reconcile', deps.authenticateToken, deps.requireOwner, async (_req, res) => {
+    const result = await runReconciliationCycle('manual');
+    res.status(result.outcome === 'error' ? 500 : 200).json({ success: result.outcome !== 'error', reconciliation: result, status: reconciliationStatus() });
+  });
+
+  // مرجع مخزن الحالة للاختبار/الصحة العامة + واجهة الاختبار للساعي/المزامنة.
   (app as any).drStateStore = stateStore;
+  (app as any).drReconciliation = {
+    status: reconciliationStatus,
+    runCycle: (trigger?: string) => runReconciliationCycle(trigger || 'manual'),
+    hourly: hourlyReconciliation,
+    runSync: (opts?: { force?: boolean }) => runSync(opts || {}),
+    start: startDriveReconciliation,
+    stop: stopDriveReconciliation,
+  };
 }

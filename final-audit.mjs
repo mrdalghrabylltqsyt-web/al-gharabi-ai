@@ -1457,6 +1457,7 @@ add('dr-ui-test-present', fs.existsSync(path.join(root, 'engine/tests/dr/dr.ui.t
 
 // --- النسخة الاحتياطية الفعلية (رفع حقيقي إلى Drive) ---
 const drBackup = fs.existsSync(path.join(drDir, 'backup.mjs')) ? read('tools/dr/backup.mjs') : '';
+const drCloudLib = fs.existsSync(path.join(drDir, 'cloud-lib.mjs')) ? read('tools/dr/cloud-lib.mjs') : '';
 const drAdapter = read('engine/storage/adapter.ts');
 add('dr-backup-module', fs.existsSync(path.join(drDir, 'backup.mjs')) && drBackup.includes('export async function runBackup') && drBackup.includes('readBackCurrent'), 'وحدة النسخة الاحتياطية الفعلية موجودة (runBackup + تحقق)');
 add('dr-backup-route', drRoutes.includes("'/api/dr/backup'") && drRoutes.includes('runBackup') && drRoutes.includes('deps.requireOwner') && drRoutes.includes('encryptDbDump'), 'مسار POST /api/dr/backup للمالك يمر بالمسار الرسمي وبتشفير DB');
@@ -1547,10 +1548,27 @@ add('dr-source-walk-fallback', drCloudSync.includes("source: 'git'") && drCloudS
 add('dr-source-completeness-single-source', drCloudSync.includes('export function assessSourceCompleteness') && drCloudSync.includes('SOURCE_MIN_FILES') && drCloudSync.includes('SOURCE_REQUIRED_FILES'), 'فحص اكتمال المصدر مصدر واحد (حد أدنى + ملفات إلزامية)');
 add('dr-server-uses-trusted-collector', server.includes('collectTrustedSourceTree') && !server.includes('collectRepoFiles(process.cwd())'), 'server.ts يستخدم جامع الشجرة الموثوق (لا مشي مجلد ناقص)');
 add('dr-backup-guards-incomplete', drRoutes.includes('SOURCE_INCOMPLETE') && drRoutes.indexOf('SOURCE_INCOMPLETE') < drRoutes.indexOf('await runBackup('), 'مسار النسخة يرفض المصدر الناقص (SOURCE_INCOMPLETE) قبل أي رفع');
-add('dr-sync-guards-incomplete', (drRoutes.match(/SOURCE_INCOMPLETE/g) || []).length >= 2 && drRoutes.lastIndexOf('SOURCE_INCOMPLETE') < drRoutes.lastIndexOf('await runCurrentMirror('), 'مسارا النسخة والمزامنة يرفضان المصدر الناقص (لا نسخة سليمة من شجرة ناقصة)');
+const drIncompleteGuards = (drRoutes.match(/code: 'SOURCE_INCOMPLETE'/g) || []).length;
+const drSecondIncompleteGuard = drRoutes.indexOf("code: 'SOURCE_INCOMPLETE'", drRoutes.indexOf("code: 'SOURCE_INCOMPLETE'") + 1);
+add('dr-sync-guards-incomplete', drIncompleteGuards >= 2 && drSecondIncompleteGuard > -1 && drSecondIncompleteGuard < drRoutes.lastIndexOf('await runCurrentMirror('), 'مسارا النسخة والمزامنة يرفضان المصدر الناقص (لا نسخة سليمة من شجرة ناقصة)');
 add('dr-health-source-collection', /sourceCollection:\s*sourceCollectionStatus\(\)/.test(drRoutes) && drRoutes.includes('function sourceCollectionStatus'), 'health يعرض حالة جمع المصدر (اكتمال + مصدر + عدد) بلا محتوى');
 add('dr-source-collection-no-secret', !/sourceCollection[\s\S]{0,400}(clientSecret|refreshToken|GOCSPX|masterKey)/.test(drRoutes), 'حالة جمع المصدر لا تحمل أي قيمة سرّية');
 add('dr-source-test-present', fs.existsSync(path.join(root, 'engine/tests/dr/dr.source.test.ts')) && (pkg.scripts['test:dr'] || '').includes('test:dr-source'), 'اختبار مصدر DR الموثوق + حماية النقص مضمّن في test:dr');
+// الفحص الساعي (reconciliation) + مشغّل التغيّر + وثائق RECOVERY الموحّدة.
+add('dr-hourly-reconciliation-single-source', drRoutes.includes('runReconciliationCycle') && drRoutes.includes('startDriveReconciliation') && /RECONCILE_INTERVAL_MS = 60 \* 60 \* 1000/.test(drRoutes), 'الفحص الساعي مصدر واحد بمؤقّت داخلي كل ساعة');
+add('dr-reconciliation-no-op-on-match', drRoutes.includes("outcome = 'no_op'") && drRoutes.includes('prevMirror.treeHash === snapshot.treeHash'), 'التطابق ⇒ no-op بلا رفع (كشف «لا تغيير» قبل المزامنة)');
+add('dr-reconciliation-incomplete-guard', drRoutes.includes("outcome = 'source_incomplete'"), 'المصدر الناقص ⇒ source_incomplete بلا تغيير');
+add('dr-reconciliation-concurrency-lock', drRoutes.includes('reconciliationRunning') && drRoutes.includes("reason: 'already_running'"), 'قفل يمنع تشغيل دورة متوازية لنفس العملية');
+add('dr-reconciliation-unref', /reconciliationTimer as any\)\.unref/.test(drRoutes), 'المؤقّت .unref() فلا يمنع الإغلاق النظيف/persist');
+add('dr-reconciliation-started-after-listen', /startYouTubeWatcher\(\);[\s\S]{0,400}drReconciliation\?\.start\?\.\(\)/.test(server), 'الخادم يبدأ الفحص الساعي بعد الاستماع (مستقل عن المتصفح)');
+add('dr-reconciliation-health-fields', drRoutes.includes('changeTrigger:') && drRoutes.includes('hourlyReconciliation: reconciliationStatus()') && drRoutes.includes('lastReconciliationAt:') && drRoutes.includes('lastReconciliationResult:'), 'health يعرض changeTrigger/hourlyReconciliation/lastReconciliationAt/lastReconciliationResult');
+add('dr-reconciliation-no-ai', !/reconciliation[\s\S]{0,2000}aiEngine|aiEngine[\s\S]{0,2000}reconciliation/.test(drRoutes), 'الفحص الساعي لا يستدعي Gemini/أي ذكاء اصطناعي');
+add('dr-reconciliation-persisted', server.includes('driveReconciliation: drControl.driveReconciliation') && drRoutes.includes("lastReconciliationResult: result.outcome"), 'نتيجة الفحص تُحفظ وتصمد بعد restart');
+add('dr-recovery-docs-unified-names', drCloudLib.includes('START-HERE.md') && drCloudLib.includes('RECOVERY-GUIDE.md') && drCloudLib.includes('RECOVERY-MANIFEST.json'), 'أسماء وثائق RECOVERY موحّدة: START-HERE/RECOVERY-GUIDE/RECOVERY-MANIFEST');
+add('dr-recovery-docs-written-on-backup', drBackup.includes('writeRecoveryDocs'), 'النسخة تكتب وثائق RECOVERY الموحّدة');
+add('dr-recovery-docs-no-secret', !/START-HERE[\s\S]{0,400}(GOCSPX|refreshToken|masterKey)/.test(drCloudLib), 'وثائق RECOVERY بلا أي قيمة سرّية');
+add('dr-recovery-docs-explains-key-not-stored', drCloudLib.includes('لا يُحفظ داخل النسخة'), 'الوثائق تشرح أن المفتاح الرئيسي لا يُحفظ داخل النسخة');
+add('dr-reconciliation-test-present', fs.existsSync(path.join(root, 'engine/tests/dr/dr.reconciliation.test.ts')) && (pkg.scripts['test:dr'] || '').includes('test:dr-reconciliation'), 'اختبار الفحص الساعي/مشغّل التغيّر/الوثائق مضمّن في test:dr');
 
 const failed = checks.filter(x => !x.ok);
 console.table(checks);
