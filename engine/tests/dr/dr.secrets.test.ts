@@ -121,6 +121,10 @@ async function main() {
       && perKey[0].fingerprint === null);
     const perKeyValid = inspectMasterKey(ENV).perKey.find((p) => p.name === MASTER_KEY_ENV);
     check('perKey exposes valid fingerprint', perKeyValid.valid === true && /^[0-9a-f]{12}$/.test(perKeyValid.fingerprint) && perKeyValid.length === 64);
+    // التوجيه الصريح: 32 محرفاً ASCII (24 بايت) => invalid مع hint يشرح الصيغة المقبولة.
+    const bad = inspectMasterKey({ [MASTER_KEY_ENV]: 'a'.repeat(32) });
+    check('hint explains present-but-invalid', bad.state === 'invalid' && typeof bad.hint === 'string' && bad.hint.includes('غير صالح') && bad.hint.includes('64'));
+    check('hint null when valid', inspectMasterKey(ENV).hint === null);
   }
 
   if (failures.length) {

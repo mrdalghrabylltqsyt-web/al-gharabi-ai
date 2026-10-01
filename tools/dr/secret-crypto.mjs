@@ -129,15 +129,23 @@ export function inspectMasterKeyNames(env = process.env) {
 /** حالة المفتاح الرئيسي (بلا أي قيمة سرّية). */
 export function inspectMasterKey(env = process.env) {
   const resolved = resolveMasterKey(env);
-  const anySet = MASTER_KEY_ENV_NAMES.some((n) => env[n]);
+  const perKey = inspectMasterKeyNames(env);
+  const anySet = perKey.some((p) => p.present);
+  const primary = perKey[0];
+  let hint = null;
+  if (resolved.ok) hint = null;
+  else if (!anySet) hint = `غير مضبوط: اضبط ${MASTER_KEY_ENV} بقيمة 32 بايت (مثال: openssl rand -hex 32).`;
+  else if (primary.present && !primary.valid) hint = `المفتاح مضبوط لكن غير صالح: طول القيمة ${primary.length} محرفاً. الصيغة المقبولة: 64 محرفاً hex أو Base64 يمثّل 32 بايت بالضبط (مثال: openssl rand -hex 32). ملاحظة: 32 محرفاً ASCII = 24 بايت فقط وتُرفض.`;
+  else hint = `مفتاح بديل غير صالح: اضبط ${MASTER_KEY_ENV} بقيمة 32 بايت.`;
   return {
     state: resolved.ok ? 'valid' : (anySet ? 'invalid' : 'missing'),
     envNames: MASTER_KEY_ENV_NAMES,
     // تشخيص صريح لكل متغيّر (غياب vs عدم صلاحية) بلا كشف أي قيمة.
-    perKey: inspectMasterKeyNames(env),
+    perKey,
     source: resolved.ok ? resolved.source : null,
     acceptedBytes: 32,
     reason: resolved.ok ? null : resolved.reason,
+    hint,
   };
 }
 
