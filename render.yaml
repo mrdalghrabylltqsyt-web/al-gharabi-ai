@@ -64,6 +64,9 @@ services:
         sync: false
       - key: DRIVE_DB_BACKUP_KEY
         sync: false
+      # مفتاح خزنة الطوارئ (KEY-VAULT/) — مستقل تماماً ولا يُحفظ داخل Drive.
+      - key: DR_RECOVERY_VAULT_KEY
+        sync: false
       # قاعدة بيانات معزولة لاختبار الاستعادة فقط (لا تستخدم الإنتاج).
       - key: DR_RECOVERY_TEST_DATABASE_URL
         sync: false

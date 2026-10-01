@@ -1398,7 +1398,7 @@ add('brain-runtime-tests-honest',
 // عدم قراءة DATABASE_URL، رفض قاعدة البيانات الخام، وحماية الأسرار.
 // ---------------------------------------------------------------------------
 const drDir = path.join(root, 'tools/dr');
-const drFiles = ['cloud-lib.mjs', 'cloud-sync.mjs', 'cloud-status.mjs', 'drive-client.mjs', 'drive-auth.mjs', 'drive-auth-url.mjs', 'drive-store.mjs', 'drive-sync.mjs', 'db-crypto.mjs', 'dump-db.mjs', 'restore-db.mjs', 'backup.mjs'];
+const drFiles = ['cloud-lib.mjs', 'cloud-sync.mjs', 'cloud-status.mjs', 'drive-client.mjs', 'drive-auth.mjs', 'drive-auth-url.mjs', 'drive-store.mjs', 'drive-sync.mjs', 'db-crypto.mjs', 'dump-db.mjs', 'restore-db.mjs', 'backup.mjs', 'key-vault-crypto.mjs', 'vault-restore.mjs'];
 const drTests = ['dr.core.test.ts', 'dr.store.test.ts', 'dr.sync.test.ts', 'dr.auth.test.ts', 'dr.db.test.ts', 'dr.routes.test.ts', 'dr.backup.test.ts'];
 const drSources = drFiles.map((f) => (fs.existsSync(path.join(drDir, f)) ? read(path.join('tools/dr', f)) : ''));
 const drRoutes = fs.existsSync(path.join(root, 'engine/dr/routes.ts')) ? read('engine/dr/routes.ts') : '';
@@ -1575,6 +1575,34 @@ add('dr-recovery-docs-written-on-backup', drBackup.includes('writeRecoveryDocs')
 add('dr-recovery-docs-no-secret', !/START-HERE[\s\S]{0,400}(GOCSPX|refreshToken|masterKey)/.test(drCloudLib), 'وثائق RECOVERY بلا أي قيمة سرّية');
 add('dr-recovery-docs-explains-key-not-stored', drCloudLib.includes('لا يُحفظ داخل النسخة'), 'الوثائق تشرح أن المفتاح الرئيسي لا يُحفظ داخل النسخة');
 add('dr-reconciliation-test-present', fs.existsSync(path.join(root, 'engine/tests/dr/dr.reconciliation.test.ts')) && (pkg.scripts['test:dr'] || '').includes('test:dr-reconciliation'), 'اختبار الفحص الساعي/مشغّل التغيّر/الوثائق مضمّن في test:dr');
+
+// --- خزنة مفاتيح الطوارئ (Emergency Key Vault): تشفير مستقل + نموذج مُرقّم + استعادة يدوية ---
+const drVaultCrypto = fs.existsSync(path.join(drDir, 'key-vault-crypto.mjs')) ? read('tools/dr/key-vault-crypto.mjs') : '';
+const drVaultRestore = fs.existsSync(path.join(drDir, 'vault-restore.mjs')) ? read('tools/dr/vault-restore.mjs') : '';
+const drVaultEngine = fs.existsSync(path.join(root, 'engine/dr/recoveryVault/vault.ts')) ? read('engine/dr/recoveryVault/vault.ts') : '';
+const drVaultInventory = fs.existsSync(path.join(root, 'engine/dr/recoveryVault/inventory.ts')) ? read('engine/dr/recoveryVault/inventory.ts') : '';
+const drVaultTest = fs.existsSync(path.join(root, 'engine/tests/dr/dr.keyvault.test.ts')) ? read('engine/tests/dr/dr.keyvault.test.ts') : '';
+add('dr-keyvault-single-source', drVaultCrypto.includes('export function buildVaultRecords') && drVaultCrypto.includes('export function encryptKeyVault') && drVaultCrypto.includes('export function decryptKeyVault') && drVaultCrypto.includes('export function inspectVaultKey'), 'خزنة المفاتيح مصدر واحد (بناء/تشفير/فكّ/فحص المفتاح)');
+add('dr-keyvault-independent-key', drVaultCrypto.includes('VAULT_KEY_ENV') && drVaultCrypto.includes('env[VAULT_KEY_ENV]') && !drVaultCrypto.includes('resolveMasterKey'), 'الخزنة تُفتح بمفتاح مستقل (DR_RECOVERY_VAULT_KEY) لا بالمفتاح الرئيسي');
+add('dr-keyvault-aes-gcm', drVaultCrypto.includes('aes-256-gcm') && drVaultCrypto.includes('scrypt'), 'الخزنة مشفّرة AES-256-GCM بمفتاح مشتقّ scrypt');
+add('dr-keyvault-magic-versioned', drCloudLib.includes('KEY_VAULT_PACKAGE_NAME') && drCloudLib.includes('GHARABI-KEY-VAULT-V1'), 'حزمة الخزنة موسومة بإصدار GHARABI-KEY-VAULT-V1');
+add('dr-keyvault-manifest-names-only', drVaultEngine.includes('vaultContentHash') && drVaultCrypto.includes('fingerprint') && !/records[\s\S]{0,120}\bvalue\s*:/.test(drVaultCrypto.split('export function buildVaultRecords')[1] || ''), 'سجلات الخزنة تحمل أسماء/بصمات بلا أي قيمة سرّية');
+add('dr-keyvault-inventory-schema', drVaultInventory.includes('RECOVERY_SECRET_INVENTORY') && drVaultInventory.includes('presentInventoryNames') && drVaultInventory.includes('criticalInventoryNames'), 'جرد الأسرار مبني على schema ثابت بلا اختراع أسماء');
+add('dr-keyvault-no-unrelated-secret', drVaultInventory.includes('RECOVERY_SECRET_INVENTORY') && !/SOME_UNRELATED|Math\.random|Object\.keys\(process\.env\)/.test(drVaultInventory), 'الخزنة لا تشمل أي اسم خارج الجرد المعتمد');
+add('dr-keyvault-versioned-head', drVaultEngine.includes('resolveCurrentKeyVault') && drVaultEngine.includes('buildKeyVaultHead') && drCloudLib.includes('KEY_VAULT_HEAD_NAME'), 'الخزنة بنموذج مُرقّم بمرجع اعتماد واحد (HEAD)');
+add('dr-keyvault-no-change', drVaultEngine.includes("state: 'no_change'") && drVaultEngine.includes('vaultContentHash'), 'لا نسخة جديدة عند عدم تغيّر بصمة المحتوى');
+add('dr-keyvault-commit-after-verify', drVaultEngine.includes('verify_hash_mismatch') && drVaultEngine.indexOf('verify_hash_mismatch') < drVaultEngine.indexOf('writeKeyVaultHead(head)'), 'لا اعتماد (HEAD) قبل التحقق الفعلي من الحزمة المرفوعة');
+add('dr-keyvault-cleanup-pending', drVaultEngine.includes('cleanupPending') && drVaultEngine.includes('cleanupOldKeyVaultVersions'), 'فشل التنظيف = cleanupPending بلا إسقاط الاعتماد');
+add('dr-keyvault-recover-readonly', drVaultEngine.includes('export async function recoverKeyVault') && drRoutes.includes('wroteToProduction: false') && drRoutes.includes('/api/dr/key-vault/drill'), 'استعادة الخزنة قراءة فقط (لا كتابة إنتاجية)');
+add('dr-keyvault-restore-cli', drVaultRestore.includes('decryptKeyVault') && drVaultRestore.includes('0600') && !/console\.log\([^)]*values/.test(drVaultRestore), 'أداة فكّ يدوية (vault-restore) بلا طباعة أي قيمة سرّية وملف بإذن 0600');
+add('dr-keyvault-routes', drRoutes.includes('/api/dr/key-vault/status') && drRoutes.includes('/api/dr/key-vault/sync') && drRoutes.includes('/api/dr/key-vault/verify') && drRoutes.includes('/api/dr/key-vault/drill'), 'مسارات الخزنة (حالة/مزامنة/فحص/اختبار) مسجّلة');
+add('dr-keyvault-owner-only', /'\/api\/dr\/key-vault\/sync'[\s\S]{0,120}requireOwner/.test(drRoutes) && /'\/api\/dr\/key-vault\/backup'[\s\S]{0,120}requireOwner/.test(drRoutes), 'عمليات الكتابة على الخزنة للمالك فقط');
+add('dr-keyvault-backup-autosync', drRoutes.includes('runKeyVaultSync') && /keyVault[\s\S]{0,40}(state|error)/.test(drRoutes), 'النسخة الاحتياطية تُزامن الخزنة تلقائياً وتُعلن النتيجة');
+add('dr-keyvault-health-no-secret', /keyVault:\s*\{[\s\S]{0,600}inventoryCount/.test(drRoutes) && !/keyVault[\s\S]{0,600}(clientSecret|refreshToken|GOCSPX|AIzaSy)/.test(drRoutes), 'health يعرض كتلة الخزنة بلا أي قيمة سرّية');
+add('dr-keyvault-env-documented', read('.env.example').includes('DR_RECOVERY_VAULT_KEY') && read('render.yaml').includes('DR_RECOVERY_VAULT_KEY'), 'DR_RECOVERY_VAULT_KEY موثّق في .env.example وrender.yaml (بلا قيمة)');
+add('dr-keyvault-ui', cloudView.includes('خزنة مفاتيح الطوارئ') && cloudView.includes('apiService.syncDrKeyVault') && cloudView.includes('apiService.getDrKeyVaultStatus'), 'واجهة خزنة المفاتيح موجودة وتستدعي الخادم الفعلي');
+add('dr-keyvault-ui-no-values', !/keyVault[^\n]{0,80}\.value\b/.test(cloudView), 'واجهة الخزنة لا تعرض أي قيمة سرّية');
+add('dr-keyvault-tests', drVaultTest.includes('decrypt fails with wrong key') && drVaultTest.includes('tampered package detected') && drVaultTest.includes('cleanup retried and clears pending') && (pkg.scripts['test:dr'] || '').includes('test:dr-keyvault'), 'اختبار الخزنة يغطّي المفتاح الخاطئ/العبث/التنظيف ومضمّن في test:dr');
 
 const failed = checks.filter(x => !x.ok);
 console.table(checks);

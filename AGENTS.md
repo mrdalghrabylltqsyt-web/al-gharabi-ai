@@ -2950,3 +2950,43 @@ restart/idempotency، وثائق RECOVERY، وحالة health بلا أسرار.
 
 **لم يُمسّ:** لا رفع إلى Drive، لا rp-004، لا تعديل Render، لا سرّ/مفتاح، لا rp-002/rp-003.
 
+
+## خزنة مفاتيح الطوارئ (Emergency Key Vault) + تشخيص DR OAuth redirect — Batch DR (2026-10-01)
+
+### خزنة مفاتيح الطوارئ `KEY-VAULT/` — إكمال وتوثيق واختبار
+استُكملت خزنة الطوارئ (كانت الكود فقط) ببيئة/توثيق/واجهة/اختبارات:
+- `tools/dr/key-vault-crypto.mjs`: مصدر واحد (`buildVaultRecords`، `encryptKeyVault`،
+  `decryptKeyVault`، `inspectVaultKey`، `decodeVaultKey`). تُفتح بمفتاح **مستقل تماماً**
+  `DR_RECOVERY_VAULT_KEY` (64 hex أو Base64 لـ32 بايت) — لا بالمفتاح الرئيسي.
+- `tools/dr/vault-restore.mjs`: أداة فكّ يدوية عند الكارثة (بلا تشغيل الغرابي): تطبع
+  الأسماء فقط افتراضياً، وتكتب القيم في `--out` بصلاحيات 0600، ولا تطبع أي قيمة سرّية.
+- `engine/dr/recoveryVault/{inventory.ts,vault.ts}`: الجرد schema-based بلا أسرار، والمنطق
+  المُرقّم (HEAD واحد + نسخ `KV-<N>` + `current.enc`) مع كشف «لا تغيير» ببصمة المحتوى،
+  وإصلاح جذر: التنظيف المعلّق يُعاد بلا إنشاء نسخة جديدة ولا `no_change` كاذب.
+- `engine/dr/routes.ts`: مسارات owner (`status`/`sync`/`backup`/`verify`/`drill`)، والنسخة
+  الاحتياطية تُزامن الخزنة تلقائياً (غير قاتلة)، و`/api/health.dr.keyVault` بلا أي سرّ.
+- `.env.example` و`render.yaml` و`scripts/generate-secrets.mjs`: `DR_RECOVERY_VAULT_KEY`
+  (بلا قيمة في Git). الواجهة: قسم «خزنة مفاتيح الطوارئ» في `CloudBackupView`.
+- اختبار: `engine/tests/dr/dr.keyvault.test.ts` (`npm run test:dr-keyvault`، **63 فحصاً**)
+  + فحوص خزنة في `dr.endpoints.test.ts` (70) و`dr.real-drill.test.ts` (34). final-audit
+  صار **929 فحصاً** (`dr-keyvault-*`).
+
+### تشخيص `redirect_uri_mismatch` في إعادة ربط Google Drive (تشخيص فقط، بلا تعديل)
+- قيمة `redirectUri` الفعلية التي ينتجها `/api/dr/drive/auth-url` هي **ثابت صريح**:
+  `https://al-gharabi-ai.onrender.com/api/dr/drive/callback`
+  (`DRIVE_OAUTH_REDIRECT_URI` في `tools/dr/cloud-lib.mjs`) — **لا تُشتق من `APP_URL`**
+  ولا من أي متغيّر بيئة، فلا يوجد أي انحراف بمصدر مختلف.
+- لا شرطة مائلة زائدة، ولا نطاق مختلف: المسار `/api/dr/drive/callback` هو نفسه في
+  التسجيل والتفويض والتبادل (`stateStore.consume` يقارن `redirectUri` بالضبط).
+- `DRIVE_OAUTH_CLIENT_ID` مُضبوط فعلاً في الإنتاج (`oauthClient.clientIdPresent=true`,
+  `effectiveClientIdSource=drive`, صيغة `google_client_id` صحيحة، بلا مسافات، بصمة
+  `7d755d3442b7`) — **لا يُعرض السرّ ولا الرمز**.
+- الوضع الحالي على الإنتاج: `configured=true`, `authorized=true`, `reauthorizationNeeded=false`,
+  `refreshTokenUsable=true`, `nextAction=none` — أي أن الربط **قائم وسليم الآن**، وفحص
+  `/api/dr/drive/callback` بلا `state` يرد **302** إلى `/?dr=error&reason=MISSING_CODE_OR_STATE`
+  (لا 500). فالعطل السابق كان `redirect_uri` مسجّلاً خطأً في Google Cloud Console فقط.
+- **الشرط الخارجي الوحيد المتبقي (لا ينفّذه أي وكيل):** أن يطابق المسجّل في
+  Google Cloud Console → OAuth Client (نفس `client_id` بالبصمة أعلاه) → Authorized redirect
+  URIs القيمة أعلاه **حرفياً**. لو ظهر `redirect_uri_mismatch` مستقبلاً فسببه أن المسجّل
+  هناك مختلف (شرطة مائلة/نطاق/http) وليس الكود.
+

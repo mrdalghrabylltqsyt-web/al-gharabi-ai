@@ -40,6 +40,9 @@ import { runBackup } from '../../tools/dr/backup.mjs';
 import { encryptDbDump } from '../../tools/dr/db-crypto.mjs';
 import { runCurrentMirror, buildMirrorSnapshot } from '../../tools/dr/current-mirror.mjs';
 import { buildSecretsBundle, inspectMasterKey } from '../../tools/dr/secret-crypto.mjs';
+import { runKeyVaultSync, recoverKeyVault, keyVaultStatus } from './recoveryVault/vault';
+import { inspectVaultKey } from '../../tools/dr/key-vault-crypto.mjs';
+import { RECOVERY_SECRET_INVENTORY } from './recoveryVault/inventory';
 import { buildRestorePlan, runRecoveryDrill, verifyRecoveryPoint, applyDatabaseDump } from '../../tools/dr/restore.mjs';
 import {
   buildRecoveryInformation,
@@ -479,6 +482,24 @@ export function registerDriveRoutes(app: express.Express, deps: DriveRoutesDeps)
           deps.persistControl({ driveMirror: control().driveMirror });
         }
       }
+      // خزنة مفاتيح الطوارئ: مزامنة تلقائية مع النسخة (منفصلة الترقيم، نفس مبدأ CURRENT).
+      // فشلها لا يُسقط النسخة المتحقّقة — يُعلن صراحةً بلا قيمة سرّية.
+      let keyVault: any = null;
+      if (result.state === 'backed_up' || result.state === 'no_change') {
+        try {
+          const kv = await runKeyVaultSync({ store, env: env as Record<string, string | undefined>, now: startedAt });
+          keyVault = {
+            state: kv.state,
+            version: kv.version ?? null,
+            recordCount: kv.recordCount ?? null,
+            diff: kv.diff ?? null,
+            cleanupPending: Boolean(kv.cleanupPending),
+            reason: kv.reason ?? null,
+          };
+        } catch (e: any) {
+          keyVault = { state: 'failed', reason: String(e?.code || e?.message || 'key_vault_failed').slice(0, 80) };
+        }
+      }
       recordBackupResult(result);
       const httpStatus = result.state === 'failed' ? 500 : 200;
       return res.status(httpStatus).json({
@@ -492,6 +513,7 @@ export function registerDriveRoutes(app: express.Express, deps: DriveRoutesDeps)
         uploaded: result.uploaded ?? 0,
         secretsCount: result.secretsCount ?? null,
         mirror,
+        keyVault,
         reason: result.reason ?? null,
         message: result.message ?? null,
         errorDetails: result.errorDetails ?? null,
@@ -652,10 +674,23 @@ export function registerDriveRoutes(app: express.Express, deps: DriveRoutesDeps)
           currentMirror: Boolean(mirror?.treeHash),
           secretsEncryptionRequired: true,
           databaseEncryptionRequired: true,
+          keyVaultEncryptionRequired: true,
           recoveryPointsRoute: '/api/dr/recovery-points',
           restorePlanRoute: '/api/dr/restore/plan',
           drillRoute: '/api/dr/restore/drill',
           productionRestoreRoute: '/api/dr/restore/production',
+        },
+        // خزنة مفاتيح الطوارئ (بلا أسرار): حالة المفتاح ورقم الإصدار فقط.
+        // التفاصيل الكاملة في /api/dr/key-vault/status (owner).
+        keyVault: {
+          enabled: true,
+          vaultKey: inspectVaultKey(env as NodeJS.ProcessEnv),
+          inventoryCount: RECOVERY_SECRET_INVENTORY.length,
+          statusRoute: '/api/dr/key-vault/status',
+          syncRoute: '/api/dr/key-vault/sync',
+          verifyRoute: '/api/dr/key-vault/verify',
+          backupRoute: '/api/dr/key-vault/backup',
+          drillRoute: '/api/dr/key-vault/drill',
         },
         lastError: control().driveLastError ?? null,
         backup: control().driveBackup ?? null,
@@ -1091,6 +1126,123 @@ export function registerDriveRoutes(app: express.Express, deps: DriveRoutesDeps)
   app.post('/api/dr/reconcile', deps.authenticateToken, deps.requireOwner, async (_req, res) => {
     const result = await runReconciliationCycle('manual');
     res.status(result.outcome === 'error' ? 500 : 200).json({ success: result.outcome !== 'error', reconciliation: result, status: reconciliationStatus() });
+  });
+
+  // ------------------------------------------------------------------
+  // خزنة مفاتيح الطوارئ (Emergency Key Vault): حالة/مزامنة/فحص/نسخة/اختبار.
+  // كلها للمالك فقط، وبلا أي قيمة سرّية في أي رد. لا زر "إظهار المفاتيح".
+  // ------------------------------------------------------------------
+
+  /** يبني مخزن Drive قابل للكتابة لعمليات الخزنة (يتطلّب تفويضاً فعّالاً). */
+  function vaultStore(): { ok: boolean; store?: any; status?: number; code?: string; error?: string } {
+    const readiness = authReadiness(env, control().driveRefreshToken);
+    if (!readiness.authorized) return { ok: false, status: 409, code: 'NOT_AUTHORIZED', error: 'لا تفويض Google Drive فعّال.' };
+    const client = buildClient();
+    if (!client) return { ok: false, status: 503, code: 'DRIVE_CLIENT_UNAVAILABLE', error: 'تعذّر بناء عميل Drive.' };
+    return { ok: true, store: buildStore(client) };
+  }
+
+  // حالة الخزنة (owner): بلا قيم — حالة المفتاح + رقم الإصدار + عدد السجلات + الحالات.
+  app.get('/api/dr/key-vault/status', deps.authenticateToken, deps.requireOwner, async (_req, res) => {
+    const readiness = authReadiness(env, control().driveRefreshToken);
+    let store: any = null;
+    if (readiness.authorized) { const c = buildClient(); if (c) store = buildStore(c, { readOnlyStructure: true }); }
+    const status = await keyVaultStatus(store, env as Record<string, string | undefined>);
+    res.json({ success: true, keyVault: status, inventory: RECOVERY_SECRET_INVENTORY, authorized: readiness.authorized });
+  });
+
+  // مزامنة الخزنة (owner): بناء نسخة جديدة عند التغيّر فقط + تحقق + اعتماد.
+  app.post('/api/dr/key-vault/sync', deps.authenticateToken, deps.requireOwner, async (_req, res) => {
+    const v = vaultStore();
+    if (!v.ok) return res.status(v.status!).json({ success: false, code: v.code, error: v.error });
+    if (backupRunning) return res.status(409).json({ success: false, code: 'SYNC_ALREADY_RUNNING', error: 'عملية نسخ/مزامنة قيد التنفيذ بالفعل.' });
+    backupRunning = true;
+    try {
+      const result = await runKeyVaultSync({ store: v.store, env: env as Record<string, string | undefined>, now: now() });
+      rememberStructure(v.store);
+      const status = await keyVaultStatus(v.store, env as Record<string, string | undefined>);
+      const httpStatus = result.state === 'failed' ? 500 : (result.state === 'blocked' ? 409 : 200);
+      // لا قيمة سرّية في الرد: أسماء/بصمات/حالات فقط (diff = أسماء).
+      return res.status(httpStatus).json({
+        success: result.state === 'synced' || result.state === 'no_change',
+        state: result.state,
+        version: result.version ?? null,
+        recordCount: result.recordCount ?? null,
+        contentHash: result.contentHash ?? null,
+        diff: result.diff ?? null,
+        removed: result.removed ?? 0,
+        cleanupPending: Boolean(result.cleanupPending),
+        reason: result.reason ?? null,
+        message: result.message ?? null,
+        keyVault: status,
+        at: now(),
+      });
+    } finally {
+      backupRunning = false;
+    }
+  });
+
+  // فحص الخزنة (owner): فكّ تجريبي + تحقق بصمة + اتساق البيان — بلا كشف قيم.
+  app.post('/api/dr/key-vault/verify', deps.authenticateToken, deps.requireOwner, async (_req, res) => {
+    const v = vaultStore();
+    if (!v.ok) return res.status(v.status!).json({ success: false, code: v.code, error: v.error });
+    const rec = await recoverKeyVault(v.store, env as Record<string, string | undefined>);
+    const status = await keyVaultStatus(v.store, env as Record<string, string | undefined>);
+    return res.status(rec.ok ? 200 : 409).json({
+      success: rec.ok,
+      verified: rec.ok,
+      version: rec.version ?? null,
+      recordCount: rec.ok ? rec.recordCount : null,
+      integrity: rec.ok ? rec.integrity : null,
+      reason: rec.ok ? null : rec.code,
+      message: rec.ok ? 'الخزنة تُفكّ بمفتاح المالك وبصماتها مطابقة للبيان.' : rec.message,
+      keyVault: status,
+      at: now(),
+    });
+  });
+
+  // إنشاء نسخة طوارئ (owner): يفرض مزامنة الخزنة (force) فتبني نسخة جديدة مؤكدة.
+  app.post('/api/dr/key-vault/backup', deps.authenticateToken, deps.requireOwner, async (_req, res) => {
+    const v = vaultStore();
+    if (!v.ok) return res.status(v.status!).json({ success: false, code: v.code, error: v.error });
+    if (backupRunning) return res.status(409).json({ success: false, code: 'SYNC_ALREADY_RUNNING', error: 'عملية نسخ/مزامنة قيد التنفيذ بالفعل.' });
+    backupRunning = true;
+    try {
+      const result = await runKeyVaultSync({ store: v.store, env: env as Record<string, string | undefined>, now: now() });
+      rememberStructure(v.store);
+      const status = await keyVaultStatus(v.store, env as Record<string, string | undefined>);
+      return res.status(result.state === 'failed' ? 500 : 200).json({
+        success: result.state === 'synced' || result.state === 'no_change',
+        state: result.state,
+        version: result.version ?? null,
+        recordCount: result.recordCount ?? null,
+        reason: result.reason ?? null,
+        message: result.message ?? null,
+        keyVault: status,
+        at: now(),
+      });
+    } finally {
+      backupRunning = false;
+    }
+  });
+
+  // اختبار استعادة الخزنة (owner): فكّ في الذاكرة + تحقق تكامل — لا كتابة على الإنتاج.
+  app.post('/api/dr/key-vault/drill', deps.authenticateToken, deps.requireOwner, async (_req, res) => {
+    const v = vaultStore();
+    if (!v.ok) return res.status(v.status!).json({ success: false, code: v.code, error: v.error });
+    const rec = await recoverKeyVault(v.store, env as Record<string, string | undefined>);
+    return res.status(rec.ok ? 200 : 409).json({
+      success: rec.ok,
+      state: rec.ok ? 'recovered' : 'failed',
+      version: rec.version ?? null,
+      recordCount: rec.ok ? rec.recordCount : null,
+      names: rec.ok ? Object.keys(rec.values || {}).sort() : [],
+      integrity: rec.ok ? rec.integrity : null,
+      reason: rec.ok ? null : rec.code,
+      message: rec.ok ? 'نجح فكّ الخزنة والتحقق من تكاملها (بلا أي كتابة).' : rec.message,
+      wroteToProduction: false,
+      at: now(),
+    });
   });
 
   // مرجع مخزن الحالة للاختبار/الصحة العامة + واجهة الاختبار للساعي/المزامنة.

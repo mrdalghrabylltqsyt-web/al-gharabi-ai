@@ -26,7 +26,7 @@ export const DR_FOLDER_NAME = 'al-gharabi-ai-dr';
  * التعافي المستقلة القابلة للقراءة بلا تشغيل الغرابي) + staging (منطقة ذرّية
  * للترقية). المجلدات الثلاثة الأولى مطلوبة للتوافق الرجعي مع النقاط القائمة.
  */
-export const DR_SUBDIRS = ['current', 'history', 'db', 'secrets', 'recovery', 'staging'];
+export const DR_SUBDIRS = ['current', 'history', 'db', 'secrets', 'recovery', 'staging', 'key-vault'];
 export const DR_ROOT_DIR = '.dr-recovery';
 
 /** أسماء ملفات العقد داخل المجلدات. */
@@ -771,6 +771,9 @@ export function summarizeBackupState(manifest) {
 // ---------------------------------------------------------------------------
 
 export const SECRETS_PACKAGE_MAGIC = 'GHARABI-SECRETS-V1';
+
+/** اسم متغيّر مفتاح خزنة الطوارئ (مفتاح فتح الخزنة — لا يُحفظ داخل Drive). */
+export const VAULT_KEY_ENV = 'DR_RECOVERY_VAULT_KEY';
 export const SECRETS_PACKAGE_VERSION = 1;
 
 /**
@@ -827,6 +830,96 @@ export const MIRROR_VERSIONS_DIR = 'versions';
 export const MIRROR_MANIFEST_NAME_V2 = 'manifest.json';
 export const MIRROR_HEAD_NAME = 'HEAD.json';
 export const MIRROR_HEAD_VERSION = 1;
+
+// ---------------------------------------------------------------------------
+// خزنة مفاتيح الطوارئ (Emergency Key Vault) — نموذج مُرقّم + مرجع اعتماد واحد
+// البنية: KEY-VAULT/current.enc (حزمة مشفّرة) + KEY-VAULT/HEAD.json (مرجع)
+//          + KEY-VAULT/versions/KV-<N>/{current.enc, manifest.json} + KEY-VAULT/history/
+// نفس مبدأ CURRENT: نسخ مستقلة، لا تعديل في المكان، الترقية = كتابة HEAD فقط.
+// مفتاح الخزنة (DR_RECOVERY_VAULT_KEY) **لا يوجد داخل Drive أبداً**.
+// ---------------------------------------------------------------------------
+export const KEY_VAULT_DIR = 'key-vault';
+export const KEY_VAULT_VERSIONS_DIR = 'versions';
+export const KEY_VAULT_HISTORY_DIR = 'history';
+export const KEY_VAULT_PACKAGE_NAME = 'current.enc';
+export const KEY_VAULT_HEAD_NAME = 'HEAD.json';
+export const KEY_VAULT_MANIFEST_NAME = 'manifest.json';
+export const KEY_VAULT_MAGIC = 'GHARABI-KEY-VAULT-V1';
+export const KEY_VAULT_HEAD_VERSION = 1;
+
+/** اسم مجلد نسخة الخزنة من رقمها: KV-1, KV-2, ... (يرفض غير الصحيح). */
+export function keyVaultVersionDirName(version) {
+  const n = Number(version);
+  if (!Number.isFinite(n) || n < 1 || Math.floor(n) !== n) return null;
+  return `KV-${n}`;
+}
+
+/** يحلّل اسم مجلد نسخة خزنة `KV-N` إلى رقم، أو null. */
+export function parseKeyVaultVersionDir(name) {
+  const m = /^KV-(\d+)$/.exec(String(name || ''));
+  if (!m) return null;
+  const n = Number(m[1]);
+  return Number.isFinite(n) && n >= 1 ? n : null;
+}
+
+/** هل النص حزمة خزنة مشفّرة بالشكل المقبول؟ (لا قيمة سرّية — شكل فقط). */
+export function isEncryptedKeyVaultPackage(content) {
+  const text = Buffer.isBuffer(content) ? content.toString('utf8') : String(content ?? '');
+  const lines = text.split(/\r?\n/);
+  if (lines[0]?.trim() !== KEY_VAULT_MAGIC) return false;
+  const hasEncrypted = lines.some((l) => /^encrypted:\s*true\s*$/.test(l));
+  const hasCipher = lines.some((l) => /^cipher:\s*aes-256-gcm\s*$/.test(l));
+  const hasData = hasValidDataLine(text);
+  return hasEncrypted && hasCipher && hasData;
+}
+
+/** بيان الخزنة: أسماء/حالات/بصمات فقط — **لا قيمة سرّية إطلاقاً**. */
+export function buildKeyVaultManifest(input = {}) {
+  return {
+    kind: 'key-vault',
+    version: Number.isFinite(input.version) ? input.version : 0,
+    dirName: input.dirName ?? keyVaultVersionDirName(input.version),
+    createdAt: input.createdAt ?? new Date().toISOString(),
+    updatedAt: input.updatedAt ?? input.createdAt ?? new Date().toISOString(),
+    encrypted: true,
+    cipher: 'aes-256-gcm',
+    kdf: input.kdf ?? 'scrypt',
+    keyFingerprint: input.keyFingerprint ?? null,
+    recordCount: Number.isFinite(input.recordCount) ? input.recordCount : 0,
+    encryptedVaultHash: input.encryptedVaultHash ?? null,
+    encryptedVaultSize: Number.isFinite(input.encryptedVaultSize) ? input.encryptedVaultSize : null,
+    // بصمة حتمية لمحتوى الخزنة (أسماء + بصمات القيم) لكشف «لا تغيير» بلا كشف قيمة.
+    contentHash: input.contentHash ?? null,
+    // كل سجل: metadata غير سرية فقط (بلا قيمة).
+    records: Array.isArray(input.records) ? input.records : [],
+    vaultKeyRequired: true,
+    vaultKeyEnvName: input.vaultKeyEnvName ?? null,
+  };
+}
+
+/** مرجع اعتماد الخزنة (KEY-VAULT/HEAD.json) — يحدد النسخة الفعلية. */
+export function buildKeyVaultHead(input = {}) {
+  return {
+    kind: 'key-vault-head',
+    headVersion: KEY_VAULT_HEAD_VERSION,
+    version: Number.isFinite(input.version) ? input.version : null,
+    dirName: input.dirName ?? keyVaultVersionDirName(input.version),
+    encryptedVaultHash: input.encryptedVaultHash ?? null,
+    recordCount: Number.isFinite(input.recordCount) ? input.recordCount : 0,
+    createdAt: input.createdAt ?? new Date().toISOString(),
+    pendingCleanup: Array.isArray(input.pendingCleanup) ? input.pendingCleanup : [],
+    cleanupPending: Boolean(input.cleanupPending),
+  };
+}
+
+/** يتحقق من سلامة مرجع اعتماد الخزنة شكلياً. */
+export function isKeyVaultHeadValid(head) {
+  if (!head || typeof head !== 'object') return false;
+  if (head.kind !== 'key-vault-head') return false;
+  if (!Number.isFinite(head.version) || head.version < 1) return false;
+  if (keyVaultVersionDirName(head.version) !== head.dirName) return false;
+  return typeof head.encryptedVaultHash === 'string' && head.encryptedVaultHash.length === 64;
+}
 
 /** اسم مجلد النسخة من رقمها: v1, v2, ... (يرفض غير الصحيح). */
 export function mirrorVersionDirName(version) {
@@ -1069,6 +1162,8 @@ export function buildStartHereDoc(input = {}) {
 - \`HISTORY/rp-XXX/\` — نقاط استعادة كاملة مستقلة (لا تُعدّل أبداً).
 - \`DATABASE/database.enc\` — نسخة قاعدة البيانات **مشفّرة فقط** (لا يوجد SQL خام).
 - \`SECRETS/secrets.enc\` — حزمة الأسرار **مشفّرة فقط** + \`manifest.json\` (أسماء وبصمات).
+- \`KEY-VAULT/current.enc\` — خزنة مفاتيح الطوارئ (مشفّرة AES-256-GCM) + \`KEY-VAULT/HEAD.json\`.
+  مفتاح فتحها (\`DR_RECOVERY_VAULT_KEY\`) **لا يوجد هنا أبداً** — نسخة المالك مستقلة.
 - \`RECOVERY/\` — هذا الدليل + \`RECOVERY-GUIDE.md\` + \`RECOVERY-MANIFEST.json\`.
 
 ## كيف تُدار CURRENT (آمن ضد الانقطاع)
@@ -1085,6 +1180,9 @@ export function buildStartHereDoc(input = {}) {
    أو الأحدث في \`HISTORY/\`.
 4. **مهم:** مفتاح الاستعادة الرئيسي (\`DR_RECOVERY_MASTER_KEY\`) **لا يُحفظ داخل النسخة**؛
    احتفظ به في مكان آمن منفصل. بدونه لا يمكن فكّ الأسرار.
+5. **خزنة الطوارئ** \`KEY-VAULT/\` تحوي نسخة مُرقّمة من مفاتيح الاستعادة الأساسية، تُفتح
+   بمفتاح مستقل (\`DR_RECOVERY_VAULT_KEY\`) لا يوجد داخل Drive. فكّها يدوياً:
+   \`node tools/dr/vault-restore.mjs --in current.enc --out .env.vault\`.
 
 ## هل تحتاج حساباً؟
 - Google Drive: نعم (للوصول للملفات).
@@ -1119,6 +1217,9 @@ export function buildRecoveryGuideDoc(input = {}) {
 - \`HISTORY/rp-XXX/\` — نقطة استعادة مستقلة: \`source.tar.gz\`, \`database.enc\`, \`secrets.enc\`, \`manifest.json\`.
 - \`DATABASE/database.enc\` — نسخة قاعدة بيانات مشفّرة (لا SQL خام في Drive إطلاقاً).
 - \`SECRETS/secrets.enc\` — حزمة أسرار مشفّرة (AES-256-GCM) + \`SECRETS/manifest.json\`.
+- \`KEY-VAULT/current.enc\` — خزنة مفاتيح الطوارئ (مشفّرة) + \`KEY-VAULT/HEAD.json\` (مرجع الاعتماد)
+  + \`KEY-VAULT/versions/KV-<N>/\` (نسخ مستقلة) + \`KEY-VAULT/history/\`.
+  تُفتح بمفتاح \`DR_RECOVERY_VAULT_KEY\` المستقل (لا يوجد داخل Drive).
 - \`RECOVERY/\` — START-HERE.md, RECOVERY-GUIDE.md, RECOVERY-MANIFEST.json, latest-recovery.json.
 
 ## 1ب) تحديد CURRENT المُعتمدة (من HEAD وحده)
@@ -1162,9 +1263,15 @@ export function buildRecoveryGuideDoc(input = {}) {
 - افتح \`secrets.enc\` بالمفتاح الرئيسي وتأكد أنه يُفكّ.
 - اختبر الاستعادة في بيئة معزولة (Recovery Drill) قبل أي استعادة إنتاجية.
 
-## 8) المفتاح الرئيسي
+## 8) المفتاح الرئيسي وخزنة الطوارئ
 - \`DR_RECOVERY_MASTER_KEY\` (أو \`DRIVE_DB_BACKUP_KEY\` احتياطاً) — **لا يُحفظ داخل النسخة**.
 - فقدانه ⇒ لا يمكن فكّ الأسرار (تبقى المصدر والقاعدة قابلين للاستعادة).
+- \`DR_RECOVERY_VAULT_KEY\` — مفتاح **خزنة الطوارئ** \`KEY-VAULT/\`، مستقل تماماً ولا يُحفظ داخل Drive.
+- خزنة الطوارئ تحوي كل الأسرار الأساسية المشفّرة كتسجيل واحد \`KEY-VAULT/current.enc\`
+  (أو النسخة المعتمدة \`KEY-VAULT/versions/KV-<N>/\` بحسب \`KEY-VAULT/HEAD.json\`).
+- فكّها يدوياً عند الكارثة:
+  \`node tools/dr/vault-restore.mjs --in current.enc --out .env.vault\`
+  (يطبع الأسماء فقط افتراضياً؛ القيم تُكتب في ملف بصلاحيات 0600 عند \`--out\`).
 
 المستودع: \`${repo}\` · خدمة Render: \`${service}\`.
 
@@ -1193,6 +1300,10 @@ export function buildRecoveryManifestDoc(input = {}) {
     currentMirrorTreeHash: input.currentMirrorTreeHash ?? null,
     currentMirrorSource: 'HEAD.json',
     currentMirrorPath: input.currentMirrorVersion ? `CURRENT/versions/v${input.currentMirrorVersion}/` : null,
+    // خزنة مفاتيح الطوارئ: نسخة مُرقّمة مستقلة تُفتح بمفتاح DR_RECOVERY_VAULT_KEY.
+    keyVaultVersion: input.keyVaultVersion ?? null,
+    keyVaultHash: input.keyVaultHash ?? null,
+    keyVaultPath: input.keyVaultVersion ? `KEY-VAULT/versions/KV-${input.keyVaultVersion}/` : 'KEY-VAULT/current.enc',
     fileCount: Number.isFinite(input.fileCount) ? input.fileCount : latestPoint?.fileCount ?? null,
     treeHash: input.treeHash ?? latestPoint?.treeHash ?? null,
     sourceHash: input.sourceHash ?? latestPoint?.sourceHash ?? null,

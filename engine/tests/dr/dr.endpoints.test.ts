@@ -28,6 +28,8 @@ const ENV: Record<string, string> = {
   DRIVE_OAUTH_CLIENT_SECRET: 'GOCSPX-' + 'drive-fake-test-secret-value',
   DRIVE_DB_BACKUP_KEY: KEY,
   DRIVE_TOKEN_ENCRYPTION_KEY: KEY,
+  DR_RECOVERY_MASTER_KEY: KEY,
+  DR_RECOVERY_VAULT_KEY: KEY,
   GEMINI_API_KEY: 'AIzaSy' + 'g'.repeat(33),
   SESSION_SECRET: 'sess-' + 'h'.repeat(30),
   DATABASE_URL: 'postgres://production@example/prod',
@@ -216,6 +218,54 @@ async function main() {
       const body = await confirmed.json();
       check('production restore is external/manual', confirmed.status === 501 && body.code === 'PRODUCTION_RESTORE_EXTERNAL');
       check('production restore lists steps', Array.isArray(body.steps) && body.steps.length > 0);
+    }
+
+    // --- خزنة مفاتيح الطوارئ: حالة/مزامنة/فحص/نسخة/اختبار (owner) ---
+    {
+      const noAuth = await fetch(`${base}/api/dr/key-vault/status`);
+      check('key-vault status requires auth', noAuth.status === 401);
+      const staff = await fetch(`${base}/api/dr/key-vault/sync`, { method: 'POST', headers: { 'x-owner': 'u', 'x-role': 'staff', 'Content-Type': 'application/json' } });
+      check('key-vault sync owner only', staff.status === 403);
+
+      const status0 = await (await fetch(`${base}/api/dr/key-vault/status`, { headers: ownerHeaders })).json();
+      check('key-vault status exposes inventory', Array.isArray(status0.inventory) && status0.inventory.length >= 30);
+      check('key-vault status inventory no values', status0.inventory.every((e: any) => typeof e.value === 'undefined'));
+      check('key-vault status vaultKey valid', status0.keyVault.vaultKey.state === 'valid');
+
+      const sync = await fetch(`${base}/api/dr/key-vault/sync`, { method: 'POST', headers: ownerHeaders });
+      const syncBody = await sync.json();
+      // قد تكون الخزنة زُومنت تلقائياً مع النسخة الاحتياطية أعلاه => no_change صادق.
+      check('key-vault sync 200 (synced|no_change)', sync.status === 200 && syncBody.success === true && (syncBody.state === 'synced' || syncBody.state === 'no_change') && syncBody.version === 1);
+      check('key-vault sync recordCount', syncBody.recordCount >= 5);
+      check('key-vault sync no secret', !JSON.stringify(syncBody).includes('AIzaSy') && !JSON.stringify(syncBody).includes('sess-') && !JSON.stringify(syncBody).includes(KEY));
+
+      // الحزمة مشفّرة فعلاً على Drive، ولا نص سرّي مكشوف.
+      const vaultPkg = [...fakeState.files.values()].find((f: any) => f.name === 'current.enc');
+      check('key-vault package on drive', Boolean(vaultPkg));
+      const pkgText = vaultPkg ? Buffer.from(vaultPkg.content).toString('utf8') : '';
+      check('key-vault package encrypted + no plaintext', pkgText.startsWith('GHARABI-KEY-VAULT-V1') && !pkgText.includes('AIzaSy') && !pkgText.includes('sess-') && !pkgText.includes('DR_RECOVERY_MASTER_KEY'));
+
+      const verify = await fetch(`${base}/api/dr/key-vault/verify`, { method: 'POST', headers: ownerHeaders });
+      const verifyBody = await verify.json();
+      check('key-vault verify ok', verify.status === 200 && verifyBody.verified === true && verifyBody.integrity.recordsMatch === true);
+      check('key-vault verify no secret', !JSON.stringify(verifyBody).includes('AIzaSy') && !JSON.stringify(verifyBody).includes(KEY));
+
+      const drill = await fetch(`${base}/api/dr/key-vault/drill`, { method: 'POST', headers: ownerHeaders });
+      const drillBody = await drill.json();
+      check('key-vault drill ok', drill.status === 200 && drillBody.success === true && drillBody.state === 'recovered' && drillBody.wroteToProduction === false);
+      check('key-vault drill returns names only', Array.isArray(drillBody.names) && drillBody.names.includes('DR_RECOVERY_MASTER_KEY') && !JSON.stringify(drillBody.names).includes(KEY));
+
+      // health يعلن خزنة المفاتيح بلا أسرار.
+      const health = await (await fetch(`${base}/api/dr/health`)).json();
+      check('health keyVault block', health.dr.keyVault.enabled === true && health.dr.keyVault.vaultKey.state === 'valid' && health.dr.keyVault.inventoryCount >= 30);
+      check('health keyVault no secret', !JSON.stringify(health.dr.keyVault).includes(KEY) && !JSON.stringify(health.dr.keyVault).includes('AIzaSy'));
+      check('health recoverySystem keyVaultEncryptionRequired', health.dr.recoverySystem.keyVaultEncryptionRequired === true);
+
+      // النسخة الاحتياطية تُزامن الخزنة تلقائياً وتُعلن النتيجة بلا سرّ.
+      const backup = await fetch(`${base}/api/dr/backup`, { method: 'POST', headers: ownerHeaders });
+      const backupBody = await backup.json();
+      check('backup syncs key vault', backupBody.keyVault && (backupBody.keyVault.state === 'synced' || backupBody.keyVault.state === 'no_change'));
+      check('backup keyVault no secret', !JSON.stringify(backupBody.keyVault || {}).includes(KEY));
     }
 
     // --- رفض استخدام قاعدة الإنتاج في drill ---

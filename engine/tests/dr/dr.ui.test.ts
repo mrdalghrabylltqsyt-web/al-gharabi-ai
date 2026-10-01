@@ -261,6 +261,14 @@ function backupUiChecks() {
   check('api has createDrBackup', api.includes('createDrBackup') && api.includes("'/api/dr/backup'"));
   check('api backup is POST', /createDrBackup[\s\S]{0,200}method:\s*'POST'/.test(api));
   check('api backup attaches status', /createDrBackup[\s\S]{0,500}err\.status\s*=\s*res\.status/.test(api));
+  // خزنة مفاتيح الطوارئ في الواجهة + api
+  check('view has key vault section', view.includes('خزنة مفاتيح الطوارئ') && view.includes('KEY-VAULT'));
+  check('view key vault buttons', view.includes('apiService.syncDrKeyVault') && view.includes('apiService.backupDrKeyVault') && view.includes('apiService.verifyDrKeyVault') && view.includes('apiService.drillDrKeyVault'));
+  check('view loads key vault status', view.includes('apiService.getDrKeyVaultStatus') && view.includes('keyVaultInventory'));
+  check('view key vault no values', !/keyVault[^\n]{0,80}\.value\b/.test(view));
+  check('api has getDrKeyVaultStatus', api.includes('getDrKeyVaultStatus') && api.includes("'/api/dr/key-vault/status'"));
+  check('api has syncDrKeyVault', api.includes('syncDrKeyVault') && api.includes("'/api/dr/key-vault/sync'"));
+  check('api key vault sync is POST', /syncDrKeyVault[\s\S]{0,200}method:\s*'POST'/.test(api));
 }
 
 async function backupLogicChecks() {

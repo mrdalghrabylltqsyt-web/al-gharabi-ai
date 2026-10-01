@@ -38,6 +38,14 @@ import {
   mirrorVersionDirName,
   parseMirrorVersionDir,
   isMirrorHeadValid,
+  KEY_VAULT_PACKAGE_NAME,
+  KEY_VAULT_HEAD_NAME,
+  KEY_VAULT_MANIFEST_NAME,
+  KEY_VAULT_VERSIONS_DIR,
+  keyVaultVersionDirName,
+  parseKeyVaultVersionDir,
+  isEncryptedKeyVaultPackage,
+  isKeyVaultHeadValid,
 } from './cloud-lib.mjs';
 
 export const CURRENT_MANIFEST_NAME = 'manifest.json';
@@ -61,6 +69,7 @@ export class DriveStore {
     this._versionsRootId = null;
     this._versionRoots = new Map(); // version -> filesRoot folder id
     this._versionDirs = new Map();  // `${version}:${key}` -> folder id
+    this._kvVersionsRootId = null;
   }
 
   // ------------------------------------------------------------------
@@ -738,6 +747,119 @@ export class DriveStore {
     const del = await this.client.deleteFile(folderId);
     if (!del.ok) return del;
     return { ok: true, data: { removed: true } };
+  }
+
+  // ------------------------------------------------------------------
+  // key-vault/ — خزنة مفاتيح الطوارئ: نسخ مُرقّمة مستقلة + مرجع اعتماد واحد.
+  // البنية: key-vault/current.enc (أحدث نسخة، للمستخدم البشري) + key-vault/HEAD.json
+  //          + key-vault/versions/KV-<N>/{current.enc, manifest.json}
+  // لا تعديل في المكان؛ الترقية = كتابة HEAD.json فقط. مفتاح الخزنة لا يوجد هنا أبداً.
+  // ------------------------------------------------------------------
+
+  /** جذر مجلدات نسخ الخزنة `key-vault/versions`. */
+  async ensureKeyVaultVersionsRoot() {
+    if (this._kvVersionsRootId) return { ok: true, data: this._kvVersionsRootId };
+    const kvId = await this.subdirId('key-vault');
+    if (!kvId) return { ok: false, code: 'no_structure' };
+    const ensured = await this.ensureFolder(kvId, KEY_VAULT_VERSIONS_DIR);
+    if (!ensured.ok) return ensured;
+    this._kvVersionsRootId = ensured.data;
+    return { ok: true, data: ensured.data };
+  }
+
+  /** يضمن مجلد نسخة خزنة `KV-<N>` ويعيد معرّفه. */
+  async ensureKeyVaultVersionDir(version) {
+    const name = keyVaultVersionDirName(version);
+    if (!name) return { ok: false, code: 'invalid_version' };
+    const root = await this.ensureKeyVaultVersionsRoot();
+    if (!root.ok) return root;
+    const ensured = await this.ensureFolder(root.data, name);
+    if (!ensured.ok) return ensured;
+    return { ok: true, data: ensured.data };
+  }
+
+  /** يكتب حزمة خزنة مشفّرة + بيانها داخل نسخة محدّدة. */
+  async writeKeyVaultVersion(version, payload, manifest) {
+    if (!isEncryptedKeyVaultPackage(payload)) {
+      return { ok: false, code: 'not_an_encrypted_key_vault', message: 'المسموح فقط حزمة خزنة مشفّرة.' };
+    }
+    const vdir = await this.ensureKeyVaultVersionDir(version);
+    if (!vdir.ok) return vdir;
+    const p = await this.upsertFile(vdir.data, KEY_VAULT_PACKAGE_NAME, payload, 'application/octet-stream');
+    if (!p.ok) return p;
+    if (manifest) {
+      const m = await this.writeJson(vdir.data, KEY_VAULT_MANIFEST_NAME, manifest);
+      if (!m.ok) return m;
+    }
+    return { ok: true, data: { id: p.data?.id, name: KEY_VAULT_PACKAGE_NAME, size: Buffer.byteLength(payload) } };
+  }
+
+  /** يقرأ حزمة خزنة نسخة محدّدة. */
+  async readKeyVaultVersion(version) {
+    const vdir = await this.ensureKeyVaultVersionDir(version);
+    if (!vdir.ok) return vdir;
+    return this.readVersionFile(vdir.data, KEY_VAULT_PACKAGE_NAME);
+  }
+
+  /** يقرأ بيان نسخة خزنة محدّدة. */
+  async readKeyVaultVersionManifest(version) {
+    const vdir = await this.ensureKeyVaultVersionDir(version);
+    if (!vdir.ok) return vdir;
+    return this.readJsonChild(vdir.data, KEY_VAULT_MANIFEST_NAME);
+  }
+
+  /** يسرد أرقام نسخ الخزنة الموجودة فعلاً. */
+  async listKeyVaultVersions() {
+    const root = await this.ensureKeyVaultVersionsRoot();
+    if (!root.ok) return root;
+    const list = await this.listChildren(root.data);
+    if (!list.ok) return list;
+    const versions = list.data
+      .filter((f) => f.mimeType === 'application/vnd.google-apps.folder')
+      .map((f) => parseKeyVaultVersionDir(f.name))
+      .filter((n) => n !== null)
+      .sort((a, b) => a - b);
+    return { ok: true, data: versions };
+  }
+
+  /** يقرأ مرجع اعتماد الخزنة `key-vault/HEAD.json`. */
+  async readKeyVaultHead() {
+    const id = await this.subdirId('key-vault');
+    if (!id) return { ok: false, code: 'no_structure' };
+    return this.readJsonChild(id, KEY_VAULT_HEAD_NAME);
+  }
+
+  /** يكتب مرجع اعتماد الخزنة (نقطة الالتزام الوحيدة). */
+  async writeKeyVaultHead(head) {
+    const id = await this.subdirId('key-vault');
+    if (!id) return { ok: false, code: 'no_structure' };
+    return this.writeJson(id, KEY_VAULT_HEAD_NAME, head);
+  }
+
+  /**
+   * يرقّي مؤشر الراحة `key-vault/current.enc` (نسخة بشرية قابلة للتنزيل مباشرة).
+   * كتابة واحدة فقط بعد اعتماد HEAD — بلا حالة نصف مكتملة.
+   */
+  async writeKeyVaultCurrent(payload) {
+    if (!isEncryptedKeyVaultPackage(payload)) {
+      return { ok: false, code: 'not_an_encrypted_key_vault' };
+    }
+    const id = await this.subdirId('key-vault');
+    if (!id) return { ok: false, code: 'no_structure' };
+    return this.upsertFile(id, KEY_VAULT_PACKAGE_NAME, payload, 'application/octet-stream');
+  }
+
+  async readKeyVaultCurrent() {
+    const id = await this.subdirId('key-vault');
+    if (!id) return { ok: false, code: 'no_structure' };
+    return this.readVersionFile(id, KEY_VAULT_PACKAGE_NAME);
+  }
+
+  /** يحذف مجلد نسخة خزنة تعاودياً (بعد الاعتماد فقط). لا يمسّ HISTORY. */
+  async deleteKeyVaultVersionDir(version) {
+    const vdir = await this.ensureKeyVaultVersionDir(version);
+    if (!vdir.ok) return vdir;
+    return this.deleteFolderRecursive(vdir.data);
   }
 
   // ------------------------------------------------------------------

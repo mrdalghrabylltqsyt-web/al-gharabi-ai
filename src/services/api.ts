@@ -1663,5 +1663,66 @@ ${payload.topic || payload.productName || 'أنظمة وحلول التقسيط 
       throw err;
     }
     return data;
+  },
+
+  // --- خزنة مفاتيح الطوارئ (Emergency Key Vault) — owner، بلا أي قيمة سرّية ---
+  /** حالة الخزنة + الجرد المعتمد (أسماء/حالات/بصمات فقط). */
+  async getDrKeyVaultStatus(): Promise<any> {
+    const res = await fetch('/api/dr/key-vault/status', { headers: getAuthHeaders() });
+    const data = await res.json().catch(() => null);
+    if (!res.ok || !data?.success) {
+      const err: any = new Error(data?.error || data?.code || 'تعذّر قراءة حالة خزنة المفاتيح');
+      err.status = res.status; err.code = data?.code;
+      throw err;
+    }
+    return data;
+  },
+
+  /** مزامنة الخزنة (owner): نسخة جديدة عند التغيّر فقط + تحقق + اعتماد. */
+  async syncDrKeyVault(): Promise<any> {
+    const res = await fetch('/api/dr/key-vault/sync', { method: 'POST', headers: getAuthHeaders() });
+    const data = await res.json().catch(() => null);
+    if (!res.ok || !data?.success) {
+      const err: any = new Error(data?.message || data?.error || data?.code || 'تعذّرت مزامنة خزنة المفاتيح');
+      err.status = res.status; err.code = data?.code; err.state = data?.state;
+      throw err;
+    }
+    return data;
+  },
+
+  /** إنشاء نسخة طوارئ من الخزنة (owner). */
+  async backupDrKeyVault(): Promise<any> {
+    const res = await fetch('/api/dr/key-vault/backup', { method: 'POST', headers: getAuthHeaders() });
+    const data = await res.json().catch(() => null);
+    if (!res.ok || !data?.success) {
+      const err: any = new Error(data?.message || data?.error || data?.code || 'تعذّر إنشاء نسخة خزنة المفاتيح');
+      err.status = res.status; err.code = data?.code; err.state = data?.state;
+      throw err;
+    }
+    return data;
+  },
+
+  /** فحص الخزنة (owner): فكّ تجريبي + تحقق تكامل — بلا كشف أي قيمة. */
+  async verifyDrKeyVault(): Promise<any> {
+    const res = await fetch('/api/dr/key-vault/verify', { method: 'POST', headers: getAuthHeaders() });
+    const data = await res.json().catch(() => null);
+    if (!res.ok || !data?.verified) {
+      const err: any = new Error(data?.message || data?.error || data?.code || 'فشل فحص خزنة المفاتيح');
+      err.status = res.status; err.code = data?.code;
+      throw err;
+    }
+    return data;
+  },
+
+  /** اختبار استعادة الخزنة (owner): فكّ في الذاكرة بلا أي كتابة إنتاجية. */
+  async drillDrKeyVault(): Promise<any> {
+    const res = await fetch('/api/dr/key-vault/drill', { method: 'POST', headers: getAuthHeaders() });
+    const data = await res.json().catch(() => null);
+    if (!res.ok || !data?.success) {
+      const err: any = new Error(data?.message || data?.error || data?.code || 'تعذّر اختبار استعادة خزنة المفاتيح');
+      err.status = res.status; err.code = data?.code;
+      throw err;
+    }
+    return data;
   }
 };

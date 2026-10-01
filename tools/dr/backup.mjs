@@ -344,6 +344,9 @@ async function runBackupInner({ store, files, dumpDatabase, encryptDatabase, met
     try {
       const pointsRes = await store.listRestorePoints();
       const points = pointsRes?.ok ? pointsRes.data : [];
+      // خزنة الطوارئ (أفضل جهد): إن كانت مُزامنة، تشير الوثيقة إلى نسختها المعتمدة.
+      let vaultHead = null;
+      try { const vh = await store.readKeyVaultHead(); if (vh?.ok) vaultHead = vh.data; } catch { /* تجاهل */ }
       await writeRecoveryDocs(store, {
         repository: meta.repository,
         project: meta.project,
@@ -359,6 +362,8 @@ async function runBackupInner({ store, files, dumpDatabase, encryptDatabase, met
         secretsHash: encryptedSecretsHash,
         currentMirrorVersion: currentMirror?.version ?? null,
         currentMirrorTreeHash: currentMirror?.treeHash ?? null,
+        keyVaultVersion: vaultHead?.version ?? null,
+        keyVaultHash: vaultHead?.encryptedVaultHash ?? null,
       });
     } catch { /* أفضل جهد */ }
   } catch { /* وثائق التعافي أفضل جهد: لا تُسقط نسخة مكتملة ومتحقّقة */ }
