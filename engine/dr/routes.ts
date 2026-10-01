@@ -317,6 +317,8 @@ export function registerDriveRoutes(app: express.Express, deps: DriveRoutesDeps)
     control().driveRefreshToken = encrypted;
     control().driveLastError = null;
     deps.persistControl({ driveRefreshToken: encrypted, driveLastError: null });
+    // تفويض جديد => يُبطل فحص الرمز المخبَّأ حتى لا يبقى «يلزم إعادة تفويض» بعد الربط.
+    refreshDiagCache = null;
 
     return respond(200, {
       success: true,
@@ -432,7 +434,22 @@ export function registerDriveRoutes(app: express.Express, deps: DriveRoutesDeps)
         at: startedAt,
       });
     } catch (err: any) {
-      const failure = { state: 'failed', reason: String(err?.code || err?.message || 'backup_failed').slice(0, 80), message: 'فشل غير متوقّع أثناء النسخة.' };
+      const code = String(err?.code || err?.message || 'backup_failed').slice(0, 80);
+      // فشل تجديد رمز Google: سبب حقيقي (لا عطل عام) + إجراء صريح = إعادة تفويض.
+      const tokenRefreshFailure = ['invalid_grant', 'invalid_client', 'invalid_request', 'token_refresh_unauthorized', 'token_refresh_other_error'].includes(code);
+      if (tokenRefreshFailure) {
+        const failure = {
+          state: 'failed',
+          code: 'REAUTHORIZATION_NEEDED',
+          reason: code,
+          providerCode: err?.providerCode ?? null,
+          message: 'رمز تفويض Google Drive غير صالح بعد الآن (رفضه Google): يلزم إعادة التفويض من زر «ربط Google Drive».',
+          reauthorizationNeeded: true,
+        };
+        recordBackupResult({ state: 'failed', reason: code });
+        return res.status(409).json({ success: false, ...failure });
+      }
+      const failure = { state: 'failed', reason: code, message: 'فشل غير متوقّع أثناء النسخة.' };
       recordBackupResult(failure);
       return res.status(500).json({ success: false, ...failure });
     } finally {
@@ -467,6 +484,10 @@ export function registerDriveRoutes(app: express.Express, deps: DriveRoutesDeps)
         refreshDiagCache = { at: Date.now(), value: refreshTokenDiagnostic };
       }
     }
+    // صدق الحالة: «مربوط» يعني رمز مخزّن فقط؛ أما قابلية النسخ فتتطلّب نجاح تجديد فعلي.
+    const refreshTested = refreshTokenDiagnostic.providerRefresh === 'ok';
+    const refreshFailed = refreshTokenDiagnostic.providerRefresh === 'failed';
+    const reauthorizationNeeded = refreshFailed;
     res.json({
       success: true,
       dr: {
@@ -486,6 +507,10 @@ export function registerDriveRoutes(app: express.Express, deps: DriveRoutesDeps)
           providerCode: refreshTokenDiagnostic.providerCode ?? null,
           httpStatus: refreshTokenDiagnostic.httpStatus ?? null,
         },
+        // حقائق صادقة: هل أُثبت رمز التجديد فعلاً؟ وهل يلزم إعادة تفويض؟
+        refreshTokenTested: refreshTested,
+        refreshTokenUsable: refreshTested,
+        reauthorizationNeeded,
         // اعتماد OAuth Client: وجود/طول/صيغة/بصمة آمنة + هل كانت مسافة زائدة (بلا أي قيمة).
         oauthClient: inspectDriveOAuthClient(env as Record<string, string | undefined>),
         // مفتاح الاستعادة الرئيسي (بلا قيمة): هل يفتح الأسرار فعلاً؟
@@ -494,7 +519,8 @@ export function registerDriveRoutes(app: express.Express, deps: DriveRoutesDeps)
         authUrlRoute: '/api/dr/drive/auth-url',
         rp001Commit: RP_001_COMMIT,
         quota: { designBytes: DESIGN_QUOTA_BYTES, headroomBytes: QUOTA_HEADROOM_BYTES },
-        backupReady: readiness.authorized,
+        // لا نُعلن جهوزية النسخ إلا بعد إثبات تجديد فعلي ناجح (لا مجرد وجود رمز).
+        backupReady: readiness.authorized && !refreshFailed,
         backupRoute: '/api/dr/backup',
         // مرآة CURRENT (بلا أسرار): synced تتطلّب بصمة شجرة فعلية، لا مجرد سجل موجود.
         // سبب آخر فشل يُعلن صراحةً (لا فشل صامت).

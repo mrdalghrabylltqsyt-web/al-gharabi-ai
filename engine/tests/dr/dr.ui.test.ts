@@ -86,7 +86,9 @@ function staticChecks() {
 
   // CloudBackupView: الحماية + زر الربط + عدم كشف الأسرار
   check('view owner gate', view.includes("currentUser?.role === 'owner'") && view.includes('if (!isOwner)'));
-  check('view connect only when !authorized && configured', /!authorized\s*&&\s*configured/.test(view));
+  check('view connect reachable when not operable && configured', /configured\s*&&\s*\(!canOperate\)/.test(view));
+  check('view reauth reachable when google rejected token', view.includes('reauthorizationNeeded') && view.includes('إعادة الربط بنقرة واحدة'));
+  check('view gates ops on refresh usability not mere storage', view.includes('refreshTokenUsable') && view.includes('canOperate = authorized && !reauthorizationNeeded'));
   check('view calls getDrAuthUrl', view.includes('apiService.getDrAuthUrl'));
   check('view navigates to server url', view.includes('window.location.assign'));
   check('view no token storage', !/localStorage[\s\S]{0,40}(state|token|code)/i.test(view) && !view.includes('setApiAuthToken'));

@@ -397,7 +397,7 @@ export function createRefreshTokenProvider(options = {}) {
       ?? null;
     if (!plain) throw Object.assign(new Error('no_refresh_token'), { code: 'no_refresh_token' });
     const refreshed = await refreshDriveAccessToken(plain, options);
-    if (!refreshed.ok || !refreshed.accessToken) throw Object.assign(new Error(refreshed.code || 'token_refresh_other_error'), { code: refreshed.code });
+    if (!refreshed.ok || !refreshed.accessToken) throw Object.assign(new Error(refreshed.code || 'token_refresh_other_error'), { code: refreshed.code, providerCode: refreshed.providerCode ?? null, httpStatus: refreshed.status ?? null });
     cached = { token: refreshed.accessToken, expiry: refreshed.expiryDate || now + 3_600_000 };
     return cached.token;
   };

@@ -163,6 +163,11 @@ export const CloudBackupView: React.FC = () => {
 
   const authorized = health?.authorized === true;
   const configured = health?.configured === true;
+  // «مربوط» تعني رمز مخزّن فقط؛ إن رفض Google التجديد فعلاً يلزم إعادة تفويض،
+  // فلا نُخفي زر الربط ولا ندّعي جهوزية النسخ.
+  const reauthorizationNeeded = health?.reauthorizationNeeded === true;
+  const refreshUsable = health?.refreshTokenUsable === true;
+  const canOperate = authorized && !reauthorizationNeeded;
   const stateKey = snapshot?.state || (authorized ? 'never_synced' : 'not_authorized');
 
   const connectDrive = async () => {
@@ -283,17 +288,17 @@ export const CloudBackupView: React.FC = () => {
           <p className="text-xs text-slate-400 mt-1">حالة ربط Google Drive، النسخة الحالية، نقاط الاستعادة، ونسخة قاعدة البيانات المشفّرة. يمكنك إنشاء نسخة احتياطية فعلية بعد الربط.</p>
         </div>
         <div className="flex gap-2 flex-wrap">
-          {authorized && (
+          {canOperate && (
             <button onClick={() => void createBackup()} disabled={backingUp} className="px-4 py-2 rounded-xl bg-emerald-500 text-slate-950 text-xs font-black flex items-center gap-2 disabled:opacity-60">
               {backingUp ? <Loader2 className="w-4 h-4 animate-spin" /> : <CloudUpload className="w-4 h-4" />} {backingUp ? 'جارٍ إنشاء النسخة…' : 'إنشاء Recovery Point'}
             </button>
           )}
-          {authorized && (
+          {canOperate && (
             <button onClick={() => void syncCurrent()} disabled={syncing} className="px-4 py-2 rounded-xl bg-sky-500 text-slate-950 text-xs font-black flex items-center gap-2 disabled:opacity-60">
               {syncing ? <Loader2 className="w-4 h-4 animate-spin" /> : <RefreshCw className="w-4 h-4" />} {syncing ? 'جارٍ المزامنة…' : 'مزامنة الآن'}
             </button>
           )}
-          {authorized && (
+          {canOperate && (
             <button onClick={() => void runDrill()} disabled={drilling} className="px-4 py-2 rounded-xl bg-violet-500 text-slate-950 text-xs font-black flex items-center gap-2 disabled:opacity-60">
               {drilling ? <Loader2 className="w-4 h-4 animate-spin" /> : <ShieldCheck className="w-4 h-4" />} {drilling ? 'جارٍ الاختبار…' : 'اختبار الاستعادة'}
             </button>
@@ -301,9 +306,11 @@ export const CloudBackupView: React.FC = () => {
           <button onClick={() => void load()} disabled={loading} className="px-4 py-2 rounded-xl bg-slate-800 border border-slate-700 text-xs font-bold text-white flex items-center gap-2 disabled:opacity-60">
             <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} /> {loading ? 'جارٍ التحديث…' : 'تحديث الحالة'}
           </button>
-          {!authorized && configured && (
+          {/* زر الربط/إعادة الربط يظهر دائماً عند ضبط الاعتماد: يغطي الحالة الأولى
+              وحالة رفض Google لرمز قديم (unauthorized_client) — بنقرة واحدة. */}
+          {configured && (!canOperate) && (
             <button onClick={() => void connectDrive()} disabled={connecting} className="px-4 py-2 rounded-xl bg-sky-500 text-slate-950 text-xs font-black flex items-center gap-2 disabled:opacity-60">
-              {connecting ? <Loader2 className="w-4 h-4 animate-spin" /> : <CloudUpload className="w-4 h-4" />} ربط Google Drive
+              {connecting ? <Loader2 className="w-4 h-4 animate-spin" /> : <CloudUpload className="w-4 h-4" />} {reauthorizationNeeded ? 'إعادة الربط بنقرة واحدة' : 'ربط Google Drive'}
             </button>
           )}
         </div>
@@ -340,16 +347,24 @@ export const CloudBackupView: React.FC = () => {
       <section className="p-5 rounded-2xl bg-slate-900 border border-slate-800">
         <div className="flex items-center justify-between flex-wrap gap-3">
           <div className="flex items-center gap-2">
-            {authorized ? <CheckCircle2 className="w-4 h-4 text-emerald-400" /> : <TriangleAlert className="w-4 h-4 text-amber-400" />}
-            <span className="text-sm font-bold text-white">{authorized ? 'Google Drive مربوط' : 'Google Drive غير مربوط'}</span>
+            {canOperate ? <CheckCircle2 className="w-4 h-4 text-emerald-400" /> : <TriangleAlert className="w-4 h-4 text-amber-400" />}
+            <span className="text-sm font-bold text-white">{canOperate ? 'Google Drive مربوط' : (reauthorizationNeeded ? 'Google Drive مربوط — لكن يلزم إعادة تفويض' : 'Google Drive غير مربوط')}</span>
           </div>
-          <span className={`px-3 py-1 rounded-full text-[10px] font-black ${authorized ? 'bg-emerald-500/15 text-emerald-400' : 'bg-amber-500/15 text-amber-400'}`}>
-            {DR_STATE_LABELS[stateKey] || stateKey}
+          <span className={`px-3 py-1 rounded-full text-[10px] font-black ${canOperate ? 'bg-emerald-500/15 text-emerald-400' : 'bg-amber-500/15 text-amber-400'}`}>
+            {reauthorizationNeeded ? 'يلزم إعادة الربط' : (DR_STATE_LABELS[stateKey] || stateKey)}
           </span>
         </div>
+        {reauthorizationNeeded && (
+          <p className="text-[11px] text-amber-300/90 mt-3 leading-relaxed">
+            رمز التجديد المخزّن رفضه Google فعلاً
+            {health?.refreshToken?.providerCode ? ` (${health.refreshToken.providerCode})` : ''}
+            {' '}— غالباً لأن التفويض أُلغي أو أن التطبيق/الصلاحيات تغيّرت. اضغط «إعادة الربط بنقرة واحدة» أعلاه ثم وافق بحساب Google نفسه.
+          </p>
+        )}
         <div className="grid md:grid-cols-2 gap-2 mt-4 text-xs">
           <div className="p-3 rounded-xl bg-slate-950/60 border border-slate-800 flex justify-between"><span className="text-slate-400">إعدادات OAuth</span><span className={configured ? 'text-emerald-400' : 'text-amber-400'}>{configured ? 'مكتملة' : 'ناقصة'}</span></div>
           <div className="p-3 rounded-xl bg-slate-950/60 border border-slate-800 flex justify-between"><span className="text-slate-400">رمز التجديد محفوظ</span><span className={health?.refreshTokenStored ? 'text-emerald-400' : 'text-slate-300'}>{health?.refreshTokenStored ? 'نعم (مشفّر)' : 'لا'}</span></div>
+          <div className="p-3 rounded-xl bg-slate-950/60 border border-slate-800 flex justify-between"><span className="text-slate-400">قابلية التجديد لدى Google</span><span className={refreshUsable ? 'text-emerald-400' : (reauthorizationNeeded ? 'text-rose-400' : 'text-slate-300')}>{refreshUsable ? 'مُثبتة (نجح التجديد)' : (reauthorizationNeeded ? 'مرفوضة — إعادة تفويض' : 'لم تُختبر بعد')}</span></div>
           <div className="p-3 rounded-xl bg-slate-950/60 border border-slate-800 flex justify-between"><span className="text-slate-400">النطاق</span><span className="text-slate-300 font-mono text-[10px] truncate max-w-[55%]" title={health?.scope}>{health?.scope || '—'}</span></div>
           <div className="p-3 rounded-xl bg-slate-950/60 border border-slate-800 flex justify-between"><span className="text-slate-400">عنوان العودة</span><span className="text-slate-300 font-mono text-[10px] truncate max-w-[55%]" title={health?.redirectUri}>{health?.redirectUri || '—'}</span></div>
         </div>

@@ -249,6 +249,11 @@ async function main() {
     let threw = false;
     try { await none(); } catch { threw = true; }
     check('token provider without refresh throws', threw === true);
+    // فشل التجديد يحمل كوداً دقيقاً + كود المزوّد + رمز HTTP (بلا قيمة سرّية).
+    const unauth = createRefreshTokenProvider({ env: AUTH_ENV, refreshToken: '1//refresh', transporter: makeFakeTokenTransport({ fail: 'unauthorized_client', status: 401 }) });
+    let err: any = null;
+    try { await unauth(); } catch (e) { err = e; }
+    check('provider surfaces precise token error', err?.code === 'token_refresh_unauthorized' && err?.providerCode === 'unauthorized_client' && err?.httpStatus === 401);
   }
 
   // --- تشفير رمز التجديد ---
