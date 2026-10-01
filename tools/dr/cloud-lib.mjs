@@ -389,7 +389,9 @@ function tarHeader(name, size) {
   write('0000000', 108, 8); // uid
   write('0000000', 116, 8); // gid
   write(size.toString(8).padStart(11, '0'), 124, 12); // size
-  write(Math.floor(Date.now() / 1000).toString(8).padStart(11, '0'), 136, 12); // mtime
+  // mtime ثابت (epoch 0): الحزمة تمثل **المحتوى** لا زمن البناء، فتصبح البصمة
+  // قابلة لإعادة الإنتاج لنفس المدخلات — وإلا فشل كشف «لا تغيير» عشوائياً.
+  write('00000000000', 136, 12); // mtime
   write('        ', 148, 8); // checksum placeholder
   write('0', 156, 1); // typeflag: regular file
   write('ustar', 257, 6);

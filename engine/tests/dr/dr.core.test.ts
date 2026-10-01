@@ -7,10 +7,12 @@
  * وربط rp-001 بالـcommit المعتمد.
  */
 
+import zlib from 'node:zlib';
 import {
   computeTreeHash,
   diffSnapshots,
   hashContent,
+  buildSourceBundle,
   shouldExclude,
   scanForSecrets,
   classifyDbDump,
@@ -42,6 +44,20 @@ check('treeHash stable order-independent', t1 === t2 && /^[0-9a-f]{64}$/.test(t1
 const t3 = computeTreeHash([{ path: 'a', sha256: '9' }, { path: 'b', sha256: '2' }]);
 check('treeHash changes with content', t1 !== t3);
 check('hashContent deterministic', hashContent('x') === hashContent(Buffer.from('x')));
+
+// --- حزمة المصدر قابلة لإعادة الإنتاج (لا mtime متغيّر) ---
+// يضمن كشف «لا تغيير» فعلاً: نفس المحتوى => نفس البصمة، مهما اختلف زمن البناء.
+{
+  const files = [{ path: 'a.txt', content: 'hello' }, { path: 'dir/b.txt', content: 'world' }];
+  const b1 = buildSourceBundle(files).buffer;
+  const b2 = buildSourceBundle(files).buffer;
+  check('source bundle deterministic (same hash)', hashContent(b1) === hashContent(b2));
+  const tar = zlib.gunzipSync(b1);
+  const mtimeField = tar.subarray(136, 147).toString('utf8');
+  check('source bundle tar mtime is fixed epoch', mtimeField === '00000000000');
+  const changed = buildSourceBundle([{ path: 'a.txt', content: 'hello!' }, { path: 'dir/b.txt', content: 'world' }]).buffer;
+  check('source bundle hash changes with content', hashContent(b1) !== hashContent(changed));
+}
 
 // --- diff: إضافة ---
 const base = [{ path: 'a.txt', sha256: 'aa' }, { path: 'b.txt', sha256: 'bb' }];

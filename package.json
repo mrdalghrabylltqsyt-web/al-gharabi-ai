@@ -81,7 +81,8 @@
     "test:dr-endpoints": "tsx engine/tests/dr/dr.endpoints.test.ts",
     "test:dr-real-drill": "tsx engine/tests/dr/dr.real-drill.test.ts",
     "test:dr": "npm run test:dr-core && npm run test:dr-store && npm run test:dr-sync && npm run test:dr-auth && npm run test:dr-db && npm run test:dr-routes && npm run test:dr-backup && npm run test:dr-secrets && npm run test:dr-mirror && npm run test:dr-restore && npm run test:dr-endpoints && npm run test:dr-real-drill && npm run test:dr-ui",
-    "test:dr-ui": "tsx engine/tests/dr/dr.ui.test.ts"
+    "test:dr-ui": "tsx engine/tests/dr/dr.ui.test.ts",
+    "test:dr-stage4": "tsx engine/tests/dr/dr.stage4.evidence.ts"
   },
   "dependencies": {
     "@google/genai": "^2.4.0",
