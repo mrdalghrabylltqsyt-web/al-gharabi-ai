@@ -268,6 +268,57 @@ async function main() {
       check('backup keyVault no secret', !JSON.stringify(backupBody.keyVault || {}).includes(KEY));
     }
 
+    // --- الاستعادة المستقلة (Standalone Recovery) + الاحتفاظ ---
+    {
+      // نقاط الاستعادة المستقلة (owner): قائمة + جاهزية + بلا سرّ.
+      const noAuth = await fetch(`${base}/api/dr/standalone/points`);
+      check('standalone points requires auth', noAuth.status === 401);
+      const staff = await fetch(`${base}/api/dr/standalone/points`, { headers: { 'x-owner': 'u', 'x-role': 'staff' } });
+      check('standalone points owner only', staff.status === 403);
+      const pointsRes = await fetch(`${base}/api/dr/standalone/points`, { headers: ownerHeaders });
+      const pointsBody = await pointsRes.json();
+      check('standalone points 200', pointsRes.status === 200 && pointsBody.success === true);
+      check('standalone points list', Array.isArray(pointsBody.points) && pointsBody.points.length >= 1);
+      check('standalone points readiness exposed', pointsBody.readiness.drive.configured === true && pointsBody.readiness.vaultKey.present === true);
+      check('standalone points no secret', !JSON.stringify(pointsBody).includes('AIzaSy') && !JSON.stringify(pointsBody).includes(KEY));
+      const latest = pointsBody.points.find((p: any) => p.restorable === true);
+      check('standalone has restorable point', Boolean(latest && latest.manifest && latest.folderId));
+
+      // الاستعادة تتطلّب تأكيداً صريحاً.
+      const noConfirm = await fetch(`${base}/api/dr/standalone/restore`, { method: 'POST', headers: ownerHeaders, body: JSON.stringify({ point: latest.id }) });
+      check('standalone restore requires confirm', noConfirm.status === 428);
+
+      // رفض قاعدة الإنتاج.
+      const prodDb = await fetch(`${base}/api/dr/standalone/restore`, { method: 'POST', headers: ownerHeaders, body: JSON.stringify({ point: latest.id, confirm: true, targetDatabaseUrl: ENV.DATABASE_URL, applyDatabase: true }) });
+      check('standalone restore refuses production db', prodDb.status === 409);
+
+      // استعادة فعلية كاملة (بلا قاعدة هدف) => تقرير صادق بلا سرّ.
+      const restore = await fetch(`${base}/api/dr/standalone/restore`, { method: 'POST', headers: ownerHeaders, body: JSON.stringify({ point: latest.id, confirm: true, vaultKey: ENV.DR_RECOVERY_VAULT_KEY }) });
+      const restoreBody = await restore.json();
+      check('standalone restore 200 ok', restore.status === 200 && restoreBody.success === true, JSON.stringify(restoreBody.report?.problems || restoreBody));
+      check('standalone restore reached complete', restoreBody.report.stage === 'complete');
+      check('standalone restore decrypted vault+secrets+db', restoreBody.report.checks.vaultDecrypt === true && restoreBody.report.checks.secretsDecrypt === true && restoreBody.report.checks.databaseDecrypt === true);
+      check('standalone restore extracted source', restoreBody.report.extractedFileCount >= FILES.length);
+      check('standalone restore no secret', !JSON.stringify(restoreBody).includes('AIzaSy') && !JSON.stringify(restoreBody).includes(KEY));
+      check('standalone restore no production write', restoreBody.report.wroteToProduction === false);
+
+      // مفتاح خزنة خاطئ => فشل صريح في مرحلة الفتح بلا استخراج.
+      const badKey = await fetch(`${base}/api/dr/standalone/restore`, { method: 'POST', headers: ownerHeaders, body: JSON.stringify({ point: latest.id, confirm: true, vaultKey: '00'.repeat(32) }) });
+      const badKeyBody = await badKey.json();
+      check('standalone wrong vault key blocked', badKey.status === 200 && badKeyBody.success === false && badKeyBody.report.failureStage === 'open_vault');
+
+      // الاحتفاظ: الحالة (owner) + تقليم يدوي بلا حذف النقاط المحميّة.
+      const retStatus = await fetch(`${base}/api/dr/retention/status`, { headers: ownerHeaders });
+      const retBody = await retStatus.json();
+      check('retention status 200', retStatus.status === 200 && retBody.success === true);
+      check('retention keep default 3', retBody.retention.keep === 3 && retBody.retention.enabled === true);
+      check('retention protects rp-002..004', retBody.retention.protectedIds.includes('rp-002') && retBody.retention.protectedIds.includes('rp-003') && retBody.retention.protectedIds.includes('rp-004'));
+      const prune = await fetch(`${base}/api/dr/retention/prune`, { method: 'POST', headers: ownerHeaders });
+      const pruneBody = await prune.json();
+      check('retention prune 200', prune.status === 200 && pruneBody.success === true);
+      check('retention prune deleted nothing protected', pruneBody.retention.deleted.length === 0, JSON.stringify(pruneBody.retention));
+    }
+
     // --- رفض استخدام قاعدة الإنتاج في drill ---
     {
       // نُحقن قاعدة معزولة تساوي الإنتاج => يجب الرفض.

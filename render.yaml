@@ -70,6 +70,18 @@ services:
       # قاعدة بيانات معزولة لاختبار الاستعادة فقط (لا تستخدم الإنتاج).
       - key: DR_RECOVERY_TEST_DATABASE_URL
         sync: false
+      # اختياري: فاصل النسخة الكاملة التلقائية. فارغ => الافتراضي 6 ساعات.
+      - key: DR_AUTO_BACKUP_INTERVAL_MS
+        sync: false
+      # اختياري: عدد نقاط الاستعادة المكتملة المحفوظة (افتراضياً 3).
+      - key: DR_RETENTION_KEEP
+        sync: false
+      # اختياري: نقاط محميّة لا تُحذف (افتراضياً rp-002,rp-003,rp-004).
+      - key: DR_RETENTION_PROTECTED_IDS
+        sync: false
+      # اختياري: false لتعطيل التقليم التلقائي كلياً (افتراضاً مفعّل).
+      - key: DR_AUTO_RETENTION
+        sync: false
       # اختياري: معطّل افتراضياً. لا تضبطه إلا لقصد الدخول المباشر.
       - key: GHARABI_PREVIEW_TOKEN
         sync: false

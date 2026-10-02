@@ -1,0 +1,38 @@
+# خدمة استعادة الغرابي AI — Render منفصل تماماً عن خدمة الغرابي الرئيسية.
+# الغرض: تبقى متاحة ولو توقّف تطبيق الغرابي أو واجهته أو جلسته.
+services:
+  - type: web
+    name: gharabi-recovery-center
+    runtime: node
+    plan: free
+    rootDir: dr-recovery-center
+    buildCommand: npm install
+    startCommand: npm start
+    healthCheckPath: /api/health
+    autoDeploy: false
+    envVars:
+      - key: NODE_VERSION
+        value: "20"
+      - key: RECOVERY_CENTER_HOSTED
+        value: "true"
+      # اعتماد OAuth لعميل Drive (نفس عميل «AI-Gharabi AI — Google Drive Backup»).
+      - key: DRIVE_OAUTH_CLIENT_ID
+        sync: false
+      - key: DRIVE_OAUTH_CLIENT_SECRET
+        sync: false
+      - key: DRIVE_OAUTH_REFRESH_TOKEN
+        sync: false
+      - key: DRIVE_TOKEN_ENCRYPTION_KEY
+        sync: false
+      # مفتاح فكّ الأسرار/القاعدة (اسم واحد يكفي).
+      - key: DRIVE_DB_BACKUP_KEY
+        sync: false
+      - key: DR_RECOVERY_MASTER_KEY
+        sync: false
+      # اختياري: معرّفات مجلدات Drive تحت drive.file (من /api/dr/health.dr.sourceCollection).
+      - key: DR_FOLDER_IDENTITY
+        sync: false
+      # اختياري: قاعدة هدف معزولة لاستعادة القاعدة (تُرفض إن طابقت DATABASE_URL).
+      - key: DR_RECOVERY_TEST_DATABASE_URL
+        sync: false
+      # ملاحظة: DR_RECOVERY_VAULT_KEY **لا يُضبط هنا إطلاقاً** — يُدخله المالك في الواجهة فقط.

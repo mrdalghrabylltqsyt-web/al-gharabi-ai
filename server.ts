@@ -4523,7 +4523,7 @@ let youtubeDelegationState: YouTubeDelegation = defaultYouTubeDelegation();
 // المنظومة. لا تُقرأ DATABASE_URL ولا تُرفع قاعدة بيانات خام. تُحفظ هنا فقط
 // حالات CSRF ورمز التجديد المشفّر وآخر خطأ — كلها عبر محوّل الحالة.
 // -------------------------------------------------------------
-const drControl: { driveOAuthStates: any[]; driveRefreshToken: any; driveLastError: string | null; driveBackup: any; driveFolderIdentity: any; driveMirror: any; driveReconciliation: any } = {
+const drControl: { driveOAuthStates: any[]; driveRefreshToken: any; driveLastError: string | null; driveBackup: any; driveFolderIdentity: any; driveMirror: any; driveReconciliation: any; driveAutoBackup: any } = {
   driveOAuthStates: [],
   driveRefreshToken: null,
   driveLastError: null,
@@ -4531,6 +4531,7 @@ const drControl: { driveOAuthStates: any[]; driveRefreshToken: any; driveLastErr
   driveFolderIdentity: null,
   driveMirror: null,
   driveReconciliation: null,
+  driveAutoBackup: null,
 };
 
 /** يحفظ التفويض عبر محوّل الحالة (يصمد بعد restart) — كتابة تُنتظر عند التغيير. */
@@ -8577,6 +8578,7 @@ function applyControlSnapshot(control: any): void {
   drControl.driveFolderIdentity = control.driveFolderIdentity && typeof control.driveFolderIdentity === "object" ? control.driveFolderIdentity : null;
   drControl.driveMirror = control.driveMirror && typeof control.driveMirror === "object" ? control.driveMirror : null;
   drControl.driveReconciliation = control.driveReconciliation && typeof control.driveReconciliation === "object" ? control.driveReconciliation : null;
+  drControl.driveAutoBackup = control.driveAutoBackup && typeof control.driveAutoBackup === "object" ? control.driveAutoBackup : null;
 }
 
 /** يقرأ حالة التحكّم متزامناً (backend الملف) عند الإقلاع. */
@@ -8623,6 +8625,9 @@ function buildControlState() {
     driveMirror: drControl.driveMirror,
     // نتيجة آخر فحص ساعي (reconciliation): طابع/نتيجة/سبب فقط — تصمد بعد restart.
     driveReconciliation: drControl.driveReconciliation,
+    // حالة الجدولة التلقائية للنسخة الكاملة: آخر تشغيل/نتيجته/عدّاد التخطّي — تصمد
+    // بعد restart فيُمنع إنشاء نسخة مكرّرة عند إعادة التشغيل. بلا أي سرّ.
+    driveAutoBackup: drControl.driveAutoBackup,
   };
 }
 
@@ -12041,6 +12046,16 @@ async function startServer() {
     (app as any).drReconciliation?.start?.();
   } catch (e: any) {
     console.error("[الغرابي AI] failed to start DR hourly reconciliation:", String(e?.message || e).slice(0, 120));
+  }
+
+  // النسخة الاحتياطية الكاملة التلقائية كل 6 ساعات: Recovery Point كامل (مصدر + DB
+  // مشفّرة + secrets.enc + خزنة المفاتيح) عبر نفس المسار الرسمي. مؤقّت داخلي على
+  // الخادم، مستقل عن المتصفح، ولا يُنشئ نسخة عند كل إعادة تشغيل (قرار بالزمن المنقضي)،
+  // ويستخدم نفس قفل النسخ فيمنع التشغيل المتوازي.
+  try {
+    (app as any).drAutoBackup?.start?.();
+  } catch (e: any) {
+    console.error("[الغرابي AI] failed to start DR full auto-backup:", String(e?.message || e).slice(0, 120));
   }
 
   // إغلاق نظيف: ينتظر تفريغ طابور الكتابة (مع مهلة صارمة ≤ 10 ثوانٍ) ثم يُنهي

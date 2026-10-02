@@ -1,0 +1,16 @@
+{
+  "name": "gharabi-recovery-center",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "مركز استعادة الغرابي AI — خدمة مستقلة لقراءة Recovery Points من Google Drive والاستعادة عند فقدان بيئة التشغيل.",
+  "engines": { "node": ">=20" },
+  "scripts": {
+    "start": "node lib/recovery-center.mjs",
+    "sync-lib": "node sync-lib.mjs"
+  },
+  "dependencies": {
+    "gaxios": "^7.0.0",
+    "google-auth-library": "^9.15.1"
+  }
+}
