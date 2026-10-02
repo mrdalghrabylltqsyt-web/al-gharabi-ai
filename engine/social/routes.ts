@@ -550,6 +550,8 @@ export function registerSocialManagerRoutes(app: express.Express, deps: SocialRo
       platform,
       externalId,
       postExternalId: typeof req.body?.postExternalId === 'string' ? req.body.postExternalId : null,
+      // ربط صريح بمنتج مسجّل (لا يُستنتج من النص) — يخدم عقل الطلب والمطابقة.
+      productId: typeof req.body?.productId === 'string' && req.body.productId.trim() ? req.body.productId.trim().slice(0, 100) : null,
       authorName: typeof req.body?.authorName === 'string' ? req.body.authorName : null,
       text,
       createdAt: new Date().toISOString(),

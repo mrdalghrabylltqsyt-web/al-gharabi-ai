@@ -3489,3 +3489,37 @@ Telegram، ولا Gemini، ولا rp-002/rp-003/rp-004، ولا PostgreSQL ال�
 ### لم يُمسّ
 التعافي/DR كامل، المفاتيح، OAuth/المنصات، Gemini، قاعدة البيانات، الحالة المحفوظة.
 **لا تنفيذ خارجي** في هذه الدفعة (قراءة/تحليل فقط). الوثيقة: `docs/دفعة-1-العقل-التجاري.md`.
+
+## الدفعة 2/4 — عقل التسويق والطلب: مدير طلب مدفوع بالدليل (2026-10-02)
+
+تحويل العقل التجاري (الدفعة 1/4) إلى **مدير تسويق وطلب** يبدأ من الطلب لا من المحتوى.
+الوحدات في `engine/brain/growth/` (منطق خالص، بلا شبكة/أسرار/Gemini):
+- `segments.ts`: **ذكاء الجمهور** — 8 مقاطع سلوكية (أجهزة منزلية/تجهيز بيت/زواج/استبدال/
+  بناء/ترميم/تشطيب/تقسيط) مشتقّة من تفاعل حقيقي. المقطع **فرضية** حتى تبلغ عيّنته
+  `SEGMENT_MIN_SAMPLE=3`، ويُعلن `whereActive` من المنصات الفعلية. **لا سمات سكانية**
+  (`SEGMENT_NOT_AVAILABLE_FIELDS`).
+- `demandDiscovery.ts`: **محرّك اكتشاف الطلب** — 9 أنواع (طلب متزايد، أسئلة/أسعار متكررة،
+  تقسيط، توفر، مواصفات، اعتراضات، شكاوى، طلب منتج غير مُلبّى) + `computeDemandTrend` زمني
+  مقيس (لا `RISING` بلا مدى زمني). كل فرصة: `fact/interpretation/hypothesis/recommendation`
+  + دليل/مصدر/فترة/عيّنة/ثقة/حدود/إجراء.
+- `matching.ts`: **المطابقة منتج↔جمهور** — WHO/WHY/WHAT/WHERE/WHEN/MESSAGE/CTA؛ بلا دليل `NO_EVIDENCE`.
+- `campaigns.ts`: **حملة بسبب** — `campaignHasReason` يلزم objective/hypothesis/hook/cta/demandSignalRef؛
+  `recordActualResult` يرفض نتيجة بلا مصدر.
+- `experiments.ts`: **تجارب بمتغيّر واحد** (هوكان/CTA/عرض/جمهور/توقيت)؛ `concludeMarketingExperiment`
+  يعلن `inconclusive` عند نقص العيّنة أو فرق < 5% (ضجيج).
+- `funnel.ts`: **القُمع البيعي** REACH→INTEREST→INQUIRY→LEAD→VERIFIED_SALE + `bottleneck`
+  (لا رقم مُختلق، لا معدّل بمقام صفر).
+- `runtime.ts`: التجميع من بيانات الغرابي الحقيقية + `buildPlatformBriefs` (توجيه عام، لا عقل لكل منصة).
+- `routes.ts`: `GET /api/agent/brain/growth/{state,summary,dashboard}` (state/dashboard للمالك).
+
+**ربط صغير:** `POST /api/social/manager/comments/ingest` يحفظ الآن `productId` الصريح (لا استنتاج من النص).
+
+**الواجهة:** `src/components/agent/GrowthBrainView.tsx` (تبويب `growth_brain`، Owner) تعرض
+المقاطع/الطلب/الفرص/المطابقة/الحملات/التجارب/القُمع/عنق الزجاجة/الإجراءات. `apiService.getGrowthState/getGrowthDashboard`.
+
+**اختبارات:** `growth.foundation.test.ts` (56) · `growth.antifabrication.test.ts` (19) ·
+`growth.routes.test.ts` (28، خادم حقيقي). فحوص final-audit الـ27 (`growth-*`، 1093 إجمالاً).
+أُضيفت `test:growth-foundation` · `test:growth-antifabrication` · `test:growth-routes` إلى `npm test`.
+
+**لم يُمسّ:** التعافي/DR، المفاتيح، OAuth/المنصات، Gemini، قاعدة البيانات، الحالة المحفوظة.
+**لا تنفيذ خارجي** في هذه الدفعة. الوثيقة: `docs/دفعة-2-عقل-التسويق-والطلب.md`.

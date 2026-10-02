@@ -21,6 +21,7 @@ import { AgentOrchestrator } from "./engine/agent/orchestrator";
 import { registerAgentRoutes } from "./engine/agent/routes";
 import { registerBrainRoutes } from "./engine/brain/routes";
 import { registerCommercialRoutes } from "./engine/brain/sales/routes";
+import { registerGrowthRoutes } from "./engine/brain/growth/routes";
 import { registerDriveRoutes } from "./engine/dr/routes";
 import { buildSecretsBundle } from "./tools/dr/secret-crypto.mjs";
 import { buildRecoveryInformation, buildRecoveryInstructions } from "./tools/dr/cloud-lib.mjs";
@@ -11920,6 +11921,26 @@ registerCommercialRoutes(app, {
   }),
   memory: () => brainMemoryStore,
   persistMemory: (records) => persistBrainMemory(records),
+});
+
+// مسارات عقل التسويق والطلب (Growth & Demand) — قراءة فقط من بيانات المعرض
+// الحقيقية. عقل واحد لكل المنصات: يعرض المقاطع والفرص والمطابقة والحملات
+// والتجارب والقُمع البيعي وعنق الزجاجة — بلا تنفيذ وبلا أسرار.
+registerGrowthRoutes(app, {
+  authenticateToken,
+  requireOwner,
+  commercialInput: () => ({
+    showroom: workspace.showroom,
+    products: workspace.products,
+    installmentPlans: workspace.installmentPlans,
+    conversations: workspace.conversations,
+    leads: workspace.leads,
+    sales: workspace.sales,
+    payments: workspace.payments,
+    socialComments: (workspace as any).socialComments,
+    campaigns: (workspace as any).marketingCampaigns,
+    performanceRecords: (workspace as any).performanceRecords,
+  }),
 });
 
 // -------------------------------------------------------------

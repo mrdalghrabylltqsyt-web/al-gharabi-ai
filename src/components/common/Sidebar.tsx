@@ -197,6 +197,14 @@ export const Sidebar: React.FC<SidebarProps> = ({ mobileOpen, onCloseMobile }) =
       desc: 'الواقع التجاري الحقيقي: منتجات وطلب وفرص ومبيعات موثّقة',
     },
     {
+      id: 'growth_brain',
+      label: 'عقل التسويق والطلب',
+      icon: TrendingUp,
+      badge: currentUser?.role === 'owner' ? 'Owner' : null,
+      badgeColor: 'bg-emerald-500/20 text-emerald-300 border-emerald-500/30',
+      desc: 'خلق طلب حقيقي: مقاطع وفرص ومطابقة وحملات وتجارب وقُمع بيعي',
+    },
+    {
       id: 'calendar',
       label: 'تقويم المحتوى',
       icon: Calendar,

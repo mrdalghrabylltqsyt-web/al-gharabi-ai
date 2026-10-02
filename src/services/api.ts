@@ -710,6 +710,20 @@ ${payload.topic || payload.productName || 'أنظمة وحلول التقسيط 
     return data;
   },
 
+  // عقل التسويق والطلب (Growth & Demand): قراءة فقط من بيانات المعرض الحقيقية.
+  async getGrowthState() {
+    const res = await fetch('/api/agent/brain/growth/state', { headers: getAuthHeaders() });
+    const data = await res.json();
+    if (!res.ok || !data.success) throw new Error(data.error || 'تعذر جلب حالة عقل التسويق');
+    return data;
+  },
+  async getGrowthDashboard() {
+    const res = await fetch('/api/agent/brain/growth/dashboard', { headers: getAuthHeaders() });
+    const data = await res.json();
+    if (!res.ok || !data.success) throw new Error(data.error || 'تعذر جلب لوحة عقل التسويق');
+    return data;
+  },
+
   // صفحات Facebook التي يديرها الحساب بعد OAuth (معرّفات وأسماء فقط بلا رموز).
   async getFacebookPages() {
     const res = await fetch('/api/platforms/facebook/pages', { headers: getAuthHeaders() });

@@ -1803,6 +1803,107 @@ add('sales-ui-wired', read('src/App.tsx').includes('commercial_brain') && read('
 add('sales-integration-tests', salesIntegrationTest.includes('لا مشترٍ بلا سجل بيع') && salesIntegrationTest.includes('الفرضية لا تُخزَّن كحقيقة') && (pkg.scripts['test'] || '').includes('test:sales-integration'), 'اختبار تكامل العقل التجاري بالبيانات الحقيقية مضمّن في npm test');
 add('sales-route-tests', salesRoutesTest.includes('الحالة التجارية محمية') && salesRoutesTest.includes('لا تسريب توكن') && (pkg.scripts['test'] || '').includes('test:sales-routes'), 'اختبار مسارات العقل التجاري (حماية + بلا سرّ) مضمّن في npm test');
 
+// ===========================================================================
+// عقل التسويق والطلب (Growth & Demand) — الدفعة 2/4.
+// الهدف: مدير تسويق وطلب مدفوع بالدليل — لا مولّد منشورات. الفحوص تمنع اختراع
+// جمهور/وصول/بيع/إيراد/تحويل/نتيجة حملة، وتُثبت عقل تسويق واحداً لكل المنصات.
+// ===========================================================================
+const growthDir = 'engine/brain/growth';
+const growthSegmentsModule = fs.existsSync(path.join(root, `${growthDir}/segments.ts`)) ? read(`${growthDir}/segments.ts`) : '';
+const growthDemandModule = fs.existsSync(path.join(root, `${growthDir}/demandDiscovery.ts`)) ? read(`${growthDir}/demandDiscovery.ts`) : '';
+const growthMatchingModule = fs.existsSync(path.join(root, `${growthDir}/matching.ts`)) ? read(`${growthDir}/matching.ts`) : '';
+const growthCampaignsModule = fs.existsSync(path.join(root, `${growthDir}/campaigns.ts`)) ? read(`${growthDir}/campaigns.ts`) : '';
+const growthExperimentsModule = fs.existsSync(path.join(root, `${growthDir}/experiments.ts`)) ? read(`${growthDir}/experiments.ts`) : '';
+const growthFunnelModule = fs.existsSync(path.join(root, `${growthDir}/funnel.ts`)) ? read(`${growthDir}/funnel.ts`) : '';
+const growthRuntimeModule = fs.existsSync(path.join(root, `${growthDir}/runtime.ts`)) ? read(`${growthDir}/runtime.ts`) : '';
+const growthRoutesModule = fs.existsSync(path.join(root, `${growthDir}/routes.ts`)) ? read(`${growthDir}/routes.ts`) : '';
+const growthViewModule = fs.existsSync(path.join(root, 'src/components/agent/GrowthBrainView.tsx')) ? read('src/components/agent/GrowthBrainView.tsx') : '';
+const growthFoundationTest = fs.existsSync(path.join(root, 'engine/tests/brain/growth.foundation.test.ts')) ? read('engine/tests/brain/growth.foundation.test.ts') : '';
+const growthAntiFabTest = fs.existsSync(path.join(root, 'engine/tests/brain/growth.antifabrication.test.ts')) ? read('engine/tests/brain/growth.antifabrication.test.ts') : '';
+const growthRoutesTest = fs.existsSync(path.join(root, 'engine/tests/brain/growth.routes.test.ts')) ? read('engine/tests/brain/growth.routes.test.ts') : '';
+
+add('growth-modules-exist',
+  [growthSegmentsModule, growthDemandModule, growthMatchingModule, growthCampaignsModule, growthExperimentsModule, growthFunnelModule, growthRuntimeModule, growthRoutesModule].every((m) => m.length > 0),
+  'وحدات عقل التسويق والطلب الثماني موجودة');
+add('growth-audience-evidence-based',
+  growthSegmentsModule.includes('export function deriveAudienceSegments') && growthSegmentsModule.includes('SEGMENT_MIN_SAMPLE') && growthSegmentsModule.includes('HYPOTHESIS') && growthSegmentsModule.includes('SEGMENT_NOT_AVAILABLE_FIELDS'),
+  'مقاطع الجمهور مدعومة بالدليل وتُعلن الفرضية والسمات الحساسة غير المتاحة');
+add('growth-audience-no-demographics',
+  growthSegmentsModule.includes('age') && growthSegmentsModule.includes('gender') && growthSegmentsModule.includes('income') && growthSegmentsModule.includes('لا تُستنتج'),
+  'لا تُستنتج سمات سكانية (عمر/جنس/دخل/هوية/موقع)');
+add('growth-demand-discovery',
+  growthDemandModule.includes('export function detectDemandOpportunities') && growthDemandModule.includes('computeDemandTrend') && growthDemandModule.includes('unmet_product_request'),
+  'محرّك اكتشاف الطلب يغطي الأنواع التسعة بما فيها الطلب غير المُلبّى');
+add('growth-demand-no-rising-without-trend',
+  growthDemandModule.includes("trend === 'RISING'") && growthDemandModule.includes('UNKNOWN') && growthDemandModule.includes('غير كافية لقياس الاتجاه'),
+  'لا يُعلن طلب متزايد بلا اتجاه زمني مقيس');
+add('growth-demand-epistemic-separation',
+  growthDemandModule.includes("epistemic: 'FACT'") && growthDemandModule.includes("epistemic: 'HYPOTHESIS'") && growthDemandModule.includes("epistemic: 'RECOMMENDATION'"),
+  'كل فرصة طلب تفصل الحقيقة عن الفرضية عن التوصية');
+add('growth-matching-seven-questions',
+  growthMatchingModule.includes('export function matchProductsToAudience') && growthMatchingModule.includes('whatToShow') && growthMatchingModule.includes('cta') && growthMatchingModule.includes('NO_EVIDENCE'),
+  'المطابقة تُجيب WHO/WHY/WHAT/WHERE/WHEN/MESSAGE/CTA وبلا دليل تُعلن NO_EVIDENCE');
+add('growth-campaign-has-reason',
+  growthCampaignsModule.includes('export function buildCampaignFromOpportunity') && growthCampaignsModule.includes('export function campaignHasReason') && growthCampaignsModule.includes('demandSignalRef') && growthCampaignsModule.includes('hook'),
+  'لا حملة بلا سبب: الهدف/الفرضية/الهوك/CTA إلزامية ومرجع إشارة الطلب مطلوب');
+add('growth-campaign-no-fake-result',
+  /recordActualResult[\s\S]{0,300}if \(!input\.source\)/.test(growthCampaignsModule) && growthCampaignsModule.includes('لا تُسجَّل نتيجة حملة بلا مصدر حقيقي'),
+  'لا تُسجَّل نتيجة حملة بلا مصدر حقيقي');
+add('growth-experiments-single-variable',
+  growthExperimentsModule.includes('export function createMarketingExperiment') && growthExperimentsModule.includes('two_hooks') && growthExperimentsModule.includes('two_ctas') && growthExperimentsModule.includes('GROWTH_MIN_EXPERIMENT_EVIDENCE'),
+  'تجارب تسويقية بمتغيّر واحد (هوكان/CTA/عرض/جمهور/توقيت) بحدّ أدنى للأدلة');
+add('growth-experiment-no-winner-without-evidence',
+  growthExperimentsModule.includes("verdict: 'inconclusive'") && growthExperimentsModule.includes('داخل الضجيج') && growthExperimentsModule.includes('أقل من الحد'),
+  'لا فائز بلا عيّنة كافية ولا بفرق داخل الضجيج');
+add('growth-funnel-sales-oriented',
+  growthFunnelModule.includes('export function buildSalesFunnel') && growthFunnelModule.includes('REACH') && growthFunnelModule.includes('INQUIRY') && growthFunnelModule.includes('VERIFIED_SALE') && growthFunnelModule.includes('bottleneck'),
+  'القُمع البيعي REACH→INTEREST→INQUIRY→LEAD→VERIFIED_SALE مع تحديد عنق الزجاجة');
+add('growth-funnel-no-fabricated-number',
+  growthFunnelModule.includes('NOT_AVAILABLE') && growthFunnelModule.includes('denominator <= 0') && growthFunnelModule.includes('value === null'),
+  'لا رقم مُختلق ولا معدّل بمقام صفر؛ غير المتاح يُعلن');
+add('growth-platform-agnostic',
+  growthRuntimeModule.includes('export function buildPlatformBriefs') && growthRuntimeModule.includes('PLATFORM_CONTENT_PROFILES') && !/platform === 'facebook'[\s\S]{0,80}platform === 'instagram'/.test(growthRuntimeModule),
+  'عقل تسويق واحد لكل المنصات: لا عقل منفصل لكل منصة');
+add('growth-no-external-execution',
+  !/\b(publish|sendMessage|comments\.insert|fetch\()/.test(growthSegmentsModule + growthDemandModule + growthMatchingModule + growthCampaignsModule + growthExperimentsModule + growthFunnelModule + growthRuntimeModule) && !/app\.(post|put|patch|delete)\(/.test(growthRoutesModule),
+  'طبقة عقل التسويق لا تنفّذ ولا تُسجّل أي مسار كتابة');
+add('growth-no-gemini-no-secret',
+  !/aiEngine|generateContent|GoogleGenAI|process\.env/.test(growthSegmentsModule + growthDemandModule + growthMatchingModule + growthCampaignsModule + growthExperimentsModule + growthFunnelModule + growthRuntimeModule) && !/(clientSecret|refreshToken|AIzaSy|api[_-]?key)/i.test(growthRoutesModule + growthRuntimeModule),
+  'عقل التسويق حتمي بلا Gemini وبلا قراءة env وبلا أي سرّ');
+add('growth-routes-registered',
+  growthRoutesModule.includes("'/api/agent/brain/growth/state'") && growthRoutesModule.includes("'/api/agent/brain/growth/summary'") && growthRoutesModule.includes("'/api/agent/brain/growth/dashboard'") && growthRoutesModule.includes('registerGrowthRoutes'),
+  'مسارات عقل التسويق (الحالة + الملخّص + اللوحة) مسجّلة');
+add('growth-routes-owner-protected',
+  /'\/api\/agent\/brain\/growth\/state'[\s\S]{0,120}requireOwner/.test(growthRoutesModule) && /'\/api\/agent\/brain\/growth\/dashboard'[\s\S]{0,120}requireOwner/.test(growthRoutesModule) && /'\/api\/agent\/brain\/growth\/summary'[\s\S]{0,120}authenticateToken/.test(growthRoutesModule),
+  'الحالة واللوحة للمالك فقط، والملخّص محمي بالمصادقة');
+add('growth-routes-server-wired',
+  server.includes('registerGrowthRoutes') && server.includes('socialComments: (workspace as any).socialComments') && server.includes('products: workspace.products'),
+  'الخادم يربط عقل التسويق ببيانات مساحة العمل الحقيقية');
+add('growth-comment-product-link',
+  read('engine/social/routes.ts').includes('productId: typeof req.body?.productId'),
+  'إدخال التعليق يحفظ ربط المنتج الصريح (لا استنتاج من النص)');
+add('growth-ui-dashboard',
+  growthViewModule.includes('GrowthBrainView') && growthViewModule.includes('apiService.getGrowthState') && growthViewModule.includes('apiService.getGrowthDashboard') && growthViewModule.includes('عنق الزجاجة'),
+  'لوحة المالك تعرض الطلب والفرص والحملات والتجارب والقُمع وعنق الزجاجة');
+add('growth-ui-no-secret',
+  !/(clientSecret|refreshToken|AIzaSy)/i.test(growthViewModule),
+  'لوحة عقل التسويق لا تعرض أي سرّ');
+add('growth-ui-wired',
+  read('src/App.tsx').includes('growth_brain') && read('src/components/common/Sidebar.tsx').includes('growth_brain'),
+  'لوحة عقل التسويق موصولة بالتنقّل (App + Sidebar)');
+add('growth-foundation-tests',
+  growthFoundationTest.includes('لا مقطع بلا دليل') && growthFoundationTest.includes('PASSED:') && (pkg.scripts['test'] || '').includes('test:growth-foundation'),
+  'اختبار وحدة عقل التسويق مضمّن في npm test');
+add('growth-antifabrication-tests',
+  growthAntiFabTest.includes('لا جمهور بلا دليل') && growthAntiFabTest.includes('رفض نتيجة بلا مصدر') && (pkg.scripts['test'] || '').includes('test:growth-antifabrication'),
+  'اختبار مكافحة الاختلاق (جمهور/وصول/بيع/إيراد/تحويل/نتيجة) مضمّن في npm test');
+add('growth-route-tests',
+  growthRoutesTest.includes('محمي (401 بلا جلسة)') && growthRoutesTest.includes('لا تسريب توكن') && (pkg.scripts['test'] || '').includes('test:growth-routes'),
+  'اختبار مسارات عقل التسويق (حماية + بلا سرّ) مضمّن في npm test');
+add('growth-no-fake-counter',
+  !/125\s*\/\s*125/.test(growthSegmentsModule + growthDemandModule + growthRuntimeModule + growthFunnelModule),
+  'لا عدّاد وهمي في أي وحدة تسويق');
+
 const failed = checks.filter(x => !x.ok);
 console.table(checks);
 if (failed.length) {
