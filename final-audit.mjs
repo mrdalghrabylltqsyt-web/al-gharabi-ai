@@ -1904,6 +1904,124 @@ add('growth-no-fake-counter',
   !/125\s*\/\s*125/.test(growthSegmentsModule + growthDemandModule + growthRuntimeModule + growthFunnelModule),
   'لا عدّاد وهمي في أي وحدة تسويق');
 
+// ===========================================================================
+// عقل المبيعات الرقمية (Digital Sales Brain) — الدفعة 3/4
+// ===========================================================================
+const digitalDir = 'engine/brain/digital';
+const digitalIdentityModule = fs.existsSync(path.join(root, `${digitalDir}/identity.ts`)) ? read(`${digitalDir}/identity.ts`) : '';
+const digitalIntentModule = fs.existsSync(path.join(root, `${digitalDir}/intent.ts`)) ? read(`${digitalDir}/intent.ts`) : '';
+const digitalOfferModule = fs.existsSync(path.join(root, `${digitalDir}/offer.ts`)) ? read(`${digitalDir}/offer.ts`) : '';
+const digitalLeadModule = fs.existsSync(path.join(root, `${digitalDir}/lead.ts`)) ? read(`${digitalDir}/lead.ts`) : '';
+const digitalHandoffModule = fs.existsSync(path.join(root, `${digitalDir}/handoff.ts`)) ? read(`${digitalDir}/handoff.ts`) : '';
+const digitalFollowupModule = fs.existsSync(path.join(root, `${digitalDir}/followup.ts`)) ? read(`${digitalDir}/followup.ts`) : '';
+const digitalAttributionModule = fs.existsSync(path.join(root, `${digitalDir}/attribution.ts`)) ? read(`${digitalDir}/attribution.ts`) : '';
+const digitalEventsModule = fs.existsSync(path.join(root, `${digitalDir}/events.ts`)) ? read(`${digitalDir}/events.ts`) : '';
+const digitalFunnelModule = fs.existsSync(path.join(root, `${digitalDir}/salesFunnel.ts`)) ? read(`${digitalDir}/salesFunnel.ts`) : '';
+const digitalAutonomyModule = fs.existsSync(path.join(root, `${digitalDir}/autonomy.ts`)) ? read(`${digitalDir}/autonomy.ts`) : '';
+const digitalAdaptersModule = fs.existsSync(path.join(root, `${digitalDir}/adapters.ts`)) ? read(`${digitalDir}/adapters.ts`) : '';
+const digitalStoreModule = fs.existsSync(path.join(root, `${digitalDir}/store.ts`)) ? read(`${digitalDir}/store.ts`) : '';
+const digitalRuntimeModule = fs.existsSync(path.join(root, `${digitalDir}/runtime.ts`)) ? read(`${digitalDir}/runtime.ts`) : '';
+const digitalRoutesModule = fs.existsSync(path.join(root, `${digitalDir}/routes.ts`)) ? read(`${digitalDir}/routes.ts`) : '';
+const digitalViewModule = fs.existsSync(path.join(root, 'src/components/agent/SalesDashboardView.tsx')) ? read('src/components/agent/SalesDashboardView.tsx') : '';
+const digitalFoundationTest = fs.existsSync(path.join(root, 'engine/tests/brain/digital.sales.foundation.test.ts')) ? read('engine/tests/brain/digital.sales.foundation.test.ts') : '';
+const digitalAntiFabTest = fs.existsSync(path.join(root, 'engine/tests/brain/digital.sales.antifabrication.test.ts')) ? read('engine/tests/brain/digital.sales.antifabrication.test.ts') : '';
+const digitalRoutesTest = fs.existsSync(path.join(root, 'engine/tests/brain/digital.sales.routes.test.ts')) ? read('engine/tests/brain/digital.sales.routes.test.ts') : '';
+const digitalModules = [digitalIdentityModule, digitalIntentModule, digitalOfferModule, digitalLeadModule, digitalHandoffModule, digitalFollowupModule, digitalAttributionModule, digitalEventsModule, digitalFunnelModule, digitalAutonomyModule, digitalAdaptersModule, digitalStoreModule, digitalRuntimeModule, digitalRoutesModule];
+
+add('digital-sales-modules-exist',
+  digitalModules.every((m) => m.length > 0),
+  'وحدات عقل المبيعات الرقمية كلها موجودة (هوية/نية/عرض/عميل/تسليم/متابعة/إسناد/أحداث/قُمع/استقلالية/موصلات/مخزن/تجميع/مسارات)');
+add('digital-sales-identity-verified-only',
+  digitalIdentityModule.includes('export function buildCustomerIdentity') && digitalIdentityModule.includes('IDENTITY_WITHHELD_FIELDS') && digitalIdentityModule.includes("confidence") && /strong[\s\S]{0,40}weak|weak[\s\S]{0,40}strong/.test(digitalIdentityModule) && digitalIdentityModule.includes('لا تُدمج'),
+  'الهوية تُبنى من معرّف موثّق فقط، والدمج يقع عند strong فقط، وحقول حساسة محجوبة');
+add('digital-sales-identity-privacy-hash',
+  digitalIdentityModule.includes('export function privacyCustomerHash') && digitalIdentityModule.includes('createHash') && digitalIdentityModule.includes('platformIdentityKey'),
+  'بصمة العميل آمنة الخصوصية (SHA-256) تُستخدم مفتاحاً للحفظ بلا قيمة خامة');
+add('digital-sales-intent-not-sale',
+  digitalIntentModule.includes('export function detectPurchaseIntent') && digitalIntentModule.includes('PURCHASE_SIGNAL') && digitalIntentModule.includes('ليست بيعاً') && digitalIntentModule.includes('STRONG_SIGNAL_KINDS'),
+  'اكتشاف نية الشراء يفصل الإشارة عن البيع ويحمل أدلتها');
+add('digital-sales-offer-no-fabrication',
+  digitalOfferModule.includes('export function answerProductQuestion') && digitalOfferModule.includes('DATA_NOT_AVAILABLE') && digitalOfferModule.includes('HUMAN_REVIEW') && digitalOfferModule.includes('لا يُخترع') && digitalOfferModule.includes('checkOfferMutation'),
+  'الإجابة عن السؤال من بيانات موثّقة فقط؛ الناقص يُعلن ولا يُخترع؛ حرس تغيير العرض');
+add('digital-sales-lead-no-sale-without-id',
+  digitalLeadModule.includes('export function qualifyLead') && digitalLeadModule.includes('export function planLeadTransition') && digitalLeadModule.includes("code: 'NO_SALE_ID'") && digitalLeadModule.includes('TERMINAL_STATE') && digitalLeadModule.includes('NO_EVIDENCE'),
+  'لا بيع بلا معرّف، ولا انتقال بلا دليل، والحالات النهائية لا تُنقض');
+add('digital-sales-qualification-evidence',
+  digitalLeadModule.includes('QUALIFICATION_WEIGHTS') && digitalLeadModule.includes('QUALIFICATION_THRESHOLDS') && digitalLeadModule.includes('لا يُؤهَّل العميل') && digitalLeadModule.includes('classifyLostReason'),
+  'التأهيل بأوزان صريحة قابلة للتدقيق، ولا تأهيل بلا إشارة شراء، وسبب الخسارة من دليل');
+add('digital-sales-handoff-honest',
+  digitalHandoffModule.includes('export function buildHumanHandoff') && digitalHandoffModule.includes('fabricatedFallback: false') && digitalHandoffModule.includes('HANDOFF_RECOMMENDED_ACTION_AR') && digitalHandoffModule.includes('shouldHandoff'),
+  'التسليم البشري لا يخترع رداً، ويحمل سبباً وإجراءً موصى به');
+add('digital-sales-followup-consent',
+  digitalFollowupModule.includes('export function planFollowUp') && digitalFollowupModule.includes('optedOut') && digitalFollowupModule.includes('consent') && digitalFollowupModule.includes('isDuplicateFollowUp') && digitalFollowupModule.includes('مكافحة سبام'),
+  'المتابعة تحترم الموافقة/الإلغاء/حدود التكرار/منع السبام');
+add('digital-sales-attribution-no-causation',
+  digitalAttributionModule.includes('export function computeAttribution') && digitalAttributionModule.includes('canClaimCausation') && digitalAttributionModule.includes('UNCERTAIN') && digitalAttributionModule.includes('NOT_ATTRIBUTABLE'),
+  'لا سببية عند الشك؛ الإسناد من معرّفات موثوقة فقط');
+add('digital-sales-events-privacy-learning',
+  digitalEventsModule.includes('export function recordSalesEvent') && digitalEventsModule.includes('learningEligible') && digitalEventsModule.includes('EVENT_FORBIDDEN_FIELDS') && digitalEventsModule.includes('stripSensitiveEventFields') && digitalEventsModule.includes("code: 'NO_SALE_ID'"),
+  'أحداث آمنة الخصوصية جاهزة للتعلّم؛ لا تعلّم من بيع غير موثّق؛ بلا بيانات شخصية');
+add('digital-sales-funnel-no-divide-zero',
+  digitalFunnelModule.includes('export function buildDigitalSalesFunnel') && digitalFunnelModule.includes('المقام صفر') && digitalFunnelModule.includes('NOT_AVAILABLE') && digitalFunnelModule.includes('bottleneck'),
+  'القُمع الرقمي لا يقسم على صفر ولا يعلن صفراً مُختلقاً، ويحدّد عنق الزجاجة');
+add('digital-sales-autonomy-safe-default',
+  digitalAutonomyModule.includes('export function evaluateAutonomy') && digitalAutonomyModule.includes('defaultGrantedLevel') && digitalAutonomyModule.includes('NEVER_SILENT_ACTIONS') && digitalAutonomyModule.includes('OWNER_APPROVAL') && /return 'OBSERVE'/.test(digitalAutonomyModule),
+  'الافتراضي مراقبة؛ الأفعال الحساسة لا تُنفَّذ صامتةً وتحتاج موافقة المالك');
+add('digital-sales-adapter-boundary',
+  digitalAdaptersModule.includes('export function assertAdapterBoundary') && digitalAdaptersModule.includes('FORBIDDEN_ADAPTER_RESPONSIBILITIES') && digitalAdaptersModule.includes('PlatformSalesAdapter') && digitalAdaptersModule.includes('لا منطق تجاري'),
+  'حدّ موصلات المنصات: الموصل يقدّم البيانات فقط ولا يحمل منطقاً تجارياً');
+add('digital-sales-store-privacy',
+  digitalStoreModule.includes('export function normalizeDigitalSalesStore') && digitalStoreModule.includes('startsWith(\'k_\')') && digitalStoreModule.includes('updateConsentByHash') && digitalStoreModule.includes('guardDuplicateFollowUp'),
+  'المخزن يحفظ بصمات فقط ويتجاهل أي مفتاح خام، ويحرس تكرار المتابعة');
+add('digital-sales-runtime-platform-agnostic',
+  digitalRuntimeModule.includes('export function buildDigitalSalesState') && digitalRuntimeModule.includes('buildDigitalSalesFunnel') && digitalRuntimeModule.includes('computeAttribution') && !/platform === 'facebook'[\s\S]{0,80}platform === 'instagram'/.test(digitalRuntimeModule),
+  'عقل مبيعات رقمي واحد لكل المنصات (لا عقل منفصل لكل منصة)');
+add('digital-sales-no-external-execution',
+  !/\b(await\s+fetch\(|sendMessage\s*\(|comments\.insert\s*\(|\.publish\s*\(|httpRequest\s*\()/.test(digitalModules.join('')) && !/app\.(post|put|patch|delete)\(/.test(digitalRoutesModule),
+  'طبقة العقل الرقمي لا تنفّذ ولا تُسجّل أي مسار كتابة خارجي (قراءة/تحضير فقط)');
+add('digital-sales-no-gemini-no-env-secret',
+  !/aiEngine|generateContent|GoogleGenAI|process\.env/.test(digitalModules.join('')) && !/(clientSecret|refreshToken|AIzaSy|api[_-]?key)/i.test(digitalRoutesModule + digitalRuntimeModule),
+  'العقل الرقمي حتمي بلا Gemini وبلا قراءة env وبلا أي سرّ');
+add('digital-sales-routes-registered',
+  digitalRoutesModule.includes("'/api/agent/brain/sales/digital/state'") && digitalRoutesModule.includes("'/api/agent/brain/sales/digital/dashboard'") && digitalRoutesModule.includes("'/api/agent/brain/sales/digital/events'") && digitalRoutesModule.includes('registerDigitalSalesRoutes'),
+  'مسارات العقل الرقمي (الحالة + اللوحة + الأحداث + الملخّص + الاستقلالية) مسجّلة');
+add('digital-sales-routes-owner-protected',
+  /'\/api\/agent\/brain\/sales\/digital\/state'[\s\S]{0,140}requireOwner/.test(digitalRoutesModule) && /'\/api\/agent\/brain\/sales\/digital\/dashboard'[\s\S]{0,140}requireOwner/.test(digitalRoutesModule) && /'\/api\/agent\/brain\/sales\/digital\/summary'[\s\S]{0,140}authenticateToken/.test(digitalRoutesModule),
+  'الحالة واللوحة والأحداث للمالك فقط، والملخّص محمي بالمصادقة');
+add('digital-sales-server-wired',
+  server.includes('registerDigitalSalesRoutes') && server.includes('digitalSalesStore.consents') && server.includes('followUpLog: digitalSalesStore.followUps'),
+  'الخادم يربط العقل الرقمي ببيانات مساحة العمل + مخزن الموافقة/المتابعة');
+add('digital-sales-consent-persisted',
+  server.includes('STORAGE_KEY_DIGITAL_SALES') && server.includes('loadDigitalSalesSync') && server.includes('persistDigitalSales') && server.includes('digitalSalesStore = normalizeDigitalSalesStore'),
+  'حالة الموافقة/الإلغاء وسجل المتابعة تُحفظ وتُسترجع (تصمد بعد restart) ببصمات فقط');
+add('digital-sales-consent-server-only-hash',
+  server.includes('privacyCustomerHash(customerKey)') && /digital_sales_consent_updated/.test(server) && !server.includes('phone:${') ,
+  'مسار الموافقة يحفظ بصمة فقط ويُسجَّل تدقيقياً بلا قيمة خامة');
+add('digital-sales-health-block',
+  server.includes('digitalSales: (() =>') && server.includes('externalExecution: false') && server.includes('defaultAutonomyLevel'),
+  'الصحة تعرض كتلة العقل الرقمي (بلا سرّ وبلا تنفيذ خارجي)');
+add('digital-sales-ui-dashboard',
+  digitalViewModule.includes('SalesDashboardView') && digitalViewModule.includes('apiService.getDigitalSalesState') && digitalViewModule.includes('apiService.getDigitalSalesDashboard') && digitalViewModule.includes('القُمع البيعي الرقمي') && digitalViewModule.includes('التسليم البشري'),
+  'لوحة المبيعات الرقمية تعرض القُمع والاستفسارات والعملاء والطلبات والمبيعات والخسائر والإسناد');
+add('digital-sales-ui-no-secret',
+  !/(clientSecret|refreshToken|AIzaSy)/i.test(digitalViewModule),
+  'لوحة المبيعات الرقمية لا تعرض أي سرّ');
+add('digital-sales-ui-wired',
+  read('src/App.tsx').includes('sales_dashboard') && read('src/components/common/Sidebar.tsx').includes('sales_dashboard'),
+  'لوحة المبيعات الرقمية موصولة بالتنقّل (App + Sidebar)');
+add('digital-sales-foundation-tests',
+  digitalFoundationTest.includes('لا سعر/قسط/توفر مُخترع') && digitalFoundationTest.includes('PASSED:') && (pkg.scripts['test'] || '').includes('test:digital-sales-foundation'),
+  'اختبار وحدة العقل الرقمي مضمّن في npm test');
+add('digital-sales-antifabrication-tests',
+  digitalAntiFabTest.includes('لا سعر/قسط/توفر مُخترع') && digitalAntiFabTest.includes('لا سببية عند الشك') && (pkg.scripts['test'] || '').includes('test:digital-sales-antifabrication'),
+  'اختبار مكافحة الاختلاق (سعر/قسط/بيع/تحويل/إسناد/بيانات شخصية) مضمّن في npm test');
+add('digital-sales-route-tests',
+  digitalRoutesTest.includes('محمي (401 بلا جلسة)') && digitalRoutesTest.includes('لا تسريب توكن') && digitalRoutesTest.includes('تصمد بعد إعادة التشغيل') && (pkg.scripts['test'] || '').includes('test:digital-sales-routes'),
+  'اختبار مسارات العقل الرقمي (حماية + ثبات + بلا سرّ) مضمّن في npm test');
+add('digital-sales-no-fake-counter',
+  !/125\s*\/\s*125/.test(digitalModules.join('')),
+  'لا عدّاد وهمي في أي وحدة من العقل الرقمي');
+
 const failed = checks.filter(x => !x.ok);
 console.table(checks);
 if (failed.length) {

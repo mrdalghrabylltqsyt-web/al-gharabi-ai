@@ -205,6 +205,14 @@ export const Sidebar: React.FC<SidebarProps> = ({ mobileOpen, onCloseMobile }) =
       desc: 'خلق طلب حقيقي: مقاطع وفرص ومطابقة وحملات وتجارب وقُمع بيعي',
     },
     {
+      id: 'sales_dashboard',
+      label: 'لوحة المبيعات الرقمية',
+      icon: TrendingUp,
+      badge: currentUser?.role === 'owner' ? 'Owner' : null,
+      badgeColor: 'bg-emerald-500/20 text-emerald-300 border-emerald-500/30',
+      desc: 'قناة بيع رقمية: استفسارات وإشارات شراء وعملاء وطلبات ومبيعات موثّقة',
+    },
+    {
       id: 'calendar',
       label: 'تقويم المحتوى',
       icon: Calendar,

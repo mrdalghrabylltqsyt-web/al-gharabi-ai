@@ -22,6 +22,13 @@ import { registerAgentRoutes } from "./engine/agent/routes";
 import { registerBrainRoutes } from "./engine/brain/routes";
 import { registerCommercialRoutes } from "./engine/brain/sales/routes";
 import { registerGrowthRoutes } from "./engine/brain/growth/routes";
+import { registerDigitalSalesRoutes } from "./engine/brain/digital/routes";
+import {
+  normalizeDigitalSalesStore, EMPTY_DIGITAL_SALES_STORE,
+  updateConsentByHash, getConsentByHash,
+  type DigitalSalesStore,
+} from "./engine/brain/digital/store";
+import { privacyCustomerHash } from "./engine/brain/digital/identity";
 import { registerDriveRoutes } from "./engine/dr/routes";
 import { buildSecretsBundle } from "./tools/dr/secret-crypto.mjs";
 import { buildRecoveryInformation, buildRecoveryInstructions } from "./tools/dr/cloud-lib.mjs";
@@ -8495,6 +8502,9 @@ async function bootstrapStorage(): Promise<void> {
       // ذاكرة العقل الدائمة: تُقرأ قبل بدء الخدمة فتصمد بعد restart/cold start.
       const brainMemory = await storageAdapter.read<any>(STORAGE_KEY_BRAIN_MEMORY);
       brainMemoryStore = normalizeBrainMemory(brainMemory);
+      // حالة المبيعات الرقمية (موافقة/إلغاء + سجل متابعة): تُقرأ قبل بدء الخدمة.
+      const digitalSales = await storageAdapter.read<any>(STORAGE_KEY_DIGITAL_SALES);
+      digitalSalesStore = normalizeDigitalSalesStore(digitalSales);
       // حالة مدير تشغيل YouTube (المراقبة/التحكم/سجل المعالجة): تُقرأ قبل بدء
       // الخدمة فيصمد الـcheckpoint وسجل منع التكرار وإعدادات الأتمتة بعد restart.
       const watcher = await storageAdapter.read<any>(WATCHER_STATE_KEY);
@@ -8510,6 +8520,7 @@ async function bootstrapStorage(): Promise<void> {
     loadControlStateSync();
     loadAgentStateSync();
     loadBrainMemorySync();
+    loadDigitalSalesSync();
     const watcher = storageAdapter.readSync<any>(WATCHER_STATE_KEY);
     if (watcher) applyWatcherStateSnapshot(watcher);
     const media = storageAdapter.readSync<any>(CONTENT_MEDIA_KEY);
@@ -8660,6 +8671,14 @@ const STORAGE_KEY_AGENT = "agent";
 const STORAGE_KEY_BRAIN_MEMORY = "brainMemory";
 /** سقف سجلات الذاكرة لمنع التضخّم (الأحدث يُبقى). */
 const BRAIN_MEMORY_MAX = 5000;
+
+/**
+ * مفتاح حالة المبيعات الرقمية: موافقة/إلغاء العميل وسجل المتابعات — بمفاتيح
+ * بصمة آمنة الخصوصية فقط (لا هاتف/معرّف خام). مستقل عن الحالة العامة، ويصمد بعد
+ * إعادة التشغيل/cold start كي يبقى الإلغاء ومنع التكرار ساريين.
+ */
+const STORAGE_KEY_DIGITAL_SALES = "digitalSales";
+let digitalSalesStore: DigitalSalesStore = EMPTY_DIGITAL_SALES_STORE;
 
 /**
  * العقل المركزي: المنسّق الوحيد. مهامه تُنفَّذ بأدوات حقيقية محقونة من الخادم،
@@ -9021,6 +9040,23 @@ let brainMemoryStore: BrainMemoryStoreState = emptyBrainMemory();
 function loadBrainMemorySync(): void {
   const raw = storageAdapter.readSync<any>(STORAGE_KEY_BRAIN_MEMORY);
   brainMemoryStore = normalizeBrainMemory(raw);
+}
+
+/** يسترجع حالة المبيعات الرقمية (موافقة/إلغاء + سجل متابعة ببصمات فقط). */
+function loadDigitalSalesSync(): void {
+  const raw = storageAdapter.readSync<any>(STORAGE_KEY_DIGITAL_SALES);
+  digitalSalesStore = normalizeDigitalSalesStore(raw);
+}
+
+/** يحفظ حالة المبيعات الرقمية دائمياً (بلا أي سرّ). */
+function persistDigitalSales(): void {
+  if (!storageReady) return;
+  persistQueue = persistQueue
+    .then(() => storageAdapter.write(STORAGE_KEY_DIGITAL_SALES, digitalSalesStore))
+    .catch((error: any) => {
+      lastPersistError = String(error?.code || error?.name || "persist_failed").slice(0, 60);
+      console.warn("Could not persist digital sales store:", lastPersistError);
+    });
 }
 
 /** يوحّد لقطة الذاكرة المحمّلة (يتجاهل أي شكل غير صالح بلا إسقاط). */
@@ -10127,6 +10163,19 @@ app.get("/api/health", (_req, res) => {
         lastStatus: last ? last.status : null,
         lastVerified: last ? Boolean(last.verified) : null,
         providers: describeProvidersForHealth(),
+      };
+    })(),
+    // عقل المبيعات الرقمية: ملخّص منطقي بلا أي سرّ ولا بيانات شخصية (أعداد فقط).
+    digitalSales: (() => {
+      const consents = digitalSalesStore.consents.length;
+      const optedOut = digitalSalesStore.consents.filter((c) => c.optedOut).length;
+      return {
+        enabled: true,
+        consentRecords: consents,
+        optedOutRecords: optedOut,
+        followUpRecords: digitalSalesStore.followUps.length,
+        externalExecution: false,
+        defaultAutonomyLevel: 'OBSERVE',
       };
     })(),
     // دليل النشر: أي commit يعمل فعلاً (Render يضبط RENDER_GIT_COMMIT). يُقرأ هنا
@@ -11941,6 +11990,53 @@ registerGrowthRoutes(app, {
     campaigns: (workspace as any).marketingCampaigns,
     performanceRecords: (workspace as any).performanceRecords,
   }),
+});
+
+// مسارات العقل المركزي للمبيعات الرقمية — قراءة وتحضير فقط من بيانات حقيقية.
+// عقل تجاري واحد platform-agnostic: القُمع الرقمي، الإشارات الشرائية، العملاء
+// المؤهّلون، الطلبات، المبيعات الموثّقة، الخسائر وأسبابها، التسليم البشري،
+// المتابعات، الإسناد، والاستدلال البيعي. لا تنفيذ خارجي ولا رسائل ولا أسرار.
+registerDigitalSalesRoutes(app, {
+  authenticateToken,
+  requireOwner,
+  commercialInput: () => ({
+    showroom: workspace.showroom,
+    products: workspace.products,
+    installmentPlans: workspace.installmentPlans,
+    conversations: workspace.conversations,
+    leads: workspace.leads,
+    sales: workspace.sales,
+    payments: workspace.payments,
+    socialComments: (workspace as any).socialComments,
+    campaigns: (workspace as any).marketingCampaigns,
+    performanceRecords: (workspace as any).performanceRecords,
+    // حالة الموافقة/الإلغاء وسجل المتابعة (بصمات فقط، لا بيانات شخصية خامة).
+    consents: digitalSalesStore.consents.map((c) => ({ customerKey: c.hash, consent: c.consent, optedOut: c.optedOut, updatedAt: c.updatedAt })),
+    followUpLog: digitalSalesStore.followUps.map((f) => ({ customerKey: f.hash, productId: f.productId, at: f.at })),
+  }),
+});
+
+// مسارات الموافقة/الإلغاء (للمالك) — لا تنفيذ خارجي؛ تُحفظ بمفاتيح بصمة فقط.
+app.post("/api/agent/brain/sales/digital/consent", authenticateToken, requireOwner, (req, res) => {
+  const customerKey = typeof req.body?.customerKey === "string" ? req.body.customerKey.trim() : "";
+  if (!customerKey) return res.status(400).json({ success: false, error: "معرّف العميل (customerKey) مطلوب." });
+  const hash = privacyCustomerHash(customerKey);
+  if (!hash) return res.status(400).json({ success: false, error: "تعذّر اشتقاق بصمة العميل." });
+  const optedOut = req.body?.optedOut === true;
+  const consent = req.body?.consent === true;
+  digitalSalesStore = updateConsentByHash(digitalSalesStore, hash, { consent, optedOut, nowMs: Date.now() });
+  persistDigitalSales();
+  audit((req as any).user.id, "digital_sales_consent_updated", optedOut ? "opt_out" : "consent");
+  const stored = getConsentByHash(digitalSalesStore, hash);
+  res.json({ success: true, hash, consent: Boolean(stored?.consent), optedOut: Boolean(stored?.optedOut), updatedAt: stored?.updatedAt });
+});
+
+// عرض حالة الموافقة لعميل (للمالك) — بلا كشف أي قيمة سرية.
+app.get("/api/agent/brain/sales/digital/consent", authenticateToken, requireOwner, (req, res) => {
+  const customerKey = typeof req.query.customerKey === "string" ? req.query.customerKey.trim() : "";
+  const hash = customerKey ? privacyCustomerHash(customerKey) : null;
+  const stored = hash ? getConsentByHash(digitalSalesStore, hash) : null;
+  res.json({ success: true, found: Boolean(stored), consent: Boolean(stored?.consent), optedOut: Boolean(stored?.optedOut), updatedAt: stored?.updatedAt || null });
 });
 
 // -------------------------------------------------------------

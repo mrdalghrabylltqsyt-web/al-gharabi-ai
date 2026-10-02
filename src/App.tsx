@@ -22,6 +22,7 @@ import { BrainCommandView } from './components/agent/BrainCommandView';
 import { CentralBrainView } from './components/agent/CentralBrainView';
 import { CommercialBrainView } from './components/agent/CommercialBrainView';
 import { GrowthBrainView } from './components/agent/GrowthBrainView';
+import { SalesDashboardView } from './components/agent/SalesDashboardView';
 import { MarketingAgentView } from './components/agent/MarketingAgentView';
 import { ContentCalendarView } from './components/calendar/ContentCalendarView';
 import { AnalyticsView } from './components/analytics/AnalyticsView';
@@ -137,6 +138,7 @@ const AppContent: React.FC = () => {
       case 'central_brain': return <CentralBrainView />;
       case 'commercial_brain': return <CommercialBrainView />;
       case 'growth_brain': return <GrowthBrainView />;
+      case 'sales_dashboard': return <SalesDashboardView />;
       case 'marketing_agent': return <MarketingAgentView />;
       case 'calendar': return <ContentCalendarView />;
       case 'analytics': return <AnalyticsView />;

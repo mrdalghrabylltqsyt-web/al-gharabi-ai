@@ -3523,3 +3523,83 @@ Telegram، ولا Gemini، ولا rp-002/rp-003/rp-004، ولا PostgreSQL ال�
 
 **لم يُمسّ:** التعافي/DR، المفاتيح، OAuth/المنصات، Gemini، قاعدة البيانات، الحالة المحفوظة.
 **لا تنفيذ خارجي** في هذه الدفعة. الوثيقة: `docs/دفعة-2-عقل-التسويق-والطلب.md`.
+
+## الدفعة 3/4 — العقل المركزي للمبيعات الرقمية (قناة بيع ثانية) (2026-10-02)
+
+تحويل العقل التجاري إلى **مدير مبيعات رقمي** يجعل الجانب الرقمي قناة بيع حقيقية ثانية
+بجانب المعرض الفيزيائي، بلا اختراع أي معلومة تجارية وبلا تنفيذ خارجي. القاعدة الحاكمة
+تبقى: `Capability ≠ Connection ≠ Verification ≠ Delivery`، ويُضاف الفصل الصريح
+`Signal ≠ Lead ≠ Request ≠ Sale` و`Reach ≠ Interest ≠ Inquiry ≠ Lead ≠ Verified Sale`.
+
+**وحدات جديدة (`engine/brain/digital/`، منطق خالص قابل للاختبار، بلا شبكة/أسرار/AI):**
+- `identity.ts`: هوية العميل. الربط **فقط** بمعرّف موثوق (هاتف مطبَّع كامل أو
+  `platform:customerId`)؛ ممنوع الربط بتشابه الأسماء (`linkByNameSimilarity` ترفض دائماً).
+  سمات حساسة محجوبة (`IDENTITY_WITHHELD_FIELDS`: عمر/جنس/دين/هوية/موقع دقيق/ملف مستنتج).
+  `privacyCustomerHash` (SHA-256 مقتطعة، بادئة `k_`) مفتاح حفظ آمن الخصوصية.
+- `intent.ts`: `detectPurchaseIntent` يميّز الإشارة الشرائية (قوية/سياقية) عن مجرّد
+  التفاعل؛ **الإشارة ليست بيعاً**.
+- `offer.ts`: `identifyProduct` + `classifyOfferQuestion` + `answerProductQuestion` +
+  `checkOfferMutation`. الإجابة **من بيانات موثّقة فقط**؛ السعر/القسط/التوفر الغائب
+  يُعلن `DATA_NOT_AVAILABLE`/`HUMAN_REVIEW` ولا يُخترع. حرس تغيير العرض يمنع تعديل
+  السعر/الخصم بلا قاعدة معتمدة.
+- `lead.ts`: `qualifyLead` بأوزان/عتبات صريحة (`QUALIFICATION_WEIGHTS`/`THRESHOLDS`)،
+  ولا تأهيل بلا إشارة شراء؛ `planLeadTransition` يمنع `VERIFIED_SALE` بلا `saleId`
+  (`NO_SALE_ID`)، ويمنع الانتقال بلا دليل (`NO_EVIDENCE`)، ولا ينقض الحالات النهائية
+  (`TERMINAL_STATE`). `classifyLostReason` من دليل فقط (بلا دليل ⇒ `unknown`).
+- `handoff.ts`: `shouldHandoff` + `buildHumanHandoff` — التسليم البشري لا يخترع رداً
+  (`fabricatedFallback: false`) ويحمل سبباً وإجراءً موصى به.
+- `followup.ts`: `planFollowUp` يحترم الموافقة/الإلغاء/الفاصل الأدنى/حدود 30 يوماً
+  (منع سبام)؛ `isDuplicateFollowUp` يمنع تكرار نفس المتابعة؛ `applyConsentUpdate`.
+- `attribution.ts`: `computeAttribution` — لا سببية عند الشك (`canClaimCausation`
+  صريح؛ `DIRECT`/`UNCERTAIN`/`NOT_ATTRIBUTABLE`).
+- `events.ts`: `recordSalesEvent` (لا حدث بيع موثّق بلا معرّف بيع)، `learningEligible`،
+  و`stripSensitiveEventFields`/`EVENT_FORBIDDEN_FIELDS` لتنقية البيانات الشخصية.
+- `salesFunnel.ts`: القُمع الرقمي `INTERACTIONS→PURCHASE_SIGNALS→QUALIFIED_LEADS→
+  REQUESTS→VERIFIED_SALES`؛ **لا معدّل بمقام صفر**، والمرحلة بلا بيانات تُعلن
+  `NOT_AVAILABLE`، ويُحدَّد `bottleneck`.
+- `autonomy.ts`: مستويات الاستقلالية (`OBSERVE`…)، `defaultGrantedLevel()='OBSERVE'`
+  (آمن افتراضياً)، و`NEVER_SILENT_ACTIONS` تمنع التنفيذ الصامت للأفعال الحساسة
+  (النشر/تغيير السعر/تعديل التشفير…).
+- `adapters.ts`: `PlatformSalesAdapter` + `assertAdapterBoundary` —
+  `FORBIDDEN_ADAPTER_RESPONSIBILITIES`: الموصل يقدّم البيانات فقط ولا يحمل منطقاً تجارياً.
+- `store.ts`: `normalizeDigitalSalesStore` يحفظ **بصمات فقط** (يتجاهل أي مفتاح خام غير
+  `k_`)، `updateConsentByHash`/`getConsentByHash`/`guardDuplicateFollowUp`/`recordFollowUp`.
+- `runtime.ts`: `buildDigitalSalesState` يجمع كل ما سبق من بيانات مساحة العمل الحقيقية
+  (منتجات/خطط/محادثات/عملاء/مبيعات/تعليقات/حملات/سجلات أداء + الموافقة/سجل المتابعة).
+- `routes.ts`: `registerDigitalSalesRoutes` — مسارات **قراءة فقط**:
+  `GET /api/agent/brain/sales/digital/{state,summary,dashboard,events,autonomy}`.
+
+**دمج الخادم (`server.ts`):**
+- `STORAGE_KEY_DIGITAL_SALES="digitalSales"` + `loadDigitalSalesSync`/`persistDigitalSales`
+  عبر محوّل الحالة (ملف/Postgres) فتصمد الموافقة/الإلغاء وسجل المتابعة بعد restart.
+- `registerDigitalSalesRoutes` بعد مسارات العقل التجاري، يحقن بيانات مساحة العمل الحقيقية
+  + الموافقة/سجل المتابعة (بصمات فقط).
+- مساران للمالك فقط: `POST/GET /api/agent/brain/sales/digital/consent` — يحفظان
+  `privacyCustomerHash(customerKey)` فقط، ويُسجَّلان تدقيقياً (`digital_sales_consent_updated`)
+  بلا قيمة خامة، ولا يُعاد أي معرّف خام في أي استجابة.
+- `/api/health.digitalSales`: `summary` + `externalExecution: false` + `defaultAutonomyLevel`
+  (بلا سرّ وبلا بيانات شخصية).
+
+**الواجهة:** `src/components/agent/SalesDashboardView.tsx` (تبويب `sales_dashboard` =
+«لوحة المبيعات الرقمية» في Sidebar، للمالك): القُمع الرقمي، الإشارات الشرائية، العملاء
+المؤهّلون، الطلبات، المبيعات الموثّقة، الخسائر وأسبابها، التسليم البشري، الإسناد،
+والاستقلالية. `apiService.getDigitalSales{State,Summary,Dashboard,Events,Autonomy}`.
+
+**قواعد ملزمة (مُختبرة):**
+- لا سعر/قسط/مقدم/توفر مُخترع؛ الغائب يُعلن ولا يُخترع.
+- لا بيع (`VERIFIED_SALE`) بلا معرّف بيع حقيقي؛ لا تأهيل بلا إشارة شراء.
+- لا سبب خسارة بلا دليل؛ لا إسناد سببية عند الشك.
+- لا متابعة بلا موافقة؛ لا تكرار ولا سبام.
+- لا بيانات شخصية خامة تُخزَّن أو تُسجَّل (بصمات فقط).
+- لا تنفيذ خارجي، ولا Gemini، ولا قراءة env في طبقة العقل الرقمي.
+
+اختبارات: `engine/tests/brain/digital.sales.foundation.test.ts` (`npm run
+test:digital-sales-foundation`، **79 فحصاً**)، `digital.sales.antifabrication.test.ts`
+(`test:digital-sales-antifabrication`، **25 فحصاً**)، `digital.sales.routes.test.ts`
+(`test:digital-sales-routes`، **39 فحصاً** خادم حقيقي + ثبات بعد restart). فحوص
+final-audit الـ27 الجديدة (`digital-sales-*`، **1124 إجمالاً**). `npm run lint` +
+`npm run build` + `npm test` (77 مجموعة، بلا فشل) + `final-audit` كلها ناجحة.
+
+**لم يُمسّ:** التعافي/DR، المفاتيح، OAuth/المنصات، Gemini، قاعدة البيانات، الحالة المحفوظة،
+والدفعات 1–2. **لا تنفيذ خارجي** في هذه الدفعة (قراءة/تحضير فقط). الوثيقة:
+`docs/دفعة-3-العقل-الرقمي.md`.

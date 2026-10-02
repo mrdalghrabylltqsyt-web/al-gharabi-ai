@@ -724,6 +724,44 @@ ${payload.topic || payload.productName || 'أنظمة وحلول التقسيط 
     return data;
   },
 
+  // العقل المركزي للمبيعات الرقمية: قراءة وتحضير فقط من بيانات حقيقية.
+  async getDigitalSalesState() {
+    const res = await fetch('/api/agent/brain/sales/digital/state', { headers: getAuthHeaders() });
+    const data = await res.json();
+    if (!res.ok || !data.success) throw new Error(data.error || 'تعذر جلب حالة المبيعات الرقمية');
+    return data;
+  },
+  async getDigitalSalesSummary() {
+    const res = await fetch('/api/agent/brain/sales/digital/summary', { headers: getAuthHeaders() });
+    const data = await res.json();
+    if (!res.ok || !data.success) throw new Error(data.error || 'تعذر جلب ملخّص المبيعات الرقمية');
+    return data;
+  },
+  async getDigitalSalesDashboard() {
+    const res = await fetch('/api/agent/brain/sales/digital/dashboard', { headers: getAuthHeaders() });
+    const data = await res.json();
+    if (!res.ok || !data.success) throw new Error(data.error || 'تعذر جلب لوحة المبيعات الرقمية');
+    return data;
+  },
+  async getDigitalSalesEvents() {
+    const res = await fetch('/api/agent/brain/sales/digital/events', { headers: getAuthHeaders() });
+    const data = await res.json();
+    if (!res.ok || !data.success) throw new Error(data.error || 'تعذر جلب أحداث المبيعات الرقمية');
+    return data;
+  },
+  async getDigitalSalesAutonomy() {
+    const res = await fetch('/api/agent/brain/sales/digital/autonomy', { headers: getAuthHeaders() });
+    const data = await res.json();
+    if (!res.ok || !data.success) throw new Error(data.error || 'تعذر جلب مستويات الاستقلالية');
+    return data;
+  },
+  async setDigitalSalesConsent(input: { customerKey: string; consent?: boolean; optedOut?: boolean }) {
+    const res = await fetch('/api/agent/brain/sales/digital/consent', { method: 'POST', headers: getAuthHeaders(), body: JSON.stringify(input) });
+    const data = await res.json();
+    if (!res.ok || !data.success) throw new Error(data.error || 'تعذر تحديث الموافقة');
+    return data;
+  },
+
   // صفحات Facebook التي يديرها الحساب بعد OAuth (معرّفات وأسماء فقط بلا رموز).
   async getFacebookPages() {
     const res = await fetch('/api/platforms/facebook/pages', { headers: getAuthHeaders() });
