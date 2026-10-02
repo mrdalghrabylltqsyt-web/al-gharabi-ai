@@ -29,7 +29,7 @@ import {
   DR_STATE_DATABASE_URL_ENV,
 } from '../../../tools/dr/token-source.mjs';
 import { buildRecoveryClient } from '../../../tools/dr/standalone-recovery.mjs';
-import { createRecoveryCenterServer } from '../../../tools/dr/recovery-center.mjs';
+import { createRecoveryCenterServer, RECOVERY_CENTER_BUILD } from '../../../tools/dr/recovery-center.mjs';
 
 let passed = 0;
 const failures: string[] = [];
@@ -181,6 +181,7 @@ async function main() {
     check('center health: token via state db', health.drive.refreshTokenAvailable === true && health.drive.refreshTokenSource === 'state_database');
     check('center health: state db flag', health.drive.stateDatabaseConfigured === true);
     check('center health: no vault key in env', health.vaultKeyInEnv === false);
+    check('center health: build marker proves deployed version', health.build === RECOVERY_CENTER_BUILD);
     check('center health: no secret', noSecret(health));
 
     const pts = await (await fetch(`${base}/api/points`)).json();

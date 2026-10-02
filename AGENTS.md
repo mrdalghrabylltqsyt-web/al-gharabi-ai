@@ -3327,3 +3327,35 @@ Drive من `env.DRIVE_OAUTH_REFRESH_TOKEN` وحده. لمّا لم يكن هذا
 
 **لا تغيير في:** أي سرّ/مفتاح قائم، ولا OAuth/scopes، ولا YouTube/Facebook/Instagram/TikTok/
 Telegram، ولا Gemini، ولا rp-002/rp-003/rp-004، ولا PostgreSQL الإنتاجي (قراءة الرمز فقط).
+
+## جذر بقاء `no_refresh_token` في الإنتاج — الخدمة المستقلة لم تستلم الإصلاح (2026-10-02)
+
+**التشخيص الإنتاجي (لا من الكود فقط):** `https://gharabi-recovery-center.onrender.com`
+كانت تُرجع في `/api/health` الشكل **ما قبل الإصلاح** (بلا كتلة `drive`)، و`/api/points`
+و`POST /api/verify` تردّان **HTTP 500** بـ`{"ok":false,"code":"no_refresh_token"}`.
+بالمقارنة مع كل نسخ `recovery-center.mjs` في المستودع (blobs: `870a327` قبل الإصلاح،
+`f62d59e` بعده) تبيّن أن **النسخة العاملة هي `a3a27e1`** (قبل إصلاح رمز التجديد من قاعدة
+الحالة)، وأن إصلاح `e8cbb36` المدموج إلى `main` **لم يُبنَ ولم يُنشر** على هذه الخدمة.
+السبب: `dr-recovery-center/render.yaml` كان يحمل `autoDeploy: false` بلا `branch`، فبقيت
+الخدمة على آخر نشر يدوي (زمن إنشائها) ولم تستلم أي إصلاح مدموج — بينما تطبيق الغرابي
+الرئيسي يستخدم `autoDeploy: true` فاستلم كل الإصلاحات (`/api/health` يُظهر `7d6ee86`).
+
+**إصلاح الرؤية (يمنع تكرار «إصلاح منشور لكن غير عامل»):**
+- `dr-recovery-center/render.yaml`: `autoDeploy: true` + `branch: main` — فتستلم الخدمة
+  المستقلة كل إصلاح مدموج، وتتوقف الحاجة لأي نشر يدوي.
+- `RECOVERY_CENTER_BUILD` بصمة بناء **غير سرّية** تُعلن في `/api/health.build`، فيمكن إثبات
+  أي نسخة تعمل فعلاً من الخارج بلا تخمين (كان هذا بالضبط ما يخفي أن الإصلاح لم يُنشر).
+- `/api/points`: فشل قراءة Drive يُعاد الآن `{ok:false, reason:<code>}` بحالة 200 مع كتلة
+  الجاهزية، بدل السقوط إلى 500 عام يُخفي الكود الحقيقي.
+- فحوص final-audit: `recovery-center-build-marker`، `recovery-center-autodeploy`،
+  `recovery-center-points-explicit-failure` (1017 إجمالاً)، وفحص بصمة البناء في
+  `dr.token.source.test.ts` (35 فحصاً).
+
+**ما أُثبت محلياً على قاعدة Postgres حقيقية (embedded) وDrive وهمي:** الصف
+`gharabi_state.control.driveRefreshToken` المشفّر يُقرأ ويُفكّ بمفتاح `DRIVE_TOKEN_ENCRYPTION_KEY`
+ويعيد `source=state_database`، والرمز المطابق تماماً للمخزَّن؛ ومفتاح خاطئ ⇒
+`refresh_token_undecryptable`؛ وغياب الصف ⇒ `refresh_token_not_found`؛ ولا يُطبع أي سرّ.
+أي أن كود الإصلاح صحيح تماماً، والعائق الوحيد كان **النشر**.
+
+**لا تغيير في:** أي سرّ/مفتاح، ولا OAuth/scopes، ولا YouTube/Facebook/Instagram/TikTok/
+Telegram، ولا Gemini، ولا rp-002/rp-003/rp-004، ولا PostgreSQL الإنتاجي (قراءة الرمز فقط).

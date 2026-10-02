@@ -47,6 +47,13 @@ const IS_HOSTED = Boolean(process.env.RENDER || process.env.RECOVERY_CENTER_HOST
 const HOST = process.env.RECOVERY_CENTER_HOST || (IS_HOSTED ? '0.0.0.0' : '127.0.0.1');
 const PORT = Number.parseInt(process.env.PORT || process.env.RECOVERY_CENTER_PORT || '4600', 10);
 
+/**
+ * بصمة بناء غير سرّية تُثبت أي نسخة تعمل فعلاً. سببها: بلا بصمة لا يمكن التمييز
+ * بين «إصلاح منشور» و«خدمة ما زالت تخدم نسخة قديمة» — وهو بالضبط ما أخفى سابقاً
+ * أن مركز الاستعادة لم يستلم إصلاح قراءة رمز التجديد من قاعدة الحالة.
+ */
+export const RECOVERY_CENTER_BUILD = 'token-source-state-db-1';
+
 /** الحالات الصادقة للاستعادة (تُعرض للمالك كما هي؛ لا ادّعاء نجاح غير مُثبت). */
 export const RECOVERY_HONEST_STATES = [
   { key: 'verified', labelAr: 'تم التحقق', detail: 'بيان النقطة والبصمات والحزم سليمة.' },
@@ -278,6 +285,7 @@ export function createRecoveryCenterServer(options = {}) {
         const readiness = await inspectRecoveryReadiness(env, tokenOptions || {});
         return json(res, 200, {
           ok: true, service: 'gharabi-recovery-center', standalone: true,
+          build: RECOVERY_CENTER_BUILD,
           driveConfigured: readiness.drive.configured,
           drive: {
             configured: readiness.drive.configured,
@@ -297,7 +305,12 @@ export function createRecoveryCenterServer(options = {}) {
         const { store, code } = await makeStore(env, clientFactory, tokenOptions);
         if (!store) return json(res, 200, { ok: false, reason: code || 'drive_client_unavailable', readiness });
         const listed = await listRecoveryPoints(store);
-        return json(res, 200, { ok: listed.ok === true, points: listed.points || [], readiness });
+        // فشل قراءة Drive لا يُعاد كخطأ 500 ولا يُخفى: يُعلن الكود الصريح مع الجاهزية،
+        // فيرى المالك السبب الحقيقي (لا رسالة عامة تبدو كعطل غير معروف).
+        if (listed.ok !== true) {
+          return json(res, 200, { ok: false, reason: listed.code || 'list_failed', points: [], readiness });
+        }
+        return json(res, 200, { ok: true, points: listed.points || [], readiness });
       }
       if (req.method === 'POST' && url.pathname === '/api/verify') {
         const body = await readBody(req);

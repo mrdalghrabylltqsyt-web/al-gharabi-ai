@@ -6,10 +6,14 @@ services:
     runtime: node
     plan: free
     rootDir: dr-recovery-center
+    branch: main
     buildCommand: npm install
     startCommand: npm start
     healthCheckPath: /api/health
-    autoDeploy: false
+    # autoDeploy مفعّل: بلا ذلك لا يستلم المركز أي إصلاح مدموج إلى main، فيبقى
+    # يخدم نسخة قديمة بصمت (وهو ما أخفى سابقاً إصلاح قراءة رمز التجديد من قاعدة
+    # الحالة: health بلا كتلة drive و/api/points يفشل بـno_refresh_token).
+    autoDeploy: true
     envVars:
       - key: NODE_VERSION
         value: "20"
