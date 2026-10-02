@@ -1058,7 +1058,9 @@ export function registerDriveRoutes(app: express.Express, deps: DriveRoutesDeps)
     try {
       const store = buildStore(buildClient(), { readOnlyStructure: true });
       const listed = await listRecoveryPoints(store);
-      res.json({ success: listed.ok === true, points: listed.points || [], readiness: inspectRecoveryReadiness(env as Record<string, string | undefined>) });
+      const encryptedStored = control().driveRefreshToken;
+      const readiness = await inspectRecoveryReadiness(env as Record<string, string | undefined>, { encryptedRefreshToken: encryptedStored });
+      res.json({ success: listed.ok === true, points: listed.points || [], readiness });
     } catch (err: any) {
       res.status(502).json({ success: false, code: 'DRIVE_READ_FAILED', error: String(err?.code || err?.message || 'drive_read_failed').slice(0, 80) });
     }

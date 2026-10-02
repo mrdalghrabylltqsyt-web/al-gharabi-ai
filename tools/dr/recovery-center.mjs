@@ -89,12 +89,13 @@ async function readBody(req) {
 }
 
 /** يبني عميلاً/مخزناً قراءة فقط من بيئة الخدمة (قابل للحقن في الاختبار). */
-function makeStore(env, clientFactory) {
-  const client = buildRecoveryClient(env, { clientFactory });
-  if (!client) return null;
+async function makeStore(env, clientFactory, tokenOptions) {
+  const client = await buildRecoveryClient(env, { clientFactory, ...(tokenOptions || {}) });
+  if (!client) return { store: null, code: 'drive_not_configured' };
+  if (client.ok === false) return { store: null, code: client.code || 'no_refresh_token' };
   let storedIdentity = null;
   try { if (env.DR_FOLDER_IDENTITY) storedIdentity = JSON.parse(env.DR_FOLDER_IDENTITY); } catch { /* تجاهل */ }
-  return buildRecoveryStore(client, { storedIdentity, readOnlyStructure: true });
+  return { store: buildRecoveryStore(client, { storedIdentity, readOnlyStructure: true }), code: null };
 }
 
 /** يحلّل كتلة متغيّرات الهدف (KEY=VALUE أو JSON) — قيمها تُستخدم في الذاكرة فقط. */
@@ -263,6 +264,7 @@ load();
 export function createRecoveryCenterServer(options = {}) {
   const env = options.env || process.env;
   const clientFactory = options.clientFactory;
+  const tokenOptions = options.tokenOptions || null;
   const restoreRoot = options.restoreRoot || null;
 
   return http.createServer(async (req, res) => {
@@ -273,27 +275,34 @@ export function createRecoveryCenterServer(options = {}) {
         return res.end(page());
       }
       if (req.method === 'GET' && url.pathname === '/api/health') {
-        const readiness = inspectRecoveryReadiness(env);
+        const readiness = await inspectRecoveryReadiness(env, tokenOptions || {});
         return json(res, 200, {
           ok: true, service: 'gharabi-recovery-center', standalone: true,
           driveConfigured: readiness.drive.configured,
+          drive: {
+            configured: readiness.drive.configured,
+            refreshTokenAvailable: readiness.drive.refreshTokenStored,
+            refreshTokenSource: readiness.drive.refreshTokenSource,
+            refreshTokenCode: readiness.drive.refreshTokenCode,
+            stateDatabaseConfigured: readiness.drive.stateDatabaseConfigured,
+          },
           vaultKeyInEnv: false, // المركز لا يحمل مفتاح الخزنة في بيئته إطلاقاً.
           honestStates: RECOVERY_HONEST_STATES.map((s) => s.key),
           target: inspectTargetEnvironment(env, {}),
         });
       }
       if (req.method === 'GET' && url.pathname === '/api/points') {
-        const readiness = inspectRecoveryReadiness(env);
+        const readiness = await inspectRecoveryReadiness(env, tokenOptions || {});
         if (!readiness.drive.configured) return json(res, 200, { ok: false, reason: 'drive_not_configured', readiness });
-        const store = makeStore(env, clientFactory);
-        if (!store) return json(res, 200, { ok: false, reason: 'drive_client_unavailable', readiness });
+        const { store, code } = await makeStore(env, clientFactory, tokenOptions);
+        if (!store) return json(res, 200, { ok: false, reason: code || 'drive_client_unavailable', readiness });
         const listed = await listRecoveryPoints(store);
         return json(res, 200, { ok: listed.ok === true, points: listed.points || [], readiness });
       }
       if (req.method === 'POST' && url.pathname === '/api/verify') {
         const body = await readBody(req);
-        const store = makeStore(env, clientFactory);
-        if (!store) return json(res, 200, { ok: false, code: 'drive_client_unavailable' });
+        const { store, code } = await makeStore(env, clientFactory, tokenOptions);
+        if (!store) return json(res, 200, { ok: false, code: code || 'drive_client_unavailable' });
         const listed = await listRecoveryPoints(store);
         const point = (listed.points || []).find((p) => p.id === body.point);
         if (!point) return json(res, 404, { ok: false, code: 'RECOVERY_POINT_NOT_FOUND' });
@@ -324,8 +333,8 @@ export function createRecoveryCenterServer(options = {}) {
       if (req.method === 'POST' && url.pathname === '/api/restore') {
         const body = await readBody(req);
         if (body.confirm !== true) return json(res, 428, { ok: false, code: 'OWNER_CONFIRMATION_REQUIRED' });
-        const store = makeStore(env, clientFactory);
-        if (!store) return json(res, 200, { ok: false, code: 'drive_client_unavailable' });
+        const { store, code } = await makeStore(env, clientFactory, tokenOptions);
+        if (!store) return json(res, 200, { ok: false, code: code || 'drive_client_unavailable' });
         const listed = await listRecoveryPoints(store);
         const point = (listed.points || []).find((p) => p.id === body.point);
         if (!point) return json(res, 404, { ok: false, code: 'RECOVERY_POINT_NOT_FOUND' });

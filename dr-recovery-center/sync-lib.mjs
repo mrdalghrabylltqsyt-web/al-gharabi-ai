@@ -27,6 +27,7 @@ const MODULES = [
   'db-crypto.mjs',
   'key-vault-crypto.mjs',
   'retention.mjs',
+  'token-source.mjs',
   'standalone-recovery.mjs',
   'recovery-center.mjs',
 ];

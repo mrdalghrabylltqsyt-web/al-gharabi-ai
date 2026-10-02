@@ -59,14 +59,14 @@ function print(obj, json) {
 async function main() {
   const args = parseArgs(process.argv.slice(2));
   const env = process.env;
-  const readiness = inspectRecoveryReadiness(env);
+  const readiness = await inspectRecoveryReadiness(env);
   if (!readiness.drive.configured) {
     print({ state: 'blocked', reason: 'drive_not_configured', readiness }, args.json);
     process.exit(2);
   }
-  const client = buildRecoveryClient(env);
-  if (!client) {
-    print({ state: 'blocked', reason: 'drive_client_unavailable', readiness }, args.json);
+  const client = await buildRecoveryClient(env);
+  if (!client || client.ok === false) {
+    print({ state: 'blocked', reason: (client && client.code) || 'drive_client_unavailable', readiness }, args.json);
     process.exit(2);
   }
   // هوية المجلدات المحفوظة (إن وُجدت) عبر متغيّر اختياري، وإلا تُكتشف بالاسم تحت drive.file.
