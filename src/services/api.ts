@@ -678,6 +678,26 @@ ${payload.topic || payload.productName || 'أنظمة وحلول التقسيط 
     if (!res.ok) throw new Error(data?.result?.error || data.error || 'تعذر تشغيل دورة العقل');
     return data;
   },
+  // فريق الوكلاء (Agent Council — Batch 6): قراءة/تشخيص فقط، بلا تنفيذ خارجي.
+  async getTeamSessions() {
+    const res = await fetch('/api/agent/team', { headers: getAuthHeaders() });
+    const data = await res.json();
+    if (!res.ok || !data.success) throw new Error(data.error || 'تعذر جلب جلسات فريق الوكلاء');
+    return data;
+  },
+  async getTeamSession(teamSessionId: string) {
+    const res = await fetch(`/api/agent/team/${encodeURIComponent(teamSessionId)}`, { headers: getAuthHeaders() });
+    const data = await res.json();
+    if (!res.ok || !data.success) throw new Error(data.error || 'تعذر جلب جلسة الفريق');
+    return data;
+  },
+  // تشغيل جلسة فريق الآن (تشخيص، للمالك فقط): قرار مقترح فقط — لا تنفيذ خارجي.
+  async runTeamSession() {
+    const res = await fetch('/api/agent/team/run', { method: 'POST', headers: getAuthHeaders() });
+    const data = await res.json();
+    if (!res.ok || !data.success) throw new Error(data.error || 'تعذر تشغيل جلسة فريق الوكلاء');
+    return data;
+  },
   async getBrainCapabilities() {
     const res = await fetch('/api/agent/brain/capabilities', { headers: getAuthHeaders() });
     const data = await res.json();

@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { useApp } from '../../context/AppContext';
 import { apiService } from '../../services/api';
+import AgentTeamCenter from './AgentTeamCenter';
 
 /**
  * العقل المركزي العام (Batch 26): طبقة ذكاء محتوى وتعلّم وتوصيات تغطي كل
@@ -443,6 +444,10 @@ export const CentralBrainView: React.FC = () => {
       <p className="text-[11px] text-slate-500 px-1">
         هذا السطح عرض/تخطيط فقط. أي نشر أو رد خارجي يمر عبر بوابات المنصة الفعلية (Capability → Connection → Verification → Safety) ولا يُعلن التسليم إلا بإثبات المزود.
       </p>
+
+      <Card title="فريق الوكلاء (Agent Team)" hint="فريق تفكير داخلي ينسّقه العقل المركزي: بحث → تحليل → استراتيجية → نقد → قرار. قرار مقترح فقط — لا تنفيذ خارجي.">
+        <AgentTeamCenter />
+      </Card>
     </div>
   );
 };

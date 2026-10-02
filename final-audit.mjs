@@ -1178,6 +1178,128 @@ add('brain-runtime-ui-surface',
   read('src/services/api.ts').includes('/api/agent/brain/runtime/run'),
   'لوحة العقل تعرض وقت التشغيل وتشغّل دورة (للمالك) بلا أي سرّ');
 
+// --- فريق الوكلاء (Agent Council — Batch 6) ---
+const teamDir = (p) => read(path.join('engine/brain/team', p));
+const teamTruth = teamDir('truth.ts');
+const teamTypes = teamDir('types.ts');
+const teamAgents = teamDir('agents.ts');
+const teamOrchestrator = teamDir('orchestrator.ts');
+const teamRoutesSrc = teamDir('routes.ts');
+const teamCouncilTest = read('engine/tests/brain/team.council.test.ts');
+const teamCouncilServerTest = read('engine/tests/brain/team.council.server.test.ts');
+const teamCouncilYoutubeTest = read('engine/tests/brain/team.council.youtube.test.ts');
+
+add('agent-team-module-structure',
+  ['truth.ts', 'types.ts', 'agents.ts', 'orchestrator.ts', 'routes.ts']
+    .every((f) => fs.existsSync(path.join(root, 'engine/brain/team', f))),
+  'وحدة فريق الوكلاء موجودة بمكوّناتها (حقيقة/أنواع/وكلاء/منسّق/مسارات)');
+
+add('agent-team-truth-model-separation',
+  teamTruth.includes("'FACT'") && teamTruth.includes("'DERIVED'") && teamTruth.includes("'HYPOTHESIS'") &&
+  teamTruth.includes("'UNKNOWN'") && teamTruth.includes("'UNAVAILABLE'") &&
+  teamTruth.includes('truthStateForEvidence'),
+  'نموذج الصدق يفصل FACT/DERIVED/HYPOTHESIS/UNKNOWN/UNAVAILABLE صراحةً');
+
+add('agent-team-hypothesis-not-promoted',
+  teamTruth.includes('confirmTruthState') && teamTruth.includes('promoted: false') &&
+  teamTruth.includes('promoteWithIndependentEvidence') && teamTruth.includes('independentSource'),
+  'الفرضية لا تصبح حقيقة بالتأييد؛ الترقية تحتاج دليلاً مستقلاً فقط');
+
+add('agent-team-agents-role-separated',
+  teamTypes.includes('TEAM_AGENT_ROLE') && teamTypes.includes("research: 'observe'") &&
+  teamTypes.includes("strategy: 'recommend'") && teamTypes.includes("critic: 'verify'") &&
+  teamTypes.includes("decision: 'decide'"),
+  'أدوار الوكلاء مفصولة (رصد/تحليل/توصية/تحقق/قرار) — لا تجاوز صلاحيات');
+
+add('agent-team-capability-gated',
+  teamAgents.includes('capabilityRow') && teamAgents.includes("'UNAVAILABLE'") &&
+  teamAgents.includes('connectedPlatforms') && teamAgents.includes('verified'),
+  'الفريق يحترم مصفوفة القدرات ولا يدّعي اتصالاً بلا توثيق');
+
+add('agent-team-no-external-execution',
+  !/executeYouTubeReply|executeYouTubePublish|publishNow|sendMessage|comments\.insert/.test(teamAgents + teamOrchestrator + teamRoutesSrc) &&
+  !/app\.post\('\/api\/agent\/team\/(execute|publish|reply)/.test(teamRoutesSrc),
+  'فريق الوكلاء لا ينفّذ أي إجراء خارجي (قرار مقترح فقط)');
+
+add('agent-team-routes-authenticated-owner-run',
+  teamRoutesSrc.includes("'/api/agent/team'") && teamRoutesSrc.includes("'/api/agent/team/:teamSessionId'") &&
+  teamRoutesSrc.includes("'/api/agent/team/run'") &&
+  /app\.post\('\/api\/agent\/team\/run', deps\.authenticateToken, deps\.requireOwner/.test(teamRoutesSrc),
+  'مسارات الفريق محمية، والتشغيل للمالك فقط');
+
+add('agent-team-wired-server',
+  server.includes('registerTeamRoutes(app,') && server.includes('runTeamSessionNow') &&
+  server.includes('teamSessionState'),
+  'فريق الوكلاء موصول في server.ts بحقن التبعيات');
+
+add('agent-team-triggered-by-real-event',
+  /runTeamSessionNow\(\s*"youtube_event"/.test(server) && server.includes('comment:${String(c.commentId)}'),
+  'جلسة الفريق تُشغَّل من حدث YouTube حقيقي داخل دورة المراقبة');
+
+add('agent-team-reuses-brain-memory',
+  server.includes('teamSessionToMemoryRecords') && server.includes('persistBrainMemory(records)') &&
+  teamOrchestrator.includes("from '../memory/store'") && teamOrchestrator.includes('toMemoryRecord') &&
+  !/new Map|CREATE TABLE|secondMemory|teamMemoryStore/i.test(teamOrchestrator),
+  'قرار الفريق يُكتب في نفس ذاكرة العقل القائمة (لا نظام/جدول ثانٍ)');
+
+add('agent-team-persists-state',
+  server.includes('STORAGE_KEY_TEAM_SESSIONS') && server.includes('loadTeamSessionsSync') &&
+  server.includes('normalizeTeamSessionState') && server.includes('persistTeamSessions'),
+  'جلسات الفريق تُحفظ وتُسترجع عبر محوّل الحالة (تصمد بعد restart)');
+
+add('agent-team-dedupe-by-event',
+  teamOrchestrator.includes('teamDedupeKey') && teamOrchestrator.includes('findSessionByDedupeKey') &&
+  teamOrchestrator.includes('upsertTeamSession') && teamOrchestrator.includes('options.existing.dedupeKey === dedupeKey'),
+  'منع التكرار مشتق من هوية الحدث الحقيقي (لا جلسة مكررة)');
+
+add('agent-team-critic-verifies-honestly',
+  teamOrchestrator.includes('criticFailed') && teamAgents.includes('criticAgent') &&
+  teamAgents.includes('rejected') && teamAgents.includes('بلا مصدر'),
+  'الناقد يرفض الادعاءات غير المدعومة وفشله يجعل القرار غير مُتحقَّق');
+
+add('agent-team-failure-isolated',
+  teamOrchestrator.includes('safe(') && teamOrchestrator.includes('failedOutput') &&
+  teamOrchestrator.includes("'partial'") && teamOrchestrator.includes('failedAgents'),
+  'فشل وكيل لا يُسقط الجلسة ويُسجَّل صراحةً (حالة partial)');
+
+add('agent-team-no-gemini-consumption',
+  server.includes('geminiUsedOnSessions: false') && teamAgents.includes('aiAvailable') &&
+  !/new GoogleGenAI|generateContent/.test(teamDir('agents.ts') + teamOrchestrator + teamRoutesSrc),
+  'جلسات الفريق لا تستهلك Gemini (منطق حتمي)');
+
+add('agent-team-no-secrets',
+  !/api[_-]?key|client_secret|refresh_token|access_token|GEMINI_API_KEY/i.test(
+    teamDir('agents.ts') + teamDir('truth.ts') + teamTypes + teamOrchestrator + teamRoutesSrc),
+  'وحدة فريق الوكلاء لا تحمل أي سرّ');
+
+add('agent-team-health-exposed',
+  server.includes('agentTeam: {') && server.includes('summarizeTeamState(teamSessionState)') &&
+  server.includes('executesExternalActions: false'),
+  'حالة الفريق معلنة في /api/health و/api/readiness بلا سرّ');
+
+add('agent-team-ui-surface',
+  read('src/components/agent/AgentTeamCenter.tsx').includes('getTeamSessions') &&
+  read('src/components/agent/AgentTeamCenter.tsx').includes('runTeamSession') &&
+  read('src/components/agent/CentralBrainView.tsx').includes('AgentTeamCenter') &&
+  read('src/services/api.ts').includes('/api/agent/team'),
+  'لوحة الفريق موصولة في العقل المركزي عبر apiService بلا أي سرّ');
+
+add('agent-team-tests',
+  fs.existsSync(path.join(root, 'engine/tests/brain/team.council.test.ts')) &&
+  fs.existsSync(path.join(root, 'engine/tests/brain/team.council.server.test.ts')) &&
+  fs.existsSync(path.join(root, 'engine/tests/brain/team.council.youtube.test.ts')) &&
+  pkg.scripts['test:team-council'] && pkg.scripts['test:team-council-server'] && pkg.scripts['test:team-council-youtube'] &&
+  typeof pkg.scripts.test === 'string' && pkg.scripts.test.includes('test:team-council') &&
+  pkg.scripts.test.includes('test:team-council-server') && pkg.scripts.test.includes('test:team-council-youtube'),
+  'اختبارات الفريق (وحدة + خادم + تدفّق YouTube حقيقي) مسجّلة وضمن npm test');
+
+add('agent-team-youtube-flow-test',
+  teamCouncilYoutubeTest.includes('real YouTube event') &&
+  teamCouncilYoutubeTest.includes('restart persistence') &&
+  teamCouncilYoutubeTest.includes('deduplication'),
+  'اختبار التدفّق يثبت حدث YouTube حقيقي => جلسة فريق + ثبات بعد restart + منع تكرار');
+
+
 // --- Central Brain upgrade (طبقة العقل المركزي المُطوَّرة) ---
 const brainDir = (p) => read(path.join('engine/brain', p));
 const brainState = brainDir('state.ts');

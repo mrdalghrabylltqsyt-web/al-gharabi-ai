@@ -24,6 +24,15 @@ import { registerCommercialRoutes } from "./engine/brain/sales/routes";
 import { registerGrowthRoutes } from "./engine/brain/growth/routes";
 import { registerDigitalSalesRoutes } from "./engine/brain/digital/routes";
 import { registerCommercialBrainRoutes } from "./engine/brain/commercial/routes";
+import { registerTeamRoutes } from "./engine/brain/team/routes";
+import {
+  runTeamSession,
+  upsertTeamSession,
+  teamSessionToMemoryRecords,
+  summarizeTeamState,
+  type TeamRunOptions,
+} from "./engine/brain/team/orchestrator";
+import { emptyTeamSessionState, type TeamSessionState } from "./engine/brain/team/types";
 import { buildUnifiedCommercialBrain } from "./engine/brain/commercial/unified";
 import { buildCatalogFromWorkspace } from "./engine/brain/sales/commercialRuntime";
 import { buildGrowthRuntime } from "./engine/brain/growth/runtime";
@@ -5391,6 +5400,17 @@ async function runYouTubeWatcherCycle(trigger: "schedule" | "manual" = "schedule
       if (hasProcessed(watcherState.processed, c.commentId)) continue;
       analysed += 1;
       newDetected += 1;
+      // فريق الوكلاء (Batch 6): حدث YouTube حقيقي => جلسة فريق واحدة (بلا تكرار،
+      // بلا تنفيذ خارجي). تُشغَّل هنا داخل دورة المراقبة الدائمة. أي فشل لا يُسقط
+      // الدورة (جلسة الفريق لا ترمي)، والقرار يُكتب في نفس ذاكرة العقل القائمة.
+      try {
+        await runTeamSessionNow(
+          "youtube_event",
+          `تحليل تعليق YouTube جديد والبتّ في الرد عليه من الحقائق المسجّلة (بلا اختراع)`,
+          "youtube",
+          `comment:${String(c.commentId)}`,
+        );
+      } catch { /* جلسة الفريق لا تُسقط دورة المراقبة */ }
       const cls = classifyComment(String(c.text || ""));
       const alreadyReplied = history.some((h: any) => h.externalId === c.commentId);
       // حساب القناة نفسه: بالمعرّف الحقيقي للقناة (أدق) أو بالاسم المخزّن.
@@ -8522,6 +8542,10 @@ async function bootstrapStorage(): Promise<void> {
       // حالة المبيعات الرقمية (موافقة/إلغاء + سجل متابعة): تُقرأ قبل بدء الخدمة.
       const digitalSales = await storageAdapter.read<any>(STORAGE_KEY_DIGITAL_SALES);
       digitalSalesStore = normalizeDigitalSalesStore(digitalSales);
+      // جلسات فريق الوكلاء: تُقرأ قبل بدء الخدمة فتصمد بعد restart/cold start،
+      // فيمنع التكرار إعادة العمل المكرر لنفس الحدث.
+      const teamSessions = await storageAdapter.read<any>(STORAGE_KEY_TEAM_SESSIONS);
+      teamSessionState = normalizeTeamSessionState(teamSessions);
       // حالة مدير تشغيل YouTube (المراقبة/التحكم/سجل المعالجة): تُقرأ قبل بدء
       // الخدمة فيصمد الـcheckpoint وسجل منع التكرار وإعدادات الأتمتة بعد restart.
       const watcher = await storageAdapter.read<any>(WATCHER_STATE_KEY);
@@ -8538,6 +8562,7 @@ async function bootstrapStorage(): Promise<void> {
     loadAgentStateSync();
     loadBrainMemorySync();
     loadDigitalSalesSync();
+    loadTeamSessionsSync();
     const watcher = storageAdapter.readSync<any>(WATCHER_STATE_KEY);
     if (watcher) applyWatcherStateSnapshot(watcher);
     const media = storageAdapter.readSync<any>(CONTENT_MEDIA_KEY);
@@ -9142,6 +9167,106 @@ function persistBrainMemory(records: BrainMemoryRecord[]): number {
       console.warn("Could not persist brain memory:", lastPersistError);
     });
   return mySeq;
+}
+
+// -----------------------------------------------------------------------------
+// فريق الوكلاء (Agent Council — Batch 6).
+//
+// جلسة فريق داخلية ينسّقها العقل المركزي: بحث → تحليل → استراتيجية → نقد → قرار.
+// **لا تنفيذ خارجي** ولا استدعاء AI بلا داعٍ (منطق حتمي)، وقرارها يُكتب في **نفس**
+// ذاكرة العقل القائمة (`persistBrainMemory`) عند استيفاء قواعد الصدق. تُحفظ الجلسات
+// عبر محوّل الحالة في مفتاح `teamSessions` فتصمد بعد restart/cold start.
+// -----------------------------------------------------------------------------
+
+const STORAGE_KEY_TEAM_SESSIONS = "teamSessions";
+let teamSessionState: TeamSessionState = emptyTeamSessionState();
+
+/** يسترجع جلسات الفريق عند الإقلاع (تصمد بعد restart). */
+function loadTeamSessionsSync(): void {
+  const raw = storageAdapter.readSync<any>(STORAGE_KEY_TEAM_SESSIONS);
+  teamSessionState = normalizeTeamSessionState(raw);
+}
+
+/** يوحّد لقطة الجلسات المحمّلة (يتجاهل أي شكل غير صالح بلا إسقاط). */
+function normalizeTeamSessionState(raw: any): TeamSessionState {
+  const sessions = Array.isArray(raw?.sessions) ? raw.sessions : [];
+  const valid = sessions.filter((s: any) =>
+    s && typeof s.teamSessionId === 'string' && typeof s.task === 'string' && typeof s.dedupeKey === 'string'
+    && Array.isArray(s.participants) && ['completed', 'partial', 'failed'].includes(s.status),
+  );
+  return { sessions: valid.slice(-2000) };
+}
+
+/** يحفظ جلسات الفريق دائمياً (بلا أي سرّ). */
+function persistTeamSessions(): void {
+  if (!storageReady) return;
+  persistQueue = persistQueue
+    .then(() => storageAdapter.write(STORAGE_KEY_TEAM_SESSIONS, { sessions: teamSessionState.sessions }))
+    .catch((error: any) => {
+      lastPersistError = String(error?.code || error?.name || "persist_failed").slice(0, 60);
+      console.warn("Could not persist team sessions:", lastPersistError);
+    });
+}
+
+/** سياق الفريق الحقيقي من بيانات الإنتاج (بلا شبكة وبلا أسرار). */
+function teamContext(task: string, platform: PlatformId) {
+  const input = brainRuntimeInput();
+  const activeMemory = brainMemoryStore.records.filter((r) => r.status === 'active' && !r.stale).length;
+  return {
+    now: Date.now(),
+    task,
+    platform,
+    comments: input.comments.map((c) => ({ platform: c.platform, externalId: c.externalId, text: c.text, at: c.at ?? null, authorName: c.authorName ?? null })),
+    watcher: input.watcher.map((w) => ({ commentId: w.commentId, stage: w.stage, action: w.action ?? null, code: w.code ?? null, at: w.at ?? null, externalReplyId: w.externalReplyId ?? null })),
+    connections: input.connections,
+    verifiedFacts: (input.verifiedFacts || []).map((f) => ({ id: f.id, statement: f.statement, source: f.source })),
+    memoryActive: activeMemory,
+    aiAvailable: Boolean(process.env.GEMINI_API_KEY),
+    priorSessions: teamSessionState.sessions.length,
+  };
+}
+
+/**
+ * يشغّل جلسة فريق على سياق حقيقي، يحفظها (بلا تكرار)، ويكتب قرارها في ذاكرة العقل
+ * القائمة عند استيفاء قواعد الصدق. لا ينفّذ أي إجراء خارجي. لا يرمي.
+ */
+async function runTeamSessionNow(trigger: TeamRunOptions['trigger'], task: string, platform: PlatformId, eventIdentity: string) {
+  const nowMs = Date.now();
+  const dedupe = `team:${platform}:${String(eventIdentity).trim().toLowerCase().slice(0, 200)}:${String(task).trim().toLowerCase().replace(/\s+/g, ' ').slice(0, 200)}`;
+  const existing = teamSessionState.sessions.find((s) => s.dedupeKey === dedupe) || null;
+  const session = runTeamSession(teamContext(task, platform), {
+    trigger,
+    platform,
+    eventIdentity,
+    existing,
+    now: nowMs,
+  });
+  // إعادة جلسة موجودة (منع تكرار) => لا عمل مكرر ولا كتابة ذاكرة مكررة.
+  if (existing && existing.teamSessionId === session.teamSessionId) {
+    return { session, memoryWritten: existing.memoryWritten, persistenceError: existing.persistence.error };
+  }
+  const up = upsertTeamSession(teamSessionState, session);
+  teamSessionState = up.state;
+  // قرار الجلسة => ذاكرة العقل القائمة (بلا نظام ثانٍ) عند استيفاء قواعد الصدق.
+  const records = teamSessionToMemoryRecords(session);
+  let memoryWritten = false;
+  let memoryError: string | null = null;
+  if (records.length) {
+    const seq = persistBrainMemory(records);
+    if (seq >= 0) {
+      memoryWritten = true;
+      session.memoryRecordIds = records.map((r) => r.id);
+    } else {
+      memoryError = 'memory_not_persisted';
+    }
+  }
+  session.memoryWritten = memoryWritten;
+  // ثبات الجلسة نفسها + بصمة الحفظ الصادقة (لا ادّعاء نجاح عند الفشل).
+  session.persistence = { ok: storageReady, error: storageReady ? null : 'storage_not_ready' };
+  const up2 = upsertTeamSession(teamSessionState, session);
+  teamSessionState = up2.state;
+  persistTeamSessions();
+  return { session, memoryWritten, persistenceError: memoryError ?? session.persistence.error };
 }
 
 // -----------------------------------------------------------------------------
@@ -9889,6 +10014,14 @@ app.get("/api/readiness", (_req, res) => {
         limitations: state.limitations,
         // وقت تشغيل العقل 24/7 (Batch 5): يُثبت أن العقل يعمل على الخادم بلا متصفح.
         runtime: brainRuntimeStatus(),
+        // فريق الوكلاء (Batch 6): جلسات/خلافات/تحقق/ذاكرة — بلا تنفيذ خارجي ولا AI.
+        agentTeam: {
+          enabled: true,
+          ...summarizeTeamState(teamSessionState),
+          executesExternalActions: false,
+          geminiUsedOnSessions: false,
+          note: 'فريق وكلاء داخلي: قرار مقترح فقط؛ لا تنفيذ خارجي.',
+        },
       };
     })(),
     timestamp: new Date().toISOString(),
@@ -10291,6 +10424,16 @@ app.get("/api/health", (_req, res) => {
     youtubeWatcher: watcherStatusBlock(),
     // وقت تشغيل العقل المركزي 24/7 (Batch 5): حالة/إيقاع/قفل/عدّادات الذاكرة — بلا سرّ.
     brainRuntime: brainRuntimeStatus(),
+    // فريق الوكلاء (Batch 6): ملخّص الجلسات/الخلافات/التحقق/الذاكرة — بلا سرّ.
+    // يُثبت أن الجلسات تعمل وأن قراراتها تُحفظ في نفس ذاكرة العقل القائمة.
+    agentTeam: {
+      enabled: true,
+      ...summarizeTeamState(teamSessionState),
+      executesExternalActions: false,
+      geminiUsedOnSessions: false,
+      agents: ['orchestrator', 'research', 'analysis', 'strategy', 'critic', 'decision'],
+      note: 'فريق وكلاء داخلي: رصد/تحليل/تحقق/قرار مقترح فقط — لا تنفيذ خارجي ولا استهلاك AI.',
+    },
     // طابور المحتوى (نشر/جدولة/مراجعة): ملخص حقيقي بلا أي سرّ.
     youtubeContent: { summary: contentQueueSummary(), mediaStored: contentMedia.size, mediaTotalBytes: contentMediaTotalBytes },
     // حالة موصل TikTok الحقيقي (منطقي فقط بلا أي سرّ أو رمز).
@@ -12201,6 +12344,22 @@ registerGrowthRoutes(app, {
     campaigns: (workspace as any).marketingCampaigns,
     performanceRecords: (workspace as any).performanceRecords,
   }),
+});
+
+// مسارات فريق الوكلاء (Agent Council — Batch 6) — قراءة/تشخيص فقط.
+// العقل المركزي ينسّق فريقاً داخلياً (بحث/تحليل/استراتيجية/نقد/قرار) على بيانات
+// حقيقية. لا تنفيذ خارجي: الجلسة تنتج قراراً مقترحاً فقط، والبوابات القائمة تبقى
+// المرجع. التشغيل (POST /run) للمالك فقط، والقرار يُكتب في نفس ذاكرة العقل القائمة.
+registerTeamRoutes(app, {
+  authenticateToken,
+  requireOwner,
+  sessions: () => teamSessionState.sessions,
+  runSession: (trigger) => runTeamSessionNow(
+    trigger,
+    'تحليل الوضع الحالي للقناة وتقديم قرار مقترح من الأدلة الحقيقية (بلا اختراع)',
+    'youtube',
+    `manual:${new Date().toISOString().slice(0, 13)}`,
+  ),
 });
 
 // مسارات العقل المركزي للمبيعات الرقمية — قراءة وتحضير فقط من بيانات حقيقية.

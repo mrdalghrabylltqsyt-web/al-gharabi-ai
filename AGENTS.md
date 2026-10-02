@@ -3691,3 +3691,65 @@ final-audit الـ27 الجديدة (`digital-sales-*`، **1124 إجمالاً**
 **لم يُمسّ:** الدفعات 1–4 (العقل التجاري/التسويق/الرقمي/الموحّد)، Gemini/firewall، OAuth/
 الاعتمادات، المصادقة، قاعدة البيانات، DR/الاستعادة، YouTube (المراقب/الطابور/التفويض)،
 بقية المنصات، ونموذج الجدولة. لا تغيير في أي سرّ أو مفتاح.
+
+## فريق الوكلاء الداخلي (Agent Council) — Batch 6 (2026-10-02)
+
+تحويل العقل المركزي من وكيل واحد إلى **فريق تفكير تعاوني داخلي** ينسّقه العقل المركزي
+على **بيانات حقيقية**، مع الفصل الصريح `FACT ≠ DERIVED ≠ HYPOTHESIS ≠ UNKNOWN ≠ UNAVAILABLE`
+و`Analysis ≠ Execution`. الهدف: رفع جودة القرار حول الأنظمة القائمة (سوشيال/AI/تسويق) بلا
+نظام ذاكرة ثانٍ وبلا أي تنفيذ خارجي وبلا استهلاك Gemini.
+
+### الوحدات الجديدة (`engine/brain/team/`، منطق خالص قابل للاختبار)
+- `truth.ts`: نموذج الصدق — `TeamTruthState` (FACT/DERIVED/HYPOTHESIS/UNKNOWN/UNAVAILABLE)،
+  `truthStateForEvidence`، `confidenceForTruth`، `confirmTruthState` (**التأييد لا يرقّي
+  الفرضية أبداً**)، `promoteWithIndependentEvidence` (الترقية إلى FACT تحتاج مصدراً مستقلاً
+  + عيّنة كافية)، `isActionableTruth` (الحقائق/الاستنتاجات فقط).
+- `types.ts`: أنواع الجلسة (`TeamSession`, `TeamAgentOutput`, `TeamConflict`, `TeamDecision`)،
+  معرّفات الوكلاء الستة، `TEAM_AGENT_ROLE` (رصد/تحليل/توصية/تحقق/قرار)، `TEAM_SESSION_MAX`.
+- `agents.ts`: الوكلاء المتخصّصون (وحدات منطقية حتمية، لا اشتراكات AI خارجية):
+  `researchAgent` (يجمع الأدلة الحقيقية فقط)، `analysisAgent` (يشتقّ نمطاً حسابياً + فرضية
+  معلنة)، `strategyAgent` (توصية مبنية على أدلة + تحذير قدرة NOT_AVAILABLE)، `criticAgent`
+  (يرفض FACT بلا مصدر، يرفض ادّعاء إجراء خارجي، يكشف خلاف المنصة غير المتصلة وتناقض
+  دليل/فجوة)، `decisionAgent` (قرار مقترح + ثقة + حدود؛ غير مُتحقَّق إن فشل الناقد).
+- `orchestrator.ts`: المنسّق — `decideRequiredAgents`، `teamDedupeKey`، `runTeamSession`
+  (فشل وكيل معزول عبر `safe`، حالة `partial`)، `upsertTeamSession` (بلا تكرار)،
+  `teamSessionToMemoryRecords` (**يحوّل القرار إلى ذاكرة عبر `toMemoryRecord` القائم فقط**)،
+  `summarizeTeamSession`/`summarizeTeamState`.
+- `routes.ts`: مسارات الفريق (قراءة/تشخيص)، بحقن تبعيات `authenticateToken`/`requireOwner`.
+
+### الربط في `server.ts`
+- `teamSessionState` تُحفظ وتُسترجع عبر محوّل الحالة في مفتاح `teamSessions` (file + Postgres)
+  فتصمد بعد restart/cold start. `runTeamSessionNow` يبني السياق من بيانات الإنتاج الحقيقية
+  (`brainRuntimeInput` + `platformConnections` + `verifiedFacts`)، يمنع التكرار بمفتاح الحدث،
+  ويكتب القرار في **نفس** `persistBrainMemory` — **لا نظام/جدول ثانٍ**.
+- **المشغّل الحقيقي:** داخل دورة مراقب YouTube 24/7 (`runYouTubeWatcherCycle`)، كل تعليق جديد
+  حقيقي يُنشئ جلسة فريق واحدة (`trigger: youtube_event`, `eventIdentity: comment:<id>`) بلا
+  تكرار. أي فشل لا يُسقط دورة المراقبة.
+- مسارات owner: `POST /api/agent/team/run` (تشغيل جلسة الآن — قرار مقترح فقط)، و`GET
+  /api/agent/team` و`GET /api/agent/team/:teamSessionId` (قراءة محمية).
+- `/api/health.agentTeam` و`/api/readiness.brain.agentTeam` يعرضان الملخّص
+  (`executesExternalActions: false`, `geminiUsedOnSessions: false`) بلا أي سرّ.
+
+### الواجهة
+`src/components/agent/AgentTeamCenter.tsx` (مدمج في `CentralBrainView`): قائمة الجلسات،
+تفاصيل كاملة (الأدلة/التحليل/التوصيات/الاعتراضات/الخلافات/القرار/الثقة/حالة الصدق/حالة
+الذاكرة)، وزر «تشغيل جلسة فريق الآن» للمالك. تُعرض نتيجة الخادم الفعلية فقط بلا أي ادّعاء.
+
+### القواعد الملزمة (مُختبرة)
+- **لا تنفيذ خارجي من الفريق**: القرار مقترح فقط، والتنفيذ يمر ببوابات المشروع القائمة.
+- **الفرضية لا تصبح حقيقة بالتكرار**؛ الترقية تحتاج دليلاً مستقلاً.
+- **لا اختراع**: لا سعر/قسط/توفر/معرّف مزوّد؛ غير المتاح يُعلن UNAVAILABLE، والناقد يرفض
+  الادعاء بلا مصدر.
+- **لا استهلاك Gemini** في الجلسات (منطق حتمي)، **ولا ذاكرة ثانية** (نفس Brain Memory).
+
+اختبارات: `engine/tests/brain/team.council.test.ts` (`npm run test:team-council`، 80 فحصاً
+وحدة) و`engine/tests/brain/team.council.server.test.ts` (`npm run test:team-council-server`،
+44 فحصاً على خادم حقيقي: تصريح، منع تكرار، ثبات بعد restart، ذاكرة العقل، بلا سرّ) و
+`engine/tests/brain/team.council.youtube.test.ts` (`npm run test:team-council-youtube`، 25
+فحصاً: حدث YouTube حقيقي عبر خادم Google وهمي => جلسة فريق + ثبات بعد restart + منع تكرار).
+فحوص final-audit الجديدة `agent-team-*` (**1192 إجمالاً**). `npm run lint` + `build` + `test`
++ `final-audit` كلها ناجحة.
+
+**لم يُمسّ:** الدفعات 1–5 (العقل التجاري/التسويق/الرقمي/الموحّد/وقت التشغيل)، Gemini/firewall،
+OAuth/الاعتمادات/الأسرار، المصادقة، قاعدة البيانات، DR/الاستعادة، YouTube (المراقب/الطابور/
+التفويض)، بقية المنصات، ونموذج الجدولة.
