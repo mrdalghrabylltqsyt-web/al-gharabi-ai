@@ -3442,3 +3442,50 @@ Telegram، ولا Gemini، ولا rp-002/rp-003/rp-004، ولا PostgreSQL ال�
 ### لم يُمسّ
 التعافي/DR كامل، المفاتيح، OAuth/المنصات، Gemini، قاعدة البيانات، الحالة المحفوظة،
 أو أي مسار قائم. الوثيقة الكاملة: `docs/تحضير-العقل-التجاري.md`.
+
+## الدفعة 1/4 — العقل التجاري المتصل ببيانات الغرابي الحقيقية (2026-10-02)
+
+تحويل طبقة التحضير (`f727ce0`) إلى **عقل تجاري يقرأ الواقع الحقيقي** للمعرض: منتجات،
+خطط تقسيط، محادثات، عملاء محتملون، مبيعات، تعليقات، حملات، وسجلات أداء — بلا اختراع
+أي معلومة تجارية.
+
+### وحدات الربط الجديدة (`engine/brain/sales/`)
+- `commercialRuntime.ts`: `buildCommercialRuntime` + `buildCatalogFromWorkspace` +
+  `buildInteractionsFromComments` + `buildJourneysFromWorkspace` + `buildRoiInput` +
+  `buildSalesEvidence` + `buildCampaignsFromWorkspace` + `approvedInstallmentRules`.
+  - الكتالوج: سعر/توفر موثّقان من `workspace.products`؛ عرض القسط يُدرج **فقط** إذا كان
+    `DERIVED` من سعر موثّق + قاعدة تقسيط معتمدة (من `workspace.installmentPlans` أو
+    `durationMonths`/`downPaymentPercent` الحقيقيين).
+  - المسار: استفسار/سؤال ⇒ `PURCHASE_SIGNAL` فقط؛ `VERIFIED_SALE` **بمعرّف بيع حقيقي** من
+    `workspace.sales`؛ المحادثات/التعليقات لا تُرقّي أحداً إلى مشترٍ.
+  - ROI: الإيراد من مبيعات حقيقية؛ تكلفة الحملة غير المسجّلة = `null` (غير متاح).
+  - الربط بالمنتج بمعرّف صريح من السجل فقط — لا استنتاج من نص التعليق.
+- `commercialMemory.ts`: جسر الذاكرة المركزية. يبني سجلات دائمة بادئتها `commercial:`،
+  ويفصل الأصل صراحةً: `platform_data` (حقيقة ملاحَظة) / `derived` (استنتاج) /
+  `ai_statement` (فرضية). **الفرضية لا تُخزَّن كحقيقة**. `mergeCommercialMemory` بلا تكرار،
+  و`summarizeCommercialMemory` ملخّص آمن.
+- `routes.ts`: `registerCommercialRoutes` — مسارات **قراءة فقط**:
+  - `GET /api/agent/brain/sales/state` (owner فقط): الحالة الكاملة + تسميات عربية + فجوات الجاهزية.
+  - `GET /api/agent/brain/sales/summary` (مصادقة): ملخّص بلا بيانات عملاء تفصيلية.
+
+### الربط
+- `server.ts`: `registerCommercialRoutes` بعد مسارات العقل المركزي، يحقن بيانات مساحة العمل
+  الحقيقية + `brainMemoryStore` + `persistBrainMemory`.
+- الواجهة: `src/components/agent/CommercialBrainView.tsx` (تبويب `commercial_brain`، Owner)
+  — منتجات بحالة التوثيق، إشارات الطلب، الفرص بفصل معرفي، مسار العملاء، المبيعات الموثّقة،
+  حالة الحملات، ذاكرة العقل، وما ينقص. `apiService.getCommercialState/getCommercialSummary`.
+  موصولة في `App.tsx` و`Sidebar.tsx` (أيقونة `TrendingUp`).
+
+### اختبارات وفحوص
+- `engine/tests/brain/sales.integration.test.ts` (**48 فحصاً**): الكتالوج من بيانات حقيقية،
+  سلامة السعر/التقسيط، إشارات الطلب، استفسار ≠ بيع، الفرص، ROI، أدلة الاستدلال، الحملات،
+  الذاكرة (حقيقة ≠ استنتاج ≠ فرضية)، الحالة الفارغة، ولا Gemini.
+- `engine/tests/brain/sales.routes.test.ts` (**20 فحصاً** على خادم حقيقي): 401 بلا جلسة،
+  إنشاء منتج/عميل/بيع عبر الـAPI، قراءة الحالة تعكس البيانات الحقيقية، لا تسريب سرّ، ملخّص خفيف.
+- `final-audit` = **1066 فحصاً** (+18 جديداً: `sales-runtime-*`، `sales-memory-*`،
+  `sales-routes-*`، `sales-ui-*`؛ حُذف فحص `sales-foundation-not-wired` القديم لأنه صار موصولاً).
+- `npm run lint` + `build` + `test` (EXIT=0) + `final-audit` كلها ناجحة.
+
+### لم يُمسّ
+التعافي/DR كامل، المفاتيح، OAuth/المنصات، Gemini، قاعدة البيانات، الحالة المحفوظة.
+**لا تنفيذ خارجي** في هذه الدفعة (قراءة/تحليل فقط). الوثيقة: `docs/دفعة-1-العقل-التجاري.md`.

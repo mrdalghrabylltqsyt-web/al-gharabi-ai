@@ -26,6 +26,7 @@ import {
   Brain,
   PlugZap,
   CloudUpload,
+  TrendingUp,
 } from 'lucide-react';
 
 interface SidebarProps {
@@ -186,6 +187,14 @@ export const Sidebar: React.FC<SidebarProps> = ({ mobileOpen, onCloseMobile }) =
       badge: 'ذكاء',
       badgeColor: 'bg-indigo-500/20 text-indigo-300 border-indigo-500/30',
       desc: 'ذكاء محتوى وتعلّم وتوصيات لكل المنصات العشر',
+    },
+    {
+      id: 'commercial_brain',
+      label: 'العقل التجاري (مبيعات ونمو)',
+      icon: TrendingUp,
+      badge: currentUser?.role === 'owner' ? 'Owner' : null,
+      badgeColor: 'bg-emerald-500/20 text-emerald-300 border-emerald-500/30',
+      desc: 'الواقع التجاري الحقيقي: منتجات وطلب وفرص ومبيعات موثّقة',
     },
     {
       id: 'calendar',

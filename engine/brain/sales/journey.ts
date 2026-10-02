@@ -71,7 +71,7 @@ function stageIndex(stage: JourneyStage): number {
  * VERIFIED_SALE من نص وحده: تلك تحتاج مصدراً تجارياً (نظام العملاء/البيع).
  */
 export function stageFromInteraction(input: {
-  platform: PlatformId;
+  platform: PlatformId | 'cross_platform';
   category: ConversationCategory;
   isBusinessInquiry: boolean;
 }): JourneyEvidence {

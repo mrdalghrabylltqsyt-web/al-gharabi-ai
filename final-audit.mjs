@@ -1771,9 +1771,37 @@ add('sales-growth-foundation-module', salesGrowthModule.includes('export functio
 add('sales-foundation-no-env-no-secret', !/process\.env/.test(salesGrowthModule) && !/(clientSecret|refreshToken|AIzaSy|api[_-]?key)/i.test(salesGrowthModule + catalogModule + roiModule), 'طبقة التحضير بلا قراءة env وبلا أي سرّ');
 add('sales-foundation-no-execution', !/\b(publish|sendMessage|comments\.insert|fetch\()/.test(salesGrowthModule) && !/app\.(get|post|put|patch|delete)\(/.test(salesGrowthModule), 'طبقة التحضير لا تنفّذ ولا تُسجّل أي مسار HTTP');
 add('sales-foundation-no-gemini', !/aiEngine|generateContent|GoogleGenAI/.test(salesGrowthModule + demandModule + opportunityModule + journeyModule + salesReasoningModule + roiModule + campaignModule + catalogModule), 'عمليات التحضير حتمية بالكامل بلا استهلاك Gemini');
-add('sales-foundation-not-wired', !server.includes('salesGrowth') && !server.includes('buildSalesGrowthFoundation') && !server.includes('engine/brain/sales/'), 'طبقة التحضير غير موصولة بأي مسار في هذه الدفعة (امتداد آمن معزول)');
 add('sales-foundation-no-fake-counter', !/125\s*\/\s*125/.test(salesGrowthModule + catalogModule + roiModule + campaignModule), 'لا عدّاد وهمي في أي وحدة تجارية');
 add('sales-foundation-tests', salesFoundationTest.includes('لا بيع بلا معرّف') && salesFoundationTest.includes('لا قسط بلا سعر موثّق') && salesFoundationTest.includes('PASSED:') && (pkg.scripts['test'] || '').includes('test:sales-foundation'), 'اختبار أساس العقل التجاري موجود ومضمّن في npm test');
+
+// ===========================================================================
+// البنية التحتية الحقيقية للعقل التجاري (Batch 1/4) — الربط ببيانات الغرابي.
+// ===========================================================================
+const commercialRuntime = fs.existsSync(path.join(root, 'engine/brain/sales/commercialRuntime.ts')) ? read('engine/brain/sales/commercialRuntime.ts') : '';
+const commercialMemory = fs.existsSync(path.join(root, 'engine/brain/sales/commercialMemory.ts')) ? read('engine/brain/sales/commercialMemory.ts') : '';
+const commercialRoutes = fs.existsSync(path.join(root, 'engine/brain/sales/routes.ts')) ? read('engine/brain/sales/routes.ts') : '';
+const commercialView = fs.existsSync(path.join(root, 'src/components/agent/CommercialBrainView.tsx')) ? read('src/components/agent/CommercialBrainView.tsx') : '';
+const salesIntegrationTest = fs.existsSync(path.join(root, 'engine/tests/brain/sales.integration.test.ts')) ? read('engine/tests/brain/sales.integration.test.ts') : '';
+const salesRoutesTest = fs.existsSync(path.join(root, 'engine/tests/brain/sales.routes.test.ts')) ? read('engine/tests/brain/sales.routes.test.ts') : '';
+
+add('sales-runtime-module', commercialRuntime.includes('export function buildCommercialRuntime') && commercialRuntime.includes('export function buildCatalogFromWorkspace') && commercialRuntime.includes('export function buildJourneysFromWorkspace'), 'وحدة الربط ببيانات الغرابي الحقيقية موجودة (كتالوج + مسار عملاء + حالة)');
+add('sales-runtime-real-sources', commercialRuntime.includes('workspace.products') === false && commercialRuntime.includes('buildCatalogFromWorkspace') && commercialRuntime.includes('approvedInstallmentRules'), 'الكتالوج يُبنى من منتجات وخطط تقسيط حقيقية (لا قيم ثابتة)');
+add('sales-runtime-no-fake-price', /buildCatalogFromWorkspace[\s\S]{0,900}catalogProductFromWorkspace/.test(commercialRuntime) && commercialRuntime.includes("offer.state === 'DERIVED'"), 'لا يُدرج عرض قسط إلا إذا كان مشتقاً قابلاً للاستخدام');
+add('sales-runtime-sale-needs-id', /verifySale\([\s\S]{0,200}saleId:/.test(commercialRuntime) && commercialRuntime.includes('workspace.sales'), 'البيع الموثّق يُبنى من سجلات مبيعات حقيقية بمعرّف');
+add('sales-runtime-no-gemini', !/aiEngine|generateContent|GoogleGenAI|process\.env/.test(commercialRuntime), 'طبقة الربط حتمية بلا Gemini وبلا قراءة بيئة');
+add('sales-memory-module', commercialMemory.includes('export function buildCommercialMemorySeeds') && commercialMemory.includes('export function mergeCommercialMemory') && commercialMemory.includes('COMMERCIAL_MEMORY_PREFIX'), 'جسر الذاكرة التجارية موجود');
+add('sales-memory-origin-separation', commercialMemory.includes("origin: 'platform_data'") && commercialMemory.includes("origin: 'derived'") && commercialMemory.includes("origin: 'ai_statement'"), 'الذاكرة تفصل الحقيقة الملاحَظة عن الاستنتاج عن الفرضية');
+add('sales-memory-no-hypothesis-as-fact', /hypothesis:[\s\S]{0,400}origin: 'ai_statement'/.test(commercialMemory) && !/hypothesis:[\s\S]{0,200}origin: 'platform_data'/.test(commercialMemory), 'الفرضية لا تُخزَّن كحقيقة تجارية');
+add('sales-routes-module', commercialRoutes.includes("'/api/agent/brain/sales/state'") && commercialRoutes.includes("'/api/agent/brain/sales/summary'") && commercialRoutes.includes('registerCommercialRoutes'), 'مسارات العقل التجاري (الحالة + الملخّص) مسجّلة');
+add('sales-routes-owner-state', /'\/api\/agent\/brain\/sales\/state'[\s\S]{0,120}requireOwner/.test(commercialRoutes), 'الحالة التجارية الكاملة للمالك فقط');
+add('sales-routes-auth', /'\/api\/agent\/brain\/sales\/summary'[\s\S]{0,120}authenticateToken/.test(commercialRoutes), 'الملخّص محمي بالمصادقة');
+add('sales-routes-no-secret', !/(clientSecret|refreshToken|AIzaSy|api[_-]?key)/i.test(commercialRoutes), 'مسارات العقل التجاري لا تُعيد أي سرّ');
+add('sales-routes-server-wired', server.includes('registerCommercialRoutes') && server.includes('commercialInput:') && server.includes('products: workspace.products') && server.includes('sales: workspace.sales'), 'الخادم يربط العقل التجاري ببيانات مساحة العمل الحقيقية');
+add('sales-ui-view', commercialView.includes('CommercialBrainView') && commercialView.includes('apiService.getCommercialState') && commercialView.includes('لا تنفيذ ولا أسعار مُخترعة'), 'لوحة العقل التجاري موجودة وتستدعي الخادم الحقيقي');
+add('sales-ui-no-secret', !/(clientSecret|refreshToken|AIzaSy)/i.test(commercialView), 'لوحة العقل التجاري لا تعرض أي سرّ');
+add('sales-ui-wired', read('src/App.tsx').includes('commercial_brain') && read('src/components/common/Sidebar.tsx').includes('commercial_brain'), 'لوحة العقل التجاري موصولة بالتنقّل (App + Sidebar)');
+add('sales-integration-tests', salesIntegrationTest.includes('لا مشترٍ بلا سجل بيع') && salesIntegrationTest.includes('الفرضية لا تُخزَّن كحقيقة') && (pkg.scripts['test'] || '').includes('test:sales-integration'), 'اختبار تكامل العقل التجاري بالبيانات الحقيقية مضمّن في npm test');
+add('sales-route-tests', salesRoutesTest.includes('الحالة التجارية محمية') && salesRoutesTest.includes('لا تسريب توكن') && (pkg.scripts['test'] || '').includes('test:sales-routes'), 'اختبار مسارات العقل التجاري (حماية + بلا سرّ) مضمّن في npm test');
 
 const failed = checks.filter(x => !x.ok);
 console.table(checks);

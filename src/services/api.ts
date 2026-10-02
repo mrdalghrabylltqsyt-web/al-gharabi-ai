@@ -696,6 +696,20 @@ ${payload.topic || payload.productName || 'أنظمة وحلول التقسيط 
     return data;
   },
 
+  // العقل التجاري (Sales & Growth): قراءة فقط من بيانات المعرض الحقيقية.
+  async getCommercialState() {
+    const res = await fetch('/api/agent/brain/sales/state', { headers: getAuthHeaders() });
+    const data = await res.json();
+    if (!res.ok || !data.success) throw new Error(data.error || 'تعذر جلب الحالة التجارية');
+    return data;
+  },
+  async getCommercialSummary() {
+    const res = await fetch('/api/agent/brain/sales/summary', { headers: getAuthHeaders() });
+    const data = await res.json();
+    if (!res.ok || !data.success) throw new Error(data.error || 'تعذر جلب الملخّص التجاري');
+    return data;
+  },
+
   // صفحات Facebook التي يديرها الحساب بعد OAuth (معرّفات وأسماء فقط بلا رموز).
   async getFacebookPages() {
     const res = await fetch('/api/platforms/facebook/pages', { headers: getAuthHeaders() });

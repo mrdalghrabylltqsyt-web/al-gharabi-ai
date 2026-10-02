@@ -20,6 +20,7 @@ import { registerSocialManagerRoutes } from "./engine/social/routes";
 import { AgentOrchestrator } from "./engine/agent/orchestrator";
 import { registerAgentRoutes } from "./engine/agent/routes";
 import { registerBrainRoutes } from "./engine/brain/routes";
+import { registerCommercialRoutes } from "./engine/brain/sales/routes";
 import { registerDriveRoutes } from "./engine/dr/routes";
 import { buildSecretsBundle } from "./tools/dr/secret-crypto.mjs";
 import { buildRecoveryInformation, buildRecoveryInstructions } from "./tools/dr/cloud-lib.mjs";
@@ -11896,6 +11897,28 @@ registerBrainRoutes(app, {
   requireOwner,
   platforms: () => SUPPORTED_PLATFORMS.map((p: any) => p.id) as PlatformId[],
   runtimeInput: () => brainRuntimeInput(),
+  persistMemory: (records) => persistBrainMemory(records),
+});
+
+// مسارات العقل التجاري (Sales & Growth) — قراءة فقط من بيانات المعرض الحقيقية.
+// لا تنفيذ: تعرض ما يعرفه العقل عن المنتجات والطلب والفرص ومسار العملاء والمبيعات
+// الموثّقة. الحالة الكاملة للمالك فقط (تحتوي بيانات عملاء)، والملخّص لأي مستخدم مصرّح.
+registerCommercialRoutes(app, {
+  authenticateToken,
+  requireOwner,
+  commercialInput: () => ({
+    showroom: workspace.showroom,
+    products: workspace.products,
+    installmentPlans: workspace.installmentPlans,
+    conversations: workspace.conversations,
+    leads: workspace.leads,
+    sales: workspace.sales,
+    payments: workspace.payments,
+    socialComments: (workspace as any).socialComments,
+    campaigns: (workspace as any).marketingCampaigns,
+    performanceRecords: (workspace as any).performanceRecords,
+  }),
+  memory: () => brainMemoryStore,
   persistMemory: (records) => persistBrainMemory(records),
 });
 
