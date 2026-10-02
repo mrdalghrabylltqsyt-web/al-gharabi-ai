@@ -261,12 +261,12 @@ async function main() {
     check('project-loss: reachable with drive+point+vault key', report.ok === true);
     check('project-loss: stages recorded', report.stages.includes('verify_point') && report.stages.includes('open_vault') && report.stages.includes('restore_source'));
     check('project-loss: no secret exposed', noSecret(report));
-    const readiness = inspectRecoveryReadiness(env as any);
+    const readiness = await inspectRecoveryReadiness(env as any);
     check('readiness: drive configured', readiness.drive.configured === true);
     check('readiness: refresh token stored', readiness.drive.refreshTokenStored === true);
     check('readiness: vault key present', readiness.vaultKey.present === true);
     check('readiness: master key state valid', readiness.masterKey.state === 'valid', JSON.stringify(readiness.masterKey));
-    const readinessMissing = inspectRecoveryReadiness({} as any);
+    const readinessMissing = await inspectRecoveryReadiness({} as any);
     check('readiness without env: drive not configured', readinessMissing.drive.configured === false);
   }
 

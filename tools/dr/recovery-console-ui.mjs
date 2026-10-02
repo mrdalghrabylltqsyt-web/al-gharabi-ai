@@ -102,9 +102,9 @@ async function readBody(req) {
 export function createRecoveryUiServer(options = {}) {
   const env = options.env || process.env;
   const clientFactory = options.clientFactory;
-  const makeStore = () => {
-    const client = buildRecoveryClient(env, { clientFactory });
-    if (!client) return null;
+  const makeStore = async () => {
+    const client = await buildRecoveryClient(env, { clientFactory });
+    if (!client || client.ok === false) return null;
     return buildRecoveryStore(client, { readOnlyStructure: true });
   };
   return http.createServer(async (req, res) => {
@@ -115,9 +115,9 @@ export function createRecoveryUiServer(options = {}) {
         return res.end(page());
       }
       if (req.method === 'GET' && url.pathname === '/api/points') {
-        const readiness = inspectRecoveryReadiness(env);
+        const readiness = await inspectRecoveryReadiness(env);
         if (!readiness.drive.configured) return json(res, 200, { ok: false, reason: 'drive_not_configured', readiness });
-        const store = makeStore();
+        const store = await makeStore();
         if (!store) return json(res, 200, { ok: false, reason: 'drive_client_unavailable', readiness });
         const listed = await listRecoveryPoints(store);
         return json(res, 200, { ok: listed.ok === true, points: listed.points || [], readiness });
@@ -125,7 +125,7 @@ export function createRecoveryUiServer(options = {}) {
       if (req.method === 'POST' && url.pathname === '/api/restore') {
         const body = await readBody(req);
         if (body.confirm !== true) return json(res, 428, { ok: false, code: 'OWNER_CONFIRMATION_REQUIRED' });
-        const store = makeStore();
+        const store = await makeStore();
         if (!store) return json(res, 200, { ok: false, reason: 'drive_client_unavailable' });
         const listed = await listRecoveryPoints(store);
         const point = (listed.points || []).find((p) => p.id === body.point);

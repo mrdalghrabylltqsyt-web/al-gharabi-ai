@@ -26,6 +26,7 @@ import { verifyRecoveryPoint, extractSourceBundle, materializeSource, applyDatab
 import { decryptSecretsPackage, inspectMasterKey } from './secret-crypto.mjs';
 import { decryptDbDump } from './db-crypto.mjs';
 import { decryptKeyVault, inspectVaultKey } from './key-vault-crypto.mjs';
+import { inspectRefreshTokenSource, resolveRefreshTokenSource } from './token-source.mjs';
 import {
   hashContent,
   DRIVE_OAUTH_REFRESH_TOKEN_ENV,
@@ -74,16 +75,20 @@ export function recoveryEnv(env = process.env) {
 }
 
 /** حالة الاعتماد المتاح (أسماء وحالات فقط — بلا أي قيمة سرّية). */
-export function inspectRecoveryReadiness(env = process.env) {
+export async function inspectRecoveryReadiness(env = process.env, options = {}) {
   const auth = inspectDriveAuthEnv(env);
   const oauth = inspectDriveOAuthClient(env);
   const master = inspectMasterKey(env);
   const vaultKey = inspectVaultKey(env);
   const vaultKeyPresent = Boolean(env.DR_RECOVERY_VAULT_KEY && String(env.DR_RECOVERY_VAULT_KEY).length > 0);
+  const tokenSource = await inspectRefreshTokenSource(env, options);
   return {
     drive: {
       configured: Boolean(auth.configured),
-      refreshTokenStored: Boolean(env[DRIVE_OAUTH_REFRESH_TOKEN_ENV] && String(env[DRIVE_OAUTH_REFRESH_TOKEN_ENV]).length > 0),
+      refreshTokenStored: tokenSource.available,
+      refreshTokenSource: tokenSource.source,
+      refreshTokenCode: tokenSource.code,
+      stateDatabaseConfigured: tokenSource.stateDatabaseConfigured,
       clientIdPresent: oauth.clientIdPresent,
       clientSecretPresent: oauth.clientSecretPresent,
       clientIdFingerprint: oauth.clientIdFingerprint,
@@ -94,14 +99,21 @@ export function inspectRecoveryReadiness(env = process.env) {
   };
 }
 
-/** يبني عميل Drive من البيئة (نفس عقد الخادم) — قابل للحقن في الاختبار. */
-export function buildRecoveryClient(env = process.env, options = {}) {
+/**
+ * يبني عميل Drive من البيئة (نفس عقد الخادم) — قابل للحقن في الاختبار.
+ * مصدر رمز التجديد: صريح/مشفّر/بيئة نصية/قاعدة الحالة المشفّرة (بلا نقل سرّ).
+ * يعيد null عند غياب اعتماد العميل، أو كائن `{ ok:false, code }` عند فشل مصدر الرمز.
+ */
+export async function buildRecoveryClient(env = process.env, options = {}) {
   if (options.clientFactory) return options.clientFactory(env);
   const info = inspectDriveAuthEnv(env);
   if (!info.configured) return null;
-  const refreshToken = env[DRIVE_OAUTH_REFRESH_TOKEN_ENV];
-  const provider = createRefreshTokenProvider({ env, refreshToken: refreshToken || undefined });
-  return new DriveClient({ transport: options.transport || createGaxiosTransport(), tokenProvider: provider });
+  const token = await resolveRefreshTokenSource(env, options);
+  if (!token.ok) return { ok: false, code: token.code };
+  const provider = createRefreshTokenProvider({ env, refreshToken: token.refreshToken });
+  const client = new DriveClient({ transport: options.transport || createGaxiosTransport(), tokenProvider: provider });
+  client.refreshTokenSource = token.source;
+  return client;
 }
 
 /** يبني مخزن Drive بهوية المجلدات المحفوظة إن وُجدت (منع 403 تحت drive.file). */

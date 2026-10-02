@@ -38,8 +38,16 @@
 |---|---|
 | `DR_RECOVERY_VAULT_KEY` | يفتح خزنة المفاتيح — **يُدخله المالك وقت الاستعادة فقط** |
 | `DR_RECOVERY_MASTER_KEY` / `DRIVE_DB_BACKUP_KEY` | فكّ الأسرار/القاعدة |
-| `DRIVE_TOKEN_ENCRYPTION_KEY` | فكّ رمز تجديد Drive المخزّن |
-| `DRIVE_OAUTH_CLIENT_ID/SECRET/REFRESH_TOKEN` | اعتماد OAuth لعميل Drive |
+| `DRIVE_TOKEN_ENCRYPTION_KEY` | فكّ رمز تجديد Drive المخزّن (يشفّر رمز التجديد في قاعدة الحالة) |
+| `DR_STATE_DATABASE_URL` | اتصال **قراءة فقط** بجدول حالة الغرابي (Neon) لقراءة رمز التجديد المشفّر |
+| `DRIVE_OAUTH_CLIENT_ID/SECRET` | اعتماد OAuth لعميل Drive |
+| `DRIVE_OAUTH_REFRESH_TOKEN` | **توافق خلفي فقط** — لا يُضبط؛ الرمز يبقى مشفّراً في قاعدة الحالة |
+
+**كيف يصل مركز الاستعادة إلى Google Drive بلا نقل أي رمز:**
+رمز التجديد موجود **مشفّراً** أصلاً داخل جدول حالة الغرابي (`gharabi_state`، الصف `control`،
+الحقل `driveRefreshToken`). يقرأه المركز **مشفّراً** ويفكّه بمفتاح `DRIVE_TOKEN_ENCRYPTION_KEY`
+نفسه. لذا لا يُنقل أي رمز نصي صريح إلى خدمة الاستعادة، ولا سرّ جديد، ولا تدوير لأي مفتاح قائم.
+`DR_STATE_DATABASE_URL` يُستخدم **فقط** لقراءة هذا الصف (لا كتابة، ولا علاقة له بقاعدة الإنتاج).
 
 **ممنوع**: وضع `DR_RECOVERY_VAULT_KEY` في Google Drive أو GitHub أو داخل أي Recovery Point
 أو `secrets.enc` أو السجلات أو الواجهة بعد الإدخال.

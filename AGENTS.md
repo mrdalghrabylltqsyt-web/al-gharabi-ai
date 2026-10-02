@@ -3286,3 +3286,44 @@ rp-005 في هذه المهمة (الإنتاج لم يُلمس؛ التوقف �
 **لا تغيير في:** أي سرّ/مفتاح، ولا OAuth، ولا YouTube/Facebook/Instagram/TikTok/Telegram،
 ولا Gemini، ولا rp-002/rp-003/rp-004، ولا PostgreSQL. فحوص final-audit الجديدة
 `recovery-center-*` (1003 إجمالاً).
+
+## إصلاح جذر `no_refresh_token` في مركز الاستعادة — رمز التجديد المشفّر من قاعدة الحالة (2026-10-01)
+
+**الجذر المُثبت:** مركز الاستعادة `gharabi-recovery-center` خدمة **مستقلة**، وكان يبني عميل
+Drive من `env.DRIVE_OAUTH_REFRESH_TOKEN` وحده. لمّا لم يكن هذا المتغيّر مضبوطاً في بيئته،
+كان كل نداء يفشل بـ`no_refresh_token` رغم أن `driveConfigured:true` (لوجود Client ID/Secret).
+في الوقت نفسه يخزّن تطبيق الغرابي رمز التجديد **مشفّراً** في جدول الحالة المشترك
+(`gharabi_state`، الصف `control`، الحقل `driveRefreshToken`).
+
+**الإصلاح (بلا نقل أي سرّ نصي، بلا سرّ جديد، بلا مطالبة المالك بأي قيمة):**
+- `tools/dr/token-source.mjs` (**مصدر واحد**): `loadRefreshTokenFromDatabase` يقرأ الصف
+  المشفّر من Postgres ويفكّه بـ`decryptDriveSecret` (مفتاح `DRIVE_TOKEN_ENCRYPTION_KEY`
+  نفسه)، و`resolveRefreshTokenSource` يحسم الترتيب: صريح → مشفّر مُمرَّر → بيئة نصية
+  (توافق خلفي) → قاعدة الحالة المشفّرة. أكواد الفشل صريحة: `state_db_not_configured` /
+  `refresh_token_not_found` / `refresh_token_undecryptable` / `state_db_error` /
+  `token_key_missing` / `pg_not_installed`. `inspectRefreshTokenSource` فحص قراءة-فقط بلا سرّ.
+- متغيّر جديد `DR_STATE_DATABASE_URL` (بديل قديم `DR_RECOVERY_STATE_DATABASE_URL`) لاتصال
+  **قراءة فقط** بجدول الحالة؛ لا يُقرأ `DATABASE_URL` الإنتاجي في هذا المسار إطلاقاً.
+- `standalone-recovery.mjs`: `inspectRecoveryReadiness` و`buildRecoveryClient` صارا `async`،
+  ويعيدان مصدر الرمز (`provided`/`provided_encrypted`/`env_plaintext`/`state_database`) أو
+  كوداً صريحاً عند الفشل (`buildRecoveryClient` يعيد `{ok:false, code}` بدل client).
+- `recovery-center.mjs`/`recovery-console-ui.mjs`/`recovery-console.mjs`: كلها تنتظر الدوال،
+  وصحة المركز تعرض `drive.refreshTokenAvailable`/`refreshTokenSource`/`refreshTokenCode`/
+  `stateDatabaseConfigured` — بلا أي قيمة سرّية. `engine/dr/routes.ts` يمرّر الرمز المشفّر
+  المحفوظ لـ`inspectRecoveryReadiness` في `/api/dr/standalone/points`.
+- حزمة `dr-recovery-center`: أُضيفت `pg`، وأُضيف `token-source.mjs` إلى `sync-lib.mjs`
+  (12 وحدة)، و`render.yaml`/`.env.example`/`recovery-information.md` توثّق `DR_STATE_DATABASE_URL`
+  وتُصرّح بأن `DRIVE_OAUTH_REFRESH_TOKEN` **توافق خلفي فقط** وأنه لا يُنقل رمز نصي.
+
+اختبارات: `engine/tests/dr/dr.token.source.test.ts` (`npm run test:dr-token-source`، **34 فحصاً**:
+ترتيب المصادر، الفكّ من قاعدة الحالة، أكواد الفشل، مركز يقرأ نقاطاً حقيقية عبر رمز القاعدة
+المشفّر، وعدم تسريب أي سرّ). فحوص final-audit الجديدة `token-source-*` (**1014 إجمالاً**).
+
+**إجراء المالك الوحيد (بلا سرّ):** في Render → خدمة `gharabi-recovery-center` → Environment:
+أضف `DR_STATE_DATABASE_URL` بقيمة اتصال قاعدة Neon **نفسها** المستخدمة في التطبيق الرئيسي
+(`DATABASE_URL`)، وتأكد من وجود `DRIVE_TOKEN_ENCRYPTION_KEY` (نفس مفتاح التطبيق). لا حاجة
+لوضع `DRIVE_OAUTH_REFRESH_TOKEN` إطلاقاً. بعد النشر تظهر في `/api/health`
+`drive.refreshTokenSource = state_database` وتُقرأ نقاط الاستعادة فعلياً.
+
+**لا تغيير في:** أي سرّ/مفتاح قائم، ولا OAuth/scopes، ولا YouTube/Facebook/Instagram/TikTok/
+Telegram، ولا Gemini، ولا rp-002/rp-003/rp-004، ولا PostgreSQL الإنتاجي (قراءة الرمز فقط).

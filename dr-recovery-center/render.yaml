@@ -20,9 +20,20 @@ services:
         sync: false
       - key: DRIVE_OAUTH_CLIENT_SECRET
         sync: false
-      - key: DRIVE_OAUTH_REFRESH_TOKEN
-        sync: false
+      # DRIVE_TOKEN_ENCRYPTION_KEY: نفس مفتاح تشفير رمز التجديد في تطبيق الغرابي.
+      # يقرأه المركز لفكّ رمز التجديد المخزّن مشفّراً داخل جدول الحالة — بلا نقل أي
+      # رمز نصي صريح إلى هذه الخدمة (لا DRIVE_OAUTH_REFRESH_TOKEN هنا).
       - key: DRIVE_TOKEN_ENCRYPTION_KEY
+        sync: false
+      # DR_STATE_DATABASE_URL: اتصال **قراءة فقط** بجدول حالة الغرابي (Neon) الذي
+      # يحمل كتلة `control` وفيها رمز التجديد مشفّراً. يُفضَّل هذا على نقل الرمز:
+      # لا سرّ جديد، ولا رمز نصي، ويُفكّ بمفتاح التشفير نفسه. (بديل قديم مقبول:
+      # DR_RECOVERY_STATE_DATABASE_URL.) لا يُستخدم هذا الاتصال إلا لقراءة الرمز.
+      - key: DR_STATE_DATABASE_URL
+        sync: false
+      # DRIVE_OAUTH_REFRESH_TOKEN: توافق خلفي اختياري فقط. لا تضبطه — الأفضل
+      # ترك الرمز مشفّراً في قاعدة الحالة (أعلاه) بدل نقله نصاً صريحاً.
+      - key: DRIVE_OAUTH_REFRESH_TOKEN
         sync: false
       # مفتاح فكّ الأسرار/القاعدة (اسم واحد يكفي).
       - key: DRIVE_DB_BACKUP_KEY
