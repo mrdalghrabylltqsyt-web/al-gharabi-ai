@@ -1713,6 +1713,24 @@ add('dr-source-bundle-docker-context', !/^\.git$/m.test(read('.dockerignore')) &
 add('dr-source-bundle-test', sourceBundleTest.includes('docker-like collector uses bundle') && sourceBundleTest.includes('guard rejects bundle missing server.ts') && sourceBundleTest.includes('CURRENT treeHash unchanged after failed collection'), 'اختبار الحزمة يثبت: بيئة Docker + الحرس + عدم تأثّر CURRENT');
 add('dr-source-bundle-in-package', (pkg.scripts['test:dr'] || '').includes('test:dr-source-bundle') && pkg.scripts.test.includes('test:dr-source-bundle'), 'اختبار الحزمة مضافة إلى npm test');
 add('dr-source-bundle-health-exposed', drRoutes.includes('bundle: (c as any).bundle ?? null') && drRoutes.includes('bundle: collected?.bundle ?? null'), 'health/ردود الرفض تُعلن كتلة الحزمة (commit/bound/treeHash) بلا أي سرّ');
+
+// SEC-01: لا تُقدَّم حزمة المصدر (dist/dr-source) للعامة. الحجب في Express (قبل
+// express.static) وفي Netlify (على الحافة قبل قاعدة SPA)، واختبار تشغيلي يثبت 404.
+const exposureTest = read('engine/tests/source.bundle.exposure.test.ts');
+add('sec01-express-blocks-dr-source',
+  server.includes('BLOCKED_SOURCE_BUNDLE_PREFIX = "/dr-source"') &&
+  server.includes('pathname === BLOCKED_SOURCE_BUNDLE_PREFIX') &&
+  server.includes('pathname.startsWith(') &&
+  server.indexOf('BLOCKED_SOURCE_BUNDLE_PREFIX') < server.indexOf('app.use(express.static(distPath))'),
+  'Express يمنع /dr-source قبل express.static (لا تسريب حزمة المصدر)');
+add('sec01-netlify-blocks-dr-source',
+  /from = "\/dr-source\/\*"[\s\S]*?status = 404/.test(read('netlify.toml')),
+  'Netlify تمنع /dr-source/* بحالة 404 قبل قاعدة SPA');
+add('sec01-exposure-test',
+  pkg.scripts['test:source-bundle-exposure'] === 'tsx engine/tests/source.bundle.exposure.test.ts' &&
+  pkg.scripts.test.includes('test:source-bundle-exposure') &&
+  exposureTest.includes('/dr-source/source.tar.gz') && exposureTest.includes("=== 404"),
+  'اختبار انحدار SEC-01 مضمّن في npm test ويؤكد 404 على حزمة المصدر');
 add('dr-source-bundle-render-commit-env', sourceBundleModule.includes('export function resolveBuildCommit') && sourceBundleModule.includes("RENDER_GIT_COMMIT") && sourceBundleModule.includes("source: 'RENDER_GIT_COMMIT'"), 'commit الحزمة يُحسم من RENDER_GIT_COMMIT (بيئة Render بلا .git) بترتيب أسبقية صريح');
 add('dr-source-bundle-render-commit-priority', /options\.commit[\s\S]*?RENDER_GIT_COMMIT[\s\S]*?resolveGitCommit/.test(sourceBundleModule) && sourceBundleModule.includes("source: 'none'"), 'الأسبقية: provided ثم RENDER_GIT_COMMIT ثم git ثم null (بلا اختراع commit)');
 add('dr-source-bundle-render-commit-no-invention', /bad_sha/.test(sourceBundleModule) && sourceBundleModule.includes("commitRes.commit ?? null"), 'RENDER_GIT_COMMIT غير الصالح يُرفض ولا يُخترع commit');

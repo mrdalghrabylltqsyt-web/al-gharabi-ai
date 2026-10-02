@@ -19,6 +19,16 @@
   to = "/.netlify/functions/api/:splat"
   status = 200
 
+# SEC-01: مجلد dist/dr-source يحوي حزمة المصدر الكاملة (source.tar.gz + البيان +
+# بصمة الالتزام). Netlify ينشر dist كأصول ثابتة فيخدمه علناً. هذه القاعدة تمنعه
+# على الحافة بحالة 404 قبل قاعدة SPA، فلا يُعاد إلى index.html ولا يُخدَم الملف.
+# تبقى حزمة المصدر متاحة داخلياً (تُقرأ من نظام الملفات في بناء نسخ DR) — لا حذف للأداة.
+[[redirects]]
+  from = "/dr-source/*"
+  to = "/404.html"
+  status = 404
+  force = true
+
 # تطبيق React أحادي الصفحة: أي مسار غير API يُخدم من index.html.
 [[redirects]]
   from = "/*"

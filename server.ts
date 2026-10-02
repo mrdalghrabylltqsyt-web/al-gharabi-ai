@@ -469,6 +469,26 @@ app.use((_req, res, next) => {
   next();
 });
 
+// SEC-01: مجلد dist/dr-source يحوي حزمة المصدر الكاملة (source.tar.gz + البيان +
+// بصمة الالتزام). كان express.static(dist) يخدمه علناً بلا مصادقة، فيسرّب الكود
+// المصدري كاملاً لأي طلب. نمنع أي وصول HTTP إلى هذا المجلد قبل خدمة الأصول
+// الثابتة. الحزمة تبقى متاحة داخلياً (تُقرأ من نظام الملفات فقط لبناء نسخ DR)،
+// ولا يتأثر أي مسار آخر: الحجب محصور ببادئة /dr-source على حدود مقطع المسار.
+const BLOCKED_SOURCE_BUNDLE_PREFIX = "/dr-source";
+app.use((req, res, next) => {
+  const pathname = String(req.path || req.url || "").split("?")[0].toLowerCase();
+  if (pathname === BLOCKED_SOURCE_BUNDLE_PREFIX || pathname.startsWith(`${BLOCKED_SOURCE_BUNDLE_PREFIX}/`)) {
+    return res.status(404).json({
+      success: false,
+      error: "المسار غير موجود.",
+      method: req.method,
+      path: req.path,
+      requestId: (req as any).requestId,
+    });
+  }
+  next();
+});
+
 // -------------------------------------------------------------
 // Security & Role-Based Access Control (RBAC) System
 // -------------------------------------------------------------
