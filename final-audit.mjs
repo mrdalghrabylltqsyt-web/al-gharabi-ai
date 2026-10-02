@@ -1092,6 +1092,92 @@ add('central-brain-ui-no-publish',
   !/\/api\/platforms\/[^'"`]*\/publish|executeJob|replyTelegram|replyFacebook|replyInstagram|publishTikTok/.test(read('src/components/agent/CentralBrainView.tsx')),
   'سطح العقل لا ينفّذ أي نشر أو رد خارجي من الواجهة');
 
+// --- العقل المركزي — وقت تشغيل 24/7 (Batch 5) ---
+const brainRuntimeMod = read('engine/brain/brainRuntime.ts');
+const brainRtCycleTest = read('engine/tests/brain/brain.runtime.cycle.test.ts');
+const brainRtCycleServerTest = read('engine/tests/brain/brain.runtime.cycle.server.test.ts');
+
+add('brain-runtime-module-single-source',
+  fs.existsSync(path.join(root, 'engine/brain/brainRuntime.ts')) &&
+  brainRuntimeMod.includes('runBrainRuntimeCycle') && brainRuntimeMod.includes('buildBrainRuntimeStatus'),
+  'وحدة وقت تشغيل العقل موجودة كمصدر واحد للدورة والحالة');
+
+add('brain-runtime-started-on-server',
+  /startBrainRuntime\(\)/.test(server) && server.includes('BRAIN_RUNTIME_BOOT_DELAY_MS') &&
+  server.includes('const BRAIN_RUNTIME_OWNER = '),
+  'المُشغِّل الداخلي يُبدأ على الخادم بعد listen (بلا متصفح)');
+
+add('brain-runtime-reuses-existing-persist',
+  /runBrainRuntimeCycleInternal[\s\S]{0,1600}?persistBrainMemory\(records\)/.test(server) &&
+  /runBrainRuntimeCycleInternal[\s\S]{0,1600}?buildRuntimeBrain\(\{/.test(server),
+  'الدورة تستخدم منطق العقل القائم ومسار الحفظ القائم (لا نظام ثانٍ)');
+
+add('brain-runtime-lock-and-lease',
+  brainRuntimeMod.includes('acquireBrainLock') && brainRuntimeMod.includes('releaseBrainLock') &&
+  brainRuntimeMod.includes('isBrainLockStale') && brainRuntimeMod.includes('staleLockRecoveries'),
+  'قفل/lease يمنع التوازي ويستردّ المتقادم فلا جمود دائم');
+
+add('brain-runtime-no-parallel-cycle',
+  brainRuntimeMod.includes("'SKIPPED_LOCKED'") && server.includes('brainRuntimeInFlight'),
+  'لا دورة متوازية: قفل العملية + lease');
+
+add('brain-runtime-no-fake-success',
+  brainRuntimeMod.includes("status: BrainCycleStatus = persistResult.ok") &&
+  brainRuntimeMod.includes('persistenceFailureCount'),
+  'لا ادّعاء نجاح حفظ: الحالة من نتيجة persist الحقيقية');
+
+add('brain-runtime-no-fabrication',
+  brainRuntimeMod.includes("noData ? 'NO_NEW_DATA' : 'SUCCESS'") &&
+  brainRuntimeMod.includes('executesExternalActions: false') && brainRuntimeMod.includes('geminiUsedOnCycles: false'),
+  'لا اختراع بيانات (NO_NEW_DATA)، ولا إجراء خارجي، ولا استهلاك Gemini');
+
+add('brain-runtime-persists-state',
+  server.includes('brainRuntime: brainRuntimeState,') && server.includes('normalizeBrainRuntimeState(control.brainRuntime)'),
+  'حالة وقت التشغيل تُحفظ وتُسترجع عبر محوّل الحالة (تصمد بعد restart)');
+
+add('brain-runtime-cadence-bounded',
+  brainRuntimeMod.includes('BRAIN_RUNTIME_DEFAULT_INTERVAL_MS') && brainRuntimeMod.includes('BRAIN_RUNTIME_MIN_INTERVAL_MS') &&
+  brainRuntimeMod.includes('BRAIN_RUNTIME_MAX_INTERVAL_MS') && brainRuntimeMod.includes('isBrainRuntimeDue'),
+  'الإيقاع بحدود آمنة وقرار استحقاق زمني (لا دورة عند كل restart)');
+
+add('brain-runtime-health-exposed',
+  server.includes('brainRuntime: brainRuntimeStatus(),') && /brain: \(\(\) => \{[\s\S]{0,4000}?runtime: brainRuntimeStatus\(\)/.test(server),
+  'حالة وقت التشغيل معلنة في /api/health و/api/readiness بلا سرّ');
+
+add('brain-runtime-endpoints-owner',
+  server.includes('"/api/agent/brain/runtime/run"') && server.includes('"/api/agent/brain/runtime"') &&
+  /app\.post\("\/api\/agent\/brain\/runtime\/run", authenticateToken, requireOwner/.test(server),
+  'مسارات وقت التشغيل محمية والملكية مطلوبة لتشغيل دورة');
+
+add('brain-runtime-no-secrets',
+  !/api[_-]?key|client_secret|refresh_token|access_token/i.test(brainRuntimeMod),
+  'وحدة وقت التشغيل لا تحمل أي سرّ');
+
+add('brain-runtime-tests',
+  fs.existsSync(path.join(root, 'engine/tests/brain/brain.runtime.cycle.test.ts')) &&
+  fs.existsSync(path.join(root, 'engine/tests/brain/brain.runtime.cycle.server.test.ts')) &&
+  pkg.scripts['test:brain-runtime-cycle'] && pkg.scripts['test:brain-runtime-cycle-server'] &&
+  typeof pkg.scripts.test === 'string' && pkg.scripts.test.includes('test:brain-runtime-cycle') && pkg.scripts.test.includes('test:brain-runtime-cycle-server'),
+  'اختبارات وقت التشغيل (وحدة + تكامل) مسجّلة وضمن npm test');
+
+add('brain-runtime-server-test-restart',
+  brainRtCycleServerTest.includes('durability across real restart') &&
+  brainRtCycleServerTest.includes('memoryHealth.total محفوظ بعد restart') &&
+  brainRtCycleServerTest.includes('real YouTube reply via watcher'),
+  'اختبار الخادم يثبت الحفظ من نتيجة حقيقية والثبات بعد restart فعلي');
+
+add('brain-runtime-unit-test-guards',
+  brainRtCycleTest.includes('duplicate memory prevention') && brainRtCycleTest.includes('commercial truth guards') &&
+  brainRtCycleTest.includes('no non-YouTube platform logic') && brainRtCycleTest.includes('persistence failure'),
+  'اختبار الوحدة يثبت منع التكرار وحماية الحقيقة التجارية وعدم الفشل الصامت');
+
+add('brain-runtime-ui-surface',
+  read('src/components/agent/CentralBrainView.tsx').includes('getBrainRuntime') &&
+  read('src/components/agent/CentralBrainView.tsx').includes('وقت تشغيل العقل 24/7') &&
+  read('src/services/api.ts').includes('/api/agent/brain/runtime') &&
+  read('src/services/api.ts').includes('/api/agent/brain/runtime/run'),
+  'لوحة العقل تعرض وقت التشغيل وتشغّل دورة (للمالك) بلا أي سرّ');
+
 // --- Central Brain upgrade (طبقة العقل المركزي المُطوَّرة) ---
 const brainDir = (p) => read(path.join('engine/brain', p));
 const brainState = brainDir('state.ts');

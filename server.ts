@@ -43,6 +43,18 @@ import { capabilityMatrix } from "./engine/brain/strategy/capabilityMatrix";
 import { defineGoal } from "./engine/brain/goals/goalEngine";
 import { emptyBrainMemory, upsertMemoryRecord, summarizeBrainMemory, type BrainMemoryStoreState, type BrainMemoryRecord } from "./engine/brain/memory/store";
 import { buildRuntimeBrain, type RuntimeBrainInput, type RuntimeComment, type RuntimeReply, type RuntimePublish, type RuntimeWatcherEntry, type RuntimeConnection, type RuntimeVerifiedFact } from "./engine/brain/runtime";
+import {
+  runBrainRuntimeCycle,
+  buildBrainRuntimeStatus,
+  normalizeBrainRuntimeState,
+  emptyBrainRuntimeState,
+  resolveBrainRuntimeEnabled,
+  resolveBrainRuntimeIntervalMs,
+  resolveBrainLockTtlMs,
+  isBrainRuntimeDue,
+  BRAIN_RUNTIME_TICK_MS,
+  type BrainRuntimeState,
+} from "./engine/brain/brainRuntime";
 import { toCentralBrainSnapshot } from "./engine/brain/compat";
 import type { AgentOperator } from "./engine/agent/permissions";
 import type { AgentToolContext } from "./engine/agent/tools";
@@ -8597,6 +8609,8 @@ function applyControlSnapshot(control: any): void {
   drControl.driveMirror = control.driveMirror && typeof control.driveMirror === "object" ? control.driveMirror : null;
   drControl.driveReconciliation = control.driveReconciliation && typeof control.driveReconciliation === "object" ? control.driveReconciliation : null;
   drControl.driveAutoBackup = control.driveAutoBackup && typeof control.driveAutoBackup === "object" ? control.driveAutoBackup : null;
+  // حالة وقت تشغيل العقل (Batch 5): تُسترجَع فتصمد بعد restart/cold start (بلا سرّ).
+  brainRuntimeState = normalizeBrainRuntimeState(control.brainRuntime);
 }
 
 /** يقرأ حالة التحكّم متزامناً (backend الملف) عند الإقلاع. */
@@ -8646,6 +8660,9 @@ function buildControlState() {
     // حالة الجدولة التلقائية للنسخة الكاملة: آخر تشغيل/نتيجته/عدّاد التخطّي — تصمد
     // بعد restart فيُمنع إنشاء نسخة مكرّرة عند إعادة التشغيل. بلا أي سرّ.
     driveAutoBackup: drControl.driveAutoBackup,
+    // حالة وقت تشغيل العقل (Batch 5): الحالة/القفل/العدّادات — تصمد بعد restart
+    // فلا تُنشئ دورة مكرّرة، ويُستردّ القفل المتقادم. بلا أي سرّ.
+    brainRuntime: brainRuntimeState,
   };
 }
 
@@ -9090,27 +9107,185 @@ function normalizeBrainMemory(raw: any): BrainMemoryStoreState {
   return { records: valid.slice(0, BRAIN_MEMORY_MAX) };
 }
 
-/** يدرج سجلات ذاكرة جديدة (بلا تكرار) ثم يحفظها دائمياً. */
-function persistBrainMemory(records: BrainMemoryRecord[]): void {
+/**
+ * عدّادان خاصان بكتابات ذاكرة العقل: `brainMemoryWriteSeq` يزيد لكل كتابة
+ * مجدولة، و`brainMemoryLastErrorSeq` يحمل تسلسل آخر كتابة فاشلة. بهما تعرف دورة
+ * العقل نجاح كتابتها **بالضبط** بلا تأثّر بفشل كتابة أخرى (lastPersistError مشترك
+ * مع مسارات الحالة الأخرى، فلا يصلح للحكم هنا).
+ */
+let brainMemoryWriteSeq = 0;
+let brainMemoryLastErrorSeq = -1;
+
+/**
+ * يدرج سجلات ذاكرة جديدة (بلا تكرار) ثم يحفظها دائمياً. يعيد تسلسل الكتابة
+ * المجدولة (أو -1 إن لم تكن هناك كتابة) ليتابع المستدعي نجاحها/فشلها بالضبط.
+ */
+function persistBrainMemory(records: BrainMemoryRecord[]): number {
   let added = 0;
   for (const record of records) {
     const res = upsertMemoryRecord(brainMemoryStore, record);
     brainMemoryStore = res.store;
     if (res.added) added += 1;
   }
-  if (!added) return;
+  if (!added) return -1;
   if (brainMemoryStore.records.length > BRAIN_MEMORY_MAX) {
     brainMemoryStore = { records: brainMemoryStore.records.slice(-BRAIN_MEMORY_MAX) };
   }
-  if (!storageReady) return;
+  if (!storageReady) return -1;
   const snapshot = { records: brainMemoryStore.records };
+  const mySeq = brainMemoryWriteSeq++;
   persistQueue = persistQueue
     .then(() => storageAdapter.write(STORAGE_KEY_BRAIN_MEMORY, snapshot))
     .catch((error: any) => {
+      brainMemoryLastErrorSeq = mySeq;
       lastPersistError = String(error?.code || error?.name || "persist_failed").slice(0, 60);
       console.warn("Could not persist brain memory:", lastPersistError);
     });
+  return mySeq;
 }
+
+// -----------------------------------------------------------------------------
+// العقل المركزي — وقت تشغيل 24/7 (Batch 5).
+//
+// مُشغِّل داخلي على الخادم يبني العقل من بيانات الإنتاج الحقيقية، يحوّل أحداث
+// التعلّم إلى ذاكرة دائمة، ويحفظها عبر **نفس** مسار الحفظ القائم
+// (`persistBrainMemory`) — بلا نظام ذاكرة ثانٍ ولا جدول جديد. مستقل عن المتصفح.
+//
+// الأمان: قفل/lease واحد يمنع أي دورة متوازية، ويُستردّ المتقادم فلا جمود دائم.
+// لا إجراء خارجي ولا استهلاك Gemini (الدورة تحليل/تعلّم/حفظ فقط). الحالة تُحفظ عبر
+// محوّل الحالة (Postgres/ملف) في مفتاح `control` فتصمد بعد restart/deploy.
+// -----------------------------------------------------------------------------
+
+/** حالة وقت التشغيل المحفوظة (بلا أي سرّ) + قفل الدورة. */
+let brainRuntimeState: BrainRuntimeState = emptyBrainRuntimeState();
+
+/** قفل داخل العملية يمنع محاولة دورة ثانية أثناء جريانها (دفاع إضافي فوق الـlease). */
+let brainRuntimeInFlight = false;
+let brainRuntimeTimer: NodeJS.Timeout | null = null;
+let brainRuntimeBootTimer: NodeJS.Timeout | null = null;
+const BRAIN_RUNTIME_BOOT_DELAY_MS = 90 * 1000; // فحص إقلاع بعد 90 ثانية (لا فور الإقلاع)
+/** بصمة فريدة لهذه العملية (لا تتكرر): تمنع استيلاء نسخة أخرى على القفل الحي. */
+const BRAIN_RUNTIME_OWNER = `brain-${process.pid}-${Date.now().toString(36)}`;
+
+function brainRuntimeIntervalMs(): number {
+  return resolveBrainRuntimeIntervalMs(process.env as Record<string, string | undefined>);
+}
+function brainRuntimeLockTtlMs(): number {
+  return resolveBrainLockTtlMs(process.env as Record<string, string | undefined>);
+}
+function brainRuntimeEnabled(): boolean {
+  return resolveBrainRuntimeEnabled(process.env as Record<string, string | undefined>);
+}
+
+/** يحفظ حالة وقت التشغيل عبر محوّل الحالة (تصمد بعد restart). */
+function persistBrainRuntimeState(): void {
+  if (!storageReady) return;
+  persistQueue = persistQueue
+    .then(() => storageAdapter.write(STORAGE_KEY_CONTROL, buildControlState()))
+    .catch((error: any) => {
+      lastPersistError = String(error?.code || error?.name || "persist_failed").slice(0, 60);
+      console.warn("Could not persist brain runtime state:", lastPersistError);
+    });
+}
+
+/**
+ * دورة عقل واحدة عبر المُشغِّل الداخلي. تستخدم منطق العقل القائم
+ * (`buildRuntimeBrain`) ومسار الحفظ القائم (`persistBrainMemory`) حرفياً — بلا
+ * تجاوز. لا تُرمي، وتُفرج القفل دائماً.
+ */
+async function runBrainRuntimeCycleInternal(trigger: "scheduled" | "boot" | "manual" = "scheduled") {
+  const out = await runBrainRuntimeCycle(
+    {
+      now: () => Date.now(),
+      isEnabled: () => brainRuntimeEnabled(),
+      lockTtlMs: () => brainRuntimeLockTtlMs(),
+      owner: () => BRAIN_RUNTIME_OWNER,
+      getState: () => brainRuntimeState,
+      setState: (next) => { brainRuntimeState = next; persistBrainRuntimeState(); },
+      isInFlight: () => brainRuntimeInFlight,
+      setInFlight: (v) => { brainRuntimeInFlight = v; },
+      build: () => {
+        const built = buildRuntimeBrain({ ...brainRuntimeInput(), now: Date.now() });
+        return {
+          newMemoryRecords: built.newMemoryRecords,
+          learningEventsCount: built.learningEvents.length,
+          memoryTotal: brainMemoryStore.records.length,
+        };
+      },
+      persist: async (records) => {
+        // مسار الحفظ القائم: `persistBrainMemory` يدرج بلا تكرار ثم يحفظ عبر الطابور،
+        // ويعيد تسلسل الكتابة. ننتظر تفريغ الطابور ثم نحكم على **كتابتنا** وحدها
+        // (brainMemoryLastErrorSeq === mySeq) فلا يتأثر الحكم بفشل كتابة أخرى.
+        const before = brainMemoryStore.records.length;
+        const mySeq = persistBrainMemory(records);
+        const after = brainMemoryStore.records.length;
+        if (mySeq < 0) {
+          // لم تُجدول كتابة: إما لا سجلات جديدة (يُعالَج قبل الاستدعاء) أو المخزن غير جاهز.
+          return storageReady
+            ? { ok: true, added: Math.max(0, after - before), total: after }
+            : { ok: false, added: 0, total: after, error: 'storage_not_ready' };
+        }
+        try {
+          await persistQueue;
+        } catch (err: any) {
+          return { ok: false, added: 0, total: after, error: String(err?.code || err?.name || 'persist_failed').slice(0, 60) };
+        }
+        if (brainMemoryLastErrorSeq === mySeq) {
+          return { ok: false, added: 0, total: after, error: lastPersistError || 'persist_failed' };
+        }
+        return { ok: true, added: Math.max(0, after - before), total: after };
+      },
+    },
+    trigger,
+  );
+  return out;
+}
+
+/** لقطة حالة وقت التشغيل الصادقة (بلا سرّ) للصحة/الجاهزية. */
+function brainRuntimeStatus() {
+  return buildBrainRuntimeStatus(brainRuntimeState, Date.now(), brainRuntimeIntervalMs(), {
+    enabled: brainRuntimeEnabled(),
+    scheduled: brainRuntimeTimer !== null,
+    running: brainRuntimeInFlight,
+  });
+}
+
+/** يبدأ المؤقّت الداخلي (مرة واحدة). `.unref()` يمنع تعليق الإغلاق النظيف. */
+function startBrainRuntime(): void {
+  if (brainRuntimeTimer) return;
+  const intervalMs = brainRuntimeIntervalMs();
+  const tickMs = Math.max(60 * 1000, Math.min(BRAIN_RUNTIME_TICK_MS, intervalMs));
+  brainRuntimeTimer = setInterval(() => {
+    const lastRunAtMs = (() => { const t = Date.parse(String(brainRuntimeState.lastCycleStartedAt || "")); return Number.isFinite(t) ? t : null; })();
+    if (!isBrainRuntimeDue(lastRunAtMs, Date.now(), intervalMs)) return; // لا دورة إلا عند الاستحقاق
+    void runBrainRuntimeCycleInternal("scheduled").catch(() => { /* الخطأ مسجَّل داخل الدورة */ });
+  }, tickMs);
+  if (typeof (brainRuntimeTimer as any).unref === "function") (brainRuntimeTimer as any).unref();
+  // فحص إقلاع واحد: بعد restart لا تُنفَّذ دورة فوراً إن لم يحل الموعد (لا تكرار)؛
+  // وإن كان الموعد قد حلّ أثناء التوقّف تُنفَّذ دورة واحدة فقط.
+  brainRuntimeBootTimer = setTimeout(() => {
+    brainRuntimeBootTimer = null;
+    void runBrainRuntimeCycleInternal("boot").catch(() => { /* لا يُسقط العملية */ });
+  }, BRAIN_RUNTIME_BOOT_DELAY_MS);
+  if (typeof (brainRuntimeBootTimer as any).unref === "function") (brainRuntimeBootTimer as any).unref();
+  console.log(`[الغرابي AI] Central Brain runtime scheduled every ${Math.round(intervalMs / 60000)} min (tick ${Math.round(tickMs / 60000)} min)`);
+}
+
+function stopBrainRuntime(): void {
+  if (brainRuntimeTimer) { clearInterval(brainRuntimeTimer); brainRuntimeTimer = null; }
+  if (brainRuntimeBootTimer) { clearTimeout(brainRuntimeBootTimer); brainRuntimeBootTimer = null; }
+}
+
+/** مسار المالك: تشغيل دورة الآن (تشخيص) — بلا تجاوز للقفل/التمكين. */
+app.post("/api/agent/brain/runtime/run", authenticateToken, requireOwner, async (_req, res) => {
+  const result = await runBrainRuntimeCycleInternal("manual");
+  res.status(result.status === "FAILED" ? 500 : 200).json({ success: result.status !== "FAILED", result, runtime: brainRuntimeStatus() });
+});
+
+/** حالة وقت التشغيل (للمالك فقط: لا سرّ، لكنها تفاصيل تشغيلية). */
+app.get("/api/agent/brain/runtime", authenticateToken, requireOwner, (_req, res) => {
+  res.json({ success: true, runtime: brainRuntimeStatus() });
+});
 
 /**
  * يقارن بصمة توكن المعاينة الحالي بالمحفوظة. عند اختلافهما (تغيير التوكن)
@@ -9712,6 +9887,8 @@ app.get("/api/readiness", (_req, res) => {
         geminiUsedOnReads: false,
         geminiProviderCallsToday: state.ai.providerCalls,
         limitations: state.limitations,
+        // وقت تشغيل العقل 24/7 (Batch 5): يُثبت أن العقل يعمل على الخادم بلا متصفح.
+        runtime: brainRuntimeStatus(),
       };
     })(),
     timestamp: new Date().toISOString(),
@@ -10112,6 +10289,8 @@ app.get("/api/health", (_req, res) => {
     // مدير تشغيل YouTube 24/7: حالة المراقبة المستقلة عن المتصفح (منطقي بلا سرّ).
     // يُعلن كل الحقائق: نشاط المراقبة، الإيقاع، آخر فحص/تعليق/رد، المعلّق، الأخطاء.
     youtubeWatcher: watcherStatusBlock(),
+    // وقت تشغيل العقل المركزي 24/7 (Batch 5): حالة/إيقاع/قفل/عدّادات الذاكرة — بلا سرّ.
+    brainRuntime: brainRuntimeStatus(),
     // طابور المحتوى (نشر/جدولة/مراجعة): ملخص حقيقي بلا أي سرّ.
     youtubeContent: { summary: contentQueueSummary(), mediaStored: contentMedia.size, mediaTotalBytes: contentMediaTotalBytes },
     // حالة موصل TikTok الحقيقي (منطقي فقط بلا أي سرّ أو رمز).
@@ -12274,6 +12453,16 @@ async function startServer() {
     (app as any).drAutoBackup?.start?.();
   } catch (e: any) {
     console.error("[الغرابي AI] failed to start DR full auto-backup:", String(e?.message || e).slice(0, 120));
+  }
+
+  // العقل المركزي 24/7 (Batch 5): مُشغِّل داخلي يبني العقل من بيانات الإنتاج
+  // الحقيقية ويحفظ الذاكرة الجديدة عبر نفس مسار الحفظ القائم. مؤقّت على الخادم
+  // مستقل عن المتصفح، ولا يُنشئ دورة عند كل إعادة تشغيل (قرار بالزمن المنقضي + قفل)،
+  // ولا يستدعي Gemini ولا ينفّذ أي إجراء خارجي.
+  try {
+    startBrainRuntime();
+  } catch (e: any) {
+    console.error("[الغرابي AI] failed to start Central Brain runtime:", String(e?.message || e).slice(0, 120));
   }
 
   // إغلاق نظيف: ينتظر تفريغ طابور الكتابة (مع مهلة صارمة ≤ 10 ثوانٍ) ثم يُنهي

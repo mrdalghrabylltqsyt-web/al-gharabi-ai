@@ -3632,3 +3632,62 @@ final-audit الـ27 الجديدة (`digital-sales-*`، **1124 إجمالاً**
 اختبارات: `commercial.unified.test.ts` (120) + `commercial.antifabrication.test.ts` (24) + `commercial.routes.test.ts` (52). final-audit = **1156 فحصاً** (31 فحصاً `commercial-*`). `npm run lint` + `build` + `test` + `final-audit` كلها ناجحة.
 
 **لم يُمسّ:** Gemini/firewall، OAuth/الاعتمادات، المصادقة، قاعدة البيانات، DR/الاستعادة، YouTube (المراقب/الطابور/التفويض)، Facebook/Instagram/TikTok/Telegram، ونموذج الجدولة. الوثيقة: `docs/دفعة-4-العقل-الموحّد.md`.
+
+## Batch 5 — وقت تشغيل العقل 24/7 + ذاكرة دائمة (2026-10-02)
+
+تحويل العقل المركزي من طبقة تُقرأ عند الطلب إلى **مدير يعمل 24/7 داخل خدمة Render**
+بلا أي اعتماد على المتصفح: دورة داخلية تحلّل الواقع الحقيقي، تُنتج أحداث تعلّم، وتحفظ
+ذاكرة دائمة تصمد بعد restart/cold start. **لا نظام ثانٍ**: الدورة تُعيد استخدام
+`buildRuntimeBrain` ومنطق الذاكرة القائم ومسار الحفظ القائم حرفياً.
+
+### الوحدة `engine/brain/brainRuntime.ts` (منطق خالص قابل للاختبار، بلا شبكة/أسرار/ساعة حقيقية)
+- `BRAIN_CYCLE_STATUSES` = `SUCCESS` / `NO_NEW_DATA` / `FAILED` / `SKIPPED_LOCKED` /
+  `SKIPPED_DISABLED` / `SKIPPED_RUNNING`، و`BRAIN_CYCLE_STATUS_LABELS_AR` (بلا `as any`).
+- الإيقاع بحدود آمنة: `BRAIN_RUNTIME_DEFAULT_INTERVAL_MS` (6 ساعات) و
+  `BRAIN_RUNTIME_MIN_INTERVAL_MS` (5 دقائق) و`BRAIN_RUNTIME_MAX_INTERVAL_MS` (24 ساعة)،
+  و`resolveBrainIntervalMs(env)` يرفض أي قيمة غائبة/غير رقمية/خارج الحدود.
+- `isBrainRuntimeDue(lastCompletedAt, nowMs, intervalMs)` — لا تشغيل سابق ⇒ مستحق؛ وغياب
+  `now` لا يُخترع (يُعلن `not_due`).
+- قفل/lease: `acquireBrainLock` / `releaseBrainLock` / `isBrainLockStale` / `BRAIN_LOCK_MAX_TTL_MS`
+  (10 دقائق) + `staleLockRecoveries`، فلا توازٍ ولا جمود دائم بعد تعطّل عملية.
+- `runBrainRuntimeCycle(deps, trigger)` — البوابات: معطّل ⇒ `SKIPPED_DISABLED`، دورة جارية
+  ⇒ `SKIPPED_RUNNING`، قفل حيّ لغيري ⇒ `SKIPPED_LOCKED`؛ ثم `build` → `persist` →
+  `release`. **لا ادّعاء نجاح**: الحالة من `persistResult.ok` الفعلي، وفشل الحفظ ⇒ `FAILED`
+  + `persistenceFailureCount` + `lastError` (بلا سرّ).
+- **NO_NEW_DATA الصادقة**: تشمل `records.length === 0` **و** `added === 0` (تكرار كل السجلات)،
+  فلا يُعلن SUCCESS بلا ذاكرة جديدة فعلية.
+- `sanitizeBrainRuntimeError` يقتصر على اسم/كود الخطأ (بلا نص قد يحمل سرّاً)،
+  و`buildBrainRuntimeStatus` يعرض كل العدّادات + `executesExternalActions:false` +
+  `geminiUsedOnCycles:false` + `intervalMinutes` + `lastStatusLabelAr` بلا أي سرّ.
+- `normalizeBrainRuntimeState` للتوافق الخلفي عند استرجاع الحالة.
+
+### الربط في `server.ts`
+- `brainRuntimeState` يُحفظ ويُسترجع عبر محوّل الحالة (`buildControlState` /
+  `applyControlSnapshot` → `control.brainRuntime`) فيصمد بعد restart/deploy/cold start.
+- `runBrainRuntimeCycleInternal(trigger)` يحقن: `build` = `buildRuntimeBrain` (نفس مدخلات
+  العقل الحقيقية) + `dedupeLearningEvents` + `memoryRecordsFromEvents`، و`persist` = مسار
+  `persistBrainMemory` القائم. **`persistBrainMemory` يعيد تسلسل الكتابة**، والدورة تنتظر
+  الطابور وتحكم على **كتابتها وحدها** (`brainMemoryLastErrorSeq === mySeq`) بلا تأثّر بفشل
+  كتابة أخرى — فلا ادّعاء نجاح ولا فشل كاذب.
+- `startBrainRuntime()` يُبدأ بعد `app.listen` (`BRAIN_RUNTIME_BOOT_DELAY_MS`) بمؤقّت
+  واحد `.unref()`؛ `rescheduleBrainRuntime` يُبطل القديم قبل الجديد. مالك داخلي ثابت
+  (`BRAIN_RUNTIME_OWNER`) يعزل قفل الدورة عن قفل أداة العقل.
+- مسارات owner: `GET /api/agent/brain/runtime` (حالة) و`POST /api/agent/brain/runtime/run`
+  (تشغيل دورة الآن — تحليل/تعلّم/حفظ، **بلا إجراء خارجي وبلا Gemini**).
+- `/api/health.brainRuntime` و`/api/readiness.brain.runtime` يعرضان الحالة بلا سرّ.
+
+### الواجهة
+`CentralBrainView` (تبويب `central_brain`): بطاقة «وقت تشغيل العقل 24/7» تعرض الحالة
+والإيقاع والعدّادات والقفل وآخر خطأ، وزر «تشغيل دورة الآن (تشخيص)» للمالك. تُعرض نتيجة
+الخادم الفعلية فقط؛ فشل قراءة وقت التشغيل لا يُسقط بقية اللوحة.
+
+اختبارات: `engine/tests/brain/brain.runtime.cycle.test.ts` (`npm run test:brain-runtime-cycle`،
+66 فحصاً وحدة) و`engine/tests/brain/brain.runtime.cycle.server.test.ts`
+(`npm run test:brain-runtime-cycle-server`، 30 فحصاً على خادم حقيقي + خادم YouTube وهمي:
+دورة بلا بيانات ⇒ NO_NEW_DATA، رد حقيقي عبر المراقب ⇒ حدث تعلّم حقيقي، حفظ الذاكرة، منع
+التكرار، الثبات بعد restart فعلي، ولا تسريب أسرار). فحوص final-audit الجديدة `brain-runtime-*`
+(**1172 إجمالاً**). `npm run lint` + `build` + `test` + `final-audit` كلها ناجحة.
+
+**لم يُمسّ:** الدفعات 1–4 (العقل التجاري/التسويق/الرقمي/الموحّد)، Gemini/firewall، OAuth/
+الاعتمادات، المصادقة، قاعدة البيانات، DR/الاستعادة، YouTube (المراقب/الطابور/التفويض)،
+بقية المنصات، ونموذج الجدولة. لا تغيير في أي سرّ أو مفتاح.

@@ -49,6 +49,8 @@ export const CentralBrainView: React.FC = () => {
   const [brainState, setBrainState] = useState<any>(null);
   const [brainCaps, setBrainCaps] = useState<any>(null);
   const [brainDryRun, setBrainDryRun] = useState<any>(null);
+  // وقت تشغيل العقل 24/7 (Batch 5): للمالك فقط (يظهر فقط عند نجاح القراءة).
+  const [runtime, setRuntime] = useState<any>(null);
 
   const loadAll = useCallback(async () => {
     setLoading(true);
@@ -63,12 +65,28 @@ export const CentralBrainView: React.FC = () => {
       ]);
       setDiag(d); setLearning(l.learning); setRecommendations(r.recommendations); setAudience(a.audience);
       setBrainState(bs.state); setBrainCaps(bc.rows);
+      // وقت التشغيل للمالك فقط؛ فشله لا يُسقط بقية اللوحة.
+      try { const rt = await apiService.getBrainRuntime(); setRuntime(rt.runtime); } catch { setRuntime(null); }
     } catch (e: any) {
       showToast(e?.message || 'تعذر تحميل بيانات العقل المركزي.');
     } finally {
       setLoading(false);
     }
   }, [showToast]);
+
+  const runRuntimeNow = async () => {
+    setLoading(true);
+    try {
+      const res = await apiService.runBrainRuntimeCycle();
+      setRuntime(res.runtime);
+      const label = res.runtime?.lastStatusLabelAr || res.result?.status || '';
+      showToast(`دورة العقل: ${label}${res.result?.newMemoryRecords ? ` — سجلات جديدة: ${res.result.newMemoryRecords}` : ''}`);
+    } catch (e: any) {
+      showToast(e?.message || 'تعذر تشغيل دورة العقل.');
+    } finally {
+      setLoading(false);
+    }
+  };
 
   const loadDryRun = async () => {
     setLoading(true);
@@ -149,6 +167,30 @@ export const CentralBrainView: React.FC = () => {
           </ul>
         ) : null}
       </Card>
+
+      {runtime ? (
+        <Card title="وقت تشغيل العقل 24/7" hint="مُشغِّل داخلي على الخادم: تحليل/تعلّم/حفظ ذاكرة — بلا متصفح، وبلا أي إجراء خارجي، وبلا استهلاك Gemini.">
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-xs">
+            <Stat label="الحالة" value={runtime.statusLabelAr ?? runtime.status ?? '—'} />
+            <Stat label="الإيقاع (دقائق)" value={runtime.intervalMinutes ?? '—'} />
+            <Stat label="دورات" value={runtime.cycleCount ?? 0} />
+            <Stat label="نجاح" value={runtime.successCount ?? 0} />
+            <Stat label="لا بيانات" value={runtime.noDataCount ?? 0} />
+            <Stat label="متخطّاة (قفل)" value={runtime.skippedLockedCount ?? 0} />
+            <Stat label="سجلات ذاكرة تراكمية" value={runtime.totalNewMemoryRecords ?? 0} />
+            <Stat label="آخر تشغيل" value={runtime.lastCycleCompletedAt ? new Date(runtime.lastCycleCompletedAt).toLocaleString('ar-IQ') : '—'} />
+          </div>
+          <div className="mt-3 text-[11px] text-slate-400 space-y-1">
+            <div>القفل: {runtime.lockHeld ? 'مُحتجَز الآن' : 'حر'} {runtime.lockStale ? '(متقادم — يُستردّ)' : ''}</div>
+            <div>آخر خطأ: {runtime.lastError ? <span className="text-amber-300">{runtime.lastError}</span> : 'لا يوجد'}</div>
+            <div>إجراءات خارجية: {runtime.executesExternalActions ? 'نعم' : 'لا'} · استهلاك Gemini في الدورات: {runtime.geminiUsedOnCycles ? 'نعم' : 'لا'}</div>
+          </div>
+          <button onClick={runRuntimeNow} disabled={loading}
+            className="mt-4 px-4 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white text-xs font-bold">
+            تشغيل دورة الآن (تشخيص)
+          </button>
+        </Card>
+      ) : null}
 
       <Card title="مصفوفة قدرات المنصات" hint="Capability ≠ Connection ≠ Verification — «متصل» تُقرأ من الخادم منفصلة.">
         <div className="overflow-x-auto">

@@ -664,6 +664,20 @@ ${payload.topic || payload.productName || 'أنظمة وحلول التقسيط 
     if (!res.ok || !data.success) throw new Error(data.error || 'تعذر جلب لقطة العقل المركزي');
     return data;
   },
+  // وقت تشغيل العقل 24/7 (Batch 5): حالة/إيقاع/عدّادات الذاكرة (للمالك فقط). بلا سرّ.
+  async getBrainRuntime() {
+    const res = await fetch('/api/agent/brain/runtime', { headers: getAuthHeaders() });
+    const data = await res.json();
+    if (!res.ok || !data.success) throw new Error(data.error || 'تعذر جلب حالة وقت تشغيل العقل');
+    return data;
+  },
+  // تشغيل دورة عقل الآن (تشخيص، للمالك فقط): تحليل/تعلّم/حفظ — بلا إجراء خارجي.
+  async runBrainRuntimeCycle() {
+    const res = await fetch('/api/agent/brain/runtime/run', { method: 'POST', headers: getAuthHeaders() });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data?.result?.error || data.error || 'تعذر تشغيل دورة العقل');
+    return data;
+  },
   async getBrainCapabilities() {
     const res = await fetch('/api/agent/brain/capabilities', { headers: getAuthHeaders() });
     const data = await res.json();
