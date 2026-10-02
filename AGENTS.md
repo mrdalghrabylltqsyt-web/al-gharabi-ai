@@ -3328,6 +3328,48 @@ Drive من `env.DRIVE_OAUTH_REFRESH_TOKEN` وحده. لمّا لم يكن هذا
 **لا تغيير في:** أي سرّ/مفتاح قائم، ولا OAuth/scopes، ولا YouTube/Facebook/Instagram/TikTok/
 Telegram، ولا Gemini، ولا rp-002/rp-003/rp-004، ولا PostgreSQL الإنتاجي (قراءة الرمز فقط).
 
+## مركز الاستعادة تطبيق قابل للتثبيت (PWA: جوال + سطح مكتب) — 2026-10-02
+
+تحويل مركز الاستعادة المستقل القائم (`gharabi-recovery-center`) إلى **تطبيق واحد قابل
+للتثبيت** من نفس الخدمة المركزية `https://gharabi-recovery-center.onrender.com` — بلا
+خادم ثانٍ ولا قاعدة ثانية ولا Electron/Tauri. لا تغيير في المصادقة/الجلسات/التشفير/OAuth/
+الخزنة/النسخ/الاستعادة.
+
+**وحدة واحدة جديدة `tools/dr/recoveryPwa.mjs` (منطق صافٍ + أصول، بلا أسرار):**
+- `buildManifest()`/`manifestJson()`: بيان `display=standalone`, `start_url=/`, `scope=/`,
+  `theme_color/background_color=#0b1220`, `lang=ar dir=rtl`, اسم عربي كامل + قصير، وأيقونات
+  192/512 (any + maskable).
+- **مُرمّز PNG داخلي** (`encodePng`) — بلا أي مكتبة خارجية. `renderIconRgba(size)` يرسم
+  أيقونة الهوية: درع (حماية) + صليب (استعادة/طوارئ) أخضر زمردي على خلفية داكنة، **معتمة
+  تماماً** (آمنة للـmaskable)، بsupersampling للتلطيف. `iconPng(size)` مُخزَّن بالذاكرة.
+- `servePwaAsset(path)` يخدم `/manifest.webmanifest` (`application/manifest+json`) +
+  `/service-worker.js` (`no-cache`) + 5 أيقونات (192/512/maskable-192/maskable-512/apple-180).
+- `injectPwaIntoHtml(html)` يحقن وسوم `<head>` (manifest/theme-color/icons/apple) + سكربت
+  تسجيل الـSW قبل `</body>` — **idempotent**.
+- **Service Worker تمرير شفّاف بلا كاش إطلاقاً**: `install`/`activate` فقط، **بلا
+  `respondWith`** وبلا `caches.*`؛ لا يتدخّل في `/api/*` ولا في أي طلب غير GET. وجوده يجعل
+  التطبيق قابلاً للتثبيت مع بقاء العمليات الحسّاسة online-first بلا تخزين أي استجابة مصادقة/
+  رمز/خزنة/نسخة.
+
+**الربط (بلا تغيير أي منطق استعادة):** `tools/dr/recovery-center.mjs` و`recovery-console-ui.mjs`
+يستوردان الوحدة، يلفّان `page()` بـ`injectPwaIntoHtml`، ويخدمان الأصول عبر `servePwaAsset`
+في فرع GET قبل `/api/health`. `sync-lib.mjs` صار يزامن **13 وحدة** (أُضيف `recoveryPwa.mjs`).
+
+**تحسينات واجهة حقيقية للتثبيت (فقط ما يلزم):** `viewport-fit=cover` + `env(safe-area-inset-*)`
+للحواف (notch) + `min-height:44px` لأزرار اللمس + `font-size:16px` للحقول (منع تكبير iOS
+التلقائي) + `@media(max-width:520px)` للجوال. لم يُعد التصميم من الصفر.
+
+**اختبار `engine/tests/dr/dr.pwa.test.ts`** (`npm run test:dr-pwa`، **74 فحصاً**، مضاف
+لـ`test:dr`): صحة البيان، أبعاد/نوع PNG الفعلية لكل أيقونة، عمّية الأيقونة (maskable)،
+الـSW بلا كاش وبلا `respondWith` وبلا تدخّل API، الحقن idempotent، خادم حقيقي يخدم كل أصل
+200 بنوعه، `no-store` على `/api/*`، عدم وجود أي سرّ في أي أصل، وتطابق نسخة `lib` بلا انحراف.
+فحوص final-audit الجديدة `pwa-*` (**1026 إجمالاً**).
+
+**إجراء المالك (بلا سرّ):** على Render `gharabi-recovery-center` النشر تلقائي (`autoDeploy:
+true`, `branch: main`) فيستلم هذا الإصلاح بمجرد الدفع إلى main. للتثبيت: أندرويد Chrome →
+«تثبيت التطبيق/إضافة للشاشة الرئيسية»؛ سطح المكتب Chrome/Edge → أيقونة التثبيت في شريط
+العنوان. لا حاجة لأي متغيّر بيئة جديد ولا تغيير أي إعداد.
+
 ## جذر بقاء `no_refresh_token` في الإنتاج — الخدمة المستقلة لم تستلم الإصلاح (2026-10-02)
 
 **التشخيص الإنتاجي (لا من الكود فقط):** `https://gharabi-recovery-center.onrender.com`

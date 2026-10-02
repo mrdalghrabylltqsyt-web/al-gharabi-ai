@@ -42,6 +42,7 @@ import {
   openKeyVault,
   verifyRecoveryPoint,
 } from './standalone-recovery.mjs';
+import { injectPwaIntoHtml, servePwaAsset } from './recoveryPwa.mjs';
 
 const IS_HOSTED = Boolean(process.env.RENDER || process.env.RECOVERY_CENTER_HOSTED);
 const HOST = process.env.RECOVERY_CENTER_HOST || (IS_HOSTED ? '0.0.0.0' : '127.0.0.1');
@@ -132,23 +133,24 @@ export function parseTargetEnv(raw) {
 }
 
 function page() {
-  return `<!doctype html><html lang="ar" dir="rtl"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+  return injectPwaIntoHtml(`<!doctype html><html lang="ar" dir="rtl"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>مركز استعادة الغرابي AI</title>
 <style>
   :root{color-scheme:dark}
   *{box-sizing:border-box}
-  body{font-family:system-ui,"Segoe UI",Tahoma,sans-serif;background:#0b1220;color:#e2e8f0;margin:0;padding:20px;line-height:1.7}
+  body{font-family:system-ui,"Segoe UI",Tahoma,sans-serif;background:#0b1220;color:#e2e8f0;margin:0;line-height:1.7;
+    padding:calc(16px + env(safe-area-inset-top)) calc(14px + env(safe-area-inset-right)) calc(16px + env(safe-area-inset-bottom)) calc(14px + env(safe-area-inset-left))}
   .wrap{max-width:900px;margin:0 auto}
   h1{font-size:24px;margin:0 0 4px} h3{margin:0 0 8px;font-size:16px}
   .sub{color:#94a3b8;margin:0 0 18px}
   .card{background:#111c33;border:1px solid #1f2d4a;border-radius:16px;padding:16px;margin:12px 0}
   .row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
   .grow{flex:1}
-  button{background:#2563eb;color:#fff;border:0;border-radius:10px;padding:10px 16px;font-size:15px;cursor:pointer;font-family:inherit}
+  button{background:#2563eb;color:#fff;border:0;border-radius:10px;padding:11px 16px;font-size:15px;cursor:pointer;font-family:inherit;min-height:44px}
   button.sec{background:#334155} button.danger{background:#b91c1c}
   button:disabled{opacity:.45;cursor:not-allowed}
-  input,textarea{background:#0b1220;color:#e2e8f0;border:1px solid #1f2d4a;border-radius:10px;padding:10px;width:100%;font-family:inherit;font-size:14px}
+  input,textarea{background:#0b1220;color:#e2e8f0;border:1px solid #1f2d4a;border-radius:10px;padding:10px;width:100%;font-family:inherit;font-size:16px}
   .pill{display:inline-block;padding:2px 10px;border-radius:999px;font-size:12px;border:1px solid #1f2d4a}
   .pill.ok{background:#052e1a;color:#4ade80;border-color:#14532d}
   .pill.bad{background:#3a0d0d;color:#f87171;border-color:#7f1d1d}
@@ -163,6 +165,12 @@ function page() {
   ol{padding-inline-start:18px} .step{color:#cbd5e1}
   .banner{background:#3a2a05;border:1px solid #713f12;color:#fde68a;border-radius:12px;padding:10px 14px;margin:10px 0}
   a{color:#60a5fa}
+  @media (max-width:520px){
+    h1{font-size:20px} .sub{font-size:14px;margin-bottom:12px}
+    .card{padding:14px;border-radius:14px} .wrap{max-width:100%}
+    .row button{flex:1}
+    .grid{grid-template-columns:1fr 1fr}
+  }
 </style></head><body><div class="wrap">
 <h1>🛟 مركز استعادة الغرابي AI</h1>
 <p class="sub">هذا المركز مخصص لاستعادة المشروع عند حدوث عطل أو فقدان بيئة التشغيل. يعمل مستقلاً عن تطبيق الغرابي الرئيسي وعن جلسته.</p>
@@ -265,7 +273,7 @@ $('restore').onclick=async()=>{
   $('verdict').innerHTML=d.ok?'<span class="ok">اكتملت الاستعادة (راجع الحالات والخطوة الخارجية).</span>':'<span class="bad">توقفت الاستعادة عند: '+esc((d.report&&d.report.failureStage)||d.code||'—')+'</span>';
 };
 load();
-</script></body></html>`;
+</script></body></html>`);
 }
 
 export function createRecoveryCenterServer(options = {}) {
@@ -280,6 +288,15 @@ export function createRecoveryCenterServer(options = {}) {
       if (req.method === 'GET' && (url.pathname === '/' || url.pathname === '/index.html')) {
         res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' });
         return res.end(page());
+      }
+      // أصول PWA (بيان/أيقونات/service worker): بلا أي سرّ، وبترويسات تخزين مناسبة.
+      // الـService Worker تمرير شفّاف بلا كاش إطلاقاً (انظر recoveryPwa.mjs).
+      if (req.method === 'GET') {
+        const asset = servePwaAsset(url.pathname);
+        if (asset) {
+          res.writeHead(asset.status, { 'Content-Type': asset.contentType, 'Cache-Control': asset.cacheControl });
+          return res.end(asset.body);
+        }
       }
       if (req.method === 'GET' && url.pathname === '/api/health') {
         const readiness = await inspectRecoveryReadiness(env, tokenOptions || {});

@@ -1589,6 +1589,19 @@ add('token-source-no-vault-key', !/DR_RECOVERY_VAULT_KEY\s*\n\s*sync/.test(read(
 add('token-source-center-health', recoveryCenterModule.includes('refreshTokenSource') && recoveryCenterModule.includes('refreshTokenAvailable') && recoveryCenterModule.includes('stateDatabaseConfigured'), 'صحة المركز تعلن مصدر الرمز وقاعدة الحالة بلا أي قيمة سرّية');
 add('token-source-center-no-secret', !/refreshToken\s*:\s*(plain|token)\b/.test(recoveryCenterModule) && !/DRIVE_OAUTH_REFRESH_TOKEN\s*:/.test(recoveryCenterModule), 'المركز لا يُعيد الرمز ولا يضبطه نصاً');
 add('token-source-test', (pkg.scripts['test:dr'] || '').includes('test:dr-token-source') && fs.existsSync(path.join(root, 'engine/tests/dr/dr.token.source.test.ts')) && read('engine/tests/dr/dr.token.source.test.ts').includes('state_database') && read('engine/tests/dr/dr.token.source.test.ts').includes('no secret'), 'اختبار مصدر الرمز (قاعدة الحالة المشفّرة + عدم التسريب) مربوط بـtest:dr');
+
+// ---- PWA: مركز الاستعادة تطبيق قابل للتثبيت (جوال + سطح مكتب) ----
+const pwaModule = fs.existsSync(path.join(root, 'tools/dr/recoveryPwa.mjs')) ? read('tools/dr/recoveryPwa.mjs') : '';
+const pwaLib = fs.existsSync(path.join(root, 'dr-recovery-center/lib/recoveryPwa.mjs')) ? read('dr-recovery-center/lib/recoveryPwa.mjs') : '';
+add('pwa-module', pwaModule.includes('buildManifest') && pwaModule.includes('iconPng') && pwaModule.includes('servePwaAsset') && pwaModule.includes('injectPwaIntoHtml'), 'وحدة PWA موجودة (بيان + أيقونات + خدمة أصول + حقن)');
+add('pwa-manifest-standalone', pwaModule.includes("display: 'standalone'") && pwaModule.includes("start_url: '/'") && pwaModule.includes("scope: '/'") && pwaModule.includes('theme_color'), 'البيان: display standalone + start_url/scope + theme_color');
+add('pwa-icons-192-512-maskable', pwaModule.includes("'/icons/icon-192.png': 192") && pwaModule.includes("'/icons/icon-512.png': 512") && pwaModule.includes('maskable') && pwaModule.includes('apple-touch-icon'), 'أيقونات 192/512 + maskable + Apple touch icon');
+add('pwa-service-worker-no-cache', pwaModule.includes('self.skipWaiting') && !/caches\.open|cache\.put|CacheStorage/.test(pwaModule) && !/respondWith/.test(pwaModule.replace(/\/\*[\s\S]*?\*\//g, '')), 'Service Worker بلا كاش إطلاقاً (لا respondWith ولا caches) — online-first');
+add('pwa-service-worker-guards-api', /\/api\//.test(pwaModule) && /GET/.test(pwaModule), 'سياسة الـService Worker تعلن حماية /api/* والطلبات غير GET (بلا كاش لاستجابات المصادقة/النقاط)');
+add('pwa-center-wired', recoveryCenterModule.includes("from './recoveryPwa.mjs'") && recoveryCenterModule.includes('injectPwaIntoHtml') && recoveryCenterModule.includes('servePwaAsset'), 'المركز يحقن وسوم PWA ويخدم أصولها (بلا تغيير أي منطق استعادة)');
+add('pwa-lib-synced', pwaLib !== '' && pwaLib === pwaModule, 'نسخة lib المتزامنة للـPWA مطابقة لوحدة tools/dr (بلا انحراف)');
+add('pwa-no-secret', !/(GOCSPX|AIzaSy|1\/\/)[A-Za-z0-9_-]{8,}/.test(pwaModule) && !/DRIVE_TOKEN_ENCRYPTION_KEY|DR_RECOVERY_VAULT_KEY|refresh[_-]?token\s*[:=]/.test(pwaModule), 'لا سرّ/مفتاح/متغيّر بيئة داخل وحدة PWA (بيانات عرض فقط)');
+add('pwa-test-wired', (pkg.scripts['test:dr'] || '').includes('test:dr-pwa') && fs.existsSync(path.join(root, 'engine/tests/dr/dr.pwa.test.ts')) && read('engine/tests/dr/dr.pwa.test.ts').includes('standalone') && read('engine/tests/dr/dr.pwa.test.ts').includes('no secret'), 'اختبار PWA (بيان/أيقونات/service worker/عدم التسريب) مربوط بـtest:dr');
 // بصمة بناء غير سرّية: بلا بصمة لا يمكن إثبات أي نسخة تعمل فعلاً على الخدمة المستقلة.
 add('recovery-center-build-marker', recoveryCenterModule.includes('RECOVERY_CENTER_BUILD') && recoveryCenterModule.includes('build: RECOVERY_CENTER_BUILD'), 'صحة المركز تعلن بصمة بناء غير سرّية تُثبت النسخة العاملة (منع «إصلاح لم يُنشر» صامتاً)');
 // autoDeploy مفعّل: بدون ذلك لا يستلم المركز أي إصلاح مدموج إلى main.

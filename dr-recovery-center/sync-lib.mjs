@@ -29,6 +29,7 @@ const MODULES = [
   'retention.mjs',
   'token-source.mjs',
   'standalone-recovery.mjs',
+  'recoveryPwa.mjs',
   'recovery-center.mjs',
 ];
 

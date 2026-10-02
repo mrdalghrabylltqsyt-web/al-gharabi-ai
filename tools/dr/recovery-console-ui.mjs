@@ -26,25 +26,28 @@ import {
   inspectTargetEnvironment,
   runStandaloneRestore,
 } from './standalone-recovery.mjs';
+import { injectPwaIntoHtml, servePwaAsset } from './recoveryPwa.mjs';
 
 const HOST = process.env.RECOVERY_UI_HOST || '127.0.0.1';
 const PORT = Number.parseInt(process.env.PORT || '4599', 10);
 
 function page() {
-  return `<!doctype html><html lang="ar" dir="rtl"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+  return injectPwaIntoHtml(`<!doctype html><html lang="ar" dir="rtl"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>الغرابي AI — الاستعادة المستقلة</title>
 <style>
-  body{font-family:system-ui,Segoe UI,Tahoma,sans-serif;background:#0f172a;color:#e2e8f0;margin:0;padding:24px}
+  body{font-family:system-ui,Segoe UI,Tahoma,sans-serif;background:#0f172a;color:#e2e8f0;margin:0;
+    padding:calc(16px + env(safe-area-inset-top)) calc(14px + env(safe-area-inset-right)) calc(16px + env(safe-area-inset-bottom)) calc(14px + env(safe-area-inset-left))}
   h1{font-size:20px} .card{background:#1e293b;border:1px solid #334155;border-radius:16px;padding:16px;margin:12px 0}
-  button{background:#2563eb;color:#fff;border:0;border-radius:10px;padding:10px 16px;font-size:15px;cursor:pointer}
+  button{background:#2563eb;color:#fff;border:0;border-radius:10px;padding:11px 16px;font-size:15px;cursor:pointer;min-height:44px}
   button:disabled{opacity:.5;cursor:not-allowed}
-  input{background:#0b1220;color:#e2e8f0;border:1px solid #334155;border-radius:10px;padding:10px;width:100%;box-sizing:border-box}
+  input{background:#0b1220;color:#e2e8f0;border:1px solid #334155;border-radius:10px;padding:10px;width:100%;box-sizing:border-box;font-size:16px}
   .row{display:flex;gap:12px;align-items:center;flex-wrap:wrap}
   .pt{border:1px solid #334155;border-radius:12px;padding:12px;margin:8px 0;cursor:pointer}
   .pt.sel{border-color:#22c55e;background:#0b2013}
   .ok{color:#4ade80}.bad{color:#f87171}.muted{color:#94a3b8}
   pre{background:#0b1220;border:1px solid #334155;border-radius:10px;padding:12px;overflow:auto;max-height:340px}
+  @media (max-width:520px){ h1{font-size:18px} .card{padding:14px} .row button{flex:1} }
 </style></head><body>
 <h1>🛟 الغرابي AI — واجهة الاستعادة المستقلة</h1>
 <p class="muted">تعمل بلا خادم الغرابي. تعرض نقاط الاستعادة من Google Drive، تطلب مفتاح خزنة الطوارئ، وتستعيد.</p>
@@ -84,7 +87,7 @@ $('restore').onclick=async()=>{
     body:JSON.stringify({point:selected.id,vaultKey:$('vaultKey').value,confirm:true})});
   $('out').textContent=JSON.stringify(d,null,2);
 };
-</script></body></html>`;
+</script></body></html>`);
 }
 
 function json(res, code, body) {
@@ -113,6 +116,13 @@ export function createRecoveryUiServer(options = {}) {
       if (req.method === 'GET' && (url.pathname === '/' || url.pathname === '/index.html')) {
         res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
         return res.end(page());
+      }
+      if (req.method === 'GET') {
+        const asset = servePwaAsset(url.pathname);
+        if (asset) {
+          res.writeHead(asset.status, { 'Content-Type': asset.contentType, 'Cache-Control': asset.cacheControl });
+          return res.end(asset.body);
+        }
       }
       if (req.method === 'GET' && url.pathname === '/api/points') {
         const readiness = await inspectRecoveryReadiness(env);
