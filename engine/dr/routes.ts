@@ -26,6 +26,14 @@ import {
 } from '../../tools/dr/cloud-lib.mjs';
 import { DriveStateStore } from '../../tools/dr/drive-auth-url.mjs';
 import {
+  resolveAutoBackupIntervalMs,
+  isAutoBackupDue,
+  parseLastRunAtMs,
+  nextAutoBackupAtMs,
+  buildAutoBackupStatus,
+  AUTO_BACKUP_TICK_MS,
+} from './autoBackup';
+import {
   inspectDriveAuthEnv,
   exchangeDriveAuthCode,
   encryptDriveSecret,
@@ -44,6 +52,8 @@ import { runKeyVaultSync, recoverKeyVault, keyVaultStatus } from './recoveryVaul
 import { inspectVaultKey } from '../../tools/dr/key-vault-crypto.mjs';
 import { RECOVERY_SECRET_INVENTORY } from './recoveryVault/inventory';
 import { buildRestorePlan, runRecoveryDrill, verifyRecoveryPoint, applyDatabaseDump } from '../../tools/dr/restore.mjs';
+import { pruneCompletedRestorePoints, retentionEnabled, resolveKeep, resolveProtectedIds } from '../../tools/dr/retention.mjs';
+import { listRecoveryPoints, runStandaloneRestore, inspectRecoveryReadiness, inspectTargetEnvironment } from '../../tools/dr/standalone-recovery.mjs';
 import {
   buildRecoveryInformation,
   buildRecoveryInstructions,
@@ -56,7 +66,7 @@ export interface DriveRoutesDeps {
   requireOwner: express.RequestHandler;
   env?: Record<string, string | undefined>;
   /** يقرأ حالة DR المحفوظة (states + رمز تجديد مشفّر + آخر خطأ + حالة النسخ + هوية مجلدات Drive). */
-  loadControl: () => { driveOAuthStates?: any[]; driveRefreshToken?: any; driveLastError?: string | null; driveBackup?: any; driveFolderIdentity?: any; driveMirror?: any; driveReconciliation?: any };
+  loadControl: () => { driveOAuthStates?: any[]; driveRefreshToken?: any; driveLastError?: string | null; driveBackup?: any; driveFolderIdentity?: any; driveMirror?: any; driveReconciliation?: any; driveAutoBackup?: any };
   /** يثبّت جزءاً من حالة DR عبر محوّل الحالة (يصمد بعد restart). */
   persistControl: (partial: Record<string, any>) => void;
   /** عميل Drive اختياري (للاختبار). إن غاب يُبنى من البيئة. */
@@ -394,10 +404,11 @@ export function registerDriveRoutes(app: express.Express, deps: DriveRoutesDeps)
   const defaultGitMeta = () => ({ commit: env.RENDER_GIT_COMMIT || env.GIT_COMMIT || null, branch: env.RENDER_GIT_BRANCH || env.GIT_BRANCH || 'main', repository: env.GHARABI_REPOSITORY || 'mrdalghrabylltqsyt-web/al-gharabi-ai', project: 'al-gharabi-ai' });
 
   /** يحدّث سجل آخر نسخة عبر محوّل الحالة (يصمد بعد restart). */
-  function recordBackupResult(result: any): void {
+  function recordBackupResult(result: any, trigger: string = 'manual'): void {
     const previous = control().driveBackup || {};
     const entry = {
       at: now(),
+      trigger,
       state: result?.state ?? 'unknown',
       verified: result?.verified === true,
       commit: result?.commit ?? null,
@@ -415,17 +426,26 @@ export function registerDriveRoutes(app: express.Express, deps: DriveRoutesDeps)
     deps.persistControl({ driveBackup: entry });
   }
 
-  app.post('/api/dr/backup', deps.authenticateToken, deps.requireOwner, async (_req, res) => {
+  /**
+   * ينفّذ **النسخة الكاملة** (Recovery Point) عبر المسار الرسمي الوحيد: نفس ما كان
+   * يجري في المسار اليدوي (source bundle → فحص الأسرار → DB مشفّرة → secrets.enc
+   * → مرآة CURRENT → خزنة المفاتيح → رفع → تحقق). يُعاد استخدامه من المسار اليدوي
+   * ومن الجدولة التلقائية كل 6 ساعات — فلا مسار نسخ موازٍ إطلاقاً.
+   *
+   * القفل `backupRunning` يمنع التشغيل المتوازي (يدوي/تلقائي معاً): مناداة أثناء
+   * نسخة جارية تُعيد `BACKUP_ALREADY_RUNNING` بلا بدء عمل ثانٍ.
+   */
+  async function runFullBackup(trigger: string = 'manual'): Promise<{ status: number; body: any }> {
     const readiness = authReadiness(env, control().driveRefreshToken);
     if (!readiness.authorized) {
-      return res.status(409).json({ success: false, code: 'NOT_AUTHORIZED', error: 'لا تفويض Google Drive فعّال: لا يمكن إنشاء نسخة.' });
+      return { status: 409, body: { success: false, code: 'NOT_AUTHORIZED', error: 'لا تفويض Google Drive فعّال: لا يمكن إنشاء نسخة.' } };
     }
     const client = buildClient();
     if (!client) {
-      return res.status(503).json({ success: false, code: 'DRIVE_CLIENT_UNAVAILABLE', error: 'تعذّر بناء عميل Drive.' });
+      return { status: 503, body: { success: false, code: 'DRIVE_CLIENT_UNAVAILABLE', error: 'تعذّر بناء عميل Drive.' } };
     }
     if (backupRunning) {
-      return res.status(409).json({ success: false, code: 'BACKUP_ALREADY_RUNNING', error: 'نسخة احتياطية قيد التنفيذ بالفعل.' });
+      return { status: 409, body: { success: false, code: 'BACKUP_ALREADY_RUNNING', error: 'نسخة احتياطية قيد التنفيذ بالفعل.' } };
     }
     backupRunning = true;
     const startedAt = now();
@@ -436,12 +456,15 @@ export function registerDriveRoutes(app: express.Express, deps: DriveRoutesDeps)
       // حماية صريحة: لا نسخة ولا ترقية من شجرة ناقصة (منعت سابقاً "نسخة سليمة"
       // من مجلد Docker يحوي ملفين فقط). لا رفع ولا نقطة استعادة عند النقص.
       if (collected.complete === false) {
-        return res.status(409).json({
-          success: false,
-          code: 'SOURCE_INCOMPLETE',
-          error: 'المصدر المُجمَّع ناقص: رُفض إنشاء نسخة/ترقية CURRENT (لا نسخة سليمة من شجرة ناقصة).',
-          sourceCollection: sourceCollectionOf(collected),
-        });
+        return {
+          status: 409,
+          body: {
+            success: false,
+            code: 'SOURCE_INCOMPLETE',
+            error: 'المصدر المُجمَّع ناقص: رُفض إنشاء نسخة/ترقية CURRENT (لا نسخة سليمة من شجرة ناقصة).',
+            sourceCollection: sourceCollectionOf(collected),
+          },
+        };
       }
       const files = [...(collected.included || []), ...(collected.excluded || [])];
       const result = await runBackup({
@@ -504,27 +527,46 @@ export function registerDriveRoutes(app: express.Express, deps: DriveRoutesDeps)
           keyVault = { state: 'failed', reason: String(e?.code || e?.message || 'key_vault_failed').slice(0, 80) };
         }
       }
-      recordBackupResult(result);
+      // الاحتفاظ بثلاث نقاط مكتملة: يُنفَّذ **فقط** بعد نسخة ناجحة ومتحقّقة. لا يُحذف
+      // أي شيء قبل اكتمال النقطة الجديدة، ولا تُحذف النقاط المحميّة (rp-002/003/004).
+      let retention: any = null;
+      if (retentionEnabled(env as Record<string, string | undefined>) && (result.state === 'backed_up' || result.state === 'no_change')) {
+        try {
+          retention = await pruneCompletedRestorePoints(store, {
+            keep: resolveKeep(env as Record<string, string | undefined>),
+            protect: resolveProtectedIds(env as Record<string, string | undefined>),
+            newestId: result.recoveryPointId ?? null,
+            now: startedAt,
+          });
+        } catch (e: any) {
+          retention = { ok: false, code: String(e?.code || e?.message || 'retention_failed').slice(0, 60), deleted: [] };
+        }
+      }
+      recordBackupResult(result, trigger);
       const httpStatus = result.state === 'failed' ? 500 : 200;
-      return res.status(httpStatus).json({
-        success: result.state === 'backed_up' || result.state === 'no_change',
-        state: result.state,
-        verified: result.verified === true,
-        recoveryPointId: result.recoveryPointId ?? null,
-        commit: result.commit ?? null,
-        treeHash: result.treeHash ?? null,
-        sourceHash: result.sourceHash ?? null,
-        uploaded: result.uploaded ?? 0,
-        secretsCount: result.secretsCount ?? null,
-        mirror,
-        keyVault,
-        reason: result.reason ?? null,
-        message: result.message ?? null,
-        errorDetails: result.errorDetails ?? null,
-        problems: result.problems ?? null,
-        secretScan: result.secretScan ?? { ok: true, findings: 0 },
-        at: startedAt,
-      });
+      return {
+        status: httpStatus,
+        body: {
+          success: result.state === 'backed_up' || result.state === 'no_change',
+          state: result.state,
+          verified: result.verified === true,
+          recoveryPointId: result.recoveryPointId ?? null,
+          commit: result.commit ?? null,
+          treeHash: result.treeHash ?? null,
+          sourceHash: result.sourceHash ?? null,
+          uploaded: result.uploaded ?? 0,
+          secretsCount: result.secretsCount ?? null,
+          mirror,
+          keyVault,
+          retention,
+          reason: result.reason ?? null,
+          message: result.message ?? null,
+          errorDetails: result.errorDetails ?? null,
+          problems: result.problems ?? null,
+          secretScan: result.secretScan ?? { ok: true, findings: 0 },
+          at: startedAt,
+        },
+      };
     } catch (err: any) {
       const code = String(err?.code || err?.message || 'backup_failed').slice(0, 80);
       // فشل تجديد رمز Google: سبب حقيقي (لا عطل عام) + إجراء صريح = إعادة تفويض.
@@ -538,15 +580,21 @@ export function registerDriveRoutes(app: express.Express, deps: DriveRoutesDeps)
           message: 'رمز تفويض Google Drive غير صالح بعد الآن (رفضه Google): يلزم إعادة التفويض من زر «ربط Google Drive».',
           reauthorizationNeeded: true,
         };
-        recordBackupResult({ state: 'failed', reason: code });
-        return res.status(409).json({ success: false, ...failure });
+        recordBackupResult({ state: 'failed', reason: code }, trigger);
+        return { status: 409, body: { success: false, ...failure } };
       }
       const failure = { state: 'failed', reason: code, message: 'فشل غير متوقّع أثناء النسخة.' };
-      recordBackupResult(failure);
-      return res.status(500).json({ success: false, ...failure });
+      recordBackupResult(failure, trigger);
+      return { status: 500, body: { success: false, ...failure } };
     } finally {
       backupRunning = false;
     }
+  }
+
+  // المسار اليدوي (owner): يبقى كما هو ويعمل — يستدعي نفس النسخة الكاملة.
+  app.post('/api/dr/backup', deps.authenticateToken, deps.requireOwner, async (_req, res) => {
+    const { status, body } = await runFullBackup('manual');
+    res.status(status).json(body);
   });
 
   // ------------------------------------------------------------------
@@ -673,6 +721,8 @@ export function registerDriveRoutes(app: express.Express, deps: DriveRoutesDeps)
         hourlyReconciliation: reconciliationStatus(),
         lastReconciliationAt: control().driveReconciliation?.lastReconciliationAt ?? null,
         lastReconciliationResult: control().driveReconciliation?.lastReconciliationResult ?? null,
+        // الجدولة التلقائية: Recovery Point كامل كل 6 ساعات (بلا متصفح، على الخادم).
+        autoBackup: autoBackupStatus(),
         // منظومة التعافي: نقاط الاستعادة تُقرأ من /api/dr/recovery-points (owner).
         recoverySystem: {
           currentMirror: Boolean(mirror?.treeHash),
@@ -998,6 +1048,108 @@ export function registerDriveRoutes(app: express.Express, deps: DriveRoutesDeps)
   });
 
   // ------------------------------------------------------------------
+  // الاستعادة المستقلة (Standalone Recovery) — عرض/تحقق/تنفيذ بلا الاعتماد على
+  // جلسة الغرابي. تصل إلى Drive بمنظومة DR، تطلب DR_RECOVERY_VAULT_KEY عند الفكّ،
+  // ولا تلمس الإنتاج ولا أي نقطة استعادة (قراءة فقط). الأسرار لا تُعاد إطلاقاً.
+  // ------------------------------------------------------------------
+  app.get('/api/dr/standalone/points', deps.authenticateToken, deps.requireOwner, async (_req, res) => {
+    const readiness = authReadiness(env, control().driveRefreshToken);
+    if (!readiness.authorized) return res.status(409).json({ success: false, code: 'NOT_AUTHORIZED', error: 'لا تفويض Google Drive فعّال.' });
+    try {
+      const store = buildStore(buildClient(), { readOnlyStructure: true });
+      const listed = await listRecoveryPoints(store);
+      res.json({ success: listed.ok === true, points: listed.points || [], readiness: inspectRecoveryReadiness(env as Record<string, string | undefined>) });
+    } catch (err: any) {
+      res.status(502).json({ success: false, code: 'DRIVE_READ_FAILED', error: String(err?.code || err?.message || 'drive_read_failed').slice(0, 80) });
+    }
+  });
+
+  app.post('/api/dr/standalone/restore', deps.authenticateToken, deps.requireOwner, async (req, res) => {
+    const readiness = authReadiness(env, control().driveRefreshToken);
+    if (!readiness.authorized) return res.status(409).json({ success: false, code: 'NOT_AUTHORIZED', error: 'لا تفويض Google Drive فعّال.' });
+    const confirmed = req.body && req.body.confirm === true;
+    if (!confirmed) {
+      return res.status(428).json({
+        success: false,
+        code: 'OWNER_CONFIRMATION_REQUIRED',
+        error: 'الاستعادة تتطلّب تأكيداً صريحاً (confirm: true): لن تُعدَّل النسخة الاحتياطية الأصلية، وستُستعاد إلى البيئة المحدّدة.',
+      });
+    }
+    const id = (req.body && typeof req.body.point === 'string' && req.body.point) ? req.body.point : null;
+    // مفتاح الخزنة يُقبل في الجسم (POST) ولا يُسجَّل؛ ويُستخدم للفكّ فقط.
+    const vaultKey = (req.body && typeof req.body.vaultKey === 'string' && req.body.vaultKey) ? req.body.vaultKey : null;
+    const applyDb = req.body && req.body.applyDatabase === true;
+    const targetDb = (req.body && typeof req.body.targetDatabaseUrl === 'string' && req.body.targetDatabaseUrl) ? req.body.targetDatabaseUrl : null;
+    try {
+      const store = buildStore(buildClient(), { readOnlyStructure: true });
+      const point = await resolvePoint(store, id);
+      if (!point.ok || !point.data) return res.status(404).json({ success: false, code: 'RECOVERY_POINT_NOT_FOUND', error: point.message || 'نقطة الاستعادة غير موجودة.' });
+      const isolatedUrl = targetDb || deps.isolatedDatabaseUrl || env.DR_RECOVERY_TEST_DATABASE_URL || null;
+      const productionUrl = env.DATABASE_URL || null;
+      if (isolatedUrl && productionUrl && isolatedUrl === productionUrl) {
+        return res.status(409).json({ success: false, code: 'REFUSED_PRODUCTION_DATABASE', error: 'قاعدة الهدف تطابق DATABASE_URL الإنتاجي: رُفضت الاستعادة.' });
+      }
+      const fsMod = await import('node:fs');
+      const osMod = await import('node:os');
+      const pathMod = await import('node:path');
+      const targetDir = deps.drillDir || fsMod.mkdtempSync(pathMod.join(osMod.tmpdir(), 'gharabi-restore-'));
+      // بيئة الفكّ: مفتاح الخزنة المُدخَل يتقدّم؛ لا يُحفظ ولا يُسجَّل.
+      const restoreEnv: Record<string, string | undefined> = vaultKey ? { ...(env as Record<string, string | undefined>), DR_RECOVERY_VAULT_KEY: vaultKey } : (env as Record<string, string | undefined>);
+      const report = await runStandaloneRestore({
+        store,
+        point: point.data,
+        env: restoreEnv,
+        targetDir,
+        isolatedDatabaseUrl: isolatedUrl,
+        applyDatabase: applyDb,
+        now: now(),
+      });
+      // لا نُعيد أي قيمة سرّية؛ تقرير صادق فقط (مراحل/أعداد/مشاكل).
+      res.json({ success: report.ok === true, report, target: inspectTargetEnvironment(env as Record<string, string | undefined>, { isolatedDatabaseUrl: isolatedUrl }) });
+    } catch (err: any) {
+      res.status(500).json({ success: false, code: 'STANDALONE_RESTORE_FAILED', error: String(err?.code || err?.message || 'restore_failed').slice(0, 120) });
+    }
+  });
+
+  // ------------------------------------------------------------------
+  // الاحتفاظ: حالة السياسة + تنفيذ يدوي للمالك (بلا كشف أسرار).
+  // ------------------------------------------------------------------
+  app.get('/api/dr/retention/status', deps.authenticateToken, deps.requireOwner, async (_req, res) => {
+    const points = await (async () => {
+      try {
+        const store = buildStore(buildClient(), { readOnlyStructure: true });
+        const listed = await store.listRestorePoints();
+        return listed.ok ? listed.data.map((p: any) => ({ id: p.id, complete: Boolean(p.manifest && p.manifest.sourceHash && p.manifest.encryptedDatabaseHash && p.manifest.encryptedSecretsHash) })) : [];
+      } catch { return []; }
+    })();
+    res.json({
+      success: true,
+      retention: {
+        enabled: retentionEnabled(env as Record<string, string | undefined>),
+        keep: resolveKeep(env as Record<string, string | undefined>),
+        protectedIds: resolveProtectedIds(env as Record<string, string | undefined>),
+        points,
+      },
+    });
+  });
+
+  app.post('/api/dr/retention/prune', deps.authenticateToken, deps.requireOwner, async (_req, res) => {
+    const readiness = authReadiness(env, control().driveRefreshToken);
+    if (!readiness.authorized) return res.status(409).json({ success: false, code: 'NOT_AUTHORIZED', error: 'لا تفويض Google Drive فعّال.' });
+    try {
+      const store = buildStore(buildClient(), { readOnlyStructure: false });
+      const result = await pruneCompletedRestorePoints(store, {
+        keep: resolveKeep(env as Record<string, string | undefined>),
+        protect: resolveProtectedIds(env as Record<string, string | undefined>),
+        now: now(),
+      });
+      res.json({ success: result.ok === true, retention: result });
+    } catch (err: any) {
+      res.status(500).json({ success: false, code: 'RETENTION_FAILED', error: String(err?.code || err?.message || 'retention_failed').slice(0, 80) });
+    }
+  });
+
+  // ------------------------------------------------------------------
   // الفحص الساعي (reconciliation) — مؤقّت داخلي آمن في الإنتاج.
   // يقارن مصدر المشروع الحالي مع CURRENT: تطابق ⇒ no-op، اختلاف ⇒ مزامنة بعد
   // التحقق من اكتمال المصدر، نقص ⇒ SOURCE_INCOMPLETE بلا تغيير. لا AI، لا حلقات.
@@ -1133,6 +1285,124 @@ export function registerDriveRoutes(app: express.Express, deps: DriveRoutesDeps)
   });
 
   // ------------------------------------------------------------------
+  // الجدولة التلقائية: Recovery Point كامل كل 6 ساعات (بلا متصفح، على الخادم).
+  //
+  // - المؤقّت داخلي في العملية (Render web process) — مستقل عن المتصفح، لا يتأثر
+  //   بتحديث الصفحة، ولا ينشئ نسخة عند كل إعادة تشغيل لأن القرار مبني على الزمن
+  //   المنقضي منذ آخر تشغيل محفوظ (`driveAutoBackup.lastRunAt` في محوّل الحالة).
+  // - القفل `backupRunning` (نفس قفل النسخة اليدوية/المزامنة) يمنع أي تشغيل متوازٍ:
+  //   إن كانت نسخة قيد التنفيذ تُتخطّى الدورة بأمان (`already_running`) بلا بدء عمل.
+  // - لا يُسجَّل فشل كنقطة استعادة: النتيجة تُسجَّل كما هي (state=failed)، والنقطة
+  //   تُنشأ فقط عند `backed_up` عبر `runBackup` نفسه (لا ادّعاء نجاح).
+  // - الاحتفاظ محدود ومحميّ: بعد نجاح النسخة والتحقق منها فقط، تُقلَّم أقدم النقاط
+  //   المكتملة الزائدة عن `keep` (افتراضاً 3) عبر `pruneCompletedRestorePoints`.
+  //   لا تُحذف نقاط rp-002/rp-003/rp-004 (محميّة)، ولا النقطة الأحدث، ولا نقطة ناقصة.
+  // ------------------------------------------------------------------
+  let autoBackupTimer: NodeJS.Timeout | null = null;
+  let autoBackupInFlight = false;
+  let bootAutoBackupTimer: NodeJS.Timeout | null = null;
+  const AUTO_BACKUP_BOOT_DELAY_MS = 2 * 60 * 1000; // فحص الإقلاع بعد دقيقتين (لا فور الإقلاع)
+  const autoBackupIntervalMs = resolveAutoBackupIntervalMs(env as Record<string, string | undefined>);
+
+  /** يحفظ نتيجة دورة الجدولة في الحالة (تصمد بعد restart، بلا أسرار). */
+  function recordAutoBackupRun(result: { state: string; recoveryPointId?: string | null; reason?: string | null }, trigger: string, startedMs: number): void {
+    const prev = control().driveAutoBackup || {};
+    const entry = {
+      ...prev,
+      lastRunAt: now(),
+      lastRunStartedAtMs: startedMs,
+      lastRunResult: result.state,
+      lastRunTrigger: trigger,
+      lastRecoveryPointId: result.state === 'backed_up' ? result.recoveryPointId ?? null : prev.lastRecoveryPointId ?? null,
+      lastError: result.state === 'failed' ? result.reason ?? 'failed' : null,
+      runCount: (prev.runCount || 0) + 1,
+      intervalMs: autoBackupIntervalMs,
+    };
+    control().driveAutoBackup = entry;
+    deps.persistControl({ driveAutoBackup: entry });
+  }
+
+  /** يسجّل تخطّي دورة (due/قيد التنفيذ) بلا تشغيل — يمنع «نسخة مكرّرة» ويسجّل السبب. */
+  function recordAutoBackupSkip(reason: string): void {
+    const prev = control().driveAutoBackup || {};
+    const entry = {
+      ...prev,
+      lastSkippedAt: now(),
+      lastSkippedReason: reason,
+      skippedCount: (prev.skippedCount || 0) + 1,
+      intervalMs: autoBackupIntervalMs,
+    };
+    control().driveAutoBackup = entry;
+    deps.persistControl({ driveAutoBackup: entry });
+  }
+
+  /**
+   * دورة الجدولة: لا تفعل شيئاً إن لم يحل الموعد أو كانت نسخة/مزامنة قيد التنفيذ.
+   * عند الاستحقاق تنفّذ النسخة الكاملة عبر `runFullBackup('scheduled')` — نفس المسار
+   * الرسمي — وتسجّل النتيجة الصادقة.
+   */
+  async function runAutoBackupCycle(trigger: string = 'scheduled'): Promise<any> {
+    const startedMs = Date.now();
+    const lastRunAtMs = parseLastRunAtMs(control().driveAutoBackup);
+    if (!isAutoBackupDue(lastRunAtMs, startedMs, autoBackupIntervalMs)) {
+      return { outcome: 'skipped', reason: 'not_due', nextRunAt: nextAutoBackupAtMs(lastRunAtMs, autoBackupIntervalMs) == null ? null : new Date(nextAutoBackupAtMs(lastRunAtMs, autoBackupIntervalMs)!).toISOString() };
+    }
+    if (backupRunning || autoBackupInFlight) {
+      recordAutoBackupSkip('already_running');
+      return { outcome: 'skipped', reason: 'already_running' };
+    }
+    autoBackupInFlight = true;
+    try {
+      const { status, body } = await runFullBackup(trigger);
+      recordAutoBackupRun(body, trigger, startedMs);
+      return { outcome: status >= 200 && status < 300 ? 'ran' : 'failed', state: body.state ?? body.code ?? null, recoveryPointId: body.recoveryPointId ?? null, reason: body.reason ?? body.code ?? null, status };
+    } catch (err: any) {
+      recordAutoBackupRun({ state: 'failed', reason: String(err?.code || err?.message || 'auto_backup_failed').slice(0, 120) }, trigger, startedMs);
+      return { outcome: 'failed', reason: String(err?.code || err?.message || 'auto_backup_failed').slice(0, 120) };
+    } finally {
+      autoBackupInFlight = false;
+    }
+  }
+
+  /** حالة الجدولة الصادقة (بلا سرّ) للواجهة/الصحة. */
+  function autoBackupStatus(): any {
+    const base = buildAutoBackupStatus(control().driveAutoBackup, Date.now(), autoBackupIntervalMs);
+    const tickMs = Math.max(60 * 1000, Math.min(AUTO_BACKUP_TICK_MS, autoBackupIntervalMs));
+    return { ...base, scheduled: autoBackupTimer !== null, tickMinutes: Math.round(tickMs / 60000), running: autoBackupInFlight };
+  }
+
+  /** يبدأ المؤقّت الداخلي (مرة واحدة). `.unref()` يمنع تعليق الإغلاق النظيف. */
+  function startAutoBackup(): void {
+    if (autoBackupTimer) return;
+    // نبض داخلي كل 15 دقيقة (لا 6 ساعات): كل نبضة تتحقق من `isAutoBackupDue`، فيصمد
+    // الموعد حتى لو أُعيد تشغيل الخادم قبل انقضائه. لا تُنشأ نسخة إلا عند الاستحقاق.
+    const tickMs = Math.max(60 * 1000, Math.min(AUTO_BACKUP_TICK_MS, autoBackupIntervalMs));
+    autoBackupTimer = setInterval(() => {
+      void runAutoBackupCycle('scheduled').catch(() => { /* لا يُسقط العملية */ });
+    }, tickMs);
+    if (typeof (autoBackupTimer as any).unref === 'function') (autoBackupTimer as any).unref();
+    // فحص إقلاع واحد: بعد restart لا تُنشأ نسخة فوراً إن لم يحل الموعد (لا تكرار عند
+    // إعادة التشغيل)؛ وإن كان الموعد قد حلّ أثناء التوقّف تُنشأ نسخة واحدة فقط.
+    bootAutoBackupTimer = setTimeout(() => {
+      bootAutoBackupTimer = null;
+      void runAutoBackupCycle('boot').catch(() => { /* لا يُسقط العملية */ });
+    }, AUTO_BACKUP_BOOT_DELAY_MS);
+    if (typeof (bootAutoBackupTimer as any).unref === 'function') (bootAutoBackupTimer as any).unref();
+    console.log(`[الغرابي AI] DR full auto-backup scheduled every ${Math.round(autoBackupIntervalMs / 60000)} min (tick ${Math.round(tickMs / 60000)} min)`);
+  }
+
+  function stopAutoBackup(): void {
+    if (autoBackupTimer) { clearInterval(autoBackupTimer); autoBackupTimer = null; }
+    if (bootAutoBackupTimer) { clearTimeout(bootAutoBackupTimer); bootAutoBackupTimer = null; }
+  }
+
+  // مسار المالك: تشغيل دورة الجدولة الآن (تشخيص) — بلا تجاوز للموعد/القفل.
+  app.post('/api/dr/auto-backup/run', deps.authenticateToken, deps.requireOwner, async (_req, res) => {
+    const result = await runAutoBackupCycle('manual');
+    res.status(result.outcome === 'failed' ? 500 : 200).json({ success: result.outcome !== 'failed', autoBackup: result, status: autoBackupStatus() });
+  });
+
+  // ------------------------------------------------------------------
   // خزنة مفاتيح الطوارئ (Emergency Key Vault): حالة/مزامنة/فحص/نسخة/اختبار.
   // كلها للمالك فقط، وبلا أي قيمة سرّية في أي رد. لا زر "إظهار المفاتيح".
   // ------------------------------------------------------------------
@@ -1258,5 +1528,14 @@ export function registerDriveRoutes(app: express.Express, deps: DriveRoutesDeps)
     runSync: (opts?: { force?: boolean }) => runSync(opts || {}),
     start: startDriveReconciliation,
     stop: stopDriveReconciliation,
+  };
+  // واجهة الجدولة التلقائية (للاختبار والصحة): الحالة/الدورة/البدء/الإيقاف + النسخة الكاملة.
+  (app as any).drAutoBackup = {
+    status: autoBackupStatus,
+    runCycle: (trigger?: string) => runAutoBackupCycle(trigger || 'manual'),
+    runFullBackup,
+    start: startAutoBackup,
+    stop: stopAutoBackup,
+    intervalMs: autoBackupIntervalMs,
   };
 }

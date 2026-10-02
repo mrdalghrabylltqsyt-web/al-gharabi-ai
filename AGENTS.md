@@ -3162,3 +3162,127 @@ final-audit = **961** (`dr-runtime-commit-*`، `dr-source-bundle-build-env-*`).
 من داخل خطوة البناء نفسها. وفي بيئة لا يوفّر المزوّد فيها الـcommit زمن البناء، الربط
 بالـcommit المنشور وقت التشغيل صادق لأن الحزمة تُبنى في نفس النشر.
 
+
+## النسخة الاحتياطية الكاملة التلقائية كل 6 ساعات (2026-10-01)
+
+تحويل إنشاء Recovery Point الكامل من عملية يدوية إلى عملية تلقائية كل **6 ساعات**،
+مع بقاء النسخ اليدوي يعمل، وبلا أي مساس بالمفاتيح/OAuth/النسخ القائمة.
+
+**المسار الرسمي الواحد:** `runFullBackup(trigger)` في `engine/dr/routes.ts` هو الوحيد
+الذي ينفّذ النسخة الكاملة (source bundle → فحص الأسرار الصارم → DB مشفّرة AES-256-GCM
+→ secrets.enc → مرآة CURRENT → خزنة المفاتيح KEY-VAULT → رفع Drive → تحقق فعلي → نقطة
+استعادة). كلٌّ من `POST /api/dr/backup` (اليدوي) والدورة التلقائية يستدعيان **نفس**
+الدالة — لا مسار نسخ موازٍ إطلاقاً، فحُذف تكرار الجسم القديم ونُقل كما هو حرفياً.
+
+**الوحدة `engine/dr/autoBackup.ts` (منطق صافٍ قابل للاختبار، بلا شبكة/ساعة حقيقية):**
+- `AUTO_BACKUP_DEFAULT_INTERVAL_MS = 6h`، وحدّان آمنان [1 دقيقة .. 24 ساعة].
+- `resolveAutoBackupIntervalMs(env)` يقرأ `DR_AUTO_BACKUP_INTERVAL_MS` ويرفض أي قيمة
+  غائبة/غير رقمية/خارج الحدود => 6 ساعات (لا إيقاع صفري/سالب).
+- `isAutoBackupDue(lastRunAtMs, nowMs, intervalMs)` — لا تشغيل سابق ⇒ مستحق.
+- `parseLastRunAtMs` / `nextAutoBackupAtMs` / `buildAutoBackupStatus` (حالة صادقة بلا سرّ).
+
+**الجدولة في الخادم (لا تعتمد على المتصفح):** مؤقّت داخلي `setInterval` يُبدأ بعد
+`app.listen` عبر `(app as any).drAutoBackup.start()` (`.unref()`)، + فحص إقلاع واحد بعد
+دقيقتين. الحالة `driveAutoBackup` تُحفظ وتُسترجع عبر محوّل الحالة (`buildControlState`/
+`applyControlSnapshot` في `server.ts`) فتصمد بعد restart/deploy/cold start.
+
+**كيف تمنع التكرار عند إعادة التشغيل:** القرار مبني على الزمن المنقضي منذ `lastRunAt`
+المحفوظ، لا على وجود العملية. فعند الإقلاع، إن لم يحل الموعد تُتخطّى الدورة (`not_due`)
+بلا نسخة جديدة؛ وإن حلّ أثناء التوقّف تُنشأ نسخة واحدة فقط.
+
+**كيف تمنع التشغيل المتوازي:** نفس قفل `backupRunning` (المشترك مع النسخة اليدوية
+والمزامنة وخزنة المفاتيح) + `autoBackupInFlight`. أي نسخة قيد التنفيذ تُتخطّى الدورة
+بأمان (`already_running`) بلا بدء عمل ثانٍ، ويُسجَّل التخطّي (`skippedCount`).
+
+**لا فشل يُعلن نجاحاً:** `recordAutoBackupRun` يضع `lastError` عند `failed`، و
+`lastRecoveryPointId` فقط عند `backed_up`. المصدر الناقص ⇒ `SOURCE_INCOMPLETE` (409)
+بلا نقطة. لا حذف تلقائي للنسخ القديمة (لا منطق حذف إطلاقاً في هذه المرحلة).
+
+**المراقبة:** `/api/dr/health.dr.autoBackup` يعرض (`enabled`, `intervalMinutes=360`,
+`lastRunAt`, `lastRunResult`, `lastTrigger`, `lastRecoveryPointId`, `nextRunAt`, `due`,
+`skippedCount`, `lastSkippedReason`) بلا أي سرّ. ومسار owner `POST /api/dr/auto-backup/run`
+يشغّل دورة الآن (احتراماً للموعد/القفل).
+
+**اختبار `engine/tests/dr/dr.autoBackup.test.ts` (`npm run test:dr-autobackup`، 70 فحصاً):**
+الإيقاع والحدود، قرار الاستحقاق، دورة تنتج نقطة كاملة (DB مشفّرة + أسرار + خزنة بـrecords)،
+منع التكرار قبل الموعد، إعادة التشغيل بلا تكرار، نسخة قيد التنفيذ تُتخطّى، منع التوازي
+(القفل المشترك)، الفشل يُسجَّل فشلاً بلا نقطة، المصدر الناقص، عدم حذف النقاط، وhealth
+بلا سرّ. فحوص final-audit: `dr-auto-backup-*` (972 إجمالاً).
+
+**لا تغيير في:** DR_RECOVERY_VAULT_KEY / DR_RECOVERY_MASTER_KEY / DRIVE_DB_BACKUP_KEY /
+DRIVE_TOKEN_ENCRYPTION_KEY، ولا OAuth الخاص بـDrive، ولا rp-002/rp-003/rp-004، ولا
+YouTube/TikTok/Instagram/Facebook/Telegram، ولا Gemini، ولا المزامنة الحالية. لم تُنشأ
+rp-005 في هذه المهمة (الإنتاج لم يُلمس؛ التوقف قبل push/merge/deploy بطلب المالك).
+
+## الاحتفاظ بنقاط الاستعادة (3 مكتملة) — 2026-10-01
+
+`tools/dr/retention.mjs` (منطق صافٍ قابل للاختبار، بلا شبكة): `planRetention`,
+`pruneCompletedRestorePoints`, `resolveKeep` (افتراضياً 3، 1..50)، `resolveProtectedIds`
+(افتراضياً `rp-002,rp-003,rp-004`)، `retentionEnabled` (`DR_AUTO_RETENTION=false` يُعطّل).
+
+**قواعد مُختبرة:** لا حذف قبل اكتمال النقطة الجديدة والتحقق منها؛ التقليم يقع في
+`runFullBackup` **بعد** `backed_up`/`no_change` فقط؛ لا تُحذف النقطة الأحدث، ولا نقطة ناقصة،
+ولا نقطة محميّة (`rp-002/003/004`). فشل الحذف لا يُسقط النسخة (يُعاد كـ`pending`).
+مسارات owner: `GET /api/dr/retention/status` و`POST /api/dr/retention/prune`.
+
+## الاستعادة المستقلة — واجهة منفصلة عن المشروع (Task B) — 2026-10-01
+
+عند انهيار المشروع بالكامل (Render متوقف، `dist` مفقود، لا جلسة مالك) لا يبقى زر داخل
+التطبيق. لذلك أُضيف **مسار استعادة مستقل** لا يستورد خادم الغرابي ولا كود المشروع المترجم:
+
+- `tools/dr/standalone-recovery.mjs`: `listRecoveryPoints` (نقاط + تحقق فعلي)،
+  `openKeyVault` (فكّ خزنة الطوارئ من `HEAD.json` مع تحقق بصمات السجلات)،
+  `runStandaloneRestore` (اختيار نقطة → فتح خزنة → فكّ أسرار → فكّ قاعدة → استخراج مصدر
+  → كتابته → قاعدة هدف → تقرير صادق بمراحل ومشاكل)، `inspectRecoveryReadiness`,
+  `inspectTargetEnvironment`. **لا تُعدَّل النقاط** (قراءة فقط)، وتُرفض قاعدة الإنتاج.
+- `tools/dr/recovery-console.mjs`: واجهة CLI (`--list`/`--verify`/`--restore --target`).
+- `tools/dr/recovery-console-ui.mjs`: **واجهة ويب مستقلة** (`node tools/dr/recovery-console-ui.mjs`
+  ثم `http://127.0.0.1:4599`): عرض النقاط، إدخال `DR_RECOVERY_VAULT_KEY`، بدء الاستعادة.
+  تستمع على `127.0.0.1` فقط، لا تسجّل المفتاح، ولا تعتمد على خادم الغرابي.
+- مسارات داخل اللوحة (owner): `GET /api/dr/standalone/points` و`POST /api/dr/standalone/restore`
+  (تأكيد صريح `confirm:true`، مفتاح الخزنة في الجسم POST فلا يُسجَّل).
+- وثائق `RECOVERY/` (START-HERE + RECOVERY-GUIDE) تشرح الواجهة المستقلة صراحةً.
+
+اختبار `engine/tests/dr/dr.standalone.test.ts` (`npm run test:dr-standalone`، **72 فحصاً**):
+سياسة الاحتفاظ، الاستعادة الكاملة عبر Drive وهمي، فشل المفتاح، نقطة تالفة، أسرار/قاعدة
+تالفة، رفض قاعدة الإنتاج، بيئة هدف غير متاحة، محاكاة فقدان المشروع بالكامل، وواجهة الويب
+المستقلة. فحوص final-audit: `dr-retention-*` و`dr-standalone-*` (985 إجمالاً).
+
+**لا تغيير في:** أي سرّ/مفتاح، ولا OAuth، ولا rp-002/rp-003/rp-004 (محميّة من التقليم)،
+ولا المنصّات، ولا Gemini.
+
+## مركز استعادة الغرابي AI — خدمة مستقلة + إغلاق منظومة DR (الدفعة النهائية، 2026-10-01)
+
+الدفعة الأخيرة في موضوع النسخ الاحتياطي والاستعادة. أُضيف **مركز استعادة الغرابي AI**
+كخدمة مستقلة تماماً عن تطبيق الغرابي الرئيسي، فتبقى متاحة ولو توقّف Render/التطبيق/جلسته.
+
+- `tools/dr/recovery-center.mjs`: **خدمة ويب مستقلة** (`createRecoveryCenterServer`) بلا أي
+  استيراد لـ`server.ts`/`dist`/git/GitHub. واجهة عربية: حالة Google Drive + نقاط الاستعادة
+  (رقم/تاريخ/التزام/ملفات/بصمة/DB/أسرار/خزنة/تحقق/قابلية استعادة) + حقل مفتاح الخزنة المخفي
+  + «التحقق من النسخة» (قراءة فقط) + «بدء الاستعادة» + حالات صادقة + «إعداد بيئة الاستعادة».
+  - مسارات: `GET /api/health` (standalone + `vaultKeyInEnv:false`)، `GET /api/points`،
+    `POST /api/verify` (قراءة فقط)، `POST /api/restore` (تأكيد `confirm:true`).
+  - `RECOVERY_HONEST_STATES` (8 حالات): تم التحقق/فكّ الخزنة/استعادة المصدر/قاعدة البيانات/
+    الأسرار/تجهيز البيئة + **service_started/service_verified دائماً false** (خطوة خارجية،
+    لا ادّعاء آلي). `honestStatesFromReport` يترجم التقرير بلا ادّعاء.
+  - مفتاح `DR_RECOVERY_VAULT_KEY` يُمرَّر في **جسم POST فقط**، لا يُحفظ/يُسجَّل/يُعاد.
+  - `parseTargetEnv` لخطوة «إعداد بيئة الاستعادة» المنفصلة (أسماء فقط في التقرير).
+- `dr-recovery-center/`: **حزمة نشر مستقلة** (`package.json`, `render.yaml` بخدمة منفصلة
+  `gharabi-recovery-center` `rootDir: dr-recovery-center`, `sync-lib.mjs`, `start.sh`,
+  `start.cmd`, `lib/` نسخة من وحدات `tools/dr/` الضرورية). **لا يضبط مفتاح الخزنة إطلاقاً.**
+- `recovery-instructions.md` و`recovery-information.md`: تعليمات الاختصار (هاتف/كمبيوتر)
+  باسم **«استعادة الغرابي AI»** بلا أي سرّ، والعنوان المستقل، وحدود الأتمتة الصادقة.
+- اختبار `engine/tests/dr/dr.recovery.center.test.ts` (`npm run test:dr-recovery-center`،
+  **25 فحصاً**): استقلال المركز (لا server/dist/git/GitHub)، **فقدان Render الرئيسي + فقدان
+  GitHub** مع بقاء القراءة والاستعادة، عدم كشف المفتاح، عدم تغيّر النقطة الأصلية، وعدم
+  ادّعاء تشغيل/تحقق الخدمة.
+- `dr.standalone.test.ts` صار **94 فحصاً** (مجموعة I لمركز الاستعادة على خادم حقيقي +
+  تكافؤ نسخة `dr-recovery-center/lib`).
+- الاحتفاظ (المرحلة 14) مطبَّق مسبقاً: 3 نقاط مكتملة، حذف الأقدم فقط **بعد** نجاح الجديدة
+  والتحقق منها، ولا حذف المحميّ/الناقص/الأحدث. النسخ كل 6 ساعات يعمل على الخادم بلا متصفح
+  عبر `runFullBackup(trigger)` الواحد. لا تغيير مطلوب في OAuth (`redirect_uri_mismatch`
+  خارج نطاق الكود: العنوان مسجَّل في عميل «AI-Gharabi AI — Google Drive Backup»).
+
+**لا تغيير في:** أي سرّ/مفتاح، ولا OAuth، ولا YouTube/Facebook/Instagram/TikTok/Telegram،
+ولا Gemini، ولا rp-002/rp-003/rp-004، ولا PostgreSQL. فحوص final-audit الجديدة
+`recovery-center-*` (1003 إجمالاً).

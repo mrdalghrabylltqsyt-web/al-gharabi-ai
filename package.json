@@ -85,11 +85,14 @@
     "test:dr-real-drill": "tsx engine/tests/dr/dr.real-drill.test.ts",
     "test:dr-lostkeys": "tsx engine/tests/dr/dr.lostkeys.test.ts",
     "test:dr-keyrelations": "tsx engine/tests/dr/dr.keyrelations.test.ts",
-    "test:dr": "npm run test:dr-core && npm run test:dr-source && npm run test:dr-source-bundle && npm run test:dr-store && npm run test:dr-sync && npm run test:dr-auth && npm run test:dr-db && npm run test:dr-routes && npm run test:dr-backup && npm run test:dr-secrets && npm run test:dr-mirror && npm run test:dr-keyvault && npm run test:dr-keyrelations && npm run test:dr-reconciliation && npm run test:dr-restore && npm run test:dr-endpoints && npm run test:dr-real-drill && npm run test:dr-lostkeys && npm run test:dr-ui",
+    "test:dr": "npm run test:dr-core && npm run test:dr-source && npm run test:dr-source-bundle && npm run test:dr-store && npm run test:dr-sync && npm run test:dr-auth && npm run test:dr-db && npm run test:dr-routes && npm run test:dr-backup && npm run test:dr-secrets && npm run test:dr-mirror && npm run test:dr-keyvault && npm run test:dr-keyrelations && npm run test:dr-reconciliation && npm run test:dr-autobackup && npm run test:dr-restore && npm run test:dr-endpoints && npm run test:dr-real-drill && npm run test:dr-lostkeys && npm run test:dr-ui && npm run test:dr-standalone && npm run test:dr-recovery-center",
     "test:dr-ui": "tsx engine/tests/dr/dr.ui.test.ts",
     "test:dr-stage4": "tsx engine/tests/dr/dr.stage4.evidence.ts",
     "build:source-bundle": "node tools/dr/source-bundle.mjs dist/dr-source",
-    "test:dr-source-bundle": "tsx engine/tests/dr/dr.source.bundle.test.ts"
+    "test:dr-source-bundle": "tsx engine/tests/dr/dr.source.bundle.test.ts",
+    "test:dr-autobackup": "tsx engine/tests/dr/dr.autoBackup.test.ts",
+    "test:dr-standalone": "tsx engine/tests/dr/dr.standalone.test.ts",
+    "test:dr-recovery-center": "tsx engine/tests/dr/dr.recovery.center.test.ts"
   },
   "dependencies": {
     "@google/genai": "^2.4.0",
