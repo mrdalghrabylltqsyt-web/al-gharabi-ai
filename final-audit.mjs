@@ -1736,6 +1736,45 @@ add('dr-lostkeys-no-production', !drLostKeysTest.includes('restore/production') 
 const drKeyRelTest = fs.existsSync(path.join(root, 'engine/tests/dr/dr.keyrelations.test.ts')) ? read('engine/tests/dr/dr.keyrelations.test.ts') : '';
 add('dr-keyrelations-test', drKeyRelTest.includes('secrets NOT decryptable with vault key') && drKeyRelTest.includes('vault restores master key') && drKeyRelTest.includes('vault does NOT store its own key') && (pkg.scripts['test:dr'] || '').includes('test:dr-keyrelations'), 'اختبار علاقة المفاتيح الأربعة (استقلال + استعادة من الخزنة) مضمّن في test:dr');
 
+// ===========================================================================
+// تحضير العقل التجاري (Sales & Growth) — فحوص البنية لا السلوك.
+// الهدف: منع أي اختراع تجاري ومنع خلط التحليل بالتنفيذ، وإثبات أن الطبقة
+// تحضيرية معزولة (لا مسار تنفيذ، لا أسرار، لا Gemini).
+// ===========================================================================
+const catalogModule = fs.existsSync(path.join(root, 'engine/brain/knowledge/catalog.ts')) ? read('engine/brain/knowledge/catalog.ts') : '';
+const demandModule = fs.existsSync(path.join(root, 'engine/brain/market/demandSignals.ts')) ? read('engine/brain/market/demandSignals.ts') : '';
+const opportunityModule = fs.existsSync(path.join(root, 'engine/brain/market/opportunityEngine.ts')) ? read('engine/brain/market/opportunityEngine.ts') : '';
+const journeyModule = fs.existsSync(path.join(root, 'engine/brain/sales/journey.ts')) ? read('engine/brain/sales/journey.ts') : '';
+const salesReasoningModule = fs.existsSync(path.join(root, 'engine/brain/sales/salesReasoning.ts')) ? read('engine/brain/sales/salesReasoning.ts') : '';
+const roiModule = fs.existsSync(path.join(root, 'engine/brain/sales/roi.ts')) ? read('engine/brain/sales/roi.ts') : '';
+const campaignModule = fs.existsSync(path.join(root, 'engine/brain/sales/campaignIntelligence.ts')) ? read('engine/brain/sales/campaignIntelligence.ts') : '';
+const salesGrowthModule = fs.existsSync(path.join(root, 'engine/brain/sales/salesGrowth.ts')) ? read('engine/brain/sales/salesGrowth.ts') : '';
+const salesFoundationTest = fs.existsSync(path.join(root, 'engine/tests/brain/sales.foundation.test.ts')) ? read('engine/tests/brain/sales.foundation.test.ts') : '';
+
+add('sales-catalog-module', catalogModule.includes('export interface CatalogProduct') && catalogModule.includes('export function verifiedField') && catalogModule.includes('export function deriveInstallmentOffer'), 'مخزن معرفة المنتجات موجود (منتج + حقل موثّق + اشتقاق تقسيط)');
+add('sales-catalog-no-invention', catalogModule.includes('MISSING_INFO_PHRASES_AR') && catalogModule.includes('NEEDS_UPDATE') && catalogModule.includes('UNKNOWN') && catalogModule.includes('NOT_PROVIDED'), 'المخزن يعلن حالات النقص صراحةً بدل اختراع سعر/توفر');
+add('sales-installment-requires-verified-price', /deriveInstallmentOffer[\s\S]{0,400}cashPrice\.state === 'VERIFIED'/.test(catalogModule), 'لا اشتقاق قسط بلا سعر موثّق (DERIVED من قاعدة معتمدة فقط)');
+add('sales-catalog-availability-honest', catalogModule.includes('التوفر يحتاج تحقق') && catalogModule.includes('السعر يحتاج تحديث'), 'العبارات المعتمدة للمعلومة غير المتاحة موجودة');
+add('sales-demand-signal-module', demandModule.includes('export type DemandSignalKind') && demandModule.includes('export function toDemandSignal') && demandModule.includes('export function aggregateDemandSignals'), 'محرّك إشارات الطلب موجود (نوع + بناء + تجميع)');
+add('sales-demand-no-verdict-without-sample', demandModule.includes('INSUFFICIENT_DATA') && demandModule.includes('DEMAND_MIN_SAMPLE'), 'لا قوة طلب بلا عيّنة كافية (INSUFFICIENT_DATA صريحة)');
+add('sales-opportunity-module', opportunityModule.includes('export type EpistemicKind') && opportunityModule.includes('FACT') && opportunityModule.includes('INTERPRETATION') && opportunityModule.includes('HYPOTHESIS') && opportunityModule.includes('RECOMMENDATION'), 'محرّك الفرص يفصل FACT/INTERPRETATION/HYPOTHESIS/RECOMMENDATION صراحةً');
+add('sales-opportunity-separation-guard', opportunityModule.includes('export function validateEpistemicSeparation') && opportunityModule.includes('لا تفسير بلا عيّنة كافية'), 'حارس الفصل المعرفي يمنع تفسيراً بلا عيّنة');
+add('sales-journey-module', journeyModule.includes('export type JourneyStage') && journeyModule.includes('PURCHASE_SIGNAL') && journeyModule.includes('VERIFIED_SALE'), 'مسار العميل يفصل المراحل بما فيها VERIFIED_SALE');
+add('sales-journey-no-sale-without-source', /verifySale[\s\S]{0,400}if \(!evidence\.saleId\)/.test(journeyModule) && journeyModule.includes('لا يُعلن البيع إلا بمعرّف عملية بيع حقيقي'), 'لا VERIFIED_SALE بلا معرّف بيع حقيقي (الاستفسار ليس بيعاً)');
+add('sales-reasoning-module', salesReasoningModule.includes('export type SalesBlocker') && salesReasoningModule.includes('missing_information') && salesReasoningModule.includes('export function reasonAboutSales'), 'استدلال «لماذا لم يُبِع؟» موجود بقائمة أسباب صريحة');
+add('sales-reasoning-unknown-explicit', salesReasoningModule.includes("state: 'UNKNOWN'") && salesReasoningModule.includes('whatWeDontKnow') && salesReasoningModule.includes('verdictAvailable'), 'الاستدلال يعلن المجهول ولا يحكم بلا أدلة');
+add('sales-roi-module', roiModule.includes('export function buildRoiReport') && roiModule.includes('NOT_AVAILABLE') && roiModule.includes('costPerLead') && roiModule.includes('costPerSale'), 'قياس ROI يعلن المؤشرات غير المتاحة ولا يخترع تكلفة/إيراد');
+add('sales-roi-no-fabricated-rate', roiModule.includes('function rate') && roiModule.includes('denominator <= 0'), 'لا حساب معدّل تحويل بمقام صفر أو بيانات ناقصة');
+add('sales-campaign-module', campaignModule.includes('export interface CampaignDefinition') && campaignModule.includes('objective') && campaignModule.includes('expectedOutcome') && campaignModule.includes('verifiedSales'), 'بنية الحملة تربط الهدف بالنتيجة المتوقعة والفعلية');
+add('sales-campaign-outcome-needs-source', /recordCampaignOutcome[\s\S]{0,300}if \(!input\.source\)/.test(campaignModule), 'لا تُسجَّل نتيجة حملة بلا مصدر حقيقي');
+add('sales-growth-foundation-module', salesGrowthModule.includes('export function buildSalesGrowthFoundation') && salesGrowthModule.includes('epistemicAudit') && salesGrowthModule.includes('readinessGaps'), 'الطبقة الجامعة للعقل التجاري موجودة (تقرير + فحص معرفي + فجوات)');
+add('sales-foundation-no-env-no-secret', !/process\.env/.test(salesGrowthModule) && !/(clientSecret|refreshToken|AIzaSy|api[_-]?key)/i.test(salesGrowthModule + catalogModule + roiModule), 'طبقة التحضير بلا قراءة env وبلا أي سرّ');
+add('sales-foundation-no-execution', !/\b(publish|sendMessage|comments\.insert|fetch\()/.test(salesGrowthModule) && !/app\.(get|post|put|patch|delete)\(/.test(salesGrowthModule), 'طبقة التحضير لا تنفّذ ولا تُسجّل أي مسار HTTP');
+add('sales-foundation-no-gemini', !/aiEngine|generateContent|GoogleGenAI/.test(salesGrowthModule + demandModule + opportunityModule + journeyModule + salesReasoningModule + roiModule + campaignModule + catalogModule), 'عمليات التحضير حتمية بالكامل بلا استهلاك Gemini');
+add('sales-foundation-not-wired', !server.includes('salesGrowth') && !server.includes('buildSalesGrowthFoundation') && !server.includes('engine/brain/sales/'), 'طبقة التحضير غير موصولة بأي مسار في هذه الدفعة (امتداد آمن معزول)');
+add('sales-foundation-no-fake-counter', !/125\s*\/\s*125/.test(salesGrowthModule + catalogModule + roiModule + campaignModule), 'لا عدّاد وهمي في أي وحدة تجارية');
+add('sales-foundation-tests', salesFoundationTest.includes('لا بيع بلا معرّف') && salesFoundationTest.includes('لا قسط بلا سعر موثّق') && salesFoundationTest.includes('PASSED:') && (pkg.scripts['test'] || '').includes('test:sales-foundation'), 'اختبار أساس العقل التجاري موجود ومضمّن في npm test');
+
 const failed = checks.filter(x => !x.ok);
 console.table(checks);
 if (failed.length) {

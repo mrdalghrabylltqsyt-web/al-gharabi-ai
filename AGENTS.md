@@ -3401,3 +3401,44 @@ true`, `branch: main`) فيستلم هذا الإصلاح بمجرد الدفع 
 
 **لا تغيير في:** أي سرّ/مفتاح، ولا OAuth/scopes، ولا YouTube/Facebook/Instagram/TikTok/
 Telegram، ولا Gemini، ولا rp-002/rp-003/rp-004، ولا PostgreSQL الإنتاجي (قراءة الرمز فقط).
+
+## تحضير عقل المبيعات والنمو (Sales & Growth Brain) — دفعة تحضير معماري (2026-10-02)
+
+**دفعة تحضير فقط**: لا تنفيذ للعقل التجاري الكامل. الهدف: فحص المشروع، سدّ فجوات
+البنية، وإنتاج خطة تنفيذ دقيقة للدفعة التالية. الهدف التجاري المركزي الملزم:
+**زيادة المبيعات الحقيقية الموثّقة** لا المشاهدات/المتابعين وحدهم.
+
+### وحدات تحضير جديدة (منطق خالص قابل للاختبار، بلا شبكة/أسرار/AI)
+- `engine/brain/knowledge/catalog.ts`: مخزن معرفة المنتجات. `VerifiedField<T>` (قيمة +
+  حالة `VERIFIED/DERIVED/NEEDS_UPDATE/UNKNOWN/NOT_PROVIDED` + مصدر + آخر تحقق)،
+  `CatalogProduct`، `deriveInstallmentOffer` (**لا اشتقاق قسط بلا سعر موثّق + قاعدة
+  معتمدة** ⇒ `DERIVED`)، عبارات معتمدة (`المعلومة غير متوفرة`/`التوفر يحتاج تحقق`/
+  `السعر يحتاج تحديث`)، و`catalogProductFromWorkspace` (مسار هجرة غير موصول).
+- `engine/brain/market/demandSignals.ts`: 9 أنواع إشارة طلب + `toDemandSignal` من
+  تعليق حقيقي + `aggregateDemandSignals` بقوة `HIGH/MEDIUM/LOW/INSUFFICIENT_DATA`
+  وحدّ أدنى للعيّنة. الربط بالمنتج **بمعرّف صريح فقط** لا بتخمين النص.
+- `engine/brain/market/opportunityEngine.ts`: الفرص بفصل معرفي إلزامي
+  `FACT/INTERPRETATION/HYPOTHESIS/RECOMMENDATION` + `validateEpistemicSeparation`
+  (يمنع تفسيراً بلا عيّنة كافية).
+- `engine/brain/sales/journey.ts`: مسار العميل `VIEW→…→PURCHASE_SIGNAL→LEAD→REQUEST→
+  VERIFIED_SALE`. المراحل من التفاعل تصل حتى `PURCHASE_SIGNAL` فقط، و**`VERIFIED_SALE`
+  لا يقع إلا بمعرّف بيع حقيقي** (الاستفسار ليس بيعاً).
+- `engine/brain/sales/salesReasoning.ts`: استدلال «لماذا لم يُبِع؟» بـ12 سبباً صريحاً
+  وحالات دليل `SUPPORTED/CONTRADICTED/UNKNOWN/INSUFFICIENT_DATA`؛ لا حكم بلا أدلة.
+- `engine/brain/sales/roi.ts`: ROI يعلن `NOT_AVAILABLE` ولا يخترع تكلفة/إيراد، ولا
+  يحسب معدّلاً بمقام صفر.
+- `engine/brain/sales/campaignIntelligence.ts`: حملة تربط الهدف/الفرضية/إشارة الطلب/
+  النتيجة المتوقعة/الفعلية/العملاء/المبيعات الموثّقة؛ لا نتيجة بلا مصدر.
+- `engine/brain/sales/salesGrowth.ts`: طبقة التجميع/الجاهزية (`buildSalesGrowthFoundation`)
+  — **غير موصولة بأي مسار أو واجهة في هذه الدفعة** (امتداد آمن معزول).
+
+### اختبار وفحوص
+- `engine/tests/brain/sales.foundation.test.ts` (`npm run test:sales-foundation`،
+  **70 فحصاً**، مضاف إلى `npm test`): يثبت منع اختراع السعر/التقسيط/التوفر، وفصل
+  الاستفسار عن البيع الموثّق، وإشارات الطلب، والفصل المعرفي، وROI الصادق، وبنية الحملة.
+- final-audit: **25 فحصاً جديداً** (`sales-*`، إجمالاً 1049): يمنع اختراع تجاري، ويؤكد
+  أن الطبقة لا تنفّذ/لا Gemini/لا env/لا سرّ، وأنها **غير موصولة** (`sales-foundation-not-wired`).
+
+### لم يُمسّ
+التعافي/DR كامل، المفاتيح، OAuth/المنصات، Gemini، قاعدة البيانات، الحالة المحفوظة،
+أو أي مسار قائم. الوثيقة الكاملة: `docs/تحضير-العقل-التجاري.md`.
