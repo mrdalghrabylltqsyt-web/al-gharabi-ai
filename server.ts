@@ -23,6 +23,11 @@ import { registerBrainRoutes } from "./engine/brain/routes";
 import { registerCommercialRoutes } from "./engine/brain/sales/routes";
 import { registerGrowthRoutes } from "./engine/brain/growth/routes";
 import { registerDigitalSalesRoutes } from "./engine/brain/digital/routes";
+import { registerCommercialBrainRoutes } from "./engine/brain/commercial/routes";
+import { buildUnifiedCommercialBrain } from "./engine/brain/commercial/unified";
+import { buildCatalogFromWorkspace } from "./engine/brain/sales/commercialRuntime";
+import { buildGrowthRuntime } from "./engine/brain/growth/runtime";
+import { buildDigitalSalesState } from "./engine/brain/digital/runtime";
 import {
   normalizeDigitalSalesStore, EMPTY_DIGITAL_SALES_STORE,
   updateConsentByHash, getConsentByHash,
@@ -10178,6 +10183,33 @@ app.get("/api/health", (_req, res) => {
         defaultAutonomyLevel: 'OBSERVE',
       };
     })(),
+    // العقل التجاري المركزي الموحّد (الدفعة 4): غاية عليا + إصدار الذكاء + عدّ القدرات.
+    // بلا أي سرّ وبلا بيانات عملاء — ملخّص فقط.
+    commercialBrain: (() => {
+      try {
+        const raw = unifiedCommercialRaw();
+        const nowMs = Date.now();
+        const catalog = buildCatalogFromWorkspace(raw.products || [], raw.installmentPlans || [], nowMs);
+        const growth = buildGrowthRuntime({ ...raw, now: nowMs });
+        const digital = buildDigitalSalesState({ ...raw, now: nowMs });
+        const report = buildUnifiedCommercialBrain({ now: nowMs, catalog, digital, growth, raw });
+        return {
+          enabled: true,
+          version: report.version,
+          northStarStatement: report.northStar.statement,
+          verifiedSales: report.northStar.primaryAvailable ? report.commandCenter.verifiedSales : null,
+          verifiedRevenueAvailable: report.northStar.secondaryAvailable,
+          verifiedProfitAvailable: report.northStar.tertiaryAvailable,
+          profitGuard: report.northStar.profitGuard,
+          capabilities: report.capabilityEvolution.counts,
+          capabilitiesNotRuntimeReady: report.capabilityEvolution.notRuntimeReady,
+          systemHealth: report.systemHealth.overall,
+          externalExecution: false,
+        };
+      } catch (error: any) {
+        return { enabled: true, error: String(error?.code || error?.name || 'commercial_brain_error').slice(0, 60), externalExecution: false };
+      }
+    })(),
     // دليل النشر: أي commit يعمل فعلاً (Render يضبط RENDER_GIT_COMMIT). يُقرأ هنا
     // مباشرةً لإثبات أن الكود المنشور هو المدفوع، لا استنتاجاً من السلوك.
     deploy: deploymentInfo(),
@@ -12014,6 +12046,52 @@ registerDigitalSalesRoutes(app, {
     consents: digitalSalesStore.consents.map((c) => ({ customerKey: c.hash, consent: c.consent, optedOut: c.optedOut, updatedAt: c.updatedAt })),
     followUpLog: digitalSalesStore.followUps.map((f) => ({ customerKey: f.hash, productId: f.productId, at: f.at })),
   }),
+});
+
+// مسارات العقل التجاري المركزي الموحّد (الدفعة 4) — قراءة/تحليل/اقتراح فقط.
+// يدمج الدفعات 1–3 في عقل تجاري واحد: الغاية العليا، ذكاء المنتجات، الفرص المرتّبة،
+// دورة العميل، الحملات، التجارب، الإسناد، التعلّم، البحث، الاستراتيجية، القدرات،
+// الصحة، الإصدارات، مركز التحكّم، ومركز القيادة. لا تنفيذ خارجي ولا أسرار.
+function unifiedCommercialRaw(): {
+  products: any[]; installmentPlans: any[]; conversations: any[]; leads: any[]; sales: any[];
+  payments: any[]; socialComments: any[]; campaigns: any[]; performanceRecords: any[];
+} {
+  return {
+    products: workspace.products,
+    installmentPlans: workspace.installmentPlans,
+    conversations: workspace.conversations,
+    leads: workspace.leads,
+    sales: workspace.sales,
+    payments: workspace.payments,
+    socialComments: (workspace as any).socialComments,
+    campaigns: (workspace as any).marketingCampaigns,
+    performanceRecords: (workspace as any).performanceRecords,
+  };
+}
+
+registerCommercialBrainRoutes(app, {
+  authenticateToken,
+  requireOwner,
+  commercialInput: () => {
+    const raw = unifiedCommercialRaw();
+    const nowMs = Date.now();
+    const catalog = buildCatalogFromWorkspace(raw.products || [], raw.installmentPlans || [], nowMs);
+    const growth = buildGrowthRuntime({ ...raw, now: nowMs });
+    const digital = buildDigitalSalesState({
+      ...raw,
+      now: nowMs,
+      consents: digitalSalesStore.consents.map((c) => ({ customerKey: c.hash, consent: c.consent, optedOut: c.optedOut, updatedAt: c.updatedAt })),
+      followUpLog: digitalSalesStore.followUps.map((f) => ({ customerKey: f.hash, productId: f.productId, at: f.at })),
+    });
+    return {
+      catalog,
+      digital,
+      growth,
+      raw,
+      consents: digitalSalesStore.consents.map((c) => ({ customerKey: c.hash, consent: c.consent, optedOut: c.optedOut })),
+      goal: null,
+    };
+  },
 });
 
 // مسارات الموافقة/الإلغاء (للمالك) — لا تنفيذ خارجي؛ تُحفظ بمفاتيح بصمة فقط.

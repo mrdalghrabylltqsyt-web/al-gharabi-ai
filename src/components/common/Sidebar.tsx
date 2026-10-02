@@ -213,6 +213,14 @@ export const Sidebar: React.FC<SidebarProps> = ({ mobileOpen, onCloseMobile }) =
       desc: 'قناة بيع رقمية: استفسارات وإشارات شراء وعملاء وطلبات ومبيعات موثّقة',
     },
     {
+      id: 'unified_growth_brain',
+      label: 'العقل التجاري الموحّد (نمو وتعلّم)',
+      icon: TrendingUp,
+      badge: currentUser?.role === 'owner' ? 'Owner' : null,
+      badgeColor: 'bg-violet-500/20 text-violet-300 border-violet-500/30',
+      desc: 'عقل واحد: غاية عليا (مبيعات/ربح موثّق) + طلب + فرص + حملات + تجارب + تعلّم + تحسين آمن',
+    },
+    {
       id: 'calendar',
       label: 'تقويم المحتوى',
       icon: Calendar,

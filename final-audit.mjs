@@ -2022,6 +2022,127 @@ add('digital-sales-no-fake-counter',
   !/125\s*\/\s*125/.test(digitalModules.join('')),
   'لا عدّاد وهمي في أي وحدة من العقل الرقمي');
 
+// ===========================================================================
+// العقل التجاري المركزي الموحّد (Unified Growth Brain) — الدفعة 4/4
+// ===========================================================================
+const commDir = 'engine/brain/commercial';
+const commNorthStar = fs.existsSync(path.join(root, `${commDir}/northStar.ts`)) ? read(`${commDir}/northStar.ts`) : '';
+const commTruth = fs.existsSync(path.join(root, `${commDir}/truth.ts`)) ? read(`${commDir}/truth.ts`) : '';
+const commResearch = fs.existsSync(path.join(root, `${commDir}/research.ts`)) ? read(`${commDir}/research.ts`) : '';
+const commLearning = fs.existsSync(path.join(root, `${commDir}/learning.ts`)) ? read(`${commDir}/learning.ts`) : '';
+const commStrategy = fs.existsSync(path.join(root, `${commDir}/strategy.ts`)) ? read(`${commDir}/strategy.ts`) : '';
+const commProductIntel = fs.existsSync(path.join(root, `${commDir}/productIntel.ts`)) ? read(`${commDir}/productIntel.ts`) : '';
+const commLifecycle = fs.existsSync(path.join(root, `${commDir}/lifecycle.ts`)) ? read(`${commDir}/lifecycle.ts`) : '';
+const commCampaignLoop = fs.existsSync(path.join(root, `${commDir}/campaignLoop.ts`)) ? read(`${commDir}/campaignLoop.ts`) : '';
+const commGovernance = fs.existsSync(path.join(root, `${commDir}/governance.ts`)) ? read(`${commDir}/governance.ts`) : '';
+const commHealth = fs.existsSync(path.join(root, `${commDir}/health.ts`)) ? read(`${commDir}/health.ts`) : '';
+const commMemory = fs.existsSync(path.join(root, `${commDir}/commercialMemory.ts`)) ? read(`${commDir}/commercialMemory.ts`) : '';
+const commOperatingLoop = fs.existsSync(path.join(root, `${commDir}/operatingLoop.ts`)) ? read(`${commDir}/operatingLoop.ts`) : '';
+const commUnified = fs.existsSync(path.join(root, `${commDir}/unified.ts`)) ? read(`${commDir}/unified.ts`) : '';
+const commRoutes = fs.existsSync(path.join(root, `${commDir}/routes.ts`)) ? read(`${commDir}/routes.ts`) : '';
+const commView = fs.existsSync(path.join(root, 'src/components/agent/UnifiedGrowthBrainView.tsx')) ? read('src/components/agent/UnifiedGrowthBrainView.tsx') : '';
+const commUnitTest = fs.existsSync(path.join(root, 'engine/tests/brain/commercial.unified.test.ts')) ? read('engine/tests/brain/commercial.unified.test.ts') : '';
+const commAntiFabTest = fs.existsSync(path.join(root, 'engine/tests/brain/commercial.antifabrication.test.ts')) ? read('engine/tests/brain/commercial.antifabrication.test.ts') : '';
+const commRoutesTest = fs.existsSync(path.join(root, 'engine/tests/brain/commercial.routes.test.ts')) ? read('engine/tests/brain/commercial.routes.test.ts') : '';
+const commModules = [commNorthStar, commTruth, commResearch, commLearning, commStrategy, commProductIntel, commLifecycle, commCampaignLoop, commGovernance, commHealth, commMemory, commOperatingLoop, commUnified, commRoutes];
+
+add('commercial-modules-exist',
+  commModules.every((m) => m.length > 0),
+  'وحدات العقل التجاري الموحّد كلها موجودة (غاية/حقيقة/بحث/تعلّم/استراتيجية/منتجات/دورة عميل/حملة/حكامة/صحة/ذاكرة/دورة تشغيل/تجميع/مسارات)');
+add('commercial-one-central-brain',
+  commUnified.includes('عقل تجاري واحد') && !/registerMarketingBrain|registerSalesBrain|per-platform brain/.test(commUnified + commRoutes) && (commRoutes.match(/registerCommercialBrainRoutes/g) || []).length >= 1,
+  'عقل تجاري مركزي واحد — لا عقل تسويق/بيع/منصة منفصل');
+add('commercial-north-star-sales-first',
+  commNorthStar.includes('زيادة المبيعات') && commNorthStar.includes('PRIMARY') && commNorthStar.includes('verified_profit'),
+  'الغاية العليا: المبيعات أولاً ثم الإيراد ثم الربح الموثّق');
+add('commercial-vanity-guard',
+  commNorthStar.includes('VANITY') && commNorthStar.includes('views') && commNorthStar.includes('likes'),
+  'حرس المقاييس الوهمية: المشاهدات/الإعجاب ليست هدف تحسين');
+add('commercial-profit-guard',
+  commNorthStar.includes('profitGuard') && commCampaignLoop.includes('costTotal') && commCampaignLoop.includes('NOT_AVAILABLE'),
+  'لا ربح بلا إيراد موثّق + تكلفة موثوقة (UNKNOWN ≠ صفر)');
+add('commercial-truth-layer',
+  commTruth.includes('CONFLICTING') && commTruth.includes('classifyFreshness') && commTruth.includes('assessDataQuality') && commTruth.includes('NOT_ENOUGH_EVIDENCE'),
+  'طبقة الحقيقة: تعارض المصادر + طزاجة + جودة بيانات');
+add('commercial-research-untrusted',
+  commResearch.includes('UNTRUSTED_INPUT') && commResearch.includes('externalCannotOverrideInternal') && commResearch.includes('researchToLearning'),
+  'البحث/المزوّد الخارجي دليل غير موثوق؛ الحقيقة الداخلية مرجعية');
+add('commercial-learning-from-failure',
+  commLearning.includes('analyzeFailure') && commLearning.includes('analyzeChange') && commLearning.includes('IMPROVEMENT_NOT_PROVEN'),
+  'التعلّم من الفشل وتحليل التغيّر ومنع ادّعاء التحسّن بلا دليل');
+add('commercial-expectation-vs-actual',
+  commLearning.includes('compareExpectationVsReality') && commLearning.includes('OVER_ESTIMATION'),
+  'مقارنة المتوقّع بالواقع (مكافحة خداع الذات)');
+add('commercial-recommendation-has-why',
+  commStrategy.includes('NO_WHY') && commStrategy.includes('VANITY_OBJECTIVE') && commStrategy.includes('explainCommercialDecision'),
+  'لا توصية بلا سبب/دليل، ولا هدف وهمي؛ وشرح القرار من أدلة مخزّنة');
+add('commercial-product-opportunities-evidence',
+  commProductIntel.includes('buildProductOpportunities') && commProductIntel.includes('recommendedNextTest') && commProductIntel.includes('sampleSize'),
+  'كل فرصة منتج تحمل دليلاً/عيّنة/اختباراً تالياً');
+add('commercial-lifecycle-no-fake-sale',
+  commLifecycle.includes('VERIFIED_SALE') && commLifecycle.includes('learnFromFollowUps') && commLifecycle.includes('repeatOpportunity'),
+  'دورة العميل: لا مشتري بلا بيع موثّق؛ موافقة للتكرار؛ تعلّم المتابعة');
+add('commercial-campaign-profit-loop',
+  commCampaignLoop.includes('buildCampaignCommercialReport') && commCampaignLoop.includes('explainAttribution') && commCampaignLoop.includes('judgeExperiment'),
+  'دورة الحملة→البيع→الربح + الإسناد + التجارب');
+add('commercial-experiment-no-winner-without-evidence',
+  commCampaignLoop.includes('INCONCLUSIVE') && commCampaignLoop.includes('MIN_EXPERIMENT_SAMPLE') && commCampaignLoop.includes('MIN_EXPERIMENT_DELTA_PCT'),
+  'لا فائز تجربة بلا عيّنة/فرق كافٍ');
+add('commercial-governance-no-silent-authority',
+  commGovernance.includes('assertNoSilentAuthorityExpansion') && commGovernance.includes('HIGH_RISK_ACTIONS') && commGovernance.includes('PRODUCTION_SAFETY_PROHIBITIONS'),
+  'لا توسيع سلطة صامت؛ إجراءات عالية الخطورة تتطلب موافقة المالك');
+add('commercial-self-improvement-proposal-only',
+  commGovernance.includes('buildSelfImprovementProposal') && commGovernance.includes("status: 'PROPOSED'") && commGovernance.includes('evaluateChangePipeline'),
+  'التحسين الذاتي اقتراح فقط بمسار تغيير محمي (لا نشر بلا موافقة)');
+add('commercial-production-safety',
+  commGovernance.includes('اختراع سعر') && commGovernance.includes('كشف اعتماد') && commGovernance.includes('تعديل المصادقة') && commGovernance.includes('تعديل التعافي'),
+  'منع اختراع المعلومة التجارية والمساس بالمصادقة/التشفير/الأسرار/التعافي');
+add('commercial-health-and-versioning',
+  commHealth.includes('buildSystemHealth') && commHealth.includes('buildBrainVersionHistory') && commHealth.includes('v2.0') && commHealth.includes('RUNTIME_READY'),
+  'صحة النظام + إصدار ذكاء العقل + تطوّر القدرات من أدلة');
+add('commercial-capability-from-evidence',
+  commHealth.includes('computeCapabilityLevel') && commHealth.includes('CAPABILITY_LEVEL_ORDER') && !/score\s*[:=]\s*Math\.random/.test(commHealth),
+  'مستوى القدرة من (منفّذة + اختبارات + جهوزية) لا نِسَب عشوائية');
+add('commercial-memory-origin-separation',
+  commMemory.includes('ai_statement') && commMemory.includes('research_external') && commMemory.includes('isCommercialFact'),
+  'ذاكرة موحّدة: قول AI/بحث خارجي لا يصبح حقيقة تجارية');
+add('commercial-operating-loop-approval-gated',
+  commOperatingLoop.includes('OWNER_APPROVAL') && commOperatingLoop.includes('blockedOnOwnerApproval') && commOperatingLoop.includes('FINAL_COMMERCIAL_QUESTIONS'),
+  'دورة تشغيل محكومة بموافقة المالك + الأسئلة التجارية النهائية');
+add('commercial-no-external-execution',
+  !/(await\s+)?(fetch|axios)\s*\(/.test(commModules.join('')) && !/comments\.insert\s*\(/.test(commModules.join('')) && !/\bsendMessage\s*\(/.test(commModules.join('')) && !/app\.(post|put|patch|delete)\(/.test(commRoutes),
+  'العقل التجاري لا ينفّذ أي إجراء خارجي ولا مسار كتابة');
+add('commercial-no-gemini-no-env-secret',
+  !/aiEngine|generateContent|GoogleGenAI|process\.env|clientSecret|refreshToken|AIzaSy|api[_-]?key/i.test(commModules.join('')),
+  'العقل التجاري حتمي بالكامل: بلا Gemini وبلا قراءة env وبلا أي سرّ');
+add('commercial-no-fake-counter',
+  !/125\s*\/\s*125/.test(commModules.join('')),
+  'لا عدّاد وهمي في أي وحدة تجارية');
+add('commercial-routes-registered',
+  commRoutes.includes('registerCommercialBrainRoutes') && server.includes('registerCommercialBrainRoutes(app'),
+  'مسارات العقل التجاري مسجّلة في الخادم');
+add('commercial-routes-owner-protected',
+  commRoutes.includes('authenticateToken') && commRoutes.includes('requireOwner'),
+  'مسارات العقل التجاري محمية، والحالة الكاملة للمالك فقط');
+add('commercial-health-block',
+  server.includes('commercialBrain:') && server.includes('northStarStatement') && server.includes('externalExecution: false'),
+  'كتلة commercialBrain في /api/health (بلا سرّ)');
+add('commercial-ui-dashboard',
+  commView.includes('العقل التجاري المركزي الموحّد') && commView.includes('الغاية العليا') && commView.includes('getUnifiedCommercialState'),
+  'لوحة المالك للعقل التجاري الموحّد (طلب/فرص/حملات/تجارب/مبيعات/عنق زجاجة/إجراءات)');
+add('commercial-ui-wired',
+  read('src/App.tsx').includes('UnifiedGrowthBrainView') && read('src/components/common/Sidebar.tsx').includes('unified_growth_brain') && read('src/services/api.ts').includes('getUnifiedCommercialState'),
+  'اللوحة موصولة في التطبيق والتبويبات وخدمة الـAPI');
+add('commercial-unit-tests',
+  commUnitTest.includes('حرس المقاييس الوهمية') && commUnitTest.includes('PASSED:') && (pkg.scripts['test'] || '').includes('test:commercial-unified'),
+  'اختبار وحدة العقل التجاري الموحّد مضمّن في npm test');
+add('commercial-antifabrication-tests',
+  commAntiFabTest.includes('لا بيع/إيراد/ربح مُخترع') && commAntiFabTest.includes('قول AI لا يصبح حقيقة تجارية') && (pkg.scripts['test'] || '').includes('test:commercial-antifabrication'),
+  'اختبار مكافحة الاختلاق مضمّن في npm test');
+add('commercial-route-tests',
+  commRoutesTest.includes('محمي (401 بلا جلسة)') && commRoutesTest.includes('لا تسريب توكن') && (pkg.scripts['test'] || '').includes('test:commercial-routes'),
+  'اختبار مسارات العقل التجاري (حماية + بلا سرّ) مضمّن في npm test');
+
 const failed = checks.filter(x => !x.ok);
 console.table(checks);
 if (failed.length) {

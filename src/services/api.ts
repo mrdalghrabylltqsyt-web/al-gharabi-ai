@@ -755,6 +755,50 @@ ${payload.topic || payload.productName || 'أنظمة وحلول التقسيط 
     if (!res.ok || !data.success) throw new Error(data.error || 'تعذر جلب مستويات الاستقلالية');
     return data;
   },
+
+  // العقل التجاري المركزي الموحّد (الدفعة 4): قراءة/تحليل/اقتراح فقط من بيانات حقيقية.
+  async getUnifiedCommercialState() {
+    const res = await fetch('/api/agent/brain/commercial/state', { headers: getAuthHeaders() });
+    const data = await res.json();
+    if (!res.ok || !data.success) throw new Error(data.error || 'تعذر جلب العقل التجاري المركزي');
+    return data;
+  },
+  async getUnifiedCommercialSummary() {
+    const res = await fetch('/api/agent/brain/commercial/summary', { headers: getAuthHeaders() });
+    const data = await res.json();
+    if (!res.ok || !data.success) throw new Error(data.error || 'تعذر جلب ملخّص العقل التجاري المركزي');
+    return data;
+  },
+  async getUnifiedCommercialCommandCenter() {
+    const res = await fetch('/api/agent/brain/commercial/command-center', { headers: getAuthHeaders() });
+    const data = await res.json();
+    if (!res.ok || !data.success) throw new Error(data.error || 'تعذر جلب مركز القيادة التجاري');
+    return data;
+  },
+  async getUnifiedCommercialOwnerControl() {
+    const res = await fetch('/api/agent/brain/commercial/owner-control', { headers: getAuthHeaders() });
+    const data = await res.json();
+    if (!res.ok || !data.success) throw new Error(data.error || 'تعذر جلب مركز تحكّم المالك');
+    return data;
+  },
+  async getUnifiedCommercialCapabilities() {
+    const res = await fetch('/api/agent/brain/commercial/capabilities', { headers: getAuthHeaders() });
+    const data = await res.json();
+    if (!res.ok || !data.success) throw new Error(data.error || 'تعذر جلب تطوّر القدرات');
+    return data;
+  },
+  async getUnifiedCommercialHealth() {
+    const res = await fetch('/api/agent/brain/commercial/health', { headers: getAuthHeaders() });
+    const data = await res.json();
+    if (!res.ok || !data.success) throw new Error(data.error || 'تعذر جلب صحة النظام');
+    return data;
+  },
+  async getUnifiedCommercialOperatingLoop() {
+    const res = await fetch('/api/agent/brain/commercial/operating-loop', { headers: getAuthHeaders() });
+    const data = await res.json();
+    if (!res.ok || !data.success) throw new Error(data.error || 'تعذر جلب دورة التشغيل');
+    return data;
+  },
   async setDigitalSalesConsent(input: { customerKey: string; consent?: boolean; optedOut?: boolean }) {
     const res = await fetch('/api/agent/brain/sales/digital/consent', { method: 'POST', headers: getAuthHeaders(), body: JSON.stringify(input) });
     const data = await res.json();
