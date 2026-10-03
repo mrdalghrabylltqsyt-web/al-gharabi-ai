@@ -474,7 +474,7 @@ const tiktokPublishRecon = read('engine/social/tiktok.ts');
 add('tiktok-publish-reconcile-single-source', tiktokPublishRecon.includes('export function shouldReconcileTikTokRecord') && tiktokPublishRecon.includes('export function applyTikTokPublishStatus'), 'منطق المصالحة مصدر واحد قابل للاختبار في وحدة TikTok');
 add('tiktok-publish-reconcile-no-claim', /export function applyTikTokPublishStatus[\s\S]{0,900}?status\.delivered && status\.state === 'delivered'/.test(tiktokPublishRecon), 'لا published بلا delivered الحقيقي من المزود');
 add('tiktok-publish-reconcile-server-sweep', server.includes('reconcileTikTokPublishes') && /fetchPublishStatus\(ensured\.token, publishId\)/.test(server), 'الخادم يستعلم حالة النشر فعلياً من TikTok ويحدّث السجل');
-add('tiktok-publish-reconcile-timer', /tiktokReconcileTimer = setInterval\(\(\) => \{ void reconcileTikTokPublishes\(\); \}/.test(server), 'مصالحة دورية داخل عملية الخادم (بلا تدخّل المالك)');
+add('tiktok-publish-reconcile-timer', /tiktokReconcileTimer = setInterval\(safeTimerCallback\(\(\) => reconcileTikTokPublishes\(\), "tiktok-reconcile"\)/.test(server), 'مصالحة دورية داخل عملية الخادم (بلا تدخّل المالك)');
 add('tiktok-publish-reconcile-verified-only', /async function reconcileTikTokPublishes[\s\S]{0,400}?if \(!tiktokOperationalNow\(\)\) return result;/.test(server), 'لا مصالحة بلا اتصال موثق (لا استعلام خارجي بلا توثيق)');
 add('tiktok-publish-history-endpoint', /app\.get\("\/api\/platforms\/tiktok\/publishes", requireOwner/.test(server), 'سجل عمليات النشر للمالك فقط (requireOwner)');
 add('tiktok-publish-history-no-secret', /app\.get\("\/api\/platforms\/tiktok\/publishes"[\s\S]{0,1200}?res\.json/.test(server) && !/tiktok\/publishes"[\s\S]{0,1500}?providerTokens/.test(server), 'سجل النشر لا يكشف أي اعتماد أو سرّ');
@@ -2425,6 +2425,24 @@ add('env-vars-documented', (() => {
   const missing = [...used].filter((v) => !documented.has(v) && !platformInjected.has(v));
   return missing.length === 0;
 })(), 'Phase 5: كل متغيّر بيئة يقرأه server.ts موثّق في .env.example (عدا المُحقَن من المنصّة)');
+
+const safeTimer = read('engine/social/safeTimer.ts');
+const safeTimerTest = read('engine/tests/safe.timer.test.ts');
+add('phase6-timers-safe-wrapped',
+  server.includes('safeTimerCallback(runSafeJobPreflight') &&
+  server.includes('safeTimerCallback(cleanupRuntimeState') &&
+  server.includes('safeTimerCallback(() => reconcileTikTokPublishes()') &&
+  safeTimer.includes('export function safeTimerCallback'),
+  'Phase 6: مؤقّتات الخادم ملفوفة بغلاف يلتقط الاستثناء/الرفض فلا تُسقط العملية');
+add('phase6-reconcile-overlap-guard',
+  server.includes('let tiktokReconcileRunning = false') && server.includes('if (tiktokReconcileRunning) return result;'),
+  'Phase 6: مصالحة TikTok محميّة من التداخل (لا استعلامات متراكمة)');
+add('phase6-shutdown-stops-timers',
+  server.includes('watcherScheduler?.stop();') && server.includes('stopBrainRuntime();') && server.includes('drReconciliation?.stop?.();') && server.includes('drAutoBackup?.stop?.();'),
+  'Phase 6: الإغلاق النظيف يوقف المؤقّتات قبل تفريغ الطابور');
+add('phase6-safe-timer-test-present',
+  safeTimerTest.includes('sync throw is swallowed') && safeTimerTest.includes('reconcile overlap guard') && (pkg.scripts['test'] || '').includes('test:safe-timer'),
+  'Phase 6: اختبار غلاف المؤقّتات مضمّن في npm test');
 
 const failed = checks.filter(x => !x.ok);
 console.table(checks);

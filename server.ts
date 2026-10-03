@@ -297,6 +297,7 @@ import {
 } from "./engine/social/youtubeWatcher";
 import { createWatcherScheduler, type WatcherScheduler } from "./engine/social/youtubeWatcherScheduler";
 import { acquireLease, releaseLease, normalizeLease, type DurableLease } from "./engine/social/durableLease";
+import { safeTimerCallback } from "./engine/social/safeTimer";
 import {
   computeBriefCounts,
   buildMetricViews,
@@ -1992,8 +1993,14 @@ function tiktokTruthfulState(): ReturnType<typeof resolveTikTokState> {
  * يبقى السجل `publishing` صراحةً.
  */
 const tiktokReconcileInFlight = new Set<string>();
+// PROC-01/Phase 6: قفل يمنع تداخل دورتي مصالحة متزامنتين (نبضة كل 60s قد تتقاطع مع
+// استعلام مزود بطيء). النبضة التالية تُتخطّى بلا عمل بدل تراكم استعلامات.
+let tiktokReconcileRunning = false;
 async function reconcileTikTokPublishes(): Promise<{ checked: number; delivered: number; failed: number; stillPending: number }> {
   const result = { checked: 0, delivered: 0, failed: 0, stillPending: 0 };
+  if (tiktokReconcileRunning) return result;
+  tiktokReconcileRunning = true;
+  try {
   if (!tiktokOperationalNow()) return result;
   const records = (workspace as any).publishRecords;
   if (!Array.isArray(records)) return result;
@@ -2028,6 +2035,9 @@ async function reconcileTikTokPublishes(): Promise<{ checked: number; delivered:
   }
   if (changed) await persistStateDurable();
   return result;
+  } finally {
+    tiktokReconcileRunning = false;
+  }
 }
 
 /**
@@ -7804,7 +7814,7 @@ function runSafeJobPreflight() {
   }
   return changed;
 }
-const safeJobWorkerTimer = setInterval(runSafeJobPreflight, 60 * 1000);
+const safeJobWorkerTimer = setInterval(safeTimerCallback(runSafeJobPreflight, "safe-job-preflight"), 60 * 1000);
 (safeJobWorkerTimer as any).unref?.();
 
 /**
@@ -7818,7 +7828,7 @@ function tiktokReconcileIntervalMs(): number {
   if (Number.isFinite(raw) && raw >= 1000) return raw;
   return 60 * 1000;
 }
-const tiktokReconcileTimer = setInterval(() => { void reconcileTikTokPublishes(); }, tiktokReconcileIntervalMs());
+const tiktokReconcileTimer = setInterval(safeTimerCallback(() => reconcileTikTokPublishes(), "tiktok-reconcile"), tiktokReconcileIntervalMs());
 (tiktokReconcileTimer as any).unref?.();
 
 /**
@@ -9545,7 +9555,7 @@ function cleanupRuntimeState() {
   }
   aiEngine.pruneCache();
 }
-const runtimeCleanupTimer = setInterval(cleanupRuntimeState, 5 * 60 * 1000);
+const runtimeCleanupTimer = setInterval(safeTimerCallback(cleanupRuntimeState, "runtime-cleanup"), 5 * 60 * 1000);
 (runtimeCleanupTimer as any).unref?.();
 
 function requestKey(req: express.Request): string {
@@ -12732,6 +12742,14 @@ async function startServer() {
     if (shuttingDown) return;
     shuttingDown = true;
     console.log(`[الغرابي AI] received ${signal}, flushing pending writes...`);
+    // Phase 6: نوقف المؤقّتات الداخلية أولاً فلا تُضاف كتابات جديدة أثناء الإغلاق.
+    try { watcherScheduler?.stop(); } catch { /* تجاهل */ }
+    try { stopBrainRuntime(); } catch { /* تجاهل */ }
+    try { (app as any).drReconciliation?.stop?.(); } catch { /* تجاهل */ }
+    try { (app as any).drAutoBackup?.stop?.(); } catch { /* تجاهل */ }
+    try { clearInterval(runtimeCleanupTimer); } catch { /* تجاهل */ }
+    try { clearInterval(safeJobWorkerTimer); } catch { /* تجاهل */ }
+    try { clearInterval(tiktokReconcileTimer); } catch { /* تجاهل */ }
     const deadline = new Promise<void>((resolve) => setTimeout(resolve, 10_000));
     Promise.race([drainQueue(), deadline])
       .then(() => storageAdapter.close().catch(() => { /* تجاهل */ }))
