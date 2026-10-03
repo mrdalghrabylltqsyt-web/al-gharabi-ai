@@ -2369,6 +2369,54 @@ add('commercial-route-tests',
   commRoutesTest.includes('محمي (401 بلا جلسة)') && commRoutesTest.includes('لا تسريب توكن') && (pkg.scripts['test'] || '').includes('test:commercial-routes'),
   'اختبار مسارات العقل التجاري (حماية + بلا سرّ) مضمّن في npm test');
 
+// ---- Engineering hardening & stabilization (Phases 1–4) ----
+const durableLease = read('engine/social/durableLease.ts');
+const secHardeningTest = read('engine/tests/security.hardening.test.ts');
+const leaseTest = read('engine/tests/durable.lease.test.ts');
+const runWithSkip = read('scripts/run-with-skip.mjs');
+
+add('sec02-webhook-rawbody-hmac',
+  server.includes('hmacSignatureVerifier("x-gharabi-signature"') &&
+  server.includes('typeof (req as any).rawBody !== "string"') &&
+  !server.includes('createHmac("sha256",WEBHOOK_SECRET).update(raw)'),
+  'SEC-02: توقيع /api/webhooks/:platform على الجسم الخام (req.rawBody) لا على إعادة التسلسل');
+add('sec03-csp-production-only',
+  server.includes('CONTENT_SECURITY_POLICY') &&
+  server.includes('process.env.NODE_ENV === "production") res.setHeader("Content-Security-Policy"') &&
+  server.includes("frame-ancestors 'none'"),
+  'SEC-03: CSP في الإنتاج فقط مع frame-ancestors none (بلا كسر Vite dev)');
+add('sec04-runtime-maps-bounded',
+  server.includes('for (const [state, pending] of pendingOAuth) if (pending.expiresAt < now)') &&
+  server.includes('for (const [platform, entry] of oauthStartPreflightCache)') &&
+  server.includes('for (const [key, list] of youtubeOperationWindows)'),
+  'SEC-04: القوائم غير المحدودة (OAuth/preflight/YouTube) مقيّدة في حلقة التنظيف');
+add('sec04-revocation-lists-untouched',
+  !/for \(const \[[^\]]+\] of userRevocationEpoch\)[^\n]*delete/.test(server),
+  'SEC-04: لا حذف عددي لقوائم الإبطال الأمنية (revokedSessions/userRevocations)');
+add('proc01-durable-lease-module',
+  durableLease.includes('export function acquireLease') && durableLease.includes('export function releaseLease') && durableLease.includes('export function normalizeLease') && durableLease.includes('isLeaseStale'),
+  'PROC-01: وحدة قفل الدوام موجودة (استحواذ/إفراج/استرداد متقادم)');
+add('proc01-watcher-uses-durable-lease',
+  server.includes('acquireLease(watcherLease') && server.includes('releaseLease(watcherLease, WATCHER_LEASE_OWNER)') && server.includes('lease: watcherLease') && server.includes('watcherLease = normalizeLease(raw.lease)'),
+  'PROC-01: دورة مراقب YouTube تستحوذ/تفرج القفل الدائم وتسترجعه بعد restart');
+add('proc01-dr-backup-durable-lease',
+  drRoutes.includes('acquireLease(normalizeLease(control().driveLease)') && drRoutes.includes('releaseLease(normalizeLease(control().driveLease), BACKUP_LEASE_OWNER)'),
+  'PROC-01: النسخة الكاملة تحمل قفل دوام فلا تتزامن نسختان عبر العمليات');
+add('test-skip-is-explicit',
+  runWithSkip.includes('code === 2') &&
+  (pkg.scripts['test:db'] || '').includes('run-with-skip') &&
+  (pkg.scripts['test:brain-memory'] || '').includes('run-with-skip') &&
+  (pkg.scripts['test:dr-real-drill'] || '').includes('run-with-skip') &&
+  read('engine/tests/database.persistence.test.ts').includes('process.exitCode = 2') &&
+  read('engine/tests/dr/dr.real-drill.test.ts').includes('process.exit(2)'),
+  'Phase 3: التخطّي يخرج 2 صراحةً والمشغّل يحوّله إلى 0 مع تحذير (لا اجتياز كاذب)');
+add('security-hardening-test-present',
+  secHardeningTest.includes('SEC-02') && secHardeningTest.includes('SEC-03') && secHardeningTest.includes('raw-body mismatch cannot bypass') && (pkg.scripts['test'] || '').includes('test:security-hardening'),
+  'Phase 1: اختبار انحدار أمني حقيقي (webhook/CSP/maps/leak) مضمّن في npm test');
+add('durable-lease-test-present',
+  leaseTest.includes('live lease is not stolen') && leaseTest.includes('stale lease recovered') && (pkg.scripts['test'] || '').includes('test:durable-lease'),
+  'Phase 2: اختبار قفل الدوام مضمّن في npm test');
+
 const failed = checks.filter(x => !x.ok);
 console.table(checks);
 if (failed.length) {
