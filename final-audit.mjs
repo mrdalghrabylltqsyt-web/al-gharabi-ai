@@ -2416,6 +2416,15 @@ add('security-hardening-test-present',
 add('durable-lease-test-present',
   leaseTest.includes('live lease is not stolen') && leaseTest.includes('stale lease recovered') && (pkg.scripts['test'] || '').includes('test:durable-lease'),
   'Phase 2: اختبار قفل الدوام مضمّن في npm test');
+add('env-vars-documented', (() => {
+  const envExample = read('.env.example');
+  const documented = new Set([...envExample.matchAll(/^([A-Z][A-Z0-9_]+)=/gm)].map((m) => m[1]));
+  const used = new Set([...server.matchAll(/process\.env\.([A-Z][A-Z0-9_]+)/g)].map((m) => m[1]));
+  // أسماء تُحقنها المنصّة تلقائياً (Render/Netlify/Lambda) أو أدوات تشخيص، لا تُوثَّق.
+  const platformInjected = new Set(['NODE_ENV', 'PORT', 'NETLIFY', 'RENDER', 'LAMBDA_TASK_ROOT', 'AWS_LAMBDA_FUNCTION_NAME', 'RENDER_GIT_COMMIT', 'RENDER_GIT_BRANCH', 'GIT_COMMIT', 'GIT_BRANCH']);
+  const missing = [...used].filter((v) => !documented.has(v) && !platformInjected.has(v));
+  return missing.length === 0;
+})(), 'Phase 5: كل متغيّر بيئة يقرأه server.ts موثّق في .env.example (عدا المُحقَن من المنصّة)');
 
 const failed = checks.filter(x => !x.ok);
 console.table(checks);
