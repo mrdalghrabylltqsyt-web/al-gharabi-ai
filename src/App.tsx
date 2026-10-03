@@ -39,10 +39,6 @@ const CentralAgentConsole = lazy(() => import('./components/agent/CentralAgentCo
 const YouTubeOperationsView = lazy(() => import('./components/agent/YouTubeOperationsView').then((m) => ({ default: m.YouTubeOperationsView })));
 const BrainCommandView = lazy(() => import('./components/agent/BrainCommandView').then((m) => ({ default: m.BrainCommandView })));
 const CentralBrainView = lazy(() => import('./components/agent/CentralBrainView').then((m) => ({ default: m.CentralBrainView })));
-const CommercialBrainView = lazy(() => import('./components/agent/CommercialBrainView').then((m) => ({ default: m.CommercialBrainView })));
-const GrowthBrainView = lazy(() => import('./components/agent/GrowthBrainView').then((m) => ({ default: m.GrowthBrainView })));
-const SalesDashboardView = lazy(() => import('./components/agent/SalesDashboardView').then((m) => ({ default: m.SalesDashboardView })));
-const UnifiedGrowthBrainView = lazy(() => import('./components/agent/UnifiedGrowthBrainView').then((m) => ({ default: m.UnifiedGrowthBrainView })));
 const MarketingAgentView = lazy(() => import('./components/agent/MarketingAgentView').then((m) => ({ default: m.MarketingAgentView })));
 const CloudBackupView = lazy(() => import('./components/system/CloudBackupView').then((m) => ({ default: m.CloudBackupView })));
 
@@ -141,10 +137,6 @@ const AppContent: React.FC = () => {
       case 'youtube_operations': return <YouTubeOperationsView />;
       case 'brain_manager': return <BrainCommandView />;
       case 'central_brain': return <CentralBrainView />;
-      case 'commercial_brain': return <CommercialBrainView />;
-      case 'growth_brain': return <GrowthBrainView />;
-      case 'sales_dashboard': return <SalesDashboardView />;
-      case 'unified_growth_brain': return <UnifiedGrowthBrainView />;
       case 'marketing_agent': return <MarketingAgentView />;
       case 'calendar': return <ContentCalendarView />;
       case 'analytics': return <AnalyticsView />;

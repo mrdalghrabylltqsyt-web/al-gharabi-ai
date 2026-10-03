@@ -26,7 +26,6 @@ import {
   Brain,
   PlugZap,
   CloudUpload,
-  TrendingUp,
 } from 'lucide-react';
 
 interface SidebarProps {
@@ -187,38 +186,6 @@ export const Sidebar: React.FC<SidebarProps> = ({ mobileOpen, onCloseMobile }) =
       badge: 'ذكاء',
       badgeColor: 'bg-indigo-500/20 text-indigo-300 border-indigo-500/30',
       desc: 'ذكاء محتوى وتعلّم وتوصيات لكل المنصات العشر',
-    },
-    {
-      id: 'commercial_brain',
-      label: 'العقل التجاري (مبيعات ونمو)',
-      icon: TrendingUp,
-      badge: currentUser?.role === 'owner' ? 'Owner' : null,
-      badgeColor: 'bg-emerald-500/20 text-emerald-300 border-emerald-500/30',
-      desc: 'الواقع التجاري الحقيقي: منتجات وطلب وفرص ومبيعات موثّقة',
-    },
-    {
-      id: 'growth_brain',
-      label: 'عقل التسويق والطلب',
-      icon: TrendingUp,
-      badge: currentUser?.role === 'owner' ? 'Owner' : null,
-      badgeColor: 'bg-emerald-500/20 text-emerald-300 border-emerald-500/30',
-      desc: 'خلق طلب حقيقي: مقاطع وفرص ومطابقة وحملات وتجارب وقُمع بيعي',
-    },
-    {
-      id: 'sales_dashboard',
-      label: 'لوحة المبيعات الرقمية',
-      icon: TrendingUp,
-      badge: currentUser?.role === 'owner' ? 'Owner' : null,
-      badgeColor: 'bg-emerald-500/20 text-emerald-300 border-emerald-500/30',
-      desc: 'قناة بيع رقمية: استفسارات وإشارات شراء وعملاء وطلبات ومبيعات موثّقة',
-    },
-    {
-      id: 'unified_growth_brain',
-      label: 'العقل التجاري الموحّد (نمو وتعلّم)',
-      icon: TrendingUp,
-      badge: currentUser?.role === 'owner' ? 'Owner' : null,
-      badgeColor: 'bg-violet-500/20 text-violet-300 border-violet-500/30',
-      desc: 'عقل واحد: غاية عليا (مبيعات/ربح موثّق) + طلب + فرص + حملات + تجارب + تعلّم + تحسين آمن',
     },
     {
       id: 'calendar',
