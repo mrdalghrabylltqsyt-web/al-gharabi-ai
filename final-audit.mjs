@@ -1731,6 +1731,20 @@ add('sec01-exposure-test',
   pkg.scripts.test.includes('test:source-bundle-exposure') &&
   exposureTest.includes('/dr-source/source.tar.gz') && exposureTest.includes("=== 404"),
   'اختبار انحدار SEC-01 مضمّن في npm test ويؤكد 404 على حزمة المصدر');
+add('sec01-express-blocks-server-bundle',
+  server.includes('BLOCKED_DIST_FILES') &&
+  server.includes('"/server.cjs"') && server.includes('"/server.cjs.map"') &&
+  server.indexOf('BLOCKED_DIST_FILES') < server.indexOf('app.use(express.static(distPath))'),
+  'SEC-01 تكملة: Express يمنع /server.cjs و/server.cjs.map (خريطة تحمل الكود المصدري كاملاً)');
+add('sec01-netlify-blocks-server-bundle',
+  /from = "\/server\.cjs"[\s\S]*?status = 404/.test(read('netlify.toml')) &&
+  /from = "\/server\.cjs\.map"[\s\S]*?status = 404/.test(read('netlify.toml')),
+  'SEC-01 تكملة: Netlify تمنع /server.cjs و/server.cjs.map بحالة 404');
+add('sec01-server-bundle-test',
+  exposureTest.includes("'/server.cjs'") && exposureTest.includes("'/server.cjs.map'") &&
+  exposureTest.includes('server.cjs.map is not served as the source map') &&
+  exposureTest.includes('sourcesContent'),
+  'اختبار SEC-01 يثبت أن خريطة الخادم وحزمته لا تُخدمان (لا sourcesContent عام)');
 add('dr-source-bundle-render-commit-env', sourceBundleModule.includes('export function resolveBuildCommit') && sourceBundleModule.includes("RENDER_GIT_COMMIT") && sourceBundleModule.includes("source: 'RENDER_GIT_COMMIT'"), 'commit الحزمة يُحسم من RENDER_GIT_COMMIT (بيئة Render بلا .git) بترتيب أسبقية صريح');
 add('dr-source-bundle-render-commit-priority', /options\.commit[\s\S]*?RENDER_GIT_COMMIT[\s\S]*?resolveGitCommit/.test(sourceBundleModule) && sourceBundleModule.includes("source: 'none'"), 'الأسبقية: provided ثم RENDER_GIT_COMMIT ثم git ثم null (بلا اختراع commit)');
 add('dr-source-bundle-render-commit-no-invention', /bad_sha/.test(sourceBundleModule) && sourceBundleModule.includes("commitRes.commit ?? null"), 'RENDER_GIT_COMMIT غير الصالح يُرفض ولا يُخترع commit');

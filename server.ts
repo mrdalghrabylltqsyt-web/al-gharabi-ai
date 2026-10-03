@@ -496,9 +496,15 @@ app.use((_req, res, next) => {
 // الثابتة. الحزمة تبقى متاحة داخلياً (تُقرأ من نظام الملفات فقط لبناء نسخ DR)،
 // ولا يتأثر أي مسار آخر: الحجب محصور ببادئة /dr-source على حدود مقطع المسار.
 const BLOCKED_SOURCE_BUNDLE_PREFIX = "/dr-source";
+// SEC-01 (تكملة): الـ`esbuild --sourcemap` يُنتج `dist/server.cjs.map` الذي يحمل
+// `sourcesContent` الكامل — أي الكود المصدري الأصلي (server.ts + engine/ + tools/).
+// و`express.static(dist)` كان يخدمه علناً بلا مصادقة (وأيضاً `server.cjs` نفسه).
+// نمنع أي وصول HTTP لهذين الملفين تحديداً في جذر الأصول. لا يُحذف الملف من dist
+// (يبقى للتشخيص على القرص)، ولا يتأثر أي مسار آخر.
+const BLOCKED_DIST_FILES = new Set(["/server.cjs", "/server.cjs.map"]);
 app.use((req, res, next) => {
   const pathname = String(req.path || req.url || "").split("?")[0].toLowerCase();
-  if (pathname === BLOCKED_SOURCE_BUNDLE_PREFIX || pathname.startsWith(`${BLOCKED_SOURCE_BUNDLE_PREFIX}/`)) {
+  if (pathname === BLOCKED_SOURCE_BUNDLE_PREFIX || pathname.startsWith(`${BLOCKED_SOURCE_BUNDLE_PREFIX}/`) || BLOCKED_DIST_FILES.has(pathname)) {
     return res.status(404).json({
       success: false,
       error: "المسار غير موجود.",

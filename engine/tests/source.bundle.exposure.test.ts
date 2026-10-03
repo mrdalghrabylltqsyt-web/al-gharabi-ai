@@ -58,6 +58,11 @@ const BLOCKED_PATHS = [
   '/dr-source',
   '/DR-SOURCE/source.tar.gz',
   '/Dr-Source/source-bundle.json',
+  // SEC-01 (تكملة): حزمة الخادم المبنية وخريطتها تحملان الكود المصدري الكامل.
+  '/server.cjs',
+  '/server.cjs.map',
+  '/SERVER.CJS',
+  '/Server.cjs.map',
 ];
 
 async function run(): Promise<void> {
@@ -94,6 +99,11 @@ async function run(): Promise<void> {
     check('archive response is not the gzip bundle', !/gzip|octet-stream/i.test(tar.contentType) && !tar.body.includes('\x1f\x8b'), tar.contentType);
     const manifest = await statusOf(`${BASE}/dr-source/source-bundle.json`);
     check('manifest response body is not the bundle manifest', !manifest.body.includes('gharabi-source-bundle'), manifest.contentType);
+    // خريطة الخادم تحمل sourcesContent؛ نتأكد أن الرد ليس الخريطة ولا مصدراً أصلياً.
+    const mapFile = await statusOf(`${BASE}/server.cjs.map`);
+    check('server.cjs.map is not served as the source map', !mapFile.body.includes('sourcesContent') && !mapFile.body.includes('server.ts'), `status=${mapFile.status} type=${mapFile.contentType}`);
+    const serverCjs = await statusOf(`${BASE}/server.cjs`);
+    check('server.cjs is not served as the node bundle', !serverCjs.body.includes('require(') && serverCjs.status === 404, `status=${serverCjs.status}`);
 
     // --- عدم كسر بقية المسارات: الصحة والواجهة تعملان ---
     const health = await statusOf(`${BASE}/api/health`);
