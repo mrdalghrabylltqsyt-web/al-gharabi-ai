@@ -296,6 +296,7 @@ import {
   type WatcherOpportunity,
 } from "./engine/social/youtubeWatcher";
 import { createWatcherScheduler, type WatcherScheduler } from "./engine/social/youtubeWatcherScheduler";
+import { acquireLease, releaseLease, normalizeLease, type DurableLease } from "./engine/social/durableLease";
 import {
   computeBriefCounts,
   buildMetricViews,
@@ -4597,7 +4598,7 @@ let youtubeDelegationState: YouTubeDelegation = defaultYouTubeDelegation();
 // المنظومة. لا تُقرأ DATABASE_URL ولا تُرفع قاعدة بيانات خام. تُحفظ هنا فقط
 // حالات CSRF ورمز التجديد المشفّر وآخر خطأ — كلها عبر محوّل الحالة.
 // -------------------------------------------------------------
-const drControl: { driveOAuthStates: any[]; driveRefreshToken: any; driveLastError: string | null; driveBackup: any; driveFolderIdentity: any; driveMirror: any; driveReconciliation: any; driveAutoBackup: any } = {
+const drControl: { driveOAuthStates: any[]; driveRefreshToken: any; driveLastError: string | null; driveBackup: any; driveFolderIdentity: any; driveMirror: any; driveReconciliation: any; driveAutoBackup: any; driveLease: any } = {
   driveOAuthStates: [],
   driveRefreshToken: null,
   driveLastError: null,
@@ -4606,6 +4607,7 @@ const drControl: { driveOAuthStates: any[]; driveRefreshToken: any; driveLastErr
   driveMirror: null,
   driveReconciliation: null,
   driveAutoBackup: null,
+  driveLease: null,
 };
 
 /** يحفظ التفويض عبر محوّل الحالة (يصمد بعد restart) — كتابة تُنتظر عند التغيير. */
@@ -4907,6 +4909,12 @@ let watcherState: WatcherState = {
 let watcherRunning = false;
 let watcherScheduler: WatcherScheduler | null = null;
 let watcherLastRun: { newDetected: number; replied: number; escalated: number; skipped: number; verified: number; failed: number; deferred: number; at: string } | null = null;
+// PROC-01: قفل دوام لدورة المراقبة. يُحفظ عبر الحالة الدائمة (ملف/Postgres) فيراه
+// أي عملية أخرى — لا تنطلق دورتان متزامنتان عند تعدد العمليات/cold start/إعادة نشر.
+// حي لمدة 5 دقائق (> مهلة الدورة الفعلية)، ويُستردّ إن تعطّلت العملية المالكة.
+const WATCHER_LEASE_TTL_MS = 5 * 60 * 1000;
+let watcherLease: DurableLease | null = null;
+const WATCHER_LEASE_OWNER = `watcher-${process.pid}-${Date.now().toString(36)}`;
 
 // -------------------------------------------------------------
 // طابور محتوى YouTube (Auto Publish + Auto Schedule + Human Review).
@@ -5242,6 +5250,8 @@ async function persistWatcherState(): Promise<void> {
       briefDate: watcherState.briefDate,
       lastScanned: watcherState.lastScanned,
       reviewOverrides: watcherState.reviewOverrides.slice(0, 5000),
+      // PROC-01: القفل الدائم لدورة المراقبة (owner + انتهاء فقط، بلا سرّ).
+      lease: watcherLease,
       // طابور المحتوى (نشر/جدولة/مراجعة) يُحفظ ضمن حالة الـwatcher فيصمد بعد restart.
       contentQueue: contentQueue.slice(0, CONTENT_QUEUE_MAX),
       contentMediaTotalBytes,
@@ -5275,6 +5285,9 @@ function applyWatcherStateSnapshot(raw: any): void {
   watcherState.briefDate = typeof raw.briefDate === "string" ? raw.briefDate : null;
   watcherState.lastScanned = Number.isFinite(raw.lastScanned) ? Number(raw.lastScanned) : 0;
   watcherState.reviewOverrides = normalizeReviewOverrides(raw.reviewOverrides);
+  // PROC-01: استرجاع القفل الدائم. قفل حيّ لمالك آخر يبقى محفوظاً فيمنع هذه
+  // العملية من التزامن؛ أما المتقادم فيُبقى ليُستردّ عند أول دورة (لا جمود دائم).
+  watcherLease = normalizeLease(raw.lease);
   // استرجاع طابور المحتوى: يصمد بعد restart/deploy فلا تُفقد الموافقات/الجدولة/الرفض.
   contentQueue = normalizeContentQueue(raw.contentQueue);
   // لو كان الرد الآلي ممكّناً أصلاً (مثلاً نُشِر الإصلاح بعد تمكينه)، تُحرَّر
@@ -5378,7 +5391,15 @@ function watcherReplyExecutionReady(): { ready: boolean; code?: string; reason?:
  */
 async function runYouTubeWatcherCycle(trigger: "schedule" | "manual" = "schedule"): Promise<{ ok: boolean; error?: string; [k: string]: any }> {
   if (watcherRunning) return { ok: false, error: "دورة مراقبة قيد التنفيذ." };
+  // PROC-01: القفل الدائم يمنع التزامن عبر العمليات. قفل حيّ لغيري ⇒ تخطٍّ بلا عمل.
+  const leaseRes = acquireLease(watcherLease, { owner: WATCHER_LEASE_OWNER, nowMs: Date.now(), ttlMs: WATCHER_LEASE_TTL_MS });
+  if (!leaseRes.acquired) {
+    return { ok: true, skippedPoll: true, reason: "lease_held_elsewhere", newDetected: 0, replied: 0, escalated: 0, skipped: 0, verified: 0, failed: 0 };
+  }
+  watcherLease = leaseRes.lease;
   watcherRunning = true;
+  // نُثبّت القفل دائماً **قبل** أي عمل، فتقرأه أي عملية أخرى فوراً (لا تزامن).
+  try { await persistWatcherState(); } catch { /* يبقى الحارس الذاكري فعّالاً داخل العملية */ }
   const now = Date.now();
   let newDetected = 0, replied = 0, escalated = 0, skipped = 0, verified = 0, failed = 0, deferred = 0;
   try {
@@ -5584,6 +5605,9 @@ async function runYouTubeWatcherCycle(trigger: "schedule" | "manual" = "schedule
     return { ok: false, error: watcherState.lastError, newDetected, replied, escalated, skipped, verified, failed };
   } finally {
     watcherRunning = false;
+    // PROC-01: نُفرج القفل الدائم (مالكنا فقط) ونثبّت الإفراج قبل نهاية الدورة.
+    watcherLease = releaseLease(watcherLease, WATCHER_LEASE_OWNER).lease;
+    try { await persistWatcherState(); } catch { /* الإفراج الذاكري يكفي داخل العملية */ }
   }
 }
 
@@ -5617,6 +5641,8 @@ function watcherStatusBlock() {
   }));
   return {
     watcherActive: Boolean(watcherState.controls.enabled && !watcherState.controls.paused && watcherScheduler?.status().active),
+    // PROC-01: حالة القفل الدائم (منطقية فقط: محتجز؟ متقادم؟ بلا أي سرّ).
+    lease: { held: Boolean(watcherLease), stale: watcherLease ? watcherLease.expiresAtMs <= Date.now() : false },
     controls: controlsView,
     cadenceMs: cadence,
     cadenceMinutes: controlsView.cadenceMinutes,
@@ -8673,6 +8699,8 @@ function applyControlSnapshot(control: any): void {
   drControl.driveMirror = control.driveMirror && typeof control.driveMirror === "object" ? control.driveMirror : null;
   drControl.driveReconciliation = control.driveReconciliation && typeof control.driveReconciliation === "object" ? control.driveReconciliation : null;
   drControl.driveAutoBackup = control.driveAutoBackup && typeof control.driveAutoBackup === "object" ? control.driveAutoBackup : null;
+  // PROC-01: قفل دوام النسخة/المزامنة (owner + انتهاء فقط، بلا سرّ).
+  drControl.driveLease = control.driveLease && typeof control.driveLease === "object" ? control.driveLease : null;
   // حالة وقت تشغيل العقل (Batch 5): تُسترجَع فتصمد بعد restart/cold start (بلا سرّ).
   brainRuntimeState = normalizeBrainRuntimeState(control.brainRuntime);
 }
@@ -8724,6 +8752,8 @@ function buildControlState() {
     // حالة الجدولة التلقائية للنسخة الكاملة: آخر تشغيل/نتيجته/عدّاد التخطّي — تصمد
     // بعد restart فيُمنع إنشاء نسخة مكرّرة عند إعادة التشغيل. بلا أي سرّ.
     driveAutoBackup: drControl.driveAutoBackup,
+    // PROC-01: قفل دوام النسخة/المزامنة (يمنع نسختين متزامنتين عبر العمليات).
+    driveLease: drControl.driveLease,
     // حالة وقت تشغيل العقل (Batch 5): الحالة/القفل/العدّادات — تصمد بعد restart
     // فلا تُنشئ دورة مكرّرة، ويُستردّ القفل المتقادم. بلا أي سرّ.
     brainRuntime: brainRuntimeState,

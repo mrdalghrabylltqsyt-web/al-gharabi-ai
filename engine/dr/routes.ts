@@ -25,6 +25,7 @@ import {
   RP_001_COMMIT,
 } from '../../tools/dr/cloud-lib.mjs';
 import { DriveStateStore } from '../../tools/dr/drive-auth-url.mjs';
+import { acquireLease, releaseLease, normalizeLease } from '../social/durableLease';
 import {
   resolveAutoBackupIntervalMs,
   isAutoBackupDue,
@@ -66,7 +67,7 @@ export interface DriveRoutesDeps {
   requireOwner: express.RequestHandler;
   env?: Record<string, string | undefined>;
   /** يقرأ حالة DR المحفوظة (states + رمز تجديد مشفّر + آخر خطأ + حالة النسخ + هوية مجلدات Drive). */
-  loadControl: () => { driveOAuthStates?: any[]; driveRefreshToken?: any; driveLastError?: string | null; driveBackup?: any; driveFolderIdentity?: any; driveMirror?: any; driveReconciliation?: any; driveAutoBackup?: any };
+  loadControl: () => { driveOAuthStates?: any[]; driveRefreshToken?: any; driveLastError?: string | null; driveBackup?: any; driveFolderIdentity?: any; driveMirror?: any; driveReconciliation?: any; driveAutoBackup?: any; driveLease?: any };
   /** يثبّت جزءاً من حالة DR عبر محوّل الحالة (يصمد بعد restart). */
   persistControl: (partial: Record<string, any>) => void;
   /** عميل Drive اختياري (للاختبار). إن غاب يُبنى من البيئة. */
@@ -401,6 +402,10 @@ export function registerDriveRoutes(app: express.Express, deps: DriveRoutesDeps)
   // النسخة الاحتياطية الفعلية (owner): المسار الرسمي الوحيد.
   // ------------------------------------------------------------------
   let backupRunning = false; // قفل على مستوى الخادم يمنع التشغيل المزدوج
+  // PROC-01: قفل دوام إضافي (يُحفظ عبر الحالة الدائمة) يمنع نسختين متزامنتين عبر
+  // العمليات (cold start/نسختان/إعادة نشر). قفل حيّ لغيري ⇒ رفض بلا عمل.
+  const BACKUP_LEASE_TTL_MS = 60 * 60 * 1000; // ساعة (> أطول نسخة كاملة)
+  const BACKUP_LEASE_OWNER = `backup-${process.pid}-${Date.now().toString(36)}`;
   const defaultGitMeta = () => ({ commit: env.RENDER_GIT_COMMIT || env.GIT_COMMIT || null, branch: env.RENDER_GIT_BRANCH || env.GIT_BRANCH || 'main', repository: env.GHARABI_REPOSITORY || 'mrdalghrabylltqsyt-web/al-gharabi-ai', project: 'al-gharabi-ai' });
 
   /** يحدّث سجل آخر نسخة عبر محوّل الحالة (يصمد بعد restart). */
@@ -447,6 +452,13 @@ export function registerDriveRoutes(app: express.Express, deps: DriveRoutesDeps)
     if (backupRunning) {
       return { status: 409, body: { success: false, code: 'BACKUP_ALREADY_RUNNING', error: 'نسخة احتياطية قيد التنفيذ بالفعل.' } };
     }
+    // PROC-01: القفل الدائم يمنع نسختين متزامنتين عبر العمليات. قفل حيّ لغيري ⇒ رفض.
+    const leaseAcq = acquireLease(normalizeLease(control().driveLease), { owner: BACKUP_LEASE_OWNER, nowMs: Date.now(), ttlMs: BACKUP_LEASE_TTL_MS });
+    if (!leaseAcq.acquired) {
+      return { status: 409, body: { success: false, code: 'BACKUP_LEASE_HELD', error: 'نسخة احتياطية قيد التنفيذ في عملية أخرى.' } };
+    }
+    control().driveLease = leaseAcq.lease;
+    deps.persistControl({ driveLease: leaseAcq.lease });
     backupRunning = true;
     const startedAt = now();
     let store: any = null;
@@ -588,6 +600,10 @@ export function registerDriveRoutes(app: express.Express, deps: DriveRoutesDeps)
       return { status: 500, body: { success: false, ...failure } };
     } finally {
       backupRunning = false;
+      // PROC-01: نُفرج القفل الدائم (مالكنا فقط) ونثبّت الإفراج.
+      const rel = releaseLease(normalizeLease(control().driveLease), BACKUP_LEASE_OWNER);
+      control().driveLease = rel.lease;
+      deps.persistControl({ driveLease: rel.lease });
     }
   }
 

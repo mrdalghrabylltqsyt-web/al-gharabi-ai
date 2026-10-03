@@ -63,17 +63,19 @@ async function run(): Promise<void> {
     const rawBody = '{\n  "type": "test_event",\n  "data": { "n": 1, "ok": true }\n}';
     const goodSig = hmacHex(WEBHOOK_SECRET, rawBody);
     const badSig = hmacHex('wrong-secret', rawBody);
+    // معرّفات فريدة لكل تشغيل (الحالة الدائمة تعيش بين التشغيلات، فلا يُعدّ الحدث مكرراً).
+    const run = crypto.randomBytes(6).toString('hex');
 
     const accept = await fetch(`${BASE}/api/webhooks/telegram`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json', 'x-gharabi-signature': goodSig, 'x-event-id': 'p1-accept-1' },
+      headers: { 'content-type': 'application/json', 'x-gharabi-signature': goodSig, 'x-event-id': `p1-accept-${run}` },
       body: rawBody,
     });
     check('SEC-02 valid raw-body signature accepted (202)', accept.status === 202, `status=${accept.status}`);
 
     const rejectBad = await fetch(`${BASE}/api/webhooks/telegram`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json', 'x-gharabi-signature': badSig, 'x-event-id': 'p1-bad-1' },
+      headers: { 'content-type': 'application/json', 'x-gharabi-signature': badSig, 'x-event-id': `p1-bad-${run}` },
       body: rawBody,
     });
     check('SEC-02 invalid signature rejected (401)', rejectBad.status === 401, `status=${rejectBad.status}`);
@@ -84,14 +86,14 @@ async function run(): Promise<void> {
     const reserializedSig = hmacHex(WEBHOOK_SECRET, compact);
     const rejectReserialized = await fetch(`${BASE}/api/webhooks/telegram`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json', 'x-gharabi-signature': reserializedSig, 'x-event-id': 'p1-reser-1' },
+      headers: { 'content-type': 'application/json', 'x-gharabi-signature': reserializedSig, 'x-event-id': `p1-reser-${run}` },
       body: rawBody,
     });
     check('SEC-02 raw-body mismatch cannot bypass verification (401)', rejectReserialized.status === 401, `status=${rejectReserialized.status}`);
 
     const missingSig = await fetch(`${BASE}/api/webhooks/telegram`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json', 'x-event-id': 'p1-nosig-1' },
+      headers: { 'content-type': 'application/json', 'x-event-id': `p1-nosig-${run}` },
       body: rawBody,
     });
     check('SEC-02 missing signature rejected (401)', missingSig.status === 401, `status=${missingSig.status}`);
