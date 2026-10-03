@@ -2090,7 +2090,7 @@ add('phase6-safe-timer-test-present',
 // ---- Phase 7: frontend bundle splitting ----
 add('phase7-heavy-views-lazy',
   app.includes('lazy(') && app.includes('<Suspense') &&
-  app.includes("lazy(() => import('./components/agent/UnifiedGrowthBrainView')") &&
+  app.includes("lazy(() => import('./components/agent/CentralBrainView')") &&
   app.includes("lazy(() => import('./components/system/CloudBackupView')") &&
   app.includes("lazy(() => import('./components/agent/YouTubeOperationsView')"),
   'Phase 7: اللوحات الثقيلة (العقل/الوكيل/النسخ السحابي) تُحمَّل عند الطلب عبر lazy+Suspense');
