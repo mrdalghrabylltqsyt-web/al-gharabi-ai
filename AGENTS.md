@@ -3792,3 +3792,87 @@ final-audit الجديدة `brain-decision-*` (**1253 إجمالاً**). `lint`+
 
 **لم يُمسّ:** Gemini/firewall، OAuth/الاعتمادات/الأسرار، المصادقة، قاعدة البيانات، DR، YouTube
 (المراقب/الطابور/التفويض)، بقية المنصات، ونموذج الجدولة. لا تنفيذ خارجي أُضيف.
+
+## Batch 7 — الطبقة الإدراكية للعقل المركزي + حلقة التعلّم الكاملة (Cognition) (2026-10-02)
+
+ترقية العقل المركزي إلى **طبقة إدراكية حتمية** تدير دورة واحدة موحّدة (بلا عقل لكل منصة):
+`PERCEIVE → UNDERSTAND → REMEMBER → REASON → CONSULT → PLAN → CRITIQUE → DECIDE → ACT →
+OBSERVE → LEARN`. **قراءة/تحليل/تخطيط فقط، بلا تنفيذ خارجي، وبلا استهلاك AI** — التنفيذ
+يبقى في مساراته المحكومة القائمة (نفس `executeYouTubeReply` والبوابات).
+
+### الوحدات الجديدة (`engine/brain/cognition/`، منطق خالص قابل للاختبار)
+- `types.ts`: المراحل الإحدى عشرة (`COGNITIVE_PHASES`) + مسمّيات عربية.
+- `cognitiveContext.ts`: الأبعاد (WHAT/WHO/WHERE/WHEN/WHY/HOW) من الحدث الحقيقي + كشف
+  الحقائق المجهولة (`isUnknownFactQuestion`) — لا اختراع سياق.
+- `workingMemory.ts`: **ذاكرة عاملة قصيرة المدى** بسعة محدودة وTTL، بلا ترقية تلقائية إلى
+  ذاكرة طويلة المدى (`touchWorkingMemory`/`normalizeWorkingMemory`/`summarizeWorkingMemory`).
+- `memoryRecall.ts`: استرجاع من **نفس** مخزن الذاكرة طويلة المدى القائم (لا مخزن ثانٍ)،
+  مع استبعاد المتقادم وترتيب بالملاءمة.
+- `goalPlan.ts`: أهداف اجتماعية/تسويقية فقط + خطة كاملة، وحرس نطاق مالي
+  (`OUT_OF_SCOPE_FINANCIAL_TERMS`/`goalPlanViolatesScope`) يمنع الإيراد/الربح/ROI/المخزون.
+- `councilRouting.ts` + `disagreement.ts`: توجيه انتقائي لمجلس الوكلاء + كشف الخلاف
+  وتصنيفه بلا فرض إجماع (يُعيد استخدام جلسة الفريق القائمة).
+- `nextAction.ts` + `planningEngine.ts`: إجراء تالٍ وخطوات محكومة؛ **أي خطوة خارجية تحمل
+  سبباً صريحاً** ولا تنفّذ من هذه الطبقة.
+- `outcomeLearning.ts`: جسر التعلّم — نتيجة ملاحَظة حقيقية ⇒ درس ⇒ ذاكرة (عبر
+  `learningToMemoryEntries`/`lessonToMemoryEntry`)، **درس غير دائم/بلا مصدر لا يُرقّى**
+  (`null`)، والأصل صريح (`platform_data`/`derived`)، وحارس نطاق يمنع الأرقام المالية،
+  **ولا تعلّم معزّز/تعديل ذاتي** (`learningIsNonSelfModifying`).
+- `cognitiveLoop.ts`: التجميع الحتمي للدورة كاملة فوق الطبقات القائمة + كتلة مراقبة.
+
+### الربط (`server.ts`)
+- `workingMemoryState` + `cognitiveReports` تُحفظ/تُسترجع عبر محوّل الحالة
+  (`STORAGE_KEY_WORKING_MEMORY`، file + Postgres) → تصمد بعد restart/cold start.
+- `runCognitiveCycleNow` تُشغَّل من **حدث YouTube حقيقي** داخل دورة المراقبة
+  (`eventIdentity: comment:<id>`) بلا تكرار لنفس الحدث.
+- `recordReadOutcome` تُغلق **حلقة النتيجة** فعلاً: رد مُسلَّم (`yt-reply-sent:`) أو فشل
+  (`yt-reply-failed:`) ⇒ نتيجة ⇒ درس ⇒ ذاكرة العقل القائمة (`persistBrainMemory`) — بلا
+  رقم مالي.
+- مسارات `/api/agent/brain/cognition` (+ `/reports` و`/reports/:id`) — **قراءة فقط،
+  للمالك**. و`/api/health` + `/api/readiness` يعرضان `cognitionHealthBlock` بلا سرّ.
+
+### حلقة التعلّم الكاملة: تفاعل المتابعة (REAL ACTION→RESULT→FOLLOW-UP→LESSON→MEMORY)
+في `engine/social/youtubeWatcher.ts` (مصدر واحد): `selectFollowUpCandidates`,
+`evaluateFollowUpEngagement`, `FOLLOWUP_BASELINE_DELAY_MS` (+`followUpBaselineDelayMsFromEnv`
+ضمن [0..30 يوماً])، `FOLLOWUP_MIN_DELTA`.
+- **لا اختراع**: التفاعل غير المتاح (لا `likeCount` ولا `totalReplyCount`) لا يُعلن تغيّراً.
+- **البصمة قبل الحكم**: أول ملاحظة تُثبّت `followUpBaseline`؛ الحكم لاحقاً بمقارنة حقيقية.
+- موصول في `server.ts` (`sweepFollowUpEngagement`) داخل دورة المراقبة **بعد**
+  `verifyDueScheduledContent`؛ تغيّر حقيقي ⇒ `recordReadOutcome(kind:'engagement_changed')`
+  ⇒ درس محفوظ في ذاكرة العقل. لا رقم مالي (ملاحظة سلوكية فقط).
+- العدّادات معلنة في `watcherStatusBlock`: `followUp.{baselined,observed,engagementChanged,noChange}`.
+
+### سطح حلقة التعلّم للواجهة
+- `GET /api/agent/brain/cognition/learning-loop` (owner فقط): المراحل الست
+  `ACTION→RESULT→FOLLOW-UP→LESSON→MEMORY→FUTURE_DECISION` بأرقام من سجلات فعلية، ويتضمّن
+  تفاعل المتابعة والذاكرة (مفاتيح الدروس `lesson:`). `learningLoop` اختياري في التبعيات:
+  عند غيابه يُعلن عدم التوفر صراحةً. `health.cognition.learningBridge` صار
+  `ACTION→RESULT→FOLLOW-UP→LESSON→MEMORY→FUTURE_DECISION` + ملخّص `learningLoop`.
+- **الواجهة**: `src/components/agent/CentralBrainCognitionPanel.tsx` مدمجة في
+  `CentralBrainView` — تعرض الإدراك، الذاكرة العاملة، الأهداف، الخطط، فريق الوكلاء، النقد،
+  القرارات، النتائج، وحلقة التعلّم. قراءة فقط (GET) وبلا أي سرّ.
+  دوال `api.ts`: `getCognitionState`/`getCognitionReports`/`getCognitionLearningLoop`.
+
+### القواعد الملزمة (مُختبرة)
+- **لا تنفيذ خارجي** من الطبقة الإدراكية (لا شبكة، لا `executeYouTubeReply`).
+- **لا رقم مالي** (إيراد/ربح/ROI/هامش/مخزون) — وحرس النطاق قائم.
+- **لا تفكير داخلي خاص** يُخزَّن (`storesPrivateChainOfThought: false`).
+- **لا ترقية تلقائية** للذاكرة، **ولا تعلّم معزّز/تعديل ذاتي**.
+- **لا اختراع تفاعل**: غير المتاح لا يُعلن تغيّراً.
+
+اختبارات: `engine/tests/brain/cognition.test.ts` (**100 فحصاً وحدة**) و
+`engine/tests/brain/cognition.integration.test.ts` (**43 فحصاً** خادم حقيقي: 401، اللقطة،
+مسار حلقة التعلّم، حدث YouTube حقيقي ⇒ دورة إدراكية كاملة بـ11 مرحلة، منع التكرار،
+health). `youtube.connector.test.ts` = **235 فحصاً** (مجموعة 12k-6: رد مُسلَّم ⇒ بصمة ⇒
+تفاعل متغيّر ⇒ درس ⇒ ذاكرة، عبر restart حقيقي). final-audit = **1298 فحصاً**
+(`cognition-followup-*`, `cognition-learning-loop-*`, `cognition-ui-*`, `cognition-followup-tests`,
+`cognition-loop-closes-to-future-decision`).
+
+**إثبات إغلاق الحلقة (MEMORY ⇒ FUTURE DECISION):** المجموعة 13 في اختبار الوحدة تحاكي مسار
+الخادم بالضبط (نتيجة تفاعل ⇒ درس دائم ⇒ عنصر ذاكرة `lesson:`)، ثم تثبت أن **دورة إدراكية
+لاحقة** تستدعي هذا الدرس فعلاً (`memoryUsed ≥ 1` و`context.relevantMemoryIds` يضمه)، وأن
+`no_change` لا يُرقّى لحقيقة، وأن الحلقة لا تخترق النطاق المالي. أي أن الحلقة **مغلقة
+بالبناء** (نفس كائن `brainMemoryStore` يكتب فيه الرصد ويقرأ منه القرار) ومُثبتة بالاختبار.
+
+**لم يُمسّ:** Gemini/firewall، OAuth/الاعتمادات/الأسرار، المصادقة، قاعدة البيانات، DR،
+YouTube (المراقب/الطابور/التفويض/الرد)، بقية المنصات، ونموذج الجدولة.

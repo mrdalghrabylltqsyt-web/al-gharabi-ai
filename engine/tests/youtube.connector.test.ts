@@ -584,9 +584,51 @@ async function integrationTests(): Promise<void> {
     mock.state.lastInsertPath = null;
     const pollKill = await (await fetch(`${BASE}/api/agent/youtube/watcher/poll`, { method: 'POST', headers: auth })).json();
     check('Kill Switch: لا إرسال خارجي', mock.state.lastInsertPath === null, String(pollKill.result?.skippedPoll));
+    // 5) سلطة العقل المركزي: استفسار سعر حقيقي => قرار العقل تصعيد بشري => لا رد آلي إطلاقاً.
+    mock.state.comments = [{ id: 'cmt_watcher_price', threadId: 'thr_p', videoId: 'vid_alpha', author: 'علي', text: 'كم السعر؟', publishedAt: '2026-09-28T09:45:00Z', likeCount: 0 }];
+    await fetch(`${BASE}/api/agent/youtube/watcher/controls`, { method: 'POST', headers: auth, body: JSON.stringify({ enabled: true, autoReply: true, paused: false, humanReviewMode: false }) });
+    mock.state.lastInsertPath = null;
+    const pollPrice = await (await fetch(`${BASE}/api/agent/youtube/watcher/poll`, { method: 'POST', headers: auth })).json();
+    check('سلطة العقل: استفسار سعر => لا comments.insert إطلاقاً', mock.state.lastInsertPath === null, String(mock.state.lastInsertPath));
+    check('سلطة العقل: استفسار سعر => يُصعَّد بشرياً بلا رد', (pollPrice.watcher?.counters?.escalated || 0) >= 1 && !(pollPrice.watcher?.lastReply?.commentId === 'cmt_watcher_price'), JSON.stringify(pollPrice.watcher?.counters));
     // استعادة الإعداد الافتراضي الآمن + التعليقات الأصلية.
     await fetch(`${BASE}/api/agent/youtube/watcher/controls`, { method: 'POST', headers: auth, body: JSON.stringify({ autoReply: false, paused: false }) });
     mock.state.comments = wComments;
+
+    group('12k-6) تكامل: تفاعل المتابعة يُغلق حلقة التعلّم (ACTION→…→MEMORY)');
+    // مهلة بصمة 0 (بيئة الاختبار فقط) عبر إعادة تشغيل الخادم — لا يمسّ الإنتاج.
+    await stop(currentApp!.proc);
+    currentApp = startApp(mock.base, { YOUTUBE_FOLLOWUP_BASELINE_DELAY_MS: '0' });
+    check('إعادة الإقلاع بمهلة بصمة 0', await waitForHealth(), currentApp.log().slice(0, 300));
+    const fuStart = await (await fetch(`${BASE}/api/platforms/youtube/oauth/start`, { headers: auth })).json();
+    const fuState = new URL(fuStart.authorizationUrl).searchParams.get('state') as string;
+    await fetch(`${BASE}/api/platforms/youtube/oauth/callback?state=${encodeURIComponent(fuState)}&code=test-auth-code`);
+    await fetch(`${BASE}/api/platforms/youtube/delegation`, { method: 'POST', headers: auth, body: JSON.stringify({ actions: ['reply'] }) });
+    await fetch(`${BASE}/api/agent/youtube/watcher/controls`, { method: 'POST', headers: auth, body: JSON.stringify({ enabled: true, autoReply: true, paused: false, humanReviewMode: false }) });
+    const fuComments = mock.state.comments;
+    mock.state.comments = [{ id: 'cmt_followup', threadId: 'thr_fu', videoId: 'vid_alpha', author: 'كرار', text: 'عاشت إيدكم، خدمة ممتازة', publishedAt: '2026-10-01T09:00:00Z', likeCount: 0, totalReplyCount: 0 }];
+    // دورة 1: يرد فعلياً ⇒ RESULT بمعرّف مزوّد.
+    const fuPoll1 = await (await fetch(`${BASE}/api/agent/youtube/watcher/poll`, { method: 'POST', headers: auth })).json();
+    check('12k-6: رد مُسلَّم بمعرّف مزوّد', Boolean(fuPoll1.watcher?.lastReply?.externalReplyId), JSON.stringify(fuPoll1.watcher?.lastReply));
+    // تفاعل لاحق حقيقي على التعليق (إعجابات/ردود) — تُقرأ من المزود الوهمي.
+    mock.state.comments = [{ id: 'cmt_followup', threadId: 'thr_fu', videoId: 'vid_alpha', author: 'كرار', text: 'عاشت إيدكم، خدمة ممتازة', publishedAt: '2026-10-01T09:00:00Z', likeCount: 5, totalReplyCount: 2 }];
+    // دورة 2: يثبّت البصمة (لا يُعلن تغيّراً بعد).
+    const fuPoll2 = await (await fetch(`${BASE}/api/agent/youtube/watcher/poll`, { method: 'POST', headers: auth })).json();
+    check('12k-6: البصمة ثُبّتت', (fuPoll2.watcher?.followUp?.baselined || 0) >= 1, JSON.stringify(fuPoll2.watcher?.followUp));
+    // تفاعل إضافي حقيقي.
+    mock.state.comments = [{ id: 'cmt_followup', threadId: 'thr_fu', videoId: 'vid_alpha', author: 'كرار', text: 'عاشت إيدكم، خدمة ممتازة', publishedAt: '2026-10-01T09:00:00Z', likeCount: 8, totalReplyCount: 3 }];
+    // دورة 3: يكشف تغيّراً حقيقياً ⇒ engagement_changed + درس + ذاكرة.
+    const fuPoll3 = await (await fetch(`${BASE}/api/agent/youtube/watcher/poll`, { method: 'POST', headers: auth })).json();
+    check('12k-6: تفاعل متغيّر ملاحَظ', (fuPoll3.watcher?.followUp?.engagementChanged || 0) >= 1, JSON.stringify(fuPoll3.watcher?.followUp));
+    const loopRes = await (await fetch(`${BASE}/api/agent/brain/cognition/learning-loop`, { headers: auth })).json();
+    const ll = loopRes.learningLoop;
+    check('12k-6: حلقة التعلّم تُعلن ACTION/RESULT/FOLLOW_UP', (ll?.stages || []).some((s: any) => s.stage === 'ACTION' && s.count >= 1) && (ll?.stages || []).some((s: any) => s.stage === 'RESULT' && s.count >= 1) && (ll?.stages || []).some((s: any) => s.stage === 'FOLLOW_UP' && s.count >= 1), JSON.stringify(ll?.stages));
+    check('12k-6: FOLLOW_UP يُغلق إلى MEMORY (درس محفوظ)', (ll?.memory?.lessonDerived || 0) >= 1, JSON.stringify(ll?.memory));
+    check('12k-6: حلقة التعلّم بلا سرّ', !/access_token|refresh_token|client_secret|api[_-]?key/i.test(JSON.stringify(loopRes)));
+    const healthFu = await (await fetch(`${BASE}/api/health`)).json();
+    check('12k-6: health.cognition.learningLoop صادق', healthFu.cognition?.learningLoop?.engagementChanged >= 1, JSON.stringify(healthFu.cognition?.learningLoop));
+    mock.state.comments = fuComments;
+    await fetch(`${BASE}/api/agent/youtube/watcher/controls`, { method: 'POST', headers: auth, body: JSON.stringify({ autoReply: false, paused: false }) });
 
     group('12k) تكامل: حارس YOUTUBE_ONLY_OPERATIONAL مربوط بمسارات التنفيذ الخارجي');
     // الحارس منطقياً مُختبر في 4a؛ هنا نثبت أنه مربوط فعلاً بمسارات التنفيذ الخارجي

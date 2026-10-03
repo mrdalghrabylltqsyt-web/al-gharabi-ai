@@ -32,6 +32,74 @@ import { toMemoryRecord, upsertMemoryRecord, memoryToKnowledge, emptyBrainMemory
 import { buildContentPath, buildContentPerformanceModel, type ContentPath } from './strategy/contentIntelligence';
 import { capabilityMatrix } from './strategy/capabilityMatrix';
 import { buildCentralBrainState, type CentralBrainState, type BrainPlatformState, type BrainRisk } from './state';
+import { type DecisionLedger, type DecisionLedgerEntry } from './cognition/decisionLedger';
+
+/** ملخّص حالة الاستراتيجية المحفوظة (من `strategyState`) — قراءة فقط بلا دورة دورية. */
+export interface StrategyStateSummary {
+  currentVersion: number;
+  lastReason: string;
+  itemScopes: string[];
+  itemCount: number;
+  lastUpdatedAt: string | null;
+}
+
+/**
+ * سياق القراءة التاريخي (قراءة فقط) الذي يغذّي القرار المستقبلي فعل YouTube:
+ * الاستراتيجية الكانونية + الجمهور + السوق + تاريخ القرارات ونتائجها الحقيقية.
+ * يستدعيه مسار التنفيذ لبناء قرار العقل المركزي على الصورة الكاملة (Batch 8.1).
+ */
+export interface RuntimeDecisionContext {
+  /** الخطط الاستراتيجية الكانونية (المصدر الوحيد — buildRuntimeBrain). */
+  strategies: StrategyPlan[];
+  /** ملخّص الاستراتيجية المحفوظة (إصدار/سبب تغيير) — لا عقلاً ثانياً. */
+  strategyState: StrategyStateSummary | null;
+  /** مقاطع الجمهور المبنية من تفاعل حقيقي فقط. */
+  audienceSegments: Array<{ topic: string; sampleSize: number; intent: string | null }>;
+  /** هل يوجد دليل تجاري ملاحَظ فعلاً؟ */
+  marketHasEvidence: boolean;
+  /** سياق قرارات سابقة حقيقية (بنتائج ملاحَظة فقط — لا اختراع) — أقرب 5. */
+  priorOutcomes: Array<{ decisionId: string; finalStatus: string; outcomeSummary: string; actionText: string; observedAt: string | null; providerReplyId: string | null }>;
+  /** هل قرأ العقل السجل فعلاً (جعل النتائج السابقة تُغذّي القرار)؟ */
+  consumedDecisionHistory: boolean;
+  /** الخطوة التالية المستنتجة من التاريخ (اقتراح توجيهي — لا قرار). */
+  strategyHint: string;
+  note: string;
+}
+
+/** يبني سياق القراءة التاريخي كاملاً. لا شبكة ولا أسرار ولا اختراع. */
+export function buildRuntimeDecisionContext(input: RuntimeBrainInput): RuntimeDecisionContext {
+  const built = buildRuntimeBrain(input);
+  const ledger = input.decisionLedger;
+  const prior = (ledger?.entries || [])
+    .filter((e) => e.outcome.availability === 'available')
+    .slice(-5)
+    .reverse()
+    .map((e: DecisionLedgerEntry) => ({
+      decisionId: e.decisionId,
+      finalStatus: e.finalStatus,
+      outcomeSummary: e.outcome.summary,
+      actionText: e.actionText,
+      observedAt: e.outcome.observedAt,
+      providerReplyId: e.links.providerReplyId,
+    }));
+  const failures = prior.filter((p) => p.finalStatus === 'FAILED' || /فشل/.test(p.outcomeSummary)).length;
+  const strategyHint = failures > 0
+    ? `${failures} إجراء سابق لم ينجح (دليل تاريخي)؛ راجع الشرط قبل تكراره على هذا التعليق.`
+    : (prior.length
+      ? 'توجد نتائج سابقة ملاحَظة؛ ابنِ عليها بلا تكرار الإجراء نفسه بلا داعٍ.'
+      : 'لا سياق قرارات سابق بعد؛ القرار الحالي بلا تاريخ — يُبنى على الأدلة الحاضرة فقط.');
+  const strategies = (built.strategies || []) as StrategyPlan[];
+  return {
+    strategies,
+    strategyState: input.strategyState ?? null,
+    audienceSegments: (built.state.audience?.segments || []).slice(0, 6).map((s: any) => ({ topic: s.topic ?? s.labelAr ?? '', sampleSize: s.sampleSize ?? 0, intent: s.dominantIntent ?? null })),
+    marketHasEvidence: Boolean(built.state.market?.hasCommercialEvidence),
+    priorOutcomes: prior,
+    consumedDecisionHistory: prior.length > 0,
+    strategyHint,
+    note: 'سياق قراءة فقط: استراتيجية/جمهور/سوق كانونية + تاريخ قرارات حقيقي بلا اختراع.',
+  };
+}
 
 /** تعليق حقيقي وارد من التطبيق (اجتماعي/مراقب YouTube). */
 export interface RuntimeComment {
@@ -115,6 +183,14 @@ export interface RuntimeBrainInput {
   };
   /** الذاكرة الدائمة المحمّلة (تُقرأ فقط). */
   memory?: BrainMemoryStoreState;
+  /**
+   * سجل القرار→النتيجة (قراءة فقط). يجعله العقل سلطة **تقرأ** تاريخ قراراتها
+   * ونتائجها الحقيقية كدليل ⇒ تُغذّي القرار المستقبلي (Batch 8.1). لا نظام ثانٍ:
+   * الذاكرة تبقى واحدة، والسجل مجرّد دليل تاريخي يُحوَّل إلى ذاكرة العقل القائمة.
+   */
+  decisionLedger?: DecisionLedger;
+  /** حالة الاستراتيجية المحفوظة (قراءة فقط) لتمييز تغيّر الاستراتيجية تاريخياً. */
+  strategyState?: StrategyStateSummary;
   aiCounters?: CentralBrainState['ai'];
 }
 
@@ -345,9 +421,36 @@ export function buildRuntimeContentPath(input: {
 }
 
 /**
- * يبني المخزون الكامل للعقل من بيانات حقيقية: كل الطبقات + التعلّم + الذاكرة +
- * التوصيات + القرارات + اللقطة الموحّدة. لا تنفيذ خارجي ولا اختراع.
+ * يحوّل سجل القرار→النتيجة إلى **سجلات ذاكرة العقل القائمة** (بلا نظام ذاكرة ثانٍ).
+ * لا يُنتج سجلاً إلا لقرار له **نتيجة ملاحَظة حقيقية** (`availability==='available'`)
+ * فلا تُخترع نتيجة، وتُرحَّل عبر `origin='platform_data'` (دليل حقيقي) مع عيّنة ≥1،
+ * ويُصان معرّف القرار ومعرّف رد المزوّد كمراجع حقيقية. النتائج غير المتاحة تُتجاهل.
  */
+export function decisionHistoryToMemoryRecords(ledger: DecisionLedger | undefined, now: number): BrainMemoryRecord[] {
+  const out: BrainMemoryRecord[] = [];
+  for (const e of (ledger?.entries || [])) {
+    if (e.outcome.availability !== 'available') continue; // لا اختراع نتيجة
+    out.push(toMemoryRecord({
+      id: `brain-decision-outcome:${e.decisionId}`,
+      kind: 'outcome',
+      statement: `نتيجة قرار مركزي حقيقية (${e.finalStatus}): ${e.outcome.summary}`,
+      origin: 'platform_data',
+      source: e.outcome.source || 'decisionLedger',
+      createdAt: e.outcome.observedAt || new Date(now).toISOString(),
+      lastValidatedAt: e.outcome.observedAt ?? null,
+      confidence: 'high',
+      status: 'active',
+      sampleSize: 1,
+      limitations: 'نتيجة ملاحَظة من تاريخ القرار المركزي؛ رابط القرار حقيقي ومعرّف رد المزوّد إن وُجد.',
+      refs: { decisionId: e.decisionId, platform: e.platform, providerReplyId: e.links.providerReplyId ?? null },
+      platform: e.platform,
+      sourceRefs: ['decisionLedger'],
+      summary: e.outcome.summary,
+    }));
+  }
+  return out;
+}
+
 export function buildRuntimeBrain(input: RuntimeBrainInput): RuntimeBrainOutput {
   const memory = input.memory || emptyBrainMemory();
   const now = input.now;
