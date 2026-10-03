@@ -1718,11 +1718,32 @@ add('dr-source-bundle-health-exposed', drRoutes.includes('bundle: (c as any).bun
 // express.static) وفي Netlify (على الحافة قبل قاعدة SPA)، واختبار تشغيلي يثبت 404.
 const exposureTest = read('engine/tests/source.bundle.exposure.test.ts');
 add('sec01-express-blocks-dr-source',
-  server.includes('BLOCKED_SOURCE_BUNDLE_PREFIX = "/dr-source"') &&
-  server.includes('pathname === BLOCKED_SOURCE_BUNDLE_PREFIX') &&
-  server.includes('pathname.startsWith(') &&
-  server.indexOf('BLOCKED_SOURCE_BUNDLE_PREFIX') < server.indexOf('app.use(express.static(distPath))'),
-  'Express يمنع /dr-source قبل express.static (لا تسريب حزمة المصدر)');
+  server.includes('BLOCKED_SOURCE_BUNDLE_SEGMENT = "/dr-source"') &&
+  server.includes('function canonicalRequestPath(') &&
+  server.includes('function isBlockedSourceRequest(') &&
+  server.includes('isBlockedSourceRequest(String(req.path') &&
+  server.indexOf('isBlockedSourceRequest(String(req.path') < server.indexOf('app.use(express.static(distPath))'),
+  'Express يمنع /dr-source عبر مطابقة مسار مُطبَّع قبل express.static (لا تسريب حزمة المصدر)');
+add('sec01-express-canonicalizes-path',
+  server.includes('decodeURIComponent(p)') &&
+  /for \(let i = 0; i < 5; i \+= 1\)/.test(server) &&
+  server.includes('path.posix.normalize(p)') &&
+  server.includes('.toLowerCase()') &&
+  server.includes('catch {'),
+  'التطبيع يفكّ الترميز متكرراً (محدود) + يوحّد الفواصل/الحالة ويقبل الترميز الفاسد بلا انهيار');
+add('sec01-express-blocks-encoded-bypass',
+  server.includes('p.includes(`${BLOCKED_SOURCE_BUNDLE_SEGMENT}/`)') &&
+  server.includes('p.endsWith(BLOCKED_SOURCE_BUNDLE_SEGMENT)') &&
+  server.includes('p.endsWith(".cjs") || p.endsWith(".cjs.map")') &&
+  server.includes('BLOCKED_DIST_SOURCE_PREFIX'),
+  'الحجب يغطّي أي موضع لـ/dr-source و/dist/dr-source وأي ملف .cjs/.cjs.map (لا تجاوز بالترميز)');
+add('sec01-express-blocks-encoded-test',
+  exposureTest.includes("'/%64r-source/source.tar.gz'") &&
+  exposureTest.includes("'/%73erver.cjs.map'") &&
+  exposureTest.includes("'/dr-source%2fsource.tar.gz'") &&
+  exposureTest.includes("'/%2564r-source/source.tar.gz'") &&
+  exposureTest.includes('encoded server.cjs.map does not disclose sourcesContent'),
+  'اختبار SEC-01 يغطّي التجاوز بالترميز والترميز المزدوج والاجتياز (كلها 404)');
 add('sec01-netlify-blocks-dr-source',
   /from = "\/dr-source\/\*"[\s\S]*?status = 404/.test(read('netlify.toml')),
   'Netlify تمنع /dr-source/* بحالة 404 قبل قاعدة SPA');

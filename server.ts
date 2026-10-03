@@ -490,21 +490,54 @@ app.use((_req, res, next) => {
   next();
 });
 
-// SEC-01: مجلد dist/dr-source يحوي حزمة المصدر الكاملة (source.tar.gz + البيان +
-// بصمة الالتزام). كان express.static(dist) يخدمه علناً بلا مصادقة، فيسرّب الكود
-// المصدري كاملاً لأي طلب. نمنع أي وصول HTTP إلى هذا المجلد قبل خدمة الأصول
-// الثابتة. الحزمة تبقى متاحة داخلياً (تُقرأ من نظام الملفات فقط لبناء نسخ DR)،
-// ولا يتأثر أي مسار آخر: الحجب محصور ببادئة /dr-source على حدود مقطع المسار.
-const BLOCKED_SOURCE_BUNDLE_PREFIX = "/dr-source";
-// SEC-01 (تكملة): الـ`esbuild --sourcemap` يُنتج `dist/server.cjs.map` الذي يحمل
-// `sourcesContent` الكامل — أي الكود المصدري الأصلي (server.ts + engine/ + tools/).
-// و`express.static(dist)` كان يخدمه علناً بلا مصادقة (وأيضاً `server.cjs` نفسه).
-// نمنع أي وصول HTTP لهذين الملفين تحديداً في جذر الأصول. لا يُحذف الملف من dist
-// (يبقى للتشخيص على القرص)، ولا يتأثر أي مسار آخر.
+// SEC-01 (جذر السبب): مجلد dist/dr-source يحوي حزمة المصدر الكاملة، والـ
+// `esbuild --sourcemap` يُنتج dist/server.cjs.map الذي يحمل `sourcesContent`
+// (الكود المصدري الأصلي كاملاً)، و`express.static(dist)` كان يخدم الاثنين علناً.
+// المشكلة الجذرية: أي مقارنة نصية على `req.path` الخام تفشل، لأن `express.static`
+// **يفكّ ترميز `%XX`** قبل خدمة الملف، فيتجاوز مسار مثل `/%64r-source/...` الحجب.
+// الحل: نطبّع المسار (فكّ ترميز متكرر + توحيد الفواصل + حلّ `.`/`..` + حالة موحّدة)
+// ثم نطابق على الصيغة المطبَّعة. المطابقة تصبح **مجموعة شاملة** لكل ما يمكن أن
+// يخدمه express.static (الذي يفكّ مرة واحدة فقط)، فتصمد أمام الترميز والأحرف
+// الكبيرة والترميز المزدوج ومحاولات الاجتياز. لا يُحذف أي ملف من dist، ويُبقى
+// الوصول الداخلي للحزمة كما هو (تُقرأ من نظام الملفات فقط لبناء نسخ DR).
+const BLOCKED_SOURCE_BUNDLE_SEGMENT = "/dr-source";
+const BLOCKED_DIST_SOURCE_PREFIX = "/dist/dr-source";
 const BLOCKED_DIST_FILES = new Set(["/server.cjs", "/server.cjs.map"]);
+/**
+ * يطبّع مسار الطلب إلى صيغة قانونية للمقارنة الأمنية. يفكّ الترميز بشكل متكرر
+ * (محدود) لكشف الترميز المزدوج، ويقبل الترميز الفاسد بلا انهيار (يعود لآخر قيمة
+ * سليمة)، ثم يوحّد الفواصل ويحلّ `.`/`..`/`//` ويوحّد حالة الأحرف.
+ */
+function canonicalRequestPath(rawPath: string): string {
+  let p = String(rawPath || "");
+  for (let i = 0; i < 5; i += 1) {
+    if (!/%[0-9a-fA-F]/.test(p)) break;
+    try {
+      const next = decodeURIComponent(p);
+      if (next === p) break;
+      p = next;
+    } catch {
+      break; // ترميز فاسد: نطابق على آخر قيمة سليمة بدل الانهيار.
+    }
+  }
+  p = p.split("?")[0].split("#")[0].replace(/\\/g, "/");
+  p = path.posix.normalize(p);
+  if (!p.startsWith("/")) p = `/${p}`;
+  return p.toLowerCase();
+}
+/** يحجب أي طلب يمكن أن يكشف حزمة المصدر أو حزمة الخادم أو خريطتها. */
+function isBlockedSourceRequest(rawPath: string): boolean {
+  const p = canonicalRequestPath(rawPath);
+  if (BLOCKED_DIST_FILES.has(p)) return true;
+  if (p === BLOCKED_SOURCE_BUNDLE_SEGMENT || p.endsWith(BLOCKED_SOURCE_BUNDLE_SEGMENT)) return true;
+  if (p.includes(`${BLOCKED_SOURCE_BUNDLE_SEGMENT}/`)) return true;
+  if (p === BLOCKED_DIST_SOURCE_PREFIX || p.startsWith(`${BLOCKED_DIST_SOURCE_PREFIX}/`)) return true;
+  // حزمة Node المبنية أو خريطتها في أي موضع (تحمل الكود المصدري؛ لا أصول عامة .cjs).
+  if (p.endsWith(".cjs") || p.endsWith(".cjs.map")) return true;
+  return false;
+}
 app.use((req, res, next) => {
-  const pathname = String(req.path || req.url || "").split("?")[0].toLowerCase();
-  if (pathname === BLOCKED_SOURCE_BUNDLE_PREFIX || pathname.startsWith(`${BLOCKED_SOURCE_BUNDLE_PREFIX}/`) || BLOCKED_DIST_FILES.has(pathname)) {
+  if (isBlockedSourceRequest(String(req.path || (req.url || "").split("?")[0] || ""))) {
     return res.status(404).json({
       success: false,
       error: "المسار غير موجود.",
