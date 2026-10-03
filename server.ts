@@ -32,7 +32,11 @@ import {
   summarizeTeamState,
   type TeamRunOptions,
 } from "./engine/brain/team/orchestrator";
-import { emptyTeamSessionState, type TeamSessionState } from "./engine/brain/team/types";
+import { emptyTeamSessionState, type TeamSessionState, type TeamSession } from "./engine/brain/team/types";
+import { composeBrainDecision, summarizeBrainDecision, type BrainDecision } from "./engine/brain/team/brainDecision";
+import { escalateBrainDecision, type BrainEscalationHook } from "./engine/brain/team/brainEscalation";
+import { isEscalationOpen, escalationReasonFor, type EscalationReason, type EscalationRecord } from "./engine/social/escalation";
+import { capabilityRow } from "./engine/brain/strategy/capabilityMatrix";
 import { buildUnifiedCommercialBrain } from "./engine/brain/commercial/unified";
 import { buildCatalogFromWorkspace } from "./engine/brain/sales/commercialRuntime";
 import { buildGrowthRuntime } from "./engine/brain/growth/runtime";
@@ -662,9 +666,9 @@ function loadPersistentState(snapshot?: any): any {
     if (!raw.schemaVersion) raw.schemaVersion = 1;
     const users = Array.isArray(raw.users) ? raw.users : [defaultOwner];
     if (!users.some((u: ServerUser) => u.id === "owner")) users.unshift(defaultOwner);
-    return { users, revokedSessions: Array.isArray(raw.revokedSessions) ? raw.revokedSessions : [], userRevocations: Array.isArray(raw.userRevocations) ? raw.userRevocations : [], audit: Array.isArray(raw.audit) ? raw.audit.slice(0, 200) : [], jobs: Array.isArray(raw.jobs) ? raw.jobs.slice(0, 200) : [], platformConnections: Array.isArray(raw.platformConnections) ? raw.platformConnections : [], workspace: raw.workspace && typeof raw.workspace === "object" ? { showroom: raw.workspace.showroom || {}, products: Array.isArray(raw.workspace.products) ? raw.workspace.products.slice(0, 1000) : [], posts: Array.isArray(raw.workspace.posts) ? raw.workspace.posts.slice(0, 1000) : [], conversations: Array.isArray(raw.workspace.conversations) ? raw.workspace.conversations.slice(0, 1000) : [], installmentPlans: Array.isArray(raw.workspace.installmentPlans) ? raw.workspace.installmentPlans.slice(0, 200) : [], leads: Array.isArray(raw.workspace.leads) ? raw.workspace.leads.slice(0, 2000) : [], tasks: Array.isArray(raw.workspace.tasks) ? raw.workspace.tasks.slice(0, 1000) : [], sales: Array.isArray(raw.workspace.sales) ? raw.workspace.sales.slice(0, 5000) : [], payments: Array.isArray(raw.workspace.payments) ? raw.workspace.payments.slice(0, 10000) : [], inventoryMovements: Array.isArray(raw.workspace.inventoryMovements) ? raw.workspace.inventoryMovements.slice(0, 20000) : [], suppliers: Array.isArray(raw.workspace.suppliers) ? raw.workspace.suppliers.slice(0, 1000) : [], purchases: Array.isArray(raw.workspace.purchases) ? raw.workspace.purchases.slice(0, 5000) : [], expenses: Array.isArray(raw.workspace.expenses) ? raw.workspace.expenses.slice(0, 10000) : [], contracts: Array.isArray(raw.workspace.contracts) ? raw.workspace.contracts.slice(0, 5000) : [], installmentSchedules: Array.isArray(raw.workspace.installmentSchedules) ? raw.workspace.installmentSchedules.slice(0, 20000) : [], notifications: Array.isArray(raw.workspace.notifications) ? raw.workspace.notifications.slice(0, 10000) : [], webhookEvents: Array.isArray(raw.workspace.webhookEvents) ? raw.workspace.webhookEvents.slice(0, 10000) : [], providerEvents: Array.isArray(raw.workspace.providerEvents) ? raw.workspace.providerEvents.slice(0, 10000) : [], marketingBriefs: Array.isArray(raw.workspace.marketingBriefs) ? raw.workspace.marketingBriefs.slice(0, 2000) : [], marketingCampaigns: Array.isArray(raw.workspace.marketingCampaigns) ? raw.workspace.marketingCampaigns.slice(0, 1000) : [], socialComments: Array.isArray(raw.workspace.socialComments) ? raw.workspace.socialComments.slice(0, 10000) : [], socialReplies: Array.isArray(raw.workspace.socialReplies) ? raw.workspace.socialReplies.slice(0, 5000) : [], socialApprovals: Array.isArray(raw.workspace.socialApprovals) ? raw.workspace.socialApprovals.slice(0, 5000) : [], publishRecords: Array.isArray(raw.workspace.publishRecords) ? raw.workspace.publishRecords.slice(0, 5000) : [], performanceRecords: Array.isArray(raw.workspace.performanceRecords) ? raw.workspace.performanceRecords.slice(0, 20000) : [], marketingDecisions: Array.isArray(raw.workspace.marketingDecisions) ? raw.workspace.marketingDecisions.slice(0, 2000) : [], strategiesTested: Array.isArray(raw.workspace.strategiesTested) ? raw.workspace.strategiesTested.slice(0, 2000) : [], telegramUpdateIds: Array.isArray(raw.workspace.telegramUpdateIds) ? raw.workspace.telegramUpdateIds.slice(0, 20000) : [], facebookEventIds: Array.isArray(raw.workspace.facebookEventIds) ? raw.workspace.facebookEventIds.slice(0, 20000) : [], instagramEventIds: Array.isArray(raw.workspace.instagramEventIds) ? raw.workspace.instagramEventIds.slice(0, 20000) : [], tiktokEventIds: Array.isArray(raw.workspace.tiktokEventIds) ? raw.workspace.tiktokEventIds.slice(0, 20000) : [], youtubeCommentIds: Array.isArray(raw.workspace.youtubeCommentIds) ? raw.workspace.youtubeCommentIds.slice(0, 20000) : [], youtubeOperationKeys: Array.isArray(raw.workspace.youtubeOperationKeys) ? raw.workspace.youtubeOperationKeys.slice(0, 20000) : [], providerTokens: raw.workspace.providerTokens && typeof raw.workspace.providerTokens === "object" ? raw.workspace.providerTokens : {} } : { showroom: {}, products: [], posts: [], conversations: [], installmentPlans: [], leads: [], tasks: [], sales: [], payments: [], inventoryMovements: [], suppliers: [], purchases: [], expenses: [], contracts: [], installmentSchedules: [], notifications: [], webhookEvents: [], providerEvents: [], marketingBriefs: [], marketingCampaigns: [], socialComments: [], socialReplies: [], socialApprovals: [], publishRecords: [], performanceRecords: [], marketingDecisions: [], strategiesTested: [], telegramUpdateIds: [], facebookEventIds: [], instagramEventIds: [], tiktokEventIds: [], youtubeCommentIds: [], youtubeOperationKeys: [], providerTokens: {} } };
+    return { users, revokedSessions: Array.isArray(raw.revokedSessions) ? raw.revokedSessions : [], userRevocations: Array.isArray(raw.userRevocations) ? raw.userRevocations : [], audit: Array.isArray(raw.audit) ? raw.audit.slice(0, 200) : [], jobs: Array.isArray(raw.jobs) ? raw.jobs.slice(0, 200) : [], platformConnections: Array.isArray(raw.platformConnections) ? raw.platformConnections : [], workspace: raw.workspace && typeof raw.workspace === "object" ? { showroom: raw.workspace.showroom || {}, products: Array.isArray(raw.workspace.products) ? raw.workspace.products.slice(0, 1000) : [], posts: Array.isArray(raw.workspace.posts) ? raw.workspace.posts.slice(0, 1000) : [], conversations: Array.isArray(raw.workspace.conversations) ? raw.workspace.conversations.slice(0, 1000) : [], installmentPlans: Array.isArray(raw.workspace.installmentPlans) ? raw.workspace.installmentPlans.slice(0, 200) : [], leads: Array.isArray(raw.workspace.leads) ? raw.workspace.leads.slice(0, 2000) : [], tasks: Array.isArray(raw.workspace.tasks) ? raw.workspace.tasks.slice(0, 1000) : [], sales: Array.isArray(raw.workspace.sales) ? raw.workspace.sales.slice(0, 5000) : [], payments: Array.isArray(raw.workspace.payments) ? raw.workspace.payments.slice(0, 10000) : [], inventoryMovements: Array.isArray(raw.workspace.inventoryMovements) ? raw.workspace.inventoryMovements.slice(0, 20000) : [], suppliers: Array.isArray(raw.workspace.suppliers) ? raw.workspace.suppliers.slice(0, 1000) : [], purchases: Array.isArray(raw.workspace.purchases) ? raw.workspace.purchases.slice(0, 5000) : [], expenses: Array.isArray(raw.workspace.expenses) ? raw.workspace.expenses.slice(0, 10000) : [], contracts: Array.isArray(raw.workspace.contracts) ? raw.workspace.contracts.slice(0, 5000) : [], installmentSchedules: Array.isArray(raw.workspace.installmentSchedules) ? raw.workspace.installmentSchedules.slice(0, 20000) : [], notifications: Array.isArray(raw.workspace.notifications) ? raw.workspace.notifications.slice(0, 10000) : [], webhookEvents: Array.isArray(raw.workspace.webhookEvents) ? raw.workspace.webhookEvents.slice(0, 10000) : [], providerEvents: Array.isArray(raw.workspace.providerEvents) ? raw.workspace.providerEvents.slice(0, 10000) : [], marketingBriefs: Array.isArray(raw.workspace.marketingBriefs) ? raw.workspace.marketingBriefs.slice(0, 2000) : [], marketingCampaigns: Array.isArray(raw.workspace.marketingCampaigns) ? raw.workspace.marketingCampaigns.slice(0, 1000) : [], socialComments: Array.isArray(raw.workspace.socialComments) ? raw.workspace.socialComments.slice(0, 10000) : [], socialReplies: Array.isArray(raw.workspace.socialReplies) ? raw.workspace.socialReplies.slice(0, 5000) : [], socialConversations: Array.isArray(raw.workspace.socialConversations) ? raw.workspace.socialConversations.slice(0, 500) : [], socialEscalations: Array.isArray(raw.workspace.socialEscalations) ? raw.workspace.socialEscalations.slice(0, 5000) : [], socialConversationStates: Array.isArray(raw.workspace.socialConversationStates) ? raw.workspace.socialConversationStates.slice(0, 500) : [], socialApprovals: Array.isArray(raw.workspace.socialApprovals) ? raw.workspace.socialApprovals.slice(0, 5000) : [], publishRecords: Array.isArray(raw.workspace.publishRecords) ? raw.workspace.publishRecords.slice(0, 5000) : [], performanceRecords: Array.isArray(raw.workspace.performanceRecords) ? raw.workspace.performanceRecords.slice(0, 20000) : [], marketingDecisions: Array.isArray(raw.workspace.marketingDecisions) ? raw.workspace.marketingDecisions.slice(0, 2000) : [], strategiesTested: Array.isArray(raw.workspace.strategiesTested) ? raw.workspace.strategiesTested.slice(0, 2000) : [], telegramUpdateIds: Array.isArray(raw.workspace.telegramUpdateIds) ? raw.workspace.telegramUpdateIds.slice(0, 20000) : [], facebookEventIds: Array.isArray(raw.workspace.facebookEventIds) ? raw.workspace.facebookEventIds.slice(0, 20000) : [], instagramEventIds: Array.isArray(raw.workspace.instagramEventIds) ? raw.workspace.instagramEventIds.slice(0, 20000) : [], tiktokEventIds: Array.isArray(raw.workspace.tiktokEventIds) ? raw.workspace.tiktokEventIds.slice(0, 20000) : [], youtubeCommentIds: Array.isArray(raw.workspace.youtubeCommentIds) ? raw.workspace.youtubeCommentIds.slice(0, 20000) : [], youtubeOperationKeys: Array.isArray(raw.workspace.youtubeOperationKeys) ? raw.workspace.youtubeOperationKeys.slice(0, 20000) : [], providerTokens: raw.workspace.providerTokens && typeof raw.workspace.providerTokens === "object" ? raw.workspace.providerTokens : {} } : { showroom: {}, products: [], posts: [], conversations: [], installmentPlans: [], leads: [], tasks: [], sales: [], payments: [], inventoryMovements: [], suppliers: [], purchases: [], expenses: [], contracts: [], installmentSchedules: [], notifications: [], webhookEvents: [], providerEvents: [], marketingBriefs: [], marketingCampaigns: [], socialComments: [], socialReplies: [], socialConversations: [], socialEscalations: [], socialConversationStates: [], socialApprovals: [], publishRecords: [], performanceRecords: [], marketingDecisions: [], strategiesTested: [], telegramUpdateIds: [], facebookEventIds: [], instagramEventIds: [], tiktokEventIds: [], youtubeCommentIds: [], youtubeOperationKeys: [], providerTokens: {} } };
   } catch {
-    return { users: [defaultOwner], revokedSessions: [], userRevocations: [], audit: [], jobs: [], workspace: { showroom: {}, products: [], posts: [], conversations: [], installmentPlans: [], leads: [], tasks: [], sales: [], payments: [], inventoryMovements: [], suppliers: [], purchases: [], expenses: [], contracts: [], installmentSchedules: [], notifications: [], webhookEvents: [], providerEvents: [], marketingBriefs: [], marketingCampaigns: [], socialComments: [], socialReplies: [], socialApprovals: [], publishRecords: [], performanceRecords: [], marketingDecisions: [], strategiesTested: [], telegramUpdateIds: [], providerTokens: {} } };
+    return { users: [defaultOwner], revokedSessions: [], userRevocations: [], audit: [], jobs: [], workspace: { showroom: {}, products: [], posts: [], conversations: [], installmentPlans: [], leads: [], tasks: [], sales: [], payments: [], inventoryMovements: [], suppliers: [], purchases: [], expenses: [], contracts: [], installmentSchedules: [], notifications: [], webhookEvents: [], providerEvents: [], marketingBriefs: [], marketingCampaigns: [], socialComments: [], socialReplies: [], socialConversations: [], socialEscalations: [], socialConversationStates: [], socialApprovals: [], publishRecords: [], performanceRecords: [], marketingDecisions: [], strategiesTested: [], telegramUpdateIds: [], providerTokens: {} } };
   }
 }
 
@@ -721,7 +725,7 @@ for (const key of ["telegramUpdateIds","facebookEventIds","instagramEventIds","t
 if (!(workspace as any).providerTokens || typeof (workspace as any).providerTokens !== "object") (workspace as any).providerTokens = {};
 // سجلات مدير السوشيال ميديا: تعليقات، ردود، نتائج نشر، وقرارات تسويقية.
 // كلها سجلات تشغيلية حقيقية تُبنى من عمليات فعلية فقط.
-for (const key of ["socialComments","socialReplies","socialApprovals","publishRecords","marketingDecisions","strategiesTested","performanceRecords"]) if (!Array.isArray((workspace as any)[key])) (workspace as any)[key] = [];
+for (const key of ["socialComments","socialReplies","socialConversations","socialEscalations","socialConversationStates","socialApprovals","publishRecords","marketingDecisions","strategiesTested","performanceRecords"]) if (!Array.isArray((workspace as any)[key])) (workspace as any)[key] = [];
 
 // Migration guard: a post is never considered externally published merely because
 // an old/local record said so. Until a real provider execution receipt exists,
@@ -1444,6 +1448,17 @@ function loginConfigIdFor(platform: string): string | null { return resolveLogin
  */
 function metaScopeWithoutConfigOverride(): boolean {
   const raw = String(process.env.META_ALLOW_SCOPE_WITHOUT_CONFIG ?? "").trim().toLowerCase();
+  return raw === "true" || raw === "1" || raw === "on" || raw === "yes";
+}
+/**
+ * نطاق المشروع المعلن: السوشيال + AI + التسويق (Growth/Marketing). أسطح العقل
+ * التجاري/Sales/ERP (العقل التجاري الموحّد، عقل التسويق-الطلب، المبيعات الرقمية)
+ * **خارج النطاق المعلن**، فتُعزل خلف هذا المفتاح الصريح: تُعطَّل افتراضياً برد
+ * **404 صريح** (لا 200 HTML)، وتُعاد عند الحاجة بضبط `GHARABI_ENABLE_COMMERCIAL_SALES_SCOPE`.
+ * لا يُزال أي كود ولا اختبار: المشترك (مسارات الذاكرة/العقل canonical/المتجر) لا يُمسّ.
+ */
+function commercialSalesScopeEnabled(): boolean {
+  const raw = String(process.env.GHARABI_ENABLE_COMMERCIAL_SALES_SCOPE ?? "").trim().toLowerCase();
   return raw === "true" || raw === "1" || raw === "on" || raw === "yes";
 }
 /**
@@ -5513,11 +5528,19 @@ async function runYouTubeWatcherCycle(trigger: "schedule" | "manual" = "schedule
       // بلا تنفيذ خارجي). تُشغَّل هنا داخل دورة المراقبة الدائمة. أي فشل لا يُسقط
       // الدورة (جلسة الفريق لا ترمي)، والقرار يُكتب في نفس ذاكرة العقل القائمة.
       try {
+        const preCls = classifyComment(String(c.text || ""));
+        // سبب التصعيد من التصنيف الحتمي الحقيقي (بلا اختراع)؛ سؤال السعر يُصعَّد فقط
+        // إن لم تتوفر معلومة موثّقة (نفس قاعدة مسار السوشيال).
+        const preReason = escalationReasonFor({
+          intent: preCls.intent, isSpam: preCls.isSpam,
+          requiresHumanReview: preCls.requiresHumanReview, topic: (preCls as any).topic ?? null,
+        });
         await runTeamSessionNow(
           "youtube_event",
           `تحليل تعليق YouTube جديد والبتّ في الرد عليه من الحقائق المسجّلة (بلا اختراع)`,
           "youtube",
           `comment:${String(c.commentId)}`,
+          { externalId: String(c.commentId), commentText: String(c.text || ""), objective: "البتّ في رد آمن على تعليق YouTube من الحقائق المسجّلة", conversationId: `youtube::${String(c.videoId || 'thread')}`, escalationReason: preReason },
         );
       } catch { /* جلسة الفريق لا تُسقط دورة المراقبة */ }
       const cls = classifyComment(String(c.text || ""));
@@ -9311,7 +9334,7 @@ function normalizeTeamSessionState(raw: any): TeamSessionState {
   const valid = sessions.filter((s: any) =>
     s && typeof s.teamSessionId === 'string' && typeof s.task === 'string' && typeof s.dedupeKey === 'string'
     && Array.isArray(s.participants) && ['completed', 'partial', 'failed'].includes(s.status),
-  );
+  ).map((s: any) => ({ ...s, brainDecision: s.brainDecision ?? null }));
   return { sessions: valid.slice(-2000) };
 }
 
@@ -9344,11 +9367,87 @@ function teamContext(task: string, platform: PlatformId) {
   };
 }
 
+/** قائمة سجلات التصعيد البشري القائمة (نفس المخزن في مساحة العمل). */
+function socialEscalationsList(): EscalationRecord[] {
+  if (!Array.isArray((workspace as any).socialEscalations)) (workspace as any).socialEscalations = [];
+  return (workspace as any).socialEscalations as EscalationRecord[];
+}
+
+/** يسجّل تصعيداً بشرياً في **نفس** المخزن القائم ويثبّته (بلا نظام ثانٍ). */
+function socialRecordEscalation(record: EscalationRecord): void {
+  const list = socialEscalationsList();
+  // منع التكرار لنفس التعليق الخارجي ما دام مفتوحاً (نفس قاعدة مسار السوشيال).
+  if (record.externalId && list.some((r) => r.externalId === record.externalId && isEscalationOpen(r))) return;
+  list.unshift(record);
+  if (list.length > 5000) list.length = 5000;
+  persistState();
+}
+
+/** مُبلِّغ التصعيد للقرارات العقلية — نفس بنية التنبيه القائمة (`pushNotification`). */
+function brainEscalationNotifier() {
+  return (record: any) => {
+    try {
+      const n = pushNotification(
+        'owner',
+        'brain_escalation',
+        `تصعيد العقل المركزي: ${record?.reasonLabelAr || record?.reason || 'حالة تحتاج مراجعة'}`,
+        `منصة ${record?.platform || 'غير معروفة'} — ${String(record?.commentText || '').slice(0, 200)}`,
+        'warning',
+      );
+      return { delivered: Boolean(n?.id), channel: 'in_app_notification', error: n?.id ? null : 'notification_not_created' };
+    } catch (e) {
+      return { delivered: false, channel: null, error: e instanceof Error ? e.name : 'notifier_failed' };
+    }
+  };
+}
+
+/**
+ * يشتقّ سبب التصعيد البشري من مخرجات الجلسة الحقيقية (بلا اختراع): السعر غير
+ * الموثّق / الشكوى / الحساس يُشتقّان من مخرجات الاستراتيجية والنقد؛ وغير ذلك
+ * يبقى `manual` عند التصعيد فقط.
+ */
+function brainEscalationReasonFor(session: TeamSession): EscalationReason | null {
+  const texts = [...session.recommendations, ...session.analyses, ...session.objections].map((o) => o.statement).join(' ');
+  if (/شكوى|complaint/i.test(texts)) return 'complaint';
+  if (/حسّاس|sensitive|قانوني/i.test(texts)) return 'sensitive';
+  if (/سعر|قسط|price/i.test(session.task) || /سعر غير موثّق|price_unverified/i.test(texts)) return 'price_unverified';
+  return 'manual';
+}
+
+/** ملخّص آخر قرار للعقل المركزي (بلا سرّ) — للحالة/الجاهزية. */
+function lastBrainDecision(): BrainDecision | null {
+  for (let i = teamSessionState.sessions.length - 1; i >= 0; i -= 1) {
+    const bd = teamSessionState.sessions[i].brainDecision;
+    if (bd) return bd;
+  }
+  return null;
+}
+
+/** كتلة صحة قرار العقل المركزي (بلا أي سرّ): الحالة النهائية + الحوكمة + الهرمية. */
+function brainDecisionHealthBlock() {
+  const bd = lastBrainDecision();
+  const s = summarizeBrainDecision(bd);
+  return {
+    ...s,
+    lastDecisionAt: bd?.timestamp ?? null,
+    lastFinalStatusLabelAr: bd?.finalStatusLabelAr ?? null,
+    hierarchy: 'CENTRAL_BRAIN > AGENT_COUNCIL(6) > GOVERNANCE > ACTION_OR_ESCALATION',
+    executesExternalActions: false,
+    note: 'العقل المركزي فوق الوكلاء الستة: يقرّر ويمرّر عبر الحوكمة؛ الوكلاء مستشارون فقط ولا ينفّذون.',
+  };
+}
+
 /**
  * يشغّل جلسة فريق على سياق حقيقي، يحفظها (بلا تكرار)، ويكتب قرارها في ذاكرة العقل
  * القائمة عند استيفاء قواعد الصدق. لا ينفّذ أي إجراء خارجي. لا يرمي.
  */
-async function runTeamSessionNow(trigger: TeamRunOptions['trigger'], task: string, platform: PlatformId, eventIdentity: string) {
+async function runTeamSessionNow(
+  trigger: TeamRunOptions['trigger'],
+  task: string,
+  platform: PlatformId,
+  eventIdentity: string,
+  meta: { externalId?: string | null; commentText?: string; objective?: string; conversationId?: string | null; escalationReason?: EscalationReason | null } = {},
+) {
   const nowMs = Date.now();
   const dedupe = `team:${platform}:${String(eventIdentity).trim().toLowerCase().slice(0, 200)}:${String(task).trim().toLowerCase().replace(/\s+/g, ' ').slice(0, 200)}`;
   const existing = teamSessionState.sessions.find((s) => s.dedupeKey === dedupe) || null;
@@ -9359,10 +9458,54 @@ async function runTeamSessionNow(trigger: TeamRunOptions['trigger'], task: strin
     existing,
     now: nowMs,
   });
-  // إعادة جلسة موجودة (منع تكرار) => لا عمل مكرر ولا كتابة ذاكرة مكررة.
+  // إعادة جلسة موجودة (منع تكرار) => لا عمل مكرر ولا كتابة ذاكرة/قرار/تصعيد مكرر.
   if (existing && existing.teamSessionId === session.teamSessionId) {
-    return { session, memoryWritten: existing.memoryWritten, persistenceError: existing.persistence.error };
+    return { session, memoryWritten: existing.memoryWritten, persistenceError: existing.persistence.error, brainDecision: existing.brainDecision };
   }
+
+  // ---- العقل المركزي: يكوّن قراره المحكوم من مخرجات الوكلاء (Batch 6) ----
+  // الوكلاء اقترحوا؛ العقل يقرّر ويمرّر عبر الحوكمة ويحدّد الحالة النهائية.
+  const conn = platformConnections.get(platform);
+  const providerVerified = Boolean(conn && conn.status === 'connected' && conn.providerVerified);
+  const replyCapable = capabilityRow(platform as any).states.reply === 'AVAILABLE';
+  const publishCapable = capabilityRow(platform as any).states.publish === 'AVAILABLE';
+  // موافقة/تفويض المالك للإجراء الخارجي: تفويض تشغيل YouTube الفعّال (نفس بوابة
+  // التنفيذ) — ولا يُعمَّم على منصة أخرى (التفويض خاص بـYouTube دائماً).
+  const externalApproved = platform === 'youtube'
+    && youtubeDelegationCheck('system', { toolId: 'youtube_reply', args: {} }).allowed === true;
+  const externalId = meta.externalId ?? (eventIdentity.startsWith('comment:') ? eventIdentity.slice('comment:'.length) : eventIdentity);
+  const escalationReason = meta.escalationReason ?? brainEscalationReasonFor(session);
+  const activeMemory = brainMemoryStore.records.filter((r) => r.status === 'active' && !r.stale).length;
+  const decision = composeBrainDecision({
+    session,
+    platform,
+    eventIdentity,
+    objective: meta.objective || task,
+    context: { conversationId: meta.conversationId ?? null, sessionMessages: brainRuntimeComments().filter((c) => c.platform === platform).length, memoryActive: activeMemory },
+    capabilities: { replyCapable, publishCapable },
+    providerVerified,
+    externalApproved,
+    escalationReason,
+    now: nowMs,
+  });
+  session.brainDecision = decision;
+  session.updatedAt = new Date(nowMs).toISOString();
+
+  // التصعيد البشري: يُسجَّل في **نفس** نظام التصعيد القائم عند استحقاقه فقط.
+  const escalation = escalateBrainDecision(
+    decision,
+    { externalId: externalId || null, commentText: meta.commentText || session.task, nowIso: session.updatedAt, notifier: brainEscalationNotifier() },
+    {
+      list: () => socialEscalationsList(),
+      record: (rec) => socialRecordEscalation(rec),
+      newId: () => workspaceId('escalation'),
+    } as any,
+  );
+
+  // سلسلة التدقيق: EVENT → … → GOVERNANCE → OUTCOME (بلا أي سرّ).
+  audit('system', 'brain_decision',
+    `${decision.finalStatus} · ${decision.governance.code} · ${platform}:${externalId || 'na'} · وكلاء=${decision.consultedAgents.length} · خلاف=${decision.disagreements.length}${escalation.created ? ' · تصعيد=' + (escalation.reason || 'na') : ''}`);
+
   const up = upsertTeamSession(teamSessionState, session);
   teamSessionState = up.state;
   // قرار الجلسة => ذاكرة العقل القائمة (بلا نظام ثانٍ) عند استيفاء قواعد الصدق.
@@ -9384,7 +9527,7 @@ async function runTeamSessionNow(trigger: TeamRunOptions['trigger'], task: strin
   const up2 = upsertTeamSession(teamSessionState, session);
   teamSessionState = up2.state;
   persistTeamSessions();
-  return { session, memoryWritten, persistenceError: memoryError ?? session.persistence.error };
+  return { session, memoryWritten, persistenceError: memoryError ?? session.persistence.error, brainDecision: decision };
 }
 
 // -----------------------------------------------------------------------------
@@ -9646,6 +9789,11 @@ function buildPersistedState() {
       // سجلات مدير السوشيال ميديا: بدونها لا تصمد حماية replay/duplicate بعد restart.
       socialComments: (workspace as any).socialComments.slice(0, 10000),
       socialReplies: (workspace as any).socialReplies.slice(0, 5000), socialApprovals: (workspace as any).socialApprovals.slice(0, 5000), publishRecords: (workspace as any).publishRecords.slice(0, 5000), performanceRecords: (workspace as any).performanceRecords.slice(0, 20000), marketingDecisions: (workspace as any).marketingDecisions.slice(0, 2000), strategiesTested: (workspace as any).strategiesTested.slice(0, 2000),
+      // نوافذ المحادثة قصيرة المدى (منصة+خيط): تصمد بعد restart وتُغذّي عزل السياق.
+      socialConversations: ((workspace as any).socialConversations || []).slice(0, 500),
+      // تصعيدات بشرية ودورة حياة المحادثات: تصمد بعد restart (تمنع إغلاقاً مع تصعيد معلّق).
+      socialEscalations: ((workspace as any).socialEscalations || []).slice(0, 5000),
+      socialConversationStates: ((workspace as any).socialConversationStates || []).slice(0, 500),
       // معرّفات تحديثات Telegram لصمود منع التكرار بعد restart (يمنع إعادة معالجة رسالة).
       telegramUpdateIds: ((workspace as any).telegramUpdateIds || []).slice(0, 20000),
       // معرّفات أحداث Facebook الواردة لصمود منع التكرار بعد restart.
@@ -10154,6 +10302,7 @@ app.get("/api/readiness", (_req, res) => {
           geminiUsedOnSessions: false,
           note: 'فريق وكلاء داخلي: قرار مقترح فقط؛ لا تنفيذ خارجي.',
         },
+        brainDecision: brainDecisionHealthBlock(),
       };
     })(),
     timestamp: new Date().toISOString(),
@@ -10573,6 +10722,7 @@ app.get("/api/health", (_req, res) => {
       agents: ['orchestrator', 'research', 'analysis', 'strategy', 'critic', 'decision'],
       note: 'فريق وكلاء داخلي: رصد/تحليل/تحقق/قرار مقترح فقط — لا تنفيذ خارجي ولا استهلاك AI.',
     },
+    brainDecision: brainDecisionHealthBlock(),
     // طابور المحتوى (نشر/جدولة/مراجعة): ملخص حقيقي بلا أي سرّ.
     youtubeContent: { summary: contentQueueSummary(), mediaStored: contentMedia.size, mediaTotalBytes: contentMediaTotalBytes },
     // حالة موصل TikTok الحقيقي (منطقي فقط بلا أي سرّ أو رمز).
@@ -10647,6 +10797,9 @@ app.get("/api/health", (_req, res) => {
     // العقل التجاري المركزي الموحّد (الدفعة 4): غاية عليا + إصدار الذكاء + عدّ القدرات.
     // بلا أي سرّ وبلا بيانات عملاء — ملخّص فقط.
     commercialBrain: (() => {
+      // SCOPE CLEANUP: خارج النطاق المعلن ⇒ لا نبني العقل التجاري ولا نعرض ملخّصاً
+      // يوهم بأنه مُفعَّل. يُعلَن التعطيل صراحةً.
+      if (!commercialSalesScopeEnabled()) return { enabled: false, scopeDisabled: true, externalExecution: false };
       try {
         const raw = unifiedCommercialRaw();
         const nowMs = Date.now();
@@ -12385,6 +12538,22 @@ registerSocialManagerRoutes(app, {
   // المصدر الوحيد للحقيقة للقرار/الذاكرة: الحالة canonical للعقل المركزي.
   // مسارات /api/social/manager/{brain/decision,memory} إسقاط توافقي منها فقط.
   centralBrainState: () => buildRuntimeBrain({ ...brainRuntimeInput(), now: Date.now() }).state,
+  // مُبلِّغ التصعيد البشري: يُعيد استخدام بنية التنبيه القائمة (`pushNotification`).
+  // لا يدّعي الإشعار إن لم يُنشأ التنبيه فعلاً؛ والفشل يُعلَن بسببه بلا سرّ.
+  notifyEscalation: (record: any) => {
+    try {
+      const n = pushNotification(
+        "owner",
+        "social_escalation",
+        `تصعيد بشري: ${record?.reasonLabelAr || record?.reason || "حالة تحتاج مراجعة"}`,
+        `منصة ${record?.platform || "غير معروفة"} — ${String(record?.commentText || "").slice(0, 200)}`,
+        "warning",
+      );
+      return { delivered: Boolean(n?.id), channel: "in_app_notification", error: n?.id ? null : "notification_not_created" };
+    } catch (e) {
+      return { delivered: false, channel: null, error: e instanceof Error ? e.name : "notifier_failed" };
+    }
+  },
 });
 
 // العقل المركزي: يُربط بمنفّذ التنفيذ الخارجي الفعلي (نفس بوابات النشر) وبسياق
@@ -12446,6 +12615,24 @@ registerBrainRoutes(app, {
 // مسارات العقل التجاري (Sales & Growth) — قراءة فقط من بيانات المعرض الحقيقية.
 // لا تنفيذ: تعرض ما يعرفه العقل عن المنتجات والطلب والفرص ومسار العملاء والمبيعات
 // الموثّقة. الحالة الكاملة للمالك فقط (تحتوي بيانات عملاء)، والملخّص لأي مستخدم مصرّح.
+// SCOPE CLEANUP: هذه الأسطح (Sales/Growth/Digital/Unified Commercial) **خارج نطاق
+// المشروع المعلن** (سوشيال + AI + تسويق). تُعطَّل افتراضياً برد 404 صريح، وتُعاد
+// بالكامل بضبط GHARABI_ENABLE_COMMERCIAL_SALES_SCOPE=true. لا يُزال كود/اختبار.
+const COMMERCIAL_SALES_ROUTE_PREFIXES = [
+  "/api/agent/brain/sales",
+  "/api/agent/brain/growth",
+  "/api/agent/brain/commercial",
+] as const;
+if (!commercialSalesScopeEnabled()) {
+  app.use(COMMERCIAL_SALES_ROUTE_PREFIXES as unknown as string[], (_req, res) => {
+    res.status(404).json({
+      success: false,
+      error: "هذا السطح (العقل التجاري/المبيعات) خارج نطاق المشروع المعلن (سوشيال + AI + تسويق).",
+      code: "SCOPE_DISABLED",
+      note: "لإعادة التفعيل: GHARABI_ENABLE_COMMERCIAL_SALES_SCOPE=true. لا يُزال الكود ولا البيانات.",
+    });
+  });
+}
 registerCommercialRoutes(app, {
   authenticateToken,
   requireOwner,

@@ -3753,3 +3753,42 @@ final-audit الـ27 الجديدة (`digital-sales-*`، **1124 إجمالاً**
 **لم يُمسّ:** الدفعات 1–5 (العقل التجاري/التسويق/الرقمي/الموحّد/وقت التشغيل)، Gemini/firewall،
 OAuth/الاعتمادات/الأسرار، المصادقة، قاعدة البيانات، DR/الاستعادة، YouTube (المراقب/الطابور/
 التفويض)، بقية المنصات، ونموذج الجدولة.
+
+## Batch 6 — قرار العقل المركزي المحكوم + تكامل فريق الوكلاء (2026-10-02)
+
+الفصل الجوهري الملزم: **العقل المركزي ≠ الوكلاء الستة**. الوكلاء ينتجون مخرجات استشارية
+فقط (`TeamSession`)، والعقل المركزي هو سلطة القرار: يجمع الأدلة ← يعرض الخلافات ← يطبّق
+النقد ← **يمرّر القرار على الحوكمة** ← يحدّد الحالة النهائية. العقل **يوجّه فقط**، والتنفيذ
+عبر بوابات المشروع القائمة — لا تنفيذ خارجي من العقل.
+
+**الفجوات المُثبتة بالفحص:** لا كائن قرار محكوم للعقل؛ مُبلِّغ التصعيد غير محقون في الخادم؛
+لا سجل تدقيق لقرار العقل؛ الواجهة لا تعرض الهرمية/الحوكمة. الوحدات القائمة (permissions/
+truth/agents/critic/escalation/governanceGuard/lifecycle/contextIsolation/memorySeparation)
+موجودة وموصولة سابقاً ولم تُعَد كتابتها.
+
+**الجديد (`engine/brain/team/`):**
+- `brainDecision.ts`: `composeBrainDecision` (منطق صافٍ) يمتد نموذج الجلسة؛ الحالات النهائية
+  الخمس `ALLOWED_ACTION`/`APPROVAL_REQUIRED`/`HUMAN_ESCALATION`/`NO_ACTION`/`FAILED_SAFE`؛
+  سلسلة التتبّع EVENT→CONTEXT→AGENTS→OUTPUTS→CRITIC→DECISION→GOVERNANCE→OUTCOME.
+- `brainEscalation.ts`: يستخدم `createEscalationRecord` القائم ويكتب في **نفس**
+  `workspace.socialEscalations` (لا نظام ثانٍ)، يمنع التكرار، ولا يدّعي إشعاراً بلا مُبلِّغ ناجح.
+- `types.ts`: `TeamSession.brainDecision`؛ `orchestrator.ts` يُهيّئه `null`.
+
+**قواعد الحسم:** لا قرار/جلسة فاشلة ⇒ FAILED_SAFE؛ حسّاس (سعر غير موثّق/شكوى) ⇒ HUMAN_ESCALATION؛
+ادعاء غير مثبت ⇒ FAILED_SAFE؛ إجراء خارجي بلا تفويض ⇒ APPROVAL_REQUIRED؛ بلا دليل ⇒ NO_ACTION؛
+وإلا ALLOWED_ACTION.
+
+**الخادم:** `runTeamSessionNow` يمرّر مخرج الوكلاء على `composeBrainDecision` (قدرة `capabilityRow`
++ اتصال موثق + تفويض YouTube الفعّال لـYouTube فقط)، ثم `escalateBrainDecision` (سبب من
+`escalationReasonFor` الحقيقي)، ثم `audit('system','brain_decision',…)`. `/api/health` و
+`/api/readiness` يعرضان `brainDecision` بلا سرّ.
+
+**الواجهة (`AgentTeamCenter`):** هرمية العقل المركزي ← الوكلاء الستة ← الحوكمة، ولوحة قرار
+العقل المحكوم (الحالة/الحوكمة/الإجراء/التصعيد/الخلافات/مرجع التتبّع).
+
+اختبارات: `engine/tests/brain/brain.decision.test.ts` (`npm run test:brain-decision`، 37 فحصاً)
+و`team.council.youtube.test.ts` = 41 فحصاً (مجموعة «central brain governed decision»). فحوص
+final-audit الجديدة `brain-decision-*` (**1253 إجمالاً**). `lint`+`build`+`test`(EXIT=0)+`final-audit` ناجحة.
+
+**لم يُمسّ:** Gemini/firewall، OAuth/الاعتمادات/الأسرار، المصادقة، قاعدة البيانات، DR، YouTube
+(المراقب/الطابور/التفويض)، بقية المنصات، ونموذج الجدولة. لا تنفيذ خارجي أُضيف.

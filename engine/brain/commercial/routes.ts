@@ -23,6 +23,7 @@ import { CHANGE_PIPELINE_LABELS_AR } from './governance';
 import { COMMERCIAL_MEMORY_LABELS_AR } from './commercialMemory';
 import { OPERATING_LOOP_LABELS_AR, FINAL_COMMERCIAL_QUESTIONS, advanceOperatingLoop } from './operatingLoop';
 import { IMPROVEMENT_DOMAIN_LABELS_AR, ACTION_TYPE_LABELS_AR, AUTONOMY_TIER_LABELS_AR } from './governance';
+import { AGENT_GOVERNANCE_PRINCIPLES_AR, evaluateGovernance, type GovernanceRequest } from '../../agent/governanceGuard';
 
 export interface CommercialRoutesDeps {
   authenticateToken: express.RequestHandler;
@@ -142,5 +143,25 @@ export function registerCommercialBrainRoutes(app: express.Express, deps: Commer
     const r = build();
     const state = advanceOperatingLoop({ completed: ['OBSERVE', 'UNDERSTAND', 'VERIFY', 'RESEARCH', 'IDENTIFY_OPPORTUNITY', 'PRIORITIZE', 'HYPOTHESIS', 'PLAN', 'PREPARE'] });
     res.json({ success: true, generatedAt: r.generatedAt, operatingLoop: state, questions: FINAL_COMMERCIAL_QUESTIONS, labels: OPERATING_LOOP_LABELS_AR, note: 'لا تقدّم إلى تنفيذ/تحسين بلا اعتماد المالك.' });
+  });
+
+  // حوكمة الوكلاء — للمالك: المبادئ + عرض حيّ لقرار الحوكمة على سيناريوهات صريحة.
+  // **تشخيص قراءة فقط**: لا يُنفَّذ أي إجراء، بل يُعلن القرار والكود والسبب لكل حالة.
+  app.get('/api/agent/brain/commercial/governance', deps.authenticateToken, deps.requireOwner, (_req, res) => {
+    const sample = (req: GovernanceRequest) => ({ request: req, decision: evaluateGovernance(req) });
+    res.json({
+      success: true,
+      principles: AGENT_GOVERNANCE_PRINCIPLES_AR,
+      // سيناريوهات مرجعية تثبت الفصل: تنفيذ صامت ممنوع، ادّعاء غير مثبت ممنوع، حساس يحتاج بشراً.
+      samples: {
+        ownerExternalApproved: sample({ operator: 'owner', permission: 'EXTERNAL_ACTION', externalAction: true, approved: true, claimVerified: true, sensitive: false }),
+        ownerExternalUnapproved: sample({ operator: 'owner', permission: 'EXTERNAL_ACTION', externalAction: true, approved: false, claimVerified: true, sensitive: false }),
+        staffWrite: sample({ operator: 'staff', permission: 'WRITE', externalAction: false, approved: false, claimVerified: true, sensitive: false }),
+        unverifiedClaim: sample({ operator: 'owner', permission: 'READ', externalAction: false, approved: true, claimVerified: false, sensitive: false }),
+        sensitiveAction: sample({ operator: 'owner', permission: 'SENSITIVE', externalAction: false, approved: true, claimVerified: true, sensitive: true }),
+        systemExternalUnapproved: sample({ operator: 'system', permission: 'EXTERNAL_ACTION', externalAction: true, approved: false, claimVerified: true, sensitive: false }),
+      },
+      note: 'قرار الحوكمة تشخيصي: لا يُنفَّذ إجراء خارجي بلا تفويض صريح، ولا إجراء حسّاس بلا بشر.',
+    });
   });
 }

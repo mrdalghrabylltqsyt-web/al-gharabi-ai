@@ -27,11 +27,23 @@ interface TeamSessionFull {
   confidence: string; truthState: string; status: string; createdAt: string;
   memoryWritten: boolean; criticRejections: number; criticRan: boolean; criticFailed: boolean;
   persistence: { ok: boolean; error: string | null }; failedAgents: number;
+  brainDecision: {
+    decisionId: string; eventIdentity: string; finalStatus: string; finalStatusLabelAr: string;
+    objective: string; proposedAction: { kind: string; description: string; targetPlatform: string };
+    requiredPermission: string;
+    governance: { allowed: boolean; code: string; reasonAr: string; requiresApproval: boolean; requiresHuman: boolean };
+    escalation: { required: boolean; reason: string | null; reasonLabelAr: string | null };
+    disagreements: { between: string[]; statement: string; resolved: boolean; reason: string }[];
+    criticFindings: string[];
+    uncertainty: { truthState: string; confidence: string; limitations: string[] };
+    consultedAgents: string[]; evidence: string[]; auditRef: string; notes: string[];
+  } | null;
 }
 interface TeamListRow {
   teamSessionId: string; task: string; trigger: string; source: string; status: string;
   participants: string[]; truthState: string; confidence: string; conflicts: number;
   criticFailed: boolean; verified: boolean; memoryWritten: boolean; createdAt: string;
+  brainFinalStatus?: string | null; brainFinalStatusLabelAr?: string | null;
 }
 
 const TRUTH_STYLE: Record<string, { label: string; cls: string }> = {
@@ -44,6 +56,17 @@ const TRUTH_STYLE: Record<string, { label: string; cls: string }> = {
 const AGENT_LABEL: Record<string, string> = {
   orchestrator: 'المنسّق', research: 'البحث', analysis: 'التحليل',
   strategy: 'الاستراتيجية', critic: 'النقد', decision: 'القرار',
+};
+const BRAIN_STATUS_STYLE: Record<string, { label: string; cls: string }> = {
+  ALLOWED_ACTION: { label: 'إجراء مسموح (عبر البوابة)', cls: 'bg-emerald-900/40 text-emerald-300 border-emerald-700' },
+  APPROVAL_REQUIRED: { label: 'يتطلب موافقة المالك', cls: 'bg-sky-900/40 text-sky-300 border-sky-700' },
+  HUMAN_ESCALATION: { label: 'تصعيد بشري', cls: 'bg-amber-900/40 text-amber-300 border-amber-700' },
+  NO_ACTION: { label: 'لا إجراء (آمن)', cls: 'bg-slate-800 text-slate-300 border-slate-600' },
+  FAILED_SAFE: { label: 'توقف آمن', cls: 'bg-rose-900/40 text-rose-300 border-rose-700' },
+};
+const GOV_CODE_LABEL: Record<string, string> = {
+  ALLOWED: 'مسموح', PERMISSION_DENIED: 'صلاحية مرفوضة', APPROVAL_REQUIRED: 'موافقة مطلوبة',
+  UNVERIFIED_CLAIM: 'ادعاء غير مثبت', SENSITIVE_HUMAN_REQUIRED: 'حسّاس — بشر مطلوب',
 };
 
 function TruthBadge({ state }: { state: string }) {
@@ -129,8 +152,9 @@ export default function AgentTeamCenter() {
           <div>
             <h2 className="text-lg font-bold text-slate-100">مركز فريق الوكلاء</h2>
             <p className="text-xs text-slate-400 mt-1">
-              فريق تفكير داخلي ينسّقه العقل المركزي: بحث → تحليل → استراتيجية → نقد → قرار.
-              قرار مقترح فقط — لا نشر ولا رد ولا جدولة.
+              <span className="text-indigo-300 font-semibold">العقل المركزي</span> ← فريق الوكلاء الستة
+              (بحث → تحليل → استراتيجية → نقد → قرار) ← <span className="text-indigo-300 font-semibold">الحوكمة</span>.
+              العقل يقرّر ويمرّر عبر الحوكمة؛ الوكلاء مستشارون فقط — لا نشر ولا رد ولا جدولة.
             </p>
           </div>
           <div className="flex gap-2">
@@ -178,6 +202,11 @@ export default function AgentTeamCenter() {
                 <div className="text-[11px] text-slate-300 line-clamp-2">{s.task}</div>
                 <div className="text-[10px] text-slate-500 mt-1">
                   {s.status} · ثقة {s.confidence} · خلافات {s.conflicts}
+                  {s.brainFinalStatus && (
+                    <> · <span className={`px-1 rounded ${(BRAIN_STATUS_STYLE[s.brainFinalStatus] || BRAIN_STATUS_STYLE.FAILED_SAFE).cls}`}>
+                      {(BRAIN_STATUS_STYLE[s.brainFinalStatus] || BRAIN_STATUS_STYLE.FAILED_SAFE).label}
+                    </span></>
+                  )}
                 </div>
               </button>
             ))}
@@ -199,6 +228,33 @@ export default function AgentTeamCenter() {
                 الوكلاء: {selected.participants.map((p) => AGENT_LABEL[p] || p).join(' · ')}
                 {selected.failedAgents > 0 && <span className="text-rose-400"> · وكلاء فشلوا: {selected.failedAgents}</span>}
               </div>
+
+              {selected.brainDecision && (
+                <div className="border border-indigo-800 bg-indigo-950/20 rounded-xl p-3">
+                  <div className="flex items-center gap-2 flex-wrap mb-2">
+                    <span className="text-xs font-bold text-indigo-200">قرار العقل المركزي المحكوم</span>
+                    <span className={`text-[10px] px-2 py-0.5 rounded-full border ${(BRAIN_STATUS_STYLE[selected.brainDecision.finalStatus] || BRAIN_STATUS_STYLE.FAILED_SAFE).cls}`}>
+                      {(BRAIN_STATUS_STYLE[selected.brainDecision.finalStatus] || BRAIN_STATUS_STYLE.FAILED_SAFE).label}
+                    </span>
+                    <span className="text-[10px] text-slate-500">حوكمة: {GOV_CODE_LABEL[selected.brainDecision.governance.code] || selected.brainDecision.governance.code}</span>
+                    <span className="text-[10px] text-slate-500">صلاحية: {selected.brainDecision.requiredPermission}</span>
+                  </div>
+                  <div className="text-[11px] text-slate-300">الهدف: {selected.brainDecision.objective}</div>
+                  <div className="text-[11px] text-slate-300 mt-0.5">الإجراء: <span className="text-slate-100">{selected.brainDecision.proposedAction.description}</span>
+                    <span className="text-slate-500"> ({selected.brainDecision.proposedAction.kind})</span>
+                  </div>
+                  <div className="text-[10px] text-slate-400 mt-1">{selected.brainDecision.governance.reasonAr}</div>
+                  {selected.brainDecision.escalation.required && (
+                    <div className="text-[10px] text-amber-300 mt-1">
+                      تصعيد بشري مطلوب — السبب: {selected.brainDecision.escalation.reasonLabelAr || selected.brainDecision.escalation.reason}
+                    </div>
+                  )}
+                  {selected.brainDecision.disagreements.length > 0 && (
+                    <div className="text-[10px] text-amber-300/80 mt-1">خلافات مرئية: {selected.brainDecision.disagreements.length} (لا يُختار فائز بلا دليل)</div>
+                  )}
+                  <div className="text-[10px] text-slate-600 mt-1">مرجع التتبّع: {selected.brainDecision.auditRef}</div>
+                </div>
+              )}
 
               {selected.decision && (
                 <div className={`border rounded-xl p-3 ${selected.decision.verified ? 'border-emerald-800 bg-emerald-950/20' : 'border-amber-800 bg-amber-950/20'}`}>

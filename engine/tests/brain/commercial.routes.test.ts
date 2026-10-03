@@ -37,6 +37,8 @@ function startApp(): ChildProcess {
     ...(process.env as Record<string, string>),
     PORT: String(PORT),
     NODE_ENV: 'production',
+    // SCOPE CLEANUP: هذه الأسطح خارج النطاق المعلن؛ يُفعَّل المفتاح في الاختبار لإثبات سلوكها الأصلي.
+    GHARABI_ENABLE_COMMERCIAL_SALES_SCOPE: 'true',
     APP_URL: BASE,
     STATE_DIR: stateDir,
     GHARABI_PREVIEW_TOKEN: PREVIEW_TOKEN,

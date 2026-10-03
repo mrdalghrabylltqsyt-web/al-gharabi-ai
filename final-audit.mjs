@@ -1188,6 +1188,9 @@ const teamRoutesSrc = teamDir('routes.ts');
 const teamCouncilTest = read('engine/tests/brain/team.council.test.ts');
 const teamCouncilServerTest = read('engine/tests/brain/team.council.server.test.ts');
 const teamCouncilYoutubeTest = read('engine/tests/brain/team.council.youtube.test.ts');
+const teamBrainDecision = teamDir('brainDecision.ts');
+const teamBrainEscalation = teamDir('brainEscalation.ts');
+const teamDecisionTest = read('engine/tests/brain/brain.decision.test.ts');
 
 add('agent-team-module-structure',
   ['truth.ts', 'types.ts', 'agents.ts', 'orchestrator.ts', 'routes.ts']
@@ -1298,6 +1301,83 @@ add('agent-team-youtube-flow-test',
   teamCouncilYoutubeTest.includes('restart persistence') &&
   teamCouncilYoutubeTest.includes('deduplication'),
   'اختبار التدفّق يثبت حدث YouTube حقيقي => جلسة فريق + ثبات بعد restart + منع تكرار');
+
+add('brain-decision-module',
+  fs.existsSync(path.join(root, 'engine/brain/team/brainDecision.ts')) &&
+  fs.existsSync(path.join(root, 'engine/brain/team/brainEscalation.ts')) &&
+  teamBrainDecision.includes('composeBrainDecision') && teamBrainDecision.includes('BRAIN_DECISION_STATUSES'),
+  'وحدة قرار العقل المركزي المحكوم موجودة (تكويب + حالات نهائية محدّدة)');
+
+add('brain-decision-central-brain-over-council',
+  teamBrainDecision.includes('العقل المركزي') && teamBrainDecision.includes('مخرجات استشارية') &&
+  teamTypes.includes('brainDecision: BrainDecision | null') &&
+  teamOrchestrator.includes('brainDecision: null'),
+  'العقل المركزي فوق الوكلاء الستة: يحمل قراره المحكوم داخل الجلسة (الوكلاء مستشارون)');
+
+add('brain-decision-final-statuses',
+  teamBrainDecision.includes("'ALLOWED_ACTION'") && teamBrainDecision.includes("'APPROVAL_REQUIRED'") &&
+  teamBrainDecision.includes("'HUMAN_ESCALATION'") && teamBrainDecision.includes("'NO_ACTION'") &&
+  teamBrainDecision.includes("'FAILED_SAFE'"),
+  'الحالات النهائية خمس صريحة (إجراء مسموح/موافقة/تصعيد/لا إجراء/توقف آمن)');
+
+add('brain-decision-governed',
+  teamBrainDecision.includes('evaluateGovernance') && teamBrainDecision.includes('governance') &&
+  teamBrainDecision.includes('claimVerified') && teamBrainDecision.includes('externalApproved'),
+  'قرار العقل يمرّ عبر الحوكمة (صلاحية + ادعاء مثبت + موافقة خارجية)');
+
+add('brain-decision-no-external-execution',
+  !/executeYouTubeReply|executeYouTubePublish|publishNow|sendMessage|comments\.insert/.test(teamBrainDecision + teamBrainEscalation) &&
+  teamBrainDecision.includes('لا يُنفَّذ أي إجراء خارجي من العقل'),
+  'قرار العقل لا ينفّذ أي إجراء خارجي (توجيه فقط عبر بوابات المشروع)');
+
+add('brain-decision-sensitive-escalates',
+  teamBrainDecision.includes('reasonRequiresHuman') && teamBrainDecision.includes('SENSITIVE_HUMAN_REQUIRED') &&
+  teamBrainDecision.includes('HUMAN_ESCALATION'),
+  'الإجراء الحسّاس (سعر غير موثّق/شكوى) يُصعّد بشرياً دائماً ولا يُنفَّذ آلياً');
+
+add('brain-decision-unverified-is-safe',
+  teamBrainDecision.includes("'UNVERIFIED_CLAIM'") && teamBrainDecision.includes("'FAILED_SAFE'") &&
+  teamBrainDecision.includes('cookie') === false,
+  'الادعاء غير المثبت (نقد فاشل/مزود غير موثق) => توقف آمن (لا إجراء)');
+
+add('brain-decision-escalation-reuses-system',
+  teamBrainEscalation.includes('createEscalationRecord') && teamBrainEscalation.includes("'../../social/escalation'") &&
+  !/new Map|CREATE TABLE|secondEscalation/i.test(teamBrainEscalation),
+  'جسر التصعيد يستخدم نظام التصعيد القائم (لا نظام ثانٍ)');
+
+add('brain-decision-escalation-no-fake-notification',
+  teamBrainEscalation.includes('notificationDelivered') && teamBrainEscalation.includes('duplicate_open_escalation') &&
+  server.includes('brainEscalationNotifier') && server.includes('pushNotification('),
+  'التصعيد لا يدّعي إشعاراً بلا مُبلِّغ ناجح، ويمنع التكرار (نفس بنية التنبيه القائمة)');
+
+add('brain-decision-wired-and-audited',
+  server.includes('composeBrainDecision(') && server.includes('escalateBrainDecision(') &&
+  server.includes("audit('system', 'brain_decision'") &&
+  /runTeamSessionNow\([\s\S]*brainDecision/.test(server),
+  'قرار العقل يُكوَّن ويُسجَّل تدقيقياً عند كل جلسة (سلسلة EVENT→GOVERNANCE→OUTCOME)');
+
+add('brain-decision-health-exposed',
+  server.includes('brainDecisionHealthBlock') && server.includes('brainDecision: brainDecisionHealthBlock()') &&
+  server.includes('executesExternalActions: false') && server.includes('hierarchy:'),
+  'قرار العقل معلن في /api/health و/api/readiness بلا سرّ (مع الهرمية)');
+
+add('brain-decision-no-secrets',
+  !/api[_-]?key|client_secret|refresh_token|access_token|GEMINI_API_KEY/i.test(teamBrainDecision + teamBrainEscalation),
+  'وحدة قرار العقل وجسر التصعيد لا يحملان أي سرّ');
+
+add('brain-decision-tests',
+  fs.existsSync(path.join(root, 'engine/tests/brain/brain.decision.test.ts')) &&
+  pkg.scripts['test:brain-decision'] &&
+  typeof pkg.scripts.test === 'string' && pkg.scripts.test.includes('test:brain-decision') &&
+  teamDecisionTest.includes('ALLOWED_ACTION') && teamDecisionTest.includes('HUMAN_ESCALATION'),
+  'اختبار قرار العقل (وحدة) مسجّل وضمن npm test');
+
+add('brain-decision-integration-test',
+  teamCouncilYoutubeTest.includes('central brain governed decision') &&
+  teamCouncilYoutubeTest.includes('brainDecision') &&
+  teamCouncilYoutubeTest.includes('HUMAN_ESCALATION'),
+  'اختبار التكامل يثبت قرار العقل المحكوم فعلاً على حدث YouTube حقيقي');
+
 
 
 // --- Central Brain upgrade (طبقة العقل المركزي المُطوَّرة) ---
@@ -2500,6 +2580,107 @@ add('phase7-initial-bundle-reduced', (() => {
   const chunks = fs.readdirSync(assets).filter((f) => f.endsWith('.js')).length;
   return size < 800 * 1024 && chunks >= 8;
 })(), 'Phase 7: الحزمة الأولية < 800KB مع 8+ مقاطع (بعد البناء)');
+
+// ---- MASTER BATCH: السياق/المحادثة/العزل/السياسة/الحوكمة (منطق صافٍ) ----
+const convState = read('engine/social/conversationState.ts');
+const ctxIsolation = read('engine/social/contextIsolation.ts');
+const iraqiPolicy = read('engine/social/iraqiCommercialPolicy.ts');
+const govGuard = read('engine/agent/governanceGuard.ts');
+const ctxTest = read('engine/tests/context.governance.test.ts');
+const routesTest = read('engine/tests/social.routes.test.ts');
+add('context-conversation-state-module',
+  convState.includes('export function conversationKey') && convState.includes('export function shortTermWindow') &&
+  convState.includes('CONVERSATION_MAX_MESSAGES') && convState.includes('export function priorBusinessReplies') &&
+  convState.includes('export function isConversationStale'),
+  'وحدة حالة المحادثة: معرّف صريح + نافذة قصيرة المدى محدودة + طزاجة (منطق صافٍ)');
+add('context-isolation-module',
+  ctxIsolation.includes('export function isolateContext') && ctxIsolation.includes('priorReplies: []') &&
+  ctxIsolation.includes('conversation_mismatch') && ctxIsolation.includes('platform_mismatch') && ctxIsolation.includes('subject_mismatch'),
+  'وحدة عزل السياق: ترفض أي تسرّب بين محادثة/منصة/خيط وتُفرغ السياق عند عدم التطابق');
+add('context-isolation-wired-reply',
+  server.includes('socialConversations') && socialRoutes.includes('isolateContext') && socialRoutes.includes('conversationScopeFor') &&
+  socialRoutes.includes('shortTermWindow'),
+  'عزل السياق مربوط بمسار الرد الفعلي (لا كود معزول): نوافذ محادثة معزولة بالمحادثة/الخيط');
+add('context-conversations-durable',
+  server.includes('socialConversations: ((workspace as any).socialConversations || []).slice(0, 500)') &&
+  server.includes('socialConversations: Array.isArray(raw.workspace.socialConversations)') &&
+  server.includes('"socialConversations"'),
+  'نوافذ المحادثة تُحفظ وتُسترجع عبر محوّل الحالة (تصمد بعد restart)');
+add('iraqi-commercial-policy-module',
+  iraqiPolicy.includes('export function checkCommercialPolicy') && iraqiPolicy.includes('hype_language') &&
+  iraqiPolicy.includes('false_urgency') && iraqiPolicy.includes('absolute_promise') &&
+  iraqiPolicy.includes('competitor_disparagement') && iraqiPolicy.includes('IRAQI_TONE_GUIDELINES_AR'),
+  'سياسة التواصل التجاري العراقي: تمنع المبالغة/الإلحاح/الوعد المطلق/الحطّ من المنافسين (طبقة حتمية)');
+add('iraqi-commercial-policy-wired',
+  socialRoutes.includes('checkCommercialPolicy') && socialRoutes.includes('commercialPolicy') &&
+  /commercialPolicy[\s\S]{0,200}status\(422\)/.test(socialRoutes),
+  'السياسة مطبَّقة على مسار الرد (رفض 422) وعلى الرد المقترح في التصنيف');
+add('agent-governance-guard-module',
+  govGuard.includes('export function evaluateGovernance') && govGuard.includes('SENSITIVE_HUMAN_REQUIRED') &&
+  govGuard.includes('UNVERIFIED_CLAIM') && govGuard.includes('APPROVAL_REQUIRED') && govGuard.includes('AGENT_GOVERNANCE_PRINCIPLES_AR'),
+  'حوكمة الوكلاء: قرار موحّد (صلاحية + صدق + موافقة خارجية + حساسية بشرية) بلا تنفيذ صامت');
+add('agent-governance-guard-wired',
+  read('engine/brain/commercial/routes.ts').includes('evaluateGovernance') &&
+  read('engine/brain/commercial/routes.ts').includes("'/api/agent/brain/commercial/governance'"),
+  'مسار حوكمة (owner) يعرض المبادئ + قرارات مرجعية على سيناريوهات صريحة (تشخيص قراءة فقط)');
+add('context-governance-tests',
+  pkg.scripts['test:context-governance'] === 'tsx engine/tests/context.governance.test.ts' &&
+  pkg.scripts.test.includes('test:context-governance') &&
+  ctxTest.includes('isolateContext') && ctxTest.includes('checkCommercialPolicy') && ctxTest.includes('evaluateGovernance'),
+  'اختبار وحدة شامل للسياق/العزل/السياسة/الحوكمة مضمّن في npm test');
+add('context-isolation-integration-test',
+  routesTest.includes("isolated === true") && routesTest.includes("priorRepliesUsed === 0") &&
+  routesTest.includes('commercialPolicy'),
+  'اختبار تكامل: عزل فعلي بين خيطين + سياسة التواصل مطبَّقة على الخادم الحقيقي');
+
+const lifecycleModule = read('engine/social/conversationLifecycle.ts');
+const escalationModule = read('engine/social/escalation.ts');
+const memorySepModule = read('engine/social/memorySeparation.ts');
+const scopeTest = read('engine/tests/scope.cleanup.test.ts');
+const lifecycleTest = read('engine/tests/session.lifecycle.test.ts');
+add('conversation-lifecycle-module',
+  lifecycleModule.includes('nextConversationState') && lifecycleModule.includes('pendingEscalation') &&
+  /target === 'RESOLVED' && input.pendingEscalation/.test(lifecycleModule) &&
+  lifecycleModule.includes('CONVERSATION_LIFECYCLE_STATES'),
+  'دورة حياة المحادثة: آلة حالات تمنع الانتقالات غير الصالحة والإغلاق مع تصعيد معلّق');
+add('human-escalation-module',
+  escalationModule.includes('createEscalationRecord') && escalationModule.includes('notificationDelivered') &&
+  escalationModule.includes('hasPendingEscalation') && escalationModule.includes('transitionEscalation') &&
+  escalationModule.includes('ESCALATION_REASON_LABELS_AR'),
+  'التصعيد البشري: سجل حقيقي بسياقه، ولا ادّعاء إشعار بلا مُبلِّغ ناجح');
+add('memory-separation-module',
+  memorySepModule.includes('classifyConversationMessage') && memorySepModule.includes('canPromoteToLongTerm') &&
+  memorySepModule.includes("tier: 'session_context'") && memorySepModule.includes('LONG_TERM_MEMORY_KINDS'),
+  'فصل الذاكرة: رسالة الجلسة لا تُرقّى تلقائياً؛ الترقية بدليل موثّق فقط');
+add('escalation-wired-in-social-routes',
+  socialRoutes.includes('recordEscalation') && socialRoutes.includes('applyLifecycleEvent') &&
+  socialRoutes.includes("'/api/social/manager/escalations'") && socialRoutes.includes("'/api/social/manager/conversations/lifecycle'"),
+  'التصعيد ودورة الحياة موصولان بمسار التصنيف/الرد + مسارات إدارة');
+add('escalation-notifier-reuses-notifications',
+  read('server.ts').includes('notifyEscalation') && /notifyEscalation[\s\S]{0,400}pushNotification/.test(read('server.ts')),
+  'مُبلِّغ التصعيد يعيد استخدام بنية التنبيه القائمة (pushNotification) ولا يدّعي إشعاراً');
+add('escalation-persisted',
+  read('server.ts').includes('socialEscalations') && read('server.ts').includes('socialConversationStates') &&
+  /buildPersistedState[\s\S]*socialEscalations/.test(read('server.ts')),
+  'سجلات التصعيد وحالات دورة الحياة تُحفظ وتُسترجع (تصمد بعد restart)');
+add('scope-cleanup-gate',
+  read('server.ts').includes('commercialSalesScopeEnabled') && read('server.ts').includes('SCOPE_DISABLED') &&
+  read('server.ts').includes('COMMERCIAL_SALES_ROUTE_PREFIXES') &&
+  read('server.ts').includes('GHARABI_ENABLE_COMMERCIAL_SALES_SCOPE'),
+  'SCOPE CLEANUP: أسطح Sales/Commercial خارج النطاق مُعزولة برد 404 افتراضياً ومُعادة بمفتاح صريح');
+add('scope-cleanup-health-honest',
+  /commercialBrain:[\s\S]{0,220}scopeDisabled: true/.test(read('server.ts')),
+  'health يُعلن تعطيل العقل التجاري صراحةً (بلا إيهام تفعيل)');
+add('scope-cleanup-tests',
+  pkg.scripts['test:scope-cleanup'] === 'tsx engine/tests/scope.cleanup.test.ts' &&
+  pkg.scripts.test.includes('test:scope-cleanup') &&
+  scopeTest.includes('SCOPE_DISABLED') && scopeTest.includes('GHARABI_ENABLE_COMMERCIAL_SALES_SCOPE'),
+  'اختبار عزل النطاق (افتراضي 404 + مفتاح يعيد التفعيل) مضمّن في npm test');
+add('session-lifecycle-tests',
+  pkg.scripts['test:session-lifecycle'] === 'tsx engine/tests/session.lifecycle.test.ts' &&
+  pkg.scripts.test.includes('test:session-lifecycle') &&
+  lifecycleTest.includes('nextConversationState') && lifecycleTest.includes('canPromoteToLongTerm'),
+  'اختبار وحدة لدورة الحياة/التصعيد/فصل الذاكرة مضمّن في npm test');
 
 const failed = checks.filter(x => !x.ok);
 console.table(checks);
