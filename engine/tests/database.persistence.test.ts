@@ -77,6 +77,9 @@ async function stop(proc: ChildProcess): Promise<void> {
 async function run(): Promise<void> {
   if (!DB_URL) {
     console.log('SKIPPED: database persistence checks — GHARABI_TEST_DATABASE_URL not set (no real Postgres available).');
+    // خروج مميّز (2) لا نجاح (0): التخطّي لا يجب أن يبدو كأنه اجتياز في CI،
+    // ولا كفشل (1). يمنع الاعتماد على اختبار استمرارية لم يُشغَّل فعلاً.
+    process.exitCode = 2;
     return;
   }
 

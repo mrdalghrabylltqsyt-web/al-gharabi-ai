@@ -95,6 +95,7 @@ async function runScenario(makeAdapter: () => StorageAdapter, label: string) {
 
 async function run(): Promise<void> {
   const dbUrl = (process.env.GHARABI_TEST_DATABASE_URL || '').trim();
+  let postgresSkipped = false;
   const dir = mkdtempSync(join(tmpdir(), 'gharabi-brain-mem-'));
   const fileDir = join(dir, 'file-backend');
 
@@ -107,6 +108,7 @@ async function run(): Promise<void> {
 
     // --- REAL INTEGRATION TEST (Postgres حقيقي معزول، عند توفره فقط) ---
     if (!dbUrl) {
+      postgresSkipped = true;
       console.log('\nSKIPPED: brain memory Postgres integration — GHARABI_TEST_DATABASE_URL not set (no isolated test Postgres available).');
       console.log('   شغّله على Postgres حقيقي عبر: cd tools/local-verification && npm install && npm run verify:brain-memory');
     } else {
@@ -126,6 +128,9 @@ async function run(): Promise<void> {
     process.exitCode = 1;
   } else {
     console.log(`PASSED: ${passed} brain memory persistence checks`);
+    // الخلفية الملفية تعمل دائماً؛ إن تُخطّيت تكاملة Postgres فالناتج 2 (تخطٍّ مميّز)
+    // لا 0، حتى لا يبدو في CI كأن تكامل Postgres اجتاز وهو لم يُشغَّل.
+    if (postgresSkipped) process.exitCode = 2;
   }
 }
 

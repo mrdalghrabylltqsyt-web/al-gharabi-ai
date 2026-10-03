@@ -85,7 +85,8 @@ function seedState() {
 async function main() {
   if (!fs.existsSync(EMBEDDED_PG)) {
     console.log('DR REAL DRILL TESTS SKIPPED: embedded-postgres غير مثبّت (شغّل npm install في tools/local-verification).');
-    return;
+    // خروج مميّز (2) لا نجاح: اختبار التعافي الحقيقي لم يُشغَّل، فلا يُوهَم اجتيازه.
+    process.exit(2);
   }
 
   const EmbeddedPostgres = (await import(pathToFileURL(EMBEDDED_PG).href)).default;

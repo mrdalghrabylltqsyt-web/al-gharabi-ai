@@ -47,7 +47,7 @@
     "test:coldstart": "tsx engine/tests/netlify.coldstart.test.ts",
     "test:control": "tsx engine/tests/persistence.control.test.ts",
     "test:storage": "tsx engine/tests/storage.adapter.test.ts",
-    "test:db": "tsx engine/tests/database.persistence.test.ts",
+    "test:db": "node scripts/run-with-skip.mjs test:db-raw",
     "test:schedule": "tsx engine/tests/schedule.timezone.test.ts",
     "test:schedule-rtl": "tsx engine/tests/schedule.rtl.display.test.ts",
     "test:public-url": "tsx engine/tests/public.url.test.ts",
@@ -74,7 +74,7 @@
     "test:team-council": "tsx engine/tests/brain/team.council.test.ts",
     "test:team-council-server": "tsx engine/tests/brain/team.council.server.test.ts",
     "test:team-council-youtube": "tsx engine/tests/brain/team.council.youtube.test.ts",
-    "test:brain-memory": "tsx engine/tests/brain.memory.persistence.test.ts",
+    "test:brain-memory": "node scripts/run-with-skip.mjs test:brain-memory-raw",
     "test:architecture-brain": "tsx engine/tests/architecture.parallel.brain.test.ts",
     "test:sales-foundation": "tsx engine/tests/brain/sales.foundation.test.ts",
     "test:sales-integration": "tsx engine/tests/brain/sales.integration.test.ts",
@@ -102,7 +102,7 @@
     "test:dr-restore": "tsx engine/tests/dr/dr.restore.test.ts",
     "test:dr-endpoints": "tsx engine/tests/dr/dr.endpoints.test.ts",
     "test:dr-reconciliation": "tsx engine/tests/dr/dr.reconciliation.test.ts",
-    "test:dr-real-drill": "tsx engine/tests/dr/dr.real-drill.test.ts",
+    "test:dr-real-drill": "node scripts/run-with-skip.mjs test:dr-real-drill-raw",
     "test:dr-lostkeys": "tsx engine/tests/dr/dr.lostkeys.test.ts",
     "test:dr-keyrelations": "tsx engine/tests/dr/dr.keyrelations.test.ts",
     "test:dr": "npm run test:dr-core && npm run test:dr-source && npm run test:dr-source-bundle && npm run test:dr-store && npm run test:dr-sync && npm run test:dr-auth && npm run test:dr-db && npm run test:dr-routes && npm run test:dr-backup && npm run test:dr-secrets && npm run test:dr-mirror && npm run test:dr-keyvault && npm run test:dr-keyrelations && npm run test:dr-reconciliation && npm run test:dr-autobackup && npm run test:dr-restore && npm run test:dr-endpoints && npm run test:dr-real-drill && npm run test:dr-lostkeys && npm run test:dr-ui && npm run test:dr-standalone && npm run test:dr-recovery-center && npm run test:dr-token-source && npm run test:dr-pwa",
@@ -114,7 +114,10 @@
     "test:dr-standalone": "tsx engine/tests/dr/dr.standalone.test.ts",
     "test:dr-recovery-center": "tsx engine/tests/dr/dr.recovery.center.test.ts",
     "test:dr-token-source": "tsx engine/tests/dr/dr.token.source.test.ts",
-    "test:dr-pwa": "tsx engine/tests/dr/dr.pwa.test.ts"
+    "test:dr-pwa": "tsx engine/tests/dr/dr.pwa.test.ts",
+    "test:db-raw": "tsx engine/tests/database.persistence.test.ts",
+    "test:brain-memory-raw": "tsx engine/tests/brain.memory.persistence.test.ts",
+    "test:dr-real-drill-raw": "tsx engine/tests/dr/dr.real-drill.test.ts"
   },
   "dependencies": {
     "@google/genai": "^2.4.0",
