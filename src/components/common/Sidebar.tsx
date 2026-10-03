@@ -37,6 +37,13 @@ interface SidebarProps {
 export const Sidebar: React.FC<SidebarProps> = ({ mobileOpen, onCloseMobile }) => {
   const { activeTab, setActiveTab, notificationBadge, currentUser, showroomInfo } = useApp();
 
+  // SCOPE ISOLATION (PLAN A): أسطح ERP/CRM/المالية خارج نطاق المشروع المعلن
+  // (سوشيال + AI + تسويق) وتُعزل على الخادم افتراضياً (404 SCOPE_DISABLED).
+  // نخفي مداخلها افتراضياً كي لا تُعرض واجهات غير قابلة للاستخدام. تُعاد بإطفاء
+  // العزل على الخادم (GHARABI_ENABLE_COMMERCIAL_SALES_SCOPE=true) وضبط هذا الثابت true.
+  const LEGACY_ERP_NAV_ENABLED = false;
+  const LEGACY_ERP_TAB_IDS = new Set(['executive', 'sales', 'business', 'control', 'finance', 'inventory', 'reports', 'operations']);
+
   const navigationItems = [
     {
       id: 'executive',
@@ -314,7 +321,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ mobileOpen, onCloseMobile }) =
             أقسام النظام
           </div>
 
-          {navigationItems.filter((item: any) => !item.ownerOnly || currentUser?.role === 'owner').map((item) => {
+          {navigationItems.filter((item: any) => (!item.ownerOnly || currentUser?.role === 'owner') && (LEGACY_ERP_NAV_ENABLED || !LEGACY_ERP_TAB_IDS.has(item.id))).map((item) => {
             const Icon = item.icon;
             const isActive = activeTab === item.id;
 

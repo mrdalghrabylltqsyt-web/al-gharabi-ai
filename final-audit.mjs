@@ -3092,6 +3092,79 @@ add('central-brain-authority-coverage',
   'الاختبار الشامل يغطي: عقل واحد/ذاكرة واحدة/وكلاء استشاريون/سلطة تنفيذ واحدة/سجل قابل للقراءة');
 
 
+// --- PHASE 1D: عزل أسطح ERP/CRM/المالية القديمة (خارج نطاق سوشيال + AI + تسويق) ---
+// تُضاف هنا فحوص العزل فقط؛ لا يُزال ولا يُضعَّف أي فحص قائم (Central Brain/أمني).
+add('erp-scope-guard-exists',
+  server.includes('function commercialSalesScopeEnabled') &&
+  server.includes('GHARABI_ENABLE_COMMERCIAL_SALES_SCOPE') &&
+  server.includes('LEGACY_ERP_ROUTE_PREFIXES') &&
+  server.includes('LEGACY_ERP_CONTROL_PATHS') &&
+  server.includes('function isLegacyErpRouteRequest') &&
+  server.includes('if (!commercialSalesScopeEnabled())'),
+  'حارس عزل ERP (Phase 1D) موجود: المفتاح + البادئات + مسارات control + المطابق');
+add('erp-scope-default-disabled',
+  server.includes('process.env.GHARABI_ENABLE_COMMERCIAL_SALES_SCOPE ?? ""') &&
+  !server.includes('GHARABI_ENABLE_COMMERCIAL_SALES_SCOPE ?? "true"'),
+  'الافتراضي معطّل: لا قيمة افتراضية true لمفتاح النطاق');
+add('erp-scope-guard-404-code',
+  server.includes('code: "SCOPE_DISABLED"') && server.includes('status(404).json({'),
+  'حارس العزل يرد 404 مع code: SCOPE_DISABLED');
+add('erp-scope-case-insensitive',
+  /isLegacyErpRouteRequest[\s\S]{0,400}toLowerCase\(\)/.test(server),
+  'المطابقة غير حسّاسة لحالة الأحرف (تطبيع المسار إلى أحرف صغيرة قبل المطابقة)');
+add('erp-scope-guard-covers-families',
+  ['"/api/inventory"', '"/api/customers"', '"/api/reports"', '"/api/crm"', '"/api/sales"',
+   '"/api/business"', '"/api/finance"', '"/api/executive"', '"/api/suppliers"', '"/api/purchases"',
+   '"/api/expenses"', '"/api/contracts"', '"/api/installments"', '"/api/catalog/quote"']
+    .every((p) => server.includes(p)),
+  'كل عائلات ERP/CRM/المالية المطلوبة معزولة');
+add('erp-scope-control-exact-paths',
+  ['"/api/control/cashflow"', '"/api/control/reconciliation"', '"/api/control/daily-brief"',
+   '"/api/control/customer-directory"', '"/api/control/alerts"'].every((p) => server.includes(p)),
+  'مسارات control المالية تُعزل بدقّة على المسار الكامل');
+add('erp-scope-shared-workspace-not-guarded',
+  (() => {
+    const start = server.indexOf('const LEGACY_ERP_ROUTE_PREFIXES');
+    if (start < 0) return false;
+    const block = server.slice(start, server.indexOf(']);', start));
+    const cs = server.indexOf('const LEGACY_ERP_CONTROL_PATHS');
+    const controlBlock = cs < 0 ? '' : server.slice(cs, server.indexOf(']);', cs));
+    const combined = `${block}\n${controlBlock}`;
+    return !combined.includes('/api/workspace') && !combined.includes('/api/social') &&
+      !combined.includes('/api/ai') && !combined.includes('/api/brain') && !combined.includes('/api/agent');
+  })(),
+  'بادئات العزل لا تشمل المسارات المشتركة (workspace) ولا السوشيال/AI/العقل');
+add('erp-scope-guard-before-legacy-routes',
+  server.indexOf('if (!commercialSalesScopeEnabled())') < server.indexOf('app.post("/api/catalog/quote"') &&
+  server.indexOf('if (!commercialSalesScopeEnabled())') < server.indexOf('app.get("/api/inventory"'),
+  'حارس العزل يُركَّب قبل أول مسار ERP قديم (/api/catalog/quote ثم /api/inventory)');
+add('erp-scope-legacy-code-not-deleted',
+  server.includes('app.get("/api/inventory"') && server.includes('app.post("/api/catalog/quote"') &&
+  fs.existsSync(path.join(root, 'engine/brain/commercial/unified.ts')) &&
+  fs.existsSync(path.join(root, 'engine/brain/digital/runtime.ts')) &&
+  fs.existsSync(path.join(root, 'engine/brain/growth/runtime.ts')) &&
+  fs.existsSync(path.join(root, 'engine/brain/sales/commercialRuntime.ts')) &&
+  fs.existsSync(path.join(root, 'engine/brain/cognition/planningEngine.ts')) &&
+  fs.existsSync(path.join(root, 'engine/brain/team/orchestrator.ts')) &&
+  fs.existsSync(path.join(root, 'engine/agent/governanceGuard.ts')) &&
+  fs.existsSync(path.join(root, 'src/components/agent/CentralBrainCognitionPanel.tsx')),
+  'العزل لا يحذف كوداً: مسارات ERP والعقل المركزي/المعرفة/الوكلاء/الحكامة ما زالت موجودة');
+add('erp-scope-sec01-guard-present',
+  server.includes('dr-source') && fs.existsSync(path.join(root, 'engine/tests/source.bundle.exposure.test.ts')),
+  'حارس SEC-01 (منع تقديم حزمة المصدر) باقٍ كما هو بعد Phase 1D');
+add('erp-scope-isolation-test-exists',
+  fs.existsSync(path.join(root, 'engine/tests/scope.erp.isolation.test.ts')) &&
+  pkg.scripts['test:scope-erp-isolation'] === 'tsx engine/tests/scope.erp.isolation.test.ts' &&
+  String(pkg.scripts.test || '').includes('npm run test:scope-erp-isolation'),
+  'اختبار عزل ERP (Phase 1D) موجود ومدرَج في npm test');
+add('erp-scope-isolation-test-covers-cases',
+  (() => {
+    const t = read('engine/tests/scope.erp.isolation.test.ts');
+    return t.includes('/API/SALES') && t.includes('/Api/SaLeS') && t.includes('/api/salesforce') &&
+      t.includes('/api/sales?x=1') && t.includes('/api/sales/') && t.includes('SCOPE_DISABLED');
+  })(),
+  'اختبار العزل يغطي الحالة/الشرطة المائلة/الاستعلام/حدّ المسار');
+
 const failed = checks.filter(x => !x.ok);
 console.table(checks);
 if (failed.length) {

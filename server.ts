@@ -1491,6 +1491,57 @@ function commercialSalesScopeEnabled(): boolean {
   return raw === "true" || raw === "1" || raw === "on" || raw === "yes";
 }
 /**
+ * بادئات أسطح ERP/CRM/المالية **القديمة** (خارج النطاق المعلن). تُعزل برد 404 عند
+ * إطفاء المفتاح. ملاحظة: `/api/workspace/products` وغيرها من مسارات workspace
+ * المشتركة (content/conversations/showroom/snapshot) **غير مشمولة** هنا.
+ */
+const LEGACY_ERP_ROUTE_PREFIXES: readonly string[] = Object.freeze([
+  "/api/inventory",
+  "/api/customers",
+  "/api/reports",
+  "/api/crm",
+  "/api/sales",
+  "/api/business",
+  "/api/finance",
+  "/api/executive",
+  "/api/suppliers",
+  "/api/purchases",
+  "/api/expenses",
+  "/api/contracts",
+  "/api/installments",
+  "/api/catalog/quote",
+]);
+/**
+ * مسارات `/api/control/*` المالية/ERP المحدّدة بالضبط (لا تُعزل بقية مسارات control
+ * مثل jobs/audit/activity/overview العامة إن لم تكن مالية). تُطابَق بدقّة على
+ * المسار الكامل بعد إزالة أي شرطة مائلة زائدة.
+ */
+const LEGACY_ERP_CONTROL_PATHS: readonly string[] = Object.freeze([
+  "/api/control/cashflow",
+  "/api/control/reconciliation",
+  "/api/control/daily-brief",
+  "/api/control/customer-directory",
+  "/api/control/alerts",
+]);
+/**
+ * هل الطلب ضمن سطح ERP/CRM/المالية القديم المُعزول؟ يطابق البادئات (مع احترام حدّ
+ * المسار كي لا تلتقط `/api/sales` مساراً مثل `/api/salesforce`) ومسارات control المحدّدة.
+ *
+ * **مطابقة غير حسّاسة لحالة الأحرف:** توجيه Express افتراضياً غير حسّاس للحالة، فطلب
+ * `/API/SALES` يصل إلى نفس المعالج الذي يخدمه `/api/sales`. لذلك يُطبَّع المسار إلى
+ * أحرف صغيرة قبل المطابقة، وإلا أمكن تجاوز العزل بتغيير حالة الأحرف فقط.
+ */
+function isLegacyErpRouteRequest(method: string, rawUrl: string): boolean {
+  const path = String(rawUrl || "").split("?")[0].split("#")[0].replace(/\/+$/, "").toLowerCase() || "/";
+  for (const prefix of LEGACY_ERP_ROUTE_PREFIXES) {
+    if (path === prefix || path.startsWith(prefix + "/")) return true;
+  }
+  for (const exact of LEGACY_ERP_CONTROL_PATHS) {
+    if (path === exact) return true;
+  }
+  return false;
+}
+/**
  * Configuration ID **المُطبَّق فعلاً** في رابط التفويض (قد يكون null رغم ضبط
  * المتغير). Configuration ID هو مطلب Facebook Login for Business: عند وجوده
  * يحلّ محل scope ويُلغي extras/display معاً (الConfiguration تحدّد الصلاحيات
@@ -7901,6 +7952,29 @@ app.get("/api/control/overview", authenticateToken, (req, res) => {
   const connected = connectedPlatformIds().length;
   res.json({ success: true, overview: { projectVersion: PROJECT_VERSION, supportedPlatforms: 10, connectedPlatforms: connected, disconnectedPlatforms: 10 - connected, jobs: visibleJobs.length, pendingApproval: visibleJobs.filter(j => j.status === "queued").length, approvedAwaitingConnection: visibleJobs.filter(j => j.status === "approved").length, ready: visibleJobs.filter(j => j.status === "ready").length, failed: visibleJobs.filter(j => j.status === "failed").length, scheduled: visibleJobs.filter((j: any) => Boolean(j.scheduledFor)).length, gemini: geminiStatus() }, note: "الأرقام المعروضة فعلية من حالة الخادم وليست بيانات تجريبية." });
 });
+
+// -----------------------------------------------------------------------------
+// SCOPE ISOLATION (PLAN A): عزل أسطح ERP/CRM/المالية القديمة (خارج نطاق المشروع
+// المعلن: سوشيال + AI + تسويق). عند إطفاء المفتاح تُرد **404 صريح** (لا 200 HTML)
+// قبل أي مصادقة/معالجة. لا يُزال كود ولا بيانات ولا اختبار، ويُعاد السطح بالكامل
+// بضبط GHARABI_ENABLE_COMMERCIAL_SALES_SCOPE=true. المسارات المشتركة المطلوبة
+// (workspace/products, workspace/shared-content, workspace/conversations,
+// workspace/showroom, workspace/snapshot) **ليست** ضمن البادئات فلا تُحجب.
+// المطابقة غير حسّاسة لحالة الأحرف مع احترام حدّ المسار.
+// -----------------------------------------------------------------------------
+if (!commercialSalesScopeEnabled()) {
+  app.use((req: any, res, next) => {
+    if (isLegacyErpRouteRequest(String(req.method || "GET"), String(req.url || ""))) {
+      return res.status(404).json({
+        success: false,
+        error: "هذا السطح (ERP/CRM/المالية) خارج نطاق المشروع المعلن (سوشيال + AI + تسويق).",
+        code: "SCOPE_DISABLED",
+        note: "لإعادة التفعيل: GHARABI_ENABLE_COMMERCIAL_SALES_SCOPE=true. لا يُزال الكود ولا البيانات.",
+      });
+    }
+    next();
+  });
+}
 
 // Operational foundation: deterministic endpoints below consume ZERO Gemini calls.
 app.post("/api/catalog/quote", authenticateToken, (req, res) => {
