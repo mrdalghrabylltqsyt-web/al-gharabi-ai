@@ -3753,3 +3753,37 @@ final-audit الـ27 الجديدة (`digital-sales-*`، **1124 إجمالاً**
 **لم يُمسّ:** الدفعات 1–5 (العقل التجاري/التسويق/الرقمي/الموحّد/وقت التشغيل)، Gemini/firewall،
 OAuth/الاعتمادات/الأسرار، المصادقة، قاعدة البيانات، DR/الاستعادة، YouTube (المراقب/الطابور/
 التفويض)، بقية المنصات، ونموذج الجدولة.
+
+## إغلاق ثغرة مركز الاستعادة: مصادقة المالك إلزامية (2026-10-03)
+
+**الثغرة:** خدمة `gharabi-recovery-center` المستقلة كانت تخدم `/api/points` بلا أي مصادقة،
+فيكشف أي زائر بيانات وصفية لنقاط الاستعادة (الالتزامات، عدد الملفات، عدد الأسرار).
+
+**الإصلاح (فرع منفصل، بلا لمس منطق الاستعادة ولا مفتاح الخزنة):**
+- `tools/dr/recoveryAuth.mjs` (وحدة منطق صافٍ جديدة، مصدر واحد): `checkRecoveryOwnerAuth`،
+  `inspectRecoveryOwnerAuth`، `extractBearerToken`، `isProtectedRecoveryPath`،
+  `recoveryOwnerAuthStatus`، و`RECOVERY_CENTER_PROTECTED_PATHS` = `/api/points` · `/api/verify` · `/api/restore`.
+- المفتاح مستقل لهذه الخدمة فقط (لا يُعاد استخدام مفتاح الخزنة ولا أي سرّ قائم):
+  `RECOVERY_CENTER_OWNER_TOKEN` (أساسي) أو `RECOVERY_CENTER_OWNER_TOKEN_HASH` (SHA-256 hex).
+  يُرسَل في ترويسة `Authorization: Bearer` فقط، ومقارنته بزمن ثابت (`timingSafeEqual`).
+- **fail-closed:** بلا مفتاح مضبوط تُرد المسارات الحسّاسة 401، ولا يمكن تجاوزها إلا بـ
+  `RECOVERY_CENTER_ALLOW_UNAUTHENTICATED=true` (وضع محلي صريح فقط).
+- `/api/health` و`/` و`/api/owner-auth` تبقى عامة (بلا أي بيانات وصفية). الصحة تعرض كتلة
+  `ownerAuth` منطقية فقط. الواجهة تجمع المفتاح في بطاقة «مصادقة المالك» وتُرسله Bearer
+  (يُحفظ في متصفح المالك، لا يُسجَّل على الخادم).
+- `dr-recovery-center/render.yaml` و`.env.example` يوثّقان المتغيّرين (sync: false)، والوثائق
+  (`README.md`، `recovery-instructions.md`، `recovery-information.md`) محدَّثة. `sync-lib.mjs`
+  صار 14 وحدة. بصمة البناء صارت `owner-auth-1`.
+
+**اختبار حي (فعلي على الخدمة نفسها، بلا مصادقة في الاختبار):** بلا ترويسة ⇒ 401
+`missing_bearer_token`؛ مفتاح خاطئ ⇒ 401 `invalid_bearer_token`؛ مفتاح صحيح ⇒ 200 ويعمل
+كما كان؛ بلا مفتاح مضبوط ⇒ 401 `owner_token_not_configured`؛ `/api/health` و`/` ⇒ 200 عام.
+
+**اختبارات:** `engine/tests/dr/dr.recovery.center.auth.test.ts` (`npm run test:dr-recovery-center-auth`،
+52 فحصاً) + تحديث اختبارات المركز القائمة (standalone/token-source/pwa/recovery-center) لتمرير
+المفتاح، و16 فحص final-audit جديد (`recovery-center-owner-auth-*`، 1231 إجمالاً).
+`npm run lint` + `build` + `test` (0 فشل) + `final-audit` كلها ناجحة.
+
+**إجراء المالك (إلزامي بعد النشر):** في Render → خدمة `gharabi-recovery-center` → Environment
+أضف `RECOVERY_CENTER_OWNER_TOKEN` بقيمة عشوائية قوية، ثم أدخلها مرة واحدة في بطاقة «مصادقة
+المالك» داخل الواجهة. لا تُكتب في Git ولا تُشارَك.

@@ -17,6 +17,13 @@
  *   DR_RECOVERY_MASTER_KEY أو DRIVE_DB_BACKUP_KEY (لفكّ الأسرار/القاعدة)
  *   DR_FOLDER_IDENTITY (اختياري: معرّفات مجلدات Drive تحت drive.file)
  *
+ * مصادقة المالك (إلزامية للمسارات التي تكشف بيانات وصفية أو تنفّذ استعادة):
+ *   RECOVERY_CENTER_OWNER_TOKEN       (مفتاح مالك مستقل لهذه الخدمة، يُرسَل كـBearer)
+ *   RECOVERY_CENTER_OWNER_TOKEN_HASH  (بديل: SHA-256 hex للمفتاح نفسه)
+ *   RECOVERY_CENTER_ALLOW_UNAUTHENTICATED=true (وضع محلي صريح فقط — الافتراضي: مقيّد)
+ *   الحماية: /api/points · /api/verify · /api/restore تُرد 401 بلا مفتاح صالح.
+ *   العامة (بلا بيانات وصفية): / · /api/health · /api/owner-auth.
+ *
  * **مفتاح خزنة الطوارئ `DR_RECOVERY_VAULT_KEY` لا يُضبط هنا إطلاقاً**: يُدخله المالك
  * في الواجهة وقت الاستعادة فقط، ولا يُحفظ ولا يُسجَّل ولا يُعاد في أي استجابة.
  *
@@ -43,6 +50,11 @@ import {
   verifyRecoveryPoint,
 } from './standalone-recovery.mjs';
 import { injectPwaIntoHtml, servePwaAsset } from './recoveryPwa.mjs';
+import {
+  checkRecoveryOwnerAuth,
+  isProtectedRecoveryPath,
+  recoveryOwnerAuthStatus,
+} from './recoveryAuth.mjs';
 
 const IS_HOSTED = Boolean(process.env.RENDER || process.env.RECOVERY_CENTER_HOSTED);
 const HOST = process.env.RECOVERY_CENTER_HOST || (IS_HOSTED ? '0.0.0.0' : '127.0.0.1');
@@ -53,7 +65,7 @@ const PORT = Number.parseInt(process.env.PORT || process.env.RECOVERY_CENTER_POR
  * بين «إصلاح منشور» و«خدمة ما زالت تخدم نسخة قديمة» — وهو بالضبط ما أخفى سابقاً
  * أن مركز الاستعادة لم يستلم إصلاح قراءة رمز التجديد من قاعدة الحالة.
  */
-export const RECOVERY_CENTER_BUILD = 'token-source-state-db-1';
+export const RECOVERY_CENTER_BUILD = 'owner-auth-1';
 
 /** الحالات الصادقة للاستعادة (تُعرض للمالك كما هي؛ لا ادّعاء نجاح غير مُثبت). */
 export const RECOVERY_HONEST_STATES = [
@@ -175,6 +187,12 @@ function page() {
 <h1>🛟 مركز استعادة الغرابي AI</h1>
 <p class="sub">هذا المركز مخصص لاستعادة المشروع عند حدوث عطل أو فقدان بيئة التشغيل. يعمل مستقلاً عن تطبيق الغرابي الرئيسي وعن جلسته.</p>
 
+<div class="card"><h3>🔐 مصادقة المالك</h3>
+  <input id="ownerToken" type="password" placeholder="RECOVERY_CENTER_OWNER_TOKEN" autocomplete="off" spellcheck="false">
+  <p class="muted">مفتاح مالك هذه الخدمة المستقلة (يُضبط في بيئة الخدمة فقط). يُحفظ في هذا المتصفح ولا يُسجَّل على الخادم.</p>
+  <div class="row"><button id="saveToken" class="sec">💾 حفظ المفتاح</button><button id="clearToken" class="sec">مسح</button><span id="authState" class="muted"></span></div>
+</div>
+
 <div class="card">
   <div class="row"><button id="load">🔄 تحديث الحالة ونقاط الاستعادة</button><span id="ready" class="muted"></span></div>
   <div id="drivestate" class="muted" style="margin-top:8px"></div>
@@ -207,7 +225,11 @@ function page() {
 <script>
 let selected=null, verified=false;
 const $=(id)=>document.getElementById(id);
-async function j(u,o){const r=await fetch(u,o);try{return await r.json()}catch{return{ok:false,code:'bad_response'}}}
+// مفتاح المالك يُخزَّن محلياً في المتصفح فقط (لا يُسجَّل على الخادم)، ويُرسَل في ترويسة Bearer.
+let OWNER_TOKEN=localStorage.getItem('gharabi_recovery_owner')||'';
+$('ownerToken').value=OWNER_TOKEN;
+function authHeaders(){return OWNER_TOKEN?{'Authorization':'Bearer '+OWNER_TOKEN}:{};}
+async function j(u,o){o=o||{};o.headers=Object.assign({},o.headers||{},authHeaders());const r=await fetch(u,o);try{return await r.json()}catch{return{ok:false,code:'bad_response'}}}
 const esc=(s)=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 function renderStates(st){$('states').innerHTML=Object.entries(st||{}).map(([k,v])=>
   '<div><span class="pill '+(v?'ok':'bad')+'">'+(v?'✔':'—')+'</span> '+esc(STATES[k]||k)+'</div>').join('');}
@@ -218,10 +240,23 @@ function updateBtns(){
   $('verify').disabled=!selected||!hasKey;
   $('restore').disabled=!selected||!hasKey||!verified;
 }
+async function refreshAuth(){
+  const d=await j('/api/owner-auth');
+  $('authState').innerHTML=OWNER_TOKEN
+    ? (d&&d.ok?'<span class="ok">المفتاح مقبول ✅</span>':'<span class="bad">المفتاح مرفوض ✗</span>')
+    : '<span class="muted">أدخل مفتاح المالك</span>';
+}
+$('saveToken').onclick=()=>{OWNER_TOKEN=$('ownerToken').value.trim();if(OWNER_TOKEN)localStorage.setItem('gharabi_recovery_owner',OWNER_TOKEN);else localStorage.removeItem('gharabi_recovery_owner');refreshAuth();};
+$('clearToken').onclick=()=>{OWNER_TOKEN='';$('ownerToken').value='';localStorage.removeItem('gharabi_recovery_owner');refreshAuth();};
 async function load(){
   $('ready').textContent='...';$('out').textContent='—';
   const d=await j('/api/points');
-  if(!d.ok){$('ready').textContent='';$('drivestate').innerHTML='<span class="bad">Google Drive: غير متاح ('+esc(d.reason||d.code||'—')+')</span>';$('out').textContent=JSON.stringify(d,null,2);return;}
+  if(!d.ok){
+    $('ready').textContent='';
+    if(d.code==='UNAUTHORIZED'){$('drivestate').innerHTML='<span class="bad">يتطلب مصادقة المالك — أدخل مفتاح المالك أعلاه واحفظه.</span>';}
+    else{$('drivestate').innerHTML='<span class="bad">Google Drive: غير متاح ('+esc(d.reason||d.code||'—')+')</span>';}
+    $('out').textContent=JSON.stringify(d,null,2);return;
+  }
   const r=d.readiness||{};
   $('drivestate').innerHTML='Google Drive: <span class="ok">متاح</span> · عميل: '+esc(r.drive.clientIdFingerprint||'—')+
     ' · خزنة: '+(r.vaultKey.present?'<span class="ok">مضبوط</span>':'<span class="warn">يُدخل الآن</span>')+
@@ -272,6 +307,7 @@ $('restore').onclick=async()=>{
   $('out').textContent=JSON.stringify(d.report||d,null,2);
   $('verdict').innerHTML=d.ok?'<span class="ok">اكتملت الاستعادة (راجع الحالات والخطوة الخارجية).</span>':'<span class="bad">توقفت الاستعادة عند: '+esc((d.report&&d.report.failureStage)||d.code||'—')+'</span>';
 };
+refreshAuth();
 load();
 </script></body></html>`);
 }
@@ -298,6 +334,15 @@ export function createRecoveryCenterServer(options = {}) {
           return res.end(asset.body);
         }
       }
+      // بوابة مصادقة المالك: المسارات التي تكشف بيانات وصفية لنقاط الاستعادة أو
+      // تنفّذ استعادة تُرفض 401 بلا مفتاح صالح (fail-closed). /api/health والواجهة
+      // و/api/owner-auth تبقى عامة (لا تكشف أي سرّ ولا بيانات وصفية).
+      if (isProtectedRecoveryPath(url.pathname)) {
+        const auth = checkRecoveryOwnerAuth(req, env);
+        if (!auth.allowed) {
+          return json(res, 401, { ok: false, code: 'UNAUTHORIZED', reason: auth.reason });
+        }
+      }
       if (req.method === 'GET' && url.pathname === '/api/health') {
         const readiness = await inspectRecoveryReadiness(env, tokenOptions || {});
         return json(res, 200, {
@@ -312,9 +357,15 @@ export function createRecoveryCenterServer(options = {}) {
             stateDatabaseConfigured: readiness.drive.stateDatabaseConfigured,
           },
           vaultKeyInEnv: false, // المركز لا يحمل مفتاح الخزنة في بيئته إطلاقاً.
+          ownerAuth: recoveryOwnerAuthStatus(env), // منطقي فقط — بلا أي قيمة سرّية.
           honestStates: RECOVERY_HONEST_STATES.map((s) => s.key),
           target: inspectTargetEnvironment(env, {}),
         });
+      }
+      // فحص مصادقة المالك (عام): يسمح للواجهة بالتحقق من المفتاح المُدخَل بلا كشف أي بيانات.
+      if (req.method === 'GET' && url.pathname === '/api/owner-auth') {
+        const auth = checkRecoveryOwnerAuth(req, env);
+        return json(res, auth.allowed ? 200 : 401, { ok: auth.allowed, reason: auth.reason });
       }
       if (req.method === 'GET' && url.pathname === '/api/points') {
         const readiness = await inspectRecoveryReadiness(env, tokenOptions || {});

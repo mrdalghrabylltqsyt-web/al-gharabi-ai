@@ -42,6 +42,9 @@ npm start        # ثم افتح http://127.0.0.1:4600
    - `DRIVE_DB_BACKUP_KEY` (أو `DR_RECOVERY_MASTER_KEY`)
    - `DR_FOLDER_IDENTITY` (اختياري)
    - `DR_RECOVERY_TEST_DATABASE_URL` (اختياري، قاعدة هدف معزولة)
+   - `RECOVERY_CENTER_OWNER_TOKEN` — **مفتاح مالك هذه الخدمة المستقلة** (إلزامي). بدونه
+     تُرد `/api/points` و`/api/verify` و`/api/restore` بـ**401** فلا يرى أي زائر بيانات
+     نقاط الاستعادة. بديل: `RECOVERY_CENTER_OWNER_TOKEN_HASH` (SHA-256 hex للمفتاح).
    - `DRIVE_OAUTH_REFRESH_TOKEN` **توافق خلفي فقط** — لا تضبطه؛ الأفضل ترك الرمز مشفّراً في قاعدة الحالة.
 4. **لا تضبط `DR_RECOVERY_VAULT_KEY` هنا إطلاقاً** — يُدخله المالك في الواجهة وقت الاستعادة فقط.
 
@@ -52,6 +55,11 @@ npm start        # ثم افتح http://127.0.0.1:4600
 
 ## الأمان
 
+- **مصادقة المالك إلزامية**: المسارات التي تكشف بيانات وصفية لنقاط الاستعادة
+  (`/api/points`، `/api/verify`) أو تنفّذ استعادة (`/api/restore`) تُرد **401** بلا مفتاح
+  مالك صالح (`Authorization: Bearer <RECOVERY_CENTER_OWNER_TOKEN>`). بلا ضبط المفتاح تبقى
+  مقيّدة افتراضياً (fail-closed)، ولا يمكن تعطيلها إلا بـ`RECOVERY_CENTER_ALLOW_UNAUTHENTICATED=true`
+  (وضع محلي صريح فقط). `/api/health` والواجهة و`/api/owner-auth` عامة ولا تكشف أي سرّ.
 - قراءة فقط من Drive: لا حذف/تعديل لأي Recovery Point (بما فيها rp-002/003/004).
 - تُرفض قاعدة الهدف إن طابقت `DATABASE_URL`.
 - لا سرّ في أي استجابة أو سجل؛ الأسماء والأعداد والحالات فقط.

@@ -49,6 +49,7 @@ const SYNTH_SECRETS: Record<string, string> = {
   DR_RECOVERY_VAULT_KEY: VAULT_KEY,
   DRIVE_DB_BACKUP_KEY: 'b2'.repeat(32),
 };
+const OWNER_TOKEN = 'token-src-owner-' + 'x'.repeat(30);
 
 /** قاعدة pg وهمية: تُرجع صف `control` بقيمة قابلة للحقن، بلا أي اتصال شبكي. */
 function makeFakePg(controlValue: any, opts: { fail?: string } = {}) {
@@ -163,10 +164,12 @@ async function main() {
 
   const centerEnv: any = {
     ...env,
+    RECOVERY_CENTER_OWNER_TOKEN: OWNER_TOKEN,
     DRIVE_OAUTH_CLIENT_ID: '1234567890-drive.apps.googleusercontent.com',
     DRIVE_OAUTH_CLIENT_SECRET: 'GOCSPX-' + 'drive-fake-test-secret',
     [DR_STATE_DATABASE_URL_ENV]: 'postgres://user:pw@host/db',
   };
+  const ownerAuth = { authorization: `Bearer ${OWNER_TOKEN}` };
   const server = createRecoveryCenterServer({
     env: centerEnv,
     clientFactory: () => driveClient,
@@ -184,13 +187,14 @@ async function main() {
     check('center health: build marker proves deployed version', health.build === RECOVERY_CENTER_BUILD);
     check('center health: no secret', noSecret(health));
 
-    const pts = await (await fetch(`${base}/api/points`)).json();
+    const pts = await (await fetch(`${base}/api/points`, { headers: ownerAuth })).json();
     check('center lists real points via encrypted-db token', pts.ok === true && pts.points.length >= 1 && pts.points.some((p: any) => p.id === backup.recoveryPointId));
     check('center points: no secret', noSecret(pts));
+    check('center anonymous points rejected (401)', (await fetch(`${base}/api/points`)).status === 401);
 
     // تحقق قراءة فقط من نقطة (بلا مفتاح خزنة) — لا يُسرّب شيئاً.
     const verify = await (await fetch(`${base}/api/verify`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      method: 'POST', headers: { 'Content-Type': 'application/json', ...ownerAuth },
       body: JSON.stringify({ point: backup.recoveryPointId }),
     })).json();
     check('center verify read-only', verify.report && verify.report.readOnly === true);
@@ -198,7 +202,7 @@ async function main() {
 
     // استعادة كاملة بالمفتاح (في الذاكرة فقط).
     const restore = await (await fetch(`${base}/api/restore`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      method: 'POST', headers: { 'Content-Type': 'application/json', ...ownerAuth },
       body: JSON.stringify({ point: backup.recoveryPointId, confirm: true, vaultKey: VAULT_KEY }),
     })).json();
     check('center restore ok via db-token', restore.ok === true, JSON.stringify(restore.report?.problems));
@@ -211,13 +215,13 @@ async function main() {
   // ---------- F) بلا رمز إطلاقاً: سبب صريح بلا كسر ----------
   {
     const server2 = createRecoveryCenterServer({
-      env: { ...env, DRIVE_OAUTH_CLIENT_ID: '1234567890-drive.apps.googleusercontent.com', DRIVE_OAUTH_CLIENT_SECRET: 'GOCSPX-x' },
+      env: { ...env, RECOVERY_CENTER_OWNER_TOKEN: OWNER_TOKEN, DRIVE_OAUTH_CLIENT_ID: '1234567890-drive.apps.googleusercontent.com', DRIVE_OAUTH_CLIENT_SECRET: 'GOCSPX-x' },
       tokenOptions: { loadFromDatabase: false },
     });
     await new Promise<void>((resolve) => server2.listen(0, '127.0.0.1', () => resolve()));
     const b2 = `http://127.0.0.1:${(server2.address() as any).port}`;
     try {
-      const pts = await (await fetch(`${b2}/api/points`)).json();
+      const pts = await (await fetch(`${b2}/api/points`, { headers: ownerAuth })).json();
       check('center without token => explicit reason', pts.ok === false && pts.reason === 'no_refresh_token');
       const h = await (await fetch(`${b2}/api/health`)).json();
       check('center without token health honest', h.drive.refreshTokenAvailable === false && h.drive.refreshTokenCode === 'no_refresh_token');

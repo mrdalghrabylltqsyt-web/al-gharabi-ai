@@ -39,6 +39,7 @@ function check(name: string, condition: boolean, detail = ''): void {
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(here, '../../..');
+const PWA_OWNER_TOKEN = 'pwa-owner-' + 'w'.repeat(30);
 
 /** لا يجب أن يظهر أي نمط سرّي في أي أصل PWA. */
 const SECRET_PATTERNS = [
@@ -114,13 +115,13 @@ async function main() {
   check('encodePng standalone works', encodePng(2, 2, Buffer.alloc(16, 255)).slice(0, 8).toString('hex') === '89504e470d0a1a0a');
 
   // --- 5) الخادم الحقيقي: الأصول تُخدَم 200 ---
-  const env: any = {}; // لا حاجة لأي اعتماد لعرض أصول PWA
+  const env: any = { RECOVERY_CENTER_OWNER_TOKEN: PWA_OWNER_TOKEN }; // لا حاجة لأي اعتماد Drive لعرض أصول PWA، لكن مفتاح المالك مطلوب للمسارات الحسّاسة.
   const server = createRecoveryCenterServer({ env, clientFactory: null });
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', () => resolve()));
   const port = (server.address() as any).port;
   const base = `http://127.0.0.1:${port}`;
   const get = async (p: string) => {
-    const r = await fetch(base + p);
+    const r = await fetch(base + p, { headers: { authorization: `Bearer ${PWA_OWNER_TOKEN}` } });
     const buf = Buffer.from(await r.arrayBuffer());
     return { status: r.status, ct: r.headers.get('content-type') || '', cc: r.headers.get('cache-control') || '', buf };
   };
