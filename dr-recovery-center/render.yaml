@@ -50,4 +50,12 @@ services:
       # اختياري: قاعدة هدف معزولة لاستعادة القاعدة (تُرفض إن طابقت DATABASE_URL).
       - key: DR_RECOVERY_TEST_DATABASE_URL
         sync: false
+      # RECOVERY_CENTER_OWNER_TOKEN: **مصادقة المالك لهذه الخدمة المستقلة** (إلزامية).
+      # بدونه تُرد المسارات التي تكشف بيانات وصفية لنقاط الاستعادة أو تنفّذ استعادة
+      # (/api/points · /api/verify · /api/restore) بـ401. يُرسَل كـBearer، ولا يُوضع
+      # في Git. بديل: RECOVERY_CENTER_OWNER_TOKEN_HASH (SHA-256 hex للمفتاح نفسه).
+      - key: RECOVERY_CENTER_OWNER_TOKEN
+        sync: false
+      - key: RECOVERY_CENTER_OWNER_TOKEN_HASH
+        sync: false
       # ملاحظة: DR_RECOVERY_VAULT_KEY **لا يُضبط هنا إطلاقاً** — يُدخله المالك في الواجهة فقط.

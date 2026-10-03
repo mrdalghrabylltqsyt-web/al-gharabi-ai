@@ -58,6 +58,7 @@ const SYNTH_SECRETS: Record<string, string> = {
   GEMINI_API_KEY: 'AIzaSy' + 'Z'.repeat(33),
 };
 const SQL = JSON.stringify({ backend: 'postgres', rows: [{ key: 'state', value: { users: [{ id: 'owner' }] } }] });
+const OWNER_TOKEN = 'standalone-owner-' + 'y'.repeat(30);
 
 function noSecret(obj: any): boolean {
   const text = typeof obj === 'string' ? obj : JSON.stringify(obj);
@@ -93,7 +94,8 @@ async function seedBackup(store: any, tag: string, env: any, commit = META.commi
 }
 
 async function main() {
-  const env: any = { ...SYNTH_SECRETS, DRIVE_OAUTH_CLIENT_ID: '1234567890-drive.apps.googleusercontent.com', DRIVE_OAUTH_CLIENT_SECRET: 'GOCSPX-' + 'drive-fake-test-secret', DRIVE_OAUTH_REFRESH_TOKEN: '1//fake-refresh-token-for-test' };
+  const env: any = { ...SYNTH_SECRETS, RECOVERY_CENTER_OWNER_TOKEN: OWNER_TOKEN, DRIVE_OAUTH_CLIENT_ID: '1234567890-drive.apps.googleusercontent.com', DRIVE_OAUTH_CLIENT_SECRET: 'GOCSPX-' + 'drive-fake-test-secret', DRIVE_OAUTH_REFRESH_TOKEN: '1//fake-refresh-token-for-test' };
+  const ownerAuth = { authorization: `Bearer ${OWNER_TOKEN}` };
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'gharabi-standalone-'));
 
   // ---------- A) سياسة الاحتفاظ (منطق صافٍ) ----------
@@ -373,24 +375,25 @@ async function main() {
       const html = await (await fetch(`${cbase}/`)).text();
       check('center serves Arabic page', html.includes('مركز استعادة الغرابي AI') && html.includes('DR_RECOVERY_VAULT_KEY'));
 
-      const pts = await (await fetch(`${cbase}/api/points`)).json();
+      const pts = await (await fetch(`${cbase}/api/points`, { headers: ownerAuth })).json();
       check('center lists points', pts.ok === true && pts.points.length >= 1);
+      check('center anonymous points rejected', (await fetch(`${cbase}/api/points`)).status === 401);
       const point = pts.points.find((p: any) => p.id === b.recoveryPointId);
       check('center point restorable + fields', Boolean(point && point.restorable === true && point.hashes.sourceHash && point.database.encrypted));
 
       // تحقق قراءة فقط بمفتاح خاطئ => لا نجاح.
-      const badVerify = await (await fetch(`${cbase}/api/verify`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ point: point.id, vaultKey: '77'.repeat(32) }) })).json();
+      const badVerify = await (await fetch(`${cbase}/api/verify`, { method: 'POST', headers: { 'Content-Type': 'application/json', ...ownerAuth }, body: JSON.stringify({ point: point.id, vaultKey: '77'.repeat(32) }) })).json();
       check('center verify wrong key fails', badVerify.ok === false && badVerify.report.states.vault_opened === false);
       // تحقق صحيح => جاهز.
-      const goodVerify = await (await fetch(`${cbase}/api/verify`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ point: point.id, vaultKey: VAULT_KEY }) })).json();
+      const goodVerify = await (await fetch(`${cbase}/api/verify`, { method: 'POST', headers: { 'Content-Type': 'application/json', ...ownerAuth }, body: JSON.stringify({ point: point.id, vaultKey: VAULT_KEY }) })).json();
       check('center verify ok', goodVerify.ok === true && goodVerify.report.readOnly === true && goodVerify.report.states.vault_opened === true);
       check('center verify no secret', noSecret(goodVerify));
 
       // بلا تأكيد => 428.
-      const noConfirm = await fetch(`${cbase}/api/restore`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ point: point.id }) });
+      const noConfirm = await fetch(`${cbase}/api/restore`, { method: 'POST', headers: { 'Content-Type': 'application/json', ...ownerAuth }, body: JSON.stringify({ point: point.id }) });
       check('center restore requires confirm', noConfirm.status === 428);
       // استعادة فعلية => نجاح + حالات صادقة + بلا سرّ.
-      const restore = await (await fetch(`${cbase}/api/restore`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ point: point.id, confirm: true, vaultKey: VAULT_KEY, targetEnv: 'DR_RECOVERY_TEST_DATABASE_URL=postgres://isolated/x' }) })).json();
+      const restore = await (await fetch(`${cbase}/api/restore`, { method: 'POST', headers: { 'Content-Type': 'application/json', ...ownerAuth }, body: JSON.stringify({ point: point.id, confirm: true, vaultKey: VAULT_KEY, targetEnv: 'DR_RECOVERY_TEST_DATABASE_URL=postgres://isolated/x' }) })).json();
       check('center restore ok', restore.ok === true, JSON.stringify(restore.report?.problems));
       check('center restore honest states', restore.report.states.verified === true && restore.report.states.source_restored === true && restore.report.states.service_started === false);
       check('center restore no secret', noSecret(restore));

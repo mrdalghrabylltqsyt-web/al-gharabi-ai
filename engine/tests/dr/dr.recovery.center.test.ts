@@ -43,6 +43,7 @@ const SYNTH_SECRETS: Record<string, string> = {
   GEMINI_API_KEY: 'AIzaSy' + 'Z'.repeat(33),
 };
 const SQL = JSON.stringify({ backend: 'postgres', rows: [{ key: 'state', value: { users: [{ id: 'owner' }] } }] });
+const OWNER_TOKEN = 'center-owner-' + 'z'.repeat(30);
 
 function noSecret(obj: any): boolean {
   const text = typeof obj === 'string' ? obj : JSON.stringify(obj);
@@ -62,10 +63,12 @@ function fullSource(tag: string) {
 async function main() {
   const env: any = {
     ...SYNTH_SECRETS,
+    RECOVERY_CENTER_OWNER_TOKEN: OWNER_TOKEN,
     DRIVE_OAUTH_CLIENT_ID: '1234567890-drive.apps.googleusercontent.com',
     DRIVE_OAUTH_CLIENT_SECRET: 'GOCSPX-' + 'drive-fake-test-secret',
     DRIVE_OAUTH_REFRESH_TOKEN: '1//fake-refresh-token-for-test',
   };
+  const auth = { authorization: `Bearer ${OWNER_TOKEN}` };
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'gharabi-center-'));
   const meta = { commit: 'c'.repeat(40), branch: 'main', repository: 'r/al-gharabi-ai', project: 'al-gharabi-ai' };
 
@@ -115,14 +118,15 @@ async function main() {
     check('center reachable with main Render down', health.ok === true && health.standalone === true);
     check('center reads Drive without GitHub', health.driveConfigured === true);
 
-    const pts = await (await fetch(`${base}/api/points`)).json();
+    const pts = await (await fetch(`${base}/api/points`, { headers: auth })).json();
     check('center lists points (render+github down)', pts.ok === true && pts.points.length >= 1);
+    check('anonymous center points rejected (401)', (await fetch(`${base}/api/points`)).status === 401);
 
     const point = pts.points.find((p: any) => p.id === backup.recoveryPointId);
     check('selected point restorable', Boolean(point && point.restorable === true));
 
     const restore = await (await fetch(`${base}/api/restore`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      method: 'POST', headers: { 'Content-Type': 'application/json', ...auth },
       body: JSON.stringify({ point: point.id, confirm: true, vaultKey: VAULT_KEY }),
     })).json();
     check('center restore ok with render+github down', restore.ok === true, JSON.stringify(restore.report?.problems));
@@ -139,7 +143,7 @@ async function main() {
     const pointsAfter = await store.listRestorePoints();
     const folderAfter = pointsAfter.data.map((p: any) => ({ id: p.id, folderId: p.folderId }));
     check('original point folder unchanged', JSON.stringify(folderAfter) === JSON.stringify(pointFolderBefore));
-    const recheck = await (await fetch(`${base}/api/points`)).json();
+    const recheck = await (await fetch(`${base}/api/points`, { headers: auth })).json();
     check('original point still restorable after restore', recheck.points.find((p: any) => p.id === point.id)?.restorable === true);
   } finally {
     await new Promise<void>((resolve) => server.close(() => resolve()));

@@ -40,6 +40,7 @@
 | `DR_RECOVERY_MASTER_KEY` / `DRIVE_DB_BACKUP_KEY` | فكّ الأسرار/القاعدة |
 | `DRIVE_TOKEN_ENCRYPTION_KEY` | فكّ رمز تجديد Drive المخزّن (يشفّر رمز التجديد في قاعدة الحالة) |
 | `DR_STATE_DATABASE_URL` | اتصال **قراءة فقط** بجدول حالة الغرابي (Neon) لقراءة رمز التجديد المشفّر |
+| `RECOVERY_CENTER_OWNER_TOKEN` | **مصادقة مالك مركز الاستعادة** — بدونه تُرد المسارات الحساسة 401 |
 | `DRIVE_OAUTH_CLIENT_ID/SECRET` | اعتماد OAuth لعميل Drive |
 | `DRIVE_OAUTH_REFRESH_TOKEN` | **توافق خلفي فقط** — لا يُضبط؛ الرمز يبقى مشفّراً في قاعدة الحالة |
 
