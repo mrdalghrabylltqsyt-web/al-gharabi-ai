@@ -461,11 +461,30 @@ function allowAuthAttempt(key: string, limit = 12): boolean {
 
 // Baseline security headers without adding another dependency.
 app.disable("x-powered-by");
+// SEC-03: سياسة أمان المحتوى (CSP) في الإنتاج فقط (التطوير يستخدم Vite middlewares
+// ويحتاج inline/ws). تسمح صراحةً بالمصادر الخارجية الفعلية فقط: خطوط Google،
+// وGoogle Sign-In (gsi). لا يوجد dangerouslySetInnerHTML في الواجهة، ولا inline
+// <script> في dist، لذا script-src بلا unsafe-inline. style-src يسمح inline لأن
+// React يستخدم style={{}} لأشرطة التقدم (خصائص لا سكربتات).
+const CONTENT_SECURITY_POLICY = [
+  "default-src 'self'",
+  "script-src 'self' https://accounts.google.com https://accounts.gstatic.com",
+  "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
+  "font-src 'self' https://fonts.gstatic.com data:",
+  "img-src 'self' data: blob:",
+  "connect-src 'self' https://accounts.google.com",
+  "frame-src https://accounts.google.com",
+  "frame-ancestors 'none'",
+  "base-uri 'self'",
+  "form-action 'self'",
+  "object-src 'none'",
+].join("; ");
 app.use((_req, res, next) => {
   res.setHeader("X-Content-Type-Options", "nosniff");
   res.setHeader("X-Frame-Options", "DENY");
   res.setHeader("Referrer-Policy", "no-referrer");
   res.setHeader("Permissions-Policy", "camera=(), microphone=(), geolocation=()");
+  if (process.env.NODE_ENV === "production") res.setHeader("Content-Security-Policy", CONTENT_SECURITY_POLICY);
   next();
 });
 
@@ -9472,6 +9491,10 @@ function rateLimitAI(userId: string): boolean {
 
 // Lightweight housekeeping: bound in-memory request/session maps so a long-lived
 // process does not grow without limit. No external calls and no Gemini usage.
+// SEC-04: بعض القوائم كانت تنمو بلا حد (جلسات OAuth معلّقة لكل state، وذاكرة
+// فحص بدء OAuth لكل منصة، ونوافذ معدّل عمليات YouTube لكل نوع). كلها الآن
+// مقيّدة بـTTL صريح مطابق لعمرها الفعلي. لا نحذف قوائم الإبطال (revokedSessions/
+// userRevocations) بالتقييد العددي لأنها مصدر صلاحية أمني لا يجوز إسقاطه.
 function cleanupRuntimeState() {
   const now = Date.now();
   for (const [sid, exp] of revokedSessions) if (exp < now) revokedSessions.delete(sid);
@@ -9480,6 +9503,16 @@ function cleanupRuntimeState() {
   for (const [userId, window] of requestWindow) if (now - window.startedAt >= 60_000) requestWindow.delete(userId);
   for (const [key, window] of challengeWindow) if (now - window.startedAt >= 15 * 60 * 1000) challengeWindow.delete(key);
   for (const [key, window] of authAttemptWindow) if (now - window.startedAt >= 15 * 60 * 1000) authAttemptWindow.delete(key);
+  // جلسات OAuth المعلّقة تنتهي بصلاحيتها، والذاكرة التشخيصية لبدء OAuth بـTTL قصير.
+  for (const [state, pending] of pendingOAuth) if (pending.expiresAt < now) pendingOAuth.delete(state);
+  for (const [platform, entry] of oauthStartPreflightCache) if (now - entry.at >= OAUTH_PREFLIGHT_TTL_MS) oauthStartPreflightCache.delete(platform);
+  for (const [platform, entry] of lastOAuthPreflight) if (now - entry.at >= OAUTH_PREFLIGHT_TTL_MS) lastOAuthPreflight.delete(platform);
+  for (const [key, list] of youtubeOperationWindows) {
+    const windowMs = Math.max(1000, Number(process.env.YOUTUBE_OP_RATE_WINDOW_MS || 60_000));
+    const live = list.filter((t) => now - t < windowMs);
+    if (live.length) youtubeOperationWindows.set(key, live);
+    else youtubeOperationWindows.delete(key);
+  }
   aiEngine.pruneCache();
 }
 const runtimeCleanupTimer = setInterval(cleanupRuntimeState, 5 * 60 * 1000);
@@ -10335,8 +10368,15 @@ app.get("/api/providers/capabilities", authenticateToken, (_req,res)=>{ res.json
 app.post("/api/webhooks/:platform", (req,res)=>{
   const platform=String(req.params.platform); if(!SUPPORTED_PLATFORMS.some((p:any)=>p.id===platform)) return res.status(404).json({success:false,error:"المنصة غير مدعومة."});
   if(!WEBHOOK_SECRET) return res.status(503).json({success:false,error:"WEBHOOK_SECRET غير مضبوط؛ تم تعطيل استقبال Webhook لحماية النظام."});
-  const signature=String(req.headers["x-gharabi-signature"]||""); const raw=JSON.stringify(req.body||{}); const expected=crypto.createHmac("sha256",WEBHOOK_SECRET).update(raw).digest("hex");
-  if(!signature || signature.length!==expected.length || !crypto.timingSafeEqual(Buffer.from(signature),Buffer.from(expected))) return res.status(401).json({success:false,error:"توقيع Webhook غير صالح."});
+  // SEC-02: التحقق على الجسم الخام الحقيقي (req.rawBody) لا على إعادة تسلسل JSON.
+  // إعادة التسلسل تعتمد على تنسيق Node (مسافات/ترتيب مفاتيح) وقد تختلف عن بايتات
+  // المرسل، فترفض توقيعاً شرعياً. نرفض صراحةً إن غاب الجسم الخام بدل التحقق الأعمى
+  // (نفس نمط Facebook/Instagram/TikTok). المقارنة بزمن ثابت داخل verifier الموحّد.
+  if (typeof (req as any).rawBody !== "string") return res.status(400).json({success:false,error:"جسم الطلب الخام غير متوفر للتحقق من التوقيع."});
+  const rawBody=String((req as any).rawBody ?? "");
+  const verifier=hmacSignatureVerifier("x-gharabi-signature","sha256");
+  const verification=verifier.verify({headers:req.headers as Record<string,string|undefined>,rawBody,secret:WEBHOOK_SECRET});
+  if(!verification.ok) return res.status(401).json({success:false,error:"توقيع Webhook غير صالح."});
   const eventId=cleanText(req.headers["x-event-id"],160)||workspaceId("event"); if((workspace as any).webhookEvents.some((x:any)=>x.id===eventId)) return res.json({success:true,duplicate:true});
   const event={id:eventId,platform,type:cleanText(req.body?.type,100)||"unknown",payload:req.body?.data||req.body,receivedAt:new Date().toISOString()};
   (workspace as any).webhookEvents.unshift(event); (workspace as any).webhookEvents=(workspace as any).webhookEvents.slice(0,10000); (workspace as any).providerEvents.unshift({id:workspaceId("pevent"),platform,eventId,type:event.type,receivedAt:event.receivedAt}); (workspace as any).providerEvents=(workspace as any).providerEvents.slice(0,10000); persistState();
