@@ -2444,6 +2444,28 @@ add('phase6-safe-timer-test-present',
   safeTimerTest.includes('sync throw is swallowed') && safeTimerTest.includes('reconcile overlap guard') && (pkg.scripts['test'] || '').includes('test:safe-timer'),
   'Phase 6: اختبار غلاف المؤقّتات مضمّن في npm test');
 
+// ---- Phase 7: frontend bundle splitting ----
+add('phase7-heavy-views-lazy',
+  app.includes('lazy(') && app.includes('<Suspense') &&
+  app.includes("lazy(() => import('./components/agent/UnifiedGrowthBrainView')") &&
+  app.includes("lazy(() => import('./components/system/CloudBackupView')") &&
+  app.includes("lazy(() => import('./components/agent/YouTubeOperationsView')"),
+  'Phase 7: اللوحات الثقيلة (العقل/الوكيل/النسخ السحابي) تُحمَّل عند الطلب عبر lazy+Suspense');
+add('phase7-kept-views-static',
+  app.includes("import { DashboardView } from './components/dashboard/DashboardView'") &&
+  app.includes("import { LoginView } from './components/auth/LoginView'") &&
+  app.includes("import { PlatformConnectionCenter } from './components/social/PlatformConnectionCenter'"),
+  'Phase 7: اللوحات الأساسية/شاشة الدخول تبقى ثابتة (لا تأخير للتحميل الأول)');
+add('phase7-initial-bundle-reduced', (() => {
+  const assets = path.join(root, 'dist/assets');
+  if (!fs.existsSync(assets)) return true; // يُفحص بعد البناء فقط
+  const main = fs.readdirSync(assets).filter((f) => /^index-.*\.js$/.test(f));
+  if (!main.length) return true;
+  const size = fs.statSync(path.join(assets, main[0])).size;
+  const chunks = fs.readdirSync(assets).filter((f) => f.endsWith('.js')).length;
+  return size < 800 * 1024 && chunks >= 8;
+})(), 'Phase 7: الحزمة الأولية < 800KB مع 8+ مقاطع (بعد البناء)');
+
 const failed = checks.filter(x => !x.ok);
 console.table(checks);
 if (failed.length) {

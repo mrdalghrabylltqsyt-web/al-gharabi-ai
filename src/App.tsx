@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState } from 'react';
+import React, { useState, lazy, Suspense } from 'react';
 import { AppProvider, useApp } from './context/AppContext';
 import { Header } from './components/common/Header';
 import { Sidebar } from './components/common/Sidebar';
@@ -15,16 +15,6 @@ import { ContentEngineView } from './components/content/ContentEngineView';
 import { ApprovalWorkflowView } from './components/approval/ApprovalWorkflowView';
 import { CustomerCenterView } from './components/customers/CustomerCenterView';
 import { ShowroomDatabaseView } from './components/database/ShowroomDatabaseView';
-import { CentralAgentView } from './components/agent/CentralAgentView';
-import { CentralAgentConsole } from './components/agent/CentralAgentConsole';
-import { YouTubeOperationsView } from './components/agent/YouTubeOperationsView';
-import { BrainCommandView } from './components/agent/BrainCommandView';
-import { CentralBrainView } from './components/agent/CentralBrainView';
-import { CommercialBrainView } from './components/agent/CommercialBrainView';
-import { GrowthBrainView } from './components/agent/GrowthBrainView';
-import { SalesDashboardView } from './components/agent/SalesDashboardView';
-import { UnifiedGrowthBrainView } from './components/agent/UnifiedGrowthBrainView';
-import { MarketingAgentView } from './components/agent/MarketingAgentView';
 import { ContentCalendarView } from './components/calendar/ContentCalendarView';
 import { AnalyticsView } from './components/analytics/AnalyticsView';
 import { UserManagementView } from './components/users/UserManagementView';
@@ -39,8 +29,22 @@ import { SalesCenterView } from './components/sales/SalesCenterView';
 import { ExecutiveCommandView } from './components/executive/ExecutiveCommandView';
 import { BusinessSuiteView } from './components/business/BusinessSuiteView';
 import { OperationsControlView } from './components/control/OperationsControlView';
-import { CloudBackupView } from './components/system/CloudBackupView';
 import { CheckCircle2, ShieldCheck } from 'lucide-react';
+
+// تحسين الأداء (Phase 7): لوحات العقل/الوكيل الثقيلة تُحمَّل عند الطلب فقط (code
+// splitting)، فلا يدفع مستخدم شاشة الدخول/اللوحة ثمن تحميلها في الحزمة الأولية.
+// تُبقى الحالات في switch كما هي، فيستمر كل فحص عقد (App.tsx يحتوي 'case ...') بالنجاح.
+const CentralAgentView = lazy(() => import('./components/agent/CentralAgentView').then((m) => ({ default: m.CentralAgentView })));
+const CentralAgentConsole = lazy(() => import('./components/agent/CentralAgentConsole').then((m) => ({ default: m.CentralAgentConsole })));
+const YouTubeOperationsView = lazy(() => import('./components/agent/YouTubeOperationsView').then((m) => ({ default: m.YouTubeOperationsView })));
+const BrainCommandView = lazy(() => import('./components/agent/BrainCommandView').then((m) => ({ default: m.BrainCommandView })));
+const CentralBrainView = lazy(() => import('./components/agent/CentralBrainView').then((m) => ({ default: m.CentralBrainView })));
+const CommercialBrainView = lazy(() => import('./components/agent/CommercialBrainView').then((m) => ({ default: m.CommercialBrainView })));
+const GrowthBrainView = lazy(() => import('./components/agent/GrowthBrainView').then((m) => ({ default: m.GrowthBrainView })));
+const SalesDashboardView = lazy(() => import('./components/agent/SalesDashboardView').then((m) => ({ default: m.SalesDashboardView })));
+const UnifiedGrowthBrainView = lazy(() => import('./components/agent/UnifiedGrowthBrainView').then((m) => ({ default: m.UnifiedGrowthBrainView })));
+const MarketingAgentView = lazy(() => import('./components/agent/MarketingAgentView').then((m) => ({ default: m.MarketingAgentView })));
+const CloudBackupView = lazy(() => import('./components/system/CloudBackupView').then((m) => ({ default: m.CloudBackupView })));
 
 // رسائل عودة تفويض Google Drive (بلا أي سرّ): تُقرأ من معامل dr في الرابط.
 const DR_RETURN_MESSAGES: Record<string, string> = {
@@ -181,7 +185,15 @@ const AppContent: React.FC = () => {
           <Header onOpenMobileMenu={() => setMobileOpen(true)} />
 
           <main className="flex-1 p-4 sm:p-6 lg:p-8 max-w-7xl w-full mx-auto">
-            {renderActiveView()}
+            <Suspense
+              fallback={
+                <div className="flex items-center justify-center py-24 text-slate-400 text-sm font-bold">
+                  جارٍ تحميل الوحدة...
+                </div>
+              }
+            >
+              {renderActiveView()}
+            </Suspense>
           </main>
 
           {/* Footer */}
