@@ -54,6 +54,42 @@ src/components/agent/BrainCommandView.tsx     لوحة العقل المفكر
 8. **تعطل المزود لا يُسقط النظام**: مسارات AI تعيد محتوى بديلاً صالحاً، ولا تعيد 503 أبداً.
 9. **الحالات الحساسة والسبام** تتطلب مراجعة بشرية؛ لا رد آلي عليها.
 10. **حماية الرد المكرر** عبر معرّف التعليق الخارجي (يمنع webhook replay/retry من إنشاء ردود متعددة).
+11. **نطاق المشروع: سوشيال + AI + تسويق فقط.** لا ERP/Inventory/Sales/Finance/CRM فعّالاً بلا عزل. أي سطح من هذه العائلات يُعزَل افتراضياً خلف مفتاح بيئة صريح (fail-closed) أو يُحذف — تفصيله في قسم «عزل أسطح ERP/CRM/المالية القديمة».
+
+## عزل أسطح ERP/CRM/المالية القديمة (2026-10-04) — تطبيق مبدأ النطاق
+**القرار:** هذه الأسطح **خارج النطاق المعلن** (سوشيال + AI + تسويق)، فتُعطَّل افتراضياً
+برد **404 صريح** بترميز `SCOPE_DISABLED` **قبل أي مصادقة**، وتُعاد بالكامل بضبط
+`GHARABI_ENABLE_LEGACY_ERP_SCOPE=true`. **لم يُحذف أي كود ولا بيانات** — العزل فقط.
+
+**لماذا العزل لا الحذف؟** الـAudit الفعلي (`grep` على كل المستودع) أثبت أن هذه المسارات
+**مستهلكة فعلياً من واجهة أمامية مُثبَّتة**، فحذفها يكسر ميزات قائمة (خارج نطاق هذه المهمة):
+- `/api/inventory` + `/api/inventory/:id/adjust` → `src/components/inventory/InventoryView.tsx` (تبويب `inventory`)
+- `/api/reports/operations` → `src/components/reports/ReportsView.tsx` (تبويب `reports`)
+- `/api/crm/leads` (GET/POST/PATCH) → `src/components/operations/OperationsView.tsx` (تبويب `operations`)
+- `/api/purchases` (GET/POST) → `src/components/business/BusinessSuiteView.tsx` (تبويب `business`)
+- `/api/finance/overview` → `src/components/finance/FinanceView.tsx` (تبويب `finance`)
+- `/api/finance/aging` → `src/components/executive/ExecutiveCommandView.tsx` (تبويب `executive`)
+- بلا استهلاك مباشر: `/api/inventory/movements`, `/api/inventory/alerts`,
+  `/api/customers/360`, `/api/crm/leads/from-conversation/:id`, `/api/crm/follow-ups`,
+  `/api/crm/follow-ups/today` (الطريقة `getTodayFollowUps` معرّفة بلا مستدعٍ) — لكنها
+  عُزلت ضمن نفس البادئات لأنها من نفس العائلات.
+
+**التفاصيل:**
+- **17 مساراً** تحت 6 بادئات: `/api/inventory`, `/api/customers/360`, `/api/reports/operations`,
+  `/api/crm`, `/api/purchases`, `/api/finance`. **كلها عُزلت** (لم يُحذف أي مسار).
+- الحارس في `server.ts` (`legacyErpScopeEnabled`/`LEGACY_ERP_ROUTE_PREFIXES`/
+  `isLegacyErpRouteRequest`) مُسجَّل **قبل** أول مسار من هذه العائلات، مطابقة غير حسّاسة
+  لحالة الأحرف مع احترام حدّ المسار (لا تلتقط `/api/crmx`).
+- **الواجهة:** مداخل التبويبات التابعة (executive/business/finance/inventory/reports/operations)
+  مخفية في `Sidebar.tsx` عبر `LEGACY_ERP_NAV_ENABLED=false`. تبويبا `sales` و`control`
+  ليسا معزولين (يستخدمان `/api/sales` و`/api/control/*` غير المشمولة) فبقيَا ظاهرين.
+- **المراقبة:** `/api/health` يعلن `legacyErpScope: { enabled, isolated, envName, prefixes }`
+  (منطقي بلا قيمة سرّية).
+- **الاختبار:** `engine/tests/scope.legacy.erp.isolation.test.ts` (`npm run test:scope-legacy-erp`)
+  يشغّل خادماً حقيقياً ويثبت العزل لكل المسارات (GET/POST/PATCH/DELETE، حالة الأحرف،
+  حدّ المسار، المسارات المشتركة/الداخلية غير محجوبة) + العودة عند تفعيل المفتاح.
+- **الفحوص:** 7 فحوص `legacy-erp-*` في `final-audit.mjs` تمنع عودة أي مسار من هذه
+  العائلات فعّالاً بلا عزل (البادئات تغطي أي مسار فرعي جديد).
 
 ## سياسة موديل Gemini (مهم — صُحّحت بعد تدقيق 2026-09-18)
 - `engine/ai/models.ts` هو **المصدر الوحيد** لمعرّفات الموديلات. يوجد فحص يمنع ظهور أي معرّف `gemini-x.y` في أي ملف إنتاج آخر.

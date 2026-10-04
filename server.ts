@@ -8382,6 +8382,48 @@ app.post("/api/workspace/conversations", authenticateToken, (req, res) => {
 });
 
 
+// -----------------------------------------------------------------------------
+// SCOPE ISOLATION (LEGACY ERP): أسطح Inventory/CRM/Finance/Customers-360/Purchases/
+// Reports **خارج نطاق المشروع المعلن** (سوشيال + AI + تسويق). تُعطَّل افتراضياً برد
+// **404 صريح** قبل أي مصادقة (لا 200 HTML)، وتُعاد بالكامل بضبط
+// `GHARABI_ENABLE_LEGACY_ERP_SCOPE=true`. لا يُزال أي كود ولا بيانات عند التعطيل.
+// النمط مطابق لعزل ERP في فرع phase-1d، بمتغيّر بيئة مستقل واضح الاسم.
+// المطابقة غير حسّاسة لحالة الأحرف (Express يوجّه كذلك) مع احترام حدّ المسار كي لا
+// يلتقط `/api/crm` مساراً مثل `/api/crmx`.
+// -----------------------------------------------------------------------------
+const LEGACY_ERP_ROUTE_PREFIXES: readonly string[] = Object.freeze([
+  "/api/inventory",
+  "/api/customers/360",
+  "/api/reports/operations",
+  "/api/crm",
+  "/api/purchases",
+  "/api/finance",
+]);
+function legacyErpScopeEnabled(): boolean {
+  const raw = String(process.env.GHARABI_ENABLE_LEGACY_ERP_SCOPE ?? "").trim().toLowerCase();
+  return raw === "true" || raw === "1" || raw === "on" || raw === "yes";
+}
+function isLegacyErpRouteRequest(rawUrl: string): boolean {
+  const path = String(rawUrl || "").split("?")[0].split("#")[0].replace(/\/+$/, "").toLowerCase() || "/";
+  for (const prefix of LEGACY_ERP_ROUTE_PREFIXES) {
+    if (path === prefix || path.startsWith(prefix + "/")) return true;
+  }
+  return false;
+}
+if (!legacyErpScopeEnabled()) {
+  app.use((req, res, next) => {
+    if (isLegacyErpRouteRequest(String(req.url || ""))) {
+      return res.status(404).json({
+        success: false,
+        error: "هذا السطح (Inventory/CRM/Finance) خارج نطاق المشروع المعلن (سوشيال + AI + تسويق).",
+        code: "SCOPE_DISABLED",
+        note: "لإعادة التفعيل: GHARABI_ENABLE_LEGACY_ERP_SCOPE=true. لا يُزال الكود ولا البيانات.",
+      });
+    }
+    next();
+  });
+}
+
 // -------------------------------------------------------------
 // Inventory + customer 360 + operational reporting. Deterministic, durable and Gemini-free.
 function inventoryProductView(product:any){ const qty=Math.max(0,Math.floor(Number(product.stockQuantity||0))); const reorder=Math.max(0,Math.floor(Number(product.reorderLevel||0))); return {...product,stockQuantity:qty,reorderLevel:reorder,stockStatus:qty===0?"out":(reorder>0&&qty<=reorder?"low":"ok")}; }
@@ -11297,6 +11339,14 @@ app.get("/api/health", (_req, res) => {
     // حالة مفتاح تشفير توكنات المنصات: تفصل missing من invalid بلا كشف القيمة،
     // فتعكس نفس الحكم الذي يستخدمه encryptSecret/credentials فعلياً.
     platformTokenKey: { state: tokenKey.state, envName: "PLATFORM_TOKEN_ENCRYPTION_KEY", acceptedBytes: 32, reason: tokenKey.reason },
+    // حالة عزل أسطح ERP/CRM/المالية القديمة (منطقي فقط بلا قيمة سرّية): تُعلن ما إذا
+    // كانت هذه الأسطح معزولة برد 404 SCOPE_DISABLED افتراضياً، ومتغيّر الإعادة.
+    legacyErpScope: {
+      enabled: legacyErpScopeEnabled(),
+      isolated: !legacyErpScopeEnabled(),
+      envName: "GHARABI_ENABLE_LEGACY_ERP_SCOPE",
+      prefixes: [...LEGACY_ERP_ROUTE_PREFIXES],
+    },
     // حالة تطبيق Meta غير السرّية (منطقي فقط): تفصل missing من invalid وبين
     // تكوين المعرّف والسرّ، فتكشف سبب صفحة «حدث خطأ ما» قبل إرسال المالك إليها.
     metaOAuth: (() => {

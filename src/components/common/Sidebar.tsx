@@ -36,6 +36,14 @@ interface SidebarProps {
 export const Sidebar: React.FC<SidebarProps> = ({ mobileOpen, onCloseMobile }) => {
   const { activeTab, setActiveTab, notificationBadge, currentUser, showroomInfo } = useApp();
 
+  // SCOPE ISOLATION (LEGACY ERP): أسطح Inventory/CRM/Finance/Customers-360/Purchases/
+  // Reports خارج نطاق المشروع المعلن (سوشيال + AI + تسويق)، ومعزولة على الخادم
+  // افتراضياً (404 SCOPE_DISABLED). نخفي مداخلها كي لا تُعرض واجهات غير قابلة
+  // للاستخدام. تُعاد بإطفاء العزل على الخادم (GHARABI_ENABLE_LEGACY_ERP_SCOPE=true)
+  // وضبط هذا الثابت true. (تبويبا sales/control غير معزولين فبقيَا ظاهرين.)
+  const LEGACY_ERP_NAV_ENABLED = false;
+  const LEGACY_ERP_TAB_IDS = new Set(['executive', 'business', 'finance', 'inventory', 'reports', 'operations']);
+
   const navigationItems = [
     {
       id: 'executive',
@@ -281,7 +289,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ mobileOpen, onCloseMobile }) =
             أقسام النظام
           </div>
 
-          {navigationItems.filter((item: any) => !item.ownerOnly || currentUser?.role === 'owner').map((item) => {
+          {navigationItems.filter((item: any) => (!item.ownerOnly || currentUser?.role === 'owner') && (LEGACY_ERP_NAV_ENABLED || !LEGACY_ERP_TAB_IDS.has(item.id))).map((item) => {
             const Icon = item.icon;
             const isActive = activeTab === item.id;
 

@@ -2660,6 +2660,57 @@ add('watcher-advisory-not-authority',
     return allExpected && hitsHealth && !anyFullDay;
   })(), 'نبضة الإيقاظ محصورة بنافذة 18 ساعة (كل جدول cron = "*/10 3-20 * * *") وتستهدف /api/health فقط، بلا أي جدول يغطّي 24 ساعة');
 
+  // -------------------------------------------------------------------------
+  // SCOPE ISOLATION (LEGACY ERP): أسطح Inventory/CRM/Finance/Customers-360/
+  // Purchases/Reports خارج نطاق المشروع المعلن (سوشيال + AI + تسويق). تمنع هذه
+  // الفحوص عودة أي مسار من هذه العائلات فعّالاً بلا عزل — كأي مسار جديد يُضاف
+  // مستقبلاً ضمن نفس البادئات (البادئات كافية لتغطية أي مسار فرعي جديد).
+  // -------------------------------------------------------------------------
+  add('legacy-erp-scope-guard-present',
+    server.includes('legacyErpScopeEnabled') &&
+    server.includes('LEGACY_ERP_ROUTE_PREFIXES') &&
+    server.includes('isLegacyErpRouteRequest') &&
+    server.includes('GHARABI_ENABLE_LEGACY_ERP_SCOPE') &&
+    server.includes('SCOPE_DISABLED'),
+    'حارس عزل أسطح ERP/CRM/المالية القديمة موجود في server.ts');
+
+  add('legacy-erp-scope-fail-closed',
+    /function legacyErpScopeEnabled\(\)[\s\S]{0,220}return raw === "true" \|\| raw === "1" \|\| raw === "on" \|\| raw === "yes"/.test(server) &&
+    server.includes('if (!legacyErpScopeEnabled())') &&
+    !/process\.env\.GHARABI_ENABLE_LEGACY_ERP_SCOPE\s*=\s*["']?(true|1|on|yes)/i.test(server) &&
+    !server.includes('GHARABI_ENABLE_LEGACY_ERP_SCOPE ?? "true"'),
+    'الحارس fail-closed: لا قيمة تفعيل مكتوبة في الكود ولا افتراضي مُفعّل');
+
+  add('legacy-erp-prefixes-complete',
+    ['/api/inventory', '/api/customers/360', '/api/reports/operations', '/api/crm', '/api/purchases', '/api/finance']
+      .every((p) => server.includes(`"${p}"`)),
+    'بادئات أسطح ERP/CRM/المالية الست كلها معزولة');
+
+  add('legacy-erp-guard-before-routes', (() => {
+    const guardIdx = server.indexOf('if (!legacyErpScopeEnabled())');
+    if (guardIdx < 0) return false;
+    const routeRe = /app\.(?:get|post|patch|delete|put|use)\(\s*"\/api\/(?:inventory|customers\/360|reports\/operations|crm|purchases|finance)[/"]/g;
+    let m; let earliest = Infinity;
+    while ((m = routeRe.exec(server))) { if (m.index < earliest) earliest = m.index; }
+    return earliest !== Infinity && guardIdx < earliest;
+  })(), 'حارس العزل مسجَّل قبل أول مسار من أسطح ERP/CRM/المالية (فلا مسار فعّال بلا عزل)');
+
+  add('legacy-erp-ui-nav-gated',
+    sidebar.includes('LEGACY_ERP_NAV_ENABLED') &&
+    sidebar.includes('LEGACY_ERP_TAB_IDS') &&
+    /LEGACY_ERP_NAV_ENABLED \|\| !LEGACY_ERP_TAB_IDS\.has\(item\.id\)/.test(sidebar),
+    'مداخل الواجهة لأسطح ERP/CRM/المالية مخفية افتراضياً في Sidebar');
+
+  add('legacy-erp-health-exposed',
+    server.includes('legacyErpScope') &&
+    /legacyErpScope:\s*\{[\s\S]{0,200}isolated:\s*!legacyErpScopeEnabled\(\)/.test(server),
+    '/api/health يعلن حالة عزل أسطح ERP/CRM/المالية (منطقي بلا قيمة سرّية)');
+
+  add('legacy-erp-isolation-test',
+    fs.existsSync(path.join(root, 'engine/tests/scope.legacy.erp.isolation.test.ts')) &&
+    read('package.json').includes('test:scope-legacy-erp'),
+    'اختبار عزل أسطح ERP/CRM/المالية موجود ومربوط في npm test');
+
   const failed = checks.filter(x => !x.ok);
 console.table(checks);
 if (failed.length) {
