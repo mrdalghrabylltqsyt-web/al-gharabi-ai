@@ -103,8 +103,23 @@ const safeAdvisory: CommentDecision = decideCommentAction({
   const outCtx = resolveCommentExecution({ ...base, centralDecision: allowed, belongsToChannel: false });
   check('1m خارج سياق القناة ⇒ تجاهل', outCtx.action === 'skip' && outCtx.code === 'SKIP_OUT_OF_CHANNEL_CONTEXT');
 
+  // Priority #2: استفسار سعر مع حقائق منتج موثّقة فعلاً ⇒ يُرد (بلا اختراع)،
+  // بينما الشكوى/الحساسة تبقى تصعيداً دائماً حتى مع الحقائق، وغياب الحقائق يُصعّد.
+  const priceVerified = resolveCommentExecution({ ...base, centralDecision: allowed, centralEscalationReason: 'price_unverified', priceFactsVerified: true });
+  check('1q سعر موثّق فعلاً ⇒ رد (لا تصعيد)', priceVerified.action === 'reply' && priceVerified.code === 'REPLY_ALLOWED', `${priceVerified.action}/${priceVerified.code}`);
+  const priceStillSensitive = resolveCommentExecution({ ...base, centralDecision: allowed, centralEscalationReason: 'price_unverified', priceFactsVerified: false });
+  check('1r سعر بلا حقائق ⇒ تصعيد كالسابق', priceStillSensitive.action === 'escalate' && priceStillSensitive.code === 'ESCALATE_BUSINESS_INQUIRY');
+  const complaintWithFacts = resolveCommentExecution({ ...base, centralDecision: allowed, centralEscalationReason: 'complaint', priceFactsVerified: true });
+  check('1s الشكوى تبقى تصعيداً حتى مع حقائق المنتج', complaintWithFacts.action === 'escalate' && complaintWithFacts.code === 'ESCALATE_SENSITIVE');
+  const sensitiveWithFacts = resolveCommentExecution({ ...base, centralDecision: allowed, centralEscalationReason: 'sensitive', priceFactsVerified: true });
+  check('1t الحساس يبقى تصعيداً حتى مع حقائق المنتج', sensitiveWithFacts.action === 'escalate' && sensitiveWithFacts.code === 'ESCALATE_SENSITIVE');
+
   // Source: the watcher route in server.ts consumes the central decision (single authority).
   const server = readFileSync(join(ROOT, 'server.ts'), 'utf8');
+  // المصدر الواحد: الخادم يحسم حقائق المنتج من الفيديو ويغذّي بها القرار والرد.
+  check('1u الخادم يحسم منتج الفيديو (مصدر صريح)', server.includes('resolveYouTubeVideoProduct('));
+  check('1v الخادم يمرّر priceFactsVerified للقرار', server.includes('priceFactsVerified,'));
+  check('1w الخادم يمرّر productId لمنفّذ الرد', /executeYouTubeReply\(\{ commentId: String\(c\.commentId\)[\s\S]{0,160}?productId:/.test(server));
   check('1n المسار يقرأ قرار العقل المركزي للمر الحدث', server.includes('centralActionDecisionForEvent('));
   check('1o المسار يستخدم resolveCommentExecution (لا قراراً مستقلاً)', server.includes('resolveCommentExecution('));
   check('1p لا تنفيذ رد مباشر من قرار مستقل (decideCommentAction استشاري)', server.includes("centralDecision: centralDecision ?? 'FAILED_SAFE'"));

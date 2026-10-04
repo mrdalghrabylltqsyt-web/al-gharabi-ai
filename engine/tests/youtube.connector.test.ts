@@ -630,6 +630,47 @@ async function integrationTests(): Promise<void> {
     mock.state.comments = fuComments;
     await fetch(`${BASE}/api/agent/youtube/watcher/controls`, { method: 'POST', headers: auth, body: JSON.stringify({ autoReply: false, paused: false }) });
 
+    group('12k-7) تكامل: بيانات المنتج الحقيقية → الرد على استفسار السعر (أولوية #2)');
+    // منتج حقيقي بسعر مسجّل + فيديو مرتبط به (طابور محتوى منشور). استفسار السعر
+    // يُرد من بيانات المعرض؛ وغياب الربط يُبقي التصعيد (لا اختراع سعر).
+    const prodRes = await (await fetch(`${BASE}/api/workspace/products`, {
+      method: 'POST', headers: auth,
+      body: JSON.stringify({ name: 'ثلاجة كولر 18 قدم', cashPrice: 1000000, downPaymentPercent: 20, durationMonths: 12, inStock: true, category: 'appliances' }),
+    })).json();
+    const productId = prodRes.product?.id as string;
+    check('12k-7: أُنشئ منتج حقيقي بسعر مسجّل', Boolean(productId) && prodRes.product?.cashPrice === 1000000);
+    // فيديو جديد مرتبط بالمنتج: نشره يربط productId بسجل الفيديو الحقيقي.
+    mock.state.videos = [...mock.state.videos, { id: 'vid_product', title: 'ثلاجة كولر 18 قدم', publishedAt: '2026-10-01T10:00:00Z', viewCount: 0, likeCount: 0, commentCount: 0, tags: [] }];
+    mock.state.uploadedVideoId = 'vid_product_uploaded';
+    mock.state.lastUploadBody = null;
+    const pubRes = await (await fetch(`${BASE}/api/platforms/youtube/publish`, {
+      method: 'POST', headers: auth,
+      body: JSON.stringify({ title: 'ثلاجة كولر 18 قدم — تقسيط', description: 'تفاصيل التقسيط', approved: true, privacyStatus: 'public', videoBase64: MP4_B64, productId }),
+    })).json();
+    check('12k-7: نُشر الفيديو المرتبط بالمنتج', Boolean(pubRes.externalVideoId), JSON.stringify(pubRes.externalVideoId));
+    // اجعل المحاكي يخدم الفيديو المرتبط فعلاً في playlistItems/videos.list.
+    mock.state.videos = [...mock.state.videos.filter((v) => v.id !== 'vid_product'), { id: pubRes.externalVideoId, title: 'ثلاجة كولر 18 قدم — تقسيط', publishedAt: '2026-10-01T10:00:00Z', viewCount: 0, likeCount: 0, commentCount: 0, tags: [] }];
+    await fetch(`${BASE}/api/platforms/youtube/delegation`, { method: 'POST', headers: auth, body: JSON.stringify({ actions: ['reply'] }) });
+    await fetch(`${BASE}/api/agent/youtube/watcher/controls`, { method: 'POST', headers: auth, body: JSON.stringify({ enabled: true, autoReply: true, paused: false, humanReviewMode: false }) });
+    const savedComments7 = mock.state.comments;
+    mock.state.comments = [{ id: 'cmt_price_linked', threadId: 'thr_pl', videoId: pubRes.externalVideoId, author: 'أبو محمد', text: 'كم السعر؟', publishedAt: '2026-10-01T11:00:00Z', likeCount: 0 }];
+    mock.state.lastInsertPath = null; mock.state.lastCommentBody = null;
+    const pollLinked = await (await fetch(`${BASE}/api/agent/youtube/watcher/poll`, { method: 'POST', headers: auth })).json();
+    const linkedText = String(mock.state.lastCommentBody?.snippet?.textOriginal || '');
+    check('12k-7: استفسار السعر على فيديو مرتبط => رد فعلي (لا تصعيد)', (mock.state.lastInsertPath || '').includes('/youtube/v3/comments'), JSON.stringify(pollLinked.watcher?.counters));
+    check('12k-7: الرد من بيانات المنتج الحقيقية (السعر + عرض القسط)', linkedText.includes('1,000,000') && /القسط/.test(linkedText), linkedText);
+    check('12k-7: الرد على نفس التعليق (parentId)', String(mock.state.lastCommentBody?.snippet?.parentId || '') === 'cmt_price_linked');
+    check('12k-7: آخر رد للمراقب على التعليق المرتبط (لا تصعيد)', pollLinked.watcher?.lastReply?.commentId === 'cmt_price_linked', JSON.stringify(pollLinked.watcher?.lastReply));
+    // على فيديو بلا منتج مرتبط: استفسار السعر يُصعَّد بلا اختراع (السلوك الأصلي محفوظ).
+    mock.state.comments = [{ id: 'cmt_price_unlinked', threadId: 'thr_pu', videoId: 'vid_alpha', author: 'علي', text: 'كم السعر؟', publishedAt: '2026-10-01T11:05:00Z', likeCount: 0 }];
+    mock.state.lastInsertPath = null;
+    const pollUnlinked = await (await fetch(`${BASE}/api/agent/youtube/watcher/poll`, { method: 'POST', headers: auth })).json();
+    check('12k-7: بلا منتج مرتبط => لا رد (تصعيد)', mock.state.lastInsertPath === null, String(mock.state.lastInsertPath));
+    const unlinkedDetail = await (await fetch(`${BASE}/api/agent/youtube/watcher/comment/cmt_price_unlinked`, { headers: auth })).json();
+    check('12k-7: بلا منتج مرتبط => التعليق مُصعَّد بشرياً', unlinkedDetail?.record?.stage === 'ESCALATED', JSON.stringify(unlinkedDetail?.record?.stage));
+    mock.state.comments = savedComments7;
+    await fetch(`${BASE}/api/agent/youtube/watcher/controls`, { method: 'POST', headers: auth, body: JSON.stringify({ autoReply: false, paused: false }) });
+
     group('12k) تكامل: حارس YOUTUBE_ONLY_OPERATIONAL مربوط بمسارات التنفيذ الخارجي');
     // الحارس منطقياً مُختبر في 4a؛ هنا نثبت أنه مربوط فعلاً بمسارات التنفيذ الخارجي
     // في الخادم ووحدة المسارات الاجتماعية (لا مجرد تعريف غير مستخدم).

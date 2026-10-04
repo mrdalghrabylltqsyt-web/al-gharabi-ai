@@ -348,6 +348,12 @@ export function resolveCommentExecution(input: {
   humanReviewMode: boolean;
   /** السبب الحقيقي للتصعيد من التصنيف (`price_unverified`/`complaint`/`sensitive`). */
   centralEscalationReason: string | null;
+  /**
+   * هل توفّرت **حقائق منتج موثّقة فعلاً** (سعر/قسط/توفر مسجّل) لهذا التعليق؟
+   * عندها فقط لا يُصعَّد استفسار السعر — يُرد من بيانات المعرض الحقيقية.
+   * غيابها (أو غياب منتج محدّد) يُبقي التصعيد كما هو. افتراضي `false` (لا رد بلا دليل).
+   */
+  priceFactsVerified?: boolean;
 }): CommentDecision {
   // 1) تجاهل بموجب سلامة التعليق (نفس/حساب المعرض/سبام/مُعالَج سابقاً).
   if (input.advisory.code === 'SKIP_SELF_AUTHORED'
@@ -358,14 +364,22 @@ export function resolveCommentExecution(input: {
 
   // 2) حساسية/تصعيد: السبب الحقيقي (سعر/شكوى/حساس) أو خلاف جوهري (من العقل).
   //    قرار العقل HUMAN_ESCALATION/FAILED_SAFE ⇒ لا رد آلي إطلاقاً.
-  const reasonSensitive = input.centralEscalationReason === 'price_unverified'
-    || input.centralEscalationReason === 'complaint'
-    || input.centralEscalationReason === 'sensitive';
+  //
+  //    استثناء واحد صريح: استفسار سعر/قسط **مع** توفّر حقائق منتج موثّقة فعلاً
+  //    (`priceFactsVerified`) لا يُعامل كحساس — يُرد من بيانات المعرض الحقيقية
+  //    بلا اختراع. الشكوى/الحساس تبقى تصعيداً دائماً (لا استثناء)، وغياب الحقائق
+  //    يُبقي السعر تصعيداً كما كان.
+  const priceReason = input.centralEscalationReason === 'price_unverified';
+  const complaintReason = input.centralEscalationReason === 'complaint';
+  const otherSensitive = input.centralEscalationReason === 'sensitive';
+  const reasonSensitive = complaintReason || otherSensitive || (priceReason && !input.priceFactsVerified);
   if (input.centralDecision === 'HUMAN_ESCALATION' || input.centralDecision === 'FAILED_SAFE' || reasonSensitive) {
-    const code: CommentDecisionCode = input.centralEscalationReason === 'complaint'
+    const code: CommentDecisionCode = complaintReason
       ? 'ESCALATE_SENSITIVE'
-      : reasonSensitive ? 'ESCALATE_BUSINESS_INQUIRY' : 'ESCALATE_HUMAN_REVIEW_MODE';
-    return { action: 'escalate', code, reason: 'قرار العقل المركزي يوجب تصعيداً بشرياً (حساس/شكوى/سعر غير موثّق/خلاف جوهري) — لا رد آلي.', requiresHuman: true };
+      : reasonSensitive ? (priceReason ? 'ESCALATE_BUSINESS_INQUIRY' : 'ESCALATE_SENSITIVE') : 'ESCALATE_HUMAN_REVIEW_MODE';
+    return { action: 'escalate', code, reason: reasonSensitive
+      ? 'قرار العقل المركزي يوجب تصعيداً بشرياً (حساس/شكوى/سعر غير موثّق/خلاف جوهري) — لا رد آلي.'
+      : 'قرار العقل المركزي يوجب تصعيداً بشرياً (حساس/خلاف جوهري) — لا رد آلي.', requiresHuman: true };
   }
 
   // 3) وضع المراجعة البشرية: يحوّل غير الواضح إلى تصعيد (الحالات الواضحة تُتابع).
