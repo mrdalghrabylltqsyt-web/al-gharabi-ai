@@ -2630,7 +2630,17 @@ add('watcher-advisory-not-authority',
   watcherSrc.includes('centralDecision: CentralActionDecision'),
   'decideCommentAction تصنيف استشاري فقط؛ سلطة التنفيذ في resolveCommentExecution (بلا قرار مستقل)');
 
-const failed = checks.filter(x => !x.ok);
+  // نقطتا الفحص الحيّتان يجب ألا تُخزَّنا إطلاقاً: جسمهما يحمل commit النشر الحالي
+  // ووقتاً حيّاً، فأي كاش (متصفح/وسيط/حافة) قد يقدّم استجابة قديمة مجمّدة فيُوهم
+  // بعطل نشر غير موجود. غياب no-store عن أي منهما يُفشل الفحص النهائي.
+  add('health-readiness-no-store', (() => {
+    const noStore = (routePath) => new RegExp(
+      'app\\.get\\("' + routePath + '",[\\s\\S]{0,600}?res\\.setHeader\\("Cache-Control",\\s*"no-store[^"]*"\\)[\\s\\S]{0,200}?res\\.setHeader\\("Pragma",\\s*"no-cache"\\)'
+    ).test(server);
+    return noStore('/api/health') && noStore('/api/readiness');
+  })(), 'كلا نقطتي الفحص الحيّتين (/api/health و/api/readiness) تضبطان Cache-Control: no-store و Pragma: no-cache');
+
+  const failed = checks.filter(x => !x.ok);
 console.table(checks);
 if (failed.length) {
   console.error(`FINAL AUDIT FAILED: ${failed.length} checks`);
