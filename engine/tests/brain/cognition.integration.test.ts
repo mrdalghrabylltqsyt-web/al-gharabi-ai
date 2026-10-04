@@ -171,7 +171,11 @@ async function connectYouTube(auth: Record<string, string>): Promise<void> {
     group('6) الصحة تعكس آخر دورة');
     const health2 = await (await fetch(`${BASE}/api/health`)).json();
     check('health.cognition.reports يعكس العدد', (health2.cognition?.reports ?? -1) >= countBefore);
-    check('health يعرض آخر هدف', typeof health2.cognition?.lastGoal === 'string');
+    // الخصوصية: /api/health عامة بلا مصادقة، فلا تُعلن حقولاً نصّية حرة قد تحمل نص
+    // تعليق/هدفاً مشتقاً منه. التفاصيل النصّية للمالك فقط عبر المسار المحمي.
+    check('health العامة لا تُعلن الهدف النصّي (خصوصية)', !('lastGoal' in (health2.cognition || {})) && !('lastObjective' in (health2.cognition || {})) && !('lastNextAction' in (health2.cognition || {})));
+    const reportsOwner = await (await fetch(`${BASE}/api/agent/brain/cognition/reports`, { headers: auth })).json();
+    check('التفاصيل النصّية متاحة للمالك عبر المسار المحمي', typeof reportsOwner.reports?.[0]?.currentGoal === 'string');
   } finally {
     await stop(proc);
     await mock.stop();

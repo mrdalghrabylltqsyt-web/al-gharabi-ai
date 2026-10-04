@@ -41,6 +41,8 @@ const LEAK_AUTHOR = 'PRIVACY_CANARY_AUTHOR_ZZZ';
 const LEAK_COMMENT = 'PRIVACY_CANARY_COMMENT_TEXT_ZZZ';
 const LEAK_REPLY = 'PRIVACY_CANARY_REPLY_TEXT_ZZZ';
 const LEAK_ERROR = 'فشل مزود يحوي نصاً عربياً محتملاً من محادثة عميل';
+// canary للإدراك: نص تعليق/هدف/إجراء رد — للتحقق أن الحقول النصّية لا تُعلن في الصحة/الجاهزية العامة.
+const LEAK_COGNITION = 'PRIVACY_CANARY_COGNITION_TEXT_ZZZ';
 
 /** حالة مراقبة محفوظة: قرار تصعيد + رد مُسلَّم + خطأ بنص حر (لاختبار التنقية). */
 const seededWatcherState = {
@@ -76,6 +78,22 @@ const seededWatcherState = {
 
 function seedState(): void {
   writeFileSync(join(stateDir, 'youtubeWatcher.json'), JSON.stringify(seededWatcherState, null, 2));
+  // تقرير دورة إدراكية محفوظ يحمل نصاً حساساً في الحقول النصّية الحرة. الغرض: إثبات
+  // أن /api/health و/api/readiness العامتين لا تُعلنان هذه الحقول (كانت lastObjective/
+  // lastGoal/lastNextAction تسرّب نص التعليق/الرد)، وأن التفاصيل تبقى للمالك فقط.
+  const now = new Date().toISOString();
+  writeFileSync(join(stateDir, 'workingMemory.json'), JSON.stringify({
+    workingMemory: { entries: [
+      { conversationId: 'canary-conv', platform: 'youtube', objective: LEAK_COGNITION, lastCustomerMessage: LEAK_COMMENT, unresolvedQuestion: LEAK_COMMENT, updatedAt: now },
+    ] },
+    reports: [{
+      cycleId: 'cy-canary', eventIdentity: 'canary-event', platform: 'youtube', status: 'completed',
+      observability: { currentObjective: LEAK_COGNITION, escalationState: 'none', memoryUsed: 0, agentsConsulted: [] },
+      goalPlan: { currentGoal: { labelAr: LEAK_COGNITION } },
+      nextAction: { labelAr: LEAK_REPLY },
+      decisionStatus: 'AUTO_SAFE', phases: [],
+    }],
+  }, null, 2));
 }
 
 let proc: ChildProcess | null = null;
@@ -128,7 +146,7 @@ function flatten(value: unknown, out: string[] = []): string[] {
 }
 function hasLeak(obj: unknown): boolean {
   const joined = flatten(obj).join('\n');
-  return joined.includes(LEAK_AUTHOR) || joined.includes(LEAK_COMMENT) || joined.includes(LEAK_REPLY);
+  return joined.includes(LEAK_AUTHOR) || joined.includes(LEAK_COMMENT) || joined.includes(LEAK_REPLY) || joined.includes(LEAK_COGNITION);
 }
 function keysOf(obj: unknown, acc = new Set<string>()): Set<string> {
   if (Array.isArray(obj)) { for (const v of obj) keysOf(v, acc); return acc; }
@@ -157,6 +175,10 @@ async function run(): Promise<void> {
     check('لا حقل attentionRequired في الصحة', !healthKeys.has('attentionRequired'));
     check('لا حقل authorName في الصحة', !healthKeys.has('authorName'));
     check('لا حقل lastReply في الصحة', !healthKeys.has('lastReply'));
+    // الإدراك: الحقول النصّية الحرة كانت تسرّب نص التعليق/الهدف/الرد — لا تُعلن عامةً.
+    check('لا حقل آخر هدف إدراكي نصّي في الصحة', !healthKeys.has('lastGoal'));
+    check('لا حقل آخر objective إدراكي نصّي في الصحة', !healthKeys.has('lastObjective'));
+    check('لا حقل آخر إجراء إدراكي نصّي في الصحة', !healthKeys.has('lastNextAction'));
 
     group('2) /api/health تُبقي الحقول التقنية غير الحساسة');
     const w = health.youtubeWatcher;
@@ -175,6 +197,7 @@ async function run(): Promise<void> {
     const readyKeys = keysOf(ready);
     check('لا حقل replyText في الجاهزية', !readyKeys.has('replyText'));
     check('لا حقل attentionRequired في الجاهزية', !readyKeys.has('attentionRequired'));
+    check('لا حقل lastGoal إدراكي في الجاهزية', !readyKeys.has('lastGoal'));
 
     group('4) البيانات التفصيلية تبقى في المسار المحمي بالمالك');
     const auth = await loginOwner();
@@ -187,6 +210,11 @@ async function run(): Promise<void> {
     check('نص التعليق واسم الحساب متاحان للمالك', owner.watcher?.attentionRequired?.[0]?.text === LEAK_COMMENT && owner.watcher?.attentionRequired?.[0]?.authorName === LEAK_AUTHOR);
     check('lastReply.replyText متاح للمالك', owner.watcher?.lastReply?.replyText === LEAK_REPLY);
     check('الحقول التفصيلية فعلاً محميّة (ليست عامة)', hasLeak(owner.watcher) && !hasLeak(health));
+    // الإدراك: التفاصيل النصّية تبقى للمالك عبر المسار المحمي (لا تُحذف من النظام).
+    const anonCognition = await fetch(`${BASE}/api/agent/brain/cognition/reports`);
+    check('تقارير الإدراك محمية (401 بلا جلسة)', anonCognition.status === 401, String(anonCognition.status));
+    const ownerCognition = await (await fetch(`${BASE}/api/agent/brain/cognition/reports`, { headers: auth })).json();
+    check('التفاصيل النصّية للإدراك متاحة للمالك', ownerCognition.reports?.[0]?.currentGoal === LEAK_COGNITION && ownerCognition.reports?.[0]?.nextAction === LEAK_REPLY);
 
     console.log('\n' + '='.repeat(60));
     if (failures.length) {

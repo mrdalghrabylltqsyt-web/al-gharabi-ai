@@ -9840,9 +9840,10 @@ function cognitionHealthBlock() {
     reports: cognitiveReports.length,
     lastCycleAt: last?.phases[last.phases.length - 1]?.at ?? null,
     lastCycleStatus: last?.status ?? null,
-    lastObjective: last?.observability.currentObjective ?? null,
-    lastGoal: last?.goalPlan.currentGoal.labelAr ?? null,
-    lastNextAction: last?.nextAction.labelAr ?? null,
+    // الحقول النصّية الحرة (currentObjective/currentGoal.labelAr/nextAction.labelAr) قد
+    // تحمل نص تعليق أو هدفاً مشتقاً منه — لذا لا تُعلن في النسخة العامة (تُخدم في
+    // /api/health و/api/readiness بلا مصادقة). التفاصيل النصّية للمالك فقط عبر
+    // GET /api/agent/brain/cognition/reports. تُبقى الحالات الرمزية غير الحسّاسة هنا.
     lastDecisionState: last?.decisionStatus ?? null,
     lastEscalationState: last?.observability.escalationState ?? null,
     lastMemoryUsed: last?.observability.memoryUsed ?? 0,

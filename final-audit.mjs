@@ -2335,6 +2335,21 @@ add('cognition-health-exposed',
   server.includes('cognitionHealthBlock') && server.includes('cognition: cognitionHealthBlock()') &&
   server.includes('storesPrivateChainOfThought: false') && server.includes('cognitiveLoop:'),
   'الطبقة الإدراكية معلنة في /api/health و/api/readiness بلا سرّ');
+add('cognition-health-no-customer-text',
+  (() => {
+    const start = server.indexOf('function cognitionHealthBlock');
+    const end = server.indexOf('async function runTeamSessionNow', start);
+    if (start < 0 || end <= start) return false;
+    // نُزيل التعليقات قبل الفحص كي لا يطابق الفحص شرحاً يذكر أسماء الحقول المحذوفة.
+    const block = server.slice(start, end).replace(/\/\/[^\n]*/g, '');
+    return !/lastObjective|lastGoal|lastNextAction|currentObjective|currentGoal/.test(block)
+      && block.includes('lastDecisionState');
+  })(),
+  'كتلة الإدراك العامة لا تُعلن حقولاً نصّية حرة قد تحمل نص تعليق/هدف مشتق (كانت تُسرّب)؛ الحالات الرمزية فقط');
+add('cognition-detail-owner-only',
+  cogRoutes.includes("'/api/agent/brain/cognition/reports'") && cogRoutes.includes('deps.requireOwner') &&
+  cogRoutes.includes('currentObjective') && cogRoutes.includes('nextAction'),
+  'التفاصيل النصّية للإدراك تبقى للمالك فقط عبر مسار محمي بالتصريح (لا حذف من النظام)');
 add('cognition-learning-evidence-gated',
   cogLearning.includes('deriveLesson') && cogLearning.includes('durable') &&
   cogLearning.includes('LESSON_DURABLE_MIN_SAMPLE') && cogLearning.includes('buildLearningOutcome'),
