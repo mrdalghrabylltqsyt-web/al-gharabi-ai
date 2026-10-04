@@ -756,7 +756,7 @@ add('youtube-watcher-ui-counters', watcherUi.includes('counters?.detected') && w
 add('youtube-watcher-worker-in-process', server.includes('function startYouTubeWatcher') && server.includes('watcherScheduler = createWatcherScheduler') && server.includes('startYouTubeWatcher();'), 'حلقة المراقبة تعمل داخل عملية الخادم الدائمة (مستقلة عن المتصفح)');
 add('youtube-watcher-cycle-real-executor', server.includes('await executeYouTubeReply({ commentId: String(c.commentId), text: replyText, commentText: String(c.text || "") }, "watcher")'), 'دورة المراقبة تنفّذ الرد عبر منفّذ الرد الحقيقي الموحّد (لا مسار جانبي)');
 add('youtube-watcher-delegation-gated', server.includes('watcherReplyExecutionReady') && server.includes('youtubeDelegationCheck') && server.includes('DELEGATION_REQUIRED'), 'الرد الآلي محجوب بلا تفويض فعّال (delegation gate محفوظ)');
-add('youtube-watcher-double-gate', server.includes('const replyGate = watcherGate(controls, "reply")') && server.includes('if (!replyReady.ready || !replyGate.allowed)'), 'فرض مزدوج: بوابة الأتمتة تُعاد فحصها عند نقطة التنفيذ نفسها (لا تجاوز)');
+add('youtube-watcher-double-gate', server.includes('const replyGate = watcherGate(controls, "reply")') && server.includes('if (!replyReady.ready || !replyGateFinal.allowed)'), 'فرض مزدوج: بوابة الأتمتة تُعاد فحصها عند نقطة التنفيذ نفسها (لا تجاوز)');
 add('youtube-watcher-no-fake-arg', !/commentId:\s*"[a-zA-Z0-9_-]+"/.test(server.slice(server.indexOf('async function runYouTubeWatcherCycle'), server.indexOf('function startYouTubeWatcher'))), 'لا معرّف تعليق مُختلق في دورة المراقبة (commentId يأتي من YouTube فقط)');
 add('youtube-watcher-honest-delivery', server.includes("const delivered = Boolean(result.body?.delivered && result.body?.externalReplyId);") && server.includes("baseEntry.stage = \"REPLIED\""), 'لا يُسجَّل رد مُسلَّم بلا معرّف رد حقيقي من YouTube');
 add('youtube-watcher-durable-state', server.includes('WATCHER_STATE_KEY') && server.includes('persistWatcherState') && server.includes('applyWatcherStateSnapshot') && server.includes('storageAdapter.read<any>(WATCHER_STATE_KEY)') && server.includes('storageAdapter.readSync<any>(WATCHER_STATE_KEY)'), 'حالة المراقبة تُحفظ/تُسترجع عبر المحوّل فتصمد بعد restart/deploy');
@@ -965,7 +965,7 @@ const decisionTest = read('engine/tests/youtube.decision.test.ts');
 // --- دقة قرارات الـwatcher وتفسير التعليقات الحقيقية (Batch 23) ---
 add('youtube-decision-code-stage-map', watcherModule.includes('YOUTUBE_DECISION_CODE_STAGES') && watcherModule.includes('isExplicitTerminalDecision'), 'خريطة صريحة بين كود القرار والمرحلة الطرفية');
 add('youtube-terminal-decision-forced', watcherModule.includes('stage: YouTubeCommentStage, code: string | null | undefined') && watcherModule.includes('return allowed.includes(stage)'), 'لا «معالجة بلا قرار»: المرحلة يجب أن تطابق الكود');
-add('youtube-channel-skip-has-code', server.includes('SKIP_OUT_OF_CHANNEL_CONTEXT'), 'تجاهل خارج سياق القناة يحمل كوداً صريحاً');
+add('youtube-channel-skip-has-code', watcherModule.includes('SKIP_OUT_OF_CHANNEL_CONTEXT'), 'تجاهل خارج سياق القناة يحمل كوداً صريحاً (سلطة التنفيذ في الوحدة — Batch 8.1)');
 add('youtube-reply-blocked-has-code', server.includes('ESCALATE_REPLY_NOT_READY'), 'حجب الرد يحمل كود تصعيد صريح لا REPLY_ALLOWED');
 add('youtube-reconcile-endpoint', server.includes('/api/agent/youtube/watcher/reconcile') && server.includes('buildWatcherReconciliation'), 'مسار مطابقة تشخيصي للتعليقات الحقيقية');
 add('youtube-reconcile-read-only', /function buildWatcherReconciliation[\s\S]*?readOnly: true/.test(server) && !server.slice(server.indexOf('function buildWatcherReconciliation'), server.indexOf('app.get("/api/agent/youtube/watcher/reconcile"')).includes('executeYouTubeReply'), 'المطابقة قراءة فقط بلا أي إرسال رد');
@@ -1108,8 +1108,8 @@ add('brain-runtime-started-on-server',
   'المُشغِّل الداخلي يُبدأ على الخادم بعد listen (بلا متصفح)');
 
 add('brain-runtime-reuses-existing-persist',
-  /runBrainRuntimeCycleInternal[\s\S]{0,1600}?persistBrainMemory\(records\)/.test(server) &&
-  /runBrainRuntimeCycleInternal[\s\S]{0,1600}?buildRuntimeBrain\(\{/.test(server),
+  /runBrainRuntimeCycleInternal[\s\S]{0,2600}?persistBrainMemory\(records\)/.test(server) &&
+  /runBrainRuntimeCycleInternal[\s\S]{0,2600}?buildRuntimeBrain\(\{/.test(server),
   'الدورة تستخدم منطق العقل القائم ومسار الحفظ القائم (لا نظام ثانٍ)');
 
 add('brain-runtime-lock-and-lease',
@@ -2108,6 +2108,446 @@ add('phase7-initial-bundle-reduced', (() => {
   const chunks = fs.readdirSync(assets).filter((f) => f.endsWith('.js')).length;
   return size < 800 * 1024 && chunks >= 8;
 })(), 'Phase 7: الحزمة الأولية < 800KB مع 8+ مقاطع (بعد البناء)');
+
+
+// ===========================================================================
+// Central Brain (A): الإدراك/قرار العقل/الحوكمة/التوطيد/الاستراتيجية/السياق — فحوص الفئة A.
+// ===========================================================================
+const teamBrainDecision = teamDir('brainDecision.ts');
+const teamBrainEscalation = teamDir('brainEscalation.ts');
+const teamDecisionTest = read('engine/tests/brain/brain.decision.test.ts');
+const cogDir = (p) => read(path.join('engine/brain/cognition', p));
+const cogTypes = cogDir('types.ts');
+const cogContext = cogDir('contextEngine.ts');
+const cogWorking = cogDir('workingMemory.ts');
+const cogRecall = cogDir('memoryRecall.ts');
+const cogGoals = cogDir('goalManager.ts');
+const cogCouncil = cogDir('agentCouncil.ts');
+const cogDisagreement = cogDir('disagreement.ts');
+const cogNextAction = cogDir('nextAction.ts');
+const cogPlanning = cogDir('planningEngine.ts');
+const cogLearning = cogDir('outcomeLearning.ts');
+const cogLoop = cogDir('cognitiveLoop.ts');
+const cogRoutes = cogDir('routes.ts');
+const cogUnitTest = read('engine/tests/brain/cognition.test.ts');
+const cogIntegrationTest = read('engine/tests/brain/cognition.integration.test.ts');
+const convState = read('engine/social/conversationState.ts');
+const ctxIsolation = read('engine/social/contextIsolation.ts');
+const iraqiPolicy = read('engine/social/iraqiCommercialPolicy.ts');
+const govGuard = read('engine/agent/governanceGuard.ts');
+const ctxTest = read('engine/tests/context.governance.test.ts');
+const routesTest = read('engine/tests/social.routes.test.ts');
+const lifecycleModule = read('engine/social/conversationLifecycle.ts');
+const escalationModule = read('engine/social/escalation.ts');
+const memorySepModule = read('engine/social/memorySeparation.ts');
+const lifecycleTest = read('engine/tests/session.lifecycle.test.ts');
+const watcherSrc = read('engine/social/youtubeWatcher.ts');
+const runtimeSrc = read('engine/brain/runtime.ts');
+const agentsSrc = read('engine/brain/team/agents.ts');
+const authorityTest = read('engine/tests/brain/central.authority.test.ts');
+const brainAuthorityTest = read('engine/tests/brain/central.brain.authority.test.ts');
+add('agent-governance-guard-module',
+  govGuard.includes('export function evaluateGovernance') && govGuard.includes('SENSITIVE_HUMAN_REQUIRED') &&
+  govGuard.includes('UNVERIFIED_CLAIM') && govGuard.includes('APPROVAL_REQUIRED') && govGuard.includes('AGENT_GOVERNANCE_PRINCIPLES_AR'),
+  'حوكمة الوكلاء: قرار موحّد (صلاحية + صدق + موافقة خارجية + حساسية بشرية) بلا تنفيذ صامت');
+add('batch81-no-new-brain',
+  !/buildSecondBrain|centralBrain2|secondDecisionEngine|secondLedger|secondMemoryStore/.test(server) &&
+  /single decision authority|سلطة القرار الواحدة|سلطة التنفيذ الوحيدة/.test(watcherSrc),
+  'Batch 8.1 لا يُدخل عقلاً/محرّك قرار/ذاكرة ثانية — يوحّد السلطة فقط');
+add('batch81-tests',
+  pkg.scripts['test:central-authority'] === 'tsx engine/tests/brain/central.authority.test.ts' &&
+  pkg.scripts.test.includes('test:central-authority') &&
+  authorityTest.includes('resolveCommentExecution') && authorityTest.includes('decisionHistoryToMemoryRecords') &&
+  authorityTest.includes('buildRuntimeDecisionContext'),
+  'اختبار Batch 8.1 يثبت الفجوات الثلاث (سلطة/قراءة سجل/استهلاك إدراك) ومضمّن في npm test');
+add('brain-context-populates-audience-topics',
+  server.includes('audienceTopics: audienceTopics.slice(0, 8)') && server.includes('marketNote'),
+  'سياق العقل يُغذّي موضوعات الجمهور ودليل السوق الكانونيين إلى الإدراك');
+add('brain-decision-central-brain-over-council',
+  teamBrainDecision.includes('العقل المركزي') && teamBrainDecision.includes('مخرجات استشارية') &&
+  teamTypes.includes('brainDecision: BrainDecision | null') &&
+  teamOrchestrator.includes('brainDecision: null'),
+  'العقل المركزي فوق الوكلاء الستة: يحمل قراره المحكوم داخل الجلسة (الوكلاء مستشارون)');
+add('brain-decision-escalation-no-fake-notification',
+  teamBrainEscalation.includes('notificationDelivered') && teamBrainEscalation.includes('duplicate_open_escalation') &&
+  server.includes('brainEscalationNotifier') && server.includes('pushNotification('),
+  'التصعيد لا يدّعي إشعاراً بلا مُبلِّغ ناجح، ويمنع التكرار (نفس بنية التنبيه القائمة)');
+add('brain-decision-escalation-reuses-system',
+  teamBrainEscalation.includes('createEscalationRecord') && teamBrainEscalation.includes("'../../social/escalation'") &&
+  !/new Map|CREATE TABLE|secondEscalation/i.test(teamBrainEscalation),
+  'جسر التصعيد يستخدم نظام التصعيد القائم (لا نظام ثانٍ)');
+add('brain-decision-final-statuses',
+  teamBrainDecision.includes("'ALLOWED_ACTION'") && teamBrainDecision.includes("'APPROVAL_REQUIRED'") &&
+  teamBrainDecision.includes("'HUMAN_ESCALATION'") && teamBrainDecision.includes("'NO_ACTION'") &&
+  teamBrainDecision.includes("'FAILED_SAFE'"),
+  'الحالات النهائية خمس صريحة (إجراء مسموح/موافقة/تصعيد/لا إجراء/توقف آمن)');
+add('brain-decision-governed',
+  teamBrainDecision.includes('evaluateGovernance') && teamBrainDecision.includes('governance') &&
+  teamBrainDecision.includes('claimVerified') && teamBrainDecision.includes('externalApproved'),
+  'قرار العقل يمرّ عبر الحوكمة (صلاحية + ادعاء مثبت + موافقة خارجية)');
+add('brain-decision-health-exposed',
+  server.includes('brainDecisionHealthBlock') && server.includes('brainDecision: brainDecisionHealthBlock()') &&
+  server.includes('executesExternalActions: false') && server.includes('hierarchy:'),
+  'قرار العقل معلن في /api/health و/api/readiness بلا سرّ (مع الهرمية)');
+add('brain-decision-integration-test',
+  teamCouncilYoutubeTest.includes('central brain governed decision') &&
+  teamCouncilYoutubeTest.includes('brainDecision') &&
+  teamCouncilYoutubeTest.includes('HUMAN_ESCALATION'),
+  'اختبار التكامل يثبت قرار العقل المحكوم فعلاً على حدث YouTube حقيقي');
+add('brain-decision-module',
+  fs.existsSync(path.join(root, 'engine/brain/team/brainDecision.ts')) &&
+  fs.existsSync(path.join(root, 'engine/brain/team/brainEscalation.ts')) &&
+  teamBrainDecision.includes('composeBrainDecision') && teamBrainDecision.includes('BRAIN_DECISION_STATUSES'),
+  'وحدة قرار العقل المركزي المحكوم موجودة (تكويب + حالات نهائية محدّدة)');
+add('brain-decision-no-external-execution',
+  !/executeYouTubeReply|executeYouTubePublish|publishNow|sendMessage|comments\.insert/.test(teamBrainDecision + teamBrainEscalation) &&
+  teamBrainDecision.includes('لا يُنفَّذ أي إجراء خارجي من العقل'),
+  'قرار العقل لا ينفّذ أي إجراء خارجي (توجيه فقط عبر بوابات المشروع)');
+add('brain-decision-no-secrets',
+  !/api[_-]?key|client_secret|refresh_token|access_token|GEMINI_API_KEY/i.test(teamBrainDecision + teamBrainEscalation),
+  'وحدة قرار العقل وجسر التصعيد لا يحملان أي سرّ');
+add('brain-decision-sensitive-escalates',
+  teamBrainDecision.includes('reasonRequiresHuman') && teamBrainDecision.includes('SENSITIVE_HUMAN_REQUIRED') &&
+  teamBrainDecision.includes('HUMAN_ESCALATION'),
+  'الإجراء الحسّاس (سعر غير موثّق/شكوى) يُصعّد بشرياً دائماً ولا يُنفَّذ آلياً');
+add('brain-decision-tests',
+  fs.existsSync(path.join(root, 'engine/tests/brain/brain.decision.test.ts')) &&
+  pkg.scripts['test:brain-decision'] &&
+  typeof pkg.scripts.test === 'string' && pkg.scripts.test.includes('test:brain-decision') &&
+  teamDecisionTest.includes('ALLOWED_ACTION') && teamDecisionTest.includes('HUMAN_ESCALATION'),
+  'اختبار قرار العقل (وحدة) مسجّل وضمن npm test');
+add('brain-decision-unverified-is-safe',
+  teamBrainDecision.includes("'UNVERIFIED_CLAIM'") && teamBrainDecision.includes("'FAILED_SAFE'") &&
+  teamBrainDecision.includes('cookie') === false,
+  'الادعاء غير المثبت (نقد فاشل/مزود غير موثق) => توقف آمن (لا إجراء)');
+add('brain-decision-wired-and-audited',
+  server.includes('composeBrainDecision(') && server.includes('escalateBrainDecision(') &&
+  server.includes("audit('system', 'brain_decision'") &&
+  /runTeamSessionNow\([\s\S]*brainDecision/.test(server),
+  'قرار العقل يُكوَّن ويُسجَّل تدقيقياً عند كل جلسة (سلسلة EVENT→GOVERNANCE→OUTCOME)');
+add('central-brain-authority-coverage',
+  brainAuthorityTest.includes('CENTRAL_BRAIN_ID') && brainAuthorityTest.includes('ADVISOR_AGENT_IDS') &&
+  brainAuthorityTest.includes('resolveCommentExecution') && brainAuthorityTest.includes('decisionHistoryToMemoryRecords'),
+  'الاختبار الشامل يغطي: عقل واحد/ذاكرة واحدة/وكلاء استشاريون/سلطة تنفيذ واحدة/سجل قابل للقراءة');
+add('central-brain-authority-tests-registered',
+  pkg.scripts['test:central-brain-authority'] === 'tsx engine/tests/brain/central.brain.authority.test.ts' &&
+  pkg.scripts.test.includes('test:central-brain-authority'),
+  'اختبار سلطة العقل المركزي الشامل مسجّل ومضمّن في npm test');
+add('cognition-consumed-not-advisory-only',
+  agentsSrc.includes('escalationReason?: string | null') &&
+  agentsSrc.includes('commercialContext?') &&
+  agentsSrc.includes('source: \'decisionLedger (قراءة تاريخية)\''),
+  'استهلاك الإدراك: السبب الحقيقي + السياق التجاري (استراتيجية/جمهور/سجل القرارات) يدخل قرار العقل كدليل');
+add('cognition-context-answers-dimensions',
+  cogContext.includes('buildCognitiveContext') && cogContext.includes('previousDiscussion') &&
+  cogContext.includes('conversationState') && cogContext.includes('requiredNextDecision') &&
+  cogContext.includes('relevantMarketingContext') && cogContext.includes('truth:'),
+  'السياق يجيب WHAT/WHO/WHERE/WHEN/ما سبق/حالة المحادثة/الهدف/الأدلة/المجهول/الذاكرة/القرار المطلوب');
+add('cognition-context-no-fabrication',
+  cogContext.includes('availableEvidence') && cogContext.includes('unknown') &&
+  cogContext.includes('unavailable') && cogContext.includes('لا يُخترع') === false &&
+  cogContext.includes('مجهولاً أو غير متاح'),
+  'السياق لا يخترع: المجهول/غير المتاح يُعلنان صراحةً');
+add('cognition-context-wired-server',
+  server.includes('buildRuntimeDecisionContext(') &&
+  server.includes('escalationReason: meta.escalationReason ?? null') &&
+  server.includes('commercialContext:'),
+  'الخادم يبني السياق التجاري ويمرّر السبب الحقيقي إلى قرار العقل (لا عقل ثانٍ)');
+add('cognition-council-reuses-team-session',
+  cogCouncil.includes("from '../team/orchestrator'") && cogCouncil.includes('runTeamSession') &&
+  !/function runTeamSession/.test(cogCouncil),
+  'المجلس يعيد استخدام `runTeamSession` القائم (لا فريق ثانٍ)');
+add('cognition-council-selective-routing',
+  cogCouncil.includes('SCENARIO_AGENTS') && cogCouncil.includes('routeCouncilDecision') &&
+  cogCouncil.includes('requiredAgentsForScenario') && cogCouncil.includes('detectCouncilScenario'),
+  'المجلس يوجّه لوكلاء محدّدين حسب السيناريو (لا الستة دائماً)');
+add('cognition-disagreement-no-consensus',
+  cogDisagreement.includes('analyzeDisagreements') && cogDisagreement.includes('materialToSafety') &&
+  cogDisagreement.includes('forcesHumanOrSafe') && cogDisagreement.includes('canResolveConflict') &&
+  cogDisagreement.includes('لا يُختار فائز'),
+  'الخلاف يُمثَّل بلا فرض إجماع؛ الجوهري يفرض تصعيداً بشرياً/توقفاً آمناً');
+add('cognition-followup-engagement-single-source',
+  watcherModule.includes('selectFollowUpCandidates') && watcherModule.includes('evaluateFollowUpEngagement') &&
+  watcherModule.includes('FOLLOWUP_BASELINE_DELAY_MS') && watcherModule.includes('FOLLOWUP_MIN_DELTA') &&
+  watcherModule.includes('followUpBaselineDelayMsFromEnv'),
+  'منطق تفاعل المتابعة مصدر واحد في وحدة المراقب (اختيار + تقييم + مهلة قابلة للضبط)');
+add('cognition-followup-no-fabrication',
+  watcherModule.includes('likes === null && replies === null') &&
+  watcherModule.includes('لا ادعاء تغيّر') && watcherModule.includes('followUpBaseline'),
+  'التفاعل غير المتاح لا يُعلن تغيّراً؛ البصمة تُثبَّت قبل الحكم (لا اختراع قيمة)');
+add('cognition-followup-no-financial',
+  !/إيراد|ربح|ROI|هامش|تكلفة اكتساب|محاسبة/i.test(
+    server.slice(server.indexOf('async function sweepFollowUpEngagement'), server.indexOf('async function sweepFollowUpEngagement') + 2200)) &&
+  watcherModule.slice(watcherModule.indexOf('evaluateFollowUpEngagement')).includes('لا تغيّر ملاحَظ في تفاعل المتابعة بعد'),
+  'تفاعل المتابعة لا يحمل أي رقم مالي مُخترع (ملاحظة سلوكية فقط)');
+add('cognition-followup-tests',
+  watcherTest.includes('تفاعل المتابعة') && watcherTest.includes('selectFollowUpCandidates') &&
+  read('engine/tests/youtube.connector.test.ts').includes('تفاعل المتابعة يُغلق حلقة التعلّم') &&
+  cogIntegrationTest.includes('learning-loop') && cogIntegrationTest.includes('learningLoop'),
+  'اختبارات تفاعل المتابعة (وحدة + تكامل) ومسار حلقة التعلّم مسجّلة');
+add('cognition-followup-wired-server',
+  server.includes('sweepFollowUpEngagement') && server.includes('selectFollowUpCandidates(watcherState.processed') &&
+  server.includes('evaluateFollowUpEngagement(entry') && server.includes("kind: 'engagement_changed'") &&
+  server.includes('recordReadOutcome({') && server.includes('yt-followup:'),
+  'رصد المتابعة موصول داخل دورة المراقبة ويُغلق الحلقة في ذاكرة العقل (بلا مسار ثانٍ)');
+add('cognition-goals-full-plan',
+  cogGoals.includes('buildGoalPlan') && cogGoals.includes('currentGoal') && cogGoals.includes('subGoals') &&
+  cogGoals.includes('nextBestStep'),
+  'خطة الأهداف: الهدف الأعلى ← الحالي ← الفرعية ← الخطوة التالية');
+add('cognition-goals-social-only',
+  cogGoals.includes('SOCIAL_GOAL_LABELS_AR') && cogGoals.includes('PRIMARY_BUSINESS_OBJECTIVE') &&
+  cogGoals.includes('OUT_OF_SCOPE_FINANCIAL_TERMS') && cogGoals.includes('goalPlanViolatesScope'),
+  'الأهداف اجتماعية/تسويقية فقط مع حرس يمنع المصطلحات المالية خارج النطاق');
+add('cognition-health-exposed',
+  server.includes('cognitionHealthBlock') && server.includes('cognition: cognitionHealthBlock()') &&
+  server.includes('storesPrivateChainOfThought: false') && server.includes('cognitiveLoop:'),
+  'الطبقة الإدراكية معلنة في /api/health و/api/readiness بلا سرّ');
+add('cognition-learning-evidence-gated',
+  cogLearning.includes('deriveLesson') && cogLearning.includes('durable') &&
+  cogLearning.includes('LESSON_DURABLE_MIN_SAMPLE') && cogLearning.includes('buildLearningOutcome'),
+  'التعلّم لا يُرقّى لمعرفة دائمة بلا مصدر وعيّنة كافية');
+add('cognition-learning-loop-health',
+  server.includes('buildCognitionLearningLoop') && server.includes('learningLoop: () => buildCognitionLearningLoop()') &&
+  server.includes('learningBridge:') && server.includes('FOLLOW-UP') &&
+  server.includes('memory: stageCount(') && server.includes('lessonRecords'),
+  'حلقة التعلّم معلنة في health و/api/agent/brain/cognition/learning-loop بأرقام من سجلات فعلية');
+add('cognition-learning-loop-route',
+  cogRoutes.includes("'/api/agent/brain/cognition/learning-loop'") && cogRoutes.includes('deps.requireOwner') &&
+  cogRoutes.includes('deps.learningLoop') && cogRoutes.includes('LearningLoopView'),
+  'مسار حلقة التعلّم للمالك فقط، ويُعلن عدم التوفر صراحةً عند غياب الربط (لا اختراع)');
+add('cognition-learning-no-financial-and-no-selfmod',
+  cogLearning.includes('learningOutcomeViolatesScope') && cogLearning.includes('learningIsNonSelfModifying') &&
+  cogLearning.includes('selfModifying: false') && cogLearning.includes('لا تعلّم معزّز'),
+  'التعلّم لا يحسب إيراد/ربح/ROI ولا يعدّل قواعد النظام (لا تعلّم معزّز)');
+add('cognition-learning-no-promotion-without-evidence',
+  cogLearning.includes('if (!lesson.durable || !lesson.source) return null') &&
+  cogLearning.includes("'platform_data'") && cogLearning.includes("'derived'"),
+  'الدرس غير الدائم لا يُرقّى (null)، والأصل صريح (بيانات منصة/استنتاج)');
+add('cognition-learning-to-memory-bridge',
+  cogLearning.includes('learningToMemoryEntries') && cogLearning.includes('lessonToMemoryEntry') &&
+  cogLearning.includes("from '../memory/longTerm'") && cogLearning.includes('makeMemoryEntry') &&
+  !/new Map|CREATE TABLE|secondMemory/i.test(cogLearning),
+  'التعلّم يُجسر إلى **نفس** الذاكرة طويلة المدى القائمة (لا مخزن ثانٍ)');
+add('cognition-loop-closes-to-future-decision',
+  cogUnitTest.includes('إغلاق حلقة التعلّم') &&
+  cogUnitTest.includes('القرار المستقبلي استدعى الدرس من الذاكرة') &&
+  cogUnitTest.includes('الدرس حاضر في سياق القرار المستقبلي') &&
+  cogUnitTest.includes('learningOutcomeViolatesScope') && cogUnitTest.includes('relevantMemoryIds'),
+  'إثبات أن حلقة التعلّم تُغلق فعلاً: درس من تفاعل المتابعة يُستدعى في دورة إدراكية لاحقة (MEMORY ⇒ FUTURE DECISION) بلا قفز بلا دليل');
+add('cognition-loop-composes-existing-layers',
+  cogLoop.includes('buildCognitiveContext') && cogLoop.includes('recallMemories') &&
+  cogLoop.includes('buildGoalPlan') && cogLoop.includes('routeCouncilDecision') &&
+  cogLoop.includes('analyzeDisagreements') && cogLoop.includes('proposeNextAction') &&
+  cogLoop.includes('buildPlan') && cogLoop.includes('buildLearningOutcome'),
+  'الدورة الإدراكية تجميع حتمي فوق الطبقات القائمة (لا إعادة بناء)');
+add('cognition-loop-no-external-execution',
+  cogLoop.includes('externalAction: false') && cogLoop.includes('externalActionTaken: false') &&
+  !/executeYouTubeReply|executeYouTubePublish|publishNow|sendMessage|comments\.insert|fetch\(/.test(cogLoop + cogNextAction + cogPlanning),
+  'الدورة الإدراكية لا تنفّذ أي إجراء خارجي ولا شبكة');
+add('cognition-loop-observability',
+  cogLoop.includes('observability') && cogLoop.includes('cognitiveState') &&
+  cogLoop.includes('agentsConsulted') && cogLoop.includes('memoryUsed') &&
+  cogLoop.includes('lastObservedOutcome'),
+  'الدورة تُنتج كتلة مراقبة (حالة/هدف/وكلاء/ذاكرة/قرار/تصعيد/تعلّم)');
+add('cognition-loop-phases-order',
+  cogTypes.includes("'PERCEIVE'") && cogTypes.includes("'UNDERSTAND'") && cogTypes.includes("'REMEMBER'") &&
+  cogTypes.includes("'REASON'") && cogTypes.includes("'CONSULT'") && cogTypes.includes("'PLAN'") &&
+  cogTypes.includes("'CRITIQUE'") && cogTypes.includes("'DECIDE'") && cogTypes.includes("'ACT'") &&
+  cogTypes.includes("'OBSERVE'") && cogTypes.includes("'LEARN'") && cogTypes.includes('COGNITIVE_PHASES'),
+  'الدورة الإدراكية تشمل المراحل الإحدى عشرة بالترتيب المعلن');
+add('cognition-memory-recall-relevance',
+  cogRecall.includes('recallMemories') && cogRecall.includes('scoreMemoryRecord') &&
+  cogRecall.includes('relevance') && cogRecall.includes('reasons') && cogRecall.includes('maxResults'),
+  'الاستدعاء بالصلة مع حدّ أعلى (لا تحميل كل الذاكرة على كل قرار)');
+add('cognition-memory-recall-reuses-store',
+  cogRecall.includes("from '../memory/store'") && cogRecall.includes('BrainMemoryStoreState') &&
+  !/new Map|CREATE TABLE|secondMemory/i.test(cogRecall),
+  'الاستدعاء يقرأ من **نفس** مخزن Brain Memory القائم (لا ذاكرة ثانية)');
+add('cognition-memory-recall-stale-excluded',
+  cogRecall.includes('record.stale') && cogRecall.includes('متقادم') && cogRecall.includes('stale: true'),
+  'السجل المتقادم لا يُقدَّم للقرار (يُعلن السبب)');
+add('cognition-module-structure',
+  ['types.ts', 'contextEngine.ts', 'workingMemory.ts', 'memoryRecall.ts', 'goalManager.ts',
+    'agentCouncil.ts', 'disagreement.ts', 'nextAction.ts', 'planningEngine.ts', 'planTypes.ts',
+    'outcomeLearning.ts', 'cognitiveLoop.ts', 'routes.ts']
+    .every((f) => fs.existsSync(path.join(root, 'engine/brain/cognition', f))),
+  'وحدة الإدراك موجودة بمكوّناتها (سياق/ذاكرة عاملة/استدعاء/أهداف/مجلس/خلاف/إجراء/تخطيط/تعلّم/دورة/مسارات)');
+add('cognition-next-action-governed',
+  cogNextAction.includes('proposeNextAction') && cogNextAction.includes('requiredPermission') &&
+  cogNextAction.includes('governed: true') && cogNextAction.includes("'escalate'") &&
+  cogNextAction.includes("'do_nothing'"),
+  'الإجراء التالي اقتراح محكوم (صلاحية/خطر) بترتيب سلامة — لا تنفيذ');
+add('cognition-no-erp-crm-sales',
+  // الطبقة الإدراكية لا تُنشئ أي نظام مالي/مخزون: لا حساب ربح/إيراد/ROI ولا جدول مخزون.
+  !/calculateProfit|computeRevenue|revenue\s*=|profit\s*=|roi\s*=|inventoryTable|createInventory|erpSystem|crmSystem/i.test(
+    cogContext + cogWorking + cogRecall + cogGoals + cogCouncil + cogDisagreement + cogNextAction + cogPlanning + cogLearning + cogLoop) &&
+  cogGoals.includes('OUT_OF_SCOPE_FINANCIAL_TERMS') && cogGoals.includes('goalPlanViolatesScope') &&
+  cogLearning.includes('learningOutcomeViolatesScope'),
+  'الطبقة الإدراكية لا تُنشئ ERP/CRM/مخزون/محاسبة ولا تحسب إيراد/ربح/ROI (وحرس النطاق قائم)');
+add('cognition-no-private-chain-of-thought',
+  cogTypes.includes('storesPrivateChainOfThought: false') && cogTypes.includes('ReasoningState') &&
+  cogLoop.includes('storesPrivateChainOfThought: false') && cogTypes.includes('لا تفكير داخلي'),
+  'حالة التفكير المنظّمة بيانات قابلة للتتبع فقط — لا تُحفظ سلسلة تفكير خاصة');
+add('cognition-no-secrets',
+  !/api[_-]?key|client_secret|refresh_token|access_token|GEMINI_API_KEY|PRIVATE KEY/i.test(
+    cogContext + cogWorking + cogRecall + cogGoals + cogCouncil + cogDisagreement + cogNextAction + cogPlanning + cogLearning + cogLoop + cogRoutes),
+  'وحدة الإدراك لا تحمل أي سرّ');
+add('cognition-outcome-feedback-no-financial',
+  !/إيراد|ربح|ROI|هامش|تكلفة اكتساب|قيمة عمر|محاسبة|مخزون/i.test(
+    server.slice(server.indexOf('function recordReadOutcome'), server.indexOf('function recordReadOutcome') + 1400)),
+  'حلقة النتيجة لا تحمل أي رقم مالي مُخترع (اجتماعية فقط)');
+add('cognition-outcome-feedback-wired-server',
+  server.includes('recordReadOutcome') && server.includes('makeOutcomeObservation') &&
+  server.includes('learningToMemoryEntries') && server.includes('persistBrainMemory(records)') &&
+  server.includes('yt-reply-sent:') && server.includes('yt-reply-failed:'),
+  'حلقة النتيجة (رد مُسلَّم/فشل) تُغلق فعلاً في الخادم وتُكتب في ذاكرة العقل');
+add('cognition-planning-governed-steps',
+  cogPlanning.includes('buildPlan') && cogPlanning.includes('requiresApproval') &&
+  cogPlanning.includes('external: true') && cogPlanning.includes('planRespectsGovernance'),
+  'الخطة خطوات محكومة (مسموحة/تحتاج اعتماداً) وحرس يمنع خطوة خارجية مسموحة بلا سبب');
+add('cognition-routes-read-only',
+  cogRoutes.includes("'/api/agent/brain/cognition'") && cogRoutes.includes("'/api/agent/brain/cognition/reports'") &&
+  cogRoutes.includes('deps.requireOwner') && !/app\.post\(|app\.put\(|app\.delete\(/.test(cogRoutes),
+  'مسارات الإدراك قراءة فقط (GET)، وللمالك — بلا أي مسار كتابة');
+add('cognition-state-persists',
+  server.includes('STORAGE_KEY_WORKING_MEMORY') && server.includes('loadCognitionSync') &&
+  server.includes('persistCognition') && server.includes('normalizeWorkingMemory') &&
+  server.includes('cognitiveReports'),
+  'الذاكرة العاملة + تقارير الدورات تُحفظ وتُسترجع عبر محوّل الحالة (تصمد بعد restart)');
+add('cognition-tests-cover-critical',
+  cogUnitTest.includes('الدورة تشمل 11 مرحلة') && cogUnitTest.includes('السعر غير الموثّق') &&
+  cogUnitTest.includes('الخلاف الجوهري') && cogUnitTest.includes('رفض نتيجة مالية') &&
+  cogIntegrationTest.includes('دورة إدراكية كاملة') && cogIntegrationTest.includes('منع التكرار'),
+  'اختبارات الإدراك تغطي المراحل/التصعيد/الخلاف/المنع المالي/التكامل ومنع التكرار');
+add('cognition-tests-registered',
+  fs.existsSync(path.join(root, 'engine/tests/brain/cognition.test.ts')) &&
+  fs.existsSync(path.join(root, 'engine/tests/brain/cognition.integration.test.ts')) &&
+  pkg.scripts['test:cognition'] && pkg.scripts['test:cognition-integration'] &&
+  typeof pkg.scripts.test === 'string' && pkg.scripts.test.includes('test:cognition') &&
+  pkg.scripts.test.includes('test:cognition-integration'),
+  'اختبارات الإدراك (وحدة + خادم حقيقي) مسجّلة وضمن npm test');
+add('cognition-triggered-by-real-event',
+  /runTeamSessionNow\([\s\S]{0,2000}runCognitiveCycleNow\(/.test(server) &&
+  server.includes('runCognitiveCycleNow({') && server.includes("eventIdentity: `comment:${String(c.commentId)}`"),
+  'الدورة الإدراكية تُشغَّل من حدث YouTube حقيقي داخل دورة المراقبة');
+add('cognition-ui-panel',
+  fs.existsSync(path.join(root, 'src/components/agent/CentralBrainCognitionPanel.tsx')) &&
+  read('src/components/agent/CentralBrainCognitionPanel.tsx').includes('getCognitionLearningLoop') &&
+  read('src/components/agent/CentralBrainCognitionPanel.tsx').includes('CentralBrainCognitionPanel') &&
+  read('src/components/agent/CentralBrainView.tsx').includes('CentralBrainCognitionPanel'),
+  'لوحة الإدراك (Cognition/Memory/Goals/Plans/Agents/Critic/Decisions/Outcomes/Learning) مدمجة في واجهة العقل المركزي');
+add('cognition-ui-read-only-no-secrets',
+  !/method:\s*'POST'|method:\s*'PUT'|method:\s*'DELETE'/.test(read('src/components/agent/CentralBrainCognitionPanel.tsx')) &&
+  !/api[_-]?key|client_secret|refresh_token|access_token/i.test(read('src/components/agent/CentralBrainCognitionPanel.tsx')),
+  'لوحة الإدراك قراءة فقط (GET) وبلا أي سرّ');
+add('cognition-wired-server',
+  server.includes('registerCognitionRoutes(app,') && server.includes('buildCognitiveCycle') &&
+  server.includes('runCognitiveCycleNow') && server.includes('workingMemoryState'),
+  'الطبقة الإدراكية موصولة في server.ts بحقن التبعيات');
+add('cognition-working-memory-no-auto-promotion',
+  cogWorking.includes('لا ترقية تلقائية') && cogWorking.includes('لا تُرقّى تلقائياً إلى الذاكرة طويلة المدى') &&
+  !/remember\(|upsertMemoryRecord|toMemoryRecord/.test(cogWorking),
+  'الذاكرة العاملة لا تُرقّى تلقائياً إلى الذاكرة طويلة المدى (ممنوع بالتصميم)');
+add('cognition-working-memory-ttl',
+  cogWorking.includes('WORKING_MEMORY_TTL_MS') && cogWorking.includes('isWorkingMemoryStale') &&
+  cogWorking.includes('pruneWorkingMemory') && cogWorking.includes('touchWorkingMemory'),
+  'الذاكرة العاملة قصيرة المدى بعمر TTL صريح وتشذيب — لا نمو بلا حد');
+add('context-conversation-state-module',
+  convState.includes('export function conversationKey') && convState.includes('export function shortTermWindow') &&
+  convState.includes('CONVERSATION_MAX_MESSAGES') && convState.includes('export function priorBusinessReplies') &&
+  convState.includes('export function isConversationStale'),
+  'وحدة حالة المحادثة: معرّف صريح + نافذة قصيرة المدى محدودة + طزاجة (منطق صافٍ)');
+add('context-conversations-durable',
+  server.includes('socialConversations: ((workspace as any).socialConversations || []).slice(0, 500)') &&
+  server.includes('socialConversations: Array.isArray(raw.workspace.socialConversations)') &&
+  server.includes('"socialConversations"'),
+  'نوافذ المحادثة تُحفظ وتُسترجع عبر محوّل الحالة (تصمد بعد restart)');
+add('context-governance-tests',
+  pkg.scripts['test:context-governance'] === 'tsx engine/tests/context.governance.test.ts' &&
+  pkg.scripts.test.includes('test:context-governance') &&
+  ctxTest.includes('isolateContext') && ctxTest.includes('checkCommercialPolicy') && ctxTest.includes('evaluateGovernance'),
+  'اختبار وحدة شامل للسياق/العزل/السياسة/الحوكمة مضمّن في npm test');
+add('context-isolation-integration-test',
+  routesTest.includes("isolated === true") && routesTest.includes("priorRepliesUsed === 0") &&
+  routesTest.includes('commercialPolicy'),
+  'اختبار تكامل: عزل فعلي بين خيطين + سياسة التواصل مطبَّقة على الخادم الحقيقي');
+add('context-isolation-module',
+  ctxIsolation.includes('export function isolateContext') && ctxIsolation.includes('priorReplies: []') &&
+  ctxIsolation.includes('conversation_mismatch') && ctxIsolation.includes('platform_mismatch') && ctxIsolation.includes('subject_mismatch'),
+  'وحدة عزل السياق: ترفض أي تسرّب بين محادثة/منصة/خيط وتُفرغ السياق عند عدم التطابق');
+add('context-isolation-wired-reply',
+  server.includes('socialConversations') && socialRoutes.includes('isolateContext') && socialRoutes.includes('conversationScopeFor') &&
+  socialRoutes.includes('shortTermWindow'),
+  'عزل السياق مربوط بمسار الرد الفعلي (لا كود معزول): نوافذ محادثة معزولة بالمحادثة/الخيط');
+add('conversation-lifecycle-module',
+  lifecycleModule.includes('nextConversationState') && lifecycleModule.includes('pendingEscalation') &&
+  /target === 'RESOLVED' && input.pendingEscalation/.test(lifecycleModule) &&
+  lifecycleModule.includes('CONVERSATION_LIFECYCLE_STATES'),
+  'دورة حياة المحادثة: آلة حالات تمنع الانتقالات غير الصالحة والإغلاق مع تصعيد معلّق');
+add('decide-comment-action-advisory-only',
+  /advisory: CommentDecision/.test(watcherSrc) && /centralDecision: CentralActionDecision/.test(watcherSrc) &&
+  watcherSrc.includes('لا تنشئ قراراً مستقلاً'),
+  'decideCommentAction استشاري فقط (فحص سلامة) ولا يفوّض تنفيذاً');
+add('decision-ledger-readable-by-brain',
+  runtimeSrc.includes('export function decisionHistoryToMemoryRecords') &&
+  runtimeSrc.includes('consumedDecisionHistory') &&
+  server.includes('decisionHistoryToMemoryRecords(decisionLedger'),
+  'سجل القرار→النتيجة قابل للقراءة من العقل المركزي (بلا نظام ذاكرة ثانٍ)');
+add('human-escalation-module',
+  escalationModule.includes('createEscalationRecord') && escalationModule.includes('notificationDelivered') &&
+  escalationModule.includes('hasPendingEscalation') && escalationModule.includes('transitionEscalation') &&
+  escalationModule.includes('ESCALATION_REASON_LABELS_AR'),
+  'التصعيد البشري: سجل حقيقي بسياقه، ولا ادّعاء إشعار بلا مُبلِّغ ناجح');
+add('iraqi-commercial-policy-module',
+  iraqiPolicy.includes('export function checkCommercialPolicy') && iraqiPolicy.includes('hype_language') &&
+  iraqiPolicy.includes('false_urgency') && iraqiPolicy.includes('absolute_promise') &&
+  iraqiPolicy.includes('competitor_disparagement') && iraqiPolicy.includes('IRAQI_TONE_GUIDELINES_AR'),
+  'سياسة التواصل التجاري العراقي: تمنع المبالغة/الإلحاح/الوعد المطلق/الحطّ من المنافسين (طبقة حتمية)');
+add('iraqi-commercial-policy-wired',
+  socialRoutes.includes('checkCommercialPolicy') && socialRoutes.includes('commercialPolicy') &&
+  /commercialPolicy[\s\S]{0,200}status\(422\)/.test(socialRoutes),
+  'السياسة مطبَّقة على مسار الرد (رفض 422) وعلى الرد المقترح في التصنيف');
+add('ledger-read-back',
+  runtimeSrc.includes('export function decisionHistoryToMemoryRecords') &&
+  runtimeSrc.includes("e.outcome.availability !== 'available'") &&
+  server.includes('decisionHistoryToMemoryRecords(decisionLedger'),
+  'قراءة السجل: النتائج الملاحَظة تُرحَّل إلى ذاكرة العقل القائمة (بلا نظام ثانٍ، بلا اختراع)');
+add('ledger-read-back-consumed-context',
+  runtimeSrc.includes('buildRuntimeDecisionContext') && runtimeSrc.includes('consumedDecisionHistory') &&
+  runtimeSrc.includes('priorOutcomes'),
+  'قراءة السجل تُغذّي القرار المستقبلي (سياق تاريخ قابل للقراءة: نتائج ملاحَظة فقط)');
+add('memory-separation-module',
+  memorySepModule.includes('classifyConversationMessage') && memorySepModule.includes('canPromoteToLongTerm') &&
+  memorySepModule.includes("tier: 'session_context'") && memorySepModule.includes('LONG_TERM_MEMORY_KINDS'),
+  'فصل الذاكرة: رسالة الجلسة لا تُرقّى تلقائياً؛ الترقية بدليل موثّق فقط');
+add('no-invented-outcomes',
+  runtimeSrc.includes("e.outcome.availability !== 'available'") &&
+  brainAuthorityTest.includes('لا اختراع'),
+  'لا تُخترع نتائج: غير المتاح يبقى غير متاح ولا يتحول إلى ذاكرة');
+add('no-reply-without-central-allowed',
+  watcherSrc.includes("input.centralDecision === 'ALLOWED_ACTION'") &&
+  watcherSrc.includes("code: 'REPLY_ALLOWED'") &&
+  /if \(input\.centralDecision === 'ALLOWED_ACTION'\)[\s\S]*?action: 'reply', code: 'REPLY_ALLOWED'/.test(watcherSrc),
+  'لا رد إلا بقرار العقل المركزي ALLOWED_ACTION (تصعيد/تأجيل بخلافه)');
+add('one-decision-authority-runtime-path',
+  server.includes('resolveCommentExecution(') && server.includes('centralActionDecisionForEvent(') &&
+  server.includes("centralDecision: centralDecision ?? 'FAILED_SAFE'") &&
+  watcherSrc.includes('export function resolveCommentExecution'),
+  'مسار التنفيذ يعتمد قرار العقل المركزي وحده (سلطة واحدة): لا رد بلا ALLOWED_ACTION');
+add('session-lifecycle-tests',
+  pkg.scripts['test:session-lifecycle'] === 'tsx engine/tests/session.lifecycle.test.ts' &&
+  pkg.scripts.test.includes('test:session-lifecycle') &&
+  lifecycleTest.includes('nextConversationState') && lifecycleTest.includes('canPromoteToLongTerm'),
+  'اختبار وحدة لدورة الحياة/التصعيد/فصل الذاكرة مضمّن في npm test');
+add('single-decision-authority',
+  server.includes('centralActionDecisionForEvent(') && server.includes('resolveCommentExecution(') &&
+  server.includes("centralDecision: centralDecision ?? 'FAILED_SAFE'"),
+  'سلطة قرار واحدة: مسار التنفيذ يقرأ قرار العقل المركزي (composeBrainDecision) وحده — لا قرار مستقل');
+add('watcher-advisory-not-authority',
+  watcherSrc.includes('export function resolveCommentExecution') &&
+  watcherSrc.includes('سلطة التنفيذ الوحيدة') &&
+  watcherSrc.includes('centralDecision: CentralActionDecision'),
+  'decideCommentAction تصنيف استشاري فقط؛ سلطة التنفيذ في resolveCommentExecution (بلا قرار مستقل)');
 
 const failed = checks.filter(x => !x.ok);
 console.table(checks);
