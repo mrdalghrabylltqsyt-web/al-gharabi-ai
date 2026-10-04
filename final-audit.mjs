@@ -1825,6 +1825,23 @@ add('dr-auto-backup-health-exposed', drRoutes.includes('autoBackup: autoBackupSt
 add('dr-auto-backup-endpoint', drRoutes.includes("'/api/dr/auto-backup/run'") && drRoutes.includes('deps.requireOwner'), 'مسار owner لتشغيل دورة الجدولة الآن (تشخيص)');
 add('dr-auto-backup-tests', pkg.scripts['test:dr-autobackup'] === 'tsx engine/tests/dr/dr.autoBackup.test.ts' && (pkg.scripts['test:dr'] || '').includes('test:dr-autobackup') && autoBackupTest.includes('restart') && autoBackupTest.includes('already_running') && autoBackupTest.includes('SOURCE_INCOMPLETE'), 'اختبارات الجدولة (6 ساعات/إعادة تشغيل/قفل/فشل/اكتمال مصدر) مربوطة بـtest:dr');
 
+// ---- سدّ فجوات النسخ: تنبيه المالك + موازنة محتوى قاعدة البيانات ----
+const dbBalanceModule = fs.existsSync(path.join(root, 'engine/dr/dbBalance.ts')) ? read('engine/dr/dbBalance.ts') : '';
+const backupGapsTest = fs.existsSync(path.join(root, 'engine/tests/dr/dr.backupGaps.test.ts')) ? read('engine/tests/dr/dr.backupGaps.test.ts') : '';
+const backupModule = fs.existsSync(path.join(root, 'tools/dr/backup.mjs')) ? read('tools/dr/backup.mjs') : '';
+add('dr-db-balance-module', dbBalanceModule.includes('computeLiveDatabaseFingerprint') && dbBalanceModule.includes('evaluateDatabaseBalance') && dbBalanceModule.includes('LiveDatabaseFingerprint') && dbBalanceModule.includes('DbBalanceVerdict'), 'وحدة موازنة قاعدة البيانات (بصمة مستقرة + حكم صريح) موجودة');
+add('dr-db-balance-fingerprint-timeless', dbBalanceModule.includes('VOLATILE_KEYS') && /VOLATILE_KEYS = new Set\(\[[^\]]*'exportedAt'/.test(dbBalanceModule) && dbBalanceModule.includes('fingerprint'), 'البصمة تتجاهل الطوابع الزمنية (exportedAt/savedAt) فلا تُنتج اختلافاً وهمياً');
+add('dr-db-balance-no-invention', dbBalanceModule.includes('no_point') && dbBalanceModule.includes('unavailable') && dbBalanceModule.includes('in_balance') && dbBalanceModule.includes('stale'), 'حالات الموازنة صريحة: لا نقطة/غير متاح/متوازن/متقادم (لا حكم بلا بيانات)');
+add('dr-owner-alert-on-backup-failure', drRoutes.includes('notifyOwnerOnce(') && drRoutes.includes("notifyOwnerOnce('backup_failed'") && drRoutes.includes("kind: 'backup_failed'"), 'فشل النسخة يُنبّه المالك عبر القناة القائمة (عنوان عام بلا محتوى)');
+add('dr-owner-alert-deduped', drRoutes.includes('function notifyOwnerOnce') && drRoutes.includes('ALERT_DEDUP_MS') && drRoutes.includes('alerts[dedupKey]') && drRoutes.includes('atMs'), 'التنبيه يمنع التكرار داخل نافذة زمنية (لا إغراق المالك)');
+add('dr-db-balance-detects-new-data', drRoutes.includes('checkDatabaseBalance') && /database_stale/.test(drRoutes) && drRoutes.includes('notifyOwnerOnce(') && drRoutes.includes('database_stale:'), 'الفحص الدوري يكشف بيانات جديدة (منتجات/أسعار/مبيعات) ويُنبّه بلا تغيير كود');
+add('dr-db-balance-wired-in-cycle', /runReconciliationCycle[\s\S]{0,4000}checkDatabaseBalance\(\)/.test(drRoutes) && drRoutes.includes('databaseBalance'), 'موازنة القاعدة مربوطة بدورة الفحص الساعي وتُحفظ نتيجتها (تصمد بعد restart)');
+add('dr-db-balance-durable-state', serverSrc.includes('driveDbBalance') && serverSrc.includes('drControl.driveDbBalance = control.driveDbBalance') && serverSrc.includes('driveDbBalance: drControl.driveDbBalance') && serverSrc.includes('driveAlerts'), 'حالة الموازنة والتنبيهات تُحفظ وتُسترجع عبر محوّل الحالة');
+add('dr-db-balance-in-change-detection', backupModule.includes('databaseFingerprint') && /prevDb === nextDb/.test(backupModule), 'تغيّر قاعدة البيانات وحده يُنتج نقطة استعادة جديدة (لا يبقى no_change كاذباً)');
+add('dr-db-balance-health-exposed', drRoutes.includes('databaseBalance: control().driveDbBalance') && drRoutes.includes('ownerAlerts:'), 'health يعرض الموازنة والتنبيهات (أرقام/أنواع فقط بلا محتوى)');
+add('dr-db-balance-endpoint-owner', drRoutes.includes("'/api/dr/database-balance/check'") && drRoutes.includes('deps.requireOwner'), 'مسار owner لفحص الموازنة الآن (تشخيص)');
+add('dr-db-balance-tests', pkg.scripts['test:dr-backup-gaps'] === 'tsx engine/tests/dr/dr.backupGaps.test.ts' && (pkg.scripts['test:dr'] || '').includes('test:dr-backup-gaps') && backupGapsTest.includes('الموازنة تكشف بيانات جديدة') && backupGapsTest.includes('تنبيه فشل النسخة'), 'اختبارات سدّ الفجوات (تنبيه الفشل + كشف بيانات جديدة + بلا تكرار) مربوطة بـtest:dr');
+
 // ---- مركز استعادة الغرابي AI (خدمة مستقلة) + تعليمات الاختصار + اختبار الانهيار ----
 const recoveryCenterModule = fs.existsSync(path.join(root, 'tools/dr/recovery-center.mjs')) ? read('tools/dr/recovery-center.mjs') : '';
 const recoveryCenterPkg = fs.existsSync(path.join(root, 'dr-recovery-center/package.json')) ? read('dr-recovery-center/package.json') : '';

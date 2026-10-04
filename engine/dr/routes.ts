@@ -55,6 +55,7 @@ import { RECOVERY_SECRET_INVENTORY } from './recoveryVault/inventory';
 import { buildRestorePlan, runRecoveryDrill, verifyRecoveryPoint, applyDatabaseDump } from '../../tools/dr/restore.mjs';
 import { pruneCompletedRestorePoints, retentionEnabled, resolveKeep, resolveProtectedIds } from '../../tools/dr/retention.mjs';
 import { listRecoveryPoints, runStandaloneRestore, inspectRecoveryReadiness, inspectTargetEnvironment } from '../../tools/dr/standalone-recovery.mjs';
+import { computeLiveDatabaseFingerprint, evaluateDatabaseBalance } from './dbBalance';
 import {
   buildRecoveryInformation,
   buildRecoveryInstructions,
@@ -67,7 +68,7 @@ export interface DriveRoutesDeps {
   requireOwner: express.RequestHandler;
   env?: Record<string, string | undefined>;
   /** يقرأ حالة DR المحفوظة (states + رمز تجديد مشفّر + آخر خطأ + حالة النسخ + هوية مجلدات Drive). */
-  loadControl: () => { driveOAuthStates?: any[]; driveRefreshToken?: any; driveLastError?: string | null; driveBackup?: any; driveFolderIdentity?: any; driveMirror?: any; driveReconciliation?: any; driveAutoBackup?: any; driveLease?: any };
+  loadControl: () => { driveOAuthStates?: any[]; driveRefreshToken?: any; driveLastError?: string | null; driveBackup?: any; driveFolderIdentity?: any; driveMirror?: any; driveReconciliation?: any; driveAutoBackup?: any; driveLease?: any; driveAlerts?: any; driveDbBalance?: any };
   /** يثبّت جزءاً من حالة DR عبر محوّل الحالة (يصمد بعد restart). */
   persistControl: (partial: Record<string, any>) => void;
   /** عميل Drive اختياري (للاختبار). إن غاب يُبنى من البيئة. */
@@ -98,7 +99,19 @@ export interface DriveRoutesDeps {
   drillDir?: string;
   /** رابط قاعدة بيانات معزولة لاختبار الاستعادة (تُرفض إن طابقت الإنتاج). */
   isolatedDatabaseUrl?: string | null;
+  /**
+   * بصمة محتوى مستقرة للقاعدة من نص النسخة المنطقية (تتجاهل الطوابع الزمنية).
+   * تُحسب عند النسخة وتُخزَّن مع النقطة، فتُقارَن دورياً مع البصمة الحية لكشف
+   * تغيّر البيانات (منتجات/أسعار/مبيعات) بلا تغيير كود. بلا سرّ.
+   */
+  fingerprintDatabase?: (dumpText: string) => string | null;
   now?: () => string;
+  /**
+   * قناة الإشعار القائمة للمالك (نفس `pushNotification` المستخدمة في تصعيدات
+   * السوشيال/العقل). تُستخدم لتنبيه فشل النسخة وكشف عدم توازن قاعدة البيانات.
+   * بلا سرّ: عنوان ونص عامّان فقط. غيابها لا يُسقط الدورة — يُعلن التنبيه غير المُسلَّم.
+   */
+  notifyOwner?: (input: { kind: 'backup_failed' | 'database_stale'; title: string; body: string; severity: 'warning' | 'critical'; detail?: string | null }) => { delivered: boolean; channel: string | null; error: string | null };
 }
 
 /** هل التفويض جاهز فعلاً (اعتماد + رمز تجديد مشفّر)؟ بلا كشف قيم. */
@@ -411,6 +424,12 @@ export function registerDriveRoutes(app: express.Express, deps: DriveRoutesDeps)
   /** يحدّث سجل آخر نسخة عبر محوّل الحالة (يصمد بعد restart). */
   function recordBackupResult(result: any, trigger: string = 'manual'): void {
     const previous = control().driveBackup || {};
+    const succeeded = result?.state === 'backed_up' || result?.state === 'no_change';
+    // بصمة محتوى القاعدة تصل من مخرج runBackup ضمن البيان (manifest.databaseHash)
+    // أو مباشرة في جسم الاستجابة. مصدر واحد، بلا سرّ.
+    const dbHash = result?.databaseHash ?? result?.manifest?.databaseHash ?? null;
+    // البصمة المستقرة (تتجاهل الزمن) هي المرجع للموازنة الدورية؛ تُفضَّل على hash الخام.
+    const dbFingerprint = result?.databaseFingerprint ?? result?.manifest?.databaseFingerprint ?? null;
     const entry = {
       at: now(),
       trigger,
@@ -420,15 +439,68 @@ export function registerDriveRoutes(app: express.Express, deps: DriveRoutesDeps)
       recoveryPointId: result?.recoveryPointId ?? null,
       treeHash: result?.treeHash ?? null,
       sourceHash: result?.sourceHash ?? null,
+      // بصمة محتوى قاعدة البيانات لهذه النسخة (للموازنة الدورية اللاحقة، بلا محتوى).
+      databaseHash: dbHash ?? previous.databaseHash ?? null,
       reason: result?.reason ?? null,
       message: result?.message ?? null,
-      errorDetails: result?.state === 'backed_up' || result?.state === 'no_change' ? null : (result?.errorDetails ?? previous.errorDetails ?? null),
+      errorDetails: succeeded ? null : (result?.errorDetails ?? previous.errorDetails ?? null),
       lastSuccessAt: result?.state === 'backed_up' ? now() : previous.lastSuccessAt ?? null,
       lastSuccessCommit: result?.state === 'backed_up' ? result?.commit ?? null : previous.lastSuccessCommit ?? null,
       lastRecoveryPointId: result?.state === 'backed_up' ? result?.recoveryPointId ?? null : previous.lastRecoveryPointId ?? null,
+      lastSuccessDatabaseHash: result?.state === 'backed_up' ? (dbFingerprint ?? dbHash ?? null) : previous.lastSuccessDatabaseHash ?? null,
     };
     control().driveBackup = entry;
     deps.persistControl({ driveBackup: entry });
+  }
+
+  /**
+   * تنبيه المالك عند فشل نسخة أو عدم توازن البيانات — عبر القناة القائمة
+   * (`notifyOwner` = `pushNotification`). يمنع الإغراق: لا تكرار لنفس (النوع + السبب)
+   * داخل نافذة 6 ساعات، فنسخة تفشل كل 6 ساعات تُنبّه مرة كل نافذة لا في كل دورة.
+   * لا يُعلن الإشعار مُسلَّماً إن لم تُنشأ التنبيهة فعلاً (بلا ادّعاء).
+   */
+  const ALERT_DEDUP_MS = 6 * 60 * 60 * 1000;
+  function notifyOwnerOnce(kind: 'backup_failed' | 'database_stale', title: string, body: string, severity: 'warning' | 'critical', dedupKey: string): { delivered: boolean; channel: string | null; error: string | null; deduped?: boolean } {
+    if (!deps.notifyOwner) return { delivered: false, channel: null, error: 'notifier_unavailable' };
+    const alerts = control().driveAlerts || {};
+    const lastAt = Number(alerts[dedupKey]?.atMs || 0);
+    if (lastAt && Date.now() - lastAt < ALERT_DEDUP_MS) {
+      return { delivered: false, channel: null, error: null, deduped: true };
+    }
+    const res = deps.notifyOwner({ kind, title, body, severity });
+    if (res?.delivered) {
+      alerts[dedupKey] = { atMs: Date.now(), at: now(), kind };
+      control().driveAlerts = alerts;
+      deps.persistControl({ driveAlerts: alerts });
+    }
+    return res;
+  }
+
+  /**
+   * موازنة محتوى قاعدة البيانات الحية مقابل بصمة آخر نقطة استعادة ناجحة.
+   * حتمية (dump + بصمة) بلا AI وبلا شبكة إضافية. اختلاف ⇒ تنبيه المالك صراحةً.
+   * لا تفشل بصمت: تعذّر الحساب يُعلن `unavailable` بلا ادّعاء تطابق.
+   */
+  async function checkDatabaseBalance(): Promise<any> {
+    const live = deps.dumpDatabase
+      ? computeLiveDatabaseFingerprint(await deps.dumpDatabase().catch(() => null))
+      : { fingerprint: null, rowCount: 0, valueBytes: 0, productCount: 0, saleCount: 0, error: 'no_dump_database' };
+    const pointFingerprint = control().driveBackup?.lastSuccessDatabaseHash ?? null;
+    const verdict = evaluateDatabaseBalance(live, pointFingerprint);
+    if (verdict.status === 'stale') {
+      notifyOwnerOnce(
+        'database_stale',
+        'النسخة الاحتياطية أقدم من البيانات',
+        verdict.message,
+        'warning',
+        `database_stale:${live.fingerprint}`,
+      );
+    }
+    const prev = control().driveDbBalance || {};
+    const entry = { at: now(), status: verdict.status, changed: verdict.changed, reason: verdict.reason, liveFingerprint: live.fingerprint, pointFingerprint, productCount: live.productCount, saleCount: live.saleCount, checkCount: (prev.checkCount || 0) + 1 };
+    control().driveDbBalance = entry;
+    deps.persistControl({ driveDbBalance: entry });
+    return { ...verdict, productCount: live.productCount, saleCount: live.saleCount, at: entry.at, checkCount: entry.checkCount };
   }
 
   /**
@@ -484,6 +556,7 @@ export function registerDriveRoutes(app: express.Express, deps: DriveRoutesDeps)
         files,
         dumpDatabase: deps.dumpDatabase,
         encryptDatabase: (sql: string) => encryptDbDump(sql, env as NodeJS.ProcessEnv),
+        fingerprintDatabase: deps.fingerprintDatabase,
         buildSecrets: deps.buildSecrets || (() => buildSecretsBundle(env as NodeJS.ProcessEnv, { now: startedAt })),
         recoveryInfo: deps.recoveryInfo,
         meta: deps.gitMeta ? deps.gitMeta() : defaultGitMeta(),
@@ -555,6 +628,10 @@ export function registerDriveRoutes(app: express.Express, deps: DriveRoutesDeps)
         }
       }
       recordBackupResult(result, trigger);
+      // تنبيه المالك عند فشل النسخة (عبر القناة القائمة، بلا تكرار داخل النافذة).
+      if (result.state === 'failed') {
+        notifyOwnerOnce('backup_failed', 'فشل النسخة الاحتياطية', `تعذّر إنشاء نسخة احتياطية (${String(result.reason || 'backup_failed').slice(0, 80)}). راجع /api/dr/health.`, 'critical', `backup_failed:${String(result.reason || 'failed').slice(0, 60)}`);
+      }
       const httpStatus = result.state === 'failed' ? 500 : 200;
       return {
         status: httpStatus,
@@ -566,6 +643,9 @@ export function registerDriveRoutes(app: express.Express, deps: DriveRoutesDeps)
           commit: result.commit ?? null,
           treeHash: result.treeHash ?? null,
           sourceHash: result.sourceHash ?? null,
+          // بصمة محتوى قاعدة البيانات (بلا محتوى) — تُحفظ للموازنة الدورية اللاحقة.
+          databaseHash: result.manifest?.databaseHash ?? null,
+          databaseFingerprint: result.databaseFingerprint ?? result.manifest?.databaseFingerprint ?? null,
           uploaded: result.uploaded ?? 0,
           secretsCount: result.secretsCount ?? null,
           mirror,
@@ -593,10 +673,12 @@ export function registerDriveRoutes(app: express.Express, deps: DriveRoutesDeps)
           reauthorizationNeeded: true,
         };
         recordBackupResult({ state: 'failed', reason: code }, trigger);
+        notifyOwnerOnce('backup_failed', 'النسخة الاحتياطية تحتاج إعادة تفويض Google', 'رفض Google رمز تفويض Drive (REAUTHORIZATION_NEEDED). أعد الربط من زر «ربط Google Drive».', 'critical', 'backup_failed:REAUTHORIZATION_NEEDED');
         return { status: 409, body: { success: false, ...failure } };
       }
       const failure = { state: 'failed', reason: code, message: 'فشل غير متوقّع أثناء النسخة.' };
       recordBackupResult(failure, trigger);
+      notifyOwnerOnce('backup_failed', 'فشل النسخة الاحتياطية', `تعذّر إنشاء نسخة احتياطية (${code.slice(0, 80)}). راجع /api/dr/health.`, 'critical', `backup_failed:${code.slice(0, 60)}`);
       return { status: 500, body: { success: false, ...failure } };
     } finally {
       backupRunning = false;
@@ -764,6 +846,21 @@ export function registerDriveRoutes(app: express.Express, deps: DriveRoutesDeps)
         },
         lastError: control().driveLastError ?? null,
         backup: control().driveBackup ?? null,
+        // توازن قاعدة البيانات الحية مقابل آخر نقطة استعادة ناجحة (بلا أي محتوى):
+        // يكشف بيانات جديدة (منتجات/أسعار/مبيعات) بلا تغيير كود. بلا سرّ.
+        databaseBalance: control().driveDbBalance
+          ? {
+              status: control().driveDbBalance.status ?? null,
+              changed: control().driveDbBalance.changed === true,
+              reason: control().driveDbBalance.reason ?? null,
+              productCount: control().driveDbBalance.productCount ?? null,
+              saleCount: control().driveDbBalance.saleCount ?? null,
+              lastCheckedAt: control().driveDbBalance.at ?? null,
+              checkCount: control().driveDbBalance.checkCount ?? 0,
+            }
+          : null,
+        // آخر تنبيهات المالك (بلا محتوى): النوع والوقت فقط — لإثبات أن التنبيه يعمل.
+        ownerAlerts: Object.entries(control().driveAlerts || {}).map(([key, v]: any) => ({ key: String(key).split(':')[0], at: v?.at ?? null, kind: v?.kind ?? null })).slice(-10),
       },
     });
   });
@@ -1202,6 +1299,14 @@ export function registerDriveRoutes(app: express.Express, deps: DriveRoutesDeps)
         result.reason = 'source_incomplete';
         return result;
       }
+      // 1ب) موازنة قاعدة البيانات الحية مقابل آخر نقطة استعادة ناجحة. مستقلّة عن
+      //     تغيّر الكود: تكتشف بيانات جديدة (منتجات/أسعار/مبيعات) بلا تغيير كود.
+      //     لا تُسقط الدورة إن تعذّر الحساب (تُعلن unavailable بصراحة).
+      try {
+        result.databaseBalance = await checkDatabaseBalance();
+      } catch (e: any) {
+        result.databaseBalance = { status: 'unavailable', changed: false, reason: String(e?.code || e?.message || 'balance_failed').slice(0, 80) };
+      }
       // 2) مقارنة المصدر مع CURRENT (بصمة شجرة).
       const files = [...(collected.included || []), ...(collected.excluded || [])];
       const snapshot = buildMirrorSnapshot(files);
@@ -1247,6 +1352,7 @@ export function registerDriveRoutes(app: express.Express, deps: DriveRoutesDeps)
           lastReconciliationReason: result.reason ?? null,
           lastReconciliationTreeHash: result.treeHash ?? result.sourceTreeHash ?? null,
           reconciliationCount: (prev.reconciliationCount || 0) + 1,
+          databaseBalance: result.databaseBalance ?? prev.databaseBalance ?? null,
         };
         deps.persistControl({ driveReconciliation: control().driveReconciliation });
       } catch { /* أفضل جهد */ }
@@ -1293,6 +1399,7 @@ export function registerDriveRoutes(app: express.Express, deps: DriveRoutesDeps)
       lastReconciliationReason: last?.lastReconciliationReason ?? null,
       lastReconciliationTreeHash: last?.lastReconciliationTreeHash ?? null,
       reconciliationCount: last?.reconciliationCount ?? 0,
+      databaseBalance: last?.databaseBalance ?? null,
     };
   }
 
@@ -1300,6 +1407,16 @@ export function registerDriveRoutes(app: express.Express, deps: DriveRoutesDeps)
   app.post('/api/dr/reconcile', deps.authenticateToken, deps.requireOwner, async (_req, res) => {
     const result = await runReconciliationCycle('manual');
     res.status(result.outcome === 'error' ? 500 : 200).json({ success: result.outcome !== 'error', reconciliation: result, status: reconciliationStatus() });
+  });
+
+  // فحص توازن قاعدة البيانات الحية مقابل آخر نقطة استعادة (owner، قراءة فقط، بلا AI).
+  app.post('/api/dr/database-balance/check', deps.authenticateToken, deps.requireOwner, async (_req, res) => {
+    try {
+      const verdict = await checkDatabaseBalance();
+      res.status(200).json({ success: true, ...verdict, at: now() });
+    } catch (err: any) {
+      res.status(500).json({ success: false, code: String(err?.code || err?.message || 'balance_failed').slice(0, 80) });
+    }
   });
 
   // ------------------------------------------------------------------
@@ -1546,6 +1663,7 @@ export function registerDriveRoutes(app: express.Express, deps: DriveRoutesDeps)
     runSync: (opts?: { force?: boolean }) => runSync(opts || {}),
     start: startDriveReconciliation,
     stop: stopDriveReconciliation,
+    checkDatabaseBalance,
   };
   // واجهة الجدولة التلقائية (للاختبار والصحة): الحالة/الدورة/البدء/الإيقاف + النسخة الكاملة.
   (app as any).drAutoBackup = {

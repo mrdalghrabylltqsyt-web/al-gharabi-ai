@@ -57,6 +57,7 @@ import { isEscalationOpen, escalationReasonFor, type EscalationReason, type Esca
 import { classifyConversation } from "./engine/brain/audience/conversationIntelligence";
 import { capabilityRow } from "./engine/brain/strategy/capabilityMatrix";
 import { registerDriveRoutes } from "./engine/dr/routes";
+import { computeLiveDatabaseFingerprint } from "./engine/dr/dbBalance";
 import { buildSecretsBundle } from "./tools/dr/secret-crypto.mjs";
 import { buildRecoveryInformation, buildRecoveryInstructions } from "./tools/dr/cloud-lib.mjs";
 import { collectTrustedSourceTree } from "./tools/dr/cloud-sync.mjs";
@@ -4680,7 +4681,7 @@ let youtubeDelegationState: YouTubeDelegation = defaultYouTubeDelegation();
 // المنظومة. لا تُقرأ DATABASE_URL ولا تُرفع قاعدة بيانات خام. تُحفظ هنا فقط
 // حالات CSRF ورمز التجديد المشفّر وآخر خطأ — كلها عبر محوّل الحالة.
 // -------------------------------------------------------------
-const drControl: { driveOAuthStates: any[]; driveRefreshToken: any; driveLastError: string | null; driveBackup: any; driveFolderIdentity: any; driveMirror: any; driveReconciliation: any; driveAutoBackup: any; driveLease: any } = {
+const drControl: { driveOAuthStates: any[]; driveRefreshToken: any; driveLastError: string | null; driveBackup: any; driveFolderIdentity: any; driveMirror: any; driveReconciliation: any; driveAutoBackup: any; driveLease: any; driveAlerts: any; driveDbBalance: any } = {
   driveOAuthStates: [],
   driveRefreshToken: null,
   driveLastError: null,
@@ -4690,6 +4691,8 @@ const drControl: { driveOAuthStates: any[]; driveRefreshToken: any; driveLastErr
   driveReconciliation: null,
   driveAutoBackup: null,
   driveLease: null,
+  driveAlerts: {},
+  driveDbBalance: null,
 };
 
 /** يحفظ التفويض عبر محوّل الحالة (يصمد بعد restart) — كتابة تُنتظر عند التغيير. */
@@ -8947,6 +8950,9 @@ function applyControlSnapshot(control: any): void {
   drControl.driveAutoBackup = control.driveAutoBackup && typeof control.driveAutoBackup === "object" ? control.driveAutoBackup : null;
   // PROC-01: قفل دوام النسخة/المزامنة (owner + انتهاء فقط، بلا سرّ).
   drControl.driveLease = control.driveLease && typeof control.driveLease === "object" ? control.driveLease : null;
+  // تنبيهات DR (منع تكرار الإشعار) وتوازن قاعدة البيانات — تصمد بعد restart، بلا سرّ.
+  drControl.driveAlerts = control.driveAlerts && typeof control.driveAlerts === "object" ? control.driveAlerts : {};
+  drControl.driveDbBalance = control.driveDbBalance && typeof control.driveDbBalance === "object" ? control.driveDbBalance : null;
   // حالة وقت تشغيل العقل (Batch 5): تُسترجَع فتصمد بعد restart/cold start (بلا سرّ).
   brainRuntimeState = normalizeBrainRuntimeState(control.brainRuntime);
 }
@@ -9000,6 +9006,9 @@ function buildControlState() {
     driveAutoBackup: drControl.driveAutoBackup,
     // PROC-01: قفل دوام النسخة/المزامنة (يمنع نسختين متزامنتين عبر العمليات).
     driveLease: drControl.driveLease,
+    // تنبيهات DR (منع تكرار الإشعار) وتوازن قاعدة البيانات — تصمد بعد restart، بلا سرّ.
+    driveAlerts: drControl.driveAlerts,
+    driveDbBalance: drControl.driveDbBalance,
     // حالة وقت تشغيل العقل (Batch 5): الحالة/القفل/العدّادات — تصمد بعد restart
     // فلا تُنشئ دورة مكرّرة، ويُستردّ القفل المتقادم. بلا أي سرّ.
     brainRuntime: brainRuntimeState,
@@ -13121,6 +13130,9 @@ registerDriveRoutes(app, {
   },
   collectSourceFiles: () => collectTrustedSourceTree(process.cwd(), { env: process.env }),
   dumpDatabase: () => storageAdapter.dump(),
+  // بصمة محتوى مستقرة للقاعدة (تتجاهل الطوابع الزمنية): تُخزَّن مع النقطة وتُقارَن
+  // دورياً فيكشف تغيّر البيانات (منتجات/أسعار/مبيعات) بلا تغيير كود. بلا سرّ.
+  fingerprintDatabase: (dumpText: string) => computeLiveDatabaseFingerprint(dumpText).fingerprint,
   buildSecrets: () => buildSecretsBundle(process.env),
   recoveryInfo: (ctx) => ({
     information: buildRecoveryInformation({ repository: ctx.repository, createdAt: ctx.now }),
@@ -13133,6 +13145,16 @@ registerDriveRoutes(app, {
     repository: process.env.GHARABI_REPOSITORY || "mrdalghrabylltqsyt-web/al-gharabi-ai",
     project: "al-gharabi-ai",
   }),
+  // تنبيه المالك عبر القناة القائمة (نفس pushNotification المستخدمة في تصعيدات
+  // السوشيال/العقل). عنوان ونص عامّان فقط بلا أي محتوى عميل. غياب التنبيهة يُعلن.
+  notifyOwner: (input) => {
+    try {
+      const n = pushNotification("owner", input.kind, input.title, input.body, input.severity);
+      return { delivered: Boolean(n?.id), channel: "in_app_notification", error: n?.id ? null : "notification_not_created" };
+    } catch (e) {
+      return { delivered: false, channel: null, error: e instanceof Error ? e.name : "notifier_failed" };
+    }
+  },
 });
 
 // مسارات العقل المركزي (Central Brain) — قراءة/تحليل فقط، بلا أي تنفيذ خارجي.
