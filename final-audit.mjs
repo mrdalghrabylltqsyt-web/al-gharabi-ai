@@ -871,6 +871,7 @@ add('reply-intelligence-no-ai-quota', !/aiEngine|gemini|fetch\(|https?:/.test(re
 
 // ===== جدار حماية حصة Gemini المجاني — مركزي واحد للمشروع كله =====
 const firewall = read('engine/ai/firewall.ts');
+const quotaPolicy = read('engine/ai/quotaPolicy.ts');
 const aiEngineSrc = read('engine/ai/engine.ts');
 const aiProviderSrc = read('engine/ai/provider.ts');
 add('gemini-firewall-module', firewall.includes('export class AiUsageLedger') && firewall.includes('export function buildUsageDiagnostics') && firewall.includes('export function enforcePromptLimit'), 'وحدة جدار الحماية المركزية موجودة');
@@ -880,7 +881,11 @@ add('gemini-firewall-future-platform', firewall.includes('KNOWN_AI_PLATFORMS') &
 add('gemini-firewall-ledger-sources', firewall.includes('providerCalls') && firewall.includes('cacheHits') && firewall.includes('inflightJoins') && firewall.includes('guardBlocked') && firewall.includes('deterministic') && firewall.includes('fallback') && firewall.includes('providerErrors'), 'العدّادات تميّز نداء المزود عن الكاش/الحتمي/الحجب');
 add('gemini-firewall-only-provider-consumes', /providerCalls \+= 1/.test(firewall) && !/cacheHits \+= 1[\s\S]{0,80}usedToday/.test(firewall), 'نداء المزود وحده يستهلك الميزانية اليومية');
 add('gemini-firewall-guard-single-source', server.includes('const aiUsageGuard: AiUsageGuard') && (server.match(/aiUsageGuard/g) || []).length >= 4, 'حارس واحد مركزي يستهلكه المحرك وكل المسارات');
-add('gemini-firewall-limit-default-4', server.includes('process.env.GEMINI_DAILY_LIMIT || 4') && firewall.includes('localDailyLimit'), 'الحد المحلي الافتراضي 4 طلبات/يوم');
+add('gemini-firewall-limit-default-4', server.includes('resolveGeminiDailyLimit(process.env)') && quotaPolicy.includes('GEMINI_LIMIT_DEFAULT = 40') && firewall.includes('localDailyLimit'), 'الحد المحلي الافتراضي 40 طلباً/يوم عبر مصدر سياسة واحد (كان 4)');
+add('gemini-limit-env-configurable', quotaPolicy.includes("GEMINI_DAILY_LIMIT_ENV = 'GEMINI_DAILY_LIMIT'") && quotaPolicy.includes('resolveGeminiDailyLimit'), 'الحد قابل للضبط بمتغيّر بيئة عبر مصدر واحد');
+add('gemini-limit-clamped-safely', quotaPolicy.includes('GEMINI_LIMIT_MAX_SAFE = 120') && /Math\.min\(GEMINI_LIMIT_MAX_SAFE/.test(quotaPolicy), 'أي قيمة بيئة تتجاوز الحد الآمن تُقصّ (لا تعطيل للحارس)');
+add('gemini-limit-guard-still-enforced', server.includes('geminiUsageCount >= GEMINI_DAILY_LIMIT') && server.includes('GEMINI_DAILY_LIMIT<=GEMINI_LIMIT_MAX_SAFE'), 'الحارس اليومي ما زال يمنع أي طلب بعد بلوغ السقف');
+add('gemini-limit-policy-tests', /limitPolicy/.test(server) && fs.readFileSync(path.join(root, 'engine/tests/gemini.quota.policy.test.ts'), 'utf8').includes('GEMINI_LIMIT_MAX_SAFE'), 'اختبار يثبت الرفع المتحفظ والقصّ ومنع التجاوز');
 add('gemini-firewall-protection-flag', server.includes('GEMINI_FREE_TIER_PROTECTION') && server.includes('protectionEnabled'), 'وضع الحماية معلن ومفعّل افتراضياً');
 add('gemini-firewall-no-paid-provider', !/openai|anthropic|claude|deepseek|kimi/i.test(firewall) && !/openai|anthropic|claude|deepseek/i.test(server), 'لا مزود مدفوع ولا مزود بديل مُضاف');
 add('gemini-firewall-quota-guard-reason', aiEngineSrc.includes("'quota_guard'") && aiEngineSrc.includes("source: 'fallback'"), 'الحجب يعيد بديلاً حتمياً صريحاً (quota_guard/fallback)');
