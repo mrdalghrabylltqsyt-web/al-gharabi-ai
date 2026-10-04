@@ -73,6 +73,7 @@ export function computeSourceTree(files) {
  * @param {object[]} options.files ملفات المصدر `{path, content}` (المشمولة والمستبعدة).
  * @param {() => Promise<string|null>|string|null} [options.dumpDatabase] ينتج نص SQL خام (مؤقت).
  * @param {(sql:string)=>object} options.encryptDatabase يشفر نص SQL إلى DB encrypted dump.
+ * @param {(text:string)=>string|null} [options.fingerprintDatabase] بصمة محتوى مستقرة للقاعدة (تتجاهل الزمن) — للموازنة الدورية.
  * @param {() => Promise<object>|object} [options.buildSecrets] يبني حزمة الأسرار المشفّرة من البيئة.
  * @param {object} [options.secrets] أسرار صريحة (للاختبار) تُشفَّر بالمفتاح الرئيسي.
  * @param {Record<string,string>} [options.env] بيئة المفتاح الرئيسي.
@@ -98,7 +99,7 @@ export async function runBackup(options = {}) {
   }
 }
 
-async function runBackupInner({ store, files, dumpDatabase, encryptDatabase, meta, now, env, secrets, buildSecrets, recoveryInfo }) {
+async function runBackupInner({ store, files, dumpDatabase, encryptDatabase, fingerprintDatabase, meta, now, env, secrets, buildSecrets, recoveryInfo }) {
   // 1) البنية
   const structure = await store.ensureStructure();
   if (!structure.ok) return { state: 'failed', uploaded: 0, reason: structure.code || 'no_structure', message: structure.message || 'تعذّر تجهيز بنية Drive.', errorDetails: structure.errorDetails || null };
@@ -130,6 +131,7 @@ async function runBackupInner({ store, files, dumpDatabase, encryptDatabase, met
   // 4) نسخة قاعدة البيانات: dump مؤقت → hash → تشفير → حذف الخام
   let dbEncrypted = null;
   let databaseHash = null;
+  let databaseFingerprint = null;
   let databaseSize = null;
   let encryptedDatabaseHash = null;
   let encryptedDatabaseSize = null;
@@ -146,6 +148,9 @@ async function runBackupInner({ store, files, dumpDatabase, encryptDatabase, met
     const rawBuf = toBuffer(rawSql);
     databaseHash = hashContent(rawBuf);
     databaseSize = rawBuf.length;
+    // بصمة محتوى مستقرة (تتجاهل الطوابع الزمنية): تُستخدم للموازنة الدورية فيكشف
+    // تغيّر البيانات (منتجات/أسعار/مبيعات) بلا تغيير كود. اختيارية (توافق خلفي).
+    try { databaseFingerprint = typeof fingerprintDatabase === 'function' ? fingerprintDatabase(rawSql) : null; } catch { databaseFingerprint = null; }
     const encrypted = encryptDatabase(rawBuf.toString('utf8'));
     rawSql = null; // لا يبقى النص الخام في الذاكرة
     if (!encrypted || !encrypted.ok) {
@@ -196,6 +201,7 @@ async function runBackupInner({ store, files, dumpDatabase, encryptDatabase, met
     fileCount: bundle.fileCount,
     sourceSize: bundle.sizeBytes,
     databaseHash,
+    databaseFingerprint,
     databaseSize,
     encryptedDatabaseHash,
     encryptedDatabaseSize,
@@ -208,18 +214,26 @@ async function runBackupInner({ store, files, dumpDatabase, encryptDatabase, met
   });
 
   if (previousManifest && isSameSource(previousManifest, candidateManifest)) {
-    // الحالة لم تتغيّر: لا نُبدّل current ولا نُنشئ نقطة تاريخية مكررة.
-    return {
-      state: 'no_change',
-      uploaded: 0,
-      changed: false,
-      treeHash,
-      sourceHash,
-      commit: meta.commit ?? null,
-      current: previousManifest,
-      at: now,
-      message: 'الحالة لم تتغيّر (نفس commit/treeHash/sourceHash): لا نسخة تاريخية مكررة.',
-    };
+    // نفس المصدر — لكن قد تتغيّر قاعدة البيانات وحدها (منتجات/أسعار/مبيعات) بلا
+    // تغيير كود. نمنع النسخة المكرّرة فقط إذا تطابقت بصمة القاعدة المستقرة أيضاً؛
+    // وإلا نُنشئ نقطة استعادة جديدة تحمل بيانات قاعدة البيانات المحدّثة فعلاً.
+    // توافق خلفي: بيان قديم بلا بصمة (null) + مرشّح بلا بصمة (null) ⇒ تطابق.
+    const prevDb = previousManifest.databaseFingerprint ?? null;
+    const nextDb = candidateManifest.databaseFingerprint ?? null;
+    if (prevDb === nextDb) {
+      // الحالة لم تتغيّر: لا نُبدّل current ولا نُنشئ نقطة تاريخية مكررة.
+      return {
+        state: 'no_change',
+        uploaded: 0,
+        changed: false,
+        treeHash,
+        sourceHash,
+        commit: meta.commit ?? null,
+        current: previousManifest,
+        at: now,
+        message: 'الحالة لم تتغيّر (نفس commit/treeHash/sourceHash وبصمة قاعدة البيانات): لا نسخة تاريخية مكررة.',
+      };
+    }
   }
 
   // 6) نقطة الاستعادة التاريخية: العدد من قائمة النقاط الحالية
@@ -389,6 +403,8 @@ async function runBackupInner({ store, files, dumpDatabase, encryptDatabase, met
     secretsCount: secretsManifest?.includedCount ?? null,
     secretsSkipped,
     manifest,
+    databaseHash: manifest.databaseHash ?? null,
+    databaseFingerprint: manifest.databaseFingerprint ?? null,
     verification,
     at: now,
     message: 'اكتملت النسخة الاحتياطية بنجاح وتم التحقق منها فعلاً على Google Drive (المصدر + قاعدة البيانات المشفّرة + الأسرار المشفّرة).',
