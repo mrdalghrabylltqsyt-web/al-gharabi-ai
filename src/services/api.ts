@@ -691,6 +691,41 @@ ${payload.topic || payload.productName || 'أنظمة وحلول التقسيط 
     if (!res.ok || !data.success) throw new Error(data.error || 'تعذر جلب جلسة الفريق');
     return data;
   },
+  // حلقة التعلّم الكاملة (Batch 7): ACTION→RESULT→FOLLOW-UP→LESSON→MEMORY→FUTURE.
+  async getCognitionLearningLoop() {
+    const res = await fetch('/api/agent/brain/cognition/learning-loop', { headers: getAuthHeaders() });
+    const data = await res.json();
+    if (!res.ok || !data.success) throw new Error(data.error || 'تعذر جلب حلقة التعلّم');
+    return data;
+  },
+  // حالة الإدراك (الذاكرة العاملة + وصف الطبقة) — قراءة فقط.
+  async getCognitionState() {
+    const res = await fetch('/api/agent/brain/cognition', { headers: getAuthHeaders() });
+    const data = await res.json();
+    if (!res.ok || !data.success) throw new Error(data.error || 'تعذر جلب حالة الإدراك');
+    return data;
+  },
+  // تقارير الدورات الإدراكية (Batch 7) — قراءة فقط.
+  async getCognitionReports() {
+    const res = await fetch('/api/agent/brain/cognition/reports', { headers: getAuthHeaders() });
+    const data = await res.json();
+    if (!res.ok || !data.success) throw new Error(data.error || 'تعذر جلب تقارير الإدراك');
+    return data;
+  },
+  // سجل قرار→نتيجة (يملكه العقل المركزي) — قراءة فقط.
+  async getCognitionDecisionLedger() {
+    const res = await fetch('/api/agent/brain/cognition/decision-ledger', { headers: getAuthHeaders() });
+    const data = await res.json();
+    if (!res.ok || !data.success) throw new Error(data.error || 'تعذر جلب سجل قرار→نتيجة');
+    return data;
+  },
+  // حالة الاستراتيجية التي يملكها العقل المركزي (إصدار + تاريخ) — قراءة فقط.
+  async getBrainStrategyState() {
+    const res = await fetch('/api/agent/brain/strategy-state', { headers: getAuthHeaders() });
+    const data = await res.json();
+    if (!res.ok || !data.success) throw new Error(data.error || 'تعذر جلب حالة الاستراتيجية');
+    return data;
+  },
   // تشغيل جلسة فريق الآن (تشخيص، للمالك فقط): قرار مقترح فقط — لا تنفيذ خارجي.
   async runTeamSession() {
     const res = await fetch('/api/agent/team/run', { method: 'POST', headers: getAuthHeaders() });

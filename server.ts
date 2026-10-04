@@ -21,6 +21,15 @@ import { AgentOrchestrator } from "./engine/agent/orchestrator";
 import { registerAgentRoutes } from "./engine/agent/routes";
 import { registerBrainRoutes } from "./engine/brain/routes";
 import { registerTeamRoutes } from "./engine/brain/team/routes";
+import { registerCognitionRoutes } from "./engine/brain/cognition/routes";
+import { buildCognitiveCycle, type CognitiveReport } from "./engine/brain/cognition/cognitiveLoop";
+import {
+  makeOutcomeObservation, buildLearningOutcome, learningToMemoryEntries,
+} from "./engine/brain/cognition/outcomeLearning";
+import {
+  emptyWorkingMemory, normalizeWorkingMemory, touchWorkingMemory, summarizeWorkingMemory,
+  type WorkingMemoryState,
+} from "./engine/brain/cognition/workingMemory";
 import {
   runTeamSession,
   upsertTeamSession,
@@ -28,7 +37,25 @@ import {
   summarizeTeamState,
   type TeamRunOptions,
 } from "./engine/brain/team/orchestrator";
-import { emptyTeamSessionState, type TeamSessionState } from "./engine/brain/team/types";
+import { emptyTeamSessionState, type TeamSessionState, type TeamSession } from "./engine/brain/team/types";
+import { composeBrainDecision, summarizeBrainDecision, type BrainDecision, type BrainDecisionStatus } from "./engine/brain/team/brainDecision";
+import {
+  emptyStrategyState, normalizeStrategyState, updateStrategyState, toStrategySnapshot,
+  summarizeStrategyState, type StrategyState,
+} from "./engine/brain/strategyState";
+import {
+  emptyDecisionLedger, normalizeDecisionLedger, recordDecision, attachOutcome,
+  summarizeDecisionLedger, type DecisionLedger, type LedgerOutcomeKind,
+} from "./engine/brain/cognition/decisionLedger";
+import {
+  centralBrainAuthorityContract, CENTRAL_BRAIN_CAPABILITIES, CENTRAL_BRAIN_CAPABILITY_LABELS_AR,
+  ADVISOR_AGENT_IDS, CENTRAL_BRAIN_ID, CENTRAL_BRAIN_LABEL_AR,
+} from "./engine/brain/consolidation";
+import type { CognitiveBrainContext } from "./engine/brain/cognition/cognitiveLoop";
+import { escalateBrainDecision, type BrainEscalationHook } from "./engine/brain/team/brainEscalation";
+import { isEscalationOpen, escalationReasonFor, type EscalationReason, type EscalationRecord } from "./engine/social/escalation";
+import { classifyConversation } from "./engine/brain/audience/conversationIntelligence";
+import { capabilityRow } from "./engine/brain/strategy/capabilityMatrix";
 import { registerDriveRoutes } from "./engine/dr/routes";
 import { buildSecretsBundle } from "./tools/dr/secret-crypto.mjs";
 import { buildRecoveryInformation, buildRecoveryInstructions } from "./tools/dr/cloud-lib.mjs";
@@ -36,8 +63,8 @@ import { collectTrustedSourceTree } from "./tools/dr/cloud-sync.mjs";
 import { buildCentralBrainState, brainDiagnostics } from "./engine/brain/state";
 import { capabilityMatrix } from "./engine/brain/strategy/capabilityMatrix";
 import { defineGoal } from "./engine/brain/goals/goalEngine";
-import { emptyBrainMemory, upsertMemoryRecord, summarizeBrainMemory, type BrainMemoryStoreState, type BrainMemoryRecord } from "./engine/brain/memory/store";
-import { buildRuntimeBrain, type RuntimeBrainInput, type RuntimeComment, type RuntimeReply, type RuntimePublish, type RuntimeWatcherEntry, type RuntimeConnection, type RuntimeVerifiedFact } from "./engine/brain/runtime";
+import { emptyBrainMemory, upsertMemoryRecord, summarizeBrainMemory, toMemoryRecord, type BrainMemoryStoreState, type BrainMemoryRecord } from "./engine/brain/memory/store";
+import { buildRuntimeBrain, decisionHistoryToMemoryRecords, type RuntimeBrainInput, type RuntimeComment, type RuntimeReply, type RuntimePublish, type RuntimeWatcherEntry, type RuntimeConnection, type RuntimeVerifiedFact, type RuntimeDecisionContext, type StrategyStateSummary, buildRuntimeDecisionContext } from "./engine/brain/runtime";
 import {
   runBrainRuntimeCycle,
   buildBrainRuntimeStatus,
@@ -255,6 +282,8 @@ import {
   watcherGate,
   watcherControlsView,
   decideCommentAction,
+  resolveCommentExecution,
+  isSafeForAutoReply,
   computeCommentVelocity,
   computePeakHours,
   buildDailyBrief,
@@ -275,6 +304,10 @@ import {
   YOUTUBE_COMMENT_STAGE_LABELS_AR,
   isExplicitTerminalDecision,
   repairProcessedDecisionCodes,
+  selectFollowUpCandidates,
+  evaluateFollowUpEngagement,
+  followUpBaselineDelayMsFromEnv,
+  FOLLOWUP_BASELINE_DELAY_MS,
   type CommentDecisionCode,
   type YouTubeWatcherControls,
   type WatcherProcessedEntry,
@@ -648,9 +681,9 @@ function loadPersistentState(snapshot?: any): any {
     if (!raw.schemaVersion) raw.schemaVersion = 1;
     const users = Array.isArray(raw.users) ? raw.users : [defaultOwner];
     if (!users.some((u: ServerUser) => u.id === "owner")) users.unshift(defaultOwner);
-    return { users, revokedSessions: Array.isArray(raw.revokedSessions) ? raw.revokedSessions : [], userRevocations: Array.isArray(raw.userRevocations) ? raw.userRevocations : [], audit: Array.isArray(raw.audit) ? raw.audit.slice(0, 200) : [], jobs: Array.isArray(raw.jobs) ? raw.jobs.slice(0, 200) : [], platformConnections: Array.isArray(raw.platformConnections) ? raw.platformConnections : [], workspace: raw.workspace && typeof raw.workspace === "object" ? { showroom: raw.workspace.showroom || {}, products: Array.isArray(raw.workspace.products) ? raw.workspace.products.slice(0, 1000) : [], posts: Array.isArray(raw.workspace.posts) ? raw.workspace.posts.slice(0, 1000) : [], conversations: Array.isArray(raw.workspace.conversations) ? raw.workspace.conversations.slice(0, 1000) : [], installmentPlans: Array.isArray(raw.workspace.installmentPlans) ? raw.workspace.installmentPlans.slice(0, 200) : [], leads: Array.isArray(raw.workspace.leads) ? raw.workspace.leads.slice(0, 2000) : [], tasks: Array.isArray(raw.workspace.tasks) ? raw.workspace.tasks.slice(0, 1000) : [], sales: Array.isArray(raw.workspace.sales) ? raw.workspace.sales.slice(0, 5000) : [], payments: Array.isArray(raw.workspace.payments) ? raw.workspace.payments.slice(0, 10000) : [], inventoryMovements: Array.isArray(raw.workspace.inventoryMovements) ? raw.workspace.inventoryMovements.slice(0, 20000) : [], suppliers: Array.isArray(raw.workspace.suppliers) ? raw.workspace.suppliers.slice(0, 1000) : [], purchases: Array.isArray(raw.workspace.purchases) ? raw.workspace.purchases.slice(0, 5000) : [], expenses: Array.isArray(raw.workspace.expenses) ? raw.workspace.expenses.slice(0, 10000) : [], contracts: Array.isArray(raw.workspace.contracts) ? raw.workspace.contracts.slice(0, 5000) : [], installmentSchedules: Array.isArray(raw.workspace.installmentSchedules) ? raw.workspace.installmentSchedules.slice(0, 20000) : [], notifications: Array.isArray(raw.workspace.notifications) ? raw.workspace.notifications.slice(0, 10000) : [], webhookEvents: Array.isArray(raw.workspace.webhookEvents) ? raw.workspace.webhookEvents.slice(0, 10000) : [], providerEvents: Array.isArray(raw.workspace.providerEvents) ? raw.workspace.providerEvents.slice(0, 10000) : [], marketingBriefs: Array.isArray(raw.workspace.marketingBriefs) ? raw.workspace.marketingBriefs.slice(0, 2000) : [], marketingCampaigns: Array.isArray(raw.workspace.marketingCampaigns) ? raw.workspace.marketingCampaigns.slice(0, 1000) : [], socialComments: Array.isArray(raw.workspace.socialComments) ? raw.workspace.socialComments.slice(0, 10000) : [], socialReplies: Array.isArray(raw.workspace.socialReplies) ? raw.workspace.socialReplies.slice(0, 5000) : [], socialApprovals: Array.isArray(raw.workspace.socialApprovals) ? raw.workspace.socialApprovals.slice(0, 5000) : [], publishRecords: Array.isArray(raw.workspace.publishRecords) ? raw.workspace.publishRecords.slice(0, 5000) : [], performanceRecords: Array.isArray(raw.workspace.performanceRecords) ? raw.workspace.performanceRecords.slice(0, 20000) : [], marketingDecisions: Array.isArray(raw.workspace.marketingDecisions) ? raw.workspace.marketingDecisions.slice(0, 2000) : [], strategiesTested: Array.isArray(raw.workspace.strategiesTested) ? raw.workspace.strategiesTested.slice(0, 2000) : [], telegramUpdateIds: Array.isArray(raw.workspace.telegramUpdateIds) ? raw.workspace.telegramUpdateIds.slice(0, 20000) : [], facebookEventIds: Array.isArray(raw.workspace.facebookEventIds) ? raw.workspace.facebookEventIds.slice(0, 20000) : [], instagramEventIds: Array.isArray(raw.workspace.instagramEventIds) ? raw.workspace.instagramEventIds.slice(0, 20000) : [], tiktokEventIds: Array.isArray(raw.workspace.tiktokEventIds) ? raw.workspace.tiktokEventIds.slice(0, 20000) : [], youtubeCommentIds: Array.isArray(raw.workspace.youtubeCommentIds) ? raw.workspace.youtubeCommentIds.slice(0, 20000) : [], youtubeOperationKeys: Array.isArray(raw.workspace.youtubeOperationKeys) ? raw.workspace.youtubeOperationKeys.slice(0, 20000) : [], providerTokens: raw.workspace.providerTokens && typeof raw.workspace.providerTokens === "object" ? raw.workspace.providerTokens : {} } : { showroom: {}, products: [], posts: [], conversations: [], installmentPlans: [], leads: [], tasks: [], sales: [], payments: [], inventoryMovements: [], suppliers: [], purchases: [], expenses: [], contracts: [], installmentSchedules: [], notifications: [], webhookEvents: [], providerEvents: [], marketingBriefs: [], marketingCampaigns: [], socialComments: [], socialReplies: [], socialApprovals: [], publishRecords: [], performanceRecords: [], marketingDecisions: [], strategiesTested: [], telegramUpdateIds: [], facebookEventIds: [], instagramEventIds: [], tiktokEventIds: [], youtubeCommentIds: [], youtubeOperationKeys: [], providerTokens: {} } };
+    return { users, revokedSessions: Array.isArray(raw.revokedSessions) ? raw.revokedSessions : [], userRevocations: Array.isArray(raw.userRevocations) ? raw.userRevocations : [], audit: Array.isArray(raw.audit) ? raw.audit.slice(0, 200) : [], jobs: Array.isArray(raw.jobs) ? raw.jobs.slice(0, 200) : [], platformConnections: Array.isArray(raw.platformConnections) ? raw.platformConnections : [], workspace: raw.workspace && typeof raw.workspace === "object" ? { showroom: raw.workspace.showroom || {}, products: Array.isArray(raw.workspace.products) ? raw.workspace.products.slice(0, 1000) : [], posts: Array.isArray(raw.workspace.posts) ? raw.workspace.posts.slice(0, 1000) : [], conversations: Array.isArray(raw.workspace.conversations) ? raw.workspace.conversations.slice(0, 1000) : [], installmentPlans: Array.isArray(raw.workspace.installmentPlans) ? raw.workspace.installmentPlans.slice(0, 200) : [], leads: Array.isArray(raw.workspace.leads) ? raw.workspace.leads.slice(0, 2000) : [], tasks: Array.isArray(raw.workspace.tasks) ? raw.workspace.tasks.slice(0, 1000) : [], sales: Array.isArray(raw.workspace.sales) ? raw.workspace.sales.slice(0, 5000) : [], payments: Array.isArray(raw.workspace.payments) ? raw.workspace.payments.slice(0, 10000) : [], inventoryMovements: Array.isArray(raw.workspace.inventoryMovements) ? raw.workspace.inventoryMovements.slice(0, 20000) : [], suppliers: Array.isArray(raw.workspace.suppliers) ? raw.workspace.suppliers.slice(0, 1000) : [], purchases: Array.isArray(raw.workspace.purchases) ? raw.workspace.purchases.slice(0, 5000) : [], expenses: Array.isArray(raw.workspace.expenses) ? raw.workspace.expenses.slice(0, 10000) : [], contracts: Array.isArray(raw.workspace.contracts) ? raw.workspace.contracts.slice(0, 5000) : [], installmentSchedules: Array.isArray(raw.workspace.installmentSchedules) ? raw.workspace.installmentSchedules.slice(0, 20000) : [], notifications: Array.isArray(raw.workspace.notifications) ? raw.workspace.notifications.slice(0, 10000) : [], webhookEvents: Array.isArray(raw.workspace.webhookEvents) ? raw.workspace.webhookEvents.slice(0, 10000) : [], providerEvents: Array.isArray(raw.workspace.providerEvents) ? raw.workspace.providerEvents.slice(0, 10000) : [], marketingBriefs: Array.isArray(raw.workspace.marketingBriefs) ? raw.workspace.marketingBriefs.slice(0, 2000) : [], marketingCampaigns: Array.isArray(raw.workspace.marketingCampaigns) ? raw.workspace.marketingCampaigns.slice(0, 1000) : [], socialComments: Array.isArray(raw.workspace.socialComments) ? raw.workspace.socialComments.slice(0, 10000) : [], socialReplies: Array.isArray(raw.workspace.socialReplies) ? raw.workspace.socialReplies.slice(0, 5000) : [], socialConversations: Array.isArray(raw.workspace.socialConversations) ? raw.workspace.socialConversations.slice(0, 500) : [], socialEscalations: Array.isArray(raw.workspace.socialEscalations) ? raw.workspace.socialEscalations.slice(0, 5000) : [], socialConversationStates: Array.isArray(raw.workspace.socialConversationStates) ? raw.workspace.socialConversationStates.slice(0, 500) : [], socialApprovals: Array.isArray(raw.workspace.socialApprovals) ? raw.workspace.socialApprovals.slice(0, 5000) : [], publishRecords: Array.isArray(raw.workspace.publishRecords) ? raw.workspace.publishRecords.slice(0, 5000) : [], performanceRecords: Array.isArray(raw.workspace.performanceRecords) ? raw.workspace.performanceRecords.slice(0, 20000) : [], marketingDecisions: Array.isArray(raw.workspace.marketingDecisions) ? raw.workspace.marketingDecisions.slice(0, 2000) : [], strategiesTested: Array.isArray(raw.workspace.strategiesTested) ? raw.workspace.strategiesTested.slice(0, 2000) : [], telegramUpdateIds: Array.isArray(raw.workspace.telegramUpdateIds) ? raw.workspace.telegramUpdateIds.slice(0, 20000) : [], facebookEventIds: Array.isArray(raw.workspace.facebookEventIds) ? raw.workspace.facebookEventIds.slice(0, 20000) : [], instagramEventIds: Array.isArray(raw.workspace.instagramEventIds) ? raw.workspace.instagramEventIds.slice(0, 20000) : [], tiktokEventIds: Array.isArray(raw.workspace.tiktokEventIds) ? raw.workspace.tiktokEventIds.slice(0, 20000) : [], youtubeCommentIds: Array.isArray(raw.workspace.youtubeCommentIds) ? raw.workspace.youtubeCommentIds.slice(0, 20000) : [], youtubeOperationKeys: Array.isArray(raw.workspace.youtubeOperationKeys) ? raw.workspace.youtubeOperationKeys.slice(0, 20000) : [], providerTokens: raw.workspace.providerTokens && typeof raw.workspace.providerTokens === "object" ? raw.workspace.providerTokens : {} } : { showroom: {}, products: [], posts: [], conversations: [], installmentPlans: [], leads: [], tasks: [], sales: [], payments: [], inventoryMovements: [], suppliers: [], purchases: [], expenses: [], contracts: [], installmentSchedules: [], notifications: [], webhookEvents: [], providerEvents: [], marketingBriefs: [], marketingCampaigns: [], socialComments: [], socialReplies: [], socialConversations: [], socialEscalations: [], socialConversationStates: [], socialApprovals: [], publishRecords: [], performanceRecords: [], marketingDecisions: [], strategiesTested: [], telegramUpdateIds: [], facebookEventIds: [], instagramEventIds: [], tiktokEventIds: [], youtubeCommentIds: [], youtubeOperationKeys: [], providerTokens: {} } };
   } catch {
-    return { users: [defaultOwner], revokedSessions: [], userRevocations: [], audit: [], jobs: [], workspace: { showroom: {}, products: [], posts: [], conversations: [], installmentPlans: [], leads: [], tasks: [], sales: [], payments: [], inventoryMovements: [], suppliers: [], purchases: [], expenses: [], contracts: [], installmentSchedules: [], notifications: [], webhookEvents: [], providerEvents: [], marketingBriefs: [], marketingCampaigns: [], socialComments: [], socialReplies: [], socialApprovals: [], publishRecords: [], performanceRecords: [], marketingDecisions: [], strategiesTested: [], telegramUpdateIds: [], providerTokens: {} } };
+    return { users: [defaultOwner], revokedSessions: [], userRevocations: [], audit: [], jobs: [], workspace: { showroom: {}, products: [], posts: [], conversations: [], installmentPlans: [], leads: [], tasks: [], sales: [], payments: [], inventoryMovements: [], suppliers: [], purchases: [], expenses: [], contracts: [], installmentSchedules: [], notifications: [], webhookEvents: [], providerEvents: [], marketingBriefs: [], marketingCampaigns: [], socialComments: [], socialReplies: [], socialConversations: [], socialEscalations: [], socialConversationStates: [], socialApprovals: [], publishRecords: [], performanceRecords: [], marketingDecisions: [], strategiesTested: [], telegramUpdateIds: [], providerTokens: {} } };
   }
 }
 
@@ -707,7 +740,7 @@ for (const key of ["telegramUpdateIds","facebookEventIds","instagramEventIds","t
 if (!(workspace as any).providerTokens || typeof (workspace as any).providerTokens !== "object") (workspace as any).providerTokens = {};
 // سجلات مدير السوشيال ميديا: تعليقات، ردود، نتائج نشر، وقرارات تسويقية.
 // كلها سجلات تشغيلية حقيقية تُبنى من عمليات فعلية فقط.
-for (const key of ["socialComments","socialReplies","socialApprovals","publishRecords","marketingDecisions","strategiesTested","performanceRecords"]) if (!Array.isArray((workspace as any)[key])) (workspace as any)[key] = [];
+for (const key of ["socialComments","socialReplies","socialConversations","socialEscalations","socialConversationStates","socialApprovals","publishRecords","marketingDecisions","strategiesTested","performanceRecords"]) if (!Array.isArray((workspace as any)[key])) (workspace as any)[key] = [];
 
 // Migration guard: a post is never considered externally published merely because
 // an old/local record said so. Until a real provider execution receipt exists,
@@ -3180,7 +3213,21 @@ function brainRuntimeInput(): Omit<RuntimeBrainInput, "now"> {
     verifiedFacts: brainVerifiedFacts(),
     productFacts: brainProductFacts(),
     memory: brainMemoryStore,
+    decisionLedger,
+    strategyState: strategyStateSummary(),
     aiCounters: brainAiCounters(),
+  };
+}
+
+/** ملخّص حالة الاستراتيجية المحفوظة (قراءة فقط — لا دورة دورية ولا سرّ). */
+function strategyStateSummary(): StrategyStateSummary {
+  const items = strategyState.current?.items || [];
+  return {
+    currentVersion: strategyState.currentVersion,
+    lastReason: strategyState.lastReason,
+    itemScopes: [...new Set(items.map((i) => i.scope))].slice(0, 8),
+    itemCount: items.length,
+    lastUpdatedAt: strategyState.lastUpdatedAt,
   };
 }
 
@@ -5236,6 +5283,57 @@ async function verifyDueScheduledContent(): Promise<{ checked: number; verified:
   return result;
 }
 
+/**
+ * رصد تفاعل المتابعة على الردود المُسلَّمة (قراءة فقط) — يُغلق حلقة التعلّم:
+ * ACTION → RESULT → FOLLOW-UP ENGAGEMENT → LESSON → MEMORY → FUTURE DECISION.
+ * يقرأ الإعجابات/الردود الحقيقية من `commentThreads.list`، ويثبّت بصمة أولى، ثم
+ * يكشف تغيّراً حقيقياً فقط. **لا يخترع قيمة**، وإن تعذّرت القراءة لا يُعلن تغيّراً.
+ * النتيجة تُكتب في **نفس** الذاكرة طويلة المدى عبر `recordReadOutcome`.
+ */
+async function sweepFollowUpEngagement(): Promise<{ checked: number; baselined: number; changed: number; unreadable: number }> {
+  const result = { checked: 0, baselined: 0, changed: 0, unreadable: 0 };
+  const guard = youtubeOperationGuard();
+  if (!guard.ok) return result;
+  const now = Date.now();
+  const candidates = selectFollowUpCandidates(watcherState.processed, now, { limit: 5, baselineDelayMs: followUpBaselineDelayMsFromEnv() });
+  if (!candidates.length) return result;
+  const videoIds = [...new Set(candidates.map((c) => String(c.videoId || '')).filter(Boolean))].slice(0, commentScanVideoLimitFromEnv());
+  if (!videoIds.length) return result;
+  const res = await buildAgentToolContext("system", "system").youtubeComments(videoIds);
+  if (!res.ok) return result;
+  const byId = new Map<string, any>((res.comments || []).map((c: any) => [String(c.commentId), c]));
+  let changed = false;
+  for (const entry of candidates) {
+    result.checked += 1;
+    const live = byId.get(String(entry.commentId));
+    if (!live) { result.unreadable += 1; continue; }
+    const verdict = evaluateFollowUpEngagement(entry, { likes: live.likeCount ?? null, replies: live.replyCount ?? null }, now);
+    if (verdict.baseline) {
+      entry.followUpBaseline = verdict.baseline;
+      result.baselined += 1;
+      changed = true;
+    }
+    if (verdict.outcome) {
+      entry.followUpOutcome = verdict.outcome;
+      changed = true;
+      if (verdict.outcome.kind === 'engagement_changed') {
+        result.changed += 1;
+        recordReadOutcome({
+          id: `yt-followup:${String(entry.commentId)}`, platform: 'youtube', kind: 'engagement_changed',
+          summary: `تفاعل متابعة على رد مُسلَّم (+${verdict.outcome.likesDelta} إعجاب، +${verdict.outcome.repliesDelta} رد).`,
+          source: 'platform_data:youtube-comments', sampleSize: 3,
+          decisionId: decisionIdForEvent(`comment:${String(entry.commentId)}`),
+        });
+        watcherAudit({ action: "followup_engagement", commentId: String(entry.commentId), videoId: entry.videoId, decision: "observe", reason: verdict.note });
+      } else {
+        watcherAudit({ action: "followup_no_change", commentId: String(entry.commentId), videoId: entry.videoId, decision: "observe", reason: verdict.note });
+      }
+    }
+  }
+  if (changed) await persistWatcherState();
+  return result;
+}
+
 
 const WATCHER_MAX_PROCESSED = 5000;
 const WATCHER_MAX_AUDIT = 500;
@@ -5495,25 +5593,78 @@ async function runYouTubeWatcherCycle(trigger: "schedule" | "manual" = "schedule
       if (hasProcessed(watcherState.processed, c.commentId)) continue;
       analysed += 1;
       newDetected += 1;
+      // حساب القناة نفسه + التصنيف الحتمي + المقارنة الاستشارية — تُحسب **قبل**
+      // قرار العقل المركزي لأن العقل يبنى على الأدلة الحقيقية (بما فيها السياق).
+      const cls = classifyComment(String(c.text || ""));
+      const alreadyReplied = history.some((h: any) => h.externalId === c.commentId);
+      const commentVideoId = String(c.videoId || "");
+      const belongsToChannel = !expectedChannelId || !commentVideoId || videoIds.includes(commentVideoId);
+      // حساب القناة نفسه: بالمعرّف الحقيقي للقناة (أدق) أو بالاسم المخزّن.
+      const selfAuthored = isSelfAuthored(c.authorName, ownNames)
+        || Boolean(expectedChannelId && c.authorChannelId && String(c.authorChannelId) === expectedChannelId);
+      // سبب التصعيد من التصنيف الحتمي الحقيقي (بلا اختراع).
+      const preReason = escalationReasonFor({
+        intent: cls.intent, isSpam: cls.isSpam,
+        requiresHumanReview: cls.requiresHumanReview, topic: (cls as any).topic ?? null,
+      });
       // فريق الوكلاء (Batch 6): حدث YouTube حقيقي => جلسة فريق واحدة (بلا تكرار،
       // بلا تنفيذ خارجي). تُشغَّل هنا داخل دورة المراقبة الدائمة. أي فشل لا يُسقط
       // الدورة (جلسة الفريق لا ترمي)، والقرار يُكتب في نفس ذاكرة العقل القائمة.
+      // **Batch 8.1:** قرار العقل المركزي الناتج هنا هو سلطة التنفيذ الوحيدة.
       try {
-        await runTeamSessionNow(
+        const teamResult = await runTeamSessionNow(
           "youtube_event",
           `تحليل تعليق YouTube جديد والبتّ في الرد عليه من الحقائق المسجّلة (بلا اختراع)`,
           "youtube",
           `comment:${String(c.commentId)}`,
+          { externalId: String(c.commentId), commentText: String(c.text || ""), objective: "البتّ في رد آمن على تعليق YouTube من الحقائق المسجّلة", conversationId: `youtube::${String(c.videoId || 'thread')}`, escalationReason: preReason },
         );
+        // الطبقة الإدراكية (Batch 7): دورة فهم/تذكّر/تخطيط/تعلّم على نفس الحدث
+        // والقرار المحكوم. **لا تنفيذ خارجي** ولا AI؛ تُحدِّث الذاكرة العاملة
+        // وتخزّن التقرير. فشلها لا يُسقط دورة المراقبة.
+        try {
+          const bd = teamResult?.brainDecision || null;
+          if (bd && teamResult.session) {
+            const connYt = platformConnections.get('youtube');
+            runCognitiveCycleNow({
+              session: teamResult.session,
+              decision: bd,
+              platform: 'youtube',
+              eventIdentity: `comment:${String(c.commentId)}`,
+              eventText: String(c.text || ""),
+              objective: "البتّ في رد آمن على تعليق YouTube من الحقائق المسجّلة",
+              conversationId: `youtube::${String(c.videoId || 'thread')}`,
+              externalId: String(c.commentId),
+              escalationReason: preReason,
+              replyCapable: capabilityRow('youtube').states.reply === 'AVAILABLE',
+              publishCapable: capabilityRow('youtube').states.publish === 'AVAILABLE',
+              providerVerified: Boolean(connYt && connYt.status === 'connected' && connYt.providerVerified),
+              externalApproved: youtubeDelegationCheck('system', { toolId: 'youtube_reply', args: {} }).allowed === true,
+            });
+          }
+        } catch { /* الدورة الإدراكية لا تُسقط دورة المراقبة */ }
       } catch { /* جلسة الفريق لا تُسقط دورة المراقبة */ }
-      const cls = classifyComment(String(c.text || ""));
-      const alreadyReplied = history.some((h: any) => h.externalId === c.commentId);
-      // حساب القناة نفسه: بالمعرّف الحقيقي للقناة (أدق) أو بالاسم المخزّن.
-      const selfAuthored = isSelfAuthored(c.authorName, ownNames)
-        || Boolean(expectedChannelId && c.authorChannelId && String(c.authorChannelId) === expectedChannelId);
-      // قرار حتمي (لا AI): رد / تجاهل / تصعيد للمالك مع سبب صريح.
-      const decision = decideCommentAction({
-        intent: cls.intent, requiresHumanReview: cls.requiresHumanReview, isSpam: cls.isSpam, isSelfAuthored: selfAuthored, alreadyReplied, controls,
+      // سلطة القرار الوحيدة: قرار العقل المركزي (وليس تصنيفاً مستقلاً). يُقرأ من
+      // الجلسة التي قرّرها العقل لهذا الحدث تماماً. غيابه ⇒ لا رد (أمان).
+      const centralDecision = centralActionDecisionForEvent(`comment:${String(c.commentId)}`);
+      // تصنيف استشاري (فحص سلامة التعليق — ليس قراراً) — يمنع الرد على سبام/نفس
+      // الحساب/المُعالَج، ويصعّد الحساس. يبقى مصدر الأكواد التفصيلية.
+      const advisory = decideCommentAction({
+        intent: cls.intent, requiresHumanReview: cls.requiresHumanReview, isSpam: cls.isSpam,
+        isSelfAuthored: selfAuthored, alreadyReplied, controls,
+      });
+      // القرار التنفيذي النهائي: مشتقّ من قرار العقل المركزي + الفحوص الاستشارية
+      // + بوابة الأتمتة. لا يملك سلطة قرار مستقلة (Batch 8.1).
+      const replyGate = watcherGate(controls, "reply");
+      const decision = resolveCommentExecution({
+        centralDecision: centralDecision ?? 'FAILED_SAFE',
+        advisory,
+        automationAllowed: replyGate.allowed,
+        replyReady: replyReady.ready,
+        belongsToChannel,
+        isPraise: isSafeForAutoReply(cls.intent),
+        humanReviewMode: Boolean(controls.humanReviewMode),
+        centralEscalationReason: preReason,
       });
       const baseEntry: WatcherProcessedEntry = {
         commentId: c.commentId, stage: "ANALYZED", action: decision.action, reason: decision.reason, code: decision.code,
@@ -5549,16 +5700,6 @@ async function runYouTubeWatcherCycle(trigger: "schedule" | "manual" = "schedule
         await persistWatcherState();
         continue;
       }
-      // حماية من ردٍّ على تعليق لا يخص القناة المتصلة (سياق القناة الموثّق).
-      const commentVideoId = String(c.videoId || "");
-      const belongsToChannel = !expectedChannelId || !commentVideoId || videoIds.includes(commentVideoId);
-      if (decision.action === "reply" && !belongsToChannel) {
-        baseEntry.stage = "SKIPPED"; baseEntry.action = "skip"; baseEntry.code = "SKIP_OUT_OF_CHANNEL_CONTEXT"; baseEntry.reason = "التعليق لا يخص سياق القناة الموثّقة.";
-        skipped += 1;
-        watcherState.processed.unshift(baseEntry);
-        watcherAudit({ action: "comment_skipped", commentId: c.commentId, videoId: c.videoId, reason: baseEntry.reason, decision: "skip", error: baseEntry.code });
-        continue;
-      }
       if (decision.action !== "reply") {
         baseEntry.stage = decision.action === "escalate" ? "ESCALATED" : "SKIPPED";
         if (decision.action === "escalate") escalated += 1; else skipped += 1;
@@ -5568,15 +5709,15 @@ async function runYouTubeWatcherCycle(trigger: "schedule" | "manual" = "schedule
         await persistWatcherState();
         continue;
       }
-      // الرد الحقيقي: يمر بنفس executeYouTubeReply (كل البوابات) — أو يُصعَّد بصراحة.
-      // إعادة فرض بوابة الأتمتة عند نقطة التنفيذ نفسها (دفاع مزدوج): يُمنع أي إرسال
-      // رغم قرار «رد» إن غُيّرت الإعدادات أو فُعّل الـKill Switch في هذه اللحظة.
-      const replyGate = watcherGate(controls, "reply");
-      if (!replyReady.ready || !replyGate.allowed) {
-        const code = !replyGate.allowed ? replyGate.code : (replyReady.code || "REPLY_NOT_READY");
+      // الرد الحقيقي: قرار العقل المركزي (ALLOWED_ACTION) + بوابات التنفيذ مكتملة
+      // (فُحصت داخل resolveCommentExecution). يمر بنفس executeYouTubeReply (كل
+      // البوابات). دفاع مزدوج: إعادة فرض بوابة الأتمتة عند نقطة التنفيذ نفسها.
+      const replyGateFinal = watcherGate(controls, "reply");
+      if (!replyReady.ready || !replyGateFinal.allowed) {
+        const code = !replyGateFinal.allowed ? replyGateFinal.code : (replyReady.code || "REPLY_NOT_READY");
         baseEntry.stage = "ESCALATED";
         baseEntry.code = "ESCALATE_REPLY_NOT_READY";
-        baseEntry.reason = `الرد غير ممكن الآن: ${!replyGate.allowed ? replyGate.reason : (replyReady.reason || replyReady.code)}`;
+        baseEntry.reason = `الرد غير ممكن الآن: ${!replyGateFinal.allowed ? replyGateFinal.reason : (replyReady.reason || replyReady.code)}`;
         escalated += 1;
         watcherState.processed.unshift(baseEntry);
         watcherAudit({ action: "reply_blocked", commentId: c.commentId, videoId: c.videoId, reason: baseEntry.reason, decision: "escalate", error: code });
@@ -5593,11 +5734,15 @@ async function runYouTubeWatcherCycle(trigger: "schedule" | "manual" = "schedule
           const vr = await buildAgentToolContext("system", "system").youtubeReplyVerify({ commentId: String(c.commentId), externalReplyId: String(result.body.externalReplyId) });
           if (vr.real) { verified += 1; baseEntry.stage = "VERIFIED"; baseEntry.reason = "تم التحقق من تسجيل الرد المُسلَّم."; }
           else { baseEntry.reason = "أُرسل الرد لكن لم يُثبَّت التحقق من سجل التسليم."; }
+          // إغلاق حلقة التعلّم: نتيجة ملاحَظة حقيقية (رد مُسلَّم) — بلا ادعاء بيع.
+          recordReadOutcome({ id: `yt-reply-sent:${String(c.commentId)}`, platform: 'youtube', kind: 'response_received', summary: `أُرسل رد على تعليق YouTube ووصل المزود بمعرّف (${vr.real ? 'مُتحقَّق' : 'غير مُتحقَّق'}).`, source: 'platform_data:youtube-replies', sampleSize: 3, decisionId: decisionIdForEvent(`comment:${String(c.commentId)}`), providerReplyId: String(result.body.externalReplyId) });
         } else {
           failed += 1;
           baseEntry.stage = "FAILED";
           baseEntry.reason = `فشل إرسال الرد: ${result.body?.code || result.status}`;
           watcherAudit({ action: "reply_failed", commentId: c.commentId, videoId: c.videoId, reason: baseEntry.reason, decision: "fail", sent: false, error: String(result.body?.code || result.status) });
+          // إغلاق حلقة التعلّم: إخفاق حقيقي يُستدعى لاحقاً حتى لا تُعاد التجربة بلا سبب.
+          recordReadOutcome({ id: `yt-reply-failed:${String(c.commentId)}`, platform: 'youtube', kind: 'no_change', summary: `فشل إرسال رد على تعليق YouTube (${String(result.body?.code || result.status)}).`, source: 'platform_data:youtube-reply-failures', sampleSize: 3, decisionId: decisionIdForEvent(`comment:${String(c.commentId)}`) });
         }
       }
       watcherState.processed.unshift(baseEntry);
@@ -5609,6 +5754,10 @@ async function runYouTubeWatcherCycle(trigger: "schedule" | "manual" = "schedule
     // فحص المجدولات التي حلّ موعدها (قراءة فقط من المزود) — يُغلق دورة
     // SCHEDULED → VERIFIED بدليل حقيقي بلا ادعاء، داخل نفس الدورة الدائمة.
     const scheduledCheck = await verifyDueScheduledContent();
+    // رصد تفاعل المتابعة على الردود المُسلَّمة (قراءة فقط) — يُغلق حلقة التعلّم.
+    // فشله لا يُسقط دورة المراقبة.
+    let followUp: { checked: number; baselined: number; changed: number; unreadable: number } | null = null;
+    try { followUp = await sweepFollowUpEngagement(); } catch { followUp = null; }
     watcherState.lastPollAt = new Date(now).toISOString();
     watcherState.pollCount += 1;
     watcherState.consecutiveErrors = 0;
@@ -5630,7 +5779,7 @@ async function runYouTubeWatcherCycle(trigger: "schedule" | "manual" = "schedule
     watcherLastRun = { newDetected, replied, escalated, skipped, verified, failed, deferred, at: new Date(now).toISOString() };
     watcherAudit({ action: "poll_complete", reason: trigger, decision: "ok" });
     await persistWatcherState();
-    return { ok: true, newDetected, replied, escalated, skipped, verified, failed, deferred, scheduledCheck };
+    return { ok: true, newDetected, replied, escalated, skipped, verified, failed, deferred, scheduledCheck, followUp };
   } catch (error: any) {
     watcherState.lastError = String(error?.code || error?.message || "watcher_cycle_failed").slice(0, 120);
     watcherState.consecutiveErrors += 1;
@@ -5705,6 +5854,14 @@ function watcherStatusBlock() {
     opportunities: watcherState.opportunities.slice(0, 50),
     brief: watcherState.brief,
     lastRun: watcherLastRun,
+    // حلقة التعلّم: تفاعل المتابعة على الردود المُسلَّمة (بلا ادعاء بيع).
+    followUp: {
+      baselined: processed.filter((p) => p.followUpBaseline).length,
+      observed: processed.filter((p) => p.followUpOutcome).length,
+      engagementChanged: processed.filter((p) => p.followUpOutcome?.kind === 'engagement_changed').length,
+      noChange: processed.filter((p) => p.followUpOutcome?.kind === 'no_change').length,
+      lastChanged: (processed.find((p) => p.followUpOutcome?.kind === 'engagement_changed')?.followUpOutcome) || null,
+    },
     note: "مراقبة حقيقية لتعليقات YouTube — كل الحالات من سجلات فعلية، لا بيانات مُختلقة.",
   };
 }
@@ -8643,10 +8800,21 @@ async function bootstrapStorage(): Promise<void> {
       // فيمنع التكرار إعادة العمل المكرر لنفس الحدث.
       const teamSessions = await storageAdapter.read<any>(STORAGE_KEY_TEAM_SESSIONS);
       teamSessionState = normalizeTeamSessionState(teamSessions);
+      // الطبقة الإدراكية (Batch 7): الذاكرة العاملة + تقارير الدورات — تصمد بعد restart.
+      const cognition = await storageAdapter.read<any>(STORAGE_KEY_WORKING_MEMORY);
+      if (cognition) {
+        workingMemoryState = normalizeWorkingMemory(cognition?.workingMemory ?? cognition);
+        cognitiveReports = Array.isArray(cognition?.reports)
+          ? cognition.reports.filter((r: any) => r && typeof r.cycleId === 'string' && typeof r.eventIdentity === 'string').slice(-COGNITIVE_REPORT_MAX)
+          : [];
+      }
       // حالة مدير تشغيل YouTube (المراقبة/التحكم/سجل المعالجة): تُقرأ قبل بدء
       // الخدمة فيصمد الـcheckpoint وسجل منع التكرار وإعدادات الأتمتة بعد restart.
       const watcher = await storageAdapter.read<any>(WATCHER_STATE_KEY);
       if (watcher) applyWatcherStateSnapshot(watcher);
+      // حالة الاستراتيجية + سجل قرار→نتيجة (يملكهما العقل المركزي): تُقرآن قبل بدء الخدمة.
+      strategyState = normalizeStrategyState(await storageAdapter.read<any>(STORAGE_KEY_STRATEGY_STATE));
+      decisionLedger = normalizeDecisionLedger(await storageAdapter.read<any>(STORAGE_KEY_DECISION_LEDGER));
       const media = await storageAdapter.read<any>(CONTENT_MEDIA_KEY);
       if (media) applyContentMediaState(media);
     } catch (error: any) {
@@ -8659,6 +8827,8 @@ async function bootstrapStorage(): Promise<void> {
     loadAgentStateSync();
     loadBrainMemorySync();
     loadTeamSessionsSync();
+    loadCognitionSync();
+    loadStrategyAndLedgerSync();
     const watcher = storageAdapter.readSync<any>(WATCHER_STATE_KEY);
     if (watcher) applyWatcherStateSnapshot(watcher);
     const media = storageAdapter.readSync<any>(CONTENT_MEDIA_KEY);
@@ -9268,7 +9438,7 @@ function normalizeTeamSessionState(raw: any): TeamSessionState {
   const valid = sessions.filter((s: any) =>
     s && typeof s.teamSessionId === 'string' && typeof s.task === 'string' && typeof s.dedupeKey === 'string'
     && Array.isArray(s.participants) && ['completed', 'partial', 'failed'].includes(s.status),
-  );
+  ).map((s: any) => ({ ...s, brainDecision: s.brainDecision ?? null }));
   return { sessions: valid.slice(-2000) };
 }
 
@@ -9283,10 +9453,244 @@ function persistTeamSessions(): void {
     });
 }
 
+// -----------------------------------------------------------------------------
+// الطبقة الإدراكية (Batch 7): ذاكرة عاملة قصيرة المدى + تقارير الدورات الإدراكية.
+//
+// الذاكرة العاملة **سياق قصير المدى فقط** (TTL) ولا تُرقّى تلقائياً إلى الذاكرة
+// طويلة المدى (هذا ممنوع بالتصميم). التقارير **تحليلية فقط** بلا تنفيذ خارجي وبلا
+// تفكير داخلي خاص. كلتاهما تُحفظان عبر محوّل الحالة فتصمدان بعد restart/cold start.
+// -----------------------------------------------------------------------------
+
+const STORAGE_KEY_WORKING_MEMORY = "workingMemory";
+let workingMemoryState: WorkingMemoryState = emptyWorkingMemory();
+/** تقارير الدورات الإدراكية (أحدث أولاً محفوظة بحدّ أعلى) — بلا سرّ. */
+const COGNITIVE_REPORT_MAX = 200;
+let cognitiveReports: CognitiveReport[] = [];
+
+/** يسترجع الذاكرة العاملة + تقارير الدورات عند الإقلاع (تصمد بعد restart). */
+function loadCognitionSync(): void {
+  const raw = storageAdapter.readSync<any>(STORAGE_KEY_WORKING_MEMORY);
+  workingMemoryState = normalizeWorkingMemory(raw?.workingMemory ?? raw);
+  const reportsRaw = Array.isArray(raw?.reports) ? raw.reports : [];
+  cognitiveReports = reportsRaw.filter((r: any) => r && typeof r.cycleId === 'string' && typeof r.eventIdentity === 'string').slice(-COGNITIVE_REPORT_MAX);
+}
+
+/** يحفظ الذاكرة العاملة + تقارير الدورات (بلا أي سرّ). */
+function persistCognition(): void {
+  if (!storageReady) return;
+  persistQueue = persistQueue
+    .then(() => storageAdapter.write(STORAGE_KEY_WORKING_MEMORY, {
+      workingMemory: { entries: workingMemoryState.entries },
+      reports: cognitiveReports.slice(-COGNITIVE_REPORT_MAX),
+    }))
+    .catch((error: any) => {
+      lastPersistError = String(error?.code || error?.name || "persist_failed").slice(0, 60);
+      console.warn("Could not persist cognition state:", lastPersistError);
+    });
+}
+
+/** يحفظ تقرير دورة إدراكية بلا تكرار (نفس cycleId يُستبدل). */
+function recordCognitiveReport(report: CognitiveReport): void {
+  const others = cognitiveReports.filter((r) => r.cycleId !== report.cycleId && r.eventIdentity !== report.eventIdentity);
+  cognitiveReports = [...others, report].slice(-COGNITIVE_REPORT_MAX);
+}
+
+/** يُظهر تقرير دورة بالمعرّف (cycleId أو eventIdentity). */
+function cognitiveReportById(id: string): CognitiveReport | null {
+  return cognitiveReports.find((r) => r.cycleId === id || r.eventIdentity === id) ?? null;
+}
+
+// -----------------------------------------------------------------------------
+// حالة الاستراتيجية + سجل قرار→نتيجة — يملكهما العقل المركزي (Central Brain 1).
+// تُحفظان عبر محوّل الحالة (لا مخزن ثانٍ) فتصمدان بعد restart/cold start.
+// -----------------------------------------------------------------------------
+
+const STORAGE_KEY_STRATEGY_STATE = "centralBrainStrategy";
+const STORAGE_KEY_DECISION_LEDGER = "centralBrainDecisionLedger";
+let strategyState: StrategyState = emptyStrategyState();
+let decisionLedger: DecisionLedger = emptyDecisionLedger();
+
+/** يسترجع حالة الاستراتيجية + سجل القرار→النتيجة عند الإقلاع (تصمد بعد restart). */
+function loadStrategyAndLedgerSync(): void {
+  strategyState = normalizeStrategyState(storageAdapter.readSync<any>(STORAGE_KEY_STRATEGY_STATE));
+  decisionLedger = normalizeDecisionLedger(storageAdapter.readSync<any>(STORAGE_KEY_DECISION_LEDGER));
+}
+
+function persistStrategyState(): void {
+  if (!storageReady) return;
+  persistQueue = persistQueue
+    .then(() => storageAdapter.write(STORAGE_KEY_STRATEGY_STATE, strategyState))
+    .catch((error: any) => {
+      lastPersistError = String(error?.code || error?.name || "persist_failed").slice(0, 60);
+      console.warn("Could not persist strategy state:", lastPersistError);
+    });
+}
+
+function persistDecisionLedger(): void {
+  if (!storageReady) return;
+  persistQueue = persistQueue
+    .then(() => storageAdapter.write(STORAGE_KEY_DECISION_LEDGER, decisionLedger))
+    .catch((error: any) => {
+      lastPersistError = String(error?.code || error?.name || "persist_failed").slice(0, 60);
+      console.warn("Could not persist decision ledger:", lastPersistError);
+    });
+}
+
+/**
+ * يُحدّث حالة الاستراتيجية من **خطط الاستراتيجية الكانونية** (`buildRuntimeBrain`).
+ * لا يُسجّل إصداراً إلا عند تغيّر فعلي (بلا اختراع). تُستدعى من مسارات العقل.
+ */
+function syncStrategyStateFromBrain(): void {
+  try {
+    const built = buildRuntimeBrain({ ...brainRuntimeInput(), now: Date.now() });
+    const items = toStrategySnapshot(built.strategies as any);
+    const res = updateStrategyState(strategyState, { items, now: Date.now(), source: 'brain:strategyEngine' });
+    if (res.changed) {
+      strategyState = res.state;
+      persistStrategyState();
+    }
+  } catch { /* أفضل جهد — لا يُسقط أي طلب */ }
+}
+
+/**
+ * يبني سياق العقل المركزي (Brain 1) المُغذّى للدورة الإدراكية: الاستراتيجية
+ * الحالية (التي يملكها العقل) + الهدف الكانوني + ملخّص الجمهور/السوق/المعرفة.
+ * لا إعادة حساب: يقرأ الحالة الحالية فقط. بلا سرّ.
+ */
+function brainContextForCognition(built: { state: any }): CognitiveBrainContext {
+  const st = built.state || {};
+  const segments = Array.isArray(st.audience?.segments) ? st.audience.segments : [];
+  // موضوعات الجمهور الحقيقية (اهتمامات/أسئلة متكررة من تفاعل ملاحَظ فقط) — تُستهلك
+  // في تخطيط الإدراك (مطابقة موضوع الحدث) لا للعرض فقط. بلا اختراع.
+  const audienceTopics: string[] = [];
+  for (const s of segments) {
+    const topics = [...(s?.interests || []), ...(s?.commonQuestions || [])];
+    for (const t of topics) {
+      const v = String(t || '').trim();
+      if (v && v !== 'general' && !audienceTopics.includes(v)) audienceTopics.push(v);
+    }
+  }
+  const marketNote = st.market?.note ? String(st.market.note).slice(0, 200) : null;
+  return {
+    brainId: CENTRAL_BRAIN_ID,
+    strategyVersion: strategyState.currentVersion || null,
+    strategyScopeCount: strategyState.current?.items.length ?? 0,
+    strategySummary: (strategyState.current?.items || []).slice(0, 6).map((i) => ({ scope: i.scope, what: i.what, status: i.status })),
+    canonicalGoal: st.goals?.primary ?? null,
+    audienceSegments: segments.length,
+    audienceTopics: audienceTopics.slice(0, 8),
+    marketHasEvidence: Boolean(st.market?.hasCommercialEvidence),
+    marketNote,
+    knowledgeCount: Array.isArray(st.knowledge?.items) ? st.knowledge.items.length : 0,
+    available: true,
+  };
+}
+
+/**
+ * يسجّل قراراً مركزياً حقيقياً في سجل قرار→نتيجة (سلطة واحدة). لا يُخترع قرار.
+ * النتيجة تبدأ غير متاحة صراحةً حتى تُلاحظ.
+ */
+function recordCentralDecision(input: {
+  decision: BrainDecision;
+  platform: string;
+  eventIdentity: string;
+  actionText: string;
+  memoryRecordIds?: string[];
+  escalationExternalId?: string | null;
+}): void {
+  try {
+    const res = recordDecision(decisionLedger, {
+      decisionId: input.decision.decisionId,
+      platform: input.platform,
+      eventIdentity: input.eventIdentity,
+      finalStatus: input.decision.finalStatus,
+      actionKind: input.decision.proposedAction?.kind || 'none',
+      actionText: input.actionText,
+      now: Date.now(),
+      links: {
+        memoryRecordIds: input.memoryRecordIds || [],
+        escalationExternalId: input.escalationExternalId ?? null,
+      },
+    });
+    decisionLedger = res.ledger;
+    persistDecisionLedger();
+  } catch { /* أفضل جهد */ }
+}
+
+/**
+ * يسجّل نتيجة ملاحَظة من بيانات حقيقية (رد مُسلَّم/فشل) في الذاكرة طويلة المدى —
+ * إغلاقاً لحلقة ACTION→RESULT→OBSERVATION→ANALYSIS→LESSON→MEMORY. **لا ادعاء بيع
+ * ولا رقم مالي**: النوع اجتماعي فقط، والدرس لا يُرقّى إلا بمصدر وعيّنة كافية
+ * (عبر `lessonToMemoryEntry`/`learningToMemoryEntries`). لا يرمي.
+ */
+function recordReadOutcome(input: {
+  id: string;
+  platform: PlatformId;
+  kind: 'response_received' | 'no_change' | 'inquiry' | 'purchase_signal' | 'engagement_changed';
+  summary: string;
+  source: string;
+  sampleSize: number;
+  /** ربط اختياري بقرار مركزي (decisionId) لإغلاق سجل قرار→نتيجة بمعرّف حقيقي. */
+  decisionId?: string | null;
+  providerReplyId?: string | null;
+}): void {
+  try {
+    const now = Date.now();
+    const obs = makeOutcomeObservation({ id: input.id, platform: input.platform, kind: input.kind, summary: input.summary, source: input.source, sampleSize: input.sampleSize, now });
+    const outcome = buildLearningOutcome([obs], now);
+    const records = learningToMemoryEntries(outcome, { platform: input.platform, now, source: input.source })
+      .map((b) => toMemoryRecord(b.entry));
+    if (records.length) persistBrainMemory(records);
+    // ربط النتيجة الحقيقية بالقرار المركزي (سجل قرار→نتيجة): معرّفات حقيقية فقط.
+    if (input.decisionId) {
+      const kindMap: Record<typeof input.kind, LedgerOutcomeKind> = {
+        engagement_changed: 'engagement_changed', no_change: 'no_change',
+        response_received: 'delivered', inquiry: 'delivered', purchase_signal: 'delivered',
+      };
+      const res = attachOutcome(decisionLedger, {
+        decisionId: input.decisionId,
+        kind: kindMap[input.kind],
+        summary: input.summary,
+        source: input.source,
+        now,
+        memoryRecordIds: records.map((r) => r.id),
+        providerReplyId: input.providerReplyId ?? null,
+      });
+      if (res.attached) { decisionLedger = res.ledger; persistDecisionLedger(); }
+    }
+  } catch { /* التعلّم لا يُسقط أي مسار */ }
+}
+
+/** معرّف القرار المركزي لهوية حدث (لربط النتيجة بقرارها) — أو null بلا اختراع. */
+function decisionIdForEvent(eventIdentity: string): string | null {
+  const e = decisionLedger.entries.find((x) => x.eventIdentity === eventIdentity);
+  return e ? e.decisionId : null;
+}
+
+/**
+ * قرار العقل المركزي النهائي لحدث حقيقي (سلطة التنفيذ الوحيدة — Batch 8.1).
+ * يقرأ آخر جلسة فريق قرّرها العقل لنفس `eventIdentity`. **لا يُنشئ قراراً** ولا
+ * يخترع: عند غياب قرار مركزي يعيد `null` (فيمنع مسار التنفيذ أي رد).
+ */
+function centralActionDecisionForEvent(eventIdentity: string): BrainDecisionStatus | null {
+  const norm = String(eventIdentity).trim().toLowerCase();
+  for (let i = teamSessionState.sessions.length - 1; i >= 0; i -= 1) {
+    const s = teamSessionState.sessions[i];
+    const bd = s.brainDecision;
+    if (!bd) continue;
+    const bid = `comment:${String(bd.eventIdentity || '').replace(/^comment:/, '')}`.trim().toLowerCase();
+    if (bd.eventIdentity?.toLowerCase() === norm || bid === norm) return bd.finalStatus;
+  }
+  return null;
+}
+
 /** سياق الفريق الحقيقي من بيانات الإنتاج (بلا شبكة وبلا أسرار). */
-function teamContext(task: string, platform: PlatformId) {
+function teamContext(task: string, platform: PlatformId, meta: { escalationReason?: EscalationReason | null } = {}) {
   const input = brainRuntimeInput();
   const activeMemory = brainMemoryStore.records.filter((r) => r.status === 'active' && !r.stale).length;
+  // Gap 3 (Batch 8.1): سياق تجاري حقيقي (استراتيجية/جمهور/سوق/تاريخ قرارات) يُغذّي
+  // قرار العقل المركزي — قراءة فقط من نفس المصدر الكانوني، بلا عقل ثانٍ وبلا اختراع.
+  const dc = buildRuntimeDecisionContext({ ...input, now: Date.now() });
   return {
     now: Date.now(),
     task,
@@ -9298,6 +9702,132 @@ function teamContext(task: string, platform: PlatformId) {
     memoryActive: activeMemory,
     aiAvailable: Boolean(process.env.GEMINI_API_KEY),
     priorSessions: teamSessionState.sessions.length,
+    escalationReason: meta.escalationReason ?? null,
+    commercialContext: {
+      strategyHeadlines: dc.strategies.map((s) => `${s.scope}: ${s.what}`.slice(0, 160)).slice(0, 5),
+      audienceHeadlines: dc.audienceSegments.map((s) => `${s.topic} (عيّنة ${s.sampleSize})`).slice(0, 5),
+      marketHasEvidence: dc.marketHasEvidence,
+      priorOutcomeSummaries: dc.priorOutcomes.map((o) => `${o.finalStatus}: ${o.outcomeSummary}`.slice(0, 160)),
+      strategyHint: dc.strategyHint,
+    },
+  };
+}
+
+/** قائمة سجلات التصعيد البشري القائمة (نفس المخزن في مساحة العمل). */
+function socialEscalationsList(): EscalationRecord[] {
+  if (!Array.isArray((workspace as any).socialEscalations)) (workspace as any).socialEscalations = [];
+  return (workspace as any).socialEscalations as EscalationRecord[];
+}
+
+/** يسجّل تصعيداً بشرياً في **نفس** المخزن القائم ويثبّته (بلا نظام ثانٍ). */
+function socialRecordEscalation(record: EscalationRecord): void {
+  const list = socialEscalationsList();
+  // منع التكرار لنفس التعليق الخارجي ما دام مفتوحاً (نفس قاعدة مسار السوشيال).
+  if (record.externalId && list.some((r) => r.externalId === record.externalId && isEscalationOpen(r))) return;
+  list.unshift(record);
+  if (list.length > 5000) list.length = 5000;
+  persistState();
+}
+
+/** مُبلِّغ التصعيد للقرارات العقلية — نفس بنية التنبيه القائمة (`pushNotification`). */
+function brainEscalationNotifier() {
+  return (record: any) => {
+    try {
+      const n = pushNotification(
+        'owner',
+        'brain_escalation',
+        `تصعيد العقل المركزي: ${record?.reasonLabelAr || record?.reason || 'حالة تحتاج مراجعة'}`,
+        `منصة ${record?.platform || 'غير معروفة'} — ${String(record?.commentText || '').slice(0, 200)}`,
+        'warning',
+      );
+      return { delivered: Boolean(n?.id), channel: 'in_app_notification', error: n?.id ? null : 'notification_not_created' };
+    } catch (e) {
+      return { delivered: false, channel: null, error: e instanceof Error ? e.name : 'notifier_failed' };
+    }
+  };
+}
+
+/**
+ * يشتقّ سبب التصعيد البشري من مخرجات الجلسة الحقيقية (بلا اختراع): السعر غير
+ * الموثّق / الشكوى / الحساس يُشتقّان من مخرجات الاستراتيجية والنقد؛ وغير ذلك
+ * يبقى `manual` عند التصعيد فقط.
+ */
+function brainEscalationReasonFor(session: TeamSession): EscalationReason | null {
+  const texts = [...session.recommendations, ...session.analyses, ...session.objections].map((o) => o.statement).join(' ');
+  if (/شكوى|complaint/i.test(texts)) return 'complaint';
+  if (/حسّاس|sensitive|قانوني/i.test(texts)) return 'sensitive';
+  if (/سعر|قسط|price/i.test(session.task) || /سعر غير موثّق|price_unverified/i.test(texts)) return 'price_unverified';
+  return 'manual';
+}
+
+/** ملخّص آخر قرار للعقل المركزي (بلا سرّ) — للحالة/الجاهزية. */
+function lastBrainDecision(): BrainDecision | null {
+  for (let i = teamSessionState.sessions.length - 1; i >= 0; i -= 1) {
+    const bd = teamSessionState.sessions[i].brainDecision;
+    if (bd) return bd;
+  }
+  return null;
+}
+
+/** كتلة صحة قرار العقل المركزي (بلا أي سرّ): الحالة النهائية + الحوكمة + الهرمية. */
+function brainDecisionHealthBlock() {
+  const bd = lastBrainDecision();
+  const s = summarizeBrainDecision(bd);
+  return {
+    ...s,
+    lastDecisionAt: bd?.timestamp ?? null,
+    lastFinalStatusLabelAr: bd?.finalStatusLabelAr ?? null,
+    hierarchy: 'CENTRAL_BRAIN > AGENT_COUNCIL(6) > GOVERNANCE > ACTION_OR_ESCALATION',
+    executesExternalActions: false,
+    note: 'العقل المركزي فوق الوكلاء الستة: يقرّر ويمرّر عبر الحوكمة؛ الوكلاء مستشارون فقط ولا ينفّذون.',
+  };
+}
+
+/**
+ * كتلة صحة الطبقة الإدراكية (Batch 7، بلا أي سرّ): حالة الذاكرة العاملة + آخر
+ * دورة إدراكية + الحالات. تُعلن أن العقل يفهم/يتذكّر/يخطّط/يتعلّم بلا تنفيذ خارجي.
+ */
+function cognitionHealthBlock() {
+  const wm = summarizeWorkingMemory(workingMemoryState, Date.now());
+  const last = cognitiveReports[cognitiveReports.length - 1] || null;
+  return {
+    workingMemory: wm,
+    reports: cognitiveReports.length,
+    lastCycleAt: last?.phases[last.phases.length - 1]?.at ?? null,
+    lastCycleStatus: last?.status ?? null,
+    lastObjective: last?.observability.currentObjective ?? null,
+    lastGoal: last?.goalPlan.currentGoal.labelAr ?? null,
+    lastNextAction: last?.nextAction.labelAr ?? null,
+    lastDecisionState: last?.decisionStatus ?? null,
+    lastEscalationState: last?.observability.escalationState ?? null,
+    lastMemoryUsed: last?.observability.memoryUsed ?? 0,
+    cognitiveLoop: 'PERCEIVE→UNDERSTAND→REMEMBER→REASON→CONSULT→PLAN→CRITIQUE→DECIDE→ACT→OBSERVE→LEARN',
+    /** حلقة التعلّم مغلقة: نتيجة ملاحَظة حقيقية => درس => ذاكرة طويلة المدى (بلا ترقية بلا شرط). */
+    outcomeFeedbackWired: true,
+    learningBridge: 'ACTION→RESULT→FOLLOW-UP→LESSON→MEMORY→FUTURE_DECISION',
+    /** ملخّص حلقة التعلّم الحقيقي (بلا ادعاء بيع): كل رقم من سجلات فعلية. */
+    learningLoop: (() => {
+      const loop = buildCognitionLearningLoop();
+      const stageCount = (name: string) => loop.stages.find((s) => s.stage === name)?.count ?? 0;
+      return {
+        actions: stageCount('ACTION'), results: stageCount('RESULT'), followUp: stageCount('FOLLOW_UP'),
+        lessons: stageCount('LESSON'), memory: stageCount('MEMORY'), futureDecisions: stageCount('FUTURE_DECISION'),
+        engagementChanged: loop.followUp.engagementChanged,
+      };
+    })(),
+    executesExternalActions: false,
+    storesPrivateChainOfThought: false,
+    // إعلان التبعية المعمارية: الإدراك قدرة داخلية للعقل المركزي لا عقل ثانٍ.
+    subordinateTo: 'central-brain-1',
+    independentDecisionAuthority: false,
+    brainAuthority: centralBrainAuthorityContract({
+      cognitionConsumesBrainContext: true,
+      strategyStateOwned: true,
+      decisionLedgerOwned: true,
+    }),
+    strategyState: summarizeStrategyState(strategyState),
+    decisionLedger: summarizeDecisionLedger(decisionLedger),
+    note: 'الإدراك قدرة داخلية للعقل المركزي: فهم/تذكّر/تخطيط/تعلّم حتمي — لا عقل ثانٍ ولا سلطة قرار، وبلا تنفيذ خارجي وبلا تفكير داخلي خاص وبلا أسرار.',
   };
 }
 
@@ -9305,21 +9835,71 @@ function teamContext(task: string, platform: PlatformId) {
  * يشغّل جلسة فريق على سياق حقيقي، يحفظها (بلا تكرار)، ويكتب قرارها في ذاكرة العقل
  * القائمة عند استيفاء قواعد الصدق. لا ينفّذ أي إجراء خارجي. لا يرمي.
  */
-async function runTeamSessionNow(trigger: TeamRunOptions['trigger'], task: string, platform: PlatformId, eventIdentity: string) {
+async function runTeamSessionNow(
+  trigger: TeamRunOptions['trigger'],
+  task: string,
+  platform: PlatformId,
+  eventIdentity: string,
+  meta: { externalId?: string | null; commentText?: string; objective?: string; conversationId?: string | null; escalationReason?: EscalationReason | null } = {},
+) {
   const nowMs = Date.now();
   const dedupe = `team:${platform}:${String(eventIdentity).trim().toLowerCase().slice(0, 200)}:${String(task).trim().toLowerCase().replace(/\s+/g, ' ').slice(0, 200)}`;
   const existing = teamSessionState.sessions.find((s) => s.dedupeKey === dedupe) || null;
-  const session = runTeamSession(teamContext(task, platform), {
+  const session = runTeamSession(teamContext(task, platform, { escalationReason: meta.escalationReason ?? null }), {
     trigger,
     platform,
     eventIdentity,
     existing,
     now: nowMs,
   });
-  // إعادة جلسة موجودة (منع تكرار) => لا عمل مكرر ولا كتابة ذاكرة مكررة.
+  // إعادة جلسة موجودة (منع تكرار) => لا عمل مكرر ولا كتابة ذاكرة/قرار/تصعيد مكرر.
   if (existing && existing.teamSessionId === session.teamSessionId) {
-    return { session, memoryWritten: existing.memoryWritten, persistenceError: existing.persistence.error };
+    return { session, memoryWritten: existing.memoryWritten, persistenceError: existing.persistence.error, brainDecision: existing.brainDecision };
   }
+
+  // ---- العقل المركزي: يكوّن قراره المحكوم من مخرجات الوكلاء (Batch 6) ----
+  // الوكلاء اقترحوا؛ العقل يقرّر ويمرّر عبر الحوكمة ويحدّد الحالة النهائية.
+  const conn = platformConnections.get(platform);
+  const providerVerified = Boolean(conn && conn.status === 'connected' && conn.providerVerified);
+  const replyCapable = capabilityRow(platform as any).states.reply === 'AVAILABLE';
+  const publishCapable = capabilityRow(platform as any).states.publish === 'AVAILABLE';
+  // موافقة/تفويض المالك للإجراء الخارجي: تفويض تشغيل YouTube الفعّال (نفس بوابة
+  // التنفيذ) — ولا يُعمَّم على منصة أخرى (التفويض خاص بـYouTube دائماً).
+  const externalApproved = platform === 'youtube'
+    && youtubeDelegationCheck('system', { toolId: 'youtube_reply', args: {} }).allowed === true;
+  const externalId = meta.externalId ?? (eventIdentity.startsWith('comment:') ? eventIdentity.slice('comment:'.length) : eventIdentity);
+  const escalationReason = meta.escalationReason ?? brainEscalationReasonFor(session);
+  const activeMemory = brainMemoryStore.records.filter((r) => r.status === 'active' && !r.stale).length;
+  const decision = composeBrainDecision({
+    session,
+    platform,
+    eventIdentity,
+    objective: meta.objective || task,
+    context: { conversationId: meta.conversationId ?? null, sessionMessages: brainRuntimeComments().filter((c) => c.platform === platform).length, memoryActive: activeMemory },
+    capabilities: { replyCapable, publishCapable },
+    providerVerified,
+    externalApproved,
+    escalationReason,
+    now: nowMs,
+  });
+  session.brainDecision = decision;
+  session.updatedAt = new Date(nowMs).toISOString();
+
+  // التصعيد البشري: يُسجَّل في **نفس** نظام التصعيد القائم عند استحقاقه فقط.
+  const escalation = escalateBrainDecision(
+    decision,
+    { externalId: externalId || null, commentText: meta.commentText || session.task, nowIso: session.updatedAt, notifier: brainEscalationNotifier() },
+    {
+      list: () => socialEscalationsList(),
+      record: (rec) => socialRecordEscalation(rec),
+      newId: () => workspaceId('escalation'),
+    } as any,
+  );
+
+  // سلسلة التدقيق: EVENT → … → GOVERNANCE → OUTCOME (بلا أي سرّ).
+  audit('system', 'brain_decision',
+    `${decision.finalStatus} · ${decision.governance.code} · ${platform}:${externalId || 'na'} · وكلاء=${decision.consultedAgents.length} · خلاف=${decision.disagreements.length}${escalation.created ? ' · تصعيد=' + (escalation.reason || 'na') : ''}`);
+
   const up = upsertTeamSession(teamSessionState, session);
   teamSessionState = up.state;
   // قرار الجلسة => ذاكرة العقل القائمة (بلا نظام ثانٍ) عند استيفاء قواعد الصدق.
@@ -9341,7 +9921,125 @@ async function runTeamSessionNow(trigger: TeamRunOptions['trigger'], task: strin
   const up2 = upsertTeamSession(teamSessionState, session);
   teamSessionState = up2.state;
   persistTeamSessions();
-  return { session, memoryWritten, persistenceError: memoryError ?? session.persistence.error };
+  return { session, memoryWritten, persistenceError: memoryError ?? session.persistence.error, brainDecision: decision };
+}
+
+/**
+ * يشغّل دورة إدراكية كاملة (Batch 7) على نتيجة جلسة الفريق والقرار المحكوم:
+ * PERCEIVE → … → LEARN. **لا تنفيذ خارجي** ولا استهلاك AI. تُحدِّث الذاكرة العاملة
+ * (سياق قصير المدى) وتُخزّن التقرير (بلا تكرار) فتصمد بعد restart. لا ترمي.
+ */
+function runCognitiveCycleNow(input: {
+  session: TeamSession;
+  decision: BrainDecision;
+  platform: PlatformId;
+  eventIdentity: string;
+  eventText: string;
+  objective: string;
+  conversationId: string | null;
+  externalId: string | null;
+  escalationReason: EscalationReason | null;
+  replyCapable: boolean;
+  publishCapable: boolean;
+  providerVerified: boolean;
+  externalApproved: boolean;
+}): CognitiveReport {
+  const nowMs = Date.now();
+  const cls = classifyConversation({ platform: input.platform, externalId: input.eventIdentity, text: input.eventText });
+  const verifiedFacts = brainRuntimeInput().verifiedFacts || [];
+  // سياق العقل المركزي (Brain 1): الإدراك قدرة داخلية تقرأ الاستراتيجية/الهدف الكانوني.
+  let brainBuilt: { state: any; strategies: any[] } | null = null;
+  try { brainBuilt = buildRuntimeBrain({ ...brainRuntimeInput(), now: nowMs }) as any; } catch { brainBuilt = null; }
+  if (brainBuilt) {
+    try {
+      const res = updateStrategyState(strategyState, { items: toStrategySnapshot(brainBuilt.strategies as any), now: nowMs, source: 'brain:strategyEngine' });
+      if (res.changed) { strategyState = res.state; persistStrategyState(); }
+    } catch { /* أفضل جهد */ }
+  }
+  const brainCtx: CognitiveBrainContext | null = brainBuilt ? brainContextForCognition(brainBuilt) : null;
+  const priceUnverified = input.escalationReason === 'price_unverified';
+  const hasPendingEscalation = socialEscalationsList().some((r) => r.externalId === input.externalId && isEscalationOpen(r));
+  const sessionSummary = {
+    consultedAgents: input.session.participants as unknown as string[],
+    conflicts: input.session.conflicts,
+    truthState: input.session.truthState,
+    confidence: input.session.confidence,
+    criticFailed: input.session.criticFailed,
+    decisionVerified: Boolean(input.session.decision?.verified),
+    decisionStatement: input.session.decision?.statement || '',
+    decisionLimitations: input.session.decision?.limitations || [],
+    decisionProposedAction: input.session.decision?.proposedAction || '',
+    finalStatus: input.decision.finalStatus,
+    escalationReason: input.decision.escalation.reason ?? null,
+  };
+  const report = buildCognitiveCycle({
+    now: nowMs,
+    platform: input.platform,
+    eventIdentity: input.eventIdentity,
+    context: {
+      now: nowMs,
+      platform: input.platform,
+      eventIdentity: input.eventIdentity,
+      eventText: input.eventText,
+      objective: input.objective,
+      surfaceKind: 'comment',
+      conversationId: input.conversationId,
+      sessionMessages: brainRuntimeComments().filter((c) => c.platform === input.platform).length,
+      windowSize: 0,
+      windowTruncated: false,
+      lastActivityAt: input.session.updatedAt,
+      previousDiscussion: null,
+      evidence: input.session.evidence.slice(0, 20),
+      unknown: input.session.truthState === 'UNKNOWN' || input.session.truthState === 'UNAVAILABLE' ? ['لا دليل كافٍ بعد.'] : [],
+      unavailable: ['مؤشرات الجمهور السكانية غير متاحة عبر الواجهات الرسمية.'],
+      referencedObjectIds: input.conversationId ? [input.conversationId] : [],
+      relevantMarketingContext: verifiedFacts.slice(0, 5).map((f) => f.statement),
+      requiredNextDecision: 'تحديد الإجراء التالي (رد/متابعة/تصعيد) من الأدلة.',
+    },
+    memoryStore: brainMemoryStore,
+    session: sessionSummary as any,
+    capabilities: { replyCapable: input.replyCapable, publishCapable: input.publishCapable, providerVerified: input.providerVerified, externalApproved: input.externalApproved },
+    event: {
+      category: cls.category as any,
+      topic: cls.topic as unknown as string | null,
+      priceUnverified,
+      hasContentOpportunity: cls.category === 'content_request' || cls.category === 'feature_request',
+      needsClarification: cls.category === 'question',
+      hasPendingEscalation,
+      isSpam: cls.category === 'spam',
+    },
+    observations: [],
+    brain: brainCtx,
+  });
+  // الذاكرة العاملة: سياق قصير المدى فقط (بلا ترقية تلقائية طويلة المدى).
+  const wmKey = input.conversationId || `${input.platform}::${input.eventIdentity}`;
+  workingMemoryState = touchWorkingMemory(workingMemoryState, {
+    conversationId: wmKey,
+    platform: input.platform,
+    objective: input.objective,
+    lastCustomerMessage: input.eventText.slice(0, 300),
+    previousRelevantMessages: [],
+    unresolvedQuestion: report.nextAction.kind === 'ask_clarification' || priceUnverified ? input.eventText.slice(0, 200) : null,
+    pendingEscalationReason: hasPendingEscalation ? (input.escalationReason ?? 'manual') : null,
+    lastDecisionSummary: `${report.nextAction.labelAr}: ${input.decision.finalStatusLabelAr}`,
+    lastConsultedAgents: input.session.participants as unknown as string[],
+    messageCount: 0,
+    lastActivityAt: input.session.updatedAt,
+    nowIso: new Date(nowMs).toISOString(),
+  });
+  recordCognitiveReport(report);
+  persistCognition();
+  // سجل قرار→نتيجة: قرار مركزي واحد حقيقي (السلطة الواحدة) مربوط بذاكرته/تصعيده.
+  // النتيجة تبدأ غير متاحة صراحةً حتى تُلاحظ (لا اختراع).
+  recordCentralDecision({
+    decision: input.decision,
+    platform: input.platform,
+    eventIdentity: input.eventIdentity,
+    actionText: report.nextAction.labelAr,
+    memoryRecordIds: (input.session.memoryRecordIds || []) as string[],
+    escalationExternalId: input.externalId,
+  });
+  return report;
 }
 
 // -----------------------------------------------------------------------------
@@ -9406,8 +10104,19 @@ async function runBrainRuntimeCycleInternal(trigger: "scheduled" | "boot" | "man
       setInFlight: (v) => { brainRuntimeInFlight = v; },
       build: () => {
         const built = buildRuntimeBrain({ ...brainRuntimeInput(), now: Date.now() });
+        // مزامنة حالة الاستراتيجية (يملكها العقل المركزي): تُحدَّث عند تغيّر فعلي فقط.
+        try {
+          const res = updateStrategyState(strategyState, { items: toStrategySnapshot(built.strategies as any), now: Date.now(), source: 'brain:strategyEngine' });
+          if (res.changed) { strategyState = res.state; persistStrategyState(); }
+        } catch { /* أفضل جهد */ }
+        // Gap 2 (Batch 8.1): قراءة السجل تُغذّي الذاكرة — سجلات القرار→النتيجة ذات
+        // النتيجة الملاحَظة الحقيقية فقط تُرحَّل إلى ذاكرة العقل القائمة (بلا نظام
+        // ثانٍ؛ منع التكرار عبر معرّف ثابت في persistBrainMemory).
+        const decisionMem = decisionHistoryToMemoryRecords(decisionLedger, Date.now());
+        const byId = new Map<string, BrainMemoryRecord>();
+        for (const r of [...built.newMemoryRecords, ...decisionMem]) byId.set(r.id, r);
         return {
-          newMemoryRecords: built.newMemoryRecords,
+          newMemoryRecords: [...byId.values()],
           learningEventsCount: built.learningEvents.length,
           memoryTotal: brainMemoryStore.records.length,
         };
@@ -9603,6 +10312,11 @@ function buildPersistedState() {
       // سجلات مدير السوشيال ميديا: بدونها لا تصمد حماية replay/duplicate بعد restart.
       socialComments: (workspace as any).socialComments.slice(0, 10000),
       socialReplies: (workspace as any).socialReplies.slice(0, 5000), socialApprovals: (workspace as any).socialApprovals.slice(0, 5000), publishRecords: (workspace as any).publishRecords.slice(0, 5000), performanceRecords: (workspace as any).performanceRecords.slice(0, 20000), marketingDecisions: (workspace as any).marketingDecisions.slice(0, 2000), strategiesTested: (workspace as any).strategiesTested.slice(0, 2000),
+      // نوافذ المحادثة قصيرة المدى (منصة+خيط): تصمد بعد restart وتُغذّي عزل السياق.
+      socialConversations: ((workspace as any).socialConversations || []).slice(0, 500),
+      // تصعيدات بشرية ودورة حياة المحادثات: تصمد بعد restart (تمنع إغلاقاً مع تصعيد معلّق).
+      socialEscalations: ((workspace as any).socialEscalations || []).slice(0, 5000),
+      socialConversationStates: ((workspace as any).socialConversationStates || []).slice(0, 500),
       // معرّفات تحديثات Telegram لصمود منع التكرار بعد restart (يمنع إعادة معالجة رسالة).
       telegramUpdateIds: ((workspace as any).telegramUpdateIds || []).slice(0, 20000),
       // معرّفات أحداث Facebook الواردة لصمود منع التكرار بعد restart.
@@ -10111,6 +10825,8 @@ app.get("/api/readiness", (_req, res) => {
           geminiUsedOnSessions: false,
           note: 'فريق وكلاء داخلي: قرار مقترح فقط؛ لا تنفيذ خارجي.',
         },
+        brainDecision: brainDecisionHealthBlock(),
+        cognition: cognitionHealthBlock(),
       };
     })(),
     timestamp: new Date().toISOString(),
@@ -10530,6 +11246,8 @@ app.get("/api/health", (_req, res) => {
       agents: ['orchestrator', 'research', 'analysis', 'strategy', 'critic', 'decision'],
       note: 'فريق وكلاء داخلي: رصد/تحليل/تحقق/قرار مقترح فقط — لا تنفيذ خارجي ولا استهلاك AI.',
     },
+    brainDecision: brainDecisionHealthBlock(),
+    cognition: cognitionHealthBlock(),
     // طابور المحتوى (نشر/جدولة/مراجعة): ملخص حقيقي بلا أي سرّ.
     youtubeContent: { summary: contentQueueSummary(), mediaStored: contentMedia.size, mediaTotalBytes: contentMediaTotalBytes },
     // حالة موصل TikTok الحقيقي (منطقي فقط بلا أي سرّ أو رمز).
@@ -12302,6 +13020,22 @@ registerSocialManagerRoutes(app, {
   // المصدر الوحيد للحقيقة للقرار/الذاكرة: الحالة canonical للعقل المركزي.
   // مسارات /api/social/manager/{brain/decision,memory} إسقاط توافقي منها فقط.
   centralBrainState: () => buildRuntimeBrain({ ...brainRuntimeInput(), now: Date.now() }).state,
+  // مُبلِّغ التصعيد البشري: يُعيد استخدام بنية التنبيه القائمة (`pushNotification`).
+  // لا يدّعي الإشعار إن لم يُنشأ التنبيه فعلاً؛ والفشل يُعلَن بسببه بلا سرّ.
+  notifyEscalation: (record: any) => {
+    try {
+      const n = pushNotification(
+        "owner",
+        "social_escalation",
+        `تصعيد بشري: ${record?.reasonLabelAr || record?.reason || "حالة تحتاج مراجعة"}`,
+        `منصة ${record?.platform || "غير معروفة"} — ${String(record?.commentText || "").slice(0, 200)}`,
+        "warning",
+      );
+      return { delivered: Boolean(n?.id), channel: "in_app_notification", error: n?.id ? null : "notification_not_created" };
+    } catch (e) {
+      return { delivered: false, channel: null, error: e instanceof Error ? e.name : "notifier_failed" };
+    }
+  },
 });
 
 // العقل المركزي: يُربط بمنفّذ التنفيذ الخارجي الفعلي (نفس بوابات النشر) وبسياق
@@ -12358,6 +13092,8 @@ registerBrainRoutes(app, {
   platforms: () => SUPPORTED_PLATFORMS.map((p: any) => p.id) as PlatformId[],
   runtimeInput: () => brainRuntimeInput(),
   persistMemory: (records) => persistBrainMemory(records),
+  strategyState: () => summarizeStrategyState(strategyState),
+  syncStrategyState: () => syncStrategyStateFromBrain(),
 });
 
 // مسارات فريق الوكلاء (Agent Council — Batch 6) — قراءة/تشخيص فقط.
@@ -12374,6 +13110,61 @@ registerTeamRoutes(app, {
     'youtube',
     `manual:${new Date().toISOString().slice(0, 13)}`,
   ),
+});
+
+// الطبقة الإدراكية (Batch 7) — قراءة/تحليل فقط: الذاكرة العاملة + تقارير الدورات
+// الإدراكية (فهم/تذكّر/تخطيط/تعلّم). **لا مسار كتابة ولا تنفيذ خارجي ولا أسرار.**
+
+/**
+ * حلقة التعلّم الكاملة (ACTION→RESULT→FOLLOW-UP→LESSON→MEMORY→FUTURE) من سجلات
+ * حقيقية فقط — بلا اختراع: عدد كل مرحلة من سجلات فعلية، والذاكرة من مخزن العقل
+ * القائم (مفاتيح الدروس `lesson:`)، وتفاعل المتابعة من مراقب YouTube.
+ */
+function buildCognitionLearningLoop() {
+  const processed = watcherState.processed;
+  const actions = processed.filter((p) => p.stage === 'REPLIED' || p.stage === 'VERIFIED').length;
+  const results = processed.filter((p) => Boolean(p.externalReplyId)).length;
+  const baselined = processed.filter((p) => Boolean(p.followUpBaseline)).length;
+  const observed = processed.filter((p) => Boolean(p.followUpOutcome)).length;
+  const engagementChanged = processed.filter((p) => p.followUpOutcome?.kind === 'engagement_changed').length;
+  const noChange = processed.filter((p) => p.followUpOutcome?.kind === 'no_change').length;
+  const lessons = processed.filter((p) => p.followUpOutcome?.kind === 'engagement_changed').length;
+  const lessonRecords = brainMemoryStore.records.filter((r) => r.id.startsWith('lesson:'));
+  const stage = (name: string, count: number, note: string): { stage: string; labelAr: string; count: number; available: boolean; note: string } =>
+    ({ stage: name, labelAr: '', count, available: true, note });
+  return {
+    stages: [
+      stage('ACTION', actions, 'ردود حقيقية مُرسَلة عبر المنفّذ المركزي.'),
+      stage('RESULT', results, 'تسليم مُثبَت بمعرّف من المزوّد.'),
+      stage('FOLLOW_UP', observed, 'تفاعل متابعة ملاحَظ على الردود المُسلَّمة.'),
+      stage('LESSON', lessons, 'دروس مستخلَصة من تغيّر تفاعل حقيقي (بلا ادعاء بيع).'),
+      stage('MEMORY', lessonRecords.length, 'دروس محفوظة في الذاكرة طويلة المدى.'),
+      stage('FUTURE_DECISION', cognitiveReports.length, 'دورات إدراكية ستؤثر في القرارات التالية.'),
+    ],
+    followUp: { baselined, observed, engagementChanged, noChange, lastChanged: processed.find((p) => p.followUpOutcome?.kind === 'engagement_changed')?.followUpOutcome || null },
+    memory: {
+      total: brainMemoryStore.records.length,
+      lessonDerived: lessonRecords.length,
+      recent: lessonRecords.slice(-10).map((r) => ({ key: r.id, kind: r.kind, source: r.sourceRefs[0] || '', summary: r.summary })),
+    },
+    note: 'حلقة تعلّم حقيقية: ACTION→RESULT→FOLLOW-UP→LESSON→MEMORY→FUTURE_DECISION — لا تُخترع نتيجة، وغير المتاح يُعلن صفراً صادقاً.',
+  };
+}
+
+registerCognitionRoutes(app, {
+  authenticateToken,
+  requireOwner,
+  reports: () => cognitiveReports,
+  reportById: (id) => cognitiveReportById(id),
+  workingMemory: () => workingMemoryState,
+  learningLoop: () => buildCognitionLearningLoop(),
+  brainAuthority: () => centralBrainAuthorityContract({
+    cognitionConsumesBrainContext: true,
+    strategyStateOwned: true,
+    decisionLedgerOwned: true,
+  }),
+  decisionLedgerSummary: () => summarizeDecisionLedger(decisionLedger),
+  decisionLedgerEntries: (limit) => decisionLedger.entries.slice(-limit).reverse(),
 });
 
 // -------------------------------------------------------------
