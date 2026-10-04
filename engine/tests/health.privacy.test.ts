@@ -156,6 +156,23 @@ function keysOf(obj: unknown, acc = new Set<string>()): Set<string> {
   return acc;
 }
 
+// أسماء حقول تحمل بيانات عميل صراحةً — ممنوعة في أي مكان بالنقطتين العامتين.
+// قائمة صريحة (لا أنماط واسعة) لتفادي الإنذارات الكاذبة على مفاتيح تقنية مثل
+// commentsCapability/nextAction. أي حقل جديد بهذا المعنى يجب أن يُضاف هنا عن قصد.
+const FORBIDDEN_CUSTOMER_FIELDS = [
+  'authorName', 'commentText', 'commentAuthor', 'replyText', 'lastReply',
+  'attentionRequired', 'customerName', 'customerPhone', 'customerEmail',
+  'contactPhone', 'contactEmail', 'objective', 'lastGoal', 'lastObjective',
+  'lastNextAction', 'customerMessage', 'lastCustomerMessage', 'unresolvedQuestion',
+];
+
+// الحقول التقنية المسموح بها فقط في الكتلة العامة youtubeWatcher (allow-list صارم):
+// أي حقل جديد (قد يحمل بيانات عميل) يُفشل الاختبار حتى يُراجَع عن قصد.
+const ALLOWED_WATCHER_PUBLIC_KEYS = new Set([
+  'watcherActive', 'cadenceMinutes', 'cadenceMs', 'pollCount', 'lastPollAt',
+  'nextPollAt', 'lastError', 'consecutiveErrors', 'counters', 'note',
+]);
+
 async function run(): Promise<void> {
   if (!existsSync(tsxCli)) { console.error('tsx CLI غير موجود — شغّل npm install أولاً.'); process.exit(1); }
   seedState();
@@ -179,6 +196,9 @@ async function run(): Promise<void> {
     check('لا حقل آخر هدف إدراكي نصّي في الصحة', !healthKeys.has('lastGoal'));
     check('لا حقل آخر objective إدراكي نصّي في الصحة', !healthKeys.has('lastObjective'));
     check('لا حقل آخر إجراء إدراكي نصّي في الصحة', !healthKeys.has('lastNextAction'));
+    // حارس صريح عام: لا أي حقل يحمل بيانات عميل في أي مكان بالنقطة العامة.
+    const forbiddenInHealth = FORBIDDEN_CUSTOMER_FIELDS.filter((f) => healthKeys.has(f));
+    check('لا حقل بيانات عميل معروف في الصحة (قائمة صريحة)', forbiddenInHealth.length === 0, forbiddenInHealth.join(','));
 
     group('2) /api/health تُبقي الحقول التقنية غير الحساسة');
     const w = health.youtubeWatcher;
@@ -188,6 +208,10 @@ async function run(): Promise<void> {
     check('العدّادات تُعلن (تصعيد=1، رد=1)', w?.counters?.escalated === 1 && w?.counters?.replied === 1, JSON.stringify(w?.counters));
     check('آخر خطأ نُقّي إلى رمز تقني/رسالة عامة', w?.lastError === 'connection error', String(w?.lastError));
     check('commit النشر يُعلن', 'deploy' in health && 'commit' in (health.deploy || {}));
+    // allow-list صارم: الكتلة العامة youtubeWatcher لا تحمل إلا الحقول التقنية المعروفة.
+    // أي حقل جديد (قد يحمل بيانات عميل) يُفشل الاختبار حتى يُراجَع عن قصد.
+    const watcherPublicExtra = Object.keys(w || {}).filter((k) => !ALLOWED_WATCHER_PUBLIC_KEYS.has(k));
+    check('الكتلة العامة youtubeWatcher ضمن allow-list فقط', watcherPublicExtra.length === 0, watcherPublicExtra.join(','));
 
     group('3) /api/readiness العامة لا تحمل أي بيانات عميل');
     const readyRes = await fetch(`${BASE}/api/readiness`);
@@ -198,6 +222,8 @@ async function run(): Promise<void> {
     check('لا حقل replyText في الجاهزية', !readyKeys.has('replyText'));
     check('لا حقل attentionRequired في الجاهزية', !readyKeys.has('attentionRequired'));
     check('لا حقل lastGoal إدراكي في الجاهزية', !readyKeys.has('lastGoal'));
+    const forbiddenInReady = FORBIDDEN_CUSTOMER_FIELDS.filter((f) => readyKeys.has(f));
+    check('لا حقل بيانات عميل معروف في الجاهزية (قائمة صريحة)', forbiddenInReady.length === 0, forbiddenInReady.join(','));
 
     group('4) البيانات التفصيلية تبقى في المسار المحمي بالمالك');
     const auth = await loginOwner();
