@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useState } from 'react';
 import { useApp } from '../../context/AppContext';
 import { apiService } from '../../services/api';
 import AgentTeamCenter from './AgentTeamCenter';
+import CentralBrainCognitionPanel from './CentralBrainCognitionPanel';
 
 /**
  * العقل المركزي العام (Batch 26): طبقة ذكاء محتوى وتعلّم وتوصيات تغطي كل
@@ -447,6 +448,10 @@ export const CentralBrainView: React.FC = () => {
 
       <Card title="فريق الوكلاء (Agent Team)" hint="فريق تفكير داخلي ينسّقه العقل المركزي: بحث → تحليل → استراتيجية → نقد → قرار. قرار مقترح فقط — لا تنفيذ خارجي.">
         <AgentTeamCenter />
+      </Card>
+
+      <Card title="إدراك العقل المركزي (Cognition)" hint="إدراك → فهم → تذكّر → استدلال → مشورة → تخطيط → نقد → قرار → إجراء → ملاحظة → تعلّم. قراءة فقط، بلا تنفيذ خارجي.">
+        <CentralBrainCognitionPanel />
       </Card>
     </div>
   );

@@ -44,7 +44,7 @@ export interface YouTubeMockState {
   /** فيديوهات القناة الوهمية (تُعاد عبر playlistItems + videos). */
   videos: Array<{ id: string; title: string; publishedAt: string; viewCount: number; likeCount: number; commentCount: number; tags?: string[] }>;
   /** تعليقات الفيديو الوهمية (تُعاد عبر commentThreads.list). */
-  comments: Array<{ id: string; threadId: string; videoId: string; author: string; text: string; publishedAt: string; likeCount: number }>;
+  comments: Array<{ id: string; threadId: string; videoId: string; author: string; text: string; publishedAt: string; likeCount: number; totalReplyCount?: number }>;
   /** يفشل قراءة الفيديوهات بـ403. */
   failVideos: boolean;
   /** آخر مسار/معرّف فيديو طُلب من commentThreads — يثبت أن Data API استُدعي فعلاً. */
@@ -228,6 +228,7 @@ export function startYouTubeMockServer(state: YouTubeMockState, port: number): P
       id: c.threadId,
       snippet: {
         videoId: c.videoId,
+        totalReplyCount: Number(c.totalReplyCount || 0),
         topLevelComment: {
           kind: 'youtube#comment',
           id: c.id,

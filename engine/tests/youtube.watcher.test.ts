@@ -35,6 +35,10 @@ import {
   type WatcherProcessedEntry,
 } from '../social/youtubeWatcher';
 import { validateCadenceMinutes, cadenceMinutesToMs } from '../social/youtubeWatcher';
+import {
+  selectFollowUpCandidates, evaluateFollowUpEngagement,
+  FOLLOWUP_BASELINE_DELAY_MS, FOLLOWUP_MIN_DELTA,
+} from '../social/youtubeWatcher';
 import { createWatcherScheduler } from '../social/youtubeWatcherScheduler';
 import { classifyComment } from '../social/comments';
 
@@ -305,7 +309,7 @@ function entry(partial: Partial<WatcherProcessedEntry>): WatcherProcessedEntry {
 {
   const server = readFileSync(join(process.cwd(), 'server.ts'), 'utf8');
   check('O: إعادة فرض بوابة الرد عند نقطة التنفيذ', server.includes('const replyGate = watcherGate(controls, "reply")'));
-  check('O: الشرط يجمع جاهزية التنفيذ والبوابة', server.includes('if (!replyReady.ready || !replyGate.allowed)'));
+  check('O: الشرط يجمع جاهزية التنفيذ والبوابة', server.includes('if (!replyReady.ready || !replyGateFinal.allowed)'));
   check('O: no fake commentId (لا اختلاق)', !/commentId:\s*["'][^"']+["']/.test(server.slice(server.indexOf('async function runYouTubeWatcherCycle'), server.indexOf('function startYouTubeWatcher'))));
   check('O: الرد يُسجَّل مُسلَّماً فقط بمعرّف رد حقيقي', server.includes('const delivered = Boolean(result.body?.delivered && result.body?.externalReplyId);'));
 }
@@ -358,6 +362,42 @@ function entry(partial: Partial<WatcherProcessedEntry>): WatcherProcessedEntry {
   // إعادة الجدولة بعد الإيقاف تُنشئ مؤقّتاً واحداً فقط (لا يتراكم).
   s.reschedule();
   check('Q: إعادة التشغيل بعد الإيقاف = مؤقّت واحد', s.status().activeTimers === 1);
+}
+
+// --- R) تفاعل المتابعة (Follow-up Engagement): كشف تغيّر حقيقي فقط ---
+{
+  const NOW = Date.parse('2026-10-04T12:00:00.000Z');
+  const entry = (over: Partial<WatcherProcessedEntry>): WatcherProcessedEntry => ({
+    commentId: 'c1', stage: 'REPLIED', action: 'reply', reason: 'r', videoId: 'v1', authorName: 'a',
+    text: 'كم السعر؟', at: new Date(NOW - FOLLOWUP_BASELINE_DELAY_MS - 60_000).toISOString(),
+    externalReplyId: 'r1', ...over,
+  });
+  // 1) لا مرشّح بلا رد مُسلَّم.
+  check('R: بلا معرّف رد لا يُرصد', selectFollowUpCandidates([entry({ externalReplyId: null })], NOW).length === 0);
+  // 2) لا مرشّح قبل حلول مهلة البصمة.
+  check('R: قبل المهلة لا يُرصد', selectFollowUpCandidates([entry({ at: new Date(NOW - 60_000).toISOString() })], NOW).length === 0);
+  // 3) محسوم مسبقاً لا يُرصد مجدداً.
+  check('R: المحسوم لا يُرصد', selectFollowUpCandidates([entry({ followUpOutcome: { kind: 'no_change', likesDelta: 0, repliesDelta: 0, at: 'x' } })], NOW).length === 0);
+  // 4) مرشّح صالح.
+  check('R: الرد المُسلَّم بعد المهلة يُرصد', selectFollowUpCandidates([entry({})], NOW).length === 1);
+  check('R: مهلة البصمة 30 دقيقة', FOLLOWUP_BASELINE_DELAY_MS === 30 * 60 * 1000);
+
+  // 5) بلا بصمة ⇒ تُثبَّت ولا يُعلن تغيّر.
+  const b1 = evaluateFollowUpEngagement(entry({}), { likes: 3, replies: 1 }, NOW);
+  check('R: أول رصد يثبّت البصمة', Boolean(b1.baseline) && b1.baseline?.likes === 3 && !b1.outcome);
+  // 6) إشارة غير متاحة ⇒ لا ادعاء تغيّر ولا بصمة.
+  const bNull = evaluateFollowUpEngagement(entry({}), { likes: null, replies: null }, NOW);
+  check('R: إشارة غير متاحة لا تُعلن تغيّراً', !bNull.outcome && !bNull.baseline);
+  // 7) مع بصمة وزيادة ⇒ engagement_changed.
+  const changed = evaluateFollowUpEngagement(entry({ followUpBaseline: { likes: 3, replies: 1 } }), { likes: 6, replies: 2 }, NOW);
+  check('R: زيادة الإعجاب/الرد ⇒ engagement_changed', changed.outcome?.kind === 'engagement_changed' && changed.outcome?.likesDelta === 3 && changed.outcome?.repliesDelta === 1);
+  // 8) مع بصمة بلا تغيّر ⇒ no_change.
+  const same = evaluateFollowUpEngagement(entry({ followUpBaseline: { likes: 3, replies: 1 } }), { likes: 3, replies: 1 }, NOW);
+  check('R: بلا تغيّر ⇒ no_change', same.outcome?.kind === 'no_change');
+  // 9) الحد الأدنى للتغيّر = 1 (لا ضجيج).
+  check('R: الحد الأدنى للتغيّر 1', FOLLOWUP_MIN_DELTA === 1);
+  // 10) لا ادعاء بيع ولا رقم مالي في النص.
+  check('R: بلا مصطلح مالي', !/إيراد|ربح|ROI|هامش|بيع/i.test(JSON.stringify([b1, changed, same])));
 }
 
 // --- الخلاصة ---

@@ -27,7 +27,9 @@ function buildApp(connections: Map<string, any>, workspace: any) {
   const app = express();
   app.use(express.json());
   const authenticateToken: express.RequestHandler = (req, _res, next) => {
-    (req as any).user = TEST_USER;
+    // ترويسة اختبارية تسمح بمحاكاة موظف (staff) لإثبات فرض الحوكمة على الخادم.
+    const role = req.headers['x-test-role'] === 'staff' ? 'staff' : TEST_USER.role;
+    (req as any).user = { ...TEST_USER, role };
     next();
   };
   const requireOwner: express.RequestHandler = (req, _res, next) => {
@@ -70,6 +72,9 @@ function freshWorkspace() {
     ],
     socialComments: [],
     socialReplies: [],
+    socialConversations: [],
+    socialEscalations: [],
+    socialConversationStates: [],
     publishRecords: [],
     performanceRecords: [],
     marketingDecisions: [],
@@ -77,10 +82,10 @@ function freshWorkspace() {
   };
 }
 
-async function post(path: string, body: any) {
+async function post(path: string, body: any, headers: Record<string, string> = {}) {
   const res = await fetch(`${BASE}${path}`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', ...headers },
     body: JSON.stringify(body),
   });
   return { status: res.status, body: await res.json() };
@@ -312,6 +317,85 @@ async function run(): Promise<void> {
     });
     check('الرد السليم عبر حارس المحتوى يُقبل', replyClean.status === 200, `status=${replyClean.status}`);
     check('الرد المقبول لا يُدّعى إرساله', replyClean.body.delivered === false && replyClean.body.simulated === true);
+
+    // --------------- سياسة التواصل التجاري العراقي (طبقة حتمية جديدة) ---------------
+    const replyHype = await post('/api/social/manager/comments/reply', {
+      platform: 'x', externalId: 'c-policy-hype', text: 'هذا أفضل عرض في العراق ولا يفوتك', commentText: 'شكراً',
+    });
+    check('الرد ذو المبالغة الإعلانية مرفوض بسياسة التواصل', replyHype.status === 422, `status=${replyHype.status}`);
+    check('رفض السياسة يعلن المخالفات', replyHype.body.commercialPolicy?.compliant === false && replyHype.body.commercialPolicy.labels.length >= 1);
+    check('الرد المرفوض بالسياسة لا يُسجَّل', !workspace.socialReplies.some((r: any) => r.externalId === 'c-policy-hype'));
+
+    const replyUrgency = await post('/api/social/manager/comments/reply', {
+      platform: 'x', externalId: 'c-policy-urgency', text: 'آخر قطعة، الحق قبل ما يخلص', commentText: 'شكراً',
+    });
+    check('الرد ذو الإلحاح الكاذب مرفوض بسياسة التواصل', replyUrgency.status === 422);
+
+    const replyNeutral = await post('/api/social/manager/comments/reply', {
+      platform: 'x', externalId: 'c-policy-ok', text: 'هلا بيك، نورتنا، فريق المعرض بخدمتك.', commentText: 'شكراً',
+    });
+    check('الرد العراقي الطبيعي يمر بالسياسة', replyNeutral.status === 200, `status=${replyNeutral.status}`);
+
+    // --------------- حوكمة الوكلاء: لا تنفيذ خارجي من غير المالك ---------------
+    // موظف (staff) يحاول تسجيل رد ⇒ يُرفض 403 على الخادم (فرض الحوكمة لا إخفاء واجهة).
+    const replyAsStaff = await post('/api/social/manager/comments/reply', {
+      platform: 'x', externalId: 'c-gov-staff', text: 'هلا بيك، نورتنا.', commentText: 'شكراً',
+    }, { 'x-test-role': 'staff' });
+    check('موظف: تسجيل الرد مرفوض 403 (حوكمة)', replyAsStaff.status === 403, `status=${replyAsStaff.status}`);
+    check('موظف: الرفض صريح بكود حوكمة', replyAsStaff.body.governance?.code === 'APPROVAL_REQUIRED' || replyAsStaff.body.governance?.code === 'PERMISSION_DENIED', JSON.stringify(replyAsStaff.body.governance));
+    check('موظف: لا يُسجَّل أي رد', !workspace.socialReplies.some((r: any) => r.externalId === 'c-gov-staff'));
+
+    // --------------- حالة المحادثة قصيرة المدى + عزل السياق ---------------
+    // الردود على نفس المنصة/الخيط تُبنى نوافذ محادثة معزولة.
+    check('نوافذ المحادثة قصيرة المدى تُسجَّل في الحالة', Array.isArray(workspace.socialConversations) && workspace.socialConversations.length >= 1);
+    check('كل نافذة محادثة تحمل معرّفاً ورسائل', workspace.socialConversations.every((c: any) => typeof c.conversationId === 'string' && Array.isArray(c.messages)));
+
+    const classifyIsolated = await post('/api/social/manager/comments/classify', { text: 'شكراً جزيلاً', platform: 'x', postExternalId: 'thread-1' });
+    check('التصنيف يعلن عزل السياق', classifyIsolated.body.conversation?.isolated === true && classifyIsolated.body.conversation.conversationId === 'x::thread-1');
+    check('التصنيف يعرض حجم النافذة قصيرة المدى', typeof classifyIsolated.body.conversation.windowSize === 'number');
+    check('التصنيف يعلن سياسة التواصل', classifyIsolated.body.commercialPolicy !== null && classifyIsolated.body.commercialPolicy.compliant === true);
+
+    // خيط آخر لا يقرأ ردود الخيط الأول (عزل فعلي).
+    const classifyOtherThread = await post('/api/social/manager/comments/classify', { text: 'شكراً جزيلاً', platform: 'x', postExternalId: 'thread-2' });
+    check('خيط مختلف ⇒ محادثة مختلفة', classifyOtherThread.body.conversation.conversationId === 'x::thread-2');
+    check('خيط مختلف لا يستخدم ردود خيط آخر', classifyOtherThread.body.conversation.priorRepliesUsed === 0, `used=${classifyOtherThread.body.conversation.priorRepliesUsed}`);
+
+    // --------------- التصعيد البشري + دورة حياة المحادثة ---------------
+    // سؤال سعر غير موثّق ⇒ تصعيد حقيقي بسبب صريح، ولا يُردّ عليه آلياً.
+    const escClassify = await post('/api/social/manager/comments/classify', { text: 'بكم سعر الغسالة؟', platform: 'x', postExternalId: 'thread-esc', externalId: 'c-esc-1' });
+    check('سؤال السعر يُسجّل تصعيداً بسبب صريح', escClassify.body.escalation !== null && escClassify.body.escalation.reason === 'price_unverified');
+    check('التصعيد يبدأ معلّقاً (PENDING)', escClassify.body.escalation.state === 'PENDING');
+    check('المحادثة المُصعّدة حالتها ESCALATED', escClassify.body.conversation.lifecycle === 'ESCALATED');
+
+    const escList = await get('/api/social/manager/escalations');
+    check('قائمة التصعيدات تستجيب', escList.status === 200 && escList.body.success === true);
+    check('التصعيد المعلّق ظاهر في القائمة', escList.body.pending >= 1 && escList.body.escalations.some((e: any) => e.externalId === 'c-esc-1'));
+
+    // لا إغلاق مع تصعيد معلّق.
+    const resolveBlocked = await post('/api/social/manager/conversations/lifecycle', { platform: 'x', postExternalId: 'thread-esc', event: 'resolve_requested' });
+    check('لا إغلاق مع تصعيد معلّق (409)', resolveBlocked.status === 409 && resolveBlocked.body.transition?.ok === false);
+
+    // حلّ التصعيد ثم الإغلاق مسموح.
+    const escId = escClassify.body.escalation.id;
+    const escResolve = await post(`/api/social/manager/escalations/${escId}/transition`, { event: 'resolve' });
+    check('حلّ التصعيد ينجح', escResolve.status === 200 && escResolve.body.escalation.state === 'RESOLVED');
+    const resolveOk = await post('/api/social/manager/conversations/lifecycle', { platform: 'x', postExternalId: 'thread-esc', event: 'resolve_requested' });
+    check('الإغلاق مسموح بعد رفع التصعيد', resolveOk.status === 200 && resolveOk.body.state === 'RESOLVED');
+    const reopen = await post('/api/social/manager/conversations/lifecycle', { platform: 'x', postExternalId: 'thread-esc', event: 'reopen' });
+    check('إعادة فتح المحادثة تعمل', reopen.status === 200 && reopen.body.state === 'OPEN');
+
+    // المدح لا يُصعَّد (لا تصعيد كاذب) — يبقى null صراحةً.
+    const praiseClassify = await post('/api/social/manager/comments/classify', { text: 'عاشت إيدكم', platform: 'x', postExternalId: 'thread-praise' });
+    check('المدح لا يُصعَّد (لا تصعيد كاذب)', praiseClassify.body.escalation === null, JSON.stringify(praiseClassify.body.escalation));
+    check('محادثة المدح ليست مُصعّدة', praiseClassify.body.conversation.lifecycle !== 'ESCALATED');
+
+    // التصعيد يُحفظ في مساحة العمل (يصمد بعد restart).
+    check('سجلات التصعيد تُحفظ في الحالة', Array.isArray(workspace.socialEscalations) && workspace.socialEscalations.length >= 1);
+    check('حالات دورة الحياة تُحفظ في الحالة', Array.isArray(workspace.socialConversationStates) && workspace.socialConversationStates.length >= 1);
+
+    // انتقال تصعيد غير صالح يُرفض.
+    const badTransition = await post(`/api/social/manager/escalations/${escId}/transition`, { event: 'nonsense' });
+    check('حدث تصعيد غير صالح مرفوض 400', badTransition.status === 400);
 
     // منصة لا تدعم التعليقات: تُرفض قبل أي محاولة.
     disconnected.set('snapchat', { platform: 'snapchat', status: 'connected', providerVerified: true });
