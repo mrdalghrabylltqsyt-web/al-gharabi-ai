@@ -761,7 +761,18 @@ add('youtube-watcher-no-fake-arg', !/commentId:\s*"[a-zA-Z0-9_-]+"/.test(server.
 add('youtube-watcher-honest-delivery', server.includes("const delivered = Boolean(result.body?.delivered && result.body?.externalReplyId);") && server.includes("baseEntry.stage = \"REPLIED\""), 'لا يُسجَّل رد مُسلَّم بلا معرّف رد حقيقي من YouTube');
 add('youtube-watcher-durable-state', server.includes('WATCHER_STATE_KEY') && server.includes('persistWatcherState') && server.includes('applyWatcherStateSnapshot') && server.includes('storageAdapter.read<any>(WATCHER_STATE_KEY)') && server.includes('storageAdapter.readSync<any>(WATCHER_STATE_KEY)'), 'حالة المراقبة تُحفظ/تُسترجع عبر المحوّل فتصمد بعد restart/deploy');
 add('youtube-watcher-owner-controls', server.includes('/api/agent/youtube/watcher/controls') && server.includes('requireOwner') && server.includes('/api/agent/youtube/watcher/poll') && server.includes('/api/agent/youtube/watcher/brief'), 'مسارات التحكم/التشغيل/التقرير للمالك فقط');
-add('youtube-watcher-health-block', server.includes('youtubeWatcher: watcherStatusBlock()'), 'حالة مدير YouTube تُعلن في /api/health (نشاط/إيقاع/آخر رد/معلّق)');
+add('youtube-watcher-health-block', server.includes('youtubeWatcher: watcherStatusBlockPublic()') && !server.includes('youtubeWatcher: watcherStatusBlock()'), 'حالة مدير YouTube تُعلن في /api/health و/api/readiness بنسخة عامة آمنة فقط (بلا بيانات عميل)');
+add('youtube-watcher-health-public-safe', (() => {
+  const start = server.indexOf('function watcherStatusBlockPublic');
+  const end = server.indexOf('/** تقرير YouTube اليومي');
+  if (start < 0 || end < 0 || end <= start) return false;
+  const publicBlock = server.slice(start, end);
+  const healthUsesPublic = (server.match(/youtubeWatcher: watcherStatusBlockPublic\(\)/g) || []).length === 2;
+  const publicHasNoCustomer = !/attentionRequired|replyText|authorName|lastReply/.test(publicBlock);
+  return healthUsesPublic && publicHasNoCustomer;
+})(), 'الصحة والجاهزية تستخدمان النسخة العامة في الموضعين، والنسخة العامة لا تحوي اسم حساب/نص تعليق/نص رد');
+add('youtube-watcher-detail-owner-auth', server.includes('app.get("/api/agent/youtube/watcher", authenticateToken') && server.includes('watcher: watcherStatusBlock()'), 'التفاصيل الكاملة (attentionRequired/lastReply) تُقدَّم فقط عبر المسار المحمي بالتصريح /api/agent/youtube/watcher');
+add('youtube-watcher-public-error-sanitized', server.includes('function watcherPublicError') && server.includes("'connection error'"), 'آخر خطأ في النقطة العامة يُقتصر على رمز تقني ASCII أو رسالة عامة ثابتة (لا محتوى عميل)');
 add('youtube-watcher-ui-tab', app.includes('YouTubeOperationsView') && app.includes("case 'youtube_operations'") && read('src/components/common/Sidebar.tsx').includes("id: 'youtube_operations'"), 'واجهة مدير تشغيل YouTube مرتبطة بتبويب فعّال في القائمة');
 add('youtube-watcher-ui-honest', watcherUi.includes('getYouTubeWatcher') && watcherUi.includes('setYouTubeWatcherControls') && watcherUi.includes('pollYouTubeWatcher') && watcherUi.includes('lastReply') && watcherUi.includes('attentionRequired'), 'الواجهة تعرض الحالة الحقيقية من الخادم وتتيح التحكم (Kill Switch) للمالك');
 add('youtube-watcher-tests', watcherTest.includes('watcherGate') && watcherTest.includes('decideCommentAction') && watcherTest.includes('computeCommentVelocity') && watcherTest.includes('watcherReplyExecutionReady') && watcherTest.includes('executeYouTubeReply'), 'اختبارات مدير YouTube تثبت البوابة/القرار/الزخم/بوابة التفويض/الربط بالمنفّذ الحقيقي');

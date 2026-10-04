@@ -3787,3 +3787,35 @@ OAuth/الاعتمادات/الأسرار، المصادقة، قاعدة الب
 **إجراء المالك (إلزامي بعد النشر):** في Render → خدمة `gharabi-recovery-center` → Environment
 أضف `RECOVERY_CENTER_OWNER_TOKEN` بقيمة عشوائية قوية، ثم أدخلها مرة واحدة في بطاقة «مصادقة
 المالك» داخل الواجهة. لا تُكتب في Git ولا تُشارَك.
+
+## إزالة تسريب بيانات العملاء من /api/health و/api/readiness (2026-10-04)
+
+**العطل المُثبت:** النقطتان عامتان بلا مصادقة (لأدوات المراقبة مثل Render)، وكانتا
+تُعلنان حقول عملاء حساسة داخل كتلة `youtubeWatcher`: `attentionRequired[]` (أسماء حسابات
+ونصوص تعليقات) و`lastReply.replyText` (نص الردود الفعلية للعملاء) — إضافة إلى
+`opportunities`/`brief`/`followUp` المشتقة من نص التعليق. لا علاقة لهذه الحقول بفحص صحة
+الخادم. عُثر على التسريب فعلياً في `origin/main` بعد أن تقدّم بـcognition/scope cleanup.
+
+**الإصلاح (بلا حذف من النظام):** `watcherStatusBlockPublic()` في `server.ts` — نسخة عامة
+آمنة تُستخدم في **الموضعين** (`/api/health` و`/api/readiness`): `watcherActive`,
+`cadenceMinutes`, `cadenceMs`, `pollCount`, `lastPollAt`, `nextPollAt`, `consecutiveErrors`,
+و`counters` (أرقام إجمالية فقط)، و`lastError` **كرسالة تقنية عامة**. `watcherPublicError`
+يقتصر على رمز ASCII (مثل `COMMENTS_FETCH_FAILED`) ويستبدل أي نص حر بـ`connection error`،
+فلا يمكن أن يمرّ اسم/نص عربي إلى النقطة العامة.
+- **البيانات التفصيلية تبقى للمالك فقط** عبر المسار المحمي بالتصريح
+  `GET /api/agent/youtube/watcher` (يعيد `watcherStatusBlock()` الكامل مع
+  `attentionRequired`/`lastReply`). لا مسار عام جديد.
+- الواجهة `YouTubeOperationsView` تقرأ `attentionRequired` من المسار المحمي نفسه
+  (`getYouTubeWatcher`) — لا من الصحة العامة.
+
+**فحص حي على البناء الفعلي (`dist/server.cjs`) بحالة مزروعة تحمل بصمة `LIVE_CANARY_*`:**
+`/api/health` و`/api/readiness` بلا مصادقة ⇒ لا اسم/نص تعليق/نص رد ولا مفاتيح
+`replyText`/`attentionRequired`/`authorName`/`lastReply`؛ و`/api/agent/youtube/watcher`
+للمالك ⇒ يعيد النص والاسم كاملين.
+
+اختبار انحدار: `engine/tests/health.privacy.test.ts` (`npm run test:health-privacy`، 23 فحصاً،
+مضاف إلى `npm test`) يزرع حالة عملاء (بصمة canary) ثم يقرأ النقطتين العامتين فعلياً ويثبت
+غياب أي تسريب، ويثبت بقاء التفاصيل في المسار المحمي. فحوص final-audit:
+`youtube-watcher-health-public-safe`, `youtube-watcher-detail-owner-auth`,
+`youtube-watcher-public-error-sanitized`.
+
