@@ -216,6 +216,7 @@ import {
   evaluateReplyGuard,
   fingerprintReply,
   isSelfAuthored,
+  type ReplyFactSet,
   type ReplyRecord,
 } from "./engine/social/comments";
 import {
@@ -5013,6 +5014,8 @@ interface ContentQueueItem {
   publishAt: string | null;
   mediaRef: string;
   source: string;
+  /** معرّف المنتج الحقيقي المرتبط بالمحتوى (لربط الفيديو بمنتجات المعرض) — أو null. */
+  productId: string | null;
   state: ContentState;
   stateReason: string;
   code: string;
@@ -5190,6 +5193,8 @@ function contentQueueView() {
     return {
       id: it.id, fingerprint: it.fingerprint, title: it.title, description: it.description, tags: it.tags,
       privacyStatus: it.privacyStatus, publishAt: it.publishAt, source: it.source,
+      productId: it.productId,
+      productName: it.productId ? (workspace.products || []).find((p: any) => p.id === it.productId)?.name ?? null : null,
       hasMedia, mediaState, mediaStateLabelAr: mediaState === "COMPLETE" ? "المادة جاهزة" : "المادة مطلوبة",
       mediaBytes: hasMedia ? contentMediaBytes(it.mediaRef)?.bytes.length ?? 0 : 0,
       mediaMimeType: hasMedia ? contentMediaBytes(it.mediaRef)?.mimeType ?? null : null,
@@ -5458,6 +5463,7 @@ function normalizeContentQueue(raw: any): ContentQueueItem[] {
       publishAt: typeof r.publishAt === "string" ? r.publishAt : null,
       mediaRef: typeof r.mediaRef === "string" ? r.mediaRef : "",
       source: typeof r.source === "string" ? r.source : "owner",
+      productId: typeof r.productId === "string" && r.productId ? r.productId : null,
       state,
       stateReason: typeof r.stateReason === "string" ? r.stateReason : "",
       code: typeof r.code === "string" ? r.code : "",
@@ -5602,11 +5608,20 @@ async function runYouTubeWatcherCycle(trigger: "schedule" | "manual" = "schedule
       // حساب القناة نفسه: بالمعرّف الحقيقي للقناة (أدق) أو بالاسم المخزّن.
       const selfAuthored = isSelfAuthored(c.authorName, ownNames)
         || Boolean(expectedChannelId && c.authorChannelId && String(c.authorChannelId) === expectedChannelId);
-      // سبب التصعيد من التصنيف الحتمي الحقيقي (بلا اختراع).
-      const preReason = escalationReasonFor({
+      // Priority #2: بيانات المنتج الحقيقية → مسار الرد. المنتج يُحسم بدليل صريح
+      // من الفيديو (طابور محتوى منشور/سجل نشر مربوط بمنتج) لا من تخمين النص.
+      // وجود منتج بسعر مسجّل + رد يجتاز حارس المحتوى ⇒ استفسار السعر يُرد من
+      // بيانات المعرض بدل تصعيده. غياب الدليل يُبقي التصعيد كما كان.
+      const videoProductRes = resolveYouTubeVideoProduct(c.videoId);
+      const priceReply = verifiedProductFactsForReply({ product: videoProductRes.product, commentText: String(c.text || "") });
+      const priceFactsVerified = priceReply.verified;
+      // سبب التصعيد من التصنيف الحتمي الحقيقي (بلا اختراع). استفسار السعر مع
+      // حقائق منتج موثّقة فعلاً لا يُصعَّد — يُرد من بيانات المعرض.
+      const baseReason = escalationReasonFor({
         intent: cls.intent, isSpam: cls.isSpam,
         requiresHumanReview: cls.requiresHumanReview, topic: (cls as any).topic ?? null,
       });
+      const preReason = (priceFactsVerified && baseReason === 'price_unverified') ? null : baseReason;
       // فريق الوكلاء (Batch 6): حدث YouTube حقيقي => جلسة فريق واحدة (بلا تكرار،
       // بلا تنفيذ خارجي). تُشغَّل هنا داخل دورة المراقبة الدائمة. أي فشل لا يُسقط
       // الدورة (جلسة الفريق لا ترمي)، والقرار يُكتب في نفس ذاكرة العقل القائمة.
@@ -5617,7 +5632,7 @@ async function runYouTubeWatcherCycle(trigger: "schedule" | "manual" = "schedule
           `تحليل تعليق YouTube جديد والبتّ في الرد عليه من الحقائق المسجّلة (بلا اختراع)`,
           "youtube",
           `comment:${String(c.commentId)}`,
-          { externalId: String(c.commentId), commentText: String(c.text || ""), objective: "البتّ في رد آمن على تعليق YouTube من الحقائق المسجّلة", conversationId: `youtube::${String(c.videoId || 'thread')}`, escalationReason: preReason },
+          { externalId: String(c.commentId), commentText: String(c.text || ""), objective: "البتّ في رد آمن على تعليق YouTube من الحقائق المسجّلة", conversationId: `youtube::${String(c.videoId || 'thread')}`, escalationReason: preReason, priceFactsVerified },
         );
         // الطبقة الإدراكية (Batch 7): دورة فهم/تذكّر/تخطيط/تعلّم على نفس الحدث
         // والقرار المحكوم. **لا تنفيذ خارجي** ولا AI؛ تُحدِّث الذاكرة العاملة
@@ -5665,6 +5680,7 @@ async function runYouTubeWatcherCycle(trigger: "schedule" | "manual" = "schedule
         isPraise: isSafeForAutoReply(cls.intent),
         humanReviewMode: Boolean(controls.humanReviewMode),
         centralEscalationReason: preReason,
+        priceFactsVerified,
       });
       const baseEntry: WatcherProcessedEntry = {
         commentId: c.commentId, stage: "ANALYZED", action: decision.action, reason: decision.reason, code: decision.code,
@@ -5722,8 +5738,10 @@ async function runYouTubeWatcherCycle(trigger: "schedule" | "manual" = "schedule
         watcherState.processed.unshift(baseEntry);
         watcherAudit({ action: "reply_blocked", commentId: c.commentId, videoId: c.videoId, reason: baseEntry.reason, decision: "escalate", error: code });
       } else {
-        const replyText = watcherIraqiReply(String(c.text || ''));
-        const result = await executeYouTubeReply({ commentId: String(c.commentId), text: replyText, commentText: String(c.text || "") }, "watcher");
+        // بيانات المنتج الحقيقية: إن كان التعليق استفسار سعر وللفيديو منتج موثّق
+        // بسعر مسجّل، يُرد من بيانات المعرض (والحارس يقرّه)؛ وإلا القالب العراقي العام.
+        const replyText = priceReply.verified ? priceReply.replyText : watcherIraqiReply(String(c.text || ''));
+        const result = await executeYouTubeReply({ commentId: String(c.commentId), text: replyText, commentText: String(c.text || ""), productId: priceReply.verified ? String(priceReply.product?.id || "") : "" }, "watcher");
         const delivered = Boolean(result.body?.delivered && result.body?.externalReplyId);
         if (delivered) {
           replied += 1;
@@ -6254,8 +6272,12 @@ app.post("/api/agent/youtube/watcher/review", requireOwner, async (req, res) => 
 
   // allow_reply: الإرسال الفعلي يمر بالمنفّذ المركزي نفسه (كل الحمايات).
   if (action === "allow_reply") {
-    const text = String(req.body?.text || "").trim() || watcherIraqiReply(String(entry.text || ""));
-    const result = await executeYouTubeReply({ commentId, text, commentText: String(entry.text || "") }, user.id);
+    // بيانات المنتج الحقيقية عند توفرها للفيديو (بلا اختراع): استفسار سعر
+    // يُرد من بيانات المعرض بدل قالب عام.
+    const productRes = resolveYouTubeVideoProduct(entry.videoId);
+    const priceReply = verifiedProductFactsForReply({ product: productRes.product, commentText: String(entry.text || "") });
+    const text = String(req.body?.text || "").trim() || (priceReply.verified ? priceReply.replyText : watcherIraqiReply(String(entry.text || "")));
+    const result = await executeYouTubeReply({ commentId, text, commentText: String(entry.text || ""), productId: priceReply.verified ? String(priceReply.product?.id || "") : "" }, user.id);
     if (result.status !== 200 || !result.body?.delivered) {
       // لا نُسجّل قراراً ناجحاً ولا نغيّر الحالة عند فشل الإرسال — نُبلّغ السبب الدقيق.
       audit(user.id, "youtube_watcher_review_allow_reply_failed", `youtube:${commentId}:${result.body?.code || result.status}`);
@@ -6312,6 +6334,8 @@ async function executeYouTubePublish(input: {
   title: string; description?: string; tags?: string[]; privacyStatus?: string; publishAt?: string;
   categoryId?: string; videoBase64?: string; videoUrl?: string; mimeType?: string; postId?: string; approved?: boolean;
   mediaRef?: string; queueItemId?: string;
+  /** معرّف منتج حقيقي مرتبط بالفيديو (يربطه بمنتجات المعرض للرد بلا اختراع). */
+  productId?: string | null;
   /** مصدر القرار: `manual` قرار مالك مباشر (public افتراضاً)، `auto` أتمتة. */
   mode?: "manual" | "auto";
 }, actor: string): Promise<{ status: number; body: any }> {
@@ -6445,6 +6469,9 @@ async function executeYouTubePublish(input: {
     descriptionVerification: descriptionVerification,
     verified: fullyVerified,
     title, idempotencyKey: fingerprint, createdBy: actor,
+    /** المنتج المرتبط (من عنصر الطابور أو الطلب) — يربط الفيديو بمنتجات المعرض للرد بلا اختراع. */
+    productId: (input.queueItemId ? contentQueue.find((i) => i.id === input.queueItemId)?.productId : null)
+      ?? (typeof input.productId === "string" && (workspace.products || []).some((p: any) => p.id === input.productId) ? input.productId : null),
     simulated: false,
     reconciled: reconciled ? reconciled.status : null,
     error: result.ok || externalVideoId ? null : (result.error || "فشل الرفع إلى YouTube"),
@@ -6570,6 +6597,7 @@ app.post("/api/platforms/youtube/publish", requireOwner, async (req, res) => {
     approved: req.body?.approved === true,
     mediaRef: typeof req.body?.mediaRef === "string" ? req.body.mediaRef : undefined,
     queueItemId: typeof req.body?.queueItemId === "string" ? req.body.queueItemId : undefined,
+    productId: typeof req.body?.productId === "string" ? req.body.productId : undefined,
   }, user.id);
   return res.status(result.status).json(result.body);
 });
@@ -6611,6 +6639,9 @@ app.post("/api/platforms/youtube/content/drafts", express.json({ limit: CONTENT_
   const categoryId = typeof req.body?.categoryId === "string" ? req.body.categoryId : YOUTUBE_DEFAULT_CATEGORY_ID;
   const publishAtRaw = typeof req.body?.publishAt === "string" ? req.body.publishAt.trim() : "";
   const source = typeof req.body?.source === "string" ? req.body.source : "owner";
+  // ربط المنتج الحقيقي: يُقبل فقط إن طابق منتجاً مسجّلاً فعلاً (لا معرّف مُختلق).
+  const productIdRaw = typeof req.body?.productId === "string" ? req.body.productId.trim() : "";
+  const productId = productIdRaw && (workspace.products || []).some((p: any) => p.id === productIdRaw) ? productIdRaw : null;
   const privacyExplicit = typeof req.body?.privacyStatus === "string" && (YOUTUBE_PRIVACY_STATUSES as readonly string[]).includes(req.body.privacyStatus);
 
   let mediaRef = typeof req.body?.mediaRef === "string" ? req.body.mediaRef : "";
@@ -6649,15 +6680,15 @@ app.post("/api/platforms/youtube/content/drafts", express.json({ limit: CONTENT_
   // الخصوصية: الجدولة => private حتى الموعد (كقاعدة)، والنشر الفوري => public. أي
   // قيمة صريحة من المالك تتقدّم. هذا يمنع ظهور الفيديو المجدول للعامة مسبقاً.
   const privacyStatus = privacyExplicit ? req.body.privacyStatus : (publishAtIso ? "private" : "public");
-  const input: ContentDraftInput = { title, description, tags, privacyStatus, publishAt: publishAtIso, mediaRef, source, categoryId };
+  const input: ContentDraftInput = { title, description, tags, privacyStatus, publishAt: publishAtIso, mediaRef, source, categoryId, productId };
   const fingerprint = contentFingerprint(input);
-  const dup = contentQueue.find((i) => i.fingerprint === fingerprint && !isTerminalContentState(i.state) && i.state !== "FAILED");
+  const dup = contentQueue.find((i) => i.fingerprint === fingerprint && i.productId === productId && !isTerminalContentState(i.state) && i.state !== "FAILED");
   if (dup) return res.status(409).json({ success: false, code: "DUPLICATE_CONTENT", error: "محتوى مطابق موجود بالفعل في الطابور (منع التكرار).", existing: { id: dup.id, state: dup.state } });
 
   const nowIso = new Date().toISOString();
   const item: ContentQueueItem = {
     id: workspaceId("content"), fingerprint, title, description, tags, categoryId, privacyStatus,
-    publishAt: publishAtIso, mediaRef, source,
+    publishAt: publishAtIso, mediaRef, source, productId,
     state: mapped.state, stateReason: mapped.reason, code: mapped.code, sensitivity: decision.sensitivity,
     externalVideoId: null, url: null, verified: false,
     verifiedVideoId: null, verifiedPrivacyStatus: null,
@@ -9797,11 +9828,14 @@ function brainEscalationNotifier() {
  * الموثّق / الشكوى / الحساس يُشتقّان من مخرجات الاستراتيجية والنقد؛ وغير ذلك
  * يبقى `manual` عند التصعيد فقط.
  */
-function brainEscalationReasonFor(session: TeamSession): EscalationReason | null {
+function brainEscalationReasonFor(session: TeamSession, opts: { priceFactsVerified?: boolean } = {}): EscalationReason | null {
   const texts = [...session.recommendations, ...session.analyses, ...session.objections].map((o) => o.statement).join(' ');
   if (/شكوى|complaint/i.test(texts)) return 'complaint';
   if (/حسّاس|sensitive|قانوني/i.test(texts)) return 'sensitive';
-  if (/سعر|قسط|price/i.test(session.task) || /سعر غير موثّق|price_unverified/i.test(texts)) return 'price_unverified';
+  if (/سعر|قسط|price/i.test(session.task) || /سعر غير موثّق|price_unverified/i.test(texts)) {
+    // استفسار سعر مع حقائق منتج موثّقة فعلاً => لا تصعيد سعر (يُرد من بيانات المعرض).
+    return opts.priceFactsVerified ? null : 'price_unverified';
+  }
   return 'manual';
 }
 
@@ -9886,7 +9920,7 @@ async function runTeamSessionNow(
   task: string,
   platform: PlatformId,
   eventIdentity: string,
-  meta: { externalId?: string | null; commentText?: string; objective?: string; conversationId?: string | null; escalationReason?: EscalationReason | null } = {},
+  meta: { externalId?: string | null; commentText?: string; objective?: string; conversationId?: string | null; escalationReason?: EscalationReason | null; priceFactsVerified?: boolean } = {},
 ) {
   const nowMs = Date.now();
   const dedupe = `team:${platform}:${String(eventIdentity).trim().toLowerCase().slice(0, 200)}:${String(task).trim().toLowerCase().replace(/\s+/g, ' ').slice(0, 200)}`;
@@ -9914,7 +9948,8 @@ async function runTeamSessionNow(
   const externalApproved = platform === 'youtube'
     && youtubeDelegationCheck('system', { toolId: 'youtube_reply', args: {} }).allowed === true;
   const externalId = meta.externalId ?? (eventIdentity.startsWith('comment:') ? eventIdentity.slice('comment:'.length) : eventIdentity);
-  const escalationReason = meta.escalationReason ?? brainEscalationReasonFor(session);
+  const priceFactsVerified = meta.priceFactsVerified === true;
+  const escalationReason = meta.escalationReason ?? brainEscalationReasonFor(session, { priceFactsVerified });
   const activeMemory = brainMemoryStore.records.filter((r) => r.status === 'active' && !r.stale).length;
   const decision = composeBrainDecision({
     session,
@@ -11982,6 +12017,75 @@ function resolveContentProduct(productId?: string | null, productName?: string |
   const name = cleanText(productName, 160);
   if (!id && !name) return null;
   return (workspace.products || []).find((p: any) => (id && p.id === id) || (name && p.name === name)) || null;
+}
+
+/**
+ * يحدّد المنتج الوحيد المرتبط بفيديو YouTube حقيقي — دليل صريح فقط بلا تخمين:
+ * (١) عنصر طابور محتوى نُشر فعلاً على نفس معرّف الفيديو ومربوط بمنتج (productId)،
+ * أو (٢) سجل نشر حقيقي على نفس الفيديو يحدّد منتجاً.
+ * عند تعدّد المنتجات (أو غياب الدليل) يُعيد `null` — فيبقى الرد تصعيداً بلا اختراع.
+ */
+function resolveYouTubeVideoProduct(videoId: string | null | undefined): { product: any | null; source: string | null } {
+  const vid = String(videoId || '').trim();
+  if (!vid) return { product: null, source: null };
+  const candidateIds = new Set<string>();
+  let source: string | null = null;
+  for (const it of contentQueue) {
+    if (String(it.externalVideoId || '') === vid && it.productId) { candidateIds.add(String(it.productId)); source = source || 'content_queue'; }
+  }
+  for (const rec of ((workspace as any).publishRecords || [])) {
+    const recVid = String(rec?.externalVideoId || rec?.videoId || '');
+    if (recVid === vid && rec?.productId) { candidateIds.add(String(rec.productId)); source = source || 'publish_record'; }
+  }
+  if (candidateIds.size !== 1) return { product: null, source: null };
+  const id = [...candidateIds][0];
+  const product = (workspace.products || []).find((p: any) => String(p.id) === id) || null;
+  return { product, source: product ? source : null };
+}
+
+/**
+ * حقائق الرد الموثّقة (ReplyFactSet) لمنتج محدّد — قيم مسجّلة فعلاً فقط.
+ * مصدر واحد يُستخدم في مسار المراقب والمراجعة، فلا يختلف الرد عن بيانات المعرض.
+ */
+function replyFactsForProduct(product: any | null): ReplyFactSet {
+  if (!product) return {};
+  const showroom: any = workspace.showroom || {};
+  const address = [showroom.address, showroom.city].map((x: any) => cleanText(x, 200)).filter(Boolean).join(' - ');
+  const price = Number(product?.cashPrice);
+  return {
+    productName: product?.name ? cleanText(product.name, 120) : undefined,
+    priceText: Number.isFinite(price) && price > 0 ? `${Math.round(price).toLocaleString('en-US')} د.ع` : undefined,
+    locationText: address || undefined,
+    hoursText: showroom.workingHours ? cleanText(showroom.workingHours, 120) : undefined,
+    inStock: typeof product?.inStock === 'boolean' ? product.inStock : null,
+    hasRecordedPromotion: [showroom.promotions, showroom.activeOffer].some((x: any) => cleanText(x, 300).length > 0),
+  };
+}
+
+/**
+ * هل يسمح استفسار هذا التعليق بردٍّ من بيانات المنتج المسجّلة فعلاً؟
+ * الشروط مجتمعة: (١) التعليق استفسار سعر/قسط (topic=price أو استفسار تجاري)،
+ * (٢) منتج محدّد بدليل، (٣) سعر مسجّل فعلاً، (٤) الرد المولّد يجتاز حارس
+ * `analyzeBusinessClaims`. غياب أي شرط ⇒ `verified:false` (يبقى التصعيد).
+ * مصدر واحد يُستخدم في النيّة (priceFactsVerified) وفي نقطة التنفيذ (نص الرد).
+ */
+function verifiedProductFactsForReply(input: { product: any | null; commentText: string }): { product: any | null; facts: ReplyFactSet; replyText: string; verified: boolean; reason: string } {
+  const product = input.product;
+  const facts = replyFactsForProduct(product);
+  const cls = classifyComment(String(input.commentText || ''));
+  const isPriceQuery = cls.topic === 'price' || cls.isBusinessInquiry;
+  if (!isPriceQuery) return { product, facts, replyText: '', verified: false, reason: 'ليس استفسار سعر/قسط — لا يُطبَّق مسار حقائق المنتج.' };
+  if (!product || !facts.priceText) {
+    return { product, facts, replyText: '', verified: false, reason: 'لا يوجد منتج محدّد بسعر مسجّل — تُصعَّد القضية بلا اختراع.' };
+  }
+  const replyText = buildDeterministicReply(cls, facts.productName, facts);
+  // الحارس النهائي: لا يُعلن الرد مؤكَّداً إن حمل ادعاءً غير مسجّل.
+  const factsBusiness: BusinessFacts = buildFactsForProduct(product, Number(product?.downPaymentPercent || 0), Number(product?.durationMonths || 0));
+  const safety = analyzeBusinessClaims(replyText, factsBusiness);
+  if (!safety.safe) {
+    return { product, facts, replyText, verified: false, reason: 'الرد المولّد حمل ادعاءً غير مسجّل — لا يُؤكَّد.' };
+  }
+  return { product, facts, replyText, verified: true, reason: 'رد من سعر/توفر المنتج المسجّل فعلاً ومرّ بحارس سلامة المحتوى.' };
 }
 
 /** يبني مدخلات وصف YouTube من بيانات المعرض الحقيقية فقط (بلا أي معلومة مُختلقة). */

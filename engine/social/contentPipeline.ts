@@ -226,6 +226,9 @@ export interface ContentDraftInput {
   /** مصدر المحتوى (owner/idea/comment…). */
   source?: string;
   categoryId?: string;
+  /** معرّف المنتج الحقيقي المرتبط بالمحتوى (اختياري) — يربط الفيديو بمنتجات المعرض
+   * فيُستخدم في الرد على استفسارات السعر من بيانات مسجّلة فعلاً (بلا اختراع). */
+  productId?: string | null;
 }
 
 /**

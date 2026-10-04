@@ -244,7 +244,7 @@ function entry(partial: Partial<WatcherProcessedEntry>): WatcherProcessedEntry {
 {
   const server = readFileSync(join(process.cwd(), 'server.ts'), 'utf8');
   check('K: الـwatcher يعمل داخل الخادم الدائم', server.includes('startYouTubeWatcher') && server.includes('app.listen'));
-  check('K: الـwatcher يمر بمنفّذ الرد الحقيقي الموحّد', server.includes('await executeYouTubeReply({ commentId: String(c.commentId), text: replyText, commentText: String(c.text || "") }, "watcher")'));
+  check('K: الـwatcher يمر بمنفّذ الرد الحقيقي الموحّد', server.includes('await executeYouTubeReply({ commentId: String(c.commentId), text: replyText, commentText: String(c.text || ""), productId:') && server.includes('}, "watcher")'));
   check('K: بوابة التفويض محفوظة (youtube_reply خارجي)', server.includes('watcherReplyExecutionReady') && server.includes('youtubeDelegationCheck'));
   check('K: لا إرسال بلا معرّف رد حقيقي', server.includes('externalReplyId') && server.includes('delivered'));
   check('K: حالة الـwatcher تُحفَظ عبر المحوّل (تصمد بعد restart)', server.includes('WATCHER_STATE_KEY') && server.includes('persistWatcherState'));

@@ -129,6 +129,9 @@ export function YouTubeContentQueuePanel() {
         publishAt: form.publishAt || undefined,
         privacyStatus: form.privacyStatus,
         mimeType: video.type || 'video/mp4', filename: video.name, videoBase64: video.base64,
+        // ربط المنتج الحقيقي بالفيديو (يُقبل على الخادم إن طابق منتجاً مسجّلاً):
+        // يخدم بناء الوصف والرد على استفسارات السعر من بيانات المعرض بلا اختراع.
+        productId: productId || undefined,
       };
       const res = await apiService.createYouTubeContentDraft(payload);
       setNote(`أُضيف عنصر المحتوى بحالة: ${res?.item?.stateLabelAr || res?.item?.state}${res?.decision?.reason ? ` — ${res.decision.reason}` : ''}`);
@@ -303,6 +306,7 @@ export function YouTubeContentQueuePanel() {
               {it.stateReason ? <div className="text-xs text-slate-400 mt-1">السبب: {it.stateReason}</div> : null}
               <div className="text-[11px] text-slate-500 mt-1">
                 الحساسية: {it.sensitivity} • المصدر: {it.source} • {it.publishAt ? `جدولة: ${toScheduleDisplay(it.publishAt) || it.publishAt}` : 'نشر فوري'}
+                {it.productName ? ` • المنتج المرتبط: ${it.productName}` : ''}
                 {it.mediaState ? ` • المادة: ${it.mediaStateLabelAr}${it.mediaBytes ? ` (${fmtBytes(it.mediaBytes)})` : ''}` : ''}
                 {it.externalVideoId ? ` • معرّف: ${it.externalVideoId}` : ''}
                 {it.url ? ` • ${it.url}` : ''}
