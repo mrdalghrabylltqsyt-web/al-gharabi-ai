@@ -2150,6 +2150,28 @@ add('agent-governance-guard-module',
   govGuard.includes('export function evaluateGovernance') && govGuard.includes('SENSITIVE_HUMAN_REQUIRED') &&
   govGuard.includes('UNVERIFIED_CLAIM') && govGuard.includes('APPROVAL_REQUIRED') && govGuard.includes('AGENT_GOVERNANCE_PRINCIPLES_AR'),
   'حوكمة الوكلاء: قرار موحّد (صلاحية + صدق + موافقة خارجية + حساسية بشرية) بلا تنفيذ صامت');
+add('agent-governance-guard-wired', (() => {
+  // كتلة استدعاء evaluateGovernance كاملة بين الأقواس المتوازنة (لا نمط تقريبي بالمسافة).
+  const callBlock = (src) => {
+    const start = src.indexOf('evaluateGovernance({');
+    if (start === -1) return '';
+    let depth = 0, began = false, end = -1;
+    for (let i = start; i < src.length; i++) {
+      const ch = src[i];
+      if (ch === '(' || ch === '{') { depth++; began = true; }
+      else if (ch === ')' || ch === '}') { depth--; if (began && depth === 0) { end = i; break; } }
+    }
+    return end === -1 ? '' : src.slice(start, end + 1);
+  };
+  const socialRoutes = read('engine/social/routes.ts');
+  const brainDecision = read('engine/brain/team/brainDecision.ts');
+  const socialBlock = callBlock(socialRoutes);
+  const brainBlock = callBlock(brainDecision);
+  return socialRoutes.includes("from '../agent/governanceGuard'") &&
+    socialBlock.includes("permission: 'EXTERNAL_ACTION'") &&   // وسيط صريح داخل كتلة الاستدعاء نفسها
+    socialBlock.includes('externalAction: true') &&
+    brainBlock.includes('permission') && brainBlock.includes('externalAction');
+})(), 'حوكمة الوكلاء مربوطة فعلياً بمسار الرد الحقيقي (/api/social/manager/comments/reply) بوسيط permission: EXTERNAL_ACTION صريح داخل كتلة الاستدعاء، وبسلطة القرار الواحدة (composeBrainDecision) — لا بالمسار التجاري المحذوف');
 add('batch81-no-new-brain',
   !/buildSecondBrain|centralBrain2|secondDecisionEngine|secondLedger|secondMemoryStore/.test(server) &&
   /single decision authority|سلطة القرار الواحدة|سلطة التنفيذ الوحيدة/.test(watcherSrc),
