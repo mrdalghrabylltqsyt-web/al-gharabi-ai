@@ -32,6 +32,13 @@ export interface BrainRoutesDeps {
   runtimeInput: () => Omit<RuntimeBrainInput, 'now'>;
   /** يحفظ سجلات الذاكرة الدائمة الجديدة (بلا تكرار). لا يرمي. */
   persistMemory?: (records: import('./memory/store').BrainMemoryRecord[]) => void;
+  /**
+   * حالة الاستراتيجية التي يملكها العقل المركزي (للقراءة). اختياري: عند غيابه
+   * يُعلن صريحاً أن الحالة غير مربوطة (لا اختراع).
+   */
+  strategyState?: () => unknown;
+  /** مزامنة حالة الاستراتيجية من الخطط الكانونية عند قراءة العقل. اختياري. */
+  syncStrategyState?: () => void;
   now?: () => number;
 }
 
@@ -61,15 +68,30 @@ export function registerBrainRoutes(app: express.Express, deps: BrainRoutesDeps)
 
   // لقطة العقل الموحّدة (قراءة فقط).
   app.get('/api/agent/brain/state', deps.authenticateToken, (_req, res) => {
+    if (deps.syncStrategyState) { try { deps.syncStrategyState(); } catch { /* أفضل جهد */ } }
     const out = buildAndPersist();
     res.json({
       success: true,
+      // العقل المركزي هو السلطة الواحدة؛ الطبقات كلها قدرات داخلية تابعة.
+      brainId: 'central-brain-1',
+      strategyState: deps.strategyState ? deps.strategyState() : null,
       state: out.state,
       labels: brainLabels(),
       audienceNotAvailableFields: AUDIENCE_NOT_AVAILABLE_FIELDS,
       timezone: TIMING_TIMEZONE,
       platformAgnostic: brainIsPlatformAgnostic(),
       note: 'لقطة العقل المركزي للقراءة فقط: تحليل وتخطيط وتوصيات قابلة للتفسير — بلا تنفيذ خارجي وبلا أسرار.',
+    });
+  });
+
+  // حالة الاستراتيجية التي يملكها العقل المركزي (للقراءة).
+  app.get('/api/agent/brain/strategy-state', deps.authenticateToken, (_req, res) => {
+    if (deps.syncStrategyState) { try { deps.syncStrategyState(); } catch { /* أفضل جهد */ } }
+    res.json({
+      success: true,
+      owner: 'central-brain-1',
+      strategyState: deps.strategyState ? deps.strategyState() : null,
+      note: 'حالة استراتيجية واحدة يملكها العقل المركزي (إصدار + تاريخ + سبب تغيير + دليل) — ليست عقلاً استراتيجياً ثانياً. بلا سرّ.',
     });
   });
 

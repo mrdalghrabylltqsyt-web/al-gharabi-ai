@@ -11,6 +11,7 @@
  */
 
 import type { TeamTruthState, Confidence } from './truth';
+import type { BrainDecision } from './brainDecision';
 
 export type TeamAgentId = 'orchestrator' | 'research' | 'analysis' | 'strategy' | 'critic' | 'decision';
 
@@ -107,6 +108,12 @@ export interface TeamSession {
   objections: TeamAgentOutput[];
   conflicts: TeamConflict[];
   decision: TeamDecision | null;
+  /**
+   * قرار العقل المركزي المحكوم (Batch 6): يمتد نموذج الجلسة — يمرّ عبر الحوكمة
+   * ويحمل الحالة النهائية (إجراء مسموح/موافقة/تصعيد/لا إجراء/توقف آمن) وسلسلة
+   * التتبع. يُكوَّن في `server.ts` بعد الجلسة (بلا تنفيذ خارجي).
+   */
+  brainDecision: BrainDecision | null;
   confidence: Confidence;
   truthState: TeamTruthState;
   status: TeamSessionStatus;

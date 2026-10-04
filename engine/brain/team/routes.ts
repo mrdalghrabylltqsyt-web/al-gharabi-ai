@@ -61,6 +61,8 @@ export function registerTeamRoutes(app: express.Express, deps: TeamRoutesDeps): 
         conflicts: s.conflicts.length,
         criticFailed: s.criticFailed,
         verified: Boolean(s.decision?.verified),
+        brainFinalStatus: s.brainDecision?.finalStatus ?? null,
+        brainFinalStatusLabelAr: s.brainDecision?.finalStatusLabelAr ?? null,
         memoryWritten: s.memoryWritten,
         createdAt: s.createdAt,
       })),

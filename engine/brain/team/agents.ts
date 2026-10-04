@@ -44,6 +44,23 @@ export interface TeamContext {
   aiAvailable: boolean;
   /** ملخّص ذاكرة الفريق السابقة (عدد الجلسات المكتملة) — للتكرار/التعلّم. */
   priorSessions: number;
+  /**
+   * سبب تصعيد محسوب مسبقاً من التصنيف الحتمي (`price_unverified`/`complaint`/
+   * `sensitive`/`unclear`/`spam`) — يُمرَّر كدليل حقيقي فيدخل قرار العقل المركزي
+   * (Batch 8.1). لا سعر مُخترع: السبب من التصنيف لا من توليد.
+   */
+  escalationReason?: string | null;
+  /**
+   * سياق تجاري حقيقي للقرار: استراتيجية/جمهور/سوق/تاريخ قرارات (قراءة فقط).
+   * يُمرَّر من `buildRuntimeDecisionContext` فيدخل قرار العقل كدليل (Batch 8.1).
+   */
+  commercialContext?: {
+    strategyHeadlines: string[];
+    audienceHeadlines: string[];
+    marketHasEvidence: boolean;
+    priorOutcomeSummaries: string[];
+    strategyHint: string;
+  } | null;
 }
 
 /** استدعاء اختياري لمزود AI (يُحقن؛ غيابه يعني منطق حتمي بالكامل). */
@@ -197,6 +214,54 @@ export function researchAgent(ctx: TeamContext): { outputs: TeamAgentOutput[]; p
       limitations: 'المؤشر غير المتاح يُعلن صراحةً ولا يُقدَّر ولا يُخترع.',
       at,
     }));
+  }
+
+  // سبب تصعيد حقيقي محسوب مسبقاً من التصنيف الحتمي (Batch 8.1): دليل يدخل قرار
+  // العقل المركزي، فلا يُفقد السياق الحسّاس (سعر/شكوى/حساس) بين الطبقات.
+  if (ctx.escalationReason) {
+    outputs.push(output({
+      agentId: 'research', kind: 'observation', truthState: 'FACT',
+      statement: `التصنيف الحتمي يشير إلى سبب يستوجب عناية (${ctx.escalationReason}).`,
+      evidence: [`escalationReason=${ctx.escalationReason}`],
+      source: 'classifyComment + escalationReasonFor (تصنيف حتمي)', sampleSize: 1,
+      limitations: 'سبب محسوب من التصنيف الحتمي، لا من توليد؛ لا يُخترع سعر ولا معلومة.',
+      at,
+    }));
+  }
+
+  // سياق تجاري حقيقي (استراتيجية/جمهور/سوق/تاريخ قرارات) — قراءة فقط، بلا اختراع.
+  const cc = ctx.commercialContext;
+  if (cc) {
+    if (cc.strategyHeadlines.length) {
+      outputs.push(output({
+        agentId: 'research', kind: 'observation', truthState: 'DERIVED',
+        statement: `الاستراتيجية الكانونية الحالية تتضمّن ${cc.strategyHeadlines.length} خطة موجّهة (المصدر: محرك الاستراتيجية).`,
+        evidence: cc.strategyHeadlines.slice(0, 5),
+        source: 'strategyEngine (buildRuntimeBrain)', sampleSize: cc.strategyHeadlines.length,
+        limitations: 'توصيات استراتيجية مشتقّة من بيانات حقيقية؛ لا وعد بنتيجة.',
+        at,
+      }));
+    }
+    if (cc.audienceHeadlines.length) {
+      outputs.push(output({
+        agentId: 'research', kind: 'observation', truthState: 'DERIVED',
+        statement: `نموذج الجمهور يحمل ${cc.audienceHeadlines.length} مقطعاً مدعوماً بتفاعل حقيقي.`,
+        evidence: cc.audienceHeadlines.slice(0, 5),
+        source: 'audienceModel (تفاعل حقيقي فقط)', sampleSize: cc.audienceHeadlines.length,
+        limitations: 'مقاطع سلوكية من تفاعل ملاحَظ؛ لا سمات سكانية.',
+        at,
+      }));
+    }
+    if (cc.priorOutcomeSummaries.length) {
+      outputs.push(output({
+        agentId: 'research', kind: 'observation', truthState: 'FACT',
+        statement: `سجل القرارات يحمل ${cc.priorOutcomeSummaries.length} نتيجة سابقة ملاحَظة حقيقية (تُغذّي القرار الحالي).`,
+        evidence: cc.priorOutcomeSummaries.slice(0, 5),
+        source: 'decisionLedger (قراءة تاريخية)', sampleSize: cc.priorOutcomeSummaries.length,
+        limitations: 'نتائج ملاحَظة فعلاً؛ غير الملاحَظ يبقى غير متاح ولا يُخترع.',
+        at,
+      }));
+    }
   }
 
   return { outputs, platformOffline: offline };
