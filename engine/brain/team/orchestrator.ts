@@ -183,6 +183,9 @@ export function runTeamSession(ctx: TeamContext, options: TeamRunOptions): TeamS
     objections,
     conflicts,
     decision,
+    // قرار العقل المركزي المحكوم يُكوَّن في الخادم بعد الجلسة (Batch 6) — الوكلاء
+    // لا يملكون سلطة القرار النهائي ولا الحوكمة.
+    brainDecision: null,
     confidence: decision?.confidence ?? 'low',
     truthState: decision?.truthState ?? 'UNKNOWN',
     status,

@@ -23,6 +23,36 @@ import {
   type ReplyRecord,
 } from './comments';
 import { analyzeBusinessClaims, type BusinessFacts } from './contentSafety';
+import { checkCommercialPolicy } from './iraqiCommercialPolicy';
+import {
+  appendMessage,
+  conversationKey,
+  createConversationState,
+  isConversationStale,
+  priorBusinessReplies,
+  pruneStaleConversations,
+  shortTermWindow,
+  type ConversationState,
+} from './conversationState';
+import { isolateContext } from './contextIsolation';
+import {
+  createEscalationRecord,
+  escalationReasonFor,
+  hasPendingEscalation,
+  transitionEscalation,
+  isEscalationOpen,
+  ESCALATION_STATE_LABELS_AR,
+  ESCALATION_REASON_LABELS_AR,
+  type EscalationNotifier,
+  type EscalationRecord,
+} from './escalation';
+import {
+  nextConversationState,
+  CONVERSATION_LIFECYCLE_LABELS_AR,
+  type ConversationLifecycleState,
+} from './conversationLifecycle';
+import { evaluateGovernance } from '../agent/governanceGuard';
+import type { AgentOperator } from '../agent/permissions';
 import {
   buildPublishRecord,
   collectAvailableMetrics,
@@ -84,10 +114,25 @@ export interface SocialRoutesDeps {
    * بلا أي مُنتِج قرار مستقل.
    */
   centralBrainState?: () => CentralBrainState;
+  /**
+   * مُبلِّغ التصعيد البشري — يُحقن من الخادم ليعيد استخدام بنية التنبيه القائمة
+   * (`pushNotification`). إن غاب، يُسجَّل التصعيد بلا ادّعاء إشعار.
+   */
+  notifyEscalation?: EscalationNotifier | null;
 }
 
 export function registerSocialManagerRoutes(app: express.Express, deps: SocialRoutesDeps): void {
   const { authenticateToken, requireOwner, workspace, platformConnections, persistState, audit, workspaceId } = deps;
+
+  /**
+   * يحوّل دور المستخدم إلى مُشغّل حوكمة: المالك/المدير = owner (يملك الكتابة)،
+   * وبقية الأدوار = staff (قراءة/تنفيذ آمن فقط). يمنع تنفيذ إجراء خارجي/حسّاس
+   * من غير المالك — فرض حقيقي على الخادم لا إخفاء في الواجهة.
+   */
+  const operatorFor = (user: { role?: string } | null | undefined): AgentOperator => {
+    const role = String(user?.role || '').toLowerCase();
+    return role === 'owner' || role === 'manager' ? 'owner' : 'staff';
+  };
 
   /** يطبّق حارس وضع التشغيل المركّز إن حُقن (يمنع غير YouTube عند تفعيله). */
   const guardBlocked = (platform: string): { blocked: boolean; body?: any } =>
@@ -160,6 +205,112 @@ export function registerSocialManagerRoutes(app: express.Express, deps: SocialRo
     return { authorName: input.authorName, videoTitle: input.videoTitle, platform: input.platform, previousReplies: prior.slice(0, 50) };
   };
 
+  /**
+   * نطاق المحادثة المحسوب من المنصة والخيط (المنشور). يُستخدم لعزل السياق:
+   * لا تُقرأ ردود محادثة في محادثة أخرى. عندما لا يوجد خيط صريح، يبقى السلوك
+   * السابق (سياق على مستوى المنصة) مع إعلان صريح بأنه غير معزول بخيط.
+   */
+  const conversationScopeFor = (input: { platform?: string; postExternalId?: string | null }) => {
+    const platform = input.platform || null;
+    const subjectId = input.postExternalId || null;
+    const conversationId = conversationKey(platform, subjectId);
+    const list = Array.isArray((workspace as any).socialConversations) ? ((workspace as any).socialConversations as ConversationState[]) : [];
+    const convo = list.find((c) => c && c.conversationId === conversationId) || null;
+    const isolation = isolateContext(convo, { conversationId, platform, subjectId });
+    return { conversationId, platform, subjectId, convo, isolation };
+  };
+
+  /** يضيف رسالة إلى نافذة المحادثة قصيرة المدى في مساحة العمل (مع قصّ آمن). */
+  const appendConversationMessage = (conversationId: string, platform: string | null, subjectId: string | null, message: { role: 'customer' | 'business'; text: string; externalId?: string }) => {
+    if (!Array.isArray((workspace as any).socialConversations)) (workspace as any).socialConversations = [];
+    // TTL: نشذّب المحادثات المنتهية قبل الإضافة (لا تنمو بلا حد). لا تُشذّب محادثة
+    // عليها تصعيد معلّق (تبقى ظاهرة للمالك حتى الحل).
+    const nowMs = Date.now();
+    const pendingConvoIds = new Set(escalations().filter(isEscalationOpen).map((e) => e.conversationId).filter(Boolean) as string[]);
+    (workspace as any).socialConversations = pruneStaleConversations(
+      (workspace as any).socialConversations as ConversationState[],
+      nowMs,
+    ).filter((c) => !pendingConvoIds.has(c.conversationId) || !isConversationStale(c, nowMs));
+    const list = (workspace as any).socialConversations as ConversationState[];
+    let convo = list.find((c) => c && c.conversationId === conversationId);
+    if (!convo) {
+      convo = createConversationState({ conversationId, platform, subjectId, nowIso: new Date().toISOString() });
+      list.unshift(convo);
+    }
+    const updated = appendMessage(convo, { role: message.role, text: message.text, at: new Date().toISOString(), externalId: message.externalId });
+    const idx = list.indexOf(convo);
+    list[idx] = updated;
+    if (list.length > 500) list.pop();
+    return updated;
+  };
+
+  /** قائمة سجلات التصعيد البشري (تُحفظ في مساحة العمل). */
+  const escalations = (): EscalationRecord[] => {
+    if (!Array.isArray((workspace as any).socialEscalations)) (workspace as any).socialEscalations = [];
+    return (workspace as any).socialEscalations as EscalationRecord[];
+  };
+
+  /** حالة دورة حياة المحادثة الحالية (تُشتق من التصعيدات النشطة + سجل الحالة). */
+  const lifecycleFor = (conversationId: string): { state: ConversationLifecycleState; pendingEscalation: boolean } => {
+    if (!Array.isArray((workspace as any).socialConversationStates)) (workspace as any).socialConversationStates = [];
+    const states = (workspace as any).socialConversationStates as Array<{ conversationId: string; state: ConversationLifecycleState }>;
+    const rec = states.find((s) => s.conversationId === conversationId);
+    const pendingEscalation = hasPendingEscalation(escalations(), conversationId);
+    // حالة معلّقة تصعيدها لا تُعرض مغلقة أبداً.
+    let state = rec?.state || 'OPEN';
+    if (pendingEscalation && state !== 'ESCALATED') state = 'ESCALATED';
+    return { state, pendingEscalation };
+  };
+
+  /**
+   * يطبّق حدثاً على دورة حياة المحادثة ويثبّت الحالة. يمنع الانتقالات غير الصالحة
+   * ولا يسمح بالإغلاق مع تصعيد معلّق. يُعيد النتيجة الصريحة.
+   */
+  const applyLifecycleEvent = (conversationId: string, event: Parameters<typeof nextConversationState>[0]['event']) => {
+    const { state: current, pendingEscalation } = lifecycleFor(conversationId);
+    const result = nextConversationState({ current, event, pendingEscalation });
+    if (result.ok && result.to !== current) {
+      if (!Array.isArray((workspace as any).socialConversationStates)) (workspace as any).socialConversationStates = [];
+      const states = (workspace as any).socialConversationStates as Array<{ conversationId: string; state: ConversationLifecycleState }>;
+      const rec = states.find((s) => s.conversationId === conversationId);
+      if (rec) rec.state = result.to;
+      else states.unshift({ conversationId, state: result.to });
+      if (states.length > 500) states.pop();
+    }
+    return result;
+  };
+
+  /**
+   * يسجّل تصعيداً بشرياً حقيقياً إن استحقّه التصنيف. لا يخترع إشعاراً: `notifyEscalation`
+   * محقون من الخادم، وغيابه/فشله يُعلَن صراحةً. لا يُنشئ تصعيداً مكرراً لنفس التعليق.
+   */
+  const recordEscalation = (input: {
+    platform: string | null; conversationId: string | null; subjectId: string | null;
+    externalId: string | null; commentText: string; reason: ReturnType<typeof escalationReasonFor>;
+  }): EscalationRecord | null => {
+    if (!input.reason) return null;
+    const list = escalations();
+    // منع التصعيد المكرر لنفس التعليق الخارجي ما دام مفتوحاً.
+    if (input.externalId && list.some((r) => r.externalId === input.externalId && isEscalationOpen(r))) return null;
+    const record = createEscalationRecord({
+      id: workspaceId('escalation'),
+      platform: input.platform,
+      conversationId: input.conversationId,
+      subjectId: input.subjectId,
+      externalId: input.externalId,
+      commentText: input.commentText,
+      reason: input.reason,
+      nowIso: new Date().toISOString(),
+      notifier: deps.notifyEscalation || null,
+    });
+    list.unshift(record);
+    if (list.length > 5000) list.pop();
+    if (input.conversationId) applyLifecycleEvent(input.conversationId, 'escalation_recorded');
+    audit('system', 'social_escalation_recorded', `${input.platform || 'unknown'}:${input.externalId || 'na'}:${input.reason}`);
+    return record;
+  };
+
+
   const connectionFor = (platform: string) => {
     const conn = platformConnections.get(platform);
     if (!conn) return null;
@@ -229,17 +380,53 @@ export function registerSocialManagerRoutes(app: express.Express, deps: SocialRo
     // الرد المقترح يمر عبر حارس سلامة المحتوى قبل عرضه للمراجعة البشرية.
     // المسار: تعليق → تصنيف → توليد رد (Reply Intelligence) → contentSafety → عرض.
     const replyFacts = replyFactsFor(req.body?.productId, req.body?.productName);
-    const replyContext = replyContextFor({
+    const postExternalId = typeof req.body?.postExternalId === 'string' ? req.body.postExternalId : null;
+    const scope = conversationScopeFor({
       platform: isSupportedPlatform(platform) ? platform : undefined,
-      postExternalId: typeof req.body?.postExternalId === 'string' ? req.body.postExternalId : null,
+      postExternalId,
+    });
+    // عزل السياق: إن تحقق العزل (نفس المحادثة/الخيط) نقرأ ردودنا السابقة من
+    // نافذة المحادثة وحدها؛ وإلا نسقط للسياق السابق مع إعلان صريح بعدم العزل.
+    const priorReplies = scope.isolation.isolated
+      ? scope.isolation.priorReplies
+      : replyContextFor({ platform: isSupportedPlatform(platform) ? platform : undefined, postExternalId }).previousReplies || [];
+    const replyContext: ReplyContext = {
+      platform: isSupportedPlatform(platform) ? platform : undefined,
       authorName: typeof req.body?.authorName === 'string' ? req.body.authorName : undefined,
       videoTitle: typeof req.body?.videoTitle === 'string' ? req.body.videoTitle : undefined,
-    });
+      previousReplies: priorReplies,
+    };
+    const window = scope.convo ? shortTermWindow(scope.convo, { size: 10 }) : { messages: [], truncated: false, conversationId: scope.conversationId };
+    if (text.trim()) {
+      appendConversationMessage(scope.conversationId, scope.platform, scope.subjectId, { role: 'customer', text: text.trim(), externalId: req.body?.externalId });
+    }
     const generated = autoReplyAllowed ? generateReply(classification, replyFacts, replyContext) : null;
+    // التصعيد البشري: يُسجَّل تصعيد حقيقي إن استحقّه التصنيف (شكوى/سبام/حساس/غير
+    // واضح). سؤال السعر يُصعَّد فقط إن لم تتوفر معلومة موثّقة (needsInfo) — إن
+    // قُدّم سعر مسجّل فلا تصعيد. لا يُخترع إشعار: `notifyEscalation` من الخادم.
+    let escReason = escalationReasonFor({
+      intent: classification.intent,
+      isSpam: classification.isSpam,
+      requiresHumanReview: classification.requiresHumanReview,
+      topic: (classification as any).topic ?? null,
+    });
+    if (escReason === 'price_unverified' && generated && !generated.needsInfo) escReason = null;
+    const escalation = recordEscalation({
+      platform: isSupportedPlatform(platform) ? platform : null,
+      conversationId: scope.conversationId,
+      subjectId: scope.subjectId,
+      externalId: typeof req.body?.externalId === 'string' ? req.body.externalId : null,
+      commentText: text.trim(),
+      reason: escReason,
+    });
+    // دورة حياة المحادثة: وصول رسالة عميل ينتقل بالحالة (والمُصعّدة تبقى مُصعّدة).
+    const lifecycle = applyLifecycleEvent(scope.conversationId, 'customer_message');
     const rawSuggestion = generated && generated.text ? generated.text : null;
     const { facts } = resolveProduct(req.body?.productId, req.body?.productName);
     const safety = rawSuggestion ? analyzeBusinessClaims(rawSuggestion, facts) : null;
-    const suggestedReply = rawSuggestion && safety?.safe ? rawSuggestion : null;
+    // سياسة التواصل العراقي تُطبَّق على الرد المقترح أيضاً قبل عرضه.
+    const policy = rawSuggestion ? checkCommercialPolicy(rawSuggestion) : null;
+    const suggestedReply = rawSuggestion && safety?.safe && policy?.compliant ? rawSuggestion : null;
     res.json({
       success: true,
       platform: isSupportedPlatform(platform) ? platform : null,
@@ -261,7 +448,39 @@ export function registerSocialManagerRoutes(app: express.Express, deps: SocialRo
       contentSafety: safety
         ? { safe: safety.safe, violations: safety.blocked.map((v) => v.detail), codes: safety.blocked.map((v) => v.code) }
         : null,
-      note: 'التصنيف حتمي ولا يستهلك أي حصة ذكاء اصطناعي، والرد المقترح يمر عبر حارس سلامة المحتوى قبل أي استخدام.',
+      commercialPolicy: policy
+        ? { compliant: policy.compliant, labels: policy.violationLabelsAr, violations: policy.violations.map((v) => v.detail) }
+        : null,
+      // حالة المحادثة قصيرة المدى وعزل السياق (بلا أي بيانات هوية).
+      conversation: {
+        conversationId: scope.conversationId,
+        platform: scope.platform,
+        subjectId: scope.subjectId,
+        windowSize: window.messages.length,
+        windowTruncated: window.truncated,
+        isolated: scope.isolation.isolated,
+        isolationReason: scope.isolation.reason,
+        priorRepliesUsed: priorReplies.length,
+        // دورة الحياة: الحالة والانتقال الصريح (بلا إغلاق مع تصعيد معلّق).
+        lifecycle: lifecycle.to,
+        lifecycleLabelAr: CONVERSATION_LIFECYCLE_LABELS_AR[lifecycle.to],
+        lifecycleTransition: { ok: lifecycle.ok, from: lifecycle.from, to: lifecycle.to, reason: lifecycle.reasonAr },
+      },
+      // التصعيد البشري: سجل حقيقي إن استحقّه التصنيف، وإلا null صراحةً.
+      escalation: escalation
+        ? {
+            id: escalation.id,
+            reason: escalation.reason,
+            reasonLabelAr: escalation.reasonLabelAr,
+            state: escalation.state,
+            stateLabelAr: ESCALATION_STATE_LABELS_AR[escalation.state],
+            // لا يُدّعى إشعار لم يقع.
+            notificationDelivered: escalation.notificationDelivered,
+            notificationChannel: escalation.notificationChannel,
+            notificationError: escalation.notificationError,
+          }
+        : null,
+      note: 'التصنيف حتمي ولا يستهلك أي حصة ذكاء اصطناعي، والرد المقترح يمر عبر حارس سلامة المحتوى وسياسة التواصل التجاري قبل أي استخدام. السياق معزول بالمحادثة/الخيط.',
     });
   });
 
@@ -316,6 +535,20 @@ export function registerSocialManagerRoutes(app: express.Express, deps: SocialRo
       });
     }
 
+    // حوكمة الوكلاء: تسجيل الرد إجراء كتابة/اتصال خارجي. يمنع تنفيذه من غير
+    // المالك (staff) — فرض على الخادم يستخدم نفس نموذج الصلاحيات، لا إخفاء واجهة.
+    const governance = evaluateGovernance({
+      operator: operatorFor((req as any).user),
+      permission: 'EXTERNAL_ACTION',
+      externalAction: true,
+      approved: operatorFor((req as any).user) === 'owner',
+      claimVerified: true,
+      sensitive: false,
+    });
+    if (!governance.allowed) {
+      return res.status(403).json({ success: false, error: governance.reasonAr, governance: { code: governance.code } });
+    }
+
     const classification = classifyComment(commentText || text);
     if (!canAutoReply(classification)) {
       return res.status(422).json({
@@ -348,6 +581,23 @@ export function registerSocialManagerRoutes(app: express.Express, deps: SocialRo
       });
     }
 
+    // سياسة التواصل التجاري العراقي: تمنع المبالغة/الإلحاح الكاذب/الوعد المطلق/
+    // الحطّ من المنافسين/الضغط. طبقة حتمية مستقلة عن حارس الأرقام، وتُطبَّق على
+    // أي نص رد قبل التسجيل أو الإرسال (فشل آمن: رفض 422 مع التصنيف).
+    const commercialPolicy = checkCommercialPolicy(text);
+    if (!commercialPolicy.compliant) {
+      return res.status(422).json({
+        success: false,
+        error: 'نص الرد يخالف سياسة التواصل التجاري العراقي (مبالغة/إلحاح/وعد مطلق/حطّ من المنافسين).',
+        commercialPolicy: {
+          compliant: false,
+          violations: commercialPolicy.violations.map((v) => v.detail),
+          labels: commercialPolicy.violationLabelsAr,
+        },
+        note: 'أعد صياغة الرد بلهجة عراقية طبيعية قصيرة بلا مبالغة ولا وعود غير مثبتة.',
+      });
+    }
+
     const history: ReplyRecord[] = (workspace.socialReplies || []).map((r: any) => ({
       externalId: r.externalId,
       replyFingerprint: r.replyFingerprint,
@@ -376,10 +626,89 @@ export function registerSocialManagerRoutes(app: express.Express, deps: SocialRo
     if (!Array.isArray(workspace.socialReplies)) workspace.socialReplies = [];
     workspace.socialReplies.unshift(record);
     if (workspace.socialReplies.length > 5000) workspace.socialReplies.pop();
+    // تحديث نافذة المحادثة قصيرة المدى بهذا الرد (نفس النطاق المعزول).
+    const replyScope = conversationScopeFor({ platform, postExternalId: typeof req.body?.postExternalId === 'string' ? req.body.postExternalId : null });
+    appendConversationMessage(replyScope.conversationId, replyScope.platform, replyScope.subjectId, { role: 'business', text, externalId });
+    // دورة حياة المحادثة: رد المعرض ينقل الحالة (المُصعّدة تبقى مُصعّدة).
+    applyLifecycleEvent(replyScope.conversationId, 'business_reply');
     audit(user.id, 'social_comment_reply', `${platform}:${externalId}`);
     persistState();
 
     res.json({ success: true, reply: record, delivered: false, simulated: true, note: record.note });
+  });
+
+  /**
+   * سجلات التصعيد البشري — قراءة فقط. كل سجل يحمل سياقه وسبب التصعيد وحالة
+   * الإشعار الصادقة (لا ادّعاء إشعار بلا دليل).
+   */
+  app.get('/api/social/manager/escalations', authenticateToken, (req, res) => {
+    const platform = typeof req.query?.platform === 'string' ? req.query.platform : '';
+    const state = typeof req.query?.state === 'string' ? req.query.state : '';
+    let list = escalations();
+    if (platform) list = list.filter((e) => e.platform === platform);
+    if (state) list = list.filter((e) => e.state === state);
+    res.json({
+      success: true,
+      escalations: list.slice(0, 200).map((e) => ({
+        ...e,
+        stateLabelAr: ESCALATION_STATE_LABELS_AR[e.state],
+        reasonLabelAr: e.reasonLabelAr || ESCALATION_REASON_LABELS_AR[e.reason],
+      })),
+      count: list.length,
+      pending: list.filter(isEscalationOpen).length,
+      labels: { states: ESCALATION_STATE_LABELS_AR, reasons: ESCALATION_REASON_LABELS_AR },
+      note: 'التصعيد البشري: سجلات حقيقية. لا يُنفَّذ رد آلي على الحالات المصعّدة.',
+    });
+  });
+
+  /**
+   * انتقال حالة تصعيد (إطّلاع/حل) — للمالك فقط. حلّ آخر تصعيد معلّق في المحادثة
+   * يسمح لاحقاً بإغلاقها (RESOLVED)؛ وقبله يُمنع الإغلاق صراحةً.
+   */
+  app.post('/api/social/manager/escalations/:id/transition', authenticateToken, requireOwner, (req, res) => {
+    const user = (req as any).user as { id: string };
+    const event = typeof req.body?.event === 'string' ? req.body.event : '';
+    if (event !== 'acknowledge' && event !== 'resolve') {
+      return res.status(400).json({ success: false, error: 'الحدث يجب أن يكون acknowledge أو resolve.' });
+    }
+    const list = escalations();
+    const idx = list.findIndex((e) => e.id === req.params.id);
+    if (idx < 0) return res.status(404).json({ success: false, error: 'سجل التصعيد غير موجود.' });
+    const updated = transitionEscalation(list[idx], event, user.id, new Date().toISOString());
+    list[idx] = updated;
+    // عند حلّ التصعيد: نطبّق حدث المحادثة (قد يرفع الحجب عن الإغلاق).
+    if (event === 'resolve' && updated.conversationId) {
+      applyLifecycleEvent(updated.conversationId, 'escalation_resolved');
+    }
+    audit(user.id, `social_escalation_${event}`, updated.id);
+    persistState();
+    res.json({ success: true, escalation: { ...updated, stateLabelAr: ESCALATION_STATE_LABELS_AR[updated.state] } });
+  });
+
+  /**
+   * دورة حياة المحادثة — قراءة/أحداث. `resolve` يُرفض صراحةً ما دام تصعيد معلّق.
+   */
+  app.post('/api/social/manager/conversations/lifecycle', authenticateToken, (req, res) => {
+    const user = (req as any).user as { id: string };
+    const platform = typeof req.body?.platform === 'string' ? req.body.platform : '';
+    const postExternalId = typeof req.body?.postExternalId === 'string' ? req.body.postExternalId : null;
+    const event = typeof req.body?.event === 'string' ? req.body.event : '';
+    const allowedEvents = ['customer_message', 'business_reply', 'resolve_requested', 'reopen'] as const;
+    if (!(allowedEvents as readonly string[]).includes(event)) {
+      return res.status(400).json({ success: false, error: 'حدث غير مدعوم على دورة حياة المحادثة.' });
+    }
+    const scope = conversationScopeFor({ platform: isSupportedPlatform(platform) ? platform : undefined, postExternalId });
+    const result = applyLifecycleEvent(scope.conversationId, event as any);
+    if (!result.ok) return res.status(409).json({ success: false, error: result.reasonAr, transition: result });
+    audit(user.id, 'social_conversation_lifecycle', `${scope.conversationId}:${event}`);
+    persistState();
+    res.json({
+      success: true,
+      conversationId: scope.conversationId,
+      state: result.to,
+      stateLabelAr: CONVERSATION_LIFECYCLE_LABELS_AR[result.to],
+      transition: result,
+    });
   });
 
   /** الردود المسجَّلة داخلياً. كلها غير مُسلَّمة (لا موصل إرسال إنتاجي). */

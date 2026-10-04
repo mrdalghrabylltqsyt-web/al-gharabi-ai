@@ -124,6 +124,40 @@ async function connectYouTube(auth: Record<string, string>): Promise<void> {
     check('القرار يحمل حدوداً', Array.isArray(one.session.decision?.limitations) && one.session.decision.limitations.length > 0);
     check('الجلسة مكتوبة في الذاكرة', one.session.memoryWritten === true);
 
+    group('central brain governed decision (Batch 6)');
+    // قرار العقل المركزي المحكوم يجب أن يظهر في كل جلسة، بحالة نهائية صريحة وحوكمة.
+    const details = await Promise.all(ytSessions.map(async (s: any) => {
+      const r = await (await fetch(`${BASE}/api/agent/team/${s.teamSessionId}`, { headers: auth })).json();
+      return r.session;
+    }));
+    const withBrain = details.filter((s: any) => s.brainDecision);
+    check('كل جلسة تحمل قرار العقل المحكوم', withBrain.length === details.length, `${withBrain.length}/${details.length}`);
+    const bd = withBrain[0]!.brainDecision;
+    check('القرار يحمل حالة نهائية صريحة', typeof bd.finalStatus === 'string' && bd.finalStatus.length > 0, bd.finalStatus);
+    check('الحالة النهائية من المحدّد', ['ALLOWED_ACTION', 'APPROVAL_REQUIRED', 'HUMAN_ESCALATION', 'NO_ACTION', 'FAILED_SAFE'].includes(bd.finalStatus));
+    check('الحوكمة تحمل كوداً وسبباً عربياً', typeof bd.governance.code === 'string' && bd.governance.reasonAr.length > 0);
+    check('القرار يجمع الوكلاء الستة (تتبّع)', Array.isArray(bd.consultedAgents) && bd.consultedAgents.length === 6);
+    check('القرار يسجّل رؤية الوكلاء', Array.isArray(bd.agentFindings) && bd.agentFindings.length > 0);
+    check('القرار يحمل مرجع تتبّع', typeof bd.auditRef === 'string' && bd.auditRef.includes('team-'));
+    check('العقل لا ينفّذ خارجياً (ملاحظة صريحة)', bd.notes.some((n: string) => n.includes('لا يُنفَّذ')));
+    // سؤال السعر الحقيقي => تصعيد بشري؛ والمدح => لا تصعيد (يُحدّد بهوية الحدث).
+    const priceSession = withBrain.find((s: any) => s.brainDecision.eventIdentity === 'comment:cmt_team_1');
+    const praiseSession = withBrain.find((s: any) => s.brainDecision.eventIdentity === 'comment:cmt_team_2');
+    check('سؤال السعر يُصعّد بشرياً', priceSession?.brainDecision.finalStatus === 'HUMAN_ESCALATION', priceSession?.brainDecision?.finalStatus);
+    check('سبب التصعيد معلن ومعرّب', Boolean(priceSession?.brainDecision?.escalation?.reasonLabelAr));
+    check('المدح لا يُصعّد بشرياً', Boolean(praiseSession) && praiseSession!.brainDecision.finalStatus !== 'HUMAN_ESCALATION', praiseSession?.brainDecision?.finalStatus);
+    // سجل التدقيق: قرار العقل مسجّل في سلسلة التدقيق.
+    const auditExport = await (await fetch(`${BASE}/api/system/export/audit`, { headers: auth })).json();
+    check('سلسلة التدقيق تسجّل قرار العقل', (auditExport.entries || []).some((e: any) => e.action === 'brain_decision'));
+    // سجل التصعيد يستخدم نفس المخزن القائم.
+    const escalations = await (await fetch(`${BASE}/api/social/manager/escalations`, { headers: auth })).json();
+    check('تصعيد العقل يُسجَّل في المخزن القائم', (escalations.escalations || []).some((e: any) => e.platform === 'youtube' && e.reason === 'price_unverified'));
+    // الصحة تعرض كتلة قرار العقل بلا سرّ.
+    const h2 = await (await fetch(`${BASE}/api/health`)).json();
+    check('الصحة تعرض brainDecision', Boolean(h2.brainDecision) && h2.brainDecision.executesExternalActions === false);
+    check('الصحة تعرض آخر حالة نهائية', typeof h2.brainDecision?.finalStatus === 'string');
+    check('لا تسريب أسرار في قرار العقل', !/access_token|refresh_token|client_secret|GEMINI_API_KEY|PRIVATE KEY/i.test(JSON.stringify(withBrain)));
+
     group('deduplication');
     const countBefore = teamList.count;
     await fetch(`${BASE}/api/agent/youtube/watcher/poll`, { method: 'POST', headers: auth });

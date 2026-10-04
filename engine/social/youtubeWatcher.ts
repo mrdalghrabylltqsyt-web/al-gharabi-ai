@@ -181,10 +181,17 @@ export const YOUTUBE_COMMENT_STAGE_LABELS_AR: Record<YouTubeCommentStage, string
 
 export type WatcherReplyAction = 'reply' | 'skip' | 'escalate';
 
+/** قرار مركزي نهائي (من العقل المركزي `composeBrainDecision`) — مرجع التصميم. */
+export type CentralActionDecision = 'NO_ACTION' | 'ALLOWED_ACTION' | 'APPROVAL_REQUIRED' | 'HUMAN_ESCALATION' | 'FAILED_SAFE';
+
 /**
  * كود حتمي لكل قرار — يجعل القرار قابلاً للتصنيف الآلي (تشخيص/إحصاء/إعادة تقييم)
  * بلا الاعتماد على نص السبب. مهم: يميّز «تعذّر بسبب إعداد المالك» (غير نهائي،
  * قابل لإعادة التقييم لاحقاً) عن القرارات النهائية (رد/تصعيد مضمون/تجاهل).
+ *
+ * **ملاحظة معمارية (Batch 8.1):** هذه الأكواد صارت تُشتقّ الآن من **قرار العقل
+ * المركزي** عبر `resolveCommentExecution` (لا من قرار مستقل). يبقى
+ * `decideCommentAction` مصنّفاً استشارياً فقط (لا يفوّض تنفيذاً).
  */
 export type CommentDecisionCode =
   | 'SKIP_SELF_AUTHORED'
@@ -260,13 +267,18 @@ export interface CommentDecision {
 }
 
 /**
- * قرار حتمي لكل تعليق حقيقي. القواعد الصريحة:
+ * تصنيف حتمي استشاري لكل تعليق حقيقي (Batch 8.1: **ليس سلطة تنفيذ**).
+ *
+ * كان هذا القرار مستقلاً ويقود التنفيذ فعلاً (عطل معماري: سلطتا قرار). الآن هو
+ * **مصنّف/فحص سلامة استشاري** فقط: يصف كيف يجب أن يُفسَّر التعليق (رد/تصعيد/تجاهل)
+ * لبناء قرار العقل المركزي. **لا يفوّض تنفيذاً** — التفويض الوحيد عبر
+ * `resolveCommentExecution` الذي يستهلك قرار العقل المركزي (`composeBrainDecision`).
+ *
+ * القواعد (نفسها محفوظة، لكن كمخرَج استشاري لا حاكم):
  * - تعليق من حساب المعرض أو سبام أو مُعالَج سابقاً ⇒ تجاهل.
- * - شكوى/حساس/استفسار تجاري/طلب سعر/تقسيط/شكوى مالية/قانوني ⇒ تصعيد للمالك بلا رد.
- * - سؤال عام أو مدح أو تفاعل بسيط وقد مرّت كل الحمايات ⇒ رد.
- * - وضع المراجعة البشرية يحوّل أي «رد» إلى تصعيد.
- * - تعطيل الرد الآلي (إعداد المالك) ⇒ تأجيل غير نهائي (DEFER) لا تجاهل ولا تصعيد،
- *   فيُعاد تقييم التعليق تلقائياً عند تمكين الرد لاحقاً بلا فقدان.
+ * - شكوى/حساس/استفسار تجاري/طلب سعر/تقسيط ⇒ توصية بتصعيد للمالك بلا رد.
+ * - سؤال عام أو مدح أو تفاعل بسيط وقد مرّت الحمايات ⇒ توصية برد.
+ * - تعطيل الرد الآلي (إعداد المالك) ⇒ توصية بتأجيل غير نهائي (DEFER).
  */
 export function decideCommentAction(input: {
   intent: string;
@@ -303,6 +315,84 @@ export function decideCommentAction(input: {
 /** هل القرار غير نهائي (تعذّر بسبب إعداد المالك) ويجب إعادة تقييمه لاحقاً؟ */
 export function isDeferredDecision(code: CommentDecisionCode): boolean {
   return code === 'DEFER_AUTOREPLY_DISABLED';
+}
+
+/**
+ * سلطة التنفيذ الوحيدة (Batch 8.1). تستهلك **قرار العقل المركزي**
+ * (`centralDecision` من `composeBrainDecision`) وتُنتج إجراءً تنفيذياً على YouTube:
+ * reply/skip/escalate. **لا تنشئ قراراً مستقلاً** — تطابق قرار العقل مع:
+ * - التصنيف الاستشاري (`decideCommentAction` — فحص سلامة، يمنع مثلاً الرد على سبام
+ *   أو حساب المعرض، ويصعّد الحساس).
+ * - سياق القناة (هل التعليق يخص قناة موثّقة؟).
+ * - بوابة الأتمتة (Watcher Gate + Kill Switch + خفض autoReply).
+ * - السبب الحقيقي (درجة الحساسية من التصنيف، `centralEscalationReason`).
+ *
+ * **لا تنفيذ خارجي هنا**: تُنتج القرار فقط؛ التنفيذ عبر `executeYouTubeReply`
+ * (بكل بواباته). قاعدة الأمان: لا `reply` إن لم يكن قرار العقل `ALLOWED_ACTION`.
+ * تدرّج الأسبقية: تجاهل → تصعيد → رد → تأجيل (لا فقدان) → تجاهل آمن افتراضي.
+ */
+export function resolveCommentExecution(input: {
+  /** قرار العقل المركزي النهائي (سلطة القرار الواحدة). */
+  centralDecision: CentralActionDecision;
+  /** تصنيف استشاري حتمي (فحص سلامة التعليق — لا قرار). */
+  advisory: CommentDecision;
+  /** هل بوابة الأتمتة تسمح بالإرسال الآن (Watcher Gate: autoReply/paused)؟ */
+  automationAllowed: boolean;
+  /** هل يمكن تنفيذ الرد فعلاً الآن (اتصال موثق + force-ssl + تفويض)؟ */
+  replyReady: boolean;
+  /** هل التعليق يخص سياق القناة الموثّقة؟ */
+  belongsToChannel: boolean;
+  /** هل التعليق مدح/تفاعل إيجابي آمن؟ (خفض الإيقاع عند humanReviewMode). */
+  isPraise: boolean;
+  /** وضع المراجعة البشرية (يحوّل غير الواضح إلى تصعيد). */
+  humanReviewMode: boolean;
+  /** السبب الحقيقي للتصعيد من التصنيف (`price_unverified`/`complaint`/`sensitive`). */
+  centralEscalationReason: string | null;
+}): CommentDecision {
+  // 1) تجاهل بموجب سلامة التعليق (نفس/حساب المعرض/سبام/مُعالَج سابقاً).
+  if (input.advisory.code === 'SKIP_SELF_AUTHORED'
+    || input.advisory.code === 'SKIP_ALREADY_REPLIED'
+    || input.advisory.code === 'SKIP_SPAM') {
+    return input.advisory;
+  }
+
+  // 2) حساسية/تصعيد: السبب الحقيقي (سعر/شكوى/حساس) أو خلاف جوهري (من العقل).
+  //    قرار العقل HUMAN_ESCALATION/FAILED_SAFE ⇒ لا رد آلي إطلاقاً.
+  const reasonSensitive = input.centralEscalationReason === 'price_unverified'
+    || input.centralEscalationReason === 'complaint'
+    || input.centralEscalationReason === 'sensitive';
+  if (input.centralDecision === 'HUMAN_ESCALATION' || input.centralDecision === 'FAILED_SAFE' || reasonSensitive) {
+    const code: CommentDecisionCode = input.centralEscalationReason === 'complaint'
+      ? 'ESCALATE_SENSITIVE'
+      : reasonSensitive ? 'ESCALATE_BUSINESS_INQUIRY' : 'ESCALATE_HUMAN_REVIEW_MODE';
+    return { action: 'escalate', code, reason: 'قرار العقل المركزي يوجب تصعيداً بشرياً (حساس/شكوى/سعر غير موثّق/خلاف جوهري) — لا رد آلي.', requiresHuman: true };
+  }
+
+  // 3) وضع المراجعة البشرية: يحوّل غير الواضح إلى تصعيد (الحالات الواضحة تُتابع).
+  if (input.humanReviewMode && !input.isPraise) {
+    return { action: 'escalate', code: 'ESCALATE_HUMAN_REVIEW_MODE', reason: 'وضع المراجعة البشرية مفعّل: الحالات غير الواضحة تُحوَّل للمراجعة، والحالات الواضحة تُتابع.', requiresHuman: true };
+  }
+
+  // 4) الرد: **فقط** إن قرّر العقل المركزي ALLOWED_ACTION.
+  if (input.centralDecision === 'ALLOWED_ACTION') {
+    if (!input.belongsToChannel) {
+      return { action: 'skip', code: 'SKIP_OUT_OF_CHANNEL_CONTEXT', reason: 'التعليق لا يخص سياق القناة الموثّقة.', requiresHuman: false };
+    }
+    if (!input.automationAllowed) {
+      return { action: 'skip', code: 'DEFER_AUTOREPLY_DISABLED', reason: 'قرار العقل يسمح بالرد لكن الأتمتة معطّلة (إعداد المالك)؛ أُجّل التعليق بلا إرسال وسيُعاد تقييمه عند التمكين.', requiresHuman: false };
+    }
+    if (!input.replyReady) {
+      return { action: 'escalate', code: 'ESCALATE_REPLY_NOT_READY', reason: 'قرار العقل يسمح بالرد لكن بوابة التنفيذ غير مكتملة (اتصال/نطاق/تفويض).', requiresHuman: true };
+    }
+    return { action: 'reply', code: 'REPLY_ALLOWED', reason: 'قرار العقل المركزي ALLOWED_ACTION وبوابات التنفيذ مكتملة.', requiresHuman: false };
+  }
+
+  // 5) غير مسموح: NO_ACTION (لا إجراء مطلوب) أو تعذّر بسبب إعداد المالك
+  //    ⇒ تأجيل غير نهائي (لا فقدان)، وإلا فتصعيد آمن بلا اختراع (لا رد).
+  if (input.centralDecision === 'NO_ACTION' || !input.automationAllowed) {
+    return { action: 'skip', code: 'DEFER_AUTOREPLY_DISABLED', reason: 'لا إجراء فوري مطلوب أو الأتمتة معطّلة (إعداد المالك)؛ أُجّل التعليق بلا إرسال وسيُعاد تقييمه عند الحاجة.', requiresHuman: false };
+  }
+  return { action: 'escalate', code: 'ESCALATE_REPLY_NOT_READY', reason: 'قرار العقل لا يسمح بالرد الآن (موافقة/تفويض ناقص أو لا إجراء).', requiresHuman: true };
 }
 
 // -------------------------------------------------------------
@@ -353,6 +443,18 @@ export interface WatcherProcessedEntry {
   publishedAt?: string | null;
   externalReplyId?: string | null;
   replyText?: string | null;
+  /**
+   * بصمة تفاعل المتابعة على الرد (إعجاب/ردود) عند أول رصد بعد التسليم — تُستخدم
+   * لكشف تغيّر التفاعل الحقيقي لاحقاً (لا تُخترع قيمة).
+   */
+  followUpBaseline?: { likes: number; replies: number } | null;
+  /** نتيجة تفاعل المتابعة الملاحَظة (تغيّر حقيقي فقط) — بلا ادعاء بيع. */
+  followUpOutcome?: {
+    kind: 'engagement_changed' | 'no_change';
+    likesDelta: number;
+    repliesDelta: number;
+    at: string;
+  } | null;
   /** كود القرار الحتمي (لتصنيف آلي بلا نص). */
   code?: string | null;
   /**
@@ -576,3 +678,89 @@ export function detectOpportunities(input: {
   }
   return out;
 }
+
+// -----------------------------------------------------------------------------
+// تفاعل المتابعة (Follow-up Engagement) — كشف تغيّر التفاعل على الرد المُسلَّم.
+//
+// حلقة التعلّم الكاملة: ACTION (رد) → RESULT (تسليم بمعرّف) → OBSERVATION
+// (تفاعل لاحق) → LESSON → MEMORY → FUTURE DECISION. هنا تُقاس **الحقيقة** فقط:
+// إعجابات/ردود فعلية من `commentThreads.list`. **لا تُخترع قيمة**، وإن تعذّرت
+// القراءة يبقى الأساس بلا تغيير (لا ادعاء تغيّر).
+// -----------------------------------------------------------------------------
+
+/** مهلة أول بصمة تفاعل بعد التسليم (يُمنح الجمهور وقتاً للتفاعل). */
+export const FOLLOWUP_BASELINE_DELAY_MS = 30 * 60 * 1000;
+/** أقل فارق إعجاب/رد يُعدّ تغيّراً ملاحَظاً (تحت ذلك = ضجيج). */
+export const FOLLOWUP_MIN_DELTA = 1;
+
+/** يقرأ مهلة بصمة المتابعة من البيئة ضمن [0..24س] (افتراضي 30 دقيقة). 0 للاختبار فقط. */
+export function followUpBaselineDelayMsFromEnv(env: Record<string, string | undefined> = process.env): number {
+  const raw = env.YOUTUBE_FOLLOWUP_BASELINE_DELAY_MS;
+  if (raw === undefined || raw === null || String(raw).trim() === '') return FOLLOWUP_BASELINE_DELAY_MS;
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n < 0) return FOLLOWUP_BASELINE_DELAY_MS;
+  return Math.min(24 * 60 * 60 * 1000, Math.floor(n));
+}
+
+export interface FollowUpSignal {
+  likes: number | null;
+  replies: number | null;
+}
+
+/** يختار عناصر تحتاج رصد تفاعل المتابعة (رد مُسلَّم، بلا نتيجة نهائية، موعد البصمة حلّ). */
+export function selectFollowUpCandidates(
+  processed: WatcherProcessedEntry[],
+  now: number,
+  opts: { limit?: number; baselineDelayMs?: number } = {},
+): WatcherProcessedEntry[] {
+  const delay = opts.baselineDelayMs ?? FOLLOWUP_BASELINE_DELAY_MS;
+  const limit = opts.limit ?? 5;
+  const out: WatcherProcessedEntry[] = [];
+  for (const p of processed) {
+    if (out.length >= limit) break;
+    if (!p || !p.externalReplyId) continue;
+    if (p.followUpOutcome) continue; // محسوم مسبقاً
+    const anchor = Date.parse(String(p.at || ''));
+    if (!Number.isFinite(anchor) || now - anchor < delay) continue;
+    out.push(p);
+  }
+  return out;
+}
+
+/**
+ * يقيّم إشارة تفاعل المتابعة حتمياً:
+ *   - بلا بصمة سابقة ⇒ تُثبَّت البصمة (`baseline`) ولا يُعلن تغيّر بعد.
+ *   - مع بصمة ⇒ فرق إعجاب/رد ≥ الحد ⇒ `engagement_changed`، وإلا `no_change`.
+ * **لا ادعاء بيع** ولا رقم مالي. `signal` غير متاح (null) ⇒ لا تغيير في الأساس.
+ */
+export function evaluateFollowUpEngagement(
+  entry: WatcherProcessedEntry,
+  signal: FollowUpSignal,
+  now: number,
+): { baseline?: { likes: number; replies: number }; outcome?: NonNullable<WatcherProcessedEntry['followUpOutcome']>; note: string } {
+  const likes = signal?.likes;
+  const replies = signal?.replies;
+  if (likes === null && replies === null) {
+    return { note: 'إشارة التفاعل غير متاحة (تعذّرت قراءة الإعجابات/الردود) — لا ادعاء تغيّر.' };
+  }
+  const cur = { likes: Number(likes || 0), replies: Number(replies || 0) };
+  const base = entry.followUpBaseline || null;
+  if (!base) {
+    return { baseline: cur, note: 'ثُبّتت بصمة التفاعل عند أول رصد بعد التسليم — لا يُعلن تغيّر بعد.' };
+  }
+  const likesDelta = cur.likes - base.likes;
+  const repliesDelta = cur.replies - base.replies;
+  const changed = likesDelta >= FOLLOWUP_MIN_DELTA || repliesDelta >= FOLLOWUP_MIN_DELTA;
+  return {
+    outcome: {
+      kind: changed ? 'engagement_changed' : 'no_change',
+      likesDelta: Math.max(0, likesDelta),
+      repliesDelta: Math.max(0, repliesDelta),
+      at: new Date(now).toISOString(),
+    },
+    note: changed
+      ? `تفاعل متابعة ملاحَظ: +${Math.max(0, likesDelta)} إعجاب، +${Math.max(0, repliesDelta)} رد.`
+      : 'لا تغيّر ملاحَظ في تفاعل المتابعة بعد.',
+  };
+}
+
