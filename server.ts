@@ -16,6 +16,12 @@ import {
   DEFAULT_MAX_PROMPT_CHARS,
   DEFAULT_MAX_OUTPUT_TOKENS,
 } from "./engine/ai/firewall";
+import {
+  resolveGeminiDailyLimit,
+  inspectGeminiLimit,
+  GEMINI_LIMIT_DEFAULT,
+  GEMINI_LIMIT_MAX_SAFE,
+} from "./engine/ai/quotaPolicy";
 import { registerSocialManagerRoutes } from "./engine/social/routes";
 import { AgentOrchestrator } from "./engine/agent/orchestrator";
 import { registerAgentRoutes } from "./engine/agent/routes";
@@ -8757,7 +8763,8 @@ app.post("/api/control/jobs/preflight-all", requireOwner, (req, res) => {
 // جدار حماية الحصة المجانية **مركزي واحد للمشروع كله**: لا يوجد أي تفريع على
 // اسم منصة هنا. كل منصة (حالية أو مستقبلية) تمرّ عبر نفس المحرك ونفس الحارس،
 // فميزانية Gemini واحدة تشاركها كل المنصات والوكيل المركزي وتوليد المحتوى.
-const GEMINI_DAILY_LIMIT = Math.min(6, Math.max(1, Number(process.env.GEMINI_DAILY_LIMIT || 4)));
+const GEMINI_DAILY_LIMIT = resolveGeminiDailyLimit(process.env);
+const GEMINI_LIMIT_INFO = inspectGeminiLimit(process.env);
 /** وضع الحماية: مفعّل افتراضياً. تعطيله تغيير إعداد صريح من المالك، لا ضمني. */
 const GEMINI_FREE_TIER_PROTECTION = (() => {
   const raw = String(process.env.GEMINI_FREE_TIER_PROTECTION ?? "true").trim().toLowerCase();
@@ -10585,6 +10592,18 @@ function geminiStatus() {
     usedToday: status.usedToday,
     dailyGuard: status.limit,
     remainingByGuard: status.remaining,
+    /**
+     * سياسة الحد المحلي (بلا سرّ): القيمة المطبَّقة، الحدّ الآمن الأعلى، ومصدرها.
+     * تُظهر للمالك بوضوح أن السقف رُفع متحفظاً وأن الحارس ما زال فعّالاً.
+     */
+    limitPolicy: {
+      envName: GEMINI_LIMIT_INFO.envName,
+      state: GEMINI_LIMIT_INFO.state,
+      defaultLimit: GEMINI_LIMIT_DEFAULT,
+      maxSafe: GEMINI_LIMIT_MAX_SAFE,
+      configuredRaw: GEMINI_LIMIT_INFO.configuredRaw,
+      note: "حدّ حماية محلي متحفظ (ليس حصة Google). يُضبط بـ GEMINI_DAILY_LIMIT ويُقصّ عند الحد الآمن.",
+    },
     /** حالة جدار الحماية المركزي وعدّادات التشخيص (بلا أي سرّ). */
     firewall: buildUsageDiagnostics({
       counters: aiLedger.snapshot(),
@@ -11195,7 +11214,7 @@ app.get("/api/system/final-readiness", requireOwner, (_req,res)=>{
   add("persistence","التخزين الدائم",Boolean(workspace&&typeof workspace==="object"),"حالة workspace غير متاحة");
   add("integrity","سلامة البيانات",Array.isArray(workspace.products)&&Array.isArray(workspace.sales)&&Array.isArray(workspace.payments),"هياكل البيانات الأساسية غير مكتملة");
   add("social-safety","سلامة النشر الخارجي",automationJobs.every((j:any)=>j.status!=="published" || j.providerVerified===true),"يوجد سجل نشر خارجي غير موثق");
-  add("gemini-guard","حارس Gemini",GEMINI_DAILY_LIMIT>=1&&GEMINI_DAILY_LIMIT<=6,"إعداد حارس Gemini غير آمن");
+  add("gemini-guard","حارس Gemini",GEMINI_DAILY_LIMIT>=1&&GEMINI_DAILY_LIMIT<=GEMINI_LIMIT_MAX_SAFE,"إعداد حارس Gemini غير آمن");
   add("webhook-safety","حماية Webhook",!WEBHOOK_SECRET || WEBHOOK_SECRET.length>=16,"WEBHOOK_SECRET يجب أن يكون 16 محرفًا على الأقل أو يُترك معطلًا");
   const healthy=checks.every(x=>x.ok); res.status(healthy?200:503).json({success:healthy,ready:healthy,projectVersion:PROJECT_VERSION,schemaVersion:STATE_SCHEMA_VERSION,checks,blocking:checks.filter(x=>!x.ok)});
 });
@@ -11206,7 +11225,7 @@ app.get("/api/system/deployment-checklist", requireOwner, (_req,res)=>{
     {id:"auth",label:"المصادقة والمالك",ok:serverUsers.some((u:any)=>u.role==="owner")},
     {id:"persistence",label:"التخزين والنسخ الاحتياطية",ok:Boolean(workspace&&typeof workspace==="object")&&storageStatus().healthy},
     {id:"integrity",label:"سلامة البيانات الأساسية",ok:Array.isArray(workspace.products)&&Array.isArray(workspace.sales)&&Array.isArray(workspace.payments)},
-    {id:"ai-guard",label:"حارس Gemini",ok:GEMINI_DAILY_LIMIT>=1&&GEMINI_DAILY_LIMIT<=6},
+    {id:"ai-guard",label:"حارس Gemini",ok:GEMINI_DAILY_LIMIT>=1&&GEMINI_DAILY_LIMIT<=GEMINI_LIMIT_MAX_SAFE},
     {id:"publish-safety",label:"سلامة النشر",ok:automationJobs.every((j:any)=>j.status!=="published"||j.providerVerified===true)},
     {id:"provider-clarity",label:"وضوح حالة المنصات",ok:platformRows.every((x:any)=>!x.connected||x.providerVerified)},
   ];

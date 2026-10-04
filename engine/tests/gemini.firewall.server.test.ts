@@ -41,7 +41,8 @@ function startApp(): { proc: ChildProcess; log: () => string } {
     ...(process.env as Record<string, string>),
     PORT: String(PORT), NODE_ENV: 'production', APP_URL: BASE,
     STATE_DIR: stateDir, GHARABI_PREVIEW_TOKEN: PREVIEW_TOKEN, SESSION_SECRET,
-    GEMINI_DAILY_LIMIT: '4', GEMINI_FREE_TIER_PROTECTION: 'true',
+    // لا نضبط GEMINI_DAILY_LIMIT: نتحقق من الافتراضي الجديد (40) على خادم حقيقي.
+    GEMINI_FREE_TIER_PROTECTION: 'true',
   };
   delete env.GEMINI_API_KEY;
   delete env.DATABASE_URL;
@@ -100,7 +101,7 @@ async function run(): Promise<void> {
     check('لا حد منصة منفصل', fw.body.platformSpecificQuota === false);
     const f = fw.body.firewall || {};
     check('protectionEnabled معلن', f.protectionEnabled === true);
-    check('الحد المحلي = 4 افتراضياً', f.localDailyLimit === 4, String(f.localDailyLimit));
+    check('الحد المحلي = 40 افتراضياً (رفع متحفظ)', f.localDailyLimit === 40, String(f.localDailyLimit));
     check('الحد مُسمّى «حد الحماية المحلي للمشروع»', f.limitLabelAr === 'حد الحماية المحلي للمشروع');
     check('التسمية تنفي حصة Google', !JSON.stringify(fw.body).includes('Google quota'));
     check('المنصات العشر كلها معروفة للتشخيص', TEN_PLATFORMS.every((p) => (fw.body.knownPlatforms || []).includes(p)));
@@ -134,7 +135,7 @@ async function run(): Promise<void> {
     // 6) /api/readiness يعرض كتلة الجدار بلا سرّ.
     const ready = await (await fetch(`${BASE}/api/readiness`)).json();
     const rf = ready.ai?.freeTierFirewall;
-    check('الجاهزية تعرض freeTierFirewall', Boolean(rf) && rf.localDailyLimit === 4);
+    check('الجاهزية تعرض freeTierFirewall', Boolean(rf) && rf.localDailyLimit === 40);
     check('جاهزية الجدار بلا سرّ', !/AIza|apiKey|GEMINI_API_KEY=/i.test(JSON.stringify(rf)));
     check('الجاهزية التطبيقية مستقلة عن المزود', ready.applicationReady === true && ready.ai.providerReady === false);
 

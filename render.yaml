@@ -36,10 +36,11 @@ services:
         sync: false
       - key: GEMINI_MODEL
         sync: false
-      # جدار حماية الحصة المجانية: حد محلي يومي (1-6) ووضع حماية مركزي واحد
-      # لكل المنصات. ليسا سرّين، ويُعلنان في /api/health و/api/readiness.
+      # جدار حماية الحصة المجانية: حد محلي يومي (1-120، افتراضي 40) ووضع حماية
+      # مركزي واحد لكل المنصات. ليسا سرّين، ويُعلنان في /api/health و/api/readiness.
+      # أي قيمة >120 تُقصّ عند الحد الآمن فلا يمكن تعطيل الحارس بالبيئة.
       - key: GEMINI_DAILY_LIMIT
-        value: "4"
+        value: "40"
       - key: GEMINI_FREE_TIER_PROTECTION
         value: "true"
       - key: RESEND_API_KEY
