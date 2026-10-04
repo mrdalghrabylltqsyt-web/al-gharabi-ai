@@ -249,7 +249,10 @@ function entry(partial: Partial<WatcherProcessedEntry>): WatcherProcessedEntry {
   check('K: لا إرسال بلا معرّف رد حقيقي', server.includes('externalReplyId') && server.includes('delivered'));
   check('K: حالة الـwatcher تُحفَظ عبر المحوّل (تصمد بعد restart)', server.includes('WATCHER_STATE_KEY') && server.includes('persistWatcherState'));
   check('K: مسارات التحكم/Kill Switch للمالك موجودة', server.includes('/api/agent/youtube/watcher/controls') && server.includes('/api/agent/youtube/watcher/poll'));
-  check('K: حالة الـwatcher تُعلن في الصحة', server.includes('youtubeWatcher: watcherStatusBlock()'));
+  // النقاط العامة (health/readiness) تستخدم النسخة الآمنة فقط (بلا بيانات عميل)،
+  // والتفاصيل الكاملة تُقدَّم للمالك عبر /api/agent/youtube/watcher.
+  check('K: حالة الـwatcher تُعلن في الصحة بنسخة عامة آمنة', server.includes('youtubeWatcher: watcherStatusBlockPublic()') && !server.includes('youtubeWatcher: watcherStatusBlock()'));
+  check('K: التفاصيل الكاملة تُقدَّم للمالك فقط', server.includes('app.get("/api/agent/youtube/watcher", authenticateToken') && server.includes('watcher: watcherStatusBlock()'));
 }
 
 // --- L) أوقات الذروة: من زمن النشر الحقيقي، ولا تُعلن بلا عيّنة كافية ---

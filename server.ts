@@ -5866,6 +5866,51 @@ function watcherStatusBlock() {
   };
 }
 
+const WATCHER_PUBLIC_ERROR_MAX = 40;
+/**
+ * يحوّل آخر خطأ إلى رسالة عامة بلا محتوى عميل. رسائل دورة المراقبة أكواد تقنية
+ * (ASCII: VIDEO_LIST_FAILED/…)، فإن خرجت عن ذلك (نص حر) تُستبدل برسالة عامة
+ * ثابتة — فلا يمكن أن يمرّ نص تعليق أو اسم حساب إلى النقطة العامة.
+ */
+function watcherPublicError(err: unknown): string | null {
+  if (typeof err !== 'string' || !err) return null;
+  const token = err.trim().slice(0, WATCHER_PUBLIC_ERROR_MAX);
+  return /^[A-Za-z0-9 _.:\-/]+$/.test(token) ? token : 'connection error';
+}
+
+/**
+ * نسخة **عامة آمنة** من حالة المراقبة تُعرض في /api/health و/api/readiness.
+ * هاتان النقطتان بلا مصادقة (لأدوات المراقبة مثل Render)، لذا تُعلنان الحقول
+ * التقنية فقط: النشاط، الإيقاع، العدّادات، و**آخر خطأ كرمز تقني** — بلا أي اسم
+ * حساب أو نص تعليق أو نص رد. بيانات العملاء التفصيلية (attentionRequired,
+ * lastReply.replyText, opportunities, brief, followUp) تُقرأ من المسار المحمي
+ * بالمالك فقط: /api/agent/youtube/watcher.
+ */
+function watcherStatusBlockPublic() {
+  const full = watcherStatusBlock();
+  return {
+    watcherActive: full.watcherActive,
+    cadenceMinutes: full.cadenceMinutes,
+    cadenceMs: full.cadenceMs,
+    pollCount: full.pollCount,
+    lastPollAt: full.lastPollAt,
+    nextPollAt: full.nextPollAt,
+    lastError: watcherPublicError(full.lastError),
+    consecutiveErrors: full.consecutiveErrors,
+    // الأرقام الإجمالية فقط — لا معرّف تعليق ولا نص ولا اسم.
+    counters: {
+      detected: full.counters?.detected ?? 0,
+      replied: full.counters?.replied ?? 0,
+      verified: full.counters?.verified ?? 0,
+      escalated: full.counters?.escalated ?? 0,
+      skipped: full.counters?.skipped ?? 0,
+      failed: full.counters?.failed ?? 0,
+      deferred: full.counters?.deferred ?? 0,
+    },
+    note: "حالة تقنية عامة فقط؛ بيانات التعليقات/الردود التفصيلية متاحة للمالك عبر /api/agent/youtube/watcher.",
+  };
+}
+
 /** تقرير YouTube اليومي الحتمي من السجلات الحقيقية (بلا استهلاك AI). */
 function buildWatcherDailyBrief(): any {
   const processed = watcherState.processed;
@@ -10715,6 +10760,10 @@ app.get("/api/readiness", (_req, res) => {
     youtubeDelegation: youtubeDelegationBlock(),
     // طابور المحتوى (نشر/جدولة/مراجعة): ملخص حقيقي بلا أي سرّ.
     youtubeContent: { summary: contentQueueSummary(), mediaStored: contentMedia.size, mediaTotalBytes: contentMediaTotalBytes },
+    // مدير تشغيل YouTube 24/7: النسخة العامة الآمنة فقط (نشاط/إيقاع/عدّادات/آخر
+    // خطأ كرمز تقني). لا اسم حساب ولا نص تعليق ولا نص رد — بيانات العملاء
+    // التفصيلية في /api/agent/youtube/watcher (للمالك فقط).
+    youtubeWatcher: watcherStatusBlockPublic(),
     // PHASE 7 — حقول TikTok الآمنة (منطقي فقط، بلا أي قيمة سرّية).
     tiktokOAuth: (() => {
       const c = tiktokOAuthConfig();
@@ -11231,9 +11280,10 @@ app.get("/api/health", (_req, res) => {
     // تفويض تشغيل YouTube (نطاق YouTube فقط): منطقي بلا أي سرّ، ويُعلن الإجراء
     // التالي — منح التفويض يسمح للعقل بتنفيذ عمليات YouTube المحدّدة تلقائياً.
     youtubeDelegation: youtubeDelegationBlock(),
-    // مدير تشغيل YouTube 24/7: حالة المراقبة المستقلة عن المتصفح (منطقي بلا سرّ).
-    // يُعلن كل الحقائق: نشاط المراقبة، الإيقاع، آخر فحص/تعليق/رد، المعلّق، الأخطاء.
-    youtubeWatcher: watcherStatusBlock(),
+    // مدير تشغيل YouTube 24/7: النسخة العامة الآمنة فقط (نشاط/إيقاع/عدّادات/آخر
+    // خطأ كرمز تقني). لا اسم حساب ولا نص تعليق ولا نص رد — بيانات العملاء
+    // التفصيلية في /api/agent/youtube/watcher (للمالك فقط).
+    youtubeWatcher: watcherStatusBlockPublic(),
     // وقت تشغيل العقل المركزي 24/7 (Batch 5): حالة/إيقاع/قفل/عدّادات الذاكرة — بلا سرّ.
     brainRuntime: brainRuntimeStatus(),
     // فريق الوكلاء (Batch 6): ملخّص الجلسات/الخلافات/التحقق/الذاكرة — بلا سرّ.

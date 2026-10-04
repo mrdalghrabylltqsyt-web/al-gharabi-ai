@@ -197,7 +197,7 @@ export function YouTubeOperationsView() {
         <p className="text-xs text-slate-500 mt-2">يتحكم هذا الوقت بفاصل فحص تعليقات YouTube.</p>
       </section>
 
-      {/* Attention Required */}
+      {/* Attention Required — من المسار المحمي (بلا بيانات عميل في النقاط العامة) */}
       <section>
         <h2 className="text-sm font-semibold text-slate-300 mb-2">تحتاج تدخلاً ({state?.attentionRequired?.length ?? 0})</h2>
         {state?.attentionRequired?.length ? (
@@ -205,7 +205,7 @@ export function YouTubeOperationsView() {
             {state.attentionRequired.map((a: any) => (
               <div key={a.commentId} className="bg-slate-900 border border-rose-500/20 rounded-xl p-3">
                 <div className="text-sm text-slate-200">{a.text}</div>
-                <div className="text-xs text-slate-400 mt-1">السبب: {a.reason} • {a.authorName || 'مجهول'} • {a.commentId}</div>
+                <div className="text-xs text-slate-400 mt-1">السبب: {a.reason} • {a.commentId}</div>
               </div>
             ))}
           </div>
