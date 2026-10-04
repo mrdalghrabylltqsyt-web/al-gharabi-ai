@@ -10710,6 +10710,10 @@ app.get("/api/readiness", (_req, res) => {
   const readinessBrain = buildRuntimeBrain({ ...brainRuntimeInput(), now: Date.now() });
   // الجاهزية التطبيقية منفصلة تماماً عن جاهزية مزود الذكاء الاصطناعي:
   // التطبيق جاهز للعمل حتى لو لم يُضبط المفتاح، لأن البديل الحتمي متاح دائماً.
+  // لا تخزين إطلاقاً: نقطة فحص حيّة تحمل commit النشر ووقتاً حيّاً، فأي كاش
+  // (متصفح/وسيط/حافة) قد يقدّم استجابة قديمة مجمّدة فيُوهم بعطل نشر غير موجود.
+  res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate");
+  res.setHeader("Pragma", "no-cache");
   res.json({
     success: true,
     ready: STATE_WRITABLE(),
@@ -11279,6 +11283,10 @@ app.get("/api/system/deployment-checklist", requireOwner, (_req,res)=>{
 app.get("/api/health", (_req, res) => {
   const hasKey = Boolean(process.env.GEMINI_API_KEY);
   const tokenKey = tokenKeyInspection();
+  // لا تخزين إطلاقاً: نقطة فحص حيّة تحمل commit النشر ووقتاً حيّاً، فأي كاش
+  // (متصفح/وسيط/حافة) قد يقدّم استجابة قديمة مجمّدة فيُوهم بعطل نشر غير موجود.
+  res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate");
+  res.setHeader("Pragma", "no-cache");
   res.json({
     status: "ok",
     aiEnabled: hasKey,
