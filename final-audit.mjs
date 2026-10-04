@@ -2640,6 +2640,26 @@ add('watcher-advisory-not-authority',
     return noStore('/api/health') && noStore('/api/readiness');
   })(), 'كلا نقطتي الفحص الحيّتين (/api/health و/api/readiness) تضبطان Cache-Control: no-store و Pragma: no-cache');
 
+  // نبضة الإيقاظ محدودة النطاق: خطة Render المجانية 750 ساعة/شهر لكل Workspace
+  // (مشتركة مع مركز التعافي)، فنطاق 24/7 يكسر الحصة ويخالف «مجاني للأبد». لذلك
+  // يجب أن يكون كل جدول cron بالضبط "*/10 3-20 * * *" (06:00→24:00 بغداد = 03:00→21:00 UTC)
+  // ولا يجوز أي جدول يغطّي كل الساعات (حقل الساعة = * أو 0-23).
+  add('keep-alive-window-scoped', (() => {
+    const wfPath = '.github/workflows/keep-alive.yml';
+    if (!fs.existsSync(path.join(root, wfPath))) return false;
+    const wf = read(wfPath);
+    const crons = [...wf.matchAll(/cron:\s*["']?([^"'\n]+)["']?/g)].map((m) => m[1].trim());
+    if (crons.length === 0) return false;
+    const allExpected = crons.every((c) => c === '*/10 3-20 * * *');
+    const hitsHealth = wf.includes('https://al-gharabi-ai.onrender.com/api/health');
+    // منع أي جدول يغطّي كل الساعات: حقل الساعة (الثاني) = * أو 0-23.
+    const anyFullDay = crons.some((c) => {
+      const hour = (c.split(/\s+/) || [])[1];
+      return hour === '*' || hour === '0-23';
+    });
+    return allExpected && hitsHealth && !anyFullDay;
+  })(), 'نبضة الإيقاظ محصورة بنافذة 18 ساعة (كل جدول cron = "*/10 3-20 * * *") وتستهدف /api/health فقط، بلا أي جدول يغطّي 24 ساعة');
+
   const failed = checks.filter(x => !x.ok);
 console.table(checks);
 if (failed.length) {
