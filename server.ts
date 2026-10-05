@@ -1111,6 +1111,13 @@ app.post("/api/auth/verify-challenge", async (req, res) => {
     return res.status(400).json({ success: false, error: "البريد الإلكتروني ورمز التحقق مطلوبان." });
   }
 
+  // حدّ محاولات على التحقق من الرمز (كان غائباً): الرمز 6 أرقام ونافذته 10 دقائق،
+  // فبلا حدّ يمكن تخمينه بلا نهاية. الحدّ لكل (IP + بريد) داخل نافذة موحّدة،
+  // ويُستهلَك قبل مقارنة الرمز كي لا يمنح الردّ أي إشارة عن صحّة الرمز.
+  if (!allowAuthAttempt(`verify-challenge:${req.ip || "unknown"}:${normalizedEmail}`, 10)) {
+    return res.status(429).json({ success: false, error: "تم تجاوز عدد محاولات التحقق المسموح مؤقتاً. حاول لاحقاً." });
+  }
+
   // منع إعادة استخدام الرمز داخل نافذته: يُقارن بآخر نافذة استُهلكت للبريد
   // (محفوظة عبر المحوّل)، فلا يُقبل رمز نافذة سابقة مرة أخرى حتى بعد إعادة
   // التشغيل، بلا تخزين الرمز نفسه.
@@ -6272,7 +6279,7 @@ function applyWatcherCadence(): { activeTimers: number; cadenceMs: number; activ
 }
 
 // --- مسارات التحكم بالمراقبة (Owner Controls + Kill Switch) — للمالك فقط ---
-app.get("/api/agent/youtube/watcher", authenticateToken, (_req, res) => {
+app.get("/api/agent/youtube/watcher", requireOwner, (_req, res) => {
   res.json({ success: true, watcher: watcherStatusBlock() });
 });
 
@@ -6424,7 +6431,7 @@ app.get("/api/agent/youtube/watcher/reconcile", requireOwner, async (_req, res) 
 });
 
 
-app.get("/api/agent/youtube/watcher/brief", authenticateToken, (_req, res) => {
+app.get("/api/agent/youtube/watcher/brief", requireOwner, (_req, res) => {
   const brief = buildWatcherDailyBrief();
   const now = Date.now();
   // البطاقات القابلة للنقر: نفس الرقم + مفتاحه، ليربط الرقم بقائمته بلا discrepancy.
@@ -6442,7 +6449,7 @@ app.get("/api/platforms/youtube/content/schedule-suggestion", authenticateToken,
  * تفاصيل رقم من التقرير: يُعيد **نفس السجلات** التي كوّنت الرقم (بلا اختلاق).
  * للقراءة فقط: فتح التفاصيل لا يغيّر أي حالة. الفلاتر اختيارية.
  */
-app.get("/api/agent/youtube/watcher/details", authenticateToken, (req, res) => {
+app.get("/api/agent/youtube/watcher/details", requireOwner, (req, res) => {
   const metric = String(req.query.metric || "");
   if (!WATCHER_BRIEF_METRIC_LABELS_AR[metric as WatcherBriefMetric]) {
     return res.status(400).json({ success: false, error: "بطاقة غير معروفة.", metrics: Object.keys(WATCHER_BRIEF_METRIC_LABELS_AR) });
@@ -6475,13 +6482,13 @@ app.get("/api/agent/youtube/watcher/details", authenticateToken, (req, res) => {
 });
 
 /** تفاصيل تعليق واحد بمعرّفه (للمراجعة قبل أي قرار). */
-app.get("/api/agent/youtube/watcher/comment/:commentId", authenticateToken, (req, res) => {
+app.get("/api/agent/youtube/watcher/comment/:commentId", requireOwner, (req, res) => {
   const entry = watcherState.processed.find((p) => p.commentId === req.params.commentId);
   if (!entry) return res.status(404).json({ success: false, error: "تعليق غير موجود في سجلات المعالجة." });
   res.json({ success: true, record: watcherDetailRecords([entry])[0] });
 });
 
-app.get("/api/agent/youtube/watcher/audit", authenticateToken, (req, res) => {
+app.get("/api/agent/youtube/watcher/audit", requireOwner, (req, res) => {
   const limit = Math.max(1, Math.min(200, Number(req.query.limit || 50)));
   res.json({ success: true, audit: watcherState.audit.slice(0, limit), count: watcherState.audit.length });
 });
@@ -8201,6 +8208,74 @@ app.get("/api/control/overview", authenticateToken, (req, res) => {
   res.json({ success: true, overview: { projectVersion: PROJECT_VERSION, supportedPlatforms: 10, connectedPlatforms: connected, disconnectedPlatforms: 10 - connected, jobs: visibleJobs.length, pendingApproval: visibleJobs.filter(j => j.status === "queued").length, approvedAwaitingConnection: visibleJobs.filter(j => j.status === "approved").length, ready: visibleJobs.filter(j => j.status === "ready").length, failed: visibleJobs.filter(j => j.status === "failed").length, scheduled: visibleJobs.filter((j: any) => Boolean(j.scheduledFor)).length, gemini: geminiStatus() }, note: "الأرقام المعروضة فعلية من حالة الخادم وليست بيانات تجريبية." });
 });
 
+// -----------------------------------------------------------------------------
+// SCOPE ISOLATION (LEGACY ERP): أسطح Inventory/CRM/Finance/Customers-360/Purchases/
+// Reports/Catalog/Tasks/Business/Suppliers/Expenses/Contracts/Installments/
+// Executive **خارج نطاق المشروع المعلن** (سوشيال + AI + تسويق) ولا مستهلك واجهة
+// ظاهر لها. تُعطَّل افتراضياً برد **404 صريح** قبل أي مصادقة (لا 200 HTML)،
+// وتُعاد بالكامل بضبط
+// `GHARABI_ENABLE_LEGACY_ERP_SCOPE=true`. لا يُزال أي كود ولا بيانات عند التعطيل.
+// النمط مطابق لعزل ERP في فرع phase-1d، بمتغيّر بيئة مستقل واضح الاسم.
+// المطابقة غير حسّاسة لحالة الأحرف (Express يوجّه كذلك) مع احترام حدّ المسار كي لا
+// يلتقط `/api/crm` مساراً مثل `/api/crmx`.
+// -----------------------------------------------------------------------------
+const LEGACY_ERP_ROUTE_PREFIXES: readonly string[] = Object.freeze([
+  "/api/catalog",
+  "/api/inventory",
+  "/api/customers/360",
+  "/api/reports/operations",
+  "/api/crm",
+  "/api/purchases",
+  "/api/finance",
+  "/api/tasks",
+  "/api/business",
+  "/api/suppliers",
+  "/api/expenses",
+  "/api/contracts",
+  "/api/installments",
+  "/api/executive",
+]);
+function legacyErpScopeEnabled(): boolean {
+  const raw = String(process.env.GHARABI_ENABLE_LEGACY_ERP_SCOPE ?? "").trim().toLowerCase();
+  return raw === "true" || raw === "1" || raw === "on" || raw === "yes";
+}
+function isLegacyErpRouteRequest(rawUrl: string): boolean {
+  // تطبيع مطابق لـcanonicalRequestPath (نفس سياسة حارس حزمة المصدر): فكّ ترميز
+  // متكرر محدود + توحيد الفواصل + حلّ `.`/`..` + طيّ الشرطة المائلة المكرّرة +
+  // حذف الشرطة الختامية + توحيد الحالة. يمنع تجاوز الحارس بصيغة `//api/crm/...`.
+  let p = String(rawUrl || "").split("?")[0].split("#")[0].replace(/\\/g, "/");
+  for (let i = 0; i < 5; i += 1) {
+    if (!/%[0-9a-fA-F]/.test(p)) break;
+    try {
+      const next = decodeURIComponent(p);
+      if (next === p) break;
+      p = next;
+    } catch {
+      break; // ترميز فاسد: نطابق على آخر قيمة سليمة بدل الانهيار.
+    }
+  }
+  const norm = path.posix.normalize(p);
+  const canonical = (norm.startsWith("/") ? norm : `/${norm}`).replace(/\/+$/, "").toLowerCase() || "/";
+  for (const prefix of LEGACY_ERP_ROUTE_PREFIXES) {
+    if (canonical === prefix || canonical.startsWith(prefix + "/")) return true;
+  }
+  return false;
+}
+if (!legacyErpScopeEnabled()) {
+  app.use((req, res, next) => {
+    if (isLegacyErpRouteRequest(String(req.url || ""))) {
+      return res.status(404).json({
+        success: false,
+        error: "هذا السطح (Inventory/CRM/Finance) خارج نطاق المشروع المعلن (سوشيال + AI + تسويق).",
+        code: "SCOPE_DISABLED",
+        note: "لإعادة التفعيل: GHARABI_ENABLE_LEGACY_ERP_SCOPE=true. لا يُزال الكود ولا البيانات.",
+      });
+    }
+    next();
+  });
+}
+
+
 // Operational foundation: deterministic endpoints below consume ZERO Gemini calls.
 app.post("/api/catalog/quote", authenticateToken, (req, res) => {
   const price = Number(req.body?.cashPrice); const downPayment = Number(req.body?.downPayment ?? 0); const months = Number(req.body?.months);
@@ -8620,63 +8695,6 @@ app.post("/api/workspace/conversations", authenticateToken, (req, res) => {
   workspace.conversations.unshift(c); persistState(); audit(user.id, "workspace_conversation_created", c.id); res.status(201).json({ success: true, conversation: c });
 });
 
-
-// -----------------------------------------------------------------------------
-// SCOPE ISOLATION (LEGACY ERP): أسطح Inventory/CRM/Finance/Customers-360/Purchases/
-// Reports **خارج نطاق المشروع المعلن** (سوشيال + AI + تسويق). تُعطَّل افتراضياً برد
-// **404 صريح** قبل أي مصادقة (لا 200 HTML)، وتُعاد بالكامل بضبط
-// `GHARABI_ENABLE_LEGACY_ERP_SCOPE=true`. لا يُزال أي كود ولا بيانات عند التعطيل.
-// النمط مطابق لعزل ERP في فرع phase-1d، بمتغيّر بيئة مستقل واضح الاسم.
-// المطابقة غير حسّاسة لحالة الأحرف (Express يوجّه كذلك) مع احترام حدّ المسار كي لا
-// يلتقط `/api/crm` مساراً مثل `/api/crmx`.
-// -----------------------------------------------------------------------------
-const LEGACY_ERP_ROUTE_PREFIXES: readonly string[] = Object.freeze([
-  "/api/inventory",
-  "/api/customers/360",
-  "/api/reports/operations",
-  "/api/crm",
-  "/api/purchases",
-  "/api/finance",
-]);
-function legacyErpScopeEnabled(): boolean {
-  const raw = String(process.env.GHARABI_ENABLE_LEGACY_ERP_SCOPE ?? "").trim().toLowerCase();
-  return raw === "true" || raw === "1" || raw === "on" || raw === "yes";
-}
-function isLegacyErpRouteRequest(rawUrl: string): boolean {
-  // تطبيع مطابق لـcanonicalRequestPath (نفس سياسة حارس حزمة المصدر): فكّ ترميز
-  // متكرر محدود + توحيد الفواصل + حلّ `.`/`..` + طيّ الشرطة المائلة المكرّرة +
-  // حذف الشرطة الختامية + توحيد الحالة. يمنع تجاوز الحارس بصيغة `//api/crm/...`.
-  let p = String(rawUrl || "").split("?")[0].split("#")[0].replace(/\\/g, "/");
-  for (let i = 0; i < 5; i += 1) {
-    if (!/%[0-9a-fA-F]/.test(p)) break;
-    try {
-      const next = decodeURIComponent(p);
-      if (next === p) break;
-      p = next;
-    } catch {
-      break; // ترميز فاسد: نطابق على آخر قيمة سليمة بدل الانهيار.
-    }
-  }
-  const norm = path.posix.normalize(p);
-  const canonical = (norm.startsWith("/") ? norm : `/${norm}`).replace(/\/+$/, "").toLowerCase() || "/";
-  for (const prefix of LEGACY_ERP_ROUTE_PREFIXES) {
-    if (canonical === prefix || canonical.startsWith(prefix + "/")) return true;
-  }
-  return false;
-}
-if (!legacyErpScopeEnabled()) {
-  app.use((req, res, next) => {
-    if (isLegacyErpRouteRequest(String(req.url || ""))) {
-      return res.status(404).json({
-        success: false,
-        error: "هذا السطح (Inventory/CRM/Finance) خارج نطاق المشروع المعلن (سوشيال + AI + تسويق).",
-        code: "SCOPE_DISABLED",
-        note: "لإعادة التفعيل: GHARABI_ENABLE_LEGACY_ERP_SCOPE=true. لا يُزال الكود ولا البيانات.",
-      });
-    }
-    next();
-  });
-}
 
 // -------------------------------------------------------------
 // Inventory + customer 360 + operational reporting. Deterministic, durable and Gemini-free.

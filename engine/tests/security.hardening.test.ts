@@ -120,6 +120,19 @@ async function run(): Promise<void> {
     }
     check('SEC-04 auth attempt rate limit enforced (429)', saw429);
 
+    // ---------------- SEC-04b: OTP verify rate limit ----------------
+    // /api/auth/verify-challenge كان بلا حدّ محاولات (رمز 6 أرقام): يُثبت الآن
+    // أنه يحدّ التخمين (10 محاولات لكل IP+بريد ثم 429)، وبريد فريد لكل تشغيل.
+    const otpEmail = `otp-guard-${run}@example.invalid`;
+    let sawOtp429 = false;
+    for (let i = 0; i < 14; i += 1) {
+      const r = await fetch(`${BASE}/api/auth/verify-challenge`, {
+        method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ email: otpEmail, code: '000000' }),
+      });
+      if (r.status === 429) { sawOtp429 = true; break; }
+    }
+    check('SEC-04b OTP verify rate limit enforced (429)', sawOtp429);
+
     // ---------------- OBS-01: no secret leakage ----------------
     const healthText = await (await fetch(`${BASE}/api/health`)).text();
     const readinessText = await (await fetch(`${BASE}/api/readiness`)).text();

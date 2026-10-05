@@ -151,6 +151,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ mobileOpen, onCloseMobile }) =
       id: 'youtube_operations',
       label: 'مدير تشغيل YouTube',
       icon: Bot,
+      ownerOnly: true,
       badge: currentUser?.role === 'owner' ? '24/7' : null,
       badgeColor: 'bg-red-500/20 text-red-300 border-red-500/30',
       desc: 'مراقبة القناة والتعليقات والرد الآلي والتحكم',

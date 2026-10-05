@@ -10,6 +10,8 @@
  * - المطابقة غير حسّاسة لحالة الأحرف، وتحترم حدّ المسار (لا تلتقط `/api/crmx`).
  * - المسارات داخل النطاق (سوشيال/AI/العقل المركزي) والمشتركة (workspace/products,
  *   workspace/conversations) **غير محجوبة**.
+ * - مبيعات المعرض `/api/sales*` **ميزة حيّة** (تبويب sales الظاهر) وليست Legacy ERP:
+ *   غير محجوبة في أي من حالتي المفتاح (401 بلا جلسة، 200 بجلسة) — انحدار صريح.
  * - `/api/health` يعلن `legacyErpScope.isolated=true` بلا قيمة سرّية.
  *
  * مع المفتاح مُفعّل: العزل مُعطَّل — المسار النموذجي يعود مسلك المصادقة (401 بلا جلسة)
@@ -51,6 +53,15 @@ const GUARDED_ROUTES = [
   '/api/purchases',
   '/api/finance/overview',
   '/api/finance/aging',
+  // أسطح legacy إضافية بلا مستهلك واجهة ظاهر (كانت تُرجع 401 بلا عزل قبل الإصلاح).
+  '/api/catalog/quote',
+  '/api/tasks',
+  '/api/business/overview',
+  '/api/suppliers',
+  '/api/expenses',
+  '/api/contracts',
+  '/api/installments/schedule',
+  '/api/executive/overview',
   // مسار فرعي مُختلق: يثبت أن تغطية البادئة تمنع أي مسار جديد بلا عزل.
   '/api/inventory/brand-new-future-route',
 ];
@@ -69,6 +80,14 @@ const SHARED_WORKSPACE_ROUTES = [
   '/api/workspace/conversations',
   '/api/workspace/showroom',
   '/api/workspace/snapshot',
+];
+
+// مبيعات المعرض **ميزة حيّة** (تبويب `sales` الظاهر يستهلكها عبر SalesCenterView) وليست
+// Legacy ERP. يجب ألا تُحجب في أي من حالتي المفتاح. (انحدار: كانت أُضيفت للقائمة خطأً.)
+const LIVE_SALES_ROUTES = [
+  '/api/sales',
+  '/api/sales/sale-any-id',
+  '/api/sales/sale-any-id/payments',
 ];
 
 function startApp(port: number, stateDir: string, enableScope: boolean, previewToken: string): ChildProcess {
@@ -134,7 +153,7 @@ async function login(base: string, token: string): Promise<string> {
     }
 
     // 1ب) POST/PATCH/DELETE تُعزل كذلك (لا فقط GET).
-    for (const [method, route] of [['POST', '/api/inventory/abc/adjust'], ['POST', '/api/crm/leads'], ['PATCH', '/api/crm/leads/abc'], ['DELETE', '/api/crm/leads/abc'], ['POST', '/api/purchases']] as const) {
+    for (const [method, route] of [['POST', '/api/inventory/abc/adjust'], ['POST', '/api/crm/leads'], ['PATCH', '/api/crm/leads/abc'], ['DELETE', '/api/crm/leads/abc'], ['POST', '/api/purchases'], ['POST', '/api/catalog/quote'], ['POST', '/api/tasks'], ['POST', '/api/suppliers'], ['POST', '/api/expenses'], ['POST', '/api/contracts'], ['POST', '/api/installments/generate'], ['DELETE', '/api/suppliers/abc'], ['DELETE', '/api/expenses/abc']] as const) {
       const res = await fetch(`${baseA}${route}`, { method, headers: { 'Content-Type': 'application/json' }, body: '{}' });
       const body: any = await res.json().catch(() => ({}));
       check(`off: ${method} ${route} => 404`, res.status === 404, `status=${res.status}`);
@@ -185,6 +204,23 @@ async function login(base: string, token: string): Promise<string> {
       }
     }
 
+    // 4ب) مبيعات المعرض ميزة حيّة (تبويب sales الظاهر) — لا تُحجب حتى والمفتاح مُطفأ.
+    //     القاعدة الحاكمة: لا SCOPE_DISABLED إطلاقاً. المسارات ذات المسلك المسجَّل تعود
+    //     401 بلا جلسة؛ أما مسار بلا مسلك GET فـ404 عام من Express (لا حجب نطاق).
+    for (const route of LIVE_SALES_ROUTES) {
+      const res = await fetch(`${baseA}${route}`);
+      const body: any = await res.json().catch(() => ({}));
+      check(`off: live-sales ${route} NOT scope-blocked`, !(res.status === 404 && body?.code === 'SCOPE_DISABLED'), `status=${res.status} code=${body?.code}`);
+    }
+    for (const route of ['/api/sales', '/api/sales/sale-any-id/payments']) {
+      const res = await fetch(`${baseA}${route}`);
+      check(`off: live-sales ${route} => 401 (route live, not blocked)`, res.status === 401, `status=${res.status}`);
+    }
+    if (authToken) {
+      const resSales = await fetch(`${baseA}/api/sales`, { headers: { Authorization: `Bearer ${authToken}` } });
+      check('off: live-sales /api/sales reachable with session (200)', resSales.status === 200, `status=${resSales.status}`);
+    }
+
     // 5) المسارات داخل النطاق (سوشيال/ذكاء/عقل مركزي) يجب ألا تُحجب.
     for (const route of IN_SCOPE_ROUTES) {
       const res = await fetch(`${baseA}${route}`);
@@ -216,10 +252,16 @@ async function login(base: string, token: string): Promise<string> {
   try {
     if (!(await waitForHealth(baseB))) throw new Error('الخادم (العزل معطّل) لم يقلع.');
     // ممثل من كل عائلة: يجب ألا يعيد SCOPE_DISABLED (المسار مُسجَّل => 401 بلا جلسة).
-    for (const route of ['/api/inventory', '/api/crm/leads', '/api/purchases', '/api/finance/overview', '/api/customers/360', '/api/reports/operations', '/API/INVENTORY']) {
+    for (const route of ['/api/inventory', '/api/crm/leads', '/api/purchases', '/api/finance/overview', '/api/customers/360', '/api/reports/operations', '/API/INVENTORY', '/api/catalog/quote', '/api/tasks', '/api/business/overview', '/api/suppliers', '/api/expenses', '/api/contracts', '/api/installments/schedule', '/api/executive/overview']) {
       const res = await fetch(`${baseB}${route}`);
       const body: any = await res.json().catch(() => ({}));
       check(`on: ${route} not scope-blocked`, !(res.status === 404 && body?.code === 'SCOPE_DISABLED'), `status=${res.status} code=${body?.code}`);
+    }
+    // مبيعات المعرض ميزة حيّة: لا تُحجب ولا في حالة تفعيل العزل أيضاً.
+    for (const route of LIVE_SALES_ROUTES) {
+      const res = await fetch(`${baseB}${route}`);
+      const body: any = await res.json().catch(() => ({}));
+      check(`on: live-sales ${route} NOT scope-blocked`, !(res.status === 404 && body?.code === 'SCOPE_DISABLED'), `status=${res.status} code=${body?.code}`);
     }
     const healthB: any = await (await fetch(`${baseB}/api/health`)).json().catch(() => ({}));
     check('on: health.legacyErpScope.isolated=false', healthB?.legacyErpScope?.isolated === false, JSON.stringify(healthB?.legacyErpScope));

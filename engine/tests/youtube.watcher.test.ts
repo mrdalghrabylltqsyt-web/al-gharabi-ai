@@ -252,7 +252,10 @@ function entry(partial: Partial<WatcherProcessedEntry>): WatcherProcessedEntry {
   // النقاط العامة (health/readiness) تستخدم النسخة الآمنة فقط (بلا بيانات عميل)،
   // والتفاصيل الكاملة تُقدَّم للمالك عبر /api/agent/youtube/watcher.
   check('K: حالة الـwatcher تُعلن في الصحة بنسخة عامة آمنة', server.includes('youtubeWatcher: watcherStatusBlockPublic()') && !server.includes('youtubeWatcher: watcherStatusBlock()'));
-  check('K: التفاصيل الكاملة تُقدَّم للمالك فقط', server.includes('app.get("/api/agent/youtube/watcher", authenticateToken') && server.includes('watcher: watcherStatusBlock()'));
+  // بيانات عملاء YouTube (أسماء حسابات/نصوص تعليقات/نصوص ردود) لا تُقدَّم لأي مستخدم
+  // مسجَّل بلا دور مالك: المسار مقتصر على المالك (requireOwner) لا مجرّد مصادقة.
+  check('K: التفاصيل الكاملة تُقدَّم للمالك فقط', server.includes('app.get("/api/agent/youtube/watcher", requireOwner') && server.includes('watcher: watcherStatusBlock()'));
+  check('K: مسارات بيانات المراقب مقتصرة على المالك (لا authenticateToken وحده)', ['/api/agent/youtube/watcher/brief', '/api/agent/youtube/watcher/details', '/api/agent/youtube/watcher/audit'].every((r) => server.includes(`app.get("${r}", requireOwner`)));
 }
 
 // --- L) أوقات الذروة: من زمن النشر الحقيقي، ولا تُعلن بلا عيّنة كافية ---

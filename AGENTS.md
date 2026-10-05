@@ -12,7 +12,7 @@ npm install
 npm run dev            # tsx server.ts
 npm run lint           # tsc --noEmit
 npm run build          # vite build + esbuild server.ts -> dist/server.cjs
-npm run final-audit    # node final-audit.mjs (1313 فحصاً)
+npm run final-audit    # node final-audit.mjs (1318 فحصاً)
 npm test               # storage + engine + auth + ... + db + runtime
 ```
 - التشغيل الإنتاجي: `PORT=4517 NODE_ENV=production APP_URL=http://localhost:4517 node dist/server.cjs`
@@ -3713,3 +3713,65 @@ config** ولا `eslint-plugin-react-hooks`، فهذا النوع لا يُكت�
 لكن الخدمة مضبوطة فعلياً على Docker (يُثبت بتطابق بصمة المصدر لمجموعة ملفات الصورة).
 هذا إعداد نشر لا يمسّه إصلاح الخطافات، ويُترك لقرار المالك.
 
+
+
+## تدقيق أمني نهائي — إغلاق عزل ERP المتبقي + حدّ محاولات OTP (2026-10-04)
+
+**فرع `audit/final-security-scope` من `main` (`2f8dfa2`).** تدقيق شامل كـPrincipal/Architect/
+Security/QA/Reliability. الأساس سليم (المصادقة/التوقيعات/عدم تسريب /health و/readiness/منع
+تجاوز العزل بالترميز والنقاط والشرطة المكرّرة). عولجت فجوتان حقيقيتان:
+
+### 1) عزل نطاق ERP كان ناقصاً (تسريب أسطح legacy)
+- **السبب الجذري:** الحارس `legacyErpScopeEnabled()` كان مُسجَّلاً في السطر ~8667 **بعد**
+  `/api/catalog/quote` (8205)، فلم يُعزل هذا المسار إطلاقاً، كما أن `LEGACY_ERP_ROUTE_PREFIXES`
+  غطّى 6 بادئات فقط. فبقيت أسطح legacy تُرجع **401** (المسار فعّال) بدل **404 SCOPE_DISABLED**:
+  `/api/catalog/quote`, `/api/tasks`, `/api/business/overview`, `/api/suppliers`,
+  `/api/expenses`, `/api/contracts`, `/api/installments/*`, `/api/executive/overview`.
+- **الإصلاح (بلا كسر واجهة ظاهرة):** نُقل الحارس **قبل أول مسار ERP** (`/api/catalog/quote`)
+  ووُسّعت البادئات لتشمل الأسطح الثمانية. أُثبت أن كل مساراتها يستهلكها **فقط** مكوّنات
+  التبويبات المخفية (`BusinessSuiteView`/`OperationsView`/`ExecutiveCommandView`)، فلم تُمسّ
+  تبويبات `sales`/`control` الظاهرة (قرار المؤلف الصريح) ولا `/api/workspace/*` المشتركة.
+  المفتاح `GHARABI_ENABLE_LEGACY_ERP_SCOPE=true` يُعيدها كما هي.
+  **تصحيح مهم:** `/api/sales` **ليس** Legacy ERP بل ميزة حيّة (تبويب `sales` الظاهر
+  يستهلكها عبر `SalesCenterView`)، وقد أُضيف للقائمة خطأً ثم أُزيل. يمنع حارس
+  `legacy-erp-excludes-live-sales` عودة إضافته، ويثبت اختبار النطاق أن `/api/sales*`
+  لا يُحجب في أي من حالتي المفتاح (401/200 لا 404).
+- **اختبار:** `scope.legacy.erp.isolation.test.ts` صار **156 فحصاً** (أُضيفت الأسطح الثمانية
+  GET+POST/PATCH/DELETE وphase-on). `final-audit`: `legacy-erp-prefixes-complete`،
+  `legacy-erp-guard-before-routes`، `legacy-erp-no-visible-consumer-surface-guarded`.
+
+### 2) `/api/auth/verify-challenge` بلا حدّ محاولات (تخمين OTP)
+- **السبب الجذري:** الرمز 6 أرقام بنافذة 10 دقائق، والمقارنة بزمن ثابت لكن **بلا أي حدّ**،
+  فالتخمين ممكن عملياً. (بقية مسارات المصادقة محدودة: google 12، request-challenge، preview 10.)
+- **الإصلاح:** `allowAuthAttempt` بمفتاح (IP + بريد) وحدّ 10 **قبل** مقارنة الرمز (فلا يمنح
+  429 أي إشارة عن صحّة الرمز). اختبار في `security.hardening.test.ts` (`SEC-04b`).
+  `final-audit`: `otp-verify-rate-limited`.
+
+### 3) بيانات عملاء YouTube متاحة لأي مستخدم مصادَق (لا للمالك فقط)
+- **السبب الجذري:** مسارات بيانات المراقب (`/api/agent/youtube/watcher` + `/brief` +
+  `/details` + `/comment/:commentId` + `/audit`) كانت `authenticateToken` فقط، رغم أن
+  توثيقها يقول «للمالك فقط». أي مستخدم مسجَّل (بأي دور) كان يقرأ أسماء حسابات ونصوص
+  تعليقات ونصوص ردود العملاء عبر `attentionRequired`/`lastReply`.
+- **الإصلاح:** صارت كلها `requireOwner` (لا مجرّد مصادقة)، فبيانات عملاء YouTube لا تصل
+  إلا للمالك. اختبارات `health.privacy.test.ts` و`watcher.review.integration.test.ts`
+  تستخدم جلسة المالك فتظل ناجحة. `final-audit`: `youtube-watcher-detail-owner-auth`
+  (مُحدَّث) و`youtube-watcher-data-owner-only` (جديد). والتبويب `youtube_operations` في
+  القائمة صار `ownerOnly` مطابقةً للخادم، مع حارس `youtube-watcher-ui-owner-only`.
+
+### نتائج التحقق
+`npm run lint` ✅ · `npm run build` ✅ · `npm test` ✅ (EXIT=0، 0 فشل) · `final-audit` ✅
+(**1318 فحصاً**). لم يُنفَّذ دفع/دمج/نشر — بانتظار إذن المالك.
+
+### ملاحظات لم تُعالَج (تحتاج قرار المالك)
+- **تبويبا `sales`/`control`** ظاهران ومقصودان، ويعرضان بيانات عملاء/مالية. مقبول لأن
+  المشروع يخص مالكاً واحداً؛ إن أردت تضييقاً فأبقِ `/api/workspace/*` المشتركة وعزّل
+  `/api/sales`+`/api/control/{customer-directory,cashflow,reconciliation}` (غير مستخدمة في
+  الواجهة الظاهرة).
+- **`/api/workspace/snapshot`** يعرض أسماء/معرّفات حسابات المنصات لأي مستخدم مصادَق
+  (`authenticateToken` بلا فحص دور). لا يكشف توكنات (المخزّن مشفّراً منفصلاً).
+- **توثيق متقادم:** AGENTS.md يوثّق وحدات `engine/brain/{sales,digital,growth,commercial}`
+  (العقل التجاري/الرقمي/النمو/الموحّد + دفعاتها 1–4) ووثائق `docs/دفعة-*` — **غير موجودة
+  في الشجرة الحالية**. لا أثر لها في الكود أو المسارات أو الواجهة (لا سرّ ولا مخاطرة)،
+  لكن التوثيق يصف قدرات غير منشورة فعلياً.
+- **أخطاء منصّة خارجية:** نشر TikTok URL-prefix (`Something went wrong`) وربط Meta OAuth
+  توقفا عند إعدادات لوحة المزوّد لا الكود.

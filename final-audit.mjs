@@ -781,7 +781,23 @@ add('youtube-watcher-health-public-safe', (() => {
   const publicHasNoCustomer = !/attentionRequired|replyText|authorName|lastReply/.test(publicBlock);
   return healthUsesPublic && publicHasNoCustomer;
 })(), 'الصحة والجاهزية تستخدمان النسخة العامة في الموضعين، والنسخة العامة لا تحوي اسم حساب/نص تعليق/نص رد');
-add('youtube-watcher-detail-owner-auth', server.includes('app.get("/api/agent/youtube/watcher", authenticateToken') && server.includes('watcher: watcherStatusBlock()'), 'التفاصيل الكاملة (attentionRequired/lastReply) تُقدَّم فقط عبر المسار المحمي بالتصريح /api/agent/youtube/watcher');
+add('youtube-watcher-detail-owner-auth', server.includes('app.get("/api/agent/youtube/watcher", requireOwner') && server.includes('watcher: watcherStatusBlock()'), 'التفاصيل الكاملة (attentionRequired/lastReply) تُقدَّم فقط عبر المسار المقتصر على المالك /api/agent/youtube/watcher');
+// كل مسارات بيانات المراقب (التي تحمل اسم حساب/نص تعليق/نص رد) مقتصرة على المالك،
+// لا مجرّد مصادقة: بيانات عملاء YouTube لا يجوز أن تصل لأي مستخدم مسجَّل بلا دور مالك.
+add('youtube-watcher-data-owner-only', (() => {
+  const routes = [
+    'app.get("/api/agent/youtube/watcher", requireOwner',
+    'app.get("/api/agent/youtube/watcher/brief", requireOwner',
+    'app.get("/api/agent/youtube/watcher/details", requireOwner',
+    'app.get("/api/agent/youtube/watcher/comment/:commentId", requireOwner',
+    'app.get("/api/agent/youtube/watcher/audit", requireOwner',
+    'app.post("/api/agent/youtube/watcher/review", requireOwner',
+  ];
+  const allOwner = routes.every((r) => server.includes(r));
+  // لا مسار بيانات مراقب يستخدم authenticateToken وحده (لا دور).
+  const leakyData = /app\.get\("\/api\/agent\/youtube\/watcher(?:\/brief|\/details|\/audit|\/comment\/:commentId)?"\s*,\s*authenticateToken/.test(server);
+  return allOwner && !leakyData;
+})(), 'مسارات بيانات المراقب (الحالة/التقرير/التفاصيل/التعليق/السجل) مقتصرة على المالك (requireOwner) لا مجرّد مصادقة');
 add('youtube-watcher-public-error-sanitized', server.includes('function watcherPublicError') && server.includes("'connection error'"), 'آخر خطأ في النقطة العامة يُقتصر على رمز تقني ASCII أو رسالة عامة ثابتة (لا محتوى عميل)');
 // حارس خصوصية النقطتين العامتين: اختبار حقيقي يزرع canary ويقرأ الاستجابات الفعلية.
 const healthPrivacyTest = fs.existsSync(path.join(root, 'engine/tests/health.privacy.test.ts')) ? read('engine/tests/health.privacy.test.ts') : '';
@@ -795,6 +811,8 @@ add('watcher-product-facts-reply-uses-product', /executeYouTubeReply\(\{ comment
 add('watcher-product-facts-test', read('engine/tests/youtube.connector.test.ts').includes('12k-7') && read('engine/tests/brain/central.authority.test.ts').includes('priceFactsVerified: true'), 'اختبار انحدار: استفسار سعر مع حقائق ⇒ رد، وبلا حقائق ⇒ تصعيد (وحدة + تكامل)');
 add('watcher-product-facts-ui-wired', (() => { const p = read('src/components/agent/YouTubeContentQueuePanel.tsx'); return p.includes('productId: productId || undefined') && p.includes('it.productName'); })(), 'الواجهة تربط المنتج الحقيقي بعنصر المحتوى وتعرضه (فالمسار قابل للوصول فعلاً لا مجرد كود معطّل)');
 add('youtube-watcher-ui-tab', app.includes('YouTubeOperationsView') && app.includes("case 'youtube_operations'") && read('src/components/common/Sidebar.tsx').includes("id: 'youtube_operations'"), 'واجهة مدير تشغيل YouTube مرتبطة بتبويب فعّال في القائمة');
+// التبويب مقتصر على المالك في القائمة، مطابقةً لبوابة requireOwner على بيانات المراقب.
+add('youtube-watcher-ui-owner-only', /id: 'youtube_operations',[\s\S]{0,140}?ownerOnly: true/.test(read('src/components/common/Sidebar.tsx')), 'تبويب مدير تشغيل YouTube مقتصر على المالك في القائمة (مطابق لبوابة الخادم)');
 add('youtube-watcher-ui-honest', watcherUi.includes('getYouTubeWatcher') && watcherUi.includes('setYouTubeWatcherControls') && watcherUi.includes('pollYouTubeWatcher') && watcherUi.includes('lastReply') && watcherUi.includes('attentionRequired'), 'الواجهة تعرض الحالة الحقيقية من الخادم وتتيح التحكم (Kill Switch) للمالك');
 add('youtube-watcher-tests', watcherTest.includes('watcherGate') && watcherTest.includes('decideCommentAction') && watcherTest.includes('computeCommentVelocity') && watcherTest.includes('watcherReplyExecutionReady') && watcherTest.includes('executeYouTubeReply'), 'اختبارات مدير YouTube تثبت البوابة/القرار/الزخم/بوابة التفويض/الربط بالمنفّذ الحقيقي');
 const commentsModule = read('engine/social/comments.ts');
@@ -2462,6 +2480,12 @@ add('rate-window-tests',
   read('engine/tests/rate.window.test.ts').includes('فوق السقف: الأقدم أُزيل') &&
   read('engine/tests/rate.window.test.ts').includes('يُسمح 12 محاولة ثم يُحجب'),
   'اختبار سقف النوافذ ودلالات تحديد المعدّل');
+// /api/auth/verify-challenge كان بلا حدّ محاولات (رمز 6 أرقام): يُثبت الآن أنه يحدّ
+// التخمين عبر allowAuthAttempt قبل مقارنة الرمز (فلا يمنح الردّ أي إشارة عن صحّته).
+add('otp-verify-rate-limited',
+  /app\.post\("\/api\/auth\/verify-challenge"[\s\S]{0,600}?allowAuthAttempt\(`verify-challenge:/.test(server) &&
+  read('engine/tests/security.hardening.test.ts').includes('OTP verify rate limit enforced'),
+  'التحقق من رمز OTP محدود المحاولات (منع تخمين الرمز) مع اختبار انحدار');
 add('ai-verification-persisted',
   server.includes('aiLiveVerification: aiLiveVerificationState.snapshot()') &&
   server.includes('aiLiveVerificationState.restore(control.aiLiveVerification)') &&
@@ -2828,18 +2852,39 @@ add('watcher-advisory-not-authority',
     'الحارس fail-closed: لا قيمة تفعيل مكتوبة في الكود ولا افتراضي مُفعّل');
 
   add('legacy-erp-prefixes-complete',
-    ['/api/inventory', '/api/customers/360', '/api/reports/operations', '/api/crm', '/api/purchases', '/api/finance']
+    ['/api/inventory', '/api/customers/360', '/api/reports/operations', '/api/crm', '/api/purchases', '/api/finance',
+      '/api/catalog', '/api/tasks', '/api/business', '/api/suppliers', '/api/expenses', '/api/contracts', '/api/installments', '/api/executive']
       .every((p) => server.includes(`"${p}"`)),
-    'بادئات أسطح ERP/CRM/المالية الست كلها معزولة');
+    'بادئات أسطح ERP/CRM/المالية القديمة كلها معزولة (بما فيها catalog/tasks/business/suppliers/expenses/contracts/installments/executive)');
+
+  // /api/sales ميزة حيّة (تبويب sales الظاهر يستهلكها) وليست Legacy ERP: مستثناة من
+  // قائمة العزل. يمنع هذا الحارس إضافةً مستقبلية تُحجب تبويب المبيعات بـ404.
+  add('legacy-erp-excludes-live-sales', (() => {
+    const m = server.match(/const LEGACY_ERP_ROUTE_PREFIXES[^=]*=\s*Object\.freeze\(\[([\s\S]*?)\]\)/);
+    if (!m) return false;
+    const hasSalesPrefix = /"\/api\/sales"/.test(m[1]);
+    const salesRouteLive = server.includes('app.get("/api/sales", authenticateToken') || server.includes("app.get('/api/sales', authenticateToken");
+    const salesConsumed = read('src/services/api.ts').includes("'/api/sales'") || read('src/services/api.ts').includes('"/api/sales"');
+    return !hasSalesPrefix && salesRouteLive && salesConsumed;
+  })(), 'مبيعات المعرض /api/sales ميزة حيّة (مستهلكة في الواجهة الظاهرة) ومستثناة من عزل Legacy ERP (لا تُحجب بـ404)');
+
+  add('legacy-erp-no-visible-consumer-surface-guarded',
+    // الأسطح المعزولة الجديدة بلا مستهلك واجهة ظاهر: لا مكوّن ظاهر يستدعي مساراتها.
+    ['getSuppliers', 'getExpenses', 'getContracts', 'getInstallmentSchedule', 'getBusinessOverview', 'getExecutiveOverview', 'getTasks']
+      .every((m) => {
+        const used = ['business/BusinessSuiteView.tsx', 'operations/OperationsView.tsx', 'executive/ExecutiveCommandView.tsx'];
+        return used.some((f) => fs.existsSync(path.join(root, 'src/components', f)) && read(`src/components/${f}`).includes(m));
+      }),
+    'الأسطح المعزولة الجديدة يستهلكها فقط مكوّنات التبويبات المخفية (لا كسر لواجهة ظاهرة)');
 
   add('legacy-erp-guard-before-routes', (() => {
     const guardIdx = server.indexOf('if (!legacyErpScopeEnabled())');
     if (guardIdx < 0) return false;
-    const routeRe = /app\.(?:get|post|patch|delete|put|use)\(\s*"\/api\/(?:inventory|customers\/360|reports\/operations|crm|purchases|finance)[/"]/g;
+    const routeRe = /app\.(?:get|post|patch|delete|put|use)\(\s*"\/api\/(?:catalog|inventory|customers\/360|reports\/operations|crm|purchases|finance|tasks|business|suppliers|expenses|contracts|installments|executive)[/"]/g;
     let m; let earliest = Infinity;
     while ((m = routeRe.exec(server))) { if (m.index < earliest) earliest = m.index; }
     return earliest !== Infinity && guardIdx < earliest;
-  })(), 'حارس العزل مسجَّل قبل أول مسار من أسطح ERP/CRM/المالية (فلا مسار فعّال بلا عزل)');
+  })(), 'حارس العزل مسجَّل قبل أول مسار من كل أسطح ERP/CRM/المالية (فلا مسار فعّال بلا عزل، بما فيها /api/catalog/quote)');
 
   add('legacy-erp-ui-nav-gated',
     sidebar.includes('LEGACY_ERP_NAV_ENABLED') &&
