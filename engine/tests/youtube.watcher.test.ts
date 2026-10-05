@@ -354,7 +354,7 @@ function entry(partial: Partial<WatcherProcessedEntry>): WatcherProcessedEntry {
   };
   const s = createWatcherScheduler(hooks);
   s.start();
-  check('Q: بعد البدء عند 1 دقيقة يوجد مؤقّت واحد نشط', s.status().activeTimers === 1 && live.size <= 2);
+  check('Q: بعد البدء عند 1 دقيقة يوجد مؤقّت واحد نشط', s.status().activeTimers === 1 && live.size <= 3);
   s.reschedule();
   check('Q: التغيير إلى 5 دقائق يُبقي مؤقّتاً واحداً', s.status().activeTimers === 1);
   s.reschedule();
@@ -365,6 +365,59 @@ function entry(partial: Partial<WatcherProcessedEntry>): WatcherProcessedEntry {
   // إعادة الجدولة بعد الإيقاف تُنشئ مؤقّتاً واحداً فقط (لا يتراكم).
   s.reschedule();
   check('Q: إعادة التشغيل بعد الإيقاف = مؤقّت واحد', s.status().activeTimers === 1);
+}
+
+// --- R2) حارس الجدولة (watchdog): كشف الجمود الصامت + إصلاح ذاتي + دورة فاشلة لا تُسقط الجدولة ---
+{
+  // مؤقّتات وهمية تحفظ دوالها لنستدعيها يدوياً + ساعة وهمية نتحكم بها.
+  type Fake = { fn: () => void; kind: 'interval' | 'once'; cleared: boolean };
+  const timers: Fake[] = [];
+  let clock = 1_000_000;
+  let tickErrorCalls = 0;
+  let selfHealCalls = 0;
+  let throwOnRun = false;
+  const hooks = {
+    setTimer: (fn: () => void, _ms: number) => { const h: Fake = { fn, kind: 'interval', cleared: false }; timers.push(h); return { clear: () => { h.cleared = true; } }; },
+    setTimeoutOnce: (fn: () => void, _ms: number) => { const h: Fake = { fn, kind: 'once', cleared: false }; timers.push(h); return { clear: () => { h.cleared = true; } }; },
+    getCadenceMs: () => 60_000,
+    isDue: () => true,
+    runCycle: () => { if (throwOnRun) throw new Error('boom-SECRET-detail'); },
+    watchdogMs: 60_000,
+    stallMs: 120_000,
+    nowMs: () => clock,
+    onTickError: () => { tickErrorCalls += 1; },
+    onSelfHeal: () => { selfHealCalls += 1; },
+  };
+  const s = createWatcherScheduler(hooks);
+  s.start();
+  // start: [main interval, boot once, watchdog interval]
+  const main = timers[0];
+  const watchdog = timers[2];
+  check('Q2: يبدأ مؤقّتاً رئيسياً وحارساً', main?.kind === 'interval' && watchdog?.kind === 'interval' && s.status().activeTimers === 1);
+  // دورة ترمي استثناءً لا تخرج خطأً ولا توقف الجدولة، وتُسجَّل بأمان (بلا نص الخطأ).
+  throwOnRun = true;
+  let threw = false;
+  try { main.fn(); } catch { threw = true; }
+  check('Q2: دورة فاشلة لا تُخرج استثناءً (لا uncaughtException)', threw === false);
+  check('Q2: خطأ النبضة مُسجَّل بلا نص حساس', s.status().tickErrors === 1 && !String(s.status().lastError).includes('SECRET') && tickErrorCalls === 1);
+  throwOnRun = false;
+  // الحارس قبل حلول الجمود: لا إصلاح ذاتي (المؤقّت ما زال ينبض حديثاً).
+  clock += 30_000;
+  watchdog.fn();
+  check('Q2: الحارس يزيد عدّاد الفحص', s.status().watchdogChecks === 1);
+  check('Q2: لا إصلاح ذاتي بينما المؤقّت ينبض حديثاً', s.status().selfHeals === 0 && selfHealCalls === 0);
+  // محاكاة الجمود الصامت: تمرّ مدة الجمود بلا أي نبضة مؤقّت ⇒ إصلاح ذاتي.
+  clock += 200_000;
+  const timersBeforeHeal = timers.length;
+  watchdog.fn();
+  check('Q2: الجمود الصامت يُكتشف ويُعاد إنشاء المؤقّت', s.status().selfHeals === 1 && selfHealCalls === 1 && timers.length > timersBeforeHeal);
+  check('Q2: المؤقّت المُصلَّح واحد فقط', s.status().activeTimers === 1);
+  // بعد الإيقاف: الحارس لا يُصلح شيئاً (احترام Kill Switch).
+  s.stop();
+  clock += 10_000_000;
+  const healsBefore = s.status().selfHeals;
+  watchdog.fn();
+  check('Q2: بعد الإيقاف الحارس لا يُصلح شيئاً (Kill Switch)', s.status().activeTimers === 0 && s.status().selfHeals === healsBefore);
 }
 
 // --- R) تفاعل المتابعة (Follow-up Engagement): كشف تغيّر حقيقي فقط ---

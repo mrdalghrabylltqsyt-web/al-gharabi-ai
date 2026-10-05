@@ -68,6 +68,12 @@ export interface YouTubeMockState {
   lastUpdatePath: string | null;
   /** آخر جسم رفع (metadata) لإثبات publishAt/privacyStatus. */
   lastUploadBody: any;
+  /** حدّ جسم PUT للرفع — يحاكي قيد حجم الطلب لدى YouTube (يُقرأ من YOUTUBE_MOCK_UPLOAD_LIMIT). */
+  uploadBodyLimit: string;
+  /** آخر عدد بايتات وصلت فعلاً في PUT (لإثبات عدم الاقتطاع). */
+  lastUploadBytes: number;
+  /** تجاوز حالة الرفع التي يعيدها المزود (لمحاكاة processing). */
+  uploadStatusOverride: string | null;
   /** الوصف الفعلي الذي يعيده videos.list للفيديو المرفوع (لمحاكاة وصول/عدم وصول الوصف). */
   uploadedDescriptionOverride: string | null;
   /** آخر جسم إدراج تعليق. */
@@ -122,6 +128,9 @@ export function createYouTubeMock(): YouTubeMockState {
     lastInsertPath: null,
     lastUpdatePath: null,
     lastUploadBody: null,
+    uploadBodyLimit: process.env.YOUTUBE_MOCK_UPLOAD_LIMIT || '20mb',
+    lastUploadBytes: 0,
+    uploadStatusOverride: null,
     uploadedDescriptionOverride: null,
     lastCommentBody: null,
     lastUpdateBody: null,
@@ -271,9 +280,15 @@ export function startYouTubeMockServer(state: YouTubeMockState, port: number): P
     res.setHeader('Location', `${origin}/upload/session/fake-1`);
     return res.status(200).json({});
   });
-  app.put('/upload/session/fake-1', express.raw({ type: '*/*', limit: '20mb' }), (req, res) => {
+  app.put('/upload/session/fake-1', express.raw({ type: '*/*', limit: state.uploadBodyLimit }), (req, res) => {
     state.calls += 1;
-    return res.json({ kind: 'youtube#video', id: state.uploadedVideoId, snippet: { title: state.lastUploadBody?.snippet?.title || '' }, status: { privacyStatus: state.uploadedPrivacyStatus, uploadStatus: 'uploaded' } });
+    state.lastUploadBytes = Buffer.isBuffer(req.body) ? req.body.length : 0;
+    if (req.body === undefined) {
+      // تجاوز الحدّ: express.raw يرفض الطلب بـ413، وهو ما يحاكي رفض YouTube
+      // لحجم الطلب. لا نُعلن نجاحاً لرفع اقتُطع.
+      return res.status(413).json({ error: { code: 413, message: 'Request entity too large', errors: [{ reason: 'requestTooLarge' }] } });
+    }
+    return res.json({ kind: 'youtube#video', id: state.uploadedVideoId, snippet: { title: state.lastUploadBody?.snippet?.title || '' }, status: { privacyStatus: state.uploadedPrivacyStatus, uploadStatus: state.uploadStatusOverride || 'uploaded' } });
   });
 
   // تحديث فيديو (videos.update).

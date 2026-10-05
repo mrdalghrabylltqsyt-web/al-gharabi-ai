@@ -27,6 +27,8 @@ const BASE = `http://127.0.0.1:${PORT}`;
 const PREVIEW_TOKEN = randomBytes(24).toString('hex');
 const stateDir = mkdtempSync(join(tmpdir(), 'gharabi-yt-interval-'));
 const SESSION_SECRET = 'yt-interval-test-secret-not-real';
+// مفتاح ثابت بين إعادات التشغيل (مهم لثبات أي اعتماد مشفّر عبر restart).
+const TOKEN_KEY = randomBytes(32).toString('hex');
 
 function startApp(): { proc: ChildProcess; log: () => string } {
   let log = '';
@@ -34,6 +36,10 @@ function startApp(): { proc: ChildProcess; log: () => string } {
     ...(process.env as Record<string, string>),
     PORT: String(PORT), NODE_ENV: 'production', APP_URL: BASE,
     STATE_DIR: stateDir, GHARABI_PREVIEW_TOKEN: PREVIEW_TOKEN, SESSION_SECRET,
+    // إعداد OAuth كافٍ لبناء رابط التفويض وحفظ جلسة OAuth (بلا اتصال شبكي).
+    GOOGLE_OAUTH_CLIENT_ID: 'test.apps.googleusercontent.com',
+    GOOGLE_OAUTH_CLIENT_SECRET: 'test-not-real',
+    PLATFORM_TOKEN_ENCRYPTION_KEY: TOKEN_KEY,
   };
   delete env.GEMINI_API_KEY;
   delete env.DATABASE_URL;
@@ -141,6 +147,28 @@ async function run(): Promise<void> {
     // 7) YouTube يبقى بحالته (الاتصال/التفويض لا يتأثران بهذا الإعداد)
     const w = await watcherState(auth2);
     check('كتلة التفويض لا تتأثر (حقول الحالة موجودة)', w.controls && typeof w.watcherActive === 'boolean');
+
+    // 8) M2: جلسة OAuth تصمد بعد restart (تُحفظ قبل إرجاع الرابط، ويُقبل الcallback بعد الإقلاع).
+    //     الفرق بين رسالتي 400 يميّز «جلسة مفقودة» عن «جلسة موجودة لكن رمز مفقود».
+    const startRes = await fetch(`${BASE}/api/platforms/youtube/oauth/start`, { headers: auth2 });
+    const startBody = await startRes.json();
+    const oauthUrl = new URL(String(startBody.authorizationUrl || 'https://invalid.local'));
+    const savedState = oauthUrl.searchParams.get('state') || '';
+    check('OAuth start يعيد رابطاً وحالة', startRes.status === 200 && Boolean(savedState));
+    await stop(app.proc);
+    app = startApp();
+    const up3 = await waitForHealth();
+    check('الخادم يعود قبل فحص جلسة OAuth', up3);
+    if (!up3) throw new Error('الخادم لم يعد');
+    // حالة مزوّرة => «غير معروفة» (تُثبت أن التحقق فعّال).
+    const bogus = await fetch(`${BASE}/api/platforms/youtube/oauth/callback?state=bogus_state_zzz&code=x&format=json`, { headers: { Accept: 'application/json' } });
+    const bogusText = await bogus.text();
+    // حالة محفوظة عبر restart => عُبِر التحقق من الجلسة ووصل الطلب إلى تبادل الرمز لدى
+    // Google (يفشل هنا بـinvalid_client لعدم وجود مزوّد وهمي) — دليل أن الجلسة وُجدت فعلاً.
+    const persisted = await fetch(`${BASE}/api/platforms/youtube/oauth/callback?state=${encodeURIComponent(savedState)}&code=x&format=json`, { headers: { Accept: 'application/json' } });
+    const persistedText = await persisted.text();
+    check('حالة مزوّرة => جلسة OAuth غير معروفة', bogusText.includes('غير معروفة'), bogusText.slice(0, 120));
+    check('جلسة OAuth المحفوظة تصمد بعد إعادة التشغيل', !persistedText.includes('غير معروفة') && (persistedText.includes('invalid_client') || persistedText.includes('ربط المنصة')), persistedText.slice(0, 160));
 
     console.log('\n' + '='.repeat(60));
     if (failures.length) {

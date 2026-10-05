@@ -30,6 +30,7 @@ import {
   parseChannelListResponse,
   classifyYouTubeTokenError,
   classifyYouTubeApiError,
+  classifyVideoUploadResult,
   buildChannelsMineUrl,
   YouTubeClient,
 } from '../social/youtube';
@@ -141,6 +142,19 @@ function unitTests(): void {
   check('حلّ مجموعة جزئية يعيد النطاقات الثلاثة دائماً', partial.includes(YOUTUBE_READONLY_SCOPE) && partial.includes(YOUTUBE_UPLOAD_SCOPE) && partial.includes(YOUTUBE_FORCE_SSL_SCOPE));
   const junk = resolveYouTubeScopes(['https://www.googleapis.com/auth/yt-analytics.readonly', 'not-a-scope']);
   check('حلّ مجموعة يُهمل أي نطاق غير مطلوب', !junk.includes('https://www.googleapis.com/auth/yt-analytics.readonly') && !junk.includes('not-a-scope') && junk.length === 3);
+
+  group('2b) وحدة: تصنيف نتيجة رفع الفيديو — processing ليست «مُسلَّمة» (M4)');
+  const clsPub = classifyVideoUploadResult({ id: 'vidA', status: { uploadStatus: 'uploaded' } });
+  check('uploaded => published ومُسلَّم بمعرّف', clsPub.state === 'published' && clsPub.delivered === true && clsPub.externalVideoId === 'vidA');
+  const clsProc = classifyVideoUploadResult({ id: 'vidB', status: { uploadStatus: 'processing' } });
+  check('processing => ليست published وليست مُسلَّمة', clsProc.state === 'processing' && clsProc.delivered === false && clsProc.externalVideoId === 'vidB');
+  const clsSched = classifyVideoUploadResult({ id: 'vidC', status: { uploadStatus: 'uploaded', publishAt: '2030-01-01T00:00:00Z' } });
+  check('publishAt => scheduled وغير مُسلَّمة', clsSched.state === 'scheduled' && clsSched.delivered === false);
+  const clsFailed = classifyVideoUploadResult({ id: 'vidD', status: { uploadStatus: 'failed' } });
+  check('failed/rejected => failed وغير مُسلَّمة', clsFailed.state === 'failed' && clsFailed.delivered === false);
+  const clsNoId = classifyVideoUploadResult({ status: { uploadStatus: 'uploaded' } });
+  check('بلا معرّف فيديو => failed بلا ادعاء', clsNoId.state === 'failed' && clsNoId.delivered === false && clsNoId.externalVideoId === null);
+  check('حالة uploadStatus غير معروفة => ليست مُسلَّمة', classifyVideoUploadResult({ id: 'vidE', status: { uploadStatus: 'weird' } }).delivered === false);
 
   group('3) وحدة: قراءة القناة وتصنيف الأخطاء');
   const parsed = parseChannelListResponse({ items: [{ id: 'UC_1', snippet: { title: 'قناة' }, contentDetails: { relatedPlaylists: { uploads: 'UU_1' } } }] });
@@ -398,6 +412,18 @@ async function integrationTests(): Promise<void> {
     const publishNow = await (await fetch(`${BASE}/api/platforms/youtube/publish`, { method: 'POST', headers: auth, body: JSON.stringify({ title: 'فيديو جديد', description: 'وصف', approved: true, privacyStatus: 'public', videoBase64: MP4_B64 }) })).json();
     check('الرفع الفوري نجح', publishNow.success === true && publishNow.externalVideoId === mock.state.uploadedVideoId);
     check('المسار الرسمي uploadType=resumable مُستخدم', (mock.state.lastUploadPath || '').includes('uploadType=resumable'));
+    // M1: جسم الفيديو الحقيقي (base64) يتجاوز 256kb بكثير — يجب ألا يرفضه المحلّل العام
+    // (كان 256kb فيفشل الرفع الفعلي قبل الوصول إلى المسار).
+    const BIG_MP4_B64 = Buffer.concat([Buffer.from([0, 0, 0, 0x20]), Buffer.from('ftypisom'), Buffer.alloc(400 * 1024, 9)]).toString('base64');
+    const publishBig = await (await fetch(`${BASE}/api/platforms/youtube/publish`, { method: 'POST', headers: auth, body: JSON.stringify({ title: 'فيديو كبير', description: 'وصف', approved: true, privacyStatus: 'public', videoBase64: BIG_MP4_B64 }) })).json();
+    check('رفع فيديو > 256kb يمرّ (لا 413 من المحلّل العام)', publishBig.success === true && publishBig.externalVideoId === mock.state.uploadedVideoId);
+    check('المادة الكبيرة وصلت كاملة إلى YouTube (لا اقتطاع)', mock.state.lastUploadBytes > 256 * 1024);
+    // M4: رفع ما زال قيد المعالجة عند المزود => ليست published وليست مُسلَّمة.
+    mock.state.uploadStatusOverride = 'processing';
+    const publishProc = await (await fetch(`${BASE}/api/platforms/youtube/publish`, { method: 'POST', headers: auth, body: JSON.stringify({ title: 'فيديو قيد المعالجة', description: 'وصف', approved: true, privacyStatus: 'public', videoBase64: MP4_B64 }) })).json();
+    check('processing: success بمعرّف لكن delivered=false', publishProc.success === true && publishProc.delivered === false && publishProc.processing === true);
+    check('processing: providerState صريح وscheduled غير صحيح', publishProc.providerState === 'processing' && publishProc.scheduled !== true && publishProc.verified !== true);
+    mock.state.uploadStatusOverride = null;
     const publishDup = await (await fetch(`${BASE}/api/platforms/youtube/publish`, { method: 'POST', headers: auth, body: JSON.stringify({ title: 'فيديو جديد', description: 'وصف', approved: true, privacyStatus: 'public', videoBase64: MP4_B64 }) })).json();
     check('الرفع المكرر مرفوض بـDUPLICATE_PUBLISH', publishDup.code === 'DUPLICATE_PUBLISH');
     const schedule = await (await fetch(`${BASE}/api/platforms/youtube/publish`, { method: 'POST', headers: auth, body: JSON.stringify({ title: 'فيديو مجدول', description: 'وصف', approved: true, publishAt: '2027-01-01T10:00', videoBase64: MP4_B64 }) })).json();

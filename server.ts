@@ -469,14 +469,17 @@ const STATE_SCHEMA_VERSION = 16;
 // كما أرسله Meta، لا على إعادة تسلسل req.body (قد تختلف المسافات/ترتيب المفاتيح).
 // كونه الوسيط الأول يعني أنه يقرأ التدفق الوحيد نفسه، فلا يجد أي محلّل لاحق شيئاً.
 //
-// استثناء مضبوط: مسار رفع مادة المحتوى (فيديو base64) قد يتجاوز 256kb بكثير،
-// فنترك تدفقه لمحلّل خاص بالمسار بحد أعلى معلن — مع بقاء الحد الصغير هنا وحماية
+// استثناء مضبوط: مسارات رفع مادة المحتوى (فيديو base64) قد تتجاوز 256kb بكثير،
+// فنترك تدفقها لمحلّل خاص بكل مسار بحد أعلى معلن — مع بقاء الحد الصغير هنا وحماية
 // التحقق من التوقيع (rawBody) كما هي لكل المسارات الأخرى.
-const CONTENT_UPLOAD_PATH = "/api/platforms/youtube/content/drafts";
+const LARGE_UPLOAD_JSON_PATHS = new Set([
+  "/api/platforms/youtube/content/drafts",
+  "/api/platforms/youtube/publish",
+]);
 const CONTENT_UPLOAD_JSON_LIMIT = "20mb";
 app.use((req: any, res, next) => {
   const path = String(req.path || req.url || "").split("?")[0];
-  if (path === CONTENT_UPLOAD_PATH) return next();
+  if (LARGE_UPLOAD_JSON_PATHS.has(path)) return next();
   return express.json({
     limit: "256kb",
     verify: (req: any, _res: unknown, buf: Buffer) => {
@@ -5950,7 +5953,7 @@ function watcherStatusBlock() {
     cadenceMs: cadence,
     cadenceMinutes: controlsView.cadenceMinutes,
     cadenceEffectiveMinutes: controlsView.cadenceEffectiveMinutes,
-    scheduler: watcherScheduler?.status() ?? { active: false, activeTimers: 0, cadenceMs: cadence, startedAt: null, reschedules: 0 },
+    scheduler: watcherScheduler?.status() ?? { active: false, activeTimers: 0, cadenceMs: cadence, startedAt: null, lastTickMs: null, reschedules: 0, watchdogChecks: 0, selfHeals: 0, tickErrors: 0, lastError: null },
     lastPollAt: watcherState.lastPollAt,
     nextPollAt: cadence > 0 ? nextPollAt(watcherState.lastPollAt, cadence) : null,
     pollCount: watcherState.pollCount,
@@ -6109,6 +6112,22 @@ function watcherIraqiReply(text: string): string {
 }
 
 /**
+ * ينبّه المالك عند إصلاح ذاتي للحارس (نادر) — مرة واحدة حتى استعادة تالية،
+ * لعلمه أن الجدولة تعافت. بلا محتوى عميل وبلا سرّ. يعيد استخدام علم الفشل
+ * المتكرر (errorAlerted) فلا يُغرق التنبيهات.
+ */
+function maybeNotifyWatcherSelfHeal(): void {
+  if (watcherAlertState.errorAlerted) return;
+  watcherAlertState.errorAlerted = true;
+  try {
+    pushNotification("owner", "youtube_watcher_self_healed", "إصلاح ذاتي لمراقبة YouTube",
+      "فُقد مؤقّت مراقبة YouTube وأُعيد إنشاؤه تلقائياً (watchdog) فعادت المراقبة. راجع السجل إن تكرّر.", "warning", "youtube_operations");
+    audit("system", "youtube_watcher_self_healed", "timer_recreated");
+  } catch { /* لا يُسقط الحارس */ }
+  saveYouTubeQuota();
+}
+
+/**
  * حلقة المراقبة المستمرة (24/7): job داخلي يعمل داخل عملية Render الدائمة
  * (web process) مستقل تماماً عن المتصفح — إغلاق المتصفح/الهاتف لا يؤثر. كل
  * دورة تُنفَّذ إن حان وقتها وفق الإيقاع المضبوط، وتحفظ حالتها عبر المحوّل
@@ -6118,18 +6137,23 @@ function startYouTubeWatcher(): void {
   if (watcherScheduler) { watcherScheduler.start(); return; }
   watcherScheduler = createWatcherScheduler({
     setTimer: (fn, ms) => {
-      const t = setInterval(fn, ms);
+      const t = setInterval(safeTimerCallback(fn, "youtube-watcher"), ms);
       (t as any).unref?.();
       return { clear: () => clearInterval(t) };
     },
     setTimeoutOnce: (fn, ms) => {
-      const t = setTimeout(fn, ms);
+      const t = setTimeout(safeTimerCallback(fn, "youtube-watcher-boot"), ms);
       (t as any).unref?.();
       return { clear: () => clearTimeout(t) };
     },
     getCadenceMs: () => Math.max(1, watcherCadenceMs()),
     isDue: () => watcherPollDue(),
     runCycle: () => { runYouTubeWatcherCycle("schedule").catch(() => { /* الخطأ مسجَّل داخل الدورة */ }); },
+    // عتبة الجمود: 3× الفاصل الفعلي (بحد أدنى 3 دقائق) — كشف توقّف المؤقّت الصامت.
+    stallMs: Math.max(3 * 60_000, 3 * Math.max(1, watcherCadenceMs())),
+    // الحارس يُنبّه عند الإصلاح الذاتي، ولا يخرج استثناءً أبداً.
+    onTickError: () => { /* الدورة تحفظ آخر خطأ داخلياً؛ لا uncaughtException */ },
+    onSelfHeal: () => { maybeNotifyWatcherSelfHeal(); persistWatcherState().catch(() => { /* يُعلن خطأ الحفظ العام */ }); },
   });
   // Kill Switch عند الإقلاع: لا نبضات. تُستأنف عند رفع الإيقاف من الواجهة.
   const c = normalizeWatcherControls(watcherState.controls);
@@ -6510,15 +6534,38 @@ async function executeYouTubePublish(input: {
   // إعادة نشر، فلا يُنشأ فيديو مكرر إذا نجح الطلب لدى YouTube ولم تصل الاستجابة.
   let reconciled: { status: string; videoId: string | null; note: string } | null = null;
   let externalVideoId = result.ok && result.data?.externalVideoId ? result.data.externalVideoId : null;
+  // حقيقة حالة الرفع من المزود: `classifyVideoUploadResult` هي المصدر الوحيد.
+  // لا نستنتج «تم التسليم» من وجود معرّف الفيديو وحده (كان يعامل `processing`
+  // كمنشور)، بل نعكس تصنيف المزود بدقة. عند إعادة المزامنة (found) نقرأ الحالة
+  // الفعلية من YouTube بدل الافتراض.
+  let providerUploadState: 'published' | 'scheduled' | 'processing' | 'failed' | null =
+    result.ok && result.data ? (result.data.state as any) : null;
+  let uploadDelivered = result.ok && result.data ? Boolean(result.data.delivered) : false;
   if (!result.ok && (result.code === "network" || result.code === "timeout")) {
     try {
       const found = await findYouTubeVideoByFingerprint(fingerprint);
       const rec = reconcileUnknownUpload(found, publishAtIso);
       reconciled = { status: rec.status, videoId: rec.videoId, note: rec.note };
-      if (rec.status === "FOUND" && rec.videoId) externalVideoId = rec.videoId;
+      if (rec.status === "FOUND" && rec.videoId) {
+        externalVideoId = rec.videoId;
+        // نقرأ حالة الرفع الحقيقية للفيديو المُلتقَط بدل افتراض النشر (لا ادعاء بلا دليل).
+        try {
+          const fetchedRec = await youtubeClient().getVideos(ensured.token, [externalVideoId]);
+          const rowRec = fetchedRec.ok && fetchedRec.data?.length === 1 ? fetchedRec.data[0] : null;
+          if (rowRec) {
+            const cls = classifyVideoUploadResult({ id: externalVideoId, status: { uploadStatus: rowRec.uploadStatus, publishAt: publishAtIso } });
+            providerUploadState = cls.state;
+            uploadDelivered = cls.delivered;
+          }
+        } catch { /* تبقى الحالة غير مؤكدة بصراحة */ }
+      }
     } catch { /* تبقى الحالة غير مؤكدة بصراحة */ }
   }
-  const delivered = Boolean(externalVideoId && !publishAtIso);
+  // التسليم يعكس تصنيف المزود بدقة: `processing`/`scheduled` ليست «مُسلَّمة».
+  const delivered = Boolean(uploadDelivered && externalVideoId && !publishAtIso);
+  // الحالة المحفوظة تعكس حقيقة المزود (لا «published» لمقطع قيد المعالجة).
+  const recordState: string = providerUploadState === "processing" ? "processing"
+    : externalVideoId ? (publishAtIso ? "scheduled" : "published") : "failed";
 
   // تحقق حقيقي من المزود (لا نكتفي بنجاح الطلب): نشر الآن يجب أن يكون public
   // فعلاً، والجدولة private+(publishAt)، **والوصف المعتمد يجب أن يصل فعلاً**.
@@ -6555,7 +6602,6 @@ async function executeYouTubePublish(input: {
   // لا يُعلن التحقق الكامل إلا باجتماع الخصوصية والوصف فعلاً من YouTube.
   const fullyVerified = delivered && Boolean(privacyVerification?.verified) && (!descriptionVerification?.required || Boolean(descriptionVerification?.verified));
 
-  const recordState = externalVideoId ? (publishAtIso ? "scheduled" : "published") : "failed";
   const record = {
     id: workspaceId("publish"), platform: "youtube",
     postId: typeof input.postId === "string" ? input.postId : workspaceId("post"),
@@ -6588,7 +6634,16 @@ async function executeYouTubePublish(input: {
   if (input.queueItemId) {
     queueItem = contentQueue.find((i) => i.id === input.queueItemId) || null;
     if (queueItem) {
-      if (externalVideoId) {
+      if (providerUploadState === "processing" && externalVideoId) {
+        // قيد المعالجة عند YouTube: نحفظ المعرّف الحقيقي لكن **لا** نعلن النشر،
+        // فنبقى في حالة غير منشورة صراحةً حتى يتأكد المزود (لا ادعاء كاذب).
+        queueItem.state = "APPROVED";
+        queueItem.stateReason = `رفع YouTube الفيديو وما زال يعالجه (${externalVideoId})؛ لم يُنشَر بعد. أعد الفحص لاحقاً.`;
+        queueItem.code = "YOUTUBE_PROCESSING";
+        queueItem.externalVideoId = externalVideoId;
+        queueItem.url = youtubeWatchUrl(externalVideoId);
+        pushContentHistory(queueItem, { action: "processing", actor, detail: queueItem.stateReason, externalVideoId, result: "processing" });
+      } else if (externalVideoId) {
         queueItem.state = publishAtIso ? "SCHEDULED" : "PUBLISHED";
         queueItem.externalVideoId = externalVideoId;
         queueItem.url = youtubeWatchUrl(externalVideoId);
@@ -6621,7 +6676,8 @@ async function executeYouTubePublish(input: {
 
   await persistStateDurable();
   logYouTubeOperation("video_upload", { externalId: externalVideoId, outcome: record.state, errorCode: result.ok ? null : (result.code as any) || null, durationMs: Date.now() - started, idempotencyKey: fingerprint, actor });
-  audit(actor, externalVideoId ? (publishAtIso ? "youtube_video_scheduled" : "youtube_video_uploaded") : "youtube_video_upload_failed", `youtube:${externalVideoId || "none"}`);
+  const publishAuditAction = providerUploadState === "processing" ? "youtube_video_processing" : (publishAtIso ? "youtube_video_scheduled" : "youtube_video_uploaded");
+  audit(actor, externalVideoId ? publishAuditAction : "youtube_video_upload_failed", `youtube:${externalVideoId || "none"}`);
   if (!externalVideoId) {
     noteYouTubeProviderError(result.code as any);
     return { status: 502, body: { success: false, code: result.code || "PROVIDER_ERROR", error: result.error || "لم يُعد YouTube معرّف فيديو؛ لم يُسجَّل أي نشر.", record, reconciled, delivered: false, ...youtubeStateBlock() } };
@@ -6634,6 +6690,9 @@ async function executeYouTubePublish(input: {
       externalVideoId, url: record.url,
       delivered,
       verified: record.verified === true,
+      // حالة الرفع الحقيقية من المزود: `processing` تعني أنه لم يُنشَر بعد.
+      providerState: providerUploadState,
+      processing: providerUploadState === "processing",
       privacyStatus: record.privacyStatus,
       privacyVerification,
       descriptionVerification,
@@ -6641,9 +6700,11 @@ async function executeYouTubePublish(input: {
       scheduled: record.state === "scheduled",
       state: record.state,
       reconciled,
-      note: publishAtIso
-        ? `تم الرفع مع جدولة حقيقية (publishAt) لدى YouTube بحالة private حتى الموعد${privacyVerification?.verified ? " — أثبت YouTube الحالة الفعلية." : " (لم تُؤكَّد الحالة من YouTube بعد)."}${descriptionVerification?.required ? (descriptionVerification.verified ? " وأُثبت وصول الوصف المعتمد." : " لكن لم يُثبَت وصول الوصف المعتمد إلى YouTube.") : ""}`
-        : `تم الرفع وأعاد YouTube معرّف فيديو حقيقي${privacyVerification?.verified ? " وأثبت الخصوصية الفعلية: " + privacyVerification.actual + "." : " (لم تُؤكَّد الخصوصية من YouTube بعد)."}${descriptionVerification?.required ? (descriptionVerification.verified ? " وأُثبت وصول الوصف المعتمد." : " لكن لم يُثبَت وصول الوصف المعتمد إلى YouTube.") : ""}`,
+      note: providerUploadState === "processing"
+        ? `رفع YouTube الفيديو (${externalVideoId}) وما زال يعالجه؛ لم يُنشَر بعد ولا يُعدّ مُسلَّماً حتى يتأكد المزود.`
+        : publishAtIso
+          ? `تم الرفع مع جدولة حقيقية (publishAt) لدى YouTube بحالة private حتى الموعد${privacyVerification?.verified ? " — أثبت YouTube الحالة الفعلية." : " (لم تُؤكَّد الحالة من YouTube بعد)."}${descriptionVerification?.required ? (descriptionVerification.verified ? " وأُثبت وصول الوصف المعتمد." : " لكن لم يُثبَت وصول الوصف المعتمد إلى YouTube.") : ""}`
+          : `تم الرفع وأعاد YouTube معرّف فيديو حقيقي${privacyVerification?.verified ? " وأثبت الخصوصية الفعلية: " + privacyVerification.actual + "." : " (لم تُؤكَّد الخصوصية من YouTube بعد)."}${descriptionVerification?.required ? (descriptionVerification.verified ? " وأُثبت وصول الوصف المعتمد." : " لكن لم يُثبَت وصول الوصف المعتمد إلى YouTube.") : ""}`,
       ...youtubeStateBlock(),
     },
   };
@@ -6682,7 +6743,7 @@ app.post("/api/platforms/youtube/reply", requireOwner, async (req, res) => {
  * الرفع الحقيقي للفيديو (videos.insert resumable) — نشر فوري أو جدولة حقيقية.
  * المحتوى (base64) أو رابط عام للفيديو، مع idempotency وrate limit وحارس سلامة.
  */
-app.post("/api/platforms/youtube/publish", requireOwner, async (req, res) => {
+app.post("/api/platforms/youtube/publish", express.json({ limit: CONTENT_UPLOAD_JSON_LIMIT }), requireOwner, async (req, res) => {
   const user = (req as any).user as { id: string };
   const result = await executeYouTubePublish({
     title: typeof req.body?.title === "string" ? req.body.title : "",
