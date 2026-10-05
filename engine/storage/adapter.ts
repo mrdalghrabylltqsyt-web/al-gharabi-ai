@@ -65,10 +65,17 @@ export const STORAGE_KEY_USAGE = "usage";
  */
 export const STORAGE_KEY_CONTROL = "control";
 
+/**
+ * عدّاد استهلاك حصة YouTube Data API (وحدات تقديرية لكل يوم) — مفتاح صغير مستقل
+ * عن لقطة العمل، يمرّ عبر المحوّل نفسه فيصمد بعد restart للخلفيتين.
+ */
+export const STORAGE_KEY_YOUTUBE_QUOTA = "youtubeQuota";
+
 const FILE_NAMES: Record<string, string> = {
   [STORAGE_KEY_STATE]: ".gharabi-state.json",
   [STORAGE_KEY_USAGE]: ".gharabi-usage.json",
   [STORAGE_KEY_CONTROL]: ".gharabi-control.json",
+  [STORAGE_KEY_YOUTUBE_QUOTA]: ".gharabi-youtube-quota.json",
 };
 
 const BACKUP_PREFIX = "state-";

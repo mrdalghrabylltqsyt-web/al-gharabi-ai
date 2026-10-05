@@ -78,6 +78,8 @@ function startApp(ytBase: string, extraEnv: Record<string, string> = {}): { proc
     GOOGLE_OAUTH_CLIENT_ID: GO_CLIENT_ID,
     GOOGLE_OAUTH_CLIENT_SECRET: GO_CLIENT_SECRET,
     PLATFORM_TOKEN_ENCRYPTION_KEY: TOKEN_KEY,
+    // حصة اختبارية كبيرة: هذا الاختبار ليس عن الحارس، فلا نُحجب الرفع المتكرر.
+    YOUTUBE_DAILY_QUOTA: '1000000',
     ...extraEnv,
   };
   delete env.GEMINI_API_KEY;

@@ -261,6 +261,7 @@ import {
   YOUTUBE_REPLY_LIFECYCLE_LABELS_AR,
   type YouTubeReplyLifecycleState,
   type YouTubeFetch,
+  type YouTubeHttpResponse,
   type YouTubeVideo,
   type YouTubeComment,
 } from "./engine/social/youtube";
@@ -325,6 +326,26 @@ import {
 import { createWatcherScheduler, type WatcherScheduler } from "./engine/social/youtubeWatcherScheduler";
 import { acquireLease, releaseLease, normalizeLease, type DurableLease } from "./engine/social/durableLease";
 import { safeTimerCallback } from "./engine/social/safeTimer";
+import {
+  YouTubeQuotaLedger,
+  resolveYouTubeDailyQuota,
+  resolveYouTubeQuotaAlertThreshold,
+  inspectYouTubeDailyQuota,
+  buildYouTubeQuotaStatus,
+  youtubeQuotaAlertReason,
+  canAffordYouTubeQuota,
+  classifyYouTubeQuotaOperation,
+  youtubeUrlCountsAgainstQuota,
+  YOUTUBE_QUOTA_COST,
+  type YouTubeQuotaOperation,
+} from "./engine/social/youtubeQuota";
+import {
+  resolveWatcherErrorAlertThreshold,
+  shouldAlertWatcherFailure,
+  shouldAlertReauth,
+  watcherFailureAlertText,
+  reauthAlertText,
+} from "./engine/social/watcherAlerts";
 import {
   computeBriefCounts,
   buildMetricViews,
@@ -423,6 +444,7 @@ import {
   STORAGE_KEY_STATE,
   STORAGE_KEY_USAGE,
   STORAGE_KEY_CONTROL,
+  STORAGE_KEY_YOUTUBE_QUOTA,
   type StorageAdapter,
   type StorageStatus,
 } from "./engine/storage/adapter";
@@ -2852,7 +2874,10 @@ function hasCapability(platform: string, capability: string) { return platformSu
 // إحصاءات حقيقية. النطاقات: youtube.readonly + youtube.upload + youtube.force-ssl.
 // الأسرار تُقرأ من بيئة الخادم أو تُحفظ مشفّرة؛ لا تُسجَّل ولا تُعاد.
 // -------------------------------------------------------------
-const youtubeFetchImpl: YouTubeFetch = (url, init) => fetch(url, init as any);
+// المغلّف الفعلي (مع حارس حصة YouTube) معرَّف لاحقاً بعد تعريف عدّاد الحصة؛ نفوّض
+// إليه lazily هنا كي يبقى العميل الواحد نفسه ويُحتسب كل طلب YouTube تلقائياً بلا
+// تعديل مواضع الاستدعاء (نفس نمط جدار حماية Gemini المركزي).
+const youtubeFetchImpl: YouTubeFetch = (url, init) => youtubeGuardedFetch(url, init);
 function youtubeClient(): YouTubeClient { return new YouTubeClient(youtubeFetchImpl, youtubeApiBase(), youtubeTokenUrl(), youtubeUploadBase()); }
 function youtubeOAuthConfig(): any { return OAUTH_CONFIG["youtube"]; }
 /** النطاقات النهائية: المطلوبة دائماً + أي تجاوز رسمي محدود من البيئة. */
@@ -2914,6 +2939,8 @@ async function ensureYouTubeAccessToken(): Promise<{ ok: boolean; token?: string
     await persistStateDurable();
     audit("system", "youtube_refresh_failed", res.code || "provider_error");
     logYouTube("refresh_failed", { code: res.code || "provider_error" });
+    // تنبيه المالك مرة واحدة: توقّف الرد الآلي فعلياً ويحتاج إعادة ربط (بلا إغراق).
+    maybeAlertYouTubeReauth();
     return { ok: false, error: res.error || "فشل تجديد رمز Google؛ أعد الربط.", code: res.code ?? null };
   }
   saveYouTubeCredentials({
@@ -2927,6 +2954,61 @@ async function ensureYouTubeAccessToken(): Promise<{ ok: boolean; token?: string
   logYouTube("token_refreshed", { scopeCount: res.data.scope.length });
   return { ok: true, token: res.data.accessToken, refreshed: true };
 }
+
+/**
+ * ينبّه المالك عند الحاجة لإعادة ربط YouTube (مرة واحدة حتى استعادة الاتصال) —
+ * عبر `pushNotification` القائمة. يمنع الإغراق بحالة `watcherAlertState`.
+ */
+function maybeAlertYouTubeReauth(): void {
+  if (!shouldAlertReauth({ reauthAlerted: watcherAlertState.reauthAlerted })) return;
+  watcherAlertState.reauthAlerted = true;
+  try {
+    const conn: any = platformConnections.get("youtube");
+    const { title, body } = reauthAlertText({ accountName: conn?.accountName || null });
+    pushNotification("owner", "youtube_reauth_needed", title, body, "critical", "platform_connections");
+    audit("system", "youtube_reauth_alert", "reauth_needed");
+  } catch { /* لا يُسقط فشل التنبيه المسار */ }
+  saveYouTubeQuota();
+}
+
+/** عند استعادة الاتصال: يُصفَّر علم تنبيه reauth (ليُنبَّه مجدداً لو تكرّر). */
+function clearYouTubeReauthAlert(): void {
+  if (!watcherAlertState.reauthAlerted) return;
+  watcherAlertState.reauthAlerted = false;
+  saveYouTubeQuota();
+}
+
+/**
+ * ينبّه المالك عند تكرار فشل دورات المراقبة (مرة واحدة لكل سلسلة فشل) — عبر
+ * `pushNotification` القائمة. يُصفَّر العلم عند أول دورة ناجحة.
+ */
+function maybeAlertWatcherFailure(): void {
+  if (!shouldAlertWatcherFailure({
+    consecutiveErrors: watcherState.consecutiveErrors,
+    errorAlerted: watcherAlertState.errorAlerted,
+    threshold: YOUTUBE_WATCHER_ERROR_ALERT_THRESHOLD,
+  })) return;
+  watcherAlertState.errorAlerted = true;
+  try {
+    const { title, body } = watcherFailureAlertText({
+      consecutiveErrors: watcherState.consecutiveErrors,
+      lastError: watcherState.lastError,
+      cadenceMinutes: watcherState.controls.cadenceMinutes,
+      threshold: YOUTUBE_WATCHER_ERROR_ALERT_THRESHOLD,
+    });
+    pushNotification("owner", "youtube_watcher_failure", title, body, "warning", "youtube_operations");
+    audit("system", "youtube_watcher_failure_alert", `${watcherState.consecutiveErrors} consecutive errors`);
+  } catch { /* لا يُسقط فشل التنبيه المسار */ }
+  saveYouTubeQuota();
+}
+
+/** عند أول دورة ناجحة: يُصفَّر علم تنبيه الفشل المتكرر (ليُنبَّه مجدداً لو تكرّر). */
+function clearWatcherFailureAlert(): void {
+  if (!watcherAlertState.errorAlerted) return;
+  watcherAlertState.errorAlerted = false;
+  saveYouTubeQuota();
+}
+
 /**
  * ينفّذ قراءة القناة برمز YouTube مع تجديد تلقائي عند الانتهاء — فلا يسقط الفحص
  * بعد انتهاء access token ما دام refresh token صالحاً. غلاف واحد يمنع تكرار
@@ -2936,6 +3018,8 @@ async function fetchYouTubeChannelResilient(): Promise<{ ok: boolean; data: any 
   const ensured = await ensureYouTubeAccessToken();
   if (!ensured.ok || !ensured.token) return { ok: false, data: null, error: ensured.error, code: ensured.code ?? null };
   const proof = await youtubeClient().fetchMyChannel(ensured.token);
+  // قراءة القناة نجحت ⇒ الاتصال سليم فعلاً: نُصفّر تنبيه reauth ليُعاد التنبيه إن تكرّر الانقطاع.
+  if (proof.ok) clearYouTubeReauthAlert();
   return { ok: proof.ok, data: proof.data, error: proof.error, code: proof.code ?? null, refreshed: ensured.refreshed };
 }
 /** يحفظ اعتماد YouTube مشفّراً بلا كشفه. */
@@ -5565,6 +5649,7 @@ async function runYouTubeWatcherCycle(trigger: "schedule" | "manual" = "schedule
       watcherState.consecutiveErrors += 1;
       watcherState.lastPollAt = new Date(now).toISOString();
       watcherAudit({ action: "poll_error", error: watcherState.lastError, reason: guard.error });
+      maybeAlertWatcherFailure();
       await persistWatcherState();
       return { ok: false, error: guard.error, code: guard.code, newDetected, replied, escalated, skipped, verified, failed };
     }
@@ -5576,6 +5661,7 @@ async function runYouTubeWatcherCycle(trigger: "schedule" | "manual" = "schedule
       watcherState.consecutiveErrors += 1;
       watcherState.lastPollAt = new Date(now).toISOString();
       watcherAudit({ action: "poll_error", error: watcherState.lastError, reason: videosRes.error });
+      maybeAlertWatcherFailure();
       await persistWatcherState();
       return { ok: false, error: videosRes.error, code: videosRes.code, newDetected, replied, escalated, skipped, verified, failed };
     }
@@ -5586,6 +5672,7 @@ async function runYouTubeWatcherCycle(trigger: "schedule" | "manual" = "schedule
       watcherState.consecutiveErrors += 1;
       watcherState.lastPollAt = new Date(now).toISOString();
       watcherAudit({ action: "poll_error", error: watcherState.lastError, reason: commentsRes.error });
+      maybeAlertWatcherFailure();
       await persistWatcherState();
       return { ok: false, error: commentsRes.error, code: commentsRes.code, newDetected, replied, escalated, skipped, verified, failed };
     }
@@ -5789,6 +5876,10 @@ async function runYouTubeWatcherCycle(trigger: "schedule" | "manual" = "schedule
     watcherState.pollCount += 1;
     watcherState.consecutiveErrors = 0;
     watcherState.lastError = null;
+    // أول دورة ناجحة ⇒ الاتصال عاد: نُصفّر علم تنبيه الفشل المتكرر (ليُنبَّه مجدداً لو تكرّر).
+    clearWatcherFailureAlert();
+    // وقراءة ناجحة تعني أن الرمز صالح فعلاً ⇒ نُصفّر علم تنبيه reauth أيضاً.
+    clearYouTubeReauthAlert();
     watcherState.processedWindow = [...watcherState.processedWindow, now].slice(-2000);
     // الفرص: أسئلة متكررة/قفزة تفاعل — تسجيل بلا تنفيذ.
     const questionCounts = new Map<string, number>();
@@ -5812,6 +5903,7 @@ async function runYouTubeWatcherCycle(trigger: "schedule" | "manual" = "schedule
     watcherState.consecutiveErrors += 1;
     watcherState.lastPollAt = new Date(now).toISOString();
     watcherAudit({ action: "poll_error", error: watcherState.lastError });
+    maybeAlertWatcherFailure();
     await persistWatcherState();
     return { ok: false, error: watcherState.lastError, newDetected, replied, escalated, skipped, verified, failed };
   } finally {
@@ -7466,9 +7558,15 @@ app.get("/api/platforms/:platform/health", authenticateToken, async (req,res)=>{
       // reauth_needed بلا ادعاء صحة؛ أما انتهاء access token فيُجدَّد بلا إزعاج.
       const proof=await fetchYouTubeChannelResilient();
       if(!proof.ok||!proof.data?.channelId){
+        // حصة Data API مستنفدة: ليس عطل ربط — نُعلن 429 صراحةً ولا ندّعي reauth كاذباً.
+        if(proof.code==="quota_exceeded"){
+          return res.status(429).json({success:false,platform,healthy:false,provider:"youtube",status:"quota_exceeded",error:proof.error||"حصة YouTube Data API مستنفدة؛ تُستأنف بعد تجدّد الحصة اليومية.",errorKind:proof.code});
+        }
         // رمز مرفوض/صلاحية ناقصة = الاتصال لم يعد صالحاً؛ نُعلن reauth_needed بلا ادعاء صحة.
         platformConnections.set("youtube",{...(c||{}),platform:"youtube",status:"reauth_needed"});
         savePlatformConnections();
+        // تنبيه المالك مرة واحدة: توقّف الرد الآلي فعلياً ويحتاج إعادة ربط (بلا إغراق).
+        maybeAlertYouTubeReauth();
         return res.status(409).json({success:false,platform,healthy:false,provider:"youtube",status:"reauth_needed",error:proof.error||"تعذّر إثبات هوية قناة YouTube.",errorKind:proof.code??null});
       }
       return res.json({success:true,platform,healthy:true,provider:"youtube",accountId:proof.data.channelId,accountName:proof.data.title||c.accountName,checkedAt:new Date().toISOString(),tokenRefreshed:Boolean(proof.refreshed)});
@@ -8850,6 +8948,135 @@ let geminiUsageDay = new Date().toISOString().slice(0, 10);
 let geminiUsageCount = 0;
 /** سجل استخدام مركزي للتشخيص (عدّادات فقط، بلا أي prompt أو سرّ). */
 const aiLedger = new AiUsageLedger();
+
+// -------------------------------------------------------------
+// حارس حصة YouTube Data API (نفس نمط freeTierFirewall لكن لوحدات YouTube).
+// سجل مركزي بلا أسرار يتتبع الوحدات التقديرية لكل عملية YouTube، ويصمد بعد restart
+// عبر محوّل الحالة. لا شبكة ولا سرّ هنا.
+// -------------------------------------------------------------
+const youtubeQuotaLedger = new YouTubeQuotaLedger();
+const YOUTUBE_DAILY_QUOTA = resolveYouTubeDailyQuota(process.env);
+const YOUTUBE_QUOTA_ALERT_THRESHOLD = resolveYouTubeQuotaAlertThreshold(process.env);
+const YOUTUBE_QUOTA_PROTECTION = String(process.env.YOUTUBE_QUOTA_PROTECTION || 'true').toLowerCase() !== 'false';
+const YOUTUBE_WATCHER_ERROR_ALERT_THRESHOLD = resolveWatcherErrorAlertThreshold(process.env);
+let youtubeQuotaDay = new Date().toISOString().slice(0, 10);
+/** أُرسل تنبيه العتبة لليوم الحالي؟ (يُصفَّر يومياً). */
+let youtubeQuotaAlertSent = false;
+/** حالة أعلام تنبيهات المراقب (تصمد بعد restart) — منع تكرار التنبيه لنفس السلسلة. */
+let watcherAlertState: { errorAlerted: boolean; reauthAlerted: boolean } = { errorAlerted: false, reauthAlerted: false };
+/** حارس الاستنفاد: يُفعّل مرة عند بلوغ الحصة فلا تُرسل طلبات مضمونة الفشل. */
+let youtubeQuotaExhausted = false;
+
+/** يُصفّر العدّادات عند تغيّر اليوم (UTC) فقط — نفس مبدأ حارس Gemini. */
+function rollYouTubeQuotaDayIfNeeded(): void {
+  const today = new Date().toISOString().slice(0, 10);
+  if (today !== youtubeQuotaDay) {
+    youtubeQuotaDay = today;
+    youtubeQuotaLedger.resetDaily();
+    youtubeQuotaExhausted = false;
+    // العدّادات اليومية تُصفَّر، وعلم إرسال تنبيه العتبة يُصفَّر ليُنبَّه المالك مرة واحدة في اليوم الجديد.
+    youtubeQuotaAlertSent = false;
+    saveYouTubeQuota();
+  }
+}
+
+/** لقطة حارس الحصة الحالية (بلا أي سرّ). */
+function youtubeQuotaStatusSnapshot() {
+  return buildYouTubeQuotaStatus({
+    counters: youtubeQuotaLedger.snapshot(),
+    limit: YOUTUBE_DAILY_QUOTA,
+    alertThresholdPercent: YOUTUBE_QUOTA_ALERT_THRESHOLD,
+    protectionEnabled: YOUTUBE_QUOTA_PROTECTION,
+    day: youtubeQuotaDay,
+  });
+}
+
+/** يحفظ حالة حارس الحصة وأعلام التنبيه عبر المحوّل (تصمد بعد restart). */
+function saveYouTubeQuota(): void {
+  if (!storageReady) return;
+  try {
+    void storageAdapter.write(STORAGE_KEY_YOUTUBE_QUOTA, {
+      day: youtubeQuotaDay,
+      counters: youtubeQuotaLedger.snapshot(),
+      alertSent: youtubeQuotaAlertSent,
+      watcherAlertState: { ...watcherAlertState },
+    }).catch(() => { /* فشل الحفظ لا يُسقط الخدمة (حارس محلي) */ });
+  } catch { /* تجاهل */ }
+}
+
+/** يسترجع حالة حارس الحصة وأعلام التنبيه عند الإقلاع (ملف محلي). */
+function loadYouTubeQuota(): void {
+  const raw = storageAdapter.readSync<any>(STORAGE_KEY_YOUTUBE_QUOTA);
+  if (raw?.day === youtubeQuotaDay) {
+    youtubeQuotaLedger.restore(raw.counters);
+    youtubeQuotaAlertSent = raw.alertSent === true;
+  }
+  // أعلام تنبيهات المراقب تُسترجع من أي يوم (لا تتعلق بالعدّاد اليومي) لئلا يُكرَّر
+  // التنبيه بعد restart ضمن نفس سلسلة الفشل.
+  if (raw?.watcherAlertState && typeof raw.watcherAlertState === 'object') {
+    watcherAlertState = {
+      errorAlerted: raw.watcherAlertState.errorAlerted === true,
+      reauthAlerted: raw.watcherAlertState.reauthAlerted === true,
+    };
+  }
+}
+
+/**
+ * يسجّل استهلاك عملية YouTube، ويتعامل مع بلوغ العتبة/الحصة:
+ * - عند بلوغ العتبة الآمنة (مرة لكل يوم): تنبيه واحد للمالك عبر pushNotification.
+ * - عند بلوغ الحصة: يُعلن الاستنفاد فيُرفض أي طلب جديد (بلا إرسال مضمون الفشل).
+ * حتمي وبلا سرّ؛ يُحتسب الطلب المُحاوَل (كما يفعل Google) بغض النظر عن نجاحه.
+ */
+function recordYouTubeQuota(operation: YouTubeQuotaOperation): void {
+  rollYouTubeQuotaDayIfNeeded();
+  youtubeQuotaLedger.record(operation);
+  const status = youtubeQuotaStatusSnapshot();
+  if (YOUTUBE_QUOTA_PROTECTION && status.thresholdReached && !youtubeQuotaAlertSent) {
+    youtubeQuotaAlertSent = true;
+    youtubeQuotaLedger.recordThresholdReached();
+    try {
+      pushNotification('owner', 'youtube_quota_warning', 'اقتراب استهلاك حصة YouTube Data API', youtubeQuotaAlertReason(status), 'warning', 'youtube_operations');
+      youtubeQuotaLedger.recordAlertSent();
+      audit('system', 'youtube_quota_threshold_alert', `${status.usedPercent}% (${status.usedUnits}/${status.limit})`);
+    } catch { /* لا يُسقط التسجيل فشل التنبيه */ }
+  }
+  if (status.exhausted) youtubeQuotaExhausted = true;
+  saveYouTubeQuota();
+}
+
+/**
+ * هل يمكن تنفيذ عملية وحداتها التقديرية ضمن الحصة المتبقية؟ (حارس استباقي).
+ * عند الاستنفاد يرفض العملية قبل إرسال طلب مضمون الفشل (safe failure).
+ */
+function canRunYouTubeOperation(operation: YouTubeQuotaOperation): boolean {
+  rollYouTubeQuotaDayIfNeeded();
+  if (!YOUTUBE_QUOTA_PROTECTION) return true;
+  if (youtubeQuotaExhausted) return false;
+  const snap = youtubeQuotaLedger.snapshot();
+  return canAffordYouTubeQuota(snap.unitsUsed, YOUTUBE_DAILY_QUOTA, YOUTUBE_QUOTA_COST[operation] ?? 1);
+}
+
+/**
+ * مغلّف fetch لحارس الحصة: يمرّ عليه **كل** طلب YouTube Data API في المشروع (عبر
+ * عميل YouTube الواحد `youtubeFetchImpl`)، فيُحتسب كل طلب تلقائياً بلا احتساب يدوي
+ * في كل موضع. نقطة الرمز (/token) مستثناة (ليست ضمن حصة Data API). عند استنفاد
+ * الحصة يُرد رفض صريح بلا شبكة (فلا تُرسل طلبات مضمونة الفشل)، فيراه الموصل كخطأ
+ * `quota_exceeded` بلا تمييز عن رفض Google الحقيقي.
+ */
+function youtubeGuardedFetch(url: string, init?: Parameters<YouTubeFetch>[1]): ReturnType<YouTubeFetch> {
+  if (!youtubeUrlCountsAgainstQuota(url)) return fetch(url, init as any);
+  const operation = classifyYouTubeQuotaOperation(url, init?.method);
+  if (!canRunYouTubeOperation(operation)) {
+    const rejected: YouTubeHttpResponse = {
+      ok: false,
+      status: 403,
+      json: async () => ({ error: { code: 403, message: 'quotaExceeded', errors: [{ reason: 'quotaExceeded' }] } }),
+    };
+    return Promise.resolve(rejected);
+  }
+  recordYouTubeQuota(operation);
+  return fetch(url, init as any);
+}
 const requestWindow = new Map<string, { startedAt: number; count: number }>();
 // مهلة صريحة لكل طلب مزود: لا يبقى أي طلب معلقاً بلا نهاية.
 const AI_TIMEOUT_MS = Math.min(60_000, Math.max(5_000, Number(process.env.AI_TIMEOUT_MS || 20_000)));
@@ -8917,6 +9144,18 @@ async function bootstrapStorage(): Promise<void> {
       if (snapshot) applyStateSnapshot(snapshot);
       const usage = await storageAdapter.read<any>(STORAGE_KEY_USAGE);
       if (usage?.day === geminiUsageDay && Number.isFinite(usage?.count)) geminiUsageCount = Math.max(0, Number(usage.count));
+      // حارس حصة YouTube: يُستَرجع عدّاده وحالة تنبيهاته فيصمد بعد restart/نشر.
+      const ytQuota = await storageAdapter.read<any>(STORAGE_KEY_YOUTUBE_QUOTA);
+      if (ytQuota?.day === youtubeQuotaDay) {
+        youtubeQuotaLedger.restore(ytQuota.counters);
+        youtubeQuotaAlertSent = ytQuota.alertSent === true;
+      }
+      if (ytQuota?.watcherAlertState && typeof ytQuota.watcherAlertState === 'object') {
+        watcherAlertState = {
+          errorAlerted: ytQuota.watcherAlertState.errorAlerted === true,
+          reauthAlerted: ytQuota.watcherAlertState.reauthAlerted === true,
+        };
+      }
       const control = await storageAdapter.read<any>(STORAGE_KEY_CONTROL);
       if (control) applyControlSnapshot(control);
       const agentState = await storageAdapter.read<any>(STORAGE_KEY_AGENT);
@@ -10360,6 +10599,8 @@ function saveUsage() {
   void storageAdapter.write(STORAGE_KEY_USAGE, { day: geminiUsageDay, count: geminiUsageCount }).catch(() => { /* حارس محلي: فشل الحفظ لا يُسقط الخدمة */ });
 }
 loadUsage();
+// حارس حصة YouTube: يُستَرجع عدّاده وأعلام تنبيهاته عند الإقلاع فيصمد بعد restart.
+loadYouTubeQuota();
 
 function rateLimitAI(userId: string): boolean {
   const now = Date.now();
@@ -10874,6 +11115,8 @@ app.get("/api/readiness", (_req, res) => {
     // خطأ كرمز تقني). لا اسم حساب ولا نص تعليق ولا نص رد — بيانات العملاء
     // التفصيلية في /api/agent/youtube/watcher (للمالك فقط).
     youtubeWatcher: watcherStatusBlockPublic(),
+    // حارس حصة YouTube Data API: أرقام تقديرية فقط (بلا أي سرّ وبلا بيانات عميل).
+    youtubeQuota: youtubeQuotaStatusSnapshot(),
     // PHASE 7 — حقول TikTok الآمنة (منطقي فقط، بلا أي قيمة سرّية).
     tiktokOAuth: (() => {
       const c = tiktokOAuthConfig();
@@ -11406,6 +11649,8 @@ app.get("/api/health", (_req, res) => {
     // خطأ كرمز تقني). لا اسم حساب ولا نص تعليق ولا نص رد — بيانات العملاء
     // التفصيلية في /api/agent/youtube/watcher (للمالك فقط).
     youtubeWatcher: watcherStatusBlockPublic(),
+    // حارس حصة YouTube Data API: أرقام تقديرية فقط (بلا أي سرّ وبلا بيانات عميل).
+    youtubeQuota: youtubeQuotaStatusSnapshot(),
     // وقت تشغيل العقل المركزي 24/7 (Batch 5): حالة/إيقاع/قفل/عدّادات الذاكرة — بلا سرّ.
     brainRuntime: brainRuntimeStatus(),
     // فريق الوكلاء (Batch 6): ملخّص الجلسات/الخلافات/التحقق/الذاكرة — بلا سرّ.

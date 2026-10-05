@@ -1008,6 +1008,37 @@ add('youtube-no-fake-reply-claim', decisionTest.includes('externalReplyId') && d
 add('youtube-decision-no-ai', !/GoogleGenAI|generateContent/.test(watcherModule) && !/from ['"]\\.\\.\/ai\//.test(watcherModule), 'محرك القرارات حتمي بلا أي نداء AI (صفر حصة)');
 
 // ============================================================================
+// C1 — حارس حصة YouTube Data API (منصة واحدة مركزية، بلا تفريع على اسم منصة).
+// C2 — تنبيهات فشل/إعادة ربط المراقب (نفس pushNotification القائم).
+// ============================================================================
+const quotaModule = read('engine/social/youtubeQuota.ts');
+const alertsModule = read('engine/social/watcherAlerts.ts');
+const quotaUnitTest = fs.existsSync(path.join(root, 'engine/tests/youtube.quota.test.ts')) ? read('engine/tests/youtube.quota.test.ts') : '';
+const quotaIntegrationTest = fs.existsSync(path.join(root, 'engine/tests/youtube.quota.integration.test.ts')) ? read('engine/tests/youtube.quota.integration.test.ts') : '';
+const storageAdapter = read('engine/storage/adapter.ts');
+
+add('youtube-quota-single-source', quotaModule.includes('export class YouTubeQuotaLedger') && quotaModule.includes('export function classifyYouTubeQuotaOperation') && quotaModule.includes('export const YOUTUBE_QUOTA_COST'), 'حارس حصة YouTube مصدر واحد (سجل + تصنيف + تكلفة)');
+add('youtube-quota-costs-official', /upload:\s*1600/.test(quotaModule) && /reply:\s*50/.test(quotaModule) && /video_update:\s*50/.test(quotaModule) && /comments_read:\s*1/.test(quotaModule), 'تكاليف الوحدات مطابقة لوثيقة YouTube Data API');
+add('youtube-quota-upload-session-no-double', quotaModule.includes('upload_session: 0') && quotaModule.includes("m === 'PUT' ? 'upload_session' : 'upload'"), 'PUT بايتات الجلسة لا يحتسب الـ1600 مرتين');
+add('youtube-quota-token-excluded', quotaModule.includes('youtubeUrlCountsAgainstQuota') && quotaModule.includes("includes('/token')"), 'نقطة الرمز /token مستثناة من حصة Data API');
+add('youtube-quota-central-wrapper', server.includes('function youtubeGuardedFetch') && server.includes('const youtubeFetchImpl: YouTubeFetch = (url, init) => youtubeGuardedFetch(url, init)'), 'مغلّف واحد يمرّ عليه كل طلب YouTube تلقائياً (بلا احتساب يدوي)');
+add('youtube-quota-proactive-guard', server.includes('function canRunYouTubeOperation') && server.includes('youtubeQuotaExhausted') && server.includes("reason: 'quotaExceeded'"), 'حارس استباقي يرفض بلا شبكة عند الاستنفاد (safe failure)');
+add('youtube-quota-alert-once', server.includes('youtubeQuotaAlertSent') && server.includes("'youtube_quota_warning'") && server.includes('youtubeQuotaAlertReason(status)'), 'تنبيه واحد للمالك عند بلوغ العتبة (بلا إغراق)');
+add('youtube-quota-threshold-honest', quotaModule.includes('thresholdReached') && quotaModule.includes('exhausted') && quotaModule.includes('remainingUnits') && quotaModule.includes('usedPercent'), 'الحالة تعلن العتبة/الاستنفاد/المتبقي بصدق');
+add('youtube-quota-durable', storageAdapter.includes('STORAGE_KEY_YOUTUBE_QUOTA') && server.includes('function saveYouTubeQuota') && server.includes('function loadYouTubeQuota') && server.includes('youtubeQuotaLedger.restore'), 'عدّاد الحصة وأعلام التنبيه تصمد بعد restart/نشر');
+add('youtube-quota-exposed-health', server.includes('youtubeQuota: youtubeQuotaStatusSnapshot()'), 'كتلة youtubeQuota معلنة في /api/health و/api/readiness');
+add('youtube-quota-no-secret', !/(client_secret|clientSecret|refresh_token|access_token|GOOGLE_OAUTH)/.test(quotaModule) && quotaModule.includes('note:'), 'وحدة الحارس بلا أي سرّ وتُعلن أن الرقم تقديري');
+add('youtube-quota-regression-test', Boolean(pkg.scripts['test:youtube-quota']) && quotaUnitTest.includes('YOUTUBE_QUOTA_COST.upload === 1600') && quotaUnitTest.includes('classifyYouTubeQuotaOperation'), 'اختبار وحدة للحارس مسجّل ويغطي التكاليف والتصنيف');
+add('youtube-quota-test-in-suite', typeof pkg.scripts.test === 'string' && pkg.scripts.test.includes('test:youtube-quota &&') && pkg.scripts.test.includes('test:youtube-quota-integration &&'), 'اختبارا الحارس ضمن npm test');
+add('youtube-quota-integration-test', Boolean(pkg.scripts['test:youtube-quota-integration']) && quotaIntegrationTest.includes('channel_read') && quotaIntegrationTest.includes('quota_exceeded'), 'اختبار تكامل: احتساب تلقائي + حجب عند الاستنفاد + ثبات بعد restart');
+add('watcher-alerts-single-source', alertsModule.includes('export function shouldAlertWatcherFailure') && alertsModule.includes('export function shouldAlertReauth') && alertsModule.includes('export function watcherFailureAlertText') && alertsModule.includes('export function reauthAlertText'), 'منطق تنبيهات المراقب مصدر واحد (فشل متكرر + reauth)');
+add('watcher-alerts-no-dup', server.includes('function maybeAlertWatcherFailure') && server.includes('function clearWatcherFailureAlert') && server.includes('watcherAlertState.errorAlerted'), 'تنبيه الفشل مرة واحدة لكل سلسلة (يُصفَّر عند النجاح)');
+add('watcher-alerts-reauth', server.includes('function maybeAlertYouTubeReauth') && server.includes('function clearYouTubeReauthAlert') && server.includes('shouldAlertReauth'), 'تنبيه reauth مرة واحدة حتى استعادة الاتصال');
+add('watcher-alerts-wired', server.includes('maybeAlertWatcherFailure();') && server.includes('youtube_watcher_failure') && server.includes('youtube_reauth_needed'), 'التنبيهان موصولان في مسار المراقب وفحص الصحة');
+add('watcher-alerts-tests', quotaUnitTest.includes('shouldAlertWatcherFailure') && quotaUnitTest.includes('shouldAlertReauth') && quotaIntegrationTest.includes('youtube_watcher_failure') && quotaIntegrationTest.includes('youtube_reauth_needed'), 'اختبارات التنبيهين (وحدة + تكامل) موصولة');
+
+
+// ============================================================================
 // Batch 26 — العقل المركزي العام (Platform-Agnostic) لكل المنصات.
 // ============================================================================
 const contentIntelligence = read('engine/social/contentIntelligence.ts');
