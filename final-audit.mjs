@@ -2971,6 +2971,63 @@ add('watcher-advisory-not-authority',
     typeof pkg.scripts.test === 'string' && !pkg.scripts.test.includes('test:e2e'),
     'اختبار المتصفح منفصل عن npm test (لا يفترض متصفحاً في CI الحالي)');
 
+  // ------------------------------------------------------------
+  // Point 2 — فحص دور موحّد على مسارات البيع/الأعمال/المالية.
+  // (المسارات التي كانت مُحصّنة أصلاً — GET/POST /api/sales وPATCH/payments — مستثناة.)
+  // ------------------------------------------------------------
+  const guardedRoutes = [
+    'app.get("/api/customers/360"', 'app.get("/api/reports/operations"',
+    'app.get("/api/sales/:id/payments"', 'app.get("/api/business/overview"',
+    'app.get("/api/suppliers"', 'app.post("/api/suppliers"', 'app.patch("/api/suppliers/:id"',
+    'app.get("/api/purchases"', 'app.post("/api/purchases"',
+    'app.get("/api/expenses"', 'app.post("/api/expenses"',
+    'app.get("/api/contracts"', 'app.post("/api/contracts"', 'app.post("/api/contracts/:id/sign"',
+    'app.get("/api/installments/schedule"', 'app.post("/api/installments/generate"', 'app.get("/api/installments/due"',
+    'app.get("/api/executive/overview"',
+    "app.get('/api/control/customer-directory'", "app.get('/api/control/cashflow'",
+  ];
+  const missingGuard = guardedRoutes.filter((sig) => {
+    const i = server.indexOf(sig);
+    if (i < 0) return true;
+    return !/\["owner","manager","staff"\]\.includes/.test(server.slice(i, i + 500));
+  });
+  add('sales-erp-role-guards-present', missingGuard.length === 0,
+    missingGuard.length ? `بلا فحص دور: ${missingGuard.join(', ')}` : 'كل مسارات البيع/الأعمال/المالية تحمل فحص ["owner","manager","staff"]');
+
+  // مسارا /api/control/alerts و/api/control/daily-brief يكشفان بيانات مالية/تشغيلية
+  // حقيقية؛ يلزمهما نفس فحص الدور (لا requireOwner، اتساقاً مع بقية /api/control/*).
+  const controlGuards = ["app.get('/api/control/alerts'", "app.get('/api/control/daily-brief'"];
+  const missingControlGuard = controlGuards.filter((sig) => {
+    const i = server.indexOf(sig);
+    if (i < 0) return true;
+    return !/\["owner","manager","staff"\]\.includes/.test(server.slice(i, i + 500));
+  });
+  add('control-alerts-brief-role-guards', missingControlGuard.length === 0,
+    missingControlGuard.length ? `بلا فحص دور: ${missingControlGuard.join(', ')}` : '/api/control/alerts و/api/control/daily-brief يحملان فحص ["owner","manager","staff"]');
+
+  // ------------------------------------------------------------
+  // Point 3 — ربط YouTube بالمبيعات الموثّقة: قراءة فقط، بلا سببية/ROI.
+  // ------------------------------------------------------------
+  const corrModule = read('engine/social/youtubeSalesCorrelation.ts');
+  add('youtube-sales-correlation-module',
+    corrModule.includes('export function buildYouTubeSalesCorrelation') && corrModule.includes("from '../brain/knowledge/truth'"),
+    'وحدة الربط موجودة وتعيد استخدام نموذج الصدق القائم (truth.ts)');
+  add('youtube-sales-correlation-read-only',
+    !/\bpersistState\s*\(|writeFileSync\s*\(|\.unshift\s*\(|\.splice\s*\(/.test(corrModule),
+    'الوحدة قراءة فقط (لا كتابة دائمة ولا تعديل بيانات)');
+  add('youtube-sales-correlation-owner-only',
+    server.includes('app.get("/api/agent/youtube/sales-correlation", requireOwner'),
+    'المسار مقتصر على المالك (requireOwner)');
+  add('youtube-sales-correlation-no-causation',
+    corrModule.includes('لا سببية') && corrModule.includes('UNAVAILABLE'),
+    'لا يدّعي سببية/نسبة/ROI؛ وغير المتاح يُعلن صراحةً');
+  add('youtube-sales-correlation-tests',
+    Boolean(pkg.scripts['test:youtube-sales-correlation']) && typeof pkg.scripts.test === 'string' && pkg.scripts.test.includes('test:youtube-sales-correlation'),
+    'اختبار الربط موجود ومربوط بـnpm test');
+  add('sales-erp-authz-tests',
+    Boolean(pkg.scripts['test:sales-erp-authz']) && typeof pkg.scripts.test === 'string' && pkg.scripts.test.includes('test:sales-erp-authz'),
+    'اختبار تصريح البيع/ERP موجود ومربوط بـnpm test');
+
   const failed = checks.filter(x => !x.ok);
 console.table(checks);
 if (failed.length) {
