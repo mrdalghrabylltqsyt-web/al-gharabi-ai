@@ -21,13 +21,7 @@ import { UserManagementView } from './components/users/UserManagementView';
 import { LoginView } from './components/auth/LoginView';
 import { SystemControlView } from './components/system/SystemControlView';
 import { GlobalSearchView } from './components/search/GlobalSearchView';
-import { OperationsView } from './components/operations/OperationsView';
-import { FinanceView } from './components/finance/FinanceView';
-import { InventoryView } from './components/inventory/InventoryView';
-import { ReportsView } from './components/reports/ReportsView';
 import { SalesCenterView } from './components/sales/SalesCenterView';
-import { ExecutiveCommandView } from './components/executive/ExecutiveCommandView';
-import { BusinessSuiteView } from './components/business/BusinessSuiteView';
 import { OperationsControlView } from './components/control/OperationsControlView';
 import { CheckCircle2, ShieldCheck } from 'lucide-react';
 
@@ -41,6 +35,17 @@ const BrainCommandView = lazy(() => import('./components/agent/BrainCommandView'
 const CentralBrainView = lazy(() => import('./components/agent/CentralBrainView').then((m) => ({ default: m.CentralBrainView })));
 const MarketingAgentView = lazy(() => import('./components/agent/MarketingAgentView').then((m) => ({ default: m.MarketingAgentView })));
 const CloudBackupView = lazy(() => import('./components/system/CloudBackupView').then((m) => ({ default: m.CloudBackupView })));
+
+// LEGACY ERP: أسطح خارج نطاق المشروع المعلن، مخفية من التنقل (LEGACY_ERP_NAV_ENABLED=false).
+// تُحمَّل عند الطلب فقط (code splitting) فلا تثقل الحزمة الأولية، مع بقاء الحالات في
+// switch فعّالة. ملاحظة: ExecutiveCommandView نفسه ينتقل إلى finance/inventory/reports/
+// operations ديناميكياً، لذا لا يجوز إزالتها — الإزالة تكسر مسارات تنقّل قائمة.
+const ExecutiveCommandView = lazy(() => import('./components/executive/ExecutiveCommandView').then((m) => ({ default: m.ExecutiveCommandView })));
+const BusinessSuiteView = lazy(() => import('./components/business/BusinessSuiteView').then((m) => ({ default: m.BusinessSuiteView })));
+const FinanceView = lazy(() => import('./components/finance/FinanceView').then((m) => ({ default: m.FinanceView })));
+const InventoryView = lazy(() => import('./components/inventory/InventoryView').then((m) => ({ default: m.InventoryView })));
+const ReportsView = lazy(() => import('./components/reports/ReportsView').then((m) => ({ default: m.ReportsView })));
+const OperationsView = lazy(() => import('./components/operations/OperationsView').then((m) => ({ default: m.OperationsView })));
 
 // رسائل عودة تفويض Google Drive (بلا أي سرّ): تُقرأ من معامل dr في الرابط.
 const DR_RETURN_MESSAGES: Record<string, string> = {

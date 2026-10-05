@@ -76,32 +76,39 @@ export const CentralAgentView: React.FC = () => {
     setInputPrompt('');
     setIsLoading(true);
 
-    const res = await apiService.agentChat({
-      message: query,
-      chatHistory: messages.map((m) => ({
-        role: m.role === 'assistant' ? 'model' : 'user',
-        text: m.text,
-      })),
-      context: {
-        platforms: platforms.map((p) => ({
-          name: p.name,
-          followers: p.followers,
-          engagement: p.engagementRate,
+    // try/finally يضمن إنهاء حالة التحميل حتى عند فشل الطلب (شبكة/خادم) فلا تتجمّد الواجهة.
+    try {
+      const res = await apiService.agentChat({
+        message: query,
+        chatHistory: messages.map((m) => ({
+          role: m.role === 'assistant' ? 'model' : 'user',
+          text: m.text,
         })),
-        showroom: showroomInfo,
-      },
-    });
+        context: {
+          platforms: platforms.map((p) => ({
+            name: p.name,
+            followers: p.followers,
+            engagement: p.engagementRate,
+          })),
+          showroom: showroomInfo,
+        },
+      });
 
-    setIsLoading(false);
-
-    if (res.success && res.reply) {
-      const aiMsg = {
-        id: `ai-${Date.now()}`,
-        role: 'assistant',
-        text: res.reply,
-        timestamp: new Date().toLocaleTimeString('ar-SA', { hour: '2-digit', minute: '2-digit' }),
-      };
-      setMessages((prev) => [...prev, aiMsg]);
+      if (res.success && res.reply) {
+        const aiMsg = {
+          id: `ai-${Date.now()}`,
+          role: 'assistant',
+          text: res.reply,
+          timestamp: new Date().toLocaleTimeString('ar-SA', { hour: '2-digit', minute: '2-digit' }),
+        };
+        setMessages((prev) => [...prev, aiMsg]);
+      } else {
+        showToast('تعذر الحصول على رد من الوكيل المركزي؛ حاول مرة أخرى.');
+      }
+    } catch (e: any) {
+      showToast(e?.message || 'تعذر الاتصال بالوكيل المركزي؛ تحقق من الشبكة وحاول مجدداً.');
+    } finally {
+      setIsLoading(false);
     }
   };
 

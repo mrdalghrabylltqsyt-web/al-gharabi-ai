@@ -10313,7 +10313,7 @@ function teamContext(task: string, platform: PlatformId, meta: { escalationReaso
     escalationReason: meta.escalationReason ?? null,
     commercialContext: {
       strategyHeadlines: dc.strategies.map((s) => `${s.scope}: ${s.what}`.slice(0, 160)).slice(0, 5),
-      audienceHeadlines: dc.audienceSegments.map((s) => `${s.topic} (عيّنة ${s.sampleSize})`).slice(0, 5),
+      audienceHeadlines: dc.audienceSegments.map((s) => `${s.label} (عيّنة ${s.sampleSize})`).slice(0, 5),
       marketHasEvidence: dc.marketHasEvidence,
       priorOutcomeSummaries: dc.priorOutcomes.map((o) => `${o.finalStatus}: ${o.outcomeSummary}`.slice(0, 160)),
       strategyHint: dc.strategyHint,
@@ -11685,11 +11685,14 @@ app.post("/api/ai/verify-provider", requireOwner, async (_req, res) => {
 // -------------------------------------------------------------
 function normalizedPhone(v:any){ return String(v||'').replace(/[^0-9+]/g,'').replace(/^00/,'+').trim(); }
 function customerKey(x:any){ const phone=normalizedPhone(x.phone); return phone || cleanText(x.customerName||x.name,160).toLowerCase(); }
+// معرّف العميل مُشتق أحادي الاتجاه (SHA-256) من المفتاح — لا يُمثّل رقم الهاتف ولا
+// قابلاً للعكس إليه. المعرّف **عابر** (يُعاد بناؤه لكل طلب) وغير مستخدم كمفتاح دائم.
+function customerPublicId(key:string){ return `cust_${crypto.createHash('sha256').update(`gharabi-customer:${key}`).digest('hex').slice(0,18)}`; }
 function buildCustomerDirectory(){
   const map=new Map<string,any>();
   const touch=(raw:any, source:string)=>{
     const key=customerKey(raw); if(!key)return;
-    const c=map.get(key)||{id:`cust_${Buffer.from(key).toString('base64url').slice(0,18)}`,name:cleanText(raw.customerName||raw.name,160)||'عميل',phone:normalizedPhone(raw.phone),sources:new Set<string>(),salesCount:0,salesValue:0,paid:0,balance:0,openConversations:0,openLeads:0,lastActivity:null};
+    const c=map.get(key)||{id:customerPublicId(key),name:cleanText(raw.customerName||raw.name,160)||'عميل',phone:normalizedPhone(raw.phone),sources:new Set<string>(),salesCount:0,salesValue:0,paid:0,balance:0,openConversations:0,openLeads:0,lastActivity:null};
     c.sources.add(source); if(raw.phone&&!c.phone)c.phone=normalizedPhone(raw.phone); if(raw.customerName&&!c.name)c.name=cleanText(raw.customerName,160);
     const at=raw.createdAt||raw.updatedAt||raw.at; if(at&&(!c.lastActivity||Date.parse(at)>Date.parse(c.lastActivity)))c.lastActivity=at;
     if(source==='sale'){c.salesCount++;c.salesValue+=safeMoney(raw.totalAmount);c.paid+=safeMoney(raw.paidAmount);c.balance+=safeMoney(raw.balance);}
@@ -14081,8 +14084,18 @@ async function startServer() {
     });
   }
 
-  app.listen(PORT, "0.0.0.0", () => {
+  const httpServer = app.listen(PORT, "0.0.0.0", () => {
     console.log(`[الغرابي AI Server] running on http://0.0.0.0:${PORT}`);
+  });
+  // فشل ربط المنفذ (مثل EADDRINUSE) كان يُسقط العملية بانهيار غير مفسَّر. الآن
+  // يُسجَّل السبب صراحةً ثم تُنهى العملية برمز فشل صحيح (لا استمرار بلا استماع).
+  httpServer.on("error", (err: NodeJS.ErrnoException) => {
+    const code = err?.code || "UNKNOWN";
+    const hint = code === "EADDRINUSE"
+      ? `المنفذ ${PORT} مستخدم بالفعل — أوقف العملية الأخرى أو اضبط PORT مختلفاً.`
+      : "تعذّر ربط المنفذ؛ راجع صلاحيات الشبكة/المنفذ.";
+    console.error(`[الغرابي AI Server] فشل الاستماع على المنفذ ${PORT} (${code}): ${hint}`);
+    process.exit(1);
   });
 
   // مدير تشغيل YouTube 24/7: يبدأ حلقة المراقبة الداخلية بعد جهوزية المخزن

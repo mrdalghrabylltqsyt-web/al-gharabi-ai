@@ -16,7 +16,7 @@ import type { PlatformId } from '../social/adapter';
 import type { PlatformMetricRecord } from '../social/platformLearning';
 import { buildPerceptionBundle, type Signal, type ConversationSignalInput } from './perception/signals';
 import { makeKnowledgeItem, commercialFact, type KnowledgeItem } from './knowledge/truth';
-import { buildCrossPlatformAudienceModel, type AudienceModel } from './audience/audienceModel';
+import { buildCrossPlatformAudienceModel, type AudienceModel, type AudienceSegment, type Confidence } from './audience/audienceModel';
 import { computeCommercialRelevance, type CommercialRelevance } from './market/commercialRelevance';
 import { classifyConversation, aggregateRepeatedNeeds, proposeContentFromNeed, type ClassifiedConversation, type RepeatedNeed } from './audience/conversationIntelligence';
 import { recommendTimingWindow, type TimingObservation, type TimingRecommendation } from './timing/timingModel';
@@ -44,6 +44,25 @@ export interface StrategyStateSummary {
 }
 
 /**
+ * إسقاط (projection) لمقطع جمهور حقيقي للاستخدام في سياق القرار. مشتقّ من
+ * `AudienceSegment` الكانوني بلا أي حقل مُخترع؛ الحقول هي عينها الموجودة في النوع
+ * الحقيقي (label/sampleSize/confidence/dominantIntent) بعد طيّها إلى ملخّص.
+ */
+export interface AudienceSegmentProjection {
+  /** تسمية المقطع (المعرّف العربي) — من `AudienceSegment.label`. */
+  label: string;
+  /** حجم العيّنة الحقيقي الذي بُني عليه المقطع. */
+  sampleSize: number;
+  /** الثقة المشتقّة من حجم العيّنة. */
+  confidence: Confidence;
+  /**
+   * النية المهيمنة **المستنتجة من التفاعل**: أكثر الأنواع المفضّلة تكراراً في
+   * `contentPreferences` (وهي مُشتقّة فعلاً من تصنيف تعليقات حقيقي). null عند غياب دليل.
+   */
+  dominantIntent: string | null;
+}
+
+/**
  * سياق القراءة التاريخي (قراءة فقط) الذي يغذّي القرار المستقبلي فعل YouTube:
  * الاستراتيجية الكانونية + الجمهور + السوق + تاريخ القرارات ونتائجها الحقيقية.
  * يستدعيه مسار التنفيذ لبناء قرار العقل المركزي على الصورة الكاملة (Batch 8.1).
@@ -54,7 +73,7 @@ export interface RuntimeDecisionContext {
   /** ملخّص الاستراتيجية المحفوظة (إصدار/سبب تغيير) — لا عقلاً ثانياً. */
   strategyState: StrategyStateSummary | null;
   /** مقاطع الجمهور المبنية من تفاعل حقيقي فقط. */
-  audienceSegments: Array<{ topic: string; sampleSize: number; intent: string | null }>;
+  audienceSegments: AudienceSegmentProjection[];
   /** هل يوجد دليل تجاري ملاحَظ فعلاً؟ */
   marketHasEvidence: boolean;
   /** سياق قرارات سابقة حقيقية (بنتائج ملاحَظة فقط — لا اختراع) — أقرب 5. */
@@ -64,6 +83,21 @@ export interface RuntimeDecisionContext {
   /** الخطوة التالية المستنتجة من التاريخ (اقتراح توجيهي — لا قرار). */
   strategyHint: string;
   note: string;
+}
+
+/**
+ * يحوّل مقطع جمهور كانوني (`AudienceSegment`) إلى إسقاط ملخّص لسياق القرار.
+ * مُوقَّع بالنوع الحقيقي (لا `any`) فيمنع الأخطاء الصامتة إذا تغيّر النوع مستقبلاً:
+ * أي حقل غير موجود يُفشل الترجمة بدل أن يُفرَّغ صامتاً. `dominantIntent` مشتقّ من
+ * `contentPreferences` الحقيقية (تصنيف تفاعل فعلي)، و`null` عند غياب دليل.
+ */
+function projectAudienceSegment(s: AudienceSegment): AudienceSegmentProjection {
+  return {
+    label: s.label,
+    sampleSize: s.sampleSize,
+    confidence: s.confidence,
+    dominantIntent: s.contentPreferences.length ? s.contentPreferences[0] : null,
+  };
 }
 
 /** يبني سياق القراءة التاريخي كاملاً. لا شبكة ولا أسرار ولا اختراع. */
@@ -92,7 +126,7 @@ export function buildRuntimeDecisionContext(input: RuntimeBrainInput): RuntimeDe
   return {
     strategies,
     strategyState: input.strategyState ?? null,
-    audienceSegments: (built.state.audience?.segments || []).slice(0, 6).map((s: any) => ({ topic: s.topic ?? s.labelAr ?? '', sampleSize: s.sampleSize ?? 0, intent: s.dominantIntent ?? null })),
+    audienceSegments: (built.state.audience?.segments || []).slice(0, 6).map(projectAudienceSegment),
     marketHasEvidence: Boolean(built.state.market?.hasCommercialEvidence),
     priorOutcomes: prior,
     consumedDecisionHistory: prior.length > 0,
