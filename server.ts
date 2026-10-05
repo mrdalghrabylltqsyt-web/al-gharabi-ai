@@ -2919,6 +2919,15 @@ function publicProviderReadiness(platform: string): { configured: boolean; mode:
   return { configured: false, mode: "provider-adapter", action: "configuration-required", next: "إضافة موصل إنتاجي معتمد قبل تفعيل النشر" };
 }
 function safeConnection(platform: string) { const c:any=platformConnections.get(platform); return c ? { platform:c.platform, status:c.status, accountName:c.accountName, accountId:c.accountId, connectedAt:c.connectedAt, lastSyncAt:c.lastSyncAt, providerVerified:Boolean(c.providerVerified), provider:publicProviderReadiness(platform) } : null; }
+// Least-privilege: المالك يرى هوية الحساب (اسم/معرّف) وتفاصيل المزامنة؛ أي مستخدم آخر
+// مصرّح له يرى الحالة التقنية فقط (متصل؟ موثّق؟ منذ متى) بلا هوية تنظيمية. يُستخدم في
+// /api/workspace/snapshot الذي كان يكشف accountName/accountId لأي مستخدم authenticated.
+function snapshotConnection(platform: string, isOwner: boolean) {
+  const full = safeConnection(platform);
+  if (!full) return null;
+  if (isOwner) return full;
+  return { platform: full.platform, status: full.status, connectedAt: full.connectedAt ?? null, providerVerified: full.providerVerified };
+}
 for (const p of SUPPORTED_PLATFORMS) platformConnections.set(p.id, { platform: p.id, status: "disconnected" });
 // اتصالات المنصات وتوكناتها تمر عبر نفس المخزن: توكنات المنصات المشفّرة تُحفظ
 // داخل workspace.providerTokens، واتصالات المنصات في platformConnections.
@@ -6146,6 +6155,13 @@ function watcherStatusBlockPublic() {
     watcherActive: full.watcherActive,
     cadenceMinutes: full.cadenceMinutes,
     cadenceMs: full.cadenceMs,
+    // pollCount: عدّاد تقني تراكمي لعدد دورات الفحص **الناجحة** منذ بدء القياس (يُحفظ
+    // عبر محوّل الحالة فيصمد بعد restart). لا يتضمّن الدورات الفاشلة ولا يُصفَّر عند
+    // إعادة التشغيل، فلا يصلح كمعدّل مباشر — للمعدّل استخدم lastPollAt + cadenceMs.
+    // ليس مؤشراً تجارياً ولا يحمل أي بيانات عملاء، فيُعلن في النقطتين العامتين كمرقاب
+    // حياة (liveness) للخدمة.
+    pollCount: full.pollCount,
+    lastPollAt: full.lastPollAt,
     lastError: watcherPublicError(full.lastError),
     consecutiveErrors: consecutive,
     note: "حالة عامة فقط؛ العدّادات التفصيلية وبيانات التعليقات/الردود متاحة للمالك عبر /api/agent/youtube/watcher.",
@@ -8235,6 +8251,18 @@ const LEGACY_ERP_ROUTE_PREFIXES: readonly string[] = Object.freeze([
   "/api/installments",
   "/api/executive",
 ]);
+// خارج النطاق الحالي (سوشيال + AI + تسويق) لكن مستهلكة بواجهات ظاهرة، فتُعزل بنفس
+// المفتاح لكن **بشكل منفصل** عن عائلات ERP أعلاه: عائلات المبيعات/المالية/دليل العملاء
+// كانت مؤمّنة بفحص دور (owner/manager/staff)، لكنها خارج النطاق المعلن فيجب ألا تكون
+// ظاهرة/قابلة للوصول للمستخدم العادي. تفصيله في قسم «Scope Boundary» بـAGENTS.md.
+const OUT_OF_SCOPE_LIVE_ROUTE_PREFIXES: readonly string[] = Object.freeze([
+  "/api/sales",
+  "/api/control/alerts",
+  "/api/control/customer-directory",
+  "/api/control/cashflow",
+  "/api/control/reconciliation",
+  "/api/control/daily-brief",
+]);
 function legacyErpScopeEnabled(): boolean {
   const raw = String(process.env.GHARABI_ENABLE_LEGACY_ERP_SCOPE ?? "").trim().toLowerCase();
   return raw === "true" || raw === "1" || raw === "on" || raw === "yes";
@@ -8261,12 +8289,43 @@ function isLegacyErpRouteRequest(rawUrl: string): boolean {
   }
   return false;
 }
+// عائلات خارج النطاق لكنها مستهلكة بواجهات ظاهرة (مبيعات/مالية/دليل عملاء) — تطبيع
+// مطابق تماماً لعزل ERP، فلا تتجاوز الحارس صيغة `//api/sales/...` أو `%2f`.
+function isOutOfScopeLiveRouteRequest(rawUrl: string): boolean {
+  let p = String(rawUrl || "").split("?")[0].split("#")[0].replace(/\\/g, "/");
+  for (let i = 0; i < 5; i += 1) {
+    if (!/%[0-9a-fA-F]/.test(p)) break;
+    try {
+      const next = decodeURIComponent(p);
+      if (next === p) break;
+      p = next;
+    } catch {
+      break;
+    }
+  }
+  const norm = path.posix.normalize(p);
+  const canonical = (norm.startsWith("/") ? norm : `/${norm}`).replace(/\/+$/, "").toLowerCase() || "/";
+  for (const prefix of OUT_OF_SCOPE_LIVE_ROUTE_PREFIXES) {
+    if (canonical === prefix || canonical.startsWith(prefix + "/")) return true;
+  }
+  return false;
+}
 if (!legacyErpScopeEnabled()) {
   app.use((req, res, next) => {
     if (isLegacyErpRouteRequest(String(req.url || ""))) {
       return res.status(404).json({
         success: false,
         error: "هذا السطح (Inventory/CRM/Finance) خارج نطاق المشروع المعلن (سوشيال + AI + تسويق).",
+        code: "SCOPE_DISABLED",
+        note: "لإعادة التفعيل: GHARABI_ENABLE_LEGACY_ERP_SCOPE=true. لا يُزال الكود ولا البيانات.",
+      });
+    }
+    // عائلات خارج النطاق لكنها مستهلكة بواجهات ظاهرة (مبيعات/مالية/دليل عملاء): تُعزل
+    // بنفس المفتاح مع كود مميّز يُثبت أن الحجب بسبب النطاق لا بسبب الصلاحية.
+    if (isOutOfScopeLiveRouteRequest(String(req.url || ""))) {
+      return res.status(404).json({
+        success: false,
+        error: "هذا السطح (المبيعات/المالية/دليل العملاء) خارج نطاق المشروع المعلن (سوشيال + AI + تسويق).",
         code: "SCOPE_DISABLED",
         note: "لإعادة التفعيل: GHARABI_ENABLE_LEGACY_ERP_SCOPE=true. لا يُزال الكود ولا البيانات.",
       });
@@ -8467,7 +8526,8 @@ function workspaceId(prefix: string): string {
   return `${prefix}-${Date.now()}-${crypto.randomBytes(4).toString("hex")}`;
 }
 
-app.get("/api/workspace/snapshot", authenticateToken, (_req, res) => {
+app.get("/api/workspace/snapshot", authenticateToken, (req, res) => {
+  const isOwner = ((req as any).user as ServerUser)?.role === "owner";
   const connected = connectedPlatformIds();
   res.json({
     success: true,
@@ -8477,7 +8537,9 @@ app.get("/api/workspace/snapshot", authenticateToken, (_req, res) => {
       installmentPlans: workspace.installmentPlans,
       posts: workspace.posts,
       conversations: workspace.conversations,
-      platforms: SUPPORTED_PLATFORMS.map((p: any) => ({ ...p, connection: platformConnections.get(p.id) })),
+      // Least-privilege: هوية الحساب (accountName/accountId/lastSyncAt) للمالك فقط؛
+      // غير المالك يرى الحالة التقنية (status/connectedAt/providerVerified) بلا هوية.
+      platforms: SUPPORTED_PLATFORMS.map((p: any) => ({ ...p, connection: snapshotConnection(p.id, isOwner) })),
       connectedPlatforms: connected,
       generatedAt: new Date().toISOString(),
       source: "server-workspace"

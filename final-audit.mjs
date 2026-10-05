@@ -805,6 +805,47 @@ add('health-privacy-test-registered', (pkg.scripts['test'] || '').includes('test
 add('health-privacy-canary-live', healthPrivacyTest.includes('PRIVACY_CANARY_AUTHOR_ZZZ') && healthPrivacyTest.includes('PRIVACY_CANARY_COMMENT_TEXT_ZZZ') && healthPrivacyTest.includes('PRIVACY_CANARY_REPLY_TEXT_ZZZ') && healthPrivacyTest.includes('hasLeak(health)'), 'اختبار يزرع canary (اسم/نص تعليق/نص رد) ويتحقق أن الاستجابة العامة لا تكشفه');
 add('health-privacy-field-allowlist', healthPrivacyTest.includes('ALLOWED_WATCHER_PUBLIC_KEYS') && healthPrivacyTest.includes('FORBIDDEN_CUSTOMER_FIELDS') && healthPrivacyTest.includes('watcherPublicExtra'), 'حارس allow-list صارم للكتلة العامة + قائمة حقول عميل ممنوعة (يمنع رجوع أي حقل حسّاس جديد)');
 add('health-privacy-detail-owner-only', healthPrivacyTest.includes('/api/agent/youtube/watcher') && healthPrivacyTest.includes('owner.watcher?.attentionRequired?.[0]?.text === LEAK_COMMENT') && healthPrivacyTest.includes('lastReply?.replyText === LEAK_REPLY'), 'البيانات التفصيلية تبقى متاحة للمالك عبر المسار المحمي (لا حذف من النظام)');
+
+// ------------------------------------------------------------
+// Point 5 — pollCount محسوم تقنياً: مؤشر liveness (عدّاد دورات الفحص الناجحة + طابع
+// آخر دورة) يُعلن في العامتين، وليس عدّاداً تجارياً. يمنع هذا الحارس أي إعادة تعريف
+// غامضة أو إعادة إدراجه في قائمة الحقول الممنوعة، ويضمن بقاء توثيق معناه.
+// ------------------------------------------------------------
+add('pollcount-exposed-as-technical-metric',
+  /function watcherStatusBlockPublic\(\)[\s\S]{0,1400}?pollCount: full\.pollCount/.test(server) &&
+  /function watcherStatusBlockPublic\(\)[\s\S]{0,1600}?lastPollAt: full\.lastPollAt/.test(server) &&
+  server.includes('pollCount: watcherState.pollCount'),
+  'pollCount/lastPollAt يُعلنان في الكتلة العامة كمؤشر تقني (liveness) من مصدر الحالة الواحد');
+add('pollcount-semantics-documented',
+  server.includes('عدّاد تقني تراكمي لعدد دورات الفحص **الناجحة**') &&
+  read('AGENTS.md').includes('pollCount'),
+  'معنى pollCount موثّق في الكود وفي AGENTS.md (مؤشر تقني لا تجاري)');
+add('pollcount-not-forbidden-leak',
+  healthPrivacyTest.includes("'pollCount', 'lastPollAt'") &&
+  !/FORBIDDEN_OPERATIONAL_DETAIL_FIELDS\s*=\s*\[[\s\S]*?'pollCount'/.test(healthPrivacyTest),
+  'pollCount مُستثنى عن قصد من قائمة الحقول الممنوعة (مؤشر تقني لا تسريب)');
+
+// ------------------------------------------------------------
+// Point 3 — /api/workspace/snapshot Least-Privilege: الهوية التنظيمية للحسابات (اسم/
+// معرّف/آخر مزامنة) للمالك فقط؛ أي دور آخر يرى الحالة التقنية فقط.
+// ------------------------------------------------------------
+add('workspace-snapshot-least-privilege',
+  server.includes('function snapshotConnection(platform: string, isOwner: boolean)') &&
+  /snapshotConnection\(p\.id, isOwner\)/.test(server) &&
+  /app\.get\("\/api\/workspace\/snapshot", authenticateToken[\s\S]{0,300}?role === "owner"/.test(server) &&
+  // غير المالك لا يحصل على الحقول الحسّاسة.
+  (() => {
+    const i = server.indexOf('function snapshotConnection');
+    const block = server.slice(i, i + 500);
+    return block.includes('accountName') === false || /if \(isOwner\) return full;[\s\S]{0,200}?return \{ platform: full\.platform, status: full\.status, connectedAt: full\.connectedAt \?\? null, providerVerified: full\.providerVerified \}/.test(block);
+  })(),
+  '/api/workspace/snapshot: الهوية التنظيمية للمنصات للمالك فقط، وغير المالك يرى الحالة التقنية بلا accountName/accountId/lastSyncAt');
+add('workspace-snapshot-authz-test',
+  fs.existsSync(path.join(root, 'engine/tests/workspace.snapshot.authz.test.ts')) &&
+  (pkg.scripts['test'] || '').includes('test:workspace-snapshot-authz') &&
+  read('engine/tests/workspace.snapshot.authz.test.ts').includes('لا accountName/accountId/lastSyncAt') &&
+  read('engine/tests/workspace.snapshot.authz.test.ts').includes('owner: accountName ظاهر'),
+  'اختبار Least-Privilege لـ/api/workspace/snapshot موجود ومسجّل (owner يرى الهوية، غيره لا)');
 add('watcher-product-facts-gate', server.includes('verifiedProductFactsForReply(') && server.includes('resolveYouTubeVideoProduct(') && server.includes('priceFactsVerified,'), 'المراقب يربط استفسار السعر ببيانات المنتج المسجّلة فعلاً عبر بوابة صريحة (لا اختراع)');
 add('watcher-product-facts-honest', /if \(!product \|\| !facts\.priceText\)[\s\S]{0,120}?verified: false/.test(server) && server.includes('analyzeBusinessClaims(replyText, factsBusiness)'), 'لا ردّ سعر بلا منتج/سعر مسجّل، والرد يمر بحارس سلامة المحتوى قبل الإرسال');
 add('watcher-product-facts-reply-uses-product', /executeYouTubeReply\(\{ commentId: String\(c\.commentId\)[\s\S]{0,200}?productId: priceReply\.verified/.test(server), 'منفّذ الرد يستلم معرّف المنتج الحقيقي عند تحقّق الحقائق (الرد من بيانات المعرض)');
@@ -2533,11 +2574,43 @@ add('brain-scope-removal-documented',
   !fs.existsSync(path.join(root, 'engine/brain/commercial')) &&
   !fs.existsSync(path.join(root, 'engine/brain/digital')),
   'حذف وحدات المبيعات/النمو/التجاري/الرقمي موثّق، ولا تشير الوثائق إليها كوحدات قائمة');
-add('brain-scope-removal-docs-flagged',
-  read('docs/دفعة-1-العقل-التجاري.md').includes('cc6e86f') &&
-  read('docs/دفعة-4-العقل-الموحّد.md').includes('cc6e86f') &&
-  read('docs/تحضير-العقل-التجاري.md').includes('cc6e86f'),
-  'الوثائق التصميمية للمبيعات/النمو موسومة كمحذوفة (سجل تاريخي لا مرجع قائم)');
+add('brain-scope-removal-docs-purged',
+  // الوثائق التصميمية للمبيعات/النمو/الرقمي/الموحّد حُذفت فعلياً (كانت تشرح وحدات غير
+  // موجودة فتضلّل المطوّر). هذا الحارس يمنع عودة أي وثيقة تشير إلى تلك الوحدات.
+  !fs.existsSync(path.join(root, 'docs/دفعة-1-العقل-التجاري.md')) &&
+  !fs.existsSync(path.join(root, 'docs/دفعة-2-عقل-التسويق-والطلب.md')) &&
+  !fs.existsSync(path.join(root, 'docs/دفعة-3-العقل-الرقمي.md')) &&
+  !fs.existsSync(path.join(root, 'docs/دفعة-4-العقل-الموحّد.md')) &&
+  !fs.existsSync(path.join(root, 'docs/تحضير-العقل-التجاري.md')),
+  'الوثائق التصميمية لوحدات المبيعات/النمو المحذوفة أُزيلت (لا مرجع مضلّل قائم)');
+add('brain-removed-modules-no-stale-refs',
+  // لا يبقى أي مرجع لوحدات محذوفة في أي ملف نصي (عدا هذا الحارس نفسه وAGENTS.md الذي
+  // يوثّق الإزالة صراحةً كسجل). يمنع إعادة إدخال مرجع مضلّل إلى وحدات غير موجودة.
+  (() => {
+    const stale = 'engine/brain/';
+    const removed = ['sales', 'digital', 'growth', 'commercial'];
+    const skip = new Set(['final-audit.mjs']);
+    const exts = new Set(['.ts', '.tsx', '.mjs', '.js', '.md', '.json']);
+    const bad = [];
+    const walk = (dir) => {
+      for (const name of fs.readdirSync(dir)) {
+        if (name === 'node_modules' || name === '.git' || name === 'dist') continue;
+        const full = path.join(dir, name);
+        const st = fs.statSync(full);
+        if (st.isDirectory()) { walk(full); continue; }
+        if (!exts.has(path.extname(name))) continue;
+        const rel = path.relative(root, full);
+        if (skip.has(rel)) continue;
+        const text = fs.readFileSync(full, 'utf8');
+        for (const mod of removed) {
+          if (text.includes(stale + mod)) { bad.push(`${rel}:${mod}`); break; }
+        }
+      }
+    };
+    walk(root);
+    return bad.length === 0;
+  })(),
+  'لا مراجع مضلّلة لوحدات brain المحذوفة (sales/digital/growth/commercial) في أي ملف نصي');
 add('cognition-health-no-customer-text',
   (() => {
     const start = server.indexOf('function cognitionHealthBlock');
@@ -2857,16 +2930,45 @@ add('watcher-advisory-not-authority',
       .every((p) => server.includes(`"${p}"`)),
     'بادئات أسطح ERP/CRM/المالية القديمة كلها معزولة (بما فيها catalog/tasks/business/suppliers/expenses/contracts/installments/executive)');
 
-  // /api/sales ميزة حيّة (تبويب sales الظاهر يستهلكها) وليست Legacy ERP: مستثناة من
-  // قائمة العزل. يمنع هذا الحارس إضافةً مستقبلية تُحجب تبويب المبيعات بـ404.
-  add('legacy-erp-excludes-live-sales', (() => {
-    const m = server.match(/const LEGACY_ERP_ROUTE_PREFIXES[^=]*=\s*Object\.freeze\(\[([\s\S]*?)\]\)/);
+  // عائلات خارج النطاق (سوشيال + AI + تسويق) لكنها مستهلكة بواجهات: المبيعات والمالية/
+  // دليل العملاء. تُعزل بنفس المفتاح في قائمة منفصلة (`OUT_OF_SCOPE_LIVE_ROUTE_PREFIXES`)
+  // عبر `isOutOfScopeLiveRouteRequest` الموصولة داخل كتلة fail-closed. يمنع هذا الحارس
+  // إعادة أي منها إلى الواجهة الظاهرة أو إخراجها من العزل.
+  add('out-of-scope-live-routes-isolated', (() => {
+    const m = server.match(/const OUT_OF_SCOPE_LIVE_ROUTE_PREFIXES[^=]*=\s*Object\.freeze\(\[([\s\S]*?)\]\)/);
     if (!m) return false;
-    const hasSalesPrefix = /"\/api\/sales"/.test(m[1]);
-    const salesRouteLive = server.includes('app.get("/api/sales", authenticateToken') || server.includes("app.get('/api/sales', authenticateToken");
-    const salesConsumed = read('src/services/api.ts').includes("'/api/sales'") || read('src/services/api.ts').includes('"/api/sales"');
-    return !hasSalesPrefix && salesRouteLive && salesConsumed;
-  })(), 'مبيعات المعرض /api/sales ميزة حيّة (مستهلكة في الواجهة الظاهرة) ومستثناة من عزل Legacy ERP (لا تُحجب بـ404)');
+    const list = m[1];
+    const required = ['/api/sales', '/api/control/alerts', '/api/control/customer-directory', '/api/control/cashflow', '/api/control/reconciliation', '/api/control/daily-brief'];
+    const allListed = required.every((p) => list.includes(`"${p}"`));
+    const matcherWired = server.includes('function isOutOfScopeLiveRouteRequest') &&
+      /isOutOfScopeLiveRouteRequest\(String\(req\.url \|\| ""\)\)/.test(server);
+    return allListed && matcherWired;
+  })(), 'عائلات المبيعات/المالية/دليل العملاء خارج النطاق ومُعزَلة عبر isOutOfScopeLiveRouteRequest (404 SCOPE_DISABLED)');
+  add('out-of-scope-no-visible-consumer',
+    // لا مكوّن داخل النطاق (ظاهر) يستهلك مسارات خارج النطاق — وإلا لكان العزل يكسر واجهة ظاهرة.
+    (() => {
+      const methods = ['getSales', 'getCashflow', 'getCustomerDirectory', 'getControlAlerts', 'getDailyBrief', 'getReconciliation'];
+      const outOfScopeComponents = ['sales/SalesCenterView.tsx', 'finance/FinanceView.tsx', 'business/BusinessSuiteView.tsx', 'control/OperationsControlView.tsx'];
+      const inScope = [];
+      const walk = (dir) => {
+        for (const name of fs.readdirSync(dir)) {
+          const full = path.join(dir, name);
+          if (fs.statSync(full).isDirectory()) { walk(full); continue; }
+          const rel = path.relative(path.join(root, 'src/components'), full);
+          if (outOfScopeComponents.includes(rel)) continue;
+          const text = fs.readFileSync(full, 'utf8');
+          for (const mth of methods) if (text.includes(mth)) { inScope.push(`${rel}:${mth}`); break; }
+        }
+      };
+      walk(path.join(root, 'src/components'));
+      return inScope.length === 0;
+    })(), 'لا مستهلك داخل النطاق لمسارات المبيعات/المالية (العزل لا يكسر واجهة ظاهرة)');
+  add('sidebar-hides-out-of-scope-tabs',
+    read('src/components/common/Sidebar.tsx').includes("'sales'") &&
+    read('src/components/common/Sidebar.tsx').includes("'control'") &&
+    /LEGACY_ERP_TAB_IDS\s*=\s*new Set\(\[[\s\S]*?'sales'[\s\S]*?'control'[\s\S]*?\]\)/.test(read('src/components/common/Sidebar.tsx')) &&
+    read('src/components/common/Sidebar.tsx').includes('LEGACY_ERP_NAV_ENABLED = false'),
+    'تبويبا sales/control مخفيان من التنقل (LEGACY_ERP_TAB_IDS + NAV_ENABLED=false)');
 
   add('legacy-erp-no-visible-consumer-surface-guarded',
     // الأسطح المعزولة الجديدة بلا مستهلك واجهة ظاهر: لا مكوّن ظاهر يستدعي مساراتها.

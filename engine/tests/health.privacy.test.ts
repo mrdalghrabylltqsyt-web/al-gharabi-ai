@@ -169,15 +169,20 @@ const FORBIDDEN_CUSTOMER_FIELDS = [
 // الحقول التقنية الدنيا المسموح بها فقط في الكتلة العامة youtubeWatcher (allow-list
 // صارم): أي حقل جديد (قد يحمل بيانات عميل أو تفاصيل تشغيلية زائدة) يُفشل الاختبار
 // حتى يُراجَع عن قصد. العدّادات التفصيلية (counters) والمعرّفات نُقلت للمسار المحمي.
+// pollCount وlastPollAt حُسِما كمؤشرات تقنية (liveness): عدّاد دورات الفحص الناجحة
+// وطابع آخر دورة — لا يحملان بيانات عملاء ولا عدّادات تجارية، فيُعلنان في النقطتين
+// العامتين. أما counters التفصيلية (detected/replied/escalated...) والمعرّفات فتبقى
+// للمالك فقط عبر المسار المحمي.
 const ALLOWED_WATCHER_PUBLIC_KEYS = new Set([
   'status', 'watcherActive', 'cadenceMinutes', 'cadenceMs', 'lastError',
-  'consecutiveErrors', 'note',
+  'consecutiveErrors', 'note', 'pollCount', 'lastPollAt',
 ]);
 
 // الحقول التشغيلية التفصيلية التي يجب ألا تظهر في النقطتين العامتين (نُقلت للمالك).
+// pollCount مُستثنى عن قصد (مؤشر تقني liveness لا تفصيل تجاري).
 const FORBIDDEN_OPERATIONAL_DETAIL_FIELDS = [
   'counters', 'usedUnits', 'remainingUnits', 'byOperation', 'mediaTotalBytes',
-  'mediaStored', 'byState', 'pollCount',
+  'mediaStored', 'byState',
 ];
 
 async function run(): Promise<void> {
@@ -217,9 +222,12 @@ async function run(): Promise<void> {
     // allow-list صارم: الكتلة العامة youtubeWatcher لا تحمل إلا الحقول التقنية الدنيا.
     const watcherPublicExtra = Object.keys(w || {}).filter((k) => !ALLOWED_WATCHER_PUBLIC_KEYS.has(k));
     check('الكتلة العامة youtubeWatcher ضمن allow-list فقط', watcherPublicExtra.length === 0, watcherPublicExtra.join(','));
-    // تقليص M2: لا عدّادات تفصيلية ولا pollCount في الكتلة العامة.
+    // تقليص M2: لا عدّادات تفصيلية في الكتلة العامة.
     check('لا عدّاد تفصيلي counters في الكتلة العامة', !('counters' in (w || {})));
-    check('لا pollCount في الكتلة العامة', !('pollCount' in (w || {})));
+    // pollCount حُسِم كمؤشر تقني (liveness): يُعلن في العامتين، ويطابق العدد المُغذّى.
+    check('pollCount مؤشر تقني مُعلن في الكتلة العامة', typeof w?.pollCount === 'number', String(w?.pollCount));
+    check('pollCount يطابق العدد المُغذّى (7)', w?.pollCount === 7, String(w?.pollCount));
+    check('lastPollAt مؤشر تقني مُعلن في الكتلة العامة', typeof w?.lastPollAt === 'string', String(w?.lastPollAt));
 
     group('2b) M2: /api/health لا تكشف تفاصيل تشغيلية زائدة');
     // youtubeQuota: الحالة المجملة فقط في الصحة (لا usedUnits/remainingUnits/byOperation).

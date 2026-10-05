@@ -37,12 +37,12 @@ export const Sidebar: React.FC<SidebarProps> = ({ mobileOpen, onCloseMobile }) =
   const { activeTab, setActiveTab, notificationBadge, currentUser, showroomInfo } = useApp();
 
   // SCOPE ISOLATION (LEGACY ERP): أسطح Inventory/CRM/Finance/Customers-360/Purchases/
-  // Reports خارج نطاق المشروع المعلن (سوشيال + AI + تسويق)، ومعزولة على الخادم
-  // افتراضياً (404 SCOPE_DISABLED). نخفي مداخلها كي لا تُعرض واجهات غير قابلة
-  // للاستخدام. تُعاد بإطفاء العزل على الخادم (GHARABI_ENABLE_LEGACY_ERP_SCOPE=true)
-  // وضبط هذا الثابت true. (تبويبا sales/control غير معزولين فبقيَا ظاهرين.)
+  // خارج نطاق المشروع المعلن (سوشيال + AI + تسويق)، ومعزولة على الخادم افتراضياً
+  // (404 SCOPE_DISABLED) — بما فيها المبيعات/المالية/دليل العملاء (sales/control).
+  // نخفي مداخلها كي لا تُعرض واجهات غير قابلة للاستخدام. تُعاد بإطفاء العزل على
+  // الخادم (GHARABI_ENABLE_LEGACY_ERP_SCOPE=true) وضبط هذا الثابت true.
   const LEGACY_ERP_NAV_ENABLED = false;
-  const LEGACY_ERP_TAB_IDS = new Set(['executive', 'business', 'finance', 'inventory', 'reports', 'operations']);
+  const LEGACY_ERP_TAB_IDS = new Set(['executive', 'business', 'finance', 'inventory', 'reports', 'operations', 'sales', 'control']);
 
   const navigationItems = [
     {

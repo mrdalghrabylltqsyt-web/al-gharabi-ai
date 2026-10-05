@@ -10,8 +10,10 @@
  * - المطابقة غير حسّاسة لحالة الأحرف، وتحترم حدّ المسار (لا تلتقط `/api/crmx`).
  * - المسارات داخل النطاق (سوشيال/AI/العقل المركزي) والمشتركة (workspace/products,
  *   workspace/conversations) **غير محجوبة**.
- * - مبيعات المعرض `/api/sales*` **ميزة حيّة** (تبويب sales الظاهر) وليست Legacy ERP:
- *   غير محجوبة في أي من حالتي المفتاح (401 بلا جلسة، 200 بجلسة) — انحدار صريح.
+ * - عائلات خارج النطاق لكنها مستهلكة بواجهات ظاهرة (المبيعات `/api/sales*` والمالية/
+ *   دليل العملاء `/api/control/{alerts,customer-directory,cashflow,reconciliation,
+ *   daily-brief}`) **مُعزَلة كذلك** بنفس المفتاح: 404 `SCOPE_DISABLED` عند التعطيل،
+ *   وغير محجوبة عند التفعيل. (سابقاً كانت `sales` تُعامل كـ«ميزة حيّة» — تصحيح نطاق.)
  * - `/api/health` يعلن `legacyErpScope.isolated=true` بلا قيمة سرّية.
  *
  * مع المفتاح مُفعّل: العزل مُعطَّل — المسار النموذجي يعود مسلك المصادقة (401 بلا جلسة)
@@ -82,12 +84,18 @@ const SHARED_WORKSPACE_ROUTES = [
   '/api/workspace/snapshot',
 ];
 
-// مبيعات المعرض **ميزة حيّة** (تبويب `sales` الظاهر يستهلكها عبر SalesCenterView) وليست
-// Legacy ERP. يجب ألا تُحجب في أي من حالتي المفتاح. (انحدار: كانت أُضيفت للقائمة خطأً.)
-const LIVE_SALES_ROUTES = [
+// خارج النطاق (سوشيال + AI + تسويق) لكنها مستهلكة بواجهات ظاهرة: المبيعات والمالية/
+// دليل العملاء. تُعزل افتراضياً (404 SCOPE_DISABLED) وتُعاد بالمفتاح. لا مستهلك داخل
+// النطاق يعتمد عليها (تُثبت في final-audit: no-in-scope-view-consumes-out-of-scope-api).
+const OUT_OF_SCOPE_LIVE_ROUTES = [
   '/api/sales',
   '/api/sales/sale-any-id',
   '/api/sales/sale-any-id/payments',
+  '/api/control/alerts',
+  '/api/control/customer-directory',
+  '/api/control/cashflow',
+  '/api/control/reconciliation',
+  '/api/control/daily-brief',
 ];
 
 function startApp(port: number, stateDir: string, enableScope: boolean, previewToken: string): ChildProcess {
@@ -161,7 +169,7 @@ async function login(base: string, token: string): Promise<string> {
     }
 
     // 2) حالة الأحرف: Express يوجّه بلا حساسية للحالة، فيجب أن يُعزل الحارس كل الصيغ.
-    for (const route of ['/API/INVENTORY', '/Api/Crm/Leads', '/API/FINANCE/overview', '/API/PURCHASES']) {
+    for (const route of ['/API/INVENTORY', '/Api/Crm/Leads', '/API/FINANCE/overview', '/API/PURCHASES', '/API/SALES', '/Api/Control/Cashflow']) {
       const res = await fetch(`${baseA}${route}`);
       const body: any = await res.json().catch(() => ({}));
       check(`off: ${route} => 404 (case-insensitive)`, res.status === 404, `status=${res.status}`);
@@ -176,7 +184,7 @@ async function login(base: string, token: string): Promise<string> {
       check(`off: ${route} => 404 (variant)`, res.status === 404, `status=${res.status}`);
       check(`off: ${route} => SCOPE_DISABLED (variant)`, body?.code === 'SCOPE_DISABLED', `code=${body?.code}`);
     }
-    for (const route of ['/api/crmx', '/api/inventoryX/thing']) {
+    for (const route of ['/api/crmx', '/api/inventoryX/thing', '/api/salesforce', '/api/controlx']) {
       const res = await fetch(`${baseA}${route}`);
       const body: any = await res.json().catch(() => ({}));
       check(`off: ${route} NOT scope-blocked (boundary)`, !(res.status === 404 && body?.code === 'SCOPE_DISABLED'), `status=${res.status} code=${body?.code}`);
@@ -184,7 +192,7 @@ async function login(base: string, token: string): Promise<string> {
 
     // 3ب) تحصين دفاعي: الشرطة المائلة المكرّرة تُطبَّع قبل المطابقة فيُعزل الحارس
     //     صيغ `//api/crm/...` و`/api//crm/...` (كانت تتجاوز المطابقة النصية الخام).
-    for (const route of ['//api/crm/leads', '/api//crm/leads', '//api/inventory', '/api//finance/overview', '///api/purchases']) {
+    for (const route of ['//api/crm/leads', '/api//crm/leads', '//api/inventory', '/api//finance/overview', '///api/purchases', '//api/sales', '/api//control/cashflow']) {
       const res = await fetch(`${baseA}${route}`);
       const body: any = await res.json().catch(() => ({}));
       check(`off: ${route} => 404 (dup-slash)`, res.status === 404, `status=${res.status}`);
@@ -204,21 +212,21 @@ async function login(base: string, token: string): Promise<string> {
       }
     }
 
-    // 4ب) مبيعات المعرض ميزة حيّة (تبويب sales الظاهر) — لا تُحجب حتى والمفتاح مُطفأ.
-    //     القاعدة الحاكمة: لا SCOPE_DISABLED إطلاقاً. المسارات ذات المسلك المسجَّل تعود
-    //     401 بلا جلسة؛ أما مسار بلا مسلك GET فـ404 عام من Express (لا حجب نطاق).
-    for (const route of LIVE_SALES_ROUTES) {
+    // 4ب) عائلات خارج النطاق (مبيعات/مالية/دليل عملاء) — تُعزل عند إطفاء المفتاح،
+    //     لأنها خارج النطاق المعلن (سوشيال + AI + تسويق) لا لأن المستخدم غير مصرّح.
+    for (const route of OUT_OF_SCOPE_LIVE_ROUTES) {
       const res = await fetch(`${baseA}${route}`);
       const body: any = await res.json().catch(() => ({}));
-      check(`off: live-sales ${route} NOT scope-blocked`, !(res.status === 404 && body?.code === 'SCOPE_DISABLED'), `status=${res.status} code=${body?.code}`);
+      check(`off: out-of-scope ${route} => 404`, res.status === 404, `status=${res.status}`);
+      check(`off: out-of-scope ${route} => SCOPE_DISABLED`, body?.code === 'SCOPE_DISABLED', `code=${body?.code}`);
     }
-    for (const route of ['/api/sales', '/api/sales/sale-any-id/payments']) {
-      const res = await fetch(`${baseA}${route}`);
-      check(`off: live-sales ${route} => 401 (route live, not blocked)`, res.status === 401, `status=${res.status}`);
-    }
+    // الحجب بسبب النطاق لا الصلاحية: تبقى معزولة حتى بجلسة صالحة.
     if (authToken) {
       const resSales = await fetch(`${baseA}/api/sales`, { headers: { Authorization: `Bearer ${authToken}` } });
-      check('off: live-sales /api/sales reachable with session (200)', resSales.status === 200, `status=${resSales.status}`);
+      const bSales: any = await resSales.json().catch(() => ({}));
+      check('off: out-of-scope /api/sales => 404 SCOPE_DISABLED even with session', resSales.status === 404 && bSales?.code === 'SCOPE_DISABLED', `status=${resSales.status} code=${bSales?.code}`);
+      const resCash: any = await (await fetch(`${baseA}/api/control/cashflow`, { headers: { Authorization: `Bearer ${authToken}` } })).json().catch(() => ({}));
+      check('off: out-of-scope /api/control/cashflow => SCOPE_DISABLED even with session', resCash?.code === 'SCOPE_DISABLED', `code=${resCash?.code}`);
     }
 
     // 5) المسارات داخل النطاق (سوشيال/ذكاء/عقل مركزي) يجب ألا تُحجب.
@@ -257,11 +265,11 @@ async function login(base: string, token: string): Promise<string> {
       const body: any = await res.json().catch(() => ({}));
       check(`on: ${route} not scope-blocked`, !(res.status === 404 && body?.code === 'SCOPE_DISABLED'), `status=${res.status} code=${body?.code}`);
     }
-    // مبيعات المعرض ميزة حيّة: لا تُحجب ولا في حالة تفعيل العزل أيضاً.
-    for (const route of LIVE_SALES_ROUTES) {
+    // عائلات خارج النطاق: عند تفعيل المفتاح لا تُحجب (تعود لمسلك المصادقة).
+    for (const route of OUT_OF_SCOPE_LIVE_ROUTES) {
       const res = await fetch(`${baseB}${route}`);
       const body: any = await res.json().catch(() => ({}));
-      check(`on: live-sales ${route} NOT scope-blocked`, !(res.status === 404 && body?.code === 'SCOPE_DISABLED'), `status=${res.status} code=${body?.code}`);
+      check(`on: out-of-scope ${route} NOT scope-blocked`, !(res.status === 404 && body?.code === 'SCOPE_DISABLED'), `status=${res.status} code=${body?.code}`);
     }
     const healthB: any = await (await fetch(`${baseB}/api/health`)).json().catch(() => ({}));
     check('on: health.legacyErpScope.isolated=false', healthB?.legacyErpScope?.isolated === false, JSON.stringify(healthB?.legacyErpScope));

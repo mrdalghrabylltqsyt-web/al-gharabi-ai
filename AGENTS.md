@@ -2,9 +2,41 @@
 
 ## الهوية والنطاق
 - المشروع: `al-gharabi-ai` — مساعد ذكي مركزي متعدد المنصات لمعرض الغرابي للتقسيط.
-- الهدف الحالي: بناء «مدير سوشيال ميديا ذكي» يدير دورة السوشيال ميديا (تحليل → تخطيط → محتوى → نشر → تعليقات → تحليل → تعلّم).
-- هذا المشروع **ليس ERP**. لا تُضاف وحدات مخازن/مبيعات/عقود/أقساط/مشتريات/تحصيل كتوسعة ERP.
+- **النطاق الرسمي الحالي: سوشيال + AI + تسويق.** هذا هو المعيار الوحيد لقبول أي ميزة.
+- الهدف: «مدير سوشيال ميديا ذكي» يدير دورة السوشيال ميديا (تحليل → تخطيط → محتوى → نشر → تعليقات → تحليل → تعلّم)، مع عقل مركزي متعدد المنصات.
 - اقرأ `GHARABI_PROJECT_RULES.md` قبل أي تعديل؛ فهو المصدر الملزم للقواعد.
+
+### Scope Boundary — ما هو داخل النطاق وما هو خارجه (مصدر الحقيقة)
+هذا القسم يصف **الواقع الفعلي للكود** لا طموحاً. الوجود الفني لسطح ما لا يعني أنه داخل
+النطاق؛ المعيار هو «سوشيال + AI + تسويق».
+
+**داخل النطاق (ACTIVE — ظاهر للمستخدم ومُختبر):**
+- إدارة وسائل التواصل (10 منصات)، الموصلات الحقيقية (Telegram/Facebook/Instagram/YouTube/TikTok).
+- مركز المحتوى، الموافقة والاعتماد، التقويم، التحليلات، مركز العملاء الموحد (تعليقات/رسائل).
+- العقل المركزي (`central_agent`)، العقل المركزي متعدد المنصات (`central_brain`)، مدير تشغيل YouTube، مراجعة التقرير اليومي، طابور المحتوى.
+- مركز ربط المنصات، مركز التشغيل والحماية، المستخدمون والصلاحيات، قاعدة بيانات المعرض (المنتجات/الأقساط)، التعافي والنسخ السحابي (للمالك).
+
+**خارج النطاق (OUT OF SCOPE — الكود باقٍ لكنه معزول ومخفي، لا يُحذف):**
+- `sales` (مركز المبيعات والعقود)، `control` (غرفة العمليات: دليل العملاء/التدفق النقدي/المطابقة).
+- `finance`، `inventory`، `reports`، `operations`، `business`، `executive`.
+- مساراتها: `/api/sales*`، `/api/control/{alerts,customer-directory,cashflow,reconciliation,daily-brief}`، `/api/{inventory,finance,reports/operations,crm,purchases,catalog,customers/360,tasks,business,suppliers,expenses,contracts,installments,executive}`.
+- **العزل الفعلي:** خلف `GHARABI_ENABLE_LEGACY_ERP_SCOPE` (افتراضياً معطّل ⇒ fail-closed). عند التعطيل ترد هذه المسارات **404 `SCOPE_DISABLED`** قبل أي مصادقة، والتبويبات `sales/control/finance/inventory/reports/operations/business/executive` **مخفية** من `Sidebar` (`LEGACY_ERP_NAV_ENABLED=false` + `LEGACY_ERP_TAB_IDS`). لا يُحذف أي كود أو بيانات عند التعطيل.
+- **لماذا بقيت؟** أسطح مستهلكة بواجهات كانت ظاهرة، وأسطح إرث تجاري. حُذف بعضها فعلاً (وحدات brain التجارية أدناه) وبقيت واجهاتها/مساراتها معزولة لأن حذفها يكسر مسارات تنقّل قائمة؛ القرار الصحيح هو **العزل لا الحذف العشوائي**.
+
+**محذوف فعلاً (لا تعِد إدخاله بلا قرار صريح):**
+- `engine/brain/{sales,growth,commercial,digital}/`، `engine/brain/knowledge/catalog.ts`، `engine/brain/market/{demandSignals,opportunityEngine}.ts`.
+- واجهاتها: `CommercialBrainView`/`GrowthBrainView`/`SalesDashboardView`/`UnifiedGrowthBrainView`.
+- مساراتها: `/api/agent/brain/sales/*` و`/growth/*` و`/commercial/*`، واختباراتها وفحوص final-audit الخاصة بها.
+- حُذفت في `cc6e86f` لأنها **خارج النطاق** (عقل مبيعات/نمو تجاري). الوثائق التصميمية لها أُزيلت أيضاً. لا مرجع لأي منها في أي ملف نصي (فحص `brain-removed-modules-no-stale-refs`).
+
+**حدود العقل المركزي (Central Brain) الحالية:**
+- الباقي والموصول: الإدراك (`cognition`)، الفريق (`team`)، القرار (`decisions`)، التعلّم (`learning`)، الذاكرة (`memory`)، الاستراتيجية (`strategy`)، الإيقاع (`timing`)، الأهداف (`goals`)، التجارب (`experiments`)، الجمهور (`audience`)، السوق (`market/commercialRelevance`)، المعرفة (`knowledge/truth`)، وقت التشغيل 24/7 (`brainRuntime`).
+- **قدرات العقل تحليلية/توصية/تعلّم فقط.** التنفيذ الخارجي يمرّ ببوابات المشروع القائمة (`EXTERNAL_ACTION` + تفويض المالك) ولا يقع من العقل مباشرة. لا تنفيذ صامت، ولا اختراع حقيقة تجارية.
+
+**أنظمة لا يجوز إعادة إدخالها دون قرار مالك صريح:**
+- أي وحدة ERP (مخازن/مبيعات/عقود/أقساط/مشتريات/تحصيل/مالية) كتوسعة فعلية.
+- أي عقل تجاري/مبيعات/نمو/رقمي/موحّد (حُذف).
+- أي قدرة تُعلن اتصالاً/تسليماً بلا إثبات مزود، أو أي بيانات وهمية.
 
 ## أوامر البناء والاختبار
 ```bash
@@ -12,7 +44,7 @@ npm install
 npm run dev            # tsx server.ts
 npm run lint           # tsc --noEmit
 npm run build          # vite build + esbuild server.ts -> dist/server.cjs
-npm run final-audit    # node final-audit.mjs (1318 فحصاً)
+npm run final-audit    # node final-audit.mjs (1326 فحصاً)
 npm test               # storage + engine + auth + ... + db + runtime
 ```
 - التشغيل الإنتاجي: `PORT=4517 NODE_ENV=production APP_URL=http://localhost:4517 node dist/server.cjs`
@@ -3760,18 +3792,48 @@ Security/QA/Reliability. الأساس سليم (المصادقة/التوقيع�
 
 ### نتائج التحقق
 `npm run lint` ✅ · `npm run build` ✅ · `npm test` ✅ (EXIT=0، 0 فشل) · `final-audit` ✅
-(**1318 فحصاً**). لم يُنفَّذ دفع/دمج/نشر — بانتظار إذن المالك.
+(**1326 فحصاً**). لم يُنفَّذ دفع/دمج/نشر — بانتظار إذن المالك.
 
-### ملاحظات لم تُعالَج (تحتاج قرار المالك)
-- **تبويبا `sales`/`control`** ظاهران ومقصودان، ويعرضان بيانات عملاء/مالية. مقبول لأن
-  المشروع يخص مالكاً واحداً؛ إن أردت تضييقاً فأبقِ `/api/workspace/*` المشتركة وعزّل
-  `/api/sales`+`/api/control/{customer-directory,cashflow,reconciliation}` (غير مستخدمة في
-  الواجهة الظاهرة).
-- **`/api/workspace/snapshot`** يعرض أسماء/معرّفات حسابات المنصات لأي مستخدم مصادَق
-  (`authenticateToken` بلا فحص دور). لا يكشف توكنات (المخزّن مشفّراً منفصلاً).
-- **توثيق متقادم:** AGENTS.md يوثّق وحدات `engine/brain/{sales,digital,growth,commercial}`
-  (العقل التجاري/الرقمي/النمو/الموحّد + دفعاتها 1–4) ووثائق `docs/دفعة-*` — **غير موجودة
-  في الشجرة الحالية**. لا أثر لها في الكود أو المسارات أو الواجهة (لا سرّ ولا مخاطرة)،
-  لكن التوثيق يصف قدرات غير منشورة فعلياً.
-- **أخطاء منصّة خارجية:** نشر TikTok URL-prefix (`Something went wrong`) وربط Meta OAuth
-  توقفا عند إعدادات لوحة المزوّد لا الكود.
+### Five-Point Closure (2026-10-05) — إغلاق النقاط الخمس من جذورها
+الملاحظات المفتوحة السابقة أُغلقت فعلياً. التفصيل:
+
+**1) توثيق AGENTS.md/النطاق:** أُعيد كتابة قسم «الهوية والنطاق» ليعكس **الواقع الفعلي**
+(سوشيال + AI + تسويق)، مع Scope Boundary صريح (داخل/خارج النطاق، العزل، المحذوف، حدود
+العقل المركزي، ما لا يُعاد إدخاله). لا وصف مثالي غير مطابق للكود.
+
+**2) تبويبا `sales`/`control` (والأسطح المالية/العملاء):** كانتا «ظاهرتين ومقصودتين»
+سابقاً؛ صُحِّحت إلى **خارج النطاق**: أُضيفت `OUT_OF_SCOPE_LIVE_ROUTE_PREFIXES` +
+`isOutOfScopeLiveRouteRequest` في `server.ts` تُعزل (404 `SCOPE_DISABLED` افتراضياً،
+قبل المصادقة، تطبيع مسار كامل ضد `//api/sales`/`%2f`) بنفس مفتاح `GHARABI_ENABLE_LEGACY_ERP_SCOPE`.
+`LEGACY_ERP_TAB_IDS` في `Sidebar` صار يضم `sales` و`control` (مخفيان، NAV_ENABLED=false).
+لا مستهلك داخل النطاق لهذه المسارات (فحص `out-of-scope-no-visible-consumer`)، فالعزل
+لا يكسر واجهة ظاهرة. فحوص: `out-of-scope-live-routes-isolated`, `sidebar-hides-out-of-scope-tabs`.
+
+**3) `/api/workspace/snapshot` Least-Privilege:** أُضيف `snapshotConnection(platform, isOwner)`
+— المالك يرى الهوية الكاملة (`accountName`/`accountId`/`lastSyncAt`/`provider`)؛ أي دور
+آخر يرى الحالة التقنية فقط (`platform`/`status`/`connectedAt`/`providerVerified`) بلا هوية
+تنظيمية. اختبار `workspace.snapshot.authz.test.ts` (owner يرى، manager/staff/creator/support
+لا يرون، 401/403، لا قيمة خام في النص). فحوص: `workspace-snapshot-least-privilege`,
+`workspace-snapshot-authz-test`.
+
+**4) توثيق وحدات brain المحذوفة:** `docs/{تحضير-العقل-التجاري,دفعة-1..4-*}.md` حُذفت
+فعلياً (كانت تشرح وحدات غير موجودة)، والفحص القديم `brain-scope-removal-docs-flagged`
+استُبدل بحارس `brain-scope-removal-docs-purged` + `brain-removed-modules-no-stale-refs`
+(يمنع عودة أي مرجع `engine/brain/{sales,digital,growth,commercial}` في أي ملف نصي).
+لا مرجع متبقٍ (بحث شامل).
+
+**5) pollCount:** محسوم تقنياً — **مؤشر liveness تقني**، لا تجاري:
+- **المصدر:** `watcherState.pollCount` (حالة المراقبة، تُحفظ عبر محوّل الحالة).
+- **المعنى:** عدّاد **تراكمي** لعدد **دورات الفحص الناجحة** منذ بدء القياس؛ يزيد بواحد
+  فقط في نهاية دورة ناجحة (`runYouTubeWatcherCycle`)، **لا يتضمّن الدورات الفاشلة**
+  (مسار الـcatch لا يزيده)، و**لا يُصفَّر** عند restart/deploy (يُسترجع من اللقطة).
+- **السلوك:** لا يصلح كمعدّل مباشر (ليس معدّل زمني)؛ للمعدّل استخدم `lastPollAt` +
+  `cadenceMs`. يختلف عن `counters` (عدّادات تصنيف التعليقات التجارية للمالك فقط).
+- **القرار:** يُعلن في `/api/health` و`/api/readiness` (الكتلة العامة) مع `lastPollAt`
+  لأنهما لا يحملان بيانات عملاء ولا عدّادات تجارية — مرقاب حياة للخدمة. الفحوص:
+  `pollcount-exposed-as-technical-metric`, `pollcount-semantics-documented`,
+  `pollcount-not-forbidden-leak`، واختبار `health.privacy.test.ts` (يُثبت القيمة الفعلية).
+
+### أخطاء منصّة خارجية (EXTERNAL BLOCKER — ليست كوداً)
+- نشر TikTok URL-prefix (`Something went wrong`) وربط Meta OAuth: توقفا عند إعدادات
+  لوحة المزوّد (App Domains / Redirect URIs / Use Cases / رول الصفحة) لا الكود.
