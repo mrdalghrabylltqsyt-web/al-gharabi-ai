@@ -11701,7 +11701,8 @@ function buildCustomerDirectory(){
   return [...map.values()].map(c=>({...c,sources:[...c.sources]})).sort((a,b)=>b.salesValue-a.salesValue || String(b.lastActivity||'').localeCompare(String(a.lastActivity||'')));
 }
 
-app.get('/api/control/alerts', authenticateToken, (_req,res)=>{
+app.get('/api/control/alerts', authenticateToken, (req,res)=>{
+  const user=(req as any).user as ServerUser; if(!["owner","manager","staff"].includes(user.role)) return res.status(403).json({success:false,error:"لا تملك صلاحية الوصول للتنبيهات التشغيلية."});
   const now=Date.now(), alerts:any[]=[];
   const low=(workspace.products as any[]).filter(p=>Number(p.stockQuantity||0)<=Number(p.reorderLevel||0));
   if(low.length) alerts.push({id:'stock-low',severity:'warning',type:'inventory',title:'مخزون يحتاج إعادة طلب',count:low.length,value:low.reduce((n:number,p:any)=>n+Math.max(0,Number(p.stockQuantity||0)),0)});
@@ -11746,7 +11747,8 @@ app.get('/api/control/reconciliation', requireOwner, (_req,res)=>{
   res.json({success:true,ok:Math.abs(differences.salesPaidVsTransactions)<0.01,salesValue,recordedPaid:paid,transactionPaid:computedPaid,differences,checkedAt:new Date().toISOString()});
 });
 
-app.get('/api/control/daily-brief', authenticateToken, (_req,res)=>{
+app.get('/api/control/daily-brief', authenticateToken, (req,res)=>{
+  const user=(req as any).user as ServerUser; if(!["owner","manager","staff"].includes(user.role)) return res.status(403).json({success:false,error:"لا تملك صلاحية الوصول للملخص اليومي."});
   const now=new Date(), start=new Date(now.getFullYear(),now.getMonth(),now.getDate()).getTime();
   const todaySales=(workspace.sales as any[]).filter(x=>Date.parse(x.createdAt||'')>=start);
   const todayPayments=(workspace.payments as any[]).filter(x=>Date.parse(x.createdAt||'')>=start);

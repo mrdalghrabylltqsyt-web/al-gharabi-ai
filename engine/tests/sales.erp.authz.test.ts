@@ -65,15 +65,21 @@ function seedState(): void {
     platformConnections: [],
     workspace: {
       showroom: {},
-      products: [{ id: 'prod-1', name: 'منتج اختبار', stockQuantity: 10, reorderLevel: 2, inStock: true, price: 1000 }],
+      // منتج بمخزون منخفض (1 <= reorderLevel 10) + قسط متأخر + بيع اليوم: بيانات مالية
+      // حساسة حقيقية تُثبت أن /api/control/alerts و/api/control/daily-brief تحجبها عن
+      // غير المصرّح لهم (لو بقيتا بلا فحص دور لظهرت هذه القيم في الاستجابة).
+      products: [
+        { id: 'prod-1', name: 'منتج اختبار', stockQuantity: 10, reorderLevel: 2, inStock: true, price: 1000 },
+        { id: 'prod-low', name: 'منتج منخفض المخزون', stockQuantity: 1, reorderLevel: 10, inStock: true, price: 500 },
+      ],
       suppliers: [],
       purchases: [],
-      sales: [],
-      payments: [],
-      expenses: [],
+      sales: [{ id: 'sale-seed', customerName: 'عميل اليوم', productId: 'prod-1', totalAmount: 4000, status: 'confirmed', createdAt: nowIso() }],
+      payments: [{ id: 'pay-seed', saleId: 'sale-seed', amount: 1500, method: 'cash', createdAt: nowIso() }],
+      expenses: [{ id: 'exp-seed', amount: 250, category: 'تشغيل', description: 'مصروف اليوم', createdAt: nowIso() }],
       contracts: [],
-      installmentSchedules: [],
-      leads: [],
+      installmentSchedules: [{ id: 'inst-overdue', saleId: 'sale-seed', dueAt: new Date(Date.now() - 86400000).toISOString(), amount: 900, paid: 0, status: 'unpaid' }],
+      leads: [{ id: 'lead-seed', customerName: 'عميل محتمل', status: 'new' }],
       conversations: [],
       tasks: [],
       posts: [],
@@ -146,6 +152,8 @@ const ROUTES: RouteSpec[] = [
   { name: 'GET /api/executive/overview', method: 'GET', path: '/api/executive/overview', ok: 200 },
   { name: 'GET /api/control/customer-directory', method: 'GET', path: '/api/control/customer-directory', ok: 200 },
   { name: 'GET /api/control/cashflow', method: 'GET', path: '/api/control/cashflow', ok: 200 },
+  { name: 'GET /api/control/alerts', method: 'GET', path: '/api/control/alerts', ok: 200 },
+  { name: 'GET /api/control/daily-brief', method: 'GET', path: '/api/control/daily-brief', ok: 200 },
 ];
 
 // مسارات تُبنى معرّفاتها في المسار: تُستبدل بالمعرّف الحقيقي بعد الإنشاء.
@@ -182,6 +190,30 @@ async function run(): Promise<void> {
         check(`403 (${role}): ${spec.name}`, r.status === 403 && r.json?.success === false, `status=${r.status}`);
       }
     }
+
+    // ---- 2ب) /api/control/alerts و/api/control/daily-brief: منع تسريب بيانات مالية ----
+    // تُنفَّذ قبل أي إنشاء لاحق حتى تكون القيم مطابقة للبيانات المُغذّاة بالضبط
+    // (مخزون منخفض 1، بيع 4000، تحصيل 1500). نثبت أن غير المصرّح لهم لا يرون أي قيمة،
+    // وأن المصرّح لهم يرونها فعلاً (الحجب بسبب الدور لا بسبب غياب البيانات).
+    for (const path of ['/api/control/alerts', '/api/control/daily-brief']) {
+      check(`401 بلا جلسة: ${path}`, (await call(path, 'GET')).status === 401);
+      for (const role of ['creator', 'support'] as const) {
+        const denied = await call(path, 'GET', tokens[role]);
+        check(`403 (${role}): ${path}`, denied.status === 403 && denied.json?.success === false, `status=${denied.status}`);
+        const body = JSON.stringify(denied.json);
+        check(`لا تسريب بيانات مالية (${role}): ${path}`, !/4000|1500|900|"sales"|"collections"|"overdue"|prod-low/.test(body), body.slice(0, 120));
+      }
+      check(`200 (owner): ${path}`, (await call(path, 'GET', tokens.owner)).status === 200);
+      check(`200 (manager): ${path}`, (await call(path, 'GET', tokens.manager)).status === 200);
+      check(`200 (staff): ${path}`, (await call(path, 'GET', tokens.staff)).status === 200);
+    }
+    const alertsOwner = await call('/api/control/alerts', 'GET', tokens.owner);
+    check('alerts (owner): يُعلن المخزون المنخفض الحقيقي', JSON.stringify(alertsOwner.json?.alerts || []).includes('stock-low'));
+    check('alerts (owner): يُعلن الأقساط المتأخرة الحقيقية', JSON.stringify(alertsOwner.json?.alerts || []).includes('installments-overdue'));
+    const briefOwner = await call('/api/control/daily-brief', 'GET', tokens.owner);
+    check('daily-brief (owner): مبيعات اليوم الحقيقية 4000', Number(briefOwner.json?.sales?.value) === 4000, `value=${briefOwner.json?.sales?.value}`);
+    check('daily-brief (owner): تحصيلات اليوم الحقيقية 1500', Number(briefOwner.json?.collections) === 1500, `collections=${briefOwner.json?.collections}`);
+    check('daily-brief (owner): مخزون منخفض حقيقي (1)', Number(briefOwner.json?.lowStock) === 1, `lowStock=${briefOwner.json?.lowStock}`);
 
     // ---- 3) الأدوار المسموحة => نجاح فعلي، لكل دور بمعرّفات حقيقية جديدة ----
     for (const role of ['owner', 'manager', 'staff'] as const) {

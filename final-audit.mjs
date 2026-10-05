@@ -2994,6 +2994,17 @@ add('watcher-advisory-not-authority',
   add('sales-erp-role-guards-present', missingGuard.length === 0,
     missingGuard.length ? `بلا فحص دور: ${missingGuard.join(', ')}` : 'كل مسارات البيع/الأعمال/المالية تحمل فحص ["owner","manager","staff"]');
 
+  // مسارا /api/control/alerts و/api/control/daily-brief يكشفان بيانات مالية/تشغيلية
+  // حقيقية؛ يلزمهما نفس فحص الدور (لا requireOwner، اتساقاً مع بقية /api/control/*).
+  const controlGuards = ["app.get('/api/control/alerts'", "app.get('/api/control/daily-brief'"];
+  const missingControlGuard = controlGuards.filter((sig) => {
+    const i = server.indexOf(sig);
+    if (i < 0) return true;
+    return !/\["owner","manager","staff"\]\.includes/.test(server.slice(i, i + 500));
+  });
+  add('control-alerts-brief-role-guards', missingControlGuard.length === 0,
+    missingControlGuard.length ? `بلا فحص دور: ${missingControlGuard.join(', ')}` : '/api/control/alerts و/api/control/daily-brief يحملان فحص ["owner","manager","staff"]');
+
   // ------------------------------------------------------------
   // Point 3 — ربط YouTube بالمبيعات الموثّقة: قراءة فقط، بلا سببية/ROI.
   // ------------------------------------------------------------
