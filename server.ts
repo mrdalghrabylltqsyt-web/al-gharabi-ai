@@ -63,6 +63,8 @@ import { isEscalationOpen, escalationReasonFor, type EscalationReason, type Esca
 import { classifyConversation } from "./engine/brain/audience/conversationIntelligence";
 import { capabilityRow } from "./engine/brain/strategy/capabilityMatrix";
 import { registerDriveRoutes } from "./engine/dr/routes";
+import { classifyHttpError, shouldExposeErrorMessage, safeErrorMessage, redactSecretsFromText } from "./engine/runtime/errorSafety";
+import { enforceRateWindowCap, RATE_WINDOW_TTL_MS } from "./engine/runtime/rateWindow";
 import { computeLiveDatabaseFingerprint } from "./engine/dr/dbBalance";
 import { buildSecretsBundle } from "./tools/dr/secret-crypto.mjs";
 import { buildRecoveryInformation, buildRecoveryInstructions } from "./tools/dr/cloud-lib.mjs";
@@ -455,6 +457,16 @@ import { isScheduleInFuture, normalizeScheduleInput, wallClockToEpoch } from "./
 dotenv.config();
 
 const app = express();
+
+// سلامة العملية: أي استثناء/وعد مرفوض غير مُلتقَط يُسجَّل برسالة مُنقّاة (بلا سرّ
+// ولا مكدّس يُعاد)، ولا يُسقط الخادم — يبقى يعمل بينما تُعزل العملية الجارية من
+// المسار الذي فشل. لا نُغيّر سلوك الإغلاق عند SIGTERM/SIGINT.
+process.on("uncaughtException", (err) => {
+  console.error("[الغرابي AI] uncaughtException:", redactSecretsFromText(String((err as Error)?.message || err)).slice(0, 300));
+});
+process.on("unhandledRejection", (reason) => {
+  console.error("[الغرابي AI] unhandledRejection:", redactSecretsFromText(String((reason as any)?.message || reason)).slice(0, 300));
+});
 // PORT is configurable so the app can run behind any host that injects its own
 // port (containers/PaaS). Values outside the valid TCP range fall back to 3000.
 const PORT = (() => {
@@ -497,11 +509,13 @@ app.use((req, res, next) => {
 });
 
 const authAttemptWindow = new Map<string, { startedAt: number; count: number }>();
+
 function allowAuthAttempt(key: string, limit = 12): boolean {
   const now = Date.now();
   const item = authAttemptWindow.get(key);
-  if (!item || now - item.startedAt >= 15 * 60 * 1000) {
+  if (!item || now - item.startedAt >= RATE_WINDOW_TTL_MS) {
     authAttemptWindow.set(key, { startedAt: now, count: 1 });
+    enforceRateWindowCap(authAttemptWindow, now);
     return true;
   }
   if (item.count >= limit) return false;
@@ -3912,6 +3926,83 @@ app.post("/api/platforms/telegram/configure", requireOwner, async (req,res)=>{
 });
 
 // -------------------------------------------------------------
+// استيعاب أحداث webhook (مصدر واحد لكل المنصّات التي تصل كتعليق/رسالة).
+// كان المنطق نفسه مكرّراً في أربعة مسارات (Telegram/Facebook/Instagram/الموحّد)؛
+// توحيده يمنع أي انحراف بين المنصّات في: منع التكرار، الحفظ قبل الإقرار، وحفظ
+// سجل الحدث. القواعد الملزمة محفوظة حرفياً: لا معالجة مكرّرة، والحفظ الدائم
+// **قبل** الإقرار، ولا يُخزَّن أي حدث بلا تحقق سابق.
+// - `providerEventId`/`seenProviderEventIds`/`appendProviderId`: منع التكرار
+//   بمعرّف المزود (update_id لـTelegram، externalId لـFacebook/Instagram). لولاها
+//   يُفحص المعرّف الخارجي عبر قائمة سجلات المنصّة وحدها.
+// - `omitKind`: يُبقي شكل تعليق Telegram القديم (بلا حقل kind).
+// - `webhookEventType`: نوع سجل الحدث (افتراضياً "webhook"، و"message" لـTelegram).
+// - `auditKind`: إن وُجد يُسجَّل تدقيقياً بعدد المقبول/الكل.
+// -------------------------------------------------------------
+type WebhookIngestEvent = {
+  kind: string;
+  externalId: string;
+  parentExternalId: string | null;
+  authorName: string | null;
+  text: string;
+  createdAt: string;
+  replyTarget: Record<string, unknown> | null;
+};
+async function ingestWebhookComments(input: {
+  platform: string;
+  events: WebhookIngestEvent[];
+  providerEventId?: (ev: WebhookIngestEvent) => string | number;
+  seenProviderEventIds?: Array<string | number>;
+  appendProviderId?: (ev: WebhookIngestEvent) => void;
+  omitKind?: boolean;
+  webhookEventType?: string | ((ev: WebhookIngestEvent) => string);
+  auditKind?: string;
+  onEvent?: (ev: WebhookIngestEvent, outcome: "accepted" | "duplicate") => void;
+}): Promise<{ accepted: string[]; duplicates: number; created: any[] }> {
+  const { platform, events } = input;
+  if (!Array.isArray((workspace as any).socialComments)) (workspace as any).socialComments = [];
+  if (!Array.isArray((workspace as any).webhookEvents)) (workspace as any).webhookEvents = [];
+  const seenExternal = (workspace as any).socialComments.filter((c: any) => c.platform === platform).map((c: any) => c.externalId);
+  const seenProvider = input.seenProviderEventIds || [];
+  const accepted: string[] = [];
+  const acceptedEvents: WebhookIngestEvent[] = [];
+  const created: any[] = [];
+  let duplicates = 0;
+  for (const ev of events) {
+    const providerEventId = input.providerEventId ? input.providerEventId(ev) : ev.externalId;
+    if (isReplayOrDuplicate({ providerEventId, externalId: ev.externalId, seenProviderEventIds: seenProvider, seenExternalIds: [...seenExternal, ...accepted] })) {
+      duplicates += 1;
+      input.onEvent?.(ev, "duplicate");
+      continue;
+    }
+    const classification = classifyComment(ev.text);
+    const comment: any = {
+      id: workspaceId("comment"), platform, externalId: ev.externalId,
+      postExternalId: ev.parentExternalId, authorName: ev.authorName, text: ev.text,
+      createdAt: ev.createdAt, classification, requiresHumanReview: classification.requiresHumanReview,
+      // مصدر الاستقبال حقيقي صراحةً، فلا يظهر كـ simulated/not delivered.
+      ingestSource: `${platform}_webhook`, replyTarget: ev.replyTarget,
+    };
+    if (!input.omitKind) comment.kind = ev.kind;
+    (workspace as any).socialComments.unshift(comment);
+    if ((workspace as any).socialComments.length > WORKSPACE_MAX_SOCIAL_COMMENTS) (workspace as any).socialComments.length = WORKSPACE_MAX_SOCIAL_COMMENTS;
+    input.appendProviderId?.(ev);
+    accepted.push(ev.externalId);
+    acceptedEvents.push(ev);
+    created.push(comment);
+    input.onEvent?.(ev, "accepted");
+  }
+  if (accepted.length) {
+    const typeOf = typeof input.webhookEventType === "function" ? input.webhookEventType : () => (input.webhookEventType as string) || "webhook";
+    (workspace as any).webhookEvents.unshift(...acceptedEvents.map((ev) => ({ id: workspaceId("event"), platform, type: typeOf(ev), externalId: ev.externalId, receivedAt: new Date().toISOString() })));
+    (workspace as any).webhookEvents = (workspace as any).webhookEvents.slice(0, WORKSPACE_MAX_WEBHOOK_EVENTS);
+  }
+  if (input.auditKind) audit("system", input.auditKind, `${accepted.length}/${events.length}`);
+  // الحفظ الدائم **قبل** الإقرار: يضمن ثبات الحدث ومعرّف منع التكرار.
+  await persistStateDurable();
+  return { accepted, duplicates, created };
+}
+
+// -------------------------------------------------------------
 // Telegram webhook — استقبال حقيقي للرسائل الواردة ثم تمريرها لمدير السوشيال.
 // التحقق: ترويسة Telegram السرّية بزمن ثابت. منع التكرار: update_id والمعرّف الخارجي.
 // لا يُقبل أي payload بلا تحقق، ولا يُخزَّن حدث مكرر.
@@ -3932,7 +4023,6 @@ app.post("/api/platforms/telegram/webhook", express.json({limit:"256kb"}), async
     logTelegramWebhook({ updateId, outcome: "ignored" });
     return res.status(200).json({success:true,accepted:true,ignored:"non_text_update"});
   }
-  if(!Array.isArray((workspace as any).webhookEvents)) (workspace as any).webhookEvents = [];
   const externalId = telegramExternalId(parsed.chatId, parsed.messageId);
   const seenUpdates = (workspace as any).telegramUpdateIds || [];
   const seenExternal = (workspace as any).socialComments.filter((c:any)=>c.platform==="telegram").map((c:any)=>c.externalId);
@@ -3940,29 +4030,25 @@ app.post("/api/platforms/telegram/webhook", express.json({limit:"256kb"}), async
     logTelegramWebhook({ updateId: parsed.updateId, externalId, outcome: "duplicate" });
     return res.status(200).json({success:true,duplicate:true,externalId});
   }
-  // تخزين الحد الأدنى للحماية من التكرار ثم تمرير الرسالة لمخزن تعليقات مدير السوشيال.
-  (workspace as any).telegramUpdateIds = [...seenUpdates, parsed.updateId].slice(-20000);
-  if(!Array.isArray((workspace as any).socialComments)) (workspace as any).socialComments = [];
-  const classification = classifyComment(parsed.text);
-  const comment = {
-    id: workspaceId("comment"), platform: "telegram", externalId,
-    postExternalId: null, authorName: parsed.authorName||null, text: parsed.text,
-    createdAt: parsed.date || new Date().toISOString(), classification,
-    requiresHumanReview: classification.requiresHumanReview, ingestSource: "telegram_webhook",
+  // تمرير الرسالة لمخزن تعليقات مدير السوشيال عبر المصدر الموحّد (منع تكرار +
+  // حفظ قبل الإقرار). سجل الحدث بنوع "message" كما كان.
+  const telegramEvent = buildNormalizedEvent({
+    platform: "telegram", kind: "message", externalId, text: parsed.text,
+    authorName: parsed.authorName ?? null, createdAt: parsed.date,
     // هدف الرد الحقيقي: الدردشة والرسالة، فيستطيع المُرسل الرد فعلياً لاحقاً.
     replyTarget: { chatId: parsed.chatId, messageId: parsed.messageId },
-  };
-  (workspace as any).socialComments.unshift(comment);
-  if((workspace as any).socialComments.length>WORKSPACE_MAX_SOCIAL_COMMENTS) (workspace as any).socialComments.length=WORKSPACE_MAX_SOCIAL_COMMENTS;
-  (workspace as any).webhookEvents.unshift({id:workspaceId("event"),platform:"telegram",type:"message",externalId,receivedAt:new Date().toISOString()});
-  (workspace as any).webhookEvents=(workspace as any).webhookEvents.slice(0,WORKSPACE_MAX_WEBHOOK_EVENTS);
-  // ننتظر الكتابة الدائمة **قبل** إرجاع 200: تضمن أن التعليق ومعرّف التحديث
-  // (حماية التكرار) صارا في Postgres، فلا يُفقدان لو عُلّقت العملية بعد الرد.
-  await persistStateDurable();
+  });
+  const { created } = await ingestWebhookComments({
+    platform: "telegram", events: [telegramEvent], omitKind: true, webhookEventType: "message",
+    providerEventId: () => parsed.updateId, seenProviderEventIds: seenUpdates,
+    // تخزين الحد الأدنى للحماية من التكرار ثم الحفظ الدائم قبل الإقرار.
+    appendProviderId: () => { (workspace as any).telegramUpdateIds = [...seenUpdates, parsed.updateId].slice(-20000); },
+  });
+  const comment = created[0];
   const persisted = !lastPersistError;
   audit("system","telegram_inbound_message",externalId);
   logTelegramWebhook({ updateId: parsed.updateId, externalId, outcome: "accepted", persisted });
-  res.status(200).json({success:true,accepted:true,externalId,commentId:comment.id,requiresHumanReview:classification.requiresHumanReview,persisted});
+  res.status(200).json({success:true,accepted:true,externalId,commentId:comment.id,requiresHumanReview:comment.classification.requiresHumanReview,persisted});
 });
 
 // -------------------------------------------------------------
@@ -4085,32 +4171,14 @@ app.post("/api/platforms/facebook/webhook", requireRawBody, async (req,res)=>{
     if(parsed.ignored.length) logFacebookWebhook({kind:"ignored",outcome:"ignored"});
     return res.status(200).json({success:true,accepted:true,ignored:parsed.ignored.length?parsed.ignored.map((x)=>x.reason):["no_supported_event"]});
   }
-  if(!Array.isArray((workspace as any).socialComments)) (workspace as any).socialComments=[];
   if(!Array.isArray((workspace as any).facebookEventIds)) (workspace as any).facebookEventIds=[];
-  const seenExternal=(workspace as any).socialComments.filter((c:any)=>c.platform==="facebook").map((c:any)=>c.externalId);
-  const accepted:string[]=[];
-  let duplicates=0;
-  for(const ev of parsed.events){
-    if(isReplayOrDuplicate({providerEventId:ev.externalId,externalId:ev.externalId,seenProviderEventIds:(workspace as any).facebookEventIds,seenExternalIds:[...seenExternal,...accepted]})){ duplicates+=1; logFacebookWebhook({kind:ev.kind,externalId:ev.externalId,outcome:"duplicate"}); continue; }
-    const classification=classifyComment(ev.text);
-    (workspace as any).socialComments.unshift({
-      id:workspaceId("comment"),platform:"facebook",kind:ev.kind,externalId:ev.externalId,
-      postExternalId:ev.parentExternalId,authorName:ev.authorName,text:ev.text,
-      createdAt:ev.createdAt,classification,requiresHumanReview:classification.requiresHumanReview,
-      // مصدر الاستقبال حقيقي صراحةً، فلا يظهر كـ simulated/not delivered.
-      ingestSource:"facebook_webhook",replyTarget:ev.replyTarget,
-    });
-    if((workspace as any).socialComments.length>WORKSPACE_MAX_SOCIAL_COMMENTS) (workspace as any).socialComments.length=WORKSPACE_MAX_SOCIAL_COMMENTS;
-    (workspace as any).facebookEventIds=[...(workspace as any).facebookEventIds,ev.externalId].slice(-20000);
-    accepted.push(ev.externalId);
-    logFacebookWebhook({kind:ev.kind,externalId:ev.externalId,outcome:"accepted"});
-  }
-  (workspace as any).webhookEvents.unshift(...accepted.map((id)=>({id:workspaceId("event"),platform:"facebook",type:"webhook",externalId:id,receivedAt:new Date().toISOString()})));
-  (workspace as any).webhookEvents=(workspace as any).webhookEvents.slice(0,WORKSPACE_MAX_WEBHOOK_EVENTS);
-  // ننتظر الكتابة الدائمة قبل الإقرار: تضمن ثبات الحدث ومعرّف منع التكرار.
-  await persistStateDurable();
+  const { accepted, duplicates } = await ingestWebhookComments({
+    platform:"facebook", events:parsed.events, auditKind:"facebook_inbound_events",
+    seenProviderEventIds:(workspace as any).facebookEventIds,
+    appendProviderId:(ev)=>{ (workspace as any).facebookEventIds=[...(workspace as any).facebookEventIds,ev.externalId].slice(-20000); },
+    onEvent:(ev,outcome)=>logFacebookWebhook({kind:ev.kind,externalId:ev.externalId,outcome}),
+  });
   const persisted=!lastPersistError;
-  if(accepted.length) audit("system","facebook_inbound_events",`${accepted.length}/${parsed.events.length}`);
   res.status(200).json({success:true,accepted:true,processed:accepted.length,duplicates,persisted,acceptedKinds:parsed.events.filter((e)=>accepted.includes(e.externalId)).map((e)=>e.kind)});
 });
 
@@ -4310,32 +4378,14 @@ app.post("/api/platforms/instagram/webhook", requireRawBody, async (req,res)=>{
     if(parsed.ignored.length) logInstagramWebhook({kind:"ignored",outcome:"ignored"});
     return res.status(200).json({success:true,accepted:true,ignored:parsed.ignored.length?parsed.ignored.map((x)=>x.reason):["no_supported_event"]});
   }
-  if(!Array.isArray((workspace as any).socialComments)) (workspace as any).socialComments=[];
   if(!Array.isArray((workspace as any).instagramEventIds)) (workspace as any).instagramEventIds=[];
-  const seenExternal=(workspace as any).socialComments.filter((c:any)=>c.platform==="instagram").map((c:any)=>c.externalId);
-  const accepted:string[]=[];
-  let duplicates=0;
-  for(const ev of parsed.events){
-    if(isReplayOrDuplicate({providerEventId:ev.externalId,externalId:ev.externalId,seenProviderEventIds:(workspace as any).instagramEventIds,seenExternalIds:[...seenExternal,...accepted]})){ duplicates+=1; logInstagramWebhook({kind:ev.kind,externalId:ev.externalId,outcome:"duplicate"}); continue; }
-    const classification=classifyComment(ev.text);
-    (workspace as any).socialComments.unshift({
-      id:workspaceId("comment"),platform:"instagram",kind:ev.kind,externalId:ev.externalId,
-      postExternalId:ev.parentExternalId,authorName:ev.authorName,text:ev.text,
-      createdAt:ev.createdAt,classification,requiresHumanReview:classification.requiresHumanReview,
-      // مصدر الاستقبال حقيقي صراحةً، فلا يظهر كـ simulated/not delivered.
-      ingestSource:"instagram_webhook",replyTarget:ev.replyTarget,
-    });
-    if((workspace as any).socialComments.length>WORKSPACE_MAX_SOCIAL_COMMENTS) (workspace as any).socialComments.length=WORKSPACE_MAX_SOCIAL_COMMENTS;
-    (workspace as any).instagramEventIds=[...(workspace as any).instagramEventIds,ev.externalId].slice(-20000);
-    accepted.push(ev.externalId);
-    logInstagramWebhook({kind:ev.kind,externalId:ev.externalId,outcome:"accepted"});
-  }
-  (workspace as any).webhookEvents.unshift(...accepted.map((id)=>({id:workspaceId("event"),platform:"instagram",type:"webhook",externalId:id,receivedAt:new Date().toISOString()})));
-  (workspace as any).webhookEvents=(workspace as any).webhookEvents.slice(0,WORKSPACE_MAX_WEBHOOK_EVENTS);
-  // ننتظر الكتابة الدائمة قبل الإقرار: تضمن ثبات الحدث ومعرّف منع التكرار.
-  await persistStateDurable();
+  const { accepted, duplicates } = await ingestWebhookComments({
+    platform:"instagram", events:parsed.events, auditKind:"instagram_inbound_events",
+    seenProviderEventIds:(workspace as any).instagramEventIds,
+    appendProviderId:(ev)=>{ (workspace as any).instagramEventIds=[...(workspace as any).instagramEventIds,ev.externalId].slice(-20000); },
+    onEvent:(ev,outcome)=>logInstagramWebhook({kind:ev.kind,externalId:ev.externalId,outcome}),
+  });
   const persisted=!lastPersistError;
-  if(accepted.length) audit("system","instagram_inbound_events",`${accepted.length}/${parsed.events.length}`);
   res.status(200).json({success:true,accepted:true,processed:accepted.length,duplicates,persisted,acceptedKinds:parsed.events.filter((e)=>accepted.includes(e.externalId)).map((e)=>e.kind)});
 });
 
@@ -4760,27 +4810,11 @@ app.post("/api/platforms/:platform/webhook", requireRawBody, async (req, res) =>
   const events = normalizeMetaEvents(platform as PlatformId, req.body);
   if (!events.length) return res.status(200).json({ success: true, accepted: true, ignored: "no_supported_event" });
 
-  if (!Array.isArray((workspace as any).webhookEvents)) (workspace as any).webhookEvents = [];
-  if (!Array.isArray((workspace as any).socialComments)) (workspace as any).socialComments = [];
-  const seenExternal = (workspace as any).socialComments.filter((c: any) => c.platform === platform).map((c: any) => c.externalId);
-  const accepted: string[] = [];
-  for (const ev of events) {
-    if (isReplayOrDuplicate({ providerEventId: ev.externalId, externalId: ev.externalId, seenProviderEventIds: [], seenExternalIds: [...seenExternal, ...accepted] })) continue;
-    const classification = classifyComment(ev.text);
-    (workspace as any).socialComments.unshift({
-      id: workspaceId("comment"), platform, externalId: ev.externalId, kind: ev.kind,
-      postExternalId: ev.parentExternalId, authorName: ev.authorName, text: ev.text,
-      createdAt: ev.createdAt, classification, requiresHumanReview: classification.requiresHumanReview,
-      ingestSource: `${platform}_webhook`, replyTarget: ev.replyTarget,
-    });
-    if ((workspace as any).socialComments.length > WORKSPACE_MAX_SOCIAL_COMMENTS) (workspace as any).socialComments.length = WORKSPACE_MAX_SOCIAL_COMMENTS;
-    (workspace as any).webhookEvents.unshift({ id: workspaceId("event"), platform, type: ev.kind, externalId: ev.externalId, receivedAt: new Date().toISOString() });
-    accepted.push(ev.externalId);
-  }
-  (workspace as any).webhookEvents = (workspace as any).webhookEvents.slice(0, WORKSPACE_MAX_WEBHOOK_EVENTS);
-  persistState();
-  audit("system", `${platform}_inbound_events`, `${accepted.length}/${events.length}`);
-  res.status(200).json({ success: true, accepted: true, processed: accepted.length, ignoredDuplicates: events.length - accepted.length });
+  const { accepted, duplicates } = await ingestWebhookComments({
+    platform, events, auditKind: `${platform}_inbound_events`,
+    webhookEventType: (ev) => ev.kind,
+  });
+  res.status(200).json({ success: true, accepted: true, processed: accepted.length, ignoredDuplicates: duplicates });
 });
 
 // -------------------------------------------------------------
@@ -5494,7 +5528,10 @@ async function sweepFollowUpEngagement(): Promise<{ checked: number; baselined: 
         recordReadOutcome({
           id: `yt-followup:${String(entry.commentId)}`, platform: 'youtube', kind: 'engagement_changed',
           summary: `تفاعل متابعة على رد مُسلَّم (+${verdict.outcome.likesDelta} إعجاب، +${verdict.outcome.repliesDelta} رد).`,
-          source: 'platform_data:youtube-comments', sampleSize: 3,
+          // العيّنة = العدد الحقيقي المتراكم لتغيّرات التفاعل المرصودة (لا قيمة ثابتة)،
+          // فلا تُرقّى ملاحظة واحدة إلى معرفة دائمة قبل 3 رصدات. `entry` مُدرج فعلاً في
+          // السجل و`followUpOutcome` مُثبَّت أعلاه، فالعيّنة تشمل الرصدة الحالية.
+          source: 'platform_data:youtube-comments', sampleSize: watcherObservationCount('engagement_changed'),
           decisionId: decisionIdForEvent(`comment:${String(entry.commentId)}`),
         });
         watcherAudit({ action: "followup_engagement", commentId: String(entry.commentId), videoId: entry.videoId, decision: "observe", reason: verdict.note });
@@ -5924,14 +5961,19 @@ async function runYouTubeWatcherCycle(trigger: "schedule" | "manual" = "schedule
           if (vr.real) { verified += 1; baseEntry.stage = "VERIFIED"; baseEntry.reason = "تم التحقق من تسجيل الرد المُسلَّم."; }
           else { baseEntry.reason = "أُرسل الرد لكن لم يُثبَّت التحقق من سجل التسليم."; }
           // إغلاق حلقة التعلّم: نتيجة ملاحَظة حقيقية (رد مُسلَّم) — بلا ادعاء بيع.
-          recordReadOutcome({ id: `yt-reply-sent:${String(c.commentId)}`, platform: 'youtube', kind: 'response_received', summary: `أُرسل رد على تعليق YouTube ووصل المزود بمعرّف (${vr.real ? 'مُتحقَّق' : 'غير مُتحقَّق'}).`, source: 'platform_data:youtube-replies', sampleSize: 3, decisionId: decisionIdForEvent(`comment:${String(c.commentId)}`), providerReplyId: String(result.body.externalReplyId) });
+          // العيّنة = العدد الحقيقي المتراكم للردود المُسلَّمة: ردود الدورات السابقة
+          // (من السجل) + ردود هذه الدورة حتى الحالي (`replied` يزيد قبل السجل). لا
+          // قيمة ثابتة، فلا تُرقّى ملاحظة واحدة إلى معرفة دائمة قبل 3 ردود فعلية.
+          recordReadOutcome({ id: `yt-reply-sent:${String(c.commentId)}`, platform: 'youtube', kind: 'response_received', summary: `أُرسل رد على تعليق YouTube ووصل المزود بمعرّف (${vr.real ? 'مُتحقَّق' : 'غير مُتحقَّق'}).`, source: 'platform_data:youtube-replies', sampleSize: watcherObservationCount('response_received') + replied, decisionId: decisionIdForEvent(`comment:${String(c.commentId)}`), providerReplyId: String(result.body.externalReplyId) });
         } else {
           failed += 1;
           baseEntry.stage = "FAILED";
           baseEntry.reason = `فشل إرسال الرد: ${result.body?.code || result.status}`;
           watcherAudit({ action: "reply_failed", commentId: c.commentId, videoId: c.videoId, reason: baseEntry.reason, decision: "fail", sent: false, error: String(result.body?.code || result.status) });
           // إغلاق حلقة التعلّم: إخفاق حقيقي يُستدعى لاحقاً حتى لا تُعاد التجربة بلا سبب.
-          recordReadOutcome({ id: `yt-reply-failed:${String(c.commentId)}`, platform: 'youtube', kind: 'no_change', summary: `فشل إرسال رد على تعليق YouTube (${String(result.body?.code || result.status)}).`, source: 'platform_data:youtube-reply-failures', sampleSize: 3, decisionId: decisionIdForEvent(`comment:${String(c.commentId)}`) });
+          // العيّنة = العدد الحقيقي المتراكم لإخفاقات الردود: إخفاقات الدورات السابقة
+          // (من السجل) + إخفاقات هذه الدورة حتى الحالي (`failed` يزيد قبل السجل).
+          recordReadOutcome({ id: `yt-reply-failed:${String(c.commentId)}`, platform: 'youtube', kind: 'no_change', summary: `فشل إرسال رد على تعليق YouTube (${String(result.body?.code || result.status)}).`, source: 'platform_data:youtube-reply-failures', sampleSize: watcherObservationCount('no_change') + failed, decisionId: decisionIdForEvent(`comment:${String(c.commentId)}`) });
         }
       }
       watcherState.processed.unshift(baseEntry);
@@ -9208,7 +9250,11 @@ const challengeWindow = new Map<string, { startedAt: number; count: number }>();
 function allowChallengeAttempt(key: string): boolean {
   const now = Date.now();
   const item = challengeWindow.get(key);
-  if (!item || now - item.startedAt >= 15 * 60 * 1000) { challengeWindow.set(key, { startedAt: now, count: 1 }); return true; }
+  if (!item || now - item.startedAt >= RATE_WINDOW_TTL_MS) {
+    challengeWindow.set(key, { startedAt: now, count: 1 });
+    enforceRateWindowCap(challengeWindow, now);
+    return true;
+  }
   if (item.count >= 5) return false;
   item.count += 1; return true;
 }
@@ -9323,7 +9369,37 @@ async function bootstrapStorage(): Promise<void> {
   // الجهوزية تُعلن قبل مزامنة البصمة كي تُحفظ حالة التحكّم فعلاً عند أول إقلاع.
   storageReady = true;
   reconcilePreviewTokenEpoch();
+  // نتيجة آخر تحقق حي من Gemini تُطبَّق على الحالة الحيّة بعد استرجاع مفتاح التحكّم.
+  hydrateAiLiveVerificationFromDurable();
 }
+
+/**
+ * حامل دوام لنتيجة آخر تحقق حي من Gemini — يُحفظ في مفتاح التحكّم فيصمد بعد
+ * restart/cold start، فلا يبدو المزود «غير متحقَّق» بعد كل نشر رغم إثباته فعلاً
+ * (التحقق يستهلك طلباً من الحصة، فلا يجوز إعادته بلا داعٍ). لا يحمل أي سرّ:
+ * حالة/نص تشخيصي/موديل/وقت/فئة خطأ/توجيه فقط.
+ */
+const AI_LIVE_VERIFICATION_STATES = ['not_attempted', 'ok', 'failed', 'skipped_no_key', 'blocked_by_guard'] as const;
+type AiLiveVerificationState = (typeof AI_LIVE_VERIFICATION_STATES)[number];
+const aiLiveVerificationState = {
+  value: null as null | { state: AiLiveVerificationState; detail: string | null; model: string | null; at: string | null; errorKind: string | null; hint: string | null },
+  restore(saved: any): void {
+    if (!saved || typeof saved !== "object") return;
+    const state = (AI_LIVE_VERIFICATION_STATES as readonly string[]).includes(saved.state) ? saved.state : 'not_attempted';
+    this.value = {
+      state: state as AiLiveVerificationState,
+      detail: typeof saved.detail === "string" ? saved.detail.slice(0, 300) : null,
+      model: typeof saved.model === "string" ? saved.model.slice(0, 80) : null,
+      at: typeof saved.at === "string" ? saved.at.slice(0, 40) : null,
+      errorKind: typeof saved.errorKind === "string" ? saved.errorKind.slice(0, 60) : null,
+      hint: typeof saved.hint === "string" ? saved.hint.slice(0, 400) : null,
+    };
+  },
+  capture(live: { state: AiLiveVerificationState; detail: string | null; model: string | null; at: string | null; errorKind: string | null; hint: string | null }): void {
+    this.value = { state: live.state, detail: live.detail, model: live.model, at: live.at, errorKind: live.errorKind, hint: live.hint };
+  },
+  snapshot() { return this.value; },
+};
 
 /**
  * يطبّق بصمة توكن المعاينة المحفوظة ونوافذ OTP المُستهلكة على الحاويات الحيّة.
@@ -9393,6 +9469,9 @@ function applyControlSnapshot(control: any): void {
   drControl.driveDbBalance = control.driveDbBalance && typeof control.driveDbBalance === "object" ? control.driveDbBalance : null;
   // حالة وقت تشغيل العقل (Batch 5): تُسترجَع فتصمد بعد restart/cold start (بلا سرّ).
   brainRuntimeState = normalizeBrainRuntimeState(control.brainRuntime);
+  // نتيجة آخر تحقق حي من Gemini: تُسترجَع فتصمد بعد restart، فلا يبدو المزود
+  // غير متحقَّق بعد كل نشر (بلا سرّ — حالة/نص/موديل/وقت فقط).
+  aiLiveVerificationState.restore(control.aiLiveVerification);
 }
 
 /** يقرأ حالة التحكّم متزامناً (backend الملف) عند الإقلاع. */
@@ -9450,6 +9529,9 @@ function buildControlState() {
     // حالة وقت تشغيل العقل (Batch 5): الحالة/القفل/العدّادات — تصمد بعد restart
     // فلا تُنشئ دورة مكرّرة، ويُستردّ القفل المتقادم. بلا أي سرّ.
     brainRuntime: brainRuntimeState,
+    // نتيجة آخر تحقق حي من Gemini — تصمد بعد restart فلا يبدو المزود غير متحقَّق
+    // بعد كل نشر (بلا أي سرّ: حالة/نص تشخيصي/موديل/وقت/فئة/توجيه).
+    aiLiveVerification: aiLiveVerificationState.snapshot(),
   };
 }
 
@@ -10110,6 +10192,22 @@ function recordCentralDecision(input: {
 }
 
 /**
+ * العدد الحقيقي المتراكم للرصدات المطابقة من سجل المراقبة الدائم — مصدر العيّنة
+ * لحلقة التعلّم، فلا تُرقّى ملاحظة واحدة إلى معرفة دائمة قبل 3 رصدات مستقلة.
+ * يُشتق من الحالة الفعلية (تُحفظ وتُسترجَع) لا من قيمة ثابتة، ويصمد بعد restart.
+ * مطابق لمبدأ الحلقة الدائرية (`selectMetricEntries`) المستخدم في التقارير.
+ */
+function watcherObservationCount(kind: 'engagement_changed' | 'response_received' | 'no_change'): number {
+  if (kind === 'engagement_changed') {
+    return watcherState.processed.filter((p) => p.followUpOutcome?.kind === 'engagement_changed').length;
+  }
+  if (kind === 'response_received') {
+    return watcherState.processed.filter((p) => Boolean(p.externalReplyId) && (p.stage === 'REPLIED' || p.stage === 'VERIFIED')).length;
+  }
+  return watcherState.processed.filter((p) => p.stage === 'FAILED').length;
+}
+
+/**
  * يسجّل نتيجة ملاحَظة من بيانات حقيقية (رد مُسلَّم/فشل) في الذاكرة طويلة المدى —
  * إغلاقاً لحلقة ACTION→RESULT→OBSERVATION→ANALYSIS→LESSON→MEMORY. **لا ادعاء بيع
  * ولا رقم مالي**: النوع اجتماعي فقط، والدرس لا يُرقّى إلا بمصدر وعيّنة كافية
@@ -10745,8 +10843,8 @@ function cleanupRuntimeState() {
   for (const [email, exp] of consumedChallenges) if (exp < now) consumedChallenges.delete(email);
   for (const [token, session] of activeSessions) if (session.expiresAt < now) activeSessions.delete(token);
   for (const [userId, window] of requestWindow) if (now - window.startedAt >= 60_000) requestWindow.delete(userId);
-  for (const [key, window] of challengeWindow) if (now - window.startedAt >= 15 * 60 * 1000) challengeWindow.delete(key);
-  for (const [key, window] of authAttemptWindow) if (now - window.startedAt >= 15 * 60 * 1000) authAttemptWindow.delete(key);
+  for (const [key, window] of challengeWindow) if (now - window.startedAt >= RATE_WINDOW_TTL_MS) challengeWindow.delete(key);
+  for (const [key, window] of authAttemptWindow) if (now - window.startedAt >= RATE_WINDOW_TTL_MS) authAttemptWindow.delete(key);
   // جلسات OAuth المعلّقة تنتهي بصلاحيتها، والذاكرة التشخيصية لبدء OAuth بـTTL قصير.
   for (const [state, pending] of pendingOAuth) if (pending.expiresAt < now) pendingOAuth.delete(state);
   for (const [platform, entry] of oauthStartPreflightCache) if (now - entry.at >= OAUTH_PREFLIGHT_TTL_MS) oauthStartPreflightCache.delete(platform);
@@ -10997,6 +11095,30 @@ const aiLiveVerification: {
   /** توجيه تشخيصي أمين يطابق الفئة الفعلية — بلا أي سر. */
   hint: string | null;
 } = { state: 'not_attempted', detail: null, model: null, at: null, errorKind: null, hint: null };
+
+// استرجاع نتيجة آخر تحقق حي محفوظة (إن وُجدت): يُطبَّق مرة واحدة بعد جهوزية المخزن.
+// التحقق يستهلك طلباً من الحصة، فلا يُعاد بلا داعٍ بعد كل restart/cold start.
+let aiLiveVerificationHydrated = false;
+function hydrateAiLiveVerificationFromDurable(): void {
+  if (aiLiveVerificationHydrated) return;
+  aiLiveVerificationHydrated = true;
+  const saved = aiLiveVerificationState.snapshot();
+  if (!saved) return;
+  aiLiveVerification.state = saved.state;
+  aiLiveVerification.detail = saved.detail;
+  aiLiveVerification.model = saved.model;
+  aiLiveVerification.at = saved.at;
+  aiLiveVerification.errorKind = saved.errorKind;
+  aiLiveVerification.hint = saved.hint;
+}
+/** يثبّت نتيجة التحقق الحي في المخزن الدائم (تصمد بعد restart) ثم يحفظ الحالة. */
+function persistAiLiveVerification(): void {
+  aiLiveVerificationState.capture({
+    state: aiLiveVerification.state, detail: aiLiveVerification.detail, model: aiLiveVerification.model,
+    at: aiLiveVerification.at, errorKind: aiLiveVerification.errorKind, hint: aiLiveVerification.hint,
+  });
+  saveControlState();
+}
 
 /**
  * توجيه تشخيصي أمين حسب الفئة الفعلية للخطأ.
@@ -11387,6 +11509,7 @@ app.post("/api/ai/verify-provider", requireOwner, async (_req, res) => {
     aiLiveVerification.at = new Date().toISOString();
     aiLiveVerification.errorKind = 'provider_not_configured';
     aiLiveVerification.hint = 'اضبط GEMINI_API_KEY في بيئة الخادم ثم أعد الفحص (لا تُرسل المفتاح في المحادثة).';
+    persistAiLiveVerification();
     return res.status(200).json({
       success: false,
       verified: false,
@@ -11406,6 +11529,7 @@ app.post("/api/ai/verify-provider", requireOwner, async (_req, res) => {
     aiLiveVerification.at = new Date().toISOString();
     aiLiveVerification.errorKind = 'provider_init_error';
     aiLiveVerification.hint = 'تعذر تهيئة عميل SDK على الخادم؛ راجع سلامة اعتماديات الحزمة (@google/genai) وإصدار Node.';
+    persistAiLiveVerification();
     return res.status(200).json({ success: false, verified: false, state: 'failed', model, detail: aiLiveVerification.detail, errorKind: aiLiveVerification.errorKind, hint: aiLiveVerification.hint });
   }
 
@@ -11418,6 +11542,7 @@ app.post("/api/ai/verify-provider", requireOwner, async (_req, res) => {
     aiLiveVerification.at = new Date().toISOString();
     aiLiveVerification.errorKind = 'quota_guard';
     aiLiveVerification.hint = 'انتظر تجدّد اليوم أو ارفع GEMINI_DAILY_LIMIT صراحةً؛ الفحص الحي يستهلك طلباً واحداً من نفس ميزانية المشروع.';
+    persistAiLiveVerification();
     return res.status(200).json({
       success: false, verified: false, state: aiLiveVerification.state, model,
       detail: aiLiveVerification.detail, errorKind: aiLiveVerification.errorKind, hint: aiLiveVerification.hint,
@@ -11486,6 +11611,7 @@ app.post("/api/ai/verify-provider", requireOwner, async (_req, res) => {
       ? null
       : `الموديل الإنتاجي ${model} واجه ضغط طلب مرتفع (503) وليس خطأ مفتاح/كود. النظام يستخدم المرشح ${servedModel} فعلياً؛ أعد الفحص لاحقاً ليتحول الموديل الإنتاجي تلقائياً عند توفره.`;
     audit('system', 'ai_verify_provider', `model=${servedModel}`);
+    persistAiLiveVerification();
     return res.json({
       success: true,
       verified: true,
@@ -11516,6 +11642,7 @@ app.post("/api/ai/verify-provider", requireOwner, async (_req, res) => {
   // فشل الفحص: نُعيد الحجز حتى لا يُحسب طلب فاشل على ميزانية المشروع.
   aiUsageGuard.release();
   aiLedger.recordProviderError();
+  persistAiLiveVerification();
   return res.status(200).json({
     success: false,
     verified: false,
@@ -13865,6 +13992,21 @@ app.use("/api", (req, res) => {
     method: req.method,
     path: req.path,
     requestId: (req as any).requestId,
+  });
+});
+
+// وسيط الأخطاء العام: أي خطأ غير مُلتقَط من أي مسار لا يُسقط الخادم ولا يُسرّب
+// تفاصيل داخلية أو سرّاً. أخطاء محلّل الجسم (JSON مشوّه/حجم كبير) => 4xx صريحة،
+// وما عداها 500 عام بلا stack. في الإنتاج الرسالة عامة دائماً.
+app.use((err: unknown, req: any, res: any, next: any) => {
+  const info = classifyHttpError(err);
+  console.error(`[الغرابي AI] request error (${info.code}):`, safeErrorMessage(err, shouldExposeErrorMessage(process.env)));
+  if (res.headersSent) return next(err);
+  res.status(info.status).json({
+    success: false,
+    code: info.code,
+    error: shouldExposeErrorMessage(process.env) ? safeErrorMessage(err, true) : info.message,
+    requestId: req?.requestId,
   });
 });
 

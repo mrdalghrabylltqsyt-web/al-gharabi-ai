@@ -625,7 +625,11 @@ async function integrationTests(): Promise<void> {
     const loopRes = await (await fetch(`${BASE}/api/agent/brain/cognition/learning-loop`, { headers: auth })).json();
     const ll = loopRes.learningLoop;
     check('12k-6: حلقة التعلّم تُعلن ACTION/RESULT/FOLLOW_UP', (ll?.stages || []).some((s: any) => s.stage === 'ACTION' && s.count >= 1) && (ll?.stages || []).some((s: any) => s.stage === 'RESULT' && s.count >= 1) && (ll?.stages || []).some((s: any) => s.stage === 'FOLLOW_UP' && s.count >= 1), JSON.stringify(ll?.stages));
-    check('12k-6: FOLLOW_UP يُغلق إلى MEMORY (درس محفوظ)', (ll?.memory?.lessonDerived || 0) >= 1, JSON.stringify(ll?.memory));
+    // العيّنة الآن = العدد الحقيقي المتراكم للرصدات، فرصدة واحدة لا تُرقّي درساً دائماً
+    // (كانت القيمة ثابتة 3 فتُرقّي من أول رصدة — إصلاح تسريب/تلفيق). إثبات الترقية عند
+    // 3 رصدات حقيقية في: engine/tests/youtube.observation.count.test.ts.
+    check('12k-6: FOLLOW_UP مُسجَّل ولا يُرقّى درس دائم من رصدة واحدة (العيّنة الحقيقية = 1 < 3)',
+      (ll?.memory?.lessonDerived || 0) === 0 && (fuPoll3.watcher?.followUp?.engagementChanged || 0) >= 1, JSON.stringify(ll?.memory));
     check('12k-6: حلقة التعلّم بلا سرّ', !/access_token|refresh_token|client_secret|api[_-]?key/i.test(JSON.stringify(loopRes)));
     const healthFu = await (await fetch(`${BASE}/api/health`)).json();
     check('12k-6: health.cognition.learningLoop صادق', healthFu.cognition?.learningLoop?.engagementChanged >= 1, JSON.stringify(healthFu.cognition?.learningLoop));

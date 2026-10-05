@@ -151,7 +151,11 @@ add('telegram-getwebhookinfo-real', server.includes('getWebhookInfo()') && read(
 add('telegram-webhook-info-no-secret', read('engine/social/telegram.ts').includes('checkWebhookRegistration') && !/webhook-info[\s\S]{0,900}?webhookSecret\s*:/.test(server), 'استجابة حالة webhook لا تحمل أي سرّ');
 add('telegram-secret-not-rotated', server.includes('telegramWebhookSecret()||TELEGRAM_WEBHOOK_SECRET_ENV') && server.includes('const secret = webhookSecret || crypto.randomBytes'), 'الضبط يعيد استخدام السرّ المحفوظ ولا يدوّره تلقائياً');
 add('telegram-credentials-persisted-before-hook', /saveTelegramCredentials\(botToken, secret, telegramWebhookUrl\(\)\)[\s\S]{0,400}?setWebhook\(telegramWebhookUrl\(\), secret\)/.test(server) && server.includes('checkWebhookRegistration({ info, expectedUrl: telegramWebhookUrl()'), 'الاعتماد يُحفظ مشفّراً قبل تسجيل webhook، ويُثبت التسجيل بـgetWebhookInfo');
-add('telegram-inbound-durable-before-ack', server.includes('persistStateDurable()') && /persistStateDurable\(\);[\s\S]{0,400}?res\.status\(200\)/.test(server) && server.includes('persisted}'), 'الاستقبال ينتظر الكتابة الدائمة قبل الإقرار بحالة 200');
+add('telegram-inbound-durable-before-ack',
+  /telegram\/webhook[\s\S]{0,3000}?await ingestWebhookComments\([\s\S]{0,900}?res\.status\(200\)/.test(server) &&
+  /async function ingestWebhookComments\([\s\S]{0,4200}?await persistStateDurable\(\)/.test(server) &&
+  server.includes('persisted}'),
+  'الاستقبال ينتظر الكتابة الدائمة قبل الإقرار بحالة 200 (عبر المصدر الموحّد ingestWebhookComments)');
 add('telegram-inbound-safe-logging', server.includes('logTelegramWebhook') && server.includes('outcome=') && !/logTelegramWebhook\([^)]*token/i.test(server), 'سجل آمن للاستقبال (معرّفات ونتيجة فقط بلا أسرار)');
 add('telegram-webhook-info-test', read('engine/tests/telegram.connector.test.ts').includes('getWebhookInfo') && read('engine/tests/telegram.connector.test.ts').includes('restart'), 'اختبار يثبت حالة webhook وثبات الاستقبال بعد restart');
 add('telegram-ui-webhook-status', read('src/components/social/SocialManagerView.tsx').includes('getTelegramWebhookInfo') && read('src/services/api.ts').includes('/api/platforms/telegram/webhook-info'), 'الواجهة تعرض حالة webhook الحقيقية لا لون الزر');
@@ -234,7 +238,10 @@ add('oauth-trim-regression-test', read('engine/tests/facebook.connector.test.ts'
 add('facebook-reply-dedicated-routes', server.includes('/api/platforms/facebook/reply') && server.includes('/api/platforms/facebook/message-reply') && server.includes('/api/platforms/facebook/webhook-info'), 'مسارات الرد/الرسالة/حالة webhook موجودة');
 add('facebook-publish-real-connector', server.includes('publishToPage(target.pageId, target.pageToken, content)') && server.includes("code: \"CONNECTOR_NOT_READY\""), 'النشر يستخدم الموصل الحقيقي بلا ادعاء بلا معرّف');
 add('facebook-reply-delivery-honest', server.includes('providerReplyId:result.data?.providerCommentId') && server.includes('providerReplyId:result.data?.providerMessageId') && server.includes('reviewStatus:result.ok?"delivered":"failed"'), 'نجاح/فشل الإرسال يُسجَّل صراحةً بإيصال أو خطأ بلا ادعاء');
-add('facebook-inbound-durable-before-ack', /parseFacebookWebhook\(req\.body\)[\s\S]{0,2500}?await persistStateDurable\(\)[\s\S]{0,400}?res\.status\(200\)/.test(server), 'استقبال Facebook ينتظر الكتابة الدائمة قبل الإقرار');
+add('facebook-inbound-durable-before-ack',
+  /parseFacebookWebhook\(req\.body\)[\s\S]{0,1800}?await ingestWebhookComments\([\s\S]{0,900}?res\.status\(200\)/.test(server) &&
+  /async function ingestWebhookComments\([\s\S]{0,4200}?await persistStateDurable\(\)/.test(server),
+  'استقبال Facebook ينتظر الكتابة الدائمة قبل الإقرار (عبر المصدر الموحّد ingestWebhookComments)');
 add('facebook-duplicate-persistence', server.includes('facebookEventIds') && /facebookEventIds[\s\S]{0,200}?slice\(0, 20000\)/.test(server), 'معرّفات أحداث Facebook تُحفظ لصمود منع التكرار بعد restart');
 add('facebook-webhook-safe-logging', server.includes('logFacebookWebhook') && !/logFacebookWebhook\([^)]*(token|secret)/i.test(server), 'سجل استقبال آمن بلا أسرار');
 add('facebook-no-rotating-secret', !/facebook[\s\S]{0,400}?randomBytes\([^)]*\)[\s\S]{0,200}?webhookSecret/i.test(server), 'لا تدوير سرّ تلقائي في مسار Facebook');
@@ -281,7 +288,10 @@ add('instagram-scope-dependencies', read('engine/social/instagram.ts').includes(
 add('instagram-oauth-routes', server.includes('/api/platforms/instagram/oauth/start') === false && server.includes('platform==="instagram"') && server.includes('instagramFinalizeAccountSelection'), 'Instagram يسلك مسار OAuth نفسه (start/callback) بإتمام اكتشاف الحساب');
 add('instagram-account-selection', server.includes('/api/platforms/instagram/accounts') && server.includes('/api/platforms/instagram/select-account') && server.includes('function instagramPageSelectionPending'), 'اكتشاف واختيار حساب Instagram المهني (مسار كامل قابل للوصول)');
 add('instagram-webhook-signature', server.includes('/api/platforms/instagram/webhook') && server.includes('INSTAGRAM_SIGNATURE_HEADER') && read('engine/social/instagram.ts').includes('parseInstagramWebhook'), 'webhook Instagram بتحقق توقيع وتطبيع صريح');
-add('instagram-inbound-durable-before-ack', /await persistStateDurable\(\);\s*const persisted=!lastPersistError;/.test(server) && /instagram\/webhook/.test(server), 'استقبال Instagram ينتظر الكتابة الدائمة قبل الإقرار');
+add('instagram-inbound-durable-before-ack',
+  /instagram\/webhook[\s\S]{0,3000}?await ingestWebhookComments\([\s\S]{0,900}?res\.status\(200\)/.test(server) &&
+  /async function ingestWebhookComments\([\s\S]{0,4200}?await persistStateDurable\(\)/.test(server),
+  'استقبال Instagram ينتظر الكتابة الدائمة قبل الإقرار (عبر المصدر الموحّد ingestWebhookComments)');
 add('instagram-duplicate-persistence', server.includes('instagramEventIds') && read('server.ts').includes('instagramEventIds') && /instagramEventIds[\s\S]{0,400}?buildPersistedState|buildPersistedState[\s\S]{0,4000}?instagramEventIds/.test(server), 'معرّفات أحداث Instagram تُحفظ لصمود منع التكرار بعد restart');
 add('instagram-message-not-comment-reply', read('engine/social/registry.ts').includes('message_reply') && server.includes('/api/platforms/instagram/reply') && server.includes('/api/platforms/instagram/message-reply'), 'فصل تعليق Instagram عن رسالته (comment_reply ≠ message_reply)');
 add('instagram-reply-delivery-honest', /delivered:result\.ok,providerReplyId/.test(server) && server.includes('providerReplyId'), 'نجاح/فشل إرسال Instagram يُسجَّل صراحةً بلا ادعاء');
@@ -2410,6 +2420,100 @@ add('cognition-health-exposed',
   server.includes('cognitionHealthBlock') && server.includes('cognition: cognitionHealthBlock()') &&
   server.includes('storesPrivateChainOfThought: false') && server.includes('cognitiveLoop:'),
   'الطبقة الإدراكية معلنة في /api/health و/api/readiness بلا سرّ');
+add('cognition-learning-sample-real-count',
+  server.includes('function watcherObservationCount(') &&
+  !/recordReadOutcome\(\{[^}]*sampleSize: 3\b/.test(server) &&
+  server.includes("watcherObservationCount('engagement_changed')") &&
+  server.includes("watcherObservationCount('response_received')") &&
+  server.includes("watcherObservationCount('no_change')"),
+  'عيّنة حلقة التعلّم تُشتق من العدد الحقيقي المرصود (لا قيمة ثابتة sampleSize: 3)');
+add('cognition-learning-sample-observation-test',
+  fs.existsSync(path.join(root, 'engine/tests/youtube.observation.count.test.ts')) &&
+  read('engine/tests/youtube.observation.count.test.ts').includes('العيّنة الحقيقية = 3 >= 3') &&
+  read('engine/tests/youtube.observation.count.test.ts').includes('لا درس دائم (العيّنة الحقيقية = 1 < 3)'),
+  'اختبار تكاملي يثبت أن العيّنة الحقيقية تتحكم بالترقية (1/2 لا، 3 نعم)');
+add('process-error-safety-handlers',
+  server.includes('process.on("uncaughtException"') && server.includes('process.on("unhandledRejection"') &&
+  server.includes('redactSecretsFromText(String((err as Error)?.message || err))'),
+  'معالجات uncaughtException/unhandledRejection لا تُسقط الخادم وتُسجّل رسالة مُنقّاة بلا سرّ');
+add('express-global-error-middleware',
+  server.includes('classifyHttpError(err)') && server.includes('res.status(info.status).json({') &&
+  server.includes('safeErrorMessage(err, shouldExposeErrorMessage(process.env))') &&
+  !/res\.[a-z]+\([^)]*err\.stack/.test(server),
+  'وسيط أخطاء عام رباعي يعيد JSON صريحاً بلا stack ولا سرّ (4xx للأخطاء العميلية)');
+add('error-safety-single-source',
+  read('engine/runtime/errorSafety.ts').includes('export function classifyHttpError') &&
+  read('engine/runtime/errorSafety.ts').includes('export function redactSecretsFromText') &&
+  read('engine/runtime/errorSafety.ts').includes('export function safeErrorMessage'),
+  'منطق سلامة الأخطاء مصدر واحد قابل للاختبار (تصنيف + تنقية + رسالة آمنة)');
+add('error-safety-tests',
+  fs.existsSync(path.join(root, 'engine/tests/error.safety.test.ts')) &&
+  read('engine/tests/error.safety.test.ts').includes('INVALID_JSON') &&
+  read('engine/tests/error.safety.test.ts').includes('PAYLOAD_TOO_LARGE'),
+  'اختبار وحدة + خادم حقيقي لجسم مشوّه/كبير وعدم سقوط الخادم');
+add('rate-window-bounded',
+  server.includes('enforceRateWindowCap(authAttemptWindow, now)') &&
+  server.includes('enforceRateWindowCap(challengeWindow, now)') &&
+  !server.includes('function enforceRateWindowCap(') &&
+  read('engine/runtime/rateWindow.ts').includes('export function enforceRateWindowCap'),
+  'خرائط محاولات الدخول/رموز التحقق مقيّدة بسقف دفاعي (مثل سقف الجلسات) بمصدر واحد');
+add('rate-window-tests',
+  fs.existsSync(path.join(root, 'engine/tests/rate.window.test.ts')) &&
+  read('engine/tests/rate.window.test.ts').includes('فوق السقف: الأقدم أُزيل') &&
+  read('engine/tests/rate.window.test.ts').includes('يُسمح 12 محاولة ثم يُحجب'),
+  'اختبار سقف النوافذ ودلالات تحديد المعدّل');
+add('ai-verification-persisted',
+  server.includes('aiLiveVerification: aiLiveVerificationState.snapshot()') &&
+  server.includes('aiLiveVerificationState.restore(control.aiLiveVerification)') &&
+  server.includes('hydrateAiLiveVerificationFromDurable()'),
+  'نتيجة التحقق الحي من Gemini تُحفظ في مفتاح التحكّم وتُسترجع بعد restart (بلا إعادة استهلاك حصة)');
+add('ai-verification-persist-tests',
+  fs.existsSync(path.join(root, 'engine/tests/ai.verification.persistence.test.ts')) &&
+  read('engine/tests/ai.verification.persistence.test.ts').includes('verifiedLive = true بعد إعادة التشغيل') &&
+  read('engine/tests/ai.verification.persistence.test.ts').includes('الحفظ يُستدعى في كل فرع نهائي'),
+  'اختبار يثبت استرجاع نتيجة التحقق بعد إعادة التشغيل وبلا تسريب مفتاح');
+add('dr-master-key-fallback-documented',
+  read('tools/dr/secret-crypto.mjs').includes('DRIVE_TOKEN_ENCRYPTION_KEY') &&
+  read('tools/dr/secret-crypto.mjs').includes('سلسلة المفتاح الرئيسي'),
+  'سلسلة مفتاح الاستعادة الرئيسي موثّقة كاملة (3 بدائل) مطابقة لـresolveMasterKey');
+add('env-names-documented',
+  read('.env.example').includes('X_OAUTH_CLIENT_ID=') &&
+  read('.env.example').includes('SNAPCHAT_OAUTH_CLIENT_ID=') &&
+  read('.env.example').includes('THREADS_OAUTH_CLIENT_ID=') &&
+  read('.env.example').includes('GOOGLE_OAUTH_CLIENT_ID=') &&
+  read('.env.example').includes('FACEBOOK_DIALOG_BASE='),
+  'كل اعتماد OAuth يقرأه الكود موثّق في .env.example (X/Snapchat/Threads/Google/Facebook)');
+add('env-vite-no-secret',
+  read('.env.example').includes('VITE_GOOGLE_CLIENT_ID=') &&
+  !/VITE_[A-Z0-9_]*(SECRET|TOKEN|PASSWORD|_KEY)/.test(read('.env.example')),
+  'VITE_GOOGLE_CLIENT_ID موثّق كمعرّف عام للواجهة فقط، ولا سرّ عبر أي متغيّر VITE_');
+add('env-names-reconciliation-tests',
+  fs.existsSync(path.join(root, 'engine/tests/env.names.reconciliation.test.ts')) &&
+  read('engine/tests/env.names.reconciliation.test.ts').includes('لا اسم اعتماد غير موثّق') &&
+  read('engine/tests/env.names.reconciliation.test.ts').includes('لا VITE_ سرّي'),
+  'اختبار يمنع انحراف أسماء متغيّرات البيئة وتسريب سرّ عبر VITE_');
+add('webhook-ingestion-single-source',
+  (server.match(/async function ingestWebhookComments\(/g) || []).length === 1 &&
+  server.includes('ingestSource: `${platform}_webhook`') &&
+  /ingestWebhookComments[\s\S]{0,4000}?await persistStateDurable\(\)/.test(server),
+  'استيعاب أحداث webhook من مصدر واحد (منع التكرار + الحفظ قبل الإقرار) في كل المسارات');
+add('webhook-ingestion-tests',
+  fs.existsSync(path.join(root, 'engine/tests/webhook.ingestion.test.ts')) &&
+  read('engine/tests/webhook.ingestion.test.ts').includes('المسارات الأربعة تستدعي المصدر الواحد') &&
+  read('engine/tests/webhook.ingestion.test.ts').includes('لا حلقة استيعاب مكرّرة'),
+  'اختبار حارس يمنع عودة تكرار منطق استيعاب webhook في المسارات');
+add('brain-scope-removal-documented',
+  read('AGENTS.md').includes('إزالة وحدات المبيعات/النمو/التجاري/الرقمي') &&
+  !fs.existsSync(path.join(root, 'engine/brain/sales')) &&
+  !fs.existsSync(path.join(root, 'engine/brain/growth')) &&
+  !fs.existsSync(path.join(root, 'engine/brain/commercial')) &&
+  !fs.existsSync(path.join(root, 'engine/brain/digital')),
+  'حذف وحدات المبيعات/النمو/التجاري/الرقمي موثّق، ولا تشير الوثائق إليها كوحدات قائمة');
+add('brain-scope-removal-docs-flagged',
+  read('docs/دفعة-1-العقل-التجاري.md').includes('cc6e86f') &&
+  read('docs/دفعة-4-العقل-الموحّد.md').includes('cc6e86f') &&
+  read('docs/تحضير-العقل-التجاري.md').includes('cc6e86f'),
+  'الوثائق التصميمية للمبيعات/النمو موسومة كمحذوفة (سجل تاريخي لا مرجع قائم)');
 add('cognition-health-no-customer-text',
   (() => {
     const start = server.indexOf('function cognitionHealthBlock');

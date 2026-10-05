@@ -3438,236 +3438,23 @@ true`, `branch: main`) فيستلم هذا الإصلاح بمجرد الدفع 
 **لا تغيير في:** أي سرّ/مفتاح، ولا OAuth/scopes، ولا YouTube/Facebook/Instagram/TikTok/
 Telegram، ولا Gemini، ولا rp-002/rp-003/rp-004، ولا PostgreSQL الإنتاجي (قراءة الرمز فقط).
 
-## تحضير عقل المبيعات والنمو (Sales & Growth Brain) — دفعة تحضير معماري (2026-10-02)
+## إزالة وحدات المبيعات/النمو/التجاري/الرقمي — تصحيح النطاق (2026-10-04)
 
-**دفعة تحضير فقط**: لا تنفيذ للعقل التجاري الكامل. الهدف: فحص المشروع، سدّ فجوات
-البنية، وإنتاج خطة تنفيذ دقيقة للدفعة التالية. الهدف التجاري المركزي الملزم:
-**زيادة المبيعات الحقيقية الموثّقة** لا المشاهدات/المتابعين وحدهم.
+وحدات `engine/brain/{sales,growth,commercial,digital}/` و`knowledge/catalog.ts`
+و`market/{demandSignals,opportunityEngine}.ts` وواجهاتها (`CommercialBrainView`/
+`GrowthBrainView`/`SalesDashboardView`/`UnifiedGrowthBrainView`) ومساراتها
+(`/api/agent/brain/sales/*` و`/growth/*` و`/commercial/*`) واختباراتها **حُذفت** في
+`cc6e86f` لأنها **خارج نطاق المشروع المعلن** (سوشيال + AI + تسويق، وليست وحدة ERP/مبيعات).
 
-### وحدات تحضير جديدة (منطق خالص قابل للاختبار، بلا شبكة/أسرار/AI)
-- `engine/brain/knowledge/catalog.ts`: مخزن معرفة المنتجات. `VerifiedField<T>` (قيمة +
-  حالة `VERIFIED/DERIVED/NEEDS_UPDATE/UNKNOWN/NOT_PROVIDED` + مصدر + آخر تحقق)،
-  `CatalogProduct`، `deriveInstallmentOffer` (**لا اشتقاق قسط بلا سعر موثّق + قاعدة
-  معتمدة** ⇒ `DERIVED`)، عبارات معتمدة (`المعلومة غير متوفرة`/`التوفر يحتاج تحقق`/
-  `السعر يحتاج تحديث`)، و`catalogProductFromWorkspace` (مسار هجرة غير موصول).
-- `engine/brain/market/demandSignals.ts`: 9 أنواع إشارة طلب + `toDemandSignal` من
-  تعليق حقيقي + `aggregateDemandSignals` بقوة `HIGH/MEDIUM/LOW/INSUFFICIENT_DATA`
-  وحدّ أدنى للعيّنة. الربط بالمنتج **بمعرّف صريح فقط** لا بتخمين النص.
-- `engine/brain/market/opportunityEngine.ts`: الفرص بفصل معرفي إلزامي
-  `FACT/INTERPRETATION/HYPOTHESIS/RECOMMENDATION` + `validateEpistemicSeparation`
-  (يمنع تفسيراً بلا عيّنة كافية).
-- `engine/brain/sales/journey.ts`: مسار العميل `VIEW→…→PURCHASE_SIGNAL→LEAD→REQUEST→
-  VERIFIED_SALE`. المراحل من التفاعل تصل حتى `PURCHASE_SIGNAL` فقط، و**`VERIFIED_SALE`
-  لا يقع إلا بمعرّف بيع حقيقي** (الاستفسار ليس بيعاً).
-- `engine/brain/sales/salesReasoning.ts`: استدلال «لماذا لم يُبِع؟» بـ12 سبباً صريحاً
-  وحالات دليل `SUPPORTED/CONTRADICTED/UNKNOWN/INSUFFICIENT_DATA`؛ لا حكم بلا أدلة.
-- `engine/brain/sales/roi.ts`: ROI يعلن `NOT_AVAILABLE` ولا يخترع تكلفة/إيراد، ولا
-  يحسب معدّلاً بمقام صفر.
-- `engine/brain/sales/campaignIntelligence.ts`: حملة تربط الهدف/الفرضية/إشارة الطلب/
-  النتيجة المتوقعة/الفعلية/العملاء/المبيعات الموثّقة؛ لا نتيجة بلا مصدر.
-- `engine/brain/sales/salesGrowth.ts`: طبقة التجميع/الجاهزية (`buildSalesGrowthFoundation`)
-  — **غير موصولة بأي مسار أو واجهة في هذه الدفعة** (امتداد آمن معزول).
+الفجوة التي أُغلقت: ظلّت هذه الدفعات (1–4/4 وما قبلها) موثّقة في AGENTS.md وتشير إلى
+وحدات ومسارات **غير موجودة**، فيوهم الدليل بأن العقل التجاري/الرقمي/الموحّد جزء من
+النظام القائم. لا يعمل أي منها فعلاً، ولا استيراد لها في `server.ts`، وفحوص final-audit
+الخاصة بها (`sales-*`/`growth-*`/`digital-sales-*`/`commercial-*`) حُذفت معها.
 
-### اختبار وفحوص
-- `engine/tests/brain/sales.foundation.test.ts` (`npm run test:sales-foundation`،
-  **70 فحصاً**، مضاف إلى `npm test`): يثبت منع اختراع السعر/التقسيط/التوفر، وفصل
-  الاستفسار عن البيع الموثّق، وإشارات الطلب، والفصل المعرفي، وROI الصادق، وبنية الحملة.
-- final-audit: **25 فحصاً جديداً** (`sales-*`، إجمالاً 1049): يمنع اختراع تجاري، ويؤكد
-  أن الطبقة لا تنفّذ/لا Gemini/لا env/لا سرّ، وأنها **غير موصولة** (`sales-foundation-not-wired`).
+الوحدات التجارية الوحيدة الباقية والموصولة فعلاً هي الوحدات **الخالصة** المستخدمة في
+الإدراك/الفريق: `engine/brain/knowledge/truth.ts` و`engine/brain/market/commercialRelevance.ts`
+و`engine/brain/audience/*` (تُستخدم من `cognition`/`team`). أما ما حُذف فليس جزءاً من النظام.
 
-### لم يُمسّ
-التعافي/DR كامل، المفاتيح، OAuth/المنصات، Gemini، قاعدة البيانات، الحالة المحفوظة،
-أو أي مسار قائم. الوثيقة الكاملة: `docs/تحضير-العقل-التجاري.md`.
-
-## الدفعة 1/4 — العقل التجاري المتصل ببيانات الغرابي الحقيقية (2026-10-02)
-
-تحويل طبقة التحضير (`f727ce0`) إلى **عقل تجاري يقرأ الواقع الحقيقي** للمعرض: منتجات،
-خطط تقسيط، محادثات، عملاء محتملون، مبيعات، تعليقات، حملات، وسجلات أداء — بلا اختراع
-أي معلومة تجارية.
-
-### وحدات الربط الجديدة (`engine/brain/sales/`)
-- `commercialRuntime.ts`: `buildCommercialRuntime` + `buildCatalogFromWorkspace` +
-  `buildInteractionsFromComments` + `buildJourneysFromWorkspace` + `buildRoiInput` +
-  `buildSalesEvidence` + `buildCampaignsFromWorkspace` + `approvedInstallmentRules`.
-  - الكتالوج: سعر/توفر موثّقان من `workspace.products`؛ عرض القسط يُدرج **فقط** إذا كان
-    `DERIVED` من سعر موثّق + قاعدة تقسيط معتمدة (من `workspace.installmentPlans` أو
-    `durationMonths`/`downPaymentPercent` الحقيقيين).
-  - المسار: استفسار/سؤال ⇒ `PURCHASE_SIGNAL` فقط؛ `VERIFIED_SALE` **بمعرّف بيع حقيقي** من
-    `workspace.sales`؛ المحادثات/التعليقات لا تُرقّي أحداً إلى مشترٍ.
-  - ROI: الإيراد من مبيعات حقيقية؛ تكلفة الحملة غير المسجّلة = `null` (غير متاح).
-  - الربط بالمنتج بمعرّف صريح من السجل فقط — لا استنتاج من نص التعليق.
-- `commercialMemory.ts`: جسر الذاكرة المركزية. يبني سجلات دائمة بادئتها `commercial:`،
-  ويفصل الأصل صراحةً: `platform_data` (حقيقة ملاحَظة) / `derived` (استنتاج) /
-  `ai_statement` (فرضية). **الفرضية لا تُخزَّن كحقيقة**. `mergeCommercialMemory` بلا تكرار،
-  و`summarizeCommercialMemory` ملخّص آمن.
-- `routes.ts`: `registerCommercialRoutes` — مسارات **قراءة فقط**:
-  - `GET /api/agent/brain/sales/state` (owner فقط): الحالة الكاملة + تسميات عربية + فجوات الجاهزية.
-  - `GET /api/agent/brain/sales/summary` (مصادقة): ملخّص بلا بيانات عملاء تفصيلية.
-
-### الربط
-- `server.ts`: `registerCommercialRoutes` بعد مسارات العقل المركزي، يحقن بيانات مساحة العمل
-  الحقيقية + `brainMemoryStore` + `persistBrainMemory`.
-- الواجهة: `src/components/agent/CommercialBrainView.tsx` (تبويب `commercial_brain`، Owner)
-  — منتجات بحالة التوثيق، إشارات الطلب، الفرص بفصل معرفي، مسار العملاء، المبيعات الموثّقة،
-  حالة الحملات، ذاكرة العقل، وما ينقص. `apiService.getCommercialState/getCommercialSummary`.
-  موصولة في `App.tsx` و`Sidebar.tsx` (أيقونة `TrendingUp`).
-
-### اختبارات وفحوص
-- `engine/tests/brain/sales.integration.test.ts` (**48 فحصاً**): الكتالوج من بيانات حقيقية،
-  سلامة السعر/التقسيط، إشارات الطلب، استفسار ≠ بيع، الفرص، ROI، أدلة الاستدلال، الحملات،
-  الذاكرة (حقيقة ≠ استنتاج ≠ فرضية)، الحالة الفارغة، ولا Gemini.
-- `engine/tests/brain/sales.routes.test.ts` (**20 فحصاً** على خادم حقيقي): 401 بلا جلسة،
-  إنشاء منتج/عميل/بيع عبر الـAPI، قراءة الحالة تعكس البيانات الحقيقية، لا تسريب سرّ، ملخّص خفيف.
-- `final-audit` = **1066 فحصاً** (+18 جديداً: `sales-runtime-*`، `sales-memory-*`،
-  `sales-routes-*`، `sales-ui-*`؛ حُذف فحص `sales-foundation-not-wired` القديم لأنه صار موصولاً).
-- `npm run lint` + `build` + `test` (EXIT=0) + `final-audit` كلها ناجحة.
-
-### لم يُمسّ
-التعافي/DR كامل، المفاتيح، OAuth/المنصات، Gemini، قاعدة البيانات، الحالة المحفوظة.
-**لا تنفيذ خارجي** في هذه الدفعة (قراءة/تحليل فقط). الوثيقة: `docs/دفعة-1-العقل-التجاري.md`.
-
-## الدفعة 2/4 — عقل التسويق والطلب: مدير طلب مدفوع بالدليل (2026-10-02)
-
-تحويل العقل التجاري (الدفعة 1/4) إلى **مدير تسويق وطلب** يبدأ من الطلب لا من المحتوى.
-الوحدات في `engine/brain/growth/` (منطق خالص، بلا شبكة/أسرار/Gemini):
-- `segments.ts`: **ذكاء الجمهور** — 8 مقاطع سلوكية (أجهزة منزلية/تجهيز بيت/زواج/استبدال/
-  بناء/ترميم/تشطيب/تقسيط) مشتقّة من تفاعل حقيقي. المقطع **فرضية** حتى تبلغ عيّنته
-  `SEGMENT_MIN_SAMPLE=3`، ويُعلن `whereActive` من المنصات الفعلية. **لا سمات سكانية**
-  (`SEGMENT_NOT_AVAILABLE_FIELDS`).
-- `demandDiscovery.ts`: **محرّك اكتشاف الطلب** — 9 أنواع (طلب متزايد، أسئلة/أسعار متكررة،
-  تقسيط، توفر، مواصفات، اعتراضات، شكاوى، طلب منتج غير مُلبّى) + `computeDemandTrend` زمني
-  مقيس (لا `RISING` بلا مدى زمني). كل فرصة: `fact/interpretation/hypothesis/recommendation`
-  + دليل/مصدر/فترة/عيّنة/ثقة/حدود/إجراء.
-- `matching.ts`: **المطابقة منتج↔جمهور** — WHO/WHY/WHAT/WHERE/WHEN/MESSAGE/CTA؛ بلا دليل `NO_EVIDENCE`.
-- `campaigns.ts`: **حملة بسبب** — `campaignHasReason` يلزم objective/hypothesis/hook/cta/demandSignalRef؛
-  `recordActualResult` يرفض نتيجة بلا مصدر.
-- `experiments.ts`: **تجارب بمتغيّر واحد** (هوكان/CTA/عرض/جمهور/توقيت)؛ `concludeMarketingExperiment`
-  يعلن `inconclusive` عند نقص العيّنة أو فرق < 5% (ضجيج).
-- `funnel.ts`: **القُمع البيعي** REACH→INTEREST→INQUIRY→LEAD→VERIFIED_SALE + `bottleneck`
-  (لا رقم مُختلق، لا معدّل بمقام صفر).
-- `runtime.ts`: التجميع من بيانات الغرابي الحقيقية + `buildPlatformBriefs` (توجيه عام، لا عقل لكل منصة).
-- `routes.ts`: `GET /api/agent/brain/growth/{state,summary,dashboard}` (state/dashboard للمالك).
-
-**ربط صغير:** `POST /api/social/manager/comments/ingest` يحفظ الآن `productId` الصريح (لا استنتاج من النص).
-
-**الواجهة:** `src/components/agent/GrowthBrainView.tsx` (تبويب `growth_brain`، Owner) تعرض
-المقاطع/الطلب/الفرص/المطابقة/الحملات/التجارب/القُمع/عنق الزجاجة/الإجراءات. `apiService.getGrowthState/getGrowthDashboard`.
-
-**اختبارات:** `growth.foundation.test.ts` (56) · `growth.antifabrication.test.ts` (19) ·
-`growth.routes.test.ts` (28، خادم حقيقي). فحوص final-audit الـ27 (`growth-*`، 1093 إجمالاً).
-أُضيفت `test:growth-foundation` · `test:growth-antifabrication` · `test:growth-routes` إلى `npm test`.
-
-**لم يُمسّ:** التعافي/DR، المفاتيح، OAuth/المنصات، Gemini، قاعدة البيانات، الحالة المحفوظة.
-**لا تنفيذ خارجي** في هذه الدفعة. الوثيقة: `docs/دفعة-2-عقل-التسويق-والطلب.md`.
-
-## الدفعة 3/4 — العقل المركزي للمبيعات الرقمية (قناة بيع ثانية) (2026-10-02)
-
-تحويل العقل التجاري إلى **مدير مبيعات رقمي** يجعل الجانب الرقمي قناة بيع حقيقية ثانية
-بجانب المعرض الفيزيائي، بلا اختراع أي معلومة تجارية وبلا تنفيذ خارجي. القاعدة الحاكمة
-تبقى: `Capability ≠ Connection ≠ Verification ≠ Delivery`، ويُضاف الفصل الصريح
-`Signal ≠ Lead ≠ Request ≠ Sale` و`Reach ≠ Interest ≠ Inquiry ≠ Lead ≠ Verified Sale`.
-
-**وحدات جديدة (`engine/brain/digital/`، منطق خالص قابل للاختبار، بلا شبكة/أسرار/AI):**
-- `identity.ts`: هوية العميل. الربط **فقط** بمعرّف موثوق (هاتف مطبَّع كامل أو
-  `platform:customerId`)؛ ممنوع الربط بتشابه الأسماء (`linkByNameSimilarity` ترفض دائماً).
-  سمات حساسة محجوبة (`IDENTITY_WITHHELD_FIELDS`: عمر/جنس/دين/هوية/موقع دقيق/ملف مستنتج).
-  `privacyCustomerHash` (SHA-256 مقتطعة، بادئة `k_`) مفتاح حفظ آمن الخصوصية.
-- `intent.ts`: `detectPurchaseIntent` يميّز الإشارة الشرائية (قوية/سياقية) عن مجرّد
-  التفاعل؛ **الإشارة ليست بيعاً**.
-- `offer.ts`: `identifyProduct` + `classifyOfferQuestion` + `answerProductQuestion` +
-  `checkOfferMutation`. الإجابة **من بيانات موثّقة فقط**؛ السعر/القسط/التوفر الغائب
-  يُعلن `DATA_NOT_AVAILABLE`/`HUMAN_REVIEW` ولا يُخترع. حرس تغيير العرض يمنع تعديل
-  السعر/الخصم بلا قاعدة معتمدة.
-- `lead.ts`: `qualifyLead` بأوزان/عتبات صريحة (`QUALIFICATION_WEIGHTS`/`THRESHOLDS`)،
-  ولا تأهيل بلا إشارة شراء؛ `planLeadTransition` يمنع `VERIFIED_SALE` بلا `saleId`
-  (`NO_SALE_ID`)، ويمنع الانتقال بلا دليل (`NO_EVIDENCE`)، ولا ينقض الحالات النهائية
-  (`TERMINAL_STATE`). `classifyLostReason` من دليل فقط (بلا دليل ⇒ `unknown`).
-- `handoff.ts`: `shouldHandoff` + `buildHumanHandoff` — التسليم البشري لا يخترع رداً
-  (`fabricatedFallback: false`) ويحمل سبباً وإجراءً موصى به.
-- `followup.ts`: `planFollowUp` يحترم الموافقة/الإلغاء/الفاصل الأدنى/حدود 30 يوماً
-  (منع سبام)؛ `isDuplicateFollowUp` يمنع تكرار نفس المتابعة؛ `applyConsentUpdate`.
-- `attribution.ts`: `computeAttribution` — لا سببية عند الشك (`canClaimCausation`
-  صريح؛ `DIRECT`/`UNCERTAIN`/`NOT_ATTRIBUTABLE`).
-- `events.ts`: `recordSalesEvent` (لا حدث بيع موثّق بلا معرّف بيع)، `learningEligible`،
-  و`stripSensitiveEventFields`/`EVENT_FORBIDDEN_FIELDS` لتنقية البيانات الشخصية.
-- `salesFunnel.ts`: القُمع الرقمي `INTERACTIONS→PURCHASE_SIGNALS→QUALIFIED_LEADS→
-  REQUESTS→VERIFIED_SALES`؛ **لا معدّل بمقام صفر**، والمرحلة بلا بيانات تُعلن
-  `NOT_AVAILABLE`، ويُحدَّد `bottleneck`.
-- `autonomy.ts`: مستويات الاستقلالية (`OBSERVE`…)، `defaultGrantedLevel()='OBSERVE'`
-  (آمن افتراضياً)، و`NEVER_SILENT_ACTIONS` تمنع التنفيذ الصامت للأفعال الحساسة
-  (النشر/تغيير السعر/تعديل التشفير…).
-- `adapters.ts`: `PlatformSalesAdapter` + `assertAdapterBoundary` —
-  `FORBIDDEN_ADAPTER_RESPONSIBILITIES`: الموصل يقدّم البيانات فقط ولا يحمل منطقاً تجارياً.
-- `store.ts`: `normalizeDigitalSalesStore` يحفظ **بصمات فقط** (يتجاهل أي مفتاح خام غير
-  `k_`)، `updateConsentByHash`/`getConsentByHash`/`guardDuplicateFollowUp`/`recordFollowUp`.
-- `runtime.ts`: `buildDigitalSalesState` يجمع كل ما سبق من بيانات مساحة العمل الحقيقية
-  (منتجات/خطط/محادثات/عملاء/مبيعات/تعليقات/حملات/سجلات أداء + الموافقة/سجل المتابعة).
-- `routes.ts`: `registerDigitalSalesRoutes` — مسارات **قراءة فقط**:
-  `GET /api/agent/brain/sales/digital/{state,summary,dashboard,events,autonomy}`.
-
-**دمج الخادم (`server.ts`):**
-- `STORAGE_KEY_DIGITAL_SALES="digitalSales"` + `loadDigitalSalesSync`/`persistDigitalSales`
-  عبر محوّل الحالة (ملف/Postgres) فتصمد الموافقة/الإلغاء وسجل المتابعة بعد restart.
-- `registerDigitalSalesRoutes` بعد مسارات العقل التجاري، يحقن بيانات مساحة العمل الحقيقية
-  + الموافقة/سجل المتابعة (بصمات فقط).
-- مساران للمالك فقط: `POST/GET /api/agent/brain/sales/digital/consent` — يحفظان
-  `privacyCustomerHash(customerKey)` فقط، ويُسجَّلان تدقيقياً (`digital_sales_consent_updated`)
-  بلا قيمة خامة، ولا يُعاد أي معرّف خام في أي استجابة.
-- `/api/health.digitalSales`: `summary` + `externalExecution: false` + `defaultAutonomyLevel`
-  (بلا سرّ وبلا بيانات شخصية).
-
-**الواجهة:** `src/components/agent/SalesDashboardView.tsx` (تبويب `sales_dashboard` =
-«لوحة المبيعات الرقمية» في Sidebar، للمالك): القُمع الرقمي، الإشارات الشرائية، العملاء
-المؤهّلون، الطلبات، المبيعات الموثّقة، الخسائر وأسبابها، التسليم البشري، الإسناد،
-والاستقلالية. `apiService.getDigitalSales{State,Summary,Dashboard,Events,Autonomy}`.
-
-**قواعد ملزمة (مُختبرة):**
-- لا سعر/قسط/مقدم/توفر مُخترع؛ الغائب يُعلن ولا يُخترع.
-- لا بيع (`VERIFIED_SALE`) بلا معرّف بيع حقيقي؛ لا تأهيل بلا إشارة شراء.
-- لا سبب خسارة بلا دليل؛ لا إسناد سببية عند الشك.
-- لا متابعة بلا موافقة؛ لا تكرار ولا سبام.
-- لا بيانات شخصية خامة تُخزَّن أو تُسجَّل (بصمات فقط).
-- لا تنفيذ خارجي، ولا Gemini، ولا قراءة env في طبقة العقل الرقمي.
-
-اختبارات: `engine/tests/brain/digital.sales.foundation.test.ts` (`npm run
-test:digital-sales-foundation`، **79 فحصاً**)، `digital.sales.antifabrication.test.ts`
-(`test:digital-sales-antifabrication`، **25 فحصاً**)، `digital.sales.routes.test.ts`
-(`test:digital-sales-routes`، **39 فحصاً** خادم حقيقي + ثبات بعد restart). فحوص
-final-audit الـ27 الجديدة (`digital-sales-*`، **1124 إجمالاً**). `npm run lint` +
-`npm run build` + `npm test` (77 مجموعة، بلا فشل) + `final-audit` كلها ناجحة.
-
-**لم يُمسّ:** التعافي/DR، المفاتيح، OAuth/المنصات، Gemini، قاعدة البيانات، الحالة المحفوظة،
-والدفعات 1–2. **لا تنفيذ خارجي** في هذه الدفعة (قراءة/تحضير فقط). الوثيقة:
-`docs/دفعة-3-العقل-الرقمي.md`.
-
-## الدفعة 4/4 — العقل النهائي للنمو التجاري والتعلّم والتحسين الذاتي (2026-10-02)
-
-**الغاية:** دمج الدفعات 1–3 في **عقل تجاري مركزي واحد** (لا عقل تسويق منفصل ولا عقل بيع منفصل ولا عقل منصة). الغاية العليا الوحيدة: **زيادة المبيعات الحقيقية الموثّقة، وزيادة الربح الحقيقي الموثّق حين تتوفّر بيانات تكلفة موثوقة.** كل ما عدا ذلك قدرات مساندة.
-
-### الوحدات (`engine/brain/commercial/`)
-`northStar.ts` (الغاية العليا + حرس المقاييس الوهمية + مكافحة خداع الذات)، `truth.ts` (طزاجة/تعارض/جودة بيانات + كفاية الإجابة)، `research.ts` (عقد البحث + أصل المزوّد غير الموثوق)، `learning.ts` (تعلّم + تحليل فشل/تغيّر + توقّع مقابل واقع + مكافحة ادّعاء التحسّن)، `strategy.ts` (توصيات مفسّرة + أولوية فرص + أهداف + شرح قرار)، `productIntel.ts` (تصنيف تجاري للمنتج + فرص بأدلة)، `lifecycle.ts` (دورة عميل + أولوية عميل + تعلّم متابعة)، `campaignLoop.ts` (حملة→بيع→ربح + إسناد + تجارب)، `governance.ts` (حكامة إجراءات + تحسين ذاتي اقتراح + سلامة إنتاجية + مسار تغيير كود)، `health.ts` (صحة النظام + إصدار الذكاء + تطوّر القدرات + عقد الأحداث)، `commercialMemory.ts` (ذاكرة موحّدة بأصل معرفة)، `operatingLoop.ts` (دورة تشغيل 20 خطوة + الأسئلة النهائية)، `unified.ts` (التجميع المركزي)، `routes.ts` (مسارات القراءة).
-
-### الفصل المعرفي الملزم
-`FACT ≠ OBSERVATION ≠ DERIVED_KNOWLEDGE ≠ HYPOTHESIS ≠ LEARNING ≠ RECOMMENDATION ≠ DECISION ≠ RESULT`، وقول AI/بحث خارجي لا يصبح حقيقة تجارية بلا تحقّق داخلي.
-
-### المسارات (قراءة/تحليل/اقتراح فقط)
-`GET /api/agent/brain/commercial/{state(owner),summary,command-center(owner),owner-control(owner),capabilities(owner),health,operating-loop}`، وكتلة `/api/health.commercialBrain` (بلا سرّ: الإصدار/الغاية/توفّر المبيعات/الإيراد/الربح/حرس الربح/عدّ القدرات/الصحة).
-
-### الحمايات (مُختبرة)
-- لا بيع/إيراد/ربح مُخترع؛ الغائب `null` لا صفر، والربح لا يُحسب بلا تكلفة موثوقة.
-- المقاييس الوهمية (مشاهدات/إعجابات/متابعون/وصول) لا تُعتمد هدفاً للتحسين.
-- لا فائز تجربة بلا عيّنة وفرق كافيين؛ ولا ادّعاء تحسّن بلا دليل ومدّة.
-- لا سببية حملة→بيع بلا سلسلة معرّفات موثوقة؛ الاستفسار لا يصبح بيعاً.
-- لا توسيع سلطة صامت؛ الإجراءات عالية الخطورة تتطلب موافقة المالك.
-- التحسين الذاتي **اقتراح فقط**؛ لا نشر كود بلا اختبار/تدقيق/أمن/موافقة.
-- منع المساس بالمصادقة/التشفير/الأسرار/التعافي/الحقيقة التجارية الإنتاجية.
-
-### الواجهة
-`src/components/agent/UnifiedGrowthBrainView.tsx` (تبويب `unified_growth_brain`): الغاية العليا، مركز القيادة، مركز تحكّم المالك (12 حقلاً)، تطوّر القدرات، صحة النظام، دورة التشغيل، والحدود. تُعرض نتيجة الخادم الفعلية فقط.
-
-اختبارات: `commercial.unified.test.ts` (120) + `commercial.antifabrication.test.ts` (24) + `commercial.routes.test.ts` (52). final-audit = **1156 فحصاً** (31 فحصاً `commercial-*`). `npm run lint` + `build` + `test` + `final-audit` كلها ناجحة.
-
-**لم يُمسّ:** Gemini/firewall، OAuth/الاعتمادات، المصادقة، قاعدة البيانات، DR/الاستعادة، YouTube (المراقب/الطابور/التفويض)، Facebook/Instagram/TikTok/Telegram، ونموذج الجدولة. الوثيقة: `docs/دفعة-4-العقل-الموحّد.md`.
 
 ## Batch 5 — وقت تشغيل العقل 24/7 + ذاكرة دائمة (2026-10-02)
 
@@ -3724,9 +3511,9 @@ final-audit الـ27 الجديدة (`digital-sales-*`، **1124 إجمالاً**
 التكرار، الثبات بعد restart فعلي، ولا تسريب أسرار). فحوص final-audit الجديدة `brain-runtime-*`
 (**1172 إجمالاً**). `npm run lint` + `build` + `test` + `final-audit` كلها ناجحة.
 
-**لم يُمسّ:** الدفعات 1–4 (العقل التجاري/التسويق/الرقمي/الموحّد)، Gemini/firewall، OAuth/
-الاعتمادات، المصادقة، قاعدة البيانات، DR/الاستعادة، YouTube (المراقب/الطابور/التفويض)،
-بقية المنصات، ونموذج الجدولة. لا تغيير في أي سرّ أو مفتاح.
+**لم يُمسّ:** Gemini/firewall، OAuth/الاعتمادات، المصادقة، قاعدة البيانات، DR/الاستعادة،
+YouTube (المراقب/الطابور/التفويض)، بقية المنصات، ونموذج الجدولة. لا تغيير في أي سرّ أو مفتاح.
+(وحدات المبيعات/النمو/التجاري/الرقمي حُذفت سابقاً في `cc6e86f` — خارج النطاق؛ انظر قسم الإزالة.)
 
 ## فريق الوكلاء الداخلي (Agent Council) — Batch 6 (2026-10-02)
 
@@ -3786,9 +3573,9 @@ final-audit الـ27 الجديدة (`digital-sales-*`، **1124 إجمالاً**
 فحوص final-audit الجديدة `agent-team-*` (**1192 إجمالاً**). `npm run lint` + `build` + `test`
 + `final-audit` كلها ناجحة.
 
-**لم يُمسّ:** الدفعات 1–5 (العقل التجاري/التسويق/الرقمي/الموحّد/وقت التشغيل)، Gemini/firewall،
-OAuth/الاعتمادات/الأسرار، المصادقة، قاعدة البيانات، DR/الاستعادة، YouTube (المراقب/الطابور/
-التفويض)، بقية المنصات، ونموذج الجدولة.
+**لم يُمسّ:** وقت تشغيل العقل (Batch 5)، Gemini/firewall، OAuth/الاعتمادات/الأسرار، المصادقة،
+قاعدة البيانات، DR/الاستعادة، YouTube (المراقب/الطابور/التفويض)، بقية المنصات، ونموذج الجدولة.
+(وحدات المبيعات/النمو/التجاري/الرقمي حُذفت سابقاً في `cc6e86f` — خارج النطاق؛ انظر قسم الإزالة.)
 
 ## إغلاق ثغرة مركز الاستعادة: مصادقة المالك إلزامية (2026-10-03)
 
