@@ -574,9 +574,19 @@ function canonicalRequestPath(rawPath: string): string {
   if (!p.startsWith("/")) p = `/${p}`;
   return p.toLowerCase();
 }
-/** يحجب أي طلب يمكن أن يكشف حزمة المصدر أو حزمة الخادم أو خريطتها. */
+// ملفات إعداد/قوائم حزم على جذر المشروع يخدمها express.static من الجذر العام
+// (صورة Docker التي نسخ فيها المجلد الجذر بلا .git). لا قيمة عامة لها؛ تكشف
+// الإصدارات والاعتماديات والإعداد. تُحجب بنفس آلية حزمة المصدر.
+const BLOCKED_ROOT_FILES = new Set([
+  "/package.json",
+  "/package-lock.json",
+  "/render.yaml",
+]);
+
+/** يحجب أي طلب يمكن أن يكشف حزمة المصدر أو حزمة الخادم أو خريطتها أو ملفات الإعداد. */
 function isBlockedSourceRequest(rawPath: string): boolean {
   const p = canonicalRequestPath(rawPath);
+  if (BLOCKED_ROOT_FILES.has(p)) return true;
   if (BLOCKED_DIST_FILES.has(p)) return true;
   if (p === BLOCKED_SOURCE_BUNDLE_SEGMENT || p.endsWith(BLOCKED_SOURCE_BUNDLE_SEGMENT)) return true;
   if (p.includes(`${BLOCKED_SOURCE_BUNDLE_SEGMENT}/`)) return true;
@@ -772,6 +782,20 @@ if (!(workspace as any).providerTokens || typeof (workspace as any).providerToke
 // كلها سجلات تشغيلية حقيقية تُبنى من عمليات فعلية فقط.
 for (const key of ["socialComments","socialReplies","socialConversations","socialEscalations","socialConversationStates","socialApprovals","publishRecords","marketingDecisions","strategiesTested","performanceRecords"]) if (!Array.isArray((workspace as any)[key])) (workspace as any)[key] = [];
 
+// سقوف صارمة لمصفوفات الحالة في الذاكرة (M6). كانت هذه السجلات تُقلَّم إلى هذه
+// الأرقام فقط عند الحفظ/التحميل، فتنمو بلا حدود بين عمليات إعادة التشغيل حتى تبلغ
+// أضعافها → خطر نفاد الذاكرة على Render Free (256MB). السقف يُطبَّق الآن بعد كل
+// `unshift` مباشرةً، فتبقى بصمة الذاكرة محصورة. الأرقام مبنية على حجم السجل الفعلي
+// وسقف الحفظ نفسه (بلا تغيير سلوك المستخدم):
+//   - webhookEvents/providerEvents: سجلات أحداث مرمّزة صغيرة؛ 10,000 كسقف الحفظ.
+//   - socialComments/socialReplies: السجل الأكبر (نص + تصنيف)؛ 10,000/5,000 كسقف الحفظ.
+//   - publishRecords: بايتات وصف/حالة رفع كبيرة؛ 5,000 كسقف الحفظ.
+const WORKSPACE_MAX_WEBHOOK_EVENTS = 10000;
+const WORKSPACE_MAX_PROVIDER_EVENTS = 10000;
+const WORKSPACE_MAX_SOCIAL_COMMENTS = 10000;
+const WORKSPACE_MAX_SOCIAL_REPLIES = 5000;
+const WORKSPACE_MAX_PUBLISH_RECORDS = 5000;
+
 // Migration guard: a post is never considered externally published merely because
 // an old/local record said so. Until a real provider execution receipt exists,
 // legacy "published" records are downgraded to approved.
@@ -826,7 +850,36 @@ function createSessionForUser(user: ServerUser, previewStamp?: number): ActiveSe
     expiresAt,
   };
   activeSessions.set(token, session);
+  enforceActiveSessionCap();
   return session;
+}
+
+// M6: سقف دفاعي لخريطة الجلسات في الذاكرة. الجلسات عمرها 30 يوماً وتُقلّم كل 5
+// دقائق، لكنها تبقى قابلة للنمو مع كثرة تسجيلات الدخول. عند بلوغ السقف نُزيل
+// المنتهية أولاً ثم الأقدم — فلا ينمو الاستهلاك بلا حدود (لا يسقط مستخدماً نشطاً
+// إلا في حالات نظرية بعيدة).
+const WORKSPACE_MAX_ACTIVE_SESSIONS = 5000;
+function enforceActiveSessionCap(): void {
+  if (activeSessions.size <= WORKSPACE_MAX_ACTIVE_SESSIONS) return;
+  const now = Date.now();
+  for (const [token, session] of activeSessions) if (session.expiresAt < now) activeSessions.delete(token);
+  while (activeSessions.size > WORKSPACE_MAX_ACTIVE_SESSIONS) {
+    const oldest = activeSessions.keys().next().value;
+    if (oldest === undefined) break;
+    activeSessions.delete(oldest);
+  }
+}
+
+/**
+ * L4: عدد الجلسات الفعلية غير المنتهية وقت الطلب. `activeSessions.size` يشمل
+ * جلسات منتهية لم يُقلّمها المؤقّت الدوري (كل 5 دقائق) فيُظهر عدداً زائداً.
+ * الحساب المفلتر هو الأبسط هندسياً والأدق دائماً (بلا مساس بأمان الإبطال).
+ */
+function activeSessionCount(): number {
+  const now = Date.now();
+  let n = 0;
+  for (const s of activeSessions.values()) if (s.expiresAt >= now) n += 1;
+  return n;
 }
 
 // Middleware: Authenticate incoming token
@@ -901,6 +954,7 @@ function authenticateToken(req: express.Request, res: express.Response, next: ex
     expiresAt: payload.exp,
   };
   activeSessions.set(token, session);
+  enforceActiveSessionCap();
   (req as any).session = session;
   (req as any).user = dbUser;
   next();
@@ -3899,9 +3953,9 @@ app.post("/api/platforms/telegram/webhook", express.json({limit:"256kb"}), async
     replyTarget: { chatId: parsed.chatId, messageId: parsed.messageId },
   };
   (workspace as any).socialComments.unshift(comment);
-  if((workspace as any).socialComments.length>10000) (workspace as any).socialComments.pop();
+  if((workspace as any).socialComments.length>WORKSPACE_MAX_SOCIAL_COMMENTS) (workspace as any).socialComments.length=WORKSPACE_MAX_SOCIAL_COMMENTS;
   (workspace as any).webhookEvents.unshift({id:workspaceId("event"),platform:"telegram",type:"message",externalId,receivedAt:new Date().toISOString()});
-  (workspace as any).webhookEvents=(workspace as any).webhookEvents.slice(0,10000);
+  (workspace as any).webhookEvents=(workspace as any).webhookEvents.slice(0,WORKSPACE_MAX_WEBHOOK_EVENTS);
   // ننتظر الكتابة الدائمة **قبل** إرجاع 200: تضمن أن التعليق ومعرّف التحديث
   // (حماية التكرار) صارا في Postgres، فلا يُفقدان لو عُلّقت العملية بعد الرد.
   await persistStateDurable();
@@ -4046,13 +4100,13 @@ app.post("/api/platforms/facebook/webhook", requireRawBody, async (req,res)=>{
       // مصدر الاستقبال حقيقي صراحةً، فلا يظهر كـ simulated/not delivered.
       ingestSource:"facebook_webhook",replyTarget:ev.replyTarget,
     });
-    if((workspace as any).socialComments.length>10000) (workspace as any).socialComments.pop();
+    if((workspace as any).socialComments.length>WORKSPACE_MAX_SOCIAL_COMMENTS) (workspace as any).socialComments.length=WORKSPACE_MAX_SOCIAL_COMMENTS;
     (workspace as any).facebookEventIds=[...(workspace as any).facebookEventIds,ev.externalId].slice(-20000);
     accepted.push(ev.externalId);
     logFacebookWebhook({kind:ev.kind,externalId:ev.externalId,outcome:"accepted"});
   }
   (workspace as any).webhookEvents.unshift(...accepted.map((id)=>({id:workspaceId("event"),platform:"facebook",type:"webhook",externalId:id,receivedAt:new Date().toISOString()})));
-  (workspace as any).webhookEvents=(workspace as any).webhookEvents.slice(0,10000);
+  (workspace as any).webhookEvents=(workspace as any).webhookEvents.slice(0,WORKSPACE_MAX_WEBHOOK_EVENTS);
   // ننتظر الكتابة الدائمة قبل الإقرار: تضمن ثبات الحدث ومعرّف منع التكرار.
   await persistStateDurable();
   const persisted=!lastPersistError;
@@ -4123,7 +4177,7 @@ app.post("/api/platforms/facebook/reply", requireOwner, async (req,res)=>{
   };
   if(!Array.isArray((workspace as any).socialReplies)) (workspace as any).socialReplies=[];
   (workspace as any).socialReplies.unshift(record);
-  if((workspace as any).socialReplies.length>5000) (workspace as any).socialReplies.pop();
+  if((workspace as any).socialReplies.length>WORKSPACE_MAX_SOCIAL_REPLIES) (workspace as any).socialReplies.length=WORKSPACE_MAX_SOCIAL_REPLIES;
   audit(user.id,result.ok?"social_facebook_comment_reply_sent":"social_facebook_comment_reply_failed",`${externalId}:${result.ok?"delivered":"failed"}`);
   await persistStateDurable();
   if(!result.ok) return res.status(502).json({success:false,delivered:false,simulated:false,reply:record,error:record.deliveryError});
@@ -4172,7 +4226,7 @@ app.post("/api/platforms/facebook/message-reply", requireOwner, async (req,res)=
   };
   if(!Array.isArray((workspace as any).socialReplies)) (workspace as any).socialReplies=[];
   (workspace as any).socialReplies.unshift(record);
-  if((workspace as any).socialReplies.length>5000) (workspace as any).socialReplies.pop();
+  if((workspace as any).socialReplies.length>WORKSPACE_MAX_SOCIAL_REPLIES) (workspace as any).socialReplies.length=WORKSPACE_MAX_SOCIAL_REPLIES;
   audit(user.id,result.ok?"social_facebook_message_reply_sent":"social_facebook_message_reply_failed",`${guardExternalId}:${result.ok?"delivered":"failed"}`);
   await persistStateDurable();
   if(!result.ok) return res.status(502).json({success:false,delivered:false,simulated:false,reply:record,error:record.deliveryError});
@@ -4271,13 +4325,13 @@ app.post("/api/platforms/instagram/webhook", requireRawBody, async (req,res)=>{
       // مصدر الاستقبال حقيقي صراحةً، فلا يظهر كـ simulated/not delivered.
       ingestSource:"instagram_webhook",replyTarget:ev.replyTarget,
     });
-    if((workspace as any).socialComments.length>10000) (workspace as any).socialComments.pop();
+    if((workspace as any).socialComments.length>WORKSPACE_MAX_SOCIAL_COMMENTS) (workspace as any).socialComments.length=WORKSPACE_MAX_SOCIAL_COMMENTS;
     (workspace as any).instagramEventIds=[...(workspace as any).instagramEventIds,ev.externalId].slice(-20000);
     accepted.push(ev.externalId);
     logInstagramWebhook({kind:ev.kind,externalId:ev.externalId,outcome:"accepted"});
   }
   (workspace as any).webhookEvents.unshift(...accepted.map((id)=>({id:workspaceId("event"),platform:"instagram",type:"webhook",externalId:id,receivedAt:new Date().toISOString()})));
-  (workspace as any).webhookEvents=(workspace as any).webhookEvents.slice(0,10000);
+  (workspace as any).webhookEvents=(workspace as any).webhookEvents.slice(0,WORKSPACE_MAX_WEBHOOK_EVENTS);
   // ننتظر الكتابة الدائمة قبل الإقرار: تضمن ثبات الحدث ومعرّف منع التكرار.
   await persistStateDurable();
   const persisted=!lastPersistError;
@@ -4344,7 +4398,7 @@ app.post("/api/platforms/instagram/reply", requireOwner, async (req,res)=>{
   };
   if(!Array.isArray((workspace as any).socialReplies)) (workspace as any).socialReplies=[];
   (workspace as any).socialReplies.unshift(record);
-  if((workspace as any).socialReplies.length>5000) (workspace as any).socialReplies.pop();
+  if((workspace as any).socialReplies.length>WORKSPACE_MAX_SOCIAL_REPLIES) (workspace as any).socialReplies.length=WORKSPACE_MAX_SOCIAL_REPLIES;
   audit(user.id,result.ok?"social_instagram_comment_reply_sent":"social_instagram_comment_reply_failed",`${externalId}:${result.ok?"delivered":"failed"}`);
   await persistStateDurable();
   if(!result.ok) return res.status(502).json({success:false,delivered:false,simulated:false,reply:record,error:record.deliveryError});
@@ -4393,7 +4447,7 @@ app.post("/api/platforms/instagram/message-reply", requireOwner, async (req,res)
   };
   if(!Array.isArray((workspace as any).socialReplies)) (workspace as any).socialReplies=[];
   (workspace as any).socialReplies.unshift(record);
-  if((workspace as any).socialReplies.length>5000) (workspace as any).socialReplies.pop();
+  if((workspace as any).socialReplies.length>WORKSPACE_MAX_SOCIAL_REPLIES) (workspace as any).socialReplies.length=WORKSPACE_MAX_SOCIAL_REPLIES;
   audit(user.id,result.ok?"social_instagram_message_reply_sent":"social_instagram_message_reply_failed",`${guardExternalId}:${result.ok?"delivered":"failed"}`);
   await persistStateDurable();
   if(!result.ok) return res.status(502).json({success:false,delivered:false,simulated:false,reply:record,error:record.deliveryError});
@@ -4606,7 +4660,7 @@ app.post("/api/platforms/tiktok/webhook", requireRawBody, async (req,res)=>{
   }
   (workspace as any).tiktokEventIds=[...(workspace as any).tiktokEventIds,ev.externalId].slice(-20000);
   (workspace as any).providerEvents.unshift({id:workspaceId("event"),platform:"tiktok",type:ev.event,externalId:ev.externalId,userOpenId:ev.userOpenId,content:ev.content,receivedAt:new Date().toISOString()});
-  (workspace as any).providerEvents=(workspace as any).providerEvents.slice(0,10000);
+  (workspace as any).providerEvents=(workspace as any).providerEvents.slice(0,WORKSPACE_MAX_PROVIDER_EVENTS);
   // حدث إلغاء التفويض يُعلن الحاجة لإعادة الربط فوراً (لا ادعاء اتصال قائم).
   if(ev.event==="authorization.removed"&&ev.userOpenId&&ev.userOpenId===tiktokOpenId()){
     platformConnections.set("tiktok",{platform:"tiktok",status:"reauth_needed",accountId:ev.userOpenId,connectedAt:new Date().toISOString()});
@@ -4719,11 +4773,11 @@ app.post("/api/platforms/:platform/webhook", requireRawBody, async (req, res) =>
       createdAt: ev.createdAt, classification, requiresHumanReview: classification.requiresHumanReview,
       ingestSource: `${platform}_webhook`, replyTarget: ev.replyTarget,
     });
-    if ((workspace as any).socialComments.length > 10000) (workspace as any).socialComments.pop();
+    if ((workspace as any).socialComments.length > WORKSPACE_MAX_SOCIAL_COMMENTS) (workspace as any).socialComments.length = WORKSPACE_MAX_SOCIAL_COMMENTS;
     (workspace as any).webhookEvents.unshift({ id: workspaceId("event"), platform, type: ev.kind, externalId: ev.externalId, receivedAt: new Date().toISOString() });
     accepted.push(ev.externalId);
   }
-  (workspace as any).webhookEvents = (workspace as any).webhookEvents.slice(0, 10000);
+  (workspace as any).webhookEvents = (workspace as any).webhookEvents.slice(0, WORKSPACE_MAX_WEBHOOK_EVENTS);
   persistState();
   audit("system", `${platform}_inbound_events`, `${accepted.length}/${events.length}`);
   res.status(200).json({ success: true, accepted: true, processed: accepted.length, ignoredDuplicates: events.length - accepted.length });
@@ -4838,7 +4892,7 @@ function ingestYouTubeComment(c: YouTubeComment, videoId: string | null): { dupl
     ingestSource: "youtube_api", replyTarget: { commentId: c.commentId, videoId: videoId || c.videoId },
   };
   (workspace as any).socialComments.unshift(record);
-  if ((workspace as any).socialComments.length > 10000) (workspace as any).socialComments.pop();
+  if ((workspace as any).socialComments.length > WORKSPACE_MAX_SOCIAL_COMMENTS) (workspace as any).socialComments.length = WORKSPACE_MAX_SOCIAL_COMMENTS;
   const ids: string[] = Array.isArray((workspace as any).youtubeCommentIds) ? (workspace as any).youtubeCommentIds : [];
   (workspace as any).youtubeCommentIds = [...ids, c.commentId].slice(-20000);
   return { duplicate: false, record };
@@ -5020,7 +5074,7 @@ async function executeYouTubeReply(input: { commentId: string; text: string; com
   };
   if (!Array.isArray((workspace as any).socialReplies)) (workspace as any).socialReplies = [];
   (workspace as any).socialReplies.unshift(replyRecord);
-  if ((workspace as any).socialReplies.length > 5000) (workspace as any).socialReplies.pop();
+  if ((workspace as any).socialReplies.length > WORKSPACE_MAX_SOCIAL_REPLIES) (workspace as any).socialReplies.length = WORKSPACE_MAX_SOCIAL_REPLIES;
   await persistStateDurable();
   logYouTubeOperation("comment_reply", { externalId: parentCommentId, outcome: result.ok ? "delivered" : "failed", errorCode: result.ok ? null : (result.code as any) || null, durationMs: Date.now() - started, actor });
   audit(actor, result.ok ? "youtube_reply_delivered" : "youtube_reply_failed", `youtube:${parentCommentId}`);
@@ -5315,6 +5369,27 @@ function contentQueueView() {
 /** ملخص الطابور (أرقام حقيقية من نفس السجلات). */
 function contentQueueSummary() {
   return summarizeContentQueue(contentQueue.map((i) => ({ state: i.state, publishAt: i.publishAt, verified: i.verified, externalVideoId: i.externalVideoId, verifiedVideoId: i.verifiedVideoId })));
+}
+
+/**
+ * النسخة العامة الآمنة من ملخص طابور المحتوى.
+ *
+ * السبب: /api/health و/api/readiness عامتان، وكانتا تُعلنان توزيع الحالات التفصيلي
+ * (byState) وحجم الوسائط المخزّنة بالأرقام. يُكتفى هنا بالإجماليات العاملة: إذا كان
+ * الطابور فارغاً فلا شيء يُعرَض، وإلا يُعلن حجم العمل غير المحسوم (بانتظار مراجعة/
+ * صادر) وعدد المجدول/المنشور — أرقام تشغيلية عامة بلا تفاصيل ولا حجم وسائط.
+ * التفاصيل والحالات الكاملة للمالك عبر /api/platforms/youtube/content/queue.
+ */
+function contentQueueSummaryPublic(full: ReturnType<typeof contentQueueSummary>) {
+  if (!full || full.total === 0) return { total: 0, note: "لا محتوى في الطابور." };
+  return {
+    total: full.total,
+    awaitingReview: full.awaitingReview,
+    scheduled: full.scheduled,
+    published: full.published,
+    failed: full.failed,
+    note: "طابور المحتوى: إجماليات عامة فقط؛ التفاصيل للمالك عبر /api/platforms/youtube/content/queue.",
+  };
 }
 
 /** يحوّل `publishAt` (جدار محلي بغدادي أو لحظة ISO) إلى epoch صالح للفحص. */
@@ -6000,33 +6075,30 @@ function watcherPublicError(err: unknown): string | null {
 /**
  * نسخة **عامة آمنة** من حالة المراقبة تُعرض في /api/health و/api/readiness.
  * هاتان النقطتان بلا مصادقة (لأدوات المراقبة مثل Render)، لذا تُعلنان الحقول
- * التقنية فقط: النشاط، الإيقاع، العدّادات، و**آخر خطأ كرمز تقني** — بلا أي اسم
- * حساب أو نص تعليق أو نص رد. بيانات العملاء التفصيلية (attentionRequired,
- * lastReply.replyText, opportunities, brief, followUp) تُقرأ من المسار المحمي
- * بالمالك فقط: /api/agent/youtube/watcher.
+ * التقنية الدنيا فقط: حالة عامة (healthy/degraded/disabled)، النشاط، الإيقاع،
+ * و**آخر خطأ كرمز تقني** — بلا أي عدّاد تفصيلي، وبلا اسم حساب أو نص تعليق أو رد.
+ * العدّادات التفصيلية والمعرّفات (attentionRequired, lastReply, counters الكاملة,
+ * opportunities, brief, followUp) تُقرأ من المسار المحمي بالمالك فقط:
+ * /api/agent/youtube/watcher.
  */
 function watcherStatusBlockPublic() {
   const full = watcherStatusBlock();
+  // الحالة العامة مشتقة حتمياً من النشاط والأخطاء المتتالية والتفويض — بلا أرقام
+  // تفصيلية. degraded = أخطاء متتالية حديثة أو تعطّل الرد الآلي؛ disabled = متوقّف.
+  const consecutive = full.consecutiveErrors ?? 0;
+  const status = !full.watcherActive
+    ? "disabled"
+    : consecutive > 0 || full.lastError
+      ? "degraded"
+      : "healthy";
   return {
+    status,
     watcherActive: full.watcherActive,
     cadenceMinutes: full.cadenceMinutes,
     cadenceMs: full.cadenceMs,
-    pollCount: full.pollCount,
-    lastPollAt: full.lastPollAt,
-    nextPollAt: full.nextPollAt,
     lastError: watcherPublicError(full.lastError),
-    consecutiveErrors: full.consecutiveErrors,
-    // الأرقام الإجمالية فقط — لا معرّف تعليق ولا نص ولا اسم.
-    counters: {
-      detected: full.counters?.detected ?? 0,
-      replied: full.counters?.replied ?? 0,
-      verified: full.counters?.verified ?? 0,
-      escalated: full.counters?.escalated ?? 0,
-      skipped: full.counters?.skipped ?? 0,
-      failed: full.counters?.failed ?? 0,
-      deferred: full.counters?.deferred ?? 0,
-    },
-    note: "حالة تقنية عامة فقط؛ بيانات التعليقات/الردود التفصيلية متاحة للمالك عبر /api/agent/youtube/watcher.",
+    consecutiveErrors: consecutive,
+    note: "حالة عامة فقط؛ العدّادات التفصيلية وبيانات التعليقات/الردود متاحة للمالك عبر /api/agent/youtube/watcher.",
   };
 }
 
@@ -6159,6 +6231,12 @@ function applyWatcherCadence(): { activeTimers: number; cadenceMs: number; activ
 // --- مسارات التحكم بالمراقبة (Owner Controls + Kill Switch) — للمالك فقط ---
 app.get("/api/agent/youtube/watcher", authenticateToken, (_req, res) => {
   res.json({ success: true, watcher: watcherStatusBlock() });
+});
+
+// تفاصيل حارس حصة YouTube Data API — للمالك فقط. النقطتان العامتان تعلنان الحالة
+// المجملة فقط (youtubeQuotaStatusSummary)، والتفاصيل التشغيلية الكاملة هنا.
+app.get("/api/agent/youtube/quota", authenticateToken, (_req, res) => {
+  res.json({ success: true, quota: youtubeQuotaStatusSnapshot() });
 });
 
 app.post("/api/agent/youtube/watcher/controls", requireOwner, async (req, res) => {
@@ -6580,7 +6658,7 @@ async function executeYouTubePublish(input: {
   };
   if (!Array.isArray((workspace as any).publishRecords)) (workspace as any).publishRecords = [];
   (workspace as any).publishRecords.unshift(record);
-  if ((workspace as any).publishRecords.length > 5000) (workspace as any).publishRecords.pop();
+  if ((workspace as any).publishRecords.length > WORKSPACE_MAX_PUBLISH_RECORDS) (workspace as any).publishRecords.length = WORKSPACE_MAX_PUBLISH_RECORDS;
   if (externalVideoId) recordYouTubeOperationKey(fingerprint);
 
   // تحديث عنصر الطابور المرتبط (إن وُجد) بحالة النشر الحقيقية.
@@ -7320,6 +7398,7 @@ app.post("/api/platforms/:platform/publish", requireOwner, async (req, res) => {
       const record = buildPublishRecord({ platform: platform as any, postId: typeof req.body?.postId === "string" ? req.body.postId : workspaceId("post"), providerPostId: sent.providerMessageId, simulated: false, error: sent.ok ? null : sent.error });
       if (!Array.isArray((workspace as any).publishRecords)) (workspace as any).publishRecords = [];
       (workspace as any).publishRecords.unshift({ ...record, id: workspaceId("publish"), createdBy: user.id, receipt: sent.receipt });
+      if ((workspace as any).publishRecords.length > WORKSPACE_MAX_PUBLISH_RECORDS) (workspace as any).publishRecords.length = WORKSPACE_MAX_PUBLISH_RECORDS;
       persistState();
       audit(user.id, sent.ok ? "platform_publish_published" : "platform_publish_failed", `${platform}`);
       if (!sent.ok) return res.status(502).json({ success: false, record, error: sent.error, note: "لم يُسجَّل أي نشر بلا معرّف منشور حقيقي من المزود." });
@@ -7334,6 +7413,7 @@ app.post("/api/platforms/:platform/publish", requireOwner, async (req, res) => {
       const record = buildPublishRecord({ platform: platform as any, postId: typeof req.body?.postId === "string" ? req.body.postId : workspaceId("post"), providerPostId: result.data?.providerPostId || null, simulated: false, error: result.ok ? null : result.error });
       if (!Array.isArray((workspace as any).publishRecords)) (workspace as any).publishRecords = [];
       (workspace as any).publishRecords.unshift({ ...record, id: workspaceId("publish"), createdBy: user.id, receipt });
+      if ((workspace as any).publishRecords.length > WORKSPACE_MAX_PUBLISH_RECORDS) (workspace as any).publishRecords.length = WORKSPACE_MAX_PUBLISH_RECORDS;
       persistState();
       audit(user.id, result.ok ? "platform_publish_published" : "platform_publish_failed", `${platform}`);
       if (!result.ok) return res.status(502).json({ success: false, record, error: result.error, note: "لم يُسجَّل أي نشر بلا معرّف منشور حقيقي من المزود." });
@@ -7356,6 +7436,7 @@ app.post("/api/platforms/:platform/publish", requireOwner, async (req, res) => {
       const record = buildPublishRecord({ platform: platform as any, postId: typeof req.body?.postId === "string" ? req.body.postId : workspaceId("post"), providerPostId: published.data?.providerPostId || null, simulated: false, error: published.ok ? null : published.error });
       if (!Array.isArray((workspace as any).publishRecords)) (workspace as any).publishRecords = [];
       (workspace as any).publishRecords.unshift({ ...record, id: workspaceId("publish"), createdBy: user.id, receipt });
+      if ((workspace as any).publishRecords.length > WORKSPACE_MAX_PUBLISH_RECORDS) (workspace as any).publishRecords.length = WORKSPACE_MAX_PUBLISH_RECORDS;
       persistState();
       audit(user.id, published.ok ? "platform_publish_published" : "platform_publish_failed", `${platform}`);
       if (!published.ok) return res.status(502).json({ success: false, record, error: published.error, containerId: container.data.containerId, note: "لم يُسجَّل أي نشر بلا معرّف منشور حقيقي من المزود." });
@@ -7400,6 +7481,7 @@ app.post("/api/platforms/:platform/publish", requireOwner, async (req, res) => {
       if (!initResult.ok || !initResult.data) {
         const record = buildPublishRecord({ platform: platform as any, postId: typeof req.body?.postId === "string" ? req.body.postId : workspaceId("post"), providerPostId: null, simulated: false, error: initResult.error });
         (workspace as any).publishRecords.unshift({ ...record, id: workspaceId("publish"), createdBy: user.id, idempotencyKey: fingerprint, postMode: mode, receipt: null });
+        if ((workspace as any).publishRecords.length > WORKSPACE_MAX_PUBLISH_RECORDS) (workspace as any).publishRecords.length = WORKSPACE_MAX_PUBLISH_RECORDS;
         persistState();
         audit(user.id, "platform_publish_failed", "tiktok");
         return res.status(502).json({ success: false, record, error: initResult.error, code: initResult.code || "PROVIDER_ERROR", note: "لم يُسجَّل أي نشر بلا معرّف نشر من TikTok." });
@@ -7418,6 +7500,7 @@ app.post("/api/platforms/:platform/publish", requireOwner, async (req, res) => {
         auditRequired: modeRequiresAudit,
         receipt: { provider: "tiktok", publishId, postMode: mode, createdAt: new Date().toISOString() },
       });
+      if ((workspace as any).publishRecords.length > WORKSPACE_MAX_PUBLISH_RECORDS) (workspace as any).publishRecords.length = WORKSPACE_MAX_PUBLISH_RECORDS;
       persistState();
       audit(user.id, "platform_publish_initiated", `tiktok:${mode}`);
       return res.json({
@@ -7525,7 +7608,7 @@ app.post("/api/platforms/telegram/reply", requireOwner, async (req,res)=>{
   };
   if(!Array.isArray((workspace as any).socialReplies)) (workspace as any).socialReplies=[];
   (workspace as any).socialReplies.unshift(record);
-  if((workspace as any).socialReplies.length>5000) (workspace as any).socialReplies.pop();
+  if((workspace as any).socialReplies.length>WORKSPACE_MAX_SOCIAL_REPLIES) (workspace as any).socialReplies.length=WORKSPACE_MAX_SOCIAL_REPLIES;
   audit(user.id, result.ok?"social_telegram_reply_sent":"social_telegram_reply_failed", `${externalId}:${result.ok?"delivered":"failed"}`);
   persistState();
   if(!result.ok) return res.status(502).json({success:false,delivered:false,simulated:false,reply:record,error:record.deliveryError});
@@ -8856,7 +8939,7 @@ app.get("/api/system/diagnostics", requireOwner, (_req, res) => {
   const approved = automationJobs.filter((j:any)=>j.status==="approved").length;
   const ready = automationJobs.filter((j:any)=>j.status==="ready").length;
   const failed = automationJobs.filter((j:any)=>j.status==="failed").length;
-  res.json({ success:true, generatedAt:new Date().toISOString(), version:PROJECT_VERSION, schemaVersion:STATE_SCHEMA_VERSION, node:process.version, uptimeSeconds:Math.round(process.uptime()), memory:{ rss:memory.rss, heapUsed:memory.heapUsed, heapTotal:memory.heapTotal }, sessions:activeSessions.size, users:serverUsers.length, platforms:{ total:SUPPORTED_PLATFORMS.length, connected:connectedPlatformIds().length }, workspace:{ products:workspace.products.length, posts:workspace.posts.length, conversations:workspace.conversations.length, plans:workspace.installmentPlans.length, leads:workspace.leads.length, tasks:workspace.tasks.length, sales:workspace.sales.length, payments:workspace.payments.length, suppliers:workspace.suppliers.length, purchases:workspace.purchases.length, expenses:workspace.expenses.length, contracts:workspace.contracts.length, installmentSchedules:workspace.installmentSchedules.length }, jobs:{ total:automationJobs.length, queued, approved, ready, failed }, backups:{ count: (()=>{ try{return fs.readdirSync(BACKUP_DIR).filter(n=>n.startsWith("state-")&&n.endsWith(".json")).length;}catch{return 0;} })() } });
+  res.json({ success:true, generatedAt:new Date().toISOString(), version:PROJECT_VERSION, schemaVersion:STATE_SCHEMA_VERSION, node:process.version, uptimeSeconds:Math.round(process.uptime()), memory:{ rss:memory.rss, heapUsed:memory.heapUsed, heapTotal:memory.heapTotal }, sessions:activeSessionCount(), users:serverUsers.length, platforms:{ total:SUPPORTED_PLATFORMS.length, connected:connectedPlatformIds().length }, workspace:{ products:workspace.products.length, posts:workspace.posts.length, conversations:workspace.conversations.length, plans:workspace.installmentPlans.length, leads:workspace.leads.length, tasks:workspace.tasks.length, sales:workspace.sales.length, payments:workspace.payments.length, suppliers:workspace.suppliers.length, purchases:workspace.purchases.length, expenses:workspace.expenses.length, contracts:workspace.contracts.length, installmentSchedules:workspace.installmentSchedules.length }, jobs:{ total:automationJobs.length, queued, approved, ready, failed }, backups:{ count: (()=>{ try{return fs.readdirSync(BACKUP_DIR).filter(n=>n.startsWith("state-")&&n.endsWith(".json")).length;}catch{return 0;} })() } });
 });
 
 
@@ -8989,6 +9072,27 @@ function youtubeQuotaStatusSnapshot() {
     protectionEnabled: YOUTUBE_QUOTA_PROTECTION,
     day: youtubeQuotaDay,
   });
+}
+
+/**
+ * النسخة العامة الآمنة من حارس حصة YouTube Data API.
+ *
+ * السبب: النقطتان /api/health و/api/readiness عامتان بلا مصادقة (لأدوات المراقبة
+ * مثل Render)، وكانتا تُعلنان التفاصيل التشغيلية الكاملة (usedUnits/remainingUnits/
+ * byOperation…). التفاصيل الكاملة تبقى للمالك عبر /api/agent/youtube/quota، وتُقلَّص
+ * هنا إلى ما يلزم لفحص الصحة فقط: العتبة/الاستنفاد/النسبة المشبعة/تفعيل الحماية —
+ * بلا أرقام تشغيلية تفصيلية.
+ */
+function youtubeQuotaStatusSummary() {
+  const full = youtubeQuotaStatusSnapshot();
+  return {
+    protectionEnabled: full.protectionEnabled,
+    thresholdReached: full.thresholdReached,
+    exhausted: full.exhausted,
+    usedPercent: full.usedPercent,
+    alertThresholdPercent: full.alertThresholdPercent,
+    note: full.note,
+  };
 }
 
 /** يحفظ حالة حارس الحصة وأعلام التنبيه عبر المحوّل (تصمد بعد restart). */
@@ -11109,14 +11213,14 @@ app.get("/api/readiness", (_req, res) => {
     // تفويض تشغيل YouTube: حالة التفويض الممنوح من المالك للعقل المركزي (نطاق
     // YouTube فقط) — منطقي بلا أي سرّ، ليتأكد المالك من الفعالية/الإيقاف.
     youtubeDelegation: youtubeDelegationBlock(),
-    // طابور المحتوى (نشر/جدولة/مراجعة): ملخص حقيقي بلا أي سرّ.
-    youtubeContent: { summary: contentQueueSummary(), mediaStored: contentMedia.size, mediaTotalBytes: contentMediaTotalBytes },
-    // مدير تشغيل YouTube 24/7: النسخة العامة الآمنة فقط (نشاط/إيقاع/عدّادات/آخر
-    // خطأ كرمز تقني). لا اسم حساب ولا نص تعليق ولا نص رد — بيانات العملاء
-    // التفصيلية في /api/agent/youtube/watcher (للمالك فقط).
+    // طابور المحتوى (نشر/جدولة/مراجعة): مجاميع عامة فقط — التفاصيل للمالك.
+    youtubeContent: contentQueueSummaryPublic(contentQueueSummary()),
+    // مدير تشغيل YouTube 24/7: النسخة العامة الآمنة فقط (نشاط/حالة عامة/آخر
+    // خطأ كرمز تقني). لا اسم حساب ولا نص تعليق ولا نص رد ولا عدّادات تفصيلية —
+    // بيانات العملاء والتفاصيل في /api/agent/youtube/watcher (للمالك فقط).
     youtubeWatcher: watcherStatusBlockPublic(),
-    // حارس حصة YouTube Data API: أرقام تقديرية فقط (بلا أي سرّ وبلا بيانات عميل).
-    youtubeQuota: youtubeQuotaStatusSnapshot(),
+    // حارس حصة YouTube Data API: حالة عامة فقط (عتبة/استنفاد/نسبة) بلا بيانات عميل.
+    youtubeQuota: youtubeQuotaStatusSummary(),
     // PHASE 7 — حقول TikTok الآمنة (منطقي فقط، بلا أي قيمة سرّية).
     tiktokOAuth: (() => {
       const c = tiktokOAuthConfig();
@@ -11533,7 +11637,7 @@ app.post("/api/webhooks/:platform", (req,res)=>{
   if(!verification.ok) return res.status(401).json({success:false,error:"توقيع Webhook غير صالح."});
   const eventId=cleanText(req.headers["x-event-id"],160)||workspaceId("event"); if((workspace as any).webhookEvents.some((x:any)=>x.id===eventId)) return res.json({success:true,duplicate:true});
   const event={id:eventId,platform,type:cleanText(req.body?.type,100)||"unknown",payload:req.body?.data||req.body,receivedAt:new Date().toISOString()};
-  (workspace as any).webhookEvents.unshift(event); (workspace as any).webhookEvents=(workspace as any).webhookEvents.slice(0,10000); (workspace as any).providerEvents.unshift({id:workspaceId("pevent"),platform,eventId,type:event.type,receivedAt:event.receivedAt}); (workspace as any).providerEvents=(workspace as any).providerEvents.slice(0,10000); persistState();
+  (workspace as any).webhookEvents.unshift(event); (workspace as any).webhookEvents=(workspace as any).webhookEvents.slice(0,WORKSPACE_MAX_WEBHOOK_EVENTS); (workspace as any).providerEvents.unshift({id:workspaceId("pevent"),platform,eventId,type:event.type,receivedAt:event.receivedAt}); (workspace as any).providerEvents=(workspace as any).providerEvents.slice(0,WORKSPACE_MAX_PROVIDER_EVENTS); persistState();
   res.status(202).json({success:true,accepted:true,eventId});
 });
 app.get("/api/webhooks/events", requireOwner, (req,res)=>{ const platform=cleanText(req.query.platform,60); let rows=(workspace as any).webhookEvents.slice(); if(platform) rows=rows.filter((x:any)=>x.platform===platform); res.json({success:true,events:rows.slice(0,500)}); });
@@ -11645,12 +11749,12 @@ app.get("/api/health", (_req, res) => {
     // تفويض تشغيل YouTube (نطاق YouTube فقط): منطقي بلا أي سرّ، ويُعلن الإجراء
     // التالي — منح التفويض يسمح للعقل بتنفيذ عمليات YouTube المحدّدة تلقائياً.
     youtubeDelegation: youtubeDelegationBlock(),
-    // مدير تشغيل YouTube 24/7: النسخة العامة الآمنة فقط (نشاط/إيقاع/عدّادات/آخر
-    // خطأ كرمز تقني). لا اسم حساب ولا نص تعليق ولا نص رد — بيانات العملاء
-    // التفصيلية في /api/agent/youtube/watcher (للمالك فقط).
+    // مدير تشغيل YouTube 24/7: النسخة العامة الآمنة فقط (نشاط/حالة عامة/آخر
+    // خطأ كرمز تقني). لا اسم حساب ولا نص تعليق ولا نص رد ولا عدّادات تفصيلية —
+    // بيانات العملاء والتفاصيل في /api/agent/youtube/watcher (للمالك فقط).
     youtubeWatcher: watcherStatusBlockPublic(),
-    // حارس حصة YouTube Data API: أرقام تقديرية فقط (بلا أي سرّ وبلا بيانات عميل).
-    youtubeQuota: youtubeQuotaStatusSnapshot(),
+    // حارس حصة YouTube Data API: حالة عامة فقط (عتبة/استنفاد/نسبة) بلا بيانات عميل.
+    youtubeQuota: youtubeQuotaStatusSummary(),
     // وقت تشغيل العقل المركزي 24/7 (Batch 5): حالة/إيقاع/قفل/عدّادات الذاكرة — بلا سرّ.
     brainRuntime: brainRuntimeStatus(),
     // فريق الوكلاء (Batch 6): ملخّص الجلسات/الخلافات/التحقق/الذاكرة — بلا سرّ.
@@ -11665,8 +11769,8 @@ app.get("/api/health", (_req, res) => {
     },
     brainDecision: brainDecisionHealthBlock(),
     cognition: cognitionHealthBlock(),
-    // طابور المحتوى (نشر/جدولة/مراجعة): ملخص حقيقي بلا أي سرّ.
-    youtubeContent: { summary: contentQueueSummary(), mediaStored: contentMedia.size, mediaTotalBytes: contentMediaTotalBytes },
+    // طابور المحتوى (نشر/جدولة/مراجعة): مجاميع عامة فقط — التفاصيل للمالك.
+    youtubeContent: contentQueueSummaryPublic(contentQueueSummary()),
     // حالة موصل TikTok الحقيقي (منطقي فقط بلا أي سرّ أو رمز).
     tiktokOAuth: (() => {
       const c = tiktokOAuthConfig();

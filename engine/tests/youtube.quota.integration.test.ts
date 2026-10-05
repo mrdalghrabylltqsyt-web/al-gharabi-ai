@@ -85,6 +85,12 @@ async function notifications(auth: Record<string, string>): Promise<any[]> {
   const d = await r.json();
   return d.notifications || [];
 }
+/** يقرأ التفاصيل الكاملة لحارس الحصة من المسار المحمي بالمالك (M2). */
+async function quotaDetails(auth: Record<string, string>): Promise<any> {
+  const r = await fetch(`${BASE}/api/agent/youtube/quota`, { headers: auth });
+  const d = await r.json();
+  return d.quota || {};
+}
 /** يربط القناة فعلياً عبر OAuth (start → callback). */
 async function connect(auth: Record<string, string>): Promise<void> {
   const s = await (await fetch(`${BASE}/api/platforms/youtube/oauth/start`, { headers: auth })).json();
@@ -101,39 +107,44 @@ async function run(): Promise<void> {
     check('الخادم يقلع', await waitForHealth(), currentApp.log().slice(0, 400));
     Object.assign(auth, await login());
 
-    group('1) C1: /api/health و/api/readiness يعلنان كتلة youtubeQuota (بلا سرّ)');
+    group('1) C1: /api/health و/api/readiness يعلنان ملخص youtubeQuota العام (بلا سرّ وبلا تفاصيل)');
     const h0 = await (await fetch(`${BASE}/api/health`)).json();
     check('health يحمل youtubeQuota', Boolean(h0.youtubeQuota));
-    check('الحصة المعلنة = 2000 (اختبارية)', h0.youtubeQuota?.limit === 2000);
     check('العتبة المعلنة = 50%', h0.youtubeQuota?.alertThresholdPercent === 50);
-    check('بداية: 0 وحدات مستهلكة', h0.youtubeQuota?.usedUnits === 0);
+    // M2: النقطة العامة تُعلن الحالة المجملة فقط — لا limit/usedUnits/byOperation.
+    check('الصحة لا تكشف limit التفصيلي (M2)', !('limit' in h0.youtubeQuota));
+    check('الصحة لا تكشف usedUnits (M2)', !('usedUnits' in h0.youtubeQuota));
+    check('الصحة لا تكشف byOperation (M2)', !('byOperation' in h0.youtubeQuota));
     check('health بلا أي سرّ', !JSON.stringify(h0).includes(GO_CLIENT_SECRET));
+    const q0 = await quotaDetails(auth);
+    check('المالك يقرأ التفاصيل الكاملة (limit=2000 اختبارية)', q0.limit === 2000);
+    check('بداية: 0 وحدات مستهلكة (للمالك)', q0.usedUnits === 0);
     const r0 = await (await fetch(`${BASE}/api/readiness`)).json();
-    check('readiness يحمل youtubeQuota', Boolean(r0.youtubeQuota) && r0.youtubeQuota?.limit === 2000);
+    check('readiness يحمل ملخص youtubeQuota', Boolean(r0.youtubeQuota) && !('usedUnits' in r0.youtubeQuota));
     check('readiness بلا أي سرّ', !JSON.stringify(r0).includes(GO_CLIENT_SECRET));
 
     group('2) C1: الربط يستهلك وحدات قراءة القناة (channel_read = 1)');
     await connect(auth);
-    const h1 = await (await fetch(`${BASE}/api/health`)).json();
-    check('بعد الربط: استُهلكت وحدات (channel_read)', h1.youtubeQuota?.usedUnits >= 1);
-    check('channel_read محتسب في التفصيل', h1.youtubeQuota?.byOperation?.channel_read >= 1);
+    const h1 = await quotaDetails(auth);
+    check('بعد الربط: استُهلكت وحدات (channel_read)', h1.usedUnits >= 1);
+    check('channel_read محتسب في التفصيل', h1.byOperation?.channel_read >= 1);
 
     group('3) C1: الرد يستهلك 50 وحدة (reply)');
-    const beforeReply = (await (await fetch(`${BASE}/api/health`)).json()).youtubeQuota.usedUnits;
+    const beforeReply = (await quotaDetails(auth)).usedUnits;
     const reply = await fetch(`${BASE}/api/platforms/youtube/reply`, { method: 'POST', headers: auth, body: JSON.stringify({ commentId: 'cmt_quota_1', text: 'أهلاً بيك، نورتنا', commentText: 'مرحبا' }) });
     const replyBody = await reply.json();
     check('الرد نُفِّذ فعلاً (regression: لم يكسر الحارس الرد)', replyBody.delivered === true || replyBody.success === true, JSON.stringify(replyBody).slice(0, 200));
-    const h2 = await (await fetch(`${BASE}/api/health`)).json();
-    check('الرد زاد الحصة بـ50 وحدة', h2.youtubeQuota.usedUnits - beforeReply === 50, `delta=${h2.youtubeQuota.usedUnits - beforeReply}`);
+    const h2 = await quotaDetails(auth);
+    check('الرد زاد الحصة بـ50 وحدة', h2.usedUnits - beforeReply === 50, `delta=${h2.usedUnits - beforeReply}`);
 
     group('4) C1: النشر (upload = 1600) يبلغ العتبة ويُنبّه المالك مرة واحدة');
     const notifsBefore = (await notifications(auth)).filter((n) => n.type === 'youtube_quota_warning').length;
     const pub = await fetch(`${BASE}/api/platforms/youtube/publish`, { method: 'POST', headers: auth, body: JSON.stringify({ title: 'جولة في معرض الغرابي للتقسيط', description: 'نظرة عامة على المعرض', approved: true, videoBase64: VIDEO_B64, mimeType: 'video/mp4', filename: 'clip.mp4' }) });
     const pubBody = await pub.json();
     check('النشر نُفِّذ فعلاً (regression)', pubBody.success === true || pubBody.delivered === true || pubBody.status === 'published', JSON.stringify(pubBody).slice(0, 200));
-    const h3 = await (await fetch(`${BASE}/api/health`)).json();
-    check('النشر زاد الحصة بـ1600 وحدة', h3.youtubeQuota.byOperation.upload >= 1600, `upload=${h3.youtubeQuota.byOperation.upload}`);
-    check('العتبة بلغت (thresholdReached)', h3.youtubeQuota.thresholdReached === true);
+    const h3 = await quotaDetails(auth);
+    check('النشر زاد الحصة بـ1600 وحدة', h3.byOperation.upload >= 1600, `upload=${h3.byOperation.upload}`);
+    check('العتبة بلغت (thresholdReached)', h3.thresholdReached === true);
     const quotaNotifs = (await notifications(auth)).filter((n) => n.type === 'youtube_quota_warning');
     check('أُرسل تنبيه حصة واحد للمالك', quotaNotifs.length === notifsBefore + 1, `count=${quotaNotifs.length}`);
     check('نص تنبيه الحصة يذكر النسبة والوحدات', quotaNotifs.some((n) => String(n.body || '').includes('%')));
@@ -148,12 +159,12 @@ async function run(): Promise<void> {
     group('6) C1: عند استنفاد الحصة يُرفض الطلب بلا شبكة (safe failure)');
     // نستهلك الحصة بقراءات (1 وحدة) حتى تُستنفد تماماً بلا حجب مبكر.
     for (let i = 0; i < 380; i++) {
-      const st = (await (await fetch(`${BASE}/api/health`)).json()).youtubeQuota.usedUnits;
+      const st = (await quotaDetails(auth)).usedUnits;
       if (st >= 2000) break;
       await fetch(`${BASE}/api/platforms/youtube/health`, { headers: auth });
     }
-    const hFull = await (await fetch(`${BASE}/api/health`)).json();
-    check('الحالة تُعلن الاستنفاد', hFull.youtubeQuota.exhausted === true, `used=${hFull.youtubeQuota.usedUnits}`);
+    const hFull = await quotaDetails(auth);
+    check('الحالة تُعلن الاستنفاد', hFull.exhausted === true, `used=${hFull.usedUnits}`);
     const callsBefore = mock.state.calls;
     const blocked = await fetch(`${BASE}/api/platforms/youtube/reply`, { method: 'POST', headers: auth, body: JSON.stringify({ commentId: 'cmt_quota_3', text: 'هلا', commentText: 'مرحبا' }) });
     const blockedBody = await blocked.json();
@@ -164,8 +175,8 @@ async function run(): Promise<void> {
     await stop(currentApp.proc);
     currentApp = startApp(mock.base);
     check('الخادم أعاد الإقلاع', await waitForHealth());
-    const hRestart = await (await fetch(`${BASE}/api/health`)).json();
-    check('العدّاد صمد بعد restart', hRestart.youtubeQuota.usedUnits >= 1600, `used=${hRestart.youtubeQuota.usedUnits}`);
+    const hRestart = await quotaDetails(auth);
+    check('العدّاد صمد بعد restart', hRestart.usedUnits >= 1600, `used=${hRestart.usedUnits}`);
     check('علم التنبيه صمد (لا تكرار بعد restart)', (await notifications(auth)).filter((n) => n.type === 'youtube_quota_warning').length === beforeDup);
   } finally {
     if (currentApp) await stop(currentApp.proc);

@@ -237,7 +237,9 @@ async function main(): Promise<void> {
   check('لا client secret', !blob.includes(GO_CLIENT_SECRET));
   const health = await (await fetch(`${BASE}/api/health`)).json();
   check('Gemini لم يُستهلك في عملية حتمية', (health.geminiUsage?.firewall?.providerCallsToday ?? 0) === 0);
-  check('ملخص المحتوى في الصحة', health.youtubeContent?.summary?.total >= 1);
+  // M2: النقطة العامة تعلن إجماليات فقط؛ التفاصيل الكاملة (verified/mediaStored)
+  // تُقرأ من المسار المحمي بالمالك /api/platforms/youtube/content/queue.
+  check('ملخص المحتوى في الصحة (إجماليات عامة)', (health.youtubeContent?.total ?? 0) >= 1 && health.youtubeContent?.summary === undefined);
 
   group('15) قرار المالك المباشر مستقل عن autoPublish/autoSchedule/humanReviewMode + خصوصية صادقة + تحقق');
   // نُعطّل الأتمتة ونفعّل المراجعة البشرية: يجب أن يبقى القرار اليدوي ممكناً.
@@ -384,9 +386,13 @@ async function main(): Promise<void> {
   check('المجدول محفوظ بعد restart', (queue2.items || []).some((i: any) => i.state === 'SCHEDULED'));
   check('المنشور محفوظ بعد restart', (queue2.items || []).some((i: any) => i.state === 'PUBLISHED' && i.externalVideoId));
   const health2 = await (await fetch(`${BASE}/api/health`)).json();
+  // M2: التفاصيل (verified/mediaStored) لم تعد في الصحة العامة؛ نقرؤها من المسار المحمي.
+  const queueSummary2 = queue2.summary || {};
   check('لا يُعلن تحقق بلا معرّف مزود بعد restart', (queue2.items || []).every((i: any) => !(i.verified === true && !i.externalVideoId)), JSON.stringify((queue2.items || []).filter((i: any) => i.verified && !i.externalVideoId)));
-  check('الملخص لا يعدّ تحققاً بلا دليل', (health2?.youtubeContent?.summary?.verified ?? 0) === (queue2.items || []).filter((i: any) => i.verified === true && i.externalVideoId && ['PUBLISHED', 'SCHEDULED', 'VERIFIED'].includes(i.state)).length, JSON.stringify({ summaryVerified: health2?.youtubeContent?.summary?.verified, items: (queue2.items || []).map((i: any) => ({ t: i.title, s: i.state, v: i.verified, ext: i.externalVideoId, vv: i.verifiedVideoId })) }));
-  check('المخزن صمد بعد restart', health2.youtubeContent?.mediaStored > 0);
+  check('الملخص لا يعدّ تحققاً بلا دليل', (queueSummary2.verified ?? 0) === (queue2.items || []).filter((i: any) => i.verified === true && i.externalVideoId && ['PUBLISHED', 'SCHEDULED', 'VERIFIED'].includes(i.state)).length, JSON.stringify({ summaryVerified: queueSummary2.verified, items: (queue2.items || []).map((i: any) => ({ t: i.title, s: i.state, v: i.verified, ext: i.externalVideoId, vv: i.verifiedVideoId })) }));
+  // دليل ثبات المخزن من المسار المحمي: عنصر له مادة فعلية محفوظة بعد restart.
+  check('المخزن صمد بعد restart', (queue2.items || []).some((i: any) => i.hasMedia === true && (i.mediaBytes ?? 0) > 0));
+  check('الصحة العامة لا تكشف تفاصيل المحتوى', health2.youtubeContent?.summary === undefined && health2.youtubeContent?.mediaStored === undefined);
 
   group('13ب) فحص المجدولات مدمج في الدورة بلا تحقق سابق لأوانه');
   await setControls(auth2, { enabled: true, paused: false, autoReply: false });

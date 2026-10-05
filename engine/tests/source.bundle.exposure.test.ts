@@ -84,6 +84,14 @@ const BLOCKED_PATHS = [
   '/foo/dr-source/source-bundle.json',
   '/./dr-source/source.tar.gz',
   '/dr-source/./source.tar.gz',
+  // M5: ملفات إعداد/قوائم حزم على جذر المشروع — لا تُخدَم عامة (كانت تُعاد كـHTML 200).
+  '/package.json',
+  '/package-lock.json',
+  '/render.yaml',
+  '/PACKAGE.JSON',
+  '/Render.YAML',
+  '/%70ackage.json',
+  '/./package.json',
 ];
 
 async function run(): Promise<void> {
