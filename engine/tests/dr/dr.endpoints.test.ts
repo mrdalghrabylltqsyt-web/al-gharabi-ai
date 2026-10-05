@@ -116,9 +116,12 @@ async function main() {
       check('health refreshToken exposes providerCode/httpStatus keys', 'providerCode' in health.dr.refreshToken && 'httpStatus' in health.dr.refreshToken);
       check('health exposes single nextAction', typeof health.dr.nextAction === 'string' && typeof health.dr.nextActionMessage === 'string' && !health.dr.nextActionMessage.includes('GOCSPX'));
       check('health exposes refresh truth flags', health.dr.refreshTokenTested === true && health.dr.refreshTokenUsable === true && health.dr.reauthorizationNeeded === false);
-      // اعتماد OAuth Client: يظهر وجود/صيغة/بصمة آمنة بلا أي قيمة سرّية.
-      check('health oauthClient safe', health.dr.oauthClient.clientIdPresent === true && health.dr.oauthClient.clientSecretPresent === true && /^[0-9a-f]{12}$/.test(health.dr.oauthClient.clientIdFingerprint));
+      // اعتماد OAuth Client في الصحة العامة: وجود القيمتين فقط (بلا طول/بصمة)؛
+      // التفاصيل الكاملة في المسار المحمي /api/dr/health/detail (owner).
+      check('health oauthClient minimal (no fingerprint)', health.dr.oauthClient.clientIdPresent === true && health.dr.oauthClient.clientSecretPresent === true && !('clientIdFingerprint' in health.dr.oauthClient) && !('clientIdLength' in health.dr.oauthClient));
       check('health oauthClient no secret', !JSON.stringify(health.dr.oauthClient).includes('apps.googleusercontent.com') && !JSON.stringify(health.dr.oauthClient).includes('GOCSPX'));
+      const detail = await (await fetch(`${base}/api/dr/health/detail`, { headers: ownerHeaders })).json();
+      check('health/detail oauthClient full (owner)', /^[0-9a-f]{12}$/.test(detail.dr.oauthClient.clientIdFingerprint) && Array.isArray(detail.dr.recoveryMasterKey.perKey) && detail.dr.recoveryMasterKey.perKey.length >= 1);
     }
 
     // --- فشل المرآة يُعلن صراحةً (لا فشل صامت) ---

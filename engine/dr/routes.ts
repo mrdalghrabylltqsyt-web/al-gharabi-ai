@@ -141,6 +141,31 @@ export function registerDriveRoutes(app: express.Express, deps: DriveRoutesDeps)
   let refreshDiagCache: { at: number; value: any } | null = null;
   const REFRESH_DIAG_TTL_MS = 5 * 60 * 1000;
 
+  /**
+   * فحص تشخيصي قراءة-فقط لرمز التجديد (بلا كتابة إلى Drive، بلا كشف قيمة).
+   * لا يُنفَّذ طلب تجديد فعلي إلا عند وجود اعتماد كامل ورمز مخزّن، ونتيجته مُخبَّأة
+   * 5 دقائق. مشترك بين المسار العام والمهني (owner) فلا ينحرف التشخيص بينهما.
+   */
+  async function refreshTokenDiagnosticNow(readiness: ReturnType<typeof authReadiness>): Promise<any> {
+    if (!(readiness.configured && readiness.refreshTokenStored)) {
+      return { stored: false, decryptable: false, providerRefresh: 'not_tested', reason: 'no_refresh_token' };
+    }
+    const fresh = refreshDiagCache && (Date.now() - refreshDiagCache.at) < REFRESH_DIAG_TTL_MS;
+    if (fresh) return refreshDiagCache!.value;
+    let value: any;
+    try {
+      value = await diagnoseDriveRefreshToken({
+        encrypted: control().driveRefreshToken,
+        env: env as Record<string, string | undefined>,
+        transporter: deps.oauthTransport,
+      });
+    } catch (e: any) {
+      value = { stored: true, decryptable: false, providerRefresh: 'failed', reason: String(e?.code || e?.message || 'diagnostic_failed').slice(0, 60) };
+    }
+    refreshDiagCache = { at: Date.now(), value };
+    return value;
+  }
+
   // ذاكرة حالة جمع المصدر (بلا قراءة المستودع عند كل نداء صحة) — تلخيص فقط بلا محتوى.
   let sourceCollectionCache: { at: number; value: any } | null = null;
   const SOURCE_COLLECTION_TTL_MS = 5 * 60 * 1000;
@@ -703,25 +728,7 @@ export function registerDriveRoutes(app: express.Express, deps: DriveRoutesDeps)
     const masterKey = inspectMasterKey(env as NodeJS.ProcessEnv);
     const mirror = control().driveMirror;
     // فحص تشخيصي قراءة-فقط لرمز التجديد (بلا كتابة إلى Drive، بلا كشف قيمة).
-    // لا يُنفَّذ طلب تجديد فعلي إلا عند وجود اعتماد كامل ورمز مخزّن، ونتيجته مُخبَّأة 5 دقائق.
-    let refreshTokenDiagnostic: any = { stored: false, decryptable: false, providerRefresh: 'not_tested', reason: 'no_refresh_token' };
-    if (readiness.configured && readiness.refreshTokenStored) {
-      const fresh = refreshDiagCache && (Date.now() - refreshDiagCache.at) < REFRESH_DIAG_TTL_MS;
-      if (fresh) {
-        refreshTokenDiagnostic = refreshDiagCache!.value;
-      } else {
-        try {
-          refreshTokenDiagnostic = await diagnoseDriveRefreshToken({
-            encrypted: control().driveRefreshToken,
-            env: env as Record<string, string | undefined>,
-            transporter: deps.oauthTransport,
-          });
-        } catch (e: any) {
-          refreshTokenDiagnostic = { stored: true, decryptable: false, providerRefresh: 'failed', reason: String(e?.code || e?.message || 'diagnostic_failed').slice(0, 60) };
-        }
-        refreshDiagCache = { at: Date.now(), value: refreshTokenDiagnostic };
-      }
-    }
+    const refreshTokenDiagnostic = await refreshTokenDiagnosticNow(readiness);
     // صدق الحالة: «مربوط» يعني رمز مخزّن فقط؛ أما قابلية النسخ فتتطلّب نجاح تجديد فعلي.
     const refreshTested = refreshTokenDiagnostic.providerRefresh === 'ok';
     const refreshFailed = refreshTokenDiagnostic.providerRefresh === 'failed';
@@ -767,10 +774,16 @@ export function registerDriveRoutes(app: express.Express, deps: DriveRoutesDeps)
         reauthorizationNeeded,
         nextAction,
         nextActionMessage,
-        // اعتماد OAuth Client: وجود/طول/صيغة/بصمة آمنة + هل كانت مسافة زائدة (بلا أي قيمة).
-        oauthClient: oauthDiag,
-        // مفتاح الاستعادة الرئيسي (بلا قيمة): هل يفتح الأسرار فعلاً؟
-        recoveryMasterKey: masterKey,
+        // اعتماد OAuth Client: وجود القيمتين فقط (بلا طول/صيغة/بصمة). التفاصيل
+        // (الأطوال/البصمات/المصدر) في /api/dr/health/detail (owner) — منع تسريب
+        // بيانات تعريف الأسرار عبر نقطة عامة بلا مصادقة (نفس نمط /api/health).
+        oauthClient: {
+          clientIdPresent: oauthDiag.clientIdPresent,
+          clientSecretPresent: oauthDiag.clientSecretPresent,
+        },
+        // مفتاح الاستعادة الرئيسي: الحالة فقط (valid/invalid/missing) بلا أسماء
+        // متغيّرات ولا أطوال ولا بصمات. التفاصيل في /api/dr/health/detail (owner).
+        recoveryMasterKey: { state: masterKey.state },
         callbackRoute: '/api/dr/drive/callback',
         authUrlRoute: '/api/dr/drive/auth-url',
         rp001Commit: RP_001_COMMIT,
@@ -833,10 +846,10 @@ export function registerDriveRoutes(app: express.Express, deps: DriveRoutesDeps)
           productionRestoreRoute: '/api/dr/restore/production',
         },
         // خزنة مفاتيح الطوارئ (بلا أسرار): حالة المفتاح ورقم الإصدار فقط.
-        // التفاصيل الكاملة في /api/dr/key-vault/status (owner).
+        // التفاصيل الكاملة في /api/dr/key-vault/status (owner) و/api/dr/health/detail.
         keyVault: {
           enabled: true,
-          vaultKey: inspectVaultKey(env as NodeJS.ProcessEnv),
+          vaultKey: { state: inspectVaultKey(env as NodeJS.ProcessEnv).state },
           inventoryCount: RECOVERY_SECRET_INVENTORY.length,
           statusRoute: '/api/dr/key-vault/status',
           syncRoute: '/api/dr/key-vault/sync',
@@ -861,6 +874,46 @@ export function registerDriveRoutes(app: express.Express, deps: DriveRoutesDeps)
           : null,
         // آخر تنبيهات المالك (بلا محتوى): النوع والوقت فقط — لإثبات أن التنبيه يعمل.
         ownerAlerts: Object.entries(control().driveAlerts || {}).map(([key, v]: any) => ({ key: String(key).split(':')[0], at: v?.at ?? null, kind: v?.kind ?? null })).slice(-10),
+      },
+    });
+  });
+
+  /**
+   * تفاصيل التشخيص الحسّاسة (owner فقط): أطوال/صيغ/بصمات اعتماد OAuth وكل متغيّر
+   * من متغيّرات المفتاح الرئيسي. لا قيم سرّية إطلاقاً، لكنها بيانات تعريف تُعين على
+   * استهداف الأسرار، لذا تُفصَل عن النقطة العامة — نفس نمط الفصل بين /api/health
+   * العام وwatcherStatusBlock الكامل المحمي في /api/agent/youtube/watcher.
+   */
+  app.get('/api/dr/health/detail', deps.authenticateToken, deps.requireOwner, async (_req, res) => {
+    const readiness = authReadiness(env, control().driveRefreshToken);
+    const refreshTokenDiagnostic = await refreshTokenDiagnosticNow(readiness);
+    const refreshTested = refreshTokenDiagnostic.providerRefresh === 'ok';
+    const refreshFailed = refreshTokenDiagnostic.providerRefresh === 'failed';
+    res.json({
+      success: true,
+      dr: {
+        configured: readiness.configured,
+        authorized: readiness.authorized,
+        refreshTokenStored: readiness.refreshTokenStored,
+        // اعتماد OAuth Client كاملاً: وجود/طول/صيغة/بصمة آمنة + مصدر المعرّف الفعّال.
+        oauthClient: inspectDriveOAuthClient(env as Record<string, string | undefined>),
+        // المفتاح الرئيسي: تشخيص صريح لكل متغيّر (غياب vs عدم صلاحية) بلا قيمة.
+        recoveryMasterKey: inspectMasterKey(env as NodeJS.ProcessEnv),
+        // تشخيص الرمز المختصر (أكواد تقنية فقط: reason/providerCode/httpStatus).
+        refreshToken: {
+          stored: refreshTokenDiagnostic.stored,
+          decryptable: refreshTokenDiagnostic.decryptable,
+          providerRefresh: refreshTokenDiagnostic.providerRefresh,
+          reason: refreshTokenDiagnostic.reason,
+          providerCode: refreshTokenDiagnostic.providerCode ?? null,
+          httpStatus: refreshTokenDiagnostic.httpStatus ?? null,
+        },
+        refreshTokenTested: refreshTested,
+        refreshTokenUsable: refreshTested,
+        reauthorizationNeeded: refreshFailed,
+        // خزنة المفاتيح: حالة المفتاح كاملة (بلا قيمة). التفاصيل الأعمق في
+        // /api/dr/key-vault/status (owner).
+        keyVault: { vaultKey: inspectVaultKey(env as NodeJS.ProcessEnv) },
       },
     });
   });
