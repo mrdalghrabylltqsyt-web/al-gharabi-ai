@@ -163,6 +163,15 @@ async function login(base: string, token: string): Promise<string> {
       check(`off: ${route} NOT scope-blocked (boundary)`, !(res.status === 404 && body?.code === 'SCOPE_DISABLED'), `status=${res.status} code=${body?.code}`);
     }
 
+    // 3ب) تحصين دفاعي: الشرطة المائلة المكرّرة تُطبَّع قبل المطابقة فيُعزل الحارس
+    //     صيغ `//api/crm/...` و`/api//crm/...` (كانت تتجاوز المطابقة النصية الخام).
+    for (const route of ['//api/crm/leads', '/api//crm/leads', '//api/inventory', '/api//finance/overview', '///api/purchases']) {
+      const res = await fetch(`${baseA}${route}`);
+      const body: any = await res.json().catch(() => ({}));
+      check(`off: ${route} => 404 (dup-slash)`, res.status === 404, `status=${res.status}`);
+      check(`off: ${route} => SCOPE_DISABLED (dup-slash)`, body?.code === 'SCOPE_DISABLED', `code=${body?.code}`);
+    }
+
     // 4) المسارات المشتركة: غير محجوبة => 200 بجلسة صالحة.
     const authToken = await login(baseA, previewTokenA);
     check('off: preview login succeeded', Boolean(authToken), 'token empty');

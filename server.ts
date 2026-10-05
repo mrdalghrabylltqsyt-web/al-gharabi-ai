@@ -8585,9 +8585,24 @@ function legacyErpScopeEnabled(): boolean {
   return raw === "true" || raw === "1" || raw === "on" || raw === "yes";
 }
 function isLegacyErpRouteRequest(rawUrl: string): boolean {
-  const path = String(rawUrl || "").split("?")[0].split("#")[0].replace(/\/+$/, "").toLowerCase() || "/";
+  // تطبيع مطابق لـcanonicalRequestPath (نفس سياسة حارس حزمة المصدر): فكّ ترميز
+  // متكرر محدود + توحيد الفواصل + حلّ `.`/`..` + طيّ الشرطة المائلة المكرّرة +
+  // حذف الشرطة الختامية + توحيد الحالة. يمنع تجاوز الحارس بصيغة `//api/crm/...`.
+  let p = String(rawUrl || "").split("?")[0].split("#")[0].replace(/\\/g, "/");
+  for (let i = 0; i < 5; i += 1) {
+    if (!/%[0-9a-fA-F]/.test(p)) break;
+    try {
+      const next = decodeURIComponent(p);
+      if (next === p) break;
+      p = next;
+    } catch {
+      break; // ترميز فاسد: نطابق على آخر قيمة سليمة بدل الانهيار.
+    }
+  }
+  const norm = path.posix.normalize(p);
+  const canonical = (norm.startsWith("/") ? norm : `/${norm}`).replace(/\/+$/, "").toLowerCase() || "/";
   for (const prefix of LEGACY_ERP_ROUTE_PREFIXES) {
-    if (path === prefix || path.startsWith(prefix + "/")) return true;
+    if (canonical === prefix || canonical.startsWith(prefix + "/")) return true;
   }
   return false;
 }

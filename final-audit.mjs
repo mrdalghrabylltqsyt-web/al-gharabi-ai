@@ -1966,10 +1966,20 @@ add('dr-token-no-collapse-unauthorized', !/code:\s*'unauthorized'/.test(drSource
 add('dr-refresh-diagnostic-readonly', drSources[4].includes('diagnoseDriveRefreshToken') && drSources[4].includes('refresh_token_undecryptable') && drSources[4].includes('client_missing') && drSources[4].includes('client_secret_missing'), 'فحص تشخيصي قراءة-فقط يفرّق فكّ التشفير عن غياب الاعتماد');
 add('dr-oauth-client-trim', drSources[4].includes('export function trimmedEnvValue') && drSources[4].includes('clientIdHadWhitespace') && /trimmedEnvValue\(options\.clientId/.test(drSources[4]), 'قيم اعتماد OAuth تُقصّ (مسافة/سطر/تنصيص) قبل الإرسال — منع invalid_client من قيمة ملوّثة');
 add('dr-oauth-google-fallback', drSources[4].includes('resolveDriveClientCredentials') && drSources[4].includes('google_fallback') && drSources[4].includes('driveClientIdIgnored'), 'تجاوز قيمة DRIVE غير الصالحة إلى اعتماد Google القائم (بلا مطالبة المالك بأي سرّ)');
-add('dr-oauth-effective-source-exposed', drSources[4].includes('effectiveClientIdSource') && /oauthClient:\s*(inspectDriveOAuthClient|oauthDiag)/.test(drRoutes), 'health يعلن مصدر المعرّف الفعّال (drive/google_fallback) وبصمته بلا قيمة سرّية');
+// كتلة الصحة العامة أُقلّصت: لا تفاصيل اعتماد/مفتاح (أطوال/بصمات) بلا مصادقة.
+const drHealthBlock = (drRoutes.match(/app\.get\('\/api\/dr\/health',[\s\S]*?\n  \}\);\n/) || [''])[0];
+add('dr-health-public-oauthClient-minimal', /oauthClient:\s*\{[\s\S]{0,160}clientIdPresent:\s*oauthDiag\.clientIdPresent[\s\S]{0,80}clientSecretPresent:\s*oauthDiag\.clientSecretPresent/.test(drHealthBlock), 'الصحة العامة تعلن وجود الاعتماد فقط (بلا طول/صيغة/بصمة)');
+add('dr-health-public-no-oauth-fingerprint', !drHealthBlock.includes('oauthClient: oauthDiag') && !drHealthBlock.includes('oauthClient: inspectDriveOAuthClient') && !drHealthBlock.includes('clientIdFingerprint') && !drHealthBlock.includes('effectiveClientIdFingerprint'), 'الصحة العامة لا تعرض أي بصمة/طول لاعتماد OAuth');
+add('dr-health-public-recoveryMasterKey-minimal', /recoveryMasterKey:\s*\{\s*state:\s*masterKey\.state\s*\}/.test(drHealthBlock) && !/recoveryMasterKey:\s*masterKey,/.test(drHealthBlock), 'الصحة العامة تعلن حالة المفتاح الرئيسي فقط بلا perKey');
+add('dr-health-public-no-vault-fingerprint', /vaultKey:\s*\{\s*state:\s*inspectVaultKey\(env as NodeJS\.ProcessEnv\)\.state\s*\}/.test(drHealthBlock), 'الصحة العامة تعلن حالة مفتاح الخزنة فقط (بلا طول/بصمة)');
+add('dr-health-detail-owner-route', /app\.get\('\/api\/dr\/health\/detail',\s*deps\.authenticateToken,\s*deps\.requireOwner/.test(drRoutes), 'مسار تفاصيل التشخيص محمي بـauthenticateToken + requireOwner (owner فقط)');
+add('dr-health-detail-full-diagnostics', /app\.get\('\/api\/dr\/health\/detail'[\s\S]*?oauthClient:\s*inspectDriveOAuthClient\(/.test(drRoutes) && /app\.get\('\/api\/dr\/health\/detail'[\s\S]*?recoveryMasterKey:\s*inspectMasterKey\(/.test(drRoutes), 'المسار المحمي يعرض التشخيص الكامل (oauthClient + recoveryMasterKey) للمالك');
+add('dr-health-detail-refresh-shared', drRoutes.includes('refreshTokenDiagnosticNow') && (drRoutes.match(/refreshTokenDiagnosticNow\(/g) || []).length >= 3, 'التشخيص مُستخرَج في دالة مشتركة تستخدمها الصحة العامة ومسار التفاصيل (لا انحراف)');
+add('dr-health-privacy-test', fs.existsSync(path.join(root, 'engine/tests/dr/dr.health.privacy.test.ts')) && (pkg.scripts['test:dr'] || '').includes('test:dr-health-privacy') && pkg.scripts.test.includes('test:dr'), 'اختبار خصوصية /api/dr/health موجود ومربوط في test:dr وnpm test');
+add('dr-oauth-effective-source-exposed', drSources[4].includes('effectiveClientIdSource') && /app\.get\('\/api\/dr\/health\/detail'[\s\S]*?oauthClient:\s*inspectDriveOAuthClient\(/.test(drRoutes), 'فحص اعتماد OAuth يعرض مصدر المعرّف الفعّال (drive/google_fallback) في المسار المحمي');
 add('dr-oauth-google-fallback-test', read('engine/tests/dr/dr.auth.test.ts').includes('google_fallback') && read('engine/tests/dr/dr.auth.test.ts').includes('resolveDriveClientCredentials'), 'اختبار التجاوز إلى اعتماد Google + عدم استخدامه عند صلاح قيمة DRIVE');
 add('dr-oauth-client-inspect-no-secret', drSources[4].includes('inspectDriveOAuthClient') && drSources[4].includes('clientIdFingerprint') && !/inspectDriveOAuthClient[\s\S]{0,600}clientSecret\s*:/.test(drSources[4]), 'فحص اعتماد العميل يعرض طولاً/صيغة/بصمة فقط بلا أي قيمة سرّية');
-add('dr-health-oauthClient-exposed', /oauthClient:\s*(inspectDriveOAuthClient|oauthDiag)/.test(drRoutes) && drRoutes.includes('inspectDriveOAuthClient'), 'health يعرض فحص اعتماد OAuth Client (وجود/صيغة/بصمة) بلا سرّ');
+add('dr-health-oauthClient-owner-only', drRoutes.includes('inspectDriveOAuthClient'), 'فحص اعتماد OAuth Client الكامل متاح فقط عبر مسار owner المحمي');
 add('dr-health-next-action-single', drRoutes.includes('nextActionMessage') && /nextAction\s*=\s*'reauthorize_drive'/.test(drRoutes), 'health يعلن إجراءً واحداً صريحاً (none/connect/configure/reauthorize) بلا أي سرّ');
 add('dr-health-refreshToken-diagnostic', /refreshToken:\s*\{[\s\S]{0,200}providerRefresh/.test(drRoutes) && drRoutes.includes('diagnoseDriveRefreshToken') && drRoutes.includes('decryptable'), 'health يعرض تشخيص refreshToken المختصر (stored/decryptable/providerRefresh/reason)');
 add('dr-health-refreshToken-no-secret', !/refreshToken:\s*\{[\s\S]{0,200}(token|secret|accessToken):/.test(drRoutes), 'حقول تشخيص الرمز لا تحمل أي قيمة سرّية');
@@ -2742,6 +2752,22 @@ add('watcher-advisory-not-authority',
     fs.existsSync(path.join(root, 'engine/tests/scope.legacy.erp.isolation.test.ts')) &&
     read('package.json').includes('test:scope-legacy-erp'),
     'اختبار عزل أسطح ERP/CRM/المالية موجود ومربوط في npm test');
+
+  // تحصين دفاعي: الحارس يطبّع المسار (شرطة مكرّرة/ترميز/نقاط) قبل المطابقة، فلا
+  // تتجاوز صيغة `//api/crm/...` المطابقة النصية الخام. مطابق لسياسة canonicalRequestPath.
+  add('legacy-erp-guard-normalizes-path', (() => {
+    const fnIdx = server.indexOf('function isLegacyErpRouteRequest');
+    if (fnIdx < 0) return false;
+    const body = server.slice(fnIdx, fnIdx + 1200);
+    return body.includes('decodeURIComponent') && body.includes('path.posix.normalize') &&
+      body.includes('replace(/\\\\/g, "/")') && body.includes('.replace(/\\/+$/, "")');
+  })(), 'حارس عزل ERP يطبّع المسار (فكّ ترميز + توحيد فواصل + حلّ النقاط + طيّ الشرطة المكرّرة) قبل المطابقة');
+
+  add('legacy-erp-dup-slash-test',
+    read('engine/tests/scope.legacy.erp.isolation.test.ts').includes('//api/crm/leads') &&
+    read('engine/tests/scope.legacy.erp.isolation.test.ts').includes('/api//crm/leads') &&
+    read('engine/tests/scope.legacy.erp.isolation.test.ts').includes('dup-slash'),
+    'اختبار عزل ERP يثبت عزل صيغ الشرطة المائلة المكرّرة (//api/... و/api//...)');
 
   // ------------------------------------------------------------
   // M2 — تقليص الكشف التشغيلي في النقطتين العامتين /api/health و/api/readiness.

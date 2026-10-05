@@ -98,7 +98,7 @@
     "test:dr-real-drill": "node scripts/run-with-skip.mjs test:dr-real-drill-raw",
     "test:dr-lostkeys": "tsx engine/tests/dr/dr.lostkeys.test.ts",
     "test:dr-keyrelations": "tsx engine/tests/dr/dr.keyrelations.test.ts",
-    "test:dr": "npm run test:dr-core && npm run test:dr-source && npm run test:dr-source-bundle && npm run test:dr-store && npm run test:dr-sync && npm run test:dr-auth && npm run test:dr-db && npm run test:dr-routes && npm run test:dr-backup && npm run test:dr-secrets && npm run test:dr-mirror && npm run test:dr-keyvault && npm run test:dr-keyrelations && npm run test:dr-reconciliation && npm run test:dr-autobackup && npm run test:dr-backup-gaps && npm run test:dr-restore && npm run test:dr-endpoints && npm run test:dr-real-drill && npm run test:dr-lostkeys && npm run test:dr-ui && npm run test:dr-standalone && npm run test:dr-recovery-center && npm run test:dr-recovery-center-auth && npm run test:dr-token-source && npm run test:dr-pwa",
+    "test:dr": "npm run test:dr-core && npm run test:dr-source && npm run test:dr-source-bundle && npm run test:dr-store && npm run test:dr-sync && npm run test:dr-auth && npm run test:dr-db && npm run test:dr-routes && npm run test:dr-backup && npm run test:dr-secrets && npm run test:dr-mirror && npm run test:dr-keyvault && npm run test:dr-keyrelations && npm run test:dr-reconciliation && npm run test:dr-autobackup && npm run test:dr-backup-gaps && npm run test:dr-restore && npm run test:dr-endpoints && npm run test:dr-health-privacy && npm run test:dr-real-drill && npm run test:dr-lostkeys && npm run test:dr-ui && npm run test:dr-standalone && npm run test:dr-recovery-center && npm run test:dr-recovery-center-auth && npm run test:dr-token-source && npm run test:dr-pwa",
     "test:dr-ui": "tsx engine/tests/dr/dr.ui.test.ts",
     "test:dr-stage4": "tsx engine/tests/dr/dr.stage4.evidence.ts",
     "build:source-bundle": "node tools/dr/source-bundle.mjs dist/dr-source",
@@ -122,7 +122,8 @@
     "test:central-brain-authority": "tsx engine/tests/brain/central.brain.authority.test.ts",
     "test:context-governance": "tsx engine/tests/context.governance.test.ts",
     "test:session-lifecycle": "tsx engine/tests/session.lifecycle.test.ts",
-    "test:e2e": "playwright test"
+    "test:e2e": "playwright test",
+    "test:dr-health-privacy": "tsx engine/tests/dr/dr.health.privacy.test.ts"
   },
   "dependencies": {
     "@google/genai": "^2.4.0",
