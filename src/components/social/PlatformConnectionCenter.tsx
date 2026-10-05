@@ -568,9 +568,11 @@ export const PlatformConnectionCenter: React.FC = () => {
     } finally {
       setLoading(false);
     }
+  }, [showToast]);
 
   // نتيجة عودة OAuth بتدفّق المقطع (Instagram): تُعرض مرة واحدة ثم تُمسح، وتُحدَّث
-  // الحالة فوراً فلا يظن المالك أن الربط لم يحدث. معرَّفة بعد load لتجنّب استخدامه قبل تعريفه.
+  // الحالة فوراً فلا يظن المالك أن الربط لم يحدث. خطاف على المستوى الأعلى خارج load
+  // التزاماً بقواعد React Hooks — كان موضوعاً داخل دالة async فيسبب "Invalid hook call".
   useEffect(() => {
     if (!oauthReturn) return;
     showToast(oauthReturn.ok ? 'تم إكمال ربط Instagram.' : `تعذر إكمال ربط Instagram: ${oauthReturn.message || ''}`);
@@ -578,7 +580,6 @@ export const PlatformConnectionCenter: React.FC = () => {
     void load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [oauthReturn]);
-  }, [showToast]);
 
   useEffect(() => { void load(); }, [load]);
 
