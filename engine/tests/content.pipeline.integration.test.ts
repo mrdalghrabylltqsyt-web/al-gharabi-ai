@@ -50,6 +50,8 @@ function startApp(ytBase: string): void {
     GOOGLE_OAUTH_CLIENT_ID: GO_CLIENT_ID, GOOGLE_OAUTH_CLIENT_SECRET: GO_CLIENT_SECRET,
     PLATFORM_TOKEN_ENCRYPTION_KEY: TOKEN_KEY,
     YOUTUBE_OP_RATE_LIMIT: '500',
+    // حصة اختبارية كبيرة: هذا الاختبار ليس عن الحارس، فلا نُحجب الرفع المتكرر.
+    YOUTUBE_DAILY_QUOTA: '1000000',
   };
   delete env.GEMINI_API_KEY; delete env.DATABASE_URL;
   proc = spawn(process.execPath, [tsxCli, serverEntry], { cwd: REPO_ROOT, env, stdio: ['ignore', 'pipe', 'pipe'] });
