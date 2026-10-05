@@ -1505,6 +1505,13 @@ ${payload.topic || payload.productName || 'أنظمة وحلول التقسيط 
     if (!res.ok || !data.success) throw new Error(data.error || 'تعذر تحميل حالة مراقبة YouTube');
     return data.watcher;
   },
+  /** تفاصيل حارس حصة YouTube Data API (للمالك) — النقطتان العامتان تعلنان الحالة المجملة فقط. */
+  async getYouTubeQuota(): Promise<any> {
+    const res = await fetch('/api/agent/youtube/quota', { headers: getAuthHeaders() });
+    const data = await res.json();
+    if (!res.ok || !data.success) throw new Error(data.error || 'تعذر تحميل تفاصيل حصة YouTube');
+    return data.quota;
+  },
   /** تحديث عناصر التحكم (Kill Switch/الرد/النشر/المراجعة/فاصل الأتمتة cadenceMinutes) — للمالك فقط. */
   async setYouTubeWatcherControls(controls: Record<string, boolean | number>): Promise<any> {
     const res = await fetch('/api/agent/youtube/watcher/controls', { method: 'POST', headers: getAuthHeaders(), body: JSON.stringify(controls) });

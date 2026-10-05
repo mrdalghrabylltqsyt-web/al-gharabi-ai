@@ -166,12 +166,19 @@ const FORBIDDEN_CUSTOMER_FIELDS = [
   'lastNextAction', 'customerMessage', 'lastCustomerMessage', 'unresolvedQuestion',
 ];
 
-// الحقول التقنية المسموح بها فقط في الكتلة العامة youtubeWatcher (allow-list صارم):
-// أي حقل جديد (قد يحمل بيانات عميل) يُفشل الاختبار حتى يُراجَع عن قصد.
+// الحقول التقنية الدنيا المسموح بها فقط في الكتلة العامة youtubeWatcher (allow-list
+// صارم): أي حقل جديد (قد يحمل بيانات عميل أو تفاصيل تشغيلية زائدة) يُفشل الاختبار
+// حتى يُراجَع عن قصد. العدّادات التفصيلية (counters) والمعرّفات نُقلت للمسار المحمي.
 const ALLOWED_WATCHER_PUBLIC_KEYS = new Set([
-  'watcherActive', 'cadenceMinutes', 'cadenceMs', 'pollCount', 'lastPollAt',
-  'nextPollAt', 'lastError', 'consecutiveErrors', 'counters', 'note',
+  'status', 'watcherActive', 'cadenceMinutes', 'cadenceMs', 'lastError',
+  'consecutiveErrors', 'note',
 ]);
+
+// الحقول التشغيلية التفصيلية التي يجب ألا تظهر في النقطتين العامتين (نُقلت للمالك).
+const FORBIDDEN_OPERATIONAL_DETAIL_FIELDS = [
+  'counters', 'usedUnits', 'remainingUnits', 'byOperation', 'mediaTotalBytes',
+  'mediaStored', 'byState', 'pollCount',
+];
 
 async function run(): Promise<void> {
   if (!existsSync(tsxCli)) { console.error('tsx CLI غير موجود — شغّل npm install أولاً.'); process.exit(1); }
@@ -200,18 +207,42 @@ async function run(): Promise<void> {
     const forbiddenInHealth = FORBIDDEN_CUSTOMER_FIELDS.filter((f) => healthKeys.has(f));
     check('لا حقل بيانات عميل معروف في الصحة (قائمة صريحة)', forbiddenInHealth.length === 0, forbiddenInHealth.join(','));
 
-    group('2) /api/health تُبقي الحقول التقنية غير الحساسة');
+    group('2) /api/health تُبقي الحقول التقنية غير الحساسة فقط');
     const w = health.youtubeWatcher;
     check('كتلة youtubeWatcher موجودة', Boolean(w));
     check('watcherActive منطقي', typeof w?.watcherActive === 'boolean');
-    check('pollCount يُعلن', w?.pollCount === 7, String(w?.pollCount));
-    check('العدّادات تُعلن (تصعيد=1، رد=1)', w?.counters?.escalated === 1 && w?.counters?.replied === 1, JSON.stringify(w?.counters));
+    check('حالة عامة status (healthy/degraded/disabled)', ['healthy', 'degraded', 'disabled'].includes(w?.status), String(w?.status));
     check('آخر خطأ نُقّي إلى رمز تقني/رسالة عامة', w?.lastError === 'connection error', String(w?.lastError));
     check('commit النشر يُعلن', 'deploy' in health && 'commit' in (health.deploy || {}));
-    // allow-list صارم: الكتلة العامة youtubeWatcher لا تحمل إلا الحقول التقنية المعروفة.
-    // أي حقل جديد (قد يحمل بيانات عميل) يُفشل الاختبار حتى يُراجَع عن قصد.
+    // allow-list صارم: الكتلة العامة youtubeWatcher لا تحمل إلا الحقول التقنية الدنيا.
     const watcherPublicExtra = Object.keys(w || {}).filter((k) => !ALLOWED_WATCHER_PUBLIC_KEYS.has(k));
     check('الكتلة العامة youtubeWatcher ضمن allow-list فقط', watcherPublicExtra.length === 0, watcherPublicExtra.join(','));
+    // تقليص M2: لا عدّادات تفصيلية ولا pollCount في الكتلة العامة.
+    check('لا عدّاد تفصيلي counters في الكتلة العامة', !('counters' in (w || {})));
+    check('لا pollCount في الكتلة العامة', !('pollCount' in (w || {})));
+
+    group('2b) M2: /api/health لا تكشف تفاصيل تشغيلية زائدة');
+    // youtubeQuota: الحالة المجملة فقط في الصحة (لا usedUnits/remainingUnits/byOperation).
+    const q = health.youtubeQuota || {};
+    check('youtubeQuota تُعلن في الصحة (حالة مجملة)', Boolean(health.youtubeQuota));
+    check('youtubeQuota: الحقول التقنية المجملة فقط', ['protectionEnabled', 'thresholdReached', 'exhausted', 'usedPercent', 'alertThresholdPercent', 'note'].every((k) => k in q), Object.keys(q).join(','));
+    check('youtubeQuota: لا usedUnits في الصحة', !('usedUnits' in q));
+    check('youtubeQuota: لا remainingUnits في الصحة', !('remainingUnits' in q));
+    check('youtubeQuota: لا byOperation في الصحة', !('byOperation' in q));
+    // youtubeContent: مجاميع عامة فقط (لا byState ولا mediaTotalBytes).
+    const c = health.youtubeContent || {};
+    check('youtubeContent: لا byState في الصحة', !('byState' in c) && !('byState' in (c.summary || {})));
+    check('youtubeContent: لا mediaTotalBytes في الصحة', !('mediaTotalBytes' in c));
+    // قائمة الحقول التشغيلية التفصيلية الممنوعة على المستوى العلوي للصحة.
+    const healthTopKeys = new Set(Object.keys(health));
+    const forbiddenOperational = FORBIDDEN_OPERATIONAL_DETAIL_FIELDS.filter((f) => healthTopKeys.has(f));
+    check('لا حقول تشغيلية تفصيلية معروفة في الصحة (قائمة صريحة)', forbiddenOperational.length === 0, forbiddenOperational.join(','));
+    // التفاصيل الكاملة متاحة للمالك عبر المسار المحمي الجديد.
+    const authQuota = await loginOwner();
+    const anonQuota = await fetch(`${BASE}/api/agent/youtube/quota`);
+    check('مسار تفاصيل الحصة محمي (401 بلا جلسة)', anonQuota.status === 401, String(anonQuota.status));
+    const ownerQuota = await (await fetch(`${BASE}/api/agent/youtube/quota`, { headers: authQuota })).json();
+    check('المالك يقرأ التفاصيل الكاملة للحصة', ownerQuota.success === true && 'usedUnits' in (ownerQuota.quota || {}) && 'byOperation' in (ownerQuota.quota || {}));
 
     group('3) /api/readiness العامة لا تحمل أي بيانات عميل');
     const readyRes = await fetch(`${BASE}/api/readiness`);

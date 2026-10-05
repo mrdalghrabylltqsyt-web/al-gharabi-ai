@@ -31,3 +31,8 @@ bun.lockb
 # Local verification tooling (embedded Postgres for testing persistence offline).
 # Its native binaries are heavy and never needed in CI or on Render.
 tools/local-verification/node_modules/
+
+# Playwright e2e artifacts
+/test-results/
+/playwright-report/
+/blob-report/

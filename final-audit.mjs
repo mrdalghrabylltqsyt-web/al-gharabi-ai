@@ -1026,7 +1026,8 @@ add('youtube-quota-proactive-guard', server.includes('function canRunYouTubeOper
 add('youtube-quota-alert-once', server.includes('youtubeQuotaAlertSent') && server.includes("'youtube_quota_warning'") && server.includes('youtubeQuotaAlertReason(status)'), 'تنبيه واحد للمالك عند بلوغ العتبة (بلا إغراق)');
 add('youtube-quota-threshold-honest', quotaModule.includes('thresholdReached') && quotaModule.includes('exhausted') && quotaModule.includes('remainingUnits') && quotaModule.includes('usedPercent'), 'الحالة تعلن العتبة/الاستنفاد/المتبقي بصدق');
 add('youtube-quota-durable', storageAdapter.includes('STORAGE_KEY_YOUTUBE_QUOTA') && server.includes('function saveYouTubeQuota') && server.includes('function loadYouTubeQuota') && server.includes('youtubeQuotaLedger.restore'), 'عدّاد الحصة وأعلام التنبيه تصمد بعد restart/نشر');
-add('youtube-quota-exposed-health', server.includes('youtubeQuota: youtubeQuotaStatusSnapshot()'), 'كتلة youtubeQuota معلنة في /api/health و/api/readiness');
+// M2: النقطتان العامتان تعلنان ملخص الحصة فقط؛ التفاصيل الكاملة في مسار المالك المحمي.
+add('youtube-quota-exposed-health', (server.match(/youtubeQuota: youtubeQuotaStatusSummary\(\)/g) || []).length >= 2 && server.includes('app.get("/api/agent/youtube/quota", authenticateToken'), 'كتلة youtubeQuota معلنة في /api/health و/api/readiness (ملخص عام) وتفاصيلها في مسار المالك');
 add('youtube-quota-no-secret', !/(client_secret|clientSecret|refresh_token|access_token|GOOGLE_OAUTH)/.test(quotaModule) && quotaModule.includes('note:'), 'وحدة الحارس بلا أي سرّ وتُعلن أن الرقم تقديري');
 add('youtube-quota-regression-test', Boolean(pkg.scripts['test:youtube-quota']) && quotaUnitTest.includes('YOUTUBE_QUOTA_COST.upload === 1600') && quotaUnitTest.includes('classifyYouTubeQuotaOperation'), 'اختبار وحدة للحارس مسجّل ويغطي التكاليف والتصنيف');
 add('youtube-quota-test-in-suite', typeof pkg.scripts.test === 'string' && pkg.scripts.test.includes('test:youtube-quota &&') && pkg.scripts.test.includes('test:youtube-quota-integration &&'), 'اختبارا الحارس ضمن npm test');
@@ -2741,6 +2742,104 @@ add('watcher-advisory-not-authority',
     fs.existsSync(path.join(root, 'engine/tests/scope.legacy.erp.isolation.test.ts')) &&
     read('package.json').includes('test:scope-legacy-erp'),
     'اختبار عزل أسطح ERP/CRM/المالية موجود ومربوط في npm test');
+
+  // ------------------------------------------------------------
+  // M2 — تقليص الكشف التشغيلي في النقطتين العامتين /api/health و/api/readiness.
+  // ------------------------------------------------------------
+  add('health-public-shrinks-watcher-counters',
+    server.includes('function watcherStatusBlockPublic()') &&
+    /watcherStatusBlockPublic\(\)[\s\S]{0,900}status\b/.test(server) &&
+    // الكتلة العامة لم تعد تحمل counters/pollCount التفصيلية.
+    !/function watcherStatusBlockPublic\(\)[\s\S]{0,1200}?counters:/.test(server),
+    'الكتلة العامة youtubeWatcher أُقلّصت إلى حالة عامة بلا عدّادات تفصيلية');
+
+  add('health-public-quota-summary-only',
+    server.includes('function youtubeQuotaStatusSummary()') &&
+    // النقطتان العامتان تستخدمان الملخص لا اللقطة الكاملة.
+    (server.match(/youtubeQuota: youtubeQuotaStatusSummary\(\)/g) || []).length >= 2 &&
+    !server.includes('youtubeQuota: youtubeQuotaStatusSnapshot()'),
+    'النقطتان العامتان تعلنان ملخص الحصة (youtubeQuotaStatusSummary) لا التفاصيل');
+
+  add('health-public-content-summary-only',
+    server.includes('function contentQueueSummaryPublic(') &&
+    (server.match(/youtubeContent: contentQueueSummaryPublic\(contentQueueSummary\(\)\)/g) || []).length >= 2 &&
+    !server.includes('youtubeContent: { summary: contentQueueSummary(), mediaStored'),
+    'النقطتان العامتان تعلنان مجاميع المحتوى لا byState/mediaTotalBytes');
+
+  add('health-operational-details-owner-route',
+    server.includes('app.get("/api/agent/youtube/quota", authenticateToken') &&
+    server.includes('quota: youtubeQuotaStatusSnapshot()'),
+    'التفاصيل التشغيلية الكاملة (الحصة) نُقلت لمسار محمي بالمصادقة');
+
+  add('health-operational-shrink-test',
+    fs.existsSync(path.join(root, 'engine/tests/health.privacy.test.ts')) &&
+    read('engine/tests/health.privacy.test.ts').includes('FORBIDDEN_OPERATIONAL_DETAIL_FIELDS'),
+    'اختبار الخصوصية يمنع رجوع الحقوق التشغيلية التفصيلية للنقطتين العامتين');
+
+  // ------------------------------------------------------------
+  // M5 — حجب ملفات الإعداد/القوائم من الخدمة العامة.
+  // ------------------------------------------------------------
+  add('static-blocks-config-files',
+    server.includes('BLOCKED_ROOT_FILES') &&
+    server.includes('"/package.json"') &&
+    server.includes('"/package-lock.json"') &&
+    server.includes('"/render.yaml"') &&
+    /if \(BLOCKED_ROOT_FILES\.has\(p\)\) return true;/.test(server),
+    'ملفات package.json/package-lock.json/render.yaml محجوبة من الخدمة العامة (404)');
+
+  add('static-config-block-test',
+    read('engine/tests/source.bundle.exposure.test.ts').includes("'/package.json'") &&
+    read('engine/tests/source.bundle.exposure.test.ts').includes("'/render.yaml'"),
+    'اختبار كشف المصدر يتحقق من حجب ملفات الإعداد');
+
+  // ------------------------------------------------------------
+  // M6 — سقوف صارمة لمصفوفات الحالة في الذاكرة (منع OOM).
+  // ------------------------------------------------------------
+  add('workspace-array-caps-defined',
+    ['WORKSPACE_MAX_WEBHOOK_EVENTS', 'WORKSPACE_MAX_PROVIDER_EVENTS', 'WORKSPACE_MAX_SOCIAL_COMMENTS',
+     'WORKSPACE_MAX_SOCIAL_REPLIES', 'WORKSPACE_MAX_PUBLISH_RECORDS']
+      .every((c) => server.includes(`const ${c} =`)),
+    'سقوف مصفوفات الحالة في الذاكرة محدّدة كثوابت مسماة');
+
+  add('workspace-unshift-capped', (() => {
+    // لكل unshift على مصفوفة سجلات: يجب أن يتبعه سقف صارم خلال الأسطر التالية
+    // (سقف على نفس السطر، أو slice/length في نافذة 6 أسطر) — يغطي الشكل أحادي
+    // السطر والمتعدد الأسطر. يُثبت أن لا مصفوفة تنمو بلا حدّ.
+    const lines = server.split('\n');
+    const re = /\(workspace as any\)\.(webhookEvents|providerEvents|socialComments|socialReplies|publishRecords)\.unshift\(/;
+    for (let i = 0; i < lines.length; i += 1) {
+      if (!re.test(lines[i])) continue;
+      // نافذة 12 سطراً تغطي أطول كتلة unshift متعددة الأسطر حتى سطر السقف التالي.
+      const window = lines.slice(i, i + 12).join('\n');
+      const capped = /WORKSPACE_MAX_[A-Z_]+/.test(window) || /\.slice\(0,\s*WORKSPACE_MAX_[A-Z_]+\)/.test(window);
+      if (!capped) return false;
+    }
+    return true;
+  })(), 'كل unshift لمصفوفات السجلات يتبعه سقف صارم (لا نموّ بلا حدّ)');
+
+  add('active-sessions-capped',
+    server.includes('WORKSPACE_MAX_ACTIVE_SESSIONS') && server.includes('function enforceActiveSessionCap()'),
+    'خريطة الجلسات في الذاكرة مقيّدة بسقف دفاعي');
+
+  add('active-sessions-count-honest',
+    server.includes('function activeSessionCount()') &&
+    !server.includes('sessions:activeSessions.size') &&
+    server.includes('sessions:activeSessionCount()'),
+    'عدّاد الجلسات المعروض يحسب غير المنتهية فعلياً (L4)');
+
+  // ------------------------------------------------------------
+  // M3 — اختبار e2e حقيقي واحد على الأقل (متصفح حقيقي).
+  // ------------------------------------------------------------
+  add('e2e-login-test-present',
+    fs.existsSync(path.join(root, 'engine/e2e/login.e2e.spec.ts')) &&
+    fs.existsSync(path.join(root, 'playwright.config.ts')) &&
+    Boolean(pkg.scripts['test:e2e']) &&
+    pkg.devDependencies?.['@playwright/test'],
+    'اختبار e2e حقيقي لمتدفق الدخول موجود ومربوط بـnpm run test:e2e (منفصل عن npm test)');
+
+  add('e2e-not-in-default-suite',
+    typeof pkg.scripts.test === 'string' && !pkg.scripts.test.includes('test:e2e'),
+    'اختبار المتصفح منفصل عن npm test (لا يفترض متصفحاً في CI الحالي)');
 
   const failed = checks.filter(x => !x.ok);
 console.table(checks);
