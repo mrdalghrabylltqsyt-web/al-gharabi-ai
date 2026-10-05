@@ -3028,6 +3028,34 @@ add('watcher-advisory-not-authority',
     Boolean(pkg.scripts['test:sales-erp-authz']) && typeof pkg.scripts.test === 'string' && pkg.scripts.test.includes('test:sales-erp-authz'),
     'اختبار تصريح البيع/ERP موجود ومربوط بـnpm test');
 
+  // ------------------------------------------------------------
+  // إصلاح خطاف React في PlatformConnectionCenter: يمنع رجوع خطاف داخل دالة async.
+  // tsc لا يكشف هذا النوع؛ يكشفه فحص react-hooks/rules-of-hooks وقت التشغيل.
+  // ------------------------------------------------------------
+  const hookSrc = read('src/components/social/PlatformConnectionCenter.tsx');
+  // آخر `const load` هو load الخاص بالمكوّن الرئيسي (هناك load آخر في TikTokStatusPanel).
+  const hookLoadStart = hookSrc.lastIndexOf('const load = useCallback(async () => {');
+  const hookLoadEnd = hookLoadStart >= 0 ? hookSrc.indexOf('}, [showToast]);', hookLoadStart) : -1;
+  const hookLoadBody = hookLoadStart >= 0 && hookLoadEnd > hookLoadStart ? hookSrc.slice(hookLoadStart, hookLoadEnd) : null;
+  add('platform-connection-no-hook-in-load',
+    hookLoadBody !== null && !/\buseEffect\b/.test(hookLoadBody),
+    'لا useEffect داخل دالة load (async/useCallback) — الخطافات على المستوى الأعلى فقط');
+  const hookAfterLoad = hookLoadEnd > hookLoadStart ? hookSrc.slice(hookLoadEnd) : '';
+  add('platform-connection-oauth-effect-top-level',
+    /useEffect\(\(\) => \{\s*if \(!oauthReturn\) return;/.test(hookAfterLoad),
+    'useEffect الخاص بمعالجة oauthReturn موضوع بعد إغلاق load (المستوى الأعلى) لا داخله');
+  const hookE2e = read('engine/e2e/platform-connection.e2e.spec.ts');
+  add('platform-connection-hooks-e2e',
+    /Invalid hook call/.test(hookE2e) && /مركز ربط المنصات/.test(hookE2e),
+    'اختبار e2e يفتح صفحة مركز ربط المنصات ويؤكد غياب خطأ الخطافات في الكونسول');
+  add('platform-connection-hooks-e2e-wired',
+    Boolean(pkg.scripts['test:e2e']) && String(pkg.scripts['test:e2e']).includes('playwright'),
+    'اختبار e2e مربوط بـnpm run test:e2e');
+  const hookDrBundleSrc = read('tools/dr/source-bundle.mjs');
+  add('dr-source-walk-excludes-playwright-artifacts',
+    /test-results/.test(hookDrBundleSrc) && /playwright-report/.test(hookDrBundleSrc),
+    'مشي المصدر يستبعد مخرجات Playwright فلا تفشل حزمة المصدر عند وجودها');
+
   const failed = checks.filter(x => !x.ok);
 console.table(checks);
 if (failed.length) {

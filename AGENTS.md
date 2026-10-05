@@ -3665,3 +3665,51 @@ YouTube (المراقب/الطابور/التفويض)، بقية المنصات
   البناء إذا غاب الملف، أو اختلف أي جدول cron عن `*/10 3-20 * * *`، أو ظهر جدول يغطّي
   كل الساعات (حقل الساعة = `*` أو `0-23`)، أو لم يستهدف الطلب `/api/health`.
 
+
+## إصلاح خطاف React في PlatformConnectionCenter + حارس وقت التشغيل (2026-10-05)
+
+**العطل المُثبت (لا افتراض):** في `src/components/social/PlatformConnectionCenter.tsx`
+كان `useEffect` الخاص بمعالجة عودة OAuth (`oauthReturn`) موضوعاً **داخل** جسم دالة `load`
+(async، ممرَّرة إلى `useCallback`)، بدل المستوى الأعلى للمكوّن. وهذا انتهاك لقواعد React
+Hooks، و`load` تُستدعى عند كل زيارة للصفحة عبر `useEffect(() => { void load(); }, [load])`،
+فيرمي React وقت التشغيل: **«Invalid hook call. Hooks can only be called inside of the body
+of a function component»** ويعطّل صفحة «مركز ربط المنصات» (صفحة ربط YouTube).
+
+**السبب الجذري لعدم الالتقاط:** `npm run lint` = `tsc --noEmit` فقط، **لا يوجد ESLint
+config** ولا `eslint-plugin-react-hooks`، فهذا النوع لا يُكتشف إلا وقت التشغيل.
+
+**الإصلاح:** نُقل `useEffect` إلى المستوى الأعلى بعد إغلاق `load` مباشرةً، بنفس السلوك
+الوظيفي بالضبط (قراءة `oauthReturn`، `showToast`، `clearOauthReturn()`، ثم `void load()`).
+فحص `react-hooks/rules-of-hooks` على كامل المستودع (تشغيل مؤقت لـESLint في `/tmp`) = **0
+مخالفات**؛ هذه كانت الوحيدة. (8 تحذيرات `exhaustive-deps` فقط، ليست أخطاء.)
+
+**الدليل الحقيقي (متصفح حقيقي، لا افتراض):** اختبار Playwright جديد
+`engine/e2e/platform-connection.e2e.spec.ts` (يُشغَّل بـ`npm run test:e2e`) يفتح الصفحة
+ويؤكد تصييرها وغياب خطأ الخطافات في الكونسول:
+- على الكود المكسور: **يفشل** ويُظهر نص الخطأ الحقيقي «Invalid hook call…».
+- على الكود المُصلَح: **يمر** (PAGE_HEADING_VISIBLE=true، HOOK_ERRORS=[]، PAGE_ERRORS=[]).
+- إثبات إضافي على **البناء المنشور** (`dist/server.cjs` بعد `npm run build`): تصيير سليم
+  بلا أي خطأ React (سجل الكونسول نظيف؛ الـ404 الوحيد هو `/favicon.ico` غير المؤذِ).
+
+**فجوة مصاحبة أُغلقت:** `walkProjectSource` في `tools/dr/source-bundle.mjs` كان يستبعد
+`dist/build/coverage/.git` لكن **لا** `test-results`/`playwright-report` (مخرجات Playwright
+المُتجاهَلة في Git)، فكان وجودها يجعل بصمة الشجرة في `dr.source.bundle.test.ts` لا تطابق
+البيان فيفشل الاختبار. أُضيف المجلدان إلى `NON_SOURCE_DIRS`.
+
+**حرّاس `final-audit` (1302 فحصاً، +5):** `platform-connection-no-hook-in-load` (يفشل على
+الكود المكسور التاريخي — مُثبت)، `platform-connection-oauth-effect-top-level`،
+`platform-connection-hooks-e2e`، `platform-connection-hooks-e2e-wired`،
+`dr-source-walk-excludes-playwright-artifacts`.
+
+**النشر:** دُمج على `main` (merge `3634827`)، ونُشر على Render (autoDeploy) — تأكّد حياً
+`deploy.commit=3634827` **وتغيّر بصمة أصول الواجهة** (`index-VnD0bQKQ.js` →
+`index-DhwoGX2g.js`)، وهو دليل سلوكي لا يعتمد على الحقل النصي وحده.
+
+**ملاحظة منفصلة (لم تُعالَج — تحتاج قرار المالك):** البناء المنشور على Render يخدم
+**React development** (الحزمة تحمل `react.development` وبلا `react.production`، وحجمها
+~1.16MB مقابل ~680KB للبناء الإنتاجي المحلي). السبب: `Dockerfile` يضبط
+`ENV NODE_ENV=development` في مرحلة البناء (السطر 7)، فـvite يختار فرع development.
+الأثر: تحذيرات React الإنتاجية + حجم أكبر + أداء أبطأ. `render.yaml` يقول `runtime: node`
+لكن الخدمة مضبوطة فعلياً على Docker (يُثبت بتطابق بصمة المصدر لمجموعة ملفات الصورة).
+هذا إعداد نشر لا يمسّه إصلاح الخطافات، ويُترك لقرار المالك.
+
