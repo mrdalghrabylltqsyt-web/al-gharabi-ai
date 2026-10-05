@@ -181,7 +181,7 @@ export function resolveBuildCommit(rootDir = process.cwd(), env = process.env, o
 }
 
 // مجلدات غير مصدرية تُقلَّم في مسار المشي (احتياطي عند غياب Git زمن البناء).
-const NON_SOURCE_DIRS = new Set(['node_modules', 'dist', 'build', 'coverage', '.git', '.gharabi-backups']);
+const NON_SOURCE_DIRS = new Set(['node_modules', 'dist', 'build', 'coverage', '.git', '.gharabi-backups', 'test-results', 'playwright-report']);
 
 /**
  * يمشي على شجرة المشروع كبديل احتياطي عند غياب Git زمن البناء.
