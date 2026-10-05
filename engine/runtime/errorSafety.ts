@@ -40,12 +40,24 @@ export function shouldExposeErrorMessage(env: NodeJS.ProcessEnv): boolean {
   return env.NODE_ENV !== 'production';
 }
 
-const SECRET_PATTERNS: RegExp[] = [
+/**
+ * أنماط **قيم** سرّية داخل نص حر (رسالة خطأ/سجل). تشمل أسماء الحقول متبوعة بفاصل
+ * وقيمة: access/refresh/id token، client_secret، والمجرّد `token`/`secret`، وكذلك
+ * cookie/session/credential/api_key/authorization/password/otp. مصدر واحد للمشروع.
+ */
+export const SECRET_TEXT_PATTERNS: RegExp[] = [
   /bearer\s+[a-z0-9._-]+/gi,
-  /(access_token|refresh_token|client_secret|api[_-]?key|authorization|password|otp)\s*[=:]\s*[^\s,;"']+/gi,
+  /(access_token|refresh_token|id_token|client_secret|token|secret|api[_-]?key|apikey|authorization|password|passwd|otp|cookie|session|credential)\s*[=:]\s*[^\s,;"']+/gi,
   /\b[a-f0-9]{32,}\b/gi,
   /\b[A-Za-z0-9_-]{40,}\b/g,
 ];
+
+/**
+ * نمط موحّد لكشف **أسماء المفاتيح** التي قد تحمل قيمة سرّية، فيُسقط المفتاح كاملاً
+ * من أي كائن قبل الحفظ/العرض. مصدر واحد يستخدمه كلٌّ من تنقية سياق/مخرَج العقل
+ * المركزي (`orchestrator`) وتنقية النصوص هنا، فلا تتباعد قائمتان مستقبلاً.
+ */
+export const SECRET_KEY_RE = /(token|secret|password|passwd|otp|key|credential|authorization|cookie|session|code_verifier|api_?key)/i;
 
 /**
  * تنقية نص (رسالة خطأ) من أي قيمة تشبه سرّاً قبل تسجيله أو إعادته. دفاع في العمق:
@@ -53,7 +65,7 @@ const SECRET_PATTERNS: RegExp[] = [
  */
 export function redactSecretsFromText(text: string): string {
   let out = String(text ?? '');
-  for (const re of SECRET_PATTERNS) out = out.replace(re, '[redacted]');
+  for (const re of SECRET_TEXT_PATTERNS) out = out.replace(re, '[redacted]');
   return out;
 }
 

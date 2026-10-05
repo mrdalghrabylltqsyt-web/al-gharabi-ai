@@ -4,14 +4,20 @@
 # عملية واحدة) لتعمل على أي مستضيف يحقن PORT ويشغّل Express.
 FROM node:20-slim AS build
 WORKDIR /app
-ENV NODE_ENV=development
+# NODE_ENV=production هنا ضروري ليبني Vite حزمة الواجهة بوضع الإنتاج (Vite يحترم
+# NODE_ENV المضبوطة مسبقاً، فمع development يختار فرع React التطويري غير المصغّر).
+# لا يؤثر على تثبيت الاعتماديات: npm ci يُثبّت devDependencies (vite/esbuild) دائماً،
+# و--include=dev يجعل ذلك صريحاً ومحصّناً ضد أي تغيّر مستقبلي في سلوك npm.
+ENV NODE_ENV=production
 # git مطلوب **زمن البناء** فقط: تبني حزمة المصدر الموثوقة من الشجرة المتتبَّعة
 # (`git ls-files`) وتربطها بالـcommit (`git rev-parse HEAD`). الصورة النهائية بلا git.
 RUN apt-get update && apt-get install -y --no-install-recommends git \
     && rm -rf /var/lib/apt/lists/*
 # الاعتماديات أولاً ليبقى هذا الملف الطبقي مُخزَّناً بين البناءات.
 COPY package.json package-lock.json ./
-RUN npm ci --no-audit --no-fund
+# --include=dev صريح: مرحلة البناء تحتاج vite/esbuild/typescript (devDependencies)
+# رغم NODE_ENV=production، فلا نعتمد على سلوك npm الافتراضي القابل للتغيّر.
+RUN npm ci --include=dev --no-audit --no-fund
 COPY . .
 # vite build ثم حزمة المصدر الموثوقة ثم تجميع server.ts إلى dist/server.cjs.
 RUN npm run build

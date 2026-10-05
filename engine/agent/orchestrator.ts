@@ -14,6 +14,7 @@
 import { buildAgentPlan, normalizeTask, type AgentPlan, type AgentPlanKind, type AgentArgRef } from './planner';
 import { getAgentTool, type AgentToolContext, type AgentToolResult } from './tools';
 import { canUseTool, toolRequiresApproval, type AgentOperator } from './permissions';
+import { SECRET_KEY_RE } from '../runtime/errorSafety';
 
 export type AgentTaskStatus =
   | 'queued'
@@ -410,7 +411,6 @@ function buildResultSummary(task: AgentTaskRecord): string {
 }
 
 /** يُسقط أي مفاتيح/قيم تبدو سرّية من لقطة السياق (منع تسريب الأسرار في السجل). */
-const SECRET_KEY_RE = /(token|secret|password|passwd|otp|key|credential|authorization|cookie|code_verifier|api_?key)/i;
 function sanitizeContext(context: Record<string, any> | undefined): Record<string, any> | null {
   if (!context || typeof context !== 'object') return null;
   const out: Record<string, any> = {};

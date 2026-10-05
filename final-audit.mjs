@@ -3056,6 +3056,71 @@ add('watcher-advisory-not-authority',
     /test-results/.test(hookDrBundleSrc) && /playwright-report/.test(hookDrBundleSrc),
     'مشي المصدر يستبعد مخرجات Playwright فلا تفشل حزمة المصدر عند وجودها');
 
+  // ------------------------------------------------------------
+  // الدفعة الأخيرة (تحسينات غير حرجة): حرّاس انحدار.
+  // ------------------------------------------------------------
+  // 1) Dockerfile: مرحلة البناء تبني الواجهة بوضع الإنتاج (Vite يحترم NODE_ENV)،
+  //    مع --include=dev الصريح كي لا تُسقَط devDependencies رغم NODE_ENV=production.
+  const docker = read('Dockerfile');
+  const buildStage = docker.slice(docker.indexOf('AS build'), docker.indexOf('AS runtime'));
+  add('docker-build-nodeenv-production',
+    /ENV NODE_ENV=production/.test(buildStage) && !/ENV NODE_ENV=development/.test(buildStage) && /npm ci --include=dev/.test(buildStage),
+    'مرحلة البناء تضبط NODE_ENV=production وتُثبّت devDependencies صراحةً (--include=dev)');
+  add('docker-runtime-nodeenv-production',
+    /ENV NODE_ENV=production/.test(docker.slice(docker.indexOf('AS runtime'))),
+    'مرحلة التشغيل تبقى NODE_ENV=production');
+
+  // 2) توحيد كشف الأسرار: مصدر واحد (SECRET_KEY_RE) + أنماط نص موسّعة.
+  const errorSafety = read('engine/runtime/errorSafety.ts');
+  const orchestrator = read('engine/agent/orchestrator.ts');
+  add('error-safety-secret-source-unified',
+    /export const SECRET_KEY_RE = /.test(errorSafety) && /export const SECRET_TEXT_PATTERNS/.test(errorSafety) &&
+    orchestrator.includes("import { SECRET_KEY_RE } from '../runtime/errorSafety'") && !/^const SECRET_KEY_RE =/m.test(orchestrator),
+    'SECRET_KEY_RE مصدر واحد في errorSafety يستورده orchestrator (لا قائمتان تتباعدان)');
+  add('error-safety-secret-patterns-expanded',
+    /cookie/.test(errorSafety) && /session/.test(errorSafety) && /credential/.test(errorSafety) && /\|token\|secret\|/.test(errorSafety),
+    'أنماط الأسرار تشمل cookie/session/credential وtoken/secret المجرّدين');
+
+  // 3) إسقاط مقاطع الجمهور بحقول النوع الحقيقي + بلا any.
+  const runtimeBrainSrc = read('engine/brain/runtime.ts');
+  add('brain-audience-projection-real-fields',
+    runtimeBrainSrc.includes('function projectAudienceSegment(s: AudienceSegment)') && !/\.map\(\(s: any\)/.test(runtimeBrainSrc) &&
+    /audienceSegments: \(built\.state\.audience\?\.segments \|\| \[\]\)\.slice\(0, 6\)\.map\(projectAudienceSegment\)/.test(runtimeBrainSrc),
+    'إسقاط المقاطع مطابق للنوع الحقيقي (label/sampleSize/confidence) وبلا any — لا إفراغ صامت');
+  add('brain-audience-headlines-use-label',
+    server.includes('dc.audienceSegments.map((s) => `${s.label} (عيّنة ${s.sampleSize})`)'),
+    'مستهلك سياق القرار يقرأ label الحقيقي لا topic المُختلق');
+
+  // 4) معالج فشل ربط المنفذ.
+  add('server-listen-error-handler',
+    /httpServer\.on\("error"/.test(server) && server.includes('EADDRINUSE') && server.includes('المنفذ ${PORT} مستخدم بالفعل'),
+    'app.listen يملك معالج error يفسّر EADDRINUSE وينهي العملية بفشل صريح');
+
+  // 5) معرّف العميل تجزئة أحادية الاتجاه.
+  add('customer-id-irreversible-hash',
+    /function customerPublicId\(key:string\)\{ return `cust_\$\{crypto\.createHash\('sha256'\)/.test(server) &&
+    !/cust_\$\{Buffer\.from\(key\)\.toString\('base64url'\)/.test(server),
+    'معرّف العميل تجزئة SHA-256 أحادية الاتجاه (لا base64url قابل للعكس إلى رقم الهاتف)');
+
+  // 6) مكوّنات ERP القديمة lazy (code splitting) لا استيراداً ثابتاً.
+  const legacyNames = ['ExecutiveCommandView', 'BusinessSuiteView', 'FinanceView', 'InventoryView', 'ReportsView', 'OperationsView'];
+  add('app-legacy-erp-lazy',
+    legacyNames.every((n) => new RegExp(`const ${n} = lazy\\(\\(\\) => import\\('\\./components/`).test(app) && !new RegExp(`import \\{ ${n} \\}`).test(app)) &&
+    app.includes("case 'finance': return <FinanceView />"),
+    'مكوّنات ERP القديمة تُحمَّل عند الطلب (لا تثقل الحزمة) مع بقاء حالات التنقّل');
+
+  // 7) شاشة الدخول: لا بريد مالك حقيقي.
+  const loginView = read('src/components/auth/LoginView.tsx');
+  add('login-no-real-owner-email',
+    !loginView.includes('mrdalghrabylltqsyt') && loginView.includes('example@domain.com'),
+    'LoginView لا يعرض بريد المالك الحقيقي (placeholder عام)');
+
+  // 8) AGENTS.md: عدد فحوصات final-audit مطابق للفعلي (يُعَدّ من نص الملف نفسه).
+  const auditCount = (read('final-audit.mjs').match(/^\s*add\(/gm) || []).length;
+  add('agents-audit-count-accurate',
+    read('AGENTS.md').includes(`final-audit.mjs (${auditCount} فحصاً)`),
+    `AGENTS.md يذكر العدد الفعلي لفحوصات final-audit (${auditCount})`);
+
   const failed = checks.filter(x => !x.ok);
 console.table(checks);
 if (failed.length) {

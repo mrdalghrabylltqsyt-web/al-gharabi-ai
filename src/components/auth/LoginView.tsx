@@ -243,14 +243,14 @@ export const LoginView: React.FC = () => {
                       required
                       value={email}
                       onChange={(e) => setEmail(e.target.value)}
-                      placeholder="mrdalghrabylltqsyt@gmail.com"
+                      placeholder="example@domain.com"
                       dir="ltr"
                       className="w-full px-3.5 py-2.5 pl-10 rounded-xl bg-slate-950 border border-slate-800 text-white placeholder-slate-600 text-xs focus:outline-none focus:border-emerald-500 transition"
                     />
                     <Mail className="w-4 h-4 text-slate-500 absolute left-3 top-3" />
                   </div>
                   <p className="text-[11px] text-slate-500">
-                    بريد المالك الوحيد حالياً: mrdalghrabylltqsyt@gmail.com
+                    أدخل بريد المالك المعتمد لإرسال رمز التحقق.
                   </p>
                 </div>
 
