@@ -1559,17 +1559,24 @@ function envSecret(name: string): string | undefined {
  */
 function loginConfigIdFor(platform: string): string | null { return resolveLoginConfigId(platform, process.env); }
 /**
- * مفتاح تجاوز صريح للحجب عند رصد Business Login بلا config_id.
+ * بوابة الحجب عند رصد Business Login بلا config_id.
  *
- * سبب الوجود: قاعدة «لا حجب بلا إثبات» تمنع حجباً مزمناً عند احتمال أن بعض
- * تطبيقات Business تغطّي الصلاحيات في Use Case وتقبل scope. حين يكون دليل الرفض
- * المتوقع قوياً (Business Login + بلا config_id) نُوقف افتراضياً بإجراء دقيق،
- * ونوفّر هذا المفتاح كي يُكمل المالك بلا تعديل كود إن ثبت أن متطلبه يُوفَّر بطريقة
- * أخرى (تطوير/Use Case). الافتراضي: الحجب. الضبط بـtrue/1/on/yes يعطّله.
+ * تصحيح جذر (2026-10-05): كان الافتراضي **الحجب**، وكان يُطلق عند أي علم
+ * `is_business_login=1` من فحص Meta الحي. لكن الفحص الحي أثبت أن `is_business_login=1`
+ * هو **السلوك الطبيعي لكل تطبيق** يطلب صلاحيات أعمال/صفحات (يظهر أيضاً لتطبيقات
+ * مرجعية كلاسيكية مثل 145634995501895)، بينما يظهر `0` فقط عند طلب صلاحيات
+ * استهلاكية (`public_profile`/`email`) أو بلا scope. أي أن العلم **لا يعني** أن
+ * التطبيق من نوع Business ولا أن Configuration مطلوباً — فالحجب المبني عليه كان
+ * **إيجاباً كاذباً** يمنع ربط أي تطبيق كلاسيكي يطلب صلاحيات صفحات.
+ *
+ * لذلك صار الافتراضي **السماح** (تمرير scope)، مع إمكانية استعادة الحجب الصارم
+ * بمفتاح صريح `META_ALLOW_SCOPE_WITHOUT_CONFIG=false` (أو 0/off/no) لمن يثبت لديه
+ * فعلاً أن تطبيقه Business ويلزمه config_id. القيم true/1/on/yes (أو أي قيمة أخرى)
+ * تُبقي السماح. لا سرّ في هذا المفتاح ولا يغيّر أي صلاحية أو اتصال.
  */
 function metaScopeWithoutConfigOverride(): boolean {
   const raw = String(process.env.META_ALLOW_SCOPE_WITHOUT_CONFIG ?? "").trim().toLowerCase();
-  return raw === "true" || raw === "1" || raw === "on" || raw === "yes";
+  return !(raw === "false" || raw === "0" || raw === "off" || raw === "no");
 }
 /**
  * Configuration ID **المُطبَّق فعلاً** في رابط التفويض (قد يكون null رغم ضبط
@@ -3615,13 +3622,13 @@ app.get("/api/platforms/:platform/oauth/start", requireOwner, async (req,res)=>{
         metaSetupHint: { appDomainsValue: urlInfo.host && !isLocalHost(urlInfo.host) ? `https://${urlInfo.host}` : null, redirectUri: callbackUrl, note: "طابق App ID وApp Domains وValid OAuth Redirect URIs، وتأكد أن كل صلاحية مطلوبة مفعّلة في Use Case أو Configuration ID." },
       });
     }
-    // فصل صريح أثبتته استجابة Meta الحيّة: في تطبيق من نوع Business، إرسال
-    // `scope` (بلا config_id) يجعل Meta تسلك **Business Login** (is_business_login=1)،
-    // وهذه الواجهة تقرأ الصلاحيات من Configuration عبر config_id لا من scope، فيعرض
-    // الحوار بعد تسجيل الدخول «Sorry, something went wrong» بلا إرجاع رمز. الفحص
-    // رصد هذه الواجهة فعلاً ⇒ نتوقف بإجراء دقيق بدل إرسال المالك إلى صفحة فشل مضمونة.
-    // لا نحجب عند businessLoginSurface=null (تعذّر الفحص) ولا عند Business Login **مع**
-    // config_id (هو التصحيح نفسه).
+    // فصل صريح: `is_business_login=1` هو السلوك الطبيعي لأي تطبيق يطلب صلاحيات
+    // أعمال/صفحات (يظهر أيضاً لتطبيقات كلاسيكية مرجعية)، و`0` عند صلاحيات استهلاكية
+    // أو بلا scope — فالعلم **لا يعني** أن التطبيق Business ولا أن Configuration
+    // مطلوب. لذلك لم يعد الحجب الافتراضي: نمرّر scope ونكمل الربط، ويبقى الحجب
+    // الصارم متاحاً بمفتاح `META_ALLOW_SCOPE_WITHOUT_CONFIG=false` لمن يثبت لديه
+    // أن تطبيقه Business ويلزمه config_id. (كان الحجب الافتراضي إيجاباً كاذباً
+    // يمنع ربط أي تطبيق كلاسيكي يطلب صلاحيات صفحات.)
     if (dialogProbe.businessLoginSurface === true && !loginConfigId && !metaScopeWithoutConfigOverride()) {
       logOAuthStart(platform, { outcome: "business_login_without_config", businessLoginSurface: true, loginConfigIdConfigured: preflight.loginConfig?.configured ?? false, redirectUri: callbackUrl, domain: urlInfo.host, scopeCount: scopes.length });
       const result: OAuthStartPreflight = {

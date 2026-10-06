@@ -664,11 +664,12 @@ async function integrationTests(): Promise<void> {
 
     // واجهة الدخول التي تختارها Meta (is_business_login). الفحص بلا كوكيز يتوقّف
     // عند شاشة الدخول فلا يرى ما بعدها، لكنه يثبت أي واجهة اختارتها Meta.
-    // الجذر المُثبت حياً: تطبيق Business يوجّه الحوار الذي يحمل `scope` (بلا
-    // config_id) إلى واجهة Business Login التي تقرأ الصلاحيات من Configuration،
-    // فيعرض «حدث خطأ ما» بعد الدخول بلا إرجاع رمز. لذلك نُوقف افتراضياً بإجراء
-    // دقيق بدل إرسال المالك إلى فشل مضمون، مع مفتاح تجاوز صريح إن ثبت خلاف ذلك.
-    group('23) تكامل: Business Login بلا config_id يُحجب بإجراء دقيق (Instagram)');
+    // تصحيح جذر (2026-10-05): الفحص الحي أثبت أن `is_business_login=1` هو السلوك
+    // الطبيعي لأي تطبيق يطلب صلاحيات أعمال/صفحات (يظهر أيضاً لتطبيقات كلاسيكية
+    // مرجعية مثل 145634995501895)، و`0` عند صلاحيات استهلاكية أو بلا scope — فلا
+    // يعني أن Configuration مطلوب. لذلك **الافتراضي صار تمرير scope** (بلا حجب)،
+    // ويبقى الحجب الصارم متاحاً بمفتاح `META_ALLOW_SCOPE_WITHOUT_CONFIG=false`.
+    group('23) تكامل: علم Business Login لا يحجب افتراضياً، والحجب الصارم بمفتاح صريح (Instagram)');
     await stop(currentApp.proc);
     const bizMock = await startInstagramMockServer(IG_PORT + 6, createInstagramMock({ dialogOutcome: 'business_login_surface' }));
     currentApp = startApp(bizMock.base);
@@ -676,23 +677,24 @@ async function integrationTests(): Promise<void> {
     Object.assign(auth, await login());
     const bizStart = await fetch(`${BASE}/api/platforms/instagram/oauth/start`, { headers: auth });
     const bizBody: any = await bizStart.json();
-    check('Business Login بلا config_id => 409 بدل فشل مضمون', bizStart.status === 409 && bizBody.code === 'META_BUSINESS_LOGIN_REQUIRES_CONFIG_ID', `status=${bizStart.status} code=${bizBody.code}`);
-    check('الاستجابة تُعلن واجهة Business Login التي تسلكها Meta', bizBody.businessLoginSurface === true, `surface=${bizBody.businessLoginSurface}`);
-    check('لا يُعاد رابط تفويض عند الحجب', !bizBody.authorizationUrl);
-    check('التوجيه يسمّي متغيّر البيئة المطلوب', Array.isArray(bizBody.loginConfigEnvNames) && bizBody.loginConfigEnvNames.includes('INSTAGRAM_LOGIN_CONFIG_ID'));
-    check('التوجيه يحمل الصلاحيات المطلوبة للConfiguration', Array.isArray(bizBody.scopes) && bizBody.scopes.length >= 6);
-    check('التوجيه يحمل رابط الإعداد', typeof bizBody.setupUrl === 'string' && bizBody.setupUrl.endsWith('/api/platforms/instagram/oauth/setup'));
-    check('الحجب بلا أي سرّ', !JSON.stringify(bizBody).includes('test-fb-client-secret'));
+    check('الافتراضي يمرّر scope بلا حجب (200 مع رابط تفويض)', bizStart.status === 200 && typeof bizBody.authorizationUrl === 'string', `status=${bizStart.status}`);
+    check('الاستجابة ما زالت تُعلن واجهة Business Login للتشخيص', bizBody.businessLoginSurface === true, `surface=${bizBody.businessLoginSurface}`);
+    check('مصدر الصلاحيات من scope عند عدم وجود config_id', bizBody.permissionSource === 'oauth_scope_parameter', `src=${bizBody.permissionSource}`);
+    check('الرد بلا أي سرّ', !JSON.stringify(bizBody).includes('test-fb-client-secret'));
 
-    // المفتاح الصريح META_ALLOW_SCOPE_WITHOUT_CONFIG يسمح بالإكمال بلا تعديل كود.
+    // الحجب الصارم يُستعاد صراحةً بـMETA_ALLOW_SCOPE_WITHOUT_CONFIG=false.
     await stop(currentApp.proc);
-    currentApp = startApp(bizMock.base, { META_ALLOW_SCOPE_WITHOUT_CONFIG: 'true' });
-    check('الخادم يقلع بمفتاح التجاوز', await waitForHealth(), currentApp.log().slice(0, 300));
+    currentApp = startApp(bizMock.base, { META_ALLOW_SCOPE_WITHOUT_CONFIG: 'false' });
+    check('الخادم يقلع بوضع الحجب الصارم', await waitForHealth(), currentApp.log().slice(0, 300));
     Object.assign(auth, await login());
-    const bypassStart = await fetch(`${BASE}/api/platforms/instagram/oauth/start`, { headers: auth });
-    const bypassBody: any = await bypassStart.json();
-    check('مفتاح التجاوز يعيد رابط التفويض (200)', bypassStart.status === 200 && typeof bypassBody.authorizationUrl === 'string', `status=${bypassStart.status}`);
-    check('التجاوز ما زال يُعلن واجهة Business Login للتشخيص', bypassBody.businessLoginSurface === true);
+    const strictStart = await fetch(`${BASE}/api/platforms/instagram/oauth/start`, { headers: auth });
+    const strictBody: any = await strictStart.json();
+    check('الحجب الصارم: Business Login بلا config_id => 409', strictStart.status === 409 && strictBody.code === 'META_BUSINESS_LOGIN_REQUIRES_CONFIG_ID', `status=${strictStart.status} code=${strictBody.code}`);
+    check('لا يُعاد رابط تفويض عند الحجب الصارم', !strictBody.authorizationUrl);
+    check('التوجيه يسمّي متغيّر البيئة المطلوب', Array.isArray(strictBody.loginConfigEnvNames) && strictBody.loginConfigEnvNames.includes('INSTAGRAM_LOGIN_CONFIG_ID'));
+    check('التوجيه يحمل الصلاحيات المطلوبة للConfiguration', Array.isArray(strictBody.scopes) && strictBody.scopes.length >= 6);
+    check('التوجيه يحمل رابط الإعداد', typeof strictBody.setupUrl === 'string' && strictBody.setupUrl.endsWith('/api/platforms/instagram/oauth/setup'));
+    check('الحجب بلا أي سرّ', !JSON.stringify(strictBody).includes('test-fb-client-secret'));
     await bizMock.stop();
 
     // config_id (مسار Facebook Login for Business العام) ينقل Meta إلى الواجهة

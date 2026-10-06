@@ -44,7 +44,7 @@ npm install
 npm run dev            # tsx server.ts
 npm run lint           # tsc --noEmit
 npm run build          # vite build + esbuild server.ts -> dist/server.cjs
-npm run final-audit    # node final-audit.mjs (1326 فحصاً)
+npm run final-audit    # node final-audit.mjs (1327 فحصاً)
 npm test               # storage + engine + auth + ... + db + runtime
 ```
 - التشغيل الإنتاجي: `PORT=4517 NODE_ENV=production APP_URL=http://localhost:4517 node dist/server.cjs`
@@ -3837,3 +3837,49 @@ Security/QA/Reliability. الأساس سليم (المصادقة/التوقيع�
 ### أخطاء منصّة خارجية (EXTERNAL BLOCKER — ليست كوداً)
 - نشر TikTok URL-prefix (`Something went wrong`) وربط Meta OAuth: توقفا عند إعدادات
   لوحة المزوّد (App Domains / Redirect URIs / Use Cases / رول الصفحة) لا الكود.
+
+## تصحيح جذر: علم `is_business_login=1` كان يمنع ربط فيسبوك الكلاسيكي (2026-10-05)
+
+**الدليل الحي (بلا تخمين، طلبات GET read-only على `www.facebook.com/v21.0/dialog/oauth`
+بوكيل جوال، بلا تسجيل دخول):**
+
+| الطلب | استجابة Meta |
+|---|---|
+| تطبيقنا `1060341853401123` + `scope=pages_show_list` | `is_business_login=1` |
+| تطبيق مرجعي كلاسيكي `145634995501895` + `scope=pages_show_list` | `is_business_login=1` |
+| تطبيق مرجعي `124024574287414` / `442224939723604` + صلاحية صفحة | `is_business_login=1` |
+| تطبيقنا + `scope=public_profile` أو `email` | `is_business_login=0` |
+| تطبيقنا بلا `scope` إطلاقاً | `is_business_login=0` |
+
+**النتيجة القاطعة:** `is_business_login=1` هو **السلوك الطبيعي لكل تطبيق يطلب صلاحيات
+أعمال/صفحات** (يظهر أيضاً لتطبيقات مرجعية كلاسيكية مؤكدة)، و`0` فقط عند صلاحيات
+استهلاكية أو بلا scope. فهو **لا يعني** أن التطبيق من نوع Business ولا أن
+`config_id` مطلوباً.
+
+**العطل الحقيقي:** الكود كان يحجب ربط Facebook/Instagram بـ**409
+`META_BUSINESS_LOGIN_REQUIRES_CONFIG_ID`** متى رصد `businessLoginSurface===true`
+(أي `is_business_login=1`) بلا `config_id`. وبما أن أي تطبيق يطلب صلاحيات صفحات يعطي
+هذا العلم، فقد كان الحجب **إيجاباً كاذباً** يمنع ربط **أي** تطبيق كلاسيكي — ومنه
+تطبيقنا الذي لا يملك منتج «Facebook Login for Business» أصلاً، فاستحال إنشاء
+`config_id`. ونتيجةً لذلك لم يُنفَّذ الربط الحقيقي إطلاقاً.
+
+**الإصلاح (بلا كسر أي حارس):**
+- `server.ts`: `metaScopeWithoutConfigOverride()` صار الافتراضي فيها **السماح**
+  (`return !(raw === "false" || raw === "0" || raw === "off" || raw === "no")`)، أي
+  تمرير `scope` وإكمال الربط. الحجب الصارم يبقى متاحاً صراحةً بـ
+  `META_ALLOW_SCOPE_WITHOUT_CONFIG=false` لمن يثبت لديه أن تطبيقه Business فعلاً
+  ويلزمه `config_id`.
+- لم يُمسّ أي شيء آخر: فحص الحوار `probeMetaDialog`، `businessLoginSurface` (يبقى
+  للتشخيص في الرد)، `config_id` عند وجوده، سلامة المحتوى، منع التكرار، حارس الصلاحيات.
+- `render.yaml` و`.env.example`: توثيق أن الافتراضي تمرير `scope` وأن `false` يعيد الحجب.
+- `final-audit.mjs`: فحص جديد `meta-business-login-default-allows-scope` + تحديث
+  وصف فحصي الحجب/المفتاح. `engine/tests/instagram.connector.test.ts` المجموعة 23
+  أُعيدت صياغتها: الافتراضي 200 بلا حجب، والحجب الصارم 409 عند `...=false`.
+
+اختبارات: `test:instagram` = 216 فحصاً · `test:facebook` = 231 · `npm run lint` ✅ ·
+`npm run build` ✅ · `npm test` ✅ · `final-audit` = 1327 فحصاً.
+
+**درس عام:** لا تُبنَ بوابة حجب على علم عام من المزوّد (مثل `is_business_login`) بلا
+إثبات أنه **خاص** بالتطبيق؛ يجب مقارنته بتطبيق مرجعي. وإلا صار الحارس نفسه سبب التعطّل.
+وقاعدة المشروع الملزمة («لا حجب بلا إثبات») تعني إثباتاً **مميَّزاً** لا علماً يظهر عند
+الجميع.
