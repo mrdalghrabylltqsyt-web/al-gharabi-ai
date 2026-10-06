@@ -86,7 +86,7 @@ const OAuthSetupPanel: React.FC<{ platform: string }> = ({ platform }) => {
           {info.dialogPhase && (
             <p className="text-slate-400">
               موضع الفحص: {info.dialogPhase === 'rejected_before_login' ? 'رُفض قبل تسجيل الدخول'
-                : info.dialogPhase === 'awaiting_owner_login' ? 'توقّف عند شاشة الدخول — الرفض (إن وُجد) يقع بعد الدخول: لتطبيق Business اضبط Configuration ID (config_id)، وفعّل الصلاحيات في Use Case'
+                : info.dialogPhase === 'awaiting_owner_login' ? 'توقّف عند شاشة الدخول — الفحص بلا كوكيز لا يرى ما بعدها. إن ظهر «حدث خطأ ما» بعد الدخول فتحقّق من تفعيل الصلاحيات في Use Case، أو اضبط Configuration ID (config_id) إن كان تطبيقك Business'
                 : info.dialogPhase === 'probe_unavailable' ? 'تعذّر الفحص (شبكة)'
                 : 'لا رفض مُرصود'}
             </p>
@@ -118,8 +118,8 @@ const OAuthSetupPanel: React.FC<{ platform: string }> = ({ platform }) => {
             {info.loginConfigIdUsed ? 'config_id مُفعَّل (يُرسَل بدل scope)' : info.loginConfigIdConfigured ? 'config_id مضبوط لكن غير صالح' : 'config_id غير مضبوط (يُستخدم scope)'}
           </span>
           {!info.loginConfigIdUsed && (
-            <p className="text-amber-200">
-              إن كان تطبيق Meta من نوع Business فالحوار يُوجَّه إلى Business Login الذي يقرأ الصلاحيات من Configuration لا من scope، فتظهر صفحة «حدث خطأ ما» <span className="font-bold">بعد</span> تسجيل الدخول. الحل المُثبت: أنشئ Configuration واضبط معرّفها في <code dir="ltr" className="text-amber-100">{info.loginConfigIdEnvNames?.[0]}</code>.
+            <p className="text-slate-400">
+              الافتراضي يمرّر <code dir="ltr" className="text-slate-300">scope</code> ويكمل الربط — وهو الصحيح لتطبيق Facebook Login كلاسيكي. إن كان تطبيقك من نوع Business فعلاً وظهرت «حدث خطأ ما» بعد تسجيل الدخول، أنشئ Configuration واضبط معرّفها في <code dir="ltr" className="text-slate-200">{info.loginConfigIdEnvNames?.[0]}</code>، أو استعد الحجب الصارم بمفتاح <code dir="ltr" className="text-slate-200">META_ALLOW_SCOPE_WITHOUT_CONFIG=false</code>.
             </p>
           )}
           {Array.isArray(info.loginConfigIdProblems) && info.loginConfigIdProblems.length > 0 && (

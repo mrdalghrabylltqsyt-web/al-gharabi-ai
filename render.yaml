@@ -149,9 +149,12 @@ services:
       # Configurations. Never put the value in the repository or logs.
       - key: INSTAGRAM_LOGIN_CONFIG_ID
         sync: false
-      # Optional explicit bypass of the "Business Login requires config_id" block.
-      # Leave unset (safe default: block with an actionable 409). Set to "true"
-      # only if Meta is proven to cover the permissions via the Use Case instead.
+      # Facebook Login routing: `is_business_login=1` is Meta's NORMAL flag whenever
+      # business/Page permissions are requested (it also appears for classic
+      # reference apps); it does NOT mean the app needs a Configuration. The
+      # default now PASSES scope so classic Facebook Login apps can connect.
+      # Set to "false" to restore the strict block (409) when a Business app is
+      # proven to require config_id. Never put a secret here.
       - key: META_ALLOW_SCOPE_WITHOUT_CONFIG
         sync: false
       # Optional switch for Meta's unified onboarding window (extras=IG_API_ONBOARDING).
