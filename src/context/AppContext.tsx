@@ -536,10 +536,24 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       })
     );
 
-    const changedPost = posts.find((p) => p.id === postId);
-    if (changedPost) {
-      const updatedPost = { ...changedPost, status: newStatus, ...(newStatus === 'scheduled' ? { scheduledFor: scheduleValue ?? changedPost.scheduledFor ?? defaultScheduleInput() } : {}) };
-      void apiService.updateWorkspaceContent(postId, updatedPost as any).catch((err) => showToast(err.message || 'تعذر حفظ حالة المحتوى'));
+    // الاعتماد/الجدولة عمليتان رسميتان محصورتان بالمالك على الخادم؛ نستدعي مساراهما
+    // الرسميين (لا PATCH) فلا يمكن انتحال قرار الاعتماد عبر تعديل الحالة العامة.
+    if (newStatus === 'approved' || newStatus === 'scheduled') {
+      const request = newStatus === 'approved'
+        ? apiService.approveWorkspaceContent(postId, note)
+        : apiService.scheduleWorkspaceContent(postId, scheduleValue || '', note);
+      void request.then((saved: any) => {
+        if (saved) setPosts((prev) => prev.map((p) => (p.id === postId ? { ...p, ...saved } : p)));
+      }).catch(async (err: any) => {
+        showToast(err?.message || 'تعذر تنفيذ العملية على الخادم');
+        await hydrateWorkspace();
+      });
+    } else {
+      const changedPost = posts.find((p) => p.id === postId);
+      if (changedPost) {
+        const updatedPost = { ...changedPost, status: newStatus };
+        void apiService.updateWorkspaceContent(postId, updatedPost as any).catch((err) => showToast(err.message || 'تعذر حفظ حالة المحتوى'));
+      }
     }
 
     const statusNames: Record<PostStatus, string> = {

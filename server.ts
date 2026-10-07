@@ -197,6 +197,7 @@ import { buildReadinessDetails, computeAllPlatformStatuses, computePlatformStatu
 import { inspectPlatformCredentials, CREDENTIAL_SPECS, GLOBAL_CREDENTIALS } from "./engine/social/credentials";
 import { decodeTokenKey, inspectTokenKeyFromEnv } from "./engine/social/tokenKey";
 import { resolvePublicUrl, isLocalHost } from "./engine/social/publicUrl";
+import { canSetContentStatusByRole, canEditContent } from "./engine/social/contentStatusPolicy";
 import {
   siteVerificationFiles,
   verificationFileForPath,
@@ -8789,23 +8790,33 @@ app.post("/api/workspace/content/validate", authenticateToken, (req, res) => {
 
 app.post("/api/workspace/content", authenticateToken, (req, res) => {
   const user = (req as any).user as ServerUser; const b = req.body || {};
+  if (!canEditContent(user.role)) return res.status(403).json({ success: false, error: "لا تملك صلاحية إنشاء المحتوى." });
   const content = cleanText(b.content, 10000); const targets = Array.isArray(b.targetPlatforms) ? [...new Set(b.targetPlatforms.filter((x: any) => SUPPORTED_PLATFORMS.some((p: any) => p.id === x)))].slice(0,10) : [];
   if (!content || !targets.length) return res.status(400).json({ success: false, error: "المحتوى ومنصة واحدة على الأقل مطلوبان." });
   if (/125\s*\/\s*125/i.test(content) || /سيارة|سيارات|\bcars?\b/i.test(content)) return res.status(422).json({ success: false, error: "المحتوى خالف قواعد مشروع الغرابي: لا عدادات قديمة ولا محتوى سيارات." });
-  const post = { id: cleanText(b.id, 100) || workspaceId("post"), title: cleanText(b.title, 160) || "مسودة جديدة", content, platformVersions: b.platformVersions && typeof b.platformVersions === "object" ? b.platformVersions : undefined, targetPlatforms: targets, mediaUrl: cleanText(b.mediaUrl, 500) || undefined, mediaType: ["image","video","carousel"].includes(b.mediaType) ? b.mediaType : undefined, status: ["draft","review","edited","approved","scheduled","published"].includes(b.status) ? b.status : "draft", scheduledFor: normalizeScheduleInput(b.scheduledFor) ?? undefined, publishedAt: cleanText(b.publishedAt, 80) || undefined, createdAt: cleanText(b.createdAt, 80) || new Date().toISOString(), authorId: user.id, authorName: cleanText(b.authorName, 160) || user.name, authorRole: cleanText(b.authorRole, 40) || user.role, history: Array.isArray(b.history) ? b.history.slice(-50) : [], metrics: b.metrics && typeof b.metrics === "object" ? b.metrics : undefined, tags: Array.isArray(b.tags) ? b.tags.filter((x:any)=>typeof x === "string").slice(0,20) : [], campaignName: cleanText(b.campaignName, 160) };
+  // سياسة حالة واحدة: لا يُسمح بإنشاء منشور بحالة approved/scheduled (مسار المالك) أو published (يتطلب إثبات مزود).
+  const desiredStatus = b.status === undefined ? "draft" : String(b.status);
+  const statusDecision = canSetContentStatusByRole(user.role, desiredStatus);
+  if (!statusDecision.allowed) return res.status(statusDecision.code === "PUBLISHED_REQUIRES_PROVIDER_PROOF" ? 409 : 403).json({ success: false, code: statusDecision.code, error: statusDecision.reason });
+  const resolvedStatus = desiredStatus;
+  const post = { id: cleanText(b.id, 100) || workspaceId("post"), title: cleanText(b.title, 160) || "مسودة جديدة", content, platformVersions: b.platformVersions && typeof b.platformVersions === "object" ? b.platformVersions : undefined, targetPlatforms: targets, mediaUrl: cleanText(b.mediaUrl, 500) || undefined, mediaType: ["image","video","carousel"].includes(b.mediaType) ? b.mediaType : undefined, status: resolvedStatus, scheduledFor: normalizeScheduleInput(b.scheduledFor) ?? undefined, publishedAt: cleanText(b.publishedAt, 80) || undefined, createdAt: cleanText(b.createdAt, 80) || new Date().toISOString(), authorId: user.id, authorName: cleanText(b.authorName, 160) || user.name, authorRole: cleanText(b.authorRole, 40) || user.role, history: Array.isArray(b.history) ? b.history.slice(-50) : [], metrics: b.metrics && typeof b.metrics === "object" ? b.metrics : undefined, tags: Array.isArray(b.tags) ? b.tags.filter((x:any)=>typeof x === "string").slice(0,20) : [], campaignName: cleanText(b.campaignName, 160) };
   workspace.posts.unshift(post); persistState(); audit(user.id, "workspace_content_created", post.id); res.status(201).json({ success: true, post });
 });
 
 app.patch("/api/workspace/content/:id", authenticateToken, (req,res)=>{
   const user=(req as any).user as ServerUser; const post=workspace.posts.find((p:any)=>p.id===req.params.id);
   if(!post) return res.status(404).json({success:false,error:"المنشور غير موجود."});
-  if (!["owner","manager","staff","content_creator"].includes(user.role)) return res.status(403).json({success:false,error:"لا تملك صلاحية تعديل المحتوى."});
+  if (!canEditContent(user.role)) return res.status(403).json({success:false,error:"لا تملك صلاحية تعديل المحتوى."});
   const b=req.body||{};
   if(b.title!==undefined) post.title=cleanText(b.title,160)||post.title;
   if(b.content!==undefined){ const c=cleanText(b.content,10000); if(!c) return res.status(400).json({success:false,error:"المحتوى لا يمكن أن يكون فارغاً."}); if(/125\s*\/\s*125/i.test(c)||/سيارة|سيارات|\bcars?\b/i.test(c)) return res.status(422).json({success:false,error:"المحتوى خالف قواعد مشروع الغرابي."}); post.content=c; }
   if(Array.isArray(b.targetPlatforms)) post.targetPlatforms=[...new Set(b.targetPlatforms.filter((x:any)=>SUPPORTED_PLATFORMS.some((p:any)=>p.id===x)))].slice(0,10);
-  if (b.status === "published") return res.status(409).json({ success:false, error:"لا يمكن تسجيل المنشور كمُنشر دون إيصال تنفيذ خارجي موثّق من مزود المنصة." });
-  if(["draft","review","edited","approved","scheduled"].includes(b.status)) post.status=b.status;
+  // سياسة حالة واحدة: approved/scheduled مقتصران على مساريهما الرسميين (owner)، وpublished يتطلب إثبات مزود.
+  if(b.status!==undefined){
+    const decision=canSetContentStatusByRole(user.role,String(b.status));
+    if(!decision.allowed) return res.status(decision.code==='PUBLISHED_REQUIRES_PROVIDER_PROOF'?409:403).json({success:false,code:decision.code,error:decision.reason});
+    post.status=String(b.status);
+  }
   if(b.scheduledFor!==undefined){ const norm=normalizeScheduleInput(b.scheduledFor); post.scheduledFor=norm ?? undefined; }
   if(b.campaignName!==undefined) post.campaignName=cleanText(b.campaignName,160);
   persistState(); audit(user.id,"workspace_content_updated",post.id); res.json({success:true,post});

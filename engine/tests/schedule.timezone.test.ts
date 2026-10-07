@@ -82,7 +82,7 @@ check('واجهة الجدولة لم تعد تستخدم toISOString', !approva
 check('الموعد المختار يُمرَّر إلى updatePostStatus لا عبر مسار منفصل قد يُستبدل بالافتراضي', /updatePostStatus\(\s*schedulingPost\.id,\s*'scheduled',[\s\S]{0,220}?scheduledFor\s*\)/.test(approvalSrc));
 const appContextSrc = readFileSync(join(process.cwd(), 'src/context/AppContext.tsx'), 'utf8');
 check('عرض/اشتقاق الموعد لا يعتمد على toISOString للموعد المجدول', !/scheduledFor:\s*new Date\(\)\.toISOString/.test(appContextSrc));
-check('updatePostStatus يقبل الموعد صراحةً ويحترم الموعد الممرَّر', /updatePostStatus: \(postId: string, newStatus: PostStatus, note\?: string, scheduledFor\?: string\)/.test(appContextSrc) && appContextSrc.includes('scheduleValue ?? changedPost.scheduledFor'));
+check('updatePostStatus يقبل الموعد صراحةً ويحترم الموعد الممرَّر', /updatePostStatus: \(postId: string, newStatus: PostStatus, note\?: string, scheduledFor\?: string\)/.test(appContextSrc) && appContextSrc.includes('scheduleWorkspaceContent(postId, scheduleValue'));
 
 // ------------------------------------------------------ تحقق حي من الخادم
 group('8) مسار الخادم الفعلي: تخزين وإعادة قراءة الموعد المحلي');
@@ -137,19 +137,28 @@ async function runServerTests(): Promise<void> {
     const loginBody = await login.json() as { success: boolean; token?: string };
     check('جلسة المالك أُنشئت', login.ok && loginBody.success && Boolean(loginBody.token), JSON.stringify(loginBody).slice(0, 160));
     const auth = { 'Content-Type': 'application/json', Authorization: `Bearer ${loginBody.token}` };
+    // الاعتماد صار حصرياً عبر مسار المالك الرسمي (لا يُكتب approved عبر PATCH/POST).
+    // نحوّل الحالة إلى edited (مسموح مباشرةً) ثم نعتمد رسمياً — من أي حالة سابقة.
+    const approveViaOfficial = async (id: string) => {
+      await fetch(`${base}/api/workspace/content/${encodeURIComponent(id)}`, { method: 'PATCH', headers: auth, body: JSON.stringify({ status: 'edited' }) });
+      return fetch(`${base}/api/workspace/content/${encodeURIComponent(id)}/approve`, { method: 'POST', headers: auth, body: JSON.stringify({}) });
+    };
 
     const created = await fetch(`${base}/api/workspace/content`, {
       method: 'POST', headers: auth,
-      body: JSON.stringify({ content: 'عرض جديد على الأجهزة المنزلية من معرض الغرابي.', targetPlatforms: ['facebook'], status: 'approved' }),
+      body: JSON.stringify({ content: 'عرض جديد على الأجهزة المنزلية من معرض الغرابي.', targetPlatforms: ['facebook'], status: 'draft' }),
     });
     const createdBody = await created.json() as { success: boolean; post?: { id: string } };
-    check('إنشاء منشور معتمد', created.ok && createdBody.success && Boolean(createdBody.post?.id), JSON.stringify(createdBody).slice(0, 160));
+    check('إنشاء مسودة', created.ok && createdBody.success && Boolean(createdBody.post?.id), JSON.stringify(createdBody).slice(0, 160));
     const postId = createdBody.post!.id;
+    const approved0 = await approveViaOfficial(postId);
+    const approved0Body = await approved0.json() as { success: boolean; post?: { status?: string } };
+    check('اعتماد المسار الرسمي (owner)', approved0.ok && approved0Body.success && approved0Body.post?.status === 'approved', JSON.stringify(approved0Body).slice(0, 160));
 
     // موعد مستقبلي محلي (بعد ساعة) — يُرسل كما اختاره المستخدم.
     const futureWall = baghdadWall(3600_000);
-    const patched = await fetch(`${base}/api/workspace/content/${encodeURIComponent(postId)}`, {
-      method: 'PATCH', headers: auth, body: JSON.stringify({ status: 'scheduled', scheduledFor: futureWall }),
+    const patched = await fetch(`${base}/api/workspace/content/${encodeURIComponent(postId)}/schedule`, {
+      method: 'POST', headers: auth, body: JSON.stringify({ scheduledFor: futureWall }),
     });
     const patchedBody = await patched.json() as { success: boolean; post?: { scheduledFor?: string; status?: string } };
     check('قبول موعد مستقبلي', patched.ok && patchedBody.success, JSON.stringify(patchedBody).slice(0, 160));
@@ -164,9 +173,7 @@ async function runServerTests(): Promise<void> {
 
     // موعد ماضٍ محلي (قبل ساعة) — يجب رفضه. نعيد الحالة إلى approved لأن المسار
     // المخصص يشترط الموافقة أولاً (كالتدفق الحقيقي في الواجهة).
-    await fetch(`${base}/api/workspace/content/${encodeURIComponent(postId)}`, {
-      method: 'PATCH', headers: auth, body: JSON.stringify({ status: 'approved' }),
-    });
+    await approveViaOfficial(postId);
     const pastWall = baghdadWall(-3600_000);
     const rejected = await fetch(`${base}/api/workspace/content/${encodeURIComponent(postId)}/schedule`, {
       method: 'POST', headers: auth, body: JSON.stringify({ scheduledFor: pastWall }),
@@ -185,9 +192,7 @@ async function runServerTests(): Promise<void> {
     check('التوحيد يحوّل المسافة إلى T ويحفظ الساعة المحلية', okBody.post?.scheduledFor === futureWall2.replace(' ', 'T'), String(okBody.post?.scheduledFor));
 
     // رفض قيمة تحمل منطقة UTC (ليست جداراً محلياً) لئلا يزحزح toISOString الساعة.
-    await fetch(`${base}/api/workspace/content/${encodeURIComponent(postId)}`, {
-      method: 'PATCH', headers: auth, body: JSON.stringify({ status: 'approved' }),
-    });
+    await approveViaOfficial(postId);
     const isoZ = await fetch(`${base}/api/workspace/content/${encodeURIComponent(postId)}/schedule`, {
       method: 'POST', headers: auth, body: JSON.stringify({ scheduledFor: '2027-01-01T19:30:00.000Z' }),
     });

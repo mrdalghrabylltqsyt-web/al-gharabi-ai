@@ -1145,6 +1145,22 @@ ${payload.topic || payload.productName || 'أنظمة وحلول التقسيط 
     return data.post;
   },
 
+  /** اعتماد المحتوى — مسار المالك الرسمي فقط (لا يمكن تعيين الحالة عبر PATCH). */
+  async approveWorkspaceContent(id: string, note?: string) {
+    const res = await fetch(`/api/workspace/content/${encodeURIComponent(id)}/approve`, { method: 'POST', headers: getAuthHeaders(), body: JSON.stringify({ note }) });
+    const data = await res.json();
+    if (!res.ok || !data.success) throw new Error(data.error || 'تعذر اعتماد المحتوى');
+    return data.post;
+  },
+
+  /** جدولة المحتوى — مسار المالك الرسمي فقط (بعد اعتماد المنشور). */
+  async scheduleWorkspaceContent(id: string, scheduledFor: string, note?: string) {
+    const res = await fetch(`/api/workspace/content/${encodeURIComponent(id)}/schedule`, { method: 'POST', headers: getAuthHeaders(), body: JSON.stringify({ scheduledFor, note }) });
+    const data = await res.json();
+    if (!res.ok || !data.success) throw new Error(data.error || 'تعذر جدولة المحتوى');
+    return data.post;
+  },
+
   async deleteWorkspaceContent(id: string) {
     const res = await fetch(`/api/workspace/content/${encodeURIComponent(id)}`, { method: 'DELETE', headers: getAuthHeaders() });
     const data = await res.json();
