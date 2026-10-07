@@ -372,9 +372,9 @@ async function integrationTests(): Promise<void> {
     check('callback ينجح بالصفحة الواحدة', cbRes.status === 200, `status=${cbRes.status}`);
     check('خادم Graph استُدعي فعلياً للتبادل والاشتراك', mock.state.calls > 0 && mock.state.lastSubscribe?.pageId === 'PAGE_123');
     check('الاشتراك استُخدم بحقول feed/messages', mock.state.lastSubscribe?.fields.includes('feed') === true && mock.state.lastSubscribe?.fields.includes('messages') === true);
-    // إصلاح #100: إثبات هوية الصفحة يطلب id,name,access_token فقط بلا tasks
-    // (tasks غير مستخدم في الكود وكان يستدعي pages_read_engagement فيرد Meta #100).
-    check('إثبات هوية الصفحة لا يطلب tasks (إصلاح #100)', mock.state.lastPageProfileFields === 'id,name,access_token' && !String(mock.state.lastPageProfileFields).includes('tasks'));
+    // إصلاح #100 الجذري: مسار الربط لا يستدعي GET /{page-id} إطلاقاً (يستخدم رمز
+    // الصفحة من /me/accounts مباشرةً)، فلا يتعرض لخطأ pages_read_engagement.
+    check('مسار الربط لا يستدعي GET /{page-id} (إصلاح #100 الجذري)', mock.state.pageProfileCalls === 0, `pageProfileCalls=${mock.state.pageProfileCalls}`);
     const readinessAfter = await (await fetch(`${BASE}/api/platforms/production-readiness`, { headers: auth })).json();
     const fbAfter = readinessAfter.platforms.find((p: any) => p.platform === 'facebook');
     check('Facebook أصبح متصلاً وموثقاً', fbAfter.connected === true && fbAfter.providerVerified === true);
@@ -565,12 +565,44 @@ async function integrationTests(): Promise<void> {
     const selBody = await sel.json();
     check('اختيار الصفحة يُثبتها ويشترك في webhook', sel.status === 200 && selBody.success === true && selBody.webhookSubscribed === true, JSON.stringify(selBody).slice(0, 200));
     check('الاشتراك المُنفَّذ للصفحة المختارة فعلياً', multiMock.state.lastSubscribe?.pageId === 'PAGE_A');
+    // نفس الإصلاح الجذري في مسار اختيار الصفحة: لا GET /{page-id} إطلاقاً.
+    check('اختيار الصفحة لا يستدعي GET /{page-id} (إصلاح #100 الجذري)', multiMock.state.pageProfileCalls === 0, `pageProfileCalls=${multiMock.state.pageProfileCalls}`);
     const multiAfter = await (await fetch(`${BASE}/api/platforms/production-readiness`, { headers: auth })).json();
     const multiFbAfter = multiAfter.platforms.find((p: any) => p.platform === 'facebook');
     check('Facebook يصبح متصلاً وموثقاً بعد اختيار الصفحة', multiFbAfter.connected === true && multiFbAfter.providerVerified === true);
     const multiCpAfter = await (await fetch(`${BASE}/api/platforms/control-plane`, { headers: auth })).json();
     check('لم يعد معلّقاً على اختيار الصفحة', multiCpAfter.platforms.find((p: any) => p.platform === 'facebook').pageSelectionPending === false);
     await multiMock.stop();
+
+    // انحدار #100 الحقيقي: /me/accounts ينجح ويمنح رمز الصفحة، لكن GET /{page-id}
+    // يرد #100 (pages_read_engagement) كما حدث حياً على الإنتاج. الإصلاح الجذري
+    // يجب أن يُكمل الربط رغم فشل GET /{page-id} تماماً.
+    group('19ب) تكامل: /me/accounts ينجح و GET /{page-id} يرد #100 (إصلاح #100 الجذري)');
+    await stop(currentApp.proc);
+    writeFileSync(join(stateDir, '.gharabi-state.json'), JSON.stringify({
+      schemaVersion: 16, savedAt: new Date().toISOString(), users: [ownerUser, staffUser],
+      revokedSessions: [], userRevocations: [], audit: [], jobs: [], platformConnections: [],
+      workspace: { showroom: {}, products: [], posts: [], socialComments: [], socialReplies: [], socialApprovals: [] },
+    }), 'utf8');
+    const p100Mock = await startFacebookMockServer(FB_PORT + 12, createFacebookMock({
+      pages: [{ id: 'PAGE_P100', name: 'معرض الغرابي', accessToken: 'PAGE_TOKEN_P100', tasks: ['CREATE_CONTENT'] }],
+      failPageProfile: true, // GET /{page-id} => 400 #100 (يحاكي العطل الحقيقي)
+    }));
+    currentApp = startApp(p100Mock.base);
+    check('الخادم يقلع لسيناريو #100', await waitForHealth(), currentApp.log().slice(0, 300));
+    Object.assign(auth, await login());
+    const s100 = await (await fetch(`${BASE}/api/platforms/facebook/oauth/start`, { headers: auth })).json();
+    const st100 = new URL(s100.authorizationUrl).searchParams.get('state') || '';
+    const cb100 = await fetch(`${BASE}/api/platforms/facebook/oauth/callback?state=${encodeURIComponent(st100)}&code=P100`);
+    check('الربط يكتمل رغم فشل GET /{page-id} بـ#100', cb100.status === 200, `status=${cb100.status}`);
+    const cb100Html = await cb100.text();
+    check('صفحة النجاح العربية ظهرت للمالك', cb100Html.includes('تم ربط صفحة Facebook بنجاح'), cb100Html.slice(0, 160));
+    check('لا استدعاء لـ GET /{page-id} في مسار الربط', p100Mock.state.pageProfileCalls === 0, `pageProfileCalls=${p100Mock.state.pageProfileCalls}`);
+    check('الاشتراك نُفّذ فعلياً من رمز /me/accounts', p100Mock.state.lastSubscribe?.pageId === 'PAGE_P100');
+    const r100 = await (await fetch(`${BASE}/api/platforms/production-readiness`, { headers: auth })).json();
+    const fb100 = r100.platforms.find((p: any) => p.platform === 'facebook');
+    check('Facebook متصل وموثق بعد الربط', fb100.connected === true && fb100.providerVerified === true);
+    await p100Mock.stop();
 
     // الفحص يمنع إرسال المالك إلى صفحة Meta العامة «حدث خطأ ما» عند معرّف تطبيق
     // غير مطابق، ويُعلن السبب صراحةً بدل توليد رابط سيفشل حتماً.

@@ -44,7 +44,7 @@ npm install
 npm run dev            # tsx server.ts
 npm run lint           # tsc --noEmit
 npm run build          # vite build + esbuild server.ts -> dist/server.cjs
-npm run final-audit    # node final-audit.mjs (1331 فحصاً)
+npm run final-audit    # node final-audit.mjs (1334 فحصاً)
 npm test               # storage + engine + auth + ... + db + runtime
 ```
 - التشغيل الإنتاجي: `PORT=4517 NODE_ENV=production APP_URL=http://localhost:4517 node dist/server.cjs`
@@ -3950,3 +3950,54 @@ Security/QA/Reliability. الأساس سليم (المصادقة/التوقيع�
 **درس عام:** طلب حقل اختياري غير مستخدم في Graph API قد يستدعي صلاحية غير مضمونة فيرد
 المزود خطأً يسمّي صلاحية تبدو «مطلوبة» بينما هي مطلوبة فقط للحقل الزائد. اطلب من الحقول
 قدر ما تحتاجه فقط.
+
+## الجذر الحقيقي لـ#100: لا تستدعِ GET /{page-id} في الربط — رمز الصفحة يأتي من /me/accounts (2026-10-04)
+
+**التصحيح الحاسم (دليل حيّ من المالك):** بعد نشر إزالة `tasks` (commit `691eede`) استمر
+الخطأ بنفس `endpoint=GET /{page-id}` ونفس `code=100` لكن بـ`fbtraceId` **مختلف**
+(`AUFu1JytQ8eLtBkEUXthSsk`) — أي محاولة جديدة فعلية على الكود المُصلَح. ⇒ **حقل `tasks`
+لم يكن السبب.** السبب أن **استدعاء عقدة الصفحة مباشرةً `GET /{page-id}` نفسه** يستدعي
+صلاحية قراءة صفحة (`pages_read_engagement`) وترد Meta `#100` على صفحات لا تمنحها، بلا
+علاقة بأي حقول مطلوبة.
+
+**لماذا الاستدعاء زائد أصلاً (إجابة السؤال 2):** رمز الصفحة (Page Access Token) يُمنح
+**في استجابة `/me/accounts`** لكل صفحة (`access_token`). فاستدعاء `getPageProfile` بعدها
+كان يعيد جلب نفس البيانات عبر عقدة الصفحة — طلب لا لزوم له يضيف سطح صلاحيات. والتدفّق
+كان: `listManagedPages` (ينجح) → `facebookFinalizePageSelection` → `getPageProfile`
+(يفشل #100) → `throw` → «فشل إكمال ربط المنصة: … pages_read_engagement …».
+
+**الإصلاح الجذري (بلا أي مساس بـgetPageProfile كدالة):**
+- `facebookFinalizePageSelection(pageId, userAccessToken, pageData?)` صار يقبل بيانات
+  الصفحة (`pageId`/`pageName`/`pageAccessToken`) القادمة من `/me/accounts` مباشرةً،
+  ويستخدمها بلا أي `GET /{page-id}`. `getPageProfile` يبقى **مساراً احتياطياً فقط** عند
+  غياب رمز الصفحة من القائمة، ويُستخدم مستقلاً في `verifyProviderConnection`.
+- `server.ts` — مسارا الربط يمرّران بيانات الصفحة: callback صفحة واحدة
+  (`facebookFinalizePageSelection(pages.data[0].pageId,userToken,pages.data[0])`) و
+  `POST /api/platforms/facebook/select-page` (يجد الصفحة من `listManagedPages` بالمعرّف
+  ثم يمرّرها). `getPageProfile` تبقى مستدعاةً في مكان واحد فقط:
+  `verifyProviderConnection` (إثبات الاتصال، غير حاسم للربط).
+- **سجل نجاح** `[facebook-graph] GET /me/accounts ok pages=N withToken=M` (بلا اسم/رمز)
+  يُثبت أن القائمة تنجح وتمنح رمز الصفحة — طُلب صراحةً للتشخيص.
+
+**اختبار انحدار حاسم (المجموعة 19ب):** خادم Graph وهمي بـ`failPageProfile: true`
+(يحاكي `#100` الحقيقي على `GET /{page-id}`) **مع** `/me/accounts` ناجح: الربط يكتمل
+`200` وتظهر «تم ربط صفحة Facebook بنجاح»، و`pageProfileCalls === 0` (لا استدعاء للعقدة
+إطلاقاً). ومثله في مسار اختيار الصفحة (المجموعة 19). `facebook.connector.test.ts` =
+**249 فحصاً** (+7). `final-audit` = **1334 فحصاً** (+`facebook-finalize-uses-page-from-accounts`،
+`-no-pageprofile-primary`، `facebook-accounts-success-logged`، `-on-connect-test`). الفرع:
+`fix/facebook-finalize-from-accounts`.
+
+**هل يفشل `GET /{page-id}` بحقل `id` فقط؟ (السؤال 4):** لا اختبار حي مباشر على الإنتاج،
+لكن الفشل لم يكن يوماً بسبب الحقول: حتى `fields=id,name,access_token` (بعد إزالة tasks)
+فشل بنفس `#100`. والاستدلال من سلوك Meta: طلب العقدة يُخضع للتحقق من الصلاحية قبل
+الإرجاع، فتظهر رسالة الصلاحية رغم أن الحقول المسموحة محدودة. الفرق الجوهري: `/me/accounts`
+تُعدّد الصفحات ضمن رمز المستخدم (مع `pages_show_list`/`business_management`) فتمرّ، بينما
+قراءة عقدة الصفحة تحتاج `pages_read_engagement`. **الحل المتّبع:** تجنّب عقدة الصفحة في
+الربط كلياً — وهو الحل الذي يزيل الاعتماد على تلك الصلاحية نهائياً.
+
+**لا ادّعاء نجاح قبل اختبار حيّ من المالك** يصل إلى «تم ربط صفحة Facebook بنجاح». لم يُدمج
+على `main` ولم يُنشر.
+
+**درس عام:** لا تطلب بيانات تملكها بالفعل من نقطة نهاية أضيق صلاحية. رمز الصفحة وصل في
+`/me/accounts`؛ فاستدعاء عقدة الصفحة لإعادة جلبه أضاف سطح صلاحية غير مضمون وأفشل الربط
+رغم صحة كل شيء آخر.

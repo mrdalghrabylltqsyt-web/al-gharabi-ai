@@ -671,6 +671,8 @@ export class FacebookClient {
       const pages: FacebookPageIdentity[] = (Array.isArray(data?.data) ? data.data : [])
         .filter((p: any) => p?.id)
         .map((p: any) => ({ pageId: String(p.id), pageName: p.name ? String(p.name) : null, pageAccessToken: p.access_token ? String(p.access_token) : null, tasks: Array.isArray(p.tasks) ? p.tasks.map((t: any) => String(t)) : [] }));
+      // سجل نجاح بلا أي اسم/رمز: يُثبت أن /me/accounts يُعيد الصفحات ورمزها.
+      console.log(`[facebook-graph] GET /me/accounts ok pages=${pages.length} withToken=${pages.filter((p) => p.pageAccessToken).length}`);
       return { ok: true, data: pages };
     } catch (e: any) {
       return { ok: false, data: null, error: String(e?.message || 'فشل الاتصال بـFacebook.') };

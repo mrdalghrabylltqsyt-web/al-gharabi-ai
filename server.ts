@@ -2738,24 +2738,37 @@ function saveFacebookCredentials(input: { pageId: string; pageName?: string | nu
 }
 
 /**
- * يثبت صفحة محدّدة فعلياً: يجلب هويتها ورمزها من Graph، يشترك تطبيقنا في
- * أحداثها (feed/messages)، ثم يحفظ الاعتماد ويعلن الاتصال الموثق. لا يُعلن
- * الاتصال بلا استجابة صفحة حقيقية. تُستخدم من OAuth callback ومن اختيار الصفحة.
+ * يثبت صفحة محدّدة فعلياً: يستخدم هويتها ورمزها القادمين من `/me/accounts`
+ * (المسار الذي يمنح رمز كل صفحة أصلاً)، يشترك تطبيقنا في أحداثها (feed/messages)،
+ * ثم يحفظ الاعتماد ويعلن الاتصال الموثق. لا يُعلن الاتصال بلا رمز صفحة حقيقي.
+ *
+ * مهم: لا نستدعي `GET /{page-id}` في المسار الأساسي. طلب عقدة الصفحة مباشرةً
+ * يستدعي صلاحية قراءة صفحة (`pages_read_engagement`) وترد Meta `#100` على صفحات
+ * لا تمنحها (مُثبت حياً بـfbtraceId)، فيُفشل إكمال الربط بلا سبب حقيقي — ورمز
+ * الصفحة متاح أصلاً من `/me/accounts`. يُبقى `getPageProfile` كمسار احتياطي فقط
+ * عند غياب الرمز من قائمة الصفحات، ويُستخدم مستقلاً في `verifyProviderConnection`.
  */
-async function facebookFinalizePageSelection(pageId: string, userAccessToken: string): Promise<{ ok: boolean; pageName?: string | null; error?: string; subscribed?: boolean }> {
+async function facebookFinalizePageSelection(pageId: string, userAccessToken: string, pageData?: { pageId?: string | null; pageName?: string | null; pageAccessToken?: string | null } | null): Promise<{ ok: boolean; pageName?: string | null; error?: string; subscribed?: boolean }> {
   const client = facebookClient();
-  const proof = await client.getPageProfile(pageId, userAccessToken);
-  if (!proof.ok || !proof.data?.pageId || !proof.data.pageAccessToken) {
-    return { ok: false, error: proof.error || "تعذّر إثبات هوية الصفحة أو الحصول على رمز الصفحة." };
+  const resolvedPageId = String(pageData?.pageId || pageId || "").trim();
+  let pageName = pageData?.pageName ? String(pageData.pageName) : null;
+  let pageToken = pageData?.pageAccessToken ? String(pageData.pageAccessToken) : "";
+  if (!resolvedPageId || !pageToken) {
+    // احتياطي فقط: لا رمز من /me/accounts => نُثبت الهوية عبر GET /{page-id}.
+    const proof = await client.getPageProfile(resolvedPageId, userAccessToken);
+    if (!proof.ok || !proof.data?.pageId || !proof.data.pageAccessToken) {
+      return { ok: false, error: proof.error || "تعذّر إثبات هوية الصفحة أو الحصول على رمز الصفحة." };
+    }
+    pageName = proof.data.pageName;
+    pageToken = proof.data.pageAccessToken;
   }
-  const pageToken = proof.data.pageAccessToken;
   // اشتراك التطبيق في أحداث الصفحة. عدم الاشتراك لا يُبطل الاتصال لكنه يُعلن
   // صراحةً لأن بدون اشتراك لن تصل أي أحداث webhook.
-  const sub = await client.subscribeApp(pageId, pageToken, FACEBOOK_SUBSCRIBED_FIELDS);
-  saveFacebookCredentials({ pageId: proof.data.pageId, pageName: proof.data.pageName, pageAccessToken: pageToken, userAccessToken });
-  platformConnections.set("facebook", { platform: "facebook", status: "connected", accountId: proof.data.pageId, accountName: proof.data.pageName || "Facebook Page", connectedAt: new Date().toISOString(), providerVerified: true });
+  const sub = await client.subscribeApp(resolvedPageId, pageToken, FACEBOOK_SUBSCRIBED_FIELDS);
+  saveFacebookCredentials({ pageId: resolvedPageId, pageName, pageAccessToken: pageToken, userAccessToken });
+  platformConnections.set("facebook", { platform: "facebook", status: "connected", accountId: resolvedPageId, accountName: pageName || "Facebook Page", connectedAt: new Date().toISOString(), providerVerified: true });
   savePlatformConnections();
-  return { ok: true, pageName: proof.data.pageName, subscribed: sub.ok, error: sub.ok ? undefined : sub.error };
+  return { ok: true, pageName, subscribed: sub.ok, error: sub.ok ? undefined : sub.error };
 }
 
 /**
@@ -3794,7 +3807,7 @@ async function handleOAuthCallback(req:any, res:any, rawQuery:string, viaPost:bo
       const pages=await client.listManagedPages(userToken);
       if(!pages.ok || !pages.data?.length) throw new Error(pages.error||"لم يُعد Meta أي صفحة لهذا الحساب عبر /me/accounts. السبب الأكثر شيوعاً: الصفحة مملوكة لـBusiness Manager فتحتاج صلاحية business_management ورول على الصفحة (تُمنح تلقائياً لرول التطبيق في وضع Development). تحقق أن المستخدم أدمن/محرر على صفحة «معرض الغرابي للتقسيط».");
       if(pages.data.length===1) {
-        const fin=await facebookFinalizePageSelection(pages.data[0].pageId,userToken);
+        const fin=await facebookFinalizePageSelection(pages.data[0].pageId,userToken,pages.data[0]);
         if(!fin.ok) throw new Error(fin.error||"تعذّر إتمام ربط الصفحة.");
         setProviderToken("facebook",{...token,pageId:pages.data[0].pageId,pageName:pages.data[0].pageName||"",pageAccessToken:getProviderToken("facebook")?.pageAccessToken||pages.data[0].pageAccessToken||"",userAccessToken:userToken,expiresAt:parsedTokenExpiry(token)});
         await persistStateDurable();
@@ -4151,7 +4164,13 @@ app.post("/api/platforms/facebook/select-page", requireOwner, async (req,res)=>{
   const stored=getProviderToken("facebook");
   const userToken=stored?.userAccessToken?String(stored.userAccessToken):"";
   if(!userToken) return res.status(409).json({success:false,error:"لا رمز مستخدم Facebook محفوظ؛ نفّذ الربط عبر OAuth أولاً."});
-  const result=await facebookFinalizePageSelection(pageId,userToken);
+  // نجلب رمز الصفحة من /me/accounts مباشرةً (يمنح رمز كل صفحة)، فلا نستدعي
+  // GET /{page-id} الذي يستدعي pages_read_engagement ويرد #100 على صفحات لا تمنحها.
+  const pages=await facebookClient().listManagedPages(userToken);
+  if(!pages.ok) return res.status(502).json({success:false,error:pages.error||"تعذّر جلب صفحات Facebook."});
+  const page=(pages.data||[]).find((p)=>String(p.pageId)===String(pageId));
+  if(!page) return res.status(404).json({success:false,error:"الصفحة المختارة ليست ضمن الصفحات التي يديرها هذا الحساب."});
+  const result=await facebookFinalizePageSelection(page.pageId,userToken,page);
   if(!result.ok) return res.status(502).json({success:false,error:result.error||"تعذّر ربط الصفحة المختارة."});
   await persistStateDurable();
   audit((req as any).user.id,"facebook_page_selected",pageId);
