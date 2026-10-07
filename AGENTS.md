@@ -44,7 +44,7 @@ npm install
 npm run dev            # tsx server.ts
 npm run lint           # tsc --noEmit
 npm run build          # vite build + esbuild server.ts -> dist/server.cjs
-npm run final-audit    # node final-audit.mjs (1327 فحصاً)
+npm run final-audit    # node final-audit.mjs (1330 فحصاً)
 npm test               # storage + engine + auth + ... + db + runtime
 ```
 - التشغيل الإنتاجي: `PORT=4517 NODE_ENV=production APP_URL=http://localhost:4517 node dist/server.cjs`
@@ -3883,3 +3883,39 @@ Security/QA/Reliability. الأساس سليم (المصادقة/التوقيع�
 إثبات أنه **خاص** بالتطبيق؛ يجب مقارنته بتطبيق مرجعي. وإلا صار الحارس نفسه سبب التعطّل.
 وقاعدة المشروع الملزمة («لا حجب بلا إثبات») تعني إثباتاً **مميَّزاً** لا علماً يظهر عند
 الجميع.
+
+## تشخيص قراءة-فقط لفشل ربط Facebook: تسجيل خطأ Graph كاملاً بلا قطع (2026-10-04)
+
+**الجذر المُثبت (لا تخمين):** النص الذي رآه المالك ينتهي حرفياً عند «…feature or» في كل مرة
+نسخه فيها (هاتف وسطح مكتب). هذا **قطعٌ من كودنا لا من Meta**: كتلة `catch` في
+`handleOAuthCallback` كانت تبني رسالة الفشل بـ
+`` `فشل إكمال ربط المنصة: ${String(e?.message||e).slice(0,240)}` ``
+(server.ts). البادئة «فشل إكمال ربط المنصة: » = 22 محرفاً، و`slice(0,240)` يقع بالضبط عند
+`"...Page Public Cont"` — أي قبل `"Access' feature or the 'Page Public Metadata Access' feature…"`.
+فلا يعني القطع أن Meta أرسلت رسالة قصيرة. (ومثله `providerLog.eventAlias` يقطع `providerError`
+بـ`.slice(0,200)`.)
+
+**تعديل تشخيصي فقط — لا تغيير سلوك** (فرع `diag/facebook-graph-error-logging`):
+- `engine/social/facebook.ts`: `extractFacebookGraphError(data, endpoint, status)` +
+  `formatFacebookGraphError(info)` — دالتان صافيتان تستخرجان الحقول الكاملة
+  (`code`/`error_subcode`/`message` غير مقطوعة/`type`/`fbtrace_id`/`error_user_title`/
+  `error_user_msg`/`endpoint`/`status`) **بلا أي رمز أو سرّ**. تُسجَّل عبر `console.error`
+  في مسارات القراءة الثلاثة عند الفشل فقط: `GET /me/accounts`، `GET /{page-id}`،
+  `POST /{page-id}/subscribed_apps`.
+- `server.ts`: كتلة `catch` تسجّل الآن
+  `[oauth-callback-error] ${platform} status=502 message=${String(e?.message||e)}`
+  **بلا قطع** (بلا توكن). **رسالة الاستجابة العامة تبقى كما هي** بـ`slice(0,240)` — لا تغيير
+  على تجربة المستخدم.
+
+**مكاسب الفحص:** عند تكرار المحاولة تظهر في سجلات Render السبب الكامل + `fbtrace_id`، فيُحسم
+أي استدعاء يرمي الخطأ (المرشّح: `getPageProfile` أو `listManagedAccounts`) — علماً أن فشل
+`subscribeApp` **لا يُفشل الربط** (server.ts يعيد `ok:true` دائماً مع `subscribed: sub.ok`).
+
+**اختبار/حرّاس:** `facebook.connector.test.ts` = **238 فحصاً** (مجموعة 1ز: النص الكامل
+> 240 محرفاً يُستخرَج بلا قطع + الرمز/الرقم الفرعي/`fbtrace_id` + عدم وجود أي توكن في السطر).
+`final-audit` = **1330 فحصاً** (+3: `facebook-graph-error-logged-full`،
+`-logged-on-catch`، `-logging-test`). `npm run lint` ✅ · `npm run build` ✅ · `npm test`
+✅ (0 فشل) · `final-audit` ✅.
+
+**لم يُمسّ:** المنطق التشغيلي، رسائل الواجهة، الصلاحيات/scopes، OAuth، أي سرّ/مفتاح،
+وبقية المنصّات. **لم يُدفع/يُدمج/يُنشر** — بانتظار إذن المالك.

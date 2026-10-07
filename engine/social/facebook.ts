@@ -547,6 +547,45 @@ function errorMessage(data: any, fallback: string): string {
   return String(data?.error?.message || data?.error_description || data?.error || fallback);
 }
 
+/** حقول Graph API التشخيصية المسموح تسجيلها — بلا أي رمز أو سرّ. */
+export interface FacebookGraphErrorInfo {
+  endpoint: string;
+  status: number | null;
+  code: number | null;
+  subcode: number | null;
+  message: string;
+  type: string | null;
+  fbtraceId: string | null;
+  errorUserTitle: string | null;
+  errorUserMsg: string | null;
+}
+
+/**
+ * يستخرج حقول خطأ Graph API الكاملة (بلا قطع) للتشخيص القراءة-فقط. لا يُعاد
+ * ولا يُسجَّل أي رمز وصول أو سرّ — فقط وصف الخطأ الذي يوفّره Meta. مفصول عن
+ * منطق العميل كي يبقى الاستخراج قابلاً للاختبار دوالً صافية.
+ */
+export function extractFacebookGraphError(data: any, endpoint: string, status: number | null): FacebookGraphErrorInfo {
+  const err = data && typeof data === 'object' && data.error && typeof data.error === 'object' ? data.error : data;
+  const code = Number.isFinite(Number(err?.code)) ? Number(err.code) : null;
+  return {
+    endpoint,
+    status: status ?? null,
+    code,
+    subcode: Number.isFinite(Number(err?.error_subcode)) ? Number(err.error_subcode) : null,
+    message: typeof err?.message === 'string' ? err.message : (data?.raw != null ? String(data.raw) : ''),
+    type: typeof err?.type === 'string' ? err.type : null,
+    fbtraceId: typeof err?.fbtrace_id === 'string' ? err.fbtrace_id : null,
+    errorUserTitle: typeof err?.error_user_title === 'string' ? err.error_user_title : null,
+    errorUserMsg: typeof err?.error_user_msg === 'string' ? err.error_user_msg : null,
+  };
+}
+
+/** سطر سجل تشخيصي آمن: الرمز/الرقم/النص الكامل غير المقطوع + fbtrace_id — بلا أي سرّ. */
+export function formatFacebookGraphError(info: FacebookGraphErrorInfo): string {
+  return '[facebook-graph-error] ' + JSON.stringify(info);
+}
+
 export class FacebookClient {
   constructor(
     private readonly fetchImpl: FacebookFetch,
@@ -628,7 +667,7 @@ export class FacebookClient {
       u.searchParams.set('access_token', userAccessToken);
       const res = await this.fetchImpl(u.toString(), { method: 'GET' });
       const data = await res.json().catch(() => null);
-      if (!res.ok || data?.error) return { ok: false, data: null, error: errorMessage(data, 'تعذّر جلب صفحات Facebook.') };
+      if (!res.ok || data?.error) { console.error(formatFacebookGraphError(extractFacebookGraphError(data, 'GET /me/accounts', res.status))); return { ok: false, data: null, error: errorMessage(data, 'تعذّر جلب صفحات Facebook.') }; }
       const pages: FacebookPageIdentity[] = (Array.isArray(data?.data) ? data.data : [])
         .filter((p: any) => p?.id)
         .map((p: any) => ({ pageId: String(p.id), pageName: p.name ? String(p.name) : null, pageAccessToken: p.access_token ? String(p.access_token) : null, tasks: Array.isArray(p.tasks) ? p.tasks.map((t: any) => String(t)) : [] }));
@@ -647,7 +686,7 @@ export class FacebookClient {
       u.searchParams.set('access_token', accessToken);
       const res = await this.fetchImpl(u.toString(), { method: 'GET' });
       const data = await res.json().catch(() => null);
-      if (!res.ok || data?.error || !data?.id) return { ok: false, data: null, error: errorMessage(data, 'تعذّر إثبات هوية الصفحة.') };
+      if (!res.ok || data?.error || !data?.id) { console.error(formatFacebookGraphError(extractFacebookGraphError(data, `GET /${pageId}`, res.status))); return { ok: false, data: null, error: errorMessage(data, 'تعذّر إثبات هوية الصفحة.') }; }
       return {
         ok: true,
         data: {
@@ -671,7 +710,7 @@ export class FacebookClient {
       u.searchParams.set('subscribed_fields', fields.join(','));
       const res = await this.fetchImpl(u.toString(), { method: 'POST' });
       const data = await res.json().catch(() => null);
-      if (!res.ok || data?.error || data?.success !== true) return { ok: false, data: null, error: errorMessage(data, 'تعذّر اشتراك الصفحة في webhook.') };
+      if (!res.ok || data?.error || data?.success !== true) { console.error(formatFacebookGraphError(extractFacebookGraphError(data, `POST /${pageId}/subscribed_apps`, res.status))); return { ok: false, data: null, error: errorMessage(data, 'تعذّر اشتراك الصفحة في webhook.') }; }
       return { ok: true, data: true };
     } catch (e: any) {
       return { ok: false, data: null, error: String(e?.message || 'فشل الاتصال بـFacebook.') };

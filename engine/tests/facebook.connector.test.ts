@@ -40,6 +40,8 @@ import {
   findMissingScopeDependencies,
   missingScopeDependenciesFromCsv,
   expandWithDependencies,
+  extractFacebookGraphError,
+  formatFacebookGraphError,
 } from '../social/facebook';
 import { createFacebookMock, startFacebookMockServer } from './helpers/facebookMock';
 import { signSession } from '../auth/sessions';
@@ -265,6 +267,23 @@ function unitTests(): void {
   check('استنتاج النواقص من CSV كامل', missingScopeDependenciesFromCsv('pages_show_list,pages_read_user_content,pages_manage_engagement').length === 0);
   // لا نضيف public_profile: ضمني في Facebook Login ولا يقابله استدعاء في الكود.
   check('لا نضيف public_profile (ضمني وغير مستخدم)', !FACEBOOK_REQUIRED_SCOPES.includes('public_profile'));
+
+  group('1ز) وحدة: استخراج خطأ Graph الكامل بلا قطع (تشخيص قراءة-فقط)');
+  const fullMsg = "(#100) Object does not exist, cannot be loaded due to missing permission or reviewable feature, or does not support this operation. This endpoint requires the 'pages_read_engagement' permission or the 'Page Public Content Access' feature or the 'Page Public Metadata Access' feature. Refer to https://developers.facebook.com/docs/apps/review/login-permissions#manage-pages for details.";
+  const gErr = extractFacebookGraphError(
+    { error: { message: fullMsg, type: 'OAuthException', code: 100, error_subcode: 33, fbtrace_id: 'AbCdEf123', error_user_title: 'T', error_user_msg: 'U' } },
+    'GET /me/accounts',
+    400,
+  );
+  check('رسالة Graph مستخرَجة كاملة غير مقطوعة', gErr.message === fullMsg && gErr.message.length > 240);
+  check('رمز الخطأ مستخرَج', gErr.code === 100);
+  check('الرقم الفرعي مستخرَج', gErr.subcode === 33);
+  check('fbtrace_id مستخرَج', gErr.fbtraceId === 'AbCdEf123');
+  check('نقطة النهاية مسجّلة', gErr.endpoint === 'GET /me/accounts' && gErr.status === 400);
+  const logLine = formatFacebookGraphError(gErr);
+  check('سطر السجل يحمل الرمز والنص الكامل', logLine.includes('[facebook-graph-error]') && logLine.includes(fullMsg));
+  // لا سرّ: السطر لا يحمل أي رمز وصول أو كلمة access_token.
+  check('سطر السجل بلا أي توكن/سرّ', !/access_token|Bearer |EAA[A-Za-z0-9]/.test(logLine));
 }
 
 async function integrationTests(): Promise<void> {

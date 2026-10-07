@@ -3908,7 +3908,7 @@ async function handleOAuthCallback(req:any, res:any, rawQuery:string, viaPost:bo
     const stored={...token, expiresAt: parsedToken.expiresIn ? Date.now()+parsedToken.expiresIn*1000 : null};
     setProviderToken(platform,stored); platformConnections.set(platform,{platform,status:"connected",accountId,accountName,connectedAt:new Date().toISOString(),providerVerified:true}); savePlatformConnections(); audit(pending!.userId,"platform_oauth_connected",`${platform}:${accountId}`);
     sendHtml("<html lang='ar' dir='rtl'><meta charset='utf-8'><title>تم الربط</title><body style='font-family:sans-serif;padding:40px'><h2>تم ربط المنصة بنجاح.</h2><p>يمكنك إغلاق هذه النافذة والعودة إلى الغرابي AI.</p></body></html>");
-  } catch(e:any) { audit(pending!.userId,"platform_oauth_failed",platform); failHtml(502, `فشل إكمال ربط المنصة: ${String(e?.message||e).slice(0,240)}`); }
+  } catch(e:any) { audit(pending!.userId,"platform_oauth_failed",platform); console.error(`[oauth-callback-error] ${platform} status=502 message=${String(e?.message||e)}`); failHtml(502, `فشل إكمال ربط المنصة: ${String(e?.message||e).slice(0,240)}`); }
 }
 
 app.post("/api/platforms/telegram/configure", requireOwner, async (req,res)=>{
