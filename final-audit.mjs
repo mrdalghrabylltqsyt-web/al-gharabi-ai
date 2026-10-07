@@ -234,6 +234,12 @@ add('facebook-scope-dependency-test', fs.existsSync(path.join(root, 'engine/test
 add('facebook-graph-error-logged-full', read('engine/social/facebook.ts').includes('extractFacebookGraphError') && read('engine/social/facebook.ts').includes('formatFacebookGraphError') && read('engine/social/facebook.ts').includes('[facebook-graph-error]'), 'استخراج خطأ Graph الكامل وتسجيله بلا سرّ في مسارات القراءة (accounts/page/subscribed_apps)');
 add('facebook-graph-error-logged-on-catch', server.includes('[oauth-callback-error]') && server.includes('String(e?.message||e)'), 'كتلة catch في callback تسجّل الرسالة الكاملة غير المقطوعة (بلا توكن)');
 add('facebook-graph-error-logging-test', fs.existsSync(path.join(root, 'engine/tests/facebook.connector.test.ts')) && read('engine/tests/facebook.connector.test.ts').includes('extractFacebookGraphError') && read('engine/tests/facebook.connector.test.ts').includes('fbtrace_id'), 'اختبار انحدار يثبّت استخراج نص الخطأ الكامل وبلا سرّ');
+// إصلاح #100: إثبات هوية الصفحة كان يطلب حقل tasks (غير مستخدم) فيستدعي صلاحية
+// قراءة الصفحة ويرد Meta #100 على صفحات لا تمنحها، فيُفشل إكمال الربط.
+const fbSource = read('engine/social/facebook.ts');
+const pageProfileBody = (fbSource.match(/async getPageProfile[\s\S]*?\n {2}\}/) || [''])[0];
+const pageProfileFields = (pageProfileBody.match(/searchParams\.set\('fields',\s*'([^']*)'\)/) || [])[1] || '';
+add('facebook-page-profile-no-tasks-field', pageProfileFields === 'id,name,access_token', 'getPageProfile يطلب id,name,access_token فقط بلا tasks (يمنع خطأ #100 على pages_read_engagement)');
 // تطبيع مسافات/أسطر بيئة OAuth: Render قد يضيف سطراً زائداً فيبدو السرّ «مضبوطاً»
 // بينما يرفضه Meta بـinvalid_client_secret فيمنع بدء الربط بـ409 بلا سبب ظاهر.
 add('oauth-env-trimmed-single-helper', server.includes('function envSecret(') && /envSecret\("FACEBOOK_OAUTH_CLIENT_SECRET"\)/.test(server) && /envSecret\("FACEBOOK_OAUTH_CLIENT_ID"\)/.test(server), 'client_id/secret يُقرآن عبر envSecret المطبِّع لا من process.env الخام');

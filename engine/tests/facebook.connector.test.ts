@@ -42,6 +42,7 @@ import {
   expandWithDependencies,
   extractFacebookGraphError,
   formatFacebookGraphError,
+  FacebookClient,
 } from '../social/facebook';
 import { createFacebookMock, startFacebookMockServer } from './helpers/facebookMock';
 import { signSession } from '../auth/sessions';
@@ -134,7 +135,7 @@ async function postWebhook(payload: string, signature: string) {
   return { status: res.status, json: await res.json().catch(() => null) };
 }
 
-function unitTests(): void {
+async function unitTests(): Promise<void> {
   group('1) وحدة: تطبيع webhook — تمييز التعليق عن الرسالة عن غير المفهوم');
   const commentPayload = { object: 'page', entry: [{ id: 'P1', changes: [{ field: 'feed', value: { item: 'comment', comment_id: 'C1', post_id: 'POST1', message: '  بكم السعر؟  ', from: { name: 'أحمد' }, created_time: 1700000000 } }] }] };
   const pc = parseFacebookWebhook(commentPayload);
@@ -284,6 +285,19 @@ function unitTests(): void {
   check('سطر السجل يحمل الرمز والنص الكامل', logLine.includes('[facebook-graph-error]') && logLine.includes(fullMsg));
   // لا سرّ: السطر لا يحمل أي رمز وصول أو كلمة access_token.
   check('سطر السجل بلا أي توكن/سرّ', !/access_token|Bearer |EAA[A-Za-z0-9]/.test(logLine));
+
+  group('1ح) وحدة: getPageProfile لا يطلب tasks (إصلاح #100)');
+  const requestedUrls: string[] = [];
+  const fakeFetch = async (url: string) => {
+    requestedUrls.push(url);
+    return { ok: true, status: 200, json: async () => ({ id: 'PAGE_X', name: 'صفحة', access_token: 'PT' }) };
+  };
+  const client = new FacebookClient(fakeFetch as any, 'https://graph.example/v21.0');
+  const profile = await client.getPageProfile('PAGE_X', 'USER_TOKEN');
+  const profileUrl = requestedUrls[requestedUrls.length - 1] || '';
+  check('إثبات الهوية نجح', profile.ok === true && profile.data?.pageId === 'PAGE_X');
+  check('طلب الحقول بلا tasks', decodeURIComponent(profileUrl).includes('fields=id,name,access_token') && !profileUrl.includes('tasks'));
+  check('الرمز الصفحي مستخرَج', profile.data?.pageAccessToken === 'PT');
 }
 
 async function integrationTests(): Promise<void> {
@@ -358,6 +372,9 @@ async function integrationTests(): Promise<void> {
     check('callback ينجح بالصفحة الواحدة', cbRes.status === 200, `status=${cbRes.status}`);
     check('خادم Graph استُدعي فعلياً للتبادل والاشتراك', mock.state.calls > 0 && mock.state.lastSubscribe?.pageId === 'PAGE_123');
     check('الاشتراك استُخدم بحقول feed/messages', mock.state.lastSubscribe?.fields.includes('feed') === true && mock.state.lastSubscribe?.fields.includes('messages') === true);
+    // إصلاح #100: إثبات هوية الصفحة يطلب id,name,access_token فقط بلا tasks
+    // (tasks غير مستخدم في الكود وكان يستدعي pages_read_engagement فيرد Meta #100).
+    check('إثبات هوية الصفحة لا يطلب tasks (إصلاح #100)', mock.state.lastPageProfileFields === 'id,name,access_token' && !String(mock.state.lastPageProfileFields).includes('tasks'));
     const readinessAfter = await (await fetch(`${BASE}/api/platforms/production-readiness`, { headers: auth })).json();
     const fbAfter = readinessAfter.platforms.find((p: any) => p.platform === 'facebook');
     check('Facebook أصبح متصلاً وموثقاً', fbAfter.connected === true && fbAfter.providerVerified === true);
@@ -755,7 +772,7 @@ async function integrationTests(): Promise<void> {
 }
 
 (async () => {
-  unitTests();
+  await unitTests();
   await integrationTests();
   console.log('\n' + '='.repeat(60));
   if (failures.length) {

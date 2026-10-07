@@ -682,7 +682,10 @@ export class FacebookClient {
     if (!pageId || !accessToken) return { ok: false, data: null, error: 'معرّف الصفحة والرمز مطلوبان.' };
     try {
       const u = new URL(facebookGraphUrl(`/${pageId}`, this.baseUrl));
-      u.searchParams.set('fields', 'id,name,access_token,tasks');
+      // بلا tasks: الحقل غير مستخدم في الكود، وطلبه كان يستدعي صلاحية قراءة
+      // صفحة (pages_read_engagement) فيرد Meta #100 على صفحات لا تمنحها،
+      // فيُفشل إكمال الربط. id/name/access_token كافية لإثبات الهوية.
+      u.searchParams.set('fields', 'id,name,access_token');
       u.searchParams.set('access_token', accessToken);
       const res = await this.fetchImpl(u.toString(), { method: 'GET' });
       const data = await res.json().catch(() => null);

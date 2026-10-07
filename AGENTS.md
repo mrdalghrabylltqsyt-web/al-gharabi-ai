@@ -44,7 +44,7 @@ npm install
 npm run dev            # tsx server.ts
 npm run lint           # tsc --noEmit
 npm run build          # vite build + esbuild server.ts -> dist/server.cjs
-npm run final-audit    # node final-audit.mjs (1330 فحصاً)
+npm run final-audit    # node final-audit.mjs (1331 فحصاً)
 npm test               # storage + engine + auth + ... + db + runtime
 ```
 - التشغيل الإنتاجي: `PORT=4517 NODE_ENV=production APP_URL=http://localhost:4517 node dist/server.cjs`
@@ -3919,3 +3919,34 @@ Security/QA/Reliability. الأساس سليم (المصادقة/التوقيع�
 
 **لم يُمسّ:** المنطق التشغيلي، رسائل الواجهة، الصلاحيات/scopes، OAuth، أي سرّ/مفتاح،
 وبقية المنصّات. **لم يُدفع/يُدمج/يُنشر** — بانتظار إذن المالك.
+
+## إصلاح #100: إزالة الحقل الزائد `tasks` من إثبات هوية الصفحة (2026-10-04)
+
+**الجذر المُثبت حياً (سجلات Render، لا تخمين):**
+`[facebook-graph-error] {"endpoint":"GET /102540549308721","status":400,"code":100,"message":"(#100) ... requires the 'pages_read_engagement' permission ...","type":"OAuthException","fbtraceId":"ANUoPP0bw9bX3_IN-GdAZ56"}`.
+أي أن الاستدعاء الفاشل هو **`getPageProfile` بالضبط** (`GET /{page-id}`)، لا `listManagedPages`
+ولا `subscribeApp`. الطلب كان `fields=id,name,access_token,tasks`، وحقل **`tasks` غير مستخدم
+في الكود إطلاقاً** (مُثبت بالفحص الشامل: يظهر فقط تعريفاً في النوع `FacebookPageIdentity`
+وتعبئةً في `listManagedPages`/`getPageProfile`، بلا أي قارئ — كل `.tasks` أخرى تعود لسجلات
+الوظائف/الحملات لا لصفحات Facebook). وطلب `tasks` على عقدة الصفحة يستدعي قراءة الصفحة،
+فترد Meta `#100` بصيغة تسمّي `pages_read_engagement` على صفحات لا تمنح هذه الصلاحية
+(الـConfiguration يمنحها جزئياً)، فيُفشل إكمال الربط رغم أن `id/name/access_token` وحدها
+كافية ولا تحتاج أي صلاحية متقدمة.
+
+**الإصلاح (بلا أي أثر جانبي):**
+- `engine/social/facebook.ts` — `getPageProfile`: `fields` صارت `id,name,access_token`
+  (حُذف `tasks` من هذا الاستدعاء تحديداً). لم يُمسّ `listManagedPages` (مسار `/me/accounts`
+  منفصل لم يظهر في الخطأ) ولا أي شيء آخر.
+
+**اختبار/حرّاس:** `facebook.connector.test.ts` = **242 فحصاً** (مجموعة 1ح وحدة: تثبيت أن
+`getPageProfile` يبني `fields=id,name,access_token` بلا `tasks`؛ ومجموعة 2 تكامل: الخادم
+الوهمي يلتقط `lastPageProfileFields` ويثبت غياب `tasks`). `final-audit` = **1331 فحصاً**
+(+`facebook-page-profile-no-tasks-field`). `npm run lint` ✅ · `npm run build` ✅ · `npm test`
+✅ · `final-audit` ✅. الفرع: `fix/facebook-drop-tasks-field`.
+
+**لا ادّعاء نجاح قبل اختبار حيّ من المالك** يصل إلى «تم ربط صفحة Facebook بنجاح». لم يُدمج
+على `main` ولم يُنشر.
+
+**درس عام:** طلب حقل اختياري غير مستخدم في Graph API قد يستدعي صلاحية غير مضمونة فيرد
+المزود خطأً يسمّي صلاحية تبدو «مطلوبة» بينما هي مطلوبة فقط للحقل الزائد. اطلب من الحقول
+قدر ما تحتاجه فقط.
