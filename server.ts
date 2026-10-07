@@ -93,6 +93,7 @@ import { AGENT_TOOLS } from "./engine/agent/tools";
 import { describeProviders } from "./engine/agent/providerRouter";
 import { PLATFORM_SPECS, platformSupports, hasRealConnector, credentialModeOf, isSupportedPlatform, buildAdapters } from "./engine/social/registry";
 import { buildYouTubeSalesCorrelation } from "./engine/social/youtubeSalesCorrelation";
+import { sanitizePublicHealthPayload, findForbiddenPublicKeys, findDisallowedWatcherPublicKeys } from "./engine/social/healthPrivacy";
 import type { PlatformId } from "./engine/social/adapter";
 import { fetchPostMetrics } from "./engine/social/analytics";
 import {
@@ -11423,6 +11424,7 @@ app.get("/api/system/email-status", requireOwner, (_req, res) => {
 // Readiness is deterministic and does not call Gemini. It helps deployment systems
 // distinguish a running process from a fully initialized application.
 app.get("/api/readiness", (_req, res) => {
+  installPublicHealthGuard(res);
   // العقل المركزي canonical يُبنى مرة واحدة لكل طلب؛ كل كتل العقل أدناه
   // (centralBrain التوافقية + brain) تُشتق من نفس اللقطة بلا إعادة جمع.
   const readinessBrain = buildRuntimeBrain({ ...brainRuntimeInput(), now: Date.now() });
@@ -12012,7 +12014,31 @@ app.get("/api/system/deployment-checklist", requireOwner, (_req,res)=>{
   res.json({success:true,ready:checks.every(x=>x.ok),projectVersion:PROJECT_VERSION,schemaVersion:STATE_SCHEMA_VERSION,checks,platforms:platformRows,productionAdapters:Object.fromEntries(SUPPORTED_PLATFORMS.map(p=>[p.id, hasRealConnector(p.id) ? "connector-implemented" : (OAUTH_CONFIG[p.id] ? "credentials-required" : "adapter-required")])),note:"الربط الحقيقي للمنصات يحتاج بيانات تطبيقات واعتمادات الحسابات الخاصة بالمالك؛ لا يتم اختلاقها أو اعتبار المنصة متصلة بدون تحقق مزود فعلي."});
 });
 
+// دفاع أخير بلا مصادقة: النقطتان العامتان /api/health و/api/readiness يجب ألا
+// تحملا أي بيانات عميل (اسم حساب/نص تعليق/نص رد). نُمرّر الحمولة كاملة عبر
+// `sanitizePublicHealthPayload` (المصدر الواحد لقائمة الحقول الممنوعة) قبل الإرسال،
+// فلا يمكن أن يتسرّب حقل حسّاس حتى لو أُضيف لاحقاً إلى كتلة عامة دون قصد.
+function guardPublicHealthPayload(originalJson: (body: any) => any): (body: any) => any {
+  return (body: any) => {
+    const cleaned = sanitizePublicHealthPayload(body);
+    const w = (cleaned as any)?.youtubeWatcher;
+    const extra = findDisallowedWatcherPublicKeys(w);
+    const forbidden = findForbiddenPublicKeys(cleaned);
+    if (extra.length || forbidden.length) {
+      // لا نُسقط الاستجابة (نقطة مراقبة عامة)، لكن نُسجّل الانحراف بوضوح كي لا
+      // يمرّ صامتاً ويُصلح جذرياً. لا يُسجَّل أي محتوى عميل — أسماء حقول فقط.
+      console.warn(`[الغرابي AI] public-health-payload-hardened forbidden=[${forbidden.join(',')}] watcherExtra=[${extra.join(',')}]`);
+    }
+    return originalJson(cleaned);
+  };
+}
+function installPublicHealthGuard(res: any): void {
+  if (typeof res.json !== 'function') return;
+  res.json = guardPublicHealthPayload(res.json.bind(res));
+}
+
 app.get("/api/health", (_req, res) => {
+  installPublicHealthGuard(res);
   const hasKey = Boolean(process.env.GEMINI_API_KEY);
   const tokenKey = tokenKeyInspection();
   // لا تخزين إطلاقاً: نقطة فحص حيّة تحمل commit النشر ووقتاً حيّاً، فأي كاش

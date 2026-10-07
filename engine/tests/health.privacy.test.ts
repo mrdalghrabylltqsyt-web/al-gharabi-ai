@@ -18,6 +18,7 @@ import { mkdtempSync, rmSync, existsSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { randomBytes } from 'node:crypto';
+import { PUBLIC_ENDPOINT_FORBIDDEN_CUSTOMER_FIELDS, PUBLIC_WATCHER_ALLOWED_KEYS, PUBLIC_ENDPOINT_FORBIDDEN_OPERATIONAL_FIELDS } from '../social/healthPrivacy';
 
 let passed = 0;
 const failures: string[] = [];
@@ -159,12 +160,9 @@ function keysOf(obj: unknown, acc = new Set<string>()): Set<string> {
 // أسماء حقول تحمل بيانات عميل صراحةً — ممنوعة في أي مكان بالنقطتين العامتين.
 // قائمة صريحة (لا أنماط واسعة) لتفادي الإنذارات الكاذبة على مفاتيح تقنية مثل
 // commentsCapability/nextAction. أي حقل جديد بهذا المعنى يجب أن يُضاف هنا عن قصد.
-const FORBIDDEN_CUSTOMER_FIELDS = [
-  'authorName', 'commentText', 'commentAuthor', 'replyText', 'lastReply',
-  'attentionRequired', 'customerName', 'customerPhone', 'customerEmail',
-  'contactPhone', 'contactEmail', 'objective', 'lastGoal', 'lastObjective',
-  'lastNextAction', 'customerMessage', 'lastCustomerMessage', 'unresolvedQuestion',
-];
+// مصدر واحد: القائمة الممنوعة تأتي من engine/social/healthPrivacy.ts (نفس ما يفرضه
+// الخادم وقت التشغيل وما يتحقق منه final-audit) — فلا تنحرف النسخ.
+const FORBIDDEN_CUSTOMER_FIELDS = PUBLIC_ENDPOINT_FORBIDDEN_CUSTOMER_FIELDS;
 
 // الحقول التقنية الدنيا المسموح بها فقط في الكتلة العامة youtubeWatcher (allow-list
 // صارم): أي حقل جديد (قد يحمل بيانات عميل أو تفاصيل تشغيلية زائدة) يُفشل الاختبار
@@ -173,17 +171,11 @@ const FORBIDDEN_CUSTOMER_FIELDS = [
 // وطابع آخر دورة — لا يحملان بيانات عملاء ولا عدّادات تجارية، فيُعلنان في النقطتين
 // العامتين. أما counters التفصيلية (detected/replied/escalated...) والمعرّفات فتبقى
 // للمالك فقط عبر المسار المحمي.
-const ALLOWED_WATCHER_PUBLIC_KEYS = new Set([
-  'status', 'watcherActive', 'cadenceMinutes', 'cadenceMs', 'lastError',
-  'consecutiveErrors', 'note', 'pollCount', 'lastPollAt',
-]);
+const ALLOWED_WATCHER_PUBLIC_KEYS = new Set(PUBLIC_WATCHER_ALLOWED_KEYS);
 
 // الحقول التشغيلية التفصيلية التي يجب ألا تظهر في النقطتين العامتين (نُقلت للمالك).
 // pollCount مُستثنى عن قصد (مؤشر تقني liveness لا تفصيل تجاري).
-const FORBIDDEN_OPERATIONAL_DETAIL_FIELDS = [
-  'counters', 'usedUnits', 'remainingUnits', 'byOperation', 'mediaTotalBytes',
-  'mediaStored', 'byState',
-];
+const FORBIDDEN_OPERATIONAL_DETAIL_FIELDS = PUBLIC_ENDPOINT_FORBIDDEN_OPERATIONAL_FIELDS;
 
 async function run(): Promise<void> {
   if (!existsSync(tsxCli)) { console.error('tsx CLI غير موجود — شغّل npm install أولاً.'); process.exit(1); }

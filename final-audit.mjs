@@ -845,6 +845,34 @@ add('health-privacy-test-registered', (pkg.scripts['test'] || '').includes('test
 add('health-privacy-canary-live', healthPrivacyTest.includes('PRIVACY_CANARY_AUTHOR_ZZZ') && healthPrivacyTest.includes('PRIVACY_CANARY_COMMENT_TEXT_ZZZ') && healthPrivacyTest.includes('PRIVACY_CANARY_REPLY_TEXT_ZZZ') && healthPrivacyTest.includes('hasLeak(health)'), 'اختبار يزرع canary (اسم/نص تعليق/نص رد) ويتحقق أن الاستجابة العامة لا تكشفه');
 add('health-privacy-field-allowlist', healthPrivacyTest.includes('ALLOWED_WATCHER_PUBLIC_KEYS') && healthPrivacyTest.includes('FORBIDDEN_CUSTOMER_FIELDS') && healthPrivacyTest.includes('watcherPublicExtra'), 'حارس allow-list صارم للكتلة العامة + قائمة حقول عميل ممنوعة (يمنع رجوع أي حقل حسّاس جديد)');
 add('health-privacy-detail-owner-only', healthPrivacyTest.includes('/api/agent/youtube/watcher') && healthPrivacyTest.includes('owner.watcher?.attentionRequired?.[0]?.text === LEAK_COMMENT') && healthPrivacyTest.includes('lastReply?.replyText === LEAK_REPLY'), 'البيانات التفصيلية تبقى متاحة للمالك عبر المسار المحمي (لا حذف من النظام)');
+// مصدر واحد لحماية النقطتين العامتين: قائمة الحقول الممنوعة وقائمة allow-list
+// للكتلة العامة تعيش في engine/social/healthPrivacy.ts ويستهلكها الخادم والاختبار
+// — فلا تنحرف النسخ، وأي حقل جديد يُضاف مرة واحدة فقط.
+const healthPrivacyModule = fs.existsSync(path.join(root, 'engine/social/healthPrivacy.ts')) ? read('engine/social/healthPrivacy.ts') : '';
+add('public-health-privacy-single-source',
+  healthPrivacyModule.includes('PUBLIC_ENDPOINT_FORBIDDEN_CUSTOMER_FIELDS') &&
+  healthPrivacyModule.includes('PUBLIC_WATCHER_ALLOWED_KEYS') &&
+  healthPrivacyModule.includes('export function sanitizePublicHealthPayload'),
+  'وحدة engine/social/healthPrivacy.ts هي المصدر الواحد لقائمة الحقول الممنوعة + allow-list الكتلة العامة + دالة التنقية');
+add('public-health-runtime-guard-wired',
+  server.includes('import { sanitizePublicHealthPayload, findForbiddenPublicKeys, findDisallowedWatcherPublicKeys } from "./engine/social/healthPrivacy"') &&
+  server.includes('function installPublicHealthGuard(res: any): void') &&
+  (server.match(/installPublicHealthGuard\(res\)/g) || []).length === 2,
+  'الخادم يستورد حارس الخصوصية ويُثبّته على /api/health و/api/readiness (دفاع أخير ينقّي أي حقل ممنوع قبل الإرسال)');
+add('public-health-guard-strips-forbidden',
+  server.includes('res.json = guardPublicHealthPayload(res.json.bind(res));') &&
+  server.includes('const cleaned = sanitizePublicHealthPayload(body);'),
+  'حارس التشغيل يمرّر الحمولة كاملة عبر sanitizePublicHealthPayload قبل الإرسال (لا تسرّب صامت)');
+add('public-health-test-uses-single-source',
+  healthPrivacyTest.includes("from '../social/healthPrivacy'") &&
+  healthPrivacyTest.includes('const FORBIDDEN_CUSTOMER_FIELDS = PUBLIC_ENDPOINT_FORBIDDEN_CUSTOMER_FIELDS;') &&
+  healthPrivacyTest.includes('const ALLOWED_WATCHER_PUBLIC_KEYS = new Set(PUBLIC_WATCHER_ALLOWED_KEYS);'),
+  'اختبار الانحدار يقرأ قائمة الحقول الممنوعة وallow-list من المصدر الواحد (لا نسخة ثانية تنحرف)');
+add('public-health-guard-test-exists',
+  fs.existsSync(path.join(root, 'engine/tests/health.guard.test.ts')) &&
+  (pkg.scripts['test'] || '').includes('test:health-guard'),
+  'اختبار وحدة لحارس الخصوصية (sanitize/السماح/الكشف) مسجّل ضمن npm test');
+
 
 // ------------------------------------------------------------
 // Point 5 — pollCount محسوم تقنياً: مؤشر liveness (عدّاد دورات الفحص الناجحة + طابع
@@ -861,8 +889,9 @@ add('pollcount-semantics-documented',
   read('AGENTS.md').includes('pollCount'),
   'معنى pollCount موثّق في الكود وفي AGENTS.md (مؤشر تقني لا تجاري)');
 add('pollcount-not-forbidden-leak',
-  healthPrivacyTest.includes("'pollCount', 'lastPollAt'") &&
-  !/FORBIDDEN_OPERATIONAL_DETAIL_FIELDS\s*=\s*\[[\s\S]*?'pollCount'/.test(healthPrivacyTest),
+  healthPrivacyModule.includes("'pollCount'") && healthPrivacyModule.includes("'lastPollAt'") &&
+  !/PUBLIC_ENDPOINT_FORBIDDEN_OPERATIONAL_FIELDS\s*=\s*\[[\s\S]*?'pollCount'/.test(healthPrivacyModule) &&
+  !/PUBLIC_ENDPOINT_FORBIDDEN_CUSTOMER_FIELDS\s*=\s*\[[\s\S]*?'pollCount'/.test(healthPrivacyModule),
   'pollCount مُستثنى عن قصد من قائمة الحقول الممنوعة (مؤشر تقني لا تسريب)');
 
 // ------------------------------------------------------------
