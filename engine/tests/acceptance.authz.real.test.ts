@@ -126,6 +126,27 @@ async function run(): Promise<void> {
     const staffLogoutOthers = await call('/api/users', 'GET', staffToken);
     check('موظف: قائمة المستخدمين متاحة للمصادق (ليست owner-only)', staffLogoutOthers.status === 200);
 
+    // 3b) سياسة حالة المحتوى: لا انتحال لقرار الاعتماد عبر PATCH/POST.
+    //     (ثغرة مُثبتة: كان أي دور محرّر يكتب status:"approved" فيمرّ النشر بلا موافقة المالك.)
+    const createDraft = await call('/api/workspace/content', 'POST', staffToken, { title: 'منشور اختبار', content: 'نص تسويقي تجريبي مسموح', targetPlatforms: ['facebook'], status: 'draft' });
+    check('موظف: إنشاء مسودة => 201', createDraft.status === 201 && createDraft.json?.post?.status === 'draft', `status=${createDraft.status}`);
+    const draftId = String(createDraft.json?.post?.id || '');
+    check('موظف: تعديل الحالات المسموحة (review/edited) يمرّ', (await call(`/api/workspace/content/${draftId}`, 'PATCH', staffToken, { status: 'review' })).status === 200);
+    const staffApprovePatch = await call(`/api/workspace/content/${draftId}`, 'PATCH', staffToken, { status: 'approved' });
+    check('موظف: تعيين approved عبر PATCH مرفوض 403 (لا انتحال اعتماد)', staffApprovePatch.status === 403, `status=${staffApprovePatch.status}`);
+    check('موظف: رفض approved يحمل كوداً صريحاً', staffApprovePatch.json?.code === 'OWNER_APPROVAL_ENDPOINT_REQUIRED');
+    const staffSchedulePatch = await call(`/api/workspace/content/${draftId}`, 'PATCH', staffToken, { status: 'scheduled', scheduledFor: '2099-01-01T10:00' });
+    check('موظف: تعيين scheduled عبر PATCH مرفوض 403', staffSchedulePatch.status === 403, `status=${staffSchedulePatch.status}`);
+    const staffPublishedPatch = await call(`/api/workspace/content/${draftId}`, 'PATCH', staffToken, { status: 'published' });
+    check('موظف: تعيين published عبر PATCH مرفوض 409', staffPublishedPatch.status === 409, `status=${staffPublishedPatch.status}`);
+    const staffPublishedCreate = await call('/api/workspace/content', 'POST', staffToken, { title: 'x', content: 'نص تسويقي تجريبي مسموح', targetPlatforms: ['facebook'], status: 'published' });
+    check('موظف: إنشاء بحالة published مرفوض 409 (يتطلب إثبات مزود)', staffPublishedCreate.status === 409, `status=${staffPublishedCreate.status}`);
+    const staffApprovedCreate = await call('/api/workspace/content', 'POST', staffToken, { title: 'x', content: 'نص تسويقي تجريبي مسموح', targetPlatforms: ['facebook'], status: 'approved' });
+    check('موظف: إنشاء بحالة approved مرفوض 403', staffApprovedCreate.status === 403, `status=${staffApprovedCreate.status}`);
+    // المالك يمرّ عبر المسار الرسمي للاعتماد (لا عبر PATCH).
+    const ownerApproveContent = await call(`/api/workspace/content/${draftId}/approve`, 'POST', ownerToken, {});
+    check('مالك: اعتماد المسار الرسمي => 200', ownerApproveContent.status === 200 && ownerApproveContent.json?.post?.status === 'approved', `status=${ownerApproveContent.status}`);
+
     // 4) المالك: يمر فعلاً.
     const ownerApprove = await call('/api/social/manager/approvals', 'POST', ownerToken, { platform: 'facebook', externalId: 'authz-1', status: 'approved' });
     check('مالك: قرار المراجعة => 200', ownerApprove.status === 200 && ownerApprove.json?.approval?.status === 'approved', `status=${ownerApprove.status}`);

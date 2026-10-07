@@ -44,7 +44,7 @@ npm install
 npm run dev            # tsx server.ts
 npm run lint           # tsc --noEmit
 npm run build          # vite build + esbuild server.ts -> dist/server.cjs
-npm run final-audit    # node final-audit.mjs (1340 فحصاً)
+npm run final-audit    # node final-audit.mjs (1342 فحصاً)
 npm test               # storage + engine + auth + ... + db + runtime
 ```
 - التشغيل الإنتاجي: `PORT=4517 NODE_ENV=production APP_URL=http://localhost:4517 node dist/server.cjs`
@@ -4073,6 +4073,36 @@ Threads، ولا ينفّذه أي وكيل برمجي. (احتمال إضافي
 الحقيقية ورمزها، عدم إخفائها خلف نص عام، بقاء صيغة Google مدعومة). فحوص final-audit الخمسة
 الجديدة: `oauth-provider-error-formatter`، `parse-token-response-uses-provider-message`،
 `threads-oauth-failure-hint`، `threads-setup-block-exposed`، `threads-oauth-error-test`
-(**1340 إجمالاً**). لم يُمسّ Facebook/Instagram/TikTok/YouTube/Telegram، ولا Gemini، ولا
+(**1342 إجمالاً**). لم يُمسّ Facebook/Instagram/TikTok/YouTube/Telegram، ولا Gemini، ولا
 مفاتيح التشفير، ولا أي سرّ.
 
+## إصلاح ثغرة انتحال قرار الاعتماد على النشر + حالة published عند الإنشاء (2026-10-04)
+
+**الثغرة المُثبتة (تجاوز تفويض حقيقي):** مسار `PATCH /api/workspace/content/:id` كان يقبل من أي
+دور محرّر (manager/staff/content_creator) كتابة `status:"approved"` أو `"scheduled"` مباشرةً،
+بينما مسارا الاعتماد والجدولة الرسميان محصوران بالمالك (`requireOwner`). وبما أن بوابة النشر
+تقرأ حالة المنشور مباشرةً (`publishPreflight({approved: post.status==='approved'})`)، كان موظف
+عادي قادراً على **انتحال قرار الاعتماد** فيمرّ النشر بلا موافقة المالك — تجاوز مباشر لبوابة
+اعتماد النشر الحرجة (النتيجة #1 في دفعة الإصلاحات).
+
+**ثغرة ثانية:** `POST /api/workspace/content` كان بلا فحص دور أصلاً، وقائمة الحالة المقبولة
+تتضمن `"published"` — فيمكن إنشاء منشور معلَّم كمُنشَر مباشرةً، بينما PATCH يحجبه صراحةً
+(تجاوز قاعدة «لا نشر بلا إثبات مزود»).
+
+**الإصلاح — مصدر واحد `engine/social/contentStatusPolicy.ts`:**
+- `CONTENT_EDITOR_ROLES` و`canEditContent(role)`.
+- `CONTENT_DIRECT_SETTABLE_STATUSES` = `draft|review|edited` (المسموح عبر PATCH/الإنشاء).
+- `CONTENT_OWNER_ONLY_STATUSES` = `approved|scheduled` (مسار المالك الرسمي فقط).
+- `CONTENT_PROVIDER_PROOF_STATUS` = `published` (يتطلب إيصال تنفيذ من مزود المنصة).
+- `canSetContentStatusByRole(role,status)` يعيد قراراً صريحاً بكود
+  (`ROLE_NOT_PERMITTED`/`OWNER_APPROVAL_ENDPOINT_REQUIRED`/`PUBLISHED_REQUIRES_PROVIDER_PROOF`).
+
+`server.ts`: PATCH وPOST يستخدمان `canEditContent` و`canSetContentStatusByRole`؛ لا توجد أي
+قائمة حالات مضمّنة بعد الآن. الواجهة (`AppContext.updatePostStatus`) تعتمد/تجدول عبر
+المسارين الرسميين الجديدين `apiService.approveWorkspaceContent`/`scheduleWorkspaceContent`
+(لا PATCH)، فلا ينكسر تدفّق المالك ولا يمكن انتحال الاعتماد.
+
+اختبارات: `acceptance.authz.real.test.ts` (+9 فحوص على الخادم الفعلي: PATCH approved/scheduled
+مرفوض 403، published مرفوض 409، الإنشاء بحالة published/approved مرفوض، والمالك يمرّ عبر
+المسار الرسمي). فحصا final-audit: `content-status-approval-owner-only`،
+`content-post-no-published-status` (**1342 إجمالاً**). لم يُمسّ أي سر أو متغير بيئة.

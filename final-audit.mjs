@@ -64,6 +64,20 @@ add('classify-message-no-gemini-fallback', server.includes('const aiSource = pro
 add('social-reply-console-wired', read('src/components/social/SocialHubView.tsx').includes('apiService.replyToSocialComment') && read('src/components/social/SocialHubView.tsx').includes('apiService.submitSocialApproval'), 'وحدة التعليقات موصولة بمسارات الرد والمراجعة الحقيقية');
 add('social-ui-no-fake-publish', !/ينشر\s*فور/.test(read('src/components/social/SocialHubView.tsx')) && !/تم\s*الإرسال/.test(read('src/components/social/SocialHubView.tsx')), 'الواجهة لا تدّعي نشراً خارجياً فورياً');
 add('social-approvals-owner-only', socialRoutes.includes("app.post('/api/social/manager/approvals', requireOwner"), 'قرارات المراجعة محمية بصلاحية المالك');
+// بوابة اعتماد النشر: لا يجوز لأي دور محرّر تعيين approved/scheduled عبر PATCH/الإنشاء (منع انتحال قرار الاعتماد).
+const contentStatusPolicy = read('engine/social/contentStatusPolicy.ts');
+add('content-status-approval-owner-only',
+  server.includes('canSetContentStatusByRole(user.role') &&
+  server.includes('canEditContent(user.role)') &&
+  !/includes\(b\.status\)\) post\.status=b\.status/.test(server) &&
+  contentStatusPolicy.includes("CONTENT_OWNER_ONLY_STATUSES") &&
+  contentStatusPolicy.includes("'approved', 'scheduled'"),
+  'تعيين approved/scheduled عبر PATCH مقتصر على المسار الرسمي للمالك (لا انتحال اعتماد)');
+add('content-post-no-published-status',
+  server.includes('canSetContentStatusByRole(user.role, desiredStatus)') &&
+  !/status: \["draft","review","edited","approved","scheduled","published"\]\.includes\(b\.status\)/.test(server) &&
+  contentStatusPolicy.includes("CONTENT_PROVIDER_PROOF_STATUS = 'published'"),
+  'لا يُنشأ منشور بحالة published/approved (تتطلب إثبات مزود/موافقة المالك)');
 add('social-approvals-persisted', server.includes('socialApprovals: (workspace as any).socialApprovals.slice(0, 5000)') && server.includes('socialApprovals: Array.isArray(raw.workspace.socialApprovals)'), 'قرارات المراجعة تُحفظ وتُحمَّل عبر المحوّل');
 // G4: مصدر واحد للقدرات.
 add('capabilities-single-source', server.includes('const SUPPORTED_PLATFORMS = PLATFORM_SPECS.map(') && server.includes('return platformSupports(platform, capability);'), 'قدرات المنصات مشتقة من سجل الموصلات وحده');
