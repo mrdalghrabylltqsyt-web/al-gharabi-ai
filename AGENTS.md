@@ -44,7 +44,7 @@ npm install
 npm run dev            # tsx server.ts
 npm run lint           # tsc --noEmit
 npm run build          # vite build + esbuild server.ts -> dist/server.cjs
-npm run final-audit    # node final-audit.mjs (1334 فحصاً)
+npm run final-audit    # node final-audit.mjs (1335 فحصاً)
 npm test               # storage + engine + auth + ... + db + runtime
 ```
 - التشغيل الإنتاجي: `PORT=4517 NODE_ENV=production APP_URL=http://localhost:4517 node dist/server.cjs`
@@ -3947,9 +3947,10 @@ Security/QA/Reliability. الأساس سليم (المصادقة/التوقيع�
 **لا ادّعاء نجاح قبل اختبار حيّ من المالك** يصل إلى «تم ربط صفحة Facebook بنجاح». لم يُدمج
 على `main` ولم يُنشر.
 
-**درس عام:** طلب حقل اختياري غير مستخدم في Graph API قد يستدعي صلاحية غير مضمونة فيرد
-المزود خطأً يسمّي صلاحية تبدو «مطلوبة» بينما هي مطلوبة فقط للحقل الزائد. اطلب من الحقول
-قدر ما تحتاجه فقط.
+**درس عام (مُصحَّح):** طلب حقل اختياري غير مستخدم في Graph API ممارسة خاطئة، لكن الاختبار
+الحيّ أثبت أن `tasks` لم يكن سبب `#100` — السبب الجذري هو استدعاء عقدة الصفحة نفسه (القسم
+التالي). يُبقى هذا القسم للتوثيق: الحقول الزائدة تُزال، لكن لا تفترض أنها السبب بلا إثبات
+حيّ بـfbtraceId جديد.
 
 ## الجذر الحقيقي لـ#100: لا تستدعِ GET /{page-id} في الربط — رمز الصفحة يأتي من /me/accounts (2026-10-04)
 
@@ -3970,22 +3971,29 @@ Security/QA/Reliability. الأساس سليم (المصادقة/التوقيع�
 - `facebookFinalizePageSelection(pageId, userAccessToken, pageData?)` صار يقبل بيانات
   الصفحة (`pageId`/`pageName`/`pageAccessToken`) القادمة من `/me/accounts` مباشرةً،
   ويستخدمها بلا أي `GET /{page-id}`. `getPageProfile` يبقى **مساراً احتياطياً فقط** عند
-  غياب رمز الصفحة من القائمة، ويُستخدم مستقلاً في `verifyProviderConnection`.
+  غياب رمز الصفحة من القائمة، وتبقى دالةً متاحةً ومُختبَرة وحدياً (لا مسار تشغيلي حاسم
+  يستدعيها في Facebook بعد إصلاح `verifyProviderConnection` أدناه).
 - `server.ts` — مسارا الربط يمرّران بيانات الصفحة: callback صفحة واحدة
   (`facebookFinalizePageSelection(pages.data[0].pageId,userToken,pages.data[0])`) و
   `POST /api/platforms/facebook/select-page` (يجد الصفحة من `listManagedPages` بالمعرّف
-  ثم يمرّرها). `getPageProfile` تبقى مستدعاةً في مكان واحد فقط:
-  `verifyProviderConnection` (إثبات الاتصال، غير حاسم للربط).
+  ثم يمرّرها).
+- **إصلاح تابع (verifyProviderConnection):** مسار `POST /api/platforms/:platform/connection-callback`
+  كان يُثبت اتصال Facebook عبر `getPageProfile` → `GET /{page-id}` فيفشل حتماً بـ`#100`.
+  الآن يُثبت عبر `listManagedPages` (يطابق `stored.pageId` ضمن صفحات المستخدم) — بلا
+  عقدة الصفحة إطلاقاً. **الأثر بعد الإصلاح: `getPageProfile` لم يبقَ لها أي استدعاء في
+  مسار حاسم**؛ تبقى دالةً متاحةً (احتياطي في الربط، ومُختبَرة وحدياً) لكن لا مسار تشغيلي
+  يعتمد عليها في Facebook.
 - **سجل نجاح** `[facebook-graph] GET /me/accounts ok pages=N withToken=M` (بلا اسم/رمز)
   يُثبت أن القائمة تنجح وتمنح رمز الصفحة — طُلب صراحةً للتشخيص.
 
 **اختبار انحدار حاسم (المجموعة 19ب):** خادم Graph وهمي بـ`failPageProfile: true`
 (يحاكي `#100` الحقيقي على `GET /{page-id}`) **مع** `/me/accounts` ناجح: الربط يكتمل
 `200` وتظهر «تم ربط صفحة Facebook بنجاح»، و`pageProfileCalls === 0` (لا استدعاء للعقدة
-إطلاقاً). ومثله في مسار اختيار الصفحة (المجموعة 19). `facebook.connector.test.ts` =
-**249 فحصاً** (+7). `final-audit` = **1334 فحصاً** (+`facebook-finalize-uses-page-from-accounts`،
-`-no-pageprofile-primary`، `facebook-accounts-success-logged`، `-on-connect-test`). الفرع:
-`fix/facebook-finalize-from-accounts`.
+إطلاقاً). ومثله في مسار اختيار الصفحة (المجموعة 19)، وفحص `connection-callback`
+(المجموعة 5) يثبت أن إثبات الاتصال لا يستدعي عقدة الصفحة. `facebook.connector.test.ts` =
+**250 فحصاً** (+8). `final-audit` = **1335 فحصاً** (+`facebook-finalize-uses-page-from-accounts`،
+`-no-pageprofile-primary`، `facebook-accounts-success-logged`، `-on-connect-test`،
+`facebook-verify-uses-accounts-not-page-node`). الفرع: `fix/facebook-finalize-from-accounts`.
 
 **هل يفشل `GET /{page-id}` بحقل `id` فقط؟ (السؤال 4):** لا اختبار حي مباشر على الإنتاج،
 لكن الفشل لم يكن يوماً بسبب الحقول: حتى `fields=id,name,access_token` (بعد إزالة tasks)
@@ -4001,3 +4009,30 @@ Security/QA/Reliability. الأساس سليم (المصادقة/التوقيع�
 **درس عام:** لا تطلب بيانات تملكها بالفعل من نقطة نهاية أضيق صلاحية. رمز الصفحة وصل في
 `/me/accounts`؛ فاستدعاء عقدة الصفحة لإعادة جلبه أضاف سطح صلاحية غير مضمون وأفشل الربط
 رغم صحة كل شيء آخر.
+
+### حدود ما بعد الإصلاح — أثر الصلاحيات غير المُمنوحة (تقرير إغلاق)
+
+بعد هذا الإصلاح **لا يوجد أي مسار تشغيلي في Facebook يعتمد على `pages_read_engagement`
+أو على `GET /{page-id}`**؛ الربط واكتشاف الصفحات وإثبات الاتصال كلها تمر عبر `/me/accounts`
+(المسار الذي يمنح رمز الصفحة). لذلك:
+
+- **مؤكّد:** `verifyProviderConnection` (مسار `connection-callback`) كان سيفشل لاحقاً بنفس
+  `#100`، وقد أُصلح بنفس المنطق (إثبات عبر `/me/accounts`). لا مسار حاسم يعتمد على عقدة
+  الصفحة الآن.
+- **القدرات المعلنة في السجل** (`publish`، `messages`، `message_reply`، `analytics`،
+  `comments`، `comment_reply`، `scheduling`) تعتمد على مسارات **برمز الصفحة** لا على
+  `pages_read_engagement`:
+  - رد التعليقات `POST /{comment-id}/comments` → `pages_manage_engagement` + اعتماديتها.
+  - رسائل Messenger `POST /{page-id}/messages` → `pages_messaging`.
+  - النشر `POST /{page-id}/feed` → `pages_manage_posts`.
+  - اشتراك webhook `POST /{page-id}/subscribed_apps` → `pages_manage_metadata` + `pages_show_list`.
+- **الفجوة الوحيدة المتبقية (صادقة):** أي عملية **تحتاج `pages_read_engagement` صراحةً**
+  (مثل قراءة engagement/insights للصفحة، أو قراءة عقدة الصفحة مباشرةً) ستبقى مقيّدة حتى
+  تُفعَّل الصلاحية في Configuration/Use Case لدى Meta. **لا يوجد في الكود أي استدعاء يتطلبها
+  حالياً** — فالحدّ نظري للميزات المستقبلية لا أثر فوري. إن أُريدت لاحقاً، تُفعَّل الصلاحية
+  في Meta App Dashboard → Use Cases/Configurations ثم تُضاف القدرة المقابلة.
+- **`business_management`**: مطلوبة أصلاً (لصفحات Business Manager عبر `/me/accounts`) وهي
+  ضمن المجموعة المطلوبة، فلا فجوة هناك.
+- **`getPageProfile`**: تبقى دالةً مُختبَرة وحدياً ومتاحة كاحتياطي في الربط (عند غياب رمز
+  الصفحة من القائمة فقط) — لا مسار تشغيلي يستدعيها في Facebook الآن. إن استُخدمت مستقبلاً
+  في سياق لا يمنح `pages_read_engagement` فسترد `#100`، ولهذا أُبقيت **خارج كل مسار حاسم**.

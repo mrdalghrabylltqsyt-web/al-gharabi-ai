@@ -379,6 +379,11 @@ async function integrationTests(): Promise<void> {
     const fbAfter = readinessAfter.platforms.find((p: any) => p.platform === 'facebook');
     check('Facebook أصبح متصلاً وموثقاً', fbAfter.connected === true && fbAfter.providerVerified === true);
     check('لا يُعاد أي رمز صفحة في الاستجابة', !JSON.stringify(fbAfter).includes('PAGE_TOKEN_TEST') && !JSON.stringify(readinessAfter).includes('USER_TOKEN_TEST_LONG'));
+    // verifyProviderConnection (connection-callback) كان يستدعي GET /{page-id}
+    // أيضاً فيفشل بـ#100. الآن يُثبت عبر /me/accounts، فلا استدعاء لعقدة الصفحة.
+    const cbVerify = await fetch(`${BASE}/api/platforms/facebook/connection-callback`, { method: 'POST', headers: auth, body: JSON.stringify({ platform: 'facebook' }) });
+    const cbVerifyBody = await cbVerify.json().catch(() => ({}));
+    check('connection-callback يوثّق الاتصال بلا GET /{page-id}', cbVerify.status === 200 && cbVerifyBody.success === true && mock.state.pageProfileCalls === 0, `status=${cbVerify.status} pageProfileCalls=${mock.state.pageProfileCalls}`);
 
     group('6) تكامل: إثبات اشتراك الصفحة (webhook-info)');
     const info = await (await fetch(`${BASE}/api/platforms/facebook/webhook-info`, { headers: auth })).json();

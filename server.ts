@@ -2790,11 +2790,17 @@ async function verifyProviderConnection(platform: string): Promise<{ verified: b
     const stored = getProviderToken("facebook");
     const pageId = stored?.pageId ? String(stored.pageId) : "";
     const token = stored?.pageAccessToken ? String(stored.pageAccessToken) : "";
+    const userToken = stored?.userAccessToken ? String(stored.userAccessToken) : "";
     if (!pageId || !token) return { verified: false, error: "لا اعتماد صفحة Facebook محفوظ؛ نفّذ الربط عبر OAuth أولاً." };
-    // إثبات حي: نستعلم عن هوية الصفحة فعلياً من Graph API بلا أي ادعاء.
-    const proof = await facebookClient().getPageProfile(pageId, token);
-    if (!proof.ok || !proof.data?.pageId) return { verified: false, error: proof.error || "تعذر إثبات هوية صفحة Facebook." };
-    return { verified: true, accountId: proof.data.pageId, accountName: proof.data.pageName || stored?.pageName || undefined };
+    // إثبات حي بلا GET /{page-id}: قراءة عقدة الصفحة مباشرةً تستدعي
+    // pages_read_engagement وترد Meta #100 على صفحات لا تمنحها (مُثبت حياً).
+    // نُثبت الاتصال عبر /me/accounts (المسار الذي يمنح رمز الصفحة) بأن الصفحة
+    // المحفوظة ما زالت ضمن صفحات المستخدم.
+    const pages = await facebookClient().listManagedPages(userToken);
+    if (!pages.ok) return { verified: false, error: pages.error || "تعذّر إثبات صفحات Facebook." };
+    const match = (pages.data || []).find((p) => String(p.pageId) === pageId);
+    if (!match) return { verified: false, error: "الصفحة المحفوظة ليست ضمن صفحات هذا الحساب؛ أعد الربط." };
+    return { verified: true, accountId: match.pageId, accountName: match.pageName || stored?.pageName || undefined };
   }
   if (platform === "instagram") {
     const igAccountId = instagramAccountId();

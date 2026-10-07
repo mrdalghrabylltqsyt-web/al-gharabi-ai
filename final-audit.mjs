@@ -240,6 +240,10 @@ add('facebook-finalize-uses-page-from-accounts', server.includes('facebookFinali
 add('facebook-finalize-no-pageprofile-primary', /async function facebookFinalizePageSelection\(pageId: string, userAccessToken: string, pageData\?/.test(server) && /if \(!resolvedPageId \|\| !pageToken\)/.test(server), 'getPageProfile مسار احتياطي فقط عند غياب رمز الصفحة من القائمة');
 add('facebook-accounts-success-logged', read('engine/social/facebook.ts').includes('[facebook-graph] GET /me/accounts ok'), 'نجاح /me/accounts يُسجَّل بلا اسم/رمز (إثبات أن القائمة تنجح وتمنح رمز الصفحة)');
 add('facebook-no-pageprofile-on-connect-test', fs.existsSync(path.join(root, 'engine/tests/facebook.connector.test.ts')) && read('engine/tests/facebook.connector.test.ts').includes('pageProfileCalls === 0'), 'اختبار انحدار يثبت أن مسار الربط لا يستدعي GET /{page-id} حتى لو رد #100');
+// verifyProviderConnection (connection-callback) كان يستدعي getPageProfile أيضاً،
+// فيفشل بـ#100. الآن يُثبت الاتصال عبر /me/accounts بلا عقدة الصفحة.
+const fbVerifyBranch = (server.match(/if \(platform === "facebook"\) \{[\s\S]*?listManagedPages\(userToken\)[\s\S]*?\n {2}\}/) || [''])[0];
+add('facebook-verify-uses-accounts-not-page-node', fbVerifyBranch.includes('listManagedPages') && !fbVerifyBranch.includes('getPageProfile'), 'verifyProviderConnection لـFacebook يُثبت عبر /me/accounts بلا GET /{page-id}');
 // تطبيع مسافات/أسطر بيئة OAuth: Render قد يضيف سطراً زائداً فيبدو السرّ «مضبوطاً»
 // بينما يرفضه Meta بـinvalid_client_secret فيمنع بدء الربط بـ409 بلا سبب ظاهر.
 add('oauth-env-trimmed-single-helper', server.includes('function envSecret(') && /envSecret\("FACEBOOK_OAUTH_CLIENT_SECRET"\)/.test(server) && /envSecret\("FACEBOOK_OAUTH_CLIENT_ID"\)/.test(server), 'client_id/secret يُقرآن عبر envSecret المطبِّع لا من process.env الخام');
