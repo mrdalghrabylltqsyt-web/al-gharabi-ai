@@ -42,6 +42,10 @@ export interface FacebookMockState {
   subscribed: Record<string, string[]>;
   /** آخر طلب اشتراك (للتحقق). */
   lastSubscribe: { pageId: string; fields: string; token: string } | null;
+  /** آخر حقل fields طُلب من إثبات هوية الصفحة (GET /{page-id}) — لكشف طلب tasks الزائد. */
+  lastPageProfileFields: string | null;
+  /** عدد استدعاءات GET /{page-id} (يجب أن يبقى 0 في مسار الربط بعد الإصلاح). */
+  pageProfileCalls: number;
   /** الردود على التعليقات المُرسلة. */
   commentReplies: { commentId: string; message: string; token: string; id: string }[];
   /** الرسائل المُرسلة. */
@@ -78,6 +82,8 @@ export function createFacebookMock(state: Partial<FacebookMockState> = {}): Face
     failPublish: false,
     subscribed: {},
     lastSubscribe: null,
+    lastPageProfileFields: null,
+    pageProfileCalls: 0,
     commentReplies: [],
     sentMessages: [],
     posts: [],
@@ -201,10 +207,12 @@ export async function startFacebookMockServer(
     const { pageId } = req.params;
     if (!pageId || pageId === 'me') return res.status(400).json({ error: { message: 'unsupported' } });
     state.calls += 1;
+    state.pageProfileCalls += 1;
     if (state.failPageProfile) return res.status(400).json({ error: { message: 'Unsupported get request', code: 100 } });
     const page = state.pages.find((p) => p.id === pageId);
     if (!page) return res.status(400).json({ error: { message: 'Unknown page', code: 803 } });
     const fields = String(req.query.fields || '');
+    state.lastPageProfileFields = fields;
     const out: Record<string, unknown> = { id: page.id };
     if (fields.includes('name')) out.name = page.name;
     if (fields.includes('access_token')) out.access_token = page.accessToken;

@@ -229,6 +229,21 @@ add('facebook-comment-reply-dependency-present', read('engine/social/facebook.ts
 add('facebook-scopes-resolved-with-dependencies', server.includes('resolveFacebookScopes') && server.includes('facebookScopeDependencyGaps') && !/scopes:cfg\.scopes/.test(server), 'server.ts يبني صلاحيات Facebook عبر الحلّ مع الاعتماديات لا من cfg.scopes الخام');
 add('facebook-scope-gaps-exposed', server.includes('scopeDependencyGaps') && server.includes('scopeDependenciesResolved'), 'الفارق في اعتماديات الصلاحيات يُعلَن في health/oauth-start/setup بلا سرّ');
 add('facebook-scope-dependency-test', fs.existsSync(path.join(root, 'engine/tests/facebook.connector.test.ts')) && read('engine/tests/facebook.connector.test.ts').includes('resolveFacebookScopes') && read('engine/tests/facebook.connector.test.ts').includes('findMissingScopeDependencies'), 'اختبار انحدار يثبّت اعتماديات الصلاحيات ورفض المجموعة الناقصة');
+// فشل Graph API يُسجَّل كاملاً (code/subcode/message/fbtrace_id) بلا قطع وبلا سرّ،
+// فلا يعود سبب فشل الربط مجهولاً بعد slice(0,240) الذي قطع نص Meta في الاستجابة.
+add('facebook-graph-error-logged-full', read('engine/social/facebook.ts').includes('extractFacebookGraphError') && read('engine/social/facebook.ts').includes('formatFacebookGraphError') && read('engine/social/facebook.ts').includes('[facebook-graph-error]'), 'استخراج خطأ Graph الكامل وتسجيله بلا سرّ في مسارات القراءة (accounts/page/subscribed_apps)');
+add('facebook-graph-error-logged-on-catch', server.includes('[oauth-callback-error]') && server.includes('String(e?.message||e)'), 'كتلة catch في callback تسجّل الرسالة الكاملة غير المقطوعة (بلا توكن)');
+add('facebook-graph-error-logging-test', fs.existsSync(path.join(root, 'engine/tests/facebook.connector.test.ts')) && read('engine/tests/facebook.connector.test.ts').includes('extractFacebookGraphError') && read('engine/tests/facebook.connector.test.ts').includes('fbtrace_id'), 'اختبار انحدار يثبّت استخراج نص الخطأ الكامل وبلا سرّ');
+// إصلاح #100 الجذري: مسار ربط Facebook يستخدم رمز الصفحة من /me/accounts مباشرةً
+// ولا يستدعي GET /{page-id} (الذي يستدعي pages_read_engagement ويرد #100).
+add('facebook-finalize-uses-page-from-accounts', server.includes('facebookFinalizePageSelection(pages.data[0].pageId,userToken,pages.data[0])') && server.includes('facebookFinalizePageSelection(page.pageId,userToken,page)'), 'مسارا الربط (callback + select-page) يمرّران بيانات الصفحة من /me/accounts بلا GET /{page-id}');
+add('facebook-finalize-no-pageprofile-primary', /async function facebookFinalizePageSelection\(pageId: string, userAccessToken: string, pageData\?/.test(server) && /if \(!resolvedPageId \|\| !pageToken\)/.test(server), 'getPageProfile مسار احتياطي فقط عند غياب رمز الصفحة من القائمة');
+add('facebook-accounts-success-logged', read('engine/social/facebook.ts').includes('[facebook-graph] GET /me/accounts ok'), 'نجاح /me/accounts يُسجَّل بلا اسم/رمز (إثبات أن القائمة تنجح وتمنح رمز الصفحة)');
+add('facebook-no-pageprofile-on-connect-test', fs.existsSync(path.join(root, 'engine/tests/facebook.connector.test.ts')) && read('engine/tests/facebook.connector.test.ts').includes('pageProfileCalls === 0'), 'اختبار انحدار يثبت أن مسار الربط لا يستدعي GET /{page-id} حتى لو رد #100');
+// verifyProviderConnection (connection-callback) كان يستدعي getPageProfile أيضاً،
+// فيفشل بـ#100. الآن يُثبت الاتصال عبر /me/accounts بلا عقدة الصفحة.
+const fbVerifyBranch = (server.match(/if \(platform === "facebook"\) \{[\s\S]*?listManagedPages\(userToken\)[\s\S]*?\n {2}\}/) || [''])[0];
+add('facebook-verify-uses-accounts-not-page-node', fbVerifyBranch.includes('listManagedPages') && !fbVerifyBranch.includes('getPageProfile'), 'verifyProviderConnection لـFacebook يُثبت عبر /me/accounts بلا GET /{page-id}');
 // تطبيع مسافات/أسطر بيئة OAuth: Render قد يضيف سطراً زائداً فيبدو السرّ «مضبوطاً»
 // بينما يرفضه Meta بـinvalid_client_secret فيمنع بدء الربط بـ409 بلا سبب ظاهر.
 add('oauth-env-trimmed-single-helper', server.includes('function envSecret(') && /envSecret\("FACEBOOK_OAUTH_CLIENT_SECRET"\)/.test(server) && /envSecret\("FACEBOOK_OAUTH_CLIENT_ID"\)/.test(server), 'client_id/secret يُقرآن عبر envSecret المطبِّع لا من process.env الخام');

@@ -44,7 +44,7 @@ npm install
 npm run dev            # tsx server.ts
 npm run lint           # tsc --noEmit
 npm run build          # vite build + esbuild server.ts -> dist/server.cjs
-npm run final-audit    # node final-audit.mjs (1327 فحصاً)
+npm run final-audit    # node final-audit.mjs (1335 فحصاً)
 npm test               # storage + engine + auth + ... + db + runtime
 ```
 - التشغيل الإنتاجي: `PORT=4517 NODE_ENV=production APP_URL=http://localhost:4517 node dist/server.cjs`
@@ -3883,3 +3883,156 @@ Security/QA/Reliability. الأساس سليم (المصادقة/التوقيع�
 إثبات أنه **خاص** بالتطبيق؛ يجب مقارنته بتطبيق مرجعي. وإلا صار الحارس نفسه سبب التعطّل.
 وقاعدة المشروع الملزمة («لا حجب بلا إثبات») تعني إثباتاً **مميَّزاً** لا علماً يظهر عند
 الجميع.
+
+## تشخيص قراءة-فقط لفشل ربط Facebook: تسجيل خطأ Graph كاملاً بلا قطع (2026-10-04)
+
+**الجذر المُثبت (لا تخمين):** النص الذي رآه المالك ينتهي حرفياً عند «…feature or» في كل مرة
+نسخه فيها (هاتف وسطح مكتب). هذا **قطعٌ من كودنا لا من Meta**: كتلة `catch` في
+`handleOAuthCallback` كانت تبني رسالة الفشل بـ
+`` `فشل إكمال ربط المنصة: ${String(e?.message||e).slice(0,240)}` ``
+(server.ts). البادئة «فشل إكمال ربط المنصة: » = 22 محرفاً، و`slice(0,240)` يقع بالضبط عند
+`"...Page Public Cont"` — أي قبل `"Access' feature or the 'Page Public Metadata Access' feature…"`.
+فلا يعني القطع أن Meta أرسلت رسالة قصيرة. (ومثله `providerLog.eventAlias` يقطع `providerError`
+بـ`.slice(0,200)`.)
+
+**تعديل تشخيصي فقط — لا تغيير سلوك** (فرع `diag/facebook-graph-error-logging`):
+- `engine/social/facebook.ts`: `extractFacebookGraphError(data, endpoint, status)` +
+  `formatFacebookGraphError(info)` — دالتان صافيتان تستخرجان الحقول الكاملة
+  (`code`/`error_subcode`/`message` غير مقطوعة/`type`/`fbtrace_id`/`error_user_title`/
+  `error_user_msg`/`endpoint`/`status`) **بلا أي رمز أو سرّ**. تُسجَّل عبر `console.error`
+  في مسارات القراءة الثلاثة عند الفشل فقط: `GET /me/accounts`، `GET /{page-id}`،
+  `POST /{page-id}/subscribed_apps`.
+- `server.ts`: كتلة `catch` تسجّل الآن
+  `[oauth-callback-error] ${platform} status=502 message=${String(e?.message||e)}`
+  **بلا قطع** (بلا توكن). **رسالة الاستجابة العامة تبقى كما هي** بـ`slice(0,240)` — لا تغيير
+  على تجربة المستخدم.
+
+**مكاسب الفحص:** عند تكرار المحاولة تظهر في سجلات Render السبب الكامل + `fbtrace_id`، فيُحسم
+أي استدعاء يرمي الخطأ (المرشّح: `getPageProfile` أو `listManagedAccounts`) — علماً أن فشل
+`subscribeApp` **لا يُفشل الربط** (server.ts يعيد `ok:true` دائماً مع `subscribed: sub.ok`).
+
+**اختبار/حرّاس:** `facebook.connector.test.ts` = **238 فحصاً** (مجموعة 1ز: النص الكامل
+> 240 محرفاً يُستخرَج بلا قطع + الرمز/الرقم الفرعي/`fbtrace_id` + عدم وجود أي توكن في السطر).
+`final-audit` = **1330 فحصاً** (+3: `facebook-graph-error-logged-full`،
+`-logged-on-catch`، `-logging-test`). `npm run lint` ✅ · `npm run build` ✅ · `npm test`
+✅ (0 فشل) · `final-audit` ✅.
+
+**لم يُمسّ:** المنطق التشغيلي، رسائل الواجهة، الصلاحيات/scopes، OAuth، أي سرّ/مفتاح،
+وبقية المنصّات. **لم يُدفع/يُدمج/يُنشر** — بانتظار إذن المالك.
+
+## إصلاح #100: إزالة الحقل الزائد `tasks` من إثبات هوية الصفحة (2026-10-04)
+
+**الجذر المُثبت حياً (سجلات Render، لا تخمين):**
+`[facebook-graph-error] {"endpoint":"GET /102540549308721","status":400,"code":100,"message":"(#100) ... requires the 'pages_read_engagement' permission ...","type":"OAuthException","fbtraceId":"ANUoPP0bw9bX3_IN-GdAZ56"}`.
+أي أن الاستدعاء الفاشل هو **`getPageProfile` بالضبط** (`GET /{page-id}`)، لا `listManagedPages`
+ولا `subscribeApp`. الطلب كان `fields=id,name,access_token,tasks`، وحقل **`tasks` غير مستخدم
+في الكود إطلاقاً** (مُثبت بالفحص الشامل: يظهر فقط تعريفاً في النوع `FacebookPageIdentity`
+وتعبئةً في `listManagedPages`/`getPageProfile`، بلا أي قارئ — كل `.tasks` أخرى تعود لسجلات
+الوظائف/الحملات لا لصفحات Facebook). وطلب `tasks` على عقدة الصفحة يستدعي قراءة الصفحة،
+فترد Meta `#100` بصيغة تسمّي `pages_read_engagement` على صفحات لا تمنح هذه الصلاحية
+(الـConfiguration يمنحها جزئياً)، فيُفشل إكمال الربط رغم أن `id/name/access_token` وحدها
+كافية ولا تحتاج أي صلاحية متقدمة.
+
+**الإصلاح (بلا أي أثر جانبي):**
+- `engine/social/facebook.ts` — `getPageProfile`: `fields` صارت `id,name,access_token`
+  (حُذف `tasks` من هذا الاستدعاء تحديداً). لم يُمسّ `listManagedPages` (مسار `/me/accounts`
+  منفصل لم يظهر في الخطأ) ولا أي شيء آخر.
+
+**اختبار/حرّاس:** `facebook.connector.test.ts` = **242 فحصاً** (مجموعة 1ح وحدة: تثبيت أن
+`getPageProfile` يبني `fields=id,name,access_token` بلا `tasks`؛ ومجموعة 2 تكامل: الخادم
+الوهمي يلتقط `lastPageProfileFields` ويثبت غياب `tasks`). `final-audit` = **1331 فحصاً**
+(+`facebook-page-profile-no-tasks-field`). `npm run lint` ✅ · `npm run build` ✅ · `npm test`
+✅ · `final-audit` ✅. الفرع: `fix/facebook-drop-tasks-field`.
+
+**لا ادّعاء نجاح قبل اختبار حيّ من المالك** يصل إلى «تم ربط صفحة Facebook بنجاح». لم يُدمج
+على `main` ولم يُنشر.
+
+**درس عام (مُصحَّح):** طلب حقل اختياري غير مستخدم في Graph API ممارسة خاطئة، لكن الاختبار
+الحيّ أثبت أن `tasks` لم يكن سبب `#100` — السبب الجذري هو استدعاء عقدة الصفحة نفسه (القسم
+التالي). يُبقى هذا القسم للتوثيق: الحقول الزائدة تُزال، لكن لا تفترض أنها السبب بلا إثبات
+حيّ بـfbtraceId جديد.
+
+## الجذر الحقيقي لـ#100: لا تستدعِ GET /{page-id} في الربط — رمز الصفحة يأتي من /me/accounts (2026-10-04)
+
+**التصحيح الحاسم (دليل حيّ من المالك):** بعد نشر إزالة `tasks` (commit `691eede`) استمر
+الخطأ بنفس `endpoint=GET /{page-id}` ونفس `code=100` لكن بـ`fbtraceId` **مختلف**
+(`AUFu1JytQ8eLtBkEUXthSsk`) — أي محاولة جديدة فعلية على الكود المُصلَح. ⇒ **حقل `tasks`
+لم يكن السبب.** السبب أن **استدعاء عقدة الصفحة مباشرةً `GET /{page-id}` نفسه** يستدعي
+صلاحية قراءة صفحة (`pages_read_engagement`) وترد Meta `#100` على صفحات لا تمنحها، بلا
+علاقة بأي حقول مطلوبة.
+
+**لماذا الاستدعاء زائد أصلاً (إجابة السؤال 2):** رمز الصفحة (Page Access Token) يُمنح
+**في استجابة `/me/accounts`** لكل صفحة (`access_token`). فاستدعاء `getPageProfile` بعدها
+كان يعيد جلب نفس البيانات عبر عقدة الصفحة — طلب لا لزوم له يضيف سطح صلاحيات. والتدفّق
+كان: `listManagedPages` (ينجح) → `facebookFinalizePageSelection` → `getPageProfile`
+(يفشل #100) → `throw` → «فشل إكمال ربط المنصة: … pages_read_engagement …».
+
+**الإصلاح الجذري (بلا أي مساس بـgetPageProfile كدالة):**
+- `facebookFinalizePageSelection(pageId, userAccessToken, pageData?)` صار يقبل بيانات
+  الصفحة (`pageId`/`pageName`/`pageAccessToken`) القادمة من `/me/accounts` مباشرةً،
+  ويستخدمها بلا أي `GET /{page-id}`. `getPageProfile` يبقى **مساراً احتياطياً فقط** عند
+  غياب رمز الصفحة من القائمة، وتبقى دالةً متاحةً ومُختبَرة وحدياً (لا مسار تشغيلي حاسم
+  يستدعيها في Facebook بعد إصلاح `verifyProviderConnection` أدناه).
+- `server.ts` — مسارا الربط يمرّران بيانات الصفحة: callback صفحة واحدة
+  (`facebookFinalizePageSelection(pages.data[0].pageId,userToken,pages.data[0])`) و
+  `POST /api/platforms/facebook/select-page` (يجد الصفحة من `listManagedPages` بالمعرّف
+  ثم يمرّرها).
+- **إصلاح تابع (verifyProviderConnection):** مسار `POST /api/platforms/:platform/connection-callback`
+  كان يُثبت اتصال Facebook عبر `getPageProfile` → `GET /{page-id}` فيفشل حتماً بـ`#100`.
+  الآن يُثبت عبر `listManagedPages` (يطابق `stored.pageId` ضمن صفحات المستخدم) — بلا
+  عقدة الصفحة إطلاقاً. **الأثر بعد الإصلاح: `getPageProfile` لم يبقَ لها أي استدعاء في
+  مسار حاسم**؛ تبقى دالةً متاحةً (احتياطي في الربط، ومُختبَرة وحدياً) لكن لا مسار تشغيلي
+  يعتمد عليها في Facebook.
+- **سجل نجاح** `[facebook-graph] GET /me/accounts ok pages=N withToken=M` (بلا اسم/رمز)
+  يُثبت أن القائمة تنجح وتمنح رمز الصفحة — طُلب صراحةً للتشخيص.
+
+**اختبار انحدار حاسم (المجموعة 19ب):** خادم Graph وهمي بـ`failPageProfile: true`
+(يحاكي `#100` الحقيقي على `GET /{page-id}`) **مع** `/me/accounts` ناجح: الربط يكتمل
+`200` وتظهر «تم ربط صفحة Facebook بنجاح»، و`pageProfileCalls === 0` (لا استدعاء للعقدة
+إطلاقاً). ومثله في مسار اختيار الصفحة (المجموعة 19)، وفحص `connection-callback`
+(المجموعة 5) يثبت أن إثبات الاتصال لا يستدعي عقدة الصفحة. `facebook.connector.test.ts` =
+**250 فحصاً** (+8). `final-audit` = **1335 فحصاً** (+`facebook-finalize-uses-page-from-accounts`،
+`-no-pageprofile-primary`، `facebook-accounts-success-logged`، `-on-connect-test`،
+`facebook-verify-uses-accounts-not-page-node`). الفرع: `fix/facebook-finalize-from-accounts`.
+
+**هل يفشل `GET /{page-id}` بحقل `id` فقط؟ (السؤال 4):** لا اختبار حي مباشر على الإنتاج،
+لكن الفشل لم يكن يوماً بسبب الحقول: حتى `fields=id,name,access_token` (بعد إزالة tasks)
+فشل بنفس `#100`. والاستدلال من سلوك Meta: طلب العقدة يُخضع للتحقق من الصلاحية قبل
+الإرجاع، فتظهر رسالة الصلاحية رغم أن الحقول المسموحة محدودة. الفرق الجوهري: `/me/accounts`
+تُعدّد الصفحات ضمن رمز المستخدم (مع `pages_show_list`/`business_management`) فتمرّ، بينما
+قراءة عقدة الصفحة تحتاج `pages_read_engagement`. **الحل المتّبع:** تجنّب عقدة الصفحة في
+الربط كلياً — وهو الحل الذي يزيل الاعتماد على تلك الصلاحية نهائياً.
+
+**لا ادّعاء نجاح قبل اختبار حيّ من المالك** يصل إلى «تم ربط صفحة Facebook بنجاح». لم يُدمج
+على `main` ولم يُنشر.
+
+**درس عام:** لا تطلب بيانات تملكها بالفعل من نقطة نهاية أضيق صلاحية. رمز الصفحة وصل في
+`/me/accounts`؛ فاستدعاء عقدة الصفحة لإعادة جلبه أضاف سطح صلاحية غير مضمون وأفشل الربط
+رغم صحة كل شيء آخر.
+
+### حدود ما بعد الإصلاح — أثر الصلاحيات غير المُمنوحة (تقرير إغلاق)
+
+بعد هذا الإصلاح **لا يوجد أي مسار تشغيلي في Facebook يعتمد على `pages_read_engagement`
+أو على `GET /{page-id}`**؛ الربط واكتشاف الصفحات وإثبات الاتصال كلها تمر عبر `/me/accounts`
+(المسار الذي يمنح رمز الصفحة). لذلك:
+
+- **مؤكّد:** `verifyProviderConnection` (مسار `connection-callback`) كان سيفشل لاحقاً بنفس
+  `#100`، وقد أُصلح بنفس المنطق (إثبات عبر `/me/accounts`). لا مسار حاسم يعتمد على عقدة
+  الصفحة الآن.
+- **القدرات المعلنة في السجل** (`publish`، `messages`، `message_reply`، `analytics`،
+  `comments`، `comment_reply`، `scheduling`) تعتمد على مسارات **برمز الصفحة** لا على
+  `pages_read_engagement`:
+  - رد التعليقات `POST /{comment-id}/comments` → `pages_manage_engagement` + اعتماديتها.
+  - رسائل Messenger `POST /{page-id}/messages` → `pages_messaging`.
+  - النشر `POST /{page-id}/feed` → `pages_manage_posts`.
+  - اشتراك webhook `POST /{page-id}/subscribed_apps` → `pages_manage_metadata` + `pages_show_list`.
+- **الفجوة الوحيدة المتبقية (صادقة):** أي عملية **تحتاج `pages_read_engagement` صراحةً**
+  (مثل قراءة engagement/insights للصفحة، أو قراءة عقدة الصفحة مباشرةً) ستبقى مقيّدة حتى
+  تُفعَّل الصلاحية في Configuration/Use Case لدى Meta. **لا يوجد في الكود أي استدعاء يتطلبها
+  حالياً** — فالحدّ نظري للميزات المستقبلية لا أثر فوري. إن أُريدت لاحقاً، تُفعَّل الصلاحية
+  في Meta App Dashboard → Use Cases/Configurations ثم تُضاف القدرة المقابلة.
+- **`business_management`**: مطلوبة أصلاً (لصفحات Business Manager عبر `/me/accounts`) وهي
+  ضمن المجموعة المطلوبة، فلا فجوة هناك.
+- **`getPageProfile`**: تبقى دالةً مُختبَرة وحدياً ومتاحة كاحتياطي في الربط (عند غياب رمز
+  الصفحة من القائمة فقط) — لا مسار تشغيلي يستدعيها في Facebook الآن. إن استُخدمت مستقبلاً
+  في سياق لا يمنح `pages_read_engagement` فسترد `#100`، ولهذا أُبقيت **خارج كل مسار حاسم**.
