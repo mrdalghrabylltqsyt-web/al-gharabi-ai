@@ -182,6 +182,7 @@ import {
   buildAuthorizationParams,
   buildTokenExchangeBody,
   parseTokenResponse,
+  formatOAuthProviderError,
   isAccessTokenExpired,
   inspectLoginConfigId,
   resolveLoginConfigId,
@@ -3767,6 +3768,25 @@ app.get("/api/platforms/:platform/oauth/callback", async (req,res)=>{
 });
 
 /**
+ * توجيه آمن عند فشل إكمال OAuth حسب فئة الخطأ الفعلية (لا تخمين ثابت). يمنع
+ * إظهار رسالة عامة تُخفي السبب الحقيقي الذي أعاده المزود.
+ */
+function oauthFailureHint(platform:string, message:string):string{
+  const m=message.toLowerCase();
+  if(platform==="threads"){
+    // Threads API: تطبيق غير منشور + حساب ليس مختبِراً مقبولاً => error_code 1349245.
+    if(m.includes("1349245")||m.includes("has not accepted the invite")){
+      return "سبب Meta: التطبيق في وضع Development والحساب ليس مختبِراً مقبولاً. أضِف حسابك المستخدَم لتسجيل الدخول كـ Threads Tester من App Dashboard → الأدوار بالتطبيق → Roles → Threads Tester، ثم اقبل الدعوة من Threads (الإعدادات → الحساب → أذونات الموقع → الدعوات) أو من developers.facebook.com/requests.";
+    }
+    if(m.includes("1349168")||m.includes("url blocked")){
+      return "سبب Meta: رابط إعادة التوجيه محظور. أضِف قيمة redirectUri بالضبط في Threads API → تخصيص → الإعدادات → روابط إعادة توجيه OAuth.";
+    }
+  }
+  if(m.includes("redirect_uri")||m.includes("1349168")) return "تحقق أن redirectUri المسجّل لدى المزود مطابق تماماً (بلا شرطة مائلة زائدة).";
+  return "";
+}
+
+/**
  * جسم إكمال OAuth المشترك بين GET (رمز في سطر الطلب) وPOST (مقطع الاستجابة في
  * الجسم). يستقبل نص الاستعلام صراحةً فيتحقق بنفس القواعد في الحالتين، ولا يعتمد
  * على req.query كي لا تتسرّب قيم المقطع إلى سجلات الوسيط.
@@ -3787,7 +3807,7 @@ async function handleOAuthCallback(req:any, res:any, rawQuery:string, viaPost:bo
   // الدائم فوراً فلا يُسترجَع عند إعادة تشغيل لاحقة فيُقبل تكرار الطلب.
   pendingOAuth.delete(state);
   await persistCritical();
-  if(params.get("error")) return failHtml(400, `رفض مزود المنصة عملية الربط: ${String(params.get("error_description")||params.get("error")).slice(0,200)}`);
+  if(params.get("error")) return failHtml(400, `رفض مزود المنصة عملية الربط: ${String(formatOAuthProviderError({ error_message: params.get("error_message"), error_description: params.get("error_description"), error: params.get("error"), error_code: params.get("error_code") }) || params.get("error")).slice(0,300)}`);
   const code=params.get("code")||"";
   // تدفّق Meta الرسمي لـInstagram (Facebook Login for Business - Instagram API)
   // يستخدم response_type=token: لا يعود `code` بل رمز المستخدم (والرمز طويل الأجل)
@@ -3927,7 +3947,7 @@ async function handleOAuthCallback(req:any, res:any, rawQuery:string, viaPost:bo
     const stored={...token, expiresAt: parsedToken.expiresIn ? Date.now()+parsedToken.expiresIn*1000 : null};
     setProviderToken(platform,stored); platformConnections.set(platform,{platform,status:"connected",accountId,accountName,connectedAt:new Date().toISOString(),providerVerified:true}); savePlatformConnections(); audit(pending!.userId,"platform_oauth_connected",`${platform}:${accountId}`);
     sendHtml("<html lang='ar' dir='rtl'><meta charset='utf-8'><title>تم الربط</title><body style='font-family:sans-serif;padding:40px'><h2>تم ربط المنصة بنجاح.</h2><p>يمكنك إغلاق هذه النافذة والعودة إلى الغرابي AI.</p></body></html>");
-  } catch(e:any) { audit(pending!.userId,"platform_oauth_failed",platform); console.error(`[oauth-callback-error] ${platform} status=502 message=${String(e?.message||e)}`); failHtml(502, `فشل إكمال ربط المنصة: ${String(e?.message||e).slice(0,240)}`); }
+  } catch(e:any) { audit(pending!.userId,"platform_oauth_failed",platform); console.error(`[oauth-callback-error] ${platform} status=502 message=${String(e?.message||e)}`); const msg=String(e?.message||e); const hint=oauthFailureHint(platform,msg); failHtml(502, `فشل إكمال ربط المنصة: ${msg.slice(0,300)}${hint?" — "+hint:""}`); }
 }
 
 app.post("/api/platforms/telegram/configure", requireOwner, async (req,res)=>{
@@ -8054,6 +8074,39 @@ app.get("/api/platforms/:platform/oauth/setup", requireOwner, async (req,res)=>{
     genericErrorMeaning:(platform==="facebook"||platform==="instagram")?{
       message:"صفحة Meta «حدث خطأ ما» (Sorry, something went wrong) لها مواضع محتملة: (1) قبل تسجيل الدخول: معرّف تطبيق غير مطابق أو نطاق/رابط إرجاع غير مسجّل، (2) بعد تسجيل الدخول: تطبيق من نوع Business يوجّه الحوار إلى Business Login الذي يقرأ الصلاحيات من Configuration لا من scope، فإن غاب config_id بقيت الصلاحيات فارغة وظهر الرفض، (3) عطل معروف في تدفّق الإعداد عند استخدام extras=IG_API_ONBOARDING (1850019). حقل dialogPhase يحدد الموضع.",
       checks:["طابق App ID مع Settings → Basic (أرقام فقط بلا مسافات).","أضف appDomainsValue إلى App Domains بلا https وبلا مسار.","أضف redirectUri بالضبط إلى Valid OAuth Redirect URIs.","إن كان التطبيق من نوع Business: أنشئ Configuration في Facebook Login for Business → Configurations واضبط معرّفها في INSTAGRAM_LOGIN_CONFIG_ID / FACEBOOK_LOGIN_CONFIG_ID (config_id يحلّ محل scope في Business Login).","فعّل الصلاحيات المطلوبة داخل Use Case — لا يكفي وجودها في الرابط.","تأكد أن التطبيق يحتوي منتج Instagram → API setup with Facebook login وأن التطبيق من نوع Business.","أضف حساب المالك إلى Roles → Testers إن كان التطبيق في وضع Development.","راجع المتغير FACEBOOK_OAUTH_SCOPES/INSTAGRAM_OAUTH_SCOPES إن وُجد: أي اسم صلاحية غير قائم يُرفض قبل الدخول."],
+    }:undefined,
+    // Threads API: إعداد دقيق + الفروق الجوهرية عن تطبيق فيسبوك الرئيسي + السبب
+    // الحقيقي لخطأي Meta الشائعين (1349168 رابط محظور، 1349245 حساب غير مختبِر).
+    threadsSetup:platform==="threads"?{
+      clientIdConfigured:Boolean(cfg.clientId),
+      clientSecretConfigured:Boolean(cfg.clientSecret),
+      redirectUri,
+      authorizationEndpoint:cfg.auth,
+      tokenEndpoint:cfg.token,
+      scopes:resolvedScopes,
+      credentialMode:"oauth2",
+      // Threads له عميل OAuth منفصل عن تطبيق فيسبوك الرئيسي (Threads App ID مستقل)،
+      // وله قائمة روابط إعادة توجيه خاصة به في: حالات الاستخدام → الوصول إلى واجهة
+      // API تطبيق Threads → تخصيص → تبويب الإعدادات (وليست قائمة Facebook Login for Business).
+      separateOAuthClient:true,
+      realConnector:false,
+      dashboardSteps:[
+        "تأكد أن Use Case «Access the Threads API» مضاف للتطبيق.",
+        "انسخ Threads App ID/Secret إلى THREADS_OAUTH_CLIENT_ID/THREADS_OAUTH_CLIENT_SECRET.",
+        "أضف قيمة redirectUri بالضبط في: حالات الاستخدام → الوصول إلى واجهة API تطبيق Threads → تخصيص → الإعدادات → روابط إعادة توجيه OAuth (قائمة خاصة بـThreads منفصلة عن Facebook Login for Business).",
+        "فعّل نطاقات Threads API: threads_basic, threads_content_publish, threads_manage_replies.",
+        "في وضع Development: أضف حساب Threads المستخدَم لتسجيل الدخول كـ Threads Tester ثم اقبل الدعوة (وإلا يرد Meta 1349245).",
+      ],
+      metaDashboardFields:{
+        oauthRedirectUris:"حالات الاستخدام → الوصول إلى واجهة API تطبيق Threads → تخصيص → الإعدادات → روابط إعادة توجيه OAuth",
+        roles:"إعدادات التطبيق → الأدوار بالتطبيق → Roles → إضافة Threads Tester ثم قبول الدعوة",
+      },
+      knownErrors:{
+        "1349168":"عنوان URL محظور — redirectUri غير مسجّل في قائمة Threads الخاصة (تخصيص → الإعدادات).",
+        "1349245":"الحساب ليس مختبِراً مقبولاً — أضِفه كـ Threads Tester واقبل الدعوة (وضع Development).",
+      },
+      note:"Threads API له عميل OAuth منفصل وروابط إعادة توجيه خاصة. في وضع Development يجب أن يكون الحساب المستخدَم مختبِراً مقبولاً. القيم أعلاه محسوبة من البيئة بلا أي سرّ.",
+      doc:"https://developers.facebook.com/documentation/threads/get-started",
     }:undefined,
     // موضع الرفض الفعلي: يمنع تشخيصاً خاطئاً لأن فحصاً بلا كوكيز لا يرى ما بعد
     // تسجيل الدخول، فيبدو «مقبولاً» مع أن الرفض يقع في مرحلة Use Case.
