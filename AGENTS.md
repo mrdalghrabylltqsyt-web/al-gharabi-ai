@@ -44,7 +44,7 @@ npm install
 npm run dev            # tsx server.ts
 npm run lint           # tsc --noEmit
 npm run build          # vite build + esbuild server.ts -> dist/server.cjs
-npm run final-audit    # node final-audit.mjs (1335 فحصاً)
+npm run final-audit    # node final-audit.mjs (1340 فحصاً)
 npm test               # storage + engine + auth + ... + db + runtime
 ```
 - التشغيل الإنتاجي: `PORT=4517 NODE_ENV=production APP_URL=http://localhost:4517 node dist/server.cjs`
@@ -4036,3 +4036,43 @@ Security/QA/Reliability. الأساس سليم (المصادقة/التوقيع�
 - **`getPageProfile`**: تبقى دالةً مُختبَرة وحدياً ومتاحة كاحتياطي في الربط (عند غياب رمز
   الصفحة من القائمة فقط) — لا مسار تشغيلي يستدعيها في Facebook الآن. إن استُخدمت مستقبلاً
   في سياق لا يمنح `pages_read_engagement` فسترد `#100`، ولهذا أُبقيت **خارج كل مسار حاسم**.
+
+## ربط Threads OAuth — عميل OAuth منفصل + إظهار خطأ Meta الحقيقي (2026-10-04)
+
+**تصحيح مفاهيمي مُثبت (وثيقة Meta الرسمية):** Threads API له **عميل OAuth منفصل** عن
+تطبيق فيسبوك الرئيسي (Threads App ID مستقل)، وله **قائمة روابط إعادة توجيه خاصة به** في:
+حالات الاستخدام → الوصول إلى واجهة API تطبيق Threads → تخصيص → تبويب الإعدادات. هذه
+القائمة **منفصلة** عن «Valid OAuth Redirect URIs» في Facebook Login for Business، فيجب
+إضافة `redirectUri` في المكان الصحيح لكل منصة.
+
+**عطلان متتاليان (مُثبتان حياً من المالك):**
+1. `error_code 1349168` («عنوان URL محظور») — اختفى بإضافة الرابط في قائمة Threads الخاصة.
+2. `error_code 1349245` («The user has not accepted the invite to test the app») — على مستوى
+   Meta لا الكود: التطبيق في وضع **Development**، فأي حساب يسجّل الدخول عبر Threads OAuth
+   يجب أن يكون مُضافاً كـ **Threads Tester** وقد **قبل الدعوة**.
+
+**فجوة الكود الحقيقية التي أُصلحت (كانت تُخفي السبب):** خطأ Meta/Threads يستخدم
+`error_message` + `error_code`، بينما الكود كان يقرأ `error_description`/`error` فقط
+(صيغة Google)، فيظهر «فشل تبادل رمز OAuth» عام بلا السبب. الإصلاح:
+- `engine/social/oauth.ts`: `formatOAuthProviderError(token)` مصدر واحد يقدّم `error_message`
+  على `error_description` ثم `error`، ويُلحق `error_code` إن غاب من النص. `parseTokenResponse`
+  يستخدمه عند غياب `access_token` (مع بقاء نجاح الرمز غالباً على أي خطأ).
+- `server.ts`: `oauthFailureHint(platform, message)` يوجّه حسب الفئة الفعلية — لـThreads:
+  `1349245` ⇒ خطوة Threads Tester + قبول الدعوة؛ `1349168` ⇒ قائمة روابط Threads الخاصة.
+  يُضاف إلى رسالة الفشل في `handleOAuthCallback`، ويُطبَّق المُصيغ على معاملات `error*` القادمة
+  في سطر الطلب/المقطع.
+- `oauth/setup` (للمالك): كتلة `threadsSetup` تعرض `separateOAuthClient:true`، القائمة
+  الصحيحة للروابط، الصلاحيات، `knownErrors` (1349168/1349245)، وخطوات لوحة Meta — بلا أي سرّ.
+
+**قرار تشخيصي (بلا ادّعاء):** الخطأ الحالي `1349245` **ليس عطلاً في الكود** — env vars و
+redirect URI صحيحة. الحدّ خارجي بحت: إضافة الحساب كـ Tester وقبول الدعوة من لوحة Meta/تطبيق
+Threads، ولا ينفّذه أي وكيل برمجي. (احتمال إضافي يستحق التحقق: أن يكون حساب الدخول هو نفسه
+المالك/المدير لتطبيق Meta Developer — يُفحص إن استمر الخطأ بعد إضافة Tester.)
+
+اختبارات: `engine/tests/platform.foundation.test.ts` = **99 فحصاً** (+5: عرض رسالة Threads
+الحقيقية ورمزها، عدم إخفائها خلف نص عام، بقاء صيغة Google مدعومة). فحوص final-audit الخمسة
+الجديدة: `oauth-provider-error-formatter`، `parse-token-response-uses-provider-message`،
+`threads-oauth-failure-hint`، `threads-setup-block-exposed`، `threads-oauth-error-test`
+(**1340 إجمالاً**). لم يُمسّ Facebook/Instagram/TikTok/YouTube/Telegram، ولا Gemini، ولا
+مفاتيح التشفير، ولا أي سرّ.
+

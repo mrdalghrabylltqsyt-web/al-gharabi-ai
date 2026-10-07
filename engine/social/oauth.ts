@@ -270,13 +270,30 @@ export function buildTokenExchangeBody(input: {
 }
 
 /**
+ * يصوغ رسالة خطأ OAuth من جسم استجابة المزود، مُقدِّماً `error_message` (صيغة
+ * Meta/Threads) على `error_description` (صيغة Google) ثم `error`. بلا ذلك تُخفى
+ * رسالة Meta الحقيقية (مثل «The user has not accepted the invite to test the app»
+ * مع error_code 1349245) خلف نص عام فلا يعرف المالك السبب الفعلي.
+ */
+export function formatOAuthProviderError(token: any): string | null {
+  if (!token || typeof token !== 'object') return null;
+  const message = typeof token.error_message === 'string' ? token.error_message.trim() : '';
+  const description = typeof token.error_description === 'string' ? token.error_description.trim() : '';
+  const code = typeof token.error === 'string' ? token.error.trim() : '';
+  const errorCode = token.error_code != null && String(token.error_code).trim() ? String(token.error_code).trim() : '';
+  const base = message || description || code;
+  if (!base) return null;
+  return errorCode && !base.includes(errorCode) ? `${base} (error_code: ${errorCode})` : base;
+}
+
+/**
  * هل الرمز المُعاد صالح للاستخدام؟ يلزم access_token، ويُعلن وجود refresh token
  * صراحةً (بعض المزودين لا يعيدونه في وضع معيّن).
  */
 export function parseTokenResponse(token: any): { valid: boolean; accessToken: string | null; refreshToken: string | null; expiresIn: number | null; reason?: string } {
   if (!token || typeof token !== 'object') return { valid: false, accessToken: null, refreshToken: null, expiresIn: null, reason: 'استجابة تبادل الرمز فارغة أو مشوّهة.' };
   const accessToken = typeof token.access_token === 'string' && token.access_token.trim() ? token.access_token.trim() : null;
-  if (!accessToken) return { valid: false, accessToken: null, refreshToken: null, expiresIn: null, reason: 'لم يُعد المزود access_token صالحاً.' };
+  if (!accessToken) return { valid: false, accessToken: null, refreshToken: null, expiresIn: null, reason: formatOAuthProviderError(token) || 'لم يُعد المزود access_token صالحاً.' };
   const refreshToken = typeof token.refresh_token === 'string' && token.refresh_token.trim() ? token.refresh_token.trim() : null;
   const expiresIn = Number.isFinite(Number(token.expires_in)) ? Number(token.expires_in) : null;
   return { valid: true, accessToken, refreshToken, expiresIn };

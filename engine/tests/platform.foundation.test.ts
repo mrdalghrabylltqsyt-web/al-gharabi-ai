@@ -23,6 +23,7 @@ import {
   buildAuthorizationParams,
   buildTokenExchangeBody,
   parseTokenResponse,
+  formatOAuthProviderError,
   isAccessTokenExpired,
   isPlausibleLoginConfigId,
   resolveLoginConfigId,
@@ -142,6 +143,13 @@ function run(): void {
   check('parseTokenResponse: رمز صالح', parseTokenResponse({ access_token: 'a', refresh_token: 'r', expires_in: 3600 }).valid);
   check('parseTokenResponse: بلا access_token مرفوض', !parseTokenResponse({}).valid);
   check('parseTokenResponse: مشوّه مرفوض', !parseTokenResponse(null).valid);
+  // خطأ Meta/Threads يستخدم error_message/error_code لا error_description؛ يجب ألا يُخفى.
+  const threadsErr = formatOAuthProviderError({ error_message: 'Invalid Request: The user has not accepted the invite to test the app.', error_code: 1349245 });
+  check('خطأ Threads يُعرض برسالته الحقيقية ورمزها', threadsErr === 'Invalid Request: The user has not accepted the invite to test the app. (error_code: 1349245)', String(threadsErr));
+  check('parseTokenResponse يحمل رسالة Threads الحقيقية لا نصاً عاماً', parseTokenResponse({ error_message: 'The user has not accepted the invite to test the app', error_code: 1349245 }).reason?.includes('has not accepted the invite') === true);
+  check('خطأ Google (error_description) يبقى مدعوماً', formatOAuthProviderError({ error: 'invalid_grant', error_description: 'Bad Request' }) === 'Bad Request');
+  check('بلا رسالة => null', formatOAuthProviderError({}) === null);
+  check('الرمز موجود مع خطأ => لا يُعيد خطأ (نجاح يغلب)', parseTokenResponse({ access_token: 'a', error_message: 'ignored' }).valid === true);
   check('انتهاء access token محسوب بهامش', isAccessTokenExpired({ expiresAt: Date.now() + 10_000 }) && !isAccessTokenExpired({ expiresAt: Date.now() + 10 * 60_000 }));
   check('بلا انتهاء معلن لا نحكم بالانتهاء', !isAccessTokenExpired({ expiresAt: null }));
 

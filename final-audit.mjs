@@ -248,6 +248,13 @@ add('facebook-verify-uses-accounts-not-page-node', fbVerifyBranch.includes('list
 // بينما يرفضه Meta بـinvalid_client_secret فيمنع بدء الربط بـ409 بلا سبب ظاهر.
 add('oauth-env-trimmed-single-helper', server.includes('function envSecret(') && /envSecret\("FACEBOOK_OAUTH_CLIENT_SECRET"\)/.test(server) && /envSecret\("FACEBOOK_OAUTH_CLIENT_ID"\)/.test(server), 'client_id/secret يُقرآن عبر envSecret المطبِّع لا من process.env الخام');
 add('oauth-env-trim-no-raw-secret-read', !/clientId:\s*process\.env\.[A-Z_]+/.test(server) && !/clientSecret:\s*process\.env\.[A-Z_]+/.test(server), 'لا قراءة خام لأي clientId/clientSecret في OAUTH_CONFIG');
+// Threads: خطأ Meta يستخدم error_message/error_code (لا error_description)؛ بلا
+// معالجته تظهر رسالة عامة تُخفي السبب الحقيقي (1349245 حساب غير مختبِر).
+add('oauth-provider-error-formatter', read('engine/social/oauth.ts').includes('export function formatOAuthProviderError') && read('engine/social/oauth.ts').includes('error_message'), 'مُصيغ واحد يقرأ error_message/error_code قبل error_description');
+add('parse-token-response-uses-provider-message', /parseTokenResponse[\s\S]{0,600}formatOAuthProviderError\(token\)/.test(read('engine/social/oauth.ts')), 'parseTokenResponse يُظهر رسالة المزود الحقيقية بدل نص عام');
+add('threads-oauth-failure-hint', server.includes('function oauthFailureHint') && server.includes('1349245') && server.includes('Threads Tester'), 'توجيه Threads عند الفشل يشرح 1349245/1349168 وخطوة Threads Tester');
+add('threads-setup-block-exposed', server.includes('threadsSetup:platform==="threads"') && server.includes('روابط إعادة توجيه OAuth') && server.includes('separateOAuthClient:true'), 'oauth/setup يعرض إعداد Threads الدقيق (عميل منفصل + قائمة روابط خاصة)');
+add('threads-oauth-error-test', read('engine/tests/platform.foundation.test.ts').includes('formatOAuthProviderError') && read('engine/tests/platform.foundation.test.ts').includes('1349245'), 'اختبار انحدار يثبت عرض رسالة Threads الحقيقية ورمزها');
 add('oauth-preflight-result-exposed', server.includes('lastOAuthPreflight') && server.includes('lastPreflight'), 'آخر نتيجة فحص بدء OAuth تُعرَض في oauth/setup بلا سرّ ولا استدعاء إضافي');
 add('oauth-trim-regression-test', read('engine/tests/facebook.connector.test.ts').includes("'test-fb-client-secret\\n'"), 'اختبار انحدار: بيئة بمسافات/أسطر تُطبَّع فلا يظهر 409 الخاطئ');
 add('facebook-reply-dedicated-routes', server.includes('/api/platforms/facebook/reply') && server.includes('/api/platforms/facebook/message-reply') && server.includes('/api/platforms/facebook/webhook-info'), 'مسارات الرد/الرسالة/حالة webhook موجودة');
