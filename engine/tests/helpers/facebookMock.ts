@@ -69,6 +69,12 @@ export interface FacebookMockState {
   dialogOutcome: 'consent' | 'login' | 'invalid_app_id' | 'opaque_200' | 'http_500' | 'mobile_redirect_then_fail' | 'business_login_surface' | 'classic_login_surface';
   /** إن حُدِّدت: يرد الحوار 500 فقط عندما تحمل مجموعة scope هذه الصلاحية (لعزل السبب). */
   failingScope?: string | null;
+  /** صلاحيات رمز الصفحة الممنوحة فعلاً (يُعيدها /debug_token) — للتشخيص. */
+  grantedScopes?: string[];
+  /** نوع الرمز الذي يُعيده /debug_token (PAGE عادةً). */
+  debugTokenType?: string;
+  /** خطأ مخصّص لنشر الفيديو (يحاكي #100 لا صلاحية) — لاختبار حفظ التشخيص وسحبه. */
+  publishVideoError?: { message: string; code: number; error_subcode?: number; fbtrace_id?: string } | null;
 }
 
 export function createFacebookMock(state: Partial<FacebookMockState> = {}): FacebookMockState {
@@ -97,6 +103,9 @@ export function createFacebookMock(state: Partial<FacebookMockState> = {}): Face
     // استجابة حوار التفويض: consent (تطبيق صالح) | login | invalid_app_id (صفحة «حدث خطأ ما»).
     dialogOutcome: state.dialogOutcome ?? 'consent',
     failingScope: state.failingScope ?? null,
+    grantedScopes: state.grantedScopes ?? ['pages_manage_posts', 'pages_read_engagement', 'pages_show_list', 'pages_messaging'],
+    debugTokenType: state.debugTokenType ?? 'PAGE',
+    publishVideoError: state.publishVideoError ?? null,
   };
 }
 
@@ -206,6 +215,17 @@ export async function startFacebookMockServer(
     return res.json({ data: state.pages.map((p) => ({ id: p.id, name: p.name, access_token: p.accessToken, tasks: p.tasks })) });
   });
 
+  // فحص رمز الصفحة (GET /debug_token) — يستلزم app access token. يُعيد الصلاحيات
+  // الممنوحة فعلاً، فتُحسم مشكلة «#100 لا صلاحية» بلا تخمين (تحديد الصلاحية الناقصة).
+  // يُسجَّل قبل /:version/:pageId وإلا التقطه كصفحة اسمها debug_token.
+  app.get('/:version/debug_token', (req, res) => {
+    state.calls += 1;
+    const inputToken = String(req.query.input_token || '');
+    const appToken = String(req.query.access_token || '');
+    if (!inputToken || !appToken) return res.status(400).json({ error: { message: 'input_token and access_token required', code: 100 } });
+    return res.json({ data: { is_valid: true, type: state.debugTokenType, app_id: 'APP_UNDER_TEST', scopes: state.grantedScopes, expires_at: 0 } });
+  });
+
   app.get('/:version/:pageId', (req, res) => {
     const { pageId } = req.params;
     if (!pageId || pageId === 'me') return res.status(400).json({ error: { message: 'unsupported' } });
@@ -275,6 +295,7 @@ export async function startFacebookMockServer(
   app.post('/:version/:pageId/videos', (req, res) => {
     const { pageId } = req.params;
     state.calls += 1;
+    if (state.publishVideoError) return res.status(400).json({ error: state.publishVideoError });
     if (state.failPublish) return res.status(400).json({ error: { message: 'Cannot publish video', code: 200 } });
     const fileUrl = String(req.body?.file_url || '');
     const description = String(req.body?.description || '');

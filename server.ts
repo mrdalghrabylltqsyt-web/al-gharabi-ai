@@ -5020,6 +5020,74 @@ app.get("/api/platforms/tiktok/publishes", requireOwner, async (req,res)=>{
 });
 
 /**
+ * سجل تشخيص النشر المحفوظ (للمالك فقط) — جذر «#100 لا صلاحية» و«Instagram CLIENT_ERROR».
+ *
+ * كل محاولة نشر فاشلة (Facebook/Instagram/Threads) تُحفظ برسالة Meta الكاملة غير
+ * المقطوعة + providerCode (error.code) + providerSubcode (error_subcode) + providerTraceId
+ * (fbtrace_id) عبر محوّل الحالة، فتصمد بعد restart/cold start ويمكن سحبها من هنا بدل
+ * الاعتماد على سجلات Render التي تفنى مع العملية. لا يُعاد أي رمز أو سرّ — فقط وصف الخطأ.
+ * الاستعلام: ?platform=facebook|instagram|threads&state=failed&limit=20
+ */
+app.get("/api/platforms/publish-diagnostics", requireOwner, (req,res)=>{
+  const limit = Math.min(100, Math.max(1, Number(req.query.limit || 25)));
+  const platformFilter = typeof req.query.platform === "string" ? String(req.query.platform).trim() : "";
+  const stateFilter = typeof req.query.state === "string" ? String(req.query.state).trim() : "";
+  const records = Array.isArray((workspace as any).publishRecords) ? (workspace as any).publishRecords : [];
+  const rows = records
+    .filter((r: any) => (platformFilter ? r.platform === platformFilter : ["facebook","instagram","threads","tiktok"].includes(r.platform)))
+    .filter((r: any) => (stateFilter ? r.state === stateFilter : r.state === "failed"))
+    .slice(0, limit)
+    .map((r: any) => ({
+      id: r.id || null,
+      platform: r.platform || null,
+      state: r.state || null,
+      executedAt: r.executedAt || null,
+      code: r.code || null,
+      providerCode: r.providerCode ?? null,
+      providerSubcode: r.providerSubcode ?? null,
+      providerTraceId: r.providerTraceId ?? null,
+      // رسالة Meta الحقيقية كما أعادها المزود (بلا أي رمز/سرّ).
+      error: r.error || null,
+    }));
+  res.json({ success: true, diagnostics: rows, count: rows.length, note: "رسالة المزود الكاملة + code/subcode/fbtrace الحقيقية بلا أي سرّ؛ محفوظة عبر restart." });
+});
+
+/**
+ * فحص صلاحيات رمز صفحة Facebook (للمالك فقط) — حسم «(#100) No permission to publish
+ * the video» بلا تخمين. يقارن الصلاحيات الممنوحة فعلاً (GET /debug_token) بما يتطلبه
+ * نشر فيديو الصفحة رسمياً (pages_manage_posts + pages_read_engagement + pages_show_list).
+ * السبب الشائع المؤكَّد لهذا المشروع: صفحة لا تمنح pages_read_engagement (يفسّر لماذا
+ * ينجح نشر النصّ عبر /feed بينما يفشل الفيديو عبر /videos). لا يُعاد أي رمز أو سرّ.
+ */
+app.get("/api/platforms/facebook/video-permission-diagnosis", requireOwner, async (_req,res)=>{
+  const stored = getProviderToken("facebook");
+  const pageToken = stored?.pageAccessToken ? String(stored.pageAccessToken) : "";
+  if (!pageToken) return res.status(409).json({ success: false, error: "لا رمز صفحة Facebook موثّق.", code: "NOT_CONNECTED" });
+  const clientId = envSecret("FACEBOOK_OAUTH_CLIENT_ID");
+  const clientSecret = envSecret("FACEBOOK_OAUTH_CLIENT_SECRET");
+  if (!clientId || !clientSecret) return res.status(503).json({ success: false, error: "معرّف/سرّ تطبيق Meta غير مضبوطين في البيئة.", code: "CONNECTOR_NOT_READY" });
+  const result = await facebookClient().debugToken(pageToken, `${clientId}|${clientSecret}`);
+  if (!result.ok || !result.data) return res.status(502).json({ success: false, error: result.error || "تعذّر فحص الصلاحيات.", code: result.code || "PROVIDER_ERROR" });
+  const d = result.data;
+  const videoPublishReady = d.isValid && d.missingPublishScopes.length === 0;
+  res.json({
+    success: true,
+    isValid: d.isValid,
+    tokenType: d.type,
+    grantedScopes: d.scopes,
+    missingVideoPublishScopes: d.missingPublishScopes,
+    requiredVideoPublishScopes: ["pages_manage_posts", "pages_read_engagement", "pages_show_list"],
+    videoPublishReady,
+    reason: videoPublishReady
+      ? "الصلاحيات كافية لنشر فيديو الصفحة."
+      : d.missingPublishScopes.includes("pages_read_engagement")
+        ? "ناقصة pages_read_engagement: يفسّر فشل الفيديو عبر /videos بينما ينجح النصّ عبر /feed. يتطلب منح الصلاحية (وربما App Review) في لوحة Meta."
+        : "صلاحية مطلوبة لنشر فيديو الصفحة غير ممنوحة؛ منحها من لوحة Meta.",
+    note: "فحص مباشر من Meta بلا أي سرّ؛ لا يُعلن أي نشر.",
+  });
+});
+
+/**
  * معلومات الناشر (query creator info) — إلزامية قبل أي نشر مباشر. للمالك فقط.
  */
 app.get("/api/platforms/tiktok/creator-info", requireOwner, async (_req,res)=>{
@@ -7940,7 +8008,7 @@ async function executePlatformPublish(platform: string, body: any, actor: string
         ? await facebookClient().publishVideoToPage(target.pageId, target.pageToken, videoUrl, content)
         : await facebookClient().publishToPage(target.pageId, target.pageToken, content);
       const receipt = result.ok ? { provider: "facebook", pageId: target.pageId, postId: result.data?.providerPostId, mediaKind: videoUrl ? "video" : "text", sentAt: new Date().toISOString() } : null;
-      const record = buildPublishRecord({ platform: platform as any, postId: typeof body?.postId === "string" ? body.postId : workspaceId("post"), providerPostId: result.data?.providerPostId || null, simulated: false, error: result.ok ? null : result.error });
+      const record = buildPublishRecord({ platform: platform as any, postId: typeof body?.postId === "string" ? body.postId : workspaceId("post"), providerPostId: result.data?.providerPostId || null, simulated: false, error: result.ok ? null : result.error, code: result.code ?? null, providerCode: result.providerCode ?? null, providerSubcode: result.providerSubcode ?? null, providerTraceId: result.providerTraceId ?? null });
       if (!Array.isArray((workspace as any).publishRecords)) (workspace as any).publishRecords = [];
       (workspace as any).publishRecords.unshift({ ...record, id: workspaceId("publish"), createdBy: user.id, receipt });
       if ((workspace as any).publishRecords.length > WORKSPACE_MAX_PUBLISH_RECORDS) (workspace as any).publishRecords.length = WORKSPACE_MAX_PUBLISH_RECORDS;
@@ -7967,11 +8035,18 @@ async function executePlatformPublish(platform: string, body: any, actor: string
         // كود Meta الحقيقي ورسالته بدل تثبيت MEDIA_REQUIRED الذي كان يُخفي السبب.
         const code = container.code || "MEDIA_REQUIRED";
         const isRealMediaRequired = !imageUrl && !videoUrl;
-        return { status: 422, body: { success: false, error: container.error, code: isRealMediaRequired ? "MEDIA_REQUIRED" : code, providerCode: container.providerCode ?? null, providerSubcode: container.providerSubcode ?? null, providerTraceId: container.providerTraceId ?? null, note: isRealMediaRequired ? "Instagram لا ينشر نصاً فقط؛ زوّد imageUrl أو videoUrl عاماً." : "فشل إنشاء حاوية Instagram بالسبب الحقيقي من Meta." } };
+        // يُسجَّل الفشل (بمعرّف Meta/الرمز الفرعي/fbtrace) فيبقى قابلاً للسحب من المسار
+        // المحمي للمالك بدل أن يضيع في سجلات Render — تشخيص «Invalid parameter» بلا تخمين.
+        const failRecord = buildPublishRecord({ platform: platform as any, postId: typeof body?.postId === "string" ? body.postId : workspaceId("post"), providerPostId: null, simulated: false, error: container.error, code: isRealMediaRequired ? "MEDIA_REQUIRED" : code, providerCode: container.providerCode ?? null, providerSubcode: container.providerSubcode ?? null, providerTraceId: container.providerTraceId ?? null });
+        if (!Array.isArray((workspace as any).publishRecords)) (workspace as any).publishRecords = [];
+        (workspace as any).publishRecords.unshift({ ...failRecord, id: workspaceId("publish"), createdBy: user.id, receipt: null });
+        if ((workspace as any).publishRecords.length > WORKSPACE_MAX_PUBLISH_RECORDS) (workspace as any).publishRecords.length = WORKSPACE_MAX_PUBLISH_RECORDS;
+        persistState();
+        return { status: 422, body: { success: false, record: failRecord, error: container.error, code: isRealMediaRequired ? "MEDIA_REQUIRED" : code, providerCode: container.providerCode ?? null, providerSubcode: container.providerSubcode ?? null, providerTraceId: container.providerTraceId ?? null, note: isRealMediaRequired ? "Instagram لا ينشر نصاً فقط؛ زوّد imageUrl أو videoUrl عاماً." : "فشل إنشاء حاوية Instagram بالسبب الحقيقي من Meta." } };
       }
       const published = await instagramClient().publishContainer(target.igAccountId, target.pageToken, container.data.containerId);
       const receipt = published.ok ? { provider: "instagram", igAccountId: target.igAccountId, containerId: container.data.containerId, postId: published.data?.providerPostId, mediaKind: container.data.mediaKind, sentAt: new Date().toISOString() } : null;
-      const record = buildPublishRecord({ platform: platform as any, postId: typeof body?.postId === "string" ? body.postId : workspaceId("post"), providerPostId: published.data?.providerPostId || null, simulated: false, error: published.ok ? null : published.error });
+      const record = buildPublishRecord({ platform: platform as any, postId: typeof body?.postId === "string" ? body.postId : workspaceId("post"), providerPostId: published.data?.providerPostId || null, simulated: false, error: published.ok ? null : published.error, code: published.code ?? null, providerCode: published.providerCode ?? null, providerSubcode: published.providerSubcode ?? null, providerTraceId: published.providerTraceId ?? null });
       if (!Array.isArray((workspace as any).publishRecords)) (workspace as any).publishRecords = [];
       (workspace as any).publishRecords.unshift({ ...record, id: workspaceId("publish"), createdBy: user.id, receipt });
       if ((workspace as any).publishRecords.length > WORKSPACE_MAX_PUBLISH_RECORDS) (workspace as any).publishRecords.length = WORKSPACE_MAX_PUBLISH_RECORDS;
@@ -8000,7 +8075,7 @@ async function executePlatformPublish(platform: string, body: any, actor: string
       }
       const published = await withThreadsToken((token) => threadsClient().publishContainer(target.threadsUserId, token, container.data!.containerId));
       const receipt = published.ok ? { provider: "threads", threadsUserId: target.threadsUserId, containerId: container.data.containerId, postId: published.data?.providerPostId, mediaKind: container.data.mediaKind, sentAt: new Date().toISOString() } : null;
-      const record = buildPublishRecord({ platform: platform as any, postId: typeof body?.postId === "string" ? body.postId : workspaceId("post"), providerPostId: published.data?.providerPostId || null, simulated: false, error: published.ok ? null : published.error });
+      const record = buildPublishRecord({ platform: platform as any, postId: typeof body?.postId === "string" ? body.postId : workspaceId("post"), providerPostId: published.data?.providerPostId || null, simulated: false, error: published.ok ? null : published.error, code: published.code ?? null, providerCode: published.providerCode ?? null, providerSubcode: published.providerSubcode ?? null, providerTraceId: published.providerTraceId ?? null });
       if (!Array.isArray((workspace as any).publishRecords)) (workspace as any).publishRecords = [];
       (workspace as any).publishRecords.unshift({ ...record, id: workspaceId("publish"), createdBy: user.id, receipt });
       if ((workspace as any).publishRecords.length > WORKSPACE_MAX_PUBLISH_RECORDS) (workspace as any).publishRecords.length = WORKSPACE_MAX_PUBLISH_RECORDS;

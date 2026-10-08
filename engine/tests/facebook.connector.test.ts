@@ -842,6 +842,51 @@ async function integrationTests(): Promise<void> {
     check('الفحص استدعى Graph بالسرّ المطبَّع (بلا سطر زائد)', wsMock.state.lastAppTokenCheck?.secretLen === 'test-fb-client-secret'.length);
     check('لا يُفصح عن أي سرّ في الاستجابة', !JSON.stringify(wsBody).includes('test-fb-client-secret'));
     await wsMock.stop();
+
+    // تشخيص #100 الحقيقي القابل للسحب: خطأ نشر فيديو Meta (100) يُحفظ دائماً برسالته
+    // الكاملة + code/subcode/fbtrace، ويُسحب من مسار owner محمي — بدل أن يضيع في
+    // سجلات Render. كما يفحص مسار الصلاحيات (debug_token) الصلاحية الناقصة بلا تخمين.
+    group('23) تكامل: حفظ تشخيص #100 وسحبه + فحص صلاحية نشر الفيديو (debug_token)');
+    await stop(currentApp.proc);
+    const diagMock = await startFacebookMockServer(FB_PORT + 7, createFacebookMock({
+      pages: [{ id: 'PAGE_DIAG', name: 'معرض الغرابي', accessToken: 'PAGE_TOKEN_DIAG', tasks: ['CREATE_CONTENT'] }],
+      // الصفحة تمنح صفحات النشر النصي لكنها تفتقد pages_read_engagement (السبب
+      // المؤكَّد لنجاح /feed وفشل /videos بـ#100) — فيكشفه فحص debug_token.
+      grantedScopes: ['pages_manage_posts', 'pages_show_list', 'pages_messaging'],
+      publishVideoError: { message: '(#100) No permission to publish the video', code: 100, error_subcode: 200, fbtrace_id: 'AbCdTrace#100' },
+    }));
+    currentApp = startApp(diagMock.base);
+    check('الخادم يقلع لسيناريو التشخيص', await waitForHealth(), currentApp.log().slice(0, 300));
+    Object.assign(auth, await login());
+    // ربط الصفحة أولاً (نفس مسار OAuth الحقيقي).
+    const dStart = await (await fetch(`${BASE}/api/platforms/facebook/oauth/start`, { headers: auth })).json();
+    const dState = new URL(dStart.authorizationUrl).searchParams.get('state') || '';
+    await fetch(`${BASE}/api/platforms/facebook/oauth/callback?state=${encodeURIComponent(dState)}&code=DIAG`);
+    // محاولة نشر فيديو تفشل بـ#100 من Meta الوهمي.
+    const dPub = await fetch(`${BASE}/api/platforms/facebook/publish`, { method: 'POST', headers: auth, body: JSON.stringify({ content: 'عرض تقسيط جديد من معرض الغرابي.', approved: true, videoUrl: 'https://example.invalid/v.mp4' }) });
+    const dPubBody = await dPub.json();
+    check('نشر الفيديو فشل ومعرّف خطأ Meta الحقيقي مُعاد', dPubBody.providerCode === 100 && dPubBody.providerSubcode === 200 && dPubBody.providerTraceId === 'AbCdTrace#100', JSON.stringify(dPubBody).slice(0, 260));
+    check('رسالة Meta الكاملة غير المقطوعة تصل', dPubBody.error === '(#100) No permission to publish the video', String(dPubBody.error));
+    // السحب من المسار المحمي: نفس الخطأ + code/subcode/fbtrace، بلا أي سرّ.
+    const diagRes = await (await fetch(`${BASE}/api/platforms/publish-diagnostics?platform=facebook`, { headers: auth })).json();
+    check('التشخيص محفوظ وقابل للسحب من المسار المحمي', diagRes.count >= 1 && diagRes.diagnostics[0].providerCode === 100 && diagRes.diagnostics[0].providerTraceId === 'AbCdTrace#100', JSON.stringify(diagRes).slice(0, 300));
+    check('التشخيص يحمل رسالة Meta كاملة', diagRes.diagnostics[0].error === '(#100) No permission to publish the video');
+    check('التشخيص لا يكشف أي سرّ', !JSON.stringify(diagRes).includes('PAGE_TOKEN_DIAG') && !JSON.stringify(diagRes).includes(FB_APP_SECRET));
+    check('التشخيص لغير المالك => 403', (await fetch(`${BASE}/api/platforms/publish-diagnostics`, { headers: staffAuth })).status === 403);
+    check('التشخيص بلا جلسة => 401', (await fetch(`${BASE}/api/platforms/publish-diagnostics`)).status === 401);
+    // فحص الصلاحيات (debug_token): يكشف الصلاحية الناقصة السببيّة لـ#100 بلا تخمين.
+    const permRes = await (await fetch(`${BASE}/api/platforms/facebook/video-permission-diagnosis`, { headers: auth })).json();
+    check('فحص الصلاحيات يحسم الجاهزية لنشر الفيديو', permRes.success === true && permRes.videoPublishReady === false && permRes.missingVideoPublishScopes.includes('pages_read_engagement'), JSON.stringify(permRes).slice(0, 300));
+    check('فحص الصلاحيات لا يكشف أي رمز/سرّ', !JSON.stringify(permRes).includes('PAGE_TOKEN_DIAG') && !JSON.stringify(permRes).includes('test-fb-client-secret'));
+    check('فحص الصلاحيات لغير المالك => 403', (await fetch(`${BASE}/api/platforms/facebook/video-permission-diagnosis`, { headers: staffAuth })).status === 403);
+    // التشخيص يصمد بعد restart (محفوظ عبر محوّل الحالة لا في الذاكرة فقط).
+    await stop(currentApp.proc);
+    currentApp = startApp(diagMock.base);
+    check('الخادم يقلع لفحص ثبات التشخيص', await waitForHealth(), currentApp.log().slice(0, 300));
+    Object.assign(auth, await login());
+    const diagAfter = await (await fetch(`${BASE}/api/platforms/publish-diagnostics?platform=facebook`, { headers: auth })).json();
+    check('التشخيص يصمد بعد restart', diagAfter.count >= 1 && diagAfter.diagnostics[0].providerTraceId === 'AbCdTrace#100', JSON.stringify(diagAfter).slice(0, 200));
+    await diagMock.stop();
   } finally {
     try { await stop(currentApp.proc); } catch { /* تجاهل */ }
     await mock.stop();

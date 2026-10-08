@@ -73,6 +73,14 @@ export interface PublishRecord {
   providerPostId: string | null;
   error: string | null;
   simulated: boolean;
+  /** الكود الداخلي المصنَّف (مثلاً TOKEN_EXPIRED/PERMISSION_DENIED) إن وُجد. */
+  code?: string | null;
+  /** كود المزود الحقيقي (Meta error.code مثل 100/190/9007) — للتشخيص بلا سرّ. */
+  providerCode?: number | null;
+  /** رمز المزود الفرعي (Meta error.error_subcode) — للتشخيص بلا سرّ. */
+  providerSubcode?: number | null;
+  /** معرّف تتبّع المزود (Meta fbtrace_id) — يُقدَّم للدعم ولا يُخترع. */
+  providerTraceId?: string | null;
 }
 
 /**
@@ -87,6 +95,10 @@ export function buildPublishRecord(input: {
   simulated: boolean;
   error?: string | null;
   executedAt?: string;
+  code?: string | null;
+  providerCode?: number | null;
+  providerSubcode?: number | null;
+  providerTraceId?: string | null;
 }): PublishRecord {
   const published = Boolean(input.providerPostId) && !input.error;
   return {
@@ -98,6 +110,10 @@ export function buildPublishRecord(input: {
     providerPostId: input.providerPostId,
     error: published ? null : (input.error || 'لم يُعد المزود معرّف منشور؛ لم يتم تسجيل النشر.'),
     simulated: input.simulated,
+    code: input.code ?? null,
+    providerCode: input.providerCode ?? null,
+    providerSubcode: input.providerSubcode ?? null,
+    providerTraceId: input.providerTraceId ?? null,
   };
 }
 

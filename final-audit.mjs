@@ -248,6 +248,25 @@ add('facebook-scope-dependency-test', fs.existsSync(path.join(root, 'engine/test
 add('facebook-graph-error-logged-full', read('engine/social/facebook.ts').includes('extractFacebookGraphError') && read('engine/social/facebook.ts').includes('formatFacebookGraphError') && read('engine/social/facebook.ts').includes('[facebook-graph-error]'), 'استخراج خطأ Graph الكامل وتسجيله بلا سرّ في مسارات القراءة (accounts/page/subscribed_apps)');
 add('facebook-graph-error-logged-on-catch', server.includes('[oauth-callback-error]') && server.includes('String(e?.message||e)'), 'كتلة catch في callback تسجّل الرسالة الكاملة غير المقطوعة (بلا توكن)');
 add('facebook-graph-error-logging-test', fs.existsSync(path.join(root, 'engine/tests/facebook.connector.test.ts')) && read('engine/tests/facebook.connector.test.ts').includes('extractFacebookGraphError') && read('engine/tests/facebook.connector.test.ts').includes('fbtrace_id'), 'اختبار انحدار يثبّت استخراج نص الخطأ الكامل وبلا سرّ');
+// تشخيص #100 قابل للسحب: خطأ نشر فيديو Meta يُحفظ في سجل النشر (code/subcode/fbtrace)
+// ويُسحب من مسار owner محمي — لا يعتمد على سجلات Render التي تفنى مع العملية.
+add('facebook-publish-diagnostics-persisted',
+  server.includes('/api/platforms/publish-diagnostics') &&
+  server.includes('requireOwner') &&
+  read('engine/social/publishing.ts').includes('providerSubcode') &&
+  read('engine/social/publishing.ts').includes('providerTraceId'),
+  'سجل تشخيص النشر (code/subcode/fbtrace) محفوظ ومُتاح عبر مسار owner محمي بلا سرّ');
+add('facebook-video-permission-diagnosis',
+  server.includes('/api/platforms/facebook/video-permission-diagnosis') &&
+  read('engine/social/facebook.ts').includes('debugToken') &&
+  read('engine/social/facebook.ts').includes("pages_read_engagement"),
+  'فحص صلاحيات نشر فيديو الصفحة عبر debug_token يكشف pages_read_engagement الناقصة (جذر #100)');
+add('facebook-publish-diagnostics-test',
+  fs.existsSync(path.join(root, 'engine/tests/facebook.connector.test.ts')) &&
+  read('engine/tests/facebook.connector.test.ts').includes('/api/platforms/publish-diagnostics') &&
+  read('engine/tests/facebook.connector.test.ts').includes('AbCdTrace#100') &&
+  read('engine/tests/facebook.connector.test.ts').includes('video-permission-diagnosis'),
+  'اختبار انحدار يثبّت حفظ تشخيص #100 وسحبه وفحص صلاحية نشر الفيديو');
 // إصلاح #100 الجذري: مسار ربط Facebook يستخدم رمز الصفحة من /me/accounts مباشرةً
 // ولا يستدعي GET /{page-id} (الذي يستدعي pages_read_engagement ويرد #100).
 add('facebook-finalize-uses-page-from-accounts', server.includes('facebookFinalizePageSelection(pages.data[0].pageId,userToken,pages.data[0])') && server.includes('facebookFinalizePageSelection(page.pageId,userToken,page)'), 'مسارا الربط (callback + select-page) يمرّران بيانات الصفحة من /me/accounts بلا GET /{page-id}');
