@@ -3410,6 +3410,41 @@ add('watcher-advisory-not-authority',
     (read('docs/diagrams/central-brain.html').includes('six-agent') || read('docs/diagrams/central-brain.html').includes('العقول الستة')),
     'المخططات الهندسية مُحدَّثة لتعكس النشر متعدد المنصات والتقسيم الجديد (لا وثيقة قديمة)');
 
+  // 8ب) نموذج المنتج: عرض سعر التقسيط المشتق من سعر الكاش (مصدر واحد، بلا اختراع).
+  const installmentUtil = read('src/utils/installmentPrice.ts');
+  const showroomView = read('src/components/database/ShowroomDatabaseView.tsx');
+  add('product-installment-single-source',
+    installmentUtil.includes('INSTALLMENT_MARKUP_PERCENT_DEFAULT = 25') &&
+    installmentUtil.includes('INSTALLMENT_MONTHS_DEFAULT = 10') &&
+    server.includes('from "./src/utils/installmentPrice"') &&
+    showroomView.includes("from '../../utils/installmentPrice'"),
+    'مصدر واحد للحساب (25% / 10 أشهر) يستخدمه الخادم والواجهة');
+  add('product-installment-formula',
+    installmentUtil.includes('Math.round(cashPrice * (1 + markup / 100))') &&
+    installmentUtil.includes('Math.ceil(installmentPrice / months)'),
+    'installmentPrice = cashPrice + 25% (تقريب لأقرب دينار)، monthly = price/months (تقريب لأعلى دينار)');
+  add('product-installment-server-derives',
+    server.includes('function applyInstallmentFields') &&
+    server.includes('applyInstallmentFields(product as any, { cashPrice, installmentMonths: b.installmentMonths') &&
+    server.includes('applyInstallmentFields(product, { cashPrice: Number(product.cashPrice)'),
+    'مسار إنشاء/تعديل المنتج يشتق سعر التقسيط والقسط من cashPrice ولا يحفظ قيمة يدوية متناقضة');
+  add('product-installment-form-fields',
+    showroomView.includes('سعر الكاش (د.ع)') &&
+    showroomView.includes('سعر التقسيط (د.ع)') &&
+    showroomView.includes('مدة التقسيط (بالأشهر)') &&
+    showroomView.includes('القسط الشهري (د.ع)') &&
+    showroomView.includes('readOnly'),
+    'نموذج المنتج يعرض الحقول الأربعة بالعربية، والحقول المحسوبة للقراءة فقط (بلا إدخال يدوي متناقض)');
+  add('product-installment-test-registered',
+    (pkg.scripts['test'] || '').includes('test:product-installment') &&
+    pkg.scripts['test:product-installment'] === 'tsx engine/tests/product.installment.price.test.ts' &&
+    read('engine/tests/product.installment.price.test.ts').includes('TEST1 installmentPrice=125000'),
+    'اختبار سعر التقسيط مسجَّل ضمن npm test ويغطّي الأمثلة الإلزامية');
+  add('product-installment-no-finance-scope',
+    !/new .*Contract|installmentSchedules\.push|createPayment|sales\.push/.test(installmentUtil) &&
+    !/from ['"].*finance|from ['"].*collections/i.test(server.slice(server.indexOf('function applyInstallmentFields'), server.indexOf('function applyInstallmentFields') + 900)),
+    'التعديل في نطاق عرض المنتج فقط — لا عقود/دفعات/تحصيل/مالية');
+
   // 9) AGENTS.md: عدد فحوصات final-audit مطابق للفعلي (يُعَدّ من نص الملف نفسه).
   const auditCount = (read('final-audit.mjs').match(/^\s*add\(/gm) || []).length;
   add('agents-audit-count-accurate',

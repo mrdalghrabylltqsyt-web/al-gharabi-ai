@@ -132,6 +132,11 @@ export interface ShowroomProduct {
   featured?: boolean;
   specs: string[];
   installmentOptions: string[];
+  // حقول عرض سعر التقسيط (مشتقّة من cashPrice؛ اختيارية للتوافق مع المنتجات القديمة).
+  installmentPrice?: number;
+  installmentMonths?: number;
+  monthlyInstallment?: number;
+  installmentMarkupPercent?: number;
 }
 
 export interface InstallmentPlan {
