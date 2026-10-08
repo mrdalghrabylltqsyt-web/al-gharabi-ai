@@ -1124,7 +1124,7 @@ add('drive-host-timeout-tests-in-suite', (pkg.scripts['test:dr'] || '').includes
 const videoHostingTestSrc = fs.existsSync(path.join(root, 'engine/tests/dr/dr.video.public.hosting.test.ts')) ? read('engine/tests/dr/dr.video.public.hosting.test.ts') : '';
 add('drive-reauth-classified-not-thrown', driveClientSrc.includes("code: 'drive_reauth_required'") && /if \(!status && authFailCodes\.includes\(lcCode\)\)/.test(driveClientSrc), 'فشل تجديد رمز Drive (invalid_grant) يُصنَّف drive_reauth_required لا يُرمى كخطأ عام يخفي السبب');
 add('drive-token-refresh-inside-try', /const started = Date\.now\(\);\s*try \{[\s\S]*?await this\.authHeaders\(\)/.test(driveClientSrc), 'استدعاء الرمز داخل try في request (فشل المصادقة يُصنَّف ويُسجَّل لا يمرّ استثناءً خارج التصنيف)');
-add('drive-reauth-honest-response', server.includes('DRIVE_REAUTH_REQUIRED') && server.includes('أعد الربط بنقرة واحدة'), 'مسار الاستضافة يميّز «يلزم إعادة ربط Drive» عن فشل الرفع العام برسالة صريحة قابلة للتنفيذ');
+add('drive-reauth-honest-response', server.includes('drive-mirror-skipped') && !/resolvedVideoErr\(503[\s\S]{0,200}?DRIVE_REAUTH_REQUIRED/.test(server), 'مسار الاستضافة لم يعد يُسقط الفيديو عند فشل Drive (أفضل-جهد) — الخدمة من الخادم تكفي للنشر الموحّد');
 add('drive-reauth-regression-test', videoHostingTestSrc.includes('drive_reauth_required') && videoHostingTestSrc.includes('does NOT throw'), 'اختبار انحدار يثبت أن فشل التجديد يُصنَّف ولا يرمي استثناءً عاماً');
 add('deploy-started-at-exposed', server.includes('startedAt: SERVER_STARTED_AT') && server.includes('const SERVER_STARTED_AT'), 'deploy.startedAt يُعلن زمن إقلاع العملية لكشف النسخة القديمة أثناء/بعد النشر');
 
@@ -3490,7 +3490,60 @@ add('watcher-advisory-not-authority',
     !/from ['"].*finance|from ['"].*collections/i.test(server.slice(server.indexOf('function applyInstallmentFields'), server.indexOf('function applyInstallmentFields') + 900)),
     'التعديل في نطاق عرض المنتج فقط — لا عقود/دفعات/تحصيل/مالية');
 
-  // 9) AGENTS.md: عدد فحوصات final-audit مطابق للفعلي (يُعَدّ من نص الملف نفسه).
+  // 9ب) كشف السبب الحقيقي لفشل النشر الموحّد (Instagram/Threads) + تمييز YouTube.
+  const threadsSrc = read('engine/social/threads.ts');
+  const approvalSrc = read('src/components/approval/ApprovalWorkflowView.tsx');
+  const publishResultSrc = read('src/utils/publishResult.ts');
+  add('publish-real-error-not-fixed-code',
+    server.includes('const code = container.code || "MEDIA_REQUIRED";') &&
+    server.includes('const isRealMediaRequired = !imageUrl && !videoUrl;') &&
+    server.includes('code: container.code || "PROVIDER_ERROR"') &&
+    server.includes('providerCode: container.providerCode ?? null'),
+    'المسار العام يمرّر كود Meta الحقيقي (MEDIA_REQUIRED فقط عند غياب الوسائط فعلاً) بدل تثبيته أعمى');
+  add('instagram-threads-error-classifier',
+    read('engine/social/instagram.ts').includes('classifyInstagramProviderError') &&
+    threadsSrc.includes('classifyThreadsProviderError') &&
+    read('engine/social/instagram.ts').includes("code?: string") &&
+    threadsSrc.includes("code?: string"),
+    'موصّلا Instagram/Threads يُميّزان خطأ تنزيل الوسائط الحقيقي (MEDIA_DOWNLOAD_FAILED) ويُمرّران الرسالة كما هي');
+  add('provider-error-code-non-narrowing',
+    read('engine/social/instagram.ts').includes('providerCode: number | null') &&
+    threadsSrc.includes('providerCode: number | null'),
+    'كود المزود الخام (error.code/error_subcode) مُمرَّر للتشخيص الصريح');
+  add('publish-ui-shows-code-and-message',
+    publishResultSrc.includes('formatPublishFailure') &&
+    publishResultSrc.includes('`${platform} (${code}: ${error})`') &&
+    approvalSrc.includes('summarizePublishFailures'),
+    'الواجهة تعرض الكود والرسالة معاً (لا إخفاء لأحدهما)');
+  add('publish-ui-youtube-dedicated-note',
+    publishResultSrc.includes('YOUTUBE_DEDICATED_PUBLISH_NOTE') &&
+    publishResultSrc.includes('PLATFORM_USE_DEDICATED_PUBLISH') &&
+    publishResultSrc.includes('isYouTubeDedicatedPublish'),
+    'الواجهة تميّز YouTube بأنه يُنشر عبر طابوره المخصص لا أنه «فشل»');
+  add('content-server-streams-video-with-range',
+    server.includes('app.get("/api/public/video/:ref"') &&
+    server.includes('verifyMediaSignature') &&
+    server.includes('Accept-Ranges') &&
+    server.includes('Content-Range') &&
+    server.includes('publicMediaUrl'),
+    'خدمة الفيديو العامة من الخادم (تمرير Range + توقيع HMAC) بدل رابط Drive الوسيط');
+  add('video-host-prefers-server-url',
+    server.includes('const serverUrl = publicMediaUrl(mediaRef);') &&
+    server.includes('return resolvedVideoOk(serverUrl);') &&
+    server.includes('drive-mirror-skipped') &&
+    server.includes('settleWithTimeout(publishVideoPublicly(client'),
+    'resolvePublicVideoUrl يعيد رابط الخادم المضمون وDrive أفضل-جهد بمهلة (لا يُسقط الاستجابة عند فشل/تعثّر Drive)');
+  add('publish-provider-error-tests',
+    fs.existsSync(path.join(root, 'engine/tests/publish.provider.error.test.ts')) &&
+    (pkg.scripts['test'] || '').includes('test:publish-provider-error') &&
+    pkg.scripts['test:publish-provider-error'] === 'tsx engine/tests/publish.provider.error.test.ts',
+    'اختبار انحدار مسجَّل: الرسالة الحقيقية تصل والكود يُميَّز والواجهة تعرض الاثنين');
+  add('video-host-streams-tested',
+    read('engine/tests/dr/dr.video.host.timeout.integration.test.ts').includes('/api/public/video/') &&
+    read('engine/tests/dr/dr.video.host.timeout.integration.test.ts').includes('طلب Range => 206'),
+    'اختبار خدمة الفيديو العامة (Range 206 + توقيع مزوّر 403) مسجَّل');
+
+  // 10) AGENTS.md: عدد فحوصات final-audit مطابق للفعلي (يُعَدّ من نص الملف نفسه).
   const auditCount = (read('final-audit.mjs').match(/^\s*add\(/gm) || []).length;
   add('agents-audit-count-accurate',
     read('AGENTS.md').includes(`final-audit.mjs (${auditCount} فحصاً)`),

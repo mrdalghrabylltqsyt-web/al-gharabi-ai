@@ -357,10 +357,39 @@ export interface InstagramResult<T> {
   ok: boolean;
   data: T | null;
   error?: string;
+  /**
+   * كود الفشل الحقيقي القادم من Meta — يُمرَّر للمسار العام بدل تثبيت MEDIA_REQUIRED
+   * الذي كان يُخفيه. MEDIA_REQUIRED يبقى فقط لحالة غياب الوسائط قبل أي استدعاء شبكي.
+   */
+  code?: string;
+  /** كود/رقم Meta الفرعي الخام (error.code/error_subcode) للتشخيص الصريح. */
+  providerCode?: number | null;
 }
 
 function errorMessage(data: any, fallback: string): string {
   return String(data?.error?.message || data?.error_description || data?.error || fallback);
+}
+
+function providerErrorCode(data: any): number | null {
+  const c = data?.error?.code;
+  const n = Number(c);
+  return Number.isFinite(n) ? n : null;
+}
+
+/**
+ * يميّز أخطاء Instagram الحقيقية: خطأ تنزيل الوسائط من رابط عام (Meta 9007 / رسالة
+ * «download the video/image») => MEDIA_DOWNLOAD_FAILED، وسائط ليت ليست الفيديو
+ * المطلوب (9004/352) => MEDIA_FETCH_FAILED، وإلا CLIENT_ERROR بالرسالة الحقيقية.
+ */
+function classifyInstagramProviderError(message: string, providerCode: number | null): string {
+  const m = String(message || '').toLowerCase();
+  if (providerCode === 9007 || /download (the )?(video|image|media)|couldn'?t? (download|fetch)|unable to (download|fetch)|failed to (download|fetch)/.test(m)) {
+    return 'MEDIA_DOWNLOAD_FAILED';
+  }
+  if (providerCode === 9004 || providerCode === 352 || /media (fetch|upload)|invalid (video|image)|aspect ratio|codec/.test(m)) {
+    return 'MEDIA_FETCH_FAILED';
+  }
+  return 'CLIENT_ERROR';
 }
 
 export class InstagramClient {
@@ -524,10 +553,14 @@ export class InstagramClient {
         body: built.body.toString(),
       });
       const data = await res.json().catch(() => null);
-      if (!res.ok || data?.error || !data?.id) return { ok: false, data: null, error: errorMessage(data, 'فشل إنشاء حاوية النشر عبر Instagram.') };
+      if (!res.ok || data?.error || !data?.id) {
+        const msg = errorMessage(data, 'فشل إنشاء حاوية النشر عبر Instagram.');
+        const pCode = providerErrorCode(data);
+        return { ok: false, data: null, error: msg, providerCode: pCode, code: classifyInstagramProviderError(msg, pCode) };
+      }
       return { ok: true, data: { containerId: String(data.id), mediaKind: String(built.mediaKind) } };
     } catch (e: any) {
-      return { ok: false, data: null, error: String(e?.message || 'فشل الاتصال بـInstagram.') };
+      return { ok: false, data: null, error: String(e?.message || 'فشل الاتصال بـInstagram.'), code: 'NETWORK_ERROR' };
     }
   }
 

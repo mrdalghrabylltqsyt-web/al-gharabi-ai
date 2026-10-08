@@ -82,7 +82,7 @@ async function run(): Promise<void> {
     const content = Buffer.from('fake-video-bytes-2');
     const uploaded = await client.createFile({ name: 'will-fail-permission.mp4', parentId: folder.rootId!, content, mimeType: 'video/mp4' });
     check('setup: file created before permission attempt', uploaded.ok === true);
-    const fileId = uploaded.data.id;
+    const fileId = (uploaded as { data?: any }).data.id;
     // نحقن فشل الطلب التالي فقط (منح الصلاحية) لمحاكاة 403/429 من Drive.
     state.failOnceStatus = 403;
     const result = await uploadPublicVideo(client, { folderId: folder.rootId!, fileName: 'second-file.mp4', content, mimeType: 'video/mp4' });

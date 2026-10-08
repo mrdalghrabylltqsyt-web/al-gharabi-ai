@@ -155,26 +155,46 @@ async function main(): Promise<void> {
     check('بلا جلسة => 401', unauth.res.status === 401, String(unauth.res.status));
   }
 
-  group('2) الحالة الطبيعية — 2 ميغابايت تنتهي خلال ثوانٍ برابط عام حقيقي');
+  group('2) الحالة الطبيعية — 2 ميغابايت تنتهي خلال ثوانٍ برابط خدمة مضمون من الخادم');
   {
     await fetch(`${DRIVE_BASE}/__reset`);
     const r = await host(auth, makeVideo(2 * 1024 * 1024, 1));
     check('حالة طبيعية => 200', r.res.status === 200, JSON.stringify({ s: r.res.status, b: r.body }));
-    check('حالة طبيعية => رابط عام حقيقي موجود', typeof r.body.url === 'string' && r.body.url.includes('drive.google.com'), String(r.body.url || ''));
+    // الجذر المُثبت: الرابط العام يعود من الخادم نفسه (بايتات خام + Range)، لا من
+    // رابط Drive الوسيط الذي قد يُعيد HTML فيفشل سحب Meta.
+    check('حالة طبيعية => رابط خدمة عام من الخادم', typeof r.body.url === 'string' && r.body.url.includes('/api/public/video/'), String(r.body.url || ''));
+    check('حالة طبيعية => الرابط موقّع (sig)', typeof r.body.url === 'string' && r.body.url.includes('sig='), String(r.body.url || ''));
+    // الخدمة الفعلية: البايتات تُخدَم بنوع فيديو (لا HTML) وبالحجم الكامل.
+    const fetched = await fetch(r.body.url);
+    check('خدمة الرابط => 200', fetched.status === 200, String(fetched.status));
+    check('خدمة الرابط => نوع محتوى فيديو (لا HTML)', String(fetched.headers.get('content-type') || '').startsWith('video/'), String(fetched.headers.get('content-type')));
+    check('خدمة الرابط => دعم Range معلَن', fetched.headers.get('accept-ranges') === 'bytes');
+    const buf = Buffer.from(await fetched.arrayBuffer());
+    check('خدمة الرابط => بايتات فيديو حقيقية (توقيع ftyp)', buf.length > 1024 && buf.subarray(4, 8).toString() === 'ftyp', String(buf.length));
+    // طلب مقطع Range => 206 مع طول صحيح (يتطلبه سحب الفيديو من Meta).
+    const ranged = await fetch(r.body.url, { headers: { Range: 'bytes=0-99' } });
+    check('طلب Range => 206', ranged.status === 206, String(ranged.status));
+    check('طلب Range => Content-Range صحيح', /^bytes 0-99\//.test(String(ranged.headers.get('content-range') || '')), String(ranged.headers.get('content-range')));
+    const part = Buffer.from(await ranged.arrayBuffer());
+    check('طلب Range => 100 بايت بالضبط', part.length === 100, String(part.length));
+    // توقيع خاطئ => 403 (لا تخمين روابط ملفات أخرى).
+    const bad = await fetch(r.body.url.split('?')[0] + '?sig=forged');
+    check('توقيع مزوّر => 403', bad.status === 403, String(bad.status));
     check('حالة طبيعية => تنتهي خلال ثوانٍ (أقل من 10s)', r.elapsed < 10_000, `${r.elapsed}ms`);
     check('حالة طبيعية => لم يُرفض بحد الوسيط 413', r.res.status !== 413);
   }
 
-  group('3) Drive متعثّر تماماً => رد خطأ واضح خلال مهلة محدودة (لا تعليق بلا نهاية)');
+  group('3) Drive متعثّر تماماً => الفيديو يبقى مُخدَماً من الخادم (لا تعليق بلا نهاية)');
   {
     await fetch(`${DRIVE_BASE}/__hang`);
     const r = await host(auth, makeVideo(2 * 1024 * 1024, 2));
     check('متعثّر => انتهى خلال مهلة معقولة (< 6s)', r.elapsed < 6_000, `${r.elapsed}ms`);
     check('متعثّر => ليس 413', r.res.status !== 413, String(r.res.status));
-    check('متعثّر => لا رد نجاح وهمي', r.res.status !== 200, String(r.res.status));
-    check('متعثّر => خطأ واضح (HOSTING_TIMEOUT أو VIDEO_HOSTING_FAILED)', r.body.code === 'HOSTING_TIMEOUT' || r.body.code === 'VIDEO_HOSTING_FAILED', JSON.stringify(r.body));
+    // الجذر المُصلَح: Drive صار أفضل-جهد للاستمرارية فقط؛ تعثّره لا يُسقط حصول
+    // الوسائط، لأن البايتات تُخدَم من الخادم نفسه. لا «نجاح وهمي» — الرابط حقيقي ويُخدَم.
+    check('متعثّر => ما زال ينجح برابط خدمة من الخادم', r.res.status === 200 && String(r.body.url || '').includes('/api/public/video/'), JSON.stringify({ s: r.res.status, url: r.body.url }));
+    check('متعثّر => الرابط المخدوم يعيد بايتات فعلية (لا HTML)', (await (async () => { try { const f = await fetch(r.body.url); return String(f.headers.get('content-type') || '').startsWith('video/'); } catch { return false; } })()) === true);
     check('متعثّر => لا رسالة "حجم الطلب أكبر من الحد"', !JSON.stringify(r.body).includes('حجم الطلب أكبر من الحد'));
-    check('متعثّر => الرمز يتوجّه للمالك لبديل يدوي', /يدوياً|lap|لصق/.test(String(r.body.error || '')));
     await fetch(`${DRIVE_BASE}/__reset`);
   }
 

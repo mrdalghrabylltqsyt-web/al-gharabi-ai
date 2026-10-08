@@ -107,10 +107,38 @@ export interface ThreadsResult<T> {
   ok: boolean;
   data: T | null;
   error?: string;
+  /**
+   * كود فشل حقيقي يُمرَّر للمسار العام بدل تثبيت PROVIDER_ERROR (كان يُخفي السبب).
+   * MEDIA_DOWNLOAD_FAILED لخطأ Meta 9007/«download the video» (رابط وسائط لا يعيد
+   * بايتات فيديو خام)، وNETWORK_ERROR/CLIENT_ERROR لبقية الحالات.
+   */
+  code?: string;
+  /** كود/رقم Meta الفرعي الخام (error.code/error_subcode) — للتشخيص الصريح بلا تثبيت. */
+  providerCode?: number | null;
 }
 
 function errorMessage(data: any, fallback: string): string {
   return String(data?.error?.message || data?.error_description || data?.error || fallback);
+}
+
+function providerErrorCode(data: any): number | null {
+  const c = data?.error?.code;
+  const n = Number(c);
+  return Number.isFinite(n) ? n : null;
+}
+
+/**
+ * مميِّز حقيقي لأخطاء Threads: لا تثبيت كود. إن كان الخطأ مرتبطاً بتنزيل الوسائط
+ * من رابط عام (Meta 9007 / رسالة تفيد بتعذّر تنزيل الفيديو/الصورة) نُعلن
+ * MEDIA_DOWNLOAD_FAILED صراحةً؛ وإلا نُمرّر الكود الخام. الرسالة الحقيقية تُبقى
+ * كما هي دائماً (لا تُستبدل بنص ثابت).
+ */
+function classifyThreadsProviderError(message: string, providerCode: number | null): string {
+  const m = String(message || '').toLowerCase();
+  const mediaRelated = providerCode === 9007
+    || /download|video_url|image_url|media|video|image|fetch the (video|image)|couldn'?t? (get|download)/.test(m);
+  if (mediaRelated && /download|video|image|media|fetch/.test(m)) return 'MEDIA_DOWNLOAD_FAILED';
+  return 'CLIENT_ERROR';
 }
 
 export class ThreadsClient {
@@ -148,10 +176,14 @@ export class ThreadsClient {
         body: built.body.toString(),
       });
       const data = await res.json().catch(() => null);
-      if (!res.ok || data?.error || !data?.id) return { ok: false, data: null, error: errorMessage(data, 'فشل إنشاء حاوية النشر عبر Threads.') };
+      if (!res.ok || data?.error || !data?.id) {
+        const msg = errorMessage(data, 'فشل إنشاء حاوية النشر عبر Threads.');
+        const pCode = providerErrorCode(data);
+        return { ok: false, data: null, error: msg, providerCode: pCode, code: classifyThreadsProviderError(msg, pCode) };
+      }
       return { ok: true, data: { containerId: String(data.id), mediaKind: built.mediaKind } };
     } catch (e: any) {
-      return { ok: false, data: null, error: String(e?.message || 'فشل الاتصال بـThreads.') };
+      return { ok: false, data: null, error: String(e?.message || 'فشل الاتصال بـThreads.'), code: 'NETWORK_ERROR' };
     }
   }
 
