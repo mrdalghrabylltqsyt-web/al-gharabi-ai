@@ -1962,36 +1962,74 @@ function saveThreadsCredentials(input: { accessToken: string; expiresAt?: number
   const existing = threadsStoredCredentials() || {};
   setProviderToken("threads", { ...existing, access_token: input.accessToken, expiresAt: input.expiresAt ?? null });
 }
+/** يضبط حالة Threads على reauth_needed صراحةً (لا بقاء على connected بصمت). */
+async function markThreadsReauthNeeded(reason: string): Promise<void> {
+  const stored = threadsStoredCredentials() || {};
+  const current: any = platformConnections.get("threads");
+  platformConnections.set("threads", { platform: "threads", status: "reauth_needed", accountId: String(stored?.threadsUserId || current?.accountId || ""), connectedAt: stored?.connectedAt || current?.connectedAt || new Date().toISOString() });
+  savePlatformConnections();
+  await persistStateDurable();
+  audit("system", "threads_reauth_needed", reason || "token_expired");
+}
 /**
- * يضمن رمز Threads صالحاً للتشغيل: يُجدّد الرمز الطويل عند انتهائه المعلَن عبر
- * `grant_type=th_exchange_token` (وثيقة Threads؛ بلا client_secret). لا فشل
- * صامت: فشل التجديد يُعلن `reauth_needed` صراحةً. إن لم يكن الانتهاء معلنًا
- * (رمز بلا expiresAt محفوظ) نُمرّره كما هو — لا ادّعاء انتهاء، وتُصنّف أخطاء
- * الرمز الحقيقية عند الاستخدام (TOKEN_EXPIRED) لإعادة الربط.
+ * تجديد قسري واحد للرمز الطويل عبر `grant_type=th_exchange_token` (وثيقة Threads؛
+ * بلا client_secret). يُعيد الرمز الجديد أو null عند الفشل (لا نجاح وهمي).
  */
-async function ensureThreadsAccessToken(): Promise<{ ok: boolean; token?: string; refreshed?: boolean; error?: string }> {
-  const stored = threadsStoredCredentials();
+async function forceRefreshThreadsToken(): Promise<string | null> {
   const token = threadsAccessToken();
-  if (!token) return { ok: false, error: "لا اعتماد Threads محفوظ؛ نفّذ الربط عبر OAuth أولاً." };
-  if (!threadsAccessExpired()) return { ok: true, token, refreshed: false };
+  if (!token) return null;
   const res = await threadsClient().refreshLongLivedToken(token);
   if (!res.ok || !res.data?.accessToken) {
-    platformConnections.set("threads", { platform: "threads", status: "reauth_needed", accountId: String(stored?.threadsUserId || ""), connectedAt: stored?.connectedAt || new Date().toISOString() });
-    savePlatformConnections();
-    await persistStateDurable();
     audit("system", "threads_refresh_failed", res.code || "provider_error");
-    return { ok: false, error: res.error || "فشل تجديد رمز Threads؛ أعد الربط." };
+    return null;
   }
   saveThreadsCredentials({ accessToken: res.data.accessToken, expiresAt: res.data.expiresIn ? Date.now() + res.data.expiresIn * 1000 : null });
   await persistStateDurable();
   audit("system", "threads_token_refreshed", "auto");
-  return { ok: true, token: res.data.accessToken, refreshed: true };
+  return res.data.accessToken;
 }
-/** غلاف موحّد ينفّذ عملية Threads برمز صالح مع تجديد تلقائي عند الحاجة. */
-async function withThreadsToken<T>(fn: (token: string) => Promise<{ ok: boolean; data: T | null; error?: string; code?: string | null; providerCode?: number | null }>): Promise<{ ok: boolean; data: T | null; error?: string; code?: string | null; providerCode?: number | null }> {
+/**
+ * يضمن رمز Threads صالحاً للتشغيل: يُجدّد الرمز الطويل عند انتهائه المعلَن.
+ * إن لم يكن الانتهاء معلنًا (حساب مربوط قبل تخزين expiresAt) نُمرّره — ويُعالَج
+ * الرفض الحقيقي من Meta في `withThreadsToken` بتجديد قسري.
+ */
+async function ensureThreadsAccessToken(): Promise<{ ok: boolean; token?: string; refreshed?: boolean; error?: string }> {
+  const token = threadsAccessToken();
+  if (!token) return { ok: false, error: "لا اعتماد Threads محفوظ؛ نفّذ الربط عبر OAuth أولاً." };
+  if (!threadsAccessExpired()) return { ok: true, token, refreshed: false };
+  const refreshed = await forceRefreshThreadsToken();
+  if (!refreshed) {
+    await markThreadsReauthNeeded("refresh_failed");
+    return { ok: false, error: "فشل تجديد رمز Threads؛ أعد الربط." };
+  }
+  return { ok: true, token: refreshed, refreshed: true };
+}
+/**
+ * غلاف موحّد ينفّذ عملية Threads برمز صالح مع تجديد تلقائي عند الحاجة.
+ *
+ * الإصلاح الجذري: حساب مربوط قبل تخزين `expiresAt` يجعل `ensureThreadsAccessToken`
+ * يظنّ الرمز صالحاً (expiresAt=null ⇒ غير منتهٍ) فيُمرّره، ثم يرد Meta بـ190
+ * «Session has expired» — فيتكرّر نفس الفشل صامتاً بلا أي محاولة تجديد. لذلك عند
+ * فشل العملية بـTOKEN_EXPIRED رغم ذلك نُجرّب تجديداً قسرياً واحداً ثم نُعيد
+ * المحاولة مرة واحدة؛ وإن فشل التجديد نُعلن `reauth_needed` صراحةً فلا تكرار صامت.
+ */
+async function withThreadsToken<T>(fn: (token: string) => Promise<{ ok: boolean; data: T | null; error?: string; code?: string | null; providerCode?: number | null; providerSubcode?: number | null; providerTraceId?: string | null }>): Promise<{ ok: boolean; data: T | null; error?: string; code?: string | null; providerCode?: number | null; providerSubcode?: number | null; providerTraceId?: string | null }> {
   const ensured = await ensureThreadsAccessToken();
   if (!ensured.ok || !ensured.token) return { ok: false, data: null, error: ensured.error, code: "TOKEN_EXPIRED" };
-  return fn(ensured.token);
+  const first = await fn(ensured.token);
+  // الرمز بدا صالحاً لكن Meta رفضه كمنتهٍ (حساب قديم بلا expiresAt) ⇒ تجديد قسري واحد.
+  if (!first.ok && first.code === "TOKEN_EXPIRED" && !ensured.refreshed) {
+    const forced = await forceRefreshThreadsToken();
+    if (!forced) {
+      await markThreadsReauthNeeded("expired_at_provider");
+      return { ok: false, data: null, error: first.error || "انتهى رمز Threads وفشل التجديد؛ أعد الربط.", code: "TOKEN_EXPIRED", providerCode: first.providerCode ?? 190 };
+    }
+    const retried = await fn(forced);
+    // حتى الرمز المُجدَّد رُفض كمنتهٍ ⇒ الحاجة لإعادة ربط حقيقية (لا تكرار صامت).
+    if (!retried.ok && retried.code === "TOKEN_EXPIRED") await markThreadsReauthNeeded("expired_after_refresh");
+    return retried;
+  }
+  return first;
 }
 /** تسجيل آمن لحدث Instagram الوارد. ممنوع تسجيل أي سرّ أو نص رسالة. */
 function logInstagramWebhook(event: { kind: string; externalId?: string | null; outcome: "accepted" | "duplicate" | "rejected" | "ignored"; persisted?: boolean }): void {
@@ -7908,7 +7946,7 @@ async function executePlatformPublish(platform: string, body: any, actor: string
       if ((workspace as any).publishRecords.length > WORKSPACE_MAX_PUBLISH_RECORDS) (workspace as any).publishRecords.length = WORKSPACE_MAX_PUBLISH_RECORDS;
       persistState();
       audit(user.id, result.ok ? "platform_publish_published" : "platform_publish_failed", `${platform}`);
-      if (!result.ok) return { status: 502, body: { success: false, record, error: result.error, code: result.code || "PROVIDER_ERROR", providerCode: result.providerCode ?? null, note: "لم يُسجَّل أي نشر بلا معرّف منشور حقيقي من المزود." } };
+      if (!result.ok) return { status: 502, body: { success: false, record, error: result.error, code: result.code || "PROVIDER_ERROR", providerCode: result.providerCode ?? null, providerSubcode: result.providerSubcode ?? null, providerTraceId: result.providerTraceId ?? null, note: "لم يُسجَّل أي نشر بلا معرّف منشور حقيقي من المزود." } };
       return { status: 200, body: { success: true, record, providerPostId: result.data?.providerPostId, receipt } };
     }
     if (platform === "instagram") {
@@ -7929,7 +7967,7 @@ async function executePlatformPublish(platform: string, body: any, actor: string
         // كود Meta الحقيقي ورسالته بدل تثبيت MEDIA_REQUIRED الذي كان يُخفي السبب.
         const code = container.code || "MEDIA_REQUIRED";
         const isRealMediaRequired = !imageUrl && !videoUrl;
-        return { status: 422, body: { success: false, error: container.error, code: isRealMediaRequired ? "MEDIA_REQUIRED" : code, providerCode: container.providerCode ?? null, note: isRealMediaRequired ? "Instagram لا ينشر نصاً فقط؛ زوّد imageUrl أو videoUrl عاماً." : "فشل إنشاء حاوية Instagram بالسبب الحقيقي من Meta." } };
+        return { status: 422, body: { success: false, error: container.error, code: isRealMediaRequired ? "MEDIA_REQUIRED" : code, providerCode: container.providerCode ?? null, providerSubcode: container.providerSubcode ?? null, providerTraceId: container.providerTraceId ?? null, note: isRealMediaRequired ? "Instagram لا ينشر نصاً فقط؛ زوّد imageUrl أو videoUrl عاماً." : "فشل إنشاء حاوية Instagram بالسبب الحقيقي من Meta." } };
       }
       const published = await instagramClient().publishContainer(target.igAccountId, target.pageToken, container.data.containerId);
       const receipt = published.ok ? { provider: "instagram", igAccountId: target.igAccountId, containerId: container.data.containerId, postId: published.data?.providerPostId, mediaKind: container.data.mediaKind, sentAt: new Date().toISOString() } : null;
@@ -7939,7 +7977,7 @@ async function executePlatformPublish(platform: string, body: any, actor: string
       if ((workspace as any).publishRecords.length > WORKSPACE_MAX_PUBLISH_RECORDS) (workspace as any).publishRecords.length = WORKSPACE_MAX_PUBLISH_RECORDS;
       persistState();
       audit(user.id, published.ok ? "platform_publish_published" : "platform_publish_failed", `${platform}`);
-      if (!published.ok) return { status: 502, body: { success: false, record, error: published.error, containerId: container.data.containerId, note: "لم يُسجَّل أي نشر بلا معرّف منشور حقيقي من المزود." } };
+      if (!published.ok) return { status: 502, body: { success: false, record, error: published.error, containerId: container.data.containerId, code: published.code || "PROVIDER_ERROR", providerCode: published.providerCode ?? null, providerSubcode: published.providerSubcode ?? null, providerTraceId: published.providerTraceId ?? null, note: "لم يُسجَّل أي نشر بلا معرّف منشور حقيقي من المزود." } };
       return { status: 200, body: { success: true, record, providerPostId: published.data?.providerPostId, containerId: container.data.containerId, receipt } };
     }
     if (platform === "threads") {
@@ -7958,7 +7996,7 @@ async function executePlatformPublish(platform: string, body: any, actor: string
       if (!container.ok || !container.data) {
         // لا تثبيت PROVIDER_ERROR؛ نُمرّر كود Meta الحقيقي ورسالته (مثلاً خطأ تنزيل
         // الوسائط 9007، أو انتهاء الرمز 190) بدل إخفاء السبب.
-        return { status: 502, body: { success: false, error: container.error, code: container.code || "PROVIDER_ERROR", providerCode: container.providerCode ?? null, note: "لم تُسجَّل أي حاوية بلا معرّف حقيقي من Threads." } };
+        return { status: 502, body: { success: false, error: container.error, code: container.code || "PROVIDER_ERROR", providerCode: container.providerCode ?? null, providerSubcode: container.providerSubcode ?? null, providerTraceId: container.providerTraceId ?? null, note: "لم تُسجَّل أي حاوية بلا معرّف حقيقي من Threads." } };
       }
       const published = await withThreadsToken((token) => threadsClient().publishContainer(target.threadsUserId, token, container.data!.containerId));
       const receipt = published.ok ? { provider: "threads", threadsUserId: target.threadsUserId, containerId: container.data.containerId, postId: published.data?.providerPostId, mediaKind: container.data.mediaKind, sentAt: new Date().toISOString() } : null;
@@ -7968,7 +8006,7 @@ async function executePlatformPublish(platform: string, body: any, actor: string
       if ((workspace as any).publishRecords.length > WORKSPACE_MAX_PUBLISH_RECORDS) (workspace as any).publishRecords.length = WORKSPACE_MAX_PUBLISH_RECORDS;
       persistState();
       audit(user.id, published.ok ? "platform_publish_published" : "platform_publish_failed", `${platform}`);
-      if (!published.ok) return { status: 502, body: { success: false, record, error: published.error, containerId: container.data.containerId, note: "لم يُسجَّل أي نشر بلا معرّف منشور حقيقي من المزود." } };
+      if (!published.ok) return { status: 502, body: { success: false, record, error: published.error, containerId: container.data.containerId, code: published.code || "PROVIDER_ERROR", providerCode: published.providerCode ?? null, providerSubcode: published.providerSubcode ?? null, providerTraceId: published.providerTraceId ?? null, note: "لم يُسجَّل أي نشر بلا معرّف منشور حقيقي من المزود." } };
       return { status: 200, body: { success: true, record, providerPostId: published.data?.providerPostId, containerId: container.data.containerId, receipt } };
     }
     if (platform === "tiktok") {

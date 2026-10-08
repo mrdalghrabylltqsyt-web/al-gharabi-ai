@@ -3548,9 +3548,12 @@ add('watcher-advisory-not-authority',
   add('facebook-provider-error-code',
     facebookModule.includes('export function facebookProviderErrorCode') &&
     facebookModule.includes('export function classifyFacebookProviderError') &&
-    facebookModule.includes('providerCode: pCode, code: classifyFacebookProviderError(msg, pCode)') &&
-    facebookModule.includes('providerCode?: number | null'),
-    'Facebook يُمرّر كود Meta الحقيقي (providerCode) والكود المصنَّف بدل رسالة عامة');
+    facebookModule.includes('code: classifyFacebookProviderError(msg, pCode)') &&
+    facebookModule.includes('providerCode: pCode') &&
+    facebookModule.includes('providerSubcode: ex.providerSubcode') &&
+    facebookModule.includes('providerCode?: number | null') &&
+    facebookModule.includes('providerSubcode?: number | null'),
+    'Facebook يُمرّر كود Meta الحقيقي (providerCode + error_subcode) والكود المصنَّف بدل رسالة عامة');
   const instagramModule = read('engine/social/instagram.ts');
   add('instagram-video-media-type',
     instagramModule.includes("body.set('media_type', 'VIDEO');") &&
@@ -3574,6 +3577,26 @@ add('watcher-advisory-not-authority',
     threadsModule.includes("return 'TOKEN_EXPIRED';") &&
     /providerCode === 190 \|\| \/session has expired/.test(threadsModule),
     'Threads يصنّف انتهاء الرمز (190/Session has expired) TOKEN_EXPIRED بدل إخفائه');
+  add('threads-forced-refresh-on-provider-reject',
+    server.includes('async function forceRefreshThreadsToken') &&
+    server.includes('async function markThreadsReauthNeeded') &&
+    server.includes('const forced = await forceRefreshThreadsToken()') &&
+    server.includes('const retried = await fn(forced)') &&
+    server.includes('code: "TOKEN_EXPIRED"'),
+    'Threads: رمز بلا expiresAt يُرفض من Meta ⇒ تجديد قسري واحد + إعادة محاولة، وفشل التجديد ⇒ reauth_needed (لا تكرار صامت)');
+  add('threads-provider-subcode-passthrough',
+    threadsModule.includes('providerSubcode?: number | null') &&
+    threadsModule.includes('providerTraceId?: string | null') &&
+    threadsModule.includes('function providerSubcode(') &&
+    threadsModule.includes('function logThreadsError('),
+    'Threads يُمرّر error_subcode وfbtrace_id الحقيقيين للتشخيص بلا سرّ');
+  const threadsRecoveryTest = read('engine/tests/threads.publish.recovery.test.ts');
+  add('threads-recovery-test-registered',
+    pkg.scripts['test:threads-recovery'] === 'tsx engine/tests/threads.publish.recovery.test.ts' &&
+    threadsRecoveryTest.includes('refreshCalls') &&
+    threadsRecoveryTest.includes('reauth_needed') &&
+    threadsRecoveryTest.includes("providerPostId === 'POST_1'"),
+    'اختبار انحدار دورة حياة رمز Threads (فشل التجديد => reauth_needed، نجاحه => نشر بمعرّف مزوّد) مسجَّل في npm test');
   const telegramModule = read('engine/social/telegram.ts');
   add('telegram-error-code',
     telegramModule.includes('export function telegramErrorCode') &&

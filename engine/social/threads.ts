@@ -115,6 +115,10 @@ export interface ThreadsResult<T> {
   code?: string;
   /** كود/رقم Meta الفرعي الخام (error.code/error_subcode) — للتشخيص الصريح بلا تثبيت. */
   providerCode?: number | null;
+  /** رمز الخطأ الفرعي من Meta (error.error_subcode). */
+  providerSubcode?: number | null;
+  /** معرّف تتبّع Meta (error.fbtrace_id) — يُقدَّم للدعم بلا أي سرّ. */
+  providerTraceId?: string | null;
 }
 
 function errorMessage(data: any, fallback: string): string {
@@ -125,6 +129,17 @@ function providerErrorCode(data: any): number | null {
   const c = data?.error?.code;
   const n = Number(c);
   return Number.isFinite(n) ? n : null;
+}
+
+function providerSubcode(data: any): number | null {
+  const c = data?.error?.error_subcode;
+  const n = Number(c);
+  return Number.isFinite(n) ? n : null;
+}
+
+/** سطر سجل تشخيصي آمن لخطأ Threads (بلا سرّ ولا رمز). */
+function logThreadsError(endpoint: string, status: number, data: any): void {
+  console.error('[threads-graph-error] ' + JSON.stringify({ endpoint, status, code: providerErrorCode(data), subcode: providerSubcode(data), message: errorMessage(data, ''), fbtraceId: typeof data?.error?.fbtrace_id === 'string' ? data.error.fbtrace_id : null }));
 }
 
 /**
@@ -183,7 +198,9 @@ export class ThreadsClient {
       if (!res.ok || !accessToken) {
         const msg = errorMessage(data, 'فشل تبادل رمز Threads.');
         const pCode = providerErrorCode(data);
-        return { ok: false, data: null, error: msg, code: classifyThreadsProviderError(msg, pCode), providerCode: pCode };
+        const pSub = providerSubcode(data);
+        const pTrace = typeof data?.error?.fbtrace_id === 'string' ? data.error.fbtrace_id : null;
+        return { ok: false, data: null, error: msg, code: classifyThreadsProviderError(msg, pCode), providerCode: pCode, providerSubcode: pSub, providerTraceId: pTrace };
       }
       return { ok: true, data: { accessToken } };
     } catch (e: any) {
@@ -207,7 +224,9 @@ export class ThreadsClient {
       if (!res.ok || !accessToken) {
         const msg = errorMessage(data, 'فشل إطالة رمز Threads.');
         const pCode = providerErrorCode(data);
-        return { ok: false, data: null, error: msg, code: classifyThreadsProviderError(msg, pCode), providerCode: pCode };
+        const pSub = providerSubcode(data);
+        const pTrace = typeof data?.error?.fbtrace_id === 'string' ? data.error.fbtrace_id : null;
+        return { ok: false, data: null, error: msg, code: classifyThreadsProviderError(msg, pCode), providerCode: pCode, providerSubcode: pSub, providerTraceId: pTrace };
       }
       const n = Number(data?.expires_in);
       return { ok: true, data: { accessToken, expiresIn: Number.isFinite(n) && n > 0 ? n : null } };
@@ -228,7 +247,9 @@ export class ThreadsClient {
       if (!res.ok || data?.error || !data?.id) {
         const msg = errorMessage(data, 'تعذّر إثبات هوية حساب Threads.');
         const pCode = providerErrorCode(data);
-        return { ok: false, data: null, error: msg, code: classifyThreadsProviderError(msg, pCode), providerCode: pCode };
+        const pSub = providerSubcode(data);
+        const pTrace = typeof data?.error?.fbtrace_id === 'string' ? data.error.fbtrace_id : null;
+        return { ok: false, data: null, error: msg, code: classifyThreadsProviderError(msg, pCode), providerCode: pCode, providerSubcode: pSub, providerTraceId: pTrace };
       }
       return { ok: true, data: { threadsUserId: String(data.id), username: data.username ? String(data.username) : null } };
     } catch (e: any) {
@@ -252,7 +273,9 @@ export class ThreadsClient {
       if (!res.ok || !parsed.ok || !parsed.accessToken) {
         const msg = errorMessage(data, 'تعذّر تجديد رمز Threads.');
         const pCode = providerErrorCode(data);
-        return { ok: false, data: null, error: msg, code: classifyThreadsProviderError(msg, pCode), providerCode: pCode };
+        const pSub = providerSubcode(data);
+        const pTrace = typeof data?.error?.fbtrace_id === 'string' ? data.error.fbtrace_id : null;
+        return { ok: false, data: null, error: msg, code: classifyThreadsProviderError(msg, pCode), providerCode: pCode, providerSubcode: pSub, providerTraceId: pTrace };
       }
       return { ok: true, data: { accessToken: parsed.accessToken, expiresIn: parsed.expiresIn } };
     } catch (e: any) {
@@ -274,9 +297,12 @@ export class ThreadsClient {
       });
       const data = await res.json().catch(() => null);
       if (!res.ok || data?.error || !data?.id) {
+        logThreadsError(`POST /${threadsUserId}/threads`, res.status, data);
         const msg = errorMessage(data, 'فشل إنشاء حاوية النشر عبر Threads.');
         const pCode = providerErrorCode(data);
-        return { ok: false, data: null, error: msg, providerCode: pCode, code: classifyThreadsProviderError(msg, pCode) };
+        const pSub = providerSubcode(data);
+        const pTrace = typeof data?.error?.fbtrace_id === 'string' ? data.error.fbtrace_id : null;
+        return { ok: false, data: null, error: msg, providerCode: pCode, providerSubcode: pSub, providerTraceId: pTrace, code: classifyThreadsProviderError(msg, pCode) };
       }
       return { ok: true, data: { containerId: String(data.id), mediaKind: built.mediaKind } };
     } catch (e: any) {
@@ -299,7 +325,9 @@ export class ThreadsClient {
       if (!res.ok || data?.error || !data?.id) {
         const msg = errorMessage(data, 'فشل نشر الحاوية عبر Threads.');
         const pCode = providerErrorCode(data);
-        return { ok: false, data: null, error: msg, code: classifyThreadsProviderError(msg, pCode), providerCode: pCode };
+        const pSub = providerSubcode(data);
+        const pTrace = typeof data?.error?.fbtrace_id === 'string' ? data.error.fbtrace_id : null;
+        return { ok: false, data: null, error: msg, code: classifyThreadsProviderError(msg, pCode), providerCode: pCode, providerSubcode: pSub, providerTraceId: pTrace };
       }
       return { ok: true, data: { providerPostId: String(data.id) } };
     } catch (e: any) {

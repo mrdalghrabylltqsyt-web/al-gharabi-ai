@@ -557,6 +557,10 @@ export interface FacebookResult<T> {
   code?: string;
   /** كود خطأ Meta الحقيقي (مثلاً 100/9007) إن وُجد. */
   providerCode?: number | null;
+  /** رمز Meta الفرعي (error_subcode) — للتشخيص اللاحق. */
+  providerSubcode?: number | null;
+  /** معرّف تتبّع Meta (fbtrace_id) — يُقدَّم للدعم بلا أي سرّ. */
+  providerTraceId?: string | null;
 }
 
 function errorMessage(data: any, fallback: string): string {
@@ -625,6 +629,13 @@ export function extractFacebookGraphError(data: any, endpoint: string, status: n
 /** سطر سجل تشخيصي آمن: الرمز/الرقم/النص الكامل غير المقطوع + fbtrace_id — بلا أي سرّ. */
 export function formatFacebookGraphError(info: FacebookGraphErrorInfo): string {
   return '[facebook-graph-error] ' + JSON.stringify(info);
+}
+
+/** يسجّل خطأ Meta الكامل ويرجع الحقول التشخيصية (code/subcode/fbtrace) — بلا سرّ. */
+function logAndExtractFacebookError(data: any, endpoint: string, status: number): { providerCode: number | null; providerSubcode: number | null; providerTraceId: string | null } {
+  const info = extractFacebookGraphError(data, endpoint, status);
+  console.error(formatFacebookGraphError(info));
+  return { providerCode: info.code, providerSubcode: info.subcode, providerTraceId: info.fbtraceId };
 }
 
 export class FacebookClient {
@@ -830,8 +841,9 @@ export class FacebookClient {
       const data = await res.json().catch(() => null);
       if (!res.ok || data?.error || !data?.id) {
         const msg = errorMessage(data, 'فشل النشر على صفحة Facebook.');
-        const pCode = facebookProviderErrorCode(data);
-        return { ok: false, data: null, error: msg, providerCode: pCode, code: classifyFacebookProviderError(msg, pCode) };
+        const ex = logAndExtractFacebookError(data, `POST /${pageId}/feed`, res.status);
+        const pCode = ex.providerCode ?? facebookProviderErrorCode(data);
+        return { ok: false, data: null, error: msg, providerCode: pCode, providerSubcode: ex.providerSubcode, providerTraceId: ex.providerTraceId, code: classifyFacebookProviderError(msg, pCode) };
       }
       return { ok: true, data: { providerPostId: String(data.id) } };
     } catch (e: any) {
@@ -856,7 +868,7 @@ export class FacebookClient {
         body: buildPublishVideoBody(fileUrl, description).toString(),
       });
       const data = await res.json().catch(() => null);
-      if (!res.ok || data?.error || !data?.id) { console.error(formatFacebookGraphError(extractFacebookGraphError(data, `POST /${pageId}/videos`, res.status))); const msg = errorMessage(data, 'فشل نشر الفيديو على صفحة Facebook.'); const pCode = facebookProviderErrorCode(data); return { ok: false, data: null, error: msg, providerCode: pCode, code: classifyFacebookProviderError(msg, pCode) }; }
+      if (!res.ok || data?.error || !data?.id) { const msg = errorMessage(data, 'فشل نشر الفيديو على صفحة Facebook.'); const ex = logAndExtractFacebookError(data, `POST /${pageId}/videos`, res.status); const pCode = ex.providerCode ?? facebookProviderErrorCode(data); return { ok: false, data: null, error: msg, providerCode: pCode, providerSubcode: ex.providerSubcode, providerTraceId: ex.providerTraceId, code: classifyFacebookProviderError(msg, pCode) }; }
       return { ok: true, data: { providerPostId: String(data.id) } };
     } catch (e: any) {
       return { ok: false, data: null, error: String(e?.message || 'فشل الاتصال بـFacebook.') };
