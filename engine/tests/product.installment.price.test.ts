@@ -13,7 +13,7 @@
  */
 
 import { spawn, type ChildProcess } from 'node:child_process';
-import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, rmSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import crypto from 'node:crypto';
@@ -111,6 +111,22 @@ function unitTests(): void {
   const afterMonths = computeInstallmentPrice({ cashPrice: 100000, installmentMonths: 5 });
   check('TEST8 price unchanged', before.ok && afterMonths.ok && before.installmentPrice === afterMonths.installmentPrice);
   check('TEST8 monthly recomputed', afterMonths.ok && afterMonths.monthlyInstallment === 25000);
+
+  group('6ب) نسبة الزيادة حقل يدوي — قبول أي نسبة ≥ 0 (بلا ثابت 25)');
+  const m40 = computeInstallmentPrice({ cashPrice: 100000, installmentMonths: 10, installmentMarkupPercent: 40 });
+  check('markup 40 => price 140000', m40.ok && m40.installmentPrice === 140000, m40.ok ? String(m40.installmentPrice) : 'fail');
+  check('markup 40 => monthly 14000', m40.ok && m40.monthlyInstallment === 14000, m40.ok ? String(m40.monthlyInstallment) : 'fail');
+  check('markup 40 recorded', m40.ok && m40.installmentMarkupPercent === 40);
+  const m0 = computeInstallmentPrice({ cashPrice: 100000, installmentMonths: 10, installmentMarkupPercent: 0 });
+  check('markup 0 => price=cash', m0.ok && m0.installmentPrice === 100000);
+  check('markup 0 => monthly=10000', m0.ok && m0.monthlyInstallment === 10000);
+  const mDecimal = computeInstallmentPrice({ cashPrice: 100000, installmentMonths: 10, installmentMarkupPercent: 12.5 });
+  check('markup 12.5 => price 112500', mDecimal.ok && mDecimal.installmentPrice === 112500, mDecimal.ok ? String(mDecimal.installmentPrice) : 'fail');
+  check('markup 12.5 => monthly 11250', mDecimal.ok && mDecimal.monthlyInstallment === 11250);
+  check('markup NaN => fail', computeInstallmentPrice({ cashPrice: 100000, installmentMarkupPercent: NaN }).ok === false);
+  check('markup negative => fail', computeInstallmentPrice({ cashPrice: 100000, installmentMarkupPercent: -1 }).ok === false);
+  const omitted = computeInstallmentPrice({ cashPrice: 100000 });
+  check('omitted markup => default 25', omitted.ok && omitted.installmentMarkupPercent === INSTALLMENT_MARKUP_PERCENT_DEFAULT);
 }
 
 // ---------------------------------------------------------------------------
@@ -229,6 +245,28 @@ async function integrationTests(): Promise<void> {
     group('14) لا مصادقة ⇒ 401');
     const anon = await call('/api/workspace/products', 'POST', undefined, { name: 'x', category: 'appliances', cashPrice: 100000 });
     check('POST without token => 401', anon.status === 401, String(anon.status));
+
+    group('15) نسبة زيادة مخصّصة من الواجهة تُحفظ فعلاً (ليست 25 دائماً)');
+    const custom = await call('/api/workspace/products', 'POST', token, { name: 'منتج نسبة 40', category: 'appliances', cashPrice: 100000, installmentMarkupPercent: 40 });
+    const cu = custom.json?.product;
+    check('custom markup persisted=40', cu?.installmentMarkupPercent === 40, String(cu?.installmentMarkupPercent));
+    check('custom markup price=140000', cu?.installmentPrice === 140000, String(cu?.installmentPrice));
+    check('custom markup monthly=14000', cu?.monthlyInstallment === 14000, String(cu?.monthlyInstallment));
+    // نسبة سالبة تُرفض على الخادم صراحةً (400) — التطابق مع تحقق الواجهة.
+    const negMarkup = await call('/api/workspace/products', 'POST', token, { name: 'نسبة سالبة', category: 'appliances', cashPrice: 100000, installmentMarkupPercent: -5 });
+    check('negative markup => 400', negMarkup.status === 400, String(negMarkup.status));
+    // تعديل النسبة عبر PATCH يعيد حساب سعر التقسيط والقسط.
+    const id40 = cu?.id;
+    const patchMarkup = await call(`/api/workspace/products/${encodeURIComponent(String(id40))}`, 'PATCH', token, { installmentMarkupPercent: 0 });
+    check('PATCH markup 0 => price=cash 100000', patchMarkup.json?.product?.installmentPrice === 100000, String(patchMarkup.json?.product?.installmentPrice));
+    check('PATCH markup 0 => monthly 10000', patchMarkup.json?.product?.monthlyInstallment === 10000, String(patchMarkup.json?.product?.monthlyInstallment));
+
+    group('16) ربط الواجهة — نسبة الزيادة حقل إدخال قابل للتعديل (لا ثابت)');
+    const viewSrc = readFileSync(join(REPO_ROOT, 'src/components/database/ShowroomDatabaseView.tsx'), 'utf8');
+    check('حقل نسبة الزيادة موجود', viewSrc.includes('نسبة الزيادة (%)'));
+    check('state نسبة قابلة للتعديل', viewSrc.includes('newProductMarkupPercent') && viewSrc.includes('setNewProductMarkupPercent'));
+    check('المعاينة تقرأ الحقل لا الثابت', viewSrc.includes('installmentMarkupPercent: newProductMarkupPercent') && !viewSrc.includes('installmentMarkupPercent: INSTALLMENT_MARKUP_PERCENT_DEFAULT'));
+    check('النموذج يرسل النسبة', viewSrc.includes('installmentMarkupPercent: markupPercent'));
   } finally {
     proc.kill('SIGTERM');
     await new Promise((r) => setTimeout(r, 400));

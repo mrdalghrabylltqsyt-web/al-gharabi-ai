@@ -3450,8 +3450,12 @@ add('watcher-advisory-not-authority',
     showroomView.includes('سعر التقسيط (د.ع)') &&
     showroomView.includes('مدة التقسيط (بالأشهر)') &&
     showroomView.includes('القسط الشهري (د.ع)') &&
+    showroomView.includes('نسبة الزيادة (%)') &&
+    showroomView.includes('newProductMarkupPercent') &&
+    showroomView.includes('installmentMarkupPercent: newProductMarkupPercent') &&
+    !showroomView.includes('installmentMarkupPercent: INSTALLMENT_MARKUP_PERCENT_DEFAULT') &&
     showroomView.includes('readOnly'),
-    'نموذج المنتج يعرض الحقول الأربعة بالعربية، والحقول المحسوبة للقراءة فقط (بلا إدخال يدوي متناقض)');
+    'نموذج المنتج: نسبة الزيادة حقل يدوي (لا ثابت 25)، والحقول اليدوية الثلاثة + المحسوبان للقراءة فقط');
   add('product-installment-test-registered',
     (pkg.scripts['test'] || '').includes('test:product-installment') &&
     pkg.scripts['test:product-installment'] === 'tsx engine/tests/product.installment.price.test.ts' &&
