@@ -235,6 +235,7 @@ import {
   type ReplyFactSet,
   type ReplyRecord,
 } from "./engine/social/comments";
+import { acquireReplyLock, releaseReplyLock, replyLockKey } from "./engine/social/replyInFlightLock";
 import {
   buildPublishRecord,
   canTransition,
@@ -4276,6 +4277,11 @@ app.post("/api/platforms/facebook/reply", requireOwner, async (req,res)=>{
   const commentText=typeof req.body?.commentText==="string"?req.body.commentText:"";
   if(!externalId) return res.status(400).json({success:false,error:"معرّف التعليق لدى Facebook مطلوب لمنع الرد المكرر."});
   if(!text) return res.status(400).json({success:false,error:"نص الرد مطلوب."});
+  // REL-01: حجز ذرّي لمنع رد مكرر فعلي عند تزامن طلبين على نفس التعليق (نقرة
+  // مزدوجة/إعادة محاولة) — طلب ثانٍ متزامن يُرفض فوراً بلا أي إرسال خارجي.
+  const replyLock=replyLockKey("facebook","comment",externalId);
+  if(!acquireReplyLock(replyLock)) return res.status(409).json({success:false,error:"طلب رد آخر على نفس التعليق قيد التنفيذ بالفعل؛ انتظر حتى يكتمل لمنع التكرار.",code:"REPLY_IN_PROGRESS"});
+  try{
   const conn:any=platformConnections.get("facebook");
   if(!conn||conn.status!=="connected"||conn.providerVerified!==true){
     return res.status(409).json({success:false,error:"Facebook غير متصل باتصال موثق؛ لا يمكن إرسال أي رد خارجي."});
@@ -4324,6 +4330,7 @@ app.post("/api/platforms/facebook/reply", requireOwner, async (req,res)=>{
   await persistStateDurable();
   if(!result.ok) return res.status(502).json({success:false,delivered:false,simulated:false,reply:record,error:record.deliveryError});
   res.json({success:true,delivered:true,simulated:false,providerReplyId:record.providerReplyId,reply:record});
+  } finally { releaseReplyLock(replyLock); }
 });
 
 /**
@@ -4337,6 +4344,11 @@ app.post("/api/platforms/facebook/message-reply", requireOwner, async (req,res)=
   const text=typeof req.body?.text==="string"?req.body.text.trim():"";
   const commentText=typeof req.body?.commentText==="string"?req.body.commentText:"";
   if(!text) return res.status(400).json({success:false,error:"نص الرد مطلوب."});
+  // REL-01: حجز مبكر بمعرّف المستلم (بديل احتياطي للمعرّف الخارجي قبل تحديده
+  // أدناه)، ثم إعادة الحجز بالمفتاح النهائي فوراً دون أي await بينهما.
+  const earlyLock=replyLockKey("facebook","message",externalId||`fb-msg:${recipientId}`);
+  if(!acquireReplyLock(earlyLock)) return res.status(409).json({success:false,error:"طلب رد آخر على نفس الرسالة قيد التنفيذ بالفعل؛ انتظر حتى يكتمل لمنع التكرار.",code:"REPLY_IN_PROGRESS"});
+  try{
   const conn:any=platformConnections.get("facebook");
   if(!conn||conn.status!=="connected"||conn.providerVerified!==true){
     return res.status(409).json({success:false,error:"Facebook غير متصل باتصال موثق؛ لا يمكن إرسال أي رسالة خارجية."});
@@ -4373,6 +4385,7 @@ app.post("/api/platforms/facebook/message-reply", requireOwner, async (req,res)=
   await persistStateDurable();
   if(!result.ok) return res.status(502).json({success:false,delivered:false,simulated:false,reply:record,error:record.deliveryError});
   res.json({success:true,delivered:true,simulated:false,providerReplyId:record.providerReplyId,reply:record});
+  } finally { releaseReplyLock(earlyLock); }
 });
 
 // -------------------------------------------------------------
@@ -4483,6 +4496,10 @@ app.post("/api/platforms/instagram/reply", requireOwner, async (req,res)=>{
   const commentText=typeof req.body?.commentText==="string"?req.body.commentText:"";
   if(!externalId) return res.status(400).json({success:false,error:"معرّف التعليق لدى Instagram مطلوب لمنع الرد المكرر."});
   if(!text) return res.status(400).json({success:false,error:"نص الرد مطلوب."});
+  // REL-01: حجز ذرّي لمنع رد مكرر فعلي عند تزامن طلبين على نفس التعليق.
+  const replyLock=replyLockKey("instagram","comment",externalId);
+  if(!acquireReplyLock(replyLock)) return res.status(409).json({success:false,error:"طلب رد آخر على نفس التعليق قيد التنفيذ بالفعل؛ انتظر حتى يكتمل لمنع التكرار.",code:"REPLY_IN_PROGRESS"});
+  try{
   const conn:any=platformConnections.get("instagram");
   if(!conn||conn.status!=="connected"||conn.providerVerified!==true){
     return res.status(409).json({success:false,error:"Instagram غير متصل باتصال موثق؛ لا يمكن إرسال أي رد خارجي."});
@@ -4527,6 +4544,7 @@ app.post("/api/platforms/instagram/reply", requireOwner, async (req,res)=>{
   await persistStateDurable();
   if(!result.ok) return res.status(502).json({success:false,delivered:false,simulated:false,reply:record,error:record.deliveryError});
   res.json({success:true,delivered:true,simulated:false,providerReplyId:record.providerReplyId,reply:record});
+  } finally { releaseReplyLock(replyLock); }
 });
 
 /**
@@ -4540,6 +4558,10 @@ app.post("/api/platforms/instagram/message-reply", requireOwner, async (req,res)
   const text=typeof req.body?.text==="string"?req.body.text.trim():"";
   const commentText=typeof req.body?.commentText==="string"?req.body.commentText:"";
   if(!text) return res.status(400).json({success:false,error:"نص الرد مطلوب."});
+  // REL-01: حجز مبكر لمنع رد مكرر فعلي عند تزامن طلبين (نقرة مزدوجة/إعادة محاولة).
+  const earlyLock=replyLockKey("instagram","message",externalId||`ig-msg:${recipientId}`);
+  if(!acquireReplyLock(earlyLock)) return res.status(409).json({success:false,error:"طلب رد آخر على نفس الرسالة قيد التنفيذ بالفعل؛ انتظر حتى يكتمل لمنع التكرار.",code:"REPLY_IN_PROGRESS"});
+  try{
   const conn:any=platformConnections.get("instagram");
   if(!conn||conn.status!=="connected"||conn.providerVerified!==true){
     return res.status(409).json({success:false,error:"Instagram غير متصل باتصال موثق؛ لا يمكن إرسال أي رسالة خارجية."});
@@ -4576,6 +4598,7 @@ app.post("/api/platforms/instagram/message-reply", requireOwner, async (req,res)
   await persistStateDurable();
   if(!result.ok) return res.status(502).json({success:false,delivered:false,simulated:false,reply:record,error:record.deliveryError});
   res.json({success:true,delivered:true,simulated:false,providerReplyId:record.providerReplyId,reply:record});
+  } finally { releaseReplyLock(earlyLock); }
 });
 
 // -------------------------------------------------------------
@@ -5129,6 +5152,14 @@ async function executeYouTubeReply(input: { commentId: string; text: string; com
   const commentText = String(input.commentText || "");
   if (!parentCommentId) return { status: 400, body: { success: false, error: "معرّف التعليق (commentId) مطلوب لمنع الرد المكرر." } };
   if (!text) return { status: 400, body: { success: false, error: "نص الرد مطلوب." } };
+  // REL-01: حجز ذرّي يمنع رد مكرر فعلي — هذه الدالة تُستدعى من مسار يدوي
+  // (/api/platforms/youtube/reply) **ومن** دورة مراقبة يوتيوب التلقائية معاً؛
+  // بلا هذا القفل يمكن أن يتزامن رد يدوي من المالك مع رد تلقائي على نفس التعليق.
+  const replyLock = replyLockKey("youtube", "comment", parentCommentId);
+  if (!acquireReplyLock(replyLock)) {
+    return { status: 409, body: { success: false, error: "طلب رد آخر على نفس التعليق قيد التنفيذ بالفعل (يدوي أو تلقائي)؛ انتظر حتى يكتمل لمنع التكرار.", code: "REPLY_IN_PROGRESS" } };
+  }
+  try {
   const guard = youtubeOperationGuard();
   if (!guard.ok) return { status: guard.status!, body: { success: false, code: guard.code, error: guard.error, ...youtubeStateBlock() } };
   if (!youtubeForceSslGranted()) {
@@ -5197,6 +5228,7 @@ async function executeYouTubeReply(input: { commentId: string; text: string; com
   }
   clearYouTubeProviderError();
   return { status: 200, body: { success: true, reply: replyRecord, delivered: true, externalReplyId, state: replyState, ...youtubeStateBlock() } };
+  } finally { releaseReplyLock(replyLock); }
 }
 
 // -------------------------------------------------------------
@@ -7712,6 +7744,10 @@ app.post("/api/platforms/telegram/reply", requireOwner, async (req,res)=>{
   const commentText = typeof req.body?.commentText === "string" ? req.body.commentText : "";
   if(!externalId) return res.status(400).json({success:false,error:"معرّف التعليق لدى المنصة مطلوب لمنع الرد المكرر."});
   if(!text) return res.status(400).json({success:false,error:"نص الرد مطلوب."});
+  // REL-01: حجز ذرّي لمنع رد مكرر فعلي عند تزامن طلبين على نفس التعليق.
+  const replyLock = replyLockKey("telegram","comment",externalId);
+  if(!acquireReplyLock(replyLock)) return res.status(409).json({success:false,error:"طلب رد آخر على نفس التعليق قيد التنفيذ بالفعل؛ انتظر حتى يكتمل لمنع التكرار.",code:"REPLY_IN_PROGRESS"});
+  try{
   // وضع YOUTUBE_ONLY_OPERATIONAL: يمنع أي إرسال خارجي على منصة غير YouTube.
   const onlyBlock = youtubeOnlyBlock("telegram");
   if (onlyBlock.blocked) return res.status(onlyBlock.status!).json(onlyBlock.body);
@@ -7775,6 +7811,7 @@ app.post("/api/platforms/telegram/reply", requireOwner, async (req,res)=>{
   persistState();
   if(!result.ok) return res.status(502).json({success:false,delivered:false,simulated:false,reply:record,error:record.deliveryError});
   res.json({success:true,delivered:true,simulated:false,providerReplyId:result.providerMessageId,reply:record});
+  } finally { releaseReplyLock(replyLock); }
 });
 
 app.get("/api/platforms/:platform/health", authenticateToken, async (req,res)=>{
