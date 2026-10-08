@@ -44,7 +44,7 @@ npm install
 npm run dev            # tsx server.ts
 npm run lint           # tsc --noEmit
 npm run build          # vite build + esbuild server.ts -> dist/server.cjs
-npm run final-audit    # node final-audit.mjs (1355 فحصاً)
+npm run final-audit    # node final-audit.mjs (1360 فحصاً)
 npm test               # storage + engine + auth + ... + db + runtime
 ```
 - التشغيل الإنتاجي: `PORT=4517 NODE_ENV=production APP_URL=http://localhost:4517 node dist/server.cjs`
@@ -697,6 +697,25 @@ webhook حقيقي بـ401 بلا سبب ظاهر.
 25 فحصاً) و`engine/tests/sixagent.execution.test.ts` (`npm run test:six-agent`، 41 فحصاً).
 فحوص final-audit: `multi-platform-*`، `six-agent-*`، `memory-reuse-no-parallel-store`،
 `diagrams-current-state`. المخططات في `docs/diagrams/` مُحدَّثة (الإصدار/الـcommit/المسار/التقسيم).
+## حارس خصوصية النقطتين العامتين — مصدر واحد (2026-10-04)
+
+`/api/health` و`/api/readiness` **عامتان بلا مصادقة** (لأدوات المراقبة مثل Render)، فلا
+يجوز أن تحملا أي بيانات عميل: اسم حساب، نص تعليق، أو نص رد. كان التسريب (attentionRequired/
+lastReply.replyText) قد أُزيل في commit سابق، وأُضيف الآن **حارس مصدر-واحد** يمنع رجوعه:
+
+- `engine/social/healthPrivacy.ts` هو **المصدر الواحد**: قائمة الحقول الممنوعة
+  (`PUBLIC_ENDPOINT_FORBIDDEN_CUSTOMER_FIELDS`)، allow-list الكتلة العامة youtubeWatcher
+  (`PUBLIC_WATCHER_ALLOWED_KEYS`)، الحقول التشغيلية التفصيلية الممنوعة، ودوال
+  `sanitizePublicHealthPayload`/`findForbiddenPublicKeys`/`findDisallowedWatcherPublicKeys`.
+- `server.ts`: وسيط `installPublicHealthGuard(res)` على النقطتين يمرّر الحمولة كاملة عبر
+  `sanitizePublicHealthPayload` **قبل الإرسال**، ويسجّل أي انحراف (أسماء حقول فقط، بلا محتوى)
+  فلا يمرّ تسرّب صامت. الحقول التقنية فقط تبقى: `status`، `deploy.commit`، `watcherActive`،
+  `pollCount`، `lastError` (كرمز تقني ASCII أو `connection error` — لا محتوى محادثة).
+- البيانات التفصيلية (attentionRequired/lastReply) **لم تُحذف**؛ تبقى للمالك عبر
+  `/api/agent/youtube/watcher` (requireOwner)، وتستهلكها الواجهة من هناك لا من الصحة العامة.
+- اختبارات: `engine/tests/health.privacy.test.ts` (45 فحصاً، canary حي عبر خادم فعلي،
+  يقرأ قوائم المصدر الواحد) و`engine/tests/health.guard.test.ts` (23 فحصاً وحدة للحارس).
+  فحوص final-audit: `public-health-privacy-single-source` … `public-health-guard-test-exists`.
 
 ## نمط الكود
 - تعليقات عربية موجزة تشرح «لماذا» فقط، دون شرح ما يفعله الكود.
