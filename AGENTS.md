@@ -44,7 +44,7 @@ npm install
 npm run dev            # tsx server.ts
 npm run lint           # tsc --noEmit
 npm run build          # vite build + esbuild server.ts -> dist/server.cjs
-npm run final-audit    # node final-audit.mjs (1360 فحصاً)
+npm run final-audit    # node final-audit.mjs (1366 فحصاً)
 npm test               # storage + engine + auth + ... + db + runtime
 ```
 - التشغيل الإنتاجي: `PORT=4517 NODE_ENV=production APP_URL=http://localhost:4517 node dist/server.cjs`
@@ -4168,3 +4168,27 @@ Threads، ولا ينفّذه أي وكيل برمجي. (احتمال إضافي
 مرفوض 403، published مرفوض 409، الإنشاء بحالة published/approved مرفوض، والمالك يمرّ عبر
 المسار الرسمي). فحصا final-audit: `content-status-approval-owner-only`،
 `content-post-no-published-status` (**1342 إجمالاً**). لم يُمسّ أي سر أو متغير بيئة.
+
+## نموذج المنتج: عرض سعر التقسيط (Product Catalog / Display فقط) — 2026-10-04
+
+تحسين بيانات وعرض سعر المنتج فقط — ليس نظام أقساط/عقود/تحصيل/مالية، ولا إعادة أي نظام
+ERP/Sales/CRM/Finance.
+
+- **مصدر واحد للحساب:** `src/utils/installmentPrice.ts` (يعمل على الخادم والمتصفح، كـ
+  `scheduleTime.ts`). الثوابت: `INSTALLMENT_MARKUP_PERCENT_DEFAULT = 25`،
+  `INSTALLMENT_MONTHS_DEFAULT = 10`، المدة المقبولة 1–60.
+- **المعادلة الثابتة:** `installmentPrice = cashPrice + 25%`، `monthlyInstallment =
+  installmentPrice / months`. التقريب: السعر لأقرب دينار (`Math.round`)، القسط لأعلى دينار
+  (`Math.ceil`) — نفس سياسة `ceil-to-IQD` في `/api/catalog/quote`.
+- **الحقول الأربعة (بالعربية):** سعر الكاش (د.ع)، سعر التقسيط (د.ع)، مدة التقسيط (بالأشهر)،
+  القسط الشهري (د.ع). الحقول المحسوبة `readOnly` — لا إدخال يدوي متناقض.
+- **الخادم:** `applyInstallmentFields` (بجانب مسار المنتجات) يشتق الحقول من `cashPrice`
+  ويُطبَّق في مساري الإنشاء والتعديل؛ مدة صريحة غير صالحة تُرفض 400؛ القيمة الشهرية الواردة
+  في الجسم تُتجاهَل (لا تُحفظ). للتوافق: `installmentFrom` يُحدَّث بالقسط المشتق نفسه.
+- **الواجهة:** `ShowroomDatabaseView.tsx` — عند إدخال سعر الكاش يُحسب سعر التقسيط (25%) ومدة
+  10 والقسط الشهري فوراً؛ تغيير المدة يعيد حساب القسط فقط.
+- **التوافق:** حقول `ShowroomProduct` الجديدة اختيارية؛ المنتجات القديمة بلا هذه الحقول لا
+  تتأثر (عرض احتياطي عبر `installmentFrom`).
+- اختبار: `engine/tests/product.installment.price.test.ts` (`npm run test:product-installment`،
+  58 فحصاً: وحدة + خادم حقيقي، يشمل الأمثلة الإلزامية TEST 1–8 والتقريب والتوافق). فحوص
+  final-audit الجديدة: `product-installment-*` (1366 إجمالاً).

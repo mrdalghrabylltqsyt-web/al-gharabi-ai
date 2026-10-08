@@ -16,6 +16,11 @@ import {
   Search,
 } from 'lucide-react';
 import { ShowroomProduct } from '../../types';
+import {
+  computeInstallmentPrice,
+  INSTALLMENT_MONTHS_DEFAULT,
+  INSTALLMENT_MARKUP_PERCENT_DEFAULT,
+} from '../../utils/installmentPrice';
 
 export const ShowroomDatabaseView: React.FC = () => {
   const {
@@ -37,8 +42,16 @@ export const ShowroomDatabaseView: React.FC = () => {
   const [newProductModel, setNewProductModel] = useState<string>(new Date().getFullYear().toString());
   const [newProductCategory, setNewProductCategory] = useState<'appliances' | 'phones' | 'construction' | 'electronics' | 'other'>('appliances');
   const [newProductCash, setNewProductCash] = useState<number>(0);
-  const [newProductInstallment, setNewProductInstallment] = useState<number>(0);
+  const [newProductMonths, setNewProductMonths] = useState<number>(INSTALLMENT_MONTHS_DEFAULT);
   const [newProductImage, setNewProductImage] = useState<string>('');
+
+  // سعر التقسيط والقسط الشهري يُحسبان فوراً من سعر الكاش والمدة (لا إدخال يدوي،
+  // ولا قيمة مخفية). المصدر الواحد: src/utils/installmentPrice.
+  const installmentPreview = computeInstallmentPrice({
+    cashPrice: Number(newProductCash),
+    installmentMonths: newProductMonths,
+    installmentMarkupPercent: INSTALLMENT_MARKUP_PERCENT_DEFAULT,
+  });
 
   const categoryLabel = (category: ShowroomProduct['category']) => ({
     appliances: 'أجهزة منزلية',
@@ -59,22 +72,47 @@ export const ShowroomDatabaseView: React.FC = () => {
     e.preventDefault();
     if (!newProductName.trim()) return;
 
+    const cashPrice = Number(newProductCash);
+    const months = Number(newProductMonths);
+    if (!Number.isFinite(cashPrice) || cashPrice <= 0) {
+      showToast('أدخل سعر كاش صحيحاً أكبر من صفر.');
+      return;
+    }
+    if (!Number.isInteger(months) || months < 1 || months > 60) {
+      showToast('أدخل مدة تقسيط صحيحة بين 1 و60 شهراً.');
+      return;
+    }
+    // القيمة الوحيدة المُرسَلة للحساب هي سعر الكاش + المدة؛ سعر التقسيط والقسط الشهري
+    // يُشتقّان على الخادم أيضاً (مصدر واحد)، فلا تُحفظ قيمة شهرية متناقضة.
+    const derived = computeInstallmentPrice({ cashPrice, installmentMonths: months, installmentMarkupPercent: INSTALLMENT_MARKUP_PERCENT_DEFAULT });
+    if (!derived.ok) {
+      showToast('تعذّر حساب التقسيط: تحقّق من سعر الكاش والمدة.');
+      return;
+    }
+
     addProduct({
       name: newProductName,
       modelYear: newProductModel,
       category: newProductCategory,
-      cashPrice: Number(newProductCash),
-      installmentFrom: Number(newProductInstallment),
+      cashPrice,
+      installmentFrom: derived.monthlyInstallment,
       downPaymentPercent: 0,
-      durationMonths: 60,
+      durationMonths: months,
       image: newProductImage,
       installmentOptions: ['خيارات تقسيط حسب الأهلية', 'مدد سداد مرنة', 'خطط تمويل حسب المنتج'],
       specs: ['مواصفات المنتج حسب الفئة', 'ضمان حسب سياسة المورد', 'خدمة ما بعد البيع حسب المنتج'],
       inStock: true,
+      installmentPrice: derived.installmentPrice,
+      installmentMonths: derived.installmentMonths,
+      monthlyInstallment: derived.monthlyInstallment,
+      installmentMarkupPercent: derived.installmentMarkupPercent,
     });
 
     setShowAddProductModal(false);
     setNewProductName('');
+    setNewProductCash(0);
+    setNewProductMonths(INSTALLMENT_MONTHS_DEFAULT);
+    setNewProductImage('');
     showToast('تمت إضافة المنتج لقاعدة بيانات المعرض بنجاح!');
   };
 
@@ -233,7 +271,7 @@ export const ShowroomDatabaseView: React.FC = () => {
                       <div className="absolute bottom-3 left-3 bg-slate-950/90 backdrop-blur-md px-3 py-1 rounded-xl border border-emerald-500/40 text-left">
                         <span className="text-[10px] text-slate-400 block">القسط الشهري يبدأ من</span>
                         <span className="text-sm font-black text-emerald-400">
-                          {prod.installmentFrom.toLocaleString()}
+                          {(prod.monthlyInstallment ?? prod.installmentFrom ?? 0).toLocaleString()}
                         </span>
                       </div>
                     </div>
@@ -244,6 +282,12 @@ export const ShowroomDatabaseView: React.FC = () => {
                         <p className="text-xs text-slate-400 mt-0.5">
                           سعر الكاش: {prod.cashPrice.toLocaleString()} (شامل الضريبة)
                         </p>
+                        {Number.isFinite(prod.installmentPrice) && (
+                          <p className="text-xs text-emerald-300/90 mt-0.5">
+                            سعر التقسيط: {Number(prod.installmentPrice).toLocaleString()} د.ع
+                            {Number.isFinite(prod.installmentMonths) ? ` • ${Number(prod.installmentMonths)} شهراً` : ''}
+                          </p>
+                        )}
                       </div>
 
                       {/* Specifications badges */}
@@ -479,21 +523,50 @@ export const ShowroomDatabaseView: React.FC = () => {
                   <label className="block text-slate-300 font-bold mb-1">سعر الكاش (د.ع)</label>
                   <input
                     type="number"
-                    value={newProductCash}
+                    min="0"
+                    value={newProductCash || ''}
                     onChange={(e) => setNewProductCash(Number(e.target.value))}
                     className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-white focus:outline-none focus:border-emerald-500"
                   />
                 </div>
                 <div>
-                  <label className="block text-slate-300 font-bold mb-1">القسط الشهري من (د.ع)</label>
+                  <label className="block text-slate-300 font-bold mb-1">سعر التقسيط (د.ع)</label>
                   <input
-                    type="number"
-                    value={newProductInstallment}
-                    onChange={(e) => setNewProductInstallment(Number(e.target.value))}
-                    className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-white focus:outline-none focus:border-emerald-500"
+                    type="text"
+                    readOnly
+                    value={installmentPreview.ok ? installmentPreview.installmentPrice.toLocaleString('en-US') : ''}
+                    className="w-full bg-slate-900 border border-slate-800 rounded-xl px-3 py-2 text-emerald-300 font-bold cursor-not-allowed"
                   />
                 </div>
               </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-slate-300 font-bold mb-1">مدة التقسيط (بالأشهر)</label>
+                  <input
+                    type="number"
+                    min="1"
+                    max="60"
+                    value={newProductMonths}
+                    onChange={(e) => setNewProductMonths(Number(e.target.value))}
+                    className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-white focus:outline-none focus:border-emerald-500"
+                  />
+                </div>
+                <div>
+                  <label className="block text-slate-300 font-bold mb-1">القسط الشهري (د.ع)</label>
+                  <input
+                    type="text"
+                    readOnly
+                    value={installmentPreview.ok ? installmentPreview.monthlyInstallment.toLocaleString('en-US') : ''}
+                    className="w-full bg-slate-900 border border-slate-800 rounded-xl px-3 py-2 text-emerald-300 font-bold cursor-not-allowed"
+                  />
+                </div>
+              </div>
+
+              <p className="text-[10px] text-slate-500 leading-relaxed">
+                سعر التقسيط = سعر الكاش + {INSTALLMENT_MARKUP_PERCENT_DEFAULT}%، والقسط الشهري = سعر التقسيط ÷ المدة.
+                يُحسبان تلقائياً عند إدخال سعر الكاش وتغيير المدة.
+              </p>
 
               <div>
                 <label className="block text-slate-300 font-bold mb-1">رابط صورة المنتج</label>

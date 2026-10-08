@@ -460,6 +460,7 @@ import {
 import { SESSION_TTL_MS, signSession, verifySession, type SessionPayload } from "./engine/auth/sessions";
 import { CHALLENGE_TTL_MS, issueChallengeCode, matchChallengeWindow } from "./engine/auth/challenge";
 import { isScheduleInFuture, normalizeScheduleInput, wallClockToEpoch } from "./src/utils/scheduleTime";
+import { productInstallmentFields, computeInstallmentPrice, type InstallmentInput } from "./src/utils/installmentPrice";
 
 dotenv.config();
 
@@ -8708,6 +8709,22 @@ app.put("/api/workspace/showroom", authenticateToken, (req, res) => {
   res.json({ success: true, showroom: workspace.showroom });
 });
 
+/**
+ * يضبط حقول التقسيط المشتقّة على منتج من سعر الكاش فقط (مصدر واحد: src/utils/installmentPrice).
+ * لا يقبل قيمة شهرية متناقضة، ويعيد حساب القسط فوراً عند تغيير سعر الكاش أو المدة.
+ * للتوافق: يحدّث `installmentFrom` (الذي تعرضه الواجهات الحالية) بالقيمة القديمة نفسها
+ * إن لم تكن مشتقّة أصلاً، فلا تتغيّر واجهات أخرى.
+ */
+function applyInstallmentFields(product: any, input: InstallmentInput): void {
+  const fields = productInstallmentFields(input);
+  if (!fields) return; // مدخلات غير صالحة تُرفض في مسار الـAPI قبل الوصول هنا.
+  product.cashPrice = fields.cashPrice;
+  product.installmentPrice = fields.installmentPrice;
+  product.installmentMonths = fields.installmentMonths;
+  product.monthlyInstallment = fields.monthlyInstallment;
+  product.installmentMarkupPercent = fields.installmentMarkupPercent;
+}
+
 app.get("/api/workspace/products", authenticateToken, (_req, res) => {
   res.json({ success: true, products: workspace.products, count: workspace.products.length });
 });
@@ -8719,6 +8736,11 @@ app.post("/api/workspace/products", authenticateToken, (req, res) => {
   const name = cleanText(b.name, 160);
   const cashPrice = Number(b.cashPrice);
   if (!name || !Number.isFinite(cashPrice) || cashPrice <= 0) return res.status(400).json({ success: false, error: "اسم المنتج وسعر البيع النقدي مطلوبان." });
+  // مدة تقسيط صريحة غير صالحة (0/سالب/كسر/فوق الحد) تُرفض صراحةً — لا قصّ صامت.
+  // غياب المدة ⇒ الافتراضي 10 (resolveInstallmentMonths).
+  if (!computeInstallmentPrice({ cashPrice, installmentMonths: b.installmentMonths, installmentMarkupPercent: b.installmentMarkupPercent }).ok) {
+    return res.status(400).json({ success: false, error: "بيانات التقسيط غير صحيحة: تحقّق من سعر الكاش ومدة التقسيط (1–60 شهراً)." });
+  }
   const product = {
     id: cleanText(b.id, 100) || workspaceId("prod"), name, category: ["appliances","phones","construction","electronics","other"].includes(b.category) ? b.category : "other",
     modelYear: cleanText(b.modelYear, 20), cashPrice, installmentFrom: Number.isFinite(Number(b.installmentFrom)) ? Math.max(0, Number(b.installmentFrom)) : cashPrice,
@@ -8728,6 +8750,8 @@ app.post("/api/workspace/products", authenticateToken, (req, res) => {
     specs: Array.isArray(b.specs) ? b.specs.filter((x: any) => typeof x === "string").slice(0, 30).map((x: string) => x.trim().slice(0, 200)) : [],
     installmentOptions: Array.isArray(b.installmentOptions) ? b.installmentOptions.filter((x: any) => typeof x === "string").slice(0, 20).map((x: string) => x.trim().slice(0, 200)) : []
   };
+  // سعر التقسيط والقسط الشهري مُشتقّان من cashPrice حصراً (لا قيمة يدوية ولا مخفية).
+  applyInstallmentFields(product as any, { cashPrice, installmentMonths: b.installmentMonths, installmentMarkupPercent: b.installmentMarkupPercent });
   workspace.products.unshift(product); persistState(); audit(user.id, "workspace_product_created", product.id);
   res.status(201).json({ success: true, product });
 });
@@ -8752,6 +8776,13 @@ app.patch("/api/workspace/products/:id", authenticateToken, (req, res) => {
   if (b.image !== undefined) product.image = cleanText(b.image, 500);
   if (Array.isArray(b.specs)) product.specs = b.specs.filter((x:any)=>typeof x === "string").slice(0,30).map((x:string)=>x.trim().slice(0,200));
   if (Array.isArray(b.installmentOptions)) product.installmentOptions = b.installmentOptions.filter((x:any)=>typeof x === "string").slice(0,20).map((x:string)=>x.trim().slice(0,200));
+  // إعادة حساب حقول التقسيط من cashPrice عند تغيّر سعر الكاش/المدة/النسبة فقط.
+  // القيمة الشهرية المتناقضة الواردة في الجسم تُتجاهَل (لا تُحفظ) — القسط مُشتقّ دائماً.
+  if (b.cashPrice !== undefined || b.installmentMonths !== undefined || b.installmentMarkupPercent !== undefined) {
+    const computed = computeInstallmentPrice({ cashPrice: Number(product.cashPrice), installmentMonths: b.installmentMonths, installmentMarkupPercent: b.installmentMarkupPercent });
+    if (!computed.ok) return res.status(400).json({ success: false, error: "بيانات التقسيط غير صحيحة: تحقّق من سعر الكاش ومدة التقسيط (1–60 شهراً)." });
+    applyInstallmentFields(product, { cashPrice: Number(product.cashPrice), installmentMonths: b.installmentMonths, installmentMarkupPercent: b.installmentMarkupPercent });
+  }
   persistState(); audit(user.id, "workspace_product_updated", product.id); res.json({ success: true, product });
 });
 
