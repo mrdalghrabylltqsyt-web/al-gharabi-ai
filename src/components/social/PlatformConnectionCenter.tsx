@@ -170,6 +170,89 @@ const FacebookWebhookStatus: React.FC = () => {
   );
 };
 
+/**
+ * لوحة تشخيص نشر فيديو Facebook (للمالك): زرّان يظهران فقط للمالك (المكوّن كله داخل
+ * مركز الربط المحصور بالمالك). الأول يفحص صلاحيات رمز الصفحة فعلياً عبر Meta
+ * `debug_token` فيكشف الصلاحية الناقصة التي تمنع نشر الفيديو (#100) — بلا أي رمز أو سرّ.
+ * الثاني يسحب سجل النشر الفاشل المحفوظ (رسالة المزود الكاملة + code/subcode/fbtrace).
+ * لا يدّعي أي نشر ولا يصلح الصلاحية (ذلك إجراء المالك في لوحة Meta).
+ */
+const FacebookVideoDiagnosticsPanel: React.FC = () => {
+  const [perm, setPerm] = useState<any>(null);
+  const [permErr, setPermErr] = useState('');
+  const [permBusy, setPermBusy] = useState(false);
+  const [diag, setDiag] = useState<any>(null);
+  const [diagErr, setDiagErr] = useState('');
+  const [diagBusy, setDiagBusy] = useState(false);
+
+  const REQUIRED: Record<string, string> = {
+    pages_manage_posts: 'إدارة منشورات الصفحة',
+    pages_read_engagement: 'قراءة تفاعل الصفحة (إلزامية لنشر الفيديو)',
+    pages_show_list: 'عرض قائمة الصفحات',
+  };
+
+  const runPermCheck = async () => {
+    setPermBusy(true); setPermErr(''); setPerm(null);
+    try { setPerm(await apiService.getFacebookVideoPermissionDiagnosis()); }
+    catch (e: any) { setPermErr(e?.code ? `[${e.code}] ${e?.message || ''}` : (e?.message || 'تعذّر فحص الصلاحيات')); }
+    finally { setPermBusy(false); }
+  };
+  const runDiagFetch = async () => {
+    setDiagBusy(true); setDiagErr(''); setDiag(null);
+    try { setDiag(await apiService.getPublishDiagnostics({ limit: 20 })); }
+    catch (e: any) { setDiagErr(e?.message || 'تعذّر جلب سجل التشخيص'); }
+    finally { setDiagBusy(false); }
+  };
+
+  return (
+    <div className="mt-3 pt-3 border-t border-slate-800/70 text-[10px] space-y-2">
+      <p className="text-slate-500 flex items-center gap-1"><ShieldCheck className="w-3 h-3" /> تشخيص نشر فيديو Facebook (للمالك — لا يُصلح الصلاحية، يكشفها فقط):</p>
+      <div className="flex flex-wrap gap-2">
+        <button onClick={() => void runPermCheck()} disabled={permBusy}
+          className="px-2.5 py-1 rounded-lg bg-emerald-500 text-slate-950 text-[10px] font-black inline-flex items-center gap-1 disabled:opacity-50">
+          {permBusy ? <Loader2 className="w-3 h-3 animate-spin" /> : <ShieldCheck className="w-3 h-3" />} فحص صلاحيات نشر الفيديو
+        </button>
+        <button onClick={() => void runDiagFetch()} disabled={diagBusy}
+          className="px-2.5 py-1 rounded-lg bg-slate-800 border border-slate-700 text-[10px] font-bold text-white inline-flex items-center gap-1 disabled:opacity-50">
+          {diagBusy ? <Loader2 className="w-3 h-3 animate-spin" /> : <AlertTriangle className="w-3 h-3" />} سجل تشخيص النشر الفاشل
+        </button>
+      </div>
+
+      {permErr && <p className="text-amber-300">فحص الصلاحيات: {permErr}</p>}
+      {perm && (
+        <div className={`p-2 rounded-lg bg-slate-950 border space-y-1 ${perm.videoPublishReady ? 'border-emerald-600/30' : 'border-amber-600/30'}`}>
+          <p className={perm.videoPublishReady ? 'text-emerald-300 font-bold' : 'text-amber-300 font-bold'}>
+            {perm.videoPublishReady ? '✅ نشر فيديو الصفحة جاهز — الصلاحيات كافية.' : '⚠️ نشر فيديو الصفحة غير جاهز — صلاحية مطلوبة ناقصة.'}
+          </p>
+          <p className="text-slate-400">الصلاحيات الممنوحة فعلاً: {Array.isArray(perm.grantedScopes) && perm.grantedScopes.length > 0 ? perm.grantedScopes.join('، ') : '—'}</p>
+          <p className="text-slate-400">الصلاحيات الناقصة لنشر الفيديو: {Array.isArray(perm.missingVideoPublishScopes) && perm.missingVideoPublishScopes.length > 0
+            ? perm.missingVideoPublishScopes.map((s: string) => REQUIRED[s] ? `${s} (${REQUIRED[s]})` : s).join('، ')
+            : 'لا شيء'}</p>
+          {perm.reason && <p className="text-slate-400">{perm.reason}</p>}
+          {perm.note && <p className="text-slate-600">{perm.note}</p>}
+        </div>
+      )}
+
+      {diagErr && <p className="text-amber-300">سجل التشخيص: {diagErr}</p>}
+      {diag && (
+        <div className="p-2 rounded-lg bg-slate-950 border border-slate-800 space-y-1">
+          <p className="text-slate-400 font-bold">سجل النشر الفاشل المحفوظ ({diag.count ?? 0} سجل):</p>
+          {(!diag.diagnostics || diag.diagnostics.length === 0)
+            ? <p className="text-slate-500">لا سجلات نشر فاشلة محفوظة.</p>
+            : diag.diagnostics.map((r: any, i: number) => (
+              <div key={r.id || i} className="p-1.5 rounded bg-slate-900/70 border border-slate-800 space-y-0.5">
+                <p className="text-slate-300"><span className="font-bold">{r.platform}</span> · {r.state} {r.executedAt ? <span className="text-slate-500" dir="ltr">· {r.executedAt}</span> : null}</p>
+                <p className="text-rose-300">{r.error || '—'}</p>
+                <p className="text-slate-500" dir="ltr">code={r.providerCode ?? '—'} subcode={r.providerSubcode ?? '—'} fbtrace={r.providerTraceId || '—'}</p>
+              </div>
+            ))}
+          {diag.note && <p className="text-slate-600">{diag.note}</p>}
+        </div>
+      )}
+    </div>
+  );
+};
+
 /** حالة اشتراك حساب Instagram في webhook — حقيقية من Meta بلا أي سرّ. */
 const InstagramWebhookStatus: React.FC = () => {
   const [info, setInfo] = useState<any>(null);
@@ -760,6 +843,7 @@ export const PlatformConnectionCenter: React.FC = () => {
               )}
 
               {p.platform === 'facebook' && p.connected && <FacebookWebhookStatus />}
+              {p.platform === 'facebook' && <FacebookVideoDiagnosticsPanel />}
 
               {p.platform === 'instagram' && igAccounts && (
                 <div className="mt-3 pt-3 border-t border-slate-800/70">

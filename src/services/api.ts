@@ -905,6 +905,33 @@ ${payload.topic || payload.productName || 'أنظمة وحلول التقسيط 
     return data;
   },
 
+  // فحص صلاحيات رمز صفحة Facebook عبر Meta debug_token (للمالك): يكشف الصلاحية
+  // الناقصة التي تمنع نشر فيديو الصفحة (#100) — بلا أي رمز أو سرّ في الاستجابة.
+  async getFacebookVideoPermissionDiagnosis() {
+    const res = await fetch('/api/platforms/facebook/video-permission-diagnosis', { headers: getAuthHeaders() });
+    const data = await res.json().catch(() => null);
+    if (!res.ok || !data?.success) {
+      const err: any = new Error(data?.error || 'تعذّر فحص صلاحيات نشر الفيديو');
+      err.status = res.status; err.code = data?.code;
+      throw err;
+    }
+    return data;
+  },
+
+  // سجل تشخيص النشر الفاشل المحفوظ (للمالك): رسالة المزود الكاملة + code/subcode/fbtrace
+  // بلا أي سرّ، ومحفوظ عبر restart. platform/state/limit اختيارية.
+  async getPublishDiagnostics(opts?: { platform?: string; state?: string; limit?: number }) {
+    const qs = new URLSearchParams();
+    if (opts?.platform) qs.set('platform', opts.platform);
+    if (opts?.state) qs.set('state', opts.state);
+    if (opts?.limit) qs.set('limit', String(opts.limit));
+    const suffix = qs.toString() ? `?${qs.toString()}` : '';
+    const res = await fetch(`/api/platforms/publish-diagnostics${suffix}`, { headers: getAuthHeaders() });
+    const data = await res.json().catch(() => null);
+    if (!res.ok || !data?.success) throw new Error(data?.error || 'تعذّر جلب سجل تشخيص النشر');
+    return data;
+  },
+
   async executeJob(jobId: string) { const res = await fetch(`/api/control/jobs/${encodeURIComponent(jobId)}/execute`, { method:'POST', headers:getAuthHeaders() }); const data=await res.json(); if(!res.ok || !data.success) throw new Error(data.error || 'تعذر تنفيذ المهمة'); return data; },
 
   async disconnectPlatform(platform: string) {

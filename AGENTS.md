@@ -44,7 +44,7 @@ npm install
 npm run dev            # tsx server.ts
 npm run lint           # tsc --noEmit
 npm run build          # vite build + esbuild server.ts -> dist/server.cjs
-npm run final-audit    # node final-audit.mjs (1407 فحصاً)
+npm run final-audit    # node final-audit.mjs (1413 فحصاً)
 npm test               # storage + engine + auth + ... + db + runtime
 ```
 - التشغيل الإنتاجي: `PORT=4517 NODE_ENV=production APP_URL=http://localhost:4517 node dist/server.cjs`
@@ -4736,3 +4736,32 @@ Meta بـ**190 «Session has expired»**. الأسوأ: كان الفشل يتك
 
 **لم يُمسّ:** Gemini/الـfirewall، OAuth/scopes، المصادقة، قاعدة البيانات، DR/الاستعادة،
 المنصّات الأخرى، والنقطتان العامتان `/api/health` و`/api/readiness` (بلا حقول حساسة).
+
+## واجهة تشخيص نشر فيديو Facebook (owner-only) — Batch (2026-10-08)
+
+**الفجوة الحقيقية:** المساران `GET /api/platforms/facebook/video-permission-diagnosis`
+و`GET /api/platforms/publish-diagnostics` كانا مبنيَّين في الخادم **فقط** بلا أي واجهة،
+فلا يستطيع المالك استدعاءهما إلا بأدوات تقنية (curl) — غير عملي من الهاتف.
+
+**الإصلاح (واجهة فقط، بلا أي تغيير في منطق الخادم أو الأسرار أو المنصات):**
+- `src/services/api.ts`: دالتان جديدتان `getFacebookVideoPermissionDiagnosis()` و
+  `getPublishDiagnostics({platform?,state?,limit?})` تمرّران `getAuthHeaders()` (نفس آلية
+  التوكن المستخدمة أصلاً) وتصرّحان النوع.
+- `src/components/social/PlatformConnectionCenter.tsx`: مكوّن
+  `FacebookVideoDiagnosticsPanel` داخل بطاقة Facebook، بزرّين: «فحص صلاحيات نشر الفيديو»
+  و«سجل تشخيص النشر الفاشل». يعرض بالعربية: الصلاحيات الممنوحة، الناقصة (مع تفسير
+  `pages_read_engagement` كإلزامية لنشر الفيديو)، وهل النشر جاهز (`videoPublishReady`)؛
+  وسجل الأخطاء (المنصة، الرسالة الكاملة، `code`/`subcode`/`fbtrace`). اللوحة داخل مركز
+  الربط المحصور بالمالك (`currentUser?.role !== 'owner'`) وتُعرض لبطاقة facebook فقط.
+  لا تدّعي إصلاح الصلاحية ولا أي نشر (المسار تشخيصي).
+
+**اختبارات:** `engine/tests/facebook.video.diagnostics.ui.test.ts`
+(`npm run test:facebook-video-diagnostics-ui`، 25 فحصاً، موصول بـ`npm test`)، وe2e حقيقي
+`engine/e2e/facebook-video-diagnostics.e2e.spec.ts` (Playwright/Chromium: يفتح مركز الربط
+بجلسة مالك، يضغط الزرّين، يثبت ظهور النتيجة العربية، ويتحقق أن الطلبين الحقيقيين يحملان
+ترويسة Authorization). فحوص final-audit الستة الجديدة: `facebook-diagnostics-ui-buttons` …
+`facebook-diagnostics-ui-tests` (**1413 إجمالاً**).
+
+**لم يُمسّ:** منطق الخادم، Gemini/الـfirewall، OAuth/scopes، المصادقة، قاعدة البيانات،
+DR/الاستعادة، بقية المنصّات، والنقطتان العامتان `/api/health` و`/api/readiness`.
+**يبقى مفتوحاً (إجراء خارجي):** منح `pages_read_engagement` من لوحة Meta — لا يُصلحه الكود.
