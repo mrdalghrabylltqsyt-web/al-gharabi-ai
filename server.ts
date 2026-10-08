@@ -66,6 +66,8 @@ import { isEscalationOpen, escalationReasonFor, type EscalationReason, type Esca
 import { classifyConversation } from "./engine/brain/audience/conversationIntelligence";
 import { capabilityRow } from "./engine/brain/strategy/capabilityMatrix";
 import { registerDriveRoutes } from "./engine/dr/routes";
+import { inspectDriveAuthEnv, createRefreshTokenProvider } from "./tools/dr/drive-auth.mjs";
+import { DriveClient, createGaxiosTransport } from "./tools/dr/drive-client.mjs";
 import { classifyHttpError, shouldExposeErrorMessage, safeErrorMessage, redactSecretsFromText } from "./engine/runtime/errorSafety";
 import { enforceRateWindowCap, RATE_WINDOW_TTL_MS } from "./engine/runtime/rateWindow";
 import { computeLiveDatabaseFingerprint } from "./engine/dr/dbBalance";
@@ -4957,7 +4959,7 @@ let youtubeDelegationState: YouTubeDelegation = defaultYouTubeDelegation();
 // المنظومة. لا تُقرأ DATABASE_URL ولا تُرفع قاعدة بيانات خام. تُحفظ هنا فقط
 // حالات CSRF ورمز التجديد المشفّر وآخر خطأ — كلها عبر محوّل الحالة.
 // -------------------------------------------------------------
-const drControl: { driveOAuthStates: any[]; driveRefreshToken: any; driveLastError: string | null; driveBackup: any; driveFolderIdentity: any; driveMirror: any; driveReconciliation: any; driveAutoBackup: any; driveLease: any; driveAlerts: any; driveDbBalance: any } = {
+const drControl: { driveOAuthStates: any[]; driveRefreshToken: any; driveLastError: string | null; driveBackup: any; driveFolderIdentity: any; driveMirror: any; driveReconciliation: any; driveAutoBackup: any; driveLease: any; driveAlerts: any; driveDbBalance: any; driveMarketingFolderIdentity: any } = {
   driveOAuthStates: [],
   driveRefreshToken: null,
   driveLastError: null,
@@ -4969,7 +4971,26 @@ const drControl: { driveOAuthStates: any[]; driveRefreshToken: any; driveLastErr
   driveLease: null,
   driveAlerts: {},
   driveDbBalance: null,
+  // معرّف مجلد Drive التسويقي («al-gharabi-ai-marketing») — منفصل تماماً عن
+  // مجلد DR (driveFolderIdentity أعلاه). يُستخدم فقط لاستضافة فيديوهات علنية
+  // (Task #21/videoPublicHosting)؛ لا صلة له بالنسخ الاحتياطي أو الأسرار.
+  driveMarketingFolderIdentity: null,
 };
+
+/**
+ * يبني عميل Drive لاستضافة الفيديو العامة (Task #21) من نفس رمز التجديد
+ * المخزَّن لمنظومة DR (نفس حساب Drive الشخصي للمالك، نفس موافقة OAuth
+ * `drive.file` التي تمت مرة واحدة) — بلا أي اعتماد جديد وبلا لمس منطق DR
+ * الداخلي (فصل متعمد: DR routes تبقى مسؤولة فقط عن نسخها هي).
+ * تعيد null إن لم يكن التفويض جاهزاً بعد (لم يُمنح/لا رمز تجديد مخزَّن).
+ */
+function buildMarketingDriveClient(): InstanceType<typeof DriveClient> | null {
+  const info = inspectDriveAuthEnv(process.env as NodeJS.ProcessEnv);
+  if (!info.configured) return null;
+  if (!drControl.driveRefreshToken) return null;
+  const provider = createRefreshTokenProvider({ env: process.env, encryptedRefreshToken: drControl.driveRefreshToken });
+  return new DriveClient({ transport: createGaxiosTransport(), tokenProvider: provider });
+}
 
 /** يحفظ التفويض عبر محوّل الحالة (يصمد بعد restart) — كتابة تُنتظر عند التغيير. */
 async function saveYouTubeDelegationState(): Promise<void> {
@@ -9768,6 +9789,8 @@ function applyControlSnapshot(control: any): void {
   drControl.driveLastError = typeof control.driveLastError === "string" ? control.driveLastError : null;
   drControl.driveBackup = control.driveBackup && typeof control.driveBackup === "object" ? control.driveBackup : null;
   drControl.driveFolderIdentity = control.driveFolderIdentity && typeof control.driveFolderIdentity === "object" ? control.driveFolderIdentity : null;
+  // هوية مجلد Drive التسويقي (فيديوهات علنية فقط — منفصل عن driveFolderIdentity).
+  drControl.driveMarketingFolderIdentity = control.driveMarketingFolderIdentity && typeof control.driveMarketingFolderIdentity === "object" ? control.driveMarketingFolderIdentity : null;
   drControl.driveMirror = control.driveMirror && typeof control.driveMirror === "object" ? control.driveMirror : null;
   drControl.driveReconciliation = control.driveReconciliation && typeof control.driveReconciliation === "object" ? control.driveReconciliation : null;
   drControl.driveAutoBackup = control.driveAutoBackup && typeof control.driveAutoBackup === "object" ? control.driveAutoBackup : null;
@@ -9825,6 +9848,8 @@ function buildControlState() {
     driveLastError: drControl.driveLastError,
     driveBackup: drControl.driveBackup,
     driveFolderIdentity: drControl.driveFolderIdentity,
+    // هوية مجلد Drive التسويقي (Task #21) — تصمد بعد restart فلا يُعاد البحث بالاسم كل مرة.
+    driveMarketingFolderIdentity: drControl.driveMarketingFolderIdentity,
     // مرآة CURRENT: بصمة الشجرة + سجل الملفات الفردية (بلا أسرار) — تصمد بعد restart.
     driveMirror: drControl.driveMirror,
     // نتيجة آخر فحص ساعي (reconciliation): طابع/نتيجة/سبب فقط — تصمد بعد restart.

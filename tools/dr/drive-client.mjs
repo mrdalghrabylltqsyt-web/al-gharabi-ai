@@ -294,6 +294,29 @@ export class DriveClient {
     return this.request({ url, method: 'DELETE' });
   }
 
+  /**
+   * يمنح صلاحية قراءة عامة («أي شخص لديه الرابط») لملف أنشأه التطبيق نفسه —
+   * `drive.file` يسمح بهذا للملفات المملوكة للتطبيق فقط (لا يمكن تعميم ملف لم
+   * ينشئه التطبيق). يُستخدم حصراً لفيديوهات تسويقية يختار المالك نشرها علناً
+   * عبر منصات تتطلب رابط فيديو عام (video_url) — لا يُستدعى لأي ملف نسخ احتياطي
+   * أو سرّ (تلك تبقى دوماً خاصة، فصل تام عن هذه الدالة).
+   */
+  async createPublicPermission(fileId) {
+    const url = `${this.apiBase}/drive/v3/files/${encodeURIComponent(fileId)}/permissions?fields=id`;
+    return this.request({
+      url,
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ type: 'anyone', role: 'reader' }),
+    });
+  }
+
+  /** يسحب صلاحية القراءة العامة عن ملف (تراجع — يُستخدم عند فشل لاحق أو طلب إزالة). */
+  async deletePermission(fileId, permissionId) {
+    const url = `${this.apiBase}/drive/v3/files/${encodeURIComponent(fileId)}/permissions/${encodeURIComponent(permissionId)}`;
+    return this.request({ url, method: 'DELETE' });
+  }
+
   // ---- تركيب عالٍ ----
 
   /** هل المجلد بمعرّفه موجود فعلاً؟ (لإثبات صلاحية معرّف محفوظ). */

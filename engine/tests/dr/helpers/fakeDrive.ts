@@ -18,8 +18,16 @@ export interface FakeDriveFile {
   modifiedTime: string;
 }
 
+export interface FakeDrivePermission {
+  id: string;
+  fileId: string;
+  type: string;
+  role: string;
+}
+
 export interface FakeDriveState {
   files: Map<string, FakeDriveFile>;
+  permissions: Map<string, FakeDrivePermission>;
   seq: number;
   requests: Array<{ method: string; url: string }>;
   /** كل الطلبات تُرفض بهذه الحالة حتى تُصفَّر (0 = بلا). */
@@ -45,6 +53,7 @@ export interface FakeDriveState {
 export function createFakeDriveState(): FakeDriveState {
   return {
     files: new Map(),
+    permissions: new Map(),
     seq: 0,
     requests: [],
     forcedStatus: 0,
@@ -74,7 +83,17 @@ function findByName(state: FakeDriveState, name: string, parent: string): FakeDr
 }
 
 function toMeta(f: FakeDriveFile): any {
-  return { id: f.id, name: f.name, mimeType: f.mimeType, size: String(f.content.length), parents: f.parents, modifiedTime: f.modifiedTime };
+  return {
+    id: f.id,
+    name: f.name,
+    mimeType: f.mimeType,
+    size: String(f.content.length),
+    parents: f.parents,
+    modifiedTime: f.modifiedTime,
+    // روابط وهمية تماثل شكل Drive الحقيقي (بلا أي استدعاء شبكي فعلي).
+    webContentLink: `https://drive.google.com/uc?id=${f.id}&export=download`,
+    webViewLink: `https://drive.google.com/file/d/${f.id}/view`,
+  };
 }
 
 function parseQuery(url: string): Record<string, string> {
@@ -209,6 +228,45 @@ export async function fakeDriveTransport(state: FakeDriveState, opts: any): Prom
     return { status: 200, headers: {}, data: toMeta(file) };
   }
 
+  // صلاحيات مشاركة ملف — تحاكي POST .../files/:id/permissions و
+  // DELETE .../files/:id/permissions/:permissionId فقط للملفات المملوكة
+  // (المنشأة عبر هذا الناقل نفسه)، كما يفرض `drive.file` فعلياً.
+  const permCreate = /\/drive\/v3\/files\/([^/?]+)\/permissions$/.exec(path);
+  if (permCreate && method === 'POST') {
+    const fileId = permCreate[1];
+    const file = state.files.get(fileId);
+    if (!file) {
+      return {
+        status: 404,
+        headers: {},
+        data: { error: { code: 404, message: 'File not found.', errors: [{ domain: 'global', reason: 'notFound', message: 'File not found.' }] } },
+      };
+    }
+    const body = typeof opts.body === 'string' ? JSON.parse(opts.body) : opts.body || {};
+    const perm: FakeDrivePermission = {
+      id: `perm_${nextId(state)}`,
+      fileId,
+      type: String(body.type || 'anyone'),
+      role: String(body.role || 'reader'),
+    };
+    state.permissions.set(perm.id, perm);
+    return { status: 200, headers: {}, data: { id: perm.id } };
+  }
+  const permDelete = /\/drive\/v3\/files\/([^/?]+)\/permissions\/([^/?]+)$/.exec(path);
+  if (permDelete && method === 'DELETE') {
+    const [, fileId, permissionId] = permDelete;
+    const perm = state.permissions.get(permissionId);
+    if (!perm || perm.fileId !== fileId) {
+      return {
+        status: 404,
+        headers: {},
+        data: { error: { code: 404, message: 'Permission not found.', errors: [{ domain: 'global', reason: 'notFound', message: 'Permission not found.' }] } },
+      };
+    }
+    state.permissions.delete(permissionId);
+    return { status: 204, headers: {}, data: {} };
+  }
+
   // single file
   const single = /\/drive\/v3\/files\/([^/?]+)/.exec(path);
   if (single) {
@@ -233,6 +291,7 @@ export async function fakeDriveTransport(state: FakeDriveState, opts: any): Prom
       if (!file) return { status: 404, headers: {}, data: { error: { code: 404 } } };
       state.usageBytes -= file.content.length;
       state.files.delete(id);
+      for (const [permId, perm] of state.permissions) if (perm.fileId === id) state.permissions.delete(permId);
       return { status: 204, headers: {}, data: {} };
     }
   }
