@@ -42,6 +42,7 @@ import {
   expandWithDependencies,
   extractFacebookGraphError,
   formatFacebookGraphError,
+  buildPublishVideoBody,
   FacebookClient,
 } from '../social/facebook';
 import { createFacebookMock, startFacebookMockServer } from './helpers/facebookMock';
@@ -298,6 +299,29 @@ async function unitTests(): Promise<void> {
   check('إثبات الهوية نجح', profile.ok === true && profile.data?.pageId === 'PAGE_X');
   check('طلب الحقول بلا tasks', decodeURIComponent(profileUrl).includes('fields=id,name,access_token') && !profileUrl.includes('tasks'));
   check('الرمز الصفحي مستخرَج', profile.data?.pageAccessToken === 'PT');
+
+  group('1ط) وحدة: نشر فيديو على الصفحة (Task #22 — file_url، لا video_url)');
+  check('buildPublishVideoBody يستخدم file_url', buildPublishVideoBody('https://drive.example/v.mp4').get('file_url') === 'https://drive.example/v.mp4');
+  check('buildPublishVideoBody لا يضيف video_url', buildPublishVideoBody('https://drive.example/v.mp4').get('video_url') === null);
+  check('buildPublishVideoBody يضمّن الوصف إن وُجد', buildPublishVideoBody('https://x/v.mp4', 'وصف المنتج').get('description') === 'وصف المنتج');
+  check('buildPublishVideoBody بلا وصف فارغ', buildPublishVideoBody('https://x/v.mp4', '   ').get('description') === null);
+
+  const videoRequests: { url: string; body: any }[] = [];
+  const fakeVideoFetch = async (url: string, init: any) => {
+    videoRequests.push({ url, body: Object.fromEntries(new URLSearchParams(String(init?.body || ''))) });
+    return { ok: true, status: 200, json: async () => ({ id: 'VID_123' }) };
+  };
+  const videoClient = new FacebookClient(fakeVideoFetch as any, 'https://graph.example/v21.0');
+  const published = await videoClient.publishVideoToPage('PAGE_X', 'PAGE_TOKEN', 'https://drive.example/v.mp4', 'منتج جديد');
+  check('نشر الفيديو نجح بمعرّف من Meta', published.ok === true && published.data?.providerPostId === 'VID_123');
+  check('الطلب ذهب إلى /{page-id}/videos', videoRequests[0]?.url.includes('/PAGE_X/videos'));
+  check('الجسم حمل file_url لا video_url', videoRequests[0]?.body.file_url === 'https://drive.example/v.mp4' && videoRequests[0]?.body.video_url === undefined);
+
+  const noIdFetch = async () => ({ ok: true, status: 200, json: async () => ({}) });
+  const failClient = new FacebookClient(noIdFetch as any, 'https://graph.example/v21.0');
+  const failedPublish = await failClient.publishVideoToPage('PAGE_X', 'PT', 'https://drive.example/v.mp4');
+  check('لا نجاح بلا معرّف فيديو من Meta', failedPublish.ok === false);
+  check('بلا رابط فيديو => رفض فوري بلا أي طلب شبكي', (await videoClient.publishVideoToPage('PAGE_X', 'PT', '')).ok === false);
 }
 
 async function integrationTests(): Promise<void> {

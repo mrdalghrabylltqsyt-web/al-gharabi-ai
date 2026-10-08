@@ -521,6 +521,18 @@ export function buildSendMessagePayload(recipientId: string, text: string): stri
   return JSON.stringify({ recipient: { id: recipientId }, messaging_type: 'RESPONSE', message: { text } });
 }
 
+/**
+ * يبني جسم نشر فيديو على صفحة (`POST /{page-id}/videos`). Graph API يقرأ
+ * الفيديو من رابط عام عبر `file_url` (وليس `video_url` — ذاك خاص بـInstagram
+ * فقط) حين لا نرفع بايتات مباشرة. الوصف اختياري.
+ */
+export function buildPublishVideoBody(fileUrl: string, description?: string): URLSearchParams {
+  const body = new URLSearchParams();
+  body.set('file_url', fileUrl);
+  if (description?.trim()) body.set('description', description.trim());
+  return body;
+}
+
 // ---------------------------------------------------------------------------
 // عميل Graph API
 // ---------------------------------------------------------------------------
@@ -788,6 +800,30 @@ export class FacebookClient {
       });
       const data = await res.json().catch(() => null);
       if (!res.ok || data?.error || !data?.id) return { ok: false, data: null, error: errorMessage(data, 'فشل النشر على صفحة Facebook.') };
+      return { ok: true, data: { providerPostId: String(data.id) } };
+    } catch (e: any) {
+      return { ok: false, data: null, error: String(e?.message || 'فشل الاتصال بـFacebook.') };
+    }
+  }
+
+  /**
+   * ينشر فيديو حقيقياً على الصفحة (`POST /{page-id}/videos`) من رابط عام
+   * (`file_url` — مثلاً رابط Drive العام من `videoPublicHosting.ts`). لا نجاح
+   * بلا معرّف فيديو من Meta. يتطلب نفس صلاحية النشر النصي (`pages_manage_posts`)
+   * — لا صلاحية إضافية.
+   */
+  async publishVideoToPage(pageId: string, pageAccessToken: string, fileUrl: string, description?: string): Promise<FacebookResult<{ providerPostId: string }>> {
+    if (!pageId || !fileUrl?.trim()) return { ok: false, data: null, error: 'معرّف الصفحة ورابط الفيديو العام مطلوبان.' };
+    try {
+      const u = new URL(facebookGraphUrl(`/${pageId}/videos`, this.baseUrl));
+      u.searchParams.set('access_token', pageAccessToken);
+      const res = await this.fetchImpl(u.toString(), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: buildPublishVideoBody(fileUrl, description).toString(),
+      });
+      const data = await res.json().catch(() => null);
+      if (!res.ok || data?.error || !data?.id) { console.error(formatFacebookGraphError(extractFacebookGraphError(data, `POST /${pageId}/videos`, res.status))); return { ok: false, data: null, error: errorMessage(data, 'فشل نشر الفيديو على صفحة Facebook.') }; }
       return { ok: true, data: { providerPostId: String(data.id) } };
     } catch (e: any) {
       return { ok: false, data: null, error: String(e?.message || 'فشل الاتصال بـFacebook.') };

@@ -7617,8 +7617,14 @@ async function executePlatformPublish(platform: string, body: any, actor: string
       // النشر على صفحة Facebook (Page Access Token). لا نشر بلا معرّف من Meta.
       const target = facebookReplyTarget();
       if ("error" in target) return { status: 503, body: { success: false, error: target.error, code: "CONNECTOR_NOT_READY" } };
-      const result = await facebookClient().publishToPage(target.pageId, target.pageToken, content);
-      const receipt = result.ok ? { provider: "facebook", pageId: target.pageId, postId: result.data?.providerPostId, sentAt: new Date().toISOString() } : null;
+      // فيديو (رابط عام فقط — مثلاً استضافة Drive من videoPublicHosting.ts):
+      // POST /{page-id}/videos بدل /{page-id}/feed. لا تنزيل/إعادة استضافة هنا؛
+      // الرابط يجب أن يكون عاماً مسبقاً.
+      const videoUrl = typeof body?.videoUrl === "string" ? body.videoUrl.trim() : "";
+      const result = videoUrl
+        ? await facebookClient().publishVideoToPage(target.pageId, target.pageToken, videoUrl, content)
+        : await facebookClient().publishToPage(target.pageId, target.pageToken, content);
+      const receipt = result.ok ? { provider: "facebook", pageId: target.pageId, postId: result.data?.providerPostId, mediaKind: videoUrl ? "video" : "text", sentAt: new Date().toISOString() } : null;
       const record = buildPublishRecord({ platform: platform as any, postId: typeof body?.postId === "string" ? body.postId : workspaceId("post"), providerPostId: result.data?.providerPostId || null, simulated: false, error: result.ok ? null : result.error });
       if (!Array.isArray((workspace as any).publishRecords)) (workspace as any).publishRecords = [];
       (workspace as any).publishRecords.unshift({ ...record, id: workspaceId("publish"), createdBy: user.id, receipt });
