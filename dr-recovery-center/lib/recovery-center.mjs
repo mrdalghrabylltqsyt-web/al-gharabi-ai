@@ -65,7 +65,7 @@ const PORT = Number.parseInt(process.env.PORT || process.env.RECOVERY_CENTER_POR
  * بين «إصلاح منشور» و«خدمة ما زالت تخدم نسخة قديمة» — وهو بالضبط ما أخفى سابقاً
  * أن مركز الاستعادة لم يستلم إصلاح قراءة رمز التجديد من قاعدة الحالة.
  */
-export const RECOVERY_CENTER_BUILD = 'owner-auth-1';
+export const RECOVERY_CENTER_BUILD = 'owner-auth-2';
 
 /** الحالات الصادقة للاستعادة (تُعرض للمالك كما هي؛ لا ادّعاء نجاح غير مُثبت). */
 export const RECOVERY_HONEST_STATES = [
@@ -340,7 +340,8 @@ export function createRecoveryCenterServer(options = {}) {
       if (isProtectedRecoveryPath(url.pathname)) {
         const auth = checkRecoveryOwnerAuth(req, env);
         if (!auth.allowed) {
-          return json(res, 401, { ok: false, code: 'UNAUTHORIZED', reason: auth.reason });
+          const status = auth.reason === 'rate_limited' ? 429 : 401;
+          return json(res, status, { ok: false, code: status === 429 ? 'RATE_LIMITED' : 'UNAUTHORIZED', reason: auth.reason });
         }
       }
       if (req.method === 'GET' && url.pathname === '/api/health') {
@@ -365,7 +366,8 @@ export function createRecoveryCenterServer(options = {}) {
       // فحص مصادقة المالك (عام): يسمح للواجهة بالتحقق من المفتاح المُدخَل بلا كشف أي بيانات.
       if (req.method === 'GET' && url.pathname === '/api/owner-auth') {
         const auth = checkRecoveryOwnerAuth(req, env);
-        return json(res, auth.allowed ? 200 : 401, { ok: auth.allowed, reason: auth.reason });
+        const status = auth.allowed ? 200 : auth.reason === 'rate_limited' ? 429 : 401;
+        return json(res, status, { ok: auth.allowed, reason: auth.reason });
       }
       if (req.method === 'GET' && url.pathname === '/api/points') {
         const readiness = await inspectRecoveryReadiness(env, tokenOptions || {});

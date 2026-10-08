@@ -18,6 +18,10 @@
  *    يُفعِّل المالك `RECOVERY_CENTER_ALLOW_UNAUTHENTICATED=true` صراحةً (الوضع المحلي).
  *  - `/api/health` و`/` (الواجهة) و`/api/owner-auth` تبقى عامة: لا تكشف أي سرّ ولا
  *    بيانات وصفية لنقاط الاستعادة.
+ *  - **تحديد معدّل التخمين**: محاولات فاشلة متكررة من نفس عنوان IP على المسارات
+ *    الحسّاسة (أو `/api/owner-auth`) تُحظر مؤقتاً (fail-closed) بعد حدّ معقول، لمنع
+ *    تخمين المفتاح بلا قيد عبر الشبكة. النجاح يصفّر العدّاد. عدّاد في الذاكرة فقط
+ *    (مقصود: خدمة بعملية واحدة)، بحدّ أقصى لعدد المفاتيح المتتبَّعة لمنع نموّ غير محدود.
  */
 
 import crypto from 'node:crypto';
@@ -25,6 +29,43 @@ import crypto from 'node:crypto';
 export const OWNER_TOKEN_ENV = 'RECOVERY_CENTER_OWNER_TOKEN';
 export const OWNER_TOKEN_HASH_ENV = 'RECOVERY_CENTER_OWNER_TOKEN_HASH';
 export const ALLOW_UNAUTHENTICATED_ENV = 'RECOVERY_CENTER_ALLOW_UNAUTHENTICATED';
+
+/** نافذة ومعدّل تحديد محاولات التخمين الفاشلة لكل عنوان IP. */
+const AUTH_RATE_LIMIT_WINDOW_MS = 15 * 60 * 1000;
+const AUTH_RATE_LIMIT_MAX_FAILURES = 10;
+const AUTH_RATE_LIMIT_MAX_TRACKED_KEYS = 5000;
+const failedAuthAttempts = new Map();
+
+/** يستخرج عنوان IP الفعلي للاتصال (بلا افتراض بروكسي) — أفضل مجهود، لا يرمي أبداً. */
+export function clientIpOf(req) {
+  const addr = req?.socket?.remoteAddress || req?.connection?.remoteAddress;
+  return typeof addr === 'string' && addr ? addr : 'unknown';
+}
+
+function isAuthRateLimited(key) {
+  const now = Date.now();
+  const entry = failedAuthAttempts.get(key);
+  if (!entry || now - entry.windowStart >= AUTH_RATE_LIMIT_WINDOW_MS) return false;
+  return entry.count >= AUTH_RATE_LIMIT_MAX_FAILURES;
+}
+
+function recordFailedAuthAttempt(key) {
+  const now = Date.now();
+  const entry = failedAuthAttempts.get(key);
+  if (!entry || now - entry.windowStart >= AUTH_RATE_LIMIT_WINDOW_MS) {
+    failedAuthAttempts.set(key, { count: 1, windowStart: now });
+    if (failedAuthAttempts.size > AUTH_RATE_LIMIT_MAX_TRACKED_KEYS) {
+      const oldestKey = failedAuthAttempts.keys().next().value;
+      if (oldestKey !== undefined) failedAuthAttempts.delete(oldestKey);
+    }
+    return;
+  }
+  entry.count += 1;
+}
+
+function clearFailedAuthAttempts(key) {
+  failedAuthAttempts.delete(key);
+}
 
 /**
  * المسارات التي تكشف بيانات وصفية لنقاط الاستعادة أو تنفّذ استعادة.
@@ -83,19 +124,31 @@ export function checkRecoveryOwnerAuth(req, env = process.env) {
   if (info.allowUnauthenticated) return { allowed: true, reason: 'unauthenticated_allowed_by_owner' };
   if (!info.configured) return { allowed: false, reason: 'owner_token_not_configured' };
 
+  const ipKey = clientIpOf(req);
+  if (isAuthRateLimited(ipKey)) return { allowed: false, reason: 'rate_limited' };
+
   const header = req?.headers?.authorization ?? req?.headers?.Authorization ?? '';
   const supplied = extractBearerToken(header);
-  if (!supplied) return { allowed: false, reason: 'missing_bearer_token' };
+  if (!supplied) {
+    recordFailedAuthAttempt(ipKey);
+    return { allowed: false, reason: 'missing_bearer_token' };
+  }
 
   if (info.source === 'env_token') {
-    return timingSafeEqualStr(env[OWNER_TOKEN_ENV].trim(), supplied)
-      ? { allowed: true, reason: 'bearer_ok' }
-      : { allowed: false, reason: 'invalid_bearer_token' };
+    if (timingSafeEqualStr(env[OWNER_TOKEN_ENV].trim(), supplied)) {
+      clearFailedAuthAttempts(ipKey);
+      return { allowed: true, reason: 'bearer_ok' };
+    }
+    recordFailedAuthAttempt(ipKey);
+    return { allowed: false, reason: 'invalid_bearer_token' };
   }
   // بديل البصمة: نقارن هاش المقدَّم بالهاش المضبوط.
-  return timingSafeEqualStr(env[OWNER_TOKEN_HASH_ENV].trim().toLowerCase(), sha256Hex(supplied))
-    ? { allowed: true, reason: 'bearer_ok' }
-    : { allowed: false, reason: 'invalid_bearer_token' };
+  if (timingSafeEqualStr(env[OWNER_TOKEN_HASH_ENV].trim().toLowerCase(), sha256Hex(supplied))) {
+    clearFailedAuthAttempts(ipKey);
+    return { allowed: true, reason: 'bearer_ok' };
+  }
+  recordFailedAuthAttempt(ipKey);
+  return { allowed: false, reason: 'invalid_bearer_token' };
 }
 
 /** يُعلن ما إذا كان مسار معيّن محمياً (مصدر واحد للحقيقة في الخادم والاختبار). */

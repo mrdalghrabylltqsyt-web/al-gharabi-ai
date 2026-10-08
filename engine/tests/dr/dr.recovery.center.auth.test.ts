@@ -235,9 +235,30 @@ async function main() {
     } finally { await close(server); }
   }
 
+  // ---------- F2) تحديد معدّل التخمين لكل IP (fail-closed بعد الحدّ) ----------
+  {
+    const env: any = { ...baseEnv, [OWNER_TOKEN_ENV]: OWNER_TOKEN };
+    const { server, base } = await start(env);
+    try {
+      // 10 محاولات خاطئة متتالية من نفس العميل — كل واحدة 401 (ليست محظورة بعد).
+      for (let i = 0; i < 10; i += 1) {
+        const r = await fetch(`${base}/api/points`, { headers: { authorization: 'Bearer still-wrong' } });
+        check(`rate-limit warmup attempt ${i + 1} => 401`, r.status === 401, String(r.status));
+      }
+      // المحاولة الحادية عشرة: محظورة (429) بصرف النظر عن صحة المفتاح هذه المرة.
+      const blocked = await fetch(`${base}/api/points`, { headers: { authorization: 'Bearer ' + OWNER_TOKEN } });
+      check('11th attempt rate-limited even with correct token', blocked.status === 429);
+      const blockedBody = await blocked.json();
+      check('rate-limited body explicit', blockedBody.ok === false && blockedBody.code === 'RATE_LIMITED' && blockedBody.reason === 'rate_limited');
+      // /api/owner-auth من نفس العميل محظور أيضاً (نفس مفتاح IP).
+      const ownerAuthBlocked = await fetch(`${base}/api/owner-auth`, { headers: { authorization: 'Bearer ' + OWNER_TOKEN } });
+      check('owner-auth rate-limited too (shared IP key)', ownerAuthBlocked.status === 429);
+    } finally { await close(server); }
+  }
+
   // ---------- F) بصمة البناء + نسخة lib متزامنة ----------
   {
-    check('build marker updated', RECOVERY_CENTER_BUILD === 'owner-auth-1');
+    check('build marker updated', RECOVERY_CENTER_BUILD === 'owner-auth-2');
     const toolAuth = fs.readFileSync(path.join(repoRoot, 'tools/dr/recoveryAuth.mjs'), 'utf8');
     const libAuth = fs.readFileSync(path.join(repoRoot, 'dr-recovery-center/lib/recoveryAuth.mjs'), 'utf8');
     check('recoveryAuth lib synced (no drift)', toolAuth === libAuth);
