@@ -58,9 +58,10 @@ function run(): void {
       const spec = PLATFORM_SPECS.find((s) => s.platform === r.platform)!;
       return spec.displayName === r.displayName && spec.credentialMode === r.credentialMode;
     }));
-  // CONNECTOR_READY = موصل منفّذ فعلاً في الكود. Telegram ثم Facebook ثم Instagram ثم TikTok ثم YouTube.
-  check('الموصلات المنفّذة CONNECTOR_READY = telegram,facebook,instagram,tiktok,youtube', PLATFORM_READINESS.filter((r) => r.implementationStatus === 'CONNECTOR_READY').map((r) => r.platform).sort().join(',') === 'facebook,instagram,telegram,tiktok,youtube');
-  check('كل بقية المنصات FOUNDATION_READY', PLATFORM_READINESS.filter((r) => !['telegram', 'facebook', 'instagram', 'tiktok', 'youtube'].includes(r.platform)).every((r) => r.implementationStatus === 'FOUNDATION_READY'));
+  // CONNECTOR_READY = موصل منفّذ فعلاً في الكود. Telegram ثم Facebook ثم Instagram
+  // ثم TikTok ثم YouTube ثم Threads (Task #24).
+  check('الموصلات المنفّذة CONNECTOR_READY = telegram,facebook,instagram,tiktok,youtube,threads', PLATFORM_READINESS.filter((r) => r.implementationStatus === 'CONNECTOR_READY').map((r) => r.platform).sort().join(',') === 'facebook,instagram,telegram,threads,tiktok,youtube');
+  check('كل بقية المنصات FOUNDATION_READY', PLATFORM_READINESS.filter((r) => !['telegram', 'facebook', 'instagram', 'tiktok', 'youtube', 'threads'].includes(r.platform)).every((r) => r.implementationStatus === 'FOUNDATION_READY'));
   check('المصفوفة لا تحمل حالة اتصال تشغيلية', PLATFORM_READINESS.every((r) => !('connected' in r) && !('providerVerified' in r) && ['READY', 'EXTERNAL_SETUP_REQUIRED', 'NOT_SUPPORTED'].includes(r.connection)));
   check('حقول الجاهزية كلها قيم معروفة',
     PLATFORM_READINESS.every((r) => [r.connector, r.oauth, r.connection, r.verification, r.webhook, r.read, r.reply, r.publish, r.schedule, r.analytics].every((v) => ['READY', 'EXTERNAL_SETUP_REQUIRED', 'NOT_SUPPORTED'].includes(v))));
@@ -197,6 +198,16 @@ function run(): void {
   check('OAuth callback يستخدم validateOAuthCallback', serverSource.includes('validateOAuthCallback({pending,platform,redirectUri})'));
   check('قائمة OAUTH_CONFIG تغطي كل منصات oauth2', ['youtube', 'google_business', 'tiktok', 'facebook', 'instagram', 'x', 'snapchat', 'threads'].every((p) => new RegExp(`${p}:\\s*\\{ provider:`).test(serverSource)));
   check('لا قائمة قدرات موازية في server.ts', !/"capabilities":\s*\[/.test(serverSource));
+
+  group('OAuth callback العام (threads/x/snapchat/google_business) — إثبات هوية إلزامي (إصلاح #Task24)');
+  // الثغرة المُصلَحة: كان المسار العام يُعلن providerVerified:true بهوية وهمية
+  // ("authorized-user"/"حساب متصل") حتى لو فشل fetchProviderAccount تماماً.
+  check('لا هوية وهمية متبقية في الكود', !serverSource.includes('"authorized-user"') && !serverSource.includes("accountId=\"authorized-user\""));
+  check('لا نص "حساب متصل" الوهمي المتبقي', !serverSource.includes('accountName="حساب متصل"'));
+  // السلوك الصحيح الجديد: رفض صريح (throw) بلا proof.accountId حقيقي، تماماً
+  // كمسارَي يوتيوب (channel.data.channelId) وتيك توك (identity.data.openId).
+  check('المسار العام يرفض بلا proof.accountId حقيقي', /if\(!proof\s*\|\|\s*!proof\.accountId\)\s*throw new Error/.test(serverSource));
+  check('المسار العام يستخدم proof.accountId مباشرة (بلا قيمة افتراضية وهمية)', /const accountId=proof\.accountId,\s*accountName=proof\.accountName\|\|proof\.accountId/.test(serverSource));
   // لا أسرار مكتوبة في الكود الجديد.
   check('لا مفاتيح مكتوبة في server.ts', !/AIzaSy[A-Za-z0-9_-]{10,}/.test(serverSource) && !/clientSecret:\s*"[^"]+"/.test(serverSource));
 

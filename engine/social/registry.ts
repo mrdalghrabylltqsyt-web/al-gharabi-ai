@@ -145,9 +145,17 @@ const ADAPTER_SPECS: AdapterSpec[] = [
     platform: 'threads',
     name: 'Threads',
     displayName: 'Threads',
-    capabilities: ['publish', 'analytics', 'comments', 'comment_reply', 'scheduling'],
+    // Task #24: موصل نشر حقيقي منفَّذ (engine/social/threads.ts — حاوية ثم نشر،
+    // كبنية Instagram). القدرة محصورة بـ`publish` فقط لأن هذا ما نُفِّذ فعلاً؛
+    // لا رد على تعليقات (Threads لا يملك endpoint ردود مستقلاً، ولا webhook/قفل
+    // تكرار مبنيَّين لهذه المنصة بعد)، ولا جلب تحليلات حقيقي. إعلانها هنا بلا
+    // تنفيذ كان سيخالف قاعدة «القدرة تُقرأ من السجل ويقابلها استدعاء حقيقي».
+    capabilities: ['publish'],
     credentialMode: 'oauth2',
-    realConnector: false,
+    // أول موصل نشر حقيقي لـThreads: OAuth (مُصلَح Task #24) + حاوية + نشر +
+    // فحص حالة. يبقى العمل الفعلي يحتاج تطبيق Meta "Threads API" منفصلاً
+    // (THREADS_OAUTH_CLIENT_ID/SECRET) من المالك قبل أي اتصال حقيقي — انظر AGENTS.md.
+    realConnector: true,
   },
   {
     platform: 'google_business',

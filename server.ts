@@ -145,6 +145,10 @@ import {
   type InstagramLinkedPage,
 } from "./engine/social/instagram";
 import {
+  ThreadsClient,
+  type ThreadsFetch,
+} from "./engine/social/threads";
+import {
   TikTokClient,
   TIKTOK_CAPABILITY_MATRIX,
   TIKTOK_REQUIRED_SCOPES,
@@ -1909,6 +1913,16 @@ function instagramPageSelectionPending(): boolean {
   if (!stored?.userAccessToken || stored?.pageId) return false;
   return stored?.pendingPageSelection === true;
 }
+
+// -------------------------------------------------------------
+// Threads — رابع موصل اجتماعي حقيقي (Task #24). تطبيق Meta منفصل
+// (separateOAuthClient:true، server.ts:8154) عن تطبيق Facebook الرئيسي، ويمرّ
+// بمسار OAuth العام (لا فرع callback مخصّص) بعد إصلاح إلزامية إثبات الهوية.
+// النشر فقط حالياً (حاوية + نشر + فحص حالة)؛ لا رد/تحليلات حقيقية بعد.
+// -------------------------------------------------------------
+const THREADS_GRAPH_API_BASE_ENV = process.env.THREADS_GRAPH_API_BASE;
+const threadsFetchImpl: ThreadsFetch = (url, init) => fetch(url, init as any);
+function threadsClient(): ThreadsClient { return new ThreadsClient(threadsFetchImpl, THREADS_GRAPH_API_BASE_ENV); }
 /** تسجيل آمن لحدث Instagram الوارد. ممنوع تسجيل أي سرّ أو نص رسالة. */
 function logInstagramWebhook(event: { kind: string; externalId?: string | null; outcome: "accepted" | "duplicate" | "rejected" | "ignored"; persisted?: boolean }): void {
   const parts = ["[instagram-webhook]", "platform=instagram", `kind=${event.kind}`, `outcome=${event.outcome}`];
@@ -3948,10 +3962,18 @@ async function handleOAuthCallback(req:any, res:any, rawQuery:string, viaPost:bo
     const tokenRes=await fetch(cfg.token,{method:"POST",headers:{"Content-Type":"application/x-www-form-urlencoded"},body}); token=await tokenRes.json();
     const parsedToken=parseTokenResponse(token);
     if(!tokenRes.ok || !parsedToken.valid) throw new Error(parsedToken.reason||token.error_description||token.error||"فشل تبادل رمز OAuth");
-    // إثبات حساب حقيقي حيث توفّره الواجهة الرسمية (لا نختلق هوية عند غياب الاستعلام).
-    let accountId="authorized-user", accountName="حساب متصل";
+    // إثبات حساب حقيقي إلزامي — **لا** هوية مُختلقة («authorized-user»/«حساب متصل»)
+    // عند فشل أو غياب الاستعلام. كانت هذه الهوية الوهمية تُعلن providerVerified:true
+    // رغم فشل التحقق الفعلي (الثغرة المُثبتة في التدقيق الجنائي)؛ الآن يُرفض تبادل
+    // الرمز كاملاً بلا هوية حقيقية مؤكَّدة من المزود، تماماً كمسارَي يوتيوب/تيك توك
+    // أعلاه. هذا يعني أن منصة بلا فرع تحقق حقيقي في fetchProviderAccount (مثل
+    // Snapchat حالياً) لا يمكنها إكمال اتصال OAuth إطلاقاً حتى يُضاف فرع حقيقي لها
+    // — وهو السلوك الصحيح (لا اتصال "موثق" بلا إثبات)، وليس فيه أي ضرر عملي لأن
+    // Snapchat/X/Threads/Google Business جميعها realConnector:false بالفعل (لا
+    // تنفيذ خارجي أصلاً عبرها حتى مع هذه الثغرة).
     const proof=await fetchProviderAccount(platform,parsedToken.accessToken!);
-    if(proof) { accountId=proof.accountId||accountId; accountName=proof.accountName||accountName; }
+    if(!proof || !proof.accountId) throw new Error(`تعذّر إثبات هوية حساب ${platform} الحقيقية لدى المزود بعد تبادل الرمز؛ لا يُعلن اتصال موثق بلا هوية حقيقية مؤكَّدة.`);
+    const accountId=proof.accountId, accountName=proof.accountName||proof.accountId;
     // يُخزَّن الرمز مع انتهاء مطلق محسوب ومع refresh token إن وُجد.
     const stored={...token, expiresAt: parsedToken.expiresIn ? Date.now()+parsedToken.expiresIn*1000 : null};
     setProviderToken(platform,stored); platformConnections.set(platform,{platform,status:"connected",accountId,accountName,connectedAt:new Date().toISOString(),providerVerified:true}); savePlatformConnections(); audit(pending!.userId,"platform_oauth_connected",`${platform}:${accountId}`);
@@ -7625,6 +7647,16 @@ async function resolvePublicVideoUrl(body: any): Promise<{ ok: true; url: string
   return { ok: true, url: uploaded.publicUrl };
 }
 
+/** هدف نشر Threads الحالي (حساب المستخدم + رمزه) من الاعتماد المشفّر المخزَّن عبر المسار العام. */
+function threadsPublishTarget(): { threadsUserId: string; accessToken: string } | { error: string } {
+  const conn: any = platformConnections.get("threads");
+  const threadsUserId = conn?.accountId ? String(conn.accountId) : "";
+  const stored = getProviderToken("threads");
+  const accessToken = stored?.access_token ? String(stored.access_token) : "";
+  if (!threadsUserId || !accessToken) return { error: "لا حساب Threads موثّق؛ لا يمكن تنفيذ أي نشر خارجي." };
+  return { threadsUserId, accessToken };
+}
+
 async function executePlatformPublish(platform: string, body: any, actor: string): Promise<{ status: number; body: any }> {
   const user = { id: actor };
   if (!isSupportedPlatform(platform)) return { status: 404, body: { success: false, error: "المنصة غير مدعومة." } };
@@ -7719,6 +7751,32 @@ async function executePlatformPublish(platform: string, body: any, actor: string
       }
       const published = await instagramClient().publishContainer(target.igAccountId, target.pageToken, container.data.containerId);
       const receipt = published.ok ? { provider: "instagram", igAccountId: target.igAccountId, containerId: container.data.containerId, postId: published.data?.providerPostId, mediaKind: container.data.mediaKind, sentAt: new Date().toISOString() } : null;
+      const record = buildPublishRecord({ platform: platform as any, postId: typeof body?.postId === "string" ? body.postId : workspaceId("post"), providerPostId: published.data?.providerPostId || null, simulated: false, error: published.ok ? null : published.error });
+      if (!Array.isArray((workspace as any).publishRecords)) (workspace as any).publishRecords = [];
+      (workspace as any).publishRecords.unshift({ ...record, id: workspaceId("publish"), createdBy: user.id, receipt });
+      if ((workspace as any).publishRecords.length > WORKSPACE_MAX_PUBLISH_RECORDS) (workspace as any).publishRecords.length = WORKSPACE_MAX_PUBLISH_RECORDS;
+      persistState();
+      audit(user.id, published.ok ? "platform_publish_published" : "platform_publish_failed", `${platform}`);
+      if (!published.ok) return { status: 502, body: { success: false, record, error: published.error, containerId: container.data.containerId, note: "لم يُسجَّل أي نشر بلا معرّف منشور حقيقي من المزود." } };
+      return { status: 200, body: { success: true, record, providerPostId: published.data?.providerPostId, containerId: container.data.containerId, receipt } };
+    }
+    if (platform === "threads") {
+      // نشر Threads (Task #24) عبر الخطوتين الرسميتين: حاوية ثم نشر — نفس بنية
+      // إنستغرام. خلافاً لإنستغرام، نص مجرّد (TEXT) مقبول رسمياً فلا يُطلب وسيط.
+      const target = threadsPublishTarget();
+      if ("error" in target) return { status: 503, body: { success: false, error: target.error, code: "CONNECTOR_NOT_READY" } };
+      const imageUrl = typeof body?.imageUrl === "string" ? body.imageUrl.trim() : "";
+      // فيديو: رابط عام صريح، أو بايتات (videoBase64) تُستضاف تلقائياً عبر Drive (Task #23).
+      const resolvedVideo = await resolvePublicVideoUrl(body);
+      if (!resolvedVideo.ok) return { status: resolvedVideo.status, body: { success: false, error: resolvedVideo.error, code: resolvedVideo.code } };
+      const videoUrl = resolvedVideo.url;
+      const replyToId = typeof body?.replyToId === "string" ? body.replyToId.trim() : "";
+      const container = await threadsClient().createMediaContainer(target.threadsUserId, target.accessToken, { text: content, imageUrl, videoUrl, replyToId });
+      if (!container.ok || !container.data) {
+        return { status: 502, body: { success: false, error: container.error, code: "PROVIDER_ERROR", note: "لم تُسجَّل أي حاوية بلا معرّف حقيقي من Threads." } };
+      }
+      const published = await threadsClient().publishContainer(target.threadsUserId, target.accessToken, container.data.containerId);
+      const receipt = published.ok ? { provider: "threads", threadsUserId: target.threadsUserId, containerId: container.data.containerId, postId: published.data?.providerPostId, mediaKind: container.data.mediaKind, sentAt: new Date().toISOString() } : null;
       const record = buildPublishRecord({ platform: platform as any, postId: typeof body?.postId === "string" ? body.postId : workspaceId("post"), providerPostId: published.data?.providerPostId || null, simulated: false, error: published.ok ? null : published.error });
       if (!Array.isArray((workspace as any).publishRecords)) (workspace as any).publishRecords = [];
       (workspace as any).publishRecords.unshift({ ...record, id: workspaceId("publish"), createdBy: user.id, receipt });

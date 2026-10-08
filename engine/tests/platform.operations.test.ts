@@ -88,14 +88,22 @@ function main(): void {
   check('reauth_needed => FAILED', tReauth.state === 'FAILED');
   check('FAILED يوجّه لإعادة الربط', /إعادة الربط/.test(tReauth.nextAction));
 
-  group('5) منصة بلا موصل منفّذ (Threads)؛ وInstagram صار موصلاً حقيقياً');
-  // Threads ما زال أساساً فقط: يلزم موصل منفّذ + اعتماد.
+  group('5) Threads أصبح موصلاً حقيقياً (Task #24)؛ وInstagram أيضاً');
+  // Threads: موصل نشر حقيقي منفّذ الآن (engine/social/threads.ts) — بلا اعتماد
+  // بعد (THREADS_OAUTH_CLIENT_ID/SECRET من Meta لم تُضبط) يبقى EXTERNAL_SETUP_REQUIRED
+  // بسبب الاعتماد الناقص لا بسبب غياب الموصل.
   const thNoCreds = computePlatformStatus('threads', disconnected, EMPTY_ENV)!;
-  check('بلا موصل => EXTERNAL_SETUP_REQUIRED', thNoCreds.state === 'EXTERNAL_SETUP_REQUIRED');
-  check('الاتصال محجوب موصل غير منفّذ', thNoCreds.operations.find((o) => o.operation === 'connect')!.code === 'CONNECTOR_NOT_IMPLEMENTED');
-  const thCreds = computePlatformStatus('threads', disconnected, FULL_ENV)!;
-  check('حتى مع الاعتماد يبقى EXTERNAL_SETUP_REQUIRED (لا موصل)', thCreds.state === 'EXTERNAL_SETUP_REQUIRED');
-  check('لا OPERATIONAL لمنصة بلا موصل مهما كان', thCreds.state !== 'OPERATIONAL');
+  check('بلا اعتماد => EXTERNAL_SETUP_REQUIRED (الموصل منفّذ لكن الاعتماد ناقص)', thNoCreds.state === 'EXTERNAL_SETUP_REQUIRED');
+  check('الاتصال محجوب بنقص الاعتماد لا بعدم تنفيذ الموصل', thNoCreds.operations.find((o) => o.operation === 'connect')!.code !== 'CONNECTOR_NOT_IMPLEMENTED');
+  // مع الاعتماد الكامل: موصل حقيقي + اعتماد كامل لكن بلا اتصال فعلي => CONFIGURED.
+  const thConfigured = computePlatformStatus('threads', disconnected, FULL_ENV)!;
+  check('Threads موصل منفّذ + اعتماد كامل => CONFIGURED (لا EXTERNAL_SETUP_REQUIRED)', thConfigured.state === 'CONFIGURED');
+  const thOperational = computePlatformStatus('threads', connectedVerified, FULL_ENV)!;
+  check('Threads متصل موثق + موصل منفّذ => OPERATIONAL', thOperational.state === 'OPERATIONAL' && thOperational.providerVerified);
+  check('لا OPERATIONAL لـThreads بلا توثيق', computePlatformStatus('threads', connectedUnverified, FULL_ENV)!.state !== 'OPERATIONAL');
+  // النشر فقط هو القدرة المُعلَنة فعلاً (Task #24 لم يبنِ ردوداً/تحليلات لـThreads بعد).
+  check('Threads: النشر مدعوم', thOperational.operations.find((o) => o.operation === 'publish')!.supported);
+  check('Threads: الرد غير مدعوم (لا endpoint ردود مستقل، ولا webhook/قفل تكرار مبنيّان بعد)', thOperational.operations.find((o) => o.operation === 'reply')!.code === 'CAPABILITY_NOT_SUPPORTED');
   // Instagram أصبح ثالث موصل حقيقي: CONFIGURED بلا اتصال، وOPERATIONAL عند الاتصال الموثق.
   const igConfigured = computePlatformStatus('instagram', disconnected, FULL_ENV)!;
   check('Instagram موصل منفّذ => CONFIGURED (لا EXTERNAL_SETUP_REQUIRED)', igConfigured.state === 'CONFIGURED');
