@@ -11633,12 +11633,17 @@ app.get("/api/readiness", (_req, res) => {
   // (متصفح/وسيط/حافة) قد يقدّم استجابة قديمة مجمّدة فيُوهم بعطل نشر غير موجود.
   res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate");
   res.setHeader("Pragma", "no-cache");
-  res.json({
+  // CONFIRMED HIGH (تدقيق مستقل): كان يُرجع 200 دائماً رغم أن الحقل ready يحمل
+  // القيمة الصادقة بالفعل في الجسم — أي مراقبة تقرأ رمز الحالة فقط (لا الجسم)
+  // لا يمكنها أبداً رؤية عطل حقيقي. نفس المعيار المحافظ المستخدم في /api/health:
+  // فقط عطل مخزن فعلي (لا الكتابة إطلاقاً) يُسقط الرمز، لا وضع ephemeral المقصود.
+  const appReady = STATE_WRITABLE();
+  res.status(appReady ? 200 : 503).json({
     success: true,
-    ready: STATE_WRITABLE(),
+    ready: appReady,
     version: PROJECT_VERSION,
-    statePersistence: STATE_WRITABLE(),
-    applicationReady: STATE_WRITABLE(),
+    statePersistence: appReady,
+    applicationReady: appReady,
     persistence: (() => { const s = storageStatus(); return { backend: s.backend, durable: s.durable, mode: s.durable ? "durable" : "ephemeral", healthy: s.healthy }; })(),
     auth: {
       ownerEmailConfigured: Boolean(OWNER_EMAIL),
@@ -12254,8 +12259,15 @@ app.get("/api/health", (_req, res) => {
   // (متصفح/وسيط/حافة) قد يقدّم استجابة قديمة مجمّدة فيُوهم بعطل نشر غير موجود.
   res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate");
   res.setHeader("Pragma", "no-cache");
-  res.json({
-    status: "ok",
+  // CONFIRMED HIGH (تدقيق مستقل): هذا المسار هو healthCheckPath الرسمي لدى Render
+  // (render.yaml) وHEALTHCHECK الخاص بـ Docker، وكان يُرجع 200 دائماً بصرف النظر
+  // عن الحالة الفعلية — فلا يمكن لأي مراقبة آلية اكتشاف عطل حقيقي أبداً.
+  // الإصلاح محافظ عمداً: الفشل الوحيد الذي يُسقط رمز الحالة هو عطل مخزن حقيقي
+  // (healthy=false — الكتابة نفسها تفشل)، وليس وضع "ephemeral" الدائم المقصود
+  // والموثّق بلا DATABASE_URL — ذاك وضع تشغيل مقبول رسمياً، لا عطل.
+  const storageHealthy = storageStatus().healthy;
+  res.status(storageHealthy ? 200 : 503).json({
+    status: storageHealthy ? "ok" : "degraded",
     aiEnabled: hasKey,
     timestamp: new Date().toISOString(),
     service: "Al-Gharabi AI Backend",
