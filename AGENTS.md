@@ -44,7 +44,7 @@ npm install
 npm run dev            # tsx server.ts
 npm run lint           # tsc --noEmit
 npm run build          # vite build + esbuild server.ts -> dist/server.cjs
-npm run final-audit    # node final-audit.mjs (1383 فحصاً)
+npm run final-audit    # node final-audit.mjs (1392 فحصاً)
 npm test               # storage + engine + auth + ... + db + runtime
 ```
 - التشغيل الإنتاجي: `PORT=4517 NODE_ENV=production APP_URL=http://localhost:4517 node dist/server.cjs`
@@ -4608,5 +4608,51 @@ Drive المخزّن** (أُلغي/تغيّر العميل)، فيفشل تجد�
 نفسه (يولّد رمز تجديد صالحاً جديداً) ثم إعادة رفع الفيديو.
 
 اختبار: `dr.video.public.hosting.test.ts` +4 فحوص (فشل التجديد يُصنَّف ولا يرمي، في
-`request` وفي `publishVideoPublicly`). final-audit: 1383 فحصاً (`drive-reauth-*`،
+`request` وفي `publishVideoPublicly`). final-audit: 1392 فحصاً (`drive-reauth-*`،
 `deploy-started-at-exposed`).
+
+## إصلاح فشل النشر الموحّد (Facebook/Instagram/Threads) + خدمة الفيديو من الخادم (2026-10-05)
+
+**الجذران المُثبتان (لا تخمين):**
+1. **إخفاء خطأ Meta الحقيقي.** كان `executePlatformPublish` يثبّت الكود للمنصتين:
+   Instagram يعيد `MEDIA_REQUIRED` دائماً، وThreads يعيد `PROVIDER_ERROR` دائماً، بلا
+   اعتبار لرسالة Meta الفعلية. فإذا كان الخطأ الحقيقي «تعذّر تنزيل الفيديو من الرابط
+   العام» (Meta 9007) ظهر للمالك كأنه «لا وسائط» — تشخيص مضلِّل يمنع إصلاح السبب.
+2. **رابط Drive العام غير صالح لسحب Meta.** كان مسار الاستضافة يعيد رابط
+   `drive.google.com/uc?export=download`، وDrive قد يُعيد صفحة HTML وسيطة (فحص
+   الفيروسات) لا بايتات فيديو خام عند سحبه من خوادم Meta — فيفشل إنشاء الحاوية رغم أن
+   الرابط يعمل في المتصفح. (المسار الموحّد يرفض YouTube عن قصد: يحتاج بايتات فعلية عبر
+   `videos.insert`، ويوجّهه بـ`PLATFORM_USE_DEDICATED_PUBLISH` إلى طابوره المخصص.)
+
+**الإصلاح:**
+- `engine/social/instagram.ts` و`threads.ts`: `InstagramResult`/`ThreadsResult` يحملان
+  `code?` و`providerCode?` (كود Meta الخام)، و`classifyInstagramProviderError`/
+  `classifyThreadsProviderError` يميّزان `MEDIA_DOWNLOAD_FAILED` (خطأ تنزيل وسائط، 9007)
+  عن `CLIENT_ERROR`/`NETWORK_ERROR`. **الرسالة الحقيقية تُمرَّر كما هي دائماً.**
+- `server.ts`: فرعا Instagram/Threads يمرّران كود المزود الحقيقي؛ `MEDIA_REQUIRED` يبقى
+  فقط عند غياب الوسائط فعلاً (`!imageUrl && !videoUrl`) لا ككود ثابت.
+- **خدمة الفيديو من الخادم (إصلاح جذري لرابط Meta):** `GET /api/public/video/:ref`
+  يخدم البايتات الحقيقية بنوع محتوى صحيح و**دعم Range (206)** — وهو ما يتطلبه سحب Meta.
+  الوصول موقّع بـHMAC على معرّف المادة (لا تخمين روابط)، والبايتات من ذاكرة الخادم.
+  `resolvePublicVideoUrl` يعيد الآن رابط الخادم المضمون، ورفع Drive صار **أفضل-جهد**
+  بمهلة صريحة (لا يُسقط الاستجابة عند تعثّره).
+- `src/utils/publishResult.ts`: الواجهة تعرض **الكود والرسالة معاً** (لا إخفاء لأحدهما)،
+  وتُميّز YouTube بأنه يُنشر عبر طابوره المخصص لا «فشل».
+- **إصلاح فحوص قديمة:** أُزيلت 42 خطأ `tsc` كامنة على `main` (تضييق أنواع `DriveClient`):
+  واجهة `DriveClientLike` مُعلَنة + `settleWithTimeout` للتأكيد، و`ResolvedPublicVideo`
+  بشكل موحّد — كانت `npm run lint` حمراء على المنشور بلا أن يُلتقط.
+
+اختبارات: `publish.provider.error.test.ts` (18 فحصاً)، و`dr.video.host.timeout.integration.test.ts`
+(26 فحصاً: رابط الخدمة الموقّع، Range=206، توقيع مزوّر=403)، وتحديث
+`content.pipeline.integration.test.ts` (الاستضافة تنجح بلا Drive). فحوص final-audit
+الجديدة: `publish-real-error-not-fixed-code`، `instagram-threads-error-classifier`،
+`publish-ui-shows-code-and-message`، `content-server-streams-video-with-range`،
+`video-host-prefers-server-url`، `publish-provider-error-tests`، `video-host-streams-tested`
+(1392 إجمالاً). `npm run lint` (0) + `build` + `npm test` (EXIT 0) + `final-audit` ناجحة.
+
+**خصوصية النقطتين العامتين (تأكيد):** الإصلاح السابق (commit `8825a67`، داخل المنشور
+`080f44d`) يمنع تسريب بيانات العملاء من `/api/health` و`/api/readiness` عبر
+`engine/social/healthPrivacy.ts` (allow-list صارم + حجب) و`watcherStatusBlockPublic`
+(`attentionRequired`/`lastReply`/`replyText` متاحة للمالك فقط عبر `/api/agent/youtube/watcher`).
+تحقق حي: النقطتان تُعلنان الحقول التقنية فقط (status/watcherActive/pollCount/lastError)
+بلا أي اسم حساب أو نص تعليق أو نص رد.

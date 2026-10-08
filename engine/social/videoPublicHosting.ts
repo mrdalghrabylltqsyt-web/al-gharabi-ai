@@ -42,11 +42,40 @@ export interface PublicVideoUploadResult {
 }
 
 /**
+ * واجهة عميل Drive التي نحتاجها — مُعلَنة صراحةً. الأعضاء تُعيد `DriveResult` ذا
+ * الحقول الكاملة (data/status/code/message)، فلا يعتمد TS على الاستدلال عبر الحدود
+ * (كان `ok` يُوسَّع إلى `boolean` فيمنع تضييق النوع ويُنتج أخطاء TS2339).
+ * `DriveClient` يطابق هذه البنية تماماً — إعادة استخدام لا تعديل.
+ */
+export type DriveResult = {
+  ok: boolean;
+  status?: number;
+  code?: string;
+  message?: string;
+  data?: any;
+  headers?: any;
+};
+export interface DriveClientLike {
+  apiBase: string;
+  folderExists(folderId: string): Promise<boolean>;
+  listFoldersByName(name: string): Promise<DriveResult>;
+  createFolder(name: string, parentId: string | null): Promise<DriveResult>;
+  createFile(input: { name: string; parentId: string; content: Buffer; mimeType: string }): Promise<DriveResult>;
+  createPublicPermission(fileId: string): Promise<DriveResult>;
+  deletePermission(fileId: string, permissionId: string): Promise<DriveResult>;
+  deleteFile(fileId: string): Promise<DriveResult>;
+  request(opts: { url: string; method: string }): Promise<DriveResult>;
+}
+// تأكيد وقت الترجمة: عميل Drive الحقيقي يطابق الواجهة المعلنة — لا انحراف صامت.
+type _DriveClientMatches = InstanceType<typeof DriveClient> extends DriveClientLike ? true : never;
+const _driveClientCompat: _DriveClientMatches = true;
+
+/**
  * يضمن وجود مجلد الجذر التسويقي (منفصل عن DR)، متوافقاً مع قواعد `drive.file`
  * نفسها (بلا `root` أبداً، معرّف محفوظ أولاً ثم بحث بالاسم ثم إنشاء).
  */
 export async function ensureMarketingFolder(
-  client: InstanceType<typeof DriveClient>,
+  client: DriveClientLike,
   stored: MarketingFolderIdentity | null = null,
 ): Promise<{ ok: boolean; status?: number; code?: string; message?: string; rootId?: string }> {
   let rootId = stored?.rootId || null;
@@ -74,7 +103,7 @@ export async function ensureMarketingFolder(
  * خاصاً ظنّاً أنه عام، ولا ملفاً يتيماً بلا رابط صالح).
  */
 export async function uploadPublicVideo(
-  client: InstanceType<typeof DriveClient>,
+  client: DriveClientLike,
   input: { folderId: string; fileName: string; content: Buffer; mimeType?: string },
 ): Promise<PublicVideoUploadResult> {
   const created = await client.createFile({
@@ -125,7 +154,7 @@ export async function uploadPublicVideo(
  * بدل تركه عاماً إلى الأبد بلا داعٍ.
  */
 export async function revokePublicVideo(
-  client: InstanceType<typeof DriveClient>,
+  client: DriveClientLike,
   input: { fileId: string; permissionId?: string | null },
 ): Promise<{ ok: boolean; status?: number; code?: string; message?: string }> {
   if (input.permissionId) {
@@ -137,7 +166,7 @@ export async function revokePublicVideo(
 
 /** تركيب شامل: يضمن المجلد، يرفع، يعيد رابطاً عاماً جاهزاً — نقطة الدخول المقترحة لبقية النظام. */
 export async function publishVideoPublicly(
-  client: InstanceType<typeof DriveClient>,
+  client: DriveClientLike,
   input: { fileName: string; content: Buffer; mimeType?: string; storedFolder?: MarketingFolderIdentity | null },
 ): Promise<PublicVideoUploadResult & { folderId?: string }> {
   const folder = await ensureMarketingFolder(client, input.storedFolder || null);

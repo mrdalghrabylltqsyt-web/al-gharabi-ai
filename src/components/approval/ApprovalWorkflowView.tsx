@@ -20,6 +20,7 @@ import {
 import { Post, PostStatus } from '../../types';
 import { defaultScheduleInput, wallClockInputValue, wallClockToEpoch } from '../../utils/scheduleTime';
 import { ScheduleTimestamp } from '../common/ScheduleTimestamp';
+import { summarizePublishFailures } from '../../utils/publishResult';
 
 export const ApprovalWorkflowView: React.FC = () => {
   const {
@@ -108,7 +109,7 @@ export const ApprovalWorkflowView: React.FC = () => {
       if (res.anyDelivered) {
         showToast(`تم النشر على ${published.length} منصة (${published.join('، ')}).` + (failed.length ? ` فشل/معلّق على: ${failed.map(([pf]) => pf).join('، ')}.` : ''));
       } else {
-        showToast('لم يُثبَت أي نشر: ' + (failed.map(([pf, r]: any) => `${pf} (${r.code || r.error || 'سبب غير معروف'})`).join('، ') || 'لا منصات مستهدفة'));
+        showToast('لم يُثبَت أي نشر: ' + summarizePublishFailures(failed as Array<[string, any]>));
       }
       await refreshWorkspace();
     } catch (err: any) {

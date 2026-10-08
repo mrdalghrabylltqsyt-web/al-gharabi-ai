@@ -7670,57 +7670,91 @@ const PUBLIC_VIDEO_UPLOAD_CACHE_TTL_MS = 10 * 60 * 1000;
 const PUBLIC_VIDEO_UPLOAD_CACHE_MAX = 50;
 const publicVideoUploadCache = new Map<string, { url: string; folderId: string | null; at: number }>();
 
-async function resolvePublicVideoUrl(body: any): Promise<{ ok: true; url: string } | { ok: false; status: number; error: string; code: string }> {
+type ResolvedPublicVideo = { ok: boolean; url: string; status: number; error: string; code: string };
+/** نتيجة نجاح موحّدة (الحقول غير ذات الصلة تُصفَّر لتُوحَّد الشكل وتُرضي الأنواع). */
+const resolvedVideoOk = (url: string): ResolvedPublicVideo => ({ ok: true, url, status: 200, error: "", code: "" });
+const resolvedVideoErr = (status: number, error: string, code: string): ResolvedPublicVideo => ({ ok: false, url: "", status, error, code });
+
+/**
+ * رابط عام موقّع يخدم بايتات الفيديو من الخادم نفسه (تمرير Range) بدل رابط Drive
+ * العام. الجذر المُثبت: رابط `drive.google.com/uc?export=download` قد يُعيد صفحة
+ * HTML وسيطة (فحص الفيروسات) بدل بايتات الفيديو عند سحبه من خوادم Meta تلقائياً،
+ * فيفشل إنشاء الحاوية رغم أن الرابط يعمل في المتصفح. الخدمة من الخادم تضمن بايتات
+ * فيديو خام ونوع محتوى صحيحاً ودعم Range — وهو ما تتطلبه Meta.
+ * التوقيع HMAC يمنع تخمين المعرّف، والبايتات تبقى في ذاكرة الخادم فقط (لا سرّ يُكشف).
+ */
+function signMediaRef(mediaRef: string): string {
+  return crypto.createHmac("sha256", SESSION_SECRET).update(`media:${mediaRef}`).digest("base64url");
+}
+/** رابط الفيديو العام عبر الخادم (PublicURL المعتمد) — بديل مضمون لرابط Drive الوسيط. */
+function publicMediaUrl(mediaRef: string): string {
+  return `${publicBaseUrlNow()}/api/public/video/${encodeURIComponent(mediaRef)}?sig=${signMediaRef(mediaRef)}`;
+}
+/** يتحقق من توقيع رابط الوسائط بزمن ثابت (مقاومة التلاعب/التخمين). */
+function verifyMediaSignature(mediaRef: string, sig: string): boolean {
+  const expected = signMediaRef(mediaRef);
+  const a = Buffer.from(String(sig || ""));
+  const b = Buffer.from(expected);
+  return a.length === b.length && crypto.timingSafeEqual(a, b);
+}
+async function resolvePublicVideoUrl(body: any): Promise<ResolvedPublicVideo> {
   const explicit = typeof body?.videoUrl === "string" ? body.videoUrl.trim() : "";
-  if (explicit) return { ok: true, url: explicit };
+  if (explicit) return resolvedVideoOk(explicit);
   const base64 = typeof body?.videoBase64 === "string" ? body.videoBase64 : "";
-  if (!base64) return { ok: true, url: "" };
+  if (!base64) return resolvedVideoOk("");
   const contentHash = crypto.createHash("sha256").update(base64).digest("hex");
   const cached = publicVideoUploadCache.get(contentHash);
-  if (cached && (Date.now() - cached.at) < PUBLIC_VIDEO_UPLOAD_CACHE_TTL_MS) return { ok: true, url: cached.url };
+  if (cached && (Date.now() - cached.at) < PUBLIC_VIDEO_UPLOAD_CACHE_TTL_MS) return resolvedVideoOk(cached.url);
   const reg = registerContentMedia({
     mimeType: typeof body?.mimeType === "string" ? body.mimeType : "video/mp4",
     base64,
     filename: typeof body?.filename === "string" ? body.filename : undefined,
   });
-  if (!reg.ok) return { ok: false, status: 422, error: reg.error || "فشل التحقق من بايتات الفيديو.", code: reg.code || "MEDIA_INVALID" };
+  if (!reg.ok) return resolvedVideoErr(422, reg.error || "فشل التحقق من بايتات الفيديو.", reg.code || "MEDIA_INVALID");
   const media = contentMediaBytes(reg.mediaRef!);
-  if (!media) return { ok: false, status: 500, error: "تعذّر قراءة بايتات الفيديو بعد تسجيلها.", code: "MEDIA_READ_FAILED" };
-  const client = buildMarketingDriveClient();
-  if (!client) {
-    return { ok: false, status: 503, error: "استضافة Drive العامة غير مهيأة بعد (تفويض Google Drive غير مكتمل)؛ أكمل تفويض Drive أولاً أو زوّد videoUrl عاماً يدوياً.", code: "DRIVE_NOT_CONFIGURED" };
-  }
-  const uploaded = await publishVideoPublicly(client, {
-    fileName: typeof body?.filename === "string" && body.filename ? body.filename : `marketing-${Date.now()}.mp4`,
-    content: media.bytes,
-    mimeType: media.mimeType,
-    storedFolder: drControl.driveMarketingFolderIdentity || null,
-  });
-  if (!uploaded.ok || !uploaded.publicUrl) {
-    // تمييز «يلزم إعادة ربط Drive» عن فشل الرفع العام: الأول إجراء مالك واضح وليس
-    // عطلاً عارضاً، فلا نُلبسه رسالة «إعادة المحاولة» المضلِّلة.
-    if (uploaded.code === 'drive_reauth_required') {
-      return {
-        ok: false,
-        status: 503,
-        error: "تفويض Google Drive منتهٍ أو ملغى (رفض Google رمز التجديد). أعد الربط بنقرة واحدة من «النسخ الاحتياطي السحابي» ثم أعد رفع الفيديو، أو زوّد رابط فيديو عاماً يدوياً.",
-        code: "DRIVE_REAUTH_REQUIRED",
-      };
+  if (!media) return resolvedVideoErr(500, "تعذّر قراءة بايتات الفيديو بعد تسجيلها.", "MEDIA_READ_FAILED");
+
+  // ── الجذر المُثبت ─────────────────────────────────────────────────────────
+  // الاعتماد الأوّلي على رابط Drive العام (`uc?export=download`) كان يفشل عند سحبه
+  // من خوادم Meta: Drive قد يُعيد صفحة HTML وسيطة («فحص الفيروسات») لا بايتات
+  // فيديو خام، فيفشل إنشاء حاوية Instagram/Threads/Threads رغم أن الرابط يعمل في
+  // المتصفح. الحل: نخدِم البايتات من الخادم نفسه (تمرير Range، نوع محتوى صحيح).
+  // رفع Drive يبقى أفضل-جهد للاستمرارية عبر إعادة التشغيل، ولا يُسقط الاستجابة.
+  const mediaRef = reg.mediaRef!;
+  const serverUrl = publicMediaUrl(mediaRef);
+  let driveFolderId: string | null = null;
+  try {
+    const client = buildMarketingDriveClient();
+    if (client) {
+      // مهلة صريحة: Drive متعثّر لا يجوز أن يُعلّق خدمة الفيديو (المورد الحاسم للنشر).
+      // عند تجاوز المهلة نُكمل بالرابط المخدوم من الخادم ولا نُسقط الاستجابة.
+      const mirrorTimeoutMs = envTimeoutMs(process.env as NodeJS.ProcessEnv, "DRIVE_HOST_TIMEOUT_MS", DRIVE_PUBLIC_HOST_TIMEOUT_MS);
+      const uploaded = await settleWithTimeout(publishVideoPublicly(client, {
+        fileName: typeof body?.filename === "string" && body.filename ? body.filename : `marketing-${Date.now()}.mp4`,
+        content: media.bytes,
+        mimeType: media.mimeType,
+        storedFolder: drControl.driveMarketingFolderIdentity || null,
+      }), mirrorTimeoutMs);
+      if (uploaded.ok && uploaded.folderId) driveFolderId = uploaded.folderId;
+      // عند فشل Drive لا نُعلن فشلاً: الخدمة من الخادم تغطي التشغيل الحالي،
+      // والرسالة تبقى صريحة في السجل بلا كشف سرّ.
+      if (!uploaded.ok) console.warn(`[الغرابي AI] drive-mirror-skipped code=${uploaded.code || "unknown"}`);
     }
-    return { ok: false, status: 502, error: uploaded.message || "فشل رفع الفيديو إلى استضافة Drive العامة.", code: uploaded.code || "VIDEO_HOSTING_FAILED" };
+  } catch (mirrorErr: any) {
+    console.warn(`[الغرابي AI] drive-mirror-error code=${mirrorErr?.code || "unknown"}`);
   }
-  // يصمد معرّف المجلد بعد أول رفع فلا يُعاد البحث بالاسم كل مرة.
-  if (uploaded.folderId && drControl.driveMarketingFolderIdentity?.rootId !== uploaded.folderId) {
-    drControl.driveMarketingFolderIdentity = { rootId: uploaded.folderId };
+  // يصمد معرّف المجلد بعد أول رفع ناجح فلا يُعاد البحث بالاسم كل مرة.
+  if (driveFolderId && drControl.driveMarketingFolderIdentity?.rootId !== driveFolderId) {
+    drControl.driveMarketingFolderIdentity = { rootId: driveFolderId };
     saveControlState();
   }
-  publicVideoUploadCache.set(contentHash, { url: uploaded.publicUrl, folderId: uploaded.folderId || null, at: Date.now() });
+  publicVideoUploadCache.set(contentHash, { url: serverUrl, folderId: driveFolderId, at: Date.now() });
   while (publicVideoUploadCache.size > PUBLIC_VIDEO_UPLOAD_CACHE_MAX) {
     const oldestKey = [...publicVideoUploadCache.entries()].sort((a, b) => a[1].at - b[1].at)[0]?.[0];
     if (!oldestKey) break;
     publicVideoUploadCache.delete(oldestKey);
   }
-  return { ok: true, url: uploaded.publicUrl };
+  return resolvedVideoOk(serverUrl);
 }
 
 /** هدف نشر Threads الحالي (حساب المستخدم + رمزه) من الاعتماد المشفّر المخزَّن عبر المسار العام. */
@@ -7823,7 +7857,11 @@ async function executePlatformPublish(platform: string, body: any, actor: string
       const reel = body?.reel === true;
       const container = await instagramClient().createMediaContainer(target.igAccountId, target.pageToken, { imageUrl, videoUrl, caption: content, reel });
       if (!container.ok || !container.data) {
-        return { status: 422, body: { success: false, error: container.error, code: "MEDIA_REQUIRED", note: "Instagram لا ينشر نصاً فقط؛ زوّد imageUrl أو videoUrl عاماً." } };
+        // MEDIA_REQUIRED يبقى فقط إن غاب الوسائط فعلاً قبل أي استدعاء شبكي؛ وإلا نُمرّر
+        // كود Meta الحقيقي ورسالته بدل تثبيت MEDIA_REQUIRED الذي كان يُخفي السبب.
+        const code = container.code || "MEDIA_REQUIRED";
+        const isRealMediaRequired = !imageUrl && !videoUrl;
+        return { status: 422, body: { success: false, error: container.error, code: isRealMediaRequired ? "MEDIA_REQUIRED" : code, providerCode: container.providerCode ?? null, note: isRealMediaRequired ? "Instagram لا ينشر نصاً فقط؛ زوّد imageUrl أو videoUrl عاماً." : "فشل إنشاء حاوية Instagram بالسبب الحقيقي من Meta." } };
       }
       const published = await instagramClient().publishContainer(target.igAccountId, target.pageToken, container.data.containerId);
       const receipt = published.ok ? { provider: "instagram", igAccountId: target.igAccountId, containerId: container.data.containerId, postId: published.data?.providerPostId, mediaKind: container.data.mediaKind, sentAt: new Date().toISOString() } : null;
@@ -7849,7 +7887,9 @@ async function executePlatformPublish(platform: string, body: any, actor: string
       const replyToId = typeof body?.replyToId === "string" ? body.replyToId.trim() : "";
       const container = await threadsClient().createMediaContainer(target.threadsUserId, target.accessToken, { text: content, imageUrl, videoUrl, replyToId });
       if (!container.ok || !container.data) {
-        return { status: 502, body: { success: false, error: container.error, code: "PROVIDER_ERROR", note: "لم تُسجَّل أي حاوية بلا معرّف حقيقي من Threads." } };
+        // لا تثبيت PROVIDER_ERROR؛ نُمرّر كود Meta الحقيقي ورسالته (مثلاً خطأ تنزيل
+        // الوسائط 9007 من رابط عام) بدل إخفاء السبب.
+        return { status: 502, body: { success: false, error: container.error, code: container.code || "PROVIDER_ERROR", providerCode: container.providerCode ?? null, note: "لم تُسجَّل أي حاوية بلا معرّف حقيقي من Threads." } };
       }
       const published = await threadsClient().publishContainer(target.threadsUserId, target.accessToken, container.data.containerId);
       const receipt = published.ok ? { provider: "threads", threadsUserId: target.threadsUserId, containerId: container.data.containerId, postId: published.data?.providerPostId, mediaKind: container.data.mediaKind, sentAt: new Date().toISOString() } : null;
@@ -9185,6 +9225,44 @@ app.post("/api/workspace/content/video/host", express.json({ limit: CONTENT_UPLO
   if (!resolved.url) return res.status(400).json({ success: false, error: "لا بايتات فيديو ولا رابط صريح مرسَل.", code: "VIDEO_INPUT_REQUIRED" });
   audit(user.id, "content_video_auto_hosted", resolved.url.slice(0, 120));
   res.json({ success: true, url: resolved.url });
+});
+
+/**
+ * نقطة خدمة وسائط الفيديو العامة (بلا مصادقة، كما يتطلبها سحب Meta للرابط).
+ * تُخدِم البايتات الحقيقية من ذاكرة الخادم بنوع محتوى صحيح ودعم Range — بديل
+ * مضمون لرابط Drive الوسيط الذي قد يُعيد HTML. الوصول محمي بتوقيع HMAC على
+ * معرّف المادة (يُولَّد في resolvePublicVideoUrl)، فلا يمكن تخمين روابط ملفات
+ * أخرى. البايتات لا تُسجَّل ولا تُعاد إلا للرابط الموقّع نفسه.
+ */
+app.get("/api/public/video/:ref", (req, res) => {
+  const ref = String(req.params.ref || "");
+  const sig = typeof req.query.sig === "string" ? req.query.sig : "";
+  if (!ref || !verifyMediaSignature(ref, sig)) return res.status(403).json({ success: false, error: "رابط غير صالح." });
+  const media = contentMediaBytes(ref);
+  if (!media) return res.status(404).json({ success: false, error: "المادة غير متوفرة أو انتهت صلاحيتها." });
+  const total = media.bytes.length;
+  res.setHeader("Content-Type", media.mimeType || "video/mp4");
+  res.setHeader("Accept-Ranges", "bytes");
+  res.setHeader("Cache-Control", "no-store");
+  // دعم Range (يتطلبه سحب الفيديو من خوادم Meta/المتصفحات) — 206 عند طلب مقطع.
+  const range = typeof req.headers.range === "string" ? req.headers.range : "";
+  const m = /^bytes=(\d*)-(\d*)$/.exec(range.trim());
+  if (m) {
+    let start = m[1] ? parseInt(m[1], 10) : 0;
+    let end = m[2] ? parseInt(m[2], 10) : total - 1;
+    if (Number.isNaN(start) || start < 0) start = 0;
+    if (Number.isNaN(end) || end >= total) end = total - 1;
+    if (start > end) {
+      res.status(416).setHeader("Content-Range", `bytes */${total}`);
+      return res.end();
+    }
+    res.status(206);
+    res.setHeader("Content-Range", `bytes ${start}-${end}/${total}`);
+    res.setHeader("Content-Length", String(end - start + 1));
+    return res.end(media.bytes.subarray(start, end + 1));
+  }
+  res.setHeader("Content-Length", String(total));
+  return res.end(media.bytes);
 });
 
 /**

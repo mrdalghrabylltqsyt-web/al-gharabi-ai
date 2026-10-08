@@ -463,8 +463,9 @@ async function main(): Promise<void> {
   const hostBody = await hostRes.json().catch(() => ({}));
   check('host: 4MB لا يُرفض بحد الوسيط 413', hostRes.status !== 413, String(hostRes.status));
   check('host: لا رسالة "حجم الطلب أكبر من الحد المسموح"', !JSON.stringify(hostBody).includes('حجم الطلب أكبر من الحد'));
-  // بلا Drive مضبوط في هذا الاختبار => فشل صريح لاحق (503 DRIVE_NOT_CONFIGURED)، لا رفض نقل.
-  check('host: الفشل منطقي (Drive غير مهيأ) لا حد شبكة', hostRes.status === 503 && hostBody.code === 'DRIVE_NOT_CONFIGURED', JSON.stringify({ s: hostRes.status, c: hostBody.code }));
+  // بعد إصلاح النشر الموحّد لم يعد رفع Drive شرطاً: تُخدَم البايتات من الخادم نفسها
+  // (مسار /api/public/video الموقّع) فينجح المسار حتى بلا Drive مضبوط => 200 ورابط عام.
+  check('host: 4MB ينجح بلا Drive (خدمة من الخادم)', hostRes.status === 200 && typeof hostBody.url === 'string' && hostBody.url.includes('/api/public/video/'), JSON.stringify({ s: hostRes.status, url: hostBody.url }));
   // 2) مراجعة/تعديل عنصر الطابور (إرفاق مادة): المسار المَعلمي يجب أن يُستثنى أيضاً.
   const seedDraft = await createDraft(auth, { title: 'مسودة لاختبار الحد', videoBase64: VIDEO_B64 });
   const seedId = seedDraft.item?.id;
