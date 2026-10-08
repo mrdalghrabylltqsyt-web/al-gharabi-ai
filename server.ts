@@ -68,6 +68,7 @@ import { capabilityRow } from "./engine/brain/strategy/capabilityMatrix";
 import { registerDriveRoutes } from "./engine/dr/routes";
 import { inspectDriveAuthEnv, createRefreshTokenProvider } from "./tools/dr/drive-auth.mjs";
 import { DriveClient, createGaxiosTransport } from "./tools/dr/drive-client.mjs";
+import { publishVideoPublicly } from "./engine/social/videoPublicHosting";
 import { classifyHttpError, shouldExposeErrorMessage, safeErrorMessage, redactSecretsFromText } from "./engine/runtime/errorSafety";
 import { enforceRateWindowCap, RATE_WINDOW_TTL_MS } from "./engine/runtime/rateWindow";
 import { computeLiveDatabaseFingerprint } from "./engine/dr/dbBalance";
@@ -7559,6 +7560,71 @@ app.post("/api/brain/comment-intelligence", authenticateToken, (req, res) => {
  * كان داخل المسار المفرد (نفس البوابات: القدرة → السلامة → الاتصال الموثق →
  * الموصل الحقيقي → التنفيذ)، ولا يُعلن نجاحاً بلا معرّف نشر حقيقي من المزود.
  */
+/**
+ * يحوّل جسم نشر فيديو إلى رابط عام جاهز (Task #23) — يغطي إنستغرام/تيك
+ * توك/فيسبوك، التي تتطلب جميعاً رابطاً عاماً لا بايتات مباشرة:
+ *  - `videoUrl` صريح في الجسم: يُستخدم كما هو بلا تعديل (المسار اليدوي القديم
+ *    يبقى يعمل حرفياً — لا كسر توافق).
+ *  - `videoBase64` (بايتات فعلية، نفس حقل مسار اليوتيوب): تُسجَّل وتُتحقَّق
+ *    بنفس قواعد `registerContentMedia` (الحجم/الحد/سلامة base64)، ثم تُرفع
+ *    تلقائياً إلى مجلد Drive التسويقي المنفصل (`videoPublicHosting.ts`،
+ *    Task #21) وتُعاد كرابط عام. لا رفع صامت بلا تحقق، ولا نجاح بلا رابط فعلي.
+ *  - بلا أي منهما: يُعاد رابط فارغ (تترك كل منصة قاعدتها القائمة — نص فقط
+ *    لفيسبوك، أو رفض MEDIA_REQUIRED لإنستغرام/تيك توك كما كان).
+ *
+ * تخزين مؤقت بالمحتوى (sha256): عند نشر نفس الفيديو على عدة منصات في توزيع
+ * واحد (Task #25، كل منصة تستدعي هذه الدالة بمعزل)، لا يُرفع نفس الملف إلى
+ * Drive أكثر من مرة — يُعاد نفس الرابط العام خلال نافذة قصيرة. تخزين بالذاكرة
+ * فقط (لا يصمد بعد restart، ولا ضرر من ذلك: رفع جديد عند أول طلب بعد إعادة
+ * التشغيل).
+ */
+const PUBLIC_VIDEO_UPLOAD_CACHE_TTL_MS = 10 * 60 * 1000;
+const PUBLIC_VIDEO_UPLOAD_CACHE_MAX = 50;
+const publicVideoUploadCache = new Map<string, { url: string; folderId: string | null; at: number }>();
+
+async function resolvePublicVideoUrl(body: any): Promise<{ ok: true; url: string } | { ok: false; status: number; error: string; code: string }> {
+  const explicit = typeof body?.videoUrl === "string" ? body.videoUrl.trim() : "";
+  if (explicit) return { ok: true, url: explicit };
+  const base64 = typeof body?.videoBase64 === "string" ? body.videoBase64 : "";
+  if (!base64) return { ok: true, url: "" };
+  const contentHash = crypto.createHash("sha256").update(base64).digest("hex");
+  const cached = publicVideoUploadCache.get(contentHash);
+  if (cached && (Date.now() - cached.at) < PUBLIC_VIDEO_UPLOAD_CACHE_TTL_MS) return { ok: true, url: cached.url };
+  const reg = registerContentMedia({
+    mimeType: typeof body?.mimeType === "string" ? body.mimeType : "video/mp4",
+    base64,
+    filename: typeof body?.filename === "string" ? body.filename : undefined,
+  });
+  if (!reg.ok) return { ok: false, status: 422, error: reg.error || "فشل التحقق من بايتات الفيديو.", code: reg.code || "MEDIA_INVALID" };
+  const media = contentMediaBytes(reg.mediaRef!);
+  if (!media) return { ok: false, status: 500, error: "تعذّر قراءة بايتات الفيديو بعد تسجيلها.", code: "MEDIA_READ_FAILED" };
+  const client = buildMarketingDriveClient();
+  if (!client) {
+    return { ok: false, status: 503, error: "استضافة Drive العامة غير مهيأة بعد (تفويض Google Drive غير مكتمل)؛ أكمل تفويض Drive أولاً أو زوّد videoUrl عاماً يدوياً.", code: "DRIVE_NOT_CONFIGURED" };
+  }
+  const uploaded = await publishVideoPublicly(client, {
+    fileName: typeof body?.filename === "string" && body.filename ? body.filename : `marketing-${Date.now()}.mp4`,
+    content: media.bytes,
+    mimeType: media.mimeType,
+    storedFolder: drControl.driveMarketingFolderIdentity || null,
+  });
+  if (!uploaded.ok || !uploaded.publicUrl) {
+    return { ok: false, status: 502, error: uploaded.message || "فشل رفع الفيديو إلى استضافة Drive العامة.", code: uploaded.code || "VIDEO_HOSTING_FAILED" };
+  }
+  // يصمد معرّف المجلد بعد أول رفع فلا يُعاد البحث بالاسم كل مرة.
+  if (uploaded.folderId && drControl.driveMarketingFolderIdentity?.rootId !== uploaded.folderId) {
+    drControl.driveMarketingFolderIdentity = { rootId: uploaded.folderId };
+    saveControlState();
+  }
+  publicVideoUploadCache.set(contentHash, { url: uploaded.publicUrl, folderId: uploaded.folderId || null, at: Date.now() });
+  while (publicVideoUploadCache.size > PUBLIC_VIDEO_UPLOAD_CACHE_MAX) {
+    const oldestKey = [...publicVideoUploadCache.entries()].sort((a, b) => a[1].at - b[1].at)[0]?.[0];
+    if (!oldestKey) break;
+    publicVideoUploadCache.delete(oldestKey);
+  }
+  return { ok: true, url: uploaded.publicUrl };
+}
+
 async function executePlatformPublish(platform: string, body: any, actor: string): Promise<{ status: number; body: any }> {
   const user = { id: actor };
   if (!isSupportedPlatform(platform)) return { status: 404, body: { success: false, error: "المنصة غير مدعومة." } };
@@ -7617,10 +7683,11 @@ async function executePlatformPublish(platform: string, body: any, actor: string
       // النشر على صفحة Facebook (Page Access Token). لا نشر بلا معرّف من Meta.
       const target = facebookReplyTarget();
       if ("error" in target) return { status: 503, body: { success: false, error: target.error, code: "CONNECTOR_NOT_READY" } };
-      // فيديو (رابط عام فقط — مثلاً استضافة Drive من videoPublicHosting.ts):
-      // POST /{page-id}/videos بدل /{page-id}/feed. لا تنزيل/إعادة استضافة هنا؛
-      // الرابط يجب أن يكون عاماً مسبقاً.
-      const videoUrl = typeof body?.videoUrl === "string" ? body.videoUrl.trim() : "";
+      // فيديو: رابط عام صريح، أو بايتات (videoBase64) تُستضاف تلقائياً عبر
+      // Drive (Task #23) ثم POST /{page-id}/videos بدل /{page-id}/feed.
+      const resolvedVideo = await resolvePublicVideoUrl(body);
+      if (!resolvedVideo.ok) return { status: resolvedVideo.status, body: { success: false, error: resolvedVideo.error, code: resolvedVideo.code } };
+      const videoUrl = resolvedVideo.url;
       const result = videoUrl
         ? await facebookClient().publishVideoToPage(target.pageId, target.pageToken, videoUrl, content)
         : await facebookClient().publishToPage(target.pageId, target.pageToken, content);
@@ -7640,7 +7707,11 @@ async function executePlatformPublish(platform: string, body: any, actor: string
       const target = instagramReplyTarget();
       if ("error" in target) return { status: 503, body: { success: false, error: target.error, code: "CONNECTOR_NOT_READY" } };
       const imageUrl = typeof body?.imageUrl === "string" ? body.imageUrl.trim() : "";
-      const videoUrl = typeof body?.videoUrl === "string" ? body.videoUrl.trim() : "";
+      // فيديو: رابط عام صريح، أو بايتات (videoBase64) تُستضاف تلقائياً عبر
+      // Drive (Task #23) — إنستغرام يتطلب بروتوكولياً رابطاً عاماً، لا بايتات.
+      const resolvedVideo = await resolvePublicVideoUrl(body);
+      if (!resolvedVideo.ok) return { status: resolvedVideo.status, body: { success: false, error: resolvedVideo.error, code: resolvedVideo.code } };
+      const videoUrl = resolvedVideo.url;
       const reel = body?.reel === true;
       const container = await instagramClient().createMediaContainer(target.igAccountId, target.pageToken, { imageUrl, videoUrl, caption: content, reel });
       if (!container.ok || !container.data) {
@@ -7662,7 +7733,11 @@ async function executePlatformPublish(platform: string, body: any, actor: string
       // لا يُسجَّل أي نشر بلا publish_id من TikTok.
       const mode: TikTokPostMode = body?.postMode === "DIRECT_POST" ? "DIRECT_POST" : "MEDIA_UPLOAD";
       const privacy: TikTokPrivacyLevel = (TIKTOK_PRIVACY_LEVELS as readonly string[]).includes(String(body?.privacyLevel)) ? (body.privacyLevel as TikTokPrivacyLevel) : "SELF_ONLY";
-      const videoUrl = typeof body?.videoUrl === "string" ? body.videoUrl.trim() : "";
+      // فيديو: رابط عام صريح، أو بايتات (videoBase64) تُستضاف تلقائياً عبر
+      // Drive (Task #23) — PULL_FROM_URL يتطلب بروتوكولياً رابطاً عاماً.
+      const resolvedVideo = await resolvePublicVideoUrl(body);
+      if (!resolvedVideo.ok) return { status: resolvedVideo.status, body: { success: false, error: resolvedVideo.error, code: resolvedVideo.code } };
+      const videoUrl = resolvedVideo.url;
       const photoUrls = Array.isArray(body?.photoUrls) ? body.photoUrls.map((u: any) => String(u).trim()).filter(Boolean) : [];
       if (!videoUrl && !photoUrls.length) {
         return { status: 422, body: { success: false, error: "TikTok لا ينشر نصاً فقط؛ زوّد videoUrl أو photoUrls عامة.", code: "MEDIA_REQUIRED", note: "Content Posting API يلزمه فيديو أو صور عبر PULL_FROM_URL." } };
