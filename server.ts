@@ -68,6 +68,7 @@ import { capabilityRow } from "./engine/brain/strategy/capabilityMatrix";
 import { registerDriveRoutes } from "./engine/dr/routes";
 import { inspectDriveAuthEnv, createRefreshTokenProvider } from "./tools/dr/drive-auth.mjs";
 import { DriveClient, createGaxiosTransport } from "./tools/dr/drive-client.mjs";
+import { settleWithTimeout, envTimeoutMs, DRIVE_PUBLIC_HOST_TIMEOUT_MS } from "./tools/dr/drive-timeouts.mjs";
 import { publishVideoPublicly } from "./engine/social/videoPublicHosting";
 import { classifyHttpError, shouldExposeErrorMessage, safeErrorMessage, redactSecretsFromText } from "./engine/runtime/errorSafety";
 import { enforceRateWindowCap, RATE_WINDOW_TTL_MS } from "./engine/runtime/rateWindow";
@@ -5023,12 +5024,55 @@ const drControl: { driveOAuthStates: any[]; driveRefreshToken: any; driveLastErr
  * الداخلي (فصل متعمد: DR routes تبقى مسؤولة فقط عن نسخها هي).
  * تعيد null إن لم يكن التفويض جاهزاً بعد (لم يُمنح/لا رمز تجديد مخزَّن).
  */
+// تشخيص تعثّر استضافة الفيديو إلى Drive (بلا أي سرّ): آخر انتهاء مهلة وقطرة
+// زمن آخر النداءات. تُطَّهر دائماً من الاستعلام فتبقى عناوين بلا معرّفات.
+type DriveHostTimeoutInfo = { at: string; url: string; ms: number } | null;
+type DriveHostCallRecord = { at: string; url: string; method: string; ms: number; status: number; timedOut: boolean };
+let driveHostLastTimeout: DriveHostTimeoutInfo = null;
+const driveHostCallRecords: DriveHostCallRecord[] = [];
+const DRIVE_HOST_CALL_RECORDS_MAX = 20;
 function buildMarketingDriveClient(): InstanceType<typeof DriveClient> | null {
   const info = inspectDriveAuthEnv(process.env as NodeJS.ProcessEnv);
   if (!info.configured) return null;
   if (!drControl.driveRefreshToken) return null;
   const provider = createRefreshTokenProvider({ env: process.env, encryptedRefreshToken: drControl.driveRefreshToken });
-  return new DriveClient({ transport: createGaxiosTransport(), tokenProvider: provider });
+  const client = new DriveClient({ transport: createGaxiosTransport(), tokenProvider: provider });
+  // غلاف صريح يضمن أن أي نداء Drive (حتى لو تجاهل التنفيذ الداخلي خيار timeout)
+  // ينتهي خلال مهلة محددة بدل أن يعلّق الطلب العام بلا نهاية. يُخزَّن آخر مهلة/خطأ
+  // للتشخيص فقط (بلا أي سرّ) ويُعلن في /api/health عبر driveHostLastError.
+  const base = client.transport;
+  const guardMs = envTimeoutMs(process.env as NodeJS.ProcessEnv, "DRIVE_HOST_CALL_TIMEOUT_MS", 0) || 120_000;
+  client.transport = ((opts: any) => {
+    const startedAt = Date.now();
+    const endpoint = safeDriveEndpoint(String(opts?.url || ""));
+    const method = String(opts?.method || "GET");
+    let guardFired = false;
+    const record = (status: number, timedOut: boolean) => {
+      driveHostCallRecords.push({ at: new Date().toISOString(), url: endpoint, method, ms: Date.now() - startedAt, status, timedOut });
+      if (driveHostCallRecords.length > DRIVE_HOST_CALL_RECORDS_MAX) driveHostCallRecords.splice(0, driveHostCallRecords.length - DRIVE_HOST_CALL_RECORDS_MAX);
+    };
+    return settleWithTimeout(
+      Promise.resolve().then(() => base(opts)),
+      guardMs,
+      () => { guardFired = true; driveHostLastTimeout = { at: new Date().toISOString(), url: endpoint, ms: guardMs }; },
+    ).then(
+      (res: any) => { record(Number(res?.status ?? 0), false); return res; },
+      (err: any) => {
+        // يميّز الانتهاء عن فشل عادي: مهلة الغلاف، أو انتهاء مهلة النقل/التحكم.
+        const code = String(err?.code || err?.name || "");
+        const timedOut = guardFired || /timeout|abort|ETIMEDOUT|ECONNABORTED/i.test(code);
+        if (timedOut) driveHostLastTimeout = { at: new Date().toISOString(), url: endpoint, ms: Date.now() - startedAt };
+        record(0, timedOut);
+        throw err;
+      },
+    );
+  }) as any;
+  return client;
+}
+
+/** يجرّد عنوان نقطة Drive من الاستعلام (لا معرّفات/أسرار) للتشخيص فقط. */
+function safeDriveEndpoint(url: string): string {
+  return url.split("?")[0].slice(0, 120);
 }
 
 /** يحفظ التفويض عبر محوّل الحالة (يصمد بعد restart) — كتابة تُنتظر عند التغيير. */
@@ -9104,7 +9148,23 @@ app.patch("/api/workspace/content/:id", authenticateToken, (req,res)=>{
 app.post("/api/workspace/content/video/host", express.json({ limit: CONTENT_UPLOAD_JSON_LIMIT }), authenticateToken, async (req, res) => {
   const user = (req as any).user as ServerUser;
   if (!canEditContent(user.role)) return res.status(403).json({ success: false, error: "لا تملك صلاحية إعداد وسائط المحتوى." });
-  const resolved = await resolvePublicVideoUrl(req.body || {});
+  // مهلة إجمالية صريحة حول السلسلة كاملة: لا يبقى طلب المتصفح معلّقاً بلا نهاية
+  // حتى لو تعلّق Drive (نقل/تجديد). عند التجاوز نرد خطأً واضحاً بدل التعليق.
+  const hostTimeoutMs = envTimeoutMs(process.env as NodeJS.ProcessEnv, "DRIVE_HOST_TIMEOUT_MS", DRIVE_PUBLIC_HOST_TIMEOUT_MS);
+  let resolved: Awaited<ReturnType<typeof resolvePublicVideoUrl>>;
+  try {
+    resolved = await settleWithTimeout(resolvePublicVideoUrl(req.body || {}), hostTimeoutMs);
+  } catch (hostErr: any) {
+    const isTimeout = hostErr?.code === "timeout";
+    return res.status(isTimeout ? 504 : 502).json({
+      success: false,
+      code: isTimeout ? "HOSTING_TIMEOUT" : "VIDEO_HOSTING_FAILED",
+      error: isTimeout
+        ? "انتهت مهلة تجهيز رابط الفيديو العام قبل اكتمالها. يمكنك إعادة المحاولة أو لصق رابط فيديو عام يدوياً."
+        : "فشل تجهيز رابط الفيديو العام. يمكنك إعادة المحاولة أو لصق رابط فيديو عام يدوياً.",
+      ...(isTimeout ? { timeoutMs: hostTimeoutMs } : {}),
+    });
+  }
   if (!resolved.ok) return res.status(resolved.status).json({ success: false, error: resolved.error, code: resolved.code });
   if (!resolved.url) return res.status(400).json({ success: false, error: "لا بايتات فيديو ولا رابط صريح مرسَل.", code: "VIDEO_INPUT_REQUIRED" });
   audit(user.id, "content_video_auto_hosted", resolved.url.slice(0, 120));
@@ -11961,6 +12021,18 @@ app.get("/api/readiness", (_req, res) => {
     geminiConfigured: Boolean(process.env.GEMINI_API_KEY),
     /** ملف تحقق ملكية الرابط (TikTok URL prefix) + الصفحات القانونية العامة. */
     siteVerification: siteVerificationState(),
+    /**
+     * تشخيص تعثّر استضافة الفيديو العامة إلى Drive (Task: لا تعليق بلا نهاية):
+     * عناوين نقاط googleapis + مدد + حالة فقط — بلا أي جسم/معرّف/سرّ/بيانات عميل.
+     * الغرض كشف سبب التعثّر الفعلي (شبكة/تجديد رمز) لاحقاً بلا تخمين.
+     */
+    driveHostDiagnostics: {
+      timeoutMs: envTimeoutMs(process.env as NodeJS.ProcessEnv, "DRIVE_HOST_TIMEOUT_MS", DRIVE_PUBLIC_HOST_TIMEOUT_MS),
+      perCallTimeoutMs: envTimeoutMs(process.env as NodeJS.ProcessEnv, "DRIVE_HOST_CALL_TIMEOUT_MS", 0) || 120_000,
+      lastTimeout: driveHostLastTimeout,
+      recentCalls: driveHostCallRecords.slice(-DRIVE_HOST_CALL_RECORDS_MAX),
+      timeoutCount: driveHostCallRecords.filter((c) => c.timedOut).length,
+    },
     /** حالة مفتاح تشفير توكنات المنصات بنفس حكم التشفير الفعلي (بلا قيمة). */
     platformTokenKey: (() => { const tk = tokenKeyInspection(); return { state: tk.state, envName: "PLATFORM_TOKEN_ENCRYPTION_KEY", acceptedBytes: 32, reason: tk.reason }; })(),
     /**
@@ -12630,6 +12702,15 @@ app.get("/api/health", (_req, res) => {
     youtubeWatcher: watcherStatusBlockPublic(),
     // حارس حصة YouTube Data API: حالة عامة فقط (عتبة/استنفاد/نسبة) بلا بيانات عميل.
     youtubeQuota: youtubeQuotaStatusSummary(),
+    // تشخيص تعثّر استضافة الفيديو العامة إلى Drive (بلا تعليق بلا نهاية):
+    // عناوين نقاط googleapis (بلا استعلام) + مدد + حالة فقط — لا جسم/سرّ/بيانات عميل.
+    driveHostDiagnostics: {
+      timeoutMs: envTimeoutMs(process.env as NodeJS.ProcessEnv, "DRIVE_HOST_TIMEOUT_MS", DRIVE_PUBLIC_HOST_TIMEOUT_MS),
+      perCallTimeoutMs: envTimeoutMs(process.env as NodeJS.ProcessEnv, "DRIVE_HOST_CALL_TIMEOUT_MS", 0) || 120_000,
+      lastTimeout: driveHostLastTimeout,
+      recentCalls: driveHostCallRecords.slice(-DRIVE_HOST_CALL_RECORDS_MAX),
+      timeoutCount: driveHostCallRecords.filter((c) => c.timedOut).length,
+    },
     // وقت تشغيل العقل المركزي 24/7 (Batch 5): حالة/إيقاع/قفل/عدّادات الذاكرة — بلا سرّ.
     brainRuntime: brainRuntimeStatus(),
     // فريق الوكلاء (Batch 6): ملخّص الجلسات/الخلافات/التحقق/الذاكرة — بلا سرّ.

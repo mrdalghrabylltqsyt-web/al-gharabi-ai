@@ -1164,9 +1164,34 @@ ${payload.topic || payload.productName || 'أنظمة وحلول التقسيط 
   /**
    * استضافة فيديو مركز المحتوى تلقائياً على Drive العام (إغلاق فجوة Task #25):
    * يُرسل بايتات الفيديو base64 ويُعاد رابط عام حقيقي بلا أي لصق يدوي من المالك.
+   *
+   * محدود بمهلة صريحة على مستوى fetch (AbortController): إن تعلّق الخادم/الشبكة
+   * فلا يبقى الزر «جارٍ الرفع...» يدور بلا نهاية، بل يُقطع الطلب برسالة واضحة
+   * توجّه المالك للصق الرابط يدوياً (نفس السلوك الاحتياطي الموثَّق).
    */
-  async hostContentVideo(input: { videoBase64: string; mimeType?: string; filename?: string }): Promise<{ success: boolean; url: string }> {
-    const res = await fetch('/api/workspace/content/video/host', { method: 'POST', headers: getAuthHeaders(), body: JSON.stringify(input) });
+  async hostContentVideo(
+    input: { videoBase64: string; mimeType?: string; filename?: string },
+    options?: { timeoutMs?: number },
+  ): Promise<{ success: boolean; url: string }> {
+    const timeoutMs = options?.timeoutMs ?? 100_000; // هامش أعلى قليلاً من مهلة الخادم (90s)
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    let res: Response;
+    try {
+      res = await fetch('/api/workspace/content/video/host', {
+        method: 'POST',
+        headers: getAuthHeaders(),
+        body: JSON.stringify(input),
+        signal: controller.signal,
+      });
+    } catch (err: any) {
+      if (err?.name === 'AbortError') {
+        throw new Error('انتهت مهلة الرفع التلقائي إلى الاستضافة العامة؛ يمكنك لصق رابط فيديو عام يدوياً أدناه.');
+      }
+      throw new Error('تعذّر الوصول إلى خدمة الاستضافة العامة؛ يمكنك لصق رابط فيديو عام يدوياً أدناه.');
+    } finally {
+      clearTimeout(timer);
+    }
     const data = await res.json();
     if (!res.ok || !data.success) throw new Error(data.error || 'تعذّر رفع الفيديو إلى الاستضافة العامة');
     return data;

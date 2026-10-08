@@ -686,7 +686,7 @@ async function integrationTests(): Promise<void> {
     // بعد استخراج المنفّذ المشترك: الحارس داخل executePlatformPublish، والمسار المفرد غلاف
     // رقيق يستدعيه — فالحارس ما زال مربوطاً بكل مسار نشر (لا تخفيف).
     check('الحارس يُستدعى في النشر الموحّد', /async function executePlatformPublish[\s\S]{0,1500}?youtubeOnlyBlock\(platform\)/.test(serverSrc) && /app\.post\("\/api\/platforms\/:platform\/publish", requireOwner[\s\S]{0,400}?executePlatformPublish\(/.test(serverSrc));
-    check('الحارس يُستدعى في رد Telegram', /\/api\/platforms\/telegram\/reply"[\s\S]{0,900}?youtubeOnlyBlock\("telegram"\)/.test(serverSrc));
+    check('الحارس يُستدعى في رد Telegram', /\/api\/platforms\/telegram\/reply"[\s\S]{0,1500}?youtubeOnlyBlock\("telegram"\)/.test(serverSrc));
     check('الحارس يُستدعى في تنفيذ المهام المعتمدة', /async function executeApprovedJob[\s\S]{0,1200}?youtubeOnlyBlock\(platform\)/.test(serverSrc));
     check('الحارس يُحقن في مسارات السوشيال', serverSrc.includes('platformOperationGuard:') && socialSrc.includes('deps.platformOperationGuard'));
     check('وحدة المسارات تمنع عند الحجب', /platformOperationGuard\(platform\)[\s\S]{0,200}?blocked/.test(socialSrc));

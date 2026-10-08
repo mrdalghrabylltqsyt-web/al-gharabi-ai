@@ -45,6 +45,7 @@ function check(name: string, condition: boolean, detail = ''): void {
   if (condition) passed += 1;
   else failures.push(`${name}${detail ? ` — ${detail}` : ''}`);
 }
+function group(title: string): void { console.log(`\n▸ ${title}`); }
 
 const REPO_ROOT = process.cwd();
 const serverSource = readFileSync(join(REPO_ROOT, 'server.ts'), 'utf8');
@@ -79,7 +80,7 @@ function run(): void {
   check('كل منصة تدعم الرد يجب أن تدعم القراءة', PLATFORM_READINESS.every((r) => r.reply !== 'READY' || r.read !== 'NOT_SUPPORTED'));
   check('readinessFor يرفض المجهول', readinessFor('myspace') === null);
   const sum = readinessSummary();
-  check('ملخص الجاهزية صحيح', sum.total === 10 && sum.connectorReady === 5 && sum.foundationReady === 5);
+  check('ملخص الجاهزية صحيح', sum.total === 10 && sum.connectorReady === 6 && sum.foundationReady === 4);
 
   // ---------- 2) أساس OAuth ----------
   const s1 = createOAuthState();
@@ -192,7 +193,7 @@ function run(): void {
   check('webhook يحفظ الجسم الخام للتحقق', serverSource.includes('req.rawBody = buf'));
   check('مسار النشر الموحّد يعلن CAPABILITY_NOT_SUPPORTED', serverSource.includes('CAPABILITY_NOT_SUPPORTED'));
   check('مسار النشر يعلن EXTERNAL_SETUP_REQUIRED', serverSource.includes('EXTERNAL_SETUP_REQUIRED'));
-  check('مسار النشر يمر عبر حارس السلامة', /platform\/publish[\s\S]{0,2000}analyzeBusinessClaims/.test(serverSource));
+  check('مسار النشر يمر عبر حارس السلامة', /async function executePlatformPublish[\s\S]{0,5000}analyzeBusinessClaims/.test(serverSource) && /\/api\/platforms\/:platform\/publish[\s\S]{0,300}executePlatformPublish/.test(serverSource));
   check('مسار المؤشرات موجود ويعلن NOT_SUPPORTED', serverSource.includes('/api/platforms/:platform/metrics'));
   check('OAuth start يستخدم منصة PKCE الموحّدة', serverSource.includes('requiresPkce(platform)') && serverSource.includes('createPkcePair'));
   check('OAuth callback يستخدم validateOAuthCallback', serverSource.includes('validateOAuthCallback({pending,platform,redirectUri})'));
@@ -234,12 +235,14 @@ function run(): void {
   // الآن يُرفع الفيديو تلقائياً إلى Drive العام فور إرفاقه عبر مسار مخصّص يعيد
   // استخدام resolvePublicVideoUrl/publishVideoPublicly الحقيقيتين (Task #21/#23) —
   // لا نشر خارجي هنا، تجهيز وسيط فقط، فيكفي canEditContent لا requireOwner.
-  const hostRouteMatch = serverSource.match(/app\.post\("\/api\/workspace\/content\/video\/host"[\s\S]{0,900}?\n\}\);/);
-  const hostRouteSrc = hostRouteMatch ? hostRouteMatch[0] : '';
+  const hostRouteStart = serverSource.indexOf('app.post("/api/workspace/content/video/host"');
+  const hostRouteSrc = hostRouteStart >= 0 ? serverSource.slice(hostRouteStart, hostRouteStart + 1700) : '';
   check('مسار الاستضافة التلقائية موجود', hostRouteSrc.length > 100);
   check('محمي بمصادقة + صلاحية تحرير المحتوى (لا owner فقط)', hostRouteSrc.includes('authenticateToken') && hostRouteSrc.includes('canEditContent(user.role)'));
-  check('يعيد استخدام resolvePublicVideoUrl الحقيقية (لا رفع مزدوج)', hostRouteSrc.includes('await resolvePublicVideoUrl(req.body'));
+  check('يعيد استخدام resolvePublicVideoUrl الحقيقية (لا رفع مزدوج)', hostRouteSrc.includes('resolvePublicVideoUrl(req.body'));
   check('لا نجاح بلا رابط فعلي', /if \(!resolved\.url\)/.test(hostRouteSrc));
+  // Task #25: مهلة إجمالية صريحة حول السلسلة كاملة — لا تعليق بلا نهاية لرفع الفيديو.
+  check('المسار يلفّ السلسلة بمهلة صريحة (لا تعليق بلا نهاية)', hostRouteSrc.includes('settleWithTimeout(resolvePublicVideoUrl(req.body') && hostRouteSrc.includes('HOSTING_TIMEOUT'));
 
   const apiServiceSrc = readFileSync(join(process.cwd(), 'src/services/api.ts'), 'utf8');
   check('apiService.hostContentVideo موجودة', apiServiceSrc.includes('async hostContentVideo('));

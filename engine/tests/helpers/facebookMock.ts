@@ -52,6 +52,8 @@ export interface FacebookMockState {
   sentMessages: { pageId: string; recipientId: string; text: string; messageId: string }[];
   /** منشورات الصفحة. */
   posts: { pageId: string; message: string; postId: string }[];
+  /** فيديوهات الصفحة المرفوعة من رابط عام (`file_url`). */
+  videos: { pageId: string; fileUrl: string; description: string; videoId: string }[];
   /** عدد استدعاءات نقاط الشبكة — لإثبات التنفيذ الحقيقي. */
   calls: number;
   /** معرّف التطبيق الذي يقبله الخادم الوهمي في client_credentials. */
@@ -87,6 +89,7 @@ export function createFacebookMock(state: Partial<FacebookMockState> = {}): Face
     commentReplies: [],
     sentMessages: [],
     posts: [],
+    videos: [],
     calls: 0,
     validAppId: state.validAppId ?? '145634995501895',
     validAppSecret: state.validAppSecret ?? 'test-fb-client-secret',
@@ -265,6 +268,19 @@ export async function startFacebookMockServer(
     const postId = `${pageId}_${2000 + state.posts.length}`;
     state.posts.push({ pageId, message, postId });
     return res.json({ id: postId });
+  });
+
+  // نشر فيديو على الصفحة من رابط عام (`file_url`) — Task #22. يُثبت أن التوزيع
+  // الموحّد يمرّر videoUrl الحقيقي لفيسبوك لا النص فقط.
+  app.post('/:version/:pageId/videos', (req, res) => {
+    const { pageId } = req.params;
+    state.calls += 1;
+    if (state.failPublish) return res.status(400).json({ error: { message: 'Cannot publish video', code: 200 } });
+    const fileUrl = String(req.body?.file_url || '');
+    const description = String(req.body?.description || '');
+    const videoId = `${pageId}_v${3000 + state.videos.length}`;
+    state.videos.push({ pageId, fileUrl, description, videoId });
+    return res.json({ id: videoId });
   });
 
   const server = await new Promise<Server>((resolve) => {

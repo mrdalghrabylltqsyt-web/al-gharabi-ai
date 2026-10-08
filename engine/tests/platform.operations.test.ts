@@ -89,11 +89,11 @@ function main(): void {
   check('FAILED يوجّه لإعادة الربط', /إعادة الربط/.test(tReauth.nextAction));
 
   group('5) Threads أصبح موصلاً حقيقياً (Task #24)؛ وInstagram أيضاً');
-  // Threads: موصل نشر حقيقي منفّذ الآن (engine/social/threads.ts) — بلا اعتماد
-  // بعد (THREADS_OAUTH_CLIENT_ID/SECRET من Meta لم تُضبط) يبقى EXTERNAL_SETUP_REQUIRED
-  // بسبب الاعتماد الناقص لا بسبب غياب الموصل.
+  // Threads: موصل نشر حقيقي منفّذ الآن (engine/social/threads.ts) — بلا أي اعتماد
+  // (EMPTY_ENV) تكون الحالة الصادقة CODE_READY (الكود منفّذ، والبيئة ناقصة)، لا
+  // «غير مدعوم» ولا EXTERNAL_SETUP_REQUIRED؛ وبالاعتماد الكامل بلا اتصال => CONFIGURED.
   const thNoCreds = computePlatformStatus('threads', disconnected, EMPTY_ENV)!;
-  check('بلا اعتماد => EXTERNAL_SETUP_REQUIRED (الموصل منفّذ لكن الاعتماد ناقص)', thNoCreds.state === 'EXTERNAL_SETUP_REQUIRED');
+  check('بلا اعتماد => CODE_READY (الموصل منفّذ والبيئة ناقصة)', thNoCreds.state === 'CODE_READY');
   check('الاتصال محجوب بنقص الاعتماد لا بعدم تنفيذ الموصل', thNoCreds.operations.find((o) => o.operation === 'connect')!.code !== 'CONNECTOR_NOT_IMPLEMENTED');
   // مع الاعتماد الكامل: موصل حقيقي + اعتماد كامل لكن بلا اتصال فعلي => CONFIGURED.
   const thConfigured = computePlatformStatus('threads', disconnected, FULL_ENV)!;

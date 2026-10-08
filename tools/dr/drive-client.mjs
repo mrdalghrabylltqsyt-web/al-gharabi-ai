@@ -14,8 +14,22 @@
 import crypto from 'node:crypto';
 import { Gaxios } from 'gaxios';
 import { DR_FOLDER_NAME as DR_FOLDER, DR_SUBDIRS, toBuffer } from './cloud-lib.mjs';
+import {
+  resolveRequestTimeoutMs,
+  envTimeoutMs,
+  settleWithTimeout,
+} from './drive-timeouts.mjs';
 
 export const DRIVE_API_BASE = 'https://www.googleapis.com';
+
+/**
+ * يوجّه قاعدة عناوين Drive عبر البيئة عند ضبطها (يُستخدم في الاختبارات المحلية
+ * بخادم وهمي بلا أي مزود حقيقي، وفي تشخيص الاتصال). لا سرّ هنا؛ مجرد عنوان.
+ */
+export function resolveDriveApiBase(env = process.env) {
+  const raw = env && env.DRIVE_API_BASE;
+  return typeof raw === 'string' && raw.trim() ? raw.trim() : DRIVE_API_BASE;
+}
 
 /** حدود إعادة المحاولة: أخطاء عابرة فقط (429/5xx/شبكة). */
 export const DEFAULT_MAX_RETRIES = 2;
@@ -25,9 +39,16 @@ export const DEFAULT_RETRY_BASE_MS = 200;
 // ناقل حقيقي مبني على gaxios
 // ---------------------------------------------------------------------------
 
-export function createGaxiosTransport(instance = new Gaxios()) {
+export function createGaxiosTransport(instance = new Gaxios(), options = {}) {
+  const requestTimeout = Number.isFinite(options.requestTimeoutMs)
+    ? options.requestTimeoutMs
+    : envTimeoutMs(process.env, 'DRIVE_REQUEST_TIMEOUT_MS', 0);
   return async function gaxiosTransport(opts) {
-    const res = await instance.request({
+    // مهلة صريحة لكل طلب: إن تعثّر الاتصال بـgoogleapis.com لا يبقى الطلب معلّقاً
+    // بلا نهاية؛ ينتهي بخطأ عابر (timeout) يدخل منطق إعادة المحاولة أو يفشل بوضوح.
+    const perRequestMs = requestTimeout > 0 ? requestTimeout : resolveRequestTimeoutMs(opts);
+    const startedAt = Date.now();
+    const fetchOnce = () => instance.request({
       url: opts.url,
       method: opts.method,
       headers: opts.headers,
@@ -35,12 +56,41 @@ export function createGaxiosTransport(instance = new Gaxios()) {
       responseType: opts.responseType || 'json',
       validateStatus: () => true,
       retry: false,
+      timeout: perRequestMs,
     });
+    let res;
+    try {
+      res = await fetchOnce();
+    } catch (err) {
+      // حماية إضافية: بعض مسارات gaxios الدنيا لا تحترم `timeout` دائماً. نغلّف
+      // الطلب بمهلة صريحة أيضاً فنضمن ألّا يبقى `await` معلّقاً أبداً.
+      if (Date.now() - startedAt < perRequestMs) {
+        // لم تكتمل المهلة بعد => خطأ حقيقي (شبكة/إغلاق المقبس) لا انتهاء مهلة.
+        throw err;
+      }
+      throw Object.assign(new Error('drive_request_timeout'), { code: 'ETIMEDOUT', timeoutMs: perRequestMs });
+    }
     // gaxios يعيد ArrayBuffer لـresponseType=arraybuffer؛ نوحّده إلى Buffer.
     const data = opts.responseType === 'arraybuffer' ? toBuffer(res.data) : res.data;
     return { status: res.status, headers: res.headers || {}, data };
   };
 }
+
+/**
+ * ناقل قياسي بحدّ زمني مضمون بغضّ النظر عن سلوك gaxios الداخلي: يغلّف كل نداء
+ * `instance.request` بمهلة صريحة عبر `settleWithTimeout`. يُستخدم حيث نريد ضماناً
+ * صريحاً (الاستضافة العامة للفيديو) فيُقطع الطلب عند انتهاء المهلة حتى لو تجاهل
+ * التنفيذ الداخلي خيار `timeout`.
+ */
+export function createTimeoutGuardedTransport(fetchImpl, timeoutMs) {
+  return function guardedTransport(opts) {
+    return settleWithTimeout(Promise.resolve().then(() => fetchImpl(opts)), timeoutMs, () => {
+      // لا إجراء إضافي: المهلة تكفي لتحرير المسار المعلّق.
+    });
+  };
+}
+
+export { resolveRequestTimeoutMs, settleWithTimeout, envTimeoutMs };
 
 // ---------------------------------------------------------------------------
 // بناء/تحليل multipart/related (رفع Drive القياسي)
@@ -125,6 +175,11 @@ export function extractDriveError(err) {
 export function classifyDriveError(err) {
   const status = Number(err?.status ?? err?.response?.status ?? 0);
   const details = extractDriveError(err);
+  // انتهاء مهلة صريح (نقل أو غلاف): كود `timeout` عابر يدخل منطق إعادة المحاولة.
+  const errCode = String(err?.code || '').toUpperCase();
+  if (!status && (errCode === 'ETIMEDOUT' || errCode === 'ECONNABORTED' || errCode === 'TIMEOUT' || err?.name === 'AbortError')) {
+    return { ok: false, status: 0, code: 'timeout', message: 'انتهت مهلة الاتصال بـ Google Drive.', errorDetails: details };
+  }
   if (!status) return { ok: false, status: 0, code: 'network_error', message: 'تعذّر الوصول إلى Google Drive.', errorDetails: details };
   if (status === 401) return { ok: false, status, code: 'unauthorized', message: 'رمز Drive غير صالح (401).', errorDetails: details };
   if (status === 403) {
@@ -144,7 +199,7 @@ export function classifyDriveError(err) {
 }
 
 export function isTransient(code) {
-  return code === 'rate_limited' || code === 'server_error' || code === 'network_error';
+  return code === 'rate_limited' || code === 'server_error' || code === 'network_error' || code === 'timeout';
 }
 
 // ---------------------------------------------------------------------------
@@ -153,7 +208,7 @@ export function isTransient(code) {
 
 export class DriveClient {
   constructor(options = {}) {
-    this.apiBase = options.apiBase || DRIVE_API_BASE;
+    this.apiBase = options.apiBase || resolveDriveApiBase();
     this.transport = options.transport;
     if (!this.transport) throw new Error('DriveClient يحتاج ناقلاً (transport).');
     this.tokenProvider = options.tokenProvider || (() => options.accessToken || null);
@@ -182,12 +237,21 @@ export class DriveClient {
         return classifyDriveError({ status: res.status, response: { status: res.status, data: res.data } });
       } catch (err) {
         this.calls.push({ method: opts.method, url: opts.url, status: 0, ms: Date.now() - started });
-        return classifyDriveError({ status: err?.response?.status ?? 0, response: err?.response });
+        // نُمرّر الخطأ كما هو ليبقى `err.code` (مثل ETIMEDOUT/timeout) فتتم تصنيفته كخطأ عابر.
+        return classifyDriveError(err);
       }
     };
     let result = await attempt();
     let retries = 0;
-    while (!result.ok && isTransient(result.code) && retries < this.maxRetries) {
+    // idempotency: طلب يغيّر الحالة (POST/PATCH/DELETE) قد يكون قد نُفّذ فعلاً لدى
+    // Drive عند تعثّر الشبكة/المهلة (الردّ ضاع فقط). إعادة إرساله تُنشئ نسخة/أثراً
+    // مكرّراً بلا معرّف معروف. لذلك نعيد المحاولة فقط لطرق القراءة الآمنة، أو عند
+    // خطأ خادم صريح (5xx/429: لم يُنفَّذ). أما timeout/network_error على طلب مُغيِّر
+    // فلا تُعاد تلقائياً — يُعاد الفشل بوضوح ويقرّر المستدعي.
+    const method = String(opts?.method || 'GET').toUpperCase();
+    const mutating = method === 'POST' || method === 'PATCH' || method === 'DELETE' || method === 'PUT';
+    const retriableNow = (code) => isTransient(code) && (!mutating || code === 'rate_limited' || code === 'server_error');
+    while (!result.ok && retriableNow(result.code) && retries < this.maxRetries) {
       retries += 1;
       await this.sleep(this.retryBaseMs * retries);
       result = await attempt();

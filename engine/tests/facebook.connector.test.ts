@@ -524,6 +524,23 @@ async function integrationTests(): Promise<void> {
     const pubBody = await pub.json();
     check('النشر على الصفحة نجح بمعرّف من Meta', pub.status === 200 && Boolean(pubBody.providerPostId) && mock.state.posts.length === 1, JSON.stringify(pubBody).slice(0, 200));
 
+    // Task #22/#25: التوزيع الموحّد يجب أن يمرّر videoUrl (الرابط العام الحقيقي) إلى
+    // فيسبوك لا النص فقط، فينشر فيديو حقيقياً عبر POST /{page-id}/videos. هذا يُثبت
+    // أن نقص فيسبوك/ثريدز في قائمة الواجهة كان خطأ عرض لا نقص خادم.
+    group('16ب) تكامل: التوزيع الموحّد يمرّر رابط الفيديو العام لفيسبوك (Task #25)');
+    const PUBLIC_VIDEO_URL = 'https://drive.example/gharabi/marketing-cut.mp4';
+    const fbVidDraftRes = await fetch(`${BASE}/api/workspace/content`, { method: 'POST', headers: auth, body: JSON.stringify({ title: 'فيديو عرض تقسيط', content: 'شاهد عرض التقسيط الجديد من معرض الغرابي.', targetPlatforms: ['facebook'], mediaType: 'video', mediaUrl: PUBLIC_VIDEO_URL, status: 'review' }) });
+    const fbVidDraft = { status: fbVidDraftRes.status, body: await fbVidDraftRes.json() };
+    check('إنشاء منشور فيديو لفيسبوك 201', fbVidDraft.status === 201, String(fbVidDraft.status));
+    const fbVidId = fbVidDraft.body?.post?.id;
+    await fetch(`${BASE}/api/workspace/content/${fbVidId}/approve`, { method: 'POST', headers: auth, body: JSON.stringify({ note: 'اعتماد فيديو فيسبوك' }) });
+    const fbVidPub = await fetch(`${BASE}/api/workspace/content/${fbVidId}/publish`, { method: 'POST', headers: auth, body: '{}' });
+    const fbVidBody = await fbVidPub.json();
+    check('فيسبوك: النشر الموحّد نجح بمعرّف مزود', fbVidBody.results?.facebook?.state === 'published' && Boolean(fbVidBody.results?.facebook?.providerPostId), JSON.stringify(fbVidBody.results).slice(0, 200));
+    check('فيسبوك: رُفع فيديو حقيقي من رابط عام (file_url)', mock.state.videos.length === 1 && mock.state.videos[0].fileUrl === PUBLIC_VIDEO_URL, JSON.stringify(mock.state.videos).slice(0, 200));
+    check('فيسبوك: وصف الفيديو هو نص المنشور', mock.state.videos[0]?.description === 'شاهد عرض التقسيط الجديد من معرض الغرابي.', mock.state.videos[0]?.description);
+    check('فيسبوك: لم يُنشر كنص فقط (feed لم يُستخدم)', mock.state.posts.length === 1, `posts=${mock.state.posts.length}`);
+
     group('17) تكامل: ثبات الاستقبال وحماية التكرار بعد restart');
     await stop(app.proc);
     currentApp = startApp(mock.base);

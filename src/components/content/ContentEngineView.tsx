@@ -27,13 +27,16 @@ import { SocialPlatformId, ContentFormatType } from '../../types';
 
 // نفس حدود/قيود مراجعة فيديو يوتيوب في YouTubeContentQueuePanel — مصدر واحد للقيم
 // حتى لا يختلف السلوك بين الشاشتين. الفيديو الحقيقي (رفع فعلي) مدعوم اليوم ليوتيوب
-// فقط؛ المنصات الأخرى إما تحتاج رابطاً عاماً (إنستغرام/تيك توك) أو لا تدعم الفيديو
-// إطلاقاً بعد (فيسبوك/تيليغرام) — الواجهة تصرّح بهذا بدل الادّعاء الكاذب بدعم شامل.
+// فقط؛ المنصات الأخرى تحتاج رابطاً عاماً (إنستغرام/تيك توك/فيسبوك/ثريدز) — الواجهة
+// تصرّح بهذا بدل الادّعاء الكاذب بدعم شامل أو بنفي دعم موجود.
+// مدعوم برابط عام فعلاً على الخادم: instagram/tiktok (Task #23)، facebook (Task #22
+// عبر POST /{page-id}/videos)، threads (Task #24 عبر حاوية الوسائط). التوزيع الموحّد
+// /api/workspace/content/:id/publish يمرّر videoUrl لها جميعاً عبر executePlatformPublish.
 const MAX_VIDEO_MB = 12;
 const ALLOWED_VIDEO_TYPES = ['video/mp4', 'video/webm', 'video/quicktime', 'video/x-matroska', 'video/x-msvideo'];
 const CONTENT_UPLOAD_MAX_BYTES = MAX_VIDEO_MB * 1024 * 1024;
 const VIDEO_REAL_UPLOAD_PLATFORMS: SocialPlatformId[] = ['youtube'];
-const VIDEO_PUBLIC_URL_PLATFORMS: SocialPlatformId[] = ['instagram', 'tiktok'];
+const VIDEO_PUBLIC_URL_PLATFORMS: SocialPlatformId[] = ['instagram', 'tiktok', 'facebook', 'threads'];
 
 const fmtBytes = (n: number) => {
   if (!n) return '0';
@@ -339,13 +342,13 @@ export const ContentEngineView: React.FC = () => {
                 {videoUrlNeededPlatforms.length > 0 && (
                   <p className="text-amber-400 flex items-start gap-1.5">
                     <AlertTriangle className="w-3.5 h-3.5 shrink-0 mt-0.5" />
-                    <span>{videoUrlNeededPlatforms.join('، ')}: لا يقبلان رفع ملف مباشرة — يحتاجان رابط فيديو عام وقت النشر الفعلي (أضفه أدناه أو لاحقاً).</span>
+                    <span>{videoUrlNeededPlatforms.join('، ')}: لا تقبل رفع ملف مباشرة — تحتاج رابط فيديو عام وقت النشر الفعلي (أضفه أدناه أو لاحقاً).</span>
                   </p>
                 )}
                 {videoUnsupportedPlatforms.length > 0 && (
                   <p className="text-rose-400 flex items-start gap-1.5">
                     <AlertTriangle className="w-3.5 h-3.5 shrink-0 mt-0.5" />
-                    <span>{videoUnsupportedPlatforms.join('، ')}: لا يدعمان نشر فيديو حالياً عبر هذا النظام — سيُنشر لهما نص فقط.</span>
+                    <span>{videoUnsupportedPlatforms.join('، ')}: لا تدعم نشر فيديو حالياً عبر هذا النظام — سيُنشر لها نص فقط.</span>
                   </p>
                 )}
               </div>
