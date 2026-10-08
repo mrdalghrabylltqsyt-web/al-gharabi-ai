@@ -267,6 +267,41 @@ add('facebook-publish-diagnostics-test',
   read('engine/tests/facebook.connector.test.ts').includes('AbCdTrace#100') &&
   read('engine/tests/facebook.connector.test.ts').includes('video-permission-diagnosis'),
   'اختبار انحدار يثبّت حفظ تشخيص #100 وسحبه وفحص صلاحية نشر الفيديو');
+// واجهة التشخيص (owner-only): المساران لم يبقيا في الخادم فقط — للمالك زرّان في
+// مركز ربط المنصات يستدعيان المسارين المحميين عبر apiService ويُظهران النتيجة بالعربية.
+add('facebook-diagnostics-ui-buttons',
+  read('src/components/social/PlatformConnectionCenter.tsx').includes('فحص صلاحيات نشر الفيديو') &&
+  read('src/components/social/PlatformConnectionCenter.tsx').includes('سجل تشخيص النشر الفاشل') &&
+  read('src/components/social/PlatformConnectionCenter.tsx').includes('apiService.getFacebookVideoPermissionDiagnosis()') &&
+  read('src/components/social/PlatformConnectionCenter.tsx').includes('apiService.getPublishDiagnostics('),
+  'زرّا «فحص صلاحيات نشر الفيديو» و«سجل تشخيص النشر الفاشل» في مركز الربط يستدعيان المسارين المحميين');
+add('facebook-diagnostics-ui-owner-only',
+  read('src/components/social/PlatformConnectionCenter.tsx').includes("currentUser?.role !== 'owner'") &&
+  read('src/components/social/PlatformConnectionCenter.tsx').includes("p.platform === 'facebook' && <FacebookVideoDiagnosticsPanel />"),
+  'لوحة التشخيص تظهر لبطاقة facebook فقط وداخل مركز الربط المحصور بالمالك');
+add('facebook-diagnostics-ui-shows-scopes-and-log',
+  read('src/components/social/PlatformConnectionCenter.tsx').includes('الصلاحيات الممنوحة فعلاً') &&
+  read('src/components/social/PlatformConnectionCenter.tsx').includes('الصلاحيات الناقصة لنشر الفيديو') &&
+  read('src/components/social/PlatformConnectionCenter.tsx').includes('videoPublishReady') &&
+  read('src/components/social/PlatformConnectionCenter.tsx').includes('providerSubcode') &&
+  read('src/components/social/PlatformConnectionCenter.tsx').includes('providerTraceId'),
+  'اللوحة تعرض الصلاحيات الممنوحة/الناقصة وجهوزية النشر وسجل الأخطاء (منصة/رسالة/رمز)');
+add('facebook-diagnostics-ui-api-contract',
+  read('src/services/api.ts').includes("'/api/platforms/facebook/video-permission-diagnosis'") &&
+  read('src/services/api.ts').includes('/api/platforms/publish-diagnostics${suffix}') &&
+  read('src/services/api.ts').includes('async getFacebookVideoPermissionDiagnosis()') &&
+  read('src/services/api.ts').includes('async getPublishDiagnostics('),
+  'طبقة apiService تربط الزرّين بالمسارين المحميين عبر getAuthHeaders (لا مسار وهمي)');
+add('facebook-diagnostics-ui-honest',
+  read('src/components/social/PlatformConnectionCenter.tsx').includes('لا يُصلح الصلاحية، يكشفها فقط') &&
+  !/تم النشر|نُشر بنجاح/.test(read('src/components/social/PlatformConnectionCenter.tsx')),
+  'اللوحة تعلن أنها تشخيصية (لا تُصلح الصلاحية) ولا تدّعي أي نشر');
+add('facebook-diagnostics-ui-tests',
+  fs.existsSync(path.join(root, 'engine/tests/facebook.video.diagnostics.ui.test.ts')) &&
+  fs.existsSync(path.join(root, 'engine/e2e/facebook-video-diagnostics.e2e.spec.ts')) &&
+  JSON.parse(read('package.json')).scripts['test:facebook-video-diagnostics-ui'] === 'tsx engine/tests/facebook.video.diagnostics.ui.test.ts' &&
+  JSON.parse(read('package.json')).scripts.test.includes('npm run test:facebook-video-diagnostics-ui'),
+  'اختبار واجهة ثابت + e2e يثبتان ظهور الزرّين وعملهما، وموصولان بـnpm test');
 // إصلاح #100 الجذري: مسار ربط Facebook يستخدم رمز الصفحة من /me/accounts مباشرةً
 // ولا يستدعي GET /{page-id} (الذي يستدعي pages_read_engagement ويرد #100).
 add('facebook-finalize-uses-page-from-accounts', server.includes('facebookFinalizePageSelection(pages.data[0].pageId,userToken,pages.data[0])') && server.includes('facebookFinalizePageSelection(page.pageId,userToken,page)'), 'مسارا الربط (callback + select-page) يمرّران بيانات الصفحة من /me/accounts بلا GET /{page-id}');
