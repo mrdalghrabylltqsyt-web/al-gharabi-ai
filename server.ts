@@ -1946,6 +1946,53 @@ function instagramPageSelectionPending(): boolean {
 const THREADS_GRAPH_API_BASE_ENV = process.env.THREADS_GRAPH_API_BASE;
 const threadsFetchImpl: ThreadsFetch = (url, init) => fetch(url, init as any);
 function threadsClient(): ThreadsClient { return new ThreadsClient(threadsFetchImpl, THREADS_GRAPH_API_BASE_ENV); }
+/** رمز Threads المخزّن (مشفّر داخلياً) — يُقرأ عند كل استخدام. */
+function threadsStoredCredentials(): any | null { return getProviderToken("threads"); }
+function threadsAccessToken(): string | null {
+  const stored = threadsStoredCredentials();
+  return stored?.access_token ? String(stored.access_token) : null;
+}
+/** رمز Threads الطويل ينتهي بعد ~60 يوماً — نجدّده قبل الاستخدام إن انتهى معلنًا. */
+function threadsAccessExpired(): boolean {
+  const stored = threadsStoredCredentials();
+  return isAccessTokenExpired({ expiresAt: stored?.expiresAt ?? null });
+}
+/** يحفظ اعتماد Threads مشفّراً (لا يُعاد ولا يُسجَّل). */
+function saveThreadsCredentials(input: { accessToken: string; expiresAt?: number | null }) {
+  const existing = threadsStoredCredentials() || {};
+  setProviderToken("threads", { ...existing, access_token: input.accessToken, expiresAt: input.expiresAt ?? null });
+}
+/**
+ * يضمن رمز Threads صالحاً للتشغيل: يُجدّد الرمز الطويل عند انتهائه المعلَن عبر
+ * `grant_type=th_exchange_token` (وثيقة Threads؛ بلا client_secret). لا فشل
+ * صامت: فشل التجديد يُعلن `reauth_needed` صراحةً. إن لم يكن الانتهاء معلنًا
+ * (رمز بلا expiresAt محفوظ) نُمرّره كما هو — لا ادّعاء انتهاء، وتُصنّف أخطاء
+ * الرمز الحقيقية عند الاستخدام (TOKEN_EXPIRED) لإعادة الربط.
+ */
+async function ensureThreadsAccessToken(): Promise<{ ok: boolean; token?: string; refreshed?: boolean; error?: string }> {
+  const stored = threadsStoredCredentials();
+  const token = threadsAccessToken();
+  if (!token) return { ok: false, error: "لا اعتماد Threads محفوظ؛ نفّذ الربط عبر OAuth أولاً." };
+  if (!threadsAccessExpired()) return { ok: true, token, refreshed: false };
+  const res = await threadsClient().refreshLongLivedToken(token);
+  if (!res.ok || !res.data?.accessToken) {
+    platformConnections.set("threads", { platform: "threads", status: "reauth_needed", accountId: String(stored?.threadsUserId || ""), connectedAt: stored?.connectedAt || new Date().toISOString() });
+    savePlatformConnections();
+    await persistStateDurable();
+    audit("system", "threads_refresh_failed", res.code || "provider_error");
+    return { ok: false, error: res.error || "فشل تجديد رمز Threads؛ أعد الربط." };
+  }
+  saveThreadsCredentials({ accessToken: res.data.accessToken, expiresAt: res.data.expiresIn ? Date.now() + res.data.expiresIn * 1000 : null });
+  await persistStateDurable();
+  audit("system", "threads_token_refreshed", "auto");
+  return { ok: true, token: res.data.accessToken, refreshed: true };
+}
+/** غلاف موحّد ينفّذ عملية Threads برمز صالح مع تجديد تلقائي عند الحاجة. */
+async function withThreadsToken<T>(fn: (token: string) => Promise<{ ok: boolean; data: T | null; error?: string; code?: string | null; providerCode?: number | null }>): Promise<{ ok: boolean; data: T | null; error?: string; code?: string | null; providerCode?: number | null }> {
+  const ensured = await ensureThreadsAccessToken();
+  if (!ensured.ok || !ensured.token) return { ok: false, data: null, error: ensured.error, code: "TOKEN_EXPIRED" };
+  return fn(ensured.token);
+}
 /** تسجيل آمن لحدث Instagram الوارد. ممنوع تسجيل أي سرّ أو نص رسالة. */
 function logInstagramWebhook(event: { kind: string; externalId?: string | null; outcome: "accepted" | "duplicate" | "rejected" | "ignored"; persisted?: boolean }): void {
   const parts = ["[instagram-webhook]", "platform=instagram", `kind=${event.kind}`, `outcome=${event.outcome}`];
@@ -3956,6 +4003,25 @@ async function handleOAuthCallback(req:any, res:any, rawQuery:string, viaPost:bo
       audit(pending!.userId,"platform_oauth_connected",`tiktok:${identity.data.openId}`);
       logTikTokOAuth("callback_connected",{openId:identity.data.openId,scopeCount:exchanged.data.scope.length,hasRefreshToken:Boolean(exchanged.data.refreshToken)});
       return sendHtml(`<html lang='ar' dir='rtl'><meta charset='utf-8'><title>تم الربط</title><body style='font-family:sans-serif;padding:40px'><h2>تم ربط حساب TikTok بنجاح.</h2><p>${escapeHtml(identity.data.displayName||"")} — يمكنك إغلاق هذه النافذة والعودة إلى الغرابي AI.</p></body></html>`);
+    }
+    // Threads — تطبيق Meta منفصل. رمز التفويض قصير الأجل (~ساعة) فيجب إطالته
+    // فوراً إلى رمز طويل الأجل (grant_type=th_exchange_token)، وإلا انتهى الرمز
+    // بعد ساعة فيفشل النشر بـ«Session has expired» (العطل المُثبت).
+    if(platform==="threads") {
+      const client=threadsClient();
+      const short=await client.exchangeCode({clientId:String(cfg.clientId),clientSecret:String(cfg.clientSecret),code,redirectUri:redirectUri});
+      if(!short.ok || !short.data?.accessToken) throw new Error(short.error||"فشل تبادل رمز Threads.");
+      const long=await client.exchangeLongLived({clientSecret:String(cfg.clientSecret),shortToken:short.data.accessToken});
+      const accessToken=long.ok && long.data?.accessToken ? long.data.accessToken : short.data.accessToken;
+      const profile=await client.getProfile(accessToken);
+      if(!profile.ok || !profile.data?.threadsUserId) throw new Error(profile.error||"تعذّر إثبات هوية حساب Threads.");
+      const expiresAt=long.data?.expiresIn ? Date.now()+long.data.expiresIn*1000 : null;
+      setProviderToken("threads",{access_token:accessToken,threadsUserId:profile.data.threadsUserId,username:profile.data.username||null,expiresAt,connectedAt:new Date().toISOString()});
+      platformConnections.set("threads",{platform:"threads",status:"connected",accountId:profile.data.threadsUserId,accountName:profile.data.username?`@${profile.data.username}`:"Threads",connectedAt:new Date().toISOString(),providerVerified:true});
+      savePlatformConnections();
+      await persistStateDurable();
+      audit(pending!.userId,"platform_oauth_connected",`threads:${profile.data.threadsUserId}`);
+      return sendHtml(`<html lang='ar' dir='rtl'><meta charset='utf-8'><title>تم الربط</title><body style='font-family:sans-serif;padding:40px'><h2>تم ربط حساب Threads بنجاح.</h2><p>${escapeHtml(profile.data.username?`@${profile.data.username}`:"Threads")} — يمكنك إغلاق هذه النافذة والعودة إلى الغرابي AI.</p></body></html>`);
     }
     // YouTube — مسار Google OAuth 2.0: تبادل الرمز ثم إثبات هوية القناة فعلياً
     // عبر channels.list?mine=true (نطاق youtube.readonly). لا يُعلن اتصال موثق
@@ -7788,12 +7854,14 @@ async function executePlatformPublish(platform: string, body: any, actor: string
   if (!safety.safe) {
     return { status: 422, body: { success: false, error: "المحتوى يحمل عرضاً تجارياً غير مسجّل، وتم إيقافه قبل الإرسال.", code: "CONTENT_SAFETY_BLOCKED", contentSafety: { violations: safety.blocked.map((v) => v.detail), codes: safety.blocked.map((v) => v.code) } } };
   }
+  // لا موصل منفّذ: الرسالة الصادقة هي «غير مبني بعد» (EXTERNAL_SETUP_REQUIRED) لا
+  // «غير متصل» — الأخيرة تُربك المالك بأن الاتصال فشل بينما الموصّل غير موجود أصلاً.
+  if (!hasRealConnector(platform)) {
+    return { status: 501, body: { success: false, error: "لا يوجد موصل نشر منفّذ لهذه المنصة بعد؛ يحتاج اعتماد تطبيق من المزود.", code: "EXTERNAL_SETUP_REQUIRED", platform } };
+  }
   const conn: any = platformConnections.get(platform);
   if (!conn || conn.status !== "connected" || conn.providerVerified !== true) {
     return { status: 409, body: { success: false, error: "المنصة غير متصلة باتصال موثق؛ لا نشر خارجي.", code: "NOT_CONNECTED" } };
-  }
-  if (!hasRealConnector(platform)) {
-    return { status: 501, body: { success: false, error: "لا يوجد موصل نشر منفّذ لهذه المنصة بعد.", code: "EXTERNAL_SETUP_REQUIRED", platform } };
   }
   try {
     if (platform === "youtube") {
@@ -7818,7 +7886,7 @@ async function executePlatformPublish(platform: string, body: any, actor: string
       if ((workspace as any).publishRecords.length > WORKSPACE_MAX_PUBLISH_RECORDS) (workspace as any).publishRecords.length = WORKSPACE_MAX_PUBLISH_RECORDS;
       persistState();
       audit(user.id, sent.ok ? "platform_publish_published" : "platform_publish_failed", `${platform}`);
-      if (!sent.ok) return { status: 502, body: { success: false, record, error: sent.error, note: "لم يُسجَّل أي نشر بلا معرّف منشور حقيقي من المزود." } };
+      if (!sent.ok) return { status: 502, body: { success: false, record, error: sent.error, code: sent.code || "PROVIDER_ERROR", providerCode: sent.providerCode ?? null, note: "لم يُسجَّل أي نشر بلا معرّف منشور حقيقي من المزود." } };
       return { status: 200, body: { success: true, record, providerPostId: sent.providerMessageId, receipt: sent.receipt } };
     }
     if (platform === "facebook") {
@@ -7840,7 +7908,7 @@ async function executePlatformPublish(platform: string, body: any, actor: string
       if ((workspace as any).publishRecords.length > WORKSPACE_MAX_PUBLISH_RECORDS) (workspace as any).publishRecords.length = WORKSPACE_MAX_PUBLISH_RECORDS;
       persistState();
       audit(user.id, result.ok ? "platform_publish_published" : "platform_publish_failed", `${platform}`);
-      if (!result.ok) return { status: 502, body: { success: false, record, error: result.error, note: "لم يُسجَّل أي نشر بلا معرّف منشور حقيقي من المزود." } };
+      if (!result.ok) return { status: 502, body: { success: false, record, error: result.error, code: result.code || "PROVIDER_ERROR", providerCode: result.providerCode ?? null, note: "لم يُسجَّل أي نشر بلا معرّف منشور حقيقي من المزود." } };
       return { status: 200, body: { success: true, record, providerPostId: result.data?.providerPostId, receipt } };
     }
     if (platform === "instagram") {
@@ -7885,13 +7953,14 @@ async function executePlatformPublish(platform: string, body: any, actor: string
       if (!resolvedVideo.ok) return { status: resolvedVideo.status, body: { success: false, error: resolvedVideo.error, code: resolvedVideo.code } };
       const videoUrl = resolvedVideo.url;
       const replyToId = typeof body?.replyToId === "string" ? body.replyToId.trim() : "";
-      const container = await threadsClient().createMediaContainer(target.threadsUserId, target.accessToken, { text: content, imageUrl, videoUrl, replyToId });
+      // تجديد تلقائي للرمز الطويل قبل النشر (وإلا «Session has expired» بلا تفسير).
+      const container = await withThreadsToken((token) => threadsClient().createMediaContainer(target.threadsUserId, token, { text: content, imageUrl, videoUrl, replyToId }));
       if (!container.ok || !container.data) {
         // لا تثبيت PROVIDER_ERROR؛ نُمرّر كود Meta الحقيقي ورسالته (مثلاً خطأ تنزيل
-        // الوسائط 9007 من رابط عام) بدل إخفاء السبب.
+        // الوسائط 9007، أو انتهاء الرمز 190) بدل إخفاء السبب.
         return { status: 502, body: { success: false, error: container.error, code: container.code || "PROVIDER_ERROR", providerCode: container.providerCode ?? null, note: "لم تُسجَّل أي حاوية بلا معرّف حقيقي من Threads." } };
       }
-      const published = await threadsClient().publishContainer(target.threadsUserId, target.accessToken, container.data.containerId);
+      const published = await withThreadsToken((token) => threadsClient().publishContainer(target.threadsUserId, token, container.data!.containerId));
       const receipt = published.ok ? { provider: "threads", threadsUserId: target.threadsUserId, containerId: container.data.containerId, postId: published.data?.providerPostId, mediaKind: container.data.mediaKind, sentAt: new Date().toISOString() } : null;
       const record = buildPublishRecord({ platform: platform as any, postId: typeof body?.postId === "string" ? body.postId : workspaceId("post"), providerPostId: published.data?.providerPostId || null, simulated: false, error: published.ok ? null : published.error });
       if (!Array.isArray((workspace as any).publishRecords)) (workspace as any).publishRecords = [];

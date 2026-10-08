@@ -151,6 +151,49 @@ async function run(): Promise<void> {
   const thrownProfile = await new ThreadsClient(throwingFetch).getProfile('TOKEN_A');
   check('استثناء الشبكة يُعاد كـok=false بلا رمي', thrownProfile.ok === false && thrownProfile.error?.includes('network down'));
 
+  group('9) وحدة: دورة حياة الرمز — تبادل + إطالة + تجديد (إصلاح «Session has expired»)');
+  // تبادل رمز التفويض: POST /oauth/access_token يعيد رمزاً قصير الأجل.
+  const codeRequests: string[] = [];
+  const codeFetch: ThreadsFetch = async (url) => {
+    codeRequests.push(url);
+    if (url.includes('/oauth/access_token')) return { ok: true, status: 200, json: async () => ({ access_token: 'SHORT_1' }) };
+    return { ok: true, status: 200, json: async () => ({}) };
+  };
+  const exchanged = await new ThreadsClient(codeFetch, 'https://graph.example').exchangeCode({ clientId: 'CID', clientSecret: 'SEC', code: 'CODE', redirectUri: 'https://x/cb' });
+  check('تبادل الرمز يعيد رمزاً قصير الأجل', exchanged.ok === true && exchanged.data?.accessToken === 'SHORT_1');
+  check('التبادل ذهب إلى /oauth/access_token', codeRequests[0]?.includes('/oauth/access_token'));
+
+  // الإطالة: GET /access_token?grant_type=th_exchange_token مع client_secret.
+  const longRequests: string[] = [];
+  const longFetch: ThreadsFetch = async (url) => {
+    longRequests.push(url);
+    return { ok: true, status: 200, json: async () => ({ access_token: 'LONG_1', expires_in: 5_184_000 }) };
+  };
+  const longRes = await new ThreadsClient(longFetch, 'https://graph.example').exchangeLongLived({ clientSecret: 'SEC', shortToken: 'SHORT_1' });
+  check('الإطالة تعيد رمزاً طويل الأجل', longRes.ok === true && longRes.data?.accessToken === 'LONG_1' && longRes.data?.expiresIn === 5_184_000);
+  check('الإطالة استخدمت grant_type=th_exchange_token', longRequests[0]?.includes('grant_type=th_exchange_token'));
+  check('الإطالة ذهبت إلى /access_token بلا /oauth', longRequests[0]?.includes('/access_token') && !longRequests[0]?.includes('/oauth/'));
+
+  // التجديد: GET /refresh_access_token يعيد رمزاً جديداً.
+  const refreshRequests: string[] = [];
+  const refreshFetch: ThreadsFetch = async (url) => {
+    refreshRequests.push(url);
+    return { ok: true, status: 200, json: async () => ({ access_token: 'LONG_2', expires_in: 5_184_000 }) };
+  };
+  const refreshed = await new ThreadsClient(refreshFetch, 'https://graph.example').refreshLongLivedToken('LONG_1');
+  check('التجديد يعيد رمزاً جديداً', refreshed.ok === true && refreshed.data?.accessToken === 'LONG_2');
+  check('التجديد ذهب إلى /refresh_access_token', refreshRequests[0]?.includes('/refresh_access_token'));
+
+  // لا نجاح وهمي بلا رمز في استجابة التجديد.
+  const badRefresh = await new ThreadsClient(async () => ({ ok: true, status: 200, json: async () => ({}) })).refreshLongLivedToken('LONG_1');
+  check('بلا access_token في الاستجابة => فشل (لا نجاح وهمي)', badRefresh.ok === false);
+
+  // انتهاء الرمز (190) يُصنَّف TOKEN_EXPIRED لا CLIENT_ERROR.
+  const expiredFetch: ThreadsFetch = async () => ({ ok: false, status: 400, json: async () => ({ error: { message: 'Error validating access token: Session has expired', code: 190 } }) });
+  const expired = await new ThreadsClient(expiredFetch).createMediaContainer('TU_1', 'BAD', { text: 'x' });
+  check('انتهاء الرمز => TOKEN_EXPIRED (يُجدَّد/يُعاد الربط لا يُخفى)', expired.code === 'TOKEN_EXPIRED', String(expired.code));
+  check('رسالة انتهاء الرمز الحقيقية محفوظة', String(expired.error).includes('Session has expired'));
+
   console.log('\n' + '='.repeat(60));
   if (failures.length) {
     console.error(`FAILED: ${failures.length} / ${passed + failures.length}`);

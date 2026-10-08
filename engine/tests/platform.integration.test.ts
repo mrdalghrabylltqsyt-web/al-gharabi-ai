@@ -169,6 +169,24 @@ async function login(): Promise<Record<string, string>> {
     });
     const tgBody = await tgPublish.json();
     check('Telegram غير متصل => NOT_CONNECTED', tgPublish.status === 409 && tgBody.code === 'NOT_CONNECTED');
+    // منصة تعلن قدرة publish لكن بلا موصل منفّذ (x/snapchat/google_business): الرسالة
+    // الصادقة هي «غير مبني بعد» (EXTERNAL_SETUP_REQUIRED) لا «غير متصل» — وإلا ظنّ
+    // المالك أن الاتصال فشل بينما الموصّل غير موجود أصلاً.
+    const xPublish = await fetch(`${BASE}/api/platforms/x/publish`, {
+      method: 'POST', headers: auth, body: JSON.stringify({ content: 'منشور تجريبي', approved: true }),
+    });
+    const xBody = await xPublish.json();
+    check('منصة بلا موصل منفّذ => EXTERNAL_SETUP_REQUIRED (لا NOT_CONNECTED)', xPublish.status === 501 && xBody.code === 'EXTERNAL_SETUP_REQUIRED');
+    const snapPublish = await fetch(`${BASE}/api/platforms/snapchat/publish`, {
+      method: 'POST', headers: auth, body: JSON.stringify({ content: 'منشور تجريبي', approved: true }),
+    });
+    const snapBody = await snapPublish.json();
+    check('snapchat بلا موصل => EXTERNAL_SETUP_REQUIRED', snapPublish.status === 501 && snapBody.code === 'EXTERNAL_SETUP_REQUIRED');
+    const gbPublish = await fetch(`${BASE}/api/platforms/google_business/publish`, {
+      method: 'POST', headers: auth, body: JSON.stringify({ content: 'منشور تجريبي', approved: true }),
+    });
+    const gbBody = await gbPublish.json();
+    check('google_business بلا موصل => EXTERNAL_SETUP_REQUIRED', gbPublish.status === 501 && gbBody.code === 'EXTERNAL_SETUP_REQUIRED');
     const noApproval = await fetch(`${BASE}/api/platforms/telegram/publish`, {
       method: 'POST', headers: auth, body: JSON.stringify({ content: 'منشور', approved: false }),
     });
