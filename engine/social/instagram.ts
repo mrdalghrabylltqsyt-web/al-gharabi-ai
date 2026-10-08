@@ -313,6 +313,9 @@ export function buildMediaContainerBody(input: InstagramPublishInput): { ok: boo
   if (input.videoUrl && input.videoUrl.trim()) {
     body.set('video_url', input.videoUrl.trim());
     if (input.reel) { body.set('media_type', 'REELS'); return { ok: true, body, mediaKind: 'reel' }; }
+    // وثيقة Meta: نشر الفيديو (غير الريلز) يتطلب media_type=VIDEO صراحةً؛ بغيابه
+    // يفسّره Graph كمنشور صورة ويرد (#100) The parameter image_url is required.
+    body.set('media_type', 'VIDEO');
     return { ok: true, body, mediaKind: 'video' };
   }
   if (input.imageUrl && input.imageUrl.trim()) {
@@ -383,6 +386,10 @@ function providerErrorCode(data: any): number | null {
  */
 function classifyInstagramProviderError(message: string, providerCode: number | null): string {
   const m = String(message || '').toLowerCase();
+  // رمز منتهٍ/غير صالح: Meta code 190 مع «Session has expired»/«validate access token».
+  if (providerCode === 190 || /session has expired|access token|validate access|expired|oauth/.test(m)) {
+    return 'TOKEN_EXPIRED';
+  }
   if (providerCode === 9007 || /download (the )?(video|image|media)|couldn'?t? (download|fetch)|unable to (download|fetch)|failed to (download|fetch)/.test(m)) {
     return 'MEDIA_DOWNLOAD_FAILED';
   }

@@ -553,10 +553,39 @@ export interface FacebookResult<T> {
   ok: boolean;
   data: T | null;
   error?: string;
+  /** كود داخلي مصنَّف (لا يُخفي رسالة Meta). */
+  code?: string;
+  /** كود خطأ Meta الحقيقي (مثلاً 100/9007) إن وُجد. */
+  providerCode?: number | null;
 }
 
 function errorMessage(data: any, fallback: string): string {
   return String(data?.error?.message || data?.error_description || data?.error || fallback);
+}
+
+/** يستخرج كود خطأ Meta الحقيقي من استجابة Graph (بلا اختراع). */
+export function facebookProviderErrorCode(data: any): number | null {
+  const c = data?.error?.code;
+  const n = Number(c);
+  return Number.isFinite(n) ? n : null;
+}
+
+/**
+ * يصنّف خطأ نشر/وسائط Facebook بـكود داخلي صريح دون إخفاء رسالة Meta. يبقى
+ * الرمز الحقيقي متاحاً في `providerCode` ليعرضه المالك مع النص كما هو.
+ */
+export function classifyFacebookProviderError(message: string, providerCode: number | null): string {
+  const m = String(message || '').toLowerCase();
+  if (providerCode === 9007 || /could not be fetched|couldn't be downloaded|download|fetch.*url|media.*url/.test(m)) {
+    return 'MEDIA_DOWNLOAD_FAILED';
+  }
+  if (providerCode === 190 || /access token|session has expired|expired|validate access/.test(m)) {
+    return 'TOKEN_EXPIRED';
+  }
+  if (providerCode === 10 || /permission|no permission/.test(m)) {
+    return 'PERMISSION_DENIED';
+  }
+  return 'PROVIDER_ERROR';
 }
 
 /** حقول Graph API التشخيصية المسموح تسجيلها — بلا أي رمز أو سرّ. */
@@ -799,7 +828,11 @@ export class FacebookClient {
         body: new URLSearchParams({ message }).toString(),
       });
       const data = await res.json().catch(() => null);
-      if (!res.ok || data?.error || !data?.id) return { ok: false, data: null, error: errorMessage(data, 'فشل النشر على صفحة Facebook.') };
+      if (!res.ok || data?.error || !data?.id) {
+        const msg = errorMessage(data, 'فشل النشر على صفحة Facebook.');
+        const pCode = facebookProviderErrorCode(data);
+        return { ok: false, data: null, error: msg, providerCode: pCode, code: classifyFacebookProviderError(msg, pCode) };
+      }
       return { ok: true, data: { providerPostId: String(data.id) } };
     } catch (e: any) {
       return { ok: false, data: null, error: String(e?.message || 'فشل الاتصال بـFacebook.') };
@@ -823,7 +856,7 @@ export class FacebookClient {
         body: buildPublishVideoBody(fileUrl, description).toString(),
       });
       const data = await res.json().catch(() => null);
-      if (!res.ok || data?.error || !data?.id) { console.error(formatFacebookGraphError(extractFacebookGraphError(data, `POST /${pageId}/videos`, res.status))); return { ok: false, data: null, error: errorMessage(data, 'فشل نشر الفيديو على صفحة Facebook.') }; }
+      if (!res.ok || data?.error || !data?.id) { console.error(formatFacebookGraphError(extractFacebookGraphError(data, `POST /${pageId}/videos`, res.status))); const msg = errorMessage(data, 'فشل نشر الفيديو على صفحة Facebook.'); const pCode = facebookProviderErrorCode(data); return { ok: false, data: null, error: msg, providerCode: pCode, code: classifyFacebookProviderError(msg, pCode) }; }
       return { ok: true, data: { providerPostId: String(data.id) } };
     } catch (e: any) {
       return { ok: false, data: null, error: String(e?.message || 'فشل الاتصال بـFacebook.') };

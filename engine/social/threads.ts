@@ -135,10 +135,29 @@ function providerErrorCode(data: any): number | null {
  */
 function classifyThreadsProviderError(message: string, providerCode: number | null): string {
   const m = String(message || '').toLowerCase();
+  // رمز منتهٍ/غير صالح: Meta يعيد code 190 مع «Session has expired» أو «validate
+  // access token» — نُعلنها صراحةً كي يُجدَّد الرمز بدل إخفائها تحت CLIENT_ERROR.
+  if (providerCode === 190 || /session has expired|access token|validate access|expired|oauth/.test(m)) return 'TOKEN_EXPIRED';
   const mediaRelated = providerCode === 9007
     || /download|video_url|image_url|media|video|image|fetch the (video|image)|couldn'?t? (get|download)/.test(m);
   if (mediaRelated && /download|video|image|media|fetch/.test(m)) return 'MEDIA_DOWNLOAD_FAILED';
   return 'CLIENT_ERROR';
+}
+
+/** جسم تجديد الرمز الطويل: grant_type=th_exchange_token بلا client_secret (وثيقة Threads). */
+export function buildThreadsRefreshBody(accessToken: string): URLSearchParams {
+  const body = new URLSearchParams();
+  body.set('grant_type', 'th_exchange_token');
+  body.set('access_token', accessToken);
+  return body;
+}
+
+/** يفكّ استجابة تجديد Threads — لا رمز بلا `access_token` صريح. */
+export function parseThreadsRefreshResponse(data: any): { ok: boolean; accessToken?: string; expiresIn?: number } {
+  const token = data?.access_token ? String(data.access_token) : '';
+  if (!token) return { ok: false };
+  const n = Number(data?.expires_in);
+  return { ok: true, accessToken: token, expiresIn: Number.isFinite(n) && n > 0 ? n : undefined };
 }
 
 export class ThreadsClient {
@@ -146,6 +165,56 @@ export class ThreadsClient {
     private readonly fetchImpl: ThreadsFetch,
     private readonly baseUrl?: string,
   ) {}
+
+  /**
+   * يبادل رمز التفويض برمز قصير الأجل (`POST /oauth/access_token`). الرمز
+   * القصير عمره ~ساعة، لذا يجب إطالته فوراً عبر `exchangeLongLived`.
+   */
+  async exchangeCode(input: { clientId: string; clientSecret: string; code: string; redirectUri: string }): Promise<ThreadsResult<{ accessToken: string }>> {
+    try {
+      const u = new URL(`${threadsGraphBase(this.baseUrl)}/oauth/access_token`);
+      const res = await this.fetchImpl(u.toString(), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams({ client_id: input.clientId, client_secret: input.clientSecret, grant_type: 'authorization_code', redirect_uri: input.redirectUri, code: input.code }).toString(),
+      });
+      const data = await res.json().catch(() => null);
+      const accessToken = typeof data?.access_token === 'string' && data.access_token ? data.access_token : '';
+      if (!res.ok || !accessToken) {
+        const msg = errorMessage(data, 'فشل تبادل رمز Threads.');
+        const pCode = providerErrorCode(data);
+        return { ok: false, data: null, error: msg, code: classifyThreadsProviderError(msg, pCode), providerCode: pCode };
+      }
+      return { ok: true, data: { accessToken } };
+    } catch (e: any) {
+      return { ok: false, data: null, error: String(e?.message || 'فشل الاتصال بـThreads.'), code: 'NETWORK_ERROR' };
+    }
+  }
+
+  /**
+   * يُطيل الرمز القصير إلى رمز طويل الأجل (`GET /access_token?grant_type=th_exchange_token`
+   * مع client_secret على الخادم — وثيقة Threads). بدونه ينتهي الرمز خلال ساعة.
+   */
+  async exchangeLongLived(input: { clientSecret: string; shortToken: string }): Promise<ThreadsResult<{ accessToken: string; expiresIn: number | null }>> {
+    try {
+      const u = new URL(`${threadsGraphBase(this.baseUrl)}/access_token`);
+      u.searchParams.set('grant_type', 'th_exchange_token');
+      u.searchParams.set('client_secret', input.clientSecret);
+      u.searchParams.set('access_token', input.shortToken);
+      const res = await this.fetchImpl(u.toString(), { method: 'GET' });
+      const data = await res.json().catch(() => null);
+      const accessToken = typeof data?.access_token === 'string' && data.access_token ? data.access_token : '';
+      if (!res.ok || !accessToken) {
+        const msg = errorMessage(data, 'فشل إطالة رمز Threads.');
+        const pCode = providerErrorCode(data);
+        return { ok: false, data: null, error: msg, code: classifyThreadsProviderError(msg, pCode), providerCode: pCode };
+      }
+      const n = Number(data?.expires_in);
+      return { ok: true, data: { accessToken, expiresIn: Number.isFinite(n) && n > 0 ? n : null } };
+    } catch (e: any) {
+      return { ok: false, data: null, error: String(e?.message || 'فشل الاتصال بـThreads.'), code: 'NETWORK_ERROR' };
+    }
+  }
 
   /** يثبت هوية حساب Threads (`GET /me?fields=id,username`). نفس الاستدعاء المستخدم في fetchProviderAccount. */
   async getProfile(accessToken: string): Promise<ThreadsResult<{ threadsUserId: string; username: string | null }>> {
@@ -156,10 +225,38 @@ export class ThreadsClient {
       u.searchParams.set('access_token', accessToken);
       const res = await this.fetchImpl(u.toString(), { method: 'GET' });
       const data = await res.json().catch(() => null);
-      if (!res.ok || data?.error || !data?.id) return { ok: false, data: null, error: errorMessage(data, 'تعذّر إثبات هوية حساب Threads.') };
+      if (!res.ok || data?.error || !data?.id) {
+        const msg = errorMessage(data, 'تعذّر إثبات هوية حساب Threads.');
+        const pCode = providerErrorCode(data);
+        return { ok: false, data: null, error: msg, code: classifyThreadsProviderError(msg, pCode), providerCode: pCode };
+      }
       return { ok: true, data: { threadsUserId: String(data.id), username: data.username ? String(data.username) : null } };
     } catch (e: any) {
       return { ok: false, data: null, error: String(e?.message || 'فشل الاتصال بـThreads.') };
+    }
+  }
+
+  /**
+   * يجدّد الرمز الطويل عبر GET /refresh_access_token?grant_type=th_exchange_token.
+   * لا رمز بلا `access_token` حقيقي في الاستجابة (لا نجاح وهمي).
+   */
+  async refreshLongLivedToken(accessToken: string): Promise<ThreadsResult<{ accessToken: string; expiresIn?: number }>> {
+    if (!accessToken) return { ok: false, data: null, error: 'رمز الوصول مطلوب للتجديد.' };
+    try {
+      const u = new URL(threadsGraphUrl('/refresh_access_token', this.baseUrl));
+      u.searchParams.set('grant_type', 'th_exchange_token');
+      u.searchParams.set('access_token', accessToken);
+      const res = await this.fetchImpl(u.toString(), { method: 'GET' });
+      const data = await res.json().catch(() => null);
+      const parsed = parseThreadsRefreshResponse(data);
+      if (!res.ok || !parsed.ok || !parsed.accessToken) {
+        const msg = errorMessage(data, 'تعذّر تجديد رمز Threads.');
+        const pCode = providerErrorCode(data);
+        return { ok: false, data: null, error: msg, code: classifyThreadsProviderError(msg, pCode), providerCode: pCode };
+      }
+      return { ok: true, data: { accessToken: parsed.accessToken, expiresIn: parsed.expiresIn } };
+    } catch (e: any) {
+      return { ok: false, data: null, error: String(e?.message || 'فشل الاتصال بـThreads.'), code: 'NETWORK_ERROR' };
     }
   }
 
@@ -199,7 +296,11 @@ export class ThreadsClient {
         body: buildThreadsPublishBody(creationId).toString(),
       });
       const data = await res.json().catch(() => null);
-      if (!res.ok || data?.error || !data?.id) return { ok: false, data: null, error: errorMessage(data, 'فشل نشر الحاوية عبر Threads.') };
+      if (!res.ok || data?.error || !data?.id) {
+        const msg = errorMessage(data, 'فشل نشر الحاوية عبر Threads.');
+        const pCode = providerErrorCode(data);
+        return { ok: false, data: null, error: msg, code: classifyThreadsProviderError(msg, pCode), providerCode: pCode };
+      }
       return { ok: true, data: { providerPostId: String(data.id) } };
     } catch (e: any) {
       return { ok: false, data: null, error: String(e?.message || 'فشل الاتصال بـThreads.') };

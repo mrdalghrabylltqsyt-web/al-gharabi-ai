@@ -42,7 +42,7 @@ async function run(): Promise<void> {
     const c = new InstagramClient(fakeFetch(400, { error: { message: realMessage, code: 190 } }));
     const res = await c.createMediaContainer('IG1', 'tok', { videoUrl: 'https://drive.example/x' });
     check('instagram: رسالة خطأ المصادقة تصل حرفياً', res.error === realMessage, String(res.error));
-    check('instagram: لا يُكلَّس خطأ وسائط زوراً', res.code === 'CLIENT_ERROR', String(res.code));
+    check('instagram: رمز منتهٍ (190) يُصنَّف TOKEN_EXPIRED لا خطأ وسائط', res.code === 'TOKEN_EXPIRED', String(res.code));
   }
 
   // 3) ثريدز: خطأ تنزيل الفيديو من رابط عام (Meta 9007) — الرسالة والكود الحقيقيان.
@@ -55,13 +55,48 @@ async function run(): Promise<void> {
     check('threads: الكود الحقيقي MEDIA_DOWNLOAD_FAILED لا PROVIDER_ERROR', res.code === 'MEDIA_DOWNLOAD_FAILED', String(res.code));
   }
 
-  // 4) ثريدز: خطأ غير وسائطي — كود عام لا PROVIDER_ERROR ثابت مضلِّل.
+  // 4) ثريدز: خطأ غير وسائطي (رمز منتهٍ 190) — كود حقيقي لا PROVIDER_ERROR ثابت مضلِّل.
   {
-    const realMessage = 'The access token is invalid.';
+    const realMessage = 'Error validating access token: Session has expired on Monday.';
     const c = new ThreadsClient(fakeFetch(400, { error: { message: realMessage, code: 190 } }));
     const res = await c.createMediaContainer('TH1', 'tok', { text: 'hi' });
     check('threads: الرسالة الحقيقية تصل', res.error === realMessage, String(res.error));
-    check('threads: لا تثبيت PROVIDER_ERROR', res.code === 'CLIENT_ERROR', String(res.code));
+    check('threads: انتهاء الرمز يُصنَّف TOKEN_EXPIRED لا CLIENT_ERROR', res.code === 'TOKEN_EXPIRED', String(res.code));
+  }
+
+  // 4ب) Facebook: كود Meta الحقيقي (100) ورقمه يُمرَّران مع الرسالة الحقيقية.
+  {
+    const { FacebookClient } = await import('../social/facebook');
+    const realMessage = '(#100) No permission to publish the video';
+    const c = new FacebookClient(fakeFetch(400, { error: { message: realMessage, code: 100 } }));
+    const res = await c.publishVideoToPage('PAGE1', 'tok', 'https://drive.example/v.mp4', 'desc');
+    check('facebook: الرسالة الحقيقية (#100) تصل حرفياً', res.error === realMessage, String(res.error));
+    check('facebook: كود Meta الخام (100) مُمرَّر', res.providerCode === 100, String(res.providerCode));
+    check('facebook: الكود المصنَّف صريح (PERMISSION_DENIED)', res.code === 'PERMISSION_DENIED', String(res.code));
+    // رمز منتهٍ 190 ⇒ TOKEN_EXPIRED
+    const c2 = new FacebookClient(fakeFetch(400, { error: { message: 'Error validating access token: Session has expired', code: 190 } }));
+    const res2 = await c2.publishToPage('PAGE1', 'tok', 'hello');
+    check('facebook: انتهاء الرمز (190) يُصنَّف TOKEN_EXPIRED', res2.code === 'TOKEN_EXPIRED', String(res2.code));
+  }
+
+  // 4ج) Instagram: بناء حاوية الفيديو غير الريلز يتضمن media_type=VIDEO (العطل المُثبت).
+  {
+    const { buildMediaContainerBody } = await import('../social/instagram');
+    const vid = buildMediaContainerBody({ videoUrl: 'https://drive.example/v.mp4', caption: 'عرض' });
+    check('instagram: الفيديو غير الريلز يضع media_type=VIDEO', vid.body.get('media_type') === 'VIDEO', String(vid.body.get('media_type')));
+    check('instagram: الفيديو يضع video_url', vid.body.get('video_url') === 'https://drive.example/v.mp4');
+    const reel = buildMediaContainerBody({ videoUrl: 'https://drive.example/v.mp4', reel: true });
+    check('instagram: الريلز يبقى media_type=REELS', reel.body.get('media_type') === 'REELS', String(reel.body.get('media_type')));
+    const img = buildMediaContainerBody({ imageUrl: 'https://drive.example/p.jpg' });
+    check('instagram: الصورة لا تضع media_type (الافتراضي صور)', img.body.get('media_type') === null && img.body.get('image_url') === 'https://drive.example/p.jpg');
+  }
+
+  // 4د) Telegram: كود الخطأ الحقيقي (403/400) يُصنَّف ولا تُخفى الرسالة.
+  {
+    const { telegramErrorCode } = await import('../social/telegram');
+    check('telegram: حجب البوت (403) ⇒ PERMISSION_DENIED', telegramErrorCode('Forbidden: bot was blocked by the user', 403) === 'PERMISSION_DENIED');
+    check('telegram: chat not found (400) ⇒ BAD_REQUEST', telegramErrorCode('Bad Request: chat not found', 400) === 'BAD_REQUEST');
+    check('telegram: خطأ عام ⇒ PROVIDER_ERROR', telegramErrorCode('some unknown', 500) === 'PROVIDER_ERROR');
   }
 
   // 5) الواجهة: عرض الكود والرسالة معاً (لا إخفاء لأحدهما).

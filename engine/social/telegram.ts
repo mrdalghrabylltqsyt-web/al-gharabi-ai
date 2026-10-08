@@ -147,6 +147,19 @@ export interface TelegramSendRequest {
   replyToMessageId?: string;
 }
 
+/**
+ * يصنّف خطأ Telegram بـكود داخلي صريح دون إخفاء الوصف الحقيقي. لا يُخترع:
+ * 403 «bot was blocked»/«not enough rights» ⇒ PERMISSION_DENIED؛ 400 ⇒ BAD_REQUEST؛
+ * بقية الحالات ⇒ PROVIDER_ERROR. الوصف الحقيقي يبقى في `error`.
+ */
+export function telegramErrorCode(description: unknown, errorCode: number | null): string {
+  const d = String(description || '').toLowerCase();
+  if (errorCode === 403 || /blocked|not enough rights|forbidden|bot was kicked/.test(d)) return 'PERMISSION_DENIED';
+  if (errorCode === 400 || /chat not found|chat_id is empty|message text is empty/.test(d)) return 'BAD_REQUEST';
+  if (errorCode === 401 || /unauthorized|token/.test(d)) return 'TOKEN_INVALID';
+  return 'PROVIDER_ERROR';
+}
+
 /** يبني جسم طلب sendMessage الرسمي (حتمي، قابل للاختبار بلا شبكة). */
 export function buildSendMessageBody(req: TelegramSendRequest): Record<string, unknown> {
   const body: Record<string, unknown> = { chat_id: req.chatId, text: req.text };
@@ -171,6 +184,10 @@ export interface TelegramSendResult {
   providerMessageId: string | null;
   receipt: Record<string, unknown> | null;
   error?: string;
+  /** كود خطأ Telegram الحقيقي (مثلاً 403/400) — لا يُخترع. */
+  providerCode?: number | null;
+  /** كود داخلي مصنَّف صريح بدل رسالة عامة. */
+  code?: string;
 }
 
 export interface TelegramGetMeResult {
@@ -299,7 +316,9 @@ export class TelegramClient {
       });
       const data = await res.json().catch(() => null);
       if (!res.ok || !data?.ok || data?.result?.message_id === undefined) {
-        return { ok: false, providerMessageId: null, receipt: null, error: String(data?.description || 'فشل إرسال الرسالة عبر Telegram.') };
+        // نُمرّر وصف Telegram الحقيقي + error_code كما هو (لا رسالة عامة تُخفي السبب).
+        const pCode = Number.isFinite(Number(data?.error_code)) ? Number(data.error_code) : null;
+        return { ok: false, providerMessageId: null, receipt: null, error: String(data?.description || 'فشل إرسال الرسالة عبر Telegram.'), providerCode: pCode, code: telegramErrorCode(data?.description, pCode) };
       }
       return {
         ok: true,

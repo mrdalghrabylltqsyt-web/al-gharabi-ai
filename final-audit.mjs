@@ -3543,6 +3543,58 @@ add('watcher-advisory-not-authority',
     read('engine/tests/dr/dr.video.host.timeout.integration.test.ts').includes('طلب Range => 206'),
     'اختبار خدمة الفيديو العامة (Range 206 + توقيع مزوّر 403) مسجَّل');
 
+  // 11) إصلاحات النشر عبر المنصات العشر (Batch: publish across all 10 platforms).
+  const facebookModule = read('engine/social/facebook.ts');
+  add('facebook-provider-error-code',
+    facebookModule.includes('export function facebookProviderErrorCode') &&
+    facebookModule.includes('export function classifyFacebookProviderError') &&
+    facebookModule.includes('providerCode: pCode, code: classifyFacebookProviderError(msg, pCode)') &&
+    facebookModule.includes('providerCode?: number | null'),
+    'Facebook يُمرّر كود Meta الحقيقي (providerCode) والكود المصنَّف بدل رسالة عامة');
+  const instagramModule = read('engine/social/instagram.ts');
+  add('instagram-video-media-type',
+    instagramModule.includes("body.set('media_type', 'VIDEO');") &&
+    instagramModule.includes("body.set('media_type', 'REELS');"),
+    'Instagram يضع media_type=VIDEO للفيديو غير الريلز (إصلاح (#100) The parameter image_url is required)');
+  const threadsModule = read('engine/social/threads.ts');
+  add('threads-token-lifecycle',
+    threadsModule.includes('async exchangeCode(') &&
+    threadsModule.includes('async exchangeLongLived(') &&
+    threadsModule.includes('async refreshLongLivedToken(') &&
+    threadsModule.includes('export function buildThreadsRefreshBody') &&
+    threadsModule.includes("body.set('grant_type', 'th_exchange_token')"),
+    'Threads يملك دورة حياة الرمز كاملة: تبادل + إطالة (th_exchange_token) + تجديد');
+  add('threads-token-refresh-wired',
+    server.includes('async function ensureThreadsAccessToken') &&
+    server.includes('async function withThreadsToken') &&
+    server.includes('await withThreadsToken((token) => threadsClient().createMediaContainer') &&
+    server.includes("audit(\"system\", \"threads_token_refreshed\", \"auto\")"),
+    'نشر Threads يجدّد الرمز الطويل تلقائياً قبل الاستخدام (إصلاح «Session has expired»)');
+  add('threads-token-expired-classified',
+    threadsModule.includes("return 'TOKEN_EXPIRED';") &&
+    /providerCode === 190 \|\| \/session has expired/.test(threadsModule),
+    'Threads يصنّف انتهاء الرمز (190/Session has expired) TOKEN_EXPIRED بدل إخفائه');
+  const telegramModule = read('engine/social/telegram.ts');
+  add('telegram-error-code',
+    telegramModule.includes('export function telegramErrorCode') &&
+    telegramModule.includes('providerCode: pCode, code: telegramErrorCode(') &&
+    telegramModule.includes('providerCode?: number | null'),
+    'Telegram يُمرّر error_code الحقيقي (403/400) والكود المصنَّف بدل رسالة عامة');
+  add('publish-no-connector-external-setup',
+    /if \(!hasRealConnector\(platform\)\) \{[\s\S]{0,200}?EXTERNAL_SETUP_REQUIRED[\s\S]{0,200}?const conn: any = platformConnections\.get\(platform\)/.test(server),
+    'النشر يعلن EXTERNAL_SETUP_REQUIRED لمنصة بلا موصل منفّذ قبل فحص الاتصال (لا NOT_CONNECTED المضلِّل)');
+  add('publish-all-platforms-tests',
+    read('engine/tests/platform.integration.test.ts').includes("code === 'EXTERNAL_SETUP_REQUIRED'") &&
+    read('engine/tests/publish.provider.error.test.ts').includes('media_type=VIDEO') &&
+    read('engine/tests/threads.connector.test.ts').includes('TOKEN_EXPIRED'),
+    'اختبارات النشر تغطي: EXTERNAL_SETUP_REQUIRED + media_type=VIDEO + تصنيف انتهاء رمز Threads');
+  add('health-no-customer-data-regression',
+    server.includes('youtubeWatcher: watcherStatusBlockPublic()') &&
+    !/youtubeWatcher: watcherStatusBlock\(\)/.test(server) &&
+    read('engine/tests/health.privacy.test.ts').includes("!healthKeys.has('replyText')") &&
+    read('engine/tests/health.privacy.test.ts').includes("!healthKeys.has('attentionRequired')"),
+    'منع رجوع تسريب بيانات العملاء إلى /api/health و/api/readiness (لا replyText/attentionRequired في النقطتين العامتين)');
+
   // 10) AGENTS.md: عدد فحوصات final-audit مطابق للفعلي (يُعَدّ من نص الملف نفسه).
   const auditCount = (read('final-audit.mjs').match(/^\s*add\(/gm) || []).length;
   add('agents-audit-count-accurate',

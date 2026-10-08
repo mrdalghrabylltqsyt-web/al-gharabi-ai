@@ -160,7 +160,9 @@ function unitTests(): void {
   const reelContainer = buildMediaContainerBody({ videoUrl: 'https://x/y.mp4', caption: 'ريل', reel: true });
   check('حاوية الريل تحمل media_type=REELS', reelContainer.ok && reelContainer.body.get('media_type') === 'REELS' && reelContainer.mediaKind === 'reel');
   const videoContainer = buildMediaContainerBody({ videoUrl: 'https://x/y.mp4' });
-  check('حاوية الفيديو تحمل video_url بلا media_type', videoContainer.ok && videoContainer.body.get('video_url') === 'https://x/y.mp4' && videoContainer.body.get('media_type') === null && videoContainer.mediaKind === 'video');
+  // إصلاح جذري: الفيديو غير الريلز يتطلب media_type=VIDEO صراحةً (وثيقة Meta)؛ بغيابه
+  // يرد Graph بـ(#100) The parameter image_url is required — العطل المُثبت سابقاً.
+  check('حاوية الفيديو غير الريلز تحمل media_type=VIDEO', videoContainer.ok && videoContainer.body.get('video_url') === 'https://x/y.mp4' && videoContainer.body.get('media_type') === 'VIDEO' && videoContainer.mediaKind === 'video');
   const textOnly = buildMediaContainerBody({ caption: 'نص فقط' });
   check('نص فقط مرفوض صراحةً (Instagram لا ينشر نصاً)', !textOnly.ok && textOnly.mediaKind === null);
   check('جسم النشر يحمل creation_id', buildPublishContainerBody('C1').get('creation_id') === 'C1');
