@@ -674,6 +674,41 @@ export class FacebookClient {
     }
   }
 
+  /**
+   * يفحص رمزاً عبر `GET /debug_token` (يستلزم app access token = client_id|client_secret).
+   * يعيد الصلاحيات الممنوحة فعلاً (`scopes`) والصلاحيات الناقصة مما يتطلبه نشر فيديو
+   * الصفحة — تشخيص حاسم لخطأ «(#100) No permission to publish the video» من دون أي
+   * تخمين: الفرق بين `pages_manage_posts` (ينجح للنص) و`pages_read_engagement` (يلزمه
+   * نشر الفيديو). لا يُعاد الرمز ولا السرّ — الحالة والنوع والصلاحيات فقط.
+   * صلاحيات نشر الفيديو المطلوبة رسمياً (Page Videos): pages_manage_posts,
+   * pages_read_engagement, pages_show_list.
+   */
+  async debugToken(inputToken: string, appAccessToken: string): Promise<FacebookResult<{ isValid: boolean; type: string | null; scopes: string[]; expiresAt: number | null; missingPublishScopes: string[] }>> {
+    if (!inputToken || !appAccessToken) return { ok: false, data: null, error: 'الرمز ورمز التطبيق مطلوبان لفحص الصلاحيات.' };
+    try {
+      const u = new URL(facebookGraphUrl('/debug_token', this.baseUrl));
+      u.searchParams.set('input_token', inputToken);
+      u.searchParams.set('access_token', appAccessToken);
+      const res = await this.fetchImpl(u.toString(), { method: 'GET' });
+      const data = await res.json().catch(() => null);
+      // رمز مُدخَل غير صالح: يرد Meta في data.data.is_valid=false بلا error.
+      // نُعلن ذلك صراحةً بدل السقوط إلى «تعذّر الفحص».
+      if (res.ok && !data?.error && data?.data && data.data.is_valid === false) {
+        return { ok: true, data: { isValid: false, type: data.data.type ? String(data.data.type) : null, scopes: [], expiresAt: null, missingPublishScopes: ['pages_manage_posts', 'pages_read_engagement', 'pages_show_list'] } };
+      }
+      if (!res.ok || data?.error || !data?.data) {
+        const ex = logAndExtractFacebookError(data, 'GET /debug_token', res.status);
+        return { ok: false, data: null, error: errorMessage(data, 'تعذّر فحص صلاحيات الرمز لدى Meta.'), providerCode: ex.providerCode, providerSubcode: ex.providerSubcode, providerTraceId: ex.providerTraceId };
+      }
+      const scopes: string[] = Array.isArray(data.data.scopes) ? data.data.scopes.map((s: any) => String(s)) : [];
+      const required = ['pages_manage_posts', 'pages_read_engagement', 'pages_show_list'];
+      const missingPublishScopes = required.filter((s) => !scopes.includes(s));
+      return { ok: true, data: { isValid: data.data.is_valid === true, type: data.data.type ? String(data.data.type) : null, scopes, expiresAt: Number.isFinite(Number(data.data.expires_at)) ? Number(data.data.expires_at) : null, missingPublishScopes } };
+    } catch (e: any) {
+      return { ok: false, data: null, error: String(e?.message || 'فشل الاتصال بـMeta.') };
+    }
+  }
+
   /** يبادل رمز OAuth برمز وصول قصير الأجل. */
   async exchangeCode(input: { clientId: string; clientSecret: string; code: string; redirectUri: string }): Promise<FacebookResult<{ accessToken: string; expiresIn: number | null }>> {
     try {

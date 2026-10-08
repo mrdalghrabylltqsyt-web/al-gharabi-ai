@@ -44,7 +44,7 @@ npm install
 npm run dev            # tsx server.ts
 npm run lint           # tsc --noEmit
 npm run build          # vite build + esbuild server.ts -> dist/server.cjs
-npm run final-audit    # node final-audit.mjs (1404 فحصاً)
+npm run final-audit    # node final-audit.mjs (1407 فحصاً)
 npm test               # storage + engine + auth + ... + db + runtime
 ```
 - التشغيل الإنتاجي: `PORT=4517 NODE_ENV=production APP_URL=http://localhost:4517 node dist/server.cjs`
@@ -4692,3 +4692,47 @@ Meta بـ**190 «Session has expired»**. الأسوأ: كان الفشل يتك
 
 **لم يُمسّ:** Gemini/الـfirewall، OAuth/scopes، المصادقة، قاعدة البيانات، بقية المنصّات
 (Telegram/TikTok/YouTube)، ونموذج الجدولة. لا تدوير لأي مفتاح، ولا سرّ جديد.
+
+## تشخيص #100 قابل للسحب + فحص صلاحية نشر فيديو الصفحة (Facebook) — Real Root Cause (2026-10-08)
+
+**جذر المشكلة المؤكَّد (لا تخمين):** خطأ Meta «(#100) No permission to publish the video»
+على `POST /{page-id}/videos` يظهر لأن نشر **الفيديو** على الصفحة يتطلب صلاحية
+`pages_read_engagement` إضافة إلى `pages_manage_posts` (وثيقة Meta — Page Videos)، بينما
+نشر **النصّ** عبر `/feed` يكتفي بـ`pages_manage_posts`. صفحة لا تمنح `pages_read_engagement`
+ينجح عندها النصّ ويفشل الفيديو بـ#100. الكود سليم (يستخدم Page Access Token و`file_url`)،
+والعائق إعداد صلاحيات لدى Meta يحتاج جلسة المالك.
+
+**الفجوة الحقيقية التي أُصلحت (قابلة للإصلاح برمجياً):** رسالة Meta الكاملة + `error.code`
++ `error_subcode` + `fbtrace_id` كانت تُسجَّل في سجلات Render فقط، فتفنى مع العملية ولا
+يمكن سحبها. لا سجل أخطاء محفوظ، ولا وسيلة للمالك لمعرفة الصلاحية الناقصة.
+
+**الإصلاح:**
+- `engine/social/publishing.ts`: `PublishRecord` يحمل الآن `code`/`providerCode`/
+  `providerSubcode`/`providerTraceId`، و`buildPublishRecord` يمرّرها.
+- `server.ts`: مسارات Facebook/Instagram/Threads تُحفظ بها رسالة المزود الكاملة + الأكواد
+  في `workspace.publishRecords` عبر محوّل الحالة (تصمد بعد restart/cold start). فشل إنشاء
+  حاوية Instagram (مصدر `CLIENT_ERROR: Invalid parameter`) يُحفظ أيضاً.
+- مسار owner جديد `GET /api/platforms/publish-diagnostics?platform=&state=&limit=` يُرجع
+  السجلات الفاشلة برسالة المزود الكاملة وأكوادها بلا أي سرّ — بدل الاعتماد على سجلات Render.
+- `engine/social/facebook.ts`: `debugToken(inputToken, appAccessToken)` يفحص
+  `GET /debug_token` ويعيد `is_valid`/`scopes`/`missingPublishScopes` (الصلاحيات الناقصة
+  من `pages_manage_posts`+`pages_read_engagement`+`pages_show_list`).
+- مسار owner جديد `GET /api/platforms/facebook/video-permission-diagnosis`: يعرض
+  الصلاحيات الممنوحة فعلاً والناقصة و`videoPublishReady` + السبب الدقيق. لا يكشف أي رمز/سرّ.
+
+**إجراء المالك (إلزامي، لا ينفّذه أي وكيل — يحتاج جلسته على Meta):**
+1. افتح `/api/platforms/facebook/video-permission-diagnosis` (بجلسة المالك) بعد النشر.
+2. إن ظهرت `pages_read_engagement` في `missingVideoPublishScopes`: أضفها لـUse Case/Configuration
+   في Meta App Dashboard، ثم أعد التفويض (تسجيل خروج/دخول عبر «بدء الربط») لتُضمَّن في الرمز.
+   Advanced Access لهذه الصلاحية قد يحتاج App Review (وضع Live).
+3. إن فشل الفيديو رغم اكتمال الصلاحيات: الخطأ الكامل + fbtrace_id صار في
+   `/api/platforms/publish-diagnostics` — قدّمه لدعم Meta مع fbtrace_id.
+
+**اختبار:** `facebook.connector.test.ts` = **277 فحصاً** (المجموعة 23: نشر فيديو يرد #100
+بحقوله الحقيقية => يُحفظ => يُسحب من المسار المحمي بلا سرّ => يصمد بعد restart؛ وفحص
+`debug_token` يكشف `pages_read_engagement` الناقصة). فحوص final-audit الثلاثة الجديدة:
+`facebook-publish-diagnostics-persisted`، `facebook-video-permission-diagnosis`،
+`facebook-publish-diagnostics-test` (**1407 إجمالاً**).
+
+**لم يُمسّ:** Gemini/الـfirewall، OAuth/scopes، المصادقة، قاعدة البيانات، DR/الاستعادة،
+المنصّات الأخرى، والنقطتان العامتان `/api/health` و`/api/readiness` (بلا حقول حساسة).
