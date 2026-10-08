@@ -673,6 +673,26 @@ webhook حقيقي بـ401 بلا سبب ظاهر.
   `ApprovalWorkflowView` زر «نشر الآن» يستدعي `apiService.publishWorkspaceContentMultiPlatform`
   ويعرض حالة كل منصة.
 
+**إرفاق الفيديو داخل `ContentEngineView` (بدل عزله في «مدير تشغيل YouTube» فقط):**
+طلب مالك صريح — كان رفع الفيديو موجوداً فقط في `YouTubeContentQueuePanel` (داخل شاشة
+منفصلة)، فلم تكن شاشة توليد المحتوى الموحّدة تعرض أي حقل رفع. أُضيف حقل رفع فيديو إلى
+`ContentEngineView.tsx` نفسه (نفس قيود `YouTubeContentQueuePanel`: MP4/WebM/MOV/MKV/AVI،
+حتى 12MB، تحويل base64 محلي في المتصفح — لا تغيير خلفي). **لا ادّعاء دعم موحَّد وهمي**:
+الواجهة تعرض صراحةً قدرة كل منصة محدّدة:
+- يوتيوب فقط يقبل رفعاً حقيقياً اليوم → عند الإرسال، الفيديو يذهب لنفس طابور مراجعة
+  يوتيوب الحقيقي (`apiService.createYouTubeContentDraft` → `/api/platforms/youtube/content/drafts`)
+  **قبل** إنشاء المنشور النصي العام؛ فشل الإرسال الفعلي يوقف العملية بخطأ واضح (لا نجاح
+  وهمي) ولا يُنشأ منشور بصمت عن الفشل.
+- إنستغرام/تيك توك: الباكند هنا يقبل `videoUrl` عاماً فقط (سحب، ليس رفعاً مباشراً —
+  Instagram Graph API وTikTok `PULL_FROM_URL` حسب `engine/social/instagram.ts`/`tiktok.ts`؛
+  لا مسار `FILE_UPLOAD` مفعّل في `executePlatformPublish` اليوم). الواجهة تعرض حقل رابط
+  فيديو عام اختيارياً، وتوضّح أنه مطلوب فعلياً وقت النشر لا وقت الإنشاء.
+- فيسبوك/تيليغرام: **لا يوجد كود رفع/إرسال فيديو إطلاقاً** في `engine/social/facebook.ts`/
+  `telegram.ts` أو في `executePlatformPublish` — الواجهة تُعلن ذلك صراحةً بدل الصمت.
+  بناء دعم فيديو حقيقي لهما (Graph API `/videos`، Telegram `sendVideo`) أو استضافة تلقائية
+  لإنستغرام/تيك توك (مثلاً عبر Drive) **لم يُنفَّذ بعد** — يحتاج قراراً معمارياً من المالك
+  (الاستضافة العامة للفيديو لها تبعات خصوصية/تكلفة).
+
 ### تقسيم العمل (العقول الستة ↔ العقل المركزي)
 وحدة المصدر الواحد `engine/brain/team/executionPolicy.ts`:
 - `SIX_AGENT_ALLOWED_ACTIONS` = **4 أفعال حتمية فقط** بلا Gemini: `classify_tag_comment`،

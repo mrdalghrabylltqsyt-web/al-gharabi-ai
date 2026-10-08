@@ -19,8 +19,38 @@ import {
   Eye,
   Sliders,
   ChevronDown,
+  Upload,
+  X,
+  AlertTriangle,
 } from 'lucide-react';
 import { SocialPlatformId, ContentFormatType } from '../../types';
+
+// نفس حدود/قيود مراجعة فيديو يوتيوب في YouTubeContentQueuePanel — مصدر واحد للقيم
+// حتى لا يختلف السلوك بين الشاشتين. الفيديو الحقيقي (رفع فعلي) مدعوم اليوم ليوتيوب
+// فقط؛ المنصات الأخرى إما تحتاج رابطاً عاماً (إنستغرام/تيك توك) أو لا تدعم الفيديو
+// إطلاقاً بعد (فيسبوك/تيليغرام) — الواجهة تصرّح بهذا بدل الادّعاء الكاذب بدعم شامل.
+const MAX_VIDEO_MB = 12;
+const ALLOWED_VIDEO_TYPES = ['video/mp4', 'video/webm', 'video/quicktime', 'video/x-matroska', 'video/x-msvideo'];
+const CONTENT_UPLOAD_MAX_BYTES = MAX_VIDEO_MB * 1024 * 1024;
+const VIDEO_REAL_UPLOAD_PLATFORMS: SocialPlatformId[] = ['youtube'];
+const VIDEO_PUBLIC_URL_PLATFORMS: SocialPlatformId[] = ['instagram', 'tiktok'];
+
+const fmtBytes = (n: number) => {
+  if (!n) return '0';
+  if (n >= 1048576) return `${(n / 1048576).toFixed(2)} MB`;
+  if (n >= 1024) return `${(n / 1024).toFixed(1)} KB`;
+  return `${n} B`;
+};
+// يقرأ الملف فعلياً ويحوّله base64 داخلياً (النقل الداخلي) — المستخدم لا يرى base64 إطلاقاً.
+const fileToBase64 = (file: File) => new Promise<string>((resolve, reject) => {
+  const reader = new FileReader();
+  reader.onerror = () => reject(new Error('تعذر قراءة الملف'));
+  reader.onload = () => {
+    const s = String(reader.result || '');
+    resolve(s.includes(',') ? s.slice(s.indexOf(',') + 1) : s);
+  };
+  reader.readAsDataURL(file);
+});
 
 export const ContentEngineView: React.FC = () => {
   const { products, platforms, createPost, showToast, setActiveTab, currentUser, showroomInfo } = useApp();
@@ -40,8 +70,38 @@ export const ContentEngineView: React.FC = () => {
   const [adaptedVersions, setAdaptedVersions] = useState<Record<string, string>>({});
   const [activePreviewPlatform, setActivePreviewPlatform] = useState<SocialPlatformId>('tiktok');
   const [postTitle, setPostTitle] = useState<string>('');
+  const [video, setVideo] = useState<{ name: string; size: number; type: string; base64: string } | null>(null);
+  const [videoError, setVideoError] = useState<string | null>(null);
+  const [publicVideoUrl, setPublicVideoUrl] = useState<string>('');
+  const [isQueuingYouTube, setIsQueuingYouTube] = useState<boolean>(false);
 
   const selectedProduct = products.find((p) => p.id === selectedProductId);
+
+  const onPickVideo = async (file: File | null | undefined) => {
+    setVideoError(null);
+    if (!file) { setVideo(null); return; }
+    if (!ALLOWED_VIDEO_TYPES.includes(file.type) && file.type !== '') {
+      setVideo(null); setVideoError(`نوع الفيديو غير مدعوم (${file.type}). المسموح: MP4/WebM/MOV/MKV/AVI.`); return;
+    }
+    if (file.size > CONTENT_UPLOAD_MAX_BYTES) {
+      setVideo(null); setVideoError(`حجم الفيديو أكبر من الحد (${MAX_VIDEO_MB}MB). اختر ملفاً أصغر.`); return;
+    }
+    if (file.size < 12) { setVideo(null); setVideoError('الملف أصغر من أن يكون فيديو صالحاً.'); return; }
+    try {
+      const base64 = await fileToBase64(file);
+      if (!base64) { setVideo(null); setVideoError('تعذر قراءة محتوى الملف.'); return; }
+      setVideo({ name: file.name, size: file.size, type: file.type || 'video/mp4', base64 });
+    } catch (e: any) {
+      setVideo(null); setVideoError(e?.message || 'تعذر قراءة الملف.');
+    }
+  };
+  const clearVideo = () => { setVideo(null); setVideoError(null); };
+
+  const videoCapablePlatforms = selectedPlatforms.filter((p) => VIDEO_REAL_UPLOAD_PLATFORMS.includes(p));
+  const videoUrlNeededPlatforms = selectedPlatforms.filter((p) => VIDEO_PUBLIC_URL_PLATFORMS.includes(p));
+  const videoUnsupportedPlatforms = selectedPlatforms.filter(
+    (p) => !VIDEO_REAL_UPLOAD_PLATFORMS.includes(p) && !VIDEO_PUBLIC_URL_PLATFORMS.includes(p),
+  );
 
   // Content type descriptors
   const contentTypesList: Array<{ id: ContentFormatType; label: string; icon: any; desc: string }> = [
@@ -94,21 +154,48 @@ export const ContentEngineView: React.FC = () => {
     }
   };
 
-  const handleSendToApproval = (status: 'draft' | 'review') => {
+  const handleSendToApproval = async (status: 'draft' | 'review') => {
     if (!generatedResult) {
       showToast('الرجاء توليد المحتوى أولاً قبل الحفظ');
       return;
     }
 
     const title = postTitle || (selectedProduct ? `عرض ${selectedProduct.name}` : 'منشور جديد');
+
+    // الفيديو الحقيقي (رفع فعلي) مدعوم اليوم ليوتيوب فقط — يمرّ عبر نفس طابور
+    // المراجعة الحقيقي المستخدم في "مدير تشغيل YouTube" (لا مسار مختصر يتجاوز
+    // الحوكمة). لا نُعلن نجاحاً هنا إن فشل الخادم فعلياً.
+    if (video && videoCapablePlatforms.length > 0) {
+      setIsQueuingYouTube(true);
+      try {
+        const draftPayload: Record<string, any> = {
+          title,
+          description: adaptedVersions['youtube'] || generatedResult,
+          tags: ['تقسيط_منتجات', 'معرض_الغرابي'],
+          privacyStatus: 'public',
+          mimeType: video.type || 'video/mp4',
+          filename: video.name,
+          videoBase64: video.base64,
+          productId: selectedProduct?.id || undefined,
+        };
+        const res = await apiService.createYouTubeContentDraft(draftPayload);
+        showToast(`تم إرسال الفيديو إلى طابور مراجعة يوتيوب (${res?.item?.stateLabelAr || res?.item?.state || 'بانتظار المراجعة'}).`);
+      } catch (e: any) {
+        showToast(e?.message || 'تعذر إرسال الفيديو إلى طابور يوتيوب.');
+        setIsQueuingYouTube(false);
+        return; // لا نكمل حفظ المنشور النصي بصمت عن فشل حقيقي في رفع الفيديو
+      }
+      setIsQueuingYouTube(false);
+    }
+
     createPost({
       title,
-      content: generatedResult,
+      content: generatedResult + (video && publicVideoUrl ? `\n\nرابط الفيديو العام (لإنستغرام/تيك توك): ${publicVideoUrl}` : ''),
       platformVersions: adaptedVersions,
       targetPlatforms: selectedPlatforms.length ? selectedPlatforms : [primaryPlatform],
       status,
       mediaUrl: selectedProduct?.image,
-      mediaType: contentType === 'short_video' || contentType === 'script' ? 'video' : 'image',
+      mediaType: video ? 'video' : (contentType === 'short_video' || contentType === 'script' ? 'video' : 'image'),
       authorName: currentUser.name,
       authorRole: currentUser.role,
       tags: ['تقسيط_منتجات', 'معرض_الغرابي', ...selectedPlatforms],
@@ -174,6 +261,87 @@ export const ContentEngineView: React.FC = () => {
             <p className="text-[10px] text-slate-500">
               المحدَّد: {selectedPlatforms.length} منصة. النشر يُوزَّع على كل المنصات المختارة بنقرة واحدة (كل منصة بحالة مستقلة).
             </p>
+          </div>
+
+          {/* Video Attach — real upload only for YouTube today; honest status for other platforms */}
+          <div className="p-5 rounded-2xl bg-slate-900 border border-slate-800 space-y-3">
+            <label className="block text-xs font-bold text-slate-300">
+              إرفاق فيديو (اختياري):
+            </label>
+
+            {!video ? (
+              <label className="flex items-center justify-center gap-2 p-3 rounded-xl border border-dashed border-slate-700 text-slate-300 text-xs font-bold hover:bg-slate-800/60 cursor-pointer transition">
+                <Upload className="w-4 h-4 text-emerald-400" />
+                <span>📹 اختيار فيديو (MP4/WebM/MOV/MKV/AVI، حتى {MAX_VIDEO_MB}MB)</span>
+                <input
+                  type="file"
+                  accept="video/*"
+                  className="hidden"
+                  onChange={(e) => onPickVideo(e.target.files?.[0])}
+                />
+              </label>
+            ) : (
+              <div className="p-3 rounded-xl bg-slate-950/80 border border-emerald-500/20 text-xs flex items-center justify-between gap-3">
+                <div className="flex items-center gap-2 min-w-0">
+                  <Video className="w-4 h-4 text-emerald-400 shrink-0" />
+                  <div className="min-w-0">
+                    <span className="font-bold text-white block truncate">{video.name}</span>
+                    <span className="text-[10px] text-slate-400">{fmtBytes(video.size)} • {video.type}</span>
+                  </div>
+                </div>
+                <button
+                  onClick={clearVideo}
+                  className="p-1.5 rounded-lg bg-slate-800 text-slate-300 hover:text-white transition shrink-0 cursor-pointer"
+                  title="إزالة الفيديو"
+                >
+                  <X className="w-3.5 h-3.5" />
+                </button>
+              </div>
+            )}
+
+            {videoError && (
+              <p className="text-[11px] text-rose-400 flex items-center gap-1.5">
+                <AlertTriangle className="w-3.5 h-3.5 shrink-0" /> {videoError}
+              </p>
+            )}
+
+            {video && (
+              <div className="space-y-1.5 text-[11px]">
+                {videoCapablePlatforms.length > 0 && (
+                  <p className="text-emerald-400 flex items-start gap-1.5">
+                    <CheckCircle className="w-3.5 h-3.5 shrink-0 mt-0.5" />
+                    <span>{videoCapablePlatforms.join('، ')}: سيُرفع الفيديو فعلياً عبر طابور مراجعة يوتيوب (نشر حقيقي بعد موافقتك).</span>
+                  </p>
+                )}
+                {videoUrlNeededPlatforms.length > 0 && (
+                  <p className="text-amber-400 flex items-start gap-1.5">
+                    <AlertTriangle className="w-3.5 h-3.5 shrink-0 mt-0.5" />
+                    <span>{videoUrlNeededPlatforms.join('، ')}: لا يقبلان رفع ملف مباشرة — يحتاجان رابط فيديو عام وقت النشر الفعلي (أضفه أدناه أو لاحقاً).</span>
+                  </p>
+                )}
+                {videoUnsupportedPlatforms.length > 0 && (
+                  <p className="text-rose-400 flex items-start gap-1.5">
+                    <AlertTriangle className="w-3.5 h-3.5 shrink-0 mt-0.5" />
+                    <span>{videoUnsupportedPlatforms.join('، ')}: لا يدعمان نشر فيديو حالياً عبر هذا النظام — سيُنشر لهما نص فقط.</span>
+                  </p>
+                )}
+              </div>
+            )}
+
+            {video && videoUrlNeededPlatforms.length > 0 && (
+              <div>
+                <label className="block text-[11px] font-bold text-slate-400 mb-1">
+                  رابط الفيديو العام (لإنستغرام/تيك توك — اختياري الآن، مطلوب وقت النشر الفعلي)
+                </label>
+                <input
+                  type="text"
+                  placeholder="https://..."
+                  value={publicVideoUrl}
+                  onChange={(e) => setPublicVideoUrl(e.target.value)}
+                  className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-emerald-500"
+                />
+              </div>
+            )}
           </div>
 
           {/* Content Type Selector */}
@@ -418,7 +586,8 @@ export const ContentEngineView: React.FC = () => {
                 <div className="grid grid-cols-2 gap-2">
                   <button
                     onClick={() => handleSendToApproval('draft')}
-                    className="py-2.5 px-3 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-bold transition flex items-center justify-center gap-1.5 cursor-pointer"
+                    disabled={isQueuingYouTube}
+                    className="py-2.5 px-3 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-bold transition flex items-center justify-center gap-1.5 cursor-pointer disabled:opacity-50"
                   >
                     <Save className="w-3.5 h-3.5" />
                     حفظ كـ مسودة
@@ -426,10 +595,11 @@ export const ContentEngineView: React.FC = () => {
 
                   <button
                     onClick={() => handleSendToApproval('review')}
-                    className="py-2.5 px-3 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 text-xs font-bold transition flex items-center justify-center gap-1.5 cursor-pointer shadow-md shadow-emerald-500/20"
+                    disabled={isQueuingYouTube}
+                    className="py-2.5 px-3 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 text-xs font-bold transition flex items-center justify-center gap-1.5 cursor-pointer shadow-md shadow-emerald-500/20 disabled:opacity-50"
                   >
-                    <Send className="w-3.5 h-3.5" />
-                    إرسال للمراجعة والاعتماد
+                    {isQueuingYouTube ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <Send className="w-3.5 h-3.5" />}
+                    {isQueuingYouTube ? 'جارٍ إرسال الفيديو ليوتيوب...' : 'إرسال للمراجعة والاعتماد'}
                   </button>
                 </div>
               </div>
