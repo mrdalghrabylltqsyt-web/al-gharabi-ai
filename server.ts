@@ -9070,8 +9070,28 @@ app.post("/api/workspace/content/:id/publish", requireOwner, async (req, res) =>
   if (!requested.length) return res.status(400).json({ success: false, error: "لا توجد منصات هدف صالحة على المنشور.", code: "NO_TARGET_PLATFORMS" });
 
   // توزيع متوازٍ: كل منصة مستقلة تماماً عن الأخريات (نجاح/فشل/سبب منفصل).
+  //
+  // إصلاح حقيقي (Task #25): كانت هذه النقطة تُرسل post.content الحرفي نفسه لكل
+  // منصة، فتتجاهل النسخ المكيَّفة per-platform التي يبنيها "مركز صناعة المحتوى"
+  // فعلاً (adaptedVersions/platformVersions) — فيصل نص تيك توك القصير مثلاً
+  // حرفياً إلى فيسبوك/إنستغرام بلا أي تكييف. كما كانت لا تمرّر أي وسيط (صورة/
+  // فيديو) مطلقاً، فتفشل إنستغرام/ثريدز دائماً بـMEDIA_REQUIRED رغم أن المالك
+  // أرفق فيديو ورابطاً عاماً فعلياً في واجهة التوليد. الإصلاح: كل منصة تأخذ
+  // نسختها المكيَّفة (أو النص العام إن لم توجد نسخة خاصة بها)، ووسيط المنشور
+  // الحقيقي (post.mediaUrl/mediaType) يُمرَّر كـvideoUrl/imageUrl بحسب نوعه —
+  // فتُستخدم بنية resolvePublicVideoUrl (Task #23) والموصلات الحقيقية
+  // (Task #21/22/24) فعلياً بدل تجاهلها بصمت.
   const settled = await Promise.allSettled(requested.map(async (platform: string) => {
-    const result = await executePlatformPublish(platform, { ...req.body, content: post.content, approved: true, postId: post.id }, user.id);
+    const perPlatformContent = (post.platformVersions && typeof post.platformVersions[platform] === "string" && post.platformVersions[platform].trim())
+      ? post.platformVersions[platform]
+      : post.content;
+    const mediaFields: Record<string, any> = {};
+    const mediaUrl = typeof post.mediaUrl === "string" ? post.mediaUrl.trim() : "";
+    if (mediaUrl) {
+      if (post.mediaType === "video") mediaFields.videoUrl = mediaUrl;
+      else if (post.mediaType === "image") mediaFields.imageUrl = mediaUrl;
+    }
+    const result = await executePlatformPublish(platform, { ...req.body, ...mediaFields, content: perPlatformContent, approved: true, postId: post.id }, user.id);
     return { platform, result };
   }));
 

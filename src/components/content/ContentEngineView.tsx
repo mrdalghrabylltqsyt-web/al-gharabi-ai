@@ -188,14 +188,23 @@ export const ContentEngineView: React.FC = () => {
       setIsQueuingYouTube(false);
     }
 
+    // الوسيط الفعلي المُرسَل وقت النشر الحقيقي (Task #25): إن وُجد فيديو ورابطه
+    // العام (لإنستغرام/تيك توك/فيسبوك/ثريدز)، فهذا هو الوسيط الحقيقي — لا صورة
+    // المنتج. رابط الفيديو العام يُحفظ بنياً في mediaUrl/mediaType بدل أن يُذكر
+    // في نص المنشور فقط، لأن مسار النشر الفعلي (/api/workspace/content/:id/publish)
+    // يقرأ mediaUrl/mediaType حرفياً ليبني videoUrl/imageUrl لكل منصة.
+    const hasPublicVideo = Boolean(video && publicVideoUrl.trim());
+    const effectiveMediaUrl = hasPublicVideo ? publicVideoUrl.trim() : (selectedProduct?.image || undefined);
+    const effectiveMediaType: 'image' | 'video' | undefined = hasPublicVideo ? 'video' : (selectedProduct?.image ? 'image' : undefined);
+
     createPost({
       title,
-      content: generatedResult + (video && publicVideoUrl ? `\n\nرابط الفيديو العام (لإنستغرام/تيك توك): ${publicVideoUrl}` : ''),
+      content: generatedResult,
       platformVersions: adaptedVersions,
       targetPlatforms: selectedPlatforms.length ? selectedPlatforms : [primaryPlatform],
       status,
-      mediaUrl: selectedProduct?.image,
-      mediaType: video ? 'video' : (contentType === 'short_video' || contentType === 'script' ? 'video' : 'image'),
+      mediaUrl: effectiveMediaUrl,
+      mediaType: effectiveMediaType,
       authorName: currentUser.name,
       authorRole: currentUser.role,
       tags: ['تقسيط_منتجات', 'معرض_الغرابي', ...selectedPlatforms],

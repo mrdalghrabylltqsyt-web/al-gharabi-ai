@@ -211,6 +211,24 @@ function run(): void {
   // لا أسرار مكتوبة في الكود الجديد.
   check('لا مفاتيح مكتوبة في server.ts', !/AIzaSy[A-Za-z0-9_-]{10,}/.test(serverSource) && !/clientSecret:\s*"[^"]+"/.test(serverSource));
 
+  group('النشر متعدد المنصات بنقرة واحدة — يستخدم النسخة المكيَّفة والوسيط الحقيقي (Task #25)');
+  // الثغرة المُصلَحة: كان /api/workspace/content/:id/publish يرسل post.content
+  // الحرفي نفسه لكل منصة (يتجاهل platformVersions المكيَّفة)، ولا يمرّر أي وسيط
+  // (videoUrl/imageUrl) إطلاقاً — فتفشل إنستغرام/ثريدز دائماً بـMEDIA_REQUIRED
+  // رغم إرفاق المالك فيديو ورابطه العام فعلياً من "مركز صناعة المحتوى".
+  const publishRouteMatch = serverSource.match(/app\.post\("\/api\/workspace\/content\/:id\/publish"[\s\S]{0,4500}?\n\}\);/);
+  const publishRouteSrc = publishRouteMatch ? publishRouteMatch[0] : '';
+  check('مسار النشر متعدد المنصات موجود وقابل للفحص', publishRouteSrc.length > 500);
+  check('كل منصة تقرأ نسختها من platformVersions أولاً', publishRouteSrc.includes('post.platformVersions[platform]'));
+  check('مع احتياط النص العام إن غابت نسخة المنصة', /post\.platformVersions\[platform\][\s\S]{0,80}\?\s*post\.platformVersions\[platform\]\s*\n\s*:\s*post\.content/.test(publishRouteSrc));
+  check('لا إرسال post.content الحرفي وحده بلا فرع لكل منصة (الثغرة القديمة)', !/content:\s*post\.content\s*,\s*approved:\s*true/.test(publishRouteSrc));
+  check('وسيط الفيديو الحقيقي يُمرَّر كـvideoUrl حين mediaType فيديو', /mediaFields\.videoUrl\s*=\s*mediaUrl/.test(publishRouteSrc));
+  check('وسيط الصورة الحقيقي يُمرَّر كـimageUrl حين mediaType صورة', /mediaFields\.imageUrl\s*=\s*mediaUrl/.test(publishRouteSrc));
+  check('حقول الوسيط تُدمَج فعلياً في نداء executePlatformPublish', /executePlatformPublish\(platform,\s*\{\s*\.\.\.req\.body,\s*\.\.\.mediaFields,\s*content:\s*perPlatformContent/.test(publishRouteSrc));
+  // بوابة الاعتماد لم تُمسّ: لا يزال owner-only + status==="approved" إلزاميين.
+  check('بوابة owner-only ما زالت قائمة', serverSource.includes('app.post("/api/workspace/content/:id/publish", requireOwner'));
+  check('شرط status==="approved" ما زال إلزامياً قبل أي توزيع', /post\.status\s*!==\s*"approved"/.test(publishRouteSrc));
+
   console.log('\n' + '='.repeat(60));
   if (failures.length) {
     console.error(`FAILED: ${failures.length} / ${passed + failures.length}`);
