@@ -44,7 +44,7 @@ npm install
 npm run dev            # tsx server.ts
 npm run lint           # tsc --noEmit
 npm run build          # vite build + esbuild server.ts -> dist/server.cjs
-npm run final-audit    # node final-audit.mjs (1401 فحصاً)
+npm run final-audit    # node final-audit.mjs (1404 فحصاً)
 npm test               # storage + engine + auth + ... + db + runtime
 ```
 - التشغيل الإنتاجي: `PORT=4517 NODE_ENV=production APP_URL=http://localhost:4517 node dist/server.cjs`
@@ -4656,3 +4656,39 @@ Drive المخزّن** (أُلغي/تغيّر العميل)، فيفشل تجد�
 (`attentionRequired`/`lastReply`/`replyText` متاحة للمالك فقط عبر `/api/agent/youtube/watcher`).
 تحقق حي: النقطتان تُعلنان الحقول التقنية فقط (status/watcherActive/pollCount/lastError)
 بلا أي اسم حساب أو نص تعليق أو نص رد.
+
+## دورة حياة رمز Threads: التجديد القسري عند رفض المزود + تمرير أكواد Meta الحقيقية (2026-10-04)
+
+**الجذر المُثبت (T1):** `isAccessTokenExpired({ expiresAt: null })` يُعيد `false` (لا انتهاء
+معلن)، فحساب Threads مربوط **قبل** تخزين `expiresAt` يُمرَّر رمزه كما هو بلا تجديد، ثم يرد
+Meta بـ**190 «Session has expired»**. الأسوأ: كان الفشل يتكرّر صامتاً بلا أي محاولة تجديد،
+ولا يُعلن `reauth_needed`، فيبدو الحساب متصلاً وهو معطّل فعلاً.
+
+**الإصلاح (بلا ادّعاء ولا تكرار صامت):** أُضيف تجديد قسري واحد عند رفض المزود فعلياً:
+- `server.ts`: `forceRefreshThreadsToken()` يفصل التجديد عن الحكم القبلي، و`markThreadsReauthNeeded()`
+  يعلن `reauth_needed` صراحةً (يحفظ عبر `persistStateDurable` ويسجّل تدقيقياً).
+- `withThreadsToken`: بعد المحاولة الأولى، إن فشلت بـ`TOKEN_EXPIRED` ولم يكن الرمز قد جُدِّد
+  قبلاً ⇒ تجديد قسري واحد ثم **إعادة محاولة واحدة**؛ نجاح التجديد ⇒ النشر ينجح بمعرّف منشور
+  حقيقي من Meta؛ فشل التجديد ⇒ `reauth_needed` + كود 190 الحقيقي (لا بقاء على `connected`).
+  وحتى الرمز المُجدَّد إن رُفض ⇒ `reauth_needed` (لا تكرار صامت). لا حلقة، ولا أكثر من محاولتين.
+
+**الإصلاح (T2 — أكواد الأخطاء الحقيقية):** كل موصلات Meta (Instagram/Facebook/Threads) تُمرّر
+الآن الحقول التشخيصية الكاملة من Meta بدل كود ثابت مُضلِّل:
+- `providerCode` (error.code) + **`providerSubcode`** (error.error_subcode) + **`providerTraceId`**
+  (error.fbtrace_id) — تُعاد في استجابة النشر الموحّد `/api/platforms/:platform/publish`
+  للـFacebook وInstagram وThreads. `facebook.ts` صار يوفّر `logAndExtractFacebookError`
+  (تسجيل كامل بلا قطع + إرجاع الحقول)، و`instagram.ts` يعيد استخدام
+  `extractFacebookGraphError`/`formatFacebookGraphError` (نفس تطبيق Meta، بلا ازدواج منطق).
+- `threads.ts`: `providerSubcode` + `logThreadsError` (سطر `[threads-graph-error]` آمن بلا سرّ)،
+  وكل مسارات الفشل تُمرّر subcode/trace.
+- **لا سرّ في أي سجل أو استجابة**: المعرّف/الرسالة فقط، بلا رمز أو client secret.
+
+**اختبار الانحدار (fail-old/pass-new):** `engine/tests/threads.publish.recovery.test.ts`
+(`npm run test:threads-recovery`، 15 فحصاً، خادم Threads وهمي محلي): سيناريو (أ) فشل التجديد
+⇒ `TOKEN_EXPIRED` + كود 190 + `reauth_needed` (لا بقاء على connected)؛ سيناريو (ب) نجاح
+التجديد ⇒ إعادة محاولة تلقائية تنشر بمعرّف `POST_1` حقيقي مع بقاء الاتصال. **أُثبت فشل
+الاختبار قبل الإصلاح** (6/15 يفشل: `refreshCalls=0`، لا reauth_needed، فشل النشر) ونجاحه بعده.
+`publish.provider.error.test.ts` صار **35 فحصاً** (يثبت تمرير subcode/traceId لـIG/FB/Threads).
+
+**لم يُمسّ:** Gemini/الـfirewall، OAuth/scopes، المصادقة، قاعدة البيانات، بقية المنصّات
+(Telegram/TikTok/YouTube)، ونموذج الجدولة. لا تدوير لأي مفتاح، ولا سرّ جديد.

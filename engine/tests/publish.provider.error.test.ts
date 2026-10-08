@@ -99,6 +99,24 @@ async function run(): Promise<void> {
     check('telegram: خطأ عام ⇒ PROVIDER_ERROR', telegramErrorCode('some unknown', 500) === 'PROVIDER_ERROR');
   }
 
+  // 4هـ) الحقول التشخيصية الكاملة (error_subcode/fbtrace_id) تُمرَّر من Meta — للتشخيص.
+  {
+    const full = { error: { message: 'Invalid parameter', code: 100, error_subcode: 1234567, fbtrace_id: 'AbCdEf12345', type: 'OAuthException' } };
+    const ig = new InstagramClient(fakeFetch(400, full));
+    const igRes = await ig.createMediaContainer('IG1', 'tok', { videoUrl: 'https://drive.example/x' });
+    check('instagram: error_subcode مُمرَّر', igRes.providerSubcode === 1234567, String(igRes.providerSubcode));
+    check('instagram: fbtrace_id مُمرَّر', igRes.providerTraceId === 'AbCdEf12345', String(igRes.providerTraceId));
+    const { FacebookClient } = await import('../social/facebook');
+    const fb = new FacebookClient(fakeFetch(400, full));
+    const fbRes = await fb.publishVideoToPage('PAGE1', 'tok', 'https://drive.example/v.mp4', 'desc');
+    check('facebook: error_subcode مُمرَّر', fbRes.providerSubcode === 1234567, String(fbRes.providerSubcode));
+    check('facebook: fbtrace_id مُمرَّر', fbRes.providerTraceId === 'AbCdEf12345', String(fbRes.providerTraceId));
+    const th = new ThreadsClient(fakeFetch(400, full));
+    const thRes = await th.createMediaContainer('TH1', 'tok', { text: 'hi' });
+    check('threads: error_subcode مُمرَّر', thRes.providerSubcode === 1234567, String(thRes.providerSubcode));
+    check('threads: fbtrace_id مُمرَّر', thRes.providerTraceId === 'AbCdEf12345', String(thRes.providerTraceId));
+  }
+
   // 5) الواجهة: عرض الكود والرسالة معاً (لا إخفاء لأحدهما).
   {
     const line = formatPublishFailure('instagram', { code: 'MEDIA_DOWNLOAD_FAILED', error: 'The media could not be fetched' });

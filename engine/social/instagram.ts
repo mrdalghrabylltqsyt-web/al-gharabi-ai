@@ -24,6 +24,10 @@
  * بناء الطلبات، الاعتماديات) مفصولة عن عميل الشبكة لتُختبر بلا أي مزود.
  */
 
+// نفس تطبيق Meta وgraph.facebook.com، فمستخرج خطأ Graph مُعاد استخدامه لتسجيل
+// الرمز/الرقم/النص الكامل غير المقطوع + fbtrace_id (بلا سرّ) — لا ازدواج منطق.
+import { extractFacebookGraphError, formatFacebookGraphError } from './facebook';
+
 export const INSTAGRAM_GRAPH_BASE = 'https://graph.facebook.com';
 export const INSTAGRAM_GRAPH_VERSION = 'v21.0';
 export const INSTAGRAM_SIGNATURE_HEADER = 'x-hub-signature-256';
@@ -367,6 +371,10 @@ export interface InstagramResult<T> {
   code?: string;
   /** كود/رقم Meta الفرعي الخام (error.code/error_subcode) للتشخيص الصريح. */
   providerCode?: number | null;
+  /** رمز الخطأ الفرعي من Meta (error.error_subcode) — للتشخيص. */
+  providerSubcode?: number | null;
+  /** معرّف تتبّع Meta (error.fbtrace_id) — يُقدَّم للدعم بلا أي سرّ. */
+  providerTraceId?: string | null;
 }
 
 function errorMessage(data: any, fallback: string): string {
@@ -377,6 +385,13 @@ function providerErrorCode(data: any): number | null {
   const c = data?.error?.code;
   const n = Number(c);
   return Number.isFinite(n) ? n : null;
+}
+
+/** يسجّل خطأ Meta الكامل (بلا قطع) ويرجع الحقول التشخيصية — بلا أي سرّ. */
+function logAndExtractInstagramError(data: any, endpoint: string, status: number): { providerCode: number | null; providerSubcode: number | null; providerTraceId: string | null } {
+  const info = extractFacebookGraphError(data, endpoint, status);
+  console.error(formatFacebookGraphError(info));
+  return { providerCode: info.code, providerSubcode: info.subcode, providerTraceId: info.fbtraceId };
 }
 
 /**
@@ -562,8 +577,9 @@ export class InstagramClient {
       const data = await res.json().catch(() => null);
       if (!res.ok || data?.error || !data?.id) {
         const msg = errorMessage(data, 'فشل إنشاء حاوية النشر عبر Instagram.');
-        const pCode = providerErrorCode(data);
-        return { ok: false, data: null, error: msg, providerCode: pCode, code: classifyInstagramProviderError(msg, pCode) };
+        const ex = logAndExtractInstagramError(data, `POST /${igAccountId}/media`, res.status);
+        const pCode = ex.providerCode ?? providerErrorCode(data);
+        return { ok: false, data: null, error: msg, providerCode: pCode, providerSubcode: ex.providerSubcode, providerTraceId: ex.providerTraceId, code: classifyInstagramProviderError(msg, pCode) };
       }
       return { ok: true, data: { containerId: String(data.id), mediaKind: String(built.mediaKind) } };
     } catch (e: any) {
@@ -583,7 +599,12 @@ export class InstagramClient {
         body: buildPublishContainerBody(creationId).toString(),
       });
       const data = await res.json().catch(() => null);
-      if (!res.ok || data?.error || !data?.id) return { ok: false, data: null, error: errorMessage(data, 'فشل نشر الحاوية عبر Instagram.') };
+      if (!res.ok || data?.error || !data?.id) {
+        const msg = errorMessage(data, 'فشل نشر الحاوية عبر Instagram.');
+        const ex = logAndExtractInstagramError(data, `POST /${igAccountId}/media_publish`, res.status);
+        const pCode = ex.providerCode ?? providerErrorCode(data);
+        return { ok: false, data: null, error: msg, providerCode: pCode, providerSubcode: ex.providerSubcode, providerTraceId: ex.providerTraceId, code: classifyInstagramProviderError(msg, pCode) };
+      }
       return { ok: true, data: { providerPostId: String(data.id) } };
     } catch (e: any) {
       return { ok: false, data: null, error: String(e?.message || 'فشل الاتصال بـInstagram.') };
