@@ -1,0 +1,177 @@
+<!doctype html>
+<html dir="rtl" lang="ar">
+<head>
+<meta charset="utf-8">
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { width: 1680px; background: #0b1220; color: #e2e8f0;
+    font-family: 'Noto Sans Arabic','Noto Sans',sans-serif; padding: 34px 40px 40px; }
+  h1 { font-size: 30px; color: #fff; }
+  h2 { font-size: 19px; color: #fff; }
+  .sub { color: #94a3b8; font-size: 15px; margin-top: 6px; line-height: 1.7; }
+  .head { border-bottom: 2px solid #1e293b; padding-bottom: 16px; margin-bottom: 20px; }
+  .mono { font-family: 'DejaVu Sans Mono', monospace; direction: ltr; unicode-bidi: embed; }
+  .badge { display:inline-block; padding:2px 10px; border-radius:999px; font-size:13px; font-weight:700; }
+  .g { background:#052e16; color:#4ade80; border:1px solid #16a34a; }
+  .o { background:#3a2404; color:#fbbf24; border:1px solid #d97706; }
+  .r { background:#2a1010; color:#f87171; border:1px solid #b91c1c; }
+  .legend { display:flex; gap:26px; align-items:center; margin:14px 0 22px; font-size:15px; }
+  .dot { width:15px; height:15px; border-radius:4px; display:inline-block; margin-left:7px; vertical-align:-2px; }
+  .dg{background:#22c55e;} .do{background:#f59e0b;} .dr{background:#ef4444;}
+  .layer { border:1px solid #1e293b; border-radius:14px; padding:14px 16px 16px; margin-bottom:14px; background:#0e1729; }
+  .ltitle { display:flex; justify-content:space-between; align-items:center; margin-bottom:11px; }
+  .ltitle .n { color:#64748b; font-size:13px; }
+  .row { display:flex; flex-wrap:wrap; gap:9px; }
+  .cell { border:1px solid #24334d; border-radius:10px; padding:9px 12px; background:#0a1120; font-size:14.5px; line-height:1.5; }
+  .cell b { color:#fff; font-size:15px; }
+  .cell .meta { color:#8fa3bd; font-size:12.5px; margin-top:3px; }
+  .cell.gc { border-color:#166534; background:#06160d; }
+  .cell.oc { border-color:#9a6206; background:#1c1405; }
+  .cell.rc { border-color:#7f1d1d; background:#1a0c0c; }
+  .flow { border:1px dashed #334155; border-radius:12px; padding:12px 14px; background:#0a1120; font-size:15px; line-height:1.9; }
+  .flow .ar { color:#38bdf8; font-weight:700; }
+  .stat { font-size:12.5px; color:#93c5fd; }
+  .footer { margin-top:20px; color:#7c8aa0; font-size:13px; line-height:1.8; border-top:1px solid #1e293b; padding-top:14px; }
+  .hier { text-align:center; font-size:16px; color:#fbbf24; font-weight:700; }
+  .verify { display:grid; grid-template-columns:1fr 1fr; gap:8px 26px; border:1px solid #1d4ed8; border-radius:12px; padding:12px 16px; margin-bottom:18px; background:#0a1330; font-size:14px; line-height:1.6; }
+  .verify b { color:#93c5fd; }
+</style>
+</head>
+<body>
+  <div class="head">
+    <h1>الغرابي AI — العقل المركزي والمساعدون</h1>
+    <div class="sub">
+      المصدر الوحيد: كود فرع <span class="mono badge g">feat/multiplatform-publish-six-agent-lifecycle</span> (تقسيم العقل المركزي ↔ العقول الستة) + Git + استدعاء حي <span class="mono">/api/health</span> (<span class="mono">brainRuntime · agentTeam · sixAgentExecution · cognition · brainDecision · centralAgent</span>) و <span class="mono">/api/readiness</span> (<span class="mono">brain · centralBrain</span>).<br>
+      طابع قراءة الإنتاج: <span class="mono">2026-10-08T04:30:00Z</span> · الإنتاج commit <span class="mono">8825a67</span> (main)
+    </div>
+  </div>
+
+  <div class="legend">
+    <span><span class="dot dg"></span>أخضر = منجز فعلاً (كود + route/اختبار/سلوك حي مُتحقَّق)</span>
+    <span><span class="dot do"></span>برتقالي = قيد الإنجاز (كود جزئي/غير مدموج/غير مُنفَّذ)</span>
+    <span><span class="dot dr"></span>أحمر = لم يُنجز (لا كود فعلي)</span>
+  </div>
+
+  <div class="verify">
+    <div><b>فرع العمل</b> = <span class="mono">feat/multiplatform-publish-six-agent-lifecycle</span></div>
+    <div><b>الإنتاج deploy.commit</b> = <span class="mono">8825a67</span> (main)</div>
+    <div><b>مصدر الأرقام</b> = استدعاء حي /api/health + /api/readiness</div>
+    <div><b>طابع القراءة</b> = <span class="mono">2026-10-08T04:30:00Z</span></div>
+    <div><b>npm test</b> = <span class="mono">80</span> مجموعة · <span class="mono">0</span> فشل</div>
+    <div><b>final-audit</b> = <span class="mono">1355</span> فحص</div>
+  </div>
+
+  <div class="layer">
+    <div class="ltitle"><h2>التسلسل الهرمي المُعلن</h2><span class="n">/api/health.brainDecision.hierarchy</span></div>
+    <div class="hier mono">CENTRAL_BRAIN &gt; AGENT_COUNCIL(6) &gt; GOVERNANCE &gt; ACTION_OR_ESCALATION</div>
+    <div class="meta" style="text-align:center;color:#8fa3bd;margin-top:6px">executesExternalActions = false · independentDecisionAuthority = false · subordinateTo = central-brain-1</div>
+  </div>
+
+  <!-- Central brain -->
+  <div class="layer">
+    <div class="ltitle"><h2>١. العقل المركزي (Central Brain)</h2><span class="n">engine/brain/ — على main</span></div>
+    <div class="row">
+      <div class="cell gc"><b>المنسّق وقت التشغيل</b><div class="meta">brain/brainRuntime.ts — enabled=true, scheduled=true, intervalMinutes=15, status=NO_NEW_DATA</div><div class="stat">آخر دورة: 2026-10-06T04:18:15Z</div></div>
+      <div class="cell gc"><b>اللقطة/الحالة</b><div class="meta">brain/state.ts + brain/runtime.ts + brain/compat.ts + brain/projections.ts</div></div>
+      <div class="cell gc"><b>الدورات</b><div class="meta">brain/cycles.ts (دورة يومية/أسبوعية) + brain/dryRun.ts</div></div>
+      <div class="cell gc"><b>الإدراك/المعرفة</b><div class="meta">brain/perception/signals.ts · brain/knowledge/truth.ts (knowledgeItems=50)</div></div>
+      <div class="cell gc"><b>الذاكرة</b><div class="meta">brain/memory/{longTerm,store}.ts — memoryDurable=true · knowledgeHealth.derived=1</div></div>
+      <div class="cell gc"><b>الجمهور/السوق</b><div class="meta">brain/audience/audienceModel.ts · brain/market/commercialRelevance.ts — audienceSegments=2</div></div>
+      <div class="cell gc"><b>الاستراتيجية/القرار</b><div class="meta">brain/strategy/{strategyEngine,capabilityMatrix,contentIntelligence}.ts · brain/decisions/decisionEngine.ts · brain/experiments/ · brain/goals/ · brain/timing/</div></div>
+      <div class="cell gc"><b>المسارات</b><div class="meta">engine/brain/routes.ts (state/diagnostics/capabilities/cycles/dry-run) — كلها محمية، 401 بلا جلسة</div></div>
+    </div>
+  </div>
+
+  <!-- Cognition + Team -->
+  <div class="layer">
+    <div class="ltitle"><h2>٢. الإدراك + فريق الوكلاء (Agent Council)</h2><span class="n">brain/cognition · brain/team</span></div>
+    <div class="row">
+      <div class="cell gc"><b>الحلقة الإدراكية</b><div class="meta mono">PERCEIVE→UNDERSTAND→REMEMBER→REASON→CONSULT→PLAN→CRITIQUE→DECIDE→ACT→OBSERVE→LEARN</div><div class="stat">cognitiveLoop حي في /api/health.cognition</div></div>
+      <div class="cell gc"><b>حلقة التعلّم</b><div class="meta mono">ACTION→RESULT→FOLLOW-UP→LESSON→MEMORY→FUTURE_DECISION</div><div class="stat">actions=11, results=11, followUp=11, lessons=0</div></div>
+      <div class="cell gc"><b>الذاكرة العاملة</b><div class="meta">brain/cognition/workingMemory.ts + memoryRecall.ts — total=0 (لا ترقية تلقائية)</div></div>
+      <div class="cell gc"><b>فريق الوكلاء الستة</b><div class="meta">brain/team/{orchestrator,agents,brainDecision,brainEscalation,truth}.ts</div><div class="stat">حي: total=1, completed=1, failed=0, memoryWritten=1</div></div>
+      <div class="cell gc"><b>الأدوار الستة</b><div class="meta">orchestrator · research · analysis · strategy · critic · decision</div></div>
+      <div class="cell gc"><b>ضمانات الفريق</b><div class="meta">executesExternalActions=false · geminiUsedOnSessions=false · الفرضية لا تُرقّى لحقيقة بلا دليل مستقل</div></div>
+      <div class="cell gc"><b>تنفيذ العقول الستة الحتمي (جديد)</b><div class="meta">brain/team/{executionPolicy,deterministicActions,auditLog}.ts — whitelist صريحة 4 أفعال حتمية بلا Gemini: classify_tag_comment · update_engagement_counters · retry_failed_publish_once · reply_from_stored_pattern</div><div class="stat">sixAgentExecution.executesExternalActions=bounded · geminiUsed=false</div></div>
+      <div class="cell gc"><b>التصعيد للعقل المركزي (جديد)</b><div class="meta">أي غامض/سلبي/حساس/غير مطابق لقاعدة حتمية أو نمط محفوظ بثقة ≥0.85 ⇒ ESCALATE_CENTRAL؛ العقل المركزي وحده يستدعي Gemini (ضمن GEMINI_DAILY_LIMIT)</div><div class="stat">مطابقة النمط تقرأ من نفس brainMemoryStore (مكافحة تسميم محفوظة)</div></div>
+    </div>
+  </div>
+
+  <!-- Central Agent -->
+  <div class="layer">
+    <div class="ltitle"><h2>٣. العقل المركزي التنفيذي (Central Agent)</h2><span class="n">engine/agent/ — حي: 30 أداة، 14 مهمة</span></div>
+    <div class="row">
+      <div class="cell gc"><b>المنسّق التنفيذي</b><div class="meta">agent/orchestrator.ts (createTask/run/replay/snapshot/restore)</div><div class="stat">lastStatus=completed, lastVerified=true</div></div>
+      <div class="cell gc"><b>المخطّط</b><div class="meta">agent/planner.ts (تصنيف نية حتمي + خطة خطوات)</div></div>
+      <div class="cell gc"><b>سجل الأدوات (30)</b><div class="meta">agent/tools.ts — system_health, platform_status, comments_list, ai_draft, youtube_status/videos/analytics/comments/reply/reply_verify/publish/video_update …</div></div>
+      <div class="cell gc"><b>الصلاحيات</b><div class="meta">agent/permissions.ts — READ/WRITE/EXECUTE/EXTERNAL_ACTION/SENSITIVE + staff/owner/system</div></div>
+      <div class="cell gc"><b>الحوكمة</b><div class="meta">agent/governanceGuard.ts + agent/providerRouter.ts</div></div>
+      <div class="cell gc"><b>المزوّدون</b><div class="meta">gemini(primary, configured=true) · openai(secondary, false) · anthropic(advisor, false)</div></div>
+      <div class="cell gc"><b>المسارات</b><div class="meta">engine/agent/routes.ts — /api/agent/* (health/tools/providers/tasks) محمية، 401</div></div>
+    </div>
+  </div>
+
+  <!-- Tool bridge / execution gates -->
+  <div class="layer">
+    <div class="ltitle"><h2>٤. بوابات التنفيذ (لا تنفيذ خارجي من العقل نفسه)</h2><span class="n">تفويض + حوكمة + منفّذ موحّد</span></div>
+    <div class="row">
+      <div class="cell gc"><b>تفويض YouTube</b><div class="meta">engine/social/youtubeDelegation.ts — granted=true, active=true, actions=[reply,publish,schedule,update_video]</div><div class="stat">grantedBy=owner, grantedAt=2026-09-28</div></div>
+      <div class="cell gc"><b>المنفّذ الموحّد للرد</b><div class="meta">executeYouTubeReply (server.ts) — سلامة محتوى + منع تكرار + rate limit + idempotency + منع الرد على حساب المعرض</div></div>
+      <div class="cell gc"><b>المنفّذ الموحّد للنشر</b><div class="meta">executeYouTubePublish (server.ts) — media حقيقي + تحقق خصوصية من المزود + لا PUBLISHED بلا معرّف فيديو</div></div>
+      <div class="cell gc"><b>طابور المحتوى</b><div class="meta">engine/social/contentPipeline.ts + agent/youtube/content/queue — حي: total=2, published=1, awaitingReview=0</div></div>
+      <div class="cell gc"><b>مراقب YouTube 24/7</b><div class="meta">engine/social/youtubeWatcher.ts + youtubeWatcherScheduler.ts — watcherActive=true, cadenceMinutes=5, pollCount=1185</div><div class="stat">lastError=NOT_CONNECTED (حالة عامة), consecutiveErrors=211</div></div>
+      <div class="cell gc"><b>مراجعة التقرير اليومي</b><div class="meta">engine/social/watcherReview.ts + /api/agent/youtube/watcher/review (owner) — كل رقم مرتبط بسجلاته</div></div>
+      <div class="cell rc"><b>التنفيذ الخارجي على YouTube — غير عامل الآن</b><div class="meta">YouTube connected=false · المراقب يسجّل lastError=NOT_CONNECTED · لا رد/نشر فعلي حتى يُعاد ربط القناة</div></div>
+    </div>
+  </div>
+
+  <!-- Data flow -->
+  <div class="layer">
+    <div class="ltitle"><h2>٥. تدفّق البيانات الفعلي</h2><span class="n">مُستخرَج من المسارات الحية</span></div>
+    <div class="flow">
+      <span class="ar">إشارة خارجية</span> (تعليق YouTube حقيقي عبر commentThreads.list / webhook) <span class="ar">→</span>
+      <span class="ar">مراقب YouTube</span> (كل 5 دقائق) <span class="ar">→</span>
+      <span class="ar">تصنيف حتمي</span> (comments.ts) <span class="ar">→</span>
+      <span class="ar">قرار</span> (رد آلي / تصعيد / تأجيل) <span class="ar">→</span>
+      <span class="ar">بوابة التفويض</span> <span class="ar">→</span>
+      <span class="ar">executeYouTubeReply</span> <span class="ar">→</span>
+      <span class="ar">تحقق من معرّف المزود</span> <span class="ar">→</span>
+      <span class="ar">ذاكرة + فريق وكلاء</span> (جلسة لكل حدث) <span class="ar">→</span>
+      <span class="ar">حدث تعلّم</span> <span class="ar">→</span>
+      <span class="ar">دورة العقل 24/7 (كل 15 دقيقة)</span>
+    </div>
+    <div class="meta" style="color:#8fa3bd;margin-top:8px">ملاحظة: كل خطوة تنفيذ تخضع لبوابة صلاحية؛ العقل لا ينفّذ خارجياً مباشرة (executesExternalActions=false في cognition وbrainDecision).</div>
+  </div>
+
+  <!-- Assistants + out of scope -->
+  <div class="layer">
+    <div class="ltitle"><h2>٦. المساعدون المتخصّصون — الحالة الحقيقية</h2><span class="n">لا أرقام متفائلة</span></div>
+    <div class="row">
+      <div class="cell gc"><b>مساعد السوشيال</b><div class="meta">engine/social/brain.ts + registry (10 منصات) + comments/publishing — يعمل في النطاق</div></div>
+      <div class="cell gc"><b>مساعد AI</b><div class="meta">engine/ai/engine.ts + firewall.ts — configured=true · firewall مفعّل (40 حد، 0 مُستهلك) · verifiedLive=false</div></div>
+      <div class="cell gc"><b>مساعد التسويق</b><div class="meta">engine/social/{marketingDecisions, strategiesTested, recommendationEngine, contentIntelligence} — يعمل في النطاق</div></div>
+      <div class="cell oc"><b>العقل التجاري (Sales/Growth/Digital/Commercial)</b><div class="meta">engine/brain/{sales,growth,digital,commercial} — موجودة فقط على 3 فروع غير مدموجة (integration/phase-1d-on-central-brain، fix/health-readiness-privacy-leak، fix/recovery-center-owner-auth)</div><div class="stat">غير موصولة بأي مسار في main</div></div>
+      <div class="cell rc"><b>عقل مستقل لكل منصة</b><div class="meta">مرفوض بالتصميم — عقل مركزي واحد platformAgnostic=true، platformsCovered=10</div></div>
+    </div>
+  </div>
+
+  <!-- Scores -->
+  <div class="layer">
+    <div class="ltitle"><h2>٧. مؤشرات القدرات الحية</h2><span class="n">/api/readiness.brain</span></div>
+    <div class="row">
+      <div class="cell gc"><b>قدرات المنصات</b><div class="meta">AVAILABLE=73 · NOT_AVAILABLE=55 · REQUIRES_REVIEW=2 (إجمالي 130 خلية قدرة)</div></div>
+      <div class="cell gc"><b>الموصلات الحقيقية</b><div class="meta">[tiktok, youtube, facebook, instagram, telegram] · connectedVerified=[telegram] فقط</div></div>
+      <div class="cell gc"><b>صحة المعرفة</b><div class="meta">verified=0 · derived=1 · hypothesis=0 · unknown=0 · humanRequired=0</div></div>
+      <div class="cell gc"><b>طزاجة الإشارات</b><div class="meta">total=50 · fresh=12 · stale=38</div></div>
+      <div class="cell gc"><b>القرارات/التوصيات</b><div class="meta">pendingDecisions=1 · blockedActions=1 · recommendations=1 (مدعومة=1) · experiments=1 · strategies=1</div></div>
+      <div class="cell gc"><b>قيود معلنة</b><div class="meta">لا نشر/رد تلقائي · لا اختراع مؤشرات · لا سمات شخصية حساسة · audienceDemographicsAvailable=false</div></div>
+    </div>
+  </div>
+
+  <div class="footer">
+    <b>حصر الألوان (هذا المخطط):</b> أخضر = 30 عنصراً · برتقالي = 1 عنصر · أحمر = 2 عنصر (إجمالي 33 عنصراً).<br>
+    كل رقم أعلاه مُستخرَج مباشرةً من استدعاء حي أو من ملف كود على <span class="mono">205acf0</span>. التفصيل الكامل في جدول المصادر المرفق بالنص.<br>
+    <b>تحذير:</b> العناصر البرتقالية/الحمراء ليست مكتملة ولا قيد تطوير فعلي على main — لا كود مدموج يثبتها.
+  </div>
+</body>
+</html>
