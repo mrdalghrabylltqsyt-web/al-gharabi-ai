@@ -453,6 +453,34 @@ async function main(): Promise<void> {
   check('الإلغاء/الرفض بتأكيد صريح قبل التنفيذ', panelSrc.includes("action === 'cancel'") && panelSrc.includes('window.confirm'));
   check('عرض وقت الجدولة بسياسة المنطقة الموحّدة (لا زحزحة UTC)', panelSrc.includes('toScheduleDisplay') && !panelSrc.includes('new Date(it.publishAt).toLocaleString'));
   check('API يستدعي مسار توليد الوصف', apiSrc.includes('/api/platforms/youtube/content/generate-description'));
+
+  group('15) حد النقل للتوسيط — كل مسار يستقبل فيديو يتحمل عدة ميجابايت (لا 413)');
+  // فيديو صالح (توقيع ftyp) بحجم حقيقي يتجاوز حد 256kb بكثير.
+  const makeVideo = (bytes: number) => Buffer.concat([Buffer.from([0, 0, 0, 0x20]), Buffer.from('ftypisom'), Buffer.alloc(Math.max(0, bytes - 12), 7)]).toString('base64');
+  const video4mb = makeVideo(4 * 1024 * 1024);
+  // 1) استضافة رابط الفيديو العام (المسار الذي أبلغ عنه المالك): كان يُرفض 413 قبل الإصلاح.
+  const hostRes = await fetch(`${BASE}/api/workspace/content/video/host`, { method: 'POST', headers: auth, body: JSON.stringify({ videoBase64: video4mb, mimeType: 'video/mp4', filename: 'clip.mp4' }) });
+  const hostBody = await hostRes.json().catch(() => ({}));
+  check('host: 4MB لا يُرفض بحد الوسيط 413', hostRes.status !== 413, String(hostRes.status));
+  check('host: لا رسالة "حجم الطلب أكبر من الحد المسموح"', !JSON.stringify(hostBody).includes('حجم الطلب أكبر من الحد'));
+  // بلا Drive مضبوط في هذا الاختبار => فشل صريح لاحق (503 DRIVE_NOT_CONFIGURED)، لا رفض نقل.
+  check('host: الفشل منطقي (Drive غير مهيأ) لا حد شبكة', hostRes.status === 503 && hostBody.code === 'DRIVE_NOT_CONFIGURED', JSON.stringify({ s: hostRes.status, c: hostBody.code }));
+  // 2) مراجعة/تعديل عنصر الطابور (إرفاق مادة): المسار المَعلمي يجب أن يُستثنى أيضاً.
+  const seedDraft = await createDraft(auth, { title: 'مسودة لاختبار الحد', videoBase64: VIDEO_B64 });
+  const seedId = seedDraft.item?.id;
+  check('مسودة اختبار الحد أُنشئت', Boolean(seedId));
+  const reviewBig = await fetch(`${BASE}/api/platforms/youtube/content/queue/${seedId}/review`, { method: 'POST', headers: auth, body: JSON.stringify({ action: 'edit', videoBase64: video4mb, mimeType: 'video/mp4', filename: 'clip.mp4' }) });
+  check('queue/review: 4MB لا يُرفض 413', reviewBig.status !== 413, String(reviewBig.status));
+  check('queue/review: 4MB مقبول منطقياً (200 أو تعديل ناجح)', reviewBig.status === 200, String(reviewBig.status));
+  // 3) تجاوز الحد المنطقي (>12MB) => رفض واضح من registerContentMedia (422)، لا رفض نقل 413.
+  const video13mb = makeVideo(13 * 1024 * 1024);
+  const reviewTooBig = await fetch(`${BASE}/api/platforms/youtube/content/queue/${seedId}/review`, { method: 'POST', headers: auth, body: JSON.stringify({ action: 'edit', videoBase64: video13mb, mimeType: 'video/mp4', filename: 'clip.mp4' }) });
+  const tooBigBody = await reviewTooBig.json().catch(() => ({}));
+  check('فيديو >12MB => رفض منطقي MEDIA_TOO_LARGE', reviewTooBig.status === 422 && tooBigBody.code === 'MEDIA_TOO_LARGE', JSON.stringify({ s: reviewTooBig.status, c: tooBigBody.code }));
+  check('فيديو >12MB: الرسالة من منطق المادة لا من وسيط الشبكة', !JSON.stringify(tooBigBody).includes('حجم الطلب أكبر من الحد'));
+  // 4) انحدار: مسار غير مُستثنى يبقى محمياً بحد 256kb (413) — الحماية كما هي.
+  const nonExempt = await fetch(`${BASE}/api/social/manager/comments/ingest`, { method: 'POST', headers: auth, body: JSON.stringify({ text: 'x'.repeat(300 * 1024) }) });
+  check('مسار غير مُستثنى: 300KB => 413 كما كان', nonExempt.status === 413, String(nonExempt.status));
 }
 
 main()

@@ -1073,10 +1073,27 @@ add('content-brief-metrics-clickable', server.includes('contentBriefMetricsView'
 add('content-brief-details-same-records', server.includes('/api/platforms/youtube/content/details') && server.includes('total: filtered.length'), 'تفاصيل بطاقة المحتوى = نفس السجلات التي كوّنت الرقم (بلا discrepancy)');
 add('content-reject-terminal', server.includes("action === \"reject\" || action === \"cancel\"") && contentPipeline.includes('isTerminalContentState'), 'الرفض/الإلغاء نهائي ولا يُنشر تلقائياً');
 add('content-kill-switch-blocks', contentPipeline.includes('AUTOMATION_PAUSED') && contentPipeline.includes('AUTO_PUBLISH_DISABLED') && contentPipeline.includes('AUTO_SCHEDULE_DISABLED'), 'Kill Switch وحده يمنع النشر والجدولة قبل أي تنفيذ');
-add('content-owner-only', /app\.post\("\/api\/platforms\/youtube\/content\/drafts",[\s\S]{0,120}requireOwner/.test(server) && server.includes('app.post("/api/platforms/youtube/content/queue/:id/review", requireOwner'), 'إنشاء/قرار المحتوى محصور بالمالك');
+add('content-owner-only', /app\.post\("\/api\/platforms\/youtube\/content\/drafts",[\s\S]{0,120}requireOwner/.test(server) && /app\.post\("\/api\/platforms\/youtube\/content\/queue\/:id\/review",[\s\S]{0,120}requireOwner/.test(server), 'إنشاء/قرار المحتوى محصور بالمالك');
 add('content-media-validation', server.includes('function validateMediaBytes') && server.includes('function decodeStrictBase64') && server.includes('CONTENT_ALLOWED_MIME'), 'تحقق فعلي من مادة الفيديو (توقيع/نوع/حجم/base64 صارم) على الخادم');
 add('content-media-gated-actions', server.includes('filterContentActions') && server.includes('contentItemMediaState') && server.includes('hasMedia'), 'الموافقة/النشر/الجدولة محجوبة بلا مادة فعلية (مصدر واحد)');
-add('content-upload-route-limit', server.includes('CONTENT_UPLOAD_JSON_LIMIT') && server.includes('CONTENT_UPLOAD_PATH'), 'مسار رفع الفيديو له حد جسم أعلى مع بقاء حد 256kb لبقية المسارات');
+add('content-upload-route-limit',
+  server.includes('CONTENT_UPLOAD_JSON_LIMIT') &&
+  server.includes('const CONTENT_UPLOAD_PATHS: string[] = [') &&
+  server.includes('const CONTENT_UPLOAD_PATH_PATTERNS: RegExp[] = [') &&
+  server.includes('"/api/workspace/content/video/host"') &&
+  server.includes('"/api/platforms/youtube/publish"') &&
+  server.includes('"/api/platforms/youtube/content/drafts"') &&
+  server.includes('content\\/queue\\/[^/]+\\/review'),
+  'كل مسار يستقبل videoBase64 مُستثنى من حد 256kb (حد نقله 20mb) مع بقاء الحماية لبقية المسارات');
+add('content-upload-path-parser',
+  /app\.post\("\/api\/platforms\/youtube\/publish", express\.json\(\{ limit: CONTENT_UPLOAD_JSON_LIMIT \}\)/.test(server) &&
+  /app\.post\("\/api\/platforms\/youtube\/content\/queue\/:id\/review", express\.json\(\{ limit: CONTENT_UPLOAD_JSON_LIMIT \}\)/.test(server) &&
+  /app\.post\("\/api\/workspace\/content\/video\/host", express\.json\(\{ limit: CONTENT_UPLOAD_JSON_LIMIT \}\)/.test(server),
+  'المسارات المُستثناة تمرّر محلّل 20mb خاصاً بها (لا تعتمد على المحلّل العام المحجوب)');
+add('content-upload-limit-test',
+  read('engine/tests/content.pipeline.integration.test.ts').includes('host: 4MB لا يُرفض بحد الوسيط 413') &&
+  read('engine/tests/content.pipeline.integration.test.ts').includes('MEDIA_TOO_LARGE'),
+  'اختبار يثبت قبول فيديو عدة ميجابايت على مسار الاستضافة ورفض ما فوق 12MB منطقياً');
 const panelTsx = fs.existsSync(path.join(root, 'src/components/agent/YouTubeContentQueuePanel.tsx')) ? fs.readFileSync(path.join(root, 'src/components/agent/YouTubeContentQueuePanel.tsx'), 'utf8') : '';
 add('content-ui-real-file-upload', panelTsx.includes('type="file"') && panelTsx.includes('accept="video/*"') && !panelTsx.includes('بايتات الفيديو base64'), 'واجهة المحتوى تختار ملف فيديو حقيقياً بلا كتابة base64 يدوياً');
 add('content-ui-honors-allowed-actions', panelTsx.includes('allowedActions') && panelTsx.includes('CONTENT_UPLOAD_MAX_BYTES'), 'الواجهة تحترم العمليات المتاحة وتتحقق من الحجم قبل الإرسال');

@@ -497,14 +497,29 @@ const STATE_SCHEMA_VERSION = 16;
 // كما أرسله Meta، لا على إعادة تسلسل req.body (قد تختلف المسافات/ترتيب المفاتيح).
 // كونه الوسيط الأول يعني أنه يقرأ التدفق الوحيد نفسه، فلا يجد أي محلّل لاحق شيئاً.
 //
-// استثناء مضبوط: مسار رفع مادة المحتوى (فيديو base64) قد يتجاوز 256kb بكثير،
-// فنترك تدفقه لمحلّل خاص بالمسار بحد أعلى معلن — مع بقاء الحد الصغير هنا وحماية
-// التحقق من التوقيع (rawBody) كما هي لكل المسارات الأخرى.
-const CONTENT_UPLOAD_PATH = "/api/platforms/youtube/content/drafts";
+// استثناء مضبوط: مسارات رفع مادة المحتوى (فيديو base64) قد تتجاوز 256kb بكثير،
+// فنترك تدفقها لمحلّل JSON خاص بالمسار بحد أعلى معلن — مع بقاء الحد الصغير هنا
+// وحماية التحقق من التوقيع (rawBody) كما هي لكل المسارات الأخرى.
+//
+// الجذر المُثبت (حد النقل/الشبكة): كل مسار يستقبل `videoBase64` فعلاً يجب أن يكون
+// مُستثنى هنا، وإلا رفضه الوسيط العام (256kb) بحالة 413 «حجم الطلب أكبر من الحد
+// المسموح» قبل أن يصل إلى validateMediaBytes. كان الاستثناء مساراً واحداً فقط،
+// فتعطّلت ثلاثة مسارات ترفع فيديو: نشر يوتيوب، مراجعة/تعديل عنصر الطابور (إرفاق
+// مادة)، واستضافة رابط الفيديو العام متعددة المنصات. هذا يخصّ حد النقل فقط؛ الحد
+// المنطقي للمادة (CONTENT_MEDIA_MAX_ITEM_BYTES = 12MB للعنصر) يبقى كما هو.
+const CONTENT_UPLOAD_PATHS: string[] = [
+  "/api/platforms/youtube/content/drafts",
+  "/api/platforms/youtube/publish",
+  "/api/workspace/content/video/host",
+];
+// مسار مَعلمة (queue item review) يُطابق بنمط لأن معرّف العنصر جزء من المسار.
+const CONTENT_UPLOAD_PATH_PATTERNS: RegExp[] = [
+  /^\/api\/platforms\/youtube\/content\/queue\/[^/]+\/review$/,
+];
 const CONTENT_UPLOAD_JSON_LIMIT = "20mb";
 app.use((req: any, res, next) => {
   const path = String(req.path || req.url || "").split("?")[0];
-  if (path === CONTENT_UPLOAD_PATH) return next();
+  if (CONTENT_UPLOAD_PATHS.includes(path) || CONTENT_UPLOAD_PATH_PATTERNS.some((re) => re.test(path))) return next();
   return express.json({
     limit: "256kb",
     verify: (req: any, _res: unknown, buf: Buffer) => {
@@ -6985,7 +7000,7 @@ app.post("/api/platforms/youtube/reply", requireOwner, async (req, res) => {
  * الرفع الحقيقي للفيديو (videos.insert resumable) — نشر فوري أو جدولة حقيقية.
  * المحتوى (base64) أو رابط عام للفيديو، مع idempotency وrate limit وحارس سلامة.
  */
-app.post("/api/platforms/youtube/publish", requireOwner, async (req, res) => {
+app.post("/api/platforms/youtube/publish", express.json({ limit: CONTENT_UPLOAD_JSON_LIMIT }), requireOwner, async (req, res) => {
   const user = (req as any).user as { id: string };
   const result = await executeYouTubePublish({
     title: typeof req.body?.title === "string" ? req.body.title : "",
@@ -7176,7 +7191,7 @@ async function autoExecuteContentItem(item: ContentQueueItem, actor: string): Pr
  * قرار المالك على عنصر محتوى: موافقة/رفض/تعديل/نشر الآن/جدولة/إلغاء.
  * النشر/الجدولة يمرّان بالمنفّذ المركزي وكل البوابات. المرفوض نهائي ولا يُنشر تلقائياً.
  */
-app.post("/api/platforms/youtube/content/queue/:id/review", requireOwner, async (req, res) => {
+app.post("/api/platforms/youtube/content/queue/:id/review", express.json({ limit: CONTENT_UPLOAD_JSON_LIMIT }), requireOwner, async (req, res) => {
   const user = (req as any).user;
   const action = String(req.body?.action || "");
   if (!isValidContentReviewAction(action)) {
@@ -9086,7 +9101,7 @@ app.patch("/api/workspace/content/:id", authenticateToken, (req,res)=>{
  * لا نشر خارجي هنا إطلاقاً — تجهيز وسيط فقط، فلا يحتاج موافقة المالك (owner)، بل نفس
  * صلاحية إنشاء المحتوى (canEditContent) المستخدمة في إنشاء المنشور نفسه.
  */
-app.post("/api/workspace/content/video/host", authenticateToken, async (req, res) => {
+app.post("/api/workspace/content/video/host", express.json({ limit: CONTENT_UPLOAD_JSON_LIMIT }), authenticateToken, async (req, res) => {
   const user = (req as any).user as ServerUser;
   if (!canEditContent(user.role)) return res.status(403).json({ success: false, error: "لا تملك صلاحية إعداد وسائط المحتوى." });
   const resolved = await resolvePublicVideoUrl(req.body || {});

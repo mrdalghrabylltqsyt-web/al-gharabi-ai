@@ -44,7 +44,7 @@ npm install
 npm run dev            # tsx server.ts
 npm run lint           # tsc --noEmit
 npm run build          # vite build + esbuild server.ts -> dist/server.cjs
-npm run final-audit    # node final-audit.mjs (1366 فحصاً)
+npm run final-audit    # node final-audit.mjs (1368 فحصاً)
 npm test               # storage + engine + auth + ... + db + runtime
 ```
 - التشغيل الإنتاجي: `PORT=4517 NODE_ENV=production APP_URL=http://localhost:4517 node dist/server.cjs`
@@ -4530,3 +4530,39 @@ TypeScript: فرق عدد الأخطاء قبل/بعد باستخدام `tsc --n
 **الحالة النهائية: مسار "فيديو واحد + تحديد المنصات + توليد + إرسال للمراجعة + اعتماد
 واحد" صار آلياً بالكامل من طرف لطرف** بلا أي لصق رابط يدوي — الخطوة الوحيدة المتبقية
 بيد المالك عمداً هي ضغطة الاعتماد/النشر الواحدة (بوابة حوكمة لا تُلغى أبداً).
+
+## إصلاح جذر «حجم الطلب أكبر من الحد المسموح» عند رفع فيديو (حد النقل) — 2026-10-04
+
+**الجذر المُثبت (لا تخمين):** الوسيط العام في `server.ts` (أول الواجهات) يطبّق
+`express.json({ limit: "256kb" })` على كل المسارات، باستثناء مسار واحد فقط كان
+`/api/platforms/youtube/content/drafts`. فكل مسار يستقبل `videoBase64` ولم يكن مُستثنى
+يرفضه الوسيط بحالة **413 `PAYLOAD_TOO_LARGE`** (والرسالة العربية
+«حجم الطلب أكبر من الحد المسموح.» مصدرها `engine/runtime/errorSafety.ts`) قبل أن يصل
+إلى `validateMediaBytes`. فيديو 3MB يتحوّل إلى base64 ≈4MB، فيُرفض فوراً.
+
+**الثلاثة مسارات المعطّلة فعلياً (كانت بلا محلّل خاص):**
+- `POST /api/workspace/content/video/host` (استضافة رابط الفيديو العام متعددة المنصات —
+  مسار «مركز صناعة المحتوى الذكي» الذي أبلغ عنه المالك؛ أُضيف في Task #25 follow-up).
+- `POST /api/platforms/youtube/publish` (الرفع الحقيقي `videos.insert`).
+- `POST /api/platforms/youtube/content/queue/:id/review` (إرفاق مادة لفيديو في عنصر الطابور).
+
+**الإصلاح (حد النقل/الشبكة فقط):**
+- `CONTENT_UPLOAD_PATHS` (مصفوفة: drafts/publish/video-host) +
+  `CONTENT_UPLOAD_PATH_PATTERNS` (نمط `content/queue/:id/review`) صارت مصدر الاستثناء
+  الواحد، بدل مسار واحد.
+- كل مسار مُستثنى يمرّر **محلّل خاصاً به** `express.json({ limit: CONTENT_UPLOAD_JSON_LIMIT })`
+  (20mb) — مطابق لأسلوب مسار drafts القائم. **إلزامي:** المسار المُستثنى من الوسيط العام
+  بلا محلّل خاص = `req.body` غير معرّف؛ كل المسارات الأربعة الآن لها محلّل خاص.
+- **الحد المنطقي للمادة يبقى كما هو:** `CONTENT_MEDIA_MAX_ITEM_BYTES = 12MB` للعنصر
+  (`validateMediaBytes`/`registerContentMedia`)؛ فيديو >12MB يُرفض بـ**422 `MEDIA_TOO_LARGE`**
+  برسالة واضحة، لا بـ413 شبكة غامض. (الواجهة تتحقق مسبقاً عند 12MB.)
+- **الوسيط الأمني لم يُمَسّ:** `req.rawBody` (لتحقق توقيعات HMAC، نمط Meta/TikTok) يبقى
+  كما هو لكل المسارات غير المُستثناة (حد 256kb مع `verify`). المسارات المُستثناة لا
+  تحمل توقيعات webhook، فلا حاجة لـrawBody عندها.
+
+**اختبار fail-old/pass-new:** `engine/tests/content.pipeline.integration.test.ts` المجموعة 15:
+فيديو 4MB على `video/host` لا يُرفض 413 (يصل لمنطق Drive فيفشل 503 `DRIVE_NOT_CONFIGURED`
+بلا Drive)، و`queue/review` بـ4MB => 200، و>12MB => 422 `MEDIA_TOO_LARGE`، ومسار غير
+مُستثنى بـ300KB => 413 كما كان. **قبل الإصلاح: 7 إخفاقات (كلها 413 `PAYLOAD_TOO_LARGE`)؛
+بعده: 140/140.** فحوص final-audit: `content-upload-route-limit` (موسّع)،
+`content-upload-path-parser`، `content-upload-limit-test` (1368 إجمالاً).
