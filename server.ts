@@ -491,6 +491,8 @@ const PORT = (() => {
   return Number.isInteger(raw) && raw > 0 && raw <= 65535 ? raw : 3000;
 })();
 const PROJECT_VERSION = "13.0.0";
+/** زمن إقلاع العملية (ISO): يُعلن في deploy.startedAt لتمييز النسخة العاملة فعلاً. */
+const SERVER_STARTED_AT = new Date().toISOString();
 const STATE_SCHEMA_VERSION = 16;
 
 // Body parser يُبقي نسخة نصية من البايتات المرسلة نفسها في req.rawBody.
@@ -1659,6 +1661,10 @@ function deploymentInfo() {
     provider: process.env.RENDER ? "render" : process.env.NETLIFY ? "netlify" : "unknown",
     commit: sha ? sha.slice(0, 7) : null,
     branch: (process.env.RENDER_GIT_BRANCH || "").trim() || null,
+    // زمن إقلاع هذه العملية: يميّز النسخة العاملة فعلاً عن نسخة قديمة أثناء/بعد
+    // النشر (Render قد يخدم طلباً من نسخة سابقة لدقائق). commit وحده قد يُرى قديماً
+    // بلا أن يكون النشر فاشلاً — فهذا الحقل يمنع الالتباس.
+    startedAt: SERVER_STARTED_AT,
     nodeEnv: process.env.NODE_ENV || null,
   };
 }
@@ -7691,6 +7697,16 @@ async function resolvePublicVideoUrl(body: any): Promise<{ ok: true; url: string
     storedFolder: drControl.driveMarketingFolderIdentity || null,
   });
   if (!uploaded.ok || !uploaded.publicUrl) {
+    // تمييز «يلزم إعادة ربط Drive» عن فشل الرفع العام: الأول إجراء مالك واضح وليس
+    // عطلاً عارضاً، فلا نُلبسه رسالة «إعادة المحاولة» المضلِّلة.
+    if (uploaded.code === 'drive_reauth_required') {
+      return {
+        ok: false,
+        status: 503,
+        error: "تفويض Google Drive منتهٍ أو ملغى (رفض Google رمز التجديد). أعد الربط بنقرة واحدة من «النسخ الاحتياطي السحابي» ثم أعد رفع الفيديو، أو زوّد رابط فيديو عاماً يدوياً.",
+        code: "DRIVE_REAUTH_REQUIRED",
+      };
+    }
     return { ok: false, status: 502, error: uploaded.message || "فشل رفع الفيديو إلى استضافة Drive العامة.", code: uploaded.code || "VIDEO_HOSTING_FAILED" };
   }
   // يصمد معرّف المجلد بعد أول رفع فلا يُعاد البحث بالاسم كل مرة.

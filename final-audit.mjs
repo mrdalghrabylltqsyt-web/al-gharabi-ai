@@ -1121,6 +1121,12 @@ add('drive-host-timeout-route-guard', server.includes('settleWithTimeout(resolve
 add('drive-host-timeout-idempotency', /const mutating = method === 'POST'/.test(driveClientSrc) && /retriableNow/.test(driveClientSrc) && /code === 'server_error'/.test(driveClientSrc), 'إعادة المحاولة لا تُطبَّق على طلب مُغيِّر عند timeout/شبكة (منع نسخة مكرّرة)');
 add('drive-host-timeout-tests', fs.existsSync(path.join(root, 'engine/tests/dr/dr.drive.timeouts.test.ts')) && pkg.scripts['test:dr-drive-timeouts'] && fs.existsSync(path.join(root, 'engine/tests/dr/dr.video.host.timeout.integration.test.ts')) && pkg.scripts['test:dr-video-host-timeout'], 'اختبارا مهلة Drive (وحدة + تكامل) مسجّلان');
 add('drive-host-timeout-tests-in-suite', (pkg.scripts['test:dr'] || '').includes('test:dr-drive-timeouts') && (pkg.scripts['test:dr'] || '').includes('test:dr-video-host-timeout') && pkgTest.includes('test:dr'), 'اختبارا مهلة Drive ضمن سلسلة npm test (عبر test:dr)');
+const videoHostingTestSrc = fs.existsSync(path.join(root, 'engine/tests/dr/dr.video.public.hosting.test.ts')) ? read('engine/tests/dr/dr.video.public.hosting.test.ts') : '';
+add('drive-reauth-classified-not-thrown', driveClientSrc.includes("code: 'drive_reauth_required'") && /if \(!status && authFailCodes\.includes\(lcCode\)\)/.test(driveClientSrc), 'فشل تجديد رمز Drive (invalid_grant) يُصنَّف drive_reauth_required لا يُرمى كخطأ عام يخفي السبب');
+add('drive-token-refresh-inside-try', /const started = Date\.now\(\);\s*try \{[\s\S]*?await this\.authHeaders\(\)/.test(driveClientSrc), 'استدعاء الرمز داخل try في request (فشل المصادقة يُصنَّف ويُسجَّل لا يمرّ استثناءً خارج التصنيف)');
+add('drive-reauth-honest-response', server.includes('DRIVE_REAUTH_REQUIRED') && server.includes('أعد الربط بنقرة واحدة'), 'مسار الاستضافة يميّز «يلزم إعادة ربط Drive» عن فشل الرفع العام برسالة صريحة قابلة للتنفيذ');
+add('drive-reauth-regression-test', videoHostingTestSrc.includes('drive_reauth_required') && videoHostingTestSrc.includes('does NOT throw'), 'اختبار انحدار يثبت أن فشل التجديد يُصنَّف ولا يرمي استثناءً عاماً');
+add('deploy-started-at-exposed', server.includes('startedAt: SERVER_STARTED_AT') && server.includes('const SERVER_STARTED_AT'), 'deploy.startedAt يُعلن زمن إقلاع العملية لكشف النسخة القديمة أثناء/بعد النشر');
 
 
 // --- قرار المالك المباشر: نشر الآن public + جدولة private + تحقق حقيقي (Batch 24) ---

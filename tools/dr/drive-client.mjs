@@ -175,6 +175,14 @@ export function extractDriveError(err) {
 export function classifyDriveError(err) {
   const status = Number(err?.status ?? err?.response?.status ?? 0);
   const details = extractDriveError(err);
+  // فشل المصادقة/التجديد ليس خطأ شبكة: يميّز «يلزم إعادة ربط Drive» عن أي عطل آخر،
+  // فلا تظهر رسالة عامة مضلِّلة عند رفض Google لرمز التجديد (invalid_grant).
+  const rawCode = String(err?.code || '');
+  const lcCode = rawCode.toLowerCase();
+  const authFailCodes = ['invalid_grant', 'unauthorized_client', 'invalid_rapt', 'no_refresh_token', 'refresh_token_undecryptable', 'token_key_missing', 'unauthorized'];
+  if (!status && authFailCodes.includes(lcCode)) {
+    return { ok: false, status: 0, code: 'drive_reauth_required', message: 'تفويض Google Drive غير صالح أو منتهٍ؛ يلزم إعادة الربط.', errorDetails: details };
+  }
   // انتهاء مهلة صريح (نقل أو غلاف): كود `timeout` عابر يدخل منطق إعادة المحاولة.
   const errCode = String(err?.code || '').toUpperCase();
   if (!status && (errCode === 'ETIMEDOUT' || errCode === 'ECONNABORTED' || errCode === 'TIMEOUT' || err?.name === 'AbortError')) {
@@ -227,17 +235,19 @@ export class DriveClient {
   /** طلب واحد مع إعادة محاولة للأخطاء العابرة فقط. لا يعيد رمياً أبداً. */
   async request(opts) {
     const attempt = async () => {
-      const headers = { ...(opts.headers || {}) };
-      if (!opts.skipAuth) Object.assign(headers, await this.authHeaders());
       const started = Date.now();
       try {
+        const headers = { ...(opts.headers || {}) };
+        // تجديد الرمز داخل try: فشل المصادقة/التجديد يُصنَّف بدل أن يرمي ويمرّ
+        // كخطأ عام يخفي السبب الحقيقي (كان يخرج قبل محاولة النقل، فلا يُصنَّف ولا يُسجَّل).
+        if (!opts.skipAuth) Object.assign(headers, await this.authHeaders());
         const res = await this.transport({ ...opts, headers });
         this.calls.push({ method: opts.method, url: opts.url, status: res.status, ms: Date.now() - started });
         if (res.status >= 200 && res.status < 300) return { ok: true, status: res.status, data: res.data, headers: res.headers };
         return classifyDriveError({ status: res.status, response: { status: res.status, data: res.data } });
       } catch (err) {
         this.calls.push({ method: opts.method, url: opts.url, status: 0, ms: Date.now() - started });
-        // نُمرّر الخطأ كما هو ليبقى `err.code` (مثل ETIMEDOUT/timeout) فتتم تصنيفته كخطأ عابر.
+        // نُمرّر الخطأ كما هو ليبقى `err.code` (مثل ETIMEDOUT/invalid_grant) فتتم تصنيفته بدقة.
         return classifyDriveError(err);
       }
     };

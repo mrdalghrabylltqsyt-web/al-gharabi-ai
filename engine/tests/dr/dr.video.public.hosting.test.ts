@@ -122,6 +122,32 @@ async function run(): Promise<void> {
     check('used the separate marketing root folder, not a DR folder', Boolean(folder) && folder!.name === MARKETING_ROOT_FOLDER_NAME);
   }
 
+  // 8) فشل تجديد رمز OAuth (invalid_grant) يُصنَّف «يلزم إعادة الربط» ولا يرمي
+  //    استثناءً عاماً يخفي السبب — وهذا بالضبط ما كان ينتج رسالة 502 مضلِّلة في الإنتاج.
+  {
+    const state = createFakeDriveState();
+    const transport = makeFakeTransport(state);
+    // مزوّد رمز يرفض التجديد كما تفعل Google عند invalid_grant (بلا محاولة نقل إطلاقاً).
+    const failingTokenClient = new DriveClient({
+      transport,
+      apiBase: 'https://example.test',
+      tokenProvider: async () => { throw Object.assign(new Error('invalid_grant'), { code: 'invalid_grant' }); },
+    });
+    let threw = false;
+    let res: any = null;
+    try { res = await failingTokenClient.request({ method: 'GET', url: 'https://example.test/drive/v3/about' }); }
+    catch { threw = true; }
+    check('token-refresh failure does NOT throw (classified instead)', threw === false);
+    check('token-refresh failure classified as drive_reauth_required', res?.ok === false && res?.code === 'drive_reauth_required', JSON.stringify(res));
+    // وأيضاً في مسار الاستضافة الكامل: publishVideoPublicly تُبلّغ فشلاً مصنَّفاً لا استثناءً.
+    let pubThrew = false;
+    let pubRes: any = null;
+    try { pubRes = await publishVideoPublicly(failingTokenClient, { fileName: 'reauth.mp4', content: Buffer.from('x'), mimeType: 'video/mp4' }); }
+    catch { pubThrew = true; }
+    check('publishVideoPublicly does not throw on reauth failure', pubThrew === false);
+    check('publishVideoPublicly reports drive_reauth_required', pubRes?.ok === false && pubRes?.code === 'drive_reauth_required', JSON.stringify(pubRes));
+  }
+
   console.log(`PASSED: ${passed} video-public-hosting checks`);
   if (failures.length) {
     console.error('FAILURES:');
