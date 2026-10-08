@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { useApp } from '../../context/AppContext';
+import { apiService } from '../../services/api';
 import {
   ShieldCheck,
   CheckCircle,
@@ -28,7 +29,9 @@ export const ApprovalWorkflowView: React.FC = () => {
     deletePost,
     currentUser,
     showToast,
+    refreshWorkspace,
   } = useApp();
+  const [isPublishing, setIsPublishing] = useState<Record<string, boolean>>({});
 
   const [activeStageFilter, setActiveStageFilter] = useState<PostStatus | 'all'>('all');
   const [editingPost, setEditingPost] = useState<Post | null>(null);
@@ -92,13 +95,28 @@ export const ApprovalWorkflowView: React.FC = () => {
     setSchedulingPost(null);
   };
 
-  const handlePublishNow = (post: Post) => {
-    updatePostStatus(
-      post.id,
-      'published',
-      `تم إطلاق ونشر المحتوى فورياً على المنصات بواسطة ${currentUser?.name || 'مستخدم النظام'}`
-    );
-    showToast(`تم إطلاق ونشر "${post.title}" على منصات التواصل!`);
+  // النشر الفعلي: نقرة إنسان → مسار المالك الرسمي متعدد المنصات. لا يُعلن نشر
+  // بلا معرّف من مزود كل منصة؛ كل منصة بحالة مستقلة تُعرض في التقرير.
+  const handlePublishNow = async (post: Post) => {
+    if (isPublishing[post.id]) return;
+    setIsPublishing((prev) => ({ ...prev, [post.id]: true }));
+    try {
+      const res = await apiService.publishWorkspaceContentMultiPlatform(post.id);
+      const per = Object.entries(res.results || {});
+      const published = per.filter(([, r]: any) => r.state === 'published').map(([pf]) => pf);
+      const failed = per.filter(([, r]: any) => r.state !== 'published');
+      if (res.anyDelivered) {
+        showToast(`تم النشر على ${published.length} منصة (${published.join('، ')}).` + (failed.length ? ` فشل/معلّق على: ${failed.map(([pf]) => pf).join('، ')}.` : ''));
+      } else {
+        showToast('لم يُثبَت أي نشر: ' + (failed.map(([pf, r]: any) => `${pf} (${r.code || r.error || 'سبب غير معروف'})`).join('، ') || 'لا منصات مستهدفة'));
+      }
+      await refreshWorkspace();
+    } catch (err: any) {
+      showToast(err?.message || 'تعذر تنفيذ النشر متعدد المنصات');
+      await refreshWorkspace();
+    } finally {
+      setIsPublishing((prev) => ({ ...prev, [post.id]: false }));
+    }
   };
 
   return (
@@ -303,10 +321,11 @@ export const ApprovalWorkflowView: React.FC = () => {
                         </button>
                         <button
                           onClick={() => handlePublishNow(post)}
-                          className="px-3.5 py-1.5 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 text-xs font-bold flex items-center gap-1.5 cursor-pointer shadow-md shadow-emerald-500/20"
+                          disabled={isPublishing[post.id]}
+                          className="px-3.5 py-1.5 rounded-xl bg-emerald-500 hover:bg-emerald-400 disabled:opacity-60 text-slate-950 text-xs font-bold flex items-center gap-1.5 cursor-pointer shadow-md shadow-emerald-500/20"
                         >
                           <Send className="w-3.5 h-3.5" />
-                          نشر الآن فوراً
+                          {isPublishing[post.id] ? 'جارٍ النشر…' : 'نشر الآن فوراً'}
                         </button>
                       </>
                     )}
@@ -315,10 +334,11 @@ export const ApprovalWorkflowView: React.FC = () => {
                     {post.status === 'scheduled' && (
                       <button
                         onClick={() => handlePublishNow(post)}
-                        className="px-3.5 py-1.5 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 text-xs font-bold flex items-center gap-1.5 cursor-pointer"
+                        disabled={isPublishing[post.id]}
+                        className="px-3.5 py-1.5 rounded-xl bg-emerald-500 hover:bg-emerald-400 disabled:opacity-60 text-slate-950 text-xs font-bold flex items-center gap-1.5 cursor-pointer"
                       >
                         <Send className="w-3.5 h-3.5" />
-                        تقديم النشر الآن
+                        {isPublishing[post.id] ? 'جارٍ النشر…' : 'تقديم النشر الآن'}
                       </button>
                     )}
                   </div>

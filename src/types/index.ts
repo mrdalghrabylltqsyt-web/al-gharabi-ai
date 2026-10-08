@@ -59,6 +59,8 @@ export interface Post {
   content: string;
   platformVersions?: Record<string, string>; // Tailored text per platform
   targetPlatforms: SocialPlatformId[];
+  /** حالة النشر المستقلة لكل منصة بعد التوزيع متعدد المنصات (نجاح/فشل/سبب). */
+  platformPublishResults?: Record<string, { state: string; httpStatus?: number; providerPostId?: string | null; error?: string | null; code?: string | null; at?: string }>;
   mediaUrl?: string;
   mediaType?: 'image' | 'video' | 'carousel';
   status: PostStatus;

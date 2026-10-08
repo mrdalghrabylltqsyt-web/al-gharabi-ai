@@ -3302,7 +3302,86 @@ add('watcher-advisory-not-authority',
     !loginView.includes('mrdalghrabylltqsyt') && loginView.includes('example@domain.com'),
     'LoginView لا يعرض بريد المالك الحقيقي (placeholder عام)');
 
-  // 8) AGENTS.md: عدد فحوصات final-audit مطابق للفعلي (يُعَدّ من نص الملف نفسه).
+  // 8) دفعة النشر متعدد المنصات + تقسيم الصلاحيات (العقل المركزي ↔ العقول الستة).
+  //    حراس يمنعان رجوع: مسار نشر أحادي، نشر بلا approved، فعل خارج الـwhitelist،
+  //    استدعاء Gemini من العقول الستة، أو بنية ذاكرة موازية.
+  const sixAgentPolicy = read('engine/brain/team/executionPolicy.ts');
+  const sixAgentActions = read('engine/brain/team/deterministicActions.ts');
+  const sixAgentAudit = read('engine/brain/team/auditLog.ts');
+  const multiPlatformTest = read('engine/tests/publish.multiplatform.test.ts');
+  const sixAgentTest = read('engine/tests/sixagent.execution.test.ts');
+  add('multi-platform-publish-fanout',
+    server.includes('async function executePlatformPublish(platform: string') &&
+    /Promise\.allSettled\(requested\.map/.test(server) &&
+    server.includes('post.platformPublishResults = results'),
+    'نشر متعدد المنصات: منفّذ مشترك واحد + توزيع متوازٍ + حالة مستقلة لكل منصة');
+  add('multi-platform-single-executor-reused',
+    (server.match(/executePlatformPublish\(/g) || []).length >= 3 &&
+    // المسار المفرد غلاف رقيق: لا يحوي منطق نشر المنصات inline (لا مسار ثانٍ).
+    (() => { const i = server.indexOf('app.post("/api/platforms/:platform/publish"'); const block = server.slice(i, i + 600); return !/tiktokClient\(\)\.initVideoPost|facebookClient\(\)\.publishToPage/.test(block); })(),
+    'المسار المفرد ومسار التوزيع والمنفّذات كلها تستدعي نفس executePlatformPublish (لا مسار نشر ثانٍ)');
+  add('no-publish-without-approved',
+    /post\.status !== "approved"[\s\S]{0,200}?APPROVAL_REQUIRED/.test(server) &&
+    server.includes('app.post("/api/workspace/content/:id/publish", requireOwner'),
+    'لا نشر متعدد المنصات إلا لمنشور approved عبر مسار owner الرسمي');
+  add('six-agent-whitelist-explicit',
+    sixAgentPolicy.includes('SIX_AGENT_ALLOWED_ACTIONS') &&
+    sixAgentPolicy.includes("'classify_tag_comment'") &&
+    sixAgentPolicy.includes("'update_engagement_counters'") &&
+    sixAgentPolicy.includes("'retry_failed_publish_once'") &&
+    sixAgentPolicy.includes("'reply_from_stored_pattern'") &&
+    /REJECT_OUT_OF_WHITELIST/.test(sixAgentPolicy),
+    'قائمة أفعال العقول الستة صريحة ومحصورة (4 أفعال)، وأي فعل خارجها يُرفض');
+  add('six-agent-no-gemini',
+    !/from ['"]\.\.\/\.\.\/ai\//.test(sixAgentPolicy) && !/from ['"]\.\.\/\.\.\/ai\//.test(sixAgentActions) &&
+    !/aiEngine|GoogleGenAI|generateContent/.test(sixAgentPolicy) && !/aiEngine|GoogleGenAI|generateContent/.test(sixAgentActions) &&
+    /sixAgentActionDeps[\s\S]{0,1200}?executePlatformPublish/.test(server),
+    'أفعال العقول الستة بلا أي استدعاء Gemini/مزود — تنفيذ حتمي يعيد استخدام المنفّذات القائمة');
+  add('six-agent-escalation-default',
+    sixAgentPolicy.includes('ESCALATE_CENTRAL') &&
+    /requiresCentralBrain: true/.test(sixAgentPolicy) &&
+    sixAgentPolicy.includes('SIX_AGENT_PATTERN_MIN_CONFIDENCE'),
+    'الغامض/الحساس/غير المطابق يُصعَّد للعقل المركزي افتراضياً (لا تنفيذ محلي بلا قاعدة/نمط)');
+  add('six-agent-audit-log',
+    sixAgentAudit.includes('recordSixAgentAudit') &&
+    server.includes('sixAgentAudit: sixAgentAuditState') &&
+    server.includes('normalizeSixAgentAudit(control.sixAgentAudit)') &&
+    server.includes('app.get("/api/agent/team/six-agent/audit", authenticateToken, requireOwner'),
+    'سجل تدقيق كل فعل (أي عقل/قاعدة/وقت/نتيجة) محفوظ عبر محوّل الحالة ويصمد بعد restart، ومسار owner للقراءة');
+  add('memory-reuse-no-parallel-store',
+    server.includes('function storedReplyPatternsForSixAgents') &&
+    /brainMemoryStore\.records/.test(server) &&
+    !/brainMemoryStore\s*=\s*emptyBrainMemory\(\)[\s\S]{0,200}sixAgent/.test(server),
+    'مطابقة الردود تقرأ من نفس brainMemoryStore القائم (لا بنية ذاكرة موازية)');
+  add('six-agent-anti-poisoning-preserved',
+    server.includes("if (rec.origin === 'ai_statement') continue;") &&
+    server.includes("if (rec.status !== 'active' || rec.stale) continue;") &&
+    server.includes("if (rec.confidence !== 'high') continue;"),
+    'مكافحة التسميم محفوظة: لا يُنفَّذ محلياً سجل بأصل AI/متقادم/ثقة غير عالية');
+  add('multi-platform-and-six-agent-tests',
+    (pkg.scripts['test'] || '').includes('test:multi-platform-publish') &&
+    (pkg.scripts['test'] || '').includes('test:six-agent') &&
+    pkg.scripts['test:multi-platform-publish'] === 'tsx engine/tests/publish.multiplatform.test.ts' &&
+    pkg.scripts['test:six-agent'] === 'tsx engine/tests/sixagent.execution.test.ts' &&
+    multiPlatformTest.includes('نتيجة مستقلة لكل منصة') &&
+    sixAgentTest.includes('SIX_AGENT_ALLOWED_ACTIONS'),
+    'اختبارا النشر متعدد المنصات والعقول الستة مسجّلان ضمن npm test ويغطّيان السلوك الفعلي');
+  add('six-agent-routes-owner-only',
+    /app\.post\("\/api\/agent\/team\/six-agent\/execute", authenticateToken, requireOwner/.test(server) &&
+    /app\.get\("\/api\/agent\/team\/six-agent\/audit", authenticateToken, requireOwner/.test(server),
+    'مسارات تنفيذ/تدقيق العقول الستة مقتصرة على المالك (requireOwner) لا مجرّد مصادقة');
+  add('six-agent-state-health-no-secret',
+    server.includes('sixAgentExecution:') &&
+    server.includes('allowedActions: SIX_AGENT_ALLOWED_ACTIONS') &&
+    !/sixAgentExecution[\s\S]{0,300}?replyText/.test(server),
+    'حالة العقول الستة تُعلن في الصحة/الجاهزية بلا أي سرّ ولا نص رد');
+  add('diagrams-current-state',
+    fs.existsSync(path.join(root, 'docs/diagrams/architecture.html')) &&
+    read('docs/diagrams/architecture.html').includes('executePlatformPublish') &&
+    (read('docs/diagrams/central-brain.html').includes('six-agent') || read('docs/diagrams/central-brain.html').includes('العقول الستة')),
+    'المخططات الهندسية مُحدَّثة لتعكس النشر متعدد المنصات والتقسيم الجديد (لا وثيقة قديمة)');
+
+  // 9) AGENTS.md: عدد فحوصات final-audit مطابق للفعلي (يُعَدّ من نص الملف نفسه).
   const auditCount = (read('final-audit.mjs').match(/^\s*add\(/gm) || []).length;
   add('agents-audit-count-accurate',
     read('AGENTS.md').includes(`final-audit.mjs (${auditCount} فحصاً)`),

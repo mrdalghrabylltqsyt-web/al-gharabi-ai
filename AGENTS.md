@@ -44,7 +44,7 @@ npm install
 npm run dev            # tsx server.ts
 npm run lint           # tsc --noEmit
 npm run build          # vite build + esbuild server.ts -> dist/server.cjs
-npm run final-audit    # node final-audit.mjs (1342 فحصاً)
+npm run final-audit    # node final-audit.mjs (1355 فحصاً)
 npm test               # storage + engine + auth + ... + db + runtime
 ```
 - التشغيل الإنتاجي: `PORT=4517 NODE_ENV=production APP_URL=http://localhost:4517 node dist/server.cjs`
@@ -654,6 +654,49 @@ webhook حقيقي بـ401 بلا سبب ظاهر.
   (مسافات/أسطر) الذي كان يفشل قبل الإصلاح، وفحص أن إعادة التسلسل لا تخلق حدثاً ثانياً.
 - نطاقات منافذ اختبار Facebook نُقلت إلى `6700/6800` لتجنّب المنفذ المحظور 6000 في
   `fetch` (كان يسبب فشلاً عشوائياً ~1/120 في `npm test`).
+
+## النشر متعدد المنصات + تقسيم العقل المركزي/العقول الستة (دفعة على فرع منفصل)
+
+دفعة تفتح صلاحيات محدودة للعقول الستة وتضيف نشراً متعدد المنصات بنقرة واحدة. **على فرع
+`feat/multiplatform-publish-six-agent-lifecycle`** (من main)، بلا دمج/نشر قبل إذن المالك.
+
+- **استلام الفيديو:** بلا أي معالجة AI على الفيديو؛ مسار الرفع القائم فقط (`contentMedia` +
+  `validateMediaBytes`).
+- **منفّذ نشر مشترك واحد:** `executePlatformPublish(platform, body, actor)` في `server.ts`
+  يحوي منطق facebook/instagram/tiktok/telegram/youtube حرفياً، ويُستدعى من المسار المفرد
+  `POST /api/platforms/:platform/publish` ومن مسار التوزيع. **لا مسار نشر ثانٍ.**
+- **النشر متعدد المنصات:** `POST /api/workspace/content/:id/publish` (**requireOwner**)
+  يفرض `post.status === "approved"`، ثم `Promise.allSettled` على `post.targetPlatforms`،
+  ويخزّن حالة مستقلة لكل منصة في `post.platformPublishResults` (`published` فقط بمعرّف
+  مزود حقيقي). يبدأ فقط بنقرة إنسان — لا نشر تلقائي.
+- **الواجهة:** `ContentEngineView` اختيار متعدد (checkboxes) على `selectedPlatforms`؛
+  `ApprovalWorkflowView` زر «نشر الآن» يستدعي `apiService.publishWorkspaceContentMultiPlatform`
+  ويعرض حالة كل منصة.
+
+### تقسيم العمل (العقول الستة ↔ العقل المركزي)
+وحدة المصدر الواحد `engine/brain/team/executionPolicy.ts`:
+- `SIX_AGENT_ALLOWED_ACTIONS` = **4 أفعال حتمية فقط** بلا Gemini: `classify_tag_comment`،
+  `update_engagement_counters`، `retry_failed_publish_once` (مرّة واحدة، منصة واحدة)،
+  `reply_from_stored_pattern` (تطابق تام مع نمط محفوظ بثقة ≥ `SIX_AGENT_PATTERN_MIN_CONFIDENCE=0.85`).
+- `evaluateSixAgentAction` يُعيد `ALLOW_DETERMINISTIC` / `ESCALATE_CENTRAL` /
+  `REJECT_OUT_OF_WHITELIST`. أي غامض/سلبي/حساس/غير مطابق ⇒ **تصعيد للعقل المركزي وحده**
+  (وهو الوحيد المخوَّل باستدعاء Gemini ضمن `GEMINI_DAILY_LIMIT` القائم، بلا تغيير).
+- التنفيذ الفعلي في `engine/brain/team/deterministicActions.ts` يعيد استخدام المنفّذات
+  الحقيقية القائمة (`executePlatformPublish`, `executeYouTubeReply`) عبر `sixAgentActionDeps()`
+  المحقونة من `server.ts` — كل بوابات المشروع سارية داخلها.
+- **مكافحة التسميم محفوظة:** `storedReplyPatternsForSixAgents` يقرأ من **نفس** `brainMemoryStore`
+  (لا بنية موازية) ويقبل فقط سجلات نشطة غير متقادمة بثقة عالية وأصل غير `ai_statement`.
+- **سجل التدقيق:** `engine/brain/team/auditLog.ts` + `sixAgentAuditState` محفوظ في
+  `control.sixAgentAudit` عبر محوّل الحالة (يصمد بعد restart). مسارات owner:
+  `GET /api/agent/team/six-agent/audit` و`POST /api/agent/team/six-agent/execute`.
+- `/api/health.sixAgentExecution` و`/api/readiness.brain.sixAgentExecution` يعرضان
+  (`allowedActions`, `executesExternalActions: "bounded"`, `geminiUsed: false` + ملخّص التدقيق)
+  بلا أي سرّ.
+
+اختبارات: `engine/tests/publish.multiplatform.test.ts` (`npm run test:multi-platform-publish`،
+25 فحصاً) و`engine/tests/sixagent.execution.test.ts` (`npm run test:six-agent`، 41 فحصاً).
+فحوص final-audit: `multi-platform-*`، `six-agent-*`، `memory-reuse-no-parallel-store`،
+`diagrams-current-state`. المخططات في `docs/diagrams/` مُحدَّثة (الإصدار/الـcommit/المسار/التقسيم).
 
 ## نمط الكود
 - تعليقات عربية موجزة تشرح «لماذا» فقط، دون شرح ما يفعله الكود.

@@ -25,7 +25,11 @@ import { SocialPlatformId, ContentFormatType } from '../../types';
 export const ContentEngineView: React.FC = () => {
   const { products, platforms, createPost, showToast, setActiveTab, currentUser, showroomInfo } = useApp();
 
-  const [selectedPlatform, setSelectedPlatform] = useState<SocialPlatformId>('tiktok');
+  // اختيار متعدد: المنصات المستهدفة كلها (targetPlatforms مصفوفة). المنصة الأساسية
+  // للتوليد هي أول منصة مختارة، فتبقى إعادة الصياغة الحتمية على المنصة الأولى ثم
+  // يُوزَّع المحتوى على البقية عند النشر.
+  const [selectedPlatforms, setSelectedPlatforms] = useState<SocialPlatformId[]>(['tiktok']);
+  const primaryPlatform: SocialPlatformId = selectedPlatforms[0] || 'tiktok';
   const [contentType, setContentType] = useState<ContentFormatType>('post');
   const [selectedProductId, setSelectedProductId] = useState<string>('');
   const [customTopic, setCustomTopic] = useState<string>('');
@@ -57,7 +61,7 @@ export const ContentEngineView: React.FC = () => {
       : '';
 
     const payload = {
-      platform: selectedPlatform,
+      platform: primaryPlatform,
       contentType,
       topic: customTopic || (selectedProduct ? `عرض تقسيط ${selectedProduct.name}` : 'عروض التقسيط الميسر'),
       tone,
@@ -84,7 +88,7 @@ export const ContentEngineView: React.FC = () => {
       const serverVersions = (res as any).adaptedVersions && typeof (res as any).adaptedVersions === 'object'
         ? (res as any).adaptedVersions
         : null;
-      setAdaptedVersions(serverVersions ? { ...serverVersions, [selectedPlatform]: res.content } : { [selectedPlatform]: res.content });
+      setAdaptedVersions(serverVersions ? { ...serverVersions, [primaryPlatform]: res.content } : { [primaryPlatform]: res.content });
 
       showToast('تم توليد المحتوى الذكي وإعادة صياغته للمنصات بنجاح!');
     }
@@ -101,13 +105,13 @@ export const ContentEngineView: React.FC = () => {
       title,
       content: generatedResult,
       platformVersions: adaptedVersions,
-      targetPlatforms: [selectedPlatform],
+      targetPlatforms: selectedPlatforms.length ? selectedPlatforms : [primaryPlatform],
       status,
       mediaUrl: selectedProduct?.image,
       mediaType: contentType === 'short_video' || contentType === 'script' ? 'video' : 'image',
       authorName: currentUser.name,
       authorRole: currentUser.role,
-      tags: ['تقسيط_منتجات', 'معرض_الغرابي', selectedPlatform],
+      tags: ['تقسيط_منتجات', 'معرض_الغرابي', ...selectedPlatforms],
     });
 
     setActiveTab('approval');
@@ -139,26 +143,37 @@ export const ContentEngineView: React.FC = () => {
           {/* Platform Selector */}
           <div className="p-5 rounded-2xl bg-slate-900 border border-slate-800 space-y-3">
             <label className="block text-xs font-bold text-slate-300">
-              1. اختر المنصة المستهدفة الأساسية:
+              1. اختر المنصات المستهدفة (يمكن اختيار أكثر من منصة):
             </label>
             <div className="grid grid-cols-3 sm:grid-cols-5 gap-2">
-              {platforms.map((p) => (
-                <button
-                  key={p.id}
-                  onClick={() => {
-                    setSelectedPlatform(p.platform);
-                    setActivePreviewPlatform(p.platform);
-                  }}
-                  className={`p-2.5 rounded-xl text-center text-xs font-bold transition flex flex-col items-center gap-1 cursor-pointer ${
-                    selectedPlatform === p.platform
-                      ? 'bg-emerald-500 text-slate-950 shadow-md shadow-emerald-500/30 font-black'
-                      : 'bg-slate-950/70 text-slate-300 hover:bg-slate-800 border border-slate-800'
-                  }`}
-                >
-                  <span className="text-[11px] truncate w-full">{p.name}</span>
-                </button>
-              ))}
+              {platforms.map((p) => {
+                const isSelected = selectedPlatforms.includes(p.platform);
+                return (
+                  <button
+                    key={p.id}
+                    onClick={() => {
+                      setSelectedPlatforms((prev) => {
+                        const next = prev.includes(p.platform)
+                          ? prev.filter((x) => x !== p.platform)
+                          : [...prev, p.platform];
+                        return next.length ? next : prev;
+                      });
+                      setActivePreviewPlatform(p.platform);
+                    }}
+                    className={`p-2.5 rounded-xl text-center text-xs font-bold transition flex flex-col items-center gap-1 cursor-pointer ${
+                      isSelected
+                        ? 'bg-emerald-500 text-slate-950 shadow-md shadow-emerald-500/30 font-black'
+                        : 'bg-slate-950/70 text-slate-300 hover:bg-slate-800 border border-slate-800'
+                    }`}
+                  >
+                    <span className="text-[11px] truncate w-full">{isSelected ? '✓ ' : ''}{p.name}</span>
+                  </button>
+                );
+              })}
             </div>
+            <p className="text-[10px] text-slate-500">
+              المحدَّد: {selectedPlatforms.length} منصة. النشر يُوزَّع على كل المنصات المختارة بنقرة واحدة (كل منصة بحالة مستقلة).
+            </p>
           </div>
 
           {/* Content Type Selector */}

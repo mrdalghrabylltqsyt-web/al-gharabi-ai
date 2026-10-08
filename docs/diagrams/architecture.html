@@ -1,0 +1,170 @@
+<!doctype html>
+<html dir="rtl" lang="ar">
+<head>
+<meta charset="utf-8">
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { width: 1680px; background: #0b1220; color: #e2e8f0;
+    font-family: 'Noto Sans Arabic','Noto Sans',sans-serif; padding: 34px 40px 40px; }
+  h1 { font-size: 30px; color: #fff; }
+  h2 { font-size: 19px; color: #fff; }
+  .sub { color: #94a3b8; font-size: 15px; margin-top: 6px; line-height: 1.7; }
+  .head { border-bottom: 2px solid #1e293b; padding-bottom: 16px; margin-bottom: 20px; }
+  .mono { font-family: 'DejaVu Sans Mono', monospace; direction: ltr; unicode-bidi: embed; }
+  .badge { display:inline-block; padding:2px 10px; border-radius:999px; font-size:13px; font-weight:700; }
+  .g { background:#052e16; color:#4ade80; border:1px solid #16a34a; }
+  .o { background:#3a2404; color:#fbbf24; border:1px solid #d97706; }
+  .r { background:#2a1010; color:#f87171; border:1px solid #b91c1c; }
+  .legend { display:flex; gap:26px; align-items:center; margin:14px 0 22px; font-size:15px; }
+  .dot { width:15px; height:15px; border-radius:4px; display:inline-block; margin-left:7px; vertical-align:-2px; }
+  .dg{background:#22c55e;} .do{background:#f59e0b;} .dr{background:#ef4444;}
+  .layer { border:1px solid #1e293b; border-radius:14px; padding:14px 16px 16px; margin-bottom:14px; background:#0e1729; }
+  .ltitle { display:flex; justify-content:space-between; align-items:center; margin-bottom:11px; }
+  .ltitle .n { color:#64748b; font-size:13px; }
+  .row { display:flex; flex-wrap:wrap; gap:9px; }
+  .cell { border:1px solid #24334d; border-radius:10px; padding:9px 12px; background:#0a1120; font-size:14.5px; line-height:1.5; }
+  .cell b { color:#fff; font-size:15px; }
+  .cell .meta { color:#8fa3bd; font-size:12.5px; margin-top:3px; }
+  .cell.gc { border-color:#166534; background:#06160d; }
+  .cell.oc { border-color:#9a6206; background:#1c1405; }
+  .cell.rc { border-color:#7f1d1d; background:#1a0c0c; }
+  .tag { font-size:11.5px; padding:1px 7px; border-radius:5px; margin-inline-start:6px; }
+  .stat { font-size:12.5px; color:#93c5fd; }
+  .footer { margin-top:20px; color:#7c8aa0; font-size:13px; line-height:1.8; border-top:1px solid #1e293b; padding-top:14px; }
+  .verify { display:grid; grid-template-columns:1fr 1fr; gap:8px 26px; border:1px solid #1d4ed8; border-radius:12px; padding:12px 16px; margin-bottom:18px; background:#0a1330; font-size:14px; line-height:1.6; }
+  .verify b { color:#93c5fd; }
+</style>
+</head>
+<body>
+  <div class="head">
+    <h1>الغرابي AI — الهيكل الهندسي الشامل</h1>
+    <div class="sub">
+      المصدر الوحيد: قراءة الكود على فرع <span class="mono badge g">feat/multiplatform-publish-six-agent-lifecycle</span> (دفعة النشر متعدد المنصات + تقسيم العقل المركزي/العقول الستة) + Git الفعلي + استدعاء حي لـ <span class="mono">/api/health</span> و <span class="mono">/api/readiness</span>.<br>
+      main = origin/main = <span class="mono">8825a67b06302a270bc4a535fbe531f395a8ed40</span> · الإنتاج: Render commit <span class="mono">8825a67</span> · طابع قراءة الإنتاج: <span class="mono">2026-10-08T04:30:00Z</span> · الإصدار <span class="mono">13.0.0</span>
+    </div>
+  </div>
+
+  <div class="legend">
+    <span><span class="dot dg"></span>أخضر = منجز فعلاً (كود + route/اختبار/سلوك حي مُتحقَّق)</span>
+    <span><span class="dot do"></span>برتقالي = قيد الإنجاز (كود جزئي/غير مدموج/غير مُنفَّذ)</span>
+    <span><span class="dot dr"></span>أحمر = لم يُنجز (لا كود فعلي)</span>
+  </div>
+
+  <div class="verify">
+    <div><b>فرع العمل</b> = <span class="mono">feat/multiplatform-publish-six-agent-lifecycle</span> (من main <span class="mono">c5ec98d</span>)</div>
+    <div><b>main = origin/main</b> = <span class="mono">8825a67b06302a270bc4a535fbe531f395a8ed40</span></div>
+    <div><b>ahead/behind</b> = <span class="mono">0 0</span> · <span class="mono">git cat-file -t HEAD</span> = commit</div>
+    <div><b>الإنتاج deploy.commit</b> = <span class="mono">8825a67</span> (branch=main, nodeEnv=production)</div>
+    <div><b>npm test</b> = <span class="mono">80</span> مجموعة PASSED · <span class="mono">0</span> FAILED</div>
+    <div><b>final-audit</b> = <span class="mono">1355</span> فحص (add() في final-audit.mjs)</div>
+  </div>
+
+  <!-- Layer 1 -->
+  <div class="layer">
+    <div class="ltitle"><h2>١. واجهة العميل (React SPA)</h2><span class="n">38 مكوّن .tsx</span></div>
+    <div class="row">
+      <div class="cell gc"><b>لوحة التحكم والتبويبات</b><div class="meta">src/components/common/Sidebar.tsx · 28 تبويب تنقّل (2 ownerOnly)</div></div>
+      <div class="cell gc"><b>مدير السوشيال</b><div class="meta">SocialManagerView.tsx + SocialHubView.tsx</div></div>
+      <div class="cell gc"><b>مركز ربط المنصات</b><div class="meta">PlatformConnectionCenter.tsx (تبويب platform_connections، owner)</div></div>
+      <div class="cell gc"><b>مدير تشغيل YouTube</b><div class="meta">YouTubeOperationsView.tsx + YouTubeContentQueuePanel.tsx + YouTubeBriefReview.tsx</div></div>
+      <div class="cell gc"><b>العقل المركزي</b><div class="meta">CentralBrainView.tsx + AgentTeamCenter.tsx + CentralBrainCognitionPanel.tsx</div></div>
+      <div class="cell gc"><b>العقل المركزي التنفيذي</b><div class="meta">CentralAgentConsole.tsx (تبويب central_agent)</div></div>
+      <div class="cell gc"><b>النسخ السحابي</b><div class="meta">CloudBackupView.tsx (تبويب cloud_backup)</div></div>
+      <div class="cell oc"><b>SalesCenterView / OperationsControlView</b><div class="meta">مكوّنان موجودان لكن التبويبان مخفيان + المسارات معزولة 404 (خارج النطاق)</div></div>
+      <div class="cell gc"><b>عزل أسطح ERP القديمة</b><div class="meta">LEGACY_ERP_TAB_IDS = {executive,business,finance,inventory,reports,operations,sales,control}</div></div>
+    </div>
+  </div>
+
+  <!-- Layer 2 -->
+  <div class="layer">
+    <div class="ltitle"><h2>٢. الخادم المركزي (Express)</h2><span class="n">server.ts</span></div>
+    <div class="row">
+      <div class="cell gc"><b>server.ts</b><div class="meta">14,265 سطر · 225 تسجيل مسار (+10 app.use = 235 app.*)</div><div class="stat">get 118 · post 86 · put 3 · patch 9 · delete 9</div></div>
+      <div class="cell gc"><b>عائلات المسارات</b><div class="meta">34 عائلة /api/&lt;seg&gt; — أبرزها platforms 61 · workspace 25 · control 18 · ai 18 · agent 13 · system 9 · brain 8</div></div>
+      <div class="cell gc"><b>وحدات تسجيل المسارات</b><div class="meta">engine/social/routes.ts · engine/agent/routes.ts · engine/dr/routes.ts · engine/brain/routes.ts · engine/brain/team/routes.ts · engine/brain/cognition/routes.ts</div></div>
+      <div class="cell gc"><b>وسيط العزل (Scope)</b><div class="meta">legacyErpScopeEnabled + OUT_OF_SCOPE_LIVE_ROUTE_PREFIXES → 404 SCOPE_DISABLED قبل المصادقة</div></div>
+      <div class="cell gc"><b>النشر متعدد المنصات (جديد)</b><div class="meta">executePlatformPublish (منفّذ مشترك) + POST /api/workspace/content/:id/publish (owner) — توزيع متوازٍ Promise.allSettled على targetPlatforms، حالة مستقلة لكل منصة (post.platformPublishResults)، لا نشر بلا status=approved، لا «published» بلا معرّف مزود</div></div>
+      <div class="cell gc"><b>تقسيم العقل المركزي ↔ العقول الستة (جديد)</b><div class="meta">engine/brain/team/{executionPolicy,deterministicActions,auditLog}.ts — whitelist من 4 أفعال حتمية بلا Gemini (تصنيف/عدّادات/إعادة نشر واحدة/رد بنمط محفوظ)؛ الغامض/الحساس يُصعَّد للعقل المركزي وحده؛ سجل تدقيق دائم (control.sixAgentAudit)</div></div>
+    </div>
+  </div>
+
+  <!-- Layer 3 -->
+  <div class="layer">
+    <div class="ltitle"><h2>٣. المحرّكات (engine/)</h2><span class="n">~180 ملف .ts</span></div>
+    <div class="row">
+      <div class="cell gc"><b>ai/ (7)</b><div class="meta">engine.ts · provider.ts · models.ts · errors.ts · retry.ts · firewall.ts · quotaPolicy.ts</div></div>
+      <div class="cell gc"><b>social/ (47)</b><div class="meta">registry · adapter · comments · publishing · brain · operations · readiness · oauth · webhook · credentials · tokenKey · telegram · facebook · instagram · tiktok · youtube · youtubeWatcher · contentPipeline …</div></div>
+      <div class="cell gc"><b>agent/ (7)</b><div class="meta">orchestrator · planner · tools (30 أداة) · permissions · providerRouter · governanceGuard · routes</div></div>
+      <div class="cell gc"><b>brain/ (10 + 10 مجلدات)</b><div class="meta">runtime · state · cycles · brainRuntime · dryRun · cognition/ · team/ · strategy/ · knowledge/ · memory/ · audience/ · market/ · learning/ · decisions/ · experiments/ · goals/ · timing/ · perception/</div></div>
+      <div class="cell gc"><b>dr/ (3 + recoveryVault/3)</b><div class="meta">autoBackup · dbBalance · routes · recoveryVault/{inventory,vault,recoveryReport}</div></div>
+      <div class="cell gc"><b>auth/ (2)</b><div class="meta">sessions.ts (HMAC بلا حالة) · challenge.ts (TOTP)</div></div>
+      <div class="cell gc"><b>storage/ (1)</b><div class="meta">adapter.ts (ملف/Postgres)</div></div>
+      <div class="cell gc"><b>runtime/ (2)</b><div class="meta">rateWindow.ts · errorSafety.ts</div></div>
+      <div class="cell gc"><b>notifications/ (1)</b><div class="meta">owner-email.ts (Resend)</div></div>
+      <div class="cell gc"><b>tools/dr/ (27 .mjs)</b><div class="meta">backup · restore · current-mirror · source-bundle · key-vault-crypto · recovery-center · recoveryPwa · token-source …</div></div>
+    </div>
+  </div>
+
+  <!-- Layer 4 -->
+  <div class="layer">
+    <div class="ltitle"><h2>٤. طبقة التخزين</h2><span class="n">engine/storage/adapter.ts</span></div>
+    <div class="row">
+      <div class="cell gc"><b>Postgres (DATABASE_URL)</b><div class="meta">جدول gharabi_state(key,value,updated_at) · حي: backend=postgres, durable=true</div></div>
+      <div class="cell gc"><b>ملف محلي احتياطي</b><div class="meta">.gharabi-state.json + نسخ يومية (7 أيام) + STATE_DIR</div></div>
+      <div class="cell gc"><b>الجلسات/الإبطال الدائم</b><div class="meta">SESSION_SECRET · revokedSessions · userRevocations (تصمد بعد restart)</div></div>
+    </div>
+  </div>
+
+  <!-- Layer 5 -->
+  <div class="layer">
+    <div class="ltitle"><h2>٥. المزوّدون الخارجيون — فصل «كود الموصل» عن «الاتصال الحي»</h2><span class="n">realConnector=true لخمس منصات فقط</span></div>
+    <div class="row" style="margin-bottom:10px">
+      <div class="cell gc"><b>كود الموصل الحقيقي — موجود ومختبَر (5/10)</b><div class="meta">tiktok · youtube · facebook · instagram · telegram (realConnector=true في engine/social/registry.ts، مدموج على main)</div></div>
+      <div class="cell rc"><b>كود الموصل غير موجود (5/10)</b><div class="meta">whatsapp · x · snapchat · threads · google_business (realConnector=false — لا كود موصل إطلاقاً)</div></div>
+    </div>
+    <div class="row">
+      <div class="cell gc"><b>الاتصال الحي المُثبت: Telegram فقط</b><div class="meta">/api/readiness.brain.connectedVerified = [telegram] — موصل + webhook + getWebhookInfo</div></div>
+      <div class="cell rc"><b>YouTube — غير متصل</b><div class="meta">connected=false · providerVerified=false · operationalState=TOKEN_REFRESH_REQUIRED · ينتظر تجديد/إعادة ربط المالك</div></div>
+      <div class="cell rc"><b>Facebook — غير متصل</b><div class="meta">userAccessTokenStored=false · pageAccessTokenStored=false · ينتظر OAuth المالك</div></div>
+      <div class="cell rc"><b>Instagram — غير متصل</b><div class="meta">configurationReady=false · loginConfigIdUsed=false · ينتظر Configuration ID من المالك</div></div>
+      <div class="cell rc"><b>TikTok — غير متصل</b><div class="meta">tokenStored=false · READY_TO_CONNECT · appReviewRequired=true · ينتظر ربط المالك</div></div>
+      <div class="cell rc"><b>WhatsApp · X · Snapchat · Threads · Google Business</b><div class="meta">غير متصلة — لا موصل حقيقي</div></div>
+    </div>
+    <div class="row" style="margin-top:10px">
+      <div class="cell gc"><b>Gemini — كود المزوّد + جدار الحماية</b><div class="meta">configured=true · keyPresent=true · firewall مفعّل (حد 40، مُستهلك 0) · engine/ai/*.ts</div></div>
+      <div class="cell rc"><b>Gemini — التحقق الحي (verifiedLive)</b><div class="meta">verifiedLive=false · verification=not_attempted · providerReady=false — لم يُثبت بطلب حقيقي بعد</div></div>
+    </div>
+  </div>
+
+  <!-- Layer 6 -->
+  <div class="layer">
+    <div class="ltitle"><h2>٦. التشغيل والنشر والتعافي</h2><span class="n">إنتاج حي</span></div>
+    <div class="row">
+      <div class="cell gc"><b>Render (خدمة رئيسية)</b><div class="meta">node · autoDeploy · healthCheckPath=/api/health · commit=8825a67</div></div>
+      <div class="cell gc"><b>Netlify Function</b><div class="meta">netlify/functions/api.ts + netlify.toml (rewrite 200)</div></div>
+      <div class="cell gc"><b>Dockerfile متعدد المراحل</b><div class="meta">حزمة مصدر موثوقة (source-bundle) داخل dist/dr-source</div></div>
+      <div class="cell gc"><b>GitHub Actions</b><div class="meta">.github/workflows/keep-alive.yml</div></div>
+      <div class="cell gc"><b>Google Drive DR</b><div class="meta">scope=drive.file · authorized=true · refreshTokenUsable=true · autoBackup كل 6h · آخر نقطة rp-020 · CURRENT 373 ملف</div></div>
+      <div class="cell gc"><b>خزنة مفاتيح الطوارئ</b><div class="meta">KEY-VAULT · inventoryCount=40 · vaultKey=valid</div></div>
+      <div class="cell gc"><b>مركز الاستعادة المستقل</b><div class="meta">gharabi-recovery-center.onrender.com · build=owner-auth-1 · PWA · owner-auth required</div></div>
+    </div>
+  </div>
+
+  <!-- Layer 7 -->
+  <div class="layer">
+    <div class="ltitle"><h2>٧. خارج الإنتاج الحالي (معزول أو غير موجود)</h2><span class="n">موثّق صراحةً</span></div>
+    <div class="row">
+      <div class="cell oc"><b>عائلات ERP القديمة</b><div class="meta">catalog/inventory/crm/purchases/finance/tasks/business/suppliers/expenses/contracts/installments/executive — الكود موجود ومعزول 404، يُعاد بـGHARABI_ENABLE_LEGACY_ERP_SCOPE</div></div>
+      <div class="cell oc"><b>sales / control (مالي/دليل عملاء)</b><div class="meta">الكود موجود ومعزول 404 (تم التحقق حياً) — ينتظر قرار المالك</div></div>
+      <div class="cell oc"><b>وحدات العقل التجاري/النمو/الرقمي</b><div class="meta">engine/brain/{commercial,sales,growth,digital} موجودة على 3 فروع (integration/phase-1d… ، fix/health-readiness-privacy-leak ، fix/recovery-center-owner-auth) — غير مدموجة في main، لا مسارات مسجّلة</div></div>
+      <div class="cell rc"><b>موصلات منصات غير منفّذة</b><div class="meta">WhatsApp/X/Snapchat/Threads/Google Business — بلا كود موصل إطلاقاً</div></div>
+    </div>
+  </div>
+
+  <div class="footer">
+    <b>حصر الألوان (هذا المخطط):</b> أخضر = 37 عنصراً · برتقالي = 4 عناصر · أحمر = 8 عناصر (إجمالي 49 عنصراً).<br>
+    كل عنصر أخضر مدعوم بأحد: (١) مسار كود فعلي (اسم ملف)، (٢) route يستجيب حياً، (٣) استدعاء /api/health أو /api/readiness، (٤) اختبار يمر. التفصيل الكامل في جدول المصادر المرفق بالنص.<br>
+    <b>تحذير حدود:</b> العناصر البرتقالية ليست "مكتملة"؛ إما كود معزول/غير مدموج أو اتصال خارجي غير مُثبت (providerVerified=false).
+  </div>
+</body>
+</html>

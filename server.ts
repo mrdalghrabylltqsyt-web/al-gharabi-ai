@@ -59,6 +59,9 @@ import {
 } from "./engine/brain/consolidation";
 import type { CognitiveBrainContext } from "./engine/brain/cognition/cognitiveLoop";
 import { escalateBrainDecision, type BrainEscalationHook } from "./engine/brain/team/brainEscalation";
+import { evaluateSixAgentAction, isAllowedSixAgentAction, SIX_AGENT_ALLOWED_ACTIONS, type StoredReplyPattern } from "./engine/brain/team/executionPolicy";
+import { executeSixAgentAction, type DeterministicActionDeps } from "./engine/brain/team/deterministicActions";
+import { emptySixAgentAudit, recordSixAgentAudit, summarizeSixAgentAudit, normalizeSixAgentAudit, type SixAgentAuditState } from "./engine/brain/team/auditLog";
 import { isEscalationOpen, escalationReasonFor, type EscalationReason, type EscalationRecord } from "./engine/social/escalation";
 import { classifyConversation } from "./engine/brain/audience/conversationIntelligence";
 import { capabilityRow } from "./engine/brain/strategy/capabilityMatrix";
@@ -5900,6 +5903,16 @@ async function runYouTubeWatcherCycle(trigger: "schedule" | "manual" = "schedule
         requiresHumanReview: cls.requiresHumanReview, topic: (cls as any).topic ?? null,
       });
       const preReason = (priceFactsVerified && baseReason === 'price_unverified') ? null : baseReason;
+      // أفعال العقول الستة الحتمية: تصنيف التعليق عادي/إيجابي بقاعدة حتمية (بلا
+      // Gemini). أي تصنيف غير عادي/إيجابي لا يُنفَّذ محلياً — الجلسة التالية (العقل
+      // المركزي) هي سلطة القرار الوحيدة. كل فعل يُسجَّل في سجل التدقيق.
+      try {
+        await trySixAgentAction({
+          agentId: 'analysis', action: 'classify_tag_comment', platform: 'youtube',
+          commentId: String(c.commentId), commentText: String(c.text || ''),
+          tag: cls.sentiment === 'positive' ? 'positive' : 'neutral',
+        });
+      } catch { /* فعل العقول الستة لا يُسقط دورة المراقبة */ }
       // فريق الوكلاء (Batch 6): حدث YouTube حقيقي => جلسة فريق واحدة (بلا تكرار،
       // بلا تنفيذ خارجي). تُشغَّل هنا داخل دورة المراقبة الدائمة. أي فشل لا يُسقط
       // الدورة (جلسة الفريق لا ترمي)، والقرار يُكتب في نفس ذاكرة العقل القائمة.
@@ -7483,118 +7496,126 @@ app.post("/api/brain/comment-intelligence", authenticateToken, (req, res) => {
 // منصة لا تدعم نوع النشر تُردّ صراحةً بـ CAPABILITY_NOT_SUPPORTED، بلا فشل صامت.
 // منصة تدعم النشر لكن بلا موصل منفّذ تُردّ بـ EXTERNAL_SETUP_REQUIRED.
 // -------------------------------------------------------------
-app.post("/api/platforms/:platform/publish", requireOwner, async (req, res) => {
-  const platform = req.params.platform;
-  const user = (req as any).user as { id: string };
-  if (!isSupportedPlatform(platform)) return res.status(404).json({ success: false, error: "المنصة غير مدعومة." });
-  const content = typeof req.body?.content === "string" ? req.body.content.trim() : "";
-  const approved = req.body?.approved === true;
-  const chatId = typeof req.body?.chatId === "string" ? req.body.chatId.trim() : "";
+/**
+ * المنفّذ المشترك لنشر منصة واحدة — مصدر واحد لكل مسارات النشر.
+ *
+ * يُعيد { status, body } بلا كتابة رأس استجابة، فيُعاد استخدامه من المسار
+ * المفرد (POST /api/platforms/:platform/publish) ومن دالة التوزيع متعدد
+ * المنصات (POST /api/workspace/content/:id/publish). السلوك مطابق حرفياً لما
+ * كان داخل المسار المفرد (نفس البوابات: القدرة → السلامة → الاتصال الموثق →
+ * الموصل الحقيقي → التنفيذ)، ولا يُعلن نجاحاً بلا معرّف نشر حقيقي من المزود.
+ */
+async function executePlatformPublish(platform: string, body: any, actor: string): Promise<{ status: number; body: any }> {
+  const user = { id: actor };
+  if (!isSupportedPlatform(platform)) return { status: 404, body: { success: false, error: "المنصة غير مدعومة." } };
+  const content = typeof body?.content === "string" ? body.content.trim() : "";
+  const approved = body?.approved === true;
+  const chatId = typeof body?.chatId === "string" ? body.chatId.trim() : "";
 
-  if (!content) return res.status(400).json({ success: false, error: "المحتوى مطلوب.", code: "CONTENT_REQUIRED" });
-  if (!approved) return res.status(409).json({ success: false, error: "المحتوى لم تتم الموافقة عليه.", code: "APPROVAL_REQUIRED" });
+  if (!content) return { status: 400, body: { success: false, error: "المحتوى مطلوب.", code: "CONTENT_REQUIRED" } };
+  if (!approved) return { status: 409, body: { success: false, error: "المحتوى لم تتم الموافقة عليه.", code: "APPROVAL_REQUIRED" } };
   // وضع YOUTUBE_ONLY_OPERATIONAL: يمنع أي عملية خارجية على منصة غير YouTube.
   const onlyBlock = youtubeOnlyBlock(platform);
-  if (onlyBlock.blocked) return res.status(onlyBlock.status!).json(onlyBlock.body);
+  if (onlyBlock.blocked) return { status: onlyBlock.status!, body: onlyBlock.body };
   // القدرة تُقرأ من السجل: منصة لا تدعم النشر لا تُحاول إطلاقاً.
   if (!hasCapability(platform, "publish")) {
-    return res.status(422).json({ success: false, error: "المنصة لا تدعم النشر عبر واجهتها الرسمية في هذا النظام.", code: "CAPABILITY_NOT_SUPPORTED", platform });
+    return { status: 422, body: { success: false, error: "المنصة لا تدعم النشر عبر واجهتها الرسمية في هذا النظام.", code: "CAPABILITY_NOT_SUPPORTED", platform } };
   }
   // محتوى خارجي يمر عبر حارس السلامة قبل أي إرسال.
   const safety = analyzeBusinessClaims(content, buildFactsForProduct(null, 0, 0));
   if (!safety.safe) {
-    return res.status(422).json({ success: false, error: "المحتوى يحمل عرضاً تجارياً غير مسجّل، وتم إيقافه قبل الإرسال.", code: "CONTENT_SAFETY_BLOCKED", contentSafety: { violations: safety.blocked.map((v) => v.detail), codes: safety.blocked.map((v) => v.code) } });
+    return { status: 422, body: { success: false, error: "المحتوى يحمل عرضاً تجارياً غير مسجّل، وتم إيقافه قبل الإرسال.", code: "CONTENT_SAFETY_BLOCKED", contentSafety: { violations: safety.blocked.map((v) => v.detail), codes: safety.blocked.map((v) => v.code) } } };
   }
   const conn: any = platformConnections.get(platform);
   if (!conn || conn.status !== "connected" || conn.providerVerified !== true) {
-    return res.status(409).json({ success: false, error: "المنصة غير متصلة باتصال موثق؛ لا نشر خارجي.", code: "NOT_CONNECTED" });
+    return { status: 409, body: { success: false, error: "المنصة غير متصلة باتصال موثق؛ لا نشر خارجي.", code: "NOT_CONNECTED" } };
   }
   if (!hasRealConnector(platform)) {
-    return res.status(501).json({ success: false, error: "لا يوجد موصل نشر منفّذ لهذه المنصة بعد.", code: "EXTERNAL_SETUP_REQUIRED", platform });
+    return { status: 501, body: { success: false, error: "لا يوجد موصل نشر منفّذ لهذه المنصة بعد.", code: "EXTERNAL_SETUP_REQUIRED", platform } };
   }
   try {
     if (platform === "youtube") {
       // النشر الموحّد لـYouTube يوجّه لمسار الرفع الحقيقي (videos.insert resumable)
       // لأنه يحتاج بايتات الملف. لا محاكاة نصية هنا.
-      return res.status(409).json({
+      return { status: 409, body: {
         success: false,
         error: "نشر YouTube الحقيقي يحتاج بايتات الفيديو؛ استخدم مسار الرفع المخصص.",
         code: "PLATFORM_USE_DEDICATED_PUBLISH",
         publishRoute: "/api/platforms/youtube/publish",
-      });
+      } };
     }
     if (platform === "telegram") {
       const client = telegramClient();
-      if (!client) return res.status(503).json({ success: false, error: "موصل Telegram غير مهيأ.", code: "CONNECTOR_NOT_READY" });
+      if (!client) return { status: 503, body: { success: false, error: "موصل Telegram غير مهيأ.", code: "CONNECTOR_NOT_READY" } };
       const target = chatId || String(process.env.TELEGRAM_DEFAULT_CHAT_ID || "");
-      if (!target) return res.status(503).json({ success: false, error: "Telegram يحتاج chatId أو TELEGRAM_DEFAULT_CHAT_ID.", code: "TARGET_REQUIRED" });
+      if (!target) return { status: 503, body: { success: false, error: "Telegram يحتاج chatId أو TELEGRAM_DEFAULT_CHAT_ID.", code: "TARGET_REQUIRED" } };
       const sent = await client.sendMessage({ chatId: target, text: content });
-      const record = buildPublishRecord({ platform: platform as any, postId: typeof req.body?.postId === "string" ? req.body.postId : workspaceId("post"), providerPostId: sent.providerMessageId, simulated: false, error: sent.ok ? null : sent.error });
+      const record = buildPublishRecord({ platform: platform as any, postId: typeof body?.postId === "string" ? body.postId : workspaceId("post"), providerPostId: sent.providerMessageId, simulated: false, error: sent.ok ? null : sent.error });
       if (!Array.isArray((workspace as any).publishRecords)) (workspace as any).publishRecords = [];
       (workspace as any).publishRecords.unshift({ ...record, id: workspaceId("publish"), createdBy: user.id, receipt: sent.receipt });
       if ((workspace as any).publishRecords.length > WORKSPACE_MAX_PUBLISH_RECORDS) (workspace as any).publishRecords.length = WORKSPACE_MAX_PUBLISH_RECORDS;
       persistState();
       audit(user.id, sent.ok ? "platform_publish_published" : "platform_publish_failed", `${platform}`);
-      if (!sent.ok) return res.status(502).json({ success: false, record, error: sent.error, note: "لم يُسجَّل أي نشر بلا معرّف منشور حقيقي من المزود." });
-      return res.json({ success: true, record, providerPostId: sent.providerMessageId, receipt: sent.receipt });
+      if (!sent.ok) return { status: 502, body: { success: false, record, error: sent.error, note: "لم يُسجَّل أي نشر بلا معرّف منشور حقيقي من المزود." } };
+      return { status: 200, body: { success: true, record, providerPostId: sent.providerMessageId, receipt: sent.receipt } };
     }
     if (platform === "facebook") {
       // النشر على صفحة Facebook (Page Access Token). لا نشر بلا معرّف من Meta.
       const target = facebookReplyTarget();
-      if ("error" in target) return res.status(503).json({ success: false, error: target.error, code: "CONNECTOR_NOT_READY" });
+      if ("error" in target) return { status: 503, body: { success: false, error: target.error, code: "CONNECTOR_NOT_READY" } };
       const result = await facebookClient().publishToPage(target.pageId, target.pageToken, content);
       const receipt = result.ok ? { provider: "facebook", pageId: target.pageId, postId: result.data?.providerPostId, sentAt: new Date().toISOString() } : null;
-      const record = buildPublishRecord({ platform: platform as any, postId: typeof req.body?.postId === "string" ? req.body.postId : workspaceId("post"), providerPostId: result.data?.providerPostId || null, simulated: false, error: result.ok ? null : result.error });
+      const record = buildPublishRecord({ platform: platform as any, postId: typeof body?.postId === "string" ? body.postId : workspaceId("post"), providerPostId: result.data?.providerPostId || null, simulated: false, error: result.ok ? null : result.error });
       if (!Array.isArray((workspace as any).publishRecords)) (workspace as any).publishRecords = [];
       (workspace as any).publishRecords.unshift({ ...record, id: workspaceId("publish"), createdBy: user.id, receipt });
       if ((workspace as any).publishRecords.length > WORKSPACE_MAX_PUBLISH_RECORDS) (workspace as any).publishRecords.length = WORKSPACE_MAX_PUBLISH_RECORDS;
       persistState();
       audit(user.id, result.ok ? "platform_publish_published" : "platform_publish_failed", `${platform}`);
-      if (!result.ok) return res.status(502).json({ success: false, record, error: result.error, note: "لم يُسجَّل أي نشر بلا معرّف منشور حقيقي من المزود." });
-      return res.json({ success: true, record, providerPostId: result.data?.providerPostId, receipt });
+      if (!result.ok) return { status: 502, body: { success: false, record, error: result.error, note: "لم يُسجَّل أي نشر بلا معرّف منشور حقيقي من المزود." } };
+      return { status: 200, body: { success: true, record, providerPostId: result.data?.providerPostId, receipt } };
     }
     if (platform === "instagram") {
       // نشر Instagram عبر الخطوتين الرسميتين: إنشاء حاوية ثم نشرها.
       // Instagram لا ينشر نصاً فقط؛ يلزم رابط صورة/فيديو عام — نُعلن ذلك صراحةً.
       const target = instagramReplyTarget();
-      if ("error" in target) return res.status(503).json({ success: false, error: target.error, code: "CONNECTOR_NOT_READY" });
-      const imageUrl = typeof req.body?.imageUrl === "string" ? req.body.imageUrl.trim() : "";
-      const videoUrl = typeof req.body?.videoUrl === "string" ? req.body.videoUrl.trim() : "";
-      const reel = req.body?.reel === true;
+      if ("error" in target) return { status: 503, body: { success: false, error: target.error, code: "CONNECTOR_NOT_READY" } };
+      const imageUrl = typeof body?.imageUrl === "string" ? body.imageUrl.trim() : "";
+      const videoUrl = typeof body?.videoUrl === "string" ? body.videoUrl.trim() : "";
+      const reel = body?.reel === true;
       const container = await instagramClient().createMediaContainer(target.igAccountId, target.pageToken, { imageUrl, videoUrl, caption: content, reel });
       if (!container.ok || !container.data) {
-        return res.status(422).json({ success: false, error: container.error, code: "MEDIA_REQUIRED", note: "Instagram لا ينشر نصاً فقط؛ زوّد imageUrl أو videoUrl عاماً." });
+        return { status: 422, body: { success: false, error: container.error, code: "MEDIA_REQUIRED", note: "Instagram لا ينشر نصاً فقط؛ زوّد imageUrl أو videoUrl عاماً." } };
       }
       const published = await instagramClient().publishContainer(target.igAccountId, target.pageToken, container.data.containerId);
       const receipt = published.ok ? { provider: "instagram", igAccountId: target.igAccountId, containerId: container.data.containerId, postId: published.data?.providerPostId, mediaKind: container.data.mediaKind, sentAt: new Date().toISOString() } : null;
-      const record = buildPublishRecord({ platform: platform as any, postId: typeof req.body?.postId === "string" ? req.body.postId : workspaceId("post"), providerPostId: published.data?.providerPostId || null, simulated: false, error: published.ok ? null : published.error });
+      const record = buildPublishRecord({ platform: platform as any, postId: typeof body?.postId === "string" ? body.postId : workspaceId("post"), providerPostId: published.data?.providerPostId || null, simulated: false, error: published.ok ? null : published.error });
       if (!Array.isArray((workspace as any).publishRecords)) (workspace as any).publishRecords = [];
       (workspace as any).publishRecords.unshift({ ...record, id: workspaceId("publish"), createdBy: user.id, receipt });
       if ((workspace as any).publishRecords.length > WORKSPACE_MAX_PUBLISH_RECORDS) (workspace as any).publishRecords.length = WORKSPACE_MAX_PUBLISH_RECORDS;
       persistState();
       audit(user.id, published.ok ? "platform_publish_published" : "platform_publish_failed", `${platform}`);
-      if (!published.ok) return res.status(502).json({ success: false, record, error: published.error, containerId: container.data.containerId, note: "لم يُسجَّل أي نشر بلا معرّف منشور حقيقي من المزود." });
-      return res.json({ success: true, record, providerPostId: published.data?.providerPostId, containerId: container.data.containerId, receipt });
+      if (!published.ok) return { status: 502, body: { success: false, record, error: published.error, containerId: container.data.containerId, note: "لم يُسجَّل أي نشر بلا معرّف منشور حقيقي من المزود." } };
+      return { status: 200, body: { success: true, record, providerPostId: published.data?.providerPostId, containerId: container.data.containerId, receipt } };
     }
     if (platform === "tiktok") {
       // TikTok لا ينشر نصاً فقط: يلزم فيديو (أو صور) عبر رابط عام أو ملف.
       // لا يُسجَّل أي نشر بلا publish_id من TikTok.
-      const mode: TikTokPostMode = req.body?.postMode === "DIRECT_POST" ? "DIRECT_POST" : "MEDIA_UPLOAD";
-      const privacy: TikTokPrivacyLevel = (TIKTOK_PRIVACY_LEVELS as readonly string[]).includes(String(req.body?.privacyLevel)) ? (req.body.privacyLevel as TikTokPrivacyLevel) : "SELF_ONLY";
-      const videoUrl = typeof req.body?.videoUrl === "string" ? req.body.videoUrl.trim() : "";
-      const photoUrls = Array.isArray(req.body?.photoUrls) ? req.body.photoUrls.map((u: any) => String(u).trim()).filter(Boolean) : [];
+      const mode: TikTokPostMode = body?.postMode === "DIRECT_POST" ? "DIRECT_POST" : "MEDIA_UPLOAD";
+      const privacy: TikTokPrivacyLevel = (TIKTOK_PRIVACY_LEVELS as readonly string[]).includes(String(body?.privacyLevel)) ? (body.privacyLevel as TikTokPrivacyLevel) : "SELF_ONLY";
+      const videoUrl = typeof body?.videoUrl === "string" ? body.videoUrl.trim() : "";
+      const photoUrls = Array.isArray(body?.photoUrls) ? body.photoUrls.map((u: any) => String(u).trim()).filter(Boolean) : [];
       if (!videoUrl && !photoUrls.length) {
-        return res.status(422).json({ success: false, error: "TikTok لا ينشر نصاً فقط؛ زوّد videoUrl أو photoUrls عامة.", code: "MEDIA_REQUIRED", note: "Content Posting API يلزمه فيديو أو صور عبر PULL_FROM_URL." });
+        return { status: 422, body: { success: false, error: "TikTok لا ينشر نصاً فقط؛ زوّد videoUrl أو photoUrls عامة.", code: "MEDIA_REQUIRED", note: "Content Posting API يلزمه فيديو أو صور عبر PULL_FROM_URL." } };
       }
       // منع التكرار: بصمة (المحتوى + الوسائط + الوضع) تمنع إنشاء نفس النشر مرتين.
       const fingerprint = crypto.createHash("sha256").update(JSON.stringify({ content, videoUrl, photoUrls, mode, privacy })).digest("hex");
       if (!Array.isArray((workspace as any).publishRecords)) (workspace as any).publishRecords = [];
       const dup = (workspace as any).publishRecords.find((r: any) => r.platform === "tiktok" && r.idempotencyKey === fingerprint && r.state !== "failed");
-      if (dup) return res.status(409).json({ success: false, error: "نفس النشر مُهيّأ سابقاً (منع تكرار).", code: "DUPLICATE_PUBLISH", existing: { providerPublishId: dup.providerPublishId, state: dup.state } });
+      if (dup) return { status: 409, body: { success: false, error: "نفس النشر مُهيّأ سابقاً (منع تكرار).", code: "DUPLICATE_PUBLISH", existing: { providerPublishId: dup.providerPublishId, state: dup.state } } };
       // معلومات الناشر إلزامية قبل أي نشر مباشر (وثيقة TikTok) — لا تُطلب في رفع المسودة.
       const creatorInfo = mode === "DIRECT_POST" ? await withTikTokToken((token) => tiktokClient().queryCreatorInfo(token)) : { ok: true as const, data: null };
       if (mode === "DIRECT_POST" && (!creatorInfo.ok || !creatorInfo.data)) {
-        return res.status(502).json({ success: false, error: (creatorInfo as any).error || "تعذّر قراءة معلومات الناشر قبل النشر المباشر.", code: "CREATOR_INFO_FAILED" });
+        return { status: 502, body: { success: false, error: (creatorInfo as any).error || "تعذّر قراءة معلومات الناشر قبل النشر المباشر.", code: "CREATOR_INFO_FAILED" } };
       }
       // المسار الرسمي يختلف حسب الوضع:
       //  - DIRECT_POST: فيديو عبر /v2/post/publish/video/init/ (نطاق video.publish)
@@ -7613,18 +7634,18 @@ app.post("/api/platforms/:platform/publish", requireOwner, async (req, res) => {
           : tiktokClient().initPhotoPost(token, buildPhotoPostBody({ postMode: mode, title: content, photoUrls }));
       });
       if (!initResult.ok || !initResult.data) {
-        const record = buildPublishRecord({ platform: platform as any, postId: typeof req.body?.postId === "string" ? req.body.postId : workspaceId("post"), providerPostId: null, simulated: false, error: initResult.error });
+        const record = buildPublishRecord({ platform: platform as any, postId: typeof body?.postId === "string" ? body.postId : workspaceId("post"), providerPostId: null, simulated: false, error: initResult.error });
         (workspace as any).publishRecords.unshift({ ...record, id: workspaceId("publish"), createdBy: user.id, idempotencyKey: fingerprint, postMode: mode, receipt: null });
         if ((workspace as any).publishRecords.length > WORKSPACE_MAX_PUBLISH_RECORDS) (workspace as any).publishRecords.length = WORKSPACE_MAX_PUBLISH_RECORDS;
         persistState();
         audit(user.id, "platform_publish_failed", "tiktok");
-        return res.status(502).json({ success: false, record, error: initResult.error, code: initResult.code || "PROVIDER_ERROR", note: "لم يُسجَّل أي نشر بلا معرّف نشر من TikTok." });
+        return { status: 502, body: { success: false, record, error: initResult.error, code: initResult.code || "PROVIDER_ERROR", note: "لم يُسجَّل أي نشر بلا معرّف نشر من TikTok." } };
       }
       // التهيئة نجحت: يُحفظ publish_id ويبقى التسليم معلّقاً حتى PUBLISH_COMPLETE.
       const publishId = initResult.data.publishId;
       // رفع المسودة لا يحتاج audit (video.upload)؛ النشر العام يحتاجه (video.publish).
       const modeRequiresAudit = mode === "DIRECT_POST" ? tiktokAuditRequired() : false;
-      const record = buildPublishRecord({ platform: platform as any, postId: typeof req.body?.postId === "string" ? req.body.postId : workspaceId("post"), providerPostId: null, simulated: false, error: null });
+      const record = buildPublishRecord({ platform: platform as any, postId: typeof body?.postId === "string" ? body.postId : workspaceId("post"), providerPostId: null, simulated: false, error: null });
       (workspace as any).publishRecords.unshift({
         ...record,
         // الحالة الحقيقية الآن: تهيئة تمت لكن التسليم لم يُثبت بعد.
@@ -7637,21 +7658,27 @@ app.post("/api/platforms/:platform/publish", requireOwner, async (req, res) => {
       if ((workspace as any).publishRecords.length > WORKSPACE_MAX_PUBLISH_RECORDS) (workspace as any).publishRecords.length = WORKSPACE_MAX_PUBLISH_RECORDS;
       persistState();
       audit(user.id, "platform_publish_initiated", `tiktok:${mode}`);
-      return res.json({
+      return { status: 200, body: {
         success: true, record, providerPublishId: publishId, postMode: mode,
         delivered: false,
         auditRequired: modeRequiresAudit,
         note: mode === "DIRECT_POST"
           ? "تمت تهيئة النشر المباشر لدى TikTok (publish_id). لا يُعلن التسليم إلا بحالة PUBLISH_COMPLETE عبر GET /api/platforms/tiktok/publish-status."
           : "تمت تهيئة رفع المسودة لدى TikTok (publish_id). المحتوى في صندوق TikTok وينشره المالك من التطبيق؛ لا يُعلن أي نشر عام.",
-      });
+      } };
     }
-    return res.status(501).json({ success: false, error: "الموصل متصل لكن تنفيذ النشر لهذه المنصة يحتاج بيانات المزود ولم يُختلق تنفيذ وهمي.", code: "EXTERNAL_SETUP_REQUIRED", platform });
+    return { status: 501, body: { success: false, error: "الموصل متصل لكن تنفيذ النشر لهذه المنصة يحتاج بيانات المزود ولم يُختلق تنفيذ وهمي.", code: "EXTERNAL_SETUP_REQUIRED", platform } };
   } catch (e: any) {
-    return res.status(502).json({ success: false, error: String(e?.message || e).slice(0, 300), code: "PROVIDER_ERROR" });
+    return { status: 502, body: { success: false, error: String(e?.message || e).slice(0, 300), code: "PROVIDER_ERROR" } };
   }
-});
 
+}
+
+app.post("/api/platforms/:platform/publish", requireOwner, async (req, res) => {
+  const user = (req as any).user as { id: string };
+  const result = await executePlatformPublish(req.params.platform, req.body, user.id);
+  return res.status(result.status).json(result.body);
+});
 /**
  * مؤشرات موحّدة (Batch 6): أي مؤشر غير مدعوم أو غير متوفر يُعلن NOT_SUPPORTED
  * ولا يُخترع له صفر. غير المتصل يُعلن صراحةً أنه لا جلب خارجي.
@@ -8822,6 +8849,56 @@ app.patch("/api/workspace/content/:id", authenticateToken, (req,res)=>{
   persistState(); audit(user.id,"workspace_content_updated",post.id); res.json({success:true,post});
 });
 
+/**
+ * النشر متعدد المنصات بنقرة واحدة (دفعة النشر متعدد المنصات).
+ *
+ * يأخذ منشوراً واحداً (targetPlatforms مصفوفة) ويوزّعه بالتوازي على كل منصة عبر
+ * **نفس** المنفّذ المشترك `executePlatformPublish` — لا مسار نشر ثانٍ ولا إعادة
+ * كتابة. كل منصة تُتابع بحالة مستقلة في `post.platformPublishResults`.
+ *
+ * البوابات الثابتة (بلا أي تخفيف):
+ *  - owner فقط (requireOwner)، ويبدأ بنقرة إنسان — لا نشر تلقائي.
+ *  - المنشور يجب أن يكون status==="approved" عبر المسار الرسمي.
+ *  - لا يُعلن "published" بلا معرّف نشر حقيقي من مزود المنصة.
+ */
+app.post("/api/workspace/content/:id/publish", requireOwner, async (req, res) => {
+  const user = (req as any).user as { id: string };
+  const post = workspace.posts.find((p: any) => p.id === req.params.id);
+  if (!post) return res.status(404).json({ success: false, error: "المنشور غير موجود." });
+  if (post.status !== "approved") {
+    return res.status(409).json({ success: false, error: "لا نشر إلا لمنشور معتمد (approved) عبر المسار الرسمي.", code: "APPROVAL_REQUIRED", status: post.status });
+  }
+  const requested = Array.isArray(post.targetPlatforms) ? post.targetPlatforms.filter((x: any) => SUPPORTED_PLATFORMS.some((p: any) => p.id === x)) : [];
+  if (!requested.length) return res.status(400).json({ success: false, error: "لا توجد منصات هدف صالحة على المنشور.", code: "NO_TARGET_PLATFORMS" });
+
+  // توزيع متوازٍ: كل منصة مستقلة تماماً عن الأخريات (نجاح/فشل/سبب منفصل).
+  const settled = await Promise.allSettled(requested.map(async (platform: string) => {
+    const result = await executePlatformPublish(platform, { ...req.body, content: post.content, approved: true, postId: post.id }, user.id);
+    return { platform, result };
+  }));
+
+  const results: Record<string, any> = {};
+  requested.forEach((platform: string, idx: number) => {
+    const s = settled[idx];
+    if (s.status === "fulfilled") {
+      const { result } = s.value;
+      const providerPostId = result.body?.providerPostId || result.body?.providerPublishId || null;
+      const delivered = result.status === 200 && Boolean(providerPostId);
+      results[platform] = { state: delivered ? "published" : (result.status === 200 ? "publishing" : "failed"), httpStatus: result.status, providerPostId, error: delivered ? null : (result.body?.error || null), code: result.body?.code || null, receipt: result.body?.receipt || null, at: new Date().toISOString() };
+    } else {
+      results[platform] = { state: "failed", httpStatus: 502, providerPostId: null, error: String((s as any).reason?.message || s.reason || "provider_error").slice(0, 200), code: "PROVIDER_ERROR", receipt: null, at: new Date().toISOString() };
+    }
+  });
+
+  post.platformPublishResults = results;
+  // المنشور يُعلن published فقط إن نُشر فعلاً على منصة واحدة على الأقل بمعرّف مزود حقيقي.
+  const anyDelivered = Object.values(results).some((r: any) => r.state === "published");
+  if (anyDelivered) post.status = "published";
+  persistState();
+  audit(user.id, "workspace_content_multiplatform_publish", post.id);
+  return res.json({ success: true, post, results, anyDelivered });
+});
+
 app.delete("/api/workspace/content/:id", authenticateToken, (req,res)=>{
   const user=(req as any).user as ServerUser; if(!["owner","manager","staff","content_creator"].includes(user.role)) return res.status(403).json({success:false,error:"لا تملك صلاحية حذف المحتوى."});
   const idx=workspace.posts.findIndex((p:any)=>p.id===req.params.id); if(idx<0) return res.status(404).json({success:false,error:"المنشور غير موجود."});
@@ -9663,6 +9740,8 @@ function applyControlSnapshot(control: any): void {
   drControl.driveDbBalance = control.driveDbBalance && typeof control.driveDbBalance === "object" ? control.driveDbBalance : null;
   // حالة وقت تشغيل العقل (Batch 5): تُسترجَع فتصمد بعد restart/cold start (بلا سرّ).
   brainRuntimeState = normalizeBrainRuntimeState(control.brainRuntime);
+  // سجل تدقيق أفعال العقول الستة — يصمد بعد restart (بلا سرّ).
+  sixAgentAuditState = normalizeSixAgentAudit(control.sixAgentAudit);
   // نتيجة آخر تحقق حي من Gemini: تُسترجَع فتصمد بعد restart، فلا يبدو المزود
   // غير متحقَّق بعد كل نشر (بلا سرّ — حالة/نص/موديل/وقت فقط).
   aiLiveVerificationState.restore(control.aiLiveVerification);
@@ -9723,6 +9802,8 @@ function buildControlState() {
     // حالة وقت تشغيل العقل (Batch 5): الحالة/القفل/العدّادات — تصمد بعد restart
     // فلا تُنشئ دورة مكرّرة، ويُستردّ القفل المتقادم. بلا أي سرّ.
     brainRuntime: brainRuntimeState,
+    // سجل تدقيق أفعال العقول الستة (whitelist حتمية) — تصمد بعد restart. بلا سرّ.
+    sixAgentAudit: sixAgentAuditState,
     // نتيجة آخر تحقق حي من Gemini — تصمد بعد restart فلا يبدو المزود غير متحقَّق
     // بعد كل نشر (بلا أي سرّ: حالة/نص تشخيصي/موديل/وقت/فئة/توجيه).
     aiLiveVerification: aiLiveVerificationState.snapshot(),
@@ -10219,6 +10300,124 @@ function persistTeamSessions(): void {
       lastPersistError = String(error?.code || error?.name || "persist_failed").slice(0, 60);
       console.warn("Could not persist team sessions:", lastPersistError);
     });
+}
+
+// -----------------------------------------------------------------------------
+// أفعال العقول الستة الحتمية (دفعة النشر متعدد المنصات): whitelist صريحة + تدقيق.
+//
+// العقول الستة تنفّذ أربعة أفعال حتمية فقط (بلا Gemini): تصنيف تعليق، تسجيل
+// عدّادات، إعادة محاولة نشر واحدة، ورد بنمط محفوظ بثقة عالية. أي شيء آخر ⇒ تصعيد
+// للعقل المركزي. كل فعل يُسجَّل في سجل تدقيق دائم. الحالة تُحفظ عبر محوّل الحالة
+// القائم (control.sixAgentAudit) فتصمد بعد restart/cold start. لا سرّ هنا.
+// -----------------------------------------------------------------------------
+let sixAgentAuditState: SixAgentAuditState = emptySixAgentAudit();
+/** أنماط الردود المحفوظة (من ذاكرة القرارات) — تُقرأ من الذاكرة، لا تخزين موازٍ. */
+function storedReplyPatternsForSixAgents(platform: string | null): StoredReplyPattern[] {
+  const out: StoredReplyPattern[] = [];
+  for (const rec of brainMemoryStore.records || []) {
+    if (rec.kind !== 'conversation' && rec.kind !== 'decision') continue;
+    if (rec.status !== 'active' || rec.stale) continue;
+    if (rec.confidence !== 'high') continue;
+    // أصل موثوق فقط: قول AI لا يصبح نمطاً قابلاً للتنفيذ (مكافحة التسميم).
+    if (rec.origin === 'ai_statement') continue;
+    const pat = (rec as any).replyPattern;
+    if (!pat || !Array.isArray(pat.triggers) || typeof pat.replyText !== 'string') continue;
+    out.push({
+      patternId: rec.id,
+      triggers: pat.triggers.map((t: any) => String(t)).slice(0, 20),
+      replyText: String(pat.replyText),
+      confidence: typeof pat.confidence === 'number' ? pat.confidence : (rec.confidence === 'high' ? 0.9 : 0),
+      active: rec.status === 'active' && !rec.stale,
+      platform: rec.platform ?? null,
+    });
+  }
+  return out;
+}
+function persistSixAgentAudit(): void {
+  if (!storageReady) return;
+  persistQueue = persistQueue
+    .then(() => storageAdapter.write(STORAGE_KEY_CONTROL, buildControlState()))
+    .catch((error: any) => {
+      lastPersistError = String(error?.code || error?.name || "persist_failed").slice(0, 60);
+      console.warn("Could not persist six-agent audit:", lastPersistError);
+    });
+}
+/** منفّذات أفعال العقول الستة — كلها تعيد استخدام المنفّذات الحقيقية القائمة. */
+function sixAgentActionDeps(): DeterministicActionDeps {
+  return {
+    tagComment: (platform, commentId, tag) => {
+      // تثبيت التصنيف الحتمي (لا قرار، لا إرسال): يُكتب على سجل التعليق إن وُجد،
+      // وإلا يُثبَّت في خريطة وسوم مستقلة — الدليل هو معرّف التعليق نفسه.
+      if (!commentId) return { ok: false, evidenceRef: null };
+      const entry = (watcherState.processed || []).find((e: any) => e.commentId === commentId);
+      if (entry) (entry as any).sixAgentTag = tag;
+      (workspace as any).sixAgentTags = (workspace as any).sixAgentTags || {};
+      (workspace as any).sixAgentTags[commentId] = { tag, platform, at: new Date().toISOString() };
+      persistState();
+      return { ok: true, evidenceRef: commentId };
+    },
+    recordCounter: (platform, metric, value) => {
+      const key = `counter:${platform}:${metric}`;
+      (workspace as any).sixAgentCounters = (workspace as any).sixAgentCounters || {};
+      (workspace as any).sixAgentCounters[key] = Number(value || 0);
+      persistState();
+    },
+    retryPublish: async (platform, postId, content) => {
+      const r = await executePlatformPublish(platform, { content, approved: true, postId }, "six-agent");
+      const providerPostId = r.body?.providerPostId || r.body?.providerPublishId || null;
+      return { ok: r.status === 200 && Boolean(providerPostId), providerPostId, error: r.body?.error || r.body?.code || null };
+    },
+    sendReply: async (platform, target, text) => {
+      if (platform === 'youtube') {
+        const r = await executeYouTubeReply({ commentId: target.commentId, text }, "six-agent");
+        const providerReplyId = r.body?.externalReplyId || null;
+        return { ok: Boolean(r.body?.delivered && providerReplyId), providerReplyId, error: r.body?.code || r.body?.error || null };
+      }
+      return { ok: false, providerReplyId: null, error: 'PLATFORM_REPLY_NOT_IMPLEMENTED' };
+    },
+  };
+}
+/**
+ * يحاول تنفيذ فعل حتمي من عقل (واحد من الستة) إن كان مسموحاً؛ وإلا يُصعَّد للعقل
+ * المركزي. **لا Gemini هنا إطلاقاً.** كل محاولة تُسجَّل في سجل التدقيق.
+ */
+async function trySixAgentAction(input: {
+  agentId: string; action: string; platform: string; commentId?: string; commentText?: string;
+  tag?: string; metric?: string; value?: number; postId?: string; content?: string;
+  priorRetryCount?: number; singlePlatformFailure?: boolean;
+}): Promise<{ decision: any; outcome: string; evidenceRef: string | null; requiresCentralBrain: boolean }> {
+  const patterns = storedReplyPatternsForSixAgents(input.platform);
+  const exec = await executeSixAgentAction(
+    { ...input, platform: input.platform, storedPatterns: patterns },
+    sixAgentActionDeps(),
+  );
+  // عند مطابقة نمط: نمرّر نص النمط المحفوظ (لا اختراع) ثم ننفّذ الرد.
+  if (exec.decision.matchedPatternId && input.action === 'reply_from_stored_pattern') {
+    const pat = patterns.find((p) => p.patternId === exec.decision.matchedPatternId);
+    if (pat) {
+      const r = await sixAgentActionDeps().sendReply(input.platform, { commentId: String(input.commentId || '') }, pat.replyText);
+      const outcome = r.ok && r.providerReplyId ? 'executed' : 'failed';
+      sixAgentAuditState = recordSixAgentAudit(sixAgentAuditState, {
+        id: `saa-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
+        agentId: input.agentId as any, action: input.action as any,
+        matchedRule: exec.decision.matchedRule, matchedPatternId: exec.decision.matchedPatternId,
+        decisionCode: exec.decision.code, outcome: outcome as any, platform: input.platform,
+        evidenceRef: r.providerReplyId, note: r.ok ? 'رد بنمط محفوظ بثقة عالية.' : `تعذّر الرد: ${r.error || 'سبب غير معروف'}`,
+        now: Date.now(),
+      });
+      persistSixAgentAudit();
+      return { decision: exec.decision, outcome, evidenceRef: r.providerReplyId, requiresCentralBrain: false };
+    }
+  }
+  sixAgentAuditState = recordSixAgentAudit(sixAgentAuditState, {
+    id: `saa-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
+    agentId: input.agentId as any, action: input.action as any,
+    matchedRule: exec.decision.matchedRule, matchedPatternId: exec.decision.matchedPatternId,
+    decisionCode: exec.decision.code, outcome: exec.outcome as any, platform: input.platform,
+    evidenceRef: exec.evidenceRef, note: exec.note, now: Date.now(),
+  });
+  persistSixAgentAudit();
+  return { decision: exec.decision, outcome: exec.outcome, evidenceRef: exec.evidenceRef, requiresCentralBrain: exec.decision.requiresCentralBrain };
 }
 
 // -----------------------------------------------------------------------------
@@ -11662,6 +11861,16 @@ app.get("/api/readiness", (_req, res) => {
           geminiUsedOnSessions: false,
           note: 'فريق وكلاء داخلي: قرار مقترح فقط؛ لا تنفيذ خارجي.',
         },
+        // التنفيذ الحتمي المحدود للعقول الستة: whitelist صريحة (4 أفعال) بلا Gemini،
+        // وسجل تدقيق دائم. جلسة الفريق تبقى استشارية؛ هذا طبقة تنفيذ منفصلة محدودة.
+        sixAgentExecution: {
+          enabled: true,
+          allowedActions: SIX_AGENT_ALLOWED_ACTIONS,
+          executesExternalActions: 'bounded',
+          geminiUsed: false,
+          ...summarizeSixAgentAudit(sixAgentAuditState),
+          note: 'أفعال حتمية محدودة فقط (تصنيف/عدّادات/إعادة نشر واحدة/رد بنمط محفوظ)؛ الغامض/الحساس يُصعَّد للعقل المركزي وحده.',
+        },
         brainDecision: brainDecisionHealthBlock(),
         cognition: cognitionHealthBlock(),
       };
@@ -12109,6 +12318,14 @@ app.get("/api/health", (_req, res) => {
       geminiUsedOnSessions: false,
       agents: ['orchestrator', 'research', 'analysis', 'strategy', 'critic', 'decision'],
       note: 'فريق وكلاء داخلي: رصد/تحليل/تحقق/قرار مقترح فقط — لا تنفيذ خارجي ولا استهلاك AI.',
+    },
+    sixAgentExecution: {
+      enabled: true,
+      allowedActions: SIX_AGENT_ALLOWED_ACTIONS,
+      executesExternalActions: 'bounded',
+      geminiUsed: false,
+      ...summarizeSixAgentAudit(sixAgentAuditState),
+      note: 'طبقة تنفيذ حتمية محدودة للعقول الستة (4 أفعال) بلا Gemini؛ الغامض/الحساس يُصعَّد للعقل المركزي.',
     },
     brainDecision: brainDecisionHealthBlock(),
     cognition: cognitionHealthBlock(),
@@ -14056,6 +14273,45 @@ registerTeamRoutes(app, {
     'youtube',
     `manual:${new Date().toISOString().slice(0, 13)}`,
   ),
+});
+
+/**
+ * أفعال العقول الستة الحتمية — مسارات owner للتدقيق والتنفيذ اليدوي.
+ * whitelist صريحة (4 أفعال) بلا Gemini؛ أي شيء آخر يُصعَّد للعقل المركزي.
+ * كل فعل يُسجَّل في سجل التدقيق الدائم.
+ */
+app.get("/api/agent/team/six-agent/audit", authenticateToken, requireOwner, (_req, res) => {
+  return res.json({
+    success: true,
+    summary: summarizeSixAgentAudit(sixAgentAuditState),
+    entries: sixAgentAuditState.entries.slice(0, 200),
+    allowedActions: SIX_AGENT_ALLOWED_ACTIONS,
+    executesExternalActions: false,
+    geminiUsed: false,
+    note: 'سجل تدقيق أفعال العقول الستة: أي عقل، أي قاعدة/نمط، الوقت، النتيجة. الأفعال الأربعة حتمية بلا Gemini.',
+  });
+});
+
+app.post("/api/agent/team/six-agent/execute", authenticateToken, requireOwner, async (req, res) => {
+  const action = String(req.body?.action || "");
+  if (!isAllowedSixAgentAction(action)) {
+    return res.status(422).json({ success: false, code: "ACTION_OUT_OF_WHITELIST", error: "الفعل خارج القائمة المسموحة الصريحة للعقول الستة.", allowedActions: SIX_AGENT_ALLOWED_ACTIONS });
+  }
+  const r = await trySixAgentAction({
+    agentId: String(req.body?.agentId || "decision"),
+    action,
+    platform: String(req.body?.platform || "youtube"),
+    commentId: typeof req.body?.commentId === "string" ? req.body.commentId : undefined,
+    commentText: typeof req.body?.commentText === "string" ? req.body.commentText : undefined,
+    tag: typeof req.body?.tag === "string" ? req.body.tag : undefined,
+    metric: typeof req.body?.metric === "string" ? req.body.metric : undefined,
+    value: Number.isFinite(req.body?.value) ? Number(req.body.value) : undefined,
+    postId: typeof req.body?.postId === "string" ? req.body.postId : undefined,
+    content: typeof req.body?.content === "string" ? req.body.content : undefined,
+    priorRetryCount: Number.isFinite(req.body?.priorRetryCount) ? Number(req.body.priorRetryCount) : 0,
+    singlePlatformFailure: req.body?.singlePlatformFailure === true,
+  });
+  return res.json({ success: true, decision: r.decision, outcome: r.outcome, evidenceRef: r.evidenceRef, requiresCentralBrain: r.requiresCentralBrain, geminiUsed: false });
 });
 
 // الطبقة الإدراكية (Batch 7) — قراءة/تحليل فقط: الذاكرة العاملة + تقارير الدورات

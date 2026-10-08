@@ -1161,6 +1161,18 @@ ${payload.topic || payload.productName || 'أنظمة وحلول التقسيط 
     return data.post;
   },
 
+  /**
+   * النشر متعدد المنصات بنقرة واحدة — مسار المالك الرسمي فقط.
+   * يوزّع المنشور المعتمد على كل targetPlatforms عبر نفس منفّذ النشر على الخادم،
+   * ويعيد حالة مستقلة لكل منصة (نجاح/فشل/سبب). لا يُعلن نشر بلا معرّف من المزود.
+   */
+  async publishWorkspaceContentMultiPlatform(id: string) {
+    const res = await fetch(`/api/workspace/content/${encodeURIComponent(id)}/publish`, { method: 'POST', headers: getAuthHeaders(), body: JSON.stringify({}) });
+    const data = await res.json();
+    if (!res.ok || !data.success) throw new Error(data.error || 'تعذر النشر متعدد المنصات');
+    return data as { post: any; results: Record<string, any>; anyDelivered: boolean };
+  },
+
   async deleteWorkspaceContent(id: string) {
     const res = await fetch(`/api/workspace/content/${encodeURIComponent(id)}`, { method: 'DELETE', headers: getAuthHeaders() });
     const data = await res.json();
