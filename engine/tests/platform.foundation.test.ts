@@ -229,6 +229,27 @@ function run(): void {
   check('بوابة owner-only ما زالت قائمة', serverSource.includes('app.post("/api/workspace/content/:id/publish", requireOwner'));
   check('شرط status==="approved" ما زال إلزامياً قبل أي توزيع', /post\.status\s*!==\s*"approved"/.test(publishRouteSrc));
 
+  group('استضافة فيديو مركز المحتوى تلقائياً — إغلاق فجوة اللصق اليدوي (Task #25 follow-up)');
+  // الفجوة المُصلَحة: كان المالك يلصق رابط الفيديو العام يدوياً في مركز المحتوى؛
+  // الآن يُرفع الفيديو تلقائياً إلى Drive العام فور إرفاقه عبر مسار مخصّص يعيد
+  // استخدام resolvePublicVideoUrl/publishVideoPublicly الحقيقيتين (Task #21/#23) —
+  // لا نشر خارجي هنا، تجهيز وسيط فقط، فيكفي canEditContent لا requireOwner.
+  const hostRouteMatch = serverSource.match(/app\.post\("\/api\/workspace\/content\/video\/host"[\s\S]{0,900}?\n\}\);/);
+  const hostRouteSrc = hostRouteMatch ? hostRouteMatch[0] : '';
+  check('مسار الاستضافة التلقائية موجود', hostRouteSrc.length > 100);
+  check('محمي بمصادقة + صلاحية تحرير المحتوى (لا owner فقط)', hostRouteSrc.includes('authenticateToken') && hostRouteSrc.includes('canEditContent(user.role)'));
+  check('يعيد استخدام resolvePublicVideoUrl الحقيقية (لا رفع مزدوج)', hostRouteSrc.includes('await resolvePublicVideoUrl(req.body'));
+  check('لا نجاح بلا رابط فعلي', /if \(!resolved\.url\)/.test(hostRouteSrc));
+
+  const apiServiceSrc = readFileSync(join(process.cwd(), 'src/services/api.ts'), 'utf8');
+  check('apiService.hostContentVideo موجودة', apiServiceSrc.includes('async hostContentVideo('));
+  check('تستهدف مسار الاستضافة الصحيح', apiServiceSrc.includes("fetch('/api/workspace/content/video/host'"));
+
+  const contentViewSrc = readFileSync(join(process.cwd(), 'src/components/content/ContentEngineView.tsx'), 'utf8');
+  check('الواجهة تستدعي الرفع التلقائي فور اختيار الفيديو (بلا لصق يدوي)', /onPickVideo[\s\S]{0,1400}apiService\.hostContentVideo\(/.test(contentViewSrc));
+  check('زر الإرسال يُعطَّل أثناء الرفع التلقائي (لا إرسال بلا رابط جاهز)', /disabled=\{isQueuingYouTube \|\| isHostingVideo\}/.test(contentViewSrc));
+  check('فشل الرفع لا يُسقط التدفّق — يبقى الحقل اليدوي بديلاً', contentViewSrc.includes('setVideoHostError('));
+
   console.log('\n' + '='.repeat(60));
   if (failures.length) {
     console.error(`FAILED: ${failures.length} / ${passed + failures.length}`);

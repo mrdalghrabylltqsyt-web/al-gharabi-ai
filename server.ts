@@ -9079,6 +9079,24 @@ app.patch("/api/workspace/content/:id", authenticateToken, (req,res)=>{
 });
 
 /**
+ * استضافة فيديو مركز المحتوى تلقائياً على Drive العام قبل إنشاء المنشور (إغلاق الفجوة
+ * المذكورة في توثيق Task #25): بدل أن يلصق المالك رابط الفيديو العام يدوياً، تستدعي
+ * الواجهة هذا المسار فور إرفاق الفيديو فيحصل على رابط عام حقيقي تلقائياً عبر نفس آلية
+ * resolvePublicVideoUrl/publishVideoPublicly المستخدمة أصلاً وقت النشر (Task #21/#23).
+ * لا نشر خارجي هنا إطلاقاً — تجهيز وسيط فقط، فلا يحتاج موافقة المالك (owner)، بل نفس
+ * صلاحية إنشاء المحتوى (canEditContent) المستخدمة في إنشاء المنشور نفسه.
+ */
+app.post("/api/workspace/content/video/host", authenticateToken, async (req, res) => {
+  const user = (req as any).user as ServerUser;
+  if (!canEditContent(user.role)) return res.status(403).json({ success: false, error: "لا تملك صلاحية إعداد وسائط المحتوى." });
+  const resolved = await resolvePublicVideoUrl(req.body || {});
+  if (!resolved.ok) return res.status(resolved.status).json({ success: false, error: resolved.error, code: resolved.code });
+  if (!resolved.url) return res.status(400).json({ success: false, error: "لا بايتات فيديو ولا رابط صريح مرسَل.", code: "VIDEO_INPUT_REQUIRED" });
+  audit(user.id, "content_video_auto_hosted", resolved.url.slice(0, 120));
+  res.json({ success: true, url: resolved.url });
+});
+
+/**
  * النشر متعدد المنصات بنقرة واحدة (دفعة النشر متعدد المنصات).
  *
  * يأخذ منشوراً واحداً (targetPlatforms مصفوفة) ويوزّعه بالتوازي على كل منصة عبر

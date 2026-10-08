@@ -73,6 +73,8 @@ export const ContentEngineView: React.FC = () => {
   const [video, setVideo] = useState<{ name: string; size: number; type: string; base64: string } | null>(null);
   const [videoError, setVideoError] = useState<string | null>(null);
   const [publicVideoUrl, setPublicVideoUrl] = useState<string>('');
+  const [isHostingVideo, setIsHostingVideo] = useState<boolean>(false);
+  const [videoHostError, setVideoHostError] = useState<string | null>(null);
   const [isQueuingYouTube, setIsQueuingYouTube] = useState<boolean>(false);
 
   const selectedProduct = products.find((p) => p.id === selectedProductId);
@@ -90,12 +92,24 @@ export const ContentEngineView: React.FC = () => {
     try {
       const base64 = await fileToBase64(file);
       if (!base64) { setVideo(null); setVideoError('تعذر قراءة محتوى الملف.'); return; }
-      setVideo({ name: file.name, size: file.size, type: file.type || 'video/mp4', base64 });
+      const videoData = { name: file.name, size: file.size, type: file.type || 'video/mp4', base64 };
+      setVideo(videoData);
+      // رفع تلقائي فوري إلى استضافة Drive العامة — بلا أي لصق رابط يدوي من المالك
+      // (إغلاق فجوة Task #25). الحقل أدناه يبقى متاحاً كتعديل/بديل يدوي عند الحاجة.
+      setPublicVideoUrl(''); setVideoHostError(null); setIsHostingVideo(true);
+      try {
+        const hosted = await apiService.hostContentVideo({ videoBase64: videoData.base64, mimeType: videoData.type, filename: videoData.name });
+        setPublicVideoUrl(hosted.url);
+      } catch (hostErr: any) {
+        setVideoHostError(hostErr?.message || 'تعذّر الرفع التلقائي إلى الاستضافة العامة؛ يمكنك لصق رابط فيديو عام يدوياً أدناه.');
+      } finally {
+        setIsHostingVideo(false);
+      }
     } catch (e: any) {
       setVideo(null); setVideoError(e?.message || 'تعذر قراءة الملف.');
     }
   };
-  const clearVideo = () => { setVideo(null); setVideoError(null); };
+  const clearVideo = () => { setVideo(null); setVideoError(null); setPublicVideoUrl(''); setVideoHostError(null); setIsHostingVideo(false); };
 
   const videoCapablePlatforms = selectedPlatforms.filter((p) => VIDEO_REAL_UPLOAD_PLATFORMS.includes(p));
   const videoUrlNeededPlatforms = selectedPlatforms.filter((p) => VIDEO_PUBLIC_URL_PLATFORMS.includes(p));
@@ -340,8 +354,26 @@ export const ContentEngineView: React.FC = () => {
             {video && videoUrlNeededPlatforms.length > 0 && (
               <div>
                 <label className="block text-[11px] font-bold text-slate-400 mb-1">
-                  رابط الفيديو العام (لإنستغرام/تيك توك — اختياري الآن، مطلوب وقت النشر الفعلي)
+                  رابط الفيديو العام (لإنستغرام/تيك توك/ثريدز/فيديو فيسبوك)
                 </label>
+                {isHostingVideo && (
+                  <p className="text-[11px] text-sky-400 flex items-center gap-1.5 mb-1">
+                    <span className="inline-block w-3 h-3 rounded-full border-2 border-sky-400 border-t-transparent animate-spin" />
+                    جارٍ الرفع التلقائي إلى استضافة Drive العامة…
+                  </p>
+                )}
+                {!isHostingVideo && publicVideoUrl && !videoHostError && (
+                  <p className="text-[11px] text-emerald-400 flex items-center gap-1.5 mb-1">
+                    <CheckCircle className="w-3 h-3 shrink-0" />
+                    تم رفع الفيديو تلقائياً وجهّز رابطه العام — جاهز للنشر بلا أي خطوة إضافية.
+                  </p>
+                )}
+                {videoHostError && (
+                  <p className="text-[11px] text-amber-400 flex items-start gap-1.5 mb-1">
+                    <AlertTriangle className="w-3 h-3 shrink-0 mt-0.5" />
+                    {videoHostError}
+                  </p>
+                )}
                 <input
                   type="text"
                   placeholder="https://..."
@@ -595,7 +627,7 @@ export const ContentEngineView: React.FC = () => {
                 <div className="grid grid-cols-2 gap-2">
                   <button
                     onClick={() => handleSendToApproval('draft')}
-                    disabled={isQueuingYouTube}
+                    disabled={isQueuingYouTube || isHostingVideo}
                     className="py-2.5 px-3 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-bold transition flex items-center justify-center gap-1.5 cursor-pointer disabled:opacity-50"
                   >
                     <Save className="w-3.5 h-3.5" />
@@ -604,11 +636,11 @@ export const ContentEngineView: React.FC = () => {
 
                   <button
                     onClick={() => handleSendToApproval('review')}
-                    disabled={isQueuingYouTube}
+                    disabled={isQueuingYouTube || isHostingVideo}
                     className="py-2.5 px-3 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 text-xs font-bold transition flex items-center justify-center gap-1.5 cursor-pointer shadow-md shadow-emerald-500/20 disabled:opacity-50"
                   >
-                    {isQueuingYouTube ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <Send className="w-3.5 h-3.5" />}
-                    {isQueuingYouTube ? 'جارٍ إرسال الفيديو ليوتيوب...' : 'إرسال للمراجعة والاعتماد'}
+                    {isQueuingYouTube ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : isHostingVideo ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <Send className="w-3.5 h-3.5" />}
+                    {isQueuingYouTube ? 'جارٍ إرسال الفيديو ليوتيوب...' : isHostingVideo ? 'جارٍ تجهيز رابط الفيديو العام...' : 'إرسال للمراجعة والاعتماد'}
                   </button>
                 </div>
               </div>

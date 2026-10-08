@@ -1162,6 +1162,17 @@ ${payload.topic || payload.productName || 'أنظمة وحلول التقسيط 
   },
 
   /**
+   * استضافة فيديو مركز المحتوى تلقائياً على Drive العام (إغلاق فجوة Task #25):
+   * يُرسل بايتات الفيديو base64 ويُعاد رابط عام حقيقي بلا أي لصق يدوي من المالك.
+   */
+  async hostContentVideo(input: { videoBase64: string; mimeType?: string; filename?: string }): Promise<{ success: boolean; url: string }> {
+    const res = await fetch('/api/workspace/content/video/host', { method: 'POST', headers: getAuthHeaders(), body: JSON.stringify(input) });
+    const data = await res.json();
+    if (!res.ok || !data.success) throw new Error(data.error || 'تعذّر رفع الفيديو إلى الاستضافة العامة');
+    return data;
+  },
+
+  /**
    * النشر متعدد المنصات بنقرة واحدة — مسار المالك الرسمي فقط.
    * يوزّع المنشور المعتمد على كل targetPlatforms عبر نفس منفّذ النشر على الخادم،
    * ويعيد حالة مستقلة لكل منصة (نجاح/فشل/سبب). لا يُعلن نشر بلا معرّف من المزود.
