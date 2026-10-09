@@ -3887,6 +3887,30 @@ add('watcher-advisory-not-authority',
     read('src/context/AppContext.tsx').includes("useState<string>('section_home')"),
     'الشاشة الافتراضية عند الدخول هي الرئيسية الموحّدة');
 
+  // 9-ب) حارس انحراف النشر: الإصلاحان المثبّتان من التشغيل #37950528349 باقيان.
+  add('deploy-drift-uses-tested-logic',
+    fs.existsSync(path.join(root, 'scripts/deploy-drift/lib.mjs')) &&
+    read('.github/workflows/deploy-drift-watchdog.yml').includes('node scripts/deploy-drift/run.mjs') &&
+    read('.github/workflows/deploy-drift-watchdog.yml').includes('node scripts/deploy-drift/report.mjs'),
+    'الـworkflow يشغّل منطق الانحراف من وحدة قابلة للاختبار (لا مقارنة مضمّنة)');
+  add('deploy-drift-sha-prefix-compare',
+    read('scripts/deploy-drift/lib.mjs').includes('startsWith') &&
+    read('scripts/deploy-drift/lib.mjs').includes('SUPPORTED_SHA_LENGTHS') &&
+    !read('.github/workflows/deploy-drift-watchdog.yml').includes('[ "$HEAD" != "$PROD" ]'),
+    'مقارنة SHA صحيحة (بادئة) تُنهي الإنذار الكاذب؛ لا مقارنة نصّية ساذجة');
+  add('deploy-drift-report-repo-explicit',
+    read('scripts/deploy-drift/lib.mjs').includes("'--repo'") &&
+    read('scripts/deploy-drift/lib.mjs').includes('buildGhIssueCreateArgs'),
+    'كل أمر gh للبلاغ يحمل --repo صراحةً (لا اعتماد على .git محلي)');
+  add('deploy-drift-single-issue',
+    read('scripts/deploy-drift/report.mjs').includes('buildGhIssueCommentArgs') &&
+    read('scripts/deploy-drift/report.mjs').includes('parseExistingIssueNumber'),
+    'سلوك البلاغ الواحد: تعليق على تذكرة قائمة بدل إنشاء مكرر');
+  add('deploy-drift-tests-registered',
+    fs.existsSync(path.join(root, 'engine/tests/deploy.drift.watchdog.test.ts')) &&
+    JSON.parse(read('package.json')).scripts['test:deploy-drift'] === 'tsx engine/tests/deploy.drift.watchdog.test.ts',
+    'اختبار حارس الانحراف مُسجَّل (SHA كامل/مختصر/مختلف/فارغ + فشل البلاغ)');
+
   // 10) AGENTS.md: عدد فحوصات final-audit مطابق للفعلي (يُعَدّ من نص الملف نفسه).
   const auditCount = (read('final-audit.mjs').match(/^\s*add\(/gm) || []).length;
   add('agents-audit-count-accurate',
