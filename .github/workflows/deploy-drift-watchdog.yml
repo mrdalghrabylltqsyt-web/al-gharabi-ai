@@ -1,0 +1,66 @@
+# حارس انحراف النشر — يمنع الصمت الممتد «compliance» بين آخر commit على main والإنتاج.
+#
+# سبب القرار (لا يُختلق): رُصد فعلياً أن الإنتاج خدم commit قديماً (038830f من 04:58Z)
+# لساعات بينما دُفعت 6 commits إلى main (05:56Z→09:02Z) دون أي إعادة نشر — بلا تنبيه.
+# الاعتماد على auto-deploy وحده لا يكفي لأنه صامت عند الفشل/التخطّي. هذا الحارس يقارن
+# commit الإنتاج الفعلي (من /api/health الحي) بآخر commit على main، ويفتح/يحدّث تذكرة
+# واحدة عند الانحراف، فيتحوّل العطل الصامت إلى إشعار مرئي.
+#
+# لا يكلف شيئاً: GitHub Actions مجاني للريبو العام، والطلب خفيف (GET واحد على /api/health).
+# لا يلمس Render ولا أي سرّ — قراءة فقط.
+name: Deploy Drift Watchdog
+
+on:
+  # كل 30 دقيقة داخل نافذة الصحو (03:00→20:59 UTC) — نفس نافذة نبضة الإبقاء.
+  schedule:
+    - cron: "*/30 3-20 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  drift:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Compare production commit vs main HEAD (live)
+        id: cmp
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -e
+          HEAD=$(curl -s --max-time 30 -H "Authorization: Bearer $GH_TOKEN" \
+            "https://api.github.com/repos/$REPO/commits/main" \
+            | python3 -c "import sys,json;print(json.load(sys.stdin)['sha'])" || echo "")
+          PROD=$(curl -s --max-time 60 "https://al-gharabi-ai.onrender.com/api/health?t=$(date +%s)" \
+            | python3 -c "import sys,json;print(json.load(sys.stdin).get('deploy',{}).get('commit',''))" || echo "")
+          echo "UTC: $(date -u +%FT%TZ)"
+          echo "main HEAD:  $HEAD"
+          echo "production: $PROD"
+          if [ -z "$PROD" ] || [ -z "$HEAD" ] || [ "$HEAD" != "$PROD" ]; then
+            echo "drift=true" >> "$GITHUB_OUTPUT"
+            echo "head=$HEAD" >> "$GITHUB_OUTPUT"
+            echo "prod=$PROD" >> "$GITHUB_OUTPUT"
+          else
+            echo "drift=false" >> "$GITHUB_OUTPUT"
+            echo "الإنتاج يخدم آخر commit على main — لا انحراف."
+          fi
+
+      - name: Report drift (single tracking issue)
+        if: steps.cmp.outputs.drift == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          HEAD: ${{ steps.cmp.outputs.head }}
+          PROD: ${{ steps.cmp.outputs.prod }}
+        run: |
+          body="⚠️ انحراف نشر مرصود: main HEAD = \`$HEAD\` بينما الإنتاج يخدم \`$PROD\`.
+          تحقّق من لوحة Render → خدمة al-gharabi-ai → Deploys (هل فشل النشر أم لم يُطلَق؟)،
+          ومن الإعداد الفعلي لـ Auto-Deploy. الوقت: $(date -u +%FT%TZ)."
+          existing=$(gh issue list --state open --search "انحراف النشر in:title" --json number --jq '.[0].number' 2>/dev/null || echo "")
+          if [ -n "$existing" ]; then
+            gh issue comment "$existing" --body "$body"
+          else
+            gh issue create --title "⚠️ انحراف النشر: الإنتاج لا يخدم آخر commit على main" --body "$body"
+          fi
