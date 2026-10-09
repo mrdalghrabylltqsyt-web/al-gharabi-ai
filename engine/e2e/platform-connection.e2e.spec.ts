@@ -24,9 +24,10 @@ test('مركز ربط المنصات يُصيَّر بلا خطأ React في ا�
   // جلسة مالك عبر مقطع رابط المعاينة (خادم حقيقي — نفس مسار تسجيل الدخول المعتمد).
   await page.goto('about:blank');
   await page.goto(`/#preview_token=${PREVIEW_TOKEN}`);
-  await expect(page.getByRole('heading', { name: /أهلاً بك/ })).toBeVisible();
+  await expect(page.getByRole('heading', { name: /مرحباً .* دورة العمل في مكان واحد/ })).toBeVisible();
 
-  // فتح صفحة «مركز ربط المنصات» من الشريط الجانبي.
+  // فتح صفحة «مركز ربط المنصات» عبر بحث التنقل الهرمي (مصدر واحد للأقسام/الوظائف).
+  await page.getByPlaceholder('بحث في الأقسام والوظائف…').fill('مركز ربط المنصات');
   await page.getByRole('button', { name: /مركز ربط المنصات/ }).first().click();
 
   // دليل التصيير الفعلي: العنوان الرئيسي للصفحة ظاهر (وهو h2 في المكوّن).

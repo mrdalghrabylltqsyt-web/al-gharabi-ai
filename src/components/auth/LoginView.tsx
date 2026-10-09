@@ -10,6 +10,7 @@ import {
   KeyRound,
   Building2,
   CheckCircle2,
+  RotateCw,
 } from 'lucide-react';
 
 declare global {
@@ -35,6 +36,9 @@ export const LoginView: React.FC = () => {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [successInfo, setSuccessInfo] = useState<string | null>(null);
+  // فشل طلب الرمز (شبكة/خادم) => نُظهر زر «إعادة المحاولة» بجوار الرسالة، فلا
+  // يبدو الزر «بلا استجابة» على الجوال في حال بدء بارد أو انقطاع شبكة.
+  const [requestFailed, setRequestFailed] = useState(false);
 
   const googleBtnRef = useRef<HTMLDivElement>(null);
   const googleClientId = (import.meta as any).env?.VITE_GOOGLE_CLIENT_ID || '';
@@ -79,23 +83,37 @@ export const LoginView: React.FC = () => {
 
   const handleRequestChallenge = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!email.trim()) {
-      setError('يرجى إدخال البريد الإلكتروني المصرح له');
+    if (loading) return;
+    // تحقق برمجي صريح بدل الاعتماد على فقاعة HTML الأصلية: بعض متصفحات الجوال
+    // (خصوصاً مع لوحات مفاتيح RTL) لا تُظهر فقاعة `required` بوضوح فيبدو الزر
+    // «غير مستجيب» رغم أن النقر سليم. هنا نُظهر الرسالة داخل الواجهة دائماً.
+    const trimmed = email.trim();
+    if (!trimmed) {
+      setRequestFailed(false);
+      setError('يرجى إدخال البريد الإلكتروني المصرح له.');
+      return;
+    }
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(trimmed)) {
+      setRequestFailed(false);
+      setError('صيغة البريد الإلكتروني غير صحيحة.');
       return;
     }
     setLoading(true);
     setError(null);
     setSuccessInfo(null);
+    setRequestFailed(false);
     try {
-      const res = await requestOwnerChallenge(email.trim());
+      const res = await requestOwnerChallenge(trimmed);
       if (res.success) {
         setStep('verify');
         setSuccessInfo(res.message || 'تم إرسال رمز التحقق إلى بريد المالك');
       } else {
-        setError('تعذر إرسال رمز التحقق، حاول مرة أخرى');
+        setRequestFailed(true);
+        setError('تعذّر إرسال رمز التحقق، حاول مرة أخرى.');
       }
     } catch (err: any) {
-      setError(err?.message || 'تعذر إرسال رمز التحقق، حاول مرة أخرى');
+      setRequestFailed(true);
+      setError(err?.message || 'تعذّر إرسال رمز التحقق، حاول مرة أخرى.');
     } finally {
       setLoading(false);
     }
@@ -155,6 +173,7 @@ export const LoginView: React.FC = () => {
             onClick={() => {
               setActiveTab('google');
               setError(null);
+              setRequestFailed(false);
             }}
             className={`py-2 px-3 rounded-xl text-xs font-bold transition flex items-center justify-center gap-1.5 cursor-pointer ${
               activeTab === 'google'
@@ -170,6 +189,7 @@ export const LoginView: React.FC = () => {
             onClick={() => {
               setActiveTab('challenge');
               setError(null);
+              setRequestFailed(false);
             }}
             className={`py-2 px-3 rounded-xl text-xs font-bold transition flex items-center justify-center gap-1.5 cursor-pointer ${
               activeTab === 'challenge'
@@ -184,7 +204,7 @@ export const LoginView: React.FC = () => {
 
         {/* Error / Success Feedback */}
         {error && (
-          <div className="p-3.5 rounded-2xl bg-rose-500/10 border border-rose-500/30 text-rose-300 text-xs flex items-start gap-2 animate-in fade-in">
+          <div role="alert" aria-live="assertive" className="p-3.5 rounded-2xl bg-rose-500/10 border border-rose-500/30 text-rose-300 text-xs flex items-start gap-2 animate-in fade-in">
             <AlertCircle className="w-4 h-4 text-rose-400 shrink-0 mt-0.5" />
             <span className="leading-relaxed">{error}</span>
           </div>
@@ -232,15 +252,20 @@ export const LoginView: React.FC = () => {
         {activeTab === 'challenge' && (
           <div>
             {step === 'request' ? (
-              <form onSubmit={handleRequestChallenge} className="space-y-4">
+              // noValidate: نتحقق برمجياً ونعرض رسالة داخل الواجهة دائماً بدل
+              // الاعتماد على فقاعة المتصفح التي قد لا تظهر على الجوال فيبدو
+              // الزر «غير مستجيب». البوابة الأمنية الفعلية تبقى على الخادم.
+              <form onSubmit={handleRequestChallenge} noValidate className="space-y-4">
                 <div className="space-y-1.5">
-                  <label className="text-xs font-semibold text-slate-300 block">
+                  <label htmlFor="owner-email" className="text-xs font-semibold text-slate-300 block">
                     البريد الإلكتروني المعتمد
                   </label>
                   <div className="relative">
                     <input
+                      id="owner-email"
                       type="email"
-                      required
+                      inputMode="email"
+                      autoComplete="email"
                       value={email}
                       onChange={(e) => setEmail(e.target.value)}
                       placeholder="example@domain.com"
@@ -257,10 +282,14 @@ export const LoginView: React.FC = () => {
                 <button
                   type="submit"
                   disabled={loading}
-                  className="w-full py-2.5 px-4 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-black text-xs transition flex items-center justify-center gap-2 shadow-lg shadow-emerald-500/20 cursor-pointer disabled:opacity-50"
+                  aria-busy={loading}
+                  className="w-full py-3 px-4 rounded-xl bg-emerald-500 hover:bg-emerald-400 active:bg-emerald-600 text-slate-950 font-black text-sm transition flex items-center justify-center gap-2 shadow-lg shadow-emerald-500/20 cursor-pointer touch-manipulation disabled:opacity-50 disabled:cursor-not-allowed"
                 >
                   {loading ? (
-                    'جاري التحقق وإرسال الرمز...'
+                    <>
+                      <span className="w-4 h-4 rounded-full border-2 border-slate-950/40 border-t-slate-950 animate-spin" />
+                      <span>جاري إرسال الرمز...</span>
+                    </>
                   ) : (
                     <>
                       <span>طلب رمز التحقق الآمن</span>
@@ -268,6 +297,17 @@ export const LoginView: React.FC = () => {
                     </>
                   )}
                 </button>
+
+                {requestFailed && !loading && (
+                  <button
+                    type="button"
+                    onClick={handleRequestChallenge}
+                    className="w-full py-2.5 px-4 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 text-xs font-bold transition flex items-center justify-center gap-2 cursor-pointer touch-manipulation"
+                  >
+                    <RotateCw className="w-3.5 h-3.5" />
+                    إعادة المحاولة
+                  </button>
+                )}
               </form>
             ) : (
               <form onSubmit={handleVerifyChallenge} className="space-y-4">

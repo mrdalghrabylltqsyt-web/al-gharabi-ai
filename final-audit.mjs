@@ -3913,6 +3913,32 @@ add('watcher-advisory-not-authority',
     read('src/context/AppContext.tsx').includes("useState<string>('section_home')"),
     'الشاشة الافتراضية عند الدخول هي الرئيسية الموحّدة');
 
+  // 9ب) زر «طلب رمز التحقق» على الجوال: تحقق برمجي + مهلة صريحة + إعادة محاولة.
+  const loginViewSrc = read('src/components/auth/LoginView.tsx');
+  add('login-challenge-no-native-validation',
+    /<form onSubmit=\{handleRequestChallenge\} noValidate/.test(loginViewSrc) &&
+    loginViewSrc.includes('يرجى إدخال البريد الإلكتروني المصرح له.'),
+    'النموذج لا يعتمد على فقاعة المتصفح (noValidate) بل رسالة داخل الواجهة — لا نقر «بلا استجابة» على الجوال');
+  add('login-challenge-retry-visible',
+    loginViewSrc.includes('const [requestFailed') && loginViewSrc.includes('إعادة المحاولة') && /role="alert"/.test(loginViewSrc),
+    'فشل الطلب يُظهر رسالة role=alert + زر «إعادة المحاولة» مربوطاً بالمعالج الفعلي');
+  add('login-challenge-timeout-explicit',
+    read('src/services/api.ts').includes('OWNER_CHALLENGE_TIMEOUT_MS') &&
+    /requestOwnerChallenge[\s\S]{0,600}AbortController/.test(read('src/services/api.ts')),
+    'طلب رمز المالك محدود بمهلة AbortController فلا يدور الزر بلا نهاية على شبكة/بدء بارد');
+  add('login-challenge-store-path-unchanged',
+    server.includes('"/api/auth/request-owner-challenge"') && server.includes('normalizedEmail !== OWNER_EMAIL'),
+    'بوابة الأمان على الخادم كما هي (بلا تخفيف) — الإصلاح واجهة/مهلة فقط');
+  add('login-challenge-e2e-real',
+    fs.existsSync(path.join(root, 'engine/e2e/login.button.e2e.spec.ts')) &&
+    read('engine/e2e/login.button.e2e.spec.ts').includes('hasTouch: true') &&
+    read('engine/e2e/login.button.e2e.spec.ts').includes("toBe('POST')"),
+    'اختبار e2e حقيقي يثبت إرسال POST بالنقر اللمسي على الجوال');
+  add('login-challenge-unit-regression',
+    read('engine/tests/login.button.test.ts').includes('request-owner-challenge') &&
+    read('engine/tests/login.button.test.ts').includes('AbortError'),
+    'اختبار وحدوي يمنع رجوع «الزر لا يستجيب» (إرسال فعلي + مهلة + رسائل فشل)');
+
   // 10) AGENTS.md: عدد فحوصات final-audit مطابق للفعلي (يُعَدّ من نص الملف نفسه).
   const auditCount = (read('final-audit.mjs').match(/^\s*add\(/gm) || []).length;
   add('agents-audit-count-accurate',

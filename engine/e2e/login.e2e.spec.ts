@@ -24,13 +24,14 @@ test('تسجيل الدخول عبر متصفح حقيقي: شاشة الدخو�
   // ننتقل أولاً إلى blank لضمان تحميل كامل (تغيير المقطع وحده لا يعيد تحميل SPA).
   await page.goto('about:blank');
   await page.goto(`/#preview_token=${PREVIEW_TOKEN}`);
-  await expect(page.getByRole('heading', { name: /أهلاً بك/ })).toBeVisible();
+  // بعد الجلسة يعرض مركز القيادة ترحيباً باسم المالك (النص الحالي للتطبيق).
+  await expect(page.getByRole('heading', { name: /مرحباً .* دورة العمل في مكان واحد/ })).toBeVisible();
   // التوكن لا يبقى في الرابط بعد الاستخدام (يُمسح فوراً).
   await expect.poll(async () => page.url()).not.toContain('preview_token');
 
   // 3) الجلسة تصمد عبر إعادة تحميل كاملة (token في localStorage، جلسة موقّعة).
   await page.reload();
-  await expect(page.getByRole('heading', { name: /أهلاً بك/ })).toBeVisible();
+  await expect(page.getByRole('heading', { name: /مرحباً .* دورة العمل في مكان واحد/ })).toBeVisible();
   // شاشة الدخول (بوابة المصادقة) لم تعد معروضة بعد إعادة التحميل.
   await expect(page.getByText('بوابة المصادقة والتحكم الآمنة')).toHaveCount(0);
 
