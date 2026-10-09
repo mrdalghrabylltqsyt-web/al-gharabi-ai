@@ -497,65 +497,6 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const timestamp = new Date().toISOString().replace('T', ' ').slice(0, 16);
     // الوقت المختار من المستخدم (جدار Asia/Baghdad) يُمرَّر صراحةً كي لا يُستبدل بالافتراضي.
     const scheduleValue = newStatus === 'scheduled' ? (scheduledFor || undefined) : undefined;
-    setPosts((prev) =>
-      prev.map((p) => {
-        if (p.id === postId) {
-          const actionMap: Partial<Record<PostStatus, any>> = {
-            draft: 'create',
-            review: 'submit_review',
-            edited: 'edit',
-            approved: 'approve',
-            scheduled: 'schedule',
-          };
-          const newHistory = [
-            ...p.history,
-            {
-              id: 'act-' + Date.now(),
-              byUser: currentUser.name,
-              userRole: currentUser.role,
-              action: actionMap[newStatus] || 'edit',
-              timestamp,
-              note: note || `تغيير الحالة إلى ${newStatus}`,
-            },
-          ];
-
-          const updated: Post = {
-            ...p,
-            status: newStatus,
-            history: newHistory,
-          };
-
-          if (newStatus === 'scheduled') {
-            // نُبقي الموعد المحفوظ، وإلا نضع الموعد الممرَّر أو الافتراضي (جدار محلي).
-            updated.scheduledFor = scheduleValue ?? p.scheduledFor ?? defaultScheduleInput();
-          }
-
-          return updated;
-        }
-        return p;
-      })
-    );
-
-    // الاعتماد/الجدولة عمليتان رسميتان محصورتان بالمالك على الخادم؛ نستدعي مساراهما
-    // الرسميين (لا PATCH) فلا يمكن انتحال قرار الاعتماد عبر تعديل الحالة العامة.
-    if (newStatus === 'approved' || newStatus === 'scheduled') {
-      const request = newStatus === 'approved'
-        ? apiService.approveWorkspaceContent(postId, note)
-        : apiService.scheduleWorkspaceContent(postId, scheduleValue || '', note);
-      void request.then((saved: any) => {
-        if (saved) setPosts((prev) => prev.map((p) => (p.id === postId ? { ...p, ...saved } : p)));
-      }).catch(async (err: any) => {
-        showToast(err?.message || 'تعذر تنفيذ العملية على الخادم');
-        await hydrateWorkspace();
-      });
-    } else {
-      const changedPost = posts.find((p) => p.id === postId);
-      if (changedPost) {
-        const updatedPost = { ...changedPost, status: newStatus };
-        void apiService.updateWorkspaceContent(postId, updatedPost as any).catch((err) => showToast(err.message || 'تعذر حفظ حالة المحتوى'));
-      }
-    }
-
     const statusNames: Record<PostStatus, string> = {
       draft: 'مسودة',
       review: 'قيد المراجعة',
@@ -564,7 +505,66 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       scheduled: 'مجدول للنشر',
       published: 'تم النشر بنجاح',
     };
-    showToast(`تم تحديث حالة المنشور إلى: ${statusNames[newStatus]}`);
+
+    // بناء الحالة المحلية (الحالة + سطر سجل الإجراء). لا تُطبَّق إلا بعد تأكيد الخادم،
+    // وقاعدة «لا نجاح وهمي» تمنع إعلان أي نجاح قبل رد الخادم الفعلي.
+    const applyLocalStatus = (p: Post): Post => {
+      const actionMap: Partial<Record<PostStatus, any>> = {
+        draft: 'create',
+        review: 'submit_review',
+        edited: 'edit',
+        approved: 'approve',
+        scheduled: 'schedule',
+      };
+      const updated: Post = {
+        ...p,
+        status: newStatus,
+        history: [
+          ...p.history,
+          {
+            id: 'act-' + Date.now(),
+            byUser: currentUser.name,
+            userRole: currentUser.role,
+            action: actionMap[newStatus] || 'edit',
+            timestamp,
+            note: note || `تغيير الحالة إلى ${newStatus}`,
+          },
+        ],
+      };
+      if (newStatus === 'scheduled') {
+        // نُبقي الموعد المحفوظ، وإلا نضع الموعد الممرَّر أو الافتراضي (جدار محلي).
+        updated.scheduledFor = scheduleValue ?? p.scheduledFor ?? defaultScheduleInput();
+      }
+      return updated;
+    };
+
+    // الاعتماد/الجدولة عمليتان رسميتان محصورتان بالمالك على الخادم. لا تحديث متفائل
+    // ولا رسالة نجاح قبل تأكيد الخادم — كان التحديث المتفائل يسبق التأكيد فيُظهر
+    // المنشور معتمداً ثم يُرجعه hydrateWorkspace بصمت عند رفض الخادم (409). الآن:
+    // نجاح => تطبيق المنشور المحفوظ + إعلان النجاح؛ فشل => سبب الرفض الحقيقي + إرجاع.
+    if (newStatus === 'approved' || newStatus === 'scheduled') {
+      const request = newStatus === 'approved'
+        ? apiService.approveWorkspaceContent(postId, note)
+        : apiService.scheduleWorkspaceContent(postId, scheduleValue || '', note);
+      void request.then((saved: any) => {
+        setPosts((prev) => prev.map((p) => (p.id === postId ? (saved ? { ...p, ...saved } : applyLocalStatus(p)) : p)));
+        showToast(`تم تحديث حالة المنشور إلى: ${statusNames[newStatus]}`);
+      }).catch(async (err: any) => {
+        showToast(err?.message || 'تعذر تحديث حالة المنشور على الخادم');
+        await hydrateWorkspace();
+      });
+      return;
+    }
+
+    // الحالات الأخرى (مسودة/مراجعة/تعديل) عبر PATCH: نؤكد من الخادم قبل إعلان النجاح
+    // وقبل تطبيق الحالة محلياً، فلا يُوهم المستخدم بنجاح لم يقع فعلاً.
+    void apiService.updateWorkspaceContent(postId, { status: newStatus } as any).then(() => {
+      setPosts((prev) => prev.map((p) => (p.id === postId ? applyLocalStatus(p) : p)));
+      showToast(`تم تحديث حالة المنشور إلى: ${statusNames[newStatus]}`);
+    }).catch(async (err: any) => {
+      showToast(err?.message || 'تعذر حفظ حالة المحتوى');
+      await hydrateWorkspace();
+    });
   };
 
   const updatePostContent = (postId: string, updatedFields: Partial<Post>) => {
