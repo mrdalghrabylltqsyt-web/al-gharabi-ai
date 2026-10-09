@@ -44,7 +44,7 @@ npm install
 npm run dev            # tsx server.ts
 npm run lint           # tsc --noEmit
 npm run build          # vite build + esbuild server.ts -> dist/server.cjs
-npm run final-audit    # node final-audit.mjs (1427 فحصاً)
+npm run final-audit    # node final-audit.mjs (1432 فحصاً)
 npm test               # storage + engine + auth + ... + db + runtime
 ```
 - التشغيل الإنتاجي: `PORT=4517 NODE_ENV=production APP_URL=http://localhost:4517 node dist/server.cjs`
@@ -4852,3 +4852,62 @@ Instagram موصول موثق (Configuration ID مضبوط `configurationReady=t
 YouTube موصول موثق، Telegram/TikTok مهيّأ (`READY_TO_CONNECT`)؛ X/Snapchat/Google Business/
 WhatsApp بلا موصل منفّذ. **لا يمكن لأي وكيل برمجي إتمام handshake خارجي نيابةً عن المالك**
 (موافقة OAuth على شاشة المزود، أو ضغط «موافقة واعتماد» داخل جلسة المالك).
+
+## تشخيص ارتباط تطبيق Facebook بحافظة الأعمال + حسم «حدث خطأ ما» (2026-10-09)
+
+**العطل المعروض:** «Sorry, something went wrong» قبل/خلال ربط Facebook/Instagram OAuth.
+
+**الفحص الكامل للمنطق (لا انحراف عن الموثّق):** أُعيد فحص `oauth/start` و`oauth/setup`
+و`engine/social/facebook.ts` و`engine/social/oauth.ts`:
+- `metaScopeWithoutConfigOverride()` لا يزال افتراضه **السماح** (يرفض الحجب إلا بـ
+  `META_ALLOW_SCOPE_WITHOUT_CONFIG=false`)، فلا حجب من كودنا افتراضياً.
+- بوابة `META_BUSINESS_LOGIN_REQUIRES_CONFIG_ID` (409) لا تُطلق إلا عند
+  `businessLoginSurface===true` **مع** `META_ALLOW_SCOPE_WITHOUT_CONFIG=false` صراحةً —
+  غير مُفعّلة افتراضياً.
+- `buildAuthorizationParams` لـFacebook يبني الرابط الصحيح (`client_id`+`response_type=code`
+  +`redirect_uri`+`state`+`scope` بفواصل)، وعند `config_id` صالح يحلّ محل `scope` تماماً.
+- كل الصلاحيات الثمانية لـFacebook (والعشر لـInstagram) محسومة باعتمادياتها الرسمية
+  (`resolveFacebookScopes`/`resolveInstagramScopes`).
+
+**الدليل الحي (read-only، بلا تسجيل دخول):** قاعدة الفحص الكامل (بلا كوكيز) تتوقف عند شاشة
+الدخول في كل الحالات، فلا تميّز نجاحاً من فشل. أُعيد إنتاجه للمعرّفين الحقيقيين:
+- `1879571969871804` (تطبيق المعرض) و`1060341853401123` (وكيل الغرابي الذكي) ومرجعي
+  `145634995501895` — بوكيل جوال حقيقي على `www.facebook.com/v21.0/dialog/oauth`:
+  كلها تُعيد `302 → m.facebook.com/login.php` مع `is_business_login=1` بلا رفض.
+- أربع حالات (بلا scope / `config_id` / مع scope / config_id+scope) تعطي السلوك **نفسه**
+  قبل الدخول. **لا رفض قبل تسجيل الدخول** لأي منها.
+
+**الخلاصة القاطعة:** لا مصدر لـ«حدث خطأ ما» قبل الدخول في الكود ولا في رابط التفويض
+(كل الحالات تصل إلى `login.php`). فالأرجح أن الرفض يقع **بعد** مصادقة المالك (نطاق لا
+يراه أي فحص بلا كوكيز)، أو أنه إجراء استخدام من واجهة قديمة. **لا فجوة كود أُثبتت** —
+بعد إصلاح 2026-10-05 (إزالة الحجب الكاذب) يعمل الربط فعلاً برموز موثّقة (الإنتاج:
+`userAccessTokenStored`+`pageAccessTokenStored`، Facebook وInstagram موصولان موثقان).
+
+**حقيقة موثّقة (لا اختراع):** عقدة Graph `GET /{app-id}` — بحسب وثيقة Meta الرسمية
+(Graph API App reference) — **لا تحمل حقل `business` إطلاقاً**. الحقول الحقيقية تتضمن
+`id/name/company/app_domains` (و`company` نصّي حرّ يكتبه المطوّر ولا يُثبت ارتباطاً).
+لذلك المسار التشخيصي يُعلن `businessFieldOnAppNode:false` بصراحة ولا يقرأ حقلاً غير موجود.
+
+**المسار التشخيصي الجديد (owner فقط، قراءة-فقط):**
+`GET /api/platforms/facebook/business-link-diagnosis` — يستدعي Graph فعلياً:
+`GET /{app-id}?fields=id,name,company,app_domains` برمز `client_id|client_secret` (يثبت
+صحة بيانات التطبيق؛ نفس إثبات `client_credentials` المستخدم في `oauth/start`)، ويعرض
+حالة Configuration ID، والصلاحيات المحسومة، وأسماء متغيّرات البيئة، والإجراء الخارجي
+الموثّق. لا يُعاد أي سرّ ولا يُحجب أي سلوك قائم. دالة جديدة في `engine/social/facebook.ts`:
+`FacebookClient.getAppNode`.
+
+**إجراء المالك الموثّق (لا ينفّذه أي وكيل):** لإتمام Facebook Login for Business وإنشاء
+Configuration ID يلزم أن يكون التطبيق **أصلاً من أصول حافظة الأعمال**: Meta Business Suite
+→ Settings → Accounts → Apps → Add app → أضف تطبيق «معرض الغرابي -صفحات». عندها فقط تظهر
+صفحة `Facebook Login for Business → Configurations` وتُنسخ معرّفتها إلى
+`FACEBOOK_LOGIN_CONFIG_ID`. (المصدر: help/2199735813629697 «Add an app to your business
+portfolio»). ارتباط التطبيق بحافظة يُثبت عكسياً عبر `GET /{business-id}/owned_apps` (يتطلب
+جلسة إدارة أعمال).
+
+اختبارات: `facebook.connector.test.ts` = **300 فحصاً** (المجموعة 5ب: 401 بلا جلسة، 403
+لغير المالك، إثبات صحة بيانات التطبيق، إعلان غياب حقل business، عدم الاختراع، والحالة
+الافتراضية المسموحة). فحوص final-audit الجديدة: `facebook-business-link-diagnosis-route`,
+`facebook-app-node-real-read`, `facebook-business-link-reverse-route-documented`,
+`facebook-business-link-diagnosis-no-block`, `facebook-business-link-diagnosis-test`
+(**1432 إجمالاً**). `npm run lint` ✅ · `npm run build` ✅ · `npm test` ✅ (113 كتلة PASSED،
+0 فشل).

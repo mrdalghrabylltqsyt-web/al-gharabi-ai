@@ -4370,6 +4370,110 @@ app.post("/api/platforms/facebook/select-page", requireOwner, async (req,res)=>{
 });
 
 /** إثبات اشتراك الصفحة الفعلي في webhook (مقابل subscribed_apps). */
+/**
+ * تشخيص ارتباط تطبيق Facebook بحافظة أعمال (Business Portfolio) — للمالك فقط.
+ * غرضه حسم مسألة «هل تطبيقنا مرتبط بحافظة أعمال؟» من جهة Graph API بلا تخمين،
+ * بجانب إثبات صحة بيانات التطبيق. يعتمد على **وثيقة Meta الرسمية** لا على اختراع:
+ * - `GET /{app-id}?fields=id,name,company,app_domains` برمز `client_id|client_secret`
+ *   يثبت أن التطبيق صالح من جهة Graph و`company` نصّي حرّ (لا يُثبت الارتباط).
+ * - **عقدة /{app-id} لا تحمل حقل `business` إطلاقاً** (موثّق) — لذلك لا يُقرأ ولا
+ *   يُخترع؛ نُعلن ذلك صراحةً في الحقل `businessFieldOnAppNode:false`.
+ * - ارتباط التطبيق بحافظة يُثبت عكسياً عبر `GET /{business_id}/owned_apps`، لكنه
+ *   يعود بلا صلاحية إدارة أعمال؛ لا نُخمّن business_id هنا (يتطلب إجراء المالك).
+ *
+ * لا يُعاد أي سرّ (المعرّف/الاسم/company/app_domains فقط) ولا رمز تطبيق.
+ * `oauth/start` يعمل اليوم (user/page tokens مخزّنة وموثّقة) فالتشخيص **لا يحجب**
+ * ولا يغيّر أي سلوك قائم — قرار المشروع: لا حجب بلا إثبات.
+ */
+app.get("/api/platforms/facebook/business-link-diagnosis", requireOwner, async (_req,res)=>{
+  const cfg=OAUTH_CONFIG["facebook"];
+  const appId=String(cfg?.clientId||"");
+  const appSecret=String(cfg?.clientSecret||"");
+  const envNames=["FACEBOOK_OAUTH_CLIENT_ID","FACEBOOK_OAUTH_CLIENT_SECRET","FACEBOOK_APP_SECRET","FACEBOOK_VERIFY_TOKEN","FACEBOOK_LOGIN_CONFIG_ID","META_ALLOW_SCOPE_WITHOUT_CONFIG"];
+  // إثبات صحة بيانات التطبيق (client_credentials) — نفس الإثبات المستخدم في oauth/start.
+  const appToken=appId&&appSecret?await facebookClient().fetchAppAccessToken({clientId:appId,clientSecret:appSecret}):{kind:"unknown" as const,message:"معرّف التطبيق أو سرّه غير مضبوط في بيئة الخادم.",code:null};
+  // قراءة عقدة التطبيق فعلياً (client_id|client_secret) — تُظهر الحقول المعلنة الحقيقية.
+  const appNode=appId&&appSecret?await facebookClient().getAppNode({clientId:appId,clientSecret:appSecret}):{ok:false,data:null,error:"معرّف التطبيق أو سرّه غير مضبوط في بيئة الخادم."};
+  const resolvedConfig=loginConfigInspection("facebook");
+  const scopesResolved=facebookOAuthScopes();
+  const scopeGaps=facebookScopeDependencyGaps();
+  res.json({
+    success:true,
+    platform:"facebook",
+    // القيمة المعرّفة للمالك (المعرّف عام أصلاً في رابط التفويض) — بلا أي سرّ.
+    appId:appId||null,
+    appSecretConfigured:Boolean(appSecret),
+    // إثبات صحة بيانات التطبيق من جهة Graph (لا من شاشة الحوار).
+    appCredentials:{
+      verdict:appToken.kind==="ok"?"valid":"invalid_or_unknown",
+      kind:appToken.kind,
+      message:appToken.message,
+      providerCode:appToken.code,
+    },
+    // الحقول المعلنة الحقيقية من عقدة /{app-id} (id/name/company/app_domains).
+    appNode:appNode.ok
+      ?{ok:true,fields:appNode.data?.raw||null,name:appNode.data?.name||null}
+      :{ok:false,error:appNode.error||null},
+    /**
+     * النتيجة القاطعة الموثّقة: عقدة /{app-id} **لا** تكشف ارتباط التطبيق
+     * بحافظة أعمال — لا يوجد حقل `business`. الارتباط يُثبت فقط عكسياً عبر
+     * `GET /{business_id}/owned_apps` (يتطلب جلسة إدارة أعمال للمالك).
+     */
+    businessLink:{
+      businessFieldOnAppNode:false,
+      detectableViaAppNode:false,
+      companyFieldPresent:Boolean(appNode.ok&&appNode.data?.raw&&(appNode.data.raw as any).company),
+      companyFieldNote:"`company` نصّي حرّ يكتبه المطوّر ولا يُثبت ارتباطاً بحافظة أعمال.",
+      optionalCompanyProbe:{
+        attempted:true,
+        field:"company",
+        present:Boolean(appNode.ok&&appNode.data?.raw&&(appNode.data.raw as any).company),
+        value:appNode.ok&&appNode.data?.raw&&(appNode.data.raw as any).company?String((appNode.data.raw as any).company):null,
+      },
+      reverseRoute:{method:"GET",path:"/{business-id}/owned_apps",requiresOwnerBusinessSession:true},
+      howToProveLink:"GET /{business-id}/owned_apps برمز مستخدم يملك إدارة الحافظة؛ يعود بالأسماء/المعرّفات للمالك، وفارغاً لو لم يكن التطبيق ضمنها (أو لو غابت صلاحية إدارة الأعمال). يتطلب جلسة المالك ولا ينفّذه أي وكيل.",
+    },
+    // الإجراء الخارجي الموثّق (لا ينفّذه أي وكيل): إضافة التطبيق كأصل أعمال في
+    // حافظة المالك. وثيقة Meta: «Settings in Meta Business Suite → Apps under
+    // Accounts → Add app»، و«app owned by your organisation» أصل أعمال؛ وبعد
+    // الارتباط يظهر Facebook Login for Business → Configurations ويُمكن إنشاء
+    // Configuration ID. بلا هذا الارتباط لا يوجد config_id لتطبيق Business.
+    documentedOwnerAction:{
+      where:"Meta Business Suite → Settings → Accounts → Apps",
+      steps:[
+        "سجّل الدخول إلى Meta Business Suite بحساب يملك إدارة حافظة «عباس الغرابي».",
+        "Settings → Accounts → Apps → Add app → أضف تطبيق «معرض الغرابي -صفحات» (App ID المعلن أعلاه) كأصل أعمال في الحافظة.",
+        "بعد إضافة التطبيق كأصل أعمال تظهر صفحة Facebook Login for Business → Configurations داخل لوحة التطبيق.",
+        "أنشئ Configuration (نوع User access token) بالصلاحيات التي يعرضها /api/platforms/facebook/oauth/setup، وانسخ معرّفها إلى FACEBOOK_LOGIN_CONFIG_ID (أو INSTAGRAM_LOGIN_CONFIG_ID).",
+      ],
+      source:"https://www.facebook.com/business/help/2199735813629697 (Add an app to your business portfolio)",
+      caveat:"الارتباط بحافظة وضغط هذه الخطوات يتطلبان جلسة المالك على Meta؛ لا ينفّذها أي وكيل برمجي. والتشخيص لا يحجب الربط الحالي لأنه يعمل فعلاً برموز موثّقة.",
+    },
+    // حالة Configuration ID (مطلب Facebook Login for Business) — منطقي بلا أي قيمة.
+    configuration:{
+      envNames:loginConfigEnvNames("facebook"),
+      configured:resolvedConfig.configured,
+      valid:resolvedConfig.valid,
+      used:Boolean(effectiveLoginConfigIdFor("facebook")),
+      problems:resolvedConfig.problems.length?resolvedConfig.problems:undefined,
+      permissionSource:effectiveLoginConfigIdFor("facebook")?"facebook_login_for_business_configuration":"oauth_scope_parameter",
+    },
+    // حالة بوابة الحجب عند رصد Business Login بلا config_id (الافتراضي: السماح).
+    scopeWithoutConfigOverride:metaScopeWithoutConfigOverride(),
+    // صلاحيات Facebook المحسومة باعتمادياتها — أسماء فقط (لا أسرار).
+    scopes:{
+      resolved:scopesResolved,
+      count:scopesResolved.length,
+      dependencyGaps:scopeGaps.length?scopeGaps:[],
+      dependenciesResolved:scopeGaps.length===0,
+    },
+    // أسماء متغيّرات البيئة ذات الصلة (بلا أي قيمة).
+    envNames,
+    checkedAt:new Date().toISOString(),
+    note:"تشخيص قراءة-فقط يثبت صحة بيانات التطبيق ويفحص ارتباط حافظة الأعمال من جهة Graph API. لا يُوجد حقل `business` على عقدة /{app-id} في وثيقة Meta الرسمية، فالارتباط يُثبت عكسياً عبر /{business-id}/owned_apps (يتطلب جلسة المالك). لا يُعاد أي سرّ ولا يُحجب أي سلوك قائم.",
+  });
+});
+
 app.get("/api/platforms/facebook/webhook-info", requireOwner, async (_req,res)=>{
   const stored=getProviderToken("facebook");
   const pageId=stored?.pageId?String(stored.pageId):"";

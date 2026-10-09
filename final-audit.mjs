@@ -3769,6 +3769,35 @@ add('watcher-advisory-not-authority',
     read('engine/tests/publish.all-platforms.test.ts').includes('MEDIA_REQUIRED'),
     'اختبار تكاملي على المنصات العشر معاً + كل منصة منفردة (نتيجة مستقلة، عزل الفشل، كود صادق، لا معرّف مختلق) مسجّل في npm test');
 
+  // تشخيص ارتباط تطبيق Facebook بحافظة الأعمال — قراءة-فقط للمالك، بلا اختراع حقل.
+  add('facebook-business-link-diagnosis-route',
+    server.includes('/api/platforms/facebook/business-link-diagnosis') &&
+    server.includes('app.get("/api/platforms/facebook/business-link-diagnosis", requireOwner, async') &&
+    server.includes('businessFieldOnAppNode:false') &&
+    server.includes('detectableViaAppNode:false'),
+    'مسار تشخيص owner-only يعلن صراحةً أن عقدة /{app-id} لا تحمل حقل business (لا يُخترع) ويوجّه للمسار العكسي الرسمي');
+  add('facebook-app-node-real-read',
+    read('engine/social/facebook.ts').includes('async getAppNode(') &&
+    read('engine/social/facebook.ts').includes('fields\', \'id,name,company,app_domains') &&
+    server.includes('facebookClient().getAppNode({clientId:appId,clientSecret:appSecret})') &&
+    server.includes('facebookClient().fetchAppAccessToken({clientId:appId,clientSecret:appSecret})'),
+    'المسار يقرأ عقدة التطبيق فعلياً (Graph) برمز client_id|client_secret ويثبت صحة البيانات — بلا أي سرّ في الرد');
+  add('facebook-business-link-reverse-route-documented',
+    read('engine/social/facebook.ts').includes('/{business_id}/owned_apps') &&
+    server.includes('/{business-id}/owned_apps'),
+    'يُوثّق أن الارتباط بحافظة يُثبت عكسياً عبر GET /{business-id}/owned_apps (يتطلب جلسة المالك)');
+  add('facebook-business-link-diagnosis-no-block',
+    server.includes('scopeWithoutConfigOverride:metaScopeWithoutConfigOverride()') &&
+    server.includes('documentedOwnerAction') &&
+    server.includes('Meta Business Suite → Settings → Accounts → Apps') &&
+    server.includes('لا يُحجب أي سلوك قائم'),
+    'التشخيص لا يحجب أي سلوك قائم ويوثّق إجراء المالك الخارجي (إضافة التطبيق كأصل أعمال) بلا اختراع');
+  add('facebook-business-link-diagnosis-test',
+    read('engine/tests/facebook.connector.test.ts').includes('business-link-diagnosis بلا جلسة => 401') &&
+    read('engine/tests/facebook.connector.test.ts').includes('business-link-diagnosis لغير المالك => 403') &&
+    read('engine/tests/facebook.connector.test.ts').includes('يعلن صراحةً غياب حقل business على عقدة التطبيق'),
+    'اختبار يحمي المسار: 401 بلا جلسة، 403 لغير المالك، وإعلان غياب حقل business بلا اختراع');
+
   // 10) AGENTS.md: عدد فحوصات final-audit مطابق للفعلي (يُعَدّ من نص الملف نفسه).
   const auditCount = (read('final-audit.mjs').match(/^\s*add\(/gm) || []).length;
   add('agents-audit-count-accurate',

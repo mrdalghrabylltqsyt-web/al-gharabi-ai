@@ -77,6 +77,10 @@ export interface FacebookMockState {
   debugTokenType?: string;
   /** خطأ مخصّص لنشر الفيديو (يحاكي #100 لا صلاحية) — لاختبار حفظ التشخيص وسحبه. */
   publishVideoError?: { message: string; code: number; error_subcode?: number; fbtrace_id?: string } | null;
+  /** اسم التطبيق/الشركة/النطاقات المعلنة في عقدة /{app-id} (محاكاة Graph). */
+  appName?: string;
+  appCompany?: string;
+  appDomains?: string[];
 }
 
 export function createFacebookMock(state: Partial<FacebookMockState> = {}): FacebookMockState {
@@ -232,6 +236,17 @@ export async function startFacebookMockServer(
   app.get('/:version/:pageId', (req, res) => {
     const { pageId } = req.params;
     if (!pageId || pageId === 'me') return res.status(400).json({ error: { message: 'unsupported' } });
+    // عقدة التطبيق `GET /{app-id}?fields=id,name,company,app_domains`: تُخدم عندما
+    // يطابق المعرّف معرّف التطبيق الصالح — تحاكي Graph الحقيقي بلا اختراع حقل `business`.
+    if (pageId === state.validAppId) {
+      state.calls += 1;
+      const appFields = String(req.query.fields || '');
+      const out: Record<string, unknown> = { id: state.validAppId };
+      if (appFields.includes('name')) out.name = state.appName ?? 'معرض الغرابي -صفحات';
+      if (appFields.includes('company')) out.company = state.appCompany ?? 'الغرابي';
+      if (appFields.includes('app_domains')) out.app_domains = state.appDomains ?? ['al-gharabi-ai.onrender.com'];
+      return res.json(out);
+    }
     state.calls += 1;
     state.pageProfileCalls += 1;
     if (state.failPageProfile) return res.status(400).json({ error: { message: 'Unsupported get request', code: 100 } });

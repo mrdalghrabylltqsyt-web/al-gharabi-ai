@@ -757,6 +757,38 @@ export class FacebookClient {
     }
   }
 
+  /**
+   * يقرأ عقدة التطبيق `GET /{app-id}?fields=id,name,company,app_domains` برمز
+   * تطبيق (`client_id|client_secret`). غرضه إثبات أن بيانات التطبيق صالحة **من
+   * جهة Graph API** (لا من شاشة الحوار فقط)، وإظهار الحقل `company` الحقيقي.
+   * **لا يوجد حقل `business` على عقدة /{app-id}** في وثيقة Meta الرسمية — فلا
+   * يُقرأ ولا يُخترع؛ ارتباط التطبيق بحافظة أعمال يُثبت فقط عبر
+   * `GET /{business_id}/owned_apps` (يعود فارغاً بلا صلاحية إدارة أعمال).
+   * لا يُعاد أي سرّ — المعرّف/الاسم/الحقول المعلنة فقط.
+   */
+  async getAppNode(input: { clientId: string; clientSecret: string }): Promise<FacebookResult<{ id: string; name: string | null; raw: Record<string, unknown> }>> {
+    if (!input.clientId || !input.clientSecret) return { ok: false, data: null, error: 'معرّف التطبيق وسرّه مطلوبان لقراءة عقدة التطبيق.' };
+    try {
+      const u = new URL(facebookGraphUrl(`/${encodeURIComponent(input.clientId)}`, this.baseUrl));
+      u.searchParams.set('fields', 'id,name,company,app_domains');
+      u.searchParams.set('access_token', `${input.clientId}|${input.clientSecret}`);
+      const res = await this.fetchImpl(u.toString(), { method: 'GET' });
+      const data = await res.json().catch(() => null);
+      if (!res.ok || data?.error || !data?.id) {
+        const ex = logAndExtractFacebookError(data, `GET /${input.clientId}`, res.status);
+        return { ok: false, data: null, error: errorMessage(data, 'تعذّر قراءة عقدة التطبيق من Graph API.'), providerCode: ex.providerCode, providerSubcode: ex.providerSubcode, providerTraceId: ex.providerTraceId };
+      }
+      // نُبقي الحقول المعلنة فقط (id/name/company/app_domains) — بلا أي حقل سرّي.
+      const raw: Record<string, unknown> = { id: String(data.id) };
+      if (typeof data.name === 'string') raw.name = data.name;
+      if (typeof data.company === 'string') raw.company = data.company;
+      if (Array.isArray(data.app_domains)) raw.app_domains = data.app_domains.map((d: any) => String(d));
+      return { ok: true, data: { id: String(data.id), name: typeof data.name === 'string' ? data.name : null, raw } };
+    } catch (e: any) {
+      return { ok: false, data: null, error: String(e?.message || 'فشل الاتصال بـFacebook.') };
+    }
+  }
+
   /** يسرد صفحات المستخدم مع رمز كل صفحة ومهامها (GET /me/accounts). */
   async listManagedPages(userAccessToken: string): Promise<FacebookResult<FacebookPageIdentity[]>> {
     if (!userAccessToken) return { ok: false, data: null, error: 'رمز المستخدم غير متوفر.' };

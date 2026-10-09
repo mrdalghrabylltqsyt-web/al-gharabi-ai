@@ -409,6 +409,20 @@ async function integrationTests(): Promise<void> {
     check('oauth/setup لا يدّعي قراءة وضع التطبيق من API', setup.metaAppModeNotice?.apiReadable === false && Boolean(setup.metaAppModeNotice?.where));
     check('oauth/setup لا يكشف أي سرّ', !JSON.stringify(setup).includes(FB_APP_SECRET) && !JSON.stringify(setup).includes(FB_VERIFY_TOKEN) && !JSON.stringify(setup).includes('PAGE_TOKEN'));
     check('oauth/setup لغير المالك => 403', (await fetch(`${BASE}/api/platforms/facebook/oauth/setup`, { headers: staffAuth })).status === 403);
+
+    group('5ب) تكامل: تشخيص ارتباط حافظة الأعمال (owner فقط، قراءة-فقط)');
+    check('business-link-diagnosis بلا جلسة => 401', (await fetch(`${BASE}/api/platforms/facebook/business-link-diagnosis`)).status === 401);
+    check('business-link-diagnosis لغير المالك => 403', (await fetch(`${BASE}/api/platforms/facebook/business-link-diagnosis`, { headers: staffAuth })).status === 403);
+    const bizDiag = await (await fetch(`${BASE}/api/platforms/facebook/business-link-diagnosis`, { headers: auth })).json();
+    check('يشهد أن بيانات التطبيق صالحة من جهة Graph', bizDiag.appCredentials?.verdict === 'valid', JSON.stringify(bizDiag.appCredentials));
+    // النتيجة القاطعة الموثّقة: لا حقل business على عقدة /{app-id}.
+    check('يعلن صراحةً غياب حقل business على عقدة التطبيق', bizDiag.businessLink?.businessFieldOnAppNode === false && bizDiag.businessLink?.detectableViaAppNode === false);
+    check('لا يُخترع ارتباط بحافظة أعمال', bizDiag.businessLink?.optionalCompanyProbe?.present === true && bizDiag.businessLink?.optionalCompanyProbe?.value === 'الغرابي');
+    check('يوجّه للمسار العكسي الرسمي /{business-id}/owned_apps', bizDiag.businessLink?.reverseRoute?.path === '/{business-id}/owned_apps');
+    check('يقرأ عقدة التطبيق فعلياً (اسم/حقول معلنة)', bizDiag.appNode?.ok === true && bizDiag.appNode?.name === 'معرض الغرابي -صفحات', JSON.stringify(bizDiag.appNode));
+    check('يعرض حالة Configuration ID منطقية بلا قيمة', typeof bizDiag.configuration?.configured === 'boolean' && typeof bizDiag.configuration?.valid === 'boolean');
+    check('يعلن قراءة-فقط Status 200 بلا أي سرّ', bizDiag.success === true && !JSON.stringify(bizDiag).includes(FB_APP_SECRET) && !JSON.stringify(bizDiag).includes('test-fb-client-secret'));
+    check('البوابة الافتراضية تسمح بتمرير scope (لا حجب كاذب)', bizDiag.scopeWithoutConfigOverride === true);
     const state = new URL(startRes.authorizationUrl).searchParams.get('state') || '';
     check('الحالة مُولَّدة قوية', state.length >= 32);
     const cbRes = await fetch(`${BASE}/api/platforms/facebook/oauth/callback?state=${encodeURIComponent(state)}&code=TESTCODE`);
