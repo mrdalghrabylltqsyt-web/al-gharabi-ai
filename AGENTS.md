@@ -44,7 +44,7 @@ npm install
 npm run dev            # tsx server.ts
 npm run lint           # tsc --noEmit
 npm run build          # vite build + esbuild server.ts -> dist/server.cjs
-npm run final-audit    # node final-audit.mjs (1449 فحصاً)
+npm run final-audit    # node final-audit.mjs (1466 فحصاً)
 npm test               # storage + engine + auth + ... + db + runtime
 ```
 - التشغيل الإنتاجي: `PORT=4517 NODE_ENV=production APP_URL=http://localhost:4517 node dist/server.cjs`
@@ -5074,3 +5074,50 @@ Render لم يلتقطها. إثبات التوقيت: أوقات committer من
 **اختبار:** `engine/tests/unified.nav.test.ts` (`npm run test:unified-nav`، 22 فحصاً):
 خمسة أقسام بالضبط، عدم فقدان أي وظيفة سابقة، مصدر واحد، الرئيسية تقرأ من الخادم الحقيقي.
 فحوص final-audit جديدة: `unified-nav-*`، `unified-home-*` (سُحبت من 1443 إلى 1449).
+
+## إصلاح «زر طلب رمز التحقق لا يستجيب» على الجوال (2026-10-09)
+
+**التشخيص الحقيقي (لا تخمين):** الزر **ينفّذ المعالج فعلاً** على سطح المكتب وعلى محاكاة
+الجوال — أُثبت ذلك عبر Playwright: النقر يُرسل `POST /api/auth/request-owner-challenge`
+ويعود الخادم (502 عند غياب Resend) وتُعرض رسالة الخطأ. فالعطل المُبلَّغ عنه («لا يستجيب»)
+ليس نقراً ميتاً في React، بل ثلاث فجوات عرض/سلوك تجعل النقر **يبدو** بلا استجابة على
+متصفح جوال:
+
+1. **الاعتماد على فقاعة تحقق HTML الأصلية.** حقل البريد كان `required` بلا `noValidate`،
+   فإذا كان الحقل ناقصاً/غير صالح تمنع فقاعة المتصفح إرسال النموذج — وقد لا تظهر هذه
+   الفقاعة بوضوح على جوال (خصوصاً RTL/لوحة مفاتيح عربية) فيبدو الزر غير مستجيب.
+2. **لا مهلة على الطلب.** `requestOwnerChallenge` كان `fetch` بلا `AbortController`؛ فعند
+   بدء بارد (cold start) أو شبكة جوال ضعيفة يبقى الزر «جاري التحقق وإرسال الرمز...» بلا
+   نهاية — أي «بلا استجابة» معنىً.
+3. **بلا إعادة محاولة.** عند الفشل تظهر رسالة عامة فقط بلا زر إعادة محاولة واضح.
+
+**الإصلاح (واجهة/مهلة فقط — بلا أي مساس بالخادم أو بوابة الأمان):**
+- `src/components/auth/LoginView.tsx`: النموذج `noValidate` + تحقق برمجي صريح (بريد فارغ
+  أو صيغة خاطئة => رسالة داخل الواجهة دائماً). رسالة الخطأ `role="alert"`. مؤشر تحميل
+  واضح (spinner) + `aria-busy`. زر «إعادة المحاولة» يظهر عند فشل الطلب ويُعيد تنفيذ
+  المعالج الفعلي. أزرار أكبر (`py-3`) و`touch-manipulation` و`active:` لأداء لمسي أفضل.
+- `src/services/api.ts`: `requestOwnerChallenge` محدود بمهلة `OWNER_CHALLENGE_TIMEOUT_MS`
+  (20 ثانية) عبر `AbortController`، ويصنّف الفشل برسائل واضحة (مهلة/شبكة/خطأ خادم) بلا
+  أي سرّ — فلا يبقى الزر يدور بلا نهاية.
+- **لا تغيير في الخادم:** `/api/auth/request-owner-challenge` كما هو (فحوص final-audit
+  `login-challenge-store-path-unchanged` تثبته). لا تخفيف لمصادقة ولا كشف أسرار.
+
+**اختبارات:**
+- `engine/tests/login.button.test.ts` (`npm run test:login-button`، 19 فحصاً، ضمن `npm test`):
+  إرسال فعلي للمسار الصحيح عبر `fetch` وهمي، مهلة `AbortController`، رسائل فشل
+  (502/شبكة/مهلة) بلا سرّ، وبنية `LoginView` (noValidate + إعادة محاولة + role=alert).
+- `engine/e2e/login.button.e2e.spec.ts` (متصفح حقيقي): النقر يُرسل POST ثم ينتقل لخطوة
+  الرمز على سطح المكتب، والنقر **اللمسي** (`tap` + `hasTouch`) يرسل الطلب نفسه على جوال،
+  وبريد فارغ => رسالة بلا إرسال، وفشل => رسالة + زر إعادة محاولة ينفّذ الطلب فعلاً.
+- أُصلح اختبار `login.e2e.spec.ts` القديم (كان يشير لعنوان «أهلاً بك» غير موجود) إلى
+  العنوان الفعلي لمركز القيادة.
+- فحوص final-audit جديدة: `login-challenge-*` (1461 فحصاً إجمالاً).
+
+**ملاحظة تجاوز (لا حذف):** مهمة «تسريب بيانات العملاء في /api/health» الواردة في العقد
+كانت **منجزة مسبقاً وسارية على الإنتاج** (`bb004fe`): `watcherStatusBlockPublic` في
+`server.ts` يُعلن حقولاً تقنية فقط (`status`/`watcherActive`/`cadence*`/`pollCount`/
+`lastPollAt`/`lastError` مُنقّى/`consecutiveErrors`)، ولا يحمل `attentionRequired` ولا
+`lastReply.replyText`؛ والبيانات التفصيلية تبقى في المسار المحمي `/api/agent/youtube/watcher`
+(للمالك). اختبار `engine/tests/health.privacy.test.ts` يمنع رجوع التسريب. تحقّق حي على
+الإنتاج: `GET /api/health` بلا مصادقة => عدد مطابقات `attentionRequired`/`replyText`/
+`authorName` = 0.

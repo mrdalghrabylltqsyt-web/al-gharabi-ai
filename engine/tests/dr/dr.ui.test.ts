@@ -61,14 +61,16 @@ function makeFakeTokenTransport() {
 // ---------------------------------------------------------------------------
 function staticChecks() {
   const sidebar = read('src/components/common/Sidebar.tsx');
+  // خريطة التنقل انتقلت إلى navConfig.tsx (مصدر واحد)، والشريط يعيد التصدير.
+  const navConfig = read('src/components/common/navConfig.tsx');
   const app = read('src/App.tsx');
   const api = read('src/services/api.ts');
   const view = read('src/components/system/CloudBackupView.tsx');
 
   // التبويب للمالك فقط
-  check('sidebar has cloud_backup id', sidebar.includes("id: 'cloud_backup'"));
-  check('sidebar cloud_backup is ownerOnly', /id:\s*'cloud_backup'[\s\S]{0,200}ownerOnly:\s*true/.test(sidebar));
-  check('sidebar filters ownerOnly by role', /visibleSectionGroups[\s\S]{0,160}?ownerOnly[\s\S]{0,80}?isOwner/.test(sidebar) && sidebar.includes("currentUser?.role === 'owner'"));
+  check('sidebar has cloud_backup id', navConfig.includes("id: 'cloud_backup'") && sidebar.includes("from './navConfig'"));
+  check('sidebar cloud_backup is ownerOnly', /id:\s*'cloud_backup'[\s\S]{0,200}ownerOnly:\s*true/.test(navConfig));
+  check('sidebar filters ownerOnly by role', /visibleBranchItems[\s\S]{0,200}?ownerOnly[\s\S]{0,80}?isOwner/.test(navConfig) && sidebar.includes("currentUser?.role === 'owner'"));
 
   // App.tsx: حالة + معالجة العودة
   check('app has cloud_backup case', app.includes("case 'cloud_backup': return <CloudBackupView />"));

@@ -28,6 +28,10 @@ export interface AgentChatRequest {
   context?: any;
 }
 
+// مهلة طلب رمز تحقق المالك. أقصر من مهلة التحقق الحي (30s) لأن العملية كتابة
+// واحدة بلا مزوّد AI؛ تكفي لتجاوز بدء بارد وتقصر التجربة الانتظارية على الجوال.
+const OWNER_CHALLENGE_TIMEOUT_MS = 20_000;
+
 let _authToken: string | null = null;
 
 // التوكن يُحفظ في localStorage لا sessionStorage: الأخير يُفقد عند إغلاق
@@ -96,15 +100,35 @@ export const apiService = {
     return data;
   },
 
-  async requestOwnerChallenge(email: string): Promise<{ success: boolean; message: string }> {
-    const res = await fetch('/api/auth/request-owner-challenge', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ email }),
-    });
-    const data = await res.json().catch(() => ({ success: false }));
+  async requestOwnerChallenge(email: string): Promise<{ success: boolean; message: string; codeIssued?: boolean }> {
+    // مهلة صريحة على مستوى fetch: إن علِق الخادم/الشبكة (بدء بارد، شبكة جوال
+    // ضعيفة) فلا يبقى زر «طلب الرمز» يدور بلا نهاية ولا يبدو «بلا استجابة»، بل
+    // يُقطع الطلب برسالة يمكن إعادة المحاولة بها. لا كشف لأي سرّ في أي رسالة.
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), OWNER_CHALLENGE_TIMEOUT_MS);
+    let res: Response;
+    try {
+      res = await fetch('/api/auth/request-owner-challenge', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email }),
+        signal: controller.signal,
+      });
+    } catch (err: any) {
+      if (err?.name === 'AbortError') {
+        throw new Error('انتهت مهلة الاتصال بالخادم. تحقق من الشبكة ثم أعد المحاولة.');
+      }
+      throw new Error('تعذّر الوصول إلى الخادم. تحقق من اتصالك بالإنترنت ثم أعد المحاولة.');
+    } finally {
+      clearTimeout(timer);
+    }
+    const data = await res.json().catch(() => ({ success: false } as { success: boolean }));
     if (!res.ok || !data.success) {
-      throw new Error(data.error || data.message || 'تعذر إرسال رمز التحقق، حاول مرة أخرى');
+      // رسائل الخادم تُعرض كما هي (خالية من أي سرّ)، مع بديل عام مفهوم.
+      const err: any = new Error(data.error || data.message || 'تعذّر إرسال رمز التحقق، حاول مرة أخرى.');
+      // كود سبب غير سرّي (كود مزوّد البريد أو نقص إعداد) لعرض توجيه تشخيصي دقيق.
+      if (typeof (data as any).reason === 'string') err.reason = (data as any).reason;
+      throw err;
     }
     return data;
   },

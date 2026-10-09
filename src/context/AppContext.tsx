@@ -41,7 +41,7 @@ interface AppContextType {
   clearOauthReturn: () => void;
   retryAuth: () => void;
   loginWithGoogle: (credential: string) => Promise<void>;
-  requestOwnerChallenge: (email: string) => Promise<{ success: boolean; message: string }>;
+  requestOwnerChallenge: (email: string) => Promise<{ success: boolean; message: string; codeIssued?: boolean }>;
   verifyOwnerChallenge: (email: string, code: string) => Promise<void>;
   logout: () => Promise<void>;
 

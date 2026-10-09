@@ -126,6 +126,9 @@ async function run(): Promise<void> {
     const health = await (await fetch(`${BASE}/api/health`)).json();
     check('/api/health ما زال 200 ويعيد ok', health.status === 'ok');
     check('الفحص الصحي لا يسرّب المفتاح', !app.log().includes(FAKE_KEY) && !JSON.stringify(health).includes(FAKE_KEY));
+    // كتلة تشخيص إعداد البريد (منطقية فقط): تُعلن المضبوط بلا كشف أي قيمة سرّية.
+    check('/api/health يُعلن حالة إعداد البريد (منطقي)', health.ownerEmail?.providerConfigured === true && health.ownerEmail?.fromConfigured === true && health.ownerEmail?.ownerConfigured === true, JSON.stringify(health.ownerEmail));
+    check('/api/health لا يسرب مفتاح البريد ولا بريد المُرسِل', !JSON.stringify(health.ownerEmail || {}).includes(FAKE_KEY) && !JSON.stringify(health.ownerEmail || {}).includes(FROM_EMAIL));
 
     // نجاح الإرسال: 200، ورسالة النجاح العربية، ونسخة واحدة إلى Resend فقط.
     const sent = await fetch(`${BASE}/api/auth/request-owner-challenge`, {
@@ -133,8 +136,9 @@ async function run(): Promise<void> {
     });
     const sentBody = await sent.json();
     check('طلب OTP ينجح عند نجاح Resend (200)', sent.status === 200, `status=${sent.status}`);
-    check('رسالة النجاح تطابق نص الواجهة المطلوب', sentBody.success === true && sentBody.message === 'تم إرسال رمز التحقق إلى بريد المالك', JSON.stringify(sentBody));
-    check('الاستجابة لا تُرجع الرمز إطلاقاً', !/code/i.test(JSON.stringify(sentBody)) && !/\b\d{6}\b/.test(JSON.stringify(sentBody)));
+    check('رسالة القبول تطابق نص الواجهة المطلوب', sentBody.success === true && sentBody.message === 'قَبِل مزوّد البريد طلب الإرسال — تحقّق من صندوق الوارد (والمهملات) للبريد المعتمد.', JSON.stringify(sentBody));
+    check('الاستجابة تُعلن إصدار الرمز وقبول المزود (بلا ادّعاء تسليم)', sentBody.codeIssued === true && sentBody.providerAccepted === true, JSON.stringify(sentBody));
+    check('الاستجابة لا تُرجع الرمز إطلاقاً', !/\b\d{6}\b/.test(JSON.stringify(sentBody)));
     check('لم يُرسل سوى طلب واحد إلى Resend (بلا retry)', stubState.calls.length === 1, `calls=${stubState.calls.length}`);
     const call = stubState.calls[0];
     check('الطلب ذهب إلى /emails على المزود', (call?.url || '').includes('/emails'), call?.url);
@@ -148,6 +152,22 @@ async function run(): Promise<void> {
     const emailStatus = await (await fetch(`${BASE}/api/system/email-status`)).text();
     check('حالة البريد محمية بالمالك (401 بلا جلسة)', (await fetch(`${BASE}/api/system/email-status`)).status === 401);
 
+    // ---- المرحلة 1ب: بريد غير مطابق لـOWNER_EMAIL — نجاح كاذب سابقاً (العطل المُثبت) ----
+    // العطل: رسالة «تم إصدار رمز التحقق بنجاح» كانت تُعرض لبريد لا يطابق OWNER_EMAIL،
+    // فلا يُنشأ رمز ولا يُستدعى Resend، فيبدو العطل كأن البريد لم يصل. الآن: لا إصدار
+    // رمز ظاهر، ولا استدعاء للمزود، والرد محايد يمنع كشف وجود حساب المالك.
+    stubState.calls.length = 0;
+    const mismatch = await fetch(`${BASE}/api/auth/request-owner-challenge`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email: 'someone-else@example.com' }),
+    });
+    const mismatchBody = await mismatch.json();
+    check('بريد غير مطابق: لا ادّعاء إصدار رمز', mismatch.status === 200 && mismatchBody.success === true && mismatchBody.codeIssued === false, JSON.stringify(mismatchBody));
+    check('بريد غير مطابق: لا استدعاء لمزوّد البريد إطلاقاً', stubState.calls.length === 0, `calls=${stubState.calls.length}`);
+    check('بريد غير مطابق: رسالة محايدة لا تكشف وجود حساب المالك', !/مسجل/.test(mismatchBody.message) && /البريد المعتمد/.test(mismatchBody.message), mismatchBody.message);
+    // حماية منع الكشف: رد البريد المطابق وغير المطابق متطابقان شكلاً (success:true)،
+    // والفرق الوحيد codeIssued — لا كشف مباشر لوجود حساب المالك.
+    check('منع كشف الحساب: كلاهما success:true بلا رسالة خطأ', mismatchBody.success === true && sentBody.success === true);
+
     // ---- المرحلة 2: فشل Resend (403) يجب ألا يدّعي النجاح ----
     stubState.mode = 'error';
     stubState.calls.length = 0;
@@ -158,6 +178,13 @@ async function run(): Promise<void> {
     check('فشل Resend لا يعيد نجاحاً', failedBody.success !== true && failed.status >= 400, `status=${failed.status} body=${JSON.stringify(failedBody)}`);
     check('رسالة الفشل تطابق نص الواجهة المطلوب', failedBody.error === 'تعذر إرسال رمز التحقق، حاول مرة أخرى', JSON.stringify(failedBody));
     check('لا يُرجع الرمز عند الفشل', !/\b\d{6}\b/.test(JSON.stringify(failedBody)));
+    // كود السبب غير السرّي: يكشف سبب فشل الإرسال بلا أي قيمة (بريد/مفتاح/رمز).
+    check('فشل المزود يُعلن كود السبب الفعلي', failedBody.reason === 'invalid_from_address', JSON.stringify(failedBody.reason));
+    check('سبب الفشل لا يحمل بريداً ولا مفتاحاً ولا رمزاً',
+      !String(failedBody.reason || '').includes('@') &&
+      !String(failedBody.reason || '').includes(FAKE_KEY) &&
+      !/\b\d{6}\b/.test(String(failedBody.reason || '')),
+      JSON.stringify(failedBody.reason));
 
     // ---- المرحلة 3: غياب RESEND_API_KEY يجب أن يفشل بوضوح ----
     app.proc.kill('SIGTERM');
@@ -176,6 +203,8 @@ async function run(): Promise<void> {
         const noKeyBody = await noKey.json();
         check('غياب المفتاح يفشل بوضوح لا يدّعي النجاح', noKey.status >= 400 && noKeyBody.success !== true, `status=${noKey.status}`);
         check('غياب المفتاح يعيد رسالة الفشل العربية', noKeyBody.error === 'تعذر إرسال رمز التحقق، حاول مرة أخرى');
+        // السبب يسمّي نقص الإعداد بدقة (اسم المتغيّر المنطقي) بلا قيمة سرّية.
+        check('غياب المفتاح يُعلن سبباً صريحاً غير سرّي', noKeyBody.reason === 'email_provider_not_configured', JSON.stringify(noKeyBody.reason));
       }
     } finally {
       app2.proc.kill('SIGTERM');

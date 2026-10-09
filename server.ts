@@ -1111,10 +1111,17 @@ app.post("/api/auth/request-owner-challenge", async (req, res) => {
   if (!allowChallengeAttempt(challengeKey)) return res.status(429).json({ success: false, message: "تم تجاوز عدد محاولات التحقق المسموح مؤقتاً. حاول لاحقاً." });
 
   if (normalizedEmail !== OWNER_EMAIL) {
-    // Return standard message to prevent email enumeration
+    // منع كشف وجود حساب مالك: رسالة محايدة لا تؤكّد إصدار الرمز ولا تنفيه، ولا
+    // تُعلن أن البريد ليس بريد المالك. **سبب عطل حقيقي سابق**: النص كان «تم إصدار
+    // رمز التحقق بنجاح» فيظهر نجاح كاذب للمالك الذي أدخل بريداً غير مطابق لـOWNER_EMAIL
+    // (لا يُنشأ رمز ولا يُستدعى Resend إطلاقاً)، فبدا العطل كأنه «لم يصل البريد».
+    auditLog.unshift({ id: crypto.randomUUID(), at: new Date().toISOString(), userId: "system", action: "owner_challenge_address_mismatch", detail: "address-did-not-match-configured-owner" });
+    if (auditLog.length > 100) auditLog.pop();
+    persistState();
     return res.json({
       success: true,
-      message: "إذا كان هذا البريد مسجلاً، فقد تم إصدار رمز التحقق بنجاح.",
+      message: "سيُرسَل رمز التحقق فقط إلى البريد المعتمد لمالك النظام.",
+      codeIssued: false,
     });
   }
 
@@ -1128,9 +1135,14 @@ app.post("/api/auth/request-owner-challenge", async (req, res) => {
     auditLog.unshift({ id: crypto.randomUUID(), at: new Date().toISOString(), userId: "system", action: "owner_challenge_email_failed", detail: result.error || "send_failed" });
     if (auditLog.length > 100) auditLog.pop();
     persistState();
+    // كود سبب غير سرّي (كود مزوّد البريد أو اسم متغيّر ناقص) ليعرف المالك سبب فشل
+    // الإرسال بدل «فشل صامت». لا يحمل أي قيمة: لا بريد، لا مفتاح، ولا الرمز — وأي
+    // شكل غير متوقع يُستبدل بـ send_failed. النص العربي يبقى كما هو لعقد الواجهة.
+    const reason = /^[a-z0-9_]{1,48}$/.test(String(result.error || "")) ? result.error : "send_failed";
     return res.status(502).json({
       success: false,
       error: "تعذر إرسال رمز التحقق، حاول مرة أخرى",
+      reason,
     });
   }
 
@@ -1140,7 +1152,10 @@ app.post("/api/auth/request-owner-challenge", async (req, res) => {
 
   return res.json({
     success: true,
-    message: "تم إرسال رمز التحقق إلى بريد المالك",
+    // «قبول المزود» فقط — لا يُدَّعى تسليم صندوق البريد (لا دليل عليه من Resend هنا).
+    message: "قَبِل مزوّد البريد طلب الإرسال — تحقّق من صندوق الوارد (والمهملات) للبريد المعتمد.",
+    codeIssued: true,
+    providerAccepted: true,
   });
 });
 
@@ -13183,6 +13198,16 @@ app.get("/api/health", (_req, res) => {
     timestamp: new Date().toISOString(),
     service: "Al-Gharabi AI Backend",
     version: PROJECT_VERSION,
+    // حالة إعداد بريد رمز تحقق المالك — منطقية فقط وبلا أي قيمة سرّية. تسمح
+    // للمالك بتشخيص «لم يصل الرمز» من بيئة هذا النشر بالذات: هل مزود البريد
+    // مضبوط؟ هل بريد المُرسِل مضبوط؟ هذا لا يكشف المفتاح ولا البريد.
+    ownerEmail: {
+      ownerConfigured: Boolean(OWNER_EMAIL),
+      providerConfigured: getOwnerEmailConfig().configured,
+      provider: getOwnerEmailConfig().provider,
+      fromConfigured: getOwnerEmailConfig().fromConfigured,
+      envNames: { owner: "OWNER_EMAIL", provider: "RESEND_API_KEY", from: "RESEND_FROM_EMAIL" },
+    },
     geminiUsage: geminiStatus(),
     // حالة مفتاح تشفير توكنات المنصات: تفصل missing من invalid بلا كشف القيمة،
     // فتعكس نفس الحكم الذي يستخدمه encryptSecret/credentials فعلياً.

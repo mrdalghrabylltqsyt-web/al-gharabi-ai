@@ -168,11 +168,23 @@ const AppContent: React.FC = () => {
   const renderActiveView = () => {
     // الأقسام الخمسة الرئيسية: صفحة قسم موحّدة تُفوّض العرض للأوراق (بلا تكرار منطق).
     switch (activeTab) {
+      // الأقسام الرئيسية (هرمية): كل قسم يُفوّض العرض للأوراق عبر نفس switch العرض
+      // (لا تكرار منطق، ولا صفحة جديدة). القائمة أدناه تشمل الأقسام الخمسة الأصلية
+      // والأقسام الهرمية المضافة — دون حذف أي منها.
       case 'section_home': return <SectionHub sectionId="section_home" renderLeaf={renderLeafView} />;
       case 'section_publish': return <SectionHub sectionId="section_publish" renderLeaf={renderLeafView} />;
       case 'section_customers': return <SectionHub sectionId="section_customers" renderLeaf={renderLeafView} />;
       case 'section_products': return <SectionHub sectionId="section_products" renderLeaf={renderLeafView} />;
       case 'section_settings': return <SectionHub sectionId="section_settings" renderLeaf={renderLeafView} />;
+      case 'section_brains': return <SectionHub sectionId="section_brains" renderLeaf={renderLeafView} />;
+      case 'section_central': return <SectionHub sectionId="section_central" renderLeaf={renderLeafView} />;
+      case 'section_security': return <SectionHub sectionId="section_security" renderLeaf={renderLeafView} />;
+      case 'section_automation': return <SectionHub sectionId="section_automation" renderLeaf={renderLeafView} />;
+      case 'section_memory': return <SectionHub sectionId="section_memory" renderLeaf={renderLeafView} />;
+      case 'section_storage': return <SectionHub sectionId="section_storage" renderLeaf={renderLeafView} />;
+      case 'section_monitoring': return <SectionHub sectionId="section_monitoring" renderLeaf={renderLeafView} />;
+      case 'section_recovery': return <SectionHub sectionId="section_recovery" renderLeaf={renderLeafView} />;
+      case 'section_external': return <SectionHub sectionId="section_external" renderLeaf={renderLeafView} />;
       default: return renderLeafView(activeTab);
     }
   };

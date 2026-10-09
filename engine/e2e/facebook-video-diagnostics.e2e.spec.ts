@@ -63,9 +63,10 @@ test('زرّا تشخيص نشر فيديو Facebook يظهران ويعملان
   // جلسة مالك عبر مقطع رابط المعاينة (خادم حقيقي).
   await page.goto('about:blank');
   await page.goto(`/#preview_token=${PREVIEW_TOKEN}`);
-  await expect(page.getByRole('heading', { name: /أهلاً بك/ })).toBeVisible();
+  await expect(page.getByRole('heading', { name: /مرحباً .* دورة العمل في مكان واحد/ })).toBeVisible();
 
-  // فتح «مركز ربط المنصات» (owner-only).
+  // فتح «مركز ربط المنصات» (owner-only) عبر بحث التنقل الهرمي.
+  await page.getByPlaceholder('بحث في الأقسام والوظائف…').fill('مركز ربط المنصات');
   await page.getByRole('button', { name: /مركز ربط المنصات/ }).first().click();
   await expect(page.getByRole('heading', { name: 'مركز ربط المنصات' })).toBeVisible();
 
