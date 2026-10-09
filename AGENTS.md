@@ -44,7 +44,7 @@ npm install
 npm run dev            # tsx server.ts
 npm run lint           # tsc --noEmit
 npm run build          # vite build + esbuild server.ts -> dist/server.cjs
-npm run final-audit    # node final-audit.mjs (1438 فحصاً)
+npm run final-audit    # node final-audit.mjs (1441 فحصاً)
 npm test               # storage + engine + auth + ... + db + runtime
 ```
 - التشغيل الإنتاجي: `PORT=4517 NODE_ENV=production APP_URL=http://localhost:4517 node dist/server.cjs`
@@ -4965,4 +4965,15 @@ Business Suite بـ«لا تملك هذا التطبيق» رغم ظهور Admin
 `facebook-business-owned-apps-probe`, `facebook-you-dont-own-this-app-documented`,
 `facebook-graph-api-link-alternatives-documented`, `facebook-biz-diag-read-only-no-post`
 (بـ`FACEBOOK_BUSINESS_ID` موثّق في `.env.example`/`render.yaml`). `npm run lint` ✅ ·
-`npm run build` ✅ · `final-audit` ✅ (**1438** فحصاً).
+`npm run build` ✅ · `final-audit` ✅ (**1441** فحصاً).
+
+### 3ب) الواجهة (2026-10-04): زر استهلاك المسار من مركز ربط المنصات
+أُضيف زر **«تشخيص ربط حافظة الأعمال (Facebook)»** في بطاقة Facebook داخل
+`PlatformConnectionCenter` (للمالك) يستدعي `apiService.getFacebookBusinessLinkDiagnosis()`
+(تمرير رمز التفويض المخزَّن تلقائياً عبر `getAuthHeaders`)، ويعرض النتيجة في Modal عربي
+مقروء (ليس JSON خام): بطاقات الحقول التقنية + قسم `appRoles.adminUserIds` (معرّفات الأدمن
+الفعلية) + قسم `userBusinesses` (الحافظات التي يراها الحساب المستخدَم) + الإثبات العكسي
+`businessOwnedApps` + الرسائل التوضيحية `documentedOwnerAction`/`youDontOwnThisApp`/
+`twoFactorFix` كما يعيدها الخادم بلا أي تفسير مضاف. **لم يُغيَّر أي منطق خادم** — استهلاك
+قراءة-فقط للمسار القائم. فحوص final-audit: `facebook-biz-diag-ui-button`,
+`facebook-biz-diag-api-method`, `facebook-biz-diag-ui-reads-live-fields`.

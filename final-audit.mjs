@@ -3832,6 +3832,21 @@ add('watcher-advisory-not-authority',
     /listBusinessOwnedApps[\s\S]{0,900}?method: 'GET'/.test(read('engine/social/facebook.ts')) &&
     server.includes('executesAutomatically:false'),
     'دوال التشخيص الثلاث (الأدوار/الحافظات/التطبيقات) تستخدم GET فقط — لا ينفّذ أي ربط تلقائياً');
+  add('facebook-biz-diag-ui-button',
+    read('src/components/social/PlatformConnectionCenter.tsx').includes('FacebookBusinessLinkDiagnosisPanel') &&
+    read('src/components/social/PlatformConnectionCenter.tsx').includes('تشخيص ربط حافظة الأعمال (Facebook)') &&
+    read('src/components/social/PlatformConnectionCenter.tsx').includes('{p.platform === \'facebook\' && <FacebookBusinessLinkDiagnosisPanel />}'),
+    'زر «تشخيص ربط حافظة الأعمال (Facebook)» في بطاقة Facebook بمركز ربط المنصات');
+  add('facebook-biz-diag-api-method',
+    read('src/services/api.ts').includes('async getFacebookBusinessLinkDiagnosis()') &&
+    /getFacebookBusinessLinkDiagnosis[\s\S]{0,220}?\/api\/platforms\/facebook\/business-link-diagnosis/.test(read('src/services/api.ts')) &&
+    /getFacebookBusinessLinkDiagnosis[\s\S]{0,260}?getAuthHeaders\(\)/.test(read('src/services/api.ts')),
+    'apiService.getFacebookBusinessLinkDiagnosis يستدعي المسار المحمي برمز التفويض المخزَّن تلقائياً (getAuthHeaders)');
+  add('facebook-biz-diag-ui-reads-live-fields',
+    read('src/components/social/PlatformConnectionCenter.tsx').includes('appRoles.adminUserIds') &&
+    read('src/components/social/PlatformConnectionCenter.tsx').includes('userBusinesses') &&
+    read('src/components/social/PlatformConnectionCenter.tsx').includes('documentedOwnerAction'),
+    'الواجهة تعرض adminUserIds وuserBusinesses وdocumentedOwnerAction من استجابة الخادم الفعلية بلا تفسير مُخترع');
 
   // 10) AGENTS.md: عدد فحوصات final-audit مطابق للفعلي (يُعَدّ من نص الملف نفسه).
   const auditCount = (read('final-audit.mjs').match(/^\s*add\(/gm) || []).length;

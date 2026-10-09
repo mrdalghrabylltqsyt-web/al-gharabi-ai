@@ -805,6 +805,20 @@ ${payload.topic || payload.productName || 'أنظمة وحلول التقسيط 
     return data;
   },
 
+  // تشخيص ربط حافظة الأعمال (للمالك، قراءة-فقط): يقرأ من Graph أدوار المطوّر على
+  // التطبيق (adminUserIds)، والحافظات التي يراها الحساب المستخدَم (/me/businesses)،
+  // والإثبات العكسي. بلا أي سرّ وبلا تنفيذ أي ربط. يمر برمز التفويض المخزَّن تلقائياً.
+  async getFacebookBusinessLinkDiagnosis() {
+    const res = await fetch('/api/platforms/facebook/business-link-diagnosis', { headers: getAuthHeaders() });
+    const data = await res.json().catch(() => null);
+    if (!res.ok || !data?.success) {
+      const err: any = new Error(data?.error || 'تعذّر جلب تشخيص ربط حافظة الأعمال');
+      err.status = res.status; err.code = data?.code;
+      throw err;
+    }
+    return data;
+  },
+
   // حسابات Instagram المهنية المرتبطة بصفحات الحساب بعد OAuth (معرّفات فقط بلا رموز).
   async getInstagramAccounts() {
     const res = await fetch('/api/platforms/instagram/accounts', { headers: getAuthHeaders() });

@@ -253,6 +253,179 @@ const FacebookVideoDiagnosticsPanel: React.FC = () => {
   );
 };
 
+/**
+ * لوحة تشخيص ربط حافظة الأعمال Facebook (للمالك — قراءة-فقط، لا تنفّذ أي ربط).
+ * بعض الحقول JSON متداخلة، لذا توجد مساعدتان بصيرتان: `vals` (سلاسل مقروءة من
+ * مصفوفة كائنات) و`lines` (سلاسل نصّية غير فارغة). تُعرض قيم الخادم الفعلية فقط
+ * بلا أي تفسير مُخترع. الأسماء الإنجليزية استُبدلت بأسماء عربية هي أسماء مفاتيح
+ * الاستجابة نفسها، فلا كسر حقل.
+ */
+function vals(arr: any, ...keys: string[]): string[] {
+  if (!Array.isArray(arr)) return [];
+  return arr
+    .map((it) => {
+      if (it == null) return '';
+      if (typeof it !== 'object') return String(it);
+      for (const k of keys) { const v = it[k]; if (v != null && v !== '') return String(v); }
+      return '';
+    })
+    .filter((s) => s !== '');
+}
+function lines(arr: any): string[] {
+  return Array.isArray(arr) ? arr.filter((x) => typeof x === 'string' && x.trim() !== '') : [];
+}
+
+const FacebookBusinessLinkDiagnosisPanel: React.FC = () => {
+  const [open, setOpen] = useState(false);
+  const [d, setD] = useState<any>(null);
+  const [loading, setLoading] = useState(false);
+  const [err, setErr] = useState('');
+
+  const load = async () => {
+    setOpen(true);
+    if (d || loading) return;
+    setLoading(true); setErr('');
+    try { setD(await apiService.getFacebookBusinessLinkDiagnosis()); }
+    catch (e: any) { setErr(e?.code ? `[${e.code}] ${e?.message || ''}` : (e?.message || 'تعذّر جلب التشخيص')); }
+    finally { setLoading(false); }
+  };
+  const refresh = async () => {
+    setLoading(true); setErr('');
+    try { setD(await apiService.getFacebookBusinessLinkDiagnosis()); }
+    catch (e: any) { setErr(e?.code ? `[${e.code}] ${e?.message || ''}` : (e?.message || 'تعذّر جلب التشخيص')); }
+    finally { setLoading(false); }
+  };
+
+  return (
+    <div className="mt-3 pt-3 border-t border-slate-800/70 text-[10px] space-y-2">
+      <p className="text-slate-500 flex items-center gap-1"><ShieldCheck className="w-3 h-3" /> تشخيص ربط حافظة الأعمال (للمالك — قراءة-فقط، لا ينفّذ أي ربط):</p>
+      <button onClick={() => void load()} disabled={loading}
+        className="px-2.5 py-1 rounded-lg bg-slate-800 border border-slate-700 text-[10px] font-bold text-white inline-flex items-center gap-1 disabled:opacity-50">
+        {loading ? <Loader2 className="w-3 h-3 animate-spin" /> : <ShieldCheck className="w-3 h-3" />} تشخيص ربط حافظة الأعمال (Facebook)
+      </button>
+
+      {open && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4" onClick={() => setOpen(false)}>
+          <div className="bg-slate-900 border border-slate-800 rounded-2xl w-full max-w-3xl max-h-[85vh] flex flex-col" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-between gap-2 p-3 border-b border-slate-800">
+              <h3 className="text-sm font-bold text-white flex items-center gap-2"><ShieldCheck className="w-4 h-4" /> تشخيص ربط حافظة الأعمال (Facebook)</h3>
+              <div className="flex items-center gap-2">
+                <button onClick={() => void refresh()} disabled={loading}
+                  className="px-2 py-1 rounded-lg bg-slate-800 border border-slate-700 text-[10px] font-bold text-white inline-flex items-center gap-1 disabled:opacity-50" title="إعادة جلب التشخيص">
+                  {loading ? <Loader2 className="w-3 h-3 animate-spin" /> : <RefreshCw className="w-3 h-3" />} تحديث
+                </button>
+                <button onClick={() => setOpen(false)} className="text-slate-400 hover:text-white text-sm">✕</button>
+              </div>
+            </div>
+
+            <div className="p-3 overflow-y-auto space-y-3 text-[11px]">
+              {err && <p className="text-amber-300">تعذّر الجلب: {err}</p>}
+              {loading && !d && <p className="text-slate-400 flex items-center gap-2"><Loader2 className="w-3 h-3 animate-spin" /> جارٍ جلب التشخيص الحقيقي…</p>}
+
+              {d && (
+                <>
+                  <p className="text-slate-500">بيانات حقيقية من الخادم (قراءة-فقط) — تُعرض كما هي بلا تفسير مضاف.</p>
+
+                  <div className="grid grid-cols-2 md:grid-cols-3 gap-2">
+                    <Info label="معرّف التطبيق" value={d.appId || '—'} mono />
+                    <Info label="سرّ التطبيق مضبوط" value={d.appSecretConfigured ? 'نعم' : 'لا'} />
+                    <Info label="صحة بيانات التطبيق (Graph)" value={d.appCredentials?.verdict === 'valid' ? 'صالحة' : 'غير صالحة/غير معروفة'} />
+                    <Info label="معرّف Configuration ID مضبوط" value={d.configuration?.configured ? 'نعم' : 'لا'} />
+                    <Info label="تمرير scope بلا Configuration" value={d.scopeWithoutConfigOverride ? 'مسموح' : 'محجوب — عتبة قد تُوقف الربط'} />
+                    <Info label="نسخة الصلاحيات المستخدمة" value={d.configuration?.permissionSource === 'facebook_login_for_business_configuration' ? 'من Configuration ID' : 'من scope'} />
+                  </div>
+
+                  {d.appCredentials?.message && <p className="text-slate-400">رسالة الخادم: {d.appCredentials.message}</p>}
+
+                  {/* 1) المتطلّب الأساسي: أدوار المطوّر على التطبيق */}
+                  <Section title="أدوار المطوّر على التطبيق (administrators/developers/testers/insights users)">
+                    {d.appRoles?.ok ? (
+                      <>
+                        <p className="text-slate-300">معرّفات المستخدمين المُدرَجين أدمن على التطبيق (adminUserIds):
+                          {lines(d.appRoles.adminUserIds).length === 0
+                            ? <span className="text-slate-500"> — لم يُرجع الخادم أي معرّف أدمن.</span>
+                            : <span className="text-emerald-300" dir="ltr"> {lines(d.appRoles.adminUserIds).join('، ')}</span>}
+                        </p>
+                        {vals(d.appRoles.roles, 'userId', 'user').length > 0 && (
+                          <p className="text-slate-400" dir="ltr">
+                            {vals(d.appRoles.roles, 'userId', 'user').map((u, i) => `${d.appRoles.roles[i]?.role ?? '?'}:${u}`).join('  •  ')}
+                          </p>
+                        )}
+                        {d.appRoles.note && <p className="text-slate-500">{d.appRoles.note}</p>}
+                      </>
+                    ) : <p className="text-amber-300">تعذّر قراءة الأدوار: {d.appRoles?.error || 'غير متاح'}</p>}
+                  </Section>
+
+                  {/* 2) الحافظات التي يراها الحساب المستخدَم حالياً في الربط */}
+                  <Section title="حافظات الأعمال المرتبطة بالحساب المستخدَم حالياً في الربط (/me/businesses)">
+                    {d.userBusinesses?.ok ? (
+                      lines(d.userBusinesses.businesses?.map ? d.userBusinesses.businesses.map((b: any) => `${b.businessId}${b.name ? ` — ${b.name}` : ''}${Array.isArray(b.permittedRoles) && b.permittedRoles.length ? ` [${b.permittedRoles.join('، ')}]` : ''}`) : []).length === 0
+                        ? <p className="text-slate-500">لا حافظات ظاهرة لهذا الرمز (قد يكون الحساب المستخدَم في الربط تحت ملف/حساب مختلف).</p>
+                        : <div className="space-y-0.5">{lines(d.userBusinesses.businesses?.map ? d.userBusinesses.businesses.map((b: any) => `${b.businessId}${b.name ? ` — ${b.name}` : ''}${Array.isArray(b.permittedRoles) && b.permittedRoles.length ? ` [${b.permittedRoles.join('، ')}]` : ''}`) : []).map((s, i) => <p key={i} className="text-slate-300" dir="ltr">{s}</p>)}</div>
+                    ) : <p className="text-amber-300">تعذّر جلب الحافظات: {d.userBusinesses?.error || 'غير متاح'}</p>}
+                  </Section>
+
+                  {/* 3) الإثبات العكسي قراءة-فقط */}
+                  <Section title="الإثبات العكسي: هل التطبيق ضمن تطبيقات الحافظة؟ (GET /{business-id}/owned_apps)">
+                    {d.businessOwnedApps?.attempted ? (
+                      d.businessOwnedApps.ok
+                        ? <p className={d.businessOwnedApps.containsOurApp ? 'text-emerald-300' : 'text-slate-300'}>
+                            {d.businessOwnedApps.containsOurApp ? 'نعم — التطبيق ظاهر ضمن تطبيقات الحافظة.' : 'لا — التطبيق ليس ضمن تطبيقات الحافظة المرجعة.'}
+                            <span className="text-slate-500" dir="ltr"> {lines(d.businessOwnedApps.ownedAppIds).join('، ')}</span>
+                          </p>
+                        : <p className="text-amber-300">تعذّر الفحص: {d.businessOwnedApps.error || 'غير متاح'}</p>
+                    ) : <p className="text-slate-500">لم يُجرَ (يلزم ضبط <code dir="ltr">FACEBOOK_BUSINESS_ID</code> ووجود رمز مستخدم مخزّن).</p>}
+                  </Section>
+
+                  {/* 4) الرسائل التوضيحية من الخادم كما هي */}
+                  {d.documentedOwnerAction && (
+                    <Section title="الإجراء الموثّق (كما يعيده الخادم)">
+                      <p className="text-slate-400">أين: {d.documentedOwnerAction.where}</p>
+                      {lines(d.documentedOwnerAction.steps).length > 0 && (
+                        <ol className="list-decimal pr-4 space-y-0.5 text-slate-300">{lines(d.documentedOwnerAction.steps).map((s, i) => <li key={i}>{s}</li>)}</ol>
+                      )}
+                      {d.documentedOwnerAction.youDontOwnThisApp && (
+                        <div className="mt-1 p-2 rounded-lg bg-slate-950 border border-amber-600/30 space-y-1">
+                          <p className="text-amber-300 font-bold">حسم تناقض «لا تملك هذا التطبيق»:</p>
+                          <p className="text-slate-300">{d.documentedOwnerAction.youDontOwnThisApp.likelyCause}</p>
+                          <p className="text-slate-400">كيف تتحقق: {d.documentedOwnerAction.youDontOwnThisApp.howToConfirm}</p>
+                          {lines(d.documentedOwnerAction.youDontOwnThisApp.fixes).length > 0 && (
+                            <ol className="list-decimal pr-4 space-y-0.5 text-slate-300">{lines(d.documentedOwnerAction.youDontOwnThisApp.fixes).map((s, i) => <li key={i}>{s}</li>)}</ol>
+                          )}
+                        </div>
+                      )}
+                      {d.documentedOwnerAction.twoFactorFix && (
+                        <p className="text-slate-400">إصلاح 2FA (<span className="text-slate-300">{d.documentedOwnerAction.twoFactorFix.appliesTo}</span>): {d.documentedOwnerAction.twoFactorFix.fix}</p>
+                      )}
+                      {d.documentedOwnerAction.source && <p className="text-slate-600">المصدر: <span dir="ltr">{d.documentedOwnerAction.source}</span></p>}
+                    </Section>
+                  )}
+                </>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+};
+
+/** بطاقة صغيرة لعرض حقل/قيمة (يُستخدم داخل لوحة تشخيص حافظة الأعمال). */
+const Info: React.FC<{ label: string; value: string; mono?: boolean }> = ({ label, value, mono }) => (
+  <div className="p-2 rounded-lg bg-slate-950 border border-slate-800">
+    <p className="text-slate-500">{label}</p>
+    <p className={`text-slate-200 font-bold ${mono ? 'font-mono' : ''}`} dir="ltr">{value}</p>
+  </div>
+);
+
+/** قسم بعنوان داخل لوحة تشخيص حافظة الأعمال. */
+const Section: React.FC<{ title: string; children: React.ReactNode }> = ({ title, children }) => (
+  <div className="p-2 rounded-lg bg-slate-900/60 border border-slate-800 space-y-1">
+    <p className="text-slate-300 font-bold">{title}</p>
+    {children}
+  </div>
+);
+
 /** حالة اشتراك حساب Instagram في webhook — حقيقية من Meta بلا أي سرّ. */
 const InstagramWebhookStatus: React.FC = () => {
   const [info, setInfo] = useState<any>(null);
@@ -844,6 +1017,7 @@ export const PlatformConnectionCenter: React.FC = () => {
 
               {p.platform === 'facebook' && p.connected && <FacebookWebhookStatus />}
               {p.platform === 'facebook' && <FacebookVideoDiagnosticsPanel />}
+              {p.platform === 'facebook' && <FacebookBusinessLinkDiagnosisPanel />}
 
               {p.platform === 'instagram' && igAccounts && (
                 <div className="mt-3 pt-3 border-t border-slate-800/70">
