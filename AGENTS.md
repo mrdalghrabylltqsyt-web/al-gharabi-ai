@@ -4816,3 +4816,39 @@ DR/الاستعادة، بقية المنصّات، والنقطتان العا�
 
 لم يُمسّ: Gemini/firewall، OAuth/scopes، المصادقة، قاعدة البيانات، DR/الاستعادة،
 بقية المنصات، ومسارات الصحة العامة (بقيت بلا بيانات عملاء).
+
+## تدقيق موحّد للمنصات العشر + إصلاح فجوة وسيط صورة فيسبوك — منشور (`d8241fd`، 2026-10-09)
+
+**المشهد (مثبت حياً على الإنتاج بعد النشر):** استدعاء النشر الموحّد يوزّع على المنصات
+العشر عبر `executePlatformPublish` مع `Promise.allSettled` (عزل فشل كل منصة). الموصلات
+الحقيقية الست (Facebook/Instagram/Threads/Telegram/TikTok/YouTube) تُنفّذ فعلاً وتُرجع
+معرّف مزود حقيقي؛ والمنصات الأربع غير المنفّذة تُعلن كوداً صادقاً مميزاً لا يُخفى:
+`x`/`snapchat`/`google_business` ⇒ `EXTERNAL_SETUP_REQUIRED`، و`whatsapp` ⇒
+`CAPABILITY_NOT_SUPPORTED`. لا `NOT_CONNECTED` مضلِّل، ولا نشر بلا معرّف مزود.
+
+**الإصلاح الجذري (الفجوة الوحيدة المؤكدة):** فرع النشر الموحّد لفيسبوك كان يتجاهل
+`imageUrl` صامتاً فينشر نصاً بلا الصورة. الآن:
+- `engine/social/facebook.ts`: `buildPublishPhotoBody` + `FacebookClient.publishPhotoToPage`
+  (`POST /{page-id}/photos` عبر `url` العام) بنفس صلاحية `pages_manage_posts` (بلا صلاحية جديدة).
+- `server.ts`: فرع فيسبوك واعٍ بالنوع — فيديو `/videos` (`file_url`) / صورة `/photos` (`url`)
+  / نص `/feed` — ويُعلن `mediaKind` الصحيح في الإيصال.
+- `engine/tests/helpers/facebookMock.ts`: مسار `photos` + حالة `photos[]`.
+
+**اختبار موحّد جديد `engine/tests/publish.all-platforms.test.ts` (`npm run test:all-platforms`،
+40 فحصاً):** العشر معاً + كل منصة منفردة، نتيجة مستقلة لكل منصة، عزل الفشل، كل منصة على مسار
+نوعها الصحيح، `anyDelivered=false` بلا تسليم، لا معرّف مختلق، لا تسريب سرّ، بلا مزود/حصة
+(خوادم Meta/Threads/TikTok/Telegram وهمية محلية). فحوص final-audit الجديدة:
+`facebook-photo-publish-separate-path`, `all-platforms-content-type-fidelity`,
+`all-platforms-multi-publish-isolation`, `all-platforms-no-connector-honest-codes`,
+`all-platforms-integration-test` (1427 إجمالاً).
+
+**تأكيد حي للإنتاج (`d8241fd`):** `/api/health` و`/api/readiness` العامّتان (بلا مصادقة)
+تُظهران حالة مراقبة تقنية فقط (`status/watcherActive/pollCount/lastError/consecutiveErrors`)
+ولا تحملان `replyText`/`attentionRequired`/`authorName`/`lastReply`/`commentText` إطلاقاً؛
+البيانات المفصّلة تبقى في `GET /api/agent/youtube/watcher` للمالك.
+
+**حالة المنصات على الإنتاج (صادقة):** Facebook موصول موثق (8 صلاحيات، `business_management`)،
+Instagram موصول موثق (Configuration ID مضبوط `configurationReady=true`، onboarding معطّل)،
+YouTube موصول موثق، Telegram/TikTok مهيّأ (`READY_TO_CONNECT`)؛ X/Snapchat/Google Business/
+WhatsApp بلا موصل منفّذ. **لا يمكن لأي وكيل برمجي إتمام handshake خارجي نيابةً عن المالك**
+(موافقة OAuth على شاشة المزود، أو ضغط «موافقة واعتماد» داخل جلسة المالك).
