@@ -151,7 +151,8 @@
     "test:context-governance": "tsx engine/tests/context.governance.test.ts",
     "test:session-lifecycle": "tsx engine/tests/session.lifecycle.test.ts",
     "test:e2e": "playwright test",
-    "test:dr-health-privacy": "tsx engine/tests/dr/dr.health.privacy.test.ts"
+    "test:dr-health-privacy": "tsx engine/tests/dr/dr.health.privacy.test.ts",
+    "test:deploy-drift": "tsx engine/tests/deploy.drift.watchdog.test.ts"
   },
   "dependencies": {
     "@google/genai": "^2.4.0",

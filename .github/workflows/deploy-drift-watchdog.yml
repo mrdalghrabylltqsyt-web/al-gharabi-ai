@@ -8,6 +8,12 @@
 #
 # لا يكلف شيئاً: GitHub Actions مجاني للريبو العام، والطلب خفيف (GET واحد على /api/health).
 # لا يلمس Render ولا أي سرّ — قراءة فقط.
+#
+# إصلاح (مثبّت من التشغيل #37950528349):
+#  1) المقارنة النصّية الساذجة صنّفت `bb004fef…` مقابل `bb004fe` (نفس الالتزام) كـ drift.
+#     الآن المقارنة بمنطق `scripts/deploy-drift/lib.mjs` (بادئة صحيحة، والفارغ ≠ متطابق).
+#  2) خطوة البلاغ فشلت بـ «fatal: not a git repository» لأن gh احتاج سياق مستودع ولا checkout.
+#     الآن كل أمر gh يحمل `--repo` صراحةً (وأُضيف checkout احتياطاً).
 name: Deploy Drift Watchdog
 
 on:
@@ -24,43 +30,30 @@ jobs:
   drift:
     runs-on: ubuntu-latest
     steps:
+      # النطاق لا يحتاج git، لكن الـcheckout يجعل السياق متاحاً لكل أمر gh احتياطاً
+      # فوق تمرير `--repo` الصريح الذي يُغني عنه أصلاً (سبب «not a git repository» سابقاً).
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # Node 20 (نفس نسخة الإنتاج): fetch/AbortSignal متاحة، فالمشغّل بلا اعتماديات.
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
       - name: Compare production commit vs main HEAD (live)
         id: cmp
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
-        run: |
-          set -e
-          HEAD=$(curl -s --max-time 30 -H "Authorization: Bearer $GH_TOKEN" \
-            "https://api.github.com/repos/$REPO/commits/main" \
-            | python3 -c "import sys,json;print(json.load(sys.stdin)['sha'])" || echo "")
-          PROD=$(curl -s --max-time 60 "https://al-gharabi-ai.onrender.com/api/health?t=$(date +%s)" \
-            | python3 -c "import sys,json;print(json.load(sys.stdin).get('deploy',{}).get('commit',''))" || echo "")
-          echo "UTC: $(date -u +%FT%TZ)"
-          echo "main HEAD:  $HEAD"
-          echo "production: $PROD"
-          if [ -z "$PROD" ] || [ -z "$HEAD" ] || [ "$HEAD" != "$PROD" ]; then
-            echo "drift=true" >> "$GITHUB_OUTPUT"
-            echo "head=$HEAD" >> "$GITHUB_OUTPUT"
-            echo "prod=$PROD" >> "$GITHUB_OUTPUT"
-          else
-            echo "drift=false" >> "$GITHUB_OUTPUT"
-            echo "الإنتاج يخدم آخر commit على main — لا انحراف."
-          fi
+          PROD_URL: https://al-gharabi-ai.onrender.com/api/health
+        run: node scripts/deploy-drift/run.mjs
 
       - name: Report drift (single tracking issue)
         if: steps.cmp.outputs.drift == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
           HEAD: ${{ steps.cmp.outputs.head }}
           PROD: ${{ steps.cmp.outputs.prod }}
-        run: |
-          body="⚠️ انحراف نشر مرصود: main HEAD = \`$HEAD\` بينما الإنتاج يخدم \`$PROD\`.
-          تحقّق من لوحة Render → خدمة al-gharabi-ai → Deploys (هل فشل النشر أم لم يُطلَق؟)،
-          ومن الإعداد الفعلي لـ Auto-Deploy. الوقت: $(date -u +%FT%TZ)."
-          existing=$(gh issue list --state open --search "انحراف النشر in:title" --json number --jq '.[0].number' 2>/dev/null || echo "")
-          if [ -n "$existing" ]; then
-            gh issue comment "$existing" --body "$body"
-          else
-            gh issue create --title "⚠️ انحراف النشر: الإنتاج لا يخدم آخر commit على main" --body "$body"
-          fi
+          REASON: ${{ steps.cmp.outputs.reason }}
+        run: node scripts/deploy-drift/report.mjs
