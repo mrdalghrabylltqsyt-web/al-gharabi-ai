@@ -1,0 +1,107 @@
+%% الغرابي AI — المخطط الرئيسي لتدفق النظام (Master System Flow)
+%% المصدر: قراءة فعلية لـ server.ts و engine/** بتاريخ 2026-10-09 (commit bb004fe)
+%% الحالات والألوان: انظر STATUS_LEGEND.md
+
+flowchart TB
+  subgraph OWNER["المالك (Owner)"]
+    O1["واجهة عربية RTL — 5 أقسام أم"]
+  end
+
+  subgraph AUTHZ["المصادقة والصلاحيات"]
+    A1["POST /api/auth/* — جلسة HMAC بلا حالة"]
+    A2["authenticateToken"]
+    A3["requireOwner (أفعال حسّاسة)"]
+  end
+
+  subgraph API["طبقة API (server.ts + engine/*/routes.ts)"]
+    P1["/api/agent/* (العقل/المنسّق)"]
+    P2["/api/platforms/* (نشر/تعليقات/رسائل/oauth)"]
+    P3["/api/ai/* (توليد محتوى)"]
+    P4["/api/brain/* · /api/agent/brain/* (قراءة العقل)"]
+    P5["/api/dr/* (نسخ/تعافٍ)"]
+    P6["/api/health · /api/readiness (عام)"]
+  end
+
+  subgraph BRAIN["العقل المركزي والمنسّق"]
+    B1["engine/agent/orchestrator + planner + tools"]
+    B2["engine/brain/state · runtime · cognition · team · decisions"]
+    B3["Brain Runtime 24/7 (مؤقّت داخلي)"]
+  end
+
+  subgraph SUB["العقول المتخصصة (تحليل/توصية فقط)"]
+    S1["perception · knowledge/truth"]
+    S2["audience · market/commercialRelevance"]
+    S3["strategy · contentIntelligence · experiments"]
+    S4["decisions · learning · timing · cognition · team"]
+  end
+
+  subgraph MEM["الذاكرة والحالة"]
+    M1["brainMemory · longTerm · workingMemory"]
+    M2["decisionLedger · strategyState · teamSessions"]
+    M3["workspace: products/plans/sales/conversations"]
+  end
+
+  subgraph AUTO["الأتمتة والجدولة (مؤقّتات داخلية بلا متصفح)"]
+    W1["YouTube Watcher 24/7 + Scheduler"]
+    W2["TikTok reconcile timer"]
+    W3["Safe-job preflight timer"]
+    W4["DR hourly reconciliation + 6h auto-backup"]
+  end
+
+  subgraph CONN["موصلات المنصات (engine/social)"]
+    C1["Telegram (bot-token)"]
+    C2["Facebook / Instagram / Threads (Meta OAuth)"]
+    C3["TikTok (OAuth web)"]
+    C4["YouTube (Google OAuth)"]
+    C5["WhatsApp/X/Snapchat/GoogleBusiness (أساس)"]
+  end
+
+  subgraph STORE["التخزين الدائم (engine/storage/adapter.ts)"]
+    D1["ملف .gharabi-state.json"]
+    D2["Postgres جدول gharabi_state"]
+  end
+
+  subgraph EXT["الخدمات الخارجية"]
+    E1["Google Gemini (AI)"]
+    E2["Meta Graph API"]
+    E3["Google YouTube/Drive"]
+    E4["TikTok API"]
+    E5["Telegram Bot API"]
+  end
+
+  subgraph DR["التعافي والنسخ"]
+    R1["tools/dr (CURRENT/HISTORY/DB/Secrets/KEY-VAULT)"]
+    R2["dr-recovery-center (خدمة مستقلة)"]
+  end
+
+  O1 --> A1 --> A2 --> A3
+  A2 --> API
+  P1 --> B1 --> B2
+  B2 --> SUB
+  B2 --> M1 & M2
+  P2 --> CONN
+  B1 -->|"EXTERNAL_ACTION بموافقة"| CONN
+  CONN --> EXT
+  B3 --> B2
+  W1 --> CONN
+  W1 --> B2
+  P3 --> E1
+  B2 --> E1
+  B1 --> E1
+  M3 -.-> B2
+  API --> STORE
+  B2 --> STORE
+  R1 --> STORE
+  W4 --> R1
+  R2 --> R1
+  P6 --> STORE
+  DR --> E3
+```
+
+## ملاحظات قراءة المخطط
+
+- كل الأسهم التي تصل إلى `CONN` من المسارين `P2` و`B1` تمرّ بنفس البوابات:
+  القدرة → سلامة المحتوى → الاتصال الموثق → الموصل الحقيقي → معرّف من المزود.
+- `SUB` (العقول المتخصصة) **لا تنفّذ**؛ تُنتج تحليلاً/توصية يستهلكها `B2`.
+- `P6` (health/readiness) **قراءة فقط** ومنقّى عبر `healthPrivacy.ts` (لا بيانات عملاء).
+- `B3` (runtime) و`AUTO` مؤقّتات داخلية في عملية Render — لا تعتمد على المتصفح.
