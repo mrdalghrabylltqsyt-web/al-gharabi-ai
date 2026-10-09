@@ -102,7 +102,7 @@ const AppContext = createContext<AppContextType | undefined>(undefined);
 const STORAGE_PREFIX = 'algharabi_clean_v1_7_';
 
 export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  const [activeTab, setActiveTab] = useState<string>('dashboard');
+  const [activeTab, setActiveTab] = useState<string>('section_home');
 
   // Auth State
   const [currentUser, setCurrentUser] = useState<AppUser | null>(null);

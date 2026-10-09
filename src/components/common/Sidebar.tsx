@@ -18,15 +18,197 @@ import {
   ServerCog,
   Search,
   ClipboardList,
-  WalletCards,
-  PackageCheck,
-  FileBarChart2,
-  Building2,
-  Activity,
   Brain,
   PlugZap,
   CloudUpload,
+  Home,
+  Send,
+  Settings,
+  Youtube,
 } from 'lucide-react';
+
+// ─────────────────────────────────────────────────────────────────────────────
+// خريطة التنقل الموحّدة — مصدر واحد للحقيقة (توحيد الواجهة).
+//
+// الجذر: كانت القائمة ~20 قسماً مستقلاً متداخلاً الوظائف (عقل/وكيل/سوشيال/تحليل/
+// جدولة/نسخ…). وُحّدت إلى **خمسة أقسام رئيسية** يطابق كل منها مرحلة من دورة العمل:
+//   الرئيسية = حالة النظام وملخص العمل والتنبيهات.
+//   النشر = إنشاء المحتوى ← اعتماد ← جدولة ← نشر ← نتائج.
+//   الزبائن = التعليقات والرسائل والردود.
+//   المنتجات = مستودع المنتجات والأسعار.
+//   الإعدادات = ربط المنصات والصلاحيات والنظام (وفيه مجموعة المالك التقنية).
+// كل صفحة قائمة سابقة تبقى **متصلة** داخل القسم المناسب (لا حذف وظائف)؛ الوحدات
+// المتداخلة (العقول/الوكلاء) دُمجت تحت القسم ذي العلاقة بدل أقسام منفصلة.
+// ─────────────────────────────────────────────────────────────────────────────
+
+export interface NavLeaf {
+  id: string;
+  label: string;
+  desc: string;
+  icon: React.ComponentType<{ className?: string }>;
+  ownerOnly?: boolean;
+}
+export interface NavGroup { title: string; items: NavLeaf[]; }
+export interface NavSection {
+  id: string;
+  label: string;
+  desc: string;
+  icon: React.ComponentType<{ className?: string }>;
+  ownerOnly?: boolean;
+  /** وصف المسار الموحّد لكل قسم (يُعرض في صفحة القسم). */
+  flow: string;
+  groups: NavGroup[];
+}
+
+export const NAV_SECTIONS: NavSection[] = [
+  {
+    id: 'section_home',
+    label: 'مركز القيادة والعقل',
+    desc: 'حالة النظام وملخص العمل والتنبيهات',
+    icon: Home,
+    flow: 'نظرة موحّدة: ما يعمل، ما يحتاج إجراءً، ومهام العقل المعلّقة.',
+    groups: [
+      {
+        title: 'مركز القيادة',
+        items: [
+          { id: 'command_center', label: 'مركز القيادة', desc: 'حالة النظام، ملخص العمل، والتنبيهات', icon: LayoutDashboard },
+          { id: 'dashboard', label: 'لوحة التحكم الرئيسية', desc: 'المؤشرات والعمليات الحالية', icon: LayoutDashboard },
+        ],
+      },
+      {
+        title: 'العقل المركزي',
+        items: [
+          { id: 'central_brain', label: 'العقل المركزي متعدد المنصات', desc: 'ذكاء المحتوى والتعلّم والتوصيات لكل المنصات', icon: Brain },
+          { id: 'brain_manager', label: 'العقل المفكر', desc: 'تحليل المواقف الميدانية واستنتاج القرار', icon: Brain },
+          { id: 'central_agent', label: 'العقل المركزي التنفيذي', desc: 'مهمة ← تخطيط ← أدوات ← تنفيذ ← تحقق ← سجل', icon: Bot },
+        ],
+      },
+      {
+        title: 'أدوات وعمليات',
+        items: [
+          { id: 'search', label: 'البحث الموحد', desc: 'بحث سريع في بيانات النظام', icon: Search },
+          { id: 'operations', label: 'مركز العمليات والمتابعة', desc: 'العملاء المحتملون والمهام والمتابعات', icon: ClipboardList },
+        ],
+      },
+    ],
+  },
+  {
+    id: 'section_publish',
+    label: 'النشر والمنصات',
+    desc: 'إنشاء المحتوى، اختيار المنصات، النشر والجدولة والنتائج',
+    icon: Send,
+    flow: 'إنشاء ← فحص التوافق ← اعتماد ← نشر/جدولة ← متابعة النتيجة لكل منصة.',
+    groups: [
+      {
+        title: 'دورة المحتوى',
+        items: [
+          { id: 'content', label: 'إنشاء المحتوى', desc: 'توليد منشورات وتعديل النص لكل منصة', icon: Sparkles },
+          { id: 'approval', label: 'الموافقة والاعتماد', desc: 'حوكمة النشر والمراجعة قبل النشر الموحّد', icon: ShieldCheck },
+          { id: 'calendar', label: 'الجدولة والتقويم', desc: 'جدولة المنشورات حسب الأيام', icon: Calendar },
+        ],
+      },
+      {
+        title: 'المنصات والنتائج',
+        items: [
+          { id: 'social', label: 'حالة المنصات', desc: 'حالة الحسابات وقدرات النشر لكل منصة', icon: Share2 },
+          { id: 'social_manager', label: 'مدير النشر', desc: 'النشر والتعليقات والتحليل لكل منصة', icon: Bot },
+          { id: 'analytics', label: 'التحليلات والنتائج', desc: 'المشاهدات والوصول والتفاعل', icon: BarChart3 },
+        ],
+      },
+      {
+        title: 'عقل التسويق',
+        items: [
+          { id: 'agent', label: 'الوكيل الذكي المركزي', desc: 'استراتيجيات التسويق والأداء', icon: Sparkles },
+          { id: 'marketing_agent', label: 'وكيل صياغة المحتوى', desc: 'مهمة → محتوى عربي جاهز', icon: Sparkles },
+        ],
+      },
+    ],
+  },
+  {
+    id: 'section_customers',
+    label: 'الزبائن والتفاعلات',
+    desc: 'التعليقات والرسائل والردود والمتابعة',
+    icon: MessageSquare,
+    flow: 'قراءة التفاعل ← فهم السؤال والمنتج ← رد عامي عراقي ← متابعة/تصعيد للمالك.',
+    groups: [
+      {
+        title: 'صندوق الوارد',
+        items: [
+          { id: 'customers', label: 'صندوق الوارد الموحّد', desc: 'التعليقات والرسائل والردود والمتابعة', icon: MessageSquare },
+        ],
+      },
+    ],
+  },
+  {
+    id: 'section_products',
+    label: 'المنتجات والمعرفة',
+    desc: 'البحث في المستودع وإدارة المنتجات والأسعار',
+    icon: Package,
+    flow: 'المصدر الوحيد للحقيقة التجارية: السعر/المواصفات/التقسيط المسجّلة فعلاً.',
+    groups: [
+      {
+        title: 'المستودع',
+        items: [
+          { id: 'database', label: 'مستودع المنتجات والأسعار', desc: 'المنتجات، الأقساط، والسياسات', icon: Database },
+        ],
+      },
+    ],
+  },
+  {
+    id: 'section_settings',
+    label: 'الإعدادات والتشغيل',
+    desc: 'ربط المنصات والصلاحيات وسياسات التشغيل',
+    icon: Settings,
+    flow: 'ربط المنصات ← الصلاحيات ← سياسات التشغيل ← (للمالك: التقني والتعافي).',
+    groups: [
+      {
+        title: 'الربط والصلاحيات',
+        items: [
+          { id: 'platform_connections', label: 'ربط المنصات', desc: 'حالة كل منصة والإجراء التالي لتفعيلها', icon: PlugZap },
+          { id: 'users', label: 'المستخدمون والصلاحيات', desc: 'أدوار الفريق وصلاحيات النشر', icon: Users },
+        ],
+      },
+      {
+        title: 'النظام',
+        items: [
+          { id: 'system', label: 'مراقبة النظام', desc: 'سلامة النظام والنسخ وسجل العمليات', icon: ServerCog, ownerOnly: true },
+        ],
+      },
+      {
+        title: 'الأتمتة',
+        items: [
+          { id: 'youtube_operations', ownerOnly: true, label: 'مدير تشغيل YouTube', desc: 'مراقبة القناة والتعليقات والرد الآلي والتحكم', icon: Youtube },
+        ],
+      },
+      {
+        title: 'تقني (للمالك)',
+        items: [
+          { id: 'cloud_backup', ownerOnly: true, label: 'التعافي والنسخ السحابي', desc: 'منظومة تعافٍ كاملة: CURRENT + نقاط استعادة + استعادة معزولة', icon: CloudUpload },
+        ],
+      },
+    ],
+  },
+];
+
+// SCOPE ISOLATION (LEGACY ERP): أسطح Inventory/CRM/Finance/Customers-360/Purchases/
+// خارج نطاق المشروع المعلن (سوشيال + AI + تسويق)، ومعزولة على الخادم افتراضياً
+// (404 SCOPE_DISABLED) — بما فيها المبيعات/المالية/دليل العملاء (sales/control).
+// نخفي مداخلها كي لا تُعرض واجهات غير قابلة للاستخدام. تُعاد بإطفاء العزل على
+// الخادم (GHARABI_ENABLE_LEGACY_ERP_SCOPE=true) وضبط هذا الثابت true.
+const LEGACY_ERP_NAV_ENABLED = false;
+const LEGACY_ERP_TAB_IDS = new Set(['executive', 'business', 'finance', 'inventory', 'reports', 'sales', 'control']);
+
+/** الأوراق الظاهرة في قسمٍ ما بحسب دور المستخدم (نسخة واحدة للقائمة وصفحة القسم). */
+export function visibleSectionGroups(section: NavSection, isOwner: boolean): NavGroup[] {
+  return section.groups
+    .map((g) => ({ ...g, items: g.items.filter((item) => (!item.ownerOnly || isOwner) && (LEGACY_ERP_NAV_ENABLED || !LEGACY_ERP_TAB_IDS.has(item.id))) }))
+    .filter((g) => g.items.length > 0);
+}
+
+/** كل معرّفات الأوراق داخل قسم (لتمييز «نشط» عند فتح أي صفحة تابعة). */
+export function sectionLeafIds(section: NavSection): string[] {
+  return section.groups.flatMap((g) => g.items.map((i) => i.id));
+}
 
 interface SidebarProps {
   mobileOpen: boolean;
@@ -35,213 +217,21 @@ interface SidebarProps {
 
 export const Sidebar: React.FC<SidebarProps> = ({ mobileOpen, onCloseMobile }) => {
   const { activeTab, setActiveTab, notificationBadge, currentUser, showroomInfo } = useApp();
+  const isOwner = currentUser?.role === 'owner';
 
-  // SCOPE ISOLATION (LEGACY ERP): أسطح Inventory/CRM/Finance/Customers-360/Purchases/
-  // خارج نطاق المشروع المعلن (سوشيال + AI + تسويق)، ومعزولة على الخادم افتراضياً
-  // (404 SCOPE_DISABLED) — بما فيها المبيعات/المالية/دليل العملاء (sales/control).
-  // نخفي مداخلها كي لا تُعرض واجهات غير قابلة للاستخدام. تُعاد بإطفاء العزل على
-  // الخادم (GHARABI_ENABLE_LEGACY_ERP_SCOPE=true) وضبط هذا الثابت true.
-  const LEGACY_ERP_NAV_ENABLED = false;
-  const LEGACY_ERP_TAB_IDS = new Set(['executive', 'business', 'finance', 'inventory', 'reports', 'operations', 'sales', 'control']);
-
-  const navigationItems = [
-    {
-      id: 'executive',
-      label: 'مركز القيادة التنفيذي',
-      icon: LayoutDashboard,
-      badge: 'جديد',
-      badgeColor: 'bg-amber-500/20 text-amber-300 border-amber-500/30',
-      desc: 'صورة موحدة للمبيعات والتحصيل والعملاء',
-    },
-    { id: 'search', label: 'البحث الموحد', icon: Search, badge: null, desc: 'بحث سريع في بيانات النظام', },
-    {
-      id: 'dashboard',
-      label: 'لوحة التحكم الرئيسية',
-      icon: LayoutDashboard,
-      badge: null,
-      desc: 'المؤشرات والعمليات الحالية',
-    },
-    {
-      id: 'social',
-      label: 'إدارة وسائل التواصل',
-      icon: Share2,
-      badge: '10 منصات',
-      badgeColor: 'bg-indigo-500/20 text-indigo-300 border-indigo-500/30',
-      desc: 'حالة الحسابات والاتصال الموحد',
-    },
-    {
-      id: 'content',
-      label: 'مركز المحتوى الذكي',
-      icon: Sparkles,
-      badge: 'Gemini AI',
-      badgeColor: 'bg-emerald-500/20 text-emerald-300 border-emerald-500/30',
-      desc: 'توليد منشورات، سكربتات، إعلانات',
-    },
-    {
-      id: 'approval',
-      label: 'نظام الموافقة والاعتماد',
-      icon: ShieldCheck,
-      badge: notificationBadge.pendingReviews > 0 ? `${notificationBadge.pendingReviews} معلق` : null,
-      badgeColor: 'bg-amber-500/20 text-amber-300 border-amber-500/30',
-      desc: 'حوكمة النشر مسودة ومراجعة',
-    },
-    { id: 'sales', label: 'مركز المبيعات والعقود', icon: WalletCards, badge: null, desc: 'المبيعات والأقساط والتحصيل', },
-    { id: 'business', label: 'مركز الأعمال المتكامل', icon: Building2, badge: 'ERP', badgeColor: 'bg-cyan-500/20 text-cyan-300 border-cyan-500/30', desc: 'الموردون والمشتريات والمصروفات والعقود', },
-    { id: 'control', label: 'غرفة العمليات الموحدة', icon: Activity, badge: 'v9', badgeColor: 'bg-cyan-500/20 text-cyan-300 border-cyan-500/30', desc: 'التنبيهات والتدفق النقدي ودليل العملاء', },
-    {
-      id: 'finance',
-      label: 'المبيعات والتقسيط',
-      icon: WalletCards,
-      badge: null,
-      desc: 'المبيعات والدفعات والأرصدة',
-    },
-    {
-      id: 'inventory',
-      label: 'مركز المخزون',
-      icon: PackageCheck,
-      badge: null,
-      desc: 'الكميات والحركات والتنبيهات',
-    },
-    {
-      id: 'reports',
-      label: 'التقارير التشغيلية',
-      icon: FileBarChart2,
-      badge: null,
-      desc: 'تقارير حقيقية من بيانات النظام',
-    },
-    {
-      id: 'operations',
-      label: 'مركز العمليات والمتابعة',
-      icon: ClipboardList,
-      badge: null,
-      desc: 'العملاء المحتملون والمهام والمتابعات',
-    },
-    {
-      id: 'customers',
-      label: 'مركز العملاء الموحد',
-      icon: MessageSquare,
-      badge: notificationBadge.unreadMessages > 0 ? `${notificationBadge.unreadMessages} استفسار` : null,
-      badgeColor: 'bg-rose-500/20 text-rose-300 border-rose-500/30',
-      desc: 'الردود الذكية وتحويل الحالات',
-    },
-    {
-      id: 'database',
-      label: 'قاعدة بيانات المعرض',
-      icon: Database,
-      badge: null,
-      desc: 'المنتجات، الأقساط، والسياسات',
-    },
-    {
-      id: 'marketing_agent',
-      label: 'وكيل الغرابي الذكي',
-      icon: Sparkles,
-      badge: 'مهمة جديدة',
-      badgeColor: 'bg-emerald-500/20 text-emerald-300 border-emerald-500/30',
-      desc: 'أعطِ الوكيل مهمة واحصل على محتوى عربي جاهز',
-    },
-    {
-      id: 'central_agent',
-      label: 'العقل المركزي',
-      icon: Bot,
-      badge: currentUser?.role === 'owner' ? 'Owner' : null,
-      badgeColor: 'bg-purple-500/20 text-purple-300 border-purple-500/30',
-      desc: 'مهمة → تخطيط → أدوات → تنفيذ → تحقق → سجل',
-    },
-    {
-      id: 'youtube_operations',
-      label: 'مدير تشغيل YouTube',
-      icon: Bot,
-      ownerOnly: true,
-      badge: currentUser?.role === 'owner' ? '24/7' : null,
-      badgeColor: 'bg-red-500/20 text-red-300 border-red-500/30',
-      desc: 'مراقبة القناة والتعليقات والرد الآلي والتحكم',
-    },
-    {
-      id: 'agent',
-      label: 'الوكيل الذكي المركزي',
-      icon: Sparkles,
-      badge: 'مستشار',
-      badgeColor: 'bg-purple-500/20 text-purple-300 border-purple-500/30',
-      desc: 'استراتيجيات التسويق والأداء',
-    },
-    {
-      id: 'social_manager',
-      label: 'مدير السوشيال ميديا',
-      icon: Bot,
-      badge: 'إدارة',
-      badgeColor: 'bg-emerald-500/20 text-emerald-300 border-emerald-500/30',
-      desc: 'إدارة المنصات والتعليقات والنشر والتحليل',
-    },
-    {
-      id: 'platform_connections',
-      label: 'مركز ربط المنصات',
-      icon: PlugZap,
-      badge: currentUser?.role === 'owner' ? 'Owner' : null,
-      badgeColor: 'bg-emerald-500/20 text-emerald-300 border-emerald-500/30',
-      desc: 'حالة كل منصة والإجراء التالي لتفعيلها',
-    },
-    {
-      id: 'brain_manager',
-      label: 'العقل الإداري المفكر',
-      icon: Brain,
-      badge: 'تحليل',
-      badgeColor: 'bg-blue-500/20 text-blue-300 border-blue-500/30',
-      desc: 'تحليل المواقف الميدانية واستنتاج القرار',
-    },
-    {
-      id: 'central_brain',
-      label: 'العقل المركزي متعدد المنصات',
-      icon: Brain,
-      badge: 'ذكاء',
-      badgeColor: 'bg-indigo-500/20 text-indigo-300 border-indigo-500/30',
-      desc: 'ذكاء محتوى وتعلّم وتوصيات لكل المنصات العشر',
-    },
-    {
-      id: 'calendar',
-      label: 'تقويم المحتوى',
-      icon: Calendar,
-      badge: notificationBadge.scheduledToday > 0 ? `${notificationBadge.scheduledToday} مجدول` : null,
-      badgeColor: 'bg-cyan-500/20 text-cyan-300 border-cyan-500/30',
-      desc: 'جدولة المنشورات حسب الأيام',
-    },
-    {
-      id: 'analytics',
-      label: 'التحليلات والمقارنة',
-      icon: BarChart3,
-      badge: null,
-      desc: 'المشاهدات والوصول والتفاعل',
-    },
-    {
-      id: 'system',
-      label: 'مركز التشغيل والحماية',
-      icon: ServerCog,
-      badge: currentUser?.role === 'owner' ? 'Owner' : null,
-      badgeColor: 'bg-emerald-500/20 text-emerald-300 border-emerald-500/30',
-      desc: 'سلامة النظام والنسخ وسجل العمليات',
-    },
-    {
-      // النسخ السحابي خاص بالمالك: لا يظهر للموظف إطلاقاً (وتبقى حماية الخادم requireOwner).
-      id: 'cloud_backup',
-      label: 'التعافي والنسخ السحابي',
-      icon: CloudUpload,
-      ownerOnly: true,
-      badge: currentUser?.role === 'owner' ? 'Owner' : null,
-      badgeColor: 'bg-sky-500/20 text-sky-300 border-sky-500/30',
-      desc: 'منظومة تعافٍ كاملة: CURRENT + نقاط استعادة + استعادة معزولة',
-    },
-    {
-      id: 'users',
-      label: 'المستخدمين والصلاحيات',
-      icon: Users,
-      badge: null,
-      desc: 'أدوار الفريق وصلاحيات النشر',
-    },
-  ];
+  const badgeFor = (leafId: string): string | null => {
+    if (leafId === 'approval' && notificationBadge.pendingReviews > 0) return `${notificationBadge.pendingReviews} معلق`;
+    if (leafId === 'customers' && notificationBadge.unreadMessages > 0) return `${notificationBadge.unreadMessages} استفسار`;
+    if (leafId === 'calendar' && notificationBadge.scheduledToday > 0) return `${notificationBadge.scheduledToday} مجدول`;
+    return null;
+  };
 
   const handleItemClick = (id: string) => {
     setActiveTab(id);
     onCloseMobile();
   };
+
+  const visibleSections = NAV_SECTIONS.filter((s) => !s.ownerOnly || isOwner);
 
   return (
     <>
@@ -271,7 +261,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ mobileOpen, onCloseMobile }) =
               </h2>
               <p className="text-[11px] text-slate-400 flex items-center gap-1">
                 <BadgePercent className="w-3 h-3 text-emerald-400" />
-                المركز المالي والإعلامي الذكي
+                المركز الموحّد للتسويق والنشر
               </p>
             </div>
           </div>
@@ -284,20 +274,22 @@ export const Sidebar: React.FC<SidebarProps> = ({ mobileOpen, onCloseMobile }) =
           </button>
         </div>
 
-        {/* Navigation Items */}
+        {/* Navigation Items — خمسة أقسام رئيسية فقط */}
         <div className="flex-1 overflow-y-auto px-3 py-4 space-y-1.5 custom-scrollbar">
           <div className="px-3 pb-2 text-[10px] font-bold text-slate-400 uppercase tracking-wider">
             أقسام النظام
           </div>
 
-          {navigationItems.filter((item: any) => (!item.ownerOnly || currentUser?.role === 'owner') && (LEGACY_ERP_NAV_ENABLED || !LEGACY_ERP_TAB_IDS.has(item.id))).map((item) => {
-            const Icon = item.icon;
-            const isActive = activeTab === item.id;
+          {visibleSections.map((section) => {
+            const Icon = section.icon;
+            const leaves = sectionLeafIds(section);
+            const isActive = activeTab === section.id || leaves.includes(activeTab);
+            const sectionBadge = section.groups.flatMap((g) => g.items).map((i) => badgeFor(i.id)).find(Boolean) || null;
 
             return (
               <button
-                key={item.id}
-                onClick={() => handleItemClick(item.id)}
+                key={section.id}
+                onClick={() => handleItemClick(section.id)}
                 className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-right transition-all group relative cursor-pointer ${
                   isActive
                     ? 'bg-gradient-to-l from-emerald-950/80 to-emerald-900/40 text-emerald-200 border border-emerald-500/30 shadow-sm'
@@ -316,18 +308,14 @@ export const Sidebar: React.FC<SidebarProps> = ({ mobileOpen, onCloseMobile }) =
 
                 <div className="flex-1 min-w-0 text-right">
                   <div className="flex items-center justify-between gap-1">
-                    <p className="text-xs font-bold truncate">{item.label}</p>
-                    {item.badge && (
-                      <span
-                        className={`text-[10px] px-1.5 py-0.5 rounded-md font-semibold border ${
-                          item.badgeColor || 'bg-slate-800 text-slate-300 border-slate-700'
-                        }`}
-                      >
-                        {item.badge}
+                    <p className="text-xs font-bold truncate">{section.label}</p>
+                    {sectionBadge && (
+                      <span className="text-[10px] px-1.5 py-0.5 rounded-md font-semibold border bg-slate-800 text-slate-300 border-slate-700">
+                        {sectionBadge}
                       </span>
                     )}
                   </div>
-                  <p className="text-[10px] text-slate-400 truncate">{item.desc}</p>
+                  <p className="text-[10px] text-slate-400 truncate">{section.desc}</p>
                 </div>
 
                 {isActive && (
@@ -336,6 +324,10 @@ export const Sidebar: React.FC<SidebarProps> = ({ mobileOpen, onCloseMobile }) =
               </button>
             );
           })}
+
+          <p className="px-3 pt-3 text-[10px] text-slate-500 leading-relaxed">
+            كل الأدوات القديمة ما زالت متاحة داخل الأقسام الخمسة (لا حذف لأي وظيفة).
+          </p>
         </div>
 
         {/* Footer info: Active User Status & Quick Showroom details */}

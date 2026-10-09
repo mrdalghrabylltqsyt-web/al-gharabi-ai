@@ -7,6 +7,8 @@ import React, { useState, lazy, Suspense } from 'react';
 import { AppProvider, useApp } from './context/AppContext';
 import { Header } from './components/common/Header';
 import { Sidebar } from './components/common/Sidebar';
+import { SectionHub } from './components/common/SectionHub';
+import { CommandCenterView } from './components/dashboard/CommandCenterView';
 import { DashboardView } from './components/dashboard/DashboardView';
 import { SocialHubView } from './components/social/SocialHubView';
 import { SocialManagerView } from './components/social/SocialManagerView';
@@ -126,8 +128,11 @@ const AppContent: React.FC = () => {
     return <LoginView />;
   }
 
-  const renderActiveView = () => {
-    switch (activeTab) {
+  // خريطة الأوراق (نفس switch القديم) — تُستخدم للمسارات المباشرة وداخل صفحات الأقسام.
+  // لا نسختان من المنطق: صفحات الأقسام (SectionHub) تستدعي هذه الدالة نفسها.
+  const renderLeafView = (tab: string): React.ReactNode => {
+    switch (tab) {
+      case 'command_center': return <CommandCenterView />;
       case 'dashboard': return <DashboardView />;
       case 'executive': return <ExecutiveCommandView />;
       case 'social': return <SocialHubView />;
@@ -156,7 +161,19 @@ const AppContent: React.FC = () => {
       case 'business': return <BusinessSuiteView />;
       case 'control': return <OperationsControlView />;
       case 'cloud_backup': return <CloudBackupView />;
-      default: return <DashboardView />;
+      default: return <CommandCenterView />;
+    }
+  };
+
+  const renderActiveView = () => {
+    // الأقسام الخمسة الرئيسية: صفحة قسم موحّدة تُفوّض العرض للأوراق (بلا تكرار منطق).
+    switch (activeTab) {
+      case 'section_home': return <SectionHub sectionId="section_home" renderLeaf={renderLeafView} />;
+      case 'section_publish': return <SectionHub sectionId="section_publish" renderLeaf={renderLeafView} />;
+      case 'section_customers': return <SectionHub sectionId="section_customers" renderLeaf={renderLeafView} />;
+      case 'section_products': return <SectionHub sectionId="section_products" renderLeaf={renderLeafView} />;
+      case 'section_settings': return <SectionHub sectionId="section_settings" renderLeaf={renderLeafView} />;
+      default: return renderLeafView(activeTab);
     }
   };
 

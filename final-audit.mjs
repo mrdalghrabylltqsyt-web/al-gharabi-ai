@@ -1965,7 +1965,7 @@ add('dr-client-deps', Boolean(pkg.dependencies.gaxios) && Boolean(pkg.dependenci
 const cloudView = read('src/components/system/CloudBackupView.tsx');
 const sidebar = read('src/components/common/Sidebar.tsx');
 add('dr-ui-view-exists', fs.existsSync(path.join(root, 'src/components/system/CloudBackupView.tsx')), 'مكوّن واجهة النسخ السحابي موجود');
-add('dr-ui-tab-owner-only', sidebar.includes("id: 'cloud_backup'") && /id:\s*'cloud_backup'[\s\S]{0,220}ownerOnly:\s*true/.test(sidebar) && /ownerOnly[\s\S]{0,80}currentUser\?\.role\s*===\s*'owner'/.test(sidebar), 'تبويب النسخ السحابي يظهر للمالك فقط');
+add('dr-ui-tab-owner-only', sidebar.includes("cloud_backup") && /cloud_backup[\s\S]{0,160}?ownerOnly:\s*true/.test(sidebar) && /ownerOnly[\s\S]{0,120}?isOwner/.test(sidebar), 'تبويب النسخ السحابي يظهر للمالك فقط');
 add('dr-ui-app-case', app.includes("case 'cloud_backup': return <CloudBackupView />"), 'حالة cloud_backup مضافة في App.tsx');
 add('dr-ui-api-methods', read('src/services/api.ts').includes('getDrStatus') && read('src/services/api.ts').includes('getDrHealth') && read('src/services/api.ts').includes('getDrAuthUrl'), 'دوال DR مضافة إلى apiService');
 add('dr-ui-api-uses-authheaders', /getDrStatus[\s\S]{0,320}getAuthHeaders\(\)/.test(read('src/services/api.ts')) && /getDrAuthUrl[\s\S]{0,220}getAuthHeaders\(\)/.test(read('src/services/api.ts')), 'دوال DR تستخدم getAuthHeaders الحالي (بلا نظام جلسات جديد)');
@@ -3857,6 +3857,35 @@ add('watcher-advisory-not-authority',
     read('src/components/social/PlatformConnectionCenter.tsx').includes('userBusinesses') &&
     read('src/components/social/PlatformConnectionCenter.tsx').includes('documentedOwnerAction'),
     'الواجهة تعرض adminUserIds وuserBusinesses وdocumentedOwnerAction من استجابة الخادم الفعلية بلا تفسير مُخترع');
+
+  // 9ب) توحيد الواجهة: خمسة أقسام فقط + لا فقدان لأي وظيفة سابقة (دمج لا حذف).
+  const sidebarSrc = read('src/components/common/Sidebar.tsx');
+  const navSectionIds = (sidebarSrc.match(/id: 'section_[a-z]+'/g) || []);
+  add('unified-nav-five-sections',
+    navSectionIds.length === 5 &&
+    ['section_home','section_publish','section_customers','section_products','section_settings'].every((id)=>sidebarSrc.includes("id: '" + id + "'")),
+    'التنقل يحتوي خمسة أقسام رئيسية فقط (الرئيسية/النشر/الزبائن/المنتجات/الإعدادات)');
+  const navLeafIds = ['command_center','dashboard','central_brain','brain_manager','central_agent','search','operations','content','approval','calendar','social','social_manager','analytics','agent','marketing_agent','youtube_operations','customers','database','platform_connections','users','system','cloud_backup'];
+  add('unified-nav-no-leaf-lost',
+    navLeafIds.every((id)=> sidebarSrc.includes("id: '" + id + "'")) && navLeafIds.every((id)=> app.includes("case '" + id + "':")),
+    'كل وظيفة/صفحة سابقة لا تزال متصلة (معرّف في القائمة + حالة عرض في App.tsx) — دمج لا حذف');
+  add('unified-nav-sections-rendered',
+    ['section_home','section_publish','section_customers','section_products','section_settings'].every((id)=> app.includes("case '" + id + "':")) &&
+    app.includes('SectionHub'),
+    'الأقسام الخمسة تُعرض عبر صفحة قسم موحّدة (SectionHub) في App.tsx');
+  add('unified-nav-single-source',
+    read('src/components/common/SectionHub.tsx').includes("from './Sidebar'") &&
+    read('src/components/common/SectionHub.tsx').includes('NAV_SECTIONS'),
+    'مصدر واحد لخريطة التنقل (Sidebar) يستخدمه كلٌّ من القائمة وصفحة القسم — بلا تكرار');
+  add('unified-home-command-center',
+    fs.existsSync(path.join(root, 'src/components/dashboard/CommandCenterView.tsx')) &&
+    app.includes("case 'command_center': return <CommandCenterView />") &&
+    read('src/components/dashboard/CommandCenterView.tsx').includes('apiService.checkHealth') &&
+    read('src/components/dashboard/CommandCenterView.tsx').includes('apiService.getPlatformControlPlane'),
+    'مركز القيادة (الرئيسية) يعرض حالة النظام والمنصات من الخادم الحقيقي بلا اختلاق');
+  add('unified-nav-default-home',
+    read('src/context/AppContext.tsx').includes("useState<string>('section_home')"),
+    'الشاشة الافتراضية عند الدخول هي الرئيسية الموحّدة');
 
   // 10) AGENTS.md: عدد فحوصات final-audit مطابق للفعلي (يُعَدّ من نص الملف نفسه).
   const auditCount = (read('final-audit.mjs').match(/^\s*add\(/gm) || []).length;

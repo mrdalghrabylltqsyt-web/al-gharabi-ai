@@ -44,7 +44,7 @@ npm install
 npm run dev            # tsx server.ts
 npm run lint           # tsc --noEmit
 npm run build          # vite build + esbuild server.ts -> dist/server.cjs
-npm run final-audit    # node final-audit.mjs (1443 فحصاً)
+npm run final-audit    # node final-audit.mjs (1449 فحصاً)
 npm test               # storage + engine + auth + ... + db + runtime
 ```
 - التشغيل الإنتاجي: `PORT=4517 NODE_ENV=production APP_URL=http://localhost:4517 node dist/server.cjs`
@@ -5036,3 +5036,41 @@ Render لم يلتقطها. إثبات التوقيت: أوقات committer من
 
 **حد ثابت:** لا يُعلن «تحقق حي» إلا بنداء فعلي على `/api/health`/`/api/readiness` على
 `https://al-gharabi-ai.onrender.com` وقراءة `deploy.commit` ومطابقته بالـcommit المدفوع.
+
+## توحيد الواجهة: مركز قيادة واحد بخمسة أقسام (2026-10-09)
+
+كان التنقل ~20 قسماً مستقلاً متداخلاً الوظائف. أُعيد تنظيمه إلى **خمسة أقسام رئيسية**
+فقط، كل قسم يطابق مرحلة من دورة العمل، مع **دمج لا حذف** (كل صفحة سابقة تبقى متصلة
+داخل قسمها؛ لا حذف أي وحدة/مسار/بيانات).
+
+الأقسام الخمسة الأم (معرّفات `section_*`) — بأسماء الأمر الملزم:
+1. **مركز القيادة والعقل** (`section_home`) — `command_center` (مركز القيادة الجديد) + `dashboard` +
+   العقل المركزي (`central_brain`/`brain_manager`/`central_agent`) + البحث/العمليات.
+2. **النشر والمنصات** (`section_publish`) — `content`، `approval`، `calendar`، `social`،
+   `social_manager`، `analytics`، `agent`، `marketing_agent`.
+3. **الزبائن والتفاعلات** (`section_customers`) — `customers`.
+4. **المنتجات والمعرفة** (`section_products`) — `database`.
+5. **الإعدادات والتشغيل** (`section_settings`) — `platform_connections`، `users`، `system` (مالك)،
+   `youtube_operations` (مالك/الأتمتة)، `cloud_backup` (مالك/تقني).
+
+**قيد ملزم: دمج لا حذف.** لم يُحذف أي ملف/وحدة/خدمة/API/بيانات/وظيفة/اختبار/إعداد. إعادة
+التنظيم تنقل **الوصول إلى الواجهات فقط** داخل الأقسام الأم؛ الوظائف كلها باقية وقابلة
+للوصول. اختبار `unified.nav.test.ts` يفحص وجود كل ملفات الواجهات السابقة (فشل الفحص =
+انتهاك «لا حذف»).
+
+**التنفيذ (مصدر واحد بلا تكرار منطق):**
+- `src/components/common/Sidebar.tsx`: خريطة `NAV_SECTIONS` (مصدر واحد للحقيقة) +
+  `visibleSectionGroups`/`sectionLeafIds` (فلترة الدور + الأوراق). القائمة تعرض الأقسام
+  الخمسة فقط، ويُميَّز القسم «نشط» عند فتح أي ورقة تابعة.
+- `src/components/common/SectionHub.tsx`: صفحة قسم موحّدة تعرض ترويسة القسم + مسار العمل
+  + شرائط وظائفه، وتفوّض العرض إلى `renderLeaf` (نفس switch القديم) — **لا نسخة ثانية**.
+- `src/App.tsx`: `renderLeafView(tab)` يحمل كل حالات العرض السابقة، و`section_*` تُغلَّف
+  بـ`SectionHub`. لا حذف لأي حالة.
+- `src/components/dashboard/CommandCenterView.tsx`: مركز القيادة — يقرأ حياً
+  `/api/health` + `/api/platforms/control-plane` + `/api/agent/brain/state`، ويعرض ملخص
+  العمل والتنبيهات (منصات تحتاج ربطاً/صلاحية)؛ فشل أي قراءة يُعلن صراحةً بلا اختلاق.
+- `AppContext`: الشاشة الافتراضية صارت `section_home`.
+
+**اختبار:** `engine/tests/unified.nav.test.ts` (`npm run test:unified-nav`، 22 فحصاً):
+خمسة أقسام بالضبط، عدم فقدان أي وظيفة سابقة، مصدر واحد، الرئيسية تقرأ من الخادم الحقيقي.
+فحوص final-audit جديدة: `unified-nav-*`، `unified-home-*` (سُحبت من 1443 إلى 1449).

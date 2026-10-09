@@ -68,7 +68,7 @@ function staticChecks() {
   // التبويب للمالك فقط
   check('sidebar has cloud_backup id', sidebar.includes("id: 'cloud_backup'"));
   check('sidebar cloud_backup is ownerOnly', /id:\s*'cloud_backup'[\s\S]{0,200}ownerOnly:\s*true/.test(sidebar));
-  check('sidebar filters ownerOnly by role', /navigationItems\.filter\([\s\S]{0,80}ownerOnly[\s\S]{0,60}currentUser\?\.role\s*===\s*'owner'/.test(sidebar));
+  check('sidebar filters ownerOnly by role', /visibleSectionGroups[\s\S]{0,160}?ownerOnly[\s\S]{0,80}?isOwner/.test(sidebar) && sidebar.includes("currentUser?.role === 'owner'"));
 
   // App.tsx: حالة + معالجة العودة
   check('app has cloud_backup case', app.includes("case 'cloud_backup': return <CloudBackupView />"));
