@@ -302,6 +302,35 @@ add('facebook-diagnostics-ui-tests',
   JSON.parse(read('package.json')).scripts['test:facebook-video-diagnostics-ui'] === 'tsx engine/tests/facebook.video.diagnostics.ui.test.ts' &&
   JSON.parse(read('package.json')).scripts.test.includes('npm run test:facebook-video-diagnostics-ui'),
   'اختبار واجهة ثابت + e2e يثبتان ظهور الزرّين وعملهما، وموصولان بـnpm test');
+// موافقة/اعتماد: منع رجوع «النجاح الوهمي» في updatePostStatus (AppContext).
+add('approval-no-premature-success',
+  (() => {
+    const c = read('src/context/AppContext.tsx');
+    const start = c.indexOf('const updatePostStatus =');
+    const end = c.indexOf('const updatePostContent =', start);
+    const fn = start >= 0 && end > start ? c.slice(start, end) : '';
+    const thenCount = (fn.match(/\.then\(/g) || []).length;
+    const successCount = (fn.match(/تم تحديث حالة المنشور إلى/g) || []).length;
+    return fn.length > 0 && successCount >= 2 && successCount <= thenCount;
+  })(),
+  'updatePostStatus لا يُعلن نجاح الاعتماد/الجدولة/التعديل إلا داخل .then (لا رسالة نجاح غير مشروطة)');
+add('approval-no-optimistic-apply',
+  (() => {
+    const c = read('src/context/AppContext.tsx');
+    const start = c.indexOf('const updatePostStatus =');
+    const end = c.indexOf('const updatePostContent =', start);
+    const fn = c.slice(start, end);
+    return fn.indexOf('setPosts') > fn.indexOf('const request =') && !fn.includes('await hydrateWorkspace()\n      :') && fn.includes('await hydrateWorkspace()');
+  })(),
+  'updatePostStatus لا يطبّق تحديثاً متفائلاً قبل الطلب، وبفرع الخطأ يُرجع الحالة الحقيقية (hydrate)');
+add('approval-server-contract-error-clear',
+  /app\.post\("\/api\/workspace\/content\/:id\/approve", requireOwner[\s\S]{0,500}?return res\.status\(409\)\.json\(\{success:false,error:"حالة المحتوى الحالية لا تسمح بالموافقة\."\}\)/.test(read('server.ts')),
+  'approve يرد 409 برسالة عربية واضحة عند حالة لا تسمح (سبب حقيقي لا رسالة عامة)');
+add('approval-regression-tests',
+  fs.existsSync(path.join(root, 'engine/tests/approval.workflow.regression.test.ts')) &&
+  JSON.parse(read('package.json')).scripts['test:approval-regression'] === 'tsx engine/tests/approval.workflow.regression.test.ts' &&
+  JSON.parse(read('package.json')).scripts.test.includes('npm run test:approval-regression'),
+  'اختبار ارتداد الموافقة (خادم حقيقي + فحص صدق الواجهة) موجود وموصول بـnpm test');
 // إصلاح #100 الجذري: مسار ربط Facebook يستخدم رمز الصفحة من /me/accounts مباشرةً
 // ولا يستدعي GET /{page-id} (الذي يستدعي pages_read_engagement ويرد #100).
 add('facebook-finalize-uses-page-from-accounts', server.includes('facebookFinalizePageSelection(pages.data[0].pageId,userToken,pages.data[0])') && server.includes('facebookFinalizePageSelection(page.pageId,userToken,page)'), 'مسارا الربط (callback + select-page) يمرّران بيانات الصفحة من /me/accounts بلا GET /{page-id}');
