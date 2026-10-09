@@ -463,7 +463,7 @@ import {
   type BusinessFacts,
   type BusinessClaimViolation,
 } from "./engine/social/contentSafety";
-import { getOwnerEmailConfig, sendOwnerOtpEmail } from "./engine/notifications/owner-email";
+import { getOwnerEmailConfig, sendOwnerOtpEmail, sanitizeProviderMessage } from "./engine/notifications/owner-email";
 import {
   createStorageAdapter,
   isEphemeralHost,
@@ -1132,17 +1132,20 @@ app.post("/api/auth/request-owner-challenge", async (req, res) => {
   // الإرسال الفعلي عبر Resend. لا يُسجَّل الرمز ولا يُعاد في الاستجابة إطلاقاً.
   const result = await sendOwnerOtpEmail({ to: normalizedEmail, code });
   if (!result.sent) {
-    auditLog.unshift({ id: crypto.randomUUID(), at: new Date().toISOString(), userId: "system", action: "owner_challenge_email_failed", detail: result.error || "send_failed" });
+    // كود سبب غير سرّي (كود مزوّد البريد أو اسم متغيّر ناقص) + **تفسير Resend المنقّى**
+    // (بلا بريد ولا رمز ولا مفتاح) ليعرف المالك السبب الحرفي بدل «فشل صامت». يُحفظ
+    // السبب المنقّى في سطر التدقيق أيضاً — فيُقرأ من سجل Render مباشرةً عند الحاجة.
+    const reason = /^[a-z0-9_]{1,48}$/.test(String(result.error || "")) ? result.error : "send_failed";
+    const reasonDetail = sanitizeProviderMessage(result.errorMessage || "") || null;
+    auditLog.unshift({ id: crypto.randomUUID(), at: new Date().toISOString(), userId: "system", action: "owner_challenge_email_failed", detail: reasonDetail ? `${reason}: ${reasonDetail}` : reason });
     if (auditLog.length > 100) auditLog.pop();
     persistState();
-    // كود سبب غير سرّي (كود مزوّد البريد أو اسم متغيّر ناقص) ليعرف المالك سبب فشل
-    // الإرسال بدل «فشل صامت». لا يحمل أي قيمة: لا بريد، لا مفتاح، ولا الرمز — وأي
-    // شكل غير متوقع يُستبدل بـ send_failed. النص العربي يبقى كما هو لعقد الواجهة.
-    const reason = /^[a-z0-9_]{1,48}$/.test(String(result.error || "")) ? result.error : "send_failed";
+    console.error(`[الغرابي AI] owner_challenge_email_failed reason=${reason}${reasonDetail ? ` detail=${reasonDetail}` : ""}`);
     return res.status(502).json({
       success: false,
       error: "تعذر إرسال رمز التحقق، حاول مرة أخرى",
       reason,
+      reasonDetail,
     });
   }
 

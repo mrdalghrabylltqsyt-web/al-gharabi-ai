@@ -13,6 +13,7 @@ import http from 'node:http';
 import { mkdtempSync, rmSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { sanitizeProviderMessage } from '../../engine/notifications/owner-email';
 
 let passed = 0;
 const failures: string[] = [];
@@ -100,6 +101,14 @@ async function waitForHealth(base: string, timeoutMs = 40_000): Promise<boolean>
 }
 
 async function run(): Promise<void> {
+  // ---- تنقية تفسير المزود (وحدة، بلا شبكة): تُزيل أي بريد وأي رمز ----
+  check('تنقية المزود تُبقي النص المفيد', sanitizeProviderMessage('from not verified') === 'from not verified');
+  check('تنقية المزود تُخفي أي بريد', !sanitizeProviderMessage('error for owner@gmail.com: bad from').includes('@'));
+  check('تنقية المزود تستبدل البريد بـ[email]', sanitizeProviderMessage('contact owner@gmail.com now').includes('[email]'));
+  check('تنقية المزود لا تُمرّر 6 أرقام متواصلة (قد تشبه الرمز)', !/\b\d{6}\b/.test(sanitizeProviderMessage('code 123456 rejected')));
+  check('تنقية المزود تقصّ الطول', sanitizeProviderMessage('x'.repeat(1000)).length <= 300);
+  check('تنقية المزود تتعامل مع غير النص', sanitizeProviderMessage(undefined) === '' && sanitizeProviderMessage(null) === '');
+
   if (!existsSync(tsxCli)) {
     console.error('tsx CLI غير موجود — شغّل npm install أولاً.');
     process.exit(1);
@@ -185,6 +194,13 @@ async function run(): Promise<void> {
       !String(failedBody.reason || '').includes(FAKE_KEY) &&
       !/\b\d{6}\b/.test(String(failedBody.reason || '')),
       JSON.stringify(failedBody.reason));
+    // تفسير Resend الحرفي المنقّى: يظهر السبب النصّي من المزود بلا أي بريد/رمز/مفتاح.
+    check('التفسير الحرفي للمزود يُعلن (reasonDetail)', typeof failedBody.reasonDetail === 'string' && failedBody.reasonDetail.includes('from not verified'), JSON.stringify(failedBody.reasonDetail));
+    check('التفسير الحرفي لا يحمل بريداً ولا مفتاحاً ولا رمزاً',
+      !String(failedBody.reasonDetail || '').includes('@') &&
+      !String(failedBody.reasonDetail || '').includes(FAKE_KEY) &&
+      !/\b\d{6}\b/.test(String(failedBody.reasonDetail || '')),
+      JSON.stringify(failedBody.reasonDetail));
 
     // ---- المرحلة 3: غياب RESEND_API_KEY يجب أن يفشل بوضوح ----
     app.proc.kill('SIGTERM');

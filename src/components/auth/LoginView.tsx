@@ -51,6 +51,16 @@ function challengeFailureHint(reason?: string): string | null {
   }
 }
 
+/** يدمج التوجيه المعروف مع تفسير Resend الحرفي (منقّى على الخادم) في نصّ واحد. */
+function challengeFailureText(reason?: string, detail?: string): string | null {
+  const hint = challengeFailureHint(reason);
+  const clean = typeof detail === 'string' && detail.trim() ? detail.trim() : null;
+  if (hint && clean) return `${hint} — رسالة المزوّد: ${clean}`;
+  if (hint) return hint;
+  if (clean) return `رسالة مزوّد البريد: ${clean}`;
+  return null;
+}
+
 export const LoginView: React.FC = () => {
   const { loginWithGoogle, requestOwnerChallenge, verifyOwnerChallenge } = useApp();
   const [activeTab, setActiveTab] = useState<'google' | 'challenge'>('google');
@@ -150,7 +160,7 @@ export const LoginView: React.FC = () => {
       setRequestFailed(true);
       setError(err?.message || 'تعذّر إرسال رمز التحقق، حاول مرة أخرى.');
       // التوجيه من كود السبب غير السرّي (نقص إعداد/رفض مزود) بدل رسالة عامة فقط.
-      setErrorHint(challengeFailureHint(err?.reason));
+      setErrorHint(challengeFailureText(err?.reason, err?.reasonDetail));
     } finally {
       setLoading(false);
     }

@@ -27,6 +27,24 @@ export interface SendOwnerOtpResult {
   provider: EmailProvider | null;
   /** سبب مختصر عند الفشل — لا يحوي أي سر ولا الرمز. */
   error: string | null;
+  /** كود خطأ Resend الرسمي (مثل validation_error) عند الفشل — لا سرّ. */
+  errorCode?: string | null;
+  /** تفسير Resend المقتبس، منقّى من أي بريد إلكتروني — لا سرّ ولا رمز. */
+  errorMessage?: string | null;
+}
+
+/**
+ * ينقّي رسالة Resend: يقصّ الطول ويزيل أي بريد إلكتروني (قد يحوي عنوان المستلم
+ * أو المرسل) فلا يُسرّب أي عنوان أو سرّ في السجل أو الاستجابة. **لا يمرّر الرمز**
+ * لأنه لا يوجد في رسائل Resend أصلاً، ومع ذلك نمنع أي تسلسل بريدي إضافي احتياطاً.
+ */
+export function sanitizeProviderMessage(raw: unknown): string {
+  let s = typeof raw === "string" ? raw : "";
+  s = s.replace(/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g, "[email]");
+  // منع ظهور أي تسلسل 6 أرقام متواصل (قد يُشبه الرمز) — لا يُسرّب رمزاً.
+  s = s.replace(/\b\d{6}\b/g, "[code]");
+  s = s.replace(/\s+/g, " ").trim();
+  return s.slice(0, 300);
 }
 
 function readSecret(name: string): string {
@@ -86,10 +104,22 @@ export async function sendOwnerOtpEmail(input: SendOwnerOtpInput): Promise<SendO
       html: buildOwnerOtpHtml(input.code),
     });
     if (error) {
-      return { sent: false, provider: "resend", error: String((error as any)?.name || "send_failed") };
+      return {
+        sent: false,
+        provider: "resend",
+        error: String((error as any)?.name || "send_failed"),
+        errorCode: String((error as any)?.name || "send_failed"),
+        errorMessage: sanitizeProviderMessage((error as any)?.message) || null,
+      };
     }
     return { sent: true, provider: "resend", error: null };
   } catch (err: any) {
-    return { sent: false, provider: "resend", error: String(err?.name || "send_failed") };
+    return {
+      sent: false,
+      provider: "resend",
+      error: String(err?.name || "send_failed"),
+      errorCode: String(err?.name || "send_failed"),
+      errorMessage: sanitizeProviderMessage(err?.message) || null,
+    };
   }
 }
