@@ -54,6 +54,8 @@ export interface FacebookMockState {
   posts: { pageId: string; message: string; postId: string }[];
   /** فيديوهات الصفحة المرفوعة من رابط عام (`file_url`). */
   videos: { pageId: string; fileUrl: string; description: string; videoId: string }[];
+  /** صور الصفحة المنشورة من رابط عام (`url`) عبر `POST /{page-id}/photos`. */
+  photos: { pageId: string; imageUrl: string; message: string; postId: string }[];
   /** عدد استدعاءات نقاط الشبكة — لإثبات التنفيذ الحقيقي. */
   calls: number;
   /** معرّف التطبيق الذي يقبله الخادم الوهمي في client_credentials. */
@@ -96,6 +98,7 @@ export function createFacebookMock(state: Partial<FacebookMockState> = {}): Face
     sentMessages: [],
     posts: [],
     videos: [],
+    photos: [],
     calls: 0,
     validAppId: state.validAppId ?? '145634995501895',
     validAppSecret: state.validAppSecret ?? 'test-fb-client-secret',
@@ -302,6 +305,19 @@ export async function startFacebookMockServer(
     const videoId = `${pageId}_v${3000 + state.videos.length}`;
     state.videos.push({ pageId, fileUrl, description, videoId });
     return res.json({ id: videoId });
+  });
+
+  // نشر صورة على الصفحة من رابط عام (`url`) — `POST /{page-id}/photos`. يُثبت أن
+  // وسيط الصورة (imageUrl) يُمرَّر فعلاً لفيسبوك بدل إسقاطه والنشر نصياً.
+  app.post('/:version/:pageId/photos', (req, res) => {
+    const { pageId } = req.params;
+    state.calls += 1;
+    if (state.failPublish) return res.status(400).json({ error: { message: 'Cannot publish photo', code: 200 } });
+    const imageUrl = String(req.body?.url || '');
+    const message = String(req.body?.message || '');
+    const postId = `${pageId}_${4000 + state.photos.length}`;
+    state.photos.push({ pageId, imageUrl, message, postId });
+    return res.json({ id: postId });
   });
 
   const server = await new Promise<Server>((resolve) => {

@@ -8082,10 +8082,13 @@ async function executePlatformPublish(platform: string, body: any, actor: string
       const resolvedVideo = await resolvePublicVideoUrl(body);
       if (!resolvedVideo.ok) return { status: resolvedVideo.status, body: { success: false, error: resolvedVideo.error, code: resolvedVideo.code } };
       const videoUrl = resolvedVideo.url;
+      const imageUrl = typeof body?.imageUrl === "string" ? body.imageUrl.trim() : "";
       const result = videoUrl
         ? await facebookClient().publishVideoToPage(target.pageId, target.pageToken, videoUrl, content)
-        : await facebookClient().publishToPage(target.pageId, target.pageToken, content);
-      const receipt = result.ok ? { provider: "facebook", pageId: target.pageId, postId: result.data?.providerPostId, mediaKind: videoUrl ? "video" : "text", sentAt: new Date().toISOString() } : null;
+        : imageUrl
+          ? await facebookClient().publishPhotoToPage(target.pageId, target.pageToken, imageUrl, content)
+          : await facebookClient().publishToPage(target.pageId, target.pageToken, content);
+      const receipt = result.ok ? { provider: "facebook", pageId: target.pageId, postId: result.data?.providerPostId, mediaKind: videoUrl ? "video" : (imageUrl ? "image" : "text"), sentAt: new Date().toISOString() } : null;
       const record = buildPublishRecord({ platform: platform as any, postId: typeof body?.postId === "string" ? body.postId : workspaceId("post"), providerPostId: result.data?.providerPostId || null, simulated: false, error: result.ok ? null : result.error, code: result.code ?? null, providerCode: result.providerCode ?? null, providerSubcode: result.providerSubcode ?? null, providerTraceId: result.providerTraceId ?? null });
       if (!Array.isArray((workspace as any).publishRecords)) (workspace as any).publishRecords = [];
       (workspace as any).publishRecords.unshift({ ...record, id: workspaceId("publish"), createdBy: user.id, receipt });

@@ -533,6 +533,18 @@ export function buildPublishVideoBody(fileUrl: string, description?: string): UR
   return body;
 }
 
+/**
+ * يبني جسم نشر صورة على صفحة (`POST /{page-id}/photos`). Graph API يقرأ الصورة
+ * من رابط عام عبر `url` (وليس `source` المخصّص للبايتات) حين لا نرفع ملفاً
+ * مباشرة. الرسالة اختيارية. الصلاحية: pages_manage_posts (نفس صلاحية النشر).
+ */
+export function buildPublishPhotoBody(imageUrl: string, message?: string): URLSearchParams {
+  const body = new URLSearchParams();
+  body.set('url', imageUrl);
+  if (message?.trim()) body.set('message', message.trim());
+  return body;
+}
+
 // ---------------------------------------------------------------------------
 // عميل Graph API
 // ---------------------------------------------------------------------------
@@ -904,6 +916,29 @@ export class FacebookClient {
       });
       const data = await res.json().catch(() => null);
       if (!res.ok || data?.error || !data?.id) { const msg = errorMessage(data, 'فشل نشر الفيديو على صفحة Facebook.'); const ex = logAndExtractFacebookError(data, `POST /${pageId}/videos`, res.status); const pCode = ex.providerCode ?? facebookProviderErrorCode(data); return { ok: false, data: null, error: msg, providerCode: pCode, providerSubcode: ex.providerSubcode, providerTraceId: ex.providerTraceId, code: classifyFacebookProviderError(msg, pCode) }; }
+      return { ok: true, data: { providerPostId: String(data.id) } };
+    } catch (e: any) {
+      return { ok: false, data: null, error: String(e?.message || 'فشل الاتصال بـFacebook.') };
+    }
+  }
+
+  /**
+   * ينشر صورة حقيقية على الصفحة (`POST /{page-id}/photos`) من رابط عام
+   * (`url`). لا نجاح بلا معرّف منشور من Meta. يتطلب نفس صلاحية النشر النصي
+   * (`pages_manage_posts`) — لا صلاحية إضافية. بلا صورة ⇒ رفض فوري بلا شبكة.
+   */
+  async publishPhotoToPage(pageId: string, pageAccessToken: string, imageUrl: string, message?: string): Promise<FacebookResult<{ providerPostId: string }>> {
+    if (!pageId || !imageUrl?.trim()) return { ok: false, data: null, error: 'معرّف الصفحة ورابط الصورة العام مطلوبان.' };
+    try {
+      const u = new URL(facebookGraphUrl(`/${pageId}/photos`, this.baseUrl));
+      u.searchParams.set('access_token', pageAccessToken);
+      const res = await this.fetchImpl(u.toString(), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: buildPublishPhotoBody(imageUrl, message).toString(),
+      });
+      const data = await res.json().catch(() => null);
+      if (!res.ok || data?.error || !data?.id) { const msg = errorMessage(data, 'فشل نشر الصورة على صفحة Facebook.'); const ex = logAndExtractFacebookError(data, `POST /${pageId}/photos`, res.status); const pCode = ex.providerCode ?? facebookProviderErrorCode(data); return { ok: false, data: null, error: msg, providerCode: pCode, providerSubcode: ex.providerSubcode, providerTraceId: ex.providerTraceId, code: classifyFacebookProviderError(msg, pCode) }; }
       return { ok: true, data: { providerPostId: String(data.id) } };
     } catch (e: any) {
       return { ok: false, data: null, error: String(e?.message || 'فشل الاتصال بـFacebook.') };

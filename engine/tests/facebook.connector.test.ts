@@ -43,6 +43,7 @@ import {
   extractFacebookGraphError,
   formatFacebookGraphError,
   buildPublishVideoBody,
+  buildPublishPhotoBody,
   FacebookClient,
 } from '../social/facebook';
 import { createFacebookMock, startFacebookMockServer } from './helpers/facebookMock';
@@ -322,6 +323,24 @@ async function unitTests(): Promise<void> {
   const failedPublish = await failClient.publishVideoToPage('PAGE_X', 'PT', 'https://drive.example/v.mp4');
   check('لا نجاح بلا معرّف فيديو من Meta', failedPublish.ok === false);
   check('بلا رابط فيديو => رفض فوري بلا أي طلب شبكي', (await videoClient.publishVideoToPage('PAGE_X', 'PT', '')).ok === false);
+
+  group('1ي) وحدة: نشر صورة على الصفحة (POST /{page-id}/photos — url)');
+  check('buildPublishPhotoBody يستخدم url', buildPublishPhotoBody('https://drive.example/p.jpg').get('url') === 'https://drive.example/p.jpg');
+  check('buildPublishPhotoBody لا يستخدم source (ذاك للبايتات)', buildPublishPhotoBody('https://x/p.jpg').get('source') === null);
+  check('buildPublishPhotoBody يضمّن الرسالة إن وُجدت', buildPublishPhotoBody('https://x/p.jpg', 'عرض جديد').get('message') === 'عرض جديد');
+  check('buildPublishPhotoBody بلا رسالة فارغة', buildPublishPhotoBody('https://x/p.jpg', '  ').get('message') === null);
+  const photoRequests: { url: string; body: any }[] = [];
+  const fakePhotoFetch = async (url: string, init: any) => {
+    photoRequests.push({ url, body: Object.fromEntries(new URLSearchParams(String(init?.body || ''))) });
+    return { ok: true, status: 200, json: async () => ({ id: 'PHOTO_123' }) };
+  };
+  const photoClient = new FacebookClient(fakePhotoFetch as any, 'https://graph.example/v21.0');
+  const postedPhoto = await photoClient.publishPhotoToPage('PAGE_X', 'PAGE_TOKEN', 'https://drive.example/p.jpg', 'منتج جديد');
+  check('نشر الصورة نجح بمعرّف من Meta', postedPhoto.ok === true && postedPhoto.data?.providerPostId === 'PHOTO_123');
+  check('الطلب ذهب إلى /{page-id}/photos', photoRequests[0]?.url.includes('/PAGE_X/photos'));
+  check('الجسم حمل url لا source', photoRequests[0]?.body.url === 'https://drive.example/p.jpg' && photoRequests[0]?.body.source === undefined);
+  check('بلا رابط صورة => رفض فوري بلا أي طلب شبكي', (await photoClient.publishPhotoToPage('PAGE_X', 'PT', '')).ok === false);
+  check('لا نجاح بلا معرّف صورة من Meta', (await failClient.publishPhotoToPage('PAGE_X', 'PT', 'https://x/p.jpg')).ok === false);
 }
 
 async function integrationTests(): Promise<void> {
@@ -539,7 +558,24 @@ async function integrationTests(): Promise<void> {
     check('فيسبوك: النشر الموحّد نجح بمعرّف مزود', fbVidBody.results?.facebook?.state === 'published' && Boolean(fbVidBody.results?.facebook?.providerPostId), JSON.stringify(fbVidBody.results).slice(0, 200));
     check('فيسبوك: رُفع فيديو حقيقي من رابط عام (file_url)', mock.state.videos.length === 1 && mock.state.videos[0].fileUrl === PUBLIC_VIDEO_URL, JSON.stringify(mock.state.videos).slice(0, 200));
     check('فيسبوك: وصف الفيديو هو نص المنشور', mock.state.videos[0]?.description === 'شاهد عرض التقسيط الجديد من معرض الغرابي.', mock.state.videos[0]?.description);
-    check('فيسبوك: لم يُنشر كنص فقط (feed لم يُستخدم)', mock.state.posts.length === 1, `posts=${mock.state.posts.length}`);
+
+    // إصلاح تم في هذا التدقيق: كان وسيط الصورة (mediaType=image) يُمرَّر كـimageUrl
+    // لكن مسار فيسبوك **يتجاهله صامتاً** فينشر نصاً فقط بدل الصورة — فتُفقد مادة
+    // المالك دون أي إشارة. الآن يُنشر عبر POST /{page-id}/photos (صلاحية
+    // pages_manage_posts نفسها). هذا الفحص يفشل قبل الإصلاح (photos.length=0).
+    group('16ج) تكامل: التوزيع الموحّد يمرّر الصورة العامة لفيسبوك (photos لا feed)');
+    const PUBLIC_IMAGE_URL = 'https://drive.example/gharabi/offer-card.jpg';
+    const fbImgDraftRes = await fetch(`${BASE}/api/workspace/content`, { method: 'POST', headers: auth, body: JSON.stringify({ title: 'صورة عرض تقسيط', content: 'عرض التقسيط الجديد من معرض الغرابي.', targetPlatforms: ['facebook'], mediaType: 'image', mediaUrl: PUBLIC_IMAGE_URL, status: 'review' }) });
+    const fbImgDraft = { status: fbImgDraftRes.status, body: await fbImgDraftRes.json() };
+    check('إنشاء منشور صورة لفيسبوك 201', fbImgDraft.status === 201, String(fbImgDraft.status));
+    const fbImgId = fbImgDraft.body?.post?.id;
+    await fetch(`${BASE}/api/workspace/content/${fbImgId}/approve`, { method: 'POST', headers: auth, body: JSON.stringify({ note: 'اعتماد صورة فيسبوك' }) });
+    const fbImgPub = await fetch(`${BASE}/api/workspace/content/${fbImgId}/publish`, { method: 'POST', headers: auth, body: '{}' });
+    const fbImgBody = await fbImgPub.json();
+    check('فيسبوك: نشر الصورة الموحّد نجح بمعرّف مزود', fbImgBody.results?.facebook?.state === 'published' && Boolean(fbImgBody.results?.facebook?.providerPostId), JSON.stringify(fbImgBody.results).slice(0, 200));
+    check('فيسبوك: نُشرت صورة حقيقية من رابط عام عبر /photos', mock.state.photos.length === 1 && mock.state.photos[0].imageUrl === PUBLIC_IMAGE_URL, JSON.stringify(mock.state.photos).slice(0, 200));
+    check('فيسبوك: رسالة الصورة هي نص المنشور', mock.state.photos[0]?.message === 'عرض التقسيط الجديد من معرض الغرابي.', mock.state.photos[0]?.message);
+    check('فيسبوك: لم يُنشر نص مكرر إضافي في /feed', mock.state.posts.length === 1, String(mock.state.posts.length));
 
     group('17) تكامل: ثبات الاستقبال وحماية التكرار بعد restart');
     await stop(app.proc);

@@ -3735,6 +3735,40 @@ add('watcher-advisory-not-authority',
     read('engine/tests/health.privacy.test.ts').includes("!healthKeys.has('attentionRequired')"),
     'منع رجوع تسريب بيانات العملاء إلى /api/health و/api/readiness (لا replyText/attentionRequired في النقطتين العامتين)');
 
+  // تدقيق موحّد للمنصات العشر: كل منصة تتلقى نوعها المدعوم فقط، والفشل معزول.
+  add('facebook-photo-publish-separate-path',
+    read('engine/social/facebook.ts').includes('buildPublishPhotoBody') &&
+    read('engine/social/facebook.ts').includes('async publishPhotoToPage(') &&
+    read('engine/social/facebook.ts').includes('/photos') &&
+    server.includes('facebookClient().publishPhotoToPage(target.pageId, target.pageToken, imageUrl') &&
+    server.includes('mediaKind: videoUrl ? "video" : (imageUrl ? "image" : "text")'),
+    'فيسبوك: وسيط الصورة يُنشر عبر POST /{page-id}/photos (لا يُتجاهل صامتاً فيُفقد) بنفس صلاحية pages_manage_posts');
+  add('all-platforms-content-type-fidelity',
+    // كل منصة على مسارها الصحيح للنوع: IG/Threads حاوية+جاهزية+Publish، Facebook photos/videos/feed، Telegram sendMessage، TikTok media إلزامي.
+    server.includes('instagramClient().createMediaContainer') &&
+    server.includes('threadsClient().publishContainer') &&
+    server.includes('client.sendMessage({ chatId: target, text: content })') &&
+    server.includes('tiktokClient().initVideoDraft') &&
+    /TikTok لا ينشر نصاً فقط/.test(server),
+    'النوع المدعوم لكل منصة يحدّد المسار الصحيح (حاوية IG/Threads، photos/videos/feed لفيسبوك، sendMessage لتيليجرام، وسائط إلزامية لتيك توك)');
+  add('all-platforms-multi-publish-isolation',
+    /Promise\.allSettled\(requested\.map/.test(server) &&
+    server.includes('post.platformPublishResults = results') &&
+    server.includes('const anyDelivered = Object.values(results).some((r: any) => r.state === "published")'),
+    'كل منصة في التوزيع الموحّد معزولة (Promise.allSettled) — فشل منصة لا يوقف الأخريات، ولا published كاذب بلا تسليم فعلي');
+  add('all-platforms-no-connector-honest-codes',
+    server.includes('code: "CAPABILITY_NOT_SUPPORTED"') &&
+    server.includes('code: "EXTERNAL_SETUP_REQUIRED"') &&
+    server.includes('code: "NOT_CONNECTED"'),
+    'منصة بلا قدرة نشر/بلا موصل منفّذ/غير متصلة تُعلن كوداً صادقاً مميزاً لا يُخلط بينها');
+  add('all-platforms-integration-test',
+    pkg.scripts['test:all-platforms'] === 'tsx engine/tests/publish.all-platforms.test.ts' &&
+    (pkg.scripts['test'] || '').includes('test:all-platforms') &&
+    read('engine/tests/publish.all-platforms.test.ts').includes('المنصات العشر معاً') &&
+    read('engine/tests/publish.all-platforms.test.ts').includes('عزل الفشل') &&
+    read('engine/tests/publish.all-platforms.test.ts').includes('MEDIA_REQUIRED'),
+    'اختبار تكاملي على المنصات العشر معاً + كل منصة منفردة (نتيجة مستقلة، عزل الفشل، كود صادق، لا معرّف مختلق) مسجّل في npm test');
+
   // 10) AGENTS.md: عدد فحوصات final-audit مطابق للفعلي (يُعَدّ من نص الملف نفسه).
   const auditCount = (read('final-audit.mjs').match(/^\s*add\(/gm) || []).length;
   add('agents-audit-count-accurate',
