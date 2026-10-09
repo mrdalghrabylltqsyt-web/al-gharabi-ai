@@ -10,6 +10,26 @@
 export const YOUTUBE_DEDICATED_PUBLISH_NOTE =
   'YouTube يُنشر عبر طابوره المخصص (لا عبر النشر الموحّد) — لا فشل هنا.';
 
+/**
+ * نص الإفصاح **قبل** الضغط على زر النشر الموحّد: يُعلن أن المنصات المحددة
+ * (يوتيوب) لن تُنشر في هذه النقرة، بل تذهب إلى طابور المراجعة/الجدولة المخصص.
+ *
+ * سبب الوجود (إصلاح فجوة «نشر واحد بنقرة واحدة يوزّع على كل المنصات»): كان
+ * استثناء YouTube من المنفّذ الموحّد — وهي حماية مشروعة لأن رفع فيديو YouTube
+ * الفعلي يحتاج بايتات الملف (videos.insert resumable) وزمناً أطول من نقرة نصية
+ * فورية — لا يظهر للمالك إلا كنص نتيجة **بعد** النشر («لا فشل هنا») فيبقى السلوك
+ * مبهماً. الآن يُعلن صراحةً عند الزر نفسه أي منصة ستُوجَّه لطابورها.
+ *
+ * يبقى YouTube مُداراً بالكامل: الحوكمة (اعتماد، فتّح خصوصية فعلي من المزوّد،
+ * لا نشر بلا معرّف فيديو حقيقي) محفوظة كما هي — لا تخفيف لأي حماية.
+ */
+export function youtubeDedicatedDisclosure(targetPlatforms: string[] | undefined): string | null {
+  const hasYouTube = Array.isArray(targetPlatforms) && targetPlatforms.includes('youtube');
+  if (!hasYouTube) return null;
+  return 'يوتيوب مستثنى من النشر الفوري بنقرة واحدة: رفع الفيديو الرسمي يحتاج بايتات الملف ومهلة أطول، فيُرسَل الفيديو إلى طابور مراجعة/جدولة YouTube المخصص (بالحوكمة الكاملة). بقية المنصات تُنشر الآن.';
+}
+
+
 /** هل هذه النتيجة هي توجيه YouTube المقصود إلى مساره المخصص؟ */
 export function isYouTubeDedicatedPublish(result: any): boolean {
   return result?.code === 'PLATFORM_USE_DEDICATED_PUBLISH';

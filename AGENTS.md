@@ -44,7 +44,7 @@ npm install
 npm run dev            # tsx server.ts
 npm run lint           # tsc --noEmit
 npm run build          # vite build + esbuild server.ts -> dist/server.cjs
-npm run final-audit    # node final-audit.mjs (1441 فحصاً)
+npm run final-audit    # node final-audit.mjs (1443 فحصاً)
 npm test               # storage + engine + auth + ... + db + runtime
 ```
 - التشغيل الإنتاجي: `PORT=4517 NODE_ENV=production APP_URL=http://localhost:4517 node dist/server.cjs`
@@ -4977,3 +4977,37 @@ Business Suite بـ«لا تملك هذا التطبيق» رغم ظهور Admin
 `twoFactorFix` كما يعيدها الخادم بلا أي تفسير مضاف. **لم يُغيَّر أي منطق خادم** — استهلاك
 قراءة-فقط للمسار القائم. فحوص final-audit: `facebook-biz-diag-ui-button`,
 `facebook-biz-diag-api-method`, `facebook-biz-diag-ui-reads-live-fields`.
+
+## إغلاق فجوة «النشر الموحّد بنقرة واحدة»: إفصاح يوتيوب قبل الزر + تأكيد حالة الإنتاج (2026-10-09)
+
+**تصحيح واقعة حاسمة (لا تخمين):** كان التقرير المرفوع يقول إن Production متأخر 6 إصلاحات
+عند `038830f` وإن إصلاحَي `246c865` (انتظار جاهزية حاوية الوسائط) و`d8241fd` غير منشورين.
+التحقق الحي أثبت العكس: `/api/health.deploy.commit` و`/api/readiness.deploy.commit`
+يعيدان **`3712adf`** = أحدث commit على `origin/main`، و`git merge-base --is-ancestor`
+يؤكّد أن `246c865` و`d8241fd` **داخلان في الشجرة المنشورة**. الإصلاحان منشوران ويعملان
+(`createInstagramContainerReady`/`createThreadsContainerReady` + استطلاع `FINISHED` موجود
+في `server.ts` على الإنتاج). لا عمل يلزم هنا سوى تأكيد هذه الحقيقة.
+
+**الفجوة الحقيقية الوحيدة المتبقية — قرار يوتيوب (البند 4):** YouTube مستثنى فعلاً من
+`executePlatformPublish` الموحّد (يعيد `409 PLATFORM_USE_DEDICATED_PUBLISH` مع توجيه لـ
+`/api/platforms/youtube/publish`)، لأن الرفع الرسمي `videos.insert` (resumable) **يحتاج
+بايتات الملف** (`videoBase64`/`mediaRef`) ولا يقبل رابطاً نصياً. و`/api/workspace/content/:id/publish`
+الموحّد يمرّر رابطاً (`mediaUrl`) لا بايتات، ومهمة توليد المحتوى تُرسل الفيديو مسبقاً إلى
+طابور YouTube المخصص. لذا **الدمج الفوري لليوتيوب في نقرة النص الواحدة غير متماسك تقنياً**.
+
+**القرار: الخيار (ب) — إبقاء الفصل مع إفصاح صريح عند الزر نفسه** (لا تخفيف لأي حماية:
+اعتماد، فتّح خصوصية فعلي من المزوّد، لا نشر بلا معرّف فيديو حقيقي).
+- `src/utils/publishResult.ts`: دالة `youtubeDedicatedDisclosure(targetPlatforms)` تعيد
+  نصاً عربياً صريحاً عند وجود يوتيوب بين المنصات الهدف، و`null` بدونه (لا ضجيج).
+- `src/components/approval/ApprovalWorkflowView.tsx`: يُعرض الإفصاح **قبل** زر «نشر الآن
+  فوراً»/«تقديم النشر الآن» في مرحلتَي `approved`/`scheduled` — بدل أن يظهر فقط كنتيجة
+  **بعد** النشر («لا فشل هنا») فكان الاستثناء مبهماً.
+
+اختبارات: `publish.provider.error.test.ts` = **49 فحصاً** (مجموعة 8: الإفصاح يظهر/يغيب
+بحسب المنصات)، و`approval.youtube.disclosure.ui.test.ts` (10 فحوص ثابتة: الإفصاح قبل
+الزر، مقيّد بالمراحل، لا مسار يوتيوب فوري). فحوص final-audit الجديدة:
+`publish-ui-youtube-pre-disclosure`, `approval-youtube-disclosure-ui-test` (**1443**).
+
+**ثريدز:** ليس عطلاً — يحتاج تطبيق Meta منفصل + `THREADS_OAUTH_*`/`THREADS_APP_SECRET`/
+`THREADS_VERIFY_TOKEN` غير مضبوطة على Render (إجراء خارجي من المالك).
+**حافظة أعمال فيسبوك (config_id):** أولوية منخفضة — النشر الفعلي يعمل بآلية scope بلا config_id.

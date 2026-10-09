@@ -11,7 +11,7 @@
 
 import { InstagramClient } from '../social/instagram';
 import { ThreadsClient } from '../social/threads';
-import { summarizePublishFailures, formatPublishFailure, isYouTubeDedicatedPublish, formatPlatformResultState } from '../../src/utils/publishResult';
+import { summarizePublishFailures, formatPublishFailure, isYouTubeDedicatedPublish, formatPlatformResultState, youtubeDedicatedDisclosure } from '../../src/utils/publishResult';
 
 let passed = 0;
 const failures: string[] = [];
@@ -141,6 +141,19 @@ async function run(): Promise<void> {
     ]);
     check('خلط YouTube + فشل حقيقي: الرسالة الحقيقية تظهر', mixed.includes("The video couldn't be downloaded"), mixed);
     check('خلط YouTube + فشل حقيقي: الطابور المخصص مذكور', mixed.includes('طابوره المخصص'), mixed);
+  }
+
+  // 8) الإفصاح **قبل** الزر: يوتيوب المحدد يُعلن صراحةً أنه يذهب لطابوره المخصص.
+  {
+    const withYt = youtubeDedicatedDisclosure(['facebook', 'instagram', 'youtube']);
+    check('إفصاح: تظهر رسالة عند وجود يوتيوب', typeof withYt === 'string' && withYt.length > 0, String(withYt));
+    check('إفصاح: يذكر أن يوتيوب مستثنى من النشر الفوري', Boolean(withYt && withYt.includes('مستثنى') && withYt.includes('يوتيوب')), String(withYt));
+    check('إفصاح: يذكر الطابور المخصص', Boolean(withYt && withYt.includes('طابور')), String(withYt));
+    check('إفصاح: يوضّح أن بقية المنصات تُنشر الآن', Boolean(withYt && withYt.includes('بقية المنصات')), String(withYt));
+    check('إفصاح: يعود null بلا يوتيوب (لا ضجيج)', youtubeDedicatedDisclosure(['facebook', 'instagram']) === null);
+    check('إفصاح: يعود null لمصفوفة فارغة', youtubeDedicatedDisclosure([]) === null);
+    check('إفصاح: يعود null لغير مصفوفة (undefined)', youtubeDedicatedDisclosure(undefined) === null);
+    check('إفصاح: يوتيوب وحده يُعلن صراحةً', youtubeDedicatedDisclosure(['youtube']) !== null);
   }
 
   // 7) الواجهة: تمييز مصير كل منصة في لوحة النتائج (لا رقم أخضر إجمالي واحد).

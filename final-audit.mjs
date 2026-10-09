@@ -3603,6 +3603,16 @@ add('watcher-advisory-not-authority',
     publishResultSrc.includes('PLATFORM_USE_DEDICATED_PUBLISH') &&
     publishResultSrc.includes('isYouTubeDedicatedPublish'),
     'الواجهة تميّز YouTube بأنه يُنشر عبر طابوره المخصص لا أنه «فشل»');
+  add('publish-ui-youtube-pre-disclosure',
+    publishResultSrc.includes('youtubeDedicatedDisclosure') &&
+    approvalSrc.includes('youtubeDedicatedDisclosure(post.targetPlatforms)') &&
+    /post\.status === 'approved' \|\| post\.status === 'scheduled'[\s\S]{0,200}youtubeDedicatedDisclosure\(post\.targetPlatforms\)/.test(approvalSrc),
+    'إفصاح يوتيوب يُعرض **قبل** نقرة النشر الموحّد (لا بعدها فقط) عند وجود يوتيوب في المنصات الهدف');
+  add('approval-youtube-disclosure-ui-test',
+    fs.existsSync(path.join(root, 'engine/tests/approval.youtube.disclosure.ui.test.ts')) &&
+    JSON.parse(read('package.json')).scripts['test:approval-youtube-disclosure-ui'] === 'tsx engine/tests/approval.youtube.disclosure.ui.test.ts' &&
+    JSON.parse(read('package.json')).scripts.test.includes('npm run test:approval-youtube-disclosure-ui'),
+    'اختبار ثابت يثبت إفصاح يوتيوب قبل الزر ومُسجَّل في npm test');
   add('content-server-streams-video-with-range',
     server.includes('app.get("/api/public/video/:ref"') &&
     server.includes('verifyMediaSignature') &&
