@@ -37,6 +37,9 @@ export interface InstagramMockState {
   sentMessages: { pageId: string; recipientId: string; text: string; messageId: string }[];
   containers: { igId: string; body: Record<string, string>; containerId: string }[];
   published: { igId: string; creationId: string; postId: string }[];
+  /** تسلسل حالة الحاوية (status_code) الذي يُقرأ استعلاماً بعد آخر قيمة. */
+  containerStatusSequence: string[];
+  containerStatusReads: number;
   calls: number;
   validAppId: string;
   validAppSecret: string;
@@ -64,6 +67,8 @@ export function createInstagramMock(state: Partial<InstagramMockState> = {}): In
     sentMessages: [],
     containers: [],
     published: [],
+    containerStatusSequence: state.containerStatusSequence ?? ['FINISHED'],
+    containerStatusReads: 0,
     calls: 0,
     validAppId: state.validAppId ?? '145634995501895',
     validAppSecret: state.validAppSecret ?? 'test-fb-client-secret',
@@ -164,8 +169,15 @@ export async function startInstagramMockServer(
       if (fields.includes('instagram_business_account') && page.igAccountId) out.instagram_business_account = { id: page.igAccountId, username: page.igUsername };
       return res.json(out);
     }
-    // حاوية نشر: حقول الحالة.
-    if (fields.includes('status_code')) return res.json({ id, status_code: 'FINISHED' });
+    // حاوية نشر: حقول الحالة. تُقرأ الحالة بالتسلسل المُهيَّأ (IN_PROGRESS ثم FINISHED
+    // مثلاً) لإثبات أن النشر ينتظر الجاهزية فعلاً ولا يستدعي media_publish مبكراً.
+    if (fields.includes('status_code')) {
+      const seq = state.containerStatusSequence.length ? state.containerStatusSequence : ['FINISHED'];
+      const idx = Math.min(state.containerStatusReads, seq.length - 1);
+      const statusCode = seq[idx];
+      state.containerStatusReads += 1;
+      return res.json({ id, status_code: statusCode });
+    }
     return res.status(400).json({ error: { message: 'Unknown object', code: 803 } });
   });
 

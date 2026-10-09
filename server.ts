@@ -140,6 +140,10 @@ import {
   INSTAGRAM_SIGNATURE_HEADER,
   INSTAGRAM_SUBSCRIBED_FIELDS_DEFAULT,
   INSTAGRAM_PROFESSIONAL_ACCOUNT_TYPES,
+  INSTAGRAM_CONTAINER_READY_STATES,
+  INSTAGRAM_CONTAINER_FAILED_STATES,
+  isInstagramContainerReady,
+  isInstagramContainerFailed,
   resolveInstagramScopes,
   missingInstagramScopeDependenciesFromCsv,
   type InstagramFetch,
@@ -147,6 +151,10 @@ import {
 } from "./engine/social/instagram";
 import {
   ThreadsClient,
+  THREADS_CONTAINER_READY_STATES,
+  THREADS_CONTAINER_FAILED_STATES,
+  isThreadsContainerReady,
+  isThreadsContainerFailed,
   type ThreadsFetch,
 } from "./engine/social/threads";
 import {
@@ -7939,6 +7947,76 @@ function threadsPublishTarget(): { threadsUserId: string; accessToken: string } 
   return { threadsUserId, accessToken };
 }
 
+/** نوم قصير قابل للتجاوز في الاختبار (pollIntervalMs) — لا تعليق بلا نهاية. */
+function sleepMs(ms: number): Promise<void> { return new Promise((resolve) => setTimeout(resolve, Math.max(0, ms))); }
+
+/** حدود انتظار جاهزية حاوية الوسائط (Instagram/Threads) — بلا تعليق بلا نهاية. */
+const IG_CONTAINER_POLL_MAX_ATTEMPTS = 8;
+function containerPollIntervalMs(): number {
+  const raw = Number(process.env.CONTAINER_POLL_INTERVAL_MS);
+  return Number.isFinite(raw) && raw >= 0 ? raw : 3000;
+}
+
+/**
+ * ينشئ حاوية إنستغرام ثم **ينتظر فعلياً** حتى `FINISHED` قبل `media_publish`.
+ * الجذر المُثبت لعطل «CLIENT_ERROR: Invalid parameter»: كانت الحاوية تُنشر وهي
+ * ما تزال `IN_PROGRESS` فيرد Meta بخطأ معلمة غير صالحة. النص/الصورة جاهزان
+ * مباشرةً (لا معالجة وسائط)، أما الفيديو/الريل فيتطلبان انتظاراً محدوداً.
+ * لا يُعلن الجاهزية بلا دليل (`status_code`)، والفشل يُعلن بسببه الحقيقي.
+ */
+async function createInstagramContainerReady(
+  igAccountId: string,
+  pageToken: string,
+  input: { imageUrl: string; videoUrl: string; caption: string; reel: boolean },
+  poll: { attempts: number; intervalMs: number },
+): Promise<{ containerId: string; mediaKind: string } | { error: string; code: string; providerCode?: number | null; providerSubcode?: number | null; providerTraceId?: string | null }> {
+  const created = await instagramClient().createMediaContainer(igAccountId, pageToken, input);
+  if (!created.ok || !created.data) {
+    return { error: created.error || "فشل إنشاء حاوية Instagram.", code: created.code || "MEDIA_REQUIRED", providerCode: created.providerCode ?? null, providerSubcode: created.providerSubcode ?? null, providerTraceId: created.providerTraceId ?? null };
+  }
+  const { containerId, mediaKind } = created.data;
+  // النص/الصورة: الحاوية جاهزة بلا معالجة وسائط معقّدة. الفيديو/الريل: انتظار محدود.
+  const needsWait = mediaKind === "video" || mediaKind === "reel";
+  if (!needsWait) return { containerId, mediaKind };
+  for (let i = 0; i < Math.max(1, poll.attempts); i++) {
+    if (i > 0) await sleepMs(poll.intervalMs);
+    const status = await instagramClient().getContainerStatus(containerId, pageToken);
+    // لا سلامة بلا دليل: خطأ قراءة الحالة لا يُعلن نجاحاً بل فشلاً بسببه.
+    if (!status.ok || !status.data) {
+      return { error: status.error || "تعذّر قراءة حالة حاوية Instagram قبل النشر.", code: status.code || "CONTAINER_STATUS_FAILED" };
+    }
+    const code = status.data.statusCode;
+    if (isInstagramContainerReady(code)) return { containerId, mediaKind };
+    if (isInstagramContainerFailed(code)) return { error: `حاوية Instagram انتهت بحالة ${code} قبل النشر (فشل معالجة الوسائط).`, code: "CONTAINER_FAILED" };
+  }
+  return { error: "لم تجهز حاوية الفيديو لدى Instagram ضمن المهلة المحددة؛ لم يُنشر شيء (أعد المحاولة).", code: "CONTAINER_TIMEOUT" };
+}
+
+/** نفس منطق إنستغرام لـThreads: نص جاهز مباشرةً، والفيديو/الصورة ينتظران `FINISHED`.
+ *  يُعاد بشكل ThreadsResult حتى يعمل مع `withThreadsToken` (تجديد الرمز + إعادة المحاولة). */
+async function createThreadsContainerReady(
+  threadsUserId: string,
+  accessToken: string,
+  input: { text: string; imageUrl: string; videoUrl: string; replyToId: string },
+  poll: { attempts: number; intervalMs: number },
+): Promise<{ ok: boolean; data: { containerId: string; mediaKind: string } | null; error?: string; code?: string | null; providerCode?: number | null; providerSubcode?: number | null; providerTraceId?: string | null }> {
+  const created = await threadsClient().createMediaContainer(threadsUserId, accessToken, input);
+  if (!created.ok || !created.data) {
+    return { ok: false, data: null, error: created.error || "فشل إنشاء حاوية Threads.", code: created.code || "PROVIDER_ERROR", providerCode: created.providerCode ?? null, providerSubcode: created.providerSubcode ?? null, providerTraceId: created.providerTraceId ?? null };
+  }
+  const { containerId, mediaKind } = created.data;
+  if (mediaKind === "text") return { ok: true, data: { containerId, mediaKind } };
+  for (let i = 0; i < Math.max(1, poll.attempts); i++) {
+    if (i > 0) await sleepMs(poll.intervalMs);
+    const status = await threadsClient().getContainerStatus(containerId, accessToken);
+    if (!status.ok || !status.data) return { ok: false, data: null, error: status.error || "تعذّر قراءة حالة حاوية Threads قبل النشر.", code: "CONTAINER_STATUS_FAILED" };
+    const st = status.data.status;
+    if (isThreadsContainerReady(st)) return { ok: true, data: { containerId, mediaKind } };
+    if (isThreadsContainerFailed(st)) return { ok: false, data: null, error: status.data.errorMessage || `حاوية Threads انتهت بحالة ${st} قبل النشر.`, code: "CONTAINER_FAILED" };
+  }
+  return { ok: false, data: null, error: "لم تجهز حاوية Threads ضمن المهلة المحددة؛ لم يُنشر شيء (أعد المحاولة).", code: "CONTAINER_TIMEOUT" };
+}
+
 async function executePlatformPublish(platform: string, body: any, actor: string): Promise<{ status: number; body: any }> {
   const user = { id: actor };
   if (!isSupportedPlatform(platform)) return { status: 404, body: { success: false, error: "المنصة غير مدعومة." } };
@@ -8029,12 +8107,13 @@ async function executePlatformPublish(platform: string, body: any, actor: string
       if (!resolvedVideo.ok) return { status: resolvedVideo.status, body: { success: false, error: resolvedVideo.error, code: resolvedVideo.code } };
       const videoUrl = resolvedVideo.url;
       const reel = body?.reel === true;
-      const container = await instagramClient().createMediaContainer(target.igAccountId, target.pageToken, { imageUrl, videoUrl, caption: content, reel });
-      if (!container.ok || !container.data) {
+      const igPoll = { attempts: IG_CONTAINER_POLL_MAX_ATTEMPTS, intervalMs: containerPollIntervalMs() };
+      const container = await createInstagramContainerReady(target.igAccountId, target.pageToken, { imageUrl, videoUrl, caption: content, reel }, igPoll);
+      if ("error" in container) {
         // MEDIA_REQUIRED يبقى فقط إن غاب الوسائط فعلاً قبل أي استدعاء شبكي؛ وإلا نُمرّر
         // كود Meta الحقيقي ورسالته بدل تثبيت MEDIA_REQUIRED الذي كان يُخفي السبب.
         const code = container.code || "MEDIA_REQUIRED";
-        const isRealMediaRequired = !imageUrl && !videoUrl;
+        const isRealMediaRequired = !imageUrl && !videoUrl && code === "MEDIA_REQUIRED";
         // يُسجَّل الفشل (بمعرّف Meta/الرمز الفرعي/fbtrace) فيبقى قابلاً للسحب من المسار
         // المحمي للمالك بدل أن يضيع في سجلات Render — تشخيص «Invalid parameter» بلا تخمين.
         const failRecord = buildPublishRecord({ platform: platform as any, postId: typeof body?.postId === "string" ? body.postId : workspaceId("post"), providerPostId: null, simulated: false, error: container.error, code: isRealMediaRequired ? "MEDIA_REQUIRED" : code, providerCode: container.providerCode ?? null, providerSubcode: container.providerSubcode ?? null, providerTraceId: container.providerTraceId ?? null });
@@ -8042,18 +8121,18 @@ async function executePlatformPublish(platform: string, body: any, actor: string
         (workspace as any).publishRecords.unshift({ ...failRecord, id: workspaceId("publish"), createdBy: user.id, receipt: null });
         if ((workspace as any).publishRecords.length > WORKSPACE_MAX_PUBLISH_RECORDS) (workspace as any).publishRecords.length = WORKSPACE_MAX_PUBLISH_RECORDS;
         persistState();
-        return { status: 422, body: { success: false, record: failRecord, error: container.error, code: isRealMediaRequired ? "MEDIA_REQUIRED" : code, providerCode: container.providerCode ?? null, providerSubcode: container.providerSubcode ?? null, providerTraceId: container.providerTraceId ?? null, note: isRealMediaRequired ? "Instagram لا ينشر نصاً فقط؛ زوّد imageUrl أو videoUrl عاماً." : "فشل إنشاء حاوية Instagram بالسبب الحقيقي من Meta." } };
+        return { status: isRealMediaRequired ? 422 : 502, body: { success: false, record: failRecord, error: container.error, code: isRealMediaRequired ? "MEDIA_REQUIRED" : code, providerCode: container.providerCode ?? null, providerSubcode: container.providerSubcode ?? null, providerTraceId: container.providerTraceId ?? null, note: isRealMediaRequired ? "Instagram لا ينشر نصاً فقط؛ زوّد imageUrl أو videoUrl عاماً." : "فشل نشر Instagram بالسبب الحقيقي من Meta (يتضمّن انتظار جاهزية الحاوية قبل النشر)." } };
       }
-      const published = await instagramClient().publishContainer(target.igAccountId, target.pageToken, container.data.containerId);
-      const receipt = published.ok ? { provider: "instagram", igAccountId: target.igAccountId, containerId: container.data.containerId, postId: published.data?.providerPostId, mediaKind: container.data.mediaKind, sentAt: new Date().toISOString() } : null;
+      const published = await instagramClient().publishContainer(target.igAccountId, target.pageToken, container.containerId);
+      const receipt = published.ok ? { provider: "instagram", igAccountId: target.igAccountId, containerId: container.containerId, postId: published.data?.providerPostId, mediaKind: container.mediaKind, sentAt: new Date().toISOString() } : null;
       const record = buildPublishRecord({ platform: platform as any, postId: typeof body?.postId === "string" ? body.postId : workspaceId("post"), providerPostId: published.data?.providerPostId || null, simulated: false, error: published.ok ? null : published.error, code: published.code ?? null, providerCode: published.providerCode ?? null, providerSubcode: published.providerSubcode ?? null, providerTraceId: published.providerTraceId ?? null });
       if (!Array.isArray((workspace as any).publishRecords)) (workspace as any).publishRecords = [];
       (workspace as any).publishRecords.unshift({ ...record, id: workspaceId("publish"), createdBy: user.id, receipt });
       if ((workspace as any).publishRecords.length > WORKSPACE_MAX_PUBLISH_RECORDS) (workspace as any).publishRecords.length = WORKSPACE_MAX_PUBLISH_RECORDS;
       persistState();
       audit(user.id, published.ok ? "platform_publish_published" : "platform_publish_failed", `${platform}`);
-      if (!published.ok) return { status: 502, body: { success: false, record, error: published.error, containerId: container.data.containerId, code: published.code || "PROVIDER_ERROR", providerCode: published.providerCode ?? null, providerSubcode: published.providerSubcode ?? null, providerTraceId: published.providerTraceId ?? null, note: "لم يُسجَّل أي نشر بلا معرّف منشور حقيقي من المزود." } };
-      return { status: 200, body: { success: true, record, providerPostId: published.data?.providerPostId, containerId: container.data.containerId, receipt } };
+      if (!published.ok) return { status: 502, body: { success: false, record, error: published.error, containerId: container.containerId, code: published.code || "PROVIDER_ERROR", providerCode: published.providerCode ?? null, providerSubcode: published.providerSubcode ?? null, providerTraceId: published.providerTraceId ?? null, note: "لم يُسجَّل أي نشر بلا معرّف منشور حقيقي من المزود." } };
+      return { status: 200, body: { success: true, record, providerPostId: published.data?.providerPostId, containerId: container.containerId, receipt } };
     }
     if (platform === "threads") {
       // نشر Threads (Task #24) عبر الخطوتين الرسميتين: حاوية ثم نشر — نفس بنية
@@ -8066,23 +8145,26 @@ async function executePlatformPublish(platform: string, body: any, actor: string
       if (!resolvedVideo.ok) return { status: resolvedVideo.status, body: { success: false, error: resolvedVideo.error, code: resolvedVideo.code } };
       const videoUrl = resolvedVideo.url;
       const replyToId = typeof body?.replyToId === "string" ? body.replyToId.trim() : "";
-      // تجديد تلقائي للرمز الطويل قبل النشر (وإلا «Session has expired» بلا تفسير).
-      const container = await withThreadsToken((token) => threadsClient().createMediaContainer(target.threadsUserId, token, { text: content, imageUrl, videoUrl, replyToId }));
-      if (!container.ok || !container.data) {
+      // تجديد تلقائي للرمز الطويل قبل النشر (وإلا «Session has expired» بلا تفسير)،
+      // مع انتظار جاهزية الحاوية قبل النشر (نفس جذر إنستغرام: النشر قبل FINISHED
+      // يرد «Invalid parameter»). القيمة تُمرَّر محسوبةً لتفادي تعارض الأنواع.
+      const thPollInterval = containerPollIntervalMs();
+      const thContainer = await withThreadsToken((token) => createThreadsContainerReady(target.threadsUserId, token, { text: content, imageUrl, videoUrl, replyToId }, { attempts: IG_CONTAINER_POLL_MAX_ATTEMPTS, intervalMs: thPollInterval }));
+      if (!thContainer.ok || !thContainer.data) {
         // لا تثبيت PROVIDER_ERROR؛ نُمرّر كود Meta الحقيقي ورسالته (مثلاً خطأ تنزيل
         // الوسائط 9007، أو انتهاء الرمز 190) بدل إخفاء السبب.
-        return { status: 502, body: { success: false, error: container.error, code: container.code || "PROVIDER_ERROR", providerCode: container.providerCode ?? null, providerSubcode: container.providerSubcode ?? null, providerTraceId: container.providerTraceId ?? null, note: "لم تُسجَّل أي حاوية بلا معرّف حقيقي من Threads." } };
+        return { status: 502, body: { success: false, error: thContainer.error, code: thContainer.code || "PROVIDER_ERROR", providerCode: thContainer.providerCode ?? null, providerSubcode: thContainer.providerSubcode ?? null, providerTraceId: thContainer.providerTraceId ?? null, note: "لم تُسجَّل أي حاوية بلا معرّف حقيقي من Threads (أو لم تجهز ضمن المهلة)." } };
       }
-      const published = await withThreadsToken((token) => threadsClient().publishContainer(target.threadsUserId, token, container.data!.containerId));
-      const receipt = published.ok ? { provider: "threads", threadsUserId: target.threadsUserId, containerId: container.data.containerId, postId: published.data?.providerPostId, mediaKind: container.data.mediaKind, sentAt: new Date().toISOString() } : null;
+      const published = await withThreadsToken((token) => threadsClient().publishContainer(target.threadsUserId, token, thContainer.data!.containerId));
+      const receipt = published.ok ? { provider: "threads", threadsUserId: target.threadsUserId, containerId: thContainer.data.containerId, postId: published.data?.providerPostId, mediaKind: thContainer.data.mediaKind, sentAt: new Date().toISOString() } : null;
       const record = buildPublishRecord({ platform: platform as any, postId: typeof body?.postId === "string" ? body.postId : workspaceId("post"), providerPostId: published.data?.providerPostId || null, simulated: false, error: published.ok ? null : published.error, code: published.code ?? null, providerCode: published.providerCode ?? null, providerSubcode: published.providerSubcode ?? null, providerTraceId: published.providerTraceId ?? null });
       if (!Array.isArray((workspace as any).publishRecords)) (workspace as any).publishRecords = [];
       (workspace as any).publishRecords.unshift({ ...record, id: workspaceId("publish"), createdBy: user.id, receipt });
       if ((workspace as any).publishRecords.length > WORKSPACE_MAX_PUBLISH_RECORDS) (workspace as any).publishRecords.length = WORKSPACE_MAX_PUBLISH_RECORDS;
       persistState();
       audit(user.id, published.ok ? "platform_publish_published" : "platform_publish_failed", `${platform}`);
-      if (!published.ok) return { status: 502, body: { success: false, record, error: published.error, containerId: container.data.containerId, code: published.code || "PROVIDER_ERROR", providerCode: published.providerCode ?? null, providerSubcode: published.providerSubcode ?? null, providerTraceId: published.providerTraceId ?? null, note: "لم يُسجَّل أي نشر بلا معرّف منشور حقيقي من المزود." } };
-      return { status: 200, body: { success: true, record, providerPostId: published.data?.providerPostId, containerId: container.data.containerId, receipt } };
+      if (!published.ok) return { status: 502, body: { success: false, record, error: published.error, containerId: thContainer.data.containerId, code: published.code || "PROVIDER_ERROR", providerCode: published.providerCode ?? null, providerSubcode: published.providerSubcode ?? null, providerTraceId: published.providerTraceId ?? null, note: "لم يُسجَّل أي نشر بلا معرّف منشور حقيقي من المزود." } };
+      return { status: 200, body: { success: true, record, providerPostId: published.data?.providerPostId, containerId: thContainer.data.containerId, receipt } };
     }
     if (platform === "tiktok") {
       // TikTok لا ينشر نصاً فقط: يلزم فيديو (أو صور) عبر رابط عام أو ملف.

@@ -82,6 +82,8 @@ function createThreadsMock(options: { refreshSucceeds: boolean }) {
     if (req.query.access_token === OLD_TOKEN) return res.status(400).json({ error: { message: 'Error validating access token: Session has expired on Wednesday, 07-Oct-26 11:00:00 PDT.', code: 190, error_subcode: 463 } });
     return res.json({ id: 'CONTAINER_1' });
   });
+  // قراءة حالة الحاوية (تُستدعى الآن قبل النشر): FINISHED افتراضاً.
+  app.get('/:version/:containerId', (_req, res) => res.json({ id: 'CONTAINER_1', status: 'FINISHED' }));
   app.post('/:version/:userId/threads_publish', (req, res) => {
     state.publishCalls += 1;
     if (req.query.access_token === OLD_TOKEN) return res.status(400).json({ error: { message: 'Error validating access token: Session has expired on Wednesday, 07-Oct-26 11:00:00 PDT.', code: 190, error_subcode: 463 } });
@@ -105,6 +107,7 @@ function startApp(): { proc: ChildProcess; log: () => string } {
     GHARABI_PREVIEW_TOKEN: PREVIEW_TOKEN, SESSION_SECRET,
     THREADS_GRAPH_API_BASE: `http://127.0.0.1:${TH_PORT}`,
     PLATFORM_TOKEN_ENCRYPTION_KEY: TOKEN_KEY,
+    CONTAINER_POLL_INTERVAL_MS: '0',
   };
   delete env.GEMINI_API_KEY;
   delete env.DATABASE_URL;

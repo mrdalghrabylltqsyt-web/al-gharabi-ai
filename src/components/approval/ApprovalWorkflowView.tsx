@@ -20,7 +20,7 @@ import {
 import { Post, PostStatus } from '../../types';
 import { defaultScheduleInput, wallClockInputValue, wallClockToEpoch } from '../../utils/scheduleTime';
 import { ScheduleTimestamp } from '../common/ScheduleTimestamp';
-import { summarizePublishFailures } from '../../utils/publishResult';
+import { summarizePublishFailures, formatPlatformResultState } from '../../utils/publishResult';
 
 export const ApprovalWorkflowView: React.FC = () => {
   const {
@@ -251,6 +251,27 @@ export const ApprovalWorkflowView: React.FC = () => {
                   <div className="p-2.5 rounded-xl bg-teal-950/40 border border-teal-500/30 text-xs text-teal-300 flex items-center gap-2">
                     <CheckCircle className="w-4 h-4 text-teal-400 shrink-0" />
                     <span>تنفيذ خارجي موثّق على المنصات في: {post.publishedAt}</span>
+                  </div>
+                )}
+
+                {/* نتيجة كل منصة على حدة (لا رسالة نجاح إجمالية واحدة عند فشل بعضها) */}
+                {post.platformPublishResults && Object.keys(post.platformPublishResults).length > 0 && (
+                  <div className="space-y-2">
+                    <div className="text-[11px] font-bold text-slate-400">نتيجة النشر لكل منصة:</div>
+                    <div className="flex flex-col gap-1.5">
+                      {Object.entries(post.platformPublishResults).map(([pf, r]: [string, any]) => {
+                        const st = formatPlatformResultState(r);
+                        const tone = st.tone === 'ok' ? 'bg-emerald-950/50 border-emerald-500/30 text-emerald-300'
+                          : st.tone === 'pending' ? 'bg-amber-950/40 border-amber-500/30 text-amber-300'
+                          : 'bg-rose-950/40 border-rose-500/30 text-rose-300';
+                        return (
+                          <div key={pf} className={`px-3 py-1.5 rounded-xl border text-[11px] flex items-center gap-2 ${tone}`}>
+                            <span className="font-bold uppercase">{pf}</span>
+                            <span className="opacity-90">{st.label}</span>
+                          </div>
+                        );
+                      })}
+                    </div>
                   </div>
                 )}
 

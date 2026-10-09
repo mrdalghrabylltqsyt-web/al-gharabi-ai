@@ -3579,8 +3579,8 @@ add('watcher-advisory-not-authority',
   const publishResultSrc = read('src/utils/publishResult.ts');
   add('publish-real-error-not-fixed-code',
     server.includes('const code = container.code || "MEDIA_REQUIRED";') &&
-    server.includes('const isRealMediaRequired = !imageUrl && !videoUrl;') &&
-    server.includes('code: container.code || "PROVIDER_ERROR"') &&
+    server.includes('const isRealMediaRequired = !imageUrl && !videoUrl && code === "MEDIA_REQUIRED";') &&
+    server.includes('code: thContainer.code || "PROVIDER_ERROR"') &&
     server.includes('providerCode: container.providerCode ?? null'),
     'المسار العام يمرّر كود Meta الحقيقي (MEDIA_REQUIRED فقط عند غياب الوسائط فعلاً) بدل تثبيته أعمى');
   add('instagram-threads-error-classifier',
@@ -3653,7 +3653,7 @@ add('watcher-advisory-not-authority',
   add('threads-token-refresh-wired',
     server.includes('async function ensureThreadsAccessToken') &&
     server.includes('async function withThreadsToken') &&
-    server.includes('await withThreadsToken((token) => threadsClient().createMediaContainer') &&
+    server.includes('createThreadsContainerReady(target.threadsUserId, token') &&
     server.includes("audit(\"system\", \"threads_token_refreshed\", \"auto\")"),
     'نشر Threads يجدّد الرمز الطويل تلقائياً قبل الاستخدام (إصلاح «Session has expired»)');
   add('threads-token-expired-classified',
@@ -3694,6 +3694,40 @@ add('watcher-advisory-not-authority',
     read('engine/tests/publish.provider.error.test.ts').includes('media_type=VIDEO') &&
     read('engine/tests/threads.connector.test.ts').includes('TOKEN_EXPIRED'),
     'اختبارات النشر تغطي: EXTERNAL_SETUP_REQUIRED + media_type=VIDEO + تصنيف انتهاء رمز Threads');
+  // جذر «CLIENT_ERROR: Invalid parameter»: انتظار جاهزية حاوية الوسائط قبل النشر.
+  const igModule = read('engine/social/instagram.ts');
+  add('media-container-readiness-single-source',
+    igModule.includes('INSTAGRAM_CONTAINER_READY_STATES') &&
+    igModule.includes('isInstagramContainerReady') &&
+    igModule.includes('isInstagramContainerFailed') &&
+    threadsSrc.includes('THREADS_CONTAINER_READY_STATES') &&
+    threadsSrc.includes('isThreadsContainerReady'),
+    'حسم جاهزية حاوية الوسائط مصدر واحد (Instagram/Threads): FINISHED/PUBLISHED جاهزة، ERROR/EXPIRED فاشلة');
+  add('publish-waits-for-container-ready',
+    server.includes('async function createInstagramContainerReady') &&
+    server.includes('async function createThreadsContainerReady') &&
+    server.includes('await instagramClient().getContainerStatus') &&
+    server.includes('await threadsClient().getContainerStatus') &&
+    server.includes('createInstagramContainerReady(target.igAccountId, target.pageToken') &&
+    server.includes('createThreadsContainerReady(target.threadsUserId, token'),
+    'نشر Instagram/Threads ينتظر فعلياً جاهزية الحاوية (status_code/status) قبل media_publish بدل النشر المبكر');
+  add('container-wait-bounded-and-testable',
+    server.includes('const IG_CONTAINER_POLL_MAX_ATTEMPTS = 8') &&
+    server.includes('CONTAINER_POLL_INTERVAL_MS') &&
+    server.includes('function containerPollIntervalMs') &&
+    read('.env.example').includes('CONTAINER_POLL_INTERVAL_MS'),
+    'الانتظار محدود بمهلة (بلا تعليق بلا نهاية) وقابل للضبط في الاختبار عبر CONTAINER_POLL_INTERVAL_MS موثّقاً');
+  add('container-readiness-tests',
+    read('engine/tests/instagram.connector.test.ts').includes('containerStatusSequence') &&
+    read('engine/tests/instagram.connector.test.ts').includes('انتظار جاهزية حاوية الفيديو قبل النشر') &&
+    read('engine/tests/threads.publish.recovery.test.ts').includes("status: 'FINISHED'"),
+    'اختبار تكاملي يثبت: IN_PROGRESS ثم FINISHED => نشر ناجح؛ ERROR => فشل صريح بلا نشر (Instagram) + خادم Threads يخدم حالة الحاوية');
+  add('approval-per-platform-results-panel',
+    approvalSrc.includes('formatPlatformResultState(post.platformPublishResults') ||
+    (approvalSrc.includes('platformPublishResults') && approvalSrc.includes('formatPlatformResultState')) &&
+    publishResultSrc.includes('export function formatPlatformResultState') &&
+    read('engine/tests/publish.provider.error.test.ts').includes('formatPlatformResultState'),
+    'لوحة الموافقة تعرض مصير كل منصة على حدة (نُشر بمعرّف / قيد المعالجة / فشل بسببه) بدل رقم أخضر إجمالي واحد');
   add('health-no-customer-data-regression',
     server.includes('youtubeWatcher: watcherStatusBlockPublic()') &&
     !/youtubeWatcher: watcherStatusBlock\(\)/.test(server) &&

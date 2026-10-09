@@ -94,6 +94,23 @@ export function buildThreadsPublishBody(creationId: string): URLSearchParams {
   return body;
 }
 
+/**
+ * حسم جاهزية حاوية Threads قبل `threads_publish` — نفس منطق إنستغرام: حاوية
+ * الفيديو/الصورة غير متزامنة، ونشرها وهي `IN_PROGRESS` يرد خطأ معلمة غير صالحة.
+ * النص المجرّد يبقى جاهزاً مباشرةً (لا معالجة وسائط).
+ */
+export const THREADS_CONTAINER_READY_STATES: readonly string[] = Object.freeze(['FINISHED', 'PUBLISHED']);
+export const THREADS_CONTAINER_FAILED_STATES: readonly string[] = Object.freeze(['ERROR', 'EXPIRED']);
+
+export function isThreadsContainerReady(status: string | null | undefined): boolean {
+  return THREADS_CONTAINER_READY_STATES.includes(String(status || '').toUpperCase());
+}
+
+export function isThreadsContainerFailed(status: string | null | undefined): boolean {
+  return THREADS_CONTAINER_FAILED_STATES.includes(String(status || '').toUpperCase());
+}
+
+
 // ---------------------------------------------------------------------------
 // عميل Threads Graph
 // ---------------------------------------------------------------------------

@@ -11,7 +11,7 @@
 
 import { InstagramClient } from '../social/instagram';
 import { ThreadsClient } from '../social/threads';
-import { summarizePublishFailures, formatPublishFailure, isYouTubeDedicatedPublish } from '../../src/utils/publishResult';
+import { summarizePublishFailures, formatPublishFailure, isYouTubeDedicatedPublish, formatPlatformResultState } from '../../src/utils/publishResult';
 
 let passed = 0;
 const failures: string[] = [];
@@ -141,6 +141,22 @@ async function run(): Promise<void> {
     ]);
     check('خلط YouTube + فشل حقيقي: الرسالة الحقيقية تظهر', mixed.includes("The video couldn't be downloaded"), mixed);
     check('خلط YouTube + فشل حقيقي: الطابور المخصص مذكور', mixed.includes('طابوره المخصص'), mixed);
+  }
+
+  // 7) الواجهة: تمييز مصير كل منصة في لوحة النتائج (لا رقم أخضر إجمالي واحد).
+  {
+    const ok = formatPlatformResultState({ state: 'published', providerPostId: 'POST_9' });
+    check('منشور بمعرّف مزود => tone ok', ok.tone === 'ok', JSON.stringify(ok));
+    check('منشور بمعرّف مزود => يذكر المعرّف', ok.label.includes('POST_9'), ok.label);
+    // published بلا معرّف مزود لا يُدّعى كنجاح موثّق.
+    const pubNoId = formatPlatformResultState({ state: 'published', providerPostId: null });
+    check('published بلا معرّف => لا يذكر معرّفاً', pubNoId.tone === 'ok' && !pubNoId.label.includes('null'));
+    const pending = formatPlatformResultState({ state: 'publishing', providerPostId: 'PID' });
+    check('قيد المعالجة => tone pending ولا ادعاء تسليم', pending.tone === 'pending', JSON.stringify(pending));
+    const fail = formatPlatformResultState({ state: 'failed', code: 'MEDIA_DOWNLOAD_FAILED', error: 'The media could not be fetched' });
+    check('فشل => tone fail ويظهر الكود', fail.tone === 'fail' && fail.label.includes('MEDIA_DOWNLOAD_FAILED'), fail.label);
+    const yt = formatPlatformResultState({ code: 'PLATFORM_USE_DEDICATED_PUBLISH', error: 'x' });
+    check('YouTube => توجيه لطابوره لا فشل', yt.tone === 'pending' && yt.label.includes('طابوره المخصص'), yt.label);
   }
 
   console.log(`PASSED: ${passed} publish-provider-error checks`);

@@ -35,3 +35,18 @@ export function summarizePublishFailures(failed: Array<[string, any]>): string {
   if (realFailures.length) parts.push(realFailures.map(([pf, r]) => formatPublishFailure(pf, r)).join('، '));
   return parts.join(' ') || 'لا منصات مستهدفة';
 }
+
+/**
+ * وصف مصير منصة واحدة بعد التوزيع — يفصل الحالات بدل رقم إجمالي أخضر واحد:
+ * نُشر وثُبّت بمعرّف مزود / قيد المعالجة / فشل بسببه / توجيه YouTube لطابوره.
+ * لا يُعلن «نشر» بلا معرّف مزود حقيقي (providerPostId).
+ */
+export function formatPlatformResultState(result: any): { label: string; tone: 'ok' | 'pending' | 'fail' } {
+  if (isYouTubeDedicatedPublish(result)) return { label: YOUTUBE_DEDICATED_PUBLISH_NOTE, tone: 'pending' };
+  const state = result?.state;
+  if (state === 'published') {
+    return { label: result?.providerPostId ? `نُشر وثُبّت بمعرّف المزود: ${result.providerPostId}` : 'نُشر', tone: 'ok' };
+  }
+  if (state === 'publishing') return { label: 'قيد المعالجة لدى المزود (لم يُثبت التسليم بعد)', tone: 'pending' };
+  return { label: formatPublishFailure('فشل', result), tone: 'fail' };
+}

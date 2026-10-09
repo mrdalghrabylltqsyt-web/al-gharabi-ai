@@ -44,7 +44,7 @@ npm install
 npm run dev            # tsx server.ts
 npm run lint           # tsc --noEmit
 npm run build          # vite build + esbuild server.ts -> dist/server.cjs
-npm run final-audit    # node final-audit.mjs (1417 فحصاً)
+npm run final-audit    # node final-audit.mjs (1422 فحصاً)
 npm test               # storage + engine + auth + ... + db + runtime
 ```
 - التشغيل الإنتاجي: `PORT=4517 NODE_ENV=production APP_URL=http://localhost:4517 node dist/server.cjs`
@@ -4765,3 +4765,54 @@ Meta بـ**190 «Session has expired»**. الأسوأ: كان الفشل يتك
 **لم يُمسّ:** منطق الخادم، Gemini/الـfirewall، OAuth/scopes، المصادقة، قاعدة البيانات،
 DR/الاستعادة، بقية المنصّات، والنقطتان العامتان `/api/health` و`/api/readiness`.
 **يبقى مفتوحاً (إجراء خارجي):** منح `pages_read_engagement` من لوحة Meta — لا يُصلحه الكود.
+
+## إصلاح تسريب بيانات العملاء في النقطتين العامتين + انتظار جاهزية حاوية الوسائط عند النشر (2026-10-05)
+
+### جزء 1 — خصوصية `/api/health` و`/api/readiness` (تأكيد + حرس)
+النقطتان عامتان بلا مصادقة (لأدوات المراقبة مثل Render)، وكانتا قد كشفتا سابقاً حقولاً
+حساسة (`youtubeWatcher.attentionRequired[]` بأسماء حسابات ونصوص تعليقات، و`lastReply.replyText`
+بنصوص ردود فعلية). المعالجة القائمة والمؤكَّدة الآن:
+- `engine/social/healthPrivacy.ts` هو المصدر الواحد لقائمة الحقول الممنوعة
+  (`PUBLIC_ENDPOINT_FORBIDDEN_CUSTOMER_FIELDS` = replyText/attentionRequired/authorName/
+  lastReply/text/customerName...) وقائمة allow-list لكتلة `youtubeWatcher` العامة، مع
+  `sanitizePublicHealthPayload` و`findForbiddenPublicKeys` و`findDisallowedWatcherPublicKeys`.
+- `server.ts` يعرض بديلاً محلياً `watcherStatusBlockPublic` في `/api/health` و`/api/readiness`
+  يعلن حقولاً تقنية فقط (`status/watcherActive/cadenceMinutes/cadenceMs/pollCount/lastPollAt/
+  lastError/consecutiveErrors`)، و`lastError` يمر عبر `watcherPublicError` (رسالة تقنية قصيرة
+  مثل «connection timeout» بلا نص محادثة عميل، وإلا «connection error»). التفاصيل الكاملة
+  (`attentionRequired/lastReply/counters/opportunities/brief/followUp`) في المسار المحمي
+  `/api/agent/youtube/watcher` (owner فقط). وتُطبَّق `sanitizePublicHealthPayload` قبل إرسال
+  `/api/health` و`/api/readiness`.
+- الحرس مُختبَر: `engine/tests/health.guard.test.ts` (وحدة) و`engine/tests/health.privacy.test.ts`
+  (تكامل: `/api/health` و`/api/readiness` بلا مصادقة لا يحملان `replyText`/`attentionRequired`/
+  `authorName`/`text` في أي عمق) + فحص final-audit `health-no-customer-data-regression`.
+
+### جزء 2 — جذر نشر وسائط Instagram/Threads (CLIENT_ERROR: Invalid parameter)
+- الجذر المُثبت: نشر الفيديو/الصورة عبر Instagram وThreads غير متزامن؛ بعد إنشاء الحاوية
+  تبقى `IN_PROGRESS` حتى يفرغ Meta من تنزيل الوسائط ومعالجتها. `media_publish` قبل `FINISHED`
+  يرد Meta بخطأ معلمة غير صالحة (#100/Invalid parameter). وكان الكود يُبقي `getContainerStatus`
+  معرّفة لكنها غير مستدعاة إطلاقاً، فينشر مباشرةً.
+- الإصلاح (مصدر واحد): `INSTAGRAM_CONTAINER_READY_STATES`/`isInstagramContainerReady`/
+  `isInstagramContainerFailed` في `engine/social/instagram.ts`، ونظيرها في `engine/social/threads.ts`.
+  و`createInstagramContainerReady`/`createThreadsContainerReady` في `server.ts` ينشئان الحاوية
+  ثم ينتظران فعلياً `status_code/status` حتى `FINISHED`/`PUBLISHED` (والنص جاهز مباشرةً)،
+  وبعدها فقط `media_publish`. الحالة الفاشلة (`ERROR`/`EXPIRED`) تُعلن بفشل صريح بلا نشر،
+  وتجاوز المهلة (`CONTAINER_TIMEOUT`) يُعلن بلا نشر — لا ادعاء تسليم بلا معرّف مزود.
+- الانتظار محدود وقابل للضبط: 8 محاولات كحد أقصى، والفاصل من `CONTAINER_POLL_INTERVAL_MS`
+  (افتراضي 3000ms؛ 0 في الاختبار) — موثّق في `.env.example`.
+- تمييز MEDIA_REQUIRED: لا يُعلن إلا عند غياب الوسائط فعلاً (`!imageUrl && !videoUrl &&
+  code === "MEDIA_REQUIRED"`)؛ وإلا يُمرَّر كود Meta الحقيقي (502) بلا إخفاء السبب.
+- لوحة الموافقة: تعرض مصير كل منصة على حدة (`platformPublishResults` عبر
+  `formatPlatformResultState`: نُشر وثُبّت بمعرّف المزود / قيد المعالجة / فشل بسببه /
+  توجيه YouTube لطابوره) بدل رقم أخضر إجمالي واحد يُخفي فشل بعض المنصات.
+
+اختبارات: `instagram.connector.test.ts` = 228 فحصاً (وحدة لحالات الجاهزية، وتكامل
+مجموعة 16ب: `IN_PROGRESS→FINISHED` => نشر ناجح بعد قراءتين، `ERROR` => `CONTAINER_FAILED`
+بلا نشر)، `threads.publish.recovery.test.ts` = 15 فحصاً (خادم Threads يخدم حالة الحاوية)،
+و`publish.provider.error.test.ts` = 41 فحصاً (تمييز مصير كل منصة في الواجهة).
+فحوص final-audit الجديدة: `media-container-readiness-single-source`،
+`publish-waits-for-container-ready`، `container-wait-bounded-and-testable`،
+`container-readiness-tests`، `approval-per-platform-results-panel` (1422 إجمالاً).
+
+لم يُمسّ: Gemini/firewall، OAuth/scopes، المصادقة، قاعدة البيانات، DR/الاستعادة،
+بقية المنصات، ومسارات الصحة العامة (بقيت بلا بيانات عملاء).

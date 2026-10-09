@@ -31,6 +31,10 @@ import {
   resolveInstagramScopes,
   findMissingInstagramScopeDependencies,
   INSTAGRAM_REQUIRES_PROFESSIONAL_ACCOUNT,
+  INSTAGRAM_CONTAINER_READY_STATES,
+  INSTAGRAM_CONTAINER_FAILED_STATES,
+  isInstagramContainerReady,
+  isInstagramContainerFailed,
 } from '../social/instagram';
 import { createInstagramMock, startInstagramMockServer } from './helpers/instagramMock';
 import { signSession } from '../auth/sessions';
@@ -83,6 +87,8 @@ function startApp(igBase: string, extraEnv: Record<string, string> = {}): { proc
     FACEBOOK_APP_SECRET: IG_APP_SECRET,
     FACEBOOK_VERIFY_TOKEN: IG_VERIFY_TOKEN,
     PLATFORM_TOKEN_ENCRYPTION_KEY: TOKEN_KEY,
+    // لا نوم بين قراءات حالة الحاوية في الاختبار (افتراضي الإنتاج 3000ms).
+    CONTAINER_POLL_INTERVAL_MS: '0',
     ...extraEnv,
   };
   delete env.GEMINI_API_KEY;
@@ -166,6 +172,16 @@ function unitTests(): void {
   const textOnly = buildMediaContainerBody({ caption: 'نص فقط' });
   check('نص فقط مرفوض صراحةً (Instagram لا ينشر نصاً)', !textOnly.ok && textOnly.mediaKind === null);
   check('جسم النشر يحمل creation_id', buildPublishContainerBody('C1').get('creation_id') === 'C1');
+  // جذر «Invalid parameter»: جاهزية الحاوية قبل النشر. الحالة تُحسم من دليل status_code
+  // لا بتخمين؛ FINISHED/PUBLISHED جاهزة، ERROR/EXPIRED فاشلة، وما عداهما غير جاهز بعد.
+  check('حالة FINISHED جاهزة', isInstagramContainerReady('FINISHED'));
+  check('حالة PUBLISHED جاهزة (ريلز)', isInstagramContainerReady('PUBLISHED'));
+  check('حالة IN_PROGRESS غير جاهزة', !isInstagramContainerReady('IN_PROGRESS'));
+  check('حالة INITIALIZED غير جاهزة', !isInstagramContainerReady('INITIALIZED'));
+  check('حالة ERROR فاشلة', isInstagramContainerFailed('ERROR'));
+  check('حالة EXPIRED فاشلة', isInstagramContainerFailed('EXPIRED'));
+  check('حالة مجهولة ليست فاشلة (لا ادعاء)', !isInstagramContainerFailed('SOMETHING_ELSE'));
+  check('الحالات جاهزة/فاشلة بلا تقاطع', INSTAGRAM_CONTAINER_READY_STATES.every((s) => !INSTAGRAM_CONTAINER_FAILED_STATES.includes(s)));
   check('رابط Graph يستخدم القاعدة الافتراضية الرسمية', instagramGraphUrl('/me/accounts').startsWith('https://graph.facebook.com/v'));
   check('القاعدة قابلة للتجاوز في الاختبار', instagramGraphUrl('/me/accounts', 'http://127.0.0.1:9').startsWith('http://127.0.0.1:9/v'));
 
@@ -542,6 +558,25 @@ async function integrationTests(): Promise<void> {
     check('الحاوية أُنشئت ثم نُشرت بمعرّفيها', mock.state.containers.length === 1 && mock.state.published[0].creationId === mock.state.containers[0].containerId);
     const pubFail = await (async () => { mock.state.failPublishStep = true; const r = await fetch(`${BASE}/api/platforms/instagram/publish`, { method: 'POST', headers: auth, body: JSON.stringify({ content: 'x', videoUrl: 'https://example.invalid/v.mp4', approved: true }) }); mock.state.failPublishStep = false; return r; })();
     check('فشل خطوة النشر => 502 بلا معرّف مزود', pubFail.status === 502);
+
+    // جذر «CLIENT_ERROR: Invalid parameter»: نشر الفيديو غير متزامن؛ يجب انتظار
+    // status_code=FINISHED قبل media_publish. يُثبت بمعالجة حالة أولى IN_PROGRESS.
+    group('16ب) تكامل: انتظار جاهزية حاوية الفيديو قبل النشر (إصلاح Invalid parameter)');
+    mock.state.containerStatusSequence = ['IN_PROGRESS', 'FINISHED'];
+    mock.state.containerStatusReads = 0;
+    const videoPub = await fetch(`${BASE}/api/platforms/instagram/publish`, { method: 'POST', headers: auth, body: JSON.stringify({ content: 'ريل الغرابي', videoUrl: 'https://example.invalid/v.mp4', approved: true }) });
+    const videoBody = await videoPub.json();
+    check('نشر الفيديو نجح بعد انتظار الجاهزية', videoPub.status === 200 && Boolean(videoBody.providerPostId), JSON.stringify(videoBody).slice(0, 200));
+    check('قُرئت حالة الحاوية مرتين (IN_PROGRESS ثم FINISHED)', mock.state.containerStatusReads >= 2, `reads=${mock.state.containerStatusReads}`);
+    check('لم يُنشر قبل الجاهزية (media_publish بعد قراءتين)', mock.state.published.length >= 2);
+    // حاوية تفشل بمعالجة الوسائط: لا نشر، وسبب صريح.
+    mock.state.containerStatusSequence = ['IN_PROGRESS', 'ERROR'];
+    mock.state.containerStatusReads = 0;
+    const errPub = await fetch(`${BASE}/api/platforms/instagram/publish`, { method: 'POST', headers: auth, body: JSON.stringify({ content: 'ريل فاشل', videoUrl: 'https://example.invalid/v2.mp4', approved: true }) });
+    const errBody = await errPub.json();
+    check('حاوية ERROR => فشل صريح بلا نشر', errPub.status === 502 && errBody.code === 'CONTAINER_FAILED', `${errPub.status}/${errBody.code}`);
+    mock.state.containerStatusSequence = ['FINISHED'];
+    mock.state.containerStatusReads = 0;
 
     group('17) تكامل: ثبات الاستقبال وحماية التكرار بعد restart');
     await stop(app.proc);

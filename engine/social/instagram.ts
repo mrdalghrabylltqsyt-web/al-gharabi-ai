@@ -336,6 +336,28 @@ export function buildPublishContainerBody(creationId: string): URLSearchParams {
   return body;
 }
 
+/**
+ * حسم جاهزية حاوية Instagram المهنية (media container) قبل `media_publish`.
+ *
+ * السبب المُثبت لخطأ «CLIENT_ERROR: Invalid parameter»: نشر الفيديو عبر إنستغرام
+ * **غير متزامن** — بعد `POST /{ig-id}/media` تبقى الحاوية `IN_PROGRESS` حتى يفرغ
+ * Meta من تنزيل الوسائط ومعالجتها. استدعاء `media_publish` قبل `FINISHED` يرد
+ * Meta بخطأ معلمة غير صالحة (code 100) لأن الحاوية غير جاهزة. الحل الرسمي هو
+ * الانتظار حتى `FINISHED` (وللريلز `PUBLISHED`) دون معالجة الصور، وإلا يُعلن
+ * الفشل بالسبب الحقيقي بدل استثناءه.
+ */
+export const INSTAGRAM_CONTAINER_READY_STATES: readonly string[] = Object.freeze(['FINISHED', 'PUBLISHED']);
+export const INSTAGRAM_CONTAINER_FAILED_STATES: readonly string[] = Object.freeze(['ERROR', 'EXPIRED']);
+
+export function isInstagramContainerReady(statusCode: string | null | undefined): boolean {
+  return INSTAGRAM_CONTAINER_READY_STATES.includes(String(statusCode || '').toUpperCase());
+}
+
+export function isInstagramContainerFailed(statusCode: string | null | undefined): boolean {
+  return INSTAGRAM_CONTAINER_FAILED_STATES.includes(String(statusCode || '').toUpperCase());
+}
+
+
 // ---------------------------------------------------------------------------
 // عميل Instagram Graph
 // ---------------------------------------------------------------------------
