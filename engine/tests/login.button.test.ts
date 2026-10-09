@@ -41,6 +41,13 @@ async function run() {
   check('يحمل إشارة مهلة (AbortController)', calls[0]?.hasSignal === true);
   check('يعيد نجاحاً مع الرسالة', ok.success === true && typeof ok.message === 'string');
 
+  // --- 1ب) codeIssued=false (بريد غير مطابق لـOWNER_EMAIL): لا ادّعاء إصدار رمز ---
+  (globalThis as any).fetch = async () =>
+    ({ ok: true, status: 200, json: async () => ({ success: true, message: 'سيُرسَل رمز التحقق فقط إلى البريد المعتمد لمالك النظام.', codeIssued: false }) } as any);
+  const noIssue = await apiService.requestOwnerChallenge('someone-else@example.com');
+  check('codeIssued=false يُنقل من الخادم', noIssue.success === true && noIssue.codeIssued === false, JSON.stringify(noIssue));
+  check('الواجهة لا تتقدّم لحقل الرمز عند codeIssued=false', login.includes("res.codeIssued === false") && login.includes("setStep('verify')"));
+
   // --- 2) فشل الخادم: رسالة واضحة بلا سرّ ---
   (globalThis as any).fetch = async () =>
     ({ ok: false, status: 502, json: async () => ({ success: false, error: 'تعذر إرسال رمز التحقق، حاول مرة أخرى' }) } as any);

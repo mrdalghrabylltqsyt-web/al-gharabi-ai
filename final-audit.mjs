@@ -30,7 +30,11 @@ add('backup', server.includes('BACKUP_DIR') && server.includes('/api/system/back
 add('webhook-replay', server.includes('webhookEvents') && server.includes('signature'), 'طبقة Webhook وسجل الأحداث موجودان');
 add('final-readiness', server.includes('/api/system/final-readiness') && server.includes('/api/platforms/production-readiness'), 'فحص الجاهزية النهائية موجود');
 add('otp-email-delivery', server.includes('sendOwnerOtpEmail') && server.includes('owner_challenge_email_sent') && server.includes('owner_challenge_email_failed'), 'إرسال OTP بالبريد مسجَّل بنتيجتين آمنتين بلا رمز');
-add('otp-no-success-without-send', server.includes('if (!result.sent)') && server.includes('تم إرسال رمز التحقق إلى بريد المالك') && !server.includes('owner_challenge_issued'), 'لا ادعاء إرسال بلا نجاح المزود');
+add('otp-no-success-without-send', server.includes('if (!result.sent)') && server.includes('قَبِل مزوّد البريد طلب الإرسال') && !server.includes('owner_challenge_issued'), 'لا ادعاء إرسال بلا نجاح المزود');
+// العطل المُثبت: البريد غير المطابق لـOWNER_EMAIL كان يعرض «تم إصدار رمز التحقق بنجاح»
+// بلا إصدار رمز ولا استدعاء Resend. الآن الرد محايد و codeIssued=false، ولا كشف للحساب.
+add('otp-mismatch-no-false-issue', server.includes('codeIssued: false') && server.includes('owner_challenge_address_mismatch') && server.includes('codeIssued: true') && !server.includes('تم إصدار رمز التحقق بنجاح'), 'البريد غير المطابق لا يدّعي إصدار الرمز ولا يكشف حساب المالك');
+add('otp-codeIssued-signal-ui', read('src/components/auth/LoginView.tsx').includes('res.codeIssued === false') && read('src/services/api.ts').includes('codeIssued?: boolean'), 'الواجهة تُميّز عدم إصدار الرمز عن نجاح الإرسال');
 add('email-status-owner-only', server.includes('app.get("/api/system/email-status", requireOwner'), 'فحص حالة البريد محصور بالمالك');
 add('email-env-only', !/RESEND_API_KEY\s*[:=]\s*["'`]re_/.test(server) && !/("|'|`)(re_[A-Za-z0-9_\-]{12,})\1/.test(server), 'لا مفتاح Resend مكتوب في الكود');
 // سبب فشل إرسال OTP يُعلَن ككود غير سرّي (كود مزوّد البريد / اسم متغيّر ناقص) بلا أي

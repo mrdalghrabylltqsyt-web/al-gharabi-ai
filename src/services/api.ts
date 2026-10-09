@@ -100,7 +100,7 @@ export const apiService = {
     return data;
   },
 
-  async requestOwnerChallenge(email: string): Promise<{ success: boolean; message: string }> {
+  async requestOwnerChallenge(email: string): Promise<{ success: boolean; message: string; codeIssued?: boolean }> {
     // مهلة صريحة على مستوى fetch: إن علِق الخادم/الشبكة (بدء بارد، شبكة جوال
     // ضعيفة) فلا يبقى زر «طلب الرمز» يدور بلا نهاية ولا يبدو «بلا استجابة»، بل
     // يُقطع الطلب برسالة يمكن إعادة المحاولة بها. لا كشف لأي سرّ في أي رسالة.

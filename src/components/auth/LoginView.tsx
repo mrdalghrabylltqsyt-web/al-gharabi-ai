@@ -133,8 +133,15 @@ export const LoginView: React.FC = () => {
     try {
       const res = await requestOwnerChallenge(trimmed);
       if (res.success) {
-        setStep('verify');
-        setSuccessInfo(res.message || 'تم إرسال رمز التحقق إلى بريد المالك');
+        // لا نتقدّم لحقل الرمز إلا إن أُصدر رمز فعلاً (codeIssued !== false). البريد
+        // غير المطابق لـOWNER_EMAIL يُعيد رسالة محايدة بلا إصدار رمز، فلا نوهم
+        // المالك بحقل رمز لرسالة لن تصل — نُبقيه في الخطوة الأولى برسالة محايدة.
+        if (res.codeIssued === false) {
+          setSuccessInfo(res.message || 'سيُرسَل رمز التحقق فقط إلى البريد المعتمد لمالك النظام.');
+        } else {
+          setStep('verify');
+          setSuccessInfo(res.message || 'قَبِل مزوّد البريد طلب الإرسال — تحقّق من صندوق الوارد (والمهملات).');
+        }
       } else {
         setRequestFailed(true);
         setError('تعذّر إرسال رمز التحقق، حاول مرة أخرى.');
@@ -373,7 +380,7 @@ export const LoginView: React.FC = () => {
                     <KeyRound className="w-4 h-4 text-slate-500 absolute left-3 top-3.5" />
                   </div>
                   <p className="text-[11px] text-slate-400">
-                    تم إرسال رمز التحقق إلى بريد المالك. أدخل الرمز المكوّن من 6 أرقام لإتمام الدخول.
+                    قَبِل مزوّد البريد طلب الإرسال. أدخل الرمز المكوّن من 6 أرقام لإتمام الدخول، وتحقّق من المهملات إن لم تجده.
                   </p>
                 </div>
 

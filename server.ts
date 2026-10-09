@@ -1111,10 +1111,17 @@ app.post("/api/auth/request-owner-challenge", async (req, res) => {
   if (!allowChallengeAttempt(challengeKey)) return res.status(429).json({ success: false, message: "تم تجاوز عدد محاولات التحقق المسموح مؤقتاً. حاول لاحقاً." });
 
   if (normalizedEmail !== OWNER_EMAIL) {
-    // Return standard message to prevent email enumeration
+    // منع كشف وجود حساب مالك: رسالة محايدة لا تؤكّد إصدار الرمز ولا تنفيه، ولا
+    // تُعلن أن البريد ليس بريد المالك. **سبب عطل حقيقي سابق**: النص كان «تم إصدار
+    // رمز التحقق بنجاح» فيظهر نجاح كاذب للمالك الذي أدخل بريداً غير مطابق لـOWNER_EMAIL
+    // (لا يُنشأ رمز ولا يُستدعى Resend إطلاقاً)، فبدا العطل كأنه «لم يصل البريد».
+    auditLog.unshift({ id: crypto.randomUUID(), at: new Date().toISOString(), userId: "system", action: "owner_challenge_address_mismatch", detail: "address-did-not-match-configured-owner" });
+    if (auditLog.length > 100) auditLog.pop();
+    persistState();
     return res.json({
       success: true,
-      message: "إذا كان هذا البريد مسجلاً، فقد تم إصدار رمز التحقق بنجاح.",
+      message: "سيُرسَل رمز التحقق فقط إلى البريد المعتمد لمالك النظام.",
+      codeIssued: false,
     });
   }
 
@@ -1145,7 +1152,10 @@ app.post("/api/auth/request-owner-challenge", async (req, res) => {
 
   return res.json({
     success: true,
-    message: "تم إرسال رمز التحقق إلى بريد المالك",
+    // «قبول المزود» فقط — لا يُدَّعى تسليم صندوق البريد (لا دليل عليه من Resend هنا).
+    message: "قَبِل مزوّد البريد طلب الإرسال — تحقّق من صندوق الوارد (والمهملات) للبريد المعتمد.",
+    codeIssued: true,
+    providerAccepted: true,
   });
 });
 
