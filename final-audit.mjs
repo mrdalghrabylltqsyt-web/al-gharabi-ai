@@ -3797,6 +3797,41 @@ add('watcher-advisory-not-authority',
     read('engine/tests/facebook.connector.test.ts').includes('business-link-diagnosis لغير المالك => 403') &&
     read('engine/tests/facebook.connector.test.ts').includes('يعلن صراحةً غياب حقل business على عقدة التطبيق'),
     'اختبار يحمي المسار: 401 بلا جلسة، 403 لغير المالك، وإعلان غياب حقل business بلا اختراع');
+  add('facebook-app-roles-read',
+    read('engine/social/facebook.ts').includes('async getAppRoles(') &&
+    read('engine/social/facebook.ts').includes('/roles') &&
+    server.includes('facebookClient().getAppRoles({clientId:appId,clientSecret:appSecret})') &&
+    server.includes('adminUserIds'),
+    'يقرأ أدوار المطوّر من Graph (GET /{app-id}/roles) ويكشف معرّف المستخدم الفعلي المدرَج أدمن — مفتاح تشخيص «لا تملك التطبيق»');
+  add('facebook-user-businesses-read',
+    read('engine/social/facebook.ts').includes('async listUserBusinesses(') &&
+    read('engine/social/facebook.ts').includes("'/me/businesses'") &&
+    server.includes('listUserBusinesses(userToken)') &&
+    server.includes('facebookUserToken'),
+    'يقرأ الحافظات التي يراها رمز المستخدم المخزّن (/me/businesses) لإثبات هوية الحساب — الرمز لا يُعاد ولا يُسجَّل');
+  add('facebook-business-owned-apps-probe',
+    read('engine/social/facebook.ts').includes('async listBusinessOwnedApps(') &&
+    read('engine/social/facebook.ts').includes('/owned_apps') &&
+    server.includes('listBusinessOwnedApps({businessId,userAccessToken:userToken})') &&
+    server.includes('containsOurApp'),
+    'إثبات عكسي قراءة-فقط (GET /{business-id}/owned_apps) يكشف هل التطبيق ضمن الحافظة — لا ينفّذ أي ربط');
+  add('facebook-you-dont-own-this-app-documented',
+    server.includes('youDontOwnThisApp') &&
+    server.includes('الملف الشخصي الإضافي على فيسبوك يحمل User ID مختلفاً') &&
+    server.includes('twoFactorFix'),
+    'يوثّق حسم تناقض «لا تملك هذا التطبيق» (هوية الملف الإضافي) + إصلاح 2FA المرتبط بفشل إضافة الأصول');
+  add('facebook-graph-api-link-alternatives-documented',
+    server.includes('graphApiAlternatives') &&
+    server.includes('/{business_id}/client_apps') &&
+    server.includes("requiredPermission:\"business_management\"") &&
+    server.includes('executesAutomatically:false'),
+    'يوثّق المسارين البرمجيين الرسميين للربط (client_apps بمعامل app_id / owned_apps) بصلاحية business_management — للتوثيق فقط ولا يُنفَّذان');
+  add('facebook-biz-diag-read-only-no-post',
+    /getAppRoles[\s\S]{0,900}?method: 'GET'/.test(read('engine/social/facebook.ts')) &&
+    /listUserBusinesses[\s\S]{0,900}?method: 'GET'/.test(read('engine/social/facebook.ts')) &&
+    /listBusinessOwnedApps[\s\S]{0,900}?method: 'GET'/.test(read('engine/social/facebook.ts')) &&
+    server.includes('executesAutomatically:false'),
+    'دوال التشخيص الثلاث (الأدوار/الحافظات/التطبيقات) تستخدم GET فقط — لا ينفّذ أي ربط تلقائياً');
 
   // 10) AGENTS.md: عدد فحوصات final-audit مطابق للفعلي (يُعَدّ من نص الملف نفسه).
   const auditCount = (read('final-audit.mjs').match(/^\s*add\(/gm) || []).length;

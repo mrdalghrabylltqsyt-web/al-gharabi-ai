@@ -130,6 +130,12 @@ services:
       # Render dashboard only — never in Git and never logged.
       - key: FACEBOOK_LOGIN_CONFIG_ID
         sync: false
+      # Business Portfolio ID (optional; used only by the read-only diagnostic
+      # /api/platforms/facebook/business-link-diagnosis to probe backwards whether
+      # the app is owned by the portfolio via GET /{business-id}/owned_apps).
+      # Never performs any link. Never put the value in the repository or logs.
+      - key: FACEBOOK_BUSINESS_ID
+        sync: false
       # Meta (Instagram):
       - key: INSTAGRAM_OAUTH_CLIENT_ID
         sync: false

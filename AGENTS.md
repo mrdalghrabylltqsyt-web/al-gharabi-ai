@@ -44,7 +44,7 @@ npm install
 npm run dev            # tsx server.ts
 npm run lint           # tsc --noEmit
 npm run build          # vite build + esbuild server.ts -> dist/server.cjs
-npm run final-audit    # node final-audit.mjs (1432 فحصاً)
+npm run final-audit    # node final-audit.mjs (1438 فحصاً)
 npm test               # storage + engine + auth + ... + db + runtime
 ```
 - التشغيل الإنتاجي: `PORT=4517 NODE_ENV=production APP_URL=http://localhost:4517 node dist/server.cjs`
@@ -4911,3 +4911,58 @@ portfolio»). ارتباط التطبيق بحافظة يُثبت عكسياً �
 `facebook-business-link-diagnosis-no-block`, `facebook-business-link-diagnosis-test`
 (**1432 إجمالاً**). `npm run lint` ✅ · `npm run build` ✅ · `npm test` ✅ (113 كتلة PASSED،
 0 فشل).
+
+## حسم مطلب ربط تطبيق Facebook بحافظة الأعمال + تناقض «لا تملك هذا التطبيق» (2026-10-09)
+
+**السؤال:** كيف تُربط تطبيق (App) بحافظة أعمال (Business Portfolio) برمجياً، وما سبب رفض واجهة
+Business Suite بـ«لا تملك هذا التطبيق» رغم ظهور Administrator، وهل للـ«ملف الشخصي الإضافي» دور؟
+
+### 1) المسار البرمجي الرسمي (موثّق من Graph API Reference — لا تخمين)
+| العملية | الطلب | المعامل | الصلاحية |
+|---|---|---|---|
+| إضافة تطبيق **عميل** للحافظة | `POST /{business_id}/client_apps` | `app_id` (Required) | `business_management` |
+| تمليك التطبيق للحافظة | `POST /{business_id}/owned_apps` | — | `business_management` |
+| قراءة تطبيقات الحافظة | `GET /{business_id}/owned_apps` | — | `business_management` |
+
+كلها تحتاج **رمز مستخدم (User Access Token) أو System User Token بصلاحية `business_management`
+صادراً من شخص يملك إدارة الحافظة**. **مهم:** هذان المساران **لا يتجاوزان** تناقض «لا تملك
+التطبيق»، لأن سبب الرفض هو **هوية المستخدم** لا غياب الصلاحية.
+
+### 2) سبب «لا تملك هذا التطبيق» رغم ظهور Administrator
+الواجهة تتطلب أن يكون **المستخدم المُصادق الحالي** هو مالك التطبيق/أحد أدمنه بالمعرّف الفعلي.
+الأرجح (متوافق مع شكوى المالك): **الملف الشخصي الإضافي على فيسبوك (Facebook Profiles) يحمل
+معرّف مستخدم (User ID) مختلفاً فعلاً**، ودور Administrator مربوط بالمعرّف الأصلي لا بالملف
+الإضافي. فالمعرّف المُدرَج أدمن ليس هو من يفتح Business Suite حالياً ⇒ رفض. (منصة الأعمال/أدوات
+المطوّرين قد لا تُدار بكامل الوظائف من ملف إضافي.)
+- **إثبات عدم التطابق:** `GET /{app-id}/roles` يكشف **معرّف المستخدم الفعلي** المدرَج أدمن؛
+  يُقارَن بمعرّف المستخدم الذي تفتح به business.facebook.com.
+- **الحلول:** تسجيل الدخول بالحساب/الملف الذي معرّفه يساوي المعرّف المُدرَج أدمن (الحساب
+  الأصلي أولى من الملف الإضافي)؛ ثم خروج/دخول كامل وانتظار تزامن الأدوار؛ وإن تكرّر الرفض مع
+  تطابق المعرّف فـ Business Support Home → «Business Manager admin dispute/claim».
+- **إصلاح مرتبط آخر:** فشل حفظ عام عند إضافة أصول عادة سببه طلب **2FA داخلية** تُخفيها Meta
+  خلف نفس الرسالة العامة → أكمل 2FA ثم أعد المحاولة.
+
+### 3) التشخيص القراءة-فقط (موجود في المسار المحمي owner فقط — لا ينفّذ أي ربط)
+وُسّع `GET /api/platforms/facebook/business-link-diagnosis` بثلاث قراءات Graph إضافية:
+- `appRoles` (`GET /{app-id}/roles`) — معرّف المستخدم الفعلي المدرَج أدمن + `adminUserIds`.
+- `userBusinesses` (`GET /me/businesses?fields=id,name,permitted_roles`) — الحافظات التي
+  يراها **رمز المستخدم المخزّن** (يثبت هوية الحساب؛ لا يُعاد الرمز).
+- `businessOwnedApps` (`GET /{business-id}/owned_apps`) — إثبات عكسي: هل تطبيقنا ضمن الحافظة؟
+  يتطلب `FACEBOOK_BUSINESS_ID` (اختياري) + رمز بصلاحية `business_management`.
+- `documentedOwnerAction.graphApiAlternatives` + `youDontOwnThisApp` + `twoFactorFix` — توثيق
+  المسارين الرسميين والحلول، بصراحة `executesAutomatically:false`. **لا يُنفَّذ أي ربط.**
+
+### 4) الخلاصة
+- الربط البرمجي **ممكن رسمياً** لكنه **بنفس شروط واجهة Business Suite** (مستخدم يملك إدارة
+  الحافظة + مالك للتطبيق بالمعرّف) ⇒ **لا يتجاوز** تناقض الهوية.
+- الحل الجذري **إجراء المالك**: تسجيل الدخول بالحساب/الملف ذي المعرّف المطابق للمدرَج أدمن،
+  ثم الإضافة من Business Suite (أو استدعاء `client_apps` برمز ذلك المستخدم)، أو فتح نزاع
+  إداري مع Meta إن تطابق المعرّف وبقي الرفض. لا يوجد حل برمجي خالص.
+
+اختبارات: `facebook.connector.test.ts` = **309 فحصاً** (المجموعتان 5ب/5ج: أدوار المطوّر،
+الحافظات، الإثبات العكسي، والتوثيق — على خادم وهمي عبر `FACEBOOK_GRAPH_API_BASE`).
+فحوص final-audit الجديدة: `facebook-app-roles-read`, `facebook-user-businesses-read`,
+`facebook-business-owned-apps-probe`, `facebook-you-dont-own-this-app-documented`,
+`facebook-graph-api-link-alternatives-documented`, `facebook-biz-diag-read-only-no-post`
+(بـ`FACEBOOK_BUSINESS_ID` موثّق في `.env.example`/`render.yaml`). `npm run lint` ✅ ·
+`npm run build` ✅ · `final-audit` ✅ (**1438** فحصاً).

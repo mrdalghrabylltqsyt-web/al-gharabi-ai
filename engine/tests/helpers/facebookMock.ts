@@ -81,6 +81,15 @@ export interface FacebookMockState {
   appName?: string;
   appCompany?: string;
   appDomains?: string[];
+  /** أدوار المطوّر على التطبيق (GET /{app-id}/roles) — تُظهر معرّف المستخدم الفعلي. */
+  appRoles?: Array<{ user: string; role: string }>;
+  /** حافظات الأعمال التي يراها الرمز الحالي (GET /me/businesses). */
+  userBusinesses?: Array<{ id: string; name: string; permitted_roles: string[] }>;
+  failUserBusinesses?: boolean;
+  /** معرّف الحافظة وتطبيقاتها (GET /{business-id}/owned_apps). */
+  businessId?: string;
+  ownedApps?: string[];
+  failOwnedApps?: boolean;
 }
 
 export function createFacebookMock(state: Partial<FacebookMockState> = {}): FacebookMockState {
@@ -113,6 +122,15 @@ export function createFacebookMock(state: Partial<FacebookMockState> = {}): Face
     grantedScopes: state.grantedScopes ?? ['pages_manage_posts', 'pages_read_engagement', 'pages_show_list', 'pages_messaging'],
     debugTokenType: state.debugTokenType ?? 'PAGE',
     publishVideoError: state.publishVideoError ?? null,
+    appName: state.appName,
+    appCompany: state.appCompany,
+    appDomains: state.appDomains,
+    appRoles: state.appRoles ?? [{ user: '100000000000001', role: 'administrators' }],
+    userBusinesses: state.userBusinesses ?? [{ id: 'BIZ_999', name: 'عباس الغرابي', permitted_roles: ['ADMIN'] }],
+    failUserBusinesses: state.failUserBusinesses ?? false,
+    businessId: state.businessId ?? 'BIZ_999',
+    ownedApps: state.ownedApps ?? [state.validAppId ?? '145634995501895'],
+    failOwnedApps: state.failOwnedApps ?? false,
   };
 }
 
@@ -222,6 +240,13 @@ export async function startFacebookMockServer(
     return res.json({ data: state.pages.map((p) => ({ id: p.id, name: p.name, access_token: p.accessToken, tasks: p.tasks })) });
   });
 
+  // حافظات الأعمال التي يراها الرمز الحالي (GET /me/businesses) — تمييز هوية الحساب.
+  app.get('/:version/me/businesses', (req, res) => {
+    state.calls += 1;
+    if (state.failUserBusinesses) return res.status(400).json({ error: { message: 'Permissions error', code: 200 } });
+    return res.json({ data: state.userBusinesses });
+  });
+
   // فحص رمز الصفحة (GET /debug_token) — يستلزم app access token. يُعيد الصلاحيات
   // الممنوحة فعلاً، فتُحسم مشكلة «#100 لا صلاحية» بلا تخمين (تحديد الصلاحية الناقصة).
   // يُسجَّل قبل /:version/:pageId وإلا التقطه كصفحة اسمها debug_token.
@@ -231,6 +256,23 @@ export async function startFacebookMockServer(
     const appToken = String(req.query.access_token || '');
     if (!inputToken || !appToken) return res.status(400).json({ error: { message: 'input_token and access_token required', code: 100 } });
     return res.json({ data: { is_valid: true, type: state.debugTokenType, app_id: 'APP_UNDER_TEST', scopes: state.grantedScopes, expires_at: 0 } });
+  });
+
+  // أدوار المطوّر على التطبيق (GET /{app-id}/roles) — تُظهر معرّف المستخدم الفعلي.
+  app.get('/:version/:appId/roles', (req, res) => {
+    const { appId } = req.params;
+    state.calls += 1;
+    if (appId !== state.validAppId) return res.status(400).json({ error: { message: 'Invalid app id', code: 100 } });
+    return res.json({ data: state.appRoles });
+  });
+
+  // تطبيقات الحافظة (GET /{business-id}/owned_apps) — إثبات عكسي قراءة-فقط.
+  app.get('/:version/:businessId/owned_apps', (req, res) => {
+    const { businessId } = req.params;
+    state.calls += 1;
+    if (state.failOwnedApps) return res.status(400).json({ error: { message: 'Permissions error', code: 200 } });
+    if (businessId !== state.businessId) return res.status(400).json({ error: { message: 'Unknown business', code: 803 } });
+    return res.json({ data: state.ownedApps.map((id) => ({ id, name: 'app' })) });
   });
 
   app.get('/:version/:pageId', (req, res) => {

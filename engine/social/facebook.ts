@@ -789,6 +789,85 @@ export class FacebookClient {
     }
   }
 
+  /**
+   * يقرأ أدوار المطوّر المعرّفة على التطبيق `GET /{app-id}/roles` (administrators/
+   * developers/testers/insights users). حاسم لتشخيص تناقض «مدرَج أدمن لكن الواجهة
+   * تقول لا تملك التطبيق»: يكشف **معرّف المستخدم الفعلي** الذي يحمل الدور، فيُقارَن
+   * بمعرّف المستخدم الذي يفتح Money Manager Business Suite (يختلف مع ملف فيسبوك
+   * إضافي). ملاحظة موثّقة: هذه العقدة **لا تُدرج** من يحمل دور الإدارة عبر الحافظة —
+   * فقط أدوار تطوير التطبيق. لا يُعاد شيء سرّي (معرّف/دور فقط).
+   */
+  async getAppRoles(input: { clientId: string; clientSecret: string }): Promise<FacebookResult<Array<{ userId: string; role: string }>>> {
+    if (!input.clientId || !input.clientSecret) return { ok: false, data: null, error: 'معرّف التطبيق وسرّه مطلوبان لقراءة أدوار التطبيق.' };
+    try {
+      const u = new URL(facebookGraphUrl(`/${encodeURIComponent(input.clientId)}/roles`, this.baseUrl));
+      u.searchParams.set('access_token', `${input.clientId}|${input.clientSecret}`);
+      const res = await this.fetchImpl(u.toString(), { method: 'GET' });
+      const data = await res.json().catch(() => null);
+      if (!res.ok || data?.error) {
+        const ex = logAndExtractFacebookError(data, `GET /${input.clientId}/roles`, res.status);
+        return { ok: false, data: null, error: errorMessage(data, 'تعذّر قراءة أدوار التطبيق من Graph API.'), providerCode: ex.providerCode, providerSubcode: ex.providerSubcode, providerTraceId: ex.providerTraceId };
+      }
+      const roles = (Array.isArray(data?.data) ? data.data : [])
+        .filter((r: any) => r?.user)
+        .map((r: any) => ({ userId: String(r.user), role: r.role ? String(r.role) : 'unknown' }));
+      return { ok: true, data: roles };
+    } catch (e: any) {
+      return { ok: false, data: null, error: String(e?.message || 'فشل الاتصال بـFacebook.') };
+    }
+  }
+
+  /**
+   * يسرد الحافظات (Business Portfolios) التي يملك المستخدم دوراً فيها
+   * `GET /me/businesses?fields=id,name,permitted_roles` برمز المستخدم الحقيقي.
+   * الغرض: إثبات أن الرمز الحالي (الذي يفتح به المالك لوحة الأعمال) **يرى الحافظة
+   * فعلاً** — فيُميّز أن الحافظة تحت مستخدم مختلف (ملف إضافي/حساب آخر). لا سرّ.
+   */
+  async listUserBusinesses(userAccessToken: string): Promise<FacebookResult<Array<{ businessId: string; name: string | null; permittedRoles: string[] }>>> {
+    if (!userAccessToken) return { ok: false, data: null, error: 'رمز المستخدم غير متوفر.' };
+    try {
+      const u = new URL(facebookGraphUrl('/me/businesses', this.baseUrl));
+      u.searchParams.set('fields', 'id,name,permitted_roles');
+      u.searchParams.set('access_token', userAccessToken);
+      const res = await this.fetchImpl(u.toString(), { method: 'GET' });
+      const data = await res.json().catch(() => null);
+      if (!res.ok || data?.error) {
+        const ex = logAndExtractFacebookError(data, 'GET /me/businesses', res.status);
+        return { ok: false, data: null, error: errorMessage(data, 'تعذّر جلب حافظات الأعمال من Graph API.'), providerCode: ex.providerCode, providerSubcode: ex.providerSubcode, providerTraceId: ex.providerTraceId };
+      }
+      const businesses = (Array.isArray(data?.data) ? data.data : [])
+        .filter((b: any) => b?.id)
+        .map((b: any) => ({ businessId: String(b.id), name: b.name ? String(b.name) : null, permittedRoles: Array.isArray(b.permitted_roles) ? b.permitted_roles.map((r: any) => String(r)) : [] }));
+      return { ok: true, data: businesses };
+    } catch (e: any) {
+      return { ok: false, data: null, error: String(e?.message || 'فشل الاتصال بـFacebook.') };
+    }
+  }
+
+  /**
+   * إثبات عكسي قراءة-فقط لارتباط التطبيق بحافظة: `GET /{business-id}/owned_apps`
+   * برمز المستخدم. يعيد قائمة معرّفات التطبيقات المملوكة للحافظة. **لا ينفّذ أي
+   * ربط** — قراءة فقط. غياب الصلاحية/الجلسة يُعلن بصدق بلا اختراع.
+   */
+  async listBusinessOwnedApps(input: { businessId: string; userAccessToken: string }): Promise<FacebookResult<string[]>> {
+    if (!input.businessId || !input.userAccessToken) return { ok: false, data: null, error: 'معرّف الحافظة ورمز المستخدم مطلوبان.' };
+    try {
+      const u = new URL(facebookGraphUrl(`/${encodeURIComponent(input.businessId)}/owned_apps`, this.baseUrl));
+      u.searchParams.set('fields', 'id,name');
+      u.searchParams.set('access_token', input.userAccessToken);
+      const res = await this.fetchImpl(u.toString(), { method: 'GET' });
+      const data = await res.json().catch(() => null);
+      if (!res.ok || data?.error) {
+        const ex = logAndExtractFacebookError(data, `GET /${input.businessId}/owned_apps`, res.status);
+        return { ok: false, data: null, error: errorMessage(data, 'تعذّر قراءة تطبيقات الحافظة (يلزم رمز مستخدم بصلاحية business_management).'), providerCode: ex.providerCode, providerSubcode: ex.providerSubcode, providerTraceId: ex.providerTraceId };
+      }
+      const apps = (Array.isArray(data?.data) ? data.data : []).filter((a: any) => a?.id).map((a: any) => String(a.id));
+      return { ok: true, data: apps };
+    } catch (e: any) {
+      return { ok: false, data: null, error: String(e?.message || 'فشل الاتصال بـFacebook.') };
+    }
+  }
+
   /** يسرد صفحات المستخدم مع رمز كل صفحة ومهامها (GET /me/accounts). */
   async listManagedPages(userAccessToken: string): Promise<FacebookResult<FacebookPageIdentity[]>> {
     if (!userAccessToken) return { ok: false, data: null, error: 'رمز المستخدم غير متوفر.' };

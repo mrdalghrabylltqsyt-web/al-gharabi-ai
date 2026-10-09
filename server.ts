@@ -2592,6 +2592,14 @@ function facebookAppSecret(): string {
 }
 /** رمز تحقق الاشتراك: من الاعتماد المحفوظ ثم البيئة. */
 function facebookVerifyToken(): string { return FACEBOOK_VERIFY_TOKEN_ENV; }
+/**
+ * رمز المستخدم المخزّن (المالك الذي أكمل الربط). يُستخدم في التشخيص القراءة-فقط
+ * لإثبات هوية المستخدم والحافظات التي يراها — لا يُعاد ولا يُسجَّل أبداً.
+ */
+function facebookUserToken(): string | null {
+  const stored = getProviderToken("facebook");
+  return stored?.userAccessToken ? String(stored.userAccessToken) : null;
+}
 /** قاعدة حوار Meta (قابلة للتجاوز في الاختبار فقط فلا يلمس مزوداً حقيقياً). */
 function metaDialogBase(): string {
   return envSecret("FACEBOOK_DIALOG_BASE") || "https://www.facebook.com";
@@ -4389,7 +4397,7 @@ app.get("/api/platforms/facebook/business-link-diagnosis", requireOwner, async (
   const cfg=OAUTH_CONFIG["facebook"];
   const appId=String(cfg?.clientId||"");
   const appSecret=String(cfg?.clientSecret||"");
-  const envNames=["FACEBOOK_OAUTH_CLIENT_ID","FACEBOOK_OAUTH_CLIENT_SECRET","FACEBOOK_APP_SECRET","FACEBOOK_VERIFY_TOKEN","FACEBOOK_LOGIN_CONFIG_ID","META_ALLOW_SCOPE_WITHOUT_CONFIG"];
+  const envNames=["FACEBOOK_OAUTH_CLIENT_ID","FACEBOOK_OAUTH_CLIENT_SECRET","FACEBOOK_APP_SECRET","FACEBOOK_VERIFY_TOKEN","FACEBOOK_LOGIN_CONFIG_ID","FACEBOOK_BUSINESS_ID","META_ALLOW_SCOPE_WITHOUT_CONFIG"];
   // إثبات صحة بيانات التطبيق (client_credentials) — نفس الإثبات المستخدم في oauth/start.
   const appToken=appId&&appSecret?await facebookClient().fetchAppAccessToken({clientId:appId,clientSecret:appSecret}):{kind:"unknown" as const,message:"معرّف التطبيق أو سرّه غير مضبوط في بيئة الخادم.",code:null};
   // قراءة عقدة التطبيق فعلياً (client_id|client_secret) — تُظهر الحقول المعلنة الحقيقية.
@@ -4397,6 +4405,16 @@ app.get("/api/platforms/facebook/business-link-diagnosis", requireOwner, async (
   const resolvedConfig=loginConfigInspection("facebook");
   const scopesResolved=facebookOAuthScopes();
   const scopeGaps=facebookScopeDependencyGaps();
+  // أدوار المطوّر على التطبيق: تكشف **معرّف المستخدم الفعلي** المدرَج أدمن (السبب
+  // المُرجَّح لتناقض «لا تملك التطبيق» عند استخدام ملف فيسبوك إضافي مختلف المعرّف).
+  const appRoles=appId&&appSecret?await facebookClient().getAppRoles({clientId:appId,clientSecret:appSecret}):{ok:false as const,data:null,error:"غير مضبوط"};
+  // رمز مستخدم المالك المخزّن (لا يُعاد) لإثبات هوية المستخدم الذي أكمل الربط.
+  const userToken=facebookUserToken();
+  // الحافظات التي يراها **هذا المستخدم** فعلاً عبر رمزه — يميّز أن الحافظة تحت مستخدم آخر.
+  const userBusinesses=userToken?await facebookClient().listUserBusinesses(userToken):{ok:false as const,data:null,error:"لا رمز مستخدم مخزّن (لم يُكمل المالك ربط Facebook)."};
+  // إثبات عكسي قراءة-فقط: هل يظهر تطبيقنا ضمن تطبيقات الحافظة (يتطلب معرّف الحافظة + رمز بصلاحية إدارة أعمال).
+  const businessId=String(envSecret("FACEBOOK_BUSINESS_ID")||"").trim();
+  const ownedApps=businessId&&userToken?await facebookClient().listBusinessOwnedApps({businessId,userAccessToken:userToken}):{ok:false as const,data:null,error:businessId?"لا رمز مستخدم مخزّن.":"معرّف الحافظة غير مضبوط (FACEBOOK_BUSINESS_ID) — اختياري للفحص العكسي."};
   res.json({
     success:true,
     platform:"facebook",
@@ -4433,6 +4451,37 @@ app.get("/api/platforms/facebook/business-link-diagnosis", requireOwner, async (
       reverseRoute:{method:"GET",path:"/{business-id}/owned_apps",requiresOwnerBusinessSession:true},
       howToProveLink:"GET /{business-id}/owned_apps برمز مستخدم يملك إدارة الحافظة؛ يعود بالأسماء/المعرّفات للمالك، وفارغاً لو لم يكن التطبيق ضمنها (أو لو غابت صلاحية إدارة الأعمال). يتطلب جلسة المالك ولا ينفّذه أي وكيل.",
     },
+    /**
+     * أدوار المطوّر على التطبيق من Graph (لا من الواجهة). **معرّف المستخدم الفعلي**
+     * المدرَج أدمن هو مفتاح التشخيص: إن اختلف عن معرّف المستخدم الذي يفتح لوحة
+     * الأعمال فالمشكلة «هوية» (ملف فيسبوك إضافي/حساب آخر) لا «صلاحية».
+     * ملاحظة موثّقة (Graph App/roles): العقدة لا تُدرج من يحمل الإدارة عبر الحافظة.
+     */
+    appRoles:appRoles.ok
+      ?{ok:true,count:(appRoles.data||[]).length,roles:appRoles.data||[],adminUserIds:(appRoles.data||[]).filter((r:any)=>String(r.role)==="administrators").map((r:any)=>r.userId),note:"administrators هنا = من يحمل دور تطوير التطبيق (roles في developers.facebook.com). قد لا يشمل من يحمل الإدارة عبر الحافظة."}
+      :{ok:false,error:(appRoles as any).error||null},
+    /**
+     * الحافظات التي يراها **الرمز الحالي** فعلاً (GET /me/businesses). يثبت أن
+     * المستخدم الذي أكمل الربط عضو في الحافظة؛ وغياب الحافظة هنا يعني أن الحافظة
+     * تحت مستخدم آخر (ملف إضافي). لا يُعاد أي رمز.
+     */
+    userBusinesses:userBusinesses.ok
+      ?{ok:true,count:(userBusinesses.data||[]).length,businesses:userBusinesses.data||[],note:"الحافظات التي يراها الرمز الحالي عبر /me/businesses."}
+      :{ok:false,error:(userBusinesses as any).error||null},
+    /**
+     * إثبات عكسي قراءة-فقط (لا ربط): هل يظهر تطبيقنا ضمن تطبيقات الحافظة؟
+     * يتطلب FACEBOOK_BUSINESS_ID + رمز مستخدم بصلاحية business_management؛ وغيابه
+     * يُعلن بصدق ولا يُخترع ارتباط.
+     */
+    businessOwnedApps:{
+      businessIdConfigured:Boolean(businessId),
+      attempted:Boolean(businessId&&userToken),
+      ok:ownedApps.ok,
+      ownedAppIds:ownedApps.ok?(ownedApps.data||[]):null,
+      containsOurApp:ownedApps.ok?(ownedApps.data||[]).includes(appId):null,
+      error:ownedApps.ok?null:((ownedApps as any).error||null),
+      note:"قراءة فقط عبر GET /{business-id}/owned_apps — لا ينفّذ أي ربط. غياب معرّف الحافظة/الصلاحية يُعلن صراحةً.",
+    },
     // الإجراء الخارجي الموثّق (لا ينفّذه أي وكيل): إضافة التطبيق كأصل أعمال في
     // حافظة المالك. وثيقة Meta: «Settings in Meta Business Suite → Apps under
     // Accounts → Add app»، و«app owned by your organisation» أصل أعمال؛ وبعد
@@ -4448,6 +4497,46 @@ app.get("/api/platforms/facebook/business-link-diagnosis", requireOwner, async (
       ],
       source:"https://www.facebook.com/business/help/2199735813629697 (Add an app to your business portfolio)",
       caveat:"الارتباط بحافظة وضغط هذه الخطوات يتطلبان جلسة المالك على Meta؛ لا ينفّذها أي وكيل برمجي. والتشخيص لا يحجب الربط الحالي لأنه يعمل فعلاً برموز موثّقة.",
+      /**
+       * المسار البرمجي الموثّق (Graph API) لربط تطبيق بحافظة — للتوثيق فقط،
+       * **لا يُنفَّذ تلقائياً**. النقطتان الرسميتان المؤكَّدتان من وثيقة Meta:
+       *  - POST /{business_id}/client_apps بمعامل `app_id` (Required) يضيف التطبيق
+       *    كتطبيق عميل للحافظة (رد read-after-write: {access_status}).
+       *  - POST /{business_id}/owned_apps يمتلك التطبيق للحافظة (بلا معاملات).
+       * كلاهما يتطلب رمز مستخدم/System User بصلاحية business_management صادراً من
+       * شخص يملك إدارة الحافظة. **ليس بديلاً عن واجهة Business Suite في حالة
+       * «لا تملك التطبيق»** — لأن الرفض سببه هوية المستخدم لا غياب الصلاحية.
+       */
+      graphApiAlternatives:{
+        addAsClientApp:{method:"POST",path:"/{business_id}/client_apps",param:"app_id",edgeDoc:"https://developers.facebook.com/docs/graph-api/reference/business/client_apps"},
+        ownApp:{method:"POST",path:"/{business_id}/owned_apps",edgeDoc:"https://developers.facebook.com/docs/graph-api/reference/business/owned_apps"},
+        requiredPermission:"business_management",
+        tokenKind:"User Access Token (أو System User Token) من شخص يملك إدارة الحافظة",
+        executesAutomatically:false,
+        warning:"هذان المساران لا يتجاوزان تناقض «لا تملك التطبيق»: عدم التطابق هو الهوية لا الصلاحية. لا يُنفَّذان من الكود.",
+      },
+      /**
+       * حسم تناقض الواجهة «لا تملك هذا التطبيق» رغم ظهور Administrator.
+       * السبب المُرجَّح (يُثبته حقل appRoles.adminUserIds): المستخدم المدرَج أدمن
+       * على التطبيق معرّفه ≠ المستخدم الذي يفتح لوحة الأعمال (Facebook Profiles /
+       * ملف شخصي إضافي = معرّف مستخدم مختلف فعلاً).
+       */
+      youDontOwnThisApp:{
+        likelyCause:"الملف الشخصي الإضافي على فيسبوك يحمل User ID مختلفاً؛ ودور Administrator على التطبيق مربوط بالمعرّف الأصلي لا بالملف الإضافي. فالمعرّف المُدرَج أدمن ليس هو من يفتح Business Suite حالياً.",
+        howToConfirm:"قارن appRoles.adminUserIds أعلاه بمعرّف المستخدم الذي تفتح به business.facebook.com (من واجهة/أدوات معرّف المستخدم). اختلافهما يكشف عدم التطابق.",
+        fixes:[
+          "افتح developers.facebook.com/apps/"+ (appId||"{APP_ID}") +"/roles وخذ معرّف المستخدم الظاهر بجانب اسم «سيد زيد الغرابي»، ثم سجّل الدخول بالحساب/الملف الذي معرّفه يساوي هذا المعرّف بالضبط.",
+          "من الأفضل استخدام «الحساب الأصلي» وليس «الملف الشخصي الإضافي» عند إدارة أدوات الأعمال والمطوّرين (المعروف أن بعض أدوات الأعمال لا تُدار بكامل الوظائف من ملف إضافي).",
+          "Sync: قد يلزم تسجيل خروج/دخول كامل (لا تبديل ملف) في المتصفح، وإعادة المحاولة بعد دقائق لأن تزامن الأدوار قد يتأخر.",
+          "إن تكرّر الرفض مع تطابق المعرّف: اضغط عبر Business Support Home → «Business Manager admin dispute / claim» مع وصف عدم التطابق، فبعض هذه الحالات عطل متزامن من Meta.",
+        ],
+        note:"هذا حد هوية/حساب على جهة Meta؛ لا يمكن لأي وكيل برمجي أن يتجاوزه لأنه يحتاج جلستك على Meta.",
+      },
+      twoFactorFix:{
+        appliesTo:"رسالة «غير قادر على تعيين الأصول» أو فشل حفظ عام عند الإضافة",
+        fix:"المشكلة المعروفة أن منصة الأعمال تطلب إكمال 2FA داخلية قبل السماح بتعيين الأصول، لكنها تُظهر رسالة الخطأ العامة نفسها بلا توجيه. أكمل 2FA (نافذة تأكيد الهوية/رمز SMS/TOTP) ثم أعد الإضافة.",
+        caveat:"يُجرَّب فقط إن لم يكن السبب عدم تطابق الهوية أعلاه.",
+      },
     },
     // حالة Configuration ID (مطلب Facebook Login for Business) — منطقي بلا أي قيمة.
     configuration:{

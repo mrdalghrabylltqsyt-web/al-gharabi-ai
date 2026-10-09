@@ -95,6 +95,8 @@ function startApp(fbBase: string, extraEnv: Record<string, string> = {}): { proc
     FACEBOOK_OAUTH_CLIENT_SECRET: 'test-fb-client-secret',
     FACEBOOK_APP_SECRET: FB_APP_SECRET,
     FACEBOOK_VERIFY_TOKEN: FB_VERIFY_TOKEN,
+    // معرّف الحافظة لتفعيل الفحص العكسي القراءة-فقط (owned_apps) في التشخيص.
+    FACEBOOK_BUSINESS_ID: 'BIZ_999',
     // مفتاح تشفير اختباري فقط (32 بايت hex) — ليس سراً واقعياً.
     PLATFORM_TOKEN_ENCRYPTION_KEY: randomBytes(32).toString('hex'),
     ...extraEnv,
@@ -423,10 +425,23 @@ async function integrationTests(): Promise<void> {
     check('يعرض حالة Configuration ID منطقية بلا قيمة', typeof bizDiag.configuration?.configured === 'boolean' && typeof bizDiag.configuration?.valid === 'boolean');
     check('يعلن قراءة-فقط Status 200 بلا أي سرّ', bizDiag.success === true && !JSON.stringify(bizDiag).includes(FB_APP_SECRET) && !JSON.stringify(bizDiag).includes('test-fb-client-secret'));
     check('البوابة الافتراضية تسمح بتمرير scope (لا حجب كاذب)', bizDiag.scopeWithoutConfigOverride === true);
+    // أدوار المطوّر من Graph: يكشف معرّف المستخدم الفعلي المدرَج أدمن (مفتاح تشخيص التناقض).
+    check('يقرأ أدوار التطبيق من Graph ويكشف معرّف الأدمن الفعلي', bizDiag.appRoles?.ok === true && bizDiag.appRoles?.count === 1 && bizDiag.appRoles?.adminUserIds?.[0] === '100000000000001', JSON.stringify(bizDiag.appRoles));
+    check('توثّق المسار البرمجي الرسمي للربط client_apps بمعامل app_id', bizDiag.documentedOwnerAction?.graphApiAlternatives?.addAsClientApp?.path === '/{business_id}/client_apps' && bizDiag.documentedOwnerAction?.graphApiAlternatives?.addAsClientApp?.param === 'app_id' && bizDiag.documentedOwnerAction?.graphApiAlternatives?.requiredPermission === 'business_management');
+    check('توثّق حسم «لا تملك هذا التطبيق» (هوية الملف الإضافي) بلا تنفيذ', Array.isArray(bizDiag.documentedOwnerAction?.youDontOwnThisApp?.fixes) && bizDiag.documentedOwnerAction.youDontOwnThisApp.fixes.length >= 3);
+    check('توثّق إصلاح 2FA لإضافة الأصول', Boolean(bizDiag.documentedOwnerAction?.twoFactorFix?.fix));
     const state = new URL(startRes.authorizationUrl).searchParams.get('state') || '';
     check('الحالة مُولَّدة قوية', state.length >= 32);
     const cbRes = await fetch(`${BASE}/api/platforms/facebook/oauth/callback?state=${encodeURIComponent(state)}&code=TESTCODE`);
     check('callback ينجح بالصفحة الواحدة', cbRes.status === 200, `status=${cbRes.status}`);
+
+    group('5ج) تكامل: تشخيص الحافظات بعد الربط (رمز المستخدم المخزّن، قراءة-فقط)');
+    const bizDiag2 = await (await fetch(`${BASE}/api/platforms/facebook/business-link-diagnosis`, { headers: auth })).json();
+    check('يرى الحافظة التي يملك فيها المستخدم دوراً (/me/businesses)', bizDiag2.userBusinesses?.ok === true && bizDiag2.userBusinesses?.businesses?.[0]?.businessId === 'BIZ_999', JSON.stringify(bizDiag2.userBusinesses));
+    check('يكشف أدوار المستخدم على الحافظة', bizDiag2.userBusinesses?.businesses?.[0]?.permittedRoles?.includes('ADMIN') === true);
+    check('إثبات عكسي: تطبيقنا يظهر ضمن تطبيقات الحافظة', bizDiag2.businessOwnedApps?.attempted === true && bizDiag2.businessOwnedApps?.ok === true && bizDiag2.businessOwnedApps?.containsOurApp === true, JSON.stringify(bizDiag2.businessOwnedApps));
+    check('التشخيص كله لا يكشف أي سرّ', !JSON.stringify(bizDiag2).includes(FB_APP_SECRET) && !JSON.stringify(bizDiag2).includes('test-fb-client-secret') && !JSON.stringify(bizDiag2).includes('PAGE_TOKEN'));
+    check('لا يُنفّذ أي ربط (الفحص قراءة-فقط)', bizDiag2.documentedOwnerAction?.graphApiAlternatives?.executesAutomatically === false);
     check('خادم Graph استُدعي فعلياً للتبادل والاشتراك', mock.state.calls > 0 && mock.state.lastSubscribe?.pageId === 'PAGE_123');
     check('الاشتراك استُخدم بحقول feed/messages', mock.state.lastSubscribe?.fields.includes('feed') === true && mock.state.lastSubscribe?.fields.includes('messages') === true);
     // إصلاح #100 الجذري: مسار الربط لا يستدعي GET /{page-id} إطلاقاً (يستخدم رمز
