@@ -1,213 +1,38 @@
 import React from 'react';
 import { useApp } from '../../context/AppContext';
 import {
-  LayoutDashboard,
-  Share2,
-  Sparkles,
-  ShieldCheck,
-  MessageSquare,
-  Database,
-  Bot,
-  BarChart3,
-  Calendar,
-  Users,
-  X,
-  Package,
-  BadgePercent,
-  CheckCircle2,
-  ServerCog,
-  Search,
-  ClipboardList,
-  Brain,
-  PlugZap,
-  CloudUpload,
-  Home,
-  Send,
-  Settings,
-  Youtube,
+  Package, BadgePercent, CheckCircle2, X, ChevronDown, Search as SearchIcon,
 } from 'lucide-react';
+import {
+  NAV_SECTIONS,
+  visibleSectionBranches,
+  sectionLeafIds,
+  searchNav,
+} from './navConfig';
+import type { NavLeaf, NavBranch, NavSection } from './navConfig';
 
-// ─────────────────────────────────────────────────────────────────────────────
-// خريطة التنقل الموحّدة — مصدر واحد للحقيقة (توحيد الواجهة).
-//
-// الجذر: كانت القائمة ~20 قسماً مستقلاً متداخلاً الوظائف (عقل/وكيل/سوشيال/تحليل/
-// جدولة/نسخ…). وُحّدت إلى **خمسة أقسام رئيسية** يطابق كل منها مرحلة من دورة العمل:
-//   الرئيسية = حالة النظام وملخص العمل والتنبيهات.
-//   النشر = إنشاء المحتوى ← اعتماد ← جدولة ← نشر ← نتائج.
-//   الزبائن = التعليقات والرسائل والردود.
-//   المنتجات = مستودع المنتجات والأسعار.
-//   الإعدادات = ربط المنصات والصلاحيات والنظام (وفيه مجموعة المالك التقنية).
-// كل صفحة قائمة سابقة تبقى **متصلة** داخل القسم المناسب (لا حذف وظائف)؛ الوحدات
-// المتداخلة (العقول/الوكلاء) دُمجت تحت القسم ذي العلاقة بدل أقسام منفصلة.
-// ─────────────────────────────────────────────────────────────────────────────
+// نُعيد التصدير حفاظاً على أي مستورد قديم (لا كسر للتبعيات).
+export type { NavLeaf, NavBranch, NavSection } from './navConfig';
+export {
+  NAV_SECTIONS,
+  LEGACY_ERP_NAV_ENABLED,
+  LEGACY_ERP_TAB_IDS,
+  visibleBranchItems,
+  visibleSectionBranches,
+  sectionLeafIds,
+  allNavBranches,
+  searchNav,
+} from './navConfig';
 
-export interface NavLeaf {
-  id: string;
-  label: string;
-  desc: string;
-  icon: React.ComponentType<{ className?: string }>;
-  ownerOnly?: boolean;
-}
-export interface NavGroup { title: string; items: NavLeaf[]; }
-export interface NavSection {
-  id: string;
-  label: string;
-  desc: string;
-  icon: React.ComponentType<{ className?: string }>;
-  ownerOnly?: boolean;
-  /** وصف المسار الموحّد لكل قسم (يُعرض في صفحة القسم). */
-  flow: string;
-  groups: NavGroup[];
+/** توافق خلفي: الاسم القديم يعيد الفروع بصيغة {title, items}. */
+export function visibleSectionGroups(section: NavSection, isOwner: boolean) {
+  return visibleSectionBranches(section, isOwner).map((b) => ({ title: b.title, items: b.items }));
 }
 
-export const NAV_SECTIONS: NavSection[] = [
-  {
-    id: 'section_home',
-    label: 'مركز القيادة والعقل',
-    desc: 'حالة النظام وملخص العمل والتنبيهات',
-    icon: Home,
-    flow: 'نظرة موحّدة: ما يعمل، ما يحتاج إجراءً، ومهام العقل المعلّقة.',
-    groups: [
-      {
-        title: 'مركز القيادة',
-        items: [
-          { id: 'command_center', label: 'مركز القيادة', desc: 'حالة النظام، ملخص العمل، والتنبيهات', icon: LayoutDashboard },
-          { id: 'dashboard', label: 'لوحة التحكم الرئيسية', desc: 'المؤشرات والعمليات الحالية', icon: LayoutDashboard },
-        ],
-      },
-      {
-        title: 'العقل المركزي',
-        items: [
-          { id: 'central_brain', label: 'العقل المركزي متعدد المنصات', desc: 'ذكاء المحتوى والتعلّم والتوصيات لكل المنصات', icon: Brain },
-          { id: 'brain_manager', label: 'العقل المفكر', desc: 'تحليل المواقف الميدانية واستنتاج القرار', icon: Brain },
-          { id: 'central_agent', label: 'العقل المركزي التنفيذي', desc: 'مهمة ← تخطيط ← أدوات ← تنفيذ ← تحقق ← سجل', icon: Bot },
-        ],
-      },
-      {
-        title: 'أدوات وعمليات',
-        items: [
-          { id: 'search', label: 'البحث الموحد', desc: 'بحث سريع في بيانات النظام', icon: Search },
-          { id: 'operations', label: 'مركز العمليات والمتابعة', desc: 'العملاء المحتملون والمهام والمتابعات', icon: ClipboardList },
-        ],
-      },
-    ],
-  },
-  {
-    id: 'section_publish',
-    label: 'النشر والمنصات',
-    desc: 'إنشاء المحتوى، اختيار المنصات، النشر والجدولة والنتائج',
-    icon: Send,
-    flow: 'إنشاء ← فحص التوافق ← اعتماد ← نشر/جدولة ← متابعة النتيجة لكل منصة.',
-    groups: [
-      {
-        title: 'دورة المحتوى',
-        items: [
-          { id: 'content', label: 'إنشاء المحتوى', desc: 'توليد منشورات وتعديل النص لكل منصة', icon: Sparkles },
-          { id: 'approval', label: 'الموافقة والاعتماد', desc: 'حوكمة النشر والمراجعة قبل النشر الموحّد', icon: ShieldCheck },
-          { id: 'calendar', label: 'الجدولة والتقويم', desc: 'جدولة المنشورات حسب الأيام', icon: Calendar },
-        ],
-      },
-      {
-        title: 'المنصات والنتائج',
-        items: [
-          { id: 'social', label: 'حالة المنصات', desc: 'حالة الحسابات وقدرات النشر لكل منصة', icon: Share2 },
-          { id: 'social_manager', label: 'مدير النشر', desc: 'النشر والتعليقات والتحليل لكل منصة', icon: Bot },
-          { id: 'analytics', label: 'التحليلات والنتائج', desc: 'المشاهدات والوصول والتفاعل', icon: BarChart3 },
-        ],
-      },
-      {
-        title: 'عقل التسويق',
-        items: [
-          { id: 'agent', label: 'الوكيل الذكي المركزي', desc: 'استراتيجيات التسويق والأداء', icon: Sparkles },
-          { id: 'marketing_agent', label: 'وكيل صياغة المحتوى', desc: 'مهمة → محتوى عربي جاهز', icon: Sparkles },
-        ],
-      },
-    ],
-  },
-  {
-    id: 'section_customers',
-    label: 'الزبائن والتفاعلات',
-    desc: 'التعليقات والرسائل والردود والمتابعة',
-    icon: MessageSquare,
-    flow: 'قراءة التفاعل ← فهم السؤال والمنتج ← رد عامي عراقي ← متابعة/تصعيد للمالك.',
-    groups: [
-      {
-        title: 'صندوق الوارد',
-        items: [
-          { id: 'customers', label: 'صندوق الوارد الموحّد', desc: 'التعليقات والرسائل والردود والمتابعة', icon: MessageSquare },
-        ],
-      },
-    ],
-  },
-  {
-    id: 'section_products',
-    label: 'المنتجات والمعرفة',
-    desc: 'البحث في المستودع وإدارة المنتجات والأسعار',
-    icon: Package,
-    flow: 'المصدر الوحيد للحقيقة التجارية: السعر/المواصفات/التقسيط المسجّلة فعلاً.',
-    groups: [
-      {
-        title: 'المستودع',
-        items: [
-          { id: 'database', label: 'مستودع المنتجات والأسعار', desc: 'المنتجات، الأقساط، والسياسات', icon: Database },
-        ],
-      },
-    ],
-  },
-  {
-    id: 'section_settings',
-    label: 'الإعدادات والتشغيل',
-    desc: 'ربط المنصات والصلاحيات وسياسات التشغيل',
-    icon: Settings,
-    flow: 'ربط المنصات ← الصلاحيات ← سياسات التشغيل ← (للمالك: التقني والتعافي).',
-    groups: [
-      {
-        title: 'الربط والصلاحيات',
-        items: [
-          { id: 'platform_connections', label: 'ربط المنصات', desc: 'حالة كل منصة والإجراء التالي لتفعيلها', icon: PlugZap },
-          { id: 'users', label: 'المستخدمون والصلاحيات', desc: 'أدوار الفريق وصلاحيات النشر', icon: Users },
-        ],
-      },
-      {
-        title: 'النظام',
-        items: [
-          { id: 'system', label: 'مراقبة النظام', desc: 'سلامة النظام والنسخ وسجل العمليات', icon: ServerCog, ownerOnly: true },
-        ],
-      },
-      {
-        title: 'الأتمتة',
-        items: [
-          { id: 'youtube_operations', ownerOnly: true, label: 'مدير تشغيل YouTube', desc: 'مراقبة القناة والتعليقات والرد الآلي والتحكم', icon: Youtube },
-        ],
-      },
-      {
-        title: 'تقني (للمالك)',
-        items: [
-          { id: 'cloud_backup', ownerOnly: true, label: 'التعافي والنسخ السحابي', desc: 'منظومة تعافٍ كاملة: CURRENT + نقاط استعادة + استعادة معزولة', icon: CloudUpload },
-        ],
-      },
-    ],
-  },
-];
-
-// SCOPE ISOLATION (LEGACY ERP): أسطح Inventory/CRM/Finance/Customers-360/Purchases/
-// خارج نطاق المشروع المعلن (سوشيال + AI + تسويق)، ومعزولة على الخادم افتراضياً
-// (404 SCOPE_DISABLED) — بما فيها المبيعات/المالية/دليل العملاء (sales/control).
-// نخفي مداخلها كي لا تُعرض واجهات غير قابلة للاستخدام. تُعاد بإطفاء العزل على
-// الخادم (GHARABI_ENABLE_LEGACY_ERP_SCOPE=true) وضبط هذا الثابت true.
-const LEGACY_ERP_NAV_ENABLED = false;
-const LEGACY_ERP_TAB_IDS = new Set(['executive', 'business', 'finance', 'inventory', 'reports', 'sales', 'control']);
-
-/** الأوراق الظاهرة في قسمٍ ما بحسب دور المستخدم (نسخة واحدة للقائمة وصفحة القسم). */
-export function visibleSectionGroups(section: NavSection, isOwner: boolean): NavGroup[] {
-  return section.groups
-    .map((g) => ({ ...g, items: g.items.filter((item) => (!item.ownerOnly || isOwner) && (LEGACY_ERP_NAV_ENABLED || !LEGACY_ERP_TAB_IDS.has(item.id))) }))
-    .filter((g) => g.items.length > 0);
-}
-
-/** كل معرّفات الأوراق داخل قسم (لتمييز «نشط» عند فتح أي صفحة تابعة). */
-export function sectionLeafIds(section: NavSection): string[] {
-  return section.groups.flatMap((g) => g.items.map((i) => i.id));
+/** يفتح الفرع الأول من القسم إن كانت الورقة النشطة داخله (يظهر مكان المستخدم). */
+function activeSectionFirstBranch(section: NavSection, activeTab: string): string {
+  const branch = section.branches.find((b) => b.items.some((i) => i.id === activeTab));
+  return branch ? branch.id : '';
 }
 
 interface SidebarProps {
@@ -215,9 +40,63 @@ interface SidebarProps {
   onCloseMobile: () => void;
 }
 
+const EXPANDED_KEY = 'gharabi-nav-expanded-v1';
+
+const readExpanded = (): { sections: string[]; branches: string[] } => {
+  try {
+    const raw = localStorage.getItem(EXPANDED_KEY);
+    if (raw) {
+      const p = JSON.parse(raw);
+      return { sections: Array.isArray(p.sections) ? p.sections : [], branches: Array.isArray(p.branches) ? p.branches : [] };
+    }
+  } catch { /* تجاهل */ }
+  return { sections: [], branches: [] };
+};
+
 export const Sidebar: React.FC<SidebarProps> = ({ mobileOpen, onCloseMobile }) => {
   const { activeTab, setActiveTab, notificationBadge, currentUser, showroomInfo } = useApp();
   const isOwner = currentUser?.role === 'owner';
+
+  const [query, setQuery] = React.useState('');
+  const [expandedSections, setExpandedSections] = React.useState<string[]>([]);
+  const [expandedBranches, setExpandedBranches] = React.useState<string[]>([]);
+
+  // استرجاع حالة الفتح من التخزين المحلي (يحافظ على تنقّل المالك قدر الإمكان).
+  React.useEffect(() => {
+    const s = readExpanded();
+    setExpandedSections(s.sections);
+    setExpandedBranches(s.branches);
+  }, []);
+
+  // القسم الحاوي للورقة النشطة يُفتح تلقائياً (يظهر مكان المستخدم).
+  React.useEffect(() => {
+    const section = NAV_SECTIONS.find((s) => s.id === activeTab || sectionLeafIds(s).includes(activeTab));
+    if (section) {
+      setExpandedSections((prev) => (prev.includes(section.id) ? prev : [...prev, section.id]));
+    }
+  }, [activeTab]);
+
+  const persist = (sections: string[], branches: string[]) => {
+    try { localStorage.setItem(EXPANDED_KEY, JSON.stringify({ sections, branches })); } catch { /* تجاهل */ }
+  };
+
+  const toggleSection = (id: string) => {
+    setExpandedSections((prev) => {
+      const next = prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id];
+      persist(next, expandedBranches);
+      return next;
+    });
+    // فتح القسم يعرض صفحته الموحّدة أيضاً (يحافظ على سلوك التنقل السابق).
+    if (!expandedSections.includes(id)) setActiveTab(id);
+  };
+
+  const toggleBranch = (id: string) => {
+    setExpandedBranches((prev) => {
+      const next = prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id];
+      persist(expandedSections, next);
+      return next;
+    });
+  };
 
   const badgeFor = (leafId: string): string | null => {
     if (leafId === 'approval' && notificationBadge.pendingReviews > 0) return `${notificationBadge.pendingReviews} معلق`;
@@ -226,12 +105,17 @@ export const Sidebar: React.FC<SidebarProps> = ({ mobileOpen, onCloseMobile }) =
     return null;
   };
 
-  const handleItemClick = (id: string) => {
+  const handleLeafClick = (id: string) => {
     setActiveTab(id);
     onCloseMobile();
   };
 
-  const visibleSections = NAV_SECTIONS.filter((s) => !s.ownerOnly || isOwner);
+  const searching = query.trim().length > 0;
+  const sectionsToRender = searching
+    ? searchNav(query, isOwner)
+    : NAV_SECTIONS.filter((s) => !s.ownerOnly || isOwner);
+
+  const isSectionExpanded = (id: string) => searching || expandedSections.includes(id);
 
   return (
     <>
@@ -245,12 +129,12 @@ export const Sidebar: React.FC<SidebarProps> = ({ mobileOpen, onCloseMobile }) =
 
       {/* Sidebar Container */}
       <aside
-        className={`fixed lg:sticky top-0 right-0 z-50 h-screen w-72 bg-slate-900 border-l border-slate-800 flex flex-col transition-transform duration-300 ease-in-out ${
+        className={`fixed lg:sticky top-0 right-0 z-50 h-screen w-80 lg:w-72 bg-slate-900 border-l border-slate-800 flex flex-col transition-transform duration-300 ease-in-out ${
           mobileOpen ? 'translate-x-0' : 'translate-x-full lg:translate-x-0'
         }`}
       >
         {/* Top Branding Section */}
-        <div className="p-5 border-b border-slate-800 flex items-center justify-between">
+        <div className="p-4 border-b border-slate-800 flex items-center justify-between">
           <div className="flex items-center gap-3">
             <div className="w-9 h-9 rounded-xl bg-gradient-to-tr from-emerald-500 to-teal-600 flex items-center justify-center text-white font-extrabold shadow-md shadow-emerald-900/50">
               <Package className="w-5 h-5 text-white" />
@@ -261,7 +145,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ mobileOpen, onCloseMobile }) =
               </h2>
               <p className="text-[11px] text-slate-400 flex items-center gap-1">
                 <BadgePercent className="w-3 h-3 text-emerald-400" />
-                المركز الموحّد للتسويق والنشر
+                لوحة القيادة الهرمية الموحّدة
               </p>
             </div>
           </div>
@@ -274,72 +158,140 @@ export const Sidebar: React.FC<SidebarProps> = ({ mobileOpen, onCloseMobile }) =
           </button>
         </div>
 
-        {/* Navigation Items — خمسة أقسام رئيسية فقط */}
-        <div className="flex-1 overflow-y-auto px-3 py-4 space-y-1.5 custom-scrollbar">
-          <div className="px-3 pb-2 text-[10px] font-bold text-slate-400 uppercase tracking-wider">
-            أقسام النظام
+        {/* Search */}
+        <div className="px-3 pt-3">
+          <div className="relative">
+            <SearchIcon className="w-3.5 h-3.5 text-slate-500 absolute right-3 top-1/2 -translate-y-1/2" />
+            <input
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              placeholder="بحث في الأقسام والوظائف…"
+              className="w-full bg-slate-950/60 border border-slate-800 rounded-xl pr-9 pl-3 py-2 text-[12px] text-slate-200 placeholder:text-slate-500 focus:outline-none focus:border-emerald-600/60"
+              style={{ fontSize: 16 }}
+            />
+          </div>
+        </div>
+
+        {/* Navigation Tree — عناوين رئيسية ← فروع ← وظائف */}
+        <div className="flex-1 overflow-y-auto px-3 py-3 space-y-1 custom-scrollbar">
+          <div className="px-2 pb-1 text-[10px] font-bold text-slate-500 uppercase tracking-wider">
+            {searching ? 'نتائج البحث' : 'أقسام النظام'}
           </div>
 
-          {visibleSections.map((section) => {
+          {sectionsToRender.length === 0 && (
+            <p className="px-3 py-4 text-[11px] text-slate-500">لا نتائج مطابقة.</p>
+          )}
+
+          {sectionsToRender.map((section) => {
             const Icon = section.icon;
+            const branches = visibleSectionBranches(section, isOwner);
             const leaves = sectionLeafIds(section);
-            const isActive = activeTab === section.id || leaves.includes(activeTab);
-            const sectionBadge = section.groups.flatMap((g) => g.items).map((i) => badgeFor(i.id)).find(Boolean) || null;
+            const sectionActive = activeTab === section.id || leaves.includes(activeTab);
+            const open = isSectionExpanded(section.id);
+            const sectionBadge = branches.flatMap((b) => b.items).map((i) => badgeFor(i.id)).find(Boolean) || null;
 
             return (
-              <button
-                key={section.id}
-                onClick={() => handleItemClick(section.id)}
-                className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-right transition-all group relative cursor-pointer ${
-                  isActive
-                    ? 'bg-gradient-to-l from-emerald-950/80 to-emerald-900/40 text-emerald-200 border border-emerald-500/30 shadow-sm'
-                    : 'text-slate-300 hover:bg-slate-800/60 hover:text-white'
-                }`}
-              >
-                <div
-                  className={`w-8 h-8 rounded-lg flex items-center justify-center shrink-0 transition-colors ${
-                    isActive
-                      ? 'bg-emerald-500 text-white shadow-md shadow-emerald-500/30'
-                      : 'bg-slate-800 text-slate-400 group-hover:text-slate-200 group-hover:bg-slate-700'
+              <div key={section.id} className="rounded-xl">
+                {/* المستوى 1: العنوان الرئيسي (قابل للفتح/الإغلاق) */}
+                <button
+                  onClick={() => toggleSection(section.id)}
+                  className={`w-full flex items-center gap-2.5 px-2.5 py-2.5 rounded-xl text-right transition-all group cursor-pointer ${
+                    sectionActive
+                      ? 'bg-gradient-to-l from-emerald-950/80 to-emerald-900/40 text-emerald-200 border border-emerald-500/30 shadow-sm'
+                      : 'text-slate-300 hover:bg-slate-800/60 hover:text-white border border-transparent'
                   }`}
+                  aria-expanded={open}
                 >
-                  <Icon className="w-4 h-4" />
-                </div>
-
-                <div className="flex-1 min-w-0 text-right">
-                  <div className="flex items-center justify-between gap-1">
-                    <p className="text-xs font-bold truncate">{section.label}</p>
-                    {sectionBadge && (
-                      <span className="text-[10px] px-1.5 py-0.5 rounded-md font-semibold border bg-slate-800 text-slate-300 border-slate-700">
-                        {sectionBadge}
-                      </span>
-                    )}
+                  <ChevronDown className={`w-4 h-4 shrink-0 text-slate-400 transition-transform ${open ? '' : '-rotate-90'}`} />
+                  <div
+                    className={`w-8 h-8 rounded-lg flex items-center justify-center shrink-0 transition-colors ${
+                      sectionActive
+                        ? 'bg-emerald-500 text-white shadow-md shadow-emerald-500/30'
+                        : 'bg-slate-800 text-slate-400 group-hover:text-slate-200 group-hover:bg-slate-700'
+                    }`}
+                  >
+                    <Icon className="w-4 h-4" />
                   </div>
-                  <p className="text-[10px] text-slate-400 truncate">{section.desc}</p>
-                </div>
+                  <div className="flex-1 min-w-0 text-right">
+                    <div className="flex items-center justify-between gap-1">
+                      <p className="text-xs font-bold truncate">{section.label}</p>
+                      {sectionBadge && (
+                        <span className="text-[10px] px-1.5 py-0.5 rounded-md font-semibold border bg-slate-800 text-slate-300 border-slate-700">
+                          {sectionBadge}
+                        </span>
+                      )}
+                    </div>
+                    <p className="text-[10px] text-slate-400 truncate">{section.desc}</p>
+                  </div>
+                </button>
 
-                {isActive && (
-                  <div className="absolute left-1 w-1 h-6 bg-emerald-400 rounded-full" />
+                {/* المستوى 2: الفروع (قابلة للفتح/الإغلاق) والمستوى 3: الوظائف */}
+                {open && (
+                  <div className="mt-1 mr-4 pr-3 border-r border-slate-800 space-y-0.5">
+                    {branches.map((branch) => {
+                      const BIcon = branch.icon;
+                      const bOpen = searching || expandedBranches.includes(branch.id) || branch.id === activeSectionFirstBranch(section, activeTab);
+                      return (
+                        <div key={branch.id}>
+                          <button
+                            onClick={() => toggleBranch(branch.id)}
+                            className="w-full flex items-center gap-2 px-2 py-1.5 rounded-lg text-right text-slate-400 hover:text-white hover:bg-slate-800/50 transition cursor-pointer"
+                            aria-expanded={bOpen}
+                          >
+                            <ChevronDown className={`w-3.5 h-3.5 shrink-0 transition-transform ${bOpen ? '' : '-rotate-90'}`} />
+                            <BIcon className="w-3.5 h-3.5 shrink-0 text-slate-500" />
+                            <span className="text-[11px] font-bold truncate">{branch.title}</span>
+                          </button>
+
+                          {bOpen && (
+                            <div className="mt-0.5 mr-3 space-y-0.5">
+                              {branch.items.map((leaf) => {
+                                const LIcon = leaf.icon;
+                                const on = activeTab === leaf.id;
+                                const badge = badgeFor(leaf.id);
+                                return (
+                                  <button
+                                    key={`${branch.id}:${leaf.id}:${leaf.label}`}
+                                    onClick={() => handleLeafClick(leaf.id)}
+                                    className={`w-full flex items-center gap-2 px-2 py-1.5 rounded-lg text-right transition cursor-pointer ${
+                                      on
+                                        ? 'bg-emerald-500 text-slate-950 font-bold'
+                                        : 'text-slate-300 hover:bg-slate-800/70 hover:text-white'
+                                    }`}
+                                    title={leaf.desc}
+                                  >
+                                    <LIcon className={`w-3.5 h-3.5 shrink-0 ${on ? 'text-slate-950' : 'text-slate-500'}`} />
+                                    <span className="text-[11px] truncate flex-1">{leaf.label}</span>
+                                    {badge && (
+                                      <span className={`text-[9px] px-1 py-0.5 rounded font-semibold ${on ? 'bg-slate-950/20 text-slate-950' : 'bg-slate-800 text-slate-300'}`}>
+                                        {badge}
+                                      </span>
+                                    )}
+                                  </button>
+                                );
+                              })}
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
                 )}
-              </button>
+              </div>
             );
           })}
 
           <p className="px-3 pt-3 text-[10px] text-slate-500 leading-relaxed">
-            كل الأدوات القديمة ما زالت متاحة داخل الأقسام الخمسة (لا حذف لأي وظيفة).
+            كل الوظائف القديمة ما زالت متاحة داخل الأقسام (لا حذف لأي وظيفة).
           </p>
         </div>
 
-        {/* Footer info: Active User Status & Quick Showroom details */}
+        {/* Footer info */}
         <div className="p-3 border-t border-slate-800 bg-slate-950/40">
           <div className="p-2.5 rounded-xl bg-slate-800/60 border border-slate-700/50 flex items-center gap-3">
             <div className="relative">
               {currentUser?.avatar ? (
-                <img
-                  src={currentUser.avatar}
-                  alt={currentUser.name}
-                  className="w-8 h-8 rounded-lg object-cover"
-                />
+                <img src={currentUser.avatar} alt={currentUser.name} className="w-8 h-8 rounded-lg object-cover" />
               ) : (
                 <div className="w-8 h-8 rounded-lg bg-emerald-500/10 text-emerald-400 font-black text-xs flex items-center justify-center border border-emerald-500/30">
                   {currentUser?.name?.charAt(0) || 'م'}

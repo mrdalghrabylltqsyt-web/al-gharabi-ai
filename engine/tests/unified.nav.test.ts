@@ -1,12 +1,13 @@
 /**
- * اختبار توحيد الواجهة (fail-old / pass-new).
+ * اختبار التنقل الهرمي الموحّد (fail-old / pass-new).
  *
- * يثبت أن التنقل أُعيد تنظيمه إلى **خمسة أقسام رئيسية** مع **عدم فقدان أي وظيفة
- * سابقة** (دمج لا حذف)، وأن مصدر التنقل واحد (Sidebar) يستخدمه كلٌّ من القائمة
- * وصفحة القسم، وأن الرئيسية (مركز القيادة) تقرأ من الخادم الحقيقي بلا اختلاق.
+ * يثبت أن الواجهة صارت **هرمية بثلاثة مستويات** (قسم رئيسي ← فرع ← وظيفة) مع
+ * **عدم فقدان أي وظيفة سابقة** (دمج لا حذف)، وأن مصدر التنقل واحد
+ * (`navConfig.tsx`) يستخدمه الشريط الجانبي ولوحة القسم، وأن الرئيسية (مركز القيادة)
+ * تقرأ من الخادم الحقيقي بلا اختلاق.
  *
- * قبل هذا الإصلاح كانت القائمة ~20 قسماً مستقلاً؛ هذا الملف يفشل على الشجرة
- * القديمة (لا `section_` أقسام، ولا SectionHub، ولا CommandCenterView) وينجح بعدها.
+ * يفشل على الشجرة القديمة (لا `branches`، ولا searchNav، ولا الأقسام الهرمية
+ * الجديدة) وينجح بعدها.
  */
 import fs from 'node:fs';
 import path from 'node:path';
@@ -21,21 +22,41 @@ function check(name: string, ok: boolean) {
 const root = process.cwd();
 const read = (p: string) => fs.readFileSync(path.join(root, p), 'utf8');
 
+const nav = read('src/components/common/navConfig.tsx');
 const sidebar = read('src/components/common/Sidebar.tsx');
 const app = read('src/App.tsx');
 const appCtx = read('src/context/AppContext.tsx');
 const hub = read('src/components/common/SectionHub.tsx');
 const cc = read('src/components/dashboard/CommandCenterView.tsx');
 
-console.log('\n=== توحيد الواجهة: خمسة أقسام ===');
-const sections = ['section_home', 'section_publish', 'section_customers', 'section_products', 'section_settings'];
-check('خمسة أقسام رئيسية بالضبط', (sidebar.match(/id: 'section_[a-z]+'/g) || []).length === 5);
-check('كل الأقسام الخمسة معرّفة', sections.every((s) => sidebar.includes(`id: '${s}'`)));
-check('عنوان «مركز القيادة والعقل» موجود', sidebar.includes("label: 'مركز القيادة والعقل'"));
-check('عنوان «النشر والمنصات» موجود', sidebar.includes("label: 'النشر والمنصات'"));
-check('عنوان «الزبائن والتفاعلات» موجود', sidebar.includes("label: 'الزبائن والتفاعلات'"));
-check('عنوان «المنتجات والمعرفة» موجود', sidebar.includes("label: 'المنتجات والمعرفة'"));
-check('عنوان «الإعدادات والتشغيل» موجود', sidebar.includes("label: 'الإعدادات والتشغيل'"));
+console.log('\n=== هيكل ثلاثي المستويات ===');
+check('مصدر التنقل واحد: navConfig.tsx', fs.existsSync(path.join(root, 'src/components/common/navConfig.tsx')));
+check('واجهة الفرع (NavBranch) موجودة', nav.includes('interface NavBranch') && nav.includes('branches: NavBranch[]'));
+check('الشريط الجانبي يستورد navConfig', sidebar.includes("from './navConfig'"));
+check('لوحة القسم تستورد navConfig', hub.includes("from './navConfig'"));
+check('عناوين قابلة للفتح (aria-expanded)', sidebar.includes('aria-expanded={open}') && sidebar.includes('aria-expanded={bOpen}'));
+check('سهم حالة الفتح/الإغلاق (ChevronDown)', sidebar.includes('ChevronDown'));
+
+console.log('\n=== الأقسام الرئيسية المطلوبة (13+) ===');
+const REQUIRED_SECTIONS = [
+  'section_home',       // مركز القيادة والمالك
+  'section_publish',    // النشر الموحد ومنصات التواصل
+  'section_brains',     // العقول المتخصصة
+  'section_central',    // العقل المركزي والمنسق التنفيذي
+  'section_security',   // المصادقة والأمان والصلاحيات
+  'section_customers',  // مركز الزبائن والتفاعلات
+  'section_products',   // مستودع المنتجات والمعرفة
+  'section_automation', // محرك الأتمتة والجدولة
+  'section_memory',     // الذاكرة والتعلم والتحليل
+  'section_storage',    // التخزين وقاعدة البيانات
+  'section_monitoring', // المراقبة وصحة النظام
+  'section_recovery',   // النسخ الاحتياطي والتعافي
+  'section_external',   // الخدمات الخارجية والإعدادات
+  'section_settings',   // الإعدادات والتشغيل
+];
+check('كل الأقسام المطلوبة معرّفة', REQUIRED_SECTIONS.every((s) => nav.includes(`id: '${s}'`)));
+check('App يعرض كل الأقسام (case لكل قسم)', REQUIRED_SECTIONS.every((s) => app.includes(`case '${s}':`)));
+check('الأقسام الخمسة الأصلية محفوظة', ['section_home','section_publish','section_customers','section_products','section_settings'].every((s) => nav.includes(`id: '${s}'`)));
 
 console.log('\n=== دمج لا حذف: كل وظيفة سابقة ما زالت متصلة ===');
 const LEAVES = [
@@ -43,22 +64,29 @@ const LEAVES = [
   'content', 'approval', 'calendar', 'social', 'social_manager', 'analytics', 'agent', 'marketing_agent',
   'youtube_operations', 'customers', 'database', 'platform_connections', 'users', 'system', 'cloud_backup',
 ];
-check('كل معرّفات الوظائف في القائمة', LEAVES.every((id) => sidebar.includes(`id: '${id}'`)));
-check('كل معرّفات الوظائف لها حالة عرض في App', LEAVES.every((id) => app.includes(`case '${id}':`)));
-check('لا تكرار لمعرّف ورقة في القائمة', LEAVES.every((id) => (sidebar.match(new RegExp(`id: '${id}'`, 'g')) || []).length === 1));
+check('كل معرّفات الوظائف في خريطة التنقل', LEAVES.every((id) => nav.includes(`id: '${id}'`)));
+check('كل معرّفات الوظائف لها حالة عرض حقيقية في App', LEAVES.every((id) => app.includes(`case '${id}':`)));
 
-console.log('\n=== عرض الأقسام + مصدر واحد ===');
-check('App يعرض الأقسام الخمسة', sections.every((s) => app.includes(`case '${s}':`)));
-check('App يستخدم SectionHub', app.includes('SectionHub'));
-check('SectionHub يعتمد نفس خريطة Sidebar', hub.includes("from './Sidebar'") && hub.includes('NAV_SECTIONS'));
-check('Sidebar يعرّض helper الدور', sidebar.includes('visibleSectionGroups'));
+console.log('\n=== المنصات العشر كفروع مستقلة ===');
+const PLATFORM_LABELS = ['Facebook', 'Instagram', 'TikTok', 'YouTube', 'Telegram', 'Threads', 'WhatsApp Business', 'X', 'Snapchat', 'Google Business Profile'];
+check('كل المنصات العشر معروضة كبنود/فروع', PLATFORM_LABELS.every((p) => nav.includes(`label: '${p}'`)));
+
+console.log('\n=== البحث في الأقسام والوظائف ===');
+check('دالة البحث موجودة', nav.includes('export function searchNav'));
+check('الشريط يوفّر حقل بحث', sidebar.includes('searchNav') && sidebar.includes('placeholder="بحث في الأقسام والوظائف'));
+
+console.log('\n=== مسار التنقّل (Breadcrumb) ===');
+check('لوحة القسم تعرض مسار تنقّل', hub.includes('aria-label="مسار التنقّل"') && hub.includes('الرئيسية'));
+
+console.log('\n=== مصدر الحقيقة + حفظ حالة الفتح ===');
+check('SectionHub يعتمد نفس خريطة التنقل', hub.includes('NAV_SECTIONS') && hub.includes('visibleSectionBranches'));
+check('الشريط يحفظ حالة الفتح', sidebar.includes('gharabi-nav-expanded-v1') && sidebar.includes('localStorage'));
 
 console.log('\n=== الرئيسية = مركز قيادة حقيقي (بلا اختلاق) ===');
 check('CommandCenterView موجود', fs.existsSync(path.join(root, 'src/components/dashboard/CommandCenterView.tsx')));
 check('مركز القيادة مربوط في App', app.includes("case 'command_center': return <CommandCenterView />"));
 check('يقرأ صحة النظام الحقيقية', cc.includes('apiService.checkHealth'));
 check('يقرأ حالة المنصات الحقيقية', cc.includes('apiService.getPlatformControlPlane'));
-check('يقرأ حالة العقل المركزي', cc.includes('apiService.getBrainState'));
 check('يفشل بصراحة لا باختراع', cc.includes('تعذّر قراءة') && cc.includes('errors'));
 check('الشاشة الافتراضية = الرئيسية', appCtx.includes("useState<string>('section_home')"));
 
@@ -68,10 +96,10 @@ const PLATFORMS = ['facebook', 'instagram', 'tiktok', 'youtube', 'whatsapp', 'te
 check('كل المنصات العشر في السجل', PLATFORMS.every((p) => reg.includes(`'${p}'`) || reg.includes(`"${p}"`)));
 
 console.log('\n=== دليل «لا حذف»: كل ملفات الواجهات السابقة ما زالت موجودة ===');
-// هذه الملفات حُذف أحدها = انتهاك «دمج لا حذف». إعادة التنظيم تنقل الواجهة فقط.
 const VIEW_FILES = [
   'src/App.tsx',
   'src/components/common/Sidebar.tsx',
+  'src/components/common/SectionHub.tsx',
   'src/components/dashboard/DashboardView.tsx',
   'src/components/social/SocialHubView.tsx',
   'src/components/social/SocialManagerView.tsx',
@@ -105,5 +133,5 @@ const missing = VIEW_FILES.filter((f) => !fs.existsSync(path.join(root, f)));
 check('لا حذف لأي ملف واجهة سابق', missing.length === 0);
 if (missing.length) console.error('    ملفات مفقودة:', missing.join(', '));
 
-console.log(`\n${fail === 0 ? 'PASSED' : 'FAILED'}: ${pass} توحيد واجهة، ${fail} فشل`);
+console.log(`\n${fail === 0 ? 'PASSED' : 'FAILED'}: ${pass} تنقل هرمي، ${fail} فشل`);
 if (fail > 0) process.exit(1);

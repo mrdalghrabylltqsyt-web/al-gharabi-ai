@@ -765,7 +765,7 @@ add('agent-execution-reuses-gates', server.includes('executeApprovedJob') && ser
 add('agent-health-exposed', server.includes('centralAgent:') && server.includes('describeProvidersForHealth'), 'حالة العقل معروضة في /api/health بلا أسرار');
 add('agent-ui-console', agentUi.includes('agentCreateTask') && agentUi.includes('agentReplay') && agentUi.includes('سجل المهام السابقة'), 'واجهة العقل المركزي (إرسال + حالة + سجل + أدوات)');
 add('agent-ui-no-fake-success', agentUi.includes("res.task") && !/fake success|نجاح وهمي/.test(agentUi), 'الواجهة تعرض نتيجة الخادم الفعلية لا نجاحاً محلياً');
-add('agent-nav-entry', app.includes('central_agent') && read('src/components/common/Sidebar.tsx').includes("id: 'central_agent'"), 'تبويب العقل المركزي في الواجهة');
+add('agent-nav-entry', app.includes('central_agent') && read('src/components/common/navConfig.tsx').includes("id: 'central_agent'"), 'تبويب العقل المركزي في الواجهة');
 add('agent-test-script', pkg.scripts['test:agent'] === 'tsx engine/tests/agent.central.test.ts', 'سكربت اختبار العقل مضاف إلى package.json');
 add('agent-tests-cover-critical', ['idempotency', 'PERMISSION_DENIED', 'TIMEOUT', 'restore'].every((k) => agentTest.includes(k)) && agentTest.includes('job_execute') && (agentTest.includes('clientSecret') || agentTest.includes('sanitize')), 'اختبارات العقل تغطي idempotency/RBAC/مهلة/أمان/دوام');
 // --- العقل المركزي: تمرير بيانات بين الخطوات وجلب تعليقات YouTube الحقيقية ---
@@ -1003,9 +1003,9 @@ add('watcher-product-facts-honest', /if \(!product \|\| !facts\.priceText\)[\s\S
 add('watcher-product-facts-reply-uses-product', /executeYouTubeReply\(\{ commentId: String\(c\.commentId\)[\s\S]{0,200}?productId: priceReply\.verified/.test(server), 'منفّذ الرد يستلم معرّف المنتج الحقيقي عند تحقّق الحقائق (الرد من بيانات المعرض)');
 add('watcher-product-facts-test', read('engine/tests/youtube.connector.test.ts').includes('12k-7') && read('engine/tests/brain/central.authority.test.ts').includes('priceFactsVerified: true'), 'اختبار انحدار: استفسار سعر مع حقائق ⇒ رد، وبلا حقائق ⇒ تصعيد (وحدة + تكامل)');
 add('watcher-product-facts-ui-wired', (() => { const p = read('src/components/agent/YouTubeContentQueuePanel.tsx'); return p.includes('productId: productId || undefined') && p.includes('it.productName'); })(), 'الواجهة تربط المنتج الحقيقي بعنصر المحتوى وتعرضه (فالمسار قابل للوصول فعلاً لا مجرد كود معطّل)');
-add('youtube-watcher-ui-tab', app.includes('YouTubeOperationsView') && app.includes("case 'youtube_operations'") && read('src/components/common/Sidebar.tsx').includes("id: 'youtube_operations'"), 'واجهة مدير تشغيل YouTube مرتبطة بتبويب فعّال في القائمة');
+add('youtube-watcher-ui-tab', app.includes('YouTubeOperationsView') && app.includes("case 'youtube_operations'") && read('src/components/common/navConfig.tsx').includes("id: 'youtube_operations'"), 'واجهة مدير تشغيل YouTube مرتبطة بتبويب فعّال في القائمة');
 // التبويب مقتصر على المالك في القائمة، مطابقةً لبوابة requireOwner على بيانات المراقب.
-add('youtube-watcher-ui-owner-only', /id: 'youtube_operations',[\s\S]{0,140}?ownerOnly: true/.test(read('src/components/common/Sidebar.tsx')), 'تبويب مدير تشغيل YouTube مقتصر على المالك في القائمة (مطابق لبوابة الخادم)');
+add('youtube-watcher-ui-owner-only', /id: 'youtube_operations',[\s\S]{0,140}?ownerOnly: true/.test(read('src/components/common/navConfig.tsx')), 'تبويب مدير تشغيل YouTube مقتصر على المالك في القائمة (مطابق لبوابة الخادم)');
 add('youtube-watcher-ui-honest', watcherUi.includes('getYouTubeWatcher') && watcherUi.includes('setYouTubeWatcherControls') && watcherUi.includes('pollYouTubeWatcher') && watcherUi.includes('lastReply') && watcherUi.includes('attentionRequired'), 'الواجهة تعرض الحالة الحقيقية من الخادم وتتيح التحكم (Kill Switch) للمالك');
 add('youtube-watcher-tests', watcherTest.includes('watcherGate') && watcherTest.includes('decideCommentAction') && watcherTest.includes('computeCommentVelocity') && watcherTest.includes('watcherReplyExecutionReady') && watcherTest.includes('executeYouTubeReply'), 'اختبارات مدير YouTube تثبت البوابة/القرار/الزخم/بوابة التفويض/الربط بالمنفّذ الحقيقي');
 const commentsModule = read('engine/social/comments.ts');
@@ -1405,7 +1405,7 @@ add('central-brain-future-platform',
 add('central-brain-ui-surface',
   fs.existsSync(path.join(root, 'src/components/agent/CentralBrainView.tsx')) &&
   app.includes("case 'central_brain': return <CentralBrainView />") &&
-  read('src/components/common/Sidebar.tsx').includes("id: 'central_brain'") &&
+  read('src/components/common/navConfig.tsx').includes("id: 'central_brain'") &&
   read('src/services/api.ts').includes('/api/brain/diagnostics'),
   'سطح العقل المركزي معروض في الواجهة وقائمة الجانب ومربوط بالـAPI');
 
@@ -1963,7 +1963,7 @@ add('dr-client-deps', Boolean(pkg.dependencies.gaxios) && Boolean(pkg.dependenci
 
 // --- واجهة النسخ السحابي (DR) + العودة الآمنة من OAuth ---
 const cloudView = read('src/components/system/CloudBackupView.tsx');
-const sidebar = read('src/components/common/Sidebar.tsx');
+const sidebar = read('src/components/common/navConfig.tsx');
 add('dr-ui-view-exists', fs.existsSync(path.join(root, 'src/components/system/CloudBackupView.tsx')), 'مكوّن واجهة النسخ السحابي موجود');
 add('dr-ui-tab-owner-only', sidebar.includes("cloud_backup") && /cloud_backup[\s\S]{0,160}?ownerOnly:\s*true/.test(sidebar) && /ownerOnly[\s\S]{0,120}?isOwner/.test(sidebar), 'تبويب النسخ السحابي يظهر للمالك فقط');
 add('dr-ui-app-case', app.includes("case 'cloud_backup': return <CloudBackupView />"), 'حالة cloud_backup مضافة في App.tsx');
@@ -3157,10 +3157,10 @@ add('watcher-advisory-not-authority',
       return inScope.length === 0;
     })(), 'لا مستهلك داخل النطاق لمسارات المبيعات/المالية (العزل لا يكسر واجهة ظاهرة)');
   add('sidebar-hides-out-of-scope-tabs',
-    read('src/components/common/Sidebar.tsx').includes("'sales'") &&
-    read('src/components/common/Sidebar.tsx').includes("'control'") &&
-    /LEGACY_ERP_TAB_IDS\s*=\s*new Set\(\[[\s\S]*?'sales'[\s\S]*?'control'[\s\S]*?\]\)/.test(read('src/components/common/Sidebar.tsx')) &&
-    read('src/components/common/Sidebar.tsx').includes('LEGACY_ERP_NAV_ENABLED = false'),
+    read('src/components/common/navConfig.tsx').includes("'sales'") &&
+    read('src/components/common/navConfig.tsx').includes("'control'") &&
+    /LEGACY_ERP_TAB_IDS\s*=\s*new Set\(\[[\s\S]*?'sales'[\s\S]*?'control'[\s\S]*?\]\)/.test(read('src/components/common/navConfig.tsx')) &&
+    read('src/components/common/navConfig.tsx').includes('LEGACY_ERP_NAV_ENABLED = false'),
     'تبويبا sales/control مخفيان من التنقل (LEGACY_ERP_TAB_IDS + NAV_ENABLED=false)');
 
   add('legacy-erp-no-visible-consumer-surface-guarded',
@@ -3858,25 +3858,51 @@ add('watcher-advisory-not-authority',
     read('src/components/social/PlatformConnectionCenter.tsx').includes('documentedOwnerAction'),
     'الواجهة تعرض adminUserIds وuserBusinesses وdocumentedOwnerAction من استجابة الخادم الفعلية بلا تفسير مُخترع');
 
-  // 9ب) توحيد الواجهة: خمسة أقسام فقط + لا فقدان لأي وظيفة سابقة (دمج لا حذف).
+  // 9ب) التنقل الهرمي الموحّد: قسم رئيسي ← فرع ← وظيفة + لا فقدان لأي وظيفة (دمج لا حذف).
+  const navCfgSrc = read('src/components/common/navConfig.tsx');
   const sidebarSrc = read('src/components/common/Sidebar.tsx');
-  const navSectionIds = (sidebarSrc.match(/id: 'section_[a-z]+'/g) || []);
+  const hubSrc = read('src/components/common/SectionHub.tsx');
+  // الأقسام المطلوبة (تشمل الخمسة الأصلية + الهرمية المضافة).
+  const navSectionIds = ['section_home','section_publish','section_customers','section_products','section_settings',
+    'section_brains','section_central','section_security','section_automation','section_memory','section_storage','section_monitoring','section_recovery','section_external'];
   add('unified-nav-five-sections',
-    navSectionIds.length === 5 &&
-    ['section_home','section_publish','section_customers','section_products','section_settings'].every((id)=>sidebarSrc.includes("id: '" + id + "'")),
-    'التنقل يحتوي خمسة أقسام رئيسية فقط (الرئيسية/النشر/الزبائن/المنتجات/الإعدادات)');
+    navSectionIds.every((id)=>navCfgSrc.includes("id: '" + id + "'")) &&
+    ['section_home','section_publish','section_customers','section_products','section_settings'].every((id)=>navCfgSrc.includes("id: '" + id + "'")),
+    'التنقل يحتوي الأقسام الأصلية الخمسة + الأقسام الهرمية المضافة (لا حذف)');
+  add('hier-nav-three-levels',
+    navCfgSrc.includes('interface NavBranch') && navCfgSrc.includes('branches: NavBranch[]') &&
+    sidebarSrc.includes('aria-expanded={open}') && sidebarSrc.includes('aria-expanded={bOpen}') &&
+    sidebarSrc.includes('ChevronDown'),
+    'تنقل هرمي بثلاثة مستويات (قسم←فرع←وظيفة) بفتح/إغلاق وسهم حالة');
+  add('hier-nav-branch-count',
+    (navCfgSrc.match(/branches: \[/g) || []).length >= navSectionIds.length,
+    'كل قسم رئيسي يحوي فروعاً فرعية (branches) فعلية');
+  add('hier-nav-search',
+    navCfgSrc.includes('export function searchNav') && sidebarSrc.includes('searchNav') && sidebarSrc.includes('placeholder="بحث في الأقسام والوظائف'),
+    'بحث في الأقسام والوظائف داخل الشريط الجانبي');
+  add('hier-nav-breadcrumb',
+    hubSrc.includes('aria-label="مسار التنقّل"') && hubSrc.includes('الرئيسية'),
+    'مسار تنقّل (Breadcrumb) في لوحة القسم يبيّن مكان المستخدم');
+  add('hier-nav-persist-expansion',
+    sidebarSrc.includes('gharabi-nav-expanded-v1') && sidebarSrc.includes('localStorage'),
+    'حالة الفتح/الإغلاق تُحفظ محلياً (حفاظ التنقل قدر الإمكان)');
   const navLeafIds = ['command_center','dashboard','central_brain','brain_manager','central_agent','search','operations','content','approval','calendar','social','social_manager','analytics','agent','marketing_agent','youtube_operations','customers','database','platform_connections','users','system','cloud_backup'];
   add('unified-nav-no-leaf-lost',
-    navLeafIds.every((id)=> sidebarSrc.includes("id: '" + id + "'")) && navLeafIds.every((id)=> app.includes("case '" + id + "':")),
-    'كل وظيفة/صفحة سابقة لا تزال متصلة (معرّف في القائمة + حالة عرض في App.tsx) — دمج لا حذف');
+    navLeafIds.every((id)=> navCfgSrc.includes("id: '" + id + "'")) && navLeafIds.every((id)=> app.includes("case '" + id + "':")),
+    'كل وظيفة/صفحة سابقة لا تزال متصلة (معرّف في خريطة التنقل + حالة عرض في App.tsx) — دمج لا حذف');
+  const navPlatformLabels = ['Facebook','Instagram','TikTok','YouTube','Telegram','Threads','WhatsApp Business','X','Snapchat','Google Business Profile'];
+  add('hier-nav-ten-platforms-branches',
+    navPlatformLabels.every((p)=> navCfgSrc.includes("label: '" + p + "'")),
+    'المنصات العشر معروضة كبنود/فروع مستقلة مع المحافظة على الموصلات');
   add('unified-nav-sections-rendered',
-    ['section_home','section_publish','section_customers','section_products','section_settings'].every((id)=> app.includes("case '" + id + "':")) &&
+    navSectionIds.every((id)=> app.includes("case '" + id + "':")) &&
     app.includes('SectionHub'),
-    'الأقسام الخمسة تُعرض عبر صفحة قسم موحّدة (SectionHub) في App.tsx');
+    'كل الأقسام تُعرض عبر صفحة قسم موحّدة (SectionHub) في App.tsx');
   add('unified-nav-single-source',
-    read('src/components/common/SectionHub.tsx').includes("from './Sidebar'") &&
-    read('src/components/common/SectionHub.tsx').includes('NAV_SECTIONS'),
-    'مصدر واحد لخريطة التنقل (Sidebar) يستخدمه كلٌّ من القائمة وصفحة القسم — بلا تكرار');
+    hubSrc.includes("from './navConfig'") &&
+    hubSrc.includes('NAV_SECTIONS') &&
+    sidebarSrc.includes("from './navConfig'"),
+    'مصدر واحد لخريطة التنقل (navConfig.tsx) يستخدمه الشريط الجانبي ولوحة القسم — بلا تكرار');
   add('unified-home-command-center',
     fs.existsSync(path.join(root, 'src/components/dashboard/CommandCenterView.tsx')) &&
     app.includes("case 'command_center': return <CommandCenterView />") &&
