@@ -27,6 +27,30 @@ declare global {
   }
 }
 
+/**
+ * توجيه تشخيصي من كود سبب فشل الإرسال (غير سرّي) — يسمّي المتغيّر الناقص أو سبب
+ * رفض المزود بدل رسالة عامة، فلا يبقى «فشل صامت» حين لا يصل الرمز. لا يكشف أي
+ * قيمة سرّية، ويعود null لغير المعروف.
+ */
+function challengeFailureHint(reason?: string): string | null {
+  switch (reason) {
+    case 'email_provider_not_configured':
+      return 'مزوّد البريد غير مضبوط في بيئة هذا النشر: المتغيّر RESEND_API_KEY مفقود.';
+    case 'email_from_not_configured':
+      return 'بريد المُرسِل غير مضبوط في بيئة هذا النشر: المتغيّر RESEND_FROM_EMAIL مفقود.';
+    case 'invalid_from_address':
+      return 'مزود البريد رفض المُرسِل: RESEND_FROM_EMAIL ليس نطاقاً موثّقاً لدى Resend.';
+    case 'invalid_api_key':
+    case 'missing_api_key':
+    case 'restricted_api_key':
+      return 'مزود البريد رفض المفتاح: RESEND_API_KEY غير صالح أو مقيّد.';
+    case 'validation_error':
+      return 'مزود البريد رفض الطلب: تحقّق من بريد المُرسِل والمستلم.';
+    default:
+      return reason ? `سبب فشل الإرسال: ${reason}` : null;
+  }
+}
+
 export const LoginView: React.FC = () => {
   const { loginWithGoogle, requestOwnerChallenge, verifyOwnerChallenge } = useApp();
   const [activeTab, setActiveTab] = useState<'google' | 'challenge'>('google');
@@ -35,6 +59,7 @@ export const LoginView: React.FC = () => {
   const [step, setStep] = useState<'request' | 'verify'>('request');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [errorHint, setErrorHint] = useState<string | null>(null);
   const [successInfo, setSuccessInfo] = useState<string | null>(null);
   // فشل طلب الرمز (شبكة/خادم) => نُظهر زر «إعادة المحاولة» بجوار الرسالة، فلا
   // يبدو الزر «بلا استجابة» على الجوال في حال بدء بارد أو انقطاع شبكة.
@@ -90,16 +115,19 @@ export const LoginView: React.FC = () => {
     const trimmed = email.trim();
     if (!trimmed) {
       setRequestFailed(false);
+      setErrorHint(null);
       setError('يرجى إدخال البريد الإلكتروني المصرح له.');
       return;
     }
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(trimmed)) {
       setRequestFailed(false);
+      setErrorHint(null);
       setError('صيغة البريد الإلكتروني غير صحيحة.');
       return;
     }
     setLoading(true);
     setError(null);
+    setErrorHint(null);
     setSuccessInfo(null);
     setRequestFailed(false);
     try {
@@ -114,6 +142,8 @@ export const LoginView: React.FC = () => {
     } catch (err: any) {
       setRequestFailed(true);
       setError(err?.message || 'تعذّر إرسال رمز التحقق، حاول مرة أخرى.');
+      // التوجيه من كود السبب غير السرّي (نقص إعداد/رفض مزود) بدل رسالة عامة فقط.
+      setErrorHint(challengeFailureHint(err?.reason));
     } finally {
       setLoading(false);
     }
@@ -206,7 +236,12 @@ export const LoginView: React.FC = () => {
         {error && (
           <div role="alert" aria-live="assertive" className="p-3.5 rounded-2xl bg-rose-500/10 border border-rose-500/30 text-rose-300 text-xs flex items-start gap-2 animate-in fade-in">
             <AlertCircle className="w-4 h-4 text-rose-400 shrink-0 mt-0.5" />
-            <span className="leading-relaxed">{error}</span>
+            <span className="leading-relaxed">
+              {error}
+              {errorHint && (
+                <span className="block mt-1 text-rose-200/80 leading-relaxed">{errorHint}</span>
+              )}
+            </span>
           </div>
         )}
 

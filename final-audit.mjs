@@ -33,6 +33,11 @@ add('otp-email-delivery', server.includes('sendOwnerOtpEmail') && server.include
 add('otp-no-success-without-send', server.includes('if (!result.sent)') && server.includes('تم إرسال رمز التحقق إلى بريد المالك') && !server.includes('owner_challenge_issued'), 'لا ادعاء إرسال بلا نجاح المزود');
 add('email-status-owner-only', server.includes('app.get("/api/system/email-status", requireOwner'), 'فحص حالة البريد محصور بالمالك');
 add('email-env-only', !/RESEND_API_KEY\s*[:=]\s*["'`]re_/.test(server) && !/("|'|`)(re_[A-Za-z0-9_\-]{12,})\1/.test(server), 'لا مفتاح Resend مكتوب في الكود');
+// سبب فشل إرسال OTP يُعلَن ككود غير سرّي (كود مزوّد البريد / اسم متغيّر ناقص) بلا أي
+// قيمة، مع بقاء النص العربي لعقد الواجهة — فلا يبقى «فشل صامت» عند عدم وصول الرمز.
+add('otp-failure-reason-nonsecret', server.includes('/^[a-z0-9_]{1,48}$/') && server.includes('reason,') && read('engine/notifications/owner-email.ts').includes('email_provider_not_configured'), 'فشل إرسال OTP يُعلن كود سبب غير سرّي بدل فشل صامت');
+add('otp-health-email-config-block', server.includes('ownerEmail:') && server.includes('fromConfigured: getOwnerEmailConfig().fromConfigured'), '/api/health يُعلن إعداد البريد منطقياً بلا أي قيمة سرّية');
+add('otp-failure-reason-tested', fs.readFileSync(path.join(root, 'engine/tests/owner.email.test.ts'), 'utf8').includes("failedBody.reason === 'invalid_from_address'"), 'اختبار يثبت كود سبب الفشل غير السرّي (invalid_from_address / email_provider_not_configured)');
 
 // فحص أسرار: لا مفاتيح مزودين في الملفات الإنتاجية.
 const sourceFiles = ['server.ts', 'engine/notifications/owner-email.ts', 'netlify/functions/api.ts'];

@@ -125,7 +125,10 @@ export const apiService = {
     const data = await res.json().catch(() => ({ success: false } as { success: boolean }));
     if (!res.ok || !data.success) {
       // رسائل الخادم تُعرض كما هي (خالية من أي سرّ)، مع بديل عام مفهوم.
-      throw new Error(data.error || data.message || 'تعذّر إرسال رمز التحقق، حاول مرة أخرى.');
+      const err: any = new Error(data.error || data.message || 'تعذّر إرسال رمز التحقق، حاول مرة أخرى.');
+      // كود سبب غير سرّي (كود مزوّد البريد أو نقص إعداد) لعرض توجيه تشخيصي دقيق.
+      if (typeof (data as any).reason === 'string') err.reason = (data as any).reason;
+      throw err;
     }
     return data;
   },

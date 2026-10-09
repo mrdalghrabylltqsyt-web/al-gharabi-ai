@@ -48,6 +48,14 @@ async function run() {
   try { await apiService.requestOwnerChallenge('owner@example.com'); } catch (e: any) { errMsg = e?.message || ''; }
   check('فشل 502 يعطي رسالة واضحة', /تعذر إرسال رمز التحقق/.test(errMsg));
 
+  // --- 2ب) كود السبب غير السرّي يُنقل إلى الخطأ (للتشخيص) ---
+  (globalThis as any).fetch = async () =>
+    ({ ok: false, status: 502, json: async () => ({ success: false, error: 'تعذر إرسال رمز التحقق، حاول مرة أخرى', reason: 'invalid_from_address' }) } as any);
+  let errReason = '';
+  try { await apiService.requestOwnerChallenge('owner@example.com'); } catch (e: any) { errReason = e?.reason || ''; }
+  check('كود السبب غير السرّي يُنقل إلى الخطأ', errReason === 'invalid_from_address', errReason);
+  check('الخطأ لا يسرّب أي سرّ', !/Bearer|secret|re_/i.test(errMsg) && !/Bearer|secret|re_/i.test(errReason));
+
   // --- 3) تعطّل الشبكة: رسالة اتصال لا تعليق ---
   (globalThis as any).fetch = async () => { const e: any = new Error('boom'); e.name = 'TypeError'; throw e; };
   try { await apiService.requestOwnerChallenge('owner@example.com'); errMsg = ''; } catch (e: any) { errMsg = e?.message || ''; }
@@ -66,6 +74,7 @@ async function run() {
   check('زر إعادة المحاولة موجود', /إعادة المحاولة/.test(login) && /setRequestFailed\(true\)/.test(login));
   check('حالة requestFailed موجودة', login.includes('const [requestFailed'));
   check('رسالة الخطأ role=alert', /role="alert"/.test(login));
+  check('توجيه تشخيصي من كود السبب (غير سرّي)', login.includes('challengeFailureHint') && login.includes('email_provider_not_configured') && login.includes('errorHint'));
   check('حالة تحميل واضحة على الزر', login.includes('جاري إرسال الرمز...') && login.includes('aria-busy={loading}'));
   check('مهلة الطلب معرّفة في api', api.includes('OWNER_CHALLENGE_TIMEOUT_MS') && api.includes('AbortController'));
 

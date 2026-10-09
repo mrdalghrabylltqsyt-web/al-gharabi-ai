@@ -1128,9 +1128,14 @@ app.post("/api/auth/request-owner-challenge", async (req, res) => {
     auditLog.unshift({ id: crypto.randomUUID(), at: new Date().toISOString(), userId: "system", action: "owner_challenge_email_failed", detail: result.error || "send_failed" });
     if (auditLog.length > 100) auditLog.pop();
     persistState();
+    // كود سبب غير سرّي (كود مزوّد البريد أو اسم متغيّر ناقص) ليعرف المالك سبب فشل
+    // الإرسال بدل «فشل صامت». لا يحمل أي قيمة: لا بريد، لا مفتاح، ولا الرمز — وأي
+    // شكل غير متوقع يُستبدل بـ send_failed. النص العربي يبقى كما هو لعقد الواجهة.
+    const reason = /^[a-z0-9_]{1,48}$/.test(String(result.error || "")) ? result.error : "send_failed";
     return res.status(502).json({
       success: false,
       error: "تعذر إرسال رمز التحقق، حاول مرة أخرى",
+      reason,
     });
   }
 
@@ -13183,6 +13188,16 @@ app.get("/api/health", (_req, res) => {
     timestamp: new Date().toISOString(),
     service: "Al-Gharabi AI Backend",
     version: PROJECT_VERSION,
+    // حالة إعداد بريد رمز تحقق المالك — منطقية فقط وبلا أي قيمة سرّية. تسمح
+    // للمالك بتشخيص «لم يصل الرمز» من بيئة هذا النشر بالذات: هل مزود البريد
+    // مضبوط؟ هل بريد المُرسِل مضبوط؟ هذا لا يكشف المفتاح ولا البريد.
+    ownerEmail: {
+      ownerConfigured: Boolean(OWNER_EMAIL),
+      providerConfigured: getOwnerEmailConfig().configured,
+      provider: getOwnerEmailConfig().provider,
+      fromConfigured: getOwnerEmailConfig().fromConfigured,
+      envNames: { owner: "OWNER_EMAIL", provider: "RESEND_API_KEY", from: "RESEND_FROM_EMAIL" },
+    },
     geminiUsage: geminiStatus(),
     // حالة مفتاح تشفير توكنات المنصات: تفصل missing من invalid بلا كشف القيمة،
     // فتعكس نفس الحكم الذي يستخدمه encryptSecret/credentials فعلياً.
