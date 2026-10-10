@@ -44,6 +44,7 @@ import {
   formatFacebookGraphError,
   buildPublishVideoBody,
   buildPublishPhotoBody,
+  interpretPostGrounding,
   FacebookClient,
 } from '../social/facebook';
 import { createFacebookMock, startFacebookMockServer } from './helpers/facebookMock';
@@ -308,6 +309,22 @@ async function unitTests(): Promise<void> {
   check('buildPublishVideoBody لا يضيف video_url', buildPublishVideoBody('https://drive.example/v.mp4').get('video_url') === null);
   check('buildPublishVideoBody يضمّن الوصف إن وُجد', buildPublishVideoBody('https://x/v.mp4', 'وصف المنتج').get('description') === 'وصف المنتج');
   check('buildPublishVideoBody بلا وصف فارغ', buildPublishVideoBody('https://x/v.mp4', '   ').get('description') === null);
+  // إصلاح ظهور الفيديو للجمهور: `published=true` صريح — لا نعتمد على الافتراضي في
+  // حال تغيّر عقد Graph، ولا نحوّل الفيديو سهواً لمسودة (published=false) فيبقى
+  // ظاهراً للأونر فقط بدل الجمهور.
+  check('buildPublishVideoBody يفرض published=true صراحةً', buildPublishVideoBody('https://x/v.mp4', 'وصف').get('published') === 'true');
+
+  group('1ط-2) وحدة: تفسير حالة ظهور المنشور (interpretPostGrounding)');
+  const gPublished = interpretPostGrounding('video', { id: 'V1', is_published: true, created_time: '2026-01-01T00:00:00+0000' }, true);
+  check('منشور: isPublished=true و confirmedPublicStory=true', gPublished.isPublished === true && gPublished.confirmedPublicStory === true);
+  check('منشور: ظاهر على الحائط', gPublished.appearsOnPage === true);
+  const gDraft = interpretPostGrounding('video', { id: 'V2', is_published: false, scheduled_publish_time: 123 }, null);
+  check('مسودة/مجدول: isPublished=false و confirmedPublicStory=false', gDraft.isPublished === false && gDraft.confirmedPublicStory === false);
+  check('مجدول: scheduledPublishTime محفوظ', gDraft.scheduledPublishTime === '123');
+  const gUnknown = interpretPostGrounding('post', { id: 'P3' }, null);
+  check('حقل غائب => null لا يُفترض نجاح', gUnknown.isPublished === null && gUnknown.appearsOnPage === null && gUnknown.confirmedPublicStory === false);
+  const gMissing = interpretPostGrounding('video', {}, null);
+  check('بلا معرّف => exists=false', gMissing.exists === false && gMissing.providerPostId === '');
 
   const videoRequests: { url: string; body: any }[] = [];
   const fakeVideoFetch = async (url: string, init: any) => {
@@ -319,6 +336,7 @@ async function unitTests(): Promise<void> {
   check('نشر الفيديو نجح بمعرّف من Meta', published.ok === true && published.data?.providerPostId === 'VID_123');
   check('الطلب ذهب إلى /{page-id}/videos', videoRequests[0]?.url.includes('/PAGE_X/videos'));
   check('الجسم حمل file_url لا video_url', videoRequests[0]?.body.file_url === 'https://drive.example/v.mp4' && videoRequests[0]?.body.video_url === undefined);
+  check('الجسم حمل published=true صراحةً (لا مسودة)', videoRequests[0]?.body.published === 'true');
 
   const noIdFetch = async () => ({ ok: true, status: 200, json: async () => ({}) });
   const failClient = new FacebookClient(noIdFetch as any, 'https://graph.example/v21.0');
@@ -605,6 +623,29 @@ async function integrationTests(): Promise<void> {
     check('فيسبوك: نُشرت صورة حقيقية من رابط عام عبر /photos', mock.state.photos.length === 1 && mock.state.photos[0].imageUrl === PUBLIC_IMAGE_URL, JSON.stringify(mock.state.photos).slice(0, 200));
     check('فيسبوك: رسالة الصورة هي نص المنشور', mock.state.photos[0]?.message === 'عرض التقسيط الجديد من معرض الغرابي.', mock.state.photos[0]?.message);
     check('فيسبوك: لم يُنشر نص مكرر إضافي في /feed', mock.state.posts.length === 1, String(mock.state.posts.length));
+
+    group('16د) تكامل: تشخيص ظهور منشور فيسبوك للجمهور (قراءة فقط) — السبب المُثبت «وضع التطوير»');
+    // نشر فيديو موحّد ليُنشأ معرّف فيديو حقيقي في الخادم الوهمي.
+    const visDraftRes = await fetch(`${BASE}/api/workspace/content`, { method: 'POST', headers: auth, body: JSON.stringify({ title: 'فيديو ظهور', content: 'عرض التقسيط الجديد من معرض الغرابي.', targetPlatforms: ['facebook'], mediaType: 'video', mediaUrl: PUBLIC_VIDEO_URL, status: 'review' }) });
+    const visDraft = await visDraftRes.json();
+    await fetch(`${BASE}/api/workspace/content/${visDraft?.post?.id}/approve`, { method: 'POST', headers: auth, body: JSON.stringify({ note: 'اعتماد' }) });
+    await fetch(`${BASE}/api/workspace/content/${visDraft?.post?.id}/publish`, { method: 'POST', headers: auth, body: '{}' });
+    const vidId = mock.state.videos[mock.state.videos.length - 1]?.videoId;
+    check('فيديو حقيقي أُنشئ قبل التشخيص', Boolean(vidId));
+    // بلا جلسة => 401 (owner-only).
+    const visAnon = await fetch(`${BASE}/api/platforms/facebook/post-visibility-diagnosis`);
+    check('تشخيص الظهور يتطلب جلسة (401)', visAnon.status === 401, String(visAnon.status));
+    // بلا postId: يأخذ آخر منشور فيسبوك حقيقي من السجل.
+    const visRes = await fetch(`${BASE}/api/platforms/facebook/post-visibility-diagnosis`, { headers: auth });
+    const vis = await visRes.json();
+    check('التشخيص نجح (200) وأعاد معرّف المنشور', visRes.status === 200 && vis.providerPostId === vidId, JSON.stringify(vis).slice(0, 250));
+    check('المصدر آخر سجل نشر حقيقي', vis.postIdSource === 'last_publish_record');
+    check('grounding: منشور فعلاً (is_published=true)', vis.grounding?.isPublished === true && vis.grounding?.confirmedPublicStory === true);
+    check('grounding: ظاهر على حائط الصفحة', vis.grounding?.appearsOnPage === true);
+    check('verdict انعكاس الأدلة', vis.verdict === 'published_and_returns_as_story', String(vis.verdict));
+    check('وضع التطبيق غير مقروء عبر API (معلن صراحةً)', vis.appMode?.readableViaApi === false);
+    check('خطوات يدوية محددة موجودة', Array.isArray(vis.manualActionRequired) && vis.manualActionRequired.some((s: string) => /Live/.test(s)));
+    check('بلا أي سرّ في الاستجابة', !/access_token|Bearer |EAA[A-Za-z0-9]|PLATFORM_TOKEN/.test(JSON.stringify(vis)));
 
     group('17) تكامل: ثبات الاستقبال وحماية التكرار بعد restart');
     await stop(app.proc);

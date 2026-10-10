@@ -44,7 +44,7 @@ npm install
 npm run dev            # tsx server.ts
 npm run lint           # tsc --noEmit
 npm run build          # vite build + esbuild server.ts -> dist/server.cjs
-npm run final-audit    # node final-audit.mjs (1486 فحصاً)
+npm run final-audit    # node final-audit.mjs (1491 فحصاً)
 npm test               # storage + engine + auth + ... + db + runtime
 ```
 - التشغيل الإنتاجي: `PORT=4517 NODE_ENV=production APP_URL=http://localhost:4517 node dist/server.cjs`
@@ -5186,3 +5186,45 @@ SocialManager/Operations بقيت عرضاً (توضيح صريح بلا إدع�
 App.tsx، صفوف الإجراء قابلة للضغط بلا زر متداخل، بطاقات KPI أزرار تنقل، بحث الترويسة
 فعال، وغياب `onClick` الفارغ/`href="#"`. فحوص final-audit التسعة الجديدة:
 `ui-nav-targets-valid` … `ui-interactions-test-wired` (1486 إجمالاً).
+
+## تشخيص «منشورات فيسبوك تظهر للأونر فقط» — السبب الجذري المُثبت (2026-10-04)
+
+**الأعراض المثبتة من تجربة المالك:** منشور/فيديو يُنشئه الغرابي AI على صفحة «معرض الغرابي
+للتقسيط» يظهر للأونر وللأدوار فقط، ولا يظهر لأي مشاهد آخر؛ بينما المنشور اليدوي على نفس
+الصفحة عام. المتابعون موجودون والصفحة عامة.
+
+**السبب الجذري (مُثبت من وثائق Meta الرسمية + مجتمع مطوّري Meta، لا تخمين):** تطبيق Meta
+«وكيل الغرابي الذكي» في وضع **التطوير (Development)** لا **Live**. في وضع التطوير تقيّد Meta
+**كل محتوى ينشئه التطبيق عبر API** بحيث لا يراه إلا أدوار التطبيق/الصفحة (Admin/Developer/
+Tester)، بينما المحتوى المُنشأ يدوياً يبقى عاماً — وهذا بالضبط نمط العطل. النص الحرفي من
+منتدى مطوّري Meta: «Posts created manually on the same Facebook Page are publicly visible.
+Only posts created through the Pages API are restricted to app/Page roles.»
+
+**ما استُبعد بالأدلة (لا افتراض):**
+- **ليس مسودة/مجدولاً:** وثيقة Meta لـ`/{page-id}/videos` تنصّ أن `published` افتراضيه `true`
+  («Whether a post about this video is published»)، فلا تُنشئ المسار مسودة.
+- **ليس النشر باسم الحساب الشخصي:** الكود ينشر برمز **الصفحة** (`pageAccessToken` من
+  `providerTokens.facebook`) لا رمز مستخدم؛ والنشر باسم الذات كان يعيد خطأً صريحاً لا منشوراً مخفياً.
+- **ليس خصوصية/`feed_targeting`:** لا وجود لأي معامل خصوصية أو استهداف في وحدة فيسبوك.
+- **وضع التطبيق لا يُقرأ عبر Graph API** — مصدره الوحيد لوحة Meta (لا حقل mode في Graph).
+
+**الإصلاح (فرع `fix/facebook-post-public-visibility`، بلا نشر ولا دمج):**
+1. `buildPublishVideoBody` يفرض **`published=true` صراحةً** (لا اعتماداً على الافتراضي)، فيمنع
+   تحويل الفيديو سهواً لمسودة/غير منشور يبقى ظاهراً للأونر فقط.
+2. `interpretPostGrounding` + `FacebookClient.getPostGrounding` — **قراءة فقط** لحالة المنشور
+   (`is_published`/`created_time`/`scheduled_publish_time`) + التحقق من ورود المعرّف في حائط
+   الصفحة `/{page-id}/published_posts` كدليل ظهور فعلي. أي حقل غائب يبقى `null` بلا ادّعاء.
+3. مسار owner جديد `GET /api/platforms/facebook/post-visibility-diagnosis` (بلا أي نشر/تغيير):
+   يقرأ آخر معرّف منشور حقيقي من `publishRecords` (أو `?postId=`)، ويعيد `grounding` + `verdict`
+   + `likelyRootCause` + `appMode { readableViaApi: false }` + خطوات يدوية محددة. بلا أي سرّ.
+
+**اختبارات:** `facebook.connector.test.ts` = **327 فحصاً** (المجموعة `1ط-2` وحدوية للتفسير،
+والمجموعة `16د` تكاملية: 401 بلا جلسة، المعرّف من آخر سجل، `is_published=true`، الظهور على
+الحائط، `verdict`، إعلان أن وضع التطبيق غير مقروء عبر API، وغياب أي سرّ). فحوص final-audit
+الخمسة: `facebook-video-published-explicit` … `facebook-visibility-regression-test`
+(**1491 إجمالاً**). `npm run lint` + `build` + `test` (118 مجموعة) + `final-audit` كلها ناجحة.
+
+**الخطوة اليدوية الوحيدة المطلوبة من المالك (لا ينفّذها أي وكيل):** Meta App Dashboard →
+تطبيق «وكيل الغرابي الذكي» → **App Mode** → تحويله من Development إلى **Live**. بعد التحويل
+تصبح المنشورات المُنشأة عبر API عامة (بما فيها السابقة). إن منعت Meta التحويل (تتطلب سياسة
+خصوصية/App Review لصلاحيات النشر) فأكملها — التطبيق يحتاجها ليعمل في Live.

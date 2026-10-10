@@ -130,6 +130,7 @@ import {
   missingScopeDependenciesFromCsv,
   FACEBOOK_DIALOG_PATH,
   FACEBOOK_SIGNATURE_HEADER,
+  interpretPostGrounding,
   type FacebookFetch,
   type FacebookPageIdentity,
 } from "./engine/social/facebook";
@@ -5303,6 +5304,64 @@ app.get("/api/platforms/facebook/video-permission-diagnosis", requireOwner, asyn
         ? "ناقصة pages_read_engagement: يفسّر فشل الفيديو عبر /videos بينما ينجح النصّ عبر /feed. يتطلب منح الصلاحية (وربما App Review) في لوحة Meta."
         : "صلاحية مطلوبة لنشر فيديو الصفحة غير ممنوحة؛ منحها من لوحة Meta.",
     note: "فحص مباشر من Meta بلا أي سرّ؛ لا يُعلن أي نشر.",
+  });
+});
+
+/**
+ * تشخيص ظهور منشورات الصفحة للجمهور (قراءة فقط، للمالك فقط).
+ *
+ * السبب الجذري الأكثر شيوعاً لظهور منشور أنشأه التطبيق للأونر وحده وللمشرفين
+ * فقط: تطبيق Meta في وضع **التطوير (Development)** لا **Live**. في وضع التطوير
+ * تقيّد Meta كل محتوى ينشئه التطبيق عبر API بحيث لا يراه إلا أدوار التطبيق/
+ * الصفحة، بينما المنشور اليدوي يبقى عاماً. وضع التطبيق **لا يُقرأ عبر Graph API**
+ * — لذلك نعلن ذلك صراحةً بدل التخمين، مع قراءة حالة المنشور الحقيقية من Meta.
+ *
+ * لا ينشر ولا يغيّر أي شيء؛ يقرأ فقط `is_published` وورود المعرّف في حائط الصفحة.
+ * بلا أي سرّ في الاستجابة.
+ */
+app.get("/api/platforms/facebook/post-visibility-diagnosis", requireOwner, async (req,res)=>{
+  const stored = getProviderToken("facebook");
+  const pageId = stored?.pageId ? String(stored.pageId) : "";
+  const pageToken = facebookPageToken(pageId || undefined);
+  if (!pageId || !pageToken) return res.status(409).json({ success:false, error:"لا صفحة Facebook موثقة؛ لا فحص ظهور.", code:"NOT_CONNECTED" });
+  // postId صريح، أو آخر منشور فيسبوك حقيقي سجّله النظام (بلا اختراع معرّف).
+  let providerPostId = typeof req.query.postId === "string" ? req.query.postId.trim() : "";
+  let source = "explicit_query";
+  if (!providerPostId) {
+    const records = ((workspace as any).publishRecords || []) as any[];
+    const last = records.find((r:any)=>r.platform==="facebook" && r.providerPostId);
+    if (last?.providerPostId) { providerPostId = String(last.providerPostId); source = "last_publish_record"; }
+  }
+  if (!providerPostId) return res.status(409).json({ success:false, error:"لا يوجد معرّف منشور فيسبوك مسجّل؛ مرّر ?postId= أو انشر عبر النظام أولاً.", code:"NO_POST_ID" });
+  const groundingRes = await facebookClient().getPostGrounding(pageId, pageToken, providerPostId);
+  if (!groundingRes.ok || !groundingRes.data) {
+    return res.status(502).json({ success:false, error: groundingRes.error || "تعذّر قراءة حالة المنشور من Meta.", code: groundingRes.code || "PROVIDER_ERROR", providerCode: groundingRes.providerCode ?? null, providerSubcode: groundingRes.providerSubcode ?? null, providerTraceId: groundingRes.providerTraceId ?? null });
+  }
+  const g = groundingRes.data;
+  // الحكم الصادق: نضع الأسباب المحتملة إزاء الأدلة الفعلية بلا ادّعاء يقين.
+  let verdict: string;
+  let likelyRootCause: string;
+  if (!g.exists) { verdict = "post_not_found"; likelyRootCause = "المعرّف غير موجود أو لا يمكن قراءته بالرمز الحالي."; }
+  else if (g.isPublished === false) { verdict = "draft_or_scheduled"; likelyRootCause = "المنشور مسودة أو مجدول (is_published=false) فلا يظهر للجمهور بعد."; }
+  else if (g.appearsOnPage === false) { verdict = "published_but_not_on_page_wall"; likelyRootCause = "المنشور منشور (is_published=true) لكنه غير وارد على حائط الصفحة العامة — يطابق تماماً قيد «وضع تطوير التطبيق» الذي يحصر المحتوى المنشأ عبر API في أدوار التطبيق/الصفحة."; }
+  else { verdict = "published_and_returns_as_story"; likelyRootCause = "Meta تُعلن is_published=true والمنشور يرد ضمن المنشورات المنشورة. إن ظل مخفياً عن الجمهور فالمؤشر الأقوى هو وضع تطبيق Meta (Development) لا Live، أو اشتراط App Review لصلاحيات النشر."; }
+  res.json({
+    success:true,
+    pageId,
+    providerPostId,
+    postIdSource: source,
+    grounding: g,
+    verdict,
+    likelyRootCause,
+    // وضع التطبيق لا تعرضه Graph API: يُفحص من لوحة Meta فقط. نعلن ذلك صراحةً.
+    appMode: { readableViaApi: false, source: "Meta App Dashboard → App Mode (Development/Live)" },
+    manualActionRequired: [
+      "افتح Meta App Dashboard → تطبيق «وكيل الغرابي الذكي» وتأكد أن الوضع Live لا Development.",
+      "في Development يظهر المحتوى المنشأ عبر API لأدوار التطبيق/الصفحة فقط — حوّل التطبيق إلى Live.",
+      "إن لزم App Review لصلاحيات النشر (pages_manage_posts/pages_read_engagement) فأكملها لتظهر المنشورات الجديدة للجمهور.",
+      "المنشورات المنشأة قبل التحويل إلى Live تتحول إلى عامة تلقائياً عند تبديل الوضع (تحقّق من منشور سابق).",
+    ],
+    note: "قراءة فقط بلا أي نشر أو تغيير؛ بلا أي سرّ. وضع التطبيق غير مقروء عبر API ويُفحص من لوحة Meta.",
   });
 });
 
