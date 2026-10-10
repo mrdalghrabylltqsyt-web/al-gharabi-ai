@@ -258,7 +258,7 @@ async function main() {
 
   // ---------- F) بصمة البناء + نسخة lib متزامنة ----------
   {
-    check('build marker updated', RECOVERY_CENTER_BUILD === 'owner-auth-2');
+    check('build marker updated', RECOVERY_CENTER_BUILD === 'points-timeout-1');
     const toolAuth = fs.readFileSync(path.join(repoRoot, 'tools/dr/recoveryAuth.mjs'), 'utf8');
     const libAuth = fs.readFileSync(path.join(repoRoot, 'dr-recovery-center/lib/recoveryAuth.mjs'), 'utf8');
     check('recoveryAuth lib synced (no drift)', toolAuth === libAuth);

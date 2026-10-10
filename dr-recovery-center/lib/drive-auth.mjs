@@ -23,6 +23,7 @@ import {
   DRIVE_OAUTH_REFRESH_TOKEN_ENV,
   DRIVE_OAUTH_REDIRECT_URI,
 } from './cloud-lib.mjs';
+import { settleWithTimeout, DRIVE_TOKEN_TIMEOUT_MS, envTimeoutMs } from './drive-timeouts.mjs';
 
 export const DRIVE_TOKEN_ENCRYPTION_KEY_ENV = 'DRIVE_TOKEN_ENCRYPTION_KEY';
 export const DRIVE_OAUTH_TOKEN_URL = 'https://oauth2.googleapis.com/token';
@@ -230,15 +231,19 @@ export function createDriveOAuthClient(options = {}) {
   if (!clientSecret) {
     return { ok: false, code: 'client_secret_missing', message: 'DRIVE_OAUTH_CLIENT_SECRET غير مضبوط.' };
   }
-  const endpoints = options.endpoints ? { ...options.endpoints } : undefined;
-  if (options.tokenUrl) endpoints.oauth2TokenUrl = options.tokenUrl;
-  if (options.authUrl) endpoints.oauth2AuthBaseUrl = options.authUrl;
+  const endpoints = options.endpoints ? { ...options.endpoints } : {};
+  // تجاوز عنوان نقطة الرمز/التفويض من البيئة (اختبار/تشخيص) يسمح بتوجيه تجديد
+  // الرمز إلى خادم وهمي محلي بلا لمس Google الحقيقي، وبقاء الافتراضي عند غيابه.
+  const tokenUrl = options.tokenUrl || (env.DRIVE_OAUTH_TOKEN_URL || null);
+  const authUrl = options.authUrl || (env.DRIVE_OAUTH_AUTH_URL || null);
+  if (tokenUrl) endpoints.oauth2TokenUrl = tokenUrl;
+  if (authUrl) endpoints.oauth2AuthBaseUrl = authUrl;
   const client = new OAuth2Client({
     clientId,
     clientSecret,
     redirectUri,
     transporter: options.transporter,
-    endpoints,
+    endpoints: Object.keys(endpoints).length ? endpoints : undefined,
   });
   return { ok: true, client };
 }
@@ -367,7 +372,10 @@ export async function refreshDriveAccessToken(refreshToken, options = {}) {
   try {
     // المكتبة تتطلّب ضبط الرمز في credentials قبل التجديد.
     created.client.credentials = { refresh_token: refreshToken };
-    const res = await created.client.refreshAccessToken();
+    // مهلة صريحة لاستدعاء oauth2.googleapis.com: إن تعثّر تجديد الرمز لا يبقى
+    // الطلب معلّقاً بلا نهاية (كان هذا أحد مسارات تعليق رفع الفيديو).
+    const tokenTimeoutMs = envTimeoutMs(options.env || process.env, 'DRIVE_TOKEN_TIMEOUT_MS', DRIVE_TOKEN_TIMEOUT_MS);
+    const res = await settleWithTimeout(created.client.refreshAccessToken(), tokenTimeoutMs);
     const tokens = res.tokens || res.credentials || {};
     return {
       ok: true,
@@ -377,6 +385,10 @@ export async function refreshDriveAccessToken(refreshToken, options = {}) {
       expiryDate: tokens.expiry_date || null,
     };
   } catch (err) {
+    // انتهاء مهلة التجديد يُعلن كخطأ شبكة عابر صريح (لا كعطل سرّ/اعتماد).
+    if (err && (err.code === 'timeout' || err.name === 'AbortError')) {
+      return { ok: false, code: 'network_error', status: 0, message: 'انتهت مهلة تجديد رمز Drive.' };
+    }
     return classifyTokenError(err);
   }
 }

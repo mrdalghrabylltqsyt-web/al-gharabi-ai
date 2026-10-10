@@ -65,7 +65,7 @@ const PORT = Number.parseInt(process.env.PORT || process.env.RECOVERY_CENTER_POR
  * بين «إصلاح منشور» و«خدمة ما زالت تخدم نسخة قديمة» — وهو بالضبط ما أخفى سابقاً
  * أن مركز الاستعادة لم يستلم إصلاح قراءة رمز التجديد من قاعدة الحالة.
  */
-export const RECOVERY_CENTER_BUILD = 'owner-auth-2';
+export const RECOVERY_CENTER_BUILD = 'points-timeout-1';
 
 /** الحالات الصادقة للاستعادة (تُعرض للمالك كما هي؛ لا ادّعاء نجاح غير مُثبت). */
 export const RECOVERY_HONEST_STATES = [
@@ -99,6 +99,44 @@ export function honestStatesFromReport(report) {
 function json(res, code, body) {
   res.writeHead(code, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
   res.end(JSON.stringify(body));
+}
+
+/**
+ * المهلة الإجمالية لحسم سلسلة الحالة + قراءة نقاط الاستعادة من Google Drive.
+ * الغرض: منع التعليق بلا نهاية إذا تعثّر اتصال Drive. اختيرت 25s (أطول بقليل من
+ * مهلة قاعدة الحالة 15s) فلا تقطع عملية بطيئة لكنها طبيعية، بينما تمنع الانتظار الأبدي.
+ * قابلة للتجاوز في الاختبار/التشغيل عبر `RECOVERY_CENTER_POINTS_TIMEOUT_MS`.
+ */
+export const RECOVERY_POINTS_TIMEOUT_MS = 25_000;
+
+/**
+ * الحدّ الفعلي: يقرأ تجاوزاً رقمياً صالحاً من بيئة **الخدمة فقط** (لا قيمة سرّية)،
+ * ويتجاهل أي قيمة غير صالحة (يرجع الافتراضي). يُقرأ عند كل طلب، فلا يُلتقط وقت الإقلاع.
+ */
+export function resolvePointsTimeoutMs(env = process.env) {
+  const raw = env && env.RECOVERY_CENTER_POINTS_TIMEOUT_MS;
+  const n = Number(raw);
+  return Number.isFinite(n) && n > 0 ? n : RECOVERY_POINTS_TIMEOUT_MS;
+}
+
+/**
+ * يغلّف وعداً بمهلة صريحة **محليّة بلا تبعيّة خارجية** (تبقى حزمة النشر المستقلة
+ * مكتفية بذاتها). عند التجاوز: يمنع التسرّب، ولا يُلغي العمل الجاري كي تُكتب النتيجة
+ * المتأخرة بأمان (لا إفساد لحالة)، ويرمي خطأً مُصنَّفاً `code='timeout'`.
+ */
+export function settleWithTimeoutLocal(promise, timeoutMs) {
+  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) return promise;
+  const racing = Promise.resolve(promise);
+  racing.catch(() => {}); // لا رفض غير معالَج إن تأخّر الوعد بعد المهلة.
+  let timer = null;
+  const guard = new Promise((_resolve, reject) => {
+    timer = setTimeout(() => {
+      const err = new Error('انتهت مهلة الاتصال بـ Google Drive.');
+      err.code = 'timeout';
+      reject(err);
+    }, timeoutMs);
+  });
+  return Promise.race([racing, guard]).finally(() => { if (timer) clearTimeout(timer); });
 }
 
 async function readBody(req) {
@@ -229,7 +267,21 @@ const $=(id)=>document.getElementById(id);
 let OWNER_TOKEN=localStorage.getItem('gharabi_recovery_owner')||'';
 $('ownerToken').value=OWNER_TOKEN;
 function authHeaders(){return OWNER_TOKEN?{'Authorization':'Bearer '+OWNER_TOKEN}:{};}
-async function j(u,o){o=o||{};o.headers=Object.assign({},o.headers||{},authHeaders());const r=await fetch(u,o);try{return await r.json()}catch{return{ok:false,code:'bad_response'}}}
+// مهلة الواجهة لجلب النقاط (حماية إضافية للعميل). الخادم نفسه يرد 504 عند 25s،
+// وهذه 30s أطول بقليل فلا تقطع استجابةً بطيئة لكنها طبيعية قبل وصول ردّ الخادم.
+const POINTS_FETCH_TIMEOUT_MS=30000;
+async function j(u,o,timeoutMs){
+  o=o||{};o.headers=Object.assign({},o.headers||{},authHeaders());
+  let timer=null,ctrl=null;
+  if(timeoutMs&&typeof AbortController!=='undefined'){ctrl=new AbortController();o.signal=ctrl.signal;timer=setTimeout(()=>ctrl.abort(),timeoutMs);}
+  try{
+    const r=await fetch(u,o);
+    try{return await r.json()}catch{return{ok:false,code:'bad_response'}}
+  }catch(e){
+    // لا نُخفي أي شيء: تمييز انتهاء المهلة من تعذّر الاتصال، كي تظهر رسالة صحيحة.
+    return{ok:false,code:(e&&e.name==='AbortError')?'client_timeout':'network_error'};
+  }finally{if(timer)clearTimeout(timer);}
+}
 const esc=(s)=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 function renderStates(st){$('states').innerHTML=Object.entries(st||{}).map(([k,v])=>
   '<div><span class="pill '+(v?'ok':'bad')+'">'+(v?'✔':'—')+'</span> '+esc(STATES[k]||k)+'</div>').join('');}
@@ -241,46 +293,58 @@ function updateBtns(){
   $('restore').disabled=!selected||!hasKey||!verified;
 }
 async function refreshAuth(){
-  const d=await j('/api/owner-auth');
-  $('authState').innerHTML=OWNER_TOKEN
-    ? (d&&d.ok?'<span class="ok">المفتاح مقبول ✅</span>':'<span class="bad">المفتاح مرفوض ✗</span>')
-    : '<span class="muted">أدخل مفتاح المالك</span>';
+  const d=await j('/api/owner-auth',undefined,15000);
+  // لا نعرض «مرفوض ✗» عند تعذّر الاتصال/المهلة (قد يكون المفتاح صحيحاً): نميّز الحالتين.
+  const transportFailed=!d||d.code==='client_timeout'||d.code==='network_error'||d.code==='bad_response';
+  $('authState').innerHTML=!OWNER_TOKEN
+    ? '<span class="muted">أدخل مفتاح المالك</span>'
+    : (transportFailed
+        ? '<span class="warn">تعذّر التحقق من المفتاح الآن — أعد المحاولة</span>'
+        : (d&&d.ok?'<span class="ok">المفتاح مقبول ✅</span>':'<span class="bad">المفتاح مرفوض ✗</span>'));
 }
 $('saveToken').onclick=()=>{OWNER_TOKEN=$('ownerToken').value.trim();if(OWNER_TOKEN)localStorage.setItem('gharabi_recovery_owner',OWNER_TOKEN);else localStorage.removeItem('gharabi_recovery_owner');refreshAuth();};
 $('clearToken').onclick=()=>{OWNER_TOKEN='';$('ownerToken').value='';localStorage.removeItem('gharabi_recovery_owner');refreshAuth();};
 async function load(){
   $('ready').textContent='...';$('out').textContent='—';
-  const d=await j('/api/points');
-  if(!d.ok){
-    $('ready').textContent='';
-    if(d.code==='UNAUTHORIZED'){$('drivestate').innerHTML='<span class="bad">يتطلب مصادقة المالك — أدخل مفتاح المالك أعلاه واحفظه.</span>';}
-    else{$('drivestate').innerHTML='<span class="bad">Google Drive: غير متاح ('+esc(d.reason||d.code||'—')+')</span>';}
-    $('out').textContent=JSON.stringify(d,null,2);return;
+  let d;
+  try{
+    d=await j('/api/points',undefined,POINTS_FETCH_TIMEOUT_MS);
+    if(!d.ok){
+      // تمييز صريح للحالات: مهلة، تعذّر اتصال Drive، انتهاء جلسة، أو خطأ Drive حقيقي.
+      if(d.code==='UNAUTHORIZED'){$('drivestate').innerHTML='<span class="bad">يتطلب مصادقة المالك — أدخل مفتاح المالك أعلاه واحفظه.</span>';}
+      else if(d.code==='TIMEOUT'||d.code==='client_timeout'){$('drivestate').innerHTML='<span class="bad">انتهت مهلة الاتصال بـ Google Drive — اضغط «تحديث» لإعادة المحاولة.</span>';}
+      else if(d.code==='network_error'||d.code==='bad_response'){$('drivestate').innerHTML='<span class="bad">تعذّر الاتصال بالخدمة — تحقّق من الشبكة ثم أعد المحاولة.</span>';}
+      else{$('drivestate').innerHTML='<span class="bad">تعذّر جلب نقاط الاستعادة من Google Drive ('+esc(d.reason||d.code||'—')+') — أعد المحاولة.</span>';}
+      $('out').textContent=JSON.stringify(d,null,2);return;
+    }
+    const r=d.readiness||{};
+    $('drivestate').innerHTML='Google Drive: <span class="ok">متاح</span> · عميل: '+esc(r.drive.clientIdFingerprint||'—')+
+      ' · خزنة: '+(r.vaultKey.present?'<span class="ok">مضبوط</span>':'<span class="warn">يُدخل الآن</span>')+
+      ' · مفتاح الأسرار: '+esc(r.masterKey.state||'—');
+    $('ready').textContent=(d.points||[]).length+' نقطة';
+    $('points').innerHTML='';
+    (d.points||[]).forEach(p=>{
+      const el=document.createElement('div');el.className='pt'+(p.restorable?'':' bad');
+      el.innerHTML='<div class="id">'+esc(p.id)+' <span class="pill '+(p.restorable?'ok':'bad')+'">'+(p.restorable?'سليمة':'ناقصة')+'</span></div>'+
+        '<div class="grid">'+
+        '<div><b>الالتزام:</b> '+esc(String(p.commit||'—').slice(0,10))+'</div>'+
+        '<div><b>التاريخ:</b> '+esc(p.createdAt||'—')+'</div>'+
+        '<div><b>عدد الملفات:</b> '+esc(p.fileCount??'—')+'</div>'+
+        '<div><b>بصمة المصدر:</b> '+esc(String(p.hashes.sourceHash||'—').slice(0,12))+'</div>'+
+        '<div><b>قاعدة البيانات:</b> '+(p.database.encrypted?'مشفّرة':'—')+'</div>'+
+        '<div><b>الأسرار المشفّرة:</b> '+esc(p.secrets.count??'—')+'</div>'+
+        '<div><b>خزنة المفاتيح:</b> —</div>'+
+        '<div><b>التحقق:</b> '+esc((p.verification.problems||[]).join(', ')||'سليم')+'</div>'+
+        '</div>';
+      el.onclick=()=>{[...document.querySelectorAll('.pt')].forEach(x=>x.classList.remove('sel'));el.classList.add('sel');
+        selected=p;verified=false;$('verdict').textContent='النقطة المختارة: '+p.id+' — اضغط «التحقق من النسخة».';updateBtns();};
+      $('points').appendChild(el);
+    });
+    updateBtns();
+  }finally{
+    // نُنهي حالة التحميل دائماً (نجح الطلب أو فشل أو انتهت مهلته) — لا «...» عالقة أبداً.
+    if($('ready').textContent==='...')$('ready').textContent='';
   }
-  const r=d.readiness||{};
-  $('drivestate').innerHTML='Google Drive: <span class="ok">متاح</span> · عميل: '+esc(r.drive.clientIdFingerprint||'—')+
-    ' · خزنة: '+(r.vaultKey.present?'<span class="ok">مضبوط</span>':'<span class="warn">يُدخل الآن</span>')+
-    ' · مفتاح الأسرار: '+esc(r.masterKey.state||'—');
-  $('ready').textContent=(d.points||[]).length+' نقطة';
-  $('points').innerHTML='';
-  (d.points||[]).forEach(p=>{
-    const el=document.createElement('div');el.className='pt'+(p.restorable?'':' bad');
-    el.innerHTML='<div class="id">'+esc(p.id)+' <span class="pill '+(p.restorable?'ok':'bad')+'">'+(p.restorable?'سليمة':'ناقصة')+'</span></div>'+
-      '<div class="grid">'+
-      '<div><b>الالتزام:</b> '+esc(String(p.commit||'—').slice(0,10))+'</div>'+
-      '<div><b>التاريخ:</b> '+esc(p.createdAt||'—')+'</div>'+
-      '<div><b>عدد الملفات:</b> '+esc(p.fileCount??'—')+'</div>'+
-      '<div><b>بصمة المصدر:</b> '+esc(String(p.hashes.sourceHash||'—').slice(0,12))+'</div>'+
-      '<div><b>قاعدة البيانات:</b> '+(p.database.encrypted?'مشفّرة':'—')+'</div>'+
-      '<div><b>الأسرار المشفّرة:</b> '+esc(p.secrets.count??'—')+'</div>'+
-      '<div><b>خزنة المفاتيح:</b> —</div>'+
-      '<div><b>التحقق:</b> '+esc((p.verification.problems||[]).join(', ')||'سليم')+'</div>'+
-      '</div>';
-    el.onclick=()=>{[...document.querySelectorAll('.pt')].forEach(x=>x.classList.remove('sel'));el.classList.add('sel');
-      selected=p;verified=false;$('verdict').textContent='النقطة المختارة: '+p.id+' — اضغط «التحقق من النسخة».';updateBtns();};
-    $('points').appendChild(el);
-  });
-  updateBtns();
 }
 $('load').onclick=load;
 $('vaultKey').oninput=()=>{verified=false;updateBtns();};
@@ -370,17 +434,33 @@ export function createRecoveryCenterServer(options = {}) {
         return json(res, status, { ok: auth.allowed, reason: auth.reason });
       }
       if (req.method === 'GET' && url.pathname === '/api/points') {
-        const readiness = await inspectRecoveryReadiness(env, tokenOptions || {});
-        if (!readiness.drive.configured) return json(res, 200, { ok: false, reason: 'drive_not_configured', readiness });
-        const { store, code } = await makeStore(env, clientFactory, tokenOptions);
-        if (!store) return json(res, 200, { ok: false, reason: code || 'drive_client_unavailable', readiness });
-        const listed = await listRecoveryPoints(store);
-        // فشل قراءة Drive لا يُعاد كخطأ 500 ولا يُخفى: يُعلن الكود الصريح مع الجاهزية،
-        // فيرى المالك السبب الحقيقي (لا رسالة عامة تبدو كعطل غير معروف).
-        if (listed.ok !== true) {
-          return json(res, 200, { ok: false, reason: listed.code || 'list_failed', points: [], readiness });
+        // مهلة إجمالية واحدة تغلّف سلسلة الحالة + قراءة Drive، فلا يبقى الطلب معلّقاً
+        // بلا نهاية عند تعثّر الشبكة/Drive. عند التجاوز نُعلن السبب صراحةً ونجرّب لاحقاً.
+        try {
+          const result = await settleWithTimeoutLocal((async () => {
+            const readiness = await inspectRecoveryReadiness(env, tokenOptions || {});
+            if (!readiness.drive.configured) return { ok: false, reason: 'drive_not_configured', readiness };
+            const { store, code } = await makeStore(env, clientFactory, tokenOptions);
+            if (!store) return { ok: false, reason: code || 'drive_client_unavailable', readiness };
+            const listed = await listRecoveryPoints(store);
+            // فشل قراءة Drive لا يُعاد كخطأ 500 ولا يُخفى: يُعلن الكود الصريح مع الجاهزية،
+            // فيرى المالك السبب الحقيقي (لا رسالة عامة تبدو كعطل غير معروف).
+            if (listed.ok !== true) {
+              return { ok: false, reason: listed.code || 'list_failed', points: [], readiness };
+            }
+            return { ok: true, points: listed.points || [], readiness };
+          })(), resolvePointsTimeoutMs(env));
+          return json(res, 200, result);
+        } catch (e) {
+          const timedOut = String(e?.code || '') === 'timeout';
+          // لا نكشف أي تفصيل داخلي؛ السبب صريح للمالك ومُعاد المحاولة ممكنة.
+          return json(res, timedOut ? 504 : 500, {
+            ok: false,
+            reason: timedOut ? 'timeout' : 'points_unavailable',
+            code: timedOut ? 'TIMEOUT' : 'POINTS_UNAVAILABLE',
+            retryable: true,
+          });
         }
-        return json(res, 200, { ok: true, points: listed.points || [], readiness });
       }
       if (req.method === 'POST' && url.pathname === '/api/verify') {
         const body = await readBody(req);

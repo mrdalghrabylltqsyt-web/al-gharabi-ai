@@ -21,6 +21,7 @@ const MODULES = [
   'cloud-lib.mjs',
   'drive-auth.mjs',
   'drive-client.mjs',
+  'drive-timeouts.mjs',
   'drive-store.mjs',
   'restore.mjs',
   'secret-crypto.mjs',
