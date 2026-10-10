@@ -8250,7 +8250,7 @@ function containerPollIntervalMs(): number {
 async function createInstagramContainerReady(
   igAccountId: string,
   pageToken: string,
-  input: { imageUrl: string; videoUrl: string; caption: string; reel: boolean },
+  input: { imageUrl: string; videoUrl: string; caption: string; reel: boolean; shareToFeed?: boolean },
   poll: { attempts: number; intervalMs: number },
 ): Promise<{ containerId: string; mediaKind: string } | { error: string; code: string; providerCode?: number | null; providerSubcode?: number | null; providerTraceId?: string | null }> {
   const created = await instagramClient().createMediaContainer(igAccountId, pageToken, input);
@@ -8393,8 +8393,11 @@ async function executePlatformPublish(platform: string, body: any, actor: string
       if (!resolvedVideo.ok) return { status: resolvedVideo.status, body: { success: false, error: resolvedVideo.error, code: resolvedVideo.code } };
       const videoUrl = resolvedVideo.url;
       const reel = body?.reel === true;
+      // share_to_feed خاص بالريلز: يبقى true افتراضاً (ظهور في الموجز)؛ يقبله الخادم
+      // صراحةً كي لا يُفقد سلوك «الفيديو في الموجز» بعد تحويل الفيديو إلى REELS.
+      const shareToFeed = body?.shareToFeed === false ? false : true;
       const igPoll = { attempts: IG_CONTAINER_POLL_MAX_ATTEMPTS, intervalMs: containerPollIntervalMs() };
-      const container = await createInstagramContainerReady(target.igAccountId, target.pageToken, { imageUrl, videoUrl, caption: content, reel }, igPoll);
+      const container = await createInstagramContainerReady(target.igAccountId, target.pageToken, { imageUrl, videoUrl, caption: content, reel, shareToFeed }, igPoll);
       if ("error" in container) {
         // MEDIA_REQUIRED يبقى فقط إن غاب الوسائط فعلاً قبل أي استدعاء شبكي؛ وإلا نُمرّر
         // كود Meta الحقيقي ورسالته بدل تثبيت MEDIA_REQUIRED الذي كان يُخفي السبب.

@@ -3672,9 +3672,10 @@ add('watcher-advisory-not-authority',
     'Facebook يُمرّر كود Meta الحقيقي (providerCode + error_subcode) والكود المصنَّف بدل رسالة عامة');
   const instagramModule = read('engine/social/instagram.ts');
   add('instagram-video-media-type',
-    instagramModule.includes("body.set('media_type', 'VIDEO');") &&
-    instagramModule.includes("body.set('media_type', 'REELS');"),
-    'Instagram يضع media_type=VIDEO للفيديو غير الريلز (إصلاح (#100) The parameter image_url is required)');
+    instagramModule.includes("body.set('media_type', 'REELS');") &&
+    instagramModule.includes("body.set('share_to_feed'") &&
+    !instagramModule.includes("body.set('media_type', 'VIDEO');"),
+    'Instagram يُنشئ الفيديو بـmedia_type=REELS + share_to_feed (قيمة VIDEO مهجورة تُرد بـ#100/2207067)');
   const threadsModule = read('engine/social/threads.ts');
   add('threads-token-lifecycle',
     threadsModule.includes('async exchangeCode(') &&
@@ -3724,9 +3725,10 @@ add('watcher-advisory-not-authority',
     'النشر يعلن EXTERNAL_SETUP_REQUIRED لمنصة بلا موصل منفّذ قبل فحص الاتصال (لا NOT_CONNECTED المضلِّل)');
   add('publish-all-platforms-tests',
     read('engine/tests/platform.integration.test.ts').includes("code === 'EXTERNAL_SETUP_REQUIRED'") &&
-    read('engine/tests/publish.provider.error.test.ts').includes('media_type=VIDEO') &&
+    read('engine/tests/publish.provider.error.test.ts').includes('REELS') &&
+    read('engine/tests/publish.provider.error.test.ts').includes('share_to_feed') &&
     read('engine/tests/threads.connector.test.ts').includes('TOKEN_EXPIRED'),
-    'اختبارات النشر تغطي: EXTERNAL_SETUP_REQUIRED + media_type=VIDEO + تصنيف انتهاء رمز Threads');
+    'اختبارات النشر تغطي: EXTERNAL_SETUP_REQUIRED + فيديو Instagram REELS/share_to_feed + تصنيف انتهاء رمز Threads');
   // جذر «CLIENT_ERROR: Invalid parameter»: انتظار جاهزية حاوية الوسائط قبل النشر.
   const igModule = read('engine/social/instagram.ts');
   add('media-container-readiness-single-source',

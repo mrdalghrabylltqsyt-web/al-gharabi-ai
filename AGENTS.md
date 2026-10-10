@@ -5249,3 +5249,37 @@ Graph API — مصدره الوحيد لوحة Meta.
 المنشورات المُنشأة عبر API عامة (بما فيها السابقة). هذا لا يمكن تنفيذه من الكود لأن **وضع
 التطبيق/مستوى الوصول غير مقروءين ولا قابلين للتغيير عبر Graph API إطلاقاً** — لا حقل mode في
 `debug_token` ولا في عقدة التطبيق — ولا يملك الوكيل جلسة مالك Meta لإجراء التبديل.
+
+## إصلاح نشر فيديو Instagram: `media_type=VIDEO` مهجورة => REELS — فرع (2026-10-10)
+
+**الجذر المُثبت (وثيقة Meta + رمز الإنتاج):** مسار `buildMediaContainerBody` في
+`engine/social/instagram.ts` كان يرسل `media_type=VIDEO` للفيديو غير الموسوم `reel=true`.
+قيمة `VIDEO` **مهجورة** لدى Meta، وتُرد بـ`code=100, error_subcode=2207067,
+error_user_title="Unsupported media type VIDEO"`. دليل Meta الرسمي:
+«Beginning November 9, 2023, the VIDEO value for media_type will no longer be supported.
+Use the REELS media type to publish a video to your Instagram feed» (وثيقة IG User Media:
+`POST /{ig-user-id}/media` بقيم `media_type`: VIDEO | REELS | STORIES | CAROUSEL؛
+و`share_to_feed` **للريلز فقط**: true ⇒ يظهر في الموجز والريلز، false ⇒ الريلز فقط).
+
+**الإصلاح (لا حذف وظائف/واجهات):**
+- `buildMediaContainerBody`: الفيديو (أي فيديو) يُنشأ بـ`media_type=REELS` **دائماً**
+  (لا يوجد بديل غير REELS لرفع فيديو)، مع `share_to_feed=true` افتراضاً (يقبله المالك
+  صراحةً كـ`false` فيُحصر في تبويب الريلز). الصور لا تضع `media_type`/`share_to_feed`.
+  `mediaKind` يبقى `reel`/`video` للتمييز الدلالي في سجل النشر فقط (كلاهما ينتظر الجاهزية).
+- `InstagramPublishInput.shareToFeed?: boolean`، والخادم يمرّره من جسم الطلب
+  (`body.shareToFeed === false ? false : true`).
+- **لم تُمسّ Threads** (لا تزال تستخدم `media_type=VIDEO` المشروع لديها)، ولا الصور، ولا
+  المسارين (حاوية ثم `media_publish`)، ولا الرسائل/التعليقات/الويب هوك، ولا أي منصة أخرى.
+  **لا مسار STORIES/CAROUSEL قائم** في إنستغرام فلم يلزم تعديلهما.
+
+**اختبارات:** `instagram.connector.test.ts` = **234 فحصاً** (وحدة: الفيديو ⇒ REELS لا VIDEO،
+الريـلز ⇒ REELS، `shareToFeed=false` ⇒ `share_to_feed=false`، الصورة بلا media_type/
+share_to_feed، النص مرفوض؛ وتكامل: الطلب الفعلي المُرسل إلى Meta يحمل REELS/share_to_feed
+ولا VIDEO في أي حاوية). `publish.provider.error.test.ts` = **54 فحصاً** (نفس الحالات وحدة).
+final-audit = **1493 فحصاً** (`instagram-video-media-type` صار يشترط REELS + share_to_feed
+وغياب VIDEO؛ `publish-all-platforms-tests` محدَّث).
+
+**ما يبقى للتحقق الحقلي (نقطة توقف المالك):** لم يُنفّذ أي نشر حقيقي؛ إثبات الحل يحتاج
+نشر فيديو مصرّحاً به عبر مسار النشر الفعلي في الإنتاج ثم قراءة معرّف المنشور من Meta — بعد
+موافقة المالك على مرحلة الإنتاج. لم يُدمج ولم يُنشَر هذا الفرع.
+

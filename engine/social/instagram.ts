@@ -303,8 +303,17 @@ export interface InstagramPublishInput {
   /** رابط فيديو/ريل عام. */
   videoUrl?: string;
   caption?: string;
-  /** نشر كريل (media_type=REELS) بدل فيديو عادي. */
+  /**
+   * نشر كريل (media_type=REELS). لم يعد الفرق بينه وبين الفيديو العادي موجوداً في
+   * Meta: قيمة `media_type=VIDEO` **مهجورة**، فالفيديو يُنشأ كـREELS دائماً. يبقى
+   * الحقل للتمييز الدلالي في سجل النشر (reel مقابل video).
+   */
   reel?: boolean;
+  /**
+   * للريلز فقط: هل يمكن أن يظهر الفيديو في الموجز أيضاً (لا تبويب الريلز وحده).
+   * الافتراضي `true` (يظهر في الموجز). `false` يجعل الريلز في تبويب الريلز فقط.
+   */
+  shareToFeed?: boolean;
 }
 
 /**
@@ -316,11 +325,15 @@ export function buildMediaContainerBody(input: InstagramPublishInput): { ok: boo
   if (input.caption && input.caption.trim()) body.set('caption', input.caption.trim());
   if (input.videoUrl && input.videoUrl.trim()) {
     body.set('video_url', input.videoUrl.trim());
-    if (input.reel) { body.set('media_type', 'REELS'); return { ok: true, body, mediaKind: 'reel' }; }
-    // وثيقة Meta: نشر الفيديو (غير الريلز) يتطلب media_type=VIDEO صراحةً؛ بغيابه
-    // يفسّره Graph كمنشور صورة ويرد (#100) The parameter image_url is required.
-    body.set('media_type', 'VIDEO');
-    return { ok: true, body, mediaKind: 'video' };
+    // السبب المُثبت لعطل «(code=100, subcode=2207067) Unsupported media type VIDEO»:
+    // قيمة media_type=VIDEO **مهجورة** لدى Meta، ولا يوجد بديل غير REELS لرفع
+    // فيديو عبر واجهة المحتوى. لذا الفيديو (وإن لم يُوسم ريلز) يُنشأ كـREELS.
+    body.set('media_type', 'REELS');
+    // share_to_feed خاص بالريلز: true (افتراضياً) يجيز ظهوره في الموجز أيضاً،
+    // وfalse يحصره في تبويب الريلز. يبقى دائماً مع REELS كي لا يُفقد الظهور في الموجز
+    // (وهو الأقرب سابقاً لسلوك «فيديو في الموجز»). لا يُرسل مع الصور.
+    body.set('share_to_feed', input.shareToFeed === false ? 'false' : 'true');
+    return { ok: true, body, mediaKind: input.reel ? 'reel' : 'video' };
   }
   if (input.imageUrl && input.imageUrl.trim()) {
     body.set('image_url', input.imageUrl.trim());

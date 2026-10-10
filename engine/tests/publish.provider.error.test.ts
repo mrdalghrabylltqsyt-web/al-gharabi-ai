@@ -79,16 +79,24 @@ async function run(): Promise<void> {
     check('facebook: انتهاء الرمز (190) يُصنَّف TOKEN_EXPIRED', res2.code === 'TOKEN_EXPIRED', String(res2.code));
   }
 
-  // 4ج) Instagram: بناء حاوية الفيديو غير الريلز يتضمن media_type=VIDEO (العطل المُثبت).
+  // 4ج) Instagram: الفيديو (غير الموسوم ريلز) يُنشأ كـREELS — قيمة media_type=VIDEO
+  // مهجورة لدى Meta وتُرد بـ(code=100, subcode=2207067, Unsupported media type VIDEO).
   {
     const { buildMediaContainerBody } = await import('../social/instagram');
     const vid = buildMediaContainerBody({ videoUrl: 'https://drive.example/v.mp4', caption: 'عرض' });
-    check('instagram: الفيديو غير الريلز يضع media_type=VIDEO', vid.body.get('media_type') === 'VIDEO', String(vid.body.get('media_type')));
+    check('instagram: الفيديو يُنشأ كـREELS لا VIDEO (القيمة المهجورة)', vid.body.get('media_type') === 'REELS', String(vid.body.get('media_type')));
     check('instagram: الفيديو يضع video_url', vid.body.get('video_url') === 'https://drive.example/v.mp4');
+    check('instagram: الفيديو يضع share_to_feed=true افتراضاً', vid.body.get('share_to_feed') === 'true', String(vid.body.get('share_to_feed')));
     const reel = buildMediaContainerBody({ videoUrl: 'https://drive.example/v.mp4', reel: true });
     check('instagram: الريلز يبقى media_type=REELS', reel.body.get('media_type') === 'REELS', String(reel.body.get('media_type')));
+    check('instagram: الريلز يضع share_to_feed=true افتراضاً', reel.body.get('share_to_feed') === 'true', String(reel.body.get('share_to_feed')));
+    const reelNoFeed = buildMediaContainerBody({ videoUrl: 'https://drive.example/v.mp4', shareToFeed: false });
+    check('instagram: shareToFeed=false => share_to_feed=false', reelNoFeed.body.get('share_to_feed') === 'false');
+    check('instagram: لا توجد قيمة VIDEO المهجورة في أي طلب فيديو', [vid, reel, reelNoFeed].every((b) => b.body.get('media_type') !== 'VIDEO'));
     const img = buildMediaContainerBody({ imageUrl: 'https://drive.example/p.jpg' });
-    check('instagram: الصورة لا تضع media_type (الافتراضي صور)', img.body.get('media_type') === null && img.body.get('image_url') === 'https://drive.example/p.jpg');
+    check('instagram: الصورة لا تضع media_type/share_to_feed (الافتراضي صور)', img.body.get('media_type') === null && img.body.get('share_to_feed') === null && img.body.get('image_url') === 'https://drive.example/p.jpg');
+    const textOnly = buildMediaContainerBody({ caption: 'نص فقط' });
+    check('instagram: نص فقط مرفوض صراحةً بلا وسائط', !textOnly.ok && textOnly.mediaKind === null && textOnly.body.get('video_url') === null && textOnly.body.get('image_url') === null);
   }
 
   // 4د) Telegram: كود الخطأ الحقيقي (403/400) يُصنَّف ولا تُخفى الرسالة.
