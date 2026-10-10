@@ -4047,6 +4047,12 @@ add('watcher-advisory-not-authority',
     read('engine/tests/facebook.connector.test.ts').includes("published=true صراحةً"),
     'اختبار انحدار يمنع رجوع عدم تحديد published وحالة الظهور');
 
+  add('facebook-diagnosis-no-fabricated-id',
+    read('server.ts').includes('code:"NO_POST_ID"') &&
+    read('engine/tests/facebook.connector.test.ts').includes('NO_POST_ID') &&
+    read('engine/tests/facebook.connector.test.ts').includes('لا يختلق معرّف منشور'),
+    'التشخيص يرفض بصراحة عند غياب سجل النشر ولا يختلق معرّفاً (مُختبر)');
+
   // 10) AGENTS.md: عدد فحوصات final-audit مطابق للفعلي (يُعَدّ من نص الملف نفسه).
   const auditCount = (read('final-audit.mjs').match(/^\s*add\(/gm) || []).length;
   add('agents-audit-count-accurate',

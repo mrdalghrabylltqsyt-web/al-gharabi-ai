@@ -323,6 +323,8 @@ async function unitTests(): Promise<void> {
   check('مجدول: scheduledPublishTime محفوظ', gDraft.scheduledPublishTime === '123');
   const gUnknown = interpretPostGrounding('post', { id: 'P3' }, null);
   check('حقل غائب => null لا يُفترض نجاح', gUnknown.isPublished === null && gUnknown.appearsOnPage === null && gUnknown.confirmedPublicStory === false);
+  const gPublishedNotOnWall = interpretPostGrounding('video', { id: 'V4', is_published: true }, false);
+  check('is_published=true لا تعني الظهور العام: غيابها عن الحائط تُبطل الادّعاء', gPublishedNotOnWall.isPublished === true && gPublishedNotOnWall.appearsOnPage === false && gPublishedNotOnWall.confirmedPublicStory === true);
   const gMissing = interpretPostGrounding('video', {}, null);
   check('بلا معرّف => exists=false', gMissing.exists === false && gMissing.providerPostId === '');
 
@@ -479,6 +481,16 @@ async function integrationTests(): Promise<void> {
     const info = await (await fetch(`${BASE}/api/platforms/facebook/webhook-info`, { headers: auth })).json();
     check('حالة webhook تُعلن الاشتراك الفعلي', info.status !== 502 && info.appSubscribed === true && info.pageId === 'PAGE_123', JSON.stringify(info).slice(0, 200));
     check('حالة webhook لا تكشف أي سرّ', !JSON.stringify(info).includes(FB_APP_SECRET) && !JSON.stringify(info).includes('PAGE_TOKEN_TEST') && !JSON.stringify(info).includes(FB_VERIFY_TOKEN));
+
+    group('6ب) تكامل: التشخيص لا يختلق معرّف منشور إذا لم يوجد سجل حقيقي');
+    // هنا الصفحة متصلة وموثقة (بعد group 5) لكن لم يُنشأ أي منشور فيسبوك بعد
+    // (أول نشر في group 16). فيجب أن يرفض التشخيص بصراحة لا أن يخترع معرّفاً.
+    const visNoRecord = await fetch(`${BASE}/api/platforms/facebook/post-visibility-diagnosis`, { headers: auth });
+    const visNoRecordBody = await visNoRecord.json().catch(() => ({}));
+    check('بلا سجل نشر حقيقي => رفض صريح NO_POST_ID (لا تخمين معرّف)', visNoRecord.status === 409 && visNoRecordBody.code === 'NO_POST_ID', `status=${visNoRecord.status} body=${JSON.stringify(visNoRecordBody).slice(0, 160)}`);
+    check('لا يُعاد أي providerPostId مُختلق عند غياب السجل', !visNoRecordBody.providerPostId);
+    check('التشخيص لا يكشف أي سرّ عند الرفض', !JSON.stringify(visNoRecordBody).includes('PAGE_TOKEN_TEST') && !JSON.stringify(visNoRecordBody).includes(FB_APP_SECRET));
+    check('التشخيص لغير المالك => 403 (المعرّفات للمالك فقط)', (await fetch(`${BASE}/api/platforms/facebook/post-visibility-diagnosis`, { headers: staffAuth })).status === 403);
 
     group('7) تكامل: استقبال تعليق حقيقي عبر webhook موقّع');
     const commentPayload = JSON.stringify({ object: 'page', entry: [{ id: 'PAGE_123', changes: [{ field: 'feed', value: { item: 'comment', comment_id: 'C1', post_id: 'POST1', message: 'بكم سعر الثلاجة بالتقسيط؟', from: { name: 'أحمد' }, created_time: 1700000000 } }] }] });

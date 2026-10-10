@@ -44,7 +44,7 @@ npm install
 npm run dev            # tsx server.ts
 npm run lint           # tsc --noEmit
 npm run build          # vite build + esbuild server.ts -> dist/server.cjs
-npm run final-audit    # node final-audit.mjs (1492 فحصاً)
+npm run final-audit    # node final-audit.mjs (1493 فحصاً)
 npm test               # storage + engine + auth + ... + db + runtime
 ```
 - التشغيل الإنتاجي: `PORT=4517 NODE_ENV=production APP_URL=http://localhost:4517 node dist/server.cjs`
@@ -1515,7 +1515,7 @@ TikTok. أُضيف مصدر واحد صادق للترجمة بين الحقائ
 
 اختبارات: `tiktok.connector.test.ts` = **221 فحصاً** (مجموعة `3c` وحدة تغطي كل حالة
 وأسبقياتها وقواعد الحماية، وفحوص تكامل تثبت `PUBLISHING_RESTRICTED` بعد ربط موثق،
-و`OPERATIONAL` بعد PUBLISH_COMPLETE، وانعكاسها في readiness). فحوص final-audit الستة عشر:
+و`OPERATIONAL` بعد PUBLISH_COMPLETE، وانعكاسها في readiness). فحوص final-audit السبعة عشر:
 `tiktok-truthful-state-module` … `tiktok-state-tests` (319 إجمالاً).
 
 **لم يُمسّ:** Facebook/Instagram/Telegram (تغيّر صفر — انحدارها كلها ناجح)، ولا Gemini،
@@ -4759,7 +4759,7 @@ Meta بـ**190 «Session has expired»**. الأسوأ: كان الفشل يتك
 (`npm run test:facebook-video-diagnostics-ui`، 25 فحصاً، موصول بـ`npm test`)، وe2e حقيقي
 `engine/e2e/facebook-video-diagnostics.e2e.spec.ts` (Playwright/Chromium: يفتح مركز الربط
 بجلسة مالك، يضغط الزرّين، يثبت ظهور النتيجة العربية، ويتحقق أن الطلبين الحقيقيين يحملان
-ترويسة Authorization). فحوص final-audit الستة الجديدة: `facebook-diagnostics-ui-buttons` …
+ترويسة Authorization). فحوص final-audit السبعة الجديدة: `facebook-diagnostics-ui-buttons` …
 `facebook-diagnostics-ui-tests` (**1413 إجمالاً**).
 
 **لم يُمسّ:** منطق الخادم، Gemini/الـfirewall، OAuth/scopes، المصادقة، قاعدة البيانات،
@@ -5236,11 +5236,11 @@ Graph API — مصدره الوحيد لوحة Meta.
    `verdict` + `likelyRootCause` + `evidenceSummary{proofOfPublicVisibility:false}` +
    `appMode{readableViaApi:false}` + خطوات Meta اليدوية (تشمل Access Levels). بلا أي سرّ.
 
-**اختبارات:** `facebook.connector.test.ts` = **329 فحصاً** (المجموعة `1ط-2` وحدوية للتفسير،
+**اختبارات:** `facebook.connector.test.ts` = **334 فحصاً** (المجموعة `1ط-2` وحدوية للتفسير،
 والمجموعة `16د` تكاملية: 401 بلا جلسة، المعرّف من آخر سجل، `is_published=true`، الظهور على
 الحائط، `verdict`، إعلان أن وضع التطبيق غير مقروء عبر API، و**أن published=true لا يُقدَّم
-كإثبات ظهور عام**، وغياب أي سرّ). فحوص final-audit الستة: `facebook-video-published-explicit`
-… `facebook-published-not-public-proof` (**1492 إجمالاً**). `npm run lint` + `build` + `test`
+كإثبات ظهور عام**، وغياب أي سرّ). فحوص final-audit السبعة: `facebook-video-published-explicit`
+… `facebook-published-not-public-proof` (**1493 إجمالاً**). `npm run lint` + `build` + `test`
 (118 مجموعة) + `final-audit` كلها ناجحة.
 
 **الخطوة اليدوية الوحيدة المطلوبة من المالك (لا ينفّذها أي وكيل):** Meta App Dashboard →
