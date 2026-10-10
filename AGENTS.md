@@ -44,7 +44,7 @@ npm install
 npm run dev            # tsx server.ts
 npm run lint           # tsc --noEmit
 npm run build          # vite build + esbuild server.ts -> dist/server.cjs
-npm run final-audit    # node final-audit.mjs (1466 فحصاً)
+npm run final-audit    # node final-audit.mjs (1477 فحصاً)
 npm test               # storage + engine + auth + ... + db + runtime
 ```
 - التشغيل الإنتاجي: `PORT=4517 NODE_ENV=production APP_URL=http://localhost:4517 node dist/server.cjs`
@@ -5121,3 +5121,30 @@ Render لم يلتقطها. إثبات التوقيت: أوقات committer من
 (للمالك). اختبار `engine/tests/health.privacy.test.ts` يمنع رجوع التسريب. تحقّق حي على
 الإنتاج: `GET /api/health` بلا مصادقة => عدد مطابقات `attentionRequired`/`replyText`/
 `authorName` = 0.
+
+## مهلة جلب نقاط الاستعادة في مركز الاستعادة — إصلاح تعليق `/api/points` (2026-10-03)
+
+كان `GET /api/points` (مركز الاستعادة المستقل) يقف عند تعثّر/بطء Google Drive **بلا أي
+مهلة**، فيبقى الطلب معلّقاً بلا نهاية ⇒ تبقى الواجهة على «...» ولا يظهر أي خطأ (فلا
+يُختار Recovery Point ويبقى زر «التحقق من النسخة» معطّلاً). أُثبت محلياً: مع Drive سريع
+الرد فوري (~9ms)، ومع Drive متجمّد (جلسة صحيحة) لا استجابة إطلاقاً.
+
+الإصلاح (بلا تغيير أي سرّ/مفتاح/OAuth/نقطة استعادة/منطق استعادة):
+- `tools/dr/recovery-center.mjs`: `RECOVERY_POINTS_TIMEOUT_MS=25000` + `resolvePointsTimeoutMs`
+  (تجاوز من بيئة الخدمة فقط، يُقرأ عند كل طلب) + `settleWithTimeoutLocal` **محلي بلا
+  تبعية خارجية** (عند التجاوز يمنع تسرّب الوعد ولا يُلغي العمل الجاري كي تُكتب النتيجة
+  المتأخرة بأمان). `/api/points` يُغلَّف كاملاً؛ عند التجاوز يُرد **504
+  `{ok:false, code:'TIMEOUT', reason:'timeout', retryable:true}`** بدل التعليق.
+- الواجهة: `j()` يدعم `AbortController` بمهلة (`POINTS_FETCH_TIMEOUT_MS=30000` الأطول من
+  25s للخادم) ويميّز `client_timeout`/`network_error`؛ `load()` ينهي حالة «...» **دائماً**
+  في `finally` ويعرض رسالة صريحة (مهلة/تعذّر Drive/انتهاء جلسة) مع إعادة المحاولة؛
+  `refreshAuth()` لم يعد يعرض «مرفوض» عند تعذّر الاتصال (يميّز تعذّر التحقق عن الرفض).
+- `dr-recovery-center/sync-lib.mjs`: أُضيف `drive-timeouts.mjs` (كانت نسخة `lib/` لا
+  تُستورده أصلاً) فحُدّثت النسخة المتزامنة بلا انحراف وخدمة النشر المستقلة صارت قابلة
+  للاستيراد فعلاً. `RECOVERY_CENTER_BUILD = 'points-timeout-1'`.
+
+اختبار: `engine/tests/dr/dr.recovery.center.timeout.test.ts` (`npm run
+test:dr-recovery-center-timeout`، 31 فحصاً، مضاف إلى `test:dr`): نجاح الجلب، خطأ Drive
+(403) صريح، انتهاء المهلة 504، **بقاء المصادقة بعد 504**، 401 بلا مفتاح، وواجهة متصفح
+حقيقية (نجاح/مهلة/خطأ Drive) تُثبت إنهاء «...» دائماً. فحوص final-audit الـ11 الجديدة
+(`recovery-center-points-timeout-*`، 1477 إجمالاً).

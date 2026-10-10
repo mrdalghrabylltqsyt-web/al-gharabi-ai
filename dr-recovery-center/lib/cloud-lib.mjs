@@ -665,6 +665,7 @@ export function buildBackupManifest(input = {}) {
     createdAt: input.createdAt ?? new Date().toISOString(),
     sourceHash: input.sourceHash ?? null,
     databaseHash: input.databaseHash ?? null,
+    databaseFingerprint: input.databaseFingerprint ?? null,
     encryptedDatabaseHash: input.encryptedDatabaseHash ?? null,
     treeHash: input.treeHash ?? null,
     fileCount: Number.isFinite(input.fileCount) ? input.fileCount : 0,
