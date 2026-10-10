@@ -44,7 +44,7 @@ npm install
 npm run dev            # tsx server.ts
 npm run lint           # tsc --noEmit
 npm run build          # vite build + esbuild server.ts -> dist/server.cjs
-npm run final-audit    # node final-audit.mjs (1486 فحصاً)
+npm run final-audit    # node final-audit.mjs (1493 فحصاً)
 npm test               # storage + engine + auth + ... + db + runtime
 ```
 - التشغيل الإنتاجي: `PORT=4517 NODE_ENV=production APP_URL=http://localhost:4517 node dist/server.cjs`
@@ -1515,7 +1515,7 @@ TikTok. أُضيف مصدر واحد صادق للترجمة بين الحقائ
 
 اختبارات: `tiktok.connector.test.ts` = **221 فحصاً** (مجموعة `3c` وحدة تغطي كل حالة
 وأسبقياتها وقواعد الحماية، وفحوص تكامل تثبت `PUBLISHING_RESTRICTED` بعد ربط موثق،
-و`OPERATIONAL` بعد PUBLISH_COMPLETE، وانعكاسها في readiness). فحوص final-audit الستة عشر:
+و`OPERATIONAL` بعد PUBLISH_COMPLETE، وانعكاسها في readiness). فحوص final-audit السبعة عشر:
 `tiktok-truthful-state-module` … `tiktok-state-tests` (319 إجمالاً).
 
 **لم يُمسّ:** Facebook/Instagram/Telegram (تغيّر صفر — انحدارها كلها ناجح)، ولا Gemini،
@@ -4759,7 +4759,7 @@ Meta بـ**190 «Session has expired»**. الأسوأ: كان الفشل يتك
 (`npm run test:facebook-video-diagnostics-ui`، 25 فحصاً، موصول بـ`npm test`)، وe2e حقيقي
 `engine/e2e/facebook-video-diagnostics.e2e.spec.ts` (Playwright/Chromium: يفتح مركز الربط
 بجلسة مالك، يضغط الزرّين، يثبت ظهور النتيجة العربية، ويتحقق أن الطلبين الحقيقيين يحملان
-ترويسة Authorization). فحوص final-audit الستة الجديدة: `facebook-diagnostics-ui-buttons` …
+ترويسة Authorization). فحوص final-audit السبعة الجديدة: `facebook-diagnostics-ui-buttons` …
 `facebook-diagnostics-ui-tests` (**1413 إجمالاً**).
 
 **لم يُمسّ:** منطق الخادم، Gemini/الـfirewall، OAuth/scopes، المصادقة، قاعدة البيانات،
@@ -5186,3 +5186,66 @@ SocialManager/Operations بقيت عرضاً (توضيح صريح بلا إدع�
 App.tsx، صفوف الإجراء قابلة للضغط بلا زر متداخل، بطاقات KPI أزرار تنقل، بحث الترويسة
 فعال، وغياب `onClick` الفارغ/`href="#"`. فحوص final-audit التسعة الجديدة:
 `ui-nav-targets-valid` … `ui-interactions-test-wired` (1486 إجمالاً).
+
+## تشخيص «منشورات فيسبوك تظهر للأونر فقط» — السبب الجذري المُثبت (2026-10-04)
+
+**الأعراض المثبتة من تجربة المالك:** منشور/فيديو يُنشئه الغرابي AI على صفحة «معرض الغرابي
+للتقسيط» يظهر للأونر وللأدوار فقط، ولا يظهر لأي مشاهد آخر؛ بينما المنشور اليدوي على نفس
+الصفحة عام. المتابعون موجودون والصفحة عامة.
+
+**السبب الجذري (مُثبت من وثائق Meta الرسمية + مجتمع مطوّري Meta، لا تخمين):** تطبيق Meta
+«وكيل الغرابي الذكي» في وضع **التطوير (Development)** لا **Live** — أو لمستوى وصول غير
+متقدّم إن كان من نوع **Business** (منذ Graph v8.0 استُبدل Development/Live بتطبيق Business
+بـ«Access Levels»). في الحالتين تُقيّد Meta كل محتوى ينشئه التطبيق عبر API بحيث لا يراه إلا
+أدوار التطبيق/الصفحة (Admin/Developer/Tester)، بينما المحتوى المُنشأ يدوياً يبقى عاماً —
+وهذا بالضبط نمط العطل. النص الحرفي من منتدى مطوّري Meta: «Posts created manually on the same
+Facebook Page are publicly visible. Only posts created through the Pages API are restricted
+to app/Page roles.» ومصدر ثالث: «`pages_manage_posts` with Advanced Access. Standard Access
+works only on Pages your own developer account owns, which is why an integration that works
+perfectly in development returns empty arrays for customers.»
+
+**ما استُبعد بالأدلة من الإنتاج (بلا تدخّل المالك):** `/api/health.metaOAuth` (عام) أظهر:
+`appIdConfigured:true, clientSecretConfigured:true, appSecretConfigured:true, scopeCount:8,
+scopeDependenciesResolved:true, businessManagementScope:true, pageAccessTokenStored:true,
+pendingPageSelection:false` — أي أن الصفحة **متصلة وموثّقة** والصلاحيات الثمانية مكتملة
+الاعتماديات. فيُستبعد: عدم الاتصال، ونقص الصلاحيات، وعدم إتمام OAuth. يبقى وضع التطبيق/
+مستوى الوصول هو المتغيّر الخارجي الوحيد المطابق.
+
+**ما استُبعد بـGraph API (مُثبت من وثائق Meta):** `/debug_token` وعقدة التطبيق `/{app_id}`
+**لا تعرضان** وضع التطوير/Live ولا مستوى الوصول إطلاقاً (لا حقل mode/access_level)؛ يمكن
+قراءة `app_id/type/scopes/is_valid` فقط. لذلك **وضع التطبيق غير قابل للإثبات آلياً** عبر
+Graph API — مصدره الوحيد لوحة Meta.
+
+**ما استُبعد بالأدلة (لا افتراض):**
+- **ليس مسودة/مجدولاً:** وثيقة Meta لـ`/{page-id}/videos` تنصّ أن `published` افتراضيه `true`
+  («Whether a post about this video is published»)، فلا تُنشئ المسار مسودة.
+- **ليس النشر باسم الحساب الشخصي:** الكود ينشر برمز **الصفحة** (`pageAccessToken` من
+  `providerTokens.facebook`) لا رمز مستخدم؛ والنشر باسم الذات كان يعيد خطأً صريحاً لا منشوراً مخفياً.
+- **ليس خصوصية/`feed_targeting`:** لا وجود لأي معامل خصوصية أو استهداف في وحدة فيسبوك.
+- **وضع التطبيق لا يُقرأ عبر Graph API** — مصدره الوحيد لوحة Meta (لا حقل mode في Graph).
+
+**الإصلاح (فرع `fix/facebook-post-public-visibility`، بلا نشر ولا دمج):**
+1. `buildPublishVideoBody` يفرض **`published=true` صراحةً** — لكن هذا **إجراء دفاعي لا حل
+   مضمون**: `published=true` تمنع تحويل الفيديو سهواً لمسودة، ولا تتجاوز قيد وضع التطبيق/
+   مستوى الوصول. لا يُقدَّم كإثبات ظهور عام (الاستجابة تحمل `proofOfPublicVisibility:false`).
+2. `interpretPostGrounding` + `FacebookClient.getPostGrounding` — **قراءة فقط** لحالة المنشور
+   (`is_published`/`created_time`/`scheduled_publish_time`) + التحقق من ورود المعرّف في حائط
+   الصفحة `/{page-id}/published_posts` كدليل ظهور فعلي. أي حقل غائب يبقى `null` بلا ادّعاء.
+3. مسار owner جديد `GET /api/platforms/facebook/post-visibility-diagnosis` (بلا أي نشر/تغيير):
+   يقرأ آخر معرّف منشور حقيقي من `publishRecords` (أو `?postId=`)، ويعيد `grounding` +
+   `verdict` + `likelyRootCause` + `evidenceSummary{proofOfPublicVisibility:false}` +
+   `appMode{readableViaApi:false}` + خطوات Meta اليدوية (تشمل Access Levels). بلا أي سرّ.
+
+**اختبارات:** `facebook.connector.test.ts` = **334 فحصاً** (المجموعة `1ط-2` وحدوية للتفسير،
+والمجموعة `16د` تكاملية: 401 بلا جلسة، المعرّف من آخر سجل، `is_published=true`، الظهور على
+الحائط، `verdict`، إعلان أن وضع التطبيق غير مقروء عبر API، و**أن published=true لا يُقدَّم
+كإثبات ظهور عام**، وغياب أي سرّ). فحوص final-audit السبعة: `facebook-video-published-explicit`
+… `facebook-published-not-public-proof` (**1493 إجمالاً**). `npm run lint` + `build` + `test`
+(118 مجموعة) + `final-audit` كلها ناجحة.
+
+**الخطوة اليدوية الوحيدة المطلوبة من المالك (لا ينفّذها أي وكيل):** Meta App Dashboard →
+تطبيق «وكيل الغرابي الذكي»: تأكّد أن الوضع **Live** (وإن كان من نوع Business فتحقّق أن
+`pages_manage_posts`/`pages_read_engagement` بمستوى **Advanced Access**). بعد ذلك تصبح
+المنشورات المُنشأة عبر API عامة (بما فيها السابقة). هذا لا يمكن تنفيذه من الكود لأن **وضع
+التطبيق/مستوى الوصول غير مقروءين ولا قابلين للتغيير عبر Graph API إطلاقاً** — لا حقل mode في
+`debug_token` ولا في عقدة التطبيق — ولا يملك الوكيل جلسة مالك Meta لإجراء التبديل.

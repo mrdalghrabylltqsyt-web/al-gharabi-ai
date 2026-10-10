@@ -53,7 +53,7 @@ export interface FacebookMockState {
   /** منشورات الصفحة. */
   posts: { pageId: string; message: string; postId: string }[];
   /** فيديوهات الصفحة المرفوعة من رابط عام (`file_url`). */
-  videos: { pageId: string; fileUrl: string; description: string; videoId: string }[];
+  videos: { pageId: string; fileUrl: string; description: string; videoId: string; published?: boolean }[];
   /** صور الصفحة المنشورة من رابط عام (`url`) عبر `POST /{page-id}/photos`. */
   photos: { pageId: string; imageUrl: string; message: string; postId: string }[];
   /** عدد استدعاءات نقاط الشبكة — لإثبات التنفيذ الحقيقي. */
@@ -278,6 +278,13 @@ export async function startFacebookMockServer(
   app.get('/:version/:pageId', (req, res) => {
     const { pageId } = req.params;
     if (!pageId || pageId === 'me') return res.status(400).json({ error: { message: 'unsupported' } });
+    // قراءة حالة فيديو/منشور أُنشئ عبر API (GET /{video-id}) — لمسارات تشخيص الظهور.
+    // تُخدم قبل منطق الصفحة: المعرّف يطابق فيديو سبق إنشاؤه.
+    const vid = state.videos.find((v) => v.videoId === pageId);
+    if (vid) {
+      state.calls += 1;
+      return res.json({ id: vid.videoId, is_published: vid.published !== false, created_time: '2026-01-01T00:00:00+0000' });
+    }
     // عقدة التطبيق `GET /{app-id}?fields=id,name,company,app_domains`: تُخدم عندما
     // يطابق المعرّف معرّف التطبيق الصالح — تحاكي Graph الحقيقي بلا اختراع حقل `business`.
     if (pageId === state.validAppId) {
@@ -351,7 +358,8 @@ export async function startFacebookMockServer(
   });
 
   // نشر فيديو على الصفحة من رابط عام (`file_url`) — Task #22. يُثبت أن التوزيع
-  // الموحّد يمرّر videoUrl الحقيقي لفيسبوك لا النص فقط.
+  // الموحّد يمرّر videoUrl الحقيقي لفيسبوك لا النص فقط. `published` صريح (افتراضيه
+  // في Graph true) — يُحفظ لإثبات أننا لا نحول الفيديو لمسودة.
   app.post('/:version/:pageId/videos', (req, res) => {
     const { pageId } = req.params;
     state.calls += 1;
@@ -359,9 +367,19 @@ export async function startFacebookMockServer(
     if (state.failPublish) return res.status(400).json({ error: { message: 'Cannot publish video', code: 200 } });
     const fileUrl = String(req.body?.file_url || '');
     const description = String(req.body?.description || '');
+    const published = String(req.body?.published ?? 'true') !== 'false';
     const videoId = `${pageId}_v${3000 + state.videos.length}`;
-    state.videos.push({ pageId, fileUrl, description, videoId });
+    state.videos.push({ pageId, fileUrl, description, videoId, published });
     return res.json({ id: videoId });
+  });
+
+  // حائط الصفحة (المنشورات المنشورة) — `GET /{page-id}/published_posts`. يُستخدم
+  // كدليل ظهور فعلي. يُعيد معرّفات الفيديوهات المنشورة (`published !== false`) كلها.
+  app.get('/:version/:pageId/published_posts', (req, res) => {
+    const { pageId } = req.params;
+    state.calls += 1;
+    const rows = state.videos.filter((v) => v.pageId === pageId && v.published !== false).map((v) => ({ id: v.videoId }));
+    return res.json({ data: rows });
   });
 
   // نشر صورة على الصفحة من رابط عام (`url`) — `POST /{page-id}/photos`. يُثبت أن

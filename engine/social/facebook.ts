@@ -525,10 +525,15 @@ export function buildSendMessagePayload(recipientId: string, text: string): stri
  * يبني جسم نشر فيديو على صفحة (`POST /{page-id}/videos`). Graph API يقرأ
  * الفيديو من رابط عام عبر `file_url` (وليس `video_url` — ذاك خاص بـInstagram
  * فقط) حين لا نرفع بايتات مباشرة. الوصف اختياري.
+ *
+ * `published=true` **صريح** (ليس اعتماداً على الافتراضي): يمنع تحويل الفيديو
+ * سهواً إلى مسودة/غير منشور (`published=false`) فيبقى ظاهراً للأونر فقط. القيمة
+ * الافتراضية في Graph `true`، لكن التصريح يجعل النية قاطعة وقابلة للاختبار.
  */
 export function buildPublishVideoBody(fileUrl: string, description?: string): URLSearchParams {
   const body = new URLSearchParams();
   body.set('file_url', fileUrl);
+  body.set('published', 'true');
   if (description?.trim()) body.set('description', description.trim());
   return body;
 }
@@ -648,6 +653,60 @@ function logAndExtractFacebookError(data: any, endpoint: string, status: number)
   const info = extractFacebookGraphError(data, endpoint, status);
   console.error(formatFacebookGraphError(info));
   return { providerCode: info.code, providerSubcode: info.subcode, providerTraceId: info.fbtraceId };
+}
+
+// ---------------------------------------------------------------------------
+// تشخيص ظهور المنشور للجمهور (بلا أي نشر أو تغيير)
+// ---------------------------------------------------------------------------
+// السبب الجذري المُثبت لظهور منشورات API للأونر فقط: تطبيق Meta في وضع
+// **التطوير (Development)** لا في **Live**. في وضع التطوير تقيّد Meta كل محتوى
+// ينشئه التطبيق عبر API بحيث لا يراه إلا أدوار التطبيق/الصفحة، بينما المنشور
+// الذي يُنشئه المالك يدوياً يبقى عاماً (لهذا نجح النشر اليدوي وفشل نشر API).
+// وضع التطبيق **لا يُقرأ عبر Graph API إطلاقاً** — مصدره الوحيد لوحة Meta.
+// لذلك نبني تشخيصاً صادقاً يعلن هذا صراحةً بدل التخمين.
+
+/** حالة الفيديو/المنشور كما أعلنها Meta (لا تُخترع قيمة عند الغياب). */
+export interface FacebookPostGrounding {
+  /** نوع المورد: `video` أو `post`. */
+  kind: 'video' | 'post';
+  providerPostId: string;
+  exists: boolean;
+  /** is_published إن أعلنتها Meta: true=منشور فعلاً، false=مسودة/مجدول، null=غير معلوم. */
+  isPublished: boolean | null;
+  /** وقت النشر (غير المجدول) إن توفر — null عند المسودة/الجدولة. */
+  createdTime: string | null;
+  scheduledPublishTime: string | null;
+  /** الخصوصية العامة حيث يوفّرها المورد (نادر، ويُعلن null عند عدمها). */
+  privacy: string | null;
+  /** ظهور المنشور على حائط الصفحة `/{page-id}/published_posts` (دليل ظهور فعلي). */
+  appearsOnPage: boolean | null;
+  /** true فقط إذا كانت Meta قد أعلنت isPublished=true صراحةً. */
+  confirmedPublicStory: boolean;
+}
+
+/**
+ * يفسّر استجابة `GET /{page-id}/videos?fields=...` أو `GET /{post-id}?fields=...`
+ * إلى حالة ظهور صادقة. أي حقل غائب يبقى `null` — لا يُفترض نجاح ولا فشل.
+ */
+export function interpretPostGrounding(kind: 'video' | 'post', raw: any, appearsOnPage: boolean | null = null): FacebookPostGrounding {
+  const d = raw && typeof raw === 'object' ? raw : {};
+  const providerPostId = d.id != null ? String(d.id) : '';
+  const isPubRaw = d.is_published;
+  const isPublished = typeof isPubRaw === 'boolean' ? isPubRaw : (isPubRaw === 'true' ? true : isPubRaw === 'false' ? false : null);
+  const createdTime = typeof d.created_time === 'string' ? d.created_time : null;
+  const scheduledPublishTime = Number.isFinite(Number(d.scheduled_publish_time)) && Number(d.scheduled_publish_time) > 0 ? String(d.scheduled_publish_time) : null;
+  const privacy = typeof d.privacy === 'string' ? d.privacy : (d.privacy && typeof d.privacy.value === 'string' ? d.privacy.value : null);
+  return {
+    kind,
+    providerPostId,
+    exists: Boolean(providerPostId),
+    isPublished,
+    createdTime,
+    scheduledPublishTime,
+    privacy,
+    appearsOnPage,
+    confirmedPublicStory: isPublished === true,
+  };
 }
 
 export class FacebookClient {
@@ -913,6 +972,42 @@ export class FacebookClient {
       };
     } catch (e: any) {
       return { ok: false, data: null, error: String(e?.message || 'فشل الاتصال بـFacebook.') };
+    }
+  }
+
+  /** يقرأ حالة ظهور فيديو/منشور أُنشئ عبر API (قراءة فقط، بلا تغيير). يقرأ
+   *  `is_published`/`created_time`/`scheduled_publish_time` من Graph، ثم يتحقق من
+   *  ورود المعرّف في حائط الصفحة `/{page-id}/published_posts` كدليل ظهور فعلي.
+   *  كل حقل غير معلن يبقى null — لا يُفترض نجاح ولا فشل. */
+  async getPostGrounding(pageId: string, pageAccessToken: string, providerPostId: string): Promise<FacebookResult<FacebookPostGrounding>> {
+    if (!pageId || !pageAccessToken || !providerPostId) return { ok: false, data: null, error: 'معرّف الصفحة والرمز ومعرّف المنشور مطلوبة.' };
+    try {
+      // 1) قراءة حالة الفيديو/المنشور (is_published + الأوقات).
+      const u = new URL(facebookGraphUrl(`/${encodeURIComponent(providerPostId)}`, this.baseUrl));
+      u.searchParams.set('fields', 'id,is_published,created_time,scheduled_publish_time,privacy');
+      u.searchParams.set('access_token', pageAccessToken);
+      const res = await this.fetchImpl(u.toString(), { method: 'GET' });
+      const data = await res.json().catch(() => null);
+      if (!res.ok || data?.error || !data?.id) {
+        const ex = logAndExtractFacebookError(data, `GET /${providerPostId}`, res.status);
+        return { ok: false, data: null, error: errorMessage(data, 'تعذّر قراءة حالة المنشور من Meta.'), providerCode: ex.providerCode, providerSubcode: ex.providerSubcode, providerTraceId: ex.providerTraceId };
+      }
+      // 2) دليل الظهور على الحائط: هل يرد المعرّف ضمن published_posts؟
+      let appearsOnPage: boolean | null = null;
+      try {
+        const p = new URL(facebookGraphUrl(`/${encodeURIComponent(pageId)}/published_posts`, this.baseUrl));
+        p.searchParams.set('fields', 'id');
+        p.searchParams.set('limit', '100');
+        p.searchParams.set('access_token', pageAccessToken);
+        const pres = await this.fetchImpl(p.toString(), { method: 'GET' });
+        const pdata = await pres.json().catch(() => null);
+        if (pres.ok && !pdata?.error && Array.isArray(pdata?.data)) {
+          appearsOnPage = pdata.data.some((x: any) => String(x?.id ?? '') === String(providerPostId));
+        }
+      } catch { /* الحائط غير مقروء ⇒ تبقى الحالة غير معلومة، لا فشل */ }
+      return { ok: true, data: interpretPostGrounding('video', data, appearsOnPage) };
+    } catch (e: any) {
+      return { ok: false, data: null, error: String(e?.message || 'فشل الاتصال بـMeta.') };
     }
   }
 

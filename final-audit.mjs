@@ -4012,6 +4012,47 @@ add('watcher-advisory-not-authority',
     read('engine/tests/login.button.test.ts').includes('AbortError'),
     'اختبار وحدوي يمنع رجوع «الزر لا يستجيب» (إرسال فعلي + مهلة + رسائل فشل)');
 
+  // 9ب) ظهور منشورات فيسبوك للجمهور: السبب الجذري «وضع تطوير التطبيق» + منع رجوع
+  // عدم تحديد published (فيصبح الفيديو مسودة/غير منشور ظاهراً للأونر فقط).
+  add('facebook-video-published-explicit',
+    read('engine/social/facebook.ts').includes("body.set('published', 'true')"),
+    'نشر الفيديو يفرض published=true صراحةً (لا يتحول لمسودة تظهر للأونر فقط)');
+
+  add('facebook-post-grounding-readonly',
+    read('engine/social/facebook.ts').includes('interpretPostGrounding') &&
+    read('engine/social/facebook.ts').includes('async getPostGrounding') &&
+    read('engine/social/facebook.ts').includes('published_posts'),
+    'قراءة حالة ظهور المنشور (is_published + حائط الصفحة) متاحة كتشخيص قراءة-فقط');
+
+  add('facebook-visibility-diagnosis-owner-only',
+    read('server.ts').includes('/api/platforms/facebook/post-visibility-diagnosis') &&
+    /post-visibility-diagnosis",\s*requireOwner/.test(read('server.ts')),
+    'مسار تشخيص الظهور محصور بالمالك (requireOwner)');
+
+  add('facebook-visibility-diagnosis-no-secret',
+    read('server.ts').includes('readableViaApi: false') &&
+    read('server.ts').includes('Development/Live') &&
+    read('server.ts').includes('قراءة فقط بلا أي نشر أو تغيير'),
+    'التشخيص يعلن أن وضع التطبيق غير مقروء عبر API ويوجه للوحة Meta بلا أي سرّ');
+
+  add('facebook-published-not-public-proof',
+    read('server.ts').includes('proofOfPublicVisibility: false') &&
+    read('server.ts').includes('Access Levels') &&
+    read('engine/tests/facebook.connector.test.ts').includes('لا يُقدَّم كإثبات ظهور عام'),
+    'published=true لا يُقدَّم كإثبات ظهور عام؛ Access Levels مذكورة؛ اختبار يمنع رجوع الادّعاء');
+
+  add('facebook-visibility-regression-test',
+    read('engine/tests/facebook.connector.test.ts').includes('post-visibility-diagnosis') &&
+    read('engine/tests/facebook.connector.test.ts').includes('interpretPostGrounding') &&
+    read('engine/tests/facebook.connector.test.ts').includes("published=true صراحةً"),
+    'اختبار انحدار يمنع رجوع عدم تحديد published وحالة الظهور');
+
+  add('facebook-diagnosis-no-fabricated-id',
+    read('server.ts').includes('code:"NO_POST_ID"') &&
+    read('engine/tests/facebook.connector.test.ts').includes('NO_POST_ID') &&
+    read('engine/tests/facebook.connector.test.ts').includes('لا يختلق معرّف منشور'),
+    'التشخيص يرفض بصراحة عند غياب سجل النشر ولا يختلق معرّفاً (مُختبر)');
+
   // 10) AGENTS.md: عدد فحوصات final-audit مطابق للفعلي (يُعَدّ من نص الملف نفسه).
   const auditCount = (read('final-audit.mjs').match(/^\s*add\(/gm) || []).length;
   add('agents-audit-count-accurate',
