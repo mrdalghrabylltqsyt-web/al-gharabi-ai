@@ -146,6 +146,9 @@ export const ContentEngineView: React.FC = () => {
       productId: selectedProduct?.id,
       installmentDetails: productInfo,
       customInstructions,
+      // تمرير المنصات المختارة صراحةً: التكييف الحتمي يبقى على المنصات المختارة
+      // (زائد مجموعة معروفة للتشخيص)، فلا تظهر للمالك تبويبات منصات لم يخترها.
+      platforms: selectedPlatforms,
     };
 
     const res = await apiService.generateContent(payload).catch((err: any) => {
@@ -162,10 +165,15 @@ export const ContentEngineView: React.FC = () => {
 
       // نسخ المنصات تأتي من الخادم مبنية حتمياً من نفس النص المُتحقَّق منه، فلا
       // تنشئ الواجهة أي عرض أو رقم من عندها.
-      const serverVersions = (res as any).adaptedVersions && typeof (res as any).adaptedVersions === 'object'
-        ? (res as any).adaptedVersions
-        : null;
-      setAdaptedVersions(serverVersions ? { ...serverVersions, [primaryPlatform]: res.content } : { [primaryPlatform]: res.content });
+      const rawVersions: Record<string, string> = (res as any).adaptedVersions && typeof (res as any).adaptedVersions === 'object'
+        ? ((res as any).adaptedVersions as Record<string, string>)
+        : {};
+      // المصدر الواحد للمنصات هو اختيار المالك: نبني النسخ للمنصات المختارة فقط،
+      // فلا يظهر تبويب «نسخة <منصة>» لمنصة لم تُختر ولم تُستهدف.
+      const targets = selectedPlatforms.length ? selectedPlatforms : [primaryPlatform];
+      const chosenVersions: Record<string, string> = {};
+      for (const pf of targets) chosenVersions[pf] = rawVersions[pf] || res.content;
+      setAdaptedVersions(chosenVersions);
 
       showToast('تم توليد المحتوى الذكي وإعادة صياغته للمنصات بنجاح!');
     }

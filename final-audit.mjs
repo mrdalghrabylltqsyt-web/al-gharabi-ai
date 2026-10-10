@@ -1203,6 +1203,20 @@ add('content-video-platforms-correct', /VIDEO_PUBLIC_URL_PLATFORMS[^=]*=\s*\[[^\
 add('content-video-platforms-honest-text', !/لا يدعمان/.test(contentEngineView) && !/لا يقبلان/.test(contentEngineView) && /رابط فيديو عام/.test(contentEngineView), 'نص التحذير الأصفر لا ينفي دعم فيسبوك/ثريدز (بلا صيغة ثنائية مضلّلة)');
 add('content-video-platforms-test', fs.existsSync(path.join(root, 'engine/tests/content.ui.video.platforms.test.ts')) && pkg.scripts['test:content-ui-video-platforms'], 'اختبار انحدار قائمة منصات الفيديو مسجّل');
 add('content-video-platforms-test-in-suite', pkgTest.includes('test:content-ui-video-platforms'), 'اختبار قائمة منصات الفيديو ضمن npm test');
+// اختيار المنصات = مصدر الحقيقة: لا تُضاف منصة غير مختارة (كان الخادم يعيد تكييف
+// المنصات العشر دائماً فتظهر تبويبات منصات لم يخترها المالك).
+add('content-adaptation-honors-selection',
+  server.includes('const requestedPlatforms: string[] = Array.isArray(req.body?.platforms)') &&
+  server.includes('const adaptationTargets = Array.from(new Set<string>([\n      ...(basePlatform ? [basePlatform] : []),\n      ...requestedPlatforms,\n    ]))') &&
+  !server.includes('"tiktok", "instagram", "x", "snapchat", "facebook", "whatsapp", "telegram", "threads", "google_business",'),
+  'تكييف المحتوى يُبنى على المنصات المطلوبة صراحةً (لا قائمة العشر الثابتة)');
+add('content-ui-no-auto-platform-add',
+  !/setSelectedPlatforms\([^)]*(threads|instagram)/.test(contentEngineView) &&
+  /targetPlatforms:\s*selectedPlatforms\.length\s*\?\s*selectedPlatforms/.test(contentEngineView) &&
+  contentEngineView.includes('const targets = selectedPlatforms.length ? selectedPlatforms : [primaryPlatform]'),
+  'واجهة المحتوى لا تُضيف منصة تلقائياً، والاستهداف ونسخ المنصات من اختيار المالك');
+add('platform-selection-tests', fs.existsSync(path.join(root, 'engine/tests/platform.selection.publish.test.ts')) && fs.existsSync(path.join(root, 'engine/tests/platform.selection.ui.test.ts')) && pkg.scripts['test:platform-selection'] && pkg.scripts['test:platform-selection-ui'], 'اختبارا حتمية اختيار المنصات (تكامل + حماية مصدرية) مسجّلان');
+add('platform-selection-tests-in-suite', pkgTest.includes('test:platform-selection') && pkgTest.includes('test:platform-selection-ui'), 'اختبارا اختيار المنصات ضمن npm test');
 
 // --- مهلة Drive الصريحة: لا تعليق بلا نهاية لرفع الفيديو العام (Task #25) ---
 const driveTimeoutsModule = fs.existsSync(path.join(root, 'tools/dr/drive-timeouts.mjs')) ? read('tools/dr/drive-timeouts.mjs') : '';
@@ -3676,6 +3690,13 @@ add('watcher-advisory-not-authority',
     instagramModule.includes("body.set('share_to_feed'") &&
     !instagramModule.includes("body.set('media_type', 'VIDEO');"),
     'Instagram يُنشئ الفيديو بـmedia_type=REELS + share_to_feed (قيمة VIDEO مهجورة تُرد بـ#100/2207067)');
+  add('instagram-publish-diagnostics-owner-only',
+    server.includes('app.get("/api/platforms/publish-diagnostics", requireOwner') &&
+    server.includes('providerSubcode: r.providerSubcode ?? null') &&
+    server.includes('providerTraceId: r.providerTraceId ?? null') &&
+    read('engine/tests/instagram.connector.test.ts').includes('/api/platforms/publish-diagnostics') &&
+    read('engine/tests/instagram.connector.test.ts').includes('سجل التشخيص محمي (بلا جلسة => 401)'),
+    'تشخيص نشر Instagram يحفظ code/subcode/fbtrace الحقيقية من Meta بمسار للمالك فقط (لا إخفاء للخطأ)');
   const threadsModule = read('engine/social/threads.ts');
   add('threads-token-lifecycle',
     threadsModule.includes('async exchangeCode(') &&

@@ -128,9 +128,12 @@ async function run(): Promise<void> {
     }
 
     // ---- 2) طلب نظيف ينجح ويعيد content + adaptedVersions ----
+    // المنصات المطلوبة صراحةً: التكييف الحتمي يبقى على المنصات المختارة (لا قائمة
+    // ثابتة)، فنمرّرها لنثبت أن كل نسخة مبنية من نفس النص المُتحقَّق منه بلا ادعاء.
+    const expectedPlatforms = ['tiktok', 'instagram', 'x', 'snapchat', 'facebook', 'whatsapp'];
     const clean = await fetch(`${base}/api/ai/generate-content`, {
       method: 'POST', headers: auth,
-      body: JSON.stringify({ platform: 'facebook', contentType: 'post', topic: 'عروض التقسيط الميسر' }),
+      body: JSON.stringify({ platform: 'facebook', contentType: 'post', topic: 'عروض التقسيط الميسر', platforms: expectedPlatforms }),
     });
     const cleanBody = await clean.json();
     check('الطلب النظيف ينجح 200', clean.status === 200 && cleanBody.success === true, `status=${clean.status}`);
@@ -143,8 +146,8 @@ async function run(): Promise<void> {
 
     // ---- 4) لا ادعاء مُختلق في أي نسخة من نسخ المنصات ----
     const versions = cleanBody.adaptedVersions || {};
-    const expectedPlatforms = ['tiktok', 'instagram', 'x', 'snapchat', 'facebook', 'whatsapp'];
     check('نُسخ المنصات تغطي المنصات المتوقعة', expectedPlatforms.every((p) => typeof versions[p] === 'string' && versions[p].length > 0), JSON.stringify(Object.keys(versions)));
+    check('التكييف لا يولّد نسخة لمنصة غير مختارة', Object.keys(versions).every((p) => expectedPlatforms.includes(p)), JSON.stringify(Object.keys(versions)));
     let versionFabrications = 0;
     for (const p of expectedPlatforms) versionFabrications += scanFabrications(`نسخة ${p}`, String(versions[p] || ''));
 
