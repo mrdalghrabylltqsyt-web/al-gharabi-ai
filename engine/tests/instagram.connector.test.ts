@@ -587,6 +587,22 @@ async function integrationTests(): Promise<void> {
     mock.state.containerStatusSequence = ['FINISHED'];
     mock.state.containerStatusReads = 0;
 
+    group('16ج) تشخيص نشر Instagram: خطأ Meta الدقيق يُحفظ (code 9007) ولا يُختلق');
+    // فشل خطوة إنشاء الحاوية (وسائط يتعذّر على Meta تنزيلها) => رمز 9007 الحقيقي
+    // يُحفظ في سجل التشخيص المحمي للمالك بدل إخفائه تحت CLIENT_ERROR عام.
+    const diagFail = await (async () => { mock.state.failPublish = true; const r = await fetch(`${BASE}/api/platforms/instagram/publish`, { method: 'POST', headers: auth, body: JSON.stringify({ content: 'ريل تشخيصي', videoUrl: 'https://example.invalid/bad.mp4', approved: true }) }); mock.state.failPublish = false; return r; })();
+    const diagFailBody = await diagFail.json();
+    check('فشل إنشاء الحاوية => 502 بلا نشر', diagFail.status === 502, String(diagFail.status));
+    check('كود الوسائط الحقيقي يُعتبر خطأ مزود (لا نجاح)', diagFailBody.success !== true && Boolean(diagFailBody.error), JSON.stringify(diagFailBody).slice(0, 160));
+    const diagnostics = await (await fetch(`${BASE}/api/platforms/publish-diagnostics?platform=instagram`, { headers: auth })).json();
+    const igDiag = (diagnostics.diagnostics || []).find((r: any) => r.platform === 'instagram');
+    check('سجل التشخيص يحمل رسالة Meta الحقيقية', Boolean(igDiag?.error), JSON.stringify(igDiag || {}).slice(0, 160));
+    check('سجل التشخيص يحمل رمز الخطأ (9007/100) بلا اختلاق', igDiag?.providerCode === 9007 || igDiag?.providerCode === 100 || igDiag?.code === 'MEDIA_DOWNLOAD_FAILED', JSON.stringify(igDiag || {}).slice(0, 200));
+    check('التشخيص لا يكشف أي رمز/سرّ', !/access_token|EAA[A-Za-z0-9]/.test(JSON.stringify(diagnostics)));
+    // المسار محمي بالمالك: بلا جلسة => 401 (لا تسريب تشخيصي عام).
+    const diagNoAuth = await fetch(`${BASE}/api/platforms/publish-diagnostics`);
+    check('سجل التشخيص محمي (بلا جلسة => 401)', diagNoAuth.status === 401, String(diagNoAuth.status));
+
     group('17) تكامل: ثبات الاستقبال وحماية التكرار بعد restart');
     await stop(app.proc);
     currentApp = startApp(mock.base);

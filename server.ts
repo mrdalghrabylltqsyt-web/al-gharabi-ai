@@ -13630,14 +13630,20 @@ app.post("/api/ai/generate-content", authenticateToken, async (req, res) => {
       ? result.text
       : generateSmartFallbackContent(platform, contentType, topic || productName, "");
 
-    // تكييف حتمي لكل منصة إضافية مطلوبة من **نفس النص المُتحقَّق منه** — بلا أي
-    // نداء مزود إضافي. طلب واحد لعشر منصات = نداء Gemini واحد + عشرة تكييفات
-    // حتمية. هذا جوهر حماية الحصة في توليد المحتوى متعدد المنصات.
+    // تكييف حتمي لكل منصة مطلوبة من **نفس النص المُتحقَّق منه** — بلا أي نداء
+    // مزود إضافي. طلب واحد لعدة منصات = نداء Gemini واحد + تكييف حتمي لكل منصة.
+    // **مصدر الحقيقة هو طلب العميل (اختيار المالك)** لا قائمة ثابتة: كان يُعاد
+    // تكييف للمنصات العشر كلها دائماً حتى لو اختار المالك منصة واحدة، فتظهر في
+    // الواجهة تبويبات منصات لم يخترها. الآن: المنصات المطلوبة فقط، وإن لم تُطلب
+    // أي منصة نُبني المنصة الأساسية وحدها (لا نشر/عرض لمنصة غير مختارة).
     const requestedPlatforms: string[] = Array.isArray(req.body?.platforms)
-      ? Array.from(new Set<string>(req.body.platforms.map((p: any) => cleanText(p, 40)).filter((v: string) => Boolean(v))))
+      ? Array.from(new Set<string>(req.body.platforms
+          .map((p: any) => cleanText(p, 40))
+          .filter((v: string) => Boolean(v) && SUPPORTED_PLATFORMS.some((sp: any) => sp.id === v))))
       : [];
-    const adaptationTargets = Array.from(new Set([
-      "tiktok", "instagram", "x", "snapchat", "facebook", "whatsapp", "telegram", "threads", "google_business",
+    const basePlatform = isSupportedPlatform(String(platform)) ? String(platform) : "";
+    const adaptationTargets = Array.from(new Set<string>([
+      ...(basePlatform ? [basePlatform] : []),
       ...requestedPlatforms,
     ]));
     const adaptedVersions = Object.fromEntries(
