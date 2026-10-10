@@ -109,6 +109,17 @@ import {
   platformTextLimit,
   PLATFORM_TEXT_LIMITS,
 } from "./engine/social/textLimits";
+import {
+  resolveContainerPollConfig,
+  containerPollDelayMs,
+  containerPollBudgetMs,
+  type ContainerPollConfig,
+} from "./engine/social/containerPolling";
+import {
+  adaptPublishForPlatform,
+  platformAcceptsTextOnly,
+  PLATFORM_HASHTAG_TAG,
+} from "./engine/social/publishAdaptation";
 import type { PlatformId } from "./engine/social/adapter";
 import { fetchPostMetrics } from "./engine/social/analytics";
 import {
@@ -8266,36 +8277,31 @@ function threadsPublishTarget(): { threadsUserId: string; accessToken: string } 
 /** نوم قصير قابل للتجاوز في الاختبار (pollIntervalMs) — لا تعليق بلا نهاية. */
 function sleepMs(ms: number): Promise<void> { return new Promise((resolve) => setTimeout(resolve, Math.max(0, ms))); }
 
-/** حدود انتظار جاهزية حاوية الوسائط (Instagram/Threads) — بلا تعليق بلا نهاية. */
-const IG_CONTAINER_POLL_MAX_ATTEMPTS = 8;
-function containerPollIntervalMs(): number {
-  const raw = Number(process.env.CONTAINER_POLL_INTERVAL_MS);
-  return Number.isFinite(raw) && raw >= 0 ? raw : 3000;
-}
-
 /**
  * ينشئ حاوية إنستغرام ثم **ينتظر فعلياً** حتى `FINISHED` قبل `media_publish`.
  * الجذر المُثبت لعطل «CLIENT_ERROR: Invalid parameter»: كانت الحاوية تُنشر وهي
- * ما تزال `IN_PROGRESS` فيرد Meta بخطأ معلمة غير صالحة. النص/الصورة جاهزان
- * مباشرةً (لا معالجة وسائط)، أما الفيديو/الريل فيتطلبان انتظاراً محدوداً.
+ * ما تزال `IN_PROGRESS`. والجذر المُثبت لعطل `CONTAINER_TIMEOUT`: مهلة ثابتة
+ * قصيرة (24s) غير كافية لمعالجة فيديو/ريل. الآن الانتظار **تراجع أسّي** بميزانية
+ * واقعية (`resolveContainerPollConfig`)، مع تأكيد نهائي إضافي عند آخر محاولة.
  * لا يُعلن الجاهزية بلا دليل (`status_code`)، والفشل يُعلن بسببه الحقيقي.
  */
 async function createInstagramContainerReady(
   igAccountId: string,
   pageToken: string,
   input: { imageUrl: string; videoUrl: string; caption: string; reel: boolean; shareToFeed?: boolean },
-  poll: { attempts: number; intervalMs: number },
+  poll: ContainerPollConfig,
 ): Promise<{ containerId: string; mediaKind: string } | { error: string; code: string; providerCode?: number | null; providerSubcode?: number | null; providerTraceId?: string | null }> {
   const created = await instagramClient().createMediaContainer(igAccountId, pageToken, input);
   if (!created.ok || !created.data) {
     return { error: created.error || "فشل إنشاء حاوية Instagram.", code: created.code || "MEDIA_REQUIRED", providerCode: created.providerCode ?? null, providerSubcode: created.providerSubcode ?? null, providerTraceId: created.providerTraceId ?? null };
   }
   const { containerId, mediaKind } = created.data;
-  // النص/الصورة: الحاوية جاهزة بلا معالجة وسائط معقّدة. الفيديو/الريل: انتظار محدود.
+  // النص/الصورة: الحاوية جاهزة بلا معالجة وسائط معقّدة. الفيديو/الريل: انتظار متراجع.
   const needsWait = mediaKind === "video" || mediaKind === "reel";
   if (!needsWait) return { containerId, mediaKind };
-  for (let i = 0; i < Math.max(1, poll.attempts); i++) {
-    if (i > 0) await sleepMs(poll.intervalMs);
+  for (let i = 0; i < Math.max(1, poll.maxAttempts); i++) {
+    const wait = containerPollDelayMs(i, poll);
+    if (wait > 0) await sleepMs(wait);
     const status = await instagramClient().getContainerStatus(containerId, pageToken);
     // لا سلامة بلا دليل: خطأ قراءة الحالة لا يُعلن نجاحاً بل فشلاً بسببه.
     if (!status.ok || !status.data) {
@@ -8305,7 +8311,7 @@ async function createInstagramContainerReady(
     if (isInstagramContainerReady(code)) return { containerId, mediaKind };
     if (isInstagramContainerFailed(code)) return { error: `حاوية Instagram انتهت بحالة ${code} قبل النشر (فشل معالجة الوسائط).`, code: "CONTAINER_FAILED" };
   }
-  return { error: "لم تجهز حاوية الفيديو لدى Instagram ضمن المهلة المحددة؛ لم يُنشر شيء (أعد المحاولة).", code: "CONTAINER_TIMEOUT" };
+  return { error: `لم تجهز حاوية الفيديو لدى Instagram ضمن المهلة (${Math.round(containerPollBudgetMs(poll) / 1000)}s)؛ لم يُنشر شيء (أعد المحاولة).`, code: "CONTAINER_TIMEOUT" };
 }
 
 /** نفس منطق إنستغرام لـThreads: نص جاهز مباشرةً، والفيديو/الصورة ينتظران `FINISHED`.
@@ -8314,7 +8320,7 @@ async function createThreadsContainerReady(
   threadsUserId: string,
   accessToken: string,
   input: { text: string; imageUrl: string; videoUrl: string; replyToId: string },
-  poll: { attempts: number; intervalMs: number },
+  poll: ContainerPollConfig,
 ): Promise<{ ok: boolean; data: { containerId: string; mediaKind: string } | null; error?: string; code?: string | null; providerCode?: number | null; providerSubcode?: number | null; providerTraceId?: string | null }> {
   const created = await threadsClient().createMediaContainer(threadsUserId, accessToken, input);
   if (!created.ok || !created.data) {
@@ -8322,15 +8328,86 @@ async function createThreadsContainerReady(
   }
   const { containerId, mediaKind } = created.data;
   if (mediaKind === "text") return { ok: true, data: { containerId, mediaKind } };
-  for (let i = 0; i < Math.max(1, poll.attempts); i++) {
-    if (i > 0) await sleepMs(poll.intervalMs);
+  for (let i = 0; i < Math.max(1, poll.maxAttempts); i++) {
+    const wait = containerPollDelayMs(i, poll);
+    if (wait > 0) await sleepMs(wait);
     const status = await threadsClient().getContainerStatus(containerId, accessToken);
     if (!status.ok || !status.data) return { ok: false, data: null, error: status.error || "تعذّر قراءة حالة حاوية Threads قبل النشر.", code: "CONTAINER_STATUS_FAILED" };
     const st = status.data.status;
     if (isThreadsContainerReady(st)) return { ok: true, data: { containerId, mediaKind } };
     if (isThreadsContainerFailed(st)) return { ok: false, data: null, error: status.data.errorMessage || `حاوية Threads انتهت بحالة ${st} قبل النشر.`, code: "CONTAINER_FAILED" };
   }
-  return { ok: false, data: null, error: "لم تجهز حاوية Threads ضمن المهلة المحددة؛ لم يُنشر شيء (أعد المحاولة).", code: "CONTAINER_TIMEOUT" };
+  return { ok: false, data: null, error: `لم تجهز حاوية Threads ضمن المهلة (${Math.round(containerPollBudgetMs(poll) / 1000)}s)؛ لم يُنشر شيء (أعد المحاولة).`, code: "CONTAINER_TIMEOUT" };
+}
+
+/** حدّ حجم تنزيل فيديو YouTube في المسار الموحّد (رابط عام) + مهلته. */
+const YOUTUBE_UNIFIED_DOWNLOAD_MAX_BYTES = Math.max(1024 * 1024, Number(process.env.YOUTUBE_UNIFIED_DOWNLOAD_MAX_BYTES) || 128 * 1024 * 1024);
+const YOUTUBE_UNIFIED_DOWNLOAD_TIMEOUT_MS = Math.max(5000, Number(process.env.YOUTUBE_UNIFIED_DOWNLOAD_TIMEOUT_MS) || 90000);
+
+/** هل تحمل الحمولة وسائط فعلية (بايتات/مرجع/رابط عام/صور)؟ — بلا اختراع وسيط. */
+function bodyHasMedia(body: any): boolean {
+  const mediaRef = typeof body?.mediaRef === "string" ? body.mediaRef.trim() : "";
+  if (mediaRef && contentMediaBytes(mediaRef)) return true;
+  if (typeof body?.videoBase64 === "string" && body.videoBase64.trim()) return true;
+  if (Array.isArray(body?.photoUrls) && body.photoUrls.some((u: any) => typeof u === "string" && /^https?:\/\//i.test(String(u).trim()))) return true;
+  const url = [body?.videoUrl, body?.imageUrl].find((u: any) => typeof u === "string" && /^https?:\/\//i.test(String(u).trim()));
+  return Boolean(url);
+}
+
+/** عنوان YouTube ≤ 100 محرف مع وسم تعريف عام — بلا أي معلومة تجارية مُختلقة. */
+function youTubeTitleFromContent(raw: string): string {
+  let t = String(raw || "").replace(/\s+/g, " ").trim();
+  if (!t) t = "فيديو الغرابي للتقسيط";
+  if (!t.includes(PLATFORM_HASHTAG_TAG)) {
+    const tag = ` ${PLATFORM_HASHTAG_TAG}`;
+    const base = t.slice(0, Math.max(0, 100 - tag.length)).trimEnd();
+    t = `${base}${tag}`;
+  }
+  return t.slice(0, 100);
+}
+
+/**
+ * يجهّز بايتات فيديو YouTube من الحمولة الموحّدة **بلا اختلاق**:
+ *  - mediaRef من مخزن المحتوى (مركز المحتوى) ⇒ البايتات مباشرةً.
+ *  - videoBase64 ⇒ تُمرّر كما هي (يُتحقق منها داخل executeYouTubePublish).
+ *  - videoUrl عام ⇒ **تنزيل فعلي** للبايتات بحدّ حجم/مهلة (لا يُختلق فيديو).
+ * الفشل يُعلن بسببه الصريح؛ ولا نجاح وهمي.
+ */
+async function resolveYouTubeBytes(body: any): Promise<{ ok: boolean; videoBase64?: string; mediaRef: string; mimeType: string; error?: string; code?: string }> {
+  const mimeType = typeof body?.mimeType === "string" && body.mimeType ? body.mimeType : "video/mp4";
+  const mediaRef = typeof body?.mediaRef === "string" ? body.mediaRef.trim() : "";
+  if (mediaRef) {
+    const m = contentMediaBytes(mediaRef);
+    if (m) return { ok: true, videoBase64: m.bytes.toString("base64"), mediaRef, mimeType: m.mimeType || mimeType };
+  }
+  const base64 = typeof body?.videoBase64 === "string" ? body.videoBase64.trim() : "";
+  if (base64) return { ok: true, videoBase64: base64, mediaRef, mimeType };
+  const url = typeof body?.videoUrl === "string" ? body.videoUrl.trim() : "";
+  if (!url) return { ok: false, mediaRef, mimeType, error: "نشر YouTube يحتاج بايتات الفيديو (mediaRef أو videoBase64 أو رابط فيديو عام).", code: "MEDIA_REQUIRED" };
+  if (!/^https?:\/\//i.test(url)) return { ok: false, mediaRef, mimeType, error: "رابط الفيديو غير صالح (يلزم http/https عام).", code: "MEDIA_URL_INVALID" };
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), YOUTUBE_UNIFIED_DOWNLOAD_TIMEOUT_MS);
+  try {
+    const resp = await fetch(url, { method: "GET", redirect: "follow", signal: controller.signal });
+    if (!resp.ok) return { ok: false, mediaRef, mimeType, error: `تعذّر تنزيل الفيديو من الرابط العام (HTTP ${resp.status}).`, code: "MEDIA_DOWNLOAD_FAILED" };
+    const len = Number(resp.headers.get("content-length") || 0);
+    if (Number.isFinite(len) && len > YOUTUBE_UNIFIED_DOWNLOAD_MAX_BYTES) {
+      return { ok: false, mediaRef, mimeType, error: `ملف الفيديو يتجاوز الحد المسموح للرفع عبر الرابط (${Math.round(len / 1e6)}MB).`, code: "MEDIA_TOO_LARGE" };
+    }
+    const buf = Buffer.from(await resp.arrayBuffer());
+    if (!buf.length) return { ok: false, mediaRef, mimeType, error: "الرابط العام أعاد ملفاً فارغاً.", code: "MEDIA_DOWNLOAD_FAILED" };
+    if (buf.length > YOUTUBE_UNIFIED_DOWNLOAD_MAX_BYTES) {
+      return { ok: false, mediaRef, mimeType, error: `ملف الفيديو يتجاوز الحد المسموح للرفع عبر الرابط (${Math.round(buf.length / 1e6)}MB).`, code: "MEDIA_TOO_LARGE" };
+    }
+    const ct = String(resp.headers.get("content-type") || "");
+    const resolvedMime = /^video\//i.test(ct) ? ct.split(";")[0] : mimeType;
+    return { ok: true, videoBase64: buf.toString("base64"), mediaRef, mimeType: resolvedMime };
+  } catch (e: any) {
+    const aborted = e?.name === "AbortError" || e?.code === "ABORT_ERR";
+    return { ok: false, mediaRef, mimeType, error: aborted ? "انتهت مهلة تنزيل الفيديو من الرابط العام (لا يُختلق فيديو)." : `تعذّر تنزيل الفيديو من الرابط العام: ${String(e?.message || e).slice(0, 150)}`, code: "MEDIA_DOWNLOAD_FAILED" };
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 async function executePlatformPublish(platform: string, body: any, actor: string): Promise<{ status: number; body: any }> {
@@ -8363,6 +8440,29 @@ async function executePlatformPublish(platform: string, body: any, actor: string
   if (!conn || conn.status !== "connected" || conn.providerVerified !== true) {
     return { status: 409, body: { success: false, error: "المنصة غير متصلة باتصال موثق؛ لا نشر خارجي.", code: "NOT_CONNECTED" } };
   }
+  // حارس ملاءمة المحتوى **قبل** أي نداء مزود — يمنع خطأ المزود الغامض
+  // (`CLIENT_ERROR: Invalid parameter`) بفحص صريح: نص يتجاوز الحد (مع اقتراح
+  // مختصر) أو منصة لا تقبل نصاً مجرّداً بلا وسائط (MEDIA_REQUIRED برسالة دقيقة).
+  // YouTube له فحص وسائطه الخاص أدناه فلا يُكرَّر هنا.
+  if (platform !== "youtube") {
+    const adapted = adaptPublishForPlatform({ platform, content, hasMedia: bodyHasMedia(body) });
+    if (!adapted.ok) {
+      return { status: 422, body: {
+        success: false,
+        error: adapted.reason,
+        code: adapted.code,
+        outcome: adapted.outcome,
+        limit: adapted.limit,
+        used: adapted.used,
+        countMethod: adapted.countMethod,
+        shortenedContent: adapted.shortenedContent,
+        omittedSegments: adapted.omittedSegments,
+        note: adapted.code === "TEXT_TOO_LONG"
+          ? "النص تجاوز حد المنصة؛ لم يُرسَل شيء. استخدم النسخة المقترحة يدوياً ثم أعد النشر."
+          : "المنصة لا تنشر نصاً مجرّداً؛ زوّد رابط وسائط عاماً ثم أعد النشر.",
+      } };
+    }
+  }
   // حارس طول النص **قبل** أي نداء مزود: الرفض يأتي صريحاً برسالة واضحة بدل خطأ
   // المزود الغامض. العدّ بطريقة المنصة (Threads = UTF-8 bytes، وثيقة Meta) — فـ
   // `text.length` وحده كان يترك نصاً «قصيراً» ظاهرياً يتجاوز 500 بايت فعلياً.
@@ -8388,14 +8488,34 @@ async function executePlatformPublish(platform: string, body: any, actor: string
   }
   try {
     if (platform === "youtube") {
-      // النشر الموحّد لـYouTube يوجّه لمسار الرفع الحقيقي (videos.insert resumable)
-      // لأنه يحتاج بايتات الملف. لا محاكاة نصية هنا.
-      return { status: 409, body: {
-        success: false,
-        error: "نشر YouTube الحقيقي يحتاج بايتات الفيديو؛ استخدم مسار الرفع المخصص.",
-        code: "PLATFORM_USE_DEDICATED_PUBLISH",
-        publishRoute: "/api/platforms/youtube/publish",
-      } };
+      // YouTube موحّد الآن مع بقية المنصات (نقرة واحدة): تحوّلنا من إرجاع
+      // `409 PLATFORM_USE_DEDICATED_PUBLISH` إلى تنفيذ الرفع الحقيقي عبر **نفس**
+      // `executeYouTubePublish` (كل بواباته: موافقة، سلامة محتوى، منع تكرار،
+      // rate limit، تحقق هوية/خصوصية/وصف من Google). الفيديو يُحضَّر من mediaRef
+      // (مركز المحتوى) أو videoBase64 أو رابط عام يُنزَّل فعلياً — لا فيديو وهمي.
+      // العنوان يُشتق من المحتوى (≤100 محرف) بلا اختراع معلومة تجارية.
+      if (!platformAcceptsTextOnly("youtube") && !bodyHasMedia(body)) {
+        return { status: 422, body: { success: false, error: "نشر YouTube يحتاج فيديو (mediaRef أو videoBase64 أو رابط فيديو عام).", code: "MEDIA_REQUIRED" } };
+      }
+      const ytBytes = await resolveYouTubeBytes(body);
+      if (!ytBytes.ok) return { status: 422, body: { success: false, error: ytBytes.error, code: ytBytes.code || "MEDIA_REQUIRED" } };
+      const ytTitle = typeof body?.title === "string" && body.title.trim() ? body.title.trim().slice(0, 100) : youTubeTitleFromContent(content);
+      const ytResult = await executeYouTubePublish({
+        title: ytTitle,
+        description: typeof body?.description === "string" ? body.description : content,
+        tags: Array.isArray(body?.tags) ? body.tags : undefined,
+        privacyStatus: typeof body?.privacyStatus === "string" ? body.privacyStatus : undefined,
+        publishAt: typeof body?.publishAt === "string" ? body.publishAt : undefined,
+        categoryId: typeof body?.categoryId === "string" ? body.categoryId : undefined,
+        videoBase64: ytBytes.videoBase64,
+        mediaRef: ytBytes.mediaRef || undefined,
+        mimeType: ytBytes.mimeType,
+        postId: typeof body?.postId === "string" ? body.postId : undefined,
+        productId: typeof body?.productId === "string" ? body.productId : null,
+        approved: true,
+        mode: "manual",
+      }, user.id);
+      return ytResult;
     }
     if (platform === "telegram") {
       const client = telegramClient();
@@ -8452,7 +8572,7 @@ async function executePlatformPublish(platform: string, body: any, actor: string
       // share_to_feed خاص بالريلز: يبقى true افتراضاً (ظهور في الموجز)؛ يقبله الخادم
       // صراحةً كي لا يُفقد سلوك «الفيديو في الموجز» بعد تحويل الفيديو إلى REELS.
       const shareToFeed = body?.shareToFeed === false ? false : true;
-      const igPoll = { attempts: IG_CONTAINER_POLL_MAX_ATTEMPTS, intervalMs: containerPollIntervalMs() };
+      const igPoll = resolveContainerPollConfig(process.env);
       const container = await createInstagramContainerReady(target.igAccountId, target.pageToken, { imageUrl, videoUrl, caption: content, reel, shareToFeed }, igPoll);
       if ("error" in container) {
         // MEDIA_REQUIRED يبقى فقط إن غاب الوسائط فعلاً قبل أي استدعاء شبكي؛ وإلا نُمرّر
@@ -8493,8 +8613,8 @@ async function executePlatformPublish(platform: string, body: any, actor: string
       // تجديد تلقائي للرمز الطويل قبل النشر (وإلا «Session has expired» بلا تفسير)،
       // مع انتظار جاهزية الحاوية قبل النشر (نفس جذر إنستغرام: النشر قبل FINISHED
       // يرد «Invalid parameter»). القيمة تُمرَّر محسوبةً لتفادي تعارض الأنواع.
-      const thPollInterval = containerPollIntervalMs();
-      const thContainer = await withThreadsToken((token) => createThreadsContainerReady(target.threadsUserId, token, { text: content, imageUrl, videoUrl, replyToId }, { attempts: IG_CONTAINER_POLL_MAX_ATTEMPTS, intervalMs: thPollInterval }));
+      const thPoll = resolveContainerPollConfig(process.env);
+      const thContainer = await withThreadsToken((token) => createThreadsContainerReady(target.threadsUserId, token, { text: content, imageUrl, videoUrl, replyToId }, thPoll));
       if (!thContainer.ok || !thContainer.data) {
         // لا تثبيت PROVIDER_ERROR؛ نُمرّر كود Meta الحقيقي ورسالته (مثلاً خطأ تنزيل
         // الوسائط 9007، أو انتهاء الرمز 190) بدل إخفاء السبب.
@@ -9967,7 +10087,16 @@ app.post("/api/workspace/content/:id/publish", requireOwner, async (req, res) =>
       if (post.mediaType === "video") mediaFields.videoUrl = mediaUrl;
       else if (post.mediaType === "image") mediaFields.imageUrl = mediaUrl;
     }
-    const result = await executePlatformPublish(platform, { ...req.body, ...mediaFields, content: perPlatformContent, approved: true, postId: post.id }, user.id);
+    const result = await executePlatformPublish(platform, { ...req.body, ...mediaFields, content: perPlatformContent,
+      // تلميحات موحّدة لكل منصة في نقرة واحدة (لا تُغيّر النص):
+      //  - YouTube: عنوان من عنوان المنشور (أو مشتق من المحتوى) ولا نشر بلا فيديو.
+      //  - قرار مالك مباشر ⇒ public افتراضاً (إلا إن اختار المالك غير ذلك).
+      title: typeof post.title === "string" ? post.title : undefined,
+      description: typeof post.content === "string" ? post.content : undefined,
+      privacyStatus: typeof req.body?.privacyStatus === "string" ? req.body.privacyStatus : "public",
+      approved: true,
+      postId: post.id,
+    }, user.id);
     return { platform, result };
   }));
 
@@ -9976,7 +10105,10 @@ app.post("/api/workspace/content/:id/publish", requireOwner, async (req, res) =>
     const s = settled[idx];
     if (s.status === "fulfilled") {
       const { result } = s.value;
-      const providerPostId = result.body?.providerPostId || result.body?.providerPublishId || null;
+      // معرّف المزود الحقيقي يختلف باسمه: YouTube يعيد externalVideoId،
+      // TikTok providerPublishId، والبقية providerPostId — نقرؤها جميعاً فلا
+      // يُهدر نشر YouTube ناجح بلا تسجيل معرّف مزود.
+      const providerPostId = result.body?.providerPostId || result.body?.providerPublishId || result.body?.externalVideoId || null;
       const delivered = result.status === 200 && Boolean(providerPostId);
       results[platform] = { state: delivered ? "published" : (result.status === 200 ? "publishing" : "failed"), httpStatus: result.status, providerPostId, error: delivered ? null : (result.body?.error || null), code: result.body?.code || null, receipt: result.body?.receipt || null, at: new Date().toISOString() };
     } else {

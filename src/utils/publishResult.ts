@@ -2,37 +2,36 @@
  * صياغة نتيجة النشر متعدد المنصات في الواجهة — مصدر واحد قابل للاختبار.
  *
  * الجذر المُثبت: كان السطر يستخدم `r.code || r.error` فيُخفي رسالة المزود الحقيقية
- * (نص خطأ Meta/Threads) كلما وُجد كود. الآن يُعرض الكود والرسالة معاً، ويُميَّز
- * YouTube بأنه يُنشر عبر طابوره المخصص لا أنه «فشل».
+ * (نص خطأ Meta/Threads) كلما وُجد كود. الآن يُعرض الكود والرسالة معاً.
+ *
+ * **تحديث (توحيد النشر بنقرة واحدة):** YouTube صار يُنشر **داخل** النشر الموحّد
+ * بنفس النقرة (لم يعد مستثنى إلى طابور منفصل). شرطه الوحيد: أن يحمل المنشور فيديو
+ * فعلياً (mediaRef/رابط فيديو عام). بلا فيديو يرد `MEDIA_REQUIRED` صراحةً.
  */
 
-/** نص صريح: نشر YouTube يمر بطابوره المخصص لا بالنشر الموحّد. */
-export const YOUTUBE_DEDICATED_PUBLISH_NOTE =
-  'YouTube يُنشر عبر طابوره المخصص (لا عبر النشر الموحّد) — لا فشل هنا.';
+/** نص صريح: YouTube صار ضمن النشر الموحّد لكنه يحتاج فيديو فعلياً. */
+export const YOUTUBE_UNIFIED_PUBLISH_NOTE =
+  'YouTube يُنشر في نفس النقرة، لكنه يتطلّب ملف فيديو مرفقاً بالمنشور.';
 
 /**
- * نص الإفصاح **قبل** الضغط على زر النشر الموحّد: يُعلن أن المنصات المحددة
- * (يوتيوب) لن تُنشر في هذه النقرة، بل تذهب إلى طابور المراجعة/الجدولة المخصص.
- *
- * سبب الوجود (إصلاح فجوة «نشر واحد بنقرة واحدة يوزّع على كل المنصات»): كان
- * استثناء YouTube من المنفّذ الموحّد — وهي حماية مشروعة لأن رفع فيديو YouTube
- * الفعلي يحتاج بايتات الملف (videos.insert resumable) وزمناً أطول من نقرة نصية
- * فورية — لا يظهر للمالك إلا كنص نتيجة **بعد** النشر («لا فشل هنا») فيبقى السلوك
- * مبهماً. الآن يُعلن صراحةً عند الزر نفسه أي منصة ستُوجَّه لطابورها.
- *
- * يبقى YouTube مُداراً بالكامل: الحوكمة (اعتماد، فتّح خصوصية فعلي من المزوّد،
- * لا نشر بلا معرّف فيديو حقيقي) محفوظة كما هي — لا تخفيف لأي حماية.
+ * إفصاح **قبل** ضغط زر النشر: يُذكّر بأن YouTube المحدد ضمن النشر الفوري معاً،
+ * لكنه يحتاج فيديو فعلياً — فبلا فيديو سيُعلن MEDIA_REQUIRED بدل النشر.
+ * لا يحجب أي منصة؛ توعية فقط حتى لا يُفاجأ المالك بفشل YouTube بلا سبب.
  */
 export function youtubeDedicatedDisclosure(targetPlatforms: string[] | undefined): string | null {
   const hasYouTube = Array.isArray(targetPlatforms) && targetPlatforms.includes('youtube');
   if (!hasYouTube) return null;
-  return 'يوتيوب مستثنى من النشر الفوري بنقرة واحدة: رفع الفيديو الرسمي يحتاج بايتات الملف ومهلة أطول، فيُرسَل الفيديو إلى طابور مراجعة/جدولة YouTube المخصص (بالحوكمة الكاملة). بقية المنصات تُنشر الآن.';
+  return 'يوتيوب يُنشر الآن ضمن نفس النقرة (لا طابور منفصل)؛ شرطه الوحيد: إرفاق ملف فيديو بالمنشور (mediaRef أو رابط فيديو عام). بلا فيديو يُعلن «يتطلّب وسائط» بوضوح.';
 }
 
-
-/** هل هذه النتيجة هي توجيه YouTube المقصود إلى مساره المخصص؟ */
+/** هل هذه النتيجة إشارة قديمة إلى توجيه YouTube لطابوره المخصص؟ (توافق خلفي فقط). */
 export function isYouTubeDedicatedPublish(result: any): boolean {
   return result?.code === 'PLATFORM_USE_DEDICATED_PUBLISH';
+}
+
+/** هل هذه النتيجة حاجة YouTube لفيديو (ليست فشلاً حقيقياً)؟ */
+export function isYouTubeMediaNeed(platform: string, result: any): boolean {
+  return platform === 'youtube' && result?.code === 'MEDIA_REQUIRED';
 }
 
 /** صياغة فشل منصة واحدة: الكود والرسالة الحقيقية معاً (لا إخفاء لأحدهما). */
@@ -43,30 +42,31 @@ export function formatPublishFailure(platform: string, result: any): string {
 }
 
 /**
- * ملخّص الفشل: يفصل YouTube-المخصص عن الفشل الحقيقي، ويعرض الكود والرسالة لكل
- * منصة فاشلة حقيقية. لا يُخفي أي رسالة مزود.
+ * ملخّص الفشل: يفصل حاجة YouTube للفيديو عن الفشل الحقيقي، ويعرض الكود والرسالة
+ * لكل منصة فاشلة حقيقية. لا يُخفي أي رسالة مزود (MEDIA_REQUIRED لمنصة غير يوتيوب
+ * يبقى فشلاً حقيقياً ظاهراً بسببه).
  */
 export function summarizePublishFailures(failed: Array<[string, any]>): string {
   if (!Array.isArray(failed) || !failed.length) return 'لا منصات مستهدفة';
-  const realFailures = failed.filter(([, r]) => !isYouTubeDedicatedPublish(r));
-  const hasYouTubeDedicated = failed.some(([, r]) => isYouTubeDedicatedPublish(r));
+  const realFailures = failed.filter(([pf, r]) => !isYouTubeMediaNeed(pf, r) && !isYouTubeDedicatedPublish(r));
+  const hasYouTubeMedia = failed.some(([pf, r]) => isYouTubeMediaNeed(pf, r) || (pf === 'youtube' && isYouTubeDedicatedPublish(r)));
   const parts: string[] = [];
-  if (hasYouTubeDedicated) parts.push(YOUTUBE_DEDICATED_PUBLISH_NOTE);
+  if (hasYouTubeMedia) parts.push(`${YOUTUBE_UNIFIED_PUBLISH_NOTE} أرفق فيديو ثم أعد النشر.`);
   if (realFailures.length) parts.push(realFailures.map(([pf, r]) => formatPublishFailure(pf, r)).join('، '));
   return parts.join(' ') || 'لا منصات مستهدفة';
 }
 
 /**
  * وصف مصير منصة واحدة بعد التوزيع — يفصل الحالات بدل رقم إجمالي أخضر واحد:
- * نُشر وثُبّت بمعرّف مزود / قيد المعالجة / فشل بسببه / توجيه YouTube لطابوره.
+ * نُشر وثُبّت بمعرّف مزود / قيد المعالجة / فشل بسببه / YouTube يحتاج فيديو.
  * لا يُعلن «نشر» بلا معرّف مزود حقيقي (providerPostId).
  */
-export function formatPlatformResultState(result: any): { label: string; tone: 'ok' | 'pending' | 'fail' } {
-  if (isYouTubeDedicatedPublish(result)) return { label: YOUTUBE_DEDICATED_PUBLISH_NOTE, tone: 'pending' };
+export function formatPlatformResultState(platform: string, result: any): { label: string; tone: 'ok' | 'pending' | 'fail' } {
   const state = result?.state;
   if (state === 'published') {
     return { label: result?.providerPostId ? `نُشر وثُبّت بمعرّف المزود: ${result.providerPostId}` : 'نُشر', tone: 'ok' };
   }
   if (state === 'publishing') return { label: 'قيد المعالجة لدى المزود (لم يُثبت التسليم بعد)', tone: 'pending' };
+  if (isYouTubeMediaNeed(platform, result) || isYouTubeDedicatedPublish(result)) return { label: YOUTUBE_UNIFIED_PUBLISH_NOTE, tone: 'pending' };
   return { label: formatPublishFailure('فشل', result), tone: 'fail' };
 }

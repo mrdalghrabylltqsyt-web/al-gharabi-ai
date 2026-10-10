@@ -217,7 +217,7 @@ function run(): void {
   // الحرفي نفسه لكل منصة (يتجاهل platformVersions المكيَّفة)، ولا يمرّر أي وسيط
   // (videoUrl/imageUrl) إطلاقاً — فتفشل إنستغرام/ثريدز دائماً بـMEDIA_REQUIRED
   // رغم إرفاق المالك فيديو ورابطه العام فعلياً من "مركز صناعة المحتوى".
-  const publishRouteMatch = serverSource.match(/app\.post\("\/api\/workspace\/content\/:id\/publish"[\s\S]{0,4500}?\n\}\);/);
+  const publishRouteMatch = serverSource.match(/app\.post\("\/api\/workspace\/content\/:id\/publish"[\s\S]{0,9000}?\n\}\);/);
   const publishRouteSrc = publishRouteMatch ? publishRouteMatch[0] : '';
   check('مسار النشر متعدد المنصات موجود وقابل للفحص', publishRouteSrc.length > 500);
   check('كل منصة تقرأ نسختها من platformVersions أولاً', publishRouteSrc.includes('post.platformVersions[platform]'));

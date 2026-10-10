@@ -1,20 +1,22 @@
 /**
- * اختبار ثابت: إفصاح يوتيوب **قبل** زر النشر الموحّد في نظام الموافقة.
+ * اختبار ثابت: إفصاح YouTube **قبل** زر النشر الموحّد في نظام الموافقة.
  *
- * الجذر المُثبت (لا تخمين): يوتيوب مستثنى من المنفّذ الموحّد (يحتاج بايتات الفيديو
- * عبر videos.insert resumable لا رابطاً نصياً)، وكان ذلك يظهر للمالك فقط كرسالة نتيجة
- * **بعد** النشر («لا فشل هنا») — فيبقى استثناءه مبهماً ويخالف الاتفاق بأن يكون زراً
- * واحداً يوزّع على كل المنصات. القرار التقني: إبقاء الفصل (خيار ب) لأنه آمن (الرفع
- * الفعلي لا يناسب نقرة فورية) مع **إفصاح صريح عند الزر نفسه**. هذا الاختبار يثبت:
- *  1) الإفصاح يُعرض في ApprovalWorkflowView قبل نقر النشر (شرط الحالة approved/scheduled).
- *  2) الإفصاح مبني على `youtubeDedicatedDisclosure(post.targetPlatforms)` (لا نص ثابت أعمى).
- *  3) الحمايات لم تُخفّف: لم تُضف أي حالة «نشر يوتيوب فوري» ولا تخفيف بوابات.
+ * **تحديث (توحيد النشر بنقرة واحدة):** كان YouTube مستثنى من المنفّذ الموحّد
+ * (`409 PLATFORM_USE_DEDICATED_PUBLISH`) ويُوجَّه لطابور منفصل. الآن YouTube
+ * يُنشر **داخل** `POST /api/workspace/content/:id/publish` بنفس النقرة عبر
+ * `executeYouTubePublish` (كل البوابات محفوظة). شرطه الوحيد: أن يحمل المنشور
+ * فيديو فعلياً؛ بلا فيديو يرد `MEDIA_REQUIRED` صراحةً. هذا الاختبار يثبت:
+ *  1) الإفصاح يُعرض في ApprovalWorkflowView قبل نقر النشر (approved/scheduled).
+ *  2) الإفصاح مبني على `youtubeDedicatedDisclosure(post.targetPlatforms)`.
+ *  3) النص لم يعد يذكر «الاستثناء» بل شرط الفيديو وأنه ضمن نفس النقرة.
+ *  4) لا ادعاء «نشر فوري بلا حماية» — لا بوابة أُزيلت.
  *
  * فحص ثابت على المصدر — بلا شبكة ولا سرّ.
  */
 
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { youtubeDedicatedDisclosure } from '../../src/utils/publishResult';
 
 let passed = 0;
 const failures: string[] = [];
@@ -25,7 +27,7 @@ function check(name: string, condition: boolean, detail = ''): void {
 
 const ROOT = process.cwd();
 const view = readFileSync(join(ROOT, 'src/components/approval/ApprovalWorkflowView.tsx'), 'utf8');
-const helper = readFileSync(join(ROOT, 'src/utils/publishResult.ts'), 'utf8');
+const server = readFileSync(join(ROOT, 'server.ts'), 'utf8');
 
 // 1) الاستيراد والاستخدام الفعلي للدالة المشتركة.
 check('يستورد youtubeDedicatedDisclosure من publishResult', /import\s*\{[^}]*youtubeDedicatedDisclosure[^}]*\}\s*from\s*'\.\.\/\.\.\/utils\/publishResult'/.test(view));
@@ -39,15 +41,22 @@ const disclosureIdx = view.indexOf('youtubeDedicatedDisclosure(post.targetPlatfo
 const publishBtnIdx = view.indexOf('نشر الآن فوراً');
 check('الإفصاح يظهر قبل زر «نشر الآن فوراً»', disclosureIdx >= 0 && publishBtnIdx >= 0 && disclosureIdx < publishBtnIdx, `disclosure=${disclosureIdx} button=${publishBtnIdx}`);
 
-// 4) النص العربي واضح للمالك (يذكر يوتيوب + الطابور + بقية المنصات).
-check('النص يذكر يوتيوب', helper.includes('يوتيوب'));
-check('النص يذكر الطابور المخصص', /\u0637\u0627\u0628\u0648\u0631/.test(helper) && helper.includes('طابور'));
-check('النص يوضّح أن بقية المنصات تُنشر الآن', helper.includes('بقية المنصات'));
-check('النص يذكر سبب الفصل (بايتات الملف/مهلة أطول)', helper.includes('بايتات الملف'));
+// 4) النص العربي الفعلي المُعاد واضح: يذكر يوتيوب + ضمن النقرة + شرط الفيديو، ولا يذكر الاستثناء.
+{
+  const disclosure = youtubeDedicatedDisclosure(['youtube', 'facebook']) || '';
+  check('النص يذكر يوتيوب', disclosure.includes('يوتيوب'), disclosure);
+  check('النص يُصرّح بأن يوتيوب ضمن نفس النقرة', disclosure.includes('نقرة'), disclosure);
+  check('النص يذكر شرط الفيديو', disclosure.includes('فيديو'), disclosure);
+  check('النص المُعاد لم يعد يذكر الاستثناء القديم', !disclosure.includes('مستثنى'), disclosure);
+}
 
-// 5) لا تخفيف للحمايات: لا مسار نشر يوتيوب فوري ولا إزالة لإشارة المنفّذ الموحّد.
-check('لا يُضاف نشر يوتيوب فوري في الواجهة', !view.includes('publishYouTubeNow') && !view.includes('/api/platforms/youtube/publish'));
-check('يوتيوب يبقى موسوماً بمساره المخصص', helper.includes('PLATFORM_USE_DEDICATED_PUBLISH'));
+// 5) التوحيد الفعلي في الخادم: YouTube لم يعد يُرجع PLATFORM_USE_DEDICATED_PUBLISH
+//    بل ينفّذ executeYouTubePublish داخل المنفّذ الموحّد.
+check('المنفّذ الموحّد يستدعي executeYouTubePublish لـYouTube', /platform === "youtube"[\s\S]{0,1400}executeYouTubePublish\(/.test(server));
+check('لم يبقَ إرجاع PLATFORM_USE_DEDICATED_PUBLISH في المنفّذ الموحّد', !/platform === "youtube"[\s\S]{0,1400}code: "PLATFORM_USE_DEDICATED_PUBLISH"/.test(server));
+
+// 6) لا تخفيف للحمايات: يواصل استخدام نفس بوابة executeYouTubePublish.
+check('YouTube يستخدم نفس بوابة executeYouTubePublish (لا مسار جانبي)', server.includes('async function executeYouTubePublish'));
 
 console.log('\n' + '='.repeat(60));
 if (failures.length) {
