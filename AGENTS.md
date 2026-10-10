@@ -44,7 +44,7 @@ npm install
 npm run dev            # tsx server.ts
 npm run lint           # tsc --noEmit
 npm run build          # vite build + esbuild server.ts -> dist/server.cjs
-npm run final-audit    # node final-audit.mjs (1477 فحصاً)
+npm run final-audit    # node final-audit.mjs (1486 فحصاً)
 npm test               # storage + engine + auth + ... + db + runtime
 ```
 - التشغيل الإنتاجي: `PORT=4517 NODE_ENV=production APP_URL=http://localhost:4517 node dist/server.cjs`
@@ -5148,3 +5148,41 @@ test:dr-recovery-center-timeout`، 31 فحصاً، مضاف إلى `test:dr`): �
 (403) صريح، انتهاء المهلة 504، **بقاء المصادقة بعد 504**، 401 بلا مفتاح، وواجهة متصفح
 حقيقية (نجاح/مهلة/خطأ Drive) تُثبت إنهاء «...» دائماً. فحوص final-audit الـ11 الجديدة
 (`recovery-center-points-timeout-*`، 1477 إجمالاً).
+
+## تفعيل العناصر التفاعلية في الواجهة — تدقيق وإصلاح (2026-10-04)
+
+تدقيق شامل لكل عنصر واجهة يُعرض كمدخل إلى قسم/محتوى/وظيفة، مع إصلاح ما كان غير مستجيب
+أو يشير إلى وجهة خاطئة. المنهج: جرد آلي لكل `setActiveTab`/`go(...)` وكل `<input>` بلا
+`onChange` وكل بطاقة رقمية بلا `onClick`، ثم مطابقة الوجهات مع حالات العرض الحقيقية.
+
+**أعطال حقيقية مُثبتة ومُصلَحة:**
+1. **مركز القيادة (الصفحة الرئيسية) كان «غير مستجيب» جزئياً.** مسار العمل الموحّد كان
+   يستدعي `go('publish')` و`go('products')` وزر «الإعدادات» كان `go('settings')` — وكلها
+   **ليست معرّفات أقسام صالحة** (`section_publish`/`section_products`/`section_settings`)،
+   فتسقط إلى الافتراضي `renderLeafView(activeTab)` = CommandCenter، فيبدو الضغط كأنه
+   «لم يحدث شيء». أُصلحت الوجهات إلى الأقسام الهرمية الصحيحة (والزر صار «ربط المنصات
+   والإعداد ←» إلى `platform_connections`).
+2. **بطاقات مؤشرات لوحة التحكم (DashboardView) كانت عناصر شكلية.** أربع بطاقات
+   (المتابعون/الاستفسارات/المنتجات/النشر والجدولة) تعرض رقماً وأيقونة بلا `onClick`
+   ولا تنقل إلى بياناتها. صارت `<button type="button">` معنونة بـ`aria-label` تنقل إلى
+   `social`/`customers`/`database`/`calendar` على الترتيب، مع `cursor-pointer` وحدود
+   تمييز عند المرور (توافقاً مع قاعدة «بطاقة تُظهر رقماً يجب أن تفتح بياناته»).
+3. **بحث الترويسة كان `<input>` ميّتاً بلا `onChange`.** صار `<form>` فعّالاً: `onChange`
+   يكتب في حالة مشتركة جديدة `searchQuery`/`setSearchQuery` (AppContext)، و`onSubmit`
+   ينقل إلى شاشة البحث الموحّد `search`، فيقرأ `GlobalSearchView` الاستعلام وينفّذ البحث
+   فوراً عند الفتح — بلا مسار ثانٍ ولا صفحة جديدة.
+4. **صفوف «يحتاج إجراءً» صارت قابلة للضغط كاملةً** (`role="button"` + `tabIndex` +
+   `onKeyDown` لـEnter/المسافة + `aria-label`)، وبقيت دلالية للتنقل فقط؛ ولأن التفاعل صار
+   على الصف نفسه، حُوِّل الزر الداخلي إلى `span` لمنع أي تنفيذ مزدوج (nested-interactive).
+
+**لم يُعدّل:** الأزرار التي تنفّذ إجراءً حقيقياً (تحديث/موافقة/إضافة/حذف/مزامنة) بقيت كما
+هي؛ العناصر الزخرفية (نقاط حالة المنصات، شارات المعلومات، مؤشر Gemini في الترويسة، شريط
+«بيانات مساحة العمل») بقيت `span` غير تفاعلية؛ الأزرار ذات `disabled` المشروع (التحقق/
+الاستعادة قبل اختيار نقطة ومفتاح الخزنة) بقيت معطّلة عمداً؛ بطاقات المؤشرات في Analytics/
+SocialManager/Operations بقيت عرضاً (توضيح صريح بلا إدعاء حي) ولم تُمسّ.
+
+**المنهج الاختباري:** اختبار `engine/tests/ui.interactions.test.ts`
+(`npm run test:ui-interactions`، 40 فحصاً) يحلّل المصدر: كل هدف تنقّل يقابل `case` في
+App.tsx، صفوف الإجراء قابلة للضغط بلا زر متداخل، بطاقات KPI أزرار تنقل، بحث الترويسة
+فعال، وغياب `onClick` الفارغ/`href="#"`. فحوص final-audit التسعة الجديدة:
+`ui-nav-targets-valid` … `ui-interactions-test-wired` (1486 إجمالاً).

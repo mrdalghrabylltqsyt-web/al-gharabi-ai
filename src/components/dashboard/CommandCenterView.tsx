@@ -138,13 +138,26 @@ export const CommandCenterView: React.FC = () => {
           </div>
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
             {needingAction.map((p) => (
-              <div key={p.platform} className="p-3 rounded-xl bg-slate-950/60 border border-slate-800 text-[11px]">
+              <div
+                key={p.platform}
+                role="button"
+                tabIndex={0}
+                aria-label={`ربط منصة ${p.platform} وإكمال الإعداد`}
+                onClick={() => go('platform_connections')}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' || e.key === ' ') {
+                    e.preventDefault();
+                    go('platform_connections');
+                  }
+                }}
+                className="p-3 rounded-xl bg-slate-950/60 border border-slate-800 text-[11px] cursor-pointer hover:border-emerald-500/40 transition"
+              >
                 <div className="flex items-center justify-between gap-2">
                   <span className="font-bold text-slate-200 uppercase">{p.platform}</span>
                   <span className="text-[10px] px-1.5 py-0.5 rounded-md bg-amber-500/15 text-amber-300 border border-amber-500/30">{p.stateLabelAr || p.state}</span>
                 </div>
                 <p className="text-slate-400 mt-1">{p.blockingReason || 'يحتاج إكمال إعداد.'}</p>
-                <button onClick={() => go('settings')} className="text-[10px] text-emerald-300 mt-1 hover:underline">الإعدادات › ربط المنصات ←</button>
+                <span className="text-[10px] text-emerald-300 mt-1 inline-block hover:underline">ربط المنصات والإعداد ←</span>
               </div>
             ))}
           </div>
@@ -182,7 +195,7 @@ export const CommandCenterView: React.FC = () => {
       <Card>
         <div className="text-slate-300 text-xs font-bold mb-3">مسار العمل الموحّد</div>
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-          <button onClick={() => go('publish')} className="p-4 rounded-xl bg-slate-950/60 border border-slate-800 hover:border-emerald-500/40 text-right cursor-pointer transition">
+          <button onClick={() => go('section_publish')} className="p-4 rounded-xl bg-slate-950/60 border border-slate-800 hover:border-emerald-500/40 text-right cursor-pointer transition">
             <div className="flex items-center gap-2 text-emerald-300 font-bold text-sm"><Megaphone className="w-4 h-4" /> النشر</div>
             <p className="text-[11px] text-slate-400 mt-1">إنشاء المحتوى، اختيار المنصات، النشر والجدولة والنتائج.</p>
             <span className="inline-flex items-center gap-1 text-[11px] text-emerald-300 mt-2">ابدأ <ArrowLeft className="w-3 h-3" /></span>
@@ -192,7 +205,7 @@ export const CommandCenterView: React.FC = () => {
             <p className="text-[11px] text-slate-400 mt-1">التعليقات والرسائل والردود والمتابعة.</p>
             <span className="inline-flex items-center gap-1 text-[11px] text-emerald-300 mt-2">افتح <ArrowLeft className="w-3 h-3" /></span>
           </button>
-          <button onClick={() => go('products')} className="p-4 rounded-xl bg-slate-950/60 border border-slate-800 hover:border-emerald-500/40 text-right cursor-pointer transition">
+          <button onClick={() => go('section_products')} className="p-4 rounded-xl bg-slate-950/60 border border-slate-800 hover:border-emerald-500/40 text-right cursor-pointer transition">
             <div className="flex items-center gap-2 text-emerald-300 font-bold text-sm"><Package className="w-4 h-4" /> المنتجات</div>
             <p className="text-[11px] text-slate-400 mt-1">مستودع المنتجات والأسعار — المصدر الوحيد للحقيقة التجارية.</p>
             <span className="inline-flex items-center gap-1 text-[11px] text-emerald-300 mt-2">افتح <ArrowLeft className="w-3 h-3" /></span>

@@ -29,6 +29,8 @@ export const Header: React.FC<HeaderProps> = ({ onOpenMobileMenu }) => {
     setActiveTab,
     syncAllPlatforms,
     showToast,
+    searchQuery,
+    setSearchQuery,
   } = useApp();
 
   const [roleDropdownOpen, setRoleDropdownOpen] = useState(false);
@@ -82,16 +84,30 @@ export const Header: React.FC<HeaderProps> = ({ onOpenMobileMenu }) => {
         </div>
 
         {/* Center: Search & Quick Stat */}
-        <div className="hidden md:flex items-center flex-1 max-w-md mx-4">
+        <form
+          className="hidden md:flex items-center flex-1 max-w-md mx-4"
+          onSubmit={(e) => {
+            e.preventDefault();
+            const term = searchQuery.trim();
+            if (term.length < 2) {
+              showToast('اكتب كلمتين على الأقل للبحث');
+              return;
+            }
+            setActiveTab('search');
+          }}
+        >
           <div className="relative w-full">
             <Search className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
             <input
               type="text"
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
               placeholder="ابحث عن منتج، قسط، منشور، أو عميل..."
+              aria-label="بحث موحّد في النظام"
               className="w-full bg-slate-950/60 border border-slate-800 rounded-xl py-2 pr-9 pl-4 text-sm text-slate-200 placeholder-slate-500 focus:outline-none focus:border-emerald-500/60 transition"
             />
           </div>
-        </div>
+        </form>
 
         {/* Left side (in RTL, this is the end): Quick Actions, Notifications, Role Switcher */}
         <div className="flex items-center gap-2 sm:gap-3">
