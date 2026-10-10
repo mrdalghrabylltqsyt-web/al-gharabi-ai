@@ -133,5 +133,24 @@ const missing = VIEW_FILES.filter((f) => !fs.existsSync(path.join(root, f)));
 check('لا حذف لأي ملف واجهة سابق', missing.length === 0);
 if (missing.length) console.error('    ملفات مفقودة:', missing.join(', '));
 
+console.log('\n=== سلوك الضغط على القسم/الفرع (انحدار: محتوى القسم الخطأ) ===');
+// عطل حقيقي مُثبت: كان `toggleSection` ينقّل فقط عند فتح قسم مُغلق
+// (`if (!expandedSections.includes(id)) setActiveTab(id)`)، فضغط قسم مفتوح (أو فُتح
+// تلقائياً للورقة النشطة) يطوي فروعه بلا تنقّل، فيبقى المحتوى على القسم السابق —
+// فيبدو كأن الضغط فتح محتوى قسم آخر، وكأن الفروع لا تستجيب.
+const toggleSectionBody = sidebar.slice(
+  sidebar.indexOf('const toggleSection'),
+  sidebar.indexOf('const toggleBranch'),
+);
+check('toggleSection ينقّل دائماً إلى القسم (بلا شرط فتح)', /setActiveTab\(id\)/.test(toggleSectionBody));
+check('toggleSection لا يربط التنقّل بحالة الفتح', !/if\s*\(!expandedSections\.includes\(id\)\)/.test(toggleSectionBody));
+
+const toggleBranchBody = sidebar.slice(
+  sidebar.indexOf('const toggleBranch'),
+  sidebar.indexOf('const badgeFor'),
+);
+check('toggleBranch ينقّل إلى أول ورقة عند فتح فرع مغلق', /if\s*\(!wasOpen\s*&&\s*firstLeafId\)\s*setActiveTab\(firstLeafId\)/.test(toggleBranchBody));
+check('الفرع يُمرّر أول ورقة وحالة الفتح الحالية', sidebar.includes('toggleBranch(branch.id, branch.items[0]?.id, bOpen)'));
+
 console.log(`\n${fail === 0 ? 'PASSED' : 'FAILED'}: ${pass} تنقل هرمي، ${fail} فشل`);
 if (fail > 0) process.exit(1);

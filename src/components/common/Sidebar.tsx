@@ -80,22 +80,30 @@ export const Sidebar: React.FC<SidebarProps> = ({ mobileOpen, onCloseMobile }) =
     try { localStorage.setItem(EXPANDED_KEY, JSON.stringify({ sections, branches })); } catch { /* تجاهل */ }
   };
 
+  // الضغط على ترويسة القسم **ينقّل دائماً** إلى صفحة القسم (هذا هو المقصود الأساسي
+  // من الضغط)، ثم يبدّل حالة الفتح/الإغلاق للفروع. كان سابقاً ينقّل فقط عند فتح قسم
+  // مُغلق، فإن ضغط المستخدم قسماً مفتوحاً (أو فُتح تلقائياً للورقة النشطة) انطوت
+  // فروعه بلا تنقّل، فبقي المحتوى على القسم السابق — فيبدو كأن الضغط فتح محتوى قسم
+  // آخر، وكأن الفروع لا تستجيب. الإصلاح: التنقّل غير مشروط بحالة الفتح.
   const toggleSection = (id: string) => {
     setExpandedSections((prev) => {
       const next = prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id];
       persist(next, expandedBranches);
       return next;
     });
-    // فتح القسم يعرض صفحته الموحّدة أيضاً (يحافظ على سلوك التنقل السابق).
-    if (!expandedSections.includes(id)) setActiveTab(id);
+    setActiveTab(id);
   };
 
-  const toggleBranch = (id: string) => {
+  // الضغط على الفرع يبدّل حالته، وعند فتح فرع كان **مغلقاً فعلاً** ينقل إلى أول ورقة
+  // فيه فيظهر محتواه (بدل أن يبدو الفرع بلا استجابة). لا تنقّل عند إغلاق فرع، ولا عند
+  // ضغط فرع مفتوح تلقائياً بسبب الورقة النشطة — كي لا يُسحب المحتوى من تحت المستخدم.
+  const toggleBranch = (id: string, firstLeafId: string | undefined, wasOpen: boolean) => {
     setExpandedBranches((prev) => {
       const next = prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id];
       persist(expandedSections, next);
       return next;
     });
+    if (!wasOpen && firstLeafId) setActiveTab(firstLeafId);
   };
 
   const badgeFor = (leafId: string): string | null => {
@@ -234,7 +242,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ mobileOpen, onCloseMobile }) =
                       return (
                         <div key={branch.id}>
                           <button
-                            onClick={() => toggleBranch(branch.id)}
+                            onClick={() => toggleBranch(branch.id, branch.items[0]?.id, bOpen)}
                             className="w-full flex items-center gap-2 px-2 py-1.5 rounded-lg text-right text-slate-400 hover:text-white hover:bg-slate-800/50 transition cursor-pointer"
                             aria-expanded={bOpen}
                           >
