@@ -5339,12 +5339,14 @@ app.get("/api/platforms/facebook/post-visibility-diagnosis", requireOwner, async
   }
   const g = groundingRes.data;
   // الحكم الصادق: نضع الأسباب المحتملة إزاء الأدلة الفعلية بلا ادّعاء يقين.
+  // تنبيه صياغي ملزم: is_published=true تعني «ليس مسودة/مجدولاً»، وليست إثباتاً
+  // للظهور العام — فقد يكون المنشور منشوراً فعلاً لكنه مقيَّد لأدوار التطبيق/الصفحة.
   let verdict: string;
   let likelyRootCause: string;
   if (!g.exists) { verdict = "post_not_found"; likelyRootCause = "المعرّف غير موجود أو لا يمكن قراءته بالرمز الحالي."; }
   else if (g.isPublished === false) { verdict = "draft_or_scheduled"; likelyRootCause = "المنشور مسودة أو مجدول (is_published=false) فلا يظهر للجمهور بعد."; }
   else if (g.appearsOnPage === false) { verdict = "published_but_not_on_page_wall"; likelyRootCause = "المنشور منشور (is_published=true) لكنه غير وارد على حائط الصفحة العامة — يطابق تماماً قيد «وضع تطوير التطبيق» الذي يحصر المحتوى المنشأ عبر API في أدوار التطبيق/الصفحة."; }
-  else { verdict = "published_and_returns_as_story"; likelyRootCause = "Meta تُعلن is_published=true والمنشور يرد ضمن المنشورات المنشورة. إن ظل مخفياً عن الجمهور فالمؤشر الأقوى هو وضع تطبيق Meta (Development) لا Live، أو اشتراط App Review لصلاحيات النشر."; }
+  else { verdict = "published_and_returns_as_story"; likelyRootCause = "Meta تُعلن is_published=true والمنشور يرد ضمن المنشورات المنشورة. إن ظل مخفياً عن الجمهور فالمؤشر الأقوى هو وضع تطبيق Meta (Development) لا Live، أو اشتراط App Review/Advanced Access لصلاحيات النشر."; }
   res.json({
     success:true,
     pageId,
@@ -5353,15 +5355,26 @@ app.get("/api/platforms/facebook/post-visibility-diagnosis", requireOwner, async
     grounding: g,
     verdict,
     likelyRootCause,
-    // وضع التطبيق لا تعرضه Graph API: يُفحص من لوحة Meta فقط. نعلن ذلك صراحةً.
-    appMode: { readableViaApi: false, source: "Meta App Dashboard → App Mode (Development/Live)" },
+    // ملخّص ما ثبتته هذه القراءة وما لم تثبته — بلا ادّعاء ظهور عام من is_published.
+    evidenceSummary: {
+      isDraftOrScheduled: g.isPublished === false,
+      returnsAsStory: g.isPublished === true,
+      proofOfPublicVisibility: false,
+      why: "is_published=true تثبت وجود كائن منشور (ليس مسودة/مجدولاً) فقط، ولا تثبت رؤيته لزائر غير إداري. ظهور المنشورات المُنشأة عبر API للجمهور يتوقف على وضع تطبيق Meta / مستوى الوصول.",
+    },
+    // وضع التطبيق ومستوى الوصول لا تعرضهما Graph API إطلاقاً: مصدرهما الوحيد لوحة Meta.
+    appMode: {
+      readableViaApi: false,
+      source: "Meta App Dashboard → App Mode (Development/Live) أو Access Levels (لتطبيق Business)",
+      note: "تطبيقات Business استُبدل فيها Development/Live بـ«Access Levels» منذ Graph v8.0؛ كلاهما غير مقروء عبر API.",
+    },
     manualActionRequired: [
-      "افتح Meta App Dashboard → تطبيق «وكيل الغرابي الذكي» وتأكد أن الوضع Live لا Development.",
-      "في Development يظهر المحتوى المنشأ عبر API لأدوار التطبيق/الصفحة فقط — حوّل التطبيق إلى Live.",
-      "إن لزم App Review لصلاحيات النشر (pages_manage_posts/pages_read_engagement) فأكملها لتظهر المنشورات الجديدة للجمهور.",
+      "افتح Meta App Dashboard → تطبيق «وكيل الغرابي الذكي» وتأكد أن الوضع Live (وإن كان التطبيق من نوع Business فتحقّق من Access Levels: Advanced لصلاحيات النشر pages_manage_posts/pages_read_engagement).",
+      "في Development/Standard Access يظهر المحتوى المنشأ عبر API لأدوار التطبيق/الصفحة فقط — انقله إلى Live/Advanced Access.",
+      "إن لزم App Review لصلاحيات النشر فأكملها لتظهر المنشورات الجديدة للجمهور.",
       "المنشورات المنشأة قبل التحويل إلى Live تتحول إلى عامة تلقائياً عند تبديل الوضع (تحقّق من منشور سابق).",
     ],
-    note: "قراءة فقط بلا أي نشر أو تغيير؛ بلا أي سرّ. وضع التطبيق غير مقروء عبر API ويُفحص من لوحة Meta.",
+    note: "قراءة فقط بلا أي نشر أو تغيير؛ بلا أي سرّ. وضع التطبيق/مستوى الوصول غير مقروءين عبر API ويُفحصان من لوحة Meta.",
   });
 });
 

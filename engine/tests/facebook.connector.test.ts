@@ -644,6 +644,8 @@ async function integrationTests(): Promise<void> {
     check('grounding: ظاهر على حائط الصفحة', vis.grounding?.appearsOnPage === true);
     check('verdict انعكاس الأدلة', vis.verdict === 'published_and_returns_as_story', String(vis.verdict));
     check('وضع التطبيق غير مقروء عبر API (معلن صراحةً)', vis.appMode?.readableViaApi === false);
+    check('published=true لا يُقدَّم كإثبات ظهور عام', vis.evidenceSummary?.proofOfPublicVisibility === false && vis.evidenceSummary?.returnsAsStory === true);
+    check('الاستجابة تنصّ على Access Levels لتطبيق Business', /Access Levels/.test(vis.appMode?.note || ''));
     check('خطوات يدوية محددة موجودة', Array.isArray(vis.manualActionRequired) && vis.manualActionRequired.some((s: string) => /Live/.test(s)));
     check('بلا أي سرّ في الاستجابة', !/access_token|Bearer |EAA[A-Za-z0-9]|PLATFORM_TOKEN/.test(JSON.stringify(vis)));
 

@@ -4030,10 +4030,16 @@ add('watcher-advisory-not-authority',
     'مسار تشخيص الظهور محصور بالمالك (requireOwner)');
 
   add('facebook-visibility-diagnosis-no-secret',
-    read('server.ts').includes('appMode: { readableViaApi: false') &&
+    read('server.ts').includes('readableViaApi: false') &&
     read('server.ts').includes('Development/Live') &&
     read('server.ts').includes('قراءة فقط بلا أي نشر أو تغيير'),
     'التشخيص يعلن أن وضع التطبيق غير مقروء عبر API ويوجه للوحة Meta بلا أي سرّ');
+
+  add('facebook-published-not-public-proof',
+    read('server.ts').includes('proofOfPublicVisibility: false') &&
+    read('server.ts').includes('Access Levels') &&
+    read('engine/tests/facebook.connector.test.ts').includes('لا يُقدَّم كإثبات ظهور عام'),
+    'published=true لا يُقدَّم كإثبات ظهور عام؛ Access Levels مذكورة؛ اختبار يمنع رجوع الادّعاء');
 
   add('facebook-visibility-regression-test',
     read('engine/tests/facebook.connector.test.ts').includes('post-visibility-diagnosis') &&
