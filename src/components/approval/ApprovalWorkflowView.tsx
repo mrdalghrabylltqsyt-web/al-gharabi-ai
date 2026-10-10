@@ -260,7 +260,7 @@ export const ApprovalWorkflowView: React.FC = () => {
                     <div className="text-[11px] font-bold text-slate-400">نتيجة النشر لكل منصة:</div>
                     <div className="flex flex-col gap-1.5">
                       {Object.entries(post.platformPublishResults).map(([pf, r]: [string, any]) => {
-                        const st = formatPlatformResultState(r);
+                        const st = formatPlatformResultState(pf, r);
                         const tone = st.tone === 'ok' ? 'bg-emerald-950/50 border-emerald-500/30 text-emerald-300'
                           : st.tone === 'pending' ? 'bg-amber-950/40 border-amber-500/30 text-amber-300'
                           : 'bg-rose-950/40 border-rose-500/30 text-rose-300';

@@ -44,7 +44,7 @@ npm install
 npm run dev            # tsx server.ts
 npm run lint           # tsc --noEmit
 npm run build          # vite build + esbuild server.ts -> dist/server.cjs
-npm run final-audit    # node final-audit.mjs (1517 فحصاً)
+npm run final-audit    # node final-audit.mjs (1523 فحصاً)
 npm test               # storage + engine + auth + ... + db + runtime
 ```
 - التشغيل الإنتاجي: `PORT=4517 NODE_ENV=production APP_URL=http://localhost:4517 node dist/server.cjs`
@@ -5447,3 +5447,39 @@ final-audit = **1510** (`facebook-text-limit-restored-2000`، `facebook-text-lim
 **لا دفع، لا دمج، لا نشر** — بانتظار الإذن الصريح.
 
 _(هذا الفرع يعتمد على PR #25 غير المدموج؛ سأوضّح العلاقة عند الطلب.)_
+
+## توحيد النشر بنقرة واحدة — إزالة استثناء YouTube + تراجع الحاويات + تكييف المحتوى (2026-10-04)
+
+**الجذور المُثبتة (AUDIT → ROOT CAUSE → FIX)، بلا تخمين:**
+
+1. **YouTube كان مستثنى من المنفّذ الموحّد.** `executePlatformPublish` كان يرد لـYouTube
+   `409 PLATFORM_USE_DEDICATED_PUBLISH` ويوجّهه لطابور منفصل، فيكسر وعد «زر واحد لكل
+   المنصات». **الإصلاح:** YouTube يُنفّذ الآن **داخل نفس** `executePlatformPublish` عبر
+   `executeYouTubePublish` (نفس بوابة الرفع بكل حماياتها: موافقة/سلامة محتوى/اتصال موثق/
+   منع تكرار/rate limit) — لا مسار جانبي. `resolveYouTubeBytes` يحضّر بايتات الفيديو من
+   `mediaRef` أو base64 أو رابط عام بحدّ حجم (`YOUTUBE_UNIFIED_DOWNLOAD_MAX_BYTES` 128MB)
+   ومهلة (`YOUTUBE_UNIFIED_DOWNLOAD_TIMEOUT_MS` 90s). بلا فيديو ⇒ `MEDIA_REQUIRED` صراحةً.
+2. **`CONTAINER_TIMEOUT` في Threads/Instagram.** الانتظار كان مهلة ثابتة قصيرة (24s).
+   **الإصلاح:** `engine/social/containerPolling.ts` (منطق خالص): `resolveContainerPollConfig`
+   يقرأ البيئة بحدود آمنة، و`containerPollDelayMs` تراجع أسّي، و`containerPollBudgetMs`
+   ميزانية واقعية (افتراضي أطول بكثير من 24s). قيمة بيئة سيئة لا تُنتج حلقة بلا فاصل.
+3. **`CLIENT_ERROR: Invalid parameter` مبهم.** لا فحص ملاءمة قبل النداء. **الإصلاح:**
+   `engine/social/publishAdaptation.ts`: `adaptPublishForPlatform` يفحص قبل الإرسال —
+   تجاوز الحد ⇒ نص مقترح مختصر (لا نشر تلقائي)، منصة ترفض النص المجرّد بلا وسائط ⇒
+   `MEDIA_REQUIRED` واضح بدل خطأ مزوّد مبهم. `platformAcceptsTextOnly` و`TEXT_ONLY_REJECTS`
+   و`PLATFORM_HASHTAG_TAG` هي المصدر الواحد.
+4. **معرّف المزود لـYouTube.** كان يُقرأ `providerPostId`/`providerPublishId` فقط، فيُهدر
+   نشر YouTube ناجح. **الإصلاح:** يُقرأ `externalVideoId` أيضاً.
+
+**الواجهة:** `formatPlatformResultState(platform, result)` يفرّق الآن YouTube (يحتاج فيديو)
+عن فشل حقيقي، و`youtubeDedicatedDisclosure` يعلن أن YouTube **ضمن نفس النقرة** ويشترط
+فيديو (لم يعد «مستثنى»)، ويُعرض **قبل** زر «نشر الآن فوراً» في `ApprovalWorkflowView`.
+
+**اختبارات:** `engine/tests/unified.publishing.test.ts` (`npm run test:unified-publishing`،
+41 فحصاً)، وتحديث `publish.all-platforms.test.ts` (YouTube بلا وسائط ⇒ MEDIA_REQUIRED)،
+و`publish.provider.error.test.ts` (57)، و`approval.youtube.disclosure.ui.test.ts` (11)،
+و`platform.foundation.test.ts` (نطاق المسار الأوسع). فحوص final-audit الجديدة (7):
+`unified-youtube-uses-shared-executor` … `unified-publishing-test` (**1523 إجمالاً**).
+
+**لا تغيير في:** أي سرّ/مفتاح، OAuth/الاعتمادات، المصادقة، قاعدة البيانات، DR/الاستعادة،
+Gemini، بقية المنصات أو نموذج الجدولة. لم يُنفَّذ أي نشر خارجي أثناء التطوير.

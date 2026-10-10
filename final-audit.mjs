@@ -3644,11 +3644,11 @@ add('watcher-advisory-not-authority',
     publishResultSrc.includes('`${platform} (${code}: ${error})`') &&
     approvalSrc.includes('summarizePublishFailures'),
     'الواجهة تعرض الكود والرسالة معاً (لا إخفاء لأحدهما)');
-  add('publish-ui-youtube-dedicated-note',
-    publishResultSrc.includes('YOUTUBE_DEDICATED_PUBLISH_NOTE') &&
-    publishResultSrc.includes('PLATFORM_USE_DEDICATED_PUBLISH') &&
-    publishResultSrc.includes('isYouTubeDedicatedPublish'),
-    'الواجهة تميّز YouTube بأنه يُنشر عبر طابوره المخصص لا أنه «فشل»');
+  add('publish-ui-youtube-unified-note',
+    publishResultSrc.includes('YOUTUBE_UNIFIED_PUBLISH_NOTE') &&
+    publishResultSrc.includes('isYouTubeMediaNeed') &&
+    publishResultSrc.includes('youtubeDedicatedDisclosure'),
+    'الواجهة توضّح أن YouTube موحّد بنفس النقرة ويحتاج فيديو (لا طابور منفصل)');
   add('publish-ui-youtube-pre-disclosure',
     publishResultSrc.includes('youtubeDedicatedDisclosure') &&
     approvalSrc.includes('youtubeDedicatedDisclosure(post.targetPlatforms)') &&
@@ -3777,11 +3777,11 @@ add('watcher-advisory-not-authority',
     server.includes('createThreadsContainerReady(target.threadsUserId, token'),
     'نشر Instagram/Threads ينتظر فعلياً جاهزية الحاوية (status_code/status) قبل media_publish بدل النشر المبكر');
   add('container-wait-bounded-and-testable',
-    server.includes('const IG_CONTAINER_POLL_MAX_ATTEMPTS = 8') &&
-    server.includes('CONTAINER_POLL_INTERVAL_MS') &&
-    server.includes('function containerPollIntervalMs') &&
-    read('.env.example').includes('CONTAINER_POLL_INTERVAL_MS'),
-    'الانتظار محدود بمهلة (بلا تعليق بلا نهاية) وقابل للضبط في الاختبار عبر CONTAINER_POLL_INTERVAL_MS موثّقاً');
+    read('engine/social/containerPolling.ts').includes('export function containerPollDelayMs') &&
+    read('engine/social/containerPolling.ts').includes('export function containerPollBudgetMs') &&
+    server.includes('resolveContainerPollConfig(process.env)') &&
+    read('.env.example').includes('CONTAINER_POLL_MAX_ATTEMPTS'),
+    'الانتظار محدود بميزانية وتراجع أسّي (بلا تعليق) وقابل للضبط عبر متغيّرات CONTAINER_POLL_* موثّقة');
   add('container-readiness-tests',
     read('engine/tests/instagram.connector.test.ts').includes('containerStatusSequence') &&
     read('engine/tests/instagram.connector.test.ts').includes('انتظار جاهزية حاوية الفيديو قبل النشر') &&
@@ -4157,6 +4157,37 @@ add('watcher-advisory-not-authority',
     read('src/services/api.ts').includes('getFacebookPostVisibilityDiagnosis') &&
     read('src/components/social/PlatformConnectionCenter.tsx').includes('فحص ظهور المنشور للجمهور'),
     'زر فحص الظهور مُوصَّل في واجهة المالك إلى المسار المحمي');
+
+  // 9j) توحيد النشر بنقرة واحدة (YouTube + الحاويات + التكييف).
+  add('unified-youtube-uses-shared-executor',
+    /platform === "youtube"[\s\S]{0,1400}executeYouTubePublish\(/.test(server) &&
+    !/platform === "youtube"[\s\S]{0,1400}code: "PLATFORM_USE_DEDICATED_PUBLISH"/.test(server),
+    'YouTube يُنفَّذ داخل المنفّذ الموحّد عبر executeYouTubePublish (لا استثناء 409)');
+  add('unified-youtube-bytes-resolver',
+    server.includes('async function resolveYouTubeBytes') &&
+    server.includes('YOUTUBE_UNIFIED_DOWNLOAD_MAX_BYTES') &&
+    server.includes('YOUTUBE_UNIFIED_DOWNLOAD_TIMEOUT_MS'),
+    'الفيديو يُحضَّر من mediaRef/base64/رابط عام بحدّ حجم ومهلة (لا فيديو وهمي)');
+  add('unified-provider-id-covers-youtube',
+    server.includes('result.body?.providerPostId || result.body?.providerPublishId || result.body?.externalVideoId'),
+    'معرّف المزود يشمل externalVideoId لـYouTube فلا يُهدر نشر ناجح');
+  add('container-backoff-module',
+    fs.existsSync(path.join(root, 'engine/social/containerPolling.ts')) &&
+    read('engine/social/containerPolling.ts').includes('containerPollDelayMs') &&
+    read('engine/social/containerPolling.ts').includes('containerPollBudgetMs') &&
+    server.includes('resolveContainerPollConfig(process.env)'),
+    'انتظار الحاويات بتراجع أسّي (بدل مهلة ثابتة قصيرة تُنتج CONTAINER_TIMEOUT)');
+  add('publish-adaptation-module',
+    fs.existsSync(path.join(root, 'engine/social/publishAdaptation.ts')) &&
+    read('engine/social/publishAdaptation.ts').includes('adaptPublishForPlatform') &&
+    read('engine/social/publishAdaptation.ts').includes('MEDIA_REQUIRED') &&
+    server.includes('adaptPublishForPlatform({ platform, content, hasMedia: bodyHasMedia(body) })'),
+    'تكييف المحتوى قبل الإرسال: تجاوز الحد ⇒ اقتراح؛ بلا وسائط ⇒ MEDIA_REQUIRED');
+  add('unified-publishing-test',
+    fs.existsSync(path.join(root, 'engine/tests/unified.publishing.test.ts')) &&
+    JSON.parse(read('package.json')).scripts['test:unified-publishing'] === 'tsx engine/tests/unified.publishing.test.ts' &&
+    JSON.parse(read('package.json')).scripts.test.includes('npm run test:unified-publishing'),
+    'اختبار توحيد النشر مسجَّل في npm test');
 
   // 10) AGENTS.md: عدد فحوصات final-audit مطابق للفعلي (يُعَدّ من نص الملف نفسه).
   const auditCount = (read('final-audit.mjs').match(/^\s*add\(/gm) || []).length;

@@ -11,7 +11,7 @@
 
 import { InstagramClient } from '../social/instagram';
 import { ThreadsClient } from '../social/threads';
-import { summarizePublishFailures, formatPublishFailure, isYouTubeDedicatedPublish, formatPlatformResultState, youtubeDedicatedDisclosure } from '../../src/utils/publishResult';
+import { summarizePublishFailures, formatPublishFailure, isYouTubeDedicatedPublish, isYouTubeMediaNeed, formatPlatformResultState, youtubeDedicatedDisclosure } from '../../src/utils/publishResult';
 
 let passed = 0;
 const failures: string[] = [];
@@ -136,28 +136,32 @@ async function run(): Promise<void> {
     check('ملخّص الواجهة يجمع الكود والرسالة', summary.includes('MEDIA_DOWNLOAD_FAILED') && summary.includes('The media could not be fetched'), summary);
   }
 
-  // 6) الواجهة: YouTube يُعرض كتوجيه لطابوره المخصص لا «فشل».
+  // 6) الواجهة: YouTube موحّد الآن؛ حاجته لفيديو لا تُعرض كفشل حقيقي.
   {
-    const ytResult = { code: 'PLATFORM_USE_DEDICATED_PUBLISH', error: 'نشر YouTube الحقيقي يحتاج بايتات الفيديو' };
-    check('isYouTubeDedicatedPublish يميّز توجيه YouTube', isYouTubeDedicatedPublish(ytResult) === true);
-    const summary = summarizePublishFailures([['youtube', ytResult]]);
-    check('ملخّص YouTube يذكر الطابور المخصص ولا يعرضه كفشل حقيقي', summary.includes('طابوره المخصص'), summary);
+    const ytNoMedia = { code: 'MEDIA_REQUIRED', error: 'نشر YouTube يحتاج فيديو' };
+    check('isYouTubeMediaNeed يميّز حاجة يوتيوب لفيديو', isYouTubeMediaNeed('youtube', ytNoMedia) === true);
+    check('isYouTubeMediaNeed لا يخلط منصة أخرى', isYouTubeMediaNeed('instagram', ytNoMedia) === false);
+    const summary = summarizePublishFailures([['youtube', ytNoMedia]]);
+    check('ملخّص YouTube يذكر وجوب الفيديو ولا يعرضه كفشل حقيقي', summary.includes('فيديو'), summary);
     // منصة فاشلة حقيقية + YouTube: يظهر الكود والرسالة للمنصة الحقيقية فقط.
     const mixed = summarizePublishFailures([
-      ['youtube', ytResult],
+      ['youtube', ytNoMedia],
       ['threads', { code: 'MEDIA_DOWNLOAD_FAILED', error: "The video couldn't be downloaded from video_url." }],
     ]);
     check('خلط YouTube + فشل حقيقي: الرسالة الحقيقية تظهر', mixed.includes("The video couldn't be downloaded"), mixed);
-    check('خلط YouTube + فشل حقيقي: الطابور المخصص مذكور', mixed.includes('طابوره المخصص'), mixed);
+    check('خلط YouTube + فشل حقيقي: وجوب الفيديو مذكور', mixed.includes('فيديو'), mixed);
+    // MEDIA_REQUIRED لمنصة غير يوتيوب يبقى فشلاً حقيقياً ظاهراً (لا يُخفى).
+    const igMedia = summarizePublishFailures([['instagram', { code: 'MEDIA_REQUIRED', error: 'Instagram لا تنشر نصاً فقط' }]]);
+    check('MEDIA_REQUIRED لإنستغرام يظهر كفشل حقيقي بسببه', igMedia.includes('instagram') && igMedia.includes('MEDIA_REQUIRED'), igMedia);
   }
 
-  // 8) الإفصاح **قبل** الزر: يوتيوب المحدد يُعلن صراحةً أنه يذهب لطابوره المخصص.
+  // 8) الإفصاح **قبل** الزر: يوتيوب ضمن النشر الفوري لكنه يحتاج فيديو.
   {
     const withYt = youtubeDedicatedDisclosure(['facebook', 'instagram', 'youtube']);
     check('إفصاح: تظهر رسالة عند وجود يوتيوب', typeof withYt === 'string' && withYt.length > 0, String(withYt));
-    check('إفصاح: يذكر أن يوتيوب مستثنى من النشر الفوري', Boolean(withYt && withYt.includes('مستثنى') && withYt.includes('يوتيوب')), String(withYt));
-    check('إفصاح: يذكر الطابور المخصص', Boolean(withYt && withYt.includes('طابور')), String(withYt));
-    check('إفصاح: يوضّح أن بقية المنصات تُنشر الآن', Boolean(withYt && withYt.includes('بقية المنصات')), String(withYt));
+    check('إفصاح: يذكر أن يوتيوب ضمن نفس النقرة', Boolean(withYt && withYt.includes('يوتيوب') && withYt.includes('نقرة')), String(withYt));
+    check('إفصاح: لا يذكر الاستثناء (لم يعد مستثنى)', Boolean(withYt && !withYt.includes('مستثنى')), String(withYt));
+    check('إفصاح: يذكر شرط الفيديو', Boolean(withYt && withYt.includes('فيديو')), String(withYt));
     check('إفصاح: يعود null بلا يوتيوب (لا ضجيج)', youtubeDedicatedDisclosure(['facebook', 'instagram']) === null);
     check('إفصاح: يعود null لمصفوفة فارغة', youtubeDedicatedDisclosure([]) === null);
     check('إفصاح: يعود null لغير مصفوفة (undefined)', youtubeDedicatedDisclosure(undefined) === null);
@@ -166,18 +170,20 @@ async function run(): Promise<void> {
 
   // 7) الواجهة: تمييز مصير كل منصة في لوحة النتائج (لا رقم أخضر إجمالي واحد).
   {
-    const ok = formatPlatformResultState({ state: 'published', providerPostId: 'POST_9' });
+    const ok = formatPlatformResultState('facebook', { state: 'published', providerPostId: 'POST_9' });
     check('منشور بمعرّف مزود => tone ok', ok.tone === 'ok', JSON.stringify(ok));
     check('منشور بمعرّف مزود => يذكر المعرّف', ok.label.includes('POST_9'), ok.label);
     // published بلا معرّف مزود لا يُدّعى كنجاح موثّق.
-    const pubNoId = formatPlatformResultState({ state: 'published', providerPostId: null });
+    const pubNoId = formatPlatformResultState('facebook', { state: 'published', providerPostId: null });
     check('published بلا معرّف => لا يذكر معرّفاً', pubNoId.tone === 'ok' && !pubNoId.label.includes('null'));
-    const pending = formatPlatformResultState({ state: 'publishing', providerPostId: 'PID' });
+    const pending = formatPlatformResultState('threads', { state: 'publishing', providerPostId: 'PID' });
     check('قيد المعالجة => tone pending ولا ادعاء تسليم', pending.tone === 'pending', JSON.stringify(pending));
-    const fail = formatPlatformResultState({ state: 'failed', code: 'MEDIA_DOWNLOAD_FAILED', error: 'The media could not be fetched' });
+    const fail = formatPlatformResultState('instagram', { state: 'failed', code: 'MEDIA_DOWNLOAD_FAILED', error: 'The media could not be fetched' });
     check('فشل => tone fail ويظهر الكود', fail.tone === 'fail' && fail.label.includes('MEDIA_DOWNLOAD_FAILED'), fail.label);
-    const yt = formatPlatformResultState({ code: 'PLATFORM_USE_DEDICATED_PUBLISH', error: 'x' });
-    check('YouTube => توجيه لطابوره لا فشل', yt.tone === 'pending' && yt.label.includes('طابوره المخصص'), yt.label);
+    const yt = formatPlatformResultState('youtube', { code: 'MEDIA_REQUIRED', error: 'x' });
+    check('YouTube بلا فيديو => توعية لا فشل', yt.tone === 'pending' && yt.label.includes('فيديو'), yt.label);
+    const ig = formatPlatformResultState('instagram', { code: 'MEDIA_REQUIRED', error: 'x' });
+    check('MEDIA_REQUIRED لإنستغرام => فشل حقيقي', ig.tone === 'fail', ig.label);
   }
 
   console.log(`PASSED: ${passed} publish-provider-error checks`);

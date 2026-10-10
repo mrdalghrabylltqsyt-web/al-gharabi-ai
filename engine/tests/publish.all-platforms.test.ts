@@ -269,7 +269,7 @@ async function publish(auth: Record<string, string>, id: string): Promise<any> {
     check('Threads published بمعرّف Meta', r.threads?.state === 'published' && Boolean(r.threads?.providerPostId), JSON.stringify(r.threads));
 
     group('4) المنصات بلا موصل حقيقي/بلا وسائط تفشل بأسباب صادقة ومتميزة');
-    check('يوتيوب يوجّه للمسار المخصص (PLATFORM_USE_DEDICATED_PUBLISH)', r.youtube?.code === 'PLATFORM_USE_DEDICATED_PUBLISH', JSON.stringify(r.youtube));
+    check('يوتيوب موحّد لكن بلا فيديو => MEDIA_REQUIRED (لا نشر نصي مختلق)', r.youtube?.code === 'MEDIA_REQUIRED', JSON.stringify(r.youtube));
     check('تيك توك بلا وسائط => MEDIA_REQUIRED (لا نشر نصي مختلق)', r.tiktok?.code === 'MEDIA_REQUIRED', JSON.stringify(r.tiktok));
     check('واتساب => CAPABILITY_NOT_SUPPORTED (لا قدرة نشر)', r.whatsapp?.code === 'CAPABILITY_NOT_SUPPORTED', JSON.stringify(r.whatsapp));
     check('X => EXTERNAL_SETUP_REQUIRED (موصل غير منفّذ)', r.x?.code === 'EXTERNAL_SETUP_REQUIRED', JSON.stringify(r.x));
