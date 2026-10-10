@@ -131,8 +131,13 @@ export const DashboardView: React.FC = () => {
 
       {/* KPI Cards Grid */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 sm:gap-5">
-        {/* Total Followers */}
-        <div className="p-5 rounded-2xl bg-slate-900/90 border border-slate-800 shadow-sm relative overflow-hidden">
+        {/* Total Followers → platforms snapshot */}
+        <button
+          type="button"
+          onClick={() => setActiveTab('social')}
+          aria-label="فتح ملخص المنصات المتصلة"
+          className="p-5 rounded-2xl bg-slate-900/90 border border-slate-800 shadow-sm relative overflow-hidden text-right cursor-pointer hover:border-emerald-500/40 transition"
+        >
           <div className="flex items-center justify-between">
             <span className="text-xs font-semibold text-slate-400">إجمالي المتابعين</span>
             <div className="w-8 h-8 rounded-lg bg-emerald-500/10 text-emerald-400 flex items-center justify-center">
@@ -145,10 +150,15 @@ export const DashboardView: React.FC = () => {
             </span>
           </div>
           <p className="mt-1 text-[11px] text-slate-500">عبر المنصات الاجتماعية الرسمية</p>
-        </div>
+        </button>
 
-        {/* Customer Inquiries */}
-        <div className="p-5 rounded-2xl bg-slate-900/90 border border-slate-800 shadow-sm relative overflow-hidden">
+        {/* Customer Inquiries → customers */}
+        <button
+          type="button"
+          onClick={() => setActiveTab('customers')}
+          aria-label="فتح استفسارات العملاء"
+          className="p-5 rounded-2xl bg-slate-900/90 border border-slate-800 shadow-sm relative overflow-hidden text-right cursor-pointer hover:border-cyan-500/40 transition"
+        >
           <div className="flex items-center justify-between">
             <span className="text-xs font-semibold text-slate-400">استفسارات التقسيط</span>
             <div className="w-8 h-8 rounded-lg bg-cyan-500/10 text-cyan-400 flex items-center justify-center">
@@ -161,10 +171,15 @@ export const DashboardView: React.FC = () => {
             </span>
           </div>
           <p className="mt-1 text-[11px] text-slate-500">إجمالي المحادثات المسجلة بالنظام</p>
-        </div>
+        </button>
 
-        {/* Available Products in Showroom */}
-        <div className="p-5 rounded-2xl bg-slate-900/90 border border-slate-800 shadow-sm relative overflow-hidden">
+        {/* Available Products in Showroom → products database */}
+        <button
+          type="button"
+          onClick={() => setActiveTab('database')}
+          aria-label="فتح منتجات المعرض"
+          className="p-5 rounded-2xl bg-slate-900/90 border border-slate-800 shadow-sm relative overflow-hidden text-right cursor-pointer hover:border-indigo-500/40 transition"
+        >
           <div className="flex items-center justify-between">
             <span className="text-xs font-semibold text-slate-400">منتجات المعرض</span>
             <div className="w-8 h-8 rounded-lg bg-indigo-500/10 text-indigo-400 flex items-center justify-center">
@@ -177,10 +192,15 @@ export const DashboardView: React.FC = () => {
             </span>
           </div>
           <p className="mt-1 text-[11px] text-slate-500">منتجات المعرض المسجلة في النظام</p>
-        </div>
+        </button>
 
-        {/* Governance & Published */}
-        <div className="p-5 rounded-2xl bg-slate-900/90 border border-slate-800 shadow-sm relative overflow-hidden">
+        {/* Governance & Published → calendar/schedule */}
+        <button
+          type="button"
+          onClick={() => setActiveTab('calendar')}
+          aria-label="فتح حالة النشر والجدولة"
+          className="p-5 rounded-2xl bg-slate-900/90 border border-slate-800 shadow-sm relative overflow-hidden text-right cursor-pointer hover:border-amber-500/40 transition"
+        >
           <div className="flex items-center justify-between">
             <span className="text-xs font-semibold text-slate-400">حالة النشر والجدولة</span>
             <div className="w-8 h-8 rounded-lg bg-amber-500/10 text-amber-400 flex items-center justify-center">
@@ -198,7 +218,7 @@ export const DashboardView: React.FC = () => {
           <p className="mt-1 text-[11px] text-slate-500">
             {pendingPosts.length} قيد المراجعة والاعتماد
           </p>
-        </div>
+        </button>
       </div>
 
       {/* Social Platforms Snapshot (10 Platforms) */}

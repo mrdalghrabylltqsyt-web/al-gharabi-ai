@@ -3936,6 +3936,56 @@ add('watcher-advisory-not-authority',
     read('src/context/AppContext.tsx').includes("useState<string>('section_home')"),
     'الشاشة الافتراضية عند الدخول هي الرئيسية الموحّدة');
 
+  // 9ج) تفاعلية العناصر: كل هدف تنقّل يؤدي لوجهة حقيقية، والبطاقات/البحث فعّالة (لا عناصر شكلية).
+  const ccSrc = read('src/components/dashboard/CommandCenterView.tsx');
+  const dashSrc = read('src/components/dashboard/DashboardView.tsx');
+  const headerSrc = read('src/components/common/Header.tsx');
+  const searchSrc = read('src/components/search/GlobalSearchView.tsx');
+  const appCtxSrc = read('src/context/AppContext.tsx');
+  const validTabs = new Set([...app.matchAll(/case '([^']+)':/g)].map((m)=>m[1]));
+  const navFilesForTargets = [ccSrc, dashSrc, headerSrc, hubSrc, sidebarSrc];
+  const brokenTargets = [];
+  for (const src of navFilesForTargets) {
+    for (const m of src.matchAll(/(?:setActiveTab|go)\('([^']+)'\)/g)) {
+      if (!validTabs.has(m[1])) brokenTargets.push(m[1]);
+    }
+  }
+  add('ui-nav-targets-valid',
+    brokenTargets.length === 0,
+    'كل هدف تنقّل (setActiveTab/go) في الواجهة يقابل حالة عرض حقيقية في App.tsx (لا هدف يسقط للافتراضي)');
+  add('ui-command-center-section-links',
+    ccSrc.includes("go('section_publish')") && ccSrc.includes("go('section_products')") &&
+    ccSrc.includes("go('platform_connections')") && !ccSrc.includes("go('publish')") &&
+    !ccSrc.includes("go('products')") && !ccSrc.includes("go('settings')"),
+    'مركز القيادة ينقل إلى الأقسام الهرمية الصحيحة (كان go(publish/products/settings) يسقط للافتراضي)');
+  add('ui-command-center-action-rows-clickable',
+    ccSrc.includes('role="button"') && ccSrc.includes('tabIndex={0}') &&
+    ccSrc.includes('onKeyDown') && ccSrc.includes("aria-label={`ربط منصة"),
+    'صفوف «يحتاج إجراءً» قابلة للضغط كاملةً + لوحة المفاتيح (Enter/المسافة) + aria-label');
+  add('ui-dashboard-kpi-cards-navigate',
+    dashSrc.includes("setActiveTab('social')") && dashSrc.includes("setActiveTab('customers')") &&
+    dashSrc.includes("setActiveTab('database')") && dashSrc.includes("setActiveTab('calendar')") &&
+    (dashSrc.match(/<button/g) || []).length >= 4 && dashSrc.includes('type="button"'),
+    'بطاقات مؤشرات لوحة التحكم صارت أزراراً تنقل إلى بياناتها (لا عناصر شكلية تعرض رقماً بلا فتح)');
+  add('ui-header-search-functional',
+    headerSrc.includes('<form') && headerSrc.includes('onSubmit=') && headerSrc.includes('e.preventDefault()') &&
+    headerSrc.includes("setActiveTab('search')") && headerSrc.includes('setSearchQuery(e.target.value)'),
+    'بحث الترويسة نموذج فعّال ينقل إلى البحث الموحّد بالاستعلام (كان input ميّتاً بلا onChange)');
+  add('ui-search-consumes-shared-query',
+    searchSrc.includes('useApp') && searchSrc.includes('searchQuery') && searchSrc.includes('run(searchQuery)'),
+    'شاشة البحث الموحّد تقرأ الاستعلام المشترك وتنفّذ البحث عند الفتح (تنقّل حقيقي)');
+  add('ui-context-search-state',
+    appCtxSrc.includes('searchQuery: string') && appCtxSrc.includes('setSearchQuery: (q: string) => void') &&
+    appCtxSrc.includes('setSearchQuery,'),
+    'حالة البحث المشتركة مُعرّفة ومُمرّرة في AppContext');
+  add('ui-no-op-handlers-absent',
+    !navFilesForTargets.concat([searchSrc]).some((src) => /onClick=\{\s*\(\s*\)\s*=>\s*\{?\s*\}?\s*\}/.test(src) || /href="#"/.test(src)),
+    'لا معالجات onClick فارغة ولا روابط href="#" في ملفات العناصر التفاعلية');
+  add('ui-interactions-test-wired',
+    fs.existsSync(path.join(root, 'engine/tests/ui.interactions.test.ts')) &&
+    read('package.json').includes('test:ui-interactions'),
+    'اختبار تفاعلية العناصر موجود ومربوط في package.json (يمنع رجوع التسريب/العناصر الشكلية)');
+
   // 9ب) زر «طلب رمز التحقق» على الجوال: تحقق برمجي + مهلة صريحة + إعادة محاولة.
   const loginViewSrc = read('src/components/auth/LoginView.tsx');
   add('login-challenge-no-native-validation',

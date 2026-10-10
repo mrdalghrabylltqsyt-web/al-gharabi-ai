@@ -26,6 +26,9 @@ interface AppContextType {
   // Navigation
   activeTab: string;
   setActiveTab: (tab: string) => void;
+  /** استعلام البحث الموحّد: يُكتب من ترويسة البحث ويُقرأ في شاشة البحث (تنقّل حقيقي). */
+  searchQuery: string;
+  setSearchQuery: (q: string) => void;
 
   // Authentication & Session Gate
   currentUser: AppUser | null;
@@ -103,6 +106,7 @@ const STORAGE_PREFIX = 'algharabi_clean_v1_7_';
 
 export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [activeTab, setActiveTab] = useState<string>('section_home');
+  const [searchQuery, setSearchQuery] = useState<string>('');
 
   // Auth State
   const [currentUser, setCurrentUser] = useState<AppUser | null>(null);
@@ -796,6 +800,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       value={{
         activeTab,
         setActiveTab,
+        searchQuery,
+        setSearchQuery,
         currentUser,
         isAuthenticated: Boolean(currentUser),
         isLoadingAuth,
