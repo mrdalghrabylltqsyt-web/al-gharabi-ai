@@ -164,11 +164,15 @@ function unitTests(): void {
   const imgContainer = buildMediaContainerBody({ imageUrl: 'https://x/y.jpg', caption: 'عرض' });
   check('حاوية الصورة تحمل image_url وcaption', imgContainer.ok && imgContainer.body.get('image_url') === 'https://x/y.jpg' && imgContainer.body.get('caption') === 'عرض' && imgContainer.mediaKind === 'image');
   const reelContainer = buildMediaContainerBody({ videoUrl: 'https://x/y.mp4', caption: 'ريل', reel: true });
-  check('حاوية الريل تحمل media_type=REELS', reelContainer.ok && reelContainer.body.get('media_type') === 'REELS' && reelContainer.mediaKind === 'reel');
+  check('حاوية الريل تحمل media_type=REELS و share_to_feed=true', reelContainer.ok && reelContainer.body.get('media_type') === 'REELS' && reelContainer.body.get('share_to_feed') === 'true' && reelContainer.mediaKind === 'reel');
   const videoContainer = buildMediaContainerBody({ videoUrl: 'https://x/y.mp4' });
-  // إصلاح جذري: الفيديو غير الريلز يتطلب media_type=VIDEO صراحةً (وثيقة Meta)؛ بغيابه
-  // يرد Graph بـ(#100) The parameter image_url is required — العطل المُثبت سابقاً.
-  check('حاوية الفيديو غير الريلز تحمل media_type=VIDEO', videoContainer.ok && videoContainer.body.get('video_url') === 'https://x/y.mp4' && videoContainer.body.get('media_type') === 'VIDEO' && videoContainer.mediaKind === 'video');
+  // إصلاح «Unsupported media type VIDEO» (code=100, subcode=2207067): قيمة VIDEO
+  // **مهجورة** لدى Meta، فالفيديو (غير الموسوم ريلز) يُنشأ كـREELS لا VIDEO.
+  check('حاوية الفيديو تُنشأ كـREELS لا VIDEO (القيمة المهجورة)', videoContainer.ok && videoContainer.body.get('video_url') === 'https://x/y.mp4' && videoContainer.body.get('media_type') === 'REELS' && videoContainer.mediaKind === 'video');
+  check('حاوية الفيديو تضع share_to_feed=true افتراضاً (ظهور في الموجز)', videoContainer.body.get('share_to_feed') === 'true');
+  const reelNoFeed = buildMediaContainerBody({ videoUrl: 'https://x/y.mp4', shareToFeed: false });
+  check('shareToFeed=false يحصر الفيديو في تبويب الريلز (share_to_feed=false)', reelNoFeed.body.get('share_to_feed') === 'false');
+  check('الصورة لا تضع media_type ولا share_to_feed', imgContainer.body.get('media_type') === null && imgContainer.body.get('share_to_feed') === null);
   const textOnly = buildMediaContainerBody({ caption: 'نص فقط' });
   check('نص فقط مرفوض صراحةً (Instagram لا ينشر نصاً)', !textOnly.ok && textOnly.mediaKind === null);
   check('جسم النشر يحمل creation_id', buildPublishContainerBody('C1').get('creation_id') === 'C1');
@@ -567,6 +571,11 @@ async function integrationTests(): Promise<void> {
     const videoPub = await fetch(`${BASE}/api/platforms/instagram/publish`, { method: 'POST', headers: auth, body: JSON.stringify({ content: 'ريل الغرابي', videoUrl: 'https://example.invalid/v.mp4', approved: true }) });
     const videoBody = await videoPub.json();
     check('نشر الفيديو نجح بعد انتظار الجاهزية', videoPub.status === 200 && Boolean(videoBody.providerPostId), JSON.stringify(videoBody).slice(0, 200));
+    // إثبات أن الطلب الفعلي المُرسل إلى Meta يحمل REELS + share_to_feed، لا VIDEO المهجورة.
+    const vidCaptured = mock.state.containers[mock.state.containers.length - 1]?.body || {};
+    check('طلب إنشاء حاوية الفيديو الفعلي يحمل media_type=REELS (لا VIDEO)', vidCaptured.media_type === 'REELS', `media_type=${vidCaptured.media_type}`);
+    check('طلب إنشاء الحاوية الفعلي يحمل share_to_feed=true', vidCaptured.share_to_feed === 'true', `share_to_feed=${vidCaptured.share_to_feed}`);
+    check('لا يظهر media_type=VIDEO المهجور في أي حاوية أُرسلت', mock.state.containers.every((c) => (c.body as any)?.media_type !== 'VIDEO'));
     check('قُرئت حالة الحاوية مرتين (IN_PROGRESS ثم FINISHED)', mock.state.containerStatusReads >= 2, `reads=${mock.state.containerStatusReads}`);
     check('لم يُنشر قبل الجاهزية (media_publish بعد قراءتين)', mock.state.published.length >= 2);
     // حاوية تفشل بمعالجة الوسائط: لا نشر، وسبب صريح.
