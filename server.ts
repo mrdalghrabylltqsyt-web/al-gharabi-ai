@@ -222,6 +222,7 @@ import {
 } from "./engine/social/oauth";
 import { PLATFORM_READINESS, readinessFor, readinessSummary } from "./engine/social/readiness";
 import { buildReadinessDetails, computeAllPlatformStatuses, computePlatformStatus, controlSummary, type LiveConnection } from "./engine/social/operations";
+import { buildPublishReadinessRow, summarizePublishReadiness, type PublishReadinessRow } from "./engine/social/publishReadiness";
 import { inspectPlatformCredentials, CREDENTIAL_SPECS, GLOBAL_CREDENTIALS } from "./engine/social/credentials";
 import { decodeTokenKey, inspectTokenKeyFromEnv } from "./engine/social/tokenKey";
 import { resolvePublicUrl, isLocalHost } from "./engine/social/publicUrl";
@@ -8786,6 +8787,52 @@ app.get("/api/platforms/:platform/control", authenticateToken, (req,res)=>{
     // Facebook Login for Business: هل يُستخدم config_id بدل scope؟ (منطقي فقط بلا قيمة)
     loginConfig: META_OAUTH_PLATFORMS.has(platform) ? { envNames: loginConfigEnvNames(platform), configured: loginConfigInspection(platform).configured, valid: loginConfigInspection(platform).valid, used: Boolean(loginConfigIdFor(platform)), problems: loginConfigInspection(platform).problems } : undefined,
     note:"أسماء متغيرات فقط، بلا قيم." });
+});
+
+/**
+ * تقرير جاهزية النشر الموحّد (Publishing Readiness Report) — للمالك فقط.
+ *
+ * مصدر واحد صادق يجمع لكل منصة موصّلة بنشر: هل النشر ممكن الآن، ما الذي ينقص
+ * بالضبط، متطلبات الوسائط، ومسار بدء الربط بنقرة. لا تُعلن جاهزية بلا اتصال
+ * موثق + موصل منفّذ، ولا يحمل أي سرّ — أسماء مسارات وقيم منطقية فقط.
+ */
+function buildPublishReadinessReport(): { rows: PublishReadinessRow[]; summary: ReturnType<typeof summarizePublishReadiness>; publicUrlValid: boolean } {
+  const publicUrlValid = publicUrlIsPublic();
+  const rows: PublishReadinessRow[] = [];
+  for (const spec of SUPPORTED_PLATFORMS) {
+    const p = spec.id as PlatformId;
+    const c: any = platformConnections.get(p);
+    const status = computePlatformStatus(p, { status: c?.status || "disconnected", providerVerified: Boolean(c?.providerVerified), accountName: c?.accountName || null }, process.env);
+    if (!status) continue;
+    const creds = inspectPlatformCredentials(p, process.env);
+    const auditRequiredForDirectPublish = p === "tiktok" ? true : undefined;
+    rows.push(buildPublishReadinessRow({
+      platform: p,
+      displayName: spec.name || p,
+      operationalState: status.state,
+      connected: c?.status === "connected",
+      providerVerified: Boolean(c?.providerVerified),
+      credentialsConfigured: Boolean(creds.connection.configured),
+      publicUrlValid,
+      blockingReason: status.blockingReason ?? null,
+      nextAction: status.nextAction ?? null,
+      auditRequiredForDirectPublish,
+    }));
+  }
+  return { rows, summary: summarizePublishReadiness(rows), publicUrlValid };
+}
+
+app.get("/api/platforms/publish-readiness", requireOwner, (_req, res) => {
+  const { rows, summary, publicUrlValid } = buildPublishReadinessReport();
+  res.json({
+    success: true,
+    generatedAt: new Date().toISOString(),
+    projectVersion: PROJECT_VERSION,
+    publicUrlValid,
+    summary,
+    platforms: rows,
+    note: "الجاهزية منفصلة: READY_NOW ≠ CONNECT_REQUIRED ≠ EXTERNAL_SETUP_REQUIRED ≠ NOT_IMPLEMENTED. لا تُعلن جاهزية نشر بلا اتصال موثق وموصل منفّذ. بلا أي سرّ.",
+  });
 });
 
 /**

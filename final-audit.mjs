@@ -223,6 +223,15 @@ add('external-setup-names-only', server.includes('/api/platforms/external-setup'
 add('connection-center-ui', fs.existsSync(path.join(root, 'src/components/social/PlatformConnectionCenter.tsx')) && read('src/components/social/PlatformConnectionCenter.tsx').includes('مركز ربط المنصات') && read('src/App.tsx').includes('platform_connections'), 'مركز ربط المنصات في الواجهة ومسجّل في التنقل');
 add('control-plane-tests', fs.existsSync(path.join(root, 'engine/tests/platform.operations.test.ts')) && fs.existsSync(path.join(root, 'engine/tests/platform.control.integration.test.ts')), 'اختبارات طبقة التحكم (وحدة + خادم حقيقي) موجودة');
 
+// ---- تقرير جاهزية النشر الموحّد (Publishing Readiness) ----
+add('publish-readiness-module', fs.existsSync(path.join(root, 'engine/social/publishReadiness.ts')) && read('engine/social/publishReadiness.ts').includes('buildPublishReadinessRow'), 'وحدة تقرير جاهزية النشر موجودة (منطق خالص)');
+add('publish-readiness-no-false-ready', read('engine/social/publishReadiness.ts').includes('verified = input.connected && input.providerVerified') && read('engine/social/publishReadiness.ts').includes('readyNow = verified'), 'لا READY_NOW بلا اتصال موثق + موصل منفّذ');
+add('publish-readiness-endpoint', server.includes('/api/platforms/publish-readiness') && server.includes('buildPublishReadinessReport'), 'مسار تقرير الجاهزية للمالك موجود');
+add('publish-readiness-owner-only', /app\.get\("\/api\/platforms\/publish-readiness", requireOwner/.test(server), 'مسار الجاهزية محصور بالمالك (requireOwner)');
+add('publish-readiness-state-separation', read('engine/social/publishReadiness.ts').includes("'READY_NOW'") && read('engine/social/publishReadiness.ts').includes("'CONNECT_REQUIRED'") && read('engine/social/publishReadiness.ts').includes("'NOT_IMPLEMENTED'"), 'الحالات منفصلة: READY_NOW ≠ CONNECT_REQUIRED ≠ EXTERNAL_SETUP_REQUIRED ≠ NOT_IMPLEMENTED');
+add('publish-readiness-tests', fs.existsSync(path.join(root, 'engine/tests/publish.readiness.test.ts')), 'اختبار وحدة تقرير الجاهزية موجود');
+add('publish-readiness-no-secret', !read('engine/social/publishReadiness.ts').includes('process.env') && !read('engine/social/publishReadiness.ts').includes('Bearer'), 'لا قراءة بيئة ولا رمز في وحدة تقرير الجاهزية (أسماء مسارات وقيم منطقية فقط)');
+
 // إصلاح جذري لمفتاح تشفير التوكنات: تعريف موحّد للصيغة + تمييز missing من invalid.
 add('token-key-single-source', (() => {
   const tk = read('engine/social/tokenKey.ts');

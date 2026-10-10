@@ -44,7 +44,7 @@ npm install
 npm run dev            # tsx server.ts
 npm run lint           # tsc --noEmit
 npm run build          # vite build + esbuild server.ts -> dist/server.cjs
-npm run final-audit    # node final-audit.mjs (1510 فحصاً)
+npm run final-audit    # node final-audit.mjs (1517 فحصاً)
 npm test               # storage + engine + auth + ... + db + runtime
 ```
 - التشغيل الإنتاجي: `PORT=4517 NODE_ENV=production APP_URL=http://localhost:4517 node dist/server.cjs`
@@ -5349,3 +5349,60 @@ final-audit = **1510** (`facebook-text-limit-restored-2000`، `facebook-text-lim
 `content-brief-threads-utf8-aware`، `content-brief-limits-tests`). `npm test` أُثري بـ
 `test:content-brief-limits`. **لم يُدمج ولم يُنشر** — بانتظار إذن المالك.
 
+
+## تقرير جاهزية النشر الموحّد (Publishing Readiness) — تشخيص + إعداد (2026-10-11)
+
+دفعة تشخيص وإعداد لآلية «النشر الموحّد بضغطة واحدة» على المنصات الحقيقية
+(YouTube/Facebook/Instagram/TikTok + Threads/Telegram). لا نشر فعلي في هذه الدفعة؛
+إضافة سطح تشخيص صادق واحد لتفعيل القرار. **لم يُمسّ** أي سرّ/OAuth/منصة/مراقب.
+
+### تشخيص المسار الموحّد (نتائج مثبتة من الكود + الإنتاج الحقيقي)
+- **التوزيع الموحّد** `/api/workspace/content/:id/publish` موجود وسليم: يستخدم
+  `Promise.allSettled` فينشر **بالتوازي** على كل `targetPlatforms`، وفشل منصة واحدة
+  **لا يوقف** الباقي (حالة/سبب/معرّف مستقل لكل منصة في `results`).
+- يمرّر **نسخة كل منصة المكيَّفة** (`platformVersions[platform]`) ووسيط المنشور
+  الحقيقي (`mediaUrl/mediaType` → `videoUrl`/`imageUrl`)، والمنشور يُعلن `published`
+  فقط إن نجحت منصة واحدة بمعرّف مزود حقيقي.
+- **الفيديو**: `resolvePublicVideoUrl` يخدِم البايتات من الخادم نفسه عبر
+  `/api/public/video/:ref?sig=…` (Range + توقيع HMAC)، وواجهة مركز المحتوى تستدعي
+  `/api/workspace/content/video/host` **تلقائياً** عند إرفاق الفيديو فتحصل على رابط
+  عام حقيقي → `mediaUrl` — فلا حاجة للصق رابط يدوي.
+- **الفجوة الوحيدة**: كان `createPost`/`Post` ينقلان `mediaUrl/mediaType` فقط، ومكان
+  عرض حالة `platformPublishResults` غير مؤكد — لكن المسار الفعلي للنشر يعمل.
+
+### حالة الإنتاج الحقيقية لـMeta (من `/api/readiness` — بلا تخمين)
+- Facebook وInstagram **مكتملان إعداداً**: `appId/secret/verify` مضبوطة،
+  `pageAccessTokenStored=true`، `pendingPageSelection=false`،
+  `loginConfigIdConfigured=true` + `loginConfigIdUsed=true`
+  (`facebook_login_for_business_configuration`)، `scopeDependenciesResolved=true`.
+  `brain.connectedVerified` يشمل facebook وinstagram (اتصال موثق).
+- **السبب المتبقي لعدم اكتمال التوكنات ليس برمجياً**: إتمام المنح يحتاج **نقر المالك**
+  على شاشة موافقة Meta (OAuth consent) — لا يمكن لأي وكيل تنفيذه نيابةً عنه. الرابط
+  يُولَّد مستخدماً-جاهزاً من `/api/platforms/{facebook,instagram}/oauth/start`.
+  Threads يحتاج تطبيق Meta «Threads API» منفصلاً (`THREADS_OAUTH_CLIENT_ID/SECRET`).
+
+### ما أُضيف (إعداد حقيقي)
+- **وحدة `engine/social/publishReadiness.ts`** (منطق خالص، بلا شبكة/أسرار):
+  `buildPublishReadinessRow` + `summarizePublishReadiness` + `publishPathFor` +
+  `mediaRequirementFor`. حالة صادقة لكل منصة: `READY_NOW` / `CONNECT_REQUIRED` /
+  `EXTERNAL_SETUP_REQUIRED` / `NOT_IMPLEMENTED`، **لا READY_NOW بلا اتصال موثق +
+  موصل منفّذ** (و`FAILED`/إعادة ربط تُسقط الجاهزية). متطلبات الوسائط مطابقة للكود
+  (Instagram/TikTok لا ينشران نصاً؛ Facebook/Threads يقبلان). تُعلن `oauthStartRoute`
+  و`dedicatedPublishRoute` و`auditRequiredForDirectPublish` (TikTok) بلا أي سرّ.
+- **مسار `GET /api/platforms/publish-readiness`** (owner فقط): ملخّص +
+  `platforms[]` — يجيب «هل أستطيع النشر الآن، وما ينقص، وما رابط الربط بنقرة».
+- **اختبار `engine/tests/publish.readiness.test.ts`** (`npm run test:publish-readiness`،
+  34 فحصاً): لا READY_NOW بلا توثيق، الاعتماد/العنوان العام، NOT_IMPLEMENTED، مطابقة
+  متطلبات الوسائط، الملخّص، ولا سرّ في المخرَج. مُدرَج في `npm test`.
+- فحوص final-audit السبعة: `publish-readiness-module` … `publish-readiness-no-secret`.
+
+### رابط المصادقة المباشر (ضغطة واحدة) — قيمة الفعل
+لتفعيل نشر Meta: افتح جلسة owner ثم `GET /api/platforms/facebook/oauth/start`
+(و`instagram`) — يُعيد `authorizationUrl` جاهزاً؛ ضعه في المتصفح تقرأ شاشة Meta
+الموافقة، وبعد الموافقة يعود الرمز ويُحفظ مشفّراً. الصلاحيات المحسوبة ظاهرة في
+`GET /api/platforms/{facebook,instagram}/oauth/setup` (حقل `scopes`).
+
+**التحقق:** lint ✅ · build ✅ · `npm test` (يُعاد تشغيله) · final-audit (1517).
+**لا دفع، لا دمج، لا نشر** — بانتظار الإذن الصريح.
+
+_(هذا الفرع يعتمد على PR #25 غير المدموج؛ سأوضّح العلاقة عند الطلب.)_
