@@ -4076,6 +4076,79 @@ add('watcher-advisory-not-authority',
     read('engine/tests/facebook.connector.test.ts').includes('لا يختلق معرّف منشور'),
     'التشخيص يرفض بصراحة عند غياب سجل النشر ولا يختلق معرّفاً (مُختبر)');
 
+  // 11) إصلاح عطل Threads: حدود النص مصدر واحد يُحسب بـUTF-8 bytes (وثيقة Meta).
+  add('text-limits-single-source-module',
+    read('engine/social/textLimits.ts').includes('UTF8_BYTE_COUNTED_PLATFORMS') &&
+    read('engine/social/textLimits.ts').includes('utf8Bytes') &&
+    read('engine/social/textLimits.ts').includes('Emojis are counted as the number of UTF-8 bytes'),
+    'وحدة textLimits هي المصدر الواحد وتوثّق قاعدة Meta لعدّ الإيموجي بالبايتات');
+
+  add('threads-text-limit-pre-submit-guard',
+    read('server.ts').includes('حارس طول النص **قبل** أي نداء مزود') &&
+    read('server.ts').includes('validatePlatformText(platform, content)') &&
+    read('server.ts').includes('TEXT_TOO_LONG'),
+    'executePlatformPublish يرفض النص المتجاوز قبل أي نداء مزود (كود TEXT_TOO_LONG)');
+
+  add('threads-text-guard-preserves-original',
+    read('server.ts').includes('لا يُمسّ إطلاقاً') &&
+    read('server.ts').includes('بلا أي إرسال') &&
+    read('server.ts').includes('shortenedContent') &&
+    read('server.ts').includes('shortenedOmittedSegments'),
+    'الرفض يقترح اختصاراً بلا نشر ولا تعديل للنص الأصلي (shortenedContent معلن)');
+
+  add('platform-adaptation-enforces-real-limit',
+    read('server.ts').includes('adaptContentForPlatform(platform: string, baseText: string)') &&
+    read('server.ts').includes('shortenToPlatformLimit(platform, composed, limit)') &&
+    read('server.ts').includes('platformTextLimit(platform) ?? 4096'),
+    'التكييف الحتمي يفرض الحد الفعلي بـUTF-8 بدل text.length');
+
+  add('threads-text-limit-tests',
+    read('engine/tests/text.limits.test.ts').includes('UTF-8 bytes') &&
+    read('engine/tests/publish.text.guard.test.ts').includes('Param text must be at most 500 characters long') &&
+    read('engine/tests/publish.text.guard.test.ts').includes('TEXT_TOO_LONG'),
+    'اختبارات الانحدار تغطي عند الحد/فوقه/عربي/إيموجي/هاشتاغ/فارغ + رفض قبل المزود');
+
+  add('facebook-text-limit-restored-2000',
+    /facebook:\s*2000\b/.test(read('engine/social/textLimits.ts')) &&
+    !/facebook:\s*5000\b/.test(read('engine/social/textLimits.ts')),
+    'حد فيسبوك استُعيد إلى 2000 في المصدر الواحد (لم يبقَ 5000)');
+
+  add('facebook-text-limit-regression-test',
+    read('engine/tests/text.limits.test.ts').includes('حد فيسبوك = 2000') &&
+    read('engine/tests/content.brief.limits.test.ts').includes('حد facebook المعلن = 2000'),
+    'اختبار انحدار يثبت حد فيسبوك 2000 وعدم تأثّر بقية الحدود');
+
+  add('content-brief-threads-utf8-aware',
+    read('server.ts').includes('function composePlatformText(platform: string, headline: string') &&
+    read('server.ts').includes('function trimToWordBoundary(platform: string, text: string, max: number)') &&
+    read('server.ts').includes('composePlatformText(platform, copy.headline'),
+    'توليد مركز المحتوى يقيس بطريقة المنصة عبر المصدر الواحد (لا text.length)');
+
+  add('content-brief-limits-tests',
+    read('engine/tests/content.brief.limits.test.ts').includes('bytes(') &&
+    read('engine/tests/content.brief.limits.test.ts').includes('لا يوجد يتيم UTF-16'),
+    'اختبار تكاملي لتوليد المحتوى: بايتات + عربي/إيموجي بلا كسر رموز');
+
+  add('threads-text-guard-wired-into-npm-test',
+    read('package.json').includes('test:text-limits') &&
+    read('package.json').includes('test:publish-text-guard') &&
+    read('package.json').includes('test:content-brief-limits') &&
+    read('package.json').includes('npm run test:text-limits && npm run test:publish-text-guard') &&
+    read('package.json').includes('npm run test:content-brief-limits && npm run test:tiktok'),
+    'اختبارات الحدود والحارس ومركز المحتوى مُدرَجة في npm test');
+
+  // 12) Facebook: permalink معلن (فحص ظهور يدوي) بلا كشف سرّ.
+  add('facebook-grounding-permalink-exposed',
+    read('engine/social/facebook.ts').includes('permalink_url') &&
+    read('server.ts').includes('permalink: g.permalink') &&
+    read('server.ts').includes('requiredPublishPermissions'),
+    'تشخيص الظهور (للمالك) يعرض permalink والصلاحيات المطلوبة بلا أي سرّ');
+
+  add('facebook-visibility-ui-button',
+    read('src/services/api.ts').includes('getFacebookPostVisibilityDiagnosis') &&
+    read('src/components/social/PlatformConnectionCenter.tsx').includes('فحص ظهور المنشور للجمهور'),
+    'زر فحص الظهور مُوصَّل في واجهة المالك إلى المسار المحمي');
+
   // 10) AGENTS.md: عدد فحوصات final-audit مطابق للفعلي (يُعَدّ من نص الملف نفسه).
   const auditCount = (read('final-audit.mjs').match(/^\s*add\(/gm) || []).length;
   add('agents-audit-count-accurate',

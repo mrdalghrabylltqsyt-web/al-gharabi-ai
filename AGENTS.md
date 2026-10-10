@@ -44,7 +44,7 @@ npm install
 npm run dev            # tsx server.ts
 npm run lint           # tsc --noEmit
 npm run build          # vite build + esbuild server.ts -> dist/server.cjs
-npm run final-audit    # node final-audit.mjs (1498 فحصاً)
+npm run final-audit    # node final-audit.mjs (1510 فحصاً)
 npm test               # storage + engine + auth + ... + db + runtime
 ```
 - التشغيل الإنتاجي: `PORT=4517 NODE_ENV=production APP_URL=http://localhost:4517 node dist/server.cjs`
@@ -5282,4 +5282,70 @@ final-audit = **1493 فحصاً** (`instagram-video-media-type` صار يشتر�
 **ما يبقى للتحقق الحقلي (نقطة توقف المالك):** لم يُنفّذ أي نشر حقيقي؛ إثبات الحل يحتاج
 نشر فيديو مصرّحاً به عبر مسار النشر الفعلي في الإنتاج ثم قراءة معرّف المنشور من Meta — بعد
 موافقة المالك على مرحلة الإنتاج. لم يُدمج ولم يُنشَر هذا الفرع.
+
+## إصلاح عطل Threads (تجاوز 500) + صدق ظهور Facebook + توثيق التوزيع متعدد المنصات (2026-10-04)
+
+**AUDIT → ROOT CAUSE → FIX لثلاثة أعطال حقيقية في منظومة النشر القائمة (بلا أي نظام جديد).**
+
+### 1) Threads: «Param text must be at most 500 characters long» — ROOT CAUSE + FIX
+- **الجذر:** Threads API يحدّ نص المنشور بـ**500 حسب UTF-8 bytes**، ووثيقة Meta تنصّ:
+  «Emojis are counted as the number of UTF-8 bytes». الكود كان يعدّ `text.length`
+  (وحدات UTF-16)، فلا يكشف نصاً «قصيراً» بالمحارف لكنه يتجاوز 500 بايت (300 حرف عربي =
+  600 بايت، أو 126 إيموجي = 504 بايت)، فيمرّ النص ثم يرفضه المزود. ولم يكن التكييف
+  الحتمي `adaptContentForPlatform` يفرض حدّ Threads إطلاقاً (فرع «المنصات الأخرى» يمرّر
+  النص كاملاً).
+- **FIX:** وحدة `engine/social/textLimits.ts` هي **المصدر الواحد** لـ`PLATFORM_TEXT_LIMITS`
+  و`measureText`/`countForPlatform`/`validatePlatformText`/`shortenToPlatformLimit`، مع
+  `UTF8_BYTE_COUNTED_PLATFORMS = ['threads']`. `adaptContentForPlatform` صار يفرض الحد
+  الفعلي لكل منصة بـUTF-8. وحارس في `executePlatformPublish` (بعد بوابات القدرة/السلامة/
+  الاتصال وقبل أي نداء مزود) يرد **422 `TEXT_TOO_LONG`** مع القياس (used/limit/countMethod)
+  واختصار **مقترح فقط** (`shortenedContent`) عند حدود الأسطر/الكلمات — **بلا إرسال وبلا
+  تعديل النص الأصلي المحفوظ**. عطل Threads لا يعتمد على مسار الجدولة (لا مساس به).
+- **إثبات:** `engine/tests/text.limits.test.ts` (44 فحصاً وحدة) و`engine/tests/publish.text.guard.test.ts`
+  (28 فحصاً تكاملياً على خادم حقيقي + خادم Threads وهمي يحاكي رفض Meta للنص >500 بايت:
+  عند الحد/فوقه، عربي، إيموجي، هاشتاغ، فارغ، والاختصار الآمن).
+
+### 2) Facebook: منشور لا يظهر للجمهور — ROOT CAUSE + FIX (تشخيص صادق)
+- **الجذر:** كود النشر **سليم** (`/{page-id}/feed` + `published=true` صراحةً + طلب
+  `is_published`). عدم الظهور سببه **خارجي**: وضع تطبيق Meta (Development/Live) /
+  Access Levels يحصر المحتوى المُنشأ عبر API في أدوار التطبيق/الصفحة — وهو **غير مقروء
+  عبر Graph API** (مصدره لوحة Meta فقط).
+- **FIX:** `getPostGrounding` يطلب الآن `permalink_url`، ومسارات التشخيص المحمية للمالك
+  (`/api/platforms/facebook/post-visibility-diagnosis` و`/video-permission-diagnosis`)
+  تعرض `permalink` و`requiredPublishPermissions` و`appMode.readableViaApi=false` صراحةً.
+  زر **«فحص ظهور المنشور للجمهور»** في `PlatformConnectionCenter` (للمالك) يقرأ الحالة
+  الحقيقية. لا ادّعاء ظهور عام عبر API.
+
+### 3) التوزيع متعدد المنصات: توثيق مؤكَّد بحالة مستقلة لكل منصة
+- المسار `/api/workspace/content/:id/publish` (requireOwner) والتوزيع عبر **نفس**
+  `executePlatformPublish` — لا مسار ثانٍ. الاختبار التكاملي يثبت: منصة متصلة (threads)
+  → `published` بمعرّف مزود حقيقي، وأخرى غير متصلة (telegram) → `failed` مستقلة،
+  `anyDelivered` صادق، وبلا أي تسريب سرّ.
+
+**تغييرات الملفات:** `engine/social/textLimits.ts` (جديد)، `engine/social/facebook.ts`،
+`server.ts`، `src/services/api.ts`، `src/components/social/PlatformConnectionCenter.tsx`،
+`package.json`، `final-audit.mjs`، `AGENTS.md`، واختباران جديدان.
+**لم يُمسّ:** أي سرّ/مفتاح/OAuth، Gemini/firewall، مصادقة، قاعدة بيانات، DR/الاستعادة،
+YouTube (المراقب/الطابور/التفويض)، TikTok/Instagram/Telegram، أو نموذج الجدولة.
+
+### معالجة ملاحظات المراجعة المستقلة (2026-10-04) — ثلاثة بنود غير حاجبة
+1. **استُعيد حد فيسبوك إلى 2000:** كان توحيد `PLATFORM_TEXT_LIMITS` في `textLimits.ts`
+   قد رفع فيسبوك من 2000 (السلوك السابق في `server.ts`) إلى 5000 بلا قصد، فيتأثّر بذلك
+   سقفُ توليد `/api/ai/content-brief` وحقلُ `textLimit` في `campaignPlatformResources`.
+   أُعيدت القيمة إلى **2000** في المصدر الواحد مع تعليق يوضّح أن رفعها لاحقاً قرار واعٍ
+   منفصل. باقي الحدود لم تتغيّر. اختبار انحدار في `text.limits.test.ts` (المجموعة 10)
+   وفي `content.brief.limits.test.ts` (المجموعة 4) يمنع رجوع 5000.
+2. **توليد مركز المحتوى صار byte-aware:** كان `composePlatformText`/`trimToWordBoundary`
+   يقيسان بـ`text.length` (UTF-16) في مسار `/api/ai/content-brief`، فقد يولّدان مسودة
+   Threads تتجاوز 500 بايت رغم `withinLimit=true`. الآن يقيسان بطريقة المنصة عبر
+   `countForPlatform` من المصدر الواحد، والقصّ يتم **على code points** (لا كسر إيموجي
+   مركّب)، و`charCount`/`withinLimit` صادقان. النص الأصلي لا يُعدّل، والاختصار لا يُنشر
+   تلقائياً، ويبقى حارس `executePlatformPublish` طبقة أمان ثانية مستقلة. اختبار:
+   `engine/tests/content.brief.limits.test.ts` (`npm run test:content-brief-limits`).
+3. **أُزيل استيرادان غير مستخدمين** من `server.ts`: `platformCountsUtf8Bytes` و
+   `type ShortenResult` (لا يستخدمهما الملف). لم يُحذف أي مساعد أو تصدير مستخدم في مكان آخر.
+
+final-audit = **1510** (`facebook-text-limit-restored-2000`، `facebook-text-limit-regression-test`،
+`content-brief-threads-utf8-aware`، `content-brief-limits-tests`). `npm test` أُثري بـ
+`test:content-brief-limits`. **لم يُدمج ولم يُنشر** — بانتظار إذن المالك.
 

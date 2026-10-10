@@ -101,6 +101,13 @@ import { describeProviders } from "./engine/agent/providerRouter";
 import { PLATFORM_SPECS, platformSupports, hasRealConnector, credentialModeOf, isSupportedPlatform, buildAdapters } from "./engine/social/registry";
 import { buildYouTubeSalesCorrelation } from "./engine/social/youtubeSalesCorrelation";
 import { sanitizePublicHealthPayload, findForbiddenPublicKeys, findDisallowedWatcherPublicKeys } from "./engine/social/healthPrivacy";
+import {
+  validatePlatformText,
+  shortenToPlatformLimit,
+  countForPlatform,
+  platformTextLimit,
+  PLATFORM_TEXT_LIMITS,
+} from "./engine/social/textLimits";
 import type { PlatformId } from "./engine/social/adapter";
 import { fetchPostMetrics } from "./engine/social/analytics";
 import {
@@ -5362,6 +5369,11 @@ app.get("/api/platforms/facebook/post-visibility-diagnosis", requireOwner, async
       proofOfPublicVisibility: false,
       why: "is_published=true تثبت وجود كائن منشور (ليس مسودة/مجدولاً) فقط، ولا تثبت رؤيته لزائر غير إداري. ظهور المنشورات المُنشأة عبر API للجمهور يتوقف على وضع تطبيق Meta / مستوى الوصول.",
     },
+    // رابط المنشور العام إن أعلنته Meta (بلا طلب إضافي): أداة المالك لفحص الظهور
+    // يدوياً من جلسة غير إدارية. لا يُنشر أي شيء ولا يُغيّر أي حقل.
+    permalink: g.permalink,
+    // الصلاحيات المطلوبة للنشر: تُعلن كمرجع للفحص، بلا أي رمز/سرّ.
+    requiredPublishPermissions: ["pages_manage_posts", "pages_read_engagement", "pages_show_list"],
     // وضع التطبيق ومستوى الوصول لا تعرضهما Graph API إطلاقاً: مصدرهما الوحيد لوحة Meta.
     appMode: {
       readableViaApi: false,
@@ -8329,6 +8341,29 @@ async function executePlatformPublish(platform: string, body: any, actor: string
   const conn: any = platformConnections.get(platform);
   if (!conn || conn.status !== "connected" || conn.providerVerified !== true) {
     return { status: 409, body: { success: false, error: "المنصة غير متصلة باتصال موثق؛ لا نشر خارجي.", code: "NOT_CONNECTED" } };
+  }
+  // حارس طول النص **قبل** أي نداء مزود: الرفض يأتي صريحاً برسالة واضحة بدل خطأ
+  // المزود الغامض. العدّ بطريقة المنصة (Threads = UTF-8 bytes، وثيقة Meta) — فـ
+  // `text.length` وحده كان يترك نصاً «قصيراً» ظاهرياً يتجاوز 500 بايت فعلياً.
+  // الاختصار يُقترح في الاستجابة (shortenedContent) بلا أي إرسال، والنص الأصلي
+  // المحفوظ في المنشور لا يُمسّ إطلاقاً.
+  const textCheck = validatePlatformText(platform, content);
+  if (!textCheck.ok) {
+    const shorten = platformTextLimit(platform) !== null && textCheck.code === "TEXT_TOO_LONG"
+      ? shortenToPlatformLimit(platform, content)
+      : null;
+    return { status: 422, body: {
+      success: false,
+      error: textCheck.reason,
+      code: textCheck.code,
+      limit: textCheck.limit,
+      used: textCheck.used,
+      countMethod: textCheck.method,
+      // اختصار مقترح فقط (لا يُنشر تلقائياً): يحافظ على المعنى ويعلن الأسطر المُسقطة.
+      shortenedContent: shorten && shorten.changed ? shorten.text : null,
+      shortenedOmittedSegments: shorten ? shorten.omittedSegments : 0,
+      note: "النص تجاوز حد المنصة قبل الإرسال؛ اختصر النص أو استخدم النسخة المقترحة يدوياً. لم يُرسَل أي شيء ولم يُسجَّل نشر.",
+    } };
   }
   try {
     if (platform === "youtube") {
@@ -13705,25 +13740,31 @@ function adaptContentForPlatform(platform: string, baseText: string): string {
   const text = cleanText(baseText, 10000);
   if (!text) return "";
   const hashtags = "#معرض_الغرابي #تقسيط #تسهيلات";
-  const limits: Record<string, number> = { x: 280, snapchat: 250, whatsapp: 4096, telegram: 4096, threads: 500, google_business: 1500 };
-  const limit = limits[platform] || 4096;
+  // الحدّ والعدّ من المصدر الواحد (Threads = 500 بأسلوب UTF-8 bytes، وثيقة Meta).
+  const limit = platformTextLimit(platform) ?? 4096;
 
   if (platform === "x") {
     const tweet = text.replace(/\s+/g, " ").trim();
     const withTags = tweet.includes("#") ? tweet : `${tweet} ${hashtags}`;
-    return withTags.length <= limit ? withTags : `${withTags.slice(0, limit - hashtags.length - 1).trimEnd()} ${hashtags}`;
+    return countForPlatform(platform, withTags).used <= limit ? withTags : shortenToPlatformLimit(platform, withTags, limit).text;
   }
   if (platform === "snapchat") {
     const lines = text.split(/\n+/).map((l) => l.trim()).filter(Boolean).slice(0, 3);
     const body = lines.map((l, i) => `${i + 1}) ${l}`).join("\n");
-    return body.length ? `لقطة 1..2..3:\n${body}` : text;
+    const composed = body.length ? `لقطة 1..2..3:\n${body}` : text;
+    return countForPlatform(platform, composed).used <= limit ? composed : shortenToPlatformLimit(platform, composed, limit).text;
   }
   if (platform === "tiktok") {
     const first = text.split(/\n+/).map((l) => l.trim()).filter(Boolean)[0] || text;
-    return `${first.slice(0, 150)}\n\n${text}\n\n${hashtags}`;
+    const composed = `${first.slice(0, 150)}\n\n${text}\n\n${hashtags}`;
+    return countForPlatform(platform, composed).used <= limit ? composed : shortenToPlatformLimit(platform, composed, limit).text;
   }
-  // المنصات الأخرى: النص كما هو مع إضافة الهاشتاغ عند غيابه.
-  return text.includes("#") ? text : `${text}\n\n${hashtags}`;
+  // المنصات الأخرى: النص كما هو مع إضافة الهاشتاغ عند غيابه، ثم **فرض الحد
+  // الفعلي**. هذا الجذر الحقيقي لعطل Threads: كان النص يمرّ كاملاً (وبـUTF-16)
+  // فيرفضه المزود «Param text must be at most 500 characters long». الاختصار
+  // حتمي عند حدود الأسطر/الكلمات ولا يعيد كتابة أي معلومة.
+  const composed = text.includes("#") ? text : `${text}\n\n${hashtags}`;
+  return countForPlatform(platform, composed).used <= limit ? composed : shortenToPlatformLimit(platform, composed, limit).text;
 }
 
 // 2. Classify Customer Message & Suggest Reply (Authenticated users only)
@@ -13999,10 +14040,8 @@ const MARKETING_GOALS: Record<string, { label: string; angle: string }> = {
   follow_up: { label: "متابعة وتذكير", angle: "تذكير مهذب بعرض قائم ودعوة للتواصل" },
 };
 
-const PLATFORM_TEXT_LIMITS: Record<string, number> = {
-  tiktok: 2200, instagram: 2200, facebook: 2000, youtube: 5000, x: 280,
-  snapchat: 250, whatsapp: 4096, telegram: 4096, threads: 500, google_business: 1500,
-};
+// PLATFORM_TEXT_LIMITS وحدود المنصات صارت مصدراً واحداً في engine/social/textLimits.ts
+// (تُستورد أعلاه) لأن Threads يعدّ الطول بـUTF-8 bytes لا بوحدات UTF-16.
 
 // Guards that mirror the project rules: no automotive content, no legacy fake counter.
 const FORBIDDEN_CONTENT_PATTERN = /سيارة|سيارات|automotive|\bcars?\b/i;
@@ -14244,30 +14283,43 @@ function buildMarketingQuote(cashPrice: number, downPaymentPercent: number, mont
   };
 }
 
-function trimToWordBoundary(text: string, max: number): string {
+/** يقصّ نصاً عند حدود الكلمة **بالعدّ الصحيح للمنصة** (Threads = بايتات UTF-8)،
+ *  ويعمل على code points فلا يكسر إيموجي مركّباً. لا يعدّل النص الأصلي، ويضيف «…».
+ *  الحدّ يُقاس عبر المصدر الواحد engine/social/textLimits (countForPlatform). */
+function trimToWordBoundary(platform: string, text: string, max: number): string {
   if (max <= 0) return "";
-  if (text.length <= max) return text;
-  const cut = text.slice(0, max);
+  if (countForPlatform(platform, text).used <= max) return text;
+  const reserve = countForPlatform(platform, "").method === "utf8_bytes" ? 3 : 1; // «…» = 3 بايتات UTF-8
+  let cut = "";
+  for (const ch of text) { // التكرار على code points لا وحدات UTF-16 (لا كسر إيموجي)
+    const next = cut + ch;
+    if (countForPlatform(platform, next).used + reserve > max) break;
+    cut = next;
+  }
   const lastSpace = cut.lastIndexOf(" ");
-  return `${(lastSpace > max * 0.6 ? cut.slice(0, lastSpace) : cut).trimEnd()}…`;
+  const useWord = lastSpace > cut.length * 0.6 ? cut.slice(0, lastSpace) : cut;
+  return `${useWord.trimEnd()}…`;
 }
 
 // Composes the final platform text and guarantees it fits the platform limit by
 // shortening the body first, then dropping hashtags. Never truncates mid-word.
-function composePlatformText(headline: string, body: string, callToAction: string, hashtags: string[], limit: number) {
+// القياس بطريقة المنصة (Threads = UTF-8 bytes) عبر المصدر الواحد — لا text.length.
+function composePlatformText(platform: string, headline: string, body: string, callToAction: string, hashtags: string[], limit: number) {
   let tags = hashtags.slice();
   let currentBody = body;
   const render = () => [headline, currentBody, callToAction, tags.join(" ")].filter((x) => x && x.trim()).join("\n\n");
+  const used = (t: string) => countForPlatform(platform, t).used;
   let text = render();
-  while (text.length > limit && tags.length > 1) { tags = tags.slice(0, -1); text = render(); }
-  if (text.length > limit) {
+  while (used(text) > limit && tags.length > 1) { tags = tags.slice(0, -1); text = render(); }
+  if (used(text) > limit) {
     tags = [];
-    const reserved = render().length - currentBody.length;
-    currentBody = trimToWordBoundary(currentBody, Math.max(0, limit - reserved));
+    const reserved = used(render()) - used(currentBody);
+    currentBody = trimToWordBoundary(platform, currentBody, Math.max(0, limit - reserved));
     text = render();
   }
-  if (text.length > limit) text = trimToWordBoundary(render(), limit);
-  return { text, hashtags: tags, charCount: text.length, limit, withinLimit: text.length <= limit };
+  if (used(text) > limit) text = trimToWordBoundary(platform, render(), limit);
+  const finalUsed = used(text);
+  return { text, hashtags: tags, charCount: finalUsed, limit, withinLimit: finalUsed <= limit };
 }
 
 // Per-platform Arabic copy. Uses only the real product/showroom facts it is given.
@@ -14370,7 +14422,7 @@ function generateBriefContent(input: {
       installmentOptions: Array.isArray(product?.installmentOptions) ? product.installmentOptions : [],
       showroom: workspace.showroom, contactLine, notes,
     });
-    const composed = composePlatformText(copy.headline, copy.body, copy.cta, copy.hashtags, PLATFORM_TEXT_LIMITS[platform] || 2000);
+    const composed = composePlatformText(platform, copy.headline, copy.body, copy.cta, copy.hashtags, PLATFORM_TEXT_LIMITS[platform] || 2000);
     return { platform, platformName, headline: copy.headline, body: copy.body, callToAction: copy.cta, hashtags: composed.hashtags, charCount: composed.charCount, limit: composed.limit, withinLimit: composed.withinLimit, text: composed.text };
   });
 

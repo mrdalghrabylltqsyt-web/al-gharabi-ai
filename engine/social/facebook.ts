@@ -680,6 +680,8 @@ export interface FacebookPostGrounding {
   privacy: string | null;
   /** ظهور المنشور على حائط الصفحة `/{page-id}/published_posts` (دليل ظهور فعلي). */
   appearsOnPage: boolean | null;
+  /** رابط المنشور العام (permalink_url) إن أعلنته Meta — عرض فقط، بلا طلب شبكي إضافي. */
+  permalink: string | null;
   /** true فقط إذا كانت Meta قد أعلنت isPublished=true صراحةً. */
   confirmedPublicStory: boolean;
 }
@@ -696,6 +698,7 @@ export function interpretPostGrounding(kind: 'video' | 'post', raw: any, appears
   const createdTime = typeof d.created_time === 'string' ? d.created_time : null;
   const scheduledPublishTime = Number.isFinite(Number(d.scheduled_publish_time)) && Number(d.scheduled_publish_time) > 0 ? String(d.scheduled_publish_time) : null;
   const privacy = typeof d.privacy === 'string' ? d.privacy : (d.privacy && typeof d.privacy.value === 'string' ? d.privacy.value : null);
+  const permalink = typeof d.permalink_url === 'string' && d.permalink_url ? d.permalink_url : null;
   return {
     kind,
     providerPostId,
@@ -705,6 +708,7 @@ export function interpretPostGrounding(kind: 'video' | 'post', raw: any, appears
     scheduledPublishTime,
     privacy,
     appearsOnPage,
+    permalink,
     confirmedPublicStory: isPublished === true,
   };
 }
@@ -984,7 +988,7 @@ export class FacebookClient {
     try {
       // 1) قراءة حالة الفيديو/المنشور (is_published + الأوقات).
       const u = new URL(facebookGraphUrl(`/${encodeURIComponent(providerPostId)}`, this.baseUrl));
-      u.searchParams.set('fields', 'id,is_published,created_time,scheduled_publish_time,privacy');
+      u.searchParams.set('fields', 'id,is_published,created_time,scheduled_publish_time,privacy,permalink_url');
       u.searchParams.set('access_token', pageAccessToken);
       const res = await this.fetchImpl(u.toString(), { method: 'GET' });
       const data = await res.json().catch(() => null);
