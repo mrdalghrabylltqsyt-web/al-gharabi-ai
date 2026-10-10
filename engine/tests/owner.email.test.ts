@@ -14,6 +14,7 @@ import { mkdtempSync, rmSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { sanitizeProviderMessage } from '../../engine/notifications/owner-email';
+import { buildServerTestEnv } from './helpers/serverTestEnv';
 
 let passed = 0;
 const failures: string[] = [];
@@ -72,15 +73,11 @@ const serverEntry = join(REPO_ROOT, 'server.ts');
 
 function startApp(port: number, cwd: string, extraEnv: Record<string, string>): { proc: ChildProcess; log: () => string } {
   let log = '';
-  const env: Record<string, string> = {
-    ...(process.env as Record<string, string>),
-    PORT: String(port),
-    NODE_ENV: 'production',
-    OWNER_EMAIL,
-    RESEND_FROM_EMAIL: FROM_EMAIL,
-    ...extraEnv,
-    APP_URL: `http://127.0.0.1:${port}`,
-  };
+  const env: Record<string, string> = buildServerTestEnv({
+    stateDir: cwd,
+    prefix: 'gharabi-email-',
+    overrides: { PORT: String(port), NODE_ENV: 'production', OWNER_EMAIL, RESEND_FROM_EMAIL: FROM_EMAIL, ...extraEnv, APP_URL: `http://127.0.0.1:${port}` },
+  });
   // مفتاح اختبار وهمي — ليس مفتاحاً حقيقياً ولا سراً.
   const proc = spawn(process.execPath, [tsxCli, serverEntry], { cwd, env, stdio: ['ignore', 'pipe', 'pipe'] });
   proc.stdout?.on('data', (d) => (log += String(d)));
