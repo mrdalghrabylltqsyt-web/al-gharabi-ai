@@ -15,6 +15,7 @@
 import { spawn, type ChildProcess } from 'node:child_process';
 import { existsSync, readdirSync } from 'node:fs';
 import path from 'node:path';
+import { buildServerTestEnv } from './helpers/serverTestEnv';
 
 let passed = 0;
 const failures: string[] = [];
@@ -106,7 +107,7 @@ async function run(): Promise<void> {
   check('source bundle manifest exists on disk', manifestExists);
 
   const server: ChildProcess = spawn('node', ['dist/server.cjs'], {
-    env: { ...process.env, PORT: String(PORT), NODE_ENV: 'production', APP_URL: BASE },
+    env: buildServerTestEnv({ prefix: 'gharabi-source-bundle-exposure-', overrides: { PORT: String(PORT), NODE_ENV: 'production', APP_URL: BASE } }),
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   let serverLog = '';

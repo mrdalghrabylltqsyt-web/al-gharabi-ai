@@ -1,3 +1,4 @@
+import { OAuth2Client } from "google-auth-library";
 import express from "express";
 import path from "path";
 import crypto from "crypto";
@@ -709,6 +710,14 @@ export interface ActiveSession {
 const OWNER_EMAIL = (process.env.OWNER_EMAIL || "").toLowerCase().trim();
 const GOOGLE_CLIENT_ID = (process.env.GOOGLE_CLIENT_ID || "").trim();
 
+// مُتحقّق Google محلي (مصدر واحد): يتحقق من ID token عبر JWKS بلا استدعاء
+// tokeninfo، فلا يُمرَّر الرمز في أي URL (حماية SEC-A). يُنشأ عند الحاجة فقط.
+let googleOAuth2Client: OAuth2Client | null = null;
+function googleVerifier(): OAuth2Client {
+  if (!googleOAuth2Client) googleOAuth2Client = new OAuth2Client(GOOGLE_CLIENT_ID);
+  return googleOAuth2Client;
+}
+
 // مفتاح توقيع الجلسات. يُشتق من SESSION_SECRET إن وُجد، وإلا من مفتاح تشفير
 // توكنات المنصات إن كان مضبوطاً، فيبقى التوقيع ثابتاً عبر العمليات وإعادة
 // النشر. بغيابهما يُولَّد مفتاح عابر لهذه العملية فقط، وتُعلن حالة الإعداد
@@ -1052,21 +1061,30 @@ app.post("/api/auth/google", async (req, res) => {
       return res.status(400).json({ success: false, error: "رمز المصادقة من Google مطلوب." });
     }
 
-    // Securely verify ID token with Google tokeninfo endpoint
-    const googleVerifyRes = await fetch(`https://oauth2.googleapis.com/tokeninfo?id_token=${encodeURIComponent(credential)}`);
-    if (!googleVerifyRes.ok) {
+    // التحقق محلياً عبر JWKS (google-auth-library): لا يُمرَّر الرمز في أي URL
+    // إطلاقاً، فلا يتسرّب إلى سجلات الوسيط/الـCDN (يُصلح SEC-A). فشل التحقق
+    // (توقيع/جمهور/انتهاء) => 401 صريح بلا كشف السبب الداخلي.
+    if (!GOOGLE_CLIENT_ID) {
+      return res.status(500).json({ success: false, error: "تسجيل Google غير مضبوط على الخادم." });
+    }
+    let tokenPayload: any = null;
+    try {
+      const googleTicket = await googleVerifier().verifyIdToken({ idToken: credential, audience: GOOGLE_CLIENT_ID });
+      tokenPayload = googleTicket.getPayload();
+    } catch {
       return res.status(401).json({ success: false, error: "فشل التحقق من صحة حساب Google." });
     }
-
-    const tokenPayload: any = await googleVerifyRes.json();
+    if (!tokenPayload) {
+      return res.status(401).json({ success: false, error: "فشل التحقق من صحة حساب Google." });
+    }
     const email = (tokenPayload.email || "").toLowerCase().trim();
-    const emailVerified = tokenPayload.email_verified === "true" || tokenPayload.email_verified === true;
+    const emailVerified = tokenPayload.email_verified === true || tokenPayload.email_verified === "true";
 
     if (!email || !emailVerified) {
       return res.status(401).json({ success: false, error: "البريد الإلكتروني لحساب Google غير مؤكد." });
     }
 
-    if (GOOGLE_CLIENT_ID && tokenPayload.aud !== GOOGLE_CLIENT_ID) {
+    if (tokenPayload.aud !== GOOGLE_CLIENT_ID) {
       return res.status(401).json({ success: false, error: "حساب Google غير مهيأ لهذا التطبيق." });
     }
 
@@ -1105,7 +1123,9 @@ app.post("/api/auth/google", async (req, res) => {
       user: session.user,
     });
   } catch (err: any) {
-    console.error("Google auth error:", err);
+    // تنقية السجل: لا نطبع كائن الخطأ الخام (قد يحمل رسالة fetch الكاملة وفيه الرمز).
+    // يُصلح SEC-B؛ يُستخدم المصدر الواحد لتنقية الأسرار (errorSafety).
+    console.error("Google auth error:", safeErrorMessage(err, shouldExposeErrorMessage(process.env)));
     return res.status(500).json({ success: false, error: "حدث خطأ غير متوقع أثناء المصادقة." });
   }
 });
@@ -4147,7 +4167,7 @@ async function handleOAuthCallback(req:any, res:any, rawQuery:string, viaPost:bo
     const stored={...token, expiresAt: parsedToken.expiresIn ? Date.now()+parsedToken.expiresIn*1000 : null};
     setProviderToken(platform,stored); platformConnections.set(platform,{platform,status:"connected",accountId,accountName,connectedAt:new Date().toISOString(),providerVerified:true}); savePlatformConnections(); audit(pending!.userId,"platform_oauth_connected",`${platform}:${accountId}`);
     sendHtml("<html lang='ar' dir='rtl'><meta charset='utf-8'><title>تم الربط</title><body style='font-family:sans-serif;padding:40px'><h2>تم ربط المنصة بنجاح.</h2><p>يمكنك إغلاق هذه النافذة والعودة إلى الغرابي AI.</p></body></html>");
-  } catch(e:any) { audit(pending!.userId,"platform_oauth_failed",platform); console.error(`[oauth-callback-error] ${platform} status=502 message=${String(e?.message||e)}`); const msg=String(e?.message||e); const hint=oauthFailureHint(platform,msg); failHtml(502, `فشل إكمال ربط المنصة: ${msg.slice(0,300)}${hint?" — "+hint:""}`); }
+  } catch(e:any) { audit(pending!.userId,"platform_oauth_failed",platform); const errMsg=redactSecretsFromText(String(e?.message||e)).slice(0,300); console.error(`[oauth-callback-error] ${platform} status=502 message=${errMsg}`); const hint=oauthFailureHint(platform,errMsg); failHtml(502, `فشل إكمال ربط المنصة: ${errMsg}${hint?" — "+hint:""}`); }
 }
 
 app.post("/api/platforms/telegram/configure", requireOwner, async (req,res)=>{
@@ -9119,8 +9139,11 @@ app.post("/api/platforms/:platform/disconnect", requireOwner, async (req, res) =
     const revocable = stored?.refresh_token || stored?.access_token;
     if (revocable) {
       try {
-        await fetch(`https://oauth2.googleapis.com/revoke?token=${encodeURIComponent(String(revocable))}`, {
+        // الرمز في جسم الطلب (x-www-form-urlencoded) لا في سطر الطلب، فلا يظهر
+        // في سجلات الوسيط/الـCDN (نفس مبدأ SEC-A).
+        await fetch(`https://oauth2.googleapis.com/revoke`, {
           method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" },
+          body: `token=${encodeURIComponent(String(revocable))}`,
         });
       } catch { /* إبطال محلي يكفي */ }
     }

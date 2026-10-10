@@ -11,6 +11,7 @@
 
 import { spawn, type ChildProcess } from 'node:child_process';
 import { existsSync } from 'node:fs';
+import { buildServerTestEnv } from './helpers/serverTestEnv';
 
 let passed = 0;
 const failures: string[] = [];
@@ -71,7 +72,7 @@ async function run(): Promise<void> {
   }
 
   const server: ChildProcess = spawn('node', ['dist/server.cjs'], {
-    env: { ...process.env, PORT: String(PORT), NODE_ENV: 'production', APP_URL: BASE },
+    env: buildServerTestEnv({ prefix: 'gharabi-runtime-smoke-', overrides: { PORT: String(PORT), NODE_ENV: 'production', APP_URL: BASE } }),
     stdio: ['ignore', 'pipe', 'pipe'],
   });
 

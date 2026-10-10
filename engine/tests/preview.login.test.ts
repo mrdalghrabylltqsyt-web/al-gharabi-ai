@@ -15,6 +15,7 @@ import { mkdtempSync, rmSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { randomBytes } from 'node:crypto';
+import { buildServerTestEnv } from './helpers/serverTestEnv';
 
 let passed = 0;
 const failures: string[] = [];
@@ -30,12 +31,11 @@ const TOKEN = randomBytes(24).toString('hex');
 
 function startApp(port: number, cwd: string, previewToken: string | null): { proc: ChildProcess; log: () => string } {
   let log = '';
-  const env: Record<string, string> = {
-    ...(process.env as Record<string, string>),
-    PORT: String(port),
-    NODE_ENV: 'production',
-    APP_URL: `http://127.0.0.1:${port}`,
-  };
+  const env: Record<string, string> = buildServerTestEnv({
+    stateDir: cwd,
+    prefix: 'gharabi-preview-',
+    overrides: { PORT: String(port), NODE_ENV: 'production', APP_URL: `http://127.0.0.1:${port}` },
+  });
   if (previewToken === null) delete env.GHARABI_PREVIEW_TOKEN;
   else env.GHARABI_PREVIEW_TOKEN = previewToken;
   const proc = spawn(process.execPath, [tsxCli, serverEntry], { cwd, env, stdio: ['ignore', 'pipe', 'pipe'] });

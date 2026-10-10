@@ -16,6 +16,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { issueChallengeCode } from '../auth/challenge';
 import { createTelegramMock, startTelegramMockServer } from './helpers/telegramMock';
+import { buildServerTestEnv } from './helpers/serverTestEnv';
 
 let passed = 0;
 const failures: string[] = [];
@@ -25,6 +26,8 @@ function check(name: string, condition: boolean, detail = ''): void {
 }
 
 const DB_URL = (process.env.GHARABI_TEST_DATABASE_URL || '').trim();
+/** حارس: قاعدة الاختبار يجب ألا تطابق قاعدة الإنتاج المورّثة (ISO-A). */
+const INHERITED_DATABASE_URL = (process.env.DATABASE_URL || '').trim();
 const OWNER_EMAIL = 'owner-db-test@example.invalid';
 const TEST_SECRET = 'test-db-secret-not-real';
 // توكن معاينة اختبار لاشتقاق جلسة مالك ثانية بلا استهلاك OTP (رمز OTP يُستهلك
@@ -38,21 +41,26 @@ const serverEntry = join(REPO_ROOT, 'server.ts');
 
 function startApp(port: number, cwd: string, tgBase: string): { proc: ChildProcess; log: () => string } {
   let log = '';
-  const env: Record<string, string> = {
-    ...(process.env as Record<string, string>),
-    PORT: String(port),
-    NODE_ENV: 'production',
-    OWNER_EMAIL,
-    SESSION_SECRET: TEST_SECRET,
-    APP_URL: `http://127.0.0.1:${port}`,
-    DATABASE_URL: DB_URL,
-    GHARABI_PREVIEW_TOKEN: PREVIEW_TOKEN,
-    // موصل Telegram الحقيقي مقابل خادم وهمي محلي (لا مزود حقيقي ولا حصة).
-    TELEGRAM_API_BASE: tgBase,
-    TELEGRAM_BOT_TOKEN: '111222333:DB_TEST_TOKEN_NOT_REAL',
-    TELEGRAM_WEBHOOK_SECRET: 'db_test_webhook_secret_1234',
-    PLATFORM_TOKEN_ENCRYPTION_KEY: crypto.randomBytes(32).toString('hex'),
-  };
+  // عزل حاسم: نحذف قاعدة البيانات المورّثة ثم نضبط قاعدة الاختبار صراحةً، فلا
+  // يمكن أن يتسرّب DATABASE_URL الإنتاجي إلى الخادم المُقلع فوق Postgres.
+  const env: Record<string, string> = buildServerTestEnv({
+    stateDir: cwd,
+    prefix: 'gharabi-db-persistence-',
+    overrides: {
+      PORT: String(port),
+      NODE_ENV: 'production',
+      OWNER_EMAIL,
+      SESSION_SECRET: TEST_SECRET,
+      APP_URL: `http://127.0.0.1:${port}`,
+      DATABASE_URL: DB_URL,
+      GHARABI_PREVIEW_TOKEN: PREVIEW_TOKEN,
+      // موصل Telegram الحقيقي مقابل خادم وهمي محلي (لا مزود حقيقي ولا حصة).
+      TELEGRAM_API_BASE: tgBase,
+      TELEGRAM_BOT_TOKEN: '111222333:DB_TEST_TOKEN_NOT_REAL',
+      TELEGRAM_WEBHOOK_SECRET: 'db_test_webhook_secret_1234',
+      PLATFORM_TOKEN_ENCRYPTION_KEY: crypto.randomBytes(32).toString('hex'),
+    },
+  });
   const proc = spawn(process.execPath, [tsxCli, serverEntry], { cwd, env, stdio: ['ignore', 'pipe', 'pipe'] });
   proc.stdout?.on('data', (d) => (log += String(d)));
   proc.stderr?.on('data', (d) => (log += String(d)));
@@ -79,6 +87,14 @@ async function run(): Promise<void> {
     console.log('SKIPPED: database persistence checks — GHARABI_TEST_DATABASE_URL not set (no real Postgres available).');
     // خروج مميّز (2) لا نجاح (0): التخطّي لا يجب أن يبدو كأنه اجتياز في CI،
     // ولا كفشل (1). يمنع الاعتماد على اختبار استمرارية لم يُشغَّل فعلاً.
+    process.exitCode = 2;
+    return;
+  }
+
+  // حماية إنتاج: لا تشغيل إطلاقاً إذا كانت قاعدة "الاختبار" هي نفس قاعدة الإنتاج
+  // المورّثة في البيئة — منعاً لأي كتابة عرضية فوق بيانات الإنتاج.
+  if (INHERITED_DATABASE_URL && DB_URL === INHERITED_DATABASE_URL) {
+    console.log('SKIPPED: database persistence checks — GHARABI_TEST_DATABASE_URL equals the inherited DATABASE_URL (refusing to run against production).');
     process.exitCode = 2;
     return;
   }

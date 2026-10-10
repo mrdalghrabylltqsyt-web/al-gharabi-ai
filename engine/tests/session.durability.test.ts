@@ -14,6 +14,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { issueChallengeCode } from '../auth/challenge';
+import { buildServerTestEnv } from './helpers/serverTestEnv';
 
 let passed = 0;
 const failures: string[] = [];
@@ -36,14 +37,11 @@ const serverEntry = join(REPO_ROOT, 'server.ts');
 
 function startApp(port: number, cwd: string, secret: string): { proc: ChildProcess; log: () => string } {
   let log = '';
-  const env: Record<string, string> = {
-    ...(process.env as Record<string, string>),
-    PORT: String(port),
-    NODE_ENV: 'production',
-    OWNER_EMAIL,
-    SESSION_SECRET: secret,
-    APP_URL: `http://127.0.0.1:${port}`,
-  };
+  const env: Record<string, string> = buildServerTestEnv({
+    stateDir: cwd,
+    prefix: 'gharabi-session-',
+    overrides: { PORT: String(port), NODE_ENV: 'production', OWNER_EMAIL, SESSION_SECRET: secret, APP_URL: `http://127.0.0.1:${port}` },
+  });
   const proc = spawn(process.execPath, [tsxCli, serverEntry], { cwd, env, stdio: ['ignore', 'pipe', 'pipe'] });
   proc.stdout?.on('data', (d) => (log += String(d)));
   proc.stderr?.on('data', (d) => (log += String(d)));
