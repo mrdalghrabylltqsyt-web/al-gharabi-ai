@@ -101,6 +101,15 @@ import { describeProviders } from "./engine/agent/providerRouter";
 import { PLATFORM_SPECS, platformSupports, hasRealConnector, credentialModeOf, isSupportedPlatform, buildAdapters } from "./engine/social/registry";
 import { buildYouTubeSalesCorrelation } from "./engine/social/youtubeSalesCorrelation";
 import { sanitizePublicHealthPayload, findForbiddenPublicKeys, findDisallowedWatcherPublicKeys } from "./engine/social/healthPrivacy";
+import {
+  validatePlatformText,
+  shortenToPlatformLimit,
+  countForPlatform,
+  platformTextLimit,
+  platformCountsUtf8Bytes,
+  PLATFORM_TEXT_LIMITS,
+  type ShortenResult,
+} from "./engine/social/textLimits";
 import type { PlatformId } from "./engine/social/adapter";
 import { fetchPostMetrics } from "./engine/social/analytics";
 import {
@@ -5362,6 +5371,11 @@ app.get("/api/platforms/facebook/post-visibility-diagnosis", requireOwner, async
       proofOfPublicVisibility: false,
       why: "is_published=true تثبت وجود كائن منشور (ليس مسودة/مجدولاً) فقط، ولا تثبت رؤيته لزائر غير إداري. ظهور المنشورات المُنشأة عبر API للجمهور يتوقف على وضع تطبيق Meta / مستوى الوصول.",
     },
+    // رابط المنشور العام إن أعلنته Meta (بلا طلب إضافي): أداة المالك لفحص الظهور
+    // يدوياً من جلسة غير إدارية. لا يُنشر أي شيء ولا يُغيّر أي حقل.
+    permalink: g.permalink,
+    // الصلاحيات المطلوبة للنشر: تُعلن كمرجع للفحص، بلا أي رمز/سرّ.
+    requiredPublishPermissions: ["pages_manage_posts", "pages_read_engagement", "pages_show_list"],
     // وضع التطبيق ومستوى الوصول لا تعرضهما Graph API إطلاقاً: مصدرهما الوحيد لوحة Meta.
     appMode: {
       readableViaApi: false,
@@ -8329,6 +8343,29 @@ async function executePlatformPublish(platform: string, body: any, actor: string
   const conn: any = platformConnections.get(platform);
   if (!conn || conn.status !== "connected" || conn.providerVerified !== true) {
     return { status: 409, body: { success: false, error: "المنصة غير متصلة باتصال موثق؛ لا نشر خارجي.", code: "NOT_CONNECTED" } };
+  }
+  // حارس طول النص **قبل** أي نداء مزود: الرفض يأتي صريحاً برسالة واضحة بدل خطأ
+  // المزود الغامض. العدّ بطريقة المنصة (Threads = UTF-8 bytes، وثيقة Meta) — فـ
+  // `text.length` وحده كان يترك نصاً «قصيراً» ظاهرياً يتجاوز 500 بايت فعلياً.
+  // الاختصار يُقترح في الاستجابة (shortenedContent) بلا أي إرسال، والنص الأصلي
+  // المحفوظ في المنشور لا يُمسّ إطلاقاً.
+  const textCheck = validatePlatformText(platform, content);
+  if (!textCheck.ok) {
+    const shorten = platformTextLimit(platform) !== null && textCheck.code === "TEXT_TOO_LONG"
+      ? shortenToPlatformLimit(platform, content)
+      : null;
+    return { status: 422, body: {
+      success: false,
+      error: textCheck.reason,
+      code: textCheck.code,
+      limit: textCheck.limit,
+      used: textCheck.used,
+      countMethod: textCheck.method,
+      // اختصار مقترح فقط (لا يُنشر تلقائياً): يحافظ على المعنى ويعلن الأسطر المُسقطة.
+      shortenedContent: shorten && shorten.changed ? shorten.text : null,
+      shortenedOmittedSegments: shorten ? shorten.omittedSegments : 0,
+      note: "النص تجاوز حد المنصة قبل الإرسال؛ اختصر النص أو استخدم النسخة المقترحة يدوياً. لم يُرسَل أي شيء ولم يُسجَّل نشر.",
+    } };
   }
   try {
     if (platform === "youtube") {
@@ -13705,25 +13742,31 @@ function adaptContentForPlatform(platform: string, baseText: string): string {
   const text = cleanText(baseText, 10000);
   if (!text) return "";
   const hashtags = "#معرض_الغرابي #تقسيط #تسهيلات";
-  const limits: Record<string, number> = { x: 280, snapchat: 250, whatsapp: 4096, telegram: 4096, threads: 500, google_business: 1500 };
-  const limit = limits[platform] || 4096;
+  // الحدّ والعدّ من المصدر الواحد (Threads = 500 بأسلوب UTF-8 bytes، وثيقة Meta).
+  const limit = platformTextLimit(platform) ?? 4096;
 
   if (platform === "x") {
     const tweet = text.replace(/\s+/g, " ").trim();
     const withTags = tweet.includes("#") ? tweet : `${tweet} ${hashtags}`;
-    return withTags.length <= limit ? withTags : `${withTags.slice(0, limit - hashtags.length - 1).trimEnd()} ${hashtags}`;
+    return countForPlatform(platform, withTags).used <= limit ? withTags : shortenToPlatformLimit(platform, withTags, limit).text;
   }
   if (platform === "snapchat") {
     const lines = text.split(/\n+/).map((l) => l.trim()).filter(Boolean).slice(0, 3);
     const body = lines.map((l, i) => `${i + 1}) ${l}`).join("\n");
-    return body.length ? `لقطة 1..2..3:\n${body}` : text;
+    const composed = body.length ? `لقطة 1..2..3:\n${body}` : text;
+    return countForPlatform(platform, composed).used <= limit ? composed : shortenToPlatformLimit(platform, composed, limit).text;
   }
   if (platform === "tiktok") {
     const first = text.split(/\n+/).map((l) => l.trim()).filter(Boolean)[0] || text;
-    return `${first.slice(0, 150)}\n\n${text}\n\n${hashtags}`;
+    const composed = `${first.slice(0, 150)}\n\n${text}\n\n${hashtags}`;
+    return countForPlatform(platform, composed).used <= limit ? composed : shortenToPlatformLimit(platform, composed, limit).text;
   }
-  // المنصات الأخرى: النص كما هو مع إضافة الهاشتاغ عند غيابه.
-  return text.includes("#") ? text : `${text}\n\n${hashtags}`;
+  // المنصات الأخرى: النص كما هو مع إضافة الهاشتاغ عند غيابه، ثم **فرض الحد
+  // الفعلي**. هذا الجذر الحقيقي لعطل Threads: كان النص يمرّ كاملاً (وبـUTF-16)
+  // فيرفضه المزود «Param text must be at most 500 characters long». الاختصار
+  // حتمي عند حدود الأسطر/الكلمات ولا يعيد كتابة أي معلومة.
+  const composed = text.includes("#") ? text : `${text}\n\n${hashtags}`;
+  return countForPlatform(platform, composed).used <= limit ? composed : shortenToPlatformLimit(platform, composed, limit).text;
 }
 
 // 2. Classify Customer Message & Suggest Reply (Authenticated users only)
@@ -13999,10 +14042,8 @@ const MARKETING_GOALS: Record<string, { label: string; angle: string }> = {
   follow_up: { label: "متابعة وتذكير", angle: "تذكير مهذب بعرض قائم ودعوة للتواصل" },
 };
 
-const PLATFORM_TEXT_LIMITS: Record<string, number> = {
-  tiktok: 2200, instagram: 2200, facebook: 2000, youtube: 5000, x: 280,
-  snapchat: 250, whatsapp: 4096, telegram: 4096, threads: 500, google_business: 1500,
-};
+// PLATFORM_TEXT_LIMITS وحدود المنصات صارت مصدراً واحداً في engine/social/textLimits.ts
+// (تُستورد أعلاه) لأن Threads يعدّ الطول بـUTF-8 bytes لا بوحدات UTF-16.
 
 // Guards that mirror the project rules: no automotive content, no legacy fake counter.
 const FORBIDDEN_CONTENT_PATTERN = /سيارة|سيارات|automotive|\bcars?\b/i;

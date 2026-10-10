@@ -184,6 +184,9 @@ const FacebookVideoDiagnosticsPanel: React.FC = () => {
   const [diag, setDiag] = useState<any>(null);
   const [diagErr, setDiagErr] = useState('');
   const [diagBusy, setDiagBusy] = useState(false);
+  const [visible, setVisible] = useState<any>(null);
+  const [visibleErr, setVisibleErr] = useState('');
+  const [visibleBusy, setVisibleBusy] = useState(false);
 
   const REQUIRED: Record<string, string> = {
     pages_manage_posts: 'إدارة منشورات الصفحة',
@@ -203,6 +206,12 @@ const FacebookVideoDiagnosticsPanel: React.FC = () => {
     catch (e: any) { setDiagErr(e?.message || 'تعذّر جلب سجل التشخيص'); }
     finally { setDiagBusy(false); }
   };
+  const runVisibilityCheck = async () => {
+    setVisibleBusy(true); setVisibleErr(''); setVisible(null);
+    try { setVisible(await apiService.getFacebookPostVisibilityDiagnosis()); }
+    catch (e: any) { setVisibleErr(e?.code ? `[${e.code}] ${e?.message || ''}` : (e?.message || 'تعذّر فحص الظهور')); }
+    finally { setVisibleBusy(false); }
+  };
 
   return (
     <div className="mt-3 pt-3 border-t border-slate-800/70 text-[10px] space-y-2">
@@ -216,7 +225,27 @@ const FacebookVideoDiagnosticsPanel: React.FC = () => {
           className="px-2.5 py-1 rounded-lg bg-slate-800 border border-slate-700 text-[10px] font-bold text-white inline-flex items-center gap-1 disabled:opacity-50">
           {diagBusy ? <Loader2 className="w-3 h-3 animate-spin" /> : <AlertTriangle className="w-3 h-3" />} سجل تشخيص النشر الفاشل
         </button>
+        <button onClick={() => void runVisibilityCheck()} disabled={visibleBusy}
+          className="px-2.5 py-1 rounded-lg bg-indigo-500 text-white text-[10px] font-black inline-flex items-center gap-1 disabled:opacity-50">
+          {visibleBusy ? <Loader2 className="w-3 h-3 animate-spin" /> : <ShieldCheck className="w-3 h-3" />} فحص ظهور المنشور للجمهور
+        </button>
       </div>
+
+      {visibleErr && <p className="text-amber-300">فحص الظهور: {visibleErr}</p>}
+      {visible && (
+        <div className={`p-2 rounded-lg bg-slate-950 border space-y-1 ${visible.verdict === 'published_and_returns_as_story' ? 'border-emerald-600/30' : 'border-amber-600/30'}`}>
+          <p className="text-slate-200 font-bold">الحكم: {visible.verdict}</p>
+          <p className="text-slate-400">{visible.likelyRootCause}</p>
+          <p className="text-slate-400" dir="ltr">is_published={String(visible.grounding?.isPublished)} · onPageWall={String(visible.grounding?.appearsOnPage)}</p>
+          {visible.permalink && <a href={visible.permalink} target="_blank" rel="noreferrer" className="text-indigo-300 underline" dir="ltr">{visible.permalink}</a>}
+          <p className="text-slate-500">إثبات الظهور العام عبر API: لا — يُفحص من جلسة غير إدارية. الصلاحيات المطلوبة: {(visible.requiredPublishPermissions || []).join('، ')}</p>
+          {Array.isArray(visible.manualActionRequired) && (
+            <ul className="text-slate-500 list-disc pr-4 space-y-0.5">
+              {visible.manualActionRequired.map((m: string, i: number) => <li key={i}>{m}</li>)}
+            </ul>
+          )}
+        </div>
+      )}
 
       {permErr && <p className="text-amber-300">فحص الصلاحيات: {permErr}</p>}
       {perm && (

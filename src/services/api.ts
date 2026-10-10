@@ -958,6 +958,21 @@ ${payload.topic || payload.productName || 'أنظمة وحلول التقسيط 
     return data;
   },
 
+  // تشخيص ظهور منشور Facebook للجمهور (للمالك): يقرأ is_published + ورود المعرّف
+  // على حائط الصفحة + permalink من Meta (قراءة فقط، بلا نشر). يكشف قيد «وضع تطوير
+  // التطبيق» الذي يحصر المحتوى المُنشأ عبر API في أدوار التطبيق/الصفحة.
+  async getFacebookPostVisibilityDiagnosis(postId?: string) {
+    const qs = postId ? `?postId=${encodeURIComponent(postId)}` : '';
+    const res = await fetch(`/api/platforms/facebook/post-visibility-diagnosis${qs}`, { headers: getAuthHeaders() });
+    const data = await res.json().catch(() => null);
+    if (!res.ok || !data?.success) {
+      const err: any = new Error(data?.error || 'تعذّر فحص ظهور منشور Facebook');
+      err.status = res.status; err.code = data?.code;
+      throw err;
+    }
+    return data;
+  },
+
   // سجل تشخيص النشر الفاشل المحفوظ (للمالك): رسالة المزود الكاملة + code/subcode/fbtrace
   // بلا أي سرّ، ومحفوظ عبر restart. platform/state/limit اختيارية.
   async getPublishDiagnostics(opts?: { platform?: string; state?: string; limit?: number }) {
