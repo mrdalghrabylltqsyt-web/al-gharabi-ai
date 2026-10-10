@@ -4108,11 +4108,34 @@ add('watcher-advisory-not-authority',
     read('engine/tests/publish.text.guard.test.ts').includes('TEXT_TOO_LONG'),
     'اختبارات الانحدار تغطي عند الحد/فوقه/عربي/إيموجي/هاشتاغ/فارغ + رفض قبل المزود');
 
+  add('facebook-text-limit-restored-2000',
+    /facebook:\s*2000\b/.test(read('engine/social/textLimits.ts')) &&
+    !/facebook:\s*5000\b/.test(read('engine/social/textLimits.ts')),
+    'حد فيسبوك استُعيد إلى 2000 في المصدر الواحد (لم يبقَ 5000)');
+
+  add('facebook-text-limit-regression-test',
+    read('engine/tests/text.limits.test.ts').includes('حد فيسبوك = 2000') &&
+    read('engine/tests/content.brief.limits.test.ts').includes('حد facebook المعلن = 2000'),
+    'اختبار انحدار يثبت حد فيسبوك 2000 وعدم تأثّر بقية الحدود');
+
+  add('content-brief-threads-utf8-aware',
+    read('server.ts').includes('function composePlatformText(platform: string, headline: string') &&
+    read('server.ts').includes('function trimToWordBoundary(platform: string, text: string, max: number)') &&
+    read('server.ts').includes('composePlatformText(platform, copy.headline'),
+    'توليد مركز المحتوى يقيس بطريقة المنصة عبر المصدر الواحد (لا text.length)');
+
+  add('content-brief-limits-tests',
+    read('engine/tests/content.brief.limits.test.ts').includes('bytes(') &&
+    read('engine/tests/content.brief.limits.test.ts').includes('لا يوجد يتيم UTF-16'),
+    'اختبار تكاملي لتوليد المحتوى: بايتات + عربي/إيموجي بلا كسر رموز');
+
   add('threads-text-guard-wired-into-npm-test',
     read('package.json').includes('test:text-limits') &&
     read('package.json').includes('test:publish-text-guard') &&
-    read('package.json').includes('npm run test:text-limits && npm run test:publish-text-guard'),
-    'اختبارا الحارس والحدود مُدرَجان في npm test');
+    read('package.json').includes('test:content-brief-limits') &&
+    read('package.json').includes('npm run test:text-limits && npm run test:publish-text-guard') &&
+    read('package.json').includes('npm run test:content-brief-limits && npm run test:tiktok'),
+    'اختبارات الحدود والحارس ومركز المحتوى مُدرَجة في npm test');
 
   // 12) Facebook: permalink معلن (فحص ظهور يدوي) بلا كشف سرّ.
   add('facebook-grounding-permalink-exposed',

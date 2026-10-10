@@ -110,6 +110,15 @@ for (const [pf, lim] of Object.entries(PLATFORM_TEXT_LIMITS)) {
   check(`حد ${pf} رقم موجب`, Number.isFinite(lim) && lim > 0, String(lim));
 }
 
+group('10) انحدار: حد فيسبوك استُعيد إلى 2000 وبقيت بقية الحدود دون تغيير');
+// كان التوحيد قد رفع فيسبوك من 2000 إلى 5000 بلا قصد — هذا يمنع رجوعه.
+check('حد فيسبوك = 2000 (كما قبل التوحيد)', PLATFORM_TEXT_LIMITS.facebook === 2000 && platformTextLimit('facebook') === 2000, String(PLATFORM_TEXT_LIMITS.facebook));
+check('حد فيسبوك ليس 5000', PLATFORM_TEXT_LIMITS.facebook !== 5000);
+const expectedLimits: Record<string, number> = { tiktok: 2200, instagram: 2200, facebook: 2000, youtube: 5000, x: 280, snapchat: 250, whatsapp: 4096, telegram: 4096, threads: 500, google_business: 1500 };
+for (const [pf, lim] of Object.entries(expectedLimits)) {
+  check(`حد ${pf} = ${lim} (غير متأثر)`, PLATFORM_TEXT_LIMITS[pf] === lim, String(PLATFORM_TEXT_LIMITS[pf]));
+}
+
 console.log('\n' + '='.repeat(60));
 if (failures.length === 0) { console.log(`PASSED: ${passed} text-limit checks`); process.exit(0); }
 console.error(`FAILED: ${failures.length} / ${passed + failures.length}`); failures.forEach((f) => console.error('  ✗ ' + f)); process.exit(1);

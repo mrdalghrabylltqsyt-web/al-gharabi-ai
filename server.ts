@@ -106,9 +106,7 @@ import {
   shortenToPlatformLimit,
   countForPlatform,
   platformTextLimit,
-  platformCountsUtf8Bytes,
   PLATFORM_TEXT_LIMITS,
-  type ShortenResult,
 } from "./engine/social/textLimits";
 import type { PlatformId } from "./engine/social/adapter";
 import { fetchPostMetrics } from "./engine/social/analytics";
@@ -14285,30 +14283,43 @@ function buildMarketingQuote(cashPrice: number, downPaymentPercent: number, mont
   };
 }
 
-function trimToWordBoundary(text: string, max: number): string {
+/** يقصّ نصاً عند حدود الكلمة **بالعدّ الصحيح للمنصة** (Threads = بايتات UTF-8)،
+ *  ويعمل على code points فلا يكسر إيموجي مركّباً. لا يعدّل النص الأصلي، ويضيف «…».
+ *  الحدّ يُقاس عبر المصدر الواحد engine/social/textLimits (countForPlatform). */
+function trimToWordBoundary(platform: string, text: string, max: number): string {
   if (max <= 0) return "";
-  if (text.length <= max) return text;
-  const cut = text.slice(0, max);
+  if (countForPlatform(platform, text).used <= max) return text;
+  const reserve = countForPlatform(platform, "").method === "utf8_bytes" ? 3 : 1; // «…» = 3 بايتات UTF-8
+  let cut = "";
+  for (const ch of text) { // التكرار على code points لا وحدات UTF-16 (لا كسر إيموجي)
+    const next = cut + ch;
+    if (countForPlatform(platform, next).used + reserve > max) break;
+    cut = next;
+  }
   const lastSpace = cut.lastIndexOf(" ");
-  return `${(lastSpace > max * 0.6 ? cut.slice(0, lastSpace) : cut).trimEnd()}…`;
+  const useWord = lastSpace > cut.length * 0.6 ? cut.slice(0, lastSpace) : cut;
+  return `${useWord.trimEnd()}…`;
 }
 
 // Composes the final platform text and guarantees it fits the platform limit by
 // shortening the body first, then dropping hashtags. Never truncates mid-word.
-function composePlatformText(headline: string, body: string, callToAction: string, hashtags: string[], limit: number) {
+// القياس بطريقة المنصة (Threads = UTF-8 bytes) عبر المصدر الواحد — لا text.length.
+function composePlatformText(platform: string, headline: string, body: string, callToAction: string, hashtags: string[], limit: number) {
   let tags = hashtags.slice();
   let currentBody = body;
   const render = () => [headline, currentBody, callToAction, tags.join(" ")].filter((x) => x && x.trim()).join("\n\n");
+  const used = (t: string) => countForPlatform(platform, t).used;
   let text = render();
-  while (text.length > limit && tags.length > 1) { tags = tags.slice(0, -1); text = render(); }
-  if (text.length > limit) {
+  while (used(text) > limit && tags.length > 1) { tags = tags.slice(0, -1); text = render(); }
+  if (used(text) > limit) {
     tags = [];
-    const reserved = render().length - currentBody.length;
-    currentBody = trimToWordBoundary(currentBody, Math.max(0, limit - reserved));
+    const reserved = used(render()) - used(currentBody);
+    currentBody = trimToWordBoundary(platform, currentBody, Math.max(0, limit - reserved));
     text = render();
   }
-  if (text.length > limit) text = trimToWordBoundary(render(), limit);
-  return { text, hashtags: tags, charCount: text.length, limit, withinLimit: text.length <= limit };
+  if (used(text) > limit) text = trimToWordBoundary(platform, render(), limit);
+  const finalUsed = used(text);
+  return { text, hashtags: tags, charCount: finalUsed, limit, withinLimit: finalUsed <= limit };
 }
 
 // Per-platform Arabic copy. Uses only the real product/showroom facts it is given.
@@ -14411,7 +14422,7 @@ function generateBriefContent(input: {
       installmentOptions: Array.isArray(product?.installmentOptions) ? product.installmentOptions : [],
       showroom: workspace.showroom, contactLine, notes,
     });
-    const composed = composePlatformText(copy.headline, copy.body, copy.cta, copy.hashtags, PLATFORM_TEXT_LIMITS[platform] || 2000);
+    const composed = composePlatformText(platform, copy.headline, copy.body, copy.cta, copy.hashtags, PLATFORM_TEXT_LIMITS[platform] || 2000);
     return { platform, platformName, headline: copy.headline, body: copy.body, callToAction: copy.cta, hashtags: composed.hashtags, charCount: composed.charCount, limit: composed.limit, withinLimit: composed.withinLimit, text: composed.text };
   });
 

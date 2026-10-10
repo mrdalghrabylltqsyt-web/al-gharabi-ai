@@ -15,9 +15,12 @@ export const UTF8_BYTE_COUNTED_PLATFORMS: readonly string[] = ['threads'];
 /** كيف يعدّ المزوّد الطول. */
 export type TextCountMethod = 'utf8_bytes' | 'code_points';
 
-/** حدود النص لكل منصة (المصدر الواحد — يُستهلك في التكييف والتحقق معاً). */
+/** حدود النص لكل منصة (المصدر الواحد — يُستهلك في التكييف والتحقق معاً).
+ *  ملاحظة: قيمة Facebook هنا هي سقف توليد/عرض «مركز المحتوى» (2000) المطابق للسلوك
+ *  السابق قبل التوحيد؛ لم تُرفع إلى 5000 عن قصد. رفعُها إلى حدّ المنصة الرسمي العالي
+ *  يمكن أن يُجْرَى لاحقاً كقرار واعٍ منفصل بعد اختبار فعلي على فيسبوك. */
 export const PLATFORM_TEXT_LIMITS: Record<string, number> = {
-  tiktok: 2200, instagram: 2200, facebook: 5000, youtube: 5000, x: 280,
+  tiktok: 2200, instagram: 2200, facebook: 2000, youtube: 5000, x: 280,
   snapchat: 250, whatsapp: 4096, telegram: 4096, threads: 500, google_business: 1500,
 };
 

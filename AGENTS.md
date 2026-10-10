@@ -44,7 +44,7 @@ npm install
 npm run dev            # tsx server.ts
 npm run lint           # tsc --noEmit
 npm run build          # vite build + esbuild server.ts -> dist/server.cjs
-npm run final-audit    # node final-audit.mjs (1506 فحصاً)
+npm run final-audit    # node final-audit.mjs (1510 فحصاً)
 npm test               # storage + engine + auth + ... + db + runtime
 ```
 - التشغيل الإنتاجي: `PORT=4517 NODE_ENV=production APP_URL=http://localhost:4517 node dist/server.cjs`
@@ -5327,4 +5327,25 @@ final-audit = **1493 فحصاً** (`instagram-video-media-type` صار يشتر�
 `package.json`، `final-audit.mjs`، `AGENTS.md`، واختباران جديدان.
 **لم يُمسّ:** أي سرّ/مفتاح/OAuth، Gemini/firewall، مصادقة، قاعدة بيانات، DR/الاستعادة،
 YouTube (المراقب/الطابور/التفويض)، TikTok/Instagram/Telegram، أو نموذج الجدولة.
+
+### معالجة ملاحظات المراجعة المستقلة (2026-10-04) — ثلاثة بنود غير حاجبة
+1. **استُعيد حد فيسبوك إلى 2000:** كان توحيد `PLATFORM_TEXT_LIMITS` في `textLimits.ts`
+   قد رفع فيسبوك من 2000 (السلوك السابق في `server.ts`) إلى 5000 بلا قصد، فيتأثّر بذلك
+   سقفُ توليد `/api/ai/content-brief` وحقلُ `textLimit` في `campaignPlatformResources`.
+   أُعيدت القيمة إلى **2000** في المصدر الواحد مع تعليق يوضّح أن رفعها لاحقاً قرار واعٍ
+   منفصل. باقي الحدود لم تتغيّر. اختبار انحدار في `text.limits.test.ts` (المجموعة 10)
+   وفي `content.brief.limits.test.ts` (المجموعة 4) يمنع رجوع 5000.
+2. **توليد مركز المحتوى صار byte-aware:** كان `composePlatformText`/`trimToWordBoundary`
+   يقيسان بـ`text.length` (UTF-16) في مسار `/api/ai/content-brief`، فقد يولّدان مسودة
+   Threads تتجاوز 500 بايت رغم `withinLimit=true`. الآن يقيسان بطريقة المنصة عبر
+   `countForPlatform` من المصدر الواحد، والقصّ يتم **على code points** (لا كسر إيموجي
+   مركّب)، و`charCount`/`withinLimit` صادقان. النص الأصلي لا يُعدّل، والاختصار لا يُنشر
+   تلقائياً، ويبقى حارس `executePlatformPublish` طبقة أمان ثانية مستقلة. اختبار:
+   `engine/tests/content.brief.limits.test.ts` (`npm run test:content-brief-limits`).
+3. **أُزيل استيرادان غير مستخدمين** من `server.ts`: `platformCountsUtf8Bytes` و
+   `type ShortenResult` (لا يستخدمهما الملف). لم يُحذف أي مساعد أو تصدير مستخدم في مكان آخر.
+
+final-audit = **1510** (`facebook-text-limit-restored-2000`، `facebook-text-limit-regression-test`،
+`content-brief-threads-utf8-aware`، `content-brief-limits-tests`). `npm test` أُثري بـ
+`test:content-brief-limits`. **لم يُدمج ولم يُنشر** — بانتظار إذن المالك.
 
