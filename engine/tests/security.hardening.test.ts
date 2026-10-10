@@ -15,6 +15,7 @@
 import { spawn, type ChildProcess } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import crypto from 'node:crypto';
+import { buildServerTestEnv } from './helpers/serverTestEnv';
 
 let passed = 0;
 const failures: string[] = [];
@@ -46,7 +47,7 @@ async function run(): Promise<void> {
     process.exit(1);
   }
   const server: ChildProcess = spawn('node', ['dist/server.cjs'], {
-    env: { ...process.env, PORT: String(PORT), NODE_ENV: 'production', APP_URL: BASE, WEBHOOK_SECRET },
+    env: buildServerTestEnv({ prefix: 'gharabi-security-hardening-', overrides: { PORT: String(PORT), NODE_ENV: 'production', APP_URL: BASE, WEBHOOK_SECRET } }),
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   let log = '';

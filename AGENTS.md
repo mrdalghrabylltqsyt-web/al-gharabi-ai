@@ -5350,6 +5350,47 @@ final-audit = **1510** (`facebook-text-limit-restored-2000`، `facebook-text-lim
 `test:content-brief-limits`. **لم يُدمج ولم يُنشر** — بانتظار إذن المالك.
 
 
+## إصلاح عزل بيئات الاختبار + تنقية رموز المصادقة في السجلات — فرع منفصل (2026-10-04)
+
+فرع مستقل من `main` (بلا مساس بفرع Threads ولا الدفع/الدمج/النشر). يعالج فجوتين أمنيتين
+رصدهما التدقيق الجنائي.
+
+**ISO-A — عزل بيئات الاختبار (أعلى خطورة).** كان عدد من الاختبارات يُشغّل الخادم الحقيقي
+بـ`{ ...process.env }` دون حذف `DATABASE_URL`، و`createStorageAdapter` يختار Postgres
+تلقائياً عند وجوده، فأي بيئة CI/مطوّر تضبطه يُقلع خادم الاختبار فوق **قاعدة الإنتاج نفسها**.
+
+- `engine/tests/helpers/serverTestEnv.ts` (جديد، مصدر واحد): `buildServerTestEnv` يحذف
+  `LIVE_DB_ENV_KEYS` (`DATABASE_URL`, `GHARABI_TEST_DATABASE_URL`, `POSTGRES_URL`, …) ويثبّت
+  `STATE_DIR` مؤقتاً عبر `mkdtempSync` ويُزيل علامات المضيف العابر، مع `overrides`. و
+  `hasLiveDbEnv` لفحص الانحدار.
+- طُبّق على الاختبارات الثمانية التي تُشغّل الخادم وتورّث البيئة: `runtime.smoke`,
+  `security.hardening`, `source.bundle.exposure`, `session.durability`, `preview.login`,
+  `owner.email`, `schedule.timezone`, و`database.persistence` — الأخير الأهم (يكتب في
+  Postgres فعلاً): حُصّن بحذف قاعدة الإنتاج المورّثة أولاً ثم ضبط قاعدة الاختبار، مع
+  **حارس صريح يرفض التشغيل (SKIP) إذا طابقت قاعدة الاختبار `DATABASE_URL` الإنتاجي**.
+- المسح الآن **نظيف**: لا اختبار يُشغّل الخادم يورّث `process.env` دون عزل.
+
+**SEC-A — منع تمرير الرموز في سطر الطلب (URL).** كان `/api/auth/google` يتحقق عبر
+`oauth2.googleapis.com/tokeninfo?id_token=…` فيظهر الرمز في سجلات الوسيط/الـCDN (CWE-598)،
+وكان إبطال Google يستخدم `revoke?token=…`. الإصلاح:
+- التحقق صار **محلياً عبر JWKS** بـ`google-auth-library` (تبعية إنتاجية أصلاً):
+  `googleVerifier().verifyIdToken({ idToken, audience: GOOGLE_CLIENT_ID })` — لا يُمرَّر
+  الرمز في أي URL. فشل التحقق => 401 صريح، وغياب `GOOGLE_CLIENT_ID` => 500 صريح.
+- إبطال YouTube صار `POST https://oauth2.googleapis.com/revoke` مع الرمز في **الجسم**.
+
+**SEC-B — تنقية سجل خطأ المصادقة.** `console.error("Google auth error:", err)` كان يطبع
+كائن الخطأ الخام (فيكرّر تسريب الرمز من رسالة fetch). الآن
+`console.error("Google auth error:", safeErrorMessage(err, shouldExposeErrorMessage(process.env)))`.
+وسجل `[oauth-callback-error]` يمر عبر `redactSecretsFromText(...).slice(0,300)`.
+
+**اختبار الانحدار:** `engine/tests/security.isolation.regression.test.ts`
+(`npm run test:security-isolation`، 14 فحصاً): يمنع أي وراثة `process.env` بلا عزل، ويمنع
+رجوع `tokeninfo?id_token=`/`revoke?token=`، ويثبت `verifyIdToken` المحلي والسجل المُنقّى.
+مُدرَج في `npm test` بعد `test:security-hardening`.
+
+**التحقق:** `lint` ✅ · `build` ✅ · `npm test` كامل ✅ (EXIT=0) · `final-audit` ✅ (1510).
+10 ملفات معدّلة + 2 جديدة (+96/−61). **لا دفع، لا دمج، لا نشر** — بانتظار الإذن الصريح.
+
 ## تقرير جاهزية النشر الموحّد (Publishing Readiness) — تشخيص + إعداد (2026-10-11)
 
 دفعة تشخيص وإعداد لآلية «النشر الموحّد بضغطة واحدة» على المنصات الحقيقية

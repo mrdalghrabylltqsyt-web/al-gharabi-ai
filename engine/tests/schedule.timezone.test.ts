@@ -15,6 +15,7 @@ import { mkdtempSync, rmSync, existsSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { randomBytes } from 'node:crypto';
+import { buildServerTestEnv } from './helpers/serverTestEnv';
 import {
   APP_TIMEZONE,
   defaultScheduleInput,
@@ -94,15 +95,11 @@ const OWNER_TOKEN = randomBytes(24).toString('hex');
 
 function startApp(port: number, cwd: string): { proc: ChildProcess; log: () => string } {
   let log = '';
-  const env: Record<string, string> = {
-    ...(process.env as Record<string, string>),
-    PORT: String(port),
-    NODE_ENV: 'production',
-    APP_URL: `http://127.0.0.1:${port}`,
-    GHARABI_PREVIEW_TOKEN: OWNER_TOKEN,
-    OWNER_EMAIL: 'owner@al-gharabi.test',
-    STATE_DIR: cwd,
-  };
+  const env: Record<string, string> = buildServerTestEnv({
+    stateDir: cwd,
+    prefix: 'gharabi-sched-',
+    overrides: { PORT: String(port), NODE_ENV: 'production', APP_URL: `http://127.0.0.1:${port}`, GHARABI_PREVIEW_TOKEN: OWNER_TOKEN, OWNER_EMAIL: 'owner@al-gharabi.test' },
+  });
   const proc = spawn(process.execPath, [tsxCli, serverEntry], { cwd, env, stdio: ['ignore', 'pipe', 'pipe'] });
   proc.stdout?.on('data', (d) => (log += String(d)));
   proc.stderr?.on('data', (d) => (log += String(d)));
