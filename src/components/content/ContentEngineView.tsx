@@ -25,13 +25,10 @@ import {
 } from 'lucide-react';
 import { SocialPlatformId, ContentFormatType } from '../../types';
 
-// نفس حدود/قيود مراجعة فيديو يوتيوب في YouTubeContentQueuePanel — مصدر واحد للقيم
-// حتى لا يختلف السلوك بين الشاشتين. الفيديو الحقيقي (رفع فعلي) مدعوم اليوم ليوتيوب
-// فقط؛ المنصات الأخرى تحتاج رابطاً عاماً (إنستغرام/تيك توك/فيسبوك/ثريدز) — الواجهة
-// تصرّح بهذا بدل الادّعاء الكاذب بدعم شامل أو بنفي دعم موجود.
-// مدعوم برابط عام فعلاً على الخادم: instagram/tiktok (Task #23)، facebook (Task #22
-// عبر POST /{page-id}/videos)، threads (Task #24 عبر حاوية الوسائط). التوزيع الموحّد
-// /api/workspace/content/:id/publish يمرّر videoUrl لها جميعاً عبر executePlatformPublish.
+// النشر الموحّد بنقرة واحدة: كل المنصات (بما فيها يوتيوب) تُنشر من نفس الزر.
+// عند إرفاق فيديو يُرفع تلقائياً ويُجهَّز رابطه العام (HMAC) بلا أي خطوة يدوية،
+// فيُمرَّر الوسيط الحقيقي لكل منصة عبر /api/workspace/content/:id/publish (لا طابور
+// مراجعة منفصل لليوتيوب، ولا لصق رابط إجباري). المصدر الواحد لسلوك الوسائط هنا.
 const MAX_VIDEO_MB = 12;
 const ALLOWED_VIDEO_TYPES = ['video/mp4', 'video/webm', 'video/quicktime', 'video/x-matroska', 'video/x-msvideo'];
 const CONTENT_UPLOAD_MAX_BYTES = MAX_VIDEO_MB * 1024 * 1024;
@@ -78,7 +75,6 @@ export const ContentEngineView: React.FC = () => {
   const [publicVideoUrl, setPublicVideoUrl] = useState<string>('');
   const [isHostingVideo, setIsHostingVideo] = useState<boolean>(false);
   const [videoHostError, setVideoHostError] = useState<string | null>(null);
-  const [isQueuingYouTube, setIsQueuingYouTube] = useState<boolean>(false);
 
   const selectedProduct = products.find((p) => p.id === selectedProductId);
 
@@ -187,31 +183,9 @@ export const ContentEngineView: React.FC = () => {
 
     const title = postTitle || (selectedProduct ? `عرض ${selectedProduct.name}` : 'منشور جديد');
 
-    // الفيديو الحقيقي (رفع فعلي) مدعوم اليوم ليوتيوب فقط — يمرّ عبر نفس طابور
-    // المراجعة الحقيقي المستخدم في "مدير تشغيل YouTube" (لا مسار مختصر يتجاوز
-    // الحوكمة). لا نُعلن نجاحاً هنا إن فشل الخادم فعلياً.
-    if (video && videoCapablePlatforms.length > 0) {
-      setIsQueuingYouTube(true);
-      try {
-        const draftPayload: Record<string, any> = {
-          title,
-          description: adaptedVersions['youtube'] || generatedResult,
-          tags: ['تقسيط_منتجات', 'معرض_الغرابي'],
-          privacyStatus: 'public',
-          mimeType: video.type || 'video/mp4',
-          filename: video.name,
-          videoBase64: video.base64,
-          productId: selectedProduct?.id || undefined,
-        };
-        const res = await apiService.createYouTubeContentDraft(draftPayload);
-        showToast(`تم إرسال الفيديو إلى طابور مراجعة يوتيوب (${res?.item?.stateLabelAr || res?.item?.state || 'بانتظار المراجعة'}).`);
-      } catch (e: any) {
-        showToast(e?.message || 'تعذر إرسال الفيديو إلى طابور يوتيوب.');
-        setIsQueuingYouTube(false);
-        return; // لا نكمل حفظ المنشور النصي بصمت عن فشل حقيقي في رفع الفيديو
-      }
-      setIsQueuingYouTube(false);
-    }
+    // النشر الموحّد بنقرة واحدة: يوتيوب يُنشر ضمن نفس النقرة مع بقية المنصات (لا
+    // طابور مراجعة منفصل). الفيديو المُرفق رُفع تلقائياً وجهّز رابطه العام فور
+    // الإرفاق، فيُحفظ الوسيط مع المنشور ويُنشر لاحقاً من مسار النشر الموحّد.
 
     // الوسيط الفعلي المُرسَل وقت النشر الحقيقي (Task #25): إن وُجد فيديو ورابطه
     // العام (لإنستغرام/تيك توك/فيسبوك/ثريدز)، فهذا هو الوسيط الحقيقي — لا صورة
@@ -344,13 +318,13 @@ export const ContentEngineView: React.FC = () => {
                 {videoCapablePlatforms.length > 0 && (
                   <p className="text-emerald-400 flex items-start gap-1.5">
                     <CheckCircle className="w-3.5 h-3.5 shrink-0 mt-0.5" />
-                    <span>{videoCapablePlatforms.join('، ')}: سيُرفع الفيديو فعلياً عبر طابور مراجعة يوتيوب (نشر حقيقي بعد موافقتك).</span>
+                    <span>{videoCapablePlatforms.join('، ')}: جاهز للنشر الفوري الموحد مع باقي المنصات بنقرة واحدة.</span>
                   </p>
                 )}
                 {videoUrlNeededPlatforms.length > 0 && (
-                  <p className="text-amber-400 flex items-start gap-1.5">
-                    <AlertTriangle className="w-3.5 h-3.5 shrink-0 mt-0.5" />
-                    <span>{videoUrlNeededPlatforms.join('، ')}: لا تقبل رفع ملف مباشرة — تحتاج رابط فيديو عام وقت النشر الفعلي (أضفه أدناه أو لاحقاً).</span>
+                  <p className="text-emerald-400 flex items-start gap-1.5">
+                    <CheckCircle className="w-3.5 h-3.5 shrink-0 mt-0.5" />
+                    <span>{videoUrlNeededPlatforms.join('، ')}: يُرفع الفيديو تلقائياً ويُجهَّز رابطه العام فور الإرفاق — جاهزة للنشر الموحد بلا أي خطوة يدوية.</span>
                   </p>
                 )}
                 {videoUnsupportedPlatforms.length > 0 && (
@@ -365,7 +339,7 @@ export const ContentEngineView: React.FC = () => {
             {video && videoUrlNeededPlatforms.length > 0 && (
               <div>
                 <label className="block text-[11px] font-bold text-slate-400 mb-1">
-                  رابط الفيديو العام (لإنستغرام/تيك توك/ثريدز/فيديو فيسبوك)
+                  رابط الفيديو العام (يُجهَّز تلقائياً — هذا الحقل بديل يدوي اختياري فقط)
                 </label>
                 {isHostingVideo && (
                   <p className="text-[11px] text-sky-400 flex items-center gap-1.5 mb-1">
@@ -638,7 +612,7 @@ export const ContentEngineView: React.FC = () => {
                 <div className="grid grid-cols-2 gap-2">
                   <button
                     onClick={() => handleSendToApproval('draft')}
-                    disabled={isQueuingYouTube || isHostingVideo}
+                    disabled={isHostingVideo}
                     className="py-2.5 px-3 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-bold transition flex items-center justify-center gap-1.5 cursor-pointer disabled:opacity-50"
                   >
                     <Save className="w-3.5 h-3.5" />
@@ -647,11 +621,11 @@ export const ContentEngineView: React.FC = () => {
 
                   <button
                     onClick={() => handleSendToApproval('review')}
-                    disabled={isQueuingYouTube || isHostingVideo}
+                    disabled={isHostingVideo}
                     className="py-2.5 px-3 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 text-xs font-bold transition flex items-center justify-center gap-1.5 cursor-pointer shadow-md shadow-emerald-500/20 disabled:opacity-50"
                   >
-                    {isQueuingYouTube ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : isHostingVideo ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <Send className="w-3.5 h-3.5" />}
-                    {isQueuingYouTube ? 'جارٍ إرسال الفيديو ليوتيوب...' : isHostingVideo ? 'جارٍ تجهيز رابط الفيديو العام...' : 'إرسال للمراجعة والاعتماد'}
+                    {isHostingVideo ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <Send className="w-3.5 h-3.5" />}
+                    {isHostingVideo ? 'جارٍ تجهيز رابط الفيديو العام...' : 'إرسال للمراجعة والاعتماد'}
                   </button>
                 </div>
               </div>
