@@ -17,6 +17,8 @@ import {
   findForbiddenPublicKeys,
   findDisallowedWatcherPublicKeys,
   sanitizePublicHealthPayload,
+  sanitizePublicErrorMessage,
+  PUBLIC_ERROR_TOKEN_MAX,
 } from '../social/healthPrivacy';
 
 let passed = 0;
@@ -69,6 +71,26 @@ check('حقل عميل زائد يُكشف', findDisallowedWatcherPublicKeys({ s
 group('5) collectPublicPayloadKeys شامل');
 const keys = collectPublicPayloadKeys({ a: { b: [{ c: 1 }] }, d: 2 });
 check('يجمع كل المفاتيح المتداخلة', ['a', 'b', 'c', 'd'].every((k) => keys.has(k)));
+
+group('6) تنقية رسالة الخطأ العامة (lastError)');
+// رمز تقني ASCII بلا مسافات => يمرّ كما هو.
+check('رمز تقني يمرّ', sanitizePublicErrorMessage('VIDEO_LIST_FAILED') === 'VIDEO_LIST_FAILED');
+check('رمز بنقطة/شرطة يمرّ', sanitizePublicErrorMessage('oauth.token-expired') === 'oauth.token-expired');
+check('رمز بعد trim يمرّ', sanitizePublicErrorMessage('  timeout  ') === 'timeout');
+// أي نص حر (بمسافات) — عربي أو إنجليزي — لا يمرّ.
+check('نص عربي يُستبدل برسالة عامة', sanitizePublicErrorMessage('فشل مزود يحوي نصاً من محادثة عميل') === 'connection error');
+check('رسالة إنجليزية بمسافات تُستبدل (قد تحمل تفاصيل مزوّد)', sanitizePublicErrorMessage('Graph API error: token invalid for page 123') === 'connection error');
+check('رسالة فيها اسم حساب تُستبدل', sanitizePublicErrorMessage('PRIVACY_CANARY_AUTHOR_ZZZ commented') === 'connection error');
+// حمولة طويلة (حتى لو بدت رمزاً) لا تمرّ => رسالة عامة.
+check('حمولة طويلة جداً تُستبدل', sanitizePublicErrorMessage('A'.repeat(PUBLIC_ERROR_TOKEN_MAX + 1)) === 'connection error');
+check('حمولة بطول الحد بالضبط تمرّ', sanitizePublicErrorMessage('A'.repeat(PUBLIC_ERROR_TOKEN_MAX)) === 'A'.repeat(PUBLIC_ERROR_TOKEN_MAX));
+// قيمة فارغة/غير نصية => لا خطأ.
+check('قيمة فارغة => null', sanitizePublicErrorMessage('   ') === null && sanitizePublicErrorMessage('') === null);
+check('قيمة غير نصية => null', sanitizePublicErrorMessage(null) === null && sanitizePublicErrorMessage(42) === null);
+// محرف عربي واحد بلا مسافة لا يمرّ (regex ASCII فقط).
+check('محرف عربي بلا مسافة يُستبدل', sanitizePublicErrorMessage('خطأ') === 'connection error');
+// لا تُسرّب أي بصمة canary عبر أي مدخل حر (نص فيه مسافات/محارف غير مسموحة).
+check('لا تسريب canary عبر أي مدخل حر', ['PRIVACY_CANARY_AUTHOR_ZZZ wrote something', 'عميل: PRIVACY_CANARY_REPLY_TEXT_ZZZ'].every((c) => sanitizePublicErrorMessage(c) === 'connection error'));
 
 console.log('\n' + '='.repeat(60));
 if (failures.length === 0) { console.log(`PASSED: ${passed} public health guard checks`); process.exit(0); }

@@ -69,6 +69,26 @@ export const PUBLIC_ENDPOINT_FORBIDDEN_OPERATIONAL_FIELDS: readonly string[] = O
 
 const FORBIDDEN_SET = new Set(PUBLIC_ENDPOINT_FORBIDDEN_CUSTOMER_FIELDS);
 
+/**
+ * الحد الأقصى لطول رمز الخطأ المُعلن في النقطتين العامتين. أطول من ذلك ليس رمزاً
+ * تقنياً بل نص حر (قد يحمل تفاصيل مزوّد/محادثة) فيُستبدل برسالة عامة.
+ */
+export const PUBLIC_ERROR_TOKEN_MAX = 40;
+
+/**
+ * يُنقّي قيمة خطأ داخلية إلى **رمز تقني عام** صالح للنقطتين العامتين (/api/health
+ * و/api/readiness). القاعدة الملزمة: لا يمرّ أي نص قد يحمل محتوى عميل. لذلك نقبل
+ * فقط **رمز ASCII واحداً بلا مسافات** (مثل `VIDEO_LIST_FAILED` أو `timeout`)؛ أي
+ * قيمة نصية أخرى — رسالة إنجليزية بمسافات، أو نص عربي، أو حمولة طويلة — تُستبدل
+ * بـ`connection error`. قيمة غير نصية أو فارغة تعني «لا خطأ» => null.
+ */
+export function sanitizePublicErrorMessage(err: unknown): string | null {
+  if (typeof err !== 'string') return null;
+  const token = err.trim();
+  if (!token) return null;
+  return /^[A-Za-z0-9._-]{1,40}$/.test(token) ? token : 'connection error';
+}
+
 /** يجمع كل أسماء المفاتيح في أي شكل متداخل (كائنات/مصفوفات). */
 export function collectPublicPayloadKeys(value: unknown, acc = new Set<string>()): Set<string> {
   if (Array.isArray(value)) {

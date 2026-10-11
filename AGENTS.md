@@ -44,7 +44,7 @@ npm install
 npm run dev            # tsx server.ts
 npm run lint           # tsc --noEmit
 npm run build          # vite build + esbuild server.ts -> dist/server.cjs
-npm run final-audit    # node final-audit.mjs (1534 فحصاً)
+npm run final-audit    # node final-audit.mjs (1536 فحصاً)
 npm test               # storage + engine + auth + ... + db + runtime
 ```
 - التشغيل الإنتاجي: `PORT=4517 NODE_ENV=production APP_URL=http://localhost:4517 node dist/server.cjs`
@@ -5548,3 +5548,25 @@ Gemini، بقية المنصات أو نموذج الجدولة.
 
 **لا تغيير في:** الأسرار/المفاتيح، OAuth/الاعتمادات، بقية المنصات، Gemini، قاعدة البيانات،
 DR/الاستعادة، نموذج الجدولة، أو مسارات النشر الأخرى (نص/فيديو).
+
+## تقوية عزل بيانات العملاء في /api/health و/api/readiness — `lastError` (2026-10-11)
+
+النقطتان العامتان (بلا مصادقة، لأدوات المراقبة) كانتا قد أُزيل عنهما `attentionRequired`
+و`lastReply` وأي حقل يحمل اسم حساب/نص تعليق/نص رد (مدمج مسبقاً في `8825a67`)، وهما
+**نظيفتان حياً على الإنتاج** (`5c35033`). بقيت فجوة واحدة حقيقية مُثبتة:
+`watcherPublicError` كان يقبل حتى **40 محرفاً ASCII حراً بمسافات**، فيمكن أن تمرّ رسالة
+SDK إنجليزية تحمل اسم حساب/نصاً (مثال مُثبت: `PRIVACY_CANARY_AUTHOR_ZZZ wrote: …` يمرّ
+خاماً).
+
+الإصلاح (مصدر واحد، بلا كسر أي شيء):
+- `engine/social/healthPrivacy.ts`: `sanitizePublicErrorMessage` + `PUBLIC_ERROR_TOKEN_MAX`
+  — يقبل **رمز ASCII واحداً بلا مسافات فقط** (`^[A-Za-z0-9._-]{1,40}$`)، وأي نص حر (عربي
+  أو إنجليزي بمسافات) => `connection error`، والفارغ/غير النصي => `null`.
+- `server.ts`: `watcherPublicError` يفوّض للمصدر الواحد.
+- اختبارات: `health.guard.test.ts` **35** (مجموعة 6) و`health.privacy.test.ts` **46**
+  (canary ASCII حر لا يمرّ خاماً).
+- final-audit: `youtube-watcher-public-error-sanitized` (محدَّث) + `public-error-sanitizer-single-source`
+  + `public-error-sanitizer-wired-server` => **1536**.
+
+الحقول التفصيلية تبقى متاحة للمالك فقط عبر `/api/agent/youtube/watcher` (لا حذف من النظام).
+
