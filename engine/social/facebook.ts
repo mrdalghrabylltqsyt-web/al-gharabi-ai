@@ -539,6 +539,36 @@ export function buildPublishVideoBody(fileUrl: string, description?: string): UR
 }
 
 /**
+ * يبني جسم نشر منشور نصي/رابط على صفحة (`POST /{page-id}/feed`).
+ *
+ * `published=true` **صريح** (وليس اعتماداً على الافتراضي): يمنع — بحسب عقد Graph —
+ * بقاء المنشور مسودة أو مجدولاً (`is_published=false`) فيراه المالك فقط. رغم أن
+ * الافتراضي للمنشور الفوري `true`، التصريح يجعل النية قاطعة ويحمي من انحراف العقد.
+ *
+ * **قيود موثّقة لا تُخترع:** منشور الصفحة عبر `/feed` **عام بطبيعته** — أي أن متابعي
+ * الصفحة يرونه دون أي معامل إضافي. ولا يقبل هذا المسار معامل `privacy`
+ * (`{value:'EVERYONE'}`) — ذلك معامل لجدول المستخدم/`/me/feed` لا لصفحة، ويُرفض على
+ * صفحة بخطأ `100/#200 Invalid parameter`. لذلك لا نرسله (لا ادّعاء ضمان عبر معامل
+ * غير مدعوم). الظهور العام الفعلي يتوقف على **وضع تطبيق Meta** (Live/Access Levels)
+ * لا على أي معامل HTTP — يُشخَّص عبر `/api/platforms/facebook/post-visibility-diagnosis`.
+ */
+export function buildPublishTextBody(message: string): URLSearchParams {
+  const body = new URLSearchParams();
+  body.set('message', message);
+  body.set('published', 'true');
+  return body;
+}
+
+/**
+ * حرس صريح: منشور الصفحة لا يقبل معامل `privacy`. أي محاولة لبناء جسم نشر صفحة
+ * يحمل `privacy` خطأ عقد — يُرفض بدل إرساله (فيرد Meta `100/#200 Invalid parameter`
+ * ويفشل النشر). السبب: `{value:'EVERYONE'}` خاص بجدول المستخدم لا بالصفحة.
+ */
+export function assertNoPagePostPrivacyParam(params: URLSearchParams): boolean {
+  return !params.has('privacy');
+}
+
+/**
  * يبني جسم نشر صورة على صفحة (`POST /{page-id}/photos`). Graph API يقرأ الصورة
  * من رابط عام عبر `url` (وليس `source` المخصّص للبايتات) حين لا نرفع ملفاً
  * مباشرة. الرسالة اختيارية. الصلاحية: pages_manage_posts (نفس صلاحية النشر).
@@ -1093,7 +1123,7 @@ export class FacebookClient {
       const res = await this.fetchImpl(u.toString(), {
         method: 'POST',
         headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-        body: new URLSearchParams({ message }).toString(),
+        body: buildPublishTextBody(message).toString(),
       });
       const data = await res.json().catch(() => null);
       if (!res.ok || data?.error || !data?.id) {

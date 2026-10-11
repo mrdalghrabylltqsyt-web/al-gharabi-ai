@@ -44,6 +44,8 @@ import {
   formatFacebookGraphError,
   buildPublishVideoBody,
   buildPublishPhotoBody,
+  buildPublishTextBody,
+  assertNoPagePostPrivacyParam,
   interpretPostGrounding,
   FacebookClient,
 } from '../social/facebook';
@@ -313,6 +315,28 @@ async function unitTests(): Promise<void> {
   // حال تغيّر عقد Graph، ولا نحوّل الفيديو سهواً لمسودة (published=false) فيبقى
   // ظاهراً للأونر فقط بدل الجمهور.
   check('buildPublishVideoBody يفرض published=true صراحةً', buildPublishVideoBody('https://x/v.mp4', 'وصف').get('published') === 'true');
+
+  group('1ط-3) وحدة: ظهور منشور الصفحة النصي للجمهور (public visibility fix)');
+  // منشور الصفحة عبر /feed عام بطبيعته ولا يقبل معامل privacy (ذاك لجدول المستخدم).
+  // `published=true` صريح يمنع بقاءه مسودة/مجدولاً (is_published=false) فيراه المالك فقط.
+  check('buildPublishTextBody يفرض published=true صراحةً', buildPublishTextBody('نص العرض').get('published') === 'true');
+  check('buildPublishTextBody يحمل الرسالة', buildPublishTextBody('نص العرض').get('message') === 'نص العرض');
+  check('buildPublishTextBody لا يرسل privacy (غير مدعوم على الصفحة)', buildPublishTextBody('نص').get('privacy') === null);
+  check('حرس: جسم نشر الصفحة بلا privacy مقبول', assertNoPagePostPrivacyParam(buildPublishTextBody('نص')) === true);
+  check('حرس: أي privacy يُرفض صراحةً (يمنع فشل Invalid parameter)', assertNoPagePostPrivacyParam(new URLSearchParams({ privacy: '{"value":"EVERYONE"}' })) === false);
+  {
+    const textRequests: { url: string; body: any }[] = [];
+    const fakeTextFetch = async (url: string, init: any) => {
+      textRequests.push({ url, body: Object.fromEntries(new URLSearchParams(String(init?.body || ''))) });
+      return { ok: true, status: 200, json: async () => ({ id: 'POST_789' }) };
+    };
+    const textClient = new FacebookClient(fakeTextFetch as any, 'https://graph.example/v21.0');
+    const textRes = await textClient.publishToPage('PAGE_X', 'PAGE_TOKEN', 'عرض جديد للتقسيط');
+    check('نشر المنشور النصي ينجح بمعرّف من Meta', textRes.ok === true && textRes.data?.providerPostId === 'POST_789');
+    check('الطلب ذهب إلى /{page-id}/feed', textRequests[0]?.url.includes('/PAGE_X/feed'));
+    check('الجسم حمل published=true صراحةً (لا مسودة)', textRequests[0]?.body.published === 'true');
+    check('الجسم لم يحمل privacy (لا معامل غير مدعوم)', textRequests[0]?.body.privacy === undefined);
+  }
 
   group('1ط-2) وحدة: تفسير حالة ظهور المنشور (interpretPostGrounding)');
   const gPublished = interpretPostGrounding('video', { id: 'V1', is_published: true, created_time: '2026-01-01T00:00:00+0000' }, true);

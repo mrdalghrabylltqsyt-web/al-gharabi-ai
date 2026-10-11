@@ -3660,17 +3660,16 @@ add('watcher-advisory-not-authority',
     publishResultSrc.includes('YOUTUBE_UNIFIED_PUBLISH_NOTE') &&
     publishResultSrc.includes('isYouTubeMediaNeed') &&
     publishResultSrc.includes('youtubeDedicatedDisclosure'),
-    'الواجهة توضّح أن YouTube موحّد بنفس النقرة ويحتاج فيديو (لا طابور منفصل)');
-  add('publish-ui-youtube-pre-disclosure',
-    publishResultSrc.includes('youtubeDedicatedDisclosure') &&
-    approvalSrc.includes('youtubeDedicatedDisclosure(post.targetPlatforms)') &&
-    /post\.status === 'approved' \|\| post\.status === 'scheduled'[\s\S]{0,200}youtubeDedicatedDisclosure\(post\.targetPlatforms\)/.test(approvalSrc),
-    'إفصاح يوتيوب يُعرض **قبل** نقرة النشر الموحّد (لا بعدها فقط) عند وجود يوتيوب في المنصات الهدف');
+    'منطق الواجهة يوضّح أن YouTube موحّد بنفس النقرة ويحتاج فيديو (لا طابور منفصل)');
+  add('publish-ui-youtube-no-yellow-disclosure-box',
+    !approvalSrc.includes('youtubeDedicatedDisclosure(post.targetPlatforms)') &&
+    !approvalSrc.includes('youtubeDedicatedDisclosure'),
+    'صندوق تنبيه YouTube الأصفر أُزيل من واجهة الموافقة (تنظيف نصوص فترة الاختبار)');
   add('approval-youtube-disclosure-ui-test',
     fs.existsSync(path.join(root, 'engine/tests/approval.youtube.disclosure.ui.test.ts')) &&
     JSON.parse(read('package.json')).scripts['test:approval-youtube-disclosure-ui'] === 'tsx engine/tests/approval.youtube.disclosure.ui.test.ts' &&
     JSON.parse(read('package.json')).scripts.test.includes('npm run test:approval-youtube-disclosure-ui'),
-    'اختبار ثابت يثبت إفصاح يوتيوب قبل الزر ومُسجَّل في npm test');
+    'اختبار ثابت يثبت إزالة صندوق تنبيه يوتيوب الأصفر من الواجهة ومُسجَّل في npm test');
   add('content-server-streams-video-with-range',
     server.includes('app.get("/api/public/video/:ref"') &&
     server.includes('verifyMediaSignature') &&
