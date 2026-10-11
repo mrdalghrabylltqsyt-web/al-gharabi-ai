@@ -375,6 +375,11 @@ async function unitTests(): Promise<void> {
   check('buildPublishPhotoBody لا يستخدم source (ذاك للبايتات)', buildPublishPhotoBody('https://x/p.jpg').get('source') === null);
   check('buildPublishPhotoBody يضمّن الرسالة إن وُجدت', buildPublishPhotoBody('https://x/p.jpg', 'عرض جديد').get('message') === 'عرض جديد');
   check('buildPublishPhotoBody بلا رسالة فارغة', buildPublishPhotoBody('https://x/p.jpg', '  ').get('message') === null);
+  // إصلاح ظهور الصورة للجمهور: `published=true` صريح — لا نعتمد على الافتراضي،
+  // ولا نحوّل الصورة سهواً لمنشور غير معلن (is_published=false) يراه المالك فقط.
+  check('buildPublishPhotoBody يفرض published=true صراحةً', buildPublishPhotoBody('https://x/p.jpg', 'عرض').get('published') === 'true');
+  check('buildPublishPhotoBody لا يرسل privacy (غير مدعوم على الصفحة)', buildPublishPhotoBody('https://x/p.jpg', 'عرض').get('privacy') === null);
+  check('حرس: جسم نشر الصورة بلا privacy مقبول', assertNoPagePostPrivacyParam(buildPublishPhotoBody('https://x/p.jpg')) === true);
   const photoRequests: { url: string; body: any }[] = [];
   const fakePhotoFetch = async (url: string, init: any) => {
     photoRequests.push({ url, body: Object.fromEntries(new URLSearchParams(String(init?.body || ''))) });
@@ -385,6 +390,7 @@ async function unitTests(): Promise<void> {
   check('نشر الصورة نجح بمعرّف من Meta', postedPhoto.ok === true && postedPhoto.data?.providerPostId === 'PHOTO_123');
   check('الطلب ذهب إلى /{page-id}/photos', photoRequests[0]?.url.includes('/PAGE_X/photos'));
   check('الجسم حمل url لا source', photoRequests[0]?.body.url === 'https://drive.example/p.jpg' && photoRequests[0]?.body.source === undefined);
+  check('الجسم حمل published=true صراحةً (لا منشور مخفي)', photoRequests[0]?.body.published === 'true');
   check('بلا رابط صورة => رفض فوري بلا أي طلب شبكي', (await photoClient.publishPhotoToPage('PAGE_X', 'PT', '')).ok === false);
   check('لا نجاح بلا معرّف صورة من Meta', (await failClient.publishPhotoToPage('PAGE_X', 'PT', 'https://x/p.jpg')).ok === false);
 }

@@ -44,7 +44,7 @@ npm install
 npm run dev            # tsx server.ts
 npm run lint           # tsc --noEmit
 npm run build          # vite build + esbuild server.ts -> dist/server.cjs
-npm run final-audit    # node final-audit.mjs (1533 فحصاً)
+npm run final-audit    # node final-audit.mjs (1534 فحصاً)
 npm test               # storage + engine + auth + ... + db + runtime
 ```
 - التشغيل الإنتاجي: `PORT=4517 NODE_ENV=production APP_URL=http://localhost:4517 node dist/server.cjs`
@@ -5523,3 +5523,28 @@ final-audit الجديدة `youtube-quota-retry-*` (**1533 إجمالاً**). `l
 
 **لا تغيير في:** أي سرّ/مفتاح، OAuth/الاعتمادات، المصادقة، قاعدة البيانات، DR/الاستعادة،
 Gemini، بقية المنصات أو نموذج الجدولة.
+
+## إصلاح جذر ظهور منشور صورة Facebook للأونر فقط — تصريح published=true (2026-10-04)
+
+**الجذر المُثبت (بمراجعة مسارات النشر الثلاثة، بلا تخمين):** موصل Facebook يبني جسم النشر
+في ثلاث دوال، واثنتان كانتا تُصرّحان `published=true` صراحةً — النصي `buildPublishTextBody`
+(`POST /{page-id}/feed`) والفيديو `buildPublishVideoBody` (`POST /{page-id}/videos`) — أما
+الصورة `buildPublishPhotoBody` (`POST /{page-id}/photos`) فكانت **الوحيدة** التي ترسل
+`url`/`message` فقط بلا تصريح. بحسب عقد Graph، غياب `published=true` يترك الباب مفتوحاً
+لإنشاء المنشور **غير معلن** (`is_published=false`) فيراه المالك/المشرفون فقط ولا يظهر على
+حائط الصفحة العام — وهو بالضبط عطل «المنشور لا يظهر للعامة» عند نشر صورة.
+
+**الإصلاح (محدود بمسار الصورة، بلا مساس بأي مسار آخر):**
+- `engine/social/facebook.ts`: `buildPublishPhotoBody` صار يضيف `published=true` صراحةً —
+  نفس العقد المطبَّق على النص والفيديو. لا يُرسل `privacy` (غير مدعوم على الصفحة؛ حرس
+  `assertNoPagePostPrivacyParam` قائم). لا تغيير في التوقيع ولا في المستدعين.
+- اختبارات: `engine/tests/facebook.connector.test.ts` (+3 فحوص وحدة: التصريح، غياب
+  `privacy`، قبول الحرس + فحص تكاملي أن الطلب الفعلي حمل `published=true`) => **347 فحصاً**.
+- final-audit: فحص جديد `facebook-photo-published-explicit` (يمنع رجوع الغياب) => **1534**.
+
+**صدق الإعلان:** `published=true` **لا يُقدَّم كإثبات ظهور عام**؛ الظهور العام الفعلي يتوقف
+على وضع تطبيق Meta (Live/Access Levels) لا على أي معامل HTTP — يبقى التشخيص قراءة-فقط عبر
+`/api/platforms/facebook/post-visibility-diagnosis` (owner) كما هو، بلا تغيير.
+
+**لا تغيير في:** الأسرار/المفاتيح، OAuth/الاعتمادات، بقية المنصات، Gemini، قاعدة البيانات،
+DR/الاستعادة، نموذج الجدولة، أو مسارات النشر الأخرى (نص/فيديو).

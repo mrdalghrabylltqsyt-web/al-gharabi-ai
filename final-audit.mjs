@@ -4061,6 +4061,11 @@ add('watcher-advisory-not-authority',
     read('engine/social/facebook.ts').includes("body.set('published', 'true')"),
     'نشر الفيديو يفرض published=true صراحةً (لا يتحول لمسودة تظهر للأونر فقط)');
 
+  add('facebook-photo-published-explicit',
+    /buildPublishPhotoBody[\s\S]{0,400}?body\.set\('published', 'true'\)/.test(read('engine/social/facebook.ts')) &&
+    read('engine/tests/facebook.connector.test.ts').includes('buildPublishPhotoBody يفرض published=true صراحةً'),
+    'نشر الصورة يفرض published=true صراحةً أيضاً (كان المسار الوحيد بلا تصريح — جذر ظهور الصورة للأونر فقط)');
+
   add('facebook-post-grounding-readonly',
     read('engine/social/facebook.ts').includes('interpretPostGrounding') &&
     read('engine/social/facebook.ts').includes('async getPostGrounding') &&
