@@ -119,6 +119,16 @@ export interface SocialRoutesDeps {
    * (`pushNotification`). إن غاب، يُسجَّل التصعيد بلا ادّعاء إشعار.
    */
   notifyEscalation?: EscalationNotifier | null;
+  /**
+   * بصمة الشخصية العراقية الموحّدة (مصدر واحد لكل المنصات). تُحقن من الخادم
+   * فتبقى الوحدة بلا منطق هوية محلي. تُستخدم لعرضها للمالك وللتوليد عند الحاجة.
+   */
+  buildPersona?: (platform?: string) => string;
+  /**
+   * لقطة محرّك الاستقبال الموحّد (ملخّص/صحة/تعلّم). لا تحمل اسم حساب ولا نص
+   * تعليق ولا نص رد — التفاصيل الحقيقية في مسار التعليقات/المراقب المحمي.
+   */
+  ingestionSnapshot?: () => { summary: any; health: any; learning: any[] };
 }
 
 export function registerSocialManagerRoutes(app: express.Express, deps: SocialRoutesDeps): void {
@@ -330,6 +340,33 @@ export function registerSocialManagerRoutes(app: express.Express, deps: SocialRo
     return Boolean(conn && conn.status === 'connected' && conn.providerVerified);
   };
 
+  /**
+   * محرّك الاستقبال الموحّد: حالة تقنية عامة + إشارات التعلّم (بلا بيانات عملاء).
+   * التفاصيل الحقيقية (النصوص/الأسماء) تُقرأ من /comments و/agent/youtube/watcher.
+   */
+  app.get('/api/social/manager/ingestion', authenticateToken, (_req, res) => {
+    const snap = deps.ingestionSnapshot ? deps.ingestionSnapshot() : { summary: null, health: null, learning: [] };
+    res.json({
+      success: true,
+      health: snap.health,
+      summary: snap.summary,
+      learning: Array.isArray(snap.learning) ? snap.learning : [],
+      note: 'محرّك استقبال موحّد لكل المنصات. الحقول تقنية عامة؛ النصوص والأسماء متاحة عبر مسارات التعليقات/المراقب المحمية.',
+    });
+  });
+
+  /** بصمة الشخصية العراقية الموحّدة كما تُستخدم فعلاً في صياغة الردود. */
+  app.get('/api/social/manager/persona', authenticateToken, (req, res) => {
+    const platform = typeof req.query?.platform === 'string' ? req.query.platform : undefined;
+    const persona = deps.buildPersona ? deps.buildPersona(platform) : '';
+    res.json({
+      success: true,
+      platform: platform || null,
+      persona,
+      note: 'بصمة واحدة لكل المنصات: نبرة عراقية عفوية + قواعد عدم الاختراع. تُحقن في صياغة الردود وتُمرّ عبر حارس المحتوى.',
+    });
+  });
+
   app.get('/api/social/manager/status', authenticateToken, (_req, res) => {
     const list = adapters();
     const posts = workspace.posts || [];
@@ -488,9 +525,22 @@ export function registerSocialManagerRoutes(app: express.Express, deps: SocialRo
     const user = (req as any).user as { id: string };
     const platform = typeof req.body?.platform === 'string' ? req.body.platform : '';
     const externalId = typeof req.body?.externalId === 'string' ? req.body.externalId.trim() : '';
-    const text = typeof req.body?.text === 'string' ? req.body.text.trim() : '';
+    let text = typeof req.body?.text === 'string' ? req.body.text.trim() : '';
     const authorName = typeof req.body?.authorName === 'string' ? req.body.authorName : undefined;
     const commentText = typeof req.body?.commentText === 'string' ? req.body.commentText : '';
+
+    // توليد الرد العراقي عند غياب نص صريح: نص التعليق ← محرّك الرد الحتمي (Reply
+    // Intelligence) البصمة العراقية الموحّدة. لا يخترع معلومة، ويمر بالحارس نفسه.
+    if (!text && commentText.trim() && isSupportedPlatform(platform)) {
+      const cls = classifyComment(commentText);
+      if (canAutoReply(cls)) {
+        const gen = generateReply(cls, replyFactsFor(req.body?.productId, req.body?.productName), {
+          platform, authorName,
+          previousReplies: ((workspace.socialReplies || []) as any[]).slice(0, 20).map((r) => r.text).filter(Boolean),
+        });
+        text = gen.text || '';
+      }
+    }
 
     if (!isSupportedPlatform(platform)) return res.status(400).json({ success: false, error: 'منصة غير معروفة.' });
     if (!externalId) return res.status(400).json({ success: false, error: 'معرّف التعليق لدى المنصة مطلوب لمنع الرد المكرر.' });

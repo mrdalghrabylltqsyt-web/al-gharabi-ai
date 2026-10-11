@@ -100,6 +100,7 @@ import type { AgentToolContext } from "./engine/agent/tools";
 import { AGENT_TOOLS } from "./engine/agent/tools";
 import { describeProviders } from "./engine/agent/providerRouter";
 import { PLATFORM_SPECS, platformSupports, hasRealConnector, credentialModeOf, isSupportedPlatform, buildAdapters } from "./engine/social/registry";
+import { toUnifiedSocialEvent, buildIngestionEngine, buildIraqiPersonaPrompt, buildIngestionMatrix, type ShowroomFacts, type UnifiedSocialEvent } from "./engine/social/ingestionEngine";
 import { buildYouTubeSalesCorrelation } from "./engine/social/youtubeSalesCorrelation";
 import { sanitizePublicHealthPayload, findForbiddenPublicKeys, findDisallowedWatcherPublicKeys, sanitizePublicErrorMessage } from "./engine/social/healthPrivacy";
 import {
@@ -6826,6 +6827,9 @@ async function runYouTubeWatcherCycle(trigger: "schedule" | "manual" = "schedule
     watcherLastRun = { newDetected, replied, escalated, skipped, verified, failed, deferred, at: new Date(now).toISOString() };
     watcherAudit({ action: "poll_complete", reason: trigger, decision: "ok" });
     await persistWatcherState();
+    // التعلّم: تُشتقّ إشارات الاستقبال (أسئلة متكررة/ردود ناجحة) وتُغذّي ذاكرة
+    // العقل القائمة — حتمي بلا AI، وأفضل جهد لا يُسقط الدورة عند الفشل.
+    persistIngestionLearning();
     return { ok: true, newDetected, replied, escalated, skipped, verified, failed, deferred, scheduledCheck, followUp };
   } catch (error: any) {
     watcherState.lastError = String(error?.code || error?.message || "watcher_cycle_failed").slice(0, 120);
@@ -6961,6 +6965,116 @@ function watcherStatusBlockPublic() {
     consecutiveErrors: consecutive,
     note: "حالة عامة فقط؛ العدّادات التفصيلية وبيانات التعليقات/الردود متاحة للمالك عبر /api/agent/youtube/watcher.",
   };
+}
+
+// -----------------------------------------------------------------------------
+// محرّك الاستقبال الموحّد (Unified Ingestion Engine).
+//
+// كل تعليق/رسالة من أي منصة تدخل `workspace.socialComments` بالشكل نفسه، فنبني
+// منها أحداثاً موحّدة، ثم نُشتقّ ملخّص الاستقبال + صحته + إشارات التعلّم. لا
+// بيانات عملاء في أي منها: النصوص/الأسماء تبقى في المسارات المحمية فقط.
+// -----------------------------------------------------------------------------
+
+/** يبني الأحداث الموحّدة من كل سجلات التعليقات المخزّنة (تصنيف حتمي، بلا AI). */
+function collectUnifiedSocialEvents(): UnifiedSocialEvent[] {
+  const rows = ((workspace as any).socialComments || []) as any[];
+  const out: UnifiedSocialEvent[] = [];
+  for (const row of rows) {
+    const ev = toUnifiedSocialEvent(row);
+    if (ev && ev.externalId) out.push(ev);
+  }
+  return out;
+}
+
+/** حقائق المعرض المسجّلة فعلاً فقط — تُحقن في بصمة الشخصية العراقية بلا اختراع. */
+function showroomFactsForPersona(): ShowroomFacts {
+  const showroom: any = workspace.showroom || {};
+  const name = cleanText(showroom.name, 120) || undefined;
+  const city = cleanText(showroom.city, 60) || undefined;
+  const address = [showroom.address, showroom.city].map((x: any) => cleanText(x, 200)).filter(Boolean).join(' - ');
+  const locationText = address || undefined;
+  const hoursText = showroom.workingHours ? cleanText(showroom.workingHours, 120) : undefined;
+  const phone = cleanText(showroom.phoneUnified || showroom.whatsappSales, 40) || undefined;
+  return {
+    name,
+    city,
+    locationText,
+    hoursText,
+    contactHint: phone ? `للتواصل: ${phone}` : undefined,
+  };
+}
+
+/** لقطة محرّك الاستقبال من السجلات الحقيقية (مصدر واحد للصحة والتعلّم والتشخيص). */
+function ingestionEngineSnapshot() {
+  const events = collectUnifiedSocialEvents();
+  const replies = ((workspace as any).socialReplies || []) as any[];
+  const repliedExternalIds = new Set<string>();
+  const successfulReplyExternalIds = new Set<string>();
+  for (const r of replies) {
+    const id = String(r?.externalId || r?.id || '');
+    if (id) repliedExternalIds.add(id);
+    // نجاح مثبت فقط: لا نعلن رداً ناجحاً بلا معرّف من المزوّد.
+    if (id && r?.delivered === true && (r?.providerReplyId || r?.externalReplyId)) successfulReplyExternalIds.add(id);
+  }
+  const escalations = ((workspace as any).socialEscalations || []) as any[];
+  const escalatedExternalIds = new Set<string>();
+  for (const e of escalations) {
+    const id = String(e?.externalId || '');
+    if (id) escalatedExternalIds.add(id);
+  }
+  return buildIngestionEngine({
+    events,
+    repliedExternalIds,
+    successfulReplyExternalIds,
+    escalatedExternalIds,
+    now: Date.now(),
+  });
+}
+
+/**
+ * كتلة الصحة العامة لمحرّك الاستقبال: **حقول تقنية غير حساسة فقط** (الحالة،
+ * عمق الطابور، آخر استقبال، القنوات). لا اسم حساب ولا نص تعليق ولا نص رد.
+ */
+function ingestionHealthPublic(): Record<string, unknown> {
+  const { health, summary } = ingestionEngineSnapshot();
+  return {
+    status: health.status,
+    queueDepth: health.queueDepth,
+    totalIngested: health.totalIngested,
+    lastIngestionAt: health.lastIngestionAt,
+    requiresHumanReview: health.requiresHumanReview,
+    platformsCovered: health.platformsCovered,
+    ingestiblePlatforms: health.ingestiblePlatforms,
+    channelsMissing: health.channelsMissing,
+    channels: health.channels,
+    lastIngestionPerPlatform: summary.perPlatformLastAt,
+    note: health.note,
+  };
+}
+
+/** التعلّم: يُشتقّ من الأحداث الحقيقية ويُغذّي ذاكرة العقل القائمة (لا نظام ثانٍ). */
+function persistIngestionLearning(): void {
+  try {
+    const { learning } = ingestionEngineSnapshot();
+    if (!learning.length) return;
+    const records = learning.map((l) => toMemoryRecord({
+      id: l.id,
+      kind: 'conversation',
+      statement: l.summary,
+      origin: 'platform_data',
+      source: 'ingestionEngine',
+      createdAt: new Date().toISOString(),
+      lastValidatedAt: null,
+      confidence: l.sampleSize >= 5 ? 'medium' : 'low',
+      status: 'active',
+      sampleSize: l.sampleSize,
+      limitations: 'سلوك مُلاحَظ من تفاعل حقيقي؛ ليس قاعدة تسعير.',
+      platform: l.platform,
+      sourceRefs: l.sourceRefs,
+      summary: l.summary,
+    }));
+    persistBrainMemory(records);
+  } catch { /* التعلّم أفضل جهد ولا يُسقط أي مسار */ }
 }
 
 /** تقرير YouTube اليومي الحتمي من السجلات الحقيقية (بلا استهلاك AI). */
@@ -7194,6 +7308,26 @@ app.post("/api/agent/youtube/watcher/controls", requireOwner, async (req, res) =
 app.post("/api/agent/youtube/watcher/poll", requireOwner, async (req, res) => {
   const result = await runYouTubeWatcherCycle("manual");
   res.json({ success: result.ok, result, watcher: watcherStatusBlock() });
+});
+
+/**
+ * يشتقّ إشارات تعلّم الاستقبال من السجلات الحقيقية ويُدرجها في ذاكرة العقل القائمة
+ * (بلا نظام ذاكرة ثانٍ). للمالك فقط، حتمي بلا AI. يُستخدم للتحقق من ثبات التعلّم
+ * بعد restart ولتشغيله عند الطلب بلا انتظار الدورة المجدولة.
+ */
+app.post("/api/agent/youtube/watcher/learning/persist", requireOwner, async (_req, res) => {
+  const before = brainMemoryStore.records.length;
+  const snapshot = ingestionEngineSnapshot();
+  persistIngestionLearning();
+  try { await persistQueue; } catch { /* أفضل جهد */ }
+  const after = brainMemoryStore.records.length;
+  res.json({
+    success: true,
+    added: Math.max(0, after - before),
+    memoryTotal: after,
+    learning: snapshot.learning,
+    note: "أُدرجت إشارات التعلّم في ذاكرة العقل القائمة (لا نظام ثانٍ). لا نص عميل ولا اسم حساب في أي خلاصة.",
+  });
 });
 
 /**
@@ -13158,6 +13292,10 @@ app.get("/api/readiness", (_req, res) => {
     youtubeWatcher: watcherStatusBlockPublic(),
     // حارس حصة YouTube Data API: حالة عامة فقط (عتبة/استنفاد/نسبة) بلا بيانات عميل.
     youtubeQuota: youtubeQuotaStatusSummary(),
+    // محرّك الاستقبال الموحّد لكل المنصات العشر: حقول تقنية فقط (الحالة/عمق
+    // الطابور/آخر استقبال/القنوات/العدّادات). **لا** اسم حساب ولا نص تعليق ولا نص
+    // رد — التفاصيل للمالك عبر /api/social/manager/ingestion.
+    ingestionEngine: ingestionHealthPublic(),
     // PHASE 7 — حقول TikTok الآمنة (منطقي فقط، بلا أي قيمة سرّية).
     tiktokOAuth: (() => {
       const c = tiktokOAuthConfig();
@@ -13755,6 +13893,9 @@ app.get("/api/health", (_req, res) => {
     youtubeWatcher: watcherStatusBlockPublic(),
     // حارس حصة YouTube Data API: حالة عامة فقط (عتبة/استنفاد/نسبة) بلا بيانات عميل.
     youtubeQuota: youtubeQuotaStatusSummary(),
+    // محرّك الاستقبال الموحّد لكل المنصات العشر: حقول تقنية فقط (الحالة/عمق
+    // الطابور/آخر استقبال/القنوات/العدّادات) — لا بيانات عملاء.
+    ingestionEngine: ingestionHealthPublic(),
     // تشخيص تعثّر استضافة الفيديو العامة إلى Drive (بلا تعليق بلا نهاية):
     // عناوين نقاط googleapis (بلا استعلام) + مدد + حالة فقط — لا جسم/سرّ/بيانات عميل.
     driveHostDiagnostics: {
@@ -13981,7 +14122,9 @@ app.post("/api/ai/generate-content", authenticateToken, async (req, res) => {
     }
 
 
-    const systemPrompt = `أنت المساعد الذكي الرسمي والمؤلف الإعلاني لـ "معرض الغرابي للتقسيط".
+    const systemPrompt = `${buildIraqiPersonaPrompt(showroomFactsForPersona())}
+
+أنت المساعد الذكي الرسمي والمؤلف الإعلاني لـ "معرض الغرابي للتقسيط".
 معرض الغرابي يقدم حلول تقسيط وتسهيلات مرنة وإجراءات معتمدة وواضحة.
 
 المطلوب: توليد محتوى تسويقي احترافي مخصص لمنصة: "${platform || 'عامة'}"
@@ -14136,7 +14279,9 @@ app.post("/api/ai/classify-message", authenticateToken, async (req, res) => {
     audit(user.id, "classify_message");
     const { customerName, message, channel, showroomInfo } = req.body;
 
-    const prompt = `أنت مساعد خدمة العملاء الذكي في "معرض الغرابي للتقسيط".
+    const prompt = `${buildIraqiPersonaPrompt(showroomFactsForPersona())}
+
+أنت مساعد خدمة العملاء الذكي في "معرض الغرابي للتقسيط".
 رسالة العميل (${customerName || 'عميل'} عبر ${channel || 'القناة'}): "${message}"
 
 سياسات ومعلومات المعرض المرجعية:
@@ -14288,7 +14433,9 @@ app.post("/api/ai/agent-chat", authenticateToken, async (req, res) => {
     audit(user.id, "agent_chat");
     const { message, chatHistory = [], context } = req.body;
 
-    const systemPrompt = `أنت "الغرابي AI" - الوكيل الذكي المركزي ومستشار العمليات التسويقية والتشغيلية لمعرض الغرابي للتقسيط.
+    const systemPrompt = `${buildIraqiPersonaPrompt(showroomFactsForPersona())}
+
+أنت "الغرابي AI" - الوكيل الذكي المركزي ومستشار العمليات التسويقية والتشغيلية لمعرض الغرابي للتقسيط.
 مهامك:
 1. المساعدة في إدارة وتسويق خدمات ومنتجات معرض الغرابي للتقسيط عبر جميع القنوات والمنصات المعتمدة.
 2. المساعدة في صياغة منشورات وحملات تسويقية مبتكرة للمنصات (TikTok, YouTube, Facebook, Instagram, WhatsApp, Telegram, X, Snapchat, Threads, Google Business).
@@ -15650,6 +15797,10 @@ registerSocialManagerRoutes(app, {
   // المصدر الوحيد للحقيقة للقرار/الذاكرة: الحالة canonical للعقل المركزي.
   // مسارات /api/social/manager/{brain/decision,memory} إسقاط توافقي منها فقط.
   centralBrainState: () => buildRuntimeBrain({ ...brainRuntimeInput(), now: Date.now() }).state,
+  // محرّك الاستقبال الموحّد: لقطة حقيقية من السجلات (بلا بيانات عملاء في الملخّص).
+  ingestionSnapshot: () => ingestionEngineSnapshot(),
+  // بصمة الشخصية العراقية الموحّدة (نبرة + قواعد عدم الاختراع) لكل المنصات.
+  buildPersona: (platform?: string) => buildIraqiPersonaPrompt(showroomFactsForPersona()),
   // مُبلِّغ التصعيد البشري: يُعيد استخدام بنية التنبيه القائمة (`pushNotification`).
   // لا يدّعي الإشعار إن لم يُنشأ التنبيه فعلاً؛ والفشل يُعلَن بسببه بلا سرّ.
   notifyEscalation: (record: any) => {

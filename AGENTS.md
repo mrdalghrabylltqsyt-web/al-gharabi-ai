@@ -44,7 +44,7 @@ npm install
 npm run dev            # tsx server.ts
 npm run lint           # tsc --noEmit
 npm run build          # vite build + esbuild server.ts -> dist/server.cjs
-npm run final-audit    # node final-audit.mjs (1536 فحصاً)
+npm run final-audit    # node final-audit.mjs (1547 فحصاً)
 npm test               # storage + engine + auth + ... + db + runtime
 ```
 - التشغيل الإنتاجي: `PORT=4517 NODE_ENV=production APP_URL=http://localhost:4517 node dist/server.cjs`
@@ -5569,4 +5569,66 @@ SDK إنجليزية تحمل اسم حساب/نصاً (مثال مُثبت: `PR
   + `public-error-sanitizer-wired-server` => **1536**.
 
 الحقول التفصيلية تبقى متاحة للمالك فقط عبر `/api/agent/youtube/watcher` (لا حذف من النظام).
+
+## محرّك الاستقبال الموحّد لكل المنصات العشر (Unified Comment & Ingestion Engine) — 2026-10-11
+
+توسيع إدارة التعليقات من YouTube إلى **محرّك استقبال موحّد** يغطي المنصات العشر عبر
+**بنية حدث اجتماعي واحدة**، مع إبقاء النقطتين العامتين نظيفتين تماماً، وبلا نظام
+ذاكرة ثانٍ وبلا تنفيذ خارجي وبلا استهلاك Gemini.
+
+### الوحدة `engine/social/ingestionEngine.ts` (منطق صافٍ، بلا شبكة/أسرار/AI)
+- `UnifiedSocialEvent` — تعليق/رسالة من أي منصة ببنية واحدة (`platform/kind/externalId/
+  parentExternalId/authorName/text/createdAt/ingestSource/classification`)، و
+  `toUnifiedSocialEvent` يطبّع أي سجل ويصنّفه (`classifyComment`) ويُعيد `null` للسجل غير الصالح.
+- `buildIngestionMatrix` / `ingestiblePlatforms` — مصفوفة العشر مشتقة من **`PLATFORM_SPECS`**
+  (مصدر واحد) مع قناة الإدخال الصريحة: `webhook` (telegram/facebook/instagram)،
+  `polling` (youtube)، `none` (بقية المنصات بلا واجهة إدخال عامة — تُعلَن بصدق، وتُدرج في
+  `channelsMissing`). لا ادّعاء استقبال من منصة بلا قناة.
+- `summarizeIngestion` — تجميع من سجلات حقيقية فقط: عمق الطابور، آخر استقبال (وأقصى زمن لكل
+  منصة)، العدّ لكل منصة ولكل مصدر إدخال، و`unexpectedSources` (حدث لقناة غير معلنة ⇒ انحراف).
+- `buildIngestionHealth` — كتلة **تقنية فقط**: status/queueDepth/totalIngested/lastIngestionAt/
+  requiresHumanReview/channels/channelsMissing/ingestiblePlatforms. **لا** اسم حساب ولا نص
+  تعليق ولا نص رد.
+- `buildIraqiPersonaPrompt` + `IRAQI_PERSONA_GUIDELINES_AR` — **مصدر واحد** للشخصية العراقية
+  الموحّدة (لهجة عفوية + معرض الغرابي + عدم اختراع أي معلومة غير مسجّلة)، تُحقن الحقائق
+  المسجّلة فقط (موقع/دوام/منتجات...). لا رقم/عنوان وهمي عند غياب الحقيقة.
+- `deriveFrequentQuestions` / `deriveIngestionLearning` — تعلّم من عيّنة كافية
+  (`INGESTION_FREQUENT_MIN=3`) فقط؛ الإشارات بلا نص عميل ولا اسم ولا معرّف (idempotent)،
+  وأصلها `platform_data` (سلوك مُلاحَظ لا حقيقة مُختلقة). لا نظام ذاكرة ثانٍ: تُدرج في
+  **`brainMemoryStore` القائم**.
+
+### الربط في `server.ts`
+- `ingestionEngineSnapshot()` / `ingestionHealthPublic()` — اللقطة الكاملة (للمالك) والكتلة
+  العامة المنقّاة (للصحة/الجاهزية).
+- `/api/health` و`/api/readiness`: كتلة `ingestionEngine` = `ingestionHealthPublic()`
+  (حقول تقنية فقط). **لا** تظهر أي بيانات عملاء في النقطتين العامتين.
+- `persistIngestionLearning()` يُدرج إشارات التعلّم في ذاكرة العقل القائمة عبر
+  `persistBrainMemory` (بلا متجر ثانٍ)، ويُستدعى في دورة مراقب YouTube وبمسار owner مستقل.
+- **الشخصية الموحّدة موصولة فعلاً** في ثلاث نقاط توليد/تصنيف: صياغة المحتوى التسويقي،
+  تصنيف رسائل العملاء، والوكيل المركزي الذكي (`buildIraqiPersonaPrompt(showroomFactsForPersona())`).
+- توليد نص الرد العراقي عند غياب نص صريح في `/api/social/manager/comments/reply` (محرّك
+  `generateReply` الحتمي + حارس المحتوى القائم) — صياغة موحّدة لكل المنصات.
+
+### المسارات (كلها `authenticateToken`)
+- `GET /api/social/manager/ingestion` — حالة تقنية + ملخّص + إشارات تعلّم (بلا بيانات عملاء).
+- `GET /api/social/manager/persona` — بصمة الشخصية الموحّدة كما تُستخدم فعلاً.
+- `POST /api/agent/youtube/watcher/learning/persist` (**owner**) — يُدرج إشارات التعلّم الآن
+  في ذاكرة العقل (idempotent) ويُثبت الثبات بعد restart.
+
+### حماية الخصوصية (باقية كاملة)
+- بيانات العملاء التفصيلية (أسماء/نصوص تعليقات/نصوص ردود) تبقى **للمالك فقط** عبر
+  `/api/agent/youtube/watcher` (requireOwner) — لا حذف من النظام، فقط من النقطتين العامتين
+  (حارس `engine/social/healthPrivacy.ts` + allow-list صارم).
+- `GET /api/health` بلا مصادقة **لا** يحتوي حقل `replyText` ولا `attentionRequired` ولا أي
+  اسم/نص عميل — يتحقق منه `engine/tests/health.privacy.test.ts` و`health.guard.test.ts`.
+
+اختبارات: `engine/tests/ingestion.engine.test.ts` (`test:ingestion-engine`، 54 فحصاً وحدة:
+التطبيع، المصفوفة، التجميع، الشخصية، التعلّم، الصحة النظيفة) و
+`engine/tests/ingestion.engine.server.test.ts` (`test:ingestion-engine-server`، 37 فحصاً على
+خادم حقيقي: إدخال 4 منصات، منع تكرار، ملخّص/تعلّم محميان، شخصية موحّدة، تعلّم في ذاكرة العقل
+بلا محتوى عميل + idempotent، تصريح 401، وثبات بعد restart، وبلا تسرّب canary). فحوص final-audit
+الجديدة (11): `ingestion-engine-module` … `ingestion-canary-leak-guard` (**1547 إجمالاً**).
+
+**لم يُمسّ:** Gemini/firewall، OAuth/الاعتمادات/الأسرار، قاعدة البيانات، DR/الاستعادة،
+YouTube (المراقب/الطابور/التفويض)، Facebook/Instagram/TikTok/Telegram، ونموذج الجدولة.
 

@@ -986,6 +986,61 @@ add('public-health-guard-test-exists',
   (pkg.scripts['test'] || '').includes('test:health-guard'),
   'اختبار وحدة لحارس الخصوصية (sanitize/السماح/الكشف) مسجّل ضمن npm test');
 
+// ------------------------------------------------------------
+// محرّك الاستقبال الموحّد (Unified Ingestion Engine) — كل المنصات العشر.
+// البنية الموحّدة + القنوات + الشخصية العراقية + التعلّم، مع بقاء النقطتين
+// العامتين نظيفتين. المنطق في engine/social/ingestionEngine.ts (مصدر واحد).
+const ingestionModule = fs.existsSync(path.join(root, 'engine/social/ingestionEngine.ts')) ? read('engine/social/ingestionEngine.ts') : '';
+add('ingestion-engine-module',
+  ingestionModule.includes('export interface UnifiedSocialEvent') &&
+  ingestionModule.includes('export function toUnifiedSocialEvent') &&
+  ingestionModule.includes('export function buildIngestionEngine'),
+  'محرّك الاستقبال الموحّد موجود بمنطق صافٍ: حدث موحّد + تطبيع + بناء اللقطة');
+add('ingestion-registry-single-source',
+  ingestionModule.includes("import { PLATFORM_SPECS }") && ingestionModule.includes('buildIngestionMatrix') &&
+  /buildIngestionMatrix[\s\S]{0,400}?PLATFORM_SPECS\.map/.test(ingestionModule),
+  'مصفوفة الاستقبال مشتقة من سجل الموصلات (PLATFORM_SPECS) — لا قائمة موازية تنحرف');
+add('ingestion-covers-10-platforms',
+  ingestionModule.includes('INGESTION_CHANNEL_BY_PLATFORM') && ingestionModule.includes('channelsMissing'),
+  'قنوات الإدخال صريحة لكل منصة (webhook/polling/none) والمنصات بلا قناة تُعلن بصدق');
+add('ingestion-no-customer-fields-public',
+  ingestionModule.includes("export function buildIngestionHealth") &&
+  !/buildIngestionHealth[\s\S]{0,800}?authorName/.test(ingestionModule) &&
+  !/buildIngestionHealth[\s\S]{0,800}?replyText/.test(ingestionModule),
+  'كتلة صحة الاستقبال لا تحمل اسم حساب ولا نص تعليق/رد (حقول تقنية فقط)');
+add('ingestion-health-wired-public',
+  (server.match(/ingestionEngine: ingestionHealthPublic\(\)/g) || []).length === 2 &&
+  server.includes('function ingestionHealthPublic'),
+  'كتلة محرّك الاستقبال مُدرجة في /api/health و/api/readiness (مرّتان) بلا بيانات عملاء');
+const hexIngestion = read('engine/social/routes.ts');
+add('ingestion-routes-authenticated',
+  /app\.get\('\/api\/social\/manager\/ingestion', authenticateToken/.test(hexIngestion) &&
+  /app\.get\('\/api\/social\/manager\/persona', authenticateToken/.test(hexIngestion),
+  'مسارات الاستقبال والشخصية محميّة بـauthenticateToken');
+add('ingestion-persona-single-source',
+  ingestionModule.includes('export function buildIraqiPersonaPrompt') &&
+  (server.match(/buildIraqiPersonaPrompt\(showroomFactsForPersona\(\)\)/g) || []).length >= 3,
+  'بصمة الشخصية العراقية مصدر واحد تُحقن فعلاً في صياغة المحتوى والتصنيف والوكيل');
+add('ingestion-learning-reuses-brain-memory',
+  server.includes('function persistIngestionLearning') &&
+  /persistIngestionLearning[\s\S]{0,900}?persistBrainMemory\(records\)/.test(server) &&
+  !server.includes('ingestionMemoryStore'),
+  'تعلّم الاستقبال يُدرج في ذاكرة العقل القائمة (لا نظام/متجر ذاكرة ثانٍ)');
+add('ingestion-not-second-store',
+  ingestionModule.includes("origin: 'platform_data'") && ingestionModule.includes('INGESTION_FREQUENT_MIN'),
+  'إشارات التعلّم بعيّنة كافية وأصل platform_data (سلوك مُلاحَظ لا حقيقة مُختلقة)');
+add('ingestion-engine-tests',
+  fs.existsSync(path.join(root, 'engine/tests/ingestion.engine.test.ts')) &&
+  fs.existsSync(path.join(root, 'engine/tests/ingestion.engine.server.test.ts')) &&
+  (pkg.scripts['test'] || '').includes('test:ingestion-engine') &&
+  (pkg.scripts['test'] || '').includes('test:ingestion-engine-server'),
+  'اختبارا محرّك الاستقبال (وحدة + تكامل خادم حقيقي) مسجّلان ضمن npm test');
+add('ingestion-canary-leak-guard',
+  read('engine/tests/ingestion.engine.server.test.ts').includes('ING_CANARY_AUTHOR_ZZZ') &&
+  read('engine/tests/ingestion.engine.server.test.ts').includes('hasLeak(h)') &&
+  read('engine/tests/ingestion.engine.server.test.ts').includes('hasLeak(ing)'),
+  'اختبار تكامل يبثّ canary ويثبت عدم ظهوره في الصحة/الجاهزية/ملخّص الاستقبال');
+
 
 // ------------------------------------------------------------
 // Point 5 — pollCount محسوم تقنياً: مؤشر liveness (عدّاد دورات الفحص الناجحة + طابع
