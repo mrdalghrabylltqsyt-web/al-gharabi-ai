@@ -150,6 +150,7 @@ import {
   FACEBOOK_DIALOG_PATH,
   FACEBOOK_SIGNATURE_HEADER,
   interpretPostGrounding,
+  diagnosePageVisibility,
   type FacebookFetch,
   type FacebookPageIdentity,
 } from "./engine/social/facebook";
@@ -5404,6 +5405,48 @@ app.get("/api/platforms/facebook/video-permission-diagnosis", requireOwner, asyn
 });
 
 /**
+ * فحص صحة **الصفحة نفسها** (قراءة فقط، بلا أي نشر أو تغيير، للمالك فقط).
+ * إلزامي قبل أي إعلان نجاح نشر: صفحة غير منشورة (is_published=false) تُخفي كل
+ * محتواها للجمهور، وهو سبب شائع لعرض «المنشور لا يراه الجمهور». ويعرض نوع الرمز
+ * وهوية الصفحة (link) للمقارنة بالصفحة الحقيقية. بلا أي سرّ.
+ */
+app.get("/api/platforms/facebook/page-health", requireOwner, async (_req,res)=>{
+  const stored = getProviderToken("facebook");
+  const pageId = stored?.pageId ? String(stored.pageId) : "";
+  const pageToken = facebookPageToken(pageId || undefined);
+  if (!pageId || !pageToken) return res.status(409).json({ success:false, error:"لا صفحة Facebook موثقة؛ لا فحص صحة صفحة.", code:"NOT_CONNECTED" });
+  const [pageHealthRes, tokenSubjectRes] = await Promise.all([
+    facebookClient().getPageHealth(pageId, pageToken),
+    facebookClient().probeTokenSubject(pageToken),
+  ]);
+  const pageHealth = pageHealthRes.ok ? pageHealthRes.data : null;
+  const tokenSubject = tokenSubjectRes.ok ? tokenSubjectRes.data : null;
+  const tokenType: "page" | "user" | "unknown" = tokenSubject ? (String(tokenSubject.id) === String(pageId) ? "page" : "user") : "unknown";
+  const dx = diagnosePageVisibility({ pageHealth });
+  res.json({
+    success: true,
+    pageId,
+    pageName: pageHealth?.name ?? (stored?.pageName ? String(stored.pageName) : null),
+    pageLink: pageHealth?.link ?? null,
+    pageUsername: pageHealth?.username ?? null,
+    pageIsPublished: pageHealth?.isPublished ?? null,
+    verificationStatus: pageHealth?.verificationStatus ?? null,
+    category: pageHealth?.category ?? null,
+    tokenType,
+    tokenTypeEvidence: tokenSubject ? { subjectId: tokenSubject.id, subjectName: tokenSubject.name } : null,
+    pageHealthReadable: pageHealthRes.ok,
+    pageHealthError: pageHealthRes.ok ? null : (pageHealthRes.error || "تعذّر قراءة حالة الصفحة."),
+    rootCause: dx.rootCause,
+    rootCauseLabelAr: dx.rootCauseLabelAr,
+    diagnosisIsCodeIssue: dx.isCodeIssue,
+    manualActionRequired: dx.manualActionRequired.length ? dx.manualActionRequired : [
+      "افتح رابط الصفحة (pageLink) من جلسة متخفية بلا تسجيل دخول؛ إن لم تظهر ففحص حالة نشر الصفحة من Meta Business Suite.",
+    ],
+    note: "قراءة فقط بلا أي نشر أو تغيير؛ بلا أي سرّ. is_published للصفحة ≠ للمنشور: الأولى تُخفي كل المحتوى، الثانية تُخفي منشوراً واحداً.",
+  });
+});
+
+/**
  * تشخيص ظهور منشورات الصفحة للجمهور (قراءة فقط، للمالك فقط).
  *
  * السبب الجذري الأكثر شيوعاً لظهور منشور أنشأه التطبيق للأونر وحده وللمشرفين
@@ -5434,29 +5477,64 @@ app.get("/api/platforms/facebook/post-visibility-diagnosis", requireOwner, async
     return res.status(502).json({ success:false, error: groundingRes.error || "تعذّر قراءة حالة المنشور من Meta.", code: groundingRes.code || "PROVIDER_ERROR", providerCode: groundingRes.providerCode ?? null, providerSubcode: groundingRes.providerSubcode ?? null, providerTraceId: groundingRes.providerTraceId ?? null });
   }
   const g = groundingRes.data;
-  // الحكم الصادق: نضع الأسباب المحتملة إزاء الأدلة الفعلية بلا ادّعاء يقين.
-  // تنبيه صياغي ملزم: is_published=true تعني «ليس مسودة/مجدولاً»، وليست إثباتاً
-  // للظهور العام — فقد يكون المنشور منشوراً فعلاً لكنه مقيَّد لأدوار التطبيق/الصفحة.
+  // فحوص إلزامية إضافية (قراءة فقط، بلا أي نشر أو تغيير):
+  //  (أ) حالة **الصفحة نفسها** is_published — صفحة غير منشورة تُخفي كل محتواها للجمهور.
+  //  (ب) **نوع الرمز حياً** عبر GET /me — رمز صفحة يُعيد كائن الصفحة، رمز مستخدم يُعيد المستخدم.
+  //  (ج) **هوية الصفحة** (link/name) — تُقارَن بالصفحة الحقيقية التي يفتحها المالك.
+  const [pageHealthRes, tokenSubjectRes] = await Promise.all([
+    facebookClient().getPageHealth(pageId, pageToken),
+    facebookClient().probeTokenSubject(pageToken),
+  ]);
+  const pageHealth = pageHealthRes.ok ? pageHealthRes.data : null;
+  const tokenSubject = tokenSubjectRes.ok ? tokenSubjectRes.data : null;
+  // نوع الرمز مُثبت بالدليل: رمز الصفحة يُعيد id = معرّف الصفحة نفسه. غياب الدليل => null.
+  const tokenType: "page" | "user" | "unknown" = tokenSubject ? (String(tokenSubject.id) === String(pageId) ? "page" : "user") : "unknown";
+  // هوية الصفحة: هل الرمز يستهدف نفس معرّف الصفحة المحفوظ؟ وهل الحقول مطابقة؟
+  const pageIdentity = {
+    storedPageId: pageId,
+    tokenSubjectId: tokenSubject?.id ?? null,
+    tokenSubjectName: tokenSubject?.name ?? null,
+    pageName: pageHealth?.name ?? null,
+    pageLink: pageHealth?.link ?? null,
+    pageUsername: pageHealth?.username ?? null,
+    matchesPage: tokenSubject ? String(tokenSubject.id) === String(pageId) : null,
+    // تنبيه هوية: إن كان اسم الصفحة مختلفاً عن اسم معرض الغرابي المتوقع، فالأرجح خطأ اختيار صفحة.
+    expectedNameHint: "معرض الغرابي للتقسيط",
+  };
+  // الحكم بالسبب الجذري **من الأدلة** بترتيب أسبقية صريح (لا تخمين).
+  const dx = diagnosePageVisibility({ pageHealth, postGrounding: g, scheduledTime: g.scheduledPublishTime });
+  // verdict يبقى لوصف حالة المنشور؛ rootCause يحمل السبب المُثبت للظهور العام.
   let verdict: string;
-  let likelyRootCause: string;
-  if (!g.exists) { verdict = "post_not_found"; likelyRootCause = "المعرّف غير موجود أو لا يمكن قراءته بالرمز الحالي."; }
-  else if (g.isPublished === false) { verdict = "draft_or_scheduled"; likelyRootCause = "المنشور مسودة أو مجدول (is_published=false) فلا يظهر للجمهور بعد."; }
-  else if (g.appearsOnPage === false) { verdict = "published_but_not_on_page_wall"; likelyRootCause = "المنشور منشور (is_published=true) لكنه غير وارد على حائط الصفحة العامة — يطابق تماماً قيد «وضع تطوير التطبيق» الذي يحصر المحتوى المنشأ عبر API في أدوار التطبيق/الصفحة."; }
-  else { verdict = "published_and_returns_as_story"; likelyRootCause = "Meta تُعلن is_published=true والمنشور يرد ضمن المنشورات المنشورة. إن ظل مخفياً عن الجمهور فالمؤشر الأقوى هو وضع تطبيق Meta (Development) لا Live، أو اشتراط App Review/Advanced Access لصلاحيات النشر."; }
+  if (!g.exists) verdict = "post_not_found";
+  else if (g.isPublished === false) verdict = "draft_or_scheduled";
+  else if (g.appearsOnPage === false) verdict = "published_but_not_on_page_wall";
+  else verdict = "published_and_returns_as_story";
   res.json({
     success:true,
     pageId,
     providerPostId,
     postIdSource: source,
     grounding: g,
+    pageHealth,
+    tokenType,
+    tokenTypeEvidence: tokenSubject ? { subjectId: tokenSubject.id, subjectName: tokenSubject.name, note: tokenType === "page" ? "الرمز رمز صفحة (Page Access Token) — النشر يقع على /{PAGE_ID}/feed أو /{PAGE_ID}/videos." : "الرمز ليس رمز الصفحة المستهدفة — تحقق من الربط." } : { note: "تعذّر إثبات نوع الرمز حياً (لم يُقرأ GET /me)." },
+    pageIdentity,
     verdict,
-    likelyRootCause,
+    rootCause: dx.rootCause,
+    rootCauseLabelAr: dx.rootCauseLabelAr,
+    diagnosisIsCodeIssue: dx.isCodeIssue,
+    diagnosisManualActionRequired: dx.manualActionRequired,
+    // النشر يقع دائماً على /{PAGE_ID}/feed أو /{PAGE_ID}/videos برمز الصفحة؛ لا /me/feed إطلاقاً.
+    publishEndpointUsed: tokenType === "page" ? "POST /{PAGE_ID}/feed (نص) أو POST /{PAGE_ID}/videos (فيديو) برمز الصفحة" : "غير مؤكد حتى إثبات نوع الرمز",
     // ملخّص ما ثبتته هذه القراءة وما لم تثبته — بلا ادّعاء ظهور عام من is_published.
     evidenceSummary: {
-      isDraftOrScheduled: g.isPublished === false,
+      pageIsPublished: pageHealth?.isPublished ?? null,
+      postIsPublished: g.isPublished,
       returnsAsStory: g.isPublished === true,
+      appearsOnPageWall: g.appearsOnPage,
+      tokenIsPageToken: tokenType === "page",
       proofOfPublicVisibility: false,
-      why: "is_published=true تثبت وجود كائن منشور (ليس مسودة/مجدولاً) فقط، ولا تثبت رؤيته لزائر غير إداري. ظهور المنشورات المُنشأة عبر API للجمهور يتوقف على وضع تطبيق Meta / مستوى الوصول.",
+      why: "is_published=true تثبت وجود كائن منشور (ليس مسودة/مجدولاً) فقط، ولا تثبت رؤيته لزائر غير إداري. الاختبار الحاسم الوحيد: فتح permalink من جلسة متخفية بلا أي تسجيل دخول.",
     },
     // رابط المنشور العام إن أعلنته Meta (بلا طلب إضافي): أداة المالك لفحص الظهور
     // يدوياً من جلسة غير إدارية. لا يُنشر أي شيء ولا يُغيّر أي حقل.
@@ -5469,12 +5547,25 @@ app.get("/api/platforms/facebook/post-visibility-diagnosis", requireOwner, async
       source: "Meta App Dashboard → App Mode (Development/Live) أو Access Levels (لتطبيق Business)",
       note: "تطبيقات Business استُبدل فيها Development/Live بـ«Access Levels» منذ Graph v8.0؛ كلاهما غير مقروء عبر API.",
     },
-    manualActionRequired: [
-      "افتح Meta App Dashboard → تطبيق «وكيل الغرابي الذكي» وتأكد أن الوضع Live (وإن كان التطبيق من نوع Business فتحقّق من Access Levels: Advanced لصلاحيات النشر pages_manage_posts/pages_read_engagement).",
-      "في Development/Standard Access يظهر المحتوى المنشأ عبر API لأدوار التطبيق/الصفحة فقط — انقله إلى Live/Advanced Access.",
-      "إن لزم App Review لصلاحيات النشر فأكملها لتظهر المنشورات الجديدة للجمهور.",
-      "المنشورات المنشأة قبل التحويل إلى Live تتحول إلى عامة تلقائياً عند تبديل الوضع (تحقّق من منشور سابق).",
-    ],
+    // فرضيات مُرتَّبة مع حالة الدليل لكلٍّ منها (لا يُعلن سبب جذري بلا دليل). الثلاث
+    // الأخيرة لا تُثبت من الوكيل (تحتاج Meta Business Suite / جلسة متخفية / حساب بلا صلة).
+    hypotheses: {
+      pageNotPublished: { proven: pageHealth?.isPublished === false, evidence: pageHealth?.isPublished === false ? "is_published للصفحة = false (GET /{page-id})" : "is_published للصفحة ليس false أو غير مقروء" },
+      postScheduled: { proven: Boolean(g.scheduledPublishTime), evidence: g.scheduledPublishTime ? `scheduled_publish_time=${g.scheduledPublishTime}` : "لا حقول جدولة في المنشور" },
+      wrongTokenTypeOrEndpoint: { proven: tokenType !== "page", evidence: tokenType === "page" ? "GET /me أعاد كائن الصفحة (رمز صفحة) والنشر على /{PAGE_ID}/feed" : "تعذّر تأكيد رمز الصفحة أو أنه رمز مستخدم" },
+      wrongPageIdentity: { proven: pageIdentity.matchesPage === false, evidence: pageIdentity.matchesPage === null ? "تعذّر إثبات هوية الصفحة" : (pageIdentity.matchesPage ? "الرمز يستهدف نفس معرّف الصفحة المحفوظ" : "الرمز لا يستهدف معرّف الصفحة المحفوظ") },
+      metaAppModeOrAccessLevels: { proven: false, evidence: "غير مقروء عبر API — يُفحص من Meta App Dashboard (App Mode / Access Levels)" },
+      pageAudienceRestriction: { proven: false, evidence: "يُفحص من Meta Business Suite → إعدادات الصفحة → الجمهور والظهور" },
+      metaAutomatedReviewOrQuality: { proven: false, evidence: "يُفحص من Meta Business Suite → جودة الصفحة (لا يُتاح غالباً عبر API)" },
+    },
+    // الاختبار الحاسم الوحيد: فتح permalink من جلسة متخفية بلا أي تسجيل دخول.
+    definitiveTest: {
+      readonly: true,
+      method: "افتح permalink في نافذة متخفية جديدة بلا أي تسجيل دخول (لا حساب المالك ولا أي تيستر على التطبيق أو الصفحة).",
+      why: "الظهور لحساب له أي صلة إدارية/تيستر بالصفحة أو التطبيق لا يُعد دليلاً على الظهور العام.",
+      permalink: g.permalink,
+    },
+    manualActionRequired: dx.manualActionRequired,
     note: "قراءة فقط بلا أي نشر أو تغيير؛ بلا أي سرّ. وضع التطبيق/مستوى الوصول غير مقروءين عبر API ويُفحصان من لوحة Meta.",
   });
 });

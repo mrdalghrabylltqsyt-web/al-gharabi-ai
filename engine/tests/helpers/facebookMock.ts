@@ -90,6 +90,15 @@ export interface FacebookMockState {
   businessId?: string;
   ownedApps?: string[];
   failOwnedApps?: boolean;
+  /** نتيجة GET /me لنوع الرمز: رمز صفحة يُعيد معرّف الصفحة، رمز مستخدم يُعيد المستخدم. */
+  meSubjectId?: string;
+  meSubjectName?: string;
+  /** حقول حالة الصفحة (GET /{page-id}?fields=is_published,link,...) للتشخيص. */
+  pageIsPublished?: boolean | null;
+  pageLink?: string | null;
+  pageVerificationStatus?: string | null;
+  pageCategory?: string | null;
+  pageUsername?: string | null;
 }
 
 export function createFacebookMock(state: Partial<FacebookMockState> = {}): FacebookMockState {
@@ -131,6 +140,13 @@ export function createFacebookMock(state: Partial<FacebookMockState> = {}): Face
     businessId: state.businessId ?? 'BIZ_999',
     ownedApps: state.ownedApps ?? [state.validAppId ?? '145634995501895'],
     failOwnedApps: state.failOwnedApps ?? false,
+    meSubjectId: state.meSubjectId,
+    meSubjectName: state.meSubjectName,
+    pageIsPublished: state.pageIsPublished ?? null,
+    pageLink: state.pageLink ?? null,
+    pageVerificationStatus: state.pageVerificationStatus ?? null,
+    pageCategory: state.pageCategory ?? null,
+    pageUsername: state.pageUsername ?? null,
   };
 }
 
@@ -275,6 +291,18 @@ export async function startFacebookMockServer(
     return res.json({ data: state.ownedApps.map((id) => ({ id, name: 'app' })) });
   });
 
+  // هوية الرمز (GET /me): رمز الصفحة يُعيد كائن الصفحة (id = pageId)، ورمز المستخدم
+  // يُعيد المستخدم. يُسجَّل قبل /:version/:pageId (الذي يحجز 'me').
+  app.get('/:version/me', (req, res) => {
+    state.calls += 1;
+    const fields = String(req.query.fields || '');
+    const id = state.meSubjectId ?? state.pages[0]?.id ?? 'PAGE_123';
+    const name = state.meSubjectName ?? state.pages[0]?.name ?? 'معرض الغرابي';
+    const out: Record<string, unknown> = { id };
+    if (fields.includes('name')) out.name = name;
+    return res.json(out);
+  });
+
   app.get('/:version/:pageId', (req, res) => {
     const { pageId } = req.params;
     if (!pageId || pageId === 'me') return res.status(400).json({ error: { message: 'unsupported' } });
@@ -307,6 +335,11 @@ export async function startFacebookMockServer(
     if (fields.includes('name')) out.name = page.name;
     if (fields.includes('access_token')) out.access_token = page.accessToken;
     if (fields.includes('tasks')) out.tasks = page.tasks;
+    if (fields.includes('is_published')) out.is_published = state.pageIsPublished ?? true;
+    if (fields.includes('link')) out.link = state.pageLink ?? `https://www.facebook.com/${page.id}`;
+    if (fields.includes('verification_status')) out.verification_status = state.pageVerificationStatus ?? 'not_verified';
+    if (fields.includes('category')) out.category = state.pageCategory ?? 'Electronics';
+    if (fields.includes('username')) out.username = state.pageUsername ?? null;
     return res.json(out);
   });
 

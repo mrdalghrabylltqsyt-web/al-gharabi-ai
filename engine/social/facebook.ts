@@ -743,6 +743,132 @@ export function interpretPostGrounding(kind: 'video' | 'post', raw: any, appears
   };
 }
 
+/**
+ * حالة **الصفحة نفسها** كما أعلنها Meta (GET /{page-id}?fields=...). هذه قراءة
+ * إلزامية لأن صفحة غير منشورة (is_published=false) تُظهر كل محتواها للمالك/المحرّرين
+ * فقط، بصرف النظر عن حالة أي منشور فردي — وهذا سبب شائع لعرض «المنشور لا يراه الجمهور».
+ * أي حقل غائب يبقى null (لا يُخترع)، وlink يسمح للمالك مقارنة هوية الصفحة الحقيقية.
+ */
+export interface FacebookPageHealth {
+  pageId: string;
+  exists: boolean;
+  name: string | null;
+  /** الرابط العام للصفحة — يُقارَن برابط الصفحة الحقيقية الذي يفتحه المالك. */
+  link: string | null;
+  /** is_published للصفحة (لا المنشور): false = صفحة مسودة/غير منشورة. */
+  isPublished: boolean | null;
+  verificationStatus: string | null;
+  category: string | null;
+  username: string | null;
+}
+
+/** يفسّر استجابة GET /{page-id} إلى حالة صفحة صادقة. أي حقل غائب => null. */
+export function interpretPageHealth(raw: any): FacebookPageHealth {
+  const d = raw && typeof raw === 'object' ? raw : {};
+  const pageId = d.id != null ? String(d.id) : '';
+  const isPubRaw = d.is_published;
+  const isPublished = typeof isPubRaw === 'boolean' ? isPubRaw : (isPubRaw === 'true' ? true : isPubRaw === 'false' ? false : null);
+  return {
+    pageId,
+    exists: Boolean(pageId),
+    name: typeof d.name === 'string' ? d.name : null,
+    link: typeof d.link === 'string' && d.link ? d.link : null,
+    isPublished,
+    verificationStatus: typeof d.verification_status === 'string' ? d.verification_status : null,
+    category: typeof d.category === 'string' ? d.category : null,
+    username: typeof d.username === 'string' ? d.username : null,
+  };
+}
+
+/** سبب جذري مُثبت من الأدلة، أو null إن لم تثبته الأدلة بعد (لا تخمين). */
+export interface FacebookVisibilityDiagnosis {
+  rootCause: string | null;
+  rootCauseLabelAr: string | null;
+  manualActionRequired: string[];
+  isCodeIssue: boolean;
+}
+
+/**
+ * يحسم سبب عدم ظهور المنشور للجمهور **من الأدلة الفعلية** فقط، بترتيب أسبقية صريح.
+ * القاعدة الملزمة: لا يُعلن سبب جذري إن لم تثبته قراءة صريحة؛ عند الغياب يعود null
+ * مع خطوات التحقق اليدوية. القواعد الثلاث الأولى (صفحة غير منشورة / قيود جمهور على
+ * مستوى الصفحة / مراجعة Meta) **ليست مشكلة كود** ويجب ألا تُعالج برمجياً.
+ */
+export function diagnosePageVisibility(input: {
+  pageHealth?: FacebookPageHealth | null;
+  postGrounding?: FacebookPostGrounding | null;
+  scheduledTime?: string | null;
+}): FacebookVisibilityDiagnosis {
+  const page = input.pageHealth || null;
+  const post = input.postGrounding || null;
+  const scheduled = input.scheduledTime ? String(input.scheduledTime) : (post?.scheduledPublishTime || null);
+
+  // 1) الصفحة نفسها غير منشورة: تُخفى كل محتوياتها عن العامة نهائياً.
+  if (page && page.exists && page.isPublished === false) {
+    return {
+      rootCause: 'page_not_published',
+      rootCauseLabelAr: 'الصفحة نفسها غير منشورة (is_published=false) — لذلك لا يظهر أي من محتواها للجمهور مطلقاً، لا هذا المنشور فقط.',
+      manualActionRequired: [
+        'من Meta Business Suite أو إعدادات الصفحة: انشر الصفحة نفسها (Publish Page) بدل إبقائها مسودة/غير منشورة.',
+        'متى نُشرت الصفحة صار كل محتواها المنشور مرئياً؛ لا يحتاج الأمر أي تعديل كود.',
+      ],
+      isCodeIssue: false,
+    };
+  }
+
+  // 2) جدولة غير مقصودة: المنشور مجدول (سطر الحالة «غير منشور الآن» تقنياً).
+  if (scheduled) {
+    return {
+      rootCause: 'post_scheduled',
+      rootCauseLabelAr: `المنشور مجدول (scheduled_publish_time=${scheduled}) فهو غير منشور الآن تقنياً رغم صحة معرّفه.`,
+      manualActionRequired: [
+        'إن لم تكن الجدولة مقصودة فأعد النشر دون جدولة (لا تُرسل scheduled_publish_time).',
+        'إن كانت مقصودة فانتظر حلول الموعد ثم تحقق من الحالة.',
+      ],
+      isCodeIssue: true,
+    };
+  }
+
+  // 3) المنشور مسودة/غير منشور صراحةً.
+  if (post && post.exists && post.isPublished === false) {
+    return {
+      rootCause: 'post_draft_or_unpublished',
+      rootCauseLabelAr: 'المنشور غير منشور (is_published=false) فهو مسودة/غير منشور بصرف النظر عن أي شيء آخر.',
+      manualActionRequired: ['أعد النشر بإرسال published=true صراحةً (مطبَّق في الكود للمنشورات النصية والفيديو).'],
+      isCodeIssue: true,
+    };
+  }
+
+  // 4) المنشور منشور فعلاً (is_published=true) لكنه غير ظاهر على حائط الصفحة،
+  //    أو الصفحة تُقیّد الجمهور: هذا النمط يطابق تقييد Meta لمحتوى API (App Mode
+  //    Development/Access Levels) أو قيود جمهور/مراجعة. ليس عطلاً في كود النشر.
+  if (post && post.isPublished === true && post.appearsOnPage === false) {
+    return {
+      rootCause: 'meta_restricts_api_content_visibility',
+      rootCauseLabelAr: 'المنشور منشور فعلاً (is_published=true) لكنه لا يرد على حائط الصفحة العامة — يطابق تقييد Meta لمحتوى تطبيق غير Live (Development/Access Levels) أو قيود جمهور/مراجعة على مستوى الصفحة. ونجاح النشر نفسه سليم.',
+      manualActionRequired: [
+        'Meta App Dashboard → انقل التطبيق إلى Live (أو Access Levels → Advanced للصلاحيات).',
+        'تحقق من Meta Business Suite → إعدادات الصفحة → الجمهور والظهور (قيود عمر/بلد) ومن سجل جودة الصفحة لأي تقييد.',
+        'لا يوجد إصلاح برمجي مطلوب لهذه الحالة.',
+      ],
+      isCodeIssue: false,
+    };
+  }
+
+  // 5) الأدلة غير حاسمة (حقول غائبة/غير مقروءة): لا يُعلن سبب جذري.
+  return {
+    rootCause: null,
+    rootCauseLabelAr: null,
+    manualActionRequired: [
+      'الاختبار الحاسم الوحيد: افتح رابط المنشور (permalink) من جلسة متخفية بلا أي تسجيل دخول — إن لم يظهر فافحص الفرضيات أدناه بالترتيب.',
+      'إن كان المنشور منشوراً فعلاً (is_published=true) ولا يظهر للجمهور: افحص Meta App Dashboard → App Mode (Development/Live) أو Access Levels، ثم Meta Business Suite → إعدادات الصفحة → قيود الجمهور وسجل الجودة.',
+      'تأكد أن is_published للصفحة نفسها (لا المنشور فقط) ليس false — صفحة غير منشورة تُخفي كل محتواها.',
+    ],
+    isCodeIssue: false,
+  };
+}
+
+
 export class FacebookClient {
   constructor(
     private readonly fetchImpl: FacebookFetch,
@@ -1006,6 +1132,48 @@ export class FacebookClient {
       };
     } catch (e: any) {
       return { ok: false, data: null, error: String(e?.message || 'فشل الاتصال بـFacebook.') };
+    }
+  }
+
+  /** يثبت **نوع الرمز حياً** عبر GET /me: رمز صفحة (Page Access Token) يُعيد كائن
+   *  الصفحة (id = pageId)، أما رمز المستخدم فيُعيد المستخدم. هذا يميّز — بدليل حقيقي —
+   *  أن النشر يقع برمز صفحة (لا مستخدم). يُعاد id/name فقط، بلا أي سرّ. */
+  async probeTokenSubject(accessToken: string): Promise<FacebookResult<{ id: string; name: string | null }>> {
+    if (!accessToken) return { ok: false, data: null, error: 'الرمز غير متوفر.' };
+    try {
+      const u = new URL(facebookGraphUrl('/me', this.baseUrl));
+      u.searchParams.set('fields', 'id,name');
+      u.searchParams.set('access_token', accessToken);
+      const res = await this.fetchImpl(u.toString(), { method: 'GET' });
+      const data = await res.json().catch(() => null);
+      if (!res.ok || data?.error || !data?.id) {
+        const ex = logAndExtractFacebookError(data, 'GET /me', res.status);
+        return { ok: false, data: null, error: errorMessage(data, 'تعذّر إثبات هوية الرمز.'), providerCode: ex.providerCode, providerSubcode: ex.providerSubcode, providerTraceId: ex.providerTraceId };
+      }
+      return { ok: true, data: { id: String(data.id), name: typeof data.name === 'string' ? data.name : null } };
+    } catch (e: any) {
+      return { ok: false, data: null, error: String(e?.message || 'فشل الاتصال بـFacebook.') };
+    }
+  }
+
+  /** يقرأ حالة **الصفحة نفسها** (GET /{page-id}?fields=id,name,link,is_published,
+   *  verification_status,category,username). قراءة إلزامية: صفحة غير منشورة
+   *  (is_published=false) تُظهر كل محتواها للمالك/المحرّرين فقط. كل حقل غائب => null. */
+  async getPageHealth(pageId: string, pageAccessToken: string): Promise<FacebookResult<FacebookPageHealth>> {
+    if (!pageId || !pageAccessToken) return { ok: false, data: null, error: 'معرّف الصفحة ورمزها مطلوبان.' };
+    try {
+      const u = new URL(facebookGraphUrl(`/${encodeURIComponent(pageId)}`, this.baseUrl));
+      u.searchParams.set('fields', 'id,name,link,is_published,verification_status,category,username');
+      u.searchParams.set('access_token', pageAccessToken);
+      const res = await this.fetchImpl(u.toString(), { method: 'GET' });
+      const data = await res.json().catch(() => null);
+      if (!res.ok || data?.error || !data?.id) {
+        const ex = logAndExtractFacebookError(data, `GET /${pageId}`, res.status);
+        return { ok: false, data: null, error: errorMessage(data, 'تعذّر قراءة حالة الصفحة من Meta.'), providerCode: ex.providerCode, providerSubcode: ex.providerSubcode, providerTraceId: ex.providerTraceId };
+      }
+      return { ok: true, data: interpretPageHealth(data) };
+    } catch (e: any) {
+      return { ok: false, data: null, error: String(e?.message || 'فشل الاتصال بـMeta.') };
     }
   }
 

@@ -4096,6 +4096,45 @@ add('watcher-advisory-not-authority',
     read('engine/tests/facebook.connector.test.ts').includes('لا يختلق معرّف منشور'),
     'التشخيص يرفض بصراحة عند غياب سجل النشر ولا يختلق معرّفاً (مُختبر)');
 
+  // 9ج) تشخيص ظهور Facebook للجمهور — الأدلة الإلزامية (صفحة/رمز/هوية) بلا تخمين.
+  add('facebook-page-self-published-check',
+    read('engine/social/facebook.ts').includes('async getPageHealth') &&
+    read('engine/social/facebook.ts').includes('interpretPageHealth') &&
+    read('engine/social/facebook.ts').includes('is_published=false') &&
+    read('server.ts').includes('/api/platforms/facebook/page-health'),
+    'فحص is_published للصفحة نفسها متاح (is_published للصفحة ≠ للمنشور) — قراءة فقط');
+
+  add('facebook-token-subject-proof',
+    read('engine/social/facebook.ts').includes('async probeTokenSubject') &&
+    read('server.ts').includes('probeTokenSubject') &&
+    read('server.ts').includes('tokenIsPageToken'),
+    'إثبات نوع الرمز حياً (GET /me): رمز صفحة يُعيد كائن الصفحة، رمز مستخدم يُعيد المستخدم');
+
+  add('facebook-visibility-root-cause-from-evidence',
+    read('engine/social/facebook.ts').includes('export function diagnosePageVisibility') &&
+    read('engine/social/facebook.ts').includes("'page_not_published'") &&
+    read('engine/social/facebook.ts').includes("'meta_restricts_api_content_visibility'") &&
+    read('engine/social/facebook.ts').includes('rootCause: null'),
+    'السبب الجذري يُحسم من الأدلة فقط مع أسبقية صريحة وrootCause=null عند عدم اليقين');
+
+  add('facebook-visibility-not-code-issue-honest',
+    read('engine/social/facebook.ts').includes('isCodeIssue: false') &&
+    read('engine/social/facebook.ts').includes('صفحة غير منشورة') &&
+    read('engine/social/facebook.ts').includes('لا يوجد إصلاح برمجي مطلوب'),
+    'الأسباب غير الكودية (صفحة غير منشورة/قيود جمهور/مراجعة Meta) تُعلن صراحةً بلا ادّعاء إصلاح كودي');
+
+  add('facebook-definitive-incognito-test',
+    read('server.ts').includes('definitiveTest') &&
+    read('server.ts').includes('متخفية') &&
+    read('server.ts').includes('بلا أي تسجيل دخول'),
+    'التشخيص يفرض الاختبار الحاسم: فتح permalink من جلسة متخفية بلا أي تسجيل دخول');
+
+  add('facebook-page-health-tests',
+    read('engine/tests/facebook.connector.test.ts').includes('page-health') &&
+    read('engine/tests/facebook.connector.test.ts').includes('diagnosePageVisibility') &&
+    read('engine/tests/facebook.connector.test.ts').includes('tokenType'),
+    'اختبار انحدار يثبت فحص صحة الصفحة ونوع الرمز والسبب الجذري من الأدلة');
+
   // 11) إصلاح عطل Threads: حدود النص مصدر واحد يُحسب بـUTF-8 bytes (وثيقة Meta).
   add('text-limits-single-source-module',
     read('engine/social/textLimits.ts').includes('UTF8_BYTE_COUNTED_PLATFORMS') &&

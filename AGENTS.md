@@ -44,7 +44,7 @@ npm install
 npm run dev            # tsx server.ts
 npm run lint           # tsc --noEmit
 npm run build          # vite build + esbuild server.ts -> dist/server.cjs
-npm run final-audit    # node final-audit.mjs (1533 فحصاً)
+npm run final-audit    # node final-audit.mjs (1539 فحصاً)
 npm test               # storage + engine + auth + ... + db + runtime
 ```
 - التشغيل الإنتاجي: `PORT=4517 NODE_ENV=production APP_URL=http://localhost:4517 node dist/server.cjs`
@@ -5523,3 +5523,38 @@ final-audit الجديدة `youtube-quota-retry-*` (**1533 إجمالاً**). `l
 
 **لا تغيير في:** أي سرّ/مفتاح، OAuth/الاعتمادات، المصادقة، قاعدة البيانات، DR/الاستعادة،
 Gemini، بقية المنصات أو نموذج الجدولة.
+
+## تشخيص ظهور منشورات Facebook للجمهور — أدلة إلزامية بلا تخمين (2026-10-04)
+
+**السياق:** المنشور يُنشر عبر API بنجاح (providerPostId صحيح) ويراه المالك فقط، بينما لا يراه الجمهور.
+**القاعدة الملزمة:** نجاح Graph API + وجود providerPostId **لا يُثبتان** الظهور العام. الاختبار الحاسم
+الوحيد هو فتح `permalink` من جلسة متخفية **بلا أي تسجيل دخول**. ووضع التطبيق Development/Live **لا يُقرأ
+عبر Graph API** — فلا يُعلن سبب جذري بلا دليل صريح.
+
+**أُضيف (قراءة فقط، بلا أي نشر أو تغيير):**
+- `engine/social/facebook.ts`: `FacebookPageHealth` + `interpretPageHealth` (قراءة is_published/link/
+  verification_status/category للصفحة نفسها)، `probeTokenSubject` (GET /me: رمز صفحة يُعيد كائن الصفحة
+  فتُثبت نوع الرمز حياً)، `getPageHealth`، و`diagnosePageVisibility` (سبب جذري من الأدلة بأسبقية صريحة:
+  page_not_published ← post_scheduled ← post_draft_or_unpublished ← meta_restricts_api_content_visibility،
+  وإلا `rootCause=null` بلا تخمين، مع `isCodeIssue` صريح).
+- `server.ts`: `GET /api/platforms/facebook/page-health` (owner، بلا postId) — فحص is_published للصفحة
+  نفسها + نوع الرمز + هوية الصفحة (link). و`post-visibility-diagnosis` أُثري بـ`pageHealth`/`tokenType`/
+  `pageIdentity`/`rootCause`/`hypotheses` (7 فرضيات مع حالة الدليل) و`definitiveTest` (جلسة متخفية).
+  كلها بلا أي سرّ، ووسم `proofOfPublicVisibility:false` باقٍ.
+
+**السبب الأكثر شيوعاً الذي يُثبته الفحص:** `is_published=false` **لصفحة** معرض الغرابي نفسها (صفحة مسودة/
+غير منشورة) — وهذا يُخفي **كل** محتواها عن العامة، لا منشوراً واحداً. **هذا ليس عطلاً كودياً**؛ الإصلاح
+من Meta Business Suite → نشر الصفحة. وتحذير الهوية: لو ظهر `pageIdentity.pageLink` صفحة اختبار بدل الصفحة
+الحقيقية، فتدفّق OAuth ربط أول صفحة تلقائياً (`pages.data.length===1`).
+
+**اختبارات:** `facebook.connector.test.ts` = **364 فحصاً** (مجموعة 1ي-2 وحدة + 6ج تكامل: page-health 401/403،
+tokenType=page، link، عدم تسريب سرّ، getPageHealth من مزود حقيقي). final-audit = **1539** (`facebook-page-self-published-check`،
+`facebook-token-subject-proof`، `facebook-visibility-root-cause-from-evidence`، `facebook-visibility-not-code-issue-honest`،
+`facebook-definitive-incognito-test`، `facebook-page-health-tests`).
+
+**ما يتطلب المالك (لا يُنفّذه أي وكيل):** (1) نشر الصفحة إن كانت `is_published=false`؛ (2) App Mode → Live
+(أو Advanced Access)؛ (3) فحص قيود الجمهور/جودة الصفحة من Meta Business Suite؛ (4) فتح permalink من جلسة
+متخفية؛ (5) إعادة ربط Facebook لو ثبت أن الصفحة المرتبطة اختبارية.
+
+**لا تغيير في:** Instagram/Threads، Gemini، المصادقة، قاعدة البيانات، DR/الاستعادة، أو أي سرّ/مفتاح.
+

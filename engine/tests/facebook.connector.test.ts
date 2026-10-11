@@ -47,6 +47,8 @@ import {
   buildPublishTextBody,
   assertNoPagePostPrivacyParam,
   interpretPostGrounding,
+  interpretPageHealth,
+  diagnosePageVisibility,
   FacebookClient,
 } from '../social/facebook';
 import { createFacebookMock, startFacebookMockServer } from './helpers/facebookMock';
@@ -387,6 +389,43 @@ async function unitTests(): Promise<void> {
   check('الجسم حمل url لا source', photoRequests[0]?.body.url === 'https://drive.example/p.jpg' && photoRequests[0]?.body.source === undefined);
   check('بلا رابط صورة => رفض فوري بلا أي طلب شبكي', (await photoClient.publishPhotoToPage('PAGE_X', 'PT', '')).ok === false);
   check('لا نجاح بلا معرّف صورة من Meta', (await failClient.publishPhotoToPage('PAGE_X', 'PT', 'https://x/p.jpg')).ok === false);
+
+  group('1ي-2) وحدة: صحة الصفحة نفسها + نوع الرمز (Public Visibility audit)');
+  // interpretPageHealth: is_published للصفحة يُقرأ بدقة، والحقول الغائبة تبقى null.
+  const phPub = interpretPageHealth({ id: 'PAGE_1', name: 'معرض الغرابي للتقسيط', link: 'https://www.facebook.com/PAGE_1', is_published: true, verification_status: 'blue_verified', category: 'Electronics' });
+  check('صفحة منشورة: isPublished=true', phPub.isPublished === true && phPub.exists === true);
+  check('صفحة: link وverification_status مقروءان', phPub.link === 'https://www.facebook.com/PAGE_1' && phPub.verificationStatus === 'blue_verified');
+  const phDraft = interpretPageHealth({ id: 'PAGE_2', is_published: false });
+  check('صفحة غير منشورة: isPublished=false', phDraft.isPublished === false);
+  const phUnknown = interpretPageHealth({ id: 'PAGE_3' });
+  check('صفحة بلا is_published => null (لا يُفترض نجاح)', phUnknown.isPublished === null);
+
+  // diagnosePageVisibility: أسبقية الأسباب من الأدلة فقط (لا تخمين).
+  const dxPageDraft = diagnosePageVisibility({ pageHealth: phDraft, postGrounding: gPublished });
+  check('سبب جذري: صفحة غير منشورة تتقدّم على كل شيء', dxPageDraft.rootCause === 'page_not_published' && dxPageDraft.isCodeIssue === false);
+  const dxScheduled = diagnosePageVisibility({ pageHealth: phPub, postGrounding: interpretPostGrounding('post', { id: 'P9', is_published: false, scheduled_publish_time: 1893456000 }) });
+  check('سبب جذري: جدولة غير مقصودة', dxScheduled.rootCause === 'post_scheduled' && dxScheduled.isCodeIssue === true);
+  const dxMeta = diagnosePageVisibility({ pageHealth: phPub, postGrounding: interpretPostGrounding('post', { id: 'P10', is_published: true }, false) });
+  check('سبب جذري: تقييد Meta (منشور فعلاً لكن غير على الحائط) — ليس عطلاً كودياً', dxMeta.rootCause === 'meta_restricts_api_content_visibility' && dxMeta.isCodeIssue === false);
+  const dxUnclear = diagnosePageVisibility({ pageHealth: phUnknown, postGrounding: interpretPostGrounding('post', { id: 'P11' }, null) });
+  check('أدلة غير حاسمة => لا يُعلن سبب جذري (rootCause=null)', dxUnclear.rootCause === null);
+  check('غير الحاسم يطلب الاختبار الحاسم (جلسة متخفية)', dxUnclear.manualActionRequired.some((m) => m.includes('متخفية')));
+
+  // probeTokenSubject: رمز الصفحة يُعيد كائن الصفحة (id = pageId)، ورمز المستخدم يُعيد المستخدم.
+  const mePageFetch = async () => ({ ok: true, status: 200, json: async () => ({ id: 'PAGE_X', name: 'صفحة' }) });
+  const meUserFetch = async () => ({ ok: true, status: 200, json: async () => ({ id: 'USER_9', name: 'مستخدم' }) });
+  const tokPage = await new FacebookClient(mePageFetch as any, 'https://graph.example/v21.0').probeTokenSubject('PT');
+  const tokUser = await new FacebookClient(meUserFetch as any, 'https://graph.example/v21.0').probeTokenSubject('UT');
+  check('probeTokenSubject: رمز الصفحة يُعيد id=pageId', tokPage.ok === true && tokPage.data?.id === 'PAGE_X');
+  check('probeTokenSubject: رمز المستخدم يُعيد معرّف المستخدم (لا الصفحة)', tokUser.data?.id === 'USER_9');
+  check('probeTokenSubject يسلك GET /me', (await (async () => { const urls: string[] = []; await new FacebookClient((async (u: string) => { urls.push(u); return { ok: true, status: 200, json: async () => ({ id: 'X' }) }; }) as any, 'https://graph.example/v21.0').probeTokenSubject('T'); return urls[0] || ''; })()).includes('/me'));
+
+  // getPageHealth: يقرأ /{page-id} بفields الحالة ويتحقق من الحقول.
+  let pageHealthUrl = '';
+  const pageHealthFetch = async (url: string) => { pageHealthUrl = url; return { ok: true, status: 200, json: async () => ({ id: 'PAGE_X', name: 'معرض', link: 'https://www.facebook.com/PAGE_X', is_published: true }) }; };
+  const phRes = await new FacebookClient(pageHealthFetch as any, 'https://graph.example/v21.0').getPageHealth('PAGE_X', 'PT');
+  check('getPageHealth يقرأ /{page-id} بـfields الحالة', phRes.ok === true && decodeURIComponent(pageHealthUrl).includes('fields=id,name,link,is_published,verification_status,category,username'));
+  check('getPageHealth يعيد isPublished', phRes.data?.isPublished === true);
 }
 
 async function integrationTests(): Promise<void> {
@@ -515,6 +554,27 @@ async function integrationTests(): Promise<void> {
     check('لا يُعاد أي providerPostId مُختلق عند غياب السجل', !visNoRecordBody.providerPostId);
     check('التشخيص لا يكشف أي سرّ عند الرفض', !JSON.stringify(visNoRecordBody).includes('PAGE_TOKEN_TEST') && !JSON.stringify(visNoRecordBody).includes(FB_APP_SECRET));
     check('التشخيص لغير المالك => 403 (المعرّفات للمالك فقط)', (await fetch(`${BASE}/api/platforms/facebook/post-visibility-diagnosis`, { headers: staffAuth })).status === 403);
+
+    group('6ج) تكامل: فحص صحة الصفحة نفسها + نوع الرمز (Public Visibility audit)');
+    // إلزامي قبل أي إعلان نجاح نشر: فحص is_published للصفحة نفسها (لا المنشور فقط)،
+    // ونوع الرمز (صفحة لا مستخدم) — كلها قراءة فقط بلا أي نشر.
+    check('page-health بلا جلسة => 401', (await fetch(`${BASE}/api/platforms/facebook/page-health`)).status === 401);
+    check('page-health لغير المالك => 403', (await fetch(`${BASE}/api/platforms/facebook/page-health`, { headers: staffAuth })).status === 403);
+    const pageHealthRes = await fetch(`${BASE}/api/platforms/facebook/page-health`, { headers: auth });
+    const pageHealthBody = await pageHealthRes.json().catch(() => ({}));
+    check('page-health نجح وأعلن is_published للصفحة', pageHealthRes.status === 200 && pageHealthBody.pageIsPublished === true, JSON.stringify(pageHealthBody).slice(0, 200));
+    check('page-health أثبت أن الرمز رمز صفحة (Page Access Token)', pageHealthBody.tokenType === 'page', `tokenType=${pageHealthBody.tokenType}`);
+    check('page-health يعرض هوية الصفحة (link) للمقارنة بالصفحة الحقيقية', typeof pageHealthBody.pageLink === 'string' && pageHealthBody.pageLink.includes('facebook.com'));
+    check('page-health لا يكشف أي سرّ', !JSON.stringify(pageHealthBody).includes('PAGE_TOKEN_TEST') && !JSON.stringify(pageHealthBody).includes(FB_APP_SECRET));
+    // الصفحة غير منشورة: السبب الجذري يُثبت من الدليل (مسار تشخيصي بلا تخمين).
+    const draftMock = await startFacebookMockServer(6996, createFacebookMock({ pageIsPublished: false }));
+    try {
+      // نفس الخادم الحقيقي يقرأ من هذا الخادم الوهمي عبر الاستدعاء المباشر للعميل
+      // (لا نعيد تشغيل الخادم الحقيقي بعنوان وهمي مختلف) — نتحقق عبر الدالة النقية + العميل.
+      const c = new FacebookClient((globalThis.fetch as any), `http://127.0.0.1:6996`);
+      const ph = await c.getPageHealth('PAGE_123', 'PAGE_TOKEN_TEST');
+      check('getPageHealth يقرأ is_published=false من مزود حقيقي (وهمي)', ph.ok === true && ph.data?.isPublished === false);
+    } finally { await draftMock.stop(); }
 
     group('7) تكامل: استقبال تعليق حقيقي عبر webhook موقّع');
     const commentPayload = JSON.stringify({ object: 'page', entry: [{ id: 'PAGE_123', changes: [{ field: 'feed', value: { item: 'comment', comment_id: 'C1', post_id: 'POST1', message: 'بكم سعر الثلاجة بالتقسيط؟', from: { name: 'أحمد' }, created_time: 1700000000 } }] }] });
