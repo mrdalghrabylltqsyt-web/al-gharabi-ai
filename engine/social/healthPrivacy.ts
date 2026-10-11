@@ -37,6 +37,22 @@ export const PUBLIC_ENDPOINT_FORBIDDEN_CUSTOMER_FIELDS: readonly string[] = Obje
   'customerMessage',
   'lastCustomerMessage',
   'unresolvedQuestion',
+  // أسماء عامة/مختصرة تحمل نفس المعنى (اسم حساب أو نص تعليق/رسالة) — دفاع متين
+  // ضد حقل جديد يُضاف باسم مختصر فيتسرّب بلا أن يلتقطه الحقل الصريح. لا تتقاطع مع
+  // أي مفتاح تقني مشروع في النقطتين العامتين (مُتحقَّق منه في الاختبار).
+  'text',
+  'comment',
+  'commentBody',
+  'commentMessage',
+  'author',
+  'authorId',
+  'authorHandle',
+  'username',
+  'senderName',
+  'messageText',
+  'messageBody',
+  'postText',
+  'postMessage',
 ]);
 
 /**

@@ -205,6 +205,9 @@ async function run(): Promise<void> {
     // حارس صريح عام: لا أي حقل يحمل بيانات عميل في أي مكان بالنقطة العامة.
     const forbiddenInHealth = FORBIDDEN_CUSTOMER_FIELDS.filter((f) => healthKeys.has(f));
     check('لا حقل بيانات عميل معروف في الصحة (قائمة صريحة)', forbiddenInHealth.length === 0, forbiddenInHealth.join(','));
+    // دفاع متين: أسماء عامة/مختصرة لنفس المعنى (text/author/comment/username...) لا تظهر
+    // في النقطة العامة، فلا يتسرّب حقل عميل باسم مختصر حتى لو أُضيف لاحقاً.
+    check('لا أسماء حقول عميل عامة مختصرة في الصحة', !['text', 'comment', 'author', 'username', 'senderName', 'messageText', 'messageBody'].some((k) => healthKeys.has(k)));
 
     group('2) /api/health تُبقي الحقول التقنية غير الحساسة فقط');
     const w = health.youtubeWatcher;

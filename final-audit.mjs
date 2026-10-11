@@ -985,6 +985,13 @@ add('public-health-guard-test-exists',
   fs.existsSync(path.join(root, 'engine/tests/health.guard.test.ts')) &&
   (pkg.scripts['test'] || '').includes('test:health-guard'),
   'اختبار وحدة لحارس الخصوصية (sanitize/السماح/الكشف) مسجّل ضمن npm test');
+// دفاع متين: أسماء عامة/مختصرة لنفس معنى بيانات العميل (اسم حساب/نص تعليق/رسالة)
+// ممنوعة أيضاً، فلا يتسرّب حقل جديد باسم مختصر (text/author/comment/username...).
+add('public-health-generic-customer-aliases-forbidden',
+  healthPrivacyModule.includes("'text'") && healthPrivacyModule.includes("'author'") &&
+  healthPrivacyModule.includes("'comment'") && healthPrivacyModule.includes("'username'") &&
+  healthPrivacyModule.includes("'senderName'") && healthPrivacyModule.includes("'messageText'"),
+  'أسماء عامة/مختصرة لحقول بيانات العميل ممنوعة في النقطتين العامتين (text/author/comment/username/senderName/messageText)');
 
 // ------------------------------------------------------------
 // محرّك الاستقبال الموحّد (Unified Ingestion Engine) — كل المنصات العشر.
