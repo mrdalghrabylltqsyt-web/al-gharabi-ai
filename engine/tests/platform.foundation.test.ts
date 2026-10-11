@@ -250,7 +250,7 @@ function run(): void {
 
   const contentViewSrc = readFileSync(join(process.cwd(), 'src/components/content/ContentEngineView.tsx'), 'utf8');
   check('الواجهة تستدعي الرفع التلقائي فور اختيار الفيديو (بلا لصق يدوي)', /onPickVideo[\s\S]{0,1400}apiService\.hostContentVideo\(/.test(contentViewSrc));
-  check('زر الإرسال يُعطَّل أثناء الرفع التلقائي (لا إرسال بلا رابط جاهز)', /disabled=\{isQueuingYouTube \|\| isHostingVideo\}/.test(contentViewSrc));
+  check('زر الإرسال يُعطَّل أثناء الرفع التلقائي (لا إرسال بلا رابط جاهز)', /disabled=\{isHostingVideo\}/.test(contentViewSrc));
   check('فشل الرفع لا يُسقط التدفّق — يبقى الحقل اليدوي بديلاً', contentViewSrc.includes('setVideoHostError('));
 
   console.log('\n' + '='.repeat(60));

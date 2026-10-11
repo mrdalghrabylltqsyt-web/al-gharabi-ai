@@ -44,7 +44,7 @@ npm install
 npm run dev            # tsx server.ts
 npm run lint           # tsc --noEmit
 npm run build          # vite build + esbuild server.ts -> dist/server.cjs
-npm run final-audit    # node final-audit.mjs (1523 فحصاً)
+npm run final-audit    # node final-audit.mjs (1533 فحصاً)
 npm test               # storage + engine + auth + ... + db + runtime
 ```
 - التشغيل الإنتاجي: `PORT=4517 NODE_ENV=production APP_URL=http://localhost:4517 node dist/server.cjs`
@@ -5483,3 +5483,43 @@ _(هذا الفرع يعتمد على PR #25 غير المدموج؛ سأوضّ�
 
 **لا تغيير في:** أي سرّ/مفتاح، OAuth/الاعتمادات، المصادقة، قاعدة البيانات، DR/الاستعادة،
 Gemini، بقية المنصات أو نموذج الجدولة. لم يُنفَّذ أي نشر خارجي أثناء التطوير.
+
+## إعادة المحاولة الذكية عند نفاد حصة YouTube (D-youtube-quota) — 2026-10-04
+
+**الجذر المُثبت:** عند رد YouTube بـ`quotaExceeded` (نفاد الحصة اليومية ~10,000 وحدة)،
+كان `executeYouTubePublish` يُسجّل العنصر **FAILED** نهائياً رغم أن حصة Google تتجدد
+تلقائياً كل يوم (منتصف ليل المحيط الهادئ). فيفقد المالك نشره بلا سبب دائم.
+
+**الإصلاح — ثلاث ركائز:**
+
+1. **حالة PENDING_RETRY + إعادة محاولة تلقائية.** وحدة `engine/social/quotaRetry.ts`
+   (منطق صافٍ، بلا شبكة/أسرار): `isYouTubeQuotaExceeded`، `planQuotaRetry` (وقت الإعادة =
+   `nextQuotaResetAtMs` = منتصف ليل `America/Los_Angeles` محسوب حسابياً بلا بيانات IANA)،
+   `isQuotaRetryDue`، `shouldSkipPollForQuota`. عند `quotaExceeded` يُوضع العنصر
+   `PENDING_RETRY` (لا `FAILED`) مع `retryAt`/`retryReason`/`retryInternalGuard`، ويُعاد
+   إرساله تلقائياً فور حلول الموعد عبر **نفس** `executeYouTubePublish` (كل البوابات سارية)
+   من مؤقّت داخلي (`startYouTubeQuotaRetryTimer`، افتراضياً 5 دقائق، `.unref()`)، ومسار
+   يدوي للمالك `POST /api/platforms/youtube/content/retry-pending` (requireOwner).
+   لا نشر بلا معرّف مزوّد حقيقي. `PENDING_RETRY` أُضيفت إلى `CONTENT_STATES` (10 حالات)
+   مع انتقالات صريحة (`FAILED→PENDING_RETRY`، `PENDING_RETRY→PUBLISHED/SCHEDULED/FAILED/CANCELLED`).
+
+2. **تقليل استهلاك الـAPI.** دورة مراقب YouTube تتخطّى القراءة عند اقتراب النفاد
+   (`YOUTUBE_QUOTA_PUBLISH_RESERVE_UNITS`، افتراضياً 1700) فتبقى الحصة لأوامر النشر
+   الفعلية (رفع ≈1600)، وتُعلن التخطّي صراحةً (`gate: QUOTA_LOW`). تدوير يوم الحصة صار
+   على توقيت المحيط الهادئ (`quotaDayKey`) مطابقاً لموعد تجدد Google، فلا ينحرف العدّاد.
+
+3. **الواجهة تعكس حالة الانتظار.** `src/utils/publishResult.ts`: `isYouTubeQuotaPending`
+   و`quotaPendingMessage`، و`formatPlatformResultState`/`summarizePublishFailures` تعرضان
+   «يوتيوب معلّق وسينشر تلقائياً فور تجدد الحصة» بنبرة `pending` لا فشل، مع نجاح باقي
+   المنصات. مسار `/api/workspace/content/:id/publish` يعيد `state: "pending_retry"` +
+   `quotaPending`/`quotaPendingPlatforms`/`retryAt`.
+
+**اختبارات:** `engine/tests/youtube.quota.retry.test.ts` (`npm run test:youtube-quota-retry`،
+**47 فحصاً**: وحدة لتصنيف النفاد/لحظة التجدد/الخطة/الموعد/توفير الحصة + تكامل بخادم Google
+وهمي: نفاد الحصة ⇒ PENDING_RETRY بلا معرّف ⇒ تجدد ⇒ إعادة تلقائية ⇒ PUBLISHED بمعرّف مزيد،
+وتصريح 401). helper `youtubeMock` أضاف `uploadQuotaExceeded`/`replyQuotaExceeded`. فحوص
+final-audit الجديدة `youtube-quota-retry-*` (**1533 إجمالاً**). `lint` + `build` + `test`
++ `final-audit` ناجحة.
+
+**لا تغيير في:** أي سرّ/مفتاح، OAuth/الاعتمادات، المصادقة، قاعدة البيانات، DR/الاستعادة،
+Gemini، بقية المنصات أو نموذج الجدولة.
