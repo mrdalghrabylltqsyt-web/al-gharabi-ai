@@ -101,7 +101,7 @@ import { AGENT_TOOLS } from "./engine/agent/tools";
 import { describeProviders } from "./engine/agent/providerRouter";
 import { PLATFORM_SPECS, platformSupports, hasRealConnector, credentialModeOf, isSupportedPlatform, buildAdapters } from "./engine/social/registry";
 import { buildYouTubeSalesCorrelation } from "./engine/social/youtubeSalesCorrelation";
-import { sanitizePublicHealthPayload, findForbiddenPublicKeys, findDisallowedWatcherPublicKeys } from "./engine/social/healthPrivacy";
+import { sanitizePublicHealthPayload, findForbiddenPublicKeys, findDisallowedWatcherPublicKeys, sanitizePublicErrorMessage } from "./engine/social/healthPrivacy";
 import {
   validatePlatformText,
   shortenToPlatformLimit,
@@ -6916,14 +6916,14 @@ function watcherStatusBlock() {
 
 const WATCHER_PUBLIC_ERROR_MAX = 40;
 /**
- * يحوّل آخر خطأ إلى رسالة عامة بلا محتوى عميل. رسائل دورة المراقبة أكواد تقنية
- * (ASCII: VIDEO_LIST_FAILED/…)، فإن خرجت عن ذلك (نص حر) تُستبدل برسالة عامة
- * ثابتة — فلا يمكن أن يمرّ نص تعليق أو اسم حساب إلى النقطة العامة.
+ * يُنقّي آخر خطأ داخلي إلى **رسالة تقنية عامة** صالحة للنقطتين العامتين. المصدر
+ * الواحد للمنطق في `sanitizePublicErrorMessage` (healthPrivacy.ts) ليستهلكه الخادم
+ * والاختبار وfinal-audit معاً: نقبل رمز ASCII واحداً بلا مسافات فقط، وأي نص حر
+ * (رسالة إنجليزية/عربية) يُستبدل بـ`connection error` — فلا يمرّ محتوى عميل.
  */
 function watcherPublicError(err: unknown): string | null {
-  if (typeof err !== 'string' || !err) return null;
-  const token = err.trim().slice(0, WATCHER_PUBLIC_ERROR_MAX);
-  return /^[A-Za-z0-9 _.:\-/]+$/.test(token) ? token : 'connection error';
+  const token = sanitizePublicErrorMessage(err);
+  return token === null ? null : token.slice(0, WATCHER_PUBLIC_ERROR_MAX);
 }
 
 /**

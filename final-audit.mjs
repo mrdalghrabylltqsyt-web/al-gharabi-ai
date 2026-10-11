@@ -939,7 +939,19 @@ add('youtube-watcher-data-owner-only', (() => {
   const leakyData = /app\.get\("\/api\/agent\/youtube\/watcher(?:\/brief|\/details|\/audit|\/comment\/:commentId)?"\s*,\s*authenticateToken/.test(server);
   return allOwner && !leakyData;
 })(), 'مسارات بيانات المراقب (الحالة/التقرير/التفاصيل/التعليق/السجل) مقتصرة على المالك (requireOwner) لا مجرّد مصادقة');
-add('youtube-watcher-public-error-sanitized', server.includes('function watcherPublicError') && server.includes("'connection error'"), 'آخر خطأ في النقطة العامة يُقتصر على رمز تقني ASCII أو رسالة عامة ثابتة (لا محتوى عميل)');
+add('youtube-watcher-public-error-sanitized', server.includes('function watcherPublicError') && server.includes('sanitizePublicErrorMessage'), 'آخر خطأ في النقطة العامة يُمرَّر عبر المصدر الواحد (رمز تقني ASCII فقط أو رسالة عامة، لا محتوى عميل)');
+// تقوية (2026-10-11): كان آخر خطأ يقبل حتى 40 محرفاً ASCII حراً **بمسافات**، فيمكن
+// أن تمرّ رسالة SDK إنجليزية تحمل اسم حساب/نصاً. الآن المصدر الواحد
+// `sanitizePublicErrorMessage` يقبل رمزاً واحداً بلا مسافات فقط، وأي نص حر => رسالة
+// عامة. فحصان: وجود المصدر الواحد، واستهلاكه فعلاً في الخادم.
+const healthPrivacyModuleForErr = fs.existsSync(path.join(root, 'engine/social/healthPrivacy.ts')) ? read('engine/social/healthPrivacy.ts') : '';
+add('public-error-sanitizer-single-source',
+  healthPrivacyModuleForErr.includes('export function sanitizePublicErrorMessage') &&
+  /\/\^\[A-Za-z0-9\._-\]\{1,40\}\$\//.test(healthPrivacyModuleForErr),
+  'مصدر واحد لتنقية lastError: رمز ASCII واحد بلا مسافات فقط (أي نص حر => connection error)');
+add('public-error-sanitizer-wired-server',
+  server.includes('sanitizePublicErrorMessage') && /function watcherPublicError[\s\S]{0,200}?sanitizePublicErrorMessage\(err\)/.test(server),
+  'الخادم يستهلك المصدر الواحد في watcherPublicError (لا نسخة ثانية تنحرف)');
 // حارس خصوصية النقطتين العامتين: اختبار حقيقي يزرع canary ويقرأ الاستجابات الفعلية.
 const healthPrivacyTest = fs.existsSync(path.join(root, 'engine/tests/health.privacy.test.ts')) ? read('engine/tests/health.privacy.test.ts') : '';
 add('health-privacy-test-registered', (pkg.scripts['test'] || '').includes('test:health-privacy') && pkg.scripts['test:health-privacy'] === 'tsx engine/tests/health.privacy.test.ts', 'اختبار خصوصية /api/health و/api/readiness مسجّل ضمن npm test');
@@ -956,7 +968,7 @@ add('public-health-privacy-single-source',
   healthPrivacyModule.includes('export function sanitizePublicHealthPayload'),
   'وحدة engine/social/healthPrivacy.ts هي المصدر الواحد لقائمة الحقول الممنوعة + allow-list الكتلة العامة + دالة التنقية');
 add('public-health-runtime-guard-wired',
-  server.includes('import { sanitizePublicHealthPayload, findForbiddenPublicKeys, findDisallowedWatcherPublicKeys } from "./engine/social/healthPrivacy"') &&
+  /import \{[^}]*sanitizePublicHealthPayload[^}]*\} from "\.\/engine\/social\/healthPrivacy"/.test(server) &&
   server.includes('function installPublicHealthGuard(res: any): void') &&
   (server.match(/installPublicHealthGuard\(res\)/g) || []).length === 2,
   'الخادم يستورد حارس الخصوصية ويُثبّته على /api/health و/api/readiness (دفاع أخير ينقّي أي حقل ممنوع قبل الإرسال)');

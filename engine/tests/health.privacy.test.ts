@@ -41,7 +41,9 @@ const stateDir = mkdtempSync(join(tmpdir(), 'gharabi-health-privacy-'));
 const LEAK_AUTHOR = 'PRIVACY_CANARY_AUTHOR_ZZZ';
 const LEAK_COMMENT = 'PRIVACY_CANARY_COMMENT_TEXT_ZZZ';
 const LEAK_REPLY = 'PRIVACY_CANARY_REPLY_TEXT_ZZZ';
-const LEAK_ERROR = 'فشل مزود يحوي نصاً عربياً محتملاً من محادثة عميل';
+// خطأ ASCII حر بمسافات يحوي اسم حساب ونصاً: يجب أن يُستبدل برسالة عامة أيضاً
+// (قبل التقوية كان يُمرَّر لأنه ASCII خالص بلا محارف عربية — ثغرة حقيقية).
+const LEAK_ERROR_ASCII = `PRIVACY_CANARY_AUTHOR_ZZZ wrote: ${'PRIVACY_CANARY_REPLY_TEXT_ZZZ'}`;
 // canary للإدراك: نص تعليق/هدف/إجراء رد — للتحقق أن الحقول النصّية لا تُعلن في الصحة/الجاهزية العامة.
 const LEAK_COGNITION = 'PRIVACY_CANARY_COGNITION_TEXT_ZZZ';
 
@@ -65,7 +67,7 @@ const seededWatcherState = {
   lastPollAt: new Date().toISOString(),
   lastCommentId: 'cmt_canary_escalated',
   lastCommentAt: new Date().toISOString(),
-  lastError: LEAK_ERROR,
+  lastError: LEAK_ERROR_ASCII,
   consecutiveErrors: 1,
   pollCount: 7,
   brief: null,
@@ -210,6 +212,8 @@ async function run(): Promise<void> {
     check('watcherActive منطقي', typeof w?.watcherActive === 'boolean');
     check('حالة عامة status (healthy/degraded/disabled)', ['healthy', 'degraded', 'disabled'].includes(w?.status), String(w?.status));
     check('آخر خطأ نُقّي إلى رمز تقني/رسالة عامة', w?.lastError === 'connection error', String(w?.lastError));
+    // ثغرة سابقة: نص ASCII حر (رسالة إنجليزية بمسافات) كان يمرّ خاماً. الآن يُستبدل.
+    check('آخر خطأ ASCII حر لا يمرّ خاماً (لا اسم/نص عميل)', !JSON.stringify(health).includes('CANARY'), 'ASCII free-text leaked');
     check('commit النشر يُعلن', 'deploy' in health && 'commit' in (health.deploy || {}));
     // allow-list صارم: الكتلة العامة youtubeWatcher لا تحمل إلا الحقول التقنية الدنيا.
     const watcherPublicExtra = Object.keys(w || {}).filter((k) => !ALLOWED_WATCHER_PUBLIC_KEYS.has(k));
