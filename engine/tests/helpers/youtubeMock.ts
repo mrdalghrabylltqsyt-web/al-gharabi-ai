@@ -56,6 +56,10 @@ export interface YouTubeMockState {
   failReply: boolean;
   /** يفشل الرفع (يحاكي فشل videos.insert). */
   failUpload: boolean;
+  /** يفشل الرفع بنفاد الحصة الفعلي (quotaExceeded) — لاختبار إعادة المحاولة الذكية. */
+  uploadQuotaExceeded: boolean;
+  /** يفشل إدراج الرد بنفاد الحصة الفعلي (quotaExceeded). */
+  replyQuotaExceeded: boolean;
   /** معرّف الفيديو الناتج عن الرفع (حقيقي من المزود الوهمي). */
   uploadedVideoId: string;
   /** حالة الخصوصية الفعلية للفيديو المرفوع (يعكسها videos.list كما يفعل YouTube). */
@@ -115,6 +119,8 @@ export function createYouTubeMock(): YouTubeMockState {
     commentsDisabled: false,
     failReply: false,
     failUpload: false,
+    uploadQuotaExceeded: false,
+    replyQuotaExceeded: false,
     uploadedVideoId: 'vid_uploaded_0001',
     uploadedPrivacyStatus: 'public',
     verifyPrivacyOverride: null,
@@ -255,6 +261,7 @@ export function startYouTubeMockServer(state: YouTubeMockState, port: number): P
     if (!state.hasForceSslScope) {
       return res.status(403).json({ error: { code: 403, message: 'insufficient', errors: [{ reason: 'insufficientPermissions' }] } });
     }
+    if (state.replyQuotaExceeded) return res.status(403).json({ error: { code: 403, message: 'The request cannot be completed because you have exceeded your quota.', errors: [{ reason: 'quotaExceeded' }] } });
     if (state.failReply) return res.status(500).json({ error: { code: 500, message: 'Internal error', errors: [{ reason: 'backendError' }] } });
     const parentId = String(req.body?.snippet?.parentId || '');
     if (!parentId) return res.status(400).json({ error: { code: 400, message: 'parentId required', errors: [{ reason: 'invalidArgument' }] } });
@@ -266,6 +273,7 @@ export function startYouTubeMockServer(state: YouTubeMockState, port: number): P
     state.calls += 1;
     state.lastUploadPath = req.originalUrl;
     state.lastUploadBody = req.body;
+    if (state.uploadQuotaExceeded) return res.status(403).json({ error: { code: 403, message: 'The request cannot be completed because you have exceeded your quota.', errors: [{ reason: 'quotaExceeded' }] } });
     if (state.failUpload) return res.status(500).json({ error: { code: 500, message: 'Upload failed', errors: [{ reason: 'backendError' }] } });
     const origin = `${req.protocol}://${req.get('host')}`;
     res.setHeader('Location', `${origin}/upload/session/fake-1`);

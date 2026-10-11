@@ -117,7 +117,7 @@ const on: YouTubeWatcherControls = { ...defaultWatcherControls(), enabled: true,
   check('8: REJECTED نهائي', isTerminalContentState('REJECTED') && canTransitionContent('REJECTED', 'PUBLISHED') === false);
   check('8: CANCELLED نهائي', isTerminalContentState('CANCELLED'));
   check('8: PUBLISHED → REJECTED مرفوض', canTransitionContent('PUBLISHED', 'REJECTED') === false);
-  check('8: الحالات الإحدى عشرة معرّفة', CONTENT_STATES.length === 9 && Boolean(CONTENT_STATE_LABELS_AR.VERIFIED));
+  check('8: الحالات العشر معرّفة (تشمل PENDING_RETRY)', CONTENT_STATES.length === 10 && Boolean(CONTENT_STATE_LABELS_AR.VERIFIED) && Boolean(CONTENT_STATE_LABELS_AR.PENDING_RETRY));
 }
 
 // --- 9) قرارات المراجعة ---

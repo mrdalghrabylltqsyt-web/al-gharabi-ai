@@ -387,6 +387,13 @@ import {
   type YouTubeQuotaOperation,
 } from "./engine/social/youtubeQuota";
 import {
+  isYouTubeQuotaExceeded,
+  planQuotaRetry,
+  isQuotaRetryDue,
+  shouldSkipPollForQuota,
+  quotaDayKey,
+} from "./engine/social/quotaRetry";
+import {
   resolveWatcherErrorAlertThreshold,
   shouldAlertWatcherFailure,
   shouldAlertReauth,
@@ -2406,6 +2413,56 @@ async function reconcileTikTokPublishes(): Promise<{ checked: number; delivered:
   return result;
   } finally {
     tiktokReconcileRunning = false;
+  }
+}
+
+// -------------------------------------------------------------
+// إعادة المحاولة الذكية للنشر على YouTube بعد تجدد الحصة اليومية.
+// عند استنفاد حصة YouTube Data API يُوضع عنصر المحتوى في حالة PENDING_RETRY مع
+// `retryAt` (منتصف ليل المحيط الهادئ). هذه الدورة تُعيد إرساله تلقائياً فور حلول
+// الموعد عبر **نفس** executeYouTubePublish (كل البوابات سارية) — بلا تدخل بشري.
+// تُشغَّل من نفس مؤقّت مراقب YouTube (نبضة واحدة)، ولا تُنشئ نظاماً موازياً.
+// -------------------------------------------------------------
+const YOUTUBE_QUOTA_RETRY_BATCH_MAX = 3;
+let youtubeQuotaRetryRunning = false;
+async function retryPendingYouTubeContent(force = false): Promise<{ checked: number; retried: number; succeeded: number; stillPending: number; failed: number }> {
+  const result = { checked: 0, retried: 0, succeeded: 0, stillPending: 0, failed: 0 };
+  if (youtubeQuotaRetryRunning) return result;
+  youtubeQuotaRetryRunning = true;
+  try {
+    // لا محاولة بلا اتصال موثق أو داخل الوضع المحصور بغير YouTube (نفس بوابات النشر).
+    const guard = youtubeOperationGuard();
+    if (!guard.ok) return result;
+    const now = Date.now();
+    const due = contentQueue.filter((it) => it.state === "PENDING_RETRY" && (force || isQuotaRetryDue(it.retryAt, now))).slice(0, YOUTUBE_QUOTA_RETRY_BATCH_MAX);
+    if (!due.length) return result;
+    for (const item of due) {
+      result.checked += 1;
+      result.retried += 1;
+      // إعادة الإرسال عبر المنفّذ المركزي نفسه (نفس بوابات السلامة/التكرار/المادة).
+      const exec = await executeYouTubePublish({
+        title: item.title, description: item.description, tags: item.tags, privacyStatus: item.privacyStatus,
+        publishAt: item.publishAt || undefined, categoryId: item.categoryId, mediaRef: item.mediaRef,
+        approved: true, queueItemId: item.id, mode: item.publishAt ? "auto" : "manual",
+      }, "system");
+      const b = exec.body || {};
+      if (b.pendingRetry === true) {
+        // الحصة ما زالت مستنفدة: نُعيد الجدولة لليوم التالي بلا تكرار الصف.
+        item.retryAt = b.retryAt || item.retryAt;
+        item.retryReason = b.message || item.retryReason;
+        item.retryInternalGuard = b.retryInternalGuard === true;
+        result.stillPending += 1;
+      } else if (b.externalVideoId) {
+        result.succeeded += 1;
+      } else {
+        // فشل حقيقي (غير الحصة): العنصر أُعيد للحالة FAILED داخل المنفّذ.
+        result.failed += 1;
+      }
+    }
+    await persistWatcherState();
+    return result;
+  } finally {
+    youtubeQuotaRetryRunning = false;
   }
 }
 
@@ -5932,6 +5989,12 @@ interface ContentQueueItem {
   verifiedPrivacyStatus: string | null;
   /** هل أُثبت وصول الوصف المعتمد إلى YouTube فعلاً؟ */
   verifiedDescription?: boolean;
+  /** إعادة المحاولة الذكية عند نفاد الحصة: متى تُعاد المحاولة تلقائياً (ISO) — null إن لا انتظار. */
+  retryAt?: string | null;
+  /** سبب/كود الانتظار على الحصة (يعرضه المالك). */
+  retryReason?: string | null;
+  /** هل السبب حارس الحصة التقديري الداخلي (وليس رفض Google الفعلي)؟ */
+  retryInternalGuard?: boolean;
   createdAt: string;
   updatedAt: string;
   createdBy: string;
@@ -6116,6 +6179,7 @@ function contentQueueView() {
       externalVideoId: it.externalVideoId, url: it.url, verified: it.verified,
       verifiedVideoId: it.verifiedVideoId, verifiedPrivacyStatus: it.verifiedPrivacyStatus,
       verifiedDescription: it.verifiedDescription === true,
+      retryAt: it.retryAt ?? null, retryReason: it.retryReason ?? null, retryInternalGuard: it.retryInternalGuard === true,
       descriptionPresent: String(it.description || "").trim().length > 0,
       createdAt: it.createdAt, updatedAt: it.updatedAt, reviewedBy: it.reviewedBy, reviewedAt: it.reviewedAt, reviewNote: it.reviewNote,
       history: it.history.slice(0, 10),
@@ -6487,6 +6551,21 @@ async function runYouTubeWatcherCycle(trigger: "schedule" | "manual" = "schedule
       maybeAlertWatcherFailure();
       await persistWatcherState();
       return { ok: false, error: guard.error, code: guard.code, newDetected, replied, escalated, skipped, verified, failed };
+    }
+    // توفير الحصة: نُعطي الأولوية للنشر الفعلي. عند اقتراب نفاد حصة YouTube Data
+    // API نوقف استهلاك وحدات القراءة في المراقبة، فلا تُستهلك الحصة إلا لأوامر
+    // النشر الحقيقية. الاحتياطي الافتراضي يغطي رفعاً واحداً (videos.insert ≈1600).
+    {
+      const quotaSnap = youtubeQuotaLedger.snapshot();
+      const unitsPerPoll = 1 + commentScanVideoLimitFromEnv();
+      const remaining = Math.max(0, YOUTUBE_DAILY_QUOTA - quotaSnap.unitsUsed);
+      const reserve = YOUTUBE_QUOTA_PUBLISH_RESERVE_UNITS + unitsPerPoll;
+      if (YOUTUBE_QUOTA_PROTECTION && shouldSkipPollForQuota(remaining, reserve)) {
+        watcherState.lastPollAt = new Date(now).toISOString();
+        watcherAudit({ action: "poll_skipped", reason: `quota_low_prioritize_publish (remaining=${remaining}, reserve=${reserve})`, decision: "QUOTA_LOW" });
+        await persistWatcherState();
+        return { ok: true, skippedPoll: true, gate: "QUOTA_LOW", reason: "الحصة المتبقية منخفضة؛ أُعطيت الأولوية للنشر الفعلي.", newDetected, replied, escalated, skipped, verified, failed };
+      }
     }
     const videosRes = await youtubeClient().listMyVideos((await ensureYouTubeAccessToken()).token!, {
       uploadsPlaylistId: String(youtubeStoredCredentials()?.uploadsPlaylistId || ""), maxResults: 25,
@@ -6962,6 +7041,23 @@ function watcherIraqiReply(text: string): string {
   return buildDeterministicReply(cls);
 }
 
+function startYouTubeQuotaRetryTimer(): void {
+  if (youtubeQuotaRetryTimer) return;
+  const ms = youtubeQuotaRetryIntervalMs();
+  youtubeQuotaRetryTimer = setInterval(safeTimerCallback(() => retryPendingYouTubeContent(), "youtube-quota-retry"), ms);
+  (youtubeQuotaRetryTimer as any).unref?.();
+}
+function stopYouTubeQuotaRetryTimer(): void {
+  if (youtubeQuotaRetryTimer) { clearInterval(youtubeQuotaRetryTimer); youtubeQuotaRetryTimer = null; }
+}
+/** فاصل فحص النشر المعلّق (افتراضياً 5 دقائق؛ أدنى دقيقة). لا يُضبط في الإنتاج عادةً. */
+function youtubeQuotaRetryIntervalMs(): number {
+  const raw = Number(process.env.YOUTUBE_QUOTA_RETRY_INTERVAL_MS);
+  if (!Number.isFinite(raw) || raw < 60_000) return 5 * 60 * 1000;
+  return Math.min(raw, 60 * 60 * 1000);
+}
+let youtubeQuotaRetryTimer: ReturnType<typeof setInterval> | null = null;
+
 /**
  * حلقة المراقبة المستمرة (24/7): job داخلي يعمل داخل عملية Render الدائمة
  * (web process) مستقل تماماً عن المتصفح — إغلاق المتصفح/الهاتف لا يؤثر. كل
@@ -6985,6 +7081,10 @@ function startYouTubeWatcher(): void {
     isDue: () => watcherPollDue(),
     runCycle: () => { runYouTubeWatcherCycle("schedule").catch(() => { /* الخطأ مسجَّل داخل الدورة */ }); },
   });
+  // إعادة المحاولة الذكية للنشر المعلّق على الحصة: مؤقّت مستقل خفيف (كل 5 دقائق)
+  // يُعيد الإرسال تلقائياً فور تجدد حصة YouTube. `.unref()` فلا يمنع الإغلاق النظيف،
+  // وقفل داخلي يمنع التوازي. لا يعتمد على المتصفح.
+  startYouTubeQuotaRetryTimer();
   // Kill Switch عند الإقلاع: لا نبضات. تُستأنف عند رفع الإيقاف من الواجهة.
   const c = normalizeWatcherControls(watcherState.controls);
   if (c.enabled && c.paused) {
@@ -7484,6 +7584,18 @@ async function executeYouTubePublish(input: {
         queueItem.stateReason = `حالة خارجية غير مؤكدة: ${reconciled.note}`;
         queueItem.code = "UNKNOWN_EXTERNAL_STATE";
         pushContentHistory(queueItem, { action: "reconcile_unknown", actor, detail: reconciled.note, result: reconciled.status });
+      } else if (isYouTubeQuotaExceeded(result.code) || isYouTubeQuotaExceeded(result.error)) {
+        // إعادة المحاولة الذكية: نفاد الحصة ليس فشلاً نهائياً — يُوضع العنصر «معلقاً»
+        // ويُعاد إرساله تلقائياً فور تجدد الحصة (منتصف ليل المحيط الهادئ). لا تدخل بشري.
+        const plan = planQuotaRetry(Date.now());
+        const retryAtIso = new Date(plan.retryAtMs).toISOString();
+        queueItem.state = "PENDING_RETRY";
+        queueItem.code = plan.code;
+        queueItem.stateReason = plan.reason;
+        queueItem.retryAt = retryAtIso;
+        queueItem.retryReason = plan.reason;
+        queueItem.retryInternalGuard = plan.internalGuard;
+        pushContentHistory(queueItem, { action: "quota_pending_retry", actor, detail: plan.reason, result: `retryAt=${retryAtIso}` });
       } else {
         queueItem.state = "FAILED";
         queueItem.stateReason = result.error || "فشل الرفع إلى YouTube.";
@@ -7499,9 +7611,24 @@ async function executeYouTubePublish(input: {
   audit(actor, externalVideoId ? (publishAtIso ? "youtube_video_scheduled" : "youtube_video_uploaded") : "youtube_video_upload_failed", `youtube:${externalVideoId || "none"}`);
   if (!externalVideoId) {
     noteYouTubeProviderError(result.code as any);
+    // إعادة المحاولة الذكية: نفاد الحصة ليس فشلاً نهائياً. نُعلن «معلقاً» مع وقت
+    // إعادة المحاولة التلقائي، فلا يُصعَّد للمالك كفشل، ويُعاد الإرسال بعد التجدد.
+    if (isYouTubeQuotaExceeded(result.code) || isYouTubeQuotaExceeded(result.error)) {
+      const plan = planQuotaRetry(Date.now());
+      return { status: 200, body: {
+        success: true, record, queueItem: queueItem ? contentQueueView().find((q) => q.id === queueItem!.id) : null,
+        externalVideoId: null, url: null, delivered: false, verified: false,
+        pendingRetry: true, quotaPendingRetry: true,
+        retryAt: new Date(plan.retryAtMs).toISOString(), retryAtMs: plan.retryAtMs,
+        code: plan.code, quotaDay: plan.quotaDay, retryInternalGuard: plan.internalGuard,
+        error: null, message: plan.reason, reconciled, ...youtubeStateBlock(),
+      } };
+    }
     return { status: 502, body: { success: false, code: result.code || "PROVIDER_ERROR", error: result.error || "لم يُعد YouTube معرّف فيديو؛ لم يُسجَّل أي نشر.", record, reconciled, delivered: false, ...youtubeStateBlock() } };
   }
   clearYouTubeProviderError();
+  // نجاح: نُنظّف أي انتظار سابق على الحصة (إن كان العنصر معلّقاً وعاد النشر الآن).
+  if (queueItem && (queueItem as any).retryAt) { (queueItem as any).retryAt = null; (queueItem as any).retryReason = null; }
   return {
     status: 200,
     body: {
@@ -7715,6 +7842,9 @@ function summarizePublishExec(exec: { status: number; body: any }, item: Content
     privacyVerification: b.privacyVerification ?? null,
     descriptionVerification: b.descriptionVerification ?? null,
     descriptionVerified: b.descriptionVerified === true,
+    pendingRetry: b.pendingRetry === true,
+    retryAt: b.retryAt ?? null,
+    retryInternalGuard: b.retryInternalGuard === true,
     unverifiedReason: (b.privacyVerification && b.privacyVerification.verified === false) ? b.privacyVerification.note : (b.descriptionVerification && b.descriptionVerification.required && b.descriptionVerification.verified === false ? b.descriptionVerification.note : undefined),
   };
 }
@@ -7792,6 +7922,8 @@ app.post("/api/platforms/youtube/content/queue/:id/review", express.json({ limit
     item.state = "REVIEW_REQUIRED";
     item.code = "OWNER_EDITED";
     item.stateReason = "عدّل المالك المحتوى؛ أُعيد للمراجعة قبل النشر.";
+    // تعديل العنصر يُلغي أي انتظار سابق على الحصة (سيُعاد تقييمه من جديد).
+    item.retryAt = null; item.retryReason = null; item.retryInternalGuard = false;
     item.updatedAt = new Date().toISOString();
     pushContentHistory(item, { action: "edited", actor: user.id, detail: note, result: "REVIEW_REQUIRED" });
     audit(user.id, "youtube_content_edited", `content:${item.id}`);
@@ -7864,6 +7996,16 @@ app.post("/api/platforms/youtube/content/queue/:id/review", express.json({ limit
     approved: true, queueItemId: item.id, mode: "manual",
   }, user.id);
   return res.status(exec.status || 200).json({ success: exec.status === 200, action, mode: "manual", exec: summarizePublishExec(exec, item), item: contentQueueView().find((q) => q.id === item.id) });
+});
+
+/**
+ * إعادة المحاولة اليدوية للنشر المعلّق على الحصة (owner): تُعيد إرسال كل عنصر في
+ * حالة PENDING_RETRY فوراً عبر المنفّذ المركزي (بدل انتظار الموعد التلقائي). تُستخدم
+ * لتشخيص/تسريع الإعادة بعد إصلاح الحصة أو رفع الحد في Cloud Console.
+ */
+app.post("/api/platforms/youtube/content/retry-pending", requireOwner, async (_req, res) => {
+  const result = await retryPendingYouTubeContent(true);
+  res.json({ success: true, result, pending: contentQueue.filter((i) => i.state === "PENDING_RETRY").map((i) => ({ id: i.id, title: i.title, retryAt: i.retryAt ?? null, retryReason: i.retryReason ?? null, retryInternalGuard: i.retryInternalGuard === true })), note: "إعادة المحاولة تمر بنفس بوابات النشر (اتصال موثق + مادة + سلامة محتوى + منع تكرار)." });
 });
 
 /** بطاقات المحتوى القابلة للنقر في التقرير اليومي (مصدر واحد). */
@@ -10110,7 +10252,18 @@ app.post("/api/workspace/content/:id/publish", requireOwner, async (req, res) =>
       // يُهدر نشر YouTube ناجح بلا تسجيل معرّف مزود.
       const providerPostId = result.body?.providerPostId || result.body?.providerPublishId || result.body?.externalVideoId || null;
       const delivered = result.status === 200 && Boolean(providerPostId);
-      results[platform] = { state: delivered ? "published" : (result.status === 200 ? "publishing" : "failed"), httpStatus: result.status, providerPostId, error: delivered ? null : (result.body?.error || null), code: result.body?.code || null, receipt: result.body?.receipt || null, at: new Date().toISOString() };
+      // إعادة المحاولة الذكية: نفاد حصة YouTube ليس فشلاً — الحالة «معلّق» مع وقت
+      // الإعادة التلقائي. باقي المنصات تنجح/تفشل باستقلال تام عنها.
+      const quotaPending = result.body?.pendingRetry === true;
+      const state = delivered ? "published" : quotaPending ? "pending_retry" : (result.status === 200 ? "publishing" : "failed");
+      results[platform] = {
+        state, httpStatus: result.status, providerPostId,
+        error: delivered || quotaPending ? null : (result.body?.error || null),
+        code: result.body?.code || null,
+        message: quotaPending ? (result.body?.message || null) : null,
+        retryAt: quotaPending ? (result.body?.retryAt || null) : null,
+        receipt: result.body?.receipt || null, at: new Date().toISOString(),
+      };
     } else {
       results[platform] = { state: "failed", httpStatus: 502, providerPostId: null, error: String((s as any).reason?.message || s.reason || "provider_error").slice(0, 200), code: "PROVIDER_ERROR", receipt: null, at: new Date().toISOString() };
     }
@@ -10119,10 +10272,12 @@ app.post("/api/workspace/content/:id/publish", requireOwner, async (req, res) =>
   post.platformPublishResults = results;
   // المنشور يُعلن published فقط إن نُشر فعلاً على منصة واحدة على الأقل بمعرّف مزود حقيقي.
   const anyDelivered = Object.values(results).some((r: any) => r.state === "published");
+  // معلّق على الحصة: نجح بعضها ويوتيوب معلّق ⇒ نُعلنها صراحةً للمالك بلا إيهام فشل.
+  const pendingPlatforms = Object.entries(results).filter(([, r]: [string, any]) => r.state === "pending_retry").map(([pf]) => pf);
   if (anyDelivered) post.status = "published";
   persistState();
   audit(user.id, "workspace_content_multiplatform_publish", post.id);
-  return res.json({ success: true, post, results, anyDelivered });
+  return res.json({ success: true, post, results, anyDelivered, quotaPending: pendingPlatforms.length > 0, quotaPendingPlatforms: pendingPlatforms, retryAt: pendingPlatforms.length ? (results[pendingPlatforms[0]]?.retryAt || null) : null });
 });
 
 app.delete("/api/workspace/content/:id", authenticateToken, (req,res)=>{
@@ -10595,8 +10750,11 @@ const youtubeQuotaLedger = new YouTubeQuotaLedger();
 const YOUTUBE_DAILY_QUOTA = resolveYouTubeDailyQuota(process.env);
 const YOUTUBE_QUOTA_ALERT_THRESHOLD = resolveYouTubeQuotaAlertThreshold(process.env);
 const YOUTUBE_QUOTA_PROTECTION = String(process.env.YOUTUBE_QUOTA_PROTECTION || 'true').toLowerCase() !== 'false';
+// احتياطي الحصة المخصّص للنشر الفعلي: عند نزول الحصة المتبقية تحت هذا الحد يتوقف
+// استهلاك وحدات القراءة في المراقبة، فتبقى الحصة لأوامر النشر الحقيقية (رفع ≈1600).
+const YOUTUBE_QUOTA_PUBLISH_RESERVE_UNITS = Math.max(0, Number(process.env.YOUTUBE_QUOTA_PUBLISH_RESERVE_UNITS) || 1700);
 const YOUTUBE_WATCHER_ERROR_ALERT_THRESHOLD = resolveWatcherErrorAlertThreshold(process.env);
-let youtubeQuotaDay = new Date().toISOString().slice(0, 10);
+let youtubeQuotaDay = quotaDayKey(Date.now());
 /** أُرسل تنبيه العتبة لليوم الحالي؟ (يُصفَّر يومياً). */
 let youtubeQuotaAlertSent = false;
 /** حالة أعلام تنبيهات المراقب (تصمد بعد restart) — منع تكرار التنبيه لنفس السلسلة. */
@@ -10604,9 +10762,10 @@ let watcherAlertState: { errorAlerted: boolean; reauthAlerted: boolean } = { err
 /** حارس الاستنفاد: يُفعّل مرة عند بلوغ الحصة فلا تُرسل طلبات مضمونة الفشل. */
 let youtubeQuotaExhausted = false;
 
-/** يُصفّر العدّادات عند تغيّر اليوم (UTC) فقط — نفس مبدأ حارس Gemini. */
+/** يُصفّر العدّادات عند تغيّر يوم الحصة (منتصف ليل المحيط الهادئ) فقط — نفس يوم
+ *  تجدد حصة Google الفعلية، فلا ينحرف تدوير العدّاد عن لحظة الإعادة التلقائية. */
 function rollYouTubeQuotaDayIfNeeded(): void {
-  const today = new Date().toISOString().slice(0, 10);
+  const today = quotaDayKey(Date.now());
   if (today !== youtubeQuotaDay) {
     youtubeQuotaDay = today;
     youtubeQuotaLedger.resetDaily();
@@ -15910,6 +16069,7 @@ async function startServer() {
     try { clearInterval(runtimeCleanupTimer); } catch { /* تجاهل */ }
     try { clearInterval(safeJobWorkerTimer); } catch { /* تجاهل */ }
     try { clearInterval(tiktokReconcileTimer); } catch { /* تجاهل */ }
+    try { stopYouTubeQuotaRetryTimer(); } catch { /* تجاهل */ }
     const deadline = new Promise<void>((resolve) => setTimeout(resolve, 10_000));
     Promise.race([drainQueue(), deadline])
       .then(() => storageAdapter.close().catch(() => { /* تجاهل */ }))

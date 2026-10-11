@@ -28,6 +28,7 @@ export const CONTENT_STATES = Object.freeze([
   'REJECTED',
   'CANCELLED',
   'FAILED',
+  'PENDING_RETRY',
 ] as const);
 
 export type ContentState = (typeof CONTENT_STATES)[number];
@@ -42,6 +43,7 @@ export const CONTENT_STATE_LABELS_AR: Record<ContentState, string> = Object.free
   REJECTED: 'مرفوض',
   CANCELLED: 'ملغى',
   FAILED: 'فشل النشر',
+  PENDING_RETRY: 'معلّق — إعادة محاولة تلقائية بعد تجدد حصة YouTube',
 });
 
 export type ContentStateTone = 'operational' | 'transitional' | 'blocked' | 'neutral';
@@ -56,6 +58,7 @@ export const CONTENT_STATE_TONES: Record<ContentState, ContentStateTone> = Objec
   REJECTED: 'blocked',
   CANCELLED: 'blocked',
   FAILED: 'blocked',
+  PENDING_RETRY: 'transitional',
 });
 
 /** الحالات النهائية التي لا يجوز لأي watcher/scheduler/agent نقضها تلقائياً. */
@@ -71,12 +74,15 @@ const CONTENT_TRANSITIONS: Record<ContentState, ContentState[]> = Object.freeze(
   DRAFT: ['REVIEW_REQUIRED', 'APPROVED', 'REJECTED', 'CANCELLED'],
   REVIEW_REQUIRED: ['APPROVED', 'REJECTED', 'CANCELLED', 'DRAFT'],
   APPROVED: ['SCHEDULED', 'PUBLISHED', 'REJECTED', 'CANCELLED', 'FAILED'],
-  SCHEDULED: ['PUBLISHED', 'CANCELLED', 'FAILED', 'VERIFIED'],
+  SCHEDULED: ['PUBLISHED', 'CANCELLED', 'FAILED', 'VERIFIED', 'PENDING_RETRY'],
   PUBLISHED: ['VERIFIED', 'FAILED'],
   VERIFIED: [],
   REJECTED: [],
   CANCELLED: [],
-  FAILED: ['APPROVED', 'CANCELLED'],
+  FAILED: ['APPROVED', 'CANCELLED', 'PENDING_RETRY'],
+  // «معلّق» ليس فشلاً نهائياً: يُعاد إرساله تلقائياً فور تجدد الحصة، أو يُلغى، أو
+  // ينتقل مباشرةً إلى النشر/الجدولة عند نجاح المحاولة التالية.
+  PENDING_RETRY: ['PUBLISHED', 'SCHEDULED', 'CANCELLED', 'FAILED'],
 });
 
 export function canTransitionContent(from: ContentState, to: ContentState): boolean {
@@ -322,6 +328,7 @@ export function summarizeContentQueue(items: Array<{ state: ContentState; publis
     awaitingReview: items.filter((i) => i.state === 'REVIEW_REQUIRED').length,
     rejected: items.filter((i) => i.state === 'REJECTED').length,
     failed: items.filter((i) => i.state === 'FAILED').length,
+    pendingRetry: items.filter((i) => i.state === 'PENDING_RETRY').length,
   };
 }
 
