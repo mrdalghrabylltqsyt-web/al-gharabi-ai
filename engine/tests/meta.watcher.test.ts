@@ -30,6 +30,7 @@ import {
   metaPollingPublicBlock,
 } from '../social/metaWatcher';
 import { createFacebookMock, startFacebookMockServer } from './helpers/facebookMock';
+import { parseFacebookWebhook } from '../social/facebook';
 import { signSession } from '../auth/sessions';
 
 let passed = 0;
@@ -151,6 +152,22 @@ async function unitTests(): Promise<void> {
   check('لا حقل text/comment/replyText', !pubKeys.includes('text') && !pubKeys.includes('comment') && !pubKeys.includes('replyText') && !pubKeys.includes('recent'));
   check('الكتلة العامة تحمل حقولاً تقنية فقط', ['status', 'watcherActive', 'cadenceMinutes', 'pollCount', 'lastError'].every((k) => pubKeys.includes(k)));
   check('التطبيع الدفاعي لا يختلق قيماً', normalizeMetaPollingState(null).controls.autoReply === false && normalizeMetaPollingState({ pollCount: 'x' }).pollCount === 0);
+  // تنقية رسالة الخطأ العامة (I3): لا نص مزوّد/محادثة خام في نقطة عامة.
+  const errFree = metaPollingPublicBlock({ ...d, lastError: null });
+  check('lastError الفارغ يبقى null', errFree.lastError === null);
+  const errToken = metaPollingPublicBlock({ ...d, lastError: 'FETCH_FAILED' });
+  check('رمز تقني ASCII يُقبل كما هو', errToken.lastError === 'FETCH_FAILED');
+  const errRaw = metaPollingPublicBlock({ ...d, lastError: 'فشل قراءة تعليقات Facebook: انتهت صلاحية الرمز' });
+  check('نص خطأ مزوّد حر (عربي/مسافات) => connection error', errRaw.lastError === 'connection error');
+  const errRawEn = metaPollingPublicBlock({ ...d, lastError: 'OAuthException: token expired for page' });
+  check('نص خطأ مزوّد إنجليزي حر => connection error', errRawEn.lastError === 'connection error');
+  // I2: صدى رسائل الصفحة (is_echo) لا يُعتبر رسالة واردة.
+  const echoPayload = { object: 'page', entry: [{ id: 'PAGE_123', time: 1, messaging: [{ sender: { id: 'PAGE_123' }, recipient: { id: 'U9' }, timestamp: 1, message: { mid: 'MID_ECHO', text: 'رد أرسلناه نحن', is_echo: true } }] }] };
+  const echoParsed = parseFacebookWebhook(echoPayload);
+  check('is_echo لا يُنتج أي حدث وارد', echoParsed.events.length === 0, JSON.stringify(echoParsed.events));
+  const realPayload = { object: 'page', entry: [{ id: 'PAGE_123', time: 1, messaging: [{ sender: { id: 'U9' }, recipient: { id: 'PAGE_123' }, timestamp: 1, message: { mid: 'MID_REAL', text: 'استفسار عميل' } }] }] };
+  const realParsed = parseFacebookWebhook(realPayload);
+  check('الرسالة غير الصدى تُنتج حدثاً واحداً (kind=message)', realParsed.events.length === 1 && realParsed.events[0].kind === 'message');
 
   group('6) وحدة: سلطة التنفيذ الوحيدة (لا رد بلا تمكين + جاهزية)');
   const execBlocked = resolveMetaReplyExecution({ centralDecision: 'ALLOWED_ACTION', advisory: praiseOn, automationAllowed: false, replyReady: true, belongsToChannel: true, isPraise: true, humanReviewMode: false, centralEscalationReason: null });
@@ -242,6 +259,11 @@ async function integrationTests(): Promise<void> {
     // رسالة بلا توقيع => مرفوضة (لا استقبال غير موثوق).
     const unsigned = await fetch(`${BASE}/api/platforms/facebook/webhook`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(msgEntry('MID_NOSIG', 'مرحبا', 'UMSG3')) });
     check('رسالة بلا توقيع HMAC => 401 (مرفوضة)', unsigned.status === 401, `status=${unsigned.status}`);
+    // صدى رسالتنا الصادرة (is_echo) عبر webhook => يُتجاهل ولا يُخزَّن كرسالة واردة (I2).
+    const echoRaw = JSON.stringify({ object: 'page', entry: [{ id: 'PAGE_123', time: Date.now(), messaging: [{ sender: { id: 'PAGE_123' }, recipient: { id: 'UMSG1' }, timestamp: Date.now(), message: { mid: 'MID_ECHO', text: 'رد أرسلناه نحن', is_echo: true } }] }] });
+    const echoRes = await fetch(`${BASE}/api/platforms/facebook/webhook`, { method: 'POST', headers: { 'Content-Type': 'application/json', 'x-hub-signature-256': fbSignature(echoRaw) }, body: echoRaw });
+    const echoJ = await echoRes.json();
+    check('صدى رسالتنا (is_echo) لا يُقبل كرسالة واردة', echoRes.status === 200 && !(echoJ.acceptedKinds || []).includes('message'), JSON.stringify(echoJ));
     const pollMsg = await (await fetch(`${BASE}/api/agent/meta/watcher/poll`, { method: 'POST', headers: auth, body: '{}' })).json();
     check('الدورة ردّت الرسالتين الحقيقيتين عبر sendMessage', mock.state.sentMessages.length === sentBefore + 2, `sent=${mock.state.sentMessages.length}`);
     const recipients = mock.state.sentMessages.slice(sentBefore).map((s) => s.recipientId).sort();

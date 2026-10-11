@@ -445,6 +445,9 @@ function commentFromChange(pageId: string | null, change: any): FacebookNormaliz
 
 /** يبني حدث رسالة من messaging (Messenger) صراحةً. */
 function messageFromMessaging(pageId: string | null, m: any): FacebookNormalizedEvent | null {
+  // صدى الرسائل الصادرة من الصفحة نفسها (`is_echo`) ليس رسالة عميل واردة؛
+  // معالجته كواردة تسبب ردّاً على ردّنا إلى الصفحة. يُتجاهل صراحةً.
+  if (m?.message?.is_echo === true) return null;
   const text = String(m?.message?.text ?? '').trim();
   const externalId = m?.message?.mid;
   if (!text || !externalId) return null;

@@ -733,8 +733,8 @@ lastReply.replyText) قد أُزيل في commit سابق، وأُضيف الآ�
   `pollCount`، `lastError` (كرمز تقني ASCII أو `connection error` — لا محتوى محادثة).
 - البيانات التفصيلية (attentionRequired/lastReply) **لم تُحذف**؛ تبقى للمالك عبر
   `/api/agent/youtube/watcher` (requireOwner)، وتستهلكها الواجهة من هناك لا من الصحة العامة.
-- اختبارات: `engine/tests/health.privacy.test.ts` (45 فحصاً، canary حي عبر خادم فعلي،
-  يقرأ قوائم المصدر الواحد) و`engine/tests/health.guard.test.ts` (23 فحصاً وحدة للحارس).
+- اختبارات: `engine/tests/health.privacy.test.ts` (46 فحصاً، canary حي عبر خادم فعلي،
+  يقرأ قوائم المصدر الواحد) و`engine/tests/health.guard.test.ts` (35 فحصاً وحدة للحارس).
   فحوص final-audit: `public-health-privacy-single-source` … `public-health-guard-test-exists`.
 
 ## نمط الكود
@@ -3767,7 +3767,7 @@ YouTube (المراقب/الطابور/التفويض)، بقية المنصات
 `replyText`/`attentionRequired`/`authorName`/`lastReply`؛ و`/api/agent/youtube/watcher`
 للمالك ⇒ يعيد النص والاسم كاملين.
 
-اختبار انحدار: `engine/tests/health.privacy.test.ts` (`npm run test:health-privacy`، 23 فحصاً،
+اختبار انحدار: `engine/tests/health.privacy.test.ts` (`npm run test:health-privacy`، 46 فحصاً،
 مضاف إلى `npm test`) يزرع حالة عملاء (بصمة canary) ثم يقرأ النقطتين العامتين فعلياً ويثبت
 غياب أي تسريب، ويثبت بقاء التفاصيل في المسار المحمي. فحوص final-audit:
 `youtube-watcher-health-public-safe`, `youtube-watcher-detail-owner-auth`,
@@ -5677,7 +5677,7 @@ YouTube (المراقب/الطابور/التفويض)، Facebook/Instagram/TikT
 `kind: 'comment'|'message'` (توافق خلفي: غيابه = comment). لا تسليم بلا `mid.*` من Meta.
 `fetchMetaInboundComments` فشلها (قراءة) لا يمنع معالجة الرسائل الواردة.
 
-**اختبار:** `engine/tests/meta.watcher.test.ts` (`npm run test:meta-watcher`، **63 فحصاً**):
+**اختبار:** `engine/tests/meta.watcher.test.ts` (`npm run test:meta-watcher`، **70 فحصاً**):
 وحدة (الأمان الافتراضي، البوابة، القرار، التأجيل/التحرير، الكتلة العامة النظيفة، سلطة التنفيذ)
 وتكامل (تصريح 401/403، ربط Facebook بخادم Graph وهمي، تأجيل بلا إرسال عند التعطيل، تحرير المؤجَّل
 عند التمكين، رد حقيقي بمعرّف من Meta + منع تكرار، **مسار الرسائل: webhook موقّع ⇒ رد حقيقي
@@ -5685,6 +5685,19 @@ YouTube (المراقب/الطابور/التفويض)، Facebook/Instagram/TikT
 `/api/health` و`/api/readiness` من أي اسم/نص عميل، وثبات بعد restart). فحوص final-audit:
 `meta-watcher-health-public-safe` ومحدَّثات `facebook-reply-delivery-honest`/
 `instagram-reply-delivery-honest` (**1548 إجمالاً**).
+
+**إغلاق ملاحظات المراجعة الأمنية I2/I3 (Batch 28، 2026-10-04):**
+- **I2 — تجاهل صدى رسائل الصفحة:** `messageFromMessaging` في `engine/social/facebook.ts`
+  يتجاهل صراحةً أي حدث `message.is_echo === true` (رسالة أرسلتها الصفحة نفسها)، فلا يُدخَل
+  كرسالة واردة ولا يُردّ على ردّنا (إرسال مهدر/حلقة). الاختبار يثبت أن الصدى لا يُنتج حدثاً،
+  وأن الرسالة الحقيقية تُنتج حدثاً واحداً، وأن webhook الصدى لا يُقبل كرسالة.
+- **I3 — تنقية `lastError` في الكتلة العامة:** `metaPollingPublicBlock` في
+  `engine/social/metaWatcher.ts` يمرّر `lastError` عبر المصدر الواحد
+  `sanitizePublicErrorMessage` (من `healthPrivacy.ts`): رمز ASCII تقني فقط يُقبل، وأي نص حر
+  (رسالة مزوّد/محادثة عربية أو إنجليزية) => `connection error`، والفارغ => `null`. فالطبقة
+  **المعيارية** للكتلة العامة صارت آمنة بذاتها (دفاع مزدوج مع `watcherPublicError` في الخادم).
+- **I1/I4 — تصحيح أرقام التوثيق:** `final-audit.mjs (1548)` (مطابق للعدد الفعلي على هذا
+  الفرع)، وعدد اختبارات الخصوصية (`health.privacy` 46، `health.guard` 35)، و`meta-watcher` 70.
 
 **لم يُمسّ:** Gemini/firewall، OAuth/الاعتمادات/الأسرار، DR، YouTube (المراقب/الطابور/التفويض)،
 TikTok/Telegram، ونموذج الجدولة. لا تدوير لأي مفتاح، ولا تغيير في بنية webhook القائمة.

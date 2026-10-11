@@ -29,6 +29,7 @@ import {
   releaseDeferredEntries,
   WATCHER_DEFAULT_CADENCE_MINUTES,
 } from './youtubeWatcher';
+import { sanitizePublicErrorMessage } from './healthPrivacy';
 
 /** المنصات التي يغطّيها هذا المراقب (لها موصل تعليقات حقيقي + قراءة رسمية). */
 export type MetaPlatform = 'facebook' | 'instagram';
@@ -154,7 +155,9 @@ export function metaPollingPublicBlock(state: MetaPollingState) {
     cadenceMinutes: s.controls.cadenceMinutes,
     pollCount: s.pollCount,
     lastPollAt: s.lastPollAt,
-    lastError: s.lastError,
+    // تنقية المصدر الواحد: رمز تقني ASCII فقط، وأي نص حر (رسالة مزوّد/محادثة)
+    // => 'connection error'، فلا يظهر نص خطأ المزوّد الخام في نقطة عامة.
+    lastError: sanitizePublicErrorMessage(s.lastError),
     consecutiveErrors: s.consecutiveErrors,
     note: 'حالة عامة فقط؛ تفاصيل التعليقات/الردود متاحة للمالك عبر /api/agent/meta/watcher.',
   };
