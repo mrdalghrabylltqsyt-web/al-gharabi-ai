@@ -34,6 +34,31 @@ export function isYouTubeMediaNeed(platform: string, result: any): boolean {
   return platform === 'youtube' && result?.code === 'MEDIA_REQUIRED';
 }
 
+/** هل هذه النتيجة «معلّقة على نفاد حصة YouTube» (ليست فشلاً)؟ */
+export function isYouTubeQuotaPending(result: any): boolean {
+  return result?.state === 'pending_retry' || result?.code === 'QUOTA_PENDING_RETRY' || result?.code === 'quota_exceeded';
+}
+
+/**
+ * رسالة واضحة للمالك عند نفاد حصة YouTube: النشر الموحّد أُرسل، ويوتيوب «معلّق»
+ * وسينشر تلقائياً فور تجدد حصة Google اليومية، مع نجاح باقي المنصات.
+ */
+export function quotaPendingMessage(result: any, succeededPlatforms: string[] = []): string {
+  const ok = Array.isArray(succeededPlatforms) ? succeededPlatforms.filter(Boolean) : [];
+  const okPart = ok.length ? ` نجح النشر على: ${ok.join('، ')}.` : '';
+  const retry = result?.retryAt ? ` (إعادة المحاولة التلقائية: ${formatRetryTime(result.retryAt)})` : '';
+  return `تم إرسال النشر الموحّد؛ يوتيوب «معلّق» وسيُنشر تلقائياً فور تجدد حصة Google اليومية${retry}.${okPart}`;
+}
+
+/** صياغة وقت إعادة المحاولة بصيغة محلية مقروءة (بلا كشف منطقة حساسة). */
+function formatRetryTime(iso: string): string {
+  const t = Date.parse(String(iso));
+  if (!Number.isFinite(t)) return String(iso);
+  const d = new Date(t);
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
 /** صياغة فشل منصة واحدة: الكود والرسالة الحقيقية معاً (لا إخفاء لأحدهما). */
 export function formatPublishFailure(platform: string, result: any): string {
   const code = result?.code || 'ERROR';
@@ -48,9 +73,11 @@ export function formatPublishFailure(platform: string, result: any): string {
  */
 export function summarizePublishFailures(failed: Array<[string, any]>): string {
   if (!Array.isArray(failed) || !failed.length) return 'لا منصات مستهدفة';
-  const realFailures = failed.filter(([pf, r]) => !isYouTubeMediaNeed(pf, r) && !isYouTubeDedicatedPublish(r));
+  const realFailures = failed.filter(([pf, r]) => !isYouTubeMediaNeed(pf, r) && !isYouTubeDedicatedPublish(r) && !isYouTubeQuotaPending(r));
   const hasYouTubeMedia = failed.some(([pf, r]) => isYouTubeMediaNeed(pf, r) || (pf === 'youtube' && isYouTubeDedicatedPublish(r)));
+  const quotaPending = failed.find(([, r]) => isYouTubeQuotaPending(r));
   const parts: string[] = [];
+  if (quotaPending) parts.push(quotaPendingMessage(quotaPending[1]));
   if (hasYouTubeMedia) parts.push(`${YOUTUBE_UNIFIED_PUBLISH_NOTE} أرفق فيديو ثم أعد النشر.`);
   if (realFailures.length) parts.push(realFailures.map(([pf, r]) => formatPublishFailure(pf, r)).join('، '));
   return parts.join(' ') || 'لا منصات مستهدفة';
@@ -58,13 +85,16 @@ export function summarizePublishFailures(failed: Array<[string, any]>): string {
 
 /**
  * وصف مصير منصة واحدة بعد التوزيع — يفصل الحالات بدل رقم إجمالي أخضر واحد:
- * نُشر وثُبّت بمعرّف مزود / قيد المعالجة / فشل بسببه / YouTube يحتاج فيديو.
- * لا يُعلن «نشر» بلا معرّف مزود حقيقي (providerPostId).
+ * نُشر وثُبّت بمعرّف مزود / قيد المعالجة / معلّق على الحصة (إعادة تلقائية) /
+ * فشل بسببه / YouTube يحتاج فيديو. لا يُعلن «نشر» بلا معرّف مزود حقيقي.
  */
 export function formatPlatformResultState(platform: string, result: any): { label: string; tone: 'ok' | 'pending' | 'fail' } {
   const state = result?.state;
   if (state === 'published') {
     return { label: result?.providerPostId ? `نُشر وثُبّت بمعرّف المزود: ${result.providerPostId}` : 'نُشر', tone: 'ok' };
+  }
+  if (state === 'pending_retry' || isYouTubeQuotaPending(result)) {
+    return { label: quotaPendingMessage(result), tone: 'pending' };
   }
   if (state === 'publishing') return { label: 'قيد المعالجة لدى المزود (لم يُثبت التسليم بعد)', tone: 'pending' };
   if (isYouTubeMediaNeed(platform, result) || isYouTubeDedicatedPublish(result)) return { label: YOUTUBE_UNIFIED_PUBLISH_NOTE, tone: 'pending' };

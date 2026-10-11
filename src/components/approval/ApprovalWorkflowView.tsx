@@ -20,7 +20,7 @@ import {
 import { Post, PostStatus } from '../../types';
 import { defaultScheduleInput, wallClockInputValue, wallClockToEpoch } from '../../utils/scheduleTime';
 import { ScheduleTimestamp } from '../common/ScheduleTimestamp';
-import { summarizePublishFailures, formatPlatformResultState, youtubeDedicatedDisclosure } from '../../utils/publishResult';
+import { summarizePublishFailures, formatPlatformResultState, youtubeDedicatedDisclosure, quotaPendingMessage } from '../../utils/publishResult';
 
 export const ApprovalWorkflowView: React.FC = () => {
   const {
@@ -105,9 +105,13 @@ export const ApprovalWorkflowView: React.FC = () => {
       const res = await apiService.publishWorkspaceContentMultiPlatform(post.id);
       const per = Object.entries(res.results || {});
       const published = per.filter(([, r]: any) => r.state === 'published').map(([pf]) => pf);
-      const failed = per.filter(([, r]: any) => r.state !== 'published');
-      if (res.anyDelivered) {
-        showToast(`تم النشر على ${published.length} منصة (${published.join('، ')}).` + (failed.length ? ` فشل/معلّق على: ${failed.map(([pf]) => pf).join('، ')}.` : ''));
+      const quotaPending = per.find(([, r]: any) => r.state === 'pending_retry');
+      const failed = per.filter(([, r]: any) => r.state !== 'published' && r.state !== 'pending_retry');
+      if (res.anyDelivered || quotaPending) {
+        let msg = res.anyDelivered ? `تم النشر على ${published.length} منصة (${published.join('، ')}).` : 'تم إرسال النشر الموحّد.';
+        if (quotaPending) msg += ' ' + quotaPendingMessage(quotaPending[1], published);
+        if (failed.length) msg += ` فشل على: ${failed.map(([pf]) => pf).join('، ')}.`;
+        showToast(msg);
       } else {
         showToast('لم يُثبَت أي نشر: ' + summarizePublishFailures(failed as Array<[string, any]>));
       }
