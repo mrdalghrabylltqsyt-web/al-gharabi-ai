@@ -374,7 +374,7 @@ add('oauth-preflight-result-exposed', server.includes('lastOAuthPreflight') && s
 add('oauth-trim-regression-test', read('engine/tests/facebook.connector.test.ts').includes("'test-fb-client-secret\\n'"), 'اختبار انحدار: بيئة بمسافات/أسطر تُطبَّع فلا يظهر 409 الخاطئ');
 add('facebook-reply-dedicated-routes', server.includes('/api/platforms/facebook/reply') && server.includes('/api/platforms/facebook/message-reply') && server.includes('/api/platforms/facebook/webhook-info'), 'مسارات الرد/الرسالة/حالة webhook موجودة');
 add('facebook-publish-real-connector', server.includes('publishToPage(target.pageId, target.pageToken, content)') && server.includes("code: \"CONNECTOR_NOT_READY\""), 'النشر يستخدم الموصل الحقيقي بلا ادعاء بلا معرّف');
-add('facebook-reply-delivery-honest', server.includes('providerReplyId:result.data?.providerCommentId') && server.includes('providerReplyId:result.data?.providerMessageId') && server.includes('reviewStatus:result.ok?"delivered":"failed"'), 'نجاح/فشل الإرسال يُسجَّل صراحةً بإيصال أو خطأ بلا ادعاء');
+add('facebook-reply-delivery-honest', server.includes('providerReplyId: r.data?.providerCommentId || null') && server.includes('providerReplyId: r.data?.providerMessageId || null') && server.includes("reviewStatus: result.ok ? 'delivered' : 'failed'") && server.includes('delivered: result.ok, providerReplyId: result.providerReplyId'), 'نجاح/فشل الإرسال يُسجَّل صراحةً بإيصال أو خطأ بلا ادعاء (في المنفّذ المركزي)');
 add('facebook-inbound-durable-before-ack',
   /parseFacebookWebhook\(req\.body\)[\s\S]{0,1800}?await ingestWebhookComments\([\s\S]{0,900}?res\.status\(200\)/.test(server) &&
   /async function ingestWebhookComments\([\s\S]{0,4200}?await persistStateDurable\(\)/.test(server),
@@ -431,7 +431,7 @@ add('instagram-inbound-durable-before-ack',
   'استقبال Instagram ينتظر الكتابة الدائمة قبل الإقرار (عبر المصدر الموحّد ingestWebhookComments)');
 add('instagram-duplicate-persistence', server.includes('instagramEventIds') && read('server.ts').includes('instagramEventIds') && /instagramEventIds[\s\S]{0,400}?buildPersistedState|buildPersistedState[\s\S]{0,4000}?instagramEventIds/.test(server), 'معرّفات أحداث Instagram تُحفظ لصمود منع التكرار بعد restart');
 add('instagram-message-not-comment-reply', read('engine/social/registry.ts').includes('message_reply') && server.includes('/api/platforms/instagram/reply') && server.includes('/api/platforms/instagram/message-reply'), 'فصل تعليق Instagram عن رسالته (comment_reply ≠ message_reply)');
-add('instagram-reply-delivery-honest', /delivered:result\.ok,providerReplyId/.test(server) && server.includes('providerReplyId'), 'نجاح/فشل إرسال Instagram يُسجَّل صراحةً بلا ادعاء');
+add('instagram-reply-delivery-honest', server.includes('delivered: result.ok, providerReplyId: result.providerReplyId') && server.includes("reviewStatus: result.ok ? 'delivered' : 'failed'"), 'نجاح/فشل إرسال Instagram يُسجَّل صراحةً بلا ادعاء (في المنفّذ المركزي)');
 add('instagram-publish-real-connector', server.includes('platform === "instagram"') && read('engine/social/instagram.ts').includes('createMediaContainer') && read('engine/social/instagram.ts').includes('publishContainer') && server.includes('MEDIA_REQUIRED'), 'نشر Instagram حقيقي (حاوية+نشر) بلا نص فقط وبلا ادعاء');
 add('instagram-webhook-safe-logging', server.includes('function logInstagramWebhook') && !/logInstagramWebhook\([^)]*(token|secret|access)/i.test(server), 'سجل استقبال Instagram آمن بلا أسرار');
 add('instagram-connector-tests', fs.existsSync(path.join(root, 'engine/tests/instagram.connector.test.ts')) && fs.existsSync(path.join(root, 'engine/tests/helpers/instagramMock.ts')) && pkg.scripts['test:instagram'], 'اختبار موصل Instagram (وحدة + تكامل بخادم وهمي) مسجّل');
@@ -915,13 +915,23 @@ add('youtube-watcher-owner-controls', server.includes('/api/agent/youtube/watche
 add('youtube-watcher-health-block', server.includes('youtubeWatcher: watcherStatusBlockPublic()') && !server.includes('youtubeWatcher: watcherStatusBlock()'), 'حالة مدير YouTube تُعلن في /api/health و/api/readiness بنسخة عامة آمنة فقط (بلا بيانات عميل)');
 add('youtube-watcher-health-public-safe', (() => {
   const start = server.indexOf('function watcherStatusBlockPublic');
-  const end = server.indexOf('/** تقرير YouTube اليومي');
+  const end = server.indexOf('// مراقب الردود لـ Facebook/Instagram');
   if (start < 0 || end < 0 || end <= start) return false;
   const publicBlock = server.slice(start, end);
   const healthUsesPublic = (server.match(/youtubeWatcher: watcherStatusBlockPublic\(\)/g) || []).length === 2;
   const publicHasNoCustomer = !/attentionRequired|replyText|authorName|lastReply/.test(publicBlock);
   return healthUsesPublic && publicHasNoCustomer;
 })(), 'الصحة والجاهزية تستخدمان النسخة العامة في الموضعين، والنسخة العامة لا تحوي اسم حساب/نص تعليق/نص رد');
+// مراقب Meta: نفس الحماية — النسخة العامة في الموضعين، والنسخة العامة لا تحوي بيانات عملاء.
+add('meta-watcher-health-public-safe', (() => {
+  const start = server.indexOf('function metaPollingPublicStatus');
+  const end = server.indexOf('function metaPollingStatusBlock');
+  if (start < 0 || end < 0 || end <= start) return false;
+  const publicFn = server.slice(start, end);
+  const healthUsesPublic = (server.match(/metaPolling: metaPollingPublicStatus\(\)/g) || []).length === 2;
+  const publicHasNoCustomer = !/attentionRequired|replyText|authorName|recent|\btext\b/.test(publicFn);
+  return healthUsesPublic && publicHasNoCustomer;
+})(), 'الصحة والجاهزية تستخدمان النسخة العامة لمراقب Meta، ولا تحوي اسم حساب/نص تعليق/نص رد');
 add('youtube-watcher-detail-owner-auth', server.includes('app.get("/api/agent/youtube/watcher", requireOwner') && server.includes('watcher: watcherStatusBlock()'), 'التفاصيل الكاملة (attentionRequired/lastReply) تُقدَّم فقط عبر المسار المقتصر على المالك /api/agent/youtube/watcher');
 // كل مسارات بيانات المراقب (التي تحمل اسم حساب/نص تعليق/نص رد) مقتصرة على المالك،
 // لا مجرّد مصادقة: بيانات عملاء YouTube لا يجوز أن تصل لأي مستخدم مسجَّل بلا دور مالك.

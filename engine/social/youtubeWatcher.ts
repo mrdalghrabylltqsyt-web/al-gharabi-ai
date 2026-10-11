@@ -451,6 +451,12 @@ export interface WatcherProcessedEntry {
   videoId: string | null;
   authorName: string | null;
   text: string;
+  /**
+   * نوع الوحدة المعالَجة: تعليق عام (comment) أو رسالة خاصة (message). غيابه
+   * يعني comment (توافق خلفي). لمراقب Meta يُميّز مسار التعليق عن مسار الرسالة،
+   * ويحدّد هدف الرد (معرّف التعليق مقابل معرّف المستلم في `videoId`).
+   */
+  kind?: 'comment' | 'message';
   /** زمن معالجة النظام (checkpoint/dedupe). */
   at: string;
   /** زمن نشر التعليق الحقيقي لدى YouTube — مصدر الزخم/الذروة (لا اختلاق). */

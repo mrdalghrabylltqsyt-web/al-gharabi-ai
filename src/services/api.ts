@@ -1651,6 +1651,28 @@ ${payload.topic || payload.productName || 'أنظمة وحلول التقسيط 
     if (!res.ok || !data.success) throw new Error(data.error || 'تعذر تحميل حالة مراقبة YouTube');
     return data.watcher;
   },
+  // --- Meta Reply Watcher (مراقب ردود Facebook/Instagram 24/7) — للمالك فقط ---
+  /** حالة مراقب ردود Meta (تحكم + سجل معالجة تفصيلي) — مسار محمي. */
+  async getMetaWatcher(): Promise<any> {
+    const res = await fetch('/api/agent/meta/watcher', { headers: getAuthHeaders() });
+    const data = await res.json();
+    if (!res.ok || !data.success) throw new Error(data.error || 'تعذر تحميل حالة مراقب ردود Meta');
+    return data.watcher;
+  },
+  /** تحديث تحكم مراقب Meta (autoReply/paused/humanReviewMode/cadenceMinutes) — للمالك. */
+  async setMetaWatcherControls(controls: Record<string, boolean | number>): Promise<any> {
+    const res = await fetch('/api/agent/meta/watcher/controls', { method: 'POST', headers: getAuthHeaders(), body: JSON.stringify(controls) });
+    const data = await res.json();
+    if (!res.ok || !data.success) throw new Error(data.error || 'تعذر تحديث إعدادات مراقب Meta');
+    return data;
+  },
+  /** تشغيل دورة مراقبة Meta يدوياً فوراً (للمالك) — قراءة/تحليل/رد وفق الإعداد. */
+  async pollMetaWatcher(): Promise<any> {
+    const res = await fetch('/api/agent/meta/watcher/poll', { method: 'POST', headers: getAuthHeaders() });
+    const data = await res.json();
+    if (!res.ok || !data.success) throw new Error(data.error || 'تعذر تشغيل دورة مراقب Meta');
+    return data;
+  },
   /** تفاصيل حارس حصة YouTube Data API (للمالك) — النقطتان العامتان تعلنان الحالة المجملة فقط. */
   async getYouTubeQuota(): Promise<any> {
     const res = await fetch('/api/agent/youtube/quota', { headers: getAuthHeaders() });

@@ -297,6 +297,12 @@ export interface ReplyFactSet {
   productName?: string;
   /** سعر منسَّق من بيانات مسجّلة فقط (يجب أن يطابق مبالغ BusinessFacts). */
   priceText?: string;
+  /**
+   * القسط الشهري المشتقّ — يُذكر فقط عند توفر سعر مسجّل + قاعدة تقسيط معتمدة
+   * (نسبة دفعة أولى + مدة بالأشهر من بيانات المنتج). القيمة محسوبة رياضياً من
+   * بيانات حقيقية (لا مُختلقة)، وتغذّي `analyzeBusinessClaims` عبر derivedAmounts.
+   */
+  monthlyInstallmentText?: string;
   /** موقع/عنوان مسجّل فعلاً. */
   locationText?: string;
   /** دوام مسجّل فعلاً. */
@@ -448,6 +454,15 @@ export function generateReply(
       case 'price':
         if (f.priceText) {
           usedFacts.push('price');
+          // القسط الشهري يُذكر فقط إن كان مشتقاً من سعر مسجّل + قاعدة تقسيط معتمدة
+          // (يمرّره الخادم في monthlyInstallmentText). غيابه ⇒ ذكر السعر وحده.
+          if (f.monthlyInstallmentText) {
+            usedFacts.push('installment');
+            return done(withProduct(f.productName, (p) => p
+              ? `هلا بيك، سعر ${p}: ${f.priceText}، والقسط الشهري يبدأ من ${f.monthlyInstallmentText}. تريد نأكدلك التفاصيل؟`
+              : `هلا بيك، السعر: ${f.priceText}، والقسط الشهري يبدأ من ${f.monthlyInstallmentText}. تريد نأكدلك التفاصيل؟`),
+              'price_trusted', 'سعر وخطط تقسيط مسجّلة فعلاً ⇒ يُذكر السعر والقسط المشتقّ من بيانات حقيقية.');
+          }
           return done(withProduct(f.productName, (p) => p
             ? `هلا بيك، سعر ${p}: ${f.priceText}. تريد نحسبلك القسط؟`
             : `هلا بيك، السعر: ${f.priceText}. تريد نحسبلك القسط؟`),

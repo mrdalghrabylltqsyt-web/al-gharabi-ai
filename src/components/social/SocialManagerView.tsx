@@ -18,6 +18,9 @@ import {
   Music2,
   PlugZap,
   Loader2,
+  Play,
+  Pause,
+  ShieldAlert,
 } from 'lucide-react';
 import type {
   SocialManagerStatus,
@@ -188,6 +191,33 @@ export const SocialManagerView: React.FC = () => {
   const [fbReplyText, setFbReplyText] = useState('');
   const [fbMsgRecipient, setFbMsgRecipient] = useState('');
   const [fbMsgText, setFbMsgText] = useState('');
+
+  // ---- مراقب ردود Meta 24/7 (Facebook/Instagram): يغلق فجوة «قراءة بلا رد» ----
+  const [metaWatcher, setMetaWatcher] = useState<any | null>(null);
+  const [metaBusy, setMetaBusy] = useState(false);
+  const loadMetaWatcher = useCallback(async () => {
+    try { setMetaWatcher(await apiService.getMetaWatcher()); } catch { /* يُعرض النقص بلا كسر اللوحة */ }
+  }, []);
+  useEffect(() => { void loadMetaWatcher(); }, [loadMetaWatcher]);
+  const setMetaWatcherControl = async (patch: Record<string, boolean | number>) => {
+    setMetaBusy(true);
+    try {
+      await apiService.setMetaWatcherControls(patch);
+      await loadMetaWatcher();
+      showToast('تم تحديث إعدادات مراقب Meta.');
+    } catch (err: any) { showToast(err?.message || 'تعذر تحديث إعدادات مراقب Meta'); }
+    finally { setMetaBusy(false); }
+  };
+  const pollMetaWatcherNow = async () => {
+    setMetaBusy(true);
+    try {
+      const res = await apiService.pollMetaWatcher();
+      await loadMetaWatcher();
+      const r = res?.result || {};
+      showToast(`دورة المراقبة: جديد ${r.newDetected ?? 0} • رد ${r.replied ?? 0} • تصعيد ${r.escalated ?? 0} • مؤجَّل ${r.deferred ?? 0}`);
+    } catch (err: any) { showToast(err?.message || 'تعذر تشغيل دورة مراقب Meta'); }
+    finally { setMetaBusy(false); }
+  };
 
   const loadFacebookPages = async () => {
     setFbBusy(true);
@@ -794,6 +824,95 @@ export const SocialManagerView: React.FC = () => {
             </div>
           )}
         </div>
+      </div>
+
+      {/* مراقب ردود Meta 24/7 (Facebook/Instagram) — يعالج التعليقات/الرسائل الواردة
+          تلقائياً بقرار حتمي واحد، ويرد عبر نفس المنفّذ المركزي. آمن افتراضياً. */}
+      <div className="p-6 rounded-2xl bg-slate-900 border border-slate-800 space-y-4">
+        <div className="flex items-center justify-between gap-3 border-b border-slate-800 pb-3">
+          <h3 className="text-sm font-bold text-white flex items-center gap-2">
+            <Bot className="w-4 h-4 text-sky-400" /> مراقب ردود Facebook/Instagram 24/7
+          </h3>
+          <div className="flex items-center gap-2">
+            <button onClick={() => void loadMetaWatcher()} disabled={metaBusy}
+              className="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 text-[11px] font-bold cursor-pointer">تحديث</button>
+            <button onClick={() => void pollMetaWatcherNow()} disabled={metaBusy}
+              className="px-3 py-1.5 rounded-lg bg-sky-600 hover:bg-sky-500 disabled:opacity-50 text-white text-[11px] font-bold cursor-pointer inline-flex items-center gap-1.5">
+              {metaBusy ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Play className="w-3.5 h-3.5" />} دورة الآن
+            </button>
+          </div>
+        </div>
+        {!metaWatcher ? (
+          <p className="text-[11px] text-slate-500">لم تُحمّل الحالة بعد — تُقرأ فعلياً من الخادم (للمالك فقط).</p>
+        ) : (
+          <>
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 text-[11px]">
+              <div className="p-3 rounded-xl bg-slate-950 border border-slate-800 space-y-1">
+                <div>الحالة: <span className={metaWatcher.watcherActive ? 'text-emerald-400 font-bold' : 'text-amber-400 font-bold'}>{metaWatcher.watcherActive ? 'يعمل' : 'متوقف'}</span></div>
+                <div>الفاصل: <span className="text-slate-200 font-bold">{metaWatcher.cadenceMinutes} دقيقة</span></div>
+                <div>عدد الدورات: <span className="text-slate-200">{metaWatcher.pollCount ?? 0}</span></div>
+                <div>آخر فحص: <span className="text-slate-400" dir="ltr">{metaWatcher.lastPollAt || '—'}</span></div>
+                {metaWatcher.lastError && <div className="text-rose-300">آخر خطأ: <span dir="ltr" className="font-mono">{metaWatcher.lastError}</span></div>}
+              </div>
+              <div className="p-3 rounded-xl bg-slate-950 border border-slate-800 space-y-1">
+                <div>الرد الآلي: <span className={metaWatcher.controls?.autoReply ? 'text-emerald-400 font-bold' : 'text-slate-400 font-bold'}>{metaWatcher.controls?.autoReply ? 'ممكّن' : 'معطّل (آمن)'}</span></div>
+                <div>المراجعة البشرية: <span className={metaWatcher.controls?.humanReviewMode ? 'text-amber-300 font-bold' : 'text-slate-400 font-bold'}>{metaWatcher.controls?.humanReviewMode ? 'مفعّلة' : 'غير مفعّلة'}</span></div>
+                <div>Kill Switch: <span className={metaWatcher.controls?.paused ? 'text-rose-300 font-bold' : 'text-emerald-400 font-bold'}>{metaWatcher.controls?.paused ? 'موقوف' : 'غير موقوف'}</span></div>
+              </div>
+              <div className="p-3 rounded-xl bg-slate-950 border border-slate-800 space-y-1">
+                <div>المنصات: <code dir="ltr" className="text-slate-300">{(metaWatcher.platforms || []).join(', ')}</code></div>
+                <div>سجل المعالجة: <span className="text-slate-200">{metaWatcher.processedCount ?? 0}</span></div>
+                {metaWatcher.lastRun && <div>آخر دورة: جديد {metaWatcher.lastRun.newDetected} • رد {metaWatcher.lastRun.replied} • تصعيد {metaWatcher.lastRun.escalated} • مؤجَّل {metaWatcher.lastRun.deferred}</div>}
+              </div>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-2">
+              <button onClick={() => void setMetaWatcherControl({ autoReply: !metaWatcher.controls?.autoReply })} disabled={metaBusy}
+                className={`px-4 py-2 rounded-xl text-white text-xs font-bold cursor-pointer disabled:opacity-50 ${metaWatcher.controls?.autoReply ? 'bg-amber-600 hover:bg-amber-500' : 'bg-emerald-600 hover:bg-emerald-500'}`}>
+                {metaWatcher.controls?.autoReply ? 'تعطيل الرد الآلي' : 'تمكين الرد الآلي'}
+              </button>
+              <button onClick={() => void setMetaWatcherControl({ humanReviewMode: !metaWatcher.controls?.humanReviewMode })} disabled={metaBusy}
+                className="px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-bold cursor-pointer disabled:opacity-50">
+                {metaWatcher.controls?.humanReviewMode ? 'إيقاف المراجعة البشرية' : 'تفعيل المراجعة البشرية'}
+              </button>
+              <button onClick={() => void setMetaWatcherControl({ paused: !metaWatcher.controls?.paused })} disabled={metaBusy}
+                className={`px-4 py-2 rounded-xl text-white text-xs font-bold cursor-pointer disabled:opacity-50 inline-flex items-center gap-1.5 ${metaWatcher.controls?.paused ? 'bg-emerald-600 hover:bg-emerald-500' : 'bg-rose-600 hover:bg-rose-500'}`}>
+                {metaWatcher.controls?.paused ? <><Play className="w-3.5 h-3.5" /> استئناف</> : <><Pause className="w-3.5 h-3.5" /> إيقاف مؤقت (Kill Switch)</>}
+              </button>
+              <select value={metaWatcher.cadenceMinutes || 1} disabled={metaBusy}
+                onChange={(e) => void setMetaWatcherControl({ cadenceMinutes: Number(e.target.value) })}
+                className="px-3 py-2 rounded-xl bg-slate-950 border border-slate-700 text-xs text-white">
+                {[1, 2, 3, 4, 5].map((m) => <option key={m} value={m}>فاصل {m} دقيقة</option>)}
+              </select>
+            </div>
+
+            {/* سجل المعالجة التفصيلي — يظهر للمالك فقط، ويُقرأ من مسار محمي */}
+            {(metaWatcher.recent || []).length > 0 && (
+              <div className="pt-3 border-t border-slate-800 space-y-2">
+                <h4 className="text-xs font-bold text-slate-200 flex items-center gap-2">
+                  <ShieldAlert className="w-4 h-4 text-amber-400" /> آخر التعليقات المعالَجة (بيانات عملاء — للمالك فقط)
+                </h4>
+                <div className="space-y-1.5 max-h-64 overflow-y-auto pr-1">
+                  {(metaWatcher.recent || []).slice(0, 25).map((r: any) => (
+                    <div key={r.commentId} className="p-2.5 rounded-xl bg-slate-950 border border-slate-800 text-[11px] space-y-0.5">
+                      <div className="flex items-center justify-between gap-2">
+                        <span className={`font-bold ${r.stage === 'REPLIED' ? 'text-emerald-400' : r.stage === 'ESCALATED' ? 'text-amber-300' : r.stage === 'FAILED' ? 'text-rose-300' : 'text-slate-400'}`}>
+                          {r.stage}{r.deferred ? ' • مؤجَّل' : ''} • {r.code || '—'}
+                        </span>
+                        <span className="font-mono text-slate-500" dir="ltr">{r.commentId}</span>
+                      </div>
+                      {r.authorName && <div className="text-slate-400">الحساب: <span className="text-slate-200">{r.authorName}</span></div>}
+                      {r.text && <div className="text-slate-300 line-clamp-2">{r.text}</div>}
+                      {r.reason && <div className="text-slate-500">{r.reason}</div>}
+                      {r.externalReplyId && <div className="text-emerald-300 font-mono" dir="ltr">reply: {r.externalReplyId}</div>}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+            <p className="text-[10px] text-slate-500">الرد يمرّ بنفس المنفّذ المركزي وبكل البوابات (سلامة المحتوى + منع التكرار). لا يُسجَّل تسليم بلا معرّف من Meta. تفاصيل التعليقات/الأسماء محصورة في هذا المسار المحمي ولا تظهر في النقطتين العامتين.</p>
+          </>
+        )}
       </div>
 
 

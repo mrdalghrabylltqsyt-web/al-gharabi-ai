@@ -44,7 +44,7 @@ npm install
 npm run dev            # tsx server.ts
 npm run lint           # tsc --noEmit
 npm run build          # vite build + esbuild server.ts -> dist/server.cjs
-npm run final-audit    # node final-audit.mjs (1547 فحصاً)
+npm run final-audit    # node final-audit.mjs (1548 فحصاً)
 npm test               # storage + engine + auth + ... + db + runtime
 ```
 - التشغيل الإنتاجي: `PORT=4517 NODE_ENV=production APP_URL=http://localhost:4517 node dist/server.cjs`
@@ -5631,4 +5631,61 @@ SDK إنجليزية تحمل اسم حساب/نصاً (مثال مُثبت: `PR
 
 **لم يُمسّ:** Gemini/firewall، OAuth/الاعتمادات/الأسرار، قاعدة البيانات، DR/الاستعادة،
 YouTube (المراقب/الطابور/التفويض)، Facebook/Instagram/TikTok/Telegram، ونموذج الجدولة.
+
+## تفعيل عقل الرد التجاري على Facebook/Instagram (Meta Reply Watcher) — 2026-10-12
+
+الفجوة الحقيقية: تعليقات/رسائل Facebook وInstagram كانت تُستقبل عبر webhook وتُحفظ وتُصنّف،
+لكن **لا معالجة تلقائية** لها (لا رد ولا تصعيد ولا تأجيل) — بخلاف YouTube الذي يملك مراقباً
+24/7. النتيجة: تفاعل حقيقي على الصفحتين بلا أي رد آلي، ولا سجل قرار.
+
+**الحل — مصدر واحد، بلا مسار يتجاوز بوابة:**
+- `engine/social/metaWatcher.ts` (منطق خالص قابل للاختبار): يستهلك **نفس محرّك القرار** في
+  `youtubeWatcher` (`decideCommentAction`/`metaWatcherGate`/`releaseDeferredEntries`) — سلطة
+  قرار واحدة لكل المنصات، فلا عقل منفصل. المنصتان: `META_WATCHER_PLATFORMS = ['facebook','instagram']`.
+  - `defaultMetaPollingState()` **آمن افتراضياً**: المراقبة (قراءة/تحليل) مفعّلة، `autoReply=false`.
+  - `metaWatcherGate(controls, action)`: Kill Switch يمنع الكل، والرد يحتاج `enabled && !paused && autoReply`.
+  - `decideMetaCommentAction(...)`: قرار حتمي (self-authored/سبام ⇒ تجاهل؛ سعر/شكوى/حساس ⇒ تصعيد؛
+    مدح/تفاعل بسيط ⇒ رد عند التمكين، وتأجيل غير نهائي عند تعطيله) — نفس مفردات YouTube.
+  - `resolveMetaReplyExecution(...)`: لا رد بلا تمكين + جاهزية + تصنيف آمن.
+  - `metaPollingPublicBlock(...)`: حقول تقنية فقط (بلا اسم/نص عميل) للنقطتين العامتين.
+- موصلات قراءة-فقط: `FacebookClient.listPageComments(pageId, token)` (عبر `/{page-id}/feed`
+  بحقل comments المتداخل) و`InstagramClient.listMediaComments(igId, token)` (عبر `/{ig-id}/media`
+  ثم `/{media-id}/comments`). لا كتابة، ولا تُخترع تعليقات.
+- `server.ts`: دورة `runMetaWatcherCycle` تجلب التعليقات الحقيقية، تُسجّلها كواردة (منع تكرار
+  بالمعرّف الخارجي)، تصنّف، تُصدر قراراً، وتنفّذ الرد عبر **نفس المنفّذ المركزي**
+  (`executeMetaCommentReply`) — كل البوابات سارية (سلامة محتوى + منع تكرار + self-authored).
+  لا يُسجَّل `delivered` بلا `providerReplyId` من Meta. الحالة تُحفظ عبر المحوّل في مفتاح
+  `metaPolling` (تصمد بعد restart)، مع قفل دوام (`acquireLease`) يمنع التوازي، وجدولة داخلية
+  واحدة `.unref()` تبدأ بعد `app.listen` (مستقلة عن المتصفح).
+- مسارات owner: `GET /api/agent/meta/watcher` (حالة + سجل تفصيلي)،
+  `POST /api/agent/meta/watcher/controls` (autoReply/paused/humanReviewMode/cadenceMinutes)،
+  `POST /api/agent/meta/watcher/poll` (دورة يدوية). كلها `requireOwner`.
+- `/api/health` و`/api/readiness` يعلنان كتلة `metaPolling` **عامة** (حقول تقنية فقط) عبر
+  `metaPollingPublicStatus()`؛ الحارس `guardPublicHealthPayload` يفحصها بنفس allow-list الصارم.
+- الواجهة: بطاقة «مراقب ردود Facebook/Instagram 24/7» في `SocialManagerView` (للمالك) تعرض
+  الحالة الحقيقية وأزرار التمكين/الإيقاف/الفاصل وسجل المعالجة التفصيلي — بلا أي ادّعاء نجاح محلي.
+  `apiService.getMetaWatcher/setMetaWatcherControls/pollMetaWatcher`.
+
+**إكمال مسار الرسائل الخاصة (Batch 27، 2026-10-04):** كان المراقب يعالج **التعليقات فقط**؛
+الرسائل الخاصة (Messenger/Instagram DM) تُستقبل عبر webhook وتُخزَّن (`kind='message'` مع
+`replyTarget.recipientId`) لكنها **بلا معالجة تلقائية**. الآن `runMetaWatcherCycle` يمرّ أيضاً
+على الرسائل الواردة الحقيقية من `workspace.socialComments` (`kind='message'`) بنفس سلطة القرار
+(`decideMetaCommentAction` + `resolveMetaReplyExecution`) ونفس البوابة والتحرير. الرد على
+الرسالة يمر بـ`executeMetaMessageReply` المركزي، الذي **أُضيف له حارس سلامة المحتوى**
+(`analyzeBusinessClaims`) الذي كان مفقوداً في مسار الرسالة وحده — فلا يخرج ادعاء/رقم غير مسجّل.
+هدف الرد `replyTarget.recipientId`؛ غيابه ⇒ لا إرسال (لا اختراع مستلم). سجل المعالجة يحمل
+`kind: 'comment'|'message'` (توافق خلفي: غيابه = comment). لا تسليم بلا `mid.*` من Meta.
+`fetchMetaInboundComments` فشلها (قراءة) لا يمنع معالجة الرسائل الواردة.
+
+**اختبار:** `engine/tests/meta.watcher.test.ts` (`npm run test:meta-watcher`، **63 فحصاً**):
+وحدة (الأمان الافتراضي، البوابة، القرار، التأجيل/التحرير، الكتلة العامة النظيفة، سلطة التنفيذ)
+وتكامل (تصريح 401/403، ربط Facebook بخادم Graph وهمي، تأجيل بلا إرسال عند التعطيل، تحرير المؤجَّل
+عند التمكين، رد حقيقي بمعرّف من Meta + منع تكرار، **مسار الرسائل: webhook موقّع ⇒ رد حقيقي
+بـ`mid.*` + حارس محتوى يرفض ادعاءً غير مسجّل بـ422 + رفض webhook بلا توقيع 401**، خلو
+`/api/health` و`/api/readiness` من أي اسم/نص عميل، وثبات بعد restart). فحوص final-audit:
+`meta-watcher-health-public-safe` ومحدَّثات `facebook-reply-delivery-honest`/
+`instagram-reply-delivery-honest` (**1548 إجمالاً**).
+
+**لم يُمسّ:** Gemini/firewall، OAuth/الاعتمادات/الأسرار، DR، YouTube (المراقب/الطابور/التفويض)،
+TikTok/Telegram، ونموذج الجدولة. لا تدوير لأي مفتاح، ولا تغيير في بنية webhook القائمة.
 

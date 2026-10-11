@@ -559,7 +559,58 @@ export class InstagramClient {
     }
   }
 
-  /** يرد على تعليق Instagram حقيقي. لا نجاح بلا معرّف تعليق ردّ من Meta. */
+  /**
+   * يقرأ منشورات (وسائط) الحساب المهني الأخيرة (قراءة فقط) — لاكتشاف سياق
+   * المنشور الذي ورد عليه تعليق. لا كتابة ولا نشر.
+   */
+  async listMedia(igAccountId: string, pageAccessToken: string, limit = 10): Promise<InstagramResult<Array<{ mediaId: string; caption: string | null; createdAt: string | null }>>> {
+    if (!igAccountId) return { ok: false, data: null, error: 'معرّف حساب Instagram مطلوب.' };
+    try {
+      const u = new URL(instagramGraphUrl(`/${igAccountId}/media`, this.baseUrl));
+      u.searchParams.set('fields', 'id,caption,timestamp');
+      u.searchParams.set('limit', String(Math.max(1, Math.min(50, Math.trunc(limit)))));
+      u.searchParams.set('access_token', pageAccessToken);
+      const res = await this.fetchImpl(u.toString(), { method: 'GET' });
+      const data = await res.json().catch(() => null);
+      if (!res.ok || data?.error) return { ok: false, data: null, error: errorMessage(data, 'فشل قراءة منشورات Instagram.') };
+      const rows = Array.isArray(data?.data) ? data.data : [];
+      return { ok: true, data: rows.map((m: any) => ({ mediaId: String(m?.id || ''), caption: typeof m?.caption === 'string' ? m.caption : null, createdAt: m?.timestamp ? String(m.timestamp) : null })).filter((m: any) => m.mediaId) };
+    } catch (e: any) {
+      return { ok: false, data: null, error: String(e?.message || 'فشل الاتصال بـInstagram.') };
+    }
+  }
+
+  /**
+   * يقرأ تعليقات وسائط الحساب الأخيرة عبر الحقل المتداخل `comments` على `/{ig-id}/media`
+   * (قراءة فقط، بنطاق instagram_manage_comments). تُعاد تعليقات المستخدمين فقط.
+   */
+  async listMediaComments(igAccountId: string, pageAccessToken: string, mediaLimit = 10, commentsLimit = 25): Promise<InstagramResult<Array<{ commentId: string; mediaId: string | null; text: string; username: string | null; authorId: string | null; createdAt: string | null }>>> {
+    if (!igAccountId) return { ok: false, data: null, error: 'معرّف حساب Instagram مطلوب.' };
+    try {
+      const u = new URL(instagramGraphUrl(`/${igAccountId}/media`, this.baseUrl));
+      u.searchParams.set('fields', `id,comments.limit(${Math.max(1, Math.min(50, Math.trunc(commentsLimit)))}){id,text,username,from,created_time}`);
+      u.searchParams.set('limit', String(Math.max(1, Math.min(50, Math.trunc(mediaLimit)))));
+      u.searchParams.set('access_token', pageAccessToken);
+      const res = await this.fetchImpl(u.toString(), { method: 'GET' });
+      const data = await res.json().catch(() => null);
+      if (!res.ok || data?.error) return { ok: false, data: null, error: errorMessage(data, 'فشل قراءة تعليقات Instagram.') };
+      const out: Array<{ commentId: string; mediaId: string | null; text: string; username: string | null; authorId: string | null; createdAt: string | null }> = [];
+      for (const media of Array.isArray(data?.data) ? data.data : []) {
+        const mediaId = media?.id ? String(media.id) : null;
+        for (const c of Array.isArray(media?.comments?.data) ? media.comments.data : []) {
+          const commentId = c?.id ? String(c.id) : '';
+          const text = typeof c?.text === 'string' ? c.text : '';
+          if (!commentId || !text) continue;
+          out.push({ commentId, mediaId, text, username: c?.username ? String(c.username) : (c?.from?.username ? String(c.from.username) : null), authorId: c?.from?.id ? String(c.from.id) : null, createdAt: c?.created_time ? String(c.created_time) : (c?.timestamp ? String(c.timestamp) : null) });
+        }
+      }
+      return { ok: true, data: out };
+    } catch (e: any) {
+      return { ok: false, data: null, error: String(e?.message || 'فشل الاتصال بـInstagram.') };
+    }
+  }
+
+  /** يرد على تعليق حقيقي عبر `/{comment-id}/replies`. لا نجاح بلا معرّف من Meta. */
   async replyToComment(commentId: string, pageAccessToken: string, message: string): Promise<InstagramResult<{ providerCommentId: string }>> {
     if (!commentId || !message?.trim()) return { ok: false, data: null, error: 'معرّف التعليق ونص الرد مطلوبان.' };
     try {
