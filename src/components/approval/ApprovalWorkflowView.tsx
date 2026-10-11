@@ -9,7 +9,6 @@ import {
   Calendar,
   Send,
   Trash2,
-  AlertTriangle,
   History,
   Eye,
   Check,
@@ -20,7 +19,7 @@ import {
 import { Post, PostStatus } from '../../types';
 import { defaultScheduleInput, wallClockInputValue, wallClockToEpoch } from '../../utils/scheduleTime';
 import { ScheduleTimestamp } from '../common/ScheduleTimestamp';
-import { summarizePublishFailures, formatPlatformResultState, youtubeDedicatedDisclosure, quotaPendingMessage } from '../../utils/publishResult';
+import { summarizePublishFailures, formatPlatformResultState, quotaPendingMessage } from '../../utils/publishResult';
 
 export const ApprovalWorkflowView: React.FC = () => {
   const {
@@ -283,13 +282,6 @@ export const ApprovalWorkflowView: React.FC = () => {
                 <div className="flex items-center justify-between gap-3 pt-2 border-t border-slate-800 flex-wrap">
                   {/* Left: Progression Buttons according to status */}
                   <div className="flex flex-col gap-2">
-                  {/* إفصاح صريح قبل النشر: أي منصة هدف ستُوجَّه لطابورها المخصص بدل النقرة الواحدة */}
-                  {(post.status === 'approved' || post.status === 'scheduled') && youtubeDedicatedDisclosure(post.targetPlatforms) && (
-                    <div className="px-3 py-2 rounded-xl bg-amber-950/40 border border-amber-500/30 text-[11px] text-amber-200 flex items-start gap-2 max-w-xl">
-                      <AlertTriangle className="w-3.5 h-3.5 text-amber-400 shrink-0 mt-0.5" />
-                      <span>{youtubeDedicatedDisclosure(post.targetPlatforms)}</span>
-                    </div>
-                  )}
                   <div className="flex items-center gap-2 flex-wrap">
                     {/* Stage: Draft -> Submit for Review */}
                     {post.status === 'draft' && (

@@ -58,7 +58,9 @@ check('requestedPlatforms مُرشَّحة على المنصات المدعوم�
 
 group('6) بطاقات العرض تقرأ منصات المنشور نفسه');
 check('ApprovalWorkflowView يعرض post.targetPlatforms', approval.includes('post.targetPlatforms.map'));
-check('نقل التفاصيل يستدعي youtubeDedicatedDisclosure(post.targetPlatforms)', approval.includes('youtubeDedicatedDisclosure(post.targetPlatforms)'));
+// التنبيه الأصفر لـYouTube أُزيل من الواجهة (تنظيف نصوص فترة الاختبار)؛ النشر موحّد
+// بنقرة واحدة والشرط الوحيد (فيديو إن احتاجه YouTube) يُعرض عند الفشل لا قبله.
+check('واجهة الموافقة لا تعرض صندوق تنبيه YouTube الأصفر', !approval.includes('youtubeDedicatedDisclosure(post.targetPlatforms)'));
 
 console.log('\n' + '='.repeat(60));
 if (failures.length === 0) { console.log(`PASSED: ${passed} platform-selection UI guard checks`); process.exit(0); }
