@@ -5627,7 +5627,23 @@ SDK إنجليزية تحمل اسم حساب/نصاً (مثال مُثبت: `PR
 `engine/tests/ingestion.engine.server.test.ts` (`test:ingestion-engine-server`، 37 فحصاً على
 خادم حقيقي: إدخال 4 منصات، منع تكرار، ملخّص/تعلّم محميان، شخصية موحّدة، تعلّم في ذاكرة العقل
 بلا محتوى عميل + idempotent، تصريح 401، وثبات بعد restart، وبلا تسرّب canary). فحوص final-audit
-الجديدة (11): `ingestion-engine-module` … `ingestion-canary-leak-guard` (**1547 إجمالاً**).
+الجديدة (11): `ingestion-engine-module` … `ingestion-canary-leak-guard` (**1548 إجمالاً**).
+
+### تقوية إضافية: منع رجوع التسريب بأسماء حقول عامة/مختصرة (2026-10-11)
+إكمال عزل بيانات العملاء في النقطتين العامتين `/api/health` و`/api/readiness`:
+- `attentionRequired` و`lastReply.replyText` وأي حقل يحمل اسم حساب/نص تعليق/نص رد كان قد
+  أُزيل مسبقاً (PR #31 + `8825a67`)؛ أُضيفت **أسماء عامة/مختصرة** لنفس المعنى إلى القائمة
+  الممنوعة (`text`، `comment`، `author`، `authorId`، `authorHandle`، `username`، `senderName`،
+  `messageText`، `messageBody`، `commentBody`، `commentMessage`، `postText`، `postMessage`)
+  في المصدر الواحد `engine/social/healthPrivacy.ts` — فلا يتسرّب حقل عميل جديد باسم مختصر بلا
+  التقاط. مُتحقَّق أنه لا تقاطع مع أي مفتاح تقني مشروع في النقطتين (441 مفتاحاً فعلياً).
+- الاختبارات: `health.guard.test.ts` صار **38 فحصاً** و`health.privacy.test.ts` صار **47 فحصاً**
+  (فحص جديد: لا أسماء حقول عميل عامة مختصرة في الصحة).
+- فحص final-audit جديد: `public-health-generic-customer-aliases-forbidden`.
+- **إثبات حي:** زرع canary (اسم/نص تعليق/نص رد) في حالة المراقبة + مساحة العمل ثم قراءة
+  `/api/health` و`/api/readiness` بلا مصادقة => صفر تسريب، ولا حقل `replyText`/`attentionRequired`.
+  البيانات التفصيلية باقية للمالك عبر `/api/agent/youtube/watcher` (requireOwner).
+- **لم يُمسّ:** أي سرّ/مفتاح، OAuth، بقية المنصات، Gemini، DR، نموذج الجدولة.
 
 **لم يُمسّ:** Gemini/firewall، OAuth/الاعتمادات/الأسرار، قاعدة البيانات، DR/الاستعادة،
 YouTube (المراقب/الطابور/التفويض)، Facebook/Instagram/TikTok/Telegram، ونموذج الجدولة.
