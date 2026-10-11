@@ -572,10 +572,17 @@ export function assertNoPagePostPrivacyParam(params: URLSearchParams): boolean {
  * يبني جسم نشر صورة على صفحة (`POST /{page-id}/photos`). Graph API يقرأ الصورة
  * من رابط عام عبر `url` (وليس `source` المخصّص للبايتات) حين لا نرفع ملفاً
  * مباشرة. الرسالة اختيارية. الصلاحية: pages_manage_posts (نفس صلاحية النشر).
+ *
+ * `published=true` **صريح** (وليس اعتماداً على الافتراضي): يمنع — بحسب عقد Graph —
+ * بقاء الصورة منشوراً غير معلن (`is_published=false`) فيراها المالك/المشرفون فقط
+ * ولا تظهر على حائط الصفحة العام. هذا هو **نفس** العقد المطبَّق على المنشور النصي
+ * (`/feed`) والفيديو (`/videos`): التصريح يمنع انحراف الافتراضي ويجعل النية قاطعة
+ * وقابلة للاختبار. (لا يُرسل معامل `privacy` — غير مدعوم على الصفحة.)
  */
 export function buildPublishPhotoBody(imageUrl: string, message?: string): URLSearchParams {
   const body = new URLSearchParams();
   body.set('url', imageUrl);
+  body.set('published', 'true');
   if (message?.trim()) body.set('message', message.trim());
   return body;
 }
