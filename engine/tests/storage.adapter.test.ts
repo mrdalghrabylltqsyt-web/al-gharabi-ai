@@ -119,6 +119,53 @@ async function run(): Promise<void> {
   check('★ مهلة الاتصال ≥ 10 ثوانٍ (تسع استيقاظ Neon)', typeof poolCfg.connectionTimeoutMillis === 'number' && poolCfg.connectionTimeoutMillis >= 10_000, `timeout=${poolCfg.connectionTimeoutMillis}`);
   check('sslmode=require يبقى مفروضاً', Boolean((postgresPoolConfig('postgresql://u:p@h/d?sslmode=require') as any).ssl));
   check('sslmode=disable يلغي الفرض صراحةً (اختبار محلي)', !(postgresPoolConfig('postgresql://u:p@h/d?sslmode=disable') as any).ssl);
+  check('★ حجم pool = 3 (لا يتجاوز حد Neon أثناء Rolling Deploy)', poolCfg.max === 3, `max=${poolCfg.max}`);
+
+  // مرونة الإقلاع: أخطاء الاتصال/الضغط العابرة تُعاد المحاولة، وأخطاء المصادقة لا.
+  const { isRetryablePgStartupError, runPgStartupWithRetry } = await import('../storage/adapter');
+  check('53000 insufficient_resources قابل لإعادة المحاولة', isRetryablePgStartupError({ code: '53000' }) === true);
+  check('53300 too_many_connections قابل لإعادة المحاولة', isRetryablePgStartupError({ code: '53300' }) === true);
+  check('57P03 cannot_connect_now قابل لإعادة المحاولة', isRetryablePgStartupError({ code: '57P03' }) === true);
+  check('فئة الاتصال 08xxx قابلة لإعادة المحاولة', isRetryablePgStartupError({ code: '08006' }) === true);
+  check('ECONNRESET قابل لإعادة المحاولة', isRetryablePgStartupError({ code: 'ECONNRESET', message: 'read ECONNRESET' }) === true);
+  check('نص "timeout exceeded when trying to connect" قابل لإعادة المحاولة', isRetryablePgStartupError(new Error('timeout exceeded when trying to connect')) === true);
+  check('★ فشل المصادقة 28P01 غير قابل لإعادة المحاولة (فشل سريع)', isRetryablePgStartupError({ code: '28P01' }) === false);
+  check('★ قاعدة غير موجودة 3D000 غير قابلة لإعادة المحاولة', isRetryablePgStartupError({ code: '3D000' }) === false);
+  check('خطأ مجهول البنية غير قابل لإعادة المحاولة', isRetryablePgStartupError({ code: 'XX000' }) === false);
+
+  // نجاح فوري بلا إعادة محاولة.
+  let callsA = 0;
+  const okA = await runPgStartupWithRetry(async () => { callsA += 1; }, { sleep: async () => {} });
+  check('★ نجاح من أول محاولة (بلا نوم)', okA.ok === true && callsA === 1 && okA.attempts === 1);
+
+  // فشل عابر ثم نجاح: يعيد المحاولة حتى النجاح.
+  let callsB = 0;
+  const okB = await runPgStartupWithRetry(async () => {
+    callsB += 1;
+    if (callsB < 3) { const e: any = new Error('boom'); e.code = '53000'; throw e; }
+  }, { sleep: async () => {} });
+  check('★ نجاح بعد عابرين (يعيد المحاولة حتى الاستيقاظ/زوال الضغط)', okB.ok === true && callsB === 3);
+
+  // فشل عابر دائم: يستنفد المحاولات ويُعلن فشلاً صريحاً (fail-closed، لا رمي).
+  let callsC = 0;
+  const okC = await runPgStartupWithRetry(async () => {
+    callsC += 1; const e: any = new Error('down'); e.code = '53000'; throw e;
+  }, { maxAttempts: 4, sleep: async () => {} });
+  check('★ فشل عابر دائم: يستنفد المحاولات ويعلن فشلاً (لا نجاح وهمي)', okC.ok === false && callsC === 4 && String(okC.error?.code) === '53000');
+
+  // خطأ غير قابل لإعادة المحاولة: يتوقف فوراً بلا إنفاق محاولات.
+  let callsD = 0;
+  const okD = await runPgStartupWithRetry(async () => {
+    callsD += 1; const e: any = new Error('bad password'); e.code = '28P01'; throw e;
+  }, { maxAttempts: 6, sleep: async () => {} });
+  check('★ فشل مصادقة: محاولة واحدة فقط ثم فشل سريع', okD.ok === false && callsD === 1);
+
+  // كشف النقطة المجمّعة (pooled) بلا كشف أي سرّ.
+  const { isPooledPostgresEndpoint } = await import('../storage/adapter');
+  check('★ مضيف -pooler يُكتشف كمجمّع', isPooledPostgresEndpoint('postgresql://u:p@ep-abc-pooler.us-east-1.aws.neon.tech/db') === true);
+  check('★ مضيف مباشر (غير مجمّع) يُكتشف بصدق', isPooledPostgresEndpoint('postgresql://u:p@ep-abc.us-east-1.aws.neon.tech/db') === false);
+  check('pgbouncer في المضيف يُكتشف', isPooledPostgresEndpoint('postgresql://u:p@pgbouncer.internal/db') === true);
+  check('رابط غير صالح لا يرمي (يعيد false)', isPooledPostgresEndpoint('not-a-url') === false);
 
   console.log('\n' + '='.repeat(60));
   if (failures.length) {

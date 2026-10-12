@@ -44,7 +44,7 @@ npm install
 npm run dev            # tsx server.ts
 npm run lint           # tsc --noEmit
 npm run build          # vite build + esbuild server.ts -> dist/server.cjs
-npm run final-audit    # node final-audit.mjs (1557 فحصاً)
+npm run final-audit    # node final-audit.mjs (1562 فحصاً)
 npm test               # storage + engine + auth + ... + db + runtime
 ```
 - التشغيل الإنتاجي: `PORT=4517 NODE_ENV=production APP_URL=http://localhost:4517 node dist/server.cjs`
@@ -5818,3 +5818,18 @@ permitted if the replier has been explicitly summoned by the original post's aut
 **لم يُمسّ:** سلوك أي مسار قابل للوصول، ولا أي موصل، ولا OAuth/الأسرار، ولا Gemini، ولا
 بقية المنصات. حذف كود ميت + تحديث فحوص لموضعها الحقيقي فقط.
 
+
+## إصلاح فشل الإقلاع المتكرر بعد النشر (Postgres 53000) — 2026-10-04
+
+**العَرَض الموثّق من سجلات Render:** النشرتان المتتاليتان للـcommit e4a4d84 انتهتا بـupdate_failed، والبناء (Docker/vite/esbuild) نجح كاملاً، والفشل وقع حصراً عند إقلاع العملية الجديدة:
+`فشل الإقلاع: تعذّر تحميل الحالة من Postgres (database_unavailable:53000)`. والعملية القديمة كانت تُسجّل في النافذة نفسها `Could not persist server state: 53000` — أي ضغط لحظي على Neon، لا العملية الجديدة وحدها.
+
+**ROOT CAUSE (بلا تخفيف سياسة fail-closed):** (1) الاتصال المباشر غير المجمّع + تعايش عمليتي النشر لحظات: مع max=5 لكل عملية على خطة Neon المجانية الضيّقة الحد، يتجاوز التراكب الحد فيردّ Neon 53000 insufficient_resources فيفشل الإقلاع. (2) pool واحد يُعاد استخدامه عبر المحاولات: بعد خطأ اتصال/استيقاظ من autosuspend يبقى الـpool مسمّماً فتفشل المحاولات التالية رغم زوال الضغط، والتراجع (3 محاولات، 1-2s) أقصر من استيقاظ طويل.
+
+**الإصلاح (engine/storage/adapter.ts — الإقلاع فقط):** max=3 (بدل 5) + min=0 + allowExitOnIdle + application_name؛ إعادة المحاولة تبني pool جديداً لكل محاولة (connectOnce يُغلق القديم)؛ isRetryablePgStartupError يعيد المحاولة للأخطاء العابرة فقط (08*، 57P03، 53300، 53000، شبكة/مهلة) ويفشل سريعاً للمصادقة (28P01/28000) والقاعدة (3D000)؛ runPgStartupWithRetry حتى 6 محاولات بتراجع أسّي بسقف 4s + ارتجاع. **fail-closed باقٍ:** عند الاستنفاد يبقى healthy=false ويظل الإقلاع صريحاً بلا رجوع لملف ولا كتابة فوق حالة قائمة. مؤشر بلا سرّ: isPooledPostgresEndpoint + /api/health.persistence.pooledEndpoint (منطقي) + recommendation.
+
+**توصية المالك (قيمة متغيّر بيئة، لا كود):** استخدم نقطة Neon **المجمّعة** (اسم مضيفها يحوي -pooler) كما توصي Neon لبيئات الخوادم، لإزالة تراكب الاتصالات. .env.example وrender.yaml يوثّقان ذلك.
+
+اختبارات: storage.adapter.test.ts صار **49 فحصاً** (تصنيف الأخطاء، نجاح/فشل/استنفاد/فشل مصادقة سريع، كشف النقطة المجمّعة). فحوص final-audit الجديدة الخمسة: pg-pool-size-bounded-for-rolling-deploy، pg-startup-retry-per-attempt-fresh-pool، pg-retryable-error-classifier، pg-fail-closed-preserved، pg-pooled-endpoint-indicator. إجمالي الفحوص **1562**.
+
+**لم يُمسّ:** المصادقة، الجلسات، تشفير التوكنات، OAuth/scopes، Gemini، سوشيال المنصات، التعافي/DR، ونموذج الجدولة.

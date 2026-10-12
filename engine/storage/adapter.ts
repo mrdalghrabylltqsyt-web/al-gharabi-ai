@@ -201,19 +201,113 @@ class FileStorageAdapter implements StorageAdapter {
  *
  * SSL مفروض من التطبيق (لا يُعتمد على sslmode في الرابط): بعض روابط Neon تأتي
  * بلا sslmode، فنجبر TLS حتى لا يُنقل أي سر بلا تشفير. sslmode=disable يلغي
- * الفرض صراحةً للاختبار المحلي فقط. الحد الأقصى للاتصالات 5، والمهلة 15 ثانية
- * حتى يتسع استيقاظ Neon من النوم.
+ * الفرض صراحةً للاختبار المحلي فقط.
+ *
+ * الحد الأقصى للاتصالات 3 (لا 5): أثناء Rolling Deploy على Render تتعايش العملية
+ * القديمة والجديدة لحظات، وفي خطة Neon المجانية يكون حد الاتصالات ضيقاً (وخصوصاً
+ * على نقطة الاتصال المباشرة غير المجمّعة). تقليل max يمنع تجاوز الحد الذي يُنتج
+ * `53000 insufficient_resources` ويفشل الإقلاع. min=0 فلا يبقى اتصال خامل دائم.
+ * المهلة 15 ثانية حتى يتسع استيقاظ Neon من النوم.
  */
 export function postgresPoolConfig(connectionString: string): Record<string, unknown> {
   const forceSsl = !/sslmode=disable/i.test(connectionString);
   return {
     connectionString,
-    max: 5,
+    max: 3,
+    min: 0,
     connectionTimeoutMillis: 15_000,
     idleTimeoutMillis: 30_000,
     keepAlive: true,
+    allowExitOnIdle: true,
+    application_name: "gharabi-ai",
     ...(forceSsl ? { ssl: { rejectUnauthorized: false } } : {}),
   };
+}
+
+/**
+ * أخطاء إقلاع Postgres القابلة لإعادة المحاولة: فئة الاتصال (08*)، تعذّر الاتصال
+ * الآن (57P03)، ضغط الاتصالات (53300 too_many_connections، 53000
+ * insufficient_resources)، وأخطاء الشبكة العابرة. الأخطاء غير القابلة (فشل مصادقة
+ * 28P01/28000، قاعدة غير موجودة 3D000) تفشل بسرعة بدل إهدار المحاولات — تبقى
+ * fail-closed في كل الأحوال.
+ */
+export function isRetryablePgStartupError(error: any): boolean {
+  const texts: string[] = [];
+  const collect = (e: any): void => {
+    if (!e) return;
+    if (typeof e === "string") { texts.push(e); return; }
+    const code = `${e.code ?? ""} ${e.errno ?? ""}`.trim();
+    const msg = String(e.message ?? "");
+    if (code) texts.push(code);
+    if (msg) texts.push(msg);
+    if (Array.isArray(e.errors)) e.errors.forEach(collect);
+  };
+  collect(error);
+  const blob = texts.join(" | ").toLowerCase();
+  // غير قابلة لإعادة المحاولة: مصادقة/قاعدة/صلاحية.
+  if (/28p01|28000|3d000|42p01/.test(blob)) return false;
+  return (
+    /\b08[0-9a-f]{3}\b/.test(blob) ||               // class 08 connection exception
+    blob.includes("57p03") ||                        // cannot_connect_now
+    blob.includes("53300") ||                        // too_many_connections
+    blob.includes("53000") ||                        // insufficient_resources
+    /econnrefused|econnreset|etimedout|enotfound|eai_again|epipe/.test(blob) ||
+    /timeout exceeded when trying to connect|connection terminated|server closed the connection|connection timeout/.test(blob)
+  );
+}
+
+/**
+ * هل رابط الاتصال يشير إلى نقطة Neon المجمّعة (pooled)؟ يُكتشف من اسم المضيف بلا
+ * كشف أي قيمة (اسم المضيف ليس سراً). النقط المجمّعة تحمل عادة `-pooler`، وقد
+ * تحمل وسيطة `pgbouncer`. الغرض: تحذير المالك إن كان الاتصال مباشراً على Render
+ * حيث تتزامن عمليتان أثناء النشر — وهو ما يُنتج 53000/53300. لا يُعاد الرابط.
+ */
+export function isPooledPostgresEndpoint(connectionString: string): boolean {
+  try {
+    const host = new URL(connectionString.replace(/^postgresql:/i, "postgres:")).hostname.toLowerCase();
+    return host.includes("-pooler") || host.includes("pgbouncer");
+  } catch {
+    return false;
+  }
+}
+
+export interface PgStartupRetryOptions {
+  maxAttempts?: number;
+  baseDelayMs?: number;
+  maxDelayMs?: number;
+  /** حقن النوم للاختبار (بلا انتظار حقيقي). */
+  sleep?: (ms: number) => Promise<void>;
+  /** حقن دالة الاتصال بمحاولة واحدة (للاختبار بلا قاعدة فعلية). */
+  connect?: () => Promise<void>;
+}
+
+/**
+ * تشغيل الإقلاع مع إعادة محاولة للأخطاء العابرة فقط (منطق صافٍ قابل للاختبار).
+ * كل محاولة تنفّذ `connect` كاملاً (إنشاء pool جديد) فلا يُعاد استخدام pool
+ * "مسمّم" بعد خطأ اتصال (خصوصاً استيقاظ Neon من النوم). تراجع أسّي بسقف + ارتجاف.
+ * الفشل النهائي يُعاد كـ`{ ok:false }` (لا رمي) ليتولّى المُستدعي الإعلان الصريح.
+ */
+export async function runPgStartupWithRetry(
+  connect: () => Promise<void>,
+  opts: PgStartupRetryOptions = {},
+): Promise<{ ok: boolean; attempts: number; error?: any }> {
+  const maxAttempts = opts.maxAttempts ?? 6;
+  const base = opts.baseDelayMs ?? 750;
+  const cap = opts.maxDelayMs ?? 4_000;
+  const sleep = opts.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
+  let lastError: any;
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    try {
+      await connect();
+      return { ok: true, attempts: attempt };
+    } catch (error) {
+      lastError = error;
+      if (attempt >= maxAttempts || !isRetryablePgStartupError(error)) break;
+      const delay = Math.min(attempt * base, cap) + Math.floor(Math.random() * 200);
+      await sleep(delay);
+    }
+  }
+  return { ok: false, attempts: maxAttempts, error: lastError };
 }
 
 /**
@@ -234,32 +328,32 @@ class PostgresStorageAdapter implements StorageAdapter {
   }
 
   async init(): Promise<void> {
-    const attempts = 3;
-    for (let attempt = 1; attempt <= attempts; attempt += 1) {
-      try {
-        const { Pool } = await import("pg");
-        if (!this.pool) {
-          this.pool = new Pool(postgresPoolConfig(this.connectionString));
-          // خطأ اتصال عابر داخل pool لا يجب أن يُسقط العملية.
-          this.pool.on?.("error", () => { /* يُعالج عند الطلب التالي */ });
-        }
-        // Neon Free ينام ويستيقظ عند أول اتصال؛ المهلة 15 ثانية تكفي للاستيقاظ،
-        // وإعادة المحاولة بتراجع تغطي أطول استيقاظ.
-        await this.pool.query(
-          `CREATE TABLE IF NOT EXISTS gharabi_state (
-             key text PRIMARY KEY,
-             value jsonb NOT NULL,
-             updated_at timestamptz NOT NULL DEFAULT now()
-           )`,
-        );
-        this.healthy = true;
-        this.detail = null;
-        return;
-      } catch (error: any) {
-        this.healthy = false;
-        this.detail = `database_unavailable:${String(error?.code || error?.name || "error").slice(0, 40)}`;
-        if (attempt < attempts) await new Promise((r) => setTimeout(r, attempt * 1000));
-      }
+    // pool جديد لكل محاولة: بعد خطأ اتصال (خصوصاً استيقاظ Neon من النوم) قد
+    // يبقى الـpool السابق في حالة "مسمّمة"، فنعيد البناء بدل إعادة استخدامه.
+    const connectOnce = async (): Promise<void> => {
+      if (this.pool) { try { await this.pool.end?.(); } catch { /* تجاهل */ } this.pool = null; }
+      const { Pool } = await import("pg");
+      this.pool = new Pool(postgresPoolConfig(this.connectionString));
+      // خطأ اتصال عابر داخل pool لا يجب أن يُسقط العملية.
+      this.pool.on?.("error", () => { /* يُعالج عند الطلب التالي */ });
+      // Neon Free ينام ويستيقظ عند أول اتصال؛ المهلة 15 ثانية تكفي للاستيقاظ،
+      // وإعادة المحاولة بتراجع تغطي أطول استيقاظ أو ضغط اتصالات عابر.
+      await this.pool.query(
+        `CREATE TABLE IF NOT EXISTS gharabi_state (
+           key text PRIMARY KEY,
+           value jsonb NOT NULL,
+           updated_at timestamptz NOT NULL DEFAULT now()
+         )`,
+      );
+      this.healthy = true;
+      this.detail = null;
+    };
+
+    const result = await runPgStartupWithRetry(connectOnce);
+    if (!result.ok) {
+      this.healthy = false;
+      const error: any = result.error;
+      this.detail = `database_unavailable:${String(error?.code || error?.name || "error").slice(0, 40)}`;
     }
   }
 

@@ -50,6 +50,9 @@ services:
       - key: APP_URL
         sync: false
       # DATABASE_URL: اتصال Neon Free. بدونه يكون التخزين عابراً (ephemeral).
+      # استخدم نقطة الاتصال **المجمّعة** (pooled — اسمها يحوي `-pooler`) كما
+      # توصي Neon، لأن عمليتي النشر تتعايشان لحظات على Render؛ النقطة المباشرة
+      # قد ترفض الاتصال الجديد بـ53000 insufficient_resources فيفشل الإقلاع.
       - key: DATABASE_URL
         sync: false
       # --- منظومة التعافي الكامل (DR) — Google Drive (نطاق drive.file حصراً) ---

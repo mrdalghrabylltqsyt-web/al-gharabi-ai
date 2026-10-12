@@ -142,6 +142,11 @@ add('storage-adapter-interface', adapter.includes('export interface StorageAdapt
 add('storage-adapter-file-backend', adapter.includes('class FileStorageAdapter') && adapter.includes('renameSync'), 'خلفية الملف موجودة بكتابة ذرّية');
 add('storage-adapter-postgres-backend', adapter.includes('class PostgresStorageAdapter') && adapter.includes("gharabi_state") && /jsonb/i.test(adapter), 'خلفية Postgres موجودة (جدول key/value JSONB)');
 add('storage-adapter-auto-select', adapter.includes('createStorageAdapter') && /databaseUrl/.test(adapter), 'الاختيار التلقائي حسب DATABASE_URL');
+add('pg-pool-size-bounded-for-rolling-deploy', /max:\s*3\b/.test(adapter), 'حجم pool = 3 (لا يتجاوز حد Neon أثناء تعايش عمليتي النشر)');
+add('pg-startup-retry-per-attempt-fresh-pool', adapter.includes('runPgStartupWithRetry') && adapter.includes('connectOnce') && /this\.pool\s*=\s*null/.test(adapter), 'إعادة المحاولة تبني pool جديداً لكل محاولة (لا pool مسمّم بعد خطأ اتصال)');
+add('pg-retryable-error-classifier', adapter.includes('isRetryablePgStartupError') && adapter.includes("53000") && adapter.includes("53300") && adapter.includes("57P03"), 'أخطاء ضغط الاتصالات/الاستيقاظ العابرة تُعاد المحاولة؛ أخطاء المصادقة تفشل سريعاً');
+add('pg-fail-closed-preserved', adapter.includes('this.healthy = false') && server.includes('فشل الإقلاع: تعذّر تحميل الحالة من Postgres') && !adapter.includes('catch { /* تابع بملف محلي'), 'سياسة fail-closed قائمة (لا رجوع لملف محلي ولا كتابة فوق حالة عند فشل الإقلاع)');
+add('pg-pooled-endpoint-indicator', adapter.includes('isPooledPostgresEndpoint') && server.includes('pooledEndpoint') && server.includes('isPooledPostgresEndpoint'), 'الصحة تُعلن هل نقطة الاتصال مجمّعة (pooled) بلا كشف الرابط — لتشخيص 53000/53300');
 add('no-direct-state-file-write', !/fs\.writeFileSync\(\s*`?\$\{STATE_FILE\}/.test(server) && !server.includes('const STATE_FILE = path.join'), 'لا كتابة مباشرة لملف الحالة في server.ts');
 add('persist-via-adapter', server.includes('storageAdapter.write(STORAGE_KEY_STATE'), 'persistState يمر عبر المحوّل');
 add('revocations-through-adapter', server.includes('revokedSessions') && server.includes('userRevocations') && server.includes('applyStateSnapshot'), 'الإبطال يُحمَّل ويُطبَّق من المخزن');

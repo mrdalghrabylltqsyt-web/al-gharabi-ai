@@ -525,6 +525,7 @@ import {
 import { getOwnerEmailConfig, sendOwnerOtpEmail, sanitizeProviderMessage } from "./engine/notifications/owner-email";
 import {
   createStorageAdapter,
+  isPooledPostgresEndpoint,
   isEphemeralHost,
   STORAGE_KEY_STATE,
   STORAGE_KEY_USAGE,
@@ -13738,7 +13739,7 @@ app.get("/api/readiness", (_req, res) => {
     version: PROJECT_VERSION,
     statePersistence: appReady,
     applicationReady: appReady,
-    persistence: (() => { const s = storageStatus(); return { backend: s.backend, durable: s.durable, mode: s.durable ? "durable" : "ephemeral", healthy: s.healthy }; })(),
+    persistence: (() => { const s = storageStatus(); const pooled = isPooledPostgresEndpoint(String((storageAdapter as any).connectionString || process.env.DATABASE_URL || "")); return { backend: s.backend, durable: s.durable, mode: s.durable ? "durable" : "ephemeral", healthy: s.healthy, pooledEndpoint: s.backend === "postgres" ? pooled : null, ...(s.backend === "postgres" && !pooled ? { recommendation: "استخدم نقطة اتصال Neon المجمّعة (pooled) لتقليل ضغط الاتصالات أثناء النشر (rolling deploy)." } : {}) }; })(),
     auth: {
       ownerEmailConfigured: Boolean(OWNER_EMAIL),
       sessionsDurable: SESSIONS_DURABLE,
