@@ -501,6 +501,20 @@ import {
   platformCapabilities,
 } from "./engine/social/centralBrain";
 import {
+  generateConversationalReply,
+  buildClarificationPrompt,
+  resolveGroundingProduct,
+  type DialogueContext,
+  type DialogueTurn,
+} from "./engine/social/replyDialogue";
+import {
+  conversationKey,
+  createConversationState,
+  appendMessage,
+  priorBusinessReplies,
+  type ConversationState,
+} from "./engine/social/conversationState";
+import {
   analyzeBusinessClaims,
   analyzeRequestClaims,
   buildBusinessFacts,
@@ -904,6 +918,7 @@ const WORKSPACE_MAX_PROVIDER_EVENTS = 10000;
 const WORKSPACE_MAX_SOCIAL_COMMENTS = 10000;
 const WORKSPACE_MAX_SOCIAL_REPLIES = 5000;
 const WORKSPACE_MAX_PUBLISH_RECORDS = 5000;
+const WORKSPACE_MAX_SOCIAL_CONVERSATIONS = 500;
 
 // Migration guard: a post is never considered externally published merely because
 // an old/local record said so. Until a real provider execution receipt exists,
@@ -7104,6 +7119,89 @@ function resolveProductForPost(postExternalId: string | null): any | null {
   return (workspace.products || []).find((p: any) => String(p.id) === id) || null;
 }
 
+// ---------------------------------------------------------------------------
+// حلقة الحوار/التوضيح + تأريض الكتالوج لردود Meta (Facebook/Instagram).
+// مصدر واحد للسياق (conversationState) ومحرّك الردود الحتمي (replyDialogue) —
+// بلا نظام ثانٍ، وبلا حصة AI في المسار الحتمي. لا يمنح أي سلطة تنفيذ.
+// ---------------------------------------------------------------------------
+
+/** نافذة محادثة قصيرة المدى لنفس العميل/الخيط (منصة + موضوع) — قابلة للحفظ. */
+function metaConversationStateList(): ConversationState[] {
+  if (!Array.isArray((workspace as any).socialConversations)) (workspace as any).socialConversations = [];
+  return (workspace as any).socialConversations as ConversationState[];
+}
+
+/**
+ * يسجّل دوراً (عميل/معرض) في محادثة الخيط المحدّدة ويُعيد الحالة المحدّثة.
+ * السياق مُقيَّد بمنصة + موضوع (منشور/مرسل) فلا تتسرّب رسائل محادثة إلى أخرى.
+ */
+function recordMetaConversationTurn(input: {
+  platform: string; subjectId: string; role: 'customer' | 'business'; text: string; atIso: string; externalId?: string;
+}): ConversationState {
+  const list = metaConversationStateList();
+  const conversationId = conversationKey(input.platform, input.subjectId);
+  let convo = list.find((c) => c.conversationId === conversationId) || null;
+  if (!convo) convo = createConversationState({ conversationId, platform: input.platform, subjectId: input.subjectId, nowIso: input.atIso });
+  const updated = appendMessage(convo, { role: input.role, text: input.text, at: input.atIso, externalId: input.externalId });
+  const idx = list.findIndex((c) => c.conversationId === conversationId);
+  if (idx >= 0) list[idx] = updated; else list.unshift(updated);
+  if (list.length > WORKSPACE_MAX_SOCIAL_CONVERSATIONS) list.length = WORKSPACE_MAX_SOCIAL_CONVERSATIONS;
+  return updated;
+}
+
+/** يقرأ نافذة الحوار القصيرة المدى لنفس الخيط (بلا خلط محادثات). */
+function watcherDialogueContext(platform: string, subjectId: string, subjectTitle: string | null): DialogueContext {
+  const conversationId = conversationKey(platform, subjectId);
+  const convo = metaConversationStateList().find((c) => c.conversationId === conversationId) || null;
+  const turns: DialogueTurn[] = convo ? convo.messages.map((m) => ({ role: m.role, text: m.text })) : [];
+  const clarificationRounds = turns.filter((t) => t.role === 'business' && /نقدر نساعدك|خبرني|وضّحلي|أي موديل|تقصد/.test(t.text)).length;
+  return {
+    turns,
+    clarificationRounds,
+    previousReplies: convo ? priorBusinessReplies(convo) : [],
+    subjectTitle: subjectTitle || undefined,
+  };
+}
+
+/**
+ * توليد نص الرد الحواري لتعليق/رسالة Meta — مسار واحد للجميع:
+ *  1) حقائق منتج موثّقة (سعر/قسط من الكتالوج) ⇒ محرّك الردود الحتمي (صفر حصة).
+ *  2) نية غامضة/ناقصة ⇒ سؤال توضيح. والمسار الذكي (Gemini عبر aiEngine) يُجرَّب
+ *     **داخل جدار الحماية** لجعل السؤال أكثر طبيعية، ثم يمرّ حارس سلامة المحتوى،
+ *     وإلا السقوط الحتمي الآمن (لا رد مُسقَط، لا اختراع).
+ *  3) نية واضحة ⇒ الرد الحتمي المباشر.
+ * لا يمنح هذا الدالة أي سلطة تنفيذ؛ الإرسال يبقى محكوماً بالمنفّذ المركزي.
+ */
+async function generateWatcherReply(input: {
+  platform: string; commentText: string; subjectId: string; subjectTitle: string | null; product: any | null; cls: ReturnType<typeof classifyComment>;
+}): Promise<{ text: string; clarify: boolean; escalate: boolean; strategy: string; source: 'deterministic' | 'ai' | 'clarify_ai' | 'clarify_deterministic' }> {
+  const grounding = resolveGroundingProduct({ commentText: input.commentText, postProduct: input.product, products: (workspace.products || []) as any[] });
+  const facts = replyFactsForProduct(grounding);
+  const ctx = watcherDialogueContext(input.platform, input.subjectId, input.subjectTitle);
+  const deterministic = generateConversationalReply(input.cls, facts, ctx);
+  if (!deterministic.clarifying) {
+    return { text: deterministic.text, clarify: false, escalate: deterministic.escalate, strategy: deterministic.strategy, source: 'deterministic' };
+  }
+  // سؤال توضيح: المسار الذكي داخل الجدار (cache/dedup/quota/breaker) يجعل الصياغة
+  // أكثر طبيعية؛ أي فشل/نفاد حصة ⇒ السقوط للسؤال الحتمي الآمن (لا يُسقَط الرد).
+  try {
+    const prompt = buildClarificationPrompt(input.cls, facts, ctx);
+    const cacheKey = `watcher:clarify:${input.platform}:${JSON.stringify({ n: input.cls.normalized, r: ctx.clarificationRounds ?? 0, p: grounding?.id || null })}`;
+    const res = await aiEngine.run({
+      cacheKey, prompt,
+      deterministicFallback: () => deterministic.text,
+      meta: { platform: input.platform, operation: 'meta_clarification' },
+    });
+    const factsBusiness = buildFactsForProduct(grounding, Number(grounding?.downPaymentPercent || 0), Number(grounding?.durationMonths || 0));
+    const safe = ensureSafeBusinessText(res.text, factsBusiness, () => deterministic.text);
+    const text = (safe.text || '').trim() || deterministic.text;
+    const usedAi = res.usedProvider && !safe.replaced;
+    return { text, clarify: true, escalate: false, strategy: deterministic.strategy, source: usedAi ? 'clarify_ai' : 'clarify_deterministic' };
+  } catch {
+    return { text: deterministic.text, clarify: true, escalate: false, strategy: deterministic.strategy, source: 'clarify_deterministic' };
+  }
+}
+
 /** هل الرد على هذه المنصة جاهز فعلاً الآن (اتصال موثق + موصل حقيقي)؟ */
 function metaReplyReady(platform: MetaPlatform): { ready: boolean; code?: string; reason?: string } {
   const conn: any = platformConnections.get(platform);
@@ -7220,18 +7318,30 @@ async function runMetaWatcherCycle(trigger: string): Promise<{ ok: boolean; trig
           if (decision.action === "escalate") escalated += 1; else skipped += 1;
           metaPollingState.processed.unshift(baseEntry);
         } else {
-          // رد حقيقي عبر المنفّذ المركزي (كل البوابات سارية). نص الرد مشتقّ من
-          // بيانات المنتج الموثّقة عندها (سعر/قسط مشتقّ)، وإلا فالقالب العراقي
-          // الحتمي (ترحيب/إحالة). لا يُذكر سعر/قسط غير مسجّل.
-          const replyText = priceFactsVerified && priceReply.replyText ? priceReply.replyText : watcherIraqiReply(text);
+          // رد حقيقي عبر المنفّذ المركزي (كل البوابات سارية). النص يأتي من حلقة
+          // الحوار: حقائق منتج موثّقة (سعر/قسط من الكتالوج) ⇒ رد مباشر؛ نية غامضة
+          // ⇒ سؤال توضيح؛ لا اختراع معلومة. والمسار الذكي داخل جدار الحماية فقط.
+          const convoSubjectId = String(c.postId || c.mediaId || "thread");
+          const gen = await generateWatcherReply({
+            platform, commentText: text, subjectId: convoSubjectId,
+            subjectTitle: null, product: productRes, cls,
+          });
+          const replyText = gen.text || watcherIraqiReply(text);
+          // نسجّل دور العميل ثم دورنا في نفس الخيط، فيُربط أي رد متابعة لاحق
+          // بسياق المحادثة (رسالته + سؤالنا + جوابه) لا كتعليق جديد منفصل.
+          const atIso = new Date().toISOString();
+          recordMetaConversationTurn({ platform, subjectId: convoSubjectId, role: "customer", text, atIso, externalId });
           // يُمرّر معرّف المنتج للمنفّذ المركزي كي يمرّ حارس المطالبات على نفس
           // الحقائق (السعر + القسط المشتقّ)، فلا يُحجب رد مشروع عدده مسجّل.
           const res = await executeMetaCommentReply(platform, { externalId, text: replyText, commentText: text, productId: productRes?.id }, "watcher");
           const delivered = Boolean(res.body?.delivered && res.body?.providerReplyId);
           if (delivered) {
+            recordMetaConversationTurn({ platform, subjectId: convoSubjectId, role: "business", text: replyText, atIso: new Date().toISOString() });
             replied += 1;
             baseEntry.stage = "REPLIED"; baseEntry.replyText = replyText; baseEntry.externalReplyId = String(res.body.providerReplyId);
-            baseEntry.reason = `أُرسل الرد الحقيقي وردّ ${platform} بمعرّف رد.`;
+            baseEntry.reason = gen.clarify
+              ? `أُرسل سؤال توضيح فعلياً وردّ ${platform} بمعرّف رد.`
+              : `أُرسل الرد الحقيقي وردّ ${platform} بمعرّف رد.`;
           } else {
             failed += 1;
             baseEntry.stage = "FAILED";
@@ -7304,14 +7414,25 @@ async function runMetaWatcherCycle(trigger: string): Promise<{ ok: boolean; trig
           metaPollingState.processed.unshift(baseEntry);
         } else {
           // رد حقيقي على الرسالة عبر المنفّذ المركزي (كل البوابات سارية الآن، بما
-          // فيها حارس سلامة المحتوى)، ونص مشتقّ من بيانات المنتج الموثّقة عندها.
-          const replyText = priceFactsVerified && priceReply.replyText ? priceReply.replyText : watcherIraqiReply(text);
+          // فيها حارس سلامة المحتوى). النص من حلقة الحوار: حقائق منتج موثّقة ⇒ رد
+          // مباشر، نية غامضة ⇒ سؤال توضيح؛ والمسار الذكي داخل جدار الحماية فقط.
+          const convoSubjectId = `dm:${recipientId}`;
+          const gen = await generateWatcherReply({
+            platform, commentText: text, subjectId: convoSubjectId,
+            subjectTitle: null, product: productRes, cls,
+          });
+          const replyText = gen.text || watcherIraqiReply(text);
+          const atIso = new Date().toISOString();
+          recordMetaConversationTurn({ platform, subjectId: convoSubjectId, role: "customer", text, atIso, externalId });
           const res = await executeMetaMessageReply(platform, { externalId, recipientId, text: replyText, commentText: text, productId: productRes?.id }, "watcher");
           const delivered = Boolean(res.body?.delivered && res.body?.providerReplyId);
           if (delivered) {
+            recordMetaConversationTurn({ platform, subjectId: convoSubjectId, role: "business", text: replyText, atIso: new Date().toISOString() });
             replied += 1;
             baseEntry.stage = "REPLIED"; baseEntry.replyText = replyText; baseEntry.externalReplyId = String(res.body.providerReplyId);
-            baseEntry.reason = `أُرسلت الرسالة فعلياً وردّ ${platform} بمعرّف رسالة.`;
+            baseEntry.reason = gen.clarify
+              ? `أُرسل سؤال توضيح فعلياً وردّ ${platform} بمعرّف رسالة.`
+              : `أُرسلت الرسالة فعلياً وردّ ${platform} بمعرّف رسالة.`;
           } else {
             failed += 1;
             baseEntry.stage = "FAILED";
