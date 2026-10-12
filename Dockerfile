@@ -38,9 +38,14 @@ RUN mkdir -p /data && chown -R node:node /data
 USER node
 # PORT يحقنه المستضيف؛ الافتراضي 3000 للمطابقة مع server.ts.
 ENV PORT=3000
-# حدّ كومة V8 أقل من سقف الحاوية 256MB (Back4App/Render Free) لتفادي OOM قاتل
-# بدل نمو غير محدود. 192MB يترك هامشاً للـRSS والـbuffers خارج الكومة.
-ENV NODE_OPTIONS=--max-old-space-size=192
+# حدّ كومة V8 أقل من سقف الحاوية الفعلي على Render Free (512MB، مؤكَّد عبر
+# Render Metrics API — لا 256MB كما افتُرض سابقاً خطأً). السقف السابق 192MB كان
+# يُستهلَك فعلياً خلال نحو ساعة من التشغيل (مؤكَّد من سجلات الإنتاج: رسالة
+# "JavaScript heap out of memory" متكررة كل ساعة على كل نسخة، تسبق مباشرة كل
+# انهيار server_failed برمز 139 — وهو ليس segfault حقيقياً بل انهيار V8 عند
+# امتلاء الكومة). 400MB يترك هامشاً ~112MB للـRSS والـbuffers خارج الكومة تحت
+# سقف الحاوية 512MB، وما زال أقل من السقف الفعلي فلا يُسقط OOM killer للحاوية.
+ENV NODE_OPTIONS=--max-old-space-size=400
 EXPOSE 3000
 # يخدم الخادم /api/health للفحص الصحي.
 HEALTHCHECK --interval=30s --timeout=10s --start-period=20s --retries=3 \
