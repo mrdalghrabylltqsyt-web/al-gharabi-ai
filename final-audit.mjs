@@ -2521,8 +2521,8 @@ add('sec03-csp-production-only',
 add('sec04-runtime-maps-bounded',
   server.includes('for (const [state, pending] of pendingOAuth) if (pending.expiresAt < now)') &&
   server.includes('for (const [platform, entry] of oauthStartPreflightCache)') &&
-  server.includes('for (const [key, list] of youtubeOperationWindows)'),
-  'SEC-04: القوائم غير المحدودة (OAuth/preflight/YouTube) مقيّدة في حلقة التنظيف');
+  server.includes('for (const [key, list] of operationWindows)'),
+  'SEC-04: القوائم غير المحدودة (OAuth/preflight/معدّل YouTube+Meta) مقيّدة في حلقة التنظيف');
 add('sec04-revocation-lists-untouched',
   !/for \(const \[[^\]]+\] of userRevocationEpoch\)[^\n]*delete/.test(server),
   'SEC-04: لا حذف عددي لقوائم الإبطال الأمنية (revokedSessions/userRevocations)');

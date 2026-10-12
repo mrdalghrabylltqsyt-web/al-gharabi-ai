@@ -21,6 +21,7 @@ import {
   type YouTubeWatcherControls,
   type WatcherProcessedEntry,
   type CommentDecision,
+  type CentralActionDecision,
   normalizeWatcherControls,
   watcherGate,
   decideCommentAction,
@@ -131,6 +132,26 @@ export function resolveMetaReplyExecution(input: {
 }
 
 export { isDeferredDecision, releaseDeferredEntries };
+
+/**
+ * قرار التنفيذ الفعلي لحدث Meta من قرار العقل المركزي الحقيقي + تمكين المالك.
+ * يُحلّ عند التنفيذ (لا في القرار المُخزَّن) فلا يثبّت تفويضاً قديماً:
+ *  - `ALLOWED_ACTION` => تنفيذ (مثال: مهمة موافَق عليها).
+ *  - `APPROVAL_REQUIRED` + تمكين المالك الصريح للرد الآلي => `ALLOWED_ACTION`
+ *    (التمكين هو الموافقة — نفس مبدأ تفويض YouTube، لكن لكل منصة تمكينها).
+ *  - `APPROVAL_REQUIRED` بلا تمكين => `NO_ACTION` (تأجيل غير نهائي، لا تصعيد:
+ *    حالة إعداد تُحرَّر عند التمكين، لا فشل).
+ *  - `NO_ACTION` => يبقى (الأتمتة معطّلة؛ قرار العقل نفسه بلا إجراء).
+ *  - أي حالة أخرى (بلا قرار / تصعيد / فشل) => `FAILED_SAFE` (لا إرسال).
+ * منطق صافٍ: لا يمنح أي تفويض خارجي — التنفيذ يبقى محكوماً ببوابات
+ * `executeMetaCommentReply`/`executeMetaMessageReply` (سلامة محتوى + منع تكرار + ...).
+ */
+export function metaExecutionDecisionFromCentral(central: CentralActionDecision | null, ownerAutoReplyEnabled: boolean): CentralActionDecision {
+  if (central === 'ALLOWED_ACTION') return 'ALLOWED_ACTION';
+  if (central === 'NO_ACTION') return 'NO_ACTION';
+  if (central === 'APPROVAL_REQUIRED') return ownerAutoReplyEnabled ? 'ALLOWED_ACTION' : 'NO_ACTION';
+  return 'FAILED_SAFE';
+}
 
 /** ملخص عرض التحكم (بلا أي سرّ) — مطابق لبنية عرض مراقب YouTube. */
 export function metaPollingControlsView(controls: MetaWatcherControls) {

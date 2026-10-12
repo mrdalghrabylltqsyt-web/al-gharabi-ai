@@ -103,6 +103,7 @@ import { PLATFORM_SPECS, platformSupports, hasRealConnector, credentialModeOf, i
 import { toUnifiedSocialEvent, buildIngestionEngine, buildIraqiPersonaPrompt, buildIngestionMatrix, type ShowroomFacts, type UnifiedSocialEvent } from "./engine/social/ingestionEngine";
 import { buildYouTubeSalesCorrelation } from "./engine/social/youtubeSalesCorrelation";
 import { sanitizePublicHealthPayload, findForbiddenPublicKeys, findDisallowedWatcherPublicKeys, sanitizePublicErrorMessage } from "./engine/social/healthPrivacy";
+import { reserveOperationRate } from "./engine/social/operationRateLimiter";
 import {
   validatePlatformText,
   shortenToPlatformLimit,
@@ -383,6 +384,7 @@ import {
   resolveMetaReplyExecution,
   isDeferredDecision as isMetaDeferredDecision,
   releaseDeferredEntries as releaseMetaDeferredEntries,
+  metaExecutionDecisionFromCentral,
   type MetaPlatform,
   type MetaPollingState,
 } from "./engine/social/metaWatcher";
@@ -3755,18 +3757,22 @@ function buildContentBriefForBrain(productId?: string | null, productName?: stri
   };
 }
 /** حارس معدّل العمليات الخارجية لـYouTube (يمنع الإغراق؛ pending/retryable عند الحد). */
-const youtubeOperationWindows = new Map<string, number[]>();
 function youtubeRateLimit(kind: string): { allowed: boolean; retryAfterMs: number; limit: number } {
+  return operationRateLimit("youtube", kind);
+}
+
+/**
+ * حارس معدّل موحّد للعمليات الخارجية (YouTube + ردود/رسائل Meta) — مصدر واحد.
+ * النافذة داخل العملية (`Map`)، والحجز ذرّي متزامن (بلا `await` بين الفحص والإضافة)
+ * فيمنع تجاوز الحد عند تزامن العمليات ضمن نفس العملية — نفس ضمانة `replyInFlightLock`.
+ * الحد الافتراضي 20 عملية/دقيقة، وقابل للضبط بحدود آمنة عبر متغيّرات البيئة.
+ */
+const operationWindows = new Map<string, number[]>();
+function operationRateLimit(scope: string, kind: string): { allowed: boolean; retryAfterMs: number; limit: number } {
   const limit = Math.max(1, Number(process.env.YOUTUBE_OP_RATE_LIMIT || 20));
   const windowMs = Math.max(1000, Number(process.env.YOUTUBE_OP_RATE_WINDOW_MS || 60_000));
-  const key = `youtube:${kind}`;
-  const now = Date.now();
-  const decision = checkOperationRateLimit({ timestamps: youtubeOperationWindows.get(key) || [], now, limit, windowMs });
-  if (decision.allowed) {
-    const list = (youtubeOperationWindows.get(key) || []).filter((t) => now - t < windowMs);
-    list.push(now);
-    youtubeOperationWindows.set(key, list);
-  }
+  // الحجز الذرّي داخل `reserveOperationRate` (نفس النواة المختبَرة) يمنع التجاوز عند التزامن.
+  const decision = reserveOperationRate(operationWindows, `${scope}:${kind}`, Date.now(), limit, windowMs);
   return { allowed: decision.allowed, retryAfterMs: decision.retryAfterMs, limit };
 }
 /** آخر فئة خطأ من مزود Google (بلا أي قيمة) — تُغذّي الحالة الصادقة. */
@@ -4404,6 +4410,10 @@ async function executeMetaCommentReply(
     if (!conn || conn.status !== 'connected' || conn.providerVerified !== true) {
       return { status: 409, body: { success: false, error: `${platform === 'facebook' ? 'Facebook' : 'Instagram'} غير متصل باتصال موثق؛ لا يمكن إرسال أي رد خارجي.` } };
     }
+    // حارس معدّل موحّد (نفس مبدأ YouTube): يمنع إغراق الردود الخارجية. الحجز ذرّي
+    // متزامن فلا يتجاوز الحد عند تزامن العمليات (دورة/يدوي/مستدعيان معاً).
+    const rl = operationRateLimit(`${platform}:reply`, 'comment');
+    if (!rl.allowed) return { status: 429, body: { success: false, code: 'RATE_LIMITED', error: 'تم بلوغ حد معدّل الردود؛ العملية قابلة لإعادة المحاولة لاحقاً بلا إنشاء نسخة مكررة.', retryAfterMs: rl.retryAfterMs, limit: rl.limit } };
     const comment = (workspace as any).socialComments.find((c: any) => c.platform === platform && c.externalId === externalId);
     if (!comment) return { status: 404, body: { success: false, error: 'لا يوجد تعليق وارد بهذا المعرّف؛ لا إرسال بلا تعليق حقيقي.' } };
 
@@ -4480,6 +4490,9 @@ async function executeMetaMessageReply(
     if (!conn || conn.status !== 'connected' || conn.providerVerified !== true) {
       return { status: 409, body: { success: false, error: `${platform === 'facebook' ? 'Facebook' : 'Instagram'} غير متصل باتصال موثق؛ لا يمكن إرسال أي رسالة خارجية.` } };
     }
+    // حارس معدّل موحّد للرسائل (منفصل عن عدّاد التعليقات): يمنع إغراق رسائل Messenger/DM.
+    const rl = operationRateLimit(`${platform}:reply`, 'message');
+    if (!rl.allowed) return { status: 429, body: { success: false, code: 'RATE_LIMITED', error: 'تم بلوغ حد معدّل الرسائل؛ العملية قابلة لإعادة المحاولة لاحقاً بلا إنشاء نسخة مكررة.', retryAfterMs: rl.retryAfterMs, limit: rl.limit } };
     const comment = (workspace as any).socialComments.find((c: any) => c.platform === platform && c.externalId === externalId && c.kind === 'message');
     const targetRecipient = recipientId || String(comment?.replyTarget?.recipientId || '');
     if (!comment && !targetRecipient) return { status: 404, body: { success: false, error: `لا توجد رسالة ${platform === 'facebook' ? 'Facebook' : 'Instagram'} واردة بهذا المعرّف؛ لا إرسال بلا رسالة حقيقية.` } };
@@ -7166,6 +7179,20 @@ async function runMetaWatcherCycle(trigger: string): Promise<{ ok: boolean; trig
         const priceFactsVerified = priceReply.verified;
         const baseReason = escalationReasonFor({ intent: cls.intent, isSpam: cls.isSpam, requiresHumanReview: cls.requiresHumanReview, topic: (cls as any).topic ?? null });
         const preReason = (priceFactsVerified && baseReason === 'price_unverified') ? null : baseReason;
+        // سلطة القرار الوحيدة: جلسة فريق حقيقية لهذا الحدث => قرار العقل المركزي
+        // (نفس نمط YouTube). المراقب لا يُصدر قراراً بنفسه ولا يخترع: غياب قرار
+        // مركزي => `FAILED_SAFE` (لا رد). تمكين المالك الصريح للرد الآلي هو الموافقة
+        // على الإجراء الخارجي لـMeta (لا يُعمَّم تفويض YouTube على أي منصة أخرى).
+        try {
+          await runTeamSessionNow(
+            "youtube_event",
+            `تحليل تعليق ${platform === 'facebook' ? 'Facebook' : 'Instagram'} جديد والبتّ في الرد عليه من الحقائق المسجّلة (بلا اختراع)`,
+            platform,
+            `comment:${externalId}`,
+            { externalId, commentText: text, objective: "البتّ في رد آمن على تعليق Meta من الحقائق المسجّلة", conversationId: `${platform}::${String(c.postId || c.mediaId || 'thread')}`, escalationReason: preReason, priceFactsVerified },
+          );
+        } catch { /* جلسة الفريق لا تُسقط دورة المراقبة */ }
+        const centralDecision = centralActionDecisionForEvent(`comment:${externalId}`);
         const advisory = decideMetaCommentAction({
           intent: cls.intent, requiresHumanReview: cls.requiresHumanReview, isSpam: cls.isSpam,
           isSelfAuthored: selfAuthored, alreadyReplied, controls,
@@ -7173,7 +7200,7 @@ async function runMetaWatcherCycle(trigger: string): Promise<{ ok: boolean; trig
         const replyGate = metaWatcherGate(controls, "reply");
         const rr = metaReplyReady(platform);
         const decision = resolveMetaReplyExecution({
-          centralDecision: "ALLOWED_ACTION", advisory, automationAllowed: replyGate.allowed,
+          centralDecision: metaExecutionDecisionFromCentral(centralDecision, replyGate.allowed), advisory, automationAllowed: replyGate.allowed,
           replyReady: rr.ready, belongsToChannel: true, isPraise: isSafeForAutoReply(cls.intent),
           humanReviewMode: Boolean(controls.humanReviewMode),
           centralEscalationReason: preReason,
@@ -7237,6 +7264,18 @@ async function runMetaWatcherCycle(trigger: string): Promise<{ ok: boolean; trig
         const priceFactsVerified = priceReply.verified;
         const baseReason = escalationReasonFor({ intent: cls.intent, isSpam: cls.isSpam, requiresHumanReview: cls.requiresHumanReview, topic: (cls as any).topic ?? null });
         const preReason = (priceFactsVerified && baseReason === 'price_unverified') ? null : baseReason;
+        // نفس سلطة القرار الوحيدة للرسائل: جلسة فريق حقيقية => قرار العقل المركزي.
+        // غياب قرار مركزي => `FAILED_SAFE` (لا إرسال). تمكين الرد الآلي هو الموافقة.
+        try {
+          await runTeamSessionNow(
+            "youtube_event",
+            `تحليل رسالة ${platform === 'facebook' ? 'Facebook' : 'Instagram'} جديدة والبتّ في الرد عليها من الحقائق المسجّلة (بلا اختراع)`,
+            platform,
+            `comment:${externalId}`,
+            { externalId, commentText: text, objective: "البتّ في رد آمن على رسالة Meta من الحقائق المسجّلة", conversationId: `${platform}::dm`, escalationReason: preReason, priceFactsVerified },
+          );
+        } catch { /* جلسة الفريق لا تُسقط دورة المراقبة */ }
+        const centralDecision = centralActionDecisionForEvent(`comment:${externalId}`);
         const advisory = decideMetaCommentAction({
           intent: cls.intent, requiresHumanReview: cls.requiresHumanReview, isSpam: cls.isSpam,
           isSelfAuthored: selfAuthored, alreadyReplied, controls,
@@ -7244,7 +7283,7 @@ async function runMetaWatcherCycle(trigger: string): Promise<{ ok: boolean; trig
         const replyGate = metaWatcherGate(controls, "reply");
         const rr = metaReplyReady(platform);
         const decision = resolveMetaReplyExecution({
-          centralDecision: "ALLOWED_ACTION", advisory, automationAllowed: replyGate.allowed,
+          centralDecision: metaExecutionDecisionFromCentral(centralDecision, replyGate.allowed), advisory, automationAllowed: replyGate.allowed,
           replyReady: rr.ready, belongsToChannel: true, isPraise: isSafeForAutoReply(cls.intent),
           humanReviewMode: Boolean(controls.humanReviewMode),
           centralEscalationReason: preReason,
@@ -13176,11 +13215,12 @@ function cleanupRuntimeState() {
   for (const [state, pending] of pendingOAuth) if (pending.expiresAt < now) pendingOAuth.delete(state);
   for (const [platform, entry] of oauthStartPreflightCache) if (now - entry.at >= OAUTH_PREFLIGHT_TTL_MS) oauthStartPreflightCache.delete(platform);
   for (const [platform, entry] of lastOAuthPreflight) if (now - entry.at >= OAUTH_PREFLIGHT_TTL_MS) lastOAuthPreflight.delete(platform);
-  for (const [key, list] of youtubeOperationWindows) {
+  // نافذة المعدّل المشتركة (YouTube + ردود/رسائل Meta): تُنقّى بالـTTL فلا تنمو بلا حد.
+  for (const [key, list] of operationWindows) {
     const windowMs = Math.max(1000, Number(process.env.YOUTUBE_OP_RATE_WINDOW_MS || 60_000));
     const live = list.filter((t) => now - t < windowMs);
-    if (live.length) youtubeOperationWindows.set(key, live);
-    else youtubeOperationWindows.delete(key);
+    if (live.length) operationWindows.set(key, live);
+    else operationWindows.delete(key);
   }
   aiEngine.pruneCache();
 }

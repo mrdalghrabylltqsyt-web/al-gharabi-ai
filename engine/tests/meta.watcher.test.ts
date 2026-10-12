@@ -28,7 +28,9 @@ import {
   isDeferredDecision,
   releaseDeferredEntries,
   metaPollingPublicBlock,
+  metaExecutionDecisionFromCentral,
 } from '../social/metaWatcher';
+import { reserveOperationRate } from '../social/operationRateLimiter';
 import { createFacebookMock, startFacebookMockServer } from './helpers/facebookMock';
 import { parseFacebookWebhook } from '../social/facebook';
 import { signSession } from '../auth/sessions';
@@ -57,14 +59,14 @@ const secretBuffer = createHash('sha256').update(`gharabi-session:${SESSION_SECR
 const ownerUser = { id: 'owner', name: 'مالك النظام', email: 'owner@example.invalid', role: 'owner', roleTitleArabic: 'مالك النظام', avatar: '', active: true, createdAt: new Date().toISOString() };
 const staffUser = { id: 'staff-1', name: 'موظف اختبار', email: 'staff@example.invalid', role: 'staff', roleTitleArabic: 'الموظف', avatar: '', active: true, createdAt: new Date().toISOString() };
 
-function startApp(fbBase: string, extraEnv: Record<string, string> = {}): { proc: ChildProcess; log: () => string } {
+function startApp(fbBase: string, extraEnv: Record<string, string> = {}, stateDirOverride: string = stateDir): { proc: ChildProcess; log: () => string } {
   let log = '';
   const env: Record<string, string> = {
     ...(process.env as Record<string, string>),
     PORT: String(APP_PORT),
     NODE_ENV: 'production',
     APP_URL: BASE,
-    STATE_DIR: stateDir,
+    STATE_DIR: stateDirOverride,
     GHARABI_PREVIEW_TOKEN: PREVIEW_TOKEN,
     SESSION_SECRET,
     FACEBOOK_GRAPH_API_BASE: fbBase,
@@ -174,6 +176,30 @@ async function unitTests(): Promise<void> {
   check('لا تنفيذ إن لم تسمح بوابة الأتمتة', execBlocked.action !== 'reply');
   const execOk = resolveMetaReplyExecution({ centralDecision: 'ALLOWED_ACTION', advisory: praiseOn, automationAllowed: true, replyReady: true, belongsToChannel: true, isPraise: true, humanReviewMode: false, centralEscalationReason: null });
   check('تنفيذ الرد عند اكتمال البوابات', execOk.action === 'reply');
+
+  // 6ب) حلّ قرار التنفيذ من قرار العقل المركزي الحقيقي (Gap 1): لا hardcode.
+  check('ALLOWED_ACTION => تنفيذ', metaExecutionDecisionFromCentral('ALLOWED_ACTION', false) === 'ALLOWED_ACTION');
+  check('APPROVAL_REQUIRED + تمكين المالك => تنفيذ (التمكين هو الموافقة)', metaExecutionDecisionFromCentral('APPROVAL_REQUIRED', true) === 'ALLOWED_ACTION');
+  check('APPROVAL_REQUIRED بلا تمكين => NO_ACTION (تأجيل لا تصعيد)', metaExecutionDecisionFromCentral('APPROVAL_REQUIRED', false) === 'NO_ACTION');
+  check('NO_ACTION يبقى NO_ACTION', metaExecutionDecisionFromCentral('NO_ACTION', true) === 'NO_ACTION');
+  check('HUMAN_ESCALATION => FAILED_SAFE (لا رد)', metaExecutionDecisionFromCentral('HUMAN_ESCALATION', true) === 'FAILED_SAFE');
+  check('بلا قرار مركزي => FAILED_SAFE (لا رد)', metaExecutionDecisionFromCentral(null, true) === 'FAILED_SAFE');
+
+  // 6ج) حارس المعدّل (Gap 2): الحجز ذرّي => لا تجاوز للحد عند تزامن العمليات،
+  //     ونطاق كل (منصة:نوع) مستقل (تعليق ≠ رسالة)، والنافذة تُصفّر بعد انقضائها.
+  group('6ج) وحدة: حارس المعدّل — حجز ذرّي (لا تجاوز عند التزامن)');
+  const win = new Map<string, number[]>();
+  const t0 = 1_700_000_000_000;
+  let allowed = 0, denied = 0;
+  for (let i = 0; i < 5; i += 1) { if (reserveOperationRate(win, 'facebook:comment', t0, 3, 60_000).allowed) allowed += 1; else denied += 1; }
+  check('5 محاولات متزامنة بحدّ 3 => 3 مسموحة فقط', allowed === 3 && denied === 2, `allowed=${allowed} denied=${denied}`);
+  check('لا تجاوز: العدد المحجوز = الحد بالضبط', (win.get('facebook:comment') || []).length === 3);
+  check('المحاولة السادسة مرفوضة (retryAfterMs>0)', !reserveOperationRate(win, 'facebook:comment', t0, 3, 60_000).allowed);
+  // نطاق مستقل: عدّاد الرسائل لا يتأثّر بعدّاد التعليقات.
+  check('نوع الرسالة مستقل عن التعليق (لا استنزاف متقاطع)', reserveOperationRate(win, 'facebook:message', t0, 3, 60_000).allowed === true);
+  // انقضاء النافذة => تُصفّر ويُسمح من جديد.
+  check('بعد انقضاء النافذة يُسمح من جديد', reserveOperationRate(win, 'facebook:comment', t0 + 60_001, 3, 60_000).allowed === true);
+  check('المصدر الواحد: النواة تُصدَّر من وحدة مستقلة', typeof reserveOperationRate === 'function');
 }
 
 async function integrationTests(): Promise<void> {
@@ -310,9 +336,46 @@ async function integrationTests(): Promise<void> {
   }
 }
 
+/**
+ * اختبار مركّز مستقل: يثبت أن حارس المعدّل يمنع الإرسال الزائد فعلاً على مستوى
+ * المنفّذ — بحدّ = عملية خارجية واحدة، يُرسل رد واحد فقط ويُحجب الباقي بـ429 بلا
+ * إرسال. خادم وحالة معزولان (لا يمسّان اختبار الانحدار أعلاه).
+ */
+async function rateLimitIntegrationTest(): Promise<void> {
+  const rlStateDir = mkdtempSync(join(tmpdir(), 'gharabi-meta-ratelimit-'));
+  const rlMock = await startFacebookMockServer(FB_PORT, createFacebookMock({
+    feedPosts: [{ id: 'RLPOST', comments: [
+      { id: 'RL_C1', message: 'عاشت إيدكم على الخدمة', from: { id: 'R1', name: 'عميل١' }, created_time: '2026-01-01T00:00:00+0000' },
+      { id: 'RL_C2', message: 'خدمة ممتازة شكراً لكم', from: { id: 'R2', name: 'عميل٢' }, created_time: '2026-01-01T00:01:00+0000' },
+    ] }],
+  }));
+  const app = startApp(rlMock.base, { YOUTUBE_OP_RATE_LIMIT: '1' }, rlStateDir);
+  try {
+    check('خادم اختبار المعدّل يقلع', await waitForHealth(), app.log().slice(0, 300));
+    const auth = { 'Content-Type': 'application/json', ...(await login()) };
+    const startRes = await (await fetch(`${BASE}/api/platforms/facebook/oauth/start`, { headers: auth })).json();
+    const st = new URL(startRes.authorizationUrl).searchParams.get('state') || '';
+    await fetch(`${BASE}/api/platforms/facebook/oauth/callback?state=${encodeURIComponent(st)}&code=TESTCODE`);
+    await fetch(`${BASE}/api/agent/meta/watcher/controls`, { method: 'POST', headers: auth, body: JSON.stringify({ autoReply: true }) });
+    group('14) تكامل: حدّ المعدّل يمنع الإرسال الزائد (لا over-send)');
+    await fetch(`${BASE}/api/agent/meta/watcher/poll`, { method: 'POST', headers: auth, body: '{}' });
+    check('أُرسل رد واحد فقط بالرغم من تعليقين (الحد=1)', rlMock.state.commentReplies.length === 1, `replies=${rlMock.state.commentReplies.length}`);
+    const w = await (await fetch(`${BASE}/api/agent/meta/watcher`, { headers: auth })).json();
+    const failedByRate = (w.watcher?.recent || []).find((r: any) => r.stage === 'FAILED' && /حد معدّل/.test(String(r.reason || '')));
+    const repliedCount = (w.watcher?.recent || []).filter((r: any) => r.stage === 'REPLIED').length;
+    check('التعليق الزائد حُجب بحدّ المعدّل (FAILED بسبب الحد، بلا إرسال)', Boolean(failedByRate), JSON.stringify((w.watcher?.recent || []).map((r: any) => [r.commentId, r.stage, r.reason])));
+    check('رد واحد فقط سُجِّل كمُسلَّم (الباقي محجوب)', repliedCount === 1 && rlMock.state.commentReplies.length === 1, `replied=${repliedCount} sent=${rlMock.state.commentReplies.length}`);
+  } finally {
+    await stop(app.proc);
+    await rlMock.stop();
+    rmSync(rlStateDir, { recursive: true, force: true });
+  }
+}
+
 async function main(): Promise<void> {
   await unitTests();
   await integrationTests();
+  await rateLimitIntegrationTest();
   console.log('\n' + '='.repeat(60));
   if (failures.length) {
     console.error(`FAILED: ${failures.length} — passed ${passed}`);
