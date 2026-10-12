@@ -44,7 +44,7 @@ npm install
 npm run dev            # tsx server.ts
 npm run lint           # tsc --noEmit
 npm run build          # vite build + esbuild server.ts -> dist/server.cjs
-npm run final-audit    # node final-audit.mjs (1549 فحصاً)
+npm run final-audit    # node final-audit.mjs (1556 فحصاً)
 npm test               # storage + engine + auth + ... + db + runtime
 ```
 - التشغيل الإنتاجي: `PORT=4517 NODE_ENV=production APP_URL=http://localhost:4517 node dist/server.cjs`
@@ -5717,4 +5717,33 @@ YouTube (المراقب/الطابور/التفويض)، Facebook/Instagram/TikT
 
 **لم يُمسّ:** Gemini/firewall، OAuth/الاعتمادات/الأسرار، DR، YouTube (المراقب/الطابور/التفويض)،
 TikTok/Telegram، ونموذج الجدولة. لا تدوير لأي مفتاح، ولا تغيير في بنية webhook القائمة.
+
+## حلقة الحوار/التوضيح لردود Meta (Facebook + Instagram) — دفعة 2026-10-04
+
+رفع ردود مراقب Meta من «قالب حتمي واحد» إلى **حلقة حوار قصيرة المدى** تفهم النية الغامضة
+وتسأل توضيحاً بدل التخمين أو التصعيد الفوري، وتُؤرّض الجواب من بيانات الكتالوج المسجّلة.
+
+- `engine/social/replyDialogue.ts` (منطق صافٍ قابل للاختبار، بلا شبكة/أسرار/AI): مصدر واحد
+  لـ`shouldRequestClarification` و`buildClarificationReply` (بنك أسئلة عراقي لكل موضوع:
+  general/price/location/availability/hours + جولة متابعة) و`buildClarificationPrompt`
+  (برومبت المسار الذكي) و`matchCatalogProduct`/`resolveGroundingProduct` (تأريض من اسم
+  المنتج حرفياً بعد التطبيع — بلا تخمين). حدّ `MAX_CLARIFICATION_ROUNDS = 2` يمنع الحلقة
+  اللانهائية ويحوّل إلى تصعيد.
+- `server.ts`: `generateWatcherReply` (مسار واحد للتعليق والرسالة): حقائق موثّقة ⇒ رد حتمي
+  مباشر؛ نية غامضة ⇒ سؤال توضيح (يُجرَّب تحسينه عبر `aiEngine` **داخل جدار الحماية** ثم
+  حارس سلامة المحتوى، وإلا السقوط الحتمي). سياق الحوار يُسجَّل/يُقرأ عبر `conversationState`
+  (`conversationKey` = منصة::موضوع) فلا تتسرّب رسائل خيط إلى آخر، ويُحفظ في `socialConversations`
+  عبر محوّل الحالة. **الإرسال يبقى عبر المنفّذ المركزي** `executeMetaCommentReply`/
+  `executeMetaMessageReply` (كل البوابات سارية — لا مسار جانبي).
+- اختبارات: `engine/tests/meta.dialogue.integration.test.ts` (25 فحصاً، Facebook) و
+  `engine/tests/meta.dialogue.instagram.test.ts` (16 فحصاً، Instagram) — كلاهما دورة كاملة
+  حقيقية عبر الخادم + خادم Meta وهمي محلي (بلا مزود/حصة): تعليق غامض ⇒ سؤال توضيح فعلي
+  بمعرّف رد، واستفسار سعر على منشور/وسائط مرتبط بمنتج ⇒ جواب مؤرّض (250,000 + قسط 22,500)
+  بمعرّف رد، ومنع تكرار. أُضيف `feedMedia` + مسار `GET /{ig-id}/media` إلى خادم Instagram
+  الوهمي، و`test:meta-dialogue`/`test:meta-dialogue-ig` إلى `npm test`.
+- فحوص final-audit السبعة: `meta-reply-dialogue-*` و`meta-dialogue-*-test-registered`
+  و`meta-dialogue-test-no-real-provider` (إجمالاً **1556**).
+
+**لم يُمسّ:** Gemini/firewall، OAuth/الاعتمادات/الأسرار، DR، YouTube (المراقب/الطابور/التفويض)،
+TikTok/Telegram، ونموذج الجدولة، وحماية الخصوصية في /api/health و/api/readiness.
 

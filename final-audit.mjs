@@ -932,6 +932,19 @@ add('meta-watcher-health-public-safe', (() => {
   const publicHasNoCustomer = !/attentionRequired|replyText|authorName|recent|\btext\b/.test(publicFn);
   return healthUsesPublic && publicHasNoCustomer;
 })(), 'الصحة والجاهزية تستخدمان النسخة العامة لمراقب Meta، ولا تحوي اسم حساب/نص تعليق/نص رد');
+// حلقة الحوار/التوضيح لردود Meta: مصدر واحد + ربط المسارين + اختبارا Facebook/Instagram.
+add('meta-reply-dialogue-module', fs.existsSync(path.join(root, 'engine/social/replyDialogue.ts')) && /export function generateConversationalReply/.test(read('engine/social/replyDialogue.ts')) && /export function shouldRequestClarification/.test(read('engine/social/replyDialogue.ts')) && /export function resolveGroundingProduct/.test(read('engine/social/replyDialogue.ts')), 'وحدة replyDialogue هي مصدر واحد للحوار/التوضيح/تأريض الكتالوج (لا نظام ثانٍ)');
+add('meta-reply-dialogue-clarify-no-invention', /shouldRequestClarification[\s\S]{0,900}?comment\.topic === 'price' && !facts\.priceText/.test(read('engine/social/replyDialogue.ts')) && /CLARIFY_BANK/.test(read('engine/social/replyDialogue.ts')), 'الاستفسار الغامض/ناقص الحقائق يُسأل توضيحاً ولا يخترع سعراً/قسطاً');
+add('meta-reply-dialogue-wired-both-paths', server.includes('generateWatcherReply({') && (server.match(/generateWatcherReply\(\{/g) || []).length >= 2 && server.includes('executeMetaCommentReply(platform,') && server.includes('executeMetaMessageReply(platform,'), 'حلقة الحوار مربوطة بمسارَي التعليق والرسالة عبر المنفّذ المركزي نفسه (لا مسار جانبي)');
+add('meta-reply-dialogue-conversation-state', server.includes('recordMetaConversationTurn(') && server.includes('watcherDialogueContext(') && server.includes('conversationKey('), 'سياق الحوار يُسجَّل ويُقرأ لكل خيط (منصة + موضوع) بلا خلط محادثات');
+add('meta-dialogue-fb-test-registered', (pkg.scripts['test'] || '').includes('test:meta-dialogue') && pkg.scripts['test:meta-dialogue'] === 'tsx engine/tests/meta.dialogue.integration.test.ts' && fs.existsSync(path.join(root, 'engine/tests/meta.dialogue.integration.test.ts')), 'اختبار تكامل دورة حوار Facebook (خادم وهمي) مسجَّل في npm test');
+add('meta-dialogue-ig-test-registered', (pkg.scripts['test'] || '').includes('test:meta-dialogue-ig') && pkg.scripts['test:meta-dialogue-ig'] === 'tsx engine/tests/meta.dialogue.instagram.test.ts' && fs.existsSync(path.join(root, 'engine/tests/meta.dialogue.instagram.test.ts')), 'اختبار تكامل دورة حوار Instagram (خادم وهمي) مسجَّل في npm test');
+add('meta-dialogue-test-no-real-provider', (() => {
+  const fb = fs.existsSync(path.join(root, 'engine/tests/meta.dialogue.integration.test.ts')) ? read('engine/tests/meta.dialogue.integration.test.ts') : '';
+  const ig = fs.existsSync(path.join(root, 'engine/tests/meta.dialogue.instagram.test.ts')) ? read('engine/tests/meta.dialogue.instagram.test.ts') : '';
+  const both = fb + ig;
+  return /FACEBOOK_GRAPH_API_BASE/.test(both) && /delete env\.GEMINI_API_KEY/.test(both) && !/graph\.facebook\.com/.test(both) && /PASSED:/.test(both);
+})(), 'اختبارا الحوار يستخدمان خادم Meta وهمياً محلياً بلا مزود حقيقي ولا حصة AI');
 add('youtube-watcher-detail-owner-auth', server.includes('app.get("/api/agent/youtube/watcher", requireOwner') && server.includes('watcher: watcherStatusBlock()'), 'التفاصيل الكاملة (attentionRequired/lastReply) تُقدَّم فقط عبر المسار المقتصر على المالك /api/agent/youtube/watcher');
 // كل مسارات بيانات المراقب (التي تحمل اسم حساب/نص تعليق/نص رد) مقتصرة على المالك،
 // لا مجرّد مصادقة: بيانات عملاء YouTube لا يجوز أن تصل لأي مستخدم مسجَّل بلا دور مالك.

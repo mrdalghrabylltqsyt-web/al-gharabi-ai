@@ -35,6 +35,8 @@ export interface InstagramMockState {
   lastSubscribe: { pageId: string; fields: string } | null;
   commentReplies: { commentId: string; message: string; id: string }[];
   sentMessages: { pageId: string; recipientId: string; text: string; messageId: string }[];
+  /** وسائط الحساب مع تعليقاتها الواردة (يقرأها المراقب عبر `/{ig-id}/media?fields=comments`). */
+  feedMedia: { id: string; comments: { id: string; text: string; username?: string; from?: { id: string; name?: string }; created_time?: string }[] }[];
   containers: { igId: string; body: Record<string, string>; containerId: string }[];
   published: { igId: string; creationId: string; postId: string }[];
   /** تسلسل حالة الحاوية (status_code) الذي يُقرأ استعلاماً بعد آخر قيمة. */
@@ -65,6 +67,7 @@ export function createInstagramMock(state: Partial<InstagramMockState> = {}): In
     lastSubscribe: null,
     commentReplies: [],
     sentMessages: [],
+    feedMedia: state.feedMedia ?? [],
     containers: [],
     published: [],
     containerStatusSequence: state.containerStatusSequence ?? ['FINISHED'],
@@ -151,6 +154,27 @@ export async function startInstagramMockServer(
         instagram_business_account: a.igAccountId ? { id: a.igAccountId, username: a.igUsername } : undefined,
       })),
     });
+  });
+
+  // وسائط الحساب مع تعليقاتها: يقرأها مراقب Meta عبر
+  // `GET /{ig-id}/media?fields=id,comments.limit(N){id,text,username,from,created_time}`.
+  // يُسجَّل **قبل** المسار العام `/:version/:id` كي لا يبتلعه.
+  app.get('/:version/:igId/media', (req, res) => {
+    const { igId } = req.params;
+    state.calls += 1;
+    const data = state.feedMedia.map((m) => ({
+      id: m.id,
+      comments: {
+        data: m.comments.map((c) => ({
+          id: c.id,
+          text: c.text,
+          username: c.username,
+          from: c.from,
+          created_time: c.created_time,
+        })),
+      },
+    }));
+    return res.json({ data, paging: {} });
   });
 
   // هوية صفحة أو حساب Instagram: التمييز بالمعرّف.
