@@ -37,6 +37,11 @@ check('lastReply ممنوع', PUBLIC_ENDPOINT_FORBIDDEN_CUSTOMER_FIELDS.includes
 check('allow-list youtubeWatcher يحتوي الحقول التقنية', ['status', 'watcherActive', 'pollCount', 'lastError'].every((k) => PUBLIC_WATCHER_ALLOWED_KEYS.includes(k)));
 check('allow-list لا يحتوي أي حقل عميل', !PUBLIC_WATCHER_ALLOWED_KEYS.some((k) => PUBLIC_ENDPOINT_FORBIDDEN_CUSTOMER_FIELDS.includes(k)));
 check('الحقول التشغيلية التفصيلية معلنة', PUBLIC_ENDPOINT_FORBIDDEN_OPERATIONAL_FIELDS.includes('counters'));
+// دفاع متين: أسماء عامة/مختصرة لنفس معنى بيانات العميل (اسم/نص تعليق/رسالة) ممنوعة
+// أيضاً، فلا يتسرّب حقل جديد باسم مختصر (text/author/comment/username...) بلا التقاط.
+check('أسماء عامة مختصرة ممنوعة (text/author/comment/username)', ['text', 'author', 'comment', 'username', 'senderName', 'messageText'].every((k) => PUBLIC_ENDPOINT_FORBIDDEN_CUSTOMER_FIELDS.includes(k)));
+check('لا تقاطع بين القائمة الممنوعة وallow-list التقني', !PUBLIC_WATCHER_ALLOWED_KEYS.some((k) => PUBLIC_ENDPOINT_FORBIDDEN_CUSTOMER_FIELDS.includes(k)));
+check('الحقول التقنية المشروعة غير ممنوعة', !['status', 'deploy', 'pollCount', 'watcherActive', 'lastError', 'note', 'commit', 'branch'].some((k) => PUBLIC_ENDPOINT_FORBIDDEN_CUSTOMER_FIELDS.includes(k)));
 
 group('2) كشف الحقول الممنوعة في أي عمق');
 const nested = {
