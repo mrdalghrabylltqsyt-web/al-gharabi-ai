@@ -15,12 +15,9 @@ import { buildAdapters, hasRealConnector, isSupportedPlatform } from './registry
 import {
   canAutoReply,
   classifyComment,
-  evaluateReplyGuard,
   generateReply,
-  isSelfAuthored,
   type ReplyContext,
   type ReplyFactSet,
-  type ReplyRecord,
 } from './comments';
 import { analyzeBusinessClaims, type BusinessFacts } from './contentSafety';
 import { checkCommercialPolicy } from './iraqiCommercialPolicy';
@@ -51,8 +48,6 @@ import {
   CONVERSATION_LIFECYCLE_LABELS_AR,
   type ConversationLifecycleState,
 } from './conversationLifecycle';
-import { evaluateGovernance } from '../agent/governanceGuard';
-import type { AgentOperator } from '../agent/permissions';
 import {
   buildPublishRecord,
   collectAvailableMetrics,
@@ -141,16 +136,7 @@ export function registerSocialManagerRoutes(app: express.Express, deps: SocialRo
   const { authenticateToken, requireOwner, workspace, platformConnections, persistState, audit, workspaceId } = deps;
 
   /**
-   * يحوّل دور المستخدم إلى مُشغّل حوكمة: المالك/المدير = owner (يملك الكتابة)،
-   * وبقية الأدوار = staff (قراءة/تنفيذ آمن فقط). يمنع تنفيذ إجراء خارجي/حسّاس
-   * من غير المالك — فرض حقيقي على الخادم لا إخفاء في الواجهة.
-   */
-  const operatorFor = (user: { role?: string } | null | undefined): AgentOperator => {
-    const role = String(user?.role || '').toLowerCase();
-    return role === 'owner' || role === 'manager' ? 'owner' : 'staff';
-  };
-
-  /** يطبّق حارس وضع التشغيل المركّز إن حُقن (يمنع غير YouTube عند تفعيله). */
+   * يطبّق حارس وضع التشغيل المركّز إن حُقن (يمنع غير YouTube عند تفعيله). */
   const guardBlocked = (platform: string): { blocked: boolean; body?: any } =>
     deps.platformOperationGuard ? deps.platformOperationGuard(platform) : { blocked: false };
 
@@ -542,7 +528,6 @@ export function registerSocialManagerRoutes(app: express.Express, deps: SocialRo
   });
 
   app.post('/api/social/manager/comments/reply', authenticateToken, (req, res) => {
-    const user = (req as any).user as { id: string };
     const platform = typeof req.body?.platform === 'string' ? req.body.platform : '';
     const externalId = typeof req.body?.externalId === 'string' ? req.body.externalId.trim() : '';
     let text = typeof req.body?.text === 'string' ? req.body.text.trim() : '';
@@ -605,106 +590,13 @@ export function registerSocialManagerRoutes(app: express.Express, deps: SocialRo
       });
     }
 
-    // حوكمة الوكلاء: تسجيل الرد إجراء كتابة/اتصال خارجي. يمنع تنفيذه من غير
-    // المالك (staff) — فرض على الخادم يستخدم نفس نموذج الصلاحيات، لا إخفاء واجهة.
-    const governance = evaluateGovernance({
-      operator: operatorFor((req as any).user),
-      permission: 'EXTERNAL_ACTION',
-      externalAction: true,
-      approved: operatorFor((req as any).user) === 'owner',
-      claimVerified: true,
-      sensitive: false,
+    // منصة تعلن comment_reply لكن بلا موصل رد حقيقي منفّذ: لا يوجد أي مسار تنفيذ
+    // داخلي — لا يُسجَّل رد محاكى ولا يُدّعى إرسال. كل منصة تعلن comment_reply حالياً
+    // لها موصل حقيقي فتُوجَّه 409 أعلاه، فهذه حالة نظرية مستقبلية فقط، ورسالتها صادقة.
+    return res.status(501).json({
+      success: false,
+      error: `المنصة ${adapter.displayName} تعلن دعم الرد على التعليقات لكن لا يوجد موصل رد حقيقي منفّذ لها؛ لا يُرسل الرد ولا يُسجَّل أي محاكاة.`,
     });
-    if (!governance.allowed) {
-      return res.status(403).json({ success: false, error: governance.reasonAr, governance: { code: governance.code } });
-    }
-
-    const classification = classifyComment(commentText || text);
-    if (!canAutoReply(classification)) {
-      return res.status(422).json({
-        success: false,
-        error: classification.reviewReason || 'هذا التعليق يستوجب مراجعة بشرية قبل أي رد.',
-        classification,
-        requiresHumanReview: true,
-      });
-    }
-
-    const ownNames = [String(workspace.showroom?.name || ''), 'معرض الغرابي'];
-    if (isSelfAuthored(authorName, ownNames)) {
-      return res.status(409).json({ success: false, error: 'التعليق صادر من حساب المعرض؛ لا يُرد عليه لتجنب حلقة ردود.' });
-    }
-
-    // حارس سلامة المحتوى من جهة الخادم قبل التسجيل النهائي أو أي إرسال:
-    // لا يُحفظ أو يُرسل نص رد يحمل عرضاً أو رقماً أو رابطاً غير مسجّل.
-    const { facts: replyFacts } = resolveProduct(req.body?.productId, req.body?.productName);
-    const replySafety = analyzeBusinessClaims(text, replyFacts);
-    if (!replySafety.safe) {
-      return res.status(422).json({
-        success: false,
-        error: 'نص الرد يحمل عرضاً تجارياً غير مسجّل في بيانات المعرض، وتم إيقافه قبل أي رد.',
-        contentSafety: {
-          safe: false,
-          violations: replySafety.blocked.map((v) => v.detail),
-          codes: replySafety.blocked.map((v) => v.code),
-        },
-        note: 'سجّل السعر/الشرط/الرقم الحقيقي في بيانات المعرض، أو أزل الادعاء غير المسجّل من نص الرد.',
-      });
-    }
-
-    // سياسة التواصل التجاري العراقي: تمنع المبالغة/الإلحاح الكاذب/الوعد المطلق/
-    // الحطّ من المنافسين/الضغط. طبقة حتمية مستقلة عن حارس الأرقام، وتُطبَّق على
-    // أي نص رد قبل التسجيل أو الإرسال (فشل آمن: رفض 422 مع التصنيف).
-    const commercialPolicy = checkCommercialPolicy(text);
-    if (!commercialPolicy.compliant) {
-      return res.status(422).json({
-        success: false,
-        error: 'نص الرد يخالف سياسة التواصل التجاري العراقي (مبالغة/إلحاح/وعد مطلق/حطّ من المنافسين).',
-        commercialPolicy: {
-          compliant: false,
-          violations: commercialPolicy.violations.map((v) => v.detail),
-          labels: commercialPolicy.violationLabelsAr,
-        },
-        note: 'أعد صياغة الرد بلهجة عراقية طبيعية قصيرة بلا مبالغة ولا وعود غير مثبتة.',
-      });
-    }
-
-    const history: ReplyRecord[] = (workspace.socialReplies || []).map((r: any) => ({
-      externalId: r.externalId,
-      replyFingerprint: r.replyFingerprint,
-      repliedAt: r.repliedAt,
-    }));
-    const decision = evaluateReplyGuard({ externalId, replyText: text, history });
-    if (!decision.allowed) return res.status(409).json({ success: false, error: decision.reason, guard: decision });
-
-    // لا يوجد موصل إنتاجي معتمد بعد: يُسجَّل الرد محلياً ولا يُدّعى إرساله.
-    const record = {
-      id: workspaceId('reply'),
-      platform,
-      externalId,
-      text,
-      replyFingerprint: decision.fingerprint,
-      classification,
-      // الحارس نجح أعلاه، فالرد المسجّل آمن بالبناء. يُعلن التقرير صراحةً.
-      contentSafety: { safe: true, violations: [] as string[], codes: [] as string[] },
-      repliedAt: new Date().toISOString(),
-      createdBy: user.id,
-      simulated: true,
-      delivered: false,
-      reviewStatus: classification.requiresHumanReview ? 'pending_review' : 'recorded',
-      note: 'لم يُرسل الرد إلى المنصة: لا يوجد موصل إنتاجي معتمد لهذه المنصة بعد.',
-    };
-    if (!Array.isArray(workspace.socialReplies)) workspace.socialReplies = [];
-    workspace.socialReplies.unshift(record);
-    if (workspace.socialReplies.length > 5000) workspace.socialReplies.pop();
-    // تحديث نافذة المحادثة قصيرة المدى بهذا الرد (نفس النطاق المعزول).
-    const replyScope = conversationScopeFor({ platform, postExternalId: typeof req.body?.postExternalId === 'string' ? req.body.postExternalId : null });
-    appendConversationMessage(replyScope.conversationId, replyScope.platform, replyScope.subjectId, { role: 'business', text, externalId });
-    // دورة حياة المحادثة: رد المعرض ينقل الحالة (المُصعّدة تبقى مُصعّدة).
-    applyLifecycleEvent(replyScope.conversationId, 'business_reply');
-    audit(user.id, 'social_comment_reply', `${platform}:${externalId}`);
-    persistState();
-
-    res.json({ success: true, reply: record, delivered: false, simulated: true, note: record.note });
   });
 
   /**

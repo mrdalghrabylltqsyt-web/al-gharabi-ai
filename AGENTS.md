@@ -5790,3 +5790,31 @@ permitted if the replier has been explicitly summoned by the original post's aut
 **لم يُمسّ:** أي موصل، ولا OAuth/الاعتمادات/الأسرار، ولا Gemini، ولا بقية المنصات، ولا
 `realConnector` لـX. تصحيح إعلان فقط.
 
+### إزالة الكود الميت الناتج في مسار الرد العام (2026-10-12)
+
+تصحيح قدرات X (أعلاه) جعل مسار `POST /api/social/manager/comments/reply` يحوي كتلة **ميتة
+فعلاً**: بوابة `if (hasRealConnector(platform)) → 409 PLATFORM_USE_DEDICATED_REPLY` صارت
+تُفعَّل لكل منصة تعلن `comment_reply` (YouTube/Facebook/Instagram — كلها `realConnector:true`)،
+وأي منصة أخرى تُرفض `501` أبكر، فلا يمكن الوصول إلى ما بعدها. أُزيلت الكتلة (تسجيل رد محاكى
+بحقلَي `simulated:true`/`delivered:false` + فحوص الحوكمة/التصنيف/self-authored/سلامة
+المحتوى/السياسة/منع التكرار) واستُبدلت برد **501 صريح** واحد يعلن أن المنصة تعلن `comment_reply`
+بلا موصل حقيقي — حالة نظرية مستقبلية فقط، بلا أي «نجاح وهمي».
+
+- `engine/social/routes.ts`: حُذف الكود الميت + الاستيرادات التي صارت غير مستخدمة في الملف
+  فقط (`evaluateGovernance`، `evaluateReplyGuard`، `isSelfAuthored`، `type ReplyRecord`،
+  `type AgentOperator`) ودالة `operatorFor` المساعدة. **بقي**: `checkCommercialPolicy`،
+  `analyzeBusinessClaims`، `classifyComment`، `canAutoReply`، `resolveProduct`،
+  `conversationScopeFor`/`appendConversationMessage`/`applyLifecycleEvent`، `workspaceId`،
+  `audit` (كلها مستخدمة في مواضع أخرى — تحقّق قبل الحذف).
+- **متابعة الضمانات إلى موضعها الحقيقي** (لا تُخفَّف): الحوكمة (`evaluateGovernance` بوسيط
+  `permission: EXTERNAL_ACTION`) انتقلت فعلياً إلى سلطة القرار الواحدة `composeBrainDecision`
+  في `engine/brain/team/brainDecision.ts`، ومسارات الرد الحقيقية محصورة بالمالك
+  (`requireOwner`)؛ وسلامة المحتوى تُفرَض في منفّذي الرد الحقيقيين (`executeMetaCommentReply`
+  وغيرها في `server.ts`)؛ والسياسة تُطبَّق على الرد المقترح في مسار التصنيف.
+- `final-audit.mjs`: تحديث ثلاثة فحوص كانت تشير إلى الكتلة المحذوفة لتشير إلى موضع الفرض
+  الحقيقي: `content-safety-reply-linkage`، `reply-safety-server-side-block`،
+  `agent-governance-guard-wired`، `iraqi-commercial-policy-wired`. إجمالي الفحوص يبقى **1557**.
+
+**لم يُمسّ:** سلوك أي مسار قابل للوصول، ولا أي موصل، ولا OAuth/الأسرار، ولا Gemini، ولا
+بقية المنصات. حذف كود ميت + تحديث فحوص لموضعها الحقيقي فقط.
+

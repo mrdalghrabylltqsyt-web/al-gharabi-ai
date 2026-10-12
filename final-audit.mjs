@@ -62,10 +62,13 @@ add('preview-fragment-only', appContext.includes("hashParams.get('preview_token'
 // حارس المخارج: منع اختراع العروض التجارية مفحوص على النص الفعلي بعد التوليد.
 add('content-claim-guard', server.includes('analyzeBusinessClaims(result.text') && server.includes('analyzeRequestClaims'), 'حارس ادعاءات تجارية بعد التوليد وقبل التوليد');
 add('content-fabrication-blocked', server.includes('business_claim_not_recorded') && read('engine/social/contentSafety.ts').includes('zero_down_payment_not_recorded'), 'ادعاء «بدون دفعة أولى» غير المسجّل محجوب صراحةً');
-// حارس سلامة المحتوى مربوط بمسار الرد: الرد المقترح ونص الرد يمرّان عبر contentSafety.
+// حارس سلامة المحتوى مربوط بمسار الرد: الرد المقترح (routes) ونص الرد الفعلي (منفّذو
+// الخادم) يمرّان عبر contentSafety. كان نص الرد يمر عبر مسار التسجيل المحاكى في routes.ts
+// وهو الآن كود ميت (لا منصة comment_reply بلا موصل حقيقي)، فانتقل الفرض الفعلي إلى منفّذي
+// الرد الحقيقيين في server.ts — لا تُخفَّف الضمانة بل تُتابَع إلى موضعها الحقيقي.
 const socialRoutes = read('engine/social/routes.ts');
-add('content-safety-reply-linkage', socialRoutes.includes('analyzeBusinessClaims(text, replyFacts)') && socialRoutes.includes('analyzeBusinessClaims(rawSuggestion, facts)'), 'الرد المقترح ونص الرد يمرّان عبر حارس سلامة المحتوى قبل العرض/التسجيل');
-add('reply-safety-server-side-block', socialRoutes.includes('replySafety.safe') && socialRoutes.includes('contentSafety'), 'حارس من جهة الخادم يمنع تسجيل أي رد يحمل ادعاءً غير مسجّل');
+add('content-safety-reply-linkage', socialRoutes.includes('analyzeBusinessClaims(rawSuggestion, facts)') && server.includes('analyzeBusinessClaims(text, replyFacts)'), 'الرد المقترح (routes) ونص الرد الفعلي (منفّذو الخادم) يمرّان عبر حارس سلامة المحتوى قبل العرض/الإرسال');
+add('reply-safety-server-side-block', /analyzeBusinessClaims\(text, replyFacts\)[\s\S]{0,300}?contentSafety/.test(server) && server.includes('return { status: 422'), 'منفّذو الرد الحقيقيون في الخادم يمنعون إرسال/تسجيل أي رد يحمل ادعاءً غير مسجّل (422 مع contentSafety)');
 // G1: مسار تصنيف الرسائل يجب أن يمر suggestedReply عبر حارس المحتوى قبل الواجهة.
 add('classify-message-content-safety', server.includes('buildSafeBusinessReply(') && server.includes('contentSafety') && server.includes('classifyMessageDeterministic(customerName, message).suggestedReply'), 'مسار classify-message يمر suggestedReply عبر حارس سلامة المحتوى');
 add('classify-message-no-gemini-fallback', server.includes('const aiSource = providerValidated ? result.source : "fallback";'), 'البديل الحتمي في classify-message لا يُنسب إلى Gemini');
@@ -2686,15 +2689,19 @@ add('agent-governance-guard-wired', (() => {
     }
     return end === -1 ? '' : src.slice(start, end + 1);
   };
-  const socialRoutes = read('engine/social/routes.ts');
   const brainDecision = read('engine/brain/team/brainDecision.ts');
-  const socialBlock = callBlock(socialRoutes);
   const brainBlock = callBlock(brainDecision);
-  return socialRoutes.includes("from '../agent/governanceGuard'") &&
-    socialBlock.includes("permission: 'EXTERNAL_ACTION'") &&   // وسيط صريح داخل كتلة الاستدعاء نفسها
-    socialBlock.includes('externalAction: true') &&
-    brainBlock.includes('permission') && brainBlock.includes('externalAction');
-})(), 'حوكمة الوكلاء مربوطة فعلياً بمسار الرد الحقيقي (/api/social/manager/comments/reply) بوسيط permission: EXTERNAL_ACTION صريح داخل كتلة الاستدعاء، وبسلطة القرار الواحدة (composeBrainDecision) — لا بالمسار التجاري المحذوف');
+  // الحوكمة الآن في سلطة القرار الواحدة (composeBrainDecision → evaluateGovernance) التي
+  // يحقنها الخادم في دورة المراقبة؛ ومسارات الرد الحقيقية محصورة بالمالك (requireOwner).
+  // كان الاستدعاء داخل مسار التسجيل المحاكى في routes.ts وهو كود ميت الآن — لا تُخفَّف
+  // الضمانة بل تُتابَع إلى موضعها الحقيقي.
+  return brainBlock.includes('permission') &&
+    brainBlock.includes('externalAction') &&
+    brainDecision.includes("permission: 'EXTERNAL_ACTION'") &&
+    server.includes('composeBrainDecision') &&
+    server.includes('app.post("/api/platforms/facebook/reply", requireOwner') &&
+    server.includes('app.post("/api/platforms/youtube/reply", requireOwner');
+})(), 'حوكمة الوكلاء مربوطة فعلياً بسلطة القرار الواحدة (composeBrainDecision → evaluateGovernance بوسيط permission/externalAction) وبمسارات الرد الحقيقية المحصورة بالمالك (requireOwner) — لا بمسار التسجيل المحاكى المحذوف');
 add('batch81-no-new-brain',
   !/buildSecondBrain|centralBrain2|secondDecisionEngine|secondLedger|secondMemoryStore/.test(server) &&
   /single decision authority|سلطة القرار الواحدة|سلطة التنفيذ الوحيدة/.test(watcherSrc),
@@ -3196,9 +3203,10 @@ add('iraqi-commercial-policy-module',
   iraqiPolicy.includes('competitor_disparagement') && iraqiPolicy.includes('IRAQI_TONE_GUIDELINES_AR'),
   'سياسة التواصل التجاري العراقي: تمنع المبالغة/الإلحاح/الوعد المطلق/الحطّ من المنافسين (طبقة حتمية)');
 add('iraqi-commercial-policy-wired',
-  socialRoutes.includes('checkCommercialPolicy') && socialRoutes.includes('commercialPolicy') &&
-  /commercialPolicy[\s\S]{0,200}status\(422\)/.test(socialRoutes),
-  'السياسة مطبَّقة على مسار الرد (رفض 422) وعلى الرد المقترح في التصنيف');
+  socialRoutes.includes('checkCommercialPolicy(rawSuggestion)') &&
+  socialRoutes.includes('policy?.compliant') &&
+  socialRoutes.includes('commercialPolicy: policy'),
+  'السياسة مطبَّقة على الرد المقترح في مسار التصنيف (يحجب أي عرض غير مطابق) — كان رفض 422 في مسار التسجيل المحاكى المحذوف');
 add('ledger-read-back',
   runtimeSrc.includes('export function decisionHistoryToMemoryRecords') &&
   runtimeSrc.includes("e.outcome.availability !== 'available'") &&
