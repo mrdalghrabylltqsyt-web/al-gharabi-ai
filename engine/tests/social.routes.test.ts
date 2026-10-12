@@ -265,85 +265,44 @@ async function run(): Promise<void> {
     check('Facebook المتصل بموصل حقيقي جاهز إنتاجياً', capsConnected.body.platforms.find((p: any) => p.platform === 'facebook')?.productionReady === true);
     check('المنصات بلا موصل حقيقي تبقى غير جاهزة إنتاجياً', capsConnected.body.platforms.filter((p: any) => p.platform !== 'facebook').every((p: any) => p.productionReady === false));
 
-    // الرد الآن: Facebook صار له موصل رد حقيقي (comment_reply) → مسار
-    // التعليقات العام يوجّه صراحةً إلى المسار الحقيقي بدل تسجيل محاكاة.
+    // الرد الآن: كل منصة تدعم الرد على التعليقات (comment_reply) صار لها موصل رد
+    // حقيقي منفّذ (Facebook/Instagram/YouTube) → مسار التعليقات العام يوجّه صراحةً
+    // إلى المسار الحقيقي بدل تسجيل محاكاة. لا توجد منصة تعليقات بلا موصل حقيقي، فلا
+    // يوجد أي مسار «تسجيل رد محاكى» قابل للوصول — وهذا هو الوضع الصادق.
     const replyRealFacebook = await post('/api/social/manager/comments/reply', {
       platform: 'facebook', externalId: 'c-reply-1', text: 'أهلاً بك، نشكر تواصلك معنا.', commentText: 'بكم السعر؟',
     });
     check('Facebook ذو الموصل الحقيقي يوجّه للمسار الحقيقي لا المحاكاة', replyRealFacebook.status === 409, `status=${replyRealFacebook.status}`);
     check('التوجيه صريح لمسار الرد الحقيقي', replyRealFacebook.body.code === 'PLATFORM_USE_DEDICATED_REPLY' && String(replyRealFacebook.body.replyRoute).includes('/api/platforms/facebook/reply'));
 
-    // منصة بلا موصل إرسال حقيقي (X) تبقى تُسجَّل محلياً كمحاكاة صريحة.
+    // منصة تدعم الرد على التعليقات لكن بلا موصل حقيقي: لا توجد الآن (X صُحّحت
+    // قدراتها فلم تعد تعلن comment_reply، لأن سياسة X الرسمية تمنع الرد غير المُستدعى).
+    // لذا المسار العام لا يسجّل رداً محاكى لأي منصة تعليقات — نُثبت ذلك صراحةً:
+    // X لم تعد تدعم الرد على التعليقات إطلاقاً (501 صريح) بدل تسجيل محاكاة.
     disconnected.set('x', { platform: 'x', status: 'connected', providerVerified: true });
-    const replyConnected = await post('/api/social/manager/comments/reply', {
+    const replyX = await post('/api/social/manager/comments/reply', {
       platform: 'x', externalId: 'c-reply-1', text: 'أهلاً بك، نشكر تواصلك معنا.', commentText: 'بكم السعر؟',
     });
-    check('الرد يُقبل عند اتصال موثق', replyConnected.status === 200);
-    check('الرد لا يُدّعى إرساله', replyConnected.body.delivered === false && replyConnected.body.simulated === true);
-    check('سجل الرد يحفظ البصمة', typeof replyConnected.body.reply.replyFingerprint === 'string');
-
-    const replyDuplicate = await post('/api/social/manager/comments/reply', {
-      platform: 'x', externalId: 'c-reply-1', text: 'رد آخر', commentText: 'بكم السعر؟',
-    });
-    check('الرد المكرر على نفس التعليق مرفوض', replyDuplicate.status === 409);
-    check('سبب الرفض يذكر الرد المسبق', String(replyDuplicate.body.error).includes('مسبقاً'));
-
-    const replySelf = await post('/api/social/manager/comments/reply', {
-      platform: 'x', externalId: 'c-reply-2', text: 'شكراً', commentText: 'شكراً لكم', authorName: 'معرض الغرابي',
-    });
-    check('الرد على حساب المعرض نفسه مرفوض (حلقة ردود)', replySelf.status === 409);
-
-    const replySensitive = await post('/api/social/manager/comments/reply', {
-      platform: 'x', externalId: 'c-reply-3', text: 'نعتذر', commentText: 'سأرفع قضية قانونية ضدكم',
-    });
-    check('الرد الآلي على الحالة الحساسة مرفوض', replySensitive.status === 422 && replySensitive.body.requiresHumanReview === true);
+    check('X لا تدعم الرد على التعليقات (لا موصل، لا محاكاة)', replyX.status === 501, `status=${replyX.status}`);
+    check('سبب الرفض صريح: المنصة لا تدعم الرد', String(replyX.body.error).includes('لا تدعم الرد على التعليقات'));
+    check('لا يُسجَّل أي رد محاكى لأي منصة', workspace.socialReplies.length === 0, `replies=${workspace.socialReplies.length}`);
 
     // --------------- ربط حارس سلامة المحتوى بمسار الرد (فجوة حقيقية أُغلقت) ---------------
+    // الحارس يمرّ على الرد المقترح في مسار التصنيف (المنطق نفسه المستخدَم قبل
+    // التسجيل في المسار الحقيقي)، ويُثبت أن الادعاء غير المسجّل يُحجب قبل أي عرض.
     const contractClassifySafety = await post('/api/social/manager/comments/classify', { text: 'بكم السعر؟' });
     check('التصنيف يعلن فحص سلامة المحتوى للرد المقترح', contractClassifySafety.body.contentSafety !== null && typeof contractClassifySafety.body.contentSafety.safe === 'boolean');
     check('الرد المقترح السليم يُعلن آمناً ويُعرض', contractClassifySafety.body.contentSafety.safe === true && typeof contractClassifySafety.body.suggestedDeterministicReply === 'string');
 
-    // نص رد يحمل ادعاءً غير مسجّل (بدون دفعة أولى) يجب أن يُحجب قبل أي تسجيل.
-    const replyFabricated = await post('/api/social/manager/comments/reply', {
-      platform: 'x', externalId: 'c-reply-fab', text: 'متاح بدون دفعة أولى وبقسط ميسر', commentText: 'بكم السعر؟',
-    });
-    check('الرد الذي يحمل ادعاءً غير مسجّل مرفوض بحارس المحتوى', replyFabricated.status === 422, `status=${replyFabricated.status}`);
-    check('رفض الرد يُعلن سلامة المحتوى صراحةً', replyFabricated.body.contentSafety?.safe === false && replyFabricated.body.contentSafety.codes.includes('zero_down_payment_not_recorded'));
-    check('الرد المرفوض بحارس المحتوى لا يُسجَّل', !workspace.socialReplies.some((r: any) => r.externalId === 'c-reply-fab'));
-
-    // الرد السليم بلا ادعاء يُقبل ويُسجَّل بعلامة عدم التسليم (لا موصل إنتاجي).
-    const replyClean = await post('/api/social/manager/comments/reply', {
-      platform: 'x', externalId: 'c-reply-clean', text: 'أهلاً بك، شكراً لتواصلك معنا، فريق المعرض في خدمتك.', commentText: 'بكم السعر؟',
-    });
-    check('الرد السليم عبر حارس المحتوى يُقبل', replyClean.status === 200, `status=${replyClean.status}`);
-    check('الرد المقبول لا يُدّعى إرساله', replyClean.body.delivered === false && replyClean.body.simulated === true);
-
     // --------------- سياسة التواصل التجاري العراقي (طبقة حتمية جديدة) ---------------
-    const replyHype = await post('/api/social/manager/comments/reply', {
-      platform: 'x', externalId: 'c-policy-hype', text: 'هذا أفضل عرض في العراق ولا يفوتك', commentText: 'شكراً',
-    });
-    check('الرد ذو المبالغة الإعلانية مرفوض بسياسة التواصل', replyHype.status === 422, `status=${replyHype.status}`);
-    check('رفض السياسة يعلن المخالفات', replyHype.body.commercialPolicy?.compliant === false && replyHype.body.commercialPolicy.labels.length >= 1);
-    check('الرد المرفوض بالسياسة لا يُسجَّل', !workspace.socialReplies.some((r: any) => r.externalId === 'c-policy-hype'));
-
-    const replyUrgency = await post('/api/social/manager/comments/reply', {
-      platform: 'x', externalId: 'c-policy-urgency', text: 'آخر قطعة، الحق قبل ما يخلص', commentText: 'شكراً',
-    });
-    check('الرد ذو الإلحاح الكاذب مرفوض بسياسة التواصل', replyUrgency.status === 422);
-
-    const replyNeutral = await post('/api/social/manager/comments/reply', {
-      platform: 'x', externalId: 'c-policy-ok', text: 'هلا بيك، نورتنا، فريق المعرض بخدمتك.', commentText: 'شكراً',
-    });
-    check('الرد العراقي الطبيعي يمر بالسياسة', replyNeutral.status === 200, `status=${replyNeutral.status}`);
+    // تُطبَّق على الرد المقترح في مسار التصنيف (نفس الطبقة قبل أي إرسال)؛ ومفرداتها
+    // الحتمية مُغطّاة بالوحدة في context.governance.test.ts (مبالغة/إلحاح/وعد مطلق).
 
     // --------------- حوكمة الوكلاء: لا تنفيذ خارجي من غير المالك ---------------
-    // موظف (staff) يحاول تسجيل رد ⇒ يُرفض 403 على الخادم (فرض الحوكمة لا إخفاء واجهة).
-    const replyAsStaff = await post('/api/social/manager/comments/reply', {
-      platform: 'x', externalId: 'c-gov-staff', text: 'هلا بيك، نورتنا.', commentText: 'شكراً',
-    }, { 'x-test-role': 'staff' });
-    check('موظف: تسجيل الرد مرفوض 403 (حوكمة)', replyAsStaff.status === 403, `status=${replyAsStaff.status}`);
-    check('موظف: الرفض صريح بكود حوكمة', replyAsStaff.body.governance?.code === 'APPROVAL_REQUIRED' || replyAsStaff.body.governance?.code === 'PERMISSION_DENIED', JSON.stringify(replyAsStaff.body.governance));
-    check('موظف: لا يُسجَّل أي رد', !workspace.socialReplies.some((r: any) => r.externalId === 'c-gov-staff'));
+    // حوكمة التنفيذ الخارجي (EXTERNAL_ACTION) تُفرَض داخل مسار الرد نفسه؛ ومسارات
+    // الرد الحقيقية محصورة بالمالك (requireOwner). التغطية على مستوى المسار محفوظة
+    // في اختبارات الموصلات (facebook.connector/instagram.connector/youtube.connector)
+    // ووحدات الحوكمة (agent.central)، والمسار العام يوجّه للمالك للمسار الحقيقي.
 
     // --------------- حالة المحادثة قصيرة المدى + عزل السياق ---------------
     // الردود على نفس المنصة/الخيط تُبنى نوافذ محادثة معزولة.

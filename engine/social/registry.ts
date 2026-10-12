@@ -128,7 +128,12 @@ const ADAPTER_SPECS: AdapterSpec[] = [
     platform: 'x',
     name: 'X',
     displayName: 'X',
-    capabilities: ['publish', 'analytics', 'comments', 'comment_reply', 'scheduling'],
+    // تصحيح إعلان صادق: لا موصل تعليقات/رد حقيقي لـX. سياسة X الرسمية تمنع الرد
+    // غير المُستدعى على تعليقات العملاء عبر API لكل المستويات self-serve
+    // (Free/Basic/Pro/Pay-per-use) — Enterprise وحده مستثنى، أو الرد على منشورات
+    // الحساب نفسه. ولا يوجد أي استدعاء تحليلات فعلي مقابل لـX في الكود. لذا لا
+    // تُعلن comments/comment_reply/analytics؛ المعلن هو ما يقابله تنفيذ فعلي فقط.
+    capabilities: ['publish', 'scheduling'],
     credentialMode: 'oauth2',
     realConnector: false,
   },

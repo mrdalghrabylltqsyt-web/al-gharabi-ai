@@ -50,6 +50,11 @@ function run(): void {
   check('يوتيوب لا يعلن رسائل مباشرة (لا واجهة عامة)', !platformSupports('youtube', 'messages') && !platformSupports('youtube', 'message_reply'));
   check('telegram ينشر ويراسل بلا تعليقات', platformSupports('telegram', 'publish') && platformSupports('telegram', 'messages') && !platformSupports('telegram', 'comments'));
   check('telegram يعلن message_reply لا comment_reply', platformSupports('telegram', 'message_reply') && !platformSupports('telegram', 'comment_reply'));
+  // X: لا موصل تعليقات/رد حقيقي. سياسة X الرسمية تمنع الرد غير المُستدعى على تعليقات
+  // العملاء عبر API لكل المستويات self-serve (Free/Basic/Pro/Pay-per-use) — Enterprise
+  // وحده مستثنى. ولا استدعاء تحليلات فعلي مقابل. المعلن = ما يقابله تنفيذ فقط.
+  check('X يعلن النشر والجدولة فقط', platformSupports('x', 'publish') && platformSupports('x', 'scheduling'));
+  check('X لا يعلن تعليقات/رد/تحليلات/رسائل بلا موصل', ['comments', 'comment_reply', 'analytics', 'messages', 'message_reply'].every((c) => !platformSupports('x', c)));
 
   // 4) أي منصة تدعم comment_reply يجب أن تدعم comments أيضاً (اتساق داخلي).
   check('comment_reply تستلزم comments في كل المنصات', PLATFORM_SPECS.every((s) => !platformSupports(s.platform, 'comment_reply') || platformSupports(s.platform, 'comments')));

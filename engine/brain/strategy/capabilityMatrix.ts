@@ -113,6 +113,9 @@ const EXPLICIT_CONSTRAINTS: Partial<Record<PlatformId, Partial<Record<Capability
     audience: 'NOT_AVAILABLE',
     geography: 'NOT_AVAILABLE',
   },
+  // X: لا موصل تعليقات/رد/تحليلات حقيقي. سياسة X الرسمية تمنع الرد غير المُستدعى
+  // على تعليقات العملاء عبر API لكل المستويات self-serve (Free/Basic/Pro/Pay-per-use).
+  // comments/reply/analytics تُشتق NOT_AVAILABLE من السجل (لا قدرة معلنة بلا تنفيذ).
   x: { geography: 'NOT_AVAILABLE' },
   threads: { geography: 'NOT_AVAILABLE' },
 };

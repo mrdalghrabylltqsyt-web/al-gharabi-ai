@@ -185,6 +185,26 @@ add('telegram-ui-webhook-status', read('src/components/social/SocialManagerView.
 
 // إصلاح إرسال رد Telegram: فصل الرسائل (message_reply) عن التعليقات (comment_reply).
 add('capability-message-reply-explicit', read('engine/social/adapter.ts').includes("'message_reply'") && read('engine/social/registry.ts').includes("'message_reply'"), 'قدرة message_reply معرّفة صراحةً ومنفصلة عن comment_reply');
+// X: لا موصل تعليقات/رد/تحليلات حقيقي. سياسة X الرسمية تمنع الرد غير المُستدعى على تعليقات
+// العملاء عبر API لكل المستويات self-serve (Free/Basic/Pro/Pay-per-use) — Enterprise وحده
+// مستثنى. ولا استدعاء تحليلات فعلي مقابل. القدرة المعلنة = ما يقابله تنفيذ حقيقي فقط.
+add('x-registry-no-comment-reply-without-connector', (() => {
+  const reg = read('engine/social/registry.ts');
+  const m = reg.match(/platform: 'x'[\s\S]{0,700}?\n  \}/);
+  if (!m) return false;
+  const block = m[0];
+  const capsMatch = block.match(/capabilities:\s*\[([^\]]*)\]/);
+  if (!capsMatch) return false;
+  const caps = capsMatch[1];
+  const realConnector = /realConnector:\s*true/.test(block);
+  // لا comments/comment_reply بلا موصل حقيقي مقابل.
+  if (!realConnector && /'comment_reply'|'comments'/.test(caps)) return false;
+  // لا analytics بلا استدعاء تحليلات فعلي لـX في الكود.
+  const serverSrc = read('server.ts');
+  const xAnalyticsCall = /api\.twitter\.com[^"`]*metrics|api\.x\.com[^"`]*metrics|public_metrics|tweet\.fields=[^"`]*public_metrics/.test(serverSrc);
+  if (!xAnalyticsCall && /'analytics'/.test(caps)) return false;
+  return caps.includes("'publish'");
+})(), 'X لا يعلن تعليقات/رد/تحليلات بلا موصل حقيقي مقابل (تصحيح إعلان صادق)');
 add('telegram-message-not-comment-reply', (() => { const r = read('engine/social/registry.ts'); return r.includes("capabilities: ['publish', 'messages', 'message_reply', 'scheduling']") && !r.includes("capabilities: ['publish', 'messages', 'comment_reply'"); })(), 'Telegram يعلن message_reply ولا يعلن comment_reply');
 add('reply-route-message-platform-redirect', socialRoutes.includes("supports('message_reply')") && socialRoutes.includes('MESSAGE_PLATFORM_NOT_COMMENT'), 'مسار التعليقات يوجّه منصات الرسائل بدل منع مضلل');
 add('telegram-ui-routes-message-reply', read('src/components/social/SocialHubView.tsx').includes('apiService.replyTelegram') && read('src/components/social/SocialHubView.tsx').includes('replyTarget?.chatId'), 'واجهة الرد توجّه رسائل Telegram إلى المسار الحقيقي بلا فحص comment_reply');

@@ -44,7 +44,7 @@ npm install
 npm run dev            # tsx server.ts
 npm run lint           # tsc --noEmit
 npm run build          # vite build + esbuild server.ts -> dist/server.cjs
-npm run final-audit    # node final-audit.mjs (1556 فحصاً)
+npm run final-audit    # node final-audit.mjs (1557 فحصاً)
 npm test               # storage + engine + auth + ... + db + runtime
 ```
 - التشغيل الإنتاجي: `PORT=4517 NODE_ENV=production APP_URL=http://localhost:4517 node dist/server.cjs`
@@ -5746,4 +5746,47 @@ TikTok/Telegram، ونموذج الجدولة. لا تدوير لأي مفتاح
 
 **لم يُمسّ:** Gemini/firewall، OAuth/الاعتمادات/الأسرار، DR، YouTube (المراقب/الطابور/التفويض)،
 TikTok/Telegram، ونموذج الجدولة، وحماية الخصوصية في /api/health و/api/readiness.
+
+
+## تصحيح إعلان قدرات منصة X — صدق بلا موصل رد (2026-10-12)
+
+**السبب الموثّق (سياسة X الرسمية):** `devcommunity.x.com/t/x-api-v2-update-addressing-llm-generated-spam/257909`
+تنصّ على أن **الرد عبر API مقيّد بالاستدعاء الصريح**: «replies via the API will only be
+permitted if the replier has been explicitly summoned by the original post's author»،
+ويسري على **كل المستويات self-serve** (Free/Basic/Pro/Pay-per-use)؛ **Enterprise وحده
+مستثنى**. الرد على منشورات الحساب نفسه مسموح، لكن **الرد على تعليقات العملاء بلا استدعاء
+محجوب**. فلا يوجد موصل رد تعليقات حقيقي قابل للاستخدام فعلياً لمنصة X في نطاق هذا المشروع.
+
+**الفجوة:** `engine/social/registry.ts` كان يُعلن لمنصة X:
+`capabilities: ['publish', 'analytics', 'comments', 'comment_reply', 'scheduling']` — أي
+`comments`/`comment_reply` (محجوبان بالسياسة أعلاه) و`analytics` **بلا أي استدعاء تحليلات
+فعلي مقابل** في الكود (لا `api.twitter.com/.../metrics` ولا `public_metrics`). يخالف قاعدة
+«لا قدرة مُعلنة بلا تنفيذ حقيقي يقابلها»، ويجعل `capabilityMatrix` يعلن X `reply/comments = AVAILABLE`.
+
+**الإصلاح (تصحيح إعلان فقط، بلا موصل جديد):**
+- `engine/social/registry.ts`: `capabilities` لـX صارت `['publish', 'scheduling']` (أُزيلت
+  `comments`/`comment_reply`/`analytics`). `realConnector` يبقى `false` (لم يُغيّر).
+- `engine/brain/strategy/capabilityMatrix.ts`: تعليق موثّق صريح لـX (تُشتق
+  `comments`/`reply`/`analytics` = `NOT_AVAILABLE` من السجل).
+- `engine/tests/platform.capabilities.test.ts`: فحصان جديدان (X ينشر ويجدول فقط؛ ولا يعلن
+  تعليقات/رد/تحليلات/رسائل بلا موصل).
+- `engine/tests/central.brain.upgrade.test.ts`: فحصان (X تعليقات/رد/تحليلات `NOT_AVAILABLE`؛
+  X ينشر ويجدول).
+- `final-audit.mjs`: فحص `x-registry-no-comment-reply-without-connector` يمنع عودة
+  `comment_reply`/`comments`/`analytics` لـX بلا موصل حقيقي مقابل (يقرأ كتلة X من السجل
+  ويتحقّق من غياب استدعاء تحليلات فعلي في `server.ts`). إجمالي الفحوص **1557**.
+- `engine/tests/social.routes.test.ts`: كان يستخدم X كمنصة «تعليقات بلا موصل حقيقي» لاختبار
+  مسار الرد العام (تسجيل محاكاة داخلي + حارس محتوى + سياسة تواصل + منع تكرار + حوكمة). بعد
+  تصحيح قدرات X لم يعد لهذا المسار أي منصة قابلة للوصول (كل منصات `comment_reply` الآن لها
+  موصل حقيقي فتُوجَّه 409 للمسار الحقيقي)، فأُعيدت صياغة الاختبار ليثبت الوضع الصادق: X تعيد
+  **501** (لا تدعم الرد)، ولا يُسجَّل أي رد محاكى. حُراس سلامة المحتوى/السياسة/منع التكرار/
+  الحوكمة تبقى مُغطّاة بالوحدة في `content.safety`/`context.governance`/`engine` وبالتكامل في
+  `facebook.connector`/`instagram.connector`/`youtube.connector`.
+
+**التأثير:** `/api/platforms/readiness-matrix` و`/api/platforms/control-plane` وكتلة القدرات
+في العقل المركزي تعرض الآن X بـ`read = NOT_SUPPORTED` و`reply = NOT_SUPPORTED` و
+`analytics = NOT_SUPPORTED` — بلا أي ادّعاء قدرة غير منفّذة.
+
+**لم يُمسّ:** أي موصل، ولا OAuth/الاعتمادات/الأسرار، ولا Gemini، ولا بقية المنصات، ولا
+`realConnector` لـX. تصحيح إعلان فقط.
 
