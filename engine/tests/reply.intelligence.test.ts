@@ -119,6 +119,12 @@ async function main() {
   const priceTrusted = replyOf('كم السعر؟', TRUSTED_FACTS);
   check('سؤال السعر بحقائق ⇒ يذكر السعر المسجّل فعلاً', priceTrusted.strategy === 'price_trusted' && priceTrusted.text.includes('1,250,000'), priceTrusted.text);
   check('السعر الموثوق يُوسَم في usedFacts', priceTrusted.usedFacts.includes('price'));
+
+  // القسط الشهري لا يُذكر إلا عند حقائق تقسيط مشتقّة صراحةً (سعر + قاعدة معتمدة).
+  const priceNoInstallment = replyOf('بكم التقسيط؟', TRUSTED_FACTS);
+  check('سعر بلا حقائق تقسيط ⇒ لا يُذكر قسط شهري', !priceNoInstallment.text.includes('القسط الشهري'), priceNoInstallment.text);
+  const priceInstallment = replyOf('بكم التقسيط؟', { ...TRUSTED_FACTS, monthlyInstallmentText: '85,000 د.ع' });
+  check('قسط مشتقّ ⇒ يُذكر الرقم الحقيقي ويُوسَم installment', priceInstallment.text.includes('85,000') && priceInstallment.usedFacts.includes('installment'), priceInstallment.text);
   const locTrusted = replyOf('وين موقعكم؟', TRUSTED_FACTS);
   check('سؤال الموقع بحقائق ⇒ يذكر الموقع المسجّل فعلاً', locTrusted.strategy === 'location_trusted' && locTrusted.text.includes('بغداد'), locTrusted.text);
 

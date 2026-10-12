@@ -103,6 +103,7 @@ import { PLATFORM_SPECS, platformSupports, hasRealConnector, credentialModeOf, i
 import { toUnifiedSocialEvent, buildIngestionEngine, buildIraqiPersonaPrompt, buildIngestionMatrix, type ShowroomFacts, type UnifiedSocialEvent } from "./engine/social/ingestionEngine";
 import { buildYouTubeSalesCorrelation } from "./engine/social/youtubeSalesCorrelation";
 import { sanitizePublicHealthPayload, findForbiddenPublicKeys, findDisallowedWatcherPublicKeys, sanitizePublicErrorMessage } from "./engine/social/healthPrivacy";
+import { reserveOperationRate } from "./engine/social/operationRateLimiter";
 import {
   validatePlatformText,
   shortenToPlatformLimit,
@@ -372,6 +373,21 @@ import {
   type WatcherOpportunity,
 } from "./engine/social/youtubeWatcher";
 import { createWatcherScheduler, type WatcherScheduler } from "./engine/social/youtubeWatcherScheduler";
+import {
+  META_WATCHER_PLATFORMS,
+  defaultMetaPollingState,
+  normalizeMetaPollingState,
+  metaPollingControlsView,
+  metaPollingPublicBlock,
+  metaWatcherGate,
+  decideMetaCommentAction,
+  resolveMetaReplyExecution,
+  isDeferredDecision as isMetaDeferredDecision,
+  releaseDeferredEntries as releaseMetaDeferredEntries,
+  metaExecutionDecisionFromCentral,
+  type MetaPlatform,
+  type MetaPollingState,
+} from "./engine/social/metaWatcher";
 import { acquireLease, releaseLease, normalizeLease, type DurableLease } from "./engine/social/durableLease";
 import { safeTimerCallback } from "./engine/social/safeTimer";
 import {
@@ -3741,18 +3757,22 @@ function buildContentBriefForBrain(productId?: string | null, productName?: stri
   };
 }
 /** حارس معدّل العمليات الخارجية لـYouTube (يمنع الإغراق؛ pending/retryable عند الحد). */
-const youtubeOperationWindows = new Map<string, number[]>();
 function youtubeRateLimit(kind: string): { allowed: boolean; retryAfterMs: number; limit: number } {
+  return operationRateLimit("youtube", kind);
+}
+
+/**
+ * حارس معدّل موحّد للعمليات الخارجية (YouTube + ردود/رسائل Meta) — مصدر واحد.
+ * النافذة داخل العملية (`Map`)، والحجز ذرّي متزامن (بلا `await` بين الفحص والإضافة)
+ * فيمنع تجاوز الحد عند تزامن العمليات ضمن نفس العملية — نفس ضمانة `replyInFlightLock`.
+ * الحد الافتراضي 20 عملية/دقيقة، وقابل للضبط بحدود آمنة عبر متغيّرات البيئة.
+ */
+const operationWindows = new Map<string, number[]>();
+function operationRateLimit(scope: string, kind: string): { allowed: boolean; retryAfterMs: number; limit: number } {
   const limit = Math.max(1, Number(process.env.YOUTUBE_OP_RATE_LIMIT || 20));
   const windowMs = Math.max(1000, Number(process.env.YOUTUBE_OP_RATE_WINDOW_MS || 60_000));
-  const key = `youtube:${kind}`;
-  const now = Date.now();
-  const decision = checkOperationRateLimit({ timestamps: youtubeOperationWindows.get(key) || [], now, limit, windowMs });
-  if (decision.allowed) {
-    const list = (youtubeOperationWindows.get(key) || []).filter((t) => now - t < windowMs);
-    list.push(now);
-    youtubeOperationWindows.set(key, list);
-  }
+  // الحجز الذرّي داخل `reserveOperationRate` (نفس النواة المختبَرة) يمنع التجاوز عند التزامن.
+  const decision = reserveOperationRate(operationWindows, `${scope}:${kind}`, Date.now(), limit, windowMs);
   return { allowed: decision.allowed, retryAfterMs: decision.retryAfterMs, limit };
 }
 /** آخر فئة خطأ من مزود Google (بلا أي قيمة) — تُغذّي الحالة الصادقة. */
@@ -4356,6 +4376,174 @@ async function ingestWebhookComments(input: {
 }
 
 // -------------------------------------------------------------
+// منفّذو ردود Meta المركزيون (Facebook/Instagram) — مصدر واحد يستخدمه مسار
+// المالك والمراقب التلقائي معاً، فلا يوجد مسار يتجاوز بوابة. كل بوابة تُفرض هنا:
+// وضع YouTube-only → الاتصال الموثق → وجود التعليق/الرسالة الحقيقية → التصنيف
+// وself-authored → حارس سلامة المحتوى → منع الرد المكرر → الإرسال الرسمي →
+// تسجيل الدليل (بلا ادّعاء تسليم بلا معرّف مزود) → التدقيق → الحفظ الدائم.
+// -------------------------------------------------------------
+type MetaReplyResult = { status: number; body: any };
+
+/**
+ * الرد الحقيقي على تعليق Facebook/Instagram (comment_reply). يُعيد دائماً بنية
+ * {status, body} ليستخدمه المسار والمراقب. لا يُعلن delivered=true بلا معرّف رد
+ * من Meta. يُطلق القفل الذرّي دائماً حتى عند الفشل.
+ */
+async function executeMetaCommentReply(
+  platform: 'facebook' | 'instagram',
+  input: { externalId: string; text: string; commentText?: string; productId?: string; productName?: string },
+  actor: string,
+): Promise<MetaReplyResult> {
+  const externalId = String(input.externalId || '').trim();
+  const text = String(input.text || '').trim();
+  const commentText = typeof input.commentText === 'string' ? input.commentText : '';
+  if (!externalId) return { status: 400, body: { success: false, error: `معرّف التعليق لدى ${platform === 'facebook' ? 'Facebook' : 'Instagram'} مطلوب لمنع الرد المكرر.` } };
+  if (!text) return { status: 400, body: { success: false, error: 'نص الرد مطلوب.' } };
+
+  const onlyBlock = youtubeOnlyBlock(platform);
+  if (onlyBlock.blocked) return { status: onlyBlock.status!, body: onlyBlock.body };
+
+  const lock = replyLockKey(platform, 'comment', externalId);
+  if (!acquireReplyLock(lock)) return { status: 409, body: { success: false, error: 'طلب رد آخر على نفس التعليق قيد التنفيذ بالفعل؛ انتظر حتى يكتمل لمنع التكرار.', code: 'REPLY_IN_PROGRESS' } };
+  try {
+    const conn: any = platformConnections.get(platform);
+    if (!conn || conn.status !== 'connected' || conn.providerVerified !== true) {
+      return { status: 409, body: { success: false, error: `${platform === 'facebook' ? 'Facebook' : 'Instagram'} غير متصل باتصال موثق؛ لا يمكن إرسال أي رد خارجي.` } };
+    }
+    // حارس معدّل موحّد (نفس مبدأ YouTube): يمنع إغراق الردود الخارجية. الحجز ذرّي
+    // متزامن فلا يتجاوز الحد عند تزامن العمليات (دورة/يدوي/مستدعيان معاً).
+    const rl = operationRateLimit(`${platform}:reply`, 'comment');
+    if (!rl.allowed) return { status: 429, body: { success: false, code: 'RATE_LIMITED', error: 'تم بلوغ حد معدّل الردود؛ العملية قابلة لإعادة المحاولة لاحقاً بلا إنشاء نسخة مكررة.', retryAfterMs: rl.retryAfterMs, limit: rl.limit } };
+    const comment = (workspace as any).socialComments.find((c: any) => c.platform === platform && c.externalId === externalId);
+    if (!comment) return { status: 404, body: { success: false, error: 'لا يوجد تعليق وارد بهذا المعرّف؛ لا إرسال بلا تعليق حقيقي.' } };
+
+    // 1) حمايات التصنيف وself-authored.
+    const classification = classifyComment(commentText || text);
+    if (!canAutoReply(classification)) return { status: 422, body: { success: false, error: classification.reviewReason || 'هذا التعليق يستوجب مراجعة بشرية قبل أي رد.', classification, requiresHumanReview: true } };
+    const ownNames = [String(workspace.showroom?.name || ''), 'معرض الغرابي'];
+    if (isSelfAuthored(comment.authorName, ownNames)) return { status: 409, body: { success: false, error: 'التعليق صادر من حساب المعرض؛ لا يُرد عليه لتجنب حلقة ردود.' } };
+
+    // 2) حارس سلامة المحتوى قبل أي إرسال.
+    const productId = typeof input.productId === 'string' ? input.productId.trim() : '';
+    const productName = typeof input.productName === 'string' ? input.productName.trim() : '';
+    const product = (workspace.products || []).find((p: any) => (productId && p.id === productId) || (productName && p.name === productName)) || null;
+    const replyFacts = buildFactsForProduct(product, Number(product?.downPaymentPercent || 0), Number(product?.durationMonths || 0));
+    const safety = analyzeBusinessClaims(text, replyFacts);
+    if (!safety.safe) return { status: 422, body: { success: false, error: 'نص الرد يحمل عرضاً تجارياً غير مسجّل، وتم إيقافه قبل أي إرسال.', contentSafety: { safe: false, violations: safety.blocked.map((v) => v.detail), codes: safety.blocked.map((v) => v.code) } } };
+
+    // 3) بوابة منع الرد المكرر (على معرّف التعليق الخارجي).
+    const history: ReplyRecord[] = (workspace as any).socialReplies.filter((r: any) => r.platform === platform).map((r: any) => ({ externalId: r.externalId, replyFingerprint: r.replyFingerprint, repliedAt: r.repliedAt }));
+    const decision = evaluateReplyGuard({ externalId, replyText: text, history });
+    if (!decision.allowed) return { status: 409, body: { success: false, error: decision.reason, guard: decision } };
+
+    // 4) إرسال حقيقي على مسار التعليقات فقط (comment_reply).
+    const result = platform === 'facebook'
+      ? await (async () => { const target = facebookReplyTarget(); if ('error' in target) return { ok: false, error: target.error, providerReplyId: null as string | null }; const r = await facebookClient().replyToComment(String(comment.replyTarget?.commentId || externalId), target.pageToken, text); return { ok: r.ok, error: r.error, providerReplyId: r.data?.providerCommentId || null }; })()
+      : await (async () => { const target = instagramReplyTarget(); if ('error' in target) return { ok: false, error: target.error, providerReplyId: null as string | null }; const r = await instagramClient().replyToComment(String(comment.replyTarget?.commentId || externalId), target.pageToken, text); return { ok: r.ok, error: r.error, providerReplyId: r.data?.providerCommentId || null }; })();
+    if (!result.ok && result.providerReplyId === null && /موثق|مهيأ/.test(String(result.error || ''))) {
+      return { status: 503, body: { success: false, error: result.error } };
+    }
+    const label = platform === 'facebook' ? 'Facebook' : 'Instagram';
+    const record = {
+      id: workspaceId('reply'), platform, externalId, text, kind: 'comment',
+      replyFingerprint: decision.fingerprint, classification,
+      contentSafety: { safe: true, violations: [] as string[], codes: [] as string[] },
+      repliedAt: new Date().toISOString(), createdBy: actor, simulated: false,
+      delivered: result.ok, providerReplyId: result.providerReplyId,
+      receipt: result.ok ? { provider: platform, commentId: result.providerReplyId, sentAt: new Date().toISOString() } : null,
+      deliveryError: result.ok ? null : (result.error || `فشل الرد على التعليق عبر ${label}.`),
+      reviewStatus: result.ok ? 'delivered' : 'failed',
+      note: result.ok ? `أُرسل الرد فعلياً عبر ${label} وثُبّت بمعرّف من Meta.` : `فشل الإرسال عبر ${label}؛ لم يُسجَّل أي تسليم.`,
+    };
+    if (!Array.isArray((workspace as any).socialReplies)) (workspace as any).socialReplies = [];
+    (workspace as any).socialReplies.unshift(record);
+    if ((workspace as any).socialReplies.length > WORKSPACE_MAX_SOCIAL_REPLIES) (workspace as any).socialReplies.length = WORKSPACE_MAX_SOCIAL_REPLIES;
+    audit(actor, result.ok ? `social_${platform}_comment_reply_sent` : `social_${platform}_comment_reply_failed`, `${externalId}:${result.ok ? 'delivered' : 'failed'}`);
+    await persistStateDurable();
+    if (!result.ok) return { status: 502, body: { success: false, delivered: false, simulated: false, reply: record, error: record.deliveryError } };
+    return { status: 200, body: { success: true, delivered: true, simulated: false, providerReplyId: record.providerReplyId, reply: record } };
+  } finally { releaseReplyLock(lock); }
+}
+
+/**
+ * الرد الحقيقي على رسالة Facebook/Instagram المباشرة (message_reply) — منفصل عن
+ * التعليقات. لا تسليم بلا معرّف رسالة من Meta.
+ */
+async function executeMetaMessageReply(
+  platform: 'facebook' | 'instagram',
+  input: { externalId: string; recipientId?: string; text: string; commentText?: string; productId?: string; productName?: string },
+  actor: string,
+): Promise<MetaReplyResult> {
+  const externalId = String(input.externalId || '').trim();
+  const recipientId = String(input.recipientId || '').trim();
+  const text = String(input.text || '').trim();
+  const commentText = typeof input.commentText === 'string' ? input.commentText : '';
+  if (!text) return { status: 400, body: { success: false, error: 'نص الرد مطلوب.' } };
+
+  const onlyBlock = youtubeOnlyBlock(platform);
+  if (onlyBlock.blocked) return { status: onlyBlock.status!, body: onlyBlock.body };
+
+  const earlyLock = replyLockKey(platform, 'message', externalId || `${platform}-msg:${recipientId}`);
+  if (!acquireReplyLock(earlyLock)) return { status: 409, body: { success: false, error: 'طلب رد آخر على نفس الرسالة قيد التنفيذ بالفعل؛ انتظر حتى يكتمل لمنع التكرار.', code: 'REPLY_IN_PROGRESS' } };
+  try {
+    const conn: any = platformConnections.get(platform);
+    if (!conn || conn.status !== 'connected' || conn.providerVerified !== true) {
+      return { status: 409, body: { success: false, error: `${platform === 'facebook' ? 'Facebook' : 'Instagram'} غير متصل باتصال موثق؛ لا يمكن إرسال أي رسالة خارجية.` } };
+    }
+    // حارس معدّل موحّد للرسائل (منفصل عن عدّاد التعليقات): يمنع إغراق رسائل Messenger/DM.
+    const rl = operationRateLimit(`${platform}:reply`, 'message');
+    if (!rl.allowed) return { status: 429, body: { success: false, code: 'RATE_LIMITED', error: 'تم بلوغ حد معدّل الرسائل؛ العملية قابلة لإعادة المحاولة لاحقاً بلا إنشاء نسخة مكررة.', retryAfterMs: rl.retryAfterMs, limit: rl.limit } };
+    const comment = (workspace as any).socialComments.find((c: any) => c.platform === platform && c.externalId === externalId && c.kind === 'message');
+    const targetRecipient = recipientId || String(comment?.replyTarget?.recipientId || '');
+    if (!comment && !targetRecipient) return { status: 404, body: { success: false, error: `لا توجد رسالة ${platform === 'facebook' ? 'Facebook' : 'Instagram'} واردة بهذا المعرّف؛ لا إرسال بلا رسالة حقيقية.` } };
+    const classification = classifyComment(commentText || text);
+    if (!canAutoReply(classification)) return { status: 422, body: { success: false, error: classification.reviewReason || 'هذه الرسالة تستوجب مراجعة بشرية قبل أي رد.', classification, requiresHumanReview: true } };
+
+    // حارس سلامة المحتوى قبل أي إرسال (نفس مبدأ مسار التعليق): لا عرض/سعر/رابط
+    // غير مسجّل يخرج للعميل. الحقائق من المنتج المرتبط المسجّل فقط (بلا اختراع).
+    const productId = typeof input.productId === 'string' ? input.productId.trim() : '';
+    const productName = typeof input.productName === 'string' ? input.productName.trim() : '';
+    const product = (workspace.products || []).find((p: any) => (productId && p.id === productId) || (productName && p.name === productName)) || null;
+    const replyFacts = buildFactsForProduct(product, Number(product?.downPaymentPercent || 0), Number(product?.durationMonths || 0));
+    const safety = analyzeBusinessClaims(text, replyFacts);
+    if (!safety.safe) {
+      return { status: 422, body: { success: false, error: 'نص الرسالة يحمل عرضاً تجارياً غير مسجّل، وتم إيقافه قبل أي إرسال.', contentSafety: { safe: false, violations: safety.blocked.map((v) => v.detail), codes: safety.blocked.map((v) => v.code) } } };
+    }
+
+    const guardExternalId = externalId || `${platform}-msg:${targetRecipient}`;
+    const history: ReplyRecord[] = (workspace as any).socialReplies.filter((r: any) => r.platform === platform && r.kind === 'message').map((r: any) => ({ externalId: r.externalId, replyFingerprint: r.replyFingerprint, repliedAt: r.repliedAt }));
+    const decision = evaluateReplyGuard({ externalId: guardExternalId, replyText: text, history });
+    if (!decision.allowed) return { status: 409, body: { success: false, error: decision.reason, guard: decision } };
+
+    const result = platform === 'facebook'
+      ? await (async () => { const target = facebookReplyTarget(); if ('error' in target) return { ok: false, error: target.error, providerReplyId: null as string | null, recipientId: null as string | null }; const r = await facebookClient().sendMessage(target.pageId, target.pageToken, targetRecipient, text); return { ok: r.ok, error: r.error, providerReplyId: r.data?.providerMessageId || null, recipientId: r.data?.recipientId ?? null }; })()
+      : await (async () => { const target = instagramReplyTarget(); if ('error' in target) return { ok: false, error: target.error, providerReplyId: null as string | null, recipientId: null as string | null }; const r = await instagramClient().sendMessage(target.pageId, target.pageToken, targetRecipient, text); return { ok: r.ok, error: r.error, providerReplyId: r.data?.providerMessageId || null, recipientId: r.data?.recipientId ?? null }; })();
+    if (!result.ok && result.providerReplyId === null && /موثق|مهيأ/.test(String(result.error || ''))) {
+      return { status: 503, body: { success: false, error: result.error } };
+    }
+    const label = platform === 'facebook' ? 'Facebook' : 'Instagram';
+    const record = {
+      id: workspaceId('reply'), platform, externalId: guardExternalId, text, kind: 'message',
+      replyFingerprint: decision.fingerprint, classification,
+      contentSafety: { safe: true, violations: [] as string[], codes: [] as string[] },
+      repliedAt: new Date().toISOString(), createdBy: actor, simulated: false,
+      delivered: result.ok, providerReplyId: result.providerReplyId,
+      receipt: result.ok ? { provider: platform, messageId: result.providerReplyId, recipientId: result.recipientId, sentAt: new Date().toISOString() } : null,
+      deliveryError: result.ok ? null : (result.error || `فشل إرسال الرسالة عبر ${label}.`),
+      reviewStatus: result.ok ? 'delivered' : 'failed',
+      note: result.ok ? `أُرسلت الرسالة فعلياً عبر ${label} وثُبّتت بمعرّف من Meta.` : `فشل الإرسال عبر ${label}؛ لم يُسجَّل أي تسليم.`,
+    };
+    if (!Array.isArray((workspace as any).socialReplies)) (workspace as any).socialReplies = [];
+    (workspace as any).socialReplies.unshift(record);
+    if ((workspace as any).socialReplies.length > WORKSPACE_MAX_SOCIAL_REPLIES) (workspace as any).socialReplies.length = WORKSPACE_MAX_SOCIAL_REPLIES;
+    audit(actor, result.ok ? `social_${platform}_message_reply_sent` : `social_${platform}_message_reply_failed`, `${guardExternalId}:${result.ok ? 'delivered' : 'failed'}`);
+    await persistStateDurable();
+    if (!result.ok) return { status: 502, body: { success: false, delivered: false, simulated: false, reply: record, error: record.deliveryError } };
+    return { status: 200, body: { success: true, delivered: true, simulated: false, providerReplyId: record.providerReplyId, reply: record } };
+  } finally { releaseReplyLock(earlyLock); }
+}
+
+// -------------------------------------------------------------
 // Telegram webhook — استقبال حقيقي للرسائل الواردة ثم تمريرها لمدير السوشيال.
 // التحقق: ترويسة Telegram السرّية بزمن ثابت. منع التكرار: update_id والمعرّف الخارجي.
 // لا يُقبل أي payload بلا تحقق، ولا يُخزَّن حدث مكرر.
@@ -4741,65 +4929,16 @@ function facebookReplyTarget(): { pageId: string; pageToken: string } | { error:
  */
 app.post("/api/platforms/facebook/reply", requireOwner, async (req,res)=>{
   const user=(req as any).user as {id:string};
-  const externalId=typeof req.body?.externalId==="string"?req.body.externalId.trim():"";
-  const text=typeof req.body?.text==="string"?req.body.text.trim():"";
-  const commentText=typeof req.body?.commentText==="string"?req.body.commentText:"";
-  if(!externalId) return res.status(400).json({success:false,error:"معرّف التعليق لدى Facebook مطلوب لمنع الرد المكرر."});
-  if(!text) return res.status(400).json({success:false,error:"نص الرد مطلوب."});
-  // REL-01: حجز ذرّي لمنع رد مكرر فعلي عند تزامن طلبين على نفس التعليق (نقرة
-  // مزدوجة/إعادة محاولة) — طلب ثانٍ متزامن يُرفض فوراً بلا أي إرسال خارجي.
-  const replyLock=replyLockKey("facebook","comment",externalId);
-  if(!acquireReplyLock(replyLock)) return res.status(409).json({success:false,error:"طلب رد آخر على نفس التعليق قيد التنفيذ بالفعل؛ انتظر حتى يكتمل لمنع التكرار.",code:"REPLY_IN_PROGRESS"});
-  try{
-  const conn:any=platformConnections.get("facebook");
-  if(!conn||conn.status!=="connected"||conn.providerVerified!==true){
-    return res.status(409).json({success:false,error:"Facebook غير متصل باتصال موثق؛ لا يمكن إرسال أي رد خارجي."});
-  }
-  const comment=(workspace as any).socialComments.find((c:any)=>c.platform==="facebook"&&c.externalId===externalId);
-  if(!comment) return res.status(404).json({success:false,error:"لا يوجد تعليق وارد بهذا المعرّف؛ لا إرسال بلا تعليق حقيقي."});
-
-  // 1) حمايات التصنيف وself-authored.
-  const classification=classifyComment(commentText||text);
-  if(!canAutoReply(classification)) return res.status(422).json({success:false,error:classification.reviewReason||"هذا التعليق يستوجب مراجعة بشرية قبل أي رد.",classification,requiresHumanReview:true});
-  const ownNames=[String(workspace.showroom?.name||""),"معرض الغرابي"];
-  if(isSelfAuthored(comment.authorName,ownNames)) return res.status(409).json({success:false,error:"التعليق صادر من حساب المعرض؛ لا يُرد عليه لتجنب حلقة ردود."});
-
-  // 2) حارس سلامة المحتوى قبل أي إرسال.
-  const productId=typeof req.body?.productId==="string"?req.body.productId.trim():"";
-  const productName=typeof req.body?.productName==="string"?req.body.productName.trim():"";
-  const product=(workspace.products||[]).find((p:any)=>(productId&&p.id===productId)||(productName&&p.name===productName))||null;
-  const replyFacts=buildFactsForProduct(product,Number(product?.downPaymentPercent||0),Number(product?.durationMonths||0));
-  const safety=analyzeBusinessClaims(text,replyFacts);
-  if(!safety.safe) return res.status(422).json({success:false,error:"نص الرد يحمل عرضاً تجارياً غير مسجّل، وتم إيقافه قبل أي إرسال.",contentSafety:{safe:false,violations:safety.blocked.map((v)=>v.detail),codes:safety.blocked.map((v)=>v.code)}});
-
-  // 3) بوابة منع الرد المكرر (على معرّف التعليق الخارجي).
-  const history:ReplyRecord[]=(workspace as any).socialReplies.filter((r:any)=>r.platform==="facebook").map((r:any)=>({externalId:r.externalId,replyFingerprint:r.replyFingerprint,repliedAt:r.repliedAt}));
-  const decision=evaluateReplyGuard({externalId,replyText:text,history});
-  if(!decision.allowed) return res.status(409).json({success:false,error:decision.reason,guard:decision});
-
-  // 4) إرسال حقيقي على مسار التعليقات فقط (comment_reply).
-  const target=facebookReplyTarget();
-  if("error" in target) return res.status(503).json({success:false,error:target.error});
-  const result=await facebookClient().replyToComment(String(comment.replyTarget?.commentId||externalId),target.pageToken,text);
-  const record={
-    id:workspaceId("reply"),platform:"facebook",externalId,text,kind:"comment",
-    replyFingerprint:decision.fingerprint,classification,
-    contentSafety:{safe:true,violations:[] as string[],codes:[] as string[]},
-    repliedAt:new Date().toISOString(),createdBy:user.id,simulated:false,
-    delivered:result.ok,providerReplyId:result.data?.providerCommentId||null,
-    receipt:result.ok?{provider:"facebook",commentId:result.data?.providerCommentId,sentAt:new Date().toISOString()}:null,
-    deliveryError:result.ok?null:(result.error||"فشل الرد على التعليق عبر Facebook."),
-    reviewStatus:result.ok?"delivered":"failed",
-    note:result.ok?"أُرسل الرد فعلياً عبر Facebook وثُبّت بمعرّف من Meta.":"فشل الإرسال عبر Facebook؛ لم يُسجَّل أي تسليم.",
-  };
-  if(!Array.isArray((workspace as any).socialReplies)) (workspace as any).socialReplies=[];
-  (workspace as any).socialReplies.unshift(record);
-  if((workspace as any).socialReplies.length>WORKSPACE_MAX_SOCIAL_REPLIES) (workspace as any).socialReplies.length=WORKSPACE_MAX_SOCIAL_REPLIES;
-  audit(user.id,result.ok?"social_facebook_comment_reply_sent":"social_facebook_comment_reply_failed",`${externalId}:${result.ok?"delivered":"failed"}`);
-  await persistStateDurable();
-  if(!result.ok) return res.status(502).json({success:false,delivered:false,simulated:false,reply:record,error:record.deliveryError});
-  res.json({success:true,delivered:true,simulated:false,providerReplyId:record.providerReplyId,reply:record});
-  } finally { releaseReplyLock(replyLock); }
+  // منفّذ مركزي واحد (executeMetaCommentReply): نفس البوابات التي يستخدمها المراقب
+  // التلقائي، فلا مسار يتجاوز حارساً. لا تسليم بلا معرّف من Meta.
+  const result=await executeMetaCommentReply("facebook",{
+    externalId:typeof req.body?.externalId==="string"?req.body.externalId:"",
+    text:typeof req.body?.text==="string"?req.body.text:"",
+    commentText:typeof req.body?.commentText==="string"?req.body.commentText:"",
+    productId:typeof req.body?.productId==="string"?req.body.productId:"",
+    productName:typeof req.body?.productName==="string"?req.body.productName:"",
+  },user.id);
+  res.status(result.status).json(result.body);
 });
 
 /**
@@ -4808,53 +4947,13 @@ app.post("/api/platforms/facebook/reply", requireOwner, async (req,res)=>{
  */
 app.post("/api/platforms/facebook/message-reply", requireOwner, async (req,res)=>{
   const user=(req as any).user as {id:string};
-  const externalId=typeof req.body?.externalId==="string"?req.body.externalId.trim():"";
-  const recipientId=typeof req.body?.recipientId==="string"?req.body.recipientId.trim():"";
-  const text=typeof req.body?.text==="string"?req.body.text.trim():"";
-  const commentText=typeof req.body?.commentText==="string"?req.body.commentText:"";
-  if(!text) return res.status(400).json({success:false,error:"نص الرد مطلوب."});
-  // REL-01: حجز مبكر بمعرّف المستلم (بديل احتياطي للمعرّف الخارجي قبل تحديده
-  // أدناه)، ثم إعادة الحجز بالمفتاح النهائي فوراً دون أي await بينهما.
-  const earlyLock=replyLockKey("facebook","message",externalId||`fb-msg:${recipientId}`);
-  if(!acquireReplyLock(earlyLock)) return res.status(409).json({success:false,error:"طلب رد آخر على نفس الرسالة قيد التنفيذ بالفعل؛ انتظر حتى يكتمل لمنع التكرار.",code:"REPLY_IN_PROGRESS"});
-  try{
-  const conn:any=platformConnections.get("facebook");
-  if(!conn||conn.status!=="connected"||conn.providerVerified!==true){
-    return res.status(409).json({success:false,error:"Facebook غير متصل باتصال موثق؛ لا يمكن إرسال أي رسالة خارجية."});
-  }
-  const comment=(workspace as any).socialComments.find((c:any)=>c.platform==="facebook"&&c.externalId===externalId&&c.kind==="message");
-  const targetRecipient=recipientId||String(comment?.replyTarget?.recipientId||"");
-  if(!comment&&!targetRecipient) return res.status(404).json({success:false,error:"لا توجد رسالة Facebook واردة بهذا المعرّف؛ لا إرسال بلا رسالة حقيقية."});
-  const classification=classifyComment(commentText||text);
-  if(!canAutoReply(classification)) return res.status(422).json({success:false,error:classification.reviewReason||"هذه الرسالة تستوجب مراجعة بشرية قبل أي رد.",classification,requiresHumanReview:true});
-
-  const guardExternalId=externalId||`fb-msg:${targetRecipient}`;
-  const history:ReplyRecord[]=(workspace as any).socialReplies.filter((r:any)=>r.platform==="facebook"&&r.kind==="message").map((r:any)=>({externalId:r.externalId,replyFingerprint:r.replyFingerprint,repliedAt:r.repliedAt}));
-  const decision=evaluateReplyGuard({externalId:guardExternalId,replyText:text,history});
-  if(!decision.allowed) return res.status(409).json({success:false,error:decision.reason,guard:decision});
-
-  const target=facebookReplyTarget();
-  if("error" in target) return res.status(503).json({success:false,error:target.error});
-  const result=await facebookClient().sendMessage(target.pageId,target.pageToken,targetRecipient,text);
-  const record={
-    id:workspaceId("reply"),platform:"facebook",externalId:guardExternalId,text,kind:"message",
-    replyFingerprint:decision.fingerprint,classification,
-    contentSafety:{safe:true,violations:[] as string[],codes:[] as string[]},
-    repliedAt:new Date().toISOString(),createdBy:user.id,simulated:false,
-    delivered:result.ok,providerReplyId:result.data?.providerMessageId||null,
-    receipt:result.ok?{provider:"facebook",messageId:result.data?.providerMessageId,recipientId:result.data?.recipientId,sentAt:new Date().toISOString()}:null,
-    deliveryError:result.ok?null:(result.error||"فشل إرسال الرسالة عبر Facebook."),
-    reviewStatus:result.ok?"delivered":"failed",
-    note:result.ok?"أُرسلت الرسالة فعلياً عبر Facebook وثُبّتت بمعرّف من Meta.":"فشل الإرسال عبر Facebook؛ لم يُسجَّل أي تسليم.",
-  };
-  if(!Array.isArray((workspace as any).socialReplies)) (workspace as any).socialReplies=[];
-  (workspace as any).socialReplies.unshift(record);
-  if((workspace as any).socialReplies.length>WORKSPACE_MAX_SOCIAL_REPLIES) (workspace as any).socialReplies.length=WORKSPACE_MAX_SOCIAL_REPLIES;
-  audit(user.id,result.ok?"social_facebook_message_reply_sent":"social_facebook_message_reply_failed",`${guardExternalId}:${result.ok?"delivered":"failed"}`);
-  await persistStateDurable();
-  if(!result.ok) return res.status(502).json({success:false,delivered:false,simulated:false,reply:record,error:record.deliveryError});
-  res.json({success:true,delivered:true,simulated:false,providerReplyId:record.providerReplyId,reply:record});
-  } finally { releaseReplyLock(earlyLock); }
+  const result=await executeMetaMessageReply("facebook",{
+    externalId:typeof req.body?.externalId==="string"?req.body.externalId:"",
+    recipientId:typeof req.body?.recipientId==="string"?req.body.recipientId:"",
+    text:typeof req.body?.text==="string"?req.body.text:"",
+    commentText:typeof req.body?.commentText==="string"?req.body.commentText:"",
+  },user.id);
+  res.status(result.status).json(result.body);
 });
 
 // -------------------------------------------------------------
@@ -4960,60 +5059,14 @@ function instagramReplyTarget(): { pageId: string; pageToken: string; igAccountI
  */
 app.post("/api/platforms/instagram/reply", requireOwner, async (req,res)=>{
   const user=(req as any).user as {id:string};
-  const externalId=typeof req.body?.externalId==="string"?req.body.externalId.trim():"";
-  const text=typeof req.body?.text==="string"?req.body.text.trim():"";
-  const commentText=typeof req.body?.commentText==="string"?req.body.commentText:"";
-  if(!externalId) return res.status(400).json({success:false,error:"معرّف التعليق لدى Instagram مطلوب لمنع الرد المكرر."});
-  if(!text) return res.status(400).json({success:false,error:"نص الرد مطلوب."});
-  // REL-01: حجز ذرّي لمنع رد مكرر فعلي عند تزامن طلبين على نفس التعليق.
-  const replyLock=replyLockKey("instagram","comment",externalId);
-  if(!acquireReplyLock(replyLock)) return res.status(409).json({success:false,error:"طلب رد آخر على نفس التعليق قيد التنفيذ بالفعل؛ انتظر حتى يكتمل لمنع التكرار.",code:"REPLY_IN_PROGRESS"});
-  try{
-  const conn:any=platformConnections.get("instagram");
-  if(!conn||conn.status!=="connected"||conn.providerVerified!==true){
-    return res.status(409).json({success:false,error:"Instagram غير متصل باتصال موثق؛ لا يمكن إرسال أي رد خارجي."});
-  }
-  const comment=(workspace as any).socialComments.find((c:any)=>c.platform==="instagram"&&c.externalId===externalId);
-  if(!comment) return res.status(404).json({success:false,error:"لا يوجد تعليق وارد بهذا المعرّف؛ لا إرسال بلا تعليق حقيقي."});
-
-  const classification=classifyComment(commentText||text);
-  if(!canAutoReply(classification)) return res.status(422).json({success:false,error:classification.reviewReason||"هذا التعليق يستوجب مراجعة بشرية قبل أي رد.",classification,requiresHumanReview:true});
-  const ownNames=[String(workspace.showroom?.name||""),"معرض الغرابي"];
-  if(isSelfAuthored(comment.authorName,ownNames)) return res.status(409).json({success:false,error:"التعليق صادر من حساب المعرض؛ لا يُرد عليه لتجنب حلقة ردود."});
-
-  const productId=typeof req.body?.productId==="string"?req.body.productId.trim():"";
-  const productName=typeof req.body?.productName==="string"?req.body.productName.trim():"";
-  const product=(workspace.products||[]).find((p:any)=>(productId&&p.id===productId)||(productName&&p.name===productName))||null;
-  const replyFacts=buildFactsForProduct(product,Number(product?.downPaymentPercent||0),Number(product?.durationMonths||0));
-  const safety=analyzeBusinessClaims(text,replyFacts);
-  if(!safety.safe) return res.status(422).json({success:false,error:"نص الرد يحمل عرضاً تجارياً غير مسجّل، وتم إيقافه قبل أي إرسال.",contentSafety:{safe:false,violations:safety.blocked.map((v)=>v.detail),codes:safety.blocked.map((v)=>v.code)}});
-
-  const history:ReplyRecord[]=(workspace as any).socialReplies.filter((r:any)=>r.platform==="instagram").map((r:any)=>({externalId:r.externalId,replyFingerprint:r.replyFingerprint,repliedAt:r.repliedAt}));
-  const decision=evaluateReplyGuard({externalId,replyText:text,history});
-  if(!decision.allowed) return res.status(409).json({success:false,error:decision.reason,guard:decision});
-
-  const target=instagramReplyTarget();
-  if("error" in target) return res.status(503).json({success:false,error:target.error});
-  const result=await instagramClient().replyToComment(String(comment.replyTarget?.commentId||externalId),target.pageToken,text);
-  const record={
-    id:workspaceId("reply"),platform:"instagram",externalId,text,kind:"comment",
-    replyFingerprint:decision.fingerprint,classification,
-    contentSafety:{safe:true,violations:[] as string[],codes:[] as string[]},
-    repliedAt:new Date().toISOString(),createdBy:user.id,simulated:false,
-    delivered:result.ok,providerReplyId:result.data?.providerCommentId||null,
-    receipt:result.ok?{provider:"instagram",commentId:result.data?.providerCommentId,sentAt:new Date().toISOString()}:null,
-    deliveryError:result.ok?null:(result.error||"فشل الرد على التعليق عبر Instagram."),
-    reviewStatus:result.ok?"delivered":"failed",
-    note:result.ok?"أُرسل الرد فعلياً عبر Instagram وثُبّت بمعرّف من Meta.":"فشل الإرسال عبر Instagram؛ لم يُسجَّل أي تسليم.",
-  };
-  if(!Array.isArray((workspace as any).socialReplies)) (workspace as any).socialReplies=[];
-  (workspace as any).socialReplies.unshift(record);
-  if((workspace as any).socialReplies.length>WORKSPACE_MAX_SOCIAL_REPLIES) (workspace as any).socialReplies.length=WORKSPACE_MAX_SOCIAL_REPLIES;
-  audit(user.id,result.ok?"social_instagram_comment_reply_sent":"social_instagram_comment_reply_failed",`${externalId}:${result.ok?"delivered":"failed"}`);
-  await persistStateDurable();
-  if(!result.ok) return res.status(502).json({success:false,delivered:false,simulated:false,reply:record,error:record.deliveryError});
-  res.json({success:true,delivered:true,simulated:false,providerReplyId:record.providerReplyId,reply:record});
-  } finally { releaseReplyLock(replyLock); }
+  const result=await executeMetaCommentReply("instagram",{
+    externalId:typeof req.body?.externalId==="string"?req.body.externalId:"",
+    text:typeof req.body?.text==="string"?req.body.text:"",
+    commentText:typeof req.body?.commentText==="string"?req.body.commentText:"",
+    productId:typeof req.body?.productId==="string"?req.body.productId:"",
+    productName:typeof req.body?.productName==="string"?req.body.productName:"",
+  },user.id);
+  res.status(result.status).json(result.body);
 });
 
 /**
@@ -5022,52 +5075,13 @@ app.post("/api/platforms/instagram/reply", requireOwner, async (req,res)=>{
  */
 app.post("/api/platforms/instagram/message-reply", requireOwner, async (req,res)=>{
   const user=(req as any).user as {id:string};
-  const externalId=typeof req.body?.externalId==="string"?req.body.externalId.trim():"";
-  const recipientId=typeof req.body?.recipientId==="string"?req.body.recipientId.trim():"";
-  const text=typeof req.body?.text==="string"?req.body.text.trim():"";
-  const commentText=typeof req.body?.commentText==="string"?req.body.commentText:"";
-  if(!text) return res.status(400).json({success:false,error:"نص الرد مطلوب."});
-  // REL-01: حجز مبكر لمنع رد مكرر فعلي عند تزامن طلبين (نقرة مزدوجة/إعادة محاولة).
-  const earlyLock=replyLockKey("instagram","message",externalId||`ig-msg:${recipientId}`);
-  if(!acquireReplyLock(earlyLock)) return res.status(409).json({success:false,error:"طلب رد آخر على نفس الرسالة قيد التنفيذ بالفعل؛ انتظر حتى يكتمل لمنع التكرار.",code:"REPLY_IN_PROGRESS"});
-  try{
-  const conn:any=platformConnections.get("instagram");
-  if(!conn||conn.status!=="connected"||conn.providerVerified!==true){
-    return res.status(409).json({success:false,error:"Instagram غير متصل باتصال موثق؛ لا يمكن إرسال أي رسالة خارجية."});
-  }
-  const comment=(workspace as any).socialComments.find((c:any)=>c.platform==="instagram"&&c.externalId===externalId&&c.kind==="message");
-  const targetRecipient=recipientId||String(comment?.replyTarget?.recipientId||"");
-  if(!comment&&!targetRecipient) return res.status(404).json({success:false,error:"لا توجد رسالة Instagram واردة بهذا المعرّف؛ لا إرسال بلا رسالة حقيقية."});
-  const classification=classifyComment(commentText||text);
-  if(!canAutoReply(classification)) return res.status(422).json({success:false,error:classification.reviewReason||"هذه الرسالة تستوجب مراجعة بشرية قبل أي رد.",classification,requiresHumanReview:true});
-
-  const guardExternalId=externalId||`ig-msg:${targetRecipient}`;
-  const history:ReplyRecord[]=(workspace as any).socialReplies.filter((r:any)=>r.platform==="instagram"&&r.kind==="message").map((r:any)=>({externalId:r.externalId,replyFingerprint:r.replyFingerprint,repliedAt:r.repliedAt}));
-  const decision=evaluateReplyGuard({externalId:guardExternalId,replyText:text,history});
-  if(!decision.allowed) return res.status(409).json({success:false,error:decision.reason,guard:decision});
-
-  const target=instagramReplyTarget();
-  if("error" in target) return res.status(503).json({success:false,error:target.error});
-  const result=await instagramClient().sendMessage(target.pageId,target.pageToken,targetRecipient,text);
-  const record={
-    id:workspaceId("reply"),platform:"instagram",externalId:guardExternalId,text,kind:"message",
-    replyFingerprint:decision.fingerprint,classification,
-    contentSafety:{safe:true,violations:[] as string[],codes:[] as string[]},
-    repliedAt:new Date().toISOString(),createdBy:user.id,simulated:false,
-    delivered:result.ok,providerReplyId:result.data?.providerMessageId||null,
-    receipt:result.ok?{provider:"instagram",messageId:result.data?.providerMessageId,recipientId:result.data?.recipientId,sentAt:new Date().toISOString()}:null,
-    deliveryError:result.ok?null:(result.error||"فشل إرسال الرسالة عبر Instagram."),
-    reviewStatus:result.ok?"delivered":"failed",
-    note:result.ok?"أُرسلت الرسالة فعلياً عبر Instagram وثُبّتت بمعرّف من Meta.":"فشل الإرسال عبر Instagram؛ لم يُسجَّل أي تسليم.",
-  };
-  if(!Array.isArray((workspace as any).socialReplies)) (workspace as any).socialReplies=[];
-  (workspace as any).socialReplies.unshift(record);
-  if((workspace as any).socialReplies.length>WORKSPACE_MAX_SOCIAL_REPLIES) (workspace as any).socialReplies.length=WORKSPACE_MAX_SOCIAL_REPLIES;
-  audit(user.id,result.ok?"social_instagram_message_reply_sent":"social_instagram_message_reply_failed",`${guardExternalId}:${result.ok?"delivered":"failed"}`);
-  await persistStateDurable();
-  if(!result.ok) return res.status(502).json({success:false,delivered:false,simulated:false,reply:record,error:record.deliveryError});
-  res.json({success:true,delivered:true,simulated:false,providerReplyId:record.providerReplyId,reply:record});
-  } finally { releaseReplyLock(earlyLock); }
+  const result=await executeMetaMessageReply("instagram",{
+    externalId:typeof req.body?.externalId==="string"?req.body.externalId:"",
+    recipientId:typeof req.body?.recipientId==="string"?req.body.recipientId:"",
+    text:typeof req.body?.text==="string"?req.body.text:"",
+    commentText:typeof req.body?.commentText==="string"?req.body.commentText:"",
+  },user.id);
+  res.status(result.status).json(result.body);
 });
 
 // -------------------------------------------------------------
@@ -6968,6 +6982,417 @@ function watcherStatusBlockPublic() {
 }
 
 // -----------------------------------------------------------------------------
+// مراقب الردود لـ Facebook/Instagram (Meta Reply Watcher) — يغلق الفجوة الحقيقية:
+// تعليقات/رسائل Meta الواردة كانت تُحفظ بلا معالجة تلقائية (رد/تصعيد/تأجيل).
+// يستهلك نفس محرّك القرار في youtubeWatcher (سلطة قرار واحدة) + نفس منفّذي Meta
+// المركزيين، فلا مسار يتجاوز بوابة. آمن افتراضياً (autoReply معطّل).
+// -----------------------------------------------------------------------------
+const META_POLLING_STATE_KEY = "metaPolling";
+let metaPollingState: MetaPollingState = defaultMetaPollingState();
+let metaPollingLastRun: { newDetected: number; replied: number; escalated: number; skipped: number; failed: number; deferred: number; at: string } | null = null;
+let metaPollingLease: DurableLease | null = null;
+const META_POLLING_LEASE_TTL_MS = 5 * 60 * 1000;
+const META_POLLING_LEASE_OWNER = `meta-watcher-${process.pid}-${Date.now().toString(36)}`;
+const META_POLLING_MAX_PROCESSED = 5000;
+const META_POLLING_MAX_PER_CYCLE = 15;
+// ملاحظة مهمة (تُعلن في التقرير): جلب التعليقات القديمة عبر الحقل المتداخل على
+// /feed أو /media يحتاج نطاق القراءة (pages_read_user_content / instagram_manage_comments).
+// بلا هذا النطاق يُعاد `scope`/`permission` error، ولا نُعلن نجاحاً — Webhook يبقى
+// المصدر الأساسي، وهذا سحب احتياطي/تسوية فقط.
+
+function metaPollingCadenceMs(): number {
+  const c = metaPollingState.controls;
+  return Math.max(1, cadenceMinutesToMs(c.cadenceMinutes));
+}
+function metaPollingDue(): boolean {
+  if (!metaPollingState.lastPollAt) return true;
+  const t = Date.parse(metaPollingState.lastPollAt);
+  if (!Number.isFinite(t)) return true;
+  return Date.now() - t >= metaPollingCadenceMs();
+}
+
+async function persistMetaPollingState(): Promise<void> {
+  if (!storageReady) return;
+  try {
+    await storageAdapter.write(META_POLLING_STATE_KEY, {
+      controls: metaPollingState.controls,
+      processed: metaPollingState.processed.slice(0, META_POLLING_MAX_PROCESSED),
+      lastPollAt: metaPollingState.lastPollAt,
+      lastError: metaPollingState.lastError,
+      consecutiveErrors: metaPollingState.consecutiveErrors,
+      pollCount: metaPollingState.pollCount,
+      lastScanned: metaPollingState.lastScanned,
+      lease: metaPollingLease,
+    });
+  } catch { /* يُعلن عبر حالة الحفظ العامة */ }
+}
+
+/** يسترجع حالة مراقب Meta (بعد restart) بلا طمس الحالة القائمة. */
+function applyMetaPollingStateSnapshot(raw: any): void {
+  if (!raw || typeof raw !== "object") return;
+  metaPollingState = normalizeMetaPollingState(raw);
+  metaPollingLease = normalizeLease(raw.lease);
+  const c = metaPollingState.controls;
+  if (c.enabled && !c.paused && c.autoReply) {
+    const r = releaseMetaDeferredEntries(metaPollingState.processed);
+    metaPollingState.processed = r.processed;
+  }
+}
+
+/** حالة عامة لمراقب Meta (حقول تقنية فقط — بلا اسم/نص عميل) للنقطتين العامتين. */
+function metaPollingPublicStatus() {
+  const block = metaPollingPublicBlock(metaPollingState);
+  // نفس تنقية رسالة الخطأ العامة (رمز تقني فقط) المستخدمة في كتلة YouTube.
+  return { ...block, lastError: watcherPublicError(block.lastError) };
+}
+
+/** حالة مراقب Meta الكاملة للمالك (تتضمّن السجل التفصيلي — مسار محمي فقط). */
+function metaPollingStatusBlock() {
+  const s = metaPollingState;
+  return {
+    ...metaPollingPublicStatus(),
+    controls: metaPollingControlsView(s.controls),
+    platforms: [...META_WATCHER_PLATFORMS],
+    lastRun: metaPollingLastRun,
+    processedCount: s.processed.length,
+    // آخر 50 سجلاً معالَجاً (اسم/نص/قرار/سبب) — للمالك فقط عبر requireOwner.
+    recent: s.processed.slice(0, 50),
+  };
+}
+
+/** يجلب تعليقات منصة Meta الحقيقية (قراءة فقط) عبر العميل الرسمي — بلا كتابة. */
+async function fetchMetaInboundComments(platform: MetaPlatform): Promise<{ ok: boolean; comments?: any[]; error?: string; code?: string }> {
+  try {
+    if (platform === "facebook") {
+      const pageId = String(getProviderToken("facebook")?.pageId || "");
+      const token = facebookPageToken(pageId || undefined);
+      if (!pageId || !token) return { ok: false, error: "لا صفحة Facebook موثقة.", code: "NOT_CONNECTED" };
+      const res = await facebookClient().listPageComments(pageId, token, 25);
+      if (!res.ok) return { ok: false, error: res.error || "فشل قراءة تعليقات Facebook.", code: "FETCH_FAILED" };
+      return { ok: true, comments: res.data || [] };
+    }
+    const igAccountId = String(getProviderToken("instagram")?.igAccountId || "");
+    const token = instagramPageToken();
+    if (!igAccountId || !token) return { ok: false, error: "لا حساب Instagram موثّق.", code: "NOT_CONNECTED" };
+    const res = await instagramClient().listMediaComments(igAccountId, token, 10, 25);
+    if (!res.ok) return { ok: false, error: res.error || "فشل قراءة تعليقات Instagram.", code: "FETCH_FAILED" };
+    return { ok: true, comments: res.data || [] };
+  } catch (e: any) {
+    return { ok: false, error: String(e?.message || "فشل الجلب."), code: "FETCH_ERROR" };
+  }
+}
+
+/**
+ * يحلّ المنتج المرتبط بمنشور خارجي بمعرّفه — دليل صريح فقط (بلا تخمين): عنصر
+ * طابور محتوى منشور فعلاً على نفس المعرّف ومربوط بمنتج، أو سجل نشر حقيقي على
+ * نفس المعرّف يحدّد منتجاً. عند تعدّد المنتجات أو غياب الدليل ⇒ `null` (فلا
+ * يُخترع سعر/قسط). معرّف-فقط ⇒ يعمل لأي منصة (Facebook/Instagram/YouTube).
+ */
+function resolveProductForPost(postExternalId: string | null): any | null {
+  const pid = String(postExternalId || '').trim();
+  if (!pid) return null;
+  const ids = new Set<string>();
+  for (const it of contentQueue) {
+    if (String(it.externalVideoId || '') === pid && it.productId) ids.add(String(it.productId));
+  }
+  for (const rec of ((workspace as any).publishRecords || [])) {
+    const recPost = String(rec?.externalVideoId || rec?.providerPostId || '');
+    if (recPost === pid && rec?.productId) ids.add(String(rec.productId));
+  }
+  if (ids.size !== 1) return null;
+  const id = [...ids][0];
+  return (workspace.products || []).find((p: any) => String(p.id) === id) || null;
+}
+
+/** هل الرد على هذه المنصة جاهز فعلاً الآن (اتصال موثق + موصل حقيقي)؟ */
+function metaReplyReady(platform: MetaPlatform): { ready: boolean; code?: string; reason?: string } {
+  const conn: any = platformConnections.get(platform);
+  if (!conn || conn.status !== "connected" || conn.providerVerified !== true) {
+    return { ready: false, code: "NOT_CONNECTED", reason: `${platform} غير متصل باتصال موثق.` };
+  }
+  return { ready: true };
+}
+
+/**
+ * دورة مراقب Meta: تجلب التعليقات الجديدة (قراءة فقط)، تُسجّلها كتعليقات واردة
+ * (منع تكرار بالمعرّف الخارجي)، تُصنّفها، تُصدر قراراً حتمياً (نفس محرّك YouTube)،
+ * ثم تنفّذ الرد عبر المنفّذ المركزي — أو تصعّد/تؤجّل. لا تنفيذ خارجي بلا autoReply.
+ */
+async function runMetaWatcherCycle(trigger: string): Promise<{ ok: boolean; trigger: string; result?: any; error?: string }> {
+  const leaseRes = acquireLease(metaPollingLease, { owner: META_POLLING_LEASE_OWNER, nowMs: Date.now(), ttlMs: META_POLLING_LEASE_TTL_MS });
+  if (!leaseRes.acquired) {
+    if (leaseRes.recovered) metaPollingLease = leaseRes.lease;
+    return { ok: true, trigger, result: { skipped: "locked" } };
+  }
+  metaPollingLease = leaseRes.lease;
+  const controls = normalizeMetaWatcherControlsForCycle();
+  let newDetected = 0, replied = 0, escalated = 0, skipped = 0, failed = 0, deferred = 0;
+  try {
+    for (const platform of META_WATCHER_PLATFORMS) {
+      const conn: any = platformConnections.get(platform);
+      if (!conn || conn.status !== "connected" || conn.providerVerified !== true) continue;
+      const fetched = await fetchMetaInboundComments(platform);
+      // فشل سحب التعليقات (قراءة فقط) لا يمنع معالجة الرسائل الواردة عبر webhook
+      // (مصدر مستقل)، لكنه يُعلن كخطأ حقيقي (لا نجاح صامت).
+      if (!fetched.ok) {
+        metaPollingState.lastError = fetched.error || "fetch failed";
+        metaPollingState.consecutiveErrors += 1;
+      } else {
+        metaPollingState.lastError = null;
+        metaPollingState.consecutiveErrors = 0;
+      }
+      const ownNames = [String(workspace.showroom?.name || ""), "معرض الغرابي"];
+      const pageIdFb = String(getProviderToken("facebook")?.pageId || "");
+      const igId = String(getProviderToken("instagram")?.igAccountId || "");
+      let processedThisCycle = 0;
+      for (const c of (fetched.ok ? (fetched.comments || []) : [])) {
+        if (processedThisCycle >= META_POLLING_MAX_PER_CYCLE) break;
+        const externalId = String(c.commentId || "").trim();
+        const text = String(c.message || c.text || "").trim();
+        if (!externalId || !text) continue;
+        const selfAuthored = isSelfAuthored(c.authorName || c.username || undefined, ownNames)
+          || (platform === "facebook" && Boolean(c.authorId && pageIdFb && String(c.authorId) === pageIdFb))
+          || (platform === "instagram" && Boolean(c.authorId && igId && String(c.authorId) === igId));
+        // منع التكرار: لا نعالج نفس التعليق مرتين (نفس السجل المحفوظ).
+        const existingComment = ((workspace as any).socialComments || []).find((x: any) => x.platform === platform && x.externalId === externalId);
+        const alreadyReplied = metaPollingState.processed.some((p) => p.commentId === externalId && p.stage !== "NEW");
+        if (existingComment && alreadyReplied) continue;
+        // تسجيل التعليق الوارد الحقيقي إن لم يكن مسجّلاً (نفس شكل الـwebhook).
+        if (!existingComment) {
+          const cls0 = classifyComment(text);
+          if (!Array.isArray((workspace as any).socialComments)) (workspace as any).socialComments = [];
+          (workspace as any).socialComments.unshift({
+            id: workspaceId("comment"), platform, externalId, postExternalId: c.postId || c.mediaId || null,
+            authorName: c.authorName || c.username || null, text, createdAt: c.createdAt || new Date().toISOString(),
+            classification: cls0, requiresHumanReview: cls0.requiresHumanReview, ingestSource: `${platform}_polling`,
+            replyTarget: { commentId: externalId },
+          });
+          if ((workspace as any).socialComments.length > WORKSPACE_MAX_SOCIAL_COMMENTS) (workspace as any).socialComments.length = WORKSPACE_MAX_SOCIAL_COMMENTS;
+          newDetected += 1;
+        }
+        const cls = classifyComment(text);
+        // حقائق المنتج الموثّقة: تُحلّ من منشور التعليق بمعرّف صريح فقط (بلا تخمين)،
+        // فيُرد استفسار السعر من بيانات المعرض الحقيقية بدل التصعيد — وإن لم تتوفر
+        // حقائق يبقى تصعيداً كما كان (لا اختراع سعر/قسط).
+        const productRes = resolveProductForPost(c.postId || c.mediaId || null);
+        const priceReply = verifiedProductFactsForReply({ product: productRes, commentText: text });
+        const priceFactsVerified = priceReply.verified;
+        const baseReason = escalationReasonFor({ intent: cls.intent, isSpam: cls.isSpam, requiresHumanReview: cls.requiresHumanReview, topic: (cls as any).topic ?? null });
+        const preReason = (priceFactsVerified && baseReason === 'price_unverified') ? null : baseReason;
+        // سلطة القرار الوحيدة: جلسة فريق حقيقية لهذا الحدث => قرار العقل المركزي
+        // (نفس نمط YouTube). المراقب لا يُصدر قراراً بنفسه ولا يخترع: غياب قرار
+        // مركزي => `FAILED_SAFE` (لا رد). تمكين المالك الصريح للرد الآلي هو الموافقة
+        // على الإجراء الخارجي لـMeta (لا يُعمَّم تفويض YouTube على أي منصة أخرى).
+        try {
+          await runTeamSessionNow(
+            "youtube_event",
+            `تحليل تعليق ${platform === 'facebook' ? 'Facebook' : 'Instagram'} جديد والبتّ في الرد عليه من الحقائق المسجّلة (بلا اختراع)`,
+            platform,
+            `comment:${externalId}`,
+            { externalId, commentText: text, objective: "البتّ في رد آمن على تعليق Meta من الحقائق المسجّلة", conversationId: `${platform}::${String(c.postId || c.mediaId || 'thread')}`, escalationReason: preReason, priceFactsVerified },
+          );
+        } catch { /* جلسة الفريق لا تُسقط دورة المراقبة */ }
+        const centralDecision = centralActionDecisionForEvent(`comment:${externalId}`);
+        const advisory = decideMetaCommentAction({
+          intent: cls.intent, requiresHumanReview: cls.requiresHumanReview, isSpam: cls.isSpam,
+          isSelfAuthored: selfAuthored, alreadyReplied, controls,
+        });
+        const replyGate = metaWatcherGate(controls, "reply");
+        const rr = metaReplyReady(platform);
+        const decision = resolveMetaReplyExecution({
+          centralDecision: metaExecutionDecisionFromCentral(centralDecision, replyGate.allowed), advisory, automationAllowed: replyGate.allowed,
+          replyReady: rr.ready, belongsToChannel: true, isPraise: isSafeForAutoReply(cls.intent),
+          humanReviewMode: Boolean(controls.humanReviewMode),
+          centralEscalationReason: preReason,
+          priceFactsVerified,
+        });
+        const baseEntry: WatcherProcessedEntry = {
+          commentId: externalId, stage: "ANALYZED", action: decision.action, reason: decision.reason, code: decision.code,
+          videoId: c.postId || c.mediaId || null, authorName: c.authorName || c.username || null, text,
+          at: new Date().toISOString(), publishedAt: c.createdAt || null,
+        };
+        processedThisCycle += 1;
+        if (isMetaDeferredDecision(decision.code)) {
+          baseEntry.stage = "SKIPPED"; baseEntry.deferred = true; deferred += 1;
+          metaPollingState.processed.unshift(baseEntry);
+        } else if (decision.action !== "reply") {
+          baseEntry.stage = decision.action === "escalate" ? "ESCALATED" : "SKIPPED";
+          if (decision.action === "escalate") escalated += 1; else skipped += 1;
+          metaPollingState.processed.unshift(baseEntry);
+        } else {
+          // رد حقيقي عبر المنفّذ المركزي (كل البوابات سارية). نص الرد مشتقّ من
+          // بيانات المنتج الموثّقة عندها (سعر/قسط مشتقّ)، وإلا فالقالب العراقي
+          // الحتمي (ترحيب/إحالة). لا يُذكر سعر/قسط غير مسجّل.
+          const replyText = priceFactsVerified && priceReply.replyText ? priceReply.replyText : watcherIraqiReply(text);
+          // يُمرّر معرّف المنتج للمنفّذ المركزي كي يمرّ حارس المطالبات على نفس
+          // الحقائق (السعر + القسط المشتقّ)، فلا يُحجب رد مشروع عدده مسجّل.
+          const res = await executeMetaCommentReply(platform, { externalId, text: replyText, commentText: text, productId: productRes?.id }, "watcher");
+          const delivered = Boolean(res.body?.delivered && res.body?.providerReplyId);
+          if (delivered) {
+            replied += 1;
+            baseEntry.stage = "REPLIED"; baseEntry.replyText = replyText; baseEntry.externalReplyId = String(res.body.providerReplyId);
+            baseEntry.reason = `أُرسل الرد الحقيقي وردّ ${platform} بمعرّف رد.`;
+          } else {
+            failed += 1;
+            baseEntry.stage = "FAILED";
+            baseEntry.reason = `فشل إرسال الرد: ${res.body?.error || res.status}`;
+          }
+          metaPollingState.processed.unshift(baseEntry);
+        }
+        if (metaPollingState.processed.length > META_POLLING_MAX_PROCESSED) metaPollingState.processed.length = META_POLLING_MAX_PROCESSED;
+      }
+      // 2) الرسائل الخاصة (Messenger/Instagram DM) الواردة عبر webhook: تُعالج من
+      //    السجل المحفوظ الحقيقي (لا سحب DM عبر Graph في هذه الدفعة). هدف الرد
+      //    معرّف المرسل؛ غيابه ⇒ لا إرسال (يبقى بلا رد حتى توفر هدف حقيقي).
+      const inboundMessages = ((workspace as any).socialComments || [])
+        .filter((m: any) => m.platform === platform && m.kind === "message" && m.externalId && m.text);
+      for (const m of inboundMessages) {
+        if (processedThisCycle >= META_POLLING_MAX_PER_CYCLE) break;
+        const externalId = String(m.externalId || "").trim();
+        const text = String(m.text || "").trim();
+        if (!externalId || !text) continue;
+        const alreadyReplied = metaPollingState.processed.some((p) => p.commentId === externalId && p.stage !== "NEW");
+        if (alreadyReplied) continue;
+        const recipientId = String(m.replyTarget?.recipientId || "");
+        if (!recipientId) continue; // لا هدف رد حقيقي ⇒ لا إرسال.
+        const selfAuthored = isSelfAuthored(m.authorName || undefined, ownNames)
+          || (platform === "facebook" && Boolean(m.authorId && pageIdFb && String(m.authorId) === pageIdFb))
+          || (platform === "instagram" && Boolean(m.authorId && igId && String(m.authorId) === igId));
+        const cls = classifyComment(text);
+        const productRes = resolveProductForPost(m.postExternalId || null);
+        const priceReply = verifiedProductFactsForReply({ product: productRes, commentText: text });
+        const priceFactsVerified = priceReply.verified;
+        const baseReason = escalationReasonFor({ intent: cls.intent, isSpam: cls.isSpam, requiresHumanReview: cls.requiresHumanReview, topic: (cls as any).topic ?? null });
+        const preReason = (priceFactsVerified && baseReason === 'price_unverified') ? null : baseReason;
+        // نفس سلطة القرار الوحيدة للرسائل: جلسة فريق حقيقية => قرار العقل المركزي.
+        // غياب قرار مركزي => `FAILED_SAFE` (لا إرسال). تمكين الرد الآلي هو الموافقة.
+        try {
+          await runTeamSessionNow(
+            "youtube_event",
+            `تحليل رسالة ${platform === 'facebook' ? 'Facebook' : 'Instagram'} جديدة والبتّ في الرد عليها من الحقائق المسجّلة (بلا اختراع)`,
+            platform,
+            `comment:${externalId}`,
+            { externalId, commentText: text, objective: "البتّ في رد آمن على رسالة Meta من الحقائق المسجّلة", conversationId: `${platform}::dm`, escalationReason: preReason, priceFactsVerified },
+          );
+        } catch { /* جلسة الفريق لا تُسقط دورة المراقبة */ }
+        const centralDecision = centralActionDecisionForEvent(`comment:${externalId}`);
+        const advisory = decideMetaCommentAction({
+          intent: cls.intent, requiresHumanReview: cls.requiresHumanReview, isSpam: cls.isSpam,
+          isSelfAuthored: selfAuthored, alreadyReplied, controls,
+        });
+        const replyGate = metaWatcherGate(controls, "reply");
+        const rr = metaReplyReady(platform);
+        const decision = resolveMetaReplyExecution({
+          centralDecision: metaExecutionDecisionFromCentral(centralDecision, replyGate.allowed), advisory, automationAllowed: replyGate.allowed,
+          replyReady: rr.ready, belongsToChannel: true, isPraise: isSafeForAutoReply(cls.intent),
+          humanReviewMode: Boolean(controls.humanReviewMode),
+          centralEscalationReason: preReason,
+          priceFactsVerified,
+        });
+        const baseEntry: WatcherProcessedEntry = {
+          commentId: externalId, stage: "ANALYZED", action: decision.action, reason: decision.reason, code: decision.code,
+          kind: "message", videoId: recipientId, authorName: m.authorName || null, text,
+          at: new Date().toISOString(), publishedAt: m.createdAt || null,
+        };
+        processedThisCycle += 1;
+        if (isMetaDeferredDecision(decision.code)) {
+          baseEntry.stage = "SKIPPED"; baseEntry.deferred = true; deferred += 1;
+          metaPollingState.processed.unshift(baseEntry);
+        } else if (decision.action !== "reply") {
+          baseEntry.stage = decision.action === "escalate" ? "ESCALATED" : "SKIPPED";
+          if (decision.action === "escalate") escalated += 1; else skipped += 1;
+          metaPollingState.processed.unshift(baseEntry);
+        } else {
+          // رد حقيقي على الرسالة عبر المنفّذ المركزي (كل البوابات سارية الآن، بما
+          // فيها حارس سلامة المحتوى)، ونص مشتقّ من بيانات المنتج الموثّقة عندها.
+          const replyText = priceFactsVerified && priceReply.replyText ? priceReply.replyText : watcherIraqiReply(text);
+          const res = await executeMetaMessageReply(platform, { externalId, recipientId, text: replyText, commentText: text, productId: productRes?.id }, "watcher");
+          const delivered = Boolean(res.body?.delivered && res.body?.providerReplyId);
+          if (delivered) {
+            replied += 1;
+            baseEntry.stage = "REPLIED"; baseEntry.replyText = replyText; baseEntry.externalReplyId = String(res.body.providerReplyId);
+            baseEntry.reason = `أُرسلت الرسالة فعلياً وردّ ${platform} بمعرّف رسالة.`;
+          } else {
+            failed += 1;
+            baseEntry.stage = "FAILED";
+            baseEntry.reason = `فشل إرسال الرسالة: ${res.body?.error || res.status}`;
+          }
+          metaPollingState.processed.unshift(baseEntry);
+        }
+        if (metaPollingState.processed.length > META_POLLING_MAX_PROCESSED) metaPollingState.processed.length = META_POLLING_MAX_PROCESSED;
+      }
+    }
+    metaPollingState.pollCount += 1;
+    metaPollingState.lastPollAt = new Date().toISOString();
+    metaPollingState.lastScanned = (metaPollingState.lastScanned || 0);
+    metaPollingLastRun = { newDetected, replied, escalated, skipped, failed, deferred, at: metaPollingState.lastPollAt };
+    await persistMetaPollingState();
+    await persistStateDurable();
+    return { ok: true, trigger, result: { newDetected, replied, escalated, skipped, failed, deferred } };
+  } catch (e: any) {
+    metaPollingState.lastError = String(e?.code || e?.name || "cycle_failed").slice(0, 80);
+    metaPollingState.consecutiveErrors += 1;
+    await persistMetaPollingState();
+    return { ok: false, trigger, error: metaPollingState.lastError };
+  } finally {
+    releaseLease(metaPollingLease, META_POLLING_LEASE_OWNER);
+    metaPollingLease = null;
+  }
+}
+
+/** تطبيع دفاعي للتحكم قبل كل دورة (نفس قواعد YouTube). */
+function normalizeMetaWatcherControlsForCycle() {
+  return normalizeMetaPollingState({ controls: metaPollingState.controls }).controls;
+}
+
+// --- مسارات مراقب Meta (Owner) — التفاصيل الحسّاسة هنا فقط، بلا أي سرّ ---
+app.get("/api/agent/meta/watcher", requireOwner, (_req, res) => {
+  res.json({ success: true, watcher: metaPollingStatusBlock() });
+});
+app.post("/api/agent/meta/watcher/controls", requireOwner, async (req, res) => {
+  const body = req.body || {};
+  const prevControls = normalizeMetaPollingState({ controls: metaPollingState.controls }).controls;
+  if (body.cadenceMinutes !== undefined || body.cadenceMs !== undefined) {
+    const requested = body.cadenceMinutes !== undefined ? body.cadenceMinutes : undefined;
+    const v = validateCadenceMinutes(requested);
+    if (!v.ok) {
+      audit((req as any).user.id, "meta_watcher_cadence_rejected", JSON.stringify({ requested: String(requested), reason: v.reason }));
+      return res.status(400).json({ success: false, error: v.reason, code: "INVALID_CADENCE" });
+    }
+  }
+  const next = normalizeMetaPollingState({ controls: {
+    enabled: body.enabled !== undefined ? body.enabled : prevControls.enabled,
+    autoReply: body.autoReply !== undefined ? body.autoReply : prevControls.autoReply,
+    paused: body.paused !== undefined ? body.paused : prevControls.paused,
+    humanReviewMode: body.humanReviewMode !== undefined ? body.humanReviewMode : prevControls.humanReviewMode,
+    cadenceMinutes: body.cadenceMinutes !== undefined ? validateCadenceMinutes(body.cadenceMinutes).minutes : prevControls.cadenceMinutes,
+  } }).controls;
+  metaPollingState.controls = next;
+  // تمكين الرد ⇒ تحرير المؤجَّل (نفس آلية YouTube).
+  let releasedDeferred = 0;
+  const wasReplyOn = prevControls.enabled && !prevControls.paused && !prevControls.humanReviewMode && prevControls.autoReply;
+  const nowReplyOn = next.enabled && !next.paused && !next.humanReviewMode && next.autoReply;
+  if (!wasReplyOn && nowReplyOn) {
+    const r = releaseMetaDeferredEntries(metaPollingState.processed);
+    metaPollingState.processed = r.processed; releasedDeferred = r.released;
+  }
+  await persistMetaPollingState();
+  audit((req as any).user.id, "meta_watcher_controls_updated", JSON.stringify({ autoReply: next.autoReply, paused: next.paused, releasedDeferred }));
+  // إعادة جدولة فورية عند تغيير الإيقاع/الإيقاف (نفس نمط YouTube، مؤقّت واحد).
+  try {
+    if (!metaPollingScheduler) startMetaPollingWatcher();
+    else if (next.enabled && next.paused) metaPollingScheduler.stop();
+    else metaPollingScheduler.reschedule();
+  } catch { /* الجدولة لا تُسقط تحديث التحكم */ }
+  res.json({ success: true, controls: metaPollingControlsView(next), releasedDeferred });
+});
+app.post("/api/agent/meta/watcher/poll", requireOwner, async (_req, res) => {
+  const result = await runMetaWatcherCycle("manual");
+  res.status(result.ok ? 200 : 500).json({ success: result.ok, ...result });
+});
+
+
+// -----------------------------------------------------------------------------
 // محرّك الاستقبال الموحّد (Unified Ingestion Engine).
 //
 // كل تعليق/رسالة من أي منصة تدخل `workspace.socialComments` بالشكل نفسه، فنبني
@@ -7222,6 +7647,23 @@ function applyWatcherCadence(): { activeTimers: number; cadenceMs: number; activ
   }
   const r = watcherScheduler!.reschedule();
   return { ...r, active: true };
+}
+
+// --- مراقب Meta: جدولة داخلية واحدة (نفس نمط YouTube) ---
+let metaPollingScheduler: WatcherScheduler | null = null;
+/** يُشغّل مؤقّت مراقبة Meta مرة واحدة بعد الإقلاع (مستقل عن المتصفح). */
+function startMetaPollingWatcher(): void {
+  if (metaPollingScheduler) { metaPollingScheduler.start(); return; }
+  metaPollingScheduler = createWatcherScheduler({
+    setTimer: (fn, ms) => { const t = setInterval(fn, ms); (t as any).unref?.(); return { clear: () => clearInterval(t) }; },
+    setTimeoutOnce: (fn, ms) => { const t = setTimeout(fn, ms); (t as any).unref?.(); return { clear: () => clearTimeout(t) }; },
+    getCadenceMs: () => Math.max(1, metaPollingCadenceMs()),
+    isDue: () => metaPollingDue(),
+    runCycle: () => { runMetaWatcherCycle("schedule").catch(() => { /* الخطأ مسجَّل داخل الدورة */ }); },
+  });
+  const c = metaPollingState.controls;
+  if (c.enabled && c.paused) { metaPollingScheduler.stop(); return; }
+  metaPollingScheduler.start();
 }
 
 // --- مسارات التحكم بالمراقبة (Owner Controls + Kill Switch) — للمالك فقط ---
@@ -8826,7 +9268,9 @@ async function executePlatformPublish(platform: string, body: any, actor: string
       const receipt = result.ok ? { provider: "facebook", pageId: target.pageId, postId: result.data?.providerPostId, mediaKind: videoUrl ? "video" : (imageUrl ? "image" : "text"), sentAt: new Date().toISOString() } : null;
       const record = buildPublishRecord({ platform: platform as any, postId: typeof body?.postId === "string" ? body.postId : workspaceId("post"), providerPostId: result.data?.providerPostId || null, simulated: false, error: result.ok ? null : result.error, code: result.code ?? null, providerCode: result.providerCode ?? null, providerSubcode: result.providerSubcode ?? null, providerTraceId: result.providerTraceId ?? null });
       if (!Array.isArray((workspace as any).publishRecords)) (workspace as any).publishRecords = [];
-      (workspace as any).publishRecords.unshift({ ...record, id: workspaceId("publish"), createdBy: user.id, receipt });
+      // ربط المنشور بالمنتج (معرّف صريح فقط) — يجعل تعليقات هذا المنشور قابلة للربط
+      // بمنتج موثّق، فيُرد استفسار السعر من بيانات المعرض الحقيقية (لا اختراع).
+      (workspace as any).publishRecords.unshift({ ...record, id: workspaceId("publish"), createdBy: user.id, receipt, productId: typeof body?.productId === "string" && body.productId.trim() ? body.productId.trim() : null });
       if ((workspace as any).publishRecords.length > WORKSPACE_MAX_PUBLISH_RECORDS) (workspace as any).publishRecords.length = WORKSPACE_MAX_PUBLISH_RECORDS;
       persistState();
       audit(user.id, result.ok ? "platform_publish_published" : "platform_publish_failed", `${platform}`);
@@ -8868,7 +9312,8 @@ async function executePlatformPublish(platform: string, body: any, actor: string
       const receipt = published.ok ? { provider: "instagram", igAccountId: target.igAccountId, containerId: container.containerId, postId: published.data?.providerPostId, mediaKind: container.mediaKind, sentAt: new Date().toISOString() } : null;
       const record = buildPublishRecord({ platform: platform as any, postId: typeof body?.postId === "string" ? body.postId : workspaceId("post"), providerPostId: published.data?.providerPostId || null, simulated: false, error: published.ok ? null : published.error, code: published.code ?? null, providerCode: published.providerCode ?? null, providerSubcode: published.providerSubcode ?? null, providerTraceId: published.providerTraceId ?? null });
       if (!Array.isArray((workspace as any).publishRecords)) (workspace as any).publishRecords = [];
-      (workspace as any).publishRecords.unshift({ ...record, id: workspaceId("publish"), createdBy: user.id, receipt });
+      // ربط المنشور بالمنتج (معرّف صريح فقط) — نفس مبدأ Facebook لرد استفسار السعر.
+      (workspace as any).publishRecords.unshift({ ...record, id: workspaceId("publish"), createdBy: user.id, receipt, productId: typeof body?.productId === "string" && body.productId.trim() ? body.productId.trim() : null });
       if ((workspace as any).publishRecords.length > WORKSPACE_MAX_PUBLISH_RECORDS) (workspace as any).publishRecords.length = WORKSPACE_MAX_PUBLISH_RECORDS;
       persistState();
       audit(user.id, published.ok ? "platform_publish_published" : "platform_publish_failed", `${platform}`);
@@ -11134,6 +11579,9 @@ async function bootstrapStorage(): Promise<void> {
       // الخدمة فيصمد الـcheckpoint وسجل منع التكرار وإعدادات الأتمتة بعد restart.
       const watcher = await storageAdapter.read<any>(WATCHER_STATE_KEY);
       if (watcher) applyWatcherStateSnapshot(watcher);
+      // حالة مراقب Meta (Facebook/Instagram): سجل المعالجة + التحكم — تصمد بعد restart.
+      const metaPolling = await storageAdapter.read<any>(META_POLLING_STATE_KEY);
+      if (metaPolling) applyMetaPollingStateSnapshot(metaPolling);
       // حالة الاستراتيجية + سجل قرار→نتيجة (يملكهما العقل المركزي): تُقرآن قبل بدء الخدمة.
       strategyState = normalizeStrategyState(await storageAdapter.read<any>(STORAGE_KEY_STRATEGY_STATE));
       decisionLedger = normalizeDecisionLedger(await storageAdapter.read<any>(STORAGE_KEY_DECISION_LEDGER));
@@ -11153,6 +11601,8 @@ async function bootstrapStorage(): Promise<void> {
     loadStrategyAndLedgerSync();
     const watcher = storageAdapter.readSync<any>(WATCHER_STATE_KEY);
     if (watcher) applyWatcherStateSnapshot(watcher);
+    const metaPolling = storageAdapter.readSync<any>(META_POLLING_STATE_KEY);
+    if (metaPolling) applyMetaPollingStateSnapshot(metaPolling);
     const media = storageAdapter.readSync<any>(CONTENT_MEDIA_KEY);
     if (media) applyContentMediaState(media);
   }
@@ -12765,11 +13215,12 @@ function cleanupRuntimeState() {
   for (const [state, pending] of pendingOAuth) if (pending.expiresAt < now) pendingOAuth.delete(state);
   for (const [platform, entry] of oauthStartPreflightCache) if (now - entry.at >= OAUTH_PREFLIGHT_TTL_MS) oauthStartPreflightCache.delete(platform);
   for (const [platform, entry] of lastOAuthPreflight) if (now - entry.at >= OAUTH_PREFLIGHT_TTL_MS) lastOAuthPreflight.delete(platform);
-  for (const [key, list] of youtubeOperationWindows) {
+  // نافذة المعدّل المشتركة (YouTube + ردود/رسائل Meta): تُنقّى بالـTTL فلا تنمو بلا حد.
+  for (const [key, list] of operationWindows) {
     const windowMs = Math.max(1000, Number(process.env.YOUTUBE_OP_RATE_WINDOW_MS || 60_000));
     const live = list.filter((t) => now - t < windowMs);
-    if (live.length) youtubeOperationWindows.set(key, live);
-    else youtubeOperationWindows.delete(key);
+    if (live.length) operationWindows.set(key, live);
+    else operationWindows.delete(key);
   }
   aiEngine.pruneCache();
 }
@@ -13290,6 +13741,9 @@ app.get("/api/readiness", (_req, res) => {
     // خطأ كرمز تقني). لا اسم حساب ولا نص تعليق ولا نص رد ولا عدّادات تفصيلية —
     // بيانات العملاء والتفاصيل في /api/agent/youtube/watcher (للمالك فقط).
     youtubeWatcher: watcherStatusBlockPublic(),
+    // مراقب ردود Facebook/Instagram 24/7: النسخة العامة الآمنة فقط (حقول تقنية
+    // بلا اسم/نص عميل). التفاصيل في /api/agent/meta/watcher (للمالك فقط).
+    metaPolling: metaPollingPublicStatus(),
     // حارس حصة YouTube Data API: حالة عامة فقط (عتبة/استنفاد/نسبة) بلا بيانات عميل.
     youtubeQuota: youtubeQuotaStatusSummary(),
     // محرّك الاستقبال الموحّد لكل المنصات العشر: حقول تقنية فقط (الحالة/عمق
@@ -13775,11 +14229,13 @@ function guardPublicHealthPayload(originalJson: (body: any) => any): (body: any)
     const cleaned = sanitizePublicHealthPayload(body);
     const w = (cleaned as any)?.youtubeWatcher;
     const extra = findDisallowedWatcherPublicKeys(w);
+    // مراقب Meta: نفس allow-list الصارم (حقول تقنية فقط) — أي حقل عميل يُكشف.
+    const metaExtra = findDisallowedWatcherPublicKeys((cleaned as any)?.metaPolling);
     const forbidden = findForbiddenPublicKeys(cleaned);
-    if (extra.length || forbidden.length) {
+    if (extra.length || metaExtra.length || forbidden.length) {
       // لا نُسقط الاستجابة (نقطة مراقبة عامة)، لكن نُسجّل الانحراف بوضوح كي لا
       // يمرّ صامتاً ويُصلح جذرياً. لا يُسجَّل أي محتوى عميل — أسماء حقول فقط.
-      console.warn(`[الغرابي AI] public-health-payload-hardened forbidden=[${forbidden.join(',')}] watcherExtra=[${extra.join(',')}]`);
+      console.warn(`[الغرابي AI] public-health-payload-hardened forbidden=[${forbidden.join(',')}] watcherExtra=[${extra.join(',')}] metaExtra=[${metaExtra.join(',')}]`);
     }
     return originalJson(cleaned);
   };
@@ -13891,6 +14347,9 @@ app.get("/api/health", (_req, res) => {
     // خطأ كرمز تقني). لا اسم حساب ولا نص تعليق ولا نص رد ولا عدّادات تفصيلية —
     // بيانات العملاء والتفاصيل في /api/agent/youtube/watcher (للمالك فقط).
     youtubeWatcher: watcherStatusBlockPublic(),
+    // مراقب ردود Facebook/Instagram 24/7: النسخة العامة الآمنة فقط (حقول تقنية
+    // بلا اسم/نص عميل). التفاصيل في /api/agent/meta/watcher (للمالك فقط).
+    metaPolling: metaPollingPublicStatus(),
     // حارس حصة YouTube Data API: حالة عامة فقط (عتبة/استنفاد/نسبة) بلا بيانات عميل.
     youtubeQuota: youtubeQuotaStatusSummary(),
     // محرّك الاستقبال الموحّد لكل المنصات العشر: حقول تقنية فقط (الحالة/عمق
@@ -14664,11 +15123,34 @@ function replyFactsForProduct(product: any | null): ReplyFactSet {
   return {
     productName: product?.name ? cleanText(product.name, 120) : undefined,
     priceText: Number.isFinite(price) && price > 0 ? `${Math.round(price).toLocaleString('en-US')} د.ع` : undefined,
+    monthlyInstallmentText: replyInstallmentTextForProduct(product) || undefined,
     locationText: address || undefined,
     hoursText: showroom.workingHours ? cleanText(showroom.workingHours, 120) : undefined,
     inStock: typeof product?.inStock === 'boolean' ? product.inStock : null,
     hasRecordedPromotion: [showroom.promotions, showroom.activeOffer].some((x: any) => cleanText(x, 300).length > 0),
   };
+}
+
+/**
+ * القسط الشهري المشتقّ — مصدر واحد. يُذكر في الرد **فقط** عند توفر قاعدة تقسيط
+ * معتمدة: سعر مسجّل > 0، ونسبة دفعة أولى صريحة في [0..99]، ومدة بالأشهر > 0.
+ * غياب أي شرط ⇒ `null` (لا يُذكر أي رقم قسط، فلا اختراع). الصيغة مطابقة تماماً
+ * لـ`buildMarketingQuote` (دفعة أولى ثم قسط شهري بتقريب لأعلى دينار) كي لا يختلف
+ * الرقم المعروض عن مسار حاسبة الأقساط.
+ */
+function replyInstallmentTextForProduct(product: any | null): string | null {
+  if (!product) return null;
+  const cash = Number(product?.cashPrice);
+  const downPct = Number(product?.downPaymentPercent);
+  const months = Number(product?.durationMonths);
+  if (!Number.isFinite(cash) || cash <= 0) return null;
+  if (!Number.isFinite(downPct) || downPct < 0 || downPct > 99) return null;
+  if (!Number.isInteger(months) || months <= 0) return null;
+  const down = Math.ceil((cash * downPct) / 100);
+  const financed = Math.max(0, cash - down);
+  const monthly = Math.ceil(financed / months);
+  if (!Number.isFinite(monthly) || monthly <= 0) return null;
+  return `${Math.round(monthly).toLocaleString('en-US')} د.ع`;
 }
 
 /**
@@ -15794,6 +16276,17 @@ registerSocialManagerRoutes(app, {
       hasRecordedPromotion: [showroom.promotions, showroom.activeOffer].some((x: any) => cleanText(x, 300).length > 0),
     };
   },
+  // القسط الشهري المشتقّ لقنوات الرد العامة: يُحسب من بيانات المنتج المسجّلة فقط
+  // (سعر + نسبة دفعة أولى + مدة)، فلا يذكر الرد أي رقم قسط بلا قاعدة معتمدة.
+  buildInstallmentText: (productId?: string | null, productName?: string | null) => {
+    const products: any[] = Array.isArray(workspace.products) ? workspace.products : [];
+    const product = productId
+      ? products.find((p: any) => p.id === String(productId)) || null
+      : productName
+        ? products.find((p: any) => p.name === String(productName)) || null
+        : null;
+    return replyInstallmentTextForProduct(product);
+  },
   // المصدر الوحيد للحقيقة للقرار/الذاكرة: الحالة canonical للعقل المركزي.
   // مسارات /api/social/manager/{brain/decision,memory} إسقاط توافقي منها فقط.
   centralBrainState: () => buildRuntimeBrain({ ...brainRuntimeInput(), now: Date.now() }).state,
@@ -16194,6 +16687,14 @@ async function startServer() {
     console.error("[الغرابي AI] failed to start Central Brain runtime:", String(e?.message || e).slice(0, 120));
   }
 
+  // مراقب الردود لـ Facebook/Instagram 24/7: job داخلي مستقل عن المتصفح، آمن
+  // افتراضياً (قراءة/تحليل فقط حتى يمكّن المالك الرد)، ويصمد بعد restart.
+  try {
+    startMetaPollingWatcher();
+  } catch (e: any) {
+    console.error("[الغرابي AI] failed to start Meta reply watcher:", String(e?.message || e).slice(0, 120));
+  }
+
   // إغلاق نظيف: ينتظر تفريغ طابور الكتابة (مع مهلة صارمة ≤ 10 ثوانٍ) ثم يُنهي
   // اتصال قاعدة البيانات ويخرج. المهلة تمنع تعليق العملية إن تجمّد المخزن.
   // نُفرّغ الطابور في حلقة لأن كتابة جديدة قد تُسلسَل أثناء الإغلاق، فنلتقط
@@ -16214,6 +16715,7 @@ async function startServer() {
     console.log(`[الغرابي AI] received ${signal}, flushing pending writes...`);
     // Phase 6: نوقف المؤقّتات الداخلية أولاً فلا تُضاف كتابات جديدة أثناء الإغلاق.
     try { watcherScheduler?.stop(); } catch { /* تجاهل */ }
+    try { metaPollingScheduler?.stop(); } catch { /* تجاهل */ }
     try { stopBrainRuntime(); } catch { /* تجاهل */ }
     try { (app as any).drReconciliation?.stop?.(); } catch { /* تجاهل */ }
     try { (app as any).drAutoBackup?.stop?.(); } catch { /* تجاهل */ }

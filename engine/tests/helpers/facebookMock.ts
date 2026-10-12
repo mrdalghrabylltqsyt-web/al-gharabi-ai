@@ -90,6 +90,9 @@ export interface FacebookMockState {
   businessId?: string;
   ownedApps?: string[];
   failOwnedApps?: boolean;
+  /** منشورات الصفحة وتعليقاتها (GET /{page-id}/feed) — لقراءة تعليقات المراقب. */
+  feedPosts?: Array<{ id: string; comments?: Array<{ id: string; message: string; from?: { id?: string; name?: string }; created_time?: string; parent?: { id?: string } }> }>;
+  failFeed?: boolean;
 }
 
 export function createFacebookMock(state: Partial<FacebookMockState> = {}): FacebookMockState {
@@ -131,6 +134,8 @@ export function createFacebookMock(state: Partial<FacebookMockState> = {}): Face
     businessId: state.businessId ?? 'BIZ_999',
     ownedApps: state.ownedApps ?? [state.validAppId ?? '145634995501895'],
     failOwnedApps: state.failOwnedApps ?? false,
+    feedPosts: state.feedPosts ?? [],
+    failFeed: state.failFeed ?? false,
   };
 }
 
@@ -345,6 +350,19 @@ export async function startFacebookMockServer(
     const messageId = `mid.${1000 + state.sentMessages.length}`;
     state.sentMessages.push({ pageId, recipientId, text, messageId });
     return res.json({ recipient_id: recipientId, message_id: messageId });
+  });
+
+  // حائط الصفحة (قراءة تعليقات) — `GET /{page-id}/feed`. يُستخدم في السحب
+  // الاحتياطي للمراقب (قراءة-فقط). يعيد المنشورات وتعليقاتها المتداخلة.
+  app.get('/:version/:pageId/feed', (req, res) => {
+    state.calls += 1;
+    if (state.failFeed) return res.status(400).json({ error: { message: 'Permissions error', code: 200 } });
+    const rows = (state.feedPosts || []).map((p) => ({
+      id: p.id,
+      created_time: '2026-01-01T00:00:00+0000',
+      comments: p.comments ? { data: p.comments } : undefined,
+    }));
+    return res.json({ data: rows });
   });
 
   app.post('/:version/:pageId/feed', (req, res) => {

@@ -44,7 +44,7 @@ npm install
 npm run dev            # tsx server.ts
 npm run lint           # tsc --noEmit
 npm run build          # vite build + esbuild server.ts -> dist/server.cjs
-npm run final-audit    # node final-audit.mjs (1548 فحصاً)
+npm run final-audit    # node final-audit.mjs (1549 فحصاً)
 npm test               # storage + engine + auth + ... + db + runtime
 ```
 - التشغيل الإنتاجي: `PORT=4517 NODE_ENV=production APP_URL=http://localhost:4517 node dist/server.cjs`
@@ -733,8 +733,8 @@ lastReply.replyText) قد أُزيل في commit سابق، وأُضيف الآ�
   `pollCount`، `lastError` (كرمز تقني ASCII أو `connection error` — لا محتوى محادثة).
 - البيانات التفصيلية (attentionRequired/lastReply) **لم تُحذف**؛ تبقى للمالك عبر
   `/api/agent/youtube/watcher` (requireOwner)، وتستهلكها الواجهة من هناك لا من الصحة العامة.
-- اختبارات: `engine/tests/health.privacy.test.ts` (45 فحصاً، canary حي عبر خادم فعلي،
-  يقرأ قوائم المصدر الواحد) و`engine/tests/health.guard.test.ts` (23 فحصاً وحدة للحارس).
+- اختبارات: `engine/tests/health.privacy.test.ts` (47 فحصاً، canary حي عبر خادم فعلي،
+  يقرأ قوائم المصدر الواحد) و`engine/tests/health.guard.test.ts` (38 فحصاً وحدة للحارس).
   فحوص final-audit: `public-health-privacy-single-source` … `public-health-guard-test-exists`.
 
 ## نمط الكود
@@ -3767,7 +3767,7 @@ YouTube (المراقب/الطابور/التفويض)، بقية المنصات
 `replyText`/`attentionRequired`/`authorName`/`lastReply`؛ و`/api/agent/youtube/watcher`
 للمالك ⇒ يعيد النص والاسم كاملين.
 
-اختبار انحدار: `engine/tests/health.privacy.test.ts` (`npm run test:health-privacy`، 23 فحصاً،
+اختبار انحدار: `engine/tests/health.privacy.test.ts` (`npm run test:health-privacy`، 47 فحصاً،
 مضاف إلى `npm test`) يزرع حالة عملاء (بصمة canary) ثم يقرأ النقطتين العامتين فعلياً ويثبت
 غياب أي تسريب، ويثبت بقاء التفاصيل في المسار المحمي. فحوص final-audit:
 `youtube-watcher-health-public-safe`, `youtube-watcher-detail-owner-auth`,
@@ -5563,7 +5563,7 @@ SDK إنجليزية تحمل اسم حساب/نصاً (مثال مُثبت: `PR
   — يقبل **رمز ASCII واحداً بلا مسافات فقط** (`^[A-Za-z0-9._-]{1,40}$`)، وأي نص حر (عربي
   أو إنجليزي بمسافات) => `connection error`، والفارغ/غير النصي => `null`.
 - `server.ts`: `watcherPublicError` يفوّض للمصدر الواحد.
-- اختبارات: `health.guard.test.ts` **35** (مجموعة 6) و`health.privacy.test.ts` **46**
+- اختبارات: `health.guard.test.ts` **38** (مجموعة 6) و`health.privacy.test.ts` **47**
   (canary ASCII حر لا يمرّ خاماً).
 - final-audit: `youtube-watcher-public-error-sanitized` (محدَّث) + `public-error-sanitizer-single-source`
   + `public-error-sanitizer-wired-server` => **1536**.
@@ -5647,4 +5647,74 @@ SDK إنجليزية تحمل اسم حساب/نصاً (مثال مُثبت: `PR
 
 **لم يُمسّ:** Gemini/firewall، OAuth/الاعتمادات/الأسرار، قاعدة البيانات، DR/الاستعادة،
 YouTube (المراقب/الطابور/التفويض)، Facebook/Instagram/TikTok/Telegram، ونموذج الجدولة.
+
+## تفعيل عقل الرد التجاري على Facebook/Instagram (Meta Reply Watcher) — 2026-10-12
+
+الفجوة الحقيقية: تعليقات/رسائل Facebook وInstagram كانت تُستقبل عبر webhook وتُحفظ وتُصنّف،
+لكن **لا معالجة تلقائية** لها (لا رد ولا تصعيد ولا تأجيل) — بخلاف YouTube الذي يملك مراقباً
+24/7. النتيجة: تفاعل حقيقي على الصفحتين بلا أي رد آلي، ولا سجل قرار.
+
+**الحل — مصدر واحد، بلا مسار يتجاوز بوابة:**
+- `engine/social/metaWatcher.ts` (منطق خالص قابل للاختبار): يستهلك **نفس محرّك القرار** في
+  `youtubeWatcher` (`decideCommentAction`/`metaWatcherGate`/`releaseDeferredEntries`) — سلطة
+  قرار واحدة لكل المنصات، فلا عقل منفصل. المنصتان: `META_WATCHER_PLATFORMS = ['facebook','instagram']`.
+  - `defaultMetaPollingState()` **آمن افتراضياً**: المراقبة (قراءة/تحليل) مفعّلة، `autoReply=false`.
+  - `metaWatcherGate(controls, action)`: Kill Switch يمنع الكل، والرد يحتاج `enabled && !paused && autoReply`.
+  - `decideMetaCommentAction(...)`: قرار حتمي (self-authored/سبام ⇒ تجاهل؛ سعر/شكوى/حساس ⇒ تصعيد؛
+    مدح/تفاعل بسيط ⇒ رد عند التمكين، وتأجيل غير نهائي عند تعطيله) — نفس مفردات YouTube.
+  - `resolveMetaReplyExecution(...)`: لا رد بلا تمكين + جاهزية + تصنيف آمن.
+  - `metaPollingPublicBlock(...)`: حقول تقنية فقط (بلا اسم/نص عميل) للنقطتين العامتين.
+- موصلات قراءة-فقط: `FacebookClient.listPageComments(pageId, token)` (عبر `/{page-id}/feed`
+  بحقل comments المتداخل) و`InstagramClient.listMediaComments(igId, token)` (عبر `/{ig-id}/media`
+  ثم `/{media-id}/comments`). لا كتابة، ولا تُخترع تعليقات.
+- `server.ts`: دورة `runMetaWatcherCycle` تجلب التعليقات الحقيقية، تُسجّلها كواردة (منع تكرار
+  بالمعرّف الخارجي)، تصنّف، تُصدر قراراً، وتنفّذ الرد عبر **نفس المنفّذ المركزي**
+  (`executeMetaCommentReply`) — كل البوابات سارية (سلامة محتوى + منع تكرار + self-authored).
+  لا يُسجَّل `delivered` بلا `providerReplyId` من Meta. الحالة تُحفظ عبر المحوّل في مفتاح
+  `metaPolling` (تصمد بعد restart)، مع قفل دوام (`acquireLease`) يمنع التوازي، وجدولة داخلية
+  واحدة `.unref()` تبدأ بعد `app.listen` (مستقلة عن المتصفح).
+- مسارات owner: `GET /api/agent/meta/watcher` (حالة + سجل تفصيلي)،
+  `POST /api/agent/meta/watcher/controls` (autoReply/paused/humanReviewMode/cadenceMinutes)،
+  `POST /api/agent/meta/watcher/poll` (دورة يدوية). كلها `requireOwner`.
+- `/api/health` و`/api/readiness` يعلنان كتلة `metaPolling` **عامة** (حقول تقنية فقط) عبر
+  `metaPollingPublicStatus()`؛ الحارس `guardPublicHealthPayload` يفحصها بنفس allow-list الصارم.
+- الواجهة: بطاقة «مراقب ردود Facebook/Instagram 24/7» في `SocialManagerView` (للمالك) تعرض
+  الحالة الحقيقية وأزرار التمكين/الإيقاف/الفاصل وسجل المعالجة التفصيلي — بلا أي ادّعاء نجاح محلي.
+  `apiService.getMetaWatcher/setMetaWatcherControls/pollMetaWatcher`.
+
+**إكمال مسار الرسائل الخاصة (Batch 27، 2026-10-04):** كان المراقب يعالج **التعليقات فقط**؛
+الرسائل الخاصة (Messenger/Instagram DM) تُستقبل عبر webhook وتُخزَّن (`kind='message'` مع
+`replyTarget.recipientId`) لكنها **بلا معالجة تلقائية**. الآن `runMetaWatcherCycle` يمرّ أيضاً
+على الرسائل الواردة الحقيقية من `workspace.socialComments` (`kind='message'`) بنفس سلطة القرار
+(`decideMetaCommentAction` + `resolveMetaReplyExecution`) ونفس البوابة والتحرير. الرد على
+الرسالة يمر بـ`executeMetaMessageReply` المركزي، الذي **أُضيف له حارس سلامة المحتوى**
+(`analyzeBusinessClaims`) الذي كان مفقوداً في مسار الرسالة وحده — فلا يخرج ادعاء/رقم غير مسجّل.
+هدف الرد `replyTarget.recipientId`؛ غيابه ⇒ لا إرسال (لا اختراع مستلم). سجل المعالجة يحمل
+`kind: 'comment'|'message'` (توافق خلفي: غيابه = comment). لا تسليم بلا `mid.*` من Meta.
+`fetchMetaInboundComments` فشلها (قراءة) لا يمنع معالجة الرسائل الواردة.
+
+**اختبار:** `engine/tests/meta.watcher.test.ts` (`npm run test:meta-watcher`، **70 فحصاً**):
+وحدة (الأمان الافتراضي، البوابة، القرار، التأجيل/التحرير، الكتلة العامة النظيفة، سلطة التنفيذ)
+وتكامل (تصريح 401/403، ربط Facebook بخادم Graph وهمي، تأجيل بلا إرسال عند التعطيل، تحرير المؤجَّل
+عند التمكين، رد حقيقي بمعرّف من Meta + منع تكرار، **مسار الرسائل: webhook موقّع ⇒ رد حقيقي
+بـ`mid.*` + حارس محتوى يرفض ادعاءً غير مسجّل بـ422 + رفض webhook بلا توقيع 401**، خلو
+`/api/health` و`/api/readiness` من أي اسم/نص عميل، وثبات بعد restart). فحوص final-audit:
+`meta-watcher-health-public-safe` ومحدَّثات `facebook-reply-delivery-honest`/
+`instagram-reply-delivery-honest` (**1548 إجمالاً**).
+
+**إغلاق ملاحظات المراجعة الأمنية I2/I3 (Batch 28، 2026-10-04):**
+- **I2 — تجاهل صدى رسائل الصفحة:** `messageFromMessaging` في `engine/social/facebook.ts`
+  يتجاهل صراحةً أي حدث `message.is_echo === true` (رسالة أرسلتها الصفحة نفسها)، فلا يُدخَل
+  كرسالة واردة ولا يُردّ على ردّنا (إرسال مهدر/حلقة). الاختبار يثبت أن الصدى لا يُنتج حدثاً،
+  وأن الرسالة الحقيقية تُنتج حدثاً واحداً، وأن webhook الصدى لا يُقبل كرسالة.
+- **I3 — تنقية `lastError` في الكتلة العامة:** `metaPollingPublicBlock` في
+  `engine/social/metaWatcher.ts` يمرّر `lastError` عبر المصدر الواحد
+  `sanitizePublicErrorMessage` (من `healthPrivacy.ts`): رمز ASCII تقني فقط يُقبل، وأي نص حر
+  (رسالة مزوّد/محادثة عربية أو إنجليزية) => `connection error`، والفارغ => `null`. فالطبقة
+  **المعيارية** للكتلة العامة صارت آمنة بذاتها (دفاع مزدوج مع `watcherPublicError` في الخادم).
+- **I1/I4 — تصحيح أرقام التوثيق:** `final-audit.mjs (1549)` (مطابق للعدد الفعلي على هذا
+  الفرع)، وعدد اختبارات الخصوصية (`health.privacy` 47، `health.guard` 38)، و`meta-watcher` 70.
+
+**لم يُمسّ:** Gemini/firewall، OAuth/الاعتمادات/الأسرار، DR، YouTube (المراقب/الطابور/التفويض)،
+TikTok/Telegram، ونموذج الجدولة. لا تدوير لأي مفتاح، ولا تغيير في بنية webhook القائمة.
 

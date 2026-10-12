@@ -445,6 +445,9 @@ function commentFromChange(pageId: string | null, change: any): FacebookNormaliz
 
 /** يبني حدث رسالة من messaging (Messenger) صراحةً. */
 function messageFromMessaging(pageId: string | null, m: any): FacebookNormalizedEvent | null {
+  // صدى الرسائل الصادرة من الصفحة نفسها (`is_echo`) ليس رسالة عميل واردة؛
+  // معالجته كواردة تسبب ردّاً على ردّنا إلى الصفحة. يُتجاهل صراحةً.
+  if (m?.message?.is_echo === true) return null;
   const text = String(m?.message?.text ?? '').trim();
   const externalId = m?.message?.mid;
   if (!text || !externalId) return null;
@@ -1079,6 +1082,64 @@ export class FacebookClient {
       if (!res.ok || data?.error) return { ok: false, data: null, error: errorMessage(data, 'تعذّر قراءة اشتراكات الصفحة.') };
       const apps = (Array.isArray(data?.data) ? data.data : []).map((a: any) => String(a?.id ?? '')).filter(Boolean);
       return { ok: true, data: apps };
+    } catch (e: any) {
+      return { ok: false, data: null, error: String(e?.message || 'فشل الاتصال بـFacebook.') };
+    }
+  }
+
+  /**
+   * يقرأ منشورات الصفحة الأخيرة (قراءة فقط) — لاكتشاف سياق المنشور الذي ورد
+   * عليه تعليق، ولجلب تعليقاتها في السحب الاحتياطي. لا كتابة ولا نشر.
+   */
+  async listPagePosts(pageId: string, pageAccessToken: string, limit = 10): Promise<FacebookResult<Array<{ postId: string; createdAt: string | null }>>> {
+    if (!pageId) return { ok: false, data: null, error: 'معرّف الصفحة مطلوب.' };
+    try {
+      const u = new URL(facebookGraphUrl(`/${pageId}/feed`, this.baseUrl));
+      u.searchParams.set('fields', 'id,created_time');
+      u.searchParams.set('limit', String(Math.max(1, Math.min(50, Math.trunc(limit)))));
+      u.searchParams.set('access_token', pageAccessToken);
+      const res = await this.fetchImpl(u.toString(), { method: 'GET' });
+      const data = await res.json().catch(() => null);
+      if (!res.ok || data?.error) return { ok: false, data: null, error: errorMessage(data, 'فشل قراءة منشورات الصفحة.') };
+      const rows = Array.isArray(data?.data) ? data.data : [];
+      return { ok: true, data: rows.map((p: any) => ({ postId: String(p?.id || ''), createdAt: p?.created_time ? String(p.created_time) : null })).filter((p: any) => p.postId) };
+    } catch (e: any) {
+      return { ok: false, data: null, error: String(e?.message || 'فشل الاتصال بـFacebook.') };
+    }
+  }
+
+  /**
+   * يقرأ تعليقات الصفحة الأخيرة عبر الحقل المتداخل `comments` على `/feed`
+   * (قراءة فقط، بنطاق pages_read_user_content). تُعاد تعليقات المستخدمين فقط؛
+   * تعليقات الصفحة نفسها (من == معرّف الصفحة) تُستبعد لمنع حلقة الرد على النفس.
+   */
+  async listPageComments(pageId: string, pageAccessToken: string, limit = 25): Promise<FacebookResult<Array<{ commentId: string; postId: string | null; message: string; authorName: string | null; authorId: string | null; createdAt: string | null; parentId: string | null }>>> {
+    if (!pageId) return { ok: false, data: null, error: 'معرّف الصفحة مطلوب.' };
+    try {
+      const u = new URL(facebookGraphUrl(`/${pageId}/feed`, this.baseUrl));
+      u.searchParams.set('fields', `id,comments.limit(${Math.max(1, Math.min(50, Math.trunc(limit)))}){id,message,from,created_time,parent{id}}`);
+      u.searchParams.set('limit', '10');
+      u.searchParams.set('access_token', pageAccessToken);
+      const res = await this.fetchImpl(u.toString(), { method: 'GET' });
+      const data = await res.json().catch(() => null);
+      if (!res.ok || data?.error) return { ok: false, data: null, error: errorMessage(data, 'فشل قراءة تعليقات الصفحة.') };
+      const out: Array<{ commentId: string; postId: string | null; message: string; authorName: string | null; authorId: string | null; createdAt: string | null; parentId: string | null }> = [];
+      for (const post of Array.isArray(data?.data) ? data.data : []) {
+        const postId = post?.id ? String(post.id) : null;
+        for (const c of Array.isArray(post?.comments?.data) ? post.comments.data : []) {
+          const commentId = c?.id ? String(c.id) : '';
+          const message = typeof c?.message === 'string' ? c.message : '';
+          if (!commentId || !message) continue;
+          out.push({
+            commentId, postId, message,
+            authorName: c?.from?.name ? String(c.from.name) : null,
+            authorId: c?.from?.id ? String(c.from.id) : null,
+            createdAt: c?.created_time ? String(c.created_time) : null,
+            parentId: c?.parent?.id ? String(c.parent.id) : null,
+          });
+        }
+      }
+      return { ok: true, data: out };
     } catch (e: any) {
       return { ok: false, data: null, error: String(e?.message || 'فشل الاتصال بـFacebook.') };
     }

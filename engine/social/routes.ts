@@ -109,6 +109,12 @@ export interface SocialRoutesDeps {
    */
   buildReplyFacts?: (productId?: string | null, productName?: string | null) => ReplyFactSet;
   /**
+   * القسط الشهري المشتقّ لموديل محدّد — يُحقن من الخادم ليبقى هذا الملف بلا
+   * منطق أسعار. يُذكر في الرد **فقط** عند توفر سعر مسجّل + قاعدة تقسيط معتمدة
+   * (نسبة دفعة أولى + مدة). غيابه/عدم صلاحيته ⇒ لا يُذكر أي قسط (لا اختراع).
+   */
+  buildInstallmentText?: (productId?: string | null, productName?: string | null) => string | null;
+  /**
    * حالة العقل المركزي canonical (`buildRuntimeBrain`) — المصدر الوحيد للقرار
    * والذاكرة. تُحقن من الخادم؛ مسارات القرار/الذاكرة هنا إسقاط توافقي منها فقط،
    * بلا أي مُنتِج قرار مستقل.
@@ -188,15 +194,29 @@ export function registerSocialManagerRoutes(app: express.Express, deps: SocialRo
    * فيمتنع المحرّك عن ذكره بدل اختراعه.
    */
   const replyFactsFor = (productId?: string | null, productName?: string | null): ReplyFactSet => {
-    if (deps.buildReplyFacts) return deps.buildReplyFacts(productId, productName);
-    const { product } = resolveProduct(productId, productName);
-    if (!product) return {};
-    const price = Number(product?.cashPrice);
-    return {
-      productName: typeof product?.name === 'string' ? product.name : undefined,
-      priceText: Number.isFinite(price) && price > 0 ? `${Math.round(price).toLocaleString('en-US')} د.ع` : undefined,
-      inStock: typeof product?.inStock === 'boolean' ? product.inStock : null,
-    };
+    let facts: ReplyFactSet;
+    if (deps.buildReplyFacts) {
+      facts = deps.buildReplyFacts(productId, productName);
+    } else {
+      const { product } = resolveProduct(productId, productName);
+      if (!product) {
+        facts = {};
+      } else {
+        const price = Number(product?.cashPrice);
+        facts = {
+          productName: typeof product?.name === 'string' ? product.name : undefined,
+          priceText: Number.isFinite(price) && price > 0 ? `${Math.round(price).toLocaleString('en-US')} د.ع` : undefined,
+          inStock: typeof product?.inStock === 'boolean' ? product.inStock : null,
+        };
+      }
+    }
+    // القسط الشهري: يُضاف من المصدر المحقون فقط (سعر مسجّل + قاعدة تقسيط معتمدة).
+    // غياب المصدر/عدم صلاحية القاعدة ⇒ لا يُذكر أي رقم قسط (لا اختراع).
+    if (deps.buildInstallmentText) {
+      const inst = deps.buildInstallmentText(productId, productName);
+      if (inst) facts.monthlyInstallmentText = inst;
+    }
+    return facts;
   };
 
   /** سياق المحادثة/الفيديو: عنوان المنشور وردودنا السابقة لنفس المنشور/المنصة. */
