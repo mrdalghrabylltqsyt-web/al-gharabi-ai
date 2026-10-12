@@ -733,8 +733,8 @@ lastReply.replyText) قد أُزيل في commit سابق، وأُضيف الآ�
   `pollCount`، `lastError` (كرمز تقني ASCII أو `connection error` — لا محتوى محادثة).
 - البيانات التفصيلية (attentionRequired/lastReply) **لم تُحذف**؛ تبقى للمالك عبر
   `/api/agent/youtube/watcher` (requireOwner)، وتستهلكها الواجهة من هناك لا من الصحة العامة.
-- اختبارات: `engine/tests/health.privacy.test.ts` (46 فحصاً، canary حي عبر خادم فعلي،
-  يقرأ قوائم المصدر الواحد) و`engine/tests/health.guard.test.ts` (35 فحصاً وحدة للحارس).
+- اختبارات: `engine/tests/health.privacy.test.ts` (47 فحصاً، canary حي عبر خادم فعلي،
+  يقرأ قوائم المصدر الواحد) و`engine/tests/health.guard.test.ts` (38 فحصاً وحدة للحارس).
   فحوص final-audit: `public-health-privacy-single-source` … `public-health-guard-test-exists`.
 
 ## نمط الكود
@@ -3767,7 +3767,7 @@ YouTube (المراقب/الطابور/التفويض)، بقية المنصات
 `replyText`/`attentionRequired`/`authorName`/`lastReply`؛ و`/api/agent/youtube/watcher`
 للمالك ⇒ يعيد النص والاسم كاملين.
 
-اختبار انحدار: `engine/tests/health.privacy.test.ts` (`npm run test:health-privacy`، 46 فحصاً،
+اختبار انحدار: `engine/tests/health.privacy.test.ts` (`npm run test:health-privacy`، 47 فحصاً،
 مضاف إلى `npm test`) يزرع حالة عملاء (بصمة canary) ثم يقرأ النقطتين العامتين فعلياً ويثبت
 غياب أي تسريب، ويثبت بقاء التفاصيل في المسار المحمي. فحوص final-audit:
 `youtube-watcher-health-public-safe`, `youtube-watcher-detail-owner-auth`,
@@ -5563,7 +5563,7 @@ SDK إنجليزية تحمل اسم حساب/نصاً (مثال مُثبت: `PR
   — يقبل **رمز ASCII واحداً بلا مسافات فقط** (`^[A-Za-z0-9._-]{1,40}$`)، وأي نص حر (عربي
   أو إنجليزي بمسافات) => `connection error`، والفارغ/غير النصي => `null`.
 - `server.ts`: `watcherPublicError` يفوّض للمصدر الواحد.
-- اختبارات: `health.guard.test.ts` **35** (مجموعة 6) و`health.privacy.test.ts` **46**
+- اختبارات: `health.guard.test.ts` **38** (مجموعة 6) و`health.privacy.test.ts` **47**
   (canary ASCII حر لا يمرّ خاماً).
 - final-audit: `youtube-watcher-public-error-sanitized` (محدَّث) + `public-error-sanitizer-single-source`
   + `public-error-sanitizer-wired-server` => **1536**.
@@ -5712,8 +5712,8 @@ YouTube (المراقب/الطابور/التفويض)، Facebook/Instagram/TikT
   `sanitizePublicErrorMessage` (من `healthPrivacy.ts`): رمز ASCII تقني فقط يُقبل، وأي نص حر
   (رسالة مزوّد/محادثة عربية أو إنجليزية) => `connection error`، والفارغ => `null`. فالطبقة
   **المعيارية** للكتلة العامة صارت آمنة بذاتها (دفاع مزدوج مع `watcherPublicError` في الخادم).
-- **I1/I4 — تصحيح أرقام التوثيق:** `final-audit.mjs (1548)` (مطابق للعدد الفعلي على هذا
-  الفرع)، وعدد اختبارات الخصوصية (`health.privacy` 46، `health.guard` 35)، و`meta-watcher` 70.
+- **I1/I4 — تصحيح أرقام التوثيق:** `final-audit.mjs (1549)` (مطابق للعدد الفعلي على هذا
+  الفرع)، وعدد اختبارات الخصوصية (`health.privacy` 47، `health.guard` 38)، و`meta-watcher` 70.
 
 **لم يُمسّ:** Gemini/firewall، OAuth/الاعتمادات/الأسرار، DR، YouTube (المراقب/الطابور/التفويض)،
 TikTok/Telegram، ونموذج الجدولة. لا تدوير لأي مفتاح، ولا تغيير في بنية webhook القائمة.
