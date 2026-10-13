@@ -44,7 +44,7 @@ npm install
 npm run dev            # tsx server.ts
 npm run lint           # tsc --noEmit
 npm run build          # vite build + esbuild server.ts -> dist/server.cjs
-npm run final-audit    # node final-audit.mjs (1593 فحصاً)
+npm run final-audit    # node final-audit.mjs (1601 فحصاً)
 npm test               # storage + engine + auth + ... + db + runtime
 ```
 - التشغيل الإنتاجي: `PORT=4517 NODE_ENV=production APP_URL=http://localhost:4517 node dist/server.cjs`
@@ -6036,3 +6036,57 @@ permitted if the replier has been explicitly summoned by the original post's aut
 اختبارات: commercial.brain.test.ts (62) + commercial.brain.integration.test.ts (18 تكاملي). فحوص final-audit الجديدة commercial-* (1593). lint/build/npm test/final-audit ناجحة.
 
 لم يُمسّ: أي سرّ/مفتاح/OAuth، Gemini/firewall، قاعدة البيانات، DR/الاستعادة، YouTube، TikTok/Telegram/Threads، ونموذج الجدولة.
+
+## إصلاح عطل تسليم متابعة العقل التجاري + مفتاح الإيقاف الطارئ (2026-10-13)
+
+### 1) الجذر المُثبت: بوابة منع التكرار كانت تُفتَّان على `externalId` وحده
+كانت بوابة منع الرد المكرر (`evaluateReplyGuard`) والقفل الذرّي (`replyLockKey`) تُفتَّان
+على `externalId` وحده. ولأن متابعة العقل التجاري تُرسَل على **نفس التعليق** الذي رُدّ عليه
+أصلاً، كانت تُصنَّف «رداً مكرراً» وتُحجب بـ409 رغم أنها متابعة مشروعة — فلا تصل متابعة
+أبداً (`followUpsSent=0`) رغم استحقاق العميل.
+
+**الإصلاح — فصل `idempotencyKey` عن `externalId` (مصدر واحد):**
+- `engine/social/comments.ts`: `ReplyRecord.idempotencyKey?` اختياري، و`evaluateReplyGuard`
+  يفتّش على `(r.idempotencyKey || r.externalId) === idemKey` حيث `idemKey` = المفتاح
+  المُمرَّر أو `externalId` (السلوك السابق حرفياً عند غياب المفتاح). فإعادة إرسال نفس
+  الرد على نفس التعليق تبقى محجوبة، والمتابعة المشروعة تمرّ.
+- `engine/social/replyInFlightLock.ts`: `replyLockKey(platform, kind, externalId, idempotencyKey?)`
+  يُلحق `#<idem>`، و`acquireReplyLock` يُزيل اللاحقة قبل فحص الفراغ فلا يُقفل مفتاح بلا معرّف.
+- `server.ts`: `executeMetaCommentReply`/`executeMetaMessageReply` يقبلان `idempotencyKey`
+  ويمرّرانه للقفل والبوابة ويسجّلانه في سجل الرد؛ ومتابعة العقل التجاري تستخدم مفتاحاً
+  مميّزاً `fu${followUpsSent+1}` — فلا تُحجب، بينما إعادة نفس المفتاح تبقى محجوبة (لا ثغرة تكرار).
+
+### 2) مفتاح الإيقاف/التمكين (Kill Switch) — مفتاح رئيسي واحد، **افتراضي معطَّل (fail-closed)**
+- الحالة في `server.ts`: `commercialBrainEnabled` (**افتراضي `false` = معطَّل**)،
+  `commercialBrainKillAt/KillBy/KillReason`، و`commercialKillSignal` (يُقلب عند الإيقاف فيُوقف
+  أي دورة جارية عند أول نقطة تحقّق بلا انتظار انتهائها).
+- **إقلاع نظيف بلا سجل مفتاح محفوظ ⇒ معطَّل ⇒ صفر أفعال خارجية** (لا متابعة/اقتراح/رد) حتى
+  يفعّله المالك صراحةً من الواجهة. الجدولة لا تُشغَّل إطلاقاً إلا بتفعيل صريح
+  (`if (commercialKillSwitchEnabled()) startCommercialBrain();`)، فالافتراض آمن بذاته لا
+  يعتمد على فحص داخل الدورة وحده. (اللقطة القديمة من الإنتاج لا تحفظ `killSwitch` أصلاً،
+  فبعد الترقية يبقى الافتراضي الجديد معطَّلاً.)
+- `runCommercialBrainCycle` يتحقّق من المفتاح أولاً (تخطٍّ صريح `skipped:"disabled"` بلا أي
+  تنفيذ خارجي)، ويوقف الجدولة (`stopCommercialBrainNow`) عند الإيقاف.
+- الحالة تُحفظ/تُسترجع عبر محوّل الحالة في مفتاح `commercial` (`killSwitch` مع `leads`) فتصمد
+  بعد restart/cold start.
+- مسارات owner: `GET/POST /api/agent/commercial/kill-switch` (قراءة/تبديل)، و`/api/health`
+  يعلن `commercialBrain.enabled/automated` (منطقي بلا سرّ).
+- الواجهة: `src/components/agent/CommercialBrainKillSwitch.tsx` (تبويب `commercial_kill_switch`
+  في `navConfig.tsx`، ownerOnly) + `apiService.getCommercialKillSwitch/setCommercialKillSwitch`؛
+  تعرض الافتراضي «معطَّل (fail-closed)» وتتيح التفعيل الصريح.
+
+اختبارات: `engine/tests/commercial.followup.guard.unit.test.ts` (16 فحصاً وحدة: فصل المفتاح،
+السلوك السابق محفوظ، لا ثغرة تكرار) و`engine/tests/commercial.followup.killswitch.integration.test.ts`
+(23 فحصاً تكاملياً على خادم حقيقي + خادم Graph وهمي: متابعة تُسلَّم فعلاً بمعرّف Meta، إعادة
+نفس المفتاح لا ترسل، Kill Switch يوقف فوراً ولا إرسال، إعادة التفعيل، تصريح 401/403، ثبات
+بعد restart). فحوص final-audit الجديدة: `commercial-followup-idempotency-key-separation`،
+`commercial-followup-central-executor-key`، `commercial-kill-switch-owner-only`،
+`commercial-kill-switch-persisted`، `commercial-kill-switch-gates-cycle`،
+`commercial-kill-switch-fail-closed-default`، `commercial-followup-killswitch-tests`،
+`commercial-followup-killswitch-tests-no-real-provider` (**1601 فحصاً**).
+اختبار `engine/tests/commercial.killswitch.cleanboot.test.ts` (16 فحصاً) يثبت **إقلاعاً نظيفاً
+بلا سجل مفتاح محفوظ = صفر أفعال خارجية** (لا شبكة إلى المزوّد)، ثم التفعيل الصريح يُسلّم
+المتابعة فعلاً بمعرّف Meta حقيقي.
+
+**لم يُمسّ:** أي سرّ/مفتاح/OAuth، Gemini/firewall، قاعدة البيانات، DR/الاستعادة، YouTube،
+TikTok/Telegram/Threads، ونموذج الجدولة.

@@ -33,9 +33,21 @@ const inFlightReplyKeys = new Set<string>();
 /** حد أقصى لعدد المفاتيح المتتبَّعة — يمنع تسرّب ذاكرة نظري لو تعطّل الإفراج. */
 const MAX_TRACKED_KEYS = 5000;
 
-/** يبني مفتاح القفل من المنصة ونوع الحدث والمعرّف الخارجي. */
-export function replyLockKey(platform: string, kind: "comment" | "message", externalId: string): string {
-  return `${String(platform)}:${String(kind)}:${String(externalId)}`;
+/**
+ * يبني مفتاح القفل من المنصة ونوع الحدث والمعرّف الخارجي، مع **مفتاح تكرار
+ * اختياري** (`idempotencyKey`).
+ *
+ * الفصل المُصلَح (عطل تسليم المتابعة): كان القفل ومنع التكرار يُفتَّان على
+ * `externalId` وحده، فتُصنَّف **متابعة مشروعة** على نفس التعليق (بعد رد أصلي
+ * سابق) كـ«رد مكرر» وتُحجب خطأً. الآن `externalId` يبقى للعثور على الهدف، بينما
+ * `idempotencyKey` هو مفتاح منع التكرار: متابعة العقل التجاري تأخذ مفتاحاً
+ * مميّزاً (`fu1`, `fu2`…) فلا تُحجب، بينما إعادة نفس المفتاح تُحجب كما كان.
+ * غياب المفتاح (كل الردود العادية) يُبقي السلوك السابق حرفياً.
+ */
+export function replyLockKey(platform: string, kind: "comment" | "message", externalId: string, idempotencyKey?: string): string {
+  const base = `${String(platform)}:${String(kind)}:${String(externalId)}`;
+  const idem = typeof idempotencyKey === 'string' && idempotencyKey.trim() ? idempotencyKey.trim() : '';
+  return idem ? `${base}#${idem}` : base;
 }
 
 /**
@@ -44,7 +56,10 @@ export function replyLockKey(platform: string, kind: "comment" | "message", exte
  * رفضه لسبب آخر (معرّف مطلوب)، فلا نمنح حجزاً زائفاً لمفتاح لا معنى له.
  */
 export function acquireReplyLock(key: string): boolean {
-  if (!key || /:(comment|message):$/.test(key)) return true;
+  if (!key) return true;
+  // نُزيل لاحقة مفتاح التكرار (#…) قبل فحص الفراغ، فلا يُقفل مفتاح بلا معرّف خارجي.
+  const withoutIdem = key.includes('#') ? key.slice(0, key.indexOf('#')) : key;
+  if (/:(comment|message):$/.test(withoutIdem)) return true;
   if (inFlightReplyKeys.has(key)) return false;
   if (inFlightReplyKeys.size >= MAX_TRACKED_KEYS) return false; // أفضل جهد دفاعي، لا يُفترض بلوغه عملياً
   inFlightReplyKeys.add(key);

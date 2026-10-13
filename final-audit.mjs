@@ -4500,6 +4500,56 @@ add('watcher-advisory-not-authority',
     !/GEMINI_API_KEY\s*=\s*['"]/.test(commercialIntegrationTest),
     'اختبار التكامل يستخدم خادم Graph وهمياً محلياً بلا مزود حقيقي ولا مفتاح Gemini');
 
+  // 11ب) عطل تسليم المتابعة (فصل مفتاح التكرار) + مفتاح الإيقاف الطارئ.
+  const guardUnitTest = read('engine/tests/commercial.followup.guard.unit.test.ts');
+  const followupIntegrationTest = read('engine/tests/commercial.followup.killswitch.integration.test.ts');
+  const replyLockSrc = read('engine/social/replyInFlightLock.ts');
+  const commentsSrc = read('engine/social/comments.ts');
+  add('commercial-followup-idempotency-key-separation',
+    commentsSrc.includes('idempotencyKey?: string') &&
+    commentsSrc.includes('(r.idempotencyKey || r.externalId) === idemKey') &&
+    replyLockSrc.includes('idempotencyKey?: string') &&
+    replyLockSrc.includes('${base}#${idem}'),
+    'منع التكرار يفصل idempotencyKey عن externalId (المتابعة المشروعة لا تُحجب كرد مكرر)');
+  add('commercial-followup-central-executor-key',
+    /executeMetaCommentReply\(lead\.platform as any, \{[\s\S]{0,240}idempotencyKey: followUpIdem \}/.test(server) &&
+    server.includes('const followUpIdem = `fu${lead.followUpsSent + 1}`'),
+    'متابعة العقل التجاري تمر بمفتاح idempotencyKey مميّز (fu1/fu2) عبر المنفّذ المركزي');
+  add('commercial-kill-switch-owner-only',
+    /app\.get\("\/api\/agent\/commercial\/kill-switch", requireOwner/.test(server) &&
+    /app\.post\("\/api\/agent\/commercial\/kill-switch", requireOwner/.test(server),
+    'مفتاح الإيقاف الطارئ محصور بالمالك (GET + POST)');
+  add('commercial-kill-switch-persisted',
+    /killSwitch: \{ enabled: commercialBrainEnabled, killAt: commercialBrainKillAt, killBy: commercialBrainKillBy, killReason: commercialBrainKillReason \}/.test(server) &&
+    /commercialBrainEnabled = raw\.enabled === true/.test(server),
+    'حالة مفتاح الإيقاف تُحفظ وتُسترجع عبر محوّل الحالة فتصمد بعد restart');
+  add('commercial-kill-switch-gates-cycle',
+    /commercialKillSignal\) break; \/\/ إيقاف فوري/.test(server) &&
+    /skipped: "disabled", reason: "مفتاح العقل التجاري معطَّل/.test(server) &&
+    server.includes('commercialKillSignal = true'),
+    'الإيقاف يمنع الدورة فوراً (تخطٍّ صريح + كسر الحلقة الجارية) بلا تنفيذ خارجي');
+  add('commercial-kill-switch-fail-closed-default',
+    server.includes('let commercialBrainEnabled = false;') &&
+    server.includes("killSwitchNote: enabled") &&
+    server.includes('العقل التجاري معطَّل افتراضياً (fail-closed)') &&
+    /if \(commercialKillSwitchEnabled\(\)\) \{\s*startCommercialBrain\(\);/.test(server) &&
+    read('src/components/agent/CommercialBrainKillSwitch.tsx').includes('fail-closed'),
+    'الافتراضي معطَّل (fail-closed) صراحةً في الكود والواجهة، ولا تُشغَّل الجدولة إلا بتفعيل صريح');
+  add('commercial-followup-killswitch-tests',
+    fs.existsSync(path.join(root, 'engine/tests/commercial.followup.killswitch.integration.test.ts')) &&
+    fs.existsSync(path.join(root, 'engine/tests/commercial.followup.guard.unit.test.ts')) &&
+    fs.existsSync(path.join(root, 'engine/tests/commercial.killswitch.cleanboot.test.ts')) &&
+    JSON.parse(read('package.json')).scripts.test.includes('npm run test:commercial-followup-killswitch') &&
+    JSON.parse(read('package.json')).scripts.test.includes('npm run test:commercial-followup-guard') &&
+    JSON.parse(read('package.json')).scripts.test.includes('npm run test:commercial-cleanboot'),
+    'اختبارات إصلاح المتابعة ومفتاح الإيقاف + إقلاع نظيف fail-closed موجودة ومسجّلة في npm test');
+  add('commercial-followup-killswitch-tests-no-real-provider',
+    followupIntegrationTest.includes('createFacebookMock') &&
+    followupIntegrationTest.includes('delete env.GEMINI_API_KEY') &&
+    guardUnitTest.includes('evaluateReplyGuard') &&
+    !/GEMINI_API_KEY\s*=\s*['"]/.test(followupIntegrationTest),
+    'اختبارا المتابعة/الإيقاف يستخدمان خادماً وهمياً محلياً بلا مزود حقيقي ولا مفتاح Gemini');
+
   // 12) AGENTS.md: عدد فحوصات final-audit مطابق للفعلي (يُعَدّ من نص الملف نفسه).
   const auditCount = (read('final-audit.mjs').match(/^\s*add\(/gm) || []).length;
   add('agents-audit-count-accurate',

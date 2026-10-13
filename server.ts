@@ -4604,19 +4604,20 @@ type MetaReplyResult = { status: number; body: any };
  */
 async function executeMetaCommentReply(
   platform: 'facebook' | 'instagram',
-  input: { externalId: string; text: string; commentText?: string; productId?: string; productName?: string },
+  input: { externalId: string; text: string; commentText?: string; productId?: string; productName?: string; idempotencyKey?: string },
   actor: string,
 ): Promise<MetaReplyResult> {
   const externalId = String(input.externalId || '').trim();
   const text = String(input.text || '').trim();
   const commentText = typeof input.commentText === 'string' ? input.commentText : '';
+  const idempotencyKey = typeof input.idempotencyKey === 'string' ? input.idempotencyKey.trim() : '';
   if (!externalId) return { status: 400, body: { success: false, error: `معرّف التعليق لدى ${platform === 'facebook' ? 'Facebook' : 'Instagram'} مطلوب لمنع الرد المكرر.` } };
   if (!text) return { status: 400, body: { success: false, error: 'نص الرد مطلوب.' } };
 
   const onlyBlock = youtubeOnlyBlock(platform);
   if (onlyBlock.blocked) return { status: onlyBlock.status!, body: onlyBlock.body };
 
-  const lock = replyLockKey(platform, 'comment', externalId);
+  const lock = replyLockKey(platform, 'comment', externalId, idempotencyKey);
   if (!acquireReplyLock(lock)) return { status: 409, body: { success: false, error: 'طلب رد آخر على نفس التعليق قيد التنفيذ بالفعل؛ انتظر حتى يكتمل لمنع التكرار.', code: 'REPLY_IN_PROGRESS' } };
   try {
     const conn: any = platformConnections.get(platform);
@@ -4644,9 +4645,10 @@ async function executeMetaCommentReply(
     const safety = analyzeBusinessClaims(text, replyFacts);
     if (!safety.safe) return { status: 422, body: { success: false, error: 'نص الرد يحمل عرضاً تجارياً غير مسجّل، وتم إيقافه قبل أي إرسال.', contentSafety: { safe: false, violations: safety.blocked.map((v) => v.detail), codes: safety.blocked.map((v) => v.code) } } };
 
-    // 3) بوابة منع الرد المكرر (على معرّف التعليق الخارجي).
-    const history: ReplyRecord[] = (workspace as any).socialReplies.filter((r: any) => r.platform === platform).map((r: any) => ({ externalId: r.externalId, replyFingerprint: r.replyFingerprint, repliedAt: r.repliedAt }));
-    const decision = evaluateReplyGuard({ externalId, replyText: text, history });
+    // 3) بوابة منع الرد المكرر (على مفتاح منع التكرار: externalId للردود العادية،
+    //    أو مفتاح مميّز للمتابعة المشروعة).
+    const history: ReplyRecord[] = (workspace as any).socialReplies.filter((r: any) => r.platform === platform).map((r: any) => ({ externalId: r.externalId, replyFingerprint: r.replyFingerprint, repliedAt: r.repliedAt, idempotencyKey: r.idempotencyKey }));
+    const decision = evaluateReplyGuard({ externalId, replyText: text, history, idempotencyKey });
     if (!decision.allowed) return { status: 409, body: { success: false, error: decision.reason, guard: decision } };
 
     // 4) إرسال حقيقي على مسار التعليقات فقط (comment_reply).
@@ -4660,6 +4662,7 @@ async function executeMetaCommentReply(
     const record = {
       id: workspaceId('reply'), platform, externalId, text, kind: 'comment',
       replyFingerprint: decision.fingerprint, classification,
+      idempotencyKey: idempotencyKey || undefined,
       contentSafety: { safe: true, violations: [] as string[], codes: [] as string[] },
       repliedAt: new Date().toISOString(), createdBy: actor, simulated: false,
       delivered: result.ok, providerReplyId: result.providerReplyId,
@@ -4684,19 +4687,20 @@ async function executeMetaCommentReply(
  */
 async function executeMetaMessageReply(
   platform: 'facebook' | 'instagram',
-  input: { externalId: string; recipientId?: string; text: string; commentText?: string; productId?: string; productName?: string },
+  input: { externalId: string; recipientId?: string; text: string; commentText?: string; productId?: string; productName?: string; idempotencyKey?: string },
   actor: string,
 ): Promise<MetaReplyResult> {
   const externalId = String(input.externalId || '').trim();
   const recipientId = String(input.recipientId || '').trim();
   const text = String(input.text || '').trim();
   const commentText = typeof input.commentText === 'string' ? input.commentText : '';
+  const idempotencyKey = typeof input.idempotencyKey === 'string' ? input.idempotencyKey.trim() : '';
   if (!text) return { status: 400, body: { success: false, error: 'نص الرد مطلوب.' } };
 
   const onlyBlock = youtubeOnlyBlock(platform);
   if (onlyBlock.blocked) return { status: onlyBlock.status!, body: onlyBlock.body };
 
-  const earlyLock = replyLockKey(platform, 'message', externalId || `${platform}-msg:${recipientId}`);
+  const earlyLock = replyLockKey(platform, 'message', externalId || `${platform}-msg:${recipientId}`, idempotencyKey);
   if (!acquireReplyLock(earlyLock)) return { status: 409, body: { success: false, error: 'طلب رد آخر على نفس الرسالة قيد التنفيذ بالفعل؛ انتظر حتى يكتمل لمنع التكرار.', code: 'REPLY_IN_PROGRESS' } };
   try {
     const conn: any = platformConnections.get(platform);
@@ -4724,8 +4728,8 @@ async function executeMetaMessageReply(
     }
 
     const guardExternalId = externalId || `${platform}-msg:${targetRecipient}`;
-    const history: ReplyRecord[] = (workspace as any).socialReplies.filter((r: any) => r.platform === platform && r.kind === 'message').map((r: any) => ({ externalId: r.externalId, replyFingerprint: r.replyFingerprint, repliedAt: r.repliedAt }));
-    const decision = evaluateReplyGuard({ externalId: guardExternalId, replyText: text, history });
+    const history: ReplyRecord[] = (workspace as any).socialReplies.filter((r: any) => r.platform === platform && r.kind === 'message').map((r: any) => ({ externalId: r.externalId, replyFingerprint: r.replyFingerprint, repliedAt: r.repliedAt, idempotencyKey: r.idempotencyKey }));
+    const decision = evaluateReplyGuard({ externalId: guardExternalId, replyText: text, history, idempotencyKey });
     if (!decision.allowed) return { status: 409, body: { success: false, error: decision.reason, guard: decision } };
 
     const result = platform === 'facebook'
@@ -4738,6 +4742,7 @@ async function executeMetaMessageReply(
     const record = {
       id: workspaceId('reply'), platform, externalId: guardExternalId, text, kind: 'message',
       replyFingerprint: decision.fingerprint, classification,
+      idempotencyKey: idempotencyKey || undefined,
       contentSafety: { safe: true, violations: [] as string[], codes: [] as string[] },
       repliedAt: new Date().toISOString(), createdBy: actor, simulated: false,
       delivered: result.ok, providerReplyId: result.providerReplyId,
@@ -7739,6 +7744,53 @@ const COMMERCIAL_LEASE_OWNER = `commercial-brain-${process.pid}-${Date.now().toS
 const COMMERCIAL_MAX_LEADS = 5000;
 const COMMERCIAL_MAX_PER_CYCLE = 10;
 let commercialLastRun: { processed: number; followUpsSent: number; escalated: number; at: string } | null = null;
+
+/**
+ * مفتاح الإيقاف الطارئ للعقل التجاري (Kill Switch) — مفتاح رئيسي واحد فقط.
+ * غرضه: تمكين/إيقاف طارئ شامل للعقل التجاري.
+ * - **افتراضي: معطَّل (fail-closed)** — على إقلاع نظيف بلا سجل محفوظ، لا ينفّذ العقل
+ *   التجاري أي فعل خارجي (لا متابعة ولا اقتراح) حتى يُفعّله المالك صراحةً من الواجهة.
+ *   هذا هو الافتراض الآمن الصريح (لا تشغيل تلقائي بلا تفعيل المالك).
+ * - يُحفظ عبر محوّل الحالة ذاته (نفس نمط youtubeWatcher/metaPolling) فيصمد بعد
+ *   restart/cold start. لا بنية جديدة.
+ */
+let commercialBrainEnabled = false;
+let commercialBrainKillAt: string | null = null;
+let commercialBrainKillBy: string | null = null;
+let commercialBrainKillReason: string | null = null;
+/** يُقلب إلى true عند أول دورة/إرسال — يُوقف أي عمل جارٍ فوراً (لا ينتظر انتهاء الدورة). */
+let commercialKillSignal = false;
+/** جدولة العقل التجاري — تُعرَّف مبكراً كي يُوقفها Kill Switch فوراً. */
+let commercialScheduler: WatcherScheduler | null = null;
+
+/** يقرأ المفتاح: افتراضي معطَّل (fail-closed)؛ لا يعمل إلا بتفعيل صريح من المالك. */
+function commercialKillSwitchEnabled(): boolean {
+  return commercialBrainEnabled === true;
+}
+
+/** يسترجع حالة المفتاح بعد restart بلا طمس الحالة القائمة. */
+function applyCommercialKillSwitchSnapshot(raw: any): void {
+  if (!raw || typeof raw !== 'object') return;
+  commercialBrainEnabled = raw.enabled === true;
+  commercialBrainKillAt = typeof raw.killAt === 'string' ? raw.killAt : null;
+  commercialBrainKillBy = typeof raw.killBy === 'string' ? raw.killBy : null;
+  commercialBrainKillReason = typeof raw.killReason === 'string' ? raw.killReason : null;
+}
+
+/** كتلة الحالة للمالك (بلا سرّ). */
+function commercialKillSwitchView(): { enabled: boolean; killAt: string | null; killBy: string | null; killReason: string | null } {
+  return { enabled: commercialBrainEnabled, killAt: commercialBrainKillAt, killBy: commercialBrainKillBy, killReason: commercialBrainKillReason };
+}
+
+/** يُوقف العمل فوراً: يوقف الجدولة ويقلب الإشارة فتتوقف أي دورة جارية عند أول await. */
+function stopCommercialBrainNow(reason: string, by: string): void {
+  commercialKillSignal = true;
+  try { commercialScheduler?.stop(); } catch { /* الجدولة لا تُسقط الإيقاف */ }
+  commercialBrainEnabled = false;
+  commercialBrainKillAt = new Date().toISOString();
+  commercialBrainKillBy = by;
+  commercialBrainKillReason = reason || null;
+}
 /** ربط أثر اقتراح بتأكيده لا يصمد بعد restart إلا عبر الحالة المحفوظة — نُبقي المؤقّت بلا حالة. */
 
 /** حدّ التفاوض الفعلي: من البيئة (نسبة قصوى عامة) وإلا الافتراضي الآمن. */
@@ -7763,14 +7815,18 @@ async function persistCommercialLeads(): Promise<void> {
   try {
     await storageAdapter.write(COMMERCIAL_LEAD_STATE_KEY, {
       leads: commercialLeads.slice(0, COMMERCIAL_MAX_LEADS),
+      // مفتاح الإيقاف الطارئ يُحفظ مع سجل العملاء (نفس المحوّل/المفتاح) فيصمد بعد restart.
+      killSwitch: { enabled: commercialBrainEnabled, killAt: commercialBrainKillAt, killBy: commercialBrainKillBy, killReason: commercialBrainKillReason },
     });
   } catch { /* يُعلن عبر حالة الحفظ العامة */ }
 }
 
-/** يسترجع العملاء المحتملين بعد restart بلا طمس الحالة القائمة. */
+/** يسترجع العملاء المحتملين + مفتاح الإيقاف بعد restart بلا طمس الحالة القائمة. */
 function applyCommercialStateSnapshot(raw: any): void {
   if (!raw || typeof raw !== "object") return;
   commercialLeads = normalizeCommercialLeads(raw.leads).slice(0, COMMERCIAL_MAX_LEADS);
+  // توافق خلفي (fail-closed): لقطة قديمة بلا killSwitch تُبقي الافتراضي معطَّلاً.
+  applyCommercialKillSwitchSnapshot(raw.killSwitch);
 }
 
 /** يجد عميلاً محتملاً بالمفتاح الحقيقي (منصة + خيط) بلا اختراع هوية. */
@@ -7890,6 +7946,11 @@ function incomingToInteraction(row: any, nowIso: string): InboundInteraction | n
  * بلا اتصال موثق وحارسَي المحتوى/التكرار (كلاهما داخل المنفّذ).
  */
 async function runCommercialBrainCycle(trigger: string): Promise<{ ok: boolean; trigger: string; result?: any; error?: string }> {
+  // Kill Switch (مفتاح رئيسي واحد): حين يكون معطّلاً (**الافتراضي، fail-closed**) لا
+  // تنفّذ الدورة أي عمل — تُعلن التخطّي بصراحة بلا أي تنفيذ خارجي حتى يفعّله المالك.
+  if (!commercialKillSwitchEnabled()) {
+    return { ok: true, trigger, result: { skipped: "disabled", reason: "مفتاح العقل التجاري معطَّل (إيقاف طارئ) — لا متابعة ولا تنفيذ خارجي حتى إعادة التفعيل." } };
+  }
   const leaseRes = acquireLease(commercialLease, { owner: COMMERCIAL_LEASE_OWNER, nowMs: Date.now(), ttlMs: COMMERCIAL_LEASE_TTL_MS });
   if (!leaseRes.acquired) {
     if (leaseRes.recovered) commercialLease = leaseRes.lease;
@@ -7898,6 +7959,9 @@ async function runCommercialBrainCycle(trigger: string): Promise<{ ok: boolean; 
   commercialLease = leaseRes.lease;
   const nowIso = new Date().toISOString();
   let processed = 0, followUpsSent = 0, escalated = 0;
+  // إشارة الإيقاف الطارئ تُصفَّر عند بدء دورة جديدة (المفتاح مفعّل هنا)، فيُوقف أي
+  // تعطيل أثناء الدورة كل عمل لاحق عند أول نقطة تحقّق (لا ينتظر انتهاء الدورة).
+  commercialKillSignal = false;
   try {
     // 1) تسجيل Leads من كل تفاعل وارد حقيقي (تعليق أو رسالة) على Facebook/Instagram،
     //    من سجل الاستقبال الحقيقي مباشرةً (لا اختلاق). السبام/حساب المعرض يُستبعد.
@@ -7906,6 +7970,7 @@ async function runCommercialBrainCycle(trigger: string): Promise<{ ok: boolean; 
       .slice(0, 200);
     const seen = new Set<string>();
     for (const row of inboundRows) {
+      if (commercialKillSignal) break; // إيقاف فوري (Kill Switch) — لا يُنتظر انتهاء الدورة.
       if (processed >= COMMERCIAL_MAX_PER_CYCLE) break;
       const interaction = incomingToInteraction(row, nowIso);
       if (!interaction) continue;
@@ -7923,6 +7988,7 @@ async function runCommercialBrainCycle(trigger: string): Promise<{ ok: boolean; 
 
     // 2) متابعة تلقائية لمن بدأ التواصل: عبر المنفّذ المركزي فقط، بلا رسالة باردة.
     for (const lead of commercialLeads.slice()) {
+      if (commercialKillSignal) break; // إيقاف فوري (Kill Switch).
       if (followUpsSent >= COMMERCIAL_MAX_PER_CYCLE) break;
       const due = isFollowUpDue(lead, nowIso);
       if (!due.due) continue;
@@ -7933,9 +7999,12 @@ async function runCommercialBrainCycle(trigger: string): Promise<{ ok: boolean; 
       const facts = buildFactsForProduct(product, Number(product?.downPaymentPercent || 0), Number(product?.durationMonths || 0));
       if (!analyzeBusinessClaims(text, facts).safe) continue;
       const isMessage = lead.kind === 'message';
+      // مفتاح منع التكرار المميّز للمتابعة: يميّزها عن الرد الأصلي على نفس التعليق
+      // (فلا تُحجب خطأً كرد مكرر)، ويُبقي إعادة نفس المتابعة محجوبة (لا ثغرة تكرار).
+      const followUpIdem = `fu${lead.followUpsSent + 1}`;
       const res = isMessage
-        ? await executeMetaMessageReply(lead.platform as any, { externalId: lead.lastExternalId || '', recipientId: String(lead.replyTarget?.recipientId || ''), text, commentText: lead.lastCustomerText || '', productId: product?.id }, 'commercial-brain')
-        : await executeMetaCommentReply(lead.platform as any, { externalId: lead.lastExternalId || '', text, commentText: lead.lastCustomerText || '', productId: product?.id }, 'commercial-brain');
+        ? await executeMetaMessageReply(lead.platform as any, { externalId: lead.lastExternalId || '', recipientId: String(lead.replyTarget?.recipientId || ''), text, commentText: lead.lastCustomerText || '', productId: product?.id, idempotencyKey: followUpIdem }, 'commercial-brain')
+        : await executeMetaCommentReply(lead.platform as any, { externalId: lead.lastExternalId || '', text, commentText: lead.lastCustomerText || '', productId: product?.id, idempotencyKey: followUpIdem }, 'commercial-brain');
       const delivered = Boolean(res.body?.delivered && res.body?.providerReplyId);
       if (delivered) {
         const updated = applyFollowUpSent(lead, new Date().toISOString());
@@ -7962,7 +8031,17 @@ function canConfirmCommercialProposal(user: ServerUser | undefined | null): bool
 
 /** كتلة العقل التجاري العامة (أرقام فقط بلا أي بيانات عميل) للنقطتين العامتين. */
 function commercialPublicStatus() {
-  return commercialPublicBlock(commercialLeads, new Date().toISOString());
+  const enabled = commercialKillSwitchEnabled();
+  return {
+    ...commercialPublicBlock(commercialLeads, new Date().toISOString()),
+    // مفتاح الإيقاف (حقل منطقي فقط بلا سرّ) — **الافتراضي معطَّل (fail-closed)**:
+    // لا فعل خارجي على إقلاع نظيف حتى يفعّله المالك صراحةً من الواجهة.
+    enabled,
+    automated: enabled,
+    killSwitchNote: enabled
+      ? 'مفتاح رئيسي واحد؛ العقل التجاري مفعَّل صراحةً من المالك، ويمكن إيقافه فوراً.'
+      : 'مفتاح رئيسي واحد؛ العقل التجاري معطَّل افتراضياً (fail-closed) — لا فعل خارجي حتى يفعّله المالك.',
+  };
 }
 
 // --- مسارات العقل التجاري (كلها مصادقة؛ الفعل منها owner/manager/staff) ---
@@ -8018,6 +8097,45 @@ app.post("/api/commercial/leads/:id/proposal/confirm", authenticateToken, async 
 app.post("/api/agent/commercial/run", requireOwner, async (_req, res) => {
   const result = await runCommercialBrainCycle("manual");
   res.status(result.ok ? 200 : 500).json({ success: result.ok, ...result });
+});
+
+// --- مفتاح الإيقاف/التمكين للعقل التجاري (Kill Switch) — للمالك فقط ---
+// مفتاح رئيسي واحد: قراءة الحالة وتبديلها. عند التعطيل (الافتراضي) لا ينفّذ العقل
+// التجاري أي فعل خارجي؛ ويتوقف أي عمل جارٍ فوراً. الحالة تُحفظ فتصمد بعد restart.
+app.get("/api/agent/commercial/kill-switch", requireOwner, (_req, res) => {
+  res.json({
+    success: true,
+    killSwitch: commercialKillSwitchView(),
+    scheduler: commercialScheduler ? commercialScheduler.status() : { active: false, activeTimers: 0 },
+    lastRun: commercialLastRun,
+    note: "مفتاح رئيسي واحد: الافتراضي معطَّل (fail-closed)؛ لا فعل خارجي حتى يفعّله المالك.",
+  });
+});
+
+app.post("/api/agent/commercial/kill-switch", requireOwner, async (req, res) => {
+  const user = (req as any).user as ServerUser;
+  const raw = (req.body || {}).enabled;
+  if (typeof raw !== "boolean") {
+    return res.status(400).json({ success: false, error: "الحقل enabled مطلوب (true/false).", code: "INVALID_ENABLED" });
+  }
+  const reason = typeof (req.body || {}).reason === "string" ? String((req.body || {}).reason).slice(0, 200) : "";
+  if (raw === true) {
+    // تفعيل صريح: يُصفَّر سجل الإيقاف ويُستأنف العمل، وتُجدول الدورة فوراً.
+    commercialBrainEnabled = true;
+    commercialBrainKillAt = null;
+    commercialBrainKillBy = null;
+    commercialBrainKillReason = null;
+    commercialKillSignal = false;
+    await persistCommercialLeads();
+    try { startCommercialBrain(); commercialScheduler?.reschedule(); } catch { /* الجدولة لا تُسقط التفعيل */ }
+    audit(user.id, "commercial_brain_enabled", reason || "owner_enabled");
+    return res.json({ success: true, killSwitch: commercialKillSwitchView(), note: "العقل التجاري مفعَّل — سيبدأ المتابعة وفق نوافذ 24/72 ساعة." });
+  }
+  // تعطيل/إيقاف طارئ: توقف فوري شامل + حفظ الحالة.
+  stopCommercialBrainNow(reason || "owner_disabled", user.id);
+  await persistCommercialLeads();
+  audit(user.id, "commercial_brain_disabled", reason || "owner_disabled");
+  res.json({ success: true, killSwitch: commercialKillSwitchView(), note: "العقل التجاري موقوف — لا متابعة ولا تنفيذ خارجي حتى إعادة التفعيل." });
 });
 
 // -----------------------------------------------------------------------------
@@ -8305,7 +8423,6 @@ function startMetaPollingWatcher(): void {
 // يُشغّل دورة العقل التجاري دورياً (فواصل المتابعة تُحسم داخل الدورة بـ24/72 ساعة).
 // `.unref()` فلا يمنع الإغلاق النظيف، والقفل داخل الدورة يمنع التوازي، ولا استهلاك
 // Gemini (منطق حتمي)، والتنفيذ الخارجي عبر المنفّذ المركزي وحده.
-let commercialScheduler: WatcherScheduler | null = null;
 function startCommercialBrain(): void {
   if (commercialScheduler) { commercialScheduler.start(); return; }
   commercialScheduler = createWatcherScheduler({
@@ -8315,7 +8432,12 @@ function startCommercialBrain(): void {
     // داخل الدورة وفق نوافذ 24/72 ساعة — فلا إغراق ولا رسالة باردة.
     getCadenceMs: () => 10 * 60 * 1000 * usagePressureMultiplier(),
     isDue: () => true,
-    runCycle: () => { if (currentUsagePressure().deferNonCritical) return; runCommercialBrainCycle("schedule").catch(() => { /* الخطأ مسجَّل داخل الدورة */ }); },
+    runCycle: () => {
+      // Kill Switch: الافتراضي معطَّل (fail-closed)، ولا يعمل العقل التجاري إلا بتفعيل المالك.
+      if (!commercialKillSwitchEnabled()) return;
+      if (currentUsagePressure().deferNonCritical) return;
+      runCommercialBrainCycle("schedule").catch(() => { /* الخطأ مسجَّل داخل الدورة */ });
+    },
   });
   commercialScheduler.start();
 }
@@ -17446,8 +17568,14 @@ async function startServer() {
   // العقل التجاري (Digital Salesperson) 24/7: job داخلي مستقل عن المتصفح، حتمي
   // بلا Gemini، يتابع العملاء الذين بدأوا التواصل عبر المنفّذ المركزي وحده،
   // ويصمد بعد restart (سجل العملاء في المخزن).
+  // **fail-closed:** لا تُشغَّل الجدولة إطلاقاً إلا إذا كان المفتاح مفعَّلاً صراحةً
+  // (المحفوظ أو من البيئة). على إقلاع نظيف بلا سجل ⇒ معطَّل ⇒ صفر أفعال خارجية.
   try {
-    startCommercialBrain();
+    if (commercialKillSwitchEnabled()) {
+      startCommercialBrain();
+    } else {
+      console.log("[الغرابي AI] Commercial Brain disabled by default (kill switch off) — no external actions until owner enables it.");
+    }
   } catch (e: any) {
     console.error("[الغرابي AI] failed to start Commercial Brain:", String(e?.message || e).slice(0, 120));
   }
