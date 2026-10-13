@@ -98,6 +98,11 @@ function startApp(): { proc: ChildProcess; log: () => string } {
     PORT: String(PORT), NODE_ENV: 'production', APP_URL: BASE,
     STATE_DIR: stateDir, SESSION_SECRET,
     GHARABI_ENABLE_LEGACY_ERP_SCOPE: 'true',
+    // تبويب المبيعات محكوم بعلمه المستقل (fail-closed افتراضياً) — يُفعَّل هنا لاختبار
+    // مصفوفة صلاحيات مسارات /api/sales*.
+    GHARABI_ENABLE_SALES_TAB: 'true',
+    // غرفة العمليات محكومة بعلمها المستقل — يُفعَّل لاختبار مسارات /api/control/*.
+    GHARABI_ENABLE_OPERATIONS_TAB: 'true',
   };
   delete env.GEMINI_API_KEY;
   delete env.DATABASE_URL;

@@ -64,6 +64,15 @@ import { evaluateSixAgentAction, isAllowedSixAgentAction, SIX_AGENT_ALLOWED_ACTI
 import { executeSixAgentAction, type DeterministicActionDeps } from "./engine/brain/team/deterministicActions";
 import { emptySixAgentAudit, recordSixAgentAudit, summarizeSixAgentAudit, normalizeSixAgentAudit, type SixAgentAuditState } from "./engine/brain/team/auditLog";
 import { isEscalationOpen, escalationReasonFor, type EscalationReason, type EscalationRecord } from "./engine/social/escalation";
+import {
+  type CommercialLead, type InboundInteraction, type CommercialNegotiationLimits,
+  defaultNegotiationLimits, normalizeNegotiationLimits, evaluateNegotiation,
+  createCommercialLead, mergeCommercialInteraction, commercialLeadKey,
+  requestsNegotiation, parseRequestedDiscountPercent,
+  nextFollowUpAt, isFollowUpDue, applyFollowUpSent, buildCommercialFollowUpText,
+  buildCommercialProposal, confirmCommercialProposal, rejectCommercialProposal,
+  toCommercialLeadRow, summarizeCommercialLeads, commercialPublicBlock, normalizeCommercialLeads,
+} from "./engine/commercial/commercialBrain";
 import { classifyConversation } from "./engine/brain/audience/conversationIntelligence";
 import { capabilityRow } from "./engine/brain/strategy/capabilityMatrix";
 import { registerDriveRoutes } from "./engine/dr/routes";
@@ -7499,6 +7508,7 @@ async function runMetaWatcherCycle(trigger: string): Promise<{ ok: boolean; trig
         const baseEntry: WatcherProcessedEntry = {
           commentId: externalId, stage: "ANALYZED", action: decision.action, reason: decision.reason, code: decision.code,
           videoId: c.postId || c.mediaId || null, authorName: c.authorName || c.username || null, text,
+          platform, productFactsVerified: priceFactsVerified,
           at: new Date().toISOString(), publishedAt: c.createdAt || null,
         };
         processedThisCycle += 1;
@@ -7709,6 +7719,306 @@ app.post("/api/agent/meta/watcher/poll", requireOwner, async (_req, res) => {
   res.status(result.ok ? 200 : 500).json({ success: result.ok, ...result });
 });
 
+// -----------------------------------------------------------------------------
+// العقل التجاري (Digital Salesperson) — قرار مالك صريح (2026-10-13).
+//
+// موظف مبيعات رقمي حقيقي هدفه زيادة مبيعات معرض الغرابي للتقسيط، مع القواعد الملزمة:
+//  - يتصل ببيانات المنتجات/الأسعار/الأقساط القائمة فقط (لا اختراع سعر/منتج).
+//  - يسجّل كل عميل محتمل (Lead) من تفاعل وارد حقيقي، بحالة دائمة تصمد بعد restart.
+//  - متابعة تلقائية (24/72 ساعة) فقط لمن بدأ هو التواصل (لا رسالة باردة)، عبر نفس
+//    قناة التواصل (المنفّذ المركزي) — لا مسار إرسال جانبي.
+//  - تفاوض ضمن حدّ مسموح (نسبة قصوى لكل منتج/فئة)؛ ما فوقه يُصعَّد للمالك.
+//  - لا إغلاق صفقة بلا تأكيد بشري (اقتراح فقط)؛ ولا استلام دفع ولا تعديل مخزون.
+// المنطق كله حتمي (لا استهلاك Gemini) ومعزول في engine/commercial/commercialBrain.
+// -----------------------------------------------------------------------------
+const COMMERCIAL_LEAD_STATE_KEY = "commercial";
+let commercialLeads: CommercialLead[] = [];
+let commercialLease: DurableLease | null = null;
+const COMMERCIAL_LEASE_TTL_MS = 5 * 60 * 1000;
+const COMMERCIAL_LEASE_OWNER = `commercial-brain-${process.pid}-${Date.now().toString(36)}`;
+const COMMERCIAL_MAX_LEADS = 5000;
+const COMMERCIAL_MAX_PER_CYCLE = 10;
+let commercialLastRun: { processed: number; followUpsSent: number; escalated: number; at: string } | null = null;
+/** ربط أثر اقتراح بتأكيده لا يصمد بعد restart إلا عبر الحالة المحفوظة — نُبقي المؤقّت بلا حالة. */
+
+/** حدّ التفاوض الفعلي: من البيئة (نسبة قصوى عامة) وإلا الافتراضي الآمن. */
+function commercialNegotiationLimits(): CommercialNegotiationLimits {
+  const pct = Number(process.env.COMMERCIAL_MAX_DISCOUNT_PERCENT);
+  const abs = Number(process.env.COMMERCIAL_MAX_DISCOUNT_AMOUNT);
+  const base = defaultNegotiationLimits();
+  if (process.env.COMMERCIAL_MAX_DISCOUNT_PER_CATEGORY) {
+    try {
+      base.perCategoryPercent = JSON.parse(String(process.env.COMMERCIAL_MAX_DISCOUNT_PER_CATEGORY));
+    } catch { /* JSON غير صالح يُتجاهل — يبقى الافتراضي */ }
+  }
+  return normalizeNegotiationLimits({
+    maxDiscountPercent: Number.isFinite(pct) ? pct : base.maxDiscountPercent,
+    maxDiscountAmount: Number.isFinite(abs) ? abs : base.maxDiscountAmount,
+    perCategoryPercent: base.perCategoryPercent,
+  });
+}
+
+async function persistCommercialLeads(): Promise<void> {
+  if (!storageReady) return;
+  try {
+    await storageAdapter.write(COMMERCIAL_LEAD_STATE_KEY, {
+      leads: commercialLeads.slice(0, COMMERCIAL_MAX_LEADS),
+    });
+  } catch { /* يُعلن عبر حالة الحفظ العامة */ }
+}
+
+/** يسترجع العملاء المحتملين بعد restart بلا طمس الحالة القائمة. */
+function applyCommercialStateSnapshot(raw: any): void {
+  if (!raw || typeof raw !== "object") return;
+  commercialLeads = normalizeCommercialLeads(raw.leads).slice(0, COMMERCIAL_MAX_LEADS);
+}
+
+/** يجد عميلاً محتملاً بالمفتاح الحقيقي (منصة + خيط) بلا اختراع هوية. */
+function findCommercialLead(key: string): CommercialLead | null {
+  return commercialLeads.find((l) => l.key === key) || null;
+}
+
+/**
+ * يُسجّل/يُحدّث عميلاً محتملاً من تفاعل وارد حقيقي (تعليق/رسالة). يُستدعى من مسارات
+ * الاستقبال الحقيقية داخل النبضة فقط. لا يُنشئ عميلاً من لا شيء، ولا يفقد أي حدث.
+ */
+async function recordCommercialInteraction(input: InboundInteraction): Promise<CommercialLead | null> {
+  const eid = String(input.externalId || "").trim();
+  const key = commercialLeadKey(input.platform, input.conversationId);
+  if (!eid || !input.text || !input.conversationId) return null;
+  const existing = findCommercialLead(key);
+  if (existing) {
+    if (existing.sourceEventIds.includes(eid)) return existing; // idempotent.
+    const idx = commercialLeads.findIndex((l) => l.key === key);
+    const merged = mergeCommercialInteraction(existing, input);
+    merged.nextFollowUpAt = nextFollowUpAt(merged);
+    // حماية من التسميم: التفاوض/الخصم لا يُرقّي الحالة إلى صفقة إلا بتأكيد بشري؛
+    // الاقتراح يُبنى بمرشّح staleness لاحقاً لا هنا.
+    commercialLeads[idx] = merged;
+    await persistCommercialLeads();
+    return merged;
+  }
+  const created = createCommercialLead(input);
+  created.nextFollowUpAt = nextFollowUpAt(created);
+  commercialLeads.unshift(created);
+  if (commercialLeads.length > COMMERCIAL_MAX_LEADS) commercialLeads.length = COMMERCIAL_MAX_LEADS;
+  await persistCommercialLeads();
+  return created;
+}
+
+/** هل هذا التفاعل مؤهّل ليُسجَّل كعميل محتمل؟ (حقيقي، ليس سباماً، وليس حساب المعرض). */
+function isEligibleCommercialInteraction(input: InboundInteraction): boolean {
+  const cls: any = input.classification;
+  if (cls?.isSpam === true) return false;
+  const ownNames = [String(workspace.showroom?.name || ''), 'معرض الغرابي'].map((n) => n.trim()).filter(Boolean);
+  if (input.customerName && isSelfAuthored(input.customerName, ownNames)) return false;
+  return Boolean(String(input.text || '').trim());
+}
+
+/**
+ * يحسم طلب تفاوض ويبني اقتراح صفقة معلّقاً (بلا إغلاق). غياب منتج/سعر مسجّل أو تجاوز
+ * الحدّ ⇒ تصعيد للمالك بلا قرار منفرد. لا يُعلن أي بيع.
+ */
+async function resolveCommercialNegotiation(lead: CommercialLead, text: string): Promise<{
+  outcome: string; lead: CommercialLead; proposal: any | null; escalated: boolean; reason: string;
+}> {
+  const product = lead.interestedProductId
+    ? (workspace.products || []).find((p: any) => String(p.id) === String(lead.interestedProductId)) || null
+    : null;
+  const requestedPct = parseRequestedDiscountPercent(text);
+  if (!product || !Number.isFinite(Number(product.cashPrice)) || Number(product.cashPrice) <= 0) {
+    const updated: CommercialLead = { ...lead, stage: 'ESCALATED', escalationReason: 'استفسار تفاوض بلا منتج/سعر مسجّل — يُصعَّد للمالك بلا تخمين.', updatedAt: new Date().toISOString() };
+    const idx = commercialLeads.findIndex((l) => l.key === lead.key); if (idx >= 0) commercialLeads[idx] = updated;
+    await persistCommercialLeads();
+    return { outcome: 'escalate', lead: updated, proposal: null, escalated: true, reason: updated.escalationReason! };
+  }
+  const months = Number(product.durationMonths) > 0 ? Number(product.durationMonths) : 10;
+  const decision = evaluateNegotiation({
+    cashPrice: Number(product.cashPrice), requestedDiscountPercent: requestedPct ?? commercialNegotiationLimits().maxDiscountPercent,
+    installmentMonths: months, category: product.category, limits: commercialNegotiationLimits(),
+  });
+  if (decision.outcome === 'escalate') {
+    const updated: CommercialLead = { ...lead, stage: 'ESCALATED', escalationReason: decision.reason, updatedAt: new Date().toISOString() };
+    const idx = commercialLeads.findIndex((l) => l.key === lead.key); if (idx >= 0) commercialLeads[idx] = updated;
+    await persistCommercialLeads();
+    return { outcome: 'escalate', lead: updated, proposal: null, escalated: true, reason: decision.reason };
+  }
+  const proposal = buildCommercialProposal({
+    id: workspaceId('prop'), product: { id: String(product.id), name: String(product.name || ''), cashPrice: Number(product.cashPrice) },
+    negotiation: decision, installmentMonths: months, at: new Date().toISOString(),
+  });
+  const safeProposal = proposal && decision.outcome === 'counter'
+    ? { ...proposal, note: 'عرض مضاد ضمن الحدّ المسموح (الطلب تجاوز الحدّ).' }
+    : proposal;
+  const updated: CommercialLead = {
+    ...lead, stage: 'PROPOSAL_PENDING', pendingProposal: safeProposal, updatedAt: new Date().toISOString(),
+    escalationReason: decision.outcome === 'counter' ? 'الطلب تجاوز الحدّ المسموح — عُرض بديل ضمن الحدّ وينتظر تأكيدك.' : null,
+  };
+  const idx = commercialLeads.findIndex((l) => l.key === lead.key); if (idx >= 0) commercialLeads[idx] = updated;
+  await persistCommercialLeads();
+  return { outcome: decision.outcome, lead: updated, proposal: safeProposal, escalated: false, reason: decision.reason };
+}
+
+/** يبني تفاعلاً وارداً موحّداً من سجل استقبال حقيقي (بلا اختلاق حقل). */
+function incomingToInteraction(row: any, nowIso: string): InboundInteraction | null {
+  const platform = String(row.platform || '').toLowerCase();
+  if (!['facebook', 'instagram'].includes(platform)) return null;
+  const externalId = String(row.externalId || '').trim();
+  const text = String(row.text || '').trim();
+  if (!externalId || !text) return null;
+  const isMessage = row.kind === 'message';
+  const conversationId = isMessage
+    ? `dm:${String(row.replyTarget?.recipientId || externalId)}`
+    : `thread:${String(row.postExternalId || 'thread')}`;
+  const product = resolveProductForPost(row.postExternalId || null);
+  return {
+    externalId, platform, conversationId, customerName: row.authorName || null, text,
+    at: String(row.createdAt || nowIso), fromCustomer: true,
+    kind: isMessage ? 'message' : 'comment',
+    replyTarget: isMessage
+      ? { recipientId: String(row.replyTarget?.recipientId || '') }
+      : { commentId: externalId, videoId: String(row.postExternalId || '') },
+    classification: row.classification || classifyComment(text),
+    product: product ? { id: String(product.id), name: String(product.name || ''), cashPrice: Number(product.cashPrice), category: String(product.category || '') } : null,
+  };
+}
+
+/**
+ * دورة العقل التجاري: تقرأ التنبيهات الحقيقية المرصودة في المراقبين (علامات المتابعة
+ * المُعدّة هناك)، تُسجّل/تُحدّث Leads حقيقية، تُصعّد الاستفسارات غير القابلة للرد،
+ * وتُرسل متابعة تلقائية لمن بدأ التواصل عبر المنفّذ المركزي وحده. لا تنفيذ خارجي
+ * بلا اتصال موثق وحارسَي المحتوى/التكرار (كلاهما داخل المنفّذ).
+ */
+async function runCommercialBrainCycle(trigger: string): Promise<{ ok: boolean; trigger: string; result?: any; error?: string }> {
+  const leaseRes = acquireLease(commercialLease, { owner: COMMERCIAL_LEASE_OWNER, nowMs: Date.now(), ttlMs: COMMERCIAL_LEASE_TTL_MS });
+  if (!leaseRes.acquired) {
+    if (leaseRes.recovered) commercialLease = leaseRes.lease;
+    return { ok: true, trigger, result: { skipped: "locked" } };
+  }
+  commercialLease = leaseRes.lease;
+  const nowIso = new Date().toISOString();
+  let processed = 0, followUpsSent = 0, escalated = 0;
+  try {
+    // 1) تسجيل Leads من كل تفاعل وارد حقيقي (تعليق أو رسالة) على Facebook/Instagram،
+    //    من سجل الاستقبال الحقيقي مباشرةً (لا اختلاق). السبام/حساب المعرض يُستبعد.
+    const inboundRows = ((workspace as any).socialComments || [])
+      .filter((c: any) => ['facebook', 'instagram'].includes(String(c.platform || '').toLowerCase()))
+      .slice(0, 200);
+    const seen = new Set<string>();
+    for (const row of inboundRows) {
+      if (processed >= COMMERCIAL_MAX_PER_CYCLE) break;
+      const interaction = incomingToInteraction(row, nowIso);
+      if (!interaction) continue;
+      if (seen.has(interaction.externalId)) continue;
+      seen.add(interaction.externalId);
+      if (!isEligibleCommercialInteraction(interaction)) continue;
+      processed += 1;
+      const lead = await recordCommercialInteraction(interaction);
+      // تفاوض صريح ⇒ احسمه (اقتراح/تصعيد) بلا إغلاق.
+      if (lead && requestsNegotiation(interaction.text)) {
+        const r = await resolveCommercialNegotiation(lead, interaction.text);
+        if (r.escalated) escalated += 1;
+      }
+    }
+
+    // 2) متابعة تلقائية لمن بدأ التواصل: عبر المنفّذ المركزي فقط، بلا رسالة باردة.
+    for (const lead of commercialLeads.slice()) {
+      if (followUpsSent >= COMMERCIAL_MAX_PER_CYCLE) break;
+      const due = isFollowUpDue(lead, nowIso);
+      if (!due.due) continue;
+      if (!['facebook', 'instagram'].includes(lead.platform)) continue;
+      const text = buildCommercialFollowUpText(lead);
+      // حارس المحتوى صريح إضافي (المنفّذ يفرضه أيضاً): لا متابعة تحمل ادعاءً.
+      const product = lead.interestedProductId ? (workspace.products || []).find((x: any) => String(x.id) === String(lead.interestedProductId)) || null : null;
+      const facts = buildFactsForProduct(product, Number(product?.downPaymentPercent || 0), Number(product?.durationMonths || 0));
+      if (!analyzeBusinessClaims(text, facts).safe) continue;
+      const isMessage = lead.kind === 'message';
+      const res = isMessage
+        ? await executeMetaMessageReply(lead.platform as any, { externalId: lead.lastExternalId || '', recipientId: String(lead.replyTarget?.recipientId || ''), text, commentText: lead.lastCustomerText || '', productId: product?.id }, 'commercial-brain')
+        : await executeMetaCommentReply(lead.platform as any, { externalId: lead.lastExternalId || '', text, commentText: lead.lastCustomerText || '', productId: product?.id }, 'commercial-brain');
+      const delivered = Boolean(res.body?.delivered && res.body?.providerReplyId);
+      if (delivered) {
+        const updated = applyFollowUpSent(lead, new Date().toISOString());
+        const idx = commercialLeads.findIndex((l) => l.key === lead.key);
+        if (idx >= 0) commercialLeads[idx] = updated;
+        followUpsSent += 1;
+      }
+    }
+    if (followUpsSent > 0) await persistCommercialLeads();
+    commercialLastRun = { processed, followUpsSent, escalated, at: nowIso };
+    return { ok: true, trigger, result: { processed, followUpsSent, escalated } };
+  } catch (e: any) {
+    return { ok: false, trigger, error: String(e?.code || e?.name || 'cycle_failed').slice(0, 80) };
+  } finally {
+    releaseLease(commercialLease, COMMERCIAL_LEASE_OWNER);
+    commercialLease = null;
+  }
+}
+
+/** هل يملك المستخدم صلاحية تأكيد صفقة؟ (المالك أو موظف بصلاحية؛ بلا موظف مالي منفصل). */
+function canConfirmCommercialProposal(user: ServerUser | undefined | null): boolean {
+  return Boolean(user && ['owner', 'manager', 'staff'].includes(user.role));
+}
+
+/** كتلة العقل التجاري العامة (أرقام فقط بلا أي بيانات عميل) للنقطتين العامتين. */
+function commercialPublicStatus() {
+  return commercialPublicBlock(commercialLeads, new Date().toISOString());
+}
+
+// --- مسارات العقل التجاري (كلها مصادقة؛ الفعل منها owner/manager/staff) ---
+app.get("/api/commercial/leads", authenticateToken, (req, res) => {
+  const user = (req as any).user as ServerUser;
+  if (!['owner', 'manager', 'staff'].includes(user.role)) return res.status(403).json({ success: false, error: 'لا تملك صلاحية عرض العملاء المحتملين.' });
+  const nowIso = new Date().toISOString();
+  res.json({
+    success: true,
+    leads: commercialLeads.slice(0, 1000).map(toCommercialLeadRow),
+    summary: summarizeCommercialLeads(commercialLeads, nowIso),
+    limits: commercialNegotiationLimits(),
+    lastRun: commercialLastRun,
+    generatedAt: nowIso,
+  });
+});
+
+app.post("/api/commercial/leads/:id/proposal/reject", authenticateToken, async (req, res) => {
+  const user = (req as any).user as ServerUser;
+  if (!canConfirmCommercialProposal(user)) return res.status(403).json({ success: false, error: 'لا تملك صلاحية رفض الاقتراح.' });
+  const lead = commercialLeads.find((l) => l.id === req.params.id);
+  if (!lead) return res.status(404).json({ success: false, error: 'العميل المحتمل غير موجود.' });
+  const proposalId = String(req.body?.proposalId || lead.pendingProposal?.id || '');
+  const rejected = rejectCommercialProposal(lead, proposalId, new Date().toISOString());
+  if (!rejected) return res.status(404).json({ success: false, error: 'لا اقتراح مطابق معلّق.' });
+  lead.pendingProposal = rejected;
+  lead.stage = 'NEGOTIATING';
+  lead.updatedAt = new Date().toISOString();
+  await persistCommercialLeads();
+  audit(user.id, 'commercial_proposal_rejected', `${lead.id}:${proposalId}`);
+  res.json({ success: true, lead: toCommercialLeadRow(lead) });
+});
+
+app.post("/api/commercial/leads/:id/proposal/confirm", authenticateToken, async (req, res) => {
+  const user = (req as any).user as ServerUser;
+  const lead = commercialLeads.find((l) => l.id === req.params.id);
+  if (!lead) return res.status(404).json({ success: false, error: 'العميل المحتمل غير موجود.' });
+  const proposalId = String(req.body?.proposalId || lead.pendingProposal?.id || '');
+  const result = confirmCommercialProposal({
+    lead, proposalId, confirmedBy: user.id, allowed: canConfirmCommercialProposal(user), at: new Date().toISOString(),
+  });
+  if (!result.ok) return res.status(canConfirmCommercialProposal(user) ? 409 : 403).json({ success: false, error: result.reason });
+  lead.pendingProposal = result.proposal;
+  lead.stage = result.leadStage;
+  lead.updatedAt = new Date().toISOString();
+  await persistCommercialLeads();
+  audit(user.id, 'commercial_proposal_confirmed', `${lead.id}:${proposalId}`);
+  // ملاحظة صريحة: التأكيد يوثّق الصفقة ذهنياً؛ لا استلام دفع ولا تعديل مخزون ولا
+  // إنشاء بيع في نظام المبيعات تلقائياً (خارج نطاق هذه الدفعة عن قصد).
+  res.json({ success: true, lead: toCommercialLeadRow(lead), note: 'أُكّدت الصفقة بشراً؛ لم يُسجَّل دفع ولم يُعدّل مخزون تلقائياً.' });
+});
+
+app.post("/api/agent/commercial/run", requireOwner, async (_req, res) => {
+  const result = await runCommercialBrainCycle("manual");
+  res.status(result.ok ? 200 : 500).json({ success: result.ok, ...result });
+});
 
 // -----------------------------------------------------------------------------
 // محرّك الاستقبال الموحّد (Unified Ingestion Engine).
@@ -7989,6 +8299,25 @@ function startMetaPollingWatcher(): void {
   const c = metaPollingState.controls;
   if (c.enabled && c.paused) { metaPollingScheduler.stop(); return; }
   metaPollingScheduler.start();
+}
+
+// --- العقل التجاري: مؤقّت داخلي واحد مستقل عن المتصفح (متابعة العملاء) ---
+// يُشغّل دورة العقل التجاري دورياً (فواصل المتابعة تُحسم داخل الدورة بـ24/72 ساعة).
+// `.unref()` فلا يمنع الإغلاق النظيف، والقفل داخل الدورة يمنع التوازي، ولا استهلاك
+// Gemini (منطق حتمي)، والتنفيذ الخارجي عبر المنفّذ المركزي وحده.
+let commercialScheduler: WatcherScheduler | null = null;
+function startCommercialBrain(): void {
+  if (commercialScheduler) { commercialScheduler.start(); return; }
+  commercialScheduler = createWatcherScheduler({
+    setTimer: (fn, ms) => { const t = setInterval(fn, ms); (t as any).unref?.(); return { clear: () => clearInterval(t) }; },
+    setTimeoutOnce: (fn, ms) => { const t = setTimeout(fn, ms); (t as any).unref?.(); return { clear: () => clearTimeout(t) }; },
+    // فاصل تشغيل ثابت 10 دقائق (قابل للضغط عبر حارس الحصص)، والقرار الفعلي بالمتابعة
+    // داخل الدورة وفق نوافذ 24/72 ساعة — فلا إغراق ولا رسالة باردة.
+    getCadenceMs: () => 10 * 60 * 1000 * usagePressureMultiplier(),
+    isDue: () => true,
+    runCycle: () => { if (currentUsagePressure().deferNonCritical) return; runCommercialBrainCycle("schedule").catch(() => { /* الخطأ مسجَّل داخل الدورة */ }); },
+  });
+  commercialScheduler.start();
 }
 
 // --- مسارات التحكم بالمراقبة (Owner Controls + Kill Switch) — للمالك فقط ---
@@ -10514,14 +10843,33 @@ const OUT_OF_SCOPE_LIVE_ROUTE_PREFIXES: readonly string[] = Object.freeze([
   "/api/control/reconciliation",
   "/api/control/daily-brief",
 ]);
+// عائلات فرعية لكل تبويب تجاري — تُعزل منفصلةً لأن قرار المالك (2026-10-13) يسمح
+// بإعادة تفعيل تبويب المبيعات وغرفة العمليات مستقلّين عبر علمَين صريحين (fail-closed).
+const SALES_ROUTE_PREFIXES: readonly string[] = Object.freeze(["/api/sales"]);
+const OPERATIONS_ROUTE_PREFIXES: readonly string[] = Object.freeze([
+  "/api/control/alerts",
+  "/api/control/customer-directory",
+  "/api/control/cashflow",
+  "/api/control/reconciliation",
+  "/api/control/daily-brief",
+]);
 function legacyErpScopeEnabled(): boolean {
   const raw = String(process.env.GHARABI_ENABLE_LEGACY_ERP_SCOPE ?? "").trim().toLowerCase();
   return raw === "true" || raw === "1" || raw === "on" || raw === "yes";
 }
-function isLegacyErpRouteRequest(rawUrl: string): boolean {
-  // تطبيع مطابق لـcanonicalRequestPath (نفس سياسة حارس حزمة المصدر): فكّ ترميز
-  // متكرر محدود + توحيد الفواصل + حلّ `.`/`..` + طيّ الشرطة المائلة المكرّرة +
-  // حذف الشرطة الختامية + توحيد الحالة. يمنع تجاوز الحارس بصيغة `//api/crm/...`.
+/** تبويب المبيعات مُفعَّل؟ (قرار مالك صريح — افتراضياً لا، fail-closed). */
+function salesTabScopeEnabled(): boolean {
+  const raw = String(process.env.GHARABI_ENABLE_SALES_TAB ?? "").trim().toLowerCase();
+  return raw === "true" || raw === "1" || raw === "on" || raw === "yes";
+}
+/** تبويب غرفة العمليات مُفعَّل؟ (قرار مالك صريح — افتراضياً لا، fail-closed). */
+function operationsTabScopeEnabled(): boolean {
+  const raw = String(process.env.GHARABI_ENABLE_OPERATIONS_TAB ?? "").trim().toLowerCase();
+  return raw === "true" || raw === "1" || raw === "on" || raw === "yes";
+}
+function canonicalRequestPathForScope(rawUrl: string): string {
+  // تطبيع مطابق لسياسة canonicalRequestPath: فكّ ترميز متكرر محدود + توحيد الفواصل +
+  // حلّ `.`/`..` + طيّ الشرطة المائلة المكرّرة + حذف الشرطة الختامية + توحيد الحالة.
   let p = String(rawUrl || "").split("?")[0].split("#")[0].replace(/\\/g, "/");
   for (let i = 0; i < 5; i += 1) {
     if (!/%[0-9a-fA-F]/.test(p)) break;
@@ -10534,30 +10882,28 @@ function isLegacyErpRouteRequest(rawUrl: string): boolean {
     }
   }
   const norm = path.posix.normalize(p);
-  const canonical = (norm.startsWith("/") ? norm : `/${norm}`).replace(/\/+$/, "").toLowerCase() || "/";
+  return (norm.startsWith("/") ? norm : `/${norm}`).replace(/\/+$/, "").toLowerCase() || "/";
+}
+function matchesPrefix(canonical: string, prefix: string): boolean {
+  return canonical === prefix || canonical.startsWith(prefix + "/");
+}
+function isLegacyErpRouteRequest(rawUrl: string): boolean {
+  const canonical = canonicalRequestPathForScope(rawUrl);
   for (const prefix of LEGACY_ERP_ROUTE_PREFIXES) {
-    if (canonical === prefix || canonical.startsWith(prefix + "/")) return true;
+    if (matchesPrefix(canonical, prefix)) return true;
   }
   return false;
 }
 // عائلات خارج النطاق لكنها مستهلكة بواجهات ظاهرة (مبيعات/مالية/دليل عملاء) — تطبيع
 // مطابق تماماً لعزل ERP، فلا تتجاوز الحارس صيغة `//api/sales/...` أو `%2f`.
+// قرار المالك (2026-10-13): استثناء تبويب المبيعات/العمليات لا يقع إلا بعلم صريح.
 function isOutOfScopeLiveRouteRequest(rawUrl: string): boolean {
-  let p = String(rawUrl || "").split("?")[0].split("#")[0].replace(/\\/g, "/");
-  for (let i = 0; i < 5; i += 1) {
-    if (!/%[0-9a-fA-F]/.test(p)) break;
-    try {
-      const next = decodeURIComponent(p);
-      if (next === p) break;
-      p = next;
-    } catch {
-      break;
-    }
+  const canonical = canonicalRequestPathForScope(rawUrl);
+  if (!salesTabScopeEnabled()) {
+    for (const prefix of SALES_ROUTE_PREFIXES) if (matchesPrefix(canonical, prefix)) return true;
   }
-  const norm = path.posix.normalize(p);
-  const canonical = (norm.startsWith("/") ? norm : `/${norm}`).replace(/\/+$/, "").toLowerCase() || "/";
-  for (const prefix of OUT_OF_SCOPE_LIVE_ROUTE_PREFIXES) {
-    if (canonical === prefix || canonical.startsWith(prefix + "/")) return true;
+  if (!operationsTabScopeEnabled()) {
+    for (const prefix of OPERATIONS_ROUTE_PREFIXES) if (matchesPrefix(canonical, prefix)) return true;
   }
   return false;
 }
@@ -10571,19 +10917,23 @@ if (!legacyErpScopeEnabled()) {
         note: "لإعادة التفعيل: GHARABI_ENABLE_LEGACY_ERP_SCOPE=true. لا يُزال الكود ولا البيانات.",
       });
     }
-    // عائلات خارج النطاق لكنها مستهلكة بواجهات ظاهرة (مبيعات/مالية/دليل عملاء): تُعزل
-    // بنفس المفتاح مع كود مميّز يُثبت أن الحجب بسبب النطاق لا بسبب الصلاحية.
-    if (isOutOfScopeLiveRouteRequest(String(req.url || ""))) {
-      return res.status(404).json({
-        success: false,
-        error: "هذا السطح (المبيعات/المالية/دليل العملاء) خارج نطاق المشروع المعلن (سوشيال + AI + تسويق).",
-        code: "SCOPE_DISABLED",
-        note: "لإعادة التفعيل: GHARABI_ENABLE_LEGACY_ERP_SCOPE=true. لا يُزال الكود ولا البيانات.",
-      });
-    }
     next();
   });
 }
+// عائلات المبيعات/غرفة العمليات: حارس مستقل عن عزل ERP، ويحترم قرار المالك الصريح
+// بإعادة تفعيل أيّ من التبويبين عبر علمه المستقل (fail-closed افتراضياً). يعمل دائماً
+// (لا يعتمد على مفتاح ERP) كي يبقى التبويب معزولاً حتى لو كان عزل ERP مطفأً.
+app.use((req, res, next) => {
+  if (isOutOfScopeLiveRouteRequest(String(req.url || ""))) {
+    return res.status(404).json({
+      success: false,
+      error: "هذا السطح (المبيعات/غرفة العمليات) خارج النطاق الحالي. لتفعيله استخدم العلم الصريح للتبويب.",
+      code: "SCOPE_DISABLED",
+      note: "لإعادة التفعيل: GHARABI_ENABLE_SALES_TAB=true و/أو GHARABI_ENABLE_OPERATIONS_TAB=true (مع أعلام الواجهة المطابقة). لا يُزال الكود ولا البيانات.",
+    });
+  }
+  next();
+});
 
 
 // Operational foundation: deterministic endpoints below consume ZERO Gemini calls.
@@ -11928,6 +12278,8 @@ async function bootstrapStorage(): Promise<void> {
       // حالة مراقب Meta (Facebook/Instagram): سجل المعالجة + التحكم — تصمد بعد restart.
       const metaPolling = await storageAdapter.read<any>(META_POLLING_STATE_KEY);
       if (metaPolling) applyMetaPollingStateSnapshot(metaPolling);
+      // العقل التجاري: سجل العملاء المحتملين — يصمد بعد restart (No lost lead).
+      applyCommercialStateSnapshot(await storageAdapter.read<any>(COMMERCIAL_LEAD_STATE_KEY));
       // حالة الاستراتيجية + سجل قرار→نتيجة (يملكهما العقل المركزي): تُقرآن قبل بدء الخدمة.
       strategyState = normalizeStrategyState(await storageAdapter.read<any>(STORAGE_KEY_STRATEGY_STATE));
       decisionLedger = normalizeDecisionLedger(await storageAdapter.read<any>(STORAGE_KEY_DECISION_LEDGER));
@@ -11951,6 +12303,8 @@ async function bootstrapStorage(): Promise<void> {
     if (watcher) applyWatcherStateSnapshot(watcher);
     const metaPolling = storageAdapter.readSync<any>(META_POLLING_STATE_KEY);
     if (metaPolling) applyMetaPollingStateSnapshot(metaPolling);
+    // العقل التجاري: سجل العملاء المحتملين يصمد بعد restart (backend الملفي).
+    applyCommercialStateSnapshot(storageAdapter.readSync<any>(COMMERCIAL_LEAD_STATE_KEY));
     const media = storageAdapter.readSync<any>(CONTENT_MEDIA_KEY);
     if (media) applyContentMediaState(media);
     applyFreeTierUsageSnapshot(storageAdapter.readSync<any>(STORAGE_KEY_USAGE_INDICATORS));
@@ -14111,6 +14465,9 @@ app.get("/api/readiness", (_req, res) => {
     // الطابور/آخر استقبال/القنوات/العدّادات). **لا** اسم حساب ولا نص تعليق ولا نص
     // رد — التفاصيل للمالك عبر /api/social/manager/ingestion.
     ingestionEngine: ingestionHealthPublic(),
+    // العقل التجاري (Digital Salesperson): أرقام تشغيلية فقط (عدد العملاء/الاقتراحات
+    // المعلّقة/المتابعات) — لا اسم/نص/اقتراح عميل. التفاصيل في /api/commercial/leads.
+    commercialBrain: commercialPublicStatus(),
     // PHASE 7 — حقول TikTok الآمنة (منطقي فقط، بلا أي قيمة سرّية).
     tiktokOAuth: (() => {
       const c = tiktokOAuthConfig();
@@ -14649,6 +15006,16 @@ app.get("/api/health", (_req, res) => {
       envName: "GHARABI_ENABLE_LEGACY_ERP_SCOPE",
       prefixes: [...LEGACY_ERP_ROUTE_PREFIXES],
     },
+    // قرار المالك (2026-10-13): حالة تبويبي المبيعات/غرفة العمليات (منطقي بلا سرّ).
+    // كل تبويب مفعّل بعلمه المستقل (fail-closed)، ولا يُعلن «مفعّل» بلا العلم.
+    salesOperationsScope: {
+      salesEnabled: salesTabScopeEnabled(),
+      operationsEnabled: operationsTabScopeEnabled(),
+      salesEnvName: "GHARABI_ENABLE_SALES_TAB",
+      operationsEnvName: "GHARABI_ENABLE_OPERATIONS_TAB",
+      salesIsolated: !salesTabScopeEnabled(),
+      operationsIsolated: !operationsTabScopeEnabled(),
+    },
     // حالة تطبيق Meta غير السرّية (منطقي فقط): تفصل missing من invalid وبين
     // تكوين المعرّف والسرّ، فتكشف سبب صفحة «حدث خطأ ما» قبل إرسال المالك إليها.
     metaOAuth: (() => {
@@ -14718,6 +15085,8 @@ app.get("/api/health", (_req, res) => {
     // محرّك الاستقبال الموحّد لكل المنصات العشر: حقول تقنية فقط (الحالة/عمق
     // الطابور/آخر استقبال/القنوات/العدّادات) — لا بيانات عملاء.
     ingestionEngine: ingestionHealthPublic(),
+    // العقل التجاري (Digital Salesperson): أرقام تشغيلية فقط — التفاصيل للمالك.
+    commercialBrain: commercialPublicStatus(),
     // تشخيص تعثّر استضافة الفيديو العامة إلى Drive (بلا تعليق بلا نهاية):
     // عناوين نقاط googleapis (بلا استعلام) + مدد + حالة فقط — لا جسم/سرّ/بيانات عميل.
     driveHostDiagnostics: {
@@ -15397,6 +15766,10 @@ function buildFactsForProduct(product: any | null, downPaymentPercent: number, d
   }
   const showroom: any = workspace.showroom || {};
   const urls = [product?.image].map((x: any) => cleanText(x, 500)).filter(Boolean);
+  // ملاحظة ملزمة: لا نحقن أي نسبة خصم «معتمدة» هنا، لأن هذه الحقائق تُغذّي حارس
+  // النص العام لمسار الرد الذكي، وحقن نسبة افتراضية يوسّع ما قد يقوله أي نص رد.
+  // عرض الخصم في العقل التجاري يبقى **بيانات اقتراح منظّمة** تنتظر تأكيد المالك،
+  // لا نصاً حراً. الافتراضي فارغ ⇒ لا يمرّ أي «خصم X%» بلا اعتماد صريح.
   return buildBusinessFacts({
     cashPrices: hasPrice ? [cashPrice] : [],
     derivedAmounts: derived,
@@ -17068,6 +17441,15 @@ async function startServer() {
     startMetaPollingWatcher();
   } catch (e: any) {
     console.error("[الغرابي AI] failed to start Meta reply watcher:", String(e?.message || e).slice(0, 120));
+  }
+
+  // العقل التجاري (Digital Salesperson) 24/7: job داخلي مستقل عن المتصفح، حتمي
+  // بلا Gemini، يتابع العملاء الذين بدأوا التواصل عبر المنفّذ المركزي وحده،
+  // ويصمد بعد restart (سجل العملاء في المخزن).
+  try {
+    startCommercialBrain();
+  } catch (e: any) {
+    console.error("[الغرابي AI] failed to start Commercial Brain:", String(e?.message || e).slice(0, 120));
   }
 
   // إغلاق نظيف: ينتظر تفريغ طابور الكتابة (مع مهلة صارمة ≤ 10 ثوانٍ) ثم يُنهي

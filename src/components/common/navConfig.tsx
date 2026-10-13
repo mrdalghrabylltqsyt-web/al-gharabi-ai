@@ -7,6 +7,7 @@ import {
   MessageCircle, Boxes, Bell, RefreshCw, CreditCard, Layers,
   RadioTower, Cpu, Network,
 } from 'lucide-react';
+import { salesTabEnabled, operationsTabEnabled } from './scopeFlags';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // خريطة التنقل الهرمية الموحّدة — **مصدر واحد للحقيقة**.
@@ -58,7 +59,13 @@ const RotateIcon = (props: { className?: string }) => <RefreshCw {...props} />;
 // (404 SCOPE_DISABLED). نخفي مداخلها كي لا تُعرض واجهات غير قابلة للاستخدام.
 // تُعاد بإطفاء العزل على الخادم (GHARABI_ENABLE_LEGACY_ERP_SCOPE=true) وضبط هذا true.
 export const LEGACY_ERP_NAV_ENABLED = false;
-export const LEGACY_ERP_TAB_IDS = new Set(['executive', 'business', 'finance', 'inventory', 'reports', 'sales', 'control']);
+export const LEGACY_ERP_TAB_IDS = new Set(['executive', 'business', 'finance', 'inventory', 'reports']);
+// قرار مالك صريح (2026-10-13): تبويبا «المبيعات» و«غرفة العمليات» يُعاد فتحهما ضمن
+// توسيع النطاق لعقل تجاري حقيقي — مفعّلان فقط عند ضبط متغيّرات بناء Vite الصريحة
+// ومعها أعلام الخادم (GHARABI_ENABLE_SALES_TAB / GHARABI_ENABLE_OPERATIONS_TAB).
+// افتراضياً معطّلان (fail-closed)؛ لا قيمة تفعيل مكتوبة في الكود.
+export const SALES_TAB_ENABLED = salesTabEnabled();
+export const OPERATIONS_TAB_ENABLED = operationsTabEnabled();
 
 export const NAV_SECTIONS: NavSection[] = [
   // 1) مركز القيادة والمالك
@@ -154,6 +161,18 @@ export const NAV_SECTIONS: NavSection[] = [
           { id: 'social', label: 'X', desc: 'نشر وتعليقات عبر API المدفوع', icon: Twitter, keywords: ['twitter', 'x'] },
           { id: 'social', label: 'Snapchat', desc: 'إعلانات/تحويلات (بلا تعليقات عامة)', icon: RotateIcon, keywords: ['snapchat'] },
           { id: 'social', label: 'Google Business Profile', desc: 'تحديثات محلية (بلا تعليقات)', icon: Globe, keywords: ['gbp', 'google business'] },
+        ],
+      },
+      // قرار مالك صريح (2026-10-13): الأسطح التجارية الحقيقية (مبيعات/غرفة عمليات)
+      // تُفعَّل بنفس مفاتيح علم المبيعات/العمليات. تظهر في الفرع فقط عند التمكين
+      // (عبر visibleBranchItems)، فلا تظهر افتراضياً. لا مساس ببقية التبويبات.
+      {
+        id: 'pub_commercial',
+        title: 'المبيعات وغرفة العمليات (توسيع نطاق)',
+        icon: CreditCard,
+        items: [
+          { id: 'sales', label: 'مركز المبيعات والتقسيط', desc: 'دورة البيع والتحصيل الفعلية على الخادم', icon: CreditCard, keywords: ['sales', 'installments'] },
+          { id: 'control', label: 'غرفة العمليات الموحدة', desc: 'المتابعة اليومية، التنبيهات، التدفق النقدي ودليل العملاء', icon: Activity, keywords: ['operations', 'control', 'cashflow'] },
         ],
       },
     ],
@@ -546,9 +565,15 @@ export const NAV_SECTIONS: NavSection[] = [
 
 /** الأوراق الظاهرة في فرعٍ ما بحسب دور المستخدم. */
 export function visibleBranchItems(branch: NavBranch, isOwner: boolean): NavLeaf[] {
-  return branch.items.filter(
-    (item) => (!item.ownerOnly || isOwner) && (LEGACY_ERP_NAV_ENABLED || !LEGACY_ERP_TAB_IDS.has(item.id)),
-  );
+  return branch.items.filter((item) => {
+    if (item.ownerOnly && !isOwner) return false;
+    // أسطح ERP/CRM/المالية القديمة: مخفية افتراضياً حتى يُطفأ العزل على الخادم.
+    if (!LEGACY_ERP_NAV_ENABLED && LEGACY_ERP_TAB_IDS.has(item.id)) return false;
+    // تبويبا المبيعات/غرفة العمليات: قرار مالك صريح — يظهران فقط عند تفعيل علميهما.
+    if (item.id === 'sales' && !SALES_TAB_ENABLED) return false;
+    if (item.id === 'control' && !OPERATIONS_TAB_ENABLED) return false;
+    return true;
+  });
 }
 
 /** الفروع الظاهرة في قسمٍ ما بحسب دور المستخدم (نسخة واحدة للشريط ولوحة القسم). */

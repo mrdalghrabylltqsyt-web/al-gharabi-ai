@@ -3353,9 +3353,35 @@ add('watcher-advisory-not-authority',
   add('sidebar-hides-out-of-scope-tabs',
     read('src/components/common/navConfig.tsx').includes("'sales'") &&
     read('src/components/common/navConfig.tsx').includes("'control'") &&
-    /LEGACY_ERP_TAB_IDS\s*=\s*new Set\(\[[\s\S]*?'sales'[\s\S]*?'control'[\s\S]*?\]\)/.test(read('src/components/common/navConfig.tsx')) &&
+    /LEGACY_ERP_TAB_IDS\s*=\s*new Set\(\[[\s\S]*?'executive'[\s\S]*?'reports'[\s\S]*?\]\)/.test(read('src/components/common/navConfig.tsx')) &&
     read('src/components/common/navConfig.tsx').includes('LEGACY_ERP_NAV_ENABLED = false'),
-    'تبويبا sales/control مخفيان من التنقل (LEGACY_ERP_TAB_IDS + NAV_ENABLED=false)');
+    'أسطح ERP المخفية (LEGACY_ERP_TAB_IDS + NAV_ENABLED=false)');
+
+  // قرار مالك صريح (2026-10-13): تبويبا المبيعات/غرفة العمليات مفعّلان بعلمَين مستقلّين
+  // (fail-closed) على الخادم والواجهة معاً — لا قيمة تفعيل مكتوبة في الكود.
+  add('sales-operations-tabs-explicit-flags', (() => {
+    const nav = read('src/components/common/navConfig.tsx');
+    const flags = read('src/components/common/scopeFlags.ts');
+    return flags.includes('VITE_GHARABI_ENABLE_SALES_TAB') &&
+      flags.includes('VITE_GHARABI_ENABLE_OPERATIONS_TAB') &&
+      !/VITE_GHARABI_ENABLE_SALES_TAB\s*[=:]\s*['"]?(true|1|on|yes)/i.test(flags) &&
+      nav.includes('SALES_TAB_ENABLED') && nav.includes('OPERATIONS_TAB_ENABLED') &&
+      /item\.id === 'sales' && !SALES_TAB_ENABLED/.test(nav) &&
+      /item\.id === 'control' && !OPERATIONS_TAB_ENABLED/.test(nav) &&
+      server.includes('GHARABI_ENABLE_SALES_TAB') && server.includes('GHARABI_ENABLE_OPERATIONS_TAB') &&
+      /function salesTabScopeEnabled\(\)[\s\S]{0,200}return raw === "true" \|\| raw === "1" \|\| raw === "on" \|\| raw === "yes"/.test(server) &&
+      !server.includes('GHARABI_ENABLE_SALES_TAB ?? "true"') &&
+      server.includes('salesOperationsScope');
+  })(),
+    'تبويبا المبيعات/غرفة العمليات مفعّلان بعلمَين صريحين مستقلّين (fail-closed) على الخادم والواجهة، وحالتهما معلنة في /api/health');
+
+  add('out-of-scope-flags-independent-from-erp',
+    server.includes('SALES_ROUTE_PREFIXES') && server.includes('OPERATIONS_ROUTE_PREFIXES') &&
+    /if \(!salesTabScopeEnabled\(\)\)[\s\S]{0,220}SALES_ROUTE_PREFIXES/.test(server) &&
+    /if \(!operationsTabScopeEnabled\(\)\)[\s\S]{0,260}OPERATIONS_ROUTE_PREFIXES/.test(server) &&
+    // الحارس مستقل عن مفتاح ERP: يُسجَّل خارج كتلة `if (!legacyErpScopeEnabled())`.
+    /isOutOfScopeLiveRouteRequest\(String\(req\.url \|\| ""\)\)[\s\S]{0,400}GHARABI_ENABLE_SALES_TAB/.test(server),
+    'عزل المبيعات/غرفة العمليات مستقل عن مفتاح ERP ويحترم علم كل تبويب على حدة (fail-closed)');
 
   add('legacy-erp-no-visible-consumer-surface-guarded',
     // الأسطح المعزولة الجديدة بلا مستهلك واجهة ظاهر: لا مكوّن ظاهر يستدعي مساراتها.
@@ -3378,9 +3404,8 @@ add('watcher-advisory-not-authority',
   add('legacy-erp-ui-nav-gated',
     sidebar.includes('LEGACY_ERP_NAV_ENABLED') &&
     sidebar.includes('LEGACY_ERP_TAB_IDS') &&
-    /LEGACY_ERP_NAV_ENABLED \|\| !LEGACY_ERP_TAB_IDS\.has\(item\.id\)/.test(sidebar),
+    /!LEGACY_ERP_NAV_ENABLED && LEGACY_ERP_TAB_IDS\.has\(item\.id\)/.test(sidebar),
     'مداخل الواجهة لأسطح ERP/CRM/المالية مخفية افتراضياً في Sidebar');
-
   add('legacy-erp-health-exposed',
     server.includes('legacyErpScope') &&
     /legacyErpScope:\s*\{[\s\S]{0,200}isolated:\s*!legacyErpScopeEnabled\(\)/.test(server),
@@ -3394,7 +3419,7 @@ add('watcher-advisory-not-authority',
   // تحصين دفاعي: الحارس يطبّع المسار (شرطة مكرّرة/ترميز/نقاط) قبل المطابقة، فلا
   // تتجاوز صيغة `//api/crm/...` المطابقة النصية الخام. مطابق لسياسة canonicalRequestPath.
   add('legacy-erp-guard-normalizes-path', (() => {
-    const fnIdx = server.indexOf('function isLegacyErpRouteRequest');
+    const fnIdx = server.indexOf('function canonicalRequestPathForScope');
     if (fnIdx < 0) return false;
     const body = server.slice(fnIdx, fnIdx + 1200);
     return body.includes('decodeURIComponent') && body.includes('path.posix.normalize') &&
@@ -4414,6 +4439,66 @@ add('watcher-advisory-not-authority',
     JSON.parse(read('package.json')).scripts['test:free-tier-hardening'] === 'tsx engine/tests/free.tier.hardening.test.ts' &&
     JSON.parse(read('package.json')).scripts.test.includes('npm run test:free-tier-hardening'),
     'اختبار تحصين الحصص المجانية مسجَّل في npm test');
+
+  // 11ج) العقل التجاري (Digital Salesperson): موظف مبيعات رقمي حقيقي — منطق حتمي،
+  // بلا اختراع، بلا إغلاق آلي، ومتابعة عبر المنفّذ المركزي وحده.
+  const commercialSrc = read('engine/commercial/commercialBrain.ts');
+  const commercialTest = read('engine/tests/commercial.brain.test.ts');
+  const commercialIntegrationTest = read('engine/tests/commercial.brain.integration.test.ts');
+  add('commercial-brain-module',
+    commercialSrc.includes('export function createCommercialLead') &&
+    commercialSrc.includes('export function mergeCommercialInteraction') &&
+    commercialSrc.includes('export function evaluateNegotiation') &&
+    commercialSrc.includes('export function buildCommercialProposal') &&
+    commercialSrc.includes('export function confirmCommercialProposal') &&
+    commercialSrc.includes('export function nextFollowUpAt'),
+    'وحدة العقل التجاري موجودة: Lead + تفاوض + اقتراح + متابعة (منطق صافٍ)');
+  add('commercial-no-auto-close',
+    commercialSrc.includes("stage: 'WON'") === false &&
+    commercialSrc.includes("leadStage: 'WON'") &&
+    /confirmCommercialProposal[\s\S]{0,600}input\.allowed/.test(commercialSrc) &&
+    !/discountPercent[\s\S]{0,40}=\s*0[\s\S]{0,200}stage: 'WON'/.test(commercialSrc),
+    'لا إغلاق صفقة بلا تأكيد بشري (WON من confirmCommercialProposal فقط)');
+  add('commercial-no-cold-message',
+    commercialSrc.includes('if (!lead.initiatedByCustomer) return null; // لا رسالة باردة أبداً.') &&
+    commercialSrc.includes("return { due: false, state: 'STOPPED', reason: 'لم يبدأ العميل التواصل — لا رسالة باردة.' }"),
+    'لا متابعة باردة: المتابعة لمن بدأ التواصل فقط');
+  add('commercial-negotiation-bounded',
+    commercialSrc.includes('exceedsLimit') && commercialSrc.includes("outcome: 'escalate'") &&
+    commercialSrc.includes("outcome: 'counter'") && commercialSrc.includes('maxDiscountPercentFor'),
+    'التفاوض مقيّد بحدّ أقصى: تجاوز ضخم => تصعيد، تجاوز بسيط => عرض مضاد (لا تجاوز صامت)');
+  add('commercial-lead-persisted',
+    server.includes('COMMERCIAL_LEAD_STATE_KEY') &&
+    server.includes('applyCommercialStateSnapshot') &&
+    /applyCommercialStateSnapshot\(await storageAdapter\.read/.test(server) &&
+    /applyCommercialStateSnapshot\(storageAdapter\.readSync/.test(server),
+    'العملاء المحتملون يُحفظون ويُسترجعون على الخلفيتين (ملف + Postgres) فلا يُفقد عميل بعد restart');
+  add('commercial-followup-central-executor-only',
+    server.includes('executeMetaCommentReply') && server.includes('executeMetaMessageReply') &&
+    /runCommercialBrainCycle[\s\S]{0,4000}executeMetaMessageReply\(lead\.platform/.test(server) &&
+    !/runCommercialBrainCycle[\s\S]{0,6000}facebookClient\(\)\.(replyToComment|sendMessage)/.test(server),
+    'متابعة العقل التجاري تمر بالمنفّذ المركزي وحده (لا مسار إرسال جانبي)');
+  add('commercial-health-public-no-customer-data',
+    server.includes('commercialBrain: commercialPublicStatus()') &&
+    read('engine/commercial/commercialBrain.ts').includes('executesExternalActions: false') &&
+    read('engine/commercial/commercialBrain.ts').includes('closesDealWithoutHuman: false'),
+    'كتلة /api/health العامة أرقام فقط بلا بيانات عملاء، وتعلن لا تنفيذ خارجي ولا إغلاق آلي');
+  add('commercial-routes-owner-authz',
+    /app\.post\("\/api\/agent\/commercial\/run", requireOwner/.test(server) &&
+    /app\.get\("\/api\/commercial\/leads", authenticateToken/.test(server) &&
+    /app\.post\("\/api\/commercial\/leads\/:id\/proposal\/confirm", authenticateToken/.test(server),
+    'مسارات العقل التجاري محمية (مصادقة؛ التنفيذ/التشغيل للمالك)');
+  add('commercial-brain-tests',
+    fs.existsSync(path.join(root, 'engine/tests/commercial.brain.test.ts')) &&
+    fs.existsSync(path.join(root, 'engine/tests/commercial.brain.integration.test.ts')) &&
+    JSON.parse(read('package.json')).scripts.test.includes('npm run test:commercial-brain') &&
+    JSON.parse(read('package.json')).scripts.test.includes('npm run test:commercial-brain-integration'),
+    'اختبارا العقل التجاري (وحدة + تكامل) موجودان ومسجّلان في npm test');
+  add('commercial-integration-no-real-provider',
+    commercialIntegrationTest.includes('createFacebookMock') &&
+    commercialIntegrationTest.includes('delete env.GEMINI_API_KEY') &&
+    !/GEMINI_API_KEY\s*=\s*['"]/.test(commercialIntegrationTest),
+    'اختبار التكامل يستخدم خادم Graph وهمياً محلياً بلا مزود حقيقي ولا مفتاح Gemini');
 
   // 12) AGENTS.md: عدد فحوصات final-audit مطابق للفعلي (يُعَدّ من نص الملف نفسه).
   const auditCount = (read('final-audit.mjs').match(/^\s*add\(/gm) || []).length;
