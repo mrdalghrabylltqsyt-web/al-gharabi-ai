@@ -4183,8 +4183,37 @@ add('watcher-advisory-not-authority',
     sidebarSrc.includes('text-sm font-black tracking-tight') &&
     sidebarSrc.includes('text-[12px] font-bold') &&
     sidebarSrc.includes('text-[11px] truncate flex-1') &&
-    sidebarSrc.includes('<Icon className="w-5 h-5"') && sidebarSrc.includes('<BIcon className="w-3.5 h-3.5'),
-    'تدرّج بصري حقيقي بين المستويات الثلاثة (حجم/وزن الخط والأيقونة)');
+    sidebarSrc.includes('w-9 h-9 rounded-xl') && sidebarSrc.includes('w-6 h-6 rounded-lg') && sidebarSrc.includes('w-5 h-5 rounded-md'),
+    'تدرّج بصري حقيقي بين المستويات الثلاثة (حجم/وزن الخط + حجم صندوق الأيقونة)');
+  add('nav-accent-identity-five-sections',
+    navCfgSrc.includes('export const NAV_ACCENTS') &&
+    (navCfgSrc.match(/accent: NAV_ACCENTS\./g) || []).length === 5 &&
+    ['sky','emerald','amber','violet','steel'].every((k)=> navCfgSrc.includes('accent: NAV_ACCENTS.' + k)),
+    'هوية لونية مميّزة لكل قسم من الأقسام الخمسة (sky/emerald/amber/violet/steel)');
+  add('nav-accent-glow-active-only',
+    navCfgSrc.includes('boxActive') && navCfgSrc.includes('shadow-sky-500/40') &&
+    navCfgSrc.includes('ring-1 ring-inset') &&
+    sidebarSrc.includes('section.accent.boxActive') && sidebarSrc.includes('section.accent.rowActive'),
+    'لون الأيقونة + توهج/حلقة حول الصندوق عند القسم النشط فقط (لا لكل الأقسام)');
+  add('nav-accent-icon-box-gradient',
+    navCfgSrc.includes('bg-gradient-to-br from-sky-500/20') &&
+    navCfgSrc.includes('bg-gradient-to-br from-violet-500/20') &&
+    sidebarSrc.includes('group-hover:scale-[1.04]') && sidebarSrc.includes('transition-all duration-200'),
+    'صناديق أيقونات بتدرّج خفيف (لا لون مسطّح) + انتقال سلس وزيادة لطيفة عند التمرير');
+  add('nav-accent-preserves-semantics',
+    sidebarSrc.includes('from-emerald-400 to-emerald-500 text-slate-950') &&
+    sidebarSrc.includes('bg-amber-500/20 text-amber-300'),
+    'لا كسر الدلالات القائمة: الورقة النشطة زمردية والعاجل كهرماني');
+  add('nav-icon-semantic-fit',
+    navCfgSrc.includes('icon: BrainCircuit') && navCfgSrc.includes('icon: MessageSquareText') &&
+    navCfgSrc.includes('icon: Store') && navCfgSrc.includes('icon: Cog') &&
+    !/id: 'brain_manager'[^\n]*icon: Users/.test(navCfgSrc),
+    'ملاءمة الأيقونة للمعنى: brain_manager صار BrainCircuit (لا Users)، وقسم الزبائن MessageSquareText، والمنتجات Store، والإعدادات Cog');
+  add('nav-entrance-animation-pure-css',
+    (sidebarSrc.match(/animate-nav-in/g) || []).length >= 2 &&
+    read('src/index.css').includes('@keyframes nav-in') &&
+    read('src/index.css').includes('prefers-reduced-motion'),
+    'حركة دخول خفيفة (fade+slide) CSS خالص بلا مكتبة، وتحترم prefers-reduced-motion');
   add('nav-section-separator',
     sidebarSrc.includes('h-px bg-slate-800/70'),
     'فاصل بصري بين الأقسام الرئيسية المتتالية');

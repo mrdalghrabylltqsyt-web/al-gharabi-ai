@@ -1,1 +1,22 @@
 @import "tailwindcss";
+
+/* حركة دخول خفيفة عند فتح قسم/فرع (fade + انزلاق بسيط) — CSS خالص بلا مكتبة.
+   تحترم تفضيل تقليل الحركة فلا تُزعج من يفضّل واجهة ساكنة. */
+@keyframes nav-in {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+.animate-nav-in {
+  animation: nav-in 180ms ease-out;
+}
+@media (prefers-reduced-motion: reduce) {
+  .animate-nav-in {
+    animation: none;
+  }
+}

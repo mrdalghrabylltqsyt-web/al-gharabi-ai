@@ -17,6 +17,7 @@ import type { NavLeaf, NavBranch, NavSection } from './navConfig';
 export type { NavLeaf, NavBranch, NavSection } from './navConfig';
 export {
   NAV_SECTIONS,
+  NAV_ACCENTS,
   LEGACY_ERP_NAV_ENABLED,
   LEGACY_ERP_TAB_IDS,
   visibleBranchItems,
@@ -231,25 +232,25 @@ export const Sidebar: React.FC<SidebarProps> = ({ mobileOpen, onCloseMobile }) =
                 {idx > 0 && <div className="my-1.5 h-px bg-slate-800/70" />}
 
                 <div className="rounded-xl">
-                  {/* المستوى 1: العنوان الرئيسي (الأكبر وزناً) */}
+                  {/* المستوى 1: العنوان الرئيسي (الأكبر وزناً) — هوية لونية خاصة بالقسم */}
                   <button
                     onClick={() => toggleSection(section.id)}
-                    className={`w-full flex items-center gap-2.5 px-2.5 py-2.5 rounded-xl text-right transition-all group cursor-pointer ${FOCUS_RING} ${
+                    className={`w-full flex items-center gap-2.5 px-2.5 py-2.5 rounded-xl text-right transition-all duration-200 group cursor-pointer ${FOCUS_RING} ${
                       sectionActive
-                        ? 'bg-gradient-to-l from-emerald-950/80 to-emerald-900/40 text-emerald-200 border border-emerald-500/30 shadow-sm'
+                        ? section.accent.rowActive
                         : 'text-slate-300 hover:bg-slate-800/60 hover:text-white border border-transparent'
                     }`}
                     aria-expanded={open}
                   >
                     <ChevronDown className={`w-4 h-4 shrink-0 text-slate-400 transition-transform ${open ? '' : '-rotate-90'}`} />
                     <div
-                      className={`w-9 h-9 rounded-lg flex items-center justify-center shrink-0 transition-colors ${
+                      className={`w-9 h-9 rounded-xl flex items-center justify-center shrink-0 transition-all duration-200 group-hover:scale-[1.04] ${
                         sectionActive
-                          ? 'bg-emerald-500 text-white shadow-md shadow-emerald-500/30'
-                          : 'bg-slate-800 text-slate-400 group-hover:text-slate-200 group-hover:bg-slate-700'
+                          ? section.accent.boxActive
+                          : `${section.accent.box} group-hover:shadow-md`
                       }`}
                     >
-                      <Icon className="w-5 h-5" />
+                      <Icon className={`w-5 h-5 transition-colors ${sectionActive ? 'text-white' : section.accent.icon}`} />
                     </div>
                     <div className="flex-1 min-w-0 text-right">
                       <div className="flex items-center justify-between gap-1">
@@ -272,7 +273,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ mobileOpen, onCloseMobile }) =
 
                   {/* المستوى 2: الفروع (أصغر قليلاً) والمستوى 3: الوظائف (الأخفّ) */}
                   {open && (
-                    <div className="mt-1 mr-4 pr-3 border-r border-slate-800 space-y-0.5">
+                    <div className="mt-1 mr-4 pr-3 border-r border-slate-800 space-y-0.5 animate-nav-in">
                       {branches.map((branch) => {
                         const BIcon = branch.icon;
                         const bOpen = searching || expandedBranches.includes(branch.id) || branch.id === activeSectionFirstBranch(section, activeTab);
@@ -280,16 +281,18 @@ export const Sidebar: React.FC<SidebarProps> = ({ mobileOpen, onCloseMobile }) =
                           <div key={branch.id}>
                             <button
                               onClick={() => toggleBranch(branch.id, branch.items[0]?.id, bOpen)}
-                              className={`w-full flex items-center gap-2 px-2 py-1.5 rounded-lg text-right text-slate-400 hover:text-white hover:bg-slate-800/50 transition cursor-pointer ${FOCUS_RING}`}
+                              className={`w-full flex items-center gap-2 px-2 py-1.5 rounded-lg text-right text-slate-400 hover:text-white hover:bg-slate-800/50 transition-all duration-200 cursor-pointer ${FOCUS_RING}`}
                               aria-expanded={bOpen}
                             >
                               <ChevronDown className={`w-3.5 h-3.5 shrink-0 transition-transform ${bOpen ? '' : '-rotate-90'}`} />
-                              <BIcon className="w-3.5 h-3.5 shrink-0 text-slate-500" />
+                              <span className={`w-6 h-6 rounded-lg flex items-center justify-center shrink-0 transition-all duration-200 ${section.accent.box}`}>
+                                <BIcon className={`w-3.5 h-3.5 shrink-0 ${section.accent.icon}`} />
+                              </span>
                               <span className="text-[12px] font-bold truncate">{branch.title}</span>
                             </button>
 
                             {bOpen && (
-                              <div className="mt-0.5 mr-3 space-y-0.5">
+                              <div className="mt-0.5 mr-3 space-y-0.5 animate-nav-in">
                                 {branch.items.map((leaf) => {
                                   const LIcon = leaf.icon;
                                   const on = activeTab === leaf.id;
@@ -299,14 +302,16 @@ export const Sidebar: React.FC<SidebarProps> = ({ mobileOpen, onCloseMobile }) =
                                     <button
                                       key={`${branch.id}:${leaf.id}:${leaf.label}`}
                                       onClick={() => handleLeafClick(leaf.id)}
-                                      className={`w-full flex items-center gap-2 px-2 py-1.5 rounded-lg text-right transition cursor-pointer ${FOCUS_RING} ${
+                                      className={`w-full flex items-center gap-2 px-2 py-1.5 rounded-lg text-right transition-all duration-200 cursor-pointer ${FOCUS_RING} ${
                                         on
-                                          ? 'bg-emerald-500 text-slate-950 font-semibold'
+                                          ? 'bg-gradient-to-l from-emerald-400 to-emerald-500 text-slate-950 font-semibold shadow-sm shadow-emerald-500/30'
                                           : 'text-slate-300 font-normal hover:bg-slate-800/70 hover:text-white'
                                       }`}
                                       title={leaf.desc}
                                     >
-                                      <LIcon className={`w-3.5 h-3.5 shrink-0 ${on ? 'text-slate-950' : 'text-slate-500'}`} />
+                                      <span className={`w-5 h-5 rounded-md flex items-center justify-center shrink-0 ${on ? 'bg-slate-950/15' : section.accent.box}`}>
+                                        <LIcon className={`w-3.5 h-3.5 shrink-0 ${on ? 'text-slate-950' : section.accent.icon}`} />
+                                      </span>
                                       <span className="text-[11px] truncate flex-1">{leaf.label}</span>
                                       {badge && (
                                         <span

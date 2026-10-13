@@ -177,7 +177,10 @@ check('3) النص محفوظ في تعليق كود (navConfig)', nav.includes(
 check('4) تدرّج بصري: عنوان القسم text-sm font-black', sidebar.includes('text-sm font-black tracking-tight'));
 check('4) تدرّج بصري: الفرع text-[12px]', sidebar.includes('text-[12px] font-bold'));
 check('4) تدرّج بصري: الورقة text-[11px] font-normal', sidebar.includes('text-[11px] truncate flex-1') && sidebar.includes('font-normal'));
-check('4) تدرّج الأيقونات: قسم w-5 / فرع w-3.5', sidebar.includes('<Icon className="w-5 h-5"') && sidebar.includes('<BIcon className="w-3.5 h-3.5'));
+check('4) تدرّج الأيقونات: قسم w-5 / فرع w-3.5 / ورقة w-3.5', sidebar.includes('w-5 h-5 transition-colors') && (sidebar.match(/w-3\.5 h-3\.5 shrink-0/g) || []).length >= 2);
+check('4) تدرّج الصناديق: قسم w-9 / فرع w-6 / ورقة w-5', sidebar.includes('w-9 h-9 rounded-xl') && sidebar.includes('w-6 h-6 rounded-lg') && sidebar.includes('w-5 h-5 rounded-md'));
+check('4) صناديق الأيقونات بتدرّج خفيف (لا لون مسطّح)', nav.includes('bg-gradient-to-br from-sky-500/20') && nav.includes('bg-gradient-to-br from-violet-500/20'));
+check('4) انتقال سلس موحّد', sidebar.includes('transition-all duration-200') && sidebar.includes('group-hover:scale-[1.04]'));
 // 5) فاصل بصري بين الأقسام.
 check('5) فاصل بصري بين الأقسام', sidebar.includes('h-px bg-slate-800/70'));
 // 6) شارات مفرّقة بالدلالة.
@@ -195,6 +198,28 @@ check('9) المؤشر من بيانات /api/health الحقيقية', header.i
 check('10) مفتاح localStorage محفوظ', sidebar.includes('gharabi-nav-expanded-v1'));
 check('10) فتح القسم عند الضغط دائماً محفوظ', /setActiveTab\(id\)/.test(sidebar.slice(sidebar.indexOf('const toggleSection'), sidebar.indexOf('const toggleBranch'))));
 check('10) البحث محفوظ', sidebar.includes('searchNav') && sidebar.includes('placeholder="بحث في الأقسام والوظائف'));
+
+console.log('\n=== الهوية البصرية للأيقونات (تمييز الأقسام الخمسة) ===');
+// هوية لونية مميّزة لكل قسم (sky/emerald/amber/violet/steel) — مصدر واحد NAV_ACCENTS.
+check('هوية لونية: خريطة NAV_ACCENTS موجودة', nav.includes('export const NAV_ACCENTS'));
+check('هوية لونية: الأقسام الخمسة لكل منها accent', (nav.match(/accent: NAV_ACCENTS\./g) || []).length === 5);
+check('هوية لونية: sky للقيادة، emerald للنشر، amber للزبائن، violet للمنتجات، steel للإعدادات',
+  nav.includes('accent: NAV_ACCENTS.sky') && nav.includes('accent: NAV_ACCENTS.emerald') &&
+  nav.includes('accent: NAV_ACCENTS.amber') && nav.includes('accent: NAV_ACCENTS.violet') &&
+  nav.includes('accent: NAV_ACCENTS.steel'));
+check('توهج (glow) عند القسم النشط فقط (boxActive + shadow-*-500/40)', nav.includes('shadow-sky-500/40') && nav.includes('shadow-violet-500/40') && nav.includes('shadow-emerald-500/40'));
+check('حلقة خفيفة حول صندوق الأيقونة (ring-inset)', nav.includes('ring-1 ring-inset ring-sky-500/30'));
+check('صندوق القسم عند التفعيل يستخدم accent (لا لون ثابت)', sidebar.includes('section.accent.boxActive') && sidebar.includes('section.accent.rowActive'));
+check('أيقونة القسم عند التفعيل بيضاء', sidebar.includes("sectionActive ? 'text-white' : section.accent.icon"));
+check('لا كسر الدلالة: الورقة النشطة تبقى زمردية', sidebar.includes('from-emerald-400 to-emerald-500 text-slate-950'));
+check('لا كسر الدلالة: العاجل يبقى كهرمانياً', sidebar.includes('bg-amber-500/20 text-amber-300'));
+check('ملاءمة الأيقونة: brain_manager صار BrainCircuit (لا Users)', nav.includes("id: 'brain_manager'") && nav.includes('icon: BrainCircuit'));
+check('ملاءمة الأيقونة: قسم الزبائن صار MessageSquareText', nav.includes("icon: MessageSquareText"));
+check('ملاءمة الأيقونة: قسم المنتجات صار Store', nav.includes('icon: Store'));
+check('ملاءمة الأيقونة: قسم الإعدادات صار Cog', nav.includes('icon: Cog'));
+check('حركة دخول خفيفة (animate-nav-in) على الفروع والأوراق', (sidebar.match(/animate-nav-in/g) || []).length >= 2);
+check('الحركة CSS خالص بلا مكتبة (keyframes nav-in + reduced-motion)', read('src/index.css').includes('@keyframes nav-in') && read('src/index.css').includes('prefers-reduced-motion'));
+check('RTL: التدرجات بلا اتجاه ثابت (bg-gradient-to-br) والصفوف to-l', nav.includes('bg-gradient-to-br') && sidebar.includes('bg-gradient-to-l'));
 
 console.log(`\n${fail === 0 ? 'PASSED' : 'FAILED'}: ${pass} تنقل هرمي، ${fail} فشل`);
 if (fail > 0) process.exit(1);

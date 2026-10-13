@@ -44,7 +44,7 @@ npm install
 npm run dev            # tsx server.ts
 npm run lint           # tsc --noEmit
 npm run build          # vite build + esbuild server.ts -> dist/server.cjs
-npm run final-audit    # node final-audit.mjs (1624 فحصاً)
+npm run final-audit    # node final-audit.mjs (1630 فحصاً)
 npm test               # storage + engine + auth + ... + db + runtime
 ```
 - التشغيل الإنتاجي: `PORT=4517 NODE_ENV=production APP_URL=http://localhost:4517 node dist/server.cjs`
@@ -6209,3 +6209,31 @@ automation/recovery/external/monitoring/storage). معرّفات الأقسام 
 `nav-header-health-indicator`). اختبار `unified.nav.test.ts` صار **56 فحصاً**.
 
 **لم يُمسّ:** منطق الخادم، OAuth/الأسرار، Gemini، بقية المنصّات، ونموذج الجدولة.
+
+## تحسين الهوية البصرية للأيقونات في القائمة الجانبية — 2026-10-13 (نفس فرع PR #40)
+
+تحسين بصري **فوق** بنية PR #40 (نفس الفرع `feat/sidebar-professional-redesign`، بلا فرع
+جديد، بلا دمج/نشر). لا تغيير في منطق `Sidebar.tsx`/`navConfig.tsx` (الهرمية، dedupeLeaves،
+البحث، التفاعل) — تصميم/تمييز فقط داخل الهوية الداكنة القائمة (bg-slate-900/RTL).
+
+- **هوية لونية لكل قسم** (مصدر واحد `NAV_ACCENTS`): sky للقيادة والعقل · emerald للنشر ·
+  amber للزبائن · violet للمنتجات · steel للإعدادات. تظهر في **لون أيقونة القسم** +
+  **توهج/حلقة حول صندوقها عند القسم النشط فقط** (`boxActive` + `shadow-*-500/40` +
+  `ring-inset`). **لا كسر للدلالات:** الورقة النشطة تبقى زمردية، والعاجل يبقى كهرمانياً.
+- **صناديق أيقونات بطابع عصري:** تدرّج خفيف `bg-gradient-to-br` (لا لون مسطّح) + حواف
+  ناعمة بحسب المستوى (قسم `rounded-xl` w-9 / فرع `rounded-lg` w-6 / ورقة `rounded-md` w-5)
+  + `shadow` يزداد عند التمرير/التفعيل + `transition-all duration-200` + `group-hover:scale-[1.04]`.
+- **ملاءمة الأيقونة للمعنى (حيث التحسين حقيقي):** `brain_manager` (عقل السياق والفريق
+  والعروض) كان `Users` عامة → صار **`BrainCircuit`** (دمج الفريق/الشبكة مع العقل). قسم
+  الزبائن → `MessageSquareText`، قسم المنتجات → `Store`، قسم الإعدادات → `Cog`. البقية
+  أُبقيت كما هي بلا تخمين. كلها من `lucide-react` القائمة (بلا مكتبة/تبعية جديدة).
+- **تدرّج حجمي أوضح:** حجوم الصناديق (9/6/5) + الأيقونات (20/14/14px) + أوزان الخط — لا الحجم فقط.
+- **حركة دخول خفيفة:** `animate-nav-in` (fade + انزلاق 4px، 180ms) على فتح الفروع/الأوراق —
+  **CSS خالص** في `src/index.css` بلا مكتبة، وتحترم `prefers-reduced-motion`.
+- **RTL/جوال:** التدرجات داخلية (`bg-gradient-to-br`) وصفوف القسم `to-l` فلا تتأثر بالاتجاه؛
+  القائمة تبقى `mobile-first` بلا كسر استجابة.
+
+**التحقق:** `npm run lint` ✅ · `npm run build` ✅ (كل أصناف الهوية اللونية ظهرت في حزمة CSS
+النهائية) · `npm test` ✅ · `final-audit` ✅ **1630** (`nav-accent-identity-five-sections`,
+`nav-accent-glow-active-only`, `nav-accent-icon-box-gradient`, `nav-accent-preserves-semantics`,
+`nav-icon-semantic-fit`, `nav-entrance-animation-pure-css`). `unified.nav.test.ts` = **75 فحصاً**.

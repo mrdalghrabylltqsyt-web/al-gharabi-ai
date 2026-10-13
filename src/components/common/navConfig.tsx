@@ -1,7 +1,7 @@
 import React from 'react';
 import {
-  Home, LayoutDashboard, Send, Sparkles, MessageSquare, Package, Settings,
-  Bot, BarChart3, Calendar, Users, Search, ClipboardList, Brain, PlugZap,
+  Home, LayoutDashboard, Send, Sparkles, MessageSquareText, Store, Cog,
+  Bot, BarChart3, Calendar, Users, Search, ClipboardList, Brain, BrainCircuit, PlugZap,
   CloudUpload, Database, ServerCog, Youtube, ShieldCheck, Activity,
   CreditCard, Network, Power, Boxes,
 } from 'lucide-react';
@@ -42,6 +42,60 @@ export interface NavBranch {
   items: NavLeaf[];
   ownerOnly?: boolean;
 }
+
+/**
+ * هوية لونية لكل قسم — **لا تُغيِّر أي دلالة قائمة**: الكهرماني يبقى للعاجل،
+ * والأخضر الزمردي يبقى لون العلامة التجارية الأساسي (والورقة النشطة). هذه ألوان
+ * تمييز خفيفة تُظهر شخصية كل قسم فقط. بلا مكتبة ألوان جديدة — ألوان Tailwind قائمة.
+ */
+export interface NavAccent {
+  /** صندوق أيقونة القسم عند عدم التفعيل: تدرّج خفيف + حلقة. */
+  box: string;
+  /** لون أيقونة القسم عند التفعيل. */
+  icon: string;
+  /** صندوق أيقونة القسم عند التفعيل: تدرّج أوضح + توهج (glow). */
+  boxActive: string;
+  /** خلفية/حد صف القسم عند التفعيل. */
+  rowActive: string;
+}
+
+export const NAV_ACCENTS: Record<'sky' | 'emerald' | 'amber' | 'violet' | 'steel', NavAccent> = {
+  // أزرق سماوي — القيادة والعقل (هدوء واتساع الرؤية).
+  sky: {
+    box: 'bg-gradient-to-br from-sky-500/20 to-sky-900/10 ring-1 ring-inset ring-sky-500/30',
+    icon: 'text-sky-300',
+    boxActive: 'bg-gradient-to-br from-sky-400 to-sky-600 shadow-md shadow-sky-500/40 ring-1 ring-inset ring-sky-300/40',
+    rowActive: 'bg-gradient-to-l from-sky-950/70 to-sky-900/25 text-sky-100 border border-sky-500/30 shadow-sm',
+  },
+  // أخضر زمردي — النشر والمنصات (نمو وامتداد).
+  emerald: {
+    box: 'bg-gradient-to-br from-emerald-500/20 to-emerald-900/10 ring-1 ring-inset ring-emerald-500/30',
+    icon: 'text-emerald-300',
+    boxActive: 'bg-gradient-to-br from-emerald-400 to-emerald-600 shadow-md shadow-emerald-500/40 ring-1 ring-inset ring-emerald-300/40',
+    rowActive: 'bg-gradient-to-l from-emerald-950/80 to-emerald-900/40 text-emerald-200 border border-emerald-500/30 shadow-sm',
+  },
+  // كهرماني — الزبائن والتفاعلات (دفء التواصل) — للقسم فقط، والعاجل يبقى كهرمانياً كما هو.
+  amber: {
+    box: 'bg-gradient-to-br from-amber-500/20 to-amber-900/10 ring-1 ring-inset ring-amber-500/30',
+    icon: 'text-amber-300',
+    boxActive: 'bg-gradient-to-br from-amber-400 to-amber-600 shadow-md shadow-amber-500/40 ring-1 ring-inset ring-amber-300/40',
+    rowActive: 'bg-gradient-to-l from-amber-950/70 to-amber-900/25 text-amber-100 border border-amber-500/30 shadow-sm',
+  },
+  // بنفسجي — المنتجات والمعرفة (قيمة وفخامة).
+  violet: {
+    box: 'bg-gradient-to-br from-violet-500/20 to-violet-900/10 ring-1 ring-inset ring-violet-500/30',
+    icon: 'text-violet-300',
+    boxActive: 'bg-gradient-to-br from-violet-400 to-violet-600 shadow-md shadow-violet-500/40 ring-1 ring-inset ring-violet-300/40',
+    rowActive: 'bg-gradient-to-l from-violet-950/70 to-violet-900/25 text-violet-100 border border-violet-500/30 shadow-sm',
+  },
+  // رمادي فولاذي — الإعدادات والتشغيل (رصانة النظام).
+  steel: {
+    box: 'bg-gradient-to-br from-slate-500/25 to-slate-800/10 ring-1 ring-inset ring-slate-400/30',
+    icon: 'text-slate-300',
+    boxActive: 'bg-gradient-to-br from-slate-400 to-slate-600 shadow-md shadow-slate-500/40 ring-1 ring-inset ring-slate-200/40',
+    rowActive: 'bg-gradient-to-l from-slate-800/80 to-slate-800/40 text-slate-100 border border-slate-500/30 shadow-sm',
+  },
+};
 export interface NavSection {
   id: string;
   label: string;
@@ -50,6 +104,8 @@ export interface NavSection {
   ownerOnly?: boolean;
   /** وصف مسار العمل الموحّد للقسم (يُعرض في ترويسة القسم + مسار التنقّل). */
   flow: string;
+  /** هوية لونية مميّزة للقسم (تُطبَّق على أيقونة القسم وصندوقه عند التفعيل فقط). */
+  accent: NavAccent;
   branches: NavBranch[];
 }
 
@@ -83,6 +139,7 @@ export const NAV_SECTIONS: NavSection[] = [
     label: 'مركز القيادة والعقل',
     desc: 'الحالة العامة، العقل المركزي والعقول المتخصصة، والاعتماد',
     icon: Home,
+    accent: NAV_ACCENTS.sky,
     flow: 'نظرة موحّدة: ما يعمل، ما يحتاج إجراءً، وما ينتظر موافقة المالك.',
     branches: [
       {
@@ -100,7 +157,7 @@ export const NAV_SECTIONS: NavSection[] = [
         icon: Brain,
         items: [
           { id: 'central_brain', label: 'العقل المركزي متعدد المنصات', desc: 'الإدراك، الجمهور، السوق، الاستراتيجية، القرار، التجارب، التعلم، الذاكرة — بنوع عقل داخلي', icon: Brain, keywords: ['perception', 'knowledge', 'truth', 'audience', 'market', 'strategy', 'decision', 'experiments', 'learning', 'memory'] },
-          { id: 'brain_manager', label: 'عقل السياق والفريق والعروض', desc: 'السياق والذاكرة العاملة، فريق الوكلاء، وصياغة العروض — بنوع عقل داخلي', icon: Users, keywords: ['context', 'team', 'council', 'offers', 'sales'] },
+          { id: 'brain_manager', label: 'عقل السياق والفريق والعروض', desc: 'السياق والذاكرة العاملة، فريق الوكلاء، وصياغة العروض — بنوع عقل داخلي', icon: BrainCircuit, keywords: ['context', 'team', 'council', 'offers', 'sales'] },
           { id: 'central_agent', label: 'المنسّق التنفيذي المركزي', desc: 'فهم الأوامر، التخطيط، الأدوات، التوزيع، التنفيذ، والصلاحيات — بمرحلة داخلية', icon: Bot, keywords: ['intent', 'planner', 'tools', 'routing', 'tasks', 'permissions', 'audit'] },
         ],
       },
@@ -121,6 +178,7 @@ export const NAV_SECTIONS: NavSection[] = [
     label: 'النشر والمنصات',
     desc: 'إنشاء المحتوى، النشر والجدولة والنتائج، وموصلات المنصات العشر',
     icon: Send,
+    accent: NAV_ACCENTS.emerald,
     flow: 'إنشاء ← تجهيز لكل منصة ← اعتماد ← نشر/جدولة ← متابعة النتيجة لكل منصة.',
     branches: [
       {
@@ -172,15 +230,16 @@ export const NAV_SECTIONS: NavSection[] = [
     id: 'section_customers',
     label: 'الزبائن والتفاعلات',
     desc: 'التعليقات، الرسائل، الردود، تحليل النية، والمتابعة',
-    icon: MessageSquare,
+    icon: MessageSquareText,
+    accent: NAV_ACCENTS.amber,
     flow: 'قراءة التفاعل ← فهم السؤال والمنتج ← رد عامي عراقي ← متابعة/تصعيد للمالك.',
     branches: [
       {
         id: 'cust_inbox',
         title: 'الوارد والمتابعة',
-        icon: MessageSquare,
+        icon: MessageSquareText,
         items: [
-          { id: 'customers', label: 'التعليقات والرسائل الواردة', desc: 'صندوق موحّد لكل التفاعلات، تحليل النية، واقتراح الردود', icon: MessageSquare, keywords: ['inbox', 'comments', 'intent', 'reply'] },
+          { id: 'customers', label: 'التعليقات والرسائل الواردة', desc: 'صندوق موحّد لكل التفاعلات، تحليل النية، واقتراح الردود', icon: MessageSquareText, keywords: ['inbox', 'comments', 'intent', 'reply'] },
           { id: 'operations', label: 'المهام والمتابعات', desc: 'العملاء المحتملون والمهام والمتابعات', icon: ClipboardList, keywords: ['tasks', 'follow-up'] },
         ],
       },
@@ -192,7 +251,8 @@ export const NAV_SECTIONS: NavSection[] = [
     id: 'section_products',
     label: 'المنتجات والمعرفة',
     desc: 'المنتجات، المواصفات، الأسعار، التقسيط، والبحث ومصادر المعلومات',
-    icon: Package,
+    icon: Store,
+    accent: NAV_ACCENTS.violet,
     flow: 'المصدر الوحيد للحقيقة التجارية: السعر/المواصفات/التقسيط المسجّلة فعلاً.',
     branches: [
       {
@@ -219,7 +279,8 @@ export const NAV_SECTIONS: NavSection[] = [
     id: 'section_settings',
     label: 'الإعدادات والتشغيل',
     desc: 'الصلاحيات، النظام، الأتمتة، والتعافي',
-    icon: Settings,
+    icon: Cog,
+    accent: NAV_ACCENTS.steel,
     flow: 'الصلاحيات ← النظام والأتمتة ← (للمالك: التعافي والنسخ السحابي).',
     branches: [
       {
