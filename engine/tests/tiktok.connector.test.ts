@@ -182,16 +182,18 @@ function unitTests(): void {
   check('لا قدرة بحالة غير معروفة', TIKTOK_CAPABILITY_MATRIX.every((r) => ['SUPPORTED', 'REQUIRES_REVIEW', 'REQUIRES_AUDIT', 'SANDBOX_ONLY', 'NOT_AVAILABLE_BY_PUBLIC_API'].includes(r.status)));
   check('قدرة غير معروفة تُعيد null لا ادعاء', tiktokCapabilityStatus('does_not_exist') === null && !tiktokCapabilitySupported('does_not_exist'));
 
-  group('2) وحدة: الصلاحيات الرسمية وحلّ الاعتماديات');
-  // النطاقات الرسمية: video.publish (Direct Post) وvideo.upload (رفع المسودة) مساران
-  // منفصلان في وثيقة TikTok، فيجب طلب النطاقين معاً وإلا فشل أحد المسارين.
-  check('النطاقات الرسمية الأربعة مطلوبة', ['user.info.basic', 'video.publish', 'video.upload', 'video.list'].every((s) => TIKTOK_REQUIRED_SCOPES.includes(s)));
-  check('لا نطاق بلا استدعاء حقيقي في المجموعة المطلوبة', TIKTOK_REQUIRED_SCOPES.length === 4, TIKTOK_REQUIRED_SCOPES.join(','));
+  group('2) وحدة: النطاقات الإنتاجية المعتمدة');
+  // قرار إنتاجي (commit المالك 2796ecf): نطاقان معتمدان حصرياً في تطبيق الإنتاج —
+  // user.info.basic (الهوية) وvideo.upload (رفع المسودة، بلا audit). النشر المباشر
+  // (video.publish) خارج التطبيق الحالي (يحتاج Content Posting audit)، وvideo.list
+  // (Display API) بلا استدعاء حقيقي في الكود حتى الآن — فلا يُطلبان.
+  check('النطاقان الإنتاجيان المعتمدان مطلوبان', ['user.info.basic', 'video.upload'].every((s) => TIKTOK_REQUIRED_SCOPES.includes(s)));
+  check('المجموعة مقتصرة على النطاقين المعتمدين (لا نطاق بلا استدعاء)', TIKTOK_REQUIRED_SCOPES.length === 2, TIKTOK_REQUIRED_SCOPES.join(','));
   check('المجموعة بلا تكرار', new Set(TIKTOK_REQUIRED_SCOPES).size === TIKTOK_REQUIRED_SCOPES.length);
   const partial = resolveTikTokScopes(['video.publish']);
   check('حلّ مجموعة جزئية يضيف user.info.basic', partial.includes('user.info.basic'));
-  check('حلّ مجموعة جزئية يضيف video.list', partial.includes('video.list'));
   check('حلّ مجموعة جزئية يضيف video.upload (مسار المسودة)', partial.includes('video.upload'));
+  check('لا يُضاف نطاق خارج النطاقين المعتمدين عبر التجاوز', !partial.includes('video.publish'));
   check('الحلّ بلا تكرار', new Set(partial).size === partial.length);
   check('لا نطاق غير رسمي في الحلّ', resolveTikTokScopes(['not_a_real_scope']).includes('not_a_real_scope') === false);
 
@@ -444,7 +446,7 @@ async function integrationTests(): Promise<void> {
     check('الرابط لا يحمل code_challenge (تدفّق الويب الرسمي)', aurl.searchParams.get('code_challenge') === null && aurl.searchParams.get('code_challenge_method') === null);
     check('معاملات الرابط هي الخمسة الرسمية فقط', [...aurl.searchParams.keys()].every((k) => TIKTOK_WEB_AUTHORIZATION_PARAMS.includes(k)), [...aurl.searchParams.keys()].join(','));
     check('الرابط يحمل state', (aurl.searchParams.get('state') || '').length >= 16);
-    check('الرابط يحمل النطاقات الرسمية', (aurl.searchParams.get('scope') || '').includes('video.publish'));
+    check('الرابط يحمل النطاقات المعتمدة (user.info.basic)', (aurl.searchParams.get('scope') || '').includes('user.info.basic'));
     check('الرابط لا يسرّب client_secret', !start.authorizationUrl.includes(TT_CLIENT_SECRET));
     // المفتاح المستخدم في الرابط مُخفى ومطابق للبيئة (نفس القناة).
     check('الاستجابة تعرض المفتاح المُستخدم في الرابط مُخفىً', start.tiktokClientKey?.usedInAuthorizationUrlMasked === clientKeyFingerprint(TT_CLIENT_KEY).masked);

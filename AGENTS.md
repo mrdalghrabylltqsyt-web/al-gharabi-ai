@@ -1361,10 +1361,12 @@ browser automation، ولا واجهات غير رسمية، ولا تسليم �
   المباشرة، الرد عليها. لا مسارات لها إطلاقاً، ولا تُعلن في السجل.
 
 ### النطاقات (بلا نطاق بلا استدعاء حقيقي)
-`TIKTOK_REQUIRED_SCOPES` = `user.info.basic` (الهوية) + `video.publish` (النشر وحالة النشر
-ومعلومات الناشر) + `video.list` (Display API). `resolveTikTokScopes` تُبقي المجموعة
-المطلوبة دائماً وتُهمل أي نطاق غير رسمي في `TIKTOK_OAUTH_SCOPES`، فلا يُطلب نطاق بلا
-استدعاء ولا يُسقط نطاق تحتاجه قدرة منفّذة.
+`TIKTOK_REQUIRED_SCOPES` = `user.info.basic` (الهوية) + `video.upload` (رفع المسودة) —
+هذا هو **قرار الإنتاج المعتمد** (commit المالك `2796ecf`). `video.publish` (النشر
+المباشر) خارج التطبيق الحالي لأنه يحتاج Content Posting audit، و`video.list` (Display
+API) بلا استدعاء حقيقي في الكود حتى الآن، فلا يُطلبان. `resolveTikTokScopes` تُبقي
+المجموعة المطلوبة دائماً وتُهمل أي نطاق غير معتمد في `TIKTOK_OAUTH_SCOPES`، فلا يُطلب
+نطاق بلا استدعاء ولا يُسقط نطاق تحتاجه قدرة منفّذة.
 
 ### OAuth والاعتماد
 - `pendingOAuth`/`createOAuthState` الدائم (نفس أساس Instagram/Facebook): state عشوائي
@@ -1449,6 +1451,12 @@ Posting API **منفصلان تماماً**، وكان الكود يستخدم �
 - `TIKTOK_REQUIRED_SCOPES` صار أربعة: `user.info.basic`, `video.publish`,
   **`video.upload`**, `video.list`. رفع المسودة يحتاج `video.upload` (مذكور صراحةً في
   وثيقة Upload)، والنشر المباشر يحتاج `video.publish` — فلا يعمل أحدهما بلا الآخر.
+- **تصحيح لاحق (commit المالك `2796ecf`):** `TIKTOK_REQUIRED_SCOPES` صار **نطاقين
+  معتمدين حصرياً في تطبيق الإنتاج**: `user.info.basic` (الهوية) + `video.upload`
+  (رفع المسودة، بلا audit). أُسقط `video.publish` (النشر المباشر خارج التطبيق الحالي —
+  يحتاج Content Posting audit) و`video.list` (Display API بلا استدعاء حقيقي في الكود
+  حتى الآن)، التزاماً بقاعدة «لا نطاق بلا استدعاء حقيقي». اختبار الموصل حُدِّث ليطابق
+  هذا القرار (كان ما زال يطالب بالأربعة، فيفشل على `main`).
 - `buildVideoDraftBody` جديد: جسم رفع مسودة الفيديو `source_info` **فقط** بلا `post_info`
   (تختاره الناشرة في التطبيق).
 - `TikTokClient.initVideoDraft`: POST إلى `/v2/post/publish/inbox/video/init/`، ولا
