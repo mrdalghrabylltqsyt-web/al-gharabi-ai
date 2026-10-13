@@ -463,6 +463,10 @@ export interface WatcherProcessedEntry {
    * ويحدّد هدف الرد (معرّف التعليق مقابل معرّف المستلم في `videoId`).
    */
   kind?: 'comment' | 'message';
+  /** المنصة المعالَجة (تشخيصي) — يُميّز facebook/instagram في سجل مراقب Meta. */
+  platform?: string;
+  /** هل ثُبّتت حقائق المنتج (سعر/قسط مسجّل) لهذا الحدث؟ (تشخيصي، بلا اختراع). */
+  productFactsVerified?: boolean;
   /** زمن معالجة النظام (checkpoint/dedupe). */
   at: string;
   /** زمن نشر التعليق الحقيقي لدى YouTube — مصدر الزخم/الذروة (لا اختلاق). */

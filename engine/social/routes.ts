@@ -153,6 +153,8 @@ export function registerSocialManagerRoutes(app: express.Express, deps: SocialRo
       urls: [],
       inStock: null,
       hasRecordedPromotion: [showroom.promotions, showroom.activeOffer].some((p: any) => String(p ?? '').trim().length > 0),
+      // بلا حدود خصم محقونة من الخادم ⇒ لا يمرّ أي «خصم X%» (الافتراضي فارغ).
+      approvedDiscountPercents: [],
       allowedPhrases: [
         ...(Array.isArray(showroom.policies) ? showroom.policies : []),
         typeof showroom.about === 'string' ? showroom.about : '',

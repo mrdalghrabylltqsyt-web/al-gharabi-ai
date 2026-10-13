@@ -98,7 +98,7 @@ const OUT_OF_SCOPE_LIVE_ROUTES = [
   '/api/control/daily-brief',
 ];
 
-function startApp(port: number, stateDir: string, enableScope: boolean, previewToken: string): ChildProcess {
+function startApp(port: number, stateDir: string, enableScope: boolean, previewToken: string, extraEnv: Record<string, string> = {}): ChildProcess {
   const env: Record<string, string> = {
     ...(process.env as Record<string, string>),
     PORT: String(port),
@@ -111,6 +111,10 @@ function startApp(port: number, stateDir: string, enableScope: boolean, previewT
   };
   delete env.GEMINI_API_KEY;
   delete env.DATABASE_URL;
+  // أعلام المبيعات/غرفة العمليات معطّلة افتراضياً (fail-closed) — تُضبط صراحةً فقط.
+  delete env.GHARABI_ENABLE_SALES_TAB;
+  delete env.GHARABI_ENABLE_OPERATIONS_TAB;
+  Object.assign(env, extraEnv);
   if (enableScope) env.GHARABI_ENABLE_LEGACY_ERP_SCOPE = 'true';
   else delete env.GHARABI_ENABLE_LEGACY_ERP_SCOPE;
   return spawn(process.execPath, [tsxCli, serverEntry], { cwd: REPO_ROOT, env, stdio: ['ignore', 'pipe', 'pipe'] });
@@ -256,7 +260,7 @@ async function login(base: string, token: string): Promise<string> {
   const baseB = `http://127.0.0.1:${portB}`;
   const stateDirB = mkdtempSync(join(tmpdir(), 'gharabi-legacy-erp-on-'));
   const previewTokenB = randomBytes(24).toString('hex');
-  const procB = startApp(portB, stateDirB, true, previewTokenB);
+  const procB = startApp(portB, stateDirB, true, previewTokenB, { GHARABI_ENABLE_SALES_TAB: 'true', GHARABI_ENABLE_OPERATIONS_TAB: 'true' });
   try {
     if (!(await waitForHealth(baseB))) throw new Error('الخادم (العزل معطّل) لم يقلع.');
     // ممثل من كل عائلة: يجب ألا يعيد SCOPE_DISABLED (المسار مُسجَّل => 401 بلا جلسة).
@@ -278,6 +282,45 @@ async function login(base: string, token: string): Promise<string> {
     failures.push(`phase-on fatal: ${err instanceof Error ? err.message : String(err)}`);
   } finally {
     await stop(procB);
+  }
+
+  // ---------- المرحلة ج: تفعيل تبويب المبيعات وحده (بلا مفتاح ERP) ----------
+  const portC = 7800 + Math.floor(Math.random() * 30);
+  const baseC = `http://127.0.0.1:${portC}`;
+  const stateDirC = mkdtempSync(join(tmpdir(), 'gharabi-sales-tab-on-'));
+  const previewTokenC = randomBytes(24).toString('hex');
+  const procC = startApp(portC, stateDirC, false, previewTokenC, { GHARABI_ENABLE_SALES_TAB: 'true' });
+  try {
+    if (!(await waitForHealth(baseC))) throw new Error('الخادم (تبويب المبيعات وحده) لم يقلع.');
+    const salesRes: any = await (await fetch(`${baseC}/api/sales`)).json().catch(() => ({}));
+    check('sales-only: /api/sales NOT scope-blocked (own flag)', !(salesRes?.code === 'SCOPE_DISABLED'), `code=${salesRes?.code}`);
+    const cashRes: any = await (await fetch(`${baseC}/api/control/cashflow`)).json().catch(() => ({}));
+    check('sales-only: /api/control/cashflow still SCOPE_DISABLED (independent)', cashRes?.code === 'SCOPE_DISABLED', `code=${cashRes?.code}`);
+    const healthC: any = await (await fetch(`${baseC}/api/health`)).json().catch(() => ({}));
+    check('sales-only: health.salesOperationsScope.salesEnabled=true', healthC?.salesOperationsScope?.salesEnabled === true);
+    check('sales-only: health.salesOperationsScope.operationsEnabled=false', healthC?.salesOperationsScope?.operationsEnabled === false);
+  } catch (err) {
+    failures.push(`phase-sales-only fatal: ${err instanceof Error ? err.message : String(err)}`);
+  } finally {
+    await stop(procC);
+  }
+
+  // ---------- المرحلة د: تفعيل غرفة العمليات وحدها (بلا مفتاح ERP) ----------
+  const portD = 7840 + Math.floor(Math.random() * 30);
+  const baseD = `http://127.0.0.1:${portD}`;
+  const stateDirD = mkdtempSync(join(tmpdir(), 'gharabi-ops-tab-on-'));
+  const previewTokenD = randomBytes(24).toString('hex');
+  const procD = startApp(portD, stateDirD, false, previewTokenD, { GHARABI_ENABLE_OPERATIONS_TAB: 'true' });
+  try {
+    if (!(await waitForHealth(baseD))) throw new Error('الخادم (غرفة العمليات وحدها) لم يقلع.');
+    const cashRes: any = await (await fetch(`${baseD}/api/control/cashflow`)).json().catch(() => ({}));
+    check('ops-only: /api/control/cashflow NOT scope-blocked (own flag)', !(cashRes?.code === 'SCOPE_DISABLED'), `code=${cashRes?.code}`);
+    const salesRes: any = await (await fetch(`${baseD}/api/sales`)).json().catch(() => ({}));
+    check('ops-only: /api/sales still SCOPE_DISABLED (independent)', salesRes?.code === 'SCOPE_DISABLED', `code=${salesRes?.code}`);
+  } catch (err) {
+    failures.push(`phase-ops-only fatal: ${err instanceof Error ? err.message : String(err)}`);
+  } finally {
+    await stop(procD);
   }
 
   console.log(`\n${'='.repeat(60)}`);

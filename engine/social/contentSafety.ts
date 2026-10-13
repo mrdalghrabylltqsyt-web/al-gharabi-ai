@@ -32,6 +32,12 @@ export interface BusinessFacts {
   inStock: boolean | null;
   /** هل توجد عبارات عروض/تخفيضات معتمدة في بيانات المعرض؟ */
   hasRecordedPromotion: boolean;
+  /**
+   * نِسب خصم **معتمدة صراحةً من الخادم** (من العقل التجاري بحدود المالك أو من اقتراح
+   * صفقة أكّده المالك) — تسمح بذكر «خصم X%» دون حجب، بشرط أن يطابق نص النص نسبة
+   * مسجّلة هنا فعلاً. القيمة الافتراضية فارغة، فلا يمرّ أي خصم غير معتمد.
+   */
+  approvedDiscountPercents: number[];
   /** نصوص مسجّلة في بيانات المعرض يمكن الاعتماد عليها (سياسات، مزايا…). */
   allowedPhrases: string[];
 }
@@ -101,6 +107,7 @@ export function buildBusinessFacts(input: {
   urls?: (string | null | undefined)[];
   inStock?: boolean | null;
   promotions?: (string | null | undefined)[];
+  approvedDiscountPercents?: (number | string | null | undefined)[];
   allowedPhrases?: (string | null | undefined)[];
 }): BusinessFacts {
   return {
@@ -111,6 +118,7 @@ export function buildBusinessFacts(input: {
     urls: (input.urls || []).map((u) => String(u ?? '').trim()).filter(Boolean),
     inStock: typeof input.inStock === 'boolean' ? input.inStock : null,
     hasRecordedPromotion: (input.promotions || []).some((p) => String(p ?? '').trim().length > 0),
+    approvedDiscountPercents: positiveNumbers(input.approvedDiscountPercents || []),
     allowedPhrases: (input.allowedPhrases || []).map((p) => String(p ?? '').trim()).filter(Boolean),
   };
 }
@@ -246,8 +254,19 @@ export function analyzeBusinessClaims(text: string, facts: BusinessFacts): Busin
   }
 
   // 2) خصومات وتخفيضات وعروض وهدايا: لا تُدّعى بلا عرض مسجّل.
+  // استثناء واحد مضبوط من الخادم: «خصم X%» حيث X نسبة **معتمدة صراحةً**
+  // (`approvedDiscountPercents`) من العقل التجاري بحدود المالك أو من اقتراح صفقة
+  // أكّده المالك. القيمة الافتراضية فارغة ⇒ لا يمرّ أي خصم غير معتمد. الهدايا/
+  // العروض/المجان لا يسمحها هذا الاستثناء إطلاقاً (تتطلب عرضاً مسجّلاً).
+  const approvedDiscounts = facts.approvedDiscountPercents || [];
+  const discountPercentsInText = [...normalized.matchAll(/خصم\s*(\d{1,2})(?:\s*%|\s*بالمئه|\s*بالمئة)?/g)]
+    .map((m) => Number(m[1]))
+    .filter((n) => Number.isFinite(n));
+  const allDiscountsApproved = discountPercentsInText.length > 0 &&
+    discountPercentsInText.every((p) => approvedDiscounts.some((a) => Math.abs(a - p) < 0.5));
   const discountClaim = /خصم|تخفيض|تخفيضات|عرض\s+خاص|هديه|هدايا|مجانا|مجاني|بلاش|مجانيه/.test(normalized);
-  if (discountClaim && !facts.hasRecordedPromotion) {
+  const nonPercentDiscountClaim = /تخفيض|عرض\s+خاص|هديه|هدايا|مجانا|مجاني|بلاش|مجانيه/.test(normalized);
+  if (discountClaim && !facts.hasRecordedPromotion && !(allDiscountsApproved && !nonPercentDiscountClaim)) {
     block('discount_not_recorded', 'ادعاء خصم أو عرض أو هدية غير مسجّل في بيانات المعرض.', excerpts(/خصم[^\n]{0,30}|تخفيض[^\n]{0,30}|هدي[^\n]{0,30}|مجان[^\n]{0,30}/));
   }
 

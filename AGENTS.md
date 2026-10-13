@@ -44,7 +44,7 @@ npm install
 npm run dev            # tsx server.ts
 npm run lint           # tsc --noEmit
 npm run build          # vite build + esbuild server.ts -> dist/server.cjs
-npm run final-audit    # node final-audit.mjs (1581 فحصاً)
+npm run final-audit    # node final-audit.mjs (1593 فحصاً)
 npm test               # storage + engine + auth + ... + db + runtime
 ```
 - التشغيل الإنتاجي: `PORT=4517 NODE_ENV=production APP_URL=http://localhost:4517 node dist/server.cjs`
@@ -6013,3 +6013,26 @@ permitted if the replier has been explicitly summoned by the original post's aut
 
 **لم يُمسّ:** أي سرّ/مفتاح/OAuth، ولا منطق النسخ الاحتياطي أو إيقاعه (إلا التأجيل عند الضغط)،
 ولا قاعدة البيانات، ولا Gemini، ولا بقية المنصات، ولا نموذج الجدولة.
+
+## إعادة تفعيل تبويبي المبيعات/غرفة العمليات + العقل التجاري (الرد التجاري الذكي) — 2026-10-13
+
+قرار مالك صريح بتوسيع النطاق تشغيلياً: إعادة تفعيل `sales`/`control` خلف علمَي بيئة مستقلّين fail-closed (لا حذف، ولا تفعيل افتراضي)، مع إكمال «العقل التجاري» (موظف مبيعات رقمي) لزيادة المبيعات بلا أي مخالفة لقواعد المشروع.
+
+### 1) تبويبا المبيعات/غرفة العمليات — علمان مستقلّان (fail-closed)
+- الخادم: `salesTabScopeEnabled()` و`operationsTabScopeEnabled()` يقرآن `GHARABI_ENABLE_SALES_TAB` و`GHARABI_ENABLE_OPERATIONS_TAB` (true/1/on/yes فقط). `SALES_ROUTE_PREFIXES` (`/api/sales*`) و`OPERATIONS_ROUTE_PREFIXES` (`/api/control/{alerts,customer-directory,cashflow,reconciliation,daily-brief}`). `isOutOfScopeLiveRouteRequest` يُسجَّل مستقلاً عن مفتاح ERP، ويرد 404 SCOPE_DISABLED قبل أي مصادقة عند التعطيل.
+- الواجهة: `src/components/common/scopeFlags.ts` (`VITE_GHARABI_ENABLE_SALES_TAB` / `VITE_GHARABI_ENABLE_OPERATIONS_TAB`) + `navConfig.tsx` يُخفيان كل تبويب حسب علمه.
+- /api/health يعلن `salesOperationsScope` (منطقي بلا قيمة).
+- ملاحظة تشغيلية: الفتح الفعلي على Render يتطلب ضبط الخادم (GHARABI_ENABLE_SALES_TAB/GHARABI_ENABLE_OPERATIONS_TAB) والواجهة (VITE_GHARABI_ENABLE_*) في زمن البناء.
+
+### 2) العقل التجاري (Digital Salesperson) — engine/commercial/commercialBrain.ts
+- Lead حقيقي فقط من تفاعل وارد (تعليق/رسالة) على Facebook/Instagram، مستبعداً السبام وحساب المعرض، محفوظ عبر محوّل الحالة فيصمد بعد restart.
+- تفاوض مقيّد بحدّ أقصى: ضمن الحدّ ⇒ accept، تجاوز بسيط ⇒ counter، تجاوز ضِعف ⇒ escalate. لا تجاوز صامت ولا اختراع سعر.
+- لا إغلاق آلي: `confirmCommercialProposal` وحده يصل إلى WON ويشترط صلاحية بشرية.
+- لا رسالة باردة: `nextFollowUpAt` يشترط initiatedByCustomer ونوافذ 24/72 وبحدّ متابعتين، والتنفيذ عبر المنفّذ المركزي وحده.
+- بوابة المحتوى: `approvedDiscountPercents` تُحقن من الخادم فقط (افتراضياً فارغة) فتسمح بذكر «خصم X%» فقط إن طابق نسبة معتمدة.
+- المسارات: GET /api/commercial/leads، POST /api/commercial/leads/:id/proposal/{confirm,reject}، POST /api/agent/commercial/run (owner).
+- /api/health يعلن `commercialBrain` أرقاماً فقط (executesExternalActions:false، closesDealWithoutHuman:false).
+
+اختبارات: commercial.brain.test.ts (62) + commercial.brain.integration.test.ts (18 تكاملي). فحوص final-audit الجديدة commercial-* (1593). lint/build/npm test/final-audit ناجحة.
+
+لم يُمسّ: أي سرّ/مفتاح/OAuth، Gemini/firewall، قاعدة البيانات، DR/الاستعادة، YouTube، TikTok/Telegram/Threads، ونموذج الجدولة.
