@@ -208,28 +208,17 @@ export function tiktokCapabilityNeedsAudit(key: string): boolean {
 }
 
 /**
- * النطاقات المطلوبة — مشتقة من القدرات المنفّذة فعلاً فقط:
- * - user.info.basic  → هوية الحساب (إثبات الاتصال والتحقق).
- * - video.publish    → Content Posting API — Direct Post (النشر المباشر + حالة النشر).
- * - video.upload     → Content Posting API — Upload (رفع مسودة إلى صندوق TikTok).
- * - video.list       → Display API (بيانات الفيديوهات للتحليلات).
- * لا يُطلب نطاق لا يقابله استدعاء حقيقي في الكود.
- *
- * ملاحظة رسمية: مسار رفع المسودة يستخدم `video.upload` لا `video.publish`؛ طلب
- * نطاق واحد لكليهما يُفشل أحد المسارين بـscope_not_authorized.
+ * النطاقات المطلوبة — مقتصرة حصرياً على الصلاحيتين المعتمدتين في تطبيق الإنتاج:
+ * - user.info.basic  → هوية الحساب.
+ * - video.upload     → رفع المسودات.
  */
 export const TIKTOK_REQUIRED_SCOPES: readonly string[] = Object.freeze([
   'user.info.basic',
-  'video.publish',
   'video.upload',
-  'video.list',
 ]);
 
 /**
- * تجاوز اختياري من البيئة (قائمة مفصولة بفواصل). القاعدة الملزمة: لا يُطلب
- * نطاق لا يقابله استدعاء حقيقي، ولا يُسقط نطاق تحتاجه قدرة منفّذة. لذلك:
- *  - أي نطاق غير رسمي في التجاوز يُهمَل.
- *  - النطاقات المطلوبة (المشتقة من القدرات المنفّذة) تُضمّ دائماً.
+ * تجاوز اختياري من البيئة (قائمة مفصولة بفواصل).
  */
 export function resolveTikTokScopes(requested?: readonly string[]): string[] {
   const known = new Set(TIKTOK_REQUIRED_SCOPES);
@@ -376,8 +365,6 @@ export function buildVideoPostBody(input: {
     disable_comment: Boolean(input.disableComment),
     disable_duet: Boolean(input.disableDuet),
     disable_stitch: Boolean(input.disableStitch),
-    // is_aigc حقل رسمي في Content Posting API: يُوسَم المحتوى المولَّد بالذكاء
-    // الاصطناعي. يُرسَل فقط عند التصريح به فلا نُوسم محتوى المعرض خطأً.
     is_aigc: Boolean(input.isAigc),
   };
   const sourceInfo: Record<string, unknown> = { source: input.source };
@@ -407,14 +394,11 @@ export function buildVideoDraftBody(input: {
     sourceInfo.chunk_size = input.chunkSize ?? 0;
     sourceInfo.total_chunk_count = input.totalChunkCount ?? 0;
   }
-  // وثيقة Upload الرسمية: الجسم يحتوي `source_info` فقط بلا post_info.
   return { source_info: sourceInfo };
 }
 
 /**
  * يبني جسم تهيئة نشر الصور (PHOTO) — صور متعددة = كاروسيل.
- * `privacy_level` و`disable_comment` مخصّصان لـDIRECT_POST فقط (الوثيقة الرسمية)،
- * فلا يُرسلان في وضع رفع المسودة (MEDIA_UPLOAD) لتفادي invalid_param.
  */
 export function buildPhotoPostBody(input: {
   postMode: TikTokPostMode;
@@ -449,9 +433,7 @@ export function buildPublishStatusBody(publishId: string): Record<string, unknow
 }
 
 /**
- * تصنيف حالة النشر من استجابة TikTok. لا يُعتبر المنشور مُسلَّماً إلا بحالة
- * `PUBLISH_COMPLETE` مع معرّف نشر عام (`publicaly_available_post_id`) أو نجاح
- * صريح. أي حالة أخرى تُعلن كما هي بلا ادعاء تسليم.
+ * تصنيف حالة النشر من استجابة TikTok.
  */
 export function classifyPublishStatus(input: { status?: string; failReason?: string; publiclyAvailablePostIds?: Array<string | number> }): {
   state: 'pending' | 'processing' | 'delivered' | 'failed';
@@ -476,11 +458,6 @@ export function classifyPublishStatus(input: { status?: string; failReason?: str
 /** حالة سجل النشر المحلي كما تُخزَّن في `publishRecords`. */
 export type TikTokRecordState = 'initiated' | 'publishing' | 'published' | 'failed';
 
-/**
- * يحدّد إن كان سجل نشر TikTok يستحق استعلام حالة من المزود الآن. لا استعلام على
- * سجل منتهٍ (published/failed) ولا على سجل بلا `providerPublishId` — فلا نستهلك
- * حصة TikTok بلا فائدة، ولا نعيد كتابة حالة حُسمت.
- */
 export function shouldReconcileTikTokRecord(
   record: { state?: string | null; providerPublishId?: string | null },
   inFlight: boolean,
@@ -490,11 +467,6 @@ export function shouldReconcileTikTokRecord(
   return record.state !== 'published' && record.state !== 'failed';
 }
 
-/**
- * يحوّل نتيجة `classifyPublishStatus` إلى تحديث سجل محلي — **بلا ادعاء**:
- * لا `published` ولا `providerPostId` إلا حين يُعلن TikTok حالة PUBLISH_COMPLETE.
- * أي حالة أخرى تبقى غير مُسلَّمة مع السبب الحقيقي.
- */
 export function applyTikTokPublishStatus(
   record: { state?: string | null; providerPostId?: string | null },
   status: { state: 'pending' | 'processing' | 'delivered' | 'failed'; delivered: boolean; providerPostId: string | null; detail: string },
@@ -509,13 +481,9 @@ export function applyTikTokPublishStatus(
 }
 
 // ---------------------------------------------------------------------------
-// Webhooks — فحص التوقيع (نمط TikTok) + تطبيع الحدث
+// Webhooks
 // ---------------------------------------------------------------------------
 
-/**
- * يحلل ترويسة `TikTok-Signature` بصيغة `t=<ts>,s=<sig>`. لا يحتفظ بأي قيمة
- * سرّية ولا يطبع الترويسة.
- */
 export function parseTikTokSignatureHeader(header: string | null | undefined): { timestamp: string | null; signature: string | null } {
   const raw = String(header || '');
   const out: { timestamp: string | null; signature: string | null } = { timestamp: null, signature: null };
@@ -530,14 +498,6 @@ export function parseTikTokSignatureHeader(header: string | null | undefined): {
   return out;
 }
 
-/**
- * يتحقق من توقيع TikTok: `signed_payload = timestamp + "." + rawBody`، والتوقيع
- * هو HMAC-SHA256 بمفتاح `client_secret`. يُقارن بزمن ثابت. رفض صريح عند غياب
- * الترويسة/السرّ أو عدم التطابق.
- *
- * ملاحظة: هذا النمط مختلف عن Meta (توقيع مباشر على الجسم بترويسة `X-Hub-Signature-256`)،
- * لذا لا يُعاد استخدام `hmacSignatureVerifier` كما هي.
- */
 export function verifyTikTokSignature(input: { header: string | null | undefined; rawBody: string; clientSecret: string }): { ok: boolean; reason?: string } {
   if (!input.clientSecret) return { ok: false, reason: 'سرّ توقيع TikTok (client_secret) غير مضبوط؛ رُفض الحدث لحماية النظام.' };
   const { timestamp, signature } = parseTikTokSignatureHeader(input.header);
@@ -552,7 +512,6 @@ export function verifyTikTokSignature(input: { header: string | null | undefined
   return { ok: true };
 }
 
-/** أسماء أحداث TikTok الرسمية المدعومة. */
 export const TIKTOK_WEBHOOK_EVENTS: readonly string[] = Object.freeze([
   'authorization.removed',
   'video.upload.failed',
@@ -561,22 +520,13 @@ export const TIKTOK_WEBHOOK_EVENTS: readonly string[] = Object.freeze([
 
 export interface TikTokWebhookEvent {
   event: string;
-  /** معرّف الحساب صاحب الحدث (open_id). */
   userOpenId: string | null;
-  /** وقت الحدث (epoch ثوانٍ → ISO). */
   createdAt: string | null;
-  /** محتوى الحدث (نص JSON مُسلسَل من TikTok) — يُحلَّل بلا كسر عند التشوّه. */
   content: Record<string, unknown>;
-  /** معرّف فريد للحدث (لمنع التكرار). */
   externalId: string;
-  /** هل الحدث مدعوم ومفهوم الشكل؟ */
   supported: boolean;
 }
 
-/**
- * يطبّع حمولة webhook TikTok. الأحداث الرسمية الثلاثة مدعومة، وأي حدث آخر
- * يُعاد بـ`supported=false` بدل اعتباره معروفاً (لا اختراع تعليقات/رسائل).
- */
 export function parseTikTokWebhook(payload: any): { event: TikTokWebhookEvent | null; reason?: string } {
   if (!payload || typeof payload !== 'object') return { event: null, reason: 'حمولة webhook غير صالحة.' };
   const name = typeof payload.event === 'string' ? payload.event : '';
@@ -590,7 +540,6 @@ export function parseTikTokWebhook(payload: any): { event: TikTokWebhookEvent | 
   const userOpenId = typeof payload.user_openid === 'string' ? payload.user_openid : null;
   const createTime = Number(payload.create_time);
   const createdAt = Number.isFinite(createTime) && createTime > 0 ? new Date(createTime * 1000).toISOString() : null;
-  // معرّف فريد لمنع التكرار: الاسم + الحساب + الوقت + أي معرّف داخلي متاح.
   const inner = String((content as any)?.share_id || (content as any)?.publish_id || (content as any)?.video_id || '');
   const externalId = `tiktok:${name}:${userOpenId || '-'}:${Number.isFinite(createTime) ? createTime : '-'}:${inner || '-'}`;
   return {
@@ -605,32 +554,14 @@ export function parseTikTokWebhook(payload: any): { event: TikTokWebhookEvent | 
   };
 }
 
-/**
- * كل استدعاءات TikTok المفتوحة (Content Posting / Display) تستخدم POST مع
- * `Authorization: Bearer`. هذه الدالة تبني الترويسات فقط بلا كشف الرمز.
- */
 export function tiktokAuthHeaders(accessToken: string): Record<string, string> {
   return { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json; charset=UTF-8' };
 }
 
-/**
- * الحد الأدنى الرسمي للتحقق من معرّف تطبيق TikTok: `client_key` معرّف نصي
- * (أحرف/أرقام) بلا مسافات. أي مسافة أو سطر زائد ينتج رفضاً بلا سبب ظاهر.
- */
 export function isPlausibleTikTokClientKey(value: unknown): boolean {
   return typeof value === 'string' && /^[A-Za-z0-9_-]{6,64}$/.test(value);
 }
 
-// ---------------------------------------------------------------------------
-// تشخيص مفتاح التطبيق (client_key) — بلا كشف أي سرّ
-// ---------------------------------------------------------------------------
-
-/**
- * بصمة حتمية لمفتاح التطبيق (client_key). الـclient_key **ليس سرّاً** (يظهر
- * علناً في رابط التفويض)، لكنه يُقارَن بين البيئة ولوحة المطوّر بلا كشف القيمة
- * كاملة: نُظهر أول 4 وآخر 4 محارف فقط مع طوله وبصمة SHA-256 مقتطعة. هذا يمكّن
- * المالك من إثبات «نفس المفتاح» أو «مفتاح مختلف» بمقارنة بصرية بلا طباعة السرّ.
- */
 export function clientKeyFingerprint(value: unknown): {
   configured: boolean;
   length: number;
@@ -649,11 +580,6 @@ export function clientKeyFingerprint(value: unknown): {
   };
 }
 
-/**
- * يخفي قيمة حساسة ويُظهر أول 4 وآخر 4 محارف فقط. القيم القصيرة (≤8) تُخفى
- * كاملة حتى لا تُكشف عملياً. تُستخدم لـclient_key (عام) وللاستدلال على تطابق
- * السرّ بلا إظهاره.
- */
 export function maskSecretValue(value: unknown): string {
   const s = typeof value === 'string' ? value : '';
   if (!s) return '';
@@ -661,13 +587,6 @@ export function maskSecretValue(value: unknown): string {
   return `${s.slice(0, 4)}…${s.slice(-4)}`;
 }
 
-/**
- * يصنّف خطأ مفتاح التطبيق كما يُبلّغ عنه TikTok Open API، ليُترجم إلى إجراء دقيق
- * بدل رسالة عامة. أُثبت حياً (2026-09-27) أن `client_credentials` بمفتاح وهمي
- * يعيد `invalid_client`، وأن مفتاحاً فارغاً يعيد `invalid_request`. رسالة الحوار
- * «We couldn't log in with TikTok … correct the following: client_key» هي الشكل
- * الأمامي لخطأ معرّف التطبيق نفسه.
- */
 export function classifyTikTokClientKeyError(error: unknown, description: unknown): {
   kind: 'invalid_client' | 'invalid_request' | 'unsupported_grant_type' | 'network' | 'unknown';
   hintAr: string;
@@ -707,16 +626,13 @@ export interface TikTokResult<T> {
   ok: boolean;
   data: T | null;
   error?: string;
-  /** رمز خطأ TikTok الرسمي إن وُجد (بلا أي سرّ). */
   code?: string | null;
 }
 
-/** رسالة خطأ TikTok المُطبَّعة (error_description ثم message ثم code). */
 function tiktokError(data: any, fallback: string): string {
   return String(data?.error_description || data?.message || data?.error?.message || data?.error?.code || data?.error || fallback);
 }
 
-/** رمز خطأ TikTok الرسمي من أشكال الاستجابة المختلفة. */
 function tiktokErrorCode(data: any): string | null {
   const code = data?.error?.code ?? data?.error_code ?? (typeof data?.error === 'string' ? data.error : null);
   return code && String(code) !== 'ok' ? String(code) : null;
@@ -745,23 +661,14 @@ export class TikTokClient {
     private readonly baseUrl?: string,
   ) {}
 
-  /** يبادل رمز التفويض برمز وصول + refresh token + open_id. */
   async exchangeCode(input: { clientKey: string; clientSecret: string; code: string; redirectUri: string; codeVerifier?: string }): Promise<TikTokResult<{ accessToken: string; refreshToken: string | null; openId: string; scope: string[]; expiresIn: number | null; refreshExpiresIn: number | null }>> {
     return this.tokenRequest(buildTikTokTokenExchangeBody(input), 'فشل تبادل رمز TikTok.');
   }
 
-  /** يجدّد رمز الوصول عبر refresh_token (صالح 365 يوماً). */
   async refreshToken(input: { clientKey: string; clientSecret: string; refreshToken: string }): Promise<TikTokResult<{ accessToken: string; refreshToken: string | null; openId: string; scope: string[]; expiresIn: number | null; refreshExpiresIn: number | null }>> {
     return this.tokenRequest(buildTikTokRefreshBody(input), 'فشل تجديد رمز TikTok.');
   }
 
-  /**
-   * يثبت مفتاح التطبيق (`client_key`) لدى TikTok عبر طلب `client_credentials`
-   * فعلي واحد. لا يحمل رمز مستخدم ولا ينشئ جلسة ولا يستهلك حصة تفاعل. الهدف
-   * الوحيد: التمييز بين مفتاح يتعرّف عليه TikTok (`invalid_grant` على `code`
-   * وهمي = المفتاح/السرّ مقبولان) ومفتاح لا يعرفه (`invalid_client`) — فتُنسب
-   * رسالة «correct the following: client_key» إلى سببها بدل التخمين.
-   */
   async verifyClientKey(input: { clientKey: string; clientSecret: string }): Promise<TikTokResult<{ recognized: boolean; classified: ReturnType<typeof classifyTikTokClientKeyError>; rawError: string | null; rawDescription: string | null }>> {
     if (!input.clientKey || !input.clientSecret) {
       return { ok: false, data: null, error: 'يلزم client_key وclient_secret لإثبات بيانات التطبيق.', code: 'credentials_missing' };
@@ -780,13 +687,9 @@ export class TikTokClient {
       const rawError = data?.error != null ? String(data.error) : null;
       const rawDescription = data?.error_description != null ? String(data.error_description) : null;
       const classified = classifyTikTokClientKeyError(rawError, rawDescription);
-      // إن نجح الطلب فعلاً فهذا يعني أن TikTok تعرّف على المفتاح والسرّ.
       if (res.ok && !rawError) {
         return { ok: true, data: { recognized: true, classified, rawError, rawDescription }, code: null };
       }
-      // Mفتاح غير معروف = invalid_client. أما invalid_grant فيعني أن المفتاح
-      // تعرّف عليه TikTok لكن طُلب منه grant لا يمنحه نمط client_credentials —
-      // أي أن المفتاح والسرّ مقبولان.
       const recognized = classified.kind !== 'invalid_client' && classified.kind !== 'invalid_request';
       return { ok: true, data: { recognized, classified, rawError, rawDescription }, code: rawError };
     } catch (e: any) {
@@ -794,7 +697,6 @@ export class TikTokClient {
     }
   }
 
-  /** يُبطل الرمز لدى TikTok عند فصل المنصة (revoke). المسار منفصل عن مسار الرمز. */
   async revokeToken(input: { clientKey: string; clientSecret: string; token: string }): Promise<TikTokResult<boolean>> {
     try {
       const res = await this.fetchImpl(tiktokRevokeUrl(this.baseUrl), {
@@ -803,7 +705,6 @@ export class TikTokClient {
         body: buildTikTokRevokeBody(input).toString(),
       });
       const data = await res.json().catch(() => null);
-      // TikTok يُعيد {} عند نجاح الإبطال.
       if (!res.ok || data?.error) return { ok: false, data: null, error: tiktokError(data, 'فشل إبطال رمز TikTok.'), code: tiktokErrorCode(data) };
       return { ok: true, data: true };
     } catch (e: any) {
@@ -837,10 +738,6 @@ export class TikTokClient {
     }
   }
 
-  /**
-   * يثبت هوية الحساب الحقيقي عبر /v2/user/info/ (user.info.basic).
-   * لا يُعلن اتصال موثق بلا open_id من TikTok.
-   */
   async getUserInfo(accessToken: string): Promise<TikTokResult<TikTokAccountIdentity>> {
     if (!accessToken) return { ok: false, data: null, error: 'رمز الوصول غير متوفر.' };
     try {
@@ -867,7 +764,6 @@ export class TikTokClient {
     }
   }
 
-  /** يقرأ معلومات الناشر (إلزامية قبل أي نشر مباشر). */
   async queryCreatorInfo(accessToken: string): Promise<TikTokResult<TikTokCreatorInfo>> {
     if (!accessToken) return { ok: false, data: null, error: 'رمز الوصول غير متوفر.' };
     try {
@@ -899,10 +795,6 @@ export class TikTokClient {
     }
   }
 
-  /**
-   * يهيّئ نشر فيديو. `PULL_FROM_URL` يلزمه رابط عام، و`FILE_UPLOAD` يلزمه
-   * حجم الملف وحجم القطعة. لا نجاح بلا publish_id من TikTok.
-   */
   async initVideoPost(accessToken: string, body: Record<string, unknown>): Promise<TikTokResult<{ publishId: string; uploadUrl: string | null }>> {
     if (!accessToken) return { ok: false, data: null, error: 'رمز الوصول غير متوفر.' };
     try {
@@ -923,11 +815,6 @@ export class TikTokClient {
     }
   }
 
-  /**
-   * يهيّئ رفع مسودة فيديو إلى صندوق TikTok (Upload API، نطاق video.upload).
-   * المسار مختلف عن Direct Post: /v2/post/publish/inbox/video/init/ بجسم
-   * `source_info` فقط. لا نشر عام هنا؛ المالك يُكمل النشر داخل التطبيق.
-   */
   async initVideoDraft(accessToken: string, body: Record<string, unknown>): Promise<TikTokResult<{ publishId: string; uploadUrl: string | null }>> {
     if (!accessToken) return { ok: false, data: null, error: 'رمز الوصول غير متوفر.' };
     try {
@@ -948,7 +835,6 @@ export class TikTokClient {
     }
   }
 
-  /** يهيّئ نشر صور (PHOTO) — صورة واحدة أو كاروسيل. */
   async initPhotoPost(accessToken: string, body: Record<string, unknown>): Promise<TikTokResult<{ publishId: string }>> {
     if (!accessToken) return { ok: false, data: null, error: 'رمز الوصول غير متوفر.' };
     try {
@@ -969,7 +855,6 @@ export class TikTokClient {
     }
   }
 
-  /** يستعلم حالة النشر بمفتاح publish_id. لا يُعلن تسليم إلا بحالة PUBLISH_COMPLETE. */
   async fetchPublishStatus(accessToken: string, publishId: string): Promise<TikTokResult<ReturnType<typeof classifyPublishStatus> & { rawStatus: string }>> {
     if (!accessToken || !publishId) return { ok: false, data: null, error: 'رمز الوصول ومعرّف النشر مطلوبان.' };
     try {
