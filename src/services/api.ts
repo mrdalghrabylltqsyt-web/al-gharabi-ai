@@ -1688,6 +1688,28 @@ ${payload.topic || payload.productName || 'أنظمة وحلول التقسيط 
     if (!res.ok || !data.success) throw new Error(data.error || 'تعذر تشغيل دورة مراقب Meta');
     return data;
   },
+  // --- Telegram Reply Watcher (مراقب ردود Telegram 24/7) — للمالك فقط ---
+  /** حالة مراقب ردود Telegram (تحكم + سجل معالجة تفصيلي) — مسار محمي. */
+  async getTelegramWatcher(): Promise<any> {
+    const res = await fetch('/api/agent/telegram/watcher', { headers: getAuthHeaders() });
+    const data = await res.json();
+    if (!res.ok || !data.success) throw new Error(data.error || 'تعذر تحميل حالة مراقب ردود Telegram');
+    return data.watcher;
+  },
+  /** تحديث تحكم مراقب Telegram (autoReply/paused/humanReviewMode/cadenceMinutes) — للمالك. */
+  async setTelegramWatcherControls(controls: Record<string, boolean | number>): Promise<any> {
+    const res = await fetch('/api/agent/telegram/watcher/controls', { method: 'POST', headers: getAuthHeaders(), body: JSON.stringify(controls) });
+    const data = await res.json();
+    if (!res.ok || !data.success) throw new Error(data.error || 'تعذر تحديث إعدادات مراقب Telegram');
+    return data;
+  },
+  /** تشغيل دورة مراقبة Telegram يدوياً فوراً (للمالك) — قراءة/تحليل/رد وفق الإعداد. */
+  async pollTelegramWatcher(): Promise<any> {
+    const res = await fetch('/api/agent/telegram/watcher/poll', { method: 'POST', headers: getAuthHeaders() });
+    const data = await res.json();
+    if (!res.ok || !data.success) throw new Error(data.error || 'تعذر تشغيل دورة مراقب Telegram');
+    return data;
+  },
   /** تفاصيل حارس حصة YouTube Data API (للمالك) — النقطتان العامتان تعلنان الحالة المجملة فقط. */
   async getYouTubeQuota(): Promise<any> {
     const res = await fetch('/api/agent/youtube/quota', { headers: getAuthHeaders() });

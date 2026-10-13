@@ -34,6 +34,10 @@ export type CapabilityKey =
   | 'analytics'
   | 'comments'
   | 'reply'
+  // الرد على رسالة/محادثة مباشرة (message_reply) — مفهوم منفصل عن رد التعليقات
+  // (comment_reply). منصة رسائلية بلا تعليقات عامة (Telegram) تكون قادرة على هذا
+  // وحده. يُشتق من `message_reply` في السجل.
+  | 'message_reply'
   | 'publish'
   | 'schedule'
   | 'edit'
@@ -43,7 +47,7 @@ export type CapabilityKey =
   | 'learning_signals';
 
 export const CAPABILITY_KEYS: readonly CapabilityKey[] = Object.freeze([
-  'connection', 'verification', 'read', 'analytics', 'comments', 'reply', 'publish',
+  'connection', 'verification', 'read', 'analytics', 'comments', 'reply', 'message_reply', 'publish',
   'schedule', 'edit', 'audience', 'messaging', 'geography', 'learning_signals',
 ]);
 
@@ -89,9 +93,12 @@ const EXPLICIT_CONSTRAINTS: Partial<Record<PlatformId, Partial<Record<Capability
     read: 'AVAILABLE',
     messaging: 'AVAILABLE',
   },
+  // Telegram: منصة رسائلية — الرد على الرسائل المباشرة (message_reply) منفّذ
+  // بالكود، لكن لا تعليقات عامة (comment_reply) عبر Bot API.
   telegram: {
     comments: 'NOT_AVAILABLE',
     reply: 'NOT_AVAILABLE',
+    message_reply: 'AVAILABLE',
     analytics: 'NOT_AVAILABLE',
     audience: 'NOT_AVAILABLE',
     geography: 'NOT_AVAILABLE',
@@ -141,6 +148,7 @@ export function capabilityRow(platform: PlatformId): PlatformCapabilityRow {
     analytics: derive('analytics', 'analytics'),
     comments: derive('comments', 'comments'),
     reply: derive('reply', 'comment_reply'),
+    message_reply: derive('message_reply', 'message_reply'),
     publish: derive('publish', 'publish'),
     schedule: derive('schedule', 'scheduling'),
     edit: derive('edit', null),

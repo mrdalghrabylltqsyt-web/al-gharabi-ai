@@ -345,7 +345,8 @@ export function strategyAgent(ctx: TeamContext, analysis: TeamAgentOutput[]): Te
   const outputs: TeamAgentOutput[] = [];
   const hasEvidence = analysis.some((a) => a.truthState === 'DERIVED' || a.truthState === 'FACT');
 
-  const replyCapable = capabilityRow(ctx.platform).states.reply === 'AVAILABLE';
+  // الرد يشمل التعليقات (comment_reply) أو الرسائل المباشرة (message_reply).
+  const replyCapable = capabilityRow(ctx.platform).states.reply === 'AVAILABLE' || capabilityRow(ctx.platform).states.message_reply === 'AVAILABLE';
   const publishCapable = capabilityRow(ctx.platform).states.publish === 'AVAILABLE';
 
   if (hasEvidence) {
@@ -490,7 +491,8 @@ export function decisionAgent(
   const hasActionable = actionable.length > 0;
   const unresolved = conflicts.filter((c) => !c.resolved).length;
 
-  const replyCapable = capabilityRow(ctx.platform).states.reply === 'AVAILABLE';
+  // الرد يشمل التعليقات (comment_reply) أو الرسائل المباشرة (message_reply).
+  const replyCapable = capabilityRow(ctx.platform).states.reply === 'AVAILABLE' || capabilityRow(ctx.platform).states.message_reply === 'AVAILABLE';
   const publishCapable = capabilityRow(ctx.platform).states.publish === 'AVAILABLE';
   const wantsReply = /(رد|reply|تعليق)/i.test(ctx.task);
   const wantsPublish = /(نشر|publish|جدول|schedule)/i.test(ctx.task);

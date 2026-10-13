@@ -176,7 +176,7 @@ add('suggested-reply-content-safety', server.includes('buildSafeBusinessReply(')
 // قبول Batch 5: أول موصل اجتماعي حقيقي (Telegram) مع حماية الاتصال والإرسال.
 add('telegram-real-connector', /realConnector:\s*true/.test(read('engine/social/registry.ts')) && read('engine/social/registry.ts').includes("credentialMode: 'bot-token'"), 'Telegram معرّف كموصل حقيقي بآلية bot-token');
 add('telegram-webhook-verified', server.includes('verifyTelegramSecret') && server.includes('TELEGRAM_SECRET_HEADER') && server.includes('/api/platforms/telegram/webhook'), 'Webhook Telegram يتحقق من السرّ في الترويسة قبل أي معالجة');
-add('telegram-reply-real-send', server.includes('/api/platforms/telegram/reply') && server.includes('delivered:result.ok') && server.includes('providerReplyId'), 'الإرسال الحقيقي لا يُعلن التسليم بلا استجابة مزود');
+add('telegram-reply-real-send', server.includes('/api/platforms/telegram/reply') && server.includes('client.sendMessage(') && server.includes('providerReplyId: record.providerReplyId') && server.includes('delivered: result.ok'), 'الإرسال الحقيقي لا يُعلن التسليم بلا استجابة مزود');
 add('telegram-reply-owner-only', /telegram\/reply",\s*requireOwner/.test(server), 'مسار الإرسال الحقيقي محصور بالمالك');
 add('connection-callback-no-fake-verify', server.includes('verifyProviderConnection') && !/connection-callback[\s\S]{0,600}?providerVerified\s*!==\s*true\s*\)\s*return res\.status\(400\)/.test(server), 'إثبات الاتصال يأتي من طلب مزود لا من تصريح العميل');
 add('telegram-webhook-secret-no-leak', !/res\.json\([^)]*webhookSecret\s*:/.test(server) && server.includes('secretConfigured:true'), 'السرّ لا يُعاد في أي استجابة JSON');
@@ -223,7 +223,7 @@ add('telegram-message-not-comment-reply', (() => { const r = read('engine/social
 add('reply-route-message-platform-redirect', socialRoutes.includes("supports('message_reply')") && socialRoutes.includes('MESSAGE_PLATFORM_NOT_COMMENT'), 'مسار التعليقات يوجّه منصات الرسائل بدل منع مضلل');
 add('telegram-ui-routes-message-reply', read('src/components/social/SocialHubView.tsx').includes('apiService.replyTelegram') && read('src/components/social/SocialHubView.tsx').includes('replyTarget?.chatId'), 'واجهة الرد توجّه رسائل Telegram إلى المسار الحقيقي بلا فحص comment_reply');
 add('incoming-vs-delivery-separated', read('src/components/social/SocialHubView.tsx').includes('receivedViaWebhook') && read('src/components/social/SocialHubView.tsx').includes('مستلمة فعلياً') && read('src/components/social/SocialHubView.tsx').includes('الرد المُسلَّم فعلياً'), 'الواجهة تفصل استقبال الرسالة عن تسليم الرد');
-add('telegram-reply-delivery-honest', server.includes('deliveryError') && server.includes('reviewStatus: result.ok ? "delivered" : "failed"') && server.includes('receipt: result.receipt'), 'نجاح/فشل الإرسال يُسجَّل صراحةً بإيصال أو خطأ بلا ادعاء تسليم');
+add('telegram-reply-delivery-honest', server.includes('deliveryError') && server.includes('reviewStatus: result.ok ? \'delivered\' : \'failed\'') && server.includes('receipt: result.ok ?'), 'نجاح/فشل الإرسال يُسجَّل صراحةً بإيصال أو خطأ بلا ادعاء تسليم');
 add('telegram-message-reply-tests', read('engine/tests/telegram.connector.test.ts').includes('message_reply') && read('engine/tests/telegram.connector.test.ts').includes('failSend') && read('engine/tests/social.ui.claims.test.ts').includes('message_reply'), 'اختبارات تغطي توجيه message_reply وفشل الإرسال والواجهة');
 
 // إصلاح مرونة Gemini (2026-09-23): ضغط موديل واحد (503 «high demand») لا يعني تعطل المزود.
@@ -979,6 +979,31 @@ add('meta-dialogue-test-no-real-provider', (() => {
   const both = fb + ig;
   return /FACEBOOK_GRAPH_API_BASE/.test(both) && /delete env\.GEMINI_API_KEY/.test(both) && !/graph\.facebook\.com/.test(both) && /PASSED:/.test(both);
 })(), 'اختبارا الحوار يستخدمان خادم Meta وهمياً محلياً بلا مزود حقيقي ولا حصة AI');
+// مراقب Telegram: نفس محرّك القرار الواحد (لا عقل ثانٍ) + fail-closed + نقطة عامة نظيفة.
+add('telegram-watcher-module', fs.existsSync(path.join(root, 'engine/social/telegramWatcher.ts')) && /export function defaultTelegramPollingState/.test(read('engine/social/telegramWatcher.ts')) && /export function telegramWatcherGate/.test(read('engine/social/telegramWatcher.ts')) && /export function resolveTelegramReplyExecution/.test(read('engine/social/telegramWatcher.ts')), 'وحدة telegramWatcher هي مصدر واحد لتحكم/بوابة/قرار مراقب Telegram');
+add('telegram-watcher-single-decision-engine', /import \{[\s\S]{0,400}?resolveCommentExecution[\s\S]{0,200}?\} from '\.\/youtubeWatcher'/.test(read('engine/social/telegramWatcher.ts')) || /from '\.\/youtubeWatcher'/.test(read('engine/social/telegramWatcher.ts')), 'مراقب Telegram يستهلك نفس محرّك قرار YouTube (سلطة قرار واحدة — لا عقل منفصل)');
+add('telegram-watcher-safe-by-default', /defaultTelegramWatcherControls[\s\S]{0,200}?return normalizeWatcherControls\(\{\}\)/.test(read('engine/social/telegramWatcher.ts')) && !/autoReply:\s*true/.test(read('engine/social/telegramWatcher.ts')), 'الرد الآلي معطّل افتراضياً (fail-closed) في مراقب Telegram');
+add('telegram-watcher-owner-only-routes', server.includes('app.get("/api/agent/telegram/watcher", requireOwner') && server.includes('app.post("/api/agent/telegram/watcher/controls", requireOwner') && server.includes('app.post("/api/agent/telegram/watcher/poll", requireOwner'), 'مسارات مراقب Telegram مقتصرة على المالك (requireOwner) — التفاصيل الحسّاسة للمالك فقط');
+add('telegram-watcher-health-public-safe', (() => {
+  const start = server.indexOf('function telegramPollingPublicStatus');
+  const end = server.indexOf('function telegramPollingStatusBlock');
+  if (start < 0 || end < 0 || end <= start) return false;
+  const publicFn = server.slice(start, end);
+  const healthUsesPublic = (server.match(/telegramPolling: telegramPollingPublicStatus\(\)/g) || []).length === 2;
+  const publicHasNoCustomer = !/attentionRequired|replyText|authorName|recent|\btext\b/.test(publicFn);
+  return healthUsesPublic && publicHasNoCustomer;
+})(), 'الصحة والجاهزية تستخدمان النسخة العامة لمراقب Telegram، ولا تحوي اسم حساب/نص رسالة/نص رد');
+add('telegram-watcher-uses-central-executor', server.includes('executeTelegramMessageReply(') && server.includes('runTelegramWatcherCycle(') && /const res = await executeTelegramMessageReply\(\{[\s\S]{0,200}?\}, "watcher"\)/.test(server), 'الرد الحقيقي في دورة Telegram يمرّ عبر المنفّذ المركزي (لا مسار جانبي يتجاوز البوابات)');
+add('telegram-watcher-message-reply-capability', /telegram:\s*\{[\s\S]{0,300}?message_reply:\s*'AVAILABLE'/.test(read('engine/brain/strategy/capabilityMatrix.ts')), 'مصفوفة القدرات تُعلن message_reply لـTelegram (رد رسائل حقيقي منفّذ)');
+add('telegram-watcher-scheduler-single-timer', server.includes('function startTelegramPollingWatcher') && server.includes('telegramPollingScheduler?.stop()') && server.includes('startTelegramPollingWatcher();'), 'مؤقّت مراقب Telegram واحد يُبدأ بعد الإقلاع ويُوقف عند الإغلاق (مستقل عن المتصفح)');
+add('telegram-watcher-persistence-restored', (server.match(/applyTelegramPollingStateSnapshot\(telegramPolling\)/g) || []).length === 2, 'حالة مراقب Telegram تُسترجع في مسارَي التحميل (غير المتزامن والمتزامن) — تصمد بعد restart');
+add('telegram-watcher-test-registered', (pkg.scripts['test'] || '').includes('test:telegram-watcher') && pkg.scripts['test:telegram-watcher'] === 'tsx engine/tests/telegram.watcher.test.ts' && fs.existsSync(path.join(root, 'engine/tests/telegram.watcher.test.ts')), 'اختبار مراقب Telegram مسجَّل في npm test');
+add('telegram-watcher-test-no-real-provider', (() => {
+  const t = fs.existsSync(path.join(root, 'engine/tests/telegram.watcher.test.ts')) ? read('engine/tests/telegram.watcher.test.ts') : '';
+  return /TELEGRAM_API_BASE/.test(t) && /delete env\.GEMINI_API_KEY/.test(t) && !/api\.telegram\.org/.test(t.replace(/telegramApiUrl/g, '')) && /PASSED:/.test(t);
+})(), 'اختبار مراقب Telegram يستخدم خادم Telegram وهمياً محلياً بلا مزود حقيقي ولا حصة AI');
+add('telegram-watcher-ui-card', read('src/components/social/SocialManagerView.tsx').includes('مراقب ردود Telegram 24/7') && read('src/components/social/SocialManagerView.tsx').includes('apiService.getTelegramWatcher'), 'بطاقة مراقب Telegram في الواجهة تقرأ الحالة الحقيقية من الخادم (للمالك)');
+add('telegram-watcher-ui-service-methods', read('src/services/api.ts').includes('async getTelegramWatcher') && read('src/services/api.ts').includes('async setTelegramWatcherControls') && read('src/services/api.ts').includes('async pollTelegramWatcher'), 'دوال apiService لمراقب Telegram موجودة (حالة/تحكم/دورة)');
 add('youtube-watcher-detail-owner-auth', server.includes('app.get("/api/agent/youtube/watcher", requireOwner') && server.includes('watcher: watcherStatusBlock()'), 'التفاصيل الكاملة (attentionRequired/lastReply) تُقدَّم فقط عبر المسار المقتصر على المالك /api/agent/youtube/watcher');
 // كل مسارات بيانات المراقب (التي تحمل اسم حساب/نص تعليق/نص رد) مقتصرة على المالك،
 // لا مجرّد مصادقة: بيانات عملاء YouTube لا يجوز أن تصل لأي مستخدم مسجَّل بلا دور مالك.
