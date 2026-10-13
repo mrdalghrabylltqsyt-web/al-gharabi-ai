@@ -2,12 +2,14 @@ import React from 'react';
 import { useApp } from '../../context/AppContext';
 import {
   Package, BadgePercent, CheckCircle2, X, ChevronDown, Search as SearchIcon,
+  AlertTriangle, Bell,
 } from 'lucide-react';
 import {
   NAV_SECTIONS,
   visibleSectionBranches,
   sectionLeafIds,
   searchNav,
+  navBadgeTone,
 } from './navConfig';
 import type { NavLeaf, NavBranch, NavSection } from './navConfig';
 
@@ -41,6 +43,10 @@ interface SidebarProps {
 }
 
 const EXPANDED_KEY = 'gharabi-nav-expanded-v1';
+
+// حالة focus-visible موحّدة لكل عنصر قابل للضغط (تنقّل بلوحة المفاتيح).
+const FOCUS_RING =
+  'focus:outline-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500/70 focus-visible:ring-offset-1 focus-visible:ring-offset-slate-900';
 
 const readExpanded = (): { sections: string[]; branches: string[] } => {
   try {
@@ -113,6 +119,9 @@ export const Sidebar: React.FC<SidebarProps> = ({ mobileOpen, onCloseMobile }) =
     return null;
   };
 
+  // شارات «تحتاج انتباهاً» (عاجلة) = مراجعات معلّقة + استفسارات غير مقروءة.
+  const attentionCount = notificationBadge.pendingReviews + notificationBadge.unreadMessages;
+
   const handleLeafClick = (id: string) => {
     setActiveTab(id);
     onCloseMobile();
@@ -160,7 +169,8 @@ export const Sidebar: React.FC<SidebarProps> = ({ mobileOpen, onCloseMobile }) =
 
           <button
             onClick={onCloseMobile}
-            className="lg:hidden p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800"
+            className={`lg:hidden p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 ${FOCUS_RING}`}
+            aria-label="إغلاق القائمة"
           >
             <X className="w-5 h-5" />
           </button>
@@ -174,7 +184,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ mobileOpen, onCloseMobile }) =
               value={query}
               onChange={(e) => setQuery(e.target.value)}
               placeholder="بحث في الأقسام والوظائف…"
-              className="w-full bg-slate-950/60 border border-slate-800 rounded-xl pr-9 pl-3 py-2 text-[12px] text-slate-200 placeholder:text-slate-500 focus:outline-none focus:border-emerald-600/60"
+              className={`w-full bg-slate-950/60 border border-slate-800 rounded-xl pr-9 pl-3 py-2 text-[12px] text-slate-200 placeholder:text-slate-500 focus:outline-none focus:border-emerald-600/60 ${FOCUS_RING}`}
               style={{ fontSize: 16 }}
             />
           </div>
@@ -186,112 +196,145 @@ export const Sidebar: React.FC<SidebarProps> = ({ mobileOpen, onCloseMobile }) =
             {searching ? 'نتائج البحث' : 'أقسام النظام'}
           </div>
 
+          {/* ملخّص سريع أعلى الشجرة: جملة واحدة تلخّص كل ما يحتاج انتباه المالك. */}
+          {!searching && attentionCount > 0 && (
+            <button
+              onClick={() => setActiveTab('approval')}
+              className={`w-full flex items-center gap-2 px-2.5 py-2 rounded-xl text-right transition cursor-pointer border border-amber-500/40 bg-amber-500/10 text-amber-200 hover:bg-amber-500/20 ${FOCUS_RING}`}
+              aria-label={`لديك ${attentionCount} أمراً يحتاج انتباهك`}
+            >
+              <AlertTriangle className="w-4 h-4 shrink-0 text-amber-400" />
+              <span className="text-[11px] font-bold flex-1">
+                لديك {attentionCount} أمراً يحتاج انتباهك
+              </span>
+            </button>
+          )}
+
           {sectionsToRender.length === 0 && (
             <p className="px-3 py-4 text-[11px] text-slate-500">لا نتائج مطابقة.</p>
           )}
 
-          {sectionsToRender.map((section) => {
+          {sectionsToRender.map((section, idx) => {
             const Icon = section.icon;
             const branches = visibleSectionBranches(section, isOwner);
             const leaves = sectionLeafIds(section);
             const sectionActive = activeTab === section.id || leaves.includes(activeTab);
             const open = isSectionExpanded(section.id);
-            const sectionBadge = branches.flatMap((b) => b.items).map((i) => badgeFor(i.id)).find(Boolean) || null;
+            // شارة القسم = أول تنبيه موجود، مع نبرته (عاجل/معلوماتي).
+            const sectionBadgeItem = branches.flatMap((b) => b.items).find((i) => badgeFor(i.id));
+            const sectionBadge = sectionBadgeItem ? badgeFor(sectionBadgeItem.id) : null;
+            const sectionTone = sectionBadgeItem ? navBadgeTone(sectionBadgeItem.id) : 'info';
 
             return (
-              <div key={section.id} className="rounded-xl">
-                {/* المستوى 1: العنوان الرئيسي (قابل للفتح/الإغلاق) */}
-                <button
-                  onClick={() => toggleSection(section.id)}
-                  className={`w-full flex items-center gap-2.5 px-2.5 py-2.5 rounded-xl text-right transition-all group cursor-pointer ${
-                    sectionActive
-                      ? 'bg-gradient-to-l from-emerald-950/80 to-emerald-900/40 text-emerald-200 border border-emerald-500/30 shadow-sm'
-                      : 'text-slate-300 hover:bg-slate-800/60 hover:text-white border border-transparent'
-                  }`}
-                  aria-expanded={open}
-                >
-                  <ChevronDown className={`w-4 h-4 shrink-0 text-slate-400 transition-transform ${open ? '' : '-rotate-90'}`} />
-                  <div
-                    className={`w-8 h-8 rounded-lg flex items-center justify-center shrink-0 transition-colors ${
+              <div key={section.id}>
+                {/* فاصل بصري بين الأقسام الرئيسية المتتالية (لا كتلة متصلة واحدة). */}
+                {idx > 0 && <div className="my-1.5 h-px bg-slate-800/70" />}
+
+                <div className="rounded-xl">
+                  {/* المستوى 1: العنوان الرئيسي (الأكبر وزناً) */}
+                  <button
+                    onClick={() => toggleSection(section.id)}
+                    className={`w-full flex items-center gap-2.5 px-2.5 py-2.5 rounded-xl text-right transition-all group cursor-pointer ${FOCUS_RING} ${
                       sectionActive
-                        ? 'bg-emerald-500 text-white shadow-md shadow-emerald-500/30'
-                        : 'bg-slate-800 text-slate-400 group-hover:text-slate-200 group-hover:bg-slate-700'
+                        ? 'bg-gradient-to-l from-emerald-950/80 to-emerald-900/40 text-emerald-200 border border-emerald-500/30 shadow-sm'
+                        : 'text-slate-300 hover:bg-slate-800/60 hover:text-white border border-transparent'
                     }`}
+                    aria-expanded={open}
                   >
-                    <Icon className="w-4 h-4" />
-                  </div>
-                  <div className="flex-1 min-w-0 text-right">
-                    <div className="flex items-center justify-between gap-1">
-                      <p className="text-xs font-bold truncate">{section.label}</p>
-                      {sectionBadge && (
-                        <span className="text-[10px] px-1.5 py-0.5 rounded-md font-semibold border bg-slate-800 text-slate-300 border-slate-700">
-                          {sectionBadge}
-                        </span>
-                      )}
+                    <ChevronDown className={`w-4 h-4 shrink-0 text-slate-400 transition-transform ${open ? '' : '-rotate-90'}`} />
+                    <div
+                      className={`w-9 h-9 rounded-lg flex items-center justify-center shrink-0 transition-colors ${
+                        sectionActive
+                          ? 'bg-emerald-500 text-white shadow-md shadow-emerald-500/30'
+                          : 'bg-slate-800 text-slate-400 group-hover:text-slate-200 group-hover:bg-slate-700'
+                      }`}
+                    >
+                      <Icon className="w-5 h-5" />
                     </div>
-                    <p className="text-[10px] text-slate-400 truncate">{section.desc}</p>
-                  </div>
-                </button>
-
-                {/* المستوى 2: الفروع (قابلة للفتح/الإغلاق) والمستوى 3: الوظائف */}
-                {open && (
-                  <div className="mt-1 mr-4 pr-3 border-r border-slate-800 space-y-0.5">
-                    {branches.map((branch) => {
-                      const BIcon = branch.icon;
-                      const bOpen = searching || expandedBranches.includes(branch.id) || branch.id === activeSectionFirstBranch(section, activeTab);
-                      return (
-                        <div key={branch.id}>
-                          <button
-                            onClick={() => toggleBranch(branch.id, branch.items[0]?.id, bOpen)}
-                            className="w-full flex items-center gap-2 px-2 py-1.5 rounded-lg text-right text-slate-400 hover:text-white hover:bg-slate-800/50 transition cursor-pointer"
-                            aria-expanded={bOpen}
+                    <div className="flex-1 min-w-0 text-right">
+                      <div className="flex items-center justify-between gap-1">
+                        <p className="text-sm font-black tracking-tight truncate">{section.label}</p>
+                        {sectionBadge && (
+                          <span
+                            className={`text-[10px] px-1.5 py-0.5 rounded-md font-bold border ${
+                              sectionTone === 'urgent'
+                                ? 'bg-amber-500/20 text-amber-300 border-amber-500/40'
+                                : 'bg-slate-800 text-slate-300 border-slate-700'
+                            }`}
                           >
-                            <ChevronDown className={`w-3.5 h-3.5 shrink-0 transition-transform ${bOpen ? '' : '-rotate-90'}`} />
-                            <BIcon className="w-3.5 h-3.5 shrink-0 text-slate-500" />
-                            <span className="text-[11px] font-bold truncate">{branch.title}</span>
-                          </button>
+                            {sectionBadge}
+                          </span>
+                        )}
+                      </div>
+                      <p className="text-[10px] text-slate-400 truncate">{section.desc}</p>
+                    </div>
+                  </button>
 
-                          {bOpen && (
-                            <div className="mt-0.5 mr-3 space-y-0.5">
-                              {branch.items.map((leaf) => {
-                                const LIcon = leaf.icon;
-                                const on = activeTab === leaf.id;
-                                const badge = badgeFor(leaf.id);
-                                return (
-                                  <button
-                                    key={`${branch.id}:${leaf.id}:${leaf.label}`}
-                                    onClick={() => handleLeafClick(leaf.id)}
-                                    className={`w-full flex items-center gap-2 px-2 py-1.5 rounded-lg text-right transition cursor-pointer ${
-                                      on
-                                        ? 'bg-emerald-500 text-slate-950 font-bold'
-                                        : 'text-slate-300 hover:bg-slate-800/70 hover:text-white'
-                                    }`}
-                                    title={leaf.desc}
-                                  >
-                                    <LIcon className={`w-3.5 h-3.5 shrink-0 ${on ? 'text-slate-950' : 'text-slate-500'}`} />
-                                    <span className="text-[11px] truncate flex-1">{leaf.label}</span>
-                                    {badge && (
-                                      <span className={`text-[9px] px-1 py-0.5 rounded font-semibold ${on ? 'bg-slate-950/20 text-slate-950' : 'bg-slate-800 text-slate-300'}`}>
-                                        {badge}
-                                      </span>
-                                    )}
-                                  </button>
-                                );
-                              })}
-                            </div>
-                          )}
-                        </div>
-                      );
-                    })}
-                  </div>
-                )}
+                  {/* المستوى 2: الفروع (أصغر قليلاً) والمستوى 3: الوظائف (الأخفّ) */}
+                  {open && (
+                    <div className="mt-1 mr-4 pr-3 border-r border-slate-800 space-y-0.5">
+                      {branches.map((branch) => {
+                        const BIcon = branch.icon;
+                        const bOpen = searching || expandedBranches.includes(branch.id) || branch.id === activeSectionFirstBranch(section, activeTab);
+                        return (
+                          <div key={branch.id}>
+                            <button
+                              onClick={() => toggleBranch(branch.id, branch.items[0]?.id, bOpen)}
+                              className={`w-full flex items-center gap-2 px-2 py-1.5 rounded-lg text-right text-slate-400 hover:text-white hover:bg-slate-800/50 transition cursor-pointer ${FOCUS_RING}`}
+                              aria-expanded={bOpen}
+                            >
+                              <ChevronDown className={`w-3.5 h-3.5 shrink-0 transition-transform ${bOpen ? '' : '-rotate-90'}`} />
+                              <BIcon className="w-3.5 h-3.5 shrink-0 text-slate-500" />
+                              <span className="text-[12px] font-bold truncate">{branch.title}</span>
+                            </button>
+
+                            {bOpen && (
+                              <div className="mt-0.5 mr-3 space-y-0.5">
+                                {branch.items.map((leaf) => {
+                                  const LIcon = leaf.icon;
+                                  const on = activeTab === leaf.id;
+                                  const badge = badgeFor(leaf.id);
+                                  const tone = navBadgeTone(leaf.id);
+                                  return (
+                                    <button
+                                      key={`${branch.id}:${leaf.id}:${leaf.label}`}
+                                      onClick={() => handleLeafClick(leaf.id)}
+                                      className={`w-full flex items-center gap-2 px-2 py-1.5 rounded-lg text-right transition cursor-pointer ${FOCUS_RING} ${
+                                        on
+                                          ? 'bg-emerald-500 text-slate-950 font-semibold'
+                                          : 'text-slate-300 font-normal hover:bg-slate-800/70 hover:text-white'
+                                      }`}
+                                      title={leaf.desc}
+                                    >
+                                      <LIcon className={`w-3.5 h-3.5 shrink-0 ${on ? 'text-slate-950' : 'text-slate-500'}`} />
+                                      <span className="text-[11px] truncate flex-1">{leaf.label}</span>
+                                      {badge && (
+                                        <span
+                                          className={`text-[9px] px-1 py-0.5 rounded font-bold border ${
+                                            on
+                                              ? 'bg-slate-950/20 text-slate-950 border-slate-950/30'
+                                              : tone === 'urgent'
+                                                ? 'bg-amber-500/20 text-amber-300 border-amber-500/40'
+                                                : 'bg-slate-800 text-slate-300 border-slate-700'
+                                          }`}
+                                        >
+                                          {badge}
+                                        </span>
+                                      )}
+                                    </button>
+                                  );
+                                })}
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
               </div>
             );
           })}
-
-          <p className="px-3 pt-3 text-[10px] text-slate-500 leading-relaxed">
-            كل الوظائف القديمة ما زالت متاحة داخل الأقسام (لا حذف لأي وظيفة).
-          </p>
         </div>
 
         {/* Footer info */}
@@ -317,7 +360,8 @@ export const Sidebar: React.FC<SidebarProps> = ({ mobileOpen, onCloseMobile }) =
               </p>
             </div>
           </div>
-          <div className="mt-2 text-center text-[10px] text-slate-400">
+          <div className="mt-2 text-center text-[10px] text-slate-400 flex items-center justify-center gap-1">
+            <Bell className="w-3 h-3 text-slate-500" />
             {showroomInfo.name} • نظام الإدارة والذكاء الاصطناعي
           </div>
         </div>

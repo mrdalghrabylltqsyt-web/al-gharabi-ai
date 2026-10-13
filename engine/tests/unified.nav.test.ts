@@ -28,6 +28,7 @@ const app = read('src/App.tsx');
 const appCtx = read('src/context/AppContext.tsx');
 const hub = read('src/components/common/SectionHub.tsx');
 const cc = read('src/components/dashboard/CommandCenterView.tsx');
+const header = read('src/components/common/Header.tsx');
 
 console.log('\n=== هيكل ثلاثي المستويات ===');
 check('مصدر التنقل واحد: navConfig.tsx', fs.existsSync(path.join(root, 'src/components/common/navConfig.tsx')));
@@ -37,26 +38,27 @@ check('لوحة القسم تستورد navConfig', hub.includes("from './navCon
 check('عناوين قابلة للفتح (aria-expanded)', sidebar.includes('aria-expanded={open}') && sidebar.includes('aria-expanded={bOpen}'));
 check('سهم حالة الفتح/الإغلاق (ChevronDown)', sidebar.includes('ChevronDown'));
 
-console.log('\n=== الأقسام الرئيسية المطلوبة (13+) ===');
-const REQUIRED_SECTIONS = [
-  'section_home',       // مركز القيادة والمالك
-  'section_publish',    // النشر الموحد ومنصات التواصل
-  'section_brains',     // العقول المتخصصة
-  'section_central',    // العقل المركزي والمنسق التنفيذي
-  'section_security',   // المصادقة والأمان والصلاحيات
-  'section_customers',  // مركز الزبائن والتفاعلات
-  'section_products',   // مستودع المنتجات والمعرفة
-  'section_automation', // محرك الأتمتة والجدولة
-  'section_memory',     // الذاكرة والتعلم والتحليل
-  'section_storage',    // التخزين وقاعدة البيانات
-  'section_monitoring', // المراقبة وصحة النظام
-  'section_recovery',   // النسخ الاحتياطي والتعافي
-  'section_external',   // الخدمات الخارجية والإعدادات
-  'section_settings',   // الإعدادات والتشغيل
+console.log('\n=== الأقسام الرئيسية: 5 في الشريط + 14 حالة عرض محفوظة (دمج لا حذف) ===');
+// القائمة الجانبية تُعرض الآن 5 أقسام فقط (تجميع أذكى). لكن كل معرّفات الأقسام
+// السابقة (14) تبقى صالحة كحالات عرض في App.tsx (تُوجَّه للقسم الحاوي) فلا تُكسر
+// أي وجهة تنقّل قائمة — دمج لا حذف.
+const NAV_SECTION_IDS_ACTIVE = [
+  'section_home',       // مركز القيادة والعقل (يشمل brains/central/security/memory)
+  'section_publish',    // النشر والمنصات
+  'section_customers',  // الزبائن والتفاعلات
+  'section_products',   // المنتجات والمعرفة
+  'section_settings',   // الإعدادات والتشغيل (يشمل automation/recovery/external/monitoring/storage)
 ];
-check('كل الأقسام المطلوبة معرّفة', REQUIRED_SECTIONS.every((s) => nav.includes(`id: '${s}'`)));
-check('App يعرض كل الأقسام (case لكل قسم)', REQUIRED_SECTIONS.every((s) => app.includes(`case '${s}':`)));
-check('الأقسام الخمسة الأصلية محفوظة', ['section_home','section_publish','section_customers','section_products','section_settings'].every((s) => nav.includes(`id: '${s}'`)));
+const LEGACY_SECTION_IDS = [
+  'section_brains', 'section_central', 'section_security',
+  'section_automation', 'section_memory', 'section_storage',
+  'section_monitoring', 'section_recovery', 'section_external',
+];
+check('الأقسام الخمسة الفعلية معرّفة في خريطة التنقل', NAV_SECTION_IDS_ACTIVE.every((s) => nav.includes(`id: '${s}'`)));
+check('عدد الأقسام الفعلية = 5 بالضبط', (nav.match(/^\s{4}id: 'section_/gm) || []).length === 5);
+check('الأقسام القديمة (14) كلها محفوظة كحالات عرض في App (دمج لا حذف)',
+  [...NAV_SECTION_IDS_ACTIVE, ...LEGACY_SECTION_IDS].every((s) => app.includes(`case '${s}':`)));
+check('لا حذف لأي معرّف قسم قديم من App.tsx', LEGACY_SECTION_IDS.every((s) => app.includes(`case '${s}':`)));
 
 console.log('\n=== دمج لا حذف: كل وظيفة سابقة ما زالت متصلة ===');
 const LEAVES = [
@@ -67,9 +69,16 @@ const LEAVES = [
 check('كل معرّفات الوظائف في خريطة التنقل', LEAVES.every((id) => nav.includes(`id: '${id}'`)));
 check('كل معرّفات الوظائف لها حالة عرض حقيقية في App', LEAVES.every((id) => app.includes(`case '${id}':`)));
 
-console.log('\n=== المنصات العشر كفروع مستقلة ===');
+console.log('\n=== المنصات العشر: مصدر واحد + التبديل داخلي (لا تكرار في الشريط) ===');
 const PLATFORM_LABELS = ['Facebook', 'Instagram', 'TikTok', 'YouTube', 'Telegram', 'Threads', 'WhatsApp Business', 'X', 'Snapchat', 'Google Business Profile'];
-check('كل المنصات العشر معروضة كبنود/فروع', PLATFORM_LABELS.every((p) => nav.includes(`label: '${p}'`)));
+// حسم التكرار: المنصات العشر لم تعد أوراقاً منفصلة بنفس id='social' (كانت 10 بنود
+// تفتح نفس الصفحة) — صارت مصدراً واحداً `NAV_PLATFORM_LABELS` والتبديل داخلي في
+// صفحة المنصات (SocialHubView تعرض أزرار المنصات لكل منصة حقيقية).
+const socialHub = read('src/components/social/SocialHubView.tsx');
+check('أسماء المنصات العشر في مصدر واحد', PLATFORM_LABELS.every((p) => nav.includes(`'${p}'`)));
+check('مصدر المنصات الموحّد مُصدَّر (NAV_PLATFORM_LABELS)', nav.includes('export const NAV_PLATFORM_LABELS'));
+check('صفحة المنصات تبدّل المنصة داخلياً (أزرار لكل منصة)', socialHub.includes('selectedPlatform') && socialHub.includes('PLATFORM_LABELS'));
+check('لا تكرار وهمي: id=social يظهر مرة واحدة كورقة', (nav.match(/id: 'social'/g) || []).length === 1);
 
 console.log('\n=== البحث في الأقسام والوظائف ===');
 check('دالة البحث موجودة', nav.includes('export function searchNav'));
@@ -151,6 +160,41 @@ const toggleBranchBody = sidebar.slice(
 );
 check('toggleBranch ينقّل إلى أول ورقة عند فتح فرع مغلق', /if\s*\(!wasOpen\s*&&\s*firstLeafId\)\s*setActiveTab\(firstLeafId\)/.test(toggleBranchBody));
 check('الفرع يُمرّر أول ورقة وحالة الفتح الحالية', sidebar.includes('toggleBranch(branch.id, branch.items[0]?.id, bOpen)'));
+
+console.log('\n=== البنود العشرة (إعادة تصميم القائمة الاحترافية) ===');
+// 1) تقليص الأقسام إلى 5.
+check('1) تقليص إلى 5 أقسام رئيسية', (nav.match(/^\s{4}id: 'section_/gm) || []).length === 5);
+// 2) حسم تكرار الـid: كل معرّف ورقة يظهر مرة واحدة فقط في القسم.
+check('2) حسم التكرار: id=social مرة واحدة', (nav.match(/id: 'social'/g) || []).length === 1);
+check('2) حسم التكرار: id=central_brain مرة واحدة', (nav.match(/id: 'central_brain'/g) || []).length === 1);
+check('2) حسم التكرار: id=central_agent مرة واحدة', (nav.match(/id: 'central_agent'/g) || []).length === 1);
+check('2) حسم التكرار: id=brain_manager مرة واحدة', (nav.match(/id: 'brain_manager'/g) || []).length === 1);
+check('2) دالة إزالة التكرار موجودة (dedupeLeaves)', nav.includes('export function dedupeLeaves'));
+// 3) إزالة نص المطوّر من الواجهة (منقول إلى تعليق كود).
+check('3) نص المطوّر أُزيل من الواجهة (Sidebar)', !sidebar.includes('كل الوظائف القديمة ما زالت متاحة'));
+check('3) النص محفوظ في تعليق كود (navConfig)', nav.includes('ملاحظة تطوير') && nav.includes('لا تُعرض للمستخدم'));
+// 4) تدرّج بصري حقيقي بين المستويات الثلاثة.
+check('4) تدرّج بصري: عنوان القسم text-sm font-black', sidebar.includes('text-sm font-black tracking-tight'));
+check('4) تدرّج بصري: الفرع text-[12px]', sidebar.includes('text-[12px] font-bold'));
+check('4) تدرّج بصري: الورقة text-[11px] font-normal', sidebar.includes('text-[11px] truncate flex-1') && sidebar.includes('font-normal'));
+check('4) تدرّج الأيقونات: قسم w-5 / فرع w-3.5', sidebar.includes('<Icon className="w-5 h-5"') && sidebar.includes('<BIcon className="w-3.5 h-3.5'));
+// 5) فاصل بصري بين الأقسام.
+check('5) فاصل بصري بين الأقسام', sidebar.includes('h-px bg-slate-800/70'));
+// 6) شارات مفرّقة بالدلالة.
+check('6) تمييز الشارات العاجلة/المعلوماتية', nav.includes('NAV_BADGE_URGENT_IDS') && nav.includes('navBadgeTone'));
+check('6) شارة عاجلة بلون مختلف (amber)', sidebar.includes('bg-amber-500/20 text-amber-300'));
+check('6) شارة عادية بلون محايد (slate)', sidebar.includes('bg-slate-800 text-slate-300 border-slate-700'));
+// 7) ملخّص سريع أعلى الشجرة.
+check('7) ملخّص سريع أعلى القائمة', sidebar.includes('يحتاج انتباهك') && sidebar.includes('attentionCount'));
+// 8) حالة focus-visible.
+check('8) حالة focus-visible لكل عنصر', sidebar.includes('focus-visible:ring-2') && sidebar.includes('FOCUS_RING'));
+// 9) مؤشر صحة في الترويسة.
+check('9) مؤشر صحة في الترويسة', header.includes('systemHealth') && header.includes('apiService.checkHealth'));
+check('9) المؤشر من بيانات /api/health الحقيقية', header.includes("h?.status === 'ok'"));
+// 10) منطق التفاعل القائم محفوظ.
+check('10) مفتاح localStorage محفوظ', sidebar.includes('gharabi-nav-expanded-v1'));
+check('10) فتح القسم عند الضغط دائماً محفوظ', /setActiveTab\(id\)/.test(sidebar.slice(sidebar.indexOf('const toggleSection'), sidebar.indexOf('const toggleBranch'))));
+check('10) البحث محفوظ', sidebar.includes('searchNav') && sidebar.includes('placeholder="بحث في الأقسام والوظائف'));
 
 console.log(`\n${fail === 0 ? 'PASSED' : 'FAILED'}: ${pass} تنقل هرمي، ${fail} فشل`);
 if (fail > 0) process.exit(1);

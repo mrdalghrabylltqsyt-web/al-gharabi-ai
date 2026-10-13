@@ -37,8 +37,18 @@ export const Header: React.FC<HeaderProps> = ({ onOpenMobileMenu }) => {
   const [notificationsOpen, setNotificationsOpen] = useState(false);
   const [isSyncing, setIsSyncing] = useState(false);
   const [aiReady, setAiReady] = useState<boolean | null>(null);
+  // مؤشر صحة عامة: نقطة صغيرة تعكس /api/health الحقيقية (ok / يحتاج انتباهاً).
+  const [systemHealth, setSystemHealth] = useState<'checking' | 'ok' | 'attention'>('checking');
 
-  React.useEffect(() => { apiService.checkHealth().then((h) => setAiReady(Boolean(h.aiEnabled))).catch(() => setAiReady(false)); }, []);
+  React.useEffect(() => {
+    apiService.checkHealth()
+      .then((h) => {
+        setAiReady(Boolean(h.aiEnabled));
+        // status: 'ok' من الخادم = كل الأنظمة تعمل؛ غير ذلك (degraded/offline) = يحتاج انتباهاً.
+        setSystemHealth(h?.status === 'ok' ? 'ok' : 'attention');
+      })
+      .catch(() => { setAiReady(false); setSystemHealth('attention'); });
+  }, []);
 
   const totalNotifications =
     notificationBadge.pendingReviews + notificationBadge.unreadMessages;
@@ -71,6 +81,35 @@ export const Header: React.FC<HeaderProps> = ({ onOpenMobileMenu }) => {
                 <h1 className="font-extrabold text-lg tracking-tight text-white flex items-center gap-1.5">
                   الغرابي <span className="text-emerald-400">AI</span>
                 </h1>
+                {/* مؤشر صحة عامة (من /api/health الحقيقية): نقطة صغيرة يراها المالك فوراً. */}
+                <span
+                  className="inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded-full bg-slate-800/80 border border-slate-700 text-slate-300 font-medium"
+                  title={
+                    systemHealth === 'checking'
+                      ? 'جارٍ فحص حالة النظام…'
+                      : systemHealth === 'ok'
+                        ? 'كل الأنظمة تعمل'
+                        : 'النظام يحتاج انتباهاً'
+                  }
+                  aria-label={
+                    systemHealth === 'checking'
+                      ? 'جارٍ فحص حالة النظام'
+                      : systemHealth === 'ok'
+                        ? 'حالة النظام: كل الأنظمة تعمل'
+                        : 'حالة النظام: يحتاج انتباهاً'
+                  }
+                >
+                  <span
+                    className={`w-1.5 h-1.5 rounded-full ${
+                      systemHealth === 'checking'
+                        ? 'bg-slate-400 animate-pulse'
+                        : systemHealth === 'ok'
+                          ? 'bg-emerald-400'
+                          : 'bg-amber-400'
+                    }`}
+                  />
+                  {systemHealth === 'checking' ? 'فحص' : systemHealth === 'ok' ? 'سليم' : 'تنبيه'}
+                </span>
                 <span className="hidden sm:inline-flex items-center gap-1 text-[11px] px-2 py-0.5 rounded-full bg-emerald-950/80 border border-emerald-500/30 text-emerald-300 font-medium">
                   <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span>
                   {aiReady === null ? 'فحص Gemini...' : aiReady ? 'Gemini مفعّل' : 'Gemini محمي/غير مفعّل'}
