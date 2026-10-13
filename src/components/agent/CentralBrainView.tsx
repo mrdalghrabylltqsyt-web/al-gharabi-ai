@@ -358,6 +358,7 @@ export const CentralBrainView: React.FC = () => {
                 <th className="p-2">القراءة</th>
                 <th className="p-2">التعليقات</th>
                 <th className="p-2">الرد</th>
+                <th className="p-2">رد الرسائل</th>
                 <th className="p-2">النشر</th>
                 <th className="p-2">التحليلات</th>
                 <th className="p-2">الجمهور</th>
@@ -378,6 +379,7 @@ export const CentralBrainView: React.FC = () => {
                     <td className="p-2">{cell(row.states.read)}</td>
                     <td className="p-2">{cell(row.states.comments)}</td>
                     <td className="p-2">{cell(row.states.reply)}</td>
+                    <td className="p-2">{cell(row.states.message_reply)}</td>
                     <td className="p-2">{cell(row.states.publish)}</td>
                     <td className="p-2">{cell(row.states.analytics)}</td>
                     <td className="p-2">{cell(row.states.audience)}</td>

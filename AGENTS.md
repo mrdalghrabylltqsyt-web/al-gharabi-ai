@@ -44,7 +44,7 @@ npm install
 npm run dev            # tsx server.ts
 npm run lint           # tsc --noEmit
 npm run build          # vite build + esbuild server.ts -> dist/server.cjs
-npm run final-audit    # node final-audit.mjs (1601 فحصاً)
+npm run final-audit    # node final-audit.mjs (1614 فحصاً)
 npm test               # storage + engine + auth + ... + db + runtime
 ```
 - التشغيل الإنتاجي: `PORT=4517 NODE_ENV=production APP_URL=http://localhost:4517 node dist/server.cjs`
@@ -6090,3 +6090,57 @@ permitted if the replier has been explicitly summoned by the original post's aut
 
 **لم يُمسّ:** أي سرّ/مفتاح/OAuth، Gemini/firewall، قاعدة البيانات، DR/الاستعادة، YouTube،
 TikTok/Telegram/Threads، ونموذج الجدولة.
+## مراقب ردود Telegram 24/7 — إكمال حلقة الرد الآلي على المنصات (2026-10-13)
+
+الفجوة الحقيقية: رسائل Telegram الواردة عبر webhook كانت تُحفظ في
+`workspace.socialComments` (مع `replyTarget.chatId`) وتُصنَّف، لكن **لا معالجة تلقائية**
+لها (رد/تصعيد/تأجيل) — بخلاف YouTube (مراقب 24/7) وMeta (Facebook/Instagram). فكانت
+رسائل العملاء تُقرأ بلا رد. أكملت هذه الدفعة الدورة على Telegram.
+
+**الحل — مصدر واحد، بلا عقل منفصل:**
+- `engine/social/telegramWatcher.ts` (منطق صافٍ قابل للاختبار): يستهلك **نفس محرّك القرار**
+  في `youtubeWatcher.ts` (`watcherGate`/`decideCommentAction`/`resolveCommentExecution`/
+  `releaseDeferredEntries`) — سلطة قرار واحدة لكل المنصات. المنصة: `telegram` فقط.
+  - `defaultTelegramPollingState()` **آمن افتراضياً**: المراقبة (قراءة/تحليل) مفعّلة،
+    `autoReply=false`.
+  - `telegramWatcherGate` (Kill Switch يمنع الكل، والرد يحتاج autoReply)،
+    `decideTelegramCommentAction`، `resolveTelegramReplyExecution`،
+    `telegramExecutionDecisionFromCentral` (`APPROVAL_REQUIRED` + تمكين المالك = تنفيذ،
+    بلا تمكين = تأجيل)، `telegramPollingPublicBlock` (حقول تقنية فقط).
+- `server.ts`: `executeTelegramMessageReply` **المنفّذ المركزي الواحد** (استُخرج من مسار
+  `/api/platforms/telegram/reply` الذي صار يفوّض له — لا مسار ثانٍ). يحوي كل البوابات:
+  قفل الرد المتزامن + اتصال موثق + حدّ المعدّل + وجود الرسالة + هدف الرد + تصنيف
+  `canAutoReply` + منع self-authored + حارس سلامة المحتوى + منع التكرار + `sendMessage`
+  الحقيقي. لا تسليم بلا `providerMessageId` من Telegram.
+- `runTelegramWatcherCycle` (يستدعيها المؤقّت والمسار اليدوي): تعالج الرسائل الواردة
+  الحقيقية، تبني جلسة فريق حقيقية => قرار العقل المركزي (نفس نمط Meta)، ثم قراراً حتمياً
+  وتنفيذاً عبر `executeTelegramMessageReply`. قفل دوام (`acquireLease`) يمنع التوازي.
+- مسارات owner: `GET /api/agent/telegram/watcher` (حالة + سجل تفصيلي)،
+  `POST .../watcher/controls` (autoReply/paused/humanReviewMode/cadenceMinutes، رفض
+  `INVALID_CADENCE` 400)، `POST .../watcher/poll` (دورة يدوية). كلها `requireOwner`.
+- المؤقّت `startTelegramPollingWatcher` يبدأ بعد `app.listen` (`.unref()`)، ويُوقف عند
+  SIGTERM/SIGINT. الحالة تُحفظ/تُسترجع عبر المحوّل في مفتاح `telegramPolling` (تصمد بعد
+  restart)، مع تحرير المؤجَّل عند التمكين.
+- `/api/health` و`/api/readiness` يعلنان كتلة `telegramPolling` **عامة** (حقول تقنية فقط)
+  عبر `telegramPollingPublicStatus`، ويحرسها `findDisallowedWatcherPublicKeys`.
+- الواجهة: بطاقة «مراقب ردود Telegram 24/7» في `SocialManagerView` (للمالك) +
+  `apiService.getTelegramWatcher/setTelegramWatcherControls/pollTelegramWatcher`.
+
+**تصحيح مصفوفة القدرات (جذر صدق الإعلان):** Telegram منصة **رسائلية** — الرد على الرسائل
+المباشرة (`message_reply`) منفّذ فعلاً، بينما `reply` (رد التعليقات العامة عبر
+`comment_reply`) `NOT_AVAILABLE` (لا تعليقات عامة عبر Bot API). أُضيف مفتاح `message_reply`
+إلى `CapabilityKey` في `capabilityMatrix.ts`، ويُشتق من `message_reply` في السجل؛ و`replyCapable`
+في `agents.ts`/`server.ts` (المغذّيان لقرار العقل) صار يشمل `reply` **أو** `message_reply` — فيسمح
+العقل المركزي بردّ رسائل Telegram. عمود «رد الرسائل» أُضيف إلى جدول القدرات في `CentralBrainView`.
+
+**اختبار:** `engine/tests/telegram.watcher.test.ts` (`npm run test:telegram-watcher`،
+**60 فحصاً**، مُدرَج في `npm test`): وحدة (الأمان الافتراضي، البوابة، القرار، التأجيل/التحرير،
+الكتلة العامة النظيفة، سلطة التنفيذ، مصفوفة القدرات) وتكامل بخادم Telegram وهمي محلي
+(تصريح 401/403، ضبط الموصل، استقبال webhook موثّق، تأجيل بلا إرسال عند التعطيل، تحرير
+المؤجَّل عند التمكين، رد حقيقي بمعرّف من Telegram + منع التكرار، تجاهل حساب المعرض، خلو
+`/api/health` و`/api/readiness` من بيانات العملاء، وثبات بعد restart). فحوص final-audit
+الجديدة (`telegram-watcher-*`، **1614 إجمالاً**). `npm run lint` + `build` + `test` +
+`final-audit` ناجحة.
+
+**لم يُمسّ:** أي سرّ/مفتاح/OAuth، Gemini/firewall، قاعدة البيانات، DR/الاستعادة، YouTube
+(المراقب/الطابور/التفويض)، Facebook/Instagram/Threads/TikTok، ونموذج الجدولة.

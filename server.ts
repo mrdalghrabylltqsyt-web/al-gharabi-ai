@@ -397,6 +397,20 @@ import {
   type MetaPlatform,
   type MetaPollingState,
 } from "./engine/social/metaWatcher";
+import {
+  TELEGRAM_WATCHER_PLATFORMS,
+  defaultTelegramPollingState,
+  normalizeTelegramPollingState,
+  telegramPollingControlsView,
+  telegramPollingPublicBlock,
+  telegramWatcherGate,
+  decideTelegramCommentAction,
+  resolveTelegramReplyExecution,
+  isDeferredDecision as isTelegramDeferredDecision,
+  releaseDeferredEntries as releaseTelegramDeferredEntries,
+  telegramExecutionDecisionFromCentral,
+  type TelegramPollingState,
+} from "./engine/social/telegramWatcher";
 import { acquireLease, releaseLease, normalizeLease, type DurableLease } from "./engine/social/durableLease";
 import { safeTimerCallback } from "./engine/social/safeTimer";
 import {
@@ -4761,6 +4775,85 @@ async function executeMetaMessageReply(
   } finally { releaseReplyLock(earlyLock); }
 }
 
+/**
+ * المنفّذ المركزي للرد الحقيقي على رسالة Telegram (message_reply) — مصدر واحد
+ * يستخدمه مسار المالك (`/api/platforms/telegram/reply`) ومراقب Telegram التلقائي
+ * معاً، فلا مسار يتجاوز بوابة. كل البوابات تُفرض هنا بنفس ترتيب مسار Meta:
+ * وضع YouTube-only → الاتصال الموثق → وجود الرسالة الحقيقية → هدف الرد الحقيقي
+ * → التصنيف/self-authored → حارس سلامة المحتوى → منع الرد المكرر → الإرسال الرسمي
+ * عبر TelegramClient → تسجيل الدليل (بلا ادّعاء تسليم بلا معرّف مزود) → التدقيق →
+ * الحفظ الدائم. يُطلق القفل الذرّي دائماً حتى عند الفشل.
+ */
+async function executeTelegramMessageReply(
+  input: { externalId: string; text: string; commentText?: string; productId?: string; productName?: string },
+  actor: string,
+): Promise<MetaReplyResult> {
+  const externalId = String(input.externalId || '').trim();
+  const text = String(input.text || '').trim();
+  const commentText = typeof input.commentText === 'string' ? input.commentText : '';
+  if (!externalId) return { status: 400, body: { success: false, error: 'معرّف الرسالة لدى Telegram مطلوب لمنع الرد المكرر.' } };
+  if (!text) return { status: 400, body: { success: false, error: 'نص الرد مطلوب.' } };
+
+  const onlyBlock = youtubeOnlyBlock('telegram');
+  if (onlyBlock.blocked) return { status: onlyBlock.status!, body: onlyBlock.body };
+
+  const lock = replyLockKey('telegram', 'message', externalId);
+  if (!acquireReplyLock(lock)) return { status: 409, body: { success: false, error: 'طلب رد آخر على نفس الرسالة قيد التنفيذ بالفعل؛ انتظر حتى يكتمل لمنع التكرار.', code: 'REPLY_IN_PROGRESS' } };
+  try {
+    const conn: any = platformConnections.get('telegram');
+    if (!conn || conn.status !== 'connected' || conn.providerVerified !== true) {
+      return { status: 409, body: { success: false, error: 'Telegram غير متصل باتصال موثق؛ لا يمكن إرسال أي رد خارجي.' } };
+    }
+    const rl = operationRateLimit('telegram:reply', 'message');
+    if (!rl.allowed) return { status: 429, body: { success: false, code: 'RATE_LIMITED', error: 'تم بلوغ حد معدّل الرسائل؛ العملية قابلة لإعادة المحاولة لاحقاً بلا إنشاء نسخة مكررة.', retryAfterMs: rl.retryAfterMs, limit: rl.limit } };
+    const comment = (workspace as any).socialComments.find((c: any) => c.platform === 'telegram' && c.externalId === externalId);
+    if (!comment) return { status: 404, body: { success: false, error: 'لا توجد رسالة Telegram واردة بهذا المعرّف؛ لا إرسال بلا رسالة حقيقية.' } };
+    const target = comment.replyTarget || {};
+    if (!target.chatId) return { status: 409, body: { success: false, error: 'هدف الرد (الدردشة) غير متوفر لهذه الرسالة.' } };
+
+    const classification = classifyComment(commentText || text);
+    if (!canAutoReply(classification)) return { status: 422, body: { success: false, error: classification.reviewReason || 'هذه الرسالة تستوجب مراجعة بشرية قبل أي رد.', classification, requiresHumanReview: true } };
+    const ownNames = [String(workspace.showroom?.name || ''), 'معرض الغرابي'];
+    if (isSelfAuthored(comment.authorName, ownNames)) return { status: 409, body: { success: false, error: 'الرسالة صادرة من حساب المعرض؛ لا يُرد عليها لتجنب حلقة ردود.' } };
+
+    const productId = typeof input.productId === 'string' ? input.productId.trim() : '';
+    const productName = typeof input.productName === 'string' ? input.productName.trim() : '';
+    const product = (workspace.products || []).find((p: any) => (productId && p.id === productId) || (productName && p.name === productName)) || null;
+    const replyFacts = buildFactsForProduct(product, Number(product?.downPaymentPercent || 0), Number(product?.durationMonths || 0));
+    const safety = analyzeBusinessClaims(text, replyFacts);
+    if (!safety.safe) {
+      return { status: 422, body: { success: false, error: 'نص الرد يحمل عرضاً تجارياً غير مسجّل، وتم إيقافه قبل أي إرسال.', contentSafety: { safe: false, violations: safety.blocked.map((v) => v.detail), codes: safety.blocked.map((v) => v.code) } } };
+    }
+
+    const history: ReplyRecord[] = (workspace as any).socialReplies.filter((r: any) => r.platform === 'telegram').map((r: any) => ({ externalId: r.externalId, replyFingerprint: r.replyFingerprint, repliedAt: r.repliedAt }));
+    const decision = evaluateReplyGuard({ externalId, replyText: text, history });
+    if (!decision.allowed) return { status: 409, body: { success: false, error: decision.reason, guard: decision } };
+
+    const client = telegramClient();
+    if (!client) return { status: 503, body: { success: false, error: 'موصل Telegram غير مهيأ (رمز بوت غير متوفر).' } };
+    const result = await client.sendMessage({ chatId: String(target.chatId), text, replyToMessageId: target.messageId ? String(target.messageId) : undefined });
+
+    const record = {
+      id: workspaceId('reply'), platform: 'telegram', externalId, text, kind: 'message',
+      replyFingerprint: decision.fingerprint, classification,
+      contentSafety: { safe: true, violations: [] as string[], codes: [] as string[] },
+      repliedAt: new Date().toISOString(), createdBy: actor, simulated: false,
+      delivered: result.ok, providerReplyId: result.providerMessageId,
+      receipt: result.ok ? { provider: 'telegram', chatId: String(target.chatId), messageId: result.providerMessageId, sentAt: new Date().toISOString() } : null,
+      deliveryError: result.ok ? null : (result.error || 'فشل الإرسال عبر Telegram.'),
+      reviewStatus: result.ok ? 'delivered' : 'failed',
+      note: result.ok ? 'أُرسل الرد فعلياً عبر Telegram وثُبّت بمعرّف رسالة من المزود.' : 'فشل الإرسال عبر Telegram؛ لم يُسجَّل أي تسليم.',
+    };
+    if (!Array.isArray((workspace as any).socialReplies)) (workspace as any).socialReplies = [];
+    (workspace as any).socialReplies.unshift(record);
+    if ((workspace as any).socialReplies.length > WORKSPACE_MAX_SOCIAL_REPLIES) (workspace as any).socialReplies.length = WORKSPACE_MAX_SOCIAL_REPLIES;
+    audit(actor, result.ok ? 'social_telegram_message_reply_sent' : 'social_telegram_message_reply_failed', `${externalId}:${result.ok ? 'delivered' : 'failed'}`);
+    await persistStateDurable();
+    if (!result.ok) return { status: 502, body: { success: false, delivered: false, simulated: false, reply: record, error: record.deliveryError } };
+    return { status: 200, body: { success: true, delivered: true, simulated: false, providerReplyId: record.providerReplyId, reply: record } };
+  } finally { releaseReplyLock(lock); }
+}
+
 // -------------------------------------------------------------
 // Telegram webhook — استقبال حقيقي للرسائل الواردة ثم تمريرها لمدير السوشيال.
 // التحقق: ترويسة Telegram السرّية بزمن ثابت. منع التكرار: update_id والمعرّف الخارجي.
@@ -7725,6 +7818,260 @@ app.post("/api/agent/meta/watcher/poll", requireOwner, async (_req, res) => {
 });
 
 // -----------------------------------------------------------------------------
+// مراقب الردود لـ Telegram (Telegram Reply Watcher) — حلقة الرد الآلي المتبقية.
+// رسائل Telegram الواردة عبر webhook تُحفظ في `workspace.socialComments` مع
+// `replyTarget.chatId`، لكن لم تكن هناك معالجة تلقائية لها. يستهلك نفس محرّك القرار
+// في youtubeWatcher (سلطة قرار واحدة) + نفس المنفّذ المركزي، فلا مسار يتجاوز بوابة.
+// **آمن افتراضياً (fail-closed): autoReply=false حتى يفعّله المالك صراحةً.**
+// -----------------------------------------------------------------------------
+const TELEGRAM_POLLING_STATE_KEY = "telegramPolling";
+let telegramPollingState: TelegramPollingState = defaultTelegramPollingState();
+let telegramPollingLastRun: { newDetected: number; replied: number; escalated: number; skipped: number; failed: number; deferred: number; at: string } | null = null;
+let telegramPollingLease: DurableLease | null = null;
+const TELEGRAM_POLLING_LEASE_TTL_MS = 5 * 60 * 1000;
+const TELEGRAM_POLLING_LEASE_OWNER = `telegram-watcher-${process.pid}-${Date.now().toString(36)}`;
+const TELEGRAM_POLLING_MAX_PROCESSED = 5000;
+const TELEGRAM_POLLING_MAX_PER_CYCLE = 15;
+
+function telegramPollingCadenceMs(): number {
+  const c = telegramPollingState.controls;
+  return Math.max(1, cadenceMinutesToMs(c.cadenceMinutes));
+}
+function telegramPollingDue(): boolean {
+  if (!telegramPollingState.lastPollAt) return true;
+  const t = Date.parse(telegramPollingState.lastPollAt);
+  if (!Number.isFinite(t)) return true;
+  return Date.now() - t >= telegramPollingCadenceMs();
+}
+
+async function persistTelegramPollingState(): Promise<void> {
+  if (!storageReady) return;
+  try {
+    await storageAdapter.write(TELEGRAM_POLLING_STATE_KEY, {
+      controls: telegramPollingState.controls,
+      processed: telegramPollingState.processed.slice(0, TELEGRAM_POLLING_MAX_PROCESSED),
+      lastPollAt: telegramPollingState.lastPollAt,
+      lastError: telegramPollingState.lastError,
+      consecutiveErrors: telegramPollingState.consecutiveErrors,
+      pollCount: telegramPollingState.pollCount,
+      lastScanned: telegramPollingState.lastScanned,
+      lease: telegramPollingLease,
+    });
+  } catch { /* يُعلن عبر حالة الحفظ العامة */ }
+}
+
+/** يسترجع حالة مراقب Telegram (بعد restart) بلا طمس الحالة القائمة. */
+function applyTelegramPollingStateSnapshot(raw: any): void {
+  if (!raw || typeof raw !== "object") return;
+  telegramPollingState = normalizeTelegramPollingState(raw);
+  telegramPollingLease = normalizeLease(raw.lease);
+  const c = telegramPollingState.controls;
+  if (c.enabled && !c.paused && c.autoReply) {
+    const r = releaseTelegramDeferredEntries(telegramPollingState.processed);
+    telegramPollingState.processed = r.processed;
+  }
+}
+
+/** حالة عامة لمراقب Telegram (حقول تقنية فقط — بلا اسم/نص عميل) للنقطتين العامتين. */
+function telegramPollingPublicStatus() {
+  const block = telegramPollingPublicBlock(telegramPollingState);
+  return { ...block, lastError: watcherPublicError(block.lastError) };
+}
+
+/** حالة مراقب Telegram الكاملة للمالك (تتضمّن السجل التفصيلي — مسار محمي فقط). */
+function telegramPollingStatusBlock() {
+  const s = telegramPollingState;
+  return {
+    ...telegramPollingPublicStatus(),
+    controls: telegramPollingControlsView(s.controls),
+    platforms: [...TELEGRAM_WATCHER_PLATFORMS],
+    lastRun: telegramPollingLastRun,
+    processedCount: s.processed.length,
+    recent: s.processed.slice(0, 50),
+  };
+}
+
+/** تطبيع دفاعي للتحكم قبل كل دورة (نفس قواعد YouTube/Meta). */
+function normalizeTelegramWatcherControlsForCycle() {
+  return normalizeTelegramPollingState({ controls: telegramPollingState.controls }).controls;
+}
+
+/** هل مراقب Telegram جاهز للرد فعلاً (اتصال موثق)؟ لا إرسال بلا اتصال. */
+function telegramReplyReady(): { ready: boolean; code?: string; reason?: string } {
+  const conn: any = platformConnections.get("telegram");
+  if (!conn || conn.status !== "connected" || conn.providerVerified !== true) {
+    return { ready: false, code: "NOT_CONNECTED", reason: "Telegram غير متصل باتصال موثق." };
+  }
+  return { ready: true };
+}
+
+/**
+ * دورة مراقب Telegram: تعالج الرسائل الواردة الحقيقية المحفوظة في
+ * `workspace.socialComments` (المصدر الوحيد للاستقبال — webhook)، تُصنّفها، تُصدر
+ * قراراً حتمياً (نفس محرّك YouTube/Meta)، ثم تنفّذ الرد عبر المنفّذ المركزي — أو
+ * تصعّد/تؤجّل. لا تنفيذ خارجي بلا autoReply ممكَّن صراحةً (fail-closed).
+ */
+async function runTelegramWatcherCycle(trigger: string): Promise<{ ok: boolean; trigger: string; result?: any; error?: string }> {
+  const leaseRes = acquireLease(telegramPollingLease, { owner: TELEGRAM_POLLING_LEASE_OWNER, nowMs: Date.now(), ttlMs: TELEGRAM_POLLING_LEASE_TTL_MS });
+  if (!leaseRes.acquired) {
+    if (leaseRes.recovered) telegramPollingLease = leaseRes.lease;
+    return { ok: true, trigger, result: { skipped: "locked" } };
+  }
+  telegramPollingLease = leaseRes.lease;
+  const controls = normalizeTelegramWatcherControlsForCycle();
+  let newDetected = 0, replied = 0, escalated = 0, skipped = 0, failed = 0, deferred = 0;
+  try {
+    const conn: any = platformConnections.get("telegram");
+    const connected = conn && conn.status === "connected" && conn.providerVerified === true;
+    // لا قراءة خارجية (سحب DM) هنا: مصدر الاستقبال هو webhook، فنعالج السجل المحفوظ
+    // الحقيقي فقط. غياب الاتصال لا يمنع المعالجة لكنه يمنع الرد (replyReady).
+    const ownNames = [String(workspace.showroom?.name || ""), "معرض الغرابي"];
+    const inbound = ((workspace as any).socialComments || [])
+      .filter((m: any) => m.platform === "telegram" && m.externalId && m.text && m.replyTarget?.chatId);
+    let processedThisCycle = 0;
+    for (const m of inbound) {
+      if (processedThisCycle >= TELEGRAM_POLLING_MAX_PER_CYCLE) break;
+      const externalId = String(m.externalId || "").trim();
+      const text = String(m.text || "").trim();
+      if (!externalId || !text) continue;
+      const alreadyReplied = telegramPollingState.processed.some((p) => p.commentId === externalId && p.stage !== "NEW");
+      if (alreadyReplied) continue;
+      const chatId = String(m.replyTarget?.chatId || "");
+      const selfAuthored = isSelfAuthored(m.authorName || undefined, ownNames);
+      const cls = classifyComment(text);
+      const productRes = resolveProductForPost(m.postExternalId || null);
+      const priceReply = verifiedProductFactsForReply({ product: productRes, commentText: text });
+      const priceFactsVerified = priceReply.verified;
+      const baseReason = escalationReasonFor({ intent: cls.intent, isSpam: cls.isSpam, requiresHumanReview: cls.requiresHumanReview, topic: (cls as any).topic ?? null });
+      const preReason = (priceFactsVerified && baseReason === 'price_unverified') ? null : baseReason;
+      // سلطة القرار الوحيدة: جلسة فريق حقيقية => قرار العقل المركزي (نفس نمط Meta).
+      try {
+        await runTeamSessionNow(
+          "youtube_event",
+          "تحليل رسالة Telegram جديدة والبتّ في الرد عليها من الحقائق المسجّلة (بلا اختراع)",
+          "telegram",
+          `comment:${externalId}`,
+          { externalId, commentText: text, objective: "البتّ في رد آمن على رسالة Telegram من الحقائق المسجّلة", conversationId: `telegram::${chatId}`, escalationReason: preReason, priceFactsVerified },
+        );
+      } catch { /* جلسة الفريق لا تُسقط دورة المراقبة */ }
+      const centralDecision = centralActionDecisionForEvent(`comment:${externalId}`);
+      const advisory = decideTelegramCommentAction({
+        intent: cls.intent, requiresHumanReview: cls.requiresHumanReview, isSpam: cls.isSpam,
+        isSelfAuthored: selfAuthored, alreadyReplied, controls,
+      });
+      const replyGate = telegramWatcherGate(controls, "reply");
+      const rr = telegramReplyReady();
+      const decision = resolveTelegramReplyExecution({
+        centralDecision: telegramExecutionDecisionFromCentral(centralDecision, replyGate.allowed), advisory, automationAllowed: replyGate.allowed,
+        replyReady: rr.ready, belongsToChannel: true, isPraise: isSafeForAutoReply(cls.intent),
+        humanReviewMode: Boolean(controls.humanReviewMode),
+        centralEscalationReason: preReason,
+        priceFactsVerified,
+      });
+      const baseEntry: WatcherProcessedEntry = {
+        commentId: externalId, stage: "ANALYZED", action: decision.action, reason: decision.reason, code: decision.code,
+        kind: "message", videoId: chatId, authorName: m.authorName || null, text,
+        platform: "telegram", productFactsVerified: priceFactsVerified,
+        at: new Date().toISOString(), publishedAt: m.createdAt || null,
+      };
+      processedThisCycle += 1;
+      if (isTelegramDeferredDecision(decision.code)) {
+        baseEntry.stage = "SKIPPED"; baseEntry.deferred = true; deferred += 1;
+        telegramPollingState.processed.unshift(baseEntry);
+      } else if (decision.action !== "reply") {
+        baseEntry.stage = decision.action === "escalate" ? "ESCALATED" : "SKIPPED";
+        if (decision.action === "escalate") escalated += 1; else skipped += 1;
+        telegramPollingState.processed.unshift(baseEntry);
+      } else {
+        const convoSubjectId = `dm:${chatId}`;
+        const gen = await generateWatcherReply({
+          platform: "telegram", commentText: text, subjectId: convoSubjectId,
+          subjectTitle: null, product: productRes, cls,
+        });
+        const replyText = gen.text || watcherIraqiReply(text);
+        const atIso = new Date().toISOString();
+        recordMetaConversationTurn({ platform: "telegram", subjectId: convoSubjectId, role: "customer", text, atIso, externalId });
+        // الرد الفعلي حصراً عبر المنفّذ المركزي (كل البوابات سارية — لا مسار جانبي).
+        const res = await executeTelegramMessageReply({ externalId, text: replyText, commentText: text, productId: productRes?.id }, "watcher");
+        const delivered = Boolean(res.body?.delivered && res.body?.providerReplyId);
+        if (delivered) {
+          recordMetaConversationTurn({ platform: "telegram", subjectId: convoSubjectId, role: "business", text: replyText, atIso: new Date().toISOString() });
+          replied += 1;
+          baseEntry.stage = "REPLIED"; baseEntry.replyText = replyText; baseEntry.externalReplyId = String(res.body.providerReplyId);
+          baseEntry.reason = gen.clarify
+            ? "أُرسل سؤال توضيح فعلياً وردّ Telegram بمعرّف رسالة."
+            : "أُرسل الرد الحقيقي وردّ Telegram بمعرّف رسالة.";
+        } else {
+          failed += 1;
+          baseEntry.stage = "FAILED";
+          baseEntry.reason = `فشل إرسال الرد: ${res.body?.error || res.status}`;
+        }
+        telegramPollingState.processed.unshift(baseEntry);
+      }
+      if (telegramPollingState.processed.length > TELEGRAM_POLLING_MAX_PROCESSED) telegramPollingState.processed.length = TELEGRAM_POLLING_MAX_PROCESSED;
+    }
+    telegramPollingState.pollCount += 1;
+    telegramPollingState.lastPollAt = new Date().toISOString();
+    telegramPollingLastRun = { newDetected, replied, escalated, skipped, failed, deferred, at: telegramPollingState.lastPollAt };
+    await persistTelegramPollingState();
+    if (newDetected > 0) await persistStateDurable();
+    return { ok: true, trigger, result: { newDetected, replied, escalated, skipped, failed, deferred, connected: Boolean(connected) } };
+  } catch (e: any) {
+    telegramPollingState.lastError = String(e?.code || e?.name || "cycle_failed").slice(0, 80);
+    telegramPollingState.consecutiveErrors += 1;
+    await persistTelegramPollingState();
+    return { ok: false, trigger, error: telegramPollingState.lastError };
+  } finally {
+    releaseLease(telegramPollingLease, TELEGRAM_POLLING_LEASE_OWNER);
+    telegramPollingLease = null;
+  }
+}
+
+// --- مسارات مراقب Telegram (Owner) — التفاصيل الحسّاسة هنا فقط، بلا أي سرّ ---
+app.get("/api/agent/telegram/watcher", requireOwner, (_req, res) => {
+  res.json({ success: true, watcher: telegramPollingStatusBlock() });
+});
+app.post("/api/agent/telegram/watcher/controls", requireOwner, async (req, res) => {
+  const body = req.body || {};
+  const prevControls = normalizeTelegramPollingState({ controls: telegramPollingState.controls }).controls;
+  if (body.cadenceMinutes !== undefined || body.cadenceMs !== undefined) {
+    const requested = body.cadenceMinutes !== undefined ? body.cadenceMinutes : undefined;
+    const v = validateCadenceMinutes(requested);
+    if (!v.ok) {
+      audit((req as any).user.id, "telegram_watcher_cadence_rejected", JSON.stringify({ requested: String(requested), reason: v.reason }));
+      return res.status(400).json({ success: false, error: v.reason, code: "INVALID_CADENCE" });
+    }
+  }
+  const next = normalizeTelegramPollingState({ controls: {
+    enabled: body.enabled !== undefined ? body.enabled : prevControls.enabled,
+    autoReply: body.autoReply !== undefined ? body.autoReply : prevControls.autoReply,
+    paused: body.paused !== undefined ? body.paused : prevControls.paused,
+    humanReviewMode: body.humanReviewMode !== undefined ? body.humanReviewMode : prevControls.humanReviewMode,
+    cadenceMinutes: body.cadenceMinutes !== undefined ? validateCadenceMinutes(body.cadenceMinutes).minutes : prevControls.cadenceMinutes,
+  } }).controls;
+  telegramPollingState.controls = next;
+  let releasedDeferred = 0;
+  const wasReplyOn = prevControls.enabled && !prevControls.paused && !prevControls.humanReviewMode && prevControls.autoReply;
+  const nowReplyOn = next.enabled && !next.paused && !next.humanReviewMode && next.autoReply;
+  if (!wasReplyOn && nowReplyOn) {
+    const r = releaseTelegramDeferredEntries(telegramPollingState.processed);
+    telegramPollingState.processed = r.processed; releasedDeferred = r.released;
+  }
+  await persistTelegramPollingState();
+  audit((req as any).user.id, "telegram_watcher_controls_updated", JSON.stringify({ autoReply: next.autoReply, paused: next.paused, releasedDeferred }));
+  try {
+    if (!telegramPollingScheduler) startTelegramPollingWatcher();
+    else if (next.enabled && next.paused) telegramPollingScheduler.stop();
+    else telegramPollingScheduler.reschedule();
+  } catch { /* الجدولة لا تُسقط تحديث التحكم */ }
+  res.json({ success: true, controls: telegramPollingControlsView(next), releasedDeferred });
+});
+app.post("/api/agent/telegram/watcher/poll", requireOwner, async (_req, res) => {
+  const result = await runTelegramWatcherCycle("manual");
+  res.status(result.ok ? 200 : 500).json({ success: result.ok, ...result });
+});
+
+// -----------------------------------------------------------------------------
 // العقل التجاري (Digital Salesperson) — قرار مالك صريح (2026-10-13).
 //
 // موظف مبيعات رقمي حقيقي هدفه زيادة مبيعات معرض الغرابي للتقسيط، مع القواعد الملزمة:
@@ -8417,6 +8764,23 @@ function startMetaPollingWatcher(): void {
   const c = metaPollingState.controls;
   if (c.enabled && c.paused) { metaPollingScheduler.stop(); return; }
   metaPollingScheduler.start();
+}
+
+// --- مراقب Telegram: جدولة داخلية واحدة (نفس نمط YouTube/Meta) ---
+let telegramPollingScheduler: WatcherScheduler | null = null;
+/** يُشغّل مؤقّت مراقبة Telegram مرة واحدة بعد الإقلاع (مستقل عن المتصفح). */
+function startTelegramPollingWatcher(): void {
+  if (telegramPollingScheduler) { telegramPollingScheduler.start(); return; }
+  telegramPollingScheduler = createWatcherScheduler({
+    setTimer: (fn, ms) => { const t = setInterval(fn, ms); (t as any).unref?.(); return { clear: () => clearInterval(t) }; },
+    setTimeoutOnce: (fn, ms) => { const t = setTimeout(fn, ms); (t as any).unref?.(); return { clear: () => clearTimeout(t) }; },
+    getCadenceMs: () => Math.max(1, telegramPollingCadenceMs() * usagePressureMultiplier()),
+    isDue: () => telegramPollingDue(),
+    runCycle: () => { if (currentUsagePressure().deferNonCritical) return; runTelegramWatcherCycle("schedule").catch(() => { /* الخطأ مسجَّل داخل الدورة */ }); },
+  });
+  const c = telegramPollingState.controls;
+  if (c.enabled && c.paused) { telegramPollingScheduler.stop(); return; }
+  telegramPollingScheduler.start();
 }
 
 // --- العقل التجاري: مؤقّت داخلي واحد مستقل عن المتصفح (متابعة العملاء) ---
@@ -10241,79 +10605,17 @@ app.get("/api/platforms/:platform/metrics", authenticateToken, async (req, res) 
 // -------------------------------------------------------------
 app.post("/api/platforms/telegram/reply", requireOwner, async (req,res)=>{
   const user = (req as any).user as { id: string };
-  const externalId = typeof req.body?.externalId === "string" ? req.body.externalId.trim() : "";
-  const text = typeof req.body?.text === "string" ? req.body.text.trim() : "";
-  const commentText = typeof req.body?.commentText === "string" ? req.body.commentText : "";
-  if(!externalId) return res.status(400).json({success:false,error:"معرّف التعليق لدى المنصة مطلوب لمنع الرد المكرر."});
-  if(!text) return res.status(400).json({success:false,error:"نص الرد مطلوب."});
-  // REL-01: حجز ذرّي لمنع رد مكرر فعلي عند تزامن طلبين على نفس التعليق.
-  const replyLock = replyLockKey("telegram","comment",externalId);
-  if(!acquireReplyLock(replyLock)) return res.status(409).json({success:false,error:"طلب رد آخر على نفس التعليق قيد التنفيذ بالفعل؛ انتظر حتى يكتمل لمنع التكرار.",code:"REPLY_IN_PROGRESS"});
-  try{
-  // وضع YOUTUBE_ONLY_OPERATIONAL: يمنع أي إرسال خارجي على منصة غير YouTube.
-  const onlyBlock = youtubeOnlyBlock("telegram");
-  if (onlyBlock.blocked) return res.status(onlyBlock.status!).json(onlyBlock.body);
-
-  const conn:any = platformConnections.get("telegram");
-  if(!conn || conn.status!=="connected" || conn.providerVerified!==true){
-    return res.status(409).json({success:false,error:"Telegram غير متصل باتصال موثق؛ لا يمكن إرسال أي رد خارجي."});
-  }
-  const comment = (workspace as any).socialComments.find((c:any)=>c.platform==="telegram"&&c.externalId===externalId);
-  if(!comment) return res.status(404).json({success:false,error:"لا يوجد تعليق وارد بهذا المعرّف؛ لا إرسال بلا تعليق حقيقي."});
-  const target = comment.replyTarget || {};
-  if(!target.chatId) return res.status(409).json({success:false,error:"هدف الرد (الدردشة) غير متوفر لهذا التعليق."});
-
-  // 1) لا رد على الحالات الحساسة/السبام/تعليقنا (نفس حمايات التعليقات).
-  const classification = classifyComment(commentText || text);
-  if(!canAutoReply(classification)) return res.status(422).json({success:false,error:classification.reviewReason||"هذا التعليق يستوجب مراجعة بشرية قبل أي رد.",classification,requiresHumanReview:true});
-  const ownNames = [String(workspace.showroom?.name||""),"معرض الغرابي"];
-  if(isSelfAuthored(comment.authorName,ownNames)) return res.status(409).json({success:false,error:"التعليق صادر من حساب المعرض؛ لا يُرد عليه لتجنب حلقة ردود."});
-
-  // 2) حارس سلامة المحتوى: لا عرض/سعر/رابط غير مسجّل يخرج للمنصة.
-  const productId = typeof req.body?.productId === "string" ? req.body.productId.trim() : "";
-  const productName = typeof req.body?.productName === "string" ? req.body.productName.trim() : "";
-  const product = (workspace.products||[]).find((p:any)=>
-    (productId && p.id === productId) || (productName && p.name === productName)) || null;
-  const replyFacts = buildFactsForProduct(product, Number(product?.downPaymentPercent||0), Number(product?.durationMonths||0));
-  const safety = analyzeBusinessClaims(text, replyFacts);
-  if(!safety.safe){
-    return res.status(422).json({success:false,error:"نص الرد يحمل عرضاً تجارياً غير مسجّل، وتم إيقافه قبل أي إرسال.",
-      contentSafety:{safe:false,violations:safety.blocked.map((v)=>v.detail),codes:safety.blocked.map((v)=>v.code)}});
-  }
-
-  // 3) بوابة الرد المكرر (على معرّف التعليق الخارجي — يمنع replay/retry).
-  const history: ReplyRecord[] = (workspace as any).socialReplies.filter((r:any)=>r.platform==="telegram").map((r:any)=>({externalId:r.externalId,replyFingerprint:r.replyFingerprint,repliedAt:r.repliedAt}));
-  const decision = evaluateReplyGuard({externalId,replyText:text,history});
-  if(!decision.allowed) return res.status(409).json({success:false,error:decision.reason,guard:decision});
-
-  // 4) إرسال حقيقي عبر Telegram. لا تسجيل تسليم بلا استجابة مزود.
-  const client = telegramClient();
-  if(!client) return res.status(503).json({success:false,error:"موصل Telegram غير مهيأ (رمز بوت غير متوفر)."});
-  const result = await client.sendMessage({chatId:String(target.chatId),text,replyToMessageId:target.messageId?String(target.messageId):undefined});
-
-  const record = {
-    id: workspaceId("reply"), platform:"telegram", externalId, text,
-    replyFingerprint: decision.fingerprint, classification,
-    contentSafety:{safe:true,violations:[] as string[],codes:[] as string[]},
-    repliedAt:new Date().toISOString(), createdBy:user.id,
-    simulated:false,
-    delivered:result.ok,
-    providerReplyId: result.providerMessageId,
-    receipt: result.receipt,
-    deliveryError: result.ok ? null : (result.error||"فشل الإرسال عبر Telegram."),
-    reviewStatus: result.ok ? "delivered" : "failed",
-    note: result.ok
-      ? "أُرسل الرد فعلياً عبر Telegram وثُبّت بمعرّف رسالة من المزود."
-      : "فشل الإرسال عبر Telegram؛ لم يُسجَّل أي تسليم.",
-  };
-  if(!Array.isArray((workspace as any).socialReplies)) (workspace as any).socialReplies=[];
-  (workspace as any).socialReplies.unshift(record);
-  if((workspace as any).socialReplies.length>WORKSPACE_MAX_SOCIAL_REPLIES) (workspace as any).socialReplies.length=WORKSPACE_MAX_SOCIAL_REPLIES;
-  audit(user.id, result.ok?"social_telegram_reply_sent":"social_telegram_reply_failed", `${externalId}:${result.ok?"delivered":"failed"}`);
-  persistState();
-  if(!result.ok) return res.status(502).json({success:false,delivered:false,simulated:false,reply:record,error:record.deliveryError});
-  res.json({success:true,delivered:true,simulated:false,providerReplyId:result.providerMessageId,reply:record});
-  } finally { releaseReplyLock(replyLock); }
+  // مصدر واحد: نفس المنفّذ المركزي الذي يستخدمه مراقب Telegram التلقائي — فلا
+  // مسار يتجاوز بوابة. كل الفحوص (الاتصال/التصنيف/self-authored/سلامة المحتوى/
+  // منع التكرار/الإرسال الرسمي) مفروضة داخل المنفّذ بترتيب واحد.
+  const result = await executeTelegramMessageReply({
+    externalId: typeof req.body?.externalId === "string" ? req.body.externalId.trim() : "",
+    text: typeof req.body?.text === "string" ? req.body.text.trim() : "",
+    commentText: typeof req.body?.commentText === "string" ? req.body.commentText : "",
+    productId: typeof req.body?.productId === "string" ? req.body.productId.trim() : "",
+    productName: typeof req.body?.productName === "string" ? req.body.productName.trim() : "",
+  }, user.id);
+  return res.status(result.status).json(result.body);
 });
 
 app.get("/api/platforms/:platform/health", authenticateToken, async (req,res)=>{
@@ -12400,6 +12702,9 @@ async function bootstrapStorage(): Promise<void> {
       // حالة مراقب Meta (Facebook/Instagram): سجل المعالجة + التحكم — تصمد بعد restart.
       const metaPolling = await storageAdapter.read<any>(META_POLLING_STATE_KEY);
       if (metaPolling) applyMetaPollingStateSnapshot(metaPolling);
+      // حالة مراقب Telegram: سجل المعالجة + التحكم — تصمد بعد restart.
+      const telegramPolling = await storageAdapter.read<any>(TELEGRAM_POLLING_STATE_KEY);
+      if (telegramPolling) applyTelegramPollingStateSnapshot(telegramPolling);
       // العقل التجاري: سجل العملاء المحتملين — يصمد بعد restart (No lost lead).
       applyCommercialStateSnapshot(await storageAdapter.read<any>(COMMERCIAL_LEAD_STATE_KEY));
       // حالة الاستراتيجية + سجل قرار→نتيجة (يملكهما العقل المركزي): تُقرآن قبل بدء الخدمة.
@@ -12425,6 +12730,8 @@ async function bootstrapStorage(): Promise<void> {
     if (watcher) applyWatcherStateSnapshot(watcher);
     const metaPolling = storageAdapter.readSync<any>(META_POLLING_STATE_KEY);
     if (metaPolling) applyMetaPollingStateSnapshot(metaPolling);
+    const telegramPolling = storageAdapter.readSync<any>(TELEGRAM_POLLING_STATE_KEY);
+    if (telegramPolling) applyTelegramPollingStateSnapshot(telegramPolling);
     // العقل التجاري: سجل العملاء المحتملين يصمد بعد restart (backend الملفي).
     applyCommercialStateSnapshot(storageAdapter.readSync<any>(COMMERCIAL_LEAD_STATE_KEY));
     const media = storageAdapter.readSync<any>(CONTENT_MEDIA_KEY);
@@ -13650,7 +13957,9 @@ async function runTeamSessionNow(
   // الوكلاء اقترحوا؛ العقل يقرّر ويمرّر عبر الحوكمة ويحدّد الحالة النهائية.
   const conn = platformConnections.get(platform);
   const providerVerified = Boolean(conn && conn.status === 'connected' && conn.providerVerified);
-  const replyCapable = capabilityRow(platform as any).states.reply === 'AVAILABLE';
+  // الرد يشمل رد التعليقات (comment_reply) أو رد الرسائل المباشرة (message_reply) —
+  // منصة رسائلية مثل Telegram قادرة على الرد عبر message_reply وحده.
+  const replyCapable = capabilityRow(platform as any).states.reply === 'AVAILABLE' || capabilityRow(platform as any).states.message_reply === 'AVAILABLE';
   const publishCapable = capabilityRow(platform as any).states.publish === 'AVAILABLE';
   // موافقة/تفويض المالك للإجراء الخارجي: تفويض تشغيل YouTube الفعّال (نفس بوابة
   // التنفيذ) — ولا يُعمَّم على منصة أخرى (التفويض خاص بـYouTube دائماً).
@@ -14579,6 +14888,9 @@ app.get("/api/readiness", (_req, res) => {
     // مراقب ردود Facebook/Instagram 24/7: النسخة العامة الآمنة فقط (حقول تقنية
     // بلا اسم/نص عميل). التفاصيل في /api/agent/meta/watcher (للمالك فقط).
     metaPolling: metaPollingPublicStatus(),
+    // مراقب ردود Telegram 24/7: النسخة العامة الآمنة فقط (حقول تقنية بلا اسم/نص
+    // عميل). التفاصيل في /api/agent/telegram/watcher (للمالك فقط).
+    telegramPolling: telegramPollingPublicStatus(),
     // حارس حصة YouTube Data API: حالة عامة فقط (عتبة/استنفاد/نسبة) بلا بيانات عميل.
     youtubeQuota: youtubeQuotaStatusSummary(),
     // مؤشرات الحصص المجانية (نقل Neon + مساحة Drive): عرض فقط بلا حجب وبلا سرّ.
@@ -15071,11 +15383,13 @@ function guardPublicHealthPayload(originalJson: (body: any) => any): (body: any)
     const extra = findDisallowedWatcherPublicKeys(w);
     // مراقب Meta: نفس allow-list الصارم (حقول تقنية فقط) — أي حقل عميل يُكشف.
     const metaExtra = findDisallowedWatcherPublicKeys((cleaned as any)?.metaPolling);
+    // مراقب Telegram: نفس allow-list الصارم (حقول تقنية فقط).
+    const tgExtra = findDisallowedWatcherPublicKeys((cleaned as any)?.telegramPolling);
     const forbidden = findForbiddenPublicKeys(cleaned);
-    if (extra.length || metaExtra.length || forbidden.length) {
+    if (extra.length || metaExtra.length || tgExtra.length || forbidden.length) {
       // لا نُسقط الاستجابة (نقطة مراقبة عامة)، لكن نُسجّل الانحراف بوضوح كي لا
       // يمرّ صامتاً ويُصلح جذرياً. لا يُسجَّل أي محتوى عميل — أسماء حقول فقط.
-      console.warn(`[الغرابي AI] public-health-payload-hardened forbidden=[${forbidden.join(',')}] watcherExtra=[${extra.join(',')}] metaExtra=[${metaExtra.join(',')}]`);
+      console.warn(`[الغرابي AI] public-health-payload-hardened forbidden=[${forbidden.join(',')}] watcherExtra=[${extra.join(',')}] metaExtra=[${metaExtra.join(',')}] telegramExtra=[${tgExtra.join(',')}]`);
     }
     return originalJson(cleaned);
   };
@@ -15200,6 +15514,9 @@ app.get("/api/health", (_req, res) => {
     // مراقب ردود Facebook/Instagram 24/7: النسخة العامة الآمنة فقط (حقول تقنية
     // بلا اسم/نص عميل). التفاصيل في /api/agent/meta/watcher (للمالك فقط).
     metaPolling: metaPollingPublicStatus(),
+    // مراقب ردود Telegram 24/7: النسخة العامة الآمنة فقط (حقول تقنية بلا اسم/نص
+    // عميل). التفاصيل في /api/agent/telegram/watcher (للمالك فقط).
+    telegramPolling: telegramPollingPublicStatus(),
     // حارس حصة YouTube Data API: حالة عامة فقط (عتبة/استنفاد/نسبة) بلا بيانات عميل.
     youtubeQuota: youtubeQuotaStatusSummary(),
     // مؤشرات الحصص المجانية (نقل Neon + مساحة Drive): عرض فقط بلا حجب وبلا سرّ.
@@ -17565,6 +17882,15 @@ async function startServer() {
     console.error("[الغرابي AI] failed to start Meta reply watcher:", String(e?.message || e).slice(0, 120));
   }
 
+  // مراقب الردود لـ Telegram 24/7: job داخلي مستقل عن المتصفح، آمن افتراضياً
+  // (fail-closed: autoReply معطّل حتى يفعّله المالك)، ويعالج الرسائل الواردة
+  // المحفوظة عبر webhook. يصمد بعد restart.
+  try {
+    startTelegramPollingWatcher();
+  } catch (e: any) {
+    console.error("[الغرابي AI] failed to start Telegram reply watcher:", String(e?.message || e).slice(0, 120));
+  }
+
   // العقل التجاري (Digital Salesperson) 24/7: job داخلي مستقل عن المتصفح، حتمي
   // بلا Gemini، يتابع العملاء الذين بدأوا التواصل عبر المنفّذ المركزي وحده،
   // ويصمد بعد restart (سجل العملاء في المخزن).
@@ -17601,6 +17927,7 @@ async function startServer() {
     // Phase 6: نوقف المؤقّتات الداخلية أولاً فلا تُضاف كتابات جديدة أثناء الإغلاق.
     try { watcherScheduler?.stop(); } catch { /* تجاهل */ }
     try { metaPollingScheduler?.stop(); } catch { /* تجاهل */ }
+    try { telegramPollingScheduler?.stop(); } catch { /* تجاهل */ }
     try { stopBrainRuntime(); } catch { /* تجاهل */ }
     try { (app as any).drReconciliation?.stop?.(); } catch { /* تجاهل */ }
     try { (app as any).drAutoBackup?.stop?.(); } catch { /* تجاهل */ }
