@@ -43,14 +43,17 @@ add('otp-failure-reason-nonsecret', server.includes('/^[a-z0-9_]{1,48}$/') && se
 add('otp-health-email-config-block', server.includes('ownerEmail:') && server.includes('fromConfigured: getOwnerEmailConfig().fromConfigured'), '/api/health يُعلن إعداد البريد منطقياً بلا أي قيمة سرّية');
 add('otp-failure-reason-tested', fs.readFileSync(path.join(root, 'engine/tests/owner.email.test.ts'), 'utf8').includes("failedBody.reason === 'invalid_from_address'"), 'اختبار يثبت كود سبب الفشل غير السرّي (invalid_from_address / email_provider_not_configured)');
 
-// فحص أسرار: لا مفاتيح مزودين في الملفات الإنتاجية.
+// فحص أسرار: لا مفاتيح مزودين ولا توكن GitHub في الملفات الإنتاجية.
 const sourceFiles = ['server.ts', 'engine/notifications/owner-email.ts', 'netlify/functions/api.ts'];
 const secretFree = sourceFiles.every((f) => {
   if (!fs.existsSync(path.join(root, f))) return true;
   const src = read(f);
-  return !/AIzaSy[A-Za-z0-9_\-]{10,}/.test(src) && !/re_[A-Za-z0-9]{20,}/.test(src) && !/sk-[A-Za-z0-9]{20,}/.test(src);
+  return !/AIzaSy[A-Za-z0-9_\-]{10,}/.test(src)
+    && !/re_[A-Za-z0-9]{20,}/.test(src)
+    && !/sk-[A-Za-z0-9]{20,}/.test(src)
+    && !/ghp_[A-Za-z0-9]{36}|github_pat_[A-Za-z0-9_]{22,}|gho_[A-Za-z0-9]{36}|ghs_[A-Za-z0-9]{36}|ghu_[A-Za-z0-9]{36}/.test(src);
 });
-add('secret-free-sources', secretFree, 'لا مفاتيح AIzaSy / re_ / sk- في ملفات الإنتاج');
+add('secret-free-sources', secretFree, 'لا مفاتيح AIzaSy / re_ / sk- / توكن GitHub في ملفات الإنتاج');
 add('preview-login-optin', server.includes('GHARABI_PREVIEW_TOKEN') && server.includes('app.post("/api/auth/preview-login"') && server.includes('status(404)'), 'دخول المعاينة معطّل افتراضياً (404 بلا إعداد) عبر POST فقط');
 add('preview-login-post-only', !server.includes('app.get("/api/auth/preview-login"'), 'لا مسار GET يمرّر توكن المعاينة في سطر الطلب');
 add('preview-login-query-rejected', server.includes('لا يُقبل التوكن في سطر الطلب'), 'رفض صريح لتوكن المعاينة في سطر الطلب');
