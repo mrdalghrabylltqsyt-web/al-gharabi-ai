@@ -4341,7 +4341,39 @@ add('watcher-advisory-not-authority',
     JSON.parse(read('package.json')).scripts.test.includes('npm run test:unified-publishing'),
     'اختبار توحيد النشر مسجَّل في npm test');
 
-  // 10) AGENTS.md: عدد فحوصات final-audit مطابق للفعلي (يُعَدّ من نص الملف نفسه).
+  // 11) مؤشرات الحصص المجانية (نقل Neon + مساحة Drive): عرض فقط بلا حجب وبلا سرّ.
+  const freeTierUsageSrc = read('engine/ops/freeTierUsage.ts');
+  add('free-tier-usage-module',
+    freeTierUsageSrc.includes('FREE_TIER_QUOTAS') &&
+    freeTierUsageSrc.includes('buildNeonTransferIndicator') &&
+    freeTierUsageSrc.includes('buildDriveQuotaIndicator') &&
+    freeTierUsageSrc.includes("basis: 'measured' | 'estimated'"),
+    'وحدة مؤشرات الحصص المجانية (نقل Neon + مساحة Drive) موجودة');
+  add('free-tier-usage-display-only-no-gate',
+    !/\b(res\.status|throw new|reject\(|blocked\s*=|if\s*\([^)]*>\s*FREE_TIER_QUOTAS)/.test(freeTierUsageSrc) &&
+    freeTierUsageSrc.includes('مؤشر عرض فقط') &&
+    freeTierUsageSrc.includes('لا يحجب'),
+    'وحدة المؤشرات عرض فقط: لا منطق حجب ولا امنع أي عملية');
+  add('free-tier-usage-health-wired',
+    (server.split('freeTierUsage: freeTierUsageHealthBlock()').length - 1) >= 2 &&
+    server.includes('function freeTierUsageHealthBlock') &&
+    server.includes('freeTierUsage: freeTierUsageHealthBlock()'),
+    'كتلة freeTierUsage موصولة في /api/health و/api/readiness');
+  add('free-tier-usage-no-new-drive-read',
+    read('engine/dr/routes.ts').includes('recordDriveQuota(mirror.quota') &&
+    read('engine/dr/routes.ts').includes('recordDriveQuota(result.quota') &&
+    !server.includes('readQuota()'),
+    'مساحة Drive تُلتقط من قراءة النسخة/المزامنة القائمة فقط (بلا قراءة إضافية في الخادم)');
+  add('free-tier-usage-test',
+    fs.existsSync(path.join(root, 'engine/tests/free.tier.usage.test.ts')) &&
+    JSON.parse(read('package.json')).scripts['test:free-tier-usage'] === 'tsx engine/tests/free.tier.usage.test.ts' &&
+    JSON.parse(read('package.json')).scripts.test.includes('npm run test:free-tier-usage'),
+    'اختبار مؤشرات الحصص المجانية مسجَّل في npm test');
+  add('free-tier-usage-no-secret',
+    !/access_token|refresh_token|client_secret|api[_-]?key/i.test(freeTierUsageSrc),
+    'وحدة مؤشرات الحصص المجانية لا تحمل أي سرّ');
+
+  // 12) AGENTS.md: عدد فحوصات final-audit مطابق للفعلي (يُعَدّ من نص الملف نفسه).
   const auditCount = (read('final-audit.mjs').match(/^\s*add\(/gm) || []).length;
   add('agents-audit-count-accurate',
     read('AGENTS.md').includes(`final-audit.mjs (${auditCount} فحصاً)`),
