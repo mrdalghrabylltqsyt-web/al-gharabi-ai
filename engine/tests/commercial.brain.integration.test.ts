@@ -125,6 +125,10 @@ async function login(): Promise<Record<string, string>> {
     const staffToken = signSession({ uid: 'staff-1', iat: Date.now(), exp: Date.now() + 3_600_000, sid: randomBytes(8).toString('hex') }, secretBuffer);
     const staffAuth = { 'Content-Type': 'application/json', Authorization: `Bearer ${staffToken}` };
 
+    // المفتاح معطَّل افتراضياً (fail-closed) — نفعّله صراحةً لاختبار منطق العقل التجاري نفسه.
+    const ksEnable = await (await fetch(`${BASE}/api/agent/commercial/kill-switch`, { method: 'POST', headers: auth, body: JSON.stringify({ enabled: true, reason: 'integration_test' }) })).json();
+    check('تفعيل العقل التجاري صراحةً للاختبار (الافتراضي معطَّل)', ksEnable.success === true && ksEnable.killSwitch?.enabled === true, JSON.stringify(ksEnable.killSwitch));
+
     group('1) التصريح — مسارات العقل التجاري محمية');
     check('/api/commercial/leads بلا جلسة => 401', (await fetch(`${BASE}/api/commercial/leads`)).status === 401);
     check('/api/agent/commercial/run بلا جلسة => 401', (await fetch(`${BASE}/api/agent/commercial/run`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' })).status === 401);

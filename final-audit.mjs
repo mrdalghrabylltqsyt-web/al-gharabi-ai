@@ -4528,17 +4528,21 @@ add('watcher-advisory-not-authority',
     /skipped: "disabled", reason: "مفتاح العقل التجاري معطَّل/.test(server) &&
     server.includes('commercialKillSignal = true'),
     'الإيقاف يمنع الدورة فوراً (تخطٍّ صريح + كسر الحلقة الجارية) بلا تنفيذ خارجي');
-  add('commercial-kill-switch-default-enabled-honest',
-    server.includes('let commercialBrainEnabled = true;') &&
-    server.includes('killSwitchNote: \'مفتاح رئيسي واحد؛ الافتراضي مفعَّل') &&
-    read('src/components/agent/CommercialBrainKillSwitch.tsx').includes('الافتراضي مفعَّل'),
-    'الافتراضي مفعَّل صراحةً في الكود والواجهة (بلا ادّعاء تعطيل)');
+  add('commercial-kill-switch-fail-closed-default',
+    server.includes('let commercialBrainEnabled = false;') &&
+    server.includes("killSwitchNote: enabled") &&
+    server.includes('العقل التجاري معطَّل افتراضياً (fail-closed)') &&
+    /if \(commercialKillSwitchEnabled\(\)\) \{\s*startCommercialBrain\(\);/.test(server) &&
+    read('src/components/agent/CommercialBrainKillSwitch.tsx').includes('fail-closed'),
+    'الافتراضي معطَّل (fail-closed) صراحةً في الكود والواجهة، ولا تُشغَّل الجدولة إلا بتفعيل صريح');
   add('commercial-followup-killswitch-tests',
     fs.existsSync(path.join(root, 'engine/tests/commercial.followup.killswitch.integration.test.ts')) &&
     fs.existsSync(path.join(root, 'engine/tests/commercial.followup.guard.unit.test.ts')) &&
+    fs.existsSync(path.join(root, 'engine/tests/commercial.killswitch.cleanboot.test.ts')) &&
     JSON.parse(read('package.json')).scripts.test.includes('npm run test:commercial-followup-killswitch') &&
-    JSON.parse(read('package.json')).scripts.test.includes('npm run test:commercial-followup-guard'),
-    'اختبارا إصلاح المتابعة ومفتاح الإيقاف (وحدة + تكامل) موجودان ومسجّلان في npm test');
+    JSON.parse(read('package.json')).scripts.test.includes('npm run test:commercial-followup-guard') &&
+    JSON.parse(read('package.json')).scripts.test.includes('npm run test:commercial-cleanboot'),
+    'اختبارات إصلاح المتابعة ومفتاح الإيقاف + إقلاع نظيف fail-closed موجودة ومسجّلة في npm test');
   add('commercial-followup-killswitch-tests-no-real-provider',
     followupIntegrationTest.includes('createFacebookMock') &&
     followupIntegrationTest.includes('delete env.GEMINI_API_KEY') &&

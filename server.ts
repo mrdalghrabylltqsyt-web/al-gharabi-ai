@@ -7747,13 +7747,14 @@ let commercialLastRun: { processed: number; followUpsSent: number; escalated: nu
 
 /**
  * مفتاح الإيقاف الطارئ للعقل التجاري (Kill Switch) — مفتاح رئيسي واحد فقط.
- * غرضه الوحيد: إيقاف طارئ شامل عند اكتشاف خلل، ثم استئناف العمل يدوياً.
- * - **افتراضي: مفعَّل** (يُحافظ على سلوك العقل التجاري المُعتمد في PR #34 — لا
- *   انقطاع في المتابعة)، والمفتاح يمنح المالك إيقافاً فورياً شاملاً عند الحاجة.
+ * غرضه: تمكين/إيقاف طارئ شامل للعقل التجاري.
+ * - **افتراضي: معطَّل (fail-closed)** — على إقلاع نظيف بلا سجل محفوظ، لا ينفّذ العقل
+ *   التجاري أي فعل خارجي (لا متابعة ولا اقتراح) حتى يُفعّله المالك صراحةً من الواجهة.
+ *   هذا هو الافتراض الآمن الصريح (لا تشغيل تلقائي بلا تفعيل المالك).
  * - يُحفظ عبر محوّل الحالة ذاته (نفس نمط youtubeWatcher/metaPolling) فيصمد بعد
  *   restart/cold start. لا بنية جديدة.
  */
-let commercialBrainEnabled = true;
+let commercialBrainEnabled = false;
 let commercialBrainKillAt: string | null = null;
 let commercialBrainKillBy: string | null = null;
 let commercialBrainKillReason: string | null = null;
@@ -7762,7 +7763,7 @@ let commercialKillSignal = false;
 /** جدولة العقل التجاري — تُعرَّف مبكراً كي يُوقفها Kill Switch فوراً. */
 let commercialScheduler: WatcherScheduler | null = null;
 
-/** يقرأ المفتاح: افتراضي مفعَّل؛ الإيقاف الطارئ يُقلبه إلى false. */
+/** يقرأ المفتاح: افتراضي معطَّل (fail-closed)؛ لا يعمل إلا بتفعيل صريح من المالك. */
 function commercialKillSwitchEnabled(): boolean {
   return commercialBrainEnabled === true;
 }
@@ -7824,7 +7825,7 @@ async function persistCommercialLeads(): Promise<void> {
 function applyCommercialStateSnapshot(raw: any): void {
   if (!raw || typeof raw !== "object") return;
   commercialLeads = normalizeCommercialLeads(raw.leads).slice(0, COMMERCIAL_MAX_LEADS);
-  // توافق خلفي: لقطة قديمة بلا killSwitch تُبقي الافتراضي (مفعَّل) بلا طمس.
+  // توافق خلفي (fail-closed): لقطة قديمة بلا killSwitch تُبقي الافتراضي معطَّلاً.
   applyCommercialKillSwitchSnapshot(raw.killSwitch);
 }
 
@@ -7945,8 +7946,8 @@ function incomingToInteraction(row: any, nowIso: string): InboundInteraction | n
  * بلا اتصال موثق وحارسَي المحتوى/التكرار (كلاهما داخل المنفّذ).
  */
 async function runCommercialBrainCycle(trigger: string): Promise<{ ok: boolean; trigger: string; result?: any; error?: string }> {
-  // Kill Switch (مفتاح رئيسي واحد): حين يكون معطّلاً (الافتراضي) لا تنفّذ الدورة أي
-  // عمل — تُعلن التخطّي بصراحة بلا أي تنفيذ خارجي. (الافتراضي مفعَّل؛ الإيقاف بيد المالك.)
+  // Kill Switch (مفتاح رئيسي واحد): حين يكون معطّلاً (**الافتراضي، fail-closed**) لا
+  // تنفّذ الدورة أي عمل — تُعلن التخطّي بصراحة بلا أي تنفيذ خارجي حتى يفعّله المالك.
   if (!commercialKillSwitchEnabled()) {
     return { ok: true, trigger, result: { skipped: "disabled", reason: "مفتاح العقل التجاري معطَّل (إيقاف طارئ) — لا متابعة ولا تنفيذ خارجي حتى إعادة التفعيل." } };
   }
@@ -8030,13 +8031,16 @@ function canConfirmCommercialProposal(user: ServerUser | undefined | null): bool
 
 /** كتلة العقل التجاري العامة (أرقام فقط بلا أي بيانات عميل) للنقطتين العامتين. */
 function commercialPublicStatus() {
+  const enabled = commercialKillSwitchEnabled();
   return {
     ...commercialPublicBlock(commercialLeads, new Date().toISOString()),
-    // مفتاح الإيقاف الطارئ (حقل منطقي فقط بلا سرّ) — الافتراضي مفعَّل، والإيقاف
-    // الطارئ بيد المالك يوقف كل عمل العقل التجاري فوراً.
-    enabled: commercialKillSwitchEnabled(),
-    automated: commercialKillSwitchEnabled(),
-    killSwitchNote: 'مفتاح رئيسي واحد؛ الافتراضي مفعَّل، ويمكن للمالك إيقافه فوراً (إيقاف طارئ شامل).',
+    // مفتاح الإيقاف (حقل منطقي فقط بلا سرّ) — **الافتراضي معطَّل (fail-closed)**:
+    // لا فعل خارجي على إقلاع نظيف حتى يفعّله المالك صراحةً من الواجهة.
+    enabled,
+    automated: enabled,
+    killSwitchNote: enabled
+      ? 'مفتاح رئيسي واحد؛ العقل التجاري مفعَّل صراحةً من المالك، ويمكن إيقافه فوراً.'
+      : 'مفتاح رئيسي واحد؛ العقل التجاري معطَّل افتراضياً (fail-closed) — لا فعل خارجي حتى يفعّله المالك.',
   };
 }
 
@@ -8095,16 +8099,16 @@ app.post("/api/agent/commercial/run", requireOwner, async (_req, res) => {
   res.status(result.ok ? 200 : 500).json({ success: result.ok, ...result });
 });
 
-// --- مفتاح الإيقاف الطارئ للعقل التجاري (Kill Switch) — للمالك فقط ---
-// مفتاح رئيسي واحد: قراءة الحالة وتبديلها. عند التعطيل يتوقف كل عمل فوراً (جدولة +
-// دورة جارية)، والحالة تُحفظ فتصمد بعد restart. الافتراضي مفعَّل؛ الإيقاف طارئ بيد المالك.
+// --- مفتاح الإيقاف/التمكين للعقل التجاري (Kill Switch) — للمالك فقط ---
+// مفتاح رئيسي واحد: قراءة الحالة وتبديلها. عند التعطيل (الافتراضي) لا ينفّذ العقل
+// التجاري أي فعل خارجي؛ ويتوقف أي عمل جارٍ فوراً. الحالة تُحفظ فتصمد بعد restart.
 app.get("/api/agent/commercial/kill-switch", requireOwner, (_req, res) => {
   res.json({
     success: true,
     killSwitch: commercialKillSwitchView(),
     scheduler: commercialScheduler ? commercialScheduler.status() : { active: false, activeTimers: 0 },
     lastRun: commercialLastRun,
-    note: "مفتاح رئيسي واحد: عند التعطيل يتوقف العقل التجاري كلياً (لا متابعة ولا تنفيذ خارجي) فوراً.",
+    note: "مفتاح رئيسي واحد: الافتراضي معطَّل (fail-closed)؛ لا فعل خارجي حتى يفعّله المالك.",
   });
 });
 
@@ -8429,7 +8433,7 @@ function startCommercialBrain(): void {
     getCadenceMs: () => 10 * 60 * 1000 * usagePressureMultiplier(),
     isDue: () => true,
     runCycle: () => {
-      // Kill Switch (إيقاف طارئ بيد المالك): الافتراضي مفعَّل، والإيقاف يمنع أي عمل.
+      // Kill Switch: الافتراضي معطَّل (fail-closed)، ولا يعمل العقل التجاري إلا بتفعيل المالك.
       if (!commercialKillSwitchEnabled()) return;
       if (currentUsagePressure().deferNonCritical) return;
       runCommercialBrainCycle("schedule").catch(() => { /* الخطأ مسجَّل داخل الدورة */ });
@@ -17564,8 +17568,14 @@ async function startServer() {
   // العقل التجاري (Digital Salesperson) 24/7: job داخلي مستقل عن المتصفح، حتمي
   // بلا Gemini، يتابع العملاء الذين بدأوا التواصل عبر المنفّذ المركزي وحده،
   // ويصمد بعد restart (سجل العملاء في المخزن).
+  // **fail-closed:** لا تُشغَّل الجدولة إطلاقاً إلا إذا كان المفتاح مفعَّلاً صراحةً
+  // (المحفوظ أو من البيئة). على إقلاع نظيف بلا سجل ⇒ معطَّل ⇒ صفر أفعال خارجية.
   try {
-    startCommercialBrain();
+    if (commercialKillSwitchEnabled()) {
+      startCommercialBrain();
+    } else {
+      console.log("[الغرابي AI] Commercial Brain disabled by default (kill switch off) — no external actions until owner enables it.");
+    }
   } catch (e: any) {
     console.error("[الغرابي AI] failed to start Commercial Brain:", String(e?.message || e).slice(0, 120));
   }
