@@ -5833,3 +5833,42 @@ permitted if the replier has been explicitly summoned by the original post's aut
 اختبارات: storage.adapter.test.ts صار **49 فحصاً** (تصنيف الأخطاء، نجاح/فشل/استنفاد/فشل مصادقة سريع، كشف النقطة المجمّعة). فحوص final-audit الجديدة الخمسة: pg-pool-size-bounded-for-rolling-deploy، pg-startup-retry-per-attempt-fresh-pool، pg-retryable-error-classifier، pg-fail-closed-preserved، pg-pooled-endpoint-indicator. إجمالي الفحوص **1562**.
 
 **لم يُمسّ:** المصادقة، الجلسات، تشفير التوكنات، OAuth/scopes، Gemini، سوشيال المنصات، التعافي/DR، ونموذج الجدولة.
+
+## المستمسكات المطلوبة للتقسيط: من قائمة ثابتة في الواجهة إلى بيانات مسجّلة تُغذّي العقل (2026-10-13)
+
+**السياق:** ضمن إتمام مشروع المبيعات، طُلب التأكد من بنية تخزين منتجات المعرض بتفاصيل التقسيط
+(**الدفعة الأولى، الأقساط الشهرية، والمستمسكات المطلوبة**) وإتاحتها للعقل المركزي. الفحص أثبت
+أن معظم البنية قائمة، مع **فجوة حقيقية واحدة**: «المستمسكات المطلوبة للتقسيط».
+
+**ما كان قائماً (لا عمل مطلوب):** مسار المنتجات `GET/POST/PATCH/DELETE /api/workspace/products`
+مع `cashPrice` (المصدر الواحد) و`downPaymentPercent`/`durationMonths`/`monthlyInstallment`/
+`installmentPrice` (مشتقّة بمصدر واحد `src/utils/installmentPrice.ts`)؛ وإتاحة البيانات للعقل
+عبر `replyFactsForProduct` → `generateReply` (ردود Facebook/Instagram/YouTube).
+
+**الفجوة:** قائمة «المستندات والأوراق المطلوبة للتقسيط» في `ShowroomDatabaseView` كانت **مصفوفة
+ثابتة في الواجهة** (نصوص غير محفوظة) بينما نصها يدّعي «يطلبها الذكاء الاصطناعي مباشرة» — ادعاء
+غير مدعوم بالكود، ولا حقل `requiredDocuments` أصلاً. و`ShowroomFacts.installmentNote` كان
+يُستهلك في `buildIraqiPersonaPrompt` لكن **لم يكن يُملأ إطلاقاً**.
+
+**الإصلاح (حقل مسجّل + إتاحة للعقل، بلا اختراع):**
+- `ShowroomInfo.requiredDocuments?` (عام للمعرض) و`ShowroomProduct.requiredDocuments?` (لكل منتج).
+- `server.ts`: `sanitizeDocList` (نصوص غير فارغة، بلا تكرار، 20×80) في PUT المعرض وPOST/PATCH
+  المنتج؛ و`ShowroomFacts.installmentNote` صار يُبنى من المستمسكات المسجّلة.
+- `replyFactsForProduct` يمرّرها (أولوية لمنتج، وإلا قائمة المعرض) إلى `ReplyFactSet`، و
+  `generateReply` يذكرها في رد السعر/القسط **فقط بعد وجود سعر/قسط مسجّل**، وملخّصة عند >3 بنود،
+  و**لا يذكر أي مستمسك عند غياب التسجيل**. و`buildFactsForProduct.allowedPhrases` يشملها.
+- الواجهة: القائمة صارت **مدارة ومسجّلة** (إضافة/حذف للمالك والمدير عبر `updateShowroomInfo`)،
+  وتُمرَّر لمنتج جديد، مع حالة فراغ صريحة.
+
+**قاعدة ملزمة:** لا يُذكر أي مستمسك لم يسجّله المعرض، ويُذكر فقط مع سعر/قسط مسجّل.
+
+اختبار: `engine/tests/product.installment.documents.test.ts` (`npm run test:product-installment-documents`،
+10 فحوص). `npm run lint` ✅ · `npm run build` ✅ · `npm run final-audit` ✅ (**1568**) · تحقق
+تكاملي حي على خادم فعلي أثبت حفظ/قراءة/تنقية المستمسكات عبر الـAPI.
+
+**لم يُمسّ:** أي نظام مبيعات/ERP/مالية (خارج النطاق)، ولا OAuth/الأسرار، ولا Gemini، ولا بقية
+المنصات، ولا نموذج الجدولة.
+
+**نطاق (تصحيحي):** «Lead Capture» خارج نطاق المشروع المعلن (سوشيال + AI + تسويق). البنية موجودة
+لكنها معزولة افتراضياً بـ404 `SCOPE_DISABLED` (`/api/crm`, `/api/customers/360`) خلف
+`GHARABI_ENABLE_LEGACY_ERP_SCOPE` (تحقق حي: 404). لا تُفعَّل بلا قرار مالك صريح.

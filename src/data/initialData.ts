@@ -188,6 +188,7 @@ export const INITIAL_SHOWROOM_INFO: ShowroomInfo = {
   workingHours: '',
   about: 'معرض الغرابي للتقسيط - خدمات وحلول تمويل وتقسيط ميسرة ومعتمدة.',
   policies: [],
+  requiredDocuments: [],
   faqs: [],
 };
 

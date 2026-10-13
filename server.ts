@@ -7548,12 +7548,19 @@ function showroomFactsForPersona(): ShowroomFacts {
   const locationText = address || undefined;
   const hoursText = showroom.workingHours ? cleanText(showroom.workingHours, 120) : undefined;
   const phone = cleanText(showroom.phoneUnified || showroom.whatsappSales, 40) || undefined;
+  const docs = Array.isArray(showroom.requiredDocuments) ? showroom.requiredDocuments.map((d: any) => cleanText(d, 80)).filter(Boolean).slice(0, 20) : [];
+  const installmentNote = docs.length
+    ? (docs.length > 3
+        ? `المستمسكات المطلوبة للتقسيط: بيانات أساسية و${docs.length} مستمسكات إضافية.`
+        : `المستمسكات المطلوبة للتقسيط: ${docs.join('، ')}.`)
+    : undefined;
   return {
     name,
     city,
     locationText,
     hoursText,
     contactHint: phone ? `للتواصل: ${phone}` : undefined,
+    installmentNote,
   };
 }
 
@@ -10642,11 +10649,30 @@ app.put("/api/workspace/showroom", authenticateToken, (req, res) => {
     city: cleanText(next.city, 80), phoneUnified: cleanText(next.phoneUnified, 60), whatsappSales: cleanText(next.whatsappSales, 60),
     supportEmail: cleanText(next.supportEmail, 160), workingHours: cleanText(next.workingHours, 160), about: cleanText(next.about, 1000),
     policies: Array.isArray(next.policies) ? next.policies.filter((x: any) => typeof x === "string").slice(0, 30).map((x: string) => x.trim().slice(0, 300)) : [],
+    requiredDocuments: Array.isArray(next.requiredDocuments) ? sanitizeDocList(next.requiredDocuments) : [],
     faqs: Array.isArray(next.faqs) ? next.faqs.slice(0, 100).map((x: any) => ({ id: cleanText(x?.id, 80) || workspaceId("faq"), q: cleanText(x?.q, 300), a: cleanText(x?.a, 1000), category: cleanText(x?.category, 80) })) : []
   };
   persistState(); audit(user.id, "workspace_showroom_updated");
   res.json({ success: true, showroom: workspace.showroom });
 });
+
+/**
+ * تنقية قائمة المستمسكات المطلوبة للتقسيط (أسماء يدخلها المعرض): نصوص غير فارغة،
+ * بلا تكرار، بحد 20 بنداً و80 محرفاً لكل بند. لا تُخترع أي وثيقة — تُحفظ كما أدخلها المالك.
+ */
+function sanitizeDocList(input: any[]): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const raw of input) {
+    if (typeof raw !== "string") continue;
+    const v = raw.trim().slice(0, 80);
+    if (!v || seen.has(v)) continue;
+    seen.add(v);
+    out.push(v);
+    if (out.length >= 20) break;
+  }
+  return out;
+}
 
 /**
  * يضبط حقول التقسيط المشتقّة على منتج من سعر الكاش فقط (مصدر واحد: src/utils/installmentPrice).
@@ -10687,7 +10713,8 @@ app.post("/api/workspace/products", authenticateToken, (req, res) => {
     durationMonths: Number.isInteger(Number(b.durationMonths)) ? Math.max(1, Math.min(60, Number(b.durationMonths))) : 1,
     image: cleanText(b.image, 500), inStock: b.inStock !== false, stockQuantity: Number.isFinite(Number(b.stockQuantity)) ? Math.max(0, Math.floor(Number(b.stockQuantity))) : 0, reorderLevel: Number.isFinite(Number(b.reorderLevel)) ? Math.max(0, Math.floor(Number(b.reorderLevel))) : 0, featured: b.featured === true,
     specs: Array.isArray(b.specs) ? b.specs.filter((x: any) => typeof x === "string").slice(0, 30).map((x: string) => x.trim().slice(0, 200)) : [],
-    installmentOptions: Array.isArray(b.installmentOptions) ? b.installmentOptions.filter((x: any) => typeof x === "string").slice(0, 20).map((x: string) => x.trim().slice(0, 200)) : []
+    installmentOptions: Array.isArray(b.installmentOptions) ? b.installmentOptions.filter((x: any) => typeof x === "string").slice(0, 20).map((x: string) => x.trim().slice(0, 200)) : [],
+    requiredDocuments: Array.isArray(b.requiredDocuments) ? sanitizeDocList(b.requiredDocuments) : []
   };
   // سعر التقسيط والقسط الشهري مُشتقّان من cashPrice حصراً (لا قيمة يدوية ولا مخفية).
   applyInstallmentFields(product as any, { cashPrice, installmentMonths: b.installmentMonths, installmentMarkupPercent: b.installmentMarkupPercent });
@@ -10715,6 +10742,7 @@ app.patch("/api/workspace/products/:id", authenticateToken, (req, res) => {
   if (b.image !== undefined) product.image = cleanText(b.image, 500);
   if (Array.isArray(b.specs)) product.specs = b.specs.filter((x:any)=>typeof x === "string").slice(0,30).map((x:string)=>x.trim().slice(0,200));
   if (Array.isArray(b.installmentOptions)) product.installmentOptions = b.installmentOptions.filter((x:any)=>typeof x === "string").slice(0,20).map((x:string)=>x.trim().slice(0,200));
+  if (Array.isArray(b.requiredDocuments)) product.requiredDocuments = sanitizeDocList(b.requiredDocuments);
   // إعادة حساب حقول التقسيط من cashPrice عند تغيّر سعر الكاش/المدة/النسبة فقط.
   // القيمة الشهرية المتناقضة الواردة في الجسم تُتجاهَل (لا تُحفظ) — القسط مُشتقّ دائماً.
   if (b.cashPrice !== undefined || b.installmentMonths !== undefined || b.installmentMarkupPercent !== undefined) {
@@ -15179,7 +15207,9 @@ function buildFactsForProduct(product: any | null, downPaymentPercent: number, d
     allowedPhrases: [
       ...(Array.isArray(product?.installmentOptions) ? product.installmentOptions : []),
       ...(Array.isArray(product?.specs) ? product.specs : []),
+      ...(Array.isArray(product?.requiredDocuments) ? product.requiredDocuments : []),
       ...(Array.isArray(showroom.policies) ? showroom.policies : []),
+      ...(Array.isArray(showroom.requiredDocuments) ? showroom.requiredDocuments : []),
       cleanText(showroom.about, 1000),
       cleanText(showroom.tagline, 240),
     ],
@@ -15253,6 +15283,12 @@ function replyFactsForProduct(product: any | null): ReplyFactSet {
   const showroom: any = workspace.showroom || {};
   const address = [showroom.address, showroom.city].map((x: any) => cleanText(x, 200)).filter(Boolean).join(' - ');
   const price = Number(product?.cashPrice);
+  // المستمسكات: أولوية لمستمسكات المنتج الخاصة، وإلا القائمة العامة للمعرض — كلها
+  // مسجّلة من المالك، فلا تختلق الردود وثيقة غير موجودة.
+  const docs = (Array.isArray(product?.requiredDocuments) && product.requiredDocuments.length)
+    ? product.requiredDocuments
+    : (Array.isArray(showroom.requiredDocuments) ? showroom.requiredDocuments : []);
+  const requiredDocuments = docs.map((d: any) => cleanText(d, 80)).filter(Boolean).slice(0, 20);
   return {
     productName: product?.name ? cleanText(product.name, 120) : undefined,
     priceText: Number.isFinite(price) && price > 0 ? `${Math.round(price).toLocaleString('en-US')} د.ع` : undefined,
@@ -15261,6 +15297,7 @@ function replyFactsForProduct(product: any | null): ReplyFactSet {
     hoursText: showroom.workingHours ? cleanText(showroom.workingHours, 120) : undefined,
     inStock: typeof product?.inStock === 'boolean' ? product.inStock : null,
     hasRecordedPromotion: [showroom.promotions, showroom.activeOffer].some((x: any) => cleanText(x, 300).length > 0),
+    requiredDocuments: requiredDocuments.length ? requiredDocuments : undefined,
   };
 }
 

@@ -137,6 +137,8 @@ export interface ShowroomProduct {
   installmentMonths?: number;
   monthlyInstallment?: number;
   installmentMarkupPercent?: number;
+  // المستمسكات المطلوبة لإتمام التقسيط (تُدخل يدوياً من المالك؛ لا تُخترع في الردود).
+  requiredDocuments?: string[];
 }
 
 export interface InstallmentPlan {
@@ -162,6 +164,8 @@ export interface ShowroomInfo {
   workingHours: string;
   about: string;
   policies: string[];
+  // المستمسكات المطلوبة للتقسيط (يدخلها المعرض وتُغذّي ردود العقل). اختياري للتوافق.
+  requiredDocuments?: string[];
   faqs: Array<{ id: string; q: string; a: string; category: string }>;
 }
 

@@ -31,11 +31,13 @@ export const ShowroomDatabaseView: React.FC = () => {
     deleteProduct,
     showToast,
     currentUser,
+    updateShowroomInfo,
   } = useApp();
 
   const [activeTab, setActiveTab] = useState<'products' | 'plans' | 'policies' | 'faqs'>('products');
   const [searchTerm, setSearchTerm] = useState<string>('');
   const [showAddProductModal, setShowAddProductModal] = useState<boolean>(false);
+  const [newDocument, setNewDocument] = useState<string>('');
 
   // New Product State
   const [newProductName, setNewProductName] = useState<string>('');
@@ -68,6 +70,25 @@ export const ShowroomDatabaseView: React.FC = () => {
       p.category.includes(searchTerm) ||
       p.specs.some((s) => s.includes(searchTerm))
   );
+
+  // المستمسكات المطلوبة للتقسيط: مصدرها بيانات المعرض المسجّلة (لا قائمة ثابتة في
+  // الواجهة)، فيراها العقل وتُذكر للعميل بعد سعر/قسط مسجّل فقط.
+  const requiredDocuments = Array.isArray(showroomInfo.requiredDocuments) ? showroomInfo.requiredDocuments : [];
+
+  const handleAddDocument = () => {
+    const value = newDocument.trim();
+    if (!value) return;
+    if (requiredDocuments.includes(value)) {
+      showToast('هذا المستمسك مضاف مسبقاً.');
+      return;
+    }
+    updateShowroomInfo({ requiredDocuments: [...requiredDocuments, value] });
+    setNewDocument('');
+  };
+
+  const handleRemoveDocument = (doc: string) => {
+    updateShowroomInfo({ requiredDocuments: requiredDocuments.filter((d) => d !== doc) });
+  };
 
   const handleCreateProduct = (e: React.FormEvent) => {
     e.preventDefault();
@@ -112,6 +133,7 @@ export const ShowroomDatabaseView: React.FC = () => {
       installmentMonths: derived.installmentMonths,
       monthlyInstallment: derived.monthlyInstallment,
       installmentMarkupPercent: derived.installmentMarkupPercent,
+      requiredDocuments: requiredDocuments,
     });
 
     setShowAddProductModal(false);
@@ -389,26 +411,57 @@ export const ShowroomDatabaseView: React.FC = () => {
               المستندات والأوراق المطلوبة للتقسيط
             </h3>
             <p className="text-xs text-slate-400">
-              يطلبها الذكاء الاصطناعي مباشرة من العميل في المحادثات:
+              مسجّلة في بيانات المعرض ويطلبها الذكاء الاصطناعي مباشرة من العميل في المحادثات:
             </p>
             <div className="space-y-2">
-              {[
-                'إثبات هوية رسمي ساري المفعول',
-                'تعريف حديث بالدخل / الراتب مصدق ومعتمد',
-                'كشف حساب بنكي يوضح الحركة المالية لآخر 3 أشهر',
-                'المستندات الإضافية المطلوبة حسب نوع المنتج',
-              ].map((doc, idx) => (
-                <div
-                  key={idx}
-                  className="p-3 rounded-xl bg-slate-950/70 border border-slate-800 text-xs text-slate-200 flex items-center gap-2.5"
-                >
-                  <span className="w-5 h-5 rounded-full bg-emerald-950 text-emerald-400 text-[11px] font-bold flex items-center justify-center shrink-0">
-                    {idx + 1}
-                  </span>
-                  <span>{doc}</span>
+              {requiredDocuments.length === 0 ? (
+                <div className="p-6 text-center text-slate-500 text-xs bg-slate-950/40 rounded-xl border border-slate-800/80">
+                  لا توجد مستمسكات مسجّلة حالياً. أضفها ليستخدمها الذكاء الاصطناعي في الردود.
                 </div>
-              ))}
+              ) : (
+                requiredDocuments.map((doc, idx) => (
+                  <div
+                    key={idx}
+                    className="p-3 rounded-xl bg-slate-950/70 border border-slate-800 text-xs text-slate-200 flex items-center gap-2.5"
+                  >
+                    <span className="w-5 h-5 rounded-full bg-emerald-950 text-emerald-400 text-[11px] font-bold flex items-center justify-center shrink-0">
+                      {idx + 1}
+                    </span>
+                    <span className="flex-1">{doc}</span>
+                    {(currentUser?.role === 'owner' || currentUser?.role === 'manager') && (
+                      <button
+                        type="button"
+                        onClick={() => handleRemoveDocument(doc)}
+                        className="text-rose-400 hover:text-rose-300 shrink-0"
+                        aria-label={`حذف مستمسك ${doc}`}
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
+                    )}
+                  </div>
+                ))
+              )}
             </div>
+            {(currentUser?.role === 'owner' || currentUser?.role === 'manager') && (
+              <div className="flex items-center gap-2 pt-1">
+                <input
+                  type="text"
+                  value={newDocument}
+                  onChange={(e) => setNewDocument(e.target.value)}
+                  onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); handleAddDocument(); } }}
+                  placeholder="أضف مستمسكاً مطلوباً..."
+                  className="flex-1 bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-white text-xs focus:outline-none focus:border-emerald-500"
+                />
+                <button
+                  type="button"
+                  onClick={handleAddDocument}
+                  className="px-3 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold flex items-center gap-1.5"
+                >
+                  <Plus className="w-3.5 h-3.5" />
+                  إضافة
+                </button>
+              </div>
+            )}
           </div>
 
           <div className="p-6 rounded-2xl bg-slate-900 border border-slate-800 space-y-4">
