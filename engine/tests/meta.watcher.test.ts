@@ -118,7 +118,7 @@ async function unitTests(): Promise<void> {
   check('المنصات المشمولة = facebook + instagram', META_WATCHER_PLATFORMS.length === 2 && META_WATCHER_PLATFORMS.includes('facebook') && META_WATCHER_PLATFORMS.includes('instagram'));
   check('الرد الآلي معطّل افتراضياً (آمن)', d.controls.autoReply === false);
   check('المراقبة مفعّلة افتراضياً (قراءة/تحليل)', d.controls.enabled === true && d.controls.paused === false);
-  check('الفاصل الافتراضي = 1 دقيقة', d.controls.cadenceMinutes === 1);
+  check('الفاصل الافتراضي = 5 دقائق', d.controls.cadenceMinutes === 5);
 
   group('2) وحدة: بوابة الأتمتة (Kill Switch يمنع الكل)');
   check('قراءة مسموحة افتراضياً', metaWatcherGate(d.controls, 'read').allowed === true);

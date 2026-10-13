@@ -10,8 +10,30 @@
  */
 import fs from "node:fs";
 import path from "node:path";
+import crypto from "node:crypto";
 
 export type StorageBackendKind = "file" | "postgres";
+
+/**
+ * مقارنة نصوص كبيرة (لقطة الحالة قد تبلغ مئات KB) بكفاءة بلا مقارنة O(n) في
+ * مسار الحالة الشائع: نتحقّق أولاً من الطول ثم من بصمة SHA-256. النص مُعاد
+ * التوليد من نفس الكائن حرفياً (`JSON.stringify` نفسه) فأي تغيّر فعلي يغيّر
+ * البصمة، والكتابة المتطابقة تماماً لا تُنقل إلى القاعدة.
+ */
+export function sameSerializedValue(a: string, b: string): boolean {
+  if (a === b) return true;
+  if (a.length !== b.length) return false;
+  return crypto.createHash("sha256").update(a).digest("hex") === crypto.createHash("sha256").update(b).digest("hex");
+}
+
+/**
+ * حدّ معرّفات منع التكرار المحفوظة في لقطة الحالة (`*EventIds`/`youtubeCommentIds`).
+ * كان 20000 ثابتاً فيرفع حجم الكائن الكامل المُنقل مع كل كتابة. 2000 يكفي عملياً
+ * لمنع إعادة إدخال نفس الحدث/التعليق (Webhook replay/retry) عبر نافذة زمنية معقولة،
+ * ويقلّل الحمولة ~10×. لا يُحذف أي سجل عمل (منتجات/تعليقات/منشورات) — فقط ذاكرة
+ * منع التكرار القديمة.
+ */
+export const DEDUPE_ID_MAX = 2000;
 
 export interface BackupInfo {
   name: string;
@@ -151,10 +173,19 @@ class FileStorageAdapter implements StorageAdapter {
   }
 
   async write<T>(key: string, value: T): Promise<void> {
+    const serialized = JSON.stringify(value, null, 2);
+    // كشف التغيّر: الكتابة المتطابقة تماماً لا تُعاد إلى القرص (بلا فقدان أي تغيير
+    // فعلي، فالنص مُعاد التوليد من نفس الكائن بنفس الترتيب). يمنع كتابة لقطة
+    // الحالة الكاملة في كل دورة مراقبة بلا تغيّر.
+    try {
+      if (fs.readFileSync(this.fileFor(key), "utf8") === serialized) return;
+    } catch {
+      /* الملف غير موجود أو غير قابل للقراءة ⇒ نُكمل الكتابة العادية */
+    }
     if (key === STORAGE_KEY_STATE) this.backupBeforeWrite();
     const target = this.fileFor(key);
     const tmp = `${target}.tmp`;
-    fs.writeFileSync(tmp, JSON.stringify(value, null, 2), { encoding: "utf8", mode: 0o600 });
+    fs.writeFileSync(tmp, serialized, { encoding: "utf8", mode: 0o600 });
     fs.renameSync(tmp, target);
     this.writable = true;
   }
@@ -320,6 +351,13 @@ class PostgresStorageAdapter implements StorageAdapter {
   private healthy = false;
   private detail: string | null = null;
   private pool: any = null;
+  /**
+   * آخر قيمة كُتبت فعلاً لكل مفتاح (نص JSON). تُستخدم لكشف التغيّر: الكتابة
+   * المتطابقة تماماً لا تُرسَل إلى Neon فتُوفّر نقل الشبكة (كانت تُحتسب نقلاً
+   * فعلياً مع كل دورة مراقبة بلا تغيّر). تُغذّى عند الإقلاع من قراءة الحالة
+   * (`read`) وعند كل كتابة ناجحة.
+   */
+  private writeBaseline = new Map<string, string>();
 
   constructor(private readonly connectionString: string) {}
 
@@ -365,7 +403,13 @@ class PostgresStorageAdapter implements StorageAdapter {
     if (!this.pool || !this.healthy) return null;
     try {
       const result = await this.pool.query("SELECT value FROM gharabi_state WHERE key = $1", [key]);
-      return (result.rows?.[0]?.value ?? null) as T | null;
+      const value = (result.rows?.[0]?.value ?? null) as T | null;
+      // نُغذّي خط الأساس من القيمة المقروءة فعلاً (JSONB يُعيد كائناً): أي كتابة
+      // لاحقة مطابقة لها لن تُنقل إلى القاعدة.
+      if (value !== null && value !== undefined) {
+        try { this.writeBaseline.set(key, JSON.stringify(value)); } catch { /* تجاهل */ }
+      }
+      return value;
     } catch (error: any) {
       this.detail = `database_read_failed:${String(error?.code || error?.name || "error").slice(0, 40)}`;
       throw error;
@@ -374,11 +418,17 @@ class PostgresStorageAdapter implements StorageAdapter {
 
   async write<T>(key: string, value: T): Promise<void> {
     if (!this.pool) throw new Error("storage_not_initialized");
+    const serialized = JSON.stringify(value);
+    // كشف التغيّر: لا نُرسل كتابة مطابقة تماماً لآخر قيمة (تُوفّر نقل شبكة Neon).
+    // القاعدة JSONB والقراءة تُعيد كائناً؛ نُقارن النص المولَّد من نفس الكائن.
+    const baseline = this.writeBaseline.get(key);
+    if (baseline !== undefined && sameSerializedValue(baseline, serialized)) return;
     await this.pool.query(
       `INSERT INTO gharabi_state (key, value, updated_at) VALUES ($1, $2::jsonb, now())
        ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()`,
-      [key, JSON.stringify(value)],
+      [key, serialized],
     );
+    this.writeBaseline.set(key, serialized);
     this.healthy = true;
   }
 

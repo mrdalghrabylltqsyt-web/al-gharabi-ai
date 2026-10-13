@@ -531,6 +531,7 @@ import {
   STORAGE_KEY_USAGE,
   STORAGE_KEY_CONTROL,
   STORAGE_KEY_YOUTUBE_QUOTA,
+  DEDUPE_ID_MAX,
   type StorageAdapter,
   type StorageStatus,
 } from "./engine/storage/adapter";
@@ -4599,7 +4600,7 @@ app.post("/api/platforms/telegram/webhook", express.json({limit:"256kb"}), async
     platform: "telegram", events: [telegramEvent], omitKind: true, webhookEventType: "message",
     providerEventId: () => parsed.updateId, seenProviderEventIds: seenUpdates,
     // تخزين الحد الأدنى للحماية من التكرار ثم الحفظ الدائم قبل الإقرار.
-    appendProviderId: () => { (workspace as any).telegramUpdateIds = [...seenUpdates, parsed.updateId].slice(-20000); },
+    appendProviderId: () => { (workspace as any).telegramUpdateIds = [...seenUpdates, parsed.updateId].slice(-DEDUPE_ID_MAX); },
   });
   const comment = created[0];
   const persisted = !lastPersistError;
@@ -4923,7 +4924,7 @@ app.post("/api/platforms/facebook/webhook", requireRawBody, async (req,res)=>{
   const { accepted, duplicates } = await ingestWebhookComments({
     platform:"facebook", events:parsed.events, auditKind:"facebook_inbound_events",
     seenProviderEventIds:(workspace as any).facebookEventIds,
-    appendProviderId:(ev)=>{ (workspace as any).facebookEventIds=[...(workspace as any).facebookEventIds,ev.externalId].slice(-20000); },
+    appendProviderId:(ev)=>{ (workspace as any).facebookEventIds=[...(workspace as any).facebookEventIds,ev.externalId].slice(-DEDUPE_ID_MAX); },
     onEvent:(ev,outcome)=>logFacebookWebhook({kind:ev.kind,externalId:ev.externalId,outcome}),
   });
   const persisted=!lastPersistError;
@@ -5053,7 +5054,7 @@ app.post("/api/platforms/instagram/webhook", requireRawBody, async (req,res)=>{
   const { accepted, duplicates } = await ingestWebhookComments({
     platform:"instagram", events:parsed.events, auditKind:"instagram_inbound_events",
     seenProviderEventIds:(workspace as any).instagramEventIds,
-    appendProviderId:(ev)=>{ (workspace as any).instagramEventIds=[...(workspace as any).instagramEventIds,ev.externalId].slice(-20000); },
+    appendProviderId:(ev)=>{ (workspace as any).instagramEventIds=[...(workspace as any).instagramEventIds,ev.externalId].slice(-DEDUPE_ID_MAX); },
     onEvent:(ev,outcome)=>logInstagramWebhook({kind:ev.kind,externalId:ev.externalId,outcome}),
   });
   const persisted=!lastPersistError;
@@ -5304,7 +5305,7 @@ app.post("/api/platforms/tiktok/webhook", requireRawBody, async (req,res)=>{
     logTikTokWebhook({event:ev.event,externalId:ev.externalId,outcome:"duplicate"});
     return res.status(200).json({success:true,accepted:true,duplicate:true});
   }
-  (workspace as any).tiktokEventIds=[...(workspace as any).tiktokEventIds,ev.externalId].slice(-20000);
+  (workspace as any).tiktokEventIds=[...(workspace as any).tiktokEventIds,ev.externalId].slice(-DEDUPE_ID_MAX);
   (workspace as any).providerEvents.unshift({id:workspaceId("event"),platform:"tiktok",type:ev.event,externalId:ev.externalId,userOpenId:ev.userOpenId,content:ev.content,receivedAt:new Date().toISOString()});
   (workspace as any).providerEvents=(workspace as any).providerEvents.slice(0,WORKSPACE_MAX_PROVIDER_EVENTS);
   // حدث إلغاء التفويض يُعلن الحاجة لإعادة الربط فوراً (لا ادعاء اتصال قائم).
@@ -5711,7 +5712,7 @@ function youtubeOperationKeySeen(key: string): boolean {
 function recordYouTubeOperationKey(key: string): void {
   if (!key) return;
   const keys: string[] = Array.isArray((workspace as any).youtubeOperationKeys) ? (workspace as any).youtubeOperationKeys : [];
-  (workspace as any).youtubeOperationKeys = [...keys, key].slice(-20000);
+  (workspace as any).youtubeOperationKeys = [...keys, key].slice(-DEDUPE_ID_MAX);
 }
 /** يسجّل تعليق YouTube الوارد محلياً بمنع تكرار بمعرّف التعليق (يصمد بعد restart). */
 function ingestYouTubeComment(c: YouTubeComment, videoId: string | null): { duplicate: boolean; record: any } {
@@ -5730,7 +5731,7 @@ function ingestYouTubeComment(c: YouTubeComment, videoId: string | null): { dupl
   (workspace as any).socialComments.unshift(record);
   if ((workspace as any).socialComments.length > WORKSPACE_MAX_SOCIAL_COMMENTS) (workspace as any).socialComments.length = WORKSPACE_MAX_SOCIAL_COMMENTS;
   const ids: string[] = Array.isArray((workspace as any).youtubeCommentIds) ? (workspace as any).youtubeCommentIds : [];
-  (workspace as any).youtubeCommentIds = [...ids, c.commentId].slice(-20000);
+  (workspace as any).youtubeCommentIds = [...ids, c.commentId].slice(-DEDUPE_ID_MAX);
   return { duplicate: false, record };
 }
 
@@ -7449,7 +7450,12 @@ async function runMetaWatcherCycle(trigger: string): Promise<{ ok: boolean; trig
     metaPollingState.lastScanned = (metaPollingState.lastScanned || 0);
     metaPollingLastRun = { newDetected, replied, escalated, skipped, failed, deferred, at: metaPollingState.lastPollAt };
     await persistMetaPollingState();
-    await persistStateDurable();
+    // الكتابة الكاملة للحالة (وهي الأكبر حجماً) تقع **فقط** عند دخول تعليق/رسالة
+    // جديدة فعلياً إلى `socialComments` (newDetected>0). الردود الحقيقية يحفظها
+    // المنفّذ المركزي نفسه (`executeMetaCommentReply`/`executeMetaMessageReply`)،
+    // ودورات «لا جديد» لا تُنقل كائن الحالة الكامل إلى Neon — فينخفض النقل جوهرياً
+    // بلا فقدان أي تغيير فعلي. (كشف التغيّر في المحوّل طبقة أمان ثانية.)
+    if (newDetected > 0) await persistStateDurable();
     return { ok: true, trigger, result: { newDetected, replied, escalated, skipped, failed, deferred } };
   } catch (e: any) {
     metaPollingState.lastError = String(e?.code || e?.name || "cycle_failed").slice(0, 80);
@@ -13369,7 +13375,10 @@ function ensureBackupDirectory() {
 function buildPersistedState() {
   return {
     schemaVersion: STATE_SCHEMA_VERSION,
-    savedAt: new Date().toISOString(),
+    // لا `savedAt` في اللقطة: طابع زمني متغيّر في كل نداء كان يُبطل كشف التغيّر
+    // في المحوّل فيُرسل كائن الحالة الكامل (وهو الأكبر) إلى Neon في كل كتابة بلا
+    // تغيّر فعلي. الحقل غير مقروء في أي مسار (dbBalance يعده «مفتاحاً متقلّباً»
+    // ويتجاهله)، فإزالته تُفعّل تجاوز الكتابة المتطابقة فعلياً بلا فقدان معلومة.
     users: serverUsers,
     audit: auditLog.slice(0, 200),
     jobs: automationJobs.slice(0, 200),
@@ -13404,15 +13413,17 @@ function buildPersistedState() {
       socialEscalations: ((workspace as any).socialEscalations || []).slice(0, 5000),
       socialConversationStates: ((workspace as any).socialConversationStates || []).slice(0, 500),
       // معرّفات تحديثات Telegram لصمود منع التكرار بعد restart (يمنع إعادة معالجة رسالة).
-      telegramUpdateIds: ((workspace as any).telegramUpdateIds || []).slice(0, 20000),
+      // الحدّ DEDUPE_ID_MAX (2000) بدل 20000: يكفي لمنع replay/retry عبر نافذة
+      // زمنية معقولة، ويقلّص حجم كائن الحالة الكامل المُنقل إلى Neon ~10×.
+      telegramUpdateIds: ((workspace as any).telegramUpdateIds || []).slice(-DEDUPE_ID_MAX),
       // معرّفات أحداث Facebook الواردة لصمود منع التكرار بعد restart.
-      facebookEventIds: ((workspace as any).facebookEventIds || []).slice(0, 20000),
-      instagramEventIds: ((workspace as any).instagramEventIds || []).slice(0, 20000),
-      tiktokEventIds: ((workspace as any).tiktokEventIds || []).slice(0, 20000),
+      facebookEventIds: ((workspace as any).facebookEventIds || []).slice(-DEDUPE_ID_MAX),
+      instagramEventIds: ((workspace as any).instagramEventIds || []).slice(-DEDUPE_ID_MAX),
+      tiktokEventIds: ((workspace as any).tiktokEventIds || []).slice(-DEDUPE_ID_MAX),
       // معرّفات تعليقات YouTube الواردة (لمنع إعادة إدخال نفس التعليق) ومفاتيح
       // idempotency لعمليات YouTube (لمنع تكرار الرفع/النشر/الرد) — تصمد بعد restart.
-      youtubeCommentIds: ((workspace as any).youtubeCommentIds || []).slice(0, 20000),
-      youtubeOperationKeys: ((workspace as any).youtubeOperationKeys || []).slice(0, 20000),
+      youtubeCommentIds: ((workspace as any).youtubeCommentIds || []).slice(-DEDUPE_ID_MAX),
+      youtubeOperationKeys: ((workspace as any).youtubeOperationKeys || []).slice(-DEDUPE_ID_MAX),
       providerTokens: (workspace as any).providerTokens,
     }
   };

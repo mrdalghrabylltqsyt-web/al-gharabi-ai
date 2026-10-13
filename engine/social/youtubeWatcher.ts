@@ -40,7 +40,13 @@ export const YOUTUBE_WATCHER_CONTROL_KEYS: ReadonlyArray<keyof YouTubeWatcherCon
 /** نطاق فاصل الأتمتة المسموح (بالدقائق) — لا polling عدواني ولا تعطيل طويل. */
 export const WATCHER_MIN_CADENCE_MINUTES = 1;
 export const WATCHER_MAX_CADENCE_MINUTES = 5;
-export const WATCHER_DEFAULT_CADENCE_MINUTES = 1;
+/**
+ * الفاصل الافتراضي 5 دقائق (الحد الأعلى المسموح أصلاً): يقلّل دورات المراقبة
+ * (وبالتالي نقل بيانات الحالة إلى Neon) 5× بلا فقدان وظيفة. القيمة اختيارية
+ * للمالك ضمن [1..5]، وأي إعداد محفوظ سابق (1) يبقى محترماً — لا نغيّر إعداداً
+ * اتخذه المالك؛ التغيير يقع على الافتراضي عند غياب إعداد.
+ */
+export const WATCHER_DEFAULT_CADENCE_MINUTES = 5;
 
 /**
  * يتحقق من قيمة فاصل (دقائق) قادمة من المستخدم/البيئة. يقبل عدداً صحيحاً
@@ -413,8 +419,8 @@ export function resolveCommentExecution(input: {
 // الإيقاع (cadence) + حالة الـcheckpoint
 // -------------------------------------------------------------
 
-/** الإيقاع الافتراضي: فحص كل دقيقة (60,000ms) لمراقبة 24/7. */
-export const WATCHER_DEFAULT_CADENCE_MS = 60 * 1000;
+/** الإيقاع الافتراضي: فحص كل 5 دقائق (300,000ms) — يقلّل النقل بلا فقدان وظيفة. */
+export const WATCHER_DEFAULT_CADENCE_MS = 5 * 60 * 1000;
 export const WATCHER_MIN_CADENCE_MS = 60 * 1000;
 export const WATCHER_MAX_CADENCE_MS = 60 * 60 * 1000;
 

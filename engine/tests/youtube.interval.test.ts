@@ -89,10 +89,10 @@ async function run(): Promise<void> {
 
     const auth = await loginOwner();
 
-    // 1) الافتراضي/الحالي = 1 دقيقة
+    // 1) الافتراضي/الحالي = 5 دقائق (الفاصل الافتراضي الجديد الآمن)
     let st = await watcherState(auth);
-    check('الحالي افتراضياً = 1 دقيقة', st.cadenceMinutes === 1 && st.controls.cadenceMinutes === 1, `got ${st.cadenceMinutes}`);
-    check('cadenceMs الافتراضي = 60000', st.cadenceMs === 60_000, String(st.cadenceMs));
+    check('الحالي افتراضياً = 5 دقائق', st.cadenceMinutes === 5 && st.controls.cadenceMinutes === 5, `got ${st.cadenceMinutes}`);
+    check('cadenceMs الافتراضي = 300000', st.cadenceMs === 300_000, String(st.cadenceMs));
 
     // 2) قبول 1..5
     for (const m of [1, 2, 3, 4, 5]) {

@@ -161,9 +161,9 @@ function entry(partial: Partial<WatcherProcessedEntry>): WatcherProcessedEntry {
 
 // --- G) الإيقاع (cadence) بحدود آمنة + الجدولة ---
 {
-  check('G: الافتراضي دقيقة واحدة (60,000ms)', normalizeCadenceMs(null) === WATCHER_DEFAULT_CADENCE_MS && WATCHER_DEFAULT_CADENCE_MS === 60000);
+  check('G: الافتراضي 5 دقائق (300,000ms)', normalizeCadenceMs(null) === WATCHER_DEFAULT_CADENCE_MS && WATCHER_DEFAULT_CADENCE_MS === 300000);
   check('G: حد أدنى دقيقة (لا polling عدواني)', normalizeCadenceMs(1) === WATCHER_MIN_CADENCE_MS);
-  check('G: الافتراضي = الحد الأدنى (دقيقة)', WATCHER_DEFAULT_CADENCE_MS === WATCHER_MIN_CADENCE_MS);
+  check('G: الافتراضي فوق الحد الأدنى (5 > 1 دقيقة)', WATCHER_DEFAULT_CADENCE_MS > WATCHER_MIN_CADENCE_MS);
   check('G: حدّ أقصى ساعة', normalizeCadenceMs(99 * 3_600_000) === WATCHER_MAX_CADENCE_MS);
   check('G: قيمة صالحة تمرّ', normalizeCadenceMs(120000) === 120000);
   const now = Date.parse('2026-09-28T12:00:00.000Z');
@@ -323,7 +323,7 @@ function entry(partial: Partial<WatcherProcessedEntry>): WatcherProcessedEntry {
 // --- P) فاصل الأتمتة (وقت الأتمتة): تحقق الحدود + الانعكاس في العرض ---
 {
   const d = defaultWatcherControls();
-  check('P: الافتراضي/الحالي = 1 دقيقة', d.cadenceMinutes === 1);
+  check('P: الافتراضي/الحالي = 5 دقائق', d.cadenceMinutes === 5);
   for (const m of [1, 2, 3, 4, 5]) {
     const v = validateCadenceMinutes(m);
     check(`P: القيمة ${m} مقبولة`, v.ok === true && v.minutes === m);
@@ -336,9 +336,9 @@ function entry(partial: Partial<WatcherProcessedEntry>): WatcherProcessedEntry {
   check('P: النص غير الرقمي مرفوض', validateCadenceMinutes('abc').ok === false && validateCadenceMinutes('2.5').ok === false);
   check('P: النص الرقمي الصحيح مقبول', validateCadenceMinutes('4').ok === true && validateCadenceMinutes('4').minutes === 4);
   check('P: التحويل إلى ms بعد التحقق فقط', cadenceMinutesToMs(5) === 300_000 && cadenceMinutesToMs(1) === 60_000);
-  check('P: التحويل يرفض غير الصالح ويُعيد الافتراضي', cadenceMinutesToMs(0 as any) === 60_000);
+  check('P: التحويل يرفض غير الصالح ويُعيد الافتراضي (5 دقائق)', cadenceMinutesToMs(0 as any) === 300_000);
   check('P: تطبيع قيمة محفوظة صالحة', normalizeWatcherControls({ cadenceMinutes: 3 }).cadenceMinutes === 3);
-  check('P: تطبيع قيمة محفوظة غير صالحة => الافتراضي', normalizeWatcherControls({ cadenceMinutes: 9 }).cadenceMinutes === 1);
+  check('P: تطبيع قيمة محفوظة غير صالحة => الافتراضي', normalizeWatcherControls({ cadenceMinutes: 9 }).cadenceMinutes === 5);
   check('P: توافق خلفي مع cadenceMs المحفوظ', normalizeWatcherControls({ cadenceMs: 240_000 }).cadenceMinutes === 4);
   check('P: العرض يكشف cadenceMs الصحيح', watcherControlsView({ ...d, cadenceMinutes: 5 }).cadenceMs === 300_000);
   check('P: العرض يكشف الفاصل الفعلي عند Kill Switch = 0', watcherControlsView({ ...d, cadenceMinutes: 3, paused: true }).cadenceMs === 0);
