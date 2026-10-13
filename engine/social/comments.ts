@@ -310,6 +310,13 @@ export interface ReplyFactSet {
   /** هل المنتج متوفر فعلاً؟ null = غير معروف. */
   inStock?: boolean | null;
   hasRecordedPromotion?: boolean;
+  /**
+   * المستمسكات/الوثائق المطلوبة للتقسيط كما سجّلها المعرض فعلاً (أسماء فقط).
+   * إن كانت كثيرة تُلخَّص في `requiredDocumentsText`. لا تُخترع أي وثيقة غير مسجّلة.
+   */
+  requiredDocuments?: string[];
+  /** لخّص جاهز للمستمسكات (يُستخدم عند تجاوز عددٍ صغير)، من بيانات مسجّلة فقط. */
+  requiredDocumentsText?: string;
 }
 
 /** سياق المحادثة/الفيديو: يجعل الرد متعلقاً لا قالباً معزولاً. */
@@ -359,6 +366,25 @@ function pickVariant(variants: string[], seed: string, previous: string[]): stri
 function withProduct(name: string | undefined, sentence: (p: string) => string): string {
   const p = (name || '').trim();
   return p ? sentence(p) : sentence('');
+}
+
+/**
+ * لخّص المستمسكات المطلوبة للتقسيط من بيانات المعرض المسجّلة فقط. يعيد جملة عربية
+ * جاهزة تُلحَق برد السعر/القسط، أو '' عند عدم تسجيل أي مستمسك — فلا تُخترع وثيقة
+ * غير مسجّلة. عند تجاوز ثلاثة بنود تُلخَّص في «بيانات أساسية + مستمسكات إضافية».
+ */
+function standardizedDocsClause(f: ReplyFactSet): string {
+  const list = (Array.isArray(f.requiredDocuments) ? f.requiredDocuments : [])
+    .map((d) => String(d || '').trim())
+    .filter(Boolean);
+  const summary = String(f.requiredDocumentsText || '').trim();
+  if (!list.length && !summary) return '';
+  const shown = list.length ? list : [summary];
+  if (shown.length > 3) {
+    return ` المستمسكات المطلوبة: بيانات أساسية و${shown.length} مستمسكات إضافية.`;
+  }
+  if (shown.length === 1) return ` المستمسكات المطلوبة: ${shown[0]}.`;
+  return ` المستمسكات المطلوبة: ${shown.join('، ')}.`;
 }
 
 /**
@@ -458,9 +484,11 @@ export function generateReply(
           // (يمرّره الخادم في monthlyInstallmentText). غيابه ⇒ ذكر السعر وحده.
           if (f.monthlyInstallmentText) {
             usedFacts.push('installment');
+            const docs = standardizedDocsClause(f);
+            if (docs) usedFacts.push('documents');
             return done(withProduct(f.productName, (p) => p
-              ? `هلا بيك، سعر ${p}: ${f.priceText}، والقسط الشهري يبدأ من ${f.monthlyInstallmentText}. تريد نأكدلك التفاصيل؟`
-              : `هلا بيك، السعر: ${f.priceText}، والقسط الشهري يبدأ من ${f.monthlyInstallmentText}. تريد نأكدلك التفاصيل؟`),
+              ? `هلا بيك، سعر ${p}: ${f.priceText}، والقسط الشهري يبدأ من ${f.monthlyInstallmentText}.${docs} تريد نأكدلك التفاصيل؟`
+              : `هلا بيك، السعر: ${f.priceText}، والقسط الشهري يبدأ من ${f.monthlyInstallmentText}.${docs} تريد نأكدلك التفاصيل؟`),
               'price_trusted', 'سعر وخطط تقسيط مسجّلة فعلاً ⇒ يُذكر السعر والقسط المشتقّ من بيانات حقيقية.');
           }
           return done(withProduct(f.productName, (p) => p
