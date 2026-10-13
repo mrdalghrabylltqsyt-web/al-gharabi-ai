@@ -44,7 +44,7 @@ npm install
 npm run dev            # tsx server.ts
 npm run lint           # tsc --noEmit
 npm run build          # vite build + esbuild server.ts -> dist/server.cjs
-npm run final-audit    # node final-audit.mjs (1614 فحصاً)
+npm run final-audit    # node final-audit.mjs (1615 فحصاً)
 npm test               # storage + engine + auth + ... + db + runtime
 ```
 - التشغيل الإنتاجي: `PORT=4517 NODE_ENV=production APP_URL=http://localhost:4517 node dist/server.cjs`
@@ -6144,3 +6144,34 @@ TikTok/Telegram/Threads، ونموذج الجدولة.
 
 **لم يُمسّ:** أي سرّ/مفتاح/OAuth، Gemini/firewall، قاعدة البيانات، DR/الاستعادة، YouTube
 (المراقب/الطابور/التفويض)، Facebook/Instagram/Threads/TikTok، ونموذج الجدولة.
+
+## تشخيص انحراف النشر على Render: auto-deploy يفوّت بعض الدفعات + الحارس كان يفشل صامتاً (2026-10-13)
+
+**العَرَض:** بعد دمج PR #35/#36/#37 على `main`، ظهر الإنتاج (`/api/health.deploy.commit`)
+على commit متأخر (18 كوميتاً)، وبلا كتلة `telegramPolling` — رغم أن الدمج نجح.
+
+**الجذر المُثبت (لا تخمين):**
+1. **auto-deploy فوّت #35 و#36.** توقيت `deploy.startedAt` على الإنتاج أظهر أن Render
+   نشر مرة واحدة عند دمج #37 فقط، ولم يلتقط دمجَي #35 (16:43Z) و#36 (19:01Z). هذا سلوك
+   معروف على خطة Render المجانية: تسليمات webhook المتقطّعة/المؤجّلة تُسقط بعض الدفعات.
+   عند الدمج المتتابع السريع تبقى الخدمة على نسخة أقدم حتى إعادة نشر لاحقة.
+2. **حارس انحراف النشر (`.github/workflows/deploy-drift-watchdog.yml`) كان يفشل صامتاً
+   في كل تشغيل.** خطوة «Report drift» تستخدم `gh issue` **بلا `actions/checkout`**، فيرفض
+   gh تحديد المستودع: `fatal: not a git repository`. لذلك لم تُفتح أي تذكرة رغم رصد
+   الانحراف فعلياً — أي أن التنبيه الذي كان يفترض أن يكشف العطل كان نفسه معطّلاً.
+
+**الإصلاح:**
+- `deploy-drift-watchdog.yml`: إضافة `GH_REPO: ${{ github.repository }}` لخطوة الإبلاغ
+  فيعمل `gh issue` بلا checkout. + خطوة **استرداد تلقائي** اختيارية تُطلق رابط النشر
+  (`secrets.RENDER_DEPLOY_HOOK_URL`) فور رصد انحراف — بلا السرّ تُتخطّى بسلام.
+- `.github/workflows/manual-deploy.yml` (جديد): نشر يدوي (`workflow_dispatch`) عبر نفس
+  الرابط، للاسترداد عند تخطّي auto-deploy.
+- فحص `final-audit` جديد `deploy-drift-watchdog-gh-repo` يمنع عودة الغياب (العدد 1615).
+
+**درس عام:** لا تضع إشعاراً يعتمد على `gh` بلا `GH_REPO` في workflow بلا checkout؛ وإلا
+فشل الإشعار صامتاً وأخفى العطل الذي وُجد لأجله. وتحقق دائماً من `deploy.commit` الحي بعد
+الدمج — «نجاح الدمج» ≠ «نشر فعلي».
+
+**ملاحظة (حد صلاحية):** لا وصول للوكيل إلى Render API/لوحة التحكم في هذه البيئة، ولا رابط
+Deploy Hook مضبوط، فلا يمكن إطلاق نشر من هنا؛ التحقق تم بنداءات حيّة على `/api/health`
+و`/api/readiness` ووجود مسار `/api/agent/telegram/watcher` (401 = موجود).
