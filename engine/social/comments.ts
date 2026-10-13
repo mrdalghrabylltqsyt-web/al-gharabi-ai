@@ -241,6 +241,11 @@ export interface ReplyRecord {
   /** بصمة نص الرد لمنع تكرار نفس الرد. */
   replyFingerprint: string;
   repliedAt: string;
+  /**
+   * مفتاح منع التكرار (اختياري). يُستخدم لتمييز «متابعة مشروعة» على نفس التعليق
+   * عن «إعادة إرسال» لنفس العملية. غيابه = السلوك السابق حرفياً (المفتاح = externalId).
+   */
+  idempotencyKey?: string;
 }
 
 export interface ReplyGuardDecision {
@@ -255,18 +260,26 @@ export function fingerprintReply(text: string): string {
 }
 
 /**
- * بوابة الرد: تمنع الرد المكرر على نفس التعليق، ومنع نفس النص مرات كثيرة،
+ * بوابة الرد: تمنع الرد المكرر على نفس العملية، ومنع نفس النص مرات كثيرة،
  * وبذلك تمنع تكرار المعالجة بسبب webhook replay أو retry.
+ *
+ * الفصل المُصلَح: منع التكرار يُفتّح على `idempotencyKey` (ومفتاحه الافتراضي هو
+ * `externalId` حين لا يُمرَّر). هكذا تبقى إعادة إرسال نفس الرد على نفس التعليق
+ * محجوبة كما كانت، بينما متابعة العقل التجاري المشروعة (مفتاح مميّز `fu1`/`fu2`)
+ * لا تُصنَّف «رداً مكرراً» فتُسلَّم فعلاً.
  */
 export function evaluateReplyGuard(input: {
   externalId: string;
   replyText: string;
   history: ReplyRecord[];
+  /** مفتاح منع التكرار؛ الافتراضي `externalId` (يحافظ على السلوك السابق حرفياً). */
+  idempotencyKey?: string;
   /** أقصى عدد مرات مسموح بها لنفس نص الرد. */
   maxIdenticalReplies?: number;
 }): ReplyGuardDecision {
   const fingerprint = fingerprintReply(input.replyText);
   const maxIdentical = input.maxIdenticalReplies ?? 2;
+  const idemKey = (typeof input.idempotencyKey === 'string' && input.idempotencyKey.trim()) ? input.idempotencyKey.trim() : input.externalId;
 
   if (!input.externalId) {
     return { allowed: false, reason: 'معرّف التعليق لدى المنصة مطلوب لمنع الرد المكرر.', fingerprint };
@@ -275,8 +288,9 @@ export function evaluateReplyGuard(input: {
     return { allowed: false, reason: 'نص الرد فارغ.', fingerprint };
   }
 
-  // منع الرد مرتين على نفس التعليق (يشمل إعادة إرسال نفس الحدث).
-  if (input.history.some((r) => r.externalId === input.externalId)) {
+  // منع الرد مرتين على نفس العملية (يشمل إعادة إرسال نفس الحدث). السجل القديم بلا
+  // مفتاح صريح يُعامل بمفتاحه الافتراضي (externalId) فيبقى منع التكرار سليماً.
+  if (input.history.some((r) => (r.idempotencyKey || r.externalId) === idemKey)) {
     return { allowed: false, reason: 'تم الرد على هذا التعليق مسبقاً.', fingerprint };
   }
 

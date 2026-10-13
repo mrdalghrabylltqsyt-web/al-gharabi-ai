@@ -5,7 +5,7 @@ import {
   CloudUpload, Database, ServerCog, Youtube, ShieldCheck, Activity, Workflow,
   ListChecks, HardDrive, KeyRound, Gem, Facebook, Instagram, Twitter, Globe,
   MessageCircle, Boxes, Bell, RefreshCw, CreditCard, Layers,
-  RadioTower, Cpu, Network,
+  RadioTower, Cpu, Network, Power,
 } from 'lucide-react';
 import { salesTabEnabled, operationsTabEnabled } from './scopeFlags';
 
@@ -368,6 +368,7 @@ export const NAV_SECTIONS: NavSection[] = [
           { id: 'central_agent', label: 'المهام المجدولة وقوائم الانتظار', desc: 'مهام الوكيل الخلفية وحالاتها', icon: ListChecks, keywords: ['jobs', 'queue'] },
           { id: 'calendar', label: 'جدولة المنشورات والمواعيد', desc: 'مواعيد النشر والمتابعة', icon: Calendar, keywords: ['schedule'] },
           { id: 'youtube_operations', label: 'الأتمتة الدورية (YouTube 24/7)', desc: 'دورة داخلية بالفاصل 1..5 دقائق + إيقاف/استئناف', icon: Youtube, ownerOnly: true, keywords: ['watcher', 'cadence'] },
+          { id: 'commercial_kill_switch', label: 'العقل التجاري — مفتاح الإيقاف الطارئ', desc: 'مفتاح رئيسي واحد: إيقاف/استئناف شامل للعقل التجاري', icon: Power, ownerOnly: true, keywords: ['commercial', 'kill switch', 'إيقاف', 'العقل التجاري'] },
         ],
       },
       {

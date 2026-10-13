@@ -1659,6 +1659,21 @@ ${payload.topic || payload.productName || 'أنظمة وحلول التقسيط 
     if (!res.ok || !data.success) throw new Error(data.error || 'تعذر تحميل حالة مراقب ردود Meta');
     return data.watcher;
   },
+  // --- العقل التجاري: مفتاح الإيقاف الطارئ (Kill Switch) — للمالك فقط ---
+  /** قراءة حالة مفتاح الإيقاف الطارئ للعقل التجاري (مفتاح رئيسي واحد). */
+  async getCommercialKillSwitch(): Promise<any> {
+    const res = await fetch('/api/agent/commercial/kill-switch', { headers: getAuthHeaders() });
+    const data = await res.json();
+    if (!res.ok || !data.success) throw new Error(data.error || 'تعذر تحميل حالة مفتاح العقل التجاري');
+    return data;
+  },
+  /** تبديل مفتاح الإيقاف الطارئ للعقل التجاري (true = تفعيل صريح، false = إيقاف فوري). */
+  async setCommercialKillSwitch(enabled: boolean, reason = ''): Promise<any> {
+    const res = await fetch('/api/agent/commercial/kill-switch', { method: 'POST', headers: getAuthHeaders(), body: JSON.stringify({ enabled, reason }) });
+    const data = await res.json();
+    if (!res.ok || !data.success) throw new Error(data.error || 'تعذر تبديل مفتاح العقل التجاري');
+    return data;
+  },
   /** تحديث تحكم مراقب Meta (autoReply/paused/humanReviewMode/cadenceMinutes) — للمالك. */
   async setMetaWatcherControls(controls: Record<string, boolean | number>): Promise<any> {
     const res = await fetch('/api/agent/meta/watcher/controls', { method: 'POST', headers: getAuthHeaders(), body: JSON.stringify(controls) });
