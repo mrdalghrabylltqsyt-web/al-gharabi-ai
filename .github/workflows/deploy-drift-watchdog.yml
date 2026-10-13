@@ -52,6 +52,9 @@ jobs:
         if: steps.cmp.outputs.drift == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # GH_REPO ضروري: الخطوة لا تُشغّل actions/checkout، فبلا هذا المتغيّر
+          # يرفض gh تحديد المستودع ("not a git repository") ويفشل الحارس صامتاً.
+          GH_REPO: ${{ github.repository }}
           HEAD: ${{ steps.cmp.outputs.head }}
           PROD: ${{ steps.cmp.outputs.prod }}
         run: |
@@ -64,3 +67,22 @@ jobs:
           else
             gh issue create --title "⚠️ انحراف النشر: الإنتاج لا يخدم آخر commit على main" --body "$body"
           fi
+
+      # استرداد تلقائي (اختياري): إن ضُبط سرّ رابط النشر (Deploy Hook) نُطلقه فوراً
+      # عند الانحراف، فيُعالَج التخطّي الصامت بلا تدخّل يدوي. بلا السرّ تُتخطّى بسلام.
+      - name: Auto-recover deploy (optional hook)
+        if: steps.cmp.outputs.drift == 'true'
+        env:
+          HOOK: ${{ secrets.RENDER_DEPLOY_HOOK_URL }}
+        run: |
+          if [ -z "$HOOK" ]; then
+            echo "RENDER_DEPLOY_HOOK_URL غير مضبوط — لا استرداد تلقائي (الإشعار أُرسل فقط)."
+            exit 0
+          fi
+          code=$(curl -s -o /dev/null -w "%{http_code}" --max-time 30 -X POST "$HOOK")
+          echo "Render deploy hook => HTTP $code"
+          # أي رمز 2xx = قُبل طلب النشر. غير ذلك يُفشل الخطوة ليظهر للمالك.
+          case "$code" in
+            2*) echo "أُطلق طلب نشر تعافٍ." ;;
+            *) echo "::error::فشل إطلاق نشر التعافي (HTTP $code)"; exit 1 ;;
+          esac

@@ -3318,6 +3318,17 @@ add('watcher-advisory-not-authority',
     return allExpected && hitsHealth && !anyFullDay;
   })(), 'نبضة الإيقاظ محصورة بنافذة 18 ساعة (كل جدول cron = "*/10 3-20 * * *") وتستهدف /api/health فقط، بلا أي جدول يغطّي 24 ساعة');
 
+  // حارس انحراف النشر: خطوة إنشاء التذكرة تستخدم gh CLI بلا actions/checkout، فيجب
+  // ضبط GH_REPO وإلا يفشل gh ("not a git repository") ويفشل الحارس صامتاً بلا إشعار —
+  // وهو بالضبط ما أخفى انحراف النشر فعلياً. يمنع هذا الفحص عودة الغياب.
+  add('deploy-drift-watchdog-gh-repo', (() => {
+    const wfPath = '.github/workflows/deploy-drift-watchdog.yml';
+    if (!fs.existsSync(path.join(root, wfPath))) return false;
+    const wf = read(wfPath);
+    // خطوة إنشاء التذكرة تحمل GH_REPO صريحاً (لأن لا checkout)، وتستخدم gh issue.
+    return /GH_REPO:\s*\$\{\{\s*github\.repository\s*\}\}/.test(wf) && wf.includes('gh issue create');
+  })(), 'حارس انحراف النشر يضبط GH_REPO قبل استخدام gh (بلا checkout) فلا يفشل صامتاً');
+
   // -------------------------------------------------------------------------
   // SCOPE ISOLATION (LEGACY ERP): أسطح Inventory/CRM/Finance/Customers-360/
   // Purchases/Reports خارج نطاق المشروع المعلن (سوشيال + AI + تسويق). تمنع هذه

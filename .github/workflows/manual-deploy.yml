@@ -1,0 +1,39 @@
+# نشر يدوي — استرداد عند تخطّي/فشل auto-deploy على Render.
+#
+# الاستخدام: من تبويب Actions → "Manual Deploy (Render)" → Run workflow.
+# لا يكلف شيئاً (GitHub Actions مجاني للريبو العام، وطلب واحد خفيف على رابط Render).
+# يتطلب سرّ المستودع RENDER_DEPLOY_HOOK_URL (رابط Deploy Hook من لوحة Render →
+# الخدمة → Settings → Deploy Hook). بلا السرّ يفشل صراحةً بدل ادّعاء نجاح.
+name: Manual Deploy (Render)
+
+on:
+  workflow_dispatch:
+    inputs:
+      reason:
+        description: "سبب النشر اليدوي (اختياري)"
+        required: false
+        default: "استرداد يدوي"
+
+permissions:
+  contents: read
+
+jobs:
+  trigger:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger Render deploy hook
+        env:
+          HOOK: ${{ secrets.RENDER_DEPLOY_HOOK_URL }}
+          REASON: ${{ github.event.inputs.reason }}
+        run: |
+          if [ -z "$HOOK" ]; then
+            echo "::error::RENDER_DEPLOY_HOOK_URL غير مضبوط — أضِفه في Settings → Secrets and variables → Actions."
+            exit 1
+          fi
+          echo "السبب: $REASON"
+          code=$(curl -s -o /dev/null -w "%{http_code}" --max-time 30 -X POST "$HOOK")
+          echo "Render deploy hook => HTTP $code"
+          case "$code" in
+            2*) echo "أُطلق طلب النشر على Render بنجاح." ;;
+            *) echo "::error::فشل إطلاق النشر (HTTP $code)"; exit 1 ;;
+          esac
