@@ -44,7 +44,7 @@ npm install
 npm run dev            # tsx server.ts
 npm run lint           # tsc --noEmit
 npm run build          # vite build + esbuild server.ts -> dist/server.cjs
-npm run final-audit    # node final-audit.mjs (1568 فحصاً)
+npm run final-audit    # node final-audit.mjs (1574 فحصاً)
 npm test               # storage + engine + auth + ... + db + runtime
 ```
 - التشغيل الإنتاجي: `PORT=4517 NODE_ENV=production APP_URL=http://localhost:4517 node dist/server.cjs`
@@ -5899,3 +5899,47 @@ permitted if the replier has been explicitly summoned by the original post's aut
 **نطاق (تصحيحي):** «Lead Capture» خارج نطاق المشروع المعلن (سوشيال + AI + تسويق). البنية موجودة
 لكنها معزولة افتراضياً بـ404 `SCOPE_DISABLED` (`/api/crm`, `/api/customers/360`) خلف
 `GHARABI_ENABLE_LEGACY_ERP_SCOPE` (تحقق حي: 404). لا تُفعَّل بلا قرار مالك صريح.
+
+## مؤشرات الحصص المجانية في /api/health — نقل Neon + مساحة Drive (عرض فقط) — 2026-10-05
+
+موافقة المالك الصريحة على إضافة مؤشّرَي مراقبة **صادقين بلا أسرار** لكلٍّ من حصة نقل
+بيانات Neon الشهرية ومساحة Google Drive، بنفس أسلوب مؤشرات `/api/health` القائمة
+(`youtubeQuota`/`geminiUsage.firewall`): **قيمة + نسبة + حد + تحذير صريح عند الاقتراب**،
+مع التزام صارم: **بلا أي ترقية مدفوعة، وبلا أي تغيير سلوكي في النسخ الاحتياطي أو الكتابة،
+وبلا أي سرّ في المخرَج.** مؤشر **عرض فقط** — لا منطق حجب جديد ولا تعديل إيقاع.
+
+**الوحدة `engine/ops/freeTierUsage.ts` (منطق خالص قابل للاختبار، بلا شبكة/أسرار/AI):**
+- `FREE_TIER_QUOTAS` (حدود مخطّطات مجانية **موثّقة**: Neon نقل ~5 GiB/شهر، Drive 15 GiB) —
+  تظهر في المخرَج كي لا تُخفى الفرضية.
+- الفصل الصريح `basis`: **`measured`** (قياس داخلي فعلي) مقابل **`estimated`** (تقدير
+  بحدود المخطّط) — فلا يُخلط قياس بتقدير.
+- `resolveUsageAlertThreshold` (عتبة تحذير مقصوصة [1..95]، افتراضياً 80)، `monthKey`/
+  `rollMonthlyUsage`/`accrueTransfer` (تراكم شهري idempotent يُصفَّر عند تغيّر الشهر)،
+  `buildNeonTransferIndicator`، `buildDriveQuotaIndicator`.
+
+**نقل Neon — قياس داخلي فعلي (لا قراءة API):** `engine/storage/adapter.ts` يحمل عدّاداً
+خفيفاً (`storageWriteAccounting`): البايتات المكتوبة فعلاً إلى الخلفية بعد كشف التغيّر (لا
+الكتابة المتطابقة). الخادم يتراكمها شهرياً (يُحفظ في `STORAGE_KEY_USAGE_INDICATORS` عبر
+المحوّل، بكتابة **مؤجّلة/مجمَّعة** 5s لتفادي أثر عكسي على نفس المورد)، ويقارنها بحدّ النقل
+الشهري الموثّق. **لا قراءة Neon API مطلوبة** (وحركة القراءة/الاعتماديات غير مشمولة — تقدير
+متحفظ، موثّق صراحةً في `note`).
+
+**مساحة Drive — قياس فعلي من قراءة قائمة (بلا قراءة إضافية):** استدعاء `about.get`
+(`storageQuota`) كان يقع أصلاً داخل كل نسخة/مزامنة (`runCurrentMirror`). الآن النتيجة
+تُلتقط عبر `recordDriveQuota(...)` في `engine/dr/routes.ts` وتُحفظ في `driveQuota` (تصمد
+بعد restart). عند غياب قراءة حيّة يبقى المؤشّر `estimated` بـ`usedBytes=null` (بلا اختراع).
+`/api/dr/health.quota` أُثرِي بالقراءة الحيّة المخزَّنة. **لم يُضَف أي استدعاء شبكي جديد.**
+
+**الربط:** `freeTierUsageHealthBlock()` موصول في `/api/health` و`/api/readiness` (كتلة
+`freeTierUsage`: `scope:'free-tier-only'`، `neonTransfer`، `driveStorage`، `quotas`،
+`note`) — بلا أي سرّ وبلا حقل عميل. الحارس `guardPublicHealthPayload` يسري عليها. متغيّر
+اختياري `FREE_TIER_USAGE_ALERT_PERCENT` (عتبة التحذير، مقصوصة).
+
+**اختبار:** `engine/tests/free.tier.usage.test.ts` (`npm run test:free-tier-usage`، 36 فحصاً،
+مُدرَج في `npm test`): التراكم/idempotency/تصفير الشهر، العتبة المقصوصة، `measured` مقابل
+`estimated`، عدّاد الكتابة الفعلي (الكتابة المتطابقة لا تُعدّ)، وخلوّ المخرَج من أي حقل عميل
+ممنوع. فحوص final-audit الستة الجديدة: `free-tier-usage-module` … `free-tier-usage-no-secret`
+(**1574 إجمالاً**).
+
+**لم يُمسّ:** أي سرّ/مفتاح/OAuth، ولا منطق النسخ الاحتياطي أو إيقاعه، ولا قاعدة البيانات أو
+كتابتها، ولا Gemini، ولا بقية المنصات، ولا نموذج الجدولة.

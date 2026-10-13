@@ -68,7 +68,7 @@ export interface DriveRoutesDeps {
   requireOwner: express.RequestHandler;
   env?: Record<string, string | undefined>;
   /** يقرأ حالة DR المحفوظة (states + رمز تجديد مشفّر + آخر خطأ + حالة النسخ + هوية مجلدات Drive). */
-  loadControl: () => { driveOAuthStates?: any[]; driveRefreshToken?: any; driveLastError?: string | null; driveBackup?: any; driveFolderIdentity?: any; driveMirror?: any; driveReconciliation?: any; driveAutoBackup?: any; driveLease?: any; driveAlerts?: any; driveDbBalance?: any };
+  loadControl: () => { driveOAuthStates?: any[]; driveRefreshToken?: any; driveLastError?: string | null; driveBackup?: any; driveFolderIdentity?: any; driveMirror?: any; driveReconciliation?: any; driveAutoBackup?: any; driveLease?: any; driveAlerts?: any; driveDbBalance?: any; driveQuota?: any };
   /** يثبّت جزءاً من حالة DR عبر محوّل الحالة (يصمد بعد restart). */
   persistControl: (partial: Record<string, any>) => void;
   /** عميل Drive اختياري (للاختبار). إن غاب يُبنى من البيئة. */
@@ -135,6 +135,31 @@ export function registerDriveRoutes(app: express.Express, deps: DriveRoutesDeps)
   function control(): ReturnType<DriveRoutesDeps['loadControl']> {
     if (!loaded) loaded = deps.loadControl() || {};
     return loaded;
+  }
+
+  /**
+   * يثبّت مساحة Drive المقروءة فعلاً في عملية نسخ/مزامنة قائمة — **بلا أي قراءة
+   * إضافية**. مؤشر عرض فقط لـ/api/health؛ لا يمنع ولا يغيّر أي كتابة/نسخ.
+   *
+   * لا يكتب إن لم تتغيّر القيم (usageBytes/limitBytes) — يمنع أي تضخيم كتابة على
+   * مسار قراءة متكرر (/api/dr/status)، فلا أثر على النقل الفعلي إلى Neon.
+   */
+  function recordDriveQuota(quota: any, source: string): void {
+    if (!quota || quota.usageBytes == null || !Number.isFinite(Number(quota.usageBytes))) return;
+    const usageBytes = Number(quota.usageBytes);
+    const limitBytes = quota.limitBytes != null && Number.isFinite(Number(quota.limitBytes)) ? Number(quota.limitBytes) : null;
+    const current = control().driveQuota || null;
+    if (current && Number(current.usageBytes) === usageBytes && (current.limitBytes ?? null) === (limitBytes ?? null)) return;
+    deps.persistControl({
+      driveQuota: {
+        usageBytes,
+        limitBytes,
+        designBytes: DESIGN_QUOTA_BYTES,
+        headroomBytes: QUOTA_HEADROOM_BYTES,
+        at: now(),
+        source,
+      },
+    });
   }
 
   // ذاكرة تشخيص الرمز: تمنع طلب تجديد متكرراً عند كل نداء صحة (الفحص العام).
@@ -281,6 +306,7 @@ export function registerDriveRoutes(app: express.Express, deps: DriveRoutesDeps)
       const store = buildStore(client, { readOnlyStructure: true });
       const sync = new DriveSync({ store, client });
       const quota = await sync.readQuota();
+      recordDriveQuota({ usageBytes: quota.ok ? (quota as any).driveUsageBytes : null, limitBytes: (quota as any).limitBytes ?? null }, 'dr_status_read');
       const current = await store.readCurrentManifest();
       const points = await store.listRestorePoints();
       const dumps = await store.listDbDumps();
@@ -594,6 +620,7 @@ export function registerDriveRoutes(app: express.Express, deps: DriveRoutesDeps)
         try {
           mirror = await runCurrentMirror({ store, files, commit: result.commit ?? null, previousMirror: control().driveMirror || null, currentFiles: control().driveMirror?.files || [], now: startedAt });
           if (mirror.state === 'synced') {
+            recordDriveQuota(mirror.quota, 'backup_current_mirror');
             control().driveMirror = {
               version: mirror.mirrorManifest?.version || mirror.headVersion || 1,
               treeHash: mirror.treeHash,
@@ -787,7 +814,17 @@ export function registerDriveRoutes(app: express.Express, deps: DriveRoutesDeps)
         callbackRoute: '/api/dr/drive/callback',
         authUrlRoute: '/api/dr/drive/auth-url',
         rp001Commit: RP_001_COMMIT,
-        quota: { designBytes: DESIGN_QUOTA_BYTES, headroomBytes: QUOTA_HEADROOM_BYTES },
+        quota: (() => {
+          const stored = control().driveQuota || null;
+          return {
+            designBytes: DESIGN_QUOTA_BYTES,
+            headroomBytes: QUOTA_HEADROOM_BYTES,
+            usageBytes: stored?.usageBytes ?? null,
+            limitBytes: stored?.limitBytes ?? null,
+            at: stored?.at ?? null,
+            source: stored?.source ?? null,
+          };
+        })(),
         // لا نُعلن جهوزية النسخ إلا بعد إثبات تجديد فعلي ناجح (لا مجرد وجود رمز).
         backupReady: readiness.authorized && !refreshFailed,
         backupRoute: '/api/dr/backup',
@@ -1053,6 +1090,7 @@ export function registerDriveRoutes(app: express.Express, deps: DriveRoutesDeps)
         deps.persistControl({ driveMirror: control().driveMirror });
       }
       if (result.state === 'synced') {
+        recordDriveQuota(result.quota, 'sync_current_mirror');
         control().driveMirror = {
           version: result.mirrorManifest?.version || result.headVersion || 1,
           treeHash: result.treeHash,

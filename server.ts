@@ -527,14 +527,23 @@ import {
   createStorageAdapter,
   isPooledPostgresEndpoint,
   isEphemeralHost,
+  storageWriteAccounting,
   STORAGE_KEY_STATE,
   STORAGE_KEY_USAGE,
   STORAGE_KEY_CONTROL,
   STORAGE_KEY_YOUTUBE_QUOTA,
+  STORAGE_KEY_USAGE_INDICATORS,
   DEDUPE_ID_MAX,
   type StorageAdapter,
   type StorageStatus,
 } from "./engine/storage/adapter";
+import {
+  accrueTransfer,
+  buildDriveQuotaIndicator,
+  buildNeonTransferIndicator,
+  resolveUsageAlertThreshold,
+  type FreeTierUsageState,
+} from "./engine/ops/freeTierUsage";
 import { SESSION_TTL_MS, signSession, verifySession, type SessionPayload } from "./engine/auth/sessions";
 import { CHALLENGE_TTL_MS, issueChallengeCode, matchChallengeWindow } from "./engine/auth/challenge";
 import { isScheduleInFuture, normalizeScheduleInput, wallClockToEpoch } from "./src/utils/scheduleTime";
@@ -820,6 +829,81 @@ const storageAdapter: StorageAdapter = createStorageAdapter({
   databaseUrl: process.env.DATABASE_URL,
   ephemeralHost: isEphemeralHost(),
 });
+
+// ------------------------------------------------------------------
+// مؤشرات استهلاك الحصص المجانية (عرض فقط، بلا حجب ولا سرّ) — دفعة مستقلة.
+// نقل Neon قياس داخلي فعلي (بايتات الكتابة الفعلية عبر storageWriteAccounting)،
+// ومساحة Drive تُقرأ أصلاً في عمليات النسخ/المزامنة القائمة (بلا قراءة إضافية).
+// لا يمنع هذا أي كتابة/نسخة ولا يغيّر أي إيقاع — مجرد عرض.
+// ------------------------------------------------------------------
+const USAGE_ALERT_THRESHOLD = resolveUsageAlertThreshold(process.env.FREE_TIER_USAGE_ALERT_PERCENT);
+const freeTierUsageState: { transferBytesMonth: number; transferBytesSinceBoot: number; month: string | null; updatedAt: string | null } = {
+  transferBytesMonth: 0,
+  transferBytesSinceBoot: 0,
+  month: null,
+  updatedAt: null,
+};
+let usagePersistQueued = false;
+
+/** يقرأ تراكم الاستهلاك المحفوظ (يصمد بعد restart) — قيمة عرض لا حكم. */
+function applyFreeTierUsageSnapshot(raw: any): void {
+  if (!raw || typeof raw !== "object") return;
+  freeTierUsageState.transferBytesMonth = Number.isFinite(Number(raw.transferBytesMonth)) ? Number(raw.transferBytesMonth) : 0;
+  // عدّاد الكتابة داخل العملية يبدأ من الصفر في كل تشغيل، فنصفّره هنا كي يحسب
+  // accrueTransfer فرق هذه العملية فقط بلا ازدواج (لا يتجاوز الواقع أبداً).
+  freeTierUsageState.transferBytesSinceBoot = 0;
+  freeTierUsageState.month = typeof raw.month === "string" ? raw.month : null;
+  freeTierUsageState.updatedAt = typeof raw.updatedAt === "string" ? raw.updatedAt : null;
+}
+
+/**
+ * يحدّث تقدّم نقل Neon من عدّاد الكتابة الفعلي (idempotent: يضيف الفرق فقط).
+ * يُحفظ عبر محوّل الحالة بأسلوب مؤجّل (coalesced) فلا يضيف كتابةً لكل كتابة —
+ * لتجنّب أثر عكسي على نفس المورد الذي نراقبه.
+ */
+function refreshFreeTierUsage(): void {
+  const account = storageWriteAccounting();
+  const next = accrueTransfer(freeTierUsageState as FreeTierUsageState, account.bytesWrittenSinceStart, new Date().toISOString());
+  freeTierUsageState.transferBytesMonth = next.transferBytesMonth;
+  freeTierUsageState.transferBytesSinceBoot = next.transferBytesSinceBoot;
+  freeTierUsageState.month = next.month;
+  freeTierUsageState.updatedAt = next.updatedAt;
+  if (!usagePersistQueued && storageReady) {
+    usagePersistQueued = true;
+    const t = setTimeout(() => {
+      usagePersistQueued = false;
+      void storageAdapter.write(STORAGE_KEY_USAGE_INDICATORS, { ...freeTierUsageState }).catch(() => { /* مؤشر عرض: فشل الحفظ لا يُسقط الخدمة */ });
+    }, 5000);
+    (t as any).unref?.();
+  }
+}
+
+/** كتلة مؤشرات الحصص المجانية العامة (بلا سرّ) — عرض فقط في /api/health. */
+function freeTierUsageHealthBlock(): any {
+  refreshFreeTierUsage();
+  const backend = storageAdapter.backend;
+  const neonTransferBytes = backend === "postgres" ? freeTierUsageState.transferBytesMonth : 0;
+  const neon = buildNeonTransferIndicator({ transferBytesMonth: neonTransferBytes, alertThresholdPercent: USAGE_ALERT_THRESHOLD, backend });
+  const storedQuota = drControl.driveQuota || null;
+  const liveRead = Boolean(storedQuota && storedQuota.source === "backup_current_mirror");
+  const drive = buildDriveQuotaIndicator({
+    usageBytes: storedQuota?.usageBytes ?? null,
+    limitBytes: storedQuota?.limitBytes ?? null,
+    liveRead,
+    alertThresholdPercent: USAGE_ALERT_THRESHOLD,
+  });
+  return {
+    scope: "free-tier-only",
+    updatedAt: new Date().toISOString(),
+    note: 'مؤشرات عرض فقط: لا تحجب أي عملية ولا تغيّر أي إيقاع. نقل Neon قياس داخلي فعلي (بايتات الكتابة)، ومساحة Drive قياس فعلي عند النسخة/المزامنة وإلا تقدير موثّق. الحدود من مخطّطات Neon/Drive المجانية.',
+    neonTransfer: neon,
+    driveStorage: drive,
+    quotas: {
+      neonMonthlyTransferBytes: 5 * 1024 * 1024 * 1024,
+      driveStorageBytes: 15 * 1024 * 1024 * 1024,
+    },
+  };
+}
 
 // حالة الكتابة تُقرأ من المخزّن الفعلي، لا من فحص مجلد منفصل.
 const STATE_WRITABLE = () => storageAdapter.status().writable;
@@ -5601,7 +5685,7 @@ let youtubeDelegationState: YouTubeDelegation = defaultYouTubeDelegation();
 // المنظومة. لا تُقرأ DATABASE_URL ولا تُرفع قاعدة بيانات خام. تُحفظ هنا فقط
 // حالات CSRF ورمز التجديد المشفّر وآخر خطأ — كلها عبر محوّل الحالة.
 // -------------------------------------------------------------
-const drControl: { driveOAuthStates: any[]; driveRefreshToken: any; driveLastError: string | null; driveBackup: any; driveFolderIdentity: any; driveMirror: any; driveReconciliation: any; driveAutoBackup: any; driveLease: any; driveAlerts: any; driveDbBalance: any; driveMarketingFolderIdentity: any } = {
+const drControl: { driveOAuthStates: any[]; driveRefreshToken: any; driveLastError: string | null; driveBackup: any; driveFolderIdentity: any; driveMirror: any; driveReconciliation: any; driveAutoBackup: any; driveLease: any; driveAlerts: any; driveDbBalance: any; driveMarketingFolderIdentity: any; driveQuota: any } = {
   driveOAuthStates: [],
   driveRefreshToken: null,
   driveLastError: null,
@@ -5613,6 +5697,9 @@ const drControl: { driveOAuthStates: any[]; driveRefreshToken: any; driveLastErr
   driveLease: null,
   driveAlerts: {},
   driveDbBalance: null,
+  // مساحة Drive المقروءة فعلاً في نسخة/مزامنة (سجل عرض فقط، بلا سرّ) — مؤشر
+  // الاستهلاك المجاني في /api/health. لا يُقرأ منفصلاً (بلا قراءة إضافية).
+  driveQuota: null,
   // معرّف مجلد Drive التسويقي («al-gharabi-ai-marketing») — منفصل تماماً عن
   // مجلد DR (driveFolderIdentity أعلاه). يُستخدم فقط لاستضافة فيديوهات علنية
   // (Task #21/videoPublicHosting)؛ لا صلة له بالنسخ الاحتياطي أو الأسرار.
@@ -11743,6 +11830,8 @@ async function bootstrapStorage(): Promise<void> {
       decisionLedger = normalizeDecisionLedger(await storageAdapter.read<any>(STORAGE_KEY_DECISION_LEDGER));
       const media = await storageAdapter.read<any>(CONTENT_MEDIA_KEY);
       if (media) applyContentMediaState(media);
+      const freeTierUsage = await storageAdapter.read<any>(STORAGE_KEY_USAGE_INDICATORS);
+      applyFreeTierUsageSnapshot(freeTierUsage);
     } catch (error: any) {
       storageInitError = String(error?.code || error?.name || "state_read_failed").slice(0, 60);
       return;
@@ -11761,6 +11850,7 @@ async function bootstrapStorage(): Promise<void> {
     if (metaPolling) applyMetaPollingStateSnapshot(metaPolling);
     const media = storageAdapter.readSync<any>(CONTENT_MEDIA_KEY);
     if (media) applyContentMediaState(media);
+    applyFreeTierUsageSnapshot(storageAdapter.readSync<any>(STORAGE_KEY_USAGE_INDICATORS));
   }
   // الجهوزية تُعلن قبل مزامنة البصمة كي تُحفظ حالة التحكّم فعلاً عند أول إقلاع.
   storageReady = true;
@@ -11860,6 +11950,8 @@ function applyControlSnapshot(control: any): void {
   drControl.driveMirror = control.driveMirror && typeof control.driveMirror === "object" ? control.driveMirror : null;
   drControl.driveReconciliation = control.driveReconciliation && typeof control.driveReconciliation === "object" ? control.driveReconciliation : null;
   drControl.driveAutoBackup = control.driveAutoBackup && typeof control.driveAutoBackup === "object" ? control.driveAutoBackup : null;
+  // مساحة Drive المقروءة فعلاً في نسخة/مزامنة (مؤشر عرض فقط، بلا سرّ).
+  drControl.driveQuota = control.driveQuota && typeof control.driveQuota === "object" ? control.driveQuota : null;
   // PROC-01: قفل دوام النسخة/المزامنة (owner + انتهاء فقط، بلا سرّ).
   drControl.driveLease = control.driveLease && typeof control.driveLease === "object" ? control.driveLease : null;
   // تنبيهات DR (منع تكرار الإشعار) وتوازن قاعدة البيانات — تصمد بعد restart، بلا سرّ.
@@ -11925,6 +12017,8 @@ function buildControlState() {
     driveAutoBackup: drControl.driveAutoBackup,
     // PROC-01: قفل دوام النسخة/المزامنة (يمنع نسختين متزامنتين عبر العمليات).
     driveLease: drControl.driveLease,
+    // مساحة Drive المقروءة فعلاً (مؤشر عرض فقط، بلا سرّ) — تصمد بعد restart.
+    driveQuota: drControl.driveQuota,
     // تنبيهات DR (منع تكرار الإشعار) وتوازن قاعدة البيانات — تصمد بعد restart، بلا سرّ.
     driveAlerts: drControl.driveAlerts,
     driveDbBalance: drControl.driveDbBalance,
@@ -13907,6 +14001,8 @@ app.get("/api/readiness", (_req, res) => {
     metaPolling: metaPollingPublicStatus(),
     // حارس حصة YouTube Data API: حالة عامة فقط (عتبة/استنفاد/نسبة) بلا بيانات عميل.
     youtubeQuota: youtubeQuotaStatusSummary(),
+    // مؤشرات الحصص المجانية (نقل Neon + مساحة Drive): عرض فقط بلا حجب وبلا سرّ.
+    freeTierUsage: freeTierUsageHealthBlock(),
     // محرّك الاستقبال الموحّد لكل المنصات العشر: حقول تقنية فقط (الحالة/عمق
     // الطابور/آخر استقبال/القنوات/العدّادات). **لا** اسم حساب ولا نص تعليق ولا نص
     // رد — التفاصيل للمالك عبر /api/social/manager/ingestion.
@@ -14513,6 +14609,8 @@ app.get("/api/health", (_req, res) => {
     metaPolling: metaPollingPublicStatus(),
     // حارس حصة YouTube Data API: حالة عامة فقط (عتبة/استنفاد/نسبة) بلا بيانات عميل.
     youtubeQuota: youtubeQuotaStatusSummary(),
+    // مؤشرات الحصص المجانية (نقل Neon + مساحة Drive): عرض فقط بلا حجب وبلا سرّ.
+    freeTierUsage: freeTierUsageHealthBlock(),
     // محرّك الاستقبال الموحّد لكل المنصات العشر: حقول تقنية فقط (الحالة/عمق
     // الطابور/آخر استقبال/القنوات/العدّادات) — لا بيانات عملاء.
     ingestionEngine: ingestionHealthPublic(),

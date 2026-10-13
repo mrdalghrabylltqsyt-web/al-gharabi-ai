@@ -35,6 +35,37 @@ export function sameSerializedValue(a: string, b: string): boolean {
  */
 export const DEDUPE_ID_MAX = 2000;
 
+/**
+ * عدّاد كتابة المخزّن (بلا تغيير سلوكي): يلخّص بايتات الكتابة الفعلية إلى الخلفية
+ * (Postgres/ملف). يُستخدم لتقدير استهلاك نقل البيانات (Neon) كمؤشر عرض فقط في
+ * /api/health. لا يمنع أي كتابة ولا يغيّر إيقاعها. يرجع لأول الخلفية التي تحرّض
+ * الكتابة؛ على خلفية الملف (تطوير) يكون best-effort ولا يمثّل نقل شبكة حقيقياً.
+ */
+export interface StorageWriteAccounting {
+  writeCount: number;
+  bytesWrittenTotal: number;
+  bytesWrittenSinceStart: number;
+  lastWriteAt: string | null;
+  startedAt: string;
+}
+const writeAccounting: StorageWriteAccounting = {
+  writeCount: 0,
+  bytesWrittenTotal: 0,
+  bytesWrittenSinceStart: 0,
+  lastWriteAt: null,
+  startedAt: new Date().toISOString(),
+};
+export function storageWriteAccounting(): StorageWriteAccounting {
+  return { ...writeAccounting };
+}
+function recordStorageWrite(bytes: number): void {
+  if (!Number.isFinite(bytes) || bytes <= 0) return;
+  writeAccounting.writeCount += 1;
+  writeAccounting.bytesWrittenTotal += bytes;
+  writeAccounting.bytesWrittenSinceStart += bytes;
+  writeAccounting.lastWriteAt = new Date().toISOString();
+}
+
 export interface BackupInfo {
   name: string;
   size: number;
@@ -93,11 +124,18 @@ export const STORAGE_KEY_CONTROL = "control";
  */
 export const STORAGE_KEY_YOUTUBE_QUOTA = "youtubeQuota";
 
+/**
+ * تراكم استهلاك الحصص المجانية (نقل Neon التقديري) — مفتاح صغير مستقل، يمرّ عبر
+ * المحوّل نفسه فيصمد بعد restart للخلفيتين. مؤشر عرض فقط، بلا أي منطق حجب.
+ */
+export const STORAGE_KEY_USAGE_INDICATORS = "freeTierUsage";
+
 const FILE_NAMES: Record<string, string> = {
   [STORAGE_KEY_STATE]: ".gharabi-state.json",
   [STORAGE_KEY_USAGE]: ".gharabi-usage.json",
   [STORAGE_KEY_CONTROL]: ".gharabi-control.json",
   [STORAGE_KEY_YOUTUBE_QUOTA]: ".gharabi-youtube-quota.json",
+  [STORAGE_KEY_USAGE_INDICATORS]: ".gharabi-free-tier-usage.json",
 };
 
 const BACKUP_PREFIX = "state-";
@@ -187,6 +225,7 @@ class FileStorageAdapter implements StorageAdapter {
     const tmp = `${target}.tmp`;
     fs.writeFileSync(tmp, serialized, { encoding: "utf8", mode: 0o600 });
     fs.renameSync(tmp, target);
+    recordStorageWrite(Buffer.byteLength(serialized, "utf8"));
     this.writable = true;
   }
 
@@ -428,6 +467,7 @@ class PostgresStorageAdapter implements StorageAdapter {
        ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()`,
       [key, serialized],
     );
+    recordStorageWrite(Buffer.byteLength(serialized, "utf8"));
     this.writeBaseline.set(key, serialized);
     this.healthy = true;
   }

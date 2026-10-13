@@ -56,13 +56,14 @@ async function main() {
     return next();
   };
   const drControl: any = { driveOAuthStates: [], driveRefreshToken: null, driveLastError: null, driveMirror: null };
+  let quotaPersistCount = 0;
 
   registerDriveRoutes(app, {
     authenticateToken,
     requireOwner,
     env: ENV,
     loadControl: () => drControl,
-    persistControl: (partial) => { Object.assign(drControl, partial); },
+    persistControl: (partial) => { if (partial && partial.driveQuota) quotaPersistCount += 1; Object.assign(drControl, partial); },
     clientFactory: () => new DriveClient({ transport: makeFakeTransport(fakeState), tokenProvider: () => 'tok' }),
     oauthTransport: makeFakeTokenTransport(),
     collectSourceFiles: () => ({ included: FILES, excluded: [], complete: true, source: 'test', fileCount: FILES.length }),
@@ -122,6 +123,24 @@ async function main() {
       check('health oauthClient no secret', !JSON.stringify(health.dr.oauthClient).includes('apps.googleusercontent.com') && !JSON.stringify(health.dr.oauthClient).includes('GOCSPX'));
       const detail = await (await fetch(`${base}/api/dr/health/detail`, { headers: ownerHeaders })).json();
       check('health/detail oauthClient full (owner)', /^[0-9a-f]{12}$/.test(detail.dr.oauthClient.clientIdFingerprint) && Array.isArray(detail.dr.recoveryMasterKey.perKey) && detail.dr.recoveryMasterKey.perKey.length >= 1);
+    }
+
+    // --- مؤشر مساحة Drive المجانية: قياس فعلي من قراءة قائمة (بلا قراءة إضافية) ---
+    {
+      const healthAfterSync = await (await fetch(`${base}/api/dr/health`)).json();
+      check('dr/health quota exposes live usage', healthAfterSync.dr.quota.usageBytes === 0 && healthAfterSync.dr.quota.limitBytes === 15 * 1024 * 1024 * 1024);
+      check('dr/health quota has source (no secret)', healthAfterSync.dr.quota.source === 'sync_current_mirror' && !JSON.stringify(healthAfterSync.dr.quota).includes('AIzaSy'));
+      // لا تضخيم كتابة: قراءة متكررة بنفس القياس تُحدَّث مرّة واحدة فقط ثم تُدَّخر.
+      // نضبط قياساً صريحاً مختلفاً ثم نقرأ /api/dr/status مرّتين: تحديث واحد فقط.
+      fakeState.usageBytes = 123456789;
+      const beforeReads = quotaPersistCount;
+      await fetch(`${base}/api/dr/status`, { headers: ownerHeaders });
+      await fetch(`${base}/api/dr/status`, { headers: ownerHeaders });
+      const healthChanged = await (await fetch(`${base}/api/dr/health`)).json();
+      check('changed Drive usage re-persisted exactly once across repeated reads', quotaPersistCount === beforeReads + 1);
+      check('changed Drive usage re-persisted', healthChanged.dr.quota.usageBytes === 123456789);
+      check('changed quota source is status read', healthChanged.dr.quota.source === 'dr_status_read');
+      fakeState.usageBytes = 0; // إرجاع الحالة كي لا تتأثر الدفعات اللاحقة
     }
 
     // --- فشل المرآة يُعلن صراحةً (لا فشل صامت) ---
