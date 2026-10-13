@@ -112,6 +112,12 @@ export interface DriveRoutesDeps {
    * بلا سرّ: عنوان ونص عامّان فقط. غيابها لا يُسقط الدورة — يُعلن التنبيه غير المُسلَّم.
    */
   notifyOwner?: (input: { kind: 'backup_failed' | 'database_stale'; title: string; body: string; severity: 'warning' | 'critical'; detail?: string | null }) => { delivered: boolean; channel: string | null; error: string | null };
+  /**
+   * حارس ضغط الاستهلاك: إن أعاد `true` تُؤجَّل **نبضة النسخ الاحتياطي المجدولة**
+   * الواحدة (لا تُعطَّل النسخة؛ تُؤجَّل حتى النبضة التالية عند زوال الضغط) — كي لا
+   * يصطدم النظام بحدّ المزوّد عند الاقتراب منه. غيابها = لا تأجيل (سلوك سابق).
+   */
+  pressureDeferTick?: () => boolean;
 }
 
 /** هل التفويض جاهز فعلاً (اعتماد + رمز تجديد مشفّر)؟ بلا كشف قيم. */
@@ -1576,6 +1582,12 @@ export function registerDriveRoutes(app: express.Express, deps: DriveRoutesDeps)
     if (backupRunning || autoBackupInFlight) {
       recordAutoBackupSkip('already_running');
       return { outcome: 'skipped', reason: 'already_running' };
+    }
+    // حارس ضغط الاستهلاك: تأجيل نبضة واحدة للنسخة المجدولة (لا تعطيل) عند الاقتراب
+    // من حدّ المزوّد. لا يُؤثّر على النسخة اليدوية ولا على فحص الإقلاع.
+    if (trigger === 'scheduled' && deps.pressureDeferTick && deps.pressureDeferTick()) {
+      recordAutoBackupSkip('pressure_defer');
+      return { outcome: 'skipped', reason: 'pressure_defer' };
     }
     autoBackupInFlight = true;
     try {
