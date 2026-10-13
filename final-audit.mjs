@@ -659,7 +659,7 @@ const tiktokPublishRecon = read('engine/social/tiktok.ts');
 add('tiktok-publish-reconcile-single-source', tiktokPublishRecon.includes('export function shouldReconcileTikTokRecord') && tiktokPublishRecon.includes('export function applyTikTokPublishStatus'), 'منطق المصالحة مصدر واحد قابل للاختبار في وحدة TikTok');
 add('tiktok-publish-reconcile-no-claim', /export function applyTikTokPublishStatus[\s\S]{0,900}?status\.delivered && status\.state === 'delivered'/.test(tiktokPublishRecon), 'لا published بلا delivered الحقيقي من المزود');
 add('tiktok-publish-reconcile-server-sweep', server.includes('reconcileTikTokPublishes') && /fetchPublishStatus\(ensured\.token, publishId\)/.test(server), 'الخادم يستعلم حالة النشر فعلياً من TikTok ويحدّث السجل');
-add('tiktok-publish-reconcile-timer', /tiktokReconcileTimer = setInterval\(safeTimerCallback\(\(\) => reconcileTikTokPublishes\(\), "tiktok-reconcile"\)/.test(server), 'مصالحة دورية داخل عملية الخادم (بلا تدخّل المالك)');
+add('tiktok-publish-reconcile-timer', /tiktokReconcileTimer = setInterval\(safeTimerCallback\(\(\) => \{ if \(currentUsagePressure\(\)\.deferNonCritical\) return; reconcileTikTokPublishes\(\)/,  'مصالحة دورية داخل عملية الخادم (بلا تدخّل المالك)');
 add('tiktok-publish-reconcile-verified-only', /async function reconcileTikTokPublishes[\s\S]{0,400}?if \(!tiktokOperationalNow\(\)\) return result;/.test(server), 'لا مصالحة بلا اتصال موثق (لا استعلام خارجي بلا توثيق)');
 add('tiktok-publish-history-endpoint', /app\.get\("\/api\/platforms\/tiktok\/publishes", requireOwner/.test(server), 'سجل عمليات النشر للمالك فقط (requireOwner)');
 add('tiktok-publish-history-no-secret', /app\.get\("\/api\/platforms\/tiktok\/publishes"[\s\S]{0,1200}?res\.json/.test(server) && !/tiktok\/publishes"[\s\S]{0,1500}?providerTokens/.test(server), 'سجل النشر لا يكشف أي اعتماد أو سرّ');
@@ -2611,7 +2611,7 @@ const safeTimerTest = read('engine/tests/safe.timer.test.ts');
 add('phase6-timers-safe-wrapped',
   server.includes('safeTimerCallback(runSafeJobPreflight') &&
   server.includes('safeTimerCallback(cleanupRuntimeState') &&
-  server.includes('safeTimerCallback(() => reconcileTikTokPublishes()') &&
+  server.includes('safeTimerCallback(() => { if (currentUsagePressure().deferNonCritical) return; reconcileTikTokPublishes()') &&
   safeTimer.includes('export function safeTimerCallback'),
   'Phase 6: مؤقّتات الخادم ملفوفة بغلاف يلتقط الاستثناء/الرفض فلا تُسقط العملية');
 add('phase6-reconcile-overlap-guard',
@@ -4372,6 +4372,48 @@ add('watcher-advisory-not-authority',
   add('free-tier-usage-no-secret',
     !/access_token|refresh_token|client_secret|api[_-]?key/i.test(freeTierUsageSrc),
     'وحدة مؤشرات الحصص المجانية لا تحمل أي سرّ');
+
+  // 11ب) تحصين الحصص المجانية: حارس ضغط فعلي + عدّاد ساعات Render + حصة Drive API.
+  const usagePressureSrc = read('engine/ops/usagePressure.ts');
+  const driveApiAccountingSrc = read('engine/dr/driveApiAccounting.ts');
+  add('usage-pressure-module',
+    usagePressureSrc.includes('resolveUsagePressure') &&
+    usagePressureSrc.includes("'normal' | 'watch' | 'critical'") &&
+    usagePressureSrc.includes('deferNonCritical') &&
+    usagePressureSrc.includes('deferCriticalTick'),
+    'وحدة حارس ضغط الاستهلاك (normal/watch/critical) موجودة');
+  add('usage-pressure-active-guard-wired',
+    server.includes('usagePressureMultiplier()') &&
+    server.includes('currentUsagePressure().deferNonCritical') &&
+    server.includes('pressureDeferTick: () => currentUsagePressure().deferCriticalTick'),
+    'الحارس الفعلي موصول: مضاعفة فواصل الدورات غير الحرجة + تأجيلها + تأجيل نبضة النسخة');
+  add('usage-pressure-no-gemini-no-secret',
+    !/GoogleGenAI|generateContent|@google\/genai/i.test(usagePressureSrc) &&
+    !/access_token|refresh_token|client_secret|api[_-]?key/i.test(usagePressureSrc),
+    'حارس الضغط حتمي (بلا Gemini) وبلا أي سرّ');
+  add('render-uptime-indicator',
+    freeTierUsageSrc.includes('accrueRenderUptime') &&
+    freeTierUsageSrc.includes('buildRenderUptimeIndicator') &&
+    freeTierUsageSrc.includes('RENDER_RECOVERY_CENTER_ALLOWANCE_HOURS') &&
+    freeTierUsageSrc.includes('renderWorkspaceMonthlyHours: 750') &&
+    freeTierUsageSrc.includes("basis: 'estimated'"),
+    'عدّاد ساعات Render تقديري صادق + حدّ 750 مشترك موثّق');
+  add('drive-api-accounting-wired',
+    driveApiAccountingSrc.includes('DRIVE_API_UNIT_COSTS') &&
+    driveApiAccountingSrc.includes('recordDriveApiCall') &&
+    read('tools/dr/drive-client.mjs').includes('this.onRequest') &&
+    server.includes('onRequest: recordDriveApiCallFromRequest'),
+    'حصة Drive API تُقاس فعلياً من نداءات DriveClient عبر خطّاف onRequest');
+  add('free-tier-quotas-documented',
+    freeTierUsageSrc.includes('neonMonthlyComputeCuHours: 100') &&
+    freeTierUsageSrc.includes('driveApiDailyQuotaUnits: 400_000_000') &&
+    freeTierUsageSrc.includes('neonStorageBytes: 512 * 1024 * 1024'),
+    'الحدود المجانية موثّقة من وثائق المزوّدين (Neon compute/storage، Drive API)');
+  add('free-tier-hardening-test',
+    fs.existsSync(path.join(root, 'engine/tests/free.tier.hardening.test.ts')) &&
+    JSON.parse(read('package.json')).scripts['test:free-tier-hardening'] === 'tsx engine/tests/free.tier.hardening.test.ts' &&
+    JSON.parse(read('package.json')).scripts.test.includes('npm run test:free-tier-hardening'),
+    'اختبار تحصين الحصص المجانية مسجَّل في npm test');
 
   // 12) AGENTS.md: عدد فحوصات final-audit مطابق للفعلي (يُعَدّ من نص الملف نفسه).
   const auditCount = (read('final-audit.mjs').match(/^\s*add\(/gm) || []).length;

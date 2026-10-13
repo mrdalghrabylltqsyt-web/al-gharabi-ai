@@ -224,6 +224,9 @@ export class DriveClient {
     this.retryBaseMs = Number.isFinite(options.retryBaseMs) ? options.retryBaseMs : DEFAULT_RETRY_BASE_MS;
     this.sleep = options.sleep || ((ms) => new Promise((r) => setTimeout(r, ms)));
     this.calls = [];
+    // خطّاف مراقبة اختياري (بلا سرّ): يُنادى مرة لكل نداء منطقي (لا لكل إعادة
+    // محاولة) كي يُحتسب استهلاك حصة Drive API بدقة. غيابه لا يغيّر أي سلوك.
+    this.onRequest = typeof options.onRequest === 'function' ? options.onRequest : null;
   }
 
   async authHeaders() {
@@ -234,6 +237,8 @@ export class DriveClient {
 
   /** طلب واحد مع إعادة محاولة للأخطاء العابرة فقط. لا يعيد رمياً أبداً. */
   async request(opts) {
+    // احتساب الحصّة مرة واحدة لكل نداء منطقي (لا لكل إعادة محاولة) — بلا سرّ.
+    if (this.onRequest) { try { this.onRequest({ method: opts?.method, url: opts?.url }); } catch { /* المراقبة لا تُسقط الطلب */ } }
     const attempt = async () => {
       const started = Date.now();
       try {

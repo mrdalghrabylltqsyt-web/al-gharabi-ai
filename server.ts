@@ -538,12 +538,20 @@ import {
   type StorageStatus,
 } from "./engine/storage/adapter";
 import {
+  accrueRenderUptime,
   accrueTransfer,
+  buildDriveApiIndicator,
   buildDriveQuotaIndicator,
   buildNeonTransferIndicator,
+  buildRenderUptimeIndicator,
+  FREE_TIER_QUOTAS,
+  RENDER_RECOVERY_CENTER_ALLOWANCE_HOURS,
   resolveUsageAlertThreshold,
   type FreeTierUsageState,
+  type RenderUptimeState,
 } from "./engine/ops/freeTierUsage";
+import { resolveUsagePressure, usagePressureIntervalMultiplier, type UsagePressureDecision } from "./engine/ops/usagePressure";
+import { driveApiAccountingSnapshot, recordDriveApiCall, type DriveApiCallKind } from "./engine/dr/driveApiAccounting";
 import { SESSION_TTL_MS, signSession, verifySession, type SessionPayload } from "./engine/auth/sessions";
 import { CHALLENGE_TTL_MS, issueChallengeCode, matchChallengeWindow } from "./engine/auth/challenge";
 import { isScheduleInFuture, normalizeScheduleInput, wallClockToEpoch } from "./src/utils/scheduleTime";
@@ -843,6 +851,8 @@ const freeTierUsageState: { transferBytesMonth: number; transferBytesSinceBoot: 
   month: null,
   updatedAt: null,
 };
+// عدّاد ساعات تشغيل Render (تقدير صادق — لا API حقيقي) + حالة Drive API اليومية.
+const renderUptimeState: RenderUptimeState = { month: null, hoursThisMonth: 0, lastAccruedAt: null, firstSeenAt: null, updatedAt: null };
 let usagePersistQueued = false;
 
 /** يقرأ تراكم الاستهلاك المحفوظ (يصمد بعد restart) — قيمة عرض لا حكم. */
@@ -854,28 +864,98 @@ function applyFreeTierUsageSnapshot(raw: any): void {
   freeTierUsageState.transferBytesSinceBoot = 0;
   freeTierUsageState.month = typeof raw.month === "string" ? raw.month : null;
   freeTierUsageState.updatedAt = typeof raw.updatedAt === "string" ? raw.updatedAt : null;
+  // عدّاد ساعات التشغيل: يُستعاد المتراكم الشهري + آخر لحظة محسوبة (يصمد بعد restart).
+  const ru = raw.renderUptime;
+  if (ru && typeof ru === "object") {
+    renderUptimeState.month = typeof ru.month === "string" ? ru.month : null;
+    renderUptimeState.hoursThisMonth = Number.isFinite(Number(ru.hoursThisMonth)) ? Number(ru.hoursThisMonth) : 0;
+    renderUptimeState.lastAccruedAt = typeof ru.lastAccruedAt === "string" ? ru.lastAccruedAt : null;
+    renderUptimeState.firstSeenAt = typeof ru.firstSeenAt === "string" ? ru.firstSeenAt : null;
+    renderUptimeState.updatedAt = typeof ru.updatedAt === "string" ? ru.updatedAt : null;
+  }
 }
 
 /**
- * يحدّث تقدّم نقل Neon من عدّاد الكتابة الفعلي (idempotent: يضيف الفرق فقط).
- * يُحفظ عبر محوّل الحالة بأسلوب مؤجّل (coalesced) فلا يضيف كتابةً لكل كتابة —
- * لتجنّب أثر عكسي على نفس المورد الذي نراقبه.
+ * يحدّث تقدّم نقل Neon من عدّاد الكتابة الفعلي (idempotent: يضيف الفرق فقط)،
+ * ويُراكم ساعات تشغيل Render. يُحفظ عبر محوّل الحالة بأسلوب مؤجّل (coalesced) فلا
+ * يضيف كتابةً لكل كتابة — لتجنّب أثر عكسي على نفس المورد الذي نراقبه.
  */
 function refreshFreeTierUsage(): void {
   const account = storageWriteAccounting();
-  const next = accrueTransfer(freeTierUsageState as FreeTierUsageState, account.bytesWrittenSinceStart, new Date().toISOString());
+  const nowIso = new Date().toISOString();
+  const next = accrueTransfer(freeTierUsageState as FreeTierUsageState, account.bytesWrittenSinceStart, nowIso);
   freeTierUsageState.transferBytesMonth = next.transferBytesMonth;
   freeTierUsageState.transferBytesSinceBoot = next.transferBytesSinceBoot;
   freeTierUsageState.month = next.month;
   freeTierUsageState.updatedAt = next.updatedAt;
+  const uptime = accrueRenderUptime(renderUptimeState, nowIso);
+  renderUptimeState.month = uptime.month;
+  renderUptimeState.hoursThisMonth = uptime.hoursThisMonth;
+  renderUptimeState.lastAccruedAt = uptime.lastAccruedAt;
+  renderUptimeState.firstSeenAt = uptime.firstSeenAt;
+  renderUptimeState.updatedAt = uptime.updatedAt;
   if (!usagePersistQueued && storageReady) {
     usagePersistQueued = true;
     const t = setTimeout(() => {
       usagePersistQueued = false;
-      void storageAdapter.write(STORAGE_KEY_USAGE_INDICATORS, { ...freeTierUsageState }).catch(() => { /* مؤشر عرض: فشل الحفظ لا يُسقط الخدمة */ });
+      void storageAdapter.write(STORAGE_KEY_USAGE_INDICATORS, { ...freeTierUsageState, renderUptime: { ...renderUptimeState } }).catch(() => { /* مؤشر عرض: فشل الحفظ لا يُسقط الخدمة */ });
     }, 5000);
     (t as any).unref?.();
   }
+}
+
+/** يجمع إشارات ضغط الاستهلاك من المؤشرات المُقاسة فقط (بلا سرّ). */
+function usagePressureSignals(): { usedPercent: number | null; provider?: string }[] {
+  const backend = storageAdapter.backend;
+  const neonTransferBytes = backend === "postgres" ? freeTierUsageState.transferBytesMonth : 0;
+  const neon = buildNeonTransferIndicator({ transferBytesMonth: neonTransferBytes, alertThresholdPercent: USAGE_ALERT_THRESHOLD, backend });
+  const storedQuota = drControl.driveQuota || null;
+  const drive = buildDriveQuotaIndicator({
+    usageBytes: storedQuota?.usageBytes ?? null,
+    limitBytes: storedQuota?.limitBytes ?? null,
+    liveRead: Boolean(storedQuota && storedQuota.source === "backup_current_mirror"),
+    alertThresholdPercent: USAGE_ALERT_THRESHOLD,
+  });
+  const dapi = driveApiAccountingSnapshot();
+  const driveApi = buildDriveApiIndicator({ callsToday: dapi.callsToday, unitsToday: dapi.unitsToday, limitUnits: FREE_TIER_QUOTAS.driveApiDailyQuotaUnits, alertThresholdPercent: USAGE_ALERT_THRESHOLD });
+  // ساعات Render: ساعات خدمتنا المقيسة + هامش موثّق لخدمة مركز الاستعادة (الحصّة مشتركة).
+  const measuredHours = renderUptimeState.hoursThisMonth;
+  const worstCase = measuredHours + RENDER_RECOVERY_CENTER_ALLOWANCE_HOURS;
+  const render = buildRenderUptimeIndicator({ measuredHoursThisMonth: measuredHours, worstCaseWorkspaceHours: worstCase, limitHours: FREE_TIER_QUOTAS.renderWorkspaceMonthlyHours, alertThresholdPercent: USAGE_ALERT_THRESHOLD });
+  return [
+    { usedPercent: neon.usedPercent, provider: 'neon' },
+    { usedPercent: drive.usedPercent, provider: 'drive' },
+    { usedPercent: driveApi.usedPercent, provider: 'driveApi' },
+    { usedPercent: render.usedPercent, provider: 'render' },
+  ];
+}
+
+/** قرار الحارس الحالي (يُحسب عند الطلب، بلا آثار جانبية). */
+function currentUsagePressure(): UsagePressureDecision {
+  return resolveUsagePressure(usagePressureSignals());
+}
+
+/** مضاعف الفاصل الفعلي للدورات غير الحرجة (1 عادي، 2 عند الضغط). */
+function usagePressureMultiplier(): number {
+  return usagePressureIntervalMultiplier(currentUsagePressure().level);
+}
+
+/**
+ * يحوّل نداء Drive API واحداً إلى نوع الحصّة (list/get/download/edit) ويسجّله.
+ * `onRequest` في DriveClient يُمرّر `{method,url}` فقط (بلا جسم/رأس) فلا سرّ هنا.
+ */
+function recordDriveApiCallFromRequest(opts: { method?: string; url?: string }): void {
+  const method = String(opts?.method || "GET").toUpperCase();
+  const url = String(opts?.url || "");
+  let kind: DriveApiCallKind;
+  if (method === "GET") {
+    if (url.includes("alt=media")) kind = "download";
+    else if (url.includes("/drive/v3/files?") || url.includes("/files?q=")) kind = "list";
+    else kind = "read";
+  } else {
+    kind = "edit";
+  }
+  recordDriveApiCall(kind, new Date().toISOString());
 }
 
 /** كتلة مؤشرات الحصص المجانية العامة (بلا سرّ) — عرض فقط في /api/health. */
@@ -892,15 +972,38 @@ function freeTierUsageHealthBlock(): any {
     liveRead,
     alertThresholdPercent: USAGE_ALERT_THRESHOLD,
   });
+  const dapi = driveApiAccountingSnapshot();
+  const driveApi = buildDriveApiIndicator({ callsToday: dapi.callsToday, unitsToday: dapi.unitsToday, limitUnits: FREE_TIER_QUOTAS.driveApiDailyQuotaUnits, alertThresholdPercent: USAGE_ALERT_THRESHOLD });
+  const measuredHours = renderUptimeState.hoursThisMonth;
+  const worstCase = measuredHours + RENDER_RECOVERY_CENTER_ALLOWANCE_HOURS;
+  const render = buildRenderUptimeIndicator({ measuredHoursThisMonth: measuredHours, worstCaseWorkspaceHours: worstCase, limitHours: FREE_TIER_QUOTAS.renderWorkspaceMonthlyHours, alertThresholdPercent: USAGE_ALERT_THRESHOLD });
+  const pressure = currentUsagePressure();
   return {
     scope: "free-tier-only",
     updatedAt: new Date().toISOString(),
-    note: 'مؤشرات عرض فقط: لا تحجب أي عملية ولا تغيّر أي إيقاع. نقل Neon قياس داخلي فعلي (بايتات الكتابة)، ومساحة Drive قياس فعلي عند النسخة/المزامنة وإلا تقدير موثّق. الحدود من مخطّطات Neon/Drive المجانية.',
+    note: 'مؤشرات الحصص المجانية + حارس ضغط فعلي: عند بلوغ 80% تُضاعف فواصل الدورات غير الحرجة، وعند 95% تُؤجَّل (تُؤجَّل نبضة النسخ الاحتياطي لا تُعطَّل). لا يستهلك Gemini ولا يمسّ أي عملية يدوية. الحدود من وثائق المزوّدين المجانية.',
     neonTransfer: neon,
+    neonStorage: {
+      provider: 'neon',
+      basis: 'estimated',
+      usedBytes: null,
+      limitBytes: FREE_TIER_QUOTAS.neonStorageBytes,
+      usedPercent: null,
+      alertThresholdPercent: USAGE_ALERT_THRESHOLD,
+      warning: false,
+      note: 'لم أجد واجهة REST بسيطة لقراءة حجم القاعدة الحقيقي من داخل التطبيق (يتطلّب psql/اللوحة). الحدّ المجاني الموثّق 0.5 GiB/مشروع — لم أُضف استعلاماً غير مُختبَر لتفادي أي أثر. مقياس Drive API أدناه صار measured فعلياً.',
+    },
+    renderUptime: render,
+    driveApi: driveApi,
     driveStorage: drive,
+    pressure,
     quotas: {
-      neonMonthlyTransferBytes: 5 * 1024 * 1024 * 1024,
-      driveStorageBytes: 15 * 1024 * 1024 * 1024,
+      neonMonthlyTransferBytes: FREE_TIER_QUOTAS.neonMonthlyTransferBytes,
+      neonStorageBytes: FREE_TIER_QUOTAS.neonStorageBytes,
+      neonMonthlyComputeCuHours: FREE_TIER_QUOTAS.neonMonthlyComputeCuHours,
+      driveStorageBytes: FREE_TIER_QUOTAS.driveStorageBytes,
+      driveApiDailyQuotaUnits: FREE_TIER_QUOTAS.driveApiDailyQuotaUnits,
+      renderWorkspaceMonthlyHours: FREE_TIER_QUOTAS.renderWorkspaceMonthlyHours,
     },
   };
 }
@@ -5725,7 +5828,7 @@ function buildMarketingDriveClient(): InstanceType<typeof DriveClient> | null {
   if (!info.configured) return null;
   if (!drControl.driveRefreshToken) return null;
   const provider = createRefreshTokenProvider({ env: process.env, encryptedRefreshToken: drControl.driveRefreshToken });
-  const client = new DriveClient({ transport: createGaxiosTransport(), tokenProvider: provider });
+  const client = new DriveClient({ transport: createGaxiosTransport(), tokenProvider: provider, onRequest: recordDriveApiCallFromRequest });
   // غلاف صريح يضمن أن أي نداء Drive (حتى لو تجاهل التنفيذ الداخلي خيار timeout)
   // ينتهي خلال مهلة محددة بدل أن يعلّق الطلب العام بلا نهاية. يُخزَّن آخر مهلة/خطأ
   // للتشخيص فقط (بلا أي سرّ) ويُعلن في /api/health عبر driveHostLastError.
@@ -7804,8 +7907,8 @@ function watcherIraqiReply(text: string): string {
 
 function startYouTubeQuotaRetryTimer(): void {
   if (youtubeQuotaRetryTimer) return;
-  const ms = youtubeQuotaRetryIntervalMs();
-  youtubeQuotaRetryTimer = setInterval(safeTimerCallback(() => retryPendingYouTubeContent(), "youtube-quota-retry"), ms);
+  const ms = youtubeQuotaRetryIntervalMs() * usagePressureMultiplier();
+  youtubeQuotaRetryTimer = setInterval(safeTimerCallback(() => { if (currentUsagePressure().deferNonCritical) return; retryPendingYouTubeContent(); }, "youtube-quota-retry"), ms);
   (youtubeQuotaRetryTimer as any).unref?.();
 }
 function stopYouTubeQuotaRetryTimer(): void {
@@ -7838,9 +7941,9 @@ function startYouTubeWatcher(): void {
       (t as any).unref?.();
       return { clear: () => clearTimeout(t) };
     },
-    getCadenceMs: () => Math.max(1, watcherCadenceMs()),
+    getCadenceMs: () => Math.max(1, watcherCadenceMs() * usagePressureMultiplier()),
     isDue: () => watcherPollDue(),
-    runCycle: () => { runYouTubeWatcherCycle("schedule").catch(() => { /* الخطأ مسجَّل داخل الدورة */ }); },
+    runCycle: () => { if (currentUsagePressure().deferNonCritical) return; runYouTubeWatcherCycle("schedule").catch(() => { /* الخطأ مسجَّل داخل الدورة */ }); },
   });
   // إعادة المحاولة الذكية للنشر المعلّق على الحصة: مؤقّت مستقل خفيف (كل 5 دقائق)
   // يُعيد الإرسال تلقائياً فور تجدد حصة YouTube. `.unref()` فلا يمنع الإغلاق النظيف،
@@ -7879,9 +7982,9 @@ function startMetaPollingWatcher(): void {
   metaPollingScheduler = createWatcherScheduler({
     setTimer: (fn, ms) => { const t = setInterval(fn, ms); (t as any).unref?.(); return { clear: () => clearInterval(t) }; },
     setTimeoutOnce: (fn, ms) => { const t = setTimeout(fn, ms); (t as any).unref?.(); return { clear: () => clearTimeout(t) }; },
-    getCadenceMs: () => Math.max(1, metaPollingCadenceMs()),
+    getCadenceMs: () => Math.max(1, metaPollingCadenceMs() * usagePressureMultiplier()),
     isDue: () => metaPollingDue(),
-    runCycle: () => { runMetaWatcherCycle("schedule").catch(() => { /* الخطأ مسجَّل داخل الدورة */ }); },
+    runCycle: () => { if (currentUsagePressure().deferNonCritical) return; runMetaWatcherCycle("schedule").catch(() => { /* الخطأ مسجَّل داخل الدورة */ }); },
   });
   const c = metaPollingState.controls;
   if (c.enabled && c.paused) { metaPollingScheduler.stop(); return; }
@@ -10616,7 +10719,7 @@ function tiktokReconcileIntervalMs(): number {
   if (Number.isFinite(raw) && raw >= 1000) return raw;
   return 60 * 1000;
 }
-const tiktokReconcileTimer = setInterval(safeTimerCallback(() => reconcileTikTokPublishes(), "tiktok-reconcile"), tiktokReconcileIntervalMs());
+const tiktokReconcileTimer = setInterval(safeTimerCallback(() => { if (currentUsagePressure().deferNonCritical) return; reconcileTikTokPublishes(); }, "tiktok-reconcile"), tiktokReconcileIntervalMs() * usagePressureMultiplier());
 (tiktokReconcileTimer as any).unref?.();
 
 /**
@@ -13378,6 +13481,7 @@ function startBrainRuntime(): void {
   brainRuntimeTimer = setInterval(() => {
     const lastRunAtMs = (() => { const t = Date.parse(String(brainRuntimeState.lastCycleStartedAt || "")); return Number.isFinite(t) ? t : null; })();
     if (!isBrainRuntimeDue(lastRunAtMs, Date.now(), intervalMs)) return; // لا دورة إلا عند الاستحقاق
+    if (currentUsagePressure().deferNonCritical) return; // ضغط استهلاك: تأجيل دورة غير حرجة
     void runBrainRuntimeCycleInternal("scheduled").catch(() => { /* الخطأ مسجَّل داخل الدورة */ });
   }, tickMs);
   if (typeof (brainRuntimeTimer as any).unref === "function") (brainRuntimeTimer as any).unref();
@@ -16637,6 +16741,9 @@ registerDriveRoutes(app, {
       return { delivered: false, channel: null, error: e instanceof Error ? e.name : "notifier_failed" };
     }
   },
+  // حارس ضغط الاستهلاك: تأجيل نبضة النسخة المجدولة الواحدة عند الاقتراب من حدّ
+  // المزوّد (لا تعطيل النسخة). لا يمسّ النسخة اليدوية ولا فحص الإقلاع.
+  pressureDeferTick: () => currentUsagePressure().deferCriticalTick,
 });
 
 // مسارات العقل المركزي (Central Brain) — قراءة/تحليل فقط، بلا أي تنفيذ خارجي.

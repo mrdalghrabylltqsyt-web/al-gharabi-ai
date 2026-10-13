@@ -44,7 +44,7 @@ npm install
 npm run dev            # tsx server.ts
 npm run lint           # tsc --noEmit
 npm run build          # vite build + esbuild server.ts -> dist/server.cjs
-npm run final-audit    # node final-audit.mjs (1574 فحصاً)
+npm run final-audit    # node final-audit.mjs (1581 فحصاً)
 npm test               # storage + engine + auth + ... + db + runtime
 ```
 - التشغيل الإنتاجي: `PORT=4517 NODE_ENV=production APP_URL=http://localhost:4517 node dist/server.cjs`
@@ -5951,3 +5951,65 @@ permitted if the replier has been explicitly summoned by the original post's aut
 
 **لم يُمسّ:** أي سرّ/مفتاح/OAuth، ولا منطق النسخ الاحتياطي أو إيقاعه، ولا قاعدة البيانات أو
 كتابتها، ولا Gemini، ولا بقية المنصات، ولا نموذج الجدولة.
+
+## تحصين الحصص المجانية (Free-Tier Hardening) — جرد + حارس ضغط فعلي (2026-10-13)
+
+أمر مالك ملزم: **ممنوع أي ترقية مدفوعة أو استهلاك يتجاوز الحصة المجانية لأي خدمة**، تحت
+أي ظرف، بلا إذن صريح مسبق. هذا القسم يوثّق الجرد الكامل + الفجوات الحقيقية المُغلقة.
+
+### الجرد (كل نظام يستهلك موارد دورية)
+| النظام | الحالة | الحدّ الموثّق | المؤشّر |
+|---|---|---|---|
+| Render (خدمتان) | ✅ مُغطّى + جديد | 750 ساعة/شهر **مشتركة** | `freeTierUsage.renderUptime` (estimated، أدنى مقيس + احتساب أسوأ موثّق) |
+| Neon (نقل) | ✅ مُغطّى مسبقاً | ~5 GiB/شهر (تقدير متحفظ) | `freeTierUsage.neonTransfer` (measured) |
+| Neon (تخزين) | ✅ صريح | 0.5 GiB/مشروع | `freeTierUsage.neonStorage` (estimated/null — لا REST بسيط) |
+| Neon (compute) | ✅ موثّق | 100 CU-ساعة/شهر | `freeTierUsage.quotas.neonMonthlyComputeCuHours` |
+| Gemini | ✅ مُغطّى | حدّ محلي 4..6/يوم | `geminiUsage.firewall` (fail-closed قبل الإرسال) |
+| Google Drive (مساحة) | ✅ مُغطّى | 15 GiB | `freeTierUsage.driveStorage` |
+| Google Drive (API) | ✅ جديد | 400M وحدة/يوم (قبل الفوترة) | `freeTierUsage.driveApi` (measured لنداءاتنا) |
+| GitHub Actions | ✅ مُغطّى | مستودع **عام** ⇒ دقائق مجانية | keep-alive محصور بنافذة 18h |
+
+### الدورات الداخلية — جرد كامل
+| الدورة | الفاصل (محدود) | Gemini | الحارس الفعلي |
+|---|---|---|---|
+| مراقب YouTube | 1..5 دقائق | لا | مضاعفة/تأجيل عند الضغط |
+| مراقب Meta | 1..5 دقائق | لا | مضاعفة/تأجيل عند الضغط |
+| وقت تشغيل العقل | 1 دقيقة..24 ساعة (افتراضي 15) | لا (تحليل حتمي) | تأجيل عند الضغط |
+| فريق الوكلاء | مرتبط بحدث يوتيوب | لا | (مُحدَّث بالحدث) |
+| DR auto-backup | 1 دقيقة..24 ساعة (افتراضي 6h) | لا | تأجيل **نبضة واحدة** عند الضغط (لا تعطيل) |
+| DR reconciliation | 1 ساعة ثابت | لا | — (خفيف؛ قراءة بصمة) |
+| DR retention | عند النسخة | لا | — |
+| مصالحة TikTok | 60s (أدنى 1s) | لا | مضاعفة/تأجيل عند الضغط |
+| إعادة محاولة حصة YouTube | 1 دقيقة..60 دقيقة (افتراضي 5) | لا | مضاعفة/تأجيل عند الضغط |
+| preflight مهام آمنة | 60s | لا | — |
+| تنظيف وقت التشغيل | 5 دقائق | لا | — |
+
+### الحارس الفعلي `engine/ops/usagePressure.ts` (منطق خالص)
+يحوّل المؤشرات إلى قرار: `normal` / `watch` (≥80% ⇒ مضاعفة فواصل الدورات غير الحرجة) /
+`critical` (≥95% ⇒ تأجيل الدورات غير الحرجة + تأجيل **نبضة واحدة** للنسخة الاحتياطية، **لا
+تعطيلها**). لا يستهلك Gemini ولا يمسّ أي عملية يدوية، وبلا أي سرّ.
+
+### الوحدات الجديدة
+- `engine/ops/usagePressure.ts`: `resolveUsagePressure` + `usagePressureIntervalMultiplier`.
+- `engine/dr/driveApiAccounting.ts`: عدّ نداءات Drive الحقيقية (list=100/get=5/download=200/edit=50).
+- `engine/ops/freeTierUsage.ts` مُوسَّع: `accrueRenderUptime` + `buildRenderUptimeIndicator` +
+  `buildDriveApiIndicator` + `dayKey` + ثوابت (Neon compute/storage، Drive API، Render 750).
+- `tools/dr/drive-client.mjs`: خطّاف `onRequest` اختياري (بلا سلوك جديد عند غيابه) يُحتسب
+  مرة/نداء منطقي. `engine/dr/routes.ts`: `pressureDeferTick` لتأجيل نبضة النسخة المجدولة.
+
+### إجراء المالك الموثّق (خارج الكود)
+- **Render:** تأكيد أن النافذة الحالية (18h/يوم) كافية — عند 18h + زيارات طبيعية يبقى
+  المحتسَب ~ (18×30) + 60 = 600 ساعة/شهر < 750. **لا تُوسَّع النافذة أبداً.**
+
+اختبار: `engine/tests/free.tier.hardening.test.ts` (`npm run test:free-tier-hardening`، 56 فحصاً).
+فحوص final-audit السبعة: `usage-pressure-module` … `free-tier-hardening-test` (**1581 إجمالاً**).
+
+### إصلاح انحدار عابر (غير مرتبط): نطاق منفذ اختبار sales-erp
+`engine/tests/sales.erp.authz.test.ts` كان يختار منفذاً عشوائياً في `6600..6899`، وهو يشمل
+**منافذ fetch المحظورة** (6665–6669، 6679، 6697) فيفشل `fetch` بـ`bad port` بنسبة ~2% لكل
+تشغيل (عُثر عليه في تشغيل `npm test` الكامل، وليس في التعديل الحالي). نُقل النطاق إلى
+`6060..6099` (بلا منافذ محظورة وبلا تعارض مع نطاقات بقية الاختبارات) — نفس إصلاح النطاقات
+الموثّق سابقاً لـFacebook (نُقل إلى 6700/6800). لا تغيير في منطق الاختبار نفسه.
+
+**لم يُمسّ:** أي سرّ/مفتاح/OAuth، ولا منطق النسخ الاحتياطي أو إيقاعه (إلا التأجيل عند الضغط)،
+ولا قاعدة البيانات، ولا Gemini، ولا بقية المنصات، ولا نموذج الجدولة.
