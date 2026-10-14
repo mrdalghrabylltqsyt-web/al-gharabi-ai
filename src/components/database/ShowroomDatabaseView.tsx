@@ -148,7 +148,7 @@ export const ShowroomDatabaseView: React.FC = () => {
   return (
     <div className="space-y-6">
       {/* Top Banner Notice */}
-      <div className="p-6 rounded-2xl bg-slate-900 border border-slate-800 flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
+      <div className="p-6 rounded-2xl glass flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
         <div>
           <div className="flex items-center gap-2">
             <h2 className="text-xl font-black text-white flex items-center gap-2">
@@ -251,7 +251,7 @@ export const ShowroomDatabaseView: React.FC = () => {
                 placeholder="ابحث عن منتج أو فئة أو مواصفات..."
                 value={searchTerm}
                 onChange={(e) => setSearchTerm(e.target.value)}
-                className="w-full bg-slate-900 border border-slate-800 rounded-xl pr-9 pl-3 py-2 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-emerald-500"
+                className="w-full glass rounded-xl pr-9 pl-3 py-2 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-emerald-500"
               />
             </div>
             <span className="text-xs text-slate-400">
@@ -272,7 +272,7 @@ export const ShowroomDatabaseView: React.FC = () => {
               {filteredProducts.map((prod) => (
                 <div
                   key={prod.id}
-                  className="rounded-2xl bg-slate-900 border border-slate-800 overflow-hidden hover:border-slate-700 transition flex flex-col justify-between group"
+                  className="rounded-2xl glass overflow-hidden hover:border-slate-700 transition flex flex-col justify-between group"
                 >
                   <div>
                     <div className="relative h-44 overflow-hidden bg-slate-950 flex items-center justify-center">
@@ -375,7 +375,7 @@ export const ShowroomDatabaseView: React.FC = () => {
             installmentPlans.map((prog) => (
               <div
                 key={prog.id}
-                className="p-6 rounded-2xl bg-slate-900 border border-slate-800 space-y-4 relative overflow-hidden"
+                className="p-6 rounded-2xl glass space-y-4 relative overflow-hidden"
               >
                 <div className="w-12 h-12 rounded-2xl bg-gradient-to-tr from-emerald-500/20 to-teal-500/10 text-emerald-400 flex items-center justify-center">
                   <BadgePercent className="w-6 h-6" />
@@ -405,7 +405,7 @@ export const ShowroomDatabaseView: React.FC = () => {
       {/* Tab 3: Policies & Requirements */}
       {activeTab === 'policies' && (
         <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-          <div className="p-6 rounded-2xl bg-slate-900 border border-slate-800 space-y-4">
+          <div className="p-6 rounded-2xl glass space-y-4">
             <h3 className="font-bold text-base text-white flex items-center gap-2">
               <FileCheck className="w-5 h-5 text-emerald-400" />
               المستندات والأوراق المطلوبة للتقسيط
@@ -464,7 +464,7 @@ export const ShowroomDatabaseView: React.FC = () => {
             )}
           </div>
 
-          <div className="p-6 rounded-2xl bg-slate-900 border border-slate-800 space-y-4">
+          <div className="p-6 rounded-2xl glass space-y-4">
             <h3 className="font-bold text-base text-white flex items-center gap-2">
               <ShieldCheck className="w-5 h-5 text-emerald-400" />
               شروط وأحكام المعرض العامة
@@ -510,7 +510,7 @@ export const ShowroomDatabaseView: React.FC = () => {
             showroomInfo.faqs.map((faq) => (
               <div
                 key={faq.id}
-                className="p-5 rounded-2xl bg-slate-900 border border-slate-800 space-y-2"
+                className="p-5 rounded-2xl glass space-y-2"
               >
                 <h4 className="font-bold text-sm text-white flex items-center gap-2">
                   <HelpCircle className="w-4 h-4 text-emerald-400 shrink-0" />
@@ -526,7 +526,7 @@ export const ShowroomDatabaseView: React.FC = () => {
       {/* Modal: Add New Product */}
       {showAddProductModal && (
         <div className="fixed inset-0 z-50 bg-black/70 backdrop-blur-sm flex items-center justify-center p-4">
-          <div className="w-full max-w-md bg-slate-900 border border-slate-800 rounded-3xl p-6 shadow-2xl space-y-4 animate-in fade-in">
+          <div className="w-full max-w-md glass rounded-3xl p-6 shadow-2xl space-y-4 animate-in fade-in">
             <div className="flex items-center justify-between border-b border-slate-800 pb-3">
               <h3 className="font-bold text-base text-white flex items-center gap-2">
                 <Package className="w-5 h-5 text-emerald-400" />
@@ -621,7 +621,7 @@ export const ShowroomDatabaseView: React.FC = () => {
                     type="text"
                     readOnly
                     value={installmentPreview.ok ? installmentPreview.installmentPrice.toLocaleString('en-US') : ''}
-                    className="w-full bg-slate-900 border border-slate-800 rounded-xl px-3 py-2 text-emerald-300 font-bold cursor-not-allowed"
+                    className="w-full glass rounded-xl px-3 py-2 text-emerald-300 font-bold cursor-not-allowed"
                   />
                 </div>
                 <div>
@@ -630,7 +630,7 @@ export const ShowroomDatabaseView: React.FC = () => {
                     type="text"
                     readOnly
                     value={installmentPreview.ok ? installmentPreview.monthlyInstallment.toLocaleString('en-US') : ''}
-                    className="w-full bg-slate-900 border border-slate-800 rounded-xl px-3 py-2 text-emerald-300 font-bold cursor-not-allowed"
+                    className="w-full glass rounded-xl px-3 py-2 text-emerald-300 font-bold cursor-not-allowed"
                   />
                 </div>
               </div>

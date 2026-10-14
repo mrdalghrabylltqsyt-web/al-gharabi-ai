@@ -72,7 +72,7 @@ export const CommandCenterView: React.FC = () => {
   const sectionIcon = (id: string) => NAV_SECTIONS.find((s) => s.id === id)?.icon || Home;
 
   const Card = ({ children, className = '' }: { children: React.ReactNode; className?: string }) => (
-    <div className={`p-4 rounded-2xl bg-slate-900 border border-slate-800 ${className}`}>{children}</div>
+    <div className={`p-4 rounded-2xl glass ${className}`}>{children}</div>
   );
 
   return (

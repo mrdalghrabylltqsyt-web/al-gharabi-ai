@@ -210,7 +210,7 @@ export function YouTubeContentQueuePanel() {
       {summary ? (
         <div className="grid grid-cols-3 md:grid-cols-6 gap-2">
           {[['عند المراجعة', summary.awaitingReview], ['مجدول', summary.scheduled], ['منشور', summary.published], ['مُتحقَّق', summary.verified], ['مرفوض', summary.rejected], ['فشل', summary.failed]].map(([label, val]: any) => (
-            <div key={label} className="bg-slate-900 border border-slate-800 rounded-xl p-3 text-center">
+            <div key={label} className="glass rounded-xl p-3 text-center">
               <div className="text-[11px] text-slate-400">{label}</div>
               <div className="text-lg font-semibold text-slate-100">{val ?? 0}</div>
             </div>
@@ -219,7 +219,7 @@ export function YouTubeContentQueuePanel() {
       ) : null}
 
       {showCreate ? (
-        <div className="bg-slate-900 border border-slate-800 rounded-2xl p-4 space-y-2">
+        <div className="glass rounded-2xl p-4 space-y-2">
           <input className="w-full bg-slate-800 border border-slate-700 text-slate-100 rounded-lg px-3 py-2 text-sm" placeholder="العنوان (مطلوب)" value={form.title} onChange={(e) => setForm({ ...form, title: e.target.value })} />
           <textarea className="w-full bg-slate-800 border border-slate-700 text-slate-100 rounded-lg px-3 py-2 text-sm" rows={3} placeholder="الوصف" value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} />
           {/* صياغة الوصف عبر العقل المركزي من بيانات منتج حقيقية (لا اختراع). */}
@@ -298,7 +298,7 @@ export function YouTubeContentQueuePanel() {
       {items.length ? (
         <div className="space-y-2">
           {items.map((it) => (
-            <div key={it.id} className="bg-slate-900 border border-slate-800 rounded-xl p-3" dir="rtl">
+            <div key={it.id} className="glass rounded-xl p-3" dir="rtl">
               <div className="flex items-center justify-between gap-2 flex-wrap">
                 <div className="text-sm font-semibold text-slate-100">{it.title || '(بلا عنوان)'}</div>
                 <span className={`px-2 py-0.5 rounded-full text-[11px] border ${tone(it.stateTone)}`}>{it.stateLabelAr}</span>

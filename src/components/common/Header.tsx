@@ -60,10 +60,10 @@ export const Header: React.FC<HeaderProps> = ({ onOpenMobileMenu }) => {
   };
 
   return (
-    <header className="sticky top-0 z-40 bg-slate-900/90 backdrop-blur-md border-b border-slate-800 px-4 lg:px-8 py-3 transition-colors">
-      <div className="flex items-center justify-between gap-4">
+    <header className="sticky top-0 z-40 glass-strong border-x-0 border-t-0 px-3 sm:px-4 lg:px-8 py-3 transition-colors">
+      <div className="flex flex-wrap sm:flex-nowrap items-center justify-between gap-2 sm:gap-4">
         {/* Right side (in RTL, this is the start): Mobile Toggle + Title + AI Indicator */}
-        <div className="flex items-center gap-3">
+        <div className="flex items-center gap-2 sm:gap-3 min-w-0">
           <button
             onClick={onOpenMobileMenu}
             className="lg:hidden p-2 rounded-xl text-slate-400 hover:text-white hover:bg-slate-800 transition"
@@ -72,13 +72,13 @@ export const Header: React.FC<HeaderProps> = ({ onOpenMobileMenu }) => {
             <Menu className="w-6 h-6" />
           </button>
 
-          <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-emerald-500 to-teal-700 flex items-center justify-center shadow-lg shadow-emerald-500/20 text-white font-bold text-lg">
+          <div className="flex items-center gap-2 sm:gap-3 min-w-0">
+            <div className="w-10 h-10 shrink-0 rounded-xl bg-gradient-to-br from-emerald-500 to-teal-700 flex items-center justify-center shadow-lg shadow-emerald-500/20 text-white font-bold text-lg">
               غ
             </div>
-            <div>
-              <div className="flex items-center gap-2">
-                <h1 className="font-extrabold text-lg tracking-tight text-white flex items-center gap-1.5">
+            <div className="min-w-0">
+              <div className="flex items-center gap-2 flex-wrap">
+                <h1 className="font-extrabold text-base sm:text-lg tracking-tight text-white flex items-center gap-1.5 whitespace-nowrap">
                   الغرابي <span className="text-emerald-400">AI</span>
                 </h1>
                 {/* مؤشر صحة عامة (من /api/health الحقيقية): نقطة صغيرة يراها المالك فوراً. */}
@@ -149,11 +149,11 @@ export const Header: React.FC<HeaderProps> = ({ onOpenMobileMenu }) => {
         </form>
 
         {/* Left side (in RTL, this is the end): Quick Actions, Notifications, Role Switcher */}
-        <div className="flex items-center gap-2 sm:gap-3">
+        <div className="flex items-center gap-1.5 sm:gap-3 shrink-0">
           {/* Quick Create Button */}
           <button
             onClick={() => setActiveTab('content')}
-            className="flex items-center gap-1.5 bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white px-3 sm:px-4 py-2 rounded-xl text-xs sm:text-sm font-semibold shadow-md shadow-emerald-900/30 transition active:scale-95 cursor-pointer"
+            className="flex items-center gap-1.5 bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white px-2.5 sm:px-4 py-2 rounded-xl text-xs sm:text-sm font-semibold shadow-md shadow-emerald-900/30 transition active:scale-95 cursor-pointer shrink-0"
           >
             <Sparkles className="w-4 h-4 text-emerald-200" />
             <span className="hidden sm:inline">إنشاء محتوى ذكي</span>
@@ -184,7 +184,7 @@ export const Header: React.FC<HeaderProps> = ({ onOpenMobileMenu }) => {
             </button>
 
             {notificationsOpen && (
-              <div className="absolute left-0 sm:left-auto sm:right-0 mt-2 w-72 sm:w-80 bg-slate-900 border border-slate-800 rounded-2xl shadow-2xl shadow-black/80 p-3 z-50 animate-in fade-in slide-in-from-top-2">
+              <div className="absolute left-0 sm:left-auto sm:right-0 mt-2 w-72 sm:w-80 glass rounded-2xl shadow-2xl shadow-black/80 p-3 z-50 animate-in fade-in slide-in-from-top-2">
                 <div className="flex items-center justify-between pb-2 border-b border-slate-800 text-xs text-slate-400 font-medium">
                   <span>تنبيهات النظام اللحظية</span>
                   <span className="text-emerald-400 font-semibold">{totalNotifications} جديد</span>
@@ -270,7 +270,7 @@ export const Header: React.FC<HeaderProps> = ({ onOpenMobileMenu }) => {
             </button>
 
             {roleDropdownOpen && (
-              <div className="absolute left-0 mt-2 w-64 bg-slate-900 border border-slate-800 rounded-2xl shadow-2xl p-3 z-50 animate-in fade-in space-y-3">
+              <div className="absolute left-0 mt-2 w-64 glass rounded-2xl shadow-2xl p-3 z-50 animate-in fade-in space-y-3">
                 <div className="flex items-center gap-2.5 pb-2 border-b border-slate-800">
                   {currentUser?.avatar ? (
                     <img

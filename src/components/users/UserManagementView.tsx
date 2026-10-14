@@ -117,7 +117,7 @@ export const UserManagementView: React.FC = () => {
   return (
     <div className="space-y-6">
       {/* Header */}
-      <div className="p-6 rounded-2xl bg-slate-900 border border-slate-800 flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
+      <div className="p-6 rounded-2xl glass flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
         <div>
           <div className="flex items-center gap-2">
             <h2 className="text-xl font-black text-white flex items-center gap-2">
@@ -297,7 +297,7 @@ export const UserManagementView: React.FC = () => {
       {/* Add User Modal (Exclusively for Owner) */}
       {showAddModal && isOwner && (
         <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-4 animate-in fade-in">
-          <div className="w-full max-w-md bg-slate-900 border border-slate-800 rounded-3xl p-6 shadow-2xl space-y-5">
+          <div className="w-full max-w-md glass rounded-3xl p-6 shadow-2xl space-y-5">
             <div className="flex items-center justify-between pb-3 border-b border-slate-800">
               <div className="flex items-center gap-2">
                 <UserPlus className="w-5 h-5 text-emerald-400" />
@@ -380,7 +380,7 @@ export const UserManagementView: React.FC = () => {
       )}
 
       {/* Permissions Matrix */}
-      <div className="p-6 rounded-2xl bg-slate-900 border border-slate-800 space-y-4">
+      <div className="p-6 rounded-2xl glass space-y-4">
         <h3 className="font-bold text-sm text-white flex items-center gap-2">
           <ShieldCheck className="w-4 h-4 text-emerald-400" />
           مصفوفة الصلاحيات الرسمية لمعرض الغرابي للتقسيط

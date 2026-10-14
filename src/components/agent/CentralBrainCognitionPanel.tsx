@@ -25,7 +25,7 @@ interface ReportRow {
 }
 
 const Card: React.FC<{ title: string; children: React.ReactNode; hint?: string }> = ({ title, children, hint }) => (
-  <div className="p-5 rounded-2xl bg-slate-900 border border-slate-800">
+  <div className="p-5 rounded-2xl glass">
     <h3 className="text-sm font-bold text-white border-b border-slate-800 pb-3 mb-4">{title}</h3>
     {children}
     {hint ? <p className="text-[11px] text-slate-500 mt-3">{hint}</p> : null}
@@ -99,7 +99,7 @@ export const CentralBrainCognitionPanel: React.FC = () => {
 
   return (
     <div className="space-y-5">
-      <header className="p-5 rounded-2xl bg-slate-900 border border-slate-800 flex flex-wrap items-center justify-between gap-3">
+      <header className="p-5 rounded-2xl glass flex flex-wrap items-center justify-between gap-3">
         <div>
           <h1 className="text-base font-black text-white">العقل المركزي ١ — CENTRAL BRAIN 1</h1>
           <p className="text-xs text-slate-400 mt-1.5">

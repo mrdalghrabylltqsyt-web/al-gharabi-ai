@@ -33,7 +33,7 @@ export const ContentCalendarView: React.FC = () => {
   return (
     <div className="space-y-6">
       {/* Header */}
-      <div className="p-6 rounded-2xl bg-slate-900 border border-slate-800 flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
+      <div className="p-6 rounded-2xl glass flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
         <div>
           <h2 className="text-xl font-black text-white flex items-center gap-2">
             <CalendarIcon className="w-5 h-5 text-cyan-400" />
@@ -54,7 +54,7 @@ export const ContentCalendarView: React.FC = () => {
       </div>
 
       {/* Week Navigator */}
-      <div className="flex items-center justify-between p-4 rounded-2xl bg-slate-900 border border-slate-800">
+      <div className="flex items-center justify-between p-4 rounded-2xl glass">
         <div className="flex items-center gap-2">
           <button className="p-2 rounded-xl bg-slate-800 text-slate-300 hover:text-white cursor-pointer">
             <ChevronRight className="w-4 h-4" />

@@ -1,5 +1,119 @@
 @import "tailwindcss";
 
+/* ═══════════════════════════════════════════════════════════════════════════
+   هوية "Aurora Glass" — طبقة تصميم موحّدة للتطبيق بأكمله (مصدر واحد).
+   الفكرة: نُعيد ضبط عائلة الألوان المحايدة (slate) إلى كحلي مُشبع بلمسة
+   زرقاء/بنفسجية، فترثها **كل** المكوّنات القائمة تلقائياً (bg-slate-900،
+   border-slate-800، text-slate-400 …) بلا لمس منطق أي صفحة. لا تغيير في أي
+   وظيفة أو عقد API — ألوان فقط.
+   ═══════════════════════════════════════════════════════════════════════════ */
+@theme {
+  /* المحايد الكحلي (Aurora navy) — قيم مبنية على تدرّج أزرق-بنفسجي هادئ.
+     الأسطح العليا (900) شبه شفافة عمداً ليعبر توهّج الخلفية (تأثير زجاجي). */
+  --color-slate-950: oklch(0.17 0.035 265);
+  --color-slate-900: oklch(0.23 0.032 264 / 0.72);
+  --color-slate-800: oklch(0.30 0.030 264 / 0.62);
+  --color-slate-700: oklch(0.38 0.028 264);
+  --color-slate-600: oklch(0.48 0.026 263);
+  --color-slate-500: oklch(0.60 0.024 262);
+  --color-slate-400: oklch(0.71 0.024 261);
+  --color-slate-300: oklch(0.83 0.020 260);
+  --color-slate-200: oklch(0.91 0.014 260);
+  --color-slate-100: oklch(0.96 0.010 260);
+
+  /* ألوان Aurora المعتمدة: تركوازي (تفاعل) + أزرق (بنية) + بنفسجي (عمق). */
+  --color-aurora-cyan: oklch(0.82 0.13 195);
+  --color-aurora-blue: oklch(0.70 0.15 250);
+  --color-aurora-violet: oklch(0.66 0.19 295);
+
+  /* ظل التوهّج (glow) — محدود ومدروس، لا مبالغة. */
+  --shadow-glass: 0 1px 0 0 oklch(1 0 0 / 0.06) inset, 0 18px 40px -24px oklch(0 0 0 / 0.7);
+}
+
+/* ── الأساس: خلفية Aurora متدرّجة + زجاجية على مستوى التطبيق كله. ───────── */
+@layer base {
+  html {
+    color-scheme: dark;
+  }
+  body {
+    min-height: 100vh;
+    background-color: #070b1c;
+    background-image:
+      radial-gradient(1100px 620px at 88% -8%, oklch(0.55 0.16 265 / 0.30), transparent 62%),
+      radial-gradient(980px 560px at 6% 4%, oklch(0.55 0.17 300 / 0.22), transparent 60%),
+      radial-gradient(760px 620px at 50% 118%, oklch(0.62 0.13 200 / 0.16), transparent 64%),
+      linear-gradient(180deg, #080c1e 0%, #0a0f24 46%, #070b1c 100%);
+    background-attachment: fixed;
+    background-repeat: no-repeat;
+  }
+  /* توهّج ساكن خفيف أعلى الشاشة يعطي عمقاً دون تشويش. */
+  body::before {
+    content: "";
+    position: fixed;
+    inset: 0;
+    pointer-events: none;
+    background: radial-gradient(600px 240px at 50% -60px, oklch(0.85 0.10 195 / 0.10), transparent 70%);
+    z-index: 0;
+  }
+  /* تركيز موحّد لكل العناصر القابلة للتفاعل (وصولية + وضوح). */
+  :focus-visible {
+    outline: 2px solid var(--color-aurora-cyan);
+    outline-offset: 2px;
+    border-radius: 0.5rem;
+  }
+  ::selection {
+    background: var(--color-aurora-cyan);
+    color: #070b1c;
+  }
+  /* شريط تمرير متناسق مع الهوية. */
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: oklch(0.45 0.04 264) transparent;
+  }
+  *::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+  *::-webkit-scrollbar-thumb {
+    background: oklch(0.42 0.04 264 / 0.8);
+    border-radius: 9999px;
+    border: 2px solid transparent;
+    background-clip: content-box;
+  }
+  *::-webkit-scrollbar-thumb:hover {
+    background: oklch(0.55 0.06 264 / 0.9);
+    background-clip: content-box;
+  }
+}
+
+/* ── أنماط Aurora Glass المشتركة — تُستخدم عبر المكوّنات بدل تكرار CSS متضارب. */
+@layer components {
+  /* سطح زجاجي أساسي (بطاقات/ألواح). نصف شفاف + ضبابية + حدّ دقيق + إضاءة علوية. */
+  .glass {
+    background-color: oklch(0.23 0.032 264 / 0.66);
+    backdrop-filter: blur(14px) saturate(140%);
+    -webkit-backdrop-filter: blur(14px) saturate(140%);
+    border: 1px solid oklch(0.62 0.05 264 / 0.22);
+    box-shadow: var(--shadow-glass);
+  }
+  .glass-strong {
+    background-color: oklch(0.21 0.032 264 / 0.86);
+    backdrop-filter: blur(20px) saturate(150%);
+    -webkit-backdrop-filter: blur(20px) saturate(150%);
+    border: 1px solid oklch(0.66 0.06 264 / 0.28);
+    box-shadow: var(--shadow-glass);
+  }
+  /* إضاءة تركوازية للعنصر النشط/المحدّد (قريبة من المرجع، بلا مبالغة). */
+  .glass-active {
+    border-color: oklch(0.82 0.13 195 / 0.55);
+    box-shadow: 0 0 0 1px oklch(0.82 0.13 195 / 0.25), 0 10px 30px -14px oklch(0.82 0.13 195 / 0.5);
+  }
+  /* خط فاصل دقيق متناسق. */
+  .hairline {
+    border-color: oklch(0.66 0.05 264 / 0.18);
+  }
+}
+
 /* حركة دخول خفيفة عند فتح قسم/فرع (fade + انزلاق بسيط) — CSS خالص بلا مكتبة.
    تحترم تفضيل تقليل الحركة فلا تُزعج من يفضّل واجهة ساكنة. */
 @keyframes nav-in {
@@ -18,5 +132,13 @@
 @media (prefers-reduced-motion: reduce) {
   .animate-nav-in {
     animation: none;
+  }
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
   }
 }

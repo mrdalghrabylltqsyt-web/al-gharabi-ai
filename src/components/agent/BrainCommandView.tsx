@@ -57,14 +57,14 @@ export const BrainCommandView: React.FC = () => {
 
   return (
     <div className="space-y-5">
-      <header className="p-5 rounded-2xl bg-slate-900 border border-slate-800">
+      <header className="p-5 rounded-2xl glass">
         <h1 className="text-lg font-black text-white">لوحة تحكم الذكاء الاصطناعي - معرض الغرابي للأقساط</h1>
         <p className="text-xs text-slate-400 mt-1.5">
           العقل الإداري المفكر لقيادة كافة المنصات وتوجيه المبيعات والخوارزميات
         </p>
       </header>
 
-      <div className="p-6 rounded-2xl bg-slate-900 border border-slate-800">
+      <div className="p-6 rounded-2xl glass">
         <h3 className="text-sm font-bold text-white border-b border-slate-800 pb-3 mb-5">
           🧠 مركز القيادة والعقل المفكر للمدير الآلي
         </h3>
@@ -121,7 +121,7 @@ export const BrainCommandView: React.FC = () => {
         </button>
       </div>
 
-      <div className="p-6 rounded-2xl bg-slate-900 border border-slate-800">
+      <div className="p-6 rounded-2xl glass">
         <div className="flex items-center justify-between border-b border-slate-800 pb-3 mb-5">
           <h3 className="text-sm font-bold text-white">التحليل التنفيذي والتوجيهات الموحدة</h3>
           {generatedBy && <span className="text-[10px] text-emerald-400 font-bold">{generatedBy}</span>}

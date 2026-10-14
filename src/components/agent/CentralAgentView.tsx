@@ -135,7 +135,7 @@ export const CentralAgentView: React.FC = () => {
 
       {/* Central workspace status */}
       {workspaceSummary && (
-        <div className="p-4 rounded-2xl bg-slate-900 border border-slate-800">
+        <div className="p-4 rounded-2xl glass">
           <div className="flex items-center justify-between mb-3">
             <div>
               <p className="text-xs font-bold text-white">حالة مركز التشغيل</p>
@@ -161,7 +161,7 @@ export const CentralAgentView: React.FC = () => {
 
       {/* Control Center: AI budget + deterministic planning */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-        <div className="p-4 rounded-2xl bg-slate-900 border border-slate-800">
+        <div className="p-4 rounded-2xl glass">
           <div className="flex items-center justify-between gap-3">
             <div>
               <p className="text-xs font-bold text-white">حماية استهلاك Gemini</p>
@@ -173,7 +173,7 @@ export const CentralAgentView: React.FC = () => {
             </div>
           </div>
         </div>
-        <div className="p-4 rounded-2xl bg-slate-900 border border-slate-800 flex items-center justify-between gap-3">
+        <div className="p-4 rounded-2xl glass flex items-center justify-between gap-3">
           <div>
             <p className="text-xs font-bold text-white">مخطط أسبوعي بدون AI</p>
             <p className="text-[11px] text-slate-400 mt-1">يبني هيكل الحملة دون استهلاك أي طلب Gemini.</p>
@@ -185,7 +185,7 @@ export const CentralAgentView: React.FC = () => {
       </div>
 
       {weekPlan.length > 0 && (
-        <div className="p-4 rounded-2xl bg-slate-900 border border-slate-800">
+        <div className="p-4 rounded-2xl glass">
           <div className="flex items-center justify-between mb-3">
             <h3 className="text-sm font-bold text-white">الخطة الأسبوعية الأولية</h3>
             <span className="text-[10px] text-emerald-400 font-bold">بدون استهلاك Gemini</span>
@@ -203,7 +203,7 @@ export const CentralAgentView: React.FC = () => {
 
       {/* Strategic Insights Cards */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-        <div className="p-4 rounded-2xl bg-slate-900 border border-slate-800 space-y-2">
+        <div className="p-4 rounded-2xl glass space-y-2">
           <div className="flex items-center gap-2 text-xs font-bold text-white">
             <Clock className="w-4 h-4 text-emerald-400" />
             أفضل أوقات النشر والتفاعل
@@ -213,7 +213,7 @@ export const CentralAgentView: React.FC = () => {
           </p>
         </div>
 
-        <div className="p-4 rounded-2xl bg-slate-900 border border-slate-800 space-y-2">
+        <div className="p-4 rounded-2xl glass space-y-2">
           <div className="flex items-center gap-2 text-xs font-bold text-white">
             <TrendingUp className="w-4 h-4 text-cyan-400" />
             أعلى المنصات تفاعلاً واستفساراً
@@ -223,7 +223,7 @@ export const CentralAgentView: React.FC = () => {
           </p>
         </div>
 
-        <div className="p-4 rounded-2xl bg-slate-900 border border-slate-800 space-y-2">
+        <div className="p-4 rounded-2xl glass space-y-2">
           <div className="flex items-center gap-2 text-xs font-bold text-white">
             <Lightbulb className="w-4 h-4 text-amber-400" />
             توصية المحتوى للأسبوع الحالي
@@ -235,7 +235,7 @@ export const CentralAgentView: React.FC = () => {
       </div>
 
       {/* Interactive Chat Box */}
-      <div className="rounded-2xl bg-slate-900 border border-slate-800 overflow-hidden flex flex-col h-[550px]">
+      <div className="rounded-2xl glass overflow-hidden flex flex-col h-[550px]">
         {/* Chat Messages Log */}
         <div className="flex-1 overflow-y-auto p-4 sm:p-6 space-y-4 custom-scrollbar bg-slate-950/40">
           {messages.map((msg) => {
@@ -259,7 +259,7 @@ export const CentralAgentView: React.FC = () => {
                   <div
                     className={`p-4 rounded-2xl text-xs sm:text-sm leading-relaxed whitespace-pre-line ${
                       isAi
-                        ? 'bg-slate-900 border border-slate-800 text-slate-200 shadow-md'
+                        ? 'glass text-slate-200 shadow-md'
                         : 'bg-emerald-600 text-white font-medium'
                     }`}
                   >
@@ -276,7 +276,7 @@ export const CentralAgentView: React.FC = () => {
               <div className="w-8 h-8 rounded-xl bg-purple-950 text-purple-400 border border-purple-500/40 flex items-center justify-center shrink-0">
                 <Bot className="w-4 h-4 animate-bounce" />
               </div>
-              <div className="p-3.5 rounded-2xl bg-slate-900 border border-slate-800 text-xs text-purple-300 flex items-center gap-2">
+              <div className="p-3.5 rounded-2xl glass text-xs text-purple-300 flex items-center gap-2">
                 <span className="w-2 h-2 rounded-full bg-purple-400 animate-ping" />
                 <span>الوكيل الذكي يحلل بيانات المعرض وصياغة التوصية...</span>
               </div>

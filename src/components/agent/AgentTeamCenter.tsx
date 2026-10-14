@@ -147,7 +147,7 @@ export default function AgentTeamCenter() {
 
   return (
     <div className="space-y-4" dir="rtl">
-      <div className="bg-slate-900 border border-slate-800 rounded-2xl p-4">
+      <div className="glass rounded-2xl p-4">
         <div className="flex items-center justify-between flex-wrap gap-2">
           <div>
             <h2 className="text-lg font-bold text-slate-100">مركز فريق الوكلاء</h2>
@@ -186,7 +186,7 @@ export default function AgentTeamCenter() {
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-        <div className="bg-slate-900 border border-slate-800 rounded-2xl p-3 lg:col-span-1">
+        <div className="glass rounded-2xl p-3 lg:col-span-1">
           <h3 className="text-sm font-bold text-slate-200 mb-2">الجلسات ({list.length})</h3>
           {list.length === 0 && <div className="text-xs text-slate-500">لا جلسات بعد. تبدأ الجلسات تلقائياً من أحداث YouTube الحقيقية.</div>}
           <div className="space-y-2 max-h-[600px] overflow-y-auto">
@@ -213,7 +213,7 @@ export default function AgentTeamCenter() {
           </div>
         </div>
 
-        <div className="bg-slate-900 border border-slate-800 rounded-2xl p-4 lg:col-span-2">
+        <div className="glass rounded-2xl p-4 lg:col-span-2">
           {!selected && <div className="text-sm text-slate-500">اختر جلسة لعرض تفاصيلها الكاملة (الأدلة/التحليل/الخلافات/القرار).</div>}
           {selected && (
             <div className="space-y-3">

@@ -44,7 +44,7 @@ npm install
 npm run dev            # tsx server.ts
 npm run lint           # tsc --noEmit
 npm run build          # vite build + esbuild server.ts -> dist/server.cjs
-npm run final-audit    # node final-audit.mjs (1630 فحصاً)
+npm run final-audit    # node final-audit.mjs (1638 فحصاً)
 npm test               # storage + engine + auth + ... + db + runtime
 ```
 - التشغيل الإنتاجي: `PORT=4517 NODE_ENV=production APP_URL=http://localhost:4517 node dist/server.cjs`
@@ -6237,3 +6237,40 @@ automation/recovery/external/monitoring/storage). معرّفات الأقسام 
 النهائية) · `npm test` ✅ · `final-audit` ✅ **1630** (`nav-accent-identity-five-sections`,
 `nav-accent-glow-active-only`, `nav-accent-icon-box-gradient`, `nav-accent-preserves-semantics`,
 `nav-icon-semantic-fit`, `nav-entrance-animation-pure-css`). `unified.nav.test.ts` = **75 فحصاً**.
+
+## إعادة تصميم الواجهة بالكامل — هوية "Aurora Glass" (فرع `feat/aurora-glass-redesign`)
+
+توحيد الهوية البصرية وتجربة الاستخدام في **التطبيق بأكمله** (لا القائمة فقط): الشاشة
+الرئيسية، الأقسام الرئيسية والفرعية، البطاقات، الجداول، النماذج، النوافذ، لوحات المنصات،
+الرسوم، وحالات التحميل/الخطأ/الفراغ. **بلا حذف أو تعطيل أو إخفاء أي وظيفة أو زر أو مسار
+أو صلاحية أو بيانات.** القرار المعماري: **طبقة تصميم واحدة** يورثها كل المكوّنات القائمة،
+بدل تكرار CSS متضارب في كل صفحة أو بناء نظام موازٍ.
+
+**المصدر الواحد `src/index.css`:**
+- `@theme`: إعادة ضبط عائلة `slate` إلى **كحلي Aurora** (أزرق-بنفسجي هادئ)، والأسطح
+  `900/800` شبه شفافة عمداً ليعبر توهّج الخلفية (تأثير زجاجي). + ألوان Aurora
+  (`--color-aurora-cyan/blue/violet`) + ظل التوهّج `--shadow-glass`.
+  **الأثر:** كل المكوّنات التي تستخدم `bg-slate-900`/`border-slate-800`/`text-slate-400`
+  ترث الهوية تلقائياً بلا لمس منطقها (صفر تغيير وظيفي).
+- خلفية `body` متدرّجة ثابتة (ثلاث radial + خطّي) + توهّج علوي خفيف عبر `body::before`.
+- أنماط زجاجية مشتركة `.glass` / `.glass-strong` / `.glass-active` / `.hairline`
+  (`backdrop-filter: blur + saturate`، حدّ دقيق، إضاءة تركوازية للنشط).
+- `:focus-visible` موحّد + `::selection` + شريط تمرير متناسق + `prefers-reduced-motion`
+  (يُلغى `nav-in` وكل الحركات لمن يفضّل واجهة ساكنة).
+
+**التطبيق (مصدر واحد للزجاج):** استُبدل النمط الكانوني `bg-slate-900 border border-slate-800`
+(159 موضعاً في 35 ملفاً) بالصنف `.glass` — استبدال **بصري فقط** بلا أي تغيير في المنطق.
+وطُبّق الزجاج على الهيكل: `App` (جذر شفاف + toast/footer زجاجي)، `Header`، `Sidebar`،
+`SectionHub`، `LoginView`. لا خلفيات رمادية/سوداء صريحة تشوّه الهوية (فحص).
+
+**إصلاح عطل حقيقي مُثبت (كان قائماً على `main` أيضاً):** ترويسة الهاتف كانت تُحدث
+**تمريراً أفقياً** (`scrollWidth=522px` على شاشة 390px) لأن مجموعة الإجراءات تتجاوز العرض.
+أُصلح بـ`flex-wrap sm:flex-nowrap` + `shrink-0`/`min-w-0` (دون إخفاء أي زر أو حذف وظيفة).
+
+**حرّاس الانحدار:** `engine/tests/aurora.theme.test.ts` (`npm run test:aurora`، 23 فحصاً،
+مُدرَج في `npm test`) + 8 فحوص final-audit (`aurora-theme-tokens` … `aurora-regression-test`)
+تمنع: عودة الخلفية المعتمة، إزالة الزجاج، فقدان التركيز/تقليل الحركة، أو عودة التمرير الأفقي.
+`npm run lint` ✅ · `npm run build` ✅ · `npm test` ✅ (136 مجموعة، 0 فشل) · `final-audit` ✅ **1638**.
+
+**لم يُدمج ولم يُنشر** (موافقة الواجهة على فرع منفصل فقط). لم يُمسّ: منطق الخادم، أي API،
+قاعدة البيانات، الصلاحيات، الأسرار، أو أي تكامل خارجي.

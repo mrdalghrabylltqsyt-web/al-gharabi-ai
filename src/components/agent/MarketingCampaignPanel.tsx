@@ -179,7 +179,7 @@ export const MarketingCampaignPanel: React.FC = () => {
     <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
       {/* Campaign builder */}
       <div className="lg:col-span-5 space-y-5">
-        <div className="p-5 rounded-2xl bg-slate-900 border border-slate-800 space-y-4">
+        <div className="p-5 rounded-2xl glass space-y-4">
           <div className="flex items-center gap-2">
             <Layers className="w-4 h-4 text-emerald-400" />
             <h3 className="text-sm font-black text-white">حملة تسويقية صغيرة</h3>
@@ -349,7 +349,7 @@ export const MarketingCampaignPanel: React.FC = () => {
       {/* Results */}
       <div className="lg:col-span-7 space-y-5">
         {summary && (
-          <div className="p-5 rounded-2xl bg-slate-900 border border-slate-800 space-y-4">
+          <div className="p-5 rounded-2xl glass space-y-4">
             <div className="flex items-start justify-between gap-3">
               <div>
                 <h3 className="text-sm font-black text-white flex items-center gap-2">
@@ -491,7 +491,7 @@ export const MarketingCampaignPanel: React.FC = () => {
         )}
 
         {/* Campaign list */}
-        <div className="p-5 rounded-2xl bg-slate-900 border border-slate-800 space-y-3">
+        <div className="p-5 rounded-2xl glass space-y-3">
           <div className="flex items-center justify-between">
             <h3 className="text-sm font-black text-white">الحملات السابقة ({campaigns.length})</h3>
             <button

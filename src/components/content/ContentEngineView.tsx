@@ -215,7 +215,7 @@ export const ContentEngineView: React.FC = () => {
   return (
     <div className="space-y-6">
       {/* Header Info */}
-      <div className="p-6 rounded-2xl bg-slate-900 border border-slate-800 flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
+      <div className="p-6 rounded-2xl glass flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
         <div>
           <h2 className="text-xl font-black text-white flex items-center gap-2">
             <Sparkles className="w-5 h-5 text-emerald-400" />
@@ -236,7 +236,7 @@ export const ContentEngineView: React.FC = () => {
         {/* Left Form: Parameters and AI Prompt Controls (7 cols) */}
         <div className="lg:col-span-7 space-y-5">
           {/* Platform Selector */}
-          <div className="p-5 rounded-2xl bg-slate-900 border border-slate-800 space-y-3">
+          <div className="p-5 rounded-2xl glass space-y-3">
             <label className="block text-xs font-bold text-slate-300">
               1. اختر المنصات المستهدفة (يمكن اختيار أكثر من منصة):
             </label>
@@ -272,7 +272,7 @@ export const ContentEngineView: React.FC = () => {
           </div>
 
           {/* Video Attach — real upload only for YouTube today; honest status for other platforms */}
-          <div className="p-5 rounded-2xl bg-slate-900 border border-slate-800 space-y-3">
+          <div className="p-5 rounded-2xl glass space-y-3">
             <label className="block text-xs font-bold text-slate-300">
               إرفاق فيديو (اختياري):
             </label>
@@ -371,7 +371,7 @@ export const ContentEngineView: React.FC = () => {
           </div>
 
           {/* Content Type Selector */}
-          <div className="p-5 rounded-2xl bg-slate-900 border border-slate-800 space-y-3">
+          <div className="p-5 rounded-2xl glass space-y-3">
             <label className="block text-xs font-bold text-slate-300">
               2. نوع المحتوى المطلوب:
             </label>
@@ -401,7 +401,7 @@ export const ContentEngineView: React.FC = () => {
           </div>
 
           {/* Product Linking from Showroom Database */}
-          <div className="p-5 rounded-2xl bg-slate-900 border border-slate-800 space-y-3">
+          <div className="p-5 rounded-2xl glass space-y-3">
             <div className="flex items-center justify-between">
               <label className="text-xs font-bold text-slate-300 flex items-center gap-1.5">
                 <Package className="w-4 h-4 text-emerald-400" />
@@ -452,7 +452,7 @@ export const ContentEngineView: React.FC = () => {
           </div>
 
           {/* Tone & Custom Instructions */}
-          <div className="p-5 rounded-2xl bg-slate-900 border border-slate-800 space-y-3">
+          <div className="p-5 rounded-2xl glass space-y-3">
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               <div>
                 <label className="block text-xs font-bold text-slate-300 mb-1">
@@ -526,7 +526,7 @@ export const ContentEngineView: React.FC = () => {
 
         {/* Right Output & Multi-Platform Adaptation Studio (5 cols) */}
         <div className="lg:col-span-5 space-y-4">
-          <div className="p-5 rounded-2xl bg-slate-900 border border-slate-800 space-y-4 flex flex-col h-full">
+          <div className="p-5 rounded-2xl glass space-y-4 flex flex-col h-full">
             <div className="flex items-center justify-between border-b border-slate-800 pb-3">
               <div className="flex items-center gap-2">
                 <Eye className="w-4 h-4 text-emerald-400" />

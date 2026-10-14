@@ -247,7 +247,7 @@ export const SocialHubView: React.FC = () => {
   return (
     <div className="space-y-6">
       {/* Header & Controls */}
-      <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 p-6 rounded-2xl bg-slate-900 border border-slate-800">
+      <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 p-6 rounded-2xl glass">
         <div>
           <div className="flex items-center gap-2">
             <h2 className="text-xl font-black text-white flex items-center gap-2">
@@ -430,7 +430,7 @@ export const SocialHubView: React.FC = () => {
             publishedFiltered.map((post) => (
               <div
                 key={post.id}
-                className="p-4 rounded-2xl bg-slate-900 border border-slate-800 space-y-3"
+                className="p-4 rounded-2xl glass space-y-3"
               >
                 <div className="flex items-start justify-between gap-3">
                   <div>
@@ -533,7 +533,7 @@ export const SocialHubView: React.FC = () => {
           </div>
 
           {/* تسجيل تعليق وارد — دورة الـingest الحقيقية */}
-          <div className="p-4 rounded-2xl bg-slate-900 border border-slate-800 space-y-3">
+          <div className="p-4 rounded-2xl glass space-y-3">
             <div className="flex items-center justify-between">
               <h3 className="text-xs font-bold text-white flex items-center gap-2">
                 <Inbox className="w-4 h-4 text-blue-400" /> تسجيل تعليق وارد للمراجعة
@@ -613,7 +613,7 @@ export const SocialHubView: React.FC = () => {
                     : 'deterministic')
                   : '—';
                 return (
-                  <div key={com.id} className="p-4 rounded-2xl bg-slate-900 border border-slate-800 space-y-3">
+                  <div key={com.id} className="p-4 rounded-2xl glass space-y-3">
                     <div className="flex items-start justify-between gap-3 flex-wrap">
                       <div className="flex items-center gap-2.5">
                         <div className="w-8 h-8 rounded-lg bg-emerald-500/10 text-emerald-400 font-bold text-xs flex items-center justify-center border border-emerald-500/20">
@@ -786,7 +786,7 @@ export const SocialHubView: React.FC = () => {
 
       {/* Sub-Tab 5: Comparison Stats */}
       {activeSubTab === 'stats' && (
-        <div className="p-6 rounded-2xl bg-slate-900 border border-slate-800 space-y-5">
+        <div className="p-6 rounded-2xl glass space-y-5">
           <h3 className="font-bold text-sm text-white flex items-center gap-2">
             <TrendingUp className="w-4 h-4 text-emerald-400" />
             مقارنة أداء وتفاعل قنوات معرض الغرابي
@@ -823,7 +823,7 @@ export const SocialHubView: React.FC = () => {
       {/* Modal: Add Custom Social Platform */}
       {showAddModal && (
         <div className="fixed inset-0 z-50 bg-black/70 backdrop-blur-sm flex items-center justify-center p-4">
-          <div className="w-full max-w-md bg-slate-900 border border-slate-800 rounded-3xl p-6 shadow-2xl space-y-4 animate-in fade-in">
+          <div className="w-full max-w-md glass rounded-3xl p-6 shadow-2xl space-y-4 animate-in fade-in">
             <div className="flex items-center justify-between border-b border-slate-800 pb-3">
               <h3 className="font-bold text-base text-white flex items-center gap-2">
                 <Globe className="w-5 h-5 text-emerald-400" />
