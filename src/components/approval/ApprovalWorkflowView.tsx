@@ -193,6 +193,9 @@ export const ApprovalWorkflowView: React.FC = () => {
           filteredPosts.map((post) => {
             const isManager = currentUser.role === 'manager' || currentUser.role === 'owner';
             const isContent = currentUser.role === 'content_creator' || isManager;
+            // اعتماد/جدولة/نشر المحتوى محصورة بالمالك على الخادم (requireOwner)، فنُخفي
+            // أزرارها عن غير المالك كطبقة دفاع إضافية (الحماية الفعلية على الخادم).
+            const isOwner = currentUser.role === 'owner';
 
             return (
               <div
@@ -284,7 +287,7 @@ export const ApprovalWorkflowView: React.FC = () => {
                   <div className="flex flex-col gap-2">
                   <div className="flex items-center gap-2 flex-wrap">
                     {/* Stage: Draft -> Submit for Review */}
-                    {post.status === 'draft' && (
+                    {post.status === 'draft' && isContent && (
                       <button
                         onClick={() =>
                           updatePostStatus(
@@ -300,9 +303,10 @@ export const ApprovalWorkflowView: React.FC = () => {
                       </button>
                     )}
 
-                    {/* Stage: Review/Edited -> Approve (Manager only) */}
+                    {/* Stage: Review/Edited -> Approve (owner-only on the server; hidden for non-owner as defense-in-depth) */}
                     {(post.status === 'review' || post.status === 'edited') && (
                       <>
+                        {/* approve owner-only */}{isOwner && (
                         <button
                           onClick={() =>
                             updatePostStatus(
@@ -316,6 +320,7 @@ export const ApprovalWorkflowView: React.FC = () => {
                           <Check className="w-3.5 h-3.5" />
                           موافقة واعتماد
                         </button>
+                        )}
                         <button
                           onClick={() =>
                             updatePostStatus(
@@ -331,8 +336,8 @@ export const ApprovalWorkflowView: React.FC = () => {
                       </>
                     )}
 
-                    {/* Stage: Approved -> Schedule or Publish */}
-                    {post.status === 'approved' && (
+                    {/* Stage: Approved -> Schedule or Publish (both owner-only on the server) */}
+                    {post.status === 'approved' && isOwner && (
                       <>
                         <button
                           onClick={() => {
@@ -356,8 +361,8 @@ export const ApprovalWorkflowView: React.FC = () => {
                       </>
                     )}
 
-                    {/* Stage: Scheduled -> Publish early */}
-                    {post.status === 'scheduled' && (
+                    {/* Stage: Scheduled -> Publish early (owner-only on the server) */}
+                    {post.status === 'scheduled' && isOwner && (
                       <button
                         onClick={() => handlePublishNow(post)}
                         disabled={isPublishing[post.id]}
