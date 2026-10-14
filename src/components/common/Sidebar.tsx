@@ -32,12 +32,6 @@ export function visibleSectionGroups(section: NavSection, isOwner: boolean) {
   return visibleSectionBranches(section, isOwner).map((b) => ({ title: b.title, items: b.items }));
 }
 
-/** يفتح الفرع الأول من القسم إن كانت الورقة النشطة داخله (يظهر مكان المستخدم). */
-function activeSectionFirstBranch(section: NavSection, activeTab: string): string {
-  const branch = section.branches.find((b) => b.items.some((i) => i.id === activeTab));
-  return branch ? branch.id : '';
-}
-
 interface SidebarProps {
   mobileOpen: boolean;
   onCloseMobile: () => void;
@@ -66,13 +60,13 @@ export const Sidebar: React.FC<SidebarProps> = ({ mobileOpen, onCloseMobile }) =
 
   const [query, setQuery] = React.useState('');
   const [expandedSections, setExpandedSections] = React.useState<string[]>([]);
-  const [expandedBranches, setExpandedBranches] = React.useState<string[]>([]);
 
   // استرجاع حالة الفتح من التخزين المحلي (يحافظ على تنقّل المالك قدر الإمكان).
+  // ملاحظة: لا يوجد طيّ متداخل للفروع بعد الآن؛ تُبقى حالة الفروع القديمة في التخزين
+  // (توافق خلفي) لكن لا تُقرأ للعرض.
   React.useEffect(() => {
     const s = readExpanded();
     setExpandedSections(s.sections);
-    setExpandedBranches(s.branches);
   }, []);
 
   // القسم الحاوي للورقة النشطة يُفتح تلقائياً (يظهر مكان المستخدم).
@@ -83,34 +77,22 @@ export const Sidebar: React.FC<SidebarProps> = ({ mobileOpen, onCloseMobile }) =
     }
   }, [activeTab]);
 
-  const persist = (sections: string[], branches: string[]) => {
-    try { localStorage.setItem(EXPANDED_KEY, JSON.stringify({ sections, branches })); } catch { /* تجاهل */ }
+  const persist = (sections: string[]) => {
+    // نحفظ الفروع القديمة فارغة (لا طيّ متداخل بعد الآن) مع الحفاظ على المفتاح/الشكل
+    // نفسه للتوافق الخلفي مع أي جلسة سابقة.
+    try { localStorage.setItem(EXPANDED_KEY, JSON.stringify({ sections, branches: [] })); } catch { /* تجاهل */ }
   };
 
   // الضغط على ترويسة القسم **ينقّل دائماً** إلى صفحة القسم (هذا هو المقصود الأساسي
-  // من الضغط)، ثم يبدّل حالة الفتح/الإغلاق للفروع. كان سابقاً ينقّل فقط عند فتح قسم
-  // مُغلق، فإن ضغط المستخدم قسماً مفتوحاً (أو فُتح تلقائياً للورقة النشطة) انطوت
-  // فروعه بلا تنقّل، فبقي المحتوى على القسم السابق — فيبدو كأن الضغط فتح محتوى قسم
-  // آخر، وكأن الفروع لا تستجيب. الإصلاح: التنقّل غير مشروط بحالة الفتح.
+  // من الضغط)، ثم يبدّل حالة الفتح/الإغلاق للفروع. لا يوجد طيّ متداخل للفروع: الضغط
+  // على القسم يُظهر لوحة فرعية منظّمة (فروع كفواصل + وظائف كبطاقات قابلة للضغط مباشرة).
   const toggleSection = (id: string) => {
     setExpandedSections((prev) => {
       const next = prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id];
-      persist(next, expandedBranches);
+      persist(next);
       return next;
     });
     setActiveTab(id);
-  };
-
-  // الضغط على الفرع يبدّل حالته، وعند فتح فرع كان **مغلقاً فعلاً** ينقل إلى أول ورقة
-  // فيه فيظهر محتواه (بدل أن يبدو الفرع بلا استجابة). لا تنقّل عند إغلاق فرع، ولا عند
-  // ضغط فرع مفتوح تلقائياً بسبب الورقة النشطة — كي لا يُسحب المحتوى من تحت المستخدم.
-  const toggleBranch = (id: string, firstLeafId: string | undefined, wasOpen: boolean) => {
-    setExpandedBranches((prev) => {
-      const next = prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id];
-      persist(expandedSections, next);
-      return next;
-    });
-    if (!wasOpen && firstLeafId) setActiveTab(firstLeafId);
   };
 
   const badgeFor = (leafId: string): string | null => {
@@ -154,15 +136,15 @@ export const Sidebar: React.FC<SidebarProps> = ({ mobileOpen, onCloseMobile }) =
         {/* Top Branding Section */}
         <div className="p-4 border-b border-slate-800 flex items-center justify-between">
           <div className="flex items-center gap-3">
-            <div className="w-9 h-9 rounded-xl bg-gradient-to-tr from-emerald-500 to-teal-600 flex items-center justify-center text-white font-extrabold shadow-md shadow-emerald-900/50">
-              <Package className="w-5 h-5 text-white" />
+            <div className="w-10 h-10 rounded-xl bg-accent flex items-center justify-center text-slate-950 font-extrabold shadow-md shadow-accent/25">
+              <Package className="w-5 h-5 text-slate-950" />
             </div>
             <div>
-              <h2 className="font-extrabold text-base text-white tracking-wide">
-                معرض الغرابي <span className="text-emerald-400">للتقسيط</span>
+              <h2 className="font-black text-base text-white tracking-wide">
+                معرض الغرابي <span className="text-accent">للتقسيط</span>
               </h2>
-              <p className="text-[11px] text-slate-400 flex items-center gap-1">
-                <BadgePercent className="w-3 h-3 text-emerald-400" />
+              <p className="text-[11px] text-slate-500 flex items-center gap-1">
+                <BadgePercent className="w-3 h-3 text-accent" />
                 لوحة القيادة الهرمية الموحّدة
               </p>
             </div>
@@ -231,30 +213,30 @@ export const Sidebar: React.FC<SidebarProps> = ({ mobileOpen, onCloseMobile }) =
                 {/* فاصل بصري بين الأقسام الرئيسية المتتالية (لا كتلة متصلة واحدة). */}
                 {idx > 0 && <div className="my-1.5 h-px bg-slate-800/70" />}
 
-                <div className="rounded-xl">
-                  {/* المستوى 1: العنوان الرئيسي (الأكبر وزناً) — هوية لونية خاصة بالقسم */}
+                <div className="rounded-2xl">
+                  {/* المستوى 1: العنوان الرئيسي — الأكبر والأثقل (تسلسل طباعي ثلاثي واضح). */}
                   <button
                     onClick={() => toggleSection(section.id)}
-                    className={`w-full flex items-center gap-2.5 px-2.5 py-2.5 rounded-xl text-right transition-all duration-200 group cursor-pointer ${FOCUS_RING} ${
+                    className={`w-full flex items-center gap-3 px-3 py-3 rounded-2xl text-right transition-all duration-200 group cursor-pointer ${FOCUS_RING} ${
                       sectionActive
-                        ? section.accent.rowActive
-                        : 'text-slate-300 hover:bg-slate-800/60 hover:text-white border border-transparent'
+                        ? `${section.accent.rowActive} accent-top`
+                        : 'text-slate-200 hover:bg-slate-800/60 hover:text-white border border-transparent'
                     }`}
                     aria-expanded={open}
                   >
-                    <ChevronDown className={`w-4 h-4 shrink-0 text-slate-400 transition-transform ${open ? '' : '-rotate-90'}`} />
                     <div
-                      className={`w-9 h-9 rounded-xl flex items-center justify-center shrink-0 transition-all duration-200 group-hover:scale-[1.04] ${
+                      className={`w-11 h-11 rounded-xl flex items-center justify-center shrink-0 transition-all duration-200 group-hover:scale-[1.04] ${
                         sectionActive
                           ? section.accent.boxActive
                           : `${section.accent.box} group-hover:shadow-md`
                       }`}
                     >
-                      <Icon className={`w-5 h-5 transition-colors ${sectionActive ? 'text-white' : section.accent.icon}`} />
+                      <Icon className={`w-5 h-5 transition-colors ${sectionActive ? 'text-slate-950' : section.accent.icon}`} />
                     </div>
                     <div className="flex-1 min-w-0 text-right">
                       <div className="flex items-center justify-between gap-1">
-                        <p className="text-sm font-black tracking-tight truncate">{section.label}</p>
+                        {/* عنوان القسم: ضخم وسميك بحرف متباعد قليلاً (أعلى التسلسل الطباعي). */}
+                        <p className="text-base font-black tracking-wide truncate">{section.label}</p>
                         {sectionBadge && (
                           <span
                             className={`text-[10px] px-1.5 py-0.5 rounded-md font-bold border ${
@@ -267,70 +249,66 @@ export const Sidebar: React.FC<SidebarProps> = ({ mobileOpen, onCloseMobile }) =
                           </span>
                         )}
                       </div>
-                      <p className="text-[10px] text-slate-400 truncate">{section.desc}</p>
+                      <p className="text-[10px] text-slate-500 truncate">{section.desc}</p>
                     </div>
+                    {/* سهم واحد فقط — بجانب القسم النشط وحده (بلا أسهم متكدّسة على الفروع). */}
+                    {sectionActive && (
+                      <ChevronDown className={`w-4 h-4 shrink-0 text-accent transition-transform duration-200 ${open ? '' : '-rotate-90'}`} />
+                    )}
                   </button>
 
-                  {/* المستوى 2: الفروع (أصغر قليلاً) والمستوى 3: الوظائف (الأخفّ) */}
+                  {/* لوحة فرعية منظّمة: الفروع كفواصل صغيرة بخط خفيف (بلا سهم)،
+                      والوظائف تحتها كبطاقات صغيرة قابلة للضغط مباشرة (بلا ضغطة ثانية). */}
                   {open && (
-                    <div className="mt-1 mr-4 pr-3 border-r border-slate-800 space-y-0.5 animate-nav-in">
+                    <div className="mt-1.5 mr-4 pr-3 border-r border-slate-800 space-y-2.5 animate-nav-in">
                       {branches.map((branch) => {
                         const BIcon = branch.icon;
-                        const bOpen = searching || expandedBranches.includes(branch.id) || branch.id === activeSectionFirstBranch(section, activeTab);
                         return (
                           <div key={branch.id}>
-                            <button
-                              onClick={() => toggleBranch(branch.id, branch.items[0]?.id, bOpen)}
-                              className={`w-full flex items-center gap-2 px-2 py-1.5 rounded-lg text-right text-slate-400 hover:text-white hover:bg-slate-800/50 transition-all duration-200 cursor-pointer ${FOCUS_RING}`}
-                              aria-expanded={bOpen}
-                            >
-                              <ChevronDown className={`w-3.5 h-3.5 shrink-0 transition-transform ${bOpen ? '' : '-rotate-90'}`} />
-                              <span className={`w-6 h-6 rounded-lg flex items-center justify-center shrink-0 transition-all duration-200 ${section.accent.box}`}>
-                                <BIcon className={`w-3.5 h-3.5 shrink-0 ${section.accent.icon}`} />
-                              </span>
-                              <span className="text-[12px] font-bold truncate">{branch.title}</span>
-                            </button>
-
-                            {bOpen && (
-                              <div className="mt-0.5 mr-3 space-y-0.5 animate-nav-in">
-                                {branch.items.map((leaf) => {
-                                  const LIcon = leaf.icon;
-                                  const on = activeTab === leaf.id;
-                                  const badge = badgeFor(leaf.id);
-                                  const tone = navBadgeTone(leaf.id);
-                                  return (
-                                    <button
-                                      key={`${branch.id}:${leaf.id}:${leaf.label}`}
-                                      onClick={() => handleLeafClick(leaf.id)}
-                                      className={`w-full flex items-center gap-2 px-2 py-1.5 rounded-lg text-right transition-all duration-200 cursor-pointer ${FOCUS_RING} ${
-                                        on
-                                          ? 'bg-gradient-to-l from-emerald-400 to-emerald-500 text-slate-950 font-semibold shadow-sm shadow-emerald-500/30'
-                                          : 'text-slate-300 font-normal hover:bg-slate-800/70 hover:text-white'
-                                      }`}
-                                      title={leaf.desc}
-                                    >
-                                      <span className={`w-5 h-5 rounded-md flex items-center justify-center shrink-0 ${on ? 'bg-slate-950/15' : section.accent.box}`}>
-                                        <LIcon className={`w-3.5 h-3.5 shrink-0 ${on ? 'text-slate-950' : section.accent.icon}`} />
+                            {/* فاصل الفرع: عنوان صغير بخط خفيف — لا سهم ولا طيّ. */}
+                            <div className="flex items-center gap-1.5 px-1 pb-1 text-slate-500">
+                              <BIcon className="w-3 h-3 shrink-0" />
+                              <span className="text-[10px] font-bold uppercase tracking-wider truncate">{branch.title}</span>
+                              <span className="flex-1 h-px bg-slate-800" />
+                            </div>
+                            <div className="space-y-0.5">
+                              {branch.items.map((leaf) => {
+                                const LIcon = leaf.icon;
+                                const on = activeTab === leaf.id;
+                                const badge = badgeFor(leaf.id);
+                                const tone = navBadgeTone(leaf.id);
+                                return (
+                                  <button
+                                    key={`${branch.id}:${leaf.id}:${leaf.label}`}
+                                    onClick={() => handleLeafClick(leaf.id)}
+                                    className={`w-full flex items-center gap-2 px-2 py-1.5 rounded-lg text-right transition-all duration-200 cursor-pointer ${FOCUS_RING} ${
+                                      on
+                                        ? 'bg-accent/15 text-accent font-semibold border border-accent/30'
+                                        : 'text-slate-300 font-normal hover:bg-slate-800/70 hover:text-white border border-transparent'
+                                    }`}
+                                    title={leaf.desc}
+                                  >
+                                    <span className={`w-5 h-5 rounded-md flex items-center justify-center shrink-0 ${on ? 'bg-accent/20' : 'bg-slate-800/70'}`}>
+                                      <LIcon className={`w-3.5 h-3.5 shrink-0 ${on ? 'text-accent' : 'text-slate-400'}`} />
+                                    </span>
+                                    <span className="text-[11px] truncate flex-1">{leaf.label}</span>
+                                    {badge && (
+                                      <span
+                                        className={`text-[9px] px-1 py-0.5 rounded font-bold border ${
+                                          on
+                                            ? 'bg-accent/20 text-accent border-accent/30'
+                                            : tone === 'urgent'
+                                              ? 'bg-amber-500/20 text-amber-300 border-amber-500/40'
+                                              : 'bg-slate-800 text-slate-300 border-slate-700'
+                                        }`}
+                                      >
+                                        {badge}
                                       </span>
-                                      <span className="text-[11px] truncate flex-1">{leaf.label}</span>
-                                      {badge && (
-                                        <span
-                                          className={`text-[9px] px-1 py-0.5 rounded font-bold border ${
-                                            on
-                                              ? 'bg-slate-950/20 text-slate-950 border-slate-950/30'
-                                              : tone === 'urgent'
-                                                ? 'bg-amber-500/20 text-amber-300 border-amber-500/40'
-                                                : 'bg-slate-800 text-slate-300 border-slate-700'
-                                          }`}
-                                        >
-                                          {badge}
-                                        </span>
-                                      )}
-                                    </button>
-                                  );
-                                })}
-                              </div>
-                            )}
+                                    )}
+                                  </button>
+                                );
+                              })}
+                            </div>
                           </div>
                         );
                       })}

@@ -66,20 +66,21 @@ test('كل قسم ينقل إلى محتواه هو (بما فيه إعادة ا
   }
 });
 
-test('الضغط على فرع يفتح وظائفه وينقل إلى أولها (لا فرع بلا استجابة)', async ({ page }) => {
+test('الوظائف قابلة للضغط مباشرة بلا ضغطة ثانية لفتح الفرع', async ({ page }) => {
   await login(page);
 
   await sectionHeader(page, 'النشر والمنصات').click();
   await expect(mainHeading(page)).toHaveText('النشر والمنصات', { timeout: 15_000 });
 
-  // فروع قسم النشر داخل الحاوية المفتوحة.
-  const branchButtons = page.locator('aside button[aria-expanded]').filter({ has: page.locator('span') });
-  const count = await branchButtons.count();
+  // في التصميم الجديد: الفروع فواصل صغيرة (بلا طيّ)، والوظائف بطاقات قابلة للضغط
+  // مباشرة. نتحقّق أن الضغط على أول وظيفة ينقل إلى محتواها فوراً (بلا فتح فرع أولاً).
+  const leafButtons = page.locator('aside button[title]');
+  await expect(leafButtons.first()).toBeVisible({ timeout: 15_000 });
+  const count = await leafButtons.count();
   expect(count).toBeGreaterThan(0);
 
-  // أول فرع: الضغط عليه يجب أن يغيّر محتوى الصفحة (ينقل إلى وظيفته الأولى).
   const before = (await mainHeading(page).textContent())?.trim() || '';
-  await branchButtons.first().click();
+  await leafButtons.first().click();
   await expect
     .poll(async () => (await mainHeading(page).textContent())?.trim() || '', { timeout: 15_000 })
     .not.toBe(before);

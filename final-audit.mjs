@@ -4141,9 +4141,9 @@ add('watcher-advisory-not-authority',
     'كل معرّفات الأقسام القديمة (14) تبقى حالات عرض صالحة في App.tsx (دمج لا حذف)');
   add('hier-nav-three-levels',
     navCfgSrc.includes('interface NavBranch') && navCfgSrc.includes('branches: NavBranch[]') &&
-    sidebarSrc.includes('aria-expanded={open}') && sidebarSrc.includes('aria-expanded={bOpen}') &&
+    sidebarSrc.includes('aria-expanded={open}') &&
     sidebarSrc.includes('ChevronDown'),
-    'تنقل هرمي بثلاثة مستويات (قسم←فرع←وظيفة) بفتح/إغلاق وسهم حالة');
+    'تنقل هرمي بثلاثة مستويات (قسم←فرع←وظيفة) بفتح/إغلاق وسهم واحد عند القسم النشط');
   add('hier-nav-branch-count',
     (navCfgSrc.match(/branches: \[/g) || []).length >= navSectionIds.length,
     'كل قسم رئيسي يحوي فروعاً فرعية (branches) فعلية');
@@ -4151,8 +4151,9 @@ add('watcher-advisory-not-authority',
     navCfgSrc.includes('export function searchNav') && sidebarSrc.includes('searchNav') && sidebarSrc.includes('placeholder="بحث في الأقسام والوظائف'),
     'بحث في الأقسام والوظائف داخل الشريط الجانبي');
   add('hier-nav-breadcrumb',
-    hubSrc.includes('aria-label="مسار التنقّل"') && hubSrc.includes('الرئيسية'),
-    'مسار تنقّل (Breadcrumb) في لوحة القسم يبيّن مكان المستخدم');
+    !hubSrc.includes('aria-label="مسار التنقّل"') && !hubSrc.includes('الرئيسية') &&
+    hubSrc.includes('text-xl font-black') && hubSrc.includes('accent-top'),
+    'مسار تنقّل واحد (بلا breadcrumb مكرر في لوحة القسم) — التنقّل عبر الشريط الجانبي، والترويسة فخمة للقسم');
   add('hier-nav-persist-expansion',
     sidebarSrc.includes('gharabi-nav-expanded-v1') && sidebarSrc.includes('localStorage'),
     'حالة الفتح/الإغلاق تُحفظ محلياً (حفاظ التنقل قدر الإمكان)');
@@ -4180,40 +4181,40 @@ add('watcher-advisory-not-authority',
     navCfgSrc.includes('ملاحظة تطوير') && navCfgSrc.includes('لا تُعرض للمستخدم'),
     'نص المطوّر أُزيل من الواجهة ونُقل إلى تعليق كود فقط');
   add('nav-visual-hierarchy',
-    sidebarSrc.includes('text-sm font-black tracking-tight') &&
-    sidebarSrc.includes('text-[12px] font-bold') &&
+    sidebarSrc.includes('text-base font-black tracking-wide') &&
+    sidebarSrc.includes('text-[10px] font-bold uppercase tracking-wider') &&
     sidebarSrc.includes('text-[11px] truncate flex-1') &&
-    sidebarSrc.includes('w-9 h-9 rounded-xl') && sidebarSrc.includes('w-6 h-6 rounded-lg') && sidebarSrc.includes('w-5 h-5 rounded-md'),
-    'تدرّج بصري حقيقي بين المستويات الثلاثة (حجم/وزن الخط + حجم صندوق الأيقونة)');
+    sidebarSrc.includes('w-11 h-11 rounded-xl') && sidebarSrc.includes('w-5 h-5 rounded-md'),
+    'تدرّج بصري ثلاثي واضح (قسم ضخم → فرع متوسط خفيف → وظيفة خفيفة) + حجم صندوق الأيقونة');
   add('nav-accent-identity-five-sections',
-    navCfgSrc.includes('export const NAV_ACCENTS') &&
-    (navCfgSrc.match(/accent: NAV_ACCENTS\./g) || []).length === 5 &&
-    ['sky','emerald','amber','violet','steel'].every((k)=> navCfgSrc.includes('accent: NAV_ACCENTS.' + k)),
-    'هوية لونية مميّزة لكل قسم من الأقسام الخمسة (sky/emerald/amber/violet/steel)');
+    navCfgSrc.includes('export const NAV_ACCENT: NavAccent') &&
+    (navCfgSrc.match(/accent: NAV_ACCENT,/g) || []).length === 5 &&
+    navCfgSrc.includes('sky: NAV_ACCENT') && navCfgSrc.includes('steel: NAV_ACCENT'),
+    'لون تمييز **واحد** لكل الأقسام الخمسة (NAV_ACCENT) — بلا ألوان متعدّدة (لا «أزرق مُبهَم»)');
   add('nav-accent-glow-active-only',
-    navCfgSrc.includes('boxActive') && navCfgSrc.includes('shadow-sky-500/40') &&
+    navCfgSrc.includes('boxActive') && navCfgSrc.includes('shadow-accent/30') &&
     navCfgSrc.includes('ring-1 ring-inset') &&
     sidebarSrc.includes('section.accent.boxActive') && sidebarSrc.includes('section.accent.rowActive'),
-    'لون الأيقونة + توهج/حلقة حول الصندوق عند القسم النشط فقط (لا لكل الأقسام)');
+    'لون التمييز + توهج/حلقة حول الصندوق عند القسم النشط فقط (لا لكل الأقسام)');
   add('nav-accent-icon-box-gradient',
-    navCfgSrc.includes('bg-gradient-to-br from-sky-500/20') &&
-    navCfgSrc.includes('bg-gradient-to-br from-violet-500/20') &&
+    navCfgSrc.includes('bg-slate-800/70 ring-1 ring-inset ring-slate-700') &&
+    navCfgSrc.includes('bg-accent text-slate-950') &&
     sidebarSrc.includes('group-hover:scale-[1.04]') && sidebarSrc.includes('transition-all duration-200'),
-    'صناديق أيقونات بتدرّج خفيف (لا لون مسطّح) + انتقال سلس وزيادة لطيفة عند التمرير');
+    'صناديق أيقونات محايدة (رمادي فحمي) وصندوق نشط بلون التمييز + انتقال سلس');
   add('nav-accent-preserves-semantics',
-    sidebarSrc.includes('from-emerald-400 to-emerald-500 text-slate-950') &&
+    sidebarSrc.includes('bg-accent/15 text-accent') &&
     sidebarSrc.includes('bg-amber-500/20 text-amber-300'),
-    'لا كسر الدلالات القائمة: الورقة النشطة زمردية والعاجل كهرماني');
+    'لا كسر الدلالات القائمة: الورقة النشطة بلون التمييز الواحد والعاجل كهرماني');
   add('nav-icon-semantic-fit',
     navCfgSrc.includes('icon: BrainCircuit') && navCfgSrc.includes('icon: MessageSquareText') &&
     navCfgSrc.includes('icon: Store') && navCfgSrc.includes('icon: Cog') &&
     !/id: 'brain_manager'[^\n]*icon: Users/.test(navCfgSrc),
     'ملاءمة الأيقونة للمعنى: brain_manager صار BrainCircuit (لا Users)، وقسم الزبائن MessageSquareText، والمنتجات Store، والإعدادات Cog');
   add('nav-entrance-animation-pure-css',
-    (sidebarSrc.match(/animate-nav-in/g) || []).length >= 2 &&
+    (sidebarSrc.match(/animate-nav-in/g) || []).length >= 1 &&
     read('src/index.css').includes('@keyframes nav-in') &&
     read('src/index.css').includes('prefers-reduced-motion'),
-    'حركة دخول خفيفة (fade+slide) CSS خالص بلا مكتبة، وتحترم prefers-reduced-motion');
+    'حركة دخول خفيفة (fade+slide) CSS خالص بلا مكتبة على اللوحة الفرعية، وتحترم prefers-reduced-motion');
   add('nav-section-separator',
     sidebarSrc.includes('h-px bg-slate-800/70'),
     'فاصل بصري بين الأقسام الرئيسية المتتالية');
@@ -4304,16 +4305,18 @@ add('watcher-advisory-not-authority',
   const indexHtmlSrc = read('index.html');
   add('aurora-theme-tokens',
     cssSrc.includes('@theme') && cssSrc.includes('--color-slate-950:') &&
-    cssSrc.includes('--color-aurora-cyan:') && cssSrc.includes('--color-aurora-violet:'),
-    'index.css يعرّف رموز Aurora (كحلي مُعاد ضبطه + ألوان تركواز/بنفسجي) كمصدر واحد للهوية');
+    cssSrc.includes('--color-accent:') &&
+    !cssSrc.includes('--color-aurora-cyan:') && !cssSrc.includes('--color-aurora-violet:'),
+    'index.css يعرّف محايداً فحمياً + لون تمييز واحد (accent) كمصدر واحد للهوية — بلا ألوان Aurora متعدّدة');
   add('aurora-background-gradient',
-    /body\s*\{[^}]*background-image:\s*[\s\S]*?radial-gradient/.test(cssSrc) &&
+    /body\s*\{[^}]*background-color:\s*#0a0a0f/.test(cssSrc) &&
+    !/body\s*\{[^}]*radial-gradient/.test(cssSrc) &&
     cssSrc.includes('background-attachment: fixed'),
-    'خلفية Aurora متدرّجة (radial-gradient) ثابتة على مستوى body — لا سطح معتم يغطّيها');
+    'خلفية صلبة أنيقة (بلا تدرّجات radial ملوّنة متعدّدة) ثابتة على مستوى body');
   add('aurora-glass-utilities',
     cssSrc.includes('.glass {') && cssSrc.includes('.glass-strong') && cssSrc.includes('.glass-active') &&
-    cssSrc.includes('backdrop-filter'),
-    'أنماط زجاجية مشتركة (.glass/.glass-strong/.glass-active) بضبابية — تُستخدم بدل تكرار CSS متضارب');
+    cssSrc.includes('--shadow-elevated') && cssSrc.includes('.accent-top'),
+    'أسطح مرتفعة مشتركة (.glass/.glass-strong/.glass-active) بظل عميق + حدّ علوي مهم (accent-top)');
   add('aurora-root-not-opaque',
     !/min-h-screen\s+bg-slate-950\s+text-slate-100\s+flex/.test(app) &&
     !indexHtmlSrc.includes('class="bg-slate-950'),
