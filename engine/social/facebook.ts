@@ -705,6 +705,43 @@ function logAndExtractFacebookError(data: any, endpoint: string, status: number)
 // وضع التطبيق **لا يُقرأ عبر Graph API إطلاقاً** — مصدره الوحيد لوحة Meta.
 // لذلك نبني تشخيصاً صادقاً يعلن هذا صراحةً بدل التخمين.
 
+// ---------------------------------------------------------------------------
+// قراءة الحقول بذكاء (إصلاح جذر): كان طلب `is_published` على عقدة منشور/فيديو
+// يُرد بـ(#100) «Tried accessing nonexisting field (is_published)» فيفشل التشخيص
+// بالكامل. الحل: طلب قائمة كاملة، ثم السقوط إلى قائمة أساسية عند رفض الحقل، ثم
+// اختبار كل حقل على حدة لعزل أي حقل غير مدعوم على نوع العقدة — بلا اختراع قيمة
+// بديلة ولا إسقاط الفحص. `is_published` صالح على عقدة Post وليس على Video.
+// ---------------------------------------------------------------------------
+
+/** حقول Grounding الكاملة المطلوبة من Graph (Post node). */
+export const FACEBOOK_POST_GROUNDING_FIELDS: readonly string[] = Object.freeze([
+  'id', 'is_published', 'created_time', 'scheduled_publish_time', 'privacy', 'permalink_url', 'status_type',
+]);
+/** حقول Grounding الأساسية (احتياطي عند رفض أي حقل موسّع — تعمل على كل الأنواع). */
+export const FACEBOOK_POST_GROUNDING_FALLBACK_FIELDS: readonly string[] = Object.freeze([
+  'id', 'created_time', 'permalink_url',
+]);
+
+/** نتيجة قراءة حقول عقدة Graph — بلا أي سرّ. */
+export interface FacebookFieldRead {
+  /** الحقول التي طُلبت في القراءة الناجحة فعلاً. */
+  requested: string[];
+  /** الحقول التي ردّتها Meta فعلاً (مفاتيح الاستجابة). */
+  returned: string[];
+  /** نجحت القراءة الأساسية (المعرّف موجود). */
+  ok: boolean;
+  /** الحقول غير المدعومة على نوع العقدة هذا (من الاختبار الحقلي عند الفشل). */
+  unsupported: string[];
+  /** حالة HTTP للقراءة الأولى (قبل أي احتياطي). */
+  status: number | null;
+  /** رمز خطأ Meta للقراءة الأولى (مثل 100) — دليل سبب السقوط للاحتياطي. */
+  providerCode: number | null;
+  /** نص خطأ Meta الحقيقي غير المقطوع للقراءة الأولى (بلا سرّ). */
+  providerMessage: string | null;
+  /** true إذا سقطنا للقائمة الأساسية بسبب رفض حقل. */
+  usedFallback: boolean;
+}
+
 /** حالة الفيديو/المنشور كما أعلنها Meta (لا تُخترع قيمة عند الغياب). */
 export interface FacebookPostGrounding {
   /** نوع المورد: `video` أو `post`. */
@@ -724,13 +761,17 @@ export interface FacebookPostGrounding {
   permalink: string | null;
   /** true فقط إذا كانت Meta قد أعلنت isPublished=true صراحةً. */
   confirmedPublicStory: boolean;
+  /** حالة قراءة الحقول (أي حقول طُلبت/رُدّت، وأي حقول غير مدعومة على نوع العقدة). */
+  fieldRead?: FacebookFieldRead;
+  /** الحقول غير المدعومة على نوع العقدة هذا — تُعلن صراحةً بدل إسقاط الفحص. */
+  unsupportedFields?: string[];
 }
 
 /**
  * يفسّر استجابة `GET /{page-id}/videos?fields=...` أو `GET /{post-id}?fields=...`
  * إلى حالة ظهور صادقة. أي حقل غائب يبقى `null` — لا يُفترض نجاح ولا فشل.
  */
-export function interpretPostGrounding(kind: 'video' | 'post', raw: any, appearsOnPage: boolean | null = null): FacebookPostGrounding {
+export function interpretPostGrounding(kind: 'video' | 'post', raw: any, appearsOnPage: boolean | null = null, fieldRead?: FacebookFieldRead): FacebookPostGrounding {
   const d = raw && typeof raw === 'object' ? raw : {};
   const providerPostId = d.id != null ? String(d.id) : '';
   const isPubRaw = d.is_published;
@@ -750,6 +791,36 @@ export function interpretPostGrounding(kind: 'video' | 'post', raw: any, appears
     appearsOnPage,
     permalink,
     confirmedPublicStory: isPublished === true,
+    ...(fieldRead ? { fieldRead, unsupportedFields: fieldRead.unsupported.length ? fieldRead.unsupported : [] } : {}),
+  };
+}
+
+/**
+ * يبني تشخيص ظهور المنشور الصادق من نتيجة Grounding (منطق صافٍ قابل للاختبار).
+ * يفصل بدقّة: منشور/مسودة/مجدول/غير موجود، والحقول غير المدعومة على نوع العقدة،
+ * والسبب الجذري المرجَّح. **لا يدّعي ظهوراً عاماً** من `is_published=true`.
+ */
+export function buildPostVisibilityDiagnosis(grounding: FacebookPostGrounding): {
+  verdict: string;
+  likelyRootCause: string;
+  evidenceSummary: { isDraftOrScheduled: boolean; returnsAsStory: boolean; proofOfPublicVisibility: boolean; why: string };
+} {
+  const g = grounding;
+  let verdict: string;
+  let likelyRootCause: string;
+  if (!g.exists) { verdict = 'post_not_found'; likelyRootCause = 'المعرّف غير موجود أو لا يمكن قراءته بالرمز الحالي.'; }
+  else if (g.isPublished === false) { verdict = 'draft_or_scheduled'; likelyRootCause = 'المنشور مسودة أو مجدول (is_published=false) فلا يظهر للجمهور بعد.'; }
+  else if (g.appearsOnPage === false) { verdict = 'published_but_not_on_page_wall'; likelyRootCause = 'المنشور منشور (is_published=true) لكنه غير وارد على حائط الصفحة العامة — يطابق تماماً قيد «وضع تطوير التطبيق» الذي يحصر المحتوى المنشأ عبر API في أدوار التطبيق/الصفحة.'; }
+  else { verdict = 'published_and_returns_as_story'; likelyRootCause = 'Meta تُعلن is_published=true والمنشور يرد ضمن المنشورات المنشورة. إن ظل مخفياً عن الجمهور فالمؤشر الأقوى هو وضع تطبيق Meta (Development) لا Live، أو اشتراط App Review/Advanced Access لصلاحيات النشر.'; }
+  return {
+    verdict,
+    likelyRootCause,
+    evidenceSummary: {
+      isDraftOrScheduled: g.isPublished === false,
+      returnsAsStory: g.isPublished === true,
+      proofOfPublicVisibility: false,
+      why: 'is_published=true تثبت وجود كائن منشور (ليس مسودة/مجدولاً) فقط، ولا تثبت رؤيته لزائر غير إداري. ظهور المنشورات المُنشأة عبر API للجمهور يتوقف على وضع تطبيق Meta / مستوى الوصول.',
+    },
   };
 }
 
@@ -758,7 +829,6 @@ export class FacebookClient {
     private readonly fetchImpl: FacebookFetch,
     private readonly baseUrl?: string,
   ) {}
-
   /**
    * يثبت أن (client_id + client_secret) يعرّفان تطبيق Meta حقيقياً عبر
    * `grant_type=client_credentials`. لا يستهلك حصة تفاعل المستخدم، ولا يعيد
@@ -1019,40 +1089,84 @@ export class FacebookClient {
     }
   }
 
-  /** يقرأ حالة ظهور فيديو/منشور أُنشئ عبر API (قراءة فقط، بلا تغيير). يقرأ
-   *  `is_published`/`created_time`/`scheduled_publish_time` من Graph، ثم يتحقق من
-   *  ورود المعرّف في حائط الصفحة `/{page-id}/published_posts` كدليل ظهور فعلي.
-   *  كل حقل غير معلن يبقى null — لا يُفترض نجاح ولا فشل. */
+  /** يقرأ حالة ظهور فيديو/منشور أُنشئ عبر API (قراءة فقط، بلا تغيير).
+   *
+   *  إصلاح جذر (#100 is_published): كان الطلب يضمّ `is_published` دائماً فيُرد بـ
+   *  «Tried accessing nonexisting field (is_published)» على أنواع عقد لا تدعمه
+   *  (مثل Video)، فيفشل التشخيص بالكامل. الآن نقرأ قائمة كاملة، ونسقط لقائمة أساسية
+   *  عند رفض الحقل، ثم نختبر كل حقل على حدة لعزل الحقل غير المدعوم — فلا يُسقط حقل
+   *  واحد الفحص، ولا تُخترع قيمة بديلة. كل حقل غير معلن يبقى null. */
   async getPostGrounding(pageId: string, pageAccessToken: string, providerPostId: string): Promise<FacebookResult<FacebookPostGrounding>> {
     if (!pageId || !pageAccessToken || !providerPostId) return { ok: false, data: null, error: 'معرّف الصفحة والرمز ومعرّف المنشور مطلوبة.' };
+    const read = await this.readNodeFields(pageAccessToken, providerPostId);
+    if (!read.ok || !read.data) {
+      return { ok: false, data: null, error: read.error, code: read.code, providerCode: read.providerCode, providerSubcode: read.providerSubcode, providerTraceId: read.providerTraceId };
+    }
+    // دليل الظهور على الحائط: هل يرد المعرّف ضمن published_posts؟
+    let appearsOnPage: boolean | null = null;
     try {
-      // 1) قراءة حالة الفيديو/المنشور (is_published + الأوقات).
-      const u = new URL(facebookGraphUrl(`/${encodeURIComponent(providerPostId)}`, this.baseUrl));
-      u.searchParams.set('fields', 'id,is_published,created_time,scheduled_publish_time,privacy,permalink_url');
+      const p = new URL(facebookGraphUrl(`/${encodeURIComponent(pageId)}/published_posts`, this.baseUrl));
+      p.searchParams.set('fields', 'id');
+      p.searchParams.set('limit', '100');
+      p.searchParams.set('access_token', pageAccessToken);
+      const pres = await this.fetchImpl(p.toString(), { method: 'GET' });
+      const pdata = await pres.json().catch(() => null);
+      if (pres.ok && !pdata?.error && Array.isArray(pdata?.data)) {
+        appearsOnPage = pdata.data.some((x: any) => String(x?.id ?? '') === String(providerPostId));
+      }
+    } catch { /* الحائط غير مقروء ⇒ تبقى الحالة غير معلومة، لا فشل */ }
+    return { ok: true, data: interpretPostGrounding('video', read.data, appearsOnPage, read.fieldRead) };
+  }
+
+  /**
+   * يقرأ حقول عقدة Graph بذكاء بلا إسقاط الفحص عند حقل غير مدعوم:
+   *  1) محاولة القائمة الكاملة.
+   *  2) عند رفض حقل (#100) => محاولة القائمة الأساسية (تعمل على كل الأنواع).
+   *  3) لعزل الحقل غير المدعوم بدقّة: اختبار كل حقل موسّع على حدة (قراءات قراءة-فقط،
+   *     بلا تغيير). لا يُعاد أي رمز/سرّ، ويُعلن كل حقل غير مدعوم صراحةً.
+   */
+  private async readNodeFields(pageAccessToken: string, nodeId: string): Promise<{ ok: boolean; data: any | null; fieldRead: FacebookFieldRead; error?: string; code?: string; providerCode?: number | null; providerSubcode?: number | null; providerTraceId?: string | null }> {
+    const full = [...FACEBOOK_POST_GROUNDING_FIELDS];
+    const fallback = [...FACEBOOK_POST_GROUNDING_FALLBACK_FIELDS];
+    const attempt = async (fields: string[]): Promise<{ res: Awaited<ReturnType<FacebookFetch>>; data: any }> => {
+      const u = new URL(facebookGraphUrl(`/${encodeURIComponent(nodeId)}`, this.baseUrl));
+      u.searchParams.set('fields', fields.join(','));
       u.searchParams.set('access_token', pageAccessToken);
       const res = await this.fetchImpl(u.toString(), { method: 'GET' });
       const data = await res.json().catch(() => null);
-      if (!res.ok || data?.error || !data?.id) {
-        const ex = logAndExtractFacebookError(data, `GET /${providerPostId}`, res.status);
-        return { ok: false, data: null, error: errorMessage(data, 'تعذّر قراءة حالة المنشور من Meta.'), providerCode: ex.providerCode, providerSubcode: ex.providerSubcode, providerTraceId: ex.providerTraceId };
-      }
-      // 2) دليل الظهور على الحائط: هل يرد المعرّف ضمن published_posts؟
-      let appearsOnPage: boolean | null = null;
-      try {
-        const p = new URL(facebookGraphUrl(`/${encodeURIComponent(pageId)}/published_posts`, this.baseUrl));
-        p.searchParams.set('fields', 'id');
-        p.searchParams.set('limit', '100');
-        p.searchParams.set('access_token', pageAccessToken);
-        const pres = await this.fetchImpl(p.toString(), { method: 'GET' });
-        const pdata = await pres.json().catch(() => null);
-        if (pres.ok && !pdata?.error && Array.isArray(pdata?.data)) {
-          appearsOnPage = pdata.data.some((x: any) => String(x?.id ?? '') === String(providerPostId));
-        }
-      } catch { /* الحائط غير مقروء ⇒ تبقى الحالة غير معلومة، لا فشل */ }
-      return { ok: true, data: interpretPostGrounding('video', data, appearsOnPage) };
-    } catch (e: any) {
-      return { ok: false, data: null, error: String(e?.message || 'فشل الاتصال بـMeta.') };
+      return { res, data };
+    };
+    const fieldRead: FacebookFieldRead = { requested: full, returned: [], ok: false, unsupported: [], status: null, providerCode: null, providerMessage: null, usedFallback: false };
+    // 1) القائمة الكاملة.
+    const first = await attempt(full);
+    fieldRead.status = first.res.status;
+    const firstErr = extractFacebookGraphError(first.data, `GET /${nodeId}`, first.res.status);
+    fieldRead.providerCode = firstErr.code;
+    fieldRead.providerMessage = firstErr.message || null;
+    if (first.res.ok && first.data?.id && !first.data?.error) {
+      fieldRead.ok = true;
+      fieldRead.returned = Object.keys(first.data || {});
+      return { ok: true, data: first.data, fieldRead };
     }
+    // 2) السقوط للقائمة الأساسية عند رفض حقل (لا يُسقط الفحص).
+    fieldRead.usedFallback = true;
+    const second = await attempt(fallback);
+    if (!second.res.ok || !second.data?.id || second.data?.error) {
+      const ex = logAndExtractFacebookError(second.data, `GET /${nodeId}`, second.res.status);
+      return { ok: false, data: null, fieldRead, error: errorMessage(second.data, 'تعذّر قراءة حالة المنشور من Meta.'), providerCode: ex.providerCode, providerSubcode: ex.providerSubcode, providerTraceId: ex.providerTraceId };
+    }
+    fieldRead.ok = true;
+    fieldRead.requested = fallback;
+    fieldRead.returned = Object.keys(second.data || {});
+    // 3) عزل الحقول غير المدعومة: اختبار كل حقل موسّع على حدة (لا يفشل الفحص كله).
+    for (const f of full) {
+      if (fallback.includes(f)) continue;
+      try {
+        const t = await attempt(['id', f]);
+        if (!t.res.ok || t.data?.error) fieldRead.unsupported.push(f);
+      } catch { fieldRead.unsupported.push(f); }
+    }
+    return { ok: true, data: second.data, fieldRead };
   }
 
   /** يشترك تطبيقنا في أحداث الصفحة (feed/messages) عبر subscribed_apps. */

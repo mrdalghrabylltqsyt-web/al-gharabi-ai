@@ -40,6 +40,18 @@ export function isYouTubeQuotaPending(result: any): boolean {
 }
 
 /**
+ * هل هذه النتيجة رفع مسودة TikTok (MEDIA_UPLOAD) — لا نشر عام إطلاقاً؟
+ * (إصلاح صادق: كان يُعرض «قيد المعالجة» فحسب فيظن المالك أن النشر العام قائم.)
+ */
+export function isTikTokDraftUpload(platform: string, result: any): boolean {
+  return platform === 'tiktok' && (result?.postMode === 'MEDIA_UPLOAD' || /MEDIA_UPLOAD/.test(String(result?.note || '')));
+}
+
+/** نص صادق موحّد لرفع مسودة TikTok: لا يظهر علناً حتى يُكمله المالك من التطبيق. */
+export const TIKTOK_DRAFT_UPLOAD_NOTE =
+  'تم حفظ الفيديو في صندوق مسودات TikTok (MEDIA_UPLOAD) — لا يظهر علناً لأي أحد حتى تفتح تطبيق TikTok يدوياً وتُكمل النشر من صندوق الوارد.';
+
+/**
  * رسالة واضحة للمالك عند نفاد حصة YouTube: النشر الموحّد أُرسل، ويوتيوب «معلّق»
  * وسينشر تلقائياً فور تجدد حصة Google اليومية، مع نجاح باقي المنصات.
  */
@@ -95,6 +107,10 @@ export function formatPlatformResultState(platform: string, result: any): { labe
   }
   if (state === 'pending_retry' || isYouTubeQuotaPending(result)) {
     return { label: quotaPendingMessage(result), tone: 'pending' };
+  }
+  // رفع مسودة TikTok: لا نشر عام — لا تُعرض كـ«قيد المعالجة» فقط.
+  if (isTikTokDraftUpload(platform, result)) {
+    return { label: result?.note || TIKTOK_DRAFT_UPLOAD_NOTE, tone: 'pending' };
   }
   if (state === 'publishing') return { label: 'قيد المعالجة لدى المزود (لم يُثبت التسليم بعد)', tone: 'pending' };
   if (isYouTubeMediaNeed(platform, result) || isYouTubeDedicatedPublish(result)) return { label: YOUTUBE_UNIFIED_PUBLISH_NOTE, tone: 'pending' };

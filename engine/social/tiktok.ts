@@ -330,6 +330,19 @@ export function parseTikTokTokenResponse(token: any): {
 
 /** أوضاع النشر الرسمية. */
 export type TikTokPostMode = 'DIRECT_POST' | 'MEDIA_UPLOAD';
+
+/**
+ * صياغة صادقة موحّدة (مصدر واحد) لرفع المسودة: MEDIA_UPLOAD لا ينشر شيئاً علناً
+ * إطلاقاً — يُودِع الفيديو في صندوق مسودات TikTok الداخلي وينتظر أن يُكمله المالك
+ * يدوياً من تطبيق TikTok. لا يُوهم المالك بأن النشر اكتمل علناً.
+ */
+export const TIKTOK_DRAFT_PENDING_OWNER_NOTE =
+  'حُفظ الفيديو في صندوق مسودات TikTok (رفع مسودة — MEDIA_UPLOAD). لا يظهر علناً إطلاقاً حتى تفتح تطبيق TikTok بنفسك وتُكمل النشر من صندوق الوارد. هذا سلوك مقصود للوضع MEDIA_UPLOAD، لا نشر عام.';
+
+/** صياغة صادقة موحّدة للنشر المباشر: تهيئة فقط، والتسليم لا يُعلن إلا بـPUBLISH_COMPLETE. */
+export const TIKTOK_DIRECT_POST_PENDING_NOTE =
+  'تمت تهيئة النشر المباشر لدى TikTok (DIRECT_POST). لا يُعلن التسليم العام إلا بعد تأكيد الحالة PUBLISH_COMPLETE عبر استعلام حالة النشر.';
+
 /** مستويات الخصوصية الرسمية. */
 export type TikTokPrivacyLevel = 'PUBLIC_TO_EVERYONE' | 'MUTUAL_FOLLOW_FRIENDS' | 'FOLLOWER_OF_CREATOR' | 'SELF_ONLY';
 

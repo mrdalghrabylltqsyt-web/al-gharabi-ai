@@ -93,6 +93,13 @@ export interface FacebookMockState {
   /** منشورات الصفحة وتعليقاتها (GET /{page-id}/feed) — لقراءة تعليقات المراقب. */
   feedPosts?: Array<{ id: string; comments?: Array<{ id: string; message: string; from?: { id?: string; name?: string }; created_time?: string; parent?: { id?: string } }> }>;
   failFeed?: boolean;
+  /** خطأ مخصّص لقراءة عقدة المنشور `GET /{post-id}?fields=...` يحاكي #100
+   *  «Tried accessing nonexisting field (is_published)» — لإثبات إصلاح الجذر. */
+  nodeFieldsError?: { message: string; code: number } | null;
+  /** حقول عقدة غير مدعومة (يُرفض أي طلب يضمّها بـ#100) — لعزل الحقول حقلاً حقلاً. */
+  unsupportedNodeFields?: string[];
+  /** سجلّ الحقول المطلوبة في كل قراءة عقدة (للتحقق من السقوط للاحتياطي والاختبار الحقلي). */
+  nodeFieldReads: string[];
 }
 
 export function createFacebookMock(state: Partial<FacebookMockState> = {}): FacebookMockState {
@@ -136,6 +143,9 @@ export function createFacebookMock(state: Partial<FacebookMockState> = {}): Face
     failOwnedApps: state.failOwnedApps ?? false,
     feedPosts: state.feedPosts ?? [],
     failFeed: state.failFeed ?? false,
+    nodeFieldsError: state.nodeFieldsError ?? null,
+    unsupportedNodeFields: state.unsupportedNodeFields ?? [],
+    nodeFieldReads: [],
   };
 }
 
@@ -283,6 +293,27 @@ export async function startFacebookMockServer(
   app.get('/:version/:pageId', (req, res) => {
     const { pageId } = req.params;
     if (!pageId || pageId === 'me') return res.status(400).json({ error: { message: 'unsupported' } });
+    const fields = String(req.query.fields || '');
+    // محاكاة #100 «حقل غير موجود» على عقدة المنشور/الفيديو (is_published على Video):
+    // يُطبَّق أولاً على أي عقدة في وضع الحقل غير المدعوم، فتبدو العقدة كأن النوع لا
+    // يدعم الحقل (لا 803 «صفحة غير معروفة»).
+    if (state.unsupportedNodeFields?.length || state.nodeFieldsError) {
+      state.calls += 1;
+      state.nodeFieldReads.push(fields);
+      const requested = fields.split(',').map((s) => s.trim()).filter(Boolean);
+      const unsupported = requested.find((f) => (state.unsupportedNodeFields || []).includes(f));
+      if (unsupported) {
+        return res.status(400).json({ error: { message: `Tried accessing nonexisting field (${unsupported}) on node type "Video"`, code: 100 } });
+      }
+      if (state.nodeFieldsError) {
+        return res.status(400).json({ error: { message: state.nodeFieldsError.message, code: state.nodeFieldsError.code } });
+      }
+      // وضع التشخيص: أي معرّف يُعامل كعقدة منشور حقيقية تدعم الحقول المدعومة.
+      const out: Record<string, unknown> = { id: pageId, created_time: '2026-01-01T00:00:00+0000' };
+      if (fields.includes('permalink_url')) out.permalink_url = `https://www.facebook.com/${pageId}`;
+      if (fields.includes('is_published')) out.is_published = true;
+      return res.json(out);
+    }
     // قراءة حالة فيديو/منشور أُنشئ عبر API (GET /{video-id}) — لمسارات تشخيص الظهور.
     // تُخدم قبل منطق الصفحة: المعرّف يطابق فيديو سبق إنشاؤه.
     const vid = state.videos.find((v) => v.videoId === pageId);
@@ -306,7 +337,6 @@ export async function startFacebookMockServer(
     if (state.failPageProfile) return res.status(400).json({ error: { message: 'Unsupported get request', code: 100 } });
     const page = state.pages.find((p) => p.id === pageId);
     if (!page) return res.status(400).json({ error: { message: 'Unknown page', code: 803 } });
-    const fields = String(req.query.fields || '');
     state.lastPageProfileFields = fields;
     const out: Record<string, unknown> = { id: page.id };
     if (fields.includes('name')) out.name = page.name;
