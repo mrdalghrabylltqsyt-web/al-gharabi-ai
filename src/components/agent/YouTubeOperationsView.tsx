@@ -23,7 +23,7 @@ const tone = (s?: string) => {
 
 function Stat({ label, value, sub }: { label: string; value: React.ReactNode; sub?: string }) {
   return (
-    <div className="bg-slate-900 border border-slate-800 rounded-2xl p-4">
+    <div className="glass rounded-2xl p-4">
       <div className="text-xs text-slate-400 mb-1">{label}</div>
       <div className="text-lg font-semibold text-slate-100 break-words">{value}</div>
       {sub ? <div className="text-[11px] text-slate-500 mt-1">{sub}</div> : null}
@@ -176,7 +176,7 @@ export function YouTubeOperationsView() {
       {/* Automation interval (وقت الأتمتة) */}
       <section>
         <h2 className="text-sm font-semibold text-slate-300 mb-2">وقت الأتمتة</h2>
-        <div className="bg-slate-900 border border-slate-800 rounded-2xl p-4 flex flex-wrap items-center gap-3">
+        <div className="glass rounded-2xl p-4 flex flex-wrap items-center gap-3">
           <label htmlFor="yt-cadence" className="text-sm text-slate-300">فاصل المراقبة:</label>
           <select
             id="yt-cadence"
@@ -236,7 +236,7 @@ export function YouTubeOperationsView() {
           <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
             {(brief.metrics || []).map((m: any) => (
               <button key={m.key} onClick={() => setActiveMetric({ key: m.key, labelAr: m.labelAr, count: m.count })}
-                className="text-right bg-slate-900 border border-slate-800 hover:border-cyan-500/50 hover:bg-slate-800/60 rounded-2xl p-4 transition-colors">
+                className="text-right glass hover:border-cyan-500/50 hover:bg-slate-800/60 rounded-2xl p-4 transition-colors">
                 <div className="text-xs text-slate-400 mb-1">{m.labelAr}</div>
                 <div className="text-lg font-semibold text-slate-100">{m.count}</div>
                 <div className="text-[11px] text-cyan-400 mt-1">عرض التفاصيل ←</div>

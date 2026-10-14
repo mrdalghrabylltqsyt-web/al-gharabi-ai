@@ -168,7 +168,7 @@ export const CloudBackupView: React.FC = () => {
 
   // الحماية الحقيقية على الخادم (requireOwner)؛ هنا إخفاء الصفحة عن غير المالك.
   if (!isOwner) {
-    return <div className="p-8 rounded-2xl bg-slate-900 border border-slate-800 text-center text-slate-300">هذا القسم مخصص لمالك النظام فقط.</div>;
+    return <div className="p-8 rounded-2xl glass text-center text-slate-300">هذا القسم مخصص لمالك النظام فقط.</div>;
   }
 
   const authorized = health?.authorized === true;
@@ -376,7 +376,7 @@ export const CloudBackupView: React.FC = () => {
       )}
 
       {/* حالة الإعداد / الربط */}
-      <section className="p-5 rounded-2xl bg-slate-900 border border-slate-800">
+      <section className="p-5 rounded-2xl glass">
         <div className="flex items-center justify-between flex-wrap gap-3">
           <div className="flex items-center gap-2">
             {canOperate ? <CheckCircle2 className="w-4 h-4 text-emerald-400" /> : <TriangleAlert className="w-4 h-4 text-amber-400" />}
@@ -407,7 +407,7 @@ export const CloudBackupView: React.FC = () => {
       {/* بطاقات الحالة */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
         {cards.map(([label, value, Icon]) => (
-          <div key={label} className="p-5 rounded-2xl bg-slate-900 border border-slate-800">
+          <div key={label} className="p-5 rounded-2xl glass">
             <Icon className="w-5 h-5 text-sky-400 mb-3" />
             <p className="text-xs text-slate-400">{label}</p>
             <p className="text-sm font-black text-white mt-1 font-mono truncate">{value}</p>
@@ -416,7 +416,7 @@ export const CloudBackupView: React.FC = () => {
       </div>
 
       {/* نقاط الاستعادة الكاملة (recovery points) */}
-      <section className="p-5 rounded-2xl bg-slate-900 border border-slate-800">
+      <section className="p-5 rounded-2xl glass">
         <h3 className="font-bold text-white flex items-center gap-2 mb-4"><History className="w-4 h-4 text-sky-400" /> نقاط الاستعادة الكاملة</h3>
         {recoveryPoints.length > 0 ? (
           <div className="overflow-x-auto">
@@ -486,7 +486,7 @@ export const CloudBackupView: React.FC = () => {
 
       <div className="grid lg:grid-cols-2 gap-6">
         {/* قاعدة البيانات + الالتزام */}
-        <section className="p-5 rounded-2xl bg-slate-900 border border-slate-800">
+        <section className="p-5 rounded-2xl glass">
           <h3 className="font-bold text-white flex items-center gap-2 mb-4"><Database className="w-4 h-4 text-cyan-400" /> قاعدة البيانات والالتزام</h3>
           <div className="space-y-2 text-xs">
             <div className="p-3 rounded-xl bg-slate-950/60 border border-slate-800 flex justify-between"><span className="text-slate-400">نسخة DB مشفّرة</span><span className={snapshot?.dbEncrypted ? 'text-emerald-400' : 'text-amber-400'}>{snapshot?.dbEncrypted ? 'نعم' : 'لا'}</span></div>
@@ -499,7 +499,7 @@ export const CloudBackupView: React.FC = () => {
         </section>
 
         {/* المساحة */}
-        <section className="p-5 rounded-2xl bg-slate-900 border border-slate-800">
+        <section className="p-5 rounded-2xl glass">
           <h3 className="font-bold text-white flex items-center gap-2 mb-4"><Gauge className="w-4 h-4 text-emerald-400" /> المساحة</h3>
           <div className="p-4 rounded-xl bg-slate-950/60 border border-slate-800">
             <div className="flex justify-between text-xs mb-2">
@@ -519,7 +519,7 @@ export const CloudBackupView: React.FC = () => {
       </div>
 
       {/* آخر خطأ */}
-      <section className="p-5 rounded-2xl bg-slate-900 border border-slate-800">
+      <section className="p-5 rounded-2xl glass">
         <h3 className="font-bold text-white flex items-center gap-2 mb-3"><TriangleAlert className="w-4 h-4 text-amber-400" /> آخر خطأ</h3>
         {snapshot?.lastError
           ? <p className="text-xs text-rose-300 font-mono break-all">{String(snapshot.lastError)}</p>
@@ -528,7 +528,7 @@ export const CloudBackupView: React.FC = () => {
 
       {/* CURRENT — مرآة الملفات الفعلية + حزمة الأسرار */}
       <div className="grid lg:grid-cols-2 gap-6">
-        <section className="p-5 rounded-2xl bg-slate-900 border border-slate-800">
+        <section className="p-5 rounded-2xl glass">
           <h3 className="font-bold text-white flex items-center gap-2 mb-4"><HardDrive className="w-4 h-4 text-sky-400" /> CURRENT — مرآة الملفات الفعلية</h3>
           <div className="space-y-2 text-xs">
             <div className="p-3 rounded-xl bg-slate-950/60 border border-slate-800 flex justify-between"><span className="text-slate-400">حالة المزامنة</span><span className={mirror?.treeHash ? 'text-emerald-400' : 'text-slate-300'}>{mirror?.treeHash ? 'مُزامَنة' : 'لا مرآة بعد'}</span></div>
@@ -539,7 +539,7 @@ export const CloudBackupView: React.FC = () => {
           </div>
         </section>
 
-        <section className="p-5 rounded-2xl bg-slate-900 border border-slate-800">
+        <section className="p-5 rounded-2xl glass">
           <h3 className="font-bold text-white flex items-center gap-2 mb-4"><ShieldCheck className="w-4 h-4 text-emerald-400" /> الأسرار المشفّرة</h3>
           <div className="space-y-2 text-xs">
             <div className="p-3 rounded-xl bg-slate-950/60 border border-slate-800 flex justify-between"><span className="text-slate-400">مفتاح الاستعادة الرئيسي</span><span className={secretsStatus?.masterKey?.state === 'valid' ? 'text-emerald-400' : 'text-amber-400'}>{secretsStatus?.masterKey?.state === 'valid' ? 'صالح' : (secretsStatus?.masterKey?.state === 'invalid' ? 'مضبوط لكن غير صالح' : 'غير مضبوط')}</span></div>

@@ -197,7 +197,7 @@ export const ApprovalWorkflowView: React.FC = () => {
             return (
               <div
                 key={post.id}
-                className="p-5 rounded-2xl bg-slate-900 border border-slate-800 space-y-4 hover:border-slate-700 transition"
+                className="p-5 rounded-2xl glass space-y-4 hover:border-slate-700 transition"
               >
                 {/* Post Top Meta */}
                 <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 border-b border-slate-800 pb-3">
@@ -398,7 +398,7 @@ export const ApprovalWorkflowView: React.FC = () => {
       {/* Modal: Edit Post Content */}
       {editingPost && (
         <div className="fixed inset-0 z-50 bg-black/70 backdrop-blur-sm flex items-center justify-center p-4">
-          <div className="w-full max-w-2xl bg-slate-900 border border-slate-800 rounded-3xl p-6 shadow-2xl space-y-4 animate-in fade-in">
+          <div className="w-full max-w-2xl glass rounded-3xl p-6 shadow-2xl space-y-4 animate-in fade-in">
             <div className="flex items-center justify-between border-b border-slate-800 pb-3">
               <h3 className="font-bold text-base text-white flex items-center gap-2">
                 <Edit3 className="w-5 h-5 text-emerald-400" />
@@ -455,7 +455,7 @@ export const ApprovalWorkflowView: React.FC = () => {
       {/* Modal: Schedule Post Date & Time */}
       {schedulingPost && (
         <div className="fixed inset-0 z-50 bg-black/70 backdrop-blur-sm flex items-center justify-center p-4">
-          <div className="w-full max-w-md bg-slate-900 border border-slate-800 rounded-3xl p-6 shadow-2xl space-y-4 animate-in fade-in">
+          <div className="w-full max-w-md glass rounded-3xl p-6 shadow-2xl space-y-4 animate-in fade-in">
             <div className="flex items-center justify-between border-b border-slate-800 pb-3">
               <h3 className="font-bold text-base text-white flex items-center gap-2">
                 <Calendar className="w-5 h-5 text-cyan-400" />
@@ -505,7 +505,7 @@ export const ApprovalWorkflowView: React.FC = () => {
       {/* Modal: Audit Trail / Post History */}
       {historyModalPost && (
         <div className="fixed inset-0 z-50 bg-black/70 backdrop-blur-sm flex items-center justify-center p-4">
-          <div className="w-full max-w-lg bg-slate-900 border border-slate-800 rounded-3xl p-6 shadow-2xl space-y-4 animate-in fade-in">
+          <div className="w-full max-w-lg glass rounded-3xl p-6 shadow-2xl space-y-4 animate-in fade-in">
             <div className="flex items-center justify-between border-b border-slate-800 pb-3">
               <h3 className="font-bold text-base text-white flex items-center gap-2">
                 <History className="w-5 h-5 text-emerald-400" />

@@ -370,7 +370,7 @@ export const SocialManagerView: React.FC = () => {
   return (
     <div className="space-y-6">
       {/* Header */}
-      <div className="p-6 rounded-2xl bg-slate-900 border border-slate-800 flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
+      <div className="p-6 rounded-2xl glass flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
         <div>
           <h2 className="text-xl font-black text-white flex items-center gap-2">
             <Bot className="w-5 h-5 text-emerald-400" />
@@ -398,22 +398,22 @@ export const SocialManagerView: React.FC = () => {
 
       {/* KPI Stats */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-        <div className="p-5 rounded-2xl bg-slate-900 border border-slate-800 space-y-2">
+        <div className="p-5 rounded-2xl glass space-y-2">
           <span className="text-xs text-slate-400 block font-semibold">المنصات المتصلة</span>
           <div className="text-2xl sm:text-3xl font-black text-emerald-400">{summary?.connected ?? 0}</div>
           <p className="text-[11px] text-slate-500">من أصل {summary?.totalPlatforms ?? 10} منصة مدعومة</p>
         </div>
-        <div className="p-5 rounded-2xl bg-slate-900 border border-slate-800 space-y-2">
+        <div className="p-5 rounded-2xl glass space-y-2">
           <span className="text-xs text-slate-400 block font-semibold">غير متصلة</span>
           <div className="text-2xl sm:text-3xl font-black text-slate-300">{summary?.disconnected ?? 0}</div>
           <p className="text-[11px] text-slate-500">لا تُنفَّذ لها أي عملية خارجية</p>
         </div>
-        <div className="p-5 rounded-2xl bg-slate-900 border border-slate-800 space-y-2">
+        <div className="p-5 rounded-2xl glass space-y-2">
           <span className="text-xs text-slate-400 block font-semibold">تعليقات مُتابَعة</span>
           <div className="text-2xl sm:text-3xl font-black text-blue-400">{status?.activity.commentsTracked ?? 0}</div>
           <p className="text-[11px] text-slate-500">سجلات فعلية داخل النظام</p>
         </div>
-        <div className="p-5 rounded-2xl bg-slate-900 border border-slate-800 space-y-2">
+        <div className="p-5 rounded-2xl glass space-y-2">
           <span className="text-xs text-slate-400 block font-semibold">منشورات مؤكدة</span>
           <div className="text-2xl sm:text-3xl font-black text-white">{status?.content.published ?? 0}</div>
           <p className="text-[11px] text-slate-500">تتطلب إيصالاً حقيقياً من المزود</p>
@@ -421,7 +421,7 @@ export const SocialManagerView: React.FC = () => {
       </div>
 
       {/* Platforms table */}
-      <div className="p-6 rounded-2xl bg-slate-900 border border-slate-800">
+      <div className="p-6 rounded-2xl glass">
         <h3 className="text-sm font-bold text-white border-b border-slate-800 pb-3 mb-5 flex items-center gap-2">
           <Link2Off className="w-4 h-4 text-slate-400" /> حالة المنصات والقدرات الرسمية
         </h3>
@@ -483,7 +483,7 @@ export const SocialManagerView: React.FC = () => {
 
       {/* مصفوفة جاهزية المنصات (Batch 6) — منفّذ فعلاً مقابل ما يحتاج إعداداً خارجياً */}
       {readiness && (
-        <div className="p-6 rounded-2xl bg-slate-900 border border-slate-800">
+        <div className="p-6 rounded-2xl glass">
           <h3 className="text-sm font-bold text-white border-b border-slate-800 pb-3 mb-2 flex items-center gap-2">
             <ShieldCheck className="w-4 h-4 text-emerald-400" /> مصفوفة جاهزية المنصات العشر
           </h3>
@@ -536,7 +536,7 @@ export const SocialManagerView: React.FC = () => {
       )}
 
       {/* Telegram real connector — أول تكامل اجتماعي حقيقي */}
-      <div className="p-6 rounded-2xl bg-slate-900 border border-slate-800 space-y-5">
+      <div className="p-6 rounded-2xl glass space-y-5">
         <h3 className="text-sm font-bold text-white border-b border-slate-800 pb-3 flex items-center gap-2">
           <Send className="w-4 h-4 text-sky-400" /> موصل Telegram (تكامل خارجي حقيقي)
         </h3>
@@ -664,7 +664,7 @@ export const SocialManagerView: React.FC = () => {
       </div>
 
       {/* Facebook real connector — تعليقات الصفحة ورسائل Messenger (منفصلان) */}
-      <div className="p-6 rounded-2xl bg-slate-900 border border-slate-800 space-y-5">
+      <div className="p-6 rounded-2xl glass space-y-5">
         <h3 className="text-sm font-bold text-white border-b border-slate-800 pb-3 flex items-center gap-2">
           <Send className="w-4 h-4 text-blue-400" /> موصل Facebook (تكامل خارجي حقيقي)
         </h3>
@@ -855,7 +855,7 @@ export const SocialManagerView: React.FC = () => {
 
       {/* مراقب ردود Meta 24/7 (Facebook/Instagram) — يعالج التعليقات/الرسائل الواردة
           تلقائياً بقرار حتمي واحد، ويرد عبر نفس المنفّذ المركزي. آمن افتراضياً. */}
-      <div className="p-6 rounded-2xl bg-slate-900 border border-slate-800 space-y-4">
+      <div className="p-6 rounded-2xl glass space-y-4">
         <div className="flex items-center justify-between gap-3 border-b border-slate-800 pb-3">
           <h3 className="text-sm font-bold text-white flex items-center gap-2">
             <Bot className="w-4 h-4 text-sky-400" /> مراقب ردود Facebook/Instagram 24/7
@@ -944,7 +944,7 @@ export const SocialManagerView: React.FC = () => {
 
       {/* مراقب ردود Telegram 24/7 — يعالج الرسائل الواردة تلقائياً بقرار حتمي واحد
           (نفس محرّك YouTube)، ويرد عبر نفس المنفّذ المركزي. آمن افتراضياً. */}
-      <div className="p-6 rounded-2xl bg-slate-900 border border-slate-800 space-y-4">
+      <div className="p-6 rounded-2xl glass space-y-4">
         <div className="flex items-center justify-between gap-3 border-b border-slate-800 pb-3">
           <h3 className="text-sm font-bold text-white flex items-center gap-2">
             <Bot className="w-4 h-4 text-sky-400" /> مراقب ردود Telegram 24/7
@@ -1033,7 +1033,7 @@ export const SocialManagerView: React.FC = () => {
 
 
       {/* TikTok — رابع موصل حقيقي (OAuth + Content Posting API + Display API) */}
-      <div className="p-6 rounded-2xl bg-slate-900 border border-slate-800 space-y-4">
+      <div className="p-6 rounded-2xl glass space-y-4">
         <div className="flex items-center justify-between gap-3 border-b border-slate-800 pb-3">
           <h3 className="text-sm font-bold text-white flex items-center gap-2">
             <Music2 className="w-4 h-4 text-rose-400" /> موصل TikTok (تكامل خارجي حقيقي)
@@ -1139,7 +1139,7 @@ export const SocialManagerView: React.FC = () => {
 
       {/* Comment classification */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
-        <div className="p-6 rounded-2xl bg-slate-900 border border-slate-800">
+        <div className="p-6 rounded-2xl glass">
           <h3 className="text-sm font-bold text-white border-b border-slate-800 pb-3 mb-5 flex items-center gap-2">
             <MessageSquare className="w-4 h-4 text-blue-400" /> تصنيف التعليقات (حتمي، بلا استهلاك حصة)
           </h3>
@@ -1217,7 +1217,7 @@ export const SocialManagerView: React.FC = () => {
         </div>
 
         {/* Analytics */}
-        <div className="p-6 rounded-2xl bg-slate-900 border border-slate-800">
+        <div className="p-6 rounded-2xl glass">
           <div className="flex items-center justify-between border-b border-slate-800 pb-3 mb-5">
             <h3 className="text-sm font-bold text-white flex items-center gap-2">
               <BarChart3 className="w-4 h-4 text-emerald-400" /> تحليلات المنصة
@@ -1253,7 +1253,7 @@ export const SocialManagerView: React.FC = () => {
       </div>
 
       {/* Marketing brain */}
-      <div className="p-6 rounded-2xl bg-slate-900 border border-slate-800">
+      <div className="p-6 rounded-2xl glass">
         <h3 className="text-sm font-bold text-white border-b border-slate-800 pb-3 mb-5 flex items-center gap-2">
           <Brain className="w-4 h-4 text-purple-400" /> العقل التسويقي — قرار مبني على البيانات الفعلية
         </h3>
@@ -1345,7 +1345,7 @@ export const SocialManagerView: React.FC = () => {
       </div>
 
       {/* Memory */}
-      <div className="p-6 rounded-2xl bg-slate-900 border border-slate-800">
+      <div className="p-6 rounded-2xl glass">
         <h3 className="text-sm font-bold text-white border-b border-slate-800 pb-3 mb-5 flex items-center gap-2">
           <Inbox className="w-4 h-4 text-amber-400" /> الذاكرة التشغيلية للسوشيال ميديا
         </h3>

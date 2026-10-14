@@ -105,7 +105,7 @@ export const CustomerCenterView: React.FC = () => {
   return (
     <div className="space-y-6">
       {/* Top Banner */}
-      <div className="p-6 rounded-2xl bg-slate-900 border border-slate-800 flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
+      <div className="p-6 rounded-2xl glass flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
         <div>
           <div className="flex items-center gap-2">
             <h2 className="text-xl font-black text-white flex items-center gap-2">
@@ -134,7 +134,7 @@ export const CustomerCenterView: React.FC = () => {
       {/* Main Inbox Interface: Sidebar (4 cols) + Active Chat (8 cols) */}
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 min-h-[600px]">
         {/* Right Conversations List (in RTL, this is start - 4 cols) */}
-        <div className="lg:col-span-5 xl:col-span-4 bg-slate-900 border border-slate-800 rounded-2xl p-4 flex flex-col space-y-3">
+        <div className="lg:col-span-5 xl:col-span-4 glass rounded-2xl p-4 flex flex-col space-y-3">
           {/* Search & Channel Filter */}
           <div className="space-y-2">
             <div className="relative">
@@ -250,7 +250,7 @@ export const CustomerCenterView: React.FC = () => {
         </div>
 
         {/* Left Chat Window (8 cols) */}
-        <div className="lg:col-span-7 xl:col-span-8 bg-slate-900 border border-slate-800 rounded-2xl p-5 flex flex-col justify-between space-y-4">
+        <div className="lg:col-span-7 xl:col-span-8 glass rounded-2xl p-5 flex flex-col justify-between space-y-4">
           {activeConversation ? (
             <>
               {/* Chat Top Header */}
@@ -445,7 +445,7 @@ export const CustomerCenterView: React.FC = () => {
       {/* Modal: Simulate Customer Message */}
       {showSimulateModal && (
         <div className="fixed inset-0 z-50 bg-black/70 backdrop-blur-sm flex items-center justify-center p-4">
-          <div className="w-full max-w-md bg-slate-900 border border-slate-800 rounded-3xl p-6 shadow-2xl space-y-4 animate-in fade-in">
+          <div className="w-full max-w-md glass rounded-3xl p-6 shadow-2xl space-y-4 animate-in fade-in">
             <div className="flex items-center justify-between border-b border-slate-800 pb-3">
               <h3 className="font-bold text-base text-white flex items-center gap-2">
                 <UserPlus className="w-5 h-5 text-emerald-400" />

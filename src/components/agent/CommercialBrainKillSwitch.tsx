@@ -44,7 +44,7 @@ export function CommercialBrainKillSwitch() {
 
   return (
     <div className="space-y-4">
-      <section className="bg-slate-900 border border-slate-800 rounded-2xl p-5">
+      <section className="glass rounded-2xl p-5">
         <h2 className="text-lg font-semibold text-slate-100 mb-1">مفتاح الإيقاف الطارئ — العقل التجاري</h2>
         <p className="text-xs text-slate-400 mb-4">
           مفتاح رئيسي واحد فقط. الافتراضي <strong>معطَّل (fail-closed)</strong>: لا ينفّذ العقل التجاري

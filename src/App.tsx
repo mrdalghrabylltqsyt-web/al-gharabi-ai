@@ -92,9 +92,9 @@ const AppContent: React.FC = () => {
   // Authentication Gate: Block dashboard and admin data for unauthenticated users
   if (isLoadingAuth) {
     return (
-      <div className="min-h-screen bg-slate-950 flex flex-col items-center justify-center p-4 text-center font-['Cairo',sans-serif]">
-        <div className="w-14 h-14 rounded-2xl bg-emerald-500/10 border border-emerald-500/30 flex items-center justify-center text-emerald-400 mb-4 animate-pulse">
-          <ShieldCheck className="w-7 h-7 text-emerald-400" />
+      <div className="min-h-screen flex flex-col items-center justify-center p-4 text-center font-['Cairo',sans-serif]">
+        <div className="w-14 h-14 rounded-2xl glass glass-active flex items-center justify-center text-aurora-cyan mb-4 animate-pulse">
+          <ShieldCheck className="w-7 h-7 text-aurora-cyan" />
         </div>
         <p className="text-sm font-bold text-white mb-1">التحقق من جلسة الأمان المشفرة...</p>
         <p className="text-xs text-slate-400">معرض الغرابي للتقسيط • نظام الحوكمة والمصادقة</p>
@@ -106,7 +106,7 @@ const AppContent: React.FC = () => {
   // تُرفض، لذا نعرض إعادة محاولة بدل مطالبة المالك بـOTP بسبب عطل عابر.
   if (authUnavailable && !isAuthenticated) {
     return (
-      <div className="min-h-screen bg-slate-950 flex flex-col items-center justify-center p-4 text-center font-['Cairo',sans-serif]">
+      <div className="min-h-screen flex flex-col items-center justify-center p-4 text-center font-['Cairo',sans-serif]">
         <div className="w-14 h-14 rounded-2xl bg-amber-500/10 border border-amber-500/30 flex items-center justify-center mb-4">
           <ShieldCheck className="w-7 h-7 text-amber-400" />
         </div>
@@ -194,16 +194,16 @@ const AppContent: React.FC = () => {
   };
 
   return (
-    <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col font-sans selection:bg-emerald-500 selection:text-slate-950">
+    <div className="min-h-screen text-slate-100 flex flex-col font-sans selection:bg-emerald-500 selection:text-slate-950">
       {/* Toast Notification */}
       {toastMessage && (
-        <div className="fixed top-5 left-1/2 -translate-x-1/2 z-50 bg-emerald-500 text-slate-950 px-5 py-2.5 rounded-2xl shadow-2xl shadow-emerald-500/40 text-xs sm:text-sm font-bold flex items-center gap-2 animate-in fade-in slide-in-from-top-4">
-          <CheckCircle2 className="w-4 h-4 text-slate-950 shrink-0" />
+        <div className="fixed top-5 left-1/2 -translate-x-1/2 z-50 glass-strong glass-active px-5 py-2.5 rounded-2xl text-sm font-bold flex items-center gap-2 text-aurora-cyan animate-in fade-in slide-in-from-top-4">
+          <CheckCircle2 className="w-4 h-4 text-aurora-cyan shrink-0" />
           <span>{toastMessage}</span>
         </div>
       )}
 
-      <div className="flex flex-1 min-h-screen">
+      <div className="flex flex-1 min-h-screen relative z-[1]">
         {/* Right Sidebar (RTL) */}
         <Sidebar
           mobileOpen={mobileOpen}
@@ -227,7 +227,7 @@ const AppContent: React.FC = () => {
           </main>
 
           {/* Footer */}
-          <footer className="border-t border-slate-900 px-6 py-4 text-center text-xs text-slate-400 bg-slate-950/80">
+          <footer className="border-t hairline px-6 py-4 text-center text-xs text-slate-400">
             معرض الغرابي للتقسيط • منصة "الغرابي AI" الموحدة لإدارة جميع وسائل التواصل الاجتماعي وخدمة العملاء
           </footer>
         </div>

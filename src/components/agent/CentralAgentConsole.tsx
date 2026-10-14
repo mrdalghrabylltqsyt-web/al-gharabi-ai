@@ -133,7 +133,7 @@ function CommentAnalysisPanel({ data }: { data: AgentResultItem[] }) {
       </div>
 
       {reply && (
-        <div className="p-2.5 rounded-lg bg-slate-900 border border-slate-800">
+        <div className="p-2.5 rounded-lg glass">
           <p className="text-[10px] font-bold text-slate-400 mb-1">{deliveredReal ? 'الرد المُرسَل باللهجة العراقية' : 'الرد المقترح باللهجة العراقية (لم يُرسل)'}</p>
           <p className="text-[11px] text-slate-200 leading-relaxed">{reply}</p>
         </div>
@@ -153,7 +153,7 @@ function CommentAnalysisPanel({ data }: { data: AgentResultItem[] }) {
 function TaskCard({ task, onReplay, replaying }: { task: AgentTask; onReplay: (id: string) => void; replaying: boolean; key?: React.Key }) {
   const [open, setOpen] = useState(true);
   return (
-    <div className="rounded-2xl bg-slate-900 border border-slate-800 overflow-hidden">
+    <div className="rounded-2xl glass overflow-hidden">
       <button type="button" onClick={() => setOpen((v) => !v)} className="w-full flex items-start justify-between gap-3 p-4 text-right hover:bg-slate-800/40 transition">
         <div className="min-w-0">
           <p className="text-sm font-bold text-white truncate">{task.task}</p>
@@ -313,7 +313,7 @@ export const CentralAgentConsole: React.FC = () => {
       </div>
 
       {/* Task input */}
-      <div className="p-5 rounded-2xl bg-slate-900 border border-slate-800 space-y-3">
+      <div className="p-5 rounded-2xl glass space-y-3">
         <label className="text-xs font-bold text-slate-200">مهمة جديدة للعقل</label>
         <textarea
           value={taskText}
@@ -352,14 +352,14 @@ export const CentralAgentConsole: React.FC = () => {
       {/* Journal / history */}
       <div className="space-y-2">
         <p className="text-xs font-bold text-slate-200 inline-flex items-center gap-1.5"><History className="w-4 h-4" /> سجل المهام السابقة</p>
-        {tasks.length === 0 && <p className="text-xs text-slate-500 p-4 rounded-2xl bg-slate-900 border border-slate-800">لا توجد مهام بعد. اكتب مهمة أعلاه ليبدأ العقل.</p>}
+        {tasks.length === 0 && <p className="text-xs text-slate-500 p-4 rounded-2xl glass">لا توجد مهام بعد. اكتب مهمة أعلاه ليبدأ العقل.</p>}
         {tasks.map((t) => (
           <TaskCard key={t.id} task={t} onReplay={replay} replaying={replayingId === t.id} />
         ))}
       </div>
 
       {/* Tools reference */}
-      <div className="p-5 rounded-2xl bg-slate-900 border border-slate-800">
+      <div className="p-5 rounded-2xl glass">
         <p className="text-xs font-bold text-slate-200 inline-flex items-center gap-1.5 mb-3"><Wrench className="w-4 h-4" /> أدوات العقل ({tools.length})</p>
         <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
           {tools.map((t) => (

@@ -335,7 +335,7 @@ const FacebookBusinessLinkDiagnosisPanel: React.FC = () => {
 
       {open && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4" onClick={() => setOpen(false)}>
-          <div className="bg-slate-900 border border-slate-800 rounded-2xl w-full max-w-3xl max-h-[85vh] flex flex-col" onClick={(e) => e.stopPropagation()}>
+          <div className="glass rounded-2xl w-full max-w-3xl max-h-[85vh] flex flex-col" onClick={(e) => e.stopPropagation()}>
             <div className="flex items-center justify-between gap-2 p-3 border-b border-slate-800">
               <h3 className="text-sm font-bold text-white flex items-center gap-2"><ShieldCheck className="w-4 h-4" /> تشخيص ربط حافظة الأعمال (Facebook)</h3>
               <div className="flex items-center gap-2">
@@ -869,7 +869,7 @@ export const PlatformConnectionCenter: React.FC = () => {
   useEffect(() => { void load(); }, [load]);
 
   if (currentUser?.role !== 'owner') {
-    return <div className="p-8 rounded-2xl bg-slate-900 border border-slate-800 text-center text-slate-300">مركز ربط المنصات مخصص لمالك النظام فقط.</div>;
+    return <div className="p-8 rounded-2xl glass text-center text-slate-300">مركز ربط المنصات مخصص لمالك النظام فقط.</div>;
   }
 
   const loadFacebookPages = async () => {
@@ -932,7 +932,7 @@ export const PlatformConnectionCenter: React.FC = () => {
       {control?.summary && (
         <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
           {[['يعمل فعلياً', control.summary.operational, 'text-emerald-400'], ['متصل', control.summary.connected, 'text-indigo-400'], ['مُعدّ', control.summary.configured, 'text-sky-400'], ['يلزم إعداد خارجي', control.summary.externalSetupRequired, 'text-amber-400'], ['منفّذ بالكود', control.summary.codeReady, 'text-slate-300']].map(([label, value, cls]) => (
-            <div key={String(label)} className="p-4 rounded-2xl bg-slate-900 border border-slate-800">
+            <div key={String(label)} className="p-4 rounded-2xl glass">
               <p className="text-[11px] text-slate-400">{label}</p>
               <p className={`text-lg font-black mt-1 ${cls}`}>{String(value)}</p>
             </div>
@@ -952,7 +952,7 @@ export const PlatformConnectionCenter: React.FC = () => {
           // Instagram بعد OAuth قد ينتظر اختيار الحساب المهني من بين عدة صفحات.
           const igPageSelection = p.platform === 'instagram' && p.pageSelectionPending === true;
           return (
-            <div key={p.platform} className="p-5 rounded-2xl bg-slate-900 border border-slate-800">
+            <div key={p.platform} className="p-5 rounded-2xl glass">
               <div className="flex flex-wrap items-start justify-between gap-3">
                 <div className="min-w-0">
                   <div className="flex items-center gap-2 flex-wrap">

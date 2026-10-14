@@ -326,7 +326,7 @@ export const MarketingCampaignDetailView: React.FC<Props> = ({ campaign, onClose
       </div>
 
       {/* Drafts management */}
-      <div className="p-5 rounded-2xl bg-slate-900 border border-slate-800 space-y-4">
+      <div className="p-5 rounded-2xl glass space-y-4">
         <div className="flex flex-wrap items-center justify-between gap-2">
           <h3 className="text-sm font-black text-white flex items-center gap-2">
             <ListChecks className="w-4 h-4 text-emerald-400" />
@@ -522,7 +522,7 @@ export const MarketingCampaignDetailView: React.FC<Props> = ({ campaign, onClose
       </div>
 
       {/* Approved drafts → posts linkage */}
-      <div className="p-5 rounded-2xl bg-slate-900 border border-slate-800 space-y-3">
+      <div className="p-5 rounded-2xl glass space-y-3">
         <h3 className="text-sm font-black text-white flex items-center gap-2">
           <Link2 className="w-4 h-4 text-emerald-400" />
           الربط مع مساحة المنشورات ({approvedDrafts.length} مسودة معتمدة)
@@ -556,7 +556,7 @@ export const MarketingCampaignDetailView: React.FC<Props> = ({ campaign, onClose
       </div>
 
       {/* Change log */}
-      <div className="p-5 rounded-2xl bg-slate-900 border border-slate-800 space-y-3">
+      <div className="p-5 rounded-2xl glass space-y-3">
         <h3 className="text-sm font-black text-white flex items-center gap-2">
           <History className="w-4 h-4 text-emerald-400" />
           سجل التغييرات ({campaign.history?.length || 0})

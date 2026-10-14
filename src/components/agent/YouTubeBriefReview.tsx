@@ -117,14 +117,14 @@ export function YouTubeBriefReview({ metric, onClose, onChanged }: Props) {
 
         {loading ? <p className="text-sm text-slate-400">جارٍ التحميل…</p> : null}
         {!loading && records.length === 0 ? (
-          <div className="bg-slate-900 border border-slate-800 rounded-xl p-6 text-center text-sm text-slate-400">
+          <div className="glass rounded-xl p-6 text-center text-sm text-slate-400">
             لا سجلات مطابقة. {data?.total === 0 ? 'هذه الفئة صفر في الفترة الحالية (لا تعليقات مطابقة).' : 'جرّب تغيير الفلاتر.'}
           </div>
         ) : null}
 
         <div className="space-y-2">
           {records.map((r: any) => (
-            <div key={r.commentId} className="bg-slate-900 border border-slate-800 rounded-xl p-3">
+            <div key={r.commentId} className="glass rounded-xl p-3">
               <div className="flex items-start justify-between gap-3 flex-wrap">
                 <div className="min-w-0">
                   <div className="text-sm text-slate-100 break-words">{r.text || '(بدون نص)'}</div>

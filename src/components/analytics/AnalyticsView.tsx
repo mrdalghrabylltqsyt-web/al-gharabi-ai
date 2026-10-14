@@ -26,7 +26,7 @@ export const AnalyticsView: React.FC = () => {
   return (
     <div className="space-y-6">
       {/* Header */}
-      <div className="p-6 rounded-2xl bg-slate-900 border border-slate-800 flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
+      <div className="p-6 rounded-2xl glass flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
         <div>
           <h2 className="text-xl font-black text-white flex items-center gap-2">
             <BarChart3 className="w-5 h-5 text-emerald-400" />
@@ -46,7 +46,7 @@ export const AnalyticsView: React.FC = () => {
 
       {/* Main KPI Stats */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-        <div className="p-5 rounded-2xl bg-slate-900 border border-slate-800 space-y-2">
+        <div className="p-5 rounded-2xl glass space-y-2">
           <span className="text-xs text-slate-400 block font-semibold">إجمالي المتابعين الموثقين</span>
           <div className="flex items-baseline gap-2">
             <span className="text-2xl sm:text-3xl font-black text-white">
@@ -56,7 +56,7 @@ export const AnalyticsView: React.FC = () => {
           <p className="text-[11px] text-slate-500">لا توجد بيانات متابعين خارجية محفوظة بعد • {connectedPlatformsCount} منصة متصلة</p>
         </div>
 
-        <div className="p-5 rounded-2xl bg-slate-900 border border-slate-800 space-y-2">
+        <div className="p-5 rounded-2xl glass space-y-2">
           <span className="text-xs text-slate-400 block font-semibold">المنشورات والمحتوى</span>
           <div className="flex items-baseline gap-2">
             <span className="text-2xl sm:text-3xl font-black text-emerald-400">
@@ -66,7 +66,7 @@ export const AnalyticsView: React.FC = () => {
           <p className="text-[11px] text-slate-500">إجمالي المنشورات المجدولة والمنشورة</p>
         </div>
 
-        <div className="p-5 rounded-2xl bg-slate-900 border border-slate-800 space-y-2">
+        <div className="p-5 rounded-2xl glass space-y-2">
           <span className="text-xs text-slate-400 block font-semibold">استفسارات التقسيط الواردة</span>
           <div className="flex items-baseline gap-2">
             <span className="text-2xl sm:text-3xl font-black text-white">
@@ -76,7 +76,7 @@ export const AnalyticsView: React.FC = () => {
           <p className="text-[11px] text-slate-500">محادثة واستفسار عبر القنوات المربوطة</p>
         </div>
 
-        <div className="p-5 rounded-2xl bg-slate-900 border border-slate-800 space-y-2">
+        <div className="p-5 rounded-2xl glass space-y-2">
           <span className="text-xs text-slate-400 block font-semibold">عقود التقسيط المكتملة</span>
           <div className="flex items-baseline gap-2">
             <span className="text-2xl sm:text-3xl font-black text-emerald-400">
@@ -87,10 +87,10 @@ export const AnalyticsView: React.FC = () => {
         </div>
       </div>
 
-      <div className="grid grid-cols-2 lg:grid-cols-5 gap-3">{[['المشاهدات',metrics.views],['الإعجابات',metrics.likes],['التعليقات',metrics.comments],['المشاركات',metrics.shares],['الوصول',metrics.reach]].map(([label,value])=><div key={label} className="p-4 rounded-2xl bg-slate-900 border border-slate-800"><p className="text-[11px] text-slate-500">{label}</p><p className="text-lg font-black text-white mt-1">{Number(value||0).toLocaleString()}</p></div>)}</div>
+      <div className="grid grid-cols-2 lg:grid-cols-5 gap-3">{[['المشاهدات',metrics.views],['الإعجابات',metrics.likes],['التعليقات',metrics.comments],['المشاركات',metrics.shares],['الوصول',metrics.reach]].map(([label,value])=><div key={label} className="p-4 rounded-2xl glass"><p className="text-[11px] text-slate-500">{label}</p><p className="text-lg font-black text-white mt-1">{Number(value||0).toLocaleString()}</p></div>)}</div>
 
       {/* Platform Comparison Table */}
-      <div className="p-6 rounded-2xl bg-slate-900 border border-slate-800 space-y-4">
+      <div className="p-6 rounded-2xl glass space-y-4">
         <h3 className="font-bold text-sm text-white flex items-center gap-2">
           <TrendingUp className="w-4 h-4 text-emerald-400" />
           أداء المنصات الاجتماعية وقنوات التواصل المربوطة

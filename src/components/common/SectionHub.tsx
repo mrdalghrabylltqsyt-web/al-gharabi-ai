@@ -57,9 +57,9 @@ export const SectionHub: React.FC<{ sectionId: string; renderLeaf: (id: string) 
       </nav>
 
       {/* ترويسة القسم */}
-      <div className="p-5 rounded-2xl bg-slate-900 border border-slate-800">
+      <div className="p-5 rounded-2xl glass glass-active">
         <div className="flex items-center gap-3">
-          <div className="w-10 h-10 rounded-xl bg-emerald-500/10 border border-emerald-500/30 flex items-center justify-center text-emerald-400">
+          <div className="w-10 h-10 rounded-xl bg-aurora-cyan/10 border border-aurora-cyan/30 flex items-center justify-center text-aurora-cyan">
             <SectionIcon className="w-5 h-5" />
           </div>
           <div>
@@ -67,7 +67,7 @@ export const SectionHub: React.FC<{ sectionId: string; renderLeaf: (id: string) 
             <p className="text-xs text-slate-400 mt-0.5">{section.desc}</p>
           </div>
         </div>
-        <p className="text-[11px] text-emerald-300/90 mt-2">المسار الموحّد: {section.flow}</p>
+        <p className="text-[11px] text-aurora-cyan/90 mt-2">المسار الموحّد: {section.flow}</p>
       </div>
 
       {/* شرائط الأوراق لكل فرع */}
@@ -84,8 +84,8 @@ export const SectionHub: React.FC<{ sectionId: string; renderLeaf: (id: string) 
                   onClick={() => setActiveTab(it.id)}
                   className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-[11px] font-bold transition cursor-pointer border ${
                     on
-                      ? 'bg-emerald-500 text-slate-950 border-emerald-400 shadow-sm shadow-emerald-500/20'
-                      : 'bg-slate-900 text-slate-300 border-slate-800 hover:bg-slate-800 hover:text-white'
+                      ? 'bg-aurora-cyan text-slate-950 border-aurora-cyan/70 shadow-sm shadow-aurora-cyan/30'
+                      : 'glass text-slate-300 hover:text-white hover:border-aurora-cyan/40'
                   }`}
                 >
                   <Icon className="w-3.5 h-3.5" />

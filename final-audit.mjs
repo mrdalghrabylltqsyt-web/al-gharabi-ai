@@ -4296,6 +4296,49 @@ add('watcher-advisory-not-authority',
   add('ui-no-op-handlers-absent',
     !navFilesForTargets.concat([searchSrc]).some((src) => /onClick=\{\s*\(\s*\)\s*=>\s*\{?\s*\}?\s*\}/.test(src) || /href="#"/.test(src)),
     'لا معالجات onClick فارغة ولا روابط href="#" في ملفات العناصر التفاعلية');
+
+  // 9ج) هوية "Aurora Glass" الموحّدة: طبقة تصميم واحدة (index.css) يورثها كل المكوّنات.
+  // لا تُثبّت الشكل فحسب، بل تمنع الانحدار: عودة الخلفية المعتمة، أو إزالة الزجاج،
+  // أو ظهور تمرير أفقي على الهاتف (كان عطلاً قائماً في ترويسة الهاتف).
+  const cssSrc = read('src/index.css');
+  const indexHtmlSrc = read('index.html');
+  add('aurora-theme-tokens',
+    cssSrc.includes('@theme') && cssSrc.includes('--color-slate-950:') &&
+    cssSrc.includes('--color-aurora-cyan:') && cssSrc.includes('--color-aurora-violet:'),
+    'index.css يعرّف رموز Aurora (كحلي مُعاد ضبطه + ألوان تركواز/بنفسجي) كمصدر واحد للهوية');
+  add('aurora-background-gradient',
+    /body\s*\{[^}]*background-image:\s*[\s\S]*?radial-gradient/.test(cssSrc) &&
+    cssSrc.includes('background-attachment: fixed'),
+    'خلفية Aurora متدرّجة (radial-gradient) ثابتة على مستوى body — لا سطح معتم يغطّيها');
+  add('aurora-glass-utilities',
+    cssSrc.includes('.glass {') && cssSrc.includes('.glass-strong') && cssSrc.includes('.glass-active') &&
+    cssSrc.includes('backdrop-filter'),
+    'أنماط زجاجية مشتركة (.glass/.glass-strong/.glass-active) بضبابية — تُستخدم بدل تكرار CSS متضارب');
+  add('aurora-root-not-opaque',
+    !/min-h-screen\s+bg-slate-950\s+text-slate-100\s+flex/.test(app) &&
+    !indexHtmlSrc.includes('class="bg-slate-950'),
+    'جذر التطبيق و<body> بلا خلفية معتمة تحجب توهّج Aurora (كان bg-slate-950 يغطّيه)');
+  add('aurora-glass-applied-appwide',
+    (read('src/components/common/Sidebar.tsx').includes('glass-strong')) &&
+    (read('src/components/common/Header.tsx').includes('glass-strong')) &&
+    (read('src/components/common/SectionHub.tsx').includes('glass')) &&
+    (fs.readdirSync(path.join(root, 'src/components'), { recursive: true })
+      .filter((f) => String(f).endsWith('.tsx'))
+      .map((f) => fs.readFileSync(path.join(root, 'src/components', f), 'utf8'))
+      .filter((s) => /className="[^"]*\bglass\b/.test(s)).length >= 15),
+    'الزجاج مطبّق على الهيكل وعلى ≥15 مكوّناً داخلياً (توحيد الهوية في التطبيق كله لا الغلاف فقط)');
+  add('aurora-mobile-no-horizontal-overflow',
+    read('src/components/common/Header.tsx').includes('flex-wrap sm:flex-nowrap') &&
+    read('src/components/common/Header.tsx').includes('shrink-0'),
+    'ترويسة الهاتف تلتفّ/تنكمش فلا تمرير أفقي غير مقصود (كان scrollWidth>viewport على 390px)');
+  add('aurora-focus-and-reduced-motion',
+    cssSrc.includes(':focus-visible') && cssSrc.includes('prefers-reduced-motion') &&
+    cssSrc.includes('animation: none'),
+    'تركيز موحّد (:focus-visible) + احترام تقليل الحركة (prefers-reduced-motion)');
+  add('aurora-regression-test',
+    fs.existsSync(path.join(root, 'engine/tests/aurora.theme.test.ts')) &&
+    read('package.json').includes('test:aurora'),
+    'اختبار انحدار Aurora موجود ومُسجّل في package.json');
   add('ui-interactions-test-wired',
     fs.existsSync(path.join(root, 'engine/tests/ui.interactions.test.ts')) &&
     read('package.json').includes('test:ui-interactions'),

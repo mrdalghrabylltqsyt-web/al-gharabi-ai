@@ -20,19 +20,10 @@ import { test, expect, Page } from '@playwright/test';
 const PREVIEW_TOKEN = process.env.E2E_PREVIEW_TOKEN || 'e2e-preview-token-0123456789abcdef';
 
 const SECTION_LABELS = [
-  'مركز القيادة والمالك',
-  'النشر الموحد ومنصات التواصل',
-  'العقول المتخصصة',
-  'العقل المركزي والمنسق التنفيذي',
-  'المصادقة والأمان والصلاحيات',
-  'مركز الزبائن والتفاعلات',
-  'مستودع المنتجات والمعرفة',
-  'محرك الأتمتة والجدولة',
-  'الذاكرة والتعلم والتحليل',
-  'التخزين وقاعدة البيانات',
-  'المراقبة وصحة النظام',
-  'النسخ الاحتياطي والتعافي والاستنساخ',
-  'الخدمات الخارجية والإعدادات',
+  'مركز القيادة والعقل',
+  'النشر والمنصات',
+  'الزبائن والتفاعلات',
+  'المنتجات والمعرفة',
   'الإعدادات والتشغيل',
 ];
 
@@ -67,7 +58,7 @@ test('كل قسم ينقل إلى محتواه هو (بما فيه إعادة ا
 
   // الانحدار الحاسم: بعد التنقّل، إعادة الضغط على قسم **مفتوح** يجب أن تنقّل إليه،
   // لا أن تطوي فروعه فقط وتبقي المحتوى على القسم السابق.
-  for (const label of ['العقول المتخصصة', 'العقل المركزي والمنسق التنفيذي', 'محرك الأتمتة والجدولة']) {
+  for (const label of ['النشر والمنصات', 'المنتجات والمعرفة', 'الإعدادات والتشغيل']) {
     await sectionHeader(page, label).click();       // قد يفتح/يطوي
     await expect(mainHeading(page)).toHaveText(label, { timeout: 15_000 });
     await sectionHeader(page, label).click();       // إعادة الضغط (القسم غالباً مفتوح)
@@ -78,8 +69,8 @@ test('كل قسم ينقل إلى محتواه هو (بما فيه إعادة ا
 test('الضغط على فرع يفتح وظائفه وينقل إلى أولها (لا فرع بلا استجابة)', async ({ page }) => {
   await login(page);
 
-  await sectionHeader(page, 'النشر الموحد ومنصات التواصل').click();
-  await expect(mainHeading(page)).toHaveText('النشر الموحد ومنصات التواصل', { timeout: 15_000 });
+  await sectionHeader(page, 'النشر والمنصات').click();
+  await expect(mainHeading(page)).toHaveText('النشر والمنصات', { timeout: 15_000 });
 
   // فروع قسم النشر داخل الحاوية المفتوحة.
   const branchButtons = page.locator('aside button[aria-expanded]').filter({ has: page.locator('span') });

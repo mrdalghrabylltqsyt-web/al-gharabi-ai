@@ -159,7 +159,7 @@ export const MarketingAgentView: React.FC = () => {
       </div>
 
       {/* Mode switch: single task vs small campaign */}
-      <div className="flex flex-wrap items-center gap-2 p-1.5 rounded-2xl bg-slate-900 border border-slate-800 w-fit">
+      <div className="flex flex-wrap items-center gap-2 p-1.5 rounded-2xl glass w-fit">
         <button
           onClick={() => setMode('single')}
           className={`px-4 py-2 rounded-xl text-xs font-bold transition cursor-pointer flex items-center gap-1.5 ${
@@ -192,7 +192,7 @@ export const MarketingAgentView: React.FC = () => {
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
         {/* Brief form */}
         <div className="lg:col-span-5 space-y-5">
-          <div className="p-5 rounded-2xl bg-slate-900 border border-slate-800 space-y-4">
+          <div className="p-5 rounded-2xl glass space-y-4">
             {/* 1. Task */}
             <div>
               <label className="block text-xs font-bold text-slate-300 mb-2">1. المهمة المطلوبة من الوكيل:</label>
@@ -399,7 +399,7 @@ export const MarketingAgentView: React.FC = () => {
         {/* Result */}
         <div className="lg:col-span-7 space-y-5">
           {!result ? (
-            <div className="p-10 rounded-2xl bg-slate-900 border border-slate-800 text-center">
+            <div className="p-10 rounded-2xl glass text-center">
               <Bot className="w-10 h-10 text-slate-600 mx-auto mb-3" />
               <p className="text-sm font-bold text-slate-300">لا توجد نتيجة بعد</p>
               <p className="text-xs text-slate-500 mt-1">اكتب مهمتك واختر المنتج والمنصات، ثم نفّذ المهمة لعرض المحتوى هنا.</p>
@@ -407,7 +407,7 @@ export const MarketingAgentView: React.FC = () => {
           ) : (
             <>
               {/* Summary */}
-              <div className="p-4 rounded-2xl bg-slate-900 border border-slate-800">
+              <div className="p-4 rounded-2xl glass">
                 <div className="flex items-center justify-between gap-3 mb-3">
                   <div className="flex items-center gap-2">
                     <CheckCircle2 className="w-4 h-4 text-emerald-400" />
@@ -471,7 +471,7 @@ export const MarketingAgentView: React.FC = () => {
               </div>
 
               {/* Platform tabs */}
-              <div className="p-4 rounded-2xl bg-slate-900 border border-slate-800">
+              <div className="p-4 rounded-2xl glass">
                 <div className="flex items-center gap-2 overflow-x-auto pb-3 custom-scrollbar">
                   {result.content.map((c) => (
                     <button
