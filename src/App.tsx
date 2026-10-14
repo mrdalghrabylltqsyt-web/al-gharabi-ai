@@ -178,15 +178,17 @@ const AppContent: React.FC = () => {
       case 'section_customers': return <SectionHub sectionId="section_customers" renderLeaf={renderLeafView} />;
       case 'section_products': return <SectionHub sectionId="section_products" renderLeaf={renderLeafView} />;
       case 'section_settings': return <SectionHub sectionId="section_settings" renderLeaf={renderLeafView} />;
-      case 'section_brains': return <SectionHub sectionId="section_brains" renderLeaf={renderLeafView} />;
-      case 'section_central': return <SectionHub sectionId="section_central" renderLeaf={renderLeafView} />;
-      case 'section_security': return <SectionHub sectionId="section_security" renderLeaf={renderLeafView} />;
-      case 'section_automation': return <SectionHub sectionId="section_automation" renderLeaf={renderLeafView} />;
-      case 'section_memory': return <SectionHub sectionId="section_memory" renderLeaf={renderLeafView} />;
-      case 'section_storage': return <SectionHub sectionId="section_storage" renderLeaf={renderLeafView} />;
-      case 'section_monitoring': return <SectionHub sectionId="section_monitoring" renderLeaf={renderLeafView} />;
-      case 'section_recovery': return <SectionHub sectionId="section_recovery" renderLeaf={renderLeafView} />;
-      case 'section_external': return <SectionHub sectionId="section_external" renderLeaf={renderLeafView} />;
+      // أقسام قديمة (14→5): أُدمجت منطقياً، لكن معرّفاتها تبقى صالحة (دمج لا حذف)
+      // وتُوجَّه إلى القسم الحاوي الجديد فلا توجد حالة عرض مكسورة أو شاشة فارغة.
+      case 'section_brains':
+      case 'section_central':
+      case 'section_security': return <SectionHub sectionId="section_home" renderLeaf={renderLeafView} />;
+      case 'section_automation':
+      case 'section_recovery':
+      case 'section_external':
+      case 'section_monitoring':
+      case 'section_storage': return <SectionHub sectionId="section_settings" renderLeaf={renderLeafView} />;
+      case 'section_memory': return <SectionHub sectionId="section_home" renderLeaf={renderLeafView} />;
       default: return renderLeafView(activeTab);
     }
   };

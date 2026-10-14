@@ -1,26 +1,28 @@
 import React from 'react';
 import {
-  Home, LayoutDashboard, Send, Sparkles, MessageSquare, Package, Settings,
-  Bot, BarChart3, Calendar, Users, Search, ClipboardList, Brain, PlugZap,
-  CloudUpload, Database, ServerCog, Youtube, ShieldCheck, Activity, Workflow,
-  ListChecks, HardDrive, KeyRound, Gem, Facebook, Instagram, Twitter, Globe,
-  MessageCircle, Boxes, Bell, RefreshCw, CreditCard, Layers,
-  RadioTower, Cpu, Network, Power,
+  Home, LayoutDashboard, Send, Sparkles, MessageSquareText, Store, Cog,
+  Bot, BarChart3, Calendar, Users, Search, ClipboardList, Brain, BrainCircuit, PlugZap,
+  CloudUpload, Database, ServerCog, Youtube, ShieldCheck, Activity,
+  CreditCard, Network, Power, Boxes,
 } from 'lucide-react';
 import { salesTabEnabled, operationsTabEnabled } from './scopeFlags';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // خريطة التنقل الهرمية الموحّدة — **مصدر واحد للحقيقة**.
 //
-// ثلاثة مستويات:
-//   1) قسم رئيسي (NavSection) — عنوان قابل للفتح/الإغلاق في الشريط الجانبي.
-//   2) فرع (NavBranch) — مجموعة/فرع تحت القسم، قابل للفتح/الإغلاق.
-//   3) ورقة (NavLeaf) — وظيفة فعلية لها `id` يقابلها `case` في App.tsx (مكوّن حقيقي).
+// ثلاثة مستويات: قسم رئيسي (NavSection) ← فرع (NavBranch) ← ورقة (NavLeaf).
+// خمسة أقسام رئيسية فقط، مجمّعة حسب دورة العمل الفعلية (قيادة وعقل | نشر ومنصات |
+// زبائن وتفاعل | منتجات ومعرفة | إعدادات وتشغيل).
 //
-// قاعدة ملزمة: لا تُضاف ورقة إلا ومعرّفها مُنفَّذ في switch العرض (مكوّن حقيقي)،
-// فيستحيل وجود «زر شكلي بلا وظيفة». الوظائف القديمة كلها محفوظة كما هي (لا حذف).
+// قاعدة ملزمة: لا تُضاف ورقة إلا ومعرّفها مُنفَّذ في switch العرض (مكوّن حقيقي).
+// قاعدة الدمج-لا-الحذف: كل وظيفة/معرّف كان موجوداً سابقاً ما زال موجوداً هنا، لكن
+// **مرة واحدة فقط** لكل قسم: أي مجموعة أوراق تتقاسم نفس الـid تظهر كرابط واحد،
+// والتبديل بين الحالات (منصة/نوع عقل) يقع داخل الصفحة نفسها (تبويب/قائمة منسدلة)،
+// لا بتكرارها كبنود منفصلة في الشريط الجانبي.
 //
-// معرّفات الأقسام تبدأ بـ`section_` — تبقى متوافقة مع الفحوص القائمة.
+// ملاحظة تطوير (لا تُعرض للمستخدم): الوظائف القديمة كلها ما زالت متاحة داخل الأقسام
+// (لا حذف لأي وظيفة) — تغيّر التنظيم/العرض فقط. كان هذا النص يظهر للمستخدم النهائي
+// أسفل القائمة، فنُقل إلى تعليق كود.
 // ─────────────────────────────────────────────────────────────────────────────
 
 export interface NavLeaf {
@@ -40,6 +42,60 @@ export interface NavBranch {
   items: NavLeaf[];
   ownerOnly?: boolean;
 }
+
+/**
+ * هوية لونية لكل قسم — **لا تُغيِّر أي دلالة قائمة**: الكهرماني يبقى للعاجل،
+ * والأخضر الزمردي يبقى لون العلامة التجارية الأساسي (والورقة النشطة). هذه ألوان
+ * تمييز خفيفة تُظهر شخصية كل قسم فقط. بلا مكتبة ألوان جديدة — ألوان Tailwind قائمة.
+ */
+export interface NavAccent {
+  /** صندوق أيقونة القسم عند عدم التفعيل: تدرّج خفيف + حلقة. */
+  box: string;
+  /** لون أيقونة القسم عند التفعيل. */
+  icon: string;
+  /** صندوق أيقونة القسم عند التفعيل: تدرّج أوضح + توهج (glow). */
+  boxActive: string;
+  /** خلفية/حد صف القسم عند التفعيل. */
+  rowActive: string;
+}
+
+export const NAV_ACCENTS: Record<'sky' | 'emerald' | 'amber' | 'violet' | 'steel', NavAccent> = {
+  // أزرق سماوي — القيادة والعقل (هدوء واتساع الرؤية).
+  sky: {
+    box: 'bg-gradient-to-br from-sky-500/20 to-sky-900/10 ring-1 ring-inset ring-sky-500/30',
+    icon: 'text-sky-300',
+    boxActive: 'bg-gradient-to-br from-sky-400 to-sky-600 shadow-md shadow-sky-500/40 ring-1 ring-inset ring-sky-300/40',
+    rowActive: 'bg-gradient-to-l from-sky-950/70 to-sky-900/25 text-sky-100 border border-sky-500/30 shadow-sm',
+  },
+  // أخضر زمردي — النشر والمنصات (نمو وامتداد).
+  emerald: {
+    box: 'bg-gradient-to-br from-emerald-500/20 to-emerald-900/10 ring-1 ring-inset ring-emerald-500/30',
+    icon: 'text-emerald-300',
+    boxActive: 'bg-gradient-to-br from-emerald-400 to-emerald-600 shadow-md shadow-emerald-500/40 ring-1 ring-inset ring-emerald-300/40',
+    rowActive: 'bg-gradient-to-l from-emerald-950/80 to-emerald-900/40 text-emerald-200 border border-emerald-500/30 shadow-sm',
+  },
+  // كهرماني — الزبائن والتفاعلات (دفء التواصل) — للقسم فقط، والعاجل يبقى كهرمانياً كما هو.
+  amber: {
+    box: 'bg-gradient-to-br from-amber-500/20 to-amber-900/10 ring-1 ring-inset ring-amber-500/30',
+    icon: 'text-amber-300',
+    boxActive: 'bg-gradient-to-br from-amber-400 to-amber-600 shadow-md shadow-amber-500/40 ring-1 ring-inset ring-amber-300/40',
+    rowActive: 'bg-gradient-to-l from-amber-950/70 to-amber-900/25 text-amber-100 border border-amber-500/30 shadow-sm',
+  },
+  // بنفسجي — المنتجات والمعرفة (قيمة وفخامة).
+  violet: {
+    box: 'bg-gradient-to-br from-violet-500/20 to-violet-900/10 ring-1 ring-inset ring-violet-500/30',
+    icon: 'text-violet-300',
+    boxActive: 'bg-gradient-to-br from-violet-400 to-violet-600 shadow-md shadow-violet-500/40 ring-1 ring-inset ring-violet-300/40',
+    rowActive: 'bg-gradient-to-l from-violet-950/70 to-violet-900/25 text-violet-100 border border-violet-500/30 shadow-sm',
+  },
+  // رمادي فولاذي — الإعدادات والتشغيل (رصانة النظام).
+  steel: {
+    box: 'bg-gradient-to-br from-slate-500/25 to-slate-800/10 ring-1 ring-inset ring-slate-400/30',
+    icon: 'text-slate-300',
+    boxActive: 'bg-gradient-to-br from-slate-400 to-slate-600 shadow-md shadow-slate-500/40 ring-1 ring-inset ring-slate-200/40',
+    rowActive: 'bg-gradient-to-l from-slate-800/80 to-slate-800/40 text-slate-100 border border-slate-500/30 shadow-sm',
+  },
+};
 export interface NavSection {
   id: string;
   label: string;
@@ -48,11 +104,10 @@ export interface NavSection {
   ownerOnly?: boolean;
   /** وصف مسار العمل الموحّد للقسم (يُعرض في ترويسة القسم + مسار التنقّل). */
   flow: string;
+  /** هوية لونية مميّزة للقسم (تُطبَّق على أيقونة القسم وصندوقه عند التفعيل فقط). */
+  accent: NavAccent;
   branches: NavBranch[];
 }
-
-// أيقونة مساعدة لـSnapchat (لا أيقونة مخصّصة في lucide) — بلا وظيفة إضافية.
-const RotateIcon = (props: { className?: string }) => <RefreshCw {...props} />;
 
 // SCOPE ISOLATION (LEGACY ERP): أسطح Inventory/CRM/Finance/Customers-360/Purchases/
 // خارج نطاق المشروع المعلن (سوشيال + AI + تسويق)، ومعزولة على الخادم افتراضياً
@@ -67,13 +122,24 @@ export const LEGACY_ERP_TAB_IDS = new Set(['executive', 'business', 'finance', '
 export const SALES_TAB_ENABLED = salesTabEnabled();
 export const OPERATIONS_TAB_ENABLED = operationsTabEnabled();
 
+/**
+ * أسماء المنصات العشر للعرض — مصدر واحد يستهلكه المفتاح الداخلي (تبويب/قائمة منسدلة)
+ * في صفحات النشر والمنصات، فلا تُكرَّر كأوراق منفصلة في الشريط الجانبي (نفس الوظيفة
+ * `social` تُفتح مرة واحدة وتُبدَّل المنصة داخلها).
+ */
+export const NAV_PLATFORM_LABELS = [
+  'Facebook', 'Instagram', 'TikTok', 'YouTube', 'Telegram',
+  'Threads', 'WhatsApp Business', 'X', 'Snapchat', 'Google Business Profile',
+] as const;
+
 export const NAV_SECTIONS: NavSection[] = [
-  // 1) مركز القيادة والمالك
+  // 1) مركز القيادة والعقل — نظرة موحّدة + كل العقول (مركزي/متخصصة) + الحوكمة.
   {
     id: 'section_home',
-    label: 'مركز القيادة والمالك',
-    desc: 'الحالة العامة، المنصات، النشر، التفاعلات، التنبيهات، والتقارير',
+    label: 'مركز القيادة والعقل',
+    desc: 'الحالة العامة، العقل المركزي والعقول المتخصصة، والاعتماد',
     icon: Home,
+    accent: NAV_ACCENTS.sky,
     flow: 'نظرة موحّدة: ما يعمل، ما يحتاج إجراءً، وما ينتظر موافقة المالك.',
     branches: [
       {
@@ -83,45 +149,36 @@ export const NAV_SECTIONS: NavSection[] = [
         items: [
           { id: 'command_center', label: 'مركز القيادة', desc: 'حالة النظام، ملخص العمل، والتنبيهات', icon: LayoutDashboard, keywords: ['dashboard', 'overview'] },
           { id: 'dashboard', label: 'لوحة التحكم الرئيسية', desc: 'المؤشرات والعمليات الحالية', icon: LayoutDashboard, keywords: ['dashboard'] },
-          { id: 'system', label: 'حالة النظام والخدمات', desc: 'سلامة النظام والنسخ وسجل العمليات', icon: ServerCog, ownerOnly: true, keywords: ['health', 'system'] },
         ],
       },
       {
-        id: 'home_platforms',
-        title: 'المنصات والنشر',
-        icon: PlugZap,
+        id: 'home_brains',
+        title: 'العقل المركزي والعقول المتخصصة',
+        icon: Brain,
         items: [
-          { id: 'social', label: 'ملخص المنصات المتصلة', desc: 'حالة الحسابات وقدرات النشر لكل منصة', icon: PlugZap, keywords: ['platforms', 'connected'] },
-          { id: 'calendar', label: 'حالة النشر والجدولة', desc: 'المنشورات المجدولة حسب الأيام', icon: Calendar, keywords: ['schedule', 'calendar'] },
+          { id: 'central_brain', label: 'العقل المركزي متعدد المنصات', desc: 'الإدراك، الجمهور، السوق، الاستراتيجية، القرار، التجارب، التعلم، الذاكرة — بنوع عقل داخلي', icon: Brain, keywords: ['perception', 'knowledge', 'truth', 'audience', 'market', 'strategy', 'decision', 'experiments', 'learning', 'memory'] },
+          { id: 'brain_manager', label: 'عقل السياق والفريق والعروض', desc: 'السياق والذاكرة العاملة، فريق الوكلاء، وصياغة العروض — بنوع عقل داخلي', icon: BrainCircuit, keywords: ['context', 'team', 'council', 'offers', 'sales'] },
+          { id: 'central_agent', label: 'المنسّق التنفيذي المركزي', desc: 'فهم الأوامر، التخطيط، الأدوات، التوزيع، التنفيذ، والصلاحيات — بمرحلة داخلية', icon: Bot, keywords: ['intent', 'planner', 'tools', 'routing', 'tasks', 'permissions', 'audit'] },
         ],
       },
       {
-        id: 'home_customers',
-        title: 'التفاعلات والمتابعة',
-        icon: MessageSquare,
+        id: 'home_governance',
+        title: 'الحوكمة والاعتماد',
+        icon: ShieldCheck,
         items: [
-          { id: 'customers', label: 'ملخص التفاعلات والتعليقات والرسائل', desc: 'التعليقات والرسائل والردود والمتابعة', icon: MessageSquare, keywords: ['inbox', 'comments'] },
-          { id: 'operations', label: 'المهام والمتابعات', desc: 'العملاء المحتملون والمهام والمتابعات', icon: ClipboardList, keywords: ['tasks'] },
-        ],
-      },
-      {
-        id: 'home_reports',
-        title: 'التقارير والاعتماد',
-        icon: BarChart3,
-        items: [
-          { id: 'analytics', label: 'التقارير والنتائج والتوصيات', desc: 'المشاهدات والوصول والتفاعل', icon: BarChart3, keywords: ['reports', 'analytics'] },
-          { id: 'approval', label: 'مراجعة الأوامر التي تحتاج موافقة', desc: 'حوكمة النشر والمراجعة قبل النشر الموحّد', icon: ShieldCheck, keywords: ['approval', 'review'] },
+          { id: 'approval', label: 'الموافقة والاعتماد', desc: 'مراجعة المحتوى والأوامر التي تحتاج موافقة قبل التنفيذ', icon: ShieldCheck, keywords: ['approval', 'review', 'governance'] },
         ],
       },
     ],
   },
 
-  // 2) النشر الموحد ومنصات التواصل
+  // 2) النشر والمنصات — دورة المحتوى + النشر والنتائج + المنصات العشر + المبيعات (توسيع نطاق).
   {
     id: 'section_publish',
-    label: 'النشر الموحد ومنصات التواصل',
-    desc: 'إنشاء المحتوى، اختيار المنصات، النشر والجدولة والنتائج، وموصلات المنصات',
+    label: 'النشر والمنصات',
+    desc: 'إنشاء المحتوى، النشر والجدولة والنتائج، وموصلات المنصات العشر',
     icon: Send,
+    accent: NAV_ACCENTS.emerald,
     flow: 'إنشاء ← تجهيز لكل منصة ← اعتماد ← نشر/جدولة ← متابعة النتيجة لكل منصة.',
     branches: [
       {
@@ -129,9 +186,8 @@ export const NAV_SECTIONS: NavSection[] = [
         title: 'دورة المحتوى',
         icon: Sparkles,
         items: [
-          { id: 'content', label: 'إنشاء المحتوى وتحريره ومعاينته', desc: 'توليد منشورات وتعديل النص لكل منصة', icon: Sparkles, keywords: ['content', 'create'] },
-          { id: 'approval', label: 'الموافقة والاعتماد', desc: 'مراجعة المحتوى قبل النشر الموحّد', icon: ShieldCheck, keywords: ['approval'] },
-          { id: 'calendar', label: 'الجدولة والتقويم', desc: 'جدولة المنشورات حسب الأيام', icon: Calendar, keywords: ['schedule'] },
+          { id: 'content', label: 'إنشاء المحتوى وتحريره', desc: 'توليد منشورات وتعديل النص لكل منصة', icon: Sparkles, keywords: ['content', 'create'] },
+          { id: 'calendar', label: 'الجدولة والتقويم', desc: 'جدولة المنشورات حسب الأيام', icon: Calendar, keywords: ['schedule', 'calendar'] },
         ],
       },
       {
@@ -140,7 +196,7 @@ export const NAV_SECTIONS: NavSection[] = [
         icon: Send,
         items: [
           { id: 'social_manager', label: 'مدير النشر (نشر/تعليقات/تحليل)', desc: 'النشر والتعليقات والتحليل لكل منصة', icon: Bot, keywords: ['publish'] },
-          { id: 'analytics', label: 'نتائج النشر والتحليلات', desc: 'المشاهدات والوصول والتفاعل', icon: BarChart3, keywords: ['analytics'] },
+          { id: 'analytics', label: 'النتائج والتحليلات', desc: 'المشاهدات والوصول والتفاعل والتوصيات', icon: BarChart3, keywords: ['analytics', 'reports'] },
           { id: 'agent', label: 'الوكيل الذكي المركزي', desc: 'استراتيجيات التسويق والأداء', icon: Sparkles, keywords: ['marketing'] },
           { id: 'marketing_agent', label: 'وكيل صياغة المحتوى', desc: 'مهمة → محتوى عربي جاهز', icon: Sparkles, keywords: ['copywriting'] },
         ],
@@ -150,22 +206,13 @@ export const NAV_SECTIONS: NavSection[] = [
         title: 'المنصات العشر (الموصلات)',
         icon: Network,
         items: [
-          { id: 'platform_connections', label: 'مركز ربط المنصات (الكل)', desc: 'حالة كل منصة والإجراء التالي لتفعيلها', icon: PlugZap, keywords: ['connect'] },
-          { id: 'social', label: 'Facebook', desc: 'منشورات الصفحة، Messenger، تعليقات الصفحة', icon: Facebook, keywords: ['facebook', 'meta'] },
-          { id: 'social', label: 'Instagram', desc: 'حساب أعمال مرتبط بصفحة: نشر/تعليقات/رسائل', icon: Instagram, keywords: ['instagram', 'ig'] },
-          { id: 'social', label: 'TikTok', desc: 'نشر الفيديو (Content Posting) وبيانات العرض', icon: Sparkles, keywords: ['tiktok'] },
-          { id: 'youtube_operations', label: 'YouTube', desc: 'رفع/جدولة/تعليقات/تحليلات + مدير تشغيل 24/7', icon: Youtube, ownerOnly: true, keywords: ['youtube'] },
-          { id: 'social', label: 'Telegram', desc: 'بوت: نشر في القناة ورسائل وردود', icon: Send, keywords: ['telegram'] },
-          { id: 'social', label: 'Threads', desc: 'نشر عبر Threads API', icon: MessageCircle, keywords: ['threads'] },
-          { id: 'social', label: 'WhatsApp Business', desc: 'رسائل وردود (بلا نشر عام)', icon: MessageCircle, keywords: ['whatsapp'] },
-          { id: 'social', label: 'X', desc: 'نشر وتعليقات عبر API المدفوع', icon: Twitter, keywords: ['twitter', 'x'] },
-          { id: 'social', label: 'Snapchat', desc: 'إعلانات/تحويلات (بلا تعليقات عامة)', icon: RotateIcon, keywords: ['snapchat'] },
-          { id: 'social', label: 'Google Business Profile', desc: 'تحديثات محلية (بلا تعليقات)', icon: Globe, keywords: ['gbp', 'google business'] },
+          { id: 'platform_connections', label: 'مركز ربط المنصات (الكل)', desc: 'حالة كل منصة والإجراء التالي لتفعيلها', icon: PlugZap, keywords: ['connect', 'meta', 'tiktok', 'youtube', 'telegram'] },
+          { id: 'social', label: 'المنصات المتصلة والمنشورات', desc: 'حالة الحسابات وقدرات النشر لكل منصة (فيسبوك/إنستغرام/تيك توك/يوتيوب/تيليغرام/ثريدز/واتساب/X/سناب/جوجل)', icon: PlugZap, keywords: ['platforms', 'connected', 'facebook', 'instagram', 'tiktok', 'youtube', 'telegram', 'threads', 'whatsapp', 'x', 'snapchat', 'google business'] },
+          { id: 'youtube_operations', label: 'مدير تشغيل YouTube', desc: 'مراقبة القناة والتعليقات والرد الآلي + طابور المحتوى 24/7', icon: Youtube, ownerOnly: true, keywords: ['youtube', 'watcher', 'cadence', 'auto-reply'] },
         ],
       },
-      // قرار مالك صريح (2026-10-13): الأسطح التجارية الحقيقية (مبيعات/غرفة عمليات)
-      // تُفعَّل بنفس مفاتيح علم المبيعات/العمليات. تظهر في الفرع فقط عند التمكين
-      // (عبر visibleBranchItems)، فلا تظهر افتراضياً. لا مساس ببقية التبويبات.
+      // قرار مالك صريح (2026-10-13): الأسطح التجارية (مبيعات/غرفة عمليات) تظهر في
+      // الفرع فقط عند تفعيل علميها (visibleBranchItems)، فلا تظهر افتراضياً.
       {
         id: 'pub_commercial',
         title: 'المبيعات وغرفة العمليات (توسيع نطاق)',
@@ -178,155 +225,34 @@ export const NAV_SECTIONS: NavSection[] = [
     ],
   },
 
-  // 3) العقول المتخصصة
-  {
-    id: 'section_brains',
-    label: 'العقول المتخصصة',
-    desc: 'وحدات التحليل والتوصية: الإدراك، الجمهور، السوق، الاستراتيجية، التجارب، التعلم، التوقيت، السياق، الفريق',
-    icon: Brain,
-    flow: 'تحليل بيانات حقيقية ← توصية/قرار مقترح ← تغذية العقل المركزي (بلا تنفيذ خارجي).',
-    branches: [
-      {
-        id: 'brains_core',
-        title: 'عقول المعرفة والجمهور والسوق',
-        icon: Cpu,
-        items: [
-          { id: 'central_brain', label: 'عقل الإدراك والمعرفة', desc: 'الإشارات وطبقة الحقيقة والتوصيات لكل المنصات', icon: Brain, keywords: ['perception', 'knowledge', 'truth'] },
-          { id: 'central_brain', label: 'عقل الجمهور واكتشاف الطلب', desc: 'مقاطع سلوكية وإشارات طلب من تفاعل حقيقي', icon: Users, keywords: ['audience', 'demand'] },
-          { id: 'central_brain', label: 'عقل السوق وتحليل الفرص', desc: 'القُمع التجاري وملاءمة الجمهور', icon: BarChart3, keywords: ['market', 'opportunity'] },
-        ],
-      },
-      {
-        id: 'brains_decision',
-        title: 'عقول الاستراتيجية والقرار والعروض',
-        icon: Layers,
-        items: [
-          { id: 'central_brain', label: 'عقل الاستراتيجية واتخاذ القرارات', desc: 'توصيات مفسّرة وقرارات حسب المستويات L0..L5', icon: Layers, keywords: ['strategy', 'decision'] },
-          { id: 'brain_manager', label: 'عقل العروض والمبيعات', desc: 'صياغة العروض ومسار الاستفسار (بلا اختراع سعر)', icon: CreditCard, keywords: ['offers', 'sales'] },
-        ],
-      },
-      {
-        id: 'brains_learning',
-        title: 'عقول التجارب والتعلم والتوقيت',
-        icon: Activity,
-        items: [
-          { id: 'central_brain', label: 'عقل التجارب والاختبارات', desc: 'تجارب بمتغيّر واحد وحكم inconclusive بلا عيّنة', icon: Activity, keywords: ['experiments'] },
-          { id: 'central_brain', label: 'عقل التعلم وتحليل النتائج', desc: 'تعلّم من الأحداث وتفضيل المالك (بلا تدريب أوزان)', icon: RefreshCw, keywords: ['learning'] },
-          { id: 'calendar', label: 'عقل التوقيت وجدولة العمليات', desc: 'نوافذ النشر وفق Asia/Baghdad', icon: Calendar, keywords: ['timing'] },
-        ],
-      },
-      {
-        id: 'brains_context',
-        title: 'عقول السياق والذاكرة والفريق',
-        icon: MessageCircle,
-        items: [
-          { id: 'brain_manager', label: 'عقل الإدراك والسياق والذاكرة', desc: 'سياق المحادثة واستدعاء الذاكرة العاملة', icon: MessageCircle, keywords: ['context', 'memory'] },
-          { id: 'brain_manager', label: 'عقل إدارة الفريق وتوزيع المهام', desc: 'فريق داخلي: بحث/تحليل/استراتيجية/نقد/قرار', icon: Users, keywords: ['team', 'council'] },
-        ],
-      },
-    ],
-  },
-
-  // 4) العقل المركزي والمنسق التنفيذي
-  {
-    id: 'section_central',
-    label: 'العقل المركزي والمنسق التنفيذي',
-    desc: 'فهم الأوامر، التخطيط، الأدوات، التوزيع، متابعة التنفيذ، والصلاحيات',
-    icon: Bot,
-    ownerOnly: true,
-    flow: 'أمر ← تصنيف نية ← خطة ← أدوات ← (بوابة صلاحيات) ← تنفيذ/تحقق ← سجل.',
-    branches: [
-      {
-        id: 'central_plan',
-        title: 'الفهم والتخطيط',
-        icon: ClipboardList,
-        items: [
-          { id: 'central_agent', label: 'فهم الأوامر وتصنيف النية', desc: 'تصنيف حتمي للنية وبناء خطة خطوات', icon: ClipboardList, keywords: ['intent', 'planner'] },
-          { id: 'central_agent', label: 'تخطيط المهام واختيار الأدوات', desc: '٣٠ أداة مرتبطة بوظائف الخادم الحقيقية', icon: Workflow, keywords: ['tools'] },
-          { id: 'central_agent', label: 'توزيع المهام على العقول', desc: 'تسليم النتائج بين الوحدات داخل المهمة', icon: Network, keywords: ['routing'] },
-        ],
-      },
-      {
-        id: 'central_run',
-        title: 'التنفيذ والمراقبة',
-        icon: Activity,
-        items: [
-          { id: 'central_agent', label: 'متابعة تنفيذ المهام', desc: 'حالة كل مهمة وخطواتها ونتائجها', icon: Activity, keywords: ['tasks'] },
-          { id: 'central_agent', label: 'التحقق من الصلاحيات والقيود', desc: 'بوابة EXTERNAL_ACTION + تفويض المالك + كشف الأخطاء', icon: ShieldCheck, keywords: ['permissions'] },
-          { id: 'central_agent', label: 'سجل القرارات والأحداث', desc: 'تدقيق وتقارير حالة التنفيذ والتوصيات', icon: ListChecks, keywords: ['audit', 'ledger'] },
-        ],
-      },
-    ],
-  },
-
-  // 5) المصادقة والأمان والصلاحيات
-  {
-    id: 'section_security',
-    label: 'المصادقة والأمان والصلاحيات',
-    desc: 'تسجيل الدخول، الجلسات، الأدوار، حماية API، وحالة الإعدادات الأمنية',
-    icon: ShieldCheck,
-    ownerOnly: true,
-    flow: 'دخول ← جلسة موقّعة ← دور ← بوابة صلاحيات ← تدقيق (بلا كشف أي سرّ).',
-    branches: [
-      {
-        id: 'sec_access',
-        title: 'الوصول والجلسات',
-        icon: KeyRound,
-        items: [
-          { id: 'users', label: 'إدارة الجلسات وصلاحيات المالك', desc: 'أدوار الفريق وصلاحيات النشر (RBAC)', icon: Users, keywords: ['sessions', 'rbac'] },
-          { id: 'system', label: 'حالة إعدادات الأمان ومفاتيح التشفير', desc: 'حالة الإعداد فقط بلا كشف قيمة السر', icon: KeyRound, keywords: ['keys', 'encryption'] },
-          { id: 'system', label: 'تدقيق محاولات الدخول والأخطاء', desc: 'سجل الأحداث الأمنية المتاحة', icon: ListChecks, keywords: ['audit', 'login'] },
-        ],
-      },
-      {
-        id: 'sec_external',
-        title: 'صلاحيات الإجراءات الخارجية والموافقات',
-        icon: ShieldCheck,
-        items: [
-          { id: 'approval', label: 'الموافقات المطلوبة قبل التنفيذ', desc: 'حوكمة الإجراءات الخارجية الحسّاسة', icon: ShieldCheck, keywords: ['approval'] },
-          { id: 'central_agent', label: 'إدارة صلاحيات الإجراءات الخارجية', desc: 'مستويات الصلاحية الخمسة × المشغّل', icon: ShieldCheck, keywords: ['permissions', 'delegation'] },
-        ],
-      },
-    ],
-  },
-
-  // 6) مركز الزبائن والتفاعلات
+  // 3) الزبائن والتفاعلات — الوارد والردود + المهام والمتابعات.
   {
     id: 'section_customers',
-    label: 'مركز الزبائن والتفاعلات',
+    label: 'الزبائن والتفاعلات',
     desc: 'التعليقات، الرسائل، الردود، تحليل النية، والمتابعة',
-    icon: MessageSquare,
+    icon: MessageSquareText,
+    accent: NAV_ACCENTS.amber,
     flow: 'قراءة التفاعل ← فهم السؤال والمنتج ← رد عامي عراقي ← متابعة/تصعيد للمالك.',
     branches: [
       {
         id: 'cust_inbox',
-        title: 'الوارد والردود',
-        icon: MessageSquare,
+        title: 'الوارد والمتابعة',
+        icon: MessageSquareText,
         items: [
-          { id: 'customers', label: 'التعليقات والرسائل الواردة', desc: 'صندوق موحّد لكل التفاعلات والمتابعة', icon: MessageSquare, keywords: ['inbox', 'comments'] },
-          { id: 'customers', label: 'تحليل نية الزبون وربط المنتجات', desc: 'تصنيف السؤال (سعر/مواصفات/تقسيط) وربطه بالمنتج', icon: Cpu, keywords: ['intent'] },
-          { id: 'customers', label: 'اقتراح الردود ومراجعتها قبل الإرسال', desc: 'ردود حتمية بلا اختراع + حارس سلامة المحتوى', icon: Sparkles, keywords: ['reply'] },
-        ],
-      },
-      {
-        id: 'cust_history',
-        title: 'السجل والنتائج',
-        icon: ListChecks,
-        items: [
-          { id: 'customers', label: 'سجل المحادثات والتفاعلات', desc: 'حالات معالجة التعليقات والرسائل', icon: ListChecks, keywords: ['history'] },
-          { id: 'analytics', label: 'إحصائيات التفاعل والنتائج', desc: 'مؤشرات التفاعل والنتائج', icon: BarChart3, keywords: ['stats'] },
-          { id: 'youtube_operations', label: 'الرد التلقائي (YouTube)', desc: 'يُعرض فعّالاً فقط عند تمكينه وإثبات اتصاله', icon: Youtube, ownerOnly: true, keywords: ['auto-reply'] },
+          { id: 'customers', label: 'التعليقات والرسائل الواردة', desc: 'صندوق موحّد لكل التفاعلات، تحليل النية، واقتراح الردود', icon: MessageSquareText, keywords: ['inbox', 'comments', 'intent', 'reply'] },
+          { id: 'operations', label: 'المهام والمتابعات', desc: 'العملاء المحتملون والمهام والمتابعات', icon: ClipboardList, keywords: ['tasks', 'follow-up'] },
         ],
       },
     ],
   },
 
-  // 7) مستودع المنتجات والمعرفة
+  // 4) المنتجات والمعرفة — مصدر الحقيقة التجارية + البحث.
   {
     id: 'section_products',
-    label: 'مستودع المنتجات والمعرفة',
+    label: 'المنتجات والمعرفة',
     desc: 'المنتجات، المواصفات، الأسعار، التقسيط، والبحث ومصادر المعلومات',
-    icon: Package,
+    icon: Store,
+    accent: NAV_ACCENTS.violet,
     flow: 'المصدر الوحيد للحقيقة التجارية: السعر/المواصفات/التقسيط المسجّلة فعلاً.',
     branches: [
       {
@@ -334,220 +260,35 @@ export const NAV_SECTIONS: NavSection[] = [
         title: 'المستودع والمعلومات',
         icon: Boxes,
         items: [
-          { id: 'database', label: 'بيانات المنتجات والتصنيفات', desc: 'المنتجات والأقساط والسياسات', icon: Database, keywords: ['products'] },
-          { id: 'database', label: 'الأسعار والعروض والتقسيط', desc: 'أسعار فعلية وتقسيط مشتق من سعر مسجّل', icon: CreditCard, keywords: ['price', 'installment'] },
-          { id: 'database', label: 'الصور والمواد التسويقية', desc: 'مواد المنتج ومصادر المعلومات', icon: Package, keywords: ['media'] },
+          { id: 'database', label: 'المنتجات والأسعار والتقسيط', desc: 'المنتجات والأقساط والسياسات والمواد التسويقية', icon: Database, keywords: ['products', 'price', 'installment', 'media'] },
         ],
       },
       {
         id: 'prod_link',
-        title: 'الربط والتحقق',
+        title: 'البحث والتحقق',
         icon: Search,
         items: [
-          { id: 'search', label: 'البحث عن المنتجات', desc: 'بحث سريع في بيانات النظام', icon: Search, keywords: ['search'] },
-          { id: 'database', label: 'التحقق من صحة المعلومات وسجل التحديثات', desc: 'ربط المنتجات بالتعليقات والرسائل', icon: ListChecks, keywords: ['verify'] },
+          { id: 'search', label: 'البحث في النظام', desc: 'بحث سريع في بيانات النظام (منتجات/محتوى/تفاعلات)', icon: Search, keywords: ['search'] },
         ],
       },
     ],
   },
 
-  // 8) محرك الأتمتة والجدولة
-  {
-    id: 'section_automation',
-    label: 'محرك الأتمتة والجدولة',
-    desc: 'المهام المجدولة، المهام الخلفية، قوائم الانتظار، وسجل التنفيذ',
-    icon: Workflow,
-    ownerOnly: true,
-    flow: 'إنشاء مهمة ← طابور ← بوابة شروط ← تنفيذ ← إعادة عند الفشل ← سجل (بلا تكرار).',
-    branches: [
-      {
-        id: 'auto_jobs',
-        title: 'المهام والطوابير',
-        icon: ListChecks,
-        items: [
-          { id: 'central_agent', label: 'المهام المجدولة وقوائم الانتظار', desc: 'مهام الوكيل الخلفية وحالاتها', icon: ListChecks, keywords: ['jobs', 'queue'] },
-          { id: 'calendar', label: 'جدولة المنشورات والمواعيد', desc: 'مواعيد النشر والمتابعة', icon: Calendar, keywords: ['schedule'] },
-          { id: 'youtube_operations', label: 'الأتمتة الدورية (YouTube 24/7)', desc: 'دورة داخلية بالفاصل 1..5 دقائق + إيقاف/استئناف', icon: Youtube, ownerOnly: true, keywords: ['watcher', 'cadence'] },
-          { id: 'commercial_kill_switch', label: 'العقل التجاري — مفتاح الإيقاف الطارئ', desc: 'مفتاح رئيسي واحد: إيقاف/استئناف شامل للعقل التجاري', icon: Power, ownerOnly: true, keywords: ['commercial', 'kill switch', 'إيقاف', 'العقل التجاري'] },
-        ],
-      },
-      {
-        id: 'auto_logs',
-        title: 'السجل والأخطاء',
-        icon: Activity,
-        items: [
-          { id: 'system', label: 'سجل التنفيذ والإشعارات', desc: 'نتائج المهام وانتهاؤها', icon: Activity, keywords: ['logs'] },
-          { id: 'system', label: 'الأخطاء وإعادة المحاولة', desc: 'حالات الفشل والاستثناءات', icon: RefreshCw, keywords: ['errors', 'retry'] },
-        ],
-      },
-    ],
-  },
-
-  // 9) الذاكرة والتعلم والتحليل
-  {
-    id: 'section_memory',
-    label: 'الذاكرة والتعلم والتحليل',
-    desc: 'ذاكرة النظام، سجل الأحداث، نتائج النشر والتفاعلات، والمؤشرات والتوصيات',
-    icon: Brain,
-    flow: 'حدث ← تخزين ← تحليل ← استخراج مؤشرات ← توصية ← (موافقة) ← تحسين ← قياس.',
-    branches: [
-      {
-        id: 'mem_memory',
-        title: 'الذاكرة والأحداث',
-        icon: HardDrive,
-        items: [
-          { id: 'central_brain', label: 'ذاكرة النظام وذاكرة السياق', desc: 'ذاكرة طويلة المدى وعاملة (ضمن الصلاحيات)', icon: HardDrive, keywords: ['memory'] },
-          { id: 'central_brain', label: 'سجل الأحداث والقرارات', desc: 'أحداث حقيقية وقرارات مسجّلة', icon: ListChecks, keywords: ['events', 'ledger'] },
-        ],
-      },
-      {
-        id: 'mem_analysis',
-        title: 'التحليل والنتائج',
-        icon: BarChart3,
-        items: [
-          { id: 'analytics', label: 'نتائج النشر والتفاعلات ومؤشرات الأداء', desc: 'مؤشرات متعددة الأبعاد بلا رقم مُختلق', icon: BarChart3, keywords: ['kpi'] },
-          { id: 'analytics', label: 'اكتشاف الأنماط وقياس أداء الحملات', desc: 'أنماط وتوصيات للتحسين', icon: Activity, keywords: ['patterns'] },
-          { id: 'central_brain', label: 'التوصيات للتحسين ومتابعة النتائج', desc: 'تحسين التوصيات/القواعد (لا تدريب نموذج)', icon: Sparkles, keywords: ['optimization'] },
-        ],
-      },
-    ],
-  },
-
-  // 10) التخزين وقاعدة البيانات
-  {
-    id: 'section_storage',
-    label: 'التخزين وقاعدة البيانات',
-    desc: 'حالة قاعدة البيانات، التخزين الدائم، ومصادر الحالة للأقسام الأخرى',
-    icon: Database,
-    ownerOnly: true,
-    flow: 'قراءة/كتابة عبر محوّل واحد (ملف أو Postgres) — بلا تغيير المخطط.',
-    branches: [
-      {
-        id: 'store_state',
-        title: 'الحالة والدوام',
-        icon: HardDrive,
-        items: [
-          { id: 'system', label: 'حالة قاعدة البيانات والتخزين', desc: 'backend (ملف/Postgres) والإعداد الحالي', icon: Database, keywords: ['db', 'postgres'] },
-          { id: 'system', label: 'التحقق من استمرارية البيانات', desc: 'حالة التخزين الدائم ونتائج اختبارات الاستمرارية', icon: HardDrive, keywords: ['durability'] },
-        ],
-      },
-      {
-        id: 'store_data',
-        title: 'بيانات النطاق',
-        icon: Boxes,
-        items: [
-          { id: 'customers', label: 'بيانات التفاعلات', desc: 'التعليقات والرسائل والردود', icon: MessageSquare, keywords: ['interactions'] },
-          { id: 'social_manager', label: 'بيانات المحتوى والمنشورات', desc: 'المنشورات وسجلاتها', icon: Send, keywords: ['content'] },
-        ],
-      },
-    ],
-  },
-
-  // 11) المراقبة وصحة النظام
-  {
-    id: 'section_monitoring',
-    label: 'المراقبة وصحة النظام',
-    desc: 'Health/Readiness، حالة API والخدمات والموصلات والأتمتة، والإصدار',
-    icon: Activity,
-    flow: 'فحص حي للخدمة والواجهات والموصلات — قراءة فقط بلا بيانات حساسة.',
-    branches: [
-      {
-        id: 'mon_health',
-        title: 'الصحة والإصدار',
-        icon: Activity,
-        items: [
-          { id: 'system', label: 'Health / Readiness / حالة API', desc: 'نقاط النهاية الفعلية بلا بيانات حساسة', icon: Activity, keywords: ['health', 'readiness'] },
-          { id: 'system', label: 'معلومات الإصدار والبناء', desc: 'الإصدار وcommit النشر والبيئة', icon: ListChecks, keywords: ['version', 'build'] },
-        ],
-      },
-      {
-        id: 'mon_runtime',
-        title: 'الخدمات الخلفية',
-        icon: ServerCog,
-        items: [
-          { id: 'system', label: 'حالة الخدمات والموصلات والأتمتة', desc: 'الموقّتات الداخلية وحالة الاتصال', icon: ServerCog, keywords: ['services'] },
-          { id: 'system', label: 'الأخطاء والتنبيهات والفحوصات', desc: 'نتائج الفحوصات المتاحة وتنبيهاتها', icon: Bell, keywords: ['alerts'] },
-        ],
-      },
-    ],
-  },
-
-  // 12) النسخ الاحتياطي والتعافي
-  {
-    id: 'section_recovery',
-    label: 'النسخ الاحتياطي والتعافي والاستنساخ',
-    desc: 'مركز التعافي، النسخ، التحقق من السلامة، واختبار الاستعادة',
-    icon: CloudUpload,
-    ownerOnly: true,
-    flow: 'نسخة كاملة ← Drive (CURRENT/HISTORY) ← تحقق ← استعادة معزولة (لا استعادة إنتاجية).',
-    branches: [
-      {
-        id: 'rec_backup',
-        title: 'النسخ والمصادر',
-        icon: CloudUpload,
-        items: [
-          { id: 'cloud_backup', label: 'مركز التعافي وحالة النسخ', desc: 'CURRENT + نقاط الاستعادة + وجهات التخزين', icon: CloudUpload, keywords: ['dr', 'recovery'] },
-          { id: 'cloud_backup', label: 'سجل النسخ والتحقق من السلامة', desc: 'سجلات النسخ واختبارات السلامة', icon: ShieldCheck, keywords: ['integrity'] },
-        ],
-      },
-      {
-        id: 'rec_restore',
-        title: 'الاستعادة والاستنساخ',
-        icon: RefreshCw,
-        items: [
-          { id: 'cloud_backup', label: 'اختبار الاستعادة ونتائجها', desc: 'استعادة معزولة (لا إنتاج)', icon: Activity, keywords: ['restore', 'drill'] },
-          { id: 'cloud_backup', label: 'استمرارية البيانات والتبعيات الخارجية', desc: 'حالة الاستمرارية والإعداد المطلوب', icon: HardDrive, keywords: ['external'] },
-        ],
-      },
-    ],
-  },
-
-  // 13) الخدمات الخارجية والإعدادات
-  {
-    id: 'section_external',
-    label: 'الخدمات الخارجية والإعدادات',
-    desc: 'Gemini، Google، Meta، TikTok، YouTube، Telegram، وحالة الاعتماد والصلاحيات',
-    icon: PlugZap,
-    ownerOnly: true,
-    flow: 'حالة كل تكامل (configured/connected/verified) بلا كشف أي سرّ أو توكن.',
-    branches: [
-      {
-        id: 'ext_ai',
-        title: 'الذكاء والبحث',
-        icon: Gem,
-        items: [
-          { id: 'system', label: 'Gemini AI — الحالة والصلاحيات', desc: 'مزوّد التوليد وجودة الاتصال (بلا مفتاح)', icon: Gem, keywords: ['gemini'] },
-          { id: 'system', label: 'Google Sign-In / Drive', desc: 'الدخول والنسخ السحابي (حالة التكامل)', icon: Globe, keywords: ['google'] },
-        ],
-      },
-      {
-        id: 'ext_platforms',
-        title: 'تكاملات المنصات',
-        icon: Network,
-        items: [
-          { id: 'platform_connections', label: 'Meta / Facebook / Instagram', desc: 'بيانات التطبيق والصلاحيات والربط', icon: Facebook, keywords: ['meta'] },
-          { id: 'platform_connections', label: 'TikTok API / YouTube API / Telegram Bot', desc: 'حالة الاعتماد والنطاقات لكل مزوّد', icon: RadioTower, keywords: ['tiktok', 'youtube', 'telegram'] },
-          { id: 'system', label: 'سجل أخطاء الاتصال', desc: 'أخطاء المزوّدين الحقيقية (بلا أسرار)', icon: Activity, keywords: ['errors'] },
-        ],
-      },
-    ],
-  },
-
-  // 14) الإعدادات والتشغيل
+  // 5) الإعدادات والتشغيل — الربط والصلاحيات + النظام والتعافي والأتمتة.
   {
     id: 'section_settings',
     label: 'الإعدادات والتشغيل',
-    desc: 'ربط المنصات، الصلاحيات، سياسات التشغيل، والنظام',
-    icon: Settings,
-    flow: 'ربط المنصات ← الصلاحيات ← سياسات التشغيل ← (للمالك: النظام والتعافي).',
+    desc: 'الصلاحيات، النظام، الأتمتة، والتعافي',
+    icon: Cog,
+    accent: NAV_ACCENTS.steel,
+    flow: 'الصلاحيات ← النظام والأتمتة ← (للمالك: التعافي والنسخ السحابي).',
     branches: [
       {
         id: 'set_connect',
-        title: 'الربط والصلاحيات',
-        icon: PlugZap,
+        title: 'المستخدمون والصلاحيات',
+        icon: Users,
         items: [
-          { id: 'platform_connections', label: 'ربط المنصات', desc: 'حالة كل منصة والإجراء التالي لتفعيلها', icon: PlugZap, keywords: ['connect'] },
-          { id: 'users', label: 'المستخدمون والصلاحيات', desc: 'أدوار الفريق وصلاحيات النشر', icon: Users, keywords: ['users'] },
+          { id: 'users', label: 'المستخدمون والصلاحيات', desc: 'أدوار الفريق وصلاحيات النشر والجلسات (RBAC)', icon: Users, keywords: ['users', 'rbac', 'sessions'] },
         ],
       },
       {
@@ -555,14 +296,42 @@ export const NAV_SECTIONS: NavSection[] = [
         title: 'النظام والأتمتة والتعافي',
         icon: ServerCog,
         items: [
-          { id: 'system', label: 'مراقبة النظام', desc: 'سلامة النظام والنسخ وسجل العمليات', icon: ServerCog, ownerOnly: true, keywords: ['system'] },
-          { id: 'youtube_operations', label: 'مدير تشغيل YouTube', desc: 'مراقبة القناة والتعليقات والرد الآلي', icon: Youtube, ownerOnly: true, keywords: ['youtube'] },
-          { id: 'cloud_backup', label: 'التعافي والنسخ السحابي', desc: 'منظومة تعافٍ كاملة واستعادة معزولة', icon: CloudUpload, ownerOnly: true, keywords: ['recovery'] },
+          { id: 'system', label: 'مراقبة النظام', desc: 'Health/Readiness، سلامة النظام، الخدمات، النسخ، وسجل العمليات', icon: ServerCog, ownerOnly: true, keywords: ['system', 'health', 'services'] },
+          { id: 'cloud_backup', label: 'التعافي والنسخ السحابي', desc: 'منظومة تعافٍ كاملة واستعادة معزولة', icon: CloudUpload, ownerOnly: true, keywords: ['recovery', 'dr', 'backup'] },
+          { id: 'commercial_kill_switch', label: 'العقل التجاري — مفتاح الإيقاف الطارئ', desc: 'مفتاح رئيسي واحد: إيقاف/استئناف شامل للعقل التجاري', icon: Power, ownerOnly: true, keywords: ['commercial', 'kill switch', 'إيقاف', 'العقل التجاري'] },
         ],
       },
     ],
   },
 ];
+
+/** يزيل الأوراق المتكرّرة بنفس المعرّف ويُبقي أول ظهور (لا تكرار وهمي في الشجرة). */
+export function dedupeLeaves(items: NavLeaf[]): NavLeaf[] {
+  const seen = new Set<string>();
+  const out: NavLeaf[] = [];
+  for (const it of items) {
+    if (seen.has(it.id)) continue;
+    seen.add(it.id);
+    out.push(it);
+  }
+  return out;
+}
+
+/** الأوراق الفريدة على مستوى القسم (معرّف واحد لكل وظيفة عبر كل الفروع). */
+export function sectionUniqueLeaves(section: NavSection): NavLeaf[] {
+  return dedupeLeaves(section.branches.flatMap((b) => b.items));
+}
+
+/**
+ * تصنيف شارات التنبيه: **عاجل** (يحتاج إجراءً من المالك) مقابل **عدّاد معلوماتي**
+ * (معلومة لا تستدعي إجراءً). يفرّق الشريط بينهما باللون/الوزن لا بشكل موحّد.
+ */
+export const NAV_BADGE_URGENT_IDS = new Set(['approval', 'customers']);
+export const NAV_BADGE_INFO_IDS = new Set(['calendar']);
+export type NavBadgeTone = 'urgent' | 'info';
+export function navBadgeTone(leafId: string): NavBadgeTone {
+  return NAV_BADGE_URGENT_IDS.has(leafId) ? 'urgent' : 'info';
+}
 
 /** الأوراق الظاهرة في فرعٍ ما بحسب دور المستخدم. */
 export function visibleBranchItems(branch: NavBranch, isOwner: boolean): NavLeaf[] {
@@ -584,9 +353,9 @@ export function visibleSectionBranches(section: NavSection, isOwner: boolean): N
     .filter((b) => b.items.length > 0);
 }
 
-/** كل معرّفات الأوراق داخل قسم (لتمييز «نشط» عند فتح أي وظيفة تابعة). */
+/** كل معرّفات الأوراق الفريدة داخل قسم (لتمييز «نشط» عند فتح أي وظيفة تابعة). */
 export function sectionLeafIds(section: NavSection): string[] {
-  return section.branches.flatMap((b) => b.items.map((i) => i.id));
+  return sectionUniqueLeaves(section).map((i) => i.id);
 }
 
 /** كل الفروع/الأوراق في المشروع (للبحث). */

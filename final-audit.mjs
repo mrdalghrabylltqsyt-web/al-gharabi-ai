@@ -4128,13 +4128,17 @@ add('watcher-advisory-not-authority',
   const navCfgSrc = read('src/components/common/navConfig.tsx');
   const sidebarSrc = read('src/components/common/Sidebar.tsx');
   const hubSrc = read('src/components/common/SectionHub.tsx');
-  // الأقسام المطلوبة (تشمل الخمسة الأصلية + الهرمية المضافة).
-  const navSectionIds = ['section_home','section_publish','section_customers','section_products','section_settings',
-    'section_brains','section_central','section_security','section_automation','section_memory','section_storage','section_monitoring','section_recovery','section_external'];
+  // الأقسام الفعلية المعروضة في الشريط: 5 فقط (تجميع أذكى لدورة العمل).
+  const navSectionIds = ['section_home','section_publish','section_customers','section_products','section_settings'];
+  // الأقسام القديمة (14) تبقى حالات عرض صالحة في App.tsx (دمج لا حذف) — لا تُحذف.
+  const navLegacySectionIds = ['section_brains','section_central','section_security','section_automation','section_memory','section_storage','section_monitoring','section_recovery','section_external'];
   add('unified-nav-five-sections',
     navSectionIds.every((id)=>navCfgSrc.includes("id: '" + id + "'")) &&
-    ['section_home','section_publish','section_customers','section_products','section_settings'].every((id)=>navCfgSrc.includes("id: '" + id + "'")),
-    'التنقل يحتوي الأقسام الأصلية الخمسة + الأقسام الهرمية المضافة (لا حذف)');
+    (navCfgSrc.match(/^\s{4}id: 'section_/gm) || []).length === 5,
+    'التنقل يحتوي 5 أقسام رئيسية فقط (تجميع أذكى حسب دورة العمل)');
+  add('unified-nav-legacy-sections-preserved',
+    [...navSectionIds, ...navLegacySectionIds].every((id)=> app.includes("case '" + id + "':")),
+    'كل معرّفات الأقسام القديمة (14) تبقى حالات عرض صالحة في App.tsx (دمج لا حذف)');
   add('hier-nav-three-levels',
     navCfgSrc.includes('interface NavBranch') && navCfgSrc.includes('branches: NavBranch[]') &&
     sidebarSrc.includes('aria-expanded={open}') && sidebarSrc.includes('aria-expanded={bOpen}') &&
@@ -4152,14 +4156,82 @@ add('watcher-advisory-not-authority',
   add('hier-nav-persist-expansion',
     sidebarSrc.includes('gharabi-nav-expanded-v1') && sidebarSrc.includes('localStorage'),
     'حالة الفتح/الإغلاق تُحفظ محلياً (حفاظ التنقل قدر الإمكان)');
+  // حسم التكرار الوهمي: كل معرّف ورقة يظهر مرة واحدة فقط في القسم (لا تكرار id).
+  add('nav-no-duplicate-leaf-ids',
+    (navCfgSrc.match(/id: 'social'/g) || []).length === 1 &&
+    (navCfgSrc.match(/id: 'central_brain'/g) || []).length === 1 &&
+    (navCfgSrc.match(/id: 'central_agent'/g) || []).length === 1 &&
+    (navCfgSrc.match(/id: 'brain_manager'/g) || []).length === 1 &&
+    navCfgSrc.includes('export function dedupeLeaves'),
+    'حسم التكرار الوهمي: social/central_brain/central_agent/brain_manager مرة واحدة فقط لكل منها');
   const navLeafIds = ['command_center','dashboard','central_brain','brain_manager','central_agent','search','operations','content','approval','calendar','social','social_manager','analytics','agent','marketing_agent','youtube_operations','customers','database','platform_connections','users','system','cloud_backup'];
   add('unified-nav-no-leaf-lost',
     navLeafIds.every((id)=> navCfgSrc.includes("id: '" + id + "'")) && navLeafIds.every((id)=> app.includes("case '" + id + "':")),
     'كل وظيفة/صفحة سابقة لا تزال متصلة (معرّف في خريطة التنقل + حالة عرض في App.tsx) — دمج لا حذف');
   const navPlatformLabels = ['Facebook','Instagram','TikTok','YouTube','Telegram','Threads','WhatsApp Business','X','Snapchat','Google Business Profile'];
   add('hier-nav-ten-platforms-branches',
-    navPlatformLabels.every((p)=> navCfgSrc.includes("label: '" + p + "'")),
-    'المنصات العشر معروضة كبنود/فروع مستقلة مع المحافظة على الموصلات');
+    navPlatformLabels.every((p)=> navCfgSrc.includes("'" + p + "'")) &&
+    navCfgSrc.includes('export const NAV_PLATFORM_LABELS') &&
+    read('src/components/social/SocialHubView.tsx').includes('selectedPlatform'),
+    'المنصات العشر في مصدر واحد (NAV_PLATFORM_LABELS) والتبديل بينها داخلي في صفحة المنصات (لا تكرار في الشريط)');
+  // البنود العشرة لتصميم القائمة الاحترافية.
+  add('nav-dev-note-not-in-ui',
+    !sidebarSrc.includes('كل الوظائف القديمة ما زالت متاحة') &&
+    navCfgSrc.includes('ملاحظة تطوير') && navCfgSrc.includes('لا تُعرض للمستخدم'),
+    'نص المطوّر أُزيل من الواجهة ونُقل إلى تعليق كود فقط');
+  add('nav-visual-hierarchy',
+    sidebarSrc.includes('text-sm font-black tracking-tight') &&
+    sidebarSrc.includes('text-[12px] font-bold') &&
+    sidebarSrc.includes('text-[11px] truncate flex-1') &&
+    sidebarSrc.includes('w-9 h-9 rounded-xl') && sidebarSrc.includes('w-6 h-6 rounded-lg') && sidebarSrc.includes('w-5 h-5 rounded-md'),
+    'تدرّج بصري حقيقي بين المستويات الثلاثة (حجم/وزن الخط + حجم صندوق الأيقونة)');
+  add('nav-accent-identity-five-sections',
+    navCfgSrc.includes('export const NAV_ACCENTS') &&
+    (navCfgSrc.match(/accent: NAV_ACCENTS\./g) || []).length === 5 &&
+    ['sky','emerald','amber','violet','steel'].every((k)=> navCfgSrc.includes('accent: NAV_ACCENTS.' + k)),
+    'هوية لونية مميّزة لكل قسم من الأقسام الخمسة (sky/emerald/amber/violet/steel)');
+  add('nav-accent-glow-active-only',
+    navCfgSrc.includes('boxActive') && navCfgSrc.includes('shadow-sky-500/40') &&
+    navCfgSrc.includes('ring-1 ring-inset') &&
+    sidebarSrc.includes('section.accent.boxActive') && sidebarSrc.includes('section.accent.rowActive'),
+    'لون الأيقونة + توهج/حلقة حول الصندوق عند القسم النشط فقط (لا لكل الأقسام)');
+  add('nav-accent-icon-box-gradient',
+    navCfgSrc.includes('bg-gradient-to-br from-sky-500/20') &&
+    navCfgSrc.includes('bg-gradient-to-br from-violet-500/20') &&
+    sidebarSrc.includes('group-hover:scale-[1.04]') && sidebarSrc.includes('transition-all duration-200'),
+    'صناديق أيقونات بتدرّج خفيف (لا لون مسطّح) + انتقال سلس وزيادة لطيفة عند التمرير');
+  add('nav-accent-preserves-semantics',
+    sidebarSrc.includes('from-emerald-400 to-emerald-500 text-slate-950') &&
+    sidebarSrc.includes('bg-amber-500/20 text-amber-300'),
+    'لا كسر الدلالات القائمة: الورقة النشطة زمردية والعاجل كهرماني');
+  add('nav-icon-semantic-fit',
+    navCfgSrc.includes('icon: BrainCircuit') && navCfgSrc.includes('icon: MessageSquareText') &&
+    navCfgSrc.includes('icon: Store') && navCfgSrc.includes('icon: Cog') &&
+    !/id: 'brain_manager'[^\n]*icon: Users/.test(navCfgSrc),
+    'ملاءمة الأيقونة للمعنى: brain_manager صار BrainCircuit (لا Users)، وقسم الزبائن MessageSquareText، والمنتجات Store، والإعدادات Cog');
+  add('nav-entrance-animation-pure-css',
+    (sidebarSrc.match(/animate-nav-in/g) || []).length >= 2 &&
+    read('src/index.css').includes('@keyframes nav-in') &&
+    read('src/index.css').includes('prefers-reduced-motion'),
+    'حركة دخول خفيفة (fade+slide) CSS خالص بلا مكتبة، وتحترم prefers-reduced-motion');
+  add('nav-section-separator',
+    sidebarSrc.includes('h-px bg-slate-800/70'),
+    'فاصل بصري بين الأقسام الرئيسية المتتالية');
+  add('nav-badge-semantic-tones',
+    navCfgSrc.includes('NAV_BADGE_URGENT_IDS') && navCfgSrc.includes('navBadgeTone') &&
+    sidebarSrc.includes('bg-amber-500/20 text-amber-300') && sidebarSrc.includes('bg-slate-800 text-slate-300 border-slate-700'),
+    'شارات مفرّقة بالدلالة: عاجل (amber) مقابل عدّاد عادي (slate) لا شكل موحّد');
+  add('nav-quick-summary',
+    sidebarSrc.includes('يحتاج انتباهك') && sidebarSrc.includes('attentionCount'),
+    'ملخّص سريع أعلى الشجرة يلخّص كل التنبيهات في جملة واحدة');
+  add('nav-focus-visible',
+    sidebarSrc.includes('focus-visible:ring-2') && sidebarSrc.includes('FOCUS_RING'),
+    'حالة focus-visible واضحة لكل عنصر قابل للضغط (تنقّل بلوحة المفاتيح)');
+  add('nav-header-health-indicator',
+    read('src/components/common/Header.tsx').includes('systemHealth') &&
+    read('src/components/common/Header.tsx').includes('apiService.checkHealth') &&
+    read('src/components/common/Header.tsx').includes("h?.status === 'ok'"),
+    'مؤشر صحة عامة في الترويسة من /api/health الحقيقية (بلا قيمة وهمية)');
   add('unified-nav-sections-rendered',
     navSectionIds.every((id)=> app.includes("case '" + id + "':")) &&
     app.includes('SectionHub'),

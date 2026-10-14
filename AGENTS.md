@@ -44,7 +44,7 @@ npm install
 npm run dev            # tsx server.ts
 npm run lint           # tsc --noEmit
 npm run build          # vite build + esbuild server.ts -> dist/server.cjs
-npm run final-audit    # node final-audit.mjs (1615 فحصاً)
+npm run final-audit    # node final-audit.mjs (1630 فحصاً)
 npm test               # storage + engine + auth + ... + db + runtime
 ```
 - التشغيل الإنتاجي: `PORT=4517 NODE_ENV=production APP_URL=http://localhost:4517 node dist/server.cjs`
@@ -6175,3 +6175,65 @@ TikTok/Telegram/Threads، ونموذج الجدولة.
 **ملاحظة (حد صلاحية):** لا وصول للوكيل إلى Render API/لوحة التحكم في هذه البيئة، ولا رابط
 Deploy Hook مضبوط، فلا يمكن إطلاق نشر من هنا؛ التحقق تم بنداءات حيّة على `/api/health`
 و`/api/readiness` ووجود مسار `/api/agent/telegram/watcher` (401 = موجود).
+
+## إعادة تصميم القائمة الجانبية — لوحة تحكم من الطراز الأول (14→5) — 2026-10-13
+
+`src/components/common/navConfig.tsx` و`Sidebar.tsx` أُعيد تصميمهما (طبقة عرض/تنظيم فقط،
+دمج لا حذف). **لا حُذف أي leaf.id ولا مسار في App.tsx ولا وظيفة قائمة.**
+
+**البنية:** 14 قسماً رئيسياً → **5 أقسام** حسب دورة العمل:
+`section_home` (مركز القيادة والعقل: يشمل brains/central/security/memory) ·
+`section_publish` (النشر والمنصات) · `section_customers` (الزبائن والتفاعلات) ·
+`section_products` (المنتجات والمعرفة) · `section_settings` (الإعدادات والتشغيل: يشمل
+automation/recovery/external/monitoring/storage). معرّفات الأقسام القديمة (14) تبقى
+**حالات عرض صالحة** في App.tsx تُوجَّه للقسم الحاوي، فلا تُكسر أي وجهة تنقّل.
+
+**حسم التكرار الوهمي:** كان `social` يتكرّر 10 مرات، و`central_brain` 9، و`central_agent` 8،
+و`brain_manager` 3 — كلها تفتح نفس الصفحة. الآن **كل معرّف ورقة يظهر مرة واحدة فقط**؛
+والتبديل بين الحالات (منصة/نوع عقل) داخلي في الصفحة نفسها. أُضيفت `dedupeLeaves`/
+`sectionUniqueLeaves` (مصدر واحد يضمن عدم التكرار)، و`NAV_PLATFORM_LABELS` (أسماء المنصات
+العشر كمصدر واحد يستهلكه التبديل الداخلي في `SocialHubView`).
+
+**البنود العشرة:** (1) 5 أقسام ✓ (2) حسم التكرار ✓ (3) نص المطوّر أُزيل من الواجهة ونُقل
+لتعليق كود ✓ (4) تدرّج بصري حقيقي (قسم text-sm/font-black، فرع 12px، ورقة 11px/font-normal،
+أيقونات 20/14/14px) ✓ (5) فاصل `h-px` بين الأقسام ✓ (6) شارات مفرّقة بالدلالة: عاجل (amber)
+مقابل عدّاد عادي (slate) عبر `navBadgeTone` ✓ (7) ملخّص سريع أعلى الشجرة «لديك N أمراً يحتاج
+انتباهك» ✓ (8) `focus-visible:ring-2` لكل عنصر (FOCUS_RING) ✓ (9) مؤشر صحة في الترويسة من
+`/api/health` الحقيقية (`status==='ok'` ⇒ سليم، وإلا تنبيه) ✓ (10) منطق التفاعل محفوظ
+(`gharabi-nav-expanded-v1`، فتح القسم عند الضغط دائماً، التنقل لأول ورقة، البحث) ✓.
+
+**التحقق:** `npm run lint` ✅ · `npm run build` ✅ · `npm test` ✅ (136 مجموعة PASSED، 0 فشل) ·
+`final-audit` ✅ **1624** (`unified-nav-five-sections`, `unified-nav-legacy-sections-preserved`,
+`nav-no-duplicate-leaf-ids`, `nav-dev-note-not-in-ui`, `nav-visual-hierarchy`,
+`nav-section-separator`, `nav-badge-semantic-tones`, `nav-quick-summary`, `nav-focus-visible`,
+`nav-header-health-indicator`). اختبار `unified.nav.test.ts` صار **56 فحصاً**.
+
+**لم يُمسّ:** منطق الخادم، OAuth/الأسرار، Gemini، بقية المنصّات، ونموذج الجدولة.
+
+## تحسين الهوية البصرية للأيقونات في القائمة الجانبية — 2026-10-13 (نفس فرع PR #40)
+
+تحسين بصري **فوق** بنية PR #40 (نفس الفرع `feat/sidebar-professional-redesign`، بلا فرع
+جديد، بلا دمج/نشر). لا تغيير في منطق `Sidebar.tsx`/`navConfig.tsx` (الهرمية، dedupeLeaves،
+البحث، التفاعل) — تصميم/تمييز فقط داخل الهوية الداكنة القائمة (bg-slate-900/RTL).
+
+- **هوية لونية لكل قسم** (مصدر واحد `NAV_ACCENTS`): sky للقيادة والعقل · emerald للنشر ·
+  amber للزبائن · violet للمنتجات · steel للإعدادات. تظهر في **لون أيقونة القسم** +
+  **توهج/حلقة حول صندوقها عند القسم النشط فقط** (`boxActive` + `shadow-*-500/40` +
+  `ring-inset`). **لا كسر للدلالات:** الورقة النشطة تبقى زمردية، والعاجل يبقى كهرمانياً.
+- **صناديق أيقونات بطابع عصري:** تدرّج خفيف `bg-gradient-to-br` (لا لون مسطّح) + حواف
+  ناعمة بحسب المستوى (قسم `rounded-xl` w-9 / فرع `rounded-lg` w-6 / ورقة `rounded-md` w-5)
+  + `shadow` يزداد عند التمرير/التفعيل + `transition-all duration-200` + `group-hover:scale-[1.04]`.
+- **ملاءمة الأيقونة للمعنى (حيث التحسين حقيقي):** `brain_manager` (عقل السياق والفريق
+  والعروض) كان `Users` عامة → صار **`BrainCircuit`** (دمج الفريق/الشبكة مع العقل). قسم
+  الزبائن → `MessageSquareText`، قسم المنتجات → `Store`، قسم الإعدادات → `Cog`. البقية
+  أُبقيت كما هي بلا تخمين. كلها من `lucide-react` القائمة (بلا مكتبة/تبعية جديدة).
+- **تدرّج حجمي أوضح:** حجوم الصناديق (9/6/5) + الأيقونات (20/14/14px) + أوزان الخط — لا الحجم فقط.
+- **حركة دخول خفيفة:** `animate-nav-in` (fade + انزلاق 4px، 180ms) على فتح الفروع/الأوراق —
+  **CSS خالص** في `src/index.css` بلا مكتبة، وتحترم `prefers-reduced-motion`.
+- **RTL/جوال:** التدرجات داخلية (`bg-gradient-to-br`) وصفوف القسم `to-l` فلا تتأثر بالاتجاه؛
+  القائمة تبقى `mobile-first` بلا كسر استجابة.
+
+**التحقق:** `npm run lint` ✅ · `npm run build` ✅ (كل أصناف الهوية اللونية ظهرت في حزمة CSS
+النهائية) · `npm test` ✅ · `final-audit` ✅ **1630** (`nav-accent-identity-five-sections`,
+`nav-accent-glow-active-only`, `nav-accent-icon-box-gradient`, `nav-accent-preserves-semantics`,
+`nav-icon-semantic-fit`, `nav-entrance-animation-pure-css`). `unified.nav.test.ts` = **75 فحصاً**.
