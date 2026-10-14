@@ -93,8 +93,8 @@ const AppContent: React.FC = () => {
   if (isLoadingAuth) {
     return (
       <div className="min-h-screen flex flex-col items-center justify-center p-4 text-center font-['Cairo',sans-serif]">
-        <div className="w-14 h-14 rounded-2xl glass glass-active flex items-center justify-center text-aurora-cyan mb-4 animate-pulse">
-          <ShieldCheck className="w-7 h-7 text-aurora-cyan" />
+        <div className="w-14 h-14 rounded-2xl glass glass-active flex items-center justify-center text-accent mb-4 animate-pulse">
+          <ShieldCheck className="w-7 h-7 text-accent" />
         </div>
         <p className="text-sm font-bold text-white mb-1">التحقق من جلسة الأمان المشفرة...</p>
         <p className="text-xs text-slate-400">معرض الغرابي للتقسيط • نظام الحوكمة والمصادقة</p>
@@ -197,8 +197,8 @@ const AppContent: React.FC = () => {
     <div className="min-h-screen text-slate-100 flex flex-col font-sans selection:bg-emerald-500 selection:text-slate-950">
       {/* Toast Notification */}
       {toastMessage && (
-        <div className="fixed top-5 left-1/2 -translate-x-1/2 z-50 glass-strong glass-active px-5 py-2.5 rounded-2xl text-sm font-bold flex items-center gap-2 text-aurora-cyan animate-in fade-in slide-in-from-top-4">
-          <CheckCircle2 className="w-4 h-4 text-aurora-cyan shrink-0" />
+        <div className="fixed top-5 left-1/2 -translate-x-1/2 z-50 glass-strong glass-active px-5 py-2.5 rounded-2xl text-sm font-bold flex items-center gap-2 text-accent animate-in fade-in slide-in-from-top-4">
+          <CheckCircle2 className="w-4 h-4 text-accent shrink-0" />
           <span>{toastMessage}</span>
         </div>
       )}

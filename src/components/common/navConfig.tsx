@@ -44,57 +44,41 @@ export interface NavBranch {
 }
 
 /**
- * هوية لونية لكل قسم — **لا تُغيِّر أي دلالة قائمة**: الكهرماني يبقى للعاجل،
- * والأخضر الزمردي يبقى لون العلامة التجارية الأساسي (والورقة النشطة). هذه ألوان
- * تمييز خفيفة تُظهر شخصية كل قسم فقط. بلا مكتبة ألوان جديدة — ألوان Tailwind قائمة.
+ * هوية التمييز **الواحدة** — بلا ألوان متعدّدة للأقسام (لا «أزرق مُبهَم»).
+ * لون تمييز واحد فخم (الزمردي) يُستخدم بحساب شديد: صندوق أيقونة القسم **النشط** فقط،
+ * وحدّ الصف النشط الرقيق. الصناديق غير النشطة محايدة تماماً (رمادي فحمي) فلا تشتّت.
+ * لا كسر الدلالات: العاجل يبقى كهرمانياً في الشارات، والورقة النشطة تبقى بلون التمييز.
  */
 export interface NavAccent {
-  /** صندوق أيقونة القسم عند عدم التفعيل: تدرّج خفيف + حلقة. */
+  /** صندوق أيقونة القسم عند عدم التفعيل: محايد بلا لون (رمادي فحمي). */
   box: string;
-  /** لون أيقونة القسم عند التفعيل. */
+  /** لون أيقونة القسم عند عدم التفعيل. */
   icon: string;
-  /** صندوق أيقونة القسم عند التفعيل: تدرّج أوضح + توهج (glow). */
+  /** صندوق أيقونة القسم عند التفعيل: لون التمييز الواحد + توهج خفيف. */
   boxActive: string;
   /** خلفية/حد صف القسم عند التفعيل. */
   rowActive: string;
 }
 
+/** الهوية الواحدة (مصدر واحد) — تُستهلك لكل الأقسام الخمسة بلا تمييز لوني بينها. */
+export const NAV_ACCENT: NavAccent = {
+  box: 'bg-slate-800/70 ring-1 ring-inset ring-slate-700',
+  icon: 'text-slate-400',
+  boxActive: 'bg-accent text-slate-950 ring-1 ring-inset ring-accent/40 shadow-md shadow-accent/30',
+  rowActive: 'bg-slate-800/60 text-white border border-accent/25 shadow-sm',
+};
+
+/**
+ * توافق خلفي: الأسماء الخمسة القديمة (sky/emerald/amber/violet/steel) تُبقى لكنها
+ * تُشير جميعاً إلى **الهوية الواحدة** — فلا ألوان متعدّدة بعد الآن. أي مستورد قديم
+ * (`NAV_ACCENTS.sky`) يواصل العمل بلا كسر.
+ */
 export const NAV_ACCENTS: Record<'sky' | 'emerald' | 'amber' | 'violet' | 'steel', NavAccent> = {
-  // أزرق سماوي — القيادة والعقل (هدوء واتساع الرؤية).
-  sky: {
-    box: 'bg-gradient-to-br from-sky-500/20 to-sky-900/10 ring-1 ring-inset ring-sky-500/30',
-    icon: 'text-sky-300',
-    boxActive: 'bg-gradient-to-br from-sky-400 to-sky-600 shadow-md shadow-sky-500/40 ring-1 ring-inset ring-sky-300/40',
-    rowActive: 'bg-gradient-to-l from-sky-950/70 to-sky-900/25 text-sky-100 border border-sky-500/30 shadow-sm',
-  },
-  // أخضر زمردي — النشر والمنصات (نمو وامتداد).
-  emerald: {
-    box: 'bg-gradient-to-br from-emerald-500/20 to-emerald-900/10 ring-1 ring-inset ring-emerald-500/30',
-    icon: 'text-emerald-300',
-    boxActive: 'bg-gradient-to-br from-emerald-400 to-emerald-600 shadow-md shadow-emerald-500/40 ring-1 ring-inset ring-emerald-300/40',
-    rowActive: 'bg-gradient-to-l from-emerald-950/80 to-emerald-900/40 text-emerald-200 border border-emerald-500/30 shadow-sm',
-  },
-  // كهرماني — الزبائن والتفاعلات (دفء التواصل) — للقسم فقط، والعاجل يبقى كهرمانياً كما هو.
-  amber: {
-    box: 'bg-gradient-to-br from-amber-500/20 to-amber-900/10 ring-1 ring-inset ring-amber-500/30',
-    icon: 'text-amber-300',
-    boxActive: 'bg-gradient-to-br from-amber-400 to-amber-600 shadow-md shadow-amber-500/40 ring-1 ring-inset ring-amber-300/40',
-    rowActive: 'bg-gradient-to-l from-amber-950/70 to-amber-900/25 text-amber-100 border border-amber-500/30 shadow-sm',
-  },
-  // بنفسجي — المنتجات والمعرفة (قيمة وفخامة).
-  violet: {
-    box: 'bg-gradient-to-br from-violet-500/20 to-violet-900/10 ring-1 ring-inset ring-violet-500/30',
-    icon: 'text-violet-300',
-    boxActive: 'bg-gradient-to-br from-violet-400 to-violet-600 shadow-md shadow-violet-500/40 ring-1 ring-inset ring-violet-300/40',
-    rowActive: 'bg-gradient-to-l from-violet-950/70 to-violet-900/25 text-violet-100 border border-violet-500/30 shadow-sm',
-  },
-  // رمادي فولاذي — الإعدادات والتشغيل (رصانة النظام).
-  steel: {
-    box: 'bg-gradient-to-br from-slate-500/25 to-slate-800/10 ring-1 ring-inset ring-slate-400/30',
-    icon: 'text-slate-300',
-    boxActive: 'bg-gradient-to-br from-slate-400 to-slate-600 shadow-md shadow-slate-500/40 ring-1 ring-inset ring-slate-200/40',
-    rowActive: 'bg-gradient-to-l from-slate-800/80 to-slate-800/40 text-slate-100 border border-slate-500/30 shadow-sm',
-  },
+  sky: NAV_ACCENT,
+  emerald: NAV_ACCENT,
+  amber: NAV_ACCENT,
+  violet: NAV_ACCENT,
+  steel: NAV_ACCENT,
 };
 export interface NavSection {
   id: string;
@@ -139,7 +123,7 @@ export const NAV_SECTIONS: NavSection[] = [
     label: 'مركز القيادة والعقل',
     desc: 'الحالة العامة، العقل المركزي والعقول المتخصصة، والاعتماد',
     icon: Home,
-    accent: NAV_ACCENTS.sky,
+    accent: NAV_ACCENT,
     flow: 'نظرة موحّدة: ما يعمل، ما يحتاج إجراءً، وما ينتظر موافقة المالك.',
     branches: [
       {
@@ -178,7 +162,7 @@ export const NAV_SECTIONS: NavSection[] = [
     label: 'النشر والمنصات',
     desc: 'إنشاء المحتوى، النشر والجدولة والنتائج، وموصلات المنصات العشر',
     icon: Send,
-    accent: NAV_ACCENTS.emerald,
+    accent: NAV_ACCENT,
     flow: 'إنشاء ← تجهيز لكل منصة ← اعتماد ← نشر/جدولة ← متابعة النتيجة لكل منصة.',
     branches: [
       {
@@ -231,7 +215,7 @@ export const NAV_SECTIONS: NavSection[] = [
     label: 'الزبائن والتفاعلات',
     desc: 'التعليقات، الرسائل، الردود، تحليل النية، والمتابعة',
     icon: MessageSquareText,
-    accent: NAV_ACCENTS.amber,
+    accent: NAV_ACCENT,
     flow: 'قراءة التفاعل ← فهم السؤال والمنتج ← رد عامي عراقي ← متابعة/تصعيد للمالك.',
     branches: [
       {
@@ -252,7 +236,7 @@ export const NAV_SECTIONS: NavSection[] = [
     label: 'المنتجات والمعرفة',
     desc: 'المنتجات، المواصفات، الأسعار، التقسيط، والبحث ومصادر المعلومات',
     icon: Store,
-    accent: NAV_ACCENTS.violet,
+    accent: NAV_ACCENT,
     flow: 'المصدر الوحيد للحقيقة التجارية: السعر/المواصفات/التقسيط المسجّلة فعلاً.',
     branches: [
       {
@@ -280,7 +264,7 @@ export const NAV_SECTIONS: NavSection[] = [
     label: 'الإعدادات والتشغيل',
     desc: 'الصلاحيات، النظام، الأتمتة، والتعافي',
     icon: Cog,
-    accent: NAV_ACCENTS.steel,
+    accent: NAV_ACCENT,
     flow: 'الصلاحيات ← النظام والأتمتة ← (للمالك: التعافي والنسخ السحابي).',
     branches: [
       {

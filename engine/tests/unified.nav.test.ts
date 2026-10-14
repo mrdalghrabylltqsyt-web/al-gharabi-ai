@@ -35,8 +35,8 @@ check('مصدر التنقل واحد: navConfig.tsx', fs.existsSync(path.join(r
 check('واجهة الفرع (NavBranch) موجودة', nav.includes('interface NavBranch') && nav.includes('branches: NavBranch[]'));
 check('الشريط الجانبي يستورد navConfig', sidebar.includes("from './navConfig'"));
 check('لوحة القسم تستورد navConfig', hub.includes("from './navConfig'"));
-check('عناوين قابلة للفتح (aria-expanded)', sidebar.includes('aria-expanded={open}') && sidebar.includes('aria-expanded={bOpen}'));
-check('سهم حالة الفتح/الإغلاق (ChevronDown)', sidebar.includes('ChevronDown'));
+check('القسم قابل للفتح (aria-expanded={open})', sidebar.includes('aria-expanded={open}'));
+check('سهم واحد اختياري عند القسم النشط (ChevronDown)', sidebar.includes('ChevronDown'));
 
 console.log('\n=== الأقسام الرئيسية: 5 في الشريط + 14 حالة عرض محفوظة (دمج لا حذف) ===');
 // القائمة الجانبية تُعرض الآن 5 أقسام فقط (تجميع أذكى). لكن كل معرّفات الأقسام
@@ -84,8 +84,9 @@ console.log('\n=== البحث في الأقسام والوظائف ===');
 check('دالة البحث موجودة', nav.includes('export function searchNav'));
 check('الشريط يوفّر حقل بحث', sidebar.includes('searchNav') && sidebar.includes('placeholder="بحث في الأقسام والوظائف'));
 
-console.log('\n=== مسار التنقّل (Breadcrumb) ===');
-check('لوحة القسم تعرض مسار تنقّل', hub.includes('aria-label="مسار التنقّل"') && hub.includes('الرئيسية'));
+console.log('\n=== مسار التنقّل الموحّد (بلا breadcrumb مكرر) ===');
+check('لوحة القسم بلا breadcrumb مكرر (أُزيل)', !hub.includes('aria-label="مسار التنقّل"') && !hub.includes('الرئيسية'));
+check('لوحة القسم تعرض ترويسة فخمة للقسم', hub.includes('text-xl font-black') && hub.includes('accent-top'));
 
 console.log('\n=== مصدر الحقيقة + حفظ حالة الفتح ===');
 check('SectionHub يعتمد نفس خريطة التنقل', hub.includes('NAV_SECTIONS') && hub.includes('visibleSectionBranches'));
@@ -142,24 +143,21 @@ const missing = VIEW_FILES.filter((f) => !fs.existsSync(path.join(root, f)));
 check('لا حذف لأي ملف واجهة سابق', missing.length === 0);
 if (missing.length) console.error('    ملفات مفقودة:', missing.join(', '));
 
-console.log('\n=== سلوك الضغط على القسم/الفرع (انحدار: محتوى القسم الخطأ) ===');
+console.log('\n=== سلوك الضغط على القسم (انحدار: محتوى القسم الخطأ) ===');
 // عطل حقيقي مُثبت: كان `toggleSection` ينقّل فقط عند فتح قسم مُغلق
 // (`if (!expandedSections.includes(id)) setActiveTab(id)`)، فضغط قسم مفتوح (أو فُتح
 // تلقائياً للورقة النشطة) يطوي فروعه بلا تنقّل، فيبقى المحتوى على القسم السابق —
 // فيبدو كأن الضغط فتح محتوى قسم آخر، وكأن الفروع لا تستجيب.
 const toggleSectionBody = sidebar.slice(
   sidebar.indexOf('const toggleSection'),
-  sidebar.indexOf('const toggleBranch'),
+  sidebar.indexOf('const badgeFor'),
 );
 check('toggleSection ينقّل دائماً إلى القسم (بلا شرط فتح)', /setActiveTab\(id\)/.test(toggleSectionBody));
 check('toggleSection لا يربط التنقّل بحالة الفتح', !/if\s*\(!expandedSections\.includes\(id\)\)/.test(toggleSectionBody));
 
-const toggleBranchBody = sidebar.slice(
-  sidebar.indexOf('const toggleBranch'),
-  sidebar.indexOf('const badgeFor'),
-);
-check('toggleBranch ينقّل إلى أول ورقة عند فتح فرع مغلق', /if\s*\(!wasOpen\s*&&\s*firstLeafId\)\s*setActiveTab\(firstLeafId\)/.test(toggleBranchBody));
-check('الفرع يُمرّر أول ورقة وحالة الفتح الحالية', sidebar.includes('toggleBranch(branch.id, branch.items[0]?.id, bOpen)'));
+// لا طيّ متداخل للفروع بعد الآن: الوظائف تُضغط مباشرة (بلا ضغطة ثانية لفتح الفرع).
+check('لا طيّ متداخل للفروع (أُزيل toggleBranch)', !sidebar.includes('const toggleBranch'));
+check('الوظائف قابلة للضغط مباشرة (handleLeafClick)', sidebar.includes('handleLeafClick(leaf.id)'));
 
 console.log('\n=== البنود العشرة (إعادة تصميم القائمة الاحترافية) ===');
 // 1) تقليص الأقسام إلى 5.
@@ -173,13 +171,13 @@ check('2) دالة إزالة التكرار موجودة (dedupeLeaves)', nav.i
 // 3) إزالة نص المطوّر من الواجهة (منقول إلى تعليق كود).
 check('3) نص المطوّر أُزيل من الواجهة (Sidebar)', !sidebar.includes('كل الوظائف القديمة ما زالت متاحة'));
 check('3) النص محفوظ في تعليق كود (navConfig)', nav.includes('ملاحظة تطوير') && nav.includes('لا تُعرض للمستخدم'));
-// 4) تدرّج بصري حقيقي بين المستويات الثلاثة.
-check('4) تدرّج بصري: عنوان القسم text-sm font-black', sidebar.includes('text-sm font-black tracking-tight'));
-check('4) تدرّج بصري: الفرع text-[12px]', sidebar.includes('text-[12px] font-bold'));
+// 4) تدرّج بصري حقيقي بين المستويات الثلاثة (ضخم → متوسط → خفيف).
+check('4) تدرّج بصري: عنوان القسم text-base font-black', sidebar.includes('text-base font-black tracking-wide'));
+check('4) تدرّج بصري: الفرع بخط خفيف (فاصل صغير)', sidebar.includes('text-[10px] font-bold uppercase tracking-wider'));
 check('4) تدرّج بصري: الورقة text-[11px] font-normal', sidebar.includes('text-[11px] truncate flex-1') && sidebar.includes('font-normal'));
-check('4) تدرّج الأيقونات: قسم w-5 / فرع w-3.5 / ورقة w-3.5', sidebar.includes('w-5 h-5 transition-colors') && (sidebar.match(/w-3\.5 h-3\.5 shrink-0/g) || []).length >= 2);
-check('4) تدرّج الصناديق: قسم w-9 / فرع w-6 / ورقة w-5', sidebar.includes('w-9 h-9 rounded-xl') && sidebar.includes('w-6 h-6 rounded-lg') && sidebar.includes('w-5 h-5 rounded-md'));
-check('4) صناديق الأيقونات بتدرّج خفيف (لا لون مسطّح)', nav.includes('bg-gradient-to-br from-sky-500/20') && nav.includes('bg-gradient-to-br from-violet-500/20'));
+check('4) تدرّج الأيقونات: قسم w-5 / ورقة w-3.5', sidebar.includes('w-5 h-5 transition-colors') && (sidebar.match(/w-3\.5 h-3\.5 shrink-0/g) || []).length >= 1);
+check('4) تدرّج الصناديق: قسم w-11 / ورقة w-5', sidebar.includes('w-11 h-11 rounded-xl') && sidebar.includes('w-5 h-5 rounded-md'));
+check('4) صناديق الأيقونات محايدة (لا ألوان متعدّدة)', nav.includes('bg-slate-800/70 ring-1 ring-inset ring-slate-700'));
 check('4) انتقال سلس موحّد', sidebar.includes('transition-all duration-200') && sidebar.includes('group-hover:scale-[1.04]'));
 // 5) فاصل بصري بين الأقسام.
 check('5) فاصل بصري بين الأقسام', sidebar.includes('h-px bg-slate-800/70'));
@@ -196,30 +194,29 @@ check('9) مؤشر صحة في الترويسة', header.includes('systemHealth'
 check('9) المؤشر من بيانات /api/health الحقيقية', header.includes("h?.status === 'ok'"));
 // 10) منطق التفاعل القائم محفوظ.
 check('10) مفتاح localStorage محفوظ', sidebar.includes('gharabi-nav-expanded-v1'));
-check('10) فتح القسم عند الضغط دائماً محفوظ', /setActiveTab\(id\)/.test(sidebar.slice(sidebar.indexOf('const toggleSection'), sidebar.indexOf('const toggleBranch'))));
+check('10) فتح القسم عند الضغط دائماً محفوظ', /setActiveTab\(id\)/.test(sidebar.slice(sidebar.indexOf('const toggleSection'), sidebar.indexOf('const badgeFor'))));
 check('10) البحث محفوظ', sidebar.includes('searchNav') && sidebar.includes('placeholder="بحث في الأقسام والوظائف'));
 
-console.log('\n=== الهوية البصرية للأيقونات (تمييز الأقسام الخمسة) ===');
-// هوية لونية مميّزة لكل قسم (sky/emerald/amber/violet/steel) — مصدر واحد NAV_ACCENTS.
-check('هوية لونية: خريطة NAV_ACCENTS موجودة', nav.includes('export const NAV_ACCENTS'));
-check('هوية لونية: الأقسام الخمسة لكل منها accent', (nav.match(/accent: NAV_ACCENTS\./g) || []).length === 5);
-check('هوية لونية: sky للقيادة، emerald للنشر، amber للزبائن، violet للمنتجات، steel للإعدادات',
-  nav.includes('accent: NAV_ACCENTS.sky') && nav.includes('accent: NAV_ACCENTS.emerald') &&
-  nav.includes('accent: NAV_ACCENTS.amber') && nav.includes('accent: NAV_ACCENTS.violet') &&
-  nav.includes('accent: NAV_ACCENTS.steel'));
-check('توهج (glow) عند القسم النشط فقط (boxActive + shadow-*-500/40)', nav.includes('shadow-sky-500/40') && nav.includes('shadow-violet-500/40') && nav.includes('shadow-emerald-500/40'));
-check('حلقة خفيفة حول صندوق الأيقونة (ring-inset)', nav.includes('ring-1 ring-inset ring-sky-500/30'));
+console.log('\n=== الهوية البصرية الموحّدة (لون تمييز واحد) ===');
+// هوية واحدة لكل الأقسام الخمسة — بلا ألوان متعدّدة (لا «أزرق مُبهَم»).
+check('هوية واحدة: كائن NAV_ACCENT موجود', nav.includes('export const NAV_ACCENT: NavAccent'));
+check('هوية واحدة: كل الأقسام الخمسة تستخدم NAV_ACCENT', (nav.match(/accent: NAV_ACCENT,/g) || []).length === 5);
+check('هوية واحدة: أسماء قديمة تُشير للهوية نفسها (توافق خلفي)', nav.includes('sky: NAV_ACCENT') && nav.includes('steel: NAV_ACCENT'));
+check('لا ألوان متعدّدة في التمييز (لا sky/violet/emerald في الصناديق)', !nav.includes('from-sky-500/20') && !nav.includes('from-violet-500/20'));
+check('توهج عند القسم النشط فقط (boxActive + shadow-accent)', nav.includes('shadow-accent/30') && nav.includes('bg-accent text-slate-950'));
+check('حلقة خفيفة حول صندوق الأيقونة (ring-inset)', nav.includes('ring-1 ring-inset ring-accent/40'));
 check('صندوق القسم عند التفعيل يستخدم accent (لا لون ثابت)', sidebar.includes('section.accent.boxActive') && sidebar.includes('section.accent.rowActive'));
-check('أيقونة القسم عند التفعيل بيضاء', sidebar.includes("sectionActive ? 'text-white' : section.accent.icon"));
-check('لا كسر الدلالة: الورقة النشطة تبقى زمردية', sidebar.includes('from-emerald-400 to-emerald-500 text-slate-950'));
+check('أيقونة القسم عند التفعيل بلون فاتح على accent', sidebar.includes("sectionActive ? 'text-slate-950' : section.accent.icon"));
+check('لا كسر الدلالة: الورقة النشطة بلون التمييز', sidebar.includes('bg-accent/15 text-accent'));
 check('لا كسر الدلالة: العاجل يبقى كهرمانياً', sidebar.includes('bg-amber-500/20 text-amber-300'));
 check('ملاءمة الأيقونة: brain_manager صار BrainCircuit (لا Users)', nav.includes("id: 'brain_manager'") && nav.includes('icon: BrainCircuit'));
 check('ملاءمة الأيقونة: قسم الزبائن صار MessageSquareText', nav.includes("icon: MessageSquareText"));
 check('ملاءمة الأيقونة: قسم المنتجات صار Store', nav.includes('icon: Store'));
 check('ملاءمة الأيقونة: قسم الإعدادات صار Cog', nav.includes('icon: Cog'));
-check('حركة دخول خفيفة (animate-nav-in) على الفروع والأوراق', (sidebar.match(/animate-nav-in/g) || []).length >= 2);
+check('حركة دخول خفيفة (animate-nav-in) على اللوحة الفرعية', (sidebar.match(/animate-nav-in/g) || []).length >= 1);
 check('الحركة CSS خالص بلا مكتبة (keyframes nav-in + reduced-motion)', read('src/index.css').includes('@keyframes nav-in') && read('src/index.css').includes('prefers-reduced-motion'));
-check('RTL: التدرجات بلا اتجاه ثابت (bg-gradient-to-br) والصفوف to-l', nav.includes('bg-gradient-to-br') && sidebar.includes('bg-gradient-to-l'));
+check('صفر أسهم متكدّسة: لا سهم على الفروع (الفرع فاصل لا طيّ)', !sidebar.includes('-rotate-90') || (sidebar.match(/-rotate-90/g) || []).length === 1);
+check('مسار تنقّل واحد: لوحة القسم بلا شرائط أوراق مكررة', !hub.includes('setActiveTab(it.id)'));
 
 console.log(`\n${fail === 0 ? 'PASSED' : 'FAILED'}: ${pass} تنقل هرمي، ${fail} فشل`);
 if (fail > 0) process.exit(1);
