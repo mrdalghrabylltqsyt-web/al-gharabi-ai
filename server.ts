@@ -161,6 +161,11 @@ import {
   FACEBOOK_DIALOG_PATH,
   FACEBOOK_SIGNATURE_HEADER,
   interpretPostGrounding,
+  buildPostVisibilityDiagnosis,
+  FACEBOOK_POST_GROUNDING_FIELDS,
+  FACEBOOK_POST_GROUNDING_FALLBACK_FIELDS,
+  type FacebookPostGrounding,
+  type FacebookFieldRead,
   type FacebookFetch,
   type FacebookPageIdentity,
 } from "./engine/social/facebook";
@@ -217,6 +222,8 @@ import {
   type TikTokPrivacyLevel,
   shouldReconcileTikTokRecord,
   applyTikTokPublishStatus,
+  TIKTOK_DRAFT_PENDING_OWNER_NOTE,
+  TIKTOK_DIRECT_POST_PENDING_NOTE,
 } from "./engine/social/tiktok";
 import {
   resolveTikTokState,
@@ -5662,6 +5669,99 @@ app.get("/api/platforms/tiktok/publishes", requireOwner, async (req,res)=>{
 });
 
 /**
+ * تشخيص نشر TikTok الخام (للمالك فقط) — جذر «تم النشر بمعرّف حقيقي لكن لا يظهر».
+ * يجمع الأدلة الحية كاملة بلا سرّ: جسم/وضع الطلب الفعلي المُرسَل (DIRECT_POST مقابل
+ * MEDIA_UPLOAD) من سجل النشر، وحالة التسليم الخام من TikTok (`status/fetch`)،
+ * ومعلومات الناشر (`creator_info`) — ثم يحسم أي الاحتمالات الثلاثة صحيح فعلاً:
+ *   (أ) MEDIA_UPLOAD (مسودة): لا نشر عام مقصود — يحتاج إكمالاً يدوياً في التطبيق.
+ *   (ب) DIRECT_POST لكن الحالة ليست PUBLISH_COMPLETE: عطل إعلان تسليم مبكر.
+ *   (ج) DIRECT_POST + PUBLISH_COMPLETE لكن لا يظهر: فحص حساب الاستهداف/الـaudit.
+ * الاستعلام: ?publishId= أو آخر سجل نشر TikTok حقيقي.
+ */
+app.get("/api/platforms/tiktok/publish-diagnosis", requireOwner, async (req,res)=>{
+  const records = Array.isArray((workspace as any).publishRecords) ? (workspace as any).publishRecords : [];
+  let publishId = typeof req.query.publishId === "string" ? req.query.publishId.trim() : "";
+  let record: any = null;
+  if (publishId) record = records.find((r: any) => r.platform === "tiktok" && r.providerPublishId === publishId) || null;
+  if (!record) { record = records.find((r: any) => r.platform === "tiktok"); if (record) publishId = String(record.providerPublishId || ""); }
+  const operational = tiktokOperationalNow();
+  // الحالة الخام من TikTok (إن توفّر publish_id واتصال موثق).
+  let rawStatus: any = null;
+  let statusError: string | null = null;
+  if (operational && publishId) {
+    const st = await withTikTokToken((token) => tiktokClient().fetchPublishStatus(token, publishId));
+    if (st.ok && st.data) rawStatus = { ...st.data };
+    else statusError = st.error || "تعذّر استعلام حالة النشر.";
+  }
+  // معلومات الناشر (تُثبت الحساب المستهدَف وقيود النشر — هل يسمح بالنشر العام أصلاً؟).
+  let creator: any = null;
+  let creatorError: string | null = null;
+  if (operational) {
+    const ci = await withTikTokToken((token) => tiktokClient().queryCreatorInfo(token));
+    if (ci.ok && ci.data) creator = ci.data; else creatorError = ci.error || "تعذّر قراءة معلومات الناشر.";
+  }
+  const postMode = record?.postMode || null;
+  const recordState = record?.state || null;
+  const providerPostId = record?.providerPostId || null;
+  const rawTikTokStatus = rawStatus?.rawStatus || null;
+  // الحكم الصادق (لا تخمين): يميّز (أ)/(ب)/(ج) من الأدلة الفعلية.
+  let caseLetter: 'A' | 'B' | 'C' | 'UNKNOWN';
+  let verdict: string;
+  if (postMode === "MEDIA_UPLOAD") {
+    caseLetter = 'A';
+    verdict = "المسار الفعلي MEDIA_UPLOAD (صندوق مسودات TikTok): لا نشر عام إطلاقاً وهو سلوك مقصود. الفيديو محفوظ في صندوق مسودات TikTok ولا يظهر لأي أحد حتى يُكمله المالك يدوياً من تطبيق TikTok. إصلاح مطلوب: رسالة الواجهة/الحالة الصادقة (طُبّق).";
+  } else if (postMode === "DIRECT_POST" && rawTikTokStatus && rawTikTokStatus !== "PUBLISH_COMPLETE") {
+    caseLetter = 'B';
+    verdict = `المسار DIRECT_POST لكن حالة TikTok الفعلية «${rawTikTokStatus}» وليست PUBLISH_COMPLETE: النظام أعلن/أوشك أن يعلن تسليماً قبل اكتمال النشر الفعلي — عطل برمجي في تسجيل حالة النشر.`;
+  } else if (postMode === "DIRECT_POST" && rawTikTokStatus === "PUBLISH_COMPLETE") {
+    caseLetter = 'C';
+    verdict = "المسار DIRECT_POST والحالة PUBLISH_COMPLETE من TikTok: لا يظهر رغم ذلك يستدعي فحص حساب الاستهداف (مطابقة creator-info مع حساب TikTok الذي يفتحه المالك) و/أو قيد audit/Content Posting API (نشر غير مُراجَع يبقى SELF_ONLY).";
+  } else if (postMode === "DIRECT_POST") {
+    caseLetter = 'UNKNOWN';
+    verdict = "المسار DIRECT_POST لكن لم تتوفر حالة TikTok الخام (تعذّر الاتصال/الاستعلام)؛ لا يُعلن تسليم ولا يُحسم السبب بلا دليل حي.";
+  } else {
+    caseLetter = 'UNKNOWN';
+    verdict = "لا سجل نشر TikTok محفوظ لهذا المعرّف؛ لا يُحسم السبب بلا دليل.";
+  }
+  res.json({
+    success: true,
+    operational,
+    publishId: publishId || null,
+    record: record ? {
+      id: record.id, state: recordState, postMode,
+      providerPublishId: record.providerPublishId || null,
+      providerPostId,
+      delivered: recordState === "published" && Boolean(providerPostId),
+      auditRequired: record.auditRequired === true,
+      privacyLevel: record.privacyLevel || null,
+      createdAt: record.createdAt || null,
+      lastCheckedAt: record.lastCheckedAt || null,
+      deliveryDetail: record.deliveryDetail || null,
+      // جسم/وضع الطلب الفعلي المُرسَل (بلا سرّ): يثبت أي مسار استُخدم فعلاً.
+      receipt: record.receipt || null,
+    } : null,
+    rawStatus,
+    statusError,
+    creator,
+    creatorError,
+    auditRequired: tiktokAuditRequired(),
+    // حسم الحالة (أ)/(ب)/(ج) بالأدلة الحية.
+    case: caseLetter,
+    verdict,
+    // قيود API المفتوحة: TikTok لا يدعم قراءة/رد التعليقات والرسائل عبر Open API.
+    apiLimits: {
+      commentRead: "NOT_AVAILABLE_BY_PUBLIC_API",
+      commentReply: "NOT_AVAILABLE_BY_PUBLIC_API",
+      messageRead: "NOT_AVAILABLE_BY_PUBLIC_API",
+      messageReply: "NOT_AVAILABLE_BY_PUBLIC_API",
+      directPostPublic: tiktokAuditRequired() ? "REQUIRES_AUDIT (قبل الاجتياز يبقى SELF_ONLY)" : "AVAILABLE",
+      note: "التعليقات/الرسائل غير متاحة عبر TikTok Open API إطلاقاً؛ والنشر العام (DIRECT_POST) يتطلب Content Posting API audit.",
+    },
+    note: "قراءة فقط بلا أي نشر أو تغيير؛ بلا أي سرّ. لا يُعلن تسليم بلا PUBLISH_COMPLETE من TikTok.",
+  });
+});
+
+/**
  * سجل تشخيص النشر المحفوظ (للمالك فقط) — جذر «#100 لا صلاحية» و«Instagram CLIENT_ERROR».
  *
  * كل محاولة نشر فاشلة (Facebook/Instagram/Threads) تُحفظ برسالة Meta الكاملة غير
@@ -5760,30 +5860,33 @@ app.get("/api/platforms/facebook/post-visibility-diagnosis", requireOwner, async
     return res.status(502).json({ success:false, error: groundingRes.error || "تعذّر قراءة حالة المنشور من Meta.", code: groundingRes.code || "PROVIDER_ERROR", providerCode: groundingRes.providerCode ?? null, providerSubcode: groundingRes.providerSubcode ?? null, providerTraceId: groundingRes.providerTraceId ?? null });
   }
   const g = groundingRes.data;
-  // الحكم الصادق: نضع الأسباب المحتملة إزاء الأدلة الفعلية بلا ادّعاء يقين.
-  // تنبيه صياغي ملزم: is_published=true تعني «ليس مسودة/مجدولاً»، وليست إثباتاً
-  // للظهور العام — فقد يكون المنشور منشوراً فعلاً لكنه مقيَّد لأدوار التطبيق/الصفحة.
-  let verdict: string;
-  let likelyRootCause: string;
-  if (!g.exists) { verdict = "post_not_found"; likelyRootCause = "المعرّف غير موجود أو لا يمكن قراءته بالرمز الحالي."; }
-  else if (g.isPublished === false) { verdict = "draft_or_scheduled"; likelyRootCause = "المنشور مسودة أو مجدول (is_published=false) فلا يظهر للجمهور بعد."; }
-  else if (g.appearsOnPage === false) { verdict = "published_but_not_on_page_wall"; likelyRootCause = "المنشور منشور (is_published=true) لكنه غير وارد على حائط الصفحة العامة — يطابق تماماً قيد «وضع تطوير التطبيق» الذي يحصر المحتوى المنشأ عبر API في أدوار التطبيق/الصفحة."; }
-  else { verdict = "published_and_returns_as_story"; likelyRootCause = "Meta تُعلن is_published=true والمنشور يرد ضمن المنشورات المنشورة. إن ظل مخفياً عن الجمهور فالمؤشر الأقوى هو وضع تطبيق Meta (Development) لا Live، أو اشتراط App Review/Advanced Access لصلاحيات النشر."; }
+  const diag = buildPostVisibilityDiagnosis(g);
   res.json({
     success:true,
     pageId,
     providerPostId,
     postIdSource: source,
     grounding: g,
-    verdict,
-    likelyRootCause,
-    // ملخّص ما ثبتته هذه القراءة وما لم تثبته — بلا ادّعاء ظهور عام من is_published.
-    evidenceSummary: {
-      isDraftOrScheduled: g.isPublished === false,
-      returnsAsStory: g.isPublished === true,
-      proofOfPublicVisibility: false,
-      why: "is_published=true تثبت وجود كائن منشور (ليس مسودة/مجدولاً) فقط، ولا تثبت رؤيته لزائر غير إداري. ظهور المنشورات المُنشأة عبر API للجمهور يتوقف على وضع تطبيق Meta / مستوى الوصول.",
-    },
+    // تشخيص الحقول (إصلاح جذر #100 is_published): ما طُلب فعلاً، وما ردّته Meta،
+    // وأي حقل غير مدعوم على نوع هذه العقدة — بلا إسقاط الفحص.
+    fieldDiagnostics: g.fieldRead ? {
+      requestedFields: g.fieldRead.requested,
+      returnedFields: g.fieldRead.returned,
+      unsupportedFields: g.fieldRead.unsupported,
+      firstReadStatus: g.fieldRead.status,
+      firstReadProviderCode: g.fieldRead.providerCode,
+      firstReadProviderMessage: g.fieldRead.providerMessage,
+      usedFallback: g.fieldRead.usedFallback,
+      fullFields: [...FACEBOOK_POST_GROUNDING_FIELDS],
+      fallbackFields: [...FACEBOOK_POST_GROUNDING_FALLBACK_FIELDS],
+      isPublishedSupported: !g.fieldRead.unsupported.includes('is_published'),
+      note: g.fieldRead.unsupported.length
+        ? `الحقول التالية غير مدعومة على نوع هذه العقدة وتُعلن صراحةً بدل إسقاط الفحص: ${g.fieldRead.unsupported.join(', ')}.`
+        : 'كل الحقول المطلوبة مدعومة على نوع هذه العقدة.',
+    } : null,
+    verdict: diag.verdict,
+    likelyRootCause: diag.likelyRootCause,
+    evidenceSummary: diag.evidenceSummary,
     // رابط المنشور العام إن أعلنته Meta (بلا طلب إضافي): أداة المالك لفحص الظهور
     // يدوياً من جلسة غير إدارية. لا يُنشر أي شيء ولا يُغيّر أي حقل.
     permalink: g.permalink,
@@ -10561,9 +10664,7 @@ async function executePlatformPublish(platform: string, body: any, actor: string
         success: true, record, providerPublishId: publishId, postMode: mode,
         delivered: false,
         auditRequired: modeRequiresAudit,
-        note: mode === "DIRECT_POST"
-          ? "تمت تهيئة النشر المباشر لدى TikTok (publish_id). لا يُعلن التسليم إلا بحالة PUBLISH_COMPLETE عبر GET /api/platforms/tiktok/publish-status."
-          : "تمت تهيئة رفع المسودة لدى TikTok (publish_id). المحتوى في صندوق TikTok وينشره المالك من التطبيق؛ لا يُعلن أي نشر عام.",
+        note: mode === "DIRECT_POST" ? TIKTOK_DIRECT_POST_PENDING_NOTE : TIKTOK_DRAFT_PENDING_OWNER_NOTE,
       } };
     }
     return { status: 501, body: { success: false, error: "الموصل متصل لكن تنفيذ النشر لهذه المنصة يحتاج بيانات المزود ولم يُختلق تنفيذ وهمي.", code: "EXTERNAL_SETUP_REQUIRED", platform } };
@@ -11959,6 +12060,10 @@ app.post("/api/workspace/content/:id/publish", requireOwner, async (req, res) =>
         state, httpStatus: result.status, providerPostId,
         error: delivered || quotaPending ? null : (result.body?.error || null),
         code: result.body?.code || null,
+        // ملاحظة الخادم الصادقة (مثلاً: TikTok MEDIA_UPLOAD = صندوق مسودات، لا نشر عام)
+        // تُمرَّر للواجهة فلا تُوهم المالك بأن النشر اكتمل علناً.
+        note: result.body?.note || null,
+        postMode: result.body?.postMode || null,
         message: quotaPending ? (result.body?.message || null) : null,
         retryAt: quotaPending ? (result.body?.retryAt || null) : null,
         receipt: result.body?.receipt || null, at: new Date().toISOString(),

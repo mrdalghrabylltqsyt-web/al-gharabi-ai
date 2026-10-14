@@ -4387,6 +4387,68 @@ add('watcher-advisory-not-authority',
     read('engine/social/facebook.ts').includes('published_posts'),
     'قراءة حالة ظهور المنشور (is_published + حائط الصفحة) متاحة كتشخيص قراءة-فقط');
 
+  // 9ج) إصلاح جذر #100 «is_published nonexisting field»: قراءة حقول ذكية (احتياطي +
+  // عزل الحقل غير المدعوم) فلا يُسقط حقل واحد التشخيص كله، ولا تُخترع قيمة بديلة.
+  add('facebook-grounding-fields-single-source',
+    read('engine/social/facebook.ts').includes('FACEBOOK_POST_GROUNDING_FIELDS') &&
+    read('engine/social/facebook.ts').includes('FACEBOOK_POST_GROUNDING_FALLBACK_FIELDS') &&
+    (read('engine/social/facebook.ts').match(/FACEBOOK_POST_GROUNDING_FALLBACK_FIELDS/g) || []).length >= 2,
+    'قائمتا الحقول (الكاملة + الاحتياطي) مصدر واحد في facebook.ts');
+  add('facebook-grounding-fallback-excludes-is-published',
+    /FACEBOOK_POST_GROUNDING_FALLBACK_FIELDS[\s\S]{0,200}?'id', 'created_time', 'permalink_url'/.test(read('engine/social/facebook.ts')) &&
+    !/FACEBOOK_POST_GROUNDING_FALLBACK_FIELDS[\s\S]{0,120}?'is_published'/.test(read('engine/social/facebook.ts')),
+    'القائمة الاحتياطية تعمل على كل أنواع العقد (بلا is_published الذي قد يُرفض)');
+  add('facebook-grounding-per-field-probe',
+    read('engine/social/facebook.ts').includes('unsupported') &&
+    read('engine/social/facebook.ts').includes('readNodeFields') &&
+    /unsupported\.push\(f\)/.test(read('engine/social/facebook.ts')),
+    'الحقول غير المدعومة تُعزل حقلاً حقلاً وتُعلن صراحةً بدل إسقاط الفحص');
+  add('facebook-grounding-field-diagnostics-exposed',
+    read('server.ts').includes('fieldDiagnostics') &&
+    read('server.ts').includes('unsupportedFields') &&
+    read('server.ts').includes('isPublishedSupported'),
+    'رد التشخيص يعلن الحقول المطلوبة/المُعادة/غير المدعومة (بلا إسقاط)');
+  add('facebook-post-grounding-regression-tests',
+    fs.existsSync(path.join(root, 'engine/tests/fb.postgrounding.regression.test.ts')) &&
+    JSON.parse(read('package.json')).scripts.test.includes('npm run test:fb-postgrounding'),
+    'اختبار انحدار is_published (خادم Graph وهمي يحاكي #100) موجود ومسجّل في npm test');
+  add('facebook-grounding-no-fabricated-value',
+    read('engine/tests/fb.postgrounding.regression.test.ts').includes('isPublished يبقى null (لا اختراع'),
+    'الاختبار يثبت أن الحقل غير المدعوم يبقى null ولا تُخترع قيمة بديلة');
+
+  // 9د) صدق نشر TikTok: رفع المسودة (MEDIA_UPLOAD) لا ينشر علناً + تشخيص خام يحسم الحالة.
+  add('tiktok-draft-truthful-message',
+    read('engine/social/tiktok.ts').includes('TIKTOK_DRAFT_PENDING_OWNER_NOTE') &&
+    /صندوق مسودات TikTok/.test(read('engine/social/tiktok.ts')) &&
+    read('server.ts').includes('TIKTOK_DRAFT_PENDING_OWNER_NOTE'),
+    'رفع مسودة TikTok يحمل رسالة صادقة موحّدة: صندوق مسودات، لا نشر عام، أكمل يدوياً');
+  add('tiktok-direct-post-truthful-message',
+    read('engine/social/tiktok.ts').includes('TIKTOK_DIRECT_POST_PENDING_NOTE') &&
+    /PUBLISH_COMPLETE/.test(read('engine/social/tiktok.ts')),
+    'النشر المباشر يُعلن أنه تهيئة فقط ولا تسليم إلا بـPUBLISH_COMPLETE');
+  add('tiktok-publish-diagnosis-owner-only',
+    read('server.ts').includes('/api/platforms/tiktok/publish-diagnosis') &&
+    /publish-diagnosis",\s*requireOwner/.test(read('server.ts')),
+    'مسار تشخيص نشر TikTok الخام محصور بالمالك (requireOwner)');
+  add('tiktok-publish-diagnosis-cases',
+    read('server.ts').includes("caseLetter = 'A'") &&
+    read('server.ts').includes("caseLetter = 'B'") &&
+    read('server.ts').includes("caseLetter = 'C'") &&
+    read('server.ts').includes('rawStatus'),
+    'التشخيص يحسم الحالات (أ)/(ب)/(ج) بالأدلة الحية (الوضع + الحالة الخام + معلومات الناشر)');
+  add('tiktok-publish-diagnosis-api-limits',
+    read('server.ts').includes('NOT_AVAILABLE_BY_PUBLIC_API') &&
+    read('server.ts').includes('commentReply'),
+    'التشخيص يعلن قيود TikTok Open API (تعليقات/رسائل غير متاحة)');
+  add('tiktok-visibility-regression-tests',
+    fs.existsSync(path.join(root, 'engine/tests/tiktok.visibility.regression.test.ts')) &&
+    JSON.parse(read('package.json')).scripts.test.includes('npm run test:tiktok-visibility'),
+    'اختبار انحدار صدق نشر TikTok (خادم TikTok وهمي) موجود ومسجّل في npm test');
+  add('tiktok-ui-draft-note',
+    read('src/utils/publishResult.ts').includes('isTikTokDraftUpload') &&
+    read('src/utils/publishResult.ts').includes('TIKTOK_DRAFT_UPLOAD_NOTE'),
+    'الواجهة تعرض رسالة صندوق المسودات الصادقة بدل «قيد المعالجة» الموهمة');
+
   add('facebook-visibility-diagnosis-owner-only',
     read('server.ts').includes('/api/platforms/facebook/post-visibility-diagnosis') &&
     /post-visibility-diagnosis",\s*requireOwner/.test(read('server.ts')),
@@ -4399,8 +4461,9 @@ add('watcher-advisory-not-authority',
     'التشخيص يعلن أن وضع التطبيق غير مقروء عبر API ويوجه للوحة Meta بلا أي سرّ');
 
   add('facebook-published-not-public-proof',
-    read('server.ts').includes('proofOfPublicVisibility: false') &&
-    read('server.ts').includes('Access Levels') &&
+    read('engine/social/facebook.ts').includes('proofOfPublicVisibility: false') &&
+    read('engine/social/facebook.ts').includes('Access Levels') &&
+    read('server.ts').includes('buildPostVisibilityDiagnosis') &&
     read('engine/tests/facebook.connector.test.ts').includes('لا يُقدَّم كإثبات ظهور عام'),
     'published=true لا يُقدَّم كإثبات ظهور عام؛ Access Levels مذكورة؛ اختبار يمنع رجوع الادّعاء');
 

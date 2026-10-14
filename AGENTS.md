@@ -44,7 +44,7 @@ npm install
 npm run dev            # tsx server.ts
 npm run lint           # tsc --noEmit
 npm run build          # vite build + esbuild server.ts -> dist/server.cjs
-npm run final-audit    # node final-audit.mjs (1638 فحصاً)
+npm run final-audit    # node final-audit.mjs (1651 فحصاً)
 npm test               # storage + engine + auth + ... + db + runtime
 ```
 - التشغيل الإنتاجي: `PORT=4517 NODE_ENV=production APP_URL=http://localhost:4517 node dist/server.cjs`
@@ -5576,6 +5576,59 @@ Gemini، بقية المنصات أو نموذج الجدولة.
 - اختبارات: `engine/tests/facebook.connector.test.ts` (+3 فحوص وحدة: التصريح، غياب
   `privacy`، قبول الحرس + فحص تكاملي أن الطلب الفعلي حمل `published=true`) => **347 فحصاً**.
 - final-audit: فحص جديد `facebook-photo-published-explicit` (يمنع رجوع الغياب) => **1534**.
+
+## إصلاح جذر #100 «is_published nonexisting field» + صدق نشر TikTok (فرع `fix/fb-is-published-and-tiktok-visibility`, 2026-10-13)
+
+دفعة إصلاح جذرين لبلاغَي «منشور موجود لكن لا يراه الجمهور» (Facebook) و«منشورات TikTok لا
+يراها أحد». كلاهما **إصلاح إعلان/تشخيص صادق** لا ادّعاء.
+
+### 1) Facebook — خطأ `(#100) Tried accessing nonexisting field (is_published)`
+- **الجذر المُثبت:** `getPostGrounding` كان يطلب `is_published` **دائماً** في قائمة الحقول،
+  وMeta ترفض هذا الحقل على أنواع عقد لا تدعمه (مثل Video)، فيفشل التشخيص **بالكامل** بـ
+  `PROVIDER_ERROR` بلا أي دليل — فلا يعرف المالك لماذا لا يظهر منشوره.
+- **الإصلاح (قراءة حقول ذكية، مصدر واحد في `engine/social/facebook.ts`):**
+  - `FACEBOOK_POST_GROUNDING_FIELDS` (الكاملة) و`FACEBOOK_POST_GROUNDING_FALLBACK_FIELDS`
+    (الأساسية: `id,created_time,permalink_url` — تعمل على كل أنواع العقد، بلا `is_published`).
+  - `FacebookClient.readNodeFields`: يقرأ القائمة الكاملة، وعند رفض حقل يسقط للاحتياطي، ثم
+    **يعزل الحقل غير المدعوم حقلاً حقلاً** ويسجّل نجاح باقي الحقول.
+  - `FacebookPostGrounding` أُثرِي بـ`fieldRead` (requested/returned/unsupportedFields/
+    usedFallback/providerCode/providerMessage) و`unsupportedFields`.
+  - `buildPostVisibilityDiagnosis` (منطق صافٍ) يبني الحكم من الأدلة؛ و`server.ts` يعرض
+    `fieldDiagnostics` (الحقول المطلوبة/المُعادة/غير المدعومة + `isPublishedSupported`) في
+    `GET /api/platforms/facebook/post-visibility-diagnosis` (owner).
+- **لا اختراع:** عند رفض `is_published` يبقى `isPublished = null` (لا true ولا false)،
+  والظهور العام لا يُدَّعى أبداً (`proofOfPublicVisibility: false` دائماً).
+
+### 2) TikTok — «المنشورات لا يراها أحد»
+- **الجذر المرجّح (موثّق مسبقاً):** المسار الافتراضي `MEDIA_UPLOAD` يرفع الفيديو إلى
+  **صندوق مسودات TikTok** ولا ينشر شيئاً علناً إطلاقاً حتى يُكمله المالك يدوياً من التطبيق.
+  ومع ذلك كان السجل يُظهر «تم» بمعرّف حقيقي فيظن المالك أن النشر العام قائم.
+- **الإصلاح (صدق إعلان + تشخيص خام يحسم السبب):**
+  - `TIKTOK_DRAFT_PENDING_OWNER_NOTE` (صندوق مسودات، لا نشر عام، أكمل من التطبيق) و
+    `TIKTOK_DIRECT_POST_PENDING_NOTE` (تهيئة فقط، لا تسليم إلا `PUBLISH_COMPLETE`) في
+    `engine/social/tiktok.ts`؛ تُعاد في استجابة النشر وتُمرَّر للواجهة.
+  - `server.ts`: يُسجَّل `postMode` الصحيح في السجل، و`src/utils/publishResult.ts` يعرض
+    `isTikTokDraftUpload`/`TIKTOK_DRAFT_UPLOAD_NOTE` بدل «قيد المعالجة» الموهمة.
+  - `GET /api/platforms/tiktok/publish-diagnosis` (owner): يحسم بالأدلة الحية أي الاحتمالات
+    الثلاثة — **(أ)** MEDIA_UPLOAD (صندوق مسودات، لا نشر عام) · **(ب)** DIRECT_POST غير مكتمل
+    (يذكر الحالة الخام) · **(ج)** مكتمل لدى TikTok لكنه خاص/غير مدرَج — مع الحالة الخام
+    (`status/fetch`) ومعلومات الناشر (`creator_info`) وقيود API (تعليقات/رسائل غير متاحة).
+- **لا ادّعاء:** لا `published` ولا معرّف منشور عام بلا `PUBLISH_COMPLETE` من TikTok.
+
+### الاختبارات (Arabic) والتحقق
+- `engine/tests/fb.postgrounding.regression.test.ts` (`test:fb-postgrounding`، **29 فحصاً**):
+  وحدة (ثوابت الحقول + التفسير + بناء الحكم) + وحدة عميل (السقوط للاحتياطي + عزل الحقل +
+  `isPublished=null` بلا اختراع) + تكامل حقيقي (خادم Graph وهمي يحاكي #100 على `is_published`
+  ⇒ التشخيص يرد 200 ويُعلن الحقل غير المدعوم).
+- `engine/tests/tiktok.visibility.regression.test.ts` (`test:tiktok-visibility`، **26 فحصاً**):
+  رفع مسودة ⇒ رسالة صندوق المسودات الصادقة؛ تشخيص يحسم الحالة (أ)؛ نشر مباشر قيد المعالجة
+  ⇒ الحالة (ب) بلا ادّعاء تسليم.
+- `engine/tests/helpers/facebookMock.ts`: أُضيف `unsupportedNodeFields`/`nodeFieldsError`/
+  `nodeFieldReads` لمحاكاة #100 على حقل بعينه.
+- **التحقق الكامل:** `npm run lint` ✅ · `npm run build` ✅ · `npm test` ✅ (137 مجموعة، 0 فشل)
+  · `npm run final-audit` ✅ (**1651** فحصاً، +13 فحصاً جديداً).
+- **لم يُمسّ:** أي سرّ/مفتاح/OAuth، Gemini/firewall، المصادقة، قاعدة البيانات، DR/الاستعادة،
+  بقية المنصّات، ونموذج الجدولة.
 
 **صدق الإعلان:** `published=true` **لا يُقدَّم كإثبات ظهور عام**؛ الظهور العام الفعلي يتوقف
 على وضع تطبيق Meta (Live/Access Levels) لا على أي معامل HTTP — يبقى التشخيص قراءة-فقط عبر
