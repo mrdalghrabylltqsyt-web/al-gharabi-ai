@@ -183,17 +183,18 @@ function unitTests(): void {
   check('قدرة غير معروفة تُعيد null لا ادعاء', tiktokCapabilityStatus('does_not_exist') === null && !tiktokCapabilitySupported('does_not_exist'));
 
   group('2) وحدة: النطاقات الإنتاجية المعتمدة');
-  // قرار إنتاجي (commit المالك 2796ecf): نطاقان معتمدان حصرياً في تطبيق الإنتاج —
-  // user.info.basic (الهوية) وvideo.upload (رفع المسودة، بلا audit). النشر المباشر
-  // (video.publish) خارج التطبيق الحالي (يحتاج Content Posting audit)، وvideo.list
-  // (Display API) بلا استدعاء حقيقي في الكود حتى الآن — فلا يُطلبان.
-  check('النطاقان الإنتاجيان المعتمدان مطلوبان', ['user.info.basic', 'video.upload'].every((s) => TIKTOK_REQUIRED_SCOPES.includes(s)));
-  check('المجموعة مقتصرة على النطاقين المعتمدين (لا نطاق بلا استدعاء)', TIKTOK_REQUIRED_SCOPES.length === 2, TIKTOK_REQUIRED_SCOPES.join(','));
+  // قرار إنتاجي (2026-10-14): ثلاثة نطاقات معتمدة في تطبيق الإنتاج —
+  // user.info.basic (الهوية)، video.upload (رفع المسودة، بلا audit)، وvideo.publish
+  // (النشر المباشر العام — يتطلب اجتياز Content Posting audit؛ يبقى النشر العام
+  // محكوماً بـTIKTOK_AUDIT_PASSED للعرض، ومصدر الحقيقة النهائي هو TikTok نفسه).
+  check('النطاقات الثلاثة المعتمدة مطلوبة', ['user.info.basic', 'video.upload', 'video.publish'].every((s) => TIKTOK_REQUIRED_SCOPES.includes(s)));
+  check('المجموعة مقتصرة على النطاقات الثلاثة المعتمدة (لا نطاق بلا استدعاء)', TIKTOK_REQUIRED_SCOPES.length === 3, TIKTOK_REQUIRED_SCOPES.join(','));
   check('المجموعة بلا تكرار', new Set(TIKTOK_REQUIRED_SCOPES).size === TIKTOK_REQUIRED_SCOPES.length);
   const partial = resolveTikTokScopes(['video.publish']);
   check('حلّ مجموعة جزئية يضيف user.info.basic', partial.includes('user.info.basic'));
   check('حلّ مجموعة جزئية يضيف video.upload (مسار المسودة)', partial.includes('video.upload'));
-  check('لا يُضاف نطاق خارج النطاقين المعتمدين عبر التجاوز', !partial.includes('video.publish'));
+  check('حلّ مجموعة جزئية يضيف video.publish (مسار النشر المباشر)', partial.includes('video.publish'));
+  check('لا يُضاف نطاق خارج النطاقات الثلاثة المعتمدة عبر التجاوز', resolveTikTokScopes(['video.list']).includes('video.list') === false);
   check('الحلّ بلا تكرار', new Set(partial).size === partial.length);
   check('لا نطاق غير رسمي في الحلّ', resolveTikTokScopes(['not_a_real_scope']).includes('not_a_real_scope') === false);
 

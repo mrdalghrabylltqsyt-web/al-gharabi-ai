@@ -615,6 +615,13 @@ add('tiktok-no-fake-analytics', read('engine/social/publishing.ts').includes('ti
 // بنطاق video.upload (بجسم source_info فقط)، والنشر المباشر /v2/post/publish/video/init/
 // بنطاق video.publish. طلب نطاق واحد لكليهما يُفشل أحد المسارين بـscope_not_authorized.
 add('tiktok-upload-scope-present', /TIKTOK_REQUIRED_SCOPES[\s\S]{0,300}?'video\.upload'/.test(read('engine/social/tiktok.ts')), 'نطاق video.upload مطلوب (مسار رفع المسودة الرسمي)');
+add('tiktok-publish-scope-present', /TIKTOK_REQUIRED_SCOPES[\s\S]{0,300}?'video\.publish'/.test(read('engine/social/tiktok.ts')), 'نطاق video.publish مطلوب (مسار النشر المباشر العام)');
+add('tiktok-audit-passed-override-honest',
+  server.includes('function tiktokAuditPassedOverride') &&
+  server.includes('TIKTOK_AUDIT_PASSED') &&
+  /tiktokAuditPassedOverride[\s\S]{0,500}?لا يغيّر إنفاذ TikTok الفعلي/.test(server) &&
+  /if \(tiktokAuditPassedOverride\(\)\) return false/.test(server),
+  'مفتاح TIKTOK_AUDIT_PASSED موجود وتعليقه يصرّح أنه لا يغيّر إنفاذ TikTok الفعلي (عرض داخلي فقط)، والقيمة الافتراضية لا تجاوز');
 add('tiktok-inbox-endpoint-used', read('engine/social/tiktok.ts').includes('/v2/post/publish/inbox/video/init/'), 'رفع مسودة الفيديو يستخدم مسار inbox الرسمي');
 add('tiktok-draft-body-source-only', /buildVideoDraftBody[\s\S]{0,600}?return \{ source_info: sourceInfo \}/.test(read('engine/social/tiktok.ts')), 'جسم رفع المسودة source_info فقط بلا post_info');
 add('tiktok-draft-no-privacy', /input\.postMode === 'DIRECT_POST'[\s\S]{0,200}?privacy_level/.test(read('engine/social/tiktok.ts')), 'privacy_level للصور يُرسل في DIRECT_POST فقط لا في المسودة');

@@ -2561,9 +2561,27 @@ function tiktokOperationalNow(): boolean {
   const conn: any = platformConnections.get("tiktok");
   return Boolean(conn?.status === "connected" && conn?.providerVerified === true && hasRealConnector("tiktok"));
 }
-/** حالة قيد مراجعة TikTok (audit): النشر المباشر العام محصور حتى الاجتياز. */
+/**
+ * حالة قيد مراجعة TikTok (audit) للعرض الداخلي: تُبنى من مصفوفة القدرات، مع احترام
+ * تصريح المالك الصريح `TIKTOK_AUDIT_PASSED` (يُغيّر عرضنا فقط، لا إنفاذ TikTok الفعلي).
+ */
 function tiktokAuditRequired(): boolean {
+  if (tiktokAuditPassedOverride()) return false;
   return tiktokCapabilityNeedsAudit("content_posting_direct");
+}
+/**
+ * تجاوز صريح من البيئة: `TIKTOK_AUDIT_PASSED=true` يعني أن المالك أكّد أن التطبيق
+ * اجتاز Content Posting API audit لدى TikTok، فنعرض النشر المباشر العام كمُتاح.
+ *
+ * **تحذير صادق ملزم:** هذا المفتاح **لا يغيّر إنفاذ TikTok الفعلي إطلاقاً** — فهو
+ * قرار عرض/تشخيص داخلي فقط. حتى مع تفعيله، تبقى TikTok هي مصدر الحقيقة: إن لم يكن
+ * التطبيق مُراجَعاً فعلاً فإن أي محاولة نشر مباشر سترد من TikTok نفسه (SELF_ONLY أو
+ * رفض)، ولن يُخترع نجاح. القيمة الافتراضية `false` (لا تجاوز) فلا ادّعاء اجتياز بلا
+ * تصريح صريح من المالك.
+ */
+function tiktokAuditPassedOverride(): boolean {
+  const raw = String(process.env.TIKTOK_AUDIT_PASSED ?? "").trim().toLowerCase();
+  return raw === "true" || raw === "1" || raw === "yes" || raw === "on";
 }
 /**
  * دليل مزود على إتمام سير عمل رسمي لـTikTok: سجل نشر حُدِّث إلى `published`
