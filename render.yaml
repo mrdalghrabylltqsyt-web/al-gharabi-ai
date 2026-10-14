@@ -119,6 +119,11 @@ services:
       # issues a new one (public by design; served at /tiktok<token>.txt).
       - key: TIKTOK_VERIFICATION_TOKEN
         sync: false
+      # Optional owner assertion that the TikTok Content Posting API audit passed
+      # (shows Direct Post as AVAILABLE in our display only; does NOT change
+      # TikTok's actual enforcement — TikTok stays the source of truth).
+      - key: TIKTOK_AUDIT_PASSED
+        sync: false
       # Meta (Facebook):
       - key: FACEBOOK_OAUTH_CLIENT_ID
         sync: false

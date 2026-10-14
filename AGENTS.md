@@ -44,7 +44,7 @@ npm install
 npm run dev            # tsx server.ts
 npm run lint           # tsc --noEmit
 npm run build          # vite build + esbuild server.ts -> dist/server.cjs
-npm run final-audit    # node final-audit.mjs (1651 فحصاً)
+npm run final-audit    # node final-audit.mjs (1653 فحصاً)
 npm test               # storage + engine + auth + ... + db + runtime
 ```
 - التشغيل الإنتاجي: `PORT=4517 NODE_ENV=production APP_URL=http://localhost:4517 node dist/server.cjs`
@@ -6386,3 +6386,43 @@ automation/recovery/external/monitoring/storage). معرّفات الأقسام 
 
 **لم يُمسّ:** أي منطق خادم، أي API، قاعدة البيانات، الصلاحيات، الأسرار، أو أي تكامل خارجي.
 تغيير طبقة عرض/تنقّل فقط. **لا حذف لأي ميزة أو مسار قائم.**
+
+## تفعيل TikTok للنشر العام: نطاق video.publish + مفتاح TIKTOK_AUDIT_PASSED (2026-10-14)
+
+جذر المشكلة: كان تطبيق الإنتاج يُعلن **نطاقين** فقط (`user.info.basic`, `video.upload`)،
+فلم يكن طالب التفويض يحمل `video.publish` أصلاً — أي أن مسار **النشر المباشر العام**
+(`/v2/post/publish/video/init/` و`content/init` بـ`DIRECT_POST`) كان يستحيل أن ينجح على
+الإنتاج (`scope_not_authorized`) حتى لو اجتاز التطبيق مراجعة TikTok، لأن النطاق غير
+مطلوب في رابط التفويض. وفي الوقت نفسه لم يكن للمالك أي مفتاح صريح يصرّح بأن التطبيق
+اجتاز **Content Posting API audit**، فكانت الحالة الداخلية تبقى `REQUIRES_AUDIT` دائماً.
+
+**التغيير (طبقة نطاقات + عرض داخلي فقط — لا منطق نشر جديد):**
+- `engine/social/tiktok.ts`: `TIKTOK_REQUIRED_SCOPES` صار **ثلاثة** نطاقات —
+  `user.info.basic` (الهوية)، `video.upload` (رفع المسودة، بلا مراجعة)، و**`video.publish`**
+  (النشر المباشر العام). `resolveTikTokScopes` يبقى مصدر الحقيقة الواحد: يضمن النطاقات
+  الثلاثة دائماً ويُهمل أي نطاق غير رسمي من `TIKTOK_OAUTH_SCOPES`.
+- `server.ts`: أُضيفت `tiktokAuditPassedOverride()` (تقرأ `TIKTOK_AUDIT_PASSED` من البيئة؛
+  الافتراضي `false` = لا تجاوز) ووُصلت بـ`tiktokAuditRequired()`: عند التصريح بالاجتياز
+  يُعرض النشر المباشر العام كـ`AVAILABLE` بدل `REQUIRES_AUDIT` في لوحات العرض/الجاهزية.
+  **حدّ صادق ملزم موثّق في تعليق الدالة:** المفتاح **لا يغيّر إنفاذ TikTok الفعلي إطلاقاً** —
+  قرار عرض/تشخيص داخلي فقط. تبقى TikTok مصدر الحقيقة: إن لم يكن التطبيق مُراجَعاً فعلاً
+  فردّ النشر المباشر يأتي من TikTok نفسه (SELF_ONLY أو رفض)، ولا يُخترع أي نجاح.
+- `.env.example` و`render.yaml`: توثيق `TIKTOK_AUDIT_PASSED` (بلا قيمة سرّية، `sync: false`).
+
+**المراجع الدقيقة:** `engine/social/tiktok.ts` (`TIKTOK_REQUIRED_SCOPES` السطر ~216)،
+`server.ts` (`tiktokAuditPassedOverride` ~2578، `tiktokAuditRequired` ~2568)،
+`engine/tests/tiktok.connector.test.ts` (المجموعة 2 — ثلاثة نطاقات).
+
+**الاختبارات:** `tiktok.connector.test.ts` صار **275 فحصاً** (المجموعة 2 تتحقق الآن من
+النطاقات الثلاثة ورفض `video.list` غير المعتمد). `npm run lint` ✅ · `npm run build` ✅.
+
+**فحوص final-audit الجديدة:** `tiktok-publish-scope-present`،
+`tiktok-audit-passed-override-honest` (يتأكد من وجود `tiktokAuditPassedOverride()` ومن أن
+تعليقها يصرّح بأن المفتاح لا يغيّر إنفاذ TikTok الفعلي، وأن الافتراضي لا تجاوز) —
+المجموع **1653 فحصاً** (كان 1651).
+
+**خاتمة:** هذا التغيير **لم يُدمج ولم يُنشر** — بانتظار إذن المالك، والتغييرات باقية في
+working directory فقط (بلا commit/push). **المتبقي إجراء خارجي بحت من المالك على لوحة
+TikTok for Developers:** (١) تفعيل نطاق `video.publish` في تطبيق الإنتاج، (٢) تقديم
+التطبيق لمراجعة **Content Posting API** والحصول على الاجتياز، ثم (٣) ضبط
+`TIKTOK_AUDIT_PASSED=true` في Render — بلا ذلك يبقى النشر العام محكوماً من TikTok نفسه.

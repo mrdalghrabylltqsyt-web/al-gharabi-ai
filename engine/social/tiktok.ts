@@ -208,13 +208,15 @@ export function tiktokCapabilityNeedsAudit(key: string): boolean {
 }
 
 /**
- * النطاقات المطلوبة — مقتصرة حصرياً على الصلاحيتين المعتمدتين في تطبيق الإنتاج:
+ * النطاقات المطلوبة — الثلاثة المعتمدة في تطبيق الإنتاج:
  * - user.info.basic  → هوية الحساب.
- * - video.upload     → رفع المسودات.
+ * - video.upload     → رفع المسودات (بلا مراجعة).
+ * - video.publish    → النشر المباشر العام (يتطلب اجتياز Content Posting audit).
  */
 export const TIKTOK_REQUIRED_SCOPES: readonly string[] = Object.freeze([
   'user.info.basic',
   'video.upload',
+  'video.publish',
 ]);
 
 /**
