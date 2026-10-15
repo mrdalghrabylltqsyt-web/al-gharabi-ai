@@ -1074,7 +1074,7 @@ export class FacebookClient {
       u.searchParams.set('access_token', accessToken);
       const res = await this.fetchImpl(u.toString(), { method: 'GET' });
       const data = await res.json().catch(() => null);
-      if (!res.ok || data?.error || !data?.id) { console.error(formatFacebookGraphError(extractFacebookGraphError(data, `GET /${pageId}`, res.status))); return { ok: false, data: null, error: errorMessage(data, 'تعذّر إثبات هوية الصفحة.') }; }
+      if (!res.ok || data?.error || !data?.id) { const ex = logAndExtractFacebookError(data, `GET /${pageId}`, res.status); const msg = errorMessage(data, 'تعذّر إثبات هوية الصفحة.'); return { ok: false, data: null, error: msg, providerCode: ex.providerCode ?? facebookProviderErrorCode(data), providerSubcode: ex.providerSubcode, providerTraceId: ex.providerTraceId, code: classifyFacebookProviderError(msg, ex.providerCode ?? facebookProviderErrorCode(data)) }; }
       return {
         ok: true,
         data: {
@@ -1236,7 +1236,7 @@ export class FacebookClient {
       u.searchParams.set('access_token', pageAccessToken);
       const res = await this.fetchImpl(u.toString(), { method: 'GET' });
       const data = await res.json().catch(() => null);
-      if (!res.ok || data?.error) return { ok: false, data: null, error: errorMessage(data, 'فشل قراءة تعليقات الصفحة.') };
+      if (!res.ok || data?.error) { const msg = errorMessage(data, 'فشل قراءة تعليقات الصفحة.'); const ex = logAndExtractFacebookError(data, `GET /${pageId}/feed`, res.status); const pCode = ex.providerCode ?? facebookProviderErrorCode(data); return { ok: false, data: null, error: msg, providerCode: pCode, providerSubcode: ex.providerSubcode, providerTraceId: ex.providerTraceId, code: classifyFacebookProviderError(msg, pCode) }; }
       const out: Array<{ commentId: string; postId: string | null; message: string; authorName: string | null; authorId: string | null; createdAt: string | null; parentId: string | null }> = [];
       for (const post of Array.isArray(data?.data) ? data.data : []) {
         const postId = post?.id ? String(post.id) : null;
@@ -1270,7 +1270,12 @@ export class FacebookClient {
         body: buildCommentReplyBody(message).toString(),
       });
       const data = await res.json().catch(() => null);
-      if (!res.ok || data?.error || !data?.id) return { ok: false, data: null, error: errorMessage(data, 'فشل الرد على التعليق عبر Facebook.') };
+      if (!res.ok || data?.error || !data?.id) {
+        const msg = errorMessage(data, 'فشل الرد على التعليق عبر Facebook.');
+        const ex = logAndExtractFacebookError(data, `POST /${commentId}/comments`, res.status);
+        const pCode = ex.providerCode ?? facebookProviderErrorCode(data);
+        return { ok: false, data: null, error: msg, providerCode: pCode, providerSubcode: ex.providerSubcode, providerTraceId: ex.providerTraceId, code: classifyFacebookProviderError(msg, pCode) };
+      }
       return { ok: true, data: { providerCommentId: String(data.id) } };
     } catch (e: any) {
       // F-07: انقطاع بعد الإرسال بلا رد مزود — لا يُصنَّف فشلاً مؤكداً (انظر idempotencyStore).
@@ -1290,7 +1295,12 @@ export class FacebookClient {
         body: buildSendMessagePayload(recipientId, text),
       });
       const data = await res.json().catch(() => null);
-      if (!res.ok || data?.error || !data?.message_id) return { ok: false, data: null, error: errorMessage(data, 'فشل إرسال الرسالة عبر Facebook.') };
+      if (!res.ok || data?.error || !data?.message_id) {
+        const msg = errorMessage(data, 'فشل إرسال الرسالة عبر Facebook.');
+        const ex = logAndExtractFacebookError(data, `POST /${pageId}/messages`, res.status);
+        const pCode = ex.providerCode ?? facebookProviderErrorCode(data);
+        return { ok: false, data: null, error: msg, providerCode: pCode, providerSubcode: ex.providerSubcode, providerTraceId: ex.providerTraceId, code: classifyFacebookProviderError(msg, pCode) };
+      }
       return { ok: true, data: { providerMessageId: String(data.message_id), recipientId: data.recipient_id ? String(data.recipient_id) : null } };
     } catch (e: any) {
       // F-07: انقطاع بعد الإرسال بلا رد مزود — لا يُصنَّف فشلاً مؤكداً.

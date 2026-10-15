@@ -520,7 +520,12 @@ export class InstagramClient {
       u.searchParams.set('access_token', pageAccessToken);
       const res = await this.fetchImpl(u.toString(), { method: 'GET' });
       const data = await res.json().catch(() => null);
-      if (!res.ok || data?.error || !data?.id) return { ok: false, data: null, error: errorMessage(data, 'تعذّر إثبات هوية حساب Instagram.') };
+      if (!res.ok || data?.error || !data?.id) {
+        const msg = errorMessage(data, 'تعذّر إثبات هوية حساب Instagram.');
+        const ex = logAndExtractInstagramError(data, `GET /${igAccountId}`, res.status);
+        const pCode = ex.providerCode ?? providerErrorCode(data);
+        return { ok: false, data: null, error: msg, providerCode: pCode, providerSubcode: ex.providerSubcode, providerTraceId: ex.providerTraceId, code: classifyInstagramProviderError(msg, pCode) };
+      }
       return { ok: true, data: { igAccountId: String(data.id), igUsername: data.username ? String(data.username) : null, pageId: null } };
     } catch (e: any) {
       return { ok: false, data: null, error: String(e?.message || 'فشل الاتصال بـInstagram.') };
@@ -593,7 +598,7 @@ export class InstagramClient {
       u.searchParams.set('access_token', pageAccessToken);
       const res = await this.fetchImpl(u.toString(), { method: 'GET' });
       const data = await res.json().catch(() => null);
-      if (!res.ok || data?.error) return { ok: false, data: null, error: errorMessage(data, 'فشل قراءة تعليقات Instagram.') };
+      if (!res.ok || data?.error) { const msg = errorMessage(data, 'فشل قراءة تعليقات Instagram.'); const ex = logAndExtractInstagramError(data, `GET /${igAccountId}/media`, res.status); const pCode = ex.providerCode ?? providerErrorCode(data); return { ok: false, data: null, error: msg, providerCode: pCode, providerSubcode: ex.providerSubcode, providerTraceId: ex.providerTraceId, code: classifyInstagramProviderError(msg, pCode) }; }
       const out: Array<{ commentId: string; mediaId: string | null; text: string; username: string | null; authorId: string | null; createdAt: string | null }> = [];
       for (const media of Array.isArray(data?.data) ? data.data : []) {
         const mediaId = media?.id ? String(media.id) : null;
@@ -621,7 +626,12 @@ export class InstagramClient {
         body: buildInstagramReplyBody(message).toString(),
       });
       const data = await res.json().catch(() => null);
-      if (!res.ok || data?.error || !data?.id) return { ok: false, data: null, error: errorMessage(data, 'فشل الرد على التعليق عبر Instagram.') };
+      if (!res.ok || data?.error || !data?.id) {
+        const msg = errorMessage(data, 'فشل الرد على التعليق عبر Instagram.');
+        const ex = logAndExtractInstagramError(data, `POST /${commentId}/replies`, res.status);
+        const pCode = ex.providerCode ?? providerErrorCode(data);
+        return { ok: false, data: null, error: msg, providerCode: pCode, providerSubcode: ex.providerSubcode, providerTraceId: ex.providerTraceId, code: classifyInstagramProviderError(msg, pCode) };
+      }
       return { ok: true, data: { providerCommentId: String(data.id) } };
     } catch (e: any) {
       // F-07: انقطاع بعد الإرسال بلا رد مزود — لا يُصنَّف فشلاً مؤكداً.
@@ -641,7 +651,12 @@ export class InstagramClient {
         body: buildInstagramMessagePayload(igsid, text),
       });
       const data = await res.json().catch(() => null);
-      if (!res.ok || data?.error || !data?.message_id) return { ok: false, data: null, error: errorMessage(data, 'فشل إرسال الرسالة عبر Instagram.') };
+      if (!res.ok || data?.error || !data?.message_id) {
+        const msg = errorMessage(data, 'فشل إرسال الرسالة عبر Instagram.');
+        const ex = logAndExtractInstagramError(data, `POST /${pageId}/messages`, res.status);
+        const pCode = ex.providerCode ?? providerErrorCode(data);
+        return { ok: false, data: null, error: msg, providerCode: pCode, providerSubcode: ex.providerSubcode, providerTraceId: ex.providerTraceId, code: classifyInstagramProviderError(msg, pCode) };
+      }
       return { ok: true, data: { providerMessageId: String(data.message_id), recipientId: data.recipient_id ? String(data.recipient_id) : null } };
     } catch (e: any) {
       // F-07: انقطاع بعد الإرسال بلا رد مزود — لا يُصنَّف فشلاً مؤكداً.

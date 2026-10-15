@@ -28,6 +28,8 @@ export interface InstagramMockState {
   failProfile: boolean;
   failSubscribe: boolean;
   failCommentReply: boolean;
+  /** F-02: يحاكي رمزاً منتهياً/مسحوباً — كل نداء يرد OAuthException كود 190. */
+  revokedToken: boolean;
   failSend: boolean;
   failPublish: boolean;
   failPublishStep: boolean;
@@ -60,6 +62,7 @@ export function createInstagramMock(state: Partial<InstagramMockState> = {}): In
     failProfile: false,
     failSubscribe: false,
     failCommentReply: false,
+    revokedToken: state.revokedToken ?? false,
     failSend: false,
     failPublish: false,
     failPublishStep: false,
@@ -182,6 +185,7 @@ export async function startInstagramMockServer(
     const { id } = req.params;
     const fields = String(req.query.fields || '');
     state.calls += 1;
+    if (state.revokedToken) return res.status(400).json({ error: { message: 'Error validating access token: Session has expired', type: 'OAuthException', code: 190 } });
     if (state.failProfile) return res.status(400).json({ error: { message: 'Unsupported get request', code: 100 } });
     const account = state.accounts.find((a) => a.igAccountId === id);
     if (account) return res.json({ id: account.igAccountId, username: account.igUsername });
@@ -225,6 +229,7 @@ export async function startInstagramMockServer(
   app.post('/:version/:commentId/replies', (req, res) => {
     const { commentId } = req.params;
     state.calls += 1;
+    if (state.revokedToken) return res.status(400).json({ error: { message: 'Error validating access token: Session has expired', type: 'OAuthException', code: 190 } });
     if (state.failCommentReply) return res.status(400).json({ error: { message: 'Cannot reply', code: 200 } });
     const message = String(req.body?.message || '');
     const id = `IG_REPLY_${commentId}_${state.commentReplies.length + 1}`;
@@ -235,6 +240,7 @@ export async function startInstagramMockServer(
   app.post('/:version/:pageId/messages', (req, res) => {
     const { pageId } = req.params;
     state.calls += 1;
+    if (state.revokedToken) return res.status(400).json({ error: { message: 'Error validating access token: Session has expired', type: 'OAuthException', code: 190 } });
     if (state.failSend) return res.status(400).json({ error: { message: 'Message not sent', code: 551 } });
     const recipientId = String(req.body?.recipient?.id || '');
     const text = String(req.body?.message?.text || '');

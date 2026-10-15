@@ -34,6 +34,8 @@ export interface FacebookMockState {
   failSubscribe: boolean;
   /** يفشل الرد على تعليق عند true. */
   failCommentReply: boolean;
+  /** F-02: يحاكي رمزاً منتهياً/مسحوباً — كل نداء يرد OAuthException كود 190. */
+  revokedToken: boolean;
   /**
    * F-07: محاكاة «انقطاع بعد الإرسال» — يُسجَّل الرد فعلياً (كأن المزود نفّذه)
    * ثم لا يُرسل أي استجابة فينقطع الاتصال. يُثبت أن الانقطاع لا يُصنَّف فشلاً مؤكداً.
@@ -116,6 +118,7 @@ export function createFacebookMock(state: Partial<FacebookMockState> = {}): Face
     failPageProfile: false,
     failSubscribe: false,
     failCommentReply: false,
+    revokedToken: state.revokedToken ?? false,
     hangCommentReply: false,
     failSend: false,
     failPublish: false,
@@ -340,6 +343,7 @@ export async function startFacebookMockServer(
     }
     state.calls += 1;
     state.pageProfileCalls += 1;
+    if (state.revokedToken) return res.status(400).json({ error: { message: 'Error validating access token: Session has expired on ...', type: 'OAuthException', code: 190, error_subcode: 463 } });
     if (state.failPageProfile) return res.status(400).json({ error: { message: 'Unsupported get request', code: 100 } });
     const page = state.pages.find((p) => p.id === pageId);
     if (!page) return res.status(400).json({ error: { message: 'Unknown page', code: 803 } });
@@ -370,6 +374,7 @@ export async function startFacebookMockServer(
   app.post('/:version/:commentId/comments', (req, res) => {
     const { commentId } = req.params;
     state.calls += 1;
+    if (state.revokedToken) return res.status(400).json({ error: { message: 'Error validating access token: Session has expired', type: 'OAuthException', code: 190 } });
     if (state.failCommentReply) return res.status(400).json({ error: { message: 'Cannot reply', code: 200 } });
     const message = String(req.body?.message || '');
     const id = `REPLY_${commentId}_${state.commentReplies.length + 1}`;
@@ -381,6 +386,7 @@ export async function startFacebookMockServer(
   app.post('/:version/:pageId/messages', (req, res) => {
     const { pageId } = req.params;
     state.calls += 1;
+    if (state.revokedToken) return res.status(400).json({ error: { message: 'Error validating access token: Session has expired', type: 'OAuthException', code: 190 } });
     if (state.failSend) return res.status(400).json({ error: { message: 'Message not sent', code: 551 } });
     const recipientId = String(req.body?.recipient?.id || '');
     const text = String(req.body?.message?.text || '');
@@ -393,6 +399,7 @@ export async function startFacebookMockServer(
   // الاحتياطي للمراقب (قراءة-فقط). يعيد المنشورات وتعليقاتها المتداخلة.
   app.get('/:version/:pageId/feed', (req, res) => {
     state.calls += 1;
+    if (state.revokedToken) return res.status(400).json({ error: { message: 'Error validating access token: Session has expired', type: 'OAuthException', code: 190 } });
     if (state.failFeed) return res.status(400).json({ error: { message: 'Permissions error', code: 200 } });
     const rows = (state.feedPosts || []).map((p) => ({
       id: p.id,

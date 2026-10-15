@@ -194,7 +194,7 @@ import {
   isThreadsContainerFailed,
   type ThreadsFetch,
 } from "./engine/social/threads";
-import { createRetryingFetch, resolveHttpRetryPolicy } from "./engine/social/httpRetry";
+import { createRetryingFetch, resolveHttpRetryPolicy, META_TOKEN_EXPIRED_CODE } from "./engine/social/httpRetry";
 import {
   TikTokClient,
   TIKTOK_CAPABILITY_MATRIX,
@@ -2449,6 +2449,41 @@ async function markThreadsReauthNeeded(reason: string): Promise<void> {
   savePlatformConnections();
   await persistStateDurable();
   audit("system", "threads_reauth_needed", reason || "token_expired");
+}
+
+/**
+ * F-02: يضبط اتصال منصة Meta (Facebook/Instagram) على `reauth_needed` عند رفض
+ * الرمز فعلياً (OAuthException كود 190) من أي نداء مزود (رد/نشر/health/polling) —
+ * بنفس نمط YouTube/TikTok/Threads. لا يُعلن اتصالاً قائماً بينما الرمز مرفوض.
+ * سبب موحّد يُسجَّل في التدقيق، والحالة تصمد بعد إعادة التشغيل عبر المخزن.
+ */
+function markMetaReauthNeeded(platform: "facebook" | "instagram", reason: string): void {
+  const current: any = platformConnections.get(platform);
+  if (current?.status === "reauth_needed") return; // لا تكرار بلا داع.
+  const stored: any = getProviderToken(platform) || {};
+  platformConnections.set(platform, {
+    platform,
+    status: "reauth_needed",
+    accountId: String(stored?.igAccountId || stored?.pageId || current?.accountId || ""),
+    accountName: current?.accountName,
+    connectedAt: current?.connectedAt || stored?.connectedAt || new Date().toISOString(),
+  });
+  savePlatformConnections();
+  persistState();
+  audit("system", `${platform}_reauth_needed`, reason || "token_expired");
+  console.warn(`[meta-reauth] platform=${platform} reason=${reason || "token_expired"}`);
+}
+/**
+ * F-02: يفحص نتيجة نداء Meta فعلي (رد/نشر/قراءة) وإن كانت تحمل OAuthException
+ * كود 190 (رمز منتهٍ/مسحوب) يحوّل الحالة إلى `reauth_needed` فوراً — فلا تبقى
+ * "متوافقة" إلى الأبد ولا تُعاد المحاولة على منصة معطّلة. يعمل لأي شكل نتيجة
+ * يحمل `providerCode`/`code` (TOKEN_EXPIRED).
+ */
+function detectMetaReauthFromResult(platform: "facebook" | "instagram", result: { code?: string | null; providerCode?: number | null } | null | undefined): boolean {
+  if (!result) return false;
+  const expired = result.providerCode === META_TOKEN_EXPIRED_CODE || String(result.code || "").toUpperCase() === "TOKEN_EXPIRED";
+  if (expired) { markMetaReauthNeeded(platform, "token_expired"); return true; }
+  return false;
 }
 /**
  * تجديد قسري واحد للرمز الطويل عبر `grant_type=th_exchange_token` (وثيقة Threads؛
@@ -4866,8 +4901,10 @@ async function executeMetaCommentReply(
 
     // 5) إرسال حقيقي على مسار التعليقات فقط (comment_reply).
     const result = platform === 'facebook'
-      ? await (async () => { const target = facebookReplyTarget(); if ('error' in target) return { ok: false, error: target.error, code: 'pre_provider', providerReplyId: null as string | null }; const r = await facebookClient().replyToComment(String(comment.replyTarget?.commentId || externalId), target.pageToken, text); return { ok: r.ok, error: r.error, code: r.code || null, providerReplyId: r.data?.providerCommentId || null }; })()
-      : await (async () => { const target = instagramReplyTarget(); if ('error' in target) return { ok: false, error: target.error, code: 'pre_provider', providerReplyId: null as string | null }; const r = await instagramClient().replyToComment(String(comment.replyTarget?.commentId || externalId), target.pageToken, text); return { ok: r.ok, error: r.error, code: r.code || null, providerReplyId: r.data?.providerCommentId || null }; })();
+      ? await (async () => { const target = facebookReplyTarget(); if ('error' in target) return { ok: false, error: target.error, code: 'pre_provider', providerCode: null as number | null, providerReplyId: null as string | null }; const r = await facebookClient().replyToComment(String(comment.replyTarget?.commentId || externalId), target.pageToken, text); return { ok: r.ok, error: r.error, code: r.code || null, providerCode: r.providerCode ?? null, providerReplyId: r.data?.providerCommentId || null }; })()
+      : await (async () => { const target = instagramReplyTarget(); if ('error' in target) return { ok: false, error: target.error, code: 'pre_provider', providerCode: null as number | null, providerReplyId: null as string | null }; const r = await instagramClient().replyToComment(String(comment.replyTarget?.commentId || externalId), target.pageToken, text); return { ok: r.ok, error: r.error, code: r.code || null, providerCode: r.providerCode ?? null, providerReplyId: r.data?.providerCommentId || null }; })();
+    // F-02: رفض الرمز فعلياً (190) => reauth_needed فوراً؛ لا مزيد من المحاولات.
+    detectMetaReauthFromResult(platform, result);
     // F-07: الحالة النهائية من التصنيف — انقطاع بعد الإرسال لا يُعلن فشلاً مؤكداً.
     idemOutcome = classifyExternalOperationOutcome({ ok: result.ok, failureKind: providerFailureKind(result.code) });
     if (!result.ok && result.providerReplyId === null && /موثق|مهيأ/.test(String(result.error || ''))) {
@@ -4960,8 +4997,10 @@ async function executeMetaMessageReply(
     if (!decision.allowed) return { status: 409, body: { success: false, error: decision.reason, guard: decision } };
 
     const result = platform === 'facebook'
-      ? await (async () => { const target = facebookReplyTarget(); if ('error' in target) return { ok: false, error: target.error, code: 'pre_provider', providerReplyId: null as string | null, recipientId: null as string | null }; const r = await facebookClient().sendMessage(target.pageId, target.pageToken, targetRecipient, text); return { ok: r.ok, error: r.error, code: r.code || null, providerReplyId: r.data?.providerMessageId || null, recipientId: r.data?.recipientId ?? null }; })()
-      : await (async () => { const target = instagramReplyTarget(); if ('error' in target) return { ok: false, error: target.error, code: 'pre_provider', providerReplyId: null as string | null, recipientId: null as string | null }; const r = await instagramClient().sendMessage(target.pageId, target.pageToken, targetRecipient, text); return { ok: r.ok, error: r.error, code: r.code || null, providerReplyId: r.data?.providerMessageId || null, recipientId: r.data?.recipientId ?? null }; })();
+      ? await (async () => { const target = facebookReplyTarget(); if ('error' in target) return { ok: false, error: target.error, code: 'pre_provider', providerCode: null as number | null, providerReplyId: null as string | null, recipientId: null as string | null }; const r = await facebookClient().sendMessage(target.pageId, target.pageToken, targetRecipient, text); return { ok: r.ok, error: r.error, code: r.code || null, providerCode: r.providerCode ?? null, providerReplyId: r.data?.providerMessageId || null, recipientId: r.data?.recipientId ?? null }; })()
+      : await (async () => { const target = instagramReplyTarget(); if ('error' in target) return { ok: false, error: target.error, code: 'pre_provider', providerCode: null as number | null, providerReplyId: null as string | null, recipientId: null as string | null }; const r = await instagramClient().sendMessage(target.pageId, target.pageToken, targetRecipient, text); return { ok: r.ok, error: r.error, code: r.code || null, providerCode: r.providerCode ?? null, providerReplyId: r.data?.providerMessageId || null, recipientId: r.data?.recipientId ?? null }; })();
+    // F-02: رفض الرمز فعلياً (190) => reauth_needed فوراً؛ لا مزيد من المحاولات.
+    detectMetaReauthFromResult(platform, result);
     // F-07: الحالة النهائية من التصنيف — انقطاع بعد الإرسال لا يُعلن فشلاً مؤكداً.
     idemOutcome = classifyExternalOperationOutcome({ ok: result.ok, failureKind: providerFailureKind(result.code) });
     if (!result.ok && result.providerReplyId === null && /موثق|مهيأ/.test(String(result.error || ''))) {
@@ -7726,14 +7765,14 @@ async function fetchMetaInboundComments(platform: MetaPlatform): Promise<{ ok: b
       const token = facebookPageToken(pageId || undefined);
       if (!pageId || !token) return { ok: false, error: "لا صفحة Facebook موثقة.", code: "NOT_CONNECTED" };
       const res = await facebookClient().listPageComments(pageId, token, 25);
-      if (!res.ok) return { ok: false, error: res.error || "فشل قراءة تعليقات Facebook.", code: "FETCH_FAILED" };
+      if (!res.ok) { detectMetaReauthFromResult("facebook", res); return { ok: false, error: res.error || "فشل قراءة تعليقات Facebook.", code: "FETCH_FAILED" }; }
       return { ok: true, comments: res.data || [] };
     }
     const igAccountId = String(getProviderToken("instagram")?.igAccountId || "");
     const token = instagramPageToken();
     if (!igAccountId || !token) return { ok: false, error: "لا حساب Instagram موثّق.", code: "NOT_CONNECTED" };
     const res = await instagramClient().listMediaComments(igAccountId, token, 10, 25);
-    if (!res.ok) return { ok: false, error: res.error || "فشل قراءة تعليقات Instagram.", code: "FETCH_FAILED" };
+    if (!res.ok) { detectMetaReauthFromResult("instagram", res); return { ok: false, error: res.error || "فشل قراءة تعليقات Instagram.", code: "FETCH_FAILED" }; }
     return { ok: true, comments: res.data || [] };
   } catch (e: any) {
     return { ok: false, error: String(e?.message || "فشل الجلب."), code: "FETCH_ERROR" };
@@ -10786,6 +10825,8 @@ async function executePlatformPublishInner(platform: string, body: any, actor: s
         : imageUrl
           ? await facebookClient().publishPhotoToPage(target.pageId, target.pageToken, imageUrl, content)
           : await facebookClient().publishToPage(target.pageId, target.pageToken, content);
+      // F-02: رفض الرمز (190) => reauth_needed فوراً (توقف النشر حتى إعادة الربط).
+      detectMetaReauthFromResult("facebook", result);
       const receipt = result.ok ? { provider: "facebook", pageId: target.pageId, postId: result.data?.providerPostId, mediaKind: videoUrl ? "video" : (imageUrl ? "image" : "text"), sentAt: new Date().toISOString() } : null;
       const record = buildPublishRecord({ platform: platform as any, postId: typeof body?.postId === "string" ? body.postId : workspaceId("post"), providerPostId: result.data?.providerPostId || null, simulated: false, error: result.ok ? null : result.error, code: result.code ?? null, providerCode: result.providerCode ?? null, providerSubcode: result.providerSubcode ?? null, providerTraceId: result.providerTraceId ?? null });
       if (!Array.isArray((workspace as any).publishRecords)) (workspace as any).publishRecords = [];
@@ -10816,6 +10857,8 @@ async function executePlatformPublishInner(platform: string, body: any, actor: s
       const igPoll = resolveContainerPollConfig(process.env);
       const container = await createInstagramContainerReady(target.igAccountId, target.pageToken, { imageUrl, videoUrl, caption: content, reel, shareToFeed }, igPoll);
       if ("error" in container) {
+        // F-02: رفض الرمز (190) => reauth_needed فوراً (لا نشر حتى إعادة الربط).
+        detectMetaReauthFromResult("instagram", container);
         // MEDIA_REQUIRED يبقى فقط إن غاب الوسائط فعلاً قبل أي استدعاء شبكي؛ وإلا نُمرّر
         // كود Meta الحقيقي ورسالته بدل تثبيت MEDIA_REQUIRED الذي كان يُخفي السبب.
         const code = container.code || "MEDIA_REQUIRED";
@@ -10830,6 +10873,8 @@ async function executePlatformPublishInner(platform: string, body: any, actor: s
         return { status: isRealMediaRequired ? 422 : 502, body: { success: false, record: failRecord, error: container.error, code: isRealMediaRequired ? "MEDIA_REQUIRED" : code, providerCode: container.providerCode ?? null, providerSubcode: container.providerSubcode ?? null, providerTraceId: container.providerTraceId ?? null, note: isRealMediaRequired ? "Instagram لا ينشر نصاً فقط؛ زوّد imageUrl أو videoUrl عاماً." : "فشل نشر Instagram بالسبب الحقيقي من Meta (يتضمّن انتظار جاهزية الحاوية قبل النشر)." } };
       }
       const published = await instagramClient().publishContainer(target.igAccountId, target.pageToken, container.containerId);
+      // F-02: رفض الرمز (190) => reauth_needed فوراً.
+      detectMetaReauthFromResult("instagram", published);
       const receipt = published.ok ? { provider: "instagram", igAccountId: target.igAccountId, containerId: container.containerId, postId: published.data?.providerPostId, mediaKind: container.mediaKind, sentAt: new Date().toISOString() } : null;
       const record = buildPublishRecord({ platform: platform as any, postId: typeof body?.postId === "string" ? body.postId : workspaceId("post"), providerPostId: published.data?.providerPostId || null, simulated: false, error: published.ok ? null : published.error, code: published.code ?? null, providerCode: published.providerCode ?? null, providerSubcode: published.providerSubcode ?? null, providerTraceId: published.providerTraceId ?? null });
       if (!Array.isArray((workspace as any).publishRecords)) (workspace as any).publishRecords = [];
@@ -11073,6 +11118,30 @@ app.get("/api/platforms/:platform/health", authenticateToken, async (req,res)=>{
       if(!token?.access_token) throw new Error("رمز TikTok غير متوفر.");
       const r=await fetch("https://open.tiktokapis.com/v2/user/info/?fields=open_id,display_name",{headers:{Authorization:`Bearer ${token.access_token}`}}); const d=await r.json();
       return res.status(r.ok&&Boolean(d.data?.user)?200:502).json({success:r.ok&&Boolean(d.data?.user),platform,healthy:r.ok&&Boolean(d.data?.user),provider:"tiktok",accountId:d.data?.user?.open_id||c.accountId,accountName:d.data?.user?.display_name||c.accountName,checkedAt:new Date().toISOString()});
+    }
+    if(platform==="facebook"||platform==="instagram") {
+      // F-02: فحص حقيقي خفيف عبر Graph (GET /{page-id} أو GET /{ig-user-id}).
+      // رفض الرمز (OAuthException 190) => reauth_needed فوراً (لا ادّعاء صحة كاذب).
+      const stored:any=getProviderToken(platform);
+      const pageToken = platform==="facebook" ? facebookPageToken(String(stored?.pageId||"")||undefined) : instagramPageToken();
+      if(!pageToken) {
+        markMetaReauthNeeded(platform, "no_token");
+        return res.status(409).json({success:false,platform,healthy:false,provider:platform,status:"reauth_needed",error:"لا رمز وصول محفوظ؛ أعد الربط."});
+      }
+      const proof = platform==="facebook"
+        ? await facebookClient().getPageProfile(String(stored?.pageId||""), pageToken)
+        : await instagramClient().getInstagramProfile(String(stored?.igAccountId||""), pageToken);
+      if(!proof.ok) {
+        const expired = proof.providerCode === META_TOKEN_EXPIRED_CODE || String(proof.code||"")==="TOKEN_EXPIRED";
+        if(expired) {
+          markMetaReauthNeeded(platform, "token_expired");
+          return res.status(409).json({success:false,platform,healthy:false,provider:platform,status:"reauth_needed",error:proof.error||"انتهى الرمز أو سُحب؛ أعد الربط.",errorKind:"TOKEN_EXPIRED"});
+        }
+        return res.status(502).json({success:false,platform,healthy:false,provider:platform,status:"unhealthy",error:proof.error||"تعذّر التحقق من المنصة لدى المزود.",providerCode:proof.providerCode??null});
+      }
+      const acctId = platform==="facebook" ? (proof.data as any)?.pageId : (proof.data as any)?.igAccountId;
+      const acctName = platform==="facebook" ? (proof.data as any)?.pageName : (proof.data as any)?.igUsername;
+      return res.json({success:true,platform,healthy:true,provider:platform,accountId:acctId||c.accountId,accountName:acctName||c.accountName,checkedAt:new Date().toISOString()});
     }
     if(platform==="google_business") {
       if(!token?.access_token) throw new Error("رمز Google Business Profile غير متوفر.");
