@@ -16,8 +16,9 @@
  *  - مقارنة بزمن ثابت (timingSafeEqual) لمنع هجمات القياس الزمني.
  *  - **بلا مفتاح مضبوط**: المسارات الحسّاسة مقيّدة افتراضياً (fail-closed)، ما لم
  *    يُفعِّل المالك `RECOVERY_CENTER_ALLOW_UNAUTHENTICATED=true` صراحةً (الوضع المحلي).
- *    وُيقتصر هذا العلم على **اتصال محلي (loopback)** فقط (F-23): أي طلب من عنوان
- *    خارجي يبقى مقيّداً حتى لو ضُبط العلم خطأً على خدمة مُستضافة.
+ *    ويقتصر هذا العلم على **اتصال محلي (loopback)** **وخارج بيئة الاستضافة** (F-23):
+ *    أي طلب من عنوان خارجي — أو أي خدمة مُستضافة (`RENDER`/`RECOVERY_CENTER_HOSTED`) —
+ *    يبقى مقيّداً حتى لو ضُبط العلم خطأً على خدمة مُستضافة.
  *  - `/api/health` و`/` (الواجهة) و`/api/owner-auth` تبقى عامة: لا تكشف أي سرّ ولا
  *    بيانات وصفية لنقاط الاستعادة.
  *  - **تحديد معدّل التخمين**: محاولات فاشلة متكررة من نفس عنوان IP على المسارات
@@ -31,6 +32,18 @@ import crypto from 'node:crypto';
 export const OWNER_TOKEN_ENV = 'RECOVERY_CENTER_OWNER_TOKEN';
 export const OWNER_TOKEN_HASH_ENV = 'RECOVERY_CENTER_OWNER_TOKEN_HASH';
 export const ALLOW_UNAUTHENTICATED_ENV = 'RECOVERY_CENTER_ALLOW_UNAUTHENTICATED';
+
+/**
+ * F-23 (مراجعة): علامات بيئة الاستضافة. عند وجود أي منها يُتجاهل علم تعطيل المصادقة
+ * **كلياً** — حتى للعناوين المحلية — لأن الخدمة المُستضافة تصلها اتصالات من وكلاء
+ * البروكسي/التحويل وقد تبدو محلية. يُمنع تعطيل المصادقة على أي بيئة مُستضافة.
+ */
+export const HOSTED_ENV_VARS = ['RENDER', 'RECOVERY_CENTER_HOSTED'];
+
+/** هل نحن في بيئة استضافة (Render أو مركز مستضاف)؟ وجود الاسم بقيمة غير فارغة يكفي. */
+export function isHostedEnvironment(env = process.env) {
+  return HOSTED_ENV_VARS.some((name) => String(env?.[name] ?? '').trim() !== '');
+}
 
 /** نافذة ومعدّل تحديد محاولات التخمين الفاشلة لكل عنوان IP. */
 const AUTH_RATE_LIMIT_WINDOW_MS = 15 * 60 * 1000;
@@ -109,11 +122,16 @@ function usableHash(value) {
 export function inspectRecoveryOwnerAuth(env = process.env) {
   const tokenSet = usableToken(env[OWNER_TOKEN_ENV]);
   const hashSet = usableHash(env[OWNER_TOKEN_HASH_ENV]);
-  const allowUnauthenticated = String(env[ALLOW_UNAUTHENTICATED_ENV] || '').toLowerCase() === 'true';
+  const hosted = isHostedEnvironment(env);
+  const flagRaw = String(env[ALLOW_UNAUTHENTICATED_ENV] || '').toLowerCase() === 'true';
+  // F-23 (مراجعة): على بيئة مُستضافة يُتجاهل العلم كلياً — حتى للعناوين المحلية.
+  const allowUnauthenticated = flagRaw && !hosted;
   return {
     configured: tokenSet || hashSet,
     source: tokenSet ? 'env_token' : hashSet ? 'env_token_hash' : 'none',
     allowUnauthenticated,
+    allowUnauthenticatedRequested: flagRaw,
+    hosted,
     protectedPaths: [...RECOVERY_CENTER_PROTECTED_PATHS],
   };
 }
@@ -138,8 +156,9 @@ export function extractBearerToken(headerValue) {
  */
 export function checkRecoveryOwnerAuth(req, env = process.env) {
   const info = inspectRecoveryOwnerAuth(env);
-  // F-23: علم تعطيل المصادقة يُطبَّق **فقط** على اتصال محلي (loopback). أي طلب من
-  // عنوان خارجي يبقى مقيّداً بـfail-closed حتى لو ضُبط العلم خطأً على خدمة مُستضافة.
+  // F-23: علم تعطيل المصادقة يُطبَّق **فقط** على اتصال محلي (loopback) و**فقط** خارج
+  // بيئة الاستضافة. أي طلب من عنوان خارجي، أو أي خدمة مُستضافة (RENDER/HOSTED)، يبقى
+  // مقيّداً بـfail-closed حتى لو ضُبط العلم خطأً.
   if (info.allowUnauthenticated && isLocalAddress(clientIpOf(req))) {
     return { allowed: true, reason: 'unauthenticated_allowed_by_owner' };
   }
@@ -184,6 +203,25 @@ export function recoveryOwnerAuthStatus(env = process.env) {
     required: !info.allowUnauthenticated,
     configured: info.configured,
     source: info.source,
+    hosted: info.hosted,
     protectedPaths: info.protectedPaths,
   };
+}
+
+/**
+ * F-23 (مراجعة): تحذير إقلاع واضح — يُطبع عند الإقلاع فقط. يوضّح أن علم تعطيل
+ * المصادقة **مُتجاهَل** في بيئة الاستضافة حتى لو ضُبط. لا يكشف أي سرّ (أسماء فقط).
+ */
+export function recoveryAuthStartupWarning(env = process.env) {
+  const info = inspectRecoveryOwnerAuth(env);
+  if (info.hosted && info.allowUnauthenticatedRequested) {
+    return '⚠️  RECOVERY_CENTER_ALLOW_UNAUTHENTICATED مضبوط=true لكنه **مُتجاهَل** في بيئة '
+      + 'الاستضافة (RENDER/RECOVERY_CENTER_HOSTED): المصادقة تبقى مطلوبة (fail-closed). '
+      + 'هذا العلم للوضع المحلي فقط.';
+  }
+  if (info.hosted && !info.configured) {
+    return '⚠️  مركز الاستعادة في بيئة استضافة بلا RECOVERY_CENTER_OWNER_TOKEN مضبوط: '
+      + 'المسارات الحسّاسة مقيّدة بـfail-closed (401) حتى يُضبط المفتاح.';
+  }
+  return null;
 }

@@ -34,6 +34,7 @@ import {
   SOURCE_BUNDLE_ARCHIVE_NAME,
   SOURCE_BUNDLE_MANIFEST_NAME,
 } from '../../../tools/dr/source-bundle.mjs';
+import { gunzipBounded, MAX_GUNZIP_OUTPUT_BYTES } from '../../../tools/dr/cloud-lib.mjs';
 
 let passed = 0;
 const failures: string[] = [];
@@ -65,6 +66,17 @@ async function main() {
   check('bundle includes package-lock.json', built.files.some((f: any) => f.path === 'package-lock.json'));
   check('bundle excludes node_modules/dist/.git/.env', !built.files.some((f: any) => /^(node_modules|dist|\.git)\//.test(f.path) || f.path === '.env'));
   check('bundle is not empty', built.sizeBytes > 1000, `size=${built.sizeBytes}`);
+
+  // F-21 (مراجعة): حدّ فكّ الضغط 128MiB يغطي أكبر حزمة مصدر فعلية بهامش كافٍ.
+  // نقيس الحجم الفعلي (مضغوط + غير مضغوط) ونثبت أن الهامش ≥ 5×.
+  {
+    const un = gunzipBounded(built.archive);
+    check('F-21 source bundle decompresses under the cap', un.ok === true, un.code || '');
+    const uncompressed = un.ok ? un.data.length : 0;
+    const headroom = MAX_GUNZIP_OUTPUT_BYTES / uncompressed;
+    check('F-21 real source bundle well within 128MiB cap', headroom >= 5, `headroom=${headroom.toFixed(1)}x, uncompressed=${(uncompressed/1024/1024).toFixed(2)}MiB`);
+    check('F-21 measured gzip smaller than uncompressed', built.sizeBytes > 0 && built.sizeBytes < uncompressed);
+  }
 
   const built2 = buildTrustedSourceBundle(repoRoot, {});
   check('deterministic treeHash', built.treeHash === built2.treeHash, `${built.treeHash} vs ${built2.treeHash}`);

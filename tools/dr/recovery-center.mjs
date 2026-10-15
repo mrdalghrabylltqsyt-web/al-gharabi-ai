@@ -55,6 +55,7 @@ import {
   checkRecoveryOwnerAuth,
   isProtectedRecoveryPath,
   recoveryOwnerAuthStatus,
+  recoveryAuthStartupWarning,
 } from './recoveryAuth.mjs';
 
 const IS_HOSTED = Boolean(process.env.RENDER || process.env.RECOVERY_CENTER_HOSTED);
@@ -537,5 +538,7 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   server.listen(PORT, HOST, () => {
     console.log(`🛟 مركز استعادة الغرابي AI — http://${HOST}:${PORT}`);
     console.log('   خدمة مستقلة عن تطبيق الغرابي. لا تُسجّل أي مفتاح ولا تخزّنه.');
+    const warning = recoveryAuthStartupWarning();
+    if (warning) console.warn(warning);
   });
 }

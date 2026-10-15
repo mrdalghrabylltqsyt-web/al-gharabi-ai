@@ -28,6 +28,7 @@ import {
 } from './standalone-recovery.mjs';
 import { injectPwaIntoHtml, servePwaAsset } from './recoveryPwa.mjs';
 import { refuseProductionDatabaseTarget } from './cloud-lib.mjs';
+import { recoveryAuthStartupWarning } from './recoveryAuth.mjs';
 
 const HOST = process.env.RECOVERY_UI_HOST || '127.0.0.1';
 const PORT = Number.parseInt(process.env.PORT || '4599', 10);
@@ -162,5 +163,7 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   server.listen(PORT, HOST, () => {
     console.log(`🛟 الغرابي AI — واجهة الاستعادة المستقلة: http://${HOST}:${PORT}`);
     console.log('   (تعمل بلا خادم الغرابي. لا يُسجَّل أي مفتاح.)');
+    const warning = recoveryAuthStartupWarning();
+    if (warning) console.warn(warning);
   });
 }

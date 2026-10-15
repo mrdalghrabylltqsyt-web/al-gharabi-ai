@@ -44,7 +44,7 @@ npm install
 npm run dev            # tsx server.ts
 npm run lint           # tsc --noEmit
 npm run build          # vite build + esbuild server.ts -> dist/server.cjs
-npm run final-audit    # node final-audit.mjs (1653 فحصاً)
+npm run final-audit    # node final-audit.mjs (1657 فحصاً)
 npm test               # storage + engine + auth + ... + db + runtime
 ```
 - التشغيل الإنتاجي: `PORT=4517 NODE_ENV=production APP_URL=http://localhost:4517 node dist/server.cjs`
@@ -6466,10 +6466,23 @@ TikTok for Developers:** (١) تفعيل نطاق `video.publish` في تطبي�
   يقبل loopback (`127.0.0.0/8`، `::1`، `::ffff:127.x`)، و`checkRecoveryOwnerAuth` يُطبّق
   `RECOVERY_CENTER_ALLOW_UNAUTHENTICATED` **فقط** على اتصال محلي؛ أي طلب خارجي يبقى
   fail-closed حتى لو ضُبط العلم خطأً على خدمة مُستضافة (المركز المستضاف يربط على `0.0.0.0`).
+- **F-23 (تقوية مراجعة) — العلم مُتجاهَل كلياً في بيئة استضافة:** `isHostedEnvironment`
+  (من `RENDER` أو `RECOVERY_CENTER_HOSTED`، أسماء في `HOSTED_ENV_VARS`) يجعل
+  `checkRecoveryOwnerAuth` يرفض طلب التعطيل **حتى من loopback** إن كنا في بيئة استضافة،
+  و`inspectRecoveryOwnerAuth` يُظهر `allowUnauthenticatedRequested: true` مع
+  `allowUnauthenticated: false` (طلب مُعلَن لكنه غير مُنفَّذ)، و`recoveryAuthStartupWarning`
+  يطبع تحذير إقلاع واضح في السجل. فلا يمكن لعلم مُضلَّل على خدمة مُستضافة أن يُبطل المصادقة.
+
+**F-21 (قياس فعلي — لا تخمين):** الحزمة الحقيقية على HEAD = **3.31 MiB مضغوطة / 10.34 MiB
+غير مضغوطة (480 ملفاً) ⇒ هامش 12.4× تحت حدّ 128MiB**. ونسخة القاعدة (`dump()` منطقية JSON)
+تُشفَّر AES-256-GCM وتُخزَّن base64 **بلا gzip** (لا تمرّ بـ`gunzipBounded`)، وسقف نظري
+أسوأ حالة ~76 MiB JSON ⇒ ~101 MiB مشفّرة (تحت 128MiB بـ1.3×). لذلك الحدّ 128MiB آمن
+للاستخدام الفعلي وقابل للتجاوز بالبيئة عند الحاجة.
 
 اختبار الانحدار: `engine/tests/dr/dr.tools.hardening.test.ts` (`npm run test:dr-tools-hardening`،
-**51 فحصاً**) + تحديث `dr.recovery.center.auth.test.ts` (66) ليثبت أن العلم لا يسمح لعنوان خارجي.
-الاختبارات تفشل على الكود القديم وتنجح بعده. `sync-lib.mjs` يُبقي `dr-recovery-center/lib/`
-متزامناً (لا انحراف). `npm run lint` ✅ · `test:dr` ✅ · `final-audit` ✅ (1653).
+**51 فحصاً**) + تحديث `dr.recovery.center.auth.test.ts` (**82**) ليثبت أن العلم لا يسمح
+لعنوان خارجي **ولا في بيئة استضافة**، و`dr.source.bundle.test.ts` (**63**) يثبت هامش F-21
+الفعلي (≥5×). الاختبارات تفشل على الكود القديم وتنجح بعده. `sync-lib.mjs` يُبقي
+`dr-recovery-center/lib/` متزامناً (لا انحراف). `npm run lint` ✅ · `test:dr` ✅ · `final-audit` ✅ (1657).
 **لم يُمسّ** أي سرّ/مفتاح، ولا `public/*` ولا `index.html` ولا `/terms` ولا `/privacy` ولا
 Redirect URI الخاص بـTikTok. **لا push ولا merge ولا deploy** — بانتظار موافقة المالك.
