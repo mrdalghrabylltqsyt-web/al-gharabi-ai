@@ -13,7 +13,7 @@
  */
 
 import { spawn, type ChildProcess } from 'node:child_process';
-import { mkdtempSync, writeFileSync, existsSync, rmSync, readFileSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, existsSync, rmSync, readFileSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import crypto from 'node:crypto';
@@ -114,7 +114,8 @@ async function run(): Promise<void> {
 
     group('F-18) webhook ينتظر الكتابة قبل الإقرار (بنية + سلوك)');
     const src = readFileSync(join(REPO_ROOT, 'server.ts'), 'utf8');
-    check('المسار العام ينتظر persistStateDurable', /app\.post\("\/api\/webhooks\/:platform", async[\s\S]{0,2600}await persistStateDurable\(\)/.test(src));
+    check('المسار العام ينتظر الكتابة الصارمة قبل الإقرار', /app\.post\("\/api\/webhooks\/:platform", async[\s\S]{0,3200}await persistStateDurableOrThrow\(\)/.test(src));
+    check('الكتابة الصارمة تُعلن الخطأ صراحةً (ترمي)', /async function persistStateDurableOrThrow\(\)[\s\S]{0,900}throw new Error/.test(src));
     // سلوك: توقيع صحيح => 202 مقبول (ولا duplicate).
     const raw = JSON.stringify({ type: 'test', data: { x: 1 } });
     const sig = crypto.createHmac('sha256', WEBHOOK_SECRET).update(raw).digest('hex');
@@ -124,9 +125,41 @@ async function run(): Promise<void> {
     const dupJson = await whDup.json().catch(() => ({}));
     check('webhook مكرر => duplicate (منع تكرار يعمل)', whDup.status === 200 && dupJson.duplicate === true, `status=${whDup.status}`);
 
+    group('F-18/F-29) فشل الكتابة الدائمة => 503 بلا تسجيل الحدث (إعادة الإرسال تُقبل)');
+    const tmpPath = join(stateDir, '.gharabi-state.json.tmp');
+    const raw2 = JSON.stringify({ type: 'durability', data: { y: 2 } });
+    const sig2 = crypto.createHmac('sha256', WEBHOOK_SECRET).update(raw2).digest('hex');
+    const postWebhook = (id: string) => fetch(`${BASE}/api/webhooks/facebook`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-gharabi-signature': `sha256=${sig2}`, 'x-event-id': id },
+      body: raw2,
+    });
+    let failed = false;
+    try {
+      mkdirSync(tmpPath); // حجب الكتابة الذرّية: writeFileSync إلى مسار هو مجلد يفشل
+      const resFail = await postWebhook('evt-f29-1');
+      failed = resFail.status === 503;
+      check('فشل الكتابة => 503 (retryable)', resFail.status === 503, `status=${resFail.status}`);
+      const j = await resFail.json().catch(() => ({}));
+      check('الرد يحمل retryable:true', j.retryable === true, JSON.stringify(j).slice(0, 120));
+    } finally {
+      rmSync(tmpPath, { recursive: true, force: true });
+    }
+    if (failed) {
+      // إعادة الإرسال بعد زوال سبب الفشل تُقبل (الحدث لم يُسجَّل كي لا يُرفض كمكرر).
+      const resRetry = await postWebhook('evt-f29-1');
+      check('إعادة الإرسال بعد الفشل => 202 (لا duplicate)', resRetry.status === 202, `status=${resRetry.status}`);
+      const resRetryDup = await postWebhook('evt-f29-1');
+      const rdj = await resRetryDup.json().catch(() => ({}));
+      check('إعادة الإرسال مرّة أخرى => duplicate (سُجّل الآن)', resRetryDup.status === 200 && rdj.duplicate === true, `status=${resRetryDup.status}`);
+    } else {
+      check('محاكاة فشل الكتابة نجحت في إحداث 503', false, 'لم يُرصد 503 — قد لا يُحجب .tmp على هذا النظام');
+    }
+
     group('F-26) لا بريد صريح في سجلات الخادم (بنية)');
     check('لا console.log بالبريد الخام', !/console\.(log|error)\([^)]*\$\{[^}]*\.email\}/.test(src));
     check('يستخدم logSafeEmailId', src.includes('logSafeEmailId(user.email)') && src.includes('logSafeEmailId(newUser.email)'));
+    check('البصمة HMAC بمفتاح الجلسة لا SHA-256 مجرّد', /function logSafeEmailId[\s\S]{0,260}createHmac\("sha256", SESSION_SECRET\)/.test(src));
 
     console.log('\n' + '='.repeat(60));
     if (failures.length) {

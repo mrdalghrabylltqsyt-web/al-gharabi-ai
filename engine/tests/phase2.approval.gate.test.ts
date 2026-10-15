@@ -57,6 +57,7 @@ function main(): void {
   const ui = readFileSync(join(REPO_ROOT, 'src/components/approval/ApprovalWorkflowView.tsx'), 'utf8');
   check('isOwner معرّف', ui.includes("const isOwner = currentUser.role === 'owner'"));
   check('زر الاعتماد محصور بـ isOwner', ui.includes("/* approve owner-only */}{isOwner && ("));
+  check('زر الرفض/الإرجاع محصور بـ isOwner (يطابق /reject المحمي)', /رفض\/إرجاع للتعديل owner-only[\s\S]{0,220}\{isOwner && \(/.test(ui));
   check('زر الجدولة محصور بـ isOwner', /post\.status === 'approved' && isOwner && \(/.test(ui));
   check('زر النشر المبكر محصور بـ isOwner', /post\.status === 'scheduled' && isOwner && \(/.test(ui));
   check('isContent محسوب ومستخدم', ui.includes('const isContent =') && ui.includes("post.status === 'draft' && isContent"));

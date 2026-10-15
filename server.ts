@@ -813,10 +813,14 @@ const OWNER_EMAIL = (process.env.OWNER_EMAIL || "").toLowerCase().trim();
 
 /**
  * F-26: بصمة بريد مجزّأة للسجلات. البريد نص صريح بيانات شخصية لا يجوز أن يظهر في
- * سجل Render؛ نُسجّل بصمة قصيرة ثابتة (hash) تكفي للتتبّع دون كشف البريد.
+ * سجل Render؛ نُسجّل بصمة قصيرة ثابتة تكفي للتتبّع دون كشف البريد.
+ * تُستخدم HMAC بمفتاح الجلسة (SESSION_SECRET) لا SHA-256 مجرّداً: بلا مفتاح كان
+ * أي من يعرف قائمة بريد الموظفين يخمّن البصمة بالمقارنة. المفتاح يجعلها غير قابلة
+ * للتخمين دون سرّ الجلسة.
  */
 function logSafeEmailId(email: string): string {
-  return "u-" + crypto.createHash("sha256").update(`log:${String(email || "").toLowerCase().trim()}`).digest("hex").slice(0, 12);
+  const normalized = String(email || "").toLowerCase().trim();
+  return "u-" + crypto.createHmac("sha256", SESSION_SECRET).update(`log:${normalized}`).digest("hex").slice(0, 12);
 }
 const GOOGLE_CLIENT_ID = (process.env.GOOGLE_CLIENT_ID || "").trim();
 
@@ -14622,6 +14626,40 @@ function persistStateNow(): Promise<void> {
     });
 }
 
+/**
+ * F-29: كتابة **تُنتظر وترمي** عند فشلها — عكس `persistStateDurable` التي لا ترفض
+ * أبداً (`persistStateNow` تلتقط الخطأ وتُكمل). تُستخدم في المسارات التي يجب أن
+ * تفشل صراحةً إن لم تصل الحالة للمخزن الدائم (مثل منع تكرار webhook)، فلا يُعلن
+ * نجاح قبل ضمان الدوام.
+ *
+ * تُبقي طابور الكتابة سليماً (لا تسمّمه برفض) مع تسجيل الخطأ في `lastPersistError`.
+ */
+function persistStateNowStrict(): Promise<void> {
+  const snapshot = buildPersistedState();
+  return persistQueue.then(() => storageAdapter.write(STORAGE_KEY_STATE, snapshot));
+}
+
+async function persistStateDurableOrThrow(): Promise<void> {
+  if (!storageReady) {
+    lastPersistError = storageInitError || "storage_not_ready";
+    throw new Error(lastPersistError);
+  }
+  const strict = persistStateNowStrict();
+  // لا نسمّم الطابور المشترك: نُثبّت نتيجة الكتابة (نجاحاً/فشلاً) ونُسجّل الخطأ.
+  persistQueue = strict.then(
+    () => { lastPersistError = null; },
+    (error: any) => {
+      lastPersistError = String(error?.code || error?.name || "persist_failed").slice(0, 60);
+      console.warn("Could not persist server state:", lastPersistError);
+    },
+  );
+  return strict.catch((error: any) => {
+    const code = String(error?.code || error?.name || "persist_failed").slice(0, 60);
+    lastPersistError = code;
+    throw new Error(code);
+  });
+}
+
 function audit(userId: string, action: string, detail?: string) {
   auditLog.unshift({ id: crypto.randomUUID(), at: new Date().toISOString(), userId, action, detail });
   if (auditLog.length > 100) auditLog.pop();
@@ -15481,10 +15519,17 @@ app.post("/api/webhooks/:platform", async (req,res)=>{
   const eventId=cleanText(req.headers["x-event-id"],160)||workspaceId("event"); if((workspace as any).webhookEvents.some((x:any)=>x.id===eventId)) return res.json({success:true,duplicate:true});
   const event={id:eventId,platform,type:cleanText(req.body?.type,100)||"unknown",payload:req.body?.data||req.body,receivedAt:new Date().toISOString()};
   (workspace as any).webhookEvents.unshift(event); (workspace as any).webhookEvents=(workspace as any).webhookEvents.slice(0,WORKSPACE_MAX_WEBHOOK_EVENTS); (workspace as any).providerEvents.unshift({id:workspaceId("pevent"),platform,eventId,type:event.type,receivedAt:event.receivedAt}); (workspace as any).providerEvents=(workspace as any).providerEvents.slice(0,WORKSPACE_MAX_PROVIDER_EVENTS);
-  // F-18: الكتابة الدائمة **قبل** الإقرار 202 — مثل بقية مسارات webhook (Facebook/
-  // Instagram/TikTok/Telegram). بلا انتظار، قد تُقتل العملية بعد الرد فيُفقد الحدث
-  // ويسقط منع التكرار (فسيُعاد معالجته عند إعادة إرسال المزود).
-  await persistStateDurable();
+  // F-18/F-29: الكتابة الدائمة **قبل** الإقرار، مع **رفض صريح** عند فشلها. إضافة الحدث
+  // إلى قائمة منع التكرار قبل الحفظ تعني أن ردّ 202 بلا كتابة فعلية يجعل المزود يُعاد
+  // إرساله فيُرفض كمكرر ⇒ يضيع الحدث. لذلك نستخدم الكتابة الصارمة، وإن فشلت نتراجع عن
+  // إدخال الحدث (نُزيله من قائمتي webhookEvents/providerEvents) ونرد 503 ليعيد المزود.
+  try {
+    await persistStateDurableOrThrow();
+  } catch (persistErr) {
+    (workspace as any).webhookEvents = ((workspace as any).webhookEvents || []).filter((x:any)=>x.id!==eventId);
+    (workspace as any).providerEvents = ((workspace as any).providerEvents || []).filter((x:any)=>!(x.platform===platform && x.eventId===eventId));
+    return res.status(503).json({success:false,retryable:true,error:"تعذّر تثبيت الحدث في المخزن الدائم؛ أعد الإرسال.",reason:String((persistErr as any)?.message||"persist_failed").slice(0,60)});
+  }
   res.status(202).json({success:true,accepted:true,eventId});
 });
 app.get("/api/webhooks/events", requireOwner, (req,res)=>{ const platform=cleanText(req.query.platform,60); let rows=(workspace as any).webhookEvents.slice(); if(platform) rows=rows.filter((x:any)=>x.platform===platform); res.json({success:true,events:rows.slice(0,500)}); });

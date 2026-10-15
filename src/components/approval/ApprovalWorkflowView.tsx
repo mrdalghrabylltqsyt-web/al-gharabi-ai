@@ -321,6 +321,9 @@ export const ApprovalWorkflowView: React.FC = () => {
                           موافقة واعتماد
                         </button>
                         )}
+                        {/* رفض/إرجاع للتعديل owner-only على الخادم (POST /reject محمي بـ requireOwner):
+                            نُخفيه عن غير المالك كطبقة دفاع إضافية مطابقة لزر الاعتماد. */}
+                        {isOwner && (
                         <button
                           onClick={() =>
                             updatePostStatus(
@@ -333,6 +336,7 @@ export const ApprovalWorkflowView: React.FC = () => {
                         >
                           إرجاع للتعديل
                         </button>
+                        )}
                       </>
                     )}
 
