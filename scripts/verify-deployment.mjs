@@ -64,6 +64,22 @@ async function run() {
   check('مصدر مفتاح الجلسة ليس عابراً', p.sessionSecretSource !== 'ephemeral', `source=${p.sessionSecretSource}`);
   check('توكن المعاينة مُفعَّل في بيئة النشر', p.previewLoginEnabled === true);
 
+  // 1ب) الجاهزية: تدهور حقيقي يُعلن 503؛ وسلامة العملية (لا وعود مرفوضة).
+  let readiness;
+  try {
+    readiness = await json('/api/readiness');
+  } catch (error) {
+    check('/api/readiness متاح', false, String(error?.message || error).slice(0, 120));
+    report();
+    return;
+  }
+  const rp = readiness.body?.persistence || {};
+  const ph = readiness.body?.processHealth || {};
+  check('/api/readiness يستجيب 200 والخدمة جاهزة', readiness.status === 200 && readiness.body?.ready === true, `status=${readiness.status}`);
+  check('★ الجاهزية تُعلن persistence.healthy=true', rp.healthy === true, `healthy=${rp.healthy}`);
+  check('★ لا وعود مرفوضة غير معالجة (unhandledRejectionCount=0)', ph.unhandledRejectionCount === 0, `count=${ph.unhandledRejectionCount}`);
+  check('★ /api/health لا يُعلن كتابة فاشلة (lastPersistError=null)', !p.lastPersistError, `lastPersistError=${p.lastPersistError ?? 'null'}`);
+
   // 2) preview-login: يرفض الخطأ بغير 404، أي أن المسار مُفعَّل فعلاً.
   let wrong;
   try {
