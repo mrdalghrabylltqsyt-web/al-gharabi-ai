@@ -1506,7 +1506,7 @@ app.post("/api/auth/verify-challenge", async (req, res) => {
   consumedChallengeWindows.set(normalizedEmail, matchedWindow);
   consumedChallenges.set(normalizedEmail, Date.now() + CHALLENGE_TTL_MS);
   // ننتظر الكتابة قبل إصدار الجلسة: لا يُمنح وصول قبل تثبيت الاستهلاك الموثوق.
-  await persistCritical();
+  if (!(await persistCriticalOr503(res))) return;
 
   let user = serverUsers.find((u) => u.email.toLowerCase() === normalizedEmail && u.active);
   if (!user && normalizedEmail === OWNER_EMAIL) {
@@ -1519,7 +1519,7 @@ app.post("/api/auth/verify-challenge", async (req, res) => {
   }
 
   const session = createSessionForUser(user);
-  await persistCritical();
+  if (!(await persistCriticalOr503(res))) return;
   return res.json({
     success: true,
     token: session.token,
@@ -1564,7 +1564,7 @@ async function handlePreviewLogin(req: express.Request, res: express.Response) {
   const session = createSessionForUser(owner, previewEpoch.value);
   auditLog.unshift({ id: crypto.randomUUID(), at: new Date().toISOString(), userId: "system", action: "owner_preview_login", detail: "preview-session-created" });
   if (auditLog.length > 100) auditLog.pop();
-  await persistCritical();
+  if (!(await persistCriticalOr503(res))) return;
   return res.json({ success: true, token: session.token, user: session.user });
 }
 // يُسجَّل المسار لطريقة POST فقط: لا يوجد مسار GET يمرّر التوكن في سطر الطلب.
@@ -1590,7 +1590,7 @@ app.post("/api/auth/logout", async (req, res) => {
       revokedSessions.set(payload.sid, payload.exp);
       activeSessions.delete(token);
       // ننتظر التثبيت قبل الرد: لا نُعلن نجاح الخروج قبل استقرار الإبطال.
-      await persistCritical();
+      if (!(await persistCriticalOr503(res))) return;
     }
   }
   res.json({ success: true, message: "تم تسجيل الخروج بنجاح." });
@@ -4232,7 +4232,8 @@ app.get("/api/platforms/:platform/oauth/start", requireOwner, async (req,res)=>{
   audit((req as any).user.id,"platform_oauth_started",platform);
   // نثبّت جلسة OAuth قبل إرجاع رابط التفويض: قد يقضي المالك دقائق في شاشة
   // الموافقة وقد تُطفأ العملية، فيلزم أن تصمد الحالة في المخزن الدائم.
-  await persistCritical();
+  // F-29: fail-closed — لا نُصدر رابط تفويض قبل ضمان التثبيت.
+  if (!(await persistCriticalOr503(res))) return;
   // Meta يرفض رابط إرجاع غير عام (localhost/بلا https) برسالة «لا يمكن تحميل
   // عنوان URL / النطاق غير مُضمَّن في نطاقات التطبيق». لا نحجب البدء (لئلا نكسر
   // التطوير المحلي)، لكن نُعلن السبب صراحةً ونُرفق الرابط والنطاق الفعليين
@@ -4360,7 +4361,14 @@ async function handleOAuthCallback(req:any, res:any, rawQuery:string, viaPost:bo
   // يُستهلك state مرة واحدة فقط (يمنع إعادة الاستخدام)؛ نثبّت الحذف في المخزن
   // الدائم فوراً فلا يُسترجَع عند إعادة تشغيل لاحقة فيُقبل تكرار الطلب.
   pendingOAuth.delete(state);
-  await persistCritical();
+  // F-29: fail-closed — إن لم يُثبَّت حذف state فلا نقبل الرمز (منع إعادة استخدام
+  // state عبر restart). نرد فشلاً صريحاً بدل المتابعة بحذف غير مثبّت.
+  try {
+    await persistCritical();
+  } catch {
+    logOAuthStart(platform, { outcome: "callback_rejected", reason: "persist_failed" });
+    return failHtml(503, "تعذّر تثبيت حالة OAuth في المخزن الدائم؛ أعد المحاولة.");
+  }
   if(params.get("error")) return failHtml(400, `رفض مزود المنصة عملية الربط: ${String(formatOAuthProviderError({ error_message: params.get("error_message"), error_description: params.get("error_description"), error: params.get("error"), error_code: params.get("error_code") }) || params.get("error")).slice(0,300)}`);
   const code=params.get("code")||"";
   // تدفّق Meta الرسمي لـInstagram (Facebook Login for Business - Instagram API)
@@ -14671,11 +14679,63 @@ function audit(userId: string, action: string, detail?: string) {
  * كتابة حسّاسة تُنتظر قبل اعتبار العملية ناجحة (إنشاء جلسة، إبطال، استهلاك
  * OTP). تُثبّت لقطة الحالة وحالة التحكّم معاً (نافذة OTP المُستهلكة، بصمة
  * توكن المعاينة)، فلا يُعاد توكن أو تُعلن نجاح إبطال قبل استقرارها في المخزن.
+ *
+ * F-29 (جذر): كانت هذه الدالة تُعيد `persistQueue` الذي **لا يرفض أبداً** لأن
+ * `persistState()` و`saveControlState()` تلتقطان الخطأ وتُكملان، فيبدو الرد
+ * ناجحاً بينما لم تُكتب الحالة فعلاً. الآن تكتب **صراحةً** و**ترمي** عند الفشل،
+ * فيمنع كل مستدعٍ من إعلان نجاح (جلسة/إبطال/استهلاك OTP) قبل ضمان الدوام.
  */
-function persistCritical(): Promise<void> {
-  persistState();
-  saveControlState();
-  return persistQueue;
+async function persistCritical(): Promise<void> {
+  // F-29 (تدقيق المراجعة): الفشل القاتل **فقط حين يكون الدوام مطلوباً فعلاً**
+  // (مخزن دائم: Postgres، أو ملف محلي على مضيف بقرص دائم). على مضيف عابر مُعلَن
+  // (Render Free/Netlify/Lambda بلا DATABASE_URL) فالتخزين عابر **بالتصميم**،
+  // والجلسات موقّعة بلا حالة تعمل بلا أي كتابة — سلوك موثّق ومُختبَر في
+  // netlify.coldstart («STATE_DIR للقراءة فقط»). عندها تُترك الكتابة best-effort
+  // بدل إسقاط الخدمة (وإلا عطّلنا وضعاً مدعوماً رسمياً).
+  const durabilityExpected = storageStatus().durable;
+  if (durabilityExpected && !storageReady) {
+    lastPersistError = storageInitError || "storage_not_ready";
+    throw new Error(lastPersistError);
+  }
+  try {
+    await persistStateDurableOrThrow();
+    await saveControlStateStrict();
+  } catch (error: any) {
+    if (durabilityExpected) throw error;
+    // وضع عابر معلن: الكتابة فشلت لكن الجلسات بلا حالة تعمل — لا تُسقط العملية.
+    lastPersistError = String(error?.message || error?.code || "persist_failed").slice(0, 60);
+  }
+}
+
+/**
+ * F-29: كتابة **تُنتظر وترمي** لحالة التحكّم (نافذة OTP المُستهلكة، بصمة المعاينة،
+ * أختام الإبطال). تُبقي طابور الكتابة سليماً (لا تسمّمه برفض) مع تسجيل الخطأ.
+ */
+async function saveControlStateStrict(): Promise<void> {
+  const strict = persistQueue.then(() => storageAdapter.write(STORAGE_KEY_CONTROL, buildControlState()));
+  persistQueue = strict.then(
+    () => { /* نجاح */ },
+    (error: any) => {
+      lastPersistError = String(error?.code || error?.name || "persist_failed").slice(0, 60);
+      console.warn("Could not persist control state:", lastPersistError);
+    },
+  );
+  return strict.catch((error: any) => {
+    const code = String(error?.code || error?.name || "persist_failed").slice(0, 60);
+    lastPersistError = code;
+    throw new Error(code);
+  });
+}
+
+/** F-29: تُنفّذ persistCritical وترد 503 صراحةً عند فشل التثبيت. تُعيد true إن نجح. */
+async function persistCriticalOr503(res: express.Response): Promise<boolean> {
+  try {
+    await persistCritical();
+    return true;
+  } catch {
+    res.status(503).json({ success: false, error: "تعذّر تثبيت الحالة في المخزن الدائم؛ أعد المحاولة." });
+    return false;
+  }
 }
 
 // تاريخ الاستخدام يُصفَّر عند تغيّر اليوم. يُنادى من كل عملية حماية.

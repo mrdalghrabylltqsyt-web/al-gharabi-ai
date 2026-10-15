@@ -44,7 +44,7 @@ npm install
 npm run dev            # tsx server.ts
 npm run lint           # tsc --noEmit
 npm run build          # vite build + esbuild server.ts -> dist/server.cjs
-npm run final-audit    # node final-audit.mjs (1661 فحصاً)
+npm run final-audit    # node final-audit.mjs (1666 فحصاً)
 npm test               # storage + engine + auth + ... + db + runtime
 ```
 - التشغيل الإنتاجي: `PORT=4517 NODE_ENV=production APP_URL=http://localhost:4517 node dist/server.cjs`
@@ -6485,4 +6485,45 @@ TikTok for Developers:** (١) تفعيل نطاق `video.publish` في تطبي�
 الفعلي (≥5×). الاختبارات تفشل على الكود القديم وتنجح بعده. `sync-lib.mjs` يُبقي
 `dr-recovery-center/lib/` متزامناً (لا انحراف). `npm run lint` ✅ · `test:dr` ✅ · `final-audit` ✅ (1657).
 **لم يُمسّ** أي سرّ/مفتاح، ولا `public/*` ولا `index.html` ولا `/terms` ولا `/privacy` ولا
+Redirect URI الخاص بـTikTok. **لا push ولا merge ولا deploy** — بانتظار موافقة المالك.
+
+## PR-B — F-29: `persistCritical` كانت تُعلن نجاحاً كاذباً (2026-10-15)
+
+**العطل المُثبت (لا تخمين):** `persistCritical()` في `server.ts` كانت:
+```ts
+function persistCritical(): Promise<void> { persistState(); saveControlState(); return persistQueue; }
+```
+و`persistState()`/`saveControlState()` **تلتقطان الخطأ وتُكملان** (`catch` داخلي)، و`persistQueue`
+نفسه يحمل `.catch(...)` فلا يرفض **أبداً**. النتيجة: عند فشل الكتابة الفعلي (مخزن غير قابل
+للكتابة/انقطاع Neon)، كانت المسارات الحسّاسة — **استهلاك OTP، إنشاء جلسة، تسجيل الخروج
+(إبطال)، دخول المعاينة** — تُعيد **200 مع توكن صالح** رغم أن الحالة لم تُكتب. أي أن جلسة
+تُصدر بلا دوام (تُفقد بعد restart)، وإبطال خروج لا يُثبت (تعود الجلسة للحياة في عملية أخرى).
+
+**الإصلاح (الجذر، بنمط المشروع القائم):**
+- `persistCritical()` صارت `async` تكتب **صراحةً وترمي**: `await persistStateDurableOrThrow()`
+  (النمط الموجود فعلاً) + `saveControlStateStrict()` (جديدة، نفس النمط).
+- **نطاق الفشل القاتل (تدقيق المراجعة):** الفشل (503) يقع **فقط حين يكون الدوام مطلوباً
+  فعلاً** (`storageStatus().durable === true`: Postgres أو ملف على قرص دائم). على مضيف
+  عابر مُعلَن (Render Free/Netlify/Lambda بلا DATABASE_URL) فالتخزين عابر **بالتصميم**
+  والجلسات موقّعة بلا حالة تعمل بلا كتابة — سلوك موثّق ومُختبَر في `netlify.coldstart`،
+  فتبقى الكتابة best-effort هناك ولا نُسقط وضعاً مدعوماً رسمياً.
+- `persistCriticalOr503(res)` غلاف موحّد يرد **503** عند فشل التثبيت.
+- مسارات المصادقة (verify-challenge ×2، preview-login، logout) + بدء OAuth + callback OAuth
+  تستخدم الغلاف (fail-closed). **لا نجاح كاذب في أي مسار حسّاس على مخزن دائم.**
+
+**اختبار الانحدار:** `engine/tests/persist.critical.f29.test.ts` (`npm run test:persist-critical`،
+15 فحصاً، مُدرَج في `npm test`) يشغّل خادمًا حقيقيًا:
+- على مخزن **دائم** (ملف محلي، بلا علامة مضيف عابر) مع مجلد للقراءة فقط (chmod 555):
+  الخروج => **503**، الدخول => **503** بلا توكن، لا ملف حالة يُكتب، وبعد إصلاح الصلاحية
+  يعود للنجاح.
+- على **وضع عابر مُعلَن** (`RENDER=true`) مع مجلد للقراءة فقط: الدخول => **200** (سلوك
+  موثّق محفوظ، لا إسقاط لوضع مدعوم).
+
+**يفشل على الكود القديم** (كان يعيد 200 + توكن على المخزن الدائم) **وينجح بعده** — مُثبت.
+
+فحوص final-audit الجديدة: `persist-critical-throws-on-failure`, `persist-critical-no-false-success`,
+`persist-critical-guards-auth-routes`, `persist-critical-regression-test` (**1666 إجمالاً**).
+`npm run lint` ✅ · `npm run build` ✅ · `npm test` ✅ · `npm run final-audit` ✅.
+
+**لم يُمسّ:** أي سرّ/مفتاح، ولا `public/*` ولا `index.html` ولا `/terms` ولا `/privacy` ولا
 Redirect URI الخاص بـTikTok. **لا push ولا merge ولا deploy** — بانتظار موافقة المالك.
