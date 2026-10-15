@@ -19,6 +19,7 @@ import {
   scanForSecretsStrict,
   isSameDatabaseTarget,
   databaseTargetKey,
+  refuseProductionDatabaseTarget,
   MAX_GUNZIP_OUTPUT_BYTES,
 } from '../../../tools/dr/cloud-lib.mjs';
 import {
@@ -76,6 +77,22 @@ async function main(): Promise<void> {
     check('F-20 real tracked tree complete', tree.complete === true && tree.fileCount >= 10);
     const realScan = scanForSecretsStrict(tree.included as any);
     check('F-20 real tracked tree has no secret', realScan.ok === true, realScan.findings.slice(0, 3).map((f) => `${f.path}:${f.line}:${f.kind}`).join(','));
+
+    // F-20: استثناء صريح موثّق لكل سطر — سطر مُستثنى لا يُفشل البناء، وسطر آخر بنفس
+    // القيمة **بلا** استثناء يبقى مُرصوداً (الاستثناء محدود بالسطر لا بالملف).
+    const allowReason = 'fixture deliberately public, not a real secret';
+    const allowed = [{ path: 'src/allow.ts', content: `const SESSION_SECRET = "${fakeSession}"; // secret-scan-allow: ${allowReason}\n` }];
+    check('F-20 allow-line exception passes', scanForSecretsStrict(allowed as any).ok === true);
+    const notAllowed = [{ path: 'src/noallow.ts', content: `const SESSION_SECRET = "${fakeSession}";\n` }];
+    check('F-20 same value without exception still fails', scanForSecretsStrict(notAllowed as any).ok === false);
+    // الاستثناء يتطلّب سبباً غير فارغ (لا استثناء صامت).
+    const bare = [{ path: 'src/bare.ts', content: `const SESSION_SECRET = "${fakeSession}"; // secret-scan-allow:\n` }];
+    check('F-20 empty-reason exception does NOT apply', scanForSecretsStrict(bare as any).ok === false);
+
+    // رسالة الفشل في البناء تذكر الملف/السطر/النوع فقط ولا تسرّب القيمة.
+    const sb = fs.readFileSync(path.join(repoRoot, 'tools/dr/source-bundle.mjs'), 'utf8');
+    check('F-20 build failure message names file:line [kind]', sb.includes('${f.path}:${f.line} [${f.kind}]'));
+    check('F-20 build failure message never prints value', !/console\.error\([^)]*f\.value/.test(sb));
   }
 
   // ---------- F-22: مقارنة دلالية لقاعدة البيانات ----------
@@ -88,13 +105,32 @@ async function main(): Promise<void> {
     check('F-22 unparseable returns null key', databaseTargetKey('not a url') === null);
     check('F-22 null-safe comparison', isSameDatabaseTarget(null as any, prod) === false);
 
+    // Neon pooler vs direct = نفس القاعدة
+    const direct = 'postgres://u@ep-cool-1.us-east-2.aws.neon.tech/gharabi';
+    const pooler = 'postgres://u@ep-cool-1-pooler.us-east-2.aws.neon.tech/gharabi';
+    check('F-22 neon pooler == direct', isSameDatabaseTarget(pooler, direct) === true);
+    check('F-22 pooler reverse order', isSameDatabaseTarget(direct, pooler) === true);
+    check('F-22 host case-insensitive', isSameDatabaseTarget('postgres://u@EP-Cool-1.us-east-2.aws.neon.tech/gharabi', direct) === true);
+    check('F-22 pooler suffix only (not mid-host)', databaseTargetKey('postgres://u@ep-pooler-x.host/db') === 'ep-pooler-x.host:5432/db');
+    check('F-22 localhost == 127.0.0.1', isSameDatabaseTarget('postgres://u@localhost:5432/db', 'postgres://u@127.0.0.1:5432/db') === true);
+    check('F-22 ::1 == localhost', isSameDatabaseTarget('postgres://u@[::1]:5432/db', 'postgres://u@localhost/db') === true);
+
+    // fail-closed decision
+    const g = refuseProductionDatabaseTarget;
+    check('F-22 guard: same db refuses', g(pooler, direct).refuse === true && g(pooler, direct).reason === 'same_database');
+    check('F-22 guard: distinct db allows', g('postgres://u@a/db1', 'postgres://u@b/db2').refuse === false);
+    check('F-22 guard: target present + prod missing => refuse', g('postgres://u@a/db1', '').refuse === true && g('postgres://u@a/db1', '').reason === 'production_url_missing');
+    check('F-22 guard: unparseable production => refuse', g('postgres://u@a/db1', 'not a url').refuse === true && g('postgres://u@a/db1', 'not a url').reason === 'unparseable_production');
+    check('F-22 guard: unparseable target => refuse', g('not a url', 'postgres://u@a/db1').refuse === true && g('not a url', 'postgres://u@a/db1').reason === 'unparseable_target');
+    check('F-22 guard: no target => no write, allowed', g('', 'postgres://u@a/db1').refuse === false);
+
     // فرض فعلي في المسارات (لا فقط دالة معزولة).
     const standalone = fs.readFileSync(path.join(repoRoot, 'tools/dr/standalone-recovery.mjs'), 'utf8');
-    check('F-22 standalone uses semantic check', standalone.includes('isSameDatabaseTarget(isolatedDatabaseUrl, productionUrl)'));
+    check('F-22 standalone uses fail-closed guard', standalone.includes('refuseProductionDatabaseTarget(isolatedDatabaseUrl, productionUrl)'));
     const routes = fs.readFileSync(path.join(repoRoot, 'engine/dr/routes.ts'), 'utf8');
-    check('F-22 routes uses semantic check', routes.includes('isSameDatabaseTarget(isolatedUrl, productionUrl)'));
+    check('F-22 routes uses fail-closed guard', routes.includes('refuseProductionDatabaseTarget(isolatedUrl, productionUrl)'));
     const center = fs.readFileSync(path.join(repoRoot, 'tools/dr/recovery-center.mjs'), 'utf8');
-    check('F-22 recovery-center uses semantic check', center.includes('isSameDatabaseTarget(targetDb, env.DATABASE_URL)'));
+    check('F-22 recovery-center uses fail-closed guard', center.includes('refuseProductionDatabaseTarget(targetDb, env.DATABASE_URL)'));
   }
 
   // ---------- F-23: علم تعطيل المصادقة محلي فقط ----------

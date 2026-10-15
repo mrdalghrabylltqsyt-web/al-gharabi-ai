@@ -148,7 +148,11 @@ export function databaseTargetKey(url) {
     const u = new URL(raw);
     const dbName = decodeURIComponent((u.pathname || '').replace(/^\//, '')) || '';
     if (!u.hostname && !dbName) return null;
-    const host = u.hostname.toLowerCase();
+    // F-22: تطبيع اسم الخادم — حالة الأحرف + لاحقة Neon "-pooler" (نفس القاعدة عبر
+    // المجمّع والمباشر)، وتوحيد loopback (localhost ≡ 127.0.0.1 ≡ ::1).
+    let host = u.hostname.toLowerCase().replace(/^\[|\]$/g, '');
+    if (host === 'localhost' || host === '::1') host = '127.0.0.1';
+    host = host.replace(/-pooler(?=\.|$)/, '');
     // المنفذ الغائب يُطابق منفذ Postgres الافتراضي، فلا تختلف بصمة نفس القاعدة.
     const port = u.port || (/^postgres(ql)?:$/i.test(u.protocol) ? '5432' : '');
     return `${host}:${port}/${dbName.toLowerCase()}`;
@@ -157,7 +161,7 @@ export function databaseTargetKey(url) {
   }
 }
 
-/** F-22: هل العنوانان يشيران إلى القاعدة نفسها دلالياً (أو تعذّر التحليل)؟ */
+/** F-22: هل العنوانان يشيران إلى القاعدة نفسها دلالياً؟ (تعذّر التحليل ⇒ ليس نفس القاعدة) */
 export function isSameDatabaseTarget(a, b) {
   const ka = databaseTargetKey(a);
   const kb = databaseTargetKey(b);
@@ -166,20 +170,60 @@ export function isSameDatabaseTarget(a, b) {
 }
 
 /**
+ * F-22: قرار **fail-closed** لحماية قاعدة الإنتاج من الكتابة فوقها. يعيد `{ refuse, reason }`.
+ *
+ * الحرس يخصّ **كتابة قاعدة** فقط: لا هدف ⇒ لا كتابة ⇒ لا خطر (استعادة مصدر فقط مسموحة).
+ * وعند وجود هدف نرفض إن تعذّر إثبات أنه ليس الإنتاج:
+ *  - غياب رابط الإنتاج ⇒ رفض (لا يمكن إثبات أن الهدف ليس الإنتاج).
+ *  - تعذّر تحليل رابط الإنتاج أو الهدف ⇒ رفض.
+ *  - الهدف والإنتاج نفس القاعدة دلالياً (بعد تطبيع "-pooler" وحالة الأحرف) ⇒ رفض.
+ */
+export function refuseProductionDatabaseTarget(isolatedUrl, productionUrl) {
+  const target = String(isolatedUrl ?? '').trim();
+  const prod = String(productionUrl ?? '').trim();
+  // لا هدف ⇒ لا كتابة قاعدة ⇒ لا حاجة لرابط الإنتاج.
+  if (!target) return { refuse: false, reason: 'no_target_no_write' };
+  if (!prod) return { refuse: true, reason: 'production_url_missing' };
+  if (!databaseTargetKey(prod)) return { refuse: true, reason: 'unparseable_production' };
+  if (!databaseTargetKey(target)) return { refuse: true, reason: 'unparseable_target' };
+  if (isSameDatabaseTarget(target, prod)) return { refuse: true, reason: 'same_database' };
+  return { refuse: false, reason: 'distinct_database' };
+}
+
+/**
  * F-21: حدّ أقصى لحجم فكّ الضغط (منع «قنبلة ضغط»). نسخة احتياطية شرعية أصغر بكثير
  * من هذا الحد؛ وأي تجاوز يُرفض صراحةً بلا استنزاف الذاكرة.
+ *
+ * القيمة الافتراضية 128MiB مصمّمة لتبقى آمنة داخل خطة Render المجانية (512MB RAM):
+ * أكبر حزمة مصدر فعلية ≈ 10.3MiB غير مضغوطة (≈3.3MiB مضغوطة) — أي هامش >12×.
+ * قابلة للضبط عبر `DR_MAX_DECOMPRESSED_BYTES` بحدود [1MiB .. 256MiB].
  */
-export const MAX_GUNZIP_OUTPUT_BYTES = 256 * 1024 * 1024;
+export const MAX_GUNZIP_OUTPUT_BYTES = 128 * 1024 * 1024;
+export const MIN_GUNZIP_OUTPUT_BYTES = 1 * 1024 * 1024;
+export const HARD_GUNZIP_OUTPUT_CAP_BYTES = 256 * 1024 * 1024;
+export const MAX_GUNZIP_OUTPUT_ENV = 'DR_MAX_DECOMPRESSED_BYTES';
+
+/**
+ * F-21: يحسم حدّ فكّ الضغط من البيئة بحدود آمنة. قيمة غائبة/غير رقمية/خارج الحدود
+ * تُرفض صراحةً ويعود الحدّ الافتراضي (لا قيمة صفرية ولا غير محدودة).
+ */
+export function resolveMaxGunzipOutputBytes(env = process.env) {
+  const raw = Number.parseInt(String(env?.[MAX_GUNZIP_OUTPUT_ENV] ?? '').trim(), 10);
+  if (!Number.isFinite(raw) || raw <= 0) return MAX_GUNZIP_OUTPUT_BYTES;
+  return Math.min(HARD_GUNZIP_OUTPUT_CAP_BYTES, Math.max(MIN_GUNZIP_OUTPUT_BYTES, raw));
+}
 
 /**
  * فكّ gzip بحدّ صريح لمخرَج الضغط. يعيد `{ok, data|code}`. عند تجاوز الحد أو فساد
- * gzip لا يرمي — يُعيد كوداً صريحاً. المصدر الواحد لكل مسارات فكّ حزم DR.
+ * gzip لا يرمي — يُعيد كوداً صريحاً (مع الحد وحجم الإدخال عند التجاوز). المصدر الواحد
+ * لكل مسارات فكّ حزم DR.
  */
 export function gunzipBounded(buffer, maxBytes = MAX_GUNZIP_OUTPUT_BYTES) {
   const gz = toBuffer(buffer);
   if (!gz.length) return { ok: false, code: 'empty_gzip' };
+  const limit = Number.isFinite(maxBytes) && maxBytes > 0 ? maxBytes : MAX_GUNZIP_OUTPUT_BYTES;
   try {
-    const out = zlib.gunzipSync(gz, { maxOutputLength: maxBytes });
+    const out = zlib.gunzipSync(gz, { maxOutputLength: limit });
     return { ok: true, data: out };
   } catch (e) {
     // Node يرمي ERR_BUFFER_TOO_LARGE عند تجاوز maxOutputLength (يتضمّن النص 'maxOutputLength'
@@ -187,7 +231,7 @@ export function gunzipBounded(buffer, maxBytes = MAX_GUNZIP_OUTPUT_BYTES) {
     const code = String(e?.code || '');
     const msg = String(e?.message || '');
     if (code === 'ERR_BUFFER_TOO_LARGE' || /maxOutputLength|output length|larger than|buffer too large/i.test(msg)) {
-      return { ok: false, code: 'decompressed_too_large' };
+      return { ok: false, code: 'decompressed_too_large', limitBytes: limit, inputBytes: gz.length };
     }
     return { ok: false, code: 'invalid_gzip' };
   }
@@ -357,6 +401,18 @@ export function shannonEntropyPerChar(value) {
 /** امتدادات ملفات الشيفرة (F-20): يفحصها الماسح الصارم بإضافة إنتروبيا. */
 export const CODE_FILE_RE = /\.(ts|tsx|js|jsx|mjs|cjs)$/i;
 
+/**
+ * F-20: علامة استثناء صريحة لكل سطر. أي سطر يحمل `secret-scan-allow: <سبب>` (مع سبب
+ * غير فارغ) يُستثنى من فحص الأسرار الصارم — بشرط وجود سبب موثّق، فلا تُستثنى أسطر صامتة.
+ * القيمة نفسها لا تُطبع أبداً؛ الاستثناء قرار واعٍ موثّق في الكود.
+ */
+export const SECRET_SCAN_ALLOW_RE = /secret-scan-allow\s*:\s*\S/i;
+
+/** هل السطر يستثني نفسه صراحةً من فحص الأسرار (بسبب موثّق)؟ */
+export function isSecretScanAllowed(line) {
+  return SECRET_SCAN_ALLOW_RE.test(String(line ?? ''));
+}
+
 // إسناد نصّي مُقتبَس (value بين علامتي تنصيص). يُستخدم مع فحص الإنتروبيا لملفات
 // الشيفرة فقط — يمنع false positives من قيم وصفية (phase2-secret-local-only).
 const SECRET_ASSIGNMENT_STRING_RE =
@@ -436,6 +492,8 @@ export function scanForSecretsStrict(files) {
     const lines = content.split(/\r?\n/);
     for (let i = 0; i < lines.length; i += 1) {
       const line = lines[i];
+      // F-20: استثناء صريح موثّق لكل سطر — يتجاوز الفحص كلّه لهذا السطر.
+      if (isSecretScanAllowed(line)) continue;
       // بيانات اختبار وهمية تحمل علامة صريحة (fake/not-real/dummy…) لا تُعدّ سراً:
       // لا سرّ حقيقي يحمل هذه الكلمة في نفس السطر.
       const fakeLine = looksLikeFakeSecret(line);
@@ -456,6 +514,7 @@ export function scanForSecretsStrict(files) {
     if (CODE_FILE_RE.test(path)) {
       for (let i = 0; i < lines.length; i += 1) {
         const line = lines[i];
+        if (isSecretScanAllowed(line)) continue;
         if (looksLikeFakeSecret(line)) continue;
         SECRET_ASSIGNMENT_STRING_RE.lastIndex = 0;
         let sm;

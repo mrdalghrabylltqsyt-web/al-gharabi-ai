@@ -17,6 +17,7 @@ import {
   hashContent,
   toBuffer,
   gunzipBounded,
+  resolveMaxGunzipOutputBytes,
   verifySourceBundle,
   classifyDbDump,
   isEncryptedSecretsPackage,
@@ -50,11 +51,19 @@ export function extractTarEntries(tarBuffer) {
 }
 
 /** يفكّ حزمة المصدر (gzip → tar) إلى ملفات. */
-export function extractSourceBundle(buffer) {
+export function extractSourceBundle(buffer, options = {}) {
   const gz = toBuffer(buffer);
   if (!gz.length) return { ok: false, code: 'empty_bundle', files: [] };
-  const un = gunzipBounded(gz);
-  if (!un.ok) return { ok: false, code: un.code, files: [] };
+  // F-21: الحدّ قابل للضبط من البيئة (بافتراض آمن). التجاوز يعيد رسالة صريحة بالحجم والحد.
+  const maxBytes = options.maxBytes || resolveMaxGunzipOutputBytes(options.env || process.env);
+  const un = gunzipBounded(gz, maxBytes);
+  if (!un.ok) {
+    if (un.code === 'decompressed_too_large') {
+      return { ok: false, code: un.code, files: [], limitBytes: un.limitBytes, inputBytes: un.inputBytes,
+        message: `حزمة المصدر تتجاوز الحد المسموح لفكّ الضغط (الحد ${un.limitBytes} بايت، الحجم المضغوط ${un.inputBytes} بايت).` };
+    }
+    return { ok: false, code: un.code, files: [] };
+  }
   const res = extractTarEntries(un.data);
   if (!res.ok) return { ok: false, code: 'invalid_tar', files: [] };
   return { ok: true, files: res.files };

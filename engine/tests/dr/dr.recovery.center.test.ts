@@ -67,6 +67,7 @@ async function main() {
     DRIVE_OAUTH_CLIENT_ID: '1234567890-drive.apps.googleusercontent.com',
     DRIVE_OAUTH_CLIENT_SECRET: 'GOCSPX-' + 'drive-fake-test-secret',
     DRIVE_OAUTH_REFRESH_TOKEN: '1//fake-refresh-token-for-test',
+    DATABASE_URL: 'postgres://production-host/gharabi',
   };
   const auth = { authorization: `Bearer ${OWNER_TOKEN}` };
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'gharabi-center-'));

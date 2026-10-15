@@ -423,7 +423,15 @@ async function main() {
   const outDir = process.argv[2] || path.join(process.cwd(), 'dist', 'dr-source');
   const built = buildTrustedSourceBundle(process.cwd(), { generatedAt: null });
   if (!built.ok) {
-    console.error(JSON.stringify({ state: 'failed', code: built.code, message: built.message, findings: built.findings || [] }, null, 2));
+    // F-20: رسالة الفشل تذكر الملف والسطر ونوع الاشتباه فقط — **بلا القيمة** أبداً.
+    const findings = Array.isArray(built.findings) ? built.findings : [];
+    const lines = findings.map((f) => `  - ${f.path}:${f.line} [${f.kind}]`).join('\n');
+    console.error(
+      `STOP: سر مُرصود في شجرة المصدر — لم تُبنَ الحزمة (${findings.length} finding).\n` +
+      `${lines}\n` +
+      'إن كان السطر سليماً عن قصد، أضف تعليقاً صريحاً: // secret-scan-allow: <سبب>',
+    );
+    console.error(JSON.stringify({ state: 'failed', code: built.code, message: built.message, findings }, null, 2));
     process.exit(1);
   }
   const written = writeSourceBundle(outDir, built);
