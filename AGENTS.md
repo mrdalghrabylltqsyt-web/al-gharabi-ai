@@ -6448,6 +6448,12 @@ TikTok for Developers:** (١) تفعيل نطاق `video.publish` في تطبي�
   (480 ملفاً) تمرّ بلا finding. **استثناء صريح موثّق** عبر `// secret-scan-allow: <سبب>`
   (يلزم سبب غير فارغ) لكل سطر، فلا تُستبعد أسطر صامتة. ورسالة فشل البناء تذكر
   `path:line [kind]` فقط — **بلا القيمة أبداً**.
+  **مراجعة (تقوية):** الاستثناء يُسكت **فحص الإنتروبيا وحده** (`hardcoded_code_secret`)،
+  ولا يُسكت الأنماط المعروفة عالية الثقة أبداً — أُضيف `github_token`
+  (`gh[pousr]_…`) و`db_credential_url` (`scheme://user:pass@host` بكلمة مرور ≥4 بلا
+  `$`/`{}` لتفادي قوالب `${password}`)، ويُستبعد من نمط رابط القاعدة بياناتُ اعتماد نائبة
+  معروفة (`user:pass`، `user:secret`، `postgres`… عبر `isPlaceholderDbCredentials`). فلا
+  يمكن تمرير مفتاح Google/OpenAI/GitHub/Resend أو رابط قاعدة مُعتمد بعلامة استثناء.
 - **F-22 — رفض قاعدة الإنتاج: تطبيع Neon `-pooler` + حالة الأحرف + fail-closed:**
   `databaseTargetKey` يطبّع اسم الخادم (حالة أحرف صغيرة + **إزالة لاحقة `-pooler`** حتى
   تُطابق القاعدة عبر المجمّع والمباشر) ويوحّد loopback (`localhost` ≡ `127.0.0.1` ≡ `::1`)،
@@ -6462,7 +6468,7 @@ TikTok for Developers:** (١) تفعيل نطاق `video.publish` في تطبي�
   fail-closed حتى لو ضُبط العلم خطأً على خدمة مُستضافة (المركز المستضاف يربط على `0.0.0.0`).
 
 اختبار الانحدار: `engine/tests/dr/dr.tools.hardening.test.ts` (`npm run test:dr-tools-hardening`،
-**48 فحصاً**) + تحديث `dr.recovery.center.auth.test.ts` (66) ليثبت أن العلم لا يسمح لعنوان خارجي.
+**51 فحصاً**) + تحديث `dr.recovery.center.auth.test.ts` (66) ليثبت أن العلم لا يسمح لعنوان خارجي.
 الاختبارات تفشل على الكود القديم وتنجح بعده. `sync-lib.mjs` يُبقي `dr-recovery-center/lib/`
 متزامناً (لا انحراف). `npm run lint` ✅ · `test:dr` ✅ · `final-audit` ✅ (1653).
 **لم يُمسّ** أي سرّ/مفتاح، ولا `public/*` ولا `index.html` ولا `/terms` ولا `/privacy` ولا
