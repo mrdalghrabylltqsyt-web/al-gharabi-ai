@@ -11,6 +11,18 @@
 import fs from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
+import {
+  IDEMPOTENCY_TABLE_DDL,
+  runIdempotencyTableUpgrade,
+  IDEMPOTENCY_RESERVE_SQL,
+  IDEMPOTENCY_FINISH_SQL,
+  IDEMPOTENCY_READ_SQL,
+  IDEMPOTENCY_STORAGE_KEY,
+  applyReservationToMap,
+  applyFinishToMap,
+  type IdempotencyBackend,
+  type IdempotencyRecord,
+} from "../social/idempotencyStore";
 
 export type StorageBackendKind = "file" | "postgres";
 
@@ -119,6 +131,14 @@ export interface StorageAdapter {
   isKeyCorrupt?(key: string): boolean;
   /** سلامة حالة المفتاح: ok (غائب/مقروء) أو corrupt (موجود ومعطوب). */
   readIntegrity?(key: string): "ok" | "corrupt";
+  /**
+   * F-07: خلفية منع التكرار الدائم. Postgres ينفّذ الجدول `gharabi_idempotency`
+   * بحجز ذرّي (INSERT ... ON CONFLICT DO NOTHING RETURNING)، والملف ينفّذه عبر
+   * مخزن الحالة (يحمي ضمن نسخة واحدة وبعد إعادة التشغيل على قرص دائم).
+   */
+  idempotencyBackend?(): IdempotencyBackend;
+  /** F-07: حالة ترقية قيد جدول منع التكرار (بلا سرّ) — تُعلن في /api/readiness. */
+  idempotencyUpgradeStatus?(): { ok: boolean; applied: boolean; skippedDuplicate: boolean; error: string | null };
   /** إغلاق الموارد (اتصال قاعدة البيانات) عند الإيقاف. */
   close(): Promise<void>;
 }
@@ -151,6 +171,7 @@ const FILE_NAMES: Record<string, string> = {
   [STORAGE_KEY_CONTROL]: ".gharabi-control.json",
   [STORAGE_KEY_YOUTUBE_QUOTA]: ".gharabi-youtube-quota.json",
   [STORAGE_KEY_USAGE_INDICATORS]: ".gharabi-free-tier-usage.json",
+  [IDEMPOTENCY_STORAGE_KEY]: ".gharabi-idempotency.json",
 };
 
 const BACKUP_PREFIX = "state-";
@@ -350,6 +371,38 @@ class FileStorageAdapter implements StorageAdapter {
     }
   }
 
+  /**
+   * F-07: خلفية منع التكرار في الوضع الملفي/العابر — تُحفظ في ملف الحالة
+   * (`.gharabi-idempotency.json`) عبر المخزن نفسه فتصمد بعد إعادة التشغيل عند
+   * وجود قرص دائم. **محدودية موثّقة:** على مضيف عابر بلا قرص (Render Free) تُفقد
+   * عند إعادة النشر، فلا تحمي عبر نسختين — Postgres هو الضمان الدائم المطلوب.
+   */
+  idempotencyBackend(): IdempotencyBackend {
+    const load = (): Record<string, IdempotencyRecord> => {
+      const raw = this.readSync<{ records?: Record<string, IdempotencyRecord> }>(IDEMPOTENCY_STORAGE_KEY);
+      return raw && typeof raw === "object" && raw.records && typeof raw.records === "object" ? raw.records : {};
+    };
+    const persist = (records: Record<string, IdempotencyRecord>): void => {
+      // كتابة متزامنة مباشرة (نفس مسار writeKeyNow) — الحجز يجب أن يُثبَّت قبل أي
+      // نداء مزود، فلا يُترك معلّقاً في طابور غير مؤكَّد.
+      this.writeKeyNow(IDEMPOTENCY_STORAGE_KEY, JSON.stringify({ records }, null, 2));
+    };
+    return {
+      reserve: async (key, nowMs, expiresAtMs) => {
+        const records = load();
+        const ok = applyReservationToMap(records, key, nowMs, expiresAtMs);
+        if (ok) persist(records);
+        return ok;
+      },
+      finish: async (key, status, nowMs) => {
+        const records = load();
+        applyFinishToMap(records, key, status, nowMs);
+        persist(records);
+      },
+      read: async (key) => load()[key] || null,
+    };
+  }
+
   async close(): Promise<void> {
     /* لا موارد مفتوحة */
   }
@@ -479,6 +532,8 @@ class PostgresStorageAdapter implements StorageAdapter {
   private healthy = false;
   private detail: string | null = null;
   private pool: any = null;
+  /** F-07: نتيجة ترقية قيد جدول منع التكرار (لا تُسقط الإقلاع عند الفشل). */
+  private idemUpgrade: { ok: boolean; applied: boolean; skippedDuplicate: boolean; error: string | null } = { ok: true, applied: false, skippedDuplicate: false, error: null };
   /**
    * آخر قيمة كُتبت فعلاً لكل مفتاح (نص JSON). تُستخدم لكشف التغيّر: الكتابة
    * المتطابقة تماماً لا تُرسَل إلى Neon فتُوفّر نقل الشبكة (كانت تُحتسب نقلاً
@@ -511,6 +566,22 @@ class PostgresStorageAdapter implements StorageAdapter {
            updated_at timestamptz NOT NULL DEFAULT now()
          )`,
       );
+      // F-07: جدول منع التكرار — إنشاء إضافي فقط (لا يمسّ gharabi_state).
+      await this.pool.query(IDEMPOTENCY_TABLE_DDL);
+      // ترقية قيد الحالات ليشمل pending_quota على جدول أُنشئ سابقاً بثلاث حالات
+      // (إنشاء إضافي فقط؛ idempotent؛ لا فقدان بيانات). تُنفَّذ في معاملة واحدة على
+      // عميل مستقل، وتتجاهل 42710 (تزامن نسختين)، و**لا تُسقط الإقلاع** عند الفشل.
+      const client = await this.pool.connect();
+      try {
+        const r = await runIdempotencyTableUpgrade(client);
+        this.idemUpgrade = { ok: true, applied: r.applied, skippedDuplicate: r.skippedDuplicate, error: null };
+      } catch (e: any) {
+        const code = String(e?.code || "");
+        this.idemUpgrade = { ok: false, applied: false, skippedDuplicate: false, error: code || String(e?.name || "upgrade_failed").slice(0, 40) };
+        console.error(`[storage] idempotency table upgrade failed (non-fatal): ${this.idemUpgrade.error}`);
+      } finally {
+        try { client.release(); } catch { /* تجاهل */ }
+      }
       this.healthy = true;
       this.detail = null;
     };
@@ -632,6 +703,43 @@ class PostgresStorageAdapter implements StorageAdapter {
 
   listBackups(): BackupInfo[] {
     return [];
+  }
+
+  /**
+   * F-07: حجز ذرّي في جدول `gharabi_idempotency`. الاستعلام الواحد (CTE) يُدرج
+   * صفاً جديداً أو يستردّ حجزاً `failed`/عالقاً، ويُعيد صفاً **فقط** عند نجاح
+   * الحجز — فلا سباق بين نسختين. عدم إرجاع صف = محجوز حيّ أو منتهٍ بنجاح ⇒ رفض.
+   */
+  idempotencyUpgradeStatus(): { ok: boolean; applied: boolean; skippedDuplicate: boolean; error: string | null } {
+    return this.idemUpgrade;
+  }
+
+  idempotencyBackend(): IdempotencyBackend {
+    const pool = () => {
+      if (!this.pool || !this.healthy) throw new Error("database_unavailable");
+      return this.pool;
+    };
+    return {
+      reserve: async (key, _nowMs, expiresAtMs) => {
+        const res = await pool().query(IDEMPOTENCY_RESERVE_SQL, [key, new Date(expiresAtMs).toISOString()]);
+        return (res.rows?.length ?? 0) > 0;
+      },
+      finish: async (key, status) => {
+        await pool().query(IDEMPOTENCY_FINISH_SQL, [key, status]);
+      },
+      read: async (key) => {
+        const res = await pool().query(IDEMPOTENCY_READ_SQL, [key]);
+        const row = res.rows?.[0];
+        if (!row) return null;
+        return {
+          key: String(row.key),
+          status: row.status,
+          createdAt: row.created_at instanceof Date ? row.created_at.toISOString() : String(row.created_at),
+          updatedAt: row.updated_at instanceof Date ? row.updated_at.toISOString() : String(row.updated_at),
+          expiresAt: row.expires_at instanceof Date ? row.expires_at.toISOString() : String(row.expires_at),
+        } satisfies IdempotencyRecord;
+      },
+    };
   }
 
   async close(): Promise<void> {

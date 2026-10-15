@@ -1273,7 +1273,8 @@ export class FacebookClient {
       if (!res.ok || data?.error || !data?.id) return { ok: false, data: null, error: errorMessage(data, 'فشل الرد على التعليق عبر Facebook.') };
       return { ok: true, data: { providerCommentId: String(data.id) } };
     } catch (e: any) {
-      return { ok: false, data: null, error: String(e?.message || 'فشل الاتصال بـFacebook.') };
+      // F-07: انقطاع بعد الإرسال بلا رد مزود — لا يُصنَّف فشلاً مؤكداً (انظر idempotencyStore).
+      return { ok: false, data: null, error: String(e?.message || 'فشل الاتصال بـFacebook.'), code: 'NETWORK_ERROR' };
     }
   }
 
@@ -1292,7 +1293,8 @@ export class FacebookClient {
       if (!res.ok || data?.error || !data?.message_id) return { ok: false, data: null, error: errorMessage(data, 'فشل إرسال الرسالة عبر Facebook.') };
       return { ok: true, data: { providerMessageId: String(data.message_id), recipientId: data.recipient_id ? String(data.recipient_id) : null } };
     } catch (e: any) {
-      return { ok: false, data: null, error: String(e?.message || 'فشل الاتصال بـFacebook.') };
+      // F-07: انقطاع بعد الإرسال بلا رد مزود — لا يُصنَّف فشلاً مؤكداً.
+      return { ok: false, data: null, error: String(e?.message || 'فشل الاتصال بـFacebook.'), code: 'NETWORK_ERROR' };
     }
   }
 
