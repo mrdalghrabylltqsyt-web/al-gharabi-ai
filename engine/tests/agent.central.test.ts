@@ -603,7 +603,8 @@ async function unitTests() {
 /** تكامل: خادم Express حقيقي بمسار العقل + تصريح فعلي. */
 async function integrationTests() {
   // منفذ حر فعلي: يمنع تصادم عشوائي مع اختبارات أخرى عند تشغيل npm test كاملاً.
-  const PORT = await freePort(4819 + Math.floor(Math.random() * 300));
+  // F-07: نطاق يتجنّب منافذ Node المحظورة (5060/5061) التي تُفشل fetch بـ"bad port".
+  const PORT = await freePort(4820 + Math.floor(Math.random() * 200));
   const BASE = `http://127.0.0.1:${PORT}`;
   const app = express();
   app.use(express.json());
