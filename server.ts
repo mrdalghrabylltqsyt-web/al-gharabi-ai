@@ -169,6 +169,7 @@ import {
   type FacebookFieldRead,
   type FacebookFetch,
   type FacebookPageIdentity,
+  createFacebookFetch,
 } from "./engine/social/facebook";
 import {
   InstagramClient,
@@ -185,6 +186,7 @@ import {
   missingInstagramScopeDependenciesFromCsv,
   type InstagramFetch,
   type InstagramLinkedPage,
+  createInstagramFetch,
 } from "./engine/social/instagram";
 import {
   ThreadsClient,
@@ -220,6 +222,7 @@ import {
   TIKTOK_WEB_AUTHORIZATION_PARAMS,
   type TikTokFetch,
   type TikTokPostMode,
+  createTikTokFetch,
   type TikTokPrivacyLevel,
   shouldReconcileTikTokRecord,
   applyTikTokPublishStatus,
@@ -2363,7 +2366,8 @@ const FACEBOOK_SUBSCRIBED_FIELDS = (() => {
   const raw = (process.env.FACEBOOK_SUBSCRIBED_FIELDS || "").split(",").map((x) => x.trim()).filter(Boolean);
   return raw.length ? raw : ["feed", "messages"];
 })();
-const faceBookFetchImpl: FacebookFetch = (url, init) => fetch(url, init as any);
+// F-14: غلاف إعادة محاولة آمن (القراءة فقط) حول fetch الخام لكل موصل.
+const faceBookFetchImpl: FacebookFetch = createFacebookFetch((url, init) => fetch(url, init as any));
 function facebookClient(): FacebookClient { return new FacebookClient(faceBookFetchImpl, FACEBOOK_GRAPH_API_BASE_ENV); }
 function facebookOAuthConfig(): any { return OAUTH_CONFIG["facebook"]; }
 
@@ -2373,7 +2377,7 @@ function facebookOAuthConfig(): any { return OAUTH_CONFIG["facebook"]; }
 // Instagram للأعمال المرتبط بالصفحة واستقبال/رد/رسالة/نشر عبر Graph.
 // الأسرار تُقرأ من بيئة الخادم أو تُحفظ مشفّرة عبر محوّل الحالة؛ لا تُسجَّل ولا تُعاد.
 // -------------------------------------------------------------
-const instagramFetchImpl: InstagramFetch = (url, init) => fetch(url, init as any);
+const instagramFetchImpl: InstagramFetch = createInstagramFetch((url, init) => fetch(url, init as any));
 function instagramClient(): InstagramClient { return new InstagramClient(instagramFetchImpl, FACEBOOK_GRAPH_API_BASE_ENV); }
 function instagramOAuthConfig(): any { return OAUTH_CONFIG["instagram"]; }
 /** حقول webhook لحساب Instagram المهني (تعليقات + رسائل). تُفعَّل من Meta Dashboard. */
@@ -2447,6 +2451,42 @@ async function markThreadsReauthNeeded(reason: string): Promise<void> {
   await persistStateDurable();
   audit("system", "threads_reauth_needed", reason || "token_expired");
 }
+/**
+ * F-02: تحوّل أي OAuthException (رمز Meta 190) من أي نداء فعلي (رد/نشر/health/
+ * polling) إلى حالة `reauth_needed` على المنصة، بنفس نمط YouTube/TikTok/Threads.
+ *
+ * لماذا: كان الاتصال يبقى «متحققاً» إلى الأبد حتى لو سُحب التفويض أو انتهى الرمز،
+ * فتُحاول العمليات الخارجية بلا جدوى وتُخفي العطل الحقيقي عن المالك.
+ *
+ * القاعدة: 190 فقط (أو كود الموصل المصنَّف TOKEN_EXPIRED من كود 190) يقلب الحالة.
+ * أخطاء أخرى (100 صلاحية، 9007 وسائط، انقطاع شبكة) لا تقلبها — لا إعلان reauth كاذب.
+ */
+function markProviderReauthNeeded(platform: string, reason: string): void {
+  const current: any = platformConnections.get(platform);
+  if (!current) return;
+  if (current.status === 'reauth_needed') return;
+  platformConnections.set(platform, { ...current, platform, status: 'reauth_needed' });
+  savePlatformConnections();
+  void persistStateDurable();
+  audit('system', `${platform}_reauth_needed`, reason || 'oauth_exception');
+  pushNotification('owner', `${platform}_reauth_needed`, `إعادة ربط ${platform} مطلوبة`,
+    'سُحب التفويض أو انتهى الرمز؛ أُوقفت محاولات الرد والنشر حتى إعادة الربط.', 'critical', 'platform_connections');
+}
+
+/** هل يحمل فشل موصل رمز OAuthException (190)؟ يقرأ الكود الخام والتصنيف معاً. */
+function isOAuthExceptionFailure(code: string | null | undefined, providerCode: number | null | undefined): boolean {
+  if (Number(providerCode) === 190) return true;
+  return String(code || '').toUpperCase() === 'TOKEN_EXPIRED';
+}
+
+/**
+ * F-02: عند فشل نداء موصل بسبب OAuthException (190) نحوّل الاتصال إلى
+ * `reauth_needed` ونُعيد الفشل نفسه (لا نجاح وهمي).
+ */
+function reauthOnOAuthException(platform: string, result: { code?: string | null; providerCode?: number | null }): void {
+  if (isOAuthExceptionFailure(result?.code, result?.providerCode)) markProviderReauthNeeded(platform, 'oauth_exception_190');
+}
+
 /**
  * تجديد قسري واحد للرمز الطويل عبر `grant_type=th_exchange_token` (وثيقة Threads؛
  * بلا client_secret). يُعيد الرمز الجديد أو null عند الفشل (لا نجاح وهمي).
@@ -2576,7 +2616,7 @@ const META_OAUTH_PLATFORMS = new Set(["facebook", "instagram"]);
 // التعليقات والرسائل المباشرة غير متاحة عبر الواجهة العامة → لا مسارات لها.
 // الأسرار تُقرأ من بيئة الخادم أو تُحفظ مشفّرة عبر محوّل الحالة؛ لا تُسجَّل ولا تُعاد.
 // -------------------------------------------------------------
-const tiktokFetchImpl: TikTokFetch = (url, init) => fetch(url, init as any);
+const tiktokFetchImpl: TikTokFetch = createTikTokFetch((url, init) => fetch(url, init as any));
 function tiktokClient(): TikTokClient { return new TikTokClient(tiktokFetchImpl, process.env.TIKTOK_API_BASE); }
 function tiktokOAuthConfig(): any { return OAUTH_CONFIG["tiktok"]; }
 /**
@@ -4863,8 +4903,11 @@ async function executeMetaCommentReply(
 
     // 5) إرسال حقيقي على مسار التعليقات فقط (comment_reply).
     const result = platform === 'facebook'
-      ? await (async () => { const target = facebookReplyTarget(); if ('error' in target) return { ok: false, error: target.error, code: 'pre_provider', providerReplyId: null as string | null }; const r = await facebookClient().replyToComment(String(comment.replyTarget?.commentId || externalId), target.pageToken, text); return { ok: r.ok, error: r.error, code: r.code || null, providerReplyId: r.data?.providerCommentId || null }; })()
-      : await (async () => { const target = instagramReplyTarget(); if ('error' in target) return { ok: false, error: target.error, code: 'pre_provider', providerReplyId: null as string | null }; const r = await instagramClient().replyToComment(String(comment.replyTarget?.commentId || externalId), target.pageToken, text); return { ok: r.ok, error: r.error, code: r.code || null, providerReplyId: r.data?.providerCommentId || null }; })();
+      ? await (async () => { const target = facebookReplyTarget(); if ('error' in target) return { ok: false, error: target.error, code: 'pre_provider', providerCode: null as number | null, providerReplyId: null as string | null }; const r = await facebookClient().replyToComment(String(comment.replyTarget?.commentId || externalId), target.pageToken, text); return { ok: r.ok, error: r.error, code: r.code || null, providerCode: r.providerCode ?? null, providerReplyId: r.data?.providerCommentId || null }; })()
+      : await (async () => { const target = instagramReplyTarget(); if ('error' in target) return { ok: false, error: target.error, code: 'pre_provider', providerCode: null as number | null, providerReplyId: null as string | null }; const r = await instagramClient().replyToComment(String(comment.replyTarget?.commentId || externalId), target.pageToken, text); return { ok: r.ok, error: r.error, code: r.code || null, providerCode: r.providerCode ?? null, providerReplyId: r.data?.providerCommentId || null }; })();
+    // F-02: أي OAuthException (190) من نداء الرد الفعلي ⇒ الاتصال reauth_needed
+    // فوراً، فلا تبقى الحالة «متحققاً» ولا تُحاول ردود لاحقة على تلك المنصة.
+    reauthOnOAuthException(platform, result);
     // F-07: الحالة النهائية من التصنيف — انقطاع بعد الإرسال لا يُعلن فشلاً مؤكداً.
     idemOutcome = classifyExternalOperationOutcome({ ok: result.ok, failureKind: providerFailureKind(result.code) });
     if (!result.ok && result.providerReplyId === null && /موثق|مهيأ/.test(String(result.error || ''))) {
@@ -4957,8 +5000,10 @@ async function executeMetaMessageReply(
     if (!decision.allowed) return { status: 409, body: { success: false, error: decision.reason, guard: decision } };
 
     const result = platform === 'facebook'
-      ? await (async () => { const target = facebookReplyTarget(); if ('error' in target) return { ok: false, error: target.error, code: 'pre_provider', providerReplyId: null as string | null, recipientId: null as string | null }; const r = await facebookClient().sendMessage(target.pageId, target.pageToken, targetRecipient, text); return { ok: r.ok, error: r.error, code: r.code || null, providerReplyId: r.data?.providerMessageId || null, recipientId: r.data?.recipientId ?? null }; })()
-      : await (async () => { const target = instagramReplyTarget(); if ('error' in target) return { ok: false, error: target.error, code: 'pre_provider', providerReplyId: null as string | null, recipientId: null as string | null }; const r = await instagramClient().sendMessage(target.pageId, target.pageToken, targetRecipient, text); return { ok: r.ok, error: r.error, code: r.code || null, providerReplyId: r.data?.providerMessageId || null, recipientId: r.data?.recipientId ?? null }; })();
+      ? await (async () => { const target = facebookReplyTarget(); if ('error' in target) return { ok: false, error: target.error, code: 'pre_provider', providerCode: null as number | null, providerReplyId: null as string | null, recipientId: null as string | null }; const r = await facebookClient().sendMessage(target.pageId, target.pageToken, targetRecipient, text); return { ok: r.ok, error: r.error, code: r.code || null, providerCode: r.providerCode ?? null, providerReplyId: r.data?.providerMessageId || null, recipientId: r.data?.recipientId ?? null }; })()
+      : await (async () => { const target = instagramReplyTarget(); if ('error' in target) return { ok: false, error: target.error, code: 'pre_provider', providerCode: null as number | null, providerReplyId: null as string | null, recipientId: null as string | null }; const r = await instagramClient().sendMessage(target.pageId, target.pageToken, targetRecipient, text); return { ok: r.ok, error: r.error, code: r.code || null, providerCode: r.providerCode ?? null, providerReplyId: r.data?.providerMessageId || null, recipientId: r.data?.recipientId ?? null }; })();
+    // F-02: OAuthException (190) من نداء الرسالة الفعلي ⇒ الاتصال reauth_needed.
+    reauthOnOAuthException(platform, result);
     // F-07: الحالة النهائية من التصنيف — انقطاع بعد الإرسال لا يُعلن فشلاً مؤكداً.
     idemOutcome = classifyExternalOperationOutcome({ ok: result.ok, failureKind: providerFailureKind(result.code) });
     if (!result.ok && result.providerReplyId === null && /موثق|مهيأ/.test(String(result.error || ''))) {
@@ -7716,21 +7761,21 @@ function metaPollingStatusBlock() {
 }
 
 /** يجلب تعليقات منصة Meta الحقيقية (قراءة فقط) عبر العميل الرسمي — بلا كتابة. */
-async function fetchMetaInboundComments(platform: MetaPlatform): Promise<{ ok: boolean; comments?: any[]; error?: string; code?: string }> {
+async function fetchMetaInboundComments(platform: MetaPlatform): Promise<{ ok: boolean; comments?: any[]; error?: string; code?: string; providerCode?: number | null }> {
   try {
     if (platform === "facebook") {
       const pageId = String(getProviderToken("facebook")?.pageId || "");
       const token = facebookPageToken(pageId || undefined);
       if (!pageId || !token) return { ok: false, error: "لا صفحة Facebook موثقة.", code: "NOT_CONNECTED" };
       const res = await facebookClient().listPageComments(pageId, token, 25);
-      if (!res.ok) return { ok: false, error: res.error || "فشل قراءة تعليقات Facebook.", code: "FETCH_FAILED" };
+      if (!res.ok) return { ok: false, error: res.error || "فشل قراءة تعليقات Facebook.", code: res.code || "FETCH_FAILED", providerCode: res.providerCode ?? null };
       return { ok: true, comments: res.data || [] };
     }
     const igAccountId = String(getProviderToken("instagram")?.igAccountId || "");
     const token = instagramPageToken();
     if (!igAccountId || !token) return { ok: false, error: "لا حساب Instagram موثّق.", code: "NOT_CONNECTED" };
     const res = await instagramClient().listMediaComments(igAccountId, token, 10, 25);
-    if (!res.ok) return { ok: false, error: res.error || "فشل قراءة تعليقات Instagram.", code: "FETCH_FAILED" };
+    if (!res.ok) return { ok: false, error: res.error || "فشل قراءة تعليقات Instagram.", code: res.code || "FETCH_FAILED", providerCode: res.providerCode ?? null };
     return { ok: true, comments: res.data || [] };
   } catch (e: any) {
     return { ok: false, error: String(e?.message || "فشل الجلب."), code: "FETCH_ERROR" };
@@ -7875,6 +7920,9 @@ async function runMetaWatcherCycle(trigger: string): Promise<{ ok: boolean; trig
       if (!fetched.ok) {
         metaPollingState.lastError = fetched.error || "fetch failed";
         metaPollingState.consecutiveErrors += 1;
+        // F-02: OAuthException (190) من سحب التعليقات ⇒ الاتصال reauth_needed
+        // فيتوقف المراقب عن هذه المنصة حتى إعادة الربط (بلا تكرار صامت للأبد).
+        reauthOnOAuthException(platform, fetched);
       } else {
         metaPollingState.lastError = null;
         metaPollingState.consecutiveErrors = 0;
@@ -10784,6 +10832,8 @@ async function executePlatformPublishInner(platform: string, body: any, actor: s
           ? await facebookClient().publishPhotoToPage(target.pageId, target.pageToken, imageUrl, content)
           : await facebookClient().publishToPage(target.pageId, target.pageToken, content);
       const receipt = result.ok ? { provider: "facebook", pageId: target.pageId, postId: result.data?.providerPostId, mediaKind: videoUrl ? "video" : (imageUrl ? "image" : "text"), sentAt: new Date().toISOString() } : null;
+      // F-02: OAuthException (190) من نداء النشر ⇒ الاتصال reauth_needed فوراً.
+      reauthOnOAuthException("facebook", result);
       const record = buildPublishRecord({ platform: platform as any, postId: typeof body?.postId === "string" ? body.postId : workspaceId("post"), providerPostId: result.data?.providerPostId || null, simulated: false, error: result.ok ? null : result.error, code: result.code ?? null, providerCode: result.providerCode ?? null, providerSubcode: result.providerSubcode ?? null, providerTraceId: result.providerTraceId ?? null });
       if (!Array.isArray((workspace as any).publishRecords)) (workspace as any).publishRecords = [];
       // ربط المنشور بالمنتج (معرّف صريح فقط) — يجعل تعليقات هذا المنشور قابلة للربط
@@ -10813,6 +10863,8 @@ async function executePlatformPublishInner(platform: string, body: any, actor: s
       const igPoll = resolveContainerPollConfig(process.env);
       const container = await createInstagramContainerReady(target.igAccountId, target.pageToken, { imageUrl, videoUrl, caption: content, reel, shareToFeed }, igPoll);
       if ("error" in container) {
+        // F-02: OAuthException (190) من نداء إنشاء الحاوية ⇒ الاتصال reauth_needed.
+        reauthOnOAuthException("instagram", container);
         // MEDIA_REQUIRED يبقى فقط إن غاب الوسائط فعلاً قبل أي استدعاء شبكي؛ وإلا نُمرّر
         // كود Meta الحقيقي ورسالته بدل تثبيت MEDIA_REQUIRED الذي كان يُخفي السبب.
         const code = container.code || "MEDIA_REQUIRED";
@@ -10827,6 +10879,8 @@ async function executePlatformPublishInner(platform: string, body: any, actor: s
         return { status: isRealMediaRequired ? 422 : 502, body: { success: false, record: failRecord, error: container.error, code: isRealMediaRequired ? "MEDIA_REQUIRED" : code, providerCode: container.providerCode ?? null, providerSubcode: container.providerSubcode ?? null, providerTraceId: container.providerTraceId ?? null, note: isRealMediaRequired ? "Instagram لا ينشر نصاً فقط؛ زوّد imageUrl أو videoUrl عاماً." : "فشل نشر Instagram بالسبب الحقيقي من Meta (يتضمّن انتظار جاهزية الحاوية قبل النشر)." } };
       }
       const published = await instagramClient().publishContainer(target.igAccountId, target.pageToken, container.containerId);
+      // F-02: OAuthException (190) من نداء النشر ⇒ الاتصال reauth_needed فوراً.
+      reauthOnOAuthException("instagram", published);
       const receipt = published.ok ? { provider: "instagram", igAccountId: target.igAccountId, containerId: container.containerId, postId: published.data?.providerPostId, mediaKind: container.mediaKind, sentAt: new Date().toISOString() } : null;
       const record = buildPublishRecord({ platform: platform as any, postId: typeof body?.postId === "string" ? body.postId : workspaceId("post"), providerPostId: published.data?.providerPostId || null, simulated: false, error: published.ok ? null : published.error, code: published.code ?? null, providerCode: published.providerCode ?? null, providerSubcode: published.providerSubcode ?? null, providerTraceId: published.providerTraceId ?? null });
       if (!Array.isArray((workspace as any).publishRecords)) (workspace as any).publishRecords = [];
@@ -11075,6 +11129,33 @@ app.get("/api/platforms/:platform/health", authenticateToken, async (req,res)=>{
       if(!token?.access_token) throw new Error("رمز Google Business Profile غير متوفر.");
       const r=await fetch("https://mybusinessaccountmanagement.googleapis.com/v1/accounts",{headers:{Authorization:`Bearer ${token.access_token}`}}); const d=await r.json();
       return res.status(r.ok?200:502).json({success:r.ok,platform,healthy:r.ok,provider:"google_business",accounts:Array.isArray(d.accounts)?d.accounts.map((x:any)=>({name:x.name,displayName:x.accountName||x.name})):[],checkedAt:new Date().toISOString()});
+    }
+    if(platform==="facebook") {
+      // F-02: فحص حقيقي خفيف `GET /{page-id}?fields=id`. كان 501 سابقاً فيبقى
+      // الاتصال «متحققاً» للأبد؛ الآن OAuthException (190) يُعلن reauth_needed.
+      const pageId=String(getProviderToken("facebook")?.pageId||"");
+      const pageToken=facebookPageToken(pageId||undefined);
+      if(!pageId||!pageToken) throw new Error("لا اعتماد صفحة Facebook محفوظ.");
+      const proof=await facebookClient().getPageHealth(pageId,pageToken);
+      if(!proof.ok||!proof.data?.pageId){
+        reauthOnOAuthException("facebook", proof);
+        const reauthed = platformConnections.get("facebook")?.status === "reauth_needed";
+        return res.status(reauthed?409:502).json({success:false,platform,healthy:false,provider:"facebook",status:reauthed?"reauth_needed":"unhealthy",error:proof.error||"تعذّر إثبات صحة صفحة Facebook.",errorKind:proof.code??null});
+      }
+      return res.json({success:true,platform,healthy:true,provider:"facebook",accountId:proof.data.pageId,accountName:c.accountName,checkedAt:new Date().toISOString()});
+    }
+    if(platform==="instagram") {
+      // F-02: فحص حقيقي خفيف `GET /{ig-user-id}?fields=id` — نفس مبدأ Facebook.
+      const igAccountId=instagramAccountId();
+      const pageToken=instagramPageToken();
+      if(!igAccountId||!pageToken) throw new Error("لا اعتماد Instagram محفوظ.");
+      const proof=await instagramClient().getInstagramProfile(igAccountId,pageToken);
+      if(!proof.ok||!proof.data?.igAccountId){
+        reauthOnOAuthException("instagram", proof);
+        const reauthed = platformConnections.get("instagram")?.status === "reauth_needed";
+        return res.status(reauthed?409:502).json({success:false,platform,healthy:false,provider:"instagram",status:reauthed?"reauth_needed":"unhealthy",error:proof.error||"تعذّر إثبات صحة حساب Instagram.",errorKind:proof.code??null});
+      }
+      return res.json({success:true,platform,healthy:true,provider:"instagram",accountId:proof.data.igAccountId,accountName:proof.data.igUsername?`@${proof.data.igUsername}`:c.accountName,checkedAt:new Date().toISOString()});
     }
     return res.status(501).json({success:false,platform,healthy:false,error:"لا يوجد فحص مزود إنتاجي لهذا الموصل حتى الآن."});
   } catch(e:any) { return res.status(502).json({success:false,platform,healthy:false,error:String(e?.message||e).slice(0,240)}); }
@@ -15447,6 +15528,17 @@ app.get("/api/readiness", (_req, res) => {
     // دليل النشر: أي إصدار/commit يعمل فعلاً على المنصة (Render). أسماء ومقتطفات
     // غير سرّية فقط (7 خانات من الـcommit) — تثبت أن الكود المنشور هو المدفوع.
     deploy: deploymentInfo(),
+    /**
+     * F-02: حالة الاتصال التشغيلية لكل منصة (بلا أي بيانات عميل: لا accountName
+     * ولا accountId). الغرض إعلان `reauth_needed` علناً بعد سحب التفويض/انتهاء
+     * الرمز، فلا يبقى الاتصال «متحققاً» في نظر المراقبة والواجهة بلا نهاية.
+     * مصدرها الواحد `platformConnections` — نفس ما تعرضه لوحة التحكم.
+     */
+    platformConnections: SUPPORTED_PLATFORMS.map((p: any) => {
+      const c: any = platformConnections.get(p.id);
+      const status = c?.status === "connected" ? "connected" : c?.status === "reauth_needed" ? "reauth_needed" : "disconnected";
+      return { platform: p.id, status, providerVerified: Boolean(c?.providerVerified), reauthRequired: status === "reauth_needed" };
+    }),
     // حقول YouTube الآمنة (منطقي فقط، بلا أي قيمة سرّية): تفصل وجود بيانات
     // Google عن نطاق القراءة المطلوب لإثبات القناة وعن الاتصال الفعلي.
     youtubeOAuth: youtubeHealthState(),

@@ -17,6 +17,8 @@
  * بناء الطلب، تمييز التعليق عن الرسالة) مفصولة عن عميل الشبكة لتُختبر بلا مزود.
  */
 
+import { createRetryingProviderFetch, providerRetryConfig } from './providerRetry';
+
 export const FACEBOOK_GRAPH_BASE = 'https://graph.facebook.com';
 export const FACEBOOK_OAUTH_DIALOG_BASE = 'https://www.facebook.com';
 export const FACEBOOK_GRAPH_VERSION = 'v21.0';
@@ -599,6 +601,18 @@ export type FacebookFetch = (
   init: { method: string; headers?: Record<string, string>; body?: string },
 ) => Promise<{ ok: boolean; status: number; json: () => Promise<any> }>;
 
+/**
+ * F-14: غلاف fetch بإعادة محاولة آمنة. القراءة (GET) وحدها تُعاد عند فشل عابر
+ * (5xx/429/انقطاع)، مع احترام Retry-After؛ والكتابة (POST) لا تُعاد أبداً.
+ * يُحقن `sleep` في الاختبار فلا ساعة حقيقية. الغلاف يُصدَّر ليُثبَت سلوكه بلا شبكة.
+ */
+export function createFacebookFetch(
+  baseFetch: (url: string, init: any) => Promise<any>,
+  overrides: Parameters<typeof providerRetryConfig>[1] = {},
+): FacebookFetch {
+  return createRetryingProviderFetch(baseFetch, { config: providerRetryConfig(process.env, overrides) }) as FacebookFetch;
+}
+
 export interface FacebookPageIdentity {
   pageId: string;
   pageName: string | null;
@@ -908,7 +922,7 @@ export class FacebookClient {
       if (!res.ok || !accessToken) return { ok: false, data: null, error: errorMessage(data, 'فشل تبادل رمز Facebook.') };
       return { ok: true, data: { accessToken, expiresIn: Number.isFinite(Number(data?.expires_in)) ? Number(data.expires_in) : null } };
     } catch (e: any) {
-      return { ok: false, data: null, error: String(e?.message || 'فشل الاتصال بـFacebook.') };
+      return { ok: false, data: null, error: String(e?.message || 'فشل الاتصال بـFacebook.'), code: 'NETWORK_ERROR' };
     }
   }
 
@@ -926,7 +940,7 @@ export class FacebookClient {
       if (!res.ok || !accessToken) return { ok: false, data: null, error: errorMessage(data, 'فشل إطالة رمز Facebook.') };
       return { ok: true, data: { accessToken, expiresIn: Number.isFinite(Number(data?.expires_in)) ? Number(data.expires_in) : null } };
     } catch (e: any) {
-      return { ok: false, data: null, error: String(e?.message || 'فشل الاتصال بـFacebook.') };
+      return { ok: false, data: null, error: String(e?.message || 'فشل الاتصال بـFacebook.'), code: 'NETWORK_ERROR' };
     }
   }
 
@@ -958,7 +972,7 @@ export class FacebookClient {
       if (Array.isArray(data.app_domains)) raw.app_domains = data.app_domains.map((d: any) => String(d));
       return { ok: true, data: { id: String(data.id), name: typeof data.name === 'string' ? data.name : null, raw } };
     } catch (e: any) {
-      return { ok: false, data: null, error: String(e?.message || 'فشل الاتصال بـFacebook.') };
+      return { ok: false, data: null, error: String(e?.message || 'فشل الاتصال بـFacebook.'), code: 'NETWORK_ERROR' };
     }
   }
 
@@ -986,7 +1000,7 @@ export class FacebookClient {
         .map((r: any) => ({ userId: String(r.user), role: r.role ? String(r.role) : 'unknown' }));
       return { ok: true, data: roles };
     } catch (e: any) {
-      return { ok: false, data: null, error: String(e?.message || 'فشل الاتصال بـFacebook.') };
+      return { ok: false, data: null, error: String(e?.message || 'فشل الاتصال بـFacebook.'), code: 'NETWORK_ERROR' };
     }
   }
 
@@ -1013,7 +1027,7 @@ export class FacebookClient {
         .map((b: any) => ({ businessId: String(b.id), name: b.name ? String(b.name) : null, permittedRoles: Array.isArray(b.permitted_roles) ? b.permitted_roles.map((r: any) => String(r)) : [] }));
       return { ok: true, data: businesses };
     } catch (e: any) {
-      return { ok: false, data: null, error: String(e?.message || 'فشل الاتصال بـFacebook.') };
+      return { ok: false, data: null, error: String(e?.message || 'فشل الاتصال بـFacebook.'), code: 'NETWORK_ERROR' };
     }
   }
 
@@ -1037,7 +1051,7 @@ export class FacebookClient {
       const apps = (Array.isArray(data?.data) ? data.data : []).filter((a: any) => a?.id).map((a: any) => String(a.id));
       return { ok: true, data: apps };
     } catch (e: any) {
-      return { ok: false, data: null, error: String(e?.message || 'فشل الاتصال بـFacebook.') };
+      return { ok: false, data: null, error: String(e?.message || 'فشل الاتصال بـFacebook.'), code: 'NETWORK_ERROR' };
     }
   }
 
@@ -1058,7 +1072,7 @@ export class FacebookClient {
       console.log(`[facebook-graph] GET /me/accounts ok pages=${pages.length} withToken=${pages.filter((p) => p.pageAccessToken).length}`);
       return { ok: true, data: pages };
     } catch (e: any) {
-      return { ok: false, data: null, error: String(e?.message || 'فشل الاتصال بـFacebook.') };
+      return { ok: false, data: null, error: String(e?.message || 'فشل الاتصال بـFacebook.'), code: 'NETWORK_ERROR' };
     }
   }
 
@@ -1085,7 +1099,37 @@ export class FacebookClient {
         },
       };
     } catch (e: any) {
-      return { ok: false, data: null, error: String(e?.message || 'فشل الاتصال بـFacebook.') };
+      return { ok: false, data: null, error: String(e?.message || 'فشل الاتصال بـFacebook.'), code: 'NETWORK_ERROR' };
+    }
+  }
+
+  /**
+   * F-02: فحص صحة حقيقي خفيف للصفحة عبر Graph: `GET /{page-id}?fields=id`.
+   *
+   * لماذا: مسار `/api/platforms/:platform/health` كان يرد 501 لفيسبوك، فيبقى
+   * الاتصال «متحققاً» إلى الأبد حتى لو سُحب التفويض أو انتهى الرمز. هذا النداء
+   * الحقيقي يجعل الفحص يعكس الواقع: أي OAuthException (رمز 190) يعني أن الاتصال
+   * لم يعد صالحاً فيجب إعلان `reauth_needed` بدل ادعاء الصحة.
+   *
+   * لا يُعاد أي رمز ولا سرّ؛ فقط تصنيف النتيجة والرسالة من Meta.
+   */
+  async getPageHealth(pageId: string, accessToken: string): Promise<FacebookResult<{ pageId: string }>> {
+    if (!pageId || !accessToken) return { ok: false, data: null, error: 'معرّف الصفحة والرمز مطلوبان.' };
+    try {
+      const u = new URL(facebookGraphUrl(`/${pageId}`, this.baseUrl));
+      u.searchParams.set('fields', 'id');
+      u.searchParams.set('access_token', accessToken);
+      const res = await this.fetchImpl(u.toString(), { method: 'GET' });
+      const data = await res.json().catch(() => null);
+      if (!res.ok || data?.error || !data?.id) {
+        const ex = logAndExtractFacebookError(data, `GET /${pageId}?fields=id`, res.status);
+        const msg = errorMessage(data, 'تعذّر إثبات صحة صفحة Facebook.');
+        const pCode = ex.providerCode ?? facebookProviderErrorCode(data);
+        return { ok: false, data: null, error: msg, providerCode: pCode, providerSubcode: ex.providerSubcode, providerTraceId: ex.providerTraceId, code: classifyFacebookProviderError(msg, pCode) };
+      }
+      return { ok: true, data: { pageId: String(data.id) } };
+    } catch (e: any) {
+      return { ok: false, data: null, error: String(e?.message || 'فشل الاتصال بـFacebook.'), code: 'NETWORK_ERROR' };
     }
   }
 
@@ -1181,7 +1225,7 @@ export class FacebookClient {
       if (!res.ok || data?.error || data?.success !== true) { console.error(formatFacebookGraphError(extractFacebookGraphError(data, `POST /${pageId}/subscribed_apps`, res.status))); return { ok: false, data: null, error: errorMessage(data, 'تعذّر اشتراك الصفحة في webhook.') }; }
       return { ok: true, data: true };
     } catch (e: any) {
-      return { ok: false, data: null, error: String(e?.message || 'فشل الاتصال بـFacebook.') };
+      return { ok: false, data: null, error: String(e?.message || 'فشل الاتصال بـFacebook.'), code: 'NETWORK_ERROR' };
     }
   }
 
@@ -1197,7 +1241,7 @@ export class FacebookClient {
       const apps = (Array.isArray(data?.data) ? data.data : []).map((a: any) => String(a?.id ?? '')).filter(Boolean);
       return { ok: true, data: apps };
     } catch (e: any) {
-      return { ok: false, data: null, error: String(e?.message || 'فشل الاتصال بـFacebook.') };
+      return { ok: false, data: null, error: String(e?.message || 'فشل الاتصال بـFacebook.'), code: 'NETWORK_ERROR' };
     }
   }
 
@@ -1218,7 +1262,7 @@ export class FacebookClient {
       const rows = Array.isArray(data?.data) ? data.data : [];
       return { ok: true, data: rows.map((p: any) => ({ postId: String(p?.id || ''), createdAt: p?.created_time ? String(p.created_time) : null })).filter((p: any) => p.postId) };
     } catch (e: any) {
-      return { ok: false, data: null, error: String(e?.message || 'فشل الاتصال بـFacebook.') };
+      return { ok: false, data: null, error: String(e?.message || 'فشل الاتصال بـFacebook.'), code: 'NETWORK_ERROR' };
     }
   }
 
@@ -1236,7 +1280,14 @@ export class FacebookClient {
       u.searchParams.set('access_token', pageAccessToken);
       const res = await this.fetchImpl(u.toString(), { method: 'GET' });
       const data = await res.json().catch(() => null);
-      if (!res.ok || data?.error) return { ok: false, data: null, error: errorMessage(data, 'فشل قراءة تعليقات الصفحة.') };
+      if (!res.ok || data?.error) {
+        // F-02: نُعلن كود Meta الحقيقي (190 = OAuthException) ليُقلب الاتصال إلى
+        // reauth_needed من مسار polling بلا تخمين من نص الرسالة.
+        const msg = errorMessage(data, 'فشل قراءة تعليقات الصفحة.');
+        const ex = logAndExtractFacebookError(data, `GET /${pageId}/feed`, res.status);
+        const pCode = ex.providerCode ?? facebookProviderErrorCode(data);
+        return { ok: false, data: null, error: msg, providerCode: pCode, providerSubcode: ex.providerSubcode, providerTraceId: ex.providerTraceId, code: classifyFacebookProviderError(msg, pCode) };
+      }
       const out: Array<{ commentId: string; postId: string | null; message: string; authorName: string | null; authorId: string | null; createdAt: string | null; parentId: string | null }> = [];
       for (const post of Array.isArray(data?.data) ? data.data : []) {
         const postId = post?.id ? String(post.id) : null;
@@ -1255,7 +1306,7 @@ export class FacebookClient {
       }
       return { ok: true, data: out };
     } catch (e: any) {
-      return { ok: false, data: null, error: String(e?.message || 'فشل الاتصال بـFacebook.') };
+      return { ok: false, data: null, error: String(e?.message || 'فشل الاتصال بـFacebook.'), code: 'NETWORK_ERROR' };
     }
   }
 
@@ -1270,7 +1321,12 @@ export class FacebookClient {
         body: buildCommentReplyBody(message).toString(),
       });
       const data = await res.json().catch(() => null);
-      if (!res.ok || data?.error || !data?.id) return { ok: false, data: null, error: errorMessage(data, 'فشل الرد على التعليق عبر Facebook.') };
+      if (!res.ok || data?.error || !data?.id) {
+        const msg = errorMessage(data, 'فشل الرد على التعليق عبر Facebook.');
+        const ex = logAndExtractFacebookError(data, `POST /${commentId}/comments`, res.status);
+        const pCode = ex.providerCode ?? facebookProviderErrorCode(data);
+        return { ok: false, data: null, error: msg, providerCode: pCode, providerSubcode: ex.providerSubcode, providerTraceId: ex.providerTraceId, code: classifyFacebookProviderError(msg, pCode) };
+      }
       return { ok: true, data: { providerCommentId: String(data.id) } };
     } catch (e: any) {
       // F-07: انقطاع بعد الإرسال بلا رد مزود — لا يُصنَّف فشلاً مؤكداً (انظر idempotencyStore).
@@ -1290,7 +1346,12 @@ export class FacebookClient {
         body: buildSendMessagePayload(recipientId, text),
       });
       const data = await res.json().catch(() => null);
-      if (!res.ok || data?.error || !data?.message_id) return { ok: false, data: null, error: errorMessage(data, 'فشل إرسال الرسالة عبر Facebook.') };
+      if (!res.ok || data?.error || !data?.message_id) {
+        const msg = errorMessage(data, 'فشل إرسال الرسالة عبر Facebook.');
+        const ex = logAndExtractFacebookError(data, `POST /${pageId}/messages`, res.status);
+        const pCode = ex.providerCode ?? facebookProviderErrorCode(data);
+        return { ok: false, data: null, error: msg, providerCode: pCode, providerSubcode: ex.providerSubcode, providerTraceId: ex.providerTraceId, code: classifyFacebookProviderError(msg, pCode) };
+      }
       return { ok: true, data: { providerMessageId: String(data.message_id), recipientId: data.recipient_id ? String(data.recipient_id) : null } };
     } catch (e: any) {
       // F-07: انقطاع بعد الإرسال بلا رد مزود — لا يُصنَّف فشلاً مؤكداً.
@@ -1318,7 +1379,7 @@ export class FacebookClient {
       }
       return { ok: true, data: { providerPostId: String(data.id) } };
     } catch (e: any) {
-      return { ok: false, data: null, error: String(e?.message || 'فشل الاتصال بـFacebook.') };
+      return { ok: false, data: null, error: String(e?.message || 'فشل الاتصال بـFacebook.'), code: 'NETWORK_ERROR' };
     }
   }
 
@@ -1342,7 +1403,7 @@ export class FacebookClient {
       if (!res.ok || data?.error || !data?.id) { const msg = errorMessage(data, 'فشل نشر الفيديو على صفحة Facebook.'); const ex = logAndExtractFacebookError(data, `POST /${pageId}/videos`, res.status); const pCode = ex.providerCode ?? facebookProviderErrorCode(data); return { ok: false, data: null, error: msg, providerCode: pCode, providerSubcode: ex.providerSubcode, providerTraceId: ex.providerTraceId, code: classifyFacebookProviderError(msg, pCode) }; }
       return { ok: true, data: { providerPostId: String(data.id) } };
     } catch (e: any) {
-      return { ok: false, data: null, error: String(e?.message || 'فشل الاتصال بـFacebook.') };
+      return { ok: false, data: null, error: String(e?.message || 'فشل الاتصال بـFacebook.'), code: 'NETWORK_ERROR' };
     }
   }
 
@@ -1365,7 +1426,7 @@ export class FacebookClient {
       if (!res.ok || data?.error || !data?.id) { const msg = errorMessage(data, 'فشل نشر الصورة على صفحة Facebook.'); const ex = logAndExtractFacebookError(data, `POST /${pageId}/photos`, res.status); const pCode = ex.providerCode ?? facebookProviderErrorCode(data); return { ok: false, data: null, error: msg, providerCode: pCode, providerSubcode: ex.providerSubcode, providerTraceId: ex.providerTraceId, code: classifyFacebookProviderError(msg, pCode) }; }
       return { ok: true, data: { providerPostId: String(data.id) } };
     } catch (e: any) {
-      return { ok: false, data: null, error: String(e?.message || 'فشل الاتصال بـFacebook.') };
+      return { ok: false, data: null, error: String(e?.message || 'فشل الاتصال بـFacebook.'), code: 'NETWORK_ERROR' };
     }
   }
 }

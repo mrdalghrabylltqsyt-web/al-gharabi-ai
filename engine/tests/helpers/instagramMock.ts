@@ -28,6 +28,14 @@ export interface InstagramMockState {
   failProfile: boolean;
   failSubscribe: boolean;
   failCommentReply: boolean;
+  /** F-02: خطأ مخصّص للرد على تعليق (مثلاً `{ message: 'Session has expired', code: 190 }`). */
+  replyError?: { message: string; code: number } | null;
+  /** F-14: عدد مرات فشل قراءة هوية الحساب بـ503 قبل النجاح (إثبات إعادة القراءة). */
+  profileTransientFailures: number;
+  /** F-02: يرد قراءة الهوية بـOAuthException (190) — يقلب الاتصال إلى reauth_needed. */
+  profileOAuthError: boolean;
+  /** F-02/F-14: عدد محاولات الرد على التعليق فعلياً (إثبات عدم الإعادة على الكتابة). */
+  commentReplyAttempts: number;
   failSend: boolean;
   failPublish: boolean;
   failPublishStep: boolean;
@@ -60,6 +68,10 @@ export function createInstagramMock(state: Partial<InstagramMockState> = {}): In
     failProfile: false,
     failSubscribe: false,
     failCommentReply: false,
+    replyError: state.replyError ?? null,
+    profileTransientFailures: state.profileTransientFailures ?? 0,
+    profileOAuthError: false,
+    commentReplyAttempts: 0,
     failSend: false,
     failPublish: false,
     failPublishStep: false,
@@ -182,6 +194,15 @@ export async function startInstagramMockServer(
     const { id } = req.params;
     const fields = String(req.query.fields || '');
     state.calls += 1;
+    // F-14: فشل عابر (503) على قراءة هوية الحساب — يُثبت أن إعادة القراءة تعمل.
+    if (state.profileTransientFailures > 0 && !fields.includes('status_code')) {
+      state.profileTransientFailures -= 1;
+      return res.status(503).json({ error: { message: 'Service temporarily unavailable', code: 2 } });
+    }
+    // F-02: OAuthException (190) على قراءة الهوية — يقلب الاتصال إلى reauth_needed.
+    if (state.profileOAuthError && !fields.includes('status_code')) {
+      return res.status(400).json({ error: { message: 'Error validating access token: Session has expired', type: 'OAuthException', code: 190, error_subcode: 463 } });
+    }
     if (state.failProfile) return res.status(400).json({ error: { message: 'Unsupported get request', code: 100 } });
     const account = state.accounts.find((a) => a.igAccountId === id);
     if (account) return res.json({ id: account.igAccountId, username: account.igUsername });
@@ -225,6 +246,8 @@ export async function startInstagramMockServer(
   app.post('/:version/:commentId/replies', (req, res) => {
     const { commentId } = req.params;
     state.calls += 1;
+    state.commentReplyAttempts += 1;
+    if (state.replyError) return res.status(400).json({ error: state.replyError });
     if (state.failCommentReply) return res.status(400).json({ error: { message: 'Cannot reply', code: 200 } });
     const message = String(req.body?.message || '');
     const id = `IG_REPLY_${commentId}_${state.commentReplies.length + 1}`;

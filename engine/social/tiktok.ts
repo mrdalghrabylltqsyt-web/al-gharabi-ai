@@ -22,6 +22,7 @@
  */
 
 import crypto from 'node:crypto';
+import { createRetryingProviderFetch, providerRetryConfig } from './providerRetry';
 
 export const TIKTOK_OAUTH_AUTHORIZE_BASE = 'https://www.tiktok.com';
 export const TIKTOK_OPEN_API_BASE = 'https://open.tiktokapis.com';
@@ -637,6 +638,18 @@ export type TikTokFetch = (
   init: { method: string; headers?: Record<string, string>; body?: string },
 ) => Promise<{ ok: boolean; status: number; json: () => Promise<any> }>;
 
+/**
+ * F-14: غلاف fetch بإعادة محاولة آمنة لموصل TikTok — القراءة (GET) وحدها تُعاد
+ * عند فشل عابر (5xx/429/انقطاع) مع احترام Retry-After؛ والكتابة (POST) لا تُعاد
+ * أبداً. يُحقن `sleep` في الاختبار فلا ساعة حقيقية.
+ */
+export function createTikTokFetch(
+  baseFetch: (url: string, init: any) => Promise<any>,
+  overrides: Parameters<typeof providerRetryConfig>[1] = {},
+): TikTokFetch {
+  return createRetryingProviderFetch(baseFetch, { config: providerRetryConfig(process.env, overrides) }) as TikTokFetch;
+}
+
 export interface TikTokResult<T> {
   ok: boolean;
   data: T | null;
@@ -723,7 +736,7 @@ export class TikTokClient {
       if (!res.ok || data?.error) return { ok: false, data: null, error: tiktokError(data, 'فشل إبطال رمز TikTok.'), code: tiktokErrorCode(data) };
       return { ok: true, data: true };
     } catch (e: any) {
-      return { ok: false, data: null, error: String(e?.message || 'فشل الاتصال بـTikTok.') };
+      return { ok: false, data: null, error: String(e?.message || 'فشل الاتصال بـTikTok.'), code: 'NETWORK_ERROR' };
     }
   }
 
@@ -749,7 +762,7 @@ export class TikTokClient {
         },
       };
     } catch (e: any) {
-      return { ok: false, data: null, error: String(e?.message || 'فشل الاتصال بـTikTok.') };
+      return { ok: false, data: null, error: String(e?.message || 'فشل الاتصال بـTikTok.'), code: 'NETWORK_ERROR' };
     }
   }
 
@@ -775,7 +788,7 @@ export class TikTokClient {
         },
       };
     } catch (e: any) {
-      return { ok: false, data: null, error: String(e?.message || 'فشل الاتصال بـTikTok.') };
+      return { ok: false, data: null, error: String(e?.message || 'فشل الاتصال بـTikTok.'), code: 'NETWORK_ERROR' };
     }
   }
 
@@ -806,7 +819,7 @@ export class TikTokClient {
         },
       };
     } catch (e: any) {
-      return { ok: false, data: null, error: String(e?.message || 'فشل الاتصال بـTikTok.') };
+      return { ok: false, data: null, error: String(e?.message || 'فشل الاتصال بـTikTok.'), code: 'NETWORK_ERROR' };
     }
   }
 
@@ -826,7 +839,7 @@ export class TikTokClient {
       }
       return { ok: true, data: { publishId, uploadUrl: data?.data?.upload_url ? String(data.data.upload_url) : null } };
     } catch (e: any) {
-      return { ok: false, data: null, error: String(e?.message || 'فشل الاتصال بـTikTok.') };
+      return { ok: false, data: null, error: String(e?.message || 'فشل الاتصال بـTikTok.'), code: 'NETWORK_ERROR' };
     }
   }
 
@@ -846,7 +859,7 @@ export class TikTokClient {
       }
       return { ok: true, data: { publishId, uploadUrl: data?.data?.upload_url ? String(data.data.upload_url) : null } };
     } catch (e: any) {
-      return { ok: false, data: null, error: String(e?.message || 'فشل الاتصال بـTikTok.') };
+      return { ok: false, data: null, error: String(e?.message || 'فشل الاتصال بـTikTok.'), code: 'NETWORK_ERROR' };
     }
   }
 
@@ -866,7 +879,7 @@ export class TikTokClient {
       }
       return { ok: true, data: { publishId } };
     } catch (e: any) {
-      return { ok: false, data: null, error: String(e?.message || 'فشل الاتصال بـTikTok.') };
+      return { ok: false, data: null, error: String(e?.message || 'فشل الاتصال بـTikTok.'), code: 'NETWORK_ERROR' };
     }
   }
 
@@ -891,7 +904,7 @@ export class TikTokClient {
       });
       return { ok: true, data: { ...classified, rawStatus: String(d.status || '') } };
     } catch (e: any) {
-      return { ok: false, data: null, error: String(e?.message || 'فشل الاتصال بـTikTok.') };
+      return { ok: false, data: null, error: String(e?.message || 'فشل الاتصال بـTikTok.'), code: 'NETWORK_ERROR' };
     }
   }
 }

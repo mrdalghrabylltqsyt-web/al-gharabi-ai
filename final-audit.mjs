@@ -2728,6 +2728,69 @@ add('f07-idempotency-tests-present',
 add('durable-lease-test-present',
   leaseTest.includes('live lease is not stolen') && leaseTest.includes('stale lease recovered') && (pkg.scripts['test'] || '').includes('test:durable-lease'),
   'Phase 2: اختبار قفل الدوام مضمّن في npm test');
+
+// -------------------------------------------------------------
+// PR-E: F-02 (reauth_needed من OAuthException) + F-14 (إعادة محاولة آمنة).
+// -------------------------------------------------------------
+const providerRetryModule = read('engine/social/providerRetry.ts');
+const providerRetryTest = read('engine/tests/provider.retry.test.ts');
+const providerRetryIntegrationTest = read('engine/tests/provider.retry.integration.test.ts');
+add('f14-retry-module',
+  providerRetryModule.includes('export function createRetryingProviderFetch') && providerRetryModule.includes('export function providerRetryConfig') && providerRetryModule.includes('export function decideProviderRetry') && providerRetryModule.includes('export function parseRetryAfterHeader') && providerRetryModule.includes('export function kindForMethod'),
+  'F-14: وحدة إعادة المحاولة الآمنة موجودة (غلاف fetch + قرار موحّد + تصنيف الطريقة + Retry-After)');
+add('f14-max-three-attempts',
+  /DEFAULT_MAX_ATTEMPTS = 3/.test(providerRetryModule) && providerRetryModule.includes('attempt >= config.maxAttempts') && providerRetryModule.includes('computeBackoffDelayMs'),
+  'F-14: 3 محاولات كحد أقصى مع تأخير تصاعدي (base * 2^(n-1)) مقيّد بسقف');
+add('f14-write-never-retried',
+  /if \(kind === 'write'\) return \{ retry: false, reason: 'write_never_retried', delayMs: 0 \}/.test(providerRetryModule) && providerRetryModule.includes("m === 'GET' || m === 'HEAD' || m === 'OPTIONS' ? 'read' : 'write'"),
+  'F-14: الكتابة (POST نشر/رد) لا تُعاد تلقائياً أبداً — القراءة (GET) وحدها تُعاد');
+add('f14-permanent-errors-not-retried',
+  providerRetryModule.includes("if (code === 190) return true") && /s === 408 \|\| s === 429/.test(providerRetryModule) && providerRetryModule.includes('return s >= 400 && s < 500'),
+  'F-14: لا إعادة على الأخطاء الدائمة (400/401/403 ورمز Meta 190) مع استثناء 408/429 العابرين');
+add('f14-retry-after-honored',
+  providerRetryModule.includes('export function parseRetryAfterHeader') && providerRetryModule.includes('Math.max(backoff, honored)') && providerRetryModule.includes('maxRetryAfterMs'),
+  'F-14: Retry-After (ثوانٍ أو تاريخ HTTP) يُحترم عند 429 بسقف يمنع تعليق الطلب');
+add('f14-wired-into-connectors',
+  server.includes('createFacebookFetch(') && server.includes('createInstagramFetch(') && server.includes('createTikTokFetch(') &&
+  read('engine/social/facebook.ts').includes('export function createFacebookFetch') &&
+  read('engine/social/instagram.ts').includes('export function createInstagramFetch') &&
+  read('engine/social/tiktok.ts').includes('export function createTikTokFetch'),
+  'F-14: الغلاف مُثبَّت على موصلات Facebook/Instagram/TikTok فعلاً (لا وحدة معزولة)');
+add('f14-network-after-send-still-reserved',
+  providerRetryModule.includes('throw networkError;') && /كتابة أو استنفاد المحاولات: يُرمى كما هو/.test(providerRetryModule) && read('engine/social/facebook.ts').includes("code: 'NETWORK_ERROR'"),
+  'F-14: انقطاع الكتابة يُرمى كما هو فيُصنَّف NETWORK_ERROR ويبقى الحجز reserved (سجل idempotency من PR-D1 هو السلطة)');
+add('f02-reauth-helper-single-source',
+  server.includes('function markProviderReauthNeeded') && server.includes('function reauthOnOAuthException') && server.includes('function isOAuthExceptionFailure') && server.includes("'oauth_exception_190'"),
+  'F-02: مصدر واحد لقلب الاتصال إلى reauth_needed عند OAuthException (190) بنمط YouTube/TikTok');
+add('f02-reauth-on-all-live-calls',
+  (server.match(/reauthOnOAuthException\(/g) || []).length >= 7 &&
+  /reauthOnOAuthException\(platform, result\);[\s\S]{0,200}classifyExternalOperationOutcome/.test(server) &&
+  server.includes('reauthOnOAuthException("facebook", result);') && server.includes('reauthOnOAuthException("instagram", published);'),
+  'F-02: القلب مطبّق على كل نداء فعلي (رد تعليق/رد رسالة/نشر/إنشاء حاوية/health/polling)');
+add('f02-health-real-graph-checks',
+  read('engine/social/facebook.ts').includes('async getPageHealth(') && read('engine/social/facebook.ts').includes("u.searchParams.set('fields', 'id')") &&
+  server.includes('getPageHealth(pageId,pageToken)') && server.includes('getInstagramProfile(igAccountId,pageToken)') &&
+  !/platform==="facebook"\)\s*\{\s*return res\.status\(501\)/.test(server),
+  'F-02: فحص health لفيسبوك وإنستغرام ينادي Graph فعلاً (لا 501) — GET /{page-id}?fields=id و GET /{ig-user-id}?fields=id');
+add('f02-reauth-public-readiness',
+  /platformConnections: SUPPORTED_PLATFORMS\.map/.test(server) && server.includes('reauthRequired: status === "reauth_needed"') && server.includes('platformConnections: Array.from(platformConnections.values())'),
+  'F-02: حالة الاتصال التشغيلية (بما فيها reauth_needed) معلنة في /api/readiness بلا بيانات عميل');
+add('f02-reauth-blocks-operations',
+  server.includes('conn.status !== "connected" || conn.providerVerified !== true') && read('engine/social/operations.ts').includes("live.status === 'reauth_needed'"),
+  'F-02: reauth_needed يوقف الرد والنشر (409) ويظهر FAILED في مصفوفة العمليات');
+add('f14-tests-registered',
+  (pkg.scripts['test'] || '').includes('test:provider-retry') && (pkg.scripts['test'] || '').includes('test:provider-retry-integration') &&
+  (pkg.scripts['test:provider-retry'] || '') === 'tsx engine/tests/provider.retry.test.ts' &&
+  (pkg.scripts['test:provider-retry-integration'] || '') === 'tsx engine/tests/provider.retry.integration.test.ts',
+  'F-14/F-02: اختبارا الوحدة والتكامل مسجّلان ضمن npm test');
+add('f14-tests-fail-on-old-code',
+  providerRetryTest.includes('503 على GET => إعادة ثم نجاح') && providerRetryTest.includes('POST (نشر/رد) => لا إعادة تلقائية أبداً') &&
+  providerRetryIntegrationTest.includes('health لا يرد 501 (فحص منفّذ)') && providerRetryIntegrationTest.includes('كود 190 من نداء رد => reauth_needed ولا محاولات لاحقة') &&
+  providerRetryIntegrationTest.includes('الحجز الدائم بقي reserved') && providerRetryIntegrationTest.includes('احتُرمت مدة Retry-After'),
+  'F-14/F-02: الاختباران يثبتان السلوك المطلوب (503/429/POST/190/انقطاع) ويفشلان على الكود القديم');
+add('f14-tests-no-real-provider',
+  providerRetryIntegrationTest.includes('createFacebookMock') && providerRetryIntegrationTest.includes('createInstagramMock') && providerRetryIntegrationTest.includes('delete env.GEMINI_API_KEY') && !/GEMINI_API_KEY\s*=\s*['"]/.test(providerRetryIntegrationTest),
+  'F-14: اختبار التكامل يستخدم خادمَي Graph وهميين محليين بلا مزود حقيقي ولا مفتاح Gemini');
 add('env-vars-documented', (() => {
   const envExample = read('.env.example');
   const documented = new Set([...envExample.matchAll(/^([A-Z][A-Z0-9_]+)=/gm)].map((m) => m[1]));
