@@ -63,6 +63,10 @@ async function run() {
   check('★ الإبطال دائم عبر إعادة النشر (revocationsDurable)', p.revocationsDurable === true);
   check('مصدر مفتاح الجلسة ليس عابراً', p.sessionSecretSource !== 'ephemeral', `source=${p.sessionSecretSource}`);
   check('توكن المعاينة مُفعَّل في بيئة النشر', p.previewLoginEnabled === true);
+  // F-07: جدول منع التكرار الدائم (gharabi_idempotency) موجود وسبيله دائم.
+  const idem = p.idempotency || {};
+  check('★ جدول منع التكرار الدائم gharabi_idempotency موجود', idem.table === 'gharabi_idempotency' && idem.backend === 'postgres', `table=${idem.table} backend=${idem.backend}`);
+  check('★ حجز منع التكرار دائم (يصمد بعد إعادة النشر ولا عبر نسختين)', idem.durable === true, `durable=${idem.durable}`);
 
   // 1ب) الجاهزية: تدهور حقيقي يُعلن 503؛ وسلامة العملية (لا وعود مرفوضة).
   let readiness;
@@ -79,6 +83,9 @@ async function run() {
   check('★ الجاهزية تُعلن persistence.healthy=true', rp.healthy === true, `healthy=${rp.healthy}`);
   check('★ لا وعود مرفوضة غير معالجة (unhandledRejectionCount=0)', ph.unhandledRejectionCount === 0, `count=${ph.unhandledRejectionCount}`);
   check('★ /api/health لا يُعلن كتابة فاشلة (lastPersistError=null)', !p.lastPersistError, `lastPersistError=${p.lastPersistError ?? 'null'}`);
+  // F-07: readiness يعلن كتلة منع التكرار الدائم (يقرأها المالك للتأكد من الدوام).
+  const ridem = rp.idempotency || {};
+  check('★ /api/readiness يعلن جدول منع التكرار gharabi_idempotency', ridem.table === 'gharabi_idempotency', `table=${ridem.table}`);
 
   // 2) preview-login: يرفض الخطأ بغير 404، أي أن المسار مُفعَّل فعلاً.
   let wrong;

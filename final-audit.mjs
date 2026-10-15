@@ -2616,6 +2616,12 @@ add('dr-lostkeys-no-production', !drLostKeysTest.includes('restore/production') 
 const drKeyRelTest = fs.existsSync(path.join(root, 'engine/tests/dr/dr.keyrelations.test.ts')) ? read('engine/tests/dr/dr.keyrelations.test.ts') : '';
 add('dr-keyrelations-test', drKeyRelTest.includes('secrets NOT decryptable with vault key') && drKeyRelTest.includes('vault restores master key') && drKeyRelTest.includes('vault does NOT store its own key') && (pkg.scripts['test:dr'] || '').includes('test:dr-keyrelations'), 'اختبار علاقة المفاتيح الأربعة (استقلال + استعادة من الخزنة) مضمّن في test:dr');
 
+const idemStore = read('engine/social/idempotencyStore.ts');
+const idemTest = read('engine/tests/idempotency.store.test.ts');
+const idemDurableTest = read('engine/tests/idempotency.durable.integration.test.ts');
+const idemPgTest = read('engine/tests/idempotency.postgres.test.ts');
+const idemAdapter = read('engine/storage/adapter.ts');
+
 const durableLease = read('engine/social/durableLease.ts');
 const secHardeningTest = read('engine/tests/security.hardening.test.ts');
 const leaseTest = read('engine/tests/durable.lease.test.ts');
@@ -2659,6 +2665,41 @@ add('test-skip-is-explicit',
 add('security-hardening-test-present',
   secHardeningTest.includes('SEC-02') && secHardeningTest.includes('SEC-03') && secHardeningTest.includes('raw-body mismatch cannot bypass') && (pkg.scripts['test'] || '').includes('test:security-hardening'),
   'Phase 1: اختبار انحدار أمني حقيقي (webhook/CSP/maps/leak) مضمّن في npm test');
+add('f07-idempotency-table-ddl',
+  idemStore.includes('export const IDEMPOTENCY_TABLE =') && idemStore.includes('gharabi_idempotency') && idemStore.includes('CREATE TABLE IF NOT EXISTS') && idemStore.includes("status text NOT NULL CHECK (status IN ('reserved','done','failed'))") && idemStore.includes('expires_at'),
+  'F-07: جدول منع التكرار يُنشأ بإنشاء إضافي فقط (CREATE TABLE IF NOT EXISTS) بحالات reserved/done/failed');
+add('f07-idempotency-atomic-reserve',
+  idemStore.includes('ON CONFLICT (key) DO NOTHING') && idemStore.includes('RETURNING') && idemStore.includes("t.status = 'failed'") && idemStore.includes('t.expires_at <= now()'),
+  'F-07: حجز ذرّي (ON CONFLICT DO NOTHING RETURNING) + استرداد العالق/الفاشل في بيان واحد');
+add('f07-idempotency-table-created-pg',
+  idemAdapter.includes('IDEMPOTENCY_TABLE_DDL') && idemAdapter.includes('await this.pool.query(IDEMPOTENCY_TABLE_DDL)'),
+  'F-07: الجدول يُنشأ في تهيئة خلفية Postgres (بلا تعديل أي جدول قائم)');
+add('f07-idempotency-reserve-before-provider',
+  server.includes('async function beginExternalOperation') && server.includes('reservationAllowsExecution(result)') && server.includes('await idempotencyGuard.reserve('),
+  'F-07: الحجز الدائم يُستدعى قبل أي نداء مزود (من ينجح حجزه وحده ينفّذ)');
+add('f07-idempotency-all-reply-paths',
+  ['comment_reply', 'message_reply'].every((op) => server.includes(`operation: '${op}'`) || server.includes(`operation: "${op}"`)) &&
+  server.includes("platform: 'telegram', operation: 'message_reply'") && server.includes('platform: "youtube", operation: "comment_reply"') && server.includes('operation: "publish"') && server.includes('operation: "job_execute"'),
+  'F-07: الحجز مطبّق في كل مسارات الرد والنشر والتنفيذ (FB/IG/YouTube/Telegram + publish + job_execute)');
+add('f07-idempotency-key-shape',
+  idemStore.includes('export function buildIdempotencyKey') && idemStore.includes('content:') && idemStore.includes('idem:') && idemStore.includes('no-target'),
+  'F-07: المفتاح يضمّ المنصة + نوع العملية + معرّف الهدف + معرّف المحتوى الداخلي للنشر');
+add('f07-idempotency-keeps-inflight-lock',
+  server.includes('acquireReplyLock(') && server.includes('beginExternalOperation(') && server.includes('replyInFlightLock'),
+  'F-07: replyInFlightLock باقٍ كطبقة أولى إضافية فوق الحجز الدائم');
+add('f07-idempotency-ephemeral-documented',
+  idemStore.includes('لا يحمي عبر نسختين') && idemStore.includes('IDEMPOTENCY_STORAGE_KEY') && idemAdapter.includes('.gharabi-idempotency.json'),
+  'F-07: الوضع العابر/الملف يعمل عبر مخزن الحالة مع توثيق أنه لا يحمي عبر نسختين');
+add('f07-idempotency-health-block',
+  server.includes('function idempotencyStatusBlock') && server.includes('idempotency: idempotencyStatusBlock()') && server.includes("idempotency: idempotencyStatusBlock(),"),
+  'F-07: حالة منع التكرار الدائم معلنة في /api/health و/api/readiness (بلا سرّ)');
+add('f07-idempotency-tests-present',
+  idemTest.includes('حجز واحد فقط من طلبين متزامنين') && idemTest.includes('بعد done لا يُسمح بإعادة التنفيذ') &&
+  idemDurableTest.includes('لا نداء مزود ثانٍ بعد إعادة التشغيل') && idemDurableTest.includes('الحجز العالق المنتهي يُعاد حجزه') &&
+  idemPgTest.includes('الحجز الدائم يصمد في محوّل جديد') &&
+  (pkg.scripts['test'] || '').includes('test:idempotency-store') && (pkg.scripts['test'] || '').includes('test:idempotency-durable') && (pkg.scripts['test'] || '').includes('test:idempotency-postgres'),
+  'F-07: اختبارات وحدة + تكامل + Postgres مضمّنة في npm test (تفشل على الكود القديم)');
+
 add('durable-lease-test-present',
   leaseTest.includes('live lease is not stolen') && leaseTest.includes('stale lease recovered') && (pkg.scripts['test'] || '').includes('test:durable-lease'),
   'Phase 2: اختبار قفل الدوام مضمّن في npm test');
