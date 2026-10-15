@@ -194,6 +194,7 @@ import {
   isThreadsContainerFailed,
   type ThreadsFetch,
 } from "./engine/social/threads";
+import { createRetryingFetch, resolveHttpRetryPolicy } from "./engine/social/httpRetry";
 import {
   TikTokClient,
   TIKTOK_CAPABILITY_MATRIX,
@@ -2363,7 +2364,9 @@ const FACEBOOK_SUBSCRIBED_FIELDS = (() => {
   const raw = (process.env.FACEBOOK_SUBSCRIBED_FIELDS || "").split(",").map((x) => x.trim()).filter(Boolean);
   return raw.length ? raw : ["feed", "messages"];
 })();
-const faceBookFetchImpl: FacebookFetch = (url, init) => fetch(url, init as any);
+// F-14: إعادة محاولة القراءة فقط (GET) مع احترام Retry-After؛ POST (رد/نشر)
+// بلا إعادة تلقائية أبداً — الاعتماد على سجل منع التكرار الدائم (F-07).
+const faceBookFetchImpl: FacebookFetch = createRetryingFetch((url, init) => fetch(url, init as any), { policy: resolveHttpRetryPolicy() }) as unknown as FacebookFetch;
 function facebookClient(): FacebookClient { return new FacebookClient(faceBookFetchImpl, FACEBOOK_GRAPH_API_BASE_ENV); }
 function facebookOAuthConfig(): any { return OAUTH_CONFIG["facebook"]; }
 
@@ -2373,7 +2376,7 @@ function facebookOAuthConfig(): any { return OAUTH_CONFIG["facebook"]; }
 // Instagram للأعمال المرتبط بالصفحة واستقبال/رد/رسالة/نشر عبر Graph.
 // الأسرار تُقرأ من بيئة الخادم أو تُحفظ مشفّرة عبر محوّل الحالة؛ لا تُسجَّل ولا تُعاد.
 // -------------------------------------------------------------
-const instagramFetchImpl: InstagramFetch = (url, init) => fetch(url, init as any);
+const instagramFetchImpl: InstagramFetch = createRetryingFetch((url, init) => fetch(url, init as any), { policy: resolveHttpRetryPolicy() }) as unknown as InstagramFetch;
 function instagramClient(): InstagramClient { return new InstagramClient(instagramFetchImpl, FACEBOOK_GRAPH_API_BASE_ENV); }
 function instagramOAuthConfig(): any { return OAUTH_CONFIG["instagram"]; }
 /** حقول webhook لحساب Instagram المهني (تعليقات + رسائل). تُفعَّل من Meta Dashboard. */
@@ -2576,7 +2579,7 @@ const META_OAUTH_PLATFORMS = new Set(["facebook", "instagram"]);
 // التعليقات والرسائل المباشرة غير متاحة عبر الواجهة العامة → لا مسارات لها.
 // الأسرار تُقرأ من بيئة الخادم أو تُحفظ مشفّرة عبر محوّل الحالة؛ لا تُسجَّل ولا تُعاد.
 // -------------------------------------------------------------
-const tiktokFetchImpl: TikTokFetch = (url, init) => fetch(url, init as any);
+const tiktokFetchImpl: TikTokFetch = createRetryingFetch((url, init) => fetch(url, init as any), { policy: resolveHttpRetryPolicy() }) as unknown as TikTokFetch;
 function tiktokClient(): TikTokClient { return new TikTokClient(tiktokFetchImpl, process.env.TIKTOK_API_BASE); }
 function tiktokOAuthConfig(): any { return OAUTH_CONFIG["tiktok"]; }
 /**
