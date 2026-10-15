@@ -13,7 +13,7 @@ import path from "node:path";
 import crypto from "node:crypto";
 import {
   IDEMPOTENCY_TABLE_DDL,
-  IDEMPOTENCY_TABLE_UPGRADE_DDL,
+  runIdempotencyTableUpgrade,
   IDEMPOTENCY_RESERVE_SQL,
   IDEMPOTENCY_FINISH_SQL,
   IDEMPOTENCY_READ_SQL,
@@ -137,6 +137,8 @@ export interface StorageAdapter {
    * مخزن الحالة (يحمي ضمن نسخة واحدة وبعد إعادة التشغيل على قرص دائم).
    */
   idempotencyBackend?(): IdempotencyBackend;
+  /** F-07: حالة ترقية قيد جدول منع التكرار (بلا سرّ) — تُعلن في /api/readiness. */
+  idempotencyUpgradeStatus?(): { ok: boolean; applied: boolean; skippedDuplicate: boolean; error: string | null };
   /** إغلاق الموارد (اتصال قاعدة البيانات) عند الإيقاف. */
   close(): Promise<void>;
 }
@@ -530,6 +532,8 @@ class PostgresStorageAdapter implements StorageAdapter {
   private healthy = false;
   private detail: string | null = null;
   private pool: any = null;
+  /** F-07: نتيجة ترقية قيد جدول منع التكرار (لا تُسقط الإقلاع عند الفشل). */
+  private idemUpgrade: { ok: boolean; applied: boolean; skippedDuplicate: boolean; error: string | null } = { ok: true, applied: false, skippedDuplicate: false, error: null };
   /**
    * آخر قيمة كُتبت فعلاً لكل مفتاح (نص JSON). تُستخدم لكشف التغيّر: الكتابة
    * المتطابقة تماماً لا تُرسَل إلى Neon فتُوفّر نقل الشبكة (كانت تُحتسب نقلاً
@@ -565,8 +569,19 @@ class PostgresStorageAdapter implements StorageAdapter {
       // F-07: جدول منع التكرار — إنشاء إضافي فقط (لا يمسّ gharabi_state).
       await this.pool.query(IDEMPOTENCY_TABLE_DDL);
       // ترقية قيد الحالات ليشمل pending_quota على جدول أُنشئ سابقاً بثلاث حالات
-      // (إنشاء إضافي فقط؛ idempotent؛ لا فقدان بيانات).
-      for (const stmt of IDEMPOTENCY_TABLE_UPGRADE_DDL) await this.pool.query(stmt);
+      // (إنشاء إضافي فقط؛ idempotent؛ لا فقدان بيانات). تُنفَّذ في معاملة واحدة على
+      // عميل مستقل، وتتجاهل 42710 (تزامن نسختين)، و**لا تُسقط الإقلاع** عند الفشل.
+      const client = await this.pool.connect();
+      try {
+        const r = await runIdempotencyTableUpgrade(client);
+        this.idemUpgrade = { ok: true, applied: r.applied, skippedDuplicate: r.skippedDuplicate, error: null };
+      } catch (e: any) {
+        const code = String(e?.code || "");
+        this.idemUpgrade = { ok: false, applied: false, skippedDuplicate: false, error: code || String(e?.name || "upgrade_failed").slice(0, 40) };
+        console.error(`[storage] idempotency table upgrade failed (non-fatal): ${this.idemUpgrade.error}`);
+      } finally {
+        try { client.release(); } catch { /* تجاهل */ }
+      }
       this.healthy = true;
       this.detail = null;
     };
@@ -695,6 +710,10 @@ class PostgresStorageAdapter implements StorageAdapter {
    * صفاً جديداً أو يستردّ حجزاً `failed`/عالقاً، ويُعيد صفاً **فقط** عند نجاح
    * الحجز — فلا سباق بين نسختين. عدم إرجاع صف = محجوز حيّ أو منتهٍ بنجاح ⇒ رفض.
    */
+  idempotencyUpgradeStatus(): { ok: boolean; applied: boolean; skippedDuplicate: boolean; error: string | null } {
+    return this.idemUpgrade;
+  }
+
   idempotencyBackend(): IdempotencyBackend {
     const pool = () => {
       if (!this.pool || !this.healthy) throw new Error("database_unavailable");

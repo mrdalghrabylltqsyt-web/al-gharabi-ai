@@ -72,10 +72,34 @@ export const IDEMPOTENCY_TABLE_DDL = `CREATE TABLE IF NOT EXISTS ${IDEMPOTENCY_T
  * مرة عند تهيئة الخلفية، وهو idempotent.
  */
 export const IDEMPOTENCY_STATUS_CONSTRAINT = `${IDEMPOTENCY_TABLE}_status_check`;
+/**
+ * F-07: رمز خطأ Postgres «القيد موجود بالفعل» (duplicate_object). إذا تزامن إقلاع
+ * نسختين، قد ينجح ADD في إحداهما ويفشل في الأخرى بهذا الرمز — وهي **الحالة المطلوبة**
+ * نفسها، فيُتجاهل بدل أن يُسقط الإقلاع.
+ */
+export const IDEMPOTENCY_DUPLICATE_OBJECT_CODE = "42710";
 export const IDEMPOTENCY_TABLE_UPGRADE_DDL = [
   `ALTER TABLE ${IDEMPOTENCY_TABLE} DROP CONSTRAINT IF EXISTS ${IDEMPOTENCY_STATUS_CONSTRAINT}`,
   `ALTER TABLE ${IDEMPOTENCY_TABLE} ADD CONSTRAINT ${IDEMPOTENCY_STATUS_CONSTRAINT} CHECK (status IN ('reserved','done','failed','pending_quota'))`,
 ];
+
+/**
+ * F-07: يُنفّذ ترقية القيد داخل **معاملة واحدة** على العميل المعطى، ويتجاهل رمز
+ * `duplicate_object` (42710) تحديداً: نجاح ADD من نسخة أخرى يعني أن الحالة المطلوبة
+ * متحققة. أي خطأ آخر يُرمى ليُسجَّل (لا يُسقط الإقلاع — المعالجة عند المستدعي).
+ */
+export async function runIdempotencyTableUpgrade(client: { query: (sql: string) => Promise<any> }): Promise<{ applied: boolean; skippedDuplicate: boolean }> {
+  await client.query("BEGIN");
+  try {
+    for (const stmt of IDEMPOTENCY_TABLE_UPGRADE_DDL) await client.query(stmt);
+    await client.query("COMMIT");
+    return { applied: true, skippedDuplicate: false };
+  } catch (e: any) {
+    try { await client.query("ROLLBACK"); } catch { /* تجاهل فشل التراجع */ }
+    if (String(e?.code) === IDEMPOTENCY_DUPLICATE_OBJECT_CODE) return { applied: false, skippedDuplicate: true }; // القيد موجود = الحالة المطلوبة
+    throw e;
+  }
+}
 
 /**
  * SQL الحجز الذرّي (Postgres): إدراج مع `ON CONFLICT DO NOTHING RETURNING`، وإن

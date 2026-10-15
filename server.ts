@@ -998,13 +998,18 @@ function providerFailureKind(code: string | null | undefined): "network_after_se
  * الحجز يُحفظ في جدول `gharabi_idempotency` (Postgres) فيصمد بعد إعادة التشغيل
  * ولا عبر نسختين؛ `false` يعني خلفية الملف/الوضع العابر (لا تحمي عبر نسختين).
  */
-function idempotencyStatusBlock(): { backend: "postgres" | "file"; table: string; durable: boolean; note: string } {
+function idempotencyStatusBlock(): { backend: "postgres" | "file"; table: string; durable: boolean; upgrade: { ok: boolean; applied: boolean; skippedDuplicate: boolean; error: string | null }; note: string } {
   const backend = storageAdapter.idempotencyBackend?.();
   const durable = storageStatus().backend === "postgres" && Boolean(backend);
+  // F-07: حالة ترقية قيد الحالات (بلا سرّ) — فشلها لا يُسقط الإقلاع لكنه يُعلن.
+  const upgrade = typeof (storageAdapter as any).idempotencyUpgradeStatus === "function"
+    ? (storageAdapter as any).idempotencyUpgradeStatus()
+    : { ok: true, applied: false, skippedDuplicate: false, error: null };
   return {
     backend: durable ? "postgres" : "file",
     table: IDEMPOTENCY_TABLE,
     durable,
+    upgrade,
     note: durable
       ? "الحجز الدائم في Postgres (يصمد بعد إعادة التشغيل ولا عبر نسختين)."
       : "خلفية الملف/العابر: لا تصمد عند إعادة النشر ولا تحمي عبر نسختين (يلزم DATABASE_URL).",

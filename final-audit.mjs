@@ -2669,8 +2669,20 @@ add('f07-idempotency-table-ddl',
   idemStore.includes('export const IDEMPOTENCY_TABLE =') && idemStore.includes('gharabi_idempotency') && idemStore.includes('CREATE TABLE IF NOT EXISTS') && idemStore.includes("status text NOT NULL CHECK (status IN ('reserved','done','failed','pending_quota'))") && idemStore.includes('expires_at'),
   'F-07: جدول منع التكرار يُنشأ بإنشاء إضافي فقط (CREATE TABLE IF NOT EXISTS) بحالات reserved/done/failed/pending_quota');
 add('f07-idempotency-check-upgrade',
-  idemStore.includes('IDEMPOTENCY_TABLE_UPGRADE_DDL') && idemStore.includes('ADD CONSTRAINT') && idemAdapter.includes('IDEMPOTENCY_TABLE_UPGRADE_DDL') && idemAdapter.includes('for (const stmt of IDEMPOTENCY_TABLE_UPGRADE_DDL)'),
+  idemStore.includes('IDEMPOTENCY_TABLE_UPGRADE_DDL') && idemStore.includes('ADD CONSTRAINT') && idemAdapter.includes('runIdempotencyTableUpgrade'),
   'F-07: ترقية قيد CHECK للحالات الجديدة عبر ALTER TABLE ADD CONSTRAINT (إنشاء/ترقية إضافية فقط، لا تعديل جداول قائمة)');
+add('f07-idempotency-upgrade-transactional',
+  idemStore.includes('export async function runIdempotencyTableUpgrade') && idemStore.includes('"BEGIN"') && idemStore.includes('"COMMIT"') && idemStore.includes('"ROLLBACK"'),
+  'F-07: ترقية القيد تُنفَّذ داخل معاملة واحدة (BEGIN/COMMIT/ROLLBACK)');
+add('f07-idempotency-upgrade-ignores-duplicate',
+  idemStore.includes('IDEMPOTENCY_DUPLICATE_OBJECT_CODE = "42710"') && idemStore.includes('=== IDEMPOTENCY_DUPLICATE_OBJECT_CODE') && idemStore.includes('skippedDuplicate'),
+  'F-07: تزامن نسختين — 42710 (duplicate_object) يُتجاهل تحديداً (القيد موجود = الحالة المطلوبة)');
+add('f07-idempotency-upgrade-non-fatal',
+  idemAdapter.includes('idempotency table upgrade failed (non-fatal)') && idemAdapter.includes('this.idemUpgrade = { ok: false') && idemAdapter.includes('this.healthy = true;'),
+  'F-07: فشل الترقية لا يُسقط الإقلاع (يُسجَّل ويُعلن)، والخلفية تبقى صحية');
+add('f07-idempotency-upgrade-in-readiness',
+  server.includes('idempotencyUpgradeStatus') && server.includes('upgrade,'),
+  'F-07: حالة الترقية تُعلن في /api/readiness (persistence.idempotency.upgrade) بلا سرّ');
 add('f07-idempotency-outcome-classifier',
   idemStore.includes('export function classifyExternalOperationOutcome') && idemStore.includes('pending_quota') && idemStore.includes('network_after_send') && idemStore.includes('provider_rejected') && idemStore.includes('pre_provider'),
   'F-07: مصنّف نتيجة موحّد — الانقطاع بعد الإرسال لا يُعلن فشلاً مؤكداً، وانتظار الحصة حالة مميزة');

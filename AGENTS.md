@@ -44,7 +44,7 @@ npm install
 npm run dev            # tsx server.ts
 npm run lint           # tsc --noEmit
 npm run build          # vite build + esbuild server.ts -> dist/server.cjs
-npm run final-audit    # node final-audit.mjs (1694 فحصاً)
+npm run final-audit    # node final-audit.mjs (1698 فحصاً)
 npm test               # storage + engine + auth + ... + db + runtime
 ```
 - التشغيل الإنتاجي: `PORT=4517 NODE_ENV=production APP_URL=http://localhost:4517 node dist/server.cjs`
@@ -6575,7 +6575,9 @@ deploy) — فالسباق «تحقق من عدم التكرار ← انتظا�
 - جدول مستقل `gharabi_idempotency` بإنشاء **إضافي فقط** (`CREATE TABLE IF NOT EXISTS`،
   بلا تعديل أي جدول قائم): `key` فريد، `status` (reserved/done/failed/**pending_quota**)،
   `created_at`، `updated_at`، `expires_at`. ترقية قيد الحالات على قواعد قائمة عبر
-  `IDEMPOTENCY_TABLE_UPGRADE_DDL` (`ALTER TABLE ... DROP/ADD CONSTRAINT`، إضافية فقط).
+  `runIdempotencyTableUpgrade` (`ALTER TABLE ... DROP/ADD CONSTRAINT`، إضافية فقط)
+  **داخل معاملة واحدة**، تتجاهل `42710` (duplicate_object) عند تزامن إقلاع نسختين،
+  و**فشلها غير قاتل للإقلاع** (يُسجَّل ويُعلن في `/api/readiness.persistence.idempotency.upgrade`).
 - **حجز ذرّي** `INSERT ... ON CONFLICT (key) DO NOTHING RETURNING` (CTE واحد): من نجح
   حجزه وحده ينفّذ؛ عدم إرجاع صف = محجوز حيّ أو منتهٍ بنجاح ⇒ لا تنفيذ. الحجز العالق
   (`reserved` بعد انتهاء `expires_at`، الافتراضي 10 دقائق) يُعاد حجزه، والفشل المؤكد
@@ -6605,7 +6607,7 @@ deploy) — فالسباق «تحقق من عدم التكرار ← انتظا�
 بعد الإرسال ⇒ reserved + طلب ثانٍ 409**، وتصنيف النتيجة)، `idempotency.postgres.test.ts`
 (Postgres حقيقي عبر `tools/local-verification`، **9 فحوص** منها `pending_quota`)،
 و`youtube.quota.retry.test.ts` (**53 فحصاً**: نشر ناجح `done` لا يُعاد رفعه).
-فحوص final-audit: `f07-idempotency-*` (15 فحصاً، الإجمالي **1694**).
+فحوص final-audit: `f07-idempotency-*` (20 فحصاً، الإجمالي **1698**).
 `scripts/verify-deployment.mjs` أضاف فحوص الجدول والدوام في health/readiness.
 
 **لم يُمسّ:** TikTok (public/favicon*/index.html/tiktok*.txt//terms//privacy/OAuth

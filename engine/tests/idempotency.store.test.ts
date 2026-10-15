@@ -16,6 +16,8 @@ import {
   reservationAllowsExecution,
   IDEMPOTENCY_RESERVATION_TTL_MS,
   IDEMPOTENCY_TABLE,
+  runIdempotencyTableUpgrade,
+  IDEMPOTENCY_DUPLICATE_OBJECT_CODE,
   type IdempotencyRecord,
   type IdempotencyBackend,
 } from '../social/idempotencyStore';
@@ -135,12 +137,51 @@ async function backendUnavailableFailOpen(): Promise<void> {
   check('مدة الحجز الافتراضية 10 دقائق', IDEMPOTENCY_RESERVATION_TTL_MS === 10 * 60 * 1000);
 }
 
+/**
+ * F-07: ترقية القيد — تُنفَّذ في معاملة واحدة (BEGIN/COMMIT)، وتُلغى (ROLLBACK) عند
+ * خطأ، وتتجاهل 42710 (duplicate_object) تحديداً لأن القيد موجود = الحالة المطلوبة،
+ * وترمي أي خطأ آخر (ليُسجَّل بلا إسقاط الإقلاع).
+ */
+async function upgradeTransactionTests(): Promise<void> {
+  // عميل وهمي يسجّل الأوامر؛ ينجح افتراضياً.
+  function fakeClient(failOn?: string, code = '') {
+    const log: string[] = [];
+    return {
+      log,
+      query: async (sql: string) => {
+        log.push(sql);
+        if (failOn && sql.includes(failOn)) { const e: any = new Error('boom'); e.code = code; throw e; }
+        return {};
+      },
+    };
+  }
+
+  const ok = fakeClient();
+  const r1 = await runIdempotencyTableUpgrade(ok);
+  check('الترقية تبدأ معاملة (BEGIN)', ok.log[0] === 'BEGIN');
+  check('الترقية تُنهي معاملة (COMMIT)', ok.log.includes('COMMIT'));
+  check('الترقية تُنفّذ DROP ثم ADD', ok.log.some((l) => l.includes('DROP CONSTRAINT IF EXISTS')) && ok.log.some((l) => l.includes('ADD CONSTRAINT')));
+  check('نجاح الترقية => applied=true', r1.applied === true && r1.skippedDuplicate === false);
+
+  const dup = fakeClient('ADD CONSTRAINT', IDEMPOTENCY_DUPLICATE_OBJECT_CODE);
+  const r2 = await runIdempotencyTableUpgrade(dup);
+  check('42710 يُتجاهل => skippedDuplicate=true (لا رمي)', r2.applied === false && r2.skippedDuplicate === true);
+  check('42710 يُلغى بـROLLBACK', dup.log.includes('ROLLBACK'));
+
+  let threw = false;
+  const other = fakeClient('ADD CONSTRAINT', '42P01');
+  try { await runIdempotencyTableUpgrade(other); } catch { threw = true; }
+  check('خطأ آخر (غير 42710) يُرمى ليُسجَّل', threw === true);
+  check('خطأ آخر يُلغى بـROLLBACK', other.log.includes('ROLLBACK'));
+}
+
 async function run(): Promise<void> {
   await raceTests();
   await doneBlocksRepeat();
   await failedAllowsRetry();
   staleReservationReusable();
   await backendUnavailableFailOpen();
+  await upgradeTransactionTests();
 
   console.log(`PASSED: ${passed} idempotency-store checks`);
   if (failures.length) {
