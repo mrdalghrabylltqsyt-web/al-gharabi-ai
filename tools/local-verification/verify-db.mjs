@@ -33,12 +33,19 @@ async function main() {
   // لا رجوع صامت لملف محلي). لا علاقة لهذا بالإنتاج حيث Neon يفرض TLS.
   const url = `postgresql://${user}:${password}@127.0.0.1:${PORT}/${dbName}?sslmode=disable`;
   try {
-    const res = spawnSync('npx', ['tsx', 'engine/tests/database.persistence.test.ts'], {
-      stdio: 'inherit',
-      cwd: REPO_ROOT,
-      env: { ...process.env, GHARABI_TEST_DATABASE_URL: url },
-    });
-    if (res.status !== 0) process.exitCode = res.status ?? 1;
+    // كل اختبار Postgres حقيقي يُشغَّل على نفس القاعدة المدمجة.
+    const tests = [
+      'engine/tests/database.persistence.test.ts',
+      'engine/tests/idempotency.postgres.test.ts',
+    ];
+    for (const test of tests) {
+      const res = spawnSync('npx', ['tsx', test], {
+        stdio: 'inherit',
+        cwd: REPO_ROOT,
+        env: { ...process.env, GHARABI_TEST_DATABASE_URL: url },
+      });
+      if (res.status !== 0 && res.status !== 2) process.exitCode = res.status ?? 1;
+    }
   } finally {
     await db.stop().catch(() => { /* تجاهل */ });
     rmSync(dataDir, { recursive: true, force: true });

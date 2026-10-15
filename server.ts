@@ -293,6 +293,15 @@ import {
 } from "./engine/social/comments";
 import { acquireReplyLock, releaseReplyLock, replyLockKey } from "./engine/social/replyInFlightLock";
 import {
+  createIdempotencyGuard,
+  buildIdempotencyKey,
+  reservationAllowsExecution,
+  IDEMPOTENCY_RESERVATION_TTL_MS,
+  IDEMPOTENCY_TABLE,
+  type IdempotencyGuard,
+  type IdempotencyOperation,
+} from "./engine/social/idempotencyStore";
+import {
   buildPublishRecord,
   canTransition,
   collectAvailableMetrics,
@@ -903,6 +912,85 @@ const storageAdapter: StorageAdapter = createStorageAdapter({
   databaseUrl: process.env.DATABASE_URL,
   ephemeralHost: isEphemeralHost(),
 });
+
+// ------------------------------------------------------------------
+// F-07: منع التكرار الدائم للعمليات الخارجية (رد/نشر/تنفيذ مهمة).
+// يُحجز مفتاح العملية **قبل** أي نداء مزود في جدول `gharabi_idempotency`
+// (Postgres) أو ملف الحالة (وضع الملف/العابر). من ينجح حجزه وحده ينفّذ، ومن
+// يُرفض (محجوز حيّ أو منتهٍ بنجاح) لا ينفّذ — فلا رد/نشر مكرر بعد إعادة التشغيل
+// ولا عبر نسختين. `replyInFlightLock` يبقى طبقة أولى إضافية (أسرع، داخل العملية).
+const idempotencyGuard: IdempotencyGuard = createIdempotencyGuard({
+  reserve: async (key, nowMs, expiresAtMs) => {
+    const backend = storageAdapter.idempotencyBackend?.();
+    if (!backend) return false;
+    return backend.reserve(key, nowMs, expiresAtMs);
+  },
+  finish: async (key, status, nowMs) => {
+    const backend = storageAdapter.idempotencyBackend?.();
+    if (!backend) return;
+    await backend.finish(key, status, nowMs);
+  },
+  read: async (key) => {
+    const backend = storageAdapter.idempotencyBackend?.();
+    if (!backend) return null;
+    return backend.read(key);
+  },
+});
+
+/**
+ * F-07: يحجز عملية خارجية في المخزن الدائم قبل أي نداء مزود. عند الرفض (محجوز
+ * حيّ أو منتهٍ بنجاح) يُعيد حظراً صريحاً (409) بلا أي نداء مزود؛ وعند تعذّر
+ * المخزن يسمح بالتنفيذ (fail-open موثّق — `replyInFlightLock` يبقى طبقة أولى).
+ */
+async function beginExternalOperation(input: {
+  platform: string;
+  operation: IdempotencyOperation;
+  targetId: string;
+  contentId?: string;
+  idempotencyKey?: string;
+}): Promise<{ key: string; blocked: { status: number; body: any } | null }> {
+  const key = buildIdempotencyKey(input);
+  const result = await idempotencyGuard.reserve(key, { ttlMs: IDEMPOTENCY_RESERVATION_TTL_MS });
+  if (reservationAllowsExecution(result)) return { key, blocked: null };
+  const done = result.reason === "already_done";
+  return {
+    key,
+    blocked: {
+      status: 409,
+      body: {
+        success: false,
+        code: done ? "IDEMPOTENT_ALREADY_COMPLETED" : "IDEMPOTENT_OPERATION_IN_PROGRESS",
+        reason: result.reason,
+        error: done
+          ? "نُفِّذت هذه العملية بنجاح سابقاً (منع تكرار دائم عبر إعادة التشغيل)؛ لم يُرسَل أي نداء مزود."
+          : "العملية على نفس الهدف محجوزة بالفعل (قيد التنفيذ أو عبر نسخة أخرى)؛ لم يُرسَل أي نداء مزود لمنع التكرار.",
+      },
+    },
+  };
+}
+
+/** F-07: يُنهي الحجز — done عند النجاح، failed عند فشل مؤكد (يسمح بإعادة المحاولة). */
+async function endExternalOperation(key: string, outcome: "done" | "failed"): Promise<void> {
+  await idempotencyGuard.complete(key, outcome);
+}
+
+/**
+ * F-07: حالة منع التكرار الدائم للتشخيص (بلا أي سرّ). `durable=true` يعني أن
+ * الحجز يُحفظ في جدول `gharabi_idempotency` (Postgres) فيصمد بعد إعادة التشغيل
+ * ولا عبر نسختين؛ `false` يعني خلفية الملف/الوضع العابر (لا تحمي عبر نسختين).
+ */
+function idempotencyStatusBlock(): { backend: "postgres" | "file"; table: string; durable: boolean; note: string } {
+  const backend = storageAdapter.idempotencyBackend?.();
+  const durable = storageStatus().backend === "postgres" && Boolean(backend);
+  return {
+    backend: durable ? "postgres" : "file",
+    table: IDEMPOTENCY_TABLE,
+    durable,
+    note: durable
+      ? "الحجز الدائم في Postgres (يصمد بعد إعادة التشغيل ولا عبر نسختين)."
+      : "خلفية الملف/العابر: لا تصمد عند إعادة النشر ولا تحمي عبر نسختين (يلزم DATABASE_URL).",
+  };
+}
 
 // ------------------------------------------------------------------
 // مؤشرات استهلاك الحصص المجانية (عرض فقط، بلا حجب ولا سرّ) — دفعة مستقلة.
@@ -2752,7 +2840,8 @@ async function retryPendingYouTubeContent(force = false): Promise<{ checked: num
       const exec = await executeYouTubePublish({
         title: item.title, description: item.description, tags: item.tags, privacyStatus: item.privacyStatus,
         publishAt: item.publishAt || undefined, categoryId: item.categoryId, mediaRef: item.mediaRef,
-        approved: true, queueItemId: item.id, mode: item.publishAt ? "auto" : "manual",
+        // F-07: force=true لأن الحجز السابق بقي done (انتظار حصة مقصود لا فشل).
+        approved: true, queueItemId: item.id, postId: item.id, mode: item.publishAt ? "auto" : "manual", force: true,
       }, "system");
       const b = exec.body || {};
       if (b.pendingRetry === true) {
@@ -4706,7 +4795,13 @@ async function executeMetaCommentReply(
 
   const lock = replyLockKey(platform, 'comment', externalId, idempotencyKey);
   if (!acquireReplyLock(lock)) return { status: 409, body: { success: false, error: 'طلب رد آخر على نفس التعليق قيد التنفيذ بالفعل؛ انتظر حتى يكتمل لمنع التكرار.', code: 'REPLY_IN_PROGRESS' } };
+  let idemKey = '';
+  let idemOutcome: 'done' | 'failed' = 'failed';
   try {
+    // F-07: حجز دائم قبل أي نداء مزود — يصمد بعد إعادة التشغيل ولا عبر نسختين.
+    const idem = await beginExternalOperation({ platform, operation: 'comment_reply', targetId: externalId, idempotencyKey });
+    if (idem.blocked) return idem.blocked;
+    idemKey = idem.key;
     const conn: any = platformConnections.get(platform);
     if (!conn || conn.status !== 'connected' || conn.providerVerified !== true) {
       return { status: 409, body: { success: false, error: `${platform === 'facebook' ? 'Facebook' : 'Instagram'} غير متصل باتصال موثق؛ لا يمكن إرسال أي رد خارجي.` } };
@@ -4763,9 +4858,13 @@ async function executeMetaCommentReply(
     if ((workspace as any).socialReplies.length > WORKSPACE_MAX_SOCIAL_REPLIES) (workspace as any).socialReplies.length = WORKSPACE_MAX_SOCIAL_REPLIES;
     audit(actor, result.ok ? `social_${platform}_comment_reply_sent` : `social_${platform}_comment_reply_failed`, `${externalId}:${result.ok ? 'delivered' : 'failed'}`);
     await persistStateDurable();
+    idemOutcome = result.ok ? 'done' : 'failed';
     if (!result.ok) return { status: 502, body: { success: false, delivered: false, simulated: false, reply: record, error: record.deliveryError } };
     return { status: 200, body: { success: true, delivered: true, simulated: false, providerReplyId: record.providerReplyId, reply: record } };
-  } finally { releaseReplyLock(lock); }
+  } finally {
+    if (idemKey) await endExternalOperation(idemKey, idemOutcome);
+    releaseReplyLock(lock);
+  }
 }
 
 /**
@@ -4789,7 +4888,13 @@ async function executeMetaMessageReply(
 
   const earlyLock = replyLockKey(platform, 'message', externalId || `${platform}-msg:${recipientId}`, idempotencyKey);
   if (!acquireReplyLock(earlyLock)) return { status: 409, body: { success: false, error: 'طلب رد آخر على نفس الرسالة قيد التنفيذ بالفعل؛ انتظر حتى يكتمل لمنع التكرار.', code: 'REPLY_IN_PROGRESS' } };
+  let idemKey = '';
+  let idemOutcome: 'done' | 'failed' = 'failed';
   try {
+    // F-07: حجز دائم قبل أي نداء مزود (نفس مبدأ مسار التعليق).
+    const idem = await beginExternalOperation({ platform, operation: 'message_reply', targetId: externalId || `${platform}-msg:${recipientId}`, idempotencyKey });
+    if (idem.blocked) return idem.blocked;
+    idemKey = idem.key;
     const conn: any = platformConnections.get(platform);
     if (!conn || conn.status !== 'connected' || conn.providerVerified !== true) {
       return { status: 409, body: { success: false, error: `${platform === 'facebook' ? 'Facebook' : 'Instagram'} غير متصل باتصال موثق؛ لا يمكن إرسال أي رسالة خارجية.` } };
@@ -4843,9 +4948,13 @@ async function executeMetaMessageReply(
     if ((workspace as any).socialReplies.length > WORKSPACE_MAX_SOCIAL_REPLIES) (workspace as any).socialReplies.length = WORKSPACE_MAX_SOCIAL_REPLIES;
     audit(actor, result.ok ? `social_${platform}_message_reply_sent` : `social_${platform}_message_reply_failed`, `${guardExternalId}:${result.ok ? 'delivered' : 'failed'}`);
     await persistStateDurable();
+    idemOutcome = result.ok ? 'done' : 'failed';
     if (!result.ok) return { status: 502, body: { success: false, delivered: false, simulated: false, reply: record, error: record.deliveryError } };
     return { status: 200, body: { success: true, delivered: true, simulated: false, providerReplyId: record.providerReplyId, reply: record } };
-  } finally { releaseReplyLock(earlyLock); }
+  } finally {
+    if (idemKey) await endExternalOperation(idemKey, idemOutcome);
+    releaseReplyLock(earlyLock);
+  }
 }
 
 /**
@@ -4872,7 +4981,13 @@ async function executeTelegramMessageReply(
 
   const lock = replyLockKey('telegram', 'message', externalId);
   if (!acquireReplyLock(lock)) return { status: 409, body: { success: false, error: 'طلب رد آخر على نفس الرسالة قيد التنفيذ بالفعل؛ انتظر حتى يكتمل لمنع التكرار.', code: 'REPLY_IN_PROGRESS' } };
+  let idemKey = '';
+  let idemOutcome: 'done' | 'failed' = 'failed';
   try {
+    // F-07: حجز دائم قبل أي نداء مزود (يصمد بعد إعادة التشغيل ولا عبر نسختين).
+    const idem = await beginExternalOperation({ platform: 'telegram', operation: 'message_reply', targetId: externalId });
+    if (idem.blocked) return idem.blocked;
+    idemKey = idem.key;
     const conn: any = platformConnections.get('telegram');
     if (!conn || conn.status !== 'connected' || conn.providerVerified !== true) {
       return { status: 409, body: { success: false, error: 'Telegram غير متصل باتصال موثق؛ لا يمكن إرسال أي رد خارجي.' } };
@@ -4922,9 +5037,13 @@ async function executeTelegramMessageReply(
     if ((workspace as any).socialReplies.length > WORKSPACE_MAX_SOCIAL_REPLIES) (workspace as any).socialReplies.length = WORKSPACE_MAX_SOCIAL_REPLIES;
     audit(actor, result.ok ? 'social_telegram_message_reply_sent' : 'social_telegram_message_reply_failed', `${externalId}:${result.ok ? 'delivered' : 'failed'}`);
     await persistStateDurable();
+    idemOutcome = result.ok ? 'done' : 'failed';
     if (!result.ok) return { status: 502, body: { success: false, delivered: false, simulated: false, reply: record, error: record.deliveryError } };
     return { status: 200, body: { success: true, delivered: true, simulated: false, providerReplyId: record.providerReplyId, reply: record } };
-  } finally { releaseReplyLock(lock); }
+  } finally {
+    if (idemKey) await endExternalOperation(idemKey, idemOutcome);
+    releaseReplyLock(lock);
+  }
 }
 
 // -------------------------------------------------------------
@@ -6331,7 +6450,14 @@ async function executeYouTubeReply(input: { commentId: string; text: string; com
   if (!acquireReplyLock(replyLock)) {
     return { status: 409, body: { success: false, error: "طلب رد آخر على نفس التعليق قيد التنفيذ بالفعل (يدوي أو تلقائي)؛ انتظر حتى يكتمل لمنع التكرار.", code: "REPLY_IN_PROGRESS" } };
   }
+  let idemKey = "";
+  let idemOutcome: "done" | "failed" = "failed";
   try {
+  // F-07: حجز دائم قبل أي نداء مزود — يمنع رداً مكرراً بعد إعادة التشغيل أو عبر
+  // نسختين (يستخدمه المسار اليدوي والمراقب التلقائي معاً).
+  const idem = await beginExternalOperation({ platform: "youtube", operation: "comment_reply", targetId: parentCommentId });
+  if (idem.blocked) return idem.blocked;
+  idemKey = idem.key;
   const guard = youtubeOperationGuard();
   if (!guard.ok) return { status: guard.status!, body: { success: false, code: guard.code, error: guard.error, ...youtubeStateBlock() } };
   if (!youtubeForceSslGranted()) {
@@ -6391,16 +6517,22 @@ async function executeYouTubeReply(input: { commentId: string; text: string; com
   audit(actor, result.ok ? "youtube_reply_delivered" : "youtube_reply_failed", `youtube:${parentCommentId}`);
   if (!result.ok) {
     noteYouTubeProviderError(result.code as any);
+    idemOutcome = "failed";
     return { status: 502, body: { success: false, code: result.code || "PROVIDER_ERROR", error: result.error, reply: replyRecord, delivered: false, state: replyState, note: "لم يُسجَّل الرد مُسلَّماً بلا معرّف تعليق من Google.", ...youtubeStateBlock() } };
   }
   // الحكم على التسليم من معرّف الرد الحقيقي لا من نجاح الطلب فقط: لا `sent` ولا
   // delivered=true بلا معرّف تعليق فعلي من Google.
   if (!delivered || !externalReplyId) {
+    idemOutcome = "failed";
     return { status: 502, body: { success: false, code: "PROVIDER_NO_REPLY_ID", error: "لم يُعِد YouTube معرّف رد حقيقي؛ لا يُسجَّل تسليم.", reply: replyRecord, delivered: false, state: replyState, ...youtubeStateBlock() } };
   }
   clearYouTubeProviderError();
+  idemOutcome = "done";
   return { status: 200, body: { success: true, reply: replyRecord, delivered: true, externalReplyId, state: replyState, ...youtubeStateBlock() } };
-  } finally { releaseReplyLock(replyLock); }
+  } finally {
+    if (idemKey) await endExternalOperation(idemKey, idemOutcome);
+    releaseReplyLock(replyLock);
+  }
 }
 
 // -------------------------------------------------------------
@@ -9295,7 +9427,7 @@ app.post("/api/agent/youtube/watcher/review", requireOwner, async (req, res) => 
  * البوابات: موافقة صريحة → سلامة المحتوى → مادة فعلية → اتصال موثق → idempotency
  * → rate limit → videos.insert. يستخدمه المسار الخارجي والعقل المركزي معاً.
  */
-async function executeYouTubePublish(input: {
+async function executeYouTubePublishInner(input: {
   title: string; description?: string; tags?: string[]; privacyStatus?: string; publishAt?: string;
   categoryId?: string; videoBase64?: string; videoUrl?: string; mimeType?: string; postId?: string; approved?: boolean;
   mediaRef?: string; queueItemId?: string;
@@ -9303,6 +9435,12 @@ async function executeYouTubePublish(input: {
   productId?: string | null;
   /** مصدر القرار: `manual` قرار مالك مباشر (public افتراضاً)، `auto` أتمتة. */
   mode?: "manual" | "auto";
+  /**
+   * F-07: يتجاوز حجز منع التكرار الدائم. يُستخدم في إعادة المحاولة المتوقّعة
+   * (نفاد حصة YouTube) لأن الحجز يبقى `done` (انتظار مقصود لا فشل) ويجب إعادة
+   * الإرسال بعده فوراً. **لا يُمرَّر من أي مسار نشر عادي** (الافتراضي false).
+   */
+  force?: boolean;
 }, actor: string): Promise<{ status: number; body: any }> {
   const started = Date.now();
   const mode = input.mode === "manual" ? "manual" : "auto";
@@ -9573,6 +9711,34 @@ app.post("/api/platforms/youtube/reply", requireOwner, async (req, res) => {
  * الرفع الحقيقي للفيديو (videos.insert resumable) — نشر فوري أو جدولة حقيقية.
  * المحتوى (base64) أو رابط عام للفيديو، مع idempotency وrate limit وحارس سلامة.
  */
+/**
+ * F-07: غلاف منع التكرار الدائم لرفع YouTube حول `executeYouTubePublishInner`.
+ * يحجز قبل أي نداء مزود (نفس المنصة + معرّف المنشور) فيمنع رفع نفس الفيديو مرتين
+ * بعد إعادة التشغيل أو عبر نسختين. `force` يتجاوز الحجز **فقط** لإعادة المحاولة
+ * المتوقّعة (نفاد الحصة) — لا يُمرَّر من أي مسار نشر عادي.
+ */
+async function executeYouTubePublish(input: {
+  title: string; description?: string; tags?: string[]; privacyStatus?: string; publishAt?: string;
+  categoryId?: string; videoBase64?: string; videoUrl?: string; mimeType?: string; postId?: string; approved?: boolean;
+  mediaRef?: string; queueItemId?: string;
+  productId?: string | null;
+  mode?: "manual" | "auto";
+  force?: boolean;
+}, actor: string): Promise<{ status: number; body: any }> {
+  if (!input.postId || input.force) return executeYouTubePublishInner(input, actor);
+  const idem = await beginExternalOperation({ platform: "youtube", operation: "publish", targetId: String(input.postId) });
+  if (idem.blocked) return idem.blocked;
+  let outcome: "done" | "failed" = "failed";
+  try {
+    const result = await executeYouTubePublishInner(input, actor);
+    // pendingRetry (نفاد حصة) انتظار مقصود لا فشل ⇒ يبقى done فلا إعادة إرسال مزدوج.
+    outcome = result.status === 200 || result.body?.pendingRetry === true ? "done" : "failed";
+    return result;
+  } finally {
+    await endExternalOperation(idem.key, outcome);
+  }
+}
+
 app.post("/api/platforms/youtube/publish", express.json({ limit: CONTENT_UPLOAD_JSON_LIMIT }), requireOwner, async (req, res) => {
   const user = (req as any).user as { id: string };
   const result = await executeYouTubePublish({
@@ -9758,7 +9924,8 @@ async function autoExecuteContentItem(item: ContentQueueItem, actor: string): Pr
   const result = await executeYouTubePublish({
     title: item.title, description: item.description, tags: item.tags, privacyStatus: item.privacyStatus,
     publishAt: item.publishAt || undefined, categoryId: item.categoryId, mediaRef: item.mediaRef,
-    approved: true, queueItemId: item.id, mode: "auto",
+    // F-07: معرّف العنصر كمعرّف منشور => حجز دائم يمنع التنفيذ الآلي المزدوج.
+    approved: true, queueItemId: item.id, postId: item.id, mode: "auto",
   }, actor);
   return { status: result.status, code: result.body?.code, externalVideoId: result.body?.externalVideoId, state: item.state, error: result.body?.error };
 }
@@ -9882,7 +10049,8 @@ app.post("/api/platforms/youtube/content/queue/:id/review", express.json({ limit
   const exec = await executeYouTubePublish({
     title: item.title, description: item.description, tags: item.tags, privacyStatus: item.privacyStatus,
     publishAt: item.publishAt || undefined, categoryId: item.categoryId, mediaRef: item.mediaRef,
-    approved: true, queueItemId: item.id, mode: "manual",
+    // F-07: معرّف العنصر كمعرّف منشور => حجز دائم يمنع القرار اليدوي المزدوج.
+    approved: true, queueItemId: item.id, postId: item.id, mode: "manual",
   }, user.id);
   return res.status(exec.status || 200).json({ success: exec.status === 200, action, mode: "manual", exec: summarizePublishExec(exec, item), item: contentQueueView().find((q) => q.id === item.id) });
 });
@@ -10441,13 +10609,12 @@ async function resolveYouTubeBytes(body: any): Promise<{ ok: boolean; videoBase6
   }
 }
 
-async function executePlatformPublish(platform: string, body: any, actor: string): Promise<{ status: number; body: any }> {
+async function executePlatformPublishInner(platform: string, body: any, actor: string): Promise<{ status: number; body: any }> {
   const user = { id: actor };
   if (!isSupportedPlatform(platform)) return { status: 404, body: { success: false, error: "المنصة غير مدعومة." } };
   const content = typeof body?.content === "string" ? body.content.trim() : "";
   const approved = body?.approved === true;
   const chatId = typeof body?.chatId === "string" ? body.chatId.trim() : "";
-
   if (!content) return { status: 400, body: { success: false, error: "المحتوى مطلوب.", code: "CONTENT_REQUIRED" } };
   if (!approved) return { status: 409, body: { success: false, error: "المحتوى لم تتم الموافقة عليه.", code: "APPROVAL_REQUIRED" } };
   // وضع YOUTUBE_ONLY_OPERATIONAL: يمنع أي عملية خارجية على منصة غير YouTube.
@@ -10742,6 +10909,34 @@ async function executePlatformPublish(platform: string, body: any, actor: string
     return { status: 502, body: { success: false, error: String(e?.message || e).slice(0, 300), code: "PROVIDER_ERROR" } };
   }
 
+}
+
+/**
+ * F-07: غلاف منع التكرار الدائم للنشر حول `executePlatformPublishInner`.
+ *
+ * **لماذا غلاف لا تعديل مباشر:** المنفّذ الداخلي يحوي أكثر من 30 مخرجاً (نجاح/
+ * فشل/حالات خاصة لكل منصة)، فتتبّع الحجز في كل مخرج هشّ. الغلاف يحجز مرّة واحدة
+ * قبل أي نداء مزود، ويحسم النتيجة من الاستجابة: `done` عند النجاح أو الانتظار
+ * المتوقّع (نفاد حصة YouTube = إعادة محاولة لاحقة لا فشل)، و`failed` عند أي فشل
+ * مؤكد (يسمح بإعادة المحاولة لاحقاً) — فلا نشر مكرر بعد إعادة التشغيل/عبر نسختين.
+ *
+ * المفتاح = المنصة + العملية + معرّف المنشور الداخلي. غياب معرّف المنشور (نشر
+ * مباشر بلا منشور مسجّل) يبقى بلا حجز دائم — لا معرّف هدف ثابت لمنع تكرار صحيح.
+ */
+async function executePlatformPublish(platform: string, body: any, actor: string): Promise<{ status: number; body: any }> {
+  const publishTargetId = typeof body?.postId === "string" && body.postId.trim() ? body.postId.trim() : "";
+  if (!publishTargetId) return executePlatformPublishInner(platform, body, actor);
+  const idem = await beginExternalOperation({ platform, operation: "publish", targetId: publishTargetId });
+  if (idem.blocked) return idem.blocked;
+  let outcome: "done" | "failed" = "failed";
+  try {
+    const result = await executePlatformPublishInner(platform, body, actor);
+    // 200 = نجح/تهيئة مقبولة (TikTok publishing)؛ pendingRetry = انتظار حصة مقصود.
+    outcome = result.status === 200 || result.body?.pendingRetry === true ? "done" : "failed";
+    return result;
+  } finally {
+    await endExternalOperation(idem.key, outcome);
+  }
 }
 
 app.post("/api/platforms/:platform/publish", requireOwner, async (req, res) => {
@@ -11680,6 +11875,11 @@ async function executeApprovedJob(job: any, userId: string): Promise<{ status: n
   const onlyBlock = youtubeOnlyBlock(platform);
   if (onlyBlock.blocked) return { status: onlyBlock.status!, body: onlyBlock.body };
   if (!conn || conn.status !== "connected" || conn.providerVerified !== true) return { status: 409, body: { success: false, error: "المنصة غير موثقة باتصال حقيقي." } };
+  // F-07: حجز دائم لكل مهمة (بمعرّفها) — يمنع تنفيذ نفس المهمة مرتين بعد إعادة
+  // التشغيل أو عبر نسختين (كانت الحماية داخل العملية فقط).
+  const idem = await beginExternalOperation({ platform, operation: "job_execute", targetId: String(job.id || "") });
+  if (idem.blocked) return idem.blocked;
+  let idemOutcome: "done" | "failed" = "failed";
   try {
     if (platform === "telegram") {
       const client = telegramClient(); if (!client) return { status: 503, body: { success: false, error: "موصل Telegram غير مهيأ (رمز بوت غير متوفر)." } };
@@ -11687,12 +11887,16 @@ async function executeApprovedJob(job: any, userId: string): Promise<{ status: n
       const sent = await client.sendMessage({ chatId, text: content });
       if (!sent.ok) throw new Error(sent.error || "فشل إرسال Telegram");
       job.status = "executed"; job.executedAt = new Date().toISOString(); job.providerVerified = true; job.providerReceipt = { provider: "telegram", messageId: sent.providerMessageId, executedAt: new Date().toISOString() }; persistState(); audit(userId, "job_executed", `${job.id}:telegram`);
+      idemOutcome = "done";
       return { status: 200, body: { success: true, job, receipt: job.providerReceipt } };
     }
     return { status: 501, body: { success: false, error: "الموصل متصل ومتحقق، لكن تنفيذ هذا النوع من النشر يحتاج بيانات الوسائط/العملية الخاصة بالمزود ولم يتم اختلاق تنفيذ وهمي." } };
   } catch (e: any) {
     job.status = "failed"; job.lastError = String(e?.message || e).slice(0, 500); persistState(); audit(userId, "job_execution_failed", `${job.id}:${platform}`);
+    idemOutcome = "failed";
     return { status: 502, body: { success: false, error: job.lastError, job } };
+  } finally {
+    await endExternalOperation(idem.key, idemOutcome);
   }
 }
 
@@ -15083,7 +15287,7 @@ app.get("/api/readiness", (_req, res) => {
     statePersistence: appReady,
     applicationReady: appReady,
     processHealth: { unhandledRejectionCount, fatalRejectionInTests: isFatalRejectionTestMode },
-    persistence: (() => { const s = storageStatus(); const pooled = isPooledPostgresEndpoint(String((storageAdapter as any).connectionString || process.env.DATABASE_URL || "")); const corrupt = s.backend === "file" && typeof (storageAdapter as any).corruptKeyList === "function" ? (storageAdapter as any).corruptKeyList() : []; return { backend: s.backend, durable: s.durable, mode: s.durable ? "durable" : "ephemeral", healthy: s.healthy, pooledEndpoint: s.backend === "postgres" ? pooled : null, stateCorrupt: corrupt.length > 0, corruptKeys: corrupt, ...(s.backend === "postgres" && !pooled ? { recommendation: "استخدم نقطة اتصال Neon المجمّعة (pooled) لتقليل ضغط الاتصالات أثناء النشر (rolling deploy)." } : {}) }; })(),
+    persistence: (() => { const s = storageStatus(); const pooled = isPooledPostgresEndpoint(String((storageAdapter as any).connectionString || process.env.DATABASE_URL || "")); const corrupt = s.backend === "file" && typeof (storageAdapter as any).corruptKeyList === "function" ? (storageAdapter as any).corruptKeyList() : []; return { backend: s.backend, durable: s.durable, mode: s.durable ? "durable" : "ephemeral", healthy: s.healthy, pooledEndpoint: s.backend === "postgres" ? pooled : null, stateCorrupt: corrupt.length > 0, corruptKeys: corrupt, ...(s.backend === "postgres" && !pooled ? { recommendation: "استخدم نقطة اتصال Neon المجمّعة (pooled) لتقليل ضغط الاتصالات أثناء النشر (rolling deploy)." } : {}), idempotency: idempotencyStatusBlock() }; })(),
     auth: {
       ownerEmailConfigured: Boolean(OWNER_EMAIL),
       sessionsDurable: SESSIONS_DURABLE,
@@ -15982,6 +16186,9 @@ app.get("/api/health", (_req, res) => {
         // منطقي فقط بلا أي قيمة: يتيح للمالك التأكد من ضبط مسار الدخول المباشر
         // في بيئة النشر دون كشف التوكن أو تسجيله.
         previewLoginEnabled: Boolean((process.env.GHARABI_PREVIEW_TOKEN || "").trim()),
+        // F-07: حالة منع التكرار الدائم (منطقي بلا سرّ) — يقرأها المالك للتأكد أن
+        // الحجز يُصمد في Postgres لا في الذاكرة.
+        idempotency: idempotencyStatusBlock(),
       };
     })(),
   });
