@@ -2666,11 +2666,23 @@ add('security-hardening-test-present',
   secHardeningTest.includes('SEC-02') && secHardeningTest.includes('SEC-03') && secHardeningTest.includes('raw-body mismatch cannot bypass') && (pkg.scripts['test'] || '').includes('test:security-hardening'),
   'Phase 1: اختبار انحدار أمني حقيقي (webhook/CSP/maps/leak) مضمّن في npm test');
 add('f07-idempotency-table-ddl',
-  idemStore.includes('export const IDEMPOTENCY_TABLE =') && idemStore.includes('gharabi_idempotency') && idemStore.includes('CREATE TABLE IF NOT EXISTS') && idemStore.includes("status text NOT NULL CHECK (status IN ('reserved','done','failed'))") && idemStore.includes('expires_at'),
-  'F-07: جدول منع التكرار يُنشأ بإنشاء إضافي فقط (CREATE TABLE IF NOT EXISTS) بحالات reserved/done/failed');
+  idemStore.includes('export const IDEMPOTENCY_TABLE =') && idemStore.includes('gharabi_idempotency') && idemStore.includes('CREATE TABLE IF NOT EXISTS') && idemStore.includes("status text NOT NULL CHECK (status IN ('reserved','done','failed','pending_quota'))") && idemStore.includes('expires_at'),
+  'F-07: جدول منع التكرار يُنشأ بإنشاء إضافي فقط (CREATE TABLE IF NOT EXISTS) بحالات reserved/done/failed/pending_quota');
+add('f07-idempotency-check-upgrade',
+  idemStore.includes('IDEMPOTENCY_TABLE_UPGRADE_DDL') && idemStore.includes('ADD CONSTRAINT') && idemAdapter.includes('IDEMPOTENCY_TABLE_UPGRADE_DDL') && idemAdapter.includes('for (const stmt of IDEMPOTENCY_TABLE_UPGRADE_DDL)'),
+  'F-07: ترقية قيد CHECK للحالات الجديدة عبر ALTER TABLE ADD CONSTRAINT (إنشاء/ترقية إضافية فقط، لا تعديل جداول قائمة)');
+add('f07-idempotency-outcome-classifier',
+  idemStore.includes('export function classifyExternalOperationOutcome') && idemStore.includes('pending_quota') && idemStore.includes('network_after_send') && idemStore.includes('provider_rejected') && idemStore.includes('pre_provider'),
+  'F-07: مصنّف نتيجة موحّد — الانقطاع بعد الإرسال لا يُعلن فشلاً مؤكداً، وانتظار الحصة حالة مميزة');
+add('f07-idempotency-pending-quota-precedence',
+  /if \(input\.pending\) return "pending_quota";\s*\n\s*if \(input\.ok\) return "done";/.test(idemStore),
+  'F-07: انتظار الحصة (pending_quota) يتقدّم على ok=200 (مسار YouTube يعيد 200 مع pendingRetry) فلا يُمنع من إعادة المحاولة');
+add('f07-idempotency-no-force-bypass',
+  !server.includes('input.force') && !/executeYouTubePublish\(\{[^}]*force: true/.test(server),
+  'F-07: لا تجاوز للحجز (force أُزيل) — الانتظار المقصود pending_quota يكفي ولا يفتح ثغرة تكرار');
 add('f07-idempotency-atomic-reserve',
-  idemStore.includes('ON CONFLICT (key) DO NOTHING') && idemStore.includes('RETURNING') && idemStore.includes("t.status = 'failed'") && idemStore.includes('t.expires_at <= now()'),
-  'F-07: حجز ذرّي (ON CONFLICT DO NOTHING RETURNING) + استرداد العالق/الفاشل في بيان واحد');
+  idemStore.includes('ON CONFLICT (key) DO NOTHING') && idemStore.includes('RETURNING') && idemStore.includes("t.status IN ('failed','pending_quota')") && idemStore.includes('t.expires_at <= now()'),
+  'F-07: حجز ذرّي (ON CONFLICT DO NOTHING RETURNING) + استرداد العالق/الفاشل/المعلّق في بيان واحد');
 add('f07-idempotency-table-created-pg',
   idemAdapter.includes('IDEMPOTENCY_TABLE_DDL') && idemAdapter.includes('await this.pool.query(IDEMPOTENCY_TABLE_DDL)'),
   'F-07: الجدول يُنشأ في تهيئة خلفية Postgres (بلا تعديل أي جدول قائم)');
@@ -2696,6 +2708,7 @@ add('f07-idempotency-health-block',
 add('f07-idempotency-tests-present',
   idemTest.includes('حجز واحد فقط من طلبين متزامنين') && idemTest.includes('بعد done لا يُسمح بإعادة التنفيذ') &&
   idemDurableTest.includes('لا نداء مزود ثانٍ بعد إعادة التشغيل') && idemDurableTest.includes('الحجز العالق المنتهي يُعاد حجزه') &&
+  idemDurableTest.includes('الانقطاع بعد الإرسال => 502 بلا تسليم مؤكد') && idemDurableTest.includes('الحجز بعد الانقطاع يبقى reserved') &&
   idemPgTest.includes('الحجز الدائم يصمد في محوّل جديد') &&
   (pkg.scripts['test'] || '').includes('test:idempotency-store') && (pkg.scripts['test'] || '').includes('test:idempotency-durable') && (pkg.scripts['test'] || '').includes('test:idempotency-postgres'),
   'F-07: اختبارات وحدة + تكامل + Postgres مضمّنة في npm test (تفشل على الكود القديم)');

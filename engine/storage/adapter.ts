@@ -13,6 +13,7 @@ import path from "node:path";
 import crypto from "node:crypto";
 import {
   IDEMPOTENCY_TABLE_DDL,
+  IDEMPOTENCY_TABLE_UPGRADE_DDL,
   IDEMPOTENCY_RESERVE_SQL,
   IDEMPOTENCY_FINISH_SQL,
   IDEMPOTENCY_READ_SQL,
@@ -563,6 +564,9 @@ class PostgresStorageAdapter implements StorageAdapter {
       );
       // F-07: جدول منع التكرار — إنشاء إضافي فقط (لا يمسّ gharabi_state).
       await this.pool.query(IDEMPOTENCY_TABLE_DDL);
+      // ترقية قيد الحالات ليشمل pending_quota على جدول أُنشئ سابقاً بثلاث حالات
+      // (إنشاء إضافي فقط؛ idempotent؛ لا فقدان بيانات).
+      for (const stmt of IDEMPOTENCY_TABLE_UPGRADE_DDL) await this.pool.query(stmt);
       this.healthy = true;
       this.detail = null;
     };

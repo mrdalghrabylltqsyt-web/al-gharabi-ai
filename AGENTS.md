@@ -44,7 +44,7 @@ npm install
 npm run dev            # tsx server.ts
 npm run lint           # tsc --noEmit
 npm run build          # vite build + esbuild server.ts -> dist/server.cjs
-npm run final-audit    # node final-audit.mjs (1690 فحصاً)
+npm run final-audit    # node final-audit.mjs (1694 فحصاً)
 npm test               # storage + engine + auth + ... + db + runtime
 ```
 - التشغيل الإنتاجي: `PORT=4517 NODE_ENV=production APP_URL=http://localhost:4517 node dist/server.cjs`
@@ -6573,8 +6573,9 @@ deploy) — فالسباق «تحقق من عدم التكرار ← انتظا�
 
 **الإصلاح — مخزن حجز دائم (مصدر واحد `engine/social/idempotencyStore.ts`):**
 - جدول مستقل `gharabi_idempotency` بإنشاء **إضافي فقط** (`CREATE TABLE IF NOT EXISTS`،
-  بلا تعديل أي جدول قائم): `key` فريد، `status` (reserved/done/failed)، `created_at`،
-  `updated_at`، `expires_at`.
+  بلا تعديل أي جدول قائم): `key` فريد، `status` (reserved/done/failed/**pending_quota**)،
+  `created_at`، `updated_at`، `expires_at`. ترقية قيد الحالات على قواعد قائمة عبر
+  `IDEMPOTENCY_TABLE_UPGRADE_DDL` (`ALTER TABLE ... DROP/ADD CONSTRAINT`، إضافية فقط).
 - **حجز ذرّي** `INSERT ... ON CONFLICT (key) DO NOTHING RETURNING` (CTE واحد): من نجح
   حجزه وحده ينفّذ؛ عدم إرجاع صف = محجوز حيّ أو منتهٍ بنجاح ⇒ لا تنفيذ. الحجز العالق
   (`reserved` بعد انتهاء `expires_at`، الافتراضي 10 دقائق) يُعاد حجزه، والفشل المؤكد
@@ -6582,6 +6583,13 @@ deploy) — فالسباق «تحقق من عدم التكرار ← انتظا�
 - **الحجز يسبق أي نداء مزود** في كل المسارات: رد تعليقات/رسائل Facebook، تعليقات/رسائل
   Instagram، رد YouTube، رسائل Telegram، تنفيذ المهام (job_execute)، والنشر الموحّد
   (`executePlatformPublish`/`executeYouTubePublish` غلاف حجز قبل المزود).
+- **تصنيف النتيجة (`classifyExternalOperationOutcome`، مصدر واحد):** `done` عند النجاح؛
+  `pending_quota` عند انتظار مقصود (نفاد حصة YouTube — **يتقدّم على `ok=200`** لأن مسار
+  YouTube يعيد 200 مع `pendingRetry`، فيسمح بإعادة المحاولة)؛ **`null` عند انقطاع بعد
+  الإرسال بلا رد مزود** (يبقى `reserved` حتى TTL ولا يُعلن فشلاً مؤكداً فيُمنع التكرار
+  الخاطئ)؛ `failed` عند رفض صريح من المزود أو فشل قبل النداء. الموصلات توسم الانقطاع
+  `NETWORK_ERROR`/`network` (Facebook/Instagram/Telegram/YouTube). **لا تجاوز (`force`
+  أُزيل):** إعادة محاولة الحصة تمر عبر `pending_quota` لا عبر تجاوز الحجز.
 - **المفتاح:** المنصة + نوع العملية + معرّف الهدف عند المزود (+ معرّف المحتوى الداخلي
   للنشر)؛ ومفتاح تكرار اختياري للردود يميّز المتابعة المشروعة (`fu1`) عن التكرار.
 - **`replyInFlightLock` باقٍ طبقة أولى إضافية** (أسرع، داخل العملية) فوق الحجز الدائم.
@@ -6592,10 +6600,12 @@ deploy) — فالسباق «تحقق من عدم التكرار ← انتظا�
   (`backend`/`table`/`durable`/`note`) بلا أي سرّ.
 
 **اختبارات (تفشل على الكود القديم):** `idempotency.store.test.ts` (وحدة، 26 فحصاً)،
-`idempotency.durable.integration.test.ts` (تكامل بخادم حقيقي + Graph وهمي، 22 فحصاً:
-طلب متزامن ⇒ نداء واحد، إعادة تشغيل فعلية ⇒ لا نداء ثانٍ، حجز حيّ/عالق/فاشل)،
-`idempotency.postgres.test.ts` (Postgres حقيقي عبر `tools/local-verification`، 7 فحوص).
-فحوص final-audit: `f07-idempotency-*` (10 فحوص، الإجمالي **1690**).
+`idempotency.durable.integration.test.ts` (تكامل بخادم حقيقي + Graph وهمي، **36 فحصاً**:
+طلب متزامن ⇒ نداء واحد، إعادة تشغيل فعلية ⇒ لا نداء ثانٍ، حجز حيّ/عالق/فاشل، **انقطاع
+بعد الإرسال ⇒ reserved + طلب ثانٍ 409**، وتصنيف النتيجة)، `idempotency.postgres.test.ts`
+(Postgres حقيقي عبر `tools/local-verification`، **9 فحوص** منها `pending_quota`)،
+و`youtube.quota.retry.test.ts` (**53 فحصاً**: نشر ناجح `done` لا يُعاد رفعه).
+فحوص final-audit: `f07-idempotency-*` (15 فحصاً، الإجمالي **1694**).
 `scripts/verify-deployment.mjs` أضاف فحوص الجدول والدوام في health/readiness.
 
 **لم يُمسّ:** TikTok (public/favicon*/index.html/tiktok*.txt//terms//privacy/OAuth

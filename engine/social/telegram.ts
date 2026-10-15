@@ -326,7 +326,8 @@ export class TelegramClient {
         receipt: { provider: 'telegram', chatId: String(data.result.chat?.id ?? req.chatId), messageId: String(data.result.message_id), sentAt: new Date().toISOString() },
       };
     } catch (e: any) {
-      return { ok: false, providerMessageId: null, receipt: null, error: String(e?.message || 'فشل الاتصال بـTelegram.') };
+      // F-07: انقطاع بعد الإرسال بلا رد مزود — لا يُصنَّف فشلاً مؤكداً (انظر idempotencyStore).
+      return { ok: false, providerMessageId: null, receipt: null, error: String(e?.message || 'فشل الاتصال بـTelegram.'), code: 'NETWORK_ERROR' };
     }
   }
 

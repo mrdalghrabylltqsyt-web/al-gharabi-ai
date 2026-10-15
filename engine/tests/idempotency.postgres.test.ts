@@ -81,6 +81,13 @@ async function main(): Promise<void> {
   check('الحجز الدائم يصمد في محوّل جديد (إعادة تشغيل محاكاة)', (await backend2!.reserve(key5, Date.now(), Date.now() + IDEMPOTENCY_RESERVATION_TTL_MS)) === false);
   check('الحالة done مصمد بعد إعادة التشغيل', (await backend2!.read(key5))?.status === 'done');
 
+  // 7) pending_quota (انتظار حصة): قيد CHECK المُرقّى يقبله، ويسمح بإعادة الحجز.
+  const key6 = buildIdempotencyKey({ platform: 'youtube', operation: 'publish', targetId: 'VID_PG', contentId: 'VID_PG' });
+  await backend.reserve(key6, now, now + IDEMPOTENCY_RESERVATION_TTL_MS);
+  await backend.finish(key6, 'pending_quota', Date.now());
+  check('pending_quota مقبول في قيد CHECK المُرقّى', (await backend.read(key6))?.status === 'pending_quota');
+  check('pending_quota يسمح بإعادة الحجز (إعادة محاولة بعد تجدد الحصة)', (await backend.reserve(key6, Date.now(), Date.now() + IDEMPOTENCY_RESERVATION_TTL_MS)) === true);
+
   console.log(`PASSED: ${passed} idempotency-postgres checks`);
   if (failures.length) {
     console.error('FAILURES:');

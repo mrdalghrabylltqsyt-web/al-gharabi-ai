@@ -34,6 +34,11 @@ export interface FacebookMockState {
   failSubscribe: boolean;
   /** يفشل الرد على تعليق عند true. */
   failCommentReply: boolean;
+  /**
+   * F-07: محاكاة «انقطاع بعد الإرسال» — يُسجَّل الرد فعلياً (كأن المزود نفّذه)
+   * ثم لا يُرسل أي استجابة فينقطع الاتصال. يُثبت أن الانقطاع لا يُصنَّف فشلاً مؤكداً.
+   */
+  hangCommentReply: boolean;
   /** يفشل إرسال رسالة عند true. */
   failSend: boolean;
   /** يفشل النشر عند true. */
@@ -111,6 +116,7 @@ export function createFacebookMock(state: Partial<FacebookMockState> = {}): Face
     failPageProfile: false,
     failSubscribe: false,
     failCommentReply: false,
+    hangCommentReply: false,
     failSend: false,
     failPublish: false,
     subscribed: {},
@@ -368,6 +374,7 @@ export async function startFacebookMockServer(
     const message = String(req.body?.message || '');
     const id = `REPLY_${commentId}_${state.commentReplies.length + 1}`;
     state.commentReplies.push({ commentId, message, token: String(req.headers.authorization || ''), id });
+    if (state.hangCommentReply) { try { res.socket?.destroy(); } catch { /* تجاهل */ } return; }
     return res.json({ id });
   });
 

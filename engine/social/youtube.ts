@@ -712,6 +712,7 @@ export class YouTubeClient {
       const scope = typeof data?.scope === 'string' ? String(data.scope).split(/\s+/).filter(Boolean) : [];
       return { ok: true, data: { accessToken: parsed.accessToken, refreshToken: parsed.refreshToken, expiresIn: parsed.expiresIn, scope } };
     } catch (e: any) {
+      // F-07: انقطاع بعد الإرسال بلا رد مزود — لا يُصنَّف فشلاً مؤكداً (انظر idempotencyStore).
       return { ok: false, data: null, error: String(e?.message || 'تعذّر الاتصال بـGoogle.'), code: 'network' };
     }
   }
@@ -730,6 +731,7 @@ export class YouTubeClient {
       if (mapped === null) return { ok: false, data: null, error: fallback, code: 'provider_error' };
       return { ok: true, data: mapped };
     } catch (e: any) {
+      // F-07: انقطاع بعد الإرسال بلا رد مزود — لا يُصنَّف فشلاً مؤكداً (انظر idempotencyStore).
       return { ok: false, data: null, error: String(e?.message || 'تعذّر الاتصال بـGoogle.'), code: 'network' };
     }
   }
@@ -752,6 +754,7 @@ export class YouTubeClient {
       if (mapped === null) return { ok: false, data: null, error: fallback, code: 'provider_error' };
       return { ok: true, data: mapped };
     } catch (e: any) {
+      // F-07: انقطاع بعد الإرسال بلا رد مزود — لا يُصنَّف فشلاً مؤكداً (انظر idempotencyStore).
       return { ok: false, data: null, error: String(e?.message || 'تعذّر الاتصال بـGoogle.'), code: 'network' };
     }
   }
@@ -906,6 +909,7 @@ export class YouTubeClient {
         data: { video, state: classified.state, delivered: classified.delivered, externalVideoId: classified.externalVideoId, watchUrl: youtubeWatchUrl(classified.externalVideoId), detail: classified.detail },
       };
     } catch (e: any) {
+      // F-07: انقطاع بعد الإرسال بلا رد مزود — لا يُصنَّف فشلاً مؤكداً (انظر idempotencyStore).
       return { ok: false, data: null, error: String(e?.message || 'تعذّر الاتصال بـGoogle.'), code: 'network' };
     }
   }

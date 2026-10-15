@@ -204,6 +204,23 @@ async function integration(): Promise<void> {
   check('معرّف فيديو حقيقي من المزود', item2?.externalVideoId === mockState.uploadedVideoId, `ext=${item2?.externalVideoId}`);
   check('انتظار الحصة مُنظَّف بعد النجاح', !item2?.retryAt);
 
+  group('10ب) F-07: نشر ناجح (حجز done) لا يُعاد رفعه عبر أي محاولة ثانية');
+  mockState.uploadedVideoId = 'vid_uploaded_0002';
+  const before2 = mockState.uploadInitCalls;
+  const draft2 = await createDraft(auth, { title: 'محتوى ناجح لا يُعاد رفعه', description: 'وصف تسويقي', videoBase64: VIDEO_B64 });
+  const exec2 = await review(auth, draft2.item.id, { action: 'publish_now' });
+  check('النشر الأول نجح (status 200)', exec2.success === true && exec2.exec?.status === 200, JSON.stringify(exec2).slice(0, 200));
+  const itemDone = await getQueueItem(auth, draft2.item.id);
+  check('الحالة PUBLISHED بعد النشر', itemDone?.state === 'PUBLISHED', `state=${itemDone?.state}`);
+  check('خرجت تهيئة رفع واحدة فقط للنشر الناجح', mockState.uploadInitCalls === before2 + 1, `calls=${mockState.uploadInitCalls}`);
+  // نشر ثانٍ لنفس معرّف المنشور: الحجز الدائم `done` يمنع أي رفع جديد.
+  const dupRes = await (await fetch(`${BASE}/api/platforms/youtube/publish`, { method: 'POST', headers: auth, body: JSON.stringify({ title: 'محتوى ناجح لا يُعاد رفعه', description: 'وصف تسويقي', videoBase64: VIDEO_B64, postId: draft2.item.id, approved: true }) })).json();
+  check('نشر ثانٍ لنفس المعرّف يُرفض (IDEMPOTENT_ALREADY_COMPLETED)', dupRes.code === 'IDEMPOTENT_ALREADY_COMPLETED', JSON.stringify(dupRes).slice(0, 200));
+  check('لا تهيئة رفع جديدة بعد منع التكرار', mockState.uploadInitCalls === before2 + 1, `calls=${mockState.uploadInitCalls}`);
+  // إعادة المحاولة الدورية لا تلمس عنصراً منشوراً (لا يوجد PENDING_RETRY له).
+  await (await fetch(`${BASE}/api/platforms/youtube/content/retry-pending`, { method: 'POST', headers: auth, body: JSON.stringify({}) })).json();
+  check('إعادة المحاولة لا ترفع عنصراً منشوراً (done)', mockState.uploadInitCalls === before2 + 1, `calls=${mockState.uploadInitCalls}`);
+
   group('11) تكامل: منع رجوع التسريب — /api/health لا يحمل بيانات عملاء');
   const health = await (await fetch(`${BASE}/api/health`)).json();
   check('health لا يحمل attentionRequired', !JSON.stringify(health).includes('attentionRequired'));

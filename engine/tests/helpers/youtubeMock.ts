@@ -58,6 +58,8 @@ export interface YouTubeMockState {
   failUpload: boolean;
   /** يفشل الرفع بنفاد الحصة الفعلي (quotaExceeded) — لاختبار إعادة المحاولة الذكية. */
   uploadQuotaExceeded: boolean;
+  /** F-07: عدد تهيئات الرفع (resumable init) — لإثبات عدم إعادة رفع فيديو نُشر فعلاً. */
+  uploadInitCalls: number;
   /** يفشل إدراج الرد بنفاد الحصة الفعلي (quotaExceeded). */
   replyQuotaExceeded: boolean;
   /** معرّف الفيديو الناتج عن الرفع (حقيقي من المزود الوهمي). */
@@ -120,6 +122,7 @@ export function createYouTubeMock(): YouTubeMockState {
     failReply: false,
     failUpload: false,
     uploadQuotaExceeded: false,
+    uploadInitCalls: 0,
     replyQuotaExceeded: false,
     uploadedVideoId: 'vid_uploaded_0001',
     uploadedPrivacyStatus: 'public',
@@ -271,6 +274,7 @@ export function startYouTubeMockServer(state: YouTubeMockState, port: number): P
   // رفع فيديو resumable: المسار الأول يرد Location، ثم PUT البايتات يرد الفيديو.
   app.post('/upload/youtube/v3/videos', (req, res) => {
     state.calls += 1;
+    state.uploadInitCalls += 1;
     state.lastUploadPath = req.originalUrl;
     state.lastUploadBody = req.body;
     if (state.uploadQuotaExceeded) return res.status(403).json({ error: { code: 403, message: 'The request cannot be completed because you have exceeded your quota.', errors: [{ reason: 'quotaExceeded' }] } });

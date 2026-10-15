@@ -18,6 +18,7 @@ import { join } from 'node:path';
 import { randomBytes } from 'node:crypto';
 import type { Server } from 'node:http';
 import { createFacebookMock, startFacebookMockServer, type FacebookMockState } from './helpers/facebookMock';
+import { classifyExternalOperationOutcome, decideReservation } from '../social/idempotencyStore';
 
 let passed = 0;
 const failures: string[] = [];
@@ -206,6 +207,33 @@ async function main(): Promise<void> {
     const retryRes = await reply(auth, 'C_RETRY', 'أهلاً وسهلاً بكم، يسعدنا خدمتكم في أي وقت.');
     check('الحجز الفاشل يسمح بإعادة المحاولة => الرد ينجح', retryRes.status === 200, `status=${retryRes.status} body=${JSON.stringify(retryRes.body).slice(0, 200)}`);
     check('وصل نداء مزود فعلي عند إعادة المحاولة', mock.state.commentReplies.length === retryBefore + 1);
+
+    group('6) تكامل: انقطاع بعد الإرسال (بلا رد مزود) => الحجز يبقى reserved => طلب ثانٍ يُرفض 409');
+    await ingest(auth, 'C_HANG', 'عاشت إيدكم على الخدمة');
+    mock.state.hangCommentReply = true;
+    const hangBefore = mock.state.commentReplies.length;
+    // الطلب الأول: نداء مزود يخرج فعلاً ثم ينقطع بلا استجابة (لا نعرف هل نُفِّذ).
+    const hangRes = await reply(auth, 'C_HANG', 'شكراً لكم على تواصلكم، نحن في خدمتكم دائماً وبكل سرور.');
+    check('الانقطاع بعد الإرسال => 502 بلا تسليم مؤكد', hangRes.status === 502, `status=${hangRes.status} body=${JSON.stringify(hangRes.body).slice(0, 200)}`);
+    check('خرج نداء مزود فعلاً قبل الانقطاع', mock.state.commentReplies.length === hangBefore + 1, `replies=${mock.state.commentReplies.length}`);
+    // المفتاح الأساسي: لا فشل مؤكد (failed) بل حجز محفوظ (reserved) — يمنع تكراراً فورياً.
+    check('الحجز بعد الانقطاع يبقى reserved (لا failed)', readIdemRecord('facebook:comment_reply:C_HANG')?.status === 'reserved', JSON.stringify(readIdemRecord('facebook:comment_reply:C_HANG')));
+    mock.state.hangCommentReply = false;
+    // طلب فوري ثانٍ على نفس التعليق: يجب أن يُرفض 409 بلا نداء مزود ثانٍ.
+    const hangSecond = await reply(auth, 'C_HANG', 'أهلاً وسهلاً بكم، يسعدنا خدمتكم في أي وقت.');
+    check('الطلب الفوري الثاني بعد الانقطاع يُرفض 409', hangSecond.status === 409, `status=${hangSecond.status}`);
+    check('الرفض من الحجز المحفوظ (IDEMPOTENT_OPERATION_IN_PROGRESS)', hangSecond.body?.code === 'IDEMPOTENT_OPERATION_IN_PROGRESS', JSON.stringify(hangSecond.body).slice(0, 200));
+    check('لا نداء مزود ثانٍ بعد الانقطاع', mock.state.commentReplies.length === hangBefore + 1, `replies=${mock.state.commentReplies.length}`);
+
+    group('7) وحدة: تصنيف نتيجة العملية الخارجية (pending_quota + الانقطاع ≠ فشل مؤكد)');
+    check('نجاح => done', classifyExternalOperationOutcome({ ok: true }) === 'done');
+    check('انتظار حصة => pending_quota (لا done)', classifyExternalOperationOutcome({ ok: false, pending: true }) === 'pending_quota');
+    check('انتظار الحصة يتقدّم على ok=200 (لا يُعدّ done)', classifyExternalOperationOutcome({ ok: true, pending: true }) === 'pending_quota');
+    check('انقطاع بعد الإرسال => null (يبقى reserved)', classifyExternalOperationOutcome({ ok: false, failureKind: 'network_after_send' }) === null);
+    check('رفض مزود => failed', classifyExternalOperationOutcome({ ok: false, failureKind: 'provider_rejected' }) === 'failed');
+    check('فشل قبل النداء => failed', classifyExternalOperationOutcome({ ok: false, failureKind: 'pre_provider' }) === 'failed');
+    check('pending_quota قابل لإعادة الحجز (لا يمنع)', decideReservation({ key: 'k', status: 'pending_quota', createdAt: '', updatedAt: '', expiresAt: '' }, Date.now()).reserve === true);
+    check('done لا يُعاد حجزه أبداً', decideReservation({ key: 'k', status: 'done', createdAt: '', updatedAt: '', expiresAt: '' }, Date.now()).reserve === false);
 
     console.log(`\nPASSED: ${passed} idempotency-durable checks`);
     if (failures.length) {
