@@ -82,6 +82,7 @@ import { settleWithTimeout, envTimeoutMs, DRIVE_PUBLIC_HOST_TIMEOUT_MS } from ".
 import { publishVideoPublicly } from "./engine/social/videoPublicHosting";
 import { classifyHttpError, shouldExposeErrorMessage, safeErrorMessage, redactSecretsFromText } from "./engine/runtime/errorSafety";
 import { enforceRateWindowCap, RATE_WINDOW_TTL_MS } from "./engine/runtime/rateWindow";
+import { createProcessSafety } from "./engine/runtime/processSafety";
 import { computeLiveDatabaseFingerprint } from "./engine/dr/dbBalance";
 import { buildSecretsBundle } from "./tools/dr/secret-crypto.mjs";
 import { buildRecoveryInformation, buildRecoveryInstructions } from "./tools/dr/cloud-lib.mjs";
@@ -591,14 +592,34 @@ dotenv.config();
 
 const app = express();
 
-// سلامة العملية: أي استثناء/وعد مرفوض غير مُلتقَط يُسجَّل برسالة مُنقّاة (بلا سرّ
-// ولا مكدّس يُعاد)، ولا يُسقط الخادم — يبقى يعمل بينما تُعزل العملية الجارية من
-// المسار الذي فشل. لا نُغيّر سلوك الإغلاق عند SIGTERM/SIGINT.
-process.on("uncaughtException", (err) => {
-  console.error("[الغرابي AI] uncaughtException:", redactSecretsFromText(String((err as Error)?.message || err)).slice(0, 300));
+// N1 — سلامة العملية (تدقيق جنائي): `uncaughtException` يعني أن العملية في حالة
+// **غير معروفة** (أقفال معلّقة، كتابات نصف منجزة). الاستمرار بصمت يُخفي العطل عن
+// Render فلا يعيد التشغيل أبداً. السلوك الصحيح: تسجيل مُنقّى، تفريغ الكتابات بمهلة
+// قصيرة، ثم exit(1). المنطق في `engine/runtime/processSafety.ts` (صافٍ ومُختبَر).
+let unhandledRejectionCount = 0;
+const isFatalRejectionTestMode = process.env.GHARABI_TEST_MODE === "true";
+async function flushPendingWritesBounded(ms = 3000): Promise<void> {
+  try {
+    const deadline = Date.now() + ms;
+    let pending = persistQueue;
+    while (Date.now() < deadline) {
+      await pending.catch(() => { /* نُكمل حتى لو فشلت كتابة */ });
+      if (pending === persistQueue) break;
+      pending = persistQueue;
+    }
+  } catch { /* تجاهل */ }
+}
+const processSafety = createProcessSafety({
+  log: (line) => console.error(redactSecretsFromText(line).slice(0, 300)),
+  flush: (ms) => flushPendingWritesBounded(ms),
+  close: () => storageAdapter.close(),
+  exit: (code) => process.exit(code),
+  testMode: isFatalRejectionTestMode,
 });
+process.on("uncaughtException", (err) => processSafety.handleUncaughtException(err));
 process.on("unhandledRejection", (reason) => {
-  console.error("[الغرابي AI] unhandledRejection:", redactSecretsFromText(String((reason as any)?.message || reason)).slice(0, 300));
+  processSafety.handleUnhandledRejection(reason);
+  unhandledRejectionCount = processSafety.unhandledRejectionCount;
 });
 // PORT is configurable so the app can run behind any host that injects its own
 // port (containers/PaaS). Values outside the valid TCP range fall back to 3000.
@@ -1506,7 +1527,7 @@ app.post("/api/auth/verify-challenge", async (req, res) => {
   consumedChallengeWindows.set(normalizedEmail, matchedWindow);
   consumedChallenges.set(normalizedEmail, Date.now() + CHALLENGE_TTL_MS);
   // ننتظر الكتابة قبل إصدار الجلسة: لا يُمنح وصول قبل تثبيت الاستهلاك الموثوق.
-  await persistCritical();
+  if (!(await persistCriticalOr503(res))) return;
 
   let user = serverUsers.find((u) => u.email.toLowerCase() === normalizedEmail && u.active);
   if (!user && normalizedEmail === OWNER_EMAIL) {
@@ -1519,7 +1540,7 @@ app.post("/api/auth/verify-challenge", async (req, res) => {
   }
 
   const session = createSessionForUser(user);
-  await persistCritical();
+  if (!(await persistCriticalOr503(res))) return;
   return res.json({
     success: true,
     token: session.token,
@@ -1564,7 +1585,7 @@ async function handlePreviewLogin(req: express.Request, res: express.Response) {
   const session = createSessionForUser(owner, previewEpoch.value);
   auditLog.unshift({ id: crypto.randomUUID(), at: new Date().toISOString(), userId: "system", action: "owner_preview_login", detail: "preview-session-created" });
   if (auditLog.length > 100) auditLog.pop();
-  await persistCritical();
+  if (!(await persistCriticalOr503(res))) return;
   return res.json({ success: true, token: session.token, user: session.user });
 }
 // يُسجَّل المسار لطريقة POST فقط: لا يوجد مسار GET يمرّر التوكن في سطر الطلب.
@@ -1590,7 +1611,7 @@ app.post("/api/auth/logout", async (req, res) => {
       revokedSessions.set(payload.sid, payload.exp);
       activeSessions.delete(token);
       // ننتظر التثبيت قبل الرد: لا نُعلن نجاح الخروج قبل استقرار الإبطال.
-      await persistCritical();
+      if (!(await persistCriticalOr503(res))) return;
     }
   }
   res.json({ success: true, message: "تم تسجيل الخروج بنجاح." });
@@ -4232,7 +4253,8 @@ app.get("/api/platforms/:platform/oauth/start", requireOwner, async (req,res)=>{
   audit((req as any).user.id,"platform_oauth_started",platform);
   // نثبّت جلسة OAuth قبل إرجاع رابط التفويض: قد يقضي المالك دقائق في شاشة
   // الموافقة وقد تُطفأ العملية، فيلزم أن تصمد الحالة في المخزن الدائم.
-  await persistCritical();
+  // F-29: fail-closed — لا نُصدر رابط تفويض قبل ضمان التثبيت.
+  if (!(await persistCriticalOr503(res))) return;
   // Meta يرفض رابط إرجاع غير عام (localhost/بلا https) برسالة «لا يمكن تحميل
   // عنوان URL / النطاق غير مُضمَّن في نطاقات التطبيق». لا نحجب البدء (لئلا نكسر
   // التطوير المحلي)، لكن نُعلن السبب صراحةً ونُرفق الرابط والنطاق الفعليين
@@ -4360,7 +4382,14 @@ async function handleOAuthCallback(req:any, res:any, rawQuery:string, viaPost:bo
   // يُستهلك state مرة واحدة فقط (يمنع إعادة الاستخدام)؛ نثبّت الحذف في المخزن
   // الدائم فوراً فلا يُسترجَع عند إعادة تشغيل لاحقة فيُقبل تكرار الطلب.
   pendingOAuth.delete(state);
-  await persistCritical();
+  // F-29: fail-closed — إن لم يُثبَّت حذف state فلا نقبل الرمز (منع إعادة استخدام
+  // state عبر restart). نرد فشلاً صريحاً بدل المتابعة بحذف غير مثبّت.
+  try {
+    await persistCritical();
+  } catch {
+    logOAuthStart(platform, { outcome: "callback_rejected", reason: "persist_failed" });
+    return failHtml(503, "تعذّر تثبيت حالة OAuth في المخزن الدائم؛ أعد المحاولة.");
+  }
   if(params.get("error")) return failHtml(400, `رفض مزود المنصة عملية الربط: ${String(formatOAuthProviderError({ error_message: params.get("error_message"), error_description: params.get("error_description"), error: params.get("error"), error_code: params.get("error_code") }) || params.get("error")).slice(0,300)}`);
   const code=params.get("code")||"";
   // تدفّق Meta الرسمي لـInstagram (Facebook Login for Business - Instagram API)
@@ -8304,6 +8333,8 @@ async function persistCommercialLeads(): Promise<void> {
       leads: commercialLeads.slice(0, COMMERCIAL_MAX_LEADS),
       // مفتاح الإيقاف الطارئ يُحفظ مع سجل العملاء (نفس المحوّل/المفتاح) فيصمد بعد restart.
       killSwitch: { enabled: commercialBrainEnabled, killAt: commercialBrainKillAt, killBy: commercialBrainKillBy, killReason: commercialBrainKillReason },
+      // N2: قفل دورة العقل التجاري يُحفظ هنا (بلا سرّ) فيصمد/يُبطل صراحةً عند الإغلاق.
+      lease: commercialLease,
     });
   } catch { /* يُعلن عبر حالة الحفظ العامة */ }
 }
@@ -8314,6 +8345,8 @@ function applyCommercialStateSnapshot(raw: any): void {
   commercialLeads = normalizeCommercialLeads(raw.leads).slice(0, COMMERCIAL_MAX_LEADS);
   // توافق خلفي (fail-closed): لقطة قديمة بلا killSwitch تُبقي الافتراضي معطَّلاً.
   applyCommercialKillSwitchSnapshot(raw.killSwitch);
+  // N2: القفل الدائم لدورة العقل التجاري (owner + انتهاء فقط، بلا سرّ).
+  commercialLease = normalizeLease(raw.lease);
 }
 
 /** يجد عميلاً محتملاً بالمفتاح الحقيقي (منصة + خيط) بلا اختراع هوية. */
@@ -14671,11 +14704,63 @@ function audit(userId: string, action: string, detail?: string) {
  * كتابة حسّاسة تُنتظر قبل اعتبار العملية ناجحة (إنشاء جلسة، إبطال، استهلاك
  * OTP). تُثبّت لقطة الحالة وحالة التحكّم معاً (نافذة OTP المُستهلكة، بصمة
  * توكن المعاينة)، فلا يُعاد توكن أو تُعلن نجاح إبطال قبل استقرارها في المخزن.
+ *
+ * F-29 (جذر): كانت هذه الدالة تُعيد `persistQueue` الذي **لا يرفض أبداً** لأن
+ * `persistState()` و`saveControlState()` تلتقطان الخطأ وتُكملان، فيبدو الرد
+ * ناجحاً بينما لم تُكتب الحالة فعلاً. الآن تكتب **صراحةً** و**ترمي** عند الفشل،
+ * فيمنع كل مستدعٍ من إعلان نجاح (جلسة/إبطال/استهلاك OTP) قبل ضمان الدوام.
  */
-function persistCritical(): Promise<void> {
-  persistState();
-  saveControlState();
-  return persistQueue;
+async function persistCritical(): Promise<void> {
+  // F-29 (تدقيق المراجعة): الفشل القاتل **فقط حين يكون الدوام مطلوباً فعلاً**
+  // (مخزن دائم: Postgres، أو ملف محلي على مضيف بقرص دائم). على مضيف عابر مُعلَن
+  // (Render Free/Netlify/Lambda بلا DATABASE_URL) فالتخزين عابر **بالتصميم**،
+  // والجلسات موقّعة بلا حالة تعمل بلا أي كتابة — سلوك موثّق ومُختبَر في
+  // netlify.coldstart («STATE_DIR للقراءة فقط»). عندها تُترك الكتابة best-effort
+  // بدل إسقاط الخدمة (وإلا عطّلنا وضعاً مدعوماً رسمياً).
+  const durabilityExpected = storageStatus().durable;
+  if (durabilityExpected && !storageReady) {
+    lastPersistError = storageInitError || "storage_not_ready";
+    throw new Error(lastPersistError);
+  }
+  try {
+    await persistStateDurableOrThrow();
+    await saveControlStateStrict();
+  } catch (error: any) {
+    if (durabilityExpected) throw error;
+    // وضع عابر معلن: الكتابة فشلت لكن الجلسات بلا حالة تعمل — لا تُسقط العملية.
+    lastPersistError = String(error?.message || error?.code || "persist_failed").slice(0, 60);
+  }
+}
+
+/**
+ * F-29: كتابة **تُنتظر وترمي** لحالة التحكّم (نافذة OTP المُستهلكة، بصمة المعاينة،
+ * أختام الإبطال). تُبقي طابور الكتابة سليماً (لا تسمّمه برفض) مع تسجيل الخطأ.
+ */
+async function saveControlStateStrict(): Promise<void> {
+  const strict = persistQueue.then(() => storageAdapter.write(STORAGE_KEY_CONTROL, buildControlState()));
+  persistQueue = strict.then(
+    () => { /* نجاح */ },
+    (error: any) => {
+      lastPersistError = String(error?.code || error?.name || "persist_failed").slice(0, 60);
+      console.warn("Could not persist control state:", lastPersistError);
+    },
+  );
+  return strict.catch((error: any) => {
+    const code = String(error?.code || error?.name || "persist_failed").slice(0, 60);
+    lastPersistError = code;
+    throw new Error(code);
+  });
+}
+
+/** F-29: تُنفّذ persistCritical وترد 503 صراحةً عند فشل التثبيت. تُعيد true إن نجح. */
+async function persistCriticalOr503(res: express.Response): Promise<boolean> {
+  try {
+    await persistCritical();
+    return true;
+  } catch {
+    res.status(503).json({ success: false, error: "تعذّر تثبيت الحالة في المخزن الدائم؛ أعد المحاولة." });
+    return false;
+  }
 }
 
 // تاريخ الاستخدام يُصفَّر عند تغيّر اليوم. يُنادى من كل عملية حماية.
@@ -14939,6 +15024,7 @@ app.get("/api/readiness", (_req, res) => {
     version: PROJECT_VERSION,
     statePersistence: appReady,
     applicationReady: appReady,
+    processHealth: { unhandledRejectionCount, fatalRejectionInTests: isFatalRejectionTestMode },
     persistence: (() => { const s = storageStatus(); const pooled = isPooledPostgresEndpoint(String((storageAdapter as any).connectionString || process.env.DATABASE_URL || "")); return { backend: s.backend, durable: s.durable, mode: s.durable ? "durable" : "ephemeral", healthy: s.healthy, pooledEndpoint: s.backend === "postgres" ? pooled : null, ...(s.backend === "postgres" && !pooled ? { recommendation: "استخدم نقطة اتصال Neon المجمّعة (pooled) لتقليل ضغط الاتصالات أثناء النشر (rolling deploy)." } : {}) }; })(),
     auth: {
       ownerEmailConfigured: Boolean(OWNER_EMAIL),
@@ -18113,22 +18199,58 @@ async function startServer() {
   const shutdown = (signal: string) => {
     if (shuttingDown) return;
     shuttingDown = true;
-    console.log(`[الغرابي AI] received ${signal}, flushing pending writes...`);
-    // Phase 6: نوقف المؤقّتات الداخلية أولاً فلا تُضاف كتابات جديدة أثناء الإغلاق.
-    try { watcherScheduler?.stop(); } catch { /* تجاهل */ }
-    try { metaPollingScheduler?.stop(); } catch { /* تجاهل */ }
-    try { telegramPollingScheduler?.stop(); } catch { /* تجاهل */ }
-    try { stopBrainRuntime(); } catch { /* تجاهل */ }
-    try { (app as any).drReconciliation?.stop?.(); } catch { /* تجاهل */ }
-    try { (app as any).drAutoBackup?.stop?.(); } catch { /* تجاهل */ }
-    try { clearInterval(runtimeCleanupTimer); } catch { /* تجاهل */ }
-    try { clearInterval(safeJobWorkerTimer); } catch { /* تجاهل */ }
-    try { clearInterval(tiktokReconcileTimer); } catch { /* تجاهل */ }
-    try { stopYouTubeQuotaRetryTimer(); } catch { /* تجاهل */ }
-    const deadline = new Promise<void>((resolve) => setTimeout(resolve, 10_000));
-    Promise.race([drainQueue(), deadline])
-      .then(() => storageAdapter.close().catch(() => { /* تجاهل */ }))
-      .finally(() => process.exit(0));
+    console.log(`[الغرابي AI] received ${signal}, stopping intake then flushing pending writes...`);
+    // N2 (تدقيق جنائي): الترتيب الصحيح للإغلاق النظيف —
+    // (1) نوقف استقبال طلبات HTTP جديدة أولاً (`server.close`) فلا تدخل طلبات
+    //     أثناء التفريغ (كان الخادم يستقبل طلبات حتى آخر لحظة).
+    // (2) نوقف المؤقّتات الداخلية فلا تُضاف كتابات جديدة.
+    // (3) نُفرّغ طابور الكتابة (مع مهلة صارمة) — يلتقط أقفال durableLease الحيّة
+    //     ويجعلها متقادمة فتُستردّ تلقائياً عند إقلاع العملية التالية.
+    // (4) نُغلق اتصال قاعدة البيانات ونخرج.
+    // شبكة أمان صارمة: SIGTERM يجب ألا يُعلّق العملية أبداً (وإلا قتلها Render
+    // بـSIGKILL بعد المهلة وضاعت الكتابات). مهلة مطلقة تُجبر الخروج.
+    const hardExit = setTimeout(() => { console.error("[الغرابي AI] shutdown deadline — forcing exit"); process.exit(0); }, 10_000);
+    hardExit.unref?.();
+    const serverClosed = new Promise<void>((resolve) => {
+      try { httpServer.close(() => resolve()); } catch { resolve(); }
+      // اتصالات keep-alive الخاملة تُبقي server.close() معلّقاً؛ نُغلقها فوراً
+      // (سلوك إنتاجي صحيح: SIGTERM من Render لا يجب أن يتأخّر باتصال خامل).
+      try { (httpServer as any).closeIdleConnections?.(); } catch { /* تجاهل */ }
+      // شبكة أمان: بعد 3 ثوانٍ نُغلق كل الاتصالات المتبقية ثم نكمل الإغلاق.
+      const t = setTimeout(() => { try { (httpServer as any).closeAllConnections?.(); } catch { /* تجاهل */ } resolve(); }, 3000);
+      t.unref?.();
+    });
+    const drainAndExit = async (): Promise<void> => {
+      try { watcherScheduler?.stop(); } catch { /* تجاهل */ }
+      try { metaPollingScheduler?.stop(); } catch { /* تجاهل */ }
+      try { telegramPollingScheduler?.stop(); } catch { /* تجاهل */ }
+      try { stopBrainRuntime(); } catch { /* تجاهل */ }
+      try { (app as any).drReconciliation?.stop?.(); } catch { /* تجاهل */ }
+      try { (app as any).drAutoBackup?.stop?.(); } catch { /* تجاهل */ }
+      try { clearInterval(runtimeCleanupTimer); } catch { /* تجاهل */ }
+      try { clearInterval(safeJobWorkerTimer); } catch { /* تجاهل */ }
+      try { clearInterval(tiktokReconcileTimer); } catch { /* تجاهل */ }
+      try { stopYouTubeQuotaRetryTimer(); } catch { /* تجاهل */ }
+      // تحرير أقفال الدوام صراحةً (تُبطل فوراً عند إقلاع العملية الجديدة بدل
+      // انتظار انتهاء مهلتها) — **ويُكتب التحرير في المخزن الدائم** قبل التفريغ،
+      // وإلا بقي القفل القديم محفوظاً فيبدو محتجزاً لعملية أخرى حتى انتهاء مهلته.
+      try {
+        watcherLease = releaseLease(watcherLease, WATCHER_LEASE_OWNER).lease;
+        metaPollingLease = releaseLease(metaPollingLease, META_POLLING_LEASE_OWNER).lease;
+        telegramPollingLease = releaseLease(telegramPollingLease, TELEGRAM_POLLING_LEASE_OWNER).lease;
+        commercialLease = releaseLease(commercialLease, COMMERCIAL_LEASE_OWNER).lease;
+        // الكتابة الصريحة (الطابور يضمن الترتيب؛ تُنتظر ضمن مهلة التفريغ أدناه).
+        persistWatcherState().catch(() => { /* يُعلن عبر حالة الحفظ العامة */ });
+        persistMetaPollingState().catch(() => { /* يُعلن عبر حالة الحفظ العامة */ });
+        persistTelegramPollingState().catch(() => { /* يُعلن عبر حالة الحفظ العامة */ });
+        persistCommercialLeads().catch(() => { /* يُعلن عبر حالة الحفظ العامة */ });
+      } catch { /* تجاهل */ }
+      const deadline = new Promise<void>((resolve) => setTimeout(resolve, 10_000));
+      await Promise.race([drainQueue(), deadline]);
+      try { await storageAdapter.close(); } catch { /* تجاهل */ }
+      process.exit(0);
+    };
+    Promise.all([serverClosed, drainAndExit()]).catch(() => process.exit(0));
   };
   process.once("SIGTERM", () => shutdown("SIGTERM"));
   process.once("SIGINT", () => shutdown("SIGINT"));

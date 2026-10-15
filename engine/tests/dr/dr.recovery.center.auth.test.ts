@@ -13,6 +13,8 @@
  *  6) `/api/health` و`/` و`/api/owner-auth` تبقى عامة بلا أي بيانات وصفية حساسة.
  *  7) `/api/verify` و`/api/restore` محميّان أيضاً.
  *  8) الوضع المحلي الصريح `ALLOW_UNAUTHENTICATED=true` يسمح (للتوافق المحلي فقط).
+ *  8ب) F-23 (مراجعة): في بيئة استضافة (`RENDER`/`RECOVERY_CENTER_HOSTED`) يُتجاهل العلم
+ *      كلياً حتى للعناوين المحلية، ويُطبع تحذير إقلاع واضح — والمسار الحسّاس يبقى 401.
  *  9) لا يُسرّب المفتاح ولا قيمته في أي استجابة.
  * 10) نسخة `lib` المتزامنة مطابقة لوحدة `tools/dr` (بلا انحراف).
  */
@@ -36,10 +38,13 @@ import {
   extractBearerToken,
   isProtectedRecoveryPath,
   recoveryOwnerAuthStatus,
+  recoveryAuthStartupWarning,
+  isHostedEnvironment,
   RECOVERY_CENTER_PROTECTED_PATHS,
   OWNER_TOKEN_ENV,
   OWNER_TOKEN_HASH_ENV,
   ALLOW_UNAUTHENTICATED_ENV,
+  HOSTED_ENV_VARS,
 } from '../../../tools/dr/recoveryAuth.mjs';
 
 let passed = 0;
@@ -116,10 +121,30 @@ async function main() {
     check('wrong token vs hash rejected', checkRecoveryOwnerAuth({ headers: { authorization: 'Bearer wrong' } }, hashCfg).allowed === false);
     check('short/invalid hash ignored', inspectRecoveryOwnerAuth({ [OWNER_TOKEN_HASH_ENV]: 'abc' }).configured === false);
 
-    // الوضع المحلي الصريح فقط.
+    // الوضع المحلي الصريح فقط — F-23: العلم يسمح للاتصال المحلي (loopback) فقط،
+    // وأي طلب من عنوان خارجي يبقى مقيّداً بـfail-closed حتى مع تفعيل العلم.
     const allowCfg = { [ALLOW_UNAUTHENTICATED_ENV]: 'true' };
-    check('allow-unauthenticated opt-in', checkRecoveryOwnerAuth({ headers: {} }, allowCfg).allowed === true && checkRecoveryOwnerAuth({ headers: {} }, allowCfg).reason === 'unauthenticated_allowed_by_owner');
+    const localReq = { headers: {}, socket: { remoteAddress: '127.0.0.1' } } as any;
+    const externalReq = { headers: {}, socket: { remoteAddress: '8.8.8.8' } } as any;
+    check('allow-unauthenticated opt-in (local)', checkRecoveryOwnerAuth(localReq, allowCfg).allowed === true && checkRecoveryOwnerAuth(localReq, allowCfg).reason === 'unauthenticated_allowed_by_owner');
+    check('allow-unauthenticated NOT applied to external (F-23)', checkRecoveryOwnerAuth(externalReq, allowCfg).allowed === false);
     check('status block no secret', !JSON.stringify(recoveryOwnerAuthStatus(withCfg)).includes(OWNER_TOKEN));
+
+    // ---------- F-23 (مراجعة): العلم مُتجاهَل كلياً في بيئة الاستضافة ----------
+    check('hosted env vars single source', JSON.stringify(HOSTED_ENV_VARS) === JSON.stringify(['RENDER', 'RECOVERY_CENTER_HOSTED']));
+    check('isHostedEnvironment false when unset', isHostedEnvironment({}) === false);
+    check('isHostedEnvironment true on RENDER', isHostedEnvironment({ RENDER: 'true' }) === true);
+    check('isHostedEnvironment true on RECOVERY_CENTER_HOSTED', isHostedEnvironment({ RECOVERY_CENTER_HOSTED: '1' }) === true);
+    check('isHostedEnvironment false on empty value', isHostedEnvironment({ RENDER: '' }) === false);
+    const hostedAllowCfg = { ...allowCfg, RENDER: 'true' };
+    check('hosted: allowUnauthenticated requested but disabled', inspectRecoveryOwnerAuth(hostedAllowCfg).allowUnauthenticated === false && inspectRecoveryOwnerAuth(hostedAllowCfg).allowUnauthenticatedRequested === true);
+    check('hosted: flag ignored even for loopback (F-23 review)', checkRecoveryOwnerAuth(localReq, hostedAllowCfg).allowed === false);
+    check('hosted: flag ignored for external too', checkRecoveryOwnerAuth(externalReq, hostedAllowCfg).allowed === false);
+    check('hosted: status.required stays true', recoveryOwnerAuthStatus(hostedAllowCfg).required === true && recoveryOwnerAuthStatus(hostedAllowCfg).hosted === true);
+    check('startup warning fires on hosted+flag', typeof recoveryAuthStartupWarning(hostedAllowCfg) === 'string' && (recoveryAuthStartupWarning(hostedAllowCfg) as string).includes('مُتجاهَل'));
+    check('startup warning fires on hosted without token', typeof recoveryAuthStartupWarning({ RENDER: 'true' }) === 'string');
+    check('no startup warning locally with token', recoveryAuthStartupWarning(withCfg) === null);
+    check('no startup warning locally without flag', recoveryAuthStartupWarning({}) === null);
   }
 
   // ---------- تهيئة: نسخة حقيقية في Drive وهمي ----------
@@ -232,6 +257,20 @@ async function main() {
       check('local opt-in allows anonymous', pts.status === 200 && (await pts.json()).ok === true);
       const health = await (await fetch(`${base}/api/health`)).json();
       check('local opt-in: health honest', health.ownerAuth.required === false && health.ownerAuth.configured === false);
+    } finally { await close(server); }
+  }
+
+  // ---------- E2) F-23 (مراجعة): بيئة استضافة تُتجاهل العلم كلياً ----------
+  {
+    const env: any = { ...baseEnv, [ALLOW_UNAUTHENTICATED_ENV]: 'true', RENDER: 'true' };
+    const { server, base } = await start(env);
+    try {
+      // العلم مفعّل + استضافة ⇒ المصادقة تبقى مطلوبة (fail-closed) حتى من loopback.
+      check('hosted + flag: /api/points still 401', (await fetch(`${base}/api/points`)).status === 401);
+      const body = await (await fetch(`${base}/api/points`)).json();
+      check('hosted + flag: reason owner_token_not_configured', body.reason === 'owner_token_not_configured');
+      const health = await (await fetch(`${base}/api/health`)).json();
+      check('hosted + flag: health.required true', health.ownerAuth.required === true);
     } finally { await close(server); }
   }
 

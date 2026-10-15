@@ -44,7 +44,7 @@ npm install
 npm run dev            # tsx server.ts
 npm run lint           # tsc --noEmit
 npm run build          # vite build + esbuild server.ts -> dist/server.cjs
-npm run final-audit    # node final-audit.mjs (1653 فحصاً)
+npm run final-audit    # node final-audit.mjs (1674 فحصاً)
 npm test               # storage + engine + auth + ... + db + runtime
 ```
 - التشغيل الإنتاجي: `PORT=4517 NODE_ENV=production APP_URL=http://localhost:4517 node dist/server.cjs`
@@ -6426,3 +6426,140 @@ working directory فقط (بلا commit/push). **المتبقي إجراء خا�
 TikTok for Developers:** (١) تفعيل نطاق `video.publish` في تطبيق الإنتاج، (٢) تقديم
 التطبيق لمراجعة **Content Posting API** والحصول على الاجتياز، ثم (٣) ضبط
 `TIKTOK_AUDIT_PASSED=true` في Render — بلا ذلك يبقى النشر العام محكوماً من TikTok نفسه.
+
+## تقوية أدوات الاستعادة (tools/dr) — F-20..F-23 (دفعة المرحلة 2)
+
+إغلاق أربع نتائج في طبقة أدوات DR/الاستعادة (لا تمس الإقلاع ولا /api/health):
+
+- **F-21 — حدّ فكّ ضغط صريح قابل للضبط (منع «قنبلة ضغط»):** `gunzipBounded(buffer, maxBytes)`
+  في `tools/dr/cloud-lib.mjs` يستخدم `zlib.gunzipSync(gz, { maxOutputLength })` ويميّز
+  `decompressed_too_large` (عبر `ERR_BUFFER_TOO_LARGE`) عن `invalid_gzip` — بلا استنزاف
+  ذاكرة وبلا رمي، ويعيد `limitBytes`/`inputBytes` عند التجاوز. الحدّ **قابل للضبط** عبر
+  `resolveMaxGunzipOutputBytes(env)` (`DR_MAX_DECOMPRESSED_BYTES`، مقصوص [1MiB..256MiB])،
+  والافتراضي **128MiB** مصمّم ليبقى آمناً داخل خطة Render المجانية (512MB RAM): أكبر حزمة
+  مصدر فعلية ≈ **10.3MiB** غير مضغوطة (≈3.3MiB مضغوطة، 480 ملفاً) — أي هامش >12×.
+  طُبّق في كل مواضع فكّ gzip: `cloud-lib`، `restore.mjs` (برسالة صريحة عند التجاوز)،
+  `source-bundle.mjs`.
+- **F-20 — الماسح الصارم يفحص ملفات الشيفرة + استثناء موثّق لكل سطر:** `scanForSecretsStrict`
+  كان يفحص الإسنادات العامة فقط في الملفات التي يوحي اسمها بسرّ. الآن يفحص **أي ملف
+  `.ts/.js/.mjs/.cjs/.tsx/.jsx`** بحثاً عن سرّ مُثبَّت بإسناد نصّي مُقتبَس بإنتروبيا عالية
+  (`looksLikeHardcodedCodeSecret`: إنتروبيا Shannon ≥ 4.3 + حروف وأرقام معاً + ليس نصاً
+  وصفياً بشرطات). القيم الوصفية في الاختبارات تُستبعد صراحةً، والشجرة المتتبَّعة الكاملة
+  (480 ملفاً) تمرّ بلا finding. **استثناء صريح موثّق** عبر `// secret-scan-allow: <سبب>`
+  (يلزم سبب غير فارغ) لكل سطر، فلا تُستبعد أسطر صامتة. ورسالة فشل البناء تذكر
+  `path:line [kind]` فقط — **بلا القيمة أبداً**.
+  **مراجعة (تقوية):** الاستثناء يُسكت **فحص الإنتروبيا وحده** (`hardcoded_code_secret`)،
+  ولا يُسكت الأنماط المعروفة عالية الثقة أبداً — أُضيف `github_token`
+  (`gh[pousr]_…`) و`db_credential_url` (`scheme://user:pass@host` بكلمة مرور ≥4 بلا
+  `$`/`{}` لتفادي قوالب `${password}`)، ويُستبعد من نمط رابط القاعدة بياناتُ اعتماد نائبة
+  معروفة (`user:pass`، `user:secret`، `postgres`… عبر `isPlaceholderDbCredentials`). فلا
+  يمكن تمرير مفتاح Google/OpenAI/GitHub/Resend أو رابط قاعدة مُعتمد بعلامة استثناء.
+- **F-22 — رفض قاعدة الإنتاج: تطبيع Neon `-pooler` + حالة الأحرف + fail-closed:**
+  `databaseTargetKey` يطبّع اسم الخادم (حالة أحرف صغيرة + **إزالة لاحقة `-pooler`** حتى
+  تُطابق القاعدة عبر المجمّع والمباشر) ويوحّد loopback (`localhost` ≡ `127.0.0.1` ≡ `::1`)،
+  ويقارن (host + port الافتراضي 5432 + اسم القاعدة) بغضّ النظر عن المستخدم/المعاملات.
+  و`refuseProductionDatabaseTarget(isolated, production)` قرار **fail-closed**: يُرفض إن
+  وُجد هدف وتعذّر إثبات أنه ليس الإنتاج (غياب رابط الإنتاج، أو تعذّر تحليل أيٍّ منهما، أو
+  التطابق الدلالي)؛ وغياب الهدف لا يُرفض (لا كتابة قاعدة). طُبّق في `standalone-recovery.mjs`،
+  `engine/dr/routes.ts` (مسارا drill و restore)، `recovery-center.mjs`، `recovery-console-ui.mjs`.
+- **F-23 — علم تعطيل المصادقة محلي فقط:** `isLocalAddress` في `tools/dr/recoveryAuth.mjs`
+  يقبل loopback (`127.0.0.0/8`، `::1`، `::ffff:127.x`)، و`checkRecoveryOwnerAuth` يُطبّق
+  `RECOVERY_CENTER_ALLOW_UNAUTHENTICATED` **فقط** على اتصال محلي؛ أي طلب خارجي يبقى
+  fail-closed حتى لو ضُبط العلم خطأً على خدمة مُستضافة (المركز المستضاف يربط على `0.0.0.0`).
+- **F-23 (تقوية مراجعة) — العلم مُتجاهَل كلياً في بيئة استضافة:** `isHostedEnvironment`
+  (من `RENDER` أو `RECOVERY_CENTER_HOSTED`، أسماء في `HOSTED_ENV_VARS`) يجعل
+  `checkRecoveryOwnerAuth` يرفض طلب التعطيل **حتى من loopback** إن كنا في بيئة استضافة،
+  و`inspectRecoveryOwnerAuth` يُظهر `allowUnauthenticatedRequested: true` مع
+  `allowUnauthenticated: false` (طلب مُعلَن لكنه غير مُنفَّذ)، و`recoveryAuthStartupWarning`
+  يطبع تحذير إقلاع واضح في السجل. فلا يمكن لعلم مُضلَّل على خدمة مُستضافة أن يُبطل المصادقة.
+
+**F-21 (قياس فعلي — لا تخمين):** الحزمة الحقيقية على HEAD = **3.31 MiB مضغوطة / 10.34 MiB
+غير مضغوطة (480 ملفاً) ⇒ هامش 12.4× تحت حدّ 128MiB**. ونسخة القاعدة (`dump()` منطقية JSON)
+تُشفَّر AES-256-GCM وتُخزَّن base64 **بلا gzip** (لا تمرّ بـ`gunzipBounded`)، وسقف نظري
+أسوأ حالة ~76 MiB JSON ⇒ ~101 MiB مشفّرة (تحت 128MiB بـ1.3×). لذلك الحدّ 128MiB آمن
+للاستخدام الفعلي وقابل للتجاوز بالبيئة عند الحاجة.
+
+اختبار الانحدار: `engine/tests/dr/dr.tools.hardening.test.ts` (`npm run test:dr-tools-hardening`،
+**51 فحصاً**) + تحديث `dr.recovery.center.auth.test.ts` (**82**) ليثبت أن العلم لا يسمح
+لعنوان خارجي **ولا في بيئة استضافة**، و`dr.source.bundle.test.ts` (**63**) يثبت هامش F-21
+الفعلي (≥5×). الاختبارات تفشل على الكود القديم وتنجح بعده. `sync-lib.mjs` يُبقي
+`dr-recovery-center/lib/` متزامناً (لا انحراف). `npm run lint` ✅ · `test:dr` ✅ · `final-audit` ✅ (1657).
+**لم يُمسّ** أي سرّ/مفتاح، ولا `public/*` ولا `index.html` ولا `/terms` ولا `/privacy` ولا
+Redirect URI الخاص بـTikTok. **لا push ولا merge ولا deploy** — بانتظار موافقة المالك.
+
+## PR-B — F-29: `persistCritical` كانت تُعلن نجاحاً كاذباً (2026-10-15)
+
+**العطل المُثبت (لا تخمين):** `persistCritical()` في `server.ts` كانت:
+```ts
+function persistCritical(): Promise<void> { persistState(); saveControlState(); return persistQueue; }
+```
+و`persistState()`/`saveControlState()` **تلتقطان الخطأ وتُكملان** (`catch` داخلي)، و`persistQueue`
+نفسه يحمل `.catch(...)` فلا يرفض **أبداً**. النتيجة: عند فشل الكتابة الفعلي (مخزن غير قابل
+للكتابة/انقطاع Neon)، كانت المسارات الحسّاسة — **استهلاك OTP، إنشاء جلسة، تسجيل الخروج
+(إبطال)، دخول المعاينة** — تُعيد **200 مع توكن صالح** رغم أن الحالة لم تُكتب. أي أن جلسة
+تُصدر بلا دوام (تُفقد بعد restart)، وإبطال خروج لا يُثبت (تعود الجلسة للحياة في عملية أخرى).
+
+**الإصلاح (الجذر، بنمط المشروع القائم):**
+- `persistCritical()` صارت `async` تكتب **صراحةً وترمي**: `await persistStateDurableOrThrow()`
+  (النمط الموجود فعلاً) + `saveControlStateStrict()` (جديدة، نفس النمط).
+- **نطاق الفشل القاتل (تدقيق المراجعة):** الفشل (503) يقع **فقط حين يكون الدوام مطلوباً
+  فعلاً** (`storageStatus().durable === true`: Postgres أو ملف على قرص دائم). على مضيف
+  عابر مُعلَن (Render Free/Netlify/Lambda بلا DATABASE_URL) فالتخزين عابر **بالتصميم**
+  والجلسات موقّعة بلا حالة تعمل بلا كتابة — سلوك موثّق ومُختبَر في `netlify.coldstart`،
+  فتبقى الكتابة best-effort هناك ولا نُسقط وضعاً مدعوماً رسمياً.
+- `persistCriticalOr503(res)` غلاف موحّد يرد **503** عند فشل التثبيت.
+- مسارات المصادقة (verify-challenge ×2، preview-login، logout) + بدء OAuth + callback OAuth
+  تستخدم الغلاف (fail-closed). **لا نجاح كاذب في أي مسار حسّاس على مخزن دائم.**
+
+**اختبار الانحدار:** `engine/tests/persist.critical.f29.test.ts` (`npm run test:persist-critical`،
+15 فحصاً، مُدرَج في `npm test`) يشغّل خادمًا حقيقيًا:
+- على مخزن **دائم** (ملف محلي، بلا علامة مضيف عابر) مع مجلد للقراءة فقط (chmod 555):
+  الخروج => **503**، الدخول => **503** بلا توكن، لا ملف حالة يُكتب، وبعد إصلاح الصلاحية
+  يعود للنجاح.
+- على **وضع عابر مُعلَن** (`RENDER=true`) مع مجلد للقراءة فقط: الدخول => **200** (سلوك
+  موثّق محفوظ، لا إسقاط لوضع مدعوم).
+
+**يفشل على الكود القديم** (كان يعيد 200 + توكن على المخزن الدائم) **وينجح بعده** — مُثبت.
+
+فحوص final-audit الجديدة: `persist-critical-throws-on-failure`, `persist-critical-no-false-success`,
+`persist-critical-guards-auth-routes`, `persist-critical-regression-test` (**1674 إجمالاً**).
+`npm run lint` ✅ · `npm run build` ✅ · `npm test` ✅ · `npm run final-audit` ✅.
+
+**لم يُمسّ:** أي سرّ/مفتاح، ولا `public/*` ولا `index.html` ولا `/terms` ولا `/privacy` ولا
+Redirect URI الخاص بـTikTok. **لا push ولا merge ولا deploy** — بانتظار موافقة المالك.
+
+## N1/N2 — سلامة العملية وإغلاق SIGTERM (تدقيق جنائي، 2026-10-15)
+
+فرع `fix/process-safety-n1n2` من `main`. إصلاحان يمسّان سلوك الإقلاع/الإغلاق فقط، بلا
+مساس بأي مسار عملي أو سرّ.
+
+### N1 — `uncaughtException` كان يُبتلع (استمرار بحالة غير معروفة)
+كان المعالج يُسجّل الاستثناء ثم **تستمر** العملية، فيبقى الخادم في حالة غير معروفة (أقفال
+معلّقة، كتابات نصف منجزة) **ويُخفي العطل عن Render** فلا يعيد التشغيل أبداً. الإصلاح
+(وحدة صافية `engine/runtime/processSafety.ts` + ربط في `server.ts`): عند
+`uncaughtException` يُسجَّل سطر مُنقّى، ثم يُفرَّغ طابور الكتابة بمهلة قصيرة (`UNCAUGHT_FLUSH_MS`
+= 3s)، ثم يُغلق المخزن، ثم `exit(1)` ليعيد Render تشغيل العملية نظيفة. `unhandledRejection`
+يبقى غير قاتل في الإنتاج (يُسجَّل ويُعدّ في `unhandledRejectionCount`، ويظهر في
+`/api/readiness.processHealth`)، ويُجعل قاتلاً **داخل الاختبارات فقط** (`GHARABI_TEST_MODE=true`)
+كي لا يُبتلع فشل غير متوقّع في CI. مبدأ: «غير قابل للانهيار» = يسقط بأمان ويعود تلقائياً،
+لا أن يستمر مكسوراً بصمت.
+
+### N2 — ترتيب إغلاق SIGTERM
+كان الإغلاق يوقف المؤقّتات ثم يُفرّغ الكتابات، لكن **الخادم يبقى يستقبل طلبات HTTP جديدة**
+حتى آخر لحظة، وأقفال الدوام (`durableLease`) لا تُحرَّر صراحةً. الترتيب الصحيح الآن:
+`httpServer.close()` (وقف الاستقبال) أولاً → إيقاف المؤقّتات → تحرير أقفال الدوام صراحةً
+(`releaseLease(watcherLease/metaPollingLease/telegramPollingLease/commercialLease)`) →
+تفريغ الطابور (≤ 10s) → إغلاق المخزن → خروج 0. تُغلق اتصالات keep-alive الخاملة
+(`closeIdleConnections`) فوراً مع شبكة أمان (3s) تُغلق المتبقية، و**شبكة أمان مطلقة** (10s)
+تُجبر الخروج حتى لا يُعلّق SIGTERM أبداً (وإلا قتلت Render العملية بـSIGKILL وضاعت الكتابات).
+
+اختبارات: `engine/tests/process.safety.test.ts` (`npm run test:process-safety`، 12 فحصاً،
+وحدة) و`engine/tests/process.shutdown.n2.test.ts` (`npm run test:process-shutdown`، 10 فحوص
+على خادم حقيقي + خادم اختبار: رفض الطلبات بعد SIGTERM، خروج 0 خلال ≤ 10s، وصول الكتابة
+المعلّقة للقرص، وترتيب المصدر). فحوص final-audit: `process-safety-module`،
+`uncaught-exception-exits`، `unhandled-rejection-counted`، `process-safety-tests`،
+`shutdown-stops-intake-first`، `shutdown-releases-leases`، `shutdown-hard-exit-watchdog`،
+`process-shutdown-tests` (إجمالاً **1674**).
+
+**لم يُمسّ:** `/api/health` (يبقى 503 عند فشل المخزن — F-03)، أي مسار عملي، أي سرّ،
+`public/*`، `index.html`، `/terms`، `/privacy`، أو Redirect URI الخاص بـTikTok.

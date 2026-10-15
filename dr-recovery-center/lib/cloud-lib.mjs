@@ -135,6 +135,108 @@ export function toBuffer(data) {
   return Buffer.from(String(data), 'utf8');
 }
 
+/**
+ * F-22: بصمة دلالية لعنوان قاعدة بيانات (host+port+database) بغضّ النظر عن
+ * المستخدم/كلمة المرور/المعاملات/الترميز/المضيف النسبي. تُستخدم لمنع الكتابة فوق
+ * قاعدة الإنتاج بمقارنة **دلالية** لا نصّية (نفس القاعدة بصيغتين مختلفتين).
+ * تعيد null إن تعذّر التحليل.
+ */
+export function databaseTargetKey(url) {
+  const raw = String(url ?? '').trim();
+  if (!raw) return null;
+  try {
+    const u = new URL(raw);
+    const dbName = decodeURIComponent((u.pathname || '').replace(/^\//, '')) || '';
+    if (!u.hostname && !dbName) return null;
+    // F-22: تطبيع اسم الخادم — حالة الأحرف + لاحقة Neon "-pooler" (نفس القاعدة عبر
+    // المجمّع والمباشر)، وتوحيد loopback (localhost ≡ 127.0.0.1 ≡ ::1).
+    let host = u.hostname.toLowerCase().replace(/^\[|\]$/g, '');
+    if (host === 'localhost' || host === '::1') host = '127.0.0.1';
+    host = host.replace(/-pooler(?=\.|$)/, '');
+    // المنفذ الغائب يُطابق منفذ Postgres الافتراضي، فلا تختلف بصمة نفس القاعدة.
+    const port = u.port || (/^postgres(ql)?:$/i.test(u.protocol) ? '5432' : '');
+    return `${host}:${port}/${dbName.toLowerCase()}`;
+  } catch {
+    return null;
+  }
+}
+
+/** F-22: هل العنوانان يشيران إلى القاعدة نفسها دلالياً؟ (تعذّر التحليل ⇒ ليس نفس القاعدة) */
+export function isSameDatabaseTarget(a, b) {
+  const ka = databaseTargetKey(a);
+  const kb = databaseTargetKey(b);
+  if (!ka || !kb) return false;
+  return ka === kb;
+}
+
+/**
+ * F-22: قرار **fail-closed** لحماية قاعدة الإنتاج من الكتابة فوقها. يعيد `{ refuse, reason }`.
+ *
+ * الحرس يخصّ **كتابة قاعدة** فقط: لا هدف ⇒ لا كتابة ⇒ لا خطر (استعادة مصدر فقط مسموحة).
+ * وعند وجود هدف نرفض إن تعذّر إثبات أنه ليس الإنتاج:
+ *  - غياب رابط الإنتاج ⇒ رفض (لا يمكن إثبات أن الهدف ليس الإنتاج).
+ *  - تعذّر تحليل رابط الإنتاج أو الهدف ⇒ رفض.
+ *  - الهدف والإنتاج نفس القاعدة دلالياً (بعد تطبيع "-pooler" وحالة الأحرف) ⇒ رفض.
+ */
+export function refuseProductionDatabaseTarget(isolatedUrl, productionUrl) {
+  const target = String(isolatedUrl ?? '').trim();
+  const prod = String(productionUrl ?? '').trim();
+  // لا هدف ⇒ لا كتابة قاعدة ⇒ لا حاجة لرابط الإنتاج.
+  if (!target) return { refuse: false, reason: 'no_target_no_write' };
+  if (!prod) return { refuse: true, reason: 'production_url_missing' };
+  if (!databaseTargetKey(prod)) return { refuse: true, reason: 'unparseable_production' };
+  if (!databaseTargetKey(target)) return { refuse: true, reason: 'unparseable_target' };
+  if (isSameDatabaseTarget(target, prod)) return { refuse: true, reason: 'same_database' };
+  return { refuse: false, reason: 'distinct_database' };
+}
+
+/**
+ * F-21: حدّ أقصى لحجم فكّ الضغط (منع «قنبلة ضغط»). نسخة احتياطية شرعية أصغر بكثير
+ * من هذا الحد؛ وأي تجاوز يُرفض صراحةً بلا استنزاف الذاكرة.
+ *
+ * القيمة الافتراضية 128MiB مصمّمة لتبقى آمنة داخل خطة Render المجانية (512MB RAM):
+ * أكبر حزمة مصدر فعلية ≈ 10.3MiB غير مضغوطة (≈3.3MiB مضغوطة) — أي هامش >12×.
+ * قابلة للضبط عبر `DR_MAX_DECOMPRESSED_BYTES` بحدود [1MiB .. 256MiB].
+ */
+export const MAX_GUNZIP_OUTPUT_BYTES = 128 * 1024 * 1024;
+export const MIN_GUNZIP_OUTPUT_BYTES = 1 * 1024 * 1024;
+export const HARD_GUNZIP_OUTPUT_CAP_BYTES = 256 * 1024 * 1024;
+export const MAX_GUNZIP_OUTPUT_ENV = 'DR_MAX_DECOMPRESSED_BYTES';
+
+/**
+ * F-21: يحسم حدّ فكّ الضغط من البيئة بحدود آمنة. قيمة غائبة/غير رقمية/خارج الحدود
+ * تُرفض صراحةً ويعود الحدّ الافتراضي (لا قيمة صفرية ولا غير محدودة).
+ */
+export function resolveMaxGunzipOutputBytes(env = process.env) {
+  const raw = Number.parseInt(String(env?.[MAX_GUNZIP_OUTPUT_ENV] ?? '').trim(), 10);
+  if (!Number.isFinite(raw) || raw <= 0) return MAX_GUNZIP_OUTPUT_BYTES;
+  return Math.min(HARD_GUNZIP_OUTPUT_CAP_BYTES, Math.max(MIN_GUNZIP_OUTPUT_BYTES, raw));
+}
+
+/**
+ * فكّ gzip بحدّ صريح لمخرَج الضغط. يعيد `{ok, data|code}`. عند تجاوز الحد أو فساد
+ * gzip لا يرمي — يُعيد كوداً صريحاً (مع الحد وحجم الإدخال عند التجاوز). المصدر الواحد
+ * لكل مسارات فكّ حزم DR.
+ */
+export function gunzipBounded(buffer, maxBytes = MAX_GUNZIP_OUTPUT_BYTES) {
+  const gz = toBuffer(buffer);
+  if (!gz.length) return { ok: false, code: 'empty_gzip' };
+  const limit = Number.isFinite(maxBytes) && maxBytes > 0 ? maxBytes : MAX_GUNZIP_OUTPUT_BYTES;
+  try {
+    const out = zlib.gunzipSync(gz, { maxOutputLength: limit });
+    return { ok: true, data: out };
+  } catch (e) {
+    // Node يرمي ERR_BUFFER_TOO_LARGE عند تجاوز maxOutputLength (يتضمّن النص 'maxOutputLength'
+    // أو 'output length'). نميّز الحالة صراحةً بدل الخلط مع فساد gzip.
+    const code = String(e?.code || '');
+    const msg = String(e?.message || '');
+    if (code === 'ERR_BUFFER_TOO_LARGE' || /maxOutputLength|output length|larger than|buffer too large/i.test(msg)) {
+      return { ok: false, code: 'decompressed_too_large', limitBytes: limit, inputBytes: gz.length };
+    }
+    return { ok: false, code: 'invalid_gzip' };
+  }
+}
+
 /** بصمة محتوى الملف (hex). */
 export function hashContent(content) {
   return sha256Hex(toBuffer(content));
@@ -252,6 +354,7 @@ export const SECRET_PATTERNS = [
   { kind: 'google_refresh_token', re: /1\/\/[A-Za-z0-9_\-]{30,}/g },
   { kind: 'resend_key', re: /re_[A-Za-z0-9]{20,}/g },
   { kind: 'openai_key', re: /sk-[A-Za-z0-9]{20,}/g },
+  { kind: 'github_token', re: /gh[pousr]_[A-Za-z0-9]{30,}/g },
   { kind: 'private_key_block', re: /-----BEGIN [A-Z ]*PRIVATE KEY-----/g },
   { kind: 'aws_access_key', re: /AKIA[0-9A-Z]{16}/g },
   { kind: 'slack_token', re: /xox[baprs]-[A-Za-z0-9-]{10,}/g },
@@ -283,6 +386,70 @@ export const FAKE_SECRET_MARKERS = /(fake|not[-_]?a[-_]?real|notreal|dummy|place
 /** هل السطر يحمل علامة صريحة على أنه بيانات وهمية؟ (السر الحقيقي لا يحملها) */
 export function looksLikeFakeSecret(text) {
   return FAKE_SECRET_MARKERS.test(String(text ?? ''));
+}
+
+/** إنتروبيا Shannon (بت/محرف) — تميّز السر العشوائي من الوصف النصّي. */
+export function shannonEntropyPerChar(value) {
+  const s = String(value ?? '');
+  if (!s.length) return 0;
+  const freq = new Map();
+  for (const ch of s) freq.set(ch, (freq.get(ch) || 0) + 1);
+  let h = 0;
+  for (const n of freq.values()) { const p = n / s.length; h -= p * Math.log2(p); }
+  return h;
+}
+
+/** امتدادات ملفات الشيفرة (F-20): يفحصها الماسح الصارم بإضافة إنتروبيا. */
+export const CODE_FILE_RE = /\.(ts|tsx|js|jsx|mjs|cjs)$/i;
+
+/**
+ * F-20: رابط قاعدة بيانات يحمل اعتماداً صريحاً (scheme://user:pass@host) — نمط
+ * عالي الثقة لا يتأثّر بعلامة `secret-scan-allow` (التي تُسكت الإنتروبيا فقط).
+ * يلزم جزء اعتماد فعلي قبل `@`: مستخدم غير فارغ + كلمة مرور بطول ≥4 **بلا** `$`/`{`/`}`
+ * (كي لا تُرصد عناوين مبنية بقوالب مثل `${password}`، وتبقى القيم الحرفية مرصودة).
+ * المجموعتان: 1 = scheme، 2 = user، 3 = password.
+ */
+export const DB_CREDENTIAL_URL_RE = /\b(postgres|postgresql|mysql|mongodb|redis|amqp|mssql)(?:\+[a-z0-9]+)?:\/\/([^\s:@/]+):([^\s:@/${}]{4,})@/i;
+
+/** بيانات اعتماد نائبة معروفة في التوثيق/الاختبارات (user:pass، user:secret…) — ليست سرّاً. */
+export function isPlaceholderDbCredentials(user, pass) {
+  const u = String(user ?? '').toLowerCase();
+  const p = String(pass ?? '').toLowerCase();
+  if (/^(user|username|myuser|dbuser|testuser)$/.test(u)) return true;
+  if (/^(pass|password|passwd|secret|changeme|mypassword|test|dummy|example|placeholder)$/.test(p)) return true;
+  return false;
+}
+
+/**
+ * F-20: علامة استثناء صريحة لكل سطر، بغرض **واحد محدّد**: إسكات فحص الإنتروبيا
+ * (`hardcoded_code_secret`) فقط. لا تُسكت الأنماط المعروفة عالية الثقة أبداً
+ * (مفاتيح Google/OpenAI/GitHub/Resend، كتل المفاتيح الخاصة، روابط القواعد المُعتمدة)
+ * — فلا يمكن تمرير سرّ حقيقي الشكل بعلامة استثناء. يلزم سبب غير فارغ، فلا تُستثنى
+ * أسطر صامتة. القيمة نفسها لا تُطبع أبداً.
+ */
+export const SECRET_SCAN_ALLOW_RE = /secret-scan-allow\s*:\s*\S/i;
+
+/** هل السطر يستثني نفسه من **فحص الإنتروبيا** (بسبب موثّق)؟ لا يُسكت الأنماط المعروفة. */
+export function isSecretScanAllowed(line) {
+  return SECRET_SCAN_ALLOW_RE.test(String(line ?? ''));
+}
+
+// إسناد نصّي مُقتبَس (value بين علامتي تنصيص). يُستخدم مع فحص الإنتروبيا لملفات
+// الشيفرة فقط — يمنع false positives من قيم وصفية (phase2-secret-local-only).
+const SECRET_ASSIGNMENT_STRING_RE =
+  /(password|passwd|secret|api[_-]?key|apikey|access[_-]?token|refresh[_-]?token|client[_-]?secret|private[_-]?key|session[_-]?secret|encryption[_-]?key)\s*[:=]\s*["']([^"']{12,})["']/gi;
+
+/**
+ * F-20: هل نصّ حرفي في ملف شيفرة يبدو **سرّاً حقيقياً مُثبَّتاً في الكود**؟
+ * يلزم: إنتروبيا عالية (≥4.3 بت/محرف) + حروف وأرقام معاً + ليس نصاً وصفياً بشرطات.
+ * القيم الوصفية في الاختبارات (مثل "phase2-batch-secret-local-only") تُرفض صراحةً.
+ */
+export function looksLikeHardcodedCodeSecret(value) {
+  const v = String(value ?? '');
+  if (shannonEntropyPerChar(v) < 4.3) return false;
+  if (!/[0-9]/.test(v) || !/[A-Za-z]/.test(v)) return false;
+  if (/^[a-z0-9]+(-[a-z0-9]+)+$/.test(v)) return false;
+  return true;
 }
 
 /** نوع محتوى الملف من امتداده (يُستخدم عند رفع المرآة الفردية). */
@@ -346,6 +513,10 @@ export function scanForSecretsStrict(files) {
     const lines = content.split(/\r?\n/);
     for (let i = 0; i < lines.length; i += 1) {
       const line = lines[i];
+      // F-20: الاستثناء (secret-scan-allow) يُسكت **فحص الإنتروبيا فقط**، لا الأنماط
+      // المعروفة عالية الثقة. فسطر يحمل مفتاح Google/OpenAI/GitHub/Resend أو كتلة
+      // مفتاح خاص يبقى مُرصوداً حتى مع علامة الاستثناء.
+      const allowEntropy = isSecretScanAllowed(line);
       // بيانات اختبار وهمية تحمل علامة صريحة (fake/not-real/dummy…) لا تُعدّ سراً:
       // لا سرّ حقيقي يحمل هذه الكلمة في نفس السطر.
       const fakeLine = looksLikeFakeSecret(line);
@@ -353,11 +524,35 @@ export function scanForSecretsStrict(files) {
         re.lastIndex = 0;
         if (re.test(line) && !fakeLine) findings.push({ path, line: i + 1, kind });
       }
-      if (!secretBearing || fakeLine) continue;
+      // سرّ داخل رابط قاعدة بيانات يحمل اعتماداً صريحاً (scheme://user:pass@host) —
+      // لا يتأثّر بالاستثناء (نمط معروف عالي الثقة). تُستبعد بيانات الاعتماد النائبة فقط.
+      DB_CREDENTIAL_URL_RE.lastIndex = 0;
+      const dbm = DB_CREDENTIAL_URL_RE.exec(line);
+      if (dbm && !fakeLine && !isPlaceholderDbCredentials(dbm[2], dbm[3])) findings.push({ path, line: i + 1, kind: 'db_credential_url' });
+      if (!secretBearing || fakeLine || allowEntropy) continue;
       SECRET_ASSIGNMENT_RE.lastIndex = 0;
       let m;
       while ((m = SECRET_ASSIGNMENT_RE.exec(line)) !== null) {
         if (!isPlaceholderValue(m[2])) findings.push({ path, line: i + 1, kind: 'secret_assignment' });
+      }
+    }
+    // F-20: فحص ملفات الشيفرة أيضاً (لا فقط الملفات التي يوحي اسمها بسرّ) بحثاً عن
+    // سرّ حقيقي **مُثبَّت** في الكود: إسناد نصّي مُقتبَس بإنتروبيا عالية. القيم
+    // الوصفية في الاختبارات تُستبعد بالإنتروبيا/الشرطات، فلا false positives.
+    // علامة الاستثناء تُسكت هذا الفحص وحده (hardcoded_code_secret).
+    if (CODE_FILE_RE.test(path)) {
+      for (let i = 0; i < lines.length; i += 1) {
+        const line = lines[i];
+        if (isSecretScanAllowed(line)) continue;
+        if (looksLikeFakeSecret(line)) continue;
+        SECRET_ASSIGNMENT_STRING_RE.lastIndex = 0;
+        let sm;
+        while ((sm = SECRET_ASSIGNMENT_STRING_RE.exec(line)) !== null) {
+          const val = sm[2];
+          if (!isPlaceholderValue(val) && looksLikeHardcodedCodeSecret(val)) {
+            findings.push({ path, line: i + 1, kind: 'hardcoded_code_secret' });
+          }
+        }
       }
     }
   }
@@ -435,8 +630,9 @@ export function buildSourceBundle(files) {
 export function verifySourceBundle(buffer, expected) {
   const gz = toBuffer(buffer);
   if (!gz.length) return { ok: false, code: 'empty_bundle' };
-  let tar;
-  try { tar = zlib.gunzipSync(gz); } catch { return { ok: false, code: 'invalid_gzip' }; }
+  const un = gunzipBounded(gz);
+  if (!un.ok) return { ok: false, code: un.code };
+  const tar = un.data;
   if (!tar.length || tar.length % 512 !== 0) return { ok: false, code: 'invalid_tar' };
   if (expected && Number.isFinite(expected.fileCount) && expected.fileCount > 0) {
     let count = 0;
@@ -457,8 +653,9 @@ export function verifySourceBundle(buffer, expected) {
 /** يستخرج أسماء الملفات من حزمة مصدر (gzip → tar) بلا فكّ المحتوى كاملاً. */
 export function listSourceBundleFiles(buffer) {
   const gz = toBuffer(buffer);
-  let tar;
-  try { tar = zlib.gunzipSync(gz); } catch { return { ok: false, code: 'invalid_gzip', files: [] }; }
+  const un = gunzipBounded(gz);
+  if (!un.ok) return { ok: false, code: un.code, files: [] };
+  const tar = un.data;
   const files = [];
   let offset = 0;
   while (offset + 512 <= tar.length) {

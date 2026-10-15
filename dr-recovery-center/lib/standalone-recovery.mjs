@@ -29,6 +29,7 @@ import { decryptKeyVault, inspectVaultKey } from './key-vault-crypto.mjs';
 import { inspectRefreshTokenSource, resolveRefreshTokenSource } from './token-source.mjs';
 import {
   hashContent,
+  refuseProductionDatabaseTarget,
   DRIVE_OAUTH_REFRESH_TOKEN_ENV,
 } from './cloud-lib.mjs';
 
@@ -155,11 +156,15 @@ export async function listRecoveryPoints(store) {
 export function inspectTargetEnvironment(env = process.env, options = {}) {
   const isolatedDatabaseUrl = options.isolatedDatabaseUrl ?? env.DR_RECOVERY_TEST_DATABASE_URL ?? null;
   const productionUrl = env.DATABASE_URL ?? null;
-  const sameAsProduction = Boolean(isolatedDatabaseUrl && productionUrl && isolatedDatabaseUrl === productionUrl);
+  // F-22: قرار **fail-closed** — يُرفض إن غاب رابط الإنتاج أو الهدف، أو تعذّر تحليل أيٍّ منهما،
+  // أو اتّحدا دلالياً (host+port+database بعد تطبيع "-pooler" وحالة الأحرف).
+  const decision = refuseProductionDatabaseTarget(isolatedDatabaseUrl, productionUrl);
+  const sameAsProduction = decision.refuse;
   const databaseReady = Boolean(isolatedDatabaseUrl) && !sameAsProduction;
   return {
     isolatedDatabaseUrlConfigured: Boolean(isolatedDatabaseUrl),
     sameAsProduction,
+    refuseReason: decision.reason,
     databaseReady,
     /** إعادة تشغيل الإنتاج الفعلية تبقى خطوة خارجية (Render + env vars). */
     productionRestart: 'external_required',
@@ -281,6 +286,7 @@ export async function runStandaloneRestore(options = {}) {
   report.externalRequirements = target.externalRequirements;
   if (target.sameAsProduction) {
     report.problems.push('REFUSED_PRODUCTION_DATABASE');
+    report.refuseReason = target.refuseReason || 'same_database';
     report.failureStage = 'restore_database';
     report.checks.databaseRestored = false;
     return report;

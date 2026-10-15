@@ -22,6 +22,7 @@ import {
   hourlySafetyCheck,
   summarizeBackupState,
   writeRecoveryDocs,
+  refuseProductionDatabaseTarget,
   RP_001_COMMIT,
 } from '../../tools/dr/cloud-lib.mjs';
 import { DriveStateStore } from '../../tools/dr/drive-auth-url.mjs';
@@ -1200,8 +1201,11 @@ export function registerDriveRoutes(app: express.Express, deps: DriveRoutesDeps)
       const isolatedUrl = deps.isolatedDatabaseUrl || env.DR_RECOVERY_TEST_DATABASE_URL || null;
       const productionUrl = env.DATABASE_URL || null;
       // حماية صريحة: لا نستخدم قاعدة الإنتاج في اختبار الاستعادة.
-      if (isolatedUrl && productionUrl && isolatedUrl === productionUrl) {
-        return res.status(409).json({ success: false, code: 'REFUSED_PRODUCTION_DATABASE', error: 'DR_RECOVERY_TEST_DATABASE_URL يطابق DATABASE_URL الإنتاجي: رُفض الاختبار.' });
+      // F-22: قرار fail-closed — يُرفض إن غاب رابط الإنتاج/الهدف، أو تعذّر تحليل أيٍّ منهما،
+      // أو اتّحدا دلالياً (host+port+database بعد تطبيع "-pooler" وحالة الأحرف).
+      const dbGuard = refuseProductionDatabaseTarget(isolatedUrl, productionUrl);
+      if (dbGuard.refuse) {
+        return res.status(409).json({ success: false, code: 'REFUSED_PRODUCTION_DATABASE', reason: dbGuard.reason, error: 'قاعدة الهدف غير آمنة لاختبار الاستعادة (غياب/تعذّر تحليل/مطابقة الإنتاج): رُفض الاختبار.' });
       }
 
       const fsMod = await import('node:fs');
@@ -1298,8 +1302,11 @@ export function registerDriveRoutes(app: express.Express, deps: DriveRoutesDeps)
       if (!point.ok || !point.data) return res.status(404).json({ success: false, code: 'RECOVERY_POINT_NOT_FOUND', error: point.message || 'نقطة الاستعادة غير موجودة.' });
       const isolatedUrl = targetDb || deps.isolatedDatabaseUrl || env.DR_RECOVERY_TEST_DATABASE_URL || null;
       const productionUrl = env.DATABASE_URL || null;
-      if (isolatedUrl && productionUrl && isolatedUrl === productionUrl) {
-        return res.status(409).json({ success: false, code: 'REFUSED_PRODUCTION_DATABASE', error: 'قاعدة الهدف تطابق DATABASE_URL الإنتاجي: رُفضت الاستعادة.' });
+      // F-22: قرار fail-closed — يُرفض إن غاب رابط الإنتاج/تعذّر تحليل أيٍّ منهما/طابق الإنتاج
+      // دلالياً (host+port+database بعد تطبيع "-pooler" وحالة الأحرف).
+      const dbGuard = refuseProductionDatabaseTarget(isolatedUrl, productionUrl);
+      if (dbGuard.refuse) {
+        return res.status(409).json({ success: false, code: 'REFUSED_PRODUCTION_DATABASE', reason: dbGuard.reason, error: 'قاعدة الهدف غير آمنة للاستعادة (غياب/تعذّر تحليل/مطابقة الإنتاج): رُفضت الاستعادة.' });
       }
       const fsMod = await import('node:fs');
       const osMod = await import('node:os');

@@ -18,6 +18,9 @@ const GHARABI_PREVIEW_TOKEN = crypto.randomBytes(32).toString('hex');
 // مفتاح خزنة الطوارئ: مستقل عن كل المفاتيح أعلاه. احفظ نسخة منه خارج الخادم.
 const DR_RECOVERY_VAULT_KEY = crypto.randomBytes(32).toString('base64');
 const DR_RECOVERY_MASTER_KEY = crypto.randomBytes(32).toString('base64');
+// F-05: مفتاح مالك مركز الاستعادة المستقل (خدمة gharabi-recovery-center). 32 بايت
+// عشوائي عشري — نفس طول وعشوائية بقية المفاتيح، ولا علاقة له بأي مفتاح آخر.
+const RECOVERY_CENTER_OWNER_TOKEN = crypto.randomBytes(32).toString('hex');
 
 const line = '─'.repeat(64);
 process.stdout.write(
@@ -31,12 +34,15 @@ process.stdout.write(
     `GHARABI_PREVIEW_TOKEN=${GHARABI_PREVIEW_TOKEN}`,
     `DR_RECOVERY_MASTER_KEY=${DR_RECOVERY_MASTER_KEY}`,
     `DR_RECOVERY_VAULT_KEY=${DR_RECOVERY_VAULT_KEY}`,
+    `RECOVERY_CENTER_OWNER_TOKEN=${RECOVERY_CENTER_OWNER_TOKEN}`,
     line,
     'ملاحظة: تغيير SESSION_SECRET يُبطل كل الجلسات الحالية.',
     'ملاحظة: تغيير GHARABI_PREVIEW_TOKEN يُبطل جلسات المعاينة الصادرة قبله.',
     'ملاحظة: تغيير PLATFORM_TOKEN_ENCRYPTION_KEY يجعل توكنات المنصات المشفّرة غير قابلة للفك.',
     'ملاحظة: DR_RECOVERY_MASTER_KEY وDR_RECOVERY_VAULT_KEY مفتاحان مستقلان؛ احفظ نسخة من',
     'كل منهما في مكان آمن خارج الخادم — لا يوجد أي منهما داخل نسخ Google Drive.',
+    'ملاحظة: RECOVERY_CENTER_OWNER_TOKEN مفتاح خدمة مركز الاستعادة المستقل — ضعه في',
+    'Environment الخاص بـgharabi-recovery-center فقط (لا في تطبيق الغرابي).',
     line,
   ].join('\n') + '\n',
 );
