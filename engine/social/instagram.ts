@@ -27,6 +27,7 @@
 // نفس تطبيق Meta وgraph.facebook.com، فمستخرج خطأ Graph مُعاد استخدامه لتسجيل
 // الرمز/الرقم/النص الكامل غير المقطوع + fbtrace_id (بلا سرّ) — لا ازدواج منطق.
 import { extractFacebookGraphError, formatFacebookGraphError } from './facebook';
+import { createRetryingProviderFetch, providerRetryConfig } from './providerRetry';
 
 export const INSTAGRAM_GRAPH_BASE = 'https://graph.facebook.com';
 export const INSTAGRAM_GRAPH_VERSION = 'v21.0';
@@ -380,6 +381,18 @@ export type InstagramFetch = (
   init: { method: string; headers?: Record<string, string>; body?: string },
 ) => Promise<{ ok: boolean; status: number; json: () => Promise<any> }>;
 
+/**
+ * F-14: غلاف fetch بإعادة محاولة آمنة لموصل Instagram — القراءة (GET) وحدها
+ * تُعاد عند فشل عابر (5xx/429/انقطاع) مع احترام Retry-After؛ والكتابة (POST)
+ * لا تُعاد أبداً. يُحقن `sleep` في الاختبار فلا ساعة حقيقية.
+ */
+export function createInstagramFetch(
+  baseFetch: (url: string, init: any) => Promise<any>,
+  overrides: Parameters<typeof providerRetryConfig>[1] = {},
+): InstagramFetch {
+  return createRetryingProviderFetch(baseFetch, { config: providerRetryConfig(process.env, overrides) }) as InstagramFetch;
+}
+
 export interface InstagramLinkedPage {
   pageId: string;
   pageName: string | null;
@@ -480,7 +493,7 @@ export class InstagramClient {
         }));
       return { ok: true, data: pages };
     } catch (e: any) {
-      return { ok: false, data: null, error: String(e?.message || 'فشل الاتصال بـInstagram.') };
+      return { ok: false, data: null, error: String(e?.message || 'فشل الاتصال بـInstagram.'), code: 'NETWORK_ERROR' };
     }
   }
 
@@ -507,7 +520,7 @@ export class InstagramClient {
         },
       };
     } catch (e: any) {
-      return { ok: false, data: null, error: String(e?.message || 'فشل الاتصال بـInstagram.') };
+      return { ok: false, data: null, error: String(e?.message || 'فشل الاتصال بـInstagram.'), code: 'NETWORK_ERROR' };
     }
   }
 
@@ -520,10 +533,15 @@ export class InstagramClient {
       u.searchParams.set('access_token', pageAccessToken);
       const res = await this.fetchImpl(u.toString(), { method: 'GET' });
       const data = await res.json().catch(() => null);
-      if (!res.ok || data?.error || !data?.id) return { ok: false, data: null, error: errorMessage(data, 'تعذّر إثبات هوية حساب Instagram.') };
+      if (!res.ok || data?.error || !data?.id) {
+        const msg = errorMessage(data, 'تعذّر إثبات هوية حساب Instagram.');
+        const ex = logAndExtractInstagramError(data, `GET /${igAccountId}`, res.status);
+        const pCode = ex.providerCode ?? providerErrorCode(data);
+        return { ok: false, data: null, error: msg, providerCode: pCode, providerSubcode: ex.providerSubcode, providerTraceId: ex.providerTraceId, code: classifyInstagramProviderError(msg, pCode) };
+      }
       return { ok: true, data: { igAccountId: String(data.id), igUsername: data.username ? String(data.username) : null, pageId: null } };
     } catch (e: any) {
-      return { ok: false, data: null, error: String(e?.message || 'فشل الاتصال بـInstagram.') };
+      return { ok: false, data: null, error: String(e?.message || 'فشل الاتصال بـInstagram.'), code: 'NETWORK_ERROR' };
     }
   }
 
@@ -539,7 +557,7 @@ export class InstagramClient {
       if (!res.ok || data?.error || data?.success !== true) return { ok: false, data: null, error: errorMessage(data, 'تعذّر اشتراك الصفحة في webhook.') };
       return { ok: true, data: true };
     } catch (e: any) {
-      return { ok: false, data: null, error: String(e?.message || 'فشل الاتصال بـInstagram.') };
+      return { ok: false, data: null, error: String(e?.message || 'فشل الاتصال بـInstagram.'), code: 'NETWORK_ERROR' };
     }
   }
 
@@ -555,7 +573,7 @@ export class InstagramClient {
       const fields = (Array.isArray(data?.data) ? data.data : []).flatMap((a: any) => Array.isArray(a?.subscribed_fields) ? a.subscribed_fields.map((f: any) => String(f)) : []);
       return { ok: true, data: fields };
     } catch (e: any) {
-      return { ok: false, data: null, error: String(e?.message || 'فشل الاتصال بـInstagram.') };
+      return { ok: false, data: null, error: String(e?.message || 'فشل الاتصال بـInstagram.'), code: 'NETWORK_ERROR' };
     }
   }
 
@@ -576,7 +594,7 @@ export class InstagramClient {
       const rows = Array.isArray(data?.data) ? data.data : [];
       return { ok: true, data: rows.map((m: any) => ({ mediaId: String(m?.id || ''), caption: typeof m?.caption === 'string' ? m.caption : null, createdAt: m?.timestamp ? String(m.timestamp) : null })).filter((m: any) => m.mediaId) };
     } catch (e: any) {
-      return { ok: false, data: null, error: String(e?.message || 'فشل الاتصال بـInstagram.') };
+      return { ok: false, data: null, error: String(e?.message || 'فشل الاتصال بـInstagram.'), code: 'NETWORK_ERROR' };
     }
   }
 
@@ -593,7 +611,14 @@ export class InstagramClient {
       u.searchParams.set('access_token', pageAccessToken);
       const res = await this.fetchImpl(u.toString(), { method: 'GET' });
       const data = await res.json().catch(() => null);
-      if (!res.ok || data?.error) return { ok: false, data: null, error: errorMessage(data, 'فشل قراءة تعليقات Instagram.') };
+      if (!res.ok || data?.error) {
+        // F-02: نُعلن كود Meta الحقيقي (190 = OAuthException) ليُقلب الاتصال إلى
+        // reauth_needed من مسار polling بلا تخمين من نص الرسالة.
+        const msg = errorMessage(data, 'فشل قراءة تعليقات Instagram.');
+        const ex = logAndExtractInstagramError(data, `GET /${igAccountId}/media`, res.status);
+        const pCode = ex.providerCode ?? providerErrorCode(data);
+        return { ok: false, data: null, error: msg, providerCode: pCode, providerSubcode: ex.providerSubcode, providerTraceId: ex.providerTraceId, code: classifyInstagramProviderError(msg, pCode) };
+      }
       const out: Array<{ commentId: string; mediaId: string | null; text: string; username: string | null; authorId: string | null; createdAt: string | null }> = [];
       for (const media of Array.isArray(data?.data) ? data.data : []) {
         const mediaId = media?.id ? String(media.id) : null;
@@ -606,7 +631,7 @@ export class InstagramClient {
       }
       return { ok: true, data: out };
     } catch (e: any) {
-      return { ok: false, data: null, error: String(e?.message || 'فشل الاتصال بـInstagram.') };
+      return { ok: false, data: null, error: String(e?.message || 'فشل الاتصال بـInstagram.'), code: 'NETWORK_ERROR' };
     }
   }
 
@@ -621,7 +646,12 @@ export class InstagramClient {
         body: buildInstagramReplyBody(message).toString(),
       });
       const data = await res.json().catch(() => null);
-      if (!res.ok || data?.error || !data?.id) return { ok: false, data: null, error: errorMessage(data, 'فشل الرد على التعليق عبر Instagram.') };
+      if (!res.ok || data?.error || !data?.id) {
+        const msg = errorMessage(data, 'فشل الرد على التعليق عبر Instagram.');
+        const ex = logAndExtractInstagramError(data, `POST /${commentId}/replies`, res.status);
+        const pCode = ex.providerCode ?? providerErrorCode(data);
+        return { ok: false, data: null, error: msg, providerCode: pCode, providerSubcode: ex.providerSubcode, providerTraceId: ex.providerTraceId, code: classifyInstagramProviderError(msg, pCode) };
+      }
       return { ok: true, data: { providerCommentId: String(data.id) } };
     } catch (e: any) {
       // F-07: انقطاع بعد الإرسال بلا رد مزود — لا يُصنَّف فشلاً مؤكداً.
@@ -641,7 +671,12 @@ export class InstagramClient {
         body: buildInstagramMessagePayload(igsid, text),
       });
       const data = await res.json().catch(() => null);
-      if (!res.ok || data?.error || !data?.message_id) return { ok: false, data: null, error: errorMessage(data, 'فشل إرسال الرسالة عبر Instagram.') };
+      if (!res.ok || data?.error || !data?.message_id) {
+        const msg = errorMessage(data, 'فشل إرسال الرسالة عبر Instagram.');
+        const ex = logAndExtractInstagramError(data, `POST /${pageId}/messages`, res.status);
+        const pCode = ex.providerCode ?? providerErrorCode(data);
+        return { ok: false, data: null, error: msg, providerCode: pCode, providerSubcode: ex.providerSubcode, providerTraceId: ex.providerTraceId, code: classifyInstagramProviderError(msg, pCode) };
+      }
       return { ok: true, data: { providerMessageId: String(data.message_id), recipientId: data.recipient_id ? String(data.recipient_id) : null } };
     } catch (e: any) {
       // F-07: انقطاع بعد الإرسال بلا رد مزود — لا يُصنَّف فشلاً مؤكداً.
@@ -695,7 +730,7 @@ export class InstagramClient {
       }
       return { ok: true, data: { providerPostId: String(data.id) } };
     } catch (e: any) {
-      return { ok: false, data: null, error: String(e?.message || 'فشل الاتصال بـInstagram.') };
+      return { ok: false, data: null, error: String(e?.message || 'فشل الاتصال بـInstagram.'), code: 'NETWORK_ERROR' };
     }
   }
 
@@ -711,7 +746,7 @@ export class InstagramClient {
       if (!res.ok || data?.error) return { ok: false, data: null, error: errorMessage(data, 'تعذّر قراءة حالة الحاوية.') };
       return { ok: true, data: { statusCode: data.status_code ? String(data.status_code) : null } };
     } catch (e: any) {
-      return { ok: false, data: null, error: String(e?.message || 'فشل الاتصال بـInstagram.') };
+      return { ok: false, data: null, error: String(e?.message || 'فشل الاتصال بـInstagram.'), code: 'NETWORK_ERROR' };
     }
   }
 }

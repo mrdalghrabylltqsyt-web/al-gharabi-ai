@@ -87,6 +87,17 @@ async function run() {
   const ridem = rp.idempotency || {};
   check('★ /api/readiness يعلن جدول منع التكرار gharabi_idempotency', ridem.table === 'gharabi_idempotency', `table=${ridem.table}`);
 
+  // F-02: كتلة حالة الاتصال التشغيلية العامة (بلا بيانات عميل) — تُعلن reauth_needed
+  // صراحةً بدل بقاء الاتصال «متحققاً» إلى الأبد بعد سحب التفويض/انتهاء الرمز.
+  const conns = Array.isArray(readiness.body?.platformConnections) ? readiness.body.platformConnections : [];
+  const allowedStatuses = new Set(['connected', 'reauth_needed', 'disconnected']);
+  check('★ /api/readiness يعلن platformConnections لكل منصة',
+    conns.length > 0 && conns.every((r) => typeof r?.platform === 'string' && allowedStatuses.has(r?.status)),
+    JSON.stringify(conns).slice(0, 200));
+  check('★ platformConnections بلا أي بيانات عميل (اسم/معرّف حساب)',
+    conns.every((r) => !('accountName' in r) && !('accountId' in r)),
+    JSON.stringify(conns[0] ?? {}).slice(0, 160));
+
   // 2) preview-login: يرفض الخطأ بغير 404، أي أن المسار مُفعَّل فعلاً.
   let wrong;
   try {
@@ -114,6 +125,16 @@ async function run() {
       const me = await fetch(`${BASE}/api/auth/me`, { headers: { Authorization: `Bearer ${ok.body.token}` } });
       check('الجلسة الممنوحة تعمل على مسار محمي', me.status === 200, `status=${me.status}`);
       check('الدور هو المالك', ok.body?.user?.role === 'owner', `role=${ok.body?.user?.role}`);
+
+      // F-02: فحص health لفيسبوك وإنستغرام يرد بحالة حقيقية من المزود (200/409/502)
+      // لا 501 «لا يوجد فحص مزود إنتاجي» — فلا يبقى الاتصال «متحققاً» إلى الأبد.
+      const auth = { Authorization: `Bearer ${ok.body.token}` };
+      for (const platform of ['facebook', 'instagram']) {
+        const h = await json(`/api/platforms/${platform}/health`, { headers: auth });
+        check(`★ health ${platform} يرد حالة حقيقية لا 501`, h.status !== 501, `status=${h.status}`);
+        check(`health ${platform} يُعلن نوع المزود أو الحالة`, typeof h.body?.provider === 'string' || typeof h.body?.status === 'string', JSON.stringify(h.body).slice(0, 160));
+        check(`health ${platform} لا يكشف أي رمز`, !/(access_token|PAGE_TOKEN|IG_USER_TOKEN|EAA[A-Za-z0-9]{6,})/.test(h.raw));
+      }
     }
   } else {
     console.log('تنبيه: GHARABI_PREVIEW_TOKEN غير مضبوط في الطرفية، فتُخطَّى فحوص الدخول الصحيح.');

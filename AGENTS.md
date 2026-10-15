@@ -44,7 +44,7 @@ npm install
 npm run dev            # tsx server.ts
 npm run lint           # tsc --noEmit
 npm run build          # vite build + esbuild server.ts -> dist/server.cjs
-npm run final-audit    # node final-audit.mjs (1698 فحصاً)
+npm run final-audit    # node final-audit.mjs (1713 فحصاً)
 npm test               # storage + engine + auth + ... + db + runtime
 ```
 - التشغيل الإنتاجي: `PORT=4517 NODE_ENV=production APP_URL=http://localhost:4517 node dist/server.cjs`
@@ -6612,3 +6612,51 @@ deploy) — فالسباق «تحقق من عدم التكرار ← انتظا�
 
 **لم يُمسّ:** TikTok (public/favicon*/index.html/tiktok*.txt//terms//privacy/OAuth
 callback)، رمز حالة `/api/health`، نطاق ERP، أي سرّ أو إعداد Render.
+
+## F-02 + F-14 — صحة حقيقية لفيسبوك/إنستغرام + إعادة محاولة آمنة (PR-E، 2026-10-15)
+
+**الفجوتان المُثبتتان:**
+- **F-02:** `GET /api/platforms/:platform/health` كان يرد **501** لفيسبوك وإنستغرام (لا فحص
+  مزود إنتاجي)، فبقي الاتصال «متحققاً» (`providerVerified: true`) إلى الأبد حتى لو سُحب
+  التفويض أو انتهى الرمز — فلا المالك يرى العطل ولا النظام يوقف المحاولات.
+- **F-14:** لم يكن هناك أي retry على نداءات `facebook.ts`/`instagram.ts`/`tiktok.ts`،
+  فانقطاع عابر (503/مهلة) كان يعني فشلاً نهائياً بلا محاولة ثانية.
+
+**الإصلاح — F-02 (مصدر واحد `markProviderReauthNeeded`/`reauthOnOAuthException` في server.ts):**
+- فرعا `facebook` و`instagram` في `/api/platforms/:platform/health` يناديان Graph فعلاً:
+  `GET /{page-id}?fields=id` (`FacebookClient.getPageHealth`) و`GET /{ig-user-id}?fields=id`
+  (`InstagramClient.getInstagramProfile`). لا 501 بعد الآن، ولا يُعاد أي رمز في الاستجابة.
+- أي **OAuthException (رمز Meta 190)** — أو كود الموصل المصنَّف `TOKEN_EXPIRED` منه — من
+  **أي نداء فعلي** (رد تعليق، رد رسالة، نشر، إنشاء حاوية Instagram، health، polling) يقلب
+  حالة الاتصال إلى `reauth_needed` فوراً، بنفس نمط YouTube/TikTok/Threads. أخطاء أخرى
+  (100 صلاحية، 9007 وسائط، انقطاع شبكة) **لا** تقلبها — لا إعلان reauth كاذب.
+- `reauth_needed` يظهر علناً في `/api/readiness` (`platformConnections[].status` +
+  `reauthRequired`) بلا بيانات عميل، وفي لوحة التحكم (`/api/platforms/control-plane` ⇒
+  `state: FAILED` + إجراء إعادة الربط)، ويوقف الرد والنشر على تلك المنصة (409) حتى إعادة
+  الربط (البوابة القائمة `conn.status !== "connected"`).
+- الموصلات تُعلن كود Meta الحقيقي (`providerCode`) من مسارات الرد/القراءة/النشر ليمكن
+  التصنيف بلا تخمين من نص الرسالة.
+
+**الإصلاح — F-14 (مصدر واحد `engine/social/providerRetry.ts`):**
+- `createRetryingProviderFetch` يغلّف fetch الخام؛ مثبّت على Facebook/Instagram/TikTok
+  عبر `createFacebookFetch`/`createInstagramFetch`/`createTikTokFetch`.
+- **الشروط الحصرية:** إعادة تلقائية على **القراءة (GET/HEAD/OPTIONS) فقط** عند 5xx/429/408
+  أو فشل الاتصال قبل أي استجابة؛ **الكتابة (POST نشر/رد) لا تُعاد أبداً** — سجل idempotency
+  من PR-D1 (`classifyExternalOperationOutcome`) يبقى السلطة: انقطاع بعد الإرسال يبقى
+  `reserved` (يُرمى الخطأ كما هو ⇒ `NETWORK_ERROR`)، ورفض صريح يصبح `failed`.
+- **3 محاولات كحد أقصى** (قابل للضبط بحدود آمنة)، تأخير تصاعدي `base * 2^(n-1)` بسقف،
+  و**احترام `Retry-After` عند 429** (ثوانٍ أو تاريخ HTTP) بسقف يمنع تعليق الطلب.
+- **لا إعادة على الأخطاء الدائمة:** 400/401/403 (وكل 4xx عدا 408/429) وكود Meta 190.
+
+**البيئة:** `PROVIDER_RETRY_MAX_ATTEMPTS`/`PROVIDER_RETRY_BASE_MS`/`PROVIDER_RETRY_MAX_MS`/
+`PROVIDER_RETRY_MAX_RETRY_AFTER_MS` — موثّقة في `.env.example` بقيم افتراضية آمنة (3/300/5000/60000).
+
+**اختبارات (تفشل على الكود القديم):** `provider.retry.test.ts` (وحدة، 30 فحصاً، بلا شبكة ولا
+ساعة حقيقية)، و`provider.retry.integration.test.ts` (تكامل بخادم حقيقي + خادمَي Graph وهميين،
+**42 فحصاً**: health 200 لا 501، 503 على GET ⇒ إعادة ثم نجاح، 429 + Retry-After ⇒ احترام المدة،
+كود 190 من رد/health ⇒ reauth_needed بلا محاولات لاحقة، وانقطاع POST نشر ⇒ لا إعادة والحجز
+`reserved`). فحصا على الكود القديم: **33/42 فشلاً** (health=501، والرد ينجح وهمياً، والحجز `done`).
+فحوص final-audit: `f14-*` و`f02-*` (13 فحصاً، الإجمالي **1713**).
+
+**لم يُمسّ:** TikTok (public/favicon*/index.html/tiktok*.txt//terms//privacy/OAuth callback)،
+رمز حالة `/api/health`، نطاق ERP، أي سرّ أو إعداد Render/Meta. لا تغيير لمخطط قاعدة البيانات.

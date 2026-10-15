@@ -35,6 +35,28 @@ export interface FacebookMockState {
   /** يفشل الرد على تعليق عند true. */
   failCommentReply: boolean;
   /**
+   * F-02: خطأ مخصّص للرد على التعليق (مثلاً `{ message: 'Session has expired', code: 190 }`)
+   * لمحاكاة OAuthException حقيقي من Meta يُقلب الاتصال إلى reauth_needed.
+   */
+  replyError?: { message: string; code: number } | null;
+  /**
+   * F-14: عدد المرات التي يرد فيها `GET /{page-id}` بخطأ عابر (503) قبل النجاح —
+   * لإثبات أن إعادة المحاولة على القراءة تعمل ثم تنجح فعلاً.
+   */
+  pageNodeTransientFailures: number;
+  /** F-14: إذا حُدِّد، أول `GET /{page-id}` يرد 429 مع Retry-After ثم يُصفَّر. */
+  pageNodeRetryAfterOnce: string | null;
+  /**
+   * F-02: إذا true، يرد `GET /{page-id}` بـOAuthException (كود 190) — يُثبت أن
+   * فحص health الحقيقي يقلب الاتصال إلى reauth_needed بدل ادعاء الصحة.
+   */
+  pageNodeOAuthError: boolean;
+  /**
+   * F-14: محاكاة «انقطاع بعد الإرسال» في **النشر** (POST /{page-id}/feed): يُسجَّل
+   * المنشور فعلياً ثم يُقطع الاتصال — لإثبات عدم وجود إعادة تلقائية للكتابة.
+   */
+  hangPublish: boolean;
+  /**
    * F-07: محاكاة «انقطاع بعد الإرسال» — يُسجَّل الرد فعلياً (كأن المزود نفّذه)
    * ثم لا يُرسل أي استجابة فينقطع الاتصال. يُثبت أن الانقطاع لا يُصنَّف فشلاً مؤكداً.
    */
@@ -53,6 +75,8 @@ export interface FacebookMockState {
   pageProfileCalls: number;
   /** الردود على التعليقات المُرسلة. */
   commentReplies: { commentId: string; message: string; token: string; id: string }[];
+  /** F-02/F-14: عدد محاولات الرد على التعليق فعلياً (يُثبت عدم الإعادة على الكتابة). */
+  commentReplyAttempts: number;
   /** الرسائل المُرسلة. */
   sentMessages: { pageId: string; recipientId: string; text: string; messageId: string }[];
   /** منشورات الصفحة. */
@@ -116,6 +140,11 @@ export function createFacebookMock(state: Partial<FacebookMockState> = {}): Face
     failPageProfile: false,
     failSubscribe: false,
     failCommentReply: false,
+    replyError: state.replyError ?? null,
+    pageNodeTransientFailures: state.pageNodeTransientFailures ?? 0,
+    pageNodeRetryAfterOnce: state.pageNodeRetryAfterOnce ?? null,
+    pageNodeOAuthError: false,
+    hangPublish: false,
     hangCommentReply: false,
     failSend: false,
     failPublish: false,
@@ -124,6 +153,7 @@ export function createFacebookMock(state: Partial<FacebookMockState> = {}): Face
     lastPageProfileFields: null,
     pageProfileCalls: 0,
     commentReplies: [],
+    commentReplyAttempts: 0,
     sentMessages: [],
     posts: [],
     videos: [],
@@ -340,7 +370,21 @@ export async function startFacebookMockServer(
     }
     state.calls += 1;
     state.pageProfileCalls += 1;
+    // F-14: خطأ عابر (503) على قراءة عقدة الصفحة — يُثبت أن إعادة المحاولة تعمل.
+    if (state.pageNodeTransientFailures > 0) {
+      state.pageNodeTransientFailures -= 1;
+      return res.status(503).json({ error: { message: 'Service temporarily unavailable', code: 2 } });
+    }
+    // F-14: 429 مع Retry-After مرة واحدة — يُثبت احترام المدة المطلوبة.
+    if (state.pageNodeRetryAfterOnce) {
+      const ra = state.pageNodeRetryAfterOnce;
+      state.pageNodeRetryAfterOnce = null;
+      res.setHeader('Retry-After', ra);
+      return res.status(429).json({ error: { message: 'Rate limited', code: 4 } });
+    }
     if (state.failPageProfile) return res.status(400).json({ error: { message: 'Unsupported get request', code: 100 } });
+    // F-02: OAuthException حقيقي (190) على قراءة عقدة الصفحة — يقلب الاتصال.
+    if (state.pageNodeOAuthError) return res.status(400).json({ error: { message: 'Error validating access token: Session has expired', type: 'OAuthException', code: 190, error_subcode: 463 } });
     const page = state.pages.find((p) => p.id === pageId);
     if (!page) return res.status(400).json({ error: { message: 'Unknown page', code: 803 } });
     state.lastPageProfileFields = fields;
@@ -370,6 +414,8 @@ export async function startFacebookMockServer(
   app.post('/:version/:commentId/comments', (req, res) => {
     const { commentId } = req.params;
     state.calls += 1;
+    state.commentReplyAttempts += 1;
+    if (state.replyError) return res.status(400).json({ error: state.replyError });
     if (state.failCommentReply) return res.status(400).json({ error: { message: 'Cannot reply', code: 200 } });
     const message = String(req.body?.message || '');
     const id = `REPLY_${commentId}_${state.commentReplies.length + 1}`;
@@ -409,6 +455,8 @@ export async function startFacebookMockServer(
     const message = String(req.body?.message || '');
     const postId = `${pageId}_${2000 + state.posts.length}`;
     state.posts.push({ pageId, message, postId });
+    // F-14: انقطاع بعد الإرسال — المنشور نُفِّذ فعلاً ثم يُقطع الاتصال، فلا إعادة تلقائية.
+    if (state.hangPublish) { try { res.socket?.destroy(); } catch { /* تجاهل */ } return; }
     return res.json({ id: postId });
   });
 
