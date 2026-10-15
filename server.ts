@@ -699,6 +699,9 @@ app.use((_req, res, next) => {
   res.setHeader("X-Frame-Options", "DENY");
   res.setHeader("Referrer-Policy", "no-referrer");
   res.setHeader("Permissions-Policy", "camera=(), microphone=(), geolocation=()");
+  // F-24: HSTS في الإنتاج فقط (على HTTPS). max-age سنة مع includeSubDomains؛ بلا
+  // preload لتفادي قفل نطاق فرعي لا يدعم HTTPS. لا يُرسَل في التطوير (http).
+  if (process.env.NODE_ENV === "production") res.setHeader("Strict-Transport-Security", "max-age=31536000; includeSubDomains");
   if (process.env.NODE_ENV === "production") res.setHeader("Content-Security-Policy", CONTENT_SECURITY_POLICY);
   next();
 });
@@ -807,6 +810,18 @@ export interface ActiveSession {
 
 // Configurable Owner Email (Single source of truth on the server)
 const OWNER_EMAIL = (process.env.OWNER_EMAIL || "").toLowerCase().trim();
+
+/**
+ * F-26: بصمة بريد مجزّأة للسجلات. البريد نص صريح بيانات شخصية لا يجوز أن يظهر في
+ * سجل Render؛ نُسجّل بصمة قصيرة ثابتة تكفي للتتبّع دون كشف البريد.
+ * تُستخدم HMAC بمفتاح الجلسة (SESSION_SECRET) لا SHA-256 مجرّداً: بلا مفتاح كان
+ * أي من يعرف قائمة بريد الموظفين يخمّن البصمة بالمقارنة. المفتاح يجعلها غير قابلة
+ * للتخمين دون سرّ الجلسة.
+ */
+function logSafeEmailId(email: string): string {
+  const normalized = String(email || "").toLowerCase().trim();
+  return "u-" + crypto.createHmac("sha256", SESSION_SECRET).update(`log:${normalized}`).digest("hex").slice(0, 12);
+}
 const GOOGLE_CLIENT_ID = (process.env.GOOGLE_CLIENT_ID || "").trim();
 
 // مُتحقّق Google محلي (مصدر واحد): يتحقق من ID token عبر JWKS بلا استدعاء
@@ -1385,7 +1400,7 @@ app.post("/api/auth/google", async (req, res) => {
     }
 
     const session = createSessionForUser(user);
-    console.log(`[Auth] User authenticated: ${user.email} (${user.role})`);
+    console.log(`[Auth] User authenticated: ${logSafeEmailId(user.email)} (${user.role})`);
 
     return res.json({
       success: true,
@@ -1586,13 +1601,17 @@ app.post("/api/auth/logout", async (req, res) => {
 // -------------------------------------------------------------
 
 // List users (Any authenticated user can view the team directory)
-app.get("/api/users", authenticateToken, (_req, res) => {
+app.get("/api/users", authenticateToken, (req, res) => {
+  // F-25: بريد الموظفين بيانات شخصية — لا يُعاد إلا للمالك/المدير (من يحتاج إدارتهم).
+  // بقية الأدوار ترى المعرّف والاسم والدور فقط (least privilege).
+  const viewer = (req as any).user as ServerUser;
+  const canSeeEmails = viewer.role === "owner" || viewer.role === "manager";
   res.json({
     success: true,
     users: serverUsers.map((u) => ({
       id: u.id,
       name: u.name,
-      email: u.email,
+      email: canSeeEmails ? u.email : undefined,
       role: u.role,
       roleTitleArabic: u.roleTitleArabic,
       avatar: u.avatar,
@@ -1637,7 +1656,7 @@ app.post("/api/users", requireOwner, (req, res) => {
 
     serverUsers.push(newUser);
     persistState();
-    console.log(`[RBAC] Owner added new user: ${newUser.email} (${newUser.role})`);
+    console.log(`[RBAC] Owner added new user: ${logSafeEmailId(newUser.email)} (${newUser.role})`);
 
     return res.json({
       success: true,
@@ -1687,7 +1706,7 @@ app.put("/api/users/:id/role", requireOwner, (req, res) => {
     revokeUserSessions(id);
     persistState();
 
-    console.log(`[RBAC] Owner updated role for user ${user.email} to ${role}`);
+    console.log(`[RBAC] Owner updated role for user ${logSafeEmailId(user.email)} to ${role}`);
     return res.json({ success: true, user });
   } catch (err: any) {
     return res.status(500).json({ success: false, error: err.message || "حدث خطأ أثناء تعديل الدور." });
@@ -1717,7 +1736,7 @@ app.put("/api/users/:id/status", requireOwner, (req, res) => {
     if (!user.active) revokeUserSessions(id);
     persistState();
 
-    console.log(`[RBAC] Owner changed user ${user.email} status to active=${user.active}`);
+    console.log(`[RBAC] Owner changed user ${logSafeEmailId(user.email)} status to active=${user.active}`);
     return res.json({ success: true, user });
   } catch (err: any) {
     return res.status(500).json({ success: false, error: err.message || "حدث خطأ أثناء تعديل الحالة." });
@@ -12156,7 +12175,9 @@ function sanitizeLead(body: any, existing: any = {}) {
   const source = cleanText(b.source ?? existing.source, 80) || "direct";
   return {
     ...existing,
-    id: cleanText(b.id, 100) || existing.id || workspaceId("lead"),
+    // F-28: لا يجوز تغيير معرّف سجل قائم عبر PATCH — نُبقي existing.id دائماً عند
+    // التحديث (وإن غاب فهو إنشاء جديد فيُقبل المعرّف المرسَل أو يُولَّد).
+    id: existing.id || cleanText(b.id, 100) || workspaceId("lead"),
     customerName: cleanText(b.customerName ?? existing.customerName, 120) || "عميل",
     phone: cleanText(b.phone ?? existing.phone, 60),
     channel: SUPPORTED_PLATFORMS.some((p:any)=>p.id===b.channel) ? b.channel : (existing.channel || "direct"),
@@ -14605,6 +14626,40 @@ function persistStateNow(): Promise<void> {
     });
 }
 
+/**
+ * F-29: كتابة **تُنتظر وترمي** عند فشلها — عكس `persistStateDurable` التي لا ترفض
+ * أبداً (`persistStateNow` تلتقط الخطأ وتُكمل). تُستخدم في المسارات التي يجب أن
+ * تفشل صراحةً إن لم تصل الحالة للمخزن الدائم (مثل منع تكرار webhook)، فلا يُعلن
+ * نجاح قبل ضمان الدوام.
+ *
+ * تُبقي طابور الكتابة سليماً (لا تسمّمه برفض) مع تسجيل الخطأ في `lastPersistError`.
+ */
+function persistStateNowStrict(): Promise<void> {
+  const snapshot = buildPersistedState();
+  return persistQueue.then(() => storageAdapter.write(STORAGE_KEY_STATE, snapshot));
+}
+
+async function persistStateDurableOrThrow(): Promise<void> {
+  if (!storageReady) {
+    lastPersistError = storageInitError || "storage_not_ready";
+    throw new Error(lastPersistError);
+  }
+  const strict = persistStateNowStrict();
+  // لا نسمّم الطابور المشترك: نُثبّت نتيجة الكتابة (نجاحاً/فشلاً) ونُسجّل الخطأ.
+  persistQueue = strict.then(
+    () => { lastPersistError = null; },
+    (error: any) => {
+      lastPersistError = String(error?.code || error?.name || "persist_failed").slice(0, 60);
+      console.warn("Could not persist server state:", lastPersistError);
+    },
+  );
+  return strict.catch((error: any) => {
+    const code = String(error?.code || error?.name || "persist_failed").slice(0, 60);
+    lastPersistError = code;
+    throw new Error(code);
+  });
+}
+
 function audit(userId: string, action: string, detail?: string) {
   auditLog.unshift({ id: crypto.randomUUID(), at: new Date().toISOString(), userId, action, detail });
   if (auditLog.length > 100) auditLog.pop();
@@ -15449,7 +15504,7 @@ app.get("/api/audit/query", requireOwner, (req,res)=>{
   res.json({success:true,entries:rows.slice(0,limit),count:rows.length});
 });
 app.get("/api/providers/capabilities", authenticateToken, (_req,res)=>{ res.json({success:true,contractVersion:"2.0",mode:"real-provider-required",providers:SUPPORTED_PLATFORMS.map((p:any)=>({platform:p.id,name:p.name,...providerStatus(p.id),capabilities:{oauth:Boolean(OAUTH_CONFIG[p.id]),webhook:true,publish:p.capabilities.includes("publish"),analytics:p.capabilities.includes("analytics"),messaging:p.capabilities.includes("messages")},execution:p.id==="telegram"?"production-text-publish":"adapter-ready-credentials-required"}))}); });
-app.post("/api/webhooks/:platform", (req,res)=>{
+app.post("/api/webhooks/:platform", async (req,res)=>{
   const platform=String(req.params.platform); if(!SUPPORTED_PLATFORMS.some((p:any)=>p.id===platform)) return res.status(404).json({success:false,error:"المنصة غير مدعومة."});
   if(!WEBHOOK_SECRET) return res.status(503).json({success:false,error:"WEBHOOK_SECRET غير مضبوط؛ تم تعطيل استقبال Webhook لحماية النظام."});
   // SEC-02: التحقق على الجسم الخام الحقيقي (req.rawBody) لا على إعادة تسلسل JSON.
@@ -15463,7 +15518,18 @@ app.post("/api/webhooks/:platform", (req,res)=>{
   if(!verification.ok) return res.status(401).json({success:false,error:"توقيع Webhook غير صالح."});
   const eventId=cleanText(req.headers["x-event-id"],160)||workspaceId("event"); if((workspace as any).webhookEvents.some((x:any)=>x.id===eventId)) return res.json({success:true,duplicate:true});
   const event={id:eventId,platform,type:cleanText(req.body?.type,100)||"unknown",payload:req.body?.data||req.body,receivedAt:new Date().toISOString()};
-  (workspace as any).webhookEvents.unshift(event); (workspace as any).webhookEvents=(workspace as any).webhookEvents.slice(0,WORKSPACE_MAX_WEBHOOK_EVENTS); (workspace as any).providerEvents.unshift({id:workspaceId("pevent"),platform,eventId,type:event.type,receivedAt:event.receivedAt}); (workspace as any).providerEvents=(workspace as any).providerEvents.slice(0,WORKSPACE_MAX_PROVIDER_EVENTS); persistState();
+  (workspace as any).webhookEvents.unshift(event); (workspace as any).webhookEvents=(workspace as any).webhookEvents.slice(0,WORKSPACE_MAX_WEBHOOK_EVENTS); (workspace as any).providerEvents.unshift({id:workspaceId("pevent"),platform,eventId,type:event.type,receivedAt:event.receivedAt}); (workspace as any).providerEvents=(workspace as any).providerEvents.slice(0,WORKSPACE_MAX_PROVIDER_EVENTS);
+  // F-18/F-29: الكتابة الدائمة **قبل** الإقرار، مع **رفض صريح** عند فشلها. إضافة الحدث
+  // إلى قائمة منع التكرار قبل الحفظ تعني أن ردّ 202 بلا كتابة فعلية يجعل المزود يُعاد
+  // إرساله فيُرفض كمكرر ⇒ يضيع الحدث. لذلك نستخدم الكتابة الصارمة، وإن فشلت نتراجع عن
+  // إدخال الحدث (نُزيله من قائمتي webhookEvents/providerEvents) ونرد 503 ليعيد المزود.
+  try {
+    await persistStateDurableOrThrow();
+  } catch (persistErr) {
+    (workspace as any).webhookEvents = ((workspace as any).webhookEvents || []).filter((x:any)=>x.id!==eventId);
+    (workspace as any).providerEvents = ((workspace as any).providerEvents || []).filter((x:any)=>!(x.platform===platform && x.eventId===eventId));
+    return res.status(503).json({success:false,retryable:true,error:"تعذّر تثبيت الحدث في المخزن الدائم؛ أعد الإرسال.",reason:String((persistErr as any)?.message||"persist_failed").slice(0,60)});
+  }
   res.status(202).json({success:true,accepted:true,eventId});
 });
 app.get("/api/webhooks/events", requireOwner, (req,res)=>{ const platform=cleanText(req.query.platform,60); let rows=(workspace as any).webhookEvents.slice(); if(platform) rows=rows.filter((x:any)=>x.platform===platform); res.json({success:true,events:rows.slice(0,500)}); });
@@ -15753,7 +15819,8 @@ app.get("/api/health", (_req, res) => {
         mode: durable ? "durable" : "ephemeral",
         healthy: status.healthy,
         stateWritable: status.writable,
-        stateDir: status.stateDir,
+        // F-27: لا نكشف مسار المجلد الداخلي في النقطة العامة (يُسرّب بنية الخادم).
+        // مالك النظام يقرأه من سجلات الخادم عند الحاجة للتشخيص.
         lastPersistError,
         warning: durable
           ? null
