@@ -411,14 +411,24 @@ async function main(): Promise<void> {
   const dueItem = (wState?.contentQueue || []).find((i: any) => i.state === 'SCHEDULED');
   check('عنصر مجدول موجود في الحالة المحفوظة', Boolean(dueItem));
   if (dueItem) {
-    dueItem.publishAt = formatWallClock(epochToZonedWallClock(Date.now() - 60_000));
+    // N2: الإغلاق النظيف يكتب حالة المراقب من الذاكرة **عند** SIGTERM، فتحرير
+    // الملف قبل الإشارة كان يُطمس. الصحيح: نُغلق الخادم أولاً (فيُفرَّغ ويكتب)،
+    // ثم نُحرّر الملف على نسخة ثابتة، ثم نُقلع من جديد.
+    proc?.kill('SIGTERM');
+    // ننتظر خروج العملية فعلاً (لا مهلة ثابتة) فلا نُحرّر الملف قبل أن يُفرّغ.
+    for (let i = 0; i < 40 && proc && proc.exitCode === null && proc.signalCode === null; i++) {
+      await new Promise((r) => setTimeout(r, 250));
+    }
+    const wStateAfter = JSON.parse(readFileSync(watcherPath, 'utf8'));
+    const dueItem2 = (wStateAfter?.contentQueue || []).find((i: any) => i.state === 'SCHEDULED');
+    check('عنصر مجدول موجود بعد الإغلاق النظيف', Boolean(dueItem2));
+    if (!dueItem2) return;
+    dueItem2.publishAt = formatWallClock(epochToZonedWallClock(Date.now() - 60_000));
     // الحالة الفعلية لدى المزود: الفيديو المجدول نفسه صار public فعلاً.
-    mockState.uploadedVideoId = String(dueItem.externalVideoId);
+    mockState.uploadedVideoId = String(dueItem2.externalVideoId);
     mockState.verifyPrivacyOverride = 'public';
     mockState.uploadedPrivacyStatus = 'public';
-    writeFileSync(watcherPath, JSON.stringify(wState, null, 2));
-    proc?.kill('SIGTERM');
-    await new Promise((r) => setTimeout(r, 1500));
+    writeFileSync(watcherPath, JSON.stringify(wStateAfter, null, 2));
     startApp(yt.base);
     if (!(await waitForHealth())) throw new Error('الخادم لم يعد يقلع');
     const auth3 = await login();
@@ -427,9 +437,9 @@ async function main(): Promise<void> {
     check('الفحص قرأ العنصر المستحق', poll3?.result?.scheduledCheck?.checked === 1, JSON.stringify(poll3?.result?.scheduledCheck));
     check('public فعلي => تحقق واحد', poll3?.result?.scheduledCheck?.verified === 1, JSON.stringify(poll3?.result?.scheduledCheck));
     const verifiedQueue = await (await fetch(`${BASE}/api/platforms/youtube/content/queue`, { headers: auth3 })).json();
-    const verifiedItem = (verifiedQueue.items || []).find((i: any) => i.id === dueItem.id);
+    const verifiedItem = (verifiedQueue.items || []).find((i: any) => i.id === dueItem2.id);
     check('العنصر صار VERIFIED', verifiedItem?.state === 'VERIFIED', JSON.stringify(verifiedItem?.state));
-    check('التحقق يحمل معرّف الفيديو الحقيقي', verifiedItem?.verifiedVideoId === dueItem.externalVideoId, JSON.stringify(verifiedItem?.verifiedVideoId));
+    check('التحقق يحمل معرّف الفيديو الحقيقي', verifiedItem?.verifiedVideoId === dueItem2.externalVideoId, JSON.stringify(verifiedItem?.verifiedVideoId));
     check('حالة الخصوصية المؤكدة public', verifiedItem?.verifiedPrivacyStatus === 'public', JSON.stringify(verifiedItem?.verifiedPrivacyStatus));
     check('الملخص يعدّه متحققاً بدليل', (verifiedQueue.summary?.verified ?? 0) >= 1, JSON.stringify(verifiedQueue.summary));
   }
