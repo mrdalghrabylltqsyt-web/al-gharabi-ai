@@ -245,6 +245,16 @@ add('persist-critical-durability-scoped', /const durabilityExpected = storageSta
 add('persist-critical-no-false-success', !/function persistCritical\(\): Promise<void> \{\s*persistState\(\);\s*saveControlState\(\);\s*return persistQueue;\s*\}/.test(server), 'F-29: لم تعد persistCritical تُعيد persistQueue الذي لا يرفض أبداً (نجاح كاذب)');
 add('persist-critical-guards-auth-routes', (() => { const need = ['verify-challenge', 'preview-login', 'auth/logout']; return server.includes('persistCriticalOr503') && /if \(!\(await persistCriticalOr503\(res\)\)\) return;/.test(server) && server.includes('saveControlStateStrict'); })(), 'F-29: مسارات الجلسة/الخروج تفشل بـ503 قبل إعلان النجاح عند تعذّر التثبيت');
 add('persist-critical-regression-test', fs.existsSync(path.join(root, 'engine/tests/persist.critical.f29.test.ts')) && read('package.json').includes('test:persist-critical'), 'اختبار انحدار F-29 مُسجّل ويُشغَّل (يفشل على الكود القديم)');
+// N1 — سلامة العملية: uncaughtException يجب أن يُسقط العملية (لا استمرار بحالة غير معروفة).
+add('process-safety-module', fs.existsSync(path.join(root, 'engine/runtime/processSafety.ts')), 'وحدة سلامة العملية موجودة (منطق صافٍ قابل للاختبار)');
+add('uncaught-exception-exits', /createProcessSafety\(/.test(server) && server.includes('processSafety.handleUncaughtException') && read('engine/runtime/processSafety.ts').includes('deps.exit(1)'), 'uncaughtException يُفرّغ ثم يُغلق ثم يخرج 1 (لا استمرار صامت)');
+add('unhandled-rejection-counted', server.includes('unhandledRejectionCount') && server.includes('processHealth: { unhandledRejectionCount'), 'unhandledRejection يُعدّ ويظهر في /api/readiness');
+add('process-safety-tests', fs.existsSync(path.join(root, 'engine/tests/process.safety.test.ts')) && read('package.json').includes('test:process-safety'), 'اختبار انحدار N1 مُسجّل');
+// N2 — إغلاق نظيف: server.close أولاً ثم تحرير الأقفال ثم التفريغ.
+add('shutdown-stops-intake-first', (() => { const s = server.indexOf('const shutdown = (signal: string)'); const e = server.indexOf('process.once("SIGTERM"', s); const b = s >= 0 && e > s ? server.slice(s, e) : ''; return b.includes('httpServer.close(') && b.indexOf('httpServer.close(') < b.indexOf('drainQueue()'); })(), 'الإغلاق يوقف الاستقبال (server.close) قبل تفريغ الكتابات');
+add('shutdown-releases-leases', (() => { const s = server.indexOf('const shutdown = (signal: string)'); const e = server.indexOf('process.once("SIGTERM"', s); const b = s >= 0 && e > s ? server.slice(s, e) : ''; return b.includes('releaseLease(watcherLease') && b.includes('releaseLease(commercialLease'); })(), 'الإغلاق يُحرّر أقفال الدوام صراحةً');
+add('shutdown-hard-exit-watchdog', /shutdown deadline — forcing exit/.test(server), 'شبكة أمان: SIGTERM لا يُعلّق العملية أبداً');
+add('process-shutdown-tests', fs.existsSync(path.join(root, 'engine/tests/process.shutdown.n2.test.ts')) && read('package.json').includes('test:process-shutdown'), 'اختبار انحدار N2 مُسجّل');
 add('platform-webhook-foundation', fs.existsSync(path.join(root, 'engine/social/webhook.ts')) && server.includes('hmacSignatureVerifier') && server.includes('secretHeaderVerifier'), 'أساس webhook موحّد (ترويسة سرّية + HMAC)');
 add('webhook-hmac-raw-body', server.includes('req.rawBody = buf') && server.includes('x-hub-signature-256'), 'توقيع webhook يُحسب على الجسم الخام (لا إعادة تسلسل)');
 add('webhook-replay-guard', server.includes('isReplayOrDuplicate') && fs.existsSync(path.join(root, 'engine/social/webhook.ts')), 'حماية replay/idempotency للأحداث الواردة');
@@ -2927,8 +2937,9 @@ add('cognition-learning-sample-observation-test',
   'اختبار تكاملي يثبت أن العيّنة الحقيقية تتحكم بالترقية (1/2 لا، 3 نعم)');
 add('process-error-safety-handlers',
   server.includes('process.on("uncaughtException"') && server.includes('process.on("unhandledRejection"') &&
-  server.includes('redactSecretsFromText(String((err as Error)?.message || err))'),
-  'معالجات uncaughtException/unhandledRejection لا تُسقط الخادم وتُسجّل رسالة مُنقّاة بلا سرّ');
+  server.includes('redactSecretsFromText') && server.includes('processSafety.handleUncaughtException') &&
+  server.includes('processSafety.handleUnhandledRejection'),
+  'معالجات uncaughtException/unhandledRejection تُسجّل رسالة مُنقّاة بلا سرّ؛ uncaughtException يخرج 1 (N1) وunhandledRejection يُعدّ');
 add('express-global-error-middleware',
   server.includes('classifyHttpError(err)') && server.includes('res.status(info.status).json({') &&
   server.includes('safeErrorMessage(err, shouldExposeErrorMessage(process.env))') &&

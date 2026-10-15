@@ -82,6 +82,7 @@ import { settleWithTimeout, envTimeoutMs, DRIVE_PUBLIC_HOST_TIMEOUT_MS } from ".
 import { publishVideoPublicly } from "./engine/social/videoPublicHosting";
 import { classifyHttpError, shouldExposeErrorMessage, safeErrorMessage, redactSecretsFromText } from "./engine/runtime/errorSafety";
 import { enforceRateWindowCap, RATE_WINDOW_TTL_MS } from "./engine/runtime/rateWindow";
+import { createProcessSafety } from "./engine/runtime/processSafety";
 import { computeLiveDatabaseFingerprint } from "./engine/dr/dbBalance";
 import { buildSecretsBundle } from "./tools/dr/secret-crypto.mjs";
 import { buildRecoveryInformation, buildRecoveryInstructions } from "./tools/dr/cloud-lib.mjs";
@@ -591,14 +592,34 @@ dotenv.config();
 
 const app = express();
 
-// سلامة العملية: أي استثناء/وعد مرفوض غير مُلتقَط يُسجَّل برسالة مُنقّاة (بلا سرّ
-// ولا مكدّس يُعاد)، ولا يُسقط الخادم — يبقى يعمل بينما تُعزل العملية الجارية من
-// المسار الذي فشل. لا نُغيّر سلوك الإغلاق عند SIGTERM/SIGINT.
-process.on("uncaughtException", (err) => {
-  console.error("[الغرابي AI] uncaughtException:", redactSecretsFromText(String((err as Error)?.message || err)).slice(0, 300));
+// N1 — سلامة العملية (تدقيق جنائي): `uncaughtException` يعني أن العملية في حالة
+// **غير معروفة** (أقفال معلّقة، كتابات نصف منجزة). الاستمرار بصمت يُخفي العطل عن
+// Render فلا يعيد التشغيل أبداً. السلوك الصحيح: تسجيل مُنقّى، تفريغ الكتابات بمهلة
+// قصيرة، ثم exit(1). المنطق في `engine/runtime/processSafety.ts` (صافٍ ومُختبَر).
+let unhandledRejectionCount = 0;
+const isFatalRejectionTestMode = process.env.GHARABI_TEST_MODE === "true";
+async function flushPendingWritesBounded(ms = 3000): Promise<void> {
+  try {
+    const deadline = Date.now() + ms;
+    let pending = persistQueue;
+    while (Date.now() < deadline) {
+      await pending.catch(() => { /* نُكمل حتى لو فشلت كتابة */ });
+      if (pending === persistQueue) break;
+      pending = persistQueue;
+    }
+  } catch { /* تجاهل */ }
+}
+const processSafety = createProcessSafety({
+  log: (line) => console.error(redactSecretsFromText(line).slice(0, 300)),
+  flush: (ms) => flushPendingWritesBounded(ms),
+  close: () => storageAdapter.close(),
+  exit: (code) => process.exit(code),
+  testMode: isFatalRejectionTestMode,
 });
+process.on("uncaughtException", (err) => processSafety.handleUncaughtException(err));
 process.on("unhandledRejection", (reason) => {
-  console.error("[الغرابي AI] unhandledRejection:", redactSecretsFromText(String((reason as any)?.message || reason)).slice(0, 300));
+  processSafety.handleUnhandledRejection(reason);
+  unhandledRejectionCount = processSafety.unhandledRejectionCount;
 });
 // PORT is configurable so the app can run behind any host that injects its own
 // port (containers/PaaS). Values outside the valid TCP range fall back to 3000.
@@ -14999,6 +15020,7 @@ app.get("/api/readiness", (_req, res) => {
     version: PROJECT_VERSION,
     statePersistence: appReady,
     applicationReady: appReady,
+    processHealth: { unhandledRejectionCount, fatalRejectionInTests: isFatalRejectionTestMode },
     persistence: (() => { const s = storageStatus(); const pooled = isPooledPostgresEndpoint(String((storageAdapter as any).connectionString || process.env.DATABASE_URL || "")); return { backend: s.backend, durable: s.durable, mode: s.durable ? "durable" : "ephemeral", healthy: s.healthy, pooledEndpoint: s.backend === "postgres" ? pooled : null, ...(s.backend === "postgres" && !pooled ? { recommendation: "استخدم نقطة اتصال Neon المجمّعة (pooled) لتقليل ضغط الاتصالات أثناء النشر (rolling deploy)." } : {}) }; })(),
     auth: {
       ownerEmailConfigured: Boolean(OWNER_EMAIL),
@@ -18173,22 +18195,52 @@ async function startServer() {
   const shutdown = (signal: string) => {
     if (shuttingDown) return;
     shuttingDown = true;
-    console.log(`[الغرابي AI] received ${signal}, flushing pending writes...`);
-    // Phase 6: نوقف المؤقّتات الداخلية أولاً فلا تُضاف كتابات جديدة أثناء الإغلاق.
-    try { watcherScheduler?.stop(); } catch { /* تجاهل */ }
-    try { metaPollingScheduler?.stop(); } catch { /* تجاهل */ }
-    try { telegramPollingScheduler?.stop(); } catch { /* تجاهل */ }
-    try { stopBrainRuntime(); } catch { /* تجاهل */ }
-    try { (app as any).drReconciliation?.stop?.(); } catch { /* تجاهل */ }
-    try { (app as any).drAutoBackup?.stop?.(); } catch { /* تجاهل */ }
-    try { clearInterval(runtimeCleanupTimer); } catch { /* تجاهل */ }
-    try { clearInterval(safeJobWorkerTimer); } catch { /* تجاهل */ }
-    try { clearInterval(tiktokReconcileTimer); } catch { /* تجاهل */ }
-    try { stopYouTubeQuotaRetryTimer(); } catch { /* تجاهل */ }
-    const deadline = new Promise<void>((resolve) => setTimeout(resolve, 10_000));
-    Promise.race([drainQueue(), deadline])
-      .then(() => storageAdapter.close().catch(() => { /* تجاهل */ }))
-      .finally(() => process.exit(0));
+    console.log(`[الغرابي AI] received ${signal}, stopping intake then flushing pending writes...`);
+    // N2 (تدقيق جنائي): الترتيب الصحيح للإغلاق النظيف —
+    // (1) نوقف استقبال طلبات HTTP جديدة أولاً (`server.close`) فلا تدخل طلبات
+    //     أثناء التفريغ (كان الخادم يستقبل طلبات حتى آخر لحظة).
+    // (2) نوقف المؤقّتات الداخلية فلا تُضاف كتابات جديدة.
+    // (3) نُفرّغ طابور الكتابة (مع مهلة صارمة) — يلتقط أقفال durableLease الحيّة
+    //     ويجعلها متقادمة فتُستردّ تلقائياً عند إقلاع العملية التالية.
+    // (4) نُغلق اتصال قاعدة البيانات ونخرج.
+    // شبكة أمان صارمة: SIGTERM يجب ألا يُعلّق العملية أبداً (وإلا قتلها Render
+    // بـSIGKILL بعد المهلة وضاعت الكتابات). مهلة مطلقة تُجبر الخروج.
+    const hardExit = setTimeout(() => { console.error("[الغرابي AI] shutdown deadline — forcing exit"); process.exit(0); }, 10_000);
+    hardExit.unref?.();
+    const serverClosed = new Promise<void>((resolve) => {
+      try { httpServer.close(() => resolve()); } catch { resolve(); }
+      // اتصالات keep-alive الخاملة تُبقي server.close() معلّقاً؛ نُغلقها فوراً
+      // (سلوك إنتاجي صحيح: SIGTERM من Render لا يجب أن يتأخّر باتصال خامل).
+      try { (httpServer as any).closeIdleConnections?.(); } catch { /* تجاهل */ }
+      // شبكة أمان: بعد 3 ثوانٍ نُغلق كل الاتصالات المتبقية ثم نكمل الإغلاق.
+      const t = setTimeout(() => { try { (httpServer as any).closeAllConnections?.(); } catch { /* تجاهل */ } resolve(); }, 3000);
+      t.unref?.();
+    });
+    const drainAndExit = async (): Promise<void> => {
+      try { watcherScheduler?.stop(); } catch { /* تجاهل */ }
+      try { metaPollingScheduler?.stop(); } catch { /* تجاهل */ }
+      try { telegramPollingScheduler?.stop(); } catch { /* تجاهل */ }
+      try { stopBrainRuntime(); } catch { /* تجاهل */ }
+      try { (app as any).drReconciliation?.stop?.(); } catch { /* تجاهل */ }
+      try { (app as any).drAutoBackup?.stop?.(); } catch { /* تجاهل */ }
+      try { clearInterval(runtimeCleanupTimer); } catch { /* تجاهل */ }
+      try { clearInterval(safeJobWorkerTimer); } catch { /* تجاهل */ }
+      try { clearInterval(tiktokReconcileTimer); } catch { /* تجاهل */ }
+      try { stopYouTubeQuotaRetryTimer(); } catch { /* تجاهل */ }
+      // تحرير أقفال الدوام صراحةً (تُبطل فوراً عند إقلاع العملية الجديدة بدل
+      // انتظار انتهاء مهلتها) — قبل التفريغ.
+      try {
+        watcherLease = releaseLease(watcherLease, WATCHER_LEASE_OWNER).lease;
+        metaPollingLease = releaseLease(metaPollingLease, META_POLLING_LEASE_OWNER).lease;
+        telegramPollingLease = releaseLease(telegramPollingLease, TELEGRAM_POLLING_LEASE_OWNER).lease;
+        commercialLease = releaseLease(commercialLease, COMMERCIAL_LEASE_OWNER).lease;
+      } catch { /* تجاهل */ }
+      const deadline = new Promise<void>((resolve) => setTimeout(resolve, 10_000));
+      await Promise.race([drainQueue(), deadline]);
+      try { await storageAdapter.close(); } catch { /* تجاهل */ }
+      process.exit(0);
+    };
+    Promise.all([serverClosed, drainAndExit()]).catch(() => process.exit(0));
   };
   process.once("SIGTERM", () => shutdown("SIGTERM"));
   process.once("SIGINT", () => shutdown("SIGINT"));

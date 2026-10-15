@@ -44,7 +44,7 @@ npm install
 npm run dev            # tsx server.ts
 npm run lint           # tsc --noEmit
 npm run build          # vite build + esbuild server.ts -> dist/server.cjs
-npm run final-audit    # node final-audit.mjs (1666 فحصاً)
+npm run final-audit    # node final-audit.mjs (1674 فحصاً)
 npm test               # storage + engine + auth + ... + db + runtime
 ```
 - التشغيل الإنتاجي: `PORT=4517 NODE_ENV=production APP_URL=http://localhost:4517 node dist/server.cjs`
@@ -6522,8 +6522,44 @@ function persistCritical(): Promise<void> { persistState(); saveControlState(); 
 **يفشل على الكود القديم** (كان يعيد 200 + توكن على المخزن الدائم) **وينجح بعده** — مُثبت.
 
 فحوص final-audit الجديدة: `persist-critical-throws-on-failure`, `persist-critical-no-false-success`,
-`persist-critical-guards-auth-routes`, `persist-critical-regression-test` (**1666 إجمالاً**).
+`persist-critical-guards-auth-routes`, `persist-critical-regression-test` (**1674 إجمالاً**).
 `npm run lint` ✅ · `npm run build` ✅ · `npm test` ✅ · `npm run final-audit` ✅.
 
 **لم يُمسّ:** أي سرّ/مفتاح، ولا `public/*` ولا `index.html` ولا `/terms` ولا `/privacy` ولا
 Redirect URI الخاص بـTikTok. **لا push ولا merge ولا deploy** — بانتظار موافقة المالك.
+
+## N1/N2 — سلامة العملية وإغلاق SIGTERM (تدقيق جنائي، 2026-10-15)
+
+فرع `fix/process-safety-n1n2` من `main`. إصلاحان يمسّان سلوك الإقلاع/الإغلاق فقط، بلا
+مساس بأي مسار عملي أو سرّ.
+
+### N1 — `uncaughtException` كان يُبتلع (استمرار بحالة غير معروفة)
+كان المعالج يُسجّل الاستثناء ثم **تستمر** العملية، فيبقى الخادم في حالة غير معروفة (أقفال
+معلّقة، كتابات نصف منجزة) **ويُخفي العطل عن Render** فلا يعيد التشغيل أبداً. الإصلاح
+(وحدة صافية `engine/runtime/processSafety.ts` + ربط في `server.ts`): عند
+`uncaughtException` يُسجَّل سطر مُنقّى، ثم يُفرَّغ طابور الكتابة بمهلة قصيرة (`UNCAUGHT_FLUSH_MS`
+= 3s)، ثم يُغلق المخزن، ثم `exit(1)` ليعيد Render تشغيل العملية نظيفة. `unhandledRejection`
+يبقى غير قاتل في الإنتاج (يُسجَّل ويُعدّ في `unhandledRejectionCount`، ويظهر في
+`/api/readiness.processHealth`)، ويُجعل قاتلاً **داخل الاختبارات فقط** (`GHARABI_TEST_MODE=true`)
+كي لا يُبتلع فشل غير متوقّع في CI. مبدأ: «غير قابل للانهيار» = يسقط بأمان ويعود تلقائياً،
+لا أن يستمر مكسوراً بصمت.
+
+### N2 — ترتيب إغلاق SIGTERM
+كان الإغلاق يوقف المؤقّتات ثم يُفرّغ الكتابات، لكن **الخادم يبقى يستقبل طلبات HTTP جديدة**
+حتى آخر لحظة، وأقفال الدوام (`durableLease`) لا تُحرَّر صراحةً. الترتيب الصحيح الآن:
+`httpServer.close()` (وقف الاستقبال) أولاً → إيقاف المؤقّتات → تحرير أقفال الدوام صراحةً
+(`releaseLease(watcherLease/metaPollingLease/telegramPollingLease/commercialLease)`) →
+تفريغ الطابور (≤ 10s) → إغلاق المخزن → خروج 0. تُغلق اتصالات keep-alive الخاملة
+(`closeIdleConnections`) فوراً مع شبكة أمان (3s) تُغلق المتبقية، و**شبكة أمان مطلقة** (10s)
+تُجبر الخروج حتى لا يُعلّق SIGTERM أبداً (وإلا قتلت Render العملية بـSIGKILL وضاعت الكتابات).
+
+اختبارات: `engine/tests/process.safety.test.ts` (`npm run test:process-safety`، 12 فحصاً،
+وحدة) و`engine/tests/process.shutdown.n2.test.ts` (`npm run test:process-shutdown`، 10 فحوص
+على خادم حقيقي + خادم اختبار: رفض الطلبات بعد SIGTERM، خروج 0 خلال ≤ 10s، وصول الكتابة
+المعلّقة للقرص، وترتيب المصدر). فحوص final-audit: `process-safety-module`،
+`uncaught-exception-exits`، `unhandled-rejection-counted`، `process-safety-tests`،
+`shutdown-stops-intake-first`، `shutdown-releases-leases`، `shutdown-hard-exit-watchdog`،
+`process-shutdown-tests` (إجمالاً **1674**).
+
+**لم يُمسّ:** `/api/health` (يبقى 503 عند فشل المخزن — F-03)، أي مسار عملي، أي سرّ،
+`public/*`، `index.html`، `/terms`، `/privacy`، أو Redirect URI الخاص بـTikTok.
