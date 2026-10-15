@@ -29,6 +29,7 @@ import { decryptKeyVault, inspectVaultKey } from './key-vault-crypto.mjs';
 import { inspectRefreshTokenSource, resolveRefreshTokenSource } from './token-source.mjs';
 import {
   hashContent,
+  isSameDatabaseTarget,
   DRIVE_OAUTH_REFRESH_TOKEN_ENV,
 } from './cloud-lib.mjs';
 
@@ -155,7 +156,9 @@ export async function listRecoveryPoints(store) {
 export function inspectTargetEnvironment(env = process.env, options = {}) {
   const isolatedDatabaseUrl = options.isolatedDatabaseUrl ?? env.DR_RECOVERY_TEST_DATABASE_URL ?? null;
   const productionUrl = env.DATABASE_URL ?? null;
-  const sameAsProduction = Boolean(isolatedDatabaseUrl && productionUrl && isolatedDatabaseUrl === productionUrl);
+  // F-22: مقارنة **دلالية** (host+port+database) لا نصّية — نفس قاعدة الإنتاج
+  // بصيغة أخرى (مستخدم/معاملات/ترميز مختلف) يجب أن تُرفض أيضاً.
+  const sameAsProduction = Boolean(isolatedDatabaseUrl && productionUrl && (isolatedDatabaseUrl === productionUrl || isSameDatabaseTarget(isolatedDatabaseUrl, productionUrl)));
   const databaseReady = Boolean(isolatedDatabaseUrl) && !sameAsProduction;
   return {
     isolatedDatabaseUrlConfigured: Boolean(isolatedDatabaseUrl),

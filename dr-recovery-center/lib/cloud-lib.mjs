@@ -135,6 +135,64 @@ export function toBuffer(data) {
   return Buffer.from(String(data), 'utf8');
 }
 
+/**
+ * F-22: بصمة دلالية لعنوان قاعدة بيانات (host+port+database) بغضّ النظر عن
+ * المستخدم/كلمة المرور/المعاملات/الترميز/المضيف النسبي. تُستخدم لمنع الكتابة فوق
+ * قاعدة الإنتاج بمقارنة **دلالية** لا نصّية (نفس القاعدة بصيغتين مختلفتين).
+ * تعيد null إن تعذّر التحليل.
+ */
+export function databaseTargetKey(url) {
+  const raw = String(url ?? '').trim();
+  if (!raw) return null;
+  try {
+    const u = new URL(raw);
+    const dbName = decodeURIComponent((u.pathname || '').replace(/^\//, '')) || '';
+    if (!u.hostname && !dbName) return null;
+    const host = u.hostname.toLowerCase();
+    // المنفذ الغائب يُطابق منفذ Postgres الافتراضي، فلا تختلف بصمة نفس القاعدة.
+    const port = u.port || (/^postgres(ql)?:$/i.test(u.protocol) ? '5432' : '');
+    return `${host}:${port}/${dbName.toLowerCase()}`;
+  } catch {
+    return null;
+  }
+}
+
+/** F-22: هل العنوانان يشيران إلى القاعدة نفسها دلالياً (أو تعذّر التحليل)؟ */
+export function isSameDatabaseTarget(a, b) {
+  const ka = databaseTargetKey(a);
+  const kb = databaseTargetKey(b);
+  if (!ka || !kb) return false;
+  return ka === kb;
+}
+
+/**
+ * F-21: حدّ أقصى لحجم فكّ الضغط (منع «قنبلة ضغط»). نسخة احتياطية شرعية أصغر بكثير
+ * من هذا الحد؛ وأي تجاوز يُرفض صراحةً بلا استنزاف الذاكرة.
+ */
+export const MAX_GUNZIP_OUTPUT_BYTES = 256 * 1024 * 1024;
+
+/**
+ * فكّ gzip بحدّ صريح لمخرَج الضغط. يعيد `{ok, data|code}`. عند تجاوز الحد أو فساد
+ * gzip لا يرمي — يُعيد كوداً صريحاً. المصدر الواحد لكل مسارات فكّ حزم DR.
+ */
+export function gunzipBounded(buffer, maxBytes = MAX_GUNZIP_OUTPUT_BYTES) {
+  const gz = toBuffer(buffer);
+  if (!gz.length) return { ok: false, code: 'empty_gzip' };
+  try {
+    const out = zlib.gunzipSync(gz, { maxOutputLength: maxBytes });
+    return { ok: true, data: out };
+  } catch (e) {
+    // Node يرمي ERR_BUFFER_TOO_LARGE عند تجاوز maxOutputLength (يتضمّن النص 'maxOutputLength'
+    // أو 'output length'). نميّز الحالة صراحةً بدل الخلط مع فساد gzip.
+    const code = String(e?.code || '');
+    const msg = String(e?.message || '');
+    if (code === 'ERR_BUFFER_TOO_LARGE' || /maxOutputLength|output length|larger than|buffer too large/i.test(msg)) {
+      return { ok: false, code: 'decompressed_too_large' };
+    }
+    return { ok: false, code: 'invalid_gzip' };
+  }
+}
+
 /** بصمة محتوى الملف (hex). */
 export function hashContent(content) {
   return sha256Hex(toBuffer(content));
@@ -285,6 +343,38 @@ export function looksLikeFakeSecret(text) {
   return FAKE_SECRET_MARKERS.test(String(text ?? ''));
 }
 
+/** إنتروبيا Shannon (بت/محرف) — تميّز السر العشوائي من الوصف النصّي. */
+export function shannonEntropyPerChar(value) {
+  const s = String(value ?? '');
+  if (!s.length) return 0;
+  const freq = new Map();
+  for (const ch of s) freq.set(ch, (freq.get(ch) || 0) + 1);
+  let h = 0;
+  for (const n of freq.values()) { const p = n / s.length; h -= p * Math.log2(p); }
+  return h;
+}
+
+/** امتدادات ملفات الشيفرة (F-20): يفحصها الماسح الصارم بإضافة إنتروبيا. */
+export const CODE_FILE_RE = /\.(ts|tsx|js|jsx|mjs|cjs)$/i;
+
+// إسناد نصّي مُقتبَس (value بين علامتي تنصيص). يُستخدم مع فحص الإنتروبيا لملفات
+// الشيفرة فقط — يمنع false positives من قيم وصفية (phase2-secret-local-only).
+const SECRET_ASSIGNMENT_STRING_RE =
+  /(password|passwd|secret|api[_-]?key|apikey|access[_-]?token|refresh[_-]?token|client[_-]?secret|private[_-]?key|session[_-]?secret|encryption[_-]?key)\s*[:=]\s*["']([^"']{12,})["']/gi;
+
+/**
+ * F-20: هل نصّ حرفي في ملف شيفرة يبدو **سرّاً حقيقياً مُثبَّتاً في الكود**؟
+ * يلزم: إنتروبيا عالية (≥4.3 بت/محرف) + حروف وأرقام معاً + ليس نصاً وصفياً بشرطات.
+ * القيم الوصفية في الاختبارات (مثل "phase2-batch-secret-local-only") تُرفض صراحةً.
+ */
+export function looksLikeHardcodedCodeSecret(value) {
+  const v = String(value ?? '');
+  if (shannonEntropyPerChar(v) < 4.3) return false;
+  if (!/[0-9]/.test(v) || !/[A-Za-z]/.test(v)) return false;
+  if (/^[a-z0-9]+(-[a-z0-9]+)+$/.test(v)) return false;
+  return true;
+}
+
 /** نوع محتوى الملف من امتداده (يُستخدم عند رفع المرآة الفردية). */
 export function mimeTypeForPath(path) {
   if (/\.json$/i.test(path)) return 'application/json';
@@ -358,6 +448,23 @@ export function scanForSecretsStrict(files) {
       let m;
       while ((m = SECRET_ASSIGNMENT_RE.exec(line)) !== null) {
         if (!isPlaceholderValue(m[2])) findings.push({ path, line: i + 1, kind: 'secret_assignment' });
+      }
+    }
+    // F-20: فحص ملفات الشيفرة أيضاً (لا فقط الملفات التي يوحي اسمها بسرّ) بحثاً عن
+    // سرّ حقيقي **مُثبَّت** في الكود: إسناد نصّي مُقتبَس بإنتروبيا عالية. القيم
+    // الوصفية في الاختبارات تُستبعد بالإنتروبيا/الشرطات، فلا false positives.
+    if (CODE_FILE_RE.test(path)) {
+      for (let i = 0; i < lines.length; i += 1) {
+        const line = lines[i];
+        if (looksLikeFakeSecret(line)) continue;
+        SECRET_ASSIGNMENT_STRING_RE.lastIndex = 0;
+        let sm;
+        while ((sm = SECRET_ASSIGNMENT_STRING_RE.exec(line)) !== null) {
+          const val = sm[2];
+          if (!isPlaceholderValue(val) && looksLikeHardcodedCodeSecret(val)) {
+            findings.push({ path, line: i + 1, kind: 'hardcoded_code_secret' });
+          }
+        }
       }
     }
   }
@@ -435,8 +542,9 @@ export function buildSourceBundle(files) {
 export function verifySourceBundle(buffer, expected) {
   const gz = toBuffer(buffer);
   if (!gz.length) return { ok: false, code: 'empty_bundle' };
-  let tar;
-  try { tar = zlib.gunzipSync(gz); } catch { return { ok: false, code: 'invalid_gzip' }; }
+  const un = gunzipBounded(gz);
+  if (!un.ok) return { ok: false, code: un.code };
+  const tar = un.data;
   if (!tar.length || tar.length % 512 !== 0) return { ok: false, code: 'invalid_tar' };
   if (expected && Number.isFinite(expected.fileCount) && expected.fileCount > 0) {
     let count = 0;
@@ -457,8 +565,9 @@ export function verifySourceBundle(buffer, expected) {
 /** يستخرج أسماء الملفات من حزمة مصدر (gzip → tar) بلا فكّ المحتوى كاملاً. */
 export function listSourceBundleFiles(buffer) {
   const gz = toBuffer(buffer);
-  let tar;
-  try { tar = zlib.gunzipSync(gz); } catch { return { ok: false, code: 'invalid_gzip', files: [] }; }
+  const un = gunzipBounded(gz);
+  if (!un.ok) return { ok: false, code: un.code, files: [] };
+  const tar = un.data;
   const files = [];
   let offset = 0;
   while (offset + 512 <= tar.length) {

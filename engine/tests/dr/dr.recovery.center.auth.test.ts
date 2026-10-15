@@ -116,9 +116,13 @@ async function main() {
     check('wrong token vs hash rejected', checkRecoveryOwnerAuth({ headers: { authorization: 'Bearer wrong' } }, hashCfg).allowed === false);
     check('short/invalid hash ignored', inspectRecoveryOwnerAuth({ [OWNER_TOKEN_HASH_ENV]: 'abc' }).configured === false);
 
-    // الوضع المحلي الصريح فقط.
+    // الوضع المحلي الصريح فقط — F-23: العلم يسمح للاتصال المحلي (loopback) فقط،
+    // وأي طلب من عنوان خارجي يبقى مقيّداً بـfail-closed حتى مع تفعيل العلم.
     const allowCfg = { [ALLOW_UNAUTHENTICATED_ENV]: 'true' };
-    check('allow-unauthenticated opt-in', checkRecoveryOwnerAuth({ headers: {} }, allowCfg).allowed === true && checkRecoveryOwnerAuth({ headers: {} }, allowCfg).reason === 'unauthenticated_allowed_by_owner');
+    const localReq = { headers: {}, socket: { remoteAddress: '127.0.0.1' } } as any;
+    const externalReq = { headers: {}, socket: { remoteAddress: '8.8.8.8' } } as any;
+    check('allow-unauthenticated opt-in (local)', checkRecoveryOwnerAuth(localReq, allowCfg).allowed === true && checkRecoveryOwnerAuth(localReq, allowCfg).reason === 'unauthenticated_allowed_by_owner');
+    check('allow-unauthenticated NOT applied to external (F-23)', checkRecoveryOwnerAuth(externalReq, allowCfg).allowed === false);
     check('status block no secret', !JSON.stringify(recoveryOwnerAuthStatus(withCfg)).includes(OWNER_TOKEN));
   }
 

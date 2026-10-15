@@ -50,6 +50,7 @@ import {
   verifyRecoveryPoint,
 } from './standalone-recovery.mjs';
 import { injectPwaIntoHtml, servePwaAsset } from './recoveryPwa.mjs';
+import { isSameDatabaseTarget } from './cloud-lib.mjs';
 import {
   checkRecoveryOwnerAuth,
   isProtectedRecoveryPath,
@@ -503,7 +504,7 @@ export function createRecoveryCenterServer(options = {}) {
         if (!point) return json(res, 404, { ok: false, code: 'RECOVERY_POINT_NOT_FOUND' });
         const targetEnv = parseTargetEnv(body.targetEnv);
         const targetDb = targetEnv.DR_RECOVERY_TEST_DATABASE_URL || targetEnv.DATABASE_URL_TARGET || env.DR_RECOVERY_TEST_DATABASE_URL || null;
-        if (targetDb && env.DATABASE_URL && targetDb === env.DATABASE_URL) {
+        if (targetDb && env.DATABASE_URL && (targetDb === env.DATABASE_URL || isSameDatabaseTarget(targetDb, env.DATABASE_URL))) {
           return json(res, 409, { ok: false, code: 'REFUSED_PRODUCTION_DATABASE' });
         }
         // المفتاح والبيئة الهدف يُمرَّران في الذاكرة فقط، ولا يُعاد أي منهما.

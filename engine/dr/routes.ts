@@ -22,6 +22,7 @@ import {
   hourlySafetyCheck,
   summarizeBackupState,
   writeRecoveryDocs,
+  isSameDatabaseTarget,
   RP_001_COMMIT,
 } from '../../tools/dr/cloud-lib.mjs';
 import { DriveStateStore } from '../../tools/dr/drive-auth-url.mjs';
@@ -1200,7 +1201,9 @@ export function registerDriveRoutes(app: express.Express, deps: DriveRoutesDeps)
       const isolatedUrl = deps.isolatedDatabaseUrl || env.DR_RECOVERY_TEST_DATABASE_URL || null;
       const productionUrl = env.DATABASE_URL || null;
       // حماية صريحة: لا نستخدم قاعدة الإنتاج في اختبار الاستعادة.
-      if (isolatedUrl && productionUrl && isolatedUrl === productionUrl) {
+      // F-22: مقارنة دلالية (host+port+database) لا نصّية — تمنع الكتابة فوق قاعدة
+      // الإنتاج بنفس القاعدة بصيغة اتصال مختلفة (مستخدم/معاملات/ترميز).
+      if (isolatedUrl && productionUrl && (isolatedUrl === productionUrl || isSameDatabaseTarget(isolatedUrl, productionUrl))) {
         return res.status(409).json({ success: false, code: 'REFUSED_PRODUCTION_DATABASE', error: 'DR_RECOVERY_TEST_DATABASE_URL يطابق DATABASE_URL الإنتاجي: رُفض الاختبار.' });
       }
 
@@ -1298,7 +1301,7 @@ export function registerDriveRoutes(app: express.Express, deps: DriveRoutesDeps)
       if (!point.ok || !point.data) return res.status(404).json({ success: false, code: 'RECOVERY_POINT_NOT_FOUND', error: point.message || 'نقطة الاستعادة غير موجودة.' });
       const isolatedUrl = targetDb || deps.isolatedDatabaseUrl || env.DR_RECOVERY_TEST_DATABASE_URL || null;
       const productionUrl = env.DATABASE_URL || null;
-      if (isolatedUrl && productionUrl && isolatedUrl === productionUrl) {
+      if (isolatedUrl && productionUrl && (isolatedUrl === productionUrl || isSameDatabaseTarget(isolatedUrl, productionUrl))) {
         return res.status(409).json({ success: false, code: 'REFUSED_PRODUCTION_DATABASE', error: 'قاعدة الهدف تطابق DATABASE_URL الإنتاجي: رُفضت الاستعادة.' });
       }
       const fsMod = await import('node:fs');

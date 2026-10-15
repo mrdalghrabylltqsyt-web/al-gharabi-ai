@@ -27,6 +27,7 @@ import {
   runStandaloneRestore,
 } from './standalone-recovery.mjs';
 import { injectPwaIntoHtml, servePwaAsset } from './recoveryPwa.mjs';
+import { isSameDatabaseTarget } from './cloud-lib.mjs';
 
 const HOST = process.env.RECOVERY_UI_HOST || '127.0.0.1';
 const PORT = Number.parseInt(process.env.PORT || '4599', 10);
@@ -141,7 +142,7 @@ export function createRecoveryUiServer(options = {}) {
         const point = (listed.points || []).find((p) => p.id === body.point);
         if (!point) return json(res, 404, { ok: false, code: 'RECOVERY_POINT_NOT_FOUND' });
         const targetDb = typeof body.targetDatabaseUrl === 'string' && body.targetDatabaseUrl ? body.targetDatabaseUrl : (env.DR_RECOVERY_TEST_DATABASE_URL || null);
-        if (targetDb && env.DATABASE_URL && targetDb === env.DATABASE_URL) {
+        if (targetDb && env.DATABASE_URL && (targetDb === env.DATABASE_URL || isSameDatabaseTarget(targetDb, env.DATABASE_URL))) {
           return json(res, 409, { ok: false, code: 'REFUSED_PRODUCTION_DATABASE' });
         }
         const restoreEnv = body.vaultKey ? { ...env, DR_RECOVERY_VAULT_KEY: String(body.vaultKey) } : env;

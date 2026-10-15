@@ -6426,3 +6426,34 @@ working directory فقط (بلا commit/push). **المتبقي إجراء خا�
 TikTok for Developers:** (١) تفعيل نطاق `video.publish` في تطبيق الإنتاج، (٢) تقديم
 التطبيق لمراجعة **Content Posting API** والحصول على الاجتياز، ثم (٣) ضبط
 `TIKTOK_AUDIT_PASSED=true` في Render — بلا ذلك يبقى النشر العام محكوماً من TikTok نفسه.
+
+## تقوية أدوات الاستعادة (tools/dr) — F-20..F-23 (دفعة المرحلة 2)
+
+إغلاق أربع نتائج في طبقة أدوات DR/الاستعادة (لا تمس الإقلاع ولا /api/health):
+
+- **F-21 — حدّ فكّ ضغط صريح (منع «قنبلة ضغط»):** `gunzipBounded(buffer, maxBytes)` في
+  `tools/dr/cloud-lib.mjs` يستخدم `zlib.gunzipSync(gz, { maxOutputLength })`
+  (`MAX_GUNZIP_OUTPUT_BYTES` = 256MiB افتراضاً) ويميّز `decompressed_too_large`
+  (عبر `ERR_BUFFER_TOO_LARGE`) عن `invalid_gzip` — بلا استنزاف ذاكرة وبلا رمي. طُبّق
+  في كل مواضع فكّ gzip: `cloud-lib`، `restore.mjs`، `source-bundle.mjs`.
+- **F-20 — الماسح الصارم يفحص ملفات الشيفرة:** `scanForSecretsStrict` كان يفحص الإسنادات
+  العامة فقط في الملفات التي يوحي اسمها بسرّ. الآن يفحص **أي ملف `.ts/.js/.mjs/.cjs/.tsx/.jsx`**
+  بحثاً عن سرّ مُثبَّت بإسناد نصّي مُقتبَس بإنتروبيا عالية (`looksLikeHardcodedCodeSecret`:
+  إنتروبيا Shannon ≥ 4.3 + حروف وأرقام معاً + ليس نصاً وصفياً بشرطات). القيم الوصفية في
+  الاختبارات (`phase2-batch-secret-local-only`) تُستبعد صراحةً، والشجرة المتتبَّعة الكاملة
+  (481 ملفاً) تمرّ بلا finding.
+- **F-22 — رفض قاعدة الإنتاج مقارنةً دلالية:** `isSameDatabaseTarget`/`databaseTargetKey`
+  يقارنان (host + port الافتراضي 5432 + اسم القاعدة) بغضّ النظر عن المستخدم/كلمة المرور/
+  المعاملات/حالة الأحرف، بدل المقارنة النصّية. طُبّق في `standalone-recovery.mjs`،
+  `engine/dr/routes.ts` (مسارا drill و restore)، `recovery-center.mjs`، `recovery-console-ui.mjs`.
+- **F-23 — علم تعطيل المصادقة محلي فقط:** `isLocalAddress` في `tools/dr/recoveryAuth.mjs`
+  يقبل loopback (`127.0.0.0/8`، `::1`، `::ffff:127.x`)، و`checkRecoveryOwnerAuth` يُطبّق
+  `RECOVERY_CENTER_ALLOW_UNAUTHENTICATED` **فقط** على اتصال محلي؛ أي طلب خارجي يبقى
+  fail-closed حتى لو ضُبط العلم خطأً على خدمة مُستضافة (المركز المستضاف يربط على `0.0.0.0`).
+
+اختبار الانحدار: `engine/tests/dr/dr.tools.hardening.test.ts` (`npm run test:dr-tools-hardening`،
+31 فحصاً) + تحديث `dr.recovery.center.auth.test.ts` (66) ليثبت أن العلم لا يسمح لعنوان خارجي.
+الاختبارات تفشل على الكود القديم وتنجح بعده. `sync-lib.mjs` يُبقي `dr-recovery-center/lib/`
+متزامناً (لا انحراف). `npm run lint` ✅ · `test:dr` ✅ · `final-audit` ✅ (1653).
+**لم يُمسّ** أي سرّ/مفتاح، ولا `public/*` ولا `index.html` ولا `/terms` ولا `/privacy` ولا
+Redirect URI الخاص بـTikTok. **لا push ولا merge ولا deploy** — بانتظار موافقة المالك.

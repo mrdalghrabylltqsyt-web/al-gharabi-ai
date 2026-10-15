@@ -13,10 +13,10 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import zlib from 'node:zlib';
 import {
   hashContent,
   toBuffer,
+  gunzipBounded,
   verifySourceBundle,
   classifyDbDump,
   isEncryptedSecretsPackage,
@@ -53,9 +53,9 @@ export function extractTarEntries(tarBuffer) {
 export function extractSourceBundle(buffer) {
   const gz = toBuffer(buffer);
   if (!gz.length) return { ok: false, code: 'empty_bundle', files: [] };
-  let tar;
-  try { tar = zlib.gunzipSync(gz); } catch { return { ok: false, code: 'invalid_gzip', files: [] }; }
-  const res = extractTarEntries(tar);
+  const un = gunzipBounded(gz);
+  if (!un.ok) return { ok: false, code: un.code, files: [] };
+  const res = extractTarEntries(un.data);
   if (!res.ok) return { ok: false, code: 'invalid_tar', files: [] };
   return { ok: true, files: res.files };
 }

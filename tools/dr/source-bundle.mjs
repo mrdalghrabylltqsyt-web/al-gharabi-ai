@@ -27,6 +27,7 @@ import {
   computeTreeHash,
   hashContent,
   toBuffer,
+  gunzipBounded,
 } from './cloud-lib.mjs';
 
 export const SOURCE_BUNDLE_FORMAT = 'gharabi-source-bundle-v1';
@@ -99,8 +100,9 @@ export function buildDeterministicTarGz(entries) {
 export function extractTarGz(buffer, options = {}) {
   const gz = toBuffer(buffer);
   if (!gz.length) return { ok: false, code: 'empty_archive', files: [] };
-  let tar;
-  try { tar = zlib.gunzipSync(gz); } catch { return { ok: false, code: 'invalid_gzip', files: [] }; }
+  const un = gunzipBounded(gz);
+  if (!un.ok) return { ok: false, code: un.code, files: [] };
+  const tar = un.data;
   if (!tar.length || tar.length % 512 !== 0) return { ok: false, code: 'invalid_tar', files: [] };
   const files = [];
   let offset = 0;

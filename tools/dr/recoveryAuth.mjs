@@ -16,6 +16,8 @@
  *  - مقارنة بزمن ثابت (timingSafeEqual) لمنع هجمات القياس الزمني.
  *  - **بلا مفتاح مضبوط**: المسارات الحسّاسة مقيّدة افتراضياً (fail-closed)، ما لم
  *    يُفعِّل المالك `RECOVERY_CENTER_ALLOW_UNAUTHENTICATED=true` صراحةً (الوضع المحلي).
+ *    وُيقتصر هذا العلم على **اتصال محلي (loopback)** فقط (F-23): أي طلب من عنوان
+ *    خارجي يبقى مقيّداً حتى لو ضُبط العلم خطأً على خدمة مُستضافة.
  *  - `/api/health` و`/` (الواجهة) و`/api/owner-auth` تبقى عامة: لا تكشف أي سرّ ولا
  *    بيانات وصفية لنقاط الاستعادة.
  *  - **تحديد معدّل التخمين**: محاولات فاشلة متكررة من نفس عنوان IP على المسارات
@@ -40,6 +42,21 @@ const failedAuthAttempts = new Map();
 export function clientIpOf(req) {
   const addr = req?.socket?.remoteAddress || req?.connection?.remoteAddress;
   return typeof addr === 'string' && addr ? addr : 'unknown';
+}
+
+/**
+ * F-23: هل عنوان الاتصال محلي (loopback)؟ يُستخدم لربط علم تعطيل المصادقة
+ * بالوصول المحلي فقط، فلا يفتح الوصول الخارجي حتى لو ضُبط العلم خطأً.
+ * يقبل IPv4 loopback (127.0.0.0/8) وIPv6 loopback (::1) والصيغة المُغلَّفة (::ffff:127.x).
+ */
+export function isLocalAddress(addr) {
+  const a = typeof addr === 'string' ? addr.trim().toLowerCase() : '';
+  if (!a) return false;
+  if (a === '::1' || a === 'localhost') return true;
+  if (a.startsWith('::ffff:')) return isLocalAddress(a.slice('::ffff:'.length));
+  const m = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(a);
+  if (m) return Number(m[1]) === 127;
+  return false;
 }
 
 function isAuthRateLimited(key) {
@@ -121,7 +138,11 @@ export function extractBearerToken(headerValue) {
  */
 export function checkRecoveryOwnerAuth(req, env = process.env) {
   const info = inspectRecoveryOwnerAuth(env);
-  if (info.allowUnauthenticated) return { allowed: true, reason: 'unauthenticated_allowed_by_owner' };
+  // F-23: علم تعطيل المصادقة يُطبَّق **فقط** على اتصال محلي (loopback). أي طلب من
+  // عنوان خارجي يبقى مقيّداً بـfail-closed حتى لو ضُبط العلم خطأً على خدمة مُستضافة.
+  if (info.allowUnauthenticated && isLocalAddress(clientIpOf(req))) {
+    return { allowed: true, reason: 'unauthenticated_allowed_by_owner' };
+  }
   if (!info.configured) return { allowed: false, reason: 'owner_token_not_configured' };
 
   const ipKey = clientIpOf(req);
