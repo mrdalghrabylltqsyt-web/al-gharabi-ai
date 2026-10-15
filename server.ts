@@ -12833,6 +12833,10 @@ async function bootstrapStorage(): Promise<void> {
   await storageAdapter.init();
   if (!storageAdapter.status().healthy) {
     storageInitError = storageAdapter.status().detail || "storage_unavailable";
+    // F-17: الملف المحلي يُهيّأ storageReady=true ابتداءً، فيجب إسقاطه صراحةً عند
+    // تلف ملف الحالة (detail يبدأ بـstate_corrupt) كي يسري حارس الإقلاع fail-closed
+    // ولا يُبنى فوق ملف معطوب. أي سبب آخر (مجلد غير قابل للكتابة) يبقى غير قاتل.
+    if (String(storageInitError).startsWith("state_corrupt")) storageReady = false;
     return;
   }
   if (storageAdapter.backend === "postgres") {
@@ -12896,6 +12900,24 @@ async function bootstrapStorage(): Promise<void> {
       return;
     }
   } else {
+    // F-17: نفحص سلامة **كل** مفاتيح الحالة قبل أي كتابة. ملف موجود لكن معطوب
+    // ⇒ لا نُكمل ببناء حالة فارغة فوقه (fail-closed)، بنفس صرامة مسار Postgres.
+    const fileStateKeys = [
+      STORAGE_KEY_STATE, STORAGE_KEY_USAGE, STORAGE_KEY_CONTROL, STORAGE_KEY_YOUTUBE_QUOTA,
+      STORAGE_KEY_USAGE_INDICATORS, STORAGE_KEY_AGENT, STORAGE_KEY_BRAIN_MEMORY,
+      STORAGE_KEY_TEAM_SESSIONS, STORAGE_KEY_WORKING_MEMORY, STORAGE_KEY_STRATEGY_STATE,
+      STORAGE_KEY_DECISION_LEDGER, WATCHER_STATE_KEY, META_POLLING_STATE_KEY,
+      TELEGRAM_POLLING_STATE_KEY, COMMERCIAL_LEAD_STATE_KEY, CONTENT_MEDIA_KEY,
+    ];
+    for (const key of fileStateKeys) {
+      if (storageAdapter.readIntegrity?.(key) === "corrupt") storageInitError = storageInitError || `state_corrupt:${key}`;
+    }
+    if (storageInitError) {
+      // F-17: نُسقط الجهوزية صراحةً (القيمة الابتدائية للملف true) فيسري حارس
+      // الإقلاع fail-closed ولا تُبنى حالة فارغة فوق ملف معطوب.
+      storageReady = false;
+      return;
+    }
     // للملف المحلي: القراءة متزامنة عند الإقلاع كما في لقطة الحالة.
     loadControlStateSync();
     loadAgentStateSync();
@@ -15025,7 +15047,7 @@ app.get("/api/readiness", (_req, res) => {
     statePersistence: appReady,
     applicationReady: appReady,
     processHealth: { unhandledRejectionCount, fatalRejectionInTests: isFatalRejectionTestMode },
-    persistence: (() => { const s = storageStatus(); const pooled = isPooledPostgresEndpoint(String((storageAdapter as any).connectionString || process.env.DATABASE_URL || "")); return { backend: s.backend, durable: s.durable, mode: s.durable ? "durable" : "ephemeral", healthy: s.healthy, pooledEndpoint: s.backend === "postgres" ? pooled : null, ...(s.backend === "postgres" && !pooled ? { recommendation: "استخدم نقطة اتصال Neon المجمّعة (pooled) لتقليل ضغط الاتصالات أثناء النشر (rolling deploy)." } : {}) }; })(),
+    persistence: (() => { const s = storageStatus(); const pooled = isPooledPostgresEndpoint(String((storageAdapter as any).connectionString || process.env.DATABASE_URL || "")); const corrupt = s.backend === "file" && typeof (storageAdapter as any).corruptKeyList === "function" ? (storageAdapter as any).corruptKeyList() : []; return { backend: s.backend, durable: s.durable, mode: s.durable ? "durable" : "ephemeral", healthy: s.healthy, pooledEndpoint: s.backend === "postgres" ? pooled : null, stateCorrupt: corrupt.length > 0, corruptKeys: corrupt, ...(s.backend === "postgres" && !pooled ? { recommendation: "استخدم نقطة اتصال Neon المجمّعة (pooled) لتقليل ضغط الاتصالات أثناء النشر (rolling deploy)." } : {}) }; })(),
     auth: {
       ownerEmailConfigured: Boolean(OWNER_EMAIL),
       sessionsDurable: SESSIONS_DURABLE,
@@ -15905,6 +15927,10 @@ app.get("/api/health", (_req, res) => {
         mode: durable ? "durable" : "ephemeral",
         healthy: status.healthy,
         stateWritable: status.writable,
+        // F-17: تلف ملف الحالة المحلي يُعلن صراحةً (أسماء مفاتيح فقط، بلا قيمة)
+        // فلا يُبنى النظام فوق حالة معطوبة بصمت.
+        stateCorrupt: (() => { const c = status.backend === "file" && typeof (storageAdapter as any).corruptKeyList === "function" ? (storageAdapter as any).corruptKeyList() : []; return c.length > 0; })(),
+        corruptKeys: status.backend === "file" && typeof (storageAdapter as any).corruptKeyList === "function" ? (storageAdapter as any).corruptKeyList() : [],
         // F-27: لا نكشف مسار المجلد الداخلي في النقطة العامة (يُسرّب بنية الخادم).
         // مالك النظام يقرأه من سجلات الخادم عند الحاجة للتشخيص.
         lastPersistError,
@@ -18072,6 +18098,11 @@ async function startServer() {
     // قائمة. الفشل هنا صريح وسريع بدل خدمة تطبيق لا يحفظ شيئاً.
     if (storageAdapter.backend === "postgres") {
       throw new Error(`فشل الإقلاع: تعذّر تحميل الحالة من Postgres (${storageInitError || "storage_unavailable"}). لا رجوع لملف محلي ولا كتابة فوق حالة قائمة.`);
+    }
+    // F-17: ملف حالة محلي معطوب (موجود لكن لا يُقرأ/يُحلَّل) فشل قاتل صريح —
+    // لا نبني فوقه حالة فارغة تطمس بيانات قائمة، بنفس صرامة مسار Postgres.
+    if (String(storageInitError || "").startsWith("state_corrupt")) {
+      throw new Error(`فشل الإقلاع: ملف الحالة المحلي معطوب (${storageInitError}). لا إعادة بناء فوق بيانات قائمة — أصلح الملف أو استعده من النسخة الاحتياطية.`);
     }
     console.warn(`[الغرابي AI] storage not ready: ${storageInitError || "unknown"} — state writes are disabled until it recovers.`);
   }

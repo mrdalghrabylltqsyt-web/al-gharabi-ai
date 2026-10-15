@@ -167,6 +167,32 @@ async function run(): Promise<void> {
   check('pgbouncer في المضيف يُكتشف', isPooledPostgresEndpoint('postgresql://u:p@pgbouncer.internal/db') === true);
   check('رابط غير صالح لا يرمي (يعيد false)', isPooledPostgresEndpoint('not-a-url') === false);
 
+  // ---- F-17: ملف حالة محلي معطوب => fail-closed (لا إعادة بناء بصمت).
+  const corruptDir = mkdtempSync(join(tmpdir(), 'gharabi-storage-corrupt-'));
+  try {
+    const c = createStorageAdapter({ stateDir: corruptDir });
+    await c.init();
+    check('F-17: قبل التلف => healthy', c.status().healthy === true);
+    // ملف حالة موجود لكنه JSON غير صالح (فساد جزئي/كتابة منقطعة).
+    writeFileSync(join(corruptDir, '.gharabi-state.json'), '{ "workspace": { "posts": [ ', 'utf8');
+    const read = c.readSync<any>(STORAGE_KEY_STATE);
+    check('F-17: قراءة ملف معطوب => null (لا رمي)', read === null);
+    check('F-17: المفتاح المعطوب مُعلن عبر isKeyCorrupt', c.isKeyCorrupt?.(STORAGE_KEY_STATE) === true);
+    check('F-17: readIntegrity => corrupt', c.readIntegrity?.(STORAGE_KEY_STATE) === 'corrupt');
+    const st = c.status();
+    check('★ F-17: تلف الحالة يُسقط healthy (fail-closed)', st.healthy === false, JSON.stringify(st));
+    check('★ F-17: تلف الحالة يُسقط writable', st.writable === false, JSON.stringify(st));
+    check('★ F-17: سبب التلف صريح يحمل اسم المفتاح', String(st.detail).includes('state_corrupt') && String(st.detail).includes(STORAGE_KEY_STATE), String(st.detail));
+    // مفتاح غائب تماماً ليس تلفاً (تشغيل أول نظيف).
+    check('F-17: مفتاح غائب => ok (ليس تلفاً)', c.readIntegrity?.(STORAGE_KEY_USAGE) === 'ok');
+    // كتابة قيمة صحيحة تُبرئ المفتاح المعطوب.
+    await c.write(STORAGE_KEY_STATE, { schemaVersion: 99, ok: true });
+    check('F-17: كتابة سليمة تُبرئ المفتاح', c.isKeyCorrupt?.(STORAGE_KEY_STATE) === false && c.readSync<any>(STORAGE_KEY_STATE)?.ok === true);
+    check('F-17: الحالة تعود healthy بعد البرء', c.status().healthy === true);
+  } finally {
+    rmSync(corruptDir, { recursive: true, force: true });
+  }
+
   console.log('\n' + '='.repeat(60));
   if (failures.length) {
     console.error(`FAILED: ${failures.length} / ${passed + failures.length}`);

@@ -104,6 +104,14 @@ export interface StorageAdapter {
   dump(): Promise<string>;
   status(): StorageStatus;
   listBackups(): BackupInfo[];
+  /**
+   * F-17 (backend الملف فقط): هل الحالة المحفوظة لهذا المفتاح معطوبة (موجودة
+   * لكن لا تُقرأ/تُحلَّل)؟ يسمح للخادم برفض الكتابة فوق ملف معطوب (fail-closed)
+   * بدل إعادة بناء حالة فارغة بصمت. لPostgres لا يُنفَّذ (undefined).
+   */
+  isKeyCorrupt?(key: string): boolean;
+  /** سلامة حالة المفتاح: ok (غائب/مقروء) أو corrupt (موجود ومعطوب). */
+  readIntegrity?(key: string): "ok" | "corrupt";
   /** إغلاق الموارد (اتصال قاعدة البيانات) عند الإيقاف. */
   close(): Promise<void>;
 }
@@ -146,6 +154,13 @@ class FileStorageAdapter implements StorageAdapter {
   private writable = false;
   private detail: string | null = null;
   /**
+   * F-17: مفاتيح حالتها موجودة على القرص لكنها **غير قابلة للقراءة/التحليل**
+   * (تلف/فساد أو صلاحية). تُسجَّل هنا كي لا يُبنى النظام فوق ملف معطوب بصمت،
+   * فالإقلاع يرفض الكتابة (fail-closed) بدل إعادة بناء حالة فارغة تطمس البيانات.
+   * مفتاح غائب تماماً (ENOENT) ليس تلفاً — تشغيل أول نظيف.
+   */
+  private corruptKeys = new Set<string>();
+  /**
    * ملف محلي دائم فقط إن لم نكن على مضيف معروف بأن قرصه عابر (Render/Heroku/
    * Netlify/Lambda…). Render Free يضبط RENDER=true، فبلا DATABASE_URL يُعلَن
    * التخزين عابراً بصراحة بدل ادعاء دوام غير مثبت.
@@ -164,6 +179,30 @@ class FileStorageAdapter implements StorageAdapter {
     return path.join(this.stateDir, ".gharabi-backups");
   }
 
+  /** هل الحالة المحفوظة لهذا المفتاح معطوبة (موجودة لكن لا تُقرأ/تُحلَّل)؟ */
+  isKeyCorrupt(key: string): boolean {
+    return this.corruptKeys.has(key);
+  }
+
+  /** قائمة مفاتيح الحالة المعطوبة المكتشَفة (بلا أي قيمة سرية — أسماء فقط). */
+  corruptKeyList(): string[] {
+    return [...this.corruptKeys].sort();
+  }
+
+  /**
+   * سلامة حالة المفتاح: `ok` (غائب = تشغيل أول نظيف، أو مقروء)، أو `corrupt`
+   * (موجود على القرص لكن تعذّرت قراءته/تحليله). يُميّز ENOENT صراحةً.
+   */
+  readIntegrity(key: string): "ok" | "corrupt" {
+    try {
+      JSON.parse(fs.readFileSync(this.fileFor(key), "utf8"));
+      return "ok";
+    } catch (error: any) {
+      if (error && (error.code === "ENOENT" || error.code === "ENOTDIR")) return "ok";
+      return "corrupt";
+    }
+  }
+
   async init(): Promise<void> {
     try {
       fs.mkdirSync(this.stateDir, { recursive: true });
@@ -179,9 +218,21 @@ class FileStorageAdapter implements StorageAdapter {
   }
 
   readSync<T>(key: string): T | null {
+    let raw: string;
     try {
-      return JSON.parse(fs.readFileSync(this.fileFor(key), "utf8")) as T;
+      raw = fs.readFileSync(this.fileFor(key), "utf8");
+    } catch (error: any) {
+      // ملف غائب (ENOENT) = لا حالة بعد، وليس تلفاً. أي سبب آخر (صلاحية/IO) = تلف.
+      if (!(error && (error.code === "ENOENT" || error.code === "ENOTDIR"))) this.corruptKeys.add(key);
+      return null;
+    }
+    try {
+      const parsed = JSON.parse(raw) as T;
+      this.corruptKeys.delete(key);
+      return parsed;
     } catch {
+      // F-17: المحتوى موجود لكنه غير قابل للتحليل — نُعلن التلف ولا نُعيد null بصمت.
+      this.corruptKeys.add(key);
       return null;
     }
   }
@@ -225,6 +276,8 @@ class FileStorageAdapter implements StorageAdapter {
     const tmp = `${target}.tmp`;
     fs.writeFileSync(tmp, serialized, { encoding: "utf8", mode: 0o600 });
     fs.renameSync(tmp, target);
+    // F-17: كتابة سليمة تُبرئ المفتاح (الملف صار JSON صالحاً فعلاً).
+    this.corruptKeys.delete(key);
     recordStorageWrite(Buffer.byteLength(serialized, "utf8"));
     this.writable = true;
   }
@@ -247,7 +300,17 @@ class FileStorageAdapter implements StorageAdapter {
   }
 
   status(): StorageStatus {
-    return { backend: this.backend, durable: this.durable, writable: this.writable, healthy: this.writable, stateDir: this.stateDir, detail: this.detail };
+    // F-17: أي مفتاح معطوب يُسقط healthy (fail-closed) ويُعلَن سببه الصريح،
+    // فلا يُبنى النظام فوق حالة محلية معطوبة ولا تُطمس بيانات قائمة.
+    const corrupt = this.corruptKeys.size > 0;
+    return {
+      backend: this.backend,
+      durable: this.durable,
+      writable: this.writable && !corrupt,
+      healthy: this.writable && !corrupt,
+      stateDir: this.stateDir,
+      detail: corrupt ? `state_corrupt:${[...this.corruptKeys].sort().join(",")}`.slice(0, 120) : this.detail,
+    };
   }
 
   listBackups(): BackupInfo[] {
