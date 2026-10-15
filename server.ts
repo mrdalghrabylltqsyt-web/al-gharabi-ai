@@ -4798,10 +4798,6 @@ async function executeMetaCommentReply(
   let idemKey = '';
   let idemOutcome: 'done' | 'failed' = 'failed';
   try {
-    // F-07: حجز دائم قبل أي نداء مزود — يصمد بعد إعادة التشغيل ولا عبر نسختين.
-    const idem = await beginExternalOperation({ platform, operation: 'comment_reply', targetId: externalId, idempotencyKey });
-    if (idem.blocked) return idem.blocked;
-    idemKey = idem.key;
     const conn: any = platformConnections.get(platform);
     if (!conn || conn.status !== 'connected' || conn.providerVerified !== true) {
       return { status: 409, body: { success: false, error: `${platform === 'facebook' ? 'Facebook' : 'Instagram'} غير متصل باتصال موثق؛ لا يمكن إرسال أي رد خارجي.` } };
@@ -4827,13 +4823,19 @@ async function executeMetaCommentReply(
     const safety = analyzeBusinessClaims(text, replyFacts);
     if (!safety.safe) return { status: 422, body: { success: false, error: 'نص الرد يحمل عرضاً تجارياً غير مسجّل، وتم إيقافه قبل أي إرسال.', contentSafety: { safe: false, violations: safety.blocked.map((v) => v.detail), codes: safety.blocked.map((v) => v.code) } } };
 
-    // 3) بوابة منع الرد المكرر (على مفتاح منع التكرار: externalId للردود العادية،
-    //    أو مفتاح مميّز للمتابعة المشروعة).
+    // 3) F-07: حجز دائم **قبل** أي نداء مزود (وهو السلطة عبر العمليات): من نجح
+    //    حجزه وحده يُرسل، فلا رد مكرر بعد إعادة التشغيل ولا عبر نسختين.
+    const idem = await beginExternalOperation({ platform, operation: 'comment_reply', targetId: externalId, idempotencyKey });
+    if (idem.blocked) return idem.blocked;
+    idemKey = idem.key;
+
+    // 4) بوابة منع الرد المكرر داخل العملية (طبقة ثانية على مفتاح منع التكرار:
+    //    externalId للردود العادية، أو مفتاح مميّز للمتابعة المشروعة).
     const history: ReplyRecord[] = (workspace as any).socialReplies.filter((r: any) => r.platform === platform).map((r: any) => ({ externalId: r.externalId, replyFingerprint: r.replyFingerprint, repliedAt: r.repliedAt, idempotencyKey: r.idempotencyKey }));
     const decision = evaluateReplyGuard({ externalId, replyText: text, history, idempotencyKey });
     if (!decision.allowed) return { status: 409, body: { success: false, error: decision.reason, guard: decision } };
 
-    // 4) إرسال حقيقي على مسار التعليقات فقط (comment_reply).
+    // 5) إرسال حقيقي على مسار التعليقات فقط (comment_reply).
     const result = platform === 'facebook'
       ? await (async () => { const target = facebookReplyTarget(); if ('error' in target) return { ok: false, error: target.error, providerReplyId: null as string | null }; const r = await facebookClient().replyToComment(String(comment.replyTarget?.commentId || externalId), target.pageToken, text); return { ok: r.ok, error: r.error, providerReplyId: r.data?.providerCommentId || null }; })()
       : await (async () => { const target = instagramReplyTarget(); if ('error' in target) return { ok: false, error: target.error, providerReplyId: null as string | null }; const r = await instagramClient().replyToComment(String(comment.replyTarget?.commentId || externalId), target.pageToken, text); return { ok: r.ok, error: r.error, providerReplyId: r.data?.providerCommentId || null }; })();
@@ -4891,10 +4893,6 @@ async function executeMetaMessageReply(
   let idemKey = '';
   let idemOutcome: 'done' | 'failed' = 'failed';
   try {
-    // F-07: حجز دائم قبل أي نداء مزود (نفس مبدأ مسار التعليق).
-    const idem = await beginExternalOperation({ platform, operation: 'message_reply', targetId: externalId || `${platform}-msg:${recipientId}`, idempotencyKey });
-    if (idem.blocked) return idem.blocked;
-    idemKey = idem.key;
     const conn: any = platformConnections.get(platform);
     if (!conn || conn.status !== 'connected' || conn.providerVerified !== true) {
       return { status: 409, body: { success: false, error: `${platform === 'facebook' ? 'Facebook' : 'Instagram'} غير متصل باتصال موثق؛ لا يمكن إرسال أي رسالة خارجية.` } };
@@ -4920,6 +4918,12 @@ async function executeMetaMessageReply(
     }
 
     const guardExternalId = externalId || `${platform}-msg:${targetRecipient}`;
+    // F-07: حجز دائم **قبل** أي نداء مزود (وهو السلطة عبر العمليات) — يغلق سباق
+    //    «فحص منع التكرار ← انتظار شبكي ← تسجيل متأخر» عبر العمليات.
+    const idem = await beginExternalOperation({ platform, operation: 'message_reply', targetId: guardExternalId, idempotencyKey });
+    if (idem.blocked) return idem.blocked;
+    idemKey = idem.key;
+
     const history: ReplyRecord[] = (workspace as any).socialReplies.filter((r: any) => r.platform === platform && r.kind === 'message').map((r: any) => ({ externalId: r.externalId, replyFingerprint: r.replyFingerprint, repliedAt: r.repliedAt, idempotencyKey: r.idempotencyKey }));
     const decision = evaluateReplyGuard({ externalId: guardExternalId, replyText: text, history, idempotencyKey });
     if (!decision.allowed) return { status: 409, body: { success: false, error: decision.reason, guard: decision } };
@@ -4984,10 +4988,6 @@ async function executeTelegramMessageReply(
   let idemKey = '';
   let idemOutcome: 'done' | 'failed' = 'failed';
   try {
-    // F-07: حجز دائم قبل أي نداء مزود (يصمد بعد إعادة التشغيل ولا عبر نسختين).
-    const idem = await beginExternalOperation({ platform: 'telegram', operation: 'message_reply', targetId: externalId });
-    if (idem.blocked) return idem.blocked;
-    idemKey = idem.key;
     const conn: any = platformConnections.get('telegram');
     if (!conn || conn.status !== 'connected' || conn.providerVerified !== true) {
       return { status: 409, body: { success: false, error: 'Telegram غير متصل باتصال موثق؛ لا يمكن إرسال أي رد خارجي.' } };
@@ -5012,6 +5012,11 @@ async function executeTelegramMessageReply(
     if (!safety.safe) {
       return { status: 422, body: { success: false, error: 'نص الرد يحمل عرضاً تجارياً غير مسجّل، وتم إيقافه قبل أي إرسال.', contentSafety: { safe: false, violations: safety.blocked.map((v) => v.detail), codes: safety.blocked.map((v) => v.code) } } };
     }
+
+    // F-07: حجز دائم **قبل** أي نداء مزود (وهو السلطة عبر العمليات).
+    const idem = await beginExternalOperation({ platform: 'telegram', operation: 'message_reply', targetId: externalId });
+    if (idem.blocked) return idem.blocked;
+    idemKey = idem.key;
 
     const history: ReplyRecord[] = (workspace as any).socialReplies.filter((r: any) => r.platform === 'telegram').map((r: any) => ({ externalId: r.externalId, replyFingerprint: r.replyFingerprint, repliedAt: r.repliedAt }));
     const decision = evaluateReplyGuard({ externalId, replyText: text, history });
@@ -6453,11 +6458,6 @@ async function executeYouTubeReply(input: { commentId: string; text: string; com
   let idemKey = "";
   let idemOutcome: "done" | "failed" = "failed";
   try {
-  // F-07: حجز دائم قبل أي نداء مزود — يمنع رداً مكرراً بعد إعادة التشغيل أو عبر
-  // نسختين (يستخدمه المسار اليدوي والمراقب التلقائي معاً).
-  const idem = await beginExternalOperation({ platform: "youtube", operation: "comment_reply", targetId: parentCommentId });
-  if (idem.blocked) return idem.blocked;
-  idemKey = idem.key;
   const guard = youtubeOperationGuard();
   if (!guard.ok) return { status: guard.status!, body: { success: false, code: guard.code, error: guard.error, ...youtubeStateBlock() } };
   if (!youtubeForceSslGranted()) {
@@ -6471,6 +6471,11 @@ async function executeYouTubeReply(input: { commentId: string; text: string; com
     return { status: 422, body: { success: false, error: "نص الرد يحمل عرضاً تجارياً غير مسجّل، وتم إيقافه قبل الإرسال.", contentSafety: { violations: safety.blocked.map((v) => v.detail), codes: safety.blocked.map((v) => v.code) } } };
   }
   // منع الرد المكرر عبر معرّف التعليق + بصمة النص (حماية replay/retry).
+  // F-07: حجز دائم **قبل** أي نداء مزود (وهو السلطة عبر العمليات) — يمنع رداً
+  // مكرراً بعد إعادة التشغيل أو عبر نسختين (يدوي + مراقب تلقائي معاً).
+  const idem = await beginExternalOperation({ platform: "youtube", operation: "comment_reply", targetId: parentCommentId });
+  if (idem.blocked) return idem.blocked;
+  idemKey = idem.key;
   const history: ReplyRecord[] = ((workspace as any).socialReplies || []).map((r: any) => ({ externalId: r.externalId, replyFingerprint: r.replyFingerprint, repliedAt: r.repliedAt }));
   const decision = evaluateReplyGuard({ externalId: parentCommentId, replyText: text, history });
   if (!decision.allowed) return { status: 409, body: { success: false, code: "DUPLICATE_REPLY", error: decision.reason, guard: decision } };
