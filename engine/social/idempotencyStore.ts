@@ -103,22 +103,33 @@ export async function runIdempotencyTableUpgrade(client: { query: (sql: string) 
 
 /**
  * SQL الحجز الذرّي (Postgres): إدراج مع `ON CONFLICT DO NOTHING RETURNING`، وإن
- * وُجد صف قائم يُعاد حجزه فقط إن كان `failed` (فشل مؤكد) أو `reserved` منتهي
- * المدة (حجز عالق) — في بيان واحد ذرّي بلا سباق. يُعيد صفاً واحداً فقط عند نجاح
- * الحجز؛ عدم إرجاع صف = العملية محجوزة حيّة أو منتهية بنجاح ⇒ لا تنفيذ.
+ * وُجد صف قائم يُعاد حجزه فقط إن كان `failed`/`pending_quota` (فشل مؤكد أو انتظار
+ * مقصود) أو `reserved` منتهي المدة (حجز عالق) — في بيان واحد ذرّي بلا سباق.
+ *
+ * **عيب جذري مُصلَح:** كان البيان ينتهي بـ`UPDATE ... RETURNING` وحده. في Postgres
+ * لا تُرجِع عبارة `UPDATE` صفاً عندما يُدخل الفرع `INSERT` الصف فعلاً (الحالة
+ * الأولى لكل عملية جديدة)، لأن `NOT EXISTS (SELECT 1 FROM ins)` يكون خطأً — فلا
+ * يُصاب أي صف بالـUPDATE. النتيجة: **كل عملية أولى** على Postgres تُقرأ كأنها
+ * «محجوزة» فيُردّ 409 لكل رد/نشر جديد. العيب كان مخفياً لأن اختبار Postgres
+ * الحقيقي كان **يُتخطّى** بلا قاعدة (لا يُشغَّل في CI). الحل: يُرجَع الصف من
+ * فرعَي `ins` و`upd` معاً عبر `SELECT ... UNION ALL`، فيُصبح نجاح الحجز (إدراج
+ * جديد أو إعادة حجز مشروعة) هو الذي يُعيد صفاً واحداً فقط، ولا يُعيد شيئاً عند
+ * حجز حيّ أو عملية منتهية بنجاح.
  */
 export const IDEMPOTENCY_RESERVE_SQL = `WITH ins AS (
   INSERT INTO ${IDEMPOTENCY_TABLE} (key, status, created_at, updated_at, expires_at)
   VALUES ($1, 'reserved', now(), now(), $2::timestamptz)
   ON CONFLICT (key) DO NOTHING
   RETURNING key
+), upd AS (
+  UPDATE ${IDEMPOTENCY_TABLE} t
+  SET status = 'reserved', updated_at = now(), expires_at = $2::timestamptz
+  WHERE t.key = $1
+    AND NOT EXISTS (SELECT 1 FROM ins)
+    AND (t.status IN ('failed','pending_quota') OR (t.status = 'reserved' AND t.expires_at <= now()))
+  RETURNING t.key
 )
-UPDATE ${IDEMPOTENCY_TABLE} t
-SET status = 'reserved', updated_at = now(), expires_at = $2::timestamptz
-WHERE t.key = $1
-  AND NOT EXISTS (SELECT 1 FROM ins)
-  AND (t.status IN ('failed','pending_quota') OR (t.status = 'reserved' AND t.expires_at <= now()))
-RETURNING t.key`;
+SELECT key FROM ins UNION ALL SELECT key FROM upd`;
 
 /** إنهاء العملية: done عند النجاح، failed عند فشل مؤكد (يسمح بإعادة المحاولة). */
 export const IDEMPOTENCY_FINISH_SQL = `UPDATE ${IDEMPOTENCY_TABLE}
