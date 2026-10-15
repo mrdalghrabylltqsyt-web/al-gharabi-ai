@@ -16,7 +16,7 @@
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { createStorageAdapter, STORAGE_KEY_STATE, STORAGE_KEY_CONTROL } from '../storage/adapter';
+import { createStorageAdapter, storageWriteAccounting, STORAGE_KEY_STATE, STORAGE_KEY_CONTROL } from '../storage/adapter';
 
 let passed = 0;
 const failures: string[] = [];
@@ -64,6 +64,7 @@ async function run(): Promise<void> {
       check('F-16 (Postgres): المخزن سليم', false, String(a.status().detail));
     } else {
       // قيمة ثانية تحمل \u0000 يرفضها jsonb في Postgres => يفشل داخل المعاملة.
+      const writesBefore = storageWriteAccounting().bytesWrittenTotal;
       let threw = false;
       try {
         await a.writeMany!([
@@ -74,13 +75,17 @@ async function run(): Promise<void> {
       check('F-16 (Postgres): فشل مفتاح داخل المعاملة يرمي', threw === true);
       const stateAfter = await a.read<any>(STORAGE_KEY_STATE);
       check('★ F-16 (Postgres): المفتاح الأول لم يُثبَّت (ROLLBACK ذرّي)', stateAfter === null, JSON.stringify(stateAfter));
-      // نجاح كامل: المفتاحان معاً.
+      // لا تُحتسب كتابة أُلغيت: عدّاد النقل لم يتغيّر بعد ROLLBACK.
+      const writesAfterFail = storageWriteAccounting().bytesWrittenTotal;
+      check('★ F-16 (Postgres): الكتابة الملغاة لا تُحتسب في نقل البيانات', writesAfterFail === writesBefore, `${writesBefore} -> ${writesAfterFail}`);
+      // نجاح كامل: المفتاحان معاً، ويُحتسب النقل فعلاً.
       await a.writeMany!([
         { key: STORAGE_KEY_STATE, value: { marker: 'ok-state' } },
         { key: STORAGE_KEY_CONTROL, value: { marker: 'ok-control' } },
       ]);
       check('F-16 (Postgres): النجاح يثبّت المفتاح الأول', (await a.read<any>(STORAGE_KEY_STATE))?.marker === 'ok-state');
       check('F-16 (Postgres): النجاح يثبّت المفتاح الثاني', (await a.read<any>(STORAGE_KEY_CONTROL))?.marker === 'ok-control');
+      check('F-16 (Postgres): الكتابة الناجحة تُحتسب', storageWriteAccounting().bytesWrittenTotal > writesAfterFail);
     }
     await a.close();
   }

@@ -583,6 +583,7 @@ class PostgresStorageAdapter implements StorageAdapter {
     }
     if (pending.length === 0) return;
     const client = await this.pool.connect();
+    let failure: unknown;
     try {
       await client.query("BEGIN");
       for (const item of pending) {
@@ -591,16 +592,22 @@ class PostgresStorageAdapter implements StorageAdapter {
            ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()`,
           [item.key, item.serialized],
         );
-        recordStorageWrite(Buffer.byteLength(item.serialized, "utf8"));
       }
       await client.query("COMMIT");
+      // F-16: لا تُحتسب الكتابات إلا بعد COMMIT — فحساب كتابة أُلغيت (ROLLBACK) كان
+      // يضخّم مؤشر نقل Neon الكاذب في /api/health.
+      for (const item of pending) recordStorageWrite(Buffer.byteLength(item.serialized, "utf8"));
       for (const item of pending) this.writeBaseline.set(item.key, item.serialized);
       this.healthy = true;
     } catch (error) {
-      try { await client.query("ROLLBACK"); } catch { /* تجاهل: الاتصال سيُعاد */ }
+      failure = error;
+      try { await client.query("ROLLBACK"); } catch { /* تجاهل: سيُتلف الاتصال أدناه */ }
       throw error;
     } finally {
-      try { client.release(); } catch { /* تجاهل */ }
+      // F-16: عند الفشل يُتلف الاتصال (release(error)) بدل إعادته للمجمّع، لأن
+      // اتصالاً بقي في معاملة فاشلة (إن فشل ROLLBACK نفسه) سيُفسد كل كتابة لاحقة
+      // تستخدمه. عند النجاح يُعاد عادياً (undefined).
+      try { client.release(failure as any); } catch { /* تجاهل */ }
     }
   }
 
