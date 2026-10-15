@@ -8333,6 +8333,8 @@ async function persistCommercialLeads(): Promise<void> {
       leads: commercialLeads.slice(0, COMMERCIAL_MAX_LEADS),
       // مفتاح الإيقاف الطارئ يُحفظ مع سجل العملاء (نفس المحوّل/المفتاح) فيصمد بعد restart.
       killSwitch: { enabled: commercialBrainEnabled, killAt: commercialBrainKillAt, killBy: commercialBrainKillBy, killReason: commercialBrainKillReason },
+      // N2: قفل دورة العقل التجاري يُحفظ هنا (بلا سرّ) فيصمد/يُبطل صراحةً عند الإغلاق.
+      lease: commercialLease,
     });
   } catch { /* يُعلن عبر حالة الحفظ العامة */ }
 }
@@ -8343,6 +8345,8 @@ function applyCommercialStateSnapshot(raw: any): void {
   commercialLeads = normalizeCommercialLeads(raw.leads).slice(0, COMMERCIAL_MAX_LEADS);
   // توافق خلفي (fail-closed): لقطة قديمة بلا killSwitch تُبقي الافتراضي معطَّلاً.
   applyCommercialKillSwitchSnapshot(raw.killSwitch);
+  // N2: القفل الدائم لدورة العقل التجاري (owner + انتهاء فقط، بلا سرّ).
+  commercialLease = normalizeLease(raw.lease);
 }
 
 /** يجد عميلاً محتملاً بالمفتاح الحقيقي (منصة + خيط) بلا اختراع هوية. */
@@ -18228,12 +18232,18 @@ async function startServer() {
       try { clearInterval(tiktokReconcileTimer); } catch { /* تجاهل */ }
       try { stopYouTubeQuotaRetryTimer(); } catch { /* تجاهل */ }
       // تحرير أقفال الدوام صراحةً (تُبطل فوراً عند إقلاع العملية الجديدة بدل
-      // انتظار انتهاء مهلتها) — قبل التفريغ.
+      // انتظار انتهاء مهلتها) — **ويُكتب التحرير في المخزن الدائم** قبل التفريغ،
+      // وإلا بقي القفل القديم محفوظاً فيبدو محتجزاً لعملية أخرى حتى انتهاء مهلته.
       try {
         watcherLease = releaseLease(watcherLease, WATCHER_LEASE_OWNER).lease;
         metaPollingLease = releaseLease(metaPollingLease, META_POLLING_LEASE_OWNER).lease;
         telegramPollingLease = releaseLease(telegramPollingLease, TELEGRAM_POLLING_LEASE_OWNER).lease;
         commercialLease = releaseLease(commercialLease, COMMERCIAL_LEASE_OWNER).lease;
+        // الكتابة الصريحة (الطابور يضمن الترتيب؛ تُنتظر ضمن مهلة التفريغ أدناه).
+        persistWatcherState().catch(() => { /* يُعلن عبر حالة الحفظ العامة */ });
+        persistMetaPollingState().catch(() => { /* يُعلن عبر حالة الحفظ العامة */ });
+        persistTelegramPollingState().catch(() => { /* يُعلن عبر حالة الحفظ العامة */ });
+        persistCommercialLeads().catch(() => { /* يُعلن عبر حالة الحفظ العامة */ });
       } catch { /* تجاهل */ }
       const deadline = new Promise<void>((resolve) => setTimeout(resolve, 10_000));
       await Promise.race([drainQueue(), deadline]);

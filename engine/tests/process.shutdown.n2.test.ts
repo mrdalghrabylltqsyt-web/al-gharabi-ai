@@ -71,6 +71,13 @@ async function run(): Promise<void> {
     });
     check('إنشاء مستخدم ينجح', createUser.status === 200, `status=${createUser.status}`);
 
+    // دورة مراقبة يدوية تُثبّت ملف حالة المراقب (يُكتب فيه القفل) — ثم يُتحقّق بعد
+    // الإغلاق أن التحرير انتقل للمخزن (لا قفل حيّ متبقٍ).
+    const poll = await fetch(`${base}/api/agent/youtube/watcher/poll`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${ownerToken}` },
+    });
+    check('دورة المراقبة اليدوية تُنفَّذ', poll.status === 200, `status=${poll.status}`);
+
     // إرسال SIGTERM ثم محاولة اتصال جديد فوراً: يجب أن يُرفض (server.close أولاً).
     // نلتقط حدث الخروج **قبل** الإشارة (قد يخرج الخادم فوراً فلا نفوت الحدث).
     const exitPromise = new Promise<number | null>((resolve) => {
@@ -123,6 +130,35 @@ async function run(): Promise<void> {
   check('★ shutdown يُحرّر أقفال الدوام صراحةً', block.includes('releaseLease(watcherLease') && block.includes('releaseLease(commercialLease'), '');
   check('★ ترتيب المصدر: server.close قبل تفريغ الطابور', block.indexOf('httpServer.close(') < block.indexOf('drainQueue()'), '');
   check('★ ترتيب المصدر: تحرير الأقفال قبل التفريغ', block.indexOf('releaseLease(watcherLease') < block.indexOf('drainQueue()'), '');
+
+  // ---- N2 (ملاحظة المالك): التحرير يجب أن **يُكتب** في المخزن الدائم، لا الذاكرة فقط.
+  // كان الإغلاق يحرّر الأقفال في الذاكرة ثم يُفرّغ بلا كتابتها، فيبقى القفل القديم
+  // محفوظاً فيبدو محتجزاً حتى انتهاء مهلته. الإصلاح: كتابة صريحة بعد التحرير وقبل التفريغ.
+  const releaseIdx = block.indexOf('releaseLease(watcherLease');
+  const drainIdx = block.indexOf('drainQueue()');
+  for (const [label, call] of [
+    ['persistWatcherState', 'persistWatcherState()'],
+    ['persistMetaPollingState', 'persistMetaPollingState()'],
+    ['persistTelegramPollingState', 'persistTelegramPollingState()'],
+    ['persistCommercialLeads', 'persistCommercialLeads()'],
+  ] as [string, string][]) {
+    const i = block.indexOf(call);
+    check(`★ shutdown يكتب تحرير القفل عبر ${label}`, i >= 0, block.slice(0, 60));
+    check(`★ ترتيب المصدر: ${label} بعد التحرير وقبل التفريغ`, i > releaseIdx && i < drainIdx, `i=${i} release=${releaseIdx} drain=${drainIdx}`);
+  }
+
+  // ---- تحقق تشغيلي: القفل المحرَّر مكتوب فعلاً في المخزن (وليس الذاكرة فقط).
+  // بعد الإغلاق النظيف يجب أن توجد ملفات حالة المراقبين، وألا يحمل أيٌّ منها قفلاً
+  // حيّاً (owner + انتهاء في المستقبل) — أي أن التحرير انتقل إلى المخزن.
+  const leaseFiles = ['youtubeWatcher.json', 'metaPolling.json', 'telegramPolling.json', 'commercial.json'];
+  for (const f of leaseFiles) {
+    const p = join(dir, f);
+    if (!existsSync(p)) continue; // لا يُنشأ إن لم تعمل الدورة أصلاً
+    let lease: any = null;
+    try { lease = JSON.parse(readFileSync(p, 'utf8')).lease; } catch { /* تلف؟ */ }
+    const heldLive = lease && typeof lease.expiresAtMs === 'number' && lease.expiresAtMs > Date.now() && typeof lease.owner === 'string' && lease.owner;
+    check(`★ ${f}: لا قفل حيّ متبقٍ بعد الإغلاق (التحرير كُتب)`, !heldLive, `lease=${JSON.stringify(lease)}`);
+  }
 
   console.log(`\n[ process-shutdown-n2 ] passed=${passed} failed=${failures.length}`);
   if (failures.length) { for (const f of failures) console.error(`  ✗ ${f}`); process.exit(1); }
