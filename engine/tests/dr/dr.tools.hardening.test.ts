@@ -89,6 +89,20 @@ async function main(): Promise<void> {
     const bare = [{ path: 'src/bare.ts', content: `const SESSION_SECRET = "${fakeSession}"; // secret-scan-allow:\n` }];
     check('F-20 empty-reason exception does NOT apply', scanForSecretsStrict(bare as any).ok === false);
 
+    // F-20 (مراجعة): الاستثناء يُسكت فحص الإنتروبيا فقط — لا يُسكت الأنماط المعروفة.
+    const allowNote = '// secret-scan-allow: documented reason';
+    const allowedGoogle = [{ path: 'src/g2.ts', content: `const key = "${fakeGoogle}"; ${allowNote}\n` }];
+    check('F-20 allow does NOT silence google key pattern', scanForSecretsStrict(allowedGoogle as any).ok === false
+      && scanForSecretsStrict(allowedGoogle as any).findings.some((f) => f.kind === 'google_api_key'));
+    const fakeGithub = 'ghp_' + 'A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8';
+    const allowedGithub = [{ path: 'src/gh.ts', content: `const t = "${fakeGithub}"; ${allowNote}\n` }];
+    check('F-20 allow does NOT silence github token pattern', scanForSecretsStrict(allowedGithub as any).ok === false
+      && scanForSecretsStrict(allowedGithub as any).findings.some((f) => f.kind === 'github_token'));
+    const dbUrl = 'postgres://admin:' + 'S3cretP4ssword' + '@db.prod-gharabi.net:5432/gharabi';
+    const allowedDb = [{ path: 'src/db.ts', content: `const url = "${dbUrl}"; ${allowNote}\n` }];
+    check('F-20 allow does NOT silence db credential URL', scanForSecretsStrict(allowedDb as any).ok === false
+      && scanForSecretsStrict(allowedDb as any).findings.some((f) => f.kind === 'db_credential_url'));
+
     // رسالة الفشل في البناء تذكر الملف/السطر/النوع فقط ولا تسرّب القيمة.
     const sb = fs.readFileSync(path.join(repoRoot, 'tools/dr/source-bundle.mjs'), 'utf8');
     check('F-20 build failure message names file:line [kind]', sb.includes('${f.path}:${f.line} [${f.kind}]'));

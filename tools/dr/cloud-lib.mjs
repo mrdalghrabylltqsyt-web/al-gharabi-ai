@@ -354,6 +354,7 @@ export const SECRET_PATTERNS = [
   { kind: 'google_refresh_token', re: /1\/\/[A-Za-z0-9_\-]{30,}/g },
   { kind: 'resend_key', re: /re_[A-Za-z0-9]{20,}/g },
   { kind: 'openai_key', re: /sk-[A-Za-z0-9]{20,}/g },
+  { kind: 'github_token', re: /gh[pousr]_[A-Za-z0-9]{30,}/g },
   { kind: 'private_key_block', re: /-----BEGIN [A-Z ]*PRIVATE KEY-----/g },
   { kind: 'aws_access_key', re: /AKIA[0-9A-Z]{16}/g },
   { kind: 'slack_token', re: /xox[baprs]-[A-Za-z0-9-]{10,}/g },
@@ -402,13 +403,33 @@ export function shannonEntropyPerChar(value) {
 export const CODE_FILE_RE = /\.(ts|tsx|js|jsx|mjs|cjs)$/i;
 
 /**
- * F-20: علامة استثناء صريحة لكل سطر. أي سطر يحمل `secret-scan-allow: <سبب>` (مع سبب
- * غير فارغ) يُستثنى من فحص الأسرار الصارم — بشرط وجود سبب موثّق، فلا تُستثنى أسطر صامتة.
- * القيمة نفسها لا تُطبع أبداً؛ الاستثناء قرار واعٍ موثّق في الكود.
+ * F-20: رابط قاعدة بيانات يحمل اعتماداً صريحاً (scheme://user:pass@host) — نمط
+ * عالي الثقة لا يتأثّر بعلامة `secret-scan-allow` (التي تُسكت الإنتروبيا فقط).
+ * يلزم جزء اعتماد فعلي قبل `@`: مستخدم غير فارغ + كلمة مرور بطول ≥4 **بلا** `$`/`{`/`}`
+ * (كي لا تُرصد عناوين مبنية بقوالب مثل `${password}`، وتبقى القيم الحرفية مرصودة).
+ * المجموعتان: 1 = scheme، 2 = user، 3 = password.
+ */
+export const DB_CREDENTIAL_URL_RE = /\b(postgres|postgresql|mysql|mongodb|redis|amqp|mssql)(?:\+[a-z0-9]+)?:\/\/([^\s:@/]+):([^\s:@/${}]{4,})@/i;
+
+/** بيانات اعتماد نائبة معروفة في التوثيق/الاختبارات (user:pass، user:secret…) — ليست سرّاً. */
+export function isPlaceholderDbCredentials(user, pass) {
+  const u = String(user ?? '').toLowerCase();
+  const p = String(pass ?? '').toLowerCase();
+  if (/^(user|username|myuser|dbuser|testuser)$/.test(u)) return true;
+  if (/^(pass|password|passwd|secret|changeme|mypassword|test|dummy|example|placeholder)$/.test(p)) return true;
+  return false;
+}
+
+/**
+ * F-20: علامة استثناء صريحة لكل سطر، بغرض **واحد محدّد**: إسكات فحص الإنتروبيا
+ * (`hardcoded_code_secret`) فقط. لا تُسكت الأنماط المعروفة عالية الثقة أبداً
+ * (مفاتيح Google/OpenAI/GitHub/Resend، كتل المفاتيح الخاصة، روابط القواعد المُعتمدة)
+ * — فلا يمكن تمرير سرّ حقيقي الشكل بعلامة استثناء. يلزم سبب غير فارغ، فلا تُستثنى
+ * أسطر صامتة. القيمة نفسها لا تُطبع أبداً.
  */
 export const SECRET_SCAN_ALLOW_RE = /secret-scan-allow\s*:\s*\S/i;
 
-/** هل السطر يستثني نفسه صراحةً من فحص الأسرار (بسبب موثّق)؟ */
+/** هل السطر يستثني نفسه من **فحص الإنتروبيا** (بسبب موثّق)؟ لا يُسكت الأنماط المعروفة. */
 export function isSecretScanAllowed(line) {
   return SECRET_SCAN_ALLOW_RE.test(String(line ?? ''));
 }
@@ -492,8 +513,10 @@ export function scanForSecretsStrict(files) {
     const lines = content.split(/\r?\n/);
     for (let i = 0; i < lines.length; i += 1) {
       const line = lines[i];
-      // F-20: استثناء صريح موثّق لكل سطر — يتجاوز الفحص كلّه لهذا السطر.
-      if (isSecretScanAllowed(line)) continue;
+      // F-20: الاستثناء (secret-scan-allow) يُسكت **فحص الإنتروبيا فقط**، لا الأنماط
+      // المعروفة عالية الثقة. فسطر يحمل مفتاح Google/OpenAI/GitHub/Resend أو كتلة
+      // مفتاح خاص يبقى مُرصوداً حتى مع علامة الاستثناء.
+      const allowEntropy = isSecretScanAllowed(line);
       // بيانات اختبار وهمية تحمل علامة صريحة (fake/not-real/dummy…) لا تُعدّ سراً:
       // لا سرّ حقيقي يحمل هذه الكلمة في نفس السطر.
       const fakeLine = looksLikeFakeSecret(line);
@@ -501,7 +524,12 @@ export function scanForSecretsStrict(files) {
         re.lastIndex = 0;
         if (re.test(line) && !fakeLine) findings.push({ path, line: i + 1, kind });
       }
-      if (!secretBearing || fakeLine) continue;
+      // سرّ داخل رابط قاعدة بيانات يحمل اعتماداً صريحاً (scheme://user:pass@host) —
+      // لا يتأثّر بالاستثناء (نمط معروف عالي الثقة). تُستبعد بيانات الاعتماد النائبة فقط.
+      DB_CREDENTIAL_URL_RE.lastIndex = 0;
+      const dbm = DB_CREDENTIAL_URL_RE.exec(line);
+      if (dbm && !fakeLine && !isPlaceholderDbCredentials(dbm[2], dbm[3])) findings.push({ path, line: i + 1, kind: 'db_credential_url' });
+      if (!secretBearing || fakeLine || allowEntropy) continue;
       SECRET_ASSIGNMENT_RE.lastIndex = 0;
       let m;
       while ((m = SECRET_ASSIGNMENT_RE.exec(line)) !== null) {
@@ -511,6 +539,7 @@ export function scanForSecretsStrict(files) {
     // F-20: فحص ملفات الشيفرة أيضاً (لا فقط الملفات التي يوحي اسمها بسرّ) بحثاً عن
     // سرّ حقيقي **مُثبَّت** في الكود: إسناد نصّي مُقتبَس بإنتروبيا عالية. القيم
     // الوصفية في الاختبارات تُستبعد بالإنتروبيا/الشرطات، فلا false positives.
+    // علامة الاستثناء تُسكت هذا الفحص وحده (hardcoded_code_secret).
     if (CODE_FILE_RE.test(path)) {
       for (let i = 0; i < lines.length; i += 1) {
         const line = lines[i];
