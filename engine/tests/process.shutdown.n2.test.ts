@@ -95,7 +95,10 @@ async function run(): Promise<void> {
 
     const exitCode: number | null = await Promise.race([
       exitPromise,
-      new Promise<number | null>((resolve) => setTimeout(() => resolve(app!.proc.exitCode), 12_000)),
+      new Promise<number | null>((resolve) => {
+        const t = setTimeout(() => resolve(app ? app.proc.exitCode : null), 12_000);
+        t.unref?.();
+      }),
     ]);
     if (exitCode !== 0) console.error('[N2-DEBUG server log]\n' + app.log().slice(-1500));
     const ms = Date.now() - startedAt;
