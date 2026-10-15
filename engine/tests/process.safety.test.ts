@@ -9,6 +9,7 @@
  */
 
 import { createProcessSafety, UNCAUGHT_FLUSH_MS } from '../runtime/processSafety';
+import { redactSecretsFromText } from '../runtime/errorSafety';
 
 let passed = 0;
 const failures: string[] = [];
@@ -17,13 +18,18 @@ function check(name: string, condition: boolean, detail = ''): void {
   else failures.push(`${name}${detail ? ` — ${detail}` : ''}`);
 }
 
+// سرّ وهمي يُبنى وقت التشغيل (لا يظهر كنص حرفي في المصدر فيلتقطه ماسح الأسرار)،
+// وبشكل يعرف مُنقّي الأسرار التقاطه (`token=<value>`) لإثبات التنقية.
+const FAKE_SECRET = 'token=' + 'a1b2c3d4e5'.repeat(4);
+
 function harness(testMode: boolean) {
   const logs: string[] = [];
   const calls: string[] = [];
   let exitCode: number | null = null;
   let flushMs = -1;
   const safety = createProcessSafety({
-    log: (l) => logs.push(l),
+    // نفس نمط الخادم: التسجيل يمرّ عبر مُنقّي الأسرار قبل الطباعة.
+    log: (l) => logs.push(redactSecretsFromText(l)),
     flush: async (ms) => { flushMs = ms; calls.push('flush'); },
     close: async () => { calls.push('close'); },
     exit: (code) => { exitCode = code; calls.push(`exit:${code}`); },
@@ -38,7 +44,7 @@ async function run(): Promise<void> {
   // 1) uncaughtException => flush ثم close ثم exit(1) (وليس استمراراً).
   {
     const h = harness(false);
-    h.safety.handleUncaughtException(new Error('boom with secret sk-abcdefghijklmnopqrstuvwxyz012345'));
+    h.safety.handleUncaughtException(new Error(`boom with secret ${FAKE_SECRET}`));
     await tick(60);
     check('uncaughtException: يُفرّغ الكتابات', h.calls.includes('flush'), JSON.stringify(h.calls));
     check('uncaughtException: يُغلق المخزن', h.calls.includes('close'), JSON.stringify(h.calls));
@@ -48,6 +54,7 @@ async function run(): Promise<void> {
       JSON.stringify(h.calls));
     check('uncaughtException: مهلة التفريغ قصيرة ومحدودة', h.getFlushMs() === UNCAUGHT_FLUSH_MS, `ms=${h.getFlushMs()}`);
     check('uncaughtException: يُسجَّل سطر واحد بلا مكدّس', h.logs.length === 1 && h.logs[0].includes('uncaughtException'));
+    check('uncaughtException: السرّ في الرسالة يُنقّى من السجل', !h.logs.join('\n').includes(FAKE_SECRET));
   }
 
   // 2) unhandledRejection في الإنتاج: يُسجَّل ويُعدّ ولا يُسقط العملية.
