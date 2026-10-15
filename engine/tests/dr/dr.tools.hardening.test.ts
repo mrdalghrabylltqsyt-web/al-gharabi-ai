@@ -26,8 +26,10 @@ import {
   isLocalAddress,
   checkRecoveryOwnerAuth,
   ALLOW_UNAUTHENTICATED_ENV,
+  OWNER_TOKEN_ENV,
 } from '../../../tools/dr/recoveryAuth.mjs';
 import { collectTrustedSourceTree } from '../../../tools/dr/cloud-sync.mjs';
+import { encryptDbDump, decryptDbDump } from '../../../tools/dr/db-crypto.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(__dirname, '../../..');
@@ -163,6 +165,48 @@ async function main(): Promise<void> {
 
     const center = fs.readFileSync(path.join(repoRoot, 'tools/dr/recovery-center.mjs'), 'utf8');
     check('F-23 hosted center binds to 0.0.0.0 (non-local) so flag stays fail-closed', center.includes("'0.0.0.0'"));
+  }
+
+  // ---------- F-05: توليد مفتاح مالك مركز الاستعادة إلزامياً (32 بايت عشوائي) ----------
+  {
+    const gen = fs.readFileSync(path.join(repoRoot, 'scripts/generate-secrets.mjs'), 'utf8');
+    check('F-05 generator emits RECOVERY_CENTER_OWNER_TOKEN', gen.includes('RECOVERY_CENTER_OWNER_TOKEN'));
+    check('F-05 generator uses 32 random bytes for the owner token',
+      /RECOVERY_CENTER_OWNER_TOKEN\s*=\s*crypto\.randomBytes\(32\)/.test(gen));
+    check('F-05 generator does not add DRIVE_TOKEN_ENCRYPTION_KEY (would break existing backups)',
+      !/DRIVE_TOKEN_ENCRYPTION_KEY\s*=/.test(gen));
+  }
+
+  // ---------- F-05: تحديد معدّل محاولات التخمين على نقطة مصادقة المالك (429) ----------
+  {
+    const center = fs.readFileSync(path.join(repoRoot, 'tools/dr/recovery-center.mjs'), 'utf8');
+    check('F-05 owner-auth route returns 429 on rate limit',
+      /req\.method === 'GET' && url\.pathname === '\/api\/owner-auth'/.test(center)
+      && /auth\.reason === 'rate_limited' \? 429 : 401/.test(center));
+    // محاولات فاشلة متكررة من نفس IP => 429 (سلوك الوحدة).
+    const env = { [OWNER_TOKEN_ENV]: 'a'.repeat(32) };
+    const req = { headers: { authorization: 'Bearer wrong-token-value' }, socket: { remoteAddress: '203.0.113.55' } } as any;
+    let sawRateLimited = false;
+    for (let i = 0; i < 12; i++) {
+      const r = checkRecoveryOwnerAuth(req, env as any);
+      if (r.reason === 'rate_limited') { sawRateLimited = true; break; }
+    }
+    check('F-05 repeated bad attempts => rate_limited', sawRateLimited === true);
+  }
+
+  // ---------- F-21: قياس نسخة قاعدة البيانات (مضغوطة وبعد الفك) ----------
+  // نسخة القاعدة تُخزَّن application/octet-stream (AES-256-GCM + base64) ولا تمرّ
+  // بـgunzipBounded إطلاقاً، فلا ينطبق عليها حدّ فكّ الضغط. الحزمة الوحيدة المضغوطة
+  // (source bundle) لها هامش 12.4×. القياس أدناه يوثّق الحجم ويؤكد عدم انطباق الحدّ.
+  {
+    const dbDump = encryptDbDump('x'.repeat(1024 * 1024), { DRIVE_DB_BACKUP_KEY: 'ab'.repeat(32) });
+    check('F-21 DB artifact is an encrypted dump (never raw SQL)', dbDump.ok === true && /encrypted: true/.test(String(dbDump.payload)));
+    const roundTrip = decryptDbDump(String(dbDump.payload), { DRIVE_DB_BACKUP_KEY: 'ab'.repeat(32) });
+    check('F-21 DB artifact round-trips (measurement is valid)', roundTrip.ok === true);
+    // قاعدة ملزمة: نسخة القاعدة لا تُفكّ بـgunzipBounded (لا قنبلة ضغط ممكنة هنا).
+    const store = fs.readFileSync(path.join(repoRoot, 'tools/dr/drive-store.mjs'), 'utf8');
+    check('F-21 DB dump is stored octet-stream and never gunzipped',
+      store.includes("dbName, dbBuf, 'application/octet-stream'") && !/gunzipBounded\([^)]*DB_DUMP/.test(store));
   }
 
   // ---------- تزامن lib (لا انحراف) ----------
