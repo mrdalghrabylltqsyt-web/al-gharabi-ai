@@ -16,6 +16,7 @@
 
 import { generateReply, type ClassifiedComment, type GeneratedReply, type ReplyFactSet, type ReplyContext } from './comments';
 import { normalizeArabic } from './contentSafety';
+import { wrapUntrustedText, UNTRUSTED_TEXT_POLICY_AR } from '../ai/untrusted';
 
 /** الحد الأقصى لجولات التوضيح في نفس الخيط قبل التصعيد للمالك (منع حلقة لا نهائية). */
 export const MAX_CLARIFICATION_ROUNDS = 2;
@@ -176,17 +177,20 @@ export function buildClarificationReply(
  */
 export function buildClarificationPrompt(comment: ClassifiedComment, facts: ReplyFactSet = {}, ctx: DialogueContext = {}): string {
   const turns = Array.isArray(ctx.turns) ? ctx.turns.slice(-6) : [];
-  const history = turns.map((t) => `${t.role === 'customer' ? 'العميل' : 'المعرض'}: ${t.text}`).join('\n');
-  const product = facts.productName ? `منتج مطابق محتمل: ${facts.productName}.` : 'لا منتج مطابق مؤكّد.';
+  // كل نص خارجي (تعليق العميل، ردودنا السابقة، عنوان المنشور) يُغلَّف كبيانات لا تعليمات.
+  const history = turns.map((t) => `${t.role === 'customer' ? 'العميل' : 'المعرض'}: ${wrapUntrustedText(t.text)}`).join('\n');
+  const product = facts.productName ? `منتج مطابق محتمل: ${wrapUntrustedText(facts.productName)}.` : 'لا منتج مطابق مؤكّد.';
   return [
     'أنت مسؤول خدمة عملاء عراقي ودود في معرض الغرابي للتقسيط.',
     'المطلوب: سؤال توضيح قصير (سطر واحد) باللهجة العراقية الطبيعية لفهم ما يريده العميل بالضبط.',
     'لا تخترع أي سعر أو قسط أو توفّر أو معلومة غير مسجّلة. لا تعرض أرقاماً.',
     product,
+    UNTRUSTED_TEXT_POLICY_AR,
     history ? `سياق الحوار:\n${history}` : 'لا سياق سابق.',
-    `رسالة العميل الأخيرة: ${comment.normalized || ''}`,
+    ctx.subjectTitle ? `عنوان المنشور: ${wrapUntrustedText(ctx.subjectTitle)}` : '',
+    `رسالة العميل الأخيرة: ${wrapUntrustedText(comment.normalized || '')}`,
     'اكتب السؤال فقط بلا مقدمات.',
-  ].join('\n');
+  ].filter(Boolean).join('\n');
 }
 
 // ---------------------------------------------------------------------------

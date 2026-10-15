@@ -23,6 +23,7 @@ import {
   GEMINI_LIMIT_DEFAULT,
   GEMINI_LIMIT_MAX_SAFE,
 } from "./engine/ai/quotaPolicy";
+import { wrapUntrustedText, UNTRUSTED_TEXT_POLICY_AR, sanitizeUntrustedText } from "./engine/ai/untrusted";
 import { registerSocialManagerRoutes } from "./engine/social/routes";
 import { AgentOrchestrator } from "./engine/agent/orchestrator";
 import { registerAgentRoutes } from "./engine/agent/routes";
@@ -13643,7 +13644,11 @@ function buildAgentToolContext(operator: AgentOperator, userId: string): AgentTo
     }),
     aiGenerate: async (prompt: string) => {
       const cacheKey = `agent:${Buffer.from(prompt).toString("base64").slice(0, 64)}`;
-      const result = await aiEngine.run({ cacheKey, prompt, deterministicFallback: () => "تعذر توليد نص من المزود الآن؛ يلزم إعادة المحاولة أو صياغة يدوية.", meta: { platform: 'general', operation: 'agent_tool_generate' } });
+      // نص المهمة قد يحمل نصاً خارجياً (تعليق مقتبس)؛ يُغلَّف كبيانات لا تعليمات.
+      const safePrompt = `${wrapUntrustedText(prompt, { maxChars: 4000 })}
+
+${UNTRUSTED_TEXT_POLICY_AR}`;
+      const result = await aiEngine.run({ cacheKey, prompt: safePrompt, deterministicFallback: () => "تعذر توليد نص من المزود الآن؛ يلزم إعادة المحاولة أو صياغة يدوية.", meta: { platform: 'general', operation: 'agent_tool_generate' } });
       return { text: result.text, usedProvider: result.usedProvider, source: result.source };
     },
     // --- أدوات YouTube الحقيقية (المنصة التشغيلية الأساسية) ---
@@ -14611,7 +14616,7 @@ function runCognitiveCycleNow(input: {
       now: nowMs,
       platform: input.platform,
       eventIdentity: input.eventIdentity,
-      eventText: input.eventText,
+      eventText: sanitizeUntrustedText(input.eventText, 500),
       objective: input.objective,
       surfaceKind: 'comment',
       conversationId: input.conversationId,
@@ -14644,13 +14649,17 @@ function runCognitiveCycleNow(input: {
   });
   // الذاكرة العاملة: سياق قصير المدى فقط (بلا ترقية تلقائية طويلة المدى).
   const wmKey = input.conversationId || `${input.platform}::${input.eventIdentity}`;
+  // النص الخارجي الخام لا يُحفظ كذاكرة دائمة حرفياً: يُنظَّف من أي وسم فاصل ويُقصّ،
+  // فلا يستطيع نص تعليق أن يصبح «درساً» أو سياقاً دائماً يحمل تعليمة نظام.
+  const safeEventText = sanitizeUntrustedText(input.eventText, 300);
+  const safeUnresolved = sanitizeUntrustedText(input.eventText, 200);
   workingMemoryState = touchWorkingMemory(workingMemoryState, {
     conversationId: wmKey,
     platform: input.platform,
     objective: input.objective,
-    lastCustomerMessage: input.eventText.slice(0, 300),
+    lastCustomerMessage: safeEventText,
     previousRelevantMessages: [],
-    unresolvedQuestion: report.nextAction.kind === 'ask_clarification' || priceUnverified ? input.eventText.slice(0, 200) : null,
+    unresolvedQuestion: report.nextAction.kind === 'ask_clarification' || priceUnverified ? safeUnresolved : null,
     pendingEscalationReason: hasPendingEscalation ? (input.escalationReason ?? 'manual') : null,
     lastDecisionSummary: `${report.nextAction.labelAr}: ${input.decision.finalStatusLabelAr}`,
     lastConsultedAgents: input.session.participants as unknown as string[],
@@ -16437,6 +16446,8 @@ app.post("/api/ai/generate-content", authenticateToken, async (req, res) => {
     }
 
 
+    // كل حقل نصي يأتي من الطلب (موضوع/اسم منتج/تفاصيل/تعليمات) هو نص خارجي غير
+    // موثوق: يُغلَّف كبيانات لا تعليمات فلا يستطيع تغيير سياسة الرد أو التعليمات.
     const systemPrompt = `${buildIraqiPersonaPrompt(showroomFactsForPersona())}
 
 أنت المساعد الذكي الرسمي والمؤلف الإعلاني لـ "معرض الغرابي للتقسيط".
@@ -16444,10 +16455,12 @@ app.post("/api/ai/generate-content", authenticateToken, async (req, res) => {
 
 المطلوب: توليد محتوى تسويقي احترافي مخصص لمنصة: "${platform || 'عامة'}"
 نوع المحتوى: "${contentType || 'منشور'}"
-الموضوع/المنتج: "${topic || productName || 'عروض التقسيط الميسر'}"
+الموضوع/المنتج: ${wrapUntrustedText(topic || productName || 'عروض التقسيط الميسر')}
 النبرة: "${tone}"
-تفاصيل القسط والمنتج إن وجدت: "${installmentDetails || ''}"
-تعليمات إضافية: "${customInstructions || ''}"
+تفاصيل القسط والمنتج إن وجدت: ${wrapUntrustedText(installmentDetails || '')}
+تعليمات إضافية: ${wrapUntrustedText(customInstructions || '')}
+
+${UNTRUSTED_TEXT_POLICY_AR}
 
 إرشادات المنصات:
 - TikTok: ركز على الهوك الأول (Hook) في البداية، نص سريع وجذاب، هاشتاغات مناسبة (#تقسيط_ميسر #معرض_الغرابي #عروض_التقسيط).
@@ -16597,10 +16610,12 @@ app.post("/api/ai/classify-message", authenticateToken, async (req, res) => {
     const prompt = `${buildIraqiPersonaPrompt(showroomFactsForPersona())}
 
 أنت مساعد خدمة العملاء الذكي في "معرض الغرابي للتقسيط".
-رسالة العميل (${customerName || 'عميل'} عبر ${channel || 'القناة'}): "${message}"
+رسالة العميل (${wrapUntrustedText(customerName || 'عميل')} عبر ${wrapUntrustedText(channel || 'القناة')}): ${wrapUntrustedText(message)}
 
 سياسات ومعلومات المعرض المرجعية:
 ${showroomInfo ? JSON.stringify(showroomInfo) : 'معرض الغرابي للتقسيط - أنظمة تمويل وتقسيط ميسرة.'}
+
+${UNTRUSTED_TEXT_POLICY_AR}
 
 المطلوب إرجاع رد بصيغة JSON حصراً بالشكل التالي:
 {
@@ -16633,6 +16648,10 @@ ${showroomInfo ? JSON.stringify(showroomInfo) : 'معرض الغرابي للت�
         const candidate = JSON.parse(result.text);
         // ندمج مخرجات المزود مع التصنيف الحتمي لضمان اكتمال كل الحقول.
         parsed = { ...deterministicClassification, ...candidate };
+        // حقول السلامة حتمية ولا تُخفَّض من مخرجات المزود: لا يجوز أن يُلغي نص
+        // خارجي (أو مزود مُخترَق) تصعيداً حتمياً لمراجعة بشرية قرّره المصنّف.
+        parsed.needsHumanHandoff = Boolean(deterministicClassification.needsHumanHandoff) || Boolean(candidate?.needsHumanHandoff);
+        if (deterministicClassification.needsHumanHandoff) parsed.urgency = deterministicClassification.urgency;
         providerValidated = true;
       } catch {
         parsed = deterministicClassification;
@@ -16758,8 +16777,10 @@ app.post("/api/ai/agent-chat", authenticateToken, async (req, res) => {
 4. عدم افتراض أو توليد أرقام هواتف أو عناوين وهمية أو أسماء موظفين، والاعتماد حصراً على ما يحدده مالك النظام في قاعدة البيانات.
 
 نبرتك: احترافية، راقية، دقيقة ومباشرة.
-سياق النظام الحالي: ${JSON.stringify(context || {})}
-رسالة المستخدم: ${message}`;
+سياق النظام الحالي: ${wrapUntrustedText(JSON.stringify(context || {}))}
+رسالة المستخدم: ${wrapUntrustedText(message)}
+
+${UNTRUSTED_TEXT_POLICY_AR}`;
 
     const cacheKey = `agent:${JSON.stringify({ message, chatHistory, context })}`;
     const result = await aiEngine.run({

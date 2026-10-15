@@ -240,6 +240,18 @@ export function analyzeBusinessClaims(text: string, facts: BusinessFacts): Busin
     (m) => ' '.repeat(m.length),
   );
 
+  // نسخة لاتينية موحّدة الحالة لفحص الادعاءات الإنجليزية (تطابق بغضّ النظر عن
+  // حالة الأحرف)، مع طمس الروابط حتى لا يُقرأ جزء من رابط مسجّل كادعاء.
+  const latinNormalized = raw
+    .toLowerCase()
+    .replace(/https?:\/\/\S+|www\.\S+/g, ' ')
+    .replace(/\s+/g, ' ');
+  const latinClaim = (pattern: RegExp): boolean => pattern.test(latinNormalized);
+  const latinExcerpt = (pattern: RegExp): string => {
+    const m = latinNormalized.match(pattern);
+    return m ? m[0].slice(0, 80) : '';
+  };
+
   // 1) لا دفعة أولى / لا مقدم.
   //
   // ملاحظة منهجية: هذه عبارات صياغة عامة لا تحتوي أرقاماً، فلا يمكن التحقق منها
@@ -252,6 +264,11 @@ export function analyzeBusinessClaims(text: string, facts: BusinessFacts): Busin
   if (zeroDownClaim && !zeroDownApproved) {
     block('zero_down_payment_not_recorded', 'ادعاء «بدون دفعة أولى» غير مسجّل ومعتمد في بيانات المعرض.', excerpts(/بدون\s+دفعه[^\n]{0,40}|بدون\s+مقدم[^\n]{0,40}|لا\s+تدفع[^\n]{0,40}/));
   }
+  // النسخة الإنجليزية لنفس الادعاء (نص أجنبي لا يفلت من الحارس).
+  const zeroDownClaimEn = latinClaim(/\bno\s+down\s*payment\b|\bzero\s+down\s*payment\b|\bno\s+downpayment\b|\bwithout\s+(a\s+)?down\s*payment\b|\bno\s+deposit\b/);
+  if (zeroDownClaimEn && !zeroDownApproved) {
+    block('zero_down_payment_not_recorded', 'ادعاء «no down payment» غير مسجّل ومعتمد في بيانات المعرض.', latinExcerpt(/\bno\s+down\s*payment\b[^\n]{0,40}|\bno\s+deposit\b[^\n]{0,40}/));
+  }
 
   // 2) خصومات وتخفيضات وعروض وهدايا: لا تُدّعى بلا عرض مسجّل.
   // استثناء واحد مضبوط من الخادم: «خصم X%» حيث X نسبة **معتمدة صراحةً**
@@ -259,9 +276,11 @@ export function analyzeBusinessClaims(text: string, facts: BusinessFacts): Busin
   // أكّده المالك. القيمة الافتراضية فارغة ⇒ لا يمرّ أي خصم غير معتمد. الهدايا/
   // العروض/المجان لا يسمحها هذا الاستثناء إطلاقاً (تتطلب عرضاً مسجّلاً).
   const approvedDiscounts = facts.approvedDiscountPercents || [];
-  const discountPercentsInText = [...normalized.matchAll(/خصم\s*(\d{1,2})(?:\s*%|\s*بالمئه|\s*بالمئة)?/g)]
-    .map((m) => Number(m[1]))
-    .filter((n) => Number.isFinite(n));
+  const discountPercentsInText = [
+    ...[...normalized.matchAll(/خصم\s*(\d{1,2})(?:\s*%|\s*بالمئه|\s*بالمئة)?/g)].map((m) => Number(m[1])),
+    ...[...latinNormalized.matchAll(/(\d{1,2})\s*%\s*(?:off|discount)\b/g)].map((m) => Number(m[1])),
+    ...[...latinNormalized.matchAll(/\bdiscount\s+(?:of\s+)?(\d{1,2})\s*%/g)].map((m) => Number(m[1])),
+  ].filter((n) => Number.isFinite(n));
   const allDiscountsApproved = discountPercentsInText.length > 0 &&
     discountPercentsInText.every((p) => approvedDiscounts.some((a) => Math.abs(a - p) < 0.5));
   const discountClaim = /خصم|تخفيض|تخفيضات|عرض\s+خاص|هديه|هدايا|مجانا|مجاني|بلاش|مجانيه/.test(normalized);
@@ -269,11 +288,30 @@ export function analyzeBusinessClaims(text: string, facts: BusinessFacts): Busin
   if (discountClaim && !facts.hasRecordedPromotion && !(allDiscountsApproved && !nonPercentDiscountClaim)) {
     block('discount_not_recorded', 'ادعاء خصم أو عرض أو هدية غير مسجّل في بيانات المعرض.', excerpts(/خصم[^\n]{0,30}|تخفيض[^\n]{0,30}|هدي[^\n]{0,30}|مجان[^\n]{0,30}/));
   }
+  // النسخة الإنجليزية: خصم/عرض خاص/هدية/مجاني (بلا عرض مسجّل).
+  // «free» تُحجب فقط كادعاء عرض («free gift»/«free delivery»)، لا كصفة عامة،
+  // لتقليل الإيجابيات الكاذبة دون ترك الادعاء التجاري بلا رصد.
+  const discountClaimEn = latinClaim(/\bdiscounts?\b|\bspecial\s+offer\b|\bgifts?\b|\bgiveaway\b|\bpromo(tion|tional)?\b|\bcoupon\b|\bfree\s+(gift|delivery|shipping|installation|warranty)\b|\bfor\s+free\b|\bcomplimentary\b/);
+  const nonPercentDiscountEn = latinClaim(/\bspecial\s+offer\b|\bgifts?\b|\bgiveaway\b|\bpromo(tion|tional)?\b|\bcoupon\b|\bfree\s+(gift|delivery|shipping|installation|warranty)\b|\bfor\s+free\b|\bcomplimentary\b/);
+  if (discountClaimEn && !facts.hasRecordedPromotion && !(allDiscountsApproved && !nonPercentDiscountEn)) {
+    block('discount_not_recorded', 'ادعاء خصم أو عرض أو هدية (بالإنجليزية) غير مسجّل في بيانات المعرض.', latinExcerpt(/\bdiscounts?\b[^\n]{0,30}|\bspecial\s+offer\b[^\n]{0,30}|\bgifts?\b[^\n]{0,30}|\bfree\s+\w+[^\n]{0,30}/));
+  }
+  // «0% interest» ادعاء شرط تقسيط لا نسبة خصم — يُحجب ما لم يكن نصه معتمداً.
+  const interestFreeEn = latinClaim(/\b0\s*%\s*interest\b|\bzero\s+interest\b|\binterest[\s-]*free\b|\bno\s+interest\b/);
+  const interestRecorded = facts.allowedPhrases.some((p) => /interest|فوايد|فوائد/i.test(p));
+  if (interestFreeEn && !interestRecorded) {
+    block('installment_terms_not_recorded', 'ادعاء «بدون فوائد» (بالإنجليزية) غير مسجّل في بيانات المعرض.', latinExcerpt(/\b0\s*%\s*interest\b[^\n]{0,30}|\bzero\s+interest\b[^\n]{0,30}|\binterest[\s-]*free\b[^\n]{0,30}|\bno\s+interest\b[^\n]{0,30}/));
+  }
 
   // 3) شروط تقسيط غير مسجّلة: بدون فوائد / بدون كفيل / بدون راتب.
   const termsClaim = /بدون\s+(فوايد|فوائد|فايده)|فايده\s+صفر|صفر\s+فوايد|بدون\s+كفيل|بدون\s+راتب|بدون\s+ضامن/.test(normalized);
   if (termsClaim) {
     block('installment_terms_not_recorded', 'ادعاء شرط تقسيط (بدون فوائد/كفيل/راتب) غير مسجّل في بيانات المعرض.', excerpts(/بدون\s+(فوايد|فوائد|كفيل|راتب|ضامن)[^\n]{0,30}/));
+  }
+  // النسخة الإنجليزية: بدون كفيل/ضامن/راتب.
+  const termsClaimEn = latinClaim(/\bno\s+guarantor\b|\bwithout\s+(a\s+)?guarantor\b|\bno\s+co[\s-]*signer\b|\bno\s+salary\s+transfer\b|\bno\s+proof\s+of\s+income\b/);
+  if (termsClaimEn) {
+    block('installment_terms_not_recorded', 'ادعاء شرط تقسيط (بلا كفيل/ضامن) بالإنجليزية غير مسجّل في بيانات المعرض.', latinExcerpt(/\bno\s+guarantor\b[^\n]{0,30}|\bwithout\s+(a\s+)?guarantor\b[^\n]{0,30}|\bno\s+co[\s-]*signer\b[^\n]{0,30}|\bno\s+salary\s+transfer\b[^\n]{0,30}|\bno\s+proof\s+of\s+income\b[^\n]{0,30}/));
   }
 
   // 4) الضمان: يُقبل فقط إن كان نص ضمان مسجّلاً فعلاً في بيانات المعرض.
@@ -282,10 +320,20 @@ export function analyzeBusinessClaims(text: string, facts: BusinessFacts): Busin
   if (warrantyClaim && !warrantyRecorded) {
     block('warranty_not_recorded', 'ادعاء ضمان غير مسجّل في بيانات المعرض.', excerpts(/ضمان[^\n]{0,30}/));
   }
+  // النسخة الإنجليزية: warranty/guarantee (تُحجب ما لم يكن نصها مسجّلاً).
+  const warrantyClaimEn = latinClaim(/\bwarrant(y|ies)\b|\bguarantee[ds]?\b|\bguaranty\b/);
+  const warrantyRecordedEn = facts.allowedPhrases.some((p) => /warrant|guarant/i.test(p));
+  if (warrantyClaimEn && !warrantyRecorded && !warrantyRecordedEn) {
+    block('warranty_not_recorded', 'ادعاء ضمان (بالإنجليزية) غير مسجّل في بيانات المعرض.', latinExcerpt(/\bwarrant(y|ies)\b[^\n]{0,30}|\bguarantee[ds]?\b[^\n]{0,30}|\bguaranty\b[^\n]{0,30}/));
+  }
 
   // 5) توفر المنتج: لا يُدّعى «متوفر» إن كان المخزون غير متوفر.
   if (facts.inStock === false && /متوفر|متوفره|متاح\s+الان|جاهز\s+للاستلام|متوفر\s+الان/.test(normalized)) {
     block('stock_claim_conflicts', 'النص يدّعي توفر المنتج وهو غير متوفر في بيانات المعرض.', excerpts(/متوفر[^\n]{0,20}|متاح[^\n]{0,20}/));
+  }
+  // النسخة الإنجليزية: in stock / available now.
+  if (facts.inStock === false && latinClaim(/\bin\s+stock\b|\bavailable\s+now\b|\bready\s+to\s+ship\b|\bavailable\s+for\s+(immediate\s+)?delivery\b/)) {
+    block('stock_claim_conflicts', 'النص (بالإنجليزية) يدّعي توفر المنتج وهو غير متوفر في بيانات المعرض.', latinExcerpt(/\bin\s+stock\b[^\n]{0,20}|\bavailable\s+now\b[^\n]{0,20}|\bready\s+to\s+ship\b[^\n]{0,20}|\bavailable\s+for\s+(immediate\s+)?delivery\b[^\n]{0,20}/));
   }
 
   // 6) أرقام الهاتف: أي رقم غير مسجّل يُحجب.
