@@ -98,12 +98,27 @@ export interface StorageAdapter {
   /** كتابة ذرّية: upsert واحد لPostgres، أو tmp + rename للملف. */
   write<T>(key: string, value: T): Promise<void>;
   /**
+   * F-16: كتابة عدة مفاتيح في **عملية واحدة** — كلها تنجح أو كلها تفشل، بلا
+   * حالة وسطى (state محدّثة وcontrol قديمة أو العكس). تُستخدم لتثبيت لقطة الحالة
+   * وحالة التحكّم معاً في `persistCritical`. اختيارية للتوافق: من لا ينفّذها
+   * يسقط إلى كتابتين منفصلتين (السلوك السابق).
+   */
+  writeMany?(entries: Array<{ key: string; value: unknown }>): Promise<void>;
+  /**
    * نسخة نصية من حالة قاعدة البيانات (JSON) لأغراض النسخ الاحتياطي فقط.
    * لا تتصل بأي قاعدة خارجية ولا تُظهر رابط الاتصال؛ ولا تُرفع إلا **مشفّرة**.
    */
   dump(): Promise<string>;
   status(): StorageStatus;
   listBackups(): BackupInfo[];
+  /**
+   * F-17 (backend الملف فقط): هل الحالة المحفوظة لهذا المفتاح معطوبة (موجودة
+   * لكن لا تُقرأ/تُحلَّل)؟ يسمح للخادم برفض الكتابة فوق ملف معطوب (fail-closed)
+   * بدل إعادة بناء حالة فارغة بصمت. لPostgres لا يُنفَّذ (undefined).
+   */
+  isKeyCorrupt?(key: string): boolean;
+  /** سلامة حالة المفتاح: ok (غائب/مقروء) أو corrupt (موجود ومعطوب). */
+  readIntegrity?(key: string): "ok" | "corrupt";
   /** إغلاق الموارد (اتصال قاعدة البيانات) عند الإيقاف. */
   close(): Promise<void>;
 }
@@ -146,6 +161,13 @@ class FileStorageAdapter implements StorageAdapter {
   private writable = false;
   private detail: string | null = null;
   /**
+   * F-17: مفاتيح حالتها موجودة على القرص لكنها **غير قابلة للقراءة/التحليل**
+   * (تلف/فساد أو صلاحية). تُسجَّل هنا كي لا يُبنى النظام فوق ملف معطوب بصمت،
+   * فالإقلاع يرفض الكتابة (fail-closed) بدل إعادة بناء حالة فارغة تطمس البيانات.
+   * مفتاح غائب تماماً (ENOENT) ليس تلفاً — تشغيل أول نظيف.
+   */
+  private corruptKeys = new Set<string>();
+  /**
    * ملف محلي دائم فقط إن لم نكن على مضيف معروف بأن قرصه عابر (Render/Heroku/
    * Netlify/Lambda…). Render Free يضبط RENDER=true، فبلا DATABASE_URL يُعلَن
    * التخزين عابراً بصراحة بدل ادعاء دوام غير مثبت.
@@ -164,6 +186,30 @@ class FileStorageAdapter implements StorageAdapter {
     return path.join(this.stateDir, ".gharabi-backups");
   }
 
+  /** هل الحالة المحفوظة لهذا المفتاح معطوبة (موجودة لكن لا تُقرأ/تُحلَّل)؟ */
+  isKeyCorrupt(key: string): boolean {
+    return this.corruptKeys.has(key);
+  }
+
+  /** قائمة مفاتيح الحالة المعطوبة المكتشَفة (بلا أي قيمة سرية — أسماء فقط). */
+  corruptKeyList(): string[] {
+    return [...this.corruptKeys].sort();
+  }
+
+  /**
+   * سلامة حالة المفتاح: `ok` (غائب = تشغيل أول نظيف، أو مقروء)، أو `corrupt`
+   * (موجود على القرص لكن تعذّرت قراءته/تحليله). يُميّز ENOENT صراحةً.
+   */
+  readIntegrity(key: string): "ok" | "corrupt" {
+    try {
+      JSON.parse(fs.readFileSync(this.fileFor(key), "utf8"));
+      return "ok";
+    } catch (error: any) {
+      if (error && (error.code === "ENOENT" || error.code === "ENOTDIR")) return "ok";
+      return "corrupt";
+    }
+  }
+
   async init(): Promise<void> {
     try {
       fs.mkdirSync(this.stateDir, { recursive: true });
@@ -179,9 +225,21 @@ class FileStorageAdapter implements StorageAdapter {
   }
 
   readSync<T>(key: string): T | null {
+    let raw: string;
     try {
-      return JSON.parse(fs.readFileSync(this.fileFor(key), "utf8")) as T;
+      raw = fs.readFileSync(this.fileFor(key), "utf8");
+    } catch (error: any) {
+      // ملف غائب (ENOENT) = لا حالة بعد، وليس تلفاً. أي سبب آخر (صلاحية/IO) = تلف.
+      if (!(error && (error.code === "ENOENT" || error.code === "ENOTDIR"))) this.corruptKeys.add(key);
+      return null;
+    }
+    try {
+      const parsed = JSON.parse(raw) as T;
+      this.corruptKeys.delete(key);
+      return parsed;
     } catch {
+      // F-17: المحتوى موجود لكنه غير قابل للتحليل — نُعلن التلف ولا نُعيد null بصمت.
+      this.corruptKeys.add(key);
       return null;
     }
   }
@@ -210,23 +268,44 @@ class FileStorageAdapter implements StorageAdapter {
     }
   }
 
-  async write<T>(key: string, value: T): Promise<void> {
-    const serialized = JSON.stringify(value, null, 2);
+  /** يكتب مفتاحاً واحداً (tmp + rename ذرّي)، ويعيد true إن كُتب فعلاً. */
+  private writeKeyNow(key: string, serialized: string): boolean {
     // كشف التغيّر: الكتابة المتطابقة تماماً لا تُعاد إلى القرص (بلا فقدان أي تغيير
     // فعلي، فالنص مُعاد التوليد من نفس الكائن بنفس الترتيب). يمنع كتابة لقطة
     // الحالة الكاملة في كل دورة مراقبة بلا تغيّر.
     try {
-      if (fs.readFileSync(this.fileFor(key), "utf8") === serialized) return;
+      if (fs.readFileSync(this.fileFor(key), "utf8") === serialized) return false;
     } catch {
       /* الملف غير موجود أو غير قابل للقراءة ⇒ نُكمل الكتابة العادية */
     }
-    if (key === STORAGE_KEY_STATE) this.backupBeforeWrite();
     const target = this.fileFor(key);
     const tmp = `${target}.tmp`;
     fs.writeFileSync(tmp, serialized, { encoding: "utf8", mode: 0o600 });
     fs.renameSync(tmp, target);
+    // F-17: كتابة سليمة تُبرئ المفتاح (الملف صار JSON صالحاً فعلاً).
+    this.corruptKeys.delete(key);
     recordStorageWrite(Buffer.byteLength(serialized, "utf8"));
     this.writable = true;
+    return true;
+  }
+
+  async write<T>(key: string, value: T): Promise<void> {
+    const serialized = JSON.stringify(value, null, 2);
+    if (key === STORAGE_KEY_STATE) this.backupBeforeWrite();
+    this.writeKeyNow(key, serialized);
+  }
+
+  /**
+   * F-16 (backend الملف): كتابة المفاتيح واحداً واحداً مع نسخة احتياطية واحدة
+   * لملف الحالة الأساسي قبل أي تعديل. الملف لا يوفر معاملة عبر ملفات متعددة،
+   * لكن كل ملف يُكتب ذرّياً (tmp + rename) فلا يوجد ملف نصف مكتوب — وهذا يزيل
+   * نافذة "state محدّثة وcontrol قديمة" من جهة الاتساق المنطقي بقدر ما يسمح
+   * التخزين الملفي. (Postgres يُنفّذها في معاملة واحدة فعلية.)
+   */
+  async writeMany(entries: Array<{ key: string; value: unknown }>): Promise<void> {
+    const serialized = entries.map((e) => ({ key: e.key, text: JSON.stringify(e.value, null, 2) }));
+    if (entries.some((e) => e.key === STORAGE_KEY_STATE)) this.backupBeforeWrite();
+    for (const entry of serialized) this.writeKeyNow(entry.key, entry.text);
   }
 
   /**
@@ -247,7 +326,17 @@ class FileStorageAdapter implements StorageAdapter {
   }
 
   status(): StorageStatus {
-    return { backend: this.backend, durable: this.durable, writable: this.writable, healthy: this.writable, stateDir: this.stateDir, detail: this.detail };
+    // F-17: أي مفتاح معطوب يُسقط healthy (fail-closed) ويُعلَن سببه الصريح،
+    // فلا يُبنى النظام فوق حالة محلية معطوبة ولا تُطمس بيانات قائمة.
+    const corrupt = this.corruptKeys.size > 0;
+    return {
+      backend: this.backend,
+      durable: this.durable,
+      writable: this.writable && !corrupt,
+      healthy: this.writable && !corrupt,
+      stateDir: this.stateDir,
+      detail: corrupt ? `state_corrupt:${[...this.corruptKeys].sort().join(",")}`.slice(0, 120) : this.detail,
+    };
   }
 
   listBackups(): BackupInfo[] {
@@ -455,13 +544,20 @@ class PostgresStorageAdapter implements StorageAdapter {
     }
   }
 
+  /** يُسلسل المفتاح ويُحدّد إن كان يستحق الكتابة (كشف تغيّر مقابل خط الأساس). */
+  private serializeIfChanged(key: string, value: unknown): string | null {
+    const serialized = JSON.stringify(value);
+    const baseline = this.writeBaseline.get(key);
+    if (baseline !== undefined && sameSerializedValue(baseline, serialized)) return null;
+    return serialized;
+  }
+
   async write<T>(key: string, value: T): Promise<void> {
     if (!this.pool) throw new Error("storage_not_initialized");
-    const serialized = JSON.stringify(value);
     // كشف التغيّر: لا نُرسل كتابة مطابقة تماماً لآخر قيمة (تُوفّر نقل شبكة Neon).
     // القاعدة JSONB والقراءة تُعيد كائناً؛ نُقارن النص المولَّد من نفس الكائن.
-    const baseline = this.writeBaseline.get(key);
-    if (baseline !== undefined && sameSerializedValue(baseline, serialized)) return;
+    const serialized = this.serializeIfChanged(key, value);
+    if (serialized === null) return;
     await this.pool.query(
       `INSERT INTO gharabi_state (key, value, updated_at) VALUES ($1, $2::jsonb, now())
        ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()`,
@@ -470,6 +566,49 @@ class PostgresStorageAdapter implements StorageAdapter {
     recordStorageWrite(Buffer.byteLength(serialized, "utf8"));
     this.writeBaseline.set(key, serialized);
     this.healthy = true;
+  }
+
+  /**
+   * F-16 (backend Postgres): كتابة عدة مفاتيح في **معاملة واحدة** على اتصال واحد
+   * (BEGIN/COMMIT) — إمّا تُثبَّت الحالة وحالة التحكّم معاً أو لا شيء، فلا توجد
+   * نافذة "state محدّثة وcontrol قديمة" بعد انقطاع جزئي. كشف التغيّر يُطبَّق لكل
+   * مفتاح فلا تُنقل كتابة مطابقة (توفير نقل Neon). فشل أي كتابة => ROLLBACK.
+   */
+  async writeMany(entries: Array<{ key: string; value: unknown }>): Promise<void> {
+    if (!this.pool) throw new Error("storage_not_initialized");
+    const pending: Array<{ key: string; serialized: string }> = [];
+    for (const entry of entries) {
+      const serialized = this.serializeIfChanged(entry.key, entry.value);
+      if (serialized !== null) pending.push({ key: entry.key, serialized });
+    }
+    if (pending.length === 0) return;
+    const client = await this.pool.connect();
+    let failure: unknown;
+    try {
+      await client.query("BEGIN");
+      for (const item of pending) {
+        await client.query(
+          `INSERT INTO gharabi_state (key, value, updated_at) VALUES ($1, $2::jsonb, now())
+           ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()`,
+          [item.key, item.serialized],
+        );
+      }
+      await client.query("COMMIT");
+      // F-16: لا تُحتسب الكتابات إلا بعد COMMIT — فحساب كتابة أُلغيت (ROLLBACK) كان
+      // يضخّم مؤشر نقل Neon الكاذب في /api/health.
+      for (const item of pending) recordStorageWrite(Buffer.byteLength(item.serialized, "utf8"));
+      for (const item of pending) this.writeBaseline.set(item.key, item.serialized);
+      this.healthy = true;
+    } catch (error) {
+      failure = error;
+      try { await client.query("ROLLBACK"); } catch { /* تجاهل: سيُتلف الاتصال أدناه */ }
+      throw error;
+    } finally {
+      // F-16: عند الفشل يُتلف الاتصال (release(error)) بدل إعادته للمجمّع، لأن
+      // اتصالاً بقي في معاملة فاشلة (إن فشل ROLLBACK نفسه) سيُفسد كل كتابة لاحقة
+      // تستخدمه. عند النجاح يُعاد عادياً (undefined).
+      try { client.release(failure as any); } catch { /* تجاهل */ }
+    }
   }
 
   /**
