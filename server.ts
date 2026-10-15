@@ -14745,8 +14745,16 @@ async function persistCritical(): Promise<void> {
     throw new Error(lastPersistError);
   }
   try {
-    await persistStateDurableOrThrow();
-    await saveControlStateStrict();
+    // F-16: تثبيت لقطة الحالة وحالة التحكّم في **كتابة واحدة ذرّية** (معاملة في
+    // Postgres، أو ملفات ذرّية متتالية للملف) بدل كتابتين منفصلتين، فلا توجد نافذة
+    // "state محدّثة وcontrol قديمة" بعد انقطاع جزئي. عند غياب writeMany نتراجع
+    // لكتابتين (توافق خلفي).
+    if (typeof storageAdapter.writeMany === "function") {
+      await persistCriticalNowStrict();
+    } else {
+      await persistStateDurableOrThrow();
+      await saveControlStateStrict();
+    }
   } catch (error: any) {
     if (durabilityExpected) throw error;
     // وضع عابر معلن: الكتابة فشلت لكن الجلسات بلا حالة تعمل — لا تُسقط العملية.
@@ -14765,6 +14773,34 @@ async function saveControlStateStrict(): Promise<void> {
     (error: any) => {
       lastPersistError = String(error?.code || error?.name || "persist_failed").slice(0, 60);
       console.warn("Could not persist control state:", lastPersistError);
+    },
+  );
+  return strict.catch((error: any) => {
+    const code = String(error?.code || error?.name || "persist_failed").slice(0, 60);
+    lastPersistError = code;
+    throw new Error(code);
+  });
+}
+
+/**
+ * F-16: كتابة صارمة **واحدة** للقطة الحالة + حالة التحكّم عبر `writeMany` (معاملة
+ * في Postgres). ترمي عند الفشل فلا يُعلن نجاح قبل تثبيت الاثنين معاً، وتبقي طابور
+ * الكتابة سليماً (لا تسمّمه برفض) مع تسجيل الخطأ.
+ */
+async function persistCriticalNowStrict(): Promise<void> {
+  const stateSnapshot = buildPersistedState();
+  const controlSnapshot = buildControlState();
+  const strict = persistQueue.then(() =>
+    storageAdapter.writeMany!([
+      { key: STORAGE_KEY_STATE, value: stateSnapshot },
+      { key: STORAGE_KEY_CONTROL, value: controlSnapshot },
+    ]),
+  );
+  persistQueue = strict.then(
+    () => { lastPersistError = null; },
+    (error: any) => {
+      lastPersistError = String(error?.code || error?.name || "persist_failed").slice(0, 60);
+      console.warn("Could not persist critical state:", lastPersistError);
     },
   );
   return strict.catch((error: any) => {

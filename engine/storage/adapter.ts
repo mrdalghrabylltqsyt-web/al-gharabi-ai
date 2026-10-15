@@ -98,6 +98,13 @@ export interface StorageAdapter {
   /** كتابة ذرّية: upsert واحد لPostgres، أو tmp + rename للملف. */
   write<T>(key: string, value: T): Promise<void>;
   /**
+   * F-16: كتابة عدة مفاتيح في **عملية واحدة** — كلها تنجح أو كلها تفشل، بلا
+   * حالة وسطى (state محدّثة وcontrol قديمة أو العكس). تُستخدم لتثبيت لقطة الحالة
+   * وحالة التحكّم معاً في `persistCritical`. اختيارية للتوافق: من لا ينفّذها
+   * يسقط إلى كتابتين منفصلتين (السلوك السابق).
+   */
+  writeMany?(entries: Array<{ key: string; value: unknown }>): Promise<void>;
+  /**
    * نسخة نصية من حالة قاعدة البيانات (JSON) لأغراض النسخ الاحتياطي فقط.
    * لا تتصل بأي قاعدة خارجية ولا تُظهر رابط الاتصال؛ ولا تُرفع إلا **مشفّرة**.
    */
@@ -261,17 +268,16 @@ class FileStorageAdapter implements StorageAdapter {
     }
   }
 
-  async write<T>(key: string, value: T): Promise<void> {
-    const serialized = JSON.stringify(value, null, 2);
+  /** يكتب مفتاحاً واحداً (tmp + rename ذرّي)، ويعيد true إن كُتب فعلاً. */
+  private writeKeyNow(key: string, serialized: string): boolean {
     // كشف التغيّر: الكتابة المتطابقة تماماً لا تُعاد إلى القرص (بلا فقدان أي تغيير
     // فعلي، فالنص مُعاد التوليد من نفس الكائن بنفس الترتيب). يمنع كتابة لقطة
     // الحالة الكاملة في كل دورة مراقبة بلا تغيّر.
     try {
-      if (fs.readFileSync(this.fileFor(key), "utf8") === serialized) return;
+      if (fs.readFileSync(this.fileFor(key), "utf8") === serialized) return false;
     } catch {
       /* الملف غير موجود أو غير قابل للقراءة ⇒ نُكمل الكتابة العادية */
     }
-    if (key === STORAGE_KEY_STATE) this.backupBeforeWrite();
     const target = this.fileFor(key);
     const tmp = `${target}.tmp`;
     fs.writeFileSync(tmp, serialized, { encoding: "utf8", mode: 0o600 });
@@ -280,6 +286,26 @@ class FileStorageAdapter implements StorageAdapter {
     this.corruptKeys.delete(key);
     recordStorageWrite(Buffer.byteLength(serialized, "utf8"));
     this.writable = true;
+    return true;
+  }
+
+  async write<T>(key: string, value: T): Promise<void> {
+    const serialized = JSON.stringify(value, null, 2);
+    if (key === STORAGE_KEY_STATE) this.backupBeforeWrite();
+    this.writeKeyNow(key, serialized);
+  }
+
+  /**
+   * F-16 (backend الملف): كتابة المفاتيح واحداً واحداً مع نسخة احتياطية واحدة
+   * لملف الحالة الأساسي قبل أي تعديل. الملف لا يوفر معاملة عبر ملفات متعددة،
+   * لكن كل ملف يُكتب ذرّياً (tmp + rename) فلا يوجد ملف نصف مكتوب — وهذا يزيل
+   * نافذة "state محدّثة وcontrol قديمة" من جهة الاتساق المنطقي بقدر ما يسمح
+   * التخزين الملفي. (Postgres يُنفّذها في معاملة واحدة فعلية.)
+   */
+  async writeMany(entries: Array<{ key: string; value: unknown }>): Promise<void> {
+    const serialized = entries.map((e) => ({ key: e.key, text: JSON.stringify(e.value, null, 2) }));
+    if (entries.some((e) => e.key === STORAGE_KEY_STATE)) this.backupBeforeWrite();
+    for (const entry of serialized) this.writeKeyNow(entry.key, entry.text);
   }
 
   /**
@@ -518,13 +544,20 @@ class PostgresStorageAdapter implements StorageAdapter {
     }
   }
 
+  /** يُسلسل المفتاح ويُحدّد إن كان يستحق الكتابة (كشف تغيّر مقابل خط الأساس). */
+  private serializeIfChanged(key: string, value: unknown): string | null {
+    const serialized = JSON.stringify(value);
+    const baseline = this.writeBaseline.get(key);
+    if (baseline !== undefined && sameSerializedValue(baseline, serialized)) return null;
+    return serialized;
+  }
+
   async write<T>(key: string, value: T): Promise<void> {
     if (!this.pool) throw new Error("storage_not_initialized");
-    const serialized = JSON.stringify(value);
     // كشف التغيّر: لا نُرسل كتابة مطابقة تماماً لآخر قيمة (تُوفّر نقل شبكة Neon).
     // القاعدة JSONB والقراءة تُعيد كائناً؛ نُقارن النص المولَّد من نفس الكائن.
-    const baseline = this.writeBaseline.get(key);
-    if (baseline !== undefined && sameSerializedValue(baseline, serialized)) return;
+    const serialized = this.serializeIfChanged(key, value);
+    if (serialized === null) return;
     await this.pool.query(
       `INSERT INTO gharabi_state (key, value, updated_at) VALUES ($1, $2::jsonb, now())
        ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()`,
@@ -533,6 +566,42 @@ class PostgresStorageAdapter implements StorageAdapter {
     recordStorageWrite(Buffer.byteLength(serialized, "utf8"));
     this.writeBaseline.set(key, serialized);
     this.healthy = true;
+  }
+
+  /**
+   * F-16 (backend Postgres): كتابة عدة مفاتيح في **معاملة واحدة** على اتصال واحد
+   * (BEGIN/COMMIT) — إمّا تُثبَّت الحالة وحالة التحكّم معاً أو لا شيء، فلا توجد
+   * نافذة "state محدّثة وcontrol قديمة" بعد انقطاع جزئي. كشف التغيّر يُطبَّق لكل
+   * مفتاح فلا تُنقل كتابة مطابقة (توفير نقل Neon). فشل أي كتابة => ROLLBACK.
+   */
+  async writeMany(entries: Array<{ key: string; value: unknown }>): Promise<void> {
+    if (!this.pool) throw new Error("storage_not_initialized");
+    const pending: Array<{ key: string; serialized: string }> = [];
+    for (const entry of entries) {
+      const serialized = this.serializeIfChanged(entry.key, entry.value);
+      if (serialized !== null) pending.push({ key: entry.key, serialized });
+    }
+    if (pending.length === 0) return;
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN");
+      for (const item of pending) {
+        await client.query(
+          `INSERT INTO gharabi_state (key, value, updated_at) VALUES ($1, $2::jsonb, now())
+           ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()`,
+          [item.key, item.serialized],
+        );
+        recordStorageWrite(Buffer.byteLength(item.serialized, "utf8"));
+      }
+      await client.query("COMMIT");
+      for (const item of pending) this.writeBaseline.set(item.key, item.serialized);
+      this.healthy = true;
+    } catch (error) {
+      try { await client.query("ROLLBACK"); } catch { /* تجاهل: الاتصال سيُعاد */ }
+      throw error;
+    } finally {
+      try { client.release(); } catch { /* تجاهل */ }
+    }
   }
 
   /**
