@@ -13,6 +13,7 @@
  */
 
 import { normalizeArabic } from './contentSafety';
+import { wrapUntrustedText, UNTRUSTED_TEXT_POLICY_AR } from '../ai/untrusted';
 
 export interface YouTubeDescriptionProduct {
   name: string;
@@ -175,7 +176,9 @@ ${JSON.stringify(facts, null, 2)}
 - حوّل المواصفات الموثوقة إلى فوائد مفهومة للعميل (لماذا تنفعه)، بنبرة مقنعة بلا مبالغة كاذبة.
 - أضف دعوة واضحة للتواصل (CTA) فقط إن وُجد رقم هاتف أو واتساب في الحقائق؛ وإلا فاستخدم دعوة عامة للاستفسار عبر قنوات المعرض الرسمية.
 - ضع الوسوم (hashtags) المذكورة في نهاية الوصف كما هي، بلا اختراع وسوم جديدة.
-- أعد الوصف كنص عربي صافٍ فقط بلا أي شرح إضافي، بطول بين 3 و10 أسطر.${extra ? `\nملاحظة المالك: ${extra}` : ''}`;
+- أعد الوصف كنص عربي صافٍ فقط بلا أي شرح إضافي، بطول بين 3 و10 أسطر.${extra ? `\nملاحظة المالك:\n${wrapUntrustedText(extra)}` : ''}
+
+${UNTRUSTED_TEXT_POLICY_AR}`;
 }
 
 /**
