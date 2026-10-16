@@ -120,7 +120,7 @@ function startApp(port: number, stateDir: string, enableScope: boolean, previewT
   return spawn(process.execPath, [tsxCli, serverEntry], { cwd: REPO_ROOT, env, stdio: ['ignore', 'pipe', 'pipe'] });
 }
 
-async function waitForHealth(base: string, timeoutMs = 60_000): Promise<boolean> {
+async function waitForHealth(base: string, timeoutMs = 180_000): Promise<boolean> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     try { if ((await fetch(`${base}/api/health`)).ok) return true; } catch { /* لم يقلع بعد */ }

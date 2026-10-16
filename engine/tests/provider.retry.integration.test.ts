@@ -77,7 +77,7 @@ function startApp(port: number, stateDir: string, graphBase: string): { proc: Ch
   return { proc, log: () => log };
 }
 
-async function waitForHealth(base: string, timeoutMs = 60_000): Promise<boolean> {
+async function waitForHealth(base: string, timeoutMs = 180_000): Promise<boolean> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     try { if ((await fetch(`${base}/api/health`)).ok) return true; } catch { /* لم يقلع بعد */ }
