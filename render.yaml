@@ -106,6 +106,11 @@ services:
         sync: false
       - key: GOOGLE_OAUTH_CLIENT_SECRET
         sync: false
+      # Google Business Profile (اعتماد خاص اختياري؛ إن غاب يُستخدم اعتماد Google المشترك):
+      - key: GOOGLE_BUSINESS_OAUTH_CLIENT_ID
+        sync: false
+      - key: GOOGLE_BUSINESS_OAUTH_CLIENT_SECRET
+        sync: false
       # TikTok (Login Kit + Content Posting API + Display API):
       - key: TIKTOK_CLIENT_KEY
         sync: false

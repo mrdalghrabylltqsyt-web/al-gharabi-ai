@@ -44,7 +44,7 @@ npm install
 npm run dev            # tsx server.ts
 npm run lint           # tsc --noEmit
 npm run build          # vite build + esbuild server.ts -> dist/server.cjs
-npm run final-audit    # node final-audit.mjs (1714 فحصاً)
+npm run final-audit    # node final-audit.mjs (1721 فحصاً)
 npm test               # storage + engine + auth + ... + db + runtime
 ```
 - التشغيل الإنتاجي: `PORT=4517 NODE_ENV=production APP_URL=http://localhost:4517 node dist/server.cjs`
@@ -6660,3 +6660,44 @@ callback)، رمز حالة `/api/health`، نطاق ERP، أي سرّ أو إع
 
 **لم يُمسّ:** TikTok (public/favicon*/index.html/tiktok*.txt//terms//privacy/OAuth callback)،
 رمز حالة `/api/health`، نطاق ERP، أي سرّ أو إعداد Render/Meta. لا تغيير لمخطط قاعدة البيانات.
+
+
+## تفعيل زر «إكمال الإعداد الخارجي» لـGoogle Business Profile (2026-10-16)
+
+**الجذر المُثبت:** في `PlatformConnectionCenter` كان الفرع `state === 'EXTERNAL_SETUP_REQUIRED'`
+يعرض **وسماً ثابتاً** (`<span>`) بعنوان «إكمال الإعداد الخارجي» لا ينفّذ شيئاً. وهذه هي حالة
+Google Business/X/Snapchat (بلا موصل تنفيذ)، فلم يستطع المالك بدء ربط OAuth لـGoogle Business
+رغم توفّر اعتماد Google أصلاً — كان الزر يبدو تفاعلياً وهو معطّل فعلياً.
+
+**الإصلاح (بلا مساس بأي منصة أخرى):**
+- `engine/social/operations.ts`: حقل جديد `oauthAvailable` في `PlatformControlStatus` =
+  `readiness.oauth !== 'NOT_SUPPORTED' && connectionConfigured` — أي أن مسار البدء قابل
+  للاستدعاء فعلاً (بنية OAuth مدعومة + اعتماد مضبوط). يُعلن في `/api/platforms/control-plane`
+  و`/api/platforms/readiness-matrix` لكل منصة.
+- `src/components/social/PlatformConnectionCenter.tsx`: الفرع صار: إن كان
+  `needsExternal && p.oauthAvailable` يُعرض **زر حقيقي** يستدعي `startOAuth(p.platform)`
+  (نفس مسار «بدء الربط» القائم)؛ وإلا يبقى وسماً تشخيصياً يذكر أن البدء بعد ضبط الاعتماد
+  (بدل إرسال المالك إلى مسار يرد 503 بلا سبب ظاهر).
+- `server.ts`: OAUTH_CONFIG لـ`google_business` يقرأ اعتماداً خاصاً به
+  (`GOOGLE_BUSINESS_OAUTH_CLIENT_ID/SECRET` ثم البديل `GOOGLE_BUSINESS_CLIENT_ID/SECRET`) ثم
+  يسقط لاعتماد Google المشترك (`GOOGLE_OAUTH_CLIENT_ID/SECRET` ثم `GOOGLE_CLIENT_ID`) — فلا
+  يلزم اعتماد جديد إن كانت YouTube مضبوطة. مسار YouTube لم يُمسّ.
+- `server.ts`: `handleOAuthStart` (منفّذ واحد) مُسجَّل على المسار المعتمد
+  `/api/platforms/:platform/oauth/start` + alias `/api/platforms/:platform/oauth/connect`؛
+  ومعرّف المنصة يُطبَّع (`google-business` ⇒ `google_business`) في البدء و**في الإرجاع**،
+  فلا ينشأ معرّف منصة ثانٍ. النطاق المطلوب: `https://www.googleapis.com/auth/business.manage`.
+- `engine/social/credentials.ts`: بدائل اعتماد Google Business مذكورة صراحةً (تُقرأ من
+  `FULL_ENV` المشترك) فلا تُعدّ «ناقصة» عند ضبط اعتماد Google المشترك.
+- `.env.example` و`render.yaml`: توثيق `GOOGLE_BUSINESS_OAUTH_CLIENT_ID/SECRET` (بلا قيمة سرّية).
+
+**اختبارات:** `google.business.external.setup.ui.test.ts` (27 فحصاً، ثابت على المصدر) +
+`google.business.oauth.integration.test.ts` (17 فحصاً، خادم حقيقي بلا مزود: `oauthAvailable=true`،
+`/oauth/start` يُعيد رابطاً حقيقياً بنطاق business.manage وclient_id الصحيح، وalias
+`/oauth/connect` يُطبّع المعرّف، و401 بلا جلسة، ولا تسريب سرّ). فحوص final-audit:
+`google-business-external-setup-button`، `google-business-oauth-available-field`،
+`google-business-env-names`، `google-business-oauth-connect-alias`، `google-business-creds-alternatives`،
+`google-business-external-setup-test`، `google-business-oauth-integration-test`
+(الإجمالي **1721**).
+
+**لم يُمسّ:** Threads/Snapchat/YouTube وبقية المنصات، ولا أي سرّ/مفتاح/OAuth قائم، ولا Gemini،
+ولا قاعدة البيانات، ولا نموذج الجدولة. **لا push ولا merge ولا deploy** بانتظار إذن المالك.

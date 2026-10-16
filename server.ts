@@ -2115,7 +2115,11 @@ const OAUTH_CONFIG: Record<string, any> = {
   // هوية القناة، وyoutube.upload بقي مطلوباً بقرار المالك تمهيداً لرفع الفيديو.
   // لا تُعلن قدرة نشر/تعليقات ما لم يُنفَّذ مسارها فعلاً (انظر YOUTUBE_CAPABILITY_MATRIX).
   youtube: { provider: "google", auth: "https://accounts.google.com/o/oauth2/v2/auth", token: "https://oauth2.googleapis.com/token", clientId: envSecret("GOOGLE_OAUTH_CLIENT_ID") || envSecret("GOOGLE_CLIENT_ID"), clientSecret: envSecret("GOOGLE_OAUTH_CLIENT_SECRET"), scopes: [...YOUTUBE_REQUIRED_SCOPES] },
-  google_business: { provider: "google", auth: "https://accounts.google.com/o/oauth2/v2/auth", token: "https://oauth2.googleapis.com/token", clientId: envSecret("GOOGLE_OAUTH_CLIENT_ID") || envSecret("GOOGLE_CLIENT_ID"), clientSecret: envSecret("GOOGLE_OAUTH_CLIENT_SECRET"), scopes: ["https://www.googleapis.com/auth/business.manage"] },
+  // Google Business Profile: يقبل اعتماداً خاصاً به (GOOGLE_BUSINESS_OAUTH_CLIENT_ID/SECRET
+  // أو البديل GOOGLE_BUSINESS_CLIENT_ID/SECRET) ثم يسقط لاعتماد Google المشترك
+  // (GOOGLE_OAUTH_CLIENT_ID/SECRET ثم GOOGLE_CLIENT_ID) — فلا يلزم اعتماد جديد إن
+  // كانت YouTube مضبوطة أصلاً، ولا يتأثر مسار YouTube بهذه البدائل.
+  google_business: { provider: "google", auth: "https://accounts.google.com/o/oauth2/v2/auth", token: "https://oauth2.googleapis.com/token", clientId: envSecret("GOOGLE_BUSINESS_OAUTH_CLIENT_ID") || envSecret("GOOGLE_BUSINESS_CLIENT_ID") || envSecret("GOOGLE_OAUTH_CLIENT_ID") || envSecret("GOOGLE_CLIENT_ID"), clientSecret: envSecret("GOOGLE_BUSINESS_OAUTH_CLIENT_SECRET") || envSecret("GOOGLE_BUSINESS_CLIENT_SECRET") || envSecret("GOOGLE_OAUTH_CLIENT_SECRET"), scopes: ["https://www.googleapis.com/auth/business.manage"] },
   tiktok: { provider: "tiktok", auth: `https://www.tiktok.com/v2/auth/authorize/`, token: "https://open.tiktokapis.com/v2/oauth/token/", clientId: envSecret("TIKTOK_CLIENT_KEY"), clientSecret: envSecret("TIKTOK_CLIENT_SECRET"), scopes: [...TIKTOK_REQUIRED_SCOPES] },
   // business_management إلزامي منذ Graph v17 لعرض صفحات Business Manager عبر
   // /me/accounts؛ بدونه يظهر الحساب «يدير صفر صفحات» فاشلاً بلا سبب واضح.
@@ -4267,8 +4271,11 @@ async function fetchProviderAccount(platform: string, accessToken: string): Prom
   return null;
 }
 
-app.get("/api/platforms/:platform/oauth/start", requireOwner, async (req,res)=>{
-  const platform=req.params.platform; const cfg=OAUTH_CONFIG[platform];
+async function handleOAuthStart(req:any,res:any){
+  // مسار البدء المعتمد للمشروع: /api/platforms/:platform/oauth/start.
+  // ويُقبل كذلك alias متوافق بشكله المفصول بشرطة (google-business) عبر تطبيع
+  // المعرّف إلى المعرّف القانوني (google_business)، فلا ينشأ معرّف منصة ثانٍ.
+  const platform=String(req.params.platform||"").replace(/-/g,"_"); const cfg=OAUTH_CONFIG[platform];
   if(!cfg) return res.status(501).json({success:false,error:"هذا المزود يحتاج إعداد موصل خاص قبل بدء OAuth."});
   if(!oauthReady(platform)) {
     // تمييز missing من invalid في الرسالة نفسها بدل افتراض غياب المفتاح دائماً.
@@ -4467,7 +4474,12 @@ app.get("/api/platforms/:platform/oauth/start", requireOwner, async (req,res)=>{
     // لذا biz=1 مع scope هو السلوك المطابق للوثيقة لا خطأ. القيمة للتشخيص فقط.
     businessLoginSurface:dialogProbe?.businessLoginSurface??null,
   });
-});
+}
+
+// مسار البدء المعتمد + alias متوافق (/oauth/connect) الذي يطلبه بعض المستدعين.
+// كلاهما يفوّض لنفس المنفّذ الواحد، فلا منطق مكرر ولا معرّف منصة ثانٍ.
+app.get("/api/platforms/:platform/oauth/start", requireOwner, handleOAuthStart);
+app.get("/api/platforms/:platform/oauth/connect", requireOwner, handleOAuthStart);
 
 /**
  * إكمال OAuth عبر POST من الواجهة بعد قراءة مقطع الاستجابة.
@@ -4528,7 +4540,9 @@ async function handleOAuthCallback(req:any, res:any, rawQuery:string, viaPost:bo
   const sendHtml=(html:string)=>viaPost?res.json({success:true}):res.send(html);
   const failHtml=(status:number,msg:string)=>viaPost?res.status(status).json({success:false,error:msg}):res.status(status).send(msg);
   const params=new URLSearchParams(rawQuery||"");
-  const platform=String(req.params.platform); const state=params.get("state")||""; const pending=pendingOAuth.get(state); const cfg=OAUTH_CONFIG[platform];
+  // تطبيع معرّف المنصة (يقبل صيغة الشرطة google-business كـalias للمعرّف القانوني)
+  // حتى تنجح العودة من نفس مسار البدء.
+  const platform=String(req.params.platform||"").replace(/-/g,"_"); const state=params.get("state")||""; const pending=pendingOAuth.get(state); const cfg=OAUTH_CONFIG[platform];
   const redirectUri=oauthCallbackUrl(platform);
   // سجل آمن لعودة Meta: هل وصلت، وبأي رمز خطأ — بلا state ولا code ولا توكن.
   logOAuthStart(platform, { outcome: "callback_received", viaPost, hasState: Boolean(state), hasCode: Boolean(params.get("code")), providerError: params.get("error") ? String(params.get("error")).slice(0, 60) : null, redirectUri });
