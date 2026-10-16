@@ -996,9 +996,20 @@ export const PlatformConnectionCenter: React.FC = () => {
                         {busy === p.platform ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <PlugZap className="w-3.5 h-3.5" />} إعادة الربط
                       </button>
                     </>
+                  ) : needsExternal && p.oauthAvailable ? (
+                    // مسار OAuth قابل للبدء فعلاً (بيانات الاعتماد مضبوطة): الزر مفعّل
+                    // وينقل المالك إلى شاشة موافقة المزود. كان وسماً ثابتاً لا يفعل شيئاً.
+                    <button onClick={() => void startOAuth(p.platform)} disabled={busy === p.platform}
+                      className="px-3 py-1.5 rounded-lg bg-amber-500 text-slate-950 text-[11px] font-black inline-flex items-center gap-1 disabled:opacity-50">
+                      {busy === p.platform ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <ExternalLink className="w-3.5 h-3.5" />} إكمال الإعداد الخارجي (ربط {p.displayName})
+                    </button>
                   ) : needsExternal ? (
-                    <span className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg bg-amber-500/10 border border-amber-600/30 text-[11px] font-bold text-amber-300">
-                      <ExternalLink className="w-3.5 h-3.5" /> إكمال الإعداد الخارجي
+                    // اعتماد ناقص: لا يمكن بدء OAuth الآن — نعرض الأسماء المطلوبة بدل
+                    // إرسال المالك إلى مسار سيرفضه بـ503 بلا سبب ظاهر.
+                    <span
+                      title={p.blockingReason || 'يلزم ضبط بيانات اعتماد المزود أولاً.'}
+                      className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg bg-amber-500/10 border border-amber-600/30 text-[11px] font-bold text-amber-300">
+                      <ExternalLink className="w-3.5 h-3.5" /> إكمال الإعداد الخارجي (يبدأ بعد ضبط الاعتماد)
                     </span>
                   ) : canOAuth ? (
                     <button onClick={() => void startOAuth(p.platform)} disabled={busy === p.platform}

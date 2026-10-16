@@ -50,6 +50,13 @@ export const CREDENTIAL_SPECS: Record<PlatformId, CredentialSpec> = {
   google_business: {
     connection: ['GOOGLE_OAUTH_CLIENT_ID', 'GOOGLE_OAUTH_CLIENT_SECRET'],
     webhook: [],
+    // اعتماد خاص بـGoogle Business اختياري: إن وُجد يُستخدم، وإلا تُقبل بيانات
+    // Google المشتركة (YouTube) بديلاً — فلا تُعلن «ناقص» عند ضبط YouTube فقط.
+    optional: ['GOOGLE_BUSINESS_OAUTH_CLIENT_ID', 'GOOGLE_BUSINESS_OAUTH_CLIENT_SECRET', 'GOOGLE_BUSINESS_CLIENT_ID', 'GOOGLE_BUSINESS_CLIENT_SECRET'],
+    alternatives: [
+      ['GOOGLE_OAUTH_CLIENT_ID', 'GOOGLE_BUSINESS_OAUTH_CLIENT_ID', 'GOOGLE_BUSINESS_CLIENT_ID', 'GOOGLE_CLIENT_ID'],
+      ['GOOGLE_OAUTH_CLIENT_SECRET', 'GOOGLE_BUSINESS_OAUTH_CLIENT_SECRET', 'GOOGLE_BUSINESS_CLIENT_SECRET'],
+    ],
   },
   tiktok: {
     connection: ['TIKTOK_CLIENT_KEY', 'TIKTOK_CLIENT_SECRET'],

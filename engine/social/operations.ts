@@ -68,6 +68,14 @@ export interface PlatformControlStatus {
   capabilities: string[];
   credentialsConfigured: boolean;
   connectionConfigured: boolean;
+  /**
+   * هل مسار OAuth قابل للبدء الآن فعلاً؟ يتحقق من: البنية تدعم OAuth (ليست
+   * NOT_SUPPORTED) + بيانات الاعتماد مضبوطة (وهي تشمل APP_URL ومفتاح التشفير
+   * الصالح). تمكّن الواجهة من جعل زر «إكمال الإعداد الخارجي» قابلاً للنقر حين
+   * يكون الربط ممكناً، بدل عرضه كوسم ثابت لا يفعل شيئاً. لا تفترض جاهزية بلا
+   * اعتماد مضبوط، فلا تُرسل المالك إلى مسار سيرفضه (503).
+   */
+  oauthAvailable: boolean;
   providerVerified: boolean;
   liveConnection: 'connected' | 'reauth_needed' | 'disconnected';
   /** سبب الحجب الرئيسي (إن وُجد) — بلا أسرار. */
@@ -181,6 +189,9 @@ export function computePlatformStatus(
     capabilities: [...(PLATFORM_SPECS.find((s) => s.platform === platform)?.capabilities || [])],
     credentialsConfigured: creds.connection.configured && creds.webhook.configured,
     connectionConfigured,
+    // OAuth قابل للبدء حين تدعم البنية المصافحة (ليست NOT_SUPPORTED) وتكون بيانات
+    // الاعتماد مضبوطة (تشمل APP_URL ومفتاح التشفير الصالح عبر connection).
+    oauthAvailable: readiness.oauth !== 'NOT_SUPPORTED' && connectionConfigured,
     providerVerified: verified,
     liveConnection: live.status || 'disconnected',
     blockingReason,
