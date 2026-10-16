@@ -73,6 +73,7 @@ import {
   nextFollowUpAt, isFollowUpDue, applyFollowUpSent, buildCommercialFollowUpText,
   buildCommercialProposal, confirmCommercialProposal, rejectCommercialProposal,
   toCommercialLeadRow, summarizeCommercialLeads, commercialPublicBlock, normalizeCommercialLeads,
+  isWithinMetaMessageWindow,
 } from "./engine/commercial/commercialBrain";
 import { classifyConversation } from "./engine/brain/audience/conversationIntelligence";
 import { capabilityRow } from "./engine/brain/strategy/capabilityMatrix";
@@ -8494,7 +8495,7 @@ const COMMERCIAL_LEASE_TTL_MS = 5 * 60 * 1000;
 const COMMERCIAL_LEASE_OWNER = `commercial-brain-${process.pid}-${Date.now().toString(36)}`;
 const COMMERCIAL_MAX_LEADS = 5000;
 const COMMERCIAL_MAX_PER_CYCLE = 10;
-let commercialLastRun: { processed: number; followUpsSent: number; escalated: number; at: string } | null = null;
+let commercialLastRun: { processed: number; followUpsSent: number; escalated: number; windowBlocked: number; at: string } | null = null;
 
 /**
  * مفتاح الإيقاف الطارئ للعقل التجاري (Kill Switch) — مفتاح رئيسي واحد فقط.
@@ -8713,7 +8714,7 @@ async function runCommercialBrainCycle(trigger: string): Promise<{ ok: boolean; 
   }
   commercialLease = leaseRes.lease;
   const nowIso = new Date().toISOString();
-  let processed = 0, followUpsSent = 0, escalated = 0;
+  let processed = 0, followUpsSent = 0, escalated = 0, commercialWindowBlocked = 0;
   // إشارة الإيقاف الطارئ تُصفَّر عند بدء دورة جديدة (المفتاح مفعّل هنا)، فيُوقف أي
   // تعطيل أثناء الدورة كل عمل لاحق عند أول نقطة تحقّق (لا ينتظر انتهاء الدورة).
   commercialKillSignal = false;
@@ -8748,6 +8749,18 @@ async function runCommercialBrainCycle(trigger: string): Promise<{ ok: boolean; 
       const due = isFollowUpDue(lead, nowIso);
       if (!due.due) continue;
       if (!['facebook', 'instagram'].includes(lead.platform)) continue;
+      // PR-S1 — حارس مؤقت: نافذة مراسلة Meta الرسمية (24 ساعة) تنطبق على **الرسائل
+      // الخاصة (Messenger/DM)** فقط، لا على الردود العامة على التعليقات (لا تخضع
+      // لنافذة 24 ساعة). خارج النافذة لا تُرسَل متابعة رسالة (قد تُرفض/تعرّض الصفحة
+      // للتقييد) ويُسجَّل السبب؛ أما متابعة التعليق العام فتسلك كما كانت.
+      if (lead.kind === 'message' && !isWithinMetaMessageWindow(lead.lastCustomerInteractionAt, nowIso)) {
+        commercialWindowBlocked += 1;
+        audit('commercial-brain', 'commercial_followup_blocked_meta_window', JSON.stringify({
+          leadKey: lead.key, platform: lead.platform, kind: lead.kind,
+          lastCustomerInteractionAt: lead.lastCustomerInteractionAt, reason: 'outside_meta_message_window_24h',
+        }));
+        continue;
+      }
       const text = buildCommercialFollowUpText(lead);
       // حارس المحتوى صريح إضافي (المنفّذ يفرضه أيضاً): لا متابعة تحمل ادعاءً.
       const product = lead.interestedProductId ? (workspace.products || []).find((x: any) => String(x.id) === String(lead.interestedProductId)) || null : null;
@@ -8769,8 +8782,8 @@ async function runCommercialBrainCycle(trigger: string): Promise<{ ok: boolean; 
       }
     }
     if (followUpsSent > 0) await persistCommercialLeads();
-    commercialLastRun = { processed, followUpsSent, escalated, at: nowIso };
-    return { ok: true, trigger, result: { processed, followUpsSent, escalated } };
+    commercialLastRun = { processed, followUpsSent, escalated, windowBlocked: commercialWindowBlocked, at: nowIso };
+    return { ok: true, trigger, result: { processed, followUpsSent, escalated, windowBlocked: commercialWindowBlocked } };
   } catch (e: any) {
     return { ok: false, trigger, error: String(e?.code || e?.name || 'cycle_failed').slice(0, 80) };
   } finally {
@@ -10799,7 +10812,12 @@ async function executePlatformPublishInner(platform: string, body: any, actor: s
       const ytBytes = await resolveYouTubeBytes(body);
       if (!ytBytes.ok) return { status: 422, body: { success: false, error: ytBytes.error, code: ytBytes.code || "MEDIA_REQUIRED" } };
       const ytTitle = typeof body?.title === "string" && body.title.trim() ? body.title.trim().slice(0, 100) : youTubeTitleFromContent(content);
-      const ytResult = await executeYouTubePublish({
+      // حجز واحد فقط لكل عملية: `executePlatformPublish` (الغلاف الخارجي) حجز
+      // بالفعل مفتاح `youtube:publish:<postId>`. استدعاء الغلاف المحجوز هنا مرة
+      // ثانية على نفس المفتاح كان يُرفض 409 IDEMPOTENT_OPERATION_IN_PROGRESS.
+      // فنستدعي الدالة الداخلية مباشرةً بلا حجز ثانٍ (المسار المباشر
+      // /api/platforms/youtube/publish يبقى يستخدم الغلاف المحجوز مرة واحدة).
+      const ytResult = await executeYouTubePublishInner({
         title: ytTitle,
         description: typeof body?.description === "string" ? body.description : content,
         tags: Array.isArray(body?.tags) ? body.tags : undefined,
