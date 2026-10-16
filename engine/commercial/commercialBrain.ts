@@ -38,6 +38,21 @@ export const COMMERCIAL_MAX_DISCOUNT_ABS_DEFAULT = 200000;
 export const COMMERCIAL_FOLLOWUP_HOURS: readonly number[] = Object.freeze([24, 72]);
 /** حدّ أقصى لعدد المتابعات قبل التوقف عن الإلحاح (لا إزعاج). */
 export const COMMERCIAL_MAX_FOLLOWUPS = 2;
+
+/**
+ * PR-S1 — حارس مؤقت: نافذة مراسلة Meta الرسمية (24 ساعة من آخر رسالة للعميل).
+ * خارج هذه النافذة، إرسال رسالة عبر Messenger/DM يخالف سياسة Meta ويعرّض الصفحة
+ * للتقييد. هذا حارس مؤقت (يُوسَّع لاحقاً في PR منفصل لمعالجة كل حالات النافذة).
+ */
+export const COMMERCIAL_META_MESSAGE_WINDOW_HOURS = 24;
+
+/** هل آخر تفاعل للعميل داخل نافذة مراسلة Meta (24 ساعة) الآن؟ */
+export function isWithinMetaMessageWindow(lastCustomerInteractionAt: string | null | undefined, nowIso: string): boolean {
+  const last = Date.parse(String(lastCustomerInteractionAt || ''));
+  const now = Date.parse(nowIso);
+  if (!Number.isFinite(last) || !Number.isFinite(now)) return false;
+  return now - last < COMMERCIAL_META_MESSAGE_WINDOW_HOURS * 3600_000;
+}
 /** عتبة «العميل جاهز للتعاقد»: تفاعل كافٍ + إشارة شراء صريحة. */
 export const COMMERCIAL_MIN_TOUCHES_FOR_READY = 2;
 

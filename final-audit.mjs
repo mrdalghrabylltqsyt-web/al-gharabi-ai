@@ -4733,9 +4733,18 @@ add('watcher-advisory-not-authority',
 
   // 9j) توحيد النشر بنقرة واحدة (YouTube + الحاويات + التكييف).
   add('unified-youtube-uses-shared-executor',
-    /platform === "youtube"[\s\S]{0,1400}executeYouTubePublish\(/.test(server) &&
-    !/platform === "youtube"[\s\S]{0,1400}code: "PLATFORM_USE_DEDICATED_PUBLISH"/.test(server),
-    'YouTube يُنفَّذ داخل المنفّذ الموحّد عبر executeYouTubePublish (لا استثناء 409)');
+    /platform === "youtube"[\s\S]{0,1600}executeYouTubePublishInner\(/.test(server) &&
+    !/platform === "youtube"[\s\S]{0,1600}code: "PLATFORM_USE_DEDICATED_PUBLISH"/.test(server),
+    'YouTube يُنفَّذ داخل المنفّذ الموحّد عبر الدالة الداخلية (حجز واحد فقط — لا 409 حجز مزدوج)');
+  add('unified-youtube-single-reservation',
+    /async function executePlatformPublish\([\s\S]{0,600}beginExternalOperation\(\{ platform, operation: "publish", targetId: publishTargetId \}\)/.test(server) &&
+    (() => {
+      const i = server.indexOf('async function executePlatformPublishInner');
+      const j = server.indexOf('async function executePlatformPublish(', i);
+      const inner = i >= 0 && j > i ? server.slice(i, j) : '';
+      return inner.includes('executeYouTubePublishInner({') && !inner.includes('await executeYouTubePublish({');
+    })(),
+    'حجز واحد لكل عملية نشر: الغلاف الخارجي يحجز، والفرع الداخلي يستدعي الدالة الداخلية بلا حجز ثانٍ');
   add('unified-youtube-bytes-resolver',
     server.includes('async function resolveYouTubeBytes') &&
     server.includes('YOUTUBE_UNIFIED_DOWNLOAD_MAX_BYTES') &&
@@ -4871,7 +4880,7 @@ add('watcher-advisory-not-authority',
     'العملاء المحتملون يُحفظون ويُسترجعون على الخلفيتين (ملف + Postgres) فلا يُفقد عميل بعد restart');
   add('commercial-followup-central-executor-only',
     server.includes('executeMetaCommentReply') && server.includes('executeMetaMessageReply') &&
-    /runCommercialBrainCycle[\s\S]{0,4000}executeMetaMessageReply\(lead\.platform/.test(server) &&
+    /runCommercialBrainCycle[\s\S]{0,6000}executeMetaMessageReply\(lead\.platform/.test(server) &&
     !/runCommercialBrainCycle[\s\S]{0,6000}facebookClient\(\)\.(replyToComment|sendMessage)/.test(server),
     'متابعة العقل التجاري تمر بالمنفّذ المركزي وحده (لا مسار إرسال جانبي)');
   add('commercial-health-public-no-customer-data',
@@ -4945,6 +4954,22 @@ add('watcher-advisory-not-authority',
     guardUnitTest.includes('evaluateReplyGuard') &&
     !/GEMINI_API_KEY\s*=\s*['"]/.test(followupIntegrationTest),
     'اختبارا المتابعة/الإيقاف يستخدمان خادماً وهمياً محلياً بلا مزود حقيقي ولا مفتاح Gemini');
+  // PR-S1: حارس نافذة مراسلة Meta (24 ساعة) + إصلاح الحجز المزدوج ليوتيوب.
+  add('commercial-meta-window-guard-wired',
+    server.includes("lead.kind === 'message' && !isWithinMetaMessageWindow(lead.lastCustomerInteractionAt, nowIso)") &&
+    server.includes('commercial_followup_blocked_meta_window') &&
+    server.includes('outside_meta_message_window_24h') &&
+    server.includes('windowBlocked: commercialWindowBlocked') &&
+    read('engine/commercial/commercialBrain.ts').includes('COMMERCIAL_META_MESSAGE_WINDOW_HOURS = 24'),
+    'حارس مؤقت يمنع متابعة تجارية عبر رسائل Meta خارج 24 ساعة ويُسجّل السبب (مصدر واحد)');
+  add('commercial-meta-window-guard-test',
+    fs.existsSync(path.join(root, 'engine/tests/commercial.meta.window.guard.test.ts')) &&
+    JSON.parse(read('package.json')).scripts.test.includes('npm run test:commercial-meta-window'),
+    'اختبار حارس نافذة Meta موجود ومسجّل في npm test');
+  add('youtube-unified-single-reservation-test',
+    fs.existsSync(path.join(root, 'engine/tests/youtube.unified.reserve.test.ts')) &&
+    JSON.parse(read('package.json')).scripts.test.includes('npm run test:youtube-unified-reserve'),
+    'اختبار الحجز الواحد لنشر يوتيوب الموحّد موجود ومسجّل في npm test');
 
   // 12) مهلة إقلاع خادم الاختبارات: كل اختبارات الخوادم تنتظر 180s (لا 60s) لأن
   // `tsx server.ts` يُترجم عند التشغيل وقد يتجاوز 60s تحت حمل CI فيصير الفحص مزعزعاً.

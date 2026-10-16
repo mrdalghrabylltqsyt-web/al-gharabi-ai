@@ -6701,3 +6701,51 @@ Google Business/X/Snapchat (بلا موصل تنفيذ)، فلم يستطع ال
 
 **لم يُمسّ:** Threads/Snapchat/YouTube وبقية المنصات، ولا أي سرّ/مفتاح/OAuth قائم، ولا Gemini،
 ولا قاعدة البيانات، ولا نموذج الجدولة. **لا push ولا merge ولا deploy** بانتظار إذن المالك.
+
+## PR-S1 — حجز واحد لكل عملية نشر (يوتيوب) + حارس نافذة مراسلة Meta (24 ساعة) — 2026-10-16
+
+فرع من `main` (`f98a9b2`). إصلاحان يمسّان مسار النشر الموحّد والمتابعة التجارية، بلا مساس
+بأي سرّ أو إعداد منصة أو أي مسار آخر.
+
+### 1) جذر فشل نشر يوتيوب الموحّد: حجز مزدوج على نفس المفتاح (CRITICAL)
+- **العطل المُثبت:** `executePlatformPublish` (الغلاف الخارجي، `server.ts` ~11050) يحجز
+  `beginExternalOperation({ platform, operation: "publish", targetId: publishTargetId })`
+  أي المفتاح `youtube:publish:<postId>`. ثم الفرع الداخلي لـYouTube داخل
+  `executePlatformPublishInner` (~10802) كان يستدعي **الغلاف المحجوز** `executeYouTubePublish`
+  الذي يحجز **نفس المفتاح مرة ثانية** (~9825) فيُرفض فوراً بـ**409
+  `IDEMPOTENT_OPERATION_IN_PROGRESS`**، بلا أي نداء مزود. النتيجة: **كل** نشر يوتيوب من زر
+  النشر الموحّد يفشل حتماً، بينما إنستغرام/ثريدز/تيك توك تنجح (لا حجز مزدوج عندها).
+- **الإصلاح:** الفرع الداخلي يستدعي الدالة **الداخلية** `executeYouTubePublishInner`
+  مباشرةً (بلا حجز ثانٍ). المسار المباشر `/api/platforms/youtube/publish` يبقى يستخدم
+  الغلاف المحجوز `executeYouTubePublish` **مرة واحدة** (لا يُمَسّ منع التكرار).
+  `resolveYouTubeBytes` وكل البوابات (سلامة محتوى/اتصال موثق/rate limit) تبقى سارية داخل
+  الدالة الداخلية.
+- **اختبار `engine/tests/youtube.unified.reserve.test.ts`** (`npm run test:youtube-unified-reserve`،
+  16 فحصاً، خادم حقيقي + خادم YouTube وهمي، بلا مزود/حصة/سرّ): نشر موحّد واحد بحجز واحد
+  (لا 409)، تكرار بعد النجاح يُرفض `IDEMPOTENT_ALREADY_COMPLETED` بلا رفع ثانٍ، الحجز لا يبقى
+  عالقاً بعد `failed`، المسار المباشر يحجز مرة واحدة، والنشر الموحّد محصور بالمالك.
+  **يُثبت فشله على الكود القديم** (6/16 يفشل بـ`IDEMPOTENT_OPERATION_IN_PROGRESS`).
+
+### 2) حارس مؤقت: نافذة مراسلة Meta (24 ساعة) للمتابعة التجارية
+- **الفجوة:** العقل التجاري يجدول متابعات على نوافذ 24/72 ساعة (`COMMERCIAL_FOLLOWUP_HOURS`)،
+  لكن نافذة مراسلة Meta الرسمية تسمح بإرسال رسالة (Messenger/DM) خلال **24 ساعة** من آخر
+  رسالة للعميل فقط. متابعة عند 72 ساعة عبر رسائل Meta تقع خارج النافذة ⇒ قد تُرفض أو تعرّض
+  الصفحة للتقييد.
+- **الإصلاح (مصدر واحد):** `isWithinMetaMessageWindow(lastCustomerInteractionAt, nowIso)` +
+  `COMMERCIAL_META_MESSAGE_WINDOW_HOURS = 24` في `engine/commercial/commercialBrain.ts`؛
+  ويُطبَّق في حلقة المتابعة داخل `runCommercialBrainCycle` (`server.ts`): خارج النافذة ⇒
+  **لا إرسال**، ويُسجَّل السبب (`commercial_followup_blocked_meta_window`) ويُعدّ في
+  `windowBlocked` المُعلن في نتيجة الدورة و`commercialLastRun` (شفافية للمالك).
+  (إصلاح كامل لنوافذ الرسائل لاحقاً في PR منفصل.)
+- **اختبار `engine/tests/commercial.meta.window.guard.test.ts`**
+  (`npm run test:commercial-meta-window`، 21 فحصاً، خادم حقيقي + خادم Meta وهمي): وحدة لحدود
+  النافذة، وتكامل يزرع عميلين (داخل النافذة/خارجها) على اتصال Facebook موثق، ويُثبت أن الداخلي
+  يُرسَل فعلاً للـPSID الصحيح وأن الخارجي **محجوب** بلا أي نداء مزوّد، وأن `windowBlocked=1`.
+  **يُثبت فشله على الكود القديم** (2/21 يفشل).
+
+فحوص final-audit الجديدة: `unified-youtube-single-reservation`،
+`commercial-meta-window-guard-wired`، `commercial-meta-window-guard-test`،
+`youtube-unified-single-reservation-test`. إجمالي فحوص final-audit.mjs (1725 فحصاً).
+
+**لم يُمسّ:** أي سرّ/مفتاح/OAuth، Gemini/firewall، قاعدة البيانات، DR/الاستعادة، بقية
+المنصّات، أو نموذج الجدولة. **لا إجراء كتابة على الإنتاج أثناء التطوير.**
