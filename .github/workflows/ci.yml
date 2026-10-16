@@ -14,6 +14,12 @@
 # تحتاج dist/server.cjs، وtest:instagram تحتاج dist/index.html (تُخدَم عبر SPA).
 #
 # لا يلمس أي سرّ ولا إعدادات Render/المنصات: كل القيم اختبارية محلية فقط.
+#
+# اختبارات المنصات بلا شبكة حقيقية: test:instagram (وtest:facebook/test:tiktok/
+# test:telegram/test:youtube/test:threads) توجّه قواعد المزوّد إلى خوادم وهمية محلية
+# (FACEBOOK_GRAPH_API_BASE، TELEGRAM_API_BASE، …) فلا تلمس مزوّداً ولا تستهلك حصة.
+# الاستثناء الوحيد المتخطّى صراحةً هو test:dr-real-drill (يحتاج أداة embedded-postgres
+# التطويرية) ويُعلن تخطّيه بسبب واضح عبر scripts/run-with-skip.mjs (لا تعطيل صامت).
 name: CI
 
 on:
