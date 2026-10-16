@@ -65,6 +65,10 @@ async function run(): Promise<void> {
     } else {
       // قيمة ثانية تحمل \u0000 يرفضها jsonb في Postgres => يفشل داخل المعاملة.
       const writesBefore = storageWriteAccounting().bytesWrittenTotal;
+      // قد يكون المفتاح موجوداً من اختبار Postgres آخر يعمل على نفس القاعدة (مثل
+      // test:db في السلسلة). الخصيصة المُثبَتة هي **الذرّية**: القيمة تبقى كما كانت
+      // (لا تُكتب قيمة المعاملة الفاشلة)، لا افتراض غياب المفتاح أصلاً.
+      const stateBefore = await a.read<any>(STORAGE_KEY_STATE);
       let threw = false;
       try {
         await a.writeMany!([
@@ -74,7 +78,7 @@ async function run(): Promise<void> {
       } catch { threw = true; }
       check('F-16 (Postgres): فشل مفتاح داخل المعاملة يرمي', threw === true);
       const stateAfter = await a.read<any>(STORAGE_KEY_STATE);
-      check('★ F-16 (Postgres): المفتاح الأول لم يُثبَّت (ROLLBACK ذرّي)', stateAfter === null, JSON.stringify(stateAfter));
+      check('★ F-16 (Postgres): المفتاح الأول لم يُثبَّت (ROLLBACK ذرّي)', stateAfter?.marker !== 'should-rollback' && JSON.stringify(stateAfter) === JSON.stringify(stateBefore), JSON.stringify(stateAfter));
       // لا تُحتسب كتابة أُلغيت: عدّاد النقل لم يتغيّر بعد ROLLBACK.
       const writesAfterFail = storageWriteAccounting().bytesWrittenTotal;
       check('★ F-16 (Postgres): الكتابة الملغاة لا تُحتسب في نقل البيانات', writesAfterFail === writesBefore, `${writesBefore} -> ${writesAfterFail}`);

@@ -52,7 +52,9 @@ function startApp(): { proc: ChildProcess; log: () => string } {
   return { proc, log: () => log };
 }
 
-async function waitForHealth(timeoutMs = 60_000): Promise<boolean> {
+// مهلة إقلاع سخيّة: `tsx` يترجم server.ts عند التشغيل، وقد يتجاوز 60 ثانية على
+// مشغّل CI مزدحم. 180 ثانية هامش آمن بلا إخفاء فشل حقيقي (نُعلن سجل الإقلاع عندها).
+async function waitForHealth(timeoutMs = 180_000): Promise<boolean> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     try { if ((await fetch(`${BASE}/api/health`)).ok) return true; } catch { /* لم يقلع بعد */ }
@@ -86,7 +88,7 @@ async function run(): Promise<void> {
   try {
     const up = await waitForHealth();
     check('الخادم يقلع للاختبار', up, app.log().slice(0, 300));
-    if (!up) throw new Error('الخادم لم يبدأ');
+    if (!up) { console.error('سجل إقلاع الخادم:\n' + app.log().slice(-1500)); throw new Error('الخادم لم يبدأ'); }
 
     // 1) الحماية على المسار: بلا جلسة = 401.
     const anon = await firewall();

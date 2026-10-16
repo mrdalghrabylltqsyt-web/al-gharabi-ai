@@ -1,0 +1,162 @@
+# CI شامل للمشروع — بوابات الجودة قبل أي دمج.
+#
+# الغرض: منع دمج كود يكسر البناء أو الاختبارات أو الفحوص. كان الاعتماد على
+# الاختبارات المحلية فقط، وبعض اختبارات Postgres الحقيقية (F-16، F-07) كانت
+# **تُتخطّى** بصمت في CI بلا قاعدة بيانات — وهو بالضبط ما أخفى عيباً في SQL حجز
+# منع التكرار (رُصد عند أول تشغيل على Postgres حقيقي). هنا نضيف خدمة Postgres
+# فعلية لتشغيلها حقيقةً.
+#
+# لماذا jobs متوازية: npm test وحده يضم ~150 خطوة (~5 دقائق محلياً) + test:dr +
+# final-audit + docker build. تشغيلها تسلسلياً يطيل الزمن؛ لذلك نبني مرة واحدة
+# (dist) ثم نشغّل الفحوص الثقيلة متوازية، فتبقى المدة الإجمالية ضمن الحد المعقول.
+#
+# npm run build قبل npm test إلزامي: اختبارات مثل test:scope-legacy-erp وtest:runtime
+# تحتاج dist/server.cjs، وtest:instagram تحتاج dist/index.html (تُخدَم عبر SPA).
+#
+# لا يلمس أي سرّ ولا إعدادات Render/المنصات: كل القيم اختبارية محلية فقط.
+#
+# اختبارات المنصات بلا شبكة حقيقية: test:instagram (وtest:facebook/test:tiktok/
+# test:telegram/test:youtube/test:threads) توجّه قواعد المزوّد إلى خوادم وهمية محلية
+# (FACEBOOK_GRAPH_API_BASE، TELEGRAM_API_BASE، …) فلا تلمس مزوّداً ولا تستهلك حصة.
+# الاستثناء الوحيد المتخطّى صراحةً هو test:dr-real-drill (يحتاج أداة embedded-postgres
+# التطويرية) ويُعلن تخطّيه بسبب واضح عبر scripts/run-with-skip.mjs (لا تعطيل صامت).
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+# إلغاء تشغيلات سابقة لنفس الفرع عند دفعة جديدة (توفير دقائق CI).
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  # 1) البناء: npm ci + lint + build، ويُنتج dist لبقية الفحوص.
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+      - name: npm ci
+        run: npm ci --no-audit --no-fund
+      - name: lint (tsc --noEmit)
+        run: npm run lint
+      - name: build (vite + source bundle + esbuild)
+        run: npm run build
+      - name: upload dist artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+          retention-days: 1
+
+  # 2) الاختبارات الكاملة (تضم F-16/F-07 الحقيقية على Postgres).
+  test:
+    needs: build
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: gharabi
+          POSTGRES_PASSWORD: gharabi_ci
+          POSTGRES_DB: gharabi_test
+        ports:
+          - 5432:5432
+        # انتظر جهوزية Postgres قبل تشغيل أي خطوة.
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      # sslmode=disable إلزامي: خدمة Postgres في Actions بلا SSL، والمحوّل يفرض
+      # SSL ما لم يُذكر هذا في رابط الاتصال.
+      GHARABI_TEST_DATABASE_URL: postgresql://gharabi:gharabi_ci@localhost:5432/gharabi_test?sslmode=disable
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+      - name: npm ci
+        run: npm ci --no-audit --no-fund
+      - name: download dist artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - name: npm test
+        run: npm test
+
+  # 3) اختبارات التعافي (DR) — تشغيل مستقل صريح كما طُلب.
+  dr:
+    needs: build
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: gharabi
+          POSTGRES_PASSWORD: gharabi_ci
+          POSTGRES_DB: gharabi_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      GHARABI_TEST_DATABASE_URL: postgresql://gharabi:gharabi_ci@localhost:5432/gharabi_test?sslmode=disable
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+      - name: npm ci
+        run: npm ci --no-audit --no-fund
+      - name: download dist artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - name: npm run test:dr
+        run: npm run test:dr
+
+  # 4) الفحص النهائي (final-audit) — يحتاج dist لبعض الفحوص.
+  final-audit:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+      - name: npm ci
+        run: npm ci --no-audit --no-fund
+      - name: download dist artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - name: npm run final-audit
+        run: npm run final-audit
+
+  # 5) بناء صورة Docker — يثبت أن الصورة تُبنى (نفس مسار النشر).
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: docker build
+        run: docker build -t al-gharabi-ai:ci .

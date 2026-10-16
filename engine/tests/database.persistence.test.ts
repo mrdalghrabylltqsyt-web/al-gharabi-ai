@@ -168,10 +168,21 @@ async function run(): Promise<void> {
       method: 'POST', headers: socialAuth, body: JSON.stringify({ platform: 'facebook', externalId: 'db-persist-evt-1', text: 'بكم سعر الثلاجة؟', authorName: 'أحمد' }),
     });
     check('إنشاء تعليق وارد ناجح', ingest.status === 200 && (await ingest.json()).duplicate === false);
-    const reply = await fetch(`${BASE}/api/social/manager/comments/reply`, {
-      method: 'POST', headers: socialAuth, body: JSON.stringify({ platform: 'facebook', externalId: 'db-persist-evt-1', text: 'أهلاً بك، شكراً لتواصلك معنا، فريق المعرض في خدمتك.', commentText: 'بكم سعر الثلاجة؟' }),
+    // رد حقيقي عبر مسار Telegram المخصّص: بعد أن أصبح لكل منصة تعليقات موصل رد
+    // حقيقي، يعيد مسار التعليقات العام 409 توجيهاً للمسار المخصص (لا تسجيل محاكى).
+    // نستقبل رسالة Telegram حقيقية عبر webhook موثّق ثم نرد عليها فعلياً بمعرّف من
+    // المزوّد — فيُثبِت الاختبار أن **الرد الحقيقي** يصمد عبر Postgres بعد restart.
+    const tgInbound = await fetch(`${BASE}/api/platforms/telegram/webhook`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-telegram-bot-api-secret-token': 'db_test_webhook_secret_1234' },
+      body: JSON.stringify({ update_id: 9001, message: { message_id: 20, date: 1700000000, text: 'عاشت إيدكم على الخدمة', chat: { id: -100777 }, from: { id: 3, first_name: 'سالم' } } }),
     });
-    check('تسجيل رد ناجح', reply.status === 200);
+    check('استقبال رسالة Telegram حقيقية عبر webhook', tgInbound.status === 200 && (await tgInbound.json()).accepted === true);
+    const reply = await fetch(`${BASE}/api/platforms/telegram/reply`, {
+      method: 'POST', headers: socialAuth, body: JSON.stringify({ externalId: 'tg:-100777:20', text: 'أهلاً بك، شكراً لتواصلك معنا، فريق المعرض في خدمتك.', commentText: 'عاشت إيدكم على الخدمة' }),
+    });
+    const replyBody: any = await reply.json();
+    check('تسجيل رد حقيقي ناجح (بمعرّف من المزوّد)', reply.status === 200 && replyBody.delivered === true && Boolean(replyBody.providerReplyId), JSON.stringify(replyBody).slice(0, 200));
     await new Promise((r) => setTimeout(r, 1500));
 
     await stop(app.proc);
