@@ -66,7 +66,10 @@ export function formatWallClock(clock: WallClock): string {
 function timeZoneOffsetMs(timeZone: string, utcMs: number): number {
   const parts = new Intl.DateTimeFormat('en-US', {
     timeZone,
-    hour12: false,
+    // h23 صريح بدل hour12:false: في Node 20 (بيئة الإنتاج) يُنتج hour12:false
+    // الساعة "24" عند منتصف الليل (دورة h24)، فيصير التاريخ يوماً كاملاً للأمام
+    // وتنحرف الإزاحة 24 ساعة. h23 يُعيد "00" دائماً في كل إصدارات ICU.
+    hourCycle: 'h23',
     year: 'numeric',
     month: '2-digit',
     day: '2-digit',
@@ -120,7 +123,8 @@ export function isScheduleInFuture(value: unknown, nowMs = Date.now(), timeZone 
 export function epochToZonedWallClock(epochMs: number, timeZone = APP_TIMEZONE): WallClock {
   const parts = new Intl.DateTimeFormat('en-US', {
     timeZone,
-    hour12: false,
+    // h23 صريح (لا hour12:false) لتفادي ساعة "24" عند منتصف الليل في Node 20.
+    hourCycle: 'h23',
     year: 'numeric',
     month: '2-digit',
     day: '2-digit',

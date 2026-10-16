@@ -63,6 +63,26 @@ check('23:30 بغداد = 20:30 UTC في نفس اليوم', new Date(wallClockT
 check('00:30 بغداد = 21:30 UTC في اليوم السابق', new Date(wallClockToEpoch('2026-09-26T00:30')).toISOString() === '2026-09-25T21:30:00.000Z', new Date(wallClockToEpoch('2026-09-26T00:30')).toISOString());
 check('الميلاد يتقدم يوماً عند العودة للعرض', toScheduleDisplay(new Date(wallClockToEpoch('2026-09-26T00:30')).toISOString()) === '2026-09-26T00:30');
 
+group('4ب) منتصف الليل لا يزحزح يوماً كاملاً (h23 لا h24)');
+// في Node 20 (بيئة الإنتاج) يُنتج hour12:false الساعة "24" عند منتصف الليل فينحرف
+// التاريخ 24 ساعة. نثبت أن كل ساعات منتصف الليل تُحوَّل صحيحة على أي إصدار ICU.
+for (const [wall, iso] of [
+  ['2026-09-26T00:00', '2026-09-25T21:00:00.000Z'],
+  ['2026-09-26T00:30', '2026-09-25T21:30:00.000Z'],
+  ['2026-12-31T00:15', '2026-12-30T21:15:00.000Z'],
+  ['2027-01-01T00:45', '2026-12-31T21:45:00.000Z'],
+] as const) {
+  check(`منتصف الليل ${wall} بغداد = ${iso}`, new Date(wallClockToEpoch(wall)).toISOString() === iso, new Date(wallClockToEpoch(wall)).toISOString());
+  check(`العرض يعيد ${wall} بلا زحزحة يوم`, toScheduleDisplay(new Date(wallClockToEpoch(wall)).toISOString()) === wall);
+}
+check('لا تُنتج أي ساعة قيمة 24 من Intl (منتصف الليل)', (() => {
+  for (const h of [0, 1, 23]) {
+    const parts = new Intl.DateTimeFormat('en-US', { timeZone: APP_TIMEZONE, hourCycle: 'h23', hour: '2-digit' }).formatToParts(new Date(Date.UTC(2026, 8, 25, 21 + h, 0)));
+    if (Number(parts.find((p) => p.type === 'hour')?.value) > 23) return false;
+  }
+  return true;
+})());
+
 group('5) منع جدولة الماضي بمقارنة صحيحة');
 const now = Date.UTC(2026, 8, 22, 12, 0); // 2026-09-22T12:00Z = 15:00 بغداد
 check('موعد محلي قبل الآن يُرفض', isScheduleInFuture('2026-09-22T14:59', now) === false);
