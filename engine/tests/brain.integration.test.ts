@@ -55,7 +55,7 @@ function startApp(): { proc: ChildProcess; log: () => string } {
   proc.stderr?.on('data', (d) => (log += String(d)));
   return { proc, log: () => log };
 }
-async function waitForHealth(timeoutMs = 60_000): Promise<boolean> {
+async function waitForHealth(timeoutMs = 180_000): Promise<boolean> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     try { if ((await fetch(`${BASE}/api/health`)).ok) return true; } catch { /* لم يقلع بعد */ }

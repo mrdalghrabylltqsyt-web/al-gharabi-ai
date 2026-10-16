@@ -4938,6 +4938,19 @@ add('watcher-advisory-not-authority',
     !/GEMINI_API_KEY\s*=\s*['"]/.test(followupIntegrationTest),
     'اختبارا المتابعة/الإيقاف يستخدمان خادماً وهمياً محلياً بلا مزود حقيقي ولا مفتاح Gemini');
 
+  // 12) مهلة إقلاع خادم الاختبارات: كل اختبارات الخوادم تنتظر 180s (لا 60s) لأن
+  // `tsx server.ts` يُترجم عند التشغيل وقد يتجاوز 60s تحت حمل CI فيصير الفحص مزعزعاً.
+  {
+    const testDir = 'engine/tests';
+    const tsFiles = fs.readdirSync(path.join(root, testDir)).filter((f) => f.endsWith('.test.ts'));
+    const bootWaits = tsFiles.filter((f) => /waitForHealth\((base: string, )?timeoutMs = \d[\d_]*\)/.test(read(path.join(testDir, f))));
+    const low = bootWaits.filter((f) => /waitForHealth\((base: string, )?timeoutMs = 60_000\)/.test(read(path.join(testDir, f))));
+    const highCount = bootWaits.filter((f) => /waitForHealth\((base: string, )?timeoutMs = 180_000\)/.test(read(path.join(testDir, f)))).length;
+    add('test-server-boot-wait-budget',
+      low.length === 0 && highCount >= 40,
+      `لا اختبار خادم بمهلة إقلاع 60s (مزعزعة تحت حمل CI) — ${highCount} اختبار بـ180s`);
+  }
+
   // 12) AGENTS.md: عدد فحوصات final-audit مطابق للفعلي (يُعَدّ من نص الملف نفسه).
   const auditCount = (read('final-audit.mjs').match(/^\s*add\(/gm) || []).length;
   add('agents-audit-count-accurate',

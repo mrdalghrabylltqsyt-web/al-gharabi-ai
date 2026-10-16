@@ -55,7 +55,7 @@ function startApp(): void {
   delete env.GEMINI_API_KEY; delete env.DATABASE_URL;
   proc = spawn(process.execPath, [tsxCli, serverEntry], { cwd: REPO_ROOT, env, stdio: ['ignore', 'pipe', 'pipe'] });
 }
-async function waitForHealth(timeoutMs = 60_000): Promise<boolean> {
+async function waitForHealth(timeoutMs = 180_000): Promise<boolean> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     try { if ((await fetch(`${BASE}/api/health`)).ok) return true; } catch { /* لم يقلع بعد */ }
