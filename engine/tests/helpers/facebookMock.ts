@@ -128,6 +128,10 @@ export interface FacebookMockState {
   pageVideos?: Array<{ id: string; comments?: Array<{ id: string; message: string; from?: { id?: string; name?: string }; created_time?: string; parent?: { id?: string } }> }>;
   pageReels?: Array<{ id: string; comments?: Array<{ id: string; message: string; from?: { id?: string; name?: string }; created_time?: string; parent?: { id?: string } }> }>;
   failFeed?: boolean;
+  /** عدد نداءات القراءة المجمّعة (`GET /?ids=`) — لإثبات ≤ نداء واحد لـ45 منشوراً. */
+  commentBatchCalls: number;
+  /** عدد نداءات قراءة تعليقات منشور منفرد (`GET /{post-id}?fields=comments...`) — يجب أن يبقى 0. */
+  commentNodeCalls: number;
   /** خطأ مخصّص لقراءة عقدة المنشور `GET /{post-id}?fields=...` يحاكي #100
    *  «Tried accessing nonexisting field (is_published)» — لإثبات إصلاح الجذر. */
   nodeFieldsError?: { message: string; code: number } | null;
@@ -187,6 +191,8 @@ export function createFacebookMock(state: Partial<FacebookMockState> = {}): Face
     pageVideos: state.pageVideos ?? [],
     pageReels: state.pageReels ?? [],
     failFeed: state.failFeed ?? false,
+    commentBatchCalls: 0,
+    commentNodeCalls: 0,
     nodeFieldsError: state.nodeFieldsError ?? null,
     unsupportedNodeFields: state.unsupportedNodeFields ?? [],
     nodeFieldReads: [],
@@ -334,6 +340,28 @@ export async function startFacebookMockServer(
     return res.json({ data: state.ownedApps.map((id) => ({ id, name: 'app' })) });
   });
 
+  // القراءة المجمّعة (إصلاح حجم النداءات): `GET /?ids=<id1,id2,...>&fields=comments...`
+  // تُعيد كائناً مفتاحه معرّف كل منشور وقيمته تعليقاته — كما يفعل Graph الحقيقي.
+  // يُسجَّل **قبل** `/:version/:pageId` وإلا التقطه كعقدة منشور اسمها فارغ.
+  app.get('/:version/', (req, res) => {
+    const idsRaw = String(req.query.ids || '').trim();
+    if (!idsRaw) return res.status(400).json({ error: { message: 'ids required', code: 100 } });
+    const fields = String(req.query.fields || '');
+    const ids = idsRaw.split(',').map((s) => s.trim()).filter(Boolean);
+    const known = [...(state.feedPosts || []), ...(state.pageVideos || []), ...(state.pageReels || [])];
+    state.calls += 1;
+    state.commentBatchCalls += 1;
+    const out: Record<string, unknown> = {};
+    for (const id of ids) {
+      const post = known.find((p) => p.id === id);
+      // معرّف غير معروف ⇒ خطأ منفصل له وحده (لا يُسقط الباقي) — كما في Graph.
+      out[id] = post
+        ? { id, comments: fields.includes('comments') ? { data: post.comments || [] } : undefined }
+        : { error: { message: `Unsupported get request for object with ID ${id}`, code: 100 } };
+    }
+    return res.json(out);
+  });
+
   app.get('/:version/:pageId', (req, res) => {
     const { pageId } = req.params;
     if (!pageId || pageId === 'me') return res.status(400).json({ error: { message: 'unsupported' } });
@@ -365,6 +393,7 @@ export async function startFacebookMockServer(
       const known = [...(state.feedPosts || []), ...(state.pageVideos || []), ...(state.pageReels || [])].find((p) => p.id === pageId);
       if (known) {
         state.calls += 1;
+        state.commentNodeCalls += 1;
         return res.json({ id: known.id, comments: { data: known.comments || [] } });
       }
     }

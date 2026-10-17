@@ -47,10 +47,16 @@ export interface MetaPlatformIngestStats {
   postsScanned: number;
   commentsVisible: number;
   lastIngestAt: string | null;
+  /**
+   * عدد نداءات Graph التي استهلكها آخر سحب لهذه المنصة (جمع المعرّفات + قراءة
+   * التعليقات المجمّعة) — يُعلن في حالة المراقب كـ`callsPerCycle` لقياس حجم
+   * النداءات والتحقق من الهدف (≤ 5 لفيسبوك). لا يُخفى ولا يُقدَّر.
+   */
+  callsPerCycle: number;
 }
 
 export function defaultMetaPlatformIngestStats(): MetaPlatformIngestStats {
-  return { postsScanned: 0, commentsVisible: 0, lastIngestAt: null };
+  return { postsScanned: 0, commentsVisible: 0, lastIngestAt: null, callsPerCycle: 0 };
 }
 
 export function normalizeMetaPlatformIngestStats(raw: any): MetaPlatformIngestStats {
@@ -60,6 +66,7 @@ export function normalizeMetaPlatformIngestStats(raw: any): MetaPlatformIngestSt
     postsScanned: Number.isFinite(Number(raw.postsScanned)) ? Math.max(0, Math.trunc(Number(raw.postsScanned))) : 0,
     commentsVisible: Number.isFinite(Number(raw.commentsVisible)) ? Math.max(0, Math.trunc(Number(raw.commentsVisible))) : 0,
     lastIngestAt: typeof raw.lastIngestAt === 'string' ? raw.lastIngestAt : null,
+    callsPerCycle: Number.isFinite(Number(raw.callsPerCycle)) ? Math.max(0, Math.trunc(Number(raw.callsPerCycle))) : 0,
   };
 }
 

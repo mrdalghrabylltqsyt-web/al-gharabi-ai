@@ -156,6 +156,10 @@ async function main(): Promise<void> {
     check('عدد المنشورات المفحوصة > 1 (feed + videos)', Number(stats?.postsScanned || 0) > 1, JSON.stringify(stats));
     check('عدد التعليقات المرئية = 5', Number(stats?.commentsVisible || 0) === 5, JSON.stringify(stats));
     check('وقت آخر استقبال فعلي مسجّل', Boolean(stats?.lastIngestAt), JSON.stringify(stats));
+    // حجم النداءات: قراءة مجمّعة واحدة للتعليقات (لا نداء لكل منشور) + ≤ 5 للدورة.
+    check('قراءة تعليقات مجمّعة واحدة (بلا نداء لكل منشور)', mock.state.commentBatchCalls === 1, `batch=${mock.state.commentBatchCalls}`);
+    check('صفر نداء لتعليقات منشور منفرد', mock.state.commentNodeCalls === 0, `node=${mock.state.commentNodeCalls}`);
+    check('callsPerCycle معلن ومحدود (≤ 5) لفيسبوك', Number(stats?.callsPerCycle || 0) > 0 && Number(stats?.callsPerCycle || 0) <= 5, JSON.stringify(stats));
 
     group('4) هوية الزبون: معلّقان مختلفان = زبونان، نفس الشخص مرتين = زبون واحد');
     // تشغيل دورة العقل التجاري الآن (الجدولة الافتراضية لا تعمل فوراً في الاختبار).

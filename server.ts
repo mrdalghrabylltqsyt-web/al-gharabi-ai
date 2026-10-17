@@ -7802,7 +7802,7 @@ function metaPollingStatusBlock() {
 }
 
 /** يجلب تعليقات منصة Meta الحقيقية (قراءة فقط) عبر العميل الرسمي — بلا كتابة. */
-async function fetchMetaInboundComments(platform: MetaPlatform): Promise<{ ok: boolean; comments?: any[]; error?: string; code?: string; providerCode?: number | null; postsScanned?: number }> {
+async function fetchMetaInboundComments(platform: MetaPlatform): Promise<{ ok: boolean; comments?: any[]; error?: string; code?: string; providerCode?: number | null; postsScanned?: number; callsPerCycle?: number }> {
   try {
     if (platform === "facebook") {
       const pageId = String(getProviderToken("facebook")?.pageId || "");
@@ -7813,7 +7813,7 @@ async function fetchMetaInboundComments(platform: MetaPlatform): Promise<{ ok: b
       const extraPostIds = publishedPostIdsFor("facebook");
       const res = await facebookClient().listPageComments(pageId, token, 25, extraPostIds);
       if (!res.ok) return { ok: false, error: res.error || "فشل قراءة تعليقات Facebook.", code: res.code || "FETCH_FAILED", providerCode: res.providerCode ?? null };
-      return { ok: true, comments: res.data || [], postsScanned: (res.postIdsScanned || []).length };
+      return { ok: true, comments: res.data || [], postsScanned: (res.postIdsScanned || []).length, callsPerCycle: Number(res.graphCalls || 0) };
     }
     const igAccountId = String(getProviderToken("instagram")?.igAccountId || "");
     const token = instagramPageToken();
@@ -7821,7 +7821,7 @@ async function fetchMetaInboundComments(platform: MetaPlatform): Promise<{ ok: b
     const extraMediaIds = publishedPostIdsFor("instagram");
     const res = await instagramClient().listMediaComments(igAccountId, token, 10, 25, extraMediaIds);
     if (!res.ok) return { ok: false, error: res.error || "فشل قراءة تعليقات Instagram.", code: res.code || "FETCH_FAILED", providerCode: res.providerCode ?? null };
-    return { ok: true, comments: res.data || [], postsScanned: new Set((res.data || []).map((c: any) => c.mediaId).filter(Boolean)).size };
+    return { ok: true, comments: res.data || [], postsScanned: new Set((res.data || []).map((c: any) => c.mediaId).filter(Boolean)).size, callsPerCycle: Number(res.graphCalls || 0) };
   } catch (e: any) {
     return { ok: false, error: String(e?.message || "فشل الجلب."), code: "FETCH_ERROR" };
   }
@@ -7999,6 +7999,7 @@ async function runMetaWatcherCycle(trigger: string): Promise<{ ok: boolean; trig
           postsScanned: Number(fetched.postsScanned || 0),
           commentsVisible: (fetched.comments || []).length,
           lastIngestAt: prev.lastIngestAt || null,
+          callsPerCycle: Number(fetched.callsPerCycle || 0),
         };
       }
       const ownNames = [String(workspace.showroom?.name || ""), "معرض الغرابي"];
