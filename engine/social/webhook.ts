@@ -27,6 +27,8 @@ export interface NormalizedSocialEvent {
   /** معرّف المنشور/المحادثة الأم إن وُجد. */
   parentExternalId: string | null;
   authorName: string | null;
+  /** معرّف الكاتب الحقيقي لدى المنصة (from.id / PSID / IG user id) — هوية الزبون. */
+  authorId: string | null;
   text: string;
   createdAt: string;
   /** هدف الرد الحقيقي كما تعيده المنصة (يُستخدم لاحقاً في الإرسال). */
@@ -116,6 +118,7 @@ export function buildNormalizedEvent(input: {
   externalId: string;
   parentExternalId?: string | null;
   authorName?: string | null;
+  authorId?: string | null;
   text: string;
   createdAt?: string;
   replyTarget?: Record<string, unknown> | null;
@@ -127,6 +130,7 @@ export function buildNormalizedEvent(input: {
     externalId: String(input.externalId),
     parentExternalId: input.parentExternalId ? String(input.parentExternalId) : null,
     authorName: input.authorName ? String(input.authorName).slice(0, 200) : null,
+    authorId: input.authorId ? String(input.authorId).slice(0, 200) : null,
     text: String(input.text || '').slice(0, 8000),
     createdAt: input.createdAt || new Date().toISOString(),
     replyTarget: input.replyTarget ?? null,

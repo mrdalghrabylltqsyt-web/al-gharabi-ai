@@ -70,6 +70,11 @@ export const PUBLIC_WATCHER_ALLOWED_KEYS: readonly string[] = Object.freeze([
   'note',
   'pollCount',
   'lastPollAt',
+  // مؤشّرات تقنية لإغلاق «الفشل الصامت» (أرقام/أوقات/منصّة/رسالة تقنية عامة — بلا
+  // أي بيانات عميل). تُضاف عن قصد لتمرّ من allow-list الصارم في النقطتين العامتين.
+  'platformStats',
+  'staleIngestWarning',
+  'warnings',
 ]);
 
 /** الحقول التشغيلية التفصيلية التي يجب ألا تظهر في النقطتين العامتين (نُقلت للمالك). */

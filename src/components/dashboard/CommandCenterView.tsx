@@ -112,6 +112,27 @@ export const CommandCenterView: React.FC = () => {
         </Card>
       )}
 
+      {/* PR-S3: تحذير «لا استقبال تعليقات» — إن مرّت 48 ساعة بلا أي تعليق/رسالة
+          مرئية مع وجود منشورات مفحوصة، فالقراءة لا تجد شيئاً (فشل صامت سابقاً).
+          الحقول تقنية فقط من نقطة الصحة العامة (بلا أي بيانات عميل). */}
+      {Array.isArray(health?.metaPolling?.warnings) && health.metaPolling.warnings.length > 0 && (
+        <Card className="border-rose-500/30 bg-rose-950/20">
+          <div className="flex items-center gap-2 text-rose-300 text-xs font-bold">
+            <AlertTriangle className="w-4 h-4" /> لا استقبال تعليقات/رسائل حديث من بعض المنصات:
+          </div>
+          <ul className="mt-1 text-[11px] text-rose-200/90 list-disc pr-5">
+            {health.metaPolling.warnings.map((w: any, i: number) => (
+              <li key={i}>
+                <span className="font-bold uppercase">{w.platform}</span>
+                {typeof w.hoursSince === 'number' ? ` — آخر استقبال قبل ${w.hoursSince} ساعة. ` : ' — '}
+                {w.reason}
+              </li>
+            ))}
+          </ul>
+          <button onClick={() => go('social')} className="text-[11px] text-rose-200 mt-2 hover:underline">فحص حالة المراقب والصلاحيات ←</button>
+        </Card>
+      )}
+
       {/* النشر / الجدولة / عدد المنصات */}
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
         <Card>
