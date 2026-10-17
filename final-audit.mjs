@@ -4971,6 +4971,48 @@ add('watcher-advisory-not-authority',
     JSON.parse(read('package.json')).scripts.test.includes('npm run test:youtube-unified-reserve'),
     'اختبار الحجز الواحد لنشر يوتيوب الموحّد موجود ومسجّل في npm test');
 
+  // PR-S2: صندوق الزبائن + وضع الموافقة لرسائل العقل التجاري.
+  const draftsSrc = read('engine/commercial/commercialDrafts.ts');
+  add('commercial-send-mode-approval-default',
+    draftsSrc.includes("COMMERCIAL_SEND_MODE_DEFAULT: CommercialSendMode = 'approval'") &&
+    draftsSrc.includes("return v === 'auto' ? 'auto' : COMMERCIAL_SEND_MODE_DEFAULT") &&
+    draftsSrc.includes('export function requiresApproval'),
+    'وضع الإرسال الافتراضي approval (fail-safe) ومستقل عن مفتاح الإيقاف');
+  add('commercial-draft-lifecycle-single-source',
+    draftsSrc.includes("export type CommercialDraftStatus = 'pending' | 'approved' | 'rejected' | 'expired'") &&
+    draftsSrc.includes('export function applyOwnerDecision') &&
+    draftsSrc.includes('export function evaluateDraftSendability') &&
+    draftsSrc.includes('export function markDraftExpired') &&
+    draftsSrc.includes('export function buildOwnerDecisionRecord'),
+    'دورة حياة المسودة وقرار المالك وسجل التعلم (النص الأصلي+المعدّل) في مصدر واحد');
+  add('commercial-approval-no-provider-call',
+    /requiresApproval\(commercialSendMode\)[\s\S]{0,900}createCommercialDraft[\s\S]{0,900}continue;/.test(server) &&
+    server.includes("let commercialSendMode: CommercialSendMode = 'approval'"),
+    'في وضع الموافقة تُحفظ المسودة بلا أي نداء مزوّد (continue قبل الإرسال)');
+  add('commercial-draft-send-central-executor',
+    /\/api\/commercial\/drafts\/:id\/decision[\s\S]{0,4000}executeMeta(Comment|Message)Reply/.test(server) &&
+    server.includes('commercial-owner-approval'),
+    'إرسال المسودة يمر بالمنفّذ المركزي نفسه (سلامة المحتوى + منع التكرار) لا مسار جانبي');
+  add('commercial-inbox-owner-only',
+    /app\.get\("\/api\/commercial\/inbox", requireOwner/.test(server) &&
+    /app\.get\("\/api\/commercial\/leads\/:id", requireOwner/.test(server) &&
+    /app\.post\("\/api\/commercial\/drafts\/:id\/decision", requireOwner/.test(server) &&
+    /function canConfirmCommercialProposal[\s\S]{0,200}user\.role === 'owner'/.test(server),
+    'صندوق الزبائن وقرار المسودات وتأكيد الصفقة للمالك فقط (requireOwner)');
+  add('commercial-send-mode-owner-route',
+    /app\.post\("\/api\/agent\/commercial\/send-mode", requireOwner/.test(server),
+    'تبديل وضع الإرسال مسار owner مستقل عن مفتاح الإيقاف');
+  add('commercial-inbox-ui-wired',
+    fs.existsSync(path.join(root, 'src/components/agent/CommercialInbox.tsx')) &&
+    read('src/App.tsx').includes("case 'commercial_inbox': return <CommercialInbox />") &&
+    read('src/components/common/navConfig.tsx').includes("id: 'commercial_inbox'") &&
+    read('src/components/dashboard/CommandCenterView.tsx').includes("go('commercial_inbox')"),
+    'واجهة صندوق الزبائن موصولة (تبويب + حالة عرض + عدّاد الصفحة الرئيسية)');
+  add('commercial-inbox-tests',
+    fs.existsSync(path.join(root, 'engine/tests/commercial.inbox.test.ts')) &&
+    JSON.parse(read('package.json')).scripts.test.includes('npm run test:commercial-inbox'),
+    'اختبار صندوق الزبائن موجود ومسجّل في npm test');
+
   // 12) مهلة إقلاع خادم الاختبارات: كل اختبارات الخوادم تنتظر 180s (لا 60s) لأن
   // `tsx server.ts` يُترجم عند التشغيل وقد يتجاوز 60s تحت حمل CI فيصير الفحص مزعزعاً.
   {

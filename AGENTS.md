@@ -44,7 +44,7 @@ npm install
 npm run dev            # tsx server.ts
 npm run lint           # tsc --noEmit
 npm run build          # vite build + esbuild server.ts -> dist/server.cjs
-npm run final-audit    # node final-audit.mjs (1721 فحصاً)
+npm run final-audit    # node final-audit.mjs (1733 فحصاً)
 npm test               # storage + engine + auth + ... + db + runtime
 ```
 - التشغيل الإنتاجي: `PORT=4517 NODE_ENV=production APP_URL=http://localhost:4517 node dist/server.cjs`
@@ -6749,3 +6749,73 @@ Google Business/X/Snapchat (بلا موصل تنفيذ)، فلم يستطع ال
 
 **لم يُمسّ:** أي سرّ/مفتاح/OAuth، Gemini/firewall، قاعدة البيانات، DR/الاستعادة، بقية
 المنصّات، أو نموذج الجدولة. **لا إجراء كتابة على الإنتاج أثناء التطوير.**
+
+## PR-S2 — صندوق الزبائن + وضع الموافقة لرسائل العقل التجاري (2026-10-17)
+
+الفجوة المُعالجة: كان العقل التجاري يرسل متابعاته للزبائن **تلقائياً** بلا أي موافقة،
+ولا صفحة تعرض الزبائن أو الرسائل المعلّقة، ولا واجهة تستدعي `confirmCommercialProposal`
+(كان التأكيد متاحاً لمالك/مدير/موظف). هذه الدفعة تغلق الثلاثة معاً بلا كسر أي حارس قائم.
+
+### 1) وضع الموافقة (commercialSendMode)
+- الوحدة `engine/commercial/commercialDrafts.ts` (**منطق صافٍ** بلا شبكة/سرّ/ساعة):
+  `CommercialSendMode = 'approval' | 'auto'`، و`COMMERCIAL_SEND_MODE_DEFAULT = 'approval'`
+  (**الافتراضي fail-safe**: أي قيمة غائبة/غير معروفة تسقط إلى approval، لا إلى إرسال تلقائي).
+  `normalizeCommercialSendMode` و`requiresApproval`.
+- **مستقل تماماً عن Kill Switch**: المفتاح يوقف/يُشغّل العقل كله؛ وضع الإرسال يحدّد **هل
+  يُرسل تلقائياً أم يُحفظ مسودة**. يُغيَّر من الصندوق عبر
+  `POST /api/agent/commercial/send-mode` (requireOwner).
+- **في وضع approval**: حلقة المتابعة في `runCommercialBrainCycle` تحفظ متابعةً **مسودةً**
+  (`createCommercialDraft`) وتُكمل بـ`continue` **قبل أي نداء مزوّد** — فلا `executeMeta*Reply`
+  إطلاقاً. تُعلن `drafted` في نتيجة الدورة.
+
+### 2) دورة حياة المسودة وسجل قرار المالك (في مخزن الحالة الحالي — بلا جداول جديدة)
+- المسودات في مفتاح `commercial` (`drafts`) والقرارات في `ownerDecisions` — يُحفظان/يُسترجعان
+  عبر محوّل الحالة نفسه، فيصمدان بعد restart/cold start (بلا جدول جديد).
+- الحالات: `pending → approved | rejected | expired`؛ `applyOwnerDecision` يمنع نقض قرار
+  محسوم (409)، و`markDraftExpired`/`sweepExpiredCommercialDrafts` يعلّمان المسودة التي تجاوزت
+  **نافذة Meta 24 ساعة** منتهيةً (`isDraftExpired`، للمسودات المرسلة كرسائل خاصة فقط).
+- `evaluateDraftSendability` قرار إرسال حتمي؛ `buildOwnerDecisionRecord` يحفظ **النص الأصلي
+  والمعدّل** (للتعلم لاحقاً — لم يُبنَ تعلّم الآن).
+
+### 3) المسارات (owner-only)
+- `GET /api/commercial/inbox` — الزبائن + المسودات + عدّاد المعلّق + وضع الإرسال (requireOwner).
+- `GET /api/commercial/leads/:id` — سجل المحادثة الحقيقي (`buildLeadConversation` من
+  `socialComments`/`socialReplies` فقط) + العرض المقترح + مسودات الزبون (requireOwner).
+- `POST /api/commercial/drafts/:id/decision` — موافقة/تعديل ثم موافقة/رفض (requireOwner):
+  - الرفض: لا إرسال.
+  - الموافقة/التعديل: تُرسل عبر **المنفّذ المركزي نفسه** (`executeMetaCommentReply`/
+    `executeMetaMessageReply`) — كل البوابات سارية (سلامة المحتوى + منع التكرار الدائم +
+    نافذة Meta). لا تُسجَّل "مرسلة" بلا `providerReplyId` حقيقي.
+  - المسودة المنتهية (خارج نافذة Meta) ⇒ **409 `DRAFT_EXPIRED`** بلا إرسال.
+- `POST /api/commercial/leads/:id/proposal/{confirm,reject}` — صارت **للمالك فقط**
+  (`canConfirmCommercialProposal`)؛ 403 لغيره.
+
+### 4) الواجهة
+- `src/components/agent/CommercialInbox.tsx` (جديد): قائمة الزبائن (المنصة/المنتج/المرحلة/آخر
+  تفاعل/سبب التصعيد)، وعند الضغط سجل المحادثة + العرض المقترح + المسودات المعلّقة، وأزرار
+  «موافقة/تعديل ثم موافقة/رفض» و«تمت الصفقة (WON)/رفض العرض»، ومبدّل وضع الإرسال.
+- تبويب `commercial_inbox` («صندوق الزبائن») في `navConfig.tsx` (ownerOnly) + `case` في
+  `App.tsx`. **لم يُلمس** تبويب المبيعات القديم ولا `GHARABI_ENABLE_SALES_TAB`.
+- عدّاد «بانتظار موافقتك: N» في الصفحة الرئيسية (`CommandCenterView`) يفتح الصندوق عند الضغط
+  (للمالك فقط؛ يُقرأ من المسار المحمي فلا يظهر لغير المالك).
+
+### 5) الاختبارات
+`engine/tests/commercial.inbox.test.ts` (`npm run test:commercial-inbox`، **42 فحصاً**، خادم
+حقيقي + خادم Meta وهمي، بلا مزود/سرّ/حصة): التصريح 401/403، وضع approval لا يستدعي مزوّداً
+وينشئ مسودة، الموافقة ترسل مرة واحدة والتكرار 409، التعديل ثم الموافقة يرسل النص المعدّل
+ويمر بحارس سلامة المحتوى (422 للادعاء غير المسجّل)، الرفض لا يرسل، المسودة المنتهية 409
+`DRAFT_EXPIRED`، تأكيد الصفقة 403 للموظف وWON للمالك، خلو النقطتين العامتين من بيانات
+العملاء، والثبات بعد restart. **يُثبت فشله على الكود القديم** (9/11 يفشل).
+- تحديث ثلاثة اختبارات قائمة تقيس **مسار الإرسال التلقائي** لتضبط الوضع `auto` صراحةً
+  (`commercial.followup.killswitch`, `commercial.killswitch.cleanboot` عبر مسار الواجهة,
+  `commercial.meta.window.guard`) — لأن الافتراضي صار approval وهو سلوك صحيح مقصود.
+
+فحوص final-audit الجديدة: `commercial-send-mode-approval-default`،
+`commercial-draft-lifecycle-single-source`، `commercial-approval-no-provider-call`،
+`commercial-draft-send-central-executor`، `commercial-inbox-owner-only`،
+`commercial-send-mode-owner-route`، `commercial-inbox-ui-wired`، `commercial-inbox-tests`
+(الإجمالي **1733 فحصاً**).
+
+**لم يُمسّ:** أي سرّ/مفتاح/OAuth، Gemini/firewall، قاعدة البيانات، DR/الاستعادة، YouTube،
+TikTok/Telegram/Threads، نموذج الجدولة، أو نطاق ERP. **لا جداول جديدة** (كل الحالة في مفتاح
+`commercial` القائم). خارج هذه الدفعة عن قصد: إشعارات الجرس، تيليغرام، تعديل التصنيف، التعلم.

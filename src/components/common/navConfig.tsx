@@ -3,7 +3,7 @@ import {
   Home, LayoutDashboard, Send, Sparkles, MessageSquareText, Store, Cog,
   Bot, BarChart3, Calendar, Users, Search, ClipboardList, Brain, BrainCircuit, PlugZap,
   CloudUpload, Database, ServerCog, Youtube, ShieldCheck, Activity,
-  CreditCard, Network, Power, Boxes,
+  CreditCard, Network, Power, Boxes, Inbox,
 } from 'lucide-react';
 import { salesTabEnabled, operationsTabEnabled } from './scopeFlags';
 
@@ -282,6 +282,7 @@ export const NAV_SECTIONS: NavSection[] = [
         items: [
           { id: 'system', label: 'مراقبة النظام', desc: 'Health/Readiness، سلامة النظام، الخدمات، النسخ، وسجل العمليات', icon: ServerCog, ownerOnly: true, keywords: ['system', 'health', 'services'] },
           { id: 'cloud_backup', label: 'التعافي والنسخ السحابي', desc: 'منظومة تعافٍ كاملة واستعادة معزولة', icon: CloudUpload, ownerOnly: true, keywords: ['recovery', 'dr', 'backup'] },
+          { id: 'commercial_inbox', label: 'صندوق الزبائن (العقل التجاري)', desc: 'الزبائن المحتملون والرسائل بانتظار موافقتك — موافقة/تعديل/رفض', icon: Inbox, ownerOnly: true, keywords: ['commercial', 'inbox', 'leads', 'صندوق الزبائن', 'العقل التجاري', 'موافقة'] },
           { id: 'commercial_kill_switch', label: 'العقل التجاري — مفتاح الإيقاف الطارئ', desc: 'مفتاح رئيسي واحد: إيقاف/استئناف شامل للعقل التجاري', icon: Power, ownerOnly: true, keywords: ['commercial', 'kill switch', 'إيقاف', 'العقل التجاري'] },
         ],
       },

@@ -34,6 +34,7 @@ const CentralAgentView = lazy(() => import('./components/agent/CentralAgentView'
 const CentralAgentConsole = lazy(() => import('./components/agent/CentralAgentConsole').then((m) => ({ default: m.CentralAgentConsole })));
 const YouTubeOperationsView = lazy(() => import('./components/agent/YouTubeOperationsView').then((m) => ({ default: m.YouTubeOperationsView })));
 const CommercialBrainKillSwitch = lazy(() => import('./components/agent/CommercialBrainKillSwitch').then((m) => ({ default: m.CommercialBrainKillSwitch })));
+const CommercialInbox = lazy(() => import('./components/agent/CommercialInbox').then((m) => ({ default: m.CommercialInbox })));
 const BrainCommandView = lazy(() => import('./components/agent/BrainCommandView').then((m) => ({ default: m.BrainCommandView })));
 const CentralBrainView = lazy(() => import('./components/agent/CentralBrainView').then((m) => ({ default: m.CentralBrainView })));
 const MarketingAgentView = lazy(() => import('./components/agent/MarketingAgentView').then((m) => ({ default: m.MarketingAgentView })));
@@ -147,6 +148,7 @@ const AppContent: React.FC = () => {
       case 'central_agent': return <CentralAgentConsole />;
       case 'youtube_operations': return <YouTubeOperationsView />;
       case 'commercial_kill_switch': return <CommercialBrainKillSwitch />;
+      case 'commercial_inbox': return <CommercialInbox />;
       case 'brain_manager': return <BrainCommandView />;
       case 'central_brain': return <CentralBrainView />;
       case 'marketing_agent': return <MarketingAgentView />;
