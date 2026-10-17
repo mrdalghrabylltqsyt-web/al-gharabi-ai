@@ -44,7 +44,7 @@ npm install
 npm run dev            # tsx server.ts
 npm run lint           # tsc --noEmit
 npm run build          # vite build + esbuild server.ts -> dist/server.cjs
-npm run final-audit    # node final-audit.mjs (1733 فحصاً)
+npm run final-audit    # node final-audit.mjs (1747 فحصاً)
 npm test               # storage + engine + auth + ... + db + runtime
 ```
 - التشغيل الإنتاجي: `PORT=4517 NODE_ENV=production APP_URL=http://localhost:4517 node dist/server.cjs`
@@ -6819,3 +6819,53 @@ Google Business/X/Snapchat (بلا موصل تنفيذ)، فلم يستطع ال
 **لم يُمسّ:** أي سرّ/مفتاح/OAuth، Gemini/firewall، قاعدة البيانات، DR/الاستعادة، YouTube،
 TikTok/Telegram/Threads، نموذج الجدولة، أو نطاق ERP. **لا جداول جديدة** (كل الحالة في مفتاح
 `commercial` القائم). خارج هذه الدفعة عن قصد: إشعارات الجرس، تيليغرام، تعديل التصنيف، التعلم.
+
+## PR-S3 — تجميع قراءة التعليقات (حجم نداءات Graph) + توضيح انقطاع 12 أكتوبر
+
+**السياق:** تعليقات Facebook/Instagram كانت تُقرأ بنداء Graph **منفصل لكل منشور**
+(حتى ~50 نداءً كل دورة على فيسبوك). مع دورة كل 5 دقائق كان ذلك يستهلك حصة Graph بلا
+داعٍ ويبطئ السحب.
+
+### 1) تجميع القراءة (مصدر واحد)
+- **Facebook** (`engine/social/facebook.ts`): بعد جمع معرّفات المنشورات
+  (`feed` + `videos` + `video_reels` + منشورات النظام) تُقرأ التعليقات **مجمّعة** عبر
+  `GET /?ids=<id1,id2,...>&fields=comments.order(reverse_chronological).limit(25){id,message,from,created_time,parent{id},permalink_url}`
+  بحدّ **50 معرّفاً للطلب**. الهدف: **≤ 5 نداءات للدورة** (3 لجمع المعرّفات + 1-2 للتعليقات).
+- **إنستغرام** (`engine/social/instagram.ts`): نفس المبدأ على معرّفات الوسائط
+  (`GET /?ids=...&fields=comments...`) — 1 لجمع الوسائط + 1-2 للتعليقات.
+- **عزل الفشل:** فشل معرّف واحد داخل الطلب المجمّع (استجابة `{ error: ... }` لذلك المعرّف)
+  **لا يُسقط الباقي** — يُسجَّل ويُكمَل. أما فشل الطلب المجمّع كاملاً فيُصنَّف خطأً حقيقياً،
+  و**أكواد 190/10/102 تبقى تُوقف السحب** ليُقلب الاتصال إلى `reauth_needed` كما كان.
+- `collectPagePostIds` يعيد الآن `{ ids, calls }`؛ و`FacebookResult`/`InstagramResult`
+  يحملان `graphCalls` (عدد نداءات السحب الفعلية).
+
+### 2) `callsPerCycle` في حالة المراقب
+- `MetaPlatformIngestStats` يحمل حقل `callsPerCycle` (افتراضيه 0، يُطبَّع دفاعياً) بجانب
+  `postsScanned`/`commentsVisible`/`lastIngestAt`. يُملأ من `graphCalls` في كل دورة ناجحة،
+  ويُعلَن في `GET /api/agent/meta/watcher` (للمالك) و`/api/health`/`/api/readiness`
+  (كتلة `metaPolling.platformStats` — أرقام تقنية فقط، بلا بيانات عملاء).
+
+### 3) الاختبارات
+- `engine/tests/meta.comment.batch.test.ts` (`npm run test:meta-comment-batch`، **11 فحصاً**،
+  خادم حقيقي + خادم Graph وهمي): **45 منشوراً ⇒ نداء تعليقات واحد** (`GET /?ids=`) لا 45،
+  **صفر** نداء لتعليقات منشور منفرد، `postsScanned=45`، `commentsVisible=2`،
+  `callsPerCycle=4` (3 معرّفات + 1 مجمّع) و≤ 5، وتعليق على منشور فيديو/ريلز (لا يظهر في
+  `/feed`) يُقرأ رغم التجميع. **يفشل على الكود القديم** (كان 45 نداءً).
+- `engine/tests/prs3.comments.reach.test.ts` أُثرِي بثلاثة فحوص: قراءة مجمّعة واحدة، صفر
+  نداء منفرد، و`callsPerCycle` معلن ومحدود (≤ 5).
+- `facebookMock`/`instagramMock`: يخدمان `GET /?ids=` ويعدّان نداءات التجميع مقابل النداء
+  المنفرد، فتكشف الاختبارات أي عودة لنمط «نداء لكل منشور».
+
+### 4) تصحيح توثيق انقطاع 12 أكتوبر (توضيح، لا تخمين)
+ادّعاء سابق في وصف PR بأن انقطاع 2026-10-12 سببه انهيار الذاكرة (`1ab88ee`) **غير محسوم**
+ولا يُقدَّم كسبب مؤكّد. الواقع الموثّق: انهيار الذاكرة (`1ab88ee`) أُصلح في `ea81191`
+(رفع `NODE_OPTIONS=--max-old-space-size` إلى 400 في `Dockerfile`)، والمراقب عمل بعده أياماً
+بلا خطأ، ولم يُرصد أي قراءة/استقبال لاحق. لذلك **السبب غير محسوم، ويُحسَم بـ smoke test**:
+بعد النشر يُكتب تعليق اختبار حقيقي على منشور الصفحة، ثم يُقرأ
+`/api/health.metaPolling.platformStats.facebook.lastIngestAt` — إن تحدّث فالمسار سليم، وإن
+بقي ثابتاً مع `postsScanned>0` و`commentsVisible=0` فالسبب صلاحية/وضع تطبيق Meta (وضع
+Development/Access Levels) ويحتاج جلسة المالك على لوحة Meta.
+
+**لم يُمسّ:** أي سرّ/مفتاح/OAuth، Gemini/firewall، قاعدة البيانات، DR/الاستعادة، YouTube،
+TikTok/Telegram/Threads، نموذج الجدولة، نطاق ERP، أو رمز `/api/health`. `autoReply` يبقى off
+و`commercialSendMode` يبقى approval.

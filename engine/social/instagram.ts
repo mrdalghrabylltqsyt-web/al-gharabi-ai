@@ -423,6 +423,11 @@ export interface InstagramResult<T> {
   providerSubcode?: number | null;
   /** معرّف تتبّع Meta (error.fbtrace_id) — يُقدَّم للدعم بلا أي سرّ. */
   providerTraceId?: string | null;
+  /**
+   * عدد نداءات Graph الفعلية التي استهلكها السحب (جمع الوسائط + قراءة التعليقات
+   * المجمّعة) — يُعلن في حالة المراقب كـ`callsPerCycle`. اختياري.
+   */
+  graphCalls?: number;
 }
 
 function errorMessage(data: any, fallback: string): string {
@@ -601,14 +606,29 @@ export class InstagramClient {
   /**
    * يقرأ تعليقات وسائط الحساب الأخيرة عبر الحقل المتداخل `comments` على `/{ig-id}/media`
    * (قراءة فقط، بنطاق instagram_manage_comments). تُعاد تعليقات المستخدمين فقط.
+   *
+   * ملاحظة مهمة: نُمرّر `extraMediaIds` من سجلات النشر الحقيقية (`providerPostId`) كي
+   * تشمل القراءة منشورات النظام الفعلية (بما فيها الريلز) التي قد لا تظهر في آخر
+   * `media` دفعةً واحدة، فلا يضيع تعليق على منشور حديث. ومنع التكرار بمعرّف التعليق.
+   *
+   * حجم النداءات (إصلاح): كانت التعليقات تُقرأ بنداء منفصل لكل وسيط. الآن تُقرأ
+   * **مجمّعة** بطلب واحد لخمسين معرّفاً عبر `GET /?ids=<id1,id2,...>&fields=comments...`
+   * — فالهدف ≤ 2-3 نداءات للدورة على إنستغرام (1 لجمع الوسائط + 1-2 للتعليقات).
+   * فشل معرّف واحد داخل الطلب المجمّع لا يُسقط الباقي، وكود 190 يبقى يُوقف السحب.
    */
-  async listMediaComments(igAccountId: string, pageAccessToken: string, mediaLimit = 10, commentsLimit = 25): Promise<InstagramResult<Array<{ commentId: string; mediaId: string | null; text: string; username: string | null; authorId: string | null; createdAt: string | null }>>> {
+  async listMediaComments(igAccountId: string, pageAccessToken: string, mediaLimit = 10, commentsLimit = 25, extraMediaIds: string[] = []): Promise<InstagramResult<Array<{ commentId: string; mediaId: string | null; text: string; username: string | null; authorId: string | null; createdAt: string | null }>>> {
     if (!igAccountId) return { ok: false, data: null, error: 'معرّف حساب Instagram مطلوب.' };
     try {
+      const perMedia = Math.max(1, Math.min(50, Math.trunc(commentsLimit)));
+      const mediaIds: string[] = [];
+      const seenMedia = new Set<string>();
+      let graphCalls = 0;
+      const addMedia = (v: unknown) => { const s = String(v || '').trim(); if (s && !seenMedia.has(s)) { seenMedia.add(s); mediaIds.push(s); } };
       const u = new URL(instagramGraphUrl(`/${igAccountId}/media`, this.baseUrl));
-      u.searchParams.set('fields', `id,comments.limit(${Math.max(1, Math.min(50, Math.trunc(commentsLimit)))}){id,text,username,from,created_time}`);
+      u.searchParams.set('fields', 'id');
       u.searchParams.set('limit', String(Math.max(1, Math.min(50, Math.trunc(mediaLimit)))));
       u.searchParams.set('access_token', pageAccessToken);
+      graphCalls += 1;
       const res = await this.fetchImpl(u.toString(), { method: 'GET' });
       const data = await res.json().catch(() => null);
       if (!res.ok || data?.error) {
@@ -619,17 +639,54 @@ export class InstagramClient {
         const pCode = ex.providerCode ?? providerErrorCode(data);
         return { ok: false, data: null, error: msg, providerCode: pCode, providerSubcode: ex.providerSubcode, providerTraceId: ex.providerTraceId, code: classifyInstagramProviderError(msg, pCode) };
       }
+      for (const m of Array.isArray(data?.data) ? data.data : []) addMedia(m?.id);
+      for (const id of extraMediaIds) addMedia(id);
       const out: Array<{ commentId: string; mediaId: string | null; text: string; username: string | null; authorId: string | null; createdAt: string | null }> = [];
-      for (const media of Array.isArray(data?.data) ? data.data : []) {
-        const mediaId = media?.id ? String(media.id) : null;
-        for (const c of Array.isArray(media?.comments?.data) ? media.comments.data : []) {
-          const commentId = c?.id ? String(c.id) : '';
-          const text = typeof c?.text === 'string' ? c.text : '';
-          if (!commentId || !text) continue;
-          out.push({ commentId, mediaId, text, username: c?.username ? String(c.username) : (c?.from?.username ? String(c.from.username) : null), authorId: c?.from?.id ? String(c.from.id) : null, createdAt: c?.created_time ? String(c.created_time) : (c?.timestamp ? String(c.timestamp) : null) });
+      const seen = new Set<string>();
+      const commentsField = `comments.order(reverse_chronological).limit(${perMedia}){id,text,username,from,created_time}`;
+      let lastError: { msg: string; pCode: number | null; subcode: number | null; trace: string | null } | null = null;
+      // قراءة مجمّعة: حتى 50 معرّفاً في الطلب الواحد.
+      for (let i = 0; i < mediaIds.length; i += 50) {
+        const chunk = mediaIds.slice(i, i + 50);
+        const cu = new URL(instagramGraphUrl('/', this.baseUrl));
+        cu.searchParams.set('ids', chunk.join(','));
+        cu.searchParams.set('fields', commentsField);
+        cu.searchParams.set('access_token', pageAccessToken);
+        graphCalls += 1;
+        const cres = await this.fetchImpl(cu.toString(), { method: 'GET' });
+        const cdata = await cres.json().catch(() => null);
+        if (!cres.ok || cdata?.error) {
+          // فشل الطلب المجمّع كاملاً — يُصنَّف كخطأ حقيقي (190 يوقف السحب).
+          const msg = errorMessage(cdata, 'فشل قراءة تعليقات Instagram.');
+          const ex = logAndExtractInstagramError(cdata, 'GET /?ids=...', cres.status);
+          const pCode = ex.providerCode ?? providerErrorCode(cdata);
+          lastError = { msg, pCode, subcode: ex.providerSubcode ?? null, trace: ex.providerTraceId ?? null };
+          if (pCode === 190 || pCode === 102 || pCode === 10) {
+            return { ok: false, data: null, error: msg, providerCode: pCode, providerSubcode: lastError.subcode, providerTraceId: lastError.trace, code: classifyInstagramProviderError(msg, pCode) };
+          }
+          continue;
+        }
+        for (const mediaId of chunk) {
+          const node = cdata && typeof cdata === 'object' ? (cdata as any)[mediaId] : null;
+          // فشل معرّف واحد داخل الاستجابة لا يُسقط الباقي.
+          if (!node || node.error) {
+            if (node?.error) logAndExtractInstagramError({ error: node.error }, `GET /${mediaId}`, cres.status);
+            continue;
+          }
+          for (const c of Array.isArray(node?.comments?.data) ? node.comments.data : []) {
+            const commentId = c?.id ? String(c.id) : '';
+            const text = typeof c?.text === 'string' ? c.text : '';
+            if (!commentId || !text || seen.has(commentId)) continue;
+            seen.add(commentId);
+            out.push({ commentId, mediaId, text, username: c?.username ? String(c.username) : (c?.from?.username ? String(c.from.username) : null), authorId: c?.from?.id ? String(c.from.id) : null, createdAt: c?.created_time ? String(c.created_time) : (c?.timestamp ? String(c.timestamp) : null) });
+          }
         }
       }
-      return { ok: true, data: out };
+      if (!out.length && lastError && mediaIds.length) {
+        // لم نقرأ أي تعليق وكل المحاولات فشلت ⇒ خطأ حقيقي لا نجاح صامت.
+        return { ok: false, data: null, error: lastError.msg, providerCode: lastError.pCode, providerSubcode: lastError.subcode, providerTraceId: lastError.trace, code: classifyInstagramProviderError(lastError.msg, lastError.pCode) };
+      }
+      return { ok: true, data: out, graphCalls };
     } catch (e: any) {
       return { ok: false, data: null, error: String(e?.message || 'فشل الاتصال بـInstagram.'), code: 'NETWORK_ERROR' };
     }

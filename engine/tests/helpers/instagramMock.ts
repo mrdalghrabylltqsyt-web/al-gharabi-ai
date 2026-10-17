@@ -50,6 +50,10 @@ export interface InstagramMockState {
   /** تسلسل حالة الحاوية (status_code) الذي يُقرأ استعلاماً بعد آخر قيمة. */
   containerStatusSequence: string[];
   containerStatusReads: number;
+  /** عدد نداءات القراءة المجمّعة (`GET /?ids=`) — لإثبات ≤ نداء واحد للتعليقات. */
+  commentBatchCalls: number;
+  /** عدد نداءات قراءة تعليقات وسيط منفرد (`GET /{media-id}?fields=comments...`) — يجب أن يبقى 0. */
+  commentNodeCalls: number;
   calls: number;
   validAppId: string;
   validAppSecret: string;
@@ -84,6 +88,8 @@ export function createInstagramMock(state: Partial<InstagramMockState> = {}): In
     published: [],
     containerStatusSequence: state.containerStatusSequence ?? ['FINISHED'],
     containerStatusReads: 0,
+    commentBatchCalls: 0,
+    commentNodeCalls: 0,
     calls: 0,
     validAppId: state.validAppId ?? '145634995501895',
     validAppSecret: state.validAppSecret ?? 'test-fb-client-secret',
@@ -189,6 +195,26 @@ export async function startInstagramMockServer(
     return res.json({ data, paging: {} });
   });
 
+  // القراءة المجمّعة (إصلاح حجم النداءات): `GET /?ids=<id1,id2,...>&fields=comments...`
+  // تُعيد كائناً مفتاحه معرّف كل وسيط وقيمته تعليقاته — كما يفعل Graph الحقيقي.
+  // يُسجَّل **قبل** `/:version/:id` وإلا التقطه كعقدة معرّفها فارغ.
+  app.get('/:version/', (req, res) => {
+    const idsRaw = String(req.query.ids || '').trim();
+    if (!idsRaw) return res.status(400).json({ error: { message: 'ids required', code: 100 } });
+    const fields = String(req.query.fields || '');
+    const ids = idsRaw.split(',').map((s) => s.trim()).filter(Boolean);
+    state.calls += 1;
+    state.commentBatchCalls += 1;
+    const out: Record<string, unknown> = {};
+    for (const id of ids) {
+      const media = state.feedMedia.find((m) => m.id === id);
+      out[id] = media
+        ? { id, comments: fields.includes('comments') ? { data: media.comments.map((c) => ({ id: c.id, text: c.text, username: c.username, from: c.from, created_time: c.created_time })) } : undefined }
+        : { error: { message: `Unsupported get request for object with ID ${id}`, code: 100 } };
+    }
+    return res.json(out);
+  });
+
   // هوية صفحة أو حساب Instagram: التمييز بالمعرّف.
   app.get('/:version/:id', (req, res) => {
     const { id } = req.params;
@@ -204,6 +230,15 @@ export async function startInstagramMockServer(
       return res.status(400).json({ error: { message: 'Error validating access token: Session has expired', type: 'OAuthException', code: 190, error_subcode: 463 } });
     }
     if (state.failProfile) return res.status(400).json({ error: { message: 'Unsupported get request', code: 100 } });
+    // تعليقات وسائط محدّدة (`GET /{media-id}?fields=comments.order(...){...}`) —
+    // تُخدم لأي media معروف. تُثبت أن السحب يقرأ تعليقات منشورات النظام الفعلية.
+    if (fields.includes('comments')) {
+      const media = state.feedMedia.find((m) => m.id === id);
+      if (media) {
+        state.commentNodeCalls += 1;
+        return res.json({ id: media.id, comments: { data: media.comments.map((c) => ({ id: c.id, text: c.text, username: c.username, from: c.from, created_time: c.created_time })) } });
+      }
+    }
     const account = state.accounts.find((a) => a.igAccountId === id);
     if (account) return res.json({ id: account.igAccountId, username: account.igUsername });
     const page = state.accounts.find((a) => a.pageId === id);

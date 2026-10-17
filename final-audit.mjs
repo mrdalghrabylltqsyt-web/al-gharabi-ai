@@ -4880,8 +4880,8 @@ add('watcher-advisory-not-authority',
     'العملاء المحتملون يُحفظون ويُسترجعون على الخلفيتين (ملف + Postgres) فلا يُفقد عميل بعد restart');
   add('commercial-followup-central-executor-only',
     server.includes('executeMetaCommentReply') && server.includes('executeMetaMessageReply') &&
-    /runCommercialBrainCycle[\s\S]{0,6000}executeMetaMessageReply\(lead\.platform/.test(server) &&
-    !/runCommercialBrainCycle[\s\S]{0,6000}facebookClient\(\)\.(replyToComment|sendMessage)/.test(server),
+    /runCommercialBrainCycle[\s\S]{0,14000}executeMetaMessageReply\(lead\.platform/.test(server) &&
+    !/runCommercialBrainCycle[\s\S]{0,14000}facebookClient\(\)\.(replyToComment|sendMessage)/.test(server),
     'متابعة العقل التجاري تمر بالمنفّذ المركزي وحده (لا مسار إرسال جانبي)');
   add('commercial-health-public-no-customer-data',
     server.includes('commercialBrain: commercialPublicStatus()') &&
@@ -5024,6 +5024,62 @@ add('watcher-advisory-not-authority',
     add('test-server-boot-wait-budget',
       low.length === 0 && highCount >= 40,
       `لا اختبار خادم بمهلة إقلاع 60s (مزعزعة تحت حمل CI) — ${highCount} اختبار بـ180s`);
+  }
+
+  // 11ب) PR-S3: وصول التعليقات (feed+videos+reels) + هوية الزبون الحقيقية + مسودة فورية.
+  {
+    const fb = read('engine/social/facebook.ts');
+    const ig = read('engine/social/instagram.ts');
+    // قراءة التعليقات من كل أنواع المنشورات لا من /feed وحده (فيديو/ريلز).
+    add('prs3-facebook-post-sources-all-types',
+      /collectPagePostIds/.test(fb) && /\/\$\{pageId\}\/feed/.test(fb) && /\/\$\{pageId\}\/videos/.test(fb) && /\/\$\{pageId\}\/video_reels/.test(fb),
+      'Facebook يجمع المنشورات من feed + videos + video_reels (لا /feed وحده — منشورات الفيديو/الريلز لا تُضمن فيه)');
+    add('prs3-facebook-comments-reverse-chronological',
+      /comments\.order\(reverse_chronological\)/.test(fb),
+      'تعليقات كل منشور تُقرأ بـorder(reverse_chronological) فلا يختفي تعليق جديد بعد 25 قديماً');
+    add('prs3-facebook-extra-published-ids',
+      server.includes('publishedPostIdsFor("facebook")') && server.includes('publishedPostIdsFor("instagram")'),
+      'معرّفات المنشورات المنشورة فعلاً من سجلات النشر تُغذّي القراءة (فلا يضيع تعليق على منشور لا يظهر في /feed)');
+    add('prs3-instagram-media-comments-reverse-chronological',
+      /comments\.order\(reverse_chronological\)/.test(ig) && /extraMediaIds/.test(ig),
+      'Instagram يقرأ تعليقات media بـorder(reverse_chronological) ويشمل media منشورات النظام الفعلية');
+    // إغلاق الفشل الصامت: إحصاءات استقبال + تحذير 48 ساعة.
+    add('prs3-ingest-stats-single-source',
+      /export interface MetaPlatformIngestStats/.test(read('engine/social/metaWatcher.ts')) && /export function metaIngestWarning/.test(read('engine/social/metaWatcher.ts')) && /META_STALE_INGEST_HOURS = 48/.test(read('engine/social/metaWatcher.ts')),
+      'إحصاءات الاستقبال (منشورات مفحوصة/تعليقات مرئية/آخر استقبال) وتحذير 48 ساعة مصدرهما الوحيد metaWatcher');
+    add('prs3-ingest-stats-updated-in-cycle',
+      server.includes('platformStats[platform]') && server.includes('postsScanned:') && server.includes('commentsVisible:') && server.includes('lastIngestAt'),
+      'دورة المراقب تُحدّث إحصاءات الاستقبال لكل منصة (فلا فشل صامت: قراءة ok بلا تعليقات)');
+    add('prs3-ingest-warning-public-block',
+      /staleIngestWarning/.test(read('engine/social/metaWatcher.ts')) && server.includes('metaPolling: metaPollingPublicStatus()'),
+      'الكتلة العامة تُعلن تحذير عدم الاستقبال بلا أي بيانات عميل (أرقام/أوقات/منصة فقط)');
+    add('prs3-ui-ingest-warning',
+      read('src/components/dashboard/CommandCenterView.tsx').includes('metaPolling?.warnings') && read('src/components/dashboard/CommandCenterView.tsx').includes('لا استقبال تعليقات'),
+      'لوحة التحكم تعرض تحذير عدم الاستقبال صراحةً (48 ساعة)');
+    // هوية الزبون الحقيقية = الكاتب لا المنشور.
+    add('prs3-customer-identity-is-author',
+      server.includes('author:${authorId}') && server.includes('thread:${String(row.postExternalId') && server.includes('row.authorId'),
+      'هوية الزبون = معرّف الكاتب (from.id/PSID/IG)، مع سقوط لـthread:<post>:<comment> عند غيابه — لا تجميع معلّقي منشور في زبون واحد');
+    add('prs3-author-id-captured-both-ingest',
+      server.includes('authorId: c.authorId || null') && read('engine/social/webhook.ts').includes('authorId') && read('engine/social/facebook.ts').includes('authorId: v.from?.id'),
+      'authorId يُحفظ في socialComments من مساري polling وwebhook (وأُضيف لنوع الحدث الموحّد)');
+    // مسودة الرد الفورية في وضع الموافقة.
+    add('prs3-instant-reply-draft-deterministic',
+      server.includes('async function createInstantReplyDraft') && server.includes('allowAi: false') && server.includes('idempotencyKey: idem') && server.includes('`reply:${input.externalId}`'),
+      'مسودة الرد الفورية حتمية (بلا نداء مزوّد) بمفتاح منع تكرار reply:<commentId>');
+    add('prs3-instant-reply-draft-wired-cycle',
+      server.includes('createInstantReplyDraft({') && server.includes('draftedLeads'),
+      'مسودة الرد الفورية مربوطة بدورة العقل التجاري (تُنتج في نفس الدورة، بلا تكديس متابعة فوقها)');
+    // اختبار PR-S3 مُسجَّل ومُثبِت للسلوك على خادم حقيقي.
+    add('prs3-test-registered',
+      (pkg.scripts['test'] || '').includes('test:prs3-comments-reach') && pkg.scripts['test:prs3-comments-reach'] === 'tsx engine/tests/prs3.comments.reach.test.ts' && fs.existsSync(path.join(root, 'engine/tests/prs3.comments.reach.test.ts')),
+      'اختبار PR-S3 (وصول التعليقات + هوية الزبون + المسودة الفورية + تحذير 48 ساعة) مسجَّل في npm test');
+    add('prs3-test-no-real-provider',
+      (() => {
+        const t = fs.existsSync(path.join(root, 'engine/tests/prs3.comments.reach.test.ts')) ? read('engine/tests/prs3.comments.reach.test.ts') : '';
+        return /FACEBOOK_GRAPH_API_BASE/.test(t) && /delete env\.GEMINI_API_KEY/.test(t) && !/graph\.facebook\.com/.test(t) && /PASSED:/.test(t);
+      })(),
+      'اختبار PR-S3 يستخدم خادم Meta وهمياً محلياً بلا مزود حقيقي ولا حصة AI');
   }
 
   // 12) AGENTS.md: عدد فحوصات final-audit مطابق للفعلي (يُعَدّ من نص الملف نفسه).

@@ -203,17 +203,53 @@ function norm(s: string): string {
 }
 
 /**
- * يطابق منتجاً مسجّلاً من نص العميل عبر **ذكر اسمه حرفياً** (بعد التطبيع).
+ * يطابق منتجاً مسجّلاً من نص العميل عبر **ذكر اسمه حرفياً** (بعد التطبيع)، مع توحيد
+ * تهجئة الماركات العامية (مثال: «شارك» ⇒ «شارب»، «سامسونك» ⇒ «سامسونج»).
  * لا استنتاج: يجب أن يحتوي النص على اسم المنتج (≥3 محارف)، ويُفضّل الأطول مطابقة.
  * يُعيد null عند عدم التطابق (فلا اختراع).
+ *
+ * مرادفات الماركات: العميل قد يكتب اسم الماركة بتهجئة عامية مختلفة عن الاسم المسجّل في
+ * الكتالوج. نُوحّد كل مجموعة إلى صيغة قياسية **داخل المطابقة فقط** (لا نغيّر النص
+ * المحفوظ ولا نختلق ماركة) كي يجد المنتج المسجّل بدل التصعيد الخاطئ. لا يمسّ الأسعار.
  */
+const BRAND_SYNONYM_GROUPS: readonly (readonly string[])[] = Object.freeze([
+  ['شارب', 'شارك', 'شاب', 'sharp'],
+  ['سامسونج', 'سامسونك', 'سامسنغ', 'samsung'],
+  ['ال جي', 'الجي', 'ال جي', 'lg'],
+  ['ابل', 'ايفون', 'apple', 'iphone'],
+  ['هواوي', 'هوواي', 'huawei'],
+  ['شاومي', 'شياومي', 'xiaomi'],
+  ['توشيبا', 'toshiba'],
+  ['سوني', 'sony'],
+  ['نوكيا', 'nokia'],
+  ['ريلمي', 'realme'],
+  ['اوبو', 'oppo'],
+  ['فيفو', 'vivo'],
+]);
+
+const BRAND_CANONICAL: ReadonlyMap<string, string> = (() => {
+  const m = new Map<string, string>();
+  for (const group of BRAND_SYNONYM_GROUPS) {
+    const canonical = group[0];
+    for (const variant of group) m.set(norm(variant), canonical);
+  }
+  return m;
+})();
+
+/** يوحّد تهجئة الماركات العامية إلى صيغة قياسية (للمطابقة فقط — بلا مساس بالأسعار). */
+export function canonicalizeBrands(input: string): string {
+  const n = norm(input);
+  if (!n) return n;
+  return n.split(' ').map((token) => BRAND_CANONICAL.get(token) || token).join(' ');
+}
+
 export function matchCatalogProduct(text: string, products: any[]): any | null {
-  const hay = norm(text);
+  const hay = canonicalizeBrands(text);
   if (!hay) return null;
   let best: any | null = null;
   let bestLen = 0;
   for (const p of Array.isArray(products) ? products : []) {
-    const name = norm(p?.name);
+    const name = canonicalizeBrands(String(p?.name || ''));
     if (name.length >= 3 && hay.includes(name) && name.length > bestLen) {
       best = p; bestLen = name.length;
     }
