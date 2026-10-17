@@ -69,7 +69,7 @@ import {
   type CommercialLead, type InboundInteraction, type CommercialNegotiationLimits,
   defaultNegotiationLimits, normalizeNegotiationLimits, evaluateNegotiation,
   createCommercialLead, mergeCommercialInteraction, commercialLeadKey,
-  requestsNegotiation, parseRequestedDiscountPercent,
+  requestsNegotiation, parseRequestedDiscountPercent, hasBuyingSignal,
   nextFollowUpAt, isFollowUpDue, applyFollowUpSent, buildCommercialFollowUpText,
   buildCommercialProposal, confirmCommercialProposal, rejectCommercialProposal,
   toCommercialLeadRow, summarizeCommercialLeads, commercialPublicBlock, normalizeCommercialLeads,
@@ -418,6 +418,7 @@ import { createWatcherScheduler, type WatcherScheduler } from "./engine/social/y
 import {
   META_WATCHER_PLATFORMS,
   defaultMetaPollingState,
+  defaultMetaPlatformIngestStats,
   normalizeMetaPollingState,
   metaPollingControlsView,
   metaPollingPublicBlock,
@@ -4795,6 +4796,8 @@ type WebhookIngestEvent = {
   externalId: string;
   parentExternalId: string | null;
   authorName: string | null;
+  /** معرّف الكاتب الحقيقي لدى المنصة (from.id / IG user id) — أساس هوية الزبون. */
+  authorId?: string | null;
   text: string;
   createdAt: string;
   replyTarget: Record<string, unknown> | null;
@@ -4829,7 +4832,11 @@ async function ingestWebhookComments(input: {
     const classification = classifyComment(ev.text);
     const comment: any = {
       id: workspaceId("comment"), platform, externalId: ev.externalId,
-      postExternalId: ev.parentExternalId, authorName: ev.authorName, text: ev.text,
+      postExternalId: ev.parentExternalId, authorName: ev.authorName,
+      // هوية الكاتب الحقيقية (from.id / IG user id) — أساس «الزبون» الحقيقي في
+      // العقل التجاري (بدل تجميع كل المعلّقين على منشور واحد في زبون واحد).
+      authorId: ev.authorId ?? null,
+      text: ev.text,
       createdAt: ev.createdAt, classification, requiresHumanReview: classification.requiresHumanReview,
       // مصدر الاستقبال حقيقي صراحةً، فلا يظهر كـ simulated/not delivered.
       ingestSource: `${platform}_webhook`, replyTarget: ev.replyTarget,
@@ -4847,6 +4854,11 @@ async function ingestWebhookComments(input: {
     const typeOf = typeof input.webhookEventType === "function" ? input.webhookEventType : () => (input.webhookEventType as string) || "webhook";
     (workspace as any).webhookEvents.unshift(...acceptedEvents.map((ev) => ({ id: workspaceId("event"), platform, type: typeOf(ev), externalId: ev.externalId, receivedAt: new Date().toISOString() })));
     (workspace as any).webhookEvents = (workspace as any).webhookEvents.slice(0, WORKSPACE_MAX_WEBHOOK_EVENTS);
+    // وقت آخر استقبال فعلي لمنصّة Meta (يُغذّي تحذير 48 ساعة في مراقب Meta) —
+    // الاستقبال عبر webhook مصدر حقيقي أيضاً، لا السحب الدوري وحده.
+    if (platform === "facebook" || platform === "instagram") {
+      try { metaPollingState.platformStats[platform as MetaPlatform].lastIngestAt = new Date().toISOString(); } catch { /* حالة المراقب غير مهيّأة بعد */ }
+    }
   }
   if (input.auditKind) audit("system", input.auditKind, `${accepted.length}/${events.length}`);
   // الحفظ الدائم **قبل** الإقرار: يضمن ثبات الحدث ومعرّف منع التكرار.
@@ -5751,6 +5763,7 @@ function normalizeMetaEvents(platform: PlatformId, payload: any): NormalizedSoci
         externalId: String(externalId),
         parentExternalId: v.post_id ? String(v.post_id) : null,
         authorName: v.from?.name ?? null,
+        authorId: v.from?.id ? String(v.from.id) : null,
         text,
         createdAt: v.created_time ? new Date(Number(v.created_time) * 1000).toISOString() : undefined,
         // الرد على تعليق الصفحة يتم بمعرّف التعليق نفسه عبر Graph API.
@@ -5770,6 +5783,7 @@ function normalizeMetaEvents(platform: PlatformId, payload: any): NormalizedSoci
         externalId: String(externalId),
         parentExternalId: senderId,
         authorName: null,
+        authorId: senderId,
         text,
         createdAt: m?.timestamp ? new Date(Number(m.timestamp)).toISOString() : undefined,
         replyTarget: { recipientId: senderId, pageId },
@@ -5788,6 +5802,7 @@ function normalizeMetaEvents(platform: PlatformId, payload: any): NormalizedSoci
         externalId: String(externalId),
         parentExternalId: from,
         authorName: from,
+        authorId: from,
         text,
         createdAt: msg?.timestamp ? new Date(Number(msg.timestamp) * 1000).toISOString() : undefined,
         replyTarget: { recipientId: from },
@@ -7747,6 +7762,7 @@ async function persistMetaPollingState(): Promise<void> {
       consecutiveErrors: metaPollingState.consecutiveErrors,
       pollCount: metaPollingState.pollCount,
       lastScanned: metaPollingState.lastScanned,
+      platformStats: metaPollingState.platformStats,
       lease: metaPollingLease,
     });
   } catch { /* يُعلن عبر حالة الحفظ العامة */ }
@@ -7786,25 +7802,46 @@ function metaPollingStatusBlock() {
 }
 
 /** يجلب تعليقات منصة Meta الحقيقية (قراءة فقط) عبر العميل الرسمي — بلا كتابة. */
-async function fetchMetaInboundComments(platform: MetaPlatform): Promise<{ ok: boolean; comments?: any[]; error?: string; code?: string; providerCode?: number | null }> {
+async function fetchMetaInboundComments(platform: MetaPlatform): Promise<{ ok: boolean; comments?: any[]; error?: string; code?: string; providerCode?: number | null; postsScanned?: number }> {
   try {
     if (platform === "facebook") {
       const pageId = String(getProviderToken("facebook")?.pageId || "");
       const token = facebookPageToken(pageId || undefined);
       if (!pageId || !token) return { ok: false, error: "لا صفحة Facebook موثقة.", code: "NOT_CONNECTED" };
-      const res = await facebookClient().listPageComments(pageId, token, 25);
+      // معرّفات المنشورات التي نشرها النظام فعلاً (فيديو/ريلز/صور) — تُضاف لمصادر
+      // القراءة فلا يضيع تعليق على منشور لا يظهر في /feed (توثيق Meta).
+      const extraPostIds = publishedPostIdsFor("facebook");
+      const res = await facebookClient().listPageComments(pageId, token, 25, extraPostIds);
       if (!res.ok) return { ok: false, error: res.error || "فشل قراءة تعليقات Facebook.", code: res.code || "FETCH_FAILED", providerCode: res.providerCode ?? null };
-      return { ok: true, comments: res.data || [] };
+      return { ok: true, comments: res.data || [], postsScanned: (res.postIdsScanned || []).length };
     }
     const igAccountId = String(getProviderToken("instagram")?.igAccountId || "");
     const token = instagramPageToken();
     if (!igAccountId || !token) return { ok: false, error: "لا حساب Instagram موثّق.", code: "NOT_CONNECTED" };
-    const res = await instagramClient().listMediaComments(igAccountId, token, 10, 25);
+    const extraMediaIds = publishedPostIdsFor("instagram");
+    const res = await instagramClient().listMediaComments(igAccountId, token, 10, 25, extraMediaIds);
     if (!res.ok) return { ok: false, error: res.error || "فشل قراءة تعليقات Instagram.", code: res.code || "FETCH_FAILED", providerCode: res.providerCode ?? null };
-    return { ok: true, comments: res.data || [] };
+    return { ok: true, comments: res.data || [], postsScanned: new Set((res.data || []).map((c: any) => c.mediaId).filter(Boolean)).size };
   } catch (e: any) {
     return { ok: false, error: String(e?.message || "فشل الجلب."), code: "FETCH_ERROR" };
   }
+}
+
+/**
+ * معرّفات المنشورات التي نشرها النظام فعلاً لمنصة (فيديو/ريلز/صور) من سجلات
+ * النشر الحقيقية — تُغذّي قراءة التعليقات كي تشمل منشورات لا يضمن Graph ظهورها
+ * في `/{page-id}/feed`. معرّف حقيقي فقط (بلا اختراع)، بلا تكرار، بحدّ معقول.
+ */
+function publishedPostIdsFor(platform: "facebook" | "instagram"): string[] {
+  const ids: string[] = [];
+  const seen = new Set<string>();
+  for (const rec of ((workspace as any).publishRecords || [])) {
+    if (String(rec?.platform || '') !== platform) continue;
+    const id = String(rec?.providerPostId || rec?.externalVideoId || '').trim();
+    if (id && !seen.has(id)) { seen.add(id); ids.push(id); }
+    if (ids.length >= 20) break;
+  }
+  return ids;
 }
 
 /**
@@ -7884,13 +7921,16 @@ function watcherDialogueContext(platform: string, subjectId: string, subjectTitl
  */
 async function generateWatcherReply(input: {
   platform: string; commentText: string; subjectId: string; subjectTitle: string | null; product: any | null; cls: ReturnType<typeof classifyComment>;
+  /** PR-S3: عند false يُمنع المسار الذكي (Gemini) ويُستخدم النص الحتمي فقط —
+   *  يُستخدم في توليد مسودة صندوق الزبائن فلا يُستهلك أي مزوّد ولا حصة. */
+  allowAi?: boolean;
 }): Promise<{ text: string; clarify: boolean; escalate: boolean; strategy: string; source: 'deterministic' | 'ai' | 'clarify_ai' | 'clarify_deterministic' }> {
   const grounding = resolveGroundingProduct({ commentText: input.commentText, postProduct: input.product, products: (workspace.products || []) as any[] });
   const facts = replyFactsForProduct(grounding);
   const ctx = watcherDialogueContext(input.platform, input.subjectId, input.subjectTitle);
   const deterministic = generateConversationalReply(input.cls, facts, ctx);
-  if (!deterministic.clarifying) {
-    return { text: deterministic.text, clarify: false, escalate: deterministic.escalate, strategy: deterministic.strategy, source: 'deterministic' };
+  if (!deterministic.clarifying || input.allowAi === false) {
+    return { text: deterministic.text, clarify: deterministic.clarifying, escalate: deterministic.escalate, strategy: deterministic.strategy, source: 'deterministic' };
   }
   // سؤال توضيح: المسار الذكي داخل الجدار (cache/dedup/quota/breaker) يجعل الصياغة
   // أكثر طبيعية؛ أي فشل/نفاد حصة ⇒ السقوط للسؤال الحتمي الآمن (لا يُسقَط الرد).
@@ -7951,6 +7991,15 @@ async function runMetaWatcherCycle(trigger: string): Promise<{ ok: boolean; trig
       } else {
         metaPollingState.lastError = null;
         metaPollingState.consecutiveErrors = 0;
+        // إحصاءات الاستقبال: تُغلق «الفشل الصامت» (قراءة ok بلا تعليقات رغم وجود
+        // منشورات). تُحدَّث كل دورة ناجحة، ويُحدَّث وقت آخر استقبال فقط عند وصول
+        // تعليق فعلي (أدناه).
+        const prev = metaPollingState.platformStats[platform] || defaultMetaPlatformIngestStats();
+        metaPollingState.platformStats[platform] = {
+          postsScanned: Number(fetched.postsScanned || 0),
+          commentsVisible: (fetched.comments || []).length,
+          lastIngestAt: prev.lastIngestAt || null,
+        };
       }
       const ownNames = [String(workspace.showroom?.name || ""), "معرض الغرابي"];
       const pageIdFb = String(getProviderToken("facebook")?.pageId || "");
@@ -7974,12 +8023,17 @@ async function runMetaWatcherCycle(trigger: string): Promise<{ ok: boolean; trig
           if (!Array.isArray((workspace as any).socialComments)) (workspace as any).socialComments = [];
           (workspace as any).socialComments.unshift({
             id: workspaceId("comment"), platform, externalId, postExternalId: c.postId || c.mediaId || null,
-            authorName: c.authorName || c.username || null, text, createdAt: c.createdAt || new Date().toISOString(),
+            authorName: c.authorName || c.username || null,
+            // هوية الكاتب الحقيقية (from.id / IG user id) — أساس «الزبون» الحقيقي.
+            authorId: c.authorId || null,
+            text, createdAt: c.createdAt || new Date().toISOString(),
             classification: cls0, requiresHumanReview: cls0.requiresHumanReview, ingestSource: `${platform}_polling`,
             replyTarget: { commentId: externalId },
           });
           if ((workspace as any).socialComments.length > WORKSPACE_MAX_SOCIAL_COMMENTS) (workspace as any).socialComments.length = WORKSPACE_MAX_SOCIAL_COMMENTS;
           newDetected += 1;
+          // وقت آخر استقبال فعلي لهذه المنصة (يُغذّي تحذير 48 ساعة).
+          metaPollingState.platformStats[platform].lastIngestAt = new Date().toISOString();
         }
         const cls = classifyComment(text);
         // حقائق المنتج الموثّقة: تُحلّ من منشور التعليق بمعرّف صريح فقط (بلا تخمين)،
@@ -8690,14 +8744,65 @@ function sweepExpiredCommercialDrafts(nowIso: string): number {
 }
 
 /**
+ * PR-S3: مسودة رد **فورية** في وضع الموافقة لكل تعليق/رسالة جديد فيها سؤال سعر/قسط أو
+ * نية شراء — تُنشأ في الدورة التالية مباشرة (لا بعد 24 ساعة)، بلا أي نداء مزوّد.
+ * النص من بيانات المنتج المسجّلة فقط (السعر + القسط الحتمي) عبر نفس محرّك الردود
+ * (`generateWatcherReply`)؛ منتج غير معروف ⇒ سؤال توضيحي **بلا أي رقم**. مفتاح منع
+ * التكرار `reply:<externalId>` فلا تتكرر المسودة لنفس الحدث.
+ */
+async function createInstantReplyDraft(input: {
+  lead: CommercialLead;
+  platform: MetaPlatform;
+  externalId: string;
+  text: string;
+  kind: 'comment' | 'message';
+  recipientId?: string | null;
+  product: any | null;
+  cls: ReturnType<typeof classifyComment>;
+  subjectId: string;
+  nowIso: string;
+}): Promise<CommercialDraft | null> {
+  // نقتصر على نية شراء/سؤال سعر أو قسط — لا مسودات لكل تعليق مدح/تحية.
+  const cls: any = input.cls;
+  const isPriceOrInstallment = cls?.topic === 'price' || cls?.topic === 'availability' || cls?.isBusinessInquiry === true;
+  if (!isPriceOrInstallment && !hasBuyingSignal(cls, input.text)) return null;
+  const idem = `reply:${input.externalId}`;
+  if (findCommercialDraftByKey(input.lead.key, idem)) return null;
+  const gen = await generateWatcherReply({
+    platform: input.platform, commentText: input.text, subjectId: input.subjectId,
+    subjectTitle: null, product: input.product, cls: input.cls, allowAi: false,
+  });
+  const text = String(gen.text || '').trim();
+  if (!text) return null;
+  // حارس المحتوى: لا مسودة تحمل ادعاءً غير مسجّل (نفس بوابة المتابعة).
+  const facts = buildFactsForProduct(input.product, Number(input.product?.downPaymentPercent || 0), Number(input.product?.durationMonths || 0));
+  if (!analyzeBusinessClaims(text, facts).safe) return null;
+  return createCommercialDraft({
+    lead: input.lead,
+    purpose: 'reply',
+    text,
+    externalId: input.externalId,
+    recipientId: input.kind === 'message' ? String(input.recipientId || '') || null : null,
+    productId: input.product?.id ? String(input.product.id) : null,
+    idempotencyKey: idem,
+    windowExpiresAt: input.kind === 'message' ? metaWindowExpiresAt(input.lead.lastCustomerInteractionAt) : null,
+    at: input.nowIso,
+  });
+}
+
+/**
  * يُسجّل/يُحدّث عميلاً محتملاً من تفاعل وارد حقيقي (تعليق/رسالة). يُستدعى من مسارات
  * الاستقبال الحقيقية داخل النبضة فقط. لا يُنشئ عميلاً من لا شيء، ولا يفقد أي حدث.
  */
 async function recordCommercialInteraction(input: InboundInteraction): Promise<CommercialLead | null> {
   const eid = String(input.externalId || "").trim();
-  const key = commercialLeadKey(input.platform, input.conversationId);
   if (!eid || !input.text || !input.conversationId) return null;
-  const existing = findCommercialLead(key);
+  // مطابقة أولى بالحدث المُسجَّل: إن سبق أن سُجِّل هذا الحدث في عميل قائم (بأي مفتاح)،
+  // نُعيد استخدامه بدل إنشاء عميل ثانٍ لنفس الشخص/الحدث. يحفظ الـleads القائمة كما هي
+  // (بلا حذف ولا إعادة كتابة) ويمنع تكرار الزبون عند اختلاف صيغة المفتاح القديمة.
+  const byEvent = commercialLeads.find((l) => Array.isArray(l.sourceEventIds) && l.sourceEventIds.includes(eid));
+  const key = byEvent ? byEvent.key : commercialLeadKey(input.platform, input.conversationId);
+  const existing = byEvent || findCommercialLead(key);
   if (existing) {
     if (existing.sourceEventIds.includes(eid)) return existing; // idempotent.
     const idx = commercialLeads.findIndex((l) => l.key === key);
@@ -8778,9 +8883,17 @@ function incomingToInteraction(row: any, nowIso: string): InboundInteraction | n
   const text = String(row.text || '').trim();
   if (!externalId || !text) return null;
   const isMessage = row.kind === 'message';
+  // هوية الزبون الحقيقية = الكاتب (from.id / PSID / IG user id)، لا المنشور.
+  // الجذر المُصلح: `thread:<postId>` كان يجمع **كل** المعلّقين على منشور واحد في
+  // زبون واحد (خلل هوية). الآن: معلّقان مختلفان على نفس المنشور = زبونان، والشخص
+  // نفسه مرتين = زبون واحد. ومع غياب معرّف الكاتب نُسقط إلى الخيط الفرعي الدقيق
+  // `thread:<postId>:<commentId>` (لا خلط بين معلّقين مجهولين).
+  const authorId = String(row.authorId || '').trim();
   const conversationId = isMessage
-    ? `dm:${String(row.replyTarget?.recipientId || externalId)}`
-    : `thread:${String(row.postExternalId || 'thread')}`;
+    ? `dm:${String(row.replyTarget?.recipientId || authorId || externalId)}`
+    : (authorId
+      ? `author:${authorId}`
+      : `thread:${String(row.postExternalId || 'thread')}:${externalId}`);
   const product = resolveProductForPost(row.postExternalId || null);
   return {
     externalId, platform, conversationId, customerName: row.authorName || null, text,
@@ -8814,6 +8927,9 @@ async function runCommercialBrainCycle(trigger: string): Promise<{ ok: boolean; 
   commercialLease = leaseRes.lease;
   const nowIso = new Date().toISOString();
   let processed = 0, followUpsSent = 0, escalated = 0, commercialWindowBlocked = 0, drafted = 0;
+  // عملاء أُنشئت لهم مسودة رد فورية في هذه الدورة — لا تُضاف لهم مسودة متابعة فوقها
+  // (لا تكديس مسودتين لنفس الزبون في الدورة نفسها).
+  const draftedLeads = new Set<string>();
   // إشارة الإيقاف الطارئ تُصفَّر عند بدء دورة جديدة (المفتاح مفعّل هنا)، فيُوقف أي
   // تعطيل أثناء الدورة كل عمل لاحق عند أول نقطة تحقّق (لا ينتظر انتهاء الدورة).
   commercialKillSignal = false;
@@ -8839,12 +8955,29 @@ async function runCommercialBrainCycle(trigger: string): Promise<{ ok: boolean; 
         const r = await resolveCommercialNegotiation(lead, interaction.text);
         if (r.escalated) escalated += 1;
       }
+      // PR-S3: مسودة رد فورية في وضع الموافقة (بلا نداء مزوّد) — تُنتج في نفس الدورة
+      // لا بعد 24 ساعة. خارج وضع الموافقة لا نُنشئ مسودة (الرد الآلي يبقى كما هو).
+      if (lead && requiresApproval(commercialSendMode) && !commercialKillSignal) {
+        const kind: 'comment' | 'message' = interaction.kind === 'message' ? 'message' : 'comment';
+        const product = lead.interestedProductId
+          ? (workspace.products || []).find((p: any) => String(p.id) === String(lead.interestedProductId)) || null
+          : resolveProductForPost(row.postExternalId || null);
+        const draft = await createInstantReplyDraft({
+          lead, platform: lead.platform as MetaPlatform, externalId: interaction.externalId,
+          text: interaction.text, kind, recipientId: interaction.replyTarget?.recipientId || null,
+          product, cls: (interaction.classification as any) || classifyComment(interaction.text),
+          subjectId: kind === 'message' ? `dm:${String(interaction.replyTarget?.recipientId || '')}` : String(row.postExternalId || row.mediaId || 'thread'),
+          nowIso,
+        });
+        if (draft) { drafted += 1; draftedLeads.add(lead.key); }
+      }
     }
 
     // 2) متابعة تلقائية لمن بدأ التواصل: عبر المنفّذ المركزي فقط، بلا رسالة باردة.
     for (const lead of commercialLeads.slice()) {
       if (commercialKillSignal) break; // إيقاف فوري (Kill Switch).
       if (followUpsSent + drafted >= COMMERCIAL_MAX_PER_CYCLE) break;
+      if (draftedLeads.has(lead.key)) continue; // أُنشئت له مسودة رد فورية هذه الدورة.
       const due = isFollowUpDue(lead, nowIso);
       if (!due.due) continue;
       if (!['facebook', 'instagram'].includes(lead.platform)) continue;
@@ -8981,7 +9114,9 @@ app.get("/api/commercial/inbox", requireOwner, (_req, res) => {
     requiresApproval: requiresApproval(commercialSendMode),
     killSwitchEnabled: commercialKillSwitchEnabled(),
     pendingDrafts: pending.length,
-    leads: commercialLeads.slice(0, 1000).map(toCommercialLeadRow),
+    // PR-S3: يُعلن مفتاح الهوية الحقيقي (منصة::author:<id>) للمالك فقط كي يُثبت
+    // أن كل معلّق = زبون مستقل (لا تجميع كل معلّقي منشور في زبون واحد).
+    leads: commercialLeads.slice(0, 1000).map((l) => ({ ...toCommercialLeadRow(l), key: l.key })),
     drafts: commercialDrafts.slice(0, 1000).map(draftRowForOwner),
     summary: summarizeCommercialLeads(commercialLeads, nowIso),
     limits: commercialNegotiationLimits(),

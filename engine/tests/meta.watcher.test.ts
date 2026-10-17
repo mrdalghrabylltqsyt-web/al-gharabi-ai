@@ -315,9 +315,9 @@ async function integrationTests(): Promise<void> {
     check('لا حقل replyText/attentionRequired/text في health', !rawHealth.includes('"replyText"') && !rawHealth.includes('"attentionRequired"') && !rawHealth.includes('"authorName"'));
     const healthJson = JSON.parse(rawHealth);
     check('كتلة metaPolling العامة موجودة', healthJson.metaPolling && typeof healthJson.metaPolling === 'object');
-    check('metaPolling العامة حقول تقنية فقط', Object.keys(healthJson.metaPolling).every((k) => ['status', 'watcherActive', 'cadenceMinutes', 'pollCount', 'lastPollAt', 'lastError', 'consecutiveErrors', 'note'].includes(k)));
+    check('metaPolling العامة حقول تقنية فقط', Object.keys(healthJson.metaPolling).every((k) => ['status', 'watcherActive', 'cadenceMinutes', 'pollCount', 'lastPollAt', 'lastError', 'consecutiveErrors', 'note', 'platformStats', 'staleIngestWarning', 'warnings'].includes(k)));
     const readinessJson = JSON.parse(rawReadiness);
-    check('readiness يحمل كتلة metaPolling عامة', readinessJson.metaPolling && Object.keys(readinessJson.metaPolling).every((k) => ['status', 'watcherActive', 'cadenceMinutes', 'pollCount', 'lastPollAt', 'lastError', 'consecutiveErrors', 'note'].includes(k)));
+    check('readiness يحمل كتلة metaPolling عامة', readinessJson.metaPolling && Object.keys(readinessJson.metaPolling).every((k) => ['status', 'watcherActive', 'cadenceMinutes', 'pollCount', 'lastPollAt', 'lastError', 'consecutiveErrors', 'note', 'platformStats', 'staleIngestWarning', 'warnings'].includes(k)));
     check('لا تسريب أي سرّ في الصحة', !rawHealth.includes(FB_APP_SECRET) && !rawHealth.includes('PAGE_TOKEN_TEST') && !rawHealth.includes('USER_TOKEN_TEST_LONG'));
 
     group('13) تكامل: الثبات بعد restart');

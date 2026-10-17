@@ -36,6 +36,58 @@ import { sanitizePublicErrorMessage } from './healthPrivacy';
 export type MetaPlatform = 'facebook' | 'instagram';
 export const META_WATCHER_PLATFORMS: readonly MetaPlatform[] = Object.freeze(['facebook', 'instagram']);
 
+/**
+ * إحصاءات استقبال لكل منصة — تُغلق «الفشل الصامت»: قراءة `ok` بلا تعليقات
+ * بينما الصفحة/الحساب فيه منشورات حديثة كانت تبدو «سليمة» بلا أي مؤشّر.
+ *  - `postsScanned`: عدد المنشورات المفحوصة فعلاً في آخر دورة (feed+videos+reels).
+ *  - `commentsVisible`: عدد التعليقات المرئية في آخر دورة.
+ *  - `lastIngestAt`: آخر وقت استُقبل فيه تعليق/رسالة فعلية (null = لا استقبال).
+ */
+export interface MetaPlatformIngestStats {
+  postsScanned: number;
+  commentsVisible: number;
+  lastIngestAt: string | null;
+}
+
+export function defaultMetaPlatformIngestStats(): MetaPlatformIngestStats {
+  return { postsScanned: 0, commentsVisible: 0, lastIngestAt: null };
+}
+
+export function normalizeMetaPlatformIngestStats(raw: any): MetaPlatformIngestStats {
+  const d = defaultMetaPlatformIngestStats();
+  if (!raw || typeof raw !== 'object') return d;
+  return {
+    postsScanned: Number.isFinite(Number(raw.postsScanned)) ? Math.max(0, Math.trunc(Number(raw.postsScanned))) : 0,
+    commentsVisible: Number.isFinite(Number(raw.commentsVisible)) ? Math.max(0, Math.trunc(Number(raw.commentsVisible))) : 0,
+    lastIngestAt: typeof raw.lastIngestAt === 'string' ? raw.lastIngestAt : null,
+  };
+}
+
+/** عتبة التحذير: 48 ساعة بلا أي استقبال فعلي مع وجود منشورات حديثة. */
+export const META_STALE_INGEST_HOURS = 48;
+export const META_STALE_INGEST_MS = META_STALE_INGEST_HOURS * 3600_000;
+
+/**
+ * قرار التحذير لكل منصة: إن مرّت 48 ساعة (أو لا استقبال إطلاقاً) **مع** وجود
+ * منشورات فُحصت فعلاً، فالقراءة لا تجد تعليقات رغم وجود محتوى ⇒ تحذير صريح
+ * بدل الفشل الصامت. المنصة بلا منشورات مفحوصة لا تُنبّه (لا محتوى بعد).
+ */
+export function metaIngestWarning(stats: MetaPlatformIngestStats, nowMs: number): { stale: boolean; hoursSince: number | null; reason: string } {
+  const s = normalizeMetaPlatformIngestStats(stats);
+  if (s.postsScanned <= 0) return { stale: false, hoursSince: null, reason: 'لا منشورات مفحوصة بعد.' };
+  if (!s.lastIngestAt) {
+    return { stale: true, hoursSince: null, reason: `لا استقبال فعلي إطلاقاً مع وجود ${s.postsScanned} منشوراً مفحوصاً — قد تكون الصلاحية/وضع التطبيق تحجب التعليقات.` };
+  }
+  const t = Date.parse(s.lastIngestAt);
+  if (!Number.isFinite(t)) return { stale: false, hoursSince: null, reason: 'وقت آخر استقبال غير صالح.' };
+  const hours = Math.floor((nowMs - t) / 3600_000);
+  if (nowMs - t >= META_STALE_INGEST_MS) {
+    return { stale: true, hoursSince: hours, reason: `مرّت ${hours} ساعة بلا أي تعليق/رسالة مرئية مع وجود منشورات — تحقّق من صلاحيات القراءة ووضع التطبيق.` };
+  }
+  return { stale: false, hoursSince: hours, reason: 'الاستقبال حديث.' };
+}
+
+
 /** بنية التحكم مطابقة تماماً لمراقب YouTube (توحيد السلوك والواجهة). */
 export type MetaWatcherControls = YouTubeWatcherControls;
 
@@ -58,6 +110,8 @@ export interface MetaPollingState {
   consecutiveErrors: number;
   pollCount: number;
   lastScanned: number;
+  /** إحصاءات الاستقبال لكل منصة (منشورات مفحوصة/تعليقات مرئية/آخر استقبال). */
+  platformStats: Record<MetaPlatform, MetaPlatformIngestStats>;
   lease: any;
 }
 
@@ -70,6 +124,7 @@ export function defaultMetaPollingState(): MetaPollingState {
     consecutiveErrors: 0,
     pollCount: 0,
     lastScanned: 0,
+    platformStats: { facebook: defaultMetaPlatformIngestStats(), instagram: defaultMetaPlatformIngestStats() },
     lease: null,
   };
 }
@@ -78,6 +133,7 @@ export function defaultMetaPollingState(): MetaPollingState {
 export function normalizeMetaPollingState(raw: any): MetaPollingState {
   const d = defaultMetaPollingState();
   if (!raw || typeof raw !== 'object') return d;
+  const rawStats = raw.platformStats && typeof raw.platformStats === 'object' ? raw.platformStats : {};
   return {
     controls: normalizeMetaWatcherControls(raw.controls),
     processed: Array.isArray(raw.processed) ? raw.processed.filter((p: any) => p && typeof p === 'object') : [],
@@ -86,6 +142,10 @@ export function normalizeMetaPollingState(raw: any): MetaPollingState {
     consecutiveErrors: Number.isFinite(Number(raw.consecutiveErrors)) ? Math.max(0, Math.trunc(Number(raw.consecutiveErrors))) : 0,
     pollCount: Number.isFinite(Number(raw.pollCount)) ? Math.max(0, Math.trunc(Number(raw.pollCount))) : 0,
     lastScanned: Number.isFinite(Number(raw.lastScanned)) ? Math.max(0, Math.trunc(Number(raw.lastScanned))) : 0,
+    platformStats: {
+      facebook: normalizeMetaPlatformIngestStats(rawStats.facebook),
+      instagram: normalizeMetaPlatformIngestStats(rawStats.instagram),
+    },
     lease: raw.lease && typeof raw.lease === 'object' ? raw.lease : null,
   };
 }
@@ -170,6 +230,15 @@ export function metaPollingControlsView(controls: MetaWatcherControls) {
  */
 export function metaPollingPublicBlock(state: MetaPollingState) {
   const s = normalizeMetaPollingState(state);
+  const nowMs = Date.now();
+  const platformStats = {
+    facebook: normalizeMetaPlatformIngestStats(s.platformStats.facebook),
+    instagram: normalizeMetaPlatformIngestStats(s.platformStats.instagram),
+  };
+  const warnings = META_WATCHER_PLATFORMS.map((platform) => {
+    const w = metaIngestWarning(platformStats[platform], nowMs);
+    return w.stale ? { platform, hoursSince: w.hoursSince, reason: w.reason } : null;
+  }).filter(Boolean);
   return {
     status: s.controls.paused ? 'disabled' : (s.lastError ? 'degraded' : 'healthy'),
     watcherActive: s.controls.enabled && !s.controls.paused,
@@ -180,6 +249,10 @@ export function metaPollingPublicBlock(state: MetaPollingState) {
     // => 'connection error'، فلا يظهر نص خطأ المزوّد الخام في نقطة عامة.
     lastError: sanitizePublicErrorMessage(s.lastError),
     consecutiveErrors: s.consecutiveErrors,
+    // مؤشّرات تقنية فقط (أرقام وأوقات) — لا نص عميل ولا اسم. تُغلق الفشل الصامت.
+    platformStats,
+    staleIngestWarning: warnings.length > 0,
+    warnings,
     note: 'حالة عامة فقط؛ تفاصيل التعليقات/الردود متاحة للمالك عبر /api/agent/meta/watcher.',
   };
 }

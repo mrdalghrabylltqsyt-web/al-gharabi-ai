@@ -204,6 +204,14 @@ export async function startInstagramMockServer(
       return res.status(400).json({ error: { message: 'Error validating access token: Session has expired', type: 'OAuthException', code: 190, error_subcode: 463 } });
     }
     if (state.failProfile) return res.status(400).json({ error: { message: 'Unsupported get request', code: 100 } });
+    // تعليقات وسائط محدّدة (`GET /{media-id}?fields=comments.order(...){...}`) —
+    // تُخدم لأي media معروف. تُثبت أن السحب يقرأ تعليقات منشورات النظام الفعلية.
+    if (fields.includes('comments')) {
+      const media = state.feedMedia.find((m) => m.id === id);
+      if (media) {
+        return res.json({ id: media.id, comments: { data: media.comments.map((c) => ({ id: c.id, text: c.text, username: c.username, from: c.from, created_time: c.created_time })) } });
+      }
+    }
     const account = state.accounts.find((a) => a.igAccountId === id);
     if (account) return res.json({ id: account.igAccountId, username: account.igUsername });
     const page = state.accounts.find((a) => a.pageId === id);

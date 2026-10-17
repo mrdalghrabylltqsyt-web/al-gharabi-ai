@@ -601,12 +601,20 @@ export class InstagramClient {
   /**
    * يقرأ تعليقات وسائط الحساب الأخيرة عبر الحقل المتداخل `comments` على `/{ig-id}/media`
    * (قراءة فقط، بنطاق instagram_manage_comments). تُعاد تعليقات المستخدمين فقط.
+   *
+   * ملاحظة مهمة: نُمرّر `extraMediaIds` من سجلات النشر الحقيقية (`providerPostId`) كي
+   * تشمل القراءة منشورات النظام الفعلية (بما فيها الريلز) التي قد لا تظهر في آخر
+   * `media` دفعةً واحدة، فلا يضيع تعليق على منشور حديث. ومنع التكرار بمعرّف التعليق.
    */
-  async listMediaComments(igAccountId: string, pageAccessToken: string, mediaLimit = 10, commentsLimit = 25): Promise<InstagramResult<Array<{ commentId: string; mediaId: string | null; text: string; username: string | null; authorId: string | null; createdAt: string | null }>>> {
+  async listMediaComments(igAccountId: string, pageAccessToken: string, mediaLimit = 10, commentsLimit = 25, extraMediaIds: string[] = []): Promise<InstagramResult<Array<{ commentId: string; mediaId: string | null; text: string; username: string | null; authorId: string | null; createdAt: string | null }>>> {
     if (!igAccountId) return { ok: false, data: null, error: 'معرّف حساب Instagram مطلوب.' };
     try {
+      const perMedia = Math.max(1, Math.min(50, Math.trunc(commentsLimit)));
+      const mediaIds: string[] = [];
+      const seenMedia = new Set<string>();
+      const addMedia = (v: unknown) => { const s = String(v || '').trim(); if (s && !seenMedia.has(s)) { seenMedia.add(s); mediaIds.push(s); } };
       const u = new URL(instagramGraphUrl(`/${igAccountId}/media`, this.baseUrl));
-      u.searchParams.set('fields', `id,comments.limit(${Math.max(1, Math.min(50, Math.trunc(commentsLimit)))}){id,text,username,from,created_time}`);
+      u.searchParams.set('fields', 'id');
       u.searchParams.set('limit', String(Math.max(1, Math.min(50, Math.trunc(mediaLimit)))));
       u.searchParams.set('access_token', pageAccessToken);
       const res = await this.fetchImpl(u.toString(), { method: 'GET' });
@@ -619,13 +627,23 @@ export class InstagramClient {
         const pCode = ex.providerCode ?? providerErrorCode(data);
         return { ok: false, data: null, error: msg, providerCode: pCode, providerSubcode: ex.providerSubcode, providerTraceId: ex.providerTraceId, code: classifyInstagramProviderError(msg, pCode) };
       }
+      for (const m of Array.isArray(data?.data) ? data.data : []) addMedia(m?.id);
+      for (const id of extraMediaIds) addMedia(id);
       const out: Array<{ commentId: string; mediaId: string | null; text: string; username: string | null; authorId: string | null; createdAt: string | null }> = [];
-      for (const media of Array.isArray(data?.data) ? data.data : []) {
-        const mediaId = media?.id ? String(media.id) : null;
-        for (const c of Array.isArray(media?.comments?.data) ? media.comments.data : []) {
+      const seen = new Set<string>();
+      const commentsField = `comments.order(reverse_chronological).limit(${perMedia}){id,text,username,from,created_time}`;
+      for (const mediaId of mediaIds) {
+        const cu = new URL(instagramGraphUrl(`/${mediaId}`, this.baseUrl));
+        cu.searchParams.set('fields', commentsField);
+        cu.searchParams.set('access_token', pageAccessToken);
+        const cres = await this.fetchImpl(cu.toString(), { method: 'GET' });
+        const cdata = await cres.json().catch(() => null);
+        if (!cres.ok || cdata?.error) { logAndExtractInstagramError(cdata, `GET /${mediaId}`, cres.status); continue; }
+        for (const c of Array.isArray(cdata?.comments?.data) ? cdata.comments.data : []) {
           const commentId = c?.id ? String(c.id) : '';
           const text = typeof c?.text === 'string' ? c.text : '';
-          if (!commentId || !text) continue;
+          if (!commentId || !text || seen.has(commentId)) continue;
+          seen.add(commentId);
           out.push({ commentId, mediaId, text, username: c?.username ? String(c.username) : (c?.from?.username ? String(c.from.username) : null), authorId: c?.from?.id ? String(c.from.id) : null, createdAt: c?.created_time ? String(c.created_time) : (c?.timestamp ? String(c.timestamp) : null) });
         }
       }
