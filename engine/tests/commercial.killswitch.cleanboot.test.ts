@@ -159,6 +159,9 @@ function writeCleanBootState(): void {
     check('ربط Facebook ينجح', cbRes.status === 200, `status=${cbRes.status}`);
     const ksOn = await (await fetch(`${BASE}/api/agent/commercial/kill-switch`, { method: 'POST', headers: auth, body: JSON.stringify({ enabled: true, reason: 'owner_enabled_test' }) })).json();
     check('التفعيل الصريح ينجح', ksOn.success === true && ksOn.killSwitch?.enabled === true, JSON.stringify(ksOn.killSwitch));
+    // PR-S2: هذا الاختبار يقيس مسار الإرسال التلقائي؛ الافتراضي صار approval، فنُبدّله صراحةً.
+    const sm = await (await fetch(`${BASE}/api/agent/commercial/send-mode`, { method: 'POST', headers: auth, body: JSON.stringify({ mode: 'auto' }) })).json();
+    check('تبديل وضع الإرسال إلى auto ينجح', sm.success === true && sm.sendMode === 'auto', JSON.stringify(sm).slice(0, 160));
 
     group('4) بعد التفعيل ⇒ المتابعة المستحقة تُسلَّم فعلاً بمعرّف Meta حقيقي');
     const beforeOn = mockState.commentReplies.length;

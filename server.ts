@@ -75,6 +75,15 @@ import {
   toCommercialLeadRow, summarizeCommercialLeads, commercialPublicBlock, normalizeCommercialLeads,
   isWithinMetaMessageWindow,
 } from "./engine/commercial/commercialBrain";
+import {
+  type CommercialDraft, type CommercialSendMode, type CommercialDecisionKind,
+  type CommercialDraftPurpose, type CommercialOwnerDecision, type CommercialConversationEntry,
+  normalizeCommercialSendMode, requiresApproval, metaWindowExpiresAt, isDraftExpired,
+  evaluateDraftSendability, applyOwnerDecision, markDraftExpired, markDraftDelivery,
+  buildOwnerDecisionRecord, toCommercialDraftRow, pendingDraftCount,
+  normalizeCommercialDrafts, normalizeOwnerDecisions, buildLeadConversation,
+  COMMERCIAL_SEND_MODE_LABELS_AR,
+} from "./engine/commercial/commercialDrafts";
 import { classifyConversation } from "./engine/brain/audience/conversationIntelligence";
 import { capabilityRow } from "./engine/brain/strategy/capabilityMatrix";
 import { registerDriveRoutes } from "./engine/dr/routes";
@@ -8495,7 +8504,22 @@ const COMMERCIAL_LEASE_TTL_MS = 5 * 60 * 1000;
 const COMMERCIAL_LEASE_OWNER = `commercial-brain-${process.pid}-${Date.now().toString(36)}`;
 const COMMERCIAL_MAX_LEADS = 5000;
 const COMMERCIAL_MAX_PER_CYCLE = 10;
-let commercialLastRun: { processed: number; followUpsSent: number; escalated: number; windowBlocked: number; at: string } | null = null;
+const COMMERCIAL_MAX_DRAFTS = 2000;
+const COMMERCIAL_MAX_DECISIONS = 2000;
+let commercialLastRun: { processed: number; followUpsSent: number; escalated: number; windowBlocked: number; drafted: number; at: string } | null = null;
+
+/**
+ * PR-S2 — وضع إرسال العقل التجاري: **مستقل تماماً** عن مفتاح الإيقاف الطارئ.
+ *  - `approval` (الافتراضي، fail-safe): كل رسالة/متابعة/عرض يريد العقل إرساله يُحفظ
+ *    مسودةً في صندوق الزبائن ولا يُرسل. **لا نداء مزوّد قبل موافقة المالك.**
+ *  - `auto`: إرسال تلقائي كما كان (خارج نطاق هذه المهمة).
+ * يُحفظ عبر محوّل الحالة نفسه (نفس مفتاح commercial) فيصمد بعد restart/cold start.
+ */
+let commercialSendMode: CommercialSendMode = 'approval';
+/** مسودات بانتظار موافقة المالك (وقراراتها) — تُحفظ وتُسترجع مع سجل العملاء. */
+let commercialDrafts: CommercialDraft[] = [];
+/** سجل قرارات المالك (النص الأصلي + المعدّل) — للتعلم لاحقاً، بلا تبنّي تعلّم الآن. */
+let commercialOwnerDecisions: CommercialOwnerDecision[] = [];
 
 /**
  * مفتاح الإيقاف الطارئ للعقل التجاري (Kill Switch) — مفتاح رئيسي واحد فقط.
@@ -8569,6 +8593,10 @@ async function persistCommercialLeads(): Promise<void> {
       leads: commercialLeads.slice(0, COMMERCIAL_MAX_LEADS),
       // مفتاح الإيقاف الطارئ يُحفظ مع سجل العملاء (نفس المحوّل/المفتاح) فيصمد بعد restart.
       killSwitch: { enabled: commercialBrainEnabled, killAt: commercialBrainKillAt, killBy: commercialBrainKillBy, killReason: commercialBrainKillReason },
+      // PR-S2: وضع الإرسال + مسودات صندوق الزبائن + قرارات المالك (لا جداول جديدة).
+      sendMode: commercialSendMode,
+      drafts: commercialDrafts.slice(0, COMMERCIAL_MAX_DRAFTS),
+      ownerDecisions: commercialOwnerDecisions.slice(0, COMMERCIAL_MAX_DECISIONS),
       // N2: قفل دورة العقل التجاري يُحفظ هنا (بلا سرّ) فيصمد/يُبطل صراحةً عند الإغلاق.
       lease: commercialLease,
     });
@@ -8581,6 +8609,10 @@ function applyCommercialStateSnapshot(raw: any): void {
   commercialLeads = normalizeCommercialLeads(raw.leads).slice(0, COMMERCIAL_MAX_LEADS);
   // توافق خلفي (fail-closed): لقطة قديمة بلا killSwitch تُبقي الافتراضي معطَّلاً.
   applyCommercialKillSwitchSnapshot(raw.killSwitch);
+  // PR-S2: وضع الإرسال + المسودات + قرارات المالك (توافق خلفي: غيابها ⇒ الافتراضي approval).
+  commercialSendMode = normalizeCommercialSendMode(raw.sendMode);
+  commercialDrafts = normalizeCommercialDrafts(raw.drafts).slice(0, COMMERCIAL_MAX_DRAFTS);
+  commercialOwnerDecisions = normalizeOwnerDecisions(raw.ownerDecisions).slice(0, COMMERCIAL_MAX_DECISIONS);
   // N2: القفل الدائم لدورة العقل التجاري (owner + انتهاء فقط، بلا سرّ).
   commercialLease = normalizeLease(raw.lease);
 }
@@ -8588,6 +8620,73 @@ function applyCommercialStateSnapshot(raw: any): void {
 /** يجد عميلاً محتملاً بالمفتاح الحقيقي (منصة + خيط) بلا اختراع هوية. */
 function findCommercialLead(key: string): CommercialLead | null {
   return commercialLeads.find((l) => l.key === key) || null;
+}
+
+// --- PR-S2: صندوق الزبائن (مسودات بانتظار موافقة المالك) ---
+
+/** يجد مسودة بمفتاح منع التكرار (مفتاح العميل + مفتاح المتابعة) فلا تُنشأ مسودات مكررة. */
+function findCommercialDraftByKey(leadKey: string, idempotencyKey: string): CommercialDraft | null {
+  if (!idempotencyKey) return null;
+  return commercialDrafts.find((d) => d.leadKey === leadKey && d.idempotencyKey === idempotencyKey) || null;
+}
+
+/**
+ * ينشئ مسودة في صندوق الزبائن (بلا أي إرسال). يتخطّى المكرر بنفس مفتاح المتابعة
+ * (فلا تتكدّس مسودات لنفس الحدث كل دورة). لا يُنشئ مسودة بلا نص/هدف حقيقي.
+ */
+function createCommercialDraft(input: {
+  lead: CommercialLead;
+  purpose: CommercialDraftPurpose;
+  text: string;
+  externalId: string;
+  recipientId?: string | null;
+  productId?: string | null;
+  proposalId?: string | null;
+  idempotencyKey?: string | null;
+  windowExpiresAt?: string | null;
+  at: string;
+}): CommercialDraft | null {
+  const text = String(input.text || '').trim();
+  const externalId = String(input.externalId || '').trim();
+  if (!text || !externalId) return null;
+  const idem = input.idempotencyKey ? String(input.idempotencyKey) : null;
+  if (idem && findCommercialDraftByKey(input.lead.key, idem)) return null;
+  const draft: CommercialDraft = {
+    id: workspaceId('draft'),
+    leadId: input.lead.id,
+    leadKey: input.lead.key,
+    platform: input.lead.platform,
+    kind: input.lead.kind,
+    purpose: input.purpose,
+    text,
+    externalId,
+    recipientId: input.recipientId ? String(input.recipientId) : null,
+    productId: input.productId ? String(input.productId) : null,
+    proposalId: input.proposalId ? String(input.proposalId) : null,
+    idempotencyKey: idem,
+    createdAt: input.at,
+    windowExpiresAt: input.windowExpiresAt ? String(input.windowExpiresAt) : null,
+    status: 'pending',
+    decidedBy: null,
+    decidedAt: null,
+    approvedText: null,
+    deliveryStatus: null,
+    deliveryError: null,
+    providerReplyId: null,
+  };
+  commercialDrafts.unshift(draft);
+  if (commercialDrafts.length > COMMERCIAL_MAX_DRAFTS) commercialDrafts.length = COMMERCIAL_MAX_DRAFTS;
+  return draft;
+}
+
+/** يعلّم كل مسودة معلّقة تجاوزت نافذة Meta منتهيةً — فلا تُرسل حتى لو وُوفق عليها لاحقاً. */
+function sweepExpiredCommercialDrafts(nowIso: string): number {
+  let n = 0;
+  commercialDrafts = commercialDrafts.map((d) => {
+    if (isDraftExpired(d, nowIso)) { n += 1; return markDraftExpired(d, nowIso); }
+    return d;
+  });
+  return n;
 }
 
 /**
@@ -8714,7 +8813,7 @@ async function runCommercialBrainCycle(trigger: string): Promise<{ ok: boolean; 
   }
   commercialLease = leaseRes.lease;
   const nowIso = new Date().toISOString();
-  let processed = 0, followUpsSent = 0, escalated = 0, commercialWindowBlocked = 0;
+  let processed = 0, followUpsSent = 0, escalated = 0, commercialWindowBlocked = 0, drafted = 0;
   // إشارة الإيقاف الطارئ تُصفَّر عند بدء دورة جديدة (المفتاح مفعّل هنا)، فيُوقف أي
   // تعطيل أثناء الدورة كل عمل لاحق عند أول نقطة تحقّق (لا ينتظر انتهاء الدورة).
   commercialKillSignal = false;
@@ -8745,7 +8844,7 @@ async function runCommercialBrainCycle(trigger: string): Promise<{ ok: boolean; 
     // 2) متابعة تلقائية لمن بدأ التواصل: عبر المنفّذ المركزي فقط، بلا رسالة باردة.
     for (const lead of commercialLeads.slice()) {
       if (commercialKillSignal) break; // إيقاف فوري (Kill Switch).
-      if (followUpsSent >= COMMERCIAL_MAX_PER_CYCLE) break;
+      if (followUpsSent + drafted >= COMMERCIAL_MAX_PER_CYCLE) break;
       const due = isFollowUpDue(lead, nowIso);
       if (!due.due) continue;
       if (!['facebook', 'instagram'].includes(lead.platform)) continue;
@@ -8770,6 +8869,21 @@ async function runCommercialBrainCycle(trigger: string): Promise<{ ok: boolean; 
       // مفتاح منع التكرار المميّز للمتابعة: يميّزها عن الرد الأصلي على نفس التعليق
       // (فلا تُحجب خطأً كرد مكرر)، ويُبقي إعادة نفس المتابعة محجوبة (لا ثغرة تكرار).
       const followUpIdem = `fu${lead.followUpsSent + 1}`;
+      // PR-S2: وضع الموافقة (الافتراضي) — لا نداء مزوّد إطلاقاً؛ تُحفظ المتابعة مسودةً
+      // في صندوق الزبائن بانتظار موافقة المالك. فقط وضع auto يرسل تلقائياً كما كان.
+      if (requiresApproval(commercialSendMode)) {
+        const draft = createCommercialDraft({
+          lead, purpose: 'follow_up', text,
+          externalId: String(lead.lastExternalId || ''),
+          recipientId: isMessage ? String(lead.replyTarget?.recipientId || '') : null,
+          productId: product?.id ? String(product.id) : null,
+          idempotencyKey: followUpIdem,
+          windowExpiresAt: isMessage ? metaWindowExpiresAt(lead.lastCustomerInteractionAt) : null,
+          at: nowIso,
+        });
+        if (draft) drafted += 1;
+        continue;
+      }
       const res = isMessage
         ? await executeMetaMessageReply(lead.platform as any, { externalId: lead.lastExternalId || '', recipientId: String(lead.replyTarget?.recipientId || ''), text, commentText: lead.lastCustomerText || '', productId: product?.id, idempotencyKey: followUpIdem }, 'commercial-brain')
         : await executeMetaCommentReply(lead.platform as any, { externalId: lead.lastExternalId || '', text, commentText: lead.lastCustomerText || '', productId: product?.id, idempotencyKey: followUpIdem }, 'commercial-brain');
@@ -8781,9 +8895,11 @@ async function runCommercialBrainCycle(trigger: string): Promise<{ ok: boolean; 
         followUpsSent += 1;
       }
     }
-    if (followUpsSent > 0) await persistCommercialLeads();
-    commercialLastRun = { processed, followUpsSent, escalated, windowBlocked: commercialWindowBlocked, at: nowIso };
-    return { ok: true, trigger, result: { processed, followUpsSent, escalated, windowBlocked: commercialWindowBlocked } };
+    // PR-S2: تعليم المسودات المعلّقة التي تجاوزت نافذة Meta منتهيةً (لا تُرسل لاحقاً).
+    const expiredDrafts = sweepExpiredCommercialDrafts(nowIso);
+    if (followUpsSent > 0 || drafted > 0 || expiredDrafts > 0) await persistCommercialLeads();
+    commercialLastRun = { processed, followUpsSent, escalated, windowBlocked: commercialWindowBlocked, drafted, at: nowIso };
+    return { ok: true, trigger, result: { processed, followUpsSent, escalated, windowBlocked: commercialWindowBlocked, drafted, expiredDrafts } };
   } catch (e: any) {
     return { ok: false, trigger, error: String(e?.code || e?.name || 'cycle_failed').slice(0, 80) };
   } finally {
@@ -8792,9 +8908,12 @@ async function runCommercialBrainCycle(trigger: string): Promise<{ ok: boolean; 
   }
 }
 
-/** هل يملك المستخدم صلاحية تأكيد صفقة؟ (المالك أو موظف بصلاحية؛ بلا موظف مالي منفصل). */
+/**
+ * PR-S2: صندوق الزبائن وتأكيد الصفقة **للمالك فقط** (403 لغيره). كان التأكيد متاحاً
+ * لمالك/مدير/موظف؛ قُصر على المالك تنفيذاً لقرار المالك الصريح في هذه الدفعة.
+ */
 function canConfirmCommercialProposal(user: ServerUser | undefined | null): boolean {
-  return Boolean(user && ['owner', 'manager', 'staff'].includes(user.role));
+  return Boolean(user && user.role === 'owner');
 }
 
 /** كتلة العقل التجاري العامة (أرقام فقط بلا أي بيانات عميل) للنقطتين العامتين. */
@@ -8806,6 +8925,10 @@ function commercialPublicStatus() {
     // لا فعل خارجي على إقلاع نظيف حتى يفعّله المالك صراحةً من الواجهة.
     enabled,
     automated: enabled,
+    // PR-S2: وضع الإرسال + عدد المسودات المعلّقة (أرقام/مُفردة فقط بلا أي نص عميل).
+    sendMode: commercialSendMode,
+    requiresApproval: requiresApproval(commercialSendMode),
+    pendingDrafts: pendingDraftCount(commercialDrafts),
     killSwitchNote: enabled
       ? 'مفتاح رئيسي واحد؛ العقل التجاري مفعَّل صراحةً من المالك، ويمكن إيقافه فوراً.'
       : 'مفتاح رئيسي واحد؛ العقل التجاري معطَّل افتراضياً (fail-closed) — لا فعل خارجي حتى يفعّله المالك.',
@@ -8824,6 +8947,162 @@ app.get("/api/commercial/leads", authenticateToken, (req, res) => {
     limits: commercialNegotiationLimits(),
     lastRun: commercialLastRun,
     generatedAt: nowIso,
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PR-S2 — صندوق الزبائن (Owner-only): الزبائن + المسودات بانتظار موافقة المالك.
+// كل المسارات هنا **للمالك فقط** (403 لغيره) — بيانات عملاء ونصوص رسائل.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** يبني صف مسودة مرتبطاً بالعميل (للعرض في الصندوق). */
+function draftRowForOwner(draft: CommercialDraft): any {
+  const lead = commercialLeads.find((l) => l.id === draft.leadId) || null;
+  return {
+    ...toCommercialDraftRow(draft),
+    leadKey: draft.leadKey,
+    recipientId: draft.recipientId,
+    customerName: lead?.customerName || null,
+    interestedProductName: lead?.interestedProductName || null,
+    stage: lead?.stage || null,
+    escalationReason: lead?.escalationReason || null,
+  };
+}
+
+app.get("/api/commercial/inbox", requireOwner, (_req, res) => {
+  const nowIso = new Date().toISOString();
+  // تعليم المنتهي أولاً فلا يظهر كأنه قابل للإرسال.
+  const expired = sweepExpiredCommercialDrafts(nowIso);
+  const pending = commercialDrafts.filter((d) => d.status === 'pending');
+  res.json({
+    success: true,
+    sendMode: commercialSendMode,
+    sendModeLabelAr: COMMERCIAL_SEND_MODE_LABELS_AR[commercialSendMode],
+    requiresApproval: requiresApproval(commercialSendMode),
+    killSwitchEnabled: commercialKillSwitchEnabled(),
+    pendingDrafts: pending.length,
+    leads: commercialLeads.slice(0, 1000).map(toCommercialLeadRow),
+    drafts: commercialDrafts.slice(0, 1000).map(draftRowForOwner),
+    summary: summarizeCommercialLeads(commercialLeads, nowIso),
+    limits: commercialNegotiationLimits(),
+    lastRun: commercialLastRun,
+    expiredSwept: expired,
+    generatedAt: nowIso,
+  });
+});
+
+/** تفاصيل زبون واحد: سجل المحادثة الحقيقي + العرض المقترح + مسوداته. */
+app.get("/api/commercial/leads/:id", requireOwner, (req, res) => {
+  const lead = commercialLeads.find((l) => l.id === req.params.id);
+  if (!lead) return res.status(404).json({ success: false, error: 'العميل المحتمل غير موجود.' });
+  const nowIso = new Date().toISOString();
+  const inbound = ((workspace as any).socialComments || []) as any[];
+  const outbound = ((workspace as any).socialReplies || []) as any[];
+  const conversation: CommercialConversationEntry[] = buildLeadConversation(lead, inbound, outbound);
+  res.json({
+    success: true,
+    lead: toCommercialLeadRow(lead),
+    proposal: lead.pendingProposal,
+    conversation,
+    drafts: commercialDrafts.filter((d) => d.leadId === lead.id).map(draftRowForOwner),
+    sendMode: commercialSendMode,
+    generatedAt: nowIso,
+  });
+});
+
+/**
+ * قرار المالك على مسودة: موافقة / تعديل ثم موافقة / رفض.
+ * - الرفض: لا إرسال.
+ * - الموافقة/التعديل: تُرسل عبر **المنفّذ المركزي نفسه** (سلامة المحتوى + منع التكرار
+ *   الدائم + نافذة Meta)، ولا تُسجَّل مسودة "مرسلة" بلا معرّف رد حقيقي من المزوّد.
+ * - المسودة المنتهية (خارج نافذة Meta) تُعلَّم منتهيةً ولا تُرسل.
+ */
+app.post("/api/commercial/drafts/:id/decision", requireOwner, async (req, res) => {
+  const user = (req as any).user as ServerUser;
+  const draft = commercialDrafts.find((d) => d.id === req.params.id);
+  if (!draft) return res.status(404).json({ success: false, error: 'المسودة غير موجودة.' });
+  // مسودة خرجت من نافذة Meta (منتهية) ⇒ لا إرسال حتى لو وُوفق عليها — كود صريح.
+  if (draft.status === 'expired') {
+    return res.status(409).json({ success: false, error: 'المسودة منتهية (خارج نافذة Meta)؛ لا تُرسل.', code: 'DRAFT_EXPIRED', draft: draftRowForOwner(draft) });
+  }
+  const rawKind = String(req.body?.kind || '').trim();
+  if (!['approve', 'edit_approve', 'reject'].includes(rawKind)) {
+    return res.status(400).json({ success: false, error: 'نوع القرار مطلوب (approve|edit_approve|reject).', code: 'INVALID_DECISION' });
+  }
+  const kind = rawKind as CommercialDecisionKind;
+  const editedText = typeof req.body?.text === 'string' ? String(req.body.text) : null;
+  const nowIso = new Date().toISOString();
+
+  const applied = applyOwnerDecision(draft, { kind, editedText, by: user.id, at: nowIso });
+  if (!applied.ok) return res.status(409).json({ success: false, error: applied.reason });
+  let updated = applied.draft;
+
+  // الرفض: لا إرسال إطلاقاً — يُسجَّل القرار ويُحفظ.
+  if (kind === 'reject') {
+    const idx = commercialDrafts.findIndex((d) => d.id === draft.id);
+    if (idx >= 0) commercialDrafts[idx] = updated;
+    const record = buildOwnerDecisionRecord(updated, { id: workspaceId('cdec'), kind, editedText, by: user.id, at: nowIso, delivered: false });
+    commercialOwnerDecisions.unshift(record);
+    if (commercialOwnerDecisions.length > COMMERCIAL_MAX_DECISIONS) commercialOwnerDecisions.length = COMMERCIAL_MAX_DECISIONS;
+    await persistCommercialLeads();
+    audit(user.id, 'commercial_draft_rejected', `${draft.id}:${draft.leadKey}`);
+    return res.json({ success: true, draft: draftRowForOwner(updated), decision: record, note: 'رُفضت المسودة؛ لم يُرسل شيء.' });
+  }
+
+  // الموافقة/التعديل: فحص نافذة Meta أولاً (لا إرسال خارج النافذة).
+  const sendability = evaluateDraftSendability(updated, nowIso);
+  if (!sendability.sendable) {
+    if (sendability.shouldExpire) updated = markDraftExpired(updated, nowIso);
+    const idx = commercialDrafts.findIndex((d) => d.id === draft.id);
+    if (idx >= 0) commercialDrafts[idx] = updated;
+    const record = buildOwnerDecisionRecord(updated, { id: workspaceId('cdec'), kind, editedText, by: user.id, at: nowIso, delivered: false });
+    commercialOwnerDecisions.unshift(record);
+    if (commercialOwnerDecisions.length > COMMERCIAL_MAX_DECISIONS) commercialOwnerDecisions.length = COMMERCIAL_MAX_DECISIONS;
+    await persistCommercialLeads();
+    audit(user.id, 'commercial_draft_not_sent', `${draft.id}:${sendability.reason}`);
+    return res.status(409).json({ success: false, error: sendability.reason, code: sendability.shouldExpire ? 'DRAFT_EXPIRED' : 'DRAFT_NOT_SENDABLE', draft: draftRowForOwner(updated) });
+  }
+
+  // الإرسال عبر المنفّذ المركزي نفسه (لا مسار جانبي).
+  const lead = commercialLeads.find((l) => l.id === draft.leadId) || null;
+  const productId = draft.productId || undefined;
+  const sendText = updated.approvedText || updated.text;
+  const res_ = draft.kind === 'message'
+    ? await executeMetaMessageReply(draft.platform as any, { externalId: draft.externalId, recipientId: String(draft.recipientId || ''), text: sendText, commentText: lead?.lastCustomerText || '', productId, idempotencyKey: draft.idempotencyKey || undefined }, 'commercial-owner-approval')
+    : await executeMetaCommentReply(draft.platform as any, { externalId: draft.externalId, text: sendText, commentText: lead?.lastCustomerText || '', productId, idempotencyKey: draft.idempotencyKey || undefined }, 'commercial-owner-approval');
+  const delivered = Boolean(res_.body?.delivered && res_.body?.providerReplyId);
+  updated = markDraftDelivery(updated, { sent: delivered, providerReplyId: res_.body?.providerReplyId || null, error: res_.body?.error || null });
+  const idx = commercialDrafts.findIndex((d) => d.id === draft.id);
+  if (idx >= 0) commercialDrafts[idx] = updated;
+  const record = buildOwnerDecisionRecord(updated, { id: workspaceId('cdec'), kind, editedText, by: user.id, at: nowIso, delivered, providerReplyId: res_.body?.providerReplyId || null });
+  commercialOwnerDecisions.unshift(record);
+  if (commercialOwnerDecisions.length > COMMERCIAL_MAX_DECISIONS) commercialOwnerDecisions.length = COMMERCIAL_MAX_DECISIONS;
+  await persistCommercialLeads();
+  audit(user.id, delivered ? 'commercial_draft_sent' : 'commercial_draft_send_failed', `${draft.id}:${delivered ? 'delivered' : 'failed'}`);
+  if (!delivered) {
+    return res.status(res_.status && res_.status >= 400 ? res_.status : 502).json({ success: false, delivered: false, error: res_.body?.error || 'فشل إرسال المسودة.', draft: draftRowForOwner(updated), decision: record });
+  }
+  return res.json({ success: true, delivered: true, providerReplyId: updated.providerReplyId, draft: draftRowForOwner(updated), decision: record, note: 'أُرسلت المسودة عبر المنفّذ المركزي وثُبّتت بمعرّف من المزوّد.' });
+});
+
+/** تبديل وضع إرسال العقل التجاري (approval | auto) — للمالك، مستقل عن Kill Switch. */
+app.post("/api/agent/commercial/send-mode", requireOwner, async (req, res) => {
+  const user = (req as any).user as ServerUser;
+  const raw = String(req.body?.mode || '').trim().toLowerCase();
+  if (!['approval', 'auto'].includes(raw)) {
+    return res.status(400).json({ success: false, error: 'الوضع مطلوب (approval|auto).', code: 'INVALID_SEND_MODE' });
+  }
+  commercialSendMode = normalizeCommercialSendMode(raw);
+  await persistCommercialLeads();
+  audit(user.id, 'commercial_send_mode_changed', commercialSendMode);
+  res.json({
+    success: true,
+    sendMode: commercialSendMode,
+    sendModeLabelAr: COMMERCIAL_SEND_MODE_LABELS_AR[commercialSendMode],
+    requiresApproval: requiresApproval(commercialSendMode),
+    note: commercialSendMode === 'approval'
+      ? 'وضع الموافقة: كل رسالة/متابعة تُحفظ مسودةً بانتظار موافقتك — لا إرسال تلقائي.'
+      : 'وضع الإرسال التلقائي: العقل التجاري يرسل المتابعات بنفسه (كما كان).',
   });
 });
 

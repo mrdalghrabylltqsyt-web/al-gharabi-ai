@@ -1674,6 +1674,59 @@ ${payload.topic || payload.productName || 'أنظمة وحلول التقسيط 
     if (!res.ok || !data.success) throw new Error(data.error || 'تعذر تبديل مفتاح العقل التجاري');
     return data;
   },
+  // --- PR-S2: صندوق الزبائن (للمالك فقط) ---
+  /** صندوق الزبائن: العملاء المحتملون + المسودات بانتظار الموافقة + وضع الإرسال. */
+  async getCommercialInbox(): Promise<any> {
+    const res = await fetch('/api/commercial/inbox', { headers: getAuthHeaders() });
+    const data = await res.json();
+    if (!res.ok || !data.success) throw new Error(data.error || 'تعذر تحميل صندوق الزبائن');
+    return data;
+  },
+  /** تفاصيل زبون واحد: سجل المحادثة + العرض المقترح + مسوداته. */
+  async getCommercialLead(id: string): Promise<any> {
+    const res = await fetch(`/api/commercial/leads/${encodeURIComponent(id)}`, { headers: getAuthHeaders() });
+    const data = await res.json();
+    if (!res.ok || !data.success) throw new Error(data.error || 'تعذر تحميل تفاصيل الزبون');
+    return data;
+  },
+  /** قرار المالك على مسودة: approve | edit_approve | reject (وقد يحمل نصاً معدّلاً). */
+  async decideCommercialDraft(id: string, kind: 'approve' | 'edit_approve' | 'reject', text?: string): Promise<any> {
+    const res = await fetch(`/api/commercial/drafts/${encodeURIComponent(id)}/decision`, {
+      method: 'POST', headers: getAuthHeaders(), body: JSON.stringify({ kind, text: text ?? undefined }),
+    });
+    const data = await res.json();
+    if (!res.ok || !data.success) {
+      const err: any = new Error(data.error || 'تعذر تنفيذ القرار على المسودة');
+      err.code = data.code; err.status = res.status; err.draft = data.draft;
+      throw err;
+    }
+    return data;
+  },
+  /** تبديل وضع إرسال العقل التجاري (approval | auto) — مستقل عن Kill Switch. */
+  async setCommercialSendMode(mode: 'approval' | 'auto'): Promise<any> {
+    const res = await fetch('/api/agent/commercial/send-mode', { method: 'POST', headers: getAuthHeaders(), body: JSON.stringify({ mode }) });
+    const data = await res.json();
+    if (!res.ok || !data.success) throw new Error(data.error || 'تعذر تبديل وضع الإرسال');
+    return data;
+  },
+  /** تأكيد اقتراح الصفقة بشرياً (WON) — للمالك فقط. */
+  async confirmCommercialProposal(leadId: string, proposalId: string): Promise<any> {
+    const res = await fetch(`/api/commercial/leads/${encodeURIComponent(leadId)}/proposal/confirm`, {
+      method: 'POST', headers: getAuthHeaders(), body: JSON.stringify({ proposalId }),
+    });
+    const data = await res.json();
+    if (!res.ok || !data.success) throw new Error(data.error || 'تعذر تأكيد الصفقة');
+    return data;
+  },
+  /** رفض اقتراح الصفقة بشرياً — للمالك فقط. */
+  async rejectCommercialProposal(leadId: string, proposalId: string): Promise<any> {
+    const res = await fetch(`/api/commercial/leads/${encodeURIComponent(leadId)}/proposal/reject`, {
+      method: 'POST', headers: getAuthHeaders(), body: JSON.stringify({ proposalId }),
+    });
+    const data = await res.json();
+    if (!res.ok || !data.success) throw new Error(data.error || 'تعذر رفض العرض');
+    return data;
+  },
   /** تحديث تحكم مراقب Meta (autoReply/paused/humanReviewMode/cadenceMinutes) — للمالك. */
   async setMetaWatcherControls(controls: Record<string, boolean | number>): Promise<any> {
     const res = await fetch('/api/agent/meta/watcher/controls', { method: 'POST', headers: getAuthHeaders(), body: JSON.stringify(controls) });

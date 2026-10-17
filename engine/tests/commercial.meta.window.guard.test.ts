@@ -203,7 +203,9 @@ async function integration(): Promise<void> {
     },
   };
   writeFileSync(join(stateDir, '.gharabi-state.json'), JSON.stringify(stateSnapshot));
-  writeFileSync(join(stateDir, 'commercial.json'), JSON.stringify({ leads, killSwitch: { enabled: true, killAt: null, killBy: null, killReason: null }, lease: null }));
+  // PR-S2: هذا الاختبار يقيس مسار الإرسال التلقائي (حاجز النافذة)، فيُضبط الوضع auto
+  // صراحةً لأن الافتراضي صار approval الذي يحفظ مسودة بلا إرسال.
+  writeFileSync(join(stateDir, 'commercial.json'), JSON.stringify({ leads, killSwitch: { enabled: true, killAt: null, killBy: null, killReason: null }, sendMode: 'auto', lease: null }));
   startApp();
   if (!(await waitForHealth())) { console.log(log.slice(-2000)); throw new Error('الخادم لم يعد الإقلاع'); }
   const auth2 = await login();

@@ -17,6 +17,7 @@ import {
   MessageSquare,
   Package,
   Home,
+  Inbox,
 } from 'lucide-react';
 
 /**
@@ -42,7 +43,10 @@ export const CommandCenterView: React.FC = () => {
   const [health, setHealth] = useState<any>(null);
   const [control, setControl] = useState<any>(null);
   const [brain, setBrain] = useState<any>(null);
+  const [commercialInbox, setCommercialInbox] = useState<any>(null);
   const [errors, setErrors] = useState<string[]>([]);
+
+  const isOwner = currentUser?.role === 'owner';
 
   const load = async () => {
     setLoading(true);
@@ -55,7 +59,9 @@ export const CommandCenterView: React.FC = () => {
       safe(() => apiService.getPlatformControlPlane(), 'حالة المنصات'),
       safe(() => apiService.getBrainState(), 'العقل المركزي'),
     ]);
-    setHealth(h); setControl(c); setBrain(b); setErrors(errs);
+    // عدّاد «بانتظار موافقتك» للمالك فقط (بيانات عملاء — مسار محمي).
+    const inbox = isOwner ? await safe(() => apiService.getCommercialInbox(), 'صندوق الزبائن') : null;
+    setHealth(h); setControl(c); setBrain(b); setCommercialInbox(inbox); setErrors(errs);
     setLoading(false);
   };
 
@@ -113,6 +119,13 @@ export const CommandCenterView: React.FC = () => {
           <div className="text-2xl font-black text-white mt-1">{notificationBadge.pendingReviews}</div>
           <button onClick={() => go('approval')} className="text-[11px] text-emerald-300 mt-1 hover:underline">فتح الموافقة ←</button>
         </Card>
+        {isOwner && (
+          <Card>
+            <div className="flex items-center gap-2 text-slate-400 text-[11px]"><Inbox className="w-3.5 h-3.5" /> بانتظار موافقتك</div>
+            <div className="text-2xl font-black text-white mt-1">{commercialInbox?.pendingDrafts ?? 0}</div>
+            <button onClick={() => go('commercial_inbox')} className="text-[11px] text-emerald-300 mt-1 hover:underline">فتح صندوق الزبائن ←</button>
+          </Card>
+        )}
         <Card>
           <div className="flex items-center gap-2 text-slate-400 text-[11px]"><Home className="w-3.5 h-3.5" /> مجدول اليوم</div>
           <div className="text-2xl font-black text-white mt-1">{notificationBadge.scheduledToday}</div>

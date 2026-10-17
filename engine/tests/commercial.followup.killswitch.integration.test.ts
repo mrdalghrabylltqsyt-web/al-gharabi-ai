@@ -116,7 +116,9 @@ function writeSeededState(): void {
     },
   }), 'utf8');
   // مفتاح العقل التجاري: مفعَّل (الافتراضي)، وسجل عميل واحد مستحق للمتابعة.
-  writeFileSync(join(stateDir, 'commercial.json'), JSON.stringify({ leads: [lead], killSwitch: { enabled: true, killAt: null, killBy: null, killReason: null } }, null, 2), 'utf8');
+  // PR-S2: هذا الاختبار يقيس مسار الإرسال التلقائي نفسه، فيُضبط الوضع auto صراحةً
+  // (الافتراضي صار approval الذي يحفظ مسودة بلا إرسال — وهو سلوك صحيح مقصود).
+  writeFileSync(join(stateDir, 'commercial.json'), JSON.stringify({ leads: [lead], killSwitch: { enabled: true, killAt: null, killBy: null, killReason: null }, sendMode: 'auto' }, null, 2), 'utf8');
 }
 
 (async () => {
