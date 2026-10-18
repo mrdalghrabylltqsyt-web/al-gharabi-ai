@@ -70,16 +70,24 @@ import {
   defaultNegotiationLimits, normalizeNegotiationLimits, evaluateNegotiation,
   createCommercialLead, mergeCommercialInteraction, commercialLeadKey,
   requestsNegotiation, parseRequestedDiscountPercent, hasBuyingSignal,
+  isRealCommercialQuestion,
   nextFollowUpAt, isFollowUpDue, applyFollowUpSent, buildCommercialFollowUpText,
   buildCommercialProposal, confirmCommercialProposal, rejectCommercialProposal,
   toCommercialLeadRow, summarizeCommercialLeads, commercialPublicBlock, normalizeCommercialLeads,
   isWithinMetaMessageWindow,
 } from "./engine/commercial/commercialBrain";
 import {
+  leadAskedRealQuestion, leadLastCustomerAskedRealQuestion, evaluateFollowUpEligibility,
+  planCommercialDraftCleanup, planCommercialLeadArchive, summarizeQualification,
+  diagnoseAuthorNameAvailability, isBackfillImport, isFollowUpAgeEligible,
+  COMMERCIAL_FOLLOWUP_MAX_AGE_MS,
+} from "./engine/commercial/leadQualification";
+import {
   type CommercialDraft, type CommercialSendMode, type CommercialDecisionKind,
   type CommercialDraftPurpose, type CommercialOwnerDecision, type CommercialConversationEntry,
   normalizeCommercialSendMode, requiresApproval, metaWindowExpiresAt, isDraftExpired,
   evaluateDraftSendability, applyOwnerDecision, markDraftExpired, markDraftDelivery,
+  cancelCommercialDraft,
   buildOwnerDecisionRecord, toCommercialDraftRow, pendingDraftCount,
   normalizeCommercialDrafts, normalizeOwnerDecisions, buildLeadConversation,
   COMMERCIAL_SEND_MODE_LABELS_AR, COMMERCIAL_DRAFT_TYPE_LABELS_AR, authorDisplayName,
@@ -4843,6 +4851,9 @@ async function ingestWebhookComments(input: {
       // PR-S4: رابط Meta الحقيقي (permalink_url) يُحفظ عند الاستقبال لزر
       // «فتح على فيسبوك/إنستغرام» — بلا روابط تخمينية.
       permalinkUrl: (ev as any).permalinkUrl ?? null,
+      // PR-S5: نص المنشور الحقيقي (message/description/caption) يُحفظ عند الاستقبال
+      // فلا يظهر «منشور بلا نص ظاهر» لمنشور له نص.
+      postText: (ev as any).postText ?? null,
     };
     if (!input.omitKind) comment.kind = ev.kind;
     (workspace as any).socialComments.unshift(comment);
@@ -8020,6 +8031,12 @@ async function runMetaWatcherCycle(trigger: string): Promise<{ ok: boolean; trig
             replyTarget: { commentId: externalId },
             // PR-S4: رابط Meta الحقيقي (permalink_url) من القراءة المضمَّنة.
             permalinkUrl: c.permalinkUrl || null,
+            // PR-S5: نص المنشور الحقيقي (message/description/caption) من القراءة
+            // المضمَّنة — فلا يظهر «منشور بلا نص ظاهر» لمنشور له نص.
+            postText: c.postText || null,
+            // PR-S5: وسم الاستيراد بأثر رجعي (backfill) — عمر التعليق عند الاستقبال
+            // > 24 ساعة ⇒ لا يولّد متابعة (يُعالَج/يُرد فقط إن كان سؤالاً حديثاً).
+            backfill: isBackfillImport(c.createdAt || null, new Date().toISOString()),
           });
           if ((workspace as any).socialComments.length > WORKSPACE_MAX_SOCIAL_COMMENTS) (workspace as any).socialComments.length = WORKSPACE_MAX_SOCIAL_COMMENTS;
           newDetected += 1;
@@ -8735,6 +8752,57 @@ function sweepExpiredCommercialDrafts(nowIso: string): number {
 }
 
 /**
+ * PR-S5 — تنظيف لمرّة واحدة: يُحوّل المسودات المعلّقة المخالفة لقواعد «الزبون
+ * الحقيقي» إلى `cancelled` بسبب مكتوب، ويؤرشف الـleads غير المؤهّلة (إيموجي/مدح) —
+ * **بلا حذف**. يُسجَّل كل قرار في audit، ويُعاد العدد قبل/بعد.
+ */
+function runCommercialQualificationCleanup(input: { by: string; trigger: string }): {
+  before: { pendingDrafts: number; leads: number; archivedLeads: number };
+  after: { pendingDrafts: number; leads: number; archivedLeads: number };
+  cancelledDrafts: number;
+  archivedLeads: number;
+  cancellations: { id: string; code: string; reason: string }[];
+} {
+  const nowIso = new Date().toISOString();
+  const beforePending = pendingDraftCount(commercialDrafts);
+  const beforeLeads = commercialLeads.length;
+  const beforeArchived = commercialLeads.filter((l) => l.archived === true).length;
+
+  // 1) أرشفة الـleads المخالفة (إيموجي/مدح فقط) — بلا حذف.
+  const archivePlan = planCommercialLeadArchive(commercialLeads);
+  const archiveIds = new Set(archivePlan.map((p) => p.id));
+  commercialLeads = commercialLeads.map((l) => (archiveIds.has(l.id)
+    ? { ...l, archived: true, archivedAt: nowIso, archiveReason: archivePlan.find((p) => p.id === l.id)?.reason || null }
+    : l));
+  for (const p of archivePlan) {
+    audit(input.by, 'commercial_lead_archived', JSON.stringify({ leadId: p.id, code: p.code, trigger: input.trigger }));
+  }
+
+  // 2) إلغاء المسودات المخالفة (بلا حذف) — بسبب مكتوب.
+  const plan = planCommercialDraftCleanup({ drafts: commercialDrafts, leads: commercialLeads, nowIso });
+  const cancelById = new Map(plan.cancellations.map((c) => [c.id, c]));
+  commercialDrafts = commercialDrafts.map((d) => {
+    const c = cancelById.get(d.id);
+    return c ? cancelCommercialDraft(d, { reason: c.reason, at: nowIso, code: c.code }) : d;
+  });
+  for (const c of plan.cancellations) {
+    audit(input.by, 'commercial_draft_cancelled', JSON.stringify({ draftId: c.id, code: c.code, trigger: input.trigger }));
+  }
+
+  return {
+    before: { pendingDrafts: beforePending, leads: beforeLeads, archivedLeads: beforeArchived },
+    after: {
+      pendingDrafts: pendingDraftCount(commercialDrafts),
+      leads: commercialLeads.length,
+      archivedLeads: commercialLeads.filter((l) => l.archived === true).length,
+    },
+    cancelledDrafts: plan.cancellations.length,
+    archivedLeads: archivePlan.length,
+    cancellations: plan.cancellations,
+  };
+}
+
+/**
  * PR-S3: مسودة رد **فورية** في وضع الموافقة لكل تعليق/رسالة جديد فيها سؤال سعر/قسط أو
  * نية شراء — تُنشأ في الدورة التالية مباشرة (لا بعد 24 ساعة)، بلا أي نداء مزوّد.
  * النص من بيانات المنتج المسجّلة فقط (السعر + القسط الحتمي) عبر نفس محرّك الردود
@@ -8757,6 +8825,9 @@ async function createInstantReplyDraft(input: {
   const cls: any = input.cls;
   const isPriceOrInstallment = cls?.topic === 'price' || cls?.topic === 'availability' || cls?.isBusinessInquiry === true;
   if (!isPriceOrInstallment && !hasBuyingSignal(cls, input.text)) return null;
+  // PR-S5: لا جواب على سؤال أقدم من 7 أيام (نفس حدّ المتابعة) — «جواب السؤال الحقيقي
+  // فقط، إن كان عمره ≤ 7 أيام». يمنع الردّ العلني المتأخر على تفاعل قديم.
+  if (!isFollowUpAgeEligible(input.lead.lastCustomerInteractionAt, input.nowIso)) return null;
   const idem = `reply:${input.externalId}`;
   if (findCommercialDraftByKey(input.lead.key, idem)) return null;
   const gen = await generateWatcherReply({
@@ -8819,7 +8890,11 @@ function isEligibleCommercialInteraction(input: InboundInteraction): boolean {
   if (cls?.isSpam === true) return false;
   const ownNames = [String(workspace.showroom?.name || ''), 'معرض الغرابي'].map((n) => n.trim()).filter(Boolean);
   if (input.customerName && isSelfAuthored(input.customerName, ownNames)) return false;
-  return Boolean(String(input.text || '').trim());
+  if (!String(input.text || '').trim()) return false;
+  // PR-S5: «زبون حقيقي فقط» — الـlead يُنشأ **فقط** مع سؤال حقيقي (سعر/قسط/توفر/نية
+  // شراء/سؤال منتج). إيموجي فقط، أو مدح/تحية بلا سؤال ⇒ لا lead ولا مسودة (يبقى في
+  // «التعليقات الواردة» فقط). المصدر الواحد للقرار: isRealCommercialQuestion.
+  return isRealCommercialQuestion(cls, input.text);
 }
 
 /**
@@ -8895,6 +8970,8 @@ function incomingToInteraction(row: any, nowIso: string): InboundInteraction | n
       : { commentId: externalId, videoId: String(row.postExternalId || '') },
     classification: row.classification || classifyComment(text),
     product: product ? { id: String(product.id), name: String(product.name || ''), cashPrice: Number(product.cashPrice), category: String(product.category || '') } : null,
+    // PR-S5: وسم الاستيراد بأثر رجعي (backfill) من السجل الحقيقي — لا متابعة عليه.
+    backfill: row.backfill === true || isBackfillImport(row.createdAt || null, nowIso),
   };
 }
 
@@ -8925,6 +9002,13 @@ async function runCommercialBrainCycle(trigger: string): Promise<{ ok: boolean; 
   // تعطيل أثناء الدورة كل عمل لاحق عند أول نقطة تحقّق (لا ينتظر انتهاء الدورة).
   commercialKillSignal = false;
   try {
+    // PR-S5: تنظيف تلقائي لقواعد «الزبون الحقيقي» في كل دورة — يُحوّل المسودات
+    // المخالفة إلى `cancelled` (بسبب مكتوب) ويؤرشف الـleads غير المؤهّلة (إيموجي/
+    // مدح) بلا حذف. حتمي بالكامل (بلا AI ولا نداء مزوّد). لا يُنشئ أي مسودة جديدة.
+    const cleanup = runCommercialQualificationCleanup({ by: 'system', trigger: `cycle:${trigger}` });
+    if (cleanup.cancelledDrafts > 0 || cleanup.archivedLeads > 0) {
+      await persistCommercialLeads();
+    }
     // 1) تسجيل Leads من كل تفاعل وارد حقيقي (تعليق أو رسالة) على Facebook/Instagram،
     //    من سجل الاستقبال الحقيقي مباشرةً (لا اختلاق). السبام/حساب المعرض يُستبعد.
     const inboundRows = ((workspace as any).socialComments || [])
@@ -8972,6 +9056,16 @@ async function runCommercialBrainCycle(trigger: string): Promise<{ ok: boolean; 
       const due = isFollowUpDue(lead, nowIso);
       if (!due.due) continue;
       if (!['facebook', 'instagram'].includes(lead.platform)) continue;
+      // PR-S5 — بوابة المتابعة النظيفة (مصدر واحد): لا متابعة لغير المؤهّل بسؤال
+      // حقيقي، ولا على backfill، ولا على تفاعل أقدم من 7 أيام، ولا متابعة علنية
+      // ثانية على نفس التعليق (مرة واحدة كحد أقصى). لا يُنشأ شيء عند المنع.
+      const followUpEligibility = evaluateFollowUpEligibility({ lead, drafts: commercialDrafts, nowIso });
+      if (!followUpEligibility.eligible) {
+        audit('commercial-brain', 'commercial_followup_not_eligible', JSON.stringify({
+          leadKey: lead.key, platform: lead.platform, code: followUpEligibility.code,
+        }));
+        continue;
+      }
       // PR-S1 — حارس مؤقت: نافذة مراسلة Meta الرسمية (24 ساعة) تنطبق على **الرسائل
       // الخاصة (Messenger/DM)** فقط، لا على الردود العامة على التعليقات (لا تخضع
       // لنافذة 24 ساعة). خارج النافذة لا تُرسَل متابعة رسالة (قد تُرفض/تعرّض الصفحة
@@ -9126,9 +9220,10 @@ function customerContextForLead(lead: CommercialLead, nowIso: string) {
   // اسم الكاتب الحقيقي أو البديل الصريح.
   const authorName = authorDisplayName(lastCustomerRow?.authorName ?? lead.customerName, lastCustomerRow?.authorId);
 
-  // المنشور: أول سطر من نصه (من المحتوى المرتبط بالمعرّف) وصورته المصغّرة.
+  // المنشور: أول سطر من نصه (من المحتوى المرتبط بالمعرّف، أو نص المنشور المحفوظ
+  // عند الاستقبال) وصورته المصغّرة.
   const postExternalId = String(lastCustomerRow?.postExternalId || lead.replyTarget?.videoId || '');
-  const postInfo = postInfoForExternalId(postExternalId);
+  const postInfo = postInfoForExternalId(postExternalId, lastCustomerRow?.postText ?? null);
 
   // المنتج المرتبط (دليل صريح فقط).
   const product = resolveProductForPost(postExternalId || null);
@@ -9167,23 +9262,25 @@ function customerContextForLead(lead: CommercialLead, nowIso: string) {
  * معلومات المنشور من معرّفه الخارجي: أول سطر من نصه وصورته المصغّرة — من عنصر
  * طابور المحتوى أو منشور مساحة العمل المطابق لمعرّف النشر الحقيقي. بلا اختلاق.
  */
-function postInfoForExternalId(postExternalId: string): { firstLine: string | null; thumbnailUrl: string | null; permalinkUrl: string | null } | null {
+function postInfoForExternalId(postExternalId: string, storedPostText?: string | null): { firstLine: string | null; thumbnailUrl: string | null; permalinkUrl: string | null } | null {
   const pid = String(postExternalId || '').trim();
-  if (!pid) return null;
+  const firstLineOf = (body: string): string | null => String(body || '').split(/\r?\n/).map((l) => l.trim()).filter(Boolean)[0] || null;
+  // PR-S5: نص المنشور المحفوظ عند الاستقبال (message/description/caption من Graph)
+  // — المصدر الأدق فلا يظهر «منشور بلا نص ظاهر» لمنشور له نص فعلاً.
+  const storedLine = firstLineOf(String(storedPostText || ''));
+  if (!pid) return storedLine ? { firstLine: storedLine, thumbnailUrl: null, permalinkUrl: null } : null;
   const contentItem = contentQueue.find((it) => String(it.externalVideoId || '') === pid || String(it.id || '') === pid);
   if (contentItem) {
     const body = String(contentItem.description || contentItem.title || '');
-    const firstLine = body.split(/\r?\n/).map((l) => l.trim()).filter(Boolean)[0] || null;
-    return { firstLine, thumbnailUrl: null, permalinkUrl: contentItem.url || null };
+    return { firstLine: firstLineOf(body) || storedLine, thumbnailUrl: null, permalinkUrl: contentItem.url || null };
   }
   const rec = ((workspace as any).publishRecords || []).find((r: any) => String(r?.providerPostId || r?.externalVideoId || '') === pid);
   const post = rec ? (workspace.posts || []).find((p: any) => String(p.id) === String(rec.postId)) : null;
   if (post) {
     const body = String((post as any).content || (post as any).title || '');
-    const firstLine = body.split(/\r?\n/).map((l) => l.trim()).filter(Boolean)[0] || null;
-    return { firstLine, thumbnailUrl: (post as any).mediaUrl || null, permalinkUrl: null };
+    return { firstLine: firstLineOf(body) || storedLine, thumbnailUrl: (post as any).mediaUrl || null, permalinkUrl: null };
   }
-  return null;
+  return storedLine ? { firstLine: storedLine, thumbnailUrl: null, permalinkUrl: null } : null;
 }
 
 app.get("/api/commercial/inbox", requireOwner, (_req, res) => {
@@ -9207,10 +9304,50 @@ app.get("/api/commercial/inbox", requireOwner, (_req, res) => {
     }),
     drafts: commercialDrafts.slice(0, 1000).map(draftRowForOwner),
     summary: summarizeCommercialLeads(commercialLeads, nowIso),
+    // PR-S5: ملخّص تأهيل «الزبون الحقيقي» (أرقام فقط) — يُظهر المؤهّل/المؤرشف/
+    // الـbackfill ومسودات الجواب مقابل المتابعات القديمة.
+    qualification: summarizeQualification({ leads: commercialLeads, drafts: commercialDrafts, nowIso }),
     limits: commercialNegotiationLimits(),
     lastRun: commercialLastRun,
     expiredSwept: expired,
     generatedAt: nowIso,
+  });
+});
+
+/**
+ * PR-S5 (البند 3) — تنظيف المسودات الحالية: يحوّل كل مسودة معلّقة تخالف القواعد
+ * الجديدة إلى `cancelled` بسبب مكتوب وسجل audit، ويؤرشف الـleads المخالفة (إيموجي/
+ * مدح) — **بلا حذف**. يُعاد العدد قبل/بعد. للمالك فقط.
+ */
+app.post("/api/commercial/cleanup", requireOwner, async (req, res) => {
+  const user = (req as any).user as ServerUser;
+  const result = runCommercialQualificationCleanup({ by: user.id, trigger: 'owner_manual' });
+  await persistCommercialLeads();
+  audit(user.id, 'commercial_qualification_cleanup', JSON.stringify({ before: result.before, after: result.after, cancelled: result.cancelledDrafts, archived: result.archivedLeads }));
+  res.json({
+    success: true,
+    before: result.before,
+    after: result.after,
+    cancelledDrafts: result.cancelledDrafts,
+    archivedLeads: result.archivedLeads,
+    cancellations: result.cancellations,
+    note: 'أُلغيت المسودات المخالفة (بلا حذف) وأُرشفت الـleads غير المؤهّلة؛ تبقى سجلاتها في التعليقات الواردة.',
+  });
+});
+
+/**
+ * PR-S5 (البند 4) — تشخيص قراءة-فقط: هل يعيد Graph الحقل `from` (اسم الكاتب)؟
+ * عند الحجب يُعلن OWNER SESSION REQUIRED مع خطوات لوحة Meta الدقيقة — بلا أي تعديل
+ * إعداد ولا كشف سرّ. للمالك فقط.
+ */
+app.get("/api/commercial/author-name-diagnosis", requireOwner, (_req, res) => {
+  const rows = ((workspace as any).socialComments || []) as any[];
+  const diagnosis = diagnoseAuthorNameAvailability(rows);
+  res.json({
+    success: true,
+    diagnosis,
+    fromFieldsRequested: ['from{id,name}', 'username'],
+    generatedAt: new Date().toISOString(),
   });
 });
 

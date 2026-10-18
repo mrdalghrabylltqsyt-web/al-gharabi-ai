@@ -1709,6 +1709,23 @@ ${payload.topic || payload.productName || 'أنظمة وحلول التقسيط 
     if (!res.ok || !data.success) throw new Error(data.error || 'تعذر تبديل وضع الإرسال');
     return data;
   },
+  /**
+   * PR-S5: تنظيف المسودات المخالفة لقواعد «الزبون الحقيقي» (owner) — يحوّلها إلى
+   * cancelled بلا حذف، ويُعيد العدد قبل/بعد. لا يرسل شيئاً.
+   */
+  async cleanupCommercialDrafts(): Promise<any> {
+    const res = await fetch('/api/commercial/cleanup', { method: 'POST', headers: getAuthHeaders(), body: JSON.stringify({}) });
+    const data = await res.json();
+    if (!res.ok || !data.success) throw new Error(data.error || 'تعذر التنظيف');
+    return data;
+  },
+  /** PR-S5: تشخيص قراءة-فقط — هل يعيد Graph الحقل from (اسم الكاتب)؟ */
+  async getCommercialAuthorNameDiagnosis(): Promise<any> {
+    const res = await fetch('/api/commercial/author-name-diagnosis', { headers: getAuthHeaders() });
+    const data = await res.json();
+    if (!res.ok || !data.success) throw new Error(data.error || 'تعذر التشخيص');
+    return data;
+  },
   /** تأكيد اقتراح الصفقة بشرياً (WON) — للمالك فقط. */
   async confirmCommercialProposal(leadId: string, proposalId: string): Promise<any> {
     const res = await fetch(`/api/commercial/leads/${encodeURIComponent(leadId)}/proposal/confirm`, {
