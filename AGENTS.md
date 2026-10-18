@@ -44,7 +44,7 @@ npm install
 npm run dev            # tsx server.ts
 npm run lint           # tsc --noEmit
 npm run build          # vite build + esbuild server.ts -> dist/server.cjs
-npm run final-audit    # node final-audit.mjs (1747 فحصاً)
+npm run final-audit    # node final-audit.mjs (1760 فحصاً)
 npm test               # storage + engine + auth + ... + db + runtime
 ```
 - التشغيل الإنتاجي: `PORT=4517 NODE_ENV=production APP_URL=http://localhost:4517 node dist/server.cjs`
@@ -6822,6 +6822,11 @@ TikTok/Telegram/Threads، نموذج الجدولة، أو نطاق ERP. **لا 
 
 ## PR-S3 — تجميع قراءة التعليقات (حجم نداءات Graph) + توضيح انقطاع 12 أكتوبر
 
+> **⚠️ مُتجاوَز جزئياً بـPR-S4 (2026-10-18):** مسار الطلب المجمّع `GET /?ids=` الموصوف
+> أدناه **حُذف كلياً** لأنه كان Graph يرفضه كل دورة (نداء مهدر + خطأ مسجَّل). القراءة الآن
+> مضمَّنة داخل الحواف (feed/videos/video_reels و/{ig-id}/media) — راجع قسم PR-S4 في نهاية
+> هذا الملف. الأقسام التالية تبقى للتاريخ والسياق فقط.
+
 **السياق:** تعليقات Facebook/Instagram كانت تُقرأ بنداء Graph **منفصل لكل منشور**
 (حتى ~50 نداءً كل دورة على فيسبوك). مع دورة كل 5 دقائق كان ذلك يستهلك حصة Graph بلا
 داعٍ ويبطئ السحب.
@@ -6894,3 +6899,60 @@ TikTok/Telegram/Threads، نموذج الجدولة، نطاق ERP، أو رمز
 **اختبار الانحدار:** `meta.comment.batch.test.ts` مجموعة 2 (`failCommentBatch`) تثبت أن 45
 منشوراً عند رفض المجمّع **تُقرأ تعليقاتها كاملة** (لا فشل صامت، لا degraded). `npm test` كامل
 ناجح (EXIT=0).
+
+---
+
+## PR-S4 — تنظيف قراءة Meta (حذف `?ids=`) + تغطية التعليقات + سياق الزبون في الصندوق — 2026-10-18
+
+**الفرع:** `feat/pr-s4-meta-read-cleanup-inbox-context`. **لم يُمسّ:** أي سرّ/مفتاح/OAuth،
+Gemini/firewall، قاعدة البيانات (لا تغيير مخطط)، Render، إعدادات Meta، DR/الاستعادة، YouTube،
+TikTok (مجمّد)، Telegram/Threads، نموذج الجدولة، نطاق ERP، أو رمز `/api/health`.
+`autoReply` يبقى off و`commercialSendMode` يبقى approval. الحقول الجديدة اختيارية.
+
+### 1) البند 1 — حذف مسار `GET /?ids=` كلياً
+- `engine/social/facebook.ts` / `engine/social/instagram.ts`: **حُذف** مسار الطلب المجمّع
+  `GET /?ids=` (كان Graph يرفضه كل دورة ⇒ نداء مهدر + خطأ مسجَّل كل دورة). صارت التعليقات
+  تُقرأ **مضمَّنة داخل الحواف نفسها**:
+  - فيسبوك: `/{pageId}/feed` + `/{pageId}/videos` + `/{pageId}/video_reels`.
+  - إنستغرام: `/{igAccountId}/media`.
+  - الحقول: `comments.filter(stream).order(reverse_chronological).summary(true).limit(25){id,message,from,created_time,parent{id},permalink_url}`.
+    (`filter(stream)` لفيسبوك فقط — حافة تعليقات إنستغرام لا تدعم المُعدِّل؛ ويوجد شكل
+    احتياطي داخل الحافة نفسها إن رفض Graph مُعدِّلات الحقل — بلا عودة لمسار `?ids=`.)
+- النتيجة: **callsPerCycle ≤ 4** لفيسبوك (3 حواف) وصفر أخطاء متكررة. أكواد 190/10/102 تبقى
+  تُوقف السحب (reauth) كما كانت. حُذف `publishedPostIdsFor` الميت (لا نداء إضافي — الحواف
+  الثلاث تغطّي منشورات النظام المنشورة).
+
+### 2) البند 2 — فحص التغطية (commentsVisible مقابل commentsTotalReported)
+- لكل منشور يُقرأ `comments.summary(total_count)` (إجمالي Meta المُعلَن) ويُجمَع في
+  `commentsTotalReported` بجانب `commentsVisible` في `platformStats`.
+- **السبب الجذري للفرق المُثبت:** الفلتر الافتراضي `toplevel` كان **يستبعد الردود المتداخلة**
+  (ردود المالك على تعليقات الزبائن) من العدّ، فبدت التغطية ناقصة. الإصلاح:
+  `comments.filter(stream)` (يشمل المتداخل) + `order(reverse_chronological)` (لا يختفي تعليق
+  جديد بعد 25 قديماً) + عدم إسقاط التعليقات بلا `message` (صور/ملصقات) من العدّ.
+- أرقام الحالة الحية قبل الإصلاح: `commentsVisible=6` من `postsScanned=30` (تعليقات Business
+  Suite بعد 12 أكتوبر غير ظاهرة) — تُقاس بعد النشر بـ`platformStats.facebook/instagram`.
+
+### 3) البند 3 — سياق الزبون في صندوق الزبائن (واجهة وقراءة فقط)
+في كل بطاقة مسودة وكل زبون:
+1. اسم الكاتب الحقيقي (`from.name` / IG username). عند غيابه: **«اسم غير متاح من Meta
+   (…آخر 4 أرقام من authorId)»** — لا «زبون».
+2. نص تعليق/رسالة الزبون الأصلي ووقته.
+3. المنشور: أول سطر من نصه، وصورته المصغّرة إن توفرت، والمنتج المرتبط إن وُجد.
+4. زر «فتح على فيسبوك/إنستغرام» من `permalink_url` الحقيقي (يُحفظ عند الاستقبال) — لا روابط تخمينية.
+5. آخر 5 تفاعلات للزبون (منه ومنّا).
+6. نوع المسودة بصراحة: «جواب على سؤال» أم «متابعة 24/72 ساعة».
+
+**المصادر:** `authorDisplayName` + `COMMERCIAL_DRAFT_TYPE_LABELS_AR` في
+`engine/commercial/commercialDrafts.ts`؛ `customerContextForLead` + `postInfoForExternalId` في
+`server.ts`؛ `CustomerContextBlock` في `src/components/agent/CommercialInbox.tsx`. يُحفظ
+`permalinkUrl` على سجل التعليق الوارد عند الاستقبال (webhook + polling).
+
+### 4) الاختبارات
+- `engine/tests/prs4.meta.read.cleanup.test.ts` (`npm run test:prs4-meta-read-cleanup`، 25 فحصاً):
+  لا نداء `?ids=`، `callsPerCycle ≤ 4`، منشور بـ30 تعليقاً يُقرأ أحدث 25، صفر أخطاء متكررة.
+- `engine/tests/prs4.inbox.context.test.ts` (`npm run test:prs4-inbox-context`، 26 فحصاً):
+  بطاقة تعليق فيسبوك تعرض الاسم والنص والمنشور والرابط، غياب الاسم يعرض البديل، لا رابط مختلق.
+- `final-audit.mjs`: كتلة PR-S4 (تنظيف القراءة + التغطية + سياق الزبون) — الإجمالي 1760 فحصاً.
+
+### 5) ملاحظة: `meta.comment.batch.test.ts` (اختبار التجميع) حُذف مع مسار `?ids=`
+كان يثبت سلوك التجميع المُتجاوَز؛ سلوكه الآن مُغطّى بـ`prs4.meta.read.cleanup.test.ts`.

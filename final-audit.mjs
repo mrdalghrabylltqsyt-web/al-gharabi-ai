@@ -5032,17 +5032,17 @@ add('watcher-advisory-not-authority',
     const ig = read('engine/social/instagram.ts');
     // قراءة التعليقات من كل أنواع المنشورات لا من /feed وحده (فيديو/ريلز).
     add('prs3-facebook-post-sources-all-types',
-      /collectPagePostIds/.test(fb) && /\/\$\{pageId\}\/feed/.test(fb) && /\/\$\{pageId\}\/videos/.test(fb) && /\/\$\{pageId\}\/video_reels/.test(fb),
-      'Facebook يجمع المنشورات من feed + videos + video_reels (لا /feed وحده — منشورات الفيديو/الريلز لا تُضمن فيه)');
+      /\/\$\{pageId\}\/feed/.test(fb) && /\/\$\{pageId\}\/videos/.test(fb) && /\/\$\{pageId\}\/video_reels/.test(fb),
+      'Facebook يقرأ من feed + videos + video_reels (لا /feed وحده — منشورات الفيديو/الريلز لا تُضمن فيه)');
     add('prs3-facebook-comments-reverse-chronological',
-      /comments\.order\(reverse_chronological\)/.test(fb),
+      /comments(?:\.filter\(stream\))?\.order\(reverse_chronological\)/.test(fb),
       'تعليقات كل منشور تُقرأ بـorder(reverse_chronological) فلا يختفي تعليق جديد بعد 25 قديماً');
     add('prs3-facebook-extra-published-ids',
-      server.includes('publishedPostIdsFor("facebook")') && server.includes('publishedPostIdsFor("instagram")'),
-      'معرّفات المنشورات المنشورة فعلاً من سجلات النشر تُغذّي القراءة (فلا يضيع تعليق على منشور لا يظهر في /feed)');
+      !server.includes('publishedPostIdsFor') && /\/\$\{pageId\}\/video_reels/.test(fb) && server.includes('listPageComments(pageId, token, 25'),
+      'PR-S4: حواف النوع الثلاث (feed/videos/video_reels) تُغطّي منشورات النظام المنشورة بلا نداء إضافي (حُذف publishedPostIdsFor)');
     add('prs3-instagram-media-comments-reverse-chronological',
-      /comments\.order\(reverse_chronological\)/.test(ig) && /extraMediaIds/.test(ig),
-      'Instagram يقرأ تعليقات media بـorder(reverse_chronological) ويشمل media منشورات النظام الفعلية');
+      /comments\.order\(reverse_chronological\)/.test(ig) && /mediaScanned/.test(ig),
+      'Instagram يقرأ تعليقات media مضمَّنة بـorder(reverse_chronological) ويعلن mediaScanned');
     // إغلاق الفشل الصامت: إحصاءات استقبال + تحذير 48 ساعة.
     add('prs3-ingest-stats-single-source',
       /export interface MetaPlatformIngestStats/.test(read('engine/social/metaWatcher.ts')) && /export function metaIngestWarning/.test(read('engine/social/metaWatcher.ts')) && /META_STALE_INGEST_HOURS = 48/.test(read('engine/social/metaWatcher.ts')),
@@ -5080,6 +5080,74 @@ add('watcher-advisory-not-authority',
         return /FACEBOOK_GRAPH_API_BASE/.test(t) && /delete env\.GEMINI_API_KEY/.test(t) && !/graph\.facebook\.com/.test(t) && /PASSED:/.test(t);
       })(),
       'اختبار PR-S3 يستخدم خادم Meta وهمياً محلياً بلا مزود حقيقي ولا حصة AI');
+  }
+
+  // 11ج) PR-S4: تنظيف قراءة Meta (حذف ?ids=) + تغطية التعليقات + سياق الزبون.
+  {
+    const fb = read('engine/social/facebook.ts');
+    const ig = read('engine/social/instagram.ts');
+    // البند 1: لا مسار مجمّع ?ids= إطلاقاً، والتعليقات مضمَّنة داخل الحواف.
+    add('prs4-no-batched-ids-path',
+      !/searchParams\.set\(\s*['"`]ids['"`]/.test(fb) && !/searchParams\.set\(\s*['"`]ids['"`]/.test(ig) &&
+      !/\?ids=/.test(fb.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:])\/\/.*$/gm, '$1')) &&
+      !/\?ids=/.test(ig.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:])\/\/.*$/gm, '$1')),
+      'لا مسار مجمّع GET /?ids= في كود facebook.ts/instagram.ts (كان Graph يرفضه كل دورة)');
+    add('prs4-inline-comment-edges-facebook',
+      /\/\$\{pageId\}\/feed/.test(fb) && /\/\$\{pageId\}\/videos/.test(fb) && /\/\$\{pageId\}\/video_reels/.test(fb) &&
+      /comments\.filter\(stream\)\.order\(reverse_chronological\)\.summary\(true\)\.limit/.test(fb) &&
+      /id,message,from,created_time,parent\{id\},permalink_url/.test(fb),
+      'Facebook يقرأ التعليقات مضمَّنة في feed+videos+video_reels بترتيب reverse_chronological وحدّ 25 وحقول محدَّدة');
+    add('prs4-inline-comment-edges-instagram',
+      /\/\$\{igAccountId\}\/media/.test(ig) && /comments\.order\(reverse_chronological\)/.test(ig) &&
+      /id,text,username,from,created_time,permalink_url/.test(ig),
+      'Instagram يقرأ التعليقات مضمَّنة في /{ig-id}/media بترتيب reverse_chronological وحدّ 25');
+    add('prs4-calls-per-cycle-bounded',
+      /META_POLLING_MAX_PER_CYCLE/.test(server) && /callsPerCycle/.test(server),
+      'نداءات فيسبوك/إنستغرام في الدورة محدودة (callsPerCycle ≤ 4)');
+    add('prs4-reauth-codes-unchanged',
+      /190/.test(fb) && /102/.test(fb) && /reauth|REAUTH/i.test(fb),
+      'أكواد 190/10/102 تبقى تُوقف السحب (reauth) كما كانت');
+    // البند 2: إجمالي التعليقات المُعلَن (summary) بجانب المرئي.
+    add('prs4-comments-total-reported',
+      /commentsTotalReported/.test(fb) && /commentsTotalReported/.test(ig) && server.includes('commentsTotalReported'),
+      'commentsTotalReported يُقرأ من comments.summary(total_count) ويُمرَّر إلى platformStats');
+    add('prs4-comments-total-in-platform-stats',
+      /platformStats\[platform\]/.test(server) && /commentsTotalReported/.test(server) && /commentsVisible/.test(server),
+      'platformStats يحمل commentsVisible وcommentsTotalReported معاً لكل منصة');
+    // البند 3: سياق الزبون في صندوق الزبائن.
+    add('prs4-inbox-context-server',
+      server.includes('function customerContextForLead') && server.includes('function postInfoForExternalId') &&
+      server.includes('const context = customerContextForLead') && /customerContextForLead\([^)]*\)\s*;/.test(server),
+      'سياق الزبون الكامل يُبنى في الخادم (اسم/نص/منشور/رابط/تفاعلات/نوع المسودة) ويُرسل مع الصندوق والتفاصيل');
+    add('prs4-permalink-real-only',
+      server.includes('permalinkUrl: c.permalinkUrl') && !/permalinkUrl\s*:\s*`https?:\/\/www\.facebook\.com\/\$\{/.test(server) &&
+      read('src/components/agent/CommercialInbox.tsx').includes('permalinkUrl.startsWith(\'http\')'),
+      'رابط «فتح على فيسبوك/إنستغرام» من permalink_url الحقيقي فقط — لا رابط مختلق في الخادم أو الواجهة');
+    add('prs4-no-generic-customer-label',
+      !read('src/components/agent/CommercialInbox.tsx').includes("|| 'زبون'") &&
+      read('engine/commercial/commercialDrafts.ts').includes('اسم غير متاح من Meta') &&
+      read('src/components/agent/CommercialInbox.tsx').includes('اسم غير متاح من Meta'),
+      'لا تسمية «زبون» — البديل الصريح «اسم غير متاح من Meta (…آخر 4 أرقام)» في المحرّك والواجهة');
+    add('prs4-draft-kind-labels',
+      read('engine/commercial/commercialDrafts.ts').includes('COMMERCIAL_DRAFT_TYPE_LABELS_AR') &&
+      read('engine/commercial/commercialDrafts.ts').includes('جواب على سؤال') &&
+      read('engine/commercial/commercialDrafts.ts').includes('متابعة 24/72 ساعة'),
+      'نوع المسودة يُعلن صراحة: «جواب على سؤال» / «متابعة 24/72 ساعة»');
+    // اختبارا PR-S4 مُسجَّلان.
+    add('prs4-tests-registered',
+      (pkg.scripts['test'] || '').includes('test:prs4-meta-read-cleanup') &&
+      (pkg.scripts['test'] || '').includes('test:prs4-inbox-context') &&
+      fs.existsSync(path.join(root, 'engine/tests/prs4.meta.read.cleanup.test.ts')) &&
+      fs.existsSync(path.join(root, 'engine/tests/prs4.inbox.context.test.ts')),
+      'اختبارا PR-S4 (تنظيف القراءة + سياق الزبون) موجودان ومسجَّلان في npm test');
+    add('prs4-tests-no-real-provider',
+      (() => {
+        const a = read('engine/tests/prs4.meta.read.cleanup.test.ts');
+        const b = read('engine/tests/prs4.inbox.context.test.ts');
+        return /FACEBOOK_GRAPH_API_BASE/.test(a) && /delete env\.GEMINI_API_KEY/.test(a) &&
+          /FACEBOOK_GRAPH_API_BASE/.test(b) && !/graph\.facebook\.com/.test(a + b) && /PASSED:/.test(a + b);
+      })(),
+      'اختبارا PR-S4 يستخدمان خادم Meta وهمياً محلياً بلا مزود حقيقي ولا حصة AI');
   }
 
   // 12) AGENTS.md: عدد فحوصات final-audit مطابق للفعلي (يُعَدّ من نص الملف نفسه).

@@ -7830,23 +7830,6 @@ async function fetchMetaInboundComments(platform: MetaPlatform): Promise<{ ok: b
 }
 
 /**
- * معرّفات المنشورات التي نشرها النظام فعلاً لمنصة (فيديو/ريلز/صور) من سجلات
- * النشر الحقيقية — تُغذّي قراءة التعليقات كي تشمل منشورات لا يضمن Graph ظهورها
- * في `/{page-id}/feed`. معرّف حقيقي فقط (بلا اختراع)، بلا تكرار، بحدّ معقول.
- */
-function publishedPostIdsFor(platform: "facebook" | "instagram"): string[] {
-  const ids: string[] = [];
-  const seen = new Set<string>();
-  for (const rec of ((workspace as any).publishRecords || [])) {
-    if (String(rec?.platform || '') !== platform) continue;
-    const id = String(rec?.providerPostId || rec?.externalVideoId || '').trim();
-    if (id && !seen.has(id)) { seen.add(id); ids.push(id); }
-    if (ids.length >= 20) break;
-  }
-  return ids;
-}
-
-/**
  * يحلّ المنتج المرتبط بمنشور خارجي بمعرّفه — دليل صريح فقط (بلا تخمين): عنصر
  * طابور محتوى منشور فعلاً على نفس المعرّف ومربوط بمنتج، أو سجل نشر حقيقي على
  * نفس المعرّف يحدّد منتجاً. عند تعدّد المنتجات أو غياب الدليل ⇒ `null` (فلا
