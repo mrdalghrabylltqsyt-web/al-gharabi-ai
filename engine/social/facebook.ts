@@ -408,6 +408,11 @@ export interface FacebookNormalizedEvent {
   authorId: string | null;
   text: string;
   createdAt: string;
+  /**
+   * PR-S4: رابط التعليق/المنشور الحقيقي من Meta (permalink_url) — لزر
+   * «فتح على فيسبوك». يُحفظ عند الاستقبال؛ غيابه ⇒ لا رابط (لا روابط تخمينية).
+   */
+  permalinkUrl: string | null;
   /** هدف الرد الحقيقي حسب نوع الحدث. */
   replyTarget: Record<string, unknown> | null;
   /** البيانات الخام المطهّرة (بلا أسرار). */
@@ -442,6 +447,7 @@ function commentFromChange(pageId: string | null, change: any): FacebookNormaliz
     authorId: v.from?.id ? String(v.from.id) : null,
     text,
     createdAt: epochToIso(v.created_time) || new Date().toISOString(),
+    permalinkUrl: v.permalink_url ? String(v.permalink_url) : (v.post?.permalink_url ? String(v.post.permalink_url) : null),
     // الرد على تعليق الصفحة يتم بمعرّف التعليق نفسه عبر Graph API.
     replyTarget: { commentId: String(externalId), pageId },
     raw: { source: 'changes', field: change?.field ?? null, item: v.item ?? null },
@@ -467,6 +473,8 @@ function messageFromMessaging(pageId: string | null, m: any): FacebookNormalized
     authorId: senderId,
     text,
     createdAt: epochToIso(m?.timestamp) || new Date().toISOString(),
+    // الرسائل الخاصة بلا permalink؛ لا رابط تخميني.
+    permalinkUrl: null,
     replyTarget: { recipientId: senderId, pageId },
     raw: { source: 'messaging' },
   };
@@ -1317,6 +1325,11 @@ export class FacebookClient {
       void extraPostIds;
       const edges = [`/${pageId}/feed`, `/${pageId}/videos`, `/${pageId}/video_reels`];
       const fields = `id,comments.filter(stream).order(reverse_chronological).summary(true).limit(${perPost}){id,message,from,created_time,parent{id},permalink_url}`;
+      // شكل احتياطي **داخل الحافة نفسها** (بلا `?ids=` إطلاقاً): يُستخدم فقط إن
+      // رفض Graph مُعدِّلات الحقل (filter/order/summary/permalink) بخطأ عقد —
+      // فلا نعود أبداً إلى المسار المجمّع المحذوف. النداء الاحتياطي لا يقع إلا عند
+      // رفض فعلي، والدورة السليمة تبقى 3 نداءات (≤ 4).
+      const fieldsFallback = `id,comments.limit(${perPost}){id,message,from,created_time,parent{id}}`;
       const out: Array<{ commentId: string; postId: string | null; message: string; authorName: string | null; authorId: string | null; createdAt: string | null; parentId: string | null; permalinkUrl: string | null }> = [];
       const seen = new Set<string>();
       const postIds: string[] = [];
@@ -1325,11 +1338,12 @@ export class FacebookClient {
       let reportedTotal = 0;
       let anyOk = false;
       let lastError: { msg: string; pCode: number | null; subcode: number | null; trace: string | null } | null = null;
-      for (const path of edges) {
+      /** يقرأ حافة واحدة ويُرجع الاستجابة أو خطأً مُصنَّفاً (بلا رمي). */
+      const readEdge = async (path: string, fieldShape: string): Promise<{ ok: boolean; data?: any; msg?: string; pCode?: number | null; subcode?: number | null; trace?: string | null }> => {
         try {
           const u = new URL(facebookGraphUrl(path, this.baseUrl));
-          u.searchParams.set('fields', fields);
-          // 25 منشوراً لكل حافة (لا نداء إضافي) — تغطية أوسع للمنشورات بنفس الثلاث نداءات.
+          u.searchParams.set('fields', fieldShape);
+          // 25 منشوراً لكل حافة (لا نداء إضافي) — تغطية أوسع بنفس الثلاث نداءات.
           u.searchParams.set('limit', '25');
           u.searchParams.set('access_token', pageAccessToken);
           graphCalls += 1;
@@ -1339,13 +1353,32 @@ export class FacebookClient {
             const msg = errorMessage(data, 'فشل قراءة تعليقات الصفحة.');
             const ex = logAndExtractFacebookError(data, `GET ${path}`, res.status);
             const pCode = ex.providerCode ?? facebookProviderErrorCode(data);
-            lastError = { msg, pCode, subcode: ex.providerSubcode ?? null, trace: ex.providerTraceId ?? null };
-            // 190/102/10 (رمز منتهٍ/صلاحية) تُوقف السحب ليُقلب الاتصال إلى reauth.
-            if (pCode === 190 || pCode === 102 || pCode === 10) {
-              return { ok: false, data: null, error: msg, providerCode: pCode, providerSubcode: lastError.subcode, providerTraceId: lastError.trace, code: classifyFacebookProviderError(msg, pCode) };
-            }
-            continue;
+            return { ok: false, msg, pCode, subcode: ex.providerSubcode ?? null, trace: ex.providerTraceId ?? null };
           }
+          return { ok: true, data };
+        } catch (e: any) {
+          return { ok: false, msg: String(e?.message || 'فشل الاتصال بـFacebook.'), pCode: null, subcode: null, trace: null };
+        }
+      };
+      for (const path of edges) {
+        let read = await readEdge(path, fields);
+        // رفض عقد الحقل (غير صلاحية) ⇒ إعادة محاولة واحدة بالشكل الاحتياطي داخل
+        // الحافة نفسها — لا عودة لمسار `?ids=` المحذوف.
+        if (!read.ok && !(read.pCode === 190 || read.pCode === 102 || read.pCode === 10)) {
+          read = await readEdge(path, fieldsFallback);
+        }
+        if (!read.ok) {
+          const msg = String(read.msg || 'فشل قراءة تعليقات الصفحة.');
+          const pCode = read.pCode ?? null;
+          lastError = { msg, pCode, subcode: read.subcode ?? null, trace: read.trace ?? null };
+          // 190/102/10 (رمز منتهٍ/صلاحية) تُوقف السحب ليُقلب الاتصال إلى reauth.
+          if (pCode === 190 || pCode === 102 || pCode === 10) {
+            return { ok: false, data: null, error: msg, providerCode: pCode, providerSubcode: lastError.subcode, providerTraceId: lastError.trace, code: classifyFacebookProviderError(msg, pCode) };
+          }
+          continue;
+        }
+        const data = read.data;
+        {
           anyOk = true;
           for (const post of Array.isArray(data?.data) ? data.data : []) {
             const postId = post?.id ? String(post.id) : '';
@@ -1369,7 +1402,7 @@ export class FacebookClient {
               });
             }
           }
-        } catch { /* حافة واحدة فشلت ⇒ لا تُسقط الباقي */ }
+        }
       }
       // كل الحواف فشلت ⇒ خطأ حقيقي (لا نجاح صامت).
       if (!anyOk && lastError) {

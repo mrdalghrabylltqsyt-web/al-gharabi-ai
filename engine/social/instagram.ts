@@ -197,6 +197,11 @@ export interface InstagramNormalizedEvent {
   authorId: string | null;
   text: string;
   createdAt: string;
+  /**
+   * PR-S4: رابط التعليق/الوسيط الحقيقي من Meta (permalink_url) — لزر
+   * «فتح على إنستغرام». يُحفظ عند الاستقبال؛ غيابه ⇒ لا رابط (لا روابط تخمينية).
+   */
+  permalinkUrl: string | null;
   replyTarget: Record<string, unknown> | null;
   raw: Record<string, unknown>;
 }
@@ -241,6 +246,7 @@ export function parseInstagramWebhook(payload: any, igAccountOverride?: string |
           authorId: v.from?.id ? String(v.from.id) : null,
           text,
           createdAt: epochToIso(entry?.time) || new Date().toISOString(),
+          permalinkUrl: v.permalink_url ? String(v.permalink_url) : (v.media?.permalink_url ? String(v.media.permalink_url) : null),
           // الرد على تعليق Instagram يتم بمعرّف التعليق عبر POST /{comment-id}/replies.
           replyTarget: { commentId: String(externalId), igAccountId },
           raw: { source: 'changes', field },
@@ -267,6 +273,8 @@ export function parseInstagramWebhook(payload: any, igAccountOverride?: string |
         authorId: senderId,
         text,
         createdAt: epochToIso(m?.timestamp) || new Date().toISOString(),
+        // الرسائل الخاصة بلا permalink؛ لا رابط تخميني.
+        permalinkUrl: null,
         // إرسال الرد يتم عبر POST /{page-id}/messages والمستلم هو Instagram-scoped id.
         replyTarget: { recipientId: senderId, igAccountId: recipientId },
         raw: { source: 'messaging' },
