@@ -48,13 +48,14 @@ const feedPosts = Array.from({ length: FEED_POST_COUNT }, (_, i) => ({
     : [],
 }));
 
-function startApp(fbBase: string): { proc: ChildProcess; log: () => string } {
+function startApp(fbBase: string, appPort = APP_PORT): { proc: ChildProcess; log: () => string; base: string } {
   let log = '';
+  const base = `http://127.0.0.1:${appPort}`;
   const env: Record<string, string> = {
     ...(process.env as Record<string, string>),
-    PORT: String(APP_PORT),
+    PORT: String(appPort),
     NODE_ENV: 'production',
-    APP_URL: BASE,
+    APP_URL: base,
     STATE_DIR: stateDir,
     GHARABI_PREVIEW_TOKEN: PREVIEW_TOKEN,
     SESSION_SECRET,
@@ -71,12 +72,12 @@ function startApp(fbBase: string): { proc: ChildProcess; log: () => string } {
   const proc = spawn(process.execPath, [tsxCli, serverEntry], { cwd: REPO_ROOT, env, stdio: ['ignore', 'pipe', 'pipe'] });
   proc.stdout?.on('data', (d) => (log += String(d)));
   proc.stderr?.on('data', (d) => (log += String(d)));
-  return { proc, log: () => log };
+  return { proc, log: () => log, base };
 }
-async function waitForHealth(timeoutMs = 180_000): Promise<boolean> {
+async function waitForHealth(timeoutMs = 180_000, base = BASE): Promise<boolean> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
-    try { if ((await fetch(`${BASE}/api/health`)).ok) return true; } catch { /* لم يقلع بعد */ }
+    try { if ((await fetch(`${base}/api/health`)).ok) return true; } catch { /* لم يقلع بعد */ }
     await new Promise((r) => setTimeout(r, 400));
   }
   return false;
@@ -86,8 +87,8 @@ async function stop(proc: ChildProcess): Promise<void> {
   await new Promise((r) => setTimeout(r, 1200));
   if (!proc.killed) proc.kill('SIGKILL');
 }
-async function login(): Promise<Record<string, string>> {
-  const res = await fetch(`${BASE}/api/auth/preview-login`, {
+async function login(base = BASE): Promise<Record<string, string>> {
+  const res = await fetch(`${base}/api/auth/preview-login`, {
     method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ token: PREVIEW_TOKEN }),
   });
   const body = await res.json();
@@ -151,8 +152,53 @@ async function main(): Promise<void> {
   } finally {
     await stop(app.proc);
     await mock.stop();
-    rmSync(stateDir, { recursive: true, force: true });
   }
+
+  // ---------------------------------------------------------------------------
+  // مجموعة 2: السقوط الآمن عند رفض Graph للطلب المجمّع `?ids=` كاملاً.
+  // الجذر المُثبت على الإنتاج: Graph رفض الطلب المجمّع فسقط السحب كله (degraded).
+  // الإصلاح: السقوط إلى قراءة التعليقات مضمَّنة داخل الحواف (feed/videos/reels)
+  // فلا تُفقد أي تعليقات. هذا السيناريو يفشل على الكود بلا سقوط آمن.
+  // ---------------------------------------------------------------------------
+  {
+    const FB_PORT2 = FB_PORT + 1;
+    const APP_PORT2 = APP_PORT + 1;
+    const BASE2 = `http://127.0.0.1:${APP_PORT2}`;
+    const mock2 = await startFacebookMockServer(FB_PORT2, createFacebookMock({
+      feedPosts,
+      pageVideos: [{ id: VIDEO_POST, comments: [
+        { id: 'C_VIDEO_BATCH', message: 'شكد سعر هالفيديو؟', from: { id: 'U_D', name: 'مريم' }, created_time: '2026-02-02T00:05:00+0000' },
+      ] }],
+      pageReels: [],
+      failCommentBatch: true, // Graph يرفض الطلب المجمّع كاملاً
+    }));
+    const app2 = startApp(mock2.base, APP_PORT2);
+    try {
+      group('2) السقوط الآمن عند رفض الطلب المجمّع (45 منشوراً)');
+      check('الخادم الثاني يقلع', await waitForHealth(180_000, BASE2), app2.log().slice(0, 400));
+      const auth2 = await login(BASE2);
+      const startRes2 = await (await fetch(`${BASE2}/api/platforms/facebook/oauth/start`, { headers: auth2 })).json();
+      const state2 = new URL(startRes2.authorizationUrl).searchParams.get('state') || '';
+      const cbRes2 = await fetch(`${BASE2}/api/platforms/facebook/oauth/callback?state=${encodeURIComponent(state2)}&code=TESTCODE`);
+      check('callback ينجح (2)', cbRes2.status === 200, `status=${cbRes2.status}`);
+
+      await fetch(`${BASE2}/api/agent/meta/watcher/controls`, { method: 'POST', headers: auth2, body: JSON.stringify({ enabled: true, autoReply: false, paused: false }) });
+      const poll2 = await (await fetch(`${BASE2}/api/agent/meta/watcher/poll`, { method: 'POST', headers: auth2, body: '{}' })).json();
+      check('الدورة تعمل رغم رفض المجمّع', poll2.success === true, JSON.stringify(poll2));
+
+      const owner2 = await (await fetch(`${BASE2}/api/agent/meta/watcher`, { headers: auth2 })).json();
+      const seenIds2 = (owner2.watcher?.recent || []).map((r: any) => r.commentId);
+      check('التعليقات لم تُفقد بعد رفض المجمّع (فشل صامت مُغلَق)', seenIds2.includes('C_BATCH_1') && seenIds2.includes('C_VIDEO_BATCH'), JSON.stringify(seenIds2));
+      const stats2 = owner2.watcher?.platformStats?.facebook;
+      check('postsScanned = 45 (سقوط آمن)', Number(stats2?.postsScanned || 0) === 45, JSON.stringify(stats2));
+      check('callsPerCycle ≤ 7 (3 معرّفات + 1 مجمّع فاشل + 3 حواف)', Number(stats2?.callsPerCycle || 0) > 0 && Number(stats2?.callsPerCycle || 0) <= 7, JSON.stringify(stats2));
+      check('لا انهيار: lastError ليس خطأ السحب (السقوط نجح)', (owner2.watcher?.lastError ?? null) === null, JSON.stringify(owner2.watcher?.lastError));
+    } finally {
+      await stop(app2.proc);
+      await mock2.stop();
+    }
+  }
+  rmSync(stateDir, { recursive: true, force: true });
 
   console.log('\n' + '='.repeat(60));
   if (failures.length) {

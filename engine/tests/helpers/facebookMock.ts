@@ -130,6 +130,8 @@ export interface FacebookMockState {
   failFeed?: boolean;
   /** عدد نداءات القراءة المجمّعة (`GET /?ids=`) — لإثبات ≤ نداء واحد لـ45 منشوراً. */
   commentBatchCalls: number;
+  /** يرفض الطلب المجمّع `GET /?ids=` كاملاً (يحاكي رفض Graph لشكل الطلب) — لإثبات السقوط الآمن. */
+  failCommentBatch?: boolean;
   /** عدد نداءات قراءة تعليقات منشور منفرد (`GET /{post-id}?fields=comments...`) — يجب أن يبقى 0. */
   commentNodeCalls: number;
   /** خطأ مخصّص لقراءة عقدة المنشور `GET /{post-id}?fields=...` يحاكي #100
@@ -192,6 +194,7 @@ export function createFacebookMock(state: Partial<FacebookMockState> = {}): Face
     pageReels: state.pageReels ?? [],
     failFeed: state.failFeed ?? false,
     commentBatchCalls: 0,
+    failCommentBatch: state.failCommentBatch ?? false,
     commentNodeCalls: 0,
     nodeFieldsError: state.nodeFieldsError ?? null,
     unsupportedNodeFields: state.unsupportedNodeFields ?? [],
@@ -346,6 +349,8 @@ export async function startFacebookMockServer(
   app.get('/:version/', (req, res) => {
     const idsRaw = String(req.query.ids || '').trim();
     if (!idsRaw) return res.status(400).json({ error: { message: 'ids required', code: 100 } });
+    // يحاكي رفض Graph لشكل الطلب المجمّع كاملاً (لا على مستوى معرّف واحد).
+    if (state.failCommentBatch) { state.calls += 1; state.commentBatchCalls += 1; return res.status(400).json({ error: { message: 'Unsupported get request for multiple ids.', code: 100 } }); }
     const fields = String(req.query.fields || '');
     const ids = idsRaw.split(',').map((s) => s.trim()).filter(Boolean);
     const known = [...(state.feedPosts || []), ...(state.pageVideos || []), ...(state.pageReels || [])];
@@ -497,9 +502,14 @@ export async function startFacebookMockServer(
 
   // منشورات الفيديو (`GET /{page-id}/videos`) والريلز (`/{page-id}/video_reels`).
   // منفصلة عن /feed كما في Graph الحقيقي — تُثبت أن السحب يقرأ من كل الأنواع.
-  const listPostRows = (rows?: Array<{ id: string }>) => (rows || []).map((p) => ({ id: p.id, created_time: '2026-01-01T00:00:00+0000' }));
-  app.get('/:version/:pageId/videos', (req, res) => { state.calls += 1; return res.json({ data: listPostRows(state.pageVideos) }); });
-  app.get('/:version/:pageId/video_reels', (req, res) => { state.calls += 1; return res.json({ data: listPostRows(state.pageReels) }); });
+  // تُعيد التعليقات مضمَّنة عند طلبها (كما يفعل Graph) ليعمل السقوط الآمن.
+  const listPostRows = (rows?: Array<{ id: string; comments?: any[] }>, fields = '') => (rows || []).map((p) => ({
+    id: p.id,
+    created_time: '2026-01-01T00:00:00+0000',
+    comments: fields.includes('comments') && p.comments ? { data: p.comments } : undefined,
+  }));
+  app.get('/:version/:pageId/videos', (req, res) => { state.calls += 1; return res.json({ data: listPostRows(state.pageVideos, String(req.query.fields || '')) }); });
+  app.get('/:version/:pageId/video_reels', (req, res) => { state.calls += 1; return res.json({ data: listPostRows(state.pageReels, String(req.query.fields || '')) }); });
 
   app.post('/:version/:pageId/feed', (req, res) => {
     const { pageId } = req.params;
