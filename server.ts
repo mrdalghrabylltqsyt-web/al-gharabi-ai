@@ -77,10 +77,9 @@ import {
   isWithinMetaMessageWindow,
 } from "./engine/commercial/commercialBrain";
 import {
-  leadAskedRealQuestion, leadLastCustomerAskedRealQuestion, evaluateFollowUpEligibility,
+  evaluateFollowUpEligibility,
   planCommercialDraftCleanup, planCommercialLeadArchive, summarizeQualification,
-  diagnoseAuthorNameAvailability, isBackfillImport, isFollowUpAgeEligible,
-  COMMERCIAL_FOLLOWUP_MAX_AGE_MS,
+  diagnoseAuthorNameAvailability, isBackfillImport,
 } from "./engine/commercial/leadQualification";
 import {
   type CommercialDraft, type CommercialSendMode, type CommercialDecisionKind,
@@ -8825,9 +8824,6 @@ async function createInstantReplyDraft(input: {
   const cls: any = input.cls;
   const isPriceOrInstallment = cls?.topic === 'price' || cls?.topic === 'availability' || cls?.isBusinessInquiry === true;
   if (!isPriceOrInstallment && !hasBuyingSignal(cls, input.text)) return null;
-  // PR-S5: لا جواب على سؤال أقدم من 7 أيام (نفس حدّ المتابعة) — «جواب السؤال الحقيقي
-  // فقط، إن كان عمره ≤ 7 أيام». يمنع الردّ العلني المتأخر على تفاعل قديم.
-  if (!isFollowUpAgeEligible(input.lead.lastCustomerInteractionAt, input.nowIso)) return null;
   const idem = `reply:${input.externalId}`;
   if (findCommercialDraftByKey(input.lead.key, idem)) return null;
   const gen = await generateWatcherReply({
