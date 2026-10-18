@@ -14,6 +14,28 @@ import {
   Clock, User, Package, MessageSquare, Loader2,
 } from 'lucide-react';
 
+interface InteractionEntry {
+  direction: 'customer' | 'business';
+  text: string;
+  at: string;
+  delivered: boolean;
+  providerReplyId: string | null;
+}
+
+interface CustomerContext {
+  authorName: string;
+  authorId: string | null;
+  customerText: string | null;
+  customerTextAt: string | null;
+  post: { id: string; firstLine: string | null; thumbnailUrl: string | null } | null;
+  product: { id: string | null; name: string } | null;
+  permalinkUrl: string | null;
+  platform: string;
+  platformLabelAr: string;
+  recentInteractions: InteractionEntry[];
+  draftKind: string | null;
+}
+
 interface LeadRow {
   id: string;
   platform: string;
@@ -26,6 +48,7 @@ interface LeadRow {
   followUpLabelAr: string;
   escalationReason: string | null;
   hasPendingProposal: boolean;
+  context?: CustomerContext | null;
 }
 
 interface DraftRow {
@@ -48,6 +71,80 @@ interface DraftRow {
   interestedProductName: string | null;
   stage: string | null;
   escalationReason: string | null;
+  draftKindLabelAr?: string | null;
+  context?: CustomerContext | null;
+}
+
+/**
+ * PR-S4 (البند 3) — سياق الزبون على البطاقة: اسم الكاتب الحقيقي (أو البديل الصريح
+ * «اسم غير متاح من Meta (…آخر 4 أرقام)»)، نص الزبون ووقته، المنشور (أول سطر + صورة
+ * مصغّرة + منتج)، زر «فتح على فيسبوك/إنستغرام» من رابط Meta الحقيقي فقط، آخر 5
+ * تفاعلات، ونوع المسودة. لا كلمة «زبون» ولا رابط مختلق.
+ */
+function CustomerContextBlock({ context, compact = false }: { context?: CustomerContext | null; compact?: boolean }) {
+  if (!context) return null;
+  const hasRealLink = typeof context.permalinkUrl === 'string' && context.permalinkUrl.startsWith('http');
+  return (
+    <div className={`rounded-xl border border-slate-800 bg-slate-950/60 p-2 ${compact ? 'mt-2' : 'mb-2'}`}>
+      <div className="text-[11px] text-slate-300 flex items-center gap-2 flex-wrap">
+        <User className="w-3 h-3 text-emerald-300" />
+        <span className="font-bold text-slate-100">{context.authorName}</span>
+        {context.customerTextAt ? <span className="text-slate-500">• {new Date(context.customerTextAt).toLocaleString('ar-IQ')}</span> : null}
+      </div>
+
+      {context.customerText ? (
+        <div className="mt-1.5 text-[11px] text-slate-200 whitespace-pre-wrap bg-slate-900/60 rounded-lg p-2 border border-slate-800">
+          <span className="text-slate-500">كتب: </span>{context.customerText}
+        </div>
+      ) : null}
+
+      {context.post ? (
+        <div className="mt-2 flex items-center gap-2">
+          {context.post.thumbnailUrl ? (
+            <img src={context.post.thumbnailUrl} alt="صورة المنشور" className="w-10 h-10 rounded-lg object-cover border border-slate-700" />
+          ) : null}
+          <div className="text-[11px] text-slate-400 flex items-center gap-1 flex-wrap">
+            <Package className="w-3 h-3" />
+            <span>{context.post.firstLine || 'منشور بلا نص ظاهر'}</span>
+            {context.product ? <span className="text-emerald-300">• منتج مرتبط: {context.product.name}</span> : null}
+          </div>
+        </div>
+      ) : null}
+
+      <div className="mt-2 flex items-center gap-2 flex-wrap">
+        {hasRealLink ? (
+          <a
+            href={context.permalinkUrl as string}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="px-2 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-100 text-[10px] font-bold border border-slate-700"
+          >
+            ↗ فتح على {context.platformLabelAr}
+          </a>
+        ) : (
+          <span className="text-[10px] text-slate-500">لا رابط من Meta لهذا التعليق (لا يُختلق رابط).</span>
+        )}
+        {context.draftKind ? (
+          <span className="px-2 py-1 rounded-lg bg-amber-500/10 border border-amber-500/30 text-amber-300 text-[10px] font-bold">{context.draftKind}</span>
+        ) : null}
+      </div>
+
+      {Array.isArray(context.recentInteractions) && context.recentInteractions.length > 0 ? (
+        <div className="mt-2">
+          <div className="text-[10px] text-slate-500 mb-1">آخر التفاعلات (منه ومنّا):</div>
+          <div className="space-y-1">
+            {context.recentInteractions.map((m, i) => (
+              <div key={i} className="text-[10px] text-slate-300 flex items-start gap-1">
+                <span className={m.direction === 'customer' ? 'text-slate-400' : 'text-emerald-300'}>{m.direction === 'customer' ? 'الزبون' : 'المعرض'}:</span>
+                <span className="whitespace-pre-wrap flex-1">{m.text}</span>
+                {m.at ? <span className="text-slate-600 shrink-0">{new Date(m.at).toLocaleDateString('ar-IQ')}</span> : null}
+              </div>
+            ))}
+          </div>
+        </div>
+      ) : null}
+    </div>
+  );
 }
 
 const PLATFORM_AR: Record<string, string> = {
@@ -231,6 +328,14 @@ export function CommercialInbox() {
                   ) : null}
                 </div>
 
+                {/* PR-S4: نوع المسودة بصراحة */}
+                {d.draftKindLabelAr ? (
+                  <div className="text-[10px] text-amber-300 mb-1">نوع المسودة: {d.draftKindLabelAr}</div>
+                ) : null}
+
+                {/* PR-S4: سياق الزبون الكامل (اسم حقيقي/نص/منشور/رابط/آخر 5 تفاعلات) */}
+                <CustomerContextBlock context={d.context} />
+
                 {editId === d.id ? (
                   <textarea
                     value={editText}
@@ -289,7 +394,7 @@ export function CommercialInbox() {
                 <div className="flex items-center justify-between gap-2 flex-wrap">
                   <div className="text-[11px] text-slate-300 flex items-center gap-2 flex-wrap">
                     <span className="px-1.5 py-0.5 rounded-md bg-slate-800 border border-slate-700">{PLATFORM_AR[l.platform] || l.platform}</span>
-                    <span className="font-bold text-slate-200">{l.customerName || 'زبون'}</span>
+                    <span className="font-bold text-slate-200">{l.context?.authorName || l.customerName || 'اسم غير متاح من Meta'}</span>
                     {l.interestedProductName ? <span className="text-slate-400 flex items-center gap-1"><Package className="w-3 h-3" /> {l.interestedProductName}</span> : null}
                   </div>
                   <span className="text-[10px] px-1.5 py-0.5 rounded-md bg-slate-800 text-slate-300 border border-slate-700">{l.stageLabelAr}</span>
@@ -311,10 +416,13 @@ export function CommercialInbox() {
         <section className="glass rounded-2xl p-5">
           <div className="flex items-center justify-between gap-2 mb-3">
             <div className="text-slate-200 text-sm font-bold flex items-center gap-2">
-              <MessageSquare className="w-4 h-4 text-emerald-300" /> {selectedLead.lead?.customerName || 'زبون'}
+              <MessageSquare className="w-4 h-4 text-emerald-300" /> {selectedLead.context?.authorName || selectedLead.lead?.customerName || 'اسم غير متاح من Meta'}
             </div>
             <button type="button" onClick={() => setSelectedLead(null)} className="text-xs text-slate-400 hover:text-slate-200">إغلاق</button>
           </div>
+
+          {/* PR-S4: سياق الزبون الكامل في بطاقة الزبون */}
+          <CustomerContextBlock context={selectedLead.context} />
 
           {selectedLead.proposal ? (
             <div className="rounded-xl border border-amber-500/30 bg-amber-950/10 p-3 mb-3">

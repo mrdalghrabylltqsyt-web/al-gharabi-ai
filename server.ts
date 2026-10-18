@@ -82,7 +82,7 @@ import {
   evaluateDraftSendability, applyOwnerDecision, markDraftExpired, markDraftDelivery,
   buildOwnerDecisionRecord, toCommercialDraftRow, pendingDraftCount,
   normalizeCommercialDrafts, normalizeOwnerDecisions, buildLeadConversation,
-  COMMERCIAL_SEND_MODE_LABELS_AR,
+  COMMERCIAL_SEND_MODE_LABELS_AR, COMMERCIAL_DRAFT_TYPE_LABELS_AR, authorDisplayName,
 } from "./engine/commercial/commercialDrafts";
 import { classifyConversation } from "./engine/brain/audience/conversationIntelligence";
 import { capabilityRow } from "./engine/brain/strategy/capabilityMatrix";
@@ -4840,6 +4840,9 @@ async function ingestWebhookComments(input: {
       createdAt: ev.createdAt, classification, requiresHumanReview: classification.requiresHumanReview,
       // مصدر الاستقبال حقيقي صراحةً، فلا يظهر كـ simulated/not delivered.
       ingestSource: `${platform}_webhook`, replyTarget: ev.replyTarget,
+      // PR-S4: رابط Meta الحقيقي (permalink_url) يُحفظ عند الاستقبال لزر
+      // «فتح على فيسبوك/إنستغرام» — بلا روابط تخمينية.
+      permalinkUrl: (ev as any).permalinkUrl ?? null,
     };
     if (!input.omitKind) comment.kind = ev.kind;
     (workspace as any).socialComments.unshift(comment);
@@ -7802,46 +7805,28 @@ function metaPollingStatusBlock() {
 }
 
 /** يجلب تعليقات منصة Meta الحقيقية (قراءة فقط) عبر العميل الرسمي — بلا كتابة. */
-async function fetchMetaInboundComments(platform: MetaPlatform): Promise<{ ok: boolean; comments?: any[]; error?: string; code?: string; providerCode?: number | null; postsScanned?: number; callsPerCycle?: number }> {
+async function fetchMetaInboundComments(platform: MetaPlatform): Promise<{ ok: boolean; comments?: any[]; error?: string; code?: string; providerCode?: number | null; postsScanned?: number; callsPerCycle?: number; commentsTotalReported?: number }> {
   try {
     if (platform === "facebook") {
       const pageId = String(getProviderToken("facebook")?.pageId || "");
       const token = facebookPageToken(pageId || undefined);
       if (!pageId || !token) return { ok: false, error: "لا صفحة Facebook موثقة.", code: "NOT_CONNECTED" };
-      // معرّفات المنشورات التي نشرها النظام فعلاً (فيديو/ريلز/صور) — تُضاف لمصادر
-      // القراءة فلا يضيع تعليق على منشور لا يظهر في /feed (توثيق Meta).
-      const extraPostIds = publishedPostIdsFor("facebook");
-      const res = await facebookClient().listPageComments(pageId, token, 25, extraPostIds);
+      // PR-S4: قراءة واحدة مضمَّنة داخل الحواف (feed + videos + video_reels) —
+      // لا مسار مجمّع `?ids=` إطلاقاً (كان Graph يرفضه كل دورة).
+      const res = await facebookClient().listPageComments(pageId, token, 25, []);
       if (!res.ok) return { ok: false, error: res.error || "فشل قراءة تعليقات Facebook.", code: res.code || "FETCH_FAILED", providerCode: res.providerCode ?? null };
-      return { ok: true, comments: res.data || [], postsScanned: (res.postIdsScanned || []).length, callsPerCycle: Number(res.graphCalls || 0) };
+      return { ok: true, comments: res.data || [], postsScanned: (res.postIdsScanned || []).length, callsPerCycle: Number(res.graphCalls || 0), commentsTotalReported: Number(res.commentsTotalReported || 0) };
     }
     const igAccountId = String(getProviderToken("instagram")?.igAccountId || "");
     const token = instagramPageToken();
     if (!igAccountId || !token) return { ok: false, error: "لا حساب Instagram موثّق.", code: "NOT_CONNECTED" };
-    const extraMediaIds = publishedPostIdsFor("instagram");
-    const res = await instagramClient().listMediaComments(igAccountId, token, 10, 25, extraMediaIds);
+    const res = await instagramClient().listMediaComments(igAccountId, token, 10, 25, []);
     if (!res.ok) return { ok: false, error: res.error || "فشل قراءة تعليقات Instagram.", code: res.code || "FETCH_FAILED", providerCode: res.providerCode ?? null };
-    return { ok: true, comments: res.data || [], postsScanned: new Set((res.data || []).map((c: any) => c.mediaId).filter(Boolean)).size, callsPerCycle: Number(res.graphCalls || 0) };
+    const postsScanned = Number(res.mediaScanned || 0) || new Set((res.data || []).map((c: any) => c.mediaId).filter(Boolean)).size;
+    return { ok: true, comments: res.data || [], postsScanned, callsPerCycle: Number(res.graphCalls || 0), commentsTotalReported: Number(res.commentsTotalReported || 0) };
   } catch (e: any) {
     return { ok: false, error: String(e?.message || "فشل الجلب."), code: "FETCH_ERROR" };
   }
-}
-
-/**
- * معرّفات المنشورات التي نشرها النظام فعلاً لمنصة (فيديو/ريلز/صور) من سجلات
- * النشر الحقيقية — تُغذّي قراءة التعليقات كي تشمل منشورات لا يضمن Graph ظهورها
- * في `/{page-id}/feed`. معرّف حقيقي فقط (بلا اختراع)، بلا تكرار، بحدّ معقول.
- */
-function publishedPostIdsFor(platform: "facebook" | "instagram"): string[] {
-  const ids: string[] = [];
-  const seen = new Set<string>();
-  for (const rec of ((workspace as any).publishRecords || [])) {
-    if (String(rec?.platform || '') !== platform) continue;
-    const id = String(rec?.providerPostId || rec?.externalVideoId || '').trim();
-    if (id && !seen.has(id)) { seen.add(id); ids.push(id); }
-    if (ids.length >= 20) break;
-  }
-  return ids;
 }
 
 /**
@@ -7998,6 +7983,9 @@ async function runMetaWatcherCycle(trigger: string): Promise<{ ok: boolean; trig
         metaPollingState.platformStats[platform] = {
           postsScanned: Number(fetched.postsScanned || 0),
           commentsVisible: (fetched.comments || []).length,
+          // PR-S4: المجموع المُعلَن من Meta (comments.summary.total_count) بجانب
+          // المرئي فعلاً — فيظهر أي فرق تغطية بصراحة (لا فشل صامت).
+          commentsTotalReported: Number(fetched.commentsTotalReported || 0),
           lastIngestAt: prev.lastIngestAt || null,
           callsPerCycle: Number(fetched.callsPerCycle || 0),
         };
@@ -8030,6 +8018,8 @@ async function runMetaWatcherCycle(trigger: string): Promise<{ ok: boolean; trig
             text, createdAt: c.createdAt || new Date().toISOString(),
             classification: cls0, requiresHumanReview: cls0.requiresHumanReview, ingestSource: `${platform}_polling`,
             replyTarget: { commentId: externalId },
+            // PR-S4: رابط Meta الحقيقي (permalink_url) من القراءة المضمَّنة.
+            permalinkUrl: c.permalinkUrl || null,
           });
           if ((workspace as any).socialComments.length > WORKSPACE_MAX_SOCIAL_COMMENTS) (workspace as any).socialComments.length = WORKSPACE_MAX_SOCIAL_COMMENTS;
           newDetected += 1;
@@ -9092,15 +9082,108 @@ app.get("/api/commercial/leads", authenticateToken, (req, res) => {
 /** يبني صف مسودة مرتبطاً بالعميل (للعرض في الصندوق). */
 function draftRowForOwner(draft: CommercialDraft): any {
   const lead = commercialLeads.find((l) => l.id === draft.leadId) || null;
+  // PR-S4 (البند 3): سياق الزبون الكامل على البطاقة — اسم حقيقي، نص الزبون ووقته،
+  // المنشور (أول سطر + صورة مصغّرة + منتج)، رابط Meta الحقيقي، آخر 5 تفاعلات، ونوع
+  // المسودة («جواب على سؤال» / «متابعة 24/72 ساعة»). لا كلمة «زبون» ولا رابط مختلق.
+  const context = lead ? customerContextForLead(lead, new Date().toISOString()) : null;
   return {
     ...toCommercialDraftRow(draft),
     leadKey: draft.leadKey,
     recipientId: draft.recipientId,
-    customerName: lead?.customerName || null,
+    customerName: context?.authorName ?? lead?.customerName ?? null,
     interestedProductName: lead?.interestedProductName || null,
     stage: lead?.stage || null,
     escalationReason: lead?.escalationReason || null,
+    draftKindLabelAr: COMMERCIAL_DRAFT_TYPE_LABELS_AR[draft.purpose],
+    context,
   };
+}
+
+/**
+ * PR-S4 (البند 3) — سياق الزبون الكامل لبطاقة المسودة/الزبون (واجهة وقراءة فقط).
+ *
+ * يجمع من السجلات الحقيقية فقط (بلا اختلاق، بلا روابط تخمينية):
+ *  - اسم الكاتب الحقيقي (from.name / IG username) أو البديل الصريح
+ *    «اسم غير متاح من Meta (…آخر 4 أرقام)» — لا كلمة «زبون».
+ *  - نص تعليق/رسالة الزبون الأصلي ووقته.
+ *  - المنشور: أول سطر من نصه، وصورته المصغّرة إن توفرت، والمنتج المرتبط إن وُجد.
+ *  - زر «فتح على فيسبوك/إنستغرام» من permalink_url الحقيقي المحفوظ عند الاستقبال.
+ *  - آخر 5 تفاعلات للزبون (منه ومنّا).
+ *  - نوع المسودة: «جواب على سؤال» أو «متابعة 24/72 ساعة».
+ */
+function customerContextForLead(lead: CommercialLead, nowIso: string) {
+  const platform = String(lead.platform || '').toLowerCase();
+  const sourceIds = new Set((lead.sourceEventIds || []).map((x) => String(x)));
+  const inbound = ((workspace as any).socialComments || []) as any[];
+  const outbound = ((workspace as any).socialReplies || []) as any[];
+
+  // آخر تعليق/رسالة واردة حقيقية لهذا الزبون (سجل الاستقبال نفسه).
+  const customerRows = inbound
+    .filter((r) => String(r.platform || '').toLowerCase() === platform && sourceIds.has(String(r.externalId || '')))
+    .sort((a, b) => Date.parse(String(b.createdAt || '')) - Date.parse(String(a.createdAt || '')));
+  const lastCustomerRow = customerRows[0] || null;
+
+  // اسم الكاتب الحقيقي أو البديل الصريح.
+  const authorName = authorDisplayName(lastCustomerRow?.authorName ?? lead.customerName, lastCustomerRow?.authorId);
+
+  // المنشور: أول سطر من نصه (من المحتوى المرتبط بالمعرّف) وصورته المصغّرة.
+  const postExternalId = String(lastCustomerRow?.postExternalId || lead.replyTarget?.videoId || '');
+  const postInfo = postInfoForExternalId(postExternalId);
+
+  // المنتج المرتبط (دليل صريح فقط).
+  const product = resolveProductForPost(postExternalId || null);
+
+  // رابط حقيقي محفوظ عند الاستقبال فقط (لا تخمين).
+  const permalinkUrl = lastCustomerRow?.permalinkUrl ? String(lastCustomerRow.permalinkUrl) : (postInfo?.permalinkUrl || null);
+
+  // آخر 5 تفاعلات للزبون (منه ومنّا) من سجل المحادثة الحقيقي.
+  const conversation = buildLeadConversation(lead, inbound, outbound);
+  const recentInteractions = conversation.slice(-5).map((m) => ({
+    direction: m.direction, text: m.text, at: m.at,
+    delivered: m.delivered, providerReplyId: m.providerReplyId,
+  }));
+
+  // نوع المسودة (لأول مسودة معلّقة لهذا الزبون إن وُجدت).
+  const pendingDraft = commercialDrafts.find((d) => d.leadId === lead.id && d.status === 'pending') || null;
+  const draftKind = pendingDraft ? COMMERCIAL_DRAFT_TYPE_LABELS_AR[pendingDraft.purpose] : null;
+
+  return {
+    authorName,
+    authorId: lastCustomerRow?.authorId ?? null,
+    customerText: lastCustomerRow?.text ?? lead.lastCustomerText ?? null,
+    customerTextAt: lastCustomerRow?.createdAt ?? lead.lastInteractionAt ?? null,
+    post: postInfo ? { id: postExternalId, firstLine: postInfo.firstLine, thumbnailUrl: postInfo.thumbnailUrl } : (postExternalId ? { id: postExternalId, firstLine: null, thumbnailUrl: null } : null),
+    product: product ? { id: String(product.id), name: String(product.name || '') } : (lead.interestedProductName ? { id: lead.interestedProductId, name: lead.interestedProductName } : null),
+    permalinkUrl,
+    platform,
+    platformLabelAr: platform === 'instagram' ? 'إنستغرام' : platform === 'facebook' ? 'فيسبوك' : platform,
+    recentInteractions,
+    draftKind,
+    generatedAt: nowIso,
+  };
+}
+
+/**
+ * معلومات المنشور من معرّفه الخارجي: أول سطر من نصه وصورته المصغّرة — من عنصر
+ * طابور المحتوى أو منشور مساحة العمل المطابق لمعرّف النشر الحقيقي. بلا اختلاق.
+ */
+function postInfoForExternalId(postExternalId: string): { firstLine: string | null; thumbnailUrl: string | null; permalinkUrl: string | null } | null {
+  const pid = String(postExternalId || '').trim();
+  if (!pid) return null;
+  const contentItem = contentQueue.find((it) => String(it.externalVideoId || '') === pid || String(it.id || '') === pid);
+  if (contentItem) {
+    const body = String(contentItem.description || contentItem.title || '');
+    const firstLine = body.split(/\r?\n/).map((l) => l.trim()).filter(Boolean)[0] || null;
+    return { firstLine, thumbnailUrl: null, permalinkUrl: contentItem.url || null };
+  }
+  const rec = ((workspace as any).publishRecords || []).find((r: any) => String(r?.providerPostId || r?.externalVideoId || '') === pid);
+  const post = rec ? (workspace.posts || []).find((p: any) => String(p.id) === String(rec.postId)) : null;
+  if (post) {
+    const body = String((post as any).content || (post as any).title || '');
+    const firstLine = body.split(/\r?\n/).map((l) => l.trim()).filter(Boolean)[0] || null;
+    return { firstLine, thumbnailUrl: (post as any).mediaUrl || null, permalinkUrl: null };
+  }
+  return null;
 }
 
 app.get("/api/commercial/inbox", requireOwner, (_req, res) => {
@@ -9117,7 +9200,11 @@ app.get("/api/commercial/inbox", requireOwner, (_req, res) => {
     pendingDrafts: pending.length,
     // PR-S3: يُعلن مفتاح الهوية الحقيقي (منصة::author:<id>) للمالك فقط كي يُثبت
     // أن كل معلّق = زبون مستقل (لا تجميع كل معلّقي منشور في زبون واحد).
-    leads: commercialLeads.slice(0, 1000).map((l) => ({ ...toCommercialLeadRow(l), key: l.key })),
+    // PR-S4: يُضاف سياق الزبون الكامل (اسم حقيقي/نص/منشور/رابط/آخر 5 تفاعلات).
+    leads: commercialLeads.slice(0, 1000).map((l) => {
+      const context = customerContextForLead(l, nowIso);
+      return { ...toCommercialLeadRow(l), key: l.key, customerName: context.authorName, context };
+    }),
     drafts: commercialDrafts.slice(0, 1000).map(draftRowForOwner),
     summary: summarizeCommercialLeads(commercialLeads, nowIso),
     limits: commercialNegotiationLimits(),
@@ -9135,11 +9222,13 @@ app.get("/api/commercial/leads/:id", requireOwner, (req, res) => {
   const inbound = ((workspace as any).socialComments || []) as any[];
   const outbound = ((workspace as any).socialReplies || []) as any[];
   const conversation: CommercialConversationEntry[] = buildLeadConversation(lead, inbound, outbound);
+  const context = customerContextForLead(lead, nowIso);
   res.json({
     success: true,
-    lead: toCommercialLeadRow(lead),
+    lead: { ...toCommercialLeadRow(lead), customerName: context.authorName },
     proposal: lead.pendingProposal,
     conversation,
+    context,
     drafts: commercialDrafts.filter((d) => d.leadId === lead.id).map(draftRowForOwner),
     sendMode: commercialSendMode,
     generatedAt: nowIso,

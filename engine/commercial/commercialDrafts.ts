@@ -68,6 +68,30 @@ export const COMMERCIAL_DRAFT_STATUS_LABELS_AR: Readonly<Record<CommercialDraftS
   expired: 'منتهية (خارج نافذة Meta)',
 });
 
+/**
+ * PR-S4 — نوع المسودة بصراحة للمالك: «جواب على سؤال» (رد) أم «متابعة 24/72 ساعة».
+ * العرض حتمي من غرض المسودة المحفوظ (بلا تخمين).
+ */
+export const COMMERCIAL_DRAFT_TYPE_LABELS_AR: Readonly<Record<CommercialDraftPurpose, string>> = Object.freeze({
+  reply: 'جواب على سؤال',
+  follow_up: 'متابعة 24/72 ساعة',
+  proposal: 'عرض صفقة',
+});
+
+/**
+ * PR-S4 — اسم الكاتب الحقيقي أو بديل صريح بلا كلمة «زبون».
+ * إن غاب الاسم من Meta: «اسم غير متاح من Meta» + آخر 4 أرقام من authorId.
+ * بلا معرّف أيضاً: «اسم غير متاح من Meta» فقط (بلا اختلاق هوية).
+ */
+export function authorDisplayName(name: string | null | undefined, authorId: string | null | undefined): string {
+  const n = String(name || '').trim();
+  if (n) return n;
+  const id = String(authorId || '').trim();
+  if (!id) return 'اسم غير متاح من Meta';
+  const tail = id.slice(-4);
+  return `اسم غير متاح من Meta (…${tail})`;
+}
+
 export interface CommercialDraft {
   id: string;
   leadId: string;

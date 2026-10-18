@@ -408,6 +408,11 @@ export interface FacebookNormalizedEvent {
   authorId: string | null;
   text: string;
   createdAt: string;
+  /**
+   * PR-S4: رابط التعليق/المنشور الحقيقي من Meta (permalink_url) — لزر
+   * «فتح على فيسبوك». يُحفظ عند الاستقبال؛ غيابه ⇒ لا رابط (لا روابط تخمينية).
+   */
+  permalinkUrl: string | null;
   /** هدف الرد الحقيقي حسب نوع الحدث. */
   replyTarget: Record<string, unknown> | null;
   /** البيانات الخام المطهّرة (بلا أسرار). */
@@ -442,6 +447,7 @@ function commentFromChange(pageId: string | null, change: any): FacebookNormaliz
     authorId: v.from?.id ? String(v.from.id) : null,
     text,
     createdAt: epochToIso(v.created_time) || new Date().toISOString(),
+    permalinkUrl: v.permalink_url ? String(v.permalink_url) : (v.post?.permalink_url ? String(v.post.permalink_url) : null),
     // الرد على تعليق الصفحة يتم بمعرّف التعليق نفسه عبر Graph API.
     replyTarget: { commentId: String(externalId), pageId },
     raw: { source: 'changes', field: change?.field ?? null, item: v.item ?? null },
@@ -467,6 +473,8 @@ function messageFromMessaging(pageId: string | null, m: any): FacebookNormalized
     authorId: senderId,
     text,
     createdAt: epochToIso(m?.timestamp) || new Date().toISOString(),
+    // الرسائل الخاصة بلا permalink؛ لا رابط تخميني.
+    permalinkUrl: null,
     replyTarget: { recipientId: senderId, pageId },
     raw: { source: 'messaging' },
   };
@@ -643,10 +651,15 @@ export interface FacebookResult<T> {
    */
   postIdsScanned?: string[];
   /**
-   * عدد نداءات Graph الفعلية التي استهلكها السحب (جمع المعرّفات + قراءة
-   * التعليقات المجمّعة) — يُعلن في حالة المراقب كـ`callsPerCycle`.
+   * عدد نداءات Graph الفعلية التي استهلكها السحب (قراءة التعليقات داخل الحواف)
+   * — يُعلن في حالة المراقب كـ`callsPerCycle`.
    */
   graphCalls?: number;
+  /**
+   * PR-S4: مجموع `comments.summary(total_count)` المُعلَن من Meta لكل منشور مفحوص
+   * — يُقارَن بعدد التعليقات المقروءة فعلاً فيُغلق أي فرق تغطية. تقني فقط.
+   */
+  commentsTotalReported?: number;
 }
 
 function errorMessage(data: any, fallback: string): string {
@@ -1282,7 +1295,7 @@ export class FacebookClient {
   }
 
   /**
-   * يقرأ تعليقات الصفحة الأخيرة من **كل أنواع المنشورات** لا من `/feed` وحده.
+   * يقرأ تعليقات الصفحة الأخيرة من **كل أنواع المنشورات** مباشرةً داخل الحواف.
    *
    * الجذر المُثبت (توثيق Meta الرسمي — Page Feed reference): «Video Posts - To get
    * a list of video posts, the person making the request must be an admin of the
@@ -1291,192 +1304,114 @@ export class FacebookClient {
    * بينما النظام ينشر فيديو عبر `POST /{page-id}/videos`. فتعليق على منشور فيديو
    * كان غير مرئي إطلاقاً، وتعود القراءة `ok` بلا تعليقات = **فشل صامت**.
    *
-   * الحل: جمع المنشورات من ثلاثة مصادر معاً — `feed` + `videos` + `video_reels` —
-   * إضافةً إلى معرّفات المنشورات التي نشرها النظام فعلاً (`extraPostIds` من سجلات
-   * النشر)، ثم قراءة تعليقاتها بـ`order(reverse_chronological)` (الأحدث أولاً)
-   * كي لا يختفي تعليق جديد بعد تعليقات قديمة. منع التكرار بمعرّف التعليق.
+   * PR-S4 (تنظيف القراءة): حُذف مسار الطلب المجمّع `GET /?ids=` **كلياً** — Graph
+   * يرفضه دائماً فيُهدر نداءً ويُسجّل خطأً كل دورة. صارت التعليقات تُقرأ **مضمَّنة
+   * داخل الحواف نفسها**: `feed` + `videos` + `video_reels` — 3 نداءات للدورة
+   * (≤ 4) وصفر أخطاء متكررة. أكواد 190/10/102 تبقى تُوقف السحب (reauth) كما كانت.
    *
-   * حجم النداءات (إصلاح): كان يُقرأ كل منشور بنداء منفصل (حتى ~50 نداء كل دورة).
-   * الآن تُقرأ التعليقات **مجمّعة** بطلب واحد لخمسين معرّفاً عبر
-   * `GET /?ids=<id1,id2,...>&fields=comments...` — فالهدف ≤ 5 نداءات للدورة على
-   * فيسبوك (3 لجمع المعرّفات + 1-2 للتعليقات). فشل معرّف واحد داخل الطلب المجمّع
-   * لا يُسقط الباقي (كل معرّف يُقرأ على حدة داخل الاستجابة)، وأكواد 190/10/102
-   * تبقى تُوقف السحب كما كانت.
+   * PR-S4 (تغطية): `comments.filter(stream)` يُدخل **الردود المتداخلة** (كان الفلتر
+   * الافتراضي `toplevel` يستبعدها = سبب فرق التغطية)، و`summary(true)` يقرأ
+   * `total_count` المُعلَن لكل منشور للمقارنة، و`order(reverse_chronological)` يضمن
+   * أحدث التعليقات، و`permalink_url` الحقيقي يُحفظ لزر «فتح على فيسبوك».
+   * التعليقات بلا `message` (صور/ملصقات) لا تُسقط من العدّ.
    */
-  async listPageComments(pageId: string, pageAccessToken: string, limit = 25, extraPostIds: string[] = []): Promise<FacebookResult<Array<{ commentId: string; postId: string | null; message: string; authorName: string | null; authorId: string | null; createdAt: string | null; parentId: string | null }>>> {
+  async listPageComments(pageId: string, pageAccessToken: string, limit = 25, extraPostIds: string[] = []): Promise<FacebookResult<Array<{ commentId: string; postId: string | null; message: string; authorName: string | null; authorId: string | null; createdAt: string | null; parentId: string | null; permalinkUrl: string | null }>>> {
     if (!pageId) return { ok: false, data: null, error: 'معرّف الصفحة مطلوب.' };
     try {
       const perPost = Math.max(1, Math.min(50, Math.trunc(limit)));
-      const collected = await this.collectPagePostIds(pageId, pageAccessToken, extraPostIds);
-      const postIds = collected.ids;
-      let graphCalls = collected.calls;
-      const commentsField = `comments.order(reverse_chronological).limit(${perPost}){id,message,from,created_time,parent{id},permalink_url}`;
-      const out: Array<{ commentId: string; postId: string | null; message: string; authorName: string | null; authorId: string | null; createdAt: string | null; parentId: string | null }> = [];
+      // معرّفات منشورات النظام المنشورة فعلاً (فيديو/ريلز/صور): تُغطّيها حواف
+      // النوع الثلاث أدناه (feed/videos/video_reels) فلا حاجة لنداء إضافي — نبقي
+      // الوسيط للتوافق مع النداء ولا نُهدر نداءً (الهدف ≤ 4).
+      void extraPostIds;
+      const edges = [`/${pageId}/feed`, `/${pageId}/videos`, `/${pageId}/video_reels`];
+      const fields = `id,comments.filter(stream).order(reverse_chronological).summary(true).limit(${perPost}){id,message,from,created_time,parent{id},permalink_url}`;
+      // شكل احتياطي **داخل الحافة نفسها** (بلا `?ids=` إطلاقاً): يُستخدم فقط إن
+      // رفض Graph مُعدِّلات الحقل (filter/order/summary/permalink) بخطأ عقد —
+      // فلا نعود أبداً إلى المسار المجمّع المحذوف. النداء الاحتياطي لا يقع إلا عند
+      // رفض فعلي، والدورة السليمة تبقى 3 نداءات (≤ 4).
+      const fieldsFallback = `id,comments.limit(${perPost}){id,message,from,created_time,parent{id}}`;
+      const out: Array<{ commentId: string; postId: string | null; message: string; authorName: string | null; authorId: string | null; createdAt: string | null; parentId: string | null; permalinkUrl: string | null }> = [];
       const seen = new Set<string>();
+      const postIds: string[] = [];
+      const seenPosts = new Set<string>();
+      let graphCalls = 0;
+      let reportedTotal = 0;
+      let anyOk = false;
       let lastError: { msg: string; pCode: number | null; subcode: number | null; trace: string | null } | null = null;
-      // Graph قد يرفض شكل الطلب المجمّع `?ids=` كاملاً في بعض الحالات (لا على
-      // مستوى معرّف واحد)، ولو أسقطنا السحب هنا لفُقدت كل التعليقات (فشل صامت
-      // عاد). لذلك نسقط بأمان إلى قراءة التعليقات داخل حواف المنشورات نفسها —
-      // الشكل المُثبَت في الإنتاج — فلا تُفقد التعليقات أبداً.
-      let batchFailed = false;
-      // قراءة مجمّعة: حتى 50 معرّفاً في الطلب الواحد.
-      for (let i = 0; i < postIds.length; i += 50) {
-        const chunk = postIds.slice(i, i + 50);
-        const u = new URL(facebookGraphUrl('/', this.baseUrl));
-        u.searchParams.set('ids', chunk.join(','));
-        u.searchParams.set('fields', commentsField);
-        u.searchParams.set('access_token', pageAccessToken);
-        graphCalls += 1;
-        const res = await this.fetchImpl(u.toString(), { method: 'GET' });
-        const data = await res.json().catch(() => null);
-        if (!res.ok || data?.error) {
-          // فشل الطلب المجمّع كاملاً (مثلاً رمز منتهٍ أو شكل طلب غير مدعوم).
-          // F-02: 190/10/102 تُوقف السحب ليُقلب الاتصال إلى reauth_needed.
-          const msg = errorMessage(data, 'فشل قراءة تعليقات المنشورات.');
-          const ex = logAndExtractFacebookError(data, 'GET /?ids=...', res.status);
-          const pCode = ex.providerCode ?? facebookProviderErrorCode(data);
-          lastError = { msg, pCode, subcode: ex.providerSubcode ?? null, trace: ex.providerTraceId ?? null };
+      /** يقرأ حافة واحدة ويُرجع الاستجابة أو خطأً مُصنَّفاً (بلا رمي). */
+      const readEdge = async (path: string, fieldShape: string): Promise<{ ok: boolean; data?: any; msg?: string; pCode?: number | null; subcode?: number | null; trace?: string | null }> => {
+        try {
+          const u = new URL(facebookGraphUrl(path, this.baseUrl));
+          u.searchParams.set('fields', fieldShape);
+          // 25 منشوراً لكل حافة (لا نداء إضافي) — تغطية أوسع بنفس الثلاث نداءات.
+          u.searchParams.set('limit', '25');
+          u.searchParams.set('access_token', pageAccessToken);
+          graphCalls += 1;
+          const res = await this.fetchImpl(u.toString(), { method: 'GET' });
+          const data = await res.json().catch(() => null);
+          if (!res.ok || data?.error) {
+            const msg = errorMessage(data, 'فشل قراءة تعليقات الصفحة.');
+            const ex = logAndExtractFacebookError(data, `GET ${path}`, res.status);
+            const pCode = ex.providerCode ?? facebookProviderErrorCode(data);
+            return { ok: false, msg, pCode, subcode: ex.providerSubcode ?? null, trace: ex.providerTraceId ?? null };
+          }
+          return { ok: true, data };
+        } catch (e: any) {
+          return { ok: false, msg: String(e?.message || 'فشل الاتصال بـFacebook.'), pCode: null, subcode: null, trace: null };
+        }
+      };
+      for (const path of edges) {
+        let read = await readEdge(path, fields);
+        // رفض عقد الحقل (غير صلاحية) ⇒ إعادة محاولة واحدة بالشكل الاحتياطي داخل
+        // الحافة نفسها — لا عودة لمسار `?ids=` المحذوف.
+        if (!read.ok && !(read.pCode === 190 || read.pCode === 102 || read.pCode === 10)) {
+          read = await readEdge(path, fieldsFallback);
+        }
+        if (!read.ok) {
+          const msg = String(read.msg || 'فشل قراءة تعليقات الصفحة.');
+          const pCode = read.pCode ?? null;
+          lastError = { msg, pCode, subcode: read.subcode ?? null, trace: read.trace ?? null };
+          // 190/102/10 (رمز منتهٍ/صلاحية) تُوقف السحب ليُقلب الاتصال إلى reauth.
           if (pCode === 190 || pCode === 102 || pCode === 10) {
             return { ok: false, data: null, error: msg, providerCode: pCode, providerSubcode: lastError.subcode, providerTraceId: lastError.trace, code: classifyFacebookProviderError(msg, pCode) };
           }
-          batchFailed = true;
-          break;
+          continue;
         }
-        for (const postId of chunk) {
-          const node = data && typeof data === 'object' ? (data as any)[postId] : null;
-          // فشل معرّف واحد داخل الاستجابة (مثلاً `{ error: ... }`) لا يُسقط الباقي.
-          if (!node || node.error) {
-            if (node?.error) logAndExtractFacebookError({ error: node.error }, `GET /${postId}`, res.status);
-            continue;
-          }
-          for (const c of Array.isArray(node?.comments?.data) ? node.comments.data : []) {
-            const commentId = c?.id ? String(c.id) : '';
-            const message = typeof c?.message === 'string' ? c.message : '';
-            if (!commentId || !message || seen.has(commentId)) continue;
-            seen.add(commentId);
-            out.push({
-              commentId, postId, message,
-              authorName: c?.from?.name ? String(c.from.name) : null,
-              authorId: c?.from?.id ? String(c.from.id) : null,
-              createdAt: c?.created_time ? String(c.created_time) : null,
-              parentId: c?.parent?.id ? String(c.parent.id) : null,
-            });
+        const data = read.data;
+        {
+          anyOk = true;
+          for (const post of Array.isArray(data?.data) ? data.data : []) {
+            const postId = post?.id ? String(post.id) : '';
+            if (postId && !seenPosts.has(postId)) { seenPosts.add(postId); postIds.push(postId); }
+            const summary = Number(post?.comments?.summary?.total_count);
+            if (Number.isFinite(summary) && summary > 0) reportedTotal += Math.trunc(summary);
+            for (const c of Array.isArray(post?.comments?.data) ? post.comments.data : []) {
+              const commentId = c?.id ? String(c.id) : '';
+              // لا نُسقط تعليقاً بلا `message` (صور/ملصقات) من العدّ — كان يُهمَل
+              // فيُظهر نقصاً غير حقيقي في التغطية.
+              const message = typeof c?.message === 'string' ? c.message : '';
+              if (!commentId || seen.has(commentId)) continue;
+              seen.add(commentId);
+              out.push({
+                commentId, postId: postId || null, message,
+                authorName: c?.from?.name ? String(c.from.name) : null,
+                authorId: c?.from?.id ? String(c.from.id) : null,
+                createdAt: c?.created_time ? String(c.created_time) : null,
+                parentId: c?.parent?.id ? String(c.parent.id) : null,
+                permalinkUrl: c?.permalink_url ? String(c.permalink_url) : null,
+              });
+            }
           }
         }
       }
-      if (batchFailed) {
-        // السقوط الآمن: قراءة التعليقات داخل حواف المنشورات نفسها (نفس الشكل
-        // المُثبَت في الإنتاج) — يُستدعى فقط عند رفض الطلب المجمّع.
-        const inline = await this.readCommentsInline(pageId, pageAccessToken, perPost);
-        graphCalls += inline.calls;
-        if (inline.ok) {
-          for (const c of inline.comments) { if (!seen.has(c.commentId)) { seen.add(c.commentId); out.push(c); } }
-          return { ok: true, data: out, postIdsScanned: inline.postIds.length ? inline.postIds : postIds, graphCalls };
-        }
-        const msg = inline.error || lastError?.msg || 'فشل قراءة تعليقات الصفحة.';
-        return { ok: false, data: null, error: msg, providerCode: lastError?.pCode ?? null, providerSubcode: lastError?.subcode ?? null, providerTraceId: lastError?.trace ?? null, code: classifyFacebookProviderError(msg, lastError?.pCode ?? null) };
-      }
-      if (!out.length && lastError && postIds.length) {
-        // لم نقرأ أي تعليق وكل المحاولات فشلت ⇒ خطأ حقيقي لا نجاح صامت.
+      // كل الحواف فشلت ⇒ خطأ حقيقي (لا نجاح صامت).
+      if (!anyOk && lastError) {
         return { ok: false, data: null, error: lastError.msg, providerCode: lastError.pCode, providerSubcode: lastError.subcode, providerTraceId: lastError.trace, code: classifyFacebookProviderError(lastError.msg, lastError.pCode) };
       }
-      return { ok: true, data: out, postIdsScanned: postIds, graphCalls };
+      return { ok: true, data: out, postIdsScanned: postIds, graphCalls, commentsTotalReported: reportedTotal };
     } catch (e: any) {
       return { ok: false, data: null, error: String(e?.message || 'فشل الاتصال بـFacebook.'), code: 'NETWORK_ERROR' };
     }
-  }
-
-  /**
-   * يجمع معرّفات منشورات الصفحة من كل المصادر: `feed` (منشورات نصية/صور) +
-   * `videos` (فيديوهات) + `video_reels` (ريلز) + معرّفات منشورة فعلاً من سجلات
-   * النظام. منع تكرار بالمعرّف، مع تجاهل أي مصدر يفشل (لا يُسقط السحب كاملاً).
-   * يعيد أيضاً عدد نداءات Graph التي استهلكها الجمع (3 كحدّ أقصى).
-   */
-  async collectPagePostIds(pageId: string, pageAccessToken: string, extraPostIds: string[] = []): Promise<{ ids: string[]; calls: number }> {
-    const ids: string[] = [];
-    const seen = new Set<string>();
-    let calls = 0;
-    const add = (v: unknown) => { const s = String(v || '').trim(); if (s && !seen.has(s)) { seen.add(s); ids.push(s); } };
-    const edges: Array<{ path: string; fields: string }> = [
-      { path: `/${pageId}/feed`, fields: 'id' },
-      { path: `/${pageId}/videos`, fields: 'id' },
-      { path: `/${pageId}/video_reels`, fields: 'id' },
-    ];
-    for (const edge of edges) {
-      try {
-        const u = new URL(facebookGraphUrl(edge.path, this.baseUrl));
-        u.searchParams.set('fields', edge.fields);
-        u.searchParams.set('limit', '15');
-        u.searchParams.set('access_token', pageAccessToken);
-        calls += 1;
-        const res = await this.fetchImpl(u.toString(), { method: 'GET' });
-        const data = await res.json().catch(() => null);
-        if (!res.ok || data?.error) { logAndExtractFacebookError(data, `GET ${edge.path}`, res.status); continue; }
-        for (const row of Array.isArray(data?.data) ? data.data : []) add(row?.id);
-      } catch { /* مصدر واحد فشل ⇒ لا يُسقط الباقي */ }
-    }
-    for (const id of extraPostIds) add(id);
-    return { ids, calls };
-  }
-
-  /**
-   * السقوط الآمن لقراءة التعليقات: يقرأ التعليقات **مضمَّنة داخل الحواف نفسها**
-   * (`/{page-id}/feed|videos|video_reels?fields=id,comments...`) — وهو الشكل
-   * المُثبَت في الإنتاج — بدل الطلب المجمّع `?ids=`. يُستدعى فقط عند رفض الطلب
-   * المجمّع كاملاً، فلا تُفقد التعليقات أبداً (لا فشل صامت). 3 نداءات كحدّ أقصى.
-   */
-  async readCommentsInline(pageId: string, pageAccessToken: string, perPost: number): Promise<{ ok: boolean; comments: Array<{ commentId: string; postId: string | null; message: string; authorName: string | null; authorId: string | null; createdAt: string | null; parentId: string | null }>; postIds: string[]; calls: number; error?: string }> {
-    const comments: Array<{ commentId: string; postId: string | null; message: string; authorName: string | null; authorId: string | null; createdAt: string | null; parentId: string | null }> = [];
-    const postIds: string[] = [];
-    const seenPosts = new Set<string>();
-    const seenComments = new Set<string>();
-    let calls = 0;
-    let lastError: string | undefined;
-    const edges = [`/${pageId}/feed`, `/${pageId}/videos`, `/${pageId}/video_reels`];
-    // الشكل المُثبَت في الإنتاج حرفياً: بلا `order(...)` وبلا `permalink_url`
-    // (لأن أيّهما قد يكون سبب رفض الطلب المجمّع — لا نخاطر في مسار السقوط).
-    const fields = `id,comments.limit(${perPost}){id,message,from,created_time,parent{id}}`;
-    for (const path of edges) {
-      try {
-        const u = new URL(facebookGraphUrl(path, this.baseUrl));
-        u.searchParams.set('fields', fields);
-        u.searchParams.set('limit', '15');
-        u.searchParams.set('access_token', pageAccessToken);
-        calls += 1;
-        const res = await this.fetchImpl(u.toString(), { method: 'GET' });
-        const data = await res.json().catch(() => null);
-        if (!res.ok || data?.error) {
-          const ex = logAndExtractFacebookError(data, `GET ${path}`, res.status);
-          const pCode = ex.providerCode ?? facebookProviderErrorCode(data);
-          // 190/102/10 (رمز منتهٍ/صلاحية) تُوقف السحب ليُقلب الاتصال إلى reauth.
-          if (pCode === 190 || pCode === 102 || pCode === 10) {
-            return { ok: false, comments: [], postIds, calls, error: errorMessage(data, 'فشل قراءة تعليقات الصفحة.') };
-          }
-          lastError = errorMessage(data, 'فشل قراءة تعليقات الصفحة.');
-          continue;
-        }
-        for (const post of Array.isArray(data?.data) ? data.data : []) {
-          const postId = post?.id ? String(post.id) : '';
-          if (postId && !seenPosts.has(postId)) { seenPosts.add(postId); postIds.push(postId); }
-          for (const c of Array.isArray(post?.comments?.data) ? post.comments.data : []) {
-            const commentId = c?.id ? String(c.id) : '';
-            const message = typeof c?.message === 'string' ? c.message : '';
-            if (!commentId || !message || seenComments.has(commentId)) continue;
-            seenComments.add(commentId);
-            comments.push({
-              commentId, postId: postId || null, message,
-              authorName: c?.from?.name ? String(c.from.name) : null,
-              authorId: c?.from?.id ? String(c.from.id) : null,
-              createdAt: c?.created_time ? String(c.created_time) : null,
-              parentId: c?.parent?.id ? String(c.parent.id) : null,
-            });
-          }
-        }
-      } catch { /* حافة واحدة فشلت ⇒ لا تُسقط الباقي */ }
-    }
-    // كل الحواف فشلت ⇒ خطأ حقيقي (لا نجاح صامت).
-    if (!postIds.length && lastError) return { ok: false, comments: [], postIds, calls, error: lastError };
-    return { ok: true, comments, postIds, calls };
   }
 
   /** يرد على تعليق حقيقي. لا نجاح بلا معرّف تعليق من Meta. */

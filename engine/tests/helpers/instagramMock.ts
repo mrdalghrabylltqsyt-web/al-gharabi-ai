@@ -178,23 +178,36 @@ export async function startInstagramMockServer(
   });
 
   // وسائط الحساب مع تعليقاتها: يقرأها مراقب Meta عبر
-  // `GET /{ig-id}/media?fields=id,comments.limit(N){id,text,username,from,created_time}`.
+  // `GET /{ig-id}/media?fields=id,permalink_url,comments.order(reverse_chronological).summary(true).limit(N){id,text,username,from,created_time,permalink_url}`.
   // يُسجَّل **قبل** المسار العام `/:version/:id` كي لا يبتلعه.
   app.get('/:version/:igId/media', (req, res) => {
     const { igId } = req.params;
     state.calls += 1;
-    const data = state.feedMedia.map((m) => ({
-      id: m.id,
-      comments: {
-        data: m.comments.map((c) => ({
-          id: c.id,
-          text: c.text,
-          username: c.username,
-          from: c.from,
-          created_time: c.created_time,
-        })),
-      },
-    }));
+    const fields = String(req.query.fields || '');
+    const data = state.feedMedia.map((m) => {
+      let list = [...m.comments];
+      if (/order\(reverse_chronological\)/.test(fields)) {
+        list.sort((a, b) => Date.parse(String(b?.created_time || 0)) - Date.parse(String(a?.created_time || 0)));
+      }
+      const lim = fields.match(/limit\((\d+)\)/);
+      if (lim) list = list.slice(0, Number(lim[1]));
+      const wantPermalink = /permalink_url/.test(fields);
+      return {
+        id: m.id,
+        ...(wantPermalink ? { permalink_url: `https://www.instagram.com/p/${String(m.id)}` } : {}),
+        comments: {
+          data: list.map((c) => ({
+            id: c.id,
+            text: c.text,
+            username: c.username,
+            from: c.from,
+            created_time: c.created_time,
+            ...(wantPermalink ? { permalink_url: `https://www.instagram.com/p/${String(m.id)}#${String(c.id)}` } : {}),
+          })),
+          summary: fields.includes('summary') ? { total_count: m.comments.length } : undefined,
+        },
+      };
+    });
     return res.json({ data, paging: {} });
   });
 
