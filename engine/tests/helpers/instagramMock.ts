@@ -52,6 +52,8 @@ export interface InstagramMockState {
   containerStatusReads: number;
   /** عدد نداءات القراءة المجمّعة (`GET /?ids=`) — لإثبات ≤ نداء واحد للتعليقات. */
   commentBatchCalls: number;
+  /** يرفض الطلب المجمّع `GET /?ids=` كاملاً — لإثبات السقوط الآمن على إنستغرام. */
+  failCommentBatch?: boolean;
   /** عدد نداءات قراءة تعليقات وسيط منفرد (`GET /{media-id}?fields=comments...`) — يجب أن يبقى 0. */
   commentNodeCalls: number;
   calls: number;
@@ -89,6 +91,7 @@ export function createInstagramMock(state: Partial<InstagramMockState> = {}): In
     containerStatusSequence: state.containerStatusSequence ?? ['FINISHED'],
     containerStatusReads: 0,
     commentBatchCalls: 0,
+    failCommentBatch: state.failCommentBatch ?? false,
     commentNodeCalls: 0,
     calls: 0,
     validAppId: state.validAppId ?? '145634995501895',
@@ -201,6 +204,8 @@ export async function startInstagramMockServer(
   app.get('/:version/', (req, res) => {
     const idsRaw = String(req.query.ids || '').trim();
     if (!idsRaw) return res.status(400).json({ error: { message: 'ids required', code: 100 } });
+    // يحاكي رفض Graph لشكل الطلب المجمّع كاملاً (لا على مستوى معرّف واحد).
+    if (state.failCommentBatch) { state.calls += 1; state.commentBatchCalls += 1; return res.status(400).json({ error: { message: 'Unsupported get request for multiple ids.', code: 100 } }); }
     const fields = String(req.query.fields || '');
     const ids = idsRaw.split(',').map((s) => s.trim()).filter(Boolean);
     state.calls += 1;

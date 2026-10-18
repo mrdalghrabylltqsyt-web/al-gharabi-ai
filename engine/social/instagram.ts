@@ -645,6 +645,10 @@ export class InstagramClient {
       const seen = new Set<string>();
       const commentsField = `comments.order(reverse_chronological).limit(${perMedia}){id,text,username,from,created_time}`;
       let lastError: { msg: string; pCode: number | null; subcode: number | null; trace: string | null } | null = null;
+      // Graph قد يرفض شكل الطلب المجمّع `?ids=` كاملاً، ولو أسقطنا السحب هنا
+      // لفُقدت كل التعليقات (فشل صامت عاد). لذلك نسقط بأمان إلى الشكل المُثبَت:
+      // التعليقات مضمَّنة داخل حافة `/{ig-id}/media` نفسها.
+      let batchFailed = false;
       // قراءة مجمّعة: حتى 50 معرّفاً في الطلب الواحد.
       for (let i = 0; i < mediaIds.length; i += 50) {
         const chunk = mediaIds.slice(i, i + 50);
@@ -664,7 +668,8 @@ export class InstagramClient {
           if (pCode === 190 || pCode === 102 || pCode === 10) {
             return { ok: false, data: null, error: msg, providerCode: pCode, providerSubcode: lastError.subcode, providerTraceId: lastError.trace, code: classifyInstagramProviderError(msg, pCode) };
           }
-          continue;
+          batchFailed = true;
+          break;
         }
         for (const mediaId of chunk) {
           const node = cdata && typeof cdata === 'object' ? (cdata as any)[mediaId] : null;
@@ -682,6 +687,18 @@ export class InstagramClient {
           }
         }
       }
+      if (batchFailed) {
+        // السقوط الآمن: قراءة التعليقات مضمَّنة داخل حافة `/{ig-id}/media` —
+        // الشكل المُثبَت في الإنتاج — يُستدعى فقط عند رفض الطلب المجمّع.
+        const inline = await this.readMediaCommentsInline(igAccountId, pageAccessToken, perMedia);
+        graphCalls += inline.calls;
+        if (inline.ok) {
+          for (const c of inline.comments) { if (!seen.has(c.commentId)) { seen.add(c.commentId); out.push(c); } }
+          return { ok: true, data: out, graphCalls };
+        }
+        const msg = inline.error || lastError?.msg || 'فشل قراءة تعليقات Instagram.';
+        return { ok: false, data: null, error: msg, providerCode: lastError?.pCode ?? null, providerSubcode: lastError?.subcode ?? null, providerTraceId: lastError?.trace ?? null, code: classifyInstagramProviderError(msg, lastError?.pCode ?? null) };
+      }
       if (!out.length && lastError && mediaIds.length) {
         // لم نقرأ أي تعليق وكل المحاولات فشلت ⇒ خطأ حقيقي لا نجاح صامت.
         return { ok: false, data: null, error: lastError.msg, providerCode: lastError.pCode, providerSubcode: lastError.subcode, providerTraceId: lastError.trace, code: classifyInstagramProviderError(lastError.msg, lastError.pCode) };
@@ -689,6 +706,44 @@ export class InstagramClient {
       return { ok: true, data: out, graphCalls };
     } catch (e: any) {
       return { ok: false, data: null, error: String(e?.message || 'فشل الاتصال بـInstagram.'), code: 'NETWORK_ERROR' };
+    }
+  }
+
+  /**
+   * السقوط الآمن لقراءة تعليقات Instagram: يقرأ التعليقات **مضمَّنة داخل حافة**
+   * `/{ig-id}/media` (`fields=id,comments.limit(n){...}`) — الشكل المُثبَت في
+   * الإنتاج — بدل الطلب المجمّع `?ids=`. يُستدعى فقط عند رفض الطلب المجمّع، فلا
+   * تُفقد التعليقات أبداً (لا فشل صامت). نداء واحد.
+   */
+  async readMediaCommentsInline(igAccountId: string, pageAccessToken: string, perMedia: number): Promise<{ ok: boolean; comments: Array<{ commentId: string; mediaId: string | null; text: string; username: string | null; authorId: string | null; createdAt: string | null }>; calls: number; error?: string }> {
+    const comments: Array<{ commentId: string; mediaId: string | null; text: string; username: string | null; authorId: string | null; createdAt: string | null }> = [];
+    const seen = new Set<string>();
+    let calls = 0;
+    try {
+      const u = new URL(instagramGraphUrl(`/${igAccountId}/media`, this.baseUrl));
+      // الشكل المُثبَت في الإنتاج: بلا `order(...)` (قد يكون سبب الرفض).
+      u.searchParams.set('fields', `id,comments.limit(${perMedia}){id,text,username,from,created_time}`);
+      u.searchParams.set('limit', '50');
+      u.searchParams.set('access_token', pageAccessToken);
+      calls += 1;
+      const res = await this.fetchImpl(u.toString(), { method: 'GET' });
+      const data = await res.json().catch(() => null);
+      if (!res.ok || data?.error) {
+        return { ok: false, comments: [], calls, error: errorMessage(data, 'فشل قراءة تعليقات Instagram.') };
+      }
+      for (const m of Array.isArray(data?.data) ? data.data : []) {
+        const mediaId = m?.id ? String(m.id) : null;
+        for (const c of Array.isArray(m?.comments?.data) ? m.comments.data : []) {
+          const commentId = c?.id ? String(c.id) : '';
+          const text = typeof c?.text === 'string' ? c.text : '';
+          if (!commentId || !text || seen.has(commentId)) continue;
+          seen.add(commentId);
+          comments.push({ commentId, mediaId, text, username: c?.username ? String(c.username) : (c?.from?.username ? String(c.from.username) : null), authorId: c?.from?.id ? String(c.from.id) : null, createdAt: c?.created_time ? String(c.created_time) : (c?.timestamp ? String(c.timestamp) : null) });
+        }
+      }
+      return { ok: true, comments, calls };
+    } catch (e: any) {
+      return { ok: false, comments: [], calls, error: String(e?.message || 'فشل الاتصال بـInstagram.') };
     }
   }
 
