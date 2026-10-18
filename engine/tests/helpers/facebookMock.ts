@@ -120,13 +120,13 @@ export interface FacebookMockState {
   ownedApps?: string[];
   failOwnedApps?: boolean;
   /** منشورات الصفحة وتعليقاتها (GET /{page-id}/feed) — لقراءة تعليقات المراقب. */
-  feedPosts?: Array<{ id: string; comments?: Array<{ id: string; message?: string; from?: { id?: string; name?: string }; created_time?: string; parent?: { id?: string }; permalink_url?: string }>; commentsTotalCount?: number }>;
+  feedPosts?: Array<{ id: string; message?: string; description?: string; comments?: Array<{ id: string; message?: string; from?: { id?: string; name?: string }; created_time?: string; parent?: { id?: string }; permalink_url?: string }>; commentsTotalCount?: number }>;
   /**
    * منشورات فيديو/ريلز للصفحة (`GET /{page-id}/videos` و`/{page-id}/video_reels`) —
    * لإثبات أن سحب التعليقات يقرأ من كل أنواع المنشورات لا من `/feed` وحده.
    */
-  pageVideos?: Array<{ id: string; comments?: Array<{ id: string; message?: string; from?: { id?: string; name?: string }; created_time?: string; parent?: { id?: string }; permalink_url?: string }>; commentsTotalCount?: number }>;
-  pageReels?: Array<{ id: string; comments?: Array<{ id: string; message?: string; from?: { id?: string; name?: string }; created_time?: string; parent?: { id?: string }; permalink_url?: string }>; commentsTotalCount?: number }>;
+  pageVideos?: Array<{ id: string; message?: string; description?: string; comments?: Array<{ id: string; message?: string; from?: { id?: string; name?: string }; created_time?: string; parent?: { id?: string }; permalink_url?: string }>; commentsTotalCount?: number }>;
+  pageReels?: Array<{ id: string; message?: string; description?: string; comments?: Array<{ id: string; message?: string; from?: { id?: string; name?: string }; created_time?: string; parent?: { id?: string }; permalink_url?: string }>; commentsTotalCount?: number }>;
   failFeed?: boolean;
   /** عدد نداءات القراءة المجمّعة (`GET /?ids=`) — لإثبات ≤ نداء واحد لـ45 منشوراً. */
   commentBatchCalls: number;
@@ -502,6 +502,8 @@ export async function startFacebookMockServer(
     const rows = (state.feedPosts || []).map((p) => ({
       id: p.id,
       created_time: '2026-01-01T00:00:00+0000',
+      message: p.message,
+      description: p.description,
       comments: p.comments ? applyCommentFields(p.comments, fields) : undefined,
     }));
     return res.json({ data: rows });
@@ -538,9 +540,11 @@ export async function startFacebookMockServer(
     }
     return undefined;
   };
-  const listPostRows = (rows?: Array<{ id: string; comments?: any[]; commentsTotalCount?: number }>, fields = '') => (rows || []).map((p) => ({
+  const listPostRows = (rows?: Array<{ id: string; message?: string; description?: string; comments?: any[]; commentsTotalCount?: number }>, fields = '') => (rows || []).map((p) => ({
     id: p.id,
     created_time: '2026-01-01T00:00:00+0000',
+    message: p.message,
+    description: p.description,
     comments: p.comments ? applyCommentFields(p.comments, fields) : undefined,
   }));
   app.get('/:version/:pageId/videos', (req, res) => { state.calls += 1; return res.json({ data: listPostRows(state.pageVideos, String(req.query.fields || '')) }); });
