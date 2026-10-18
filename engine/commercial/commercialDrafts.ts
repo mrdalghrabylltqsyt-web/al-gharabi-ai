@@ -59,13 +59,14 @@ export const COMMERCIAL_DRAFT_PURPOSE_LABELS_AR: Readonly<Record<CommercialDraft
   reply: 'رد',
 });
 
-export type CommercialDraftStatus = 'pending' | 'approved' | 'rejected' | 'expired';
+export type CommercialDraftStatus = 'pending' | 'approved' | 'rejected' | 'expired' | 'cancelled';
 
 export const COMMERCIAL_DRAFT_STATUS_LABELS_AR: Readonly<Record<CommercialDraftStatus, string>> = Object.freeze({
   pending: 'بانتظار الموافقة',
   approved: 'تمت الموافقة',
   rejected: 'مرفوضة',
   expired: 'منتهية (خارج نافذة Meta)',
+  cancelled: 'ملغاة (خالفت قواعد الزبون الحقيقي)',
 });
 
 /**
@@ -124,6 +125,9 @@ export interface CommercialDraft {
   deliveryStatus: 'sent' | 'failed' | null;
   deliveryError: string | null;
   providerReplyId: string | null;
+  /** PR-S5: سبب الإلغاء (عند status='cancelled') — بلا حذف. */
+  cancelledReason?: string | null;
+  cancelledAt?: string | null;
 }
 
 /** يحسب لحظة انتهاء نافذة مراسلة Meta من آخر تفاعل للعميل (ISO) أو null. */
@@ -159,6 +163,7 @@ export interface DraftSendability {
 
 export function evaluateDraftSendability(draft: CommercialDraft, nowIso: string): DraftSendability {
   if (draft.status === 'expired') return { sendable: false, reason: 'المسودة منتهية (خارج نافذة Meta).', shouldExpire: false };
+  if (draft.status === 'cancelled') return { sendable: false, reason: `المسودة ملغاة (${draft.cancelledReason || 'خالفت قواعد الزبون الحقيقي'}).`, shouldExpire: false };
   if (draft.status === 'rejected') return { sendable: false, reason: 'المسودة مرفوضة من المالك.', shouldExpire: false };
   if (draft.status !== 'approved') return { sendable: false, reason: 'المسودة لم تُعتمد بعد (لا إرسال بلا موافقة).', shouldExpire: false };
   if (draft.deliveryStatus === 'sent') return { sendable: false, reason: 'المسودة أُرسلت مسبقاً (لا إرسال مكرر).', shouldExpire: false };
@@ -226,6 +231,21 @@ export function applyOwnerDecision(
 export function markDraftExpired(draft: CommercialDraft, at: string): CommercialDraft {
   if (draft.status !== 'pending') return draft;
   return { ...draft, status: 'expired', decidedAt: at };
+}
+
+/**
+ * PR-S5 — يُلغي مسودة معلّقة خالفت قواعد «الزبون الحقيقي» (بلا حذف). السبب مكتوب
+ * صراحةً ويُسجَّل في audit. لا يُلغي مسودة محسومة (approved/rejected/expired).
+ */
+export function cancelCommercialDraft(draft: CommercialDraft, input: { reason: string; at: string; code?: string }): CommercialDraft {
+  if (draft.status !== 'pending') return draft;
+  return {
+    ...draft,
+    status: 'cancelled',
+    cancelledReason: `${input.code ? `[${input.code}] ` : ''}${String(input.reason || '')}`.trim() || 'ملغاة.',
+    cancelledAt: input.at,
+    decidedAt: input.at,
+  };
 }
 
 /** يُسجّل نتيجة الإرسال الفعلية على المسودة (بلا ادّعاء تسليم بلا معرّف مزوّد). */
@@ -304,6 +324,8 @@ export interface CommercialDraftRow {
   deliveryStatus: 'sent' | 'failed' | null;
   providerReplyId: string | null;
   deliveryError: string | null;
+  cancelledReason: string | null;
+  cancelledAt: string | null;
 }
 
 export function toCommercialDraftRow(draft: CommercialDraft): CommercialDraftRow {
@@ -323,6 +345,8 @@ export function toCommercialDraftRow(draft: CommercialDraft): CommercialDraftRow
     deliveryStatus: draft.deliveryStatus,
     providerReplyId: draft.providerReplyId,
     deliveryError: draft.deliveryError,
+    cancelledReason: draft.cancelledReason || null,
+    cancelledAt: draft.cancelledAt || null,
   };
 }
 
@@ -336,7 +360,7 @@ export function selectPendingDrafts(drafts: readonly CommercialDraft[]): Commerc
   return drafts.filter((d) => d.status === 'pending');
 }
 
-const DRAFT_STATUSES = new Set<CommercialDraftStatus>(['pending', 'approved', 'rejected', 'expired']);
+const DRAFT_STATUSES = new Set<CommercialDraftStatus>(['pending', 'approved', 'rejected', 'expired', 'cancelled']);
 const DRAFT_PURPOSES = new Set<CommercialDraftPurpose>(['follow_up', 'proposal', 'reply']);
 
 /** يطبّع مسودة محفوظة (توافق خلفي مع أي شكل قديم)؛ يرفض غير الصالح بلا اختلاق. */
@@ -370,6 +394,8 @@ export function normalizeCommercialDraft(raw: any): CommercialDraft | null {
     deliveryStatus: raw.deliveryStatus === 'sent' || raw.deliveryStatus === 'failed' ? raw.deliveryStatus : null,
     deliveryError: raw.deliveryError ? String(raw.deliveryError) : null,
     providerReplyId: raw.providerReplyId ? String(raw.providerReplyId) : null,
+    cancelledReason: raw.cancelledReason ? String(raw.cancelledReason) : null,
+    cancelledAt: raw.cancelledAt ? String(raw.cancelledAt) : null,
   };
 }
 
