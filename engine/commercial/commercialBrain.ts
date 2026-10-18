@@ -21,6 +21,7 @@
  */
 
 import type { ClassifiedComment } from '../social/comments';
+import { classifyComment } from '../social/comments';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // الحدود الافتراضية للتفاوض (قابلة للتجاوز من البيئة عبر server.ts).
@@ -134,6 +135,20 @@ export interface CommercialLead {
   /** سبب التصعيد إن وُجد (بلا سرّ). */
   escalationReason: string | null;
   notes: string[];
+  /**
+   * PR-S5 — تأهيل «زبون حقيقي»: هل الـlead ناتج عن **سؤال حقيقي** (سعر/قسط/توفر/
+   * نية شراء/سؤال منتج)؟ إيموجي/مدح/تحية/سبام ⇒ false. `undefined` = توافق خلفي
+   * (يُشتقّ حتمياً من نص آخر تفاعل للعميل). غيابه لا يُؤرشف شيئاً بلا دليل.
+   */
+  qualifiedQuestion?: boolean;
+  /** هل **آخر** تفاعل للعميل سؤال حقيقي؟ (بوابة المتابعة — قد تختلف عن الـlead). */
+  lastCustomerQualifiedQuestion?: boolean;
+  /** هل التعليق الأصلي استُورد بأثر رجعي (backfill)؟ لا يولّد متابعات. */
+  backfill?: boolean;
+  /** أُرشف العميل (إيموجي/مدح فقط) — لا حذف، يبقى في التعليقات الواردة. */
+  archived?: boolean;
+  archivedAt?: string | null;
+  archiveReason?: string | null;
 }
 
 /** اقتراح صفقة نهائي — يُعرض على المالك للتأكيد، ولا يُغلق تلقائياً. */
@@ -323,6 +338,36 @@ export function hasBuyingSignal(cls: Pick<ClassifiedComment, 'isBusinessInquiry'
   return Boolean(cls?.isBusinessInquiry);
 }
 
+/** إشارات حتمية كافية لقرار تأهيل «سؤال حقيقي» (بلا حاجة لكائن تصنيف كامل). */
+export interface LeadQuestionSignals {
+  isBusinessInquiry?: boolean;
+  topic?: string;
+  isQuestion?: boolean;
+  isPraise?: boolean;
+  isEmojiOnly?: boolean;
+  isSpam?: boolean;
+  subIntent?: string;
+}
+
+/**
+ * PR-S5 — المصدر الواحد لقرار «سؤال حقيقي»: أي نص يحمل استفسار أعمال (سعر/قسط/
+ * توفر/نية شراء)، أو طلب تفاوض/خصم، أو سؤالاً حقيقياً (يشمل السؤال العام عن منتج).
+ * ويُرفض: السبام، الإيموجي فقط، والمدح/التحية/الشكر بلا سؤال.
+ */
+export function isRealCommercialQuestion(cls: LeadQuestionSignals | null | undefined, text: string): boolean {
+  if (cls?.isSpam === true) return false;
+  if (cls?.isEmojiOnly === true) return false;
+  const t = String(text || '').trim();
+  if (!t) return false;
+  if (cls?.isBusinessInquiry === true) return true;
+  if (hasBuyingSignal(null, t)) return true;
+  if (requestsNegotiation(t)) return true;
+  const topic = String(cls?.topic || '');
+  if (topic === 'price' || topic === 'availability') return true;
+  if (cls?.isQuestion === true && cls?.isPraise !== true) return true;
+  return false;
+}
+
 export interface InboundInteraction {
   /** معرّف الحدث الخارجي الحقيقي (يمنع التكرار ويصمد بعد restart). */
   externalId: string;
@@ -336,9 +381,14 @@ export interface InboundInteraction {
   /** نوع الحدث وهدف الرد على نفس الخيط (يُمرَّران من سجل الاستقبال الحقيقي). */
   kind?: 'comment' | 'message';
   replyTarget?: { commentId?: string; recipientId?: string; videoId?: string };
-  classification?: Pick<ClassifiedComment, 'isBusinessInquiry' | 'intent' | 'topic' | 'isSpam'> | null;
+  classification?: LeadQuestionSignals & Pick<ClassifiedComment, 'isBusinessInquiry' | 'intent' | 'topic' | 'isSpam'> | null;
   /** المنتج المرتبط بدليل حقيقي (من resolveProductForPost) أو null. */
   product?: { id: string; name: string; cashPrice?: number; category?: string } | null;
+  /**
+   * PR-S5: هل هذا الحدث استُورد بأثر رجعي (backfill)؟ يُمرَّر من سجل الاستقبال
+   * (عمر التعليق عند الاستقبال > 24 ساعة) فلا يولّد متابعات.
+   */
+  backfill?: boolean;
 }
 
 /** يبني مفتاح العميل الحقيقي: منصة + هوية المرسل/الخيط (بلا اختراع هوية). */
@@ -386,6 +436,13 @@ export function createCommercialLead(input: InboundInteraction): CommercialLead 
     pendingProposal: null,
     escalationReason: null,
     notes: [],
+    // PR-S5: تأهيل «زبون حقيقي» — سؤال حقيقي فقط. إيموجي/مدح/تحية ⇒ false.
+    qualifiedQuestion: isRealCommercialQuestion(input.classification, input.text),
+    lastCustomerQualifiedQuestion: input.fromCustomer ? isRealCommercialQuestion(input.classification, input.text) : false,
+    backfill: input.backfill === true,
+    archived: false,
+    archivedAt: null,
+    archiveReason: null,
   };
 }
 
@@ -423,6 +480,12 @@ export function mergeCommercialInteraction(lead: CommercialLead, input: InboundI
     lastBusinessReplyAt: input.fromCustomer ? lead.lastBusinessReplyAt : input.at,
     // أي تفاعل جديد من العميل يعيد فتح نافذة المتابعة.
     followUpState: input.fromCustomer ? 'SCHEDULED' : lead.followUpState,
+    // PR-S5: التأهيل يتراكم — lead مؤهّل بسؤال حقيقي يبقى مؤهّلاً؛ و«آخر تفاعل
+    // للعميل» يُحدَّث حتمياً من نص هذا الحدث (بوابة المتابعة تتبعه).
+    qualifiedQuestion: lead.qualifiedQuestion === true || isRealCommercialQuestion(input.classification, input.text),
+    lastCustomerQualifiedQuestion: input.fromCustomer ? isRealCommercialQuestion(input.classification, input.text) : lead.lastCustomerQualifiedQuestion,
+    // backfill يبقى محفوظاً إن كان أي تفاعل مستورداً بأثر رجعي (لا متابعة على backfill).
+    backfill: lead.backfill === true || input.backfill === true,
   };
 }
 
@@ -579,6 +642,10 @@ export interface CommercialLeadRow {
   hasPendingProposal: boolean;
   escalationReason: string | null;
   lastCustomerText: string | null;
+  /** PR-S5: هل الـlead مؤهّل بسؤال حقيقي؟ وأرشيفه إن كان إيموجي/مدحاً فقط. */
+  qualifiedQuestion: boolean;
+  archived: boolean;
+  backfill: boolean;
 }
 
 /** يحوّل عميلاً إلى صفّ عرض للوحة (آخر نص للعميل يبقى للمسار المحمي). */
@@ -599,6 +666,11 @@ export function toCommercialLeadRow(lead: CommercialLead): CommercialLeadRow {
     hasPendingProposal: Boolean(lead.pendingProposal && lead.pendingProposal.status === 'pending'),
     escalationReason: lead.escalationReason,
     lastCustomerText: lead.lastCustomerText,
+    // PR-S5: التوافق الخلفي يُشتقّ حتمياً من نص آخر تفاعل عند غياب العلم.
+    qualifiedQuestion: lead.qualifiedQuestion === true
+      || (lead.qualifiedQuestion === undefined && isRealCommercialQuestion(classifyComment(String(lead.lastCustomerText || '')), String(lead.lastCustomerText || ''))),
+    archived: lead.archived === true,
+    backfill: lead.backfill === true,
   };
 }
 
@@ -683,6 +755,13 @@ export function normalizeCommercialLead(raw: any): CommercialLead | null {
     pendingProposal: raw.pendingProposal && typeof raw.pendingProposal === 'object' ? raw.pendingProposal : null,
     escalationReason: raw.escalationReason ? String(raw.escalationReason) : null,
     notes: Array.isArray(raw.notes) ? raw.notes.map((x: any) => String(x)) : [],
+    // PR-S5: تأهيل الزبون — undefined = توافق خلفي (يُشتقّ حتمياً من نص آخر تفاعل).
+    qualifiedQuestion: typeof raw.qualifiedQuestion === 'boolean' ? raw.qualifiedQuestion : undefined,
+    lastCustomerQualifiedQuestion: typeof raw.lastCustomerQualifiedQuestion === 'boolean' ? raw.lastCustomerQualifiedQuestion : undefined,
+    backfill: raw.backfill === true,
+    archived: raw.archived === true,
+    archivedAt: raw.archivedAt ? String(raw.archivedAt) : null,
+    archiveReason: raw.archiveReason ? String(raw.archiveReason) : null,
   };
 }
 

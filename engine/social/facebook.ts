@@ -1315,7 +1315,7 @@ export class FacebookClient {
    * أحدث التعليقات، و`permalink_url` الحقيقي يُحفظ لزر «فتح على فيسبوك».
    * التعليقات بلا `message` (صور/ملصقات) لا تُسقط من العدّ.
    */
-  async listPageComments(pageId: string, pageAccessToken: string, limit = 25, extraPostIds: string[] = []): Promise<FacebookResult<Array<{ commentId: string; postId: string | null; message: string; authorName: string | null; authorId: string | null; createdAt: string | null; parentId: string | null; permalinkUrl: string | null }>>> {
+  async listPageComments(pageId: string, pageAccessToken: string, limit = 25, extraPostIds: string[] = []): Promise<FacebookResult<Array<{ commentId: string; postId: string | null; message: string; authorName: string | null; authorId: string | null; createdAt: string | null; parentId: string | null; permalinkUrl: string | null; postText: string | null }>>> {
     if (!pageId) return { ok: false, data: null, error: 'معرّف الصفحة مطلوب.' };
     try {
       const perPost = Math.max(1, Math.min(50, Math.trunc(limit)));
@@ -1324,13 +1324,15 @@ export class FacebookClient {
       // الوسيط للتوافق مع النداء ولا نُهدر نداءً (الهدف ≤ 4).
       void extraPostIds;
       const edges = [`/${pageId}/feed`, `/${pageId}/videos`, `/${pageId}/video_reels`];
-      const fields = `id,comments.filter(stream).order(reverse_chronological).summary(true).limit(${perPost}){id,message,from,created_time,parent{id},permalink_url}`;
+      // PR-S5: يُطلب `message` (نص المنشور) و`description` (وصف الفيديو) كي لا تظهر
+      // «منشور بلا نص ظاهر» لمنشور له نص فعلاً. التعليقات مضمَّنة داخل الحواف نفسها.
+      const fields = `id,message,description,comments.filter(stream).order(reverse_chronological).summary(true).limit(${perPost}){id,message,from,created_time,parent{id},permalink_url}`;
       // شكل احتياطي **داخل الحافة نفسها** (بلا `?ids=` إطلاقاً): يُستخدم فقط إن
       // رفض Graph مُعدِّلات الحقل (filter/order/summary/permalink) بخطأ عقد —
       // فلا نعود أبداً إلى المسار المجمّع المحذوف. النداء الاحتياطي لا يقع إلا عند
       // رفض فعلي، والدورة السليمة تبقى 3 نداءات (≤ 4).
-      const fieldsFallback = `id,comments.limit(${perPost}){id,message,from,created_time,parent{id}}`;
-      const out: Array<{ commentId: string; postId: string | null; message: string; authorName: string | null; authorId: string | null; createdAt: string | null; parentId: string | null; permalinkUrl: string | null }> = [];
+      const fieldsFallback = `id,message,description,comments.limit(${perPost}){id,message,from,created_time,parent{id}}`;
+      const out: Array<{ commentId: string; postId: string | null; message: string; authorName: string | null; authorId: string | null; createdAt: string | null; parentId: string | null; permalinkUrl: string | null; postText: string | null }> = [];
       const seen = new Set<string>();
       const postIds: string[] = [];
       const seenPosts = new Set<string>();
@@ -1383,6 +1385,12 @@ export class FacebookClient {
           for (const post of Array.isArray(data?.data) ? data.data : []) {
             const postId = post?.id ? String(post.id) : '';
             if (postId && !seenPosts.has(postId)) { seenPosts.add(postId); postIds.push(postId); }
+            // PR-S5: نص المنشور الحقيقي (message للنص، description للفيديو) — يُحفظ
+            // مع كل تعليق فلا يظهر «منشور بلا نص ظاهر» لمنشور له نص.
+            const postTextRaw = typeof post?.message === 'string' && post.message.trim()
+              ? post.message
+              : (typeof post?.description === 'string' ? post.description : '');
+            const postText = postTextRaw ? String(postTextRaw).trim() : null;
             const summary = Number(post?.comments?.summary?.total_count);
             if (Number.isFinite(summary) && summary > 0) reportedTotal += Math.trunc(summary);
             for (const c of Array.isArray(post?.comments?.data) ? post.comments.data : []) {
@@ -1399,6 +1407,7 @@ export class FacebookClient {
                 createdAt: c?.created_time ? String(c.created_time) : null,
                 parentId: c?.parent?.id ? String(c.parent.id) : null,
                 permalinkUrl: c?.permalink_url ? String(c.permalink_url) : null,
+                postText,
               });
             }
           }

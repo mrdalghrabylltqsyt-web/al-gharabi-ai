@@ -630,7 +630,7 @@ export class InstagramClient {
    * `comments.order(reverse_chronological).limit(25)` يضمن أحدث التعليقات،
    * و`permalink_url` الحقيقي يُحفظ لزر «فتح على إنستغرام». منع التكرار بمعرّف التعليق.
    */
-  async listMediaComments(igAccountId: string, pageAccessToken: string, mediaLimit = 10, commentsLimit = 25, extraMediaIds: string[] = []): Promise<InstagramResult<Array<{ commentId: string; mediaId: string | null; text: string; username: string | null; authorId: string | null; createdAt: string | null; permalinkUrl: string | null }>>> {
+  async listMediaComments(igAccountId: string, pageAccessToken: string, mediaLimit = 10, commentsLimit = 25, extraMediaIds: string[] = []): Promise<InstagramResult<Array<{ commentId: string; mediaId: string | null; text: string; username: string | null; authorId: string | null; createdAt: string | null; permalinkUrl: string | null; postText: string | null }>>> {
     if (!igAccountId) return { ok: false, data: null, error: 'معرّف حساب Instagram مطلوب.' };
     try {
       const perMedia = Math.max(1, Math.min(50, Math.trunc(commentsLimit)));
@@ -639,7 +639,8 @@ export class InstagramClient {
       void extraMediaIds;
       let graphCalls = 0;
       const u = new URL(instagramGraphUrl(`/${igAccountId}/media`, this.baseUrl));
-      u.searchParams.set('fields', `id,permalink_url,comments.order(reverse_chronological).summary(true).limit(${perMedia}){id,text,username,from,created_time,permalink_url}`);
+      // PR-S5: يُطلب `caption` (نص منشور إنستغرام) كي لا يظهر «منشور بلا نص ظاهر».
+      u.searchParams.set('fields', `id,permalink_url,caption,comments.order(reverse_chronological).summary(true).limit(${perMedia}){id,text,username,from,created_time,permalink_url}`);
       u.searchParams.set('limit', String(Math.max(1, Math.min(50, Math.trunc(mediaLimit)))));
       u.searchParams.set('access_token', pageAccessToken);
       graphCalls += 1;
@@ -653,7 +654,7 @@ export class InstagramClient {
         const pCode = ex.providerCode ?? providerErrorCode(data);
         return { ok: false, data: null, error: msg, providerCode: pCode, providerSubcode: ex.providerSubcode, providerTraceId: ex.providerTraceId, code: classifyInstagramProviderError(msg, pCode) };
       }
-      const out: Array<{ commentId: string; mediaId: string | null; text: string; username: string | null; authorId: string | null; createdAt: string | null; permalinkUrl: string | null }> = [];
+      const out: Array<{ commentId: string; mediaId: string | null; text: string; username: string | null; authorId: string | null; createdAt: string | null; permalinkUrl: string | null; postText: string | null }> = [];
       const seen = new Set<string>();
       let reportedTotal = 0;
       let mediaScanned = 0;
@@ -661,6 +662,8 @@ export class InstagramClient {
         const mediaId = m?.id ? String(m.id) : null;
         if (mediaId) mediaScanned += 1;
         const mediaPermalink = m?.permalink_url ? String(m.permalink_url) : null;
+        // PR-S5: نص منشور إنستغرام (caption) — يُحفظ فلا يظهر «منشور بلا نص ظاهر».
+        const postText = typeof m?.caption === 'string' && m.caption.trim() ? String(m.caption).trim() : null;
         const summary = Number(m?.comments?.summary?.total_count);
         if (Number.isFinite(summary) && summary > 0) reportedTotal += Math.trunc(summary);
         for (const c of Array.isArray(m?.comments?.data) ? m.comments.data : []) {
@@ -674,6 +677,7 @@ export class InstagramClient {
             authorId: c?.from?.id ? String(c.from.id) : null,
             createdAt: c?.created_time ? String(c.created_time) : (c?.timestamp ? String(c.timestamp) : null),
             permalinkUrl: c?.permalink_url ? String(c.permalink_url) : mediaPermalink,
+            postText,
           });
         }
       }
