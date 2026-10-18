@@ -120,13 +120,13 @@ export interface FacebookMockState {
   ownedApps?: string[];
   failOwnedApps?: boolean;
   /** منشورات الصفحة وتعليقاتها (GET /{page-id}/feed) — لقراءة تعليقات المراقب. */
-  feedPosts?: Array<{ id: string; comments?: Array<{ id: string; message: string; from?: { id?: string; name?: string }; created_time?: string; parent?: { id?: string } }> }>;
+  feedPosts?: Array<{ id: string; comments?: Array<{ id: string; message?: string; from?: { id?: string; name?: string }; created_time?: string; parent?: { id?: string }; permalink_url?: string }>; commentsTotalCount?: number }>;
   /**
    * منشورات فيديو/ريلز للصفحة (`GET /{page-id}/videos` و`/{page-id}/video_reels`) —
    * لإثبات أن سحب التعليقات يقرأ من كل أنواع المنشورات لا من `/feed` وحده.
    */
-  pageVideos?: Array<{ id: string; comments?: Array<{ id: string; message: string; from?: { id?: string; name?: string }; created_time?: string; parent?: { id?: string } }> }>;
-  pageReels?: Array<{ id: string; comments?: Array<{ id: string; message: string; from?: { id?: string; name?: string }; created_time?: string; parent?: { id?: string } }> }>;
+  pageVideos?: Array<{ id: string; comments?: Array<{ id: string; message?: string; from?: { id?: string; name?: string }; created_time?: string; parent?: { id?: string }; permalink_url?: string }>; commentsTotalCount?: number }>;
+  pageReels?: Array<{ id: string; comments?: Array<{ id: string; message?: string; from?: { id?: string; name?: string }; created_time?: string; parent?: { id?: string }; permalink_url?: string }>; commentsTotalCount?: number }>;
   failFeed?: boolean;
   /** عدد نداءات القراءة المجمّعة (`GET /?ids=`) — لإثبات ≤ نداء واحد لـ45 منشوراً. */
   commentBatchCalls: number;
@@ -134,6 +134,10 @@ export interface FacebookMockState {
   failCommentBatch?: boolean;
   /** عدد نداءات قراءة تعليقات منشور منفرد (`GET /{post-id}?fields=comments...`) — يجب أن يبقى 0. */
   commentNodeCalls: number;
+  /** PR-S4: معرّفات التعليقات التي أُعيدت فعلاً في قراءات الحواف (لإثبات أيها قُرئ). */
+  commentIdsReturned: string[];
+  /** PR-S4: حقول `comments...` التي طُلبت فعلاً في كل قراءة حافة (لإثبات filter(stream)). */
+  commentFieldsSeen: string[];
   /** خطأ مخصّص لقراءة عقدة المنشور `GET /{post-id}?fields=...` يحاكي #100
    *  «Tried accessing nonexisting field (is_published)» — لإثبات إصلاح الجذر. */
   nodeFieldsError?: { message: string; code: number } | null;
@@ -196,6 +200,8 @@ export function createFacebookMock(state: Partial<FacebookMockState> = {}): Face
     commentBatchCalls: 0,
     failCommentBatch: state.failCommentBatch ?? false,
     commentNodeCalls: 0,
+    commentIdsReturned: [],
+    commentFieldsSeen: [],
     nodeFieldsError: state.nodeFieldsError ?? null,
     unsupportedNodeFields: state.unsupportedNodeFields ?? [],
     nodeFieldReads: [],
@@ -492,10 +498,11 @@ export async function startFacebookMockServer(
   app.get('/:version/:pageId/feed', (req, res) => {
     state.calls += 1;
     if (state.failFeed) return res.status(400).json({ error: { message: 'Permissions error', code: 200 } });
+    const fields = String(req.query.fields || '');
     const rows = (state.feedPosts || []).map((p) => ({
       id: p.id,
       created_time: '2026-01-01T00:00:00+0000',
-      comments: p.comments ? { data: p.comments } : undefined,
+      comments: p.comments ? applyCommentFields(p.comments, fields) : undefined,
     }));
     return res.json({ data: rows });
   });
@@ -503,10 +510,38 @@ export async function startFacebookMockServer(
   // منشورات الفيديو (`GET /{page-id}/videos`) والريلز (`/{page-id}/video_reels`).
   // منفصلة عن /feed كما في Graph الحقيقي — تُثبت أن السحب يقرأ من كل الأنواع.
   // تُعيد التعليقات مضمَّنة عند طلبها (كما يفعل Graph) ليعمل السقوط الآمن.
-  const listPostRows = (rows?: Array<{ id: string; comments?: any[] }>, fields = '') => (rows || []).map((p) => ({
+  //
+  // PR-S4: تُحترم مُعدِّلات الحقل الحقيقية: `filter(toplevel)` (الافتراضي) يستبعد
+  // الردود المتداخلة (تعليقات لها `parent`)، و`filter(stream)` يُدخلها، و
+  // `order(reverse_chronological)` يرتّب الأحدث أولاً، و`limit(N)` يقتطع، و
+  // `summary(true)` يُعيد `total_count` المُعلَن، و`permalink_url` يُعاد عند طلبه.
+  const applyCommentFields = (comments: any[] | undefined, fields: string) => {
+    let list = Array.isArray(comments) ? [...comments] : [];
+    if (fields.includes('comments')) {
+      state.commentFieldsSeen.push(fields);
+      if (/filter\(stream\)/.test(fields)) {
+        // stream = كل المستويات (بما فيها الردود).
+      } else {
+        list = list.filter((c) => !c?.parent?.id);
+      }
+      if (/order\(reverse_chronological\)/.test(fields)) {
+        list.sort((a, b) => Date.parse(String(b?.created_time || 0)) - Date.parse(String(a?.created_time || 0)));
+      } else if (/order\(chronological\)/.test(fields)) {
+        list.sort((a, b) => Date.parse(String(a?.created_time || 0)) - Date.parse(String(b?.created_time || 0)));
+      }
+      const m = fields.match(/limit\((\d+)\)/);
+      if (m) list = list.slice(0, Number(m[1]));
+      const wantPermalink = /permalink_url/.test(fields);
+      list = list.map((c) => (wantPermalink && !c.permalink_url ? { ...c, permalink_url: `https://www.facebook.com/${String(c.id)}` } : c));
+      state.commentIdsReturned.push(...list.map((c: any) => String(c.id)));
+      return { data: list, summary: fields.includes('summary') ? { total_count: comments ? comments.length : 0 } : undefined };
+    }
+    return undefined;
+  };
+  const listPostRows = (rows?: Array<{ id: string; comments?: any[]; commentsTotalCount?: number }>, fields = '') => (rows || []).map((p) => ({
     id: p.id,
     created_time: '2026-01-01T00:00:00+0000',
-    comments: fields.includes('comments') && p.comments ? { data: p.comments } : undefined,
+    comments: p.comments ? applyCommentFields(p.comments, fields) : undefined,
   }));
   app.get('/:version/:pageId/videos', (req, res) => { state.calls += 1; return res.json({ data: listPostRows(state.pageVideos, String(req.query.fields || '')) }); });
   app.get('/:version/:pageId/video_reels', (req, res) => { state.calls += 1; return res.json({ data: listPostRows(state.pageReels, String(req.query.fields || '')) }); });

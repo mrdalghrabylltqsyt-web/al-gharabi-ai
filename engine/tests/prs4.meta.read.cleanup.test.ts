@@ -1,14 +1,16 @@
 /**
- * اختبار حجم نداءات Graph لسحب تعليقات Facebook/Instagram (إصلاح النداء لكل منشور).
+ * اختبار PR-S4 — تنظيف قراءة فيسبوك: حذف مسار `?ids=` كلياً + فحص التغطية.
  *
  * يُثبت على خادم حقيقي + خادم Graph وهمي محلي (بلا مزود Meta حقيقي ولا حصة):
- *  1) 45 منشوراً على فيسبوك ⇒ **نداء تعليقات واحد** مجمّع (`GET /?ids=`) لا 45.
- *  2) ≤ 5 نداءات Graph للدورة على فيسبوك (3 لجمع المعرّفات + 1-2 للتعليقات).
- *  3) صفر نداء لتعليقات منشور منفرد (`GET /{post-id}?fields=comments`).
- *  4) تعليق على منشور فيديو/ريلز (لا يظهر في /feed) يُقرأ رغم التجميع.
- *  5) `callsPerCycle` معلن لكل منصة في حالة المراقب.
+ *  1) **لا نداء `?ids=` إطلاقاً** (كان Graph يرفضه كل دورة فيُهدر نداءً ويسجّل خطأً).
+ *  2) `callsPerCycle ≤ 4` على فيسبوك (3 حواف: feed + videos + video_reels).
+ *  3) منشور فيه 30 تعليقاً يُقرأ أحدث 25 منها (order=reverse_chronological + limit=25).
+ *  4) `filter(stream)` يُدخل الردود المتداخلة (كان الفلتر الافتراضي toplevel يستبعدها
+ *     = سبب فرق التغطية المُثبت في البند 2).
+ *  5) `commentsTotalReported` يُعلَن بجانب `commentsVisible` في platformStats.
+ *  6) `permalink_url` الحقيقي يُقرأ (لزر «فتح على فيسبوك»).
  *
- * حالات التجميع تفشل على الكود القديم (نداء لكل منشور).
+ * كل حالات التجميع/الفلتر تفشل على الكود القديم.
  */
 
 import { spawn, type ChildProcess } from 'node:child_process';
@@ -38,14 +40,28 @@ const FB_APP_SECRET = 'fb_test_app_secret_not_real_batch_123';
 const FB_VERIFY_TOKEN = 'fb_test_verify_token_batch';
 const stateDir = mkdtempSync(join(tmpdir(), 'gharabi-batch-'));
 
-// 44 منشوراً في /feed + منشور فيديو/ريلز واحد (غير موجود في /feed) = 45 منشوراً.
-const FEED_POST_COUNT = 44;
+// 12 منشوراً في /feed + منشور فيديو (غير موجود في /feed) = 13 منشوراً.
+// المنشور الأول يحمل 30 تعليقاً: 25 ظاهرة + 5 ردود متداخلة (لها parent) — تُثبت
+// حدّ الصفحات (25) وفلتر stream (يُدخل الردود) في آن.
+const FEED_POST_COUNT = 12;
 const VIDEO_POST = 'POST_VIDEO_BATCH';
+const BIG_POST = 'POST_FEED_BIG';
+const BIG_POST_COMMENTS = 30;
+const BIG_POST_VISIBLE = 25;
+const bigPostComments = Array.from({ length: BIG_POST_COMMENTS }, (_, i) => ({
+  id: `C_BIG_${i}`,
+  message: `استفسار رقم ${i}`,
+  from: { id: `U_BIG_${i}`, name: `زبون ${i}` },
+  // created_time متزايد مع الفهرس: الأحدث = أعلى فهرس (يُثبت order(reverse)).
+  created_time: new Date(Date.parse('2026-02-01T00:00:00+0000') + i * 60_000).toISOString(),
+  // آخر 5 تعليقات ردود متداخلة (parent) — يستبعدها الفلتر الافتراضي toplevel.
+  ...(i >= BIG_POST_VISIBLE ? { parent: { id: 'C_BIG_0' } } : {}),
+}));
 const feedPosts = Array.from({ length: FEED_POST_COUNT }, (_, i) => ({
-  id: `POST_FEED_${i}`,
+  id: i === 0 ? BIG_POST : `POST_FEED_${i}`,
   comments: i === 0
-    ? [{ id: 'C_BATCH_1', message: 'كم سعر شاشة شارب', from: { id: 'U_X', name: 'سالم' }, created_time: '2026-02-02T00:00:00+0000' }]
-    : [],
+    ? bigPostComments
+    : (i === 1 ? [{ id: 'C_BATCH_1', message: 'كم سعر شاشة شارب', from: { id: 'U_X', name: 'سالم' }, created_time: '2026-02-02T00:00:00+0000' }] : []),
 }));
 
 function startApp(fbBase: string, appPort = APP_PORT): { proc: ChildProcess; log: () => string; base: string } {
@@ -130,35 +146,50 @@ async function main(): Promise<void> {
     const cbRes = await fetch(`${BASE}/api/platforms/facebook/oauth/callback?state=${encodeURIComponent(state)}&code=TESTCODE`);
     check('callback ينجح', cbRes.status === 200, `status=${cbRes.status}`);
 
-    group('2) دورة المراقب: 45 منشوراً ⇒ نداء تعليقات واحد');
+    group('2) دورة المراقب: لا نداء ?ids= و callsPerCycle ≤ 4');
     await fetch(`${BASE}/api/agent/meta/watcher/controls`, { method: 'POST', headers: auth, body: JSON.stringify({ enabled: true, autoReply: false, paused: false }) });
     const poll = await (await fetch(`${BASE}/api/agent/meta/watcher/poll`, { method: 'POST', headers: auth, body: '{}' })).json();
     check('الدورة تعمل', poll.success === true, JSON.stringify(poll));
 
-    // 45 معرّفاً ⇒ طلب مجمّع واحد فقط (50 كحدّ).
-    check('45 منشوراً = نداء تعليقات واحد (GET /?ids=)', mock.state.commentBatchCalls === 1, `batch=${mock.state.commentBatchCalls}`);
+    // البند 1: حُذف مسار الطلب المجمّع كلياً.
+    check('لا نداء ?ids= إطلاقاً (المسار محذوف)', mock.state.commentBatchCalls === 0, `batch=${mock.state.commentBatchCalls}`);
     check('صفر نداء لتعليقات منشور منفرد', mock.state.commentNodeCalls === 0, `node=${mock.state.commentNodeCalls}`);
 
     const owner = await (await fetch(`${BASE}/api/agent/meta/watcher`, { headers: auth })).json();
-    const seenIds = (owner.watcher?.recent || []).map((r: any) => r.commentId);
-    check('تعليق على منشور فيديو/ريلز قُرئ رغم التجميع', seenIds.includes('C_VIDEO_BATCH'), JSON.stringify(seenIds));
-    check('تعليق /feed قُرئ أيضاً', seenIds.includes('C_BATCH_1'), JSON.stringify(seenIds));
-
     const stats = owner.watcher?.platformStats?.facebook;
-    check('postsScanned = 45', Number(stats?.postsScanned || 0) === 45, JSON.stringify(stats));
-    check('commentsVisible = 2', Number(stats?.commentsVisible || 0) === 2, JSON.stringify(stats));
-    check('callsPerCycle معلن (≤ 5)', Number(stats?.callsPerCycle || 0) > 0 && Number(stats?.callsPerCycle || 0) <= 5, JSON.stringify(stats));
-    check('callsPerCycle = 4 (3 معرّفات + 1 مجمّع)', Number(stats?.callsPerCycle || 0) === 4, JSON.stringify(stats));
+    check('callsPerCycle ≤ 4 على فيسبوك', Number(stats?.callsPerCycle || 0) > 0 && Number(stats?.callsPerCycle || 0) <= 4, JSON.stringify(stats));
+    check('callsPerCycle = 3 (feed + videos + video_reels)', Number(stats?.callsPerCycle || 0) === 3, JSON.stringify(stats));
+    check('لا خطأ متكرر: lastError فارغ', (owner.watcher?.lastError ?? null) === null, JSON.stringify(owner.watcher?.lastError));
+
+    // البند 1: القراءة مضمَّنة بـfilter(stream) + order(reverse_chronological).
+    check('القراءة تطلب filter(stream) (الردود المتداخلة مضمَّنة)',
+      mock.state.commentFieldsSeen.length > 0 && mock.state.commentFieldsSeen.every((f) => /filter\(stream\)/.test(f)), JSON.stringify(mock.state.commentFieldsSeen.slice(0, 2)));
+    check('القراءة تطلب order(reverse_chronological)',
+      mock.state.commentFieldsSeen.every((f) => /order\(reverse_chronological\)/.test(f)), JSON.stringify(mock.state.commentFieldsSeen.slice(0, 2)));
+
+    // البند 2: منشور فيه 30 تعليقاً ⇒ يُقرأ أحدث 25 فقط (حد الصفحات مُعلَن لا صامت).
+    const bigSeen = mock.state.commentIdsReturned.filter((id) => id.startsWith('C_BIG_'));
+    check('منشور 30 تعليقاً يُقرأ منه 25 (حد الصفحات)', bigSeen.length === BIG_POST_VISIBLE, `read=${bigSeen.length}`);
+    check('التعليقات المقروءة هي الأحدث (order=reverse_chronological)',
+      !bigSeen.includes('C_BIG_0') && bigSeen.includes('C_BIG_29'), JSON.stringify(bigSeen.slice(0, 5)));
+
+    // البند 2: التعليقان (feed + video) مرئيان فعلاً في القراءة.
+    // نتحقّق من القراءة الفعلية (لا من سجل المعالجة المحدود بـ15/دورة).
+    check('تعليق منشور الفيديو قُرئ رغم أنه ليس في /feed', mock.state.commentIdsReturned.includes('C_VIDEO_BATCH'), JSON.stringify(mock.state.commentIdsReturned.filter((x) => !x.startsWith('C_BIG_')).slice(0, 8)));
+    check('تعليق /feed قُرئ أيضاً', mock.state.commentIdsReturned.includes('C_BATCH_1'), JSON.stringify(mock.state.commentIdsReturned.filter((x) => !x.startsWith('C_BIG_')).slice(0, 8)));
+
+    // البند 2: commentsTotalReported يُعلن بجانب commentsVisible.
+    check('postsScanned = 13 (12 feed + 1 video)', Number(stats?.postsScanned || 0) === 13, JSON.stringify(stats));
+    check('commentsTotalReported معلن', Number(stats?.commentsTotalReported || 0) >= BIG_POST_VISIBLE, JSON.stringify(stats));
+    check('commentsVisible = 27 (25 + 1 feed + 1 video)', Number(stats?.commentsVisible || 0) === 27, JSON.stringify(stats));
   } finally {
     await stop(app.proc);
     await mock.stop();
   }
 
   // ---------------------------------------------------------------------------
-  // مجموعة 2: السقوط الآمن عند رفض Graph للطلب المجمّع `?ids=` كاملاً.
-  // الجذر المُثبت على الإنتاج: Graph رفض الطلب المجمّع فسقط السحب كله (degraded).
-  // الإصلاح: السقوط إلى قراءة التعليقات مضمَّنة داخل الحواف (feed/videos/reels)
-  // فلا تُفقد أي تعليقات. هذا السيناريو يفشل على الكود بلا سقوط آمن.
+  // مجموعة 2: لا مسار مجمّع إطلاقاً — حتى مع failCommentBatch لا يوجد نداء ?ids=.
+  // على الكود القديم كان الطلب المجمّع يُهدر نداءً ويسجّل خطأً كل دورة.
   // ---------------------------------------------------------------------------
   {
     const FB_PORT2 = FB_PORT + 1;
@@ -170,11 +201,11 @@ async function main(): Promise<void> {
         { id: 'C_VIDEO_BATCH', message: 'شكد سعر هالفيديو؟', from: { id: 'U_D', name: 'مريم' }, created_time: '2026-02-02T00:05:00+0000' },
       ] }],
       pageReels: [],
-      failCommentBatch: true, // Graph يرفض الطلب المجمّع كاملاً
+      failCommentBatch: true, // لو استُدعي ?ids= لفشل — لكنه محذوف فلا يُستدعى.
     }));
     const app2 = startApp(mock2.base, APP_PORT2);
     try {
-      group('2) السقوط الآمن عند رفض الطلب المجمّع (45 منشوراً)');
+      group('2) لا مسار مجمّع: الدورة نظيفة بلا خطأ ولا نداء ?ids=');
       check('الخادم الثاني يقلع', await waitForHealth(180_000, BASE2), app2.log().slice(0, 400));
       const auth2 = await login(BASE2);
       const startRes2 = await (await fetch(`${BASE2}/api/platforms/facebook/oauth/start`, { headers: auth2 })).json();
@@ -184,15 +215,15 @@ async function main(): Promise<void> {
 
       await fetch(`${BASE2}/api/agent/meta/watcher/controls`, { method: 'POST', headers: auth2, body: JSON.stringify({ enabled: true, autoReply: false, paused: false }) });
       const poll2 = await (await fetch(`${BASE2}/api/agent/meta/watcher/poll`, { method: 'POST', headers: auth2, body: '{}' })).json();
-      check('الدورة تعمل رغم رفض المجمّع', poll2.success === true, JSON.stringify(poll2));
+      check('الدورة تعمل', poll2.success === true, JSON.stringify(poll2));
 
+      check('لا نداء ?ids= إطلاقاً', mock2.state.commentBatchCalls === 0, `batch=${mock2.state.commentBatchCalls}`);
       const owner2 = await (await fetch(`${BASE2}/api/agent/meta/watcher`, { headers: auth2 })).json();
-      const seenIds2 = (owner2.watcher?.recent || []).map((r: any) => r.commentId);
-      check('التعليقات لم تُفقد بعد رفض المجمّع (فشل صامت مُغلَق)', seenIds2.includes('C_BATCH_1') && seenIds2.includes('C_VIDEO_BATCH'), JSON.stringify(seenIds2));
+      check('التعليقات قُرئت كلها (feed + video)', mock2.state.commentIdsReturned.includes('C_BATCH_1') && mock2.state.commentIdsReturned.includes('C_VIDEO_BATCH'), JSON.stringify(mock2.state.commentIdsReturned.filter((x) => !x.startsWith('C_BIG_')).slice(0, 8)));
       const stats2 = owner2.watcher?.platformStats?.facebook;
-      check('postsScanned = 45 (سقوط آمن)', Number(stats2?.postsScanned || 0) === 45, JSON.stringify(stats2));
-      check('callsPerCycle ≤ 7 (3 معرّفات + 1 مجمّع فاشل + 3 حواف)', Number(stats2?.callsPerCycle || 0) > 0 && Number(stats2?.callsPerCycle || 0) <= 7, JSON.stringify(stats2));
-      check('لا انهيار: lastError ليس خطأ السحب (السقوط نجح)', (owner2.watcher?.lastError ?? null) === null, JSON.stringify(owner2.watcher?.lastError));
+      check('callsPerCycle ≤ 4 (2)', Number(stats2?.callsPerCycle || 0) > 0 && Number(stats2?.callsPerCycle || 0) <= 4, JSON.stringify(stats2));
+      check('صفر أخطاء متكررة: lastError فارغ', (owner2.watcher?.lastError ?? null) === null, JSON.stringify(owner2.watcher?.lastError));
+      check('consecutiveErrors = 0', Number(owner2.watcher?.consecutiveErrors || 0) === 0, JSON.stringify(owner2.watcher?.consecutiveErrors));
     } finally {
       await stop(app2.proc);
       await mock2.stop();
@@ -206,6 +237,6 @@ async function main(): Promise<void> {
     for (const f of failures) console.error('  ✗ ' + f);
     process.exit(1);
   }
-  console.log(`PASSED: ${passed} meta comment-batch checks`);
+  console.log(`PASSED: ${passed} PR-S4 meta read-cleanup checks`);
 }
 void main();

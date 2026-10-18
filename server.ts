@@ -7802,26 +7802,25 @@ function metaPollingStatusBlock() {
 }
 
 /** يجلب تعليقات منصة Meta الحقيقية (قراءة فقط) عبر العميل الرسمي — بلا كتابة. */
-async function fetchMetaInboundComments(platform: MetaPlatform): Promise<{ ok: boolean; comments?: any[]; error?: string; code?: string; providerCode?: number | null; postsScanned?: number; callsPerCycle?: number }> {
+async function fetchMetaInboundComments(platform: MetaPlatform): Promise<{ ok: boolean; comments?: any[]; error?: string; code?: string; providerCode?: number | null; postsScanned?: number; callsPerCycle?: number; commentsTotalReported?: number }> {
   try {
     if (platform === "facebook") {
       const pageId = String(getProviderToken("facebook")?.pageId || "");
       const token = facebookPageToken(pageId || undefined);
       if (!pageId || !token) return { ok: false, error: "لا صفحة Facebook موثقة.", code: "NOT_CONNECTED" };
-      // معرّفات المنشورات التي نشرها النظام فعلاً (فيديو/ريلز/صور) — تُضاف لمصادر
-      // القراءة فلا يضيع تعليق على منشور لا يظهر في /feed (توثيق Meta).
-      const extraPostIds = publishedPostIdsFor("facebook");
-      const res = await facebookClient().listPageComments(pageId, token, 25, extraPostIds);
+      // PR-S4: قراءة واحدة مضمَّنة داخل الحواف (feed + videos + video_reels) —
+      // لا مسار مجمّع `?ids=` إطلاقاً (كان Graph يرفضه كل دورة).
+      const res = await facebookClient().listPageComments(pageId, token, 25, []);
       if (!res.ok) return { ok: false, error: res.error || "فشل قراءة تعليقات Facebook.", code: res.code || "FETCH_FAILED", providerCode: res.providerCode ?? null };
-      return { ok: true, comments: res.data || [], postsScanned: (res.postIdsScanned || []).length, callsPerCycle: Number(res.graphCalls || 0) };
+      return { ok: true, comments: res.data || [], postsScanned: (res.postIdsScanned || []).length, callsPerCycle: Number(res.graphCalls || 0), commentsTotalReported: Number(res.commentsTotalReported || 0) };
     }
     const igAccountId = String(getProviderToken("instagram")?.igAccountId || "");
     const token = instagramPageToken();
     if (!igAccountId || !token) return { ok: false, error: "لا حساب Instagram موثّق.", code: "NOT_CONNECTED" };
-    const extraMediaIds = publishedPostIdsFor("instagram");
-    const res = await instagramClient().listMediaComments(igAccountId, token, 10, 25, extraMediaIds);
+    const res = await instagramClient().listMediaComments(igAccountId, token, 10, 25, []);
     if (!res.ok) return { ok: false, error: res.error || "فشل قراءة تعليقات Instagram.", code: res.code || "FETCH_FAILED", providerCode: res.providerCode ?? null };
-    return { ok: true, comments: res.data || [], postsScanned: new Set((res.data || []).map((c: any) => c.mediaId).filter(Boolean)).size, callsPerCycle: Number(res.graphCalls || 0) };
+    const postsScanned = Number(res.mediaScanned || 0) || new Set((res.data || []).map((c: any) => c.mediaId).filter(Boolean)).size;
+    return { ok: true, comments: res.data || [], postsScanned, callsPerCycle: Number(res.graphCalls || 0), commentsTotalReported: Number(res.commentsTotalReported || 0) };
   } catch (e: any) {
     return { ok: false, error: String(e?.message || "فشل الجلب."), code: "FETCH_ERROR" };
   }
@@ -7998,6 +7997,9 @@ async function runMetaWatcherCycle(trigger: string): Promise<{ ok: boolean; trig
         metaPollingState.platformStats[platform] = {
           postsScanned: Number(fetched.postsScanned || 0),
           commentsVisible: (fetched.comments || []).length,
+          // PR-S4: المجموع المُعلَن من Meta (comments.summary.total_count) بجانب
+          // المرئي فعلاً — فيظهر أي فرق تغطية بصراحة (لا فشل صامت).
+          commentsTotalReported: Number(fetched.commentsTotalReported || 0),
           lastIngestAt: prev.lastIngestAt || null,
           callsPerCycle: Number(fetched.callsPerCycle || 0),
         };
