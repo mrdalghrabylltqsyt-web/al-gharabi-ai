@@ -8020,22 +8020,18 @@ async function runMetaWatcherCycle(trigger: string): Promise<{ ok: boolean; trig
         if (!existingComment) {
           const cls0 = classifyComment(text);
           if (!Array.isArray((workspace as any).socialComments)) (workspace as any).socialComments = [];
+          // PR-S5: وسم الاستيراد بأثر رجعي (backfill) — عمر التعليق عند الاستقبال > 24
+          // ساعة ⇒ لا يولّد متابعة. يُحسب قبل الإدراج ليبقى سطر السقف قريباً من unshift.
+          const commentBackfill = isBackfillImport(c.createdAt || null, new Date().toISOString());
           (workspace as any).socialComments.unshift({
             id: workspaceId("comment"), platform, externalId, postExternalId: c.postId || c.mediaId || null,
             authorName: c.authorName || c.username || null,
-            // هوية الكاتب الحقيقية (from.id / IG user id) — أساس «الزبون» الحقيقي.
             authorId: c.authorId || null,
             text, createdAt: c.createdAt || new Date().toISOString(),
             classification: cls0, requiresHumanReview: cls0.requiresHumanReview, ingestSource: `${platform}_polling`,
             replyTarget: { commentId: externalId },
-            // PR-S4: رابط Meta الحقيقي (permalink_url) من القراءة المضمَّنة.
             permalinkUrl: c.permalinkUrl || null,
-            // PR-S5: نص المنشور الحقيقي (message/description/caption) من القراءة
-            // المضمَّنة — فلا يظهر «منشور بلا نص ظاهر» لمنشور له نص.
-            postText: c.postText || null,
-            // PR-S5: وسم الاستيراد بأثر رجعي (backfill) — عمر التعليق عند الاستقبال
-            // > 24 ساعة ⇒ لا يولّد متابعة (يُعالَج/يُرد فقط إن كان سؤالاً حديثاً).
-            backfill: isBackfillImport(c.createdAt || null, new Date().toISOString()),
+            postText: c.postText || null, backfill: commentBackfill,
           });
           if ((workspace as any).socialComments.length > WORKSPACE_MAX_SOCIAL_COMMENTS) (workspace as any).socialComments.length = WORKSPACE_MAX_SOCIAL_COMMENTS;
           newDetected += 1;

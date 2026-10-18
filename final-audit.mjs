@@ -5148,6 +5148,59 @@ add('watcher-advisory-not-authority',
           /FACEBOOK_GRAPH_API_BASE/.test(b) && !/graph\.facebook\.com/.test(a + b) && /PASSED:/.test(a + b);
       })(),
       'اختبارا PR-S4 يستخدمان خادم Meta وهمياً محلياً بلا مزود حقيقي ولا حصة AI');
+
+    // 11ب) PR-S5 — «زبون حقيقي فقط + متابعة نظيفة».
+    add('prs5-real-question-single-source',
+      read('engine/commercial/commercialBrain.ts').includes('export function isRealCommercialQuestion') &&
+      read('engine/commercial/commercialBrain.ts').includes("if (cls?.isEmojiOnly === true) return false") &&
+      read('engine/commercial/leadQualification.ts').includes('isRealCommercialQuestion'),
+      'مصدر واحد لـ«سؤال حقيقي»: إيموجي/سبام ⇒ ليس سؤالاً (لا lead)');
+    add('prs5-followup-gate-single-source',
+      read('engine/commercial/leadQualification.ts').includes('export function evaluateFollowUpEligibility') &&
+      read('engine/commercial/leadQualification.ts').includes('COMMERCIAL_FOLLOWUP_MAX_AGE_HOURS = 168') &&
+      read('engine/commercial/leadQualification.ts').includes("code: 'STALE_BEYOND_7_DAYS'") &&
+      read('engine/commercial/leadQualification.ts').includes("code: 'BACKFILL_NO_FOLLOWUP'") &&
+      read('engine/commercial/leadQualification.ts').includes("code: 'PUBLIC_FOLLOWUP_ONCE'"),
+      'بوابة متابعة واحدة: ≤7 أيام، بلا backfill، تعليق عام مرة واحدة');
+    add('prs5-cleanup-no-delete',
+      read('engine/commercial/leadQualification.ts').includes('export function planCommercialDraftCleanup') &&
+      read('engine/commercial/leadQualification.ts').includes('export function planCommercialLeadArchive') &&
+      server.includes('commercial_draft_cancelled') &&
+      server.includes('commercial_lead_archived') &&
+      !/commercialDrafts\s*=\s*commercialDrafts\.filter\(/.test(server),
+      'التنظيف يحوّل المسودات المخالفة إلى cancelled بسبب مكتوب وaudit — بلا حذف، والأرشيف بلا حذف');
+    add('prs5-backfill-and-post-text',
+      /backfill: isBackfillImport\(|backfill: row\.backfill === true \|\| isBackfillImport\(/.test(server) &&
+      read('engine/social/facebook.ts').includes('postText') &&
+      read('engine/social/instagram.ts').includes('caption'),
+      'وسم backfill يُمرَّر من سجل الاستقبال، ونص المنشور (message/description/caption) يُحفظ');
+    add('prs5-author-name-diagnosis-readonly',
+      server.includes('/api/commercial/author-name-diagnosis') &&
+      read('engine/commercial/leadQualification.ts').includes('META_AUTHOR_NAME_STEPS') &&
+      read('engine/commercial/leadQualification.ts').includes('OWNER SESSION REQUIRED') &&
+      !/META_AUTHOR_NAME_STEPS[\s\S]{0,200}(app\.post|updateEnv)/.test(server),
+      'تشخيص اسم الكاتب قراءة-فقط + OWNER SESSION REQUIRED بلا تعديل أي إعداد');
+    add('prs5-inbox-two-sections',
+      read('src/components/agent/CommercialInbox.tsx').includes('أسئلة تنتظر جوابك') &&
+      read('src/components/agent/CommercialInbox.tsx').includes('followUpsOpen') &&
+      read('src/components/agent/CommercialInbox.tsx').includes('رفض الكل في هذا القسم') &&
+      read('src/components/agent/CommercialInbox.tsx').includes('window.confirm('),
+      'الصندوق: قسم «أسئلة تنتظر جوابك» + قسم «متابعات» مطوي + «رفض الكل» بتأكيد');
+    add('prs5-tests-registered',
+      (pkg.scripts['test'] || '').includes('test:commercial-qualification') &&
+      (pkg.scripts['test'] || '').includes('test:commercial-qualification-integration') &&
+      (pkg.scripts['test'] || '').includes('test:commercial-inbox-prs5-ui') &&
+      fs.existsSync(path.join(root, 'engine/tests/commercial.qualification.test.ts')) &&
+      fs.existsSync(path.join(root, 'engine/tests/commercial.qualification.integration.test.ts')),
+      'اختبارات PR-S5 (وحدة + تكامل + واجهة) موجودة ومسجَّلة في npm test');
+    add('prs5-tests-no-real-provider',
+      (() => {
+        const a = read('engine/tests/commercial.qualification.test.ts');
+        const b = read('engine/tests/commercial.qualification.integration.test.ts');
+        return /passed, /.test(a) && /passed, /.test(b) &&
+          /FACEBOOK_GRAPH_API_BASE/.test(b) && !/graph\.facebook\.com/.test(a + b);
+      })(),
+      'اختبارات PR-S5 تستخدم خادم Meta وهمياً محلياً بلا مزود حقيقي ولا حصة AI');
   }
 
   // 12) AGENTS.md: عدد فحوصات final-audit مطابق للفعلي (يُعَدّ من نص الملف نفسه).

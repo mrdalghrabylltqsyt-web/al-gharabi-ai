@@ -44,7 +44,7 @@ npm install
 npm run dev            # tsx server.ts
 npm run lint           # tsc --noEmit
 npm run build          # vite build + esbuild server.ts -> dist/server.cjs
-npm run final-audit    # node final-audit.mjs (1760 فحصاً)
+npm run final-audit    # node final-audit.mjs (1768 فحصاً)
 npm test               # storage + engine + auth + ... + db + runtime
 ```
 - التشغيل الإنتاجي: `PORT=4517 NODE_ENV=production APP_URL=http://localhost:4517 node dist/server.cjs`
@@ -6956,3 +6956,71 @@ TikTok (مجمّد)، Telegram/Threads، نموذج الجدولة، نطاق ER
 
 ### 5) ملاحظة: `meta.comment.batch.test.ts` (اختبار التجميع) حُذف مع مسار `?ids=`
 كان يثبت سلوك التجميع المُتجاوَز؛ سلوكه الآن مُغطّى بـ`prs4.meta.read.cleanup.test.ts`.
+
+---
+
+## PR-S5 — «زبون حقيقي فقط + متابعة نظيفة» (2026-10-18)
+
+**الدليل من الإنتاج:** صندوق الزبائن امتلأ بـ**24 مسودة** «متابعة 24/72» بنفس النص على
+تعليقات **إيموجي فقط** (😍، 👏💯) عمرها أسابيع (2 و10 أكتوبر)، وكل الأسماء «اسم غير متاح
+من Meta» وكل المنشورات «منشور بلا نص ظاهر». الموافقة عليها تنشر ردوداً علنية تشبه السبام.
+
+### 1) من يُعتبر زبوناً — مصدر واحد `isRealCommercialQuestion` (في `commercialBrain.ts`)
+- **الـlead لا يُنشأ إلا بسؤال حقيقي**: سعر، قسط، توفر، نية شراء، أو سؤال عن منتج.
+- **إيموجي فقط** (`cls.isEmojiOnly`) أو **سبام** (`cls.isSpam`) ⇒ ليس سؤالاً ⇒ **لا lead
+  ولا مسودة** (يبقى في «التعليقات الواردة» فقط). المدح/التحية بلا سؤال (`isPraise`) لا
+  تُعدّ سؤالاً. لا اختراع: الحكم مشتقّ من `classifyComment` الحتمي.
+- الحقلان `qualifiedQuestion`/`lastCustomerQualifiedQuestion` يُحفظان على الـlead، مع
+  اشتقاق حتمي للـleads القديمة بلا علم (توافق خلفي).
+
+### 2) قواعد المتابعة 24/72 — بوابة واحدة `evaluateFollowUpEligibility` (في `leadQualification.ts`)
+- متابعة فقط لزبون **سأل سؤالاً حقيقياً ولم يُجب بعد**.
+- **لا متابعة على تفاعل أقدم من 7 أيام** (`COMMERCIAL_FOLLOWUP_MAX_AGE_HOURS = 168` ⇒
+  `STALE_BEYOND_7_DAYS`). قاعدة الـ7 أيام تخص **المتابعة فقط** — جواب السؤال الحقيقي يبقى
+  كما كان بلا شرط عمر (يحفظ سلوك PR-S3).
+- **التعليقات المستوردة بأثر رجعي (backfill)** — عمر التعليق عند الاستقبال > 24 ساعة ⇒ لا
+  تولّد متابعات (`BACKFILL_NO_FOLLOWUP`). الوسم يُمرَّر من سجل الاستقبال.
+- **التعليق العام يُتابَع مرة واحدة كحد أقصى** (`PUBLIC_FOLLOWUP_ONCE`) — لا متابعة علنية
+  مكررة على نفس التعليق.
+- كل منع يُسجَّل في audit بكوده (`commercial_followup_not_eligible`) — بلا تنفيذ.
+
+### 3) تنظيف المسودات الحالية (بلا حذف)
+- `planCommercialDraftCleanup`: كل مسودة `pending` تخالف القواعد تتحوّل إلى **`cancelled`**
+  بسبب مكتوب وكود، مع سجل `commercial_draft_cancelled` — **بلا حذف**. مسودة «جواب على سؤال»
+  لعميل مؤهّل حديث تبقى سليمة.
+- `planCommercialLeadArchive`: الـleads المخالفة (إيموجي/مدح فقط) **تُؤرشف** (`archived:true`
+  + `archivedAt` + `archiveReason`) مع سجل `commercial_lead_archived` — **بلا حذف**.
+- المسار **owner فقط** `POST /api/commercial/cleanup` يعيد **العدد قبل وبعد** (مسودات
+  معلّقة/leads/مؤرشفة) وعدد الإلغاءات، ويُشغَّل تلقائياً في كل دورة أيضاً.
+
+### 4) اسم الكاتب ونص المنشور
+- **تشخيص قراءة-فقط** `GET /api/commercial/author-name-diagnosis` (owner): يفحص بالدليل هل
+  يعيد Graph الحقل `from`، ويُعلن خطوات لوحة Meta الدقيقة عند الحجب. **OWNER SESSION
+  REQUIRED** إن حجب Meta الاسم (صلاحية `pages_read_user_content` بلا Advanced Access، أو
+  التطبيق في وضع التطوير) — **بلا تعديل أي إعداد**. لا سرّ ولا قيمة تُعاد.
+- **نص المنشور**: `message` للمنشور النصي، `description` للفيديو (Facebook)، و`caption`
+  لإنستغرام — تُقرأ وتُحفظ مع كل تعليق (`postText`) فلا تظهر «منشور بلا نص ظاهر» لمنشور
+  له نص. الحقول مضمَّنة في حواف القراءة (بلا `?ids=` — قرار PR-S4 قائم).
+
+### 5) واجهة الصندوق
+- قسم أول **«أسئلة تنتظر جوابك»** (جواب على سؤال) بالأحدث أولاً، وقسم **مطوي «متابعات»**
+  (`followUpsOpen`)، وزر **«رفض الكل في هذا القسم»** مع تأكيد (`window.confirm`).
+- زر «تنظيف المسودات المخالفة» وزر «تشخيص اسم الكاتب» (للمالك) في الصندوق نفسه.
+
+### الاختبارات (تفشل على القديم — مُثبت)
+- `engine/tests/commercial.qualification.test.ts` (`npm run test:commercial-qualification`،
+  **47 فحصاً** وحدة): تعليق 😍 لا ينشئ lead ولا مسودة؛ «كم سعر» ينشئ lead ومسودة جواب؛ تعليق
+  عمره 20 يوماً لا متابعة؛ backfill لا متابعة؛ التعليق العام مرة واحدة؛ التنظيف يحوّل
+  المخالف إلى cancelled ولا يلمس مسودة جواب صحيحة؛ الأرشفة بلا حذف.
+- `engine/tests/commercial.qualification.integration.test.ts`
+  (`npm run test:commercial-qualification-integration`، **37 فحصاً**، خادم حقيقي + خادم Meta
+  وهمي): المسار الكامل، `/api/commercial/cleanup` (قبل/بعد)، التشخيص، ووسم backfill.
+- `engine/tests/commercial.inbox.prs5.ui.test.ts` (`npm run test:commercial-inbox-prs5-ui`،
+  **20 فحصاً**): القسمان، الرفض الجماعي بتأكيد، وزرّا التنظيف/التشخيص.
+- **إثبات fail-old:** إضعاف الحرّاس ⇒ qualification 36 نجح/11 فشل، integration 24 نجح/13
+  فشل، ثم أُعيدت الحرّاس. فحوص final-audit: `prs5-*` (8 فحوص) — الإجمالي **1768 فحصاً**.
+- `npm test` كامل ناجح (152 مجموعة، 0 فشل) · `lint` ✅ · `build` ✅.
+
+**لم يُمسّ:** TikTok (مجمّد)، رمز `/api/health`، نطاق ERP، أي سرّ/إعداد Render أو Meta،
+مخطط قاعدة البيانات (كل الحالة في مفتاح `commercial` القائم)، `autoReply` يبقى off، و
+`commercialSendMode` يبقى approval.
