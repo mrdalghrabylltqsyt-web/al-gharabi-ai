@@ -45,6 +45,7 @@ npm run dev            # tsx server.ts
 npm run lint           # tsc --noEmit
 npm run build          # vite build + esbuild server.ts -> dist/server.cjs
 npm run final-audit    # node final-audit.mjs (1852 فحصاً)
+npm run final-audit    # node final-audit.mjs (1786 فحصاً)
 npm test               # storage + engine + auth + ... + db + runtime
 ```
 - التشغيل الإنتاجي: `PORT=4517 NODE_ENV=production APP_URL=http://localhost:4517 node dist/server.cjs`
@@ -7319,3 +7320,30 @@ test:content-product-link`، 12 فحصاً) يُثبت الإنشاء/التحق
 
 **لم يُمسّ:** `commercialSendMode` يبقى `approval` (لا إرسال لزبون)، Kill Switch، تجميد TikTok،
 YouTube (المراقب Paused)، PR #64، ERP، ومعادلة القسط. لا دمج ولا نشر ولا تغيير متغيّرات.
+## PR-P1 — توحيد صيغة القسط (العقل = المنتج) + إصلاح PATCH (2026-10-19)
+
+**الجذور المُثبتة (لا تخمين):** كانت **معادلتان متباعدتان** للقسط الشهري:
+- المنتج المخزّن (`src/utils/installmentPrice.ts`): `installmentPrice = cash + markup%` ثم
+  `monthly = ceil(installmentPrice / months)`.
+- العقل في `replyInstallmentTextForProduct` (`server.ts`): `ceil((cash - downPayment) / months)`
+  — بلا نسبة الزيادة وبمنطق دفعة أولى. فكان الرد يذكر رقماً أقل من المعروض في الكتالوج
+  (مثال: 250,000 ⇒ العقل 22,500 بينما المخزّن 31,250).
+- **PATCH** كان عند غياب `installmentMonths` يحسب بالافتراضي 10 (يفسد منتجاً بمدة 12)،
+  ويترك `installmentFrom` على قيمة قديمة.
+
+**الإصلاح (مصدر واحد):**
+- `replyInstallmentTextForProduct` صار يستدعي `computeInstallmentPrice` نفسه، ويقرأ المدة
+  عبر `resolveStoredInstallmentMonths` (`installmentMonths` ثم `durationMonths`).
+- `buildFactsForProduct` يضيف `installmentPrice`/`monthlyInstallment` المشتقّين، فيمرّ رد
+  العقل عبر حارس `analyzeBusinessClaims` بلا حجب زائف.
+- PATCH يحلّ المدة من المخزّن عند غيابها، و`applyInstallmentFields` يزامن `installmentFrom`
+  مع القسط المشتقّ.
+- **لا تغيير** في: نسبة 25% الافتراضية، الصيغة نفسها، بوابة الموافقة، autoReply/Kill Switch،
+  TikTok، `/api/health`، نطاق ERP، أو أي سرّ.
+
+**اختبار القبول:** `engine/tests/prp1.installment.unification.test.ts` (16 فحصاً، خادم حقيقي
++ خادم Meta وهمي): cash=600,000 + 25% + 12 شهراً ⇒ **62,500** (لا 50,000)؛ PATCH نسبة على
+منتج 12 شهراً يُبقي 12 ويعطي 70,000؛ `installmentFrom` يُزامَن. فحوص final-audit:
+`prp1-reply-installment-uses-stored-formula`، `prp1-facts-include-stored-installment`،
+`prp1-patch-resolves-stored-months`، `prp1-installment-from-synced`، `prp1-test-registered`
+(الإجمالي **1773**).

@@ -13385,9 +13385,9 @@ function sanitizeDocList(input: any[]): string[] {
 
 /**
  * يضبط حقول التقسيط المشتقّة على منتج من سعر الكاش فقط (مصدر واحد: src/utils/installmentPrice).
- * لا يقبل قيمة شهرية متناقضة، ويعيد حساب القسط فوراً عند تغيير سعر الكاش أو المدة.
- * للتوافق: يحدّث `installmentFrom` (الذي تعرضه الواجهات الحالية) بالقيمة القديمة نفسها
- * إن لم تكن مشتقّة أصلاً، فلا تتغيّر واجهات أخرى.
+ * لا يقبل قيمة شهرية متناقضة، ويعيد حساب القسط فوراً عند تغيير سعر الكاش أو المدة أو النسبة.
+ * يحدّث `installmentFrom` (الذي تعرضه الواجهات) بالقسط الشهري المشتقّ نفسه، فلا يبقى على
+ * قيمة قديمة بعد أي إعادة حساب — مصدر واحد للعرض في الإضافة والتعديل معاً.
  */
 function applyInstallmentFields(product: any, input: InstallmentInput): void {
   const fields = productInstallmentFields(input);
@@ -13397,6 +13397,23 @@ function applyInstallmentFields(product: any, input: InstallmentInput): void {
   product.installmentMonths = fields.installmentMonths;
   product.monthlyInstallment = fields.monthlyInstallment;
   product.installmentMarkupPercent = fields.installmentMarkupPercent;
+  product.installmentFrom = fields.monthlyInstallment;
+}
+
+/**
+ * المدة المخزّنة الموثوقة لمنتج قائم عند إعادة حساب القسط بلا مدة مُرسَلة.
+ * الأولوية: `installmentMonths` (المدة التي حُسب بها القسط فعلاً)، ثم `durationMonths`.
+ * الفصل ضروري لأن `durationMonths` قد يكون 1 (افتراضي مسار الإنشاء القديم) بينما
+ * القسط محسوب على 10؛ استخدام 1 كان يفسد القسط. يُعيد undefined عند غياب الاثنين
+ * فيسقط الحساب للافتراضي 10 (سلوك `resolveInstallmentMonths`).
+ */
+function resolveStoredInstallmentMonths(product: any): number | undefined {
+  const candidates = [product?.installmentMonths, product?.durationMonths];
+  for (const c of candidates) {
+    const n = Number(c);
+    if (Number.isInteger(n) && n >= 1 && n <= 60) return n;
+  }
+  return undefined;
 }
 
 app.get("/api/workspace/products", authenticateToken, (_req, res) => {
@@ -13452,12 +13469,18 @@ app.patch("/api/workspace/products/:id", authenticateToken, (req, res) => {
   if (Array.isArray(b.specs)) product.specs = b.specs.filter((x:any)=>typeof x === "string").slice(0,30).map((x:string)=>x.trim().slice(0,200));
   if (Array.isArray(b.installmentOptions)) product.installmentOptions = b.installmentOptions.filter((x:any)=>typeof x === "string").slice(0,20).map((x:string)=>x.trim().slice(0,200));
   if (Array.isArray(b.requiredDocuments)) product.requiredDocuments = sanitizeDocList(b.requiredDocuments);
-  // إعادة حساب حقول التقسيط من cashPrice عند تغيّر سعر الكاش/المدة/النسبة فقط.
+  // إعادة حساب حقول التقسيط عند تغيّر سعر الكاش/المدة/النسبة فقط.
+  // المدة تُحلّ من الجسم إن أُرسلت، وإلا من **المدة المخزّنة** للمنتج (لا الافتراضي)،
+  // وإلا لأعاد الحساب المدة إلى 10 وأفسد منتجاً بمدة 12. المخزّن الموثوق هو
+  // `installmentMonths` (المدة التي حُسب بها القسط فعلاً) و`durationMonths` احتياطاً —
+  // لأن منتجات أُنشئت قديماً قد تحمل `durationMonths=1` بينما قسطها محسوب على 10.
   // القيمة الشهرية المتناقضة الواردة في الجسم تُتجاهَل (لا تُحفظ) — القسط مُشتقّ دائماً.
   if (b.cashPrice !== undefined || b.installmentMonths !== undefined || b.installmentMarkupPercent !== undefined) {
-    const computed = computeInstallmentPrice({ cashPrice: Number(product.cashPrice), installmentMonths: b.installmentMonths, installmentMarkupPercent: b.installmentMarkupPercent });
+    const months = b.installmentMonths !== undefined ? b.installmentMonths : resolveStoredInstallmentMonths(product);
+    const markupPercent = b.installmentMarkupPercent !== undefined ? b.installmentMarkupPercent : product.installmentMarkupPercent;
+    const computed = computeInstallmentPrice({ cashPrice: Number(product.cashPrice), installmentMonths: months, installmentMarkupPercent: markupPercent });
     if (!computed.ok) return res.status(400).json({ success: false, error: "بيانات التقسيط غير صحيحة: تحقّق من سعر الكاش ومدة التقسيط (1–60 شهراً)." });
-    applyInstallmentFields(product, { cashPrice: Number(product.cashPrice), installmentMonths: b.installmentMonths, installmentMarkupPercent: b.installmentMarkupPercent });
+    applyInstallmentFields(product, { cashPrice: Number(product.cashPrice), installmentMonths: months, installmentMarkupPercent: markupPercent });
   }
   persistState(); audit(user.id, "workspace_product_updated", product.id); res.json({ success: true, product });
 });
@@ -18212,6 +18235,20 @@ function buildFactsForProduct(product: any | null, downPaymentPercent: number, d
     const months = Number.isInteger(durationMonths) && durationMonths > 0 ? durationMonths : 1;
     const q = buildMarketingQuote(cashPrice, percent, months);
     derived.push(q.cashPrice, q.downPayment, q.financedAmount, q.monthlyPayment, q.totalInstallments);
+    // معادلة التقسيط المخزّنة على المنتج (سعر التقسيط والقسط الشهري) مشتقة من سعر
+    // الكاش + نسبة الزيادة المسجّلة، فهي حقائق مشروعة لا مُختلقة. تُحسب من نفس
+    // المصدر الواحد (`computeInstallmentPrice`) وتُضاف كي يمرّ رد العقل الذي يذكر
+    // القسط المخزّن عبر حارس `analyzeBusinessClaims` بلا حجب زائف — وتغطّي أيضاً
+    // المنتجات القديمة التي لم تُخزّن الحقول المشتقّة.
+    const markup = Number(product?.installmentMarkupPercent);
+    // المدة نفسها التي حُسب بها القسط المخزّن — مصدر واحد مع مسار التعديل والرد.
+    const installMonths = resolveStoredInstallmentMonths(product) ?? months;
+    const computed = computeInstallmentPrice({ cashPrice, installmentMonths: installMonths, installmentMarkupPercent: Number.isFinite(markup) ? markup : undefined });
+    if (computed.ok) derived.push(computed.installmentPrice, computed.monthlyInstallment);
+    const storedPrice = Number(product?.installmentPrice);
+    const storedMonthly = Number(product?.monthlyInstallment);
+    if (Number.isFinite(storedPrice) && storedPrice > 0) derived.push(storedPrice);
+    if (Number.isFinite(storedMonthly) && storedMonthly > 0) derived.push(storedMonthly);
   }
   const showroom: any = workspace.showroom || {};
   const urls = [product?.image].map((x: any) => cleanText(x, 500)).filter(Boolean);
@@ -18368,22 +18405,30 @@ function showroomInstallmentMonthsText(): string | null {
 
 /**
  * القسط الشهري المشتقّ — مصدر واحد. يُذكر في الرد **فقط** عند توفر قاعدة تقسيط
- * معتمدة: سعر مسجّل > 0، ونسبة دفعة أولى صريحة في [0..99]، ومدة بالأشهر > 0.
- * غياب أي شرط ⇒ `null` (لا يُذكر أي رقم قسط، فلا اختراع). الصيغة مطابقة تماماً
- * لـ`buildMarketingQuote` (دفعة أولى ثم قسط شهري بتقريب لأعلى دينار) كي لا يختلف
- * الرقم المعروض عن مسار حاسبة الأقساط.
+ * معتمدة: سعر كاش مسجّل > 0 ومدة بالأشهر > 0. غياب أي شرط ⇒ `null` (لا يُذكر أي
+ * رقم قسط، فلا اختراع).
+ *
+ * الصيغة هي **نفس المعادلة المخزّنة على المنتج** عبر المصدر الواحد
+ * `src/utils/installmentPrice.ts`: `installmentPrice = cash + markup%` ثم
+ * `monthlyInstallment = ceil(installmentPrice / months)`. لا يُحسب القسط من سعر
+ * الكاش مباشرةً (ذاك كان يعرض رقماً أقل من الحقيقي كلما وُجدت نسبة زيادة)، بل من
+ * `installmentPrice` نفسه، فيتطابق ما يقوله العقل مع ما يعرضه كتالوج المنتج.
  */
 function replyInstallmentTextForProduct(product: any | null): string | null {
   if (!product) return null;
   const cash = Number(product?.cashPrice);
-  const downPct = Number(product?.downPaymentPercent);
-  const months = Number(product?.durationMonths);
   if (!Number.isFinite(cash) || cash <= 0) return null;
-  if (!Number.isFinite(downPct) || downPct < 0 || downPct > 99) return null;
-  if (!Number.isInteger(months) || months <= 0) return null;
-  const down = Math.ceil((cash * downPct) / 100);
-  const financed = Math.max(0, cash - down);
-  const monthly = Math.ceil(financed / months);
+  // المدة نفسها التي حُسب بها القسط المخزّن — مصدر واحد مع مسار التعديل.
+  const months = resolveStoredInstallmentMonths(product);
+  if (months === undefined) return null;
+  const markup = Number(product?.installmentMarkupPercent);
+  const computed = computeInstallmentPrice({
+    cashPrice: cash,
+    installmentMonths: months,
+    installmentMarkupPercent: Number.isFinite(markup) ? markup : undefined,
+  });
+  if (!computed.ok) return null;
+  const monthly = computed.monthlyInstallment;
   if (!Number.isFinite(monthly) || monthly <= 0) return null;
   return `${Math.round(monthly).toLocaleString('en-US')} د.ع`;
 }
