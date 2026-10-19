@@ -184,6 +184,7 @@ async function main(): Promise<void> {
     const w1 = await classify(auth, 'عندكم ضمان؟');
     check('«عندكم ضمان؟» ⇒ تصعيد (escalate)', w1.replyIntelligence?.escalate === true, JSON.stringify(w1.replyIntelligence));
     check('«عندكم ضمان؟» ⇒ لا تُذكر أي مدة ضمان رقمية', !/\d/.test(String(w1.suggestedDeterministicReply || '')), w1.suggestedDeterministicReply);
+    check('«عندكم ضمان؟» ⇒ مسودة موجودة وغير محجوبة بحارس السلامة', Boolean(w1.suggestedDeterministicReply) && w1.replyIntelligence?.blockedBySafety === false, JSON.stringify({ reply: w1.suggestedDeterministicReply, blocked: w1.replyIntelligence?.blockedBySafety }));
     const w2 = await classify(auth, 'شكد ضمان الثلاجة؟');
     check('«شكد ضمان الثلاجة؟» ⇒ تصعيد بلا مدة', w2.replyIntelligence?.escalate === true && !/\d/.test(String(w2.suggestedDeterministicReply || '')), w2.suggestedDeterministicReply);
 
