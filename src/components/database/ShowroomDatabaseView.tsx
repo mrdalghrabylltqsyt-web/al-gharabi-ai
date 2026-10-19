@@ -38,6 +38,9 @@ export const ShowroomDatabaseView: React.FC = () => {
   const [searchTerm, setSearchTerm] = useState<string>('');
   const [showAddProductModal, setShowAddProductModal] = useState<boolean>(false);
   const [newDocument, setNewDocument] = useState<string>('');
+  // تأكيد الحذف: لا يُحذف أي منتج إلا بعد ضغط «نعم» صراحةً (المنتج المعلّق للحذف).
+  const [productPendingDelete, setProductPendingDelete] = useState<ShowroomProduct | null>(null);
+  const [isDeletingProduct, setIsDeletingProduct] = useState<boolean>(false);
 
   // New Product State
   const [newProductName, setNewProductName] = useState<string>('');
@@ -143,6 +146,15 @@ export const ShowroomDatabaseView: React.FC = () => {
     setNewProductMarkupPercent(INSTALLMENT_MARKUP_PERCENT_DEFAULT);
     setNewProductImage('');
     showToast('تمت إضافة المنتج لقاعدة بيانات المعرض بنجاح!');
+  };
+
+  // حذف مؤكَّد: «نعم» فقط ينفّذ الحذف الحالي (بلا تغيير في منطق الخادم).
+  const confirmDeleteProduct = () => {
+    if (!productPendingDelete || isDeletingProduct) return;
+    setIsDeletingProduct(true);
+    deleteProduct(productPendingDelete.id);
+    setProductPendingDelete(null);
+    setIsDeletingProduct(false);
   };
 
   return (
@@ -347,9 +359,10 @@ export const ShowroomDatabaseView: React.FC = () => {
                     <div className="p-3 bg-slate-950/60 border-t border-slate-800 flex items-center justify-between">
                       <span className="text-[10px] text-slate-500">ID: {prod.id}</span>
                       <button
-                        onClick={() => deleteProduct(prod.id)}
+                        onClick={() => setProductPendingDelete(prod)}
                         className="p-1.5 text-slate-400 hover:text-rose-400 rounded-lg hover:bg-slate-800 transition cursor-pointer"
                         title="حذف المنتج"
+                        aria-label={`حذف المنتج ${prod.name}`}
                       >
                         <Trash2 className="w-4 h-4" />
                       </button>
@@ -666,6 +679,54 @@ export const ShowroomDatabaseView: React.FC = () => {
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {/* تأكيد حذف المنتج: نافذة صريحة تعرض الاسم والسعر — «لا» تُغلق بلا تغيير،
+          و«نعم» فقط ينفّذ الحذف. أثناء التنفيذ يُعطَّل الزر لمنع الضغط المكرر. */}
+      {productPendingDelete && (
+        <div
+          className="fixed inset-0 z-50 bg-black/70 backdrop-blur-sm flex items-center justify-center p-4"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="delete-product-title"
+        >
+          <div className="w-full max-w-sm glass rounded-3xl p-6 shadow-2xl space-y-4 animate-in fade-in">
+            <div className="flex items-center gap-3 border-b border-slate-800 pb-3">
+              <span className="w-10 h-10 rounded-xl bg-rose-950/60 border border-rose-500/30 flex items-center justify-center shrink-0">
+                <Trash2 className="w-5 h-5 text-rose-400" />
+              </span>
+              <h3 id="delete-product-title" className="font-bold text-base text-white">
+                هل أنت متأكد من حذف هذا المنتج؟
+              </h3>
+            </div>
+
+            <div className="rounded-2xl bg-slate-950/60 border border-slate-800 p-3 space-y-1">
+              <p className="text-sm font-bold text-white break-words">{productPendingDelete.name}</p>
+              <p className="text-xs text-slate-400">
+                سعر الكاش: {Number(productPendingDelete.cashPrice || 0).toLocaleString('en-US')} د.ع
+              </p>
+            </div>
+
+            <div className="flex items-center justify-end gap-3 pt-1">
+              <button
+                type="button"
+                onClick={() => setProductPendingDelete(null)}
+                disabled={isDeletingProduct}
+                className="px-5 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 font-bold cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                لا
+              </button>
+              <button
+                type="button"
+                onClick={confirmDeleteProduct}
+                disabled={isDeletingProduct}
+                className="px-5 py-2 rounded-xl bg-rose-600 hover:bg-rose-500 text-white font-bold shadow-md shadow-rose-600/20 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {isDeletingProduct ? 'جارٍ الحذف…' : 'نعم'}
+              </button>
+            </div>
           </div>
         </div>
       )}

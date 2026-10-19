@@ -44,7 +44,7 @@ npm install
 npm run dev            # tsx server.ts
 npm run lint           # tsc --noEmit
 npm run build          # vite build + esbuild server.ts -> dist/server.cjs
-npm run final-audit    # node final-audit.mjs (1781 فحصاً)
+npm run final-audit    # node final-audit.mjs (1786 فحصاً)
 npm test               # storage + engine + auth + ... + db + runtime
 ```
 - التشغيل الإنتاجي: `PORT=4517 NODE_ENV=production APP_URL=http://localhost:4517 node dist/server.cjs`
@@ -7024,3 +7024,25 @@ TikTok (مجمّد)، Telegram/Threads، نموذج الجدولة، نطاق ER
 **لم يُمسّ:** TikTok (مجمّد)، رمز `/api/health`، نطاق ERP، أي سرّ/إعداد Render أو Meta،
 مخطط قاعدة البيانات (كل الحالة في مفتاح `commercial` القائم)، `autoReply` يبقى off، و
 `commercialSendMode` يبقى approval.
+
+## PR-P2 — تأكيد قبل حذف المنتج من المعرض (واجهة فقط، 2026-10-19)
+
+كان زر سلة الحذف في `ShowroomDatabaseView.tsx` يستدعي `deleteProduct(prod.id)` **مباشرةً**
+بلا أي تأكيد، فالضغط الخاطئ (شائع على الجوال) يحذف منتجاً فوراً. الإصلاح واجهة فقط:
+
+- زر السلة صار `onClick={() => setProductPendingDelete(prod)}` — يفتح نافذة تأكيد ولا يحذف.
+- نافذة صريحة (`role="dialog"` + `aria-modal`) تعرض **اسم المنتج وسعر الكاش** مع زري
+  «نعم»/«لا». «لا» تضبط الحالة `null` بلا أي حذف. «نعم» يستدعي `deleteProduct(id)` الحالي
+  فقط (لا تغيير في منطق الخادم).
+- `isDeletingProduct` يُعطّل الزرّين أثناء التنفيذ لمنع الضغط المكرر، ويظهر «جارٍ الحذف…».
+- **لا حذف جماعي** في هذا الـPR (لاحقاً بموافقة المالك).
+
+**لم يُمسّ:** الخادم، قاعدة البيانات، بوابة الموافقة، autoReply (off)، Kill Switch، TikTok،
+`/api/health`، نطاق ERP، أي سرّ.
+
+**الاختبارات:** `engine/tests/prp2.delete.confirm.ui.test.ts` (`npm run test:prp2-delete-confirm`،
+16 فحصاً ثابتاً) + `engine/e2e/prp2.delete-confirm.e2e.spec.ts` (Playwright/Chromium حقيقي:
+النقر يفتح النافذة بلا حذف، «لا» لا ترسل DELETE، «نعم» ترسل DELETE مرة واحدة ويختفي المنتج
+ويبقى الآخر). فحوص final-audit: `prp2-delete-requires-confirm`، `prp2-confirm-shows-name-and-price`،
+`prp2-confirm-yes-deletes-no-cancel`، `prp2-confirm-no-double-delete`، `prp2-test-registered`
+(الإجمالي **1773**).
