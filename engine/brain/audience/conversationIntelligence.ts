@@ -163,6 +163,10 @@ export function proposeContentFromNeed(input: {
     price: 'السعر/التقسيط',
     availability: 'التوفر',
     hours: 'أوقات الدوام',
+    warranty: 'الضمان',
+    delivery: 'التوصيل',
+    installment_terms: 'شروط التقسيط',
+    installment: 'مدة التقسيط',
     general: 'استفسار عام',
   };
   const label = topicAr[input.need.topic];

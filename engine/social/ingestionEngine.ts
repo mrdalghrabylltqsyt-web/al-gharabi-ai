@@ -304,6 +304,10 @@ const TOPIC_LABELS_AR: Record<string, string> = Object.freeze({
   location: 'الموقع',
   availability: 'التوفر',
   hours: 'أوقات الدوام',
+  warranty: 'الضمان',
+  delivery: 'التوصيل',
+  installment_terms: 'شروط التقسيط',
+  installment: 'مدة التقسيط',
   general: 'عام',
 });
 

@@ -152,7 +152,10 @@ export function escalationReasonFor(input: {
   if (input.isSpam) return 'spam';
   if (input.intent === 'complaint') return 'complaint';
   if (input.intent === 'spam') return 'spam';
-  if (input.topic === 'price') return 'price_unverified';
+  // المرحلة 4: سؤال الضمان يُصعَّد دائماً (لا جواب من القاعدة في هذا الإصدار)،
+  // وسؤال سياسة/تقسيط غير موثّق يُصعَّد كحالة تحتاج معلومة — بلا اختراع رقم.
+  if (input.topic === 'warranty') return 'unclear';
+  if (input.topic === 'price' || input.topic === 'installment_terms' || input.topic === 'installment') return 'price_unverified';
   if (input.requiresHumanReview) return 'sensitive';
   if (input.intent === 'question' || input.intent === 'other') return 'unclear';
   return null;

@@ -430,7 +430,7 @@ export function buildRuntimeContentPath(input: {
   const factsText = (input.verifiedFacts || []).map((f) => f.statement).join(' | ');
   const priceText = pf.priceText || (/(سعر|تقسيط|قسط)/.test(factsText) ? factsText : null);
   const name = pf.productName || null;
-  const labelAr: Record<string, string> = { location: 'الموقع', price: 'السعر/التقسيط', availability: 'التوفر', hours: 'أوقات الدوام', general: 'استفسار عام' };
+  const labelAr: Record<string, string> = { location: 'الموقع', price: 'السعر/التقسيط', availability: 'التوفر', hours: 'أوقات الدوام', warranty: 'الضمان', delivery: 'التوصيل', installment_terms: 'شروط التقسيط', installment: 'مدة التقسيط', general: 'استفسار عام' };
   const label = labelAr[need.topic] || 'استفسار';
   const idea = `فيديو يجيب على «${label}» من بيانات المعرض المسجّلة فقط${name ? ` (${name})` : ''}.`;
   const hook = `«${label}» — الجواب الكامل في أقل من دقيقة.`;

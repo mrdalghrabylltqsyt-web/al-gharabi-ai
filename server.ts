@@ -572,6 +572,21 @@ import {
   type DialogueTurn,
 } from "./engine/social/replyDialogue";
 import {
+  resolveInquiry,
+  type ResolveInquiryResult,
+} from "./engine/social/inquiryResolver";
+import {
+  buildShowroomKnowledge,
+  findKnowledgeMatch,
+  type KnowledgeEntry,
+} from "./engine/social/showroomKnowledge";
+import {
+  applyShowroomSeedDefaults,
+  installmentMonthsText,
+  SHOWROOM_SEED_DEFAULT_MONTHS,
+} from "./engine/social/showroomSeed";
+import { extractInquiryAttributes } from "./engine/social/productMatch";
+import {
   conversationKey,
   createConversationState,
   appendMessage,
@@ -1285,6 +1300,10 @@ for (const entry of Array.isArray(persisted.userRevocations) ? persisted.userRev
 }
 const serverUsers: ServerUser[] = persisted.users;
 const workspace = persisted.workspace;
+// المرحلة 5: بيانات المعرض المؤكدة تُملأ للحقول **الفارغة فقط** (لا تطمس أي قيمة
+// قائمة أدخلها المالك). تُطبَّق على الإقلاع أيضاً داخل `applyStateSnapshot` بعد
+// قراءة Postgres. لا تُضاف أي بيانات ضمان (قرار المالك).
+applyShowroomSeedDefaults(workspace.showroom || (workspace.showroom = {}));
 for (const key of ["inventoryMovements","suppliers","purchases","expenses","contracts","installmentSchedules","notifications","webhookEvents","providerEvents"]) if (!Array.isArray((workspace as any)[key])) (workspace as any)[key] = [];
 if (!Array.isArray((workspace as any).inventoryMovements)) (workspace as any).inventoryMovements = [];
 for (const key of ["suppliers","purchases","expenses","contracts","installmentSchedules","notifications","webhookEvents","providerEvents","marketingBriefs","marketingCampaigns"]) if (!Array.isArray((workspace as any)[key])) (workspace as any)[key] = [];
@@ -7920,12 +7939,36 @@ async function generateWatcherReply(input: {
    *  يُستخدم في توليد مسودة صندوق الزبائن فلا يُستهلك أي مزوّد ولا حصة. */
   allowAi?: boolean;
 }): Promise<{ text: string; clarify: boolean; escalate: boolean; strategy: string; source: 'deterministic' | 'ai' | 'clarify_ai' | 'clarify_deterministic' }> {
-  const grounding = resolveGroundingProduct({ commentText: input.commentText, postProduct: input.product, products: (workspace.products || []) as any[] });
-  const facts = replyFactsForProduct(grounding);
   const ctx = watcherDialogueContext(input.platform, input.subjectId, input.subjectTitle);
+  // المرحلة 4: مُحلّل الاستفسار الموحّد — يجمع التصنيف + خصائص الاستفسار (النوع/المقاس/
+  // الماركة بالمرادفات المُدارة) + قاعدة معرفة المعرض + مطابقة مرجّحة، فيُنتج قراراً
+  // واحداً (جواب/اختيار/توضيح/تصعيد) بلا اختراع رقم. المطابقة بالخصائص تُستخدم أيضاً
+  // عند غياب منتج مرتبط بمنشور.
+  const knowledge = knowledgeMatchFor(input.commentText);
+  const resolved = resolveInquiry({
+    classification: input.cls,
+    text: input.commentText,
+    postProduct: input.product,
+    products: (workspace.products || []) as any[],
+    knowledge,
+    productFacts: replyFactsForProduct(input.product),
+    buildProductFacts: (product: any) => replyFactsForProduct(product),
+    installmentMonthsText: showroomInstallmentMonthsText() || undefined,
+    context: ctx,
+  });
+  // ضمان التوافق: تفضيل المنتج المرتبط بالمنشور إن وُجد (سلوك سابق محفوظ)، وإلا
+  // المنتج الذي طابقته الخصائص. الحقائق تُبنى دائماً من المنتج المطابق نفسه.
+  const grounding = resolved.product || resolveGroundingProduct({ commentText: input.commentText, postProduct: input.product, products: (workspace.products || []) as any[] });
+  const facts = replyFactsForProduct(grounding);
+  if (knowledge) { facts.knowledgeAnswer = knowledge.answer; facts.knowledgeTopic = knowledge.topic; }
   const deterministic = generateConversationalReply(input.cls, facts, ctx);
-  if (!deterministic.clarifying || input.allowAi === false) {
-    return { text: deterministic.text, clarify: deterministic.clarifying, escalate: deterministic.escalate, strategy: deterministic.strategy, source: 'deterministic' };
+  // قرار المُحلّل غير التوضيحي (جواب/تصعيد/اختيار) يُعتمد كما هو — لا يمرّ بالمسار
+  // الذكي (لا حاجة: النص من بيانات مسجّلة). التوضيح وحده يُجرَّب تحسينه بالـAI.
+  if (resolved.kind !== 'clarify') {
+    return { text: resolved.text, clarify: false, escalate: resolved.kind === 'escalate', strategy: resolved.strategy, source: 'deterministic' };
+  }
+  if (input.allowAi === false) {
+    return { text: resolved.text, clarify: true, escalate: false, strategy: resolved.strategy, source: 'deterministic' };
   }
   // سؤال توضيح: المسار الذكي داخل الجدار (cache/dedup/quota/breaker) يجعل الصياغة
   // أكثر طبيعية؛ أي فشل/نفاد حصة ⇒ السقوط للسؤال الحتمي الآمن (لا يُسقَط الرد).
@@ -7934,16 +7977,16 @@ async function generateWatcherReply(input: {
     const cacheKey = `watcher:clarify:${input.platform}:${JSON.stringify({ n: input.cls.normalized, r: ctx.clarificationRounds ?? 0, p: grounding?.id || null })}`;
     const res = await aiEngine.run({
       cacheKey, prompt,
-      deterministicFallback: () => deterministic.text,
+      deterministicFallback: () => resolved.text,
       meta: { platform: input.platform, operation: 'meta_clarification' },
     });
     const factsBusiness = buildFactsForProduct(grounding, Number(grounding?.downPaymentPercent || 0), Number(grounding?.durationMonths || 0));
-    const safe = ensureSafeBusinessText(res.text, factsBusiness, () => deterministic.text);
-    const text = (safe.text || '').trim() || deterministic.text;
+    const safe = ensureSafeBusinessText(res.text, factsBusiness, () => resolved.text);
+    const text = (safe.text || '').trim() || resolved.text;
     const usedAi = res.usedProvider && !safe.replaced;
-    return { text, clarify: true, escalate: false, strategy: deterministic.strategy, source: usedAi ? 'clarify_ai' : 'clarify_deterministic' };
+    return { text, clarify: true, escalate: false, strategy: resolved.strategy, source: usedAi ? 'clarify_ai' : 'clarify_deterministic' };
   } catch {
-    return { text: deterministic.text, clarify: true, escalate: false, strategy: deterministic.strategy, source: 'clarify_deterministic' };
+    return { text: resolved.text, clarify: true, escalate: false, strategy: resolved.strategy, source: 'clarify_deterministic' };
   }
 }
 
@@ -12778,14 +12821,24 @@ app.put("/api/workspace/showroom", authenticateToken, (req, res) => {
   const user = (req as any).user as ServerUser;
   if (user.role !== "owner" && user.role !== "manager") return res.status(403).json({ success: false, error: "لا تملك صلاحية تعديل بيانات المعرض." });
   const next = req.body && typeof req.body === "object" ? req.body : {};
+  // المدة الافتراضية المسجّلة: تُحفظ إن وردت صالحة، وإلا تُبقى القيمة القائمة
+  // (المؤكدة) بلا طمس — لا تُخترع ولا تُصفَّر.
+  const requestedMonths = Number(next.defaultInstallmentMonths);
+  const defaultMonths = Number.isInteger(requestedMonths) && requestedMonths >= 1 && requestedMonths <= 60
+    ? requestedMonths
+    : (Number.isInteger(workspace.showroom?.defaultInstallmentMonths) ? workspace.showroom.defaultInstallmentMonths : SHOWROOM_SEED_DEFAULT_MONTHS);
   workspace.showroom = {
     name: cleanText(next.name, 160), tagline: cleanText(next.tagline, 240), address: cleanText(next.address, 240),
     city: cleanText(next.city, 80), phoneUnified: cleanText(next.phoneUnified, 60), whatsappSales: cleanText(next.whatsappSales, 60),
     supportEmail: cleanText(next.supportEmail, 160), workingHours: cleanText(next.workingHours, 160), about: cleanText(next.about, 1000),
     policies: Array.isArray(next.policies) ? next.policies.filter((x: any) => typeof x === "string").slice(0, 30).map((x: string) => x.trim().slice(0, 300)) : [],
     requiredDocuments: Array.isArray(next.requiredDocuments) ? sanitizeDocList(next.requiredDocuments) : [],
-    faqs: Array.isArray(next.faqs) ? next.faqs.slice(0, 100).map((x: any) => ({ id: cleanText(x?.id, 80) || workspaceId("faq"), q: cleanText(x?.q, 300), a: cleanText(x?.a, 1000), category: cleanText(x?.category, 80) })) : []
+    faqs: Array.isArray(next.faqs) ? next.faqs.slice(0, 100).map((x: any) => ({ id: cleanText(x?.id, 80) || workspaceId("faq"), q: cleanText(x?.q, 300), a: cleanText(x?.a, 1000), category: cleanText(x?.category, 80) })) : [],
+    defaultInstallmentMonths: defaultMonths,
   };
+  // المرحلة 5: القيم المؤكدة تُملأ للحقول التي تُركها الواجهة فارغة (لا تطمس ما أدخله
+  // المالك، لكنها تمنع فقدان العنوان/الهاتف/الدوام/شروط التقسيط عند حفظ نموذج جزئي).
+  applyShowroomSeedDefaults(workspace.showroom);
   persistState(); audit(user.id, "workspace_showroom_updated");
   res.json({ success: true, showroom: workspace.showroom });
 });
@@ -13802,6 +13855,8 @@ function applyStateSnapshot(snapshot: any): void {
   serverUsers.splice(0, serverUsers.length, ...next.users);
   for (const key of Object.keys(workspace)) delete (workspace as any)[key];
   Object.assign(workspace, next.workspace);
+  // المرحلة 5: نفس التغذية غير المُدمِّرة بعد قراءة Postgres (حقول فارغة فقط).
+  applyShowroomSeedDefaults((workspace as any).showroom || ((workspace as any).showroom = {}));
   revokedSessions.clear();
   for (const entry of Array.isArray(next.revokedSessions) ? next.revokedSessions : []) {
     if (entry?.sid && typeof entry.exp === "number" && entry.exp > Date.now()) revokedSessions.set(entry.sid, entry.exp);
@@ -17683,7 +17738,44 @@ function replyFactsForProduct(product: any | null): ReplyFactSet {
     inStock: typeof product?.inStock === 'boolean' ? product.inStock : null,
     hasRecordedPromotion: [showroom.promotions, showroom.activeOffer].some((x: any) => cleanText(x, 300).length > 0),
     requiredDocuments: requiredDocuments.length ? requiredDocuments : undefined,
+    // المرحلة 4: مدة التقسيط المسجّلة نصاً (من بيانات المعرض) — تُذكر فقط عند التسجيل.
+    installmentMonthsText: showroomInstallmentMonthsText() || undefined,
   };
+}
+
+/**
+ * المرحلة 4: قاعدة معرفة المعرض (مصدر واحد) — تُبنى من بيانات المعرض المسجّلة فقط
+ * (عنوان/هاتف/دوام/سياسات/مستمسكات/أسئلة شائعة). لا تُنشئ مدخلاً بلا نص مسجّل،
+ * والضمان غير مُضاف إطلاقاً (يُحوَّل للمالك).
+ */
+function showroomKnowledgeEntries(): KnowledgeEntry[] {
+  const showroom: any = workspace.showroom || {};
+  return buildShowroomKnowledge({
+    address: cleanText(showroom.address, 240) || undefined,
+    city: cleanText(showroom.city, 80) || undefined,
+    phoneUnified: cleanText(showroom.phoneUnified, 60) || undefined,
+    whatsappSales: cleanText(showroom.whatsappSales, 60) || undefined,
+    workingHours: cleanText(showroom.workingHours, 160) || undefined,
+    policies: Array.isArray(showroom.policies) ? showroom.policies : [],
+    faqs: Array.isArray(showroom.faqs) ? showroom.faqs : [],
+    requiredDocuments: Array.isArray(showroom.requiredDocuments) ? showroom.requiredDocuments : [],
+  });
+}
+
+/** يبحث في قاعدة معرفة المعرض عن جواب مسجّل لسؤال العميل (نصّ حرفي) أو null. */
+function knowledgeMatchFor(commentText: string): { answer: string; topic: string } | null {
+  const m = findKnowledgeMatch(String(commentText || ''), showroomKnowledgeEntries());
+  if (!m) return null;
+  return { answer: m.entry.answer, topic: (m.entry.tags[0] || 'general') };
+}
+
+/** مدة التقسيط المسجّلة نصاً (مثال «10 أشهر») — من بيانات المعرض أو null (لا اختراع). */
+function showroomInstallmentMonthsText(): string | null {
+  const showroom: any = workspace.showroom || {};
+  const months = Number.isInteger(showroom.defaultInstallmentMonths) && showroom.defaultInstallmentMonths > 0
+    ? showroom.defaultInstallmentMonths
+    : SHOWROOM_SEED_DEFAULT_MONTHS;
+  return installmentMonthsText(months);
 }
 
 /**
@@ -18831,6 +18923,10 @@ registerSocialManagerRoutes(app, {
       hasRecordedPromotion: [showroom.promotions, showroom.activeOffer].some((x: any) => cleanText(x, 300).length > 0),
     };
   },
+  // المرحلة 4: جواب مسجّل حرفياً من قاعدة معرفة المعرض (سياسة/سؤال شائع) أو null.
+  buildKnowledge: (commentText: string) => knowledgeMatchFor(commentText),
+  // المرحلة 4: مدة التقسيط المسجّلة نصاً (أو null ⇒ لا اختراع).
+  buildInstallmentMonthsText: () => showroomInstallmentMonthsText(),
   // القسط الشهري المشتقّ لقنوات الرد العامة: يُحسب من بيانات المنتج المسجّلة فقط
   // (سعر + نسبة دفعة أولى + مدة)، فلا يذكر الرد أي رقم قسط بلا قاعدة معتمدة.
   buildInstallmentText: (productId?: string | null, productName?: string | null) => {

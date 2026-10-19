@@ -55,7 +55,9 @@ const INTENT_LABELS_AR: Record<string, string> = {
 };
 const SENTIMENT_LABELS_AR: Record<string, string> = { positive: 'إيجابي', negative: 'سلبي', neutral: 'محايد' };
 const TOPIC_LABELS_AR: Record<string, string> = {
-  location: 'الموقع', price: 'السعر', availability: 'التوفر', hours: 'الدوام', general: 'عام',
+  location: 'الموقع', price: 'السعر', availability: 'التوفر', hours: 'الدوام',
+  warranty: 'الضمان', delivery: 'التوصيل', installment_terms: 'شروط التقسيط', installment: 'مدة التقسيط',
+  general: 'عام',
 };
 const SUB_INTENT_LABELS_AR: Record<string, string> = {
   thanks: 'شكر', blessing: 'دعاء', greeting: 'تحية', appreciation: 'إعجاب', emoji: 'إيموجي', none: 'لا شيء',
