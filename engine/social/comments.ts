@@ -25,8 +25,22 @@ export type CommentSentiment = 'positive' | 'negative' | 'neutral';
 /**
  * موضوع التعليق الدقيق، مستخرج من نصه لا من تخمين. يسمح بردّ مختلف لسؤال
  * الموقع عن سؤال السعر، وبذلك لا تكون الردود قالباً واحداً لكل «سؤال».
+ *
+ * المرحلة 4: أُضيفت موضوعات مستقلة صراحةً — `warranty` (الضمان)، `delivery`
+ * (التوصيل)، `installment_terms` (شروط التقسيط/المستمسكات)، و`installment`
+ * (مدة التقسيط) — فلا تُصنَّف خطأً كـprice أو availability (تسلسل الأسبقية يمنع
+ * ذلك في `detectTopic`).
  */
-export type CommentTopic = 'location' | 'price' | 'availability' | 'hours' | 'general';
+export type CommentTopic =
+  | 'location'
+  | 'price'
+  | 'availability'
+  | 'hours'
+  | 'warranty'
+  | 'delivery'
+  | 'installment_terms'
+  | 'installment'
+  | 'general';
 
 /**
  * نية ثانوية دقيقة داخل المدح/التحية: شكر صريح، دعاء، تحية، إعجاب، أو إيموجي
@@ -78,11 +92,28 @@ const EMOJI_ONLY_RE = /^[\s\u{1F000}-\u{1FAFF}\u{2190}-\u{2BFF}\u{2600}-\u{27BF}
 // أنماط دقيقة تُستخدم لتحديد الموضوع والنية الثانوية. تُطابق على النص **المطبَّع**
 // (توحيد الألف/التاء/الهمزات) لتفادي تفويت «وين موقعكم» مقابل «أين موقعكم».
 const TOPIC_PATTERNS: Record<Exclude<CommentTopic, 'general'>, RegExp> = {
-  location: /موقع|وين\s*(موقع|انتو|توجد|فرع|صاير)|وين\s*انتوا|اين\s*(انتم|موقع|فرع|توجد|صاير)|مكانكم|عنوانكم|فروعكم|فرعكم|توصيل/,
+  // ملاحظة: أُزيل «توصيل» من الموقع — صار موضوعاً مستقلاً (delivery).
+  location: /موقع|وين\s*(موقع|انتو|توجد|فرع|صاير)|وين\s*انتوا|اين\s*(انتم|موقع|فرع|توجد|صاير)|مكانكم|عنوانكم|فروعكم|فرعكم/,
   price: /سعر|بكم|كم\s*(يكلف|سعر|ثمن)|شكد|قسط|اقساط|مقدم|دفعة|دفعه|حسبه|حسبة|ثمن/,
   availability: /متوفر|متوفره|متاح|موجود|يوجد|اكو|عدكم|عندكم|مطلوب|جاهز|محجوز|خلص|نافد/,
   hours: /دوام|تفتحون|تفتح|تغلقون|وقت|اوقات|ساعات|مفتوح|مغلق|الدوام|ساعه/,
+  // الضمان موضوع مستقل تماماً: لا يُصنَّف سعراً ولا توفّراً (تحويل للمالك دائماً).
+  warranty: /ضمان|مضمون|كفاله|كفالة|guarantee|warranty/,
+  // التوصيل موضوع مستقل: لا يُصنَّف موقعاً.
+  delivery: /توصيل|توصلون|تنقلون|توصلوا|نقل|تودعون|تودعوا|delivery|توديع/,
+  // شروط التقسيط/المستمسكات: موضوع مستقل عن السعر ومدة التقسيط.
+  installment_terms: /شروط|شرط|مستمسكات|مستندات|ورق|اوراق|متطلبات|وثائق|راتب|كفيل|ضامن|ماستر|هويه|هوية|شروطكم|متطلباتكم/,
+  // مدة التقسيط: موضوع مستقل عن السعر (سؤال عن عدد الأشهر لا عن المبلغ).
+  installment: /مده\s*التقسيط|مدة\s*التقسيط|كم\s*شهر|شكد\s*شهر|عدد\s*(الاشهر|الشهور)|كم\s*(شهر|شهور)|مده\s*الاقساط|مدة\s*الأقساط/,
 };
+
+/**
+ * أسبقية كشف الموضوع: الضمان والتوصيل وشروط/مدة التقسيط **قبل** السعر/التوفر/
+ * الموقع، فلا يُصنَّف سؤال «شكد ضمان الثلاجة؟» سعراً ولا «توصلون؟» موقعاً.
+ */
+const TOPIC_PRIORITY: ReadonlyArray<Exclude<CommentTopic, 'general'>> = Object.freeze([
+  'warranty', 'delivery', 'installment_terms', 'installment', 'location', 'hours', 'price', 'availability',
+]);
 
 const SUB_INTENT_PATTERNS: Record<Exclude<CommentSubIntent, 'none' | 'emoji'>, RegExp> = {
   blessing: /اللهم صل|صلى الله|صل الله|عليه السلام|عليه افضل الصلاه|الله اكبر|الحمد لله|لا حول ولا قوه|جزاك الله|بارك الله فيك|الله يوفق|الله يخليك|الله يرحم/,
@@ -116,7 +147,7 @@ function normalizeForMatch(input: string): string {
 
 function detectTopic(normalized: string): CommentTopic {
   if (!normalized) return 'general';
-  for (const topic of ['location', 'price', 'availability', 'hours'] as const) {
+  for (const topic of TOPIC_PRIORITY) {
     if (TOPIC_PATTERNS[topic].test(normalized)) return topic;
   }
   return 'general';
@@ -132,6 +163,17 @@ function detectSubIntent(normalized: string, isEmojiOnly: boolean): CommentSubIn
 
 /** كلمات تستوجب مراجعة بشرية دائماً: لا يجوز الرد الآلي عليها. */
 const HUMAN_REVIEW_PATTERNS = /شكوى|شاكي|غاضب|احتيال|نصب|محامي|قانوني|قضية|استرجاع|فسخ|تعويض|تسريب|بياناتي|خصوصية/;
+
+/**
+ * سؤال خارج نطاق المعرض (رياضة/سياسة/أخبار/ترفيه/طقس/دين عام...) — يُعتذر عنه
+ * بلطف ويُعاد التوجيه، ولا يُخترع جواب. مطابقة على النص المطبَّع.
+ */
+const OFF_TOPIC_RE = /كوره|كره\s*قدم|مباراه|مباريات|الدوري|ريال\s*مدريد|برشلونه|ميسي|رونالدو|رياضه|سياسه|انتخابات|برلمان|وزير|حكومه|حرب|اخبار|فيلم|مسلسل|اغنيه|ممثل|طقس|الجو\s*اليوم|زلزال/;
+/** هل النص خارج نطاق المعرض (يُعتذر عنه ويُعاد التوجيه)؟ مطابقة على النص المطبَّع. */
+export function isOffTopic(text: string): boolean {
+  const n = normalizeForMatch(String(text ?? ''));
+  return n.length > 0 && OFF_TOPIC_RE.test(n);
+}
 
 export function classifyComment(text: string): ClassifiedComment {
   const raw = (text || '').trim();
@@ -331,6 +373,19 @@ export interface ReplyFactSet {
   requiredDocuments?: string[];
   /** لخّص جاهز للمستمسكات (يُستخدم عند تجاوز عددٍ صغير)، من بيانات مسجّلة فقط. */
   requiredDocumentsText?: string;
+  /**
+   * المرحلة 4: نص جواب **مسجّل حرفياً** من قاعدة معرفة المعرض (سياسة/سؤال شائع)
+   * لموضوع السياسات (التوصيل/شروط التقسيط/مدة التقسيط/...). يُستخدم كما هو بلا أي
+   * إعادة صياغة، فلا يتغيّر أي رقم مسجّل. غيابه ⇒ لا يُخترع جواب (سؤال/تصعيد).
+   */
+  knowledgeAnswer?: string;
+  /** وسم موضوع الجواب المسجّل (للتشخيص: delivery/installment_terms/installment/...). */
+  knowledgeTopic?: string;
+  /**
+   * المرحلة 4: مدة التقسيط المسجّلة نصاً (مثال «10 أشهر»). تُذكر فقط إن سُجّلت؛
+   * غيابها ⇒ لا يُخترع عدد أشهر (سؤال توضيحي).
+   */
+  installmentMonthsText?: string;
 }
 
 /** سياق المحادثة/الفيديو: يجعل الرد متعلقاً لا قالباً معزولاً. */
@@ -357,7 +412,11 @@ export interface GeneratedReply {
   reason: string;
 }
 
-/** بصمة رقمية مستقرة (djb2) لاختيار صيغة ثابتة لنفس المدخل. */
+/** يزيل علامات النهاية (. ! ؟ …) من نص مسجّل قبل إدراجه في جملة (منع «..» مكرّر). */
+function trimEndPunct(input: string): string {
+  return String(input || '').replace(/[\s.،,؛;!?؟…]+$/u, '').trim();
+}
+
 function stableHash(input: string): number {
   let h = 5381;
   for (let i = 0; i < input.length; i++) h = ((h << 5) + h + input.charCodeAt(i)) >>> 0;
@@ -488,6 +547,15 @@ export function generateReply(
     };
   }
 
+  // 3ب) سؤال خارج نطاق المعرض (رياضة/سياسة/أخبار/ترفيه...): اعتذار مهذّب وإعادة
+  //     توجيه للاستفسار عن الأجهزة والتقسيط — لا ادّعاء معرفة ولا جواب مختلق.
+  if ((comment.intent === 'question' || comment.isQuestion) && OFF_TOPIC_RE.test(comment.normalized)) {
+    return done(pickVariant([
+      'هلا بيك 🌸 إحنا معرض أجهزة وتقسيط، وما عندنا تفاصيل عن هالموضوع. تدلل باي استفسار عن الأجهزة والأقساط 🌹',
+      'تحت أمرك 🌸 بس احنا مختصين بالأجهزة والتقسيط؛ خبرني أي جهاز يهمك ونخدمك.',
+    ], seed, previous), 'off_topic_polite', 'سؤال خارج نطاق المعرض ⇒ اعتذار مهذّب وإعادة توجيه بلا ادّعاء معرفة.');
+  }
+
   // 4) استفسار تجاري/سؤال: يعتمد موضوعه وحقائقه الموثوقة، ويمتنع عن الاختراع.
   if (comment.intent === 'business_inquiry' || comment.intent === 'question' || comment.isBusinessInquiry || comment.isQuestion) {
     switch (comment.topic) {
@@ -523,9 +591,11 @@ export function generateReply(
       case 'location':
         if (f.locationText) {
           usedFacts.push('location');
+          // نص الموقع المسجّل قد ينتهي بنقطة؛ نطبّع علامة النهاية فلا تتكرّر («..»).
+          const loc = trimEndPunct(f.locationText);
           return done(withProduct(f.productName, (p) => p
-            ? `تدلل، ${p} تجده عندنا في ${f.locationText}. حياك الله 🌹`
-            : `موقعنا: ${f.locationText}. تفضل زورنا 🌸`),
+            ? `تدلل، ${p} تجده عندنا في ${loc}. حياك الله 🌹`
+            : `موقعنا: ${loc}. تفضل زورنا 🌸`),
             'location_trusted', 'موقع مسجّل فعلاً ⇒ يُذكر الموقع الحقيقي.');
         }
         return {
@@ -540,7 +610,7 @@ export function generateReply(
       case 'hours':
         if (f.hoursText) {
           usedFacts.push('hours');
-          return done(`دوامنا: ${f.hoursText}. حياك الله 🌸`,
+          return done(`دوامنا: ${trimEndPunct(f.hoursText)}. حياك الله 🌸`,
             'hours_trusted', 'دوام مسجّل فعلاً ⇒ يُذكر الدوام الحقيقي.');
         }
         return {
@@ -574,6 +644,40 @@ export function generateReply(
           needsInfo: true, escalate: false,
           reason: 'سؤال توفر بلا بيانات مخزون ⇒ لا يُدّعى التوفر؛ إحالة للرسائل.',
         };
+      // المرحلة 4: الضمان لا يُجاب من القاعدة في هذا الإصدار — تحويل للمالك دائماً
+      // بلا ذكر أي مدة ضمان إطلاقاً (لا رقم ولا مدة، حتى لو طلبها العميل صراحةً).
+      case 'warranty':
+        return {
+          text: 'هلا بيك، خلّينا نتأكدلك من موضوع الضمان بالضبط ونجاوبك عليه من المعرض.',
+          strategy: 'warranty_escalate', usedFacts: [],
+          needsInfo: true, escalate: true,
+          reason: 'سؤال الضمان يُحوَّل للمالك دائماً في هذا الإصدار؛ لا تُذكر أي مدة ضمان غير مسجّلة.',
+        };
+      // التوصيل/شروط التقسيط/مدة التقسيط: تُجاب من النص المسجّل حرفياً (knowledgeAnswer)
+      // أو من مدة التقسيط المسجّلة؛ وإلا لا يُخترع جواب (إحالة/سؤال).
+      case 'delivery':
+      case 'installment_terms':
+      case 'installment': {
+        const recorded = String(f.knowledgeAnswer || '').trim();
+        if (recorded) {
+          usedFacts.push('knowledge');
+          return done(recorded, 'knowledge_recorded', 'جواب مسجّل حرفياً من قاعدة معرفة المعرض ⇒ يُستخدم بلا إعادة صياغة.');
+        }
+        if (comment.topic === 'installment' && f.installmentMonthsText) {
+          usedFacts.push('installment_months');
+          return done(`مدة التقسيط: ${f.installmentMonthsText}. حياك الله 🌸`,
+            'installment_months_recorded', 'مدة تقسيط مسجّلة فعلاً ⇒ تُذكر القيمة الحقيقية.');
+        }
+        return {
+          text: pickVariant([
+            'هلا بيك، خلّينا نتأكدلك من هاي التفاصيل ونجاوبك عليها بالضبط 🌸',
+            'تدلل، راسلنا ونوضحلك هاي التفاصيل من المعرض مباشرة.',
+          ], seed, previous),
+          strategy: `${comment.topic}_needs_info`, usedFacts: [],
+          needsInfo: true, escalate: false,
+          reason: 'سؤال سياسة/تقسيط بلا نص مسجّل ⇒ لا يُخترع جواب؛ إحالة للرسائل.',
+        };
+      }
       default:
         return done(pickVariant([
           'هلا بيك، خبرنا شنو الموديل اللي يعجبك ونحسبلك القسط على راحتك.',

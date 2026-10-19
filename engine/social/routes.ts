@@ -19,6 +19,7 @@ import {
   type ReplyContext,
   type ReplyFactSet,
 } from './comments';
+import { resolveInquiry } from './inquiryResolver';
 import { analyzeBusinessClaims, type BusinessFacts } from './contentSafety';
 import { checkCommercialPolicy } from './iraqiCommercialPolicy';
 import {
@@ -109,6 +110,13 @@ export interface SocialRoutesDeps {
    * (نسبة دفعة أولى + مدة). غيابه/عدم صلاحيته ⇒ لا يُذكر أي قسط (لا اختراع).
    */
   buildInstallmentText?: (productId?: string | null, productName?: string | null) => string | null;
+  /**
+   * المرحلة 4: جواب مسجّل حرفياً من قاعدة معرفة المعرض (سياسة/سؤال شائع) لسؤال
+   * العميل، أو null. يُحقن من الخادم (نفس `showroomKnowledge`) فلا يُخترع جواب.
+   */
+  buildKnowledge?: (commentText: string) => { answer: string; topic: string } | null;
+  /** المرحلة 4: مدة التقسيط المسجّلة نصاً (مثال «10 أشهر») أو null (لا اختراع). */
+  buildInstallmentMonthsText?: () => string | null;
   /**
    * حالة العقل المركزي canonical (`buildRuntimeBrain`) — المصدر الوحيد للقرار
    * والذاكرة. تُحقن من الخادم؛ مسارات القرار/الذاكرة هنا إسقاط توافقي منها فقط،
@@ -445,7 +453,34 @@ export function registerSocialManagerRoutes(app: express.Express, deps: SocialRo
     if (text.trim()) {
       appendConversationMessage(scope.conversationId, scope.platform, scope.subjectId, { role: 'customer', text: text.trim(), externalId: req.body?.externalId });
     }
-    const generated = autoReplyAllowed ? generateReply(classification, replyFacts, replyContext) : null;
+    // المرحلة 4: المُحلّل الموحّد — يجمع التصنيف + خصائص الاستفسار (النوع/المقاس/
+    // الماركة بالمرادفات المُدارة) + قاعدة معرفة المعرض + مطابقة مرجّحة. القرار
+    // الصريح (جواب/اختيار/توضيح/تصعيد) يُستخدم للرد المقترح، مع الحفاظ على حارس
+    // سلامة المحتوى أدناه (لا يمرّ أي ادعاء غير مسجّل).
+    const knowledge = deps.buildKnowledge ? deps.buildKnowledge(text) : null;
+    const { product: resolvedProduct } = resolveProduct(req.body?.productId, req.body?.productName);
+    const inquiry = autoReplyAllowed ? resolveInquiry({
+      classification,
+      text,
+      postProduct: resolvedProduct,
+      products: (workspace.products || []) as any[],
+      knowledge,
+      productFacts: replyFacts,
+      buildProductFacts: deps.buildReplyFacts
+        ? (product: any) => {
+            const f = deps.buildReplyFacts!(product?.id, product?.name);
+            // القسط الشهري يُضاف من مصدره المحقون (سعر مسجّل + قاعدة تقسيط معتمدة).
+            const inst = deps.buildInstallmentText ? deps.buildInstallmentText(product?.id, product?.name) : null;
+            if (inst) f.monthlyInstallmentText = inst;
+            return f;
+          }
+        : undefined,
+      installmentMonthsText: deps.buildInstallmentMonthsText ? deps.buildInstallmentMonthsText() || undefined : undefined,
+      context: { subjectTitle: replyContext.videoTitle, previousReplies: replyContext.previousReplies },
+    }) : null;
+    const generated = autoReplyAllowed
+      ? (inquiry ? { text: inquiry.text, strategy: inquiry.strategy, usedFacts: inquiry.usedFacts, needsInfo: inquiry.needsInfo, escalate: inquiry.escalate, reason: inquiry.reason } : generateReply(classification, replyFacts, replyContext))
+      : null;
     // التصعيد البشري: يُسجَّل تصعيد حقيقي إن استحقّه التصنيف (شكوى/سبام/حساس/غير
     // واضح). سؤال السعر يُصعَّد فقط إن لم تتوفر معلومة موثّقة (needsInfo) — إن
     // قُدّم سعر مسجّل فلا تصعيد. لا يُخترع إشعار: `notifyEscalation` من الخادم.
@@ -467,7 +502,11 @@ export function registerSocialManagerRoutes(app: express.Express, deps: SocialRo
     // دورة حياة المحادثة: وصول رسالة عميل ينتقل بالحالة (والمُصعّدة تبقى مُصعّدة).
     const lifecycle = applyLifecycleEvent(scope.conversationId, 'customer_message');
     const rawSuggestion = generated && generated.text ? generated.text : null;
-    const { facts } = resolveProduct(req.body?.productId, req.body?.productName);
+    // حقائق الحارس: للمنتج الذي **طابقه المُحلّل** (بالخصائص) لا للمنتج المطلوب فقط —
+    // وإلا حُجب سعر مسجّل حقيقي باعتباره غير مسجّل. عند غياب تطابق تُستخدم حقائق
+    // المعرض العامة (فلا يمرّ أي رقم غير مسجّل).
+    const matchedProductId = inquiry?.product?.id ? String(inquiry.product.id) : req.body?.productId;
+    const { facts } = resolveProduct(matchedProductId, inquiry?.product ? undefined : req.body?.productName);
     const safety = rawSuggestion ? analyzeBusinessClaims(rawSuggestion, facts) : null;
     // سياسة التواصل العراقي تُطبَّق على الرد المقترح أيضاً قبل عرضه.
     const policy = rawSuggestion ? checkCommercialPolicy(rawSuggestion) : null;

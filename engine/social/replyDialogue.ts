@@ -16,6 +16,7 @@
 
 import { generateReply, type ClassifiedComment, type GeneratedReply, type ReplyFactSet, type ReplyContext } from './comments';
 import { normalizeArabic } from './contentSafety';
+import { canonicalizeBrands as canonicalizeBrandsManaged } from './productMatch';
 import { wrapUntrustedText, UNTRUSTED_TEXT_POLICY_AR } from '../ai/untrusted';
 
 /** الحد الأقصى لجولات التوضيح في نفس الخيط قبل التصعيد للمالك (منع حلقة لا نهائية). */
@@ -87,6 +88,9 @@ export function shouldRequestClarification(
   if (comment.intent === 'spam' || comment.requiresHumanReview) return false;
   if (comment.intent === 'complaint') return false;
   if (comment.intent === 'praise' || comment.subIntent !== 'none') return false;
+  // المرحلة 4: الضمان يُحوَّل للمالك دائماً — لا سؤال توضيحي (لا معلومة ناقصة
+  // يمكن للعميل أن يوفرها)، فيُترك لمسار التصعيد في محرّك الردود.
+  if (comment.topic === 'warranty') return false;
   const isInquiry = comment.intent === 'business_inquiry' || comment.intent === 'question' || comment.isBusinessInquiry || comment.isQuestion;
   if (!isInquiry) return false;
   if (priorClarificationCount(ctx) >= MAX_CLARIFICATION_ROUNDS) return false;
@@ -94,6 +98,11 @@ export function shouldRequestClarification(
   if (comment.topic === 'location' && !facts.locationText) return true;
   if (comment.topic === 'availability' && (facts.inStock === null || facts.inStock === undefined)) return true;
   if (comment.topic === 'hours' && !facts.hoursText) return true;
+  // التوصيل/شروط التقسيط/مدة التقسيط: لا سؤال توضيحي إن وُجد جواب مسجّل؛ وإلا
+  // نسأل سؤالاً واحداً موجّهاً بدل التخمين.
+  if ((comment.topic === 'delivery' || comment.topic === 'installment_terms' || comment.topic === 'installment')
+    && !String(facts.knowledgeAnswer || '').trim()
+    && !(comment.topic === 'installment' && facts.installmentMonthsText)) return true;
   if (comment.topic === 'general') return true;
   return false;
 }
@@ -121,6 +130,19 @@ const CLARIFY_BANK: Readonly<Record<string, readonly string[]>> = Object.freeze(
     'هلا بيك 🌸 خبرني أي فرع تقصد حتى أعطيك أوقات دوامه الأدق.',
     'تدلل، وضّحلي الفرع وأنا أقولك أوقات الدوام بالضبط.',
   ],
+  // المرحلة 4: أسئلة توضيح موجّهة للموضوعات الجديدة (بلا اختراع رقم/شرط).
+  delivery: [
+    'تدلل 🌸 خبرني أي منطقة أو مدينة تريد التوصيل إلها، وأوضحلك التفاصيل.',
+    'هلا بيك، وضّحلي مكانك وأنا أقولك شلون يترتب موضوع التوصيل.',
+  ],
+  installment_terms: [
+    'هلا بيك 🌸 وضّحلي أي منتج تقصد بالتقسيط، وأوضحلك الشروط والمستمسكات المطلوبة.',
+    'تدلل، خبرني الموديل اللي تريده وأنا أشرحلك شروط التقسيط.',
+  ],
+  installment: [
+    'هلا بيك 🌸 خبرني أي منتج تقصد حتى أقولك مدة التقسيط المتاحة.',
+    'تدلل، وضّحلي الموديل وأنا أوضحلك مدة التقسيط.',
+  ],
 });
 
 /** جولة متابعة (بعد سؤال أول بلا جواب واضح): أكثر تحديداً وأقرب للتفاصيل. */
@@ -130,12 +152,15 @@ const CLARIFY_FOLLOWUP: readonly string[] = Object.freeze([
 ]);
 
 /** موضوع التوضيح الفعّال: يتبع أداة السؤال (tool) لمطابقة الحقول. */
-function clarificationTopic(comment: ClassifiedComment): 'general' | 'price' | 'location' | 'availability' | 'hours' {
+function clarificationTopic(comment: ClassifiedComment): string {
   switch (comment.topic) {
     case 'price': return 'price';
     case 'location': return 'location';
     case 'availability': return 'availability';
     case 'hours': return 'hours';
+    case 'delivery': return 'delivery';
+    case 'installment_terms': return 'installment_terms';
+    case 'installment': return 'installment';
     default: return 'general';
   }
 }
@@ -209,38 +234,15 @@ function norm(s: string): string {
  * يُعيد null عند عدم التطابق (فلا اختراع).
  *
  * مرادفات الماركات: العميل قد يكتب اسم الماركة بتهجئة عامية مختلفة عن الاسم المسجّل في
- * الكتالوج. نُوحّد كل مجموعة إلى صيغة قياسية **داخل المطابقة فقط** (لا نغيّر النص
- * المحفوظ ولا نختلق ماركة) كي يجد المنتج المسجّل بدل التصعيد الخاطئ. لا يمسّ الأسعار.
+ * الكتالوج. القاموس المُدار في `productMatch.ts` هو المصدر الواحد للمرادفات، ويُستخدم
+ * هنا لتوحيد التهجئة **داخل المطابقة فقط** (لا يغيّر النص المحفوظ ولا يختلق ماركة).
  */
-const BRAND_SYNONYM_GROUPS: readonly (readonly string[])[] = Object.freeze([
-  ['شارب', 'شارك', 'شاب', 'sharp'],
-  ['سامسونج', 'سامسونك', 'سامسنغ', 'samsung'],
-  ['ال جي', 'الجي', 'ال جي', 'lg'],
-  ['ابل', 'ايفون', 'apple', 'iphone'],
-  ['هواوي', 'هوواي', 'huawei'],
-  ['شاومي', 'شياومي', 'xiaomi'],
-  ['توشيبا', 'toshiba'],
-  ['سوني', 'sony'],
-  ['نوكيا', 'nokia'],
-  ['ريلمي', 'realme'],
-  ['اوبو', 'oppo'],
-  ['فيفو', 'vivo'],
-]);
-
-const BRAND_CANONICAL: ReadonlyMap<string, string> = (() => {
-  const m = new Map<string, string>();
-  for (const group of BRAND_SYNONYM_GROUPS) {
-    const canonical = group[0];
-    for (const variant of group) m.set(norm(variant), canonical);
-  }
-  return m;
-})();
 
 /** يوحّد تهجئة الماركات العامية إلى صيغة قياسية (للمطابقة فقط — بلا مساس بالأسعار). */
 export function canonicalizeBrands(input: string): string {
   const n = norm(input);
   if (!n) return n;
-  return n.split(' ').map((token) => BRAND_CANONICAL.get(token) || token).join(' ');
+  return canonicalizeBrandsManaged(n);
 }
 
 export function matchCatalogProduct(text: string, products: any[]): any | null {
@@ -283,12 +285,16 @@ export function generateConversationalReply(
   // ⇒ تصعيد للمالك بدل حلقة لا نهائية أو جواب عام قد لا يفيد.
   const rounds = priorClarificationCount(ctx);
   const unresolvedInquiry = comment.intent !== 'complaint' && comment.intent !== 'spam' && !comment.requiresHumanReview
+    && comment.topic !== 'warranty'
     && (comment.intent === 'business_inquiry' || comment.intent === 'question' || comment.isBusinessInquiry || comment.isQuestion)
     && (comment.topic === 'general'
       || (comment.topic === 'price' && !facts.priceText)
       || (comment.topic === 'location' && !facts.locationText)
       || (comment.topic === 'availability' && (facts.inStock === null || facts.inStock === undefined))
-      || (comment.topic === 'hours' && !facts.hoursText));
+      || (comment.topic === 'hours' && !facts.hoursText)
+      || ((comment.topic === 'delivery' || comment.topic === 'installment_terms' || comment.topic === 'installment')
+        && !String(facts.knowledgeAnswer || '').trim()
+        && !(comment.topic === 'installment' && facts.installmentMonthsText)));
   if (unresolvedInquiry && rounds >= MAX_CLARIFICATION_ROUNDS) {
     return {
       text: 'هلا بيك 🌸 خلي نوصلك للتفاصيل الأدق عبر الرسائل الخاصة حتى ما نتأخر عليك.',

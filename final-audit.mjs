@@ -5203,6 +5203,102 @@ add('watcher-advisory-not-authority',
       'اختبارات PR-S5 تستخدم خادم Meta وهمياً محلياً بلا مزود حقيقي ولا حصة AI');
   }
 
+  // 13) المرحلة 4 (منطق العقل عند الاستفسار) + المرحلة 5 (بيانات المعرض المؤكدة).
+  {
+    const resolver = read('engine/social/inquiryResolver.ts');
+    const productMatch = read('engine/social/productMatch.ts');
+    const knowledge = read('engine/social/showroomKnowledge.ts');
+    const seed = read('engine/social/showroomSeed.ts');
+    const comments = read('engine/social/comments.ts');
+    const accept = read('engine/tests/phase4.inquiry.acceptance.test.ts');
+
+    add('phase4-inquiry-resolver-single-source',
+      resolver.includes('export function resolveInquiry') &&
+      resolver.includes("'product_choice'") &&
+      resolver.includes('matchProducts('),
+      'مُحلّل واحد للاستفسار يجمع التصنيف + الخصائص + المعرفة ويُنتج answer/choice/clarify/escalate');
+
+    add('phase4-brand-synonym-dictionary-managed',
+      productMatch.includes('BRAND_SYNONYM_GROUPS') &&
+      /شارب',\s*'شارك/.test(productMatch) &&
+      /سامسونج',\s*'سامسونك/.test(productMatch) &&
+      productMatch.includes('canonicalizeBrands') &&
+      !/BRAND_SYNONYM_GROUPS\s*[:=]/.test(read('engine/social/replyDialogue.ts')),
+      'قاموس مرادفات الماركات مُدار في مصدر واحد (شارك⇄شارب، سامسونك⇄سامسونج) بلا قاموس موازٍ');
+
+    add('phase4-attribute-match-not-literal',
+      productMatch.includes('export function matchProducts') &&
+      productMatch.includes('deriveProductAttributes') &&
+      productMatch.includes('brandHit || top.sizeHit'),
+      'المطابقة بالخصائص (مقاس/نوع/ماركة) مع ثقة مشروطة بإشارة مميّزة — لا بالاسم الحرفي ولا بالنوع وحده');
+
+    add('phase4-knowledge-answers-verbatim',
+      knowledge.includes('export function buildShowroomKnowledge') &&
+      knowledge.includes('export function findKnowledgeMatch') &&
+      knowledge.includes('KNOWLEDGE_SIMILARITY_THRESHOLD') &&
+      !/ضمان[\s\S]{0,40}(kb:|entry)/.test(knowledge),
+      'قاعدة المعرفة تُجيب بالنص المسجّل حرفياً (كلمات مفتاحية + تشابه)، والضمان غير مُدرَج');
+
+    add('phase4-warranty-always-escalates',
+      read('engine/social/escalation.ts').includes("input.topic === 'warranty'") &&
+      resolver.includes("cls.topic === 'warranty'") &&
+      resolver.includes("'escalate'"),
+      'الضمان يُحوَّل للمالك دائماً في هذا الإصدار (لا جواب من القاعدة ولا مدة)');
+
+    add('phase4-topics-are-independent',
+      /'warranty'\s*\|\s*'delivery'/.test(comments) &&
+      /'delivery'\s*\|\s*'installment_terms'/.test(comments) &&
+      /'installment_terms'\s*\|\s*'installment'/.test(comments) &&
+      comments.includes('installment_terms: /') &&
+      comments.includes('warranty: /') &&
+      read('engine/social/escalation.ts').includes("input.topic === 'installment_terms'"),
+      'دوام/ضمان/مدة التقسيط/شروط التقسيط/توصيل موضوعات مستقلة — لا تُصنَّف price أو availability');
+
+    add('phase4-off-topic-polite-redirect',
+      comments.includes('export function isOffTopic') &&
+      comments.includes('OFF_TOPIC_RE') &&
+      resolver.includes('isOffTopic(input.text)'),
+      'السؤال خارج النطاق يُعتذر عنه ويُعاد توجيهه (لا جواب مختلق ولا رقم)');
+
+    add('phase5-showroom-seed-confirmed-values',
+      seed.includes("الطريق كربلاء الطويريج، مقابل العمود 202") &&
+      seed.includes('07728705767') &&
+      seed.includes('يومياً من 8 صباحاً حتى 8 مساءً') &&
+      seed.includes('المدة الأساسية 10 أشهر'),
+      'المرحلة 5: العنوان والهاتف والدوام وشروط التقسيط المؤكدة مُدخلة كما هي');
+
+    add('phase5-seed-non-destructive',
+      seed.includes('export function applyShowroomSeedDefaults') &&
+      seed.includes('isBlank(showroom.address)') &&
+      seed.includes('isBlank(showroom.workingHours)') &&
+      server.includes('applyShowroomSeedDefaults('),
+      'تغذية بيانات المعرض تُملأ الحقول الفارغة فقط ولا تطمس أي قيمة أدخلها المالك');
+
+    add('phase5-warranty-not-seeded',
+      // لا ثابت ضمان ولا حقل ضمان في التغذية — مجرّد ذكر القرار في تعليق توثيقي مسموح.
+      !/SHOWROOM_SEED_WARRANTY/.test(seed) &&
+      !/(warranty|ضمان)\s*[:=]/.test(seed.replace(/^\s*\*.*$/gm, '')) &&
+      !/warranty/.test(knowledge),
+      'الضمان غير مُضاف إلى قاعدة المعرفة في هذه المرحلة (قرار المالك)');
+
+    add('phase4-no-invented-numbers-in-replies',
+      accept.includes('allowedNumbers') &&
+      accept.includes('لا رقم خارج بيانات المعرض'),
+      'اختبار القبول يتحقق أن كل رقم في الرد مصدره بيانات المعرض/المنتجات المسجّلة');
+
+    add('phase4-acceptance-tests-registered',
+      (pkg.scripts['test'] || '').includes('test:phase4-inquiry') &&
+      (pkg.scripts['test:phase4-inquiry'] || '').includes('phase4.inquiry.acceptance.test.ts') &&
+      fs.existsSync(path.join(root, 'engine/tests/phase4.inquiry.acceptance.test.ts')),
+      'اختبار قبول المرحلة 4/5 موجود ومسجَّل في npm test');
+
+    add('phase4-acceptance-tests-no-real-provider',
+      /phase4\.inquiry\.acceptance\.test\.ts/.test(pkg.scripts['test:phase4-inquiry'] || '') &&
+      !/graph\.facebook\.com/.test(accept) &&
+      /delete env\.GEMINI_API_KEY/.test(accept),
+      'اختبار القبول يشغّل خادماً حقيقياً بلا مزود AI وبلا حصة (يمسح GEMINI_API_KEY/DATABASE_URL)');
+  }
+
   // 12) AGENTS.md: عدد فحوصات final-audit مطابق للفعلي (يُعَدّ من نص الملف نفسه).
   const auditCount = (read('final-audit.mjs').match(/^\s*add\(/gm) || []).length;
   add('agents-audit-count-accurate',
