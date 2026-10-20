@@ -4007,6 +4007,30 @@ add('watcher-advisory-not-authority',
     !/from ['"].*finance|from ['"].*collections/i.test(server.slice(server.indexOf('function applyInstallmentFields'), server.indexOf('function applyInstallmentFields') + 900)),
     'التعديل في نطاق عرض المنتج فقط — لا عقود/دفعات/تحصيل/مالية');
 
+  // 8ج) PR-P2: تأكيد قبل حذف المنتج (واجهة فقط — بلا تغيير خادم/قاعدة).
+  add('prp2-delete-requires-confirm',
+    showroomView.includes('onClick={() => setProductPendingDelete(prod)}') &&
+    !showroomView.includes('onClick={() => deleteProduct(prod.id)}') &&
+    showroomView.includes('هل أنت متأكد من حذف هذا المنتج؟'),
+    'زر الحذف يفتح نافذة تأكيد ولا يحذف مباشرةً');
+  add('prp2-confirm-shows-name-and-price',
+    showroomView.includes('{productPendingDelete.name}') &&
+    showroomView.includes('productPendingDelete.cashPrice'),
+    'النافذة تعرض اسم المنتج والسعر قبل التأكيد');
+  add('prp2-confirm-yes-deletes-no-cancel',
+    showroomView.includes('deleteProduct(productPendingDelete.id)') &&
+    /onClick=\{\(\) => setProductPendingDelete\(null\)\}/.test(showroomView),
+    '«نعم» ينفّذ الحذف الحالي و«لا» تُغلق بلا حذف');
+  add('prp2-confirm-no-double-delete',
+    showroomView.includes('if (!productPendingDelete || isDeletingProduct) return;') &&
+    /onClick=\{confirmDeleteProduct\}[\s\S]{0,200}disabled=\{isDeletingProduct\}/.test(showroomView),
+    'تعطيل الزر أثناء الحذف يمنع الضغط المكرر');
+  add('prp2-test-registered',
+    (pkg.scripts['test'] || '').includes('test:prp2-delete-confirm') &&
+    pkg.scripts['test:prp2-delete-confirm'] === 'tsx engine/tests/prp2.delete.confirm.ui.test.ts' &&
+    read('engine/e2e/prp2.delete-confirm.e2e.spec.ts').includes('لا يُحذف إلا بـ«نعم»'),
+    'اختبار PR-P2 مسجَّل ضمن npm test مع e2e حقيقي');
+
   // 9ب) كشف السبب الحقيقي لفشل النشر الموحّد (Instagram/Threads) + تمييز YouTube.
   const threadsSrc = read('engine/social/threads.ts');
   const approvalSrc = read('src/components/approval/ApprovalWorkflowView.tsx');
