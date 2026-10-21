@@ -25,7 +25,16 @@ import {
   USAGE_PRESSURE_WATCH_RATIO,
   resolveUsagePressure,
   usagePressureIntervalMultiplier,
+  usagePressureIngestIntervalMultiplier,
 } from '../ops/usagePressure';
+import {
+  emptyDeferralState,
+  normalizeDeferralState,
+  markCycleDeferred,
+  clearCycleDeferral,
+  cycleMissedCount,
+  cycleStaleWarning,
+} from '../ops/cycleDeferral';
 import {
   DRIVE_API_UNIT_COSTS,
   driveApiAccountingSnapshot,
@@ -69,6 +78,11 @@ function run(): void {
     check('critical => slowDown + deferNonCritical', critical.slowDown === true && critical.deferNonCritical === true);
     check('critical => deferCriticalTick (backup tick deferred, not disabled)', critical.deferCriticalTick === true);
     check('critical multiplier = 1 (deferred anyway)', usagePressureIntervalMultiplier('critical') === 1);
+    // إصلاح 2026-10-20: دورات الاستقبال الخفيفة **لا تُؤجَّل** عند critical.
+    check('critical => ingest NOT deferred (light ingest keeps running)', critical.deferIngest === false);
+    check('watch => ingest NOT deferred', watch.deferIngest === false);
+    check('normal => ingest NOT deferred', low.deferIngest === false);
+    check('no signals => ingest NOT deferred', none.deferIngest === false);
 
     // null percent لا يُعلن ضغطاً (لا تخمين).
     const mixed = resolveUsagePressure([{ usedPercent: null, provider: 'drive' }, { usedPercent: 10, provider: 'neon' }]);
@@ -177,13 +191,60 @@ function run(): void {
     check('dayKey + monthKey', dayKey('2026-10-13T09:00:00Z') === '2026-10-13' && monthKey('2026-10-13T09:00:00Z') === '2026-10');
   }
 
-  // ── 6) لا حقل عميل ممنوع في أي ناتج (بلا سرّ) ────────────────────
-  group('6) بلا سرّ: النواتج لا تحمل حقول عملاء ممنوعة');
+  // ── 6) تتبّع التأجيل + كشف الدورة الفائتة (cycleDeferral) ────────
+  group('6) تتبّع التأجيل وكشف الدورات الفائتة (إصلاح 2026-10-20)');
+  {
+    // حالة فارغة = لا تأجيل.
+    const empty = emptyDeferralState();
+    check('empty = not deferred', empty.deferred === false && empty.deferredReason === null && empty.lastDeferredAt === null);
+
+    // تسجيل تأجيل يحمل سبباً ووقتاً.
+    const marked = markCycleDeferred(empty, 'تأجيل بسبب ضغط الاستهلاك', '2026-10-19T02:40:00.000Z');
+    check('mark => deferred true', marked.deferred === true);
+    check('mark => reason kept', marked.deferredReason === 'تأجيل بسبب ضغط الاستهلاك');
+    check('mark => lastDeferredAt kept', marked.lastDeferredAt === '2026-10-19T02:40:00.000Z');
+
+    // مسح التأجيل بعد دورة فعلية يُبقي آخر وقت للتوثيق.
+    const cleared = clearCycleDeferral(marked);
+    check('clear => deferred false', cleared.deferred === false && cleared.deferredReason === null);
+    check('clear keeps lastDeferredAt', cleared.lastDeferredAt === '2026-10-19T02:40:00.000Z');
+
+    // تطبيع دفاعي: شكل قديم/فاسد ⇒ لا تأجيل بلا رمي.
+    check('normalize garbage => empty', normalizeDeferralState(null).deferred === false);
+    check('normalize partial => reason null', normalizeDeferralState({ deferred: true }).deferredReason === null);
+    check('normalize coerces deferred truthy', normalizeDeferralState({ deferred: 'yes' }).deferred === false);
+
+    // cycleMissedCount: صفر داخل الإيقاع، ثم عدد الدورات الفائتة.
+    check('missed=0 within cadence', cycleMissedCount('2026-10-19T00:00:00.000Z', 60_000, Date.parse('2026-10-19T00:00:30.000Z')) === 0);
+    check('missed counts full periods', cycleMissedCount('2026-10-19T00:00:00.000Z', 60_000, Date.parse('2026-10-19T00:05:00.000Z')) === 5);
+    check('missed=0 without lastRun', cycleMissedCount(null, 60_000, Date.now()) === 0);
+    check('missed=0 on invalid cadence', cycleMissedCount('2026-10-19T00:00:00.000Z', 0, Date.now()) === 0);
+
+    // cycleStaleWarning: لا تحذير داخل دورتين، ويقع بعد أكثر من دورتين.
+    const ok = cycleStaleWarning('2026-10-19T02:00:00.000Z', 60_000, Date.parse('2026-10-19T02:02:00.000Z'));
+    check('stale=false within 2 cycles', ok.stale === false && ok.missedCycles === 2, `${ok.stale}/${ok.missedCycles}`);
+    const stale = cycleStaleWarning('2026-10-19T02:00:00.000Z', 60_000, Date.parse('2026-10-19T02:03:00.000Z'));
+    check('stale=true beyond 2 cycles', stale.stale === true && stale.missedCycles === 3);
+    check('stale reason mentions hours', typeof stale.reason === 'string' && stale.reason.includes('ساعة'), String(stale.reason));
+    // السيناريو الفعلي: ~32 ساعة بلا دورة بإيقاع دقيقة ⇒ stale صريح.
+    const longGap = cycleStaleWarning('2026-10-19T02:40:00.000Z', 60_000, Date.parse('2026-10-20T10:40:00.000Z'));
+    check('32h gap => stale', longGap.stale === true && longGap.hoursSince === 32, `${longGap.hoursSince}`);
+    check('no lastRun => never stale', cycleStaleWarning(null, 60_000, Date.now()).stale === false);
+
+    // مضاعف إيقاع الاستقبال: 2 عند watch، 1 عند critical/normal (لا توقف).
+    check('ingest multiplier watch=2', usagePressureIngestIntervalMultiplier('watch') === 2);
+    check('ingest multiplier critical=1', usagePressureIngestIntervalMultiplier('critical') === 1);
+    check('ingest multiplier normal=1', usagePressureIngestIntervalMultiplier('normal') === 1);
+  }
+
+  // ── 7) لا حقل عميل ممنوع في أي ناتج (بلا سرّ) ────────────────────
+  group('7) بلا سرّ: النواتج لا تحمل حقول عملاء ممنوعة');
   {
     const blob = JSON.stringify({
       pressure: resolveUsagePressure([{ usedPercent: 99, provider: 'neon' }]),
       render: buildRenderUptimeIndicator({ measuredHoursThisMonth: 10, worstCaseWorkspaceHours: 70, limitHours: 750, alertThresholdPercent: 80 }),
       driveApi: buildDriveApiIndicator({ callsToday: 1, unitsToday: 5, limitUnits: 400_000_000, alertThresholdPercent: 80 }),
+      deferral: markCycleDeferred(emptyDeferralState(), 'سبب تقني', '2026-10-19T02:40:00.000Z'),
     });
     const forbidden = PUBLIC_ENDPOINT_FORBIDDEN_CUSTOMER_FIELDS.filter((k) => blob.includes(`"${k}"`));
     check('no forbidden customer fields', forbidden.length === 0, forbidden.join(','));

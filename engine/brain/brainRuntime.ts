@@ -17,6 +17,7 @@
  */
 
 import type { BrainMemoryRecord } from './memory/store';
+import { type DeferralState, emptyDeferralState, normalizeDeferralState, markCycleDeferred, clearCycleDeferral, cycleStaleWarning } from '../ops/cycleDeferral';
 
 /** حالات دورة العقل الصريحة (لا تُخفي الفشل). */
 export const BRAIN_CYCLE_STATUSES = ['IDLE', 'RUNNING', 'SUCCESS', 'NO_NEW_DATA', 'SKIPPED_LOCKED', 'FAILED', 'DISABLED'] as const;
@@ -80,6 +81,8 @@ export interface BrainRuntimeState {
   lastMemoryTotal: number | null;
   persistenceSuccessCount: number;
   persistenceFailureCount: number;
+  /** إصلاح 2026-10-20: تتبّع تأجيل الدورة (deferred/reason/lastDeferredAt) — بلا سرّ. */
+  deferral?: DeferralState;
 }
 
 export function emptyBrainRuntimeState(): BrainRuntimeState {
@@ -105,6 +108,7 @@ export function emptyBrainRuntimeState(): BrainRuntimeState {
     lastMemoryTotal: null,
     persistenceSuccessCount: 0,
     persistenceFailureCount: 0,
+    deferral: emptyDeferralState(),
   };
 }
 
@@ -145,6 +149,7 @@ export function normalizeBrainRuntimeState(raw: any): BrainRuntimeState {
     lastMemoryTotal: Number.isFinite(raw.lastMemoryTotal) ? Number(raw.lastMemoryTotal) : null,
     persistenceSuccessCount: num(raw.persistenceSuccessCount),
     persistenceFailureCount: num(raw.persistenceFailureCount),
+    deferral: normalizeDeferralState(raw.deferral),
   };
 }
 
@@ -338,6 +343,8 @@ export async function runBrainRuntimeCycle(
       failedCount: persistResult.ok ? prev.failedCount : prev.failedCount + 1,
       persistenceSuccessCount: persistResult.ok && records.length ? prev.persistenceSuccessCount + 1 : prev.persistenceSuccessCount,
       persistenceFailureCount: !persistResult.ok ? prev.persistenceFailureCount + 1 : prev.persistenceFailureCount,
+      // إصلاح 2026-10-20: دورة فعلية وقعت ⇒ يُمسح علم التأجيل (يبقى آخر وقت للتوثيق).
+      deferral: clearCycleDeferral(normalizeDeferralState(prev.deferral)),
     });
     return {
       status,
@@ -377,17 +384,29 @@ export function buildBrainRuntimeStatus(
 ) {
   const lastRunAtMs = parseBrainRuntimeLastRunAtMs(state);
   const next = nextBrainRuntimeAtMs(lastRunAtMs, intervalMs);
+  const deferral = normalizeDeferralState(state.deferral);
   const currentStatus: BrainCycleStatus = !opts.enabled
     ? 'DISABLED'
     : opts.running || state.status === 'RUNNING'
       ? 'RUNNING'
       : (state.lastStatus || state.status || 'IDLE');
+  // إصلاح 2026-10-20: لا نعرض حالة «سليمة» إذا كانت الدورة مؤجَّلة أو فائتة.
+  // تحذير الفوات: مرّ على آخر دورة فعلية أكثر من دورتين متتاليتين.
+  const stale = cycleStaleWarning(state.lastCycleCompletedAt || state.lastSuccessAt, intervalMs, nowMs);
   return {
     enabled: opts.enabled,
     scheduled: opts.scheduled,
     running: opts.running,
     status: currentStatus,
     statusLabelAr: BRAIN_CYCLE_STATUS_LABELS_AR[currentStatus],
+    // تتبّع التأجيل الصريح (بلا سرّ): هل أُجِّلت الدورة؟ لماذا؟ ومتى آخر مرة؟
+    deferred: deferral.deferred,
+    deferredReason: deferral.deferredReason,
+    lastDeferredAt: deferral.lastDeferredAt,
+    // تحذير «دورة فائتة»: يقع إن مرّ أكثر من دورتين متتاليتين بلا دورة فعلية.
+    stale: stale.stale,
+    staleReason: stale.reason,
+    missedCycles: stale.missedCycles,
     lastStatus: state.lastStatus,
     lastStatusLabelAr: state.lastStatus ? BRAIN_CYCLE_STATUS_LABELS_AR[state.lastStatus] : null,
     intervalMinutes: Math.round(intervalMs / 60000),

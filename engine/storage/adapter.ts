@@ -78,6 +78,41 @@ function recordStorageWrite(bytes: number): void {
   writeAccounting.lastWriteAt = new Date().toISOString();
 }
 
+/**
+ * عدّاد القراءة (بايتات استجابة القاعدة) — يُغذّي مؤشّر **نقل Neon الحقيقي**.
+ *
+ * السبب الجذري للإصلاح: «النقل العام» (public network transfer) لدى Neon هو
+ * **الصادر (egress)** فقط — أي حجم ما ترجعه القاعدة للعملاء (نتائج SELECT)، لا ما
+ * يُرسَل إليها. العدّاد السابق كان يقيس **بايتات الكتابة** (الصادر نحن ⇒ الوارد
+ * ingress) ويقارنها بحدّ النقل، فيبالغ جوهرياً ويُعلن ضغطاً كاذباً. الآن نقيس
+ * البايتات التي **تعود من القاعدة** (نفس ما تعدّه Neon)، وهو تقدير من جانب العميل
+ * (لا يشمل كل الاتصالات ولا تراكيب البروتوكول) فيُعلن صراحةً كتقدير لا قياس تام.
+ */
+export interface StorageReadAccounting {
+  readCount: number;
+  bytesReadTotal: number;
+  bytesReadSinceStart: number;
+  lastReadAt: string | null;
+  startedAt: string;
+}
+const readAccounting: StorageReadAccounting = {
+  readCount: 0,
+  bytesReadTotal: 0,
+  bytesReadSinceStart: 0,
+  lastReadAt: null,
+  startedAt: new Date().toISOString(),
+};
+export function storageReadAccounting(): StorageReadAccounting {
+  return { ...readAccounting };
+}
+function recordStorageRead(bytes: number): void {
+  if (!Number.isFinite(bytes) || bytes <= 0) return;
+  readAccounting.readCount += 1;
+  readAccounting.bytesReadTotal += bytes;
+  readAccounting.bytesReadSinceStart += bytes;
+  readAccounting.lastReadAt = new Date().toISOString();
+}
+
 export interface BackupInfo {
   name: string;
   size: number;
@@ -257,6 +292,9 @@ class FileStorageAdapter implements StorageAdapter {
     try {
       const parsed = JSON.parse(raw) as T;
       this.corruptKeys.delete(key);
+      // عدّاد الصادر: للخلفية الملفية لا نقل شبكة، لكن نُبقي العدّاد متسقاً (تقدير
+      // من جانب العميل يُعلن صراحةً) — والمؤشّر يتجاهله عند الخلفية الملفية.
+      try { recordStorageRead(Buffer.byteLength(raw, "utf8")); } catch { /* تجاهل */ }
       return parsed;
     } catch {
       // F-17: المحتوى موجود لكنه غير قابل للتحليل — نُعلن التلف ولا نُعيد null بصمت.
@@ -603,9 +641,11 @@ class PostgresStorageAdapter implements StorageAdapter {
     try {
       const result = await this.pool.query("SELECT value FROM gharabi_state WHERE key = $1", [key]);
       const value = (result.rows?.[0]?.value ?? null) as T | null;
-      // نُغذّي خط الأساس من القيمة المقروءة فعلاً (JSONB يُعيد كائناً): أي كتابة
-      // لاحقة مطابقة لها لن تُنقل إلى القاعدة.
+      // مؤشّر نقل Neon: نقيس بايتات ما ترجعه القاعدة (egress) — نفس ما تعدّه Neon.
       if (value !== null && value !== undefined) {
+        try { recordStorageRead(Buffer.byteLength(JSON.stringify(value), "utf8")); } catch { /* تجاهل */ }
+        // نُغذّي خط الأساس من القيمة المقروءة فعلاً (JSONB يُعيد كائناً): أي كتابة
+        // لاحقة مطابقة لها لن تُنقل إلى القاعدة.
         try { this.writeBaseline.set(key, JSON.stringify(value)); } catch { /* تجاهل */ }
       }
       return value;

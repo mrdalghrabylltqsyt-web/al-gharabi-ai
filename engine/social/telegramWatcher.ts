@@ -30,8 +30,10 @@ import {
   resolveCommentExecution,
   isDeferredDecision,
   releaseDeferredEntries,
+  cadenceMinutesToMs,
 } from './youtubeWatcher';
 import { sanitizePublicErrorMessage } from './healthPrivacy';
+import { type DeferralState, normalizeDeferralState, cycleStaleWarning } from '../ops/cycleDeferral';
 
 /** المنصات التي يغطّيها هذا المراقب (موصل رد رسائل حقيقي). */
 export type TelegramWatcherPlatform = 'telegram';
@@ -61,6 +63,8 @@ export interface TelegramPollingState {
   pollCount: number;
   lastScanned: number;
   lease: any;
+  /** إصلاح 2026-10-20: تتبّع تأجيل الدورة (deferred/reason/lastDeferredAt) — بلا سرّ. */
+  deferral?: DeferralState;
 }
 
 export function defaultTelegramPollingState(): TelegramPollingState {
@@ -73,6 +77,7 @@ export function defaultTelegramPollingState(): TelegramPollingState {
     pollCount: 0,
     lastScanned: 0,
     lease: null,
+    deferral: { deferred: false, deferredReason: null, lastDeferredAt: null },
   };
 }
 
@@ -89,6 +94,7 @@ export function normalizeTelegramPollingState(raw: any): TelegramPollingState {
     pollCount: Number.isFinite(Number(raw.pollCount)) ? Math.max(0, Math.trunc(Number(raw.pollCount))) : 0,
     lastScanned: Number.isFinite(Number(raw.lastScanned)) ? Math.max(0, Math.trunc(Number(raw.lastScanned))) : 0,
     lease: raw.lease && typeof raw.lease === 'object' ? raw.lease : null,
+    deferral: normalizeDeferralState(raw.deferral),
   };
 }
 
@@ -169,12 +175,31 @@ export function telegramPollingControlsView(controls: TelegramWatcherControls) {
  */
 export function telegramPollingPublicBlock(state: TelegramPollingState) {
   const s = normalizeTelegramPollingState(state);
+  const deferral = normalizeDeferralState(s.deferral);
+  // إصلاح 2026-10-20: كشف «دورة فائتة» (أكثر من دورتين متتاليتين بلا دورة فعلية).
+  const stale = cycleStaleWarning(s.lastPollAt, cadenceMinutesToMs(s.controls.cadenceMinutes), Date.now());
+  // لا تُعرض healthy وهي مؤجَّلة أو فائتة (كان التأجيل يبدو سليماً).
+  const status = s.controls.paused
+    ? 'disabled'
+    : s.lastError
+      ? 'degraded'
+      : (deferral.deferred || stale.stale)
+        ? 'deferred'
+        : 'healthy';
   return {
-    status: s.controls.paused ? 'disabled' : (s.lastError ? 'degraded' : 'healthy'),
+    status,
     watcherActive: s.controls.enabled && !s.controls.paused,
     cadenceMinutes: s.controls.cadenceMinutes,
     pollCount: s.pollCount,
     lastPollAt: s.lastPollAt,
+    // تتبّع التأجيل الصريح (بلا سرّ): هل الدورة مؤجَّلة؟ لماذا؟ ومتى آخر مرة؟
+    deferred: deferral.deferred,
+    deferredReason: deferral.deferredReason,
+    lastDeferredAt: deferral.lastDeferredAt,
+    // تحذير «دورة فائتة»: يقع إن مرّ أكثر من دورتين متتاليتين بلا دورة فعلية.
+    stale: stale.stale,
+    staleReason: stale.reason,
+    missedCycles: stale.missedCycles,
     // تنقية المصدر الواحد: رمز تقني ASCII فقط، وأي نص حر => 'connection error'.
     lastError: sanitizePublicErrorMessage(s.lastError),
     consecutiveErrors: s.consecutiveErrors,

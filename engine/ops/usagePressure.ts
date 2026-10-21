@@ -6,11 +6,18 @@
  *
  * الفصل الصريح:
  *  - `normal`   : لا ضغط — كل الدورات تعمل بإيقاعها الطبيعي.
- *  - `watch`    : بلغ أعلى مؤشر عتبة التحذير — تُضاعف فواصل الدورات غير الحرجة.
- *  - `critical` : بلغ عتبة حرجة — تُؤجَّل الدورات غير الحرجة (لا تُلغى).
+ *  - `watch`    : بلغ أعلى مؤشر عتبة التحذير — تُضاعف فواصل الدورات (توفير بلا توقّف).
+ *  - `critical` : بلغ عتبة حرجة — تُؤجَّل **الأعمال الثقيلة** فقط (نسخة احتياطية/
+ *                 تحليل كبير)، بينما **تستمر دورات الاستقبال الخفيفة** (قراءة
+ *                 التعليقات/الرسائل/الزبائن) بلا توقّف.
+ *
+ * إصلاح جذري (2026-10-20): كان critical يُؤجّل كل الدورات «غير الحرجة» — ومنها
+ * دورات الاستقبال الخفيفة — فتُوقفت دورات Meta/YouTube/Telegram بصمت ~32 ساعة
+ * بينما رقم Neon الداخلي كان مبالغاً (كان يقيس الكتابة لا الصادر). الآن الاستقبال
+ * الخفيف لا يُؤجَّل أبداً؛ التأجيل محصور بالعمل الثقيل، وأي تأجيل يُسجَّل صراحةً.
  *
  * قيد ملزم: الدورات **الحرجة** (النسخ الاحتياطي الكامل DR) لا تُعطَّل تماماً؛
- * تُؤجَّل نبضة واحدة فقط حتى لا تنقطع الاستمرارية، خلافاً للدورات الترفيهية.
+ * تُؤجَّل نبضة واحدة فقط حتى لا تنقطع الاستمرارية، خلافاً للدورات الثقيلة الأخرى.
  * والقرار لا يمسّ أي عملية يطلبها المالك يدوياً.
  */
 
@@ -29,10 +36,20 @@ export interface UsagePressureDecision {
   provider: string | null;
   /** أعلى نسبة مُرصودة (0..100 أو null). */
   usedPercent: number | null;
-  /** هل تُضاعف فواصل الدورات غير الحرجة؟ */
+  /** هل تُضاعف فواصل الدورات الثقيلة؟ */
   slowDown: boolean;
-  /** هل تُؤجَّل الدورات غير الحرجة هذه النبضة؟ */
+  /**
+   * هل تُؤجَّل **الأعمال الثقيلة غير الحرجة** (النسخ الاحتياطي، التحليل الكبير/
+   * دورة العقل) هذه النبضة؟ (اسمه محفوظ للتوافق، ومعناه: عمل ثقيل لا استقبال).
+   */
   deferNonCritical: boolean;
+  /**
+   * إصلاح جذري (2026-10-20): هل تُؤجَّل **دورات الاستقبال الخفيفة** (قراءة
+   * التعليقات/الرسائل/الزبائن)؟ **دائماً false** — كانت تُؤجَّل عند critical
+   * فتتوقف دورات Meta/YouTube/Telegram بصمت ~32 ساعة بينما Neon الحقيقي سليم.
+   * الاستقبال الخفيف يبقى يعمل حتى عند critical؛ التأجيل يقع على الثقيل فقط.
+   */
+  deferIngest: boolean;
   /** المتطلّب: تأجيل نبضة النسخ الاحتياطي الحرجة (لا تعطيلها كلياً). */
   deferCriticalTick: boolean;
   note: string;
@@ -66,7 +83,7 @@ export function resolveUsagePressure(
   if (!top) {
     return {
       level: 'normal', provider: null, usedPercent: null,
-      slowDown: false, deferNonCritical: false, deferCriticalTick: false,
+      slowDown: false, deferNonCritical: false, deferIngest: false, deferCriticalTick: false,
       note: 'لا مؤشر استهلاك مُقاس بعد — لا ضغط.',
     };
   }
@@ -75,25 +92,33 @@ export function resolveUsagePressure(
   if (used >= critical) {
     return {
       level: 'critical', provider, usedPercent: used,
-      slowDown: true, deferNonCritical: true, deferCriticalTick: true,
-      note: `بلغ أعلى مؤشر استهلاك ${used}% (${provider ?? 'غير معروف'}) ≥ العتبة الحرجة ${critical}% — تُؤجَّل الدورات غير الحرجة، وتُؤجَّل نبضة النسخ الاحتياطي (لا تُعطَّل).`,
+      slowDown: true, deferNonCritical: true, deferIngest: false, deferCriticalTick: true,
+      note: `بلغ أعلى مؤشر استهلاك ${used}% (${provider ?? 'غير معروف'}) ≥ العتبة الحرجة ${critical}% — تُؤجَّل **الأعمال الثقيلة** (نسخة احتياطية/تحليل كبير) وتُضاعف فواصلها، بينما **تستمر دورات الاستقبال الخفيفة** (قراءة التعليقات/الرسائل/الزبائن) بلا توقّف، وتُؤجَّل نبضة النسخ الاحتياطي (لا تُعطَّل).`,
     };
   }
   if (used >= watch) {
     return {
       level: 'watch', provider, usedPercent: used,
-      slowDown: true, deferNonCritical: false, deferCriticalTick: false,
-      note: `بلغ أعلى مؤشر استهلاك ${used}% (${provider ?? 'غير معروف'}) ≥ عتبة التحذير ${watch}% — تُضاعف فواصل الدورات غير الحرجة.`,
+      slowDown: true, deferNonCritical: false, deferIngest: false, deferCriticalTick: false,
+      note: `بلغ أعلى مؤشر استهلاك ${used}% (${provider ?? 'غير معروف'}) ≥ عتبة التحذير ${watch}% — تُضاعف فواصل الدورات الثقيلة والخفيفة معاً (لا تأجيل).`,
     };
   }
   return {
     level: 'normal', provider, usedPercent: used,
-    slowDown: false, deferNonCritical: false, deferCriticalTick: false,
+    slowDown: false, deferNonCritical: false, deferIngest: false, deferCriticalTick: false,
     note: `أعلى مؤشر استهلاك ${used}% — بلا ضغط؛ الإيقاع الطبيعي.`,
   };
 }
 
 /** مضاعف الفاصل الفعلي حسب مستوى الضغط (1 عادي، 2 تحذير، بلا تغيير عند حرج لأنها مؤجّلة). */
 export function usagePressureIntervalMultiplier(level: UsagePressureLevel): number {
+  return level === 'watch' ? 2 : 1;
+}
+
+/**
+ * مضاعف فاصل **دورات الاستقبال الخفيفة** — لا يتضاعف أبداً عند critical (كي لا
+ * تتوقف القراءة الفعلية)، ويتضاعف عند watch فقط (توفير بلا توقّف).
+ */
+export function usagePressureIngestIntervalMultiplier(level: UsagePressureLevel): number {
   return level === 'watch' ? 2 : 1;
 }

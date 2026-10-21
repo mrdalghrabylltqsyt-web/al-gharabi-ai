@@ -44,7 +44,7 @@ npm install
 npm run dev            # tsx server.ts
 npm run lint           # tsc --noEmit
 npm run build          # vite build + esbuild server.ts -> dist/server.cjs
-npm run final-audit    # node final-audit.mjs (1786 فحصاً)
+npm run final-audit    # node final-audit.mjs (1796 فحصاً)
 npm test               # storage + engine + auth + ... + db + runtime
 ```
 - التشغيل الإنتاجي: `PORT=4517 NODE_ENV=production APP_URL=http://localhost:4517 node dist/server.cjs`
@@ -7046,3 +7046,69 @@ TikTok (مجمّد)، Telegram/Threads، نموذج الجدولة، نطاق ER
 ويبقى الآخر). فحوص final-audit: `prp2-delete-requires-confirm`، `prp2-confirm-shows-name-and-price`،
 `prp2-confirm-yes-deletes-no-cancel`، `prp2-confirm-no-double-delete`، `prp2-test-registered`
 (الإجمالي **1773**).
+
+## إصلاح حارس ضغط Neon: قياس الصادر الحقيقي + فصل الاستقبال عن العمل الثقيل + تتبّع التأجيل صراحةً — 2026-10-20
+
+**الجذر المُثبت (لا تخمين):** حارس `usagePressure` كان يقيس **بايتات الكتابة** إلى قاعدة
+الحالة (`adapter.ts: recordStorageWrite`) ويقارنها بحدّ **نقل Neon** (~5 GiB)، فيصل داخلياً
+إلى 96% ويعلن `level=critical` فيؤجّل **كل** الدورات غير الحرجة — ومنها دورات الاستقبال
+الخفيفة (Meta/YouTube/Telegram) فتوقفت ~32 ساعة (`lastPollAt` ثابت 2026-10-19T02:4x)،
+بينما لوحة Neon الحقيقية أظهرت ~188 MB نقل فقط. السبب أن حدّ Neon «Public network transfer»
+هو **الصادر (egress)** — ما ترجعه القاعدة — لا بايتات الكتابة (ingress) التي لا تُحتسب نقلاً.
+والأسوأ: التأجيل كان **صامتاً** فبدا `/api/health` «healthy» وهو متوقّف.
+
+**الإصلاح — ثلاثة محاور:**
+
+### 1) قياس الصادر الفعلي بدل تقدير الكتابات (مؤشّر عرض فقط، بلا حجب)
+- `engine/ops/freeTierUsage.ts`: حقل الحالة صار `egressBytesMonth`/`egressBytesSinceBoot`
+  (توافق خلفي: يقرأ `transferBytesMonth` القديم)، و`buildNeonTransferIndicator` يقبل
+  `actualTransferBytes` ويُميّز `basis: 'measured'` (قراءة Neon الفعلية) عن `'estimated'`
+  (تقدير الصادر من جانب العميل)، ونصّ الملاحظة يوضّح أن المقياس هو **egress لا الكتابة**.
+- `engine/storage/adapter.ts`: `storageReadAccounting()` + `recordStorageRead` يقيس بايتات
+  ما **ترجعه القاعدة** (نتائج SELECT) — نفس ما تعدّه Neon. الكتابة المطابقة (لا تغيّر فعلي)
+  لا تُحتسب صادراً.
+- `engine/ops/neonUsage.ts` (جديد): قراءة استهلاك Neon **الفعلي** (compute + transfer) عبر
+  `GET /projects/{id}/consumption_history/v2` عند توفّر `NEON_API_KEY` + `NEON_PROJECT_ID`
+  فقط. **اختياري بالكامل**: بلا اعتماد ⇒ لا نداء شبكة إطلاقاً. **fail-safe**: أي خطأ يعيد
+  null ويبقى التقدير. لا سرّ في المخرَج. نبضة داخلية كل ساعة (`NEON_USAGE_POLL_MIN_INTERVAL_MS`)
+  مستقلة عن المتصفح، والقياس يصمد بعد restart عبر محوّل الحالة (`neonActual`).
+- `/api/health.freeTierUsage.neonActual` يعلن المصدر/الوقت/CU-ساعات (بلا سرّ).
+
+### 2) الضغط لا يُعطّل دورات الاستقبال
+- `engine/ops/usagePressure.ts`: حقل جديد `deferIngest` **دائماً false** (حتى عند critical)،
+  و`deferNonCritical` يبقى للتأجيل **الثقيل فقط** (النسخ الاحتياطي/التحليل الكبير/العقل
+  التجاري/وقت تشغيل العقل/مصالحة TikTok/إعادة محاولة حصة YouTube). `usagePressureIngestIntervalMultiplier`
+  يُبطّئ الاستقبال عند `watch` (×2) فقط ولا يوقفه عند critical.
+- `server.ts`: كل دورات الاستقبال (YouTube/Meta/Telegram) تستخدم `deferIngest` (false دائماً)
+  ومضاعف إيقاع الاستقبال، بينما الثقيل يستخدم `deferNonCritical` + `recordAuxiliaryDeferral`.
+
+### 3) تتبّع التأجيل صراحةً (لا تخطٍّ صامت)
+- `engine/ops/cycleDeferral.ts` (جديد، منطق صافٍ): `DeferralState` (`deferred`/`deferredReason`/
+  `lastDeferredAt`) + `normalizeDeferralState`/`markCycleDeferred`/`clearCycleDeferral` +
+  `cycleMissedCount`/`cycleStaleWarning` (تحذير إن مرّ أكثر من **دورتين** متتاليتين بلا دورة).
+- كل مراقب يحمل `deferral` (يُحفظ ويُسترجع): `metaPolling`/`telegramPolling`/`youtubeWatcher`/
+  `commercial` (يُحفظ في الحالة) و`brainRuntime` (في حالته) و`auxiliaryDeferrals` (ذاكرة العملية
+  لإعادة محاولة الحصة ومصالحة TikTok).
+- `/api/health` و`/api/readiness`: كتلة `cycleHealth` (`healthy`/`staleCycleCount`/`staleCycles`/
+  `auxiliaryDeferrals`) لا تعلن `healthy` عند وجود دورة فائتة، وكل مراقب يعلن `deferred`/
+  `deferredReason`/`lastDeferredAt`/`stale`/`staleReason`/`missedCycles`، و`status` لا يعود
+  `healthy` وهو `deferred`/`stale` (صار `deferred`).
+
+**اختبارات:** `engine/tests/usage.pressure.deferral.test.ts` (`npm run test:usage-pressure-deferral`،
+**30 فحصاً**، خادم حقيقي + خادم Graph وهمي): عند 96% ⇒ `deferIngest=false` + دورة Meta تعمل
+وتُحدّث `lastPollAt`؛ الثقيل يُؤجَّل ويُعلَن؛ حالة مؤجَّلة مزروعة (32 ساعة) ⇒ `status=deferred`
+و`cycleHealth.healthy=false` مع السبب؛ <80% ⇒ لا تغيير. `free.tier.usage.test.ts` = **66**،
+`free.tier.hardening.test.ts` = **81**، `health.guard.test.ts` = **41**، `meta.watcher` = **86**،
+`telegram.watcher` = **60**، `safe.timer` = **11**. فحوص final-audit الجديدة العشرة:
+`usage-pressure-ingest-separation` … `usage-pressure-deferral-test` (**1796 إجمالاً**).
+`npm run lint` ✅ · `npm run build` ✅ · `npm test` ✅ · `npm run final-audit` ✅.
+
+**قياسات حيّة على الفرع (خادم حقيقي):** `AFTER_CRITICAL` ⇒ `pressureLevel=critical`,
+`deferIngest=false`, `deferNonCritical=true`, `metaStatus=healthy`, `metaDeferred=false`؛
+`DEFERRED_SEEDED` ⇒ `metaStatus=deferred`, `metaDeferred=true`, `metaDeferredReason=...`,
+`metaStale=true`, `cycleHealthHealthy=false`, `cycleHealthStale=[metaPolling]`.
+
+**لم يُمسّ:** autoReply (يبقى off)، commercialSendMode (approval)، Kill Switch، تجميد TikTok،
+رمز/مسار `/api/health` (حقول فقط)، نطاق ERP، أي سرّ/متغيّر بيئة، أي نشر/دمج. **لا دمج** —
+بانتظار موافقة المالك.
+

@@ -53,7 +53,7 @@ import { readFileSync } from 'node:fs';
   check('reconcile overlap guard declared', server.includes('let tiktokReconcileRunning = false'));
   check('reconcile guard short-circuits', server.includes('if (tiktokReconcileRunning) return result;'));
   check('reconcile guard resets in finally', /tiktokReconcileRunning = false;\s*\}\s*\}/.test(server));
-  check('runtime timers use safe wrapper', server.includes('safeTimerCallback(runSafeJobPreflight') && server.includes('safeTimerCallback(cleanupRuntimeState') && server.includes('safeTimerCallback(() => { if (currentUsagePressure().deferNonCritical) return; reconcileTikTokPublishes()'));
+  check('runtime timers use safe wrapper', server.includes('safeTimerCallback(runSafeJobPreflight') && server.includes('safeTimerCallback(cleanupRuntimeState') && server.includes('safeTimerCallback(() => {') && server.includes('recordAuxiliaryDeferral("tiktokReconcile"') && server.includes('reconcileTikTokPublishes()'));
 }
 
 console.log(`PASSED: ${passed} safe-timer checks`);

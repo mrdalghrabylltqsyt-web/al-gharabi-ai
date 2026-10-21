@@ -28,9 +28,11 @@ import {
   resolveCommentExecution,
   isDeferredDecision,
   releaseDeferredEntries,
+  cadenceMinutesToMs,
   WATCHER_DEFAULT_CADENCE_MINUTES,
 } from './youtubeWatcher';
 import { sanitizePublicErrorMessage } from './healthPrivacy';
+import { type DeferralState, normalizeDeferralState, cycleStaleWarning } from '../ops/cycleDeferral';
 
 /** المنصات التي يغطّيها هذا المراقب (لها موصل تعليقات حقيقي + قراءة رسمية). */
 export type MetaPlatform = 'facebook' | 'instagram';
@@ -127,6 +129,8 @@ export interface MetaPollingState {
   /** إحصاءات الاستقبال لكل منصة (منشورات مفحوصة/تعليقات مرئية/آخر استقبال). */
   platformStats: Record<MetaPlatform, MetaPlatformIngestStats>;
   lease: any;
+  /** إصلاح 2026-10-20: تتبّع تأجيل الدورة (deferred/reason/lastDeferredAt) — بلا سرّ. */
+  deferral?: DeferralState;
 }
 
 export function defaultMetaPollingState(): MetaPollingState {
@@ -140,6 +144,7 @@ export function defaultMetaPollingState(): MetaPollingState {
     lastScanned: 0,
     platformStats: { facebook: defaultMetaPlatformIngestStats(), instagram: defaultMetaPlatformIngestStats() },
     lease: null,
+    deferral: { deferred: false, deferredReason: null, lastDeferredAt: null },
   };
 }
 
@@ -161,6 +166,7 @@ export function normalizeMetaPollingState(raw: any): MetaPollingState {
       instagram: normalizeMetaPlatformIngestStats(rawStats.instagram),
     },
     lease: raw.lease && typeof raw.lease === 'object' ? raw.lease : null,
+    deferral: normalizeDeferralState(raw.deferral),
   };
 }
 
@@ -253,12 +259,31 @@ export function metaPollingPublicBlock(state: MetaPollingState) {
     const w = metaIngestWarning(platformStats[platform], nowMs);
     return w.stale ? { platform, hoursSince: w.hoursSince, reason: w.reason } : null;
   }).filter(Boolean);
+  const deferral = normalizeDeferralState(s.deferral);
+  // إصلاح 2026-10-20: كشف «دورة فائتة» (أكثر من دورتين متتاليتين بلا دورة فعلية).
+  const stale = cycleStaleWarning(s.lastPollAt, cadenceMinutesToMs(s.controls.cadenceMinutes), nowMs);
+  // لا تُعرض healthy وهي مؤجَّلة أو فائتة (كان التأجيل يبدو سليماً).
+  const status = s.controls.paused
+    ? 'disabled'
+    : s.lastError
+      ? 'degraded'
+      : (deferral.deferred || stale.stale)
+        ? 'deferred'
+        : 'healthy';
   return {
-    status: s.controls.paused ? 'disabled' : (s.lastError ? 'degraded' : 'healthy'),
+    status,
     watcherActive: s.controls.enabled && !s.controls.paused,
     cadenceMinutes: s.controls.cadenceMinutes,
     pollCount: s.pollCount,
     lastPollAt: s.lastPollAt,
+    // تتبّع التأجيل الصريح (بلا سرّ): هل الدورة مؤجَّلة؟ لماذا؟ ومتى آخر مرة؟
+    deferred: deferral.deferred,
+    deferredReason: deferral.deferredReason,
+    lastDeferredAt: deferral.lastDeferredAt,
+    // تحذير «دورة فائتة»: يقع إن مرّ أكثر من دورتين متتاليتين بلا دورة فعلية.
+    stale: stale.stale,
+    staleReason: stale.reason,
+    missedCycles: stale.missedCycles,
     // تنقية المصدر الواحد: رمز تقني ASCII فقط، وأي نص حر (رسالة مزوّد/محادثة)
     // => 'connection error'، فلا يظهر نص خطأ المزوّد الخام في نقطة عامة.
     lastError: sanitizePublicErrorMessage(s.lastError),

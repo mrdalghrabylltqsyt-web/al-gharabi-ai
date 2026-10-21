@@ -607,6 +607,7 @@ import {
   isPooledPostgresEndpoint,
   isEphemeralHost,
   storageWriteAccounting,
+  storageReadAccounting,
   STORAGE_KEY_STATE,
   STORAGE_KEY_USAGE,
   STORAGE_KEY_CONTROL,
@@ -629,8 +630,21 @@ import {
   type FreeTierUsageState,
   type RenderUptimeState,
 } from "./engine/ops/freeTierUsage";
-import { resolveUsagePressure, usagePressureIntervalMultiplier, type UsagePressureDecision } from "./engine/ops/usagePressure";
+import {
+  resolveUsagePressure,
+  usagePressureIntervalMultiplier,
+  usagePressureIngestIntervalMultiplier,
+  type UsagePressureDecision,
+} from "./engine/ops/usagePressure";
+import {
+  normalizeDeferralState,
+  markCycleDeferred,
+  clearCycleDeferral,
+  cycleStaleWarning,
+  type DeferralState,
+} from "./engine/ops/cycleDeferral";
 import { driveApiAccountingSnapshot, recordDriveApiCall, type DriveApiCallKind } from "./engine/dr/driveApiAccounting";
+import { neonUsageApiConfig, fetchNeonActualUsage, NEON_USAGE_POLL_MIN_INTERVAL_MS, computeCuHours } from "./engine/ops/neonUsage";
 import { SESSION_TTL_MS, signSession, verifySession, type SessionPayload } from "./engine/auth/sessions";
 import { CHALLENGE_TTL_MS, issueChallengeCode, matchChallengeWindow } from "./engine/auth/challenge";
 import { isScheduleInFuture, normalizeScheduleInput, wallClockToEpoch } from "./src/utils/scheduleTime";
@@ -1060,23 +1074,31 @@ function idempotencyStatusBlock(): { backend: "postgres" | "file"; table: string
 // لا يمنع هذا أي كتابة/نسخة ولا يغيّر أي إيقاع — مجرد عرض.
 // ------------------------------------------------------------------
 const USAGE_ALERT_THRESHOLD = resolveUsageAlertThreshold(process.env.FREE_TIER_USAGE_ALERT_PERCENT);
-const freeTierUsageState: { transferBytesMonth: number; transferBytesSinceBoot: number; month: string | null; updatedAt: string | null } = {
-  transferBytesMonth: 0,
-  transferBytesSinceBoot: 0,
+const freeTierUsageState: { egressBytesMonth: number; egressBytesSinceBoot: number; month: string | null; updatedAt: string | null } = {
+  egressBytesMonth: 0,
+  egressBytesSinceBoot: 0,
   month: null,
   updatedAt: null,
 };
 // عدّاد ساعات تشغيل Render (تقدير صادق — لا API حقيقي) + حالة Drive API اليومية.
 const renderUptimeState: RenderUptimeState = { month: null, hoursThisMonth: 0, lastAccruedAt: null, firstSeenAt: null, updatedAt: null };
 let usagePersistQueued = false;
+// إصلاح 2026-10-20: قياس Neon الفعلي (اختياري) — آخر رقم مقروء من Neon API ووقته.
+// بلا اعتماد لا نداء شبكة إطلاقاً، ويبقى التقدير من الصادر الفعلي (egress).
+let neonActualUsage: { transferBytes: number; computeSeconds: number; fetchedAt: string; source: 'neon_api' } | null = null;
 
 /** يقرأ تراكم الاستهلاك المحفوظ (يصمد بعد restart) — قيمة عرض لا حكم. */
 function applyFreeTierUsageSnapshot(raw: any): void {
   if (!raw || typeof raw !== "object") return;
-  freeTierUsageState.transferBytesMonth = Number.isFinite(Number(raw.transferBytesMonth)) ? Number(raw.transferBytesMonth) : 0;
-  // عدّاد الكتابة داخل العملية يبدأ من الصفر في كل تشغيل، فنصفّره هنا كي يحسب
+  // توافق خلفي: الحقل القديم كان `transferBytesMonth` (بايتات الكتابة). نقرأه إن
+  // وُجد كي لا يضيع التراكم، لكن نُفضّل الحقل الجديد (egress الفعلي).
+  const egressMonth = Number(raw.egressBytesMonth);
+  freeTierUsageState.egressBytesMonth = Number.isFinite(egressMonth)
+    ? egressMonth
+    : (Number.isFinite(Number(raw.transferBytesMonth)) ? Number(raw.transferBytesMonth) : 0);
+  // عدّاد الصادر داخل العملية يبدأ من الصفر في كل تشغيل، فنصفّره هنا كي يحسب
   // accrueTransfer فرق هذه العملية فقط بلا ازدواج (لا يتجاوز الواقع أبداً).
-  freeTierUsageState.transferBytesSinceBoot = 0;
+  freeTierUsageState.egressBytesSinceBoot = 0;
   freeTierUsageState.month = typeof raw.month === "string" ? raw.month : null;
   freeTierUsageState.updatedAt = typeof raw.updatedAt === "string" ? raw.updatedAt : null;
   // عدّاد ساعات التشغيل: يُستعاد المتراكم الشهري + آخر لحظة محسوبة (يصمد بعد restart).
@@ -1088,19 +1110,25 @@ function applyFreeTierUsageSnapshot(raw: any): void {
     renderUptimeState.firstSeenAt = typeof ru.firstSeenAt === "string" ? ru.firstSeenAt : null;
     renderUptimeState.updatedAt = typeof ru.updatedAt === "string" ? ru.updatedAt : null;
   }
+  // إصلاح 2026-10-20: القياس الفعلي لـNeon (إن كان مقروءاً سابقاً) يصمد بعد restart.
+  const na = raw.neonActual;
+  if (na && typeof na === "object" && Number.isFinite(Number(na.transferBytes)) && typeof na.fetchedAt === "string") {
+    neonActualUsage = { transferBytes: Math.max(0, Number(na.transferBytes)), computeSeconds: Math.max(0, Number(na.computeSeconds) || 0), fetchedAt: na.fetchedAt, source: 'neon_api' };
+  }
 }
 
 /**
- * يحدّث تقدّم نقل Neon من عدّاد الكتابة الفعلي (idempotent: يضيف الفرق فقط)،
- * ويُراكم ساعات تشغيل Render. يُحفظ عبر محوّل الحالة بأسلوب مؤجّل (coalesced) فلا
- * يضيف كتابةً لكل كتابة — لتجنّب أثر عكسي على نفس المورد الذي نراقبه.
+ * يحدّث تقدّم نقل Neon من عدّاد **الصادر الفعلي** (بايتات ما ترجعه القاعدة — نفس
+ * ما تعدّه Neon ضمن النقل العام)، idempotent: يضيف الفرق فقط. يُراكم ساعات تشغيل
+ * Render. يُحفظ عبر محوّل الحالة بأسلوب مؤجّل (coalesced) فلا يضيف كتابةً لكل كتابة
+ * — لتجنّب أثر عكسي على نفس المورد الذي نراقبه.
  */
 function refreshFreeTierUsage(): void {
-  const account = storageWriteAccounting();
+  const account = storageReadAccounting();
   const nowIso = new Date().toISOString();
-  const next = accrueTransfer(freeTierUsageState as FreeTierUsageState, account.bytesWrittenSinceStart, nowIso);
-  freeTierUsageState.transferBytesMonth = next.transferBytesMonth;
-  freeTierUsageState.transferBytesSinceBoot = next.transferBytesSinceBoot;
+  const next = accrueTransfer(freeTierUsageState as FreeTierUsageState, account.bytesReadSinceStart, nowIso);
+  freeTierUsageState.egressBytesMonth = next.egressBytesMonth;
+  freeTierUsageState.egressBytesSinceBoot = next.egressBytesSinceBoot;
   freeTierUsageState.month = next.month;
   freeTierUsageState.updatedAt = next.updatedAt;
   const uptime = accrueRenderUptime(renderUptimeState, nowIso);
@@ -1113,17 +1141,47 @@ function refreshFreeTierUsage(): void {
     usagePersistQueued = true;
     const t = setTimeout(() => {
       usagePersistQueued = false;
-      void storageAdapter.write(STORAGE_KEY_USAGE_INDICATORS, { ...freeTierUsageState, renderUptime: { ...renderUptimeState } }).catch(() => { /* مؤشر عرض: فشل الحفظ لا يُسقط الخدمة */ });
+      void storageAdapter.write(STORAGE_KEY_USAGE_INDICATORS, { ...freeTierUsageState, renderUptime: { ...renderUptimeState }, neonActual: neonActualUsage }).catch(() => { /* مؤشر عرض: فشل الحفظ لا يُسقط الخدمة */ });
     }, 5000);
     (t as any).unref?.();
   }
 }
 
+/**
+ * إصلاح 2026-10-20: يقرأ استهلاك Neon **الفعلي** (compute + transfer) عبر واجهة
+ * Neon الرسمية عند توفّر اعتماد (`NEON_API_KEY` + `NEON_PROJECT_ID`). لا يُنفَّذ
+ * إلا إذا مرّ `NEON_USAGE_POLL_MIN_INTERVAL_MS` على آخر قراءة (منع الاستعلام المتكرر).
+ * fail-safe: أي فشل يُبقي التقدير ولا يوقف أي شيء، ولا يُسجَّل ولا يُعاد أي سرّ.
+ */
+async function refreshNeonActualUsage(): Promise<void> {
+  const cfg = neonUsageApiConfig();
+  if (!cfg.configured) return;
+  const nowMs = Date.now();
+  if (neonActualUsage) {
+    const last = Date.parse(neonActualUsage.fetchedAt);
+    if (Number.isFinite(last) && nowMs - last < NEON_USAGE_POLL_MIN_INTERVAL_MS) return;
+  }
+  const toIso = new Date(nowMs).toISOString();
+  const fromIso = new Date(Date.UTC(new Date(nowMs).getUTCFullYear(), new Date(nowMs).getUTCMonth(), 1)).toISOString();
+  const usage = await fetchNeonActualUsage(cfg, { fromIso, toIso });
+  if (!usage) return; // fail-safe: يبقى التقدير
+  neonActualUsage = { transferBytes: usage.transferBytes, computeSeconds: usage.computeSeconds, fetchedAt: toIso, source: 'neon_api' };
+  // حفظ مؤجّل (نفس نمط مؤشرات الحصص) فلا يضيف كتابةً لكل قراءة.
+  if (storageReady) {
+    void storageAdapter.write(STORAGE_KEY_USAGE_INDICATORS, { ...freeTierUsageState, renderUptime: { ...renderUptimeState }, neonActual: neonActualUsage }).catch(() => { /* مؤشر عرض */ });
+  }
+}
+
+/** قياس Neon الفعلي المعروض (null إن لم يُقرأ بعد) — بلا سرّ. */
+function neonActualTransferBytes(): number | null {
+  return neonActualUsage ? neonActualUsage.transferBytes : null;
+}
+
 /** يجمع إشارات ضغط الاستهلاك من المؤشرات المُقاسة فقط (بلا سرّ). */
 function usagePressureSignals(): { usedPercent: number | null; provider?: string }[] {
   const backend = storageAdapter.backend;
-  const neonTransferBytes = backend === "postgres" ? freeTierUsageState.transferBytesMonth : 0;
-  const neon = buildNeonTransferIndicator({ transferBytesMonth: neonTransferBytes, alertThresholdPercent: USAGE_ALERT_THRESHOLD, backend });
+  const neonEgressBytes = backend === "postgres" ? freeTierUsageState.egressBytesMonth : 0;
+  const neon = buildNeonTransferIndicator({ egressBytesMonth: neonEgressBytes, alertThresholdPercent: USAGE_ALERT_THRESHOLD, backend, actualTransferBytes: backend === "postgres" ? neonActualTransferBytes() : null });
   const storedQuota = drControl.driveQuota || null;
   const drive = buildDriveQuotaIndicator({
     usageBytes: storedQuota?.usageBytes ?? null,
@@ -1177,8 +1235,8 @@ function recordDriveApiCallFromRequest(opts: { method?: string; url?: string }):
 function freeTierUsageHealthBlock(): any {
   refreshFreeTierUsage();
   const backend = storageAdapter.backend;
-  const neonTransferBytes = backend === "postgres" ? freeTierUsageState.transferBytesMonth : 0;
-  const neon = buildNeonTransferIndicator({ transferBytesMonth: neonTransferBytes, alertThresholdPercent: USAGE_ALERT_THRESHOLD, backend });
+  const neonTransferBytes = backend === "postgres" ? freeTierUsageState.egressBytesMonth : 0;
+  const neon = buildNeonTransferIndicator({ egressBytesMonth: neonTransferBytes, alertThresholdPercent: USAGE_ALERT_THRESHOLD, backend, actualTransferBytes: backend === "postgres" ? neonActualTransferBytes() : null });
   const storedQuota = drControl.driveQuota || null;
   const liveRead = Boolean(storedQuota && storedQuota.source === "backup_current_mirror");
   const drive = buildDriveQuotaIndicator({
@@ -1212,6 +1270,11 @@ function freeTierUsageHealthBlock(): any {
     driveApi: driveApi,
     driveStorage: drive,
     pressure,
+    // إصلاح 2026-10-20: القياس الفعلي لـNeon إن توفّر (بلا سرّ) — يوضّح هل الرقم
+    // measured من API أم estimated من الصادر الداخلي.
+    neonActual: neonActualUsage
+      ? { source: neonActualUsage.source, fetchedAt: neonActualUsage.fetchedAt, computeCuHours: Math.round(computeCuHours(neonActualUsage.computeSeconds) * 100) / 100 }
+      : { source: null, fetchedAt: null, computeCuHours: null },
     quotas: {
       neonMonthlyTransferBytes: FREE_TIER_QUOTAS.neonMonthlyTransferBytes,
       neonStorageBytes: FREE_TIER_QUOTAS.neonStorageBytes,
@@ -6718,6 +6781,8 @@ interface WatcherState {
   lastScanned: number;
   /** قرارات مراجعة المالك (Override) — آخر قرار لكل تعليق، تصمد بعد restart. */
   reviewOverrides: WatcherReviewOverride[];
+  /** إصلاح 2026-10-20: تتبّع تأجيل الدورة (deferred/reason/lastDeferredAt) — بلا سرّ. */
+  deferral?: DeferralState;
 }
 
 let watcherState: WatcherState = {
@@ -6736,6 +6801,7 @@ let watcherState: WatcherState = {
   briefDate: null,
   lastScanned: 0,
   reviewOverrides: [],
+  deferral: { deferred: false, deferredReason: null, lastDeferredAt: null },
 };
 let watcherRunning = false;
 let watcherScheduler: WatcherScheduler | null = null;
@@ -7167,6 +7233,8 @@ async function persistWatcherState(): Promise<void> {
       briefDate: watcherState.briefDate,
       lastScanned: watcherState.lastScanned,
       reviewOverrides: watcherState.reviewOverrides.slice(0, 5000),
+      // إصلاح 2026-10-20: تتبّع التأجيل (deferred/reason/lastDeferredAt) يصمد بعد restart.
+      deferral: normalizeDeferralState(watcherState.deferral),
       // PROC-01: القفل الدائم لدورة المراقبة (owner + انتهاء فقط، بلا سرّ).
       lease: watcherLease,
       // طابور المحتوى (نشر/جدولة/مراجعة) يُحفظ ضمن حالة الـwatcher فيصمد بعد restart.
@@ -7202,6 +7270,8 @@ function applyWatcherStateSnapshot(raw: any): void {
   watcherState.briefDate = typeof raw.briefDate === "string" ? raw.briefDate : null;
   watcherState.lastScanned = Number.isFinite(raw.lastScanned) ? Number(raw.lastScanned) : 0;
   watcherState.reviewOverrides = normalizeReviewOverrides(raw.reviewOverrides);
+  // إصلاح 2026-10-20: تتبّع التأجيل (يُسترجَع بعد restart فلا يضيع سبب التوقّف).
+  watcherState.deferral = normalizeDeferralState(raw.deferral);
   // PROC-01: استرجاع القفل الدائم. قفل حيّ لمالك آخر يبقى محفوظاً فيمنع هذه
   // العملية من التزامن؛ أما المتقادم فيُبقى ليُستردّ عند أول دورة (لا جمود دائم).
   watcherLease = normalizeLease(raw.lease);
@@ -7596,6 +7666,8 @@ async function runYouTubeWatcherCycle(trigger: "schedule" | "manual" = "schedule
     clearWatcherFailureAlert();
     // وقراءة ناجحة تعني أن الرمز صالح فعلاً ⇒ نُصفّر علم تنبيه reauth أيضاً.
     clearYouTubeReauthAlert();
+    // إصلاح 2026-10-20: دورة فعلية وقعت ⇒ يُمسح علم التأجيل (يبقى آخر وقت للتوثيق).
+    watcherState.deferral = clearCycleDeferral(normalizeDeferralState(watcherState.deferral));
     watcherState.processedWindow = [...watcherState.processedWindow, now].slice(-2000);
     // الفرص: أسئلة متكررة/قفزة تفاعل — تسجيل بلا تنفيذ.
     const questionCounts = new Map<string, number>();
@@ -7631,6 +7703,85 @@ async function runYouTubeWatcherCycle(trigger: "schedule" | "manual" = "schedule
     watcherLease = releaseLease(watcherLease, WATCHER_LEASE_OWNER).lease;
     try { await persistWatcherState(); } catch { /* الإفراج الذاكري يكفي داخل العملية */ }
   }
+}
+
+/**
+ * إصلاح 2026-10-20: يسجّل تأجيل دورة المراقبة صراحةً (بدل التخطّي الصامت) فيظهر في
+ * حالة المراقب (deferred/reason/lastDeferredAt) وفي /api/health — فلا يبدو النظام
+ * «سليماً» وهو متوقّف. يُحفظ عبر محوّل الحالة فيصمد بعد restart. لا يُسقط أي شيء.
+ */
+// تأجيل المؤقّتات المساعدة (إعادة محاولة حصة YouTube + مصالحة TikTok): لا حالة
+// دائمة لها، فتُعلَن في /api/health من ذاكرة العملية (تُصفَّر عند restart طبيعياً).
+const auxiliaryDeferrals: Record<string, DeferralState> = {};
+function recordAuxiliaryDeferral(name: string, reason: string): void {
+  const prev = normalizeDeferralState(auxiliaryDeferrals[name]);
+  const next = markCycleDeferred(prev, reason, new Date().toISOString());
+  if (prev.deferred && prev.deferredReason === next.deferredReason) return;
+  auxiliaryDeferrals[name] = next;
+}
+function clearAuxiliaryDeferral(name: string): void {
+  const prev = normalizeDeferralState(auxiliaryDeferrals[name]);
+  if (!prev.deferred) return;
+  auxiliaryDeferrals[name] = clearCycleDeferral(prev);
+}
+
+function recordYouTubeWatcherDeferral(reason: string): void {
+  const prev = normalizeDeferralState(watcherState.deferral);
+  const next = markCycleDeferred(prev, reason, new Date().toISOString());
+  if (prev.deferred && prev.deferredReason === next.deferredReason) return;
+  watcherState.deferral = next;
+  void persistWatcherState();
+}
+function recordMetaWatcherDeferral(reason: string): void {
+  const prev = normalizeDeferralState(metaPollingState.deferral);
+  const next = markCycleDeferred(prev, reason, new Date().toISOString());
+  if (prev.deferred && prev.deferredReason === next.deferredReason) return;
+  metaPollingState.deferral = next;
+  void persistMetaPollingState();
+}
+function recordTelegramWatcherDeferral(reason: string): void {
+  const prev = normalizeDeferralState(telegramPollingState.deferral);
+  const next = markCycleDeferred(prev, reason, new Date().toISOString());
+  if (prev.deferred && prev.deferredReason === next.deferredReason) return;
+  telegramPollingState.deferral = next;
+  void persistTelegramPollingState();
+}
+
+/**
+ * إصلاح 2026-10-20: تحذير عام موحّد لكل الدورات الداخلية — يقع إن مرّ على آخر دورة
+ * فعلية أكثر من دورتين متتاليتين (نفس منطق `cycleStaleWarning`). يكشف التوقّف
+ * الصامت الذي كان يبدو «ok» في /api/health. بلا أي بيانات عميل ولا سرّ.
+ */
+function cycleHealthWarning() {
+  const nowMs = Date.now();
+  const rows: { name: string; cadenceMs: number; lastRunAt: string | null; deferred: boolean; deferredReason: string | null; active: boolean }[] = [
+    { name: 'youtubeWatcher', cadenceMs: watcherCadenceMs(), lastRunAt: watcherState.lastPollAt, ...normalizeDeferralState(watcherState.deferral), active: Boolean(watcherState.controls.enabled && !watcherState.controls.paused) },
+    { name: 'metaPolling', cadenceMs: metaPollingCadenceMs(), lastRunAt: metaPollingState.lastPollAt, ...normalizeDeferralState(metaPollingState.deferral), active: Boolean(metaPollingState.controls.enabled && !metaPollingState.controls.paused) },
+    { name: 'telegramPolling', cadenceMs: telegramPollingCadenceMs(), lastRunAt: telegramPollingState.lastPollAt, ...normalizeDeferralState(telegramPollingState.deferral), active: Boolean(telegramPollingState.controls.enabled && !telegramPollingState.controls.paused) },
+    { name: 'brainRuntime', cadenceMs: brainRuntimeIntervalMs(), lastRunAt: brainRuntimeState.lastCycleCompletedAt || brainRuntimeState.lastCycleStartedAt, ...normalizeDeferralState(brainRuntimeState.deferral), active: brainRuntimeEnabled() },
+    { name: 'commercialBrain', cadenceMs: 10 * 60 * 1000, lastRunAt: commercialLastRun?.at || null, ...normalizeDeferralState(commercialDeferral), active: commercialKillSwitchEnabled() },
+  ];
+  // نرصد الدورات **النشطة** فقط: متوقّف عمداً (Kill Switch/تعطيل) ليس عطلاً.
+  const staleCycles = rows.filter((r) => r.active).map((r) => {
+    const w = cycleStaleWarning(r.lastRunAt, r.cadenceMs, nowMs);
+    return w.stale ? { name: r.name, missedCycles: w.missedCycles, hoursSince: w.hoursSince, reason: w.reason, deferred: r.deferred, deferredReason: r.deferredReason } : null;
+  }).filter(Boolean) as any[];
+  return {
+    healthy: staleCycles.length === 0,
+    staleCycleCount: staleCycles.length,
+    staleCycles,
+    // إصلاح 2026-10-20: تأجيل المؤقّتات المساعدة (إعادة محاولة حصة YouTube + مصالحة
+    // TikTok) — عمل ثقيل يُؤجَّل عند critical، ويُعلن هنا صراحةً بدل التخطّي الصامت.
+    auxiliaryDeferrals: Object.entries(auxiliaryDeferrals).map(([name, d]) => ({
+      name,
+      deferred: normalizeDeferralState(d).deferred,
+      deferredReason: normalizeDeferralState(d).deferredReason,
+      lastDeferredAt: normalizeDeferralState(d).lastDeferredAt,
+    })).filter((r) => r.deferred),
+    note: staleCycles.length === 0
+      ? 'كل الدورات النشطة نُفِّذت خلال آخر دورتين — لا توقّف صامت.'
+      : 'توجد دورات نشطة تأخّرت أكثر من دورتين متتاليتين (انظر staleCycles) — لا يُعلن النظام سليماً.',
+  };
 }
 
 /** لقطة حالة المراقبة الكاملة للواجهة/الصحة (بلا أي سرّ). */
@@ -7673,6 +7824,12 @@ function watcherStatusBlock() {
     lastPollAt: watcherState.lastPollAt,
     nextPollAt: cadence > 0 ? nextPollAt(watcherState.lastPollAt, cadence) : null,
     pollCount: watcherState.pollCount,
+    // إصلاح 2026-10-20: تتبّع التأجيل + تحذير الدورة الفائتة (للمالك أيضاً).
+    ...(() => {
+      const d = normalizeDeferralState(watcherState.deferral);
+      const st = cycleStaleWarning(watcherState.lastPollAt, cadence, Date.now());
+      return { deferred: d.deferred, deferredReason: d.deferredReason, lastDeferredAt: d.lastDeferredAt, stale: st.stale, staleReason: st.reason, missedCycles: st.missedCycles };
+    })(),
     lastNewCommentAt: watcherState.lastCommentAt,
     lastCommentId: watcherState.lastCommentId,
     processedCount: processed.length,
@@ -7727,14 +7884,21 @@ function watcherPublicError(err: unknown): string | null {
  */
 function watcherStatusBlockPublic() {
   const full = watcherStatusBlock();
-  // الحالة العامة مشتقة حتمياً من النشاط والأخطاء المتتالية والتفويض — بلا أرقام
-  // تفصيلية. degraded = أخطاء متتالية حديثة أو تعطّل الرد الآلي؛ disabled = متوقّف.
+  const deferral = normalizeDeferralState(watcherState.deferral);
+  // إصلاح 2026-10-20: كشف «دورة فائتة» — أكثر من دورتين متتاليتين بلا دورة فعلية.
+  const cadence = full.cadenceMs && full.cadenceMs > 0 ? full.cadenceMs : watcherCadenceMs();
+  const stale = cycleStaleWarning(full.lastPollAt, cadence, Date.now());
+  // الحالة العامة مشتقة حتمياً من النشاط والأخطاء المتتالية والتفويض والتأجيل —
+  // بلا أرقام تفصيلية. degraded = أخطاء متتالية حديثة أو تعطّل الرد الآلي؛
+  // disabled = متوقّف. **لا تُعرض healthy وهي مؤجَّلة أو فائتة** (كان التأجيل يبدو سليماً).
   const consecutive = full.consecutiveErrors ?? 0;
   const status = !full.watcherActive
     ? "disabled"
-    : consecutive > 0 || full.lastError
+    : (consecutive > 0 || full.lastError)
       ? "degraded"
-      : "healthy";
+      : (deferral.deferred || stale.stale)
+        ? "deferred"
+        : "healthy";
   return {
     status,
     watcherActive: full.watcherActive,
@@ -7747,6 +7911,14 @@ function watcherStatusBlockPublic() {
     // حياة (liveness) للخدمة.
     pollCount: full.pollCount,
     lastPollAt: full.lastPollAt,
+    // تتبّع التأجيل الصريح (بلا سرّ): هل الدورة مؤجَّلة؟ لماذا؟ ومتى آخر مرة؟
+    deferred: deferral.deferred,
+    deferredReason: deferral.deferredReason,
+    lastDeferredAt: deferral.lastDeferredAt,
+    // تحذير «دورة فائتة»: يقع إن مرّ أكثر من دورتين متتاليتين بلا دورة فعلية.
+    stale: stale.stale,
+    staleReason: stale.reason,
+    missedCycles: stale.missedCycles,
     lastError: watcherPublicError(full.lastError),
     consecutiveErrors: consecutive,
     note: "حالة عامة فقط؛ العدّادات التفصيلية وبيانات التعليقات/الردود متاحة للمالك عبر /api/agent/youtube/watcher.",
@@ -7796,6 +7968,8 @@ async function persistMetaPollingState(): Promise<void> {
       lastScanned: metaPollingState.lastScanned,
       platformStats: metaPollingState.platformStats,
       lease: metaPollingLease,
+      // إصلاح 2026-10-20: تتبّع التأجيل يصمد بعد restart.
+      deferral: normalizeDeferralState(metaPollingState.deferral),
     });
   } catch { /* يُعلن عبر حالة الحفظ العامة */ }
 }
@@ -8260,6 +8434,8 @@ async function runMetaWatcherCycle(trigger: string): Promise<{ ok: boolean; trig
     metaPollingState.pollCount += 1;
     metaPollingState.lastPollAt = new Date().toISOString();
     metaPollingState.lastScanned = (metaPollingState.lastScanned || 0);
+    // إصلاح 2026-10-20: دورة فعلية وقعت ⇒ يُمسح علم التأجيل (يبقى آخر وقت للتوثيق).
+    metaPollingState.deferral = clearCycleDeferral(normalizeDeferralState(metaPollingState.deferral));
     metaPollingLastRun = { newDetected, replied, escalated, skipped, failed, deferred, at: metaPollingState.lastPollAt };
     await persistMetaPollingState();
     // الكتابة الكاملة للحالة (وهي الأكبر حجماً) تقع **فقط** عند دخول تعليق/رسالة
@@ -8370,6 +8546,8 @@ async function persistTelegramPollingState(): Promise<void> {
       pollCount: telegramPollingState.pollCount,
       lastScanned: telegramPollingState.lastScanned,
       lease: telegramPollingLease,
+      // إصلاح 2026-10-20: تتبّع التأجيل يصمد بعد restart.
+      deferral: normalizeDeferralState(telegramPollingState.deferral),
     });
   } catch { /* يُعلن عبر حالة الحفظ العامة */ }
 }
@@ -8526,6 +8704,8 @@ async function runTelegramWatcherCycle(trigger: string): Promise<{ ok: boolean; 
     }
     telegramPollingState.pollCount += 1;
     telegramPollingState.lastPollAt = new Date().toISOString();
+    // إصلاح 2026-10-20: دورة فعلية وقعت ⇒ يُمسح علم التأجيل (يبقى آخر وقت للتوثيق).
+    telegramPollingState.deferral = clearCycleDeferral(normalizeDeferralState(telegramPollingState.deferral));
     telegramPollingLastRun = { newDetected, replied, escalated, skipped, failed, deferred, at: telegramPollingState.lastPollAt };
     await persistTelegramPollingState();
     if (newDetected > 0) await persistStateDurable();
@@ -8607,6 +8787,16 @@ const COMMERCIAL_MAX_PER_CYCLE = 10;
 const COMMERCIAL_MAX_DRAFTS = 2000;
 const COMMERCIAL_MAX_DECISIONS = 2000;
 let commercialLastRun: { processed: number; followUpsSent: number; escalated: number; windowBlocked: number; drafted: number; at: string } | null = null;
+// إصلاح 2026-10-20: تتبّع تأجيل دورة العقل التجاري (deferred/reason/lastDeferredAt).
+let commercialDeferral: DeferralState = { deferred: false, deferredReason: null, lastDeferredAt: null };
+/** يسجّل تأجيل دورة العقل التجاري صراحةً (لا تخطّي صامت) ويحفظه. */
+function recordCommercialDeferral(reason: string): void {
+  const prev = normalizeDeferralState(commercialDeferral);
+  const next = markCycleDeferred(prev, reason, new Date().toISOString());
+  if (prev.deferred && prev.deferredReason === next.deferredReason) return;
+  commercialDeferral = next;
+  void persistCommercialLeads();
+}
 
 /**
  * PR-S2 — وضع إرسال العقل التجاري: **مستقل تماماً** عن مفتاح الإيقاف الطارئ.
@@ -8699,6 +8889,8 @@ async function persistCommercialLeads(): Promise<void> {
       ownerDecisions: commercialOwnerDecisions.slice(0, COMMERCIAL_MAX_DECISIONS),
       // N2: قفل دورة العقل التجاري يُحفظ هنا (بلا سرّ) فيصمد/يُبطل صراحةً عند الإغلاق.
       lease: commercialLease,
+      // إصلاح 2026-10-20: تتبّع التأجيل يصمد بعد restart.
+      deferral: normalizeDeferralState(commercialDeferral),
     });
   } catch { /* يُعلن عبر حالة الحفظ العامة */ }
 }
@@ -8715,6 +8907,8 @@ function applyCommercialStateSnapshot(raw: any): void {
   commercialOwnerDecisions = normalizeOwnerDecisions(raw.ownerDecisions).slice(0, COMMERCIAL_MAX_DECISIONS);
   // N2: القفل الدائم لدورة العقل التجاري (owner + انتهاء فقط، بلا سرّ).
   commercialLease = normalizeLease(raw.lease);
+  // إصلاح 2026-10-20: تتبّع التأجيل يُسترجَع بعد restart.
+  commercialDeferral = normalizeDeferralState(raw.deferral);
 }
 
 /** يجد عميلاً محتملاً بالمفتاح الحقيقي (منصة + خيط) بلا اختراع هوية. */
@@ -9152,6 +9346,8 @@ async function runCommercialBrainCycle(trigger: string): Promise<{ ok: boolean; 
     const expiredDrafts = sweepExpiredCommercialDrafts(nowIso);
     if (followUpsSent > 0 || drafted > 0 || expiredDrafts > 0) await persistCommercialLeads();
     commercialLastRun = { processed, followUpsSent, escalated, windowBlocked: commercialWindowBlocked, drafted, at: nowIso };
+    // إصلاح 2026-10-20: دورة فعلية وقعت ⇒ يُمسح علم التأجيل.
+    commercialDeferral = clearCycleDeferral(normalizeDeferralState(commercialDeferral));
     return { ok: true, trigger, result: { processed, followUpsSent, escalated, windowBlocked: commercialWindowBlocked, drafted, expiredDrafts } };
   } catch (e: any) {
     return { ok: false, trigger, error: String(e?.code || e?.name || 'cycle_failed').slice(0, 80) };
@@ -9185,6 +9381,8 @@ function commercialPublicStatus() {
     killSwitchNote: enabled
       ? 'مفتاح رئيسي واحد؛ العقل التجاري مفعَّل صراحةً من المالك، ويمكن إيقافه فوراً.'
       : 'مفتاح رئيسي واحد؛ العقل التجاري معطَّل افتراضياً (fail-closed) — لا فعل خارجي حتى يفعّله المالك.',
+    // إصلاح 2026-10-20: تتبّع التأجيل صريح (منطقي + سبب) فلا يبدو العقل «سليماً» وهو مؤجَّل.
+    deferral: normalizeDeferralState(commercialDeferral),
   };
 }
 
@@ -9780,7 +9978,12 @@ function watcherIraqiReply(text: string): string {
 function startYouTubeQuotaRetryTimer(): void {
   if (youtubeQuotaRetryTimer) return;
   const ms = youtubeQuotaRetryIntervalMs() * usagePressureMultiplier();
-  youtubeQuotaRetryTimer = setInterval(safeTimerCallback(() => { if (currentUsagePressure().deferNonCritical) return; retryPendingYouTubeContent(); }, "youtube-quota-retry"), ms);
+  youtubeQuotaRetryTimer = setInterval(safeTimerCallback(() => {
+    // إصلاح 2026-10-20: عمل ثقيل — يُؤجَّل عند critical لكن يُسجَّل صراحةً (لا تخطٍّ صامت).
+    if (currentUsagePressure().deferNonCritical) { recordAuxiliaryDeferral("youtubeQuotaRetry", "تأجيل إعادة محاولة نشر YouTube المعلّق بسبب ضغط الاستهلاك."); return; }
+    clearAuxiliaryDeferral("youtubeQuotaRetry");
+    retryPendingYouTubeContent();
+  }, "youtube-quota-retry"), ms);
   (youtubeQuotaRetryTimer as any).unref?.();
 }
 function stopYouTubeQuotaRetryTimer(): void {
@@ -9813,9 +10016,15 @@ function startYouTubeWatcher(): void {
       (t as any).unref?.();
       return { clear: () => clearTimeout(t) };
     },
-    getCadenceMs: () => Math.max(1, watcherCadenceMs() * usagePressureMultiplier()),
+    getCadenceMs: () => Math.max(1, watcherCadenceMs() * usagePressureIngestIntervalMultiplier(currentUsagePressure().level)),
     isDue: () => watcherPollDue(),
-    runCycle: () => { if (currentUsagePressure().deferNonCritical) return; runYouTubeWatcherCycle("schedule").catch(() => { /* الخطأ مسجَّل داخل الدورة */ }); },
+    // إصلاح 2026-10-20: دورة الاستقبال الخفيفة **لا تُؤجَّل** بسبب ضغط الاستهلاك
+    // (`deferIngest` دائماً false) — كانت تُؤجَّل عند critical فتتوقف القراءة ~32 ساعة.
+    // (الشرط يبقى دفاعياً: إن أُجِّلت لاحقاً يُسجَّل السبب صراحةً، لا تخطٍّ صامت.)
+    runCycle: () => {
+      if (currentUsagePressure().deferIngest) { recordYouTubeWatcherDeferral("تأجيل دورة استقبال YouTube بسبب ضغط الاستهلاك."); return; }
+      runYouTubeWatcherCycle("schedule").catch(() => { /* الخطأ مسجَّل داخل الدورة */ });
+    },
   });
   // إعادة المحاولة الذكية للنشر المعلّق على الحصة: مؤقّت مستقل خفيف (كل 5 دقائق)
   // يُعيد الإرسال تلقائياً فور تجدد حصة YouTube. `.unref()` فلا يمنع الإغلاق النظيف،
@@ -9854,9 +10063,13 @@ function startMetaPollingWatcher(): void {
   metaPollingScheduler = createWatcherScheduler({
     setTimer: (fn, ms) => { const t = setInterval(fn, ms); (t as any).unref?.(); return { clear: () => clearInterval(t) }; },
     setTimeoutOnce: (fn, ms) => { const t = setTimeout(fn, ms); (t as any).unref?.(); return { clear: () => clearTimeout(t) }; },
-    getCadenceMs: () => Math.max(1, metaPollingCadenceMs() * usagePressureMultiplier()),
+    getCadenceMs: () => Math.max(1, metaPollingCadenceMs() * usagePressureIngestIntervalMultiplier(currentUsagePressure().level)),
     isDue: () => metaPollingDue(),
-    runCycle: () => { if (currentUsagePressure().deferNonCritical) return; runMetaWatcherCycle("schedule").catch(() => { /* الخطأ مسجَّل داخل الدورة */ }); },
+    // إصلاح 2026-10-20: دورة استقبال Meta الخفيفة **لا تُؤجَّل** بسبب ضغط الاستهلاك.
+    runCycle: () => {
+      if (currentUsagePressure().deferIngest) { recordMetaWatcherDeferral("تأجيل دورة استقبال Meta بسبب ضغط الاستهلاك."); return; }
+      runMetaWatcherCycle("schedule").catch(() => { /* الخطأ مسجَّل داخل الدورة */ });
+    },
   });
   const c = metaPollingState.controls;
   if (c.enabled && c.paused) { metaPollingScheduler.stop(); return; }
@@ -9871,9 +10084,13 @@ function startTelegramPollingWatcher(): void {
   telegramPollingScheduler = createWatcherScheduler({
     setTimer: (fn, ms) => { const t = setInterval(fn, ms); (t as any).unref?.(); return { clear: () => clearInterval(t) }; },
     setTimeoutOnce: (fn, ms) => { const t = setTimeout(fn, ms); (t as any).unref?.(); return { clear: () => clearTimeout(t) }; },
-    getCadenceMs: () => Math.max(1, telegramPollingCadenceMs() * usagePressureMultiplier()),
+    getCadenceMs: () => Math.max(1, telegramPollingCadenceMs() * usagePressureIngestIntervalMultiplier(currentUsagePressure().level)),
     isDue: () => telegramPollingDue(),
-    runCycle: () => { if (currentUsagePressure().deferNonCritical) return; runTelegramWatcherCycle("schedule").catch(() => { /* الخطأ مسجَّل داخل الدورة */ }); },
+    // إصلاح 2026-10-20: دورة استقبال Telegram الخفيفة **لا تُؤجَّل** بسبب ضغط الاستهلاك.
+    runCycle: () => {
+      if (currentUsagePressure().deferIngest) { recordTelegramWatcherDeferral("تأجيل دورة استقبال Telegram بسبب ضغط الاستهلاك."); return; }
+      runTelegramWatcherCycle("schedule").catch(() => { /* الخطأ مسجَّل داخل الدورة */ });
+    },
   });
   const c = telegramPollingState.controls;
   if (c.enabled && c.paused) { telegramPollingScheduler.stop(); return; }
@@ -9896,7 +10113,9 @@ function startCommercialBrain(): void {
     runCycle: () => {
       // Kill Switch: الافتراضي معطَّل (fail-closed)، ولا يعمل العقل التجاري إلا بتفعيل المالك.
       if (!commercialKillSwitchEnabled()) return;
-      if (currentUsagePressure().deferNonCritical) return;
+      // إصلاح 2026-10-20: هذا «عمل ثقيل» فيُؤجَّل عند critical — لكن **يُسجَّل صراحةً**
+      // (deferred/reason/lastDeferredAt) فلا يبدو العقل التجاري «سليماً» وهو متوقّف.
+      if (currentUsagePressure().deferNonCritical) { recordCommercialDeferral("تأجيل دورة العقل التجاري بسبب ضغط الاستهلاك (العمل الثقيل مؤجَّل عند critical)."); return; }
       runCommercialBrainCycle("schedule").catch(() => { /* الخطأ مسجَّل داخل الدورة */ });
     },
   });
@@ -12692,7 +12911,12 @@ function tiktokReconcileIntervalMs(): number {
   if (Number.isFinite(raw) && raw >= 1000) return raw;
   return 60 * 1000;
 }
-const tiktokReconcileTimer = setInterval(safeTimerCallback(() => { if (currentUsagePressure().deferNonCritical) return; reconcileTikTokPublishes(); }, "tiktok-reconcile"), tiktokReconcileIntervalMs() * usagePressureMultiplier());
+const tiktokReconcileTimer = setInterval(safeTimerCallback(() => {
+  // إصلاح 2026-10-20: يُؤجَّل عند critical لكن يُسجَّل صراحةً (لا تخطٍّ صامت).
+  if (currentUsagePressure().deferNonCritical) { recordAuxiliaryDeferral("tiktokReconcile", "تأجيل مصالحة تسليم TikTok بسبب ضغط الاستهلاك."); return; }
+  clearAuxiliaryDeferral("tiktokReconcile");
+  reconcileTikTokPublishes();
+}, "tiktok-reconcile"), tiktokReconcileIntervalMs() * usagePressureMultiplier());
 (tiktokReconcileTimer as any).unref?.();
 
 /**
@@ -15519,6 +15743,19 @@ function brainRuntimeStatus() {
   });
 }
 
+/**
+ * إصلاح 2026-10-20: يسجّل تأجيل دورة العقل صراحةً (بدل التخطّي الصامت) فيظهر في
+ * حالة وقت التشغيل (deferred/reason/lastDeferredAt) وفي /api/health — فلا يبدو
+ * العقل «سليماً» وهو مؤجَّل. يُحفظ عبر محوّل الحالة فيصمد بعد restart.
+ */
+function recordBrainRuntimeDeferral(reason: string): void {
+  const prev = normalizeDeferralState(brainRuntimeState.deferral);
+  const next = markCycleDeferred(prev, reason, new Date().toISOString());
+  if (prev.deferred === next.deferred && prev.lastDeferredAt === next.lastDeferredAt) return;
+  brainRuntimeState = { ...brainRuntimeState, deferral: next };
+  persistBrainRuntimeState();
+}
+
 /** يبدأ المؤقّت الداخلي (مرة واحدة). `.unref()` يمنع تعليق الإغلاق النظيف. */
 function startBrainRuntime(): void {
   if (brainRuntimeTimer) return;
@@ -15527,14 +15764,25 @@ function startBrainRuntime(): void {
   brainRuntimeTimer = setInterval(() => {
     const lastRunAtMs = (() => { const t = Date.parse(String(brainRuntimeState.lastCycleStartedAt || "")); return Number.isFinite(t) ? t : null; })();
     if (!isBrainRuntimeDue(lastRunAtMs, Date.now(), intervalMs)) return; // لا دورة إلا عند الاستحقاق
-    if (currentUsagePressure().deferNonCritical) return; // ضغط استهلاك: تأجيل دورة غير حرجة
+    // ضغط استهلاك: هذا «عمل ثقيل» (تحليل كبير) فيُؤجَّل عند critical — لكن **يُسجَّل
+    // صراحةً** في حالة وقت التشغيل (deferred/reason/lastDeferredAt) فلا يبدو العقل
+    // «سليماً» وهو متوقّف. (دورات الاستقبال الخفيفة لا تُؤجَّل — إصلاح 2026-10-20.)
+    if (currentUsagePressure().deferNonCritical) {
+      recordBrainRuntimeDeferral("تأجيل بسبب ضغط الاستهلاك (العمل الثقيل مؤجَّل عند critical؛ الاستقبال الخفيف مستمر).");
+      return;
+    }
     void runBrainRuntimeCycleInternal("scheduled").catch(() => { /* الخطأ مسجَّل داخل الدورة */ });
   }, tickMs);
   if (typeof (brainRuntimeTimer as any).unref === "function") (brainRuntimeTimer as any).unref();
   // فحص إقلاع واحد: بعد restart لا تُنفَّذ دورة فوراً إن لم يحل الموعد (لا تكرار)؛
-  // وإن كان الموعد قد حلّ أثناء التوقّف تُنفَّذ دورة واحدة فقط.
+  // وإن كان الموعد قد حلّ أثناء التوقّف تُنفَّذ دورة واحدة فقط. وهو عمل ثقيل أيضاً،
+  // فيحترم ضغط الاستهلاك ويُسجَّل صراحةً (لا تخطٍّ صامت).
   brainRuntimeBootTimer = setTimeout(() => {
     brainRuntimeBootTimer = null;
+    if (currentUsagePressure().deferNonCritical) {
+      recordBrainRuntimeDeferral("تأجيل دورة إقلاع العقل بسبب ضغط الاستهلاك (العمل الثقيل مؤجَّل عند critical).");
+      return;
+    }
     void runBrainRuntimeCycleInternal("boot").catch(() => { /* لا يُسقط العملية */ });
   }, BRAIN_RUNTIME_BOOT_DELAY_MS);
   if (typeof (brainRuntimeBootTimer as any).unref === "function") (brainRuntimeBootTimer as any).unref();
@@ -16145,6 +16393,8 @@ app.get("/api/readiness", (_req, res) => {
     statePersistence: appReady,
     applicationReady: appReady,
     processHealth: { unhandledRejectionCount, fatalRejectionInTests: isFatalRejectionTestMode },
+    // إصلاح 2026-10-20: تحذير الدورات الفائتة في الجاهزية أيضاً (بلا بيانات عميل).
+    cycleHealth: cycleHealthWarning(),
     persistence: (() => { const s = storageStatus(); const pooled = isPooledPostgresEndpoint(String((storageAdapter as any).connectionString || process.env.DATABASE_URL || "")); const corrupt = s.backend === "file" && typeof (storageAdapter as any).corruptKeyList === "function" ? (storageAdapter as any).corruptKeyList() : []; return { backend: s.backend, durable: s.durable, mode: s.durable ? "durable" : "ephemeral", healthy: s.healthy, pooledEndpoint: s.backend === "postgres" ? pooled : null, stateCorrupt: corrupt.length > 0, corruptKeys: corrupt, ...(s.backend === "postgres" && !pooled ? { recommendation: "استخدم نقطة اتصال Neon المجمّعة (pooled) لتقليل ضغط الاتصالات أثناء النشر (rolling deploy)." } : {}), idempotency: idempotencyStatusBlock() }; })(),
     auth: {
       ownerEmailConfigured: Boolean(OWNER_EMAIL),
@@ -16820,8 +17070,13 @@ app.get("/api/health", (_req, res) => {
   // (healthy=false — الكتابة نفسها تفشل)، وليس وضع "ephemeral" الدائم المقصود
   // والموثّق بلا DATABASE_URL — ذاك وضع تشغيل مقبول رسمياً، لا عطل.
   const storageHealthy = storageStatus().healthy;
+  // إصلاح 2026-10-20: تحذير عام صريح إن مرّ على آخر دورة فعلية أكثر من دورتين
+  // متتاليتين لأي مراقب/دورة — فلا يبدو النظام «ok» وهو متوقّف بصمت.
+  const cycleHealth = cycleHealthWarning();
   res.status(storageHealthy ? 200 : 503).json({
     status: storageHealthy ? "ok" : "degraded",
+    // كتلة عامة صريحة: هل توجد دورة فائتة؟ ولماذا؟ (بلا أي بيانات عميل).
+    cycleHealth,
     aiEnabled: hasKey,
     timestamp: new Date().toISOString(),
     service: "Al-Gharabi AI Backend",
@@ -19345,6 +19600,16 @@ async function startServer() {
   } catch (e: any) {
     console.error("[الغرابي AI] failed to start Central Brain runtime:", String(e?.message || e).slice(0, 120));
   }
+
+  // إصلاح 2026-10-20: قياس Neon الفعلي (اختياري). بلا اعتماد (`NEON_API_KEY` +
+  // `NEON_PROJECT_ID`) لا نداء شبكة إطلاقاً ويبقى التقدير. fail-safe تماماً.
+  // نبضة داخلية كل ساعة (حدّ أدنى صريح) — لا استعلام متكرر، ولا يعتمد على المتصفح.
+  try { void refreshNeonActualUsage(); } catch { /* مؤشر عرض */ }
+  try {
+    const neonUsageTimer = setInterval(() => { void refreshNeonActualUsage(); }, NEON_USAGE_POLL_MIN_INTERVAL_MS);
+    (neonUsageTimer as any).unref?.();
+    (app as any).neonUsageTimer = neonUsageTimer;
+  } catch { /* الجدولة لا تُسقط الإقلاع */ }
 
   // مراقب الردود لـ Facebook/Instagram 24/7: job داخلي مستقل عن المتصفح، آمن
   // افتراضياً (قراءة/تحليل فقط حتى يمكّن المالك الرد)، ويصمد بعد restart.

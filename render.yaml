@@ -89,6 +89,12 @@ services:
       # اختياري: معطّل افتراضياً. لا تضبطه إلا لقصد الدخول المباشر.
       - key: GHARABI_PREVIEW_TOKEN
         sync: false
+      # اختياري (2026-10-20): قياس استهلاك Neon الفعلي عبر واجهته الرسمية. بلا هذين
+      # لا نداء شبكة إطلاقاً ويبقى مؤشّر النقل تقديراً من الصادر الداخلي (egress).
+      - key: NEON_API_KEY
+        sync: false
+      - key: NEON_PROJECT_ID
+        sync: false
       # موصل Telegram الحقيقي (Batch 5). رمز البوت وسرّ webhook أسرار من لوحة Render.
       # بدونهما يظهر Telegram "غير متصل" ولا يُنفَّذ أي إرسال خارجي.
       - key: TELEGRAM_BOT_TOKEN

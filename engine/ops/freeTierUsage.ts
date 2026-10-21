@@ -32,10 +32,14 @@ export const FREE_TIER_QUOTAS = {
 export interface FreeTierUsageState {
   /** مفتاح الشهر (YYYY-MM) لتقدير النقل الشهري. */
   month: string | null;
-  /** بايتات النقل المتراكمة في الشهر الحالي (تقديرية). */
-  transferBytesMonth: number;
-  /** بايتات النقل المتراكمة منذ بدء تشغيل واحد (لمؤشّر المستأجر). */
-  transferBytesSinceBoot: number;
+  /**
+   * بايتات **الصادر الفعلية** (egress: ما ترجعه القاعدة من نتائج) المتراكمة في
+   * الشهر الحالي — تقديرية من جانب العميل. هذا هو ما تعدّه Neon ضمن حدّ «النقل
+   * العام» (5 GiB)، خلافاً لبايتات الكتابة (ingress) التي لا تُحتسب نقلاً.
+   */
+  egressBytesMonth: number;
+  /** بايتات الصادر المتراكمة منذ بدء تشغيل واحد (لمؤشّر المستأجر). */
+  egressBytesSinceBoot: number;
   updatedAt: string | null;
 }
 
@@ -78,23 +82,23 @@ export function dayKey(nowIso: string): string {
 export function rollMonthlyUsage(state: FreeTierUsageState, nowIso: string): FreeTierUsageState {
   const mk = monthKey(nowIso);
   if (state.month !== mk) {
-    return { month: mk, transferBytesMonth: 0, transferBytesSinceBoot: state.transferBytesSinceBoot, updatedAt: nowIso };
+    return { month: mk, egressBytesMonth: 0, egressBytesSinceBoot: state.egressBytesSinceBoot, updatedAt: nowIso };
   }
   return state;
 }
 
 /**
- * يتراكم بايتات الكتابة الفعلية إلى قاعدة الحالة (نقل Neon تقديري).
+ * يتراكم بايتات **الصادر الفعلية** (egress: ما ترجعه القاعدة) إلى مؤشّر نقل Neon.
  * idempotent على مستوى الاستدعاء: يضيف الفرق بين الإجمالي الحالي والمحفوظ.
  */
 export function accrueTransfer(state: FreeTierUsageState, totalBytesSinceStart: number, nowIso: string): FreeTierUsageState {
   const rolled = rollMonthlyUsage(state, nowIso);
-  const prevBoot = Number.isFinite(state.transferBytesSinceBoot) ? state.transferBytesSinceBoot : 0;
+  const prevBoot = Number.isFinite(state.egressBytesSinceBoot) ? state.egressBytesSinceBoot : 0;
   const delta = Math.max(0, Math.floor(totalBytesSinceStart) - prevBoot);
   return {
     month: rolled.month,
-    transferBytesMonth: rolled.transferBytesMonth + delta,
-    transferBytesSinceBoot: Math.max(0, Math.floor(totalBytesSinceStart)),
+    egressBytesMonth: rolled.egressBytesMonth + delta,
+    egressBytesSinceBoot: Math.max(0, Math.floor(totalBytesSinceStart)),
     updatedAt: nowIso,
   };
 }
@@ -137,30 +141,59 @@ export function buildDriveQuotaIndicator(input: {
 }
 
 /**
- * مؤشّر نقل Neon: قياس داخلي فعلي لبايتات الكتابة إلى قاعدة الحالة مقابل حصّة
- * النقل الشهرية الموثّقة (~5 GiB، تقدير متحفظ). يوضّح أن القاعدة الحقيقية هي
- * حدّ الشبكة لدى Neon لا الحركة الثنائية الداخلية.
+ * مؤشّر نقل Neon: تقدير من جانب العميل لبايتات **الصادر الفعلية** (egress: ما
+ * ترجعه القاعدة من نتائج) مقابل حدّ «النقل العام» الشهري الموثّق (~5 GiB).
+ *
+ * تصحيح جذري (2026-10-20): كان المؤشّر يقيس **بايتات الكتابة** (الصادر نحن ⇒
+ * ingress) ويقارنها بحدّ النقل، فيبالغ جوهرياً — فبلغ 96% على الإنتاج بينما
+ * لوحة Neon الحقيقية أظهرت ~188 MB. وثيقة Neon: «Public network transfer (egress)
+ * is the total volume of data sent **from** your databases» — أي الصادر من القاعدة
+ * لا ما يُكتب إليها. الآن نقيس الصادر الفعلي، ونُعلنه **تقديراً من جانب العميل**
+ * (لا يشمل كل الاتصالات ولا تراكيب البروتوكول/الاستعلامات) لا قياساً تاماً.
  */
 export function buildNeonTransferIndicator(input: {
-  transferBytesMonth: number;
+  egressBytesMonth: number;
   alertThresholdPercent: number;
   backend: 'file' | 'postgres';
+  /**
+   * القياس الفعلي من Neon API عند توفّره (أولوية أعلى من التقدير). عند وجوده
+   * يصير `basis: 'measured'` ويُقارن الرقم الفعلي لا المُقدَّر.
+   */
+  actualTransferBytes?: number | null;
 }): UsageIndicator {
-  const used = Math.max(0, Math.floor(Number(input.transferBytesMonth) || 0));
+  const actual = input.actualTransferBytes != null && Number.isFinite(Number(input.actualTransferBytes))
+    ? Math.max(0, Math.floor(Number(input.actualTransferBytes)))
+    : null;
+  const estimated = Math.max(0, Math.floor(Number(input.egressBytesMonth) || 0));
+  const used = actual != null ? actual : estimated;
   const limit = FREE_TIER_QUOTAS.neonMonthlyTransferBytes;
   const percent = pct(used, limit);
   const warning = percent != null && percent >= input.alertThresholdPercent;
   const base =
-    'قياس داخلي فعلي لبايتات الكتابة الفعلية إلى قاعدة الحالة منذ أول التشغيل (داخل العملية) مقابل حصّة نقل Neon المجانية الموثّقة ~5 GiB/شهر. تقدير متحفظ: لا يشمل حركة القراءة/الاعتماديات، والحدّ الحقيقي لدى Neon هو نقل الشبكة لا الحركة الثنائية الداخلية — مؤشر عرض فقط بلا حجب.';
+    'حدّ نقل Neon المجاني الموثّق ~5 GiB/شهر. ما تعدّه Neon ضمن النقل العام هو **الصادر** («data sent from your databases») لا بايتات الكتابة (ingress) التي لا تُحتسب نقلاً — وكانت المقياس الخاطئ سابقاً (بالغ حتى 96% بينما اللوحة ~188MB). مؤشر عرض فقط بلا حجب ولا يمنع أي عملية بسبب هذا الرقم وحده.';
+  if (actual != null) {
+    return {
+      provider: 'neon',
+      basis: 'measured',
+      usedBytes: used,
+      limitBytes: limit,
+      usedPercent: percent,
+      alertThresholdPercent: input.alertThresholdPercent,
+      warning,
+      note: `قياس فعلي من Neon API (consumption_history) للنقل العام هذا الشهر. ${base}`,
+    };
+  }
   return {
     provider: 'neon',
-    basis: 'measured',
+    basis: 'estimated',
     usedBytes: used,
     limitBytes: limit,
     usedPercent: percent,
     alertThresholdPercent: input.alertThresholdPercent,
     warning,
-    note: input.backend === 'postgres' ? base : `الخلفية الحالية «ملف» لا Postgres — لا نقل Neon فعلي. ${base}`,
+    note: input.backend === 'postgres'
+      ? `تقدير من جانب العميل لبايتات الصادر الفعلية (egress: ما ترجعه قاعدة الحالة من نتائج SELECT). لا يشمل كل الاتصالات ولا تراكيب البروتوكول/الاستعلامات، فلا يُعلن قياساً تاماً. ${base}`
+      : `الخلفية الحالية «ملف» لا Postgres — لا نقل Neon فعلي. ${base}`,
   };
 }
 

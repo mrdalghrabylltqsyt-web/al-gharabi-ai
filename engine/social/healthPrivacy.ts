@@ -75,6 +75,14 @@ export const PUBLIC_WATCHER_ALLOWED_KEYS: readonly string[] = Object.freeze([
   'platformStats',
   'staleIngestWarning',
   'warnings',
+  // تتبّع التأجيل + تحذير «الدورة الفائتة» (إصلاح 2026-10-20): حقول تقنية صريحة
+  // (منطقي/سبب تقني/وقت) — بلا أي بيانات عميل، فلا يبدو النظام «سليماً» وهو مؤجَّل.
+  'deferred',
+  'deferredReason',
+  'lastDeferredAt',
+  'stale',
+  'staleReason',
+  'missedCycles',
 ]);
 
 /** الحقول التشغيلية التفصيلية التي يجب ألا تظهر في النقطتين العامتين (نُقلت للمالك). */
