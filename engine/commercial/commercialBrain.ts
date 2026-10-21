@@ -770,3 +770,51 @@ export function normalizeCommercialLeads(raw: any): CommercialLead[] {
   if (!Array.isArray(raw)) return [];
   return raw.map(normalizeCommercialLead).filter((x): x is CommercialLead => x !== null);
 }
+
+// ---------------------------------------------------------------------------
+// PR-B (B3): تقدير كلفة دورة عقل تجاري واحدة من الـegress الحقيقي — **حساب حتمي**
+// (بلا شبكة وبلا ساعات حقيقية) لاتخاذ قرار مسموح/محجوب تحت ضغط `critical`.
+//
+// الخلفية المقيسة (B3): دورة العقل التجاري **لا تقرأ أي شيء من Neon** — كل عملها
+// على حالة موجودة في الذاكرة (`workspace.socialComments` المحمّلة عند الإقلاع)،
+// وتكتب فقط عند تغيّر فعلي (كشف التغيّر يمنع كتابة مطابقة). لذا **كلفتها من الصادر
+// (egress) صفر فعلياً**، وكل كلفتها من الكتابة (ingress) التي لا تُحتسب ضمن حدّ
+// النقل العام لدى Neon. ولذلك يمكن السماح بها تحت `critical` بسقف كلفة صارم.
+// ---------------------------------------------------------------------------
+
+/** سقف صريح: أقصى عدد تفاعلات يُعالَج في دورة واحدة (يحدّ أي كلفة كتابة). */
+export const COMMERCIAL_CYCLE_MAX_INTERACTIONS = 200;
+/** سقف صريح: أقصى عدد متابعات تُرسل في دورة واحدة. */
+export const COMMERCIAL_CYCLE_MAX_FOLLOWUPS = 2;
+/** سقف صريح: أقصى عدد مسودات تُنشأ في دورة واحدة. */
+export const COMMERCIAL_CYCLE_MAX_DRAFTS = 10;
+
+export interface CommercialCycleCostEstimate {
+  /** بايتات الصادر المتوقّعة من دورة واحدة (0 — لا قراءة Neon في الدورة). */
+  egressBytes: number;
+  /** بايتات الكتابة المتوقّعة (لا تُحتسب ضمن حدّ نقل Neon). */
+  writeBytes: number;
+  /** هل الكلفة من الصادر صفر (لا قراءة Neon في الدورة)؟ */
+  egressFree: boolean;
+  /** السقوف المطبّقة. */
+  caps: { interactions: number; followUps: number; drafts: number };
+  note: string;
+}
+
+/**
+ * تقدير حتمي لكلفة دورة عقل تجاري واحدة. لا يستدعي أي شيء؛ مجرّد حساب سقوف.
+ * المدخل الاختياري (عدد التفاعلات الفعلي) لا يغيّر النتيجة لأن السقف ثابت.
+ */
+export function estimateCommercialCycleCost(): CommercialCycleCostEstimate {
+  return {
+    egressBytes: 0,
+    writeBytes: COMMERCIAL_CYCLE_MAX_INTERACTIONS * 8 * 1024, // تقدير أعلى-حالة، غير محتسَب نقلاً
+    egressFree: true,
+    caps: {
+      interactions: COMMERCIAL_CYCLE_MAX_INTERACTIONS,
+      followUps: COMMERCIAL_CYCLE_MAX_FOLLOWUPS,
+      drafts: COMMERCIAL_CYCLE_MAX_DRAFTS,
+    },
+    note: 'دورة العقل التجاري لا تقرأ من Neon (تعمل على الحالة المحمّلة في الذاكرة) ولا ترسل إلا عند موافقة صريحة؛ فكلفتها من الصادر (egress) صفر. سقوفها صريحة (تفاعلات/متابعات/مسودات) فتحدّ أي كلفة كتابة. لذلك يُسمح بها تحت critical خلف مفتاح صريح معطَّل افتراضياً.',
+  };
+}

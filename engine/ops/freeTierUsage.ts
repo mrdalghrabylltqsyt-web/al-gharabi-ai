@@ -40,8 +40,22 @@ export interface FreeTierUsageState {
   egressBytesMonth: number;
   /** بايتات الصادر المتراكمة منذ بدء تشغيل واحد (لمؤشّر المستأجر). */
   egressBytesSinceBoot: number;
+  /**
+   * نسخة دلالة الاحتساب. القيمة `1` (أو الغياب) = العدّاد القديم الذي كان يقيس
+   * **بايتات الكتابة** (ingress) — وهو مقياس لا تعدّه Neon نقلاً، فيتضخّم كذباً.
+   * القيمة الحالية `2` = الصادر الفعلي. عند قراءة لقطة بنسخة أقدم يُهمَل الرقم
+   * الموروث (لا يُمزج بقياس مختلف الدلالة) ويبدأ التراكم من الصفر.
+   */
+  accountingVersion: number;
   updatedAt: string | null;
 }
+
+/**
+ * نسخة دلالة احتساب النقل الحالية. رُفعت إلى 2 عند تصحيح المقياس من الكتابة
+ * (ingress) إلى الصادر الفعلي (egress). أي لقطة بلا نسخة (أو نسخة < 2) تحمل
+ * رقماً بدلالة مختلفة، فيُهمَل عند الاسترجاع.
+ */
+export const USAGE_ACCOUNTING_VERSION = 2;
 
 export interface UsageIndicator {
   provider: 'neon' | 'drive' | 'render' | 'driveApi';
@@ -82,7 +96,7 @@ export function dayKey(nowIso: string): string {
 export function rollMonthlyUsage(state: FreeTierUsageState, nowIso: string): FreeTierUsageState {
   const mk = monthKey(nowIso);
   if (state.month !== mk) {
-    return { month: mk, egressBytesMonth: 0, egressBytesSinceBoot: state.egressBytesSinceBoot, updatedAt: nowIso };
+    return { month: mk, egressBytesMonth: 0, egressBytesSinceBoot: state.egressBytesSinceBoot, accountingVersion: USAGE_ACCOUNTING_VERSION, updatedAt: nowIso };
   }
   return state;
 }
@@ -99,8 +113,34 @@ export function accrueTransfer(state: FreeTierUsageState, totalBytesSinceStart: 
     month: rolled.month,
     egressBytesMonth: rolled.egressBytesMonth + delta,
     egressBytesSinceBoot: Math.max(0, Math.floor(totalBytesSinceStart)),
+    accountingVersion: USAGE_ACCOUNTING_VERSION,
     updatedAt: nowIso,
   };
+}
+
+/**
+ * يُهاجر لقطة استهلاك محفوظة إلى دلالة الاحتساب الحالية. لقطة بنسخة أقدم من
+ * `USAGE_ACCOUNTING_VERSION` (أو بلا نسخة) تحمل رقماً بدلالة مختلفة (بايتات
+ * الكتابة قديماً) فيُهمَل ويبدأ التراكم من الصفر — فلا يُمزج مقياسان مختلفان
+ * ولا يُبالغ المؤشّر برقم موروث لا يمثّل الصادر الفعلي.
+ */
+export function migrateUsageState(raw: any, nowIso: string): FreeTierUsageState {
+  const version = Number.isFinite(Number(raw?.accountingVersion)) ? Number(raw.accountingVersion) : 1;
+  const month = typeof raw?.month === 'string' ? raw.month : null;
+  if (version >= USAGE_ACCOUNTING_VERSION) {
+    const monthValue = Number.isFinite(Number(raw?.egressBytesMonth))
+      ? Number(raw.egressBytesMonth)
+      : (Number.isFinite(Number(raw?.transferBytesMonth)) ? Number(raw.transferBytesMonth) : 0);
+    return {
+      month,
+      egressBytesMonth: Math.max(0, Math.floor(monthValue)),
+      egressBytesSinceBoot: 0,
+      accountingVersion: USAGE_ACCOUNTING_VERSION,
+      updatedAt: typeof raw?.updatedAt === 'string' ? raw.updatedAt : null,
+    };
+  }
+  // نسخة قديمة: الرقم الموروث بدلالة مختلفة ⇒ يُهمَل (يبدأ من الصفر).
+  return { month: null, egressBytesMonth: 0, egressBytesSinceBoot: 0, accountingVersion: USAGE_ACCOUNTING_VERSION, updatedAt: nowIso };
 }
 
 function pct(used: number | null, limit: number): number | null {
