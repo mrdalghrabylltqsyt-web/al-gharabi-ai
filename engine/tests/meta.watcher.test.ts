@@ -123,7 +123,7 @@ async function unitTests(): Promise<void> {
   group('2) وحدة: بوابة الأتمتة (Kill Switch يمنع الكل)');
   check('قراءة مسموحة افتراضياً', metaWatcherGate(d.controls, 'read').allowed === true);
   check('رد ممنوع افتراضياً (autoReply معطّل)', metaWatcherGate(d.controls, 'reply').allowed === false && metaWatcherGate(d.controls, 'reply').code === 'AUTO_REPLY_DISABLED');
-  check('Kill Switch يمنع القراءة أيضاً', metaWatcherGate({ ...d.controls, paused: true }, 'read').allowed === false && metaWatcherGate({ ...d.controls, paused: true }, 'read').code === 'AUTOMATION_PAUSED');
+  check('Kill Switch يمنع الإرسال ويُبقي القراءة (PR-A)', metaWatcherGate({ ...d.controls, paused: true }, 'reply').allowed === false && metaWatcherGate({ ...d.controls, paused: true }, 'reply').code === 'AUTOMATION_PAUSED' && metaWatcherGate({ ...d.controls, paused: true }, 'read').allowed === true);
   check('الرد مسموح عند التمكين', metaWatcherGate({ ...d.controls, autoReply: true }, 'reply').allowed === true);
 
   group('3) وحدة: القرار الاستشاري الحتمي (تصنيف حقيقي)');
@@ -209,6 +209,9 @@ async function integrationTests(): Promise<void> {
     revokedSessions: [], userRevocations: [], audit: [], jobs: [], platformConnections: [],
     workspace: { showroom: { name: 'معرض الغرابي' }, products: [], posts: [], socialComments: [], socialReplies: [], socialApprovals: [] },
   }), 'utf8');
+  // PR-A: هذا الاختبار يقيس **مسار الإرسال التلقائي**، فيضبط وضع الإرسال `auto`
+  // صراحةً (الافتراضي الآن `approval` fail-closed يحجب الإرسال الآلي).
+  writeFileSync(join(stateDir, 'commercial.json'), JSON.stringify({ leads: [], sendMode: 'auto' }, null, 2), 'utf8');
 
   const mock = await startFacebookMockServer(FB_PORT, createFacebookMock({
     feedPosts: [
@@ -353,6 +356,8 @@ async function rateLimitIntegrationTest(): Promise<void> {
   try {
     check('خادم اختبار المعدّل يقلع', await waitForHealth(), app.log().slice(0, 300));
     const auth = { 'Content-Type': 'application/json', ...(await login()) };
+    // PR-A: وضع الإرسال `auto` صراحةً (الافتراضي approval يحجب الإرسال الآلي).
+    await fetch(`${BASE}/api/agent/commercial/send-mode`, { method: 'POST', headers: auth, body: JSON.stringify({ mode: 'auto' }) });
     const startRes = await (await fetch(`${BASE}/api/platforms/facebook/oauth/start`, { headers: auth })).json();
     const st = new URL(startRes.authorizationUrl).searchParams.get('state') || '';
     await fetch(`${BASE}/api/platforms/facebook/oauth/callback?state=${encodeURIComponent(st)}&code=TESTCODE`);

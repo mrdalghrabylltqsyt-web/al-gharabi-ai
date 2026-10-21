@@ -103,6 +103,9 @@ async function main(): Promise<void> {
       publishRecords: [{ id: 'pub_1', platform: 'facebook', postId: 'x', providerPostId: LINKED_POST, productId: 'prod_1', state: 'published', simulated: false }],
     },
   }), 'utf8');
+  // PR-A: هذا الاختبار يقيس مسار الإرسال التلقائي، فيضبط وضع الإرسال `auto`
+  // صراحةً (الافتراضي الآن `approval` fail-closed يحجب الإرسال الآلي).
+  writeFileSync(join(stateDir, 'commercial.json'), JSON.stringify({ leads: [], sendMode: 'auto' }, null, 2), 'utf8');
 
   const mock = await startFacebookMockServer(FB_PORT, createFacebookMock({
     feedPosts: [

@@ -14,7 +14,7 @@
  */
 
 import { spawn, type ChildProcess } from 'node:child_process';
-import { mkdtempSync, rmSync, existsSync } from 'node:fs';
+import { mkdtempSync, rmSync, existsSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { randomBytes, createHash } from 'node:crypto';
@@ -122,7 +122,7 @@ async function unitTests(): Promise<void> {
   group('2) وحدة: بوابة الأتمتة (Kill Switch يمنع الكل)');
   check('قراءة مسموحة افتراضياً', telegramWatcherGate(d.controls, 'read').allowed === true);
   check('رد ممنوع افتراضياً (autoReply معطّل)', telegramWatcherGate(d.controls, 'reply').allowed === false && telegramWatcherGate(d.controls, 'reply').code === 'AUTO_REPLY_DISABLED');
-  check('Kill Switch يمنع القراءة أيضاً', telegramWatcherGate({ ...d.controls, paused: true }, 'read').allowed === false && telegramWatcherGate({ ...d.controls, paused: true }, 'read').code === 'AUTOMATION_PAUSED');
+  check('Kill Switch يمنع الإرسال ويُبقي القراءة (PR-A)', telegramWatcherGate({ ...d.controls, paused: true }, 'reply').allowed === false && telegramWatcherGate({ ...d.controls, paused: true }, 'reply').code === 'AUTOMATION_PAUSED' && telegramWatcherGate({ ...d.controls, paused: true }, 'read').allowed === true);
   check('الرد مسموح عند التمكين', telegramWatcherGate({ ...d.controls, autoReply: true }, 'reply').allowed === true);
 
   group('3) وحدة: القرار الاستشاري الحتمي (تصنيف حقيقي)');
@@ -170,6 +170,9 @@ async function unitTests(): Promise<void> {
 async function integrationTests(): Promise<void> {
   if (!existsSync(tsxCli)) { console.error('tsx CLI غير موجود — شغّل npm install أولاً.'); process.exit(1); }
   const mock = await startTelegramMockServer(TG_PORT, createTelegramMock());
+  // PR-A: هذا الاختبار يقيس مسار الإرسال التلقائي، فيضبط وضع الإرسال `auto`
+  // صراحةً (الافتراضي الآن `approval` fail-closed يحجب الإرسال الآلي).
+  writeFileSync(join(stateDir, 'commercial.json'), JSON.stringify({ leads: [], sendMode: 'auto' }, null, 2), 'utf8');
   let app = startApp(mock.base);
   const auth = { 'Content-Type': 'application/json' } as Record<string, string>;
   try {

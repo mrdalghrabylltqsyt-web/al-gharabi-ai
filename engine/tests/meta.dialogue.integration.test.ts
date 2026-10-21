@@ -148,6 +148,8 @@ async function main(): Promise<void> {
       publishRecords: [{ id: 'pub_g', platform: 'facebook', postId: 'x', providerPostId: GROUND_POST, productId: PRODUCT.id, state: 'published', simulated: false }],
     },
   }), 'utf8');
+  // PR-A: وضع الإرسال `auto` صراحةً (الافتراضي approval يحجب الإرسال الآلي).
+  writeFileSync(join(stateDir, 'commercial.json'), JSON.stringify({ leads: [], sendMode: 'auto' }, null, 2), 'utf8');
 
   const mock = await startFacebookMockServer(FB_PORT, createFacebookMock({
     feedPosts: [
