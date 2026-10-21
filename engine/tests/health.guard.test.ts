@@ -72,6 +72,11 @@ group('4) allow-list للكتلة العامة youtubeWatcher');
 check('كتلة نظيفة تمرّ', findDisallowedWatcherPublicKeys({ status: 'healthy', watcherActive: true, pollCount: 1, lastError: null, note: 'x', cadenceMinutes: 1, cadenceMs: 60000, consecutiveErrors: 0, lastPollAt: null }).length === 0);
 check('حقل زائد (counters) يُكشف', findDisallowedWatcherPublicKeys({ status: 'healthy', counters: { replied: 5 } }).includes('counters'));
 check('حقل عميل زائد يُكشف', findDisallowedWatcherPublicKeys({ status: 'healthy', attentionRequired: [] }).includes('attentionRequired'));
+// إصلاح 2026-10-20: حقول تتبّع التأجيل + «الدورة الفائتة» مسموحة (تقنية صريحة) ولا
+// تحمل أي بيانات عميل — فلا يبدو النظام «سليماً» وهو مؤجَّل.
+check('حقول التأجيل مسموحة في allow-list', ['deferred', 'deferredReason', 'lastDeferredAt', 'stale', 'staleReason', 'missedCycles'].every((k) => PUBLIC_WATCHER_ALLOWED_KEYS.includes(k)));
+check('حقول التأجيل ليست ممنوعة (لا بيانات عميل)', !['deferred', 'deferredReason', 'lastDeferredAt', 'stale', 'staleReason', 'missedCycles'].some((k) => PUBLIC_ENDPOINT_FORBIDDEN_CUSTOMER_FIELDS.includes(k)));
+check('كتلة مؤجَّلة كاملة تمرّ', findDisallowedWatcherPublicKeys({ status: 'deferred', watcherActive: true, deferred: true, deferredReason: 'تأجيل بسبب ضغط الاستهلاك', lastDeferredAt: '2026-10-19T02:40:00.000Z', stale: true, staleReason: 'لم تُنفَّذ أي دورة منذ 32 ساعة (فائتة ~32 دورات).', missedCycles: 32 }).length === 0);
 
 group('5) collectPublicPayloadKeys شامل');
 const keys = collectPublicPayloadKeys({ a: { b: [{ c: 1 }] }, d: 2 });

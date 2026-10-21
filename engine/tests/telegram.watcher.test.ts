@@ -147,7 +147,7 @@ async function unitTests(): Promise<void> {
 
   group('5) وحدة: الكتلة العامة خالية من بيانات العملاء');
   const pub = telegramPollingPublicBlock({ ...d, lastError: 'customer wrote a long arabic sentence' } as any);
-  const allowedKeys = ['status', 'watcherActive', 'cadenceMinutes', 'pollCount', 'lastPollAt', 'lastError', 'consecutiveErrors', 'note'];
+  const allowedKeys = ['status', 'watcherActive', 'cadenceMinutes', 'pollCount', 'lastPollAt', 'lastError', 'consecutiveErrors', 'note', 'deferred', 'deferredReason', 'lastDeferredAt', 'stale', 'staleReason', 'missedCycles'];
   check('الحقول تقنية فقط', Object.keys(pub).every((k) => allowedKeys.includes(k)));
   check('رسالة الخطأ الحرة تُنقّى (لا نص عميل)', pub.lastError === 'connection error');
 
@@ -237,7 +237,7 @@ async function integrationTests(): Promise<void> {
     check('readiness لا يحمل نص رسالة عميل', !rawReadiness.includes('عاشت إيدكم'));
     check('لا حقل replyText/attentionRequired/authorName في health', !rawHealth.includes('"replyText"') && !rawHealth.includes('"attentionRequired"') && !rawHealth.includes('"authorName"'));
     const healthJson = JSON.parse(rawHealth);
-    const allowedKeys = ['status', 'watcherActive', 'cadenceMinutes', 'pollCount', 'lastPollAt', 'lastError', 'consecutiveErrors', 'note'];
+    const allowedKeys = ['status', 'watcherActive', 'cadenceMinutes', 'pollCount', 'lastPollAt', 'lastError', 'consecutiveErrors', 'note', 'deferred', 'deferredReason', 'lastDeferredAt', 'stale', 'staleReason', 'missedCycles'];
     check('كتلة telegramPolling العامة موجودة', healthJson.telegramPolling && typeof healthJson.telegramPolling === 'object');
     check('telegramPolling العامة حقول تقنية فقط', Object.keys(healthJson.telegramPolling).every((k) => allowedKeys.includes(k)));
     const readinessJson = JSON.parse(rawReadiness);

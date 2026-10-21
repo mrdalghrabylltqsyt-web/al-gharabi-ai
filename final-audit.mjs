@@ -2814,7 +2814,9 @@ const safeTimerTest = read('engine/tests/safe.timer.test.ts');
 add('phase6-timers-safe-wrapped',
   server.includes('safeTimerCallback(runSafeJobPreflight') &&
   server.includes('safeTimerCallback(cleanupRuntimeState') &&
-  server.includes('safeTimerCallback(() => { if (currentUsagePressure().deferNonCritical) return; reconcileTikTokPublishes()') &&
+  server.includes('safeTimerCallback(() => {') &&
+  server.includes('recordAuxiliaryDeferral("tiktokReconcile"') &&
+  server.includes('reconcileTikTokPublishes()') &&
   safeTimer.includes('export function safeTimerCallback'),
   'Phase 6: مؤقّتات الخادم ملفوفة بغلاف يلتقط الاستثناء/الرفض فلا تُسقط العملية');
 add('phase6-reconcile-overlap-guard',
@@ -4868,6 +4870,68 @@ add('watcher-advisory-not-authority',
     JSON.parse(read('package.json')).scripts['test:free-tier-hardening'] === 'tsx engine/tests/free.tier.hardening.test.ts' &&
     JSON.parse(read('package.json')).scripts.test.includes('npm run test:free-tier-hardening'),
     'اختبار تحصين الحصص المجانية مسجَّل في npm test');
+
+  // 11ب-2) إصلاح حارس الضغط (2026-10-20): قياس النقل الحقيقي + فصل الاستقبال
+  // الخفيف عن العمل الثقيل + تتبّع التأجيل صراحةً بدل التخطّي الصامت.
+  const cycleDeferralSrc = read('engine/ops/cycleDeferral.ts');
+  const neonUsageSrc = read('engine/ops/neonUsage.ts');
+  add('usage-pressure-ingest-separation',
+    usagePressureSrc.includes('deferIngest') &&
+    usagePressureSrc.includes('usagePressureIngestIntervalMultiplier') &&
+    server.includes('usagePressureIngestIntervalMultiplier(currentUsagePressure().level)') &&
+    usagePressureSrc.includes('deferIngest: false'),
+    'الفصل صريح: الاستقبال الخفيف لا يُؤجَّل عند critical (deferIngest=false دائماً)');
+  add('usage-pressure-defer-noncritical-only',
+    usagePressureSrc.includes('deferNonCritical: true') &&
+    usagePressureSrc.includes('deferNonCritical: false') &&
+    usagePressureSrc.includes('deferIngest: false'),
+    'التأجيل يقع على العمل الثقيل (deferNonCritical) فقط، والاستقبال الخفيف (deferIngest) ثابت false');
+  add('usage-pressure-no-hard-block',
+    server.includes('recordAuxiliaryDeferral') &&
+    server.includes('cycleHealthWarning') &&
+    cycleDeferralSrc.includes('cycleStaleWarning'),
+    'التأجيل يُسجَّل صراحةً (recordAuxiliaryDeferral + cycleHealthWarning + cycleStaleWarning)');
+  add('cycle-deferral-module',
+    cycleDeferralSrc.includes('export function normalizeDeferralState') &&
+    cycleDeferralSrc.includes('export function markCycleDeferred') &&
+    cycleDeferralSrc.includes('export function clearCycleDeferral') &&
+    cycleDeferralSrc.includes('export function cycleStaleWarning') &&
+    cycleDeferralSrc.includes('DeferralState'),
+    'وحدة تتبّع التأجيل (deferred/reason/lastDeferredAt + كشف الدورة الفائتة) موجودة');
+  add('cycle-deferral-exposed-in-health',
+    server.includes('deferral: normalizeDeferralState(metaPollingState.deferral)') &&
+    server.includes('deferral: normalizeDeferralState(watcherState.deferral)') &&
+    server.includes('deferral: normalizeDeferralState(telegramPollingState.deferral)') &&
+    server.includes('normalizeDeferralState(brainRuntimeState.deferral)'),
+    'حالة التأجيل مُعلنة لكل مراقب في /api/health (meta/youtube/telegram/brain)');
+  add('cycle-health-stale-warning',
+    server.includes('staleCycleCount') &&
+    server.includes('cycleStaleWarning') &&
+    server.includes('healthy: staleCycles.length === 0') &&
+    server.includes('cycleHealth: cycleHealthWarning()'),
+    'تحذير الدورات الفائتة (>دورتين) مُعلن في cycleHealth (لا healthy كاذبة)');
+  add('neon-usage-module',
+    neonUsageSrc.includes('neonUsageApiConfig') &&
+    neonUsageSrc.includes('fetchNeonActualUsage') &&
+    neonUsageSrc.includes('parseNeonConsumption') &&
+    neonUsageSrc.includes('NEON_USAGE_POLL_MIN_INTERVAL_MS') &&
+    neonUsageSrc.includes('computeCuHours'),
+    'وحدة قراءة استهلاك Neon الفعلي موجودة (env-gated + fail-safe)');
+  add('neon-usage-measured-basis',
+    freeTierUsageSrc.includes('actualTransferBytes') &&
+    freeTierUsageSrc.includes("basis: 'measured'") &&
+    server.includes('neonActualTransferBytes()'),
+    'مؤشّر النقل يميّز القياس الفعلي (measured) عن التقدير (estimated)');
+  add('neon-usage-no-secret-no-hard-block',
+    !/access_token|refresh_token|client_secret/i.test(neonUsageSrc) &&
+    server.includes('neonActualUsage') &&
+    !/deferIngest:\s*true/.test(server),
+    'قراءة Neon بلا سرّ في المخرَج، والمؤشّر عرض فقط (لا يحجب عملية وحده)');
+  add('usage-pressure-deferral-test',
+    fs.existsSync(path.join(root, 'engine/tests/usage.pressure.deferral.test.ts')) &&
+    JSON.parse(read('package.json')).scripts['test:usage-pressure-deferral'] === 'tsx engine/tests/usage.pressure.deferral.test.ts' &&
+    JSON.parse(read('package.json')).scripts.test.includes('npm run test:usage-pressure-deferral'),
+    'اختبار فصل الضغط/التأجيل مسجَّل في npm test');
 
   // 11ج) العقل التجاري (Digital Salesperson): موظف مبيعات رقمي حقيقي — منطق حتمي،
   // بلا اختراع، بلا إغلاق آلي، ومتابعة عبر المنفّذ المركزي وحده.
