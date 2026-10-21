@@ -4967,6 +4967,12 @@ add('watcher-advisory-not-authority',
     read('src/components/agent/CommercialBrainKillSwitch.tsx').includes('مؤجَّلة منذ') &&
     read('src/components/agent/CommercialBrainKillSwitch.tsx').includes('deferral'),
     'لوحة مفتاح الإيقاف تعرض «مؤجَّلة منذ … بسبب …» بدل «لا يوجد» عند التأجيل');
+  add('prb-commercial-cycle-cost-estimate',
+    read('engine/commercial/commercialBrain.ts').includes('export function estimateCommercialCycleCost') &&
+    read('engine/commercial/commercialBrain.ts').includes('COMMERCIAL_CYCLE_MAX_INTERACTIONS') &&
+    read('engine/commercial/commercialBrain.ts').includes('egressFree: true') &&
+    server.includes('cycleCostEstimate: estimateCommercialCycleCost()'),
+    'تقدير كلفة دورة العقل التجاري حتمي (بلا شبكة) ويُعلن في مسار مفتاح الإيقاف');
   add('prb-tests-registered',
     fs.existsSync(path.join(root, 'engine/tests/free.tier.usage.test.ts')) &&
     fs.existsSync(path.join(root, 'engine/tests/brain/brain.runtime.cycle.test.ts')) &&
