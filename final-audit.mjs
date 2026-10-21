@@ -4935,6 +4935,45 @@ add('watcher-advisory-not-authority',
     JSON.parse(read('package.json')).scripts.test.includes('npm run test:usage-pressure-deferral'),
     'اختبار فصل الضغط/التأجيل مسجَّل في npm test');
 
+  // 11ب-3) PR-B: تصحيح دلالة احتساب الـegress + مفتاح العقل التجاري تحت critical
+  // (معطَّل افتراضياً) + دوام commercialLastRun + صدق حالة brainRuntime المؤجَّلة.
+  add('prb-egress-accounting-version',
+    freeTierUsageSrc.includes('USAGE_ACCOUNTING_VERSION = 2') &&
+    freeTierUsageSrc.includes('accountingVersion: number') &&
+    freeTierUsageSrc.includes('export function migrateUsageState') &&
+    server.includes('migrateUsageState(raw, new Date().toISOString())'),
+    'دلالة احتساب الـegress تحمل نسخة؛ اللقطة القديمة تُهاجر عبر migrateUsageState في الخادم');
+  add('prb-egress-legacy-discarded',
+    freeTierUsageSrc.includes('يُهمَل (يبدأ من الصفر)') &&
+    freeTierUsageSrc.includes('accountingVersion: USAGE_ACCOUNTING_VERSION') &&
+    server.includes('accountingVersion: USAGE_ACCOUNTING_VERSION'),
+    'لقطة بدلالة قديمة (بايتات الكتابة) تُهمَل فلا يُمزج مقياسان ولا يُبالغ المؤشّر');
+  add('prb-commercial-under-critical-default-off',
+    server.includes('function commercialUnderCriticalAllowed') &&
+    server.includes("raw === 'true' || raw === '1' || raw === 'on' || raw === 'yes'") &&
+    server.includes('deferNonCritical && !commercialUnderCriticalAllowed()') &&
+    !/COMMERCIAL_ALLOW_UNDER_CRITICAL\s*\|\|\s*true/.test(server),
+    'مفتاح السماح بدورة العقل التجاري تحت critical موجود ومعطَّل افتراضياً (fail-safe)');
+  add('prb-commercial-lastrun-persisted',
+    server.includes('lastRun: commercialLastRun') &&
+    server.includes('commercialLastRun = raw.lastRun && typeof raw.lastRun') ,
+    'commercialLastRun يُحفظ ويُسترجع عبر محوّل الحالة (يصمد بعد restart)');
+  add('prb-brainruntime-deferred-status',
+    read('engine/brain/brainRuntime.ts').includes("'DEFERRED'") &&
+    read('engine/brain/brainRuntime.ts').includes('deferralOverrides') &&
+    read('engine/brain/brainRuntime.ts').includes("DEFERRED: 'مؤجَّلة"),
+    'دورة العقل المستحقة المؤجَّلة تُعلن DEFERRED (لا تُحسب نجاحاً)');
+  add('prb-killswitch-ui-deferral',
+    read('src/components/agent/CommercialBrainKillSwitch.tsx').includes('مؤجَّلة منذ') &&
+    read('src/components/agent/CommercialBrainKillSwitch.tsx').includes('deferral'),
+    'لوحة مفتاح الإيقاف تعرض «مؤجَّلة منذ … بسبب …» بدل «لا يوجد» عند التأجيل');
+  add('prb-tests-registered',
+    fs.existsSync(path.join(root, 'engine/tests/free.tier.usage.test.ts')) &&
+    fs.existsSync(path.join(root, 'engine/tests/brain/brain.runtime.cycle.test.ts')) &&
+    JSON.parse(read('package.json')).scripts.test.includes('npm run test:free-tier-usage') &&
+    JSON.parse(read('package.json')).scripts.test.includes('npm run test:brain-runtime-cycle'),
+    'اختبارات PR-B (migrateUsageState + brainRuntime DEFERRED) مسجَّلة في npm test');
+
   // 11ج) العقل التجاري (Digital Salesperson): موظف مبيعات رقمي حقيقي — منطق حتمي،
   // بلا اختراع، بلا إغلاق آلي، ومتابعة عبر المنفّذ المركزي وحده.
   const commercialSrc = read('engine/commercial/commercialBrain.ts');

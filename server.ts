@@ -75,6 +75,7 @@ import {
   buildCommercialProposal, confirmCommercialProposal, rejectCommercialProposal,
   toCommercialLeadRow, summarizeCommercialLeads, commercialPublicBlock, normalizeCommercialLeads,
   isWithinMetaMessageWindow,
+  estimateCommercialCycleCost,
 } from "./engine/commercial/commercialBrain";
 import {
   evaluateFollowUpEligibility,
@@ -621,6 +622,7 @@ import {
 import {
   accrueRenderUptime,
   accrueTransfer,
+  migrateUsageState,
   buildDriveApiIndicator,
   buildDriveQuotaIndicator,
   buildNeonTransferIndicator,
@@ -628,6 +630,7 @@ import {
   FREE_TIER_QUOTAS,
   RENDER_RECOVERY_CENTER_ALLOWANCE_HOURS,
   resolveUsageAlertThreshold,
+  USAGE_ACCOUNTING_VERSION,
   type FreeTierUsageState,
   type RenderUptimeState,
 } from "./engine/ops/freeTierUsage";
@@ -1075,11 +1078,12 @@ function idempotencyStatusBlock(): { backend: "postgres" | "file"; table: string
 // القائمة (بلا قراءة إضافية). لا يمنع هذا أي كتابة/نسخة ولا يغيّر أي إيقاع.
 // ------------------------------------------------------------------
 const USAGE_ALERT_THRESHOLD = resolveUsageAlertThreshold(process.env.FREE_TIER_USAGE_ALERT_PERCENT);
-const freeTierUsageState: { egressBytesMonth: number; egressBytesSinceBoot: number; month: string | null; updatedAt: string | null } = {
+const freeTierUsageState: { egressBytesMonth: number; egressBytesSinceBoot: number; month: string | null; updatedAt: string | null; accountingVersion: number } = {
   egressBytesMonth: 0,
   egressBytesSinceBoot: 0,
   month: null,
   updatedAt: null,
+  accountingVersion: USAGE_ACCOUNTING_VERSION,
 };
 // عدّاد ساعات تشغيل Render (تقدير صادق — لا API حقيقي) + حالة Drive API اليومية.
 const renderUptimeState: RenderUptimeState = { month: null, hoursThisMonth: 0, lastAccruedAt: null, firstSeenAt: null, updatedAt: null };
@@ -1091,17 +1095,16 @@ let neonActualUsage: { transferBytes: number; computeSeconds: number; fetchedAt:
 /** يقرأ تراكم الاستهلاك المحفوظ (يصمد بعد restart) — قيمة عرض لا حكم. */
 function applyFreeTierUsageSnapshot(raw: any): void {
   if (!raw || typeof raw !== "object") return;
-  // توافق خلفي: الحقل القديم كان `transferBytesMonth` (بايتات الكتابة). نقرأه إن
-  // وُجد كي لا يضيع التراكم، لكن نُفضّل الحقل الجديد (egress الفعلي).
-  const egressMonth = Number(raw.egressBytesMonth);
-  freeTierUsageState.egressBytesMonth = Number.isFinite(egressMonth)
-    ? egressMonth
-    : (Number.isFinite(Number(raw.transferBytesMonth)) ? Number(raw.transferBytesMonth) : 0);
+  // PR-B: تهاجر اللقطة إلى دلالة الاحتساب الحالية. لقطة قديمة (بايتات الكتابة)
+  // تُهمَل فلا يُمزج مقياسان مختلفان ولا يُبالغ المؤشّر برقم موروث (كان 5.15GB
+  // على الإنتاج بينما لوحة Neon ~188MB — دلالة قديمة لا الصادر الفعلي).
+  const migrated = migrateUsageState(raw, new Date().toISOString());
+  freeTierUsageState.egressBytesMonth = migrated.egressBytesMonth;
   // عدّاد الصادر داخل العملية يبدأ من الصفر في كل تشغيل، فنصفّره هنا كي يحسب
   // accrueTransfer فرق هذه العملية فقط بلا ازدواج (لا يتجاوز الواقع أبداً).
   freeTierUsageState.egressBytesSinceBoot = 0;
-  freeTierUsageState.month = typeof raw.month === "string" ? raw.month : null;
-  freeTierUsageState.updatedAt = typeof raw.updatedAt === "string" ? raw.updatedAt : null;
+  freeTierUsageState.month = migrated.month;
+  freeTierUsageState.updatedAt = migrated.updatedAt;
   // عدّاد ساعات التشغيل: يُستعاد المتراكم الشهري + آخر لحظة محسوبة (يصمد بعد restart).
   const ru = raw.renderUptime;
   if (ru && typeof ru === "object") {
@@ -1132,6 +1135,7 @@ function refreshFreeTierUsage(): void {
   freeTierUsageState.egressBytesSinceBoot = next.egressBytesSinceBoot;
   freeTierUsageState.month = next.month;
   freeTierUsageState.updatedAt = next.updatedAt;
+  freeTierUsageState.accountingVersion = next.accountingVersion;
   const uptime = accrueRenderUptime(renderUptimeState, nowIso);
   renderUptimeState.month = uptime.month;
   renderUptimeState.hoursThisMonth = uptime.hoursThisMonth;
@@ -1257,6 +1261,16 @@ function freeTierUsageHealthBlock(): any {
     updatedAt: new Date().toISOString(),
     note: 'مؤشرات الحصص المجانية + حارس ضغط فعلي: عند بلوغ 80% تُضاعف فواصل الدورات غير الحرجة، وعند 95% تُؤجَّل (تُؤجَّل نبضة النسخ الاحتياطي لا تُعطَّل). لا يستهلك Gemini ولا يمسّ أي عملية يدوية. الحدود من وثائق المزوّدين المجانية.',
     neonTransfer: neon,
+    // PR-B: شفافية دلالة الاحتساب — أي نسخة يقيسها العدّاد، ومن استهلكه. يُعلن
+    // صراحةً أن الأساس **تقدير من جانب العميل لقراءات SELECT في مسار الإقلاع فقط**
+    // (لا يمرّ عبر Neon في العملية الواحدة؛ القراءة الحيّة الوحيدة عبر REST هي
+    // التصدير/النسخة)، فلا يُقدَّم كقياس تام لـNeon.
+    neonTransferAccounting: {
+      accountingVersion: freeTierUsageState.accountingVersion,
+      basis: 'client_side_egress_estimate',
+      counts: 'SELECT result bytes read through the storage adapter (boot-time state load)',
+      note: 'تقدير من جانب العميل لبايتات نتائج SELECT عبر محوّل الحالة (تقع في مسار الإقلاع). لا يشمل تراكيب البروتوكول ولا كل الاتصالات. عند ضبط NEON_API_KEY + NEON_PROJECT_ID يصير القياس فعلياً (basis=measured) ويُتجاهل هذا التقدير.',
+    },
     neonStorage: {
       provider: 'neon',
       basis: 'estimated',
@@ -8947,6 +8961,17 @@ function commercialKillSwitchEnabled(): boolean {
   return commercialBrainEnabled === true;
 }
 
+/**
+ * PR-B (B3): مفتاح صريح للسماح بدورة العقل التجاري تحت ضغط `critical`. **معطَّل
+ * افتراضياً (fail-safe)** — القيمة `true`/`1`/`on`/`yes` في
+ * `COMMERCIAL_ALLOW_UNDER_CRITICAL` تفعّله. مبرَّر بالأرقام: الدورة لا تقرأ من Neon
+ * (كلفتها من الصادر = صفر) وسقوفها صريحة. لا يُفعَّل تلقائياً ولا يمسّ أي عتبة حارس.
+ */
+function commercialUnderCriticalAllowed(): boolean {
+  const raw = String(process.env.COMMERCIAL_ALLOW_UNDER_CRITICAL ?? '').trim().toLowerCase();
+  return raw === 'true' || raw === '1' || raw === 'on' || raw === 'yes';
+}
+
 /** يسترجع حالة المفتاح بعد restart بلا طمس الحالة القائمة. */
 function applyCommercialKillSwitchSnapshot(raw: any): void {
   if (!raw || typeof raw !== 'object') return;
@@ -9004,6 +9029,9 @@ async function persistCommercialLeads(): Promise<void> {
       outboundApprovals: outboundApprovals.slice(0, OUTBOUND_APPROVALS_MAX),
       // N2: قفل دورة العقل التجاري يُحفظ هنا (بلا سرّ) فيصمد/يُبطل صراحةً عند الإغلاق.
       lease: commercialLease,
+      // PR-B (B4): آخر دورة ناجحة (أرقام تشغيلية بلا بيانات عملاء) تصمد بعد restart
+      // فلا تعرض لوحة المفتاح «آخر دورة: لا يوجد» رغم أن دورات سبقت.
+      lastRun: commercialLastRun,
       // إصلاح 2026-10-20: تتبّع التأجيل يصمد بعد restart.
       deferral: normalizeDeferralState(commercialDeferral),
     });
@@ -9026,6 +9054,17 @@ function applyCommercialStateSnapshot(raw: any): void {
     : [];
   // N2: القفل الدائم لدورة العقل التجاري (owner + انتهاء فقط، بلا سرّ).
   commercialLease = normalizeLease(raw.lease);
+  // PR-B (B4): آخر دورة (أرقام تشغيلية بلا بيانات عملاء) تصمد بعد restart.
+  commercialLastRun = raw.lastRun && typeof raw.lastRun === 'object'
+    ? {
+        processed: Number.isFinite(Number(raw.lastRun.processed)) ? Number(raw.lastRun.processed) : 0,
+        followUpsSent: Number.isFinite(Number(raw.lastRun.followUpsSent)) ? Number(raw.lastRun.followUpsSent) : 0,
+        escalated: Number.isFinite(Number(raw.lastRun.escalated)) ? Number(raw.lastRun.escalated) : 0,
+        windowBlocked: Number.isFinite(Number(raw.lastRun.windowBlocked)) ? Number(raw.lastRun.windowBlocked) : 0,
+        drafted: Number.isFinite(Number(raw.lastRun.drafted)) ? Number(raw.lastRun.drafted) : 0,
+        at: typeof raw.lastRun.at === 'string' ? raw.lastRun.at : new Date().toISOString(),
+      }
+    : commercialLastRun;
   // إصلاح 2026-10-20: تتبّع التأجيل يُسترجَع بعد restart.
   commercialDeferral = normalizeDeferralState(raw.deferral);
 }
@@ -9872,6 +9911,11 @@ app.get("/api/agent/commercial/kill-switch", requireOwner, (_req, res) => {
     killSwitch: commercialKillSwitchView(),
     scheduler: commercialScheduler ? commercialScheduler.status() : { active: false, activeTimers: 0 },
     lastRun: commercialLastRun,
+    // PR-B (B5): تتبّع التأجيل + القرار الفعلي — لتعرض اللوحة «مؤجَّلة منذ … بسبب …»
+    // بدل «آخر دورة: لا يوجد» عند التأجيل (بلا سرّ، حقول تقنية فقط).
+    deferral: normalizeDeferralState(commercialDeferral),
+    underCriticalAllowed: commercialUnderCriticalAllowed(),
+    cycleCostEstimate: estimateCommercialCycleCost(),
     note: "مفتاح رئيسي واحد: الافتراضي معطَّل (fail-closed)؛ لا فعل خارجي حتى يفعّله المالك.",
   });
 });
@@ -10226,7 +10270,13 @@ function startCommercialBrain(): void {
       if (!commercialKillSwitchEnabled()) return;
       // إصلاح 2026-10-20: هذا «عمل ثقيل» فيُؤجَّل عند critical — لكن **يُسجَّل صراحةً**
       // (deferred/reason/lastDeferredAt) فلا يبدو العقل التجاري «سليماً» وهو متوقّف.
-      if (currentUsagePressure().deferNonCritical) { recordCommercialDeferral("تأجيل دورة العقل التجاري بسبب ضغط الاستهلاك (العمل الثقيل مؤجَّل عند critical)."); return; }
+      // PR-B (B3): دورة العقل التجاري **لا تقرأ من Neon** (كلفتها من الصادر = صفر)،
+      // وكل كلفتها كتابة محدودة بسقوف صريحة. لذا يُسمح بها تحت critical خلف مفتاح
+      // صريح **معطَّل افتراضياً** (fail-safe) حتى يفعّله المالك.
+      if (currentUsagePressure().deferNonCritical && !commercialUnderCriticalAllowed()) {
+        recordCommercialDeferral("تأجيل دورة العقل التجاري بسبب ضغط الاستهلاك (العمل الثقيل مؤجَّل عند critical).");
+        return;
+      }
       runCommercialBrainCycle("schedule").catch(() => { /* الخطأ مسجَّل داخل الدورة */ });
     },
   });

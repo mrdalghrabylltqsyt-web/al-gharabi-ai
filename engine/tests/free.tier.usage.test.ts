@@ -15,9 +15,11 @@ import {
   monthKey,
   rollMonthlyUsage,
   accrueTransfer,
+  migrateUsageState,
   buildDriveQuotaIndicator,
   buildNeonTransferIndicator,
   USAGE_ALERT_THRESHOLD_DEFAULT,
+  USAGE_ACCOUNTING_VERSION,
   type FreeTierUsageState,
 } from '../ops/freeTierUsage';
 import { createStorageAdapter, storageWriteAccounting, storageReadAccounting } from '../storage/adapter';
@@ -32,7 +34,7 @@ function check(name: string, condition: boolean, detail = ''): void {
 }
 function group(title: string): void { console.log(`\n▸ ${title}`); }
 
-const fresh = (): FreeTierUsageState => ({ month: null, egressBytesMonth: 0, egressBytesSinceBoot: 0, updatedAt: null });
+const fresh = (): FreeTierUsageState => ({ month: null, egressBytesMonth: 0, egressBytesSinceBoot: 0, accountingVersion: USAGE_ACCOUNTING_VERSION, updatedAt: null });
 
 async function run(): Promise<void> {
   // ── 1) تراكم النقل ────────────────────────────────────────────────
@@ -53,7 +55,7 @@ async function run(): Promise<void> {
 
     // إعادة تشغيل: القيمة المحفوظة تُحمَّل ثم تُصفَّر sinceBoot ⇒ إجمالي هذه العملية
     // يُضاف بلا ازدواج (لا يتجاوز الواقع).
-    const restored: FreeTierUsageState = { month: s.month, egressBytesMonth: s.egressBytesMonth, egressBytesSinceBoot: 0, updatedAt: s.updatedAt };
+    const restored: FreeTierUsageState = { month: s.month, egressBytesMonth: s.egressBytesMonth, egressBytesSinceBoot: 0, accountingVersion: USAGE_ACCOUNTING_VERSION, updatedAt: s.updatedAt };
     const afterRestart = accrueTransfer(restored, 200, '2026-10-13T08:00:00.000Z');
     check('restart adds this-boot total (no double count)', afterRestart.egressBytesMonth === 1700, String(afterRestart.egressBytesMonth));
 
@@ -63,7 +65,7 @@ async function run(): Promise<void> {
     check('month key updated', nextMonth.month === '2026-11', String(nextMonth.month));
   }
   check('monthKey derived from ISO', monthKey('2026-02-03T00:00:00Z') === '2026-02');
-  check('roll no-op within same month', rollMonthlyUsage({ month: '2026-10', egressBytesMonth: 5, egressBytesSinceBoot: 9, updatedAt: null }, '2026-10-20T00:00:00Z').egressBytesMonth === 5);
+  check('roll no-op within same month', rollMonthlyUsage({ month: '2026-10', egressBytesMonth: 5, egressBytesSinceBoot: 9, accountingVersion: USAGE_ACCOUNTING_VERSION, updatedAt: null }, '2026-10-20T00:00:00Z').egressBytesMonth === 5);
 
   // ── 2) عتبة التحذير ───────────────────────────────────────────────
   group('2) عتبة التحذير مقصوصة');
@@ -230,6 +232,22 @@ async function run(): Promise<void> {
     // لا سرّ في المخرَج.
     const cfgText = JSON.stringify({ configured: cfg.configured, baseUrl: cfg.baseUrl, source: parsed?.source });
     check('no secret in output shape', !cfgText.includes('k') || !/("|\b)(access_token|apiKey|api_key|client_secret)\b/.test(cfgText));
+  }
+
+  // ── 12) PR-B: تهاجر دلالة الاحتساب (بايتات الكتابة القديمة تُهمَل) ─────────
+  group('12) PR-B: migrateUsageState — تصحيح دلالة الاحتساب');
+  {
+    // لقطة قديمة (بلا نسخة) تحمل رقماً بدلالة الكتابة (inflated) ⇒ تُهمَل تماماً.
+    const legacy = migrateUsageState({ month: '2026-10', transferBytesMonth: 5_152_375_152, egressBytesMonth: 5_152_375_152, updatedAt: '2026-10-20T00:00:00Z' }, '2026-10-21T00:00:00Z');
+    check('legacy (no version) discarded', legacy.egressBytesMonth === 0 && legacy.accountingVersion === USAGE_ACCOUNTING_VERSION, JSON.stringify(legacy));
+    check('legacy month reset too', legacy.month === null, String(legacy.month));
+    // لقطة بالنسخة الحالية ⇒ الرقم يبقى.
+    const current = migrateUsageState({ month: '2026-10', egressBytesMonth: 1234, accountingVersion: USAGE_ACCOUNTING_VERSION, updatedAt: 'x' }, 'now');
+    check('current version preserved', current.egressBytesMonth === 1234 && current.accountingVersion === USAGE_ACCOUNTING_VERSION, JSON.stringify(current));
+    check('current version sinceBoot zeroed', current.egressBytesSinceBoot === 0);
+    // نسخة أعلى (مستقبلية) تُقبل بلا فقد (>= current).
+    const future = migrateUsageState({ month: '2026-10', egressBytesMonth: 99, accountingVersion: 99 }, 'now');
+    check('future version preserved', future.egressBytesMonth === 99, String(future.egressBytesMonth));
   }
 
   console.log(`\n${passed} passed, ${failures.length} failed`);

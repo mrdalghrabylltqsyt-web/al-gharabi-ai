@@ -20,7 +20,7 @@ import type { BrainMemoryRecord } from './memory/store';
 import { type DeferralState, emptyDeferralState, normalizeDeferralState, markCycleDeferred, clearCycleDeferral, cycleStaleWarning } from '../ops/cycleDeferral';
 
 /** حالات دورة العقل الصريحة (لا تُخفي الفشل). */
-export const BRAIN_CYCLE_STATUSES = ['IDLE', 'RUNNING', 'SUCCESS', 'NO_NEW_DATA', 'SKIPPED_LOCKED', 'FAILED', 'DISABLED'] as const;
+export const BRAIN_CYCLE_STATUSES = ['IDLE', 'RUNNING', 'SUCCESS', 'NO_NEW_DATA', 'SKIPPED_LOCKED', 'FAILED', 'DISABLED', 'DEFERRED'] as const;
 export type BrainCycleStatus = (typeof BRAIN_CYCLE_STATUSES)[number];
 
 export const BRAIN_CYCLE_STATUS_LABELS_AR: Record<BrainCycleStatus, string> = Object.freeze({
@@ -31,6 +31,8 @@ export const BRAIN_CYCLE_STATUS_LABELS_AR: Record<BrainCycleStatus, string> = Ob
   SKIPPED_LOCKED: 'تُخطّيت (مقفلة)',
   FAILED: 'فشلت',
   DISABLED: 'معطّلة',
+  // PR-B (B6): دورة مستحقة أُجِّلت بسبب ضغط الاستهلاك — لا تُحسب نجاحاً.
+  DEFERRED: 'مؤجَّلة (ضغط استهلاك)',
 });
 
 /** الإيقاع الافتراضي: كل 15 دقيقة (أبطأ من مراقب YouTube كل 5 دقائق). */
@@ -385,11 +387,17 @@ export function buildBrainRuntimeStatus(
   const lastRunAtMs = parseBrainRuntimeLastRunAtMs(state);
   const next = nextBrainRuntimeAtMs(lastRunAtMs, intervalMs);
   const deferral = normalizeDeferralState(state.deferral);
+  // PR-B (B6): دورة مستحقة لكنها مؤجَّلة بسبب ضغط الاستهلاك ⇒ تُعلن `DEFERRED` ولا
+  // تُحسب نجاحاً (لا تُخفى وراء آخر حالة ناجحة). عند الإيقاف المؤقّت أو عدم الاستحقاق
+  // تبقى الحالة الأخيرة كما هي.
+  const deferralOverrides = deferral.deferred && isBrainRuntimeDue(lastRunAtMs, nowMs, intervalMs);
   const currentStatus: BrainCycleStatus = !opts.enabled
     ? 'DISABLED'
     : opts.running || state.status === 'RUNNING'
       ? 'RUNNING'
-      : (state.lastStatus || state.status || 'IDLE');
+      : deferralOverrides
+        ? 'DEFERRED'
+        : (state.lastStatus || state.status || 'IDLE');
   // إصلاح 2026-10-20: لا نعرض حالة «سليمة» إذا كانت الدورة مؤجَّلة أو فائتة.
   // تحذير الفوات: مرّ على آخر دورة فعلية أكثر من دورتين متتاليتين.
   const stale = cycleStaleWarning(state.lastCycleCompletedAt || state.lastSuccessAt, intervalMs, nowMs);
