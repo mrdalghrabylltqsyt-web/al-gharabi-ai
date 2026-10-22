@@ -191,7 +191,7 @@ check('7) ملخّص سريع أعلى القائمة', sidebar.includes('يحت
 check('8) حالة focus-visible لكل عنصر', sidebar.includes('focus-visible:ring-2') && sidebar.includes('FOCUS_RING'));
 // 9) مؤشر صحة في الترويسة.
 check('9) مؤشر صحة في الترويسة', header.includes('systemHealth') && header.includes('apiService.checkHealth'));
-check('9) المؤشر من بيانات /api/health الحقيقية', header.includes("h?.status === 'ok'"));
+check('9) المؤشر من بيانات /api/health الحقيقية', /h\.status === 'ok' \? 'ok' : 'attention'/.test(header) && header.includes('setInterval(poll'));
 // 10) منطق التفاعل القائم محفوظ.
 check('10) مفتاح localStorage محفوظ', sidebar.includes('gharabi-nav-expanded-v1'));
 check('10) فتح القسم عند الضغط دائماً محفوظ', /setActiveTab\(id\)/.test(sidebar.slice(sidebar.indexOf('const toggleSection'), sidebar.indexOf('const badgeFor'))));

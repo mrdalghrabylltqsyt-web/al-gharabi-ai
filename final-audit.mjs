@@ -4433,8 +4433,9 @@ add('watcher-advisory-not-authority',
   add('nav-header-health-indicator',
     read('src/components/common/Header.tsx').includes('systemHealth') &&
     read('src/components/common/Header.tsx').includes('apiService.checkHealth') &&
-    read('src/components/common/Header.tsx').includes("h?.status === 'ok'"),
-    'مؤشر صحة عامة في الترويسة من /api/health الحقيقية (بلا قيمة وهمية)');
+    /h\.status === 'ok' \? 'ok' : 'attention'/.test(read('src/components/common/Header.tsx')) &&
+    read('src/components/common/Header.tsx').includes('setInterval(poll'),
+    'مؤشر صحة عامة في الترويسة من /api/health الحقيقية (بلا قيمة وهمية) مع إعادة جلب دورية');
   add('unified-nav-sections-rendered',
     navSectionIds.every((id)=> app.includes("case '" + id + "':")) &&
     app.includes('SectionHub'),
@@ -5385,6 +5386,66 @@ add('watcher-advisory-not-authority',
       !/graph\.facebook\.com/.test(accept) &&
       /delete env\.GEMINI_API_KEY/.test(accept),
       'اختبار القبول يشغّل خادماً حقيقياً بلا مزود AI وبلا حصة (يمسح GEMINI_API_KEY/DATABASE_URL)');
+  }
+
+  // 11ب) PR-C — اتساق العرض والاتصال (C2–C8): حرّاس انحدار تمنع رجوع القيم الثابتة
+  // والتسميات المضلِّلة وتناقض حالة الاتصال.
+  {
+    const headerSrc = read('src/components/common/Header.tsx');
+    const hubSrc2 = read('src/components/social/SocialHubView.tsx');
+    const calSrc = read('src/components/calendar/ContentCalendarView.tsx');
+    const marketingSrc = read('src/components/agent/MarketingAgentView.tsx');
+    const sysCtrlSrc = read('src/components/system/SystemControlView.tsx');
+    const schedSrc = read('engine/social/youtubeWatcherScheduler.ts');
+    const routesSrc = read('engine/social/routes.ts');
+    const prcTest = read('engine/tests/prc.display.consistency.test.ts');
+
+    add('prc-header-health-polls-and-unknown',
+      /setInterval\(\s*poll\s*,\s*60_?000\s*\)/.test(headerSrc) &&
+      /setAiReady\(null\)/.test(headerSrc) &&
+      /aiReady === null \? 'Gemini: غير معروف'/.test(headerSrc),
+      'الترويسة تعيد جلب /api/health دورياً وتعرض «غير معروف» عند فشل الجلب (لا «Gemini محمي»)');
+
+    add('prc-platform-card-labels-truthful',
+      /تاريخ الربط:/.test(hubSrc2) && !/آخر مزامنة فعلية:/.test(hubSrc2) &&
+      /آخر استقبال:/.test(hubSrc2) && /lastIngestionPerPlatform/.test(hubSrc2),
+      'بطاقة المنصة تسمّي تاريخ الربط باسمه وتضيف «آخر استقبال» من بيانات الاستقبال الفعلية');
+
+    add('prc-calendar-dynamic-baghdad-date',
+      !/سبتمبر 2026/.test(calSrc) && !/day: 14, isToday: true/.test(calSrc) &&
+      /arabicMonthLabel\(/.test(calSrc) && /postWallClock\(/.test(calSrc) && !/7:30 م/.test(calSrc),
+      'التقويم يحسب الشهر/الأسبوع/اليوم من التاريخ الفعلي بتوقيت بغداد (لا قيم ثابتة ولا وقت افتراضي)');
+
+    add('prc-marketing-defaults-from-product',
+      /INSTALLMENT_MONTHS_DEFAULT/.test(marketingSrc) &&
+      /import \{ INSTALLMENT_MONTHS_DEFAULT \} from '\.\.\/\.\.\/utils\/installmentPrice'/.test(marketingSrc) &&
+      /setDurationMonths\(p\.durationMonths/.test(marketingSrc),
+      'وكيل المحتوى يأخذ المدة/الدفعة من المنتج المختار والافتراضي = INSTALLMENT_MONTHS_DEFAULT');
+
+    add('prc-watcher-cadence-precise-rearm',
+      /getRemainingMs\?:/.test(schedSrc) &&
+      /const remaining = hooks\.getRemainingMs\(\)/.test(schedSrc) &&
+      /Math\.min\(cadence, Math\.ceil\(remaining\)\)/.test(schedSrc) &&
+      /getRemainingMs: \(\) => \{[\s\S]{0,400}watcherState\.lastPollAt/.test(server),
+      'جدولة المراقب تُسلّح بالموعد الفعلي فلا يتجاوز الإيقاع المضبوط (5 => لا 6)');
+
+    add('prc-telegram-connection-single-source',
+      /function effectivePlatformConnection\(/.test(server) &&
+      /platform === "telegram"[\s\S]{0,200}telegramConnectorConfigured\(\)/.test(server) &&
+      /deps\.effectiveConnection \? deps\.effectiveConnection\(platform\)/.test(routesSrc) &&
+      (server.match(/effectivePlatformConnection\(p\)/g) || []).length >= 5,
+      'حالة اتصال Telegram من مصدر واحد: لا «متصل» بلا اعتماد موصل فعّال، وتقرأه كل الشاشات');
+
+    add('prc-operations-backup-label-truthful',
+      /نسخ الحالة المحلية/.test(sysCtrlSrc) && !/\['النسخ الاحتياطية'/.test(sysCtrlSrc) &&
+      /نقاط الاستعادة الكاملة على Drive/.test(sysCtrlSrc),
+      'مركز التشغيل يسمّي «نسخ الحالة المحلية» بدل «النسخ الاحتياطية» المتضارب مع نقاط Drive');
+
+    add('prc-regression-test',
+      fs.existsSync(path.join(root, 'engine/tests/prc.display.consistency.test.ts')) &&
+      /test:prc-display-consistency/.test(read('package.json')) &&
+      prcTest.includes('PASSED:'),
+      'اختبار PR-C موجود ومُسجّل في package.json');
   }
 
   // 12) AGENTS.md: عدد فحوصات final-audit مطابق للفعلي (يُعَدّ من نص الملف نفسه).

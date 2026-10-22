@@ -41,13 +41,32 @@ export const Header: React.FC<HeaderProps> = ({ onOpenMobileMenu }) => {
   const [systemHealth, setSystemHealth] = useState<'checking' | 'ok' | 'attention'>('checking');
 
   React.useEffect(() => {
-    apiService.checkHealth()
-      .then((h) => {
-        setAiReady(Boolean(h.aiEnabled));
-        // status: 'ok' من الخادم = كل الأنظمة تعمل؛ غير ذلك (degraded/offline) = يحتاج انتباهاً.
-        setSystemHealth(h?.status === 'ok' ? 'ok' : 'attention');
-      })
-      .catch(() => { setAiReady(false); setSystemHealth('attention'); });
+    let cancelled = false;
+    const poll = () => {
+      apiService.checkHealth()
+        .then((h) => {
+          if (cancelled) return;
+          // C3: 'offline' تعني تعذّر الجلب ⇒ «غير معروف» لا «Gemini غير مفعّل».
+          if (!h || h.status === 'offline') {
+            setAiReady(null);
+            setSystemHealth('attention');
+            return;
+          }
+          setAiReady(Boolean(h.aiEnabled));
+          // status: 'ok' من الخادم = كل الأنظمة تعمل؛ غير ذلك (degraded) = يحتاج انتباهاً.
+          setSystemHealth(h.status === 'ok' ? 'ok' : 'attention');
+        })
+        .catch(() => {
+          if (cancelled) return;
+          // C3: فشل الجلب ≠ «Gemini غير مفعّل». نُعلن «غير معروف» بدل ادّعاء حالة.
+          setAiReady(null);
+          setSystemHealth('attention');
+        });
+    };
+    poll();
+    // C3: إعادة الجلب دورياً حتى لا تبقى الحالة قديمة بعد تغيّر الخادم.
+    const timer = setInterval(poll, 60_000);
+    return () => { cancelled = true; clearInterval(timer); };
   }, []);
 
   const totalNotifications =
@@ -112,7 +131,7 @@ export const Header: React.FC<HeaderProps> = ({ onOpenMobileMenu }) => {
                 </span>
                 <span className="hidden sm:inline-flex items-center gap-1 text-[11px] px-2 py-0.5 rounded-full bg-emerald-950/80 border border-emerald-500/30 text-emerald-300 font-medium">
                   <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span>
-                  {aiReady === null ? 'فحص Gemini...' : aiReady ? 'Gemini مفعّل' : 'Gemini محمي/غير مفعّل'}
+                  {aiReady === null ? 'Gemini: غير معروف' : aiReady ? 'Gemini مفعّل' : 'Gemini محمي/غير مفعّل'}
                 </span>
               </div>
               <p className="text-[11px] text-slate-400 hidden sm:block">

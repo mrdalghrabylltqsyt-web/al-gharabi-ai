@@ -20,6 +20,7 @@ import {
   FileText,
   Layers,
 } from 'lucide-react';
+import { INSTALLMENT_MONTHS_DEFAULT } from '../../utils/installmentPrice';
 
 const GOALS: Array<{ id: MarketingGoal; label: string; hint: string }> = [
   { id: 'offer', label: 'عرض سعر وتقسيط', hint: 'إبراز سعر الكاش والقسط الشهري' },
@@ -243,7 +244,16 @@ export const MarketingAgentView: React.FC = () => {
               {products.length > 0 ? (
                 <select
                   value={productId}
-                  onChange={(e) => setProductId(e.target.value)}
+                  onChange={(e) => {
+                    const id = e.target.value;
+                    setProductId(id);
+                    // المدة والدفعة الأولى من المنتج المختار (وإن غابت فالمصدر الواحد الافتراضي).
+                    const p = products.find((x) => x.id === id);
+                    if (p) {
+                      setDurationMonths(p.durationMonths ? String(p.durationMonths) : String(INSTALLMENT_MONTHS_DEFAULT));
+                      setDownPaymentPercent(p.downPaymentPercent != null ? String(p.downPaymentPercent) : '0');
+                    }
+                  }}
                   className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2.5 text-xs text-white focus:outline-none focus:border-emerald-500"
                 >
                   <option value="">— بدون منتج من القاعدة (اكتب الاسم يدوياً) —</option>
@@ -332,7 +342,7 @@ export const MarketingAgentView: React.FC = () => {
                   max={60}
                   value={durationMonths}
                   onChange={(e) => setDurationMonths(e.target.value)}
-                  placeholder={selectedProduct ? String(selectedProduct.durationMonths) : '12'}
+                  placeholder={selectedProduct ? String(selectedProduct.durationMonths) : String(INSTALLMENT_MONTHS_DEFAULT)}
                   className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-emerald-500"
                 />
               </div>

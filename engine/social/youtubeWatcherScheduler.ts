@@ -28,6 +28,12 @@ export interface SchedulerHooks {
   runCycle: () => void;
   /** أقصى فاصل للتشغيل الحقيقي — لا يزيد عنه المؤقّت وإن كان الإيقاع أكبر. */
   maxTickMs?: number;
+  /**
+   * C7: المدة المتبقية حتى استحقاق الفحص (ميلي ثانية). عند توفّرها يُعاد تسليح
+   * المؤقّت بموعد الاستحقاق الفعلي بدل شبكة نبضات ثابتة، فلا يزيد الإيقاع الفعلي
+   * عن الإيقاع المضبوط (كان 5 دقائق يظهر 6 بسبب محاذاة النبضة).
+   */
+  getRemainingMs?: () => number;
   /** مهلة دورة الإقلاع الأولى. */
   bootDelayMs?: number;
 }
@@ -60,8 +66,35 @@ export function createWatcherScheduler(hooks: SchedulerHooks): WatcherScheduler 
 
   const tick = () => {
     if (timer == null) return; // أُوقفت الجدولة — لا تنفّذ.
-    if (!hooks.isDue()) return;
+    if (!hooks.isDue()) {
+      // C7: نبضة مبكرة (لم يحن الموعد). إن عرفنا المتبقية نُعيد التسليح بالموعد
+      // الفعلي بدل انتظار نبضة أخرى كاملة (يمنع تحوّل 5 دقائق إلى 6).
+      reschedulePrecise();
+      return;
+    }
     hooks.runCycle();
+    // C7: بعد التنفيذ نُعيد التسليح بالموعد الفعلي للإيقاع التالي.
+    reschedulePrecise();
+  };
+
+  /** يُسلّح المؤقّت بالموعد المتبقي إن أمكن، وإلا بالشبكة الحالية. */
+  const reschedulePrecise = () => {
+    if (timer == null) return;
+    if (typeof hooks.getRemainingMs === 'function') {
+      const remaining = hooks.getRemainingMs();
+      if (Number.isFinite(remaining)) {
+        // ننتظر المتبقية فعلاً (بحدّ الإيقاع نفسه)، فلا تُزاد دقيقة بسبب النبضة.
+        // أرضية صغيرة (≤5s) تمنع حلقة مزدحمة إن كان مستحقاً ولم يتقدّم lastPollAt بعد
+        // (دورة غير متزامنة تُثبّت وقتها بعد التنفيذ).
+        const cadence = Math.max(1, hooks.getCadenceMs());
+        const floor = Math.min(cadence, 5000);
+        const delay = Math.max(floor, Math.min(cadence, Math.ceil(remaining)));
+        clearTimer();
+        timer = hooks.setTimer(tick, delay);
+        return;
+      }
+    }
+    // بلا موعد دقيق نُبقي النبضة الحالية (لا إعادة إنشاء).
   };
 
   const createTimer = () => {

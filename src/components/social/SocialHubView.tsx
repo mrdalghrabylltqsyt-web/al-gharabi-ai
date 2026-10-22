@@ -78,6 +78,24 @@ export const SocialHubView: React.FC = () => {
   const [replyDraft, setReplyDraft] = useState<Record<string, string>>({});
   const [rowError, setRowError] = useState<Record<string, string>>({});
   const [ingestForm, setIngestForm] = useState({ platform: 'facebook', externalId: '', text: '', authorName: '' });
+  // C4: آخر استقبال فعلي لكل منصة (من /api/health الحقيقية — حقل تقني بلا بيانات عملاء).
+  const [lastIngestByPlatform, setLastIngestByPlatform] = useState<Record<string, string>>({});
+
+  useEffect(() => {
+    let cancelled = false;
+    const loadIngest = () => {
+      apiService.checkHealth()
+        .then((h) => {
+          if (cancelled) return;
+          const per = h?.ingestionEngine?.lastIngestionPerPlatform;
+          if (per && typeof per === 'object') setLastIngestByPlatform(per);
+        })
+        .catch(() => { /* تعذّر الجلب ⇒ لا نعرض قيمة (لا نخترع وقتاً) */ });
+    };
+    loadIngest();
+    const timer = setInterval(loadIngest, 120_000);
+    return () => { cancelled = true; clearInterval(timer); };
+  }, []);
 
   const loadConsole = useCallback(async () => {
     setConsoleLoading(true);
@@ -404,8 +422,9 @@ export const SocialHubView: React.FC = () => {
                   </div>
                 </div>
 
-                <div className="flex items-center justify-between text-[11px] text-slate-400 pt-1">
-                  <span>آخر مزامنة فعلية: {p.lastSyncTime || 'لم تتم بعد'}</span>
+                <div className="flex items-center justify-between gap-2 text-[11px] text-slate-400 pt-1">
+                  <span>تاريخ الربط: {p.lastSyncTime || 'غير مربوط بعد'}</span>
+                  <span>آخر استقبال: {lastIngestByPlatform[p.platform] ? new Date(lastIngestByPlatform[p.platform]).toLocaleString('ar-IQ') : 'لا استقبال'}</span>
                   <button
                     onClick={() => setActiveTab('content')}
                     className="text-emerald-400 hover:underline font-semibold flex items-center gap-1 cursor-pointer"

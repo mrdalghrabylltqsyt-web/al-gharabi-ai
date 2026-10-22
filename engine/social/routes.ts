@@ -73,6 +73,11 @@ export interface SocialRoutesDeps {
   /** حالة مساحة العمل المحفوظة (سجلات حقيقية فقط). */
   workspace: any;
   platformConnections: Map<string, PlatformConnectionLike>;
+  /**
+   * C2: مصدر واحد لحالة الاتصال الفعلية (يشمل حكم الموصل). عند غيابه تُقرأ الحالة
+   * المحفوظة مباشرة. يُحقن من الخادم ليبقى هذا الملف بلا منطق مزوّد.
+   */
+  effectiveConnection?: (platform: string) => PlatformConnectionLike | null | undefined;
   persistState: () => void;
   audit: (userId: string, action: string, detail?: string) => void;
   workspaceId: (prefix: string) => string;
@@ -338,7 +343,9 @@ export function registerSocialManagerRoutes(app: express.Express, deps: SocialRo
 
 
   const connectionFor = (platform: string) => {
-    const conn = platformConnections.get(platform);
+    // C2: مصدر واحد للحالة. الخادم يحقن `effectivePlatformConnection` فيُعلن Telegram
+    // `reauth_needed` إن فُقد اعتماد الموصل — فلا تقول شاشة «متصل» وأخرى «غير متصل».
+    const conn = (deps.effectiveConnection ? deps.effectiveConnection(platform) : platformConnections.get(platform));
     if (!conn) return null;
     return {
       status: conn.status,

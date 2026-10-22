@@ -136,6 +136,23 @@ export function epochToZonedWallClock(epochMs: number, timeZone = APP_TIMEZONE):
   return { year: get('year'), month: get('month'), day: get('day'), hour: get('hour'), minute: get('minute'), second: get('second') };
 }
 
+/** أسماء الأشهر العربية (مصدر واحد لعرض التقويم). */
+export const ARABIC_MONTHS = [
+  'يناير', 'فبراير', 'مارس', 'أبريل', 'مايو', 'يونيو',
+  'يوليو', 'أغسطس', 'سبتمبر', 'أكتوبر', 'نوفمبر', 'ديسمبر',
+] as const;
+
+/** أسماء أيام الأسبوع العربية بترتيب الأحد أولاً (يطابق `Date.getDay`). */
+export const ARABIC_WEEKDAYS = [
+  'الأحد', 'الإثنين', 'الثلاثاء', 'الأربعاء', 'الخميس', 'الجمعة', 'السبت',
+] as const;
+
+/** وصف شهر عربي من التاريخ الفعلي في منطقة بغداد (مثال: «أكتوبر 2026»). */
+export function arabicMonthLabel(epochMs = Date.now(), timeZone = APP_TIMEZONE): string {
+  const c = epochToZonedWallClock(epochMs, timeZone);
+  return `${ARABIC_MONTHS[c.month - 1]} ${c.year}`;
+}
+
 /** يحوّل لحظة/نص ISO إلى جدار محلي بصيغة الجدولة (يحتفظ بالتوقيت المعروض). */
 export function toScheduleDisplay(value: unknown, timeZone = APP_TIMEZONE): string | null {
   if (typeof value !== 'string' || !value.trim()) return null;
