@@ -421,6 +421,7 @@ import {
   type YouTubeCommentStage,
   type WatcherOpportunity,
 } from "./engine/social/youtubeWatcher";
+import { evaluateCustomerSendGate, isAutomaticSendActor } from "./engine/social/sendApprovalGate";
 import { createWatcherScheduler, type WatcherScheduler } from "./engine/social/youtubeWatcherScheduler";
 import {
   META_WATCHER_PLATFORMS,
@@ -1069,9 +1070,9 @@ function idempotencyStatusBlock(): { backend: "postgres" | "file"; table: string
 
 // ------------------------------------------------------------------
 // مؤشرات استهلاك الحصص المجانية (عرض فقط، بلا حجب ولا سرّ) — دفعة مستقلة.
-// نقل Neon قياس داخلي فعلي (بايتات الكتابة الفعلية عبر storageWriteAccounting)،
-// ومساحة Drive تُقرأ أصلاً في عمليات النسخ/المزامنة القائمة (بلا قراءة إضافية).
-// لا يمنع هذا أي كتابة/نسخة ولا يغيّر أي إيقاع — مجرد عرض.
+// نقل Neon قياس داخلي للصادر الفعلي (egress: ما ترجعه قاعدة الحالة من SELECT
+// عبر storageReadAccounting)، ومساحة Drive تُقرأ أصلاً في عمليات النسخ/المزامنة
+// القائمة (بلا قراءة إضافية). لا يمنع هذا أي كتابة/نسخة ولا يغيّر أي إيقاع.
 // ------------------------------------------------------------------
 const USAGE_ALERT_THRESHOLD = resolveUsageAlertThreshold(process.env.FREE_TIER_USAGE_ALERT_PERCENT);
 const freeTierUsageState: { egressBytesMonth: number; egressBytesSinceBoot: number; month: string | null; updatedAt: string | null } = {
@@ -4990,6 +4991,14 @@ async function executeMetaCommentReply(
   const onlyBlock = youtubeOnlyBlock(platform);
   if (onlyBlock.blocked) return { status: onlyBlock.status!, body: onlyBlock.body };
 
+  // PR-A: بوابة الموافقة المركزية قبل أي نداء مزوّد — في وضع approval لا يخرج
+  // إرسال آلي لزبون؛ يُسجَّل طلب موافقة بالنص المقترح بلا أي إرسال.
+  const approvalGate = await guardCustomerSend({
+    actor, platform, operation: 'comment_reply',
+    externalId, text, productId: input.productId || null,
+  });
+  if (!approvalGate.allowed) return { status: 409, body: approvalGate.body };
+
   const lock = replyLockKey(platform, 'comment', externalId, idempotencyKey);
   if (!acquireReplyLock(lock)) return { status: 409, body: { success: false, error: 'طلب رد آخر على نفس التعليق قيد التنفيذ بالفعل؛ انتظر حتى يكتمل لمنع التكرار.', code: 'REPLY_IN_PROGRESS' } };
   let idemKey = '';
@@ -5090,6 +5099,13 @@ async function executeMetaMessageReply(
   const onlyBlock = youtubeOnlyBlock(platform);
   if (onlyBlock.blocked) return { status: onlyBlock.status!, body: onlyBlock.body };
 
+  // PR-A: بوابة الموافقة المركزية قبل أي نداء مزوّد (نفس مبدأ مسار التعليق).
+  const approvalGate = await guardCustomerSend({
+    actor, platform, operation: 'message_reply',
+    externalId, recipientId, text, productId: input.productId || null,
+  });
+  if (!approvalGate.allowed) return { status: 409, body: approvalGate.body };
+
   const earlyLock = replyLockKey(platform, 'message', externalId || `${platform}-msg:${recipientId}`, idempotencyKey);
   if (!acquireReplyLock(earlyLock)) return { status: 409, body: { success: false, error: 'طلب رد آخر على نفس الرسالة قيد التنفيذ بالفعل؛ انتظر حتى يكتمل لمنع التكرار.', code: 'REPLY_IN_PROGRESS' } };
   let idemKey = '';
@@ -5188,6 +5204,13 @@ async function executeTelegramMessageReply(
 
   const onlyBlock = youtubeOnlyBlock('telegram');
   if (onlyBlock.blocked) return { status: onlyBlock.status!, body: onlyBlock.body };
+
+  // PR-A: بوابة الموافقة المركزية قبل أي نداء مزوّد (نفس مبدأ مسار Meta).
+  const approvalGate = await guardCustomerSend({
+    actor, platform: 'telegram', operation: 'message_reply',
+    externalId, text, productId: input.productId || null,
+  });
+  if (!approvalGate.allowed) return { status: 409, body: approvalGate.body };
 
   const lock = replyLockKey('telegram', 'message', externalId);
   if (!acquireReplyLock(lock)) return { status: 409, body: { success: false, error: 'طلب رد آخر على نفس الرسالة قيد التنفيذ بالفعل؛ انتظر حتى يكتمل لمنع التكرار.', code: 'REPLY_IN_PROGRESS' } };
@@ -6659,6 +6682,13 @@ async function executeYouTubeReply(input: { commentId: string; text: string; com
   const commentText = String(input.commentText || "");
   if (!parentCommentId) return { status: 400, body: { success: false, error: "معرّف التعليق (commentId) مطلوب لمنع الرد المكرر." } };
   if (!text) return { status: 400, body: { success: false, error: "نص الرد مطلوب." } };
+  // PR-A: بوابة الموافقة المركزية قبل أي نداء مزوّد — في وضع approval لا يخرج
+  // إرسال آلي (مراقب/عقل/عقدة) لزبون؛ يُسجَّل طلب موافقة بالنص المقترح بلا إرسال.
+  const approvalGate = await guardCustomerSend({
+    actor, platform: 'youtube', operation: 'comment_reply',
+    externalId: parentCommentId, text, productId: input.productId || null,
+  });
+  if (!approvalGate.allowed) return { status: 409, body: approvalGate.body };
   // REL-01: حجز ذرّي يمنع رد مكرر فعلي — هذه الدالة تُستدعى من مسار يدوي
   // (/api/platforms/youtube/reply) **ومن** دورة مراقبة يوتيوب التلقائية معاً؛
   // بلا هذا القفل يمكن أن يتزامن رد يدوي من المالك مع رد تلقائي على نفس التعليق.
@@ -7343,18 +7373,19 @@ function normalizeContentQueue(raw: any): ContentQueueItem[] {
 
 /**
  * الإيقاع الفعلي للجدولة (ميلي ثانية). مصدر الحقيقة هو إعداد المالك المحفوظ
- * (`controls.cadenceMinutes`، 1..5)، مع احترام Kill Switch (0 = لا فحص).
- * متغيّر البيئة `YOUTUBE_WATCHER_CADENCE_MS` يبقى احتياطياً فقط عند غياب الإعداد.
+ * (`controls.cadenceMinutes`، 1..5). Kill Switch يوقف الإرسال لا القراءة، فتبقى
+ * دورة الفحص عاملة. متغيّر البيئة `YOUTUBE_WATCHER_CADENCE_MS` يبقى احتياطياً فقط
+ * عند غياب الإعداد.
  */
 function watcherCadenceMs(): number {
   const c = normalizeWatcherControls(watcherState.controls);
-  if (c.enabled && c.paused) return 0;
+  // Kill Switch يوقف الإرسال لا القراءة: تبقى دورة الفحص (قراءة/تحليل) عاملة.
   const hasOwnerSetting = typeof (watcherState.controls as any)?.cadenceMinutes === 'number';
   if (hasOwnerSetting) return cadenceMinutesToMs(c.cadenceMinutes);
   return normalizeCadenceMs(process.env.YOUTUBE_WATCHER_CADENCE_MS ?? null);
 }
 
-/** هل حان وقت الفحص وفق الإيقاع الحالي؟ Kill Switch ⇒ لا فحص. */
+/** هل حان وقت الفحص وفق الإيقاع الحالي؟ (القراءة مستمرة؛ الإرسال تحكمه البوابة). */
 function watcherPollDue(): boolean {
   const cadence = watcherCadenceMs();
   if (cadence <= 0) return false;
@@ -7634,6 +7665,11 @@ async function runYouTubeWatcherCycle(trigger: "schedule" | "manual" = "schedule
           // (من السجل) + ردود هذه الدورة حتى الحالي (`replied` يزيد قبل السجل). لا
           // قيمة ثابتة، فلا تُرقّى ملاحظة واحدة إلى معرفة دائمة قبل 3 ردود فعلية.
           recordReadOutcome({ id: `yt-reply-sent:${String(c.commentId)}`, platform: 'youtube', kind: 'response_received', summary: `أُرسل رد على تعليق YouTube ووصل المزود بمعرّف (${vr.real ? 'مُتحقَّق' : 'غير مُتحقَّق'}).`, source: 'platform_data:youtube-replies', sampleSize: watcherObservationCount('response_received') + replied, decisionId: decisionIdForEvent(`comment:${String(c.commentId)}`), providerReplyId: String(result.body.externalReplyId) });
+        } else if (result.body?.needsApproval === true) {
+          // PR-A: بوابة الموافقة حجبت الإرسال الآلي — انتظار موافقة لا فشل.
+          deferred += 1;
+          baseEntry.stage = "SKIPPED"; baseEntry.deferred = true; baseEntry.code = "DEFER_AUTOREPLY_DISABLED";
+          baseEntry.reason = "بانتظار موافقة المالك على الإرسال (وضع الموافقة) — لم يُرسل شيء.";
         } else {
           failed += 1;
           baseEntry.stage = "FAILED";
@@ -7755,9 +7791,10 @@ function recordTelegramWatcherDeferral(reason: string): void {
 function cycleHealthWarning() {
   const nowMs = Date.now();
   const rows: { name: string; cadenceMs: number; lastRunAt: string | null; deferred: boolean; deferredReason: string | null; active: boolean }[] = [
-    { name: 'youtubeWatcher', cadenceMs: watcherCadenceMs(), lastRunAt: watcherState.lastPollAt, ...normalizeDeferralState(watcherState.deferral), active: Boolean(watcherState.controls.enabled && !watcherState.controls.paused) },
-    { name: 'metaPolling', cadenceMs: metaPollingCadenceMs(), lastRunAt: metaPollingState.lastPollAt, ...normalizeDeferralState(metaPollingState.deferral), active: Boolean(metaPollingState.controls.enabled && !metaPollingState.controls.paused) },
-    { name: 'telegramPolling', cadenceMs: telegramPollingCadenceMs(), lastRunAt: telegramPollingState.lastPollAt, ...normalizeDeferralState(telegramPollingState.deferral), active: Boolean(telegramPollingState.controls.enabled && !telegramPollingState.controls.paused) },
+    // PR-A: Kill Switch يوقف الإرسال لا القراءة، فالدورة تبقى نشطة عند paused.
+    { name: 'youtubeWatcher', cadenceMs: watcherCadenceMs(), lastRunAt: watcherState.lastPollAt, ...normalizeDeferralState(watcherState.deferral), active: Boolean(watcherState.controls.enabled) },
+    { name: 'metaPolling', cadenceMs: metaPollingCadenceMs(), lastRunAt: metaPollingState.lastPollAt, ...normalizeDeferralState(metaPollingState.deferral), active: Boolean(metaPollingState.controls.enabled) },
+    { name: 'telegramPolling', cadenceMs: telegramPollingCadenceMs(), lastRunAt: telegramPollingState.lastPollAt, ...normalizeDeferralState(telegramPollingState.deferral), active: Boolean(telegramPollingState.controls.enabled) },
     { name: 'brainRuntime', cadenceMs: brainRuntimeIntervalMs(), lastRunAt: brainRuntimeState.lastCycleCompletedAt || brainRuntimeState.lastCycleStartedAt, ...normalizeDeferralState(brainRuntimeState.deferral), active: brainRuntimeEnabled() },
     { name: 'commercialBrain', cadenceMs: 10 * 60 * 1000, lastRunAt: commercialLastRun?.at || null, ...normalizeDeferralState(commercialDeferral), active: commercialKillSwitchEnabled() },
   ];
@@ -7813,7 +7850,10 @@ function watcherStatusBlock() {
     commentId: p.commentId, videoId: p.videoId, authorName: p.authorName, text: p.text, reason: p.reason, at: p.at,
   }));
   return {
-    watcherActive: Boolean(watcherState.controls.enabled && !watcherState.controls.paused && watcherScheduler?.status().active),
+    // PR-A: Kill Switch يوقف الإرسال لا القراءة؛ فالنشاط يعكس تشغيل المراقبة
+    // (قراءة/تحليل) لا الرد. الرد يُحجب في البوابة لا هنا.
+    watcherActive: Boolean(watcherState.controls.enabled && watcherScheduler?.status().active),
+    paused: Boolean(watcherState.controls.paused),
     // PROC-01: حالة القفل الدائم (منطقية فقط: محتجز؟ متقادم؟ بلا أي سرّ).
     lease: { held: Boolean(watcherLease), stale: watcherLease ? watcherLease.expiresAtMs <= Date.now() : false },
     controls: controlsView,
@@ -7902,13 +7942,12 @@ function watcherStatusBlockPublic() {
   return {
     status,
     watcherActive: full.watcherActive,
+    // PR-A: الإرسال محجوب (Kill Switch) بينما القراءة/التحليل مستمران — حقل تقني منطقي.
+    sendingPaused: Boolean(full.paused),
     cadenceMinutes: full.cadenceMinutes,
     cadenceMs: full.cadenceMs,
-    // pollCount: عدّاد تقني تراكمي لعدد دورات الفحص **الناجحة** منذ بدء القياس (يُحفظ
-    // عبر محوّل الحالة فيصمد بعد restart). لا يتضمّن الدورات الفاشلة ولا يُصفَّر عند
-    // إعادة التشغيل، فلا يصلح كمعدّل مباشر — للمعدّل استخدم lastPollAt + cadenceMs.
-    // ليس مؤشراً تجارياً ولا يحمل أي بيانات عملاء، فيُعلن في النقطتين العامتين كمرقاب
-    // حياة (liveness) للخدمة.
+    // pollCount: عدّاد تقني تراكمي لعدد دورات الفحص **الناجحة** منذ بدء القياس (يصمد
+    // بعد restart؛ لا يتضمّن الدورات الفاشلة ولا يُصفَّر) — مرقاب حياة تقني لا مؤشر تجاري.
     pollCount: full.pollCount,
     lastPollAt: full.lastPollAt,
     // تتبّع التأجيل الصريح (بلا سرّ): هل الدورة مؤجَّلة؟ لماذا؟ ومتى آخر مرة؟
@@ -8330,6 +8369,11 @@ async function runMetaWatcherCycle(trigger: string): Promise<{ ok: boolean; trig
             baseEntry.reason = gen.clarify
               ? `أُرسل سؤال توضيح فعلياً وردّ ${platform} بمعرّف رد.`
               : `أُرسل الرد الحقيقي وردّ ${platform} بمعرّف رد.`;
+          } else if (res.body?.needsApproval === true) {
+            // PR-A: بوابة الموافقة حجبت الإرسال الآلي — انتظار موافقة لا فشل.
+            deferred += 1;
+            baseEntry.stage = "SKIPPED"; baseEntry.deferred = true; baseEntry.code = "DEFER_AUTOREPLY_DISABLED";
+            baseEntry.reason = "بانتظار موافقة المالك على الإرسال (وضع الموافقة) — لم يُرسل شيء.";
           } else {
             failed += 1;
             baseEntry.stage = "FAILED";
@@ -8421,6 +8465,11 @@ async function runMetaWatcherCycle(trigger: string): Promise<{ ok: boolean; trig
             baseEntry.reason = gen.clarify
               ? `أُرسل سؤال توضيح فعلياً وردّ ${platform} بمعرّف رسالة.`
               : `أُرسلت الرسالة فعلياً وردّ ${platform} بمعرّف رسالة.`;
+          } else if (res.body?.needsApproval === true) {
+            // PR-A: بوابة الموافقة حجبت الإرسال الآلي — انتظار موافقة لا فشل.
+            deferred += 1;
+            baseEntry.stage = "SKIPPED"; baseEntry.deferred = true; baseEntry.code = "DEFER_AUTOREPLY_DISABLED";
+            baseEntry.reason = "بانتظار موافقة المالك على الإرسال (وضع الموافقة) — لم يُرسل شيء.";
           } else {
             failed += 1;
             baseEntry.stage = "FAILED";
@@ -8476,6 +8525,10 @@ app.post("/api/agent/meta/watcher/controls", requireOwner, async (req, res) => {
       return res.status(400).json({ success: false, error: v.reason, code: "INVALID_CADENCE" });
     }
   }
+  // PR-A (A5): الاستئناف يعيد المراقبة فقط ويُبقي الرد الآلي معطّلاً.
+  if (prevControls.paused === true && body.paused === false && body.autoReply === undefined) {
+    body.autoReply = false;
+  }
   const next = normalizeMetaPollingState({ controls: {
     enabled: body.enabled !== undefined ? body.enabled : prevControls.enabled,
     autoReply: body.autoReply !== undefined ? body.autoReply : prevControls.autoReply,
@@ -8497,7 +8550,7 @@ app.post("/api/agent/meta/watcher/controls", requireOwner, async (req, res) => {
   // إعادة جدولة فورية عند تغيير الإيقاع/الإيقاف (نفس نمط YouTube، مؤقّت واحد).
   try {
     if (!metaPollingScheduler) startMetaPollingWatcher();
-    else if (next.enabled && next.paused) metaPollingScheduler.stop();
+    else if (!next.enabled) metaPollingScheduler.stop();
     else metaPollingScheduler.reschedule();
   } catch { /* الجدولة لا تُسقط تحديث التحكم */ }
   res.json({ success: true, controls: metaPollingControlsView(next), releasedDeferred });
@@ -8693,6 +8746,12 @@ async function runTelegramWatcherCycle(trigger: string): Promise<{ ok: boolean; 
           baseEntry.reason = gen.clarify
             ? "أُرسل سؤال توضيح فعلياً وردّ Telegram بمعرّف رسالة."
             : "أُرسل الرد الحقيقي وردّ Telegram بمعرّف رسالة.";
+        } else if (res.body?.needsApproval === true) {
+          // PR-A: بوابة الموافقة حجبت الإرسال الآلي — ليس فشلاً بل انتظار موافقة
+          // المالك. يُسجَّل موسوماً ومؤجَّلاً (يُحرَّر عند تغيير الوضع/التمكين).
+          deferred += 1;
+          baseEntry.stage = "SKIPPED"; baseEntry.deferred = true; baseEntry.code = "DEFER_AUTOREPLY_DISABLED";
+          baseEntry.reason = "بانتظار موافقة المالك على الإرسال (وضع الموافقة) — لم يُرسل شيء.";
         } else {
           failed += 1;
           baseEntry.stage = "FAILED";
@@ -8736,6 +8795,10 @@ app.post("/api/agent/telegram/watcher/controls", requireOwner, async (req, res) 
       return res.status(400).json({ success: false, error: v.reason, code: "INVALID_CADENCE" });
     }
   }
+  // PR-A (A5): الاستئناف يعيد المراقبة فقط ويُبقي الرد الآلي معطّلاً.
+  if (prevControls.paused === true && body.paused === false && body.autoReply === undefined) {
+    body.autoReply = false;
+  }
   const next = normalizeTelegramPollingState({ controls: {
     enabled: body.enabled !== undefined ? body.enabled : prevControls.enabled,
     autoReply: body.autoReply !== undefined ? body.autoReply : prevControls.autoReply,
@@ -8755,7 +8818,7 @@ app.post("/api/agent/telegram/watcher/controls", requireOwner, async (req, res) 
   audit((req as any).user.id, "telegram_watcher_controls_updated", JSON.stringify({ autoReply: next.autoReply, paused: next.paused, releasedDeferred }));
   try {
     if (!telegramPollingScheduler) startTelegramPollingWatcher();
-    else if (next.enabled && next.paused) telegramPollingScheduler.stop();
+    else if (!next.enabled) telegramPollingScheduler.stop();
     else telegramPollingScheduler.reschedule();
   } catch { /* الجدولة لا تُسقط تحديث التحكم */ }
   res.json({ success: true, controls: telegramPollingControlsView(next), releasedDeferred });
@@ -8810,6 +8873,74 @@ let commercialSendMode: CommercialSendMode = 'approval';
 let commercialDrafts: CommercialDraft[] = [];
 /** سجل قرارات المالك (النص الأصلي + المعدّل) — للتعلم لاحقاً، بلا تبنّي تعلّم الآن. */
 let commercialOwnerDecisions: CommercialOwnerDecision[] = [];
+
+/**
+ * PR-A: طابور طلبات الموافقة على الإرسال الآلي. حين يكون وضع الإرسال `approval`
+ * (الافتراضي) يُحجب أي إرسال **آلي** لزبون **قبل أي نداء مزوّد** ويُسجَّل هنا طلب
+ * موافقة يحمل النص المقترح — فلا يُرسل شيء ولا يُفقد الرد. لا سرّ فيه.
+ * يُحفظ عبر مفتاح `commercial` نفسه (بلا بنية/جدول جديد) فيصمد بعد restart.
+ */
+interface OutboundApprovalRequest {
+  id: string; platform: string; operation: string;
+  externalId: string | null; recipientId: string | null;
+  text: string; productId: string | null; actor: string;
+  at: string; status: 'pending';
+}
+const OUTBOUND_APPROVALS_MAX = 2000;
+let outboundApprovals: OutboundApprovalRequest[] = [];
+
+/**
+ * PR-A — البوابة المركزية قبل أي إرسال لزبون. تُفرض **داخل كل منفّذ مركزي** قبل
+ * أي نداء مزوّد، فلا يكفي إخفاء زر في الواجهة. في وضع `approval`:
+ *  - إرسال آلي (مراقب/عقل/عقدة) ⇒ حجب + تسجيل طلب موافقة + عدم إرسال.
+ *  - إرسال صرّح به إنسان (المالك/موافقته على مسودة) ⇒ يمرّ (فعل الموافقة نفسه).
+ * لا تتجاوزها `autoReply`/`youtubeDelegation`/قرار العقل.
+ */
+async function guardCustomerSend(input: {
+  actor: string; platform: string; operation: string;
+  externalId?: string | null; recipientId?: string | null;
+  text: string; productId?: string | null;
+}): Promise<{ allowed: boolean; code: string; body: any }> {
+  const decision = evaluateCustomerSendGate({ sendMode: commercialSendMode, actor: input.actor, platform: input.platform, operation: input.operation });
+  if (decision.allowed) return { allowed: true, code: 'ALLOWED', body: null };
+  // منع التكرار: طلب معلّق للهدف نفسه (منصة + عملية + تعليق/مستلم) لا يُنشأ مرة
+  // ثانية. يُحدَّث النص فقط إن تغيّر، ولا كتابة إلى القاعدة إن لم يتغيّر شيء.
+  const targetExt = input.externalId ? String(input.externalId) : null;
+  const targetRcp = input.recipientId ? String(input.recipientId) : null;
+  const existing = outboundApprovals.find((r) => r.status === 'pending' && r.platform === input.platform
+    && r.operation === input.operation && r.externalId === targetExt && r.recipientId === targetRcp);
+  if (existing) {
+    const nextText = String(input.text || '').slice(0, 4000);
+    if (existing.text !== nextText) {
+      existing.text = nextText;
+      existing.at = new Date().toISOString();
+      await persistCommercialLeads();
+    }
+    return {
+      allowed: false, code: 'NEEDS_APPROVAL',
+      body: { success: false, sent: false, delivered: false, needsApproval: true, code: 'NEEDS_APPROVAL', error: decision.reason, approval: existing, duplicate: true },
+    };
+  }
+  // تسجيل طلب الموافقة (بلا إرسال). لا يُسجَّل الطلب إن كان الوضع auto.
+  const req: OutboundApprovalRequest = {
+    id: workspaceId('approval'), platform: input.platform, operation: input.operation,
+    externalId: input.externalId ? String(input.externalId) : null,
+    recipientId: input.recipientId ? String(input.recipientId) : null,
+    text: String(input.text || '').slice(0, 4000), productId: input.productId ? String(input.productId) : null,
+    actor: input.actor, at: new Date().toISOString(), status: 'pending',
+  };
+  outboundApprovals.unshift(req);
+  if (outboundApprovals.length > OUTBOUND_APPROVALS_MAX) outboundApprovals.length = OUTBOUND_APPROVALS_MAX;
+  audit(input.actor, 'needs_approval', `${input.platform}:${input.operation}:${req.externalId || req.recipientId || ''}`);
+  await persistCommercialLeads();
+  return {
+    allowed: false, code: 'NEEDS_APPROVAL',
+    body: {
+      success: false, sent: false, delivered: false, needsApproval: true, code: 'NEEDS_APPROVAL',
+      error: decision.reason, approval: req,
+    },
+  };
+}
 
 /**
  * مفتاح الإيقاف الطارئ للعقل التجاري (Kill Switch) — مفتاح رئيسي واحد فقط.
@@ -8887,6 +9018,8 @@ async function persistCommercialLeads(): Promise<void> {
       sendMode: commercialSendMode,
       drafts: commercialDrafts.slice(0, COMMERCIAL_MAX_DRAFTS),
       ownerDecisions: commercialOwnerDecisions.slice(0, COMMERCIAL_MAX_DECISIONS),
+      // PR-A: طلبات الموافقة على الإرسال الآلي (بلا إرسال) — تصمد بعد restart.
+      outboundApprovals: outboundApprovals.slice(0, OUTBOUND_APPROVALS_MAX),
       // N2: قفل دورة العقل التجاري يُحفظ هنا (بلا سرّ) فيصمد/يُبطل صراحةً عند الإغلاق.
       lease: commercialLease,
       // إصلاح 2026-10-20: تتبّع التأجيل يصمد بعد restart.
@@ -8905,6 +9038,10 @@ function applyCommercialStateSnapshot(raw: any): void {
   commercialSendMode = normalizeCommercialSendMode(raw.sendMode);
   commercialDrafts = normalizeCommercialDrafts(raw.drafts).slice(0, COMMERCIAL_MAX_DRAFTS);
   commercialOwnerDecisions = normalizeOwnerDecisions(raw.ownerDecisions).slice(0, COMMERCIAL_MAX_DECISIONS);
+  // PR-A: طلبات الموافقة على الإرسال الآلي (توافق خلفي: غيابها ⇒ لا طلبات).
+  outboundApprovals = Array.isArray(raw.outboundApprovals)
+    ? raw.outboundApprovals.filter((r: any) => r && typeof r.id === 'string' && typeof r.platform === 'string').slice(0, OUTBOUND_APPROVALS_MAX)
+    : [];
   // N2: القفل الدائم لدورة العقل التجاري (owner + انتهاء فقط، بلا سرّ).
   commercialLease = normalizeLease(raw.lease);
   // إصلاح 2026-10-20: تتبّع التأجيل يُسترجَع بعد restart.
@@ -9542,6 +9679,9 @@ app.get("/api/commercial/inbox", requireOwner, (_req, res) => {
     qualification: summarizeQualification({ leads: commercialLeads, drafts: commercialDrafts, nowIso }),
     limits: commercialNegotiationLimits(),
     lastRun: commercialLastRun,
+    // PR-A: طلبات الموافقة على الإرسال الآلي (بلا إرسال) — للمالك فقط.
+    outboundApprovals: outboundApprovals.slice(0, 200),
+    outboundPendingCount: outboundApprovals.filter((r) => r.status === 'pending').length,
     expiredSwept: expired,
     generatedAt: nowIso,
   });
@@ -10030,29 +10170,20 @@ function startYouTubeWatcher(): void {
   // يُعيد الإرسال تلقائياً فور تجدد حصة YouTube. `.unref()` فلا يمنع الإغلاق النظيف،
   // وقفل داخلي يمنع التوازي. لا يعتمد على المتصفح.
   startYouTubeQuotaRetryTimer();
-  // Kill Switch عند الإقلاع: لا نبضات. تُستأنف عند رفع الإيقاف من الواجهة.
-  const c = normalizeWatcherControls(watcherState.controls);
-  if (c.enabled && c.paused) {
-    watcherScheduler.stop();
-    return;
-  }
+  // Kill Switch يوقف الإرسال لا القراءة: تبقى الجدولة عاملة (تقرأ/تحلّل) والرد
+  // محجوب في البوابة. كان الإيقاف يوقف الجدولة كلياً فيخالف النص الظاهر للمالك.
   watcherScheduler.start();
 }
 
 /**
  * يُعيد جدولة الـwatcher بالإيقاع الجديد بلا تكرار: يُبطل المؤقّت القديم ويُنشئ
- * واحداً جديداً. Kill Switch ⇒ يوقف الجدولة كلياً (لا نبضات). إن كان متوقفاً
- * ويعود مفعّلاً ⇒ يبدأ الجدولة من جديد.
+ * واحداً جديداً. Kill Switch لا يوقف الجدولة (القراءة مستمرة، الإرسال محجوب بالبوابة).
  */
 function applyWatcherCadence(): { activeTimers: number; cadenceMs: number; active: boolean } {
   if (!watcherScheduler) startYouTubeWatcher();
   const c = normalizeWatcherControls(watcherState.controls);
-  if (c.enabled && c.paused) {
-    watcherScheduler?.stop();
-    return { activeTimers: 0, cadenceMs: 0, active: false };
-  }
   const r = watcherScheduler!.reschedule();
-  return { ...r, active: true };
+  return { ...r, active: Boolean(c.enabled) };
 }
 
 // --- مراقب Meta: جدولة داخلية واحدة (نفس نمط YouTube) ---
@@ -10071,8 +10202,7 @@ function startMetaPollingWatcher(): void {
       runMetaWatcherCycle("schedule").catch(() => { /* الخطأ مسجَّل داخل الدورة */ });
     },
   });
-  const c = metaPollingState.controls;
-  if (c.enabled && c.paused) { metaPollingScheduler.stop(); return; }
+  // Kill Switch يوقف الإرسال لا القراءة: الجدولة تبقى عاملة (الرد محجوب بالبوابة).
   metaPollingScheduler.start();
 }
 
@@ -10092,8 +10222,7 @@ function startTelegramPollingWatcher(): void {
       runTelegramWatcherCycle("schedule").catch(() => { /* الخطأ مسجَّل داخل الدورة */ });
     },
   });
-  const c = telegramPollingState.controls;
-  if (c.enabled && c.paused) { telegramPollingScheduler.stop(); return; }
+  // Kill Switch يوقف الإرسال لا القراءة: الجدولة تبقى عاملة (الرد محجوب بالبوابة).
   telegramPollingScheduler.start();
 }
 
@@ -10168,6 +10297,12 @@ app.post("/api/agent/youtube/watcher/controls", requireOwner, async (req, res) =
     }
     body.cadenceMinutes = v.minutes;
     delete body.cadenceMs;
+  }
+  // PR-A (A5): الاستئناف يعيد **المراقبة فقط** ويُبقي الرد الآلي معطّلاً. عند رفع
+  // Kill Switch (paused true→false) بلا تمرير autoReply صريح، نُثبّت autoReply=false
+  // فلا يعود الرد الآلي تلقائياً. تغييره يدوياً في الطلب نفسه يبقى محترماً.
+  if (prevControls.paused === true && body.paused === false && body.autoReply === undefined) {
+    body.autoReply = false;
   }
   watcherState.controls = normalizeWatcherControls({ ...watcherState.controls, ...body });
   audit((req as any).user.id, "youtube_watcher_controls_updated", JSON.stringify({ ...watcherState.controls }));
@@ -14676,8 +14811,8 @@ ${UNTRUSTED_TEXT_POLICY_AR}`;
       return { ok: true, learning };
     },
     youtubeReply: async (input: { commentId: string; text: string; commentText?: string }) => {
-      // التنفيذ الخارجي يمر بمنفّذ الرد الحقيقي نفسه (كل البوابات سارية، لا تجاوز).
-      const result = await executeYouTubeReply({ commentId: input.commentId, text: input.text, commentText: input.commentText }, userId);
+      // منفّذ الرد نفسه بفاعل "agent" (نص الوكيل ليس موافقة المالك ⇒ بوابة الموافقة).
+      const result = await executeYouTubeReply({ commentId: input.commentId, text: input.text, commentText: input.commentText }, "agent");
       if (result.status >= 400) throw new Error(result.body?.error || "فشل الرد على تعليق YouTube.");
       // لا تسليم بلا معرّف رد حقيقي من YouTube (منفّذ الرد يضمن ذلك؛ نتحقّق هنا أيضاً).
       const delivered = result.body?.delivered === true && Boolean(result.body?.externalReplyId);

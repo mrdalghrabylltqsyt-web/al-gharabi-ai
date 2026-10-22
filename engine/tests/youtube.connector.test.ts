@@ -14,7 +14,7 @@
  */
 
 import { spawn, type ChildProcess } from 'node:child_process';
-import { mkdtempSync, rmSync, readFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { randomBytes } from 'node:crypto';
@@ -228,6 +228,9 @@ function unitTests(): void {
 // ---------------------------------------------------------------------------
 async function integrationTests(): Promise<void> {
   const mock = await startYouTubeMockServer(createYouTubeMock(), YT_PORT);
+  // PR-A: هذا الاختبار يقيس مسار الإرسال التلقائي، فيضبط وضع الإرسال `auto` صراحةً
+  // (الافتراضي الآن `approval` fail-closed يحجب الإرسال الآلي قبل أي نداء مزوّد).
+  writeFileSync(join(stateDir, 'commercial.json'), JSON.stringify({ leads: [], sendMode: 'auto' }, null, 2), 'utf8');
   try {
     currentApp = startApp(mock.base);
     const auth = { 'Content-Type': 'application/json' } as Record<string, string>;

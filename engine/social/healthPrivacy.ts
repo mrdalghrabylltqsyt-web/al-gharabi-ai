@@ -83,6 +83,8 @@ export const PUBLIC_WATCHER_ALLOWED_KEYS: readonly string[] = Object.freeze([
   'stale',
   'staleReason',
   'missedCycles',
+  // PR-A: الإرسال محجوب (Kill Switch) بينما القراءة مستمرة — حقل تقني منطقي فقط.
+  'sendingPaused',
 ]);
 
 /** الحقول التشغيلية التفصيلية التي يجب ألا تظهر في النقطتين العامتين (نُقلت للمالك). */
