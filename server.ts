@@ -2470,6 +2470,21 @@ function logTelegramWebhook(event: { updateId: number | null; externalId?: strin
 /** هل موصل Telegram الحقيقي مكتمل الإعداد الآن؟ */
 function telegramConnectorConfigured(): boolean { return Boolean(telegramBotToken() && telegramWebhookSecret()); }
 
+/**
+ * C2: مصدر واحد لحالة اتصال المنصات المقروءة في الواجهات.
+ * لـTelegram خاصةً: لا يُعلن «متصل» إلا إن كان الاتصال المحفوظ موثقاً **و** كان
+ * الموصل مهيّأً فعلاً (رمز البوت + سرّ webhook موجودان). إن فُقد الاعتماد بعد ربط
+ * سابق نُعلن `reauth_needed` بدل ادّعاء اتصال قائم — فلا تتناقض الشاشات.
+ */
+function effectivePlatformConnection(platform: string): PlatformConnection | null {
+  const c = platformConnections.get(platform) as PlatformConnection | undefined;
+  if (!c) return null;
+  if (platform === "telegram" && c.status === "connected" && c.providerVerified === true && !telegramConnectorConfigured()) {
+    return { ...c, status: "reauth_needed", providerVerified: false } as PlatformConnection;
+  }
+  return c;
+}
+
 // -------------------------------------------------------------
 // Facebook — ثاني موصل اجتماعي حقيقي (OAuth + Page Access Token).
 // الأسرار تُقرأ من بيئة الخادم فقط أو تُحفظ مشفّرة عبر محوّل الحالة. لا يُعلن
@@ -3790,7 +3805,7 @@ function publicProviderReadiness(platform: string): { configured: boolean; mode:
   if (c) return { configured: oauthReady(platform), mode: "oauth2", action: "authorize", next: "ضبط بيانات OAuth وتسجيل Redirect URI", missing: [!c.clientId && "client_id", !c.clientSecret && "client_secret", !resolvePublicUrl(process.env).valid && "APP_URL", tokenMissing].filter((x): x is string => Boolean(x)), invalid: [tokenInvalid].filter((x): x is string => Boolean(x)) };
   return { configured: false, mode: "provider-adapter", action: "configuration-required", next: "إضافة موصل إنتاجي معتمد قبل تفعيل النشر" };
 }
-function safeConnection(platform: string) { const c:any=platformConnections.get(platform); return c ? { platform:c.platform, status:c.status, accountName:c.accountName, accountId:c.accountId, connectedAt:c.connectedAt, lastSyncAt:c.lastSyncAt, providerVerified:Boolean(c.providerVerified), provider:publicProviderReadiness(platform) } : null; }
+function safeConnection(platform: string) { const c:any=effectivePlatformConnection(platform); return c ? { platform:c.platform, status:c.status, accountName:c.accountName, accountId:c.accountId, connectedAt:c.connectedAt, lastSyncAt:c.lastSyncAt, providerVerified:Boolean(c.providerVerified), provider:publicProviderReadiness(platform) } : null; }
 // Least-privilege: المالك يرى هوية الحساب (اسم/معرّف) وتفاصيل المزامنة؛ أي مستخدم آخر
 // مصرّح له يرى الحالة التقنية فقط (متصل؟ موثّق؟ منذ متى) بلا هوية تنظيمية. يُستخدم في
 // /api/workspace/snapshot الذي كان يكشف accountName/accountId لأي مستخدم authenticated.
@@ -10201,6 +10216,15 @@ function startYouTubeWatcher(): void {
       return { clear: () => clearTimeout(t) };
     },
     getCadenceMs: () => Math.max(1, watcherCadenceMs() * usagePressureIngestIntervalMultiplier(currentUsagePressure().level)),
+    // C7: المتبقية حتى موعد الفحص الفعلي (نفس إيقاع `watcherPollDue`) فلا يتجاوز
+    // الإيقاع المضبوط بسبب محاذاة النبضة.
+    getRemainingMs: () => {
+      const cadence = watcherCadenceMs();
+      if (cadence <= 0) return 0;
+      const t = watcherState.lastPollAt ? Date.parse(watcherState.lastPollAt) : NaN;
+      if (!Number.isFinite(t)) return 0;
+      return Math.max(0, t + cadence - Date.now());
+    },
     isDue: () => watcherPollDue(),
     // إصلاح 2026-10-20: دورة الاستقبال الخفيفة **لا تُؤجَّل** بسبب ضغط الاستهلاك
     // (`deferIngest` دائماً false) — كانت تُؤجَّل عند critical فتتوقف القراءة ~32 ساعة.
@@ -10239,6 +10263,14 @@ function startMetaPollingWatcher(): void {
     setTimer: (fn, ms) => { const t = setInterval(fn, ms); (t as any).unref?.(); return { clear: () => clearInterval(t) }; },
     setTimeoutOnce: (fn, ms) => { const t = setTimeout(fn, ms); (t as any).unref?.(); return { clear: () => clearTimeout(t) }; },
     getCadenceMs: () => Math.max(1, metaPollingCadenceMs() * usagePressureIngestIntervalMultiplier(currentUsagePressure().level)),
+    // C7: المتبقية حتى موعد الاستقبال الفعلي (نفس إيقاع `metaPollingDue`).
+    getRemainingMs: () => {
+      const cadence = metaPollingCadenceMs();
+      if (cadence <= 0) return 0;
+      const t = metaPollingState.lastPollAt ? Date.parse(metaPollingState.lastPollAt) : NaN;
+      if (!Number.isFinite(t)) return 0;
+      return Math.max(0, t + cadence - Date.now());
+    },
     isDue: () => metaPollingDue(),
     // إصلاح 2026-10-20: دورة استقبال Meta الخفيفة **لا تُؤجَّل** بسبب ضغط الاستهلاك.
     runCycle: () => {
@@ -10259,6 +10291,14 @@ function startTelegramPollingWatcher(): void {
     setTimer: (fn, ms) => { const t = setInterval(fn, ms); (t as any).unref?.(); return { clear: () => clearInterval(t) }; },
     setTimeoutOnce: (fn, ms) => { const t = setTimeout(fn, ms); (t as any).unref?.(); return { clear: () => clearTimeout(t) }; },
     getCadenceMs: () => Math.max(1, telegramPollingCadenceMs() * usagePressureIngestIntervalMultiplier(currentUsagePressure().level)),
+    // C7: المتبقية حتى موعد الاستقبال الفعلي (نفس إيقاع `telegramPollingDue`).
+    getRemainingMs: () => {
+      const cadence = telegramPollingCadenceMs();
+      if (cadence <= 0) return 0;
+      const t = telegramPollingState.lastPollAt ? Date.parse(telegramPollingState.lastPollAt) : NaN;
+      if (!Number.isFinite(t)) return 0;
+      return Math.max(0, t + cadence - Date.now());
+    },
     isDue: () => telegramPollingDue(),
     // إصلاح 2026-10-20: دورة استقبال Telegram الخفيفة **لا تُؤجَّل** بسبب ضغط الاستهلاك.
     runCycle: () => {
@@ -12287,7 +12327,7 @@ app.get("/api/platforms/production-readiness", authenticateToken, (_req,res)=>{
  * لا تحمل أي حالة اتصال تشغيلية — تلك تُقرأ من `connection` منفصلاً.
  */
 app.get("/api/platforms/readiness-matrix", authenticateToken, (_req,res)=>{
-  const liveFor = (p:string): LiveConnection => { const c:any=platformConnections.get(p); return { status: c?.status||"disconnected", providerVerified: Boolean(c?.providerVerified), accountName: c?.accountName||null }; };
+  const liveFor = (p:string): LiveConnection => { const c:any=effectivePlatformConnection(p); return { status: c?.status||"disconnected", providerVerified: Boolean(c?.providerVerified), accountName: c?.accountName||null }; };
   // الصفوف الغنية: جاهزية الكود + حالة الاعتماد + الحالة التشغيلية الآن + الحجب والإجراء التالي.
   const fbPending = facebookPageSelectionPending();
   const igPending = instagramPageSelectionPending();
@@ -12300,7 +12340,7 @@ app.get("/api/platforms/readiness-matrix", authenticateToken, (_req,res)=>{
  * مع بوابات العمليات الثماني. لا يحمل أي قيمة سرّية — أسماء المتغيرات فقط.
  */
 app.get("/api/platforms/control-plane", authenticateToken, (_req,res)=>{
-  const liveFor = (p:string): LiveConnection => { const c:any=platformConnections.get(p); return { status: c?.status||"disconnected", providerVerified: Boolean(c?.providerVerified), accountName: c?.accountName||null }; };
+  const liveFor = (p:string): LiveConnection => { const c:any=effectivePlatformConnection(p); return { status: c?.status||"disconnected", providerVerified: Boolean(c?.providerVerified), accountName: c?.accountName||null }; };
   const statuses = computeAllPlatformStatuses(liveFor, process.env);
   // Facebook خاص: قد يكتمل OAuth بينما ينتظر اختيار الصفحة. تُعلن هذه الحالة
   // صراحةً ولا تُترك الواجهة تظن أن الربط لم يبدأ فتعيد OAuth بلا نهاية.
@@ -12382,7 +12422,7 @@ app.get("/api/platforms/publish-readiness", requireOwner, (_req, res) => {
  * يقرأ من CREDENTIAL_SPECS (أسماء) + readiness.externalSetup (خطوات).
  */
 app.get("/api/platforms/external-setup", authenticateToken, (_req,res)=>{
-  const rows = buildReadinessDetails((p)=>{ const c:any=platformConnections.get(p); return { status: c?.status||"disconnected", providerVerified: Boolean(c?.providerVerified) }; }, process.env)
+  const rows = buildReadinessDetails((p)=>{ const c:any=effectivePlatformConnection(p); return { status: c?.status||"disconnected", providerVerified: Boolean(c?.providerVerified) }; }, process.env)
     .map((r)=>({ platform:r.platform, displayName:r.displayName, credentialMode:r.credentialMode, requiredEnvNames:inspectPlatformCredentials(r.platform, process.env).requiredEnvNames, steps:r.externalSetup, blockingReason:r.blockingReason, nextAction:r.nextAction, operationalState:r.operationalState }));
   res.json({ success:true, generatedAt:new Date().toISOString(), platforms:rows, note:"خطوات وأسماء متغيرات فقط — لا أسرار. لا تُنشأ حسابات نيابة عن المالك." });
 });
@@ -14628,10 +14668,10 @@ function buildAgentToolContext(operator: AgentOperator, userId: string): AgentTo
     delegationCheck: (input) => youtubeDelegationCheck(operator, input),
     healthSnapshot: () => agentHealthSnapshot(),
     platformStatuses: () => {
-      const liveFor = (p: string) => { const c: any = platformConnections.get(p); return { status: c?.status || "disconnected", providerVerified: Boolean(c?.providerVerified), accountName: c?.accountName || null }; };
+      const liveFor = (p: string) => { const c: any = effectivePlatformConnection(p); return { status: c?.status || "disconnected", providerVerified: Boolean(c?.providerVerified), accountName: c?.accountName || null }; };
       return computeAllPlatformStatuses(liveFor, process.env);
     },
-    readinessMatrix: () => buildReadinessDetails((p: string) => { const c: any = platformConnections.get(p); return { status: c?.status || "disconnected", providerVerified: Boolean(c?.providerVerified), accountName: c?.accountName || null }; }, process.env),
+    readinessMatrix: () => buildReadinessDetails((p: string) => { const c: any = effectivePlatformConnection(p); return { status: c?.status || "disconnected", providerVerified: Boolean(c?.providerVerified), accountName: c?.accountName || null }; }, process.env),
     connectionStatus: () => SUPPORTED_PLATFORMS.map((p: any) => {
       const c: any = platformConnections.get(p.id);
       const r = publicProviderReadiness(p.id);
@@ -19293,6 +19333,8 @@ registerSocialManagerRoutes(app, {
   requireOwner,
   workspace,
   platformConnections,
+  // C2: مصدر واحد لحالة الاتصال (Telegram: لا «متصل» بلا اعتماد موصل فعّال).
+  effectiveConnection: (platform: string) => effectivePlatformConnection(platform),
   persistState,
   audit,
   workspaceId,

@@ -1,34 +1,60 @@
-import React, { useState } from 'react';
+import React from 'react';
 import { useApp } from '../../context/AppContext';
 import {
   Calendar as CalendarIcon,
-  Clock,
   Plus,
-  Share2,
   ChevronRight,
   ChevronLeft,
-  Sparkles,
-  CheckCircle,
 } from 'lucide-react';
+import {
+  ARABIC_WEEKDAYS,
+  arabicMonthLabel,
+  epochToZonedWallClock,
+  parseWallClock,
+  toScheduleDisplay,
+  APP_TIMEZONE,
+} from '../../utils/scheduleTime';
+
+/** الجدار الزمني البغدادي ليوم المنشور: `scheduledFor` للمجدول، وإلا `publishedAt`/`createdAt`. */
+function postWallClock(post: any) {
+  const source = post?.scheduledFor || post?.publishedAt || post?.createdAt;
+  const wall = parseWallClock(source);
+  if (wall) return wall;
+  const epoch = Date.parse(source);
+  return Number.isFinite(epoch) ? epochToZonedWallClock(epoch) : null;
+}
+
+/** وقت العرض المحلي للمنشور (بغداد) — لا يُخترع وقت افتراضي. */
+function postTimeLabel(post: any): string {
+  const shown = toScheduleDisplay(post?.scheduledFor || post?.publishedAt || post?.createdAt);
+  return shown ? shown.slice(11, 16) : '—';
+}
 
 export const ContentCalendarView: React.FC = () => {
   const { posts, setActiveTab } = useApp();
 
-  const [currentMonth, setCurrentMonth] = useState('سبتمبر 2026');
+  // التاريخ الفعلي بتوقيت بغداد (لا قيمة ثابتة): نحدّد الأسبوع الجاري ويومه.
+  const now = Date.now();
+  const today = epochToZonedWallClock(now, APP_TIMEZONE);
+  const currentMonth = arabicMonthLabel(now, APP_TIMEZONE);
 
-  // Days of week in Arabic
-  const daysOfWeek = ['الأحد', 'الإثنين', 'الثلاثاء', 'الأربعاء', 'الخميس', 'الجمعة', 'السبت'];
-
-  // Calendar days for the current week - dynamically populated from real posts state only
-  const calendarDays = [
-    { day: 14, isToday: true, events: posts.filter((p) => p.status === 'scheduled' || p.status === 'published') },
-    { day: 15, isToday: false, events: [] },
-    { day: 16, isToday: false, events: [] },
-    { day: 17, isToday: false, events: [] },
-    { day: 18, isToday: false, events: [] },
-    { day: 19, isToday: false, events: [] },
-    { day: 20, isToday: false, events: [] },
-  ];
+  // أسبوع بغداد الجاري: الأحد → السبت حول «اليوم» (بدل أيام ثابتة 14..20).
+  const todayEpoch = Date.UTC(today.year, today.month - 1, today.day);
+  const todayDow = new Date(todayEpoch).getUTCDay(); // 0 = الأحد
+  const calendarDays = Array.from({ length: 7 }, (_, i) => {
+    const dayEpoch = todayEpoch + (i - todayDow) * 86400000;
+    const wall = epochToZonedWallClock(dayEpoch);
+    return {
+      day: wall.day,
+      isToday: i === todayDow,
+      // المنشورات موزّعة على يومها الحقيقي فقط (لا كلها في يوم واحد).
+      events: posts.filter((p) => {
+        const w = postWallClock(p);
+        return w && w.year === wall.year && w.month === wall.month && w.day === wall.day;
+      }),
+    };
+  });
+  const daysOfWeek = [...ARABIC_WEEKDAYS];
 
   return (
     <div className="space-y-6">
@@ -121,7 +147,7 @@ export const ContentCalendarView: React.FC = () => {
                     >
                       <div className="flex items-center justify-between">
                         <span className="font-bold truncate max-w-[90px]">{ev.title}</span>
-                        <span className="text-[9px] font-mono opacity-80">{ev.time || '7:30 م'}</span>
+                        <span className="text-[9px] font-mono opacity-80">{postTimeLabel(ev)}</span>
                       </div>
                       <div className="flex items-center justify-between text-[9px] text-slate-400">
                         <span className="uppercase">{ev.platform || 'سوشيال'}</span>
