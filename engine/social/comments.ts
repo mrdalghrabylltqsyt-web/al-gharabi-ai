@@ -78,7 +78,13 @@ const PATTERNS = {
   // تشمل العبارات العراقية والعفوية الشائعة (مدح/شكر/ترحيب) لا الفصحى وحدها،
   // كي لا يُصنَّف تعليق إيجابي واضح («مرتب»، «ما شاء الله»، «تسلمون») كأنه مجهول.
   praise: /شكرا|شكراً|شكر|ممتاز|رائع|جميل|حلو|مرتب|منظم|بارك الله|ما شاء الله|ماشاء الله|الله يوفق|الله يبارك|الله يسلم|الله يخليك|الله يعطيك|تسلم|تسلمون|تسلموا|يعطيك|عاشت ايدك|عاشت ايديكم|عاشت|خدمة طيبة|تعامل راقي|احسن|أحسن|هلا|أهلا|اهلا|يا هلا|مرحبا|حياك|نورت|تحياتي|تدلل|بالتوفيق|موفقين|تمام|زين/,
-  business: /كم سعر|بكم|السعر|سعرها|سعره|شكد|قسط|اقساط|أقساط|دفعة|مقدم|تقسيط|متوفر|متوفرة|مطلوب|اشتري|ابي|أريد|اريد|حجز|حاسبة|شروط|مستندات|راتب|ماستر/,
+  // الاستفسار التجاري يجب أن يلتقط الصيغ العراقية الشائعة كاملةً: «سعر» وحدها،
+  // «بكام»، «شو سعر/شنو سعره»، «متاح/اكو/موجود». بدونها يسقط التصنيف إلى
+  // neutral_generic (الجذر المُثبت) فيرد رداً عاماً على سؤال سعر/توفر حقيقي.
+  // **لا تُدرج كلمات الموقع المجرّدة (عنوان/مكان/موقع/وين) هنا**: أسئلة الموقع ليست
+  // «استفسار شراء»، وإدراجها يجعل `classifyConversation` يصنّف «وين موقع المعرض؟»
+  // purchase_intent خطأً. تُغطّى أسئلة الموقع عبر `topic === 'location'` وحدها.
+  business: /كم سعر|بكم|بكام|السعر|سعرها|سعره|سعر|شكد|شو سعر|شنو سعره|قسط|اقساط|أقساط|تقسيط|دفعة|مقدم|متوفر|متوفرة|متاح|اكو|موجود|مطلوب|اشتري|ابي|أريد|اريد|حجز|حاسبة|شروط|مستندات|راتب|ماستر/,
   question: /هل |كيف|وين|متى|ليش|شلون|أين|اين|ماذا|شنو|بكم/,
   spam: /https?:\/\/|www\.|ربح|استثمار|عملة|بيتكوين|كازينو|قرض سريع|متابعة مقابل|فولو/,
   contactLeak: /\b07\d{8}\b|\b\d{10,}\b/,
@@ -93,9 +99,12 @@ const EMOJI_ONLY_RE = /^[\s\u{1F000}-\u{1FAFF}\u{2190}-\u{2BFF}\u{2600}-\u{27BF}
 // (توحيد الألف/التاء/الهمزات) لتفادي تفويت «وين موقعكم» مقابل «أين موقعكم».
 const TOPIC_PATTERNS: Record<Exclude<CommentTopic, 'general'>, RegExp> = {
   // ملاحظة: أُزيل «توصيل» من الموقع — صار موضوعاً مستقلاً (delivery).
-  location: /موقع|وين\s*(موقع|انتو|توجد|فرع|صاير)|وين\s*انتوا|اين\s*(انتم|موقع|فرع|توجد|صاير)|مكانكم|عنوانكم|فروعكم|فرعكم/,
-  price: /سعر|بكم|كم\s*(يكلف|سعر|ثمن)|شكد|قسط|اقساط|مقدم|دفعة|دفعه|حسبه|حسبة|ثمن/,
-  availability: /متوفر|متوفره|متاح|موجود|يوجد|اكو|عدكم|عندكم|مطلوب|جاهز|محجوز|خلص|نافد/,
+  // أُضيفت الصيغ المجرّدة («العنوان»، «المكان»، «مكان») و«وين موجودين/وين انتو»: العميل
+  // يكتبها كثيراً بلا ضمير، وكانت تسقط إلى price/availability فيُسأل عن الماركة والمقاس
+  // بدل أن يُعطى العنوان المسجّل (الجذر المُثبت لسوء جودة الرد).
+  location: /موقع|موقعكم|مواقعكم|وين\s*(موقع|انتو|انتوا|توجد|موجود|موجودين|توجدون|فرع|صاير|تسكنون)|اين\s*(انتم|موقع|فرع|توجد|صاير|موجودين)|مكانكم|عنوانكم|فروعكم|فرعكم|عنوان|العنوان|المكان|مكان|الموقع|الفرع|فرع/,
+  price: /سعر|اسعار|أسعار|السعر|بكم|بكام|كم\s*(يكلف|سعر|ثمن)|شكد|قسط|اقساط|أقساط|مقدم|دفعة|دفعه|حسبه|حسبة|ثمن|سعرها|سعره/,
+  availability: /متوفر|متوفره|متوفرة|متاح|موجود|يوجد|اكو|عدكم|عندكم|مطلوب|جاهز|محجوز|خلص|نافد|تتوفر/,
   hours: /دوام|تفتحون|تفتح|تغلقون|وقت|اوقات|ساعات|مفتوح|مغلق|الدوام|ساعه/,
   // الضمان موضوع مستقل تماماً: لا يُصنَّف سعراً ولا توفّراً (تحويل للمالك دائماً).
   warranty: /ضمان|مضمون|كفاله|كفالة|guarantee|warranty/,
@@ -229,6 +238,11 @@ export function classifyComment(text: string): ClassifiedComment {
   else if (hasQuestion || explicitQuestion) intent = 'question';
   else if (hasPraise) intent = 'praise';
   else if (emojiOnly || (positiveEmoji && noArabicText)) intent = 'praise';
+  // موضوع تجاري محدّد (توصيل/موقع/سعر/توفر/دوام/تقسيط) بلا كلمة استفهام صريحة
+  // («عندكم توصيل؟» — بعد التطبيع «عندكم توصيل») ⇒ استفسار حقيقي لا «محايد».
+  // بدون ذلك يسقط إلى neutral_generic فيرد رداً عاماً («شكراً، نورتنا») على سؤال
+  // جوهري (الجذر المُثبت لسوء جودة الرد).
+  else if (topic !== 'general') intent = 'business_inquiry';
 
   const isPraise = intent === 'praise';
   let sentiment: CommentSentiment = 'neutral';
@@ -363,6 +377,10 @@ export interface ReplyFactSet {
   locationText?: string;
   /** دوام مسجّل فعلاً. */
   hoursText?: string;
+  /** رقم الهاتف/الواتساب المسجّل فعلاً في بيانات المعرض (غيبته ⇒ لا يُذكر رقم). */
+  phoneText?: string;
+  /** رقم واتساب مسجّل فعلاً (يُذكر فقط إن سُجّل، وإلا لا يُخترع رقم). */
+  whatsappText?: string;
   /** هل المنتج متوفر فعلاً؟ null = غير معروف. */
   inStock?: boolean | null;
   hasRecordedPromotion?: boolean;
@@ -417,6 +435,74 @@ function trimEndPunct(input: string): string {
   return String(input || '').replace(/[\s.،,؛;!?؟…]+$/u, '').trim();
 }
 
+/** تطبيع مصغّر لكشف الموضوع داخل محرّك الردود (يُطابق على `comment.normalized`). */
+function normForTopic(text: string): string {
+  return String(text || '').replace(/[أإآٱ]/g, 'ا').replace(/ى/g, 'ي').replace(/ة/g, 'ه').replace(/\s+/g, ' ').trim();
+}
+
+/**
+ * كشف السؤال **المركّب**: نص واحد يذكر أكثر من موضوع («العنوان والسعر»، «السعر
+ * والمكان»، «السعر والعنوان»). الجذر المُثبت: المحرّك كان يختار موضوعاً واحداً
+ * بالأسبقية فيجيب عن العنوان ويُهمل السعر تماماً. هنا نكشف تعدّد الموضوعات
+ * فنُجيب عنها في ردّ واحد بلا اختراع أي رقم.
+ */
+export function detectCompoundInquiry(text: string): { hasLocation: boolean; hasPrice: boolean } {
+  const n = normForTopic(text);
+  return {
+    hasLocation: /موقع|مكان|عنوان|وين|اين|فرع|صاير/.test(n),
+    hasPrice: /سعر|اسعار|بكم|بكام|شكد|قسط|اقساط|ثمن|مقدم|دفعه|حسبه/.test(n),
+  };
+}
+
+/** هل النص سؤال مركّب (موقع + سعر) يُجاب عنه في ردّ واحد؟ */
+export function isCompoundInquiry(text: string): boolean {
+  const c = detectCompoundInquiry(text);
+  return c.hasLocation && c.hasPrice;
+}
+
+/**
+ * هل النص سؤال عن **توفّر التقسيط** نفسه («في تقسيط»، «عدكم تقسيط»، «اكو تقسيط»)؟
+ * الجذر المُثبت: كان يُصنَّف عاماً فيُجاب بنص السياسة بلا جواب صريح. القاعدة الآن:
+ * يبدأ الرد بـ«نعم» ثم المدة المسجّلة ثم دعوة للتفاصيل.
+ */
+export function asksInstallmentAvailability(text: string): boolean {
+  const n = normForTopic(text);
+  if (!n) return false;
+  return /(في|عندكم|عدكم|اكو|يوجد|توجد|هل)\s*تقسيط|تقسيط\s*(اكو|يوجد|موجود|عندكم|عدكم)|^تقسيط$/.test(n);
+}
+
+/** أرقام التواصل المسجّلة بلا تكرار (فارغة إن لم تُسجَّل — لا يُخترع رقم). */
+function contactNumbers(f: ReplyFactSet): string[] {
+  return [...new Set([f.phoneText, f.whatsappText].map((x) => String(x || '').trim()).filter(Boolean))];
+}
+
+/**
+ * يبني مقطع بيانات الزيارة من المسجّل فقط وبالترتيب المطلوب: العنوان، ثم أوقات
+ * الدوام، ثم الهاتف/الواتساب. أي حقل غير مسجّل **لا يُذكر إطلاقاً** (لا اختراع).
+ * يُعيد المقطع وكلمات الحقائق المستخدمة فعلاً.
+ */
+function visitDetailsClause(f: ReplyFactSet): { text: string; used: string[] } {
+  const parts: string[] = [];
+  const used: string[] = [];
+  if (f.locationText) { parts.push(`موقعنا: ${trimEndPunct(f.locationText)}`); used.push('location'); }
+  if (f.hoursText) { parts.push(`والدوام ${trimEndPunct(f.hoursText)}`); used.push('hours'); }
+  const phones = contactNumbers(f);
+  if (phones.length) { parts.push(`وللتواصل: ${phones.join(' أو ')}`); used.push('contact'); }
+  return { text: parts.join('، '), used };
+}
+
+/** مقطع السعر: الرقم المسجّل (+القسط إن عُرف)، وإلا دعوة صريحة للتواصل (لا رقم مُختلق). */
+function priceClause(f: ReplyFactSet): { text: string; used: string[] } {
+  const used: string[] = [];
+  if (f.priceText) {
+    used.push('price');
+    const label = f.productName ? `سعر ${f.productName}` : 'السعر';
+    if (f.monthlyInstallmentText) { used.push('installment'); return { text: `${label}: ${f.priceText}، والقسط الشهري ${f.monthlyInstallmentText}`, used }; }
+    return { text: `${label}: ${f.priceText}`, used };
+  }
+  return { text: 'أما السعر فيختلف حسب الموديل — راسلنا على الخاص أو الواتساب ونعطيك السعر والقسط الأدق', used };
+}
+
 function stableHash(input: string): number {
   let h = 5381;
   for (let i = 0; i < input.length; i++) h = ((h << 5) + h + input.charCodeAt(i)) >>> 0;
@@ -433,6 +519,22 @@ function pickVariant(variants: string[], seed: string, previous: string[]): stri
   const fresh = variants.filter((v) => !previous.includes(v));
   const pool = fresh.length ? fresh : variants;
   return pool[stableHash(seed) % pool.length];
+}
+
+/**
+ * يختار بادئة ترحيبية عراقية متنوّعة لردود «الحقائق الموثّقة» (سعر/موقع/دوام/توفر).
+ * هذه الردود تُبنى نصياً (لا عبر `pickVariant`)، فكانت كلها تبدأ ببادئة واحدة حرفياً —
+ * فيبدو الرد ميكانيكياً متطابقاً لكل زبون. الاختيار هنا يوزّع البادئة على نفس المدخل
+ * (ثبات/idempotency) ويستثني ما استُخدم سابقاً في نفس المحادثة (لا تكرار ميكانيكي).
+ *
+ * **كل البادئات محايدة جنسياً**: لا تفترض أن العميل رجل («هلا بيك»/«مرحبا بيك») —
+ * فالتعليق قد يكون من امرأة، والصيغة المحايدة ترحّب بالجميع بلا خطأ لغوي.
+ */
+function trustedOpener(seed: string, previous: string[]): string {
+  const openers = ['هلا وغلا', 'تدلل', 'أهلاً وسهلاً', 'حياك الله', 'نورتنا'];
+  // `previous` يحمل نصوص الردود الكاملة، فنستثني البادئة إن كانت قد افتُتح بها ردّ سابق.
+  const usedOpeners = openers.filter((o) => previous.some((p) => String(p || '').startsWith(o)));
+  return pickVariant(openers, seed, usedOpeners);
 }
 
 /** يبني بادئة اسم المنتج بأمان لغوي عند توفره. */
@@ -509,10 +611,10 @@ export function generateReply(
         ], seed, previous), 'blessing_respect', 'دعاء/ذكر ⇒ رد محترم مناسب للسياق.');
       case 'greeting':
         return done(pickVariant([
-          'هلا بيك، نورتنا 🌸',
+          'هلا وغلا، نورتنا 🌸',
           'أهلاً وسهلاً، حياك الله.',
           'هلا والله، بخدمتك.',
-          'مرحبا بيك، نورت الصفحة 🌹',
+          'أهلاً وسهلاً، نورت الصفحة 🌹',
         ], seed, previous), 'greeting_short', 'تحية ⇒ رد ترحيبي قصير.');
       case 'appreciation':
         return done(pickVariant([
@@ -551,13 +653,31 @@ export function generateReply(
   //     توجيه للاستفسار عن الأجهزة والتقسيط — لا ادّعاء معرفة ولا جواب مختلق.
   if ((comment.intent === 'question' || comment.isQuestion) && OFF_TOPIC_RE.test(comment.normalized)) {
     return done(pickVariant([
-      'هلا بيك 🌸 إحنا معرض أجهزة وتقسيط، وما عندنا تفاصيل عن هالموضوع. تدلل باي استفسار عن الأجهزة والأقساط 🌹',
+      'هلا وغلا 🌸 إحنا معرض أجهزة وتقسيط، وما عندنا تفاصيل عن هالموضوع. تدلل باي استفسار عن الأجهزة والأقساط 🌹',
       'تحت أمرك 🌸 بس احنا مختصين بالأجهزة والتقسيط؛ خبرني أي جهاز يهمك ونخدمك.',
     ], seed, previous), 'off_topic_polite', 'سؤال خارج نطاق المعرض ⇒ اعتذار مهذّب وإعادة توجيه بلا ادّعاء معرفة.');
   }
 
   // 4) استفسار تجاري/سؤال: يعتمد موضوعه وحقائقه الموثوقة، ويمتنع عن الاختراع.
   if (comment.intent === 'business_inquiry' || comment.intent === 'question' || comment.isBusinessInquiry || comment.isQuestion) {
+    // 4أ) سؤال مركّب (موقع + سعر) ⇒ ردّ واحد يجيب الموضوعين. العنوان والدوام
+    //     والهاتف من المسجّل، والسعر من المسجّل أو دعوة صريحة للتواصل (لا اختراع).
+    if (isCompoundInquiry(comment.normalized)) {
+      const visit = visitDetailsClause(f);
+      const price = priceClause(f);
+      for (const u of [...visit.used, ...price.used]) usedFacts.push(u);
+      return done(`${trustedOpener(seed, previous)}، ${visit.text}، و${price.text} 🌸`,
+        'compound_location_price', 'سؤال مركّب (عنوان + سعر) ⇒ ردّ واحد يجيب الموضوعين من بيانات المعرض المسجّلة بلا اختراع رقم.');
+    }
+    // 4ب) سؤال «في تقسيط؟» ⇒ يبدأ بـ«نعم» ثم المدة المسجّلة ثم دعوة للتفاصيل.
+    if (asksInstallmentAvailability(comment.normalized)) {
+      const months = String(f.installmentMonthsText || '').trim();
+      if (months) usedFacts.push('installment_months');
+      const base = `${trustedOpener(seed, previous)}، نعم عدنا تقسيط`;
+      const mid = months ? `، والمدة الأساسية ${months}` : '';
+      return done(`${base}${mid}. تدلل، راسلنا ونوضحلك الشروط والمستمسكات بالتفصيل 🌸`,
+        'installment_availability_yes', 'سؤال توفّر التقسيط ⇒ يبدأ بـ«نعم» ثم المدة المسجّلة (إن سُجّلت) ثم دعوة للتفاصيل.');
+    }
     switch (comment.topic) {
       case 'price':
         if (f.priceText) {
@@ -569,20 +689,20 @@ export function generateReply(
             const docs = standardizedDocsClause(f);
             if (docs) usedFacts.push('documents');
             return done(withProduct(f.productName, (p) => p
-              ? `هلا بيك، سعر ${p}: ${f.priceText}، والقسط الشهري يبدأ من ${f.monthlyInstallmentText}.${docs} تريد نأكدلك التفاصيل؟`
-              : `هلا بيك، السعر: ${f.priceText}، والقسط الشهري يبدأ من ${f.monthlyInstallmentText}.${docs} تريد نأكدلك التفاصيل؟`),
+              ? `${trustedOpener(seed, previous)}، سعر ${p}: ${f.priceText}، والقسط الشهري يبدأ من ${f.monthlyInstallmentText}.${docs} تريد نأكدلك التفاصيل؟`
+              : `${trustedOpener(seed, previous)}، السعر: ${f.priceText}، والقسط الشهري يبدأ من ${f.monthlyInstallmentText}.${docs} تريد نأكدلك التفاصيل؟`),
               'price_trusted', 'سعر وخطط تقسيط مسجّلة فعلاً ⇒ يُذكر السعر والقسط المشتقّ من بيانات حقيقية.');
           }
           return done(withProduct(f.productName, (p) => p
-            ? `هلا بيك، سعر ${p}: ${f.priceText}. تريد نحسبلك القسط؟`
-            : `هلا بيك، السعر: ${f.priceText}. تريد نحسبلك القسط؟`),
+            ? `${trustedOpener(seed, previous)}، سعر ${p}: ${f.priceText}. تريد نحسبلك القسط؟`
+            : `${trustedOpener(seed, previous)}، السعر: ${f.priceText}. تريد نحسبلك القسط؟`),
             'price_trusted', 'سعر مسجّل فعلاً ⇒ يُذكر السعر الحقيقي مع عرض حساب القسط.');
         }
         return {
           text: pickVariant([
-            'هلا بيك، تدلل. خلي نوصلك السعر الأدق عبر الرسائل الخاصة، ونحسبلك القسط حسب رغبتك.',
-            'هلا بيك، سعرنا يختلف حسب الموديل. راسلنا ونعطيك السعر الأدق مباشرة.',
-            'هلا بيك، من عيوني. أرسل لنا رسالة ونوافيك بالسعر والقسط المناسب إلك.',
+            'هلا وغلا، تدلل. خلي نوصلك السعر الأدق عبر الرسائل الخاصة، ونحسبلك القسط حسب رغبتك.',
+            'هلا وغلا، سعرنا يختلف حسب الموديل. راسلنا ونعطيك السعر الأدق مباشرة.',
+            'هلا وغلا، من عيوني. أرسل لنا رسالة ونوافيك بالسعر والقسط المناسب.',
           ], seed, previous),
           strategy: 'price_needs_info', usedFacts: [],
           needsInfo: true, escalate: false,
@@ -590,18 +710,17 @@ export function generateReply(
         };
       case 'location':
         if (f.locationText) {
-          usedFacts.push('location');
-          // نص الموقع المسجّل قد ينتهي بنقطة؛ نطبّع علامة النهاية فلا تتكرّر («..»).
-          const loc = trimEndPunct(f.locationText);
-          return done(withProduct(f.productName, (p) => p
-            ? `تدلل، ${p} تجده عندنا في ${loc}. حياك الله 🌹`
-            : `موقعنا: ${loc}. تفضل زورنا 🌸`),
-            'location_trusted', 'موقع مسجّل فعلاً ⇒ يُذكر الموقع الحقيقي.');
+          // طلب المالك: ذكر العنوان، ثم أوقات الدوام، ثم رقم الهاتف/الواتساب — كلها
+          // من بيانات المعرض المسجّلة. الحقل الغائب لا يُذكر، ولا يُخترع.
+          const visit = visitDetailsClause(f);
+          for (const u of visit.used) usedFacts.push(u);
+          return done(`${trustedOpener(seed, previous)}، ${visit.text} 🌸`,
+            'location_trusted', 'موقع مسجّل فعلاً ⇒ يُذكر العنوان والدوام والهاتف من بيانات المعرض الحقيقية.');
         }
         return {
           text: pickVariant([
             'تدلل، خلي نوصلك الموقع الدقيق عبر الرسائل الخاصة حتى ما نغلط.',
-            'هلا بيك، راسلنا ونبعتلك الموقع على الخاص مباشرة.',
+            'هلا وغلا، راسلنا ونبعتلك الموقع على الخاص مباشرة.',
           ], seed, previous),
           strategy: 'location_needs_info', usedFacts: [],
           needsInfo: true, escalate: false,
@@ -610,13 +729,13 @@ export function generateReply(
       case 'hours':
         if (f.hoursText) {
           usedFacts.push('hours');
-          return done(`دوامنا: ${trimEndPunct(f.hoursText)}. حياك الله 🌸`,
+          return done(`${trustedOpener(seed, previous)}، دوامنا: ${trimEndPunct(f.hoursText)}. حياك الله 🌸`,
             'hours_trusted', 'دوام مسجّل فعلاً ⇒ يُذكر الدوام الحقيقي.');
         }
         return {
           text: pickVariant([
             'خلي نأكدلك أوقات الدوام عبر الرسائل الخاصة، حتى نعطيك المعلومات الدقيقة.',
-            'هلا بيك، راسلنا ونوضحلك أوقات الدوام بالضبط.',
+            'هلا وغلا، راسلنا ونوضحلك أوقات الدوام بالضبط.',
           ], seed, previous),
           strategy: 'hours_needs_info', usedFacts: [],
           needsInfo: true, escalate: false,
@@ -626,8 +745,8 @@ export function generateReply(
         if (f.inStock === true) {
           usedFacts.push('stock');
           return done(withProduct(f.productName, (p) => p
-            ? `${p} متوفر حالياً 🌸 تريد نحجزلك؟`
-            : 'إي متوفر حالياً 🌸 تريد نحجزلك؟'),
+            ? `${trustedOpener(seed, previous)}، ${p} متوفر حالياً 🌸 تريد نحجزلك؟`
+            : `${trustedOpener(seed, previous)}، إي متوفر حالياً 🌸 تريد نحجزلك؟`),
             'availability_trusted', 'توفر مسجّل فعلاً ⇒ يُؤكَّد التوفر.');
         }
         if (f.inStock === false) {
@@ -651,7 +770,7 @@ export function generateReply(
       // الموضوع للمالك عبر `replyIntelligence`.
       case 'warranty':
         return {
-          text: 'هلا بيك، خلّينا نتأكدلك من هالتفصيل ونجاوبك عليه من المعرض 🌸',
+          text: 'هلا وغلا، خلّينا نتأكدلك من هالتفصيل ونجاوبك عليه من المعرض 🌸',
           strategy: 'warranty_escalate', usedFacts: [],
           needsInfo: true, escalate: true,
           reason: 'سؤال الضمان يُحوَّل للمالك دائماً في هذا الإصدار؛ لا تُذكر أي مدة ضمان غير مسجّلة.',
@@ -673,7 +792,7 @@ export function generateReply(
         }
         return {
           text: pickVariant([
-            'هلا بيك، خلّينا نتأكدلك من هاي التفاصيل ونجاوبك عليها بالضبط 🌸',
+            'هلا وغلا، خلّينا نتأكدلك من هاي التفاصيل ونجاوبك عليها بالضبط 🌸',
             'تدلل، راسلنا ونوضحلك هاي التفاصيل من المعرض مباشرة.',
           ], seed, previous),
           strategy: `${comment.topic}_needs_info`, usedFacts: [],
@@ -683,7 +802,7 @@ export function generateReply(
       }
       default:
         return done(pickVariant([
-          'هلا بيك، خبرنا شنو الموديل اللي يعجبك ونحسبلك القسط على راحتك.',
+          'هلا وغلا، خبرنا شنو الموديل اللي يعجبك ونحسبلك القسط على راحتك.',
           'تدلل، نرتبلك كل شي بالتقسيط. راسلنا ونكمل ويّاك.',
           'تحت أمرك، خبرنا شنو تحتاج بالضبط ونوضحلك 🌸',
         ], seed, previous), 'inquiry_general', 'استفسار عام ⇒ رد عراقي يرحّب ويفتح التفاصيل.');

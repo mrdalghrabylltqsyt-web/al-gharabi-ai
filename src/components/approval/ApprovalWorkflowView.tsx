@@ -24,6 +24,7 @@ import { summarizePublishFailures, formatPlatformResultState, quotaPendingMessag
 export const ApprovalWorkflowView: React.FC = () => {
   const {
     posts,
+    products,
     updatePostStatus,
     updatePostContent,
     deletePost,
@@ -37,6 +38,8 @@ export const ApprovalWorkflowView: React.FC = () => {
   const [editingPost, setEditingPost] = useState<Post | null>(null);
   const [editTitle, setEditTitle] = useState<string>('');
   const [editContent, setEditContent] = useState<string>('');
+  // PR-B (البند 7): ربط المنشور بمنتج مسجّل يدوياً (للمنشورات القديمة) — بلا تخمين.
+  const [editProductId, setEditProductId] = useState<string>('');
   const [schedulingPost, setSchedulingPost] = useState<Post | null>(null);
   // القيمة جدار محلي Asia/Baghdad كما اختاره المستخدم — لا تُحوَّل إلى UTC أبداً.
   const [scheduleDateTime, setScheduleDateTime] = useState<string>(() => defaultScheduleInput());
@@ -59,6 +62,7 @@ export const ApprovalWorkflowView: React.FC = () => {
     setEditingPost(post);
     setEditTitle(post.title);
     setEditContent(post.content);
+    setEditProductId(post.productId || '');
   };
 
   const handleSaveEdit = () => {
@@ -66,6 +70,9 @@ export const ApprovalWorkflowView: React.FC = () => {
     updatePostContent(editingPost.id, {
       title: editTitle,
       content: editContent,
+      // ربط المنتج: نرسل المعرّف المختار (أو undefined لفكّ الربط) — الخادم يتحقق
+      // من وجود المنتج فعلاً قبل الحفظ (لا ربط بالتخمين).
+      productId: editProductId || undefined,
       status: 'edited',
     });
     updatePostStatus(editingPost.id, 'edited', `تعديل النص بواسطة ${currentUser?.name || 'مستخدم النظام'}`);
@@ -440,6 +447,24 @@ export const ApprovalWorkflowView: React.FC = () => {
                   onChange={(e) => setEditContent(e.target.value)}
                   className="w-full bg-slate-950 border border-slate-800 rounded-xl p-3 text-white focus:outline-none focus:border-emerald-500 font-sans"
                 />
+              </div>
+
+              {/* PR-B (البند 7): ربط المنشور بمنتج مسجّل — لتصحيح المنشورات القديمة. */}
+              <div>
+                <label className="block text-slate-300 font-bold mb-1">المنتج المرتبط (اختياري)</label>
+                <select
+                  value={editProductId}
+                  onChange={(e) => setEditProductId(e.target.value)}
+                  className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2.5 text-white focus:outline-none focus:border-emerald-500"
+                >
+                  <option value="">— بلا منتج مرتبط —</option>
+                  {(products || []).map((prod) => (
+                    <option key={prod.id} value={prod.id}>{prod.name}</option>
+                  ))}
+                </select>
+                <p className="mt-1 text-[11px] text-slate-500">
+                  يُحفظ الربط فقط إن كان المنتج موجوداً في قاعدة المعرض — لا ربط تلقائي بالتخمين.
+                </p>
               </div>
             </div>
 

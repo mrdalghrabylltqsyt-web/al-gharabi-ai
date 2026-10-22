@@ -350,8 +350,14 @@ export const apiService = {
   async checkHealth() {
     try {
       const res = await fetch('/api/health');
-      if (!res.ok) throw new Error('Health check failed');
-      return await res.json();
+      // الجذر المُثبت لشارة «Gemini» الخاطئة: كان أي رمز حالة غير 2xx يُصنَّف
+      // فشلاً فيُهمَل جسم الاستجابة كاملاً. لكن `/api/health` يعيد **503 مع جسم
+      // صحيح** عند عطل مخزن حقيقي (F-03)، وكذلك في وضع Netlify العابر — والجسم
+      // يحمل `aiEnabled` و`geminiUsage` الصحيحين. لذلك نقرأ الجسم دائماً، ولا
+      // نعتبر «offline» إلا عند تعذّر الشبكة أو تعذّر تحليل الجسم.
+      const body = await res.json().catch(() => null);
+      if (body && typeof body === 'object') return body;
+      return { status: 'offline', aiEnabled: false };
     } catch {
       return { status: 'offline', aiEnabled: false };
     }

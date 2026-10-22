@@ -550,9 +550,9 @@ export function applyFollowUpSent(lead: CommercialLead, atIso: string): Commerci
 export function buildCommercialFollowUpText(lead: CommercialLead): string {
   const name = String(lead.interestedProductName || '').trim();
   if (name) {
-    return `هلا بيك 🌹 شفت استفسارك عن ${name} وحبيت أتأكد إذا بعدك مهتم — نحن بالخدمة ونكدر نوضّحلك التفاصيل المناسبة لك.`;
+    return `هلا وغلا 🌹 شفت استفسارك عن ${name} وحبيت أتأكد إذا بعدك مهتم — نحن بالخدمة ونكدر نوضّحلك التفاصيل المناسبة لك.`;
   }
-  return 'هلا بيك 🌹 حبيت أتأكد إذا بعدك مهتم بالاستفسار — نحن بالخدمة ونرد على أي سؤال.';
+  return 'هلا وغلا 🌹 حبيت أتأكد إذا بعدك مهتم بالاستفسار — نحن بالخدمة ونرد على أي سؤال.';
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

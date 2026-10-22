@@ -1315,7 +1315,7 @@ export class FacebookClient {
    * أحدث التعليقات، و`permalink_url` الحقيقي يُحفظ لزر «فتح على فيسبوك».
    * التعليقات بلا `message` (صور/ملصقات) لا تُسقط من العدّ.
    */
-  async listPageComments(pageId: string, pageAccessToken: string, limit = 25, extraPostIds: string[] = []): Promise<FacebookResult<Array<{ commentId: string; postId: string | null; message: string; authorName: string | null; authorId: string | null; createdAt: string | null; parentId: string | null; permalinkUrl: string | null; postText: string | null }>>> {
+  async listPageComments(pageId: string, pageAccessToken: string, limit = 25, extraPostIds: string[] = []): Promise<FacebookResult<Array<{ commentId: string; postId: string | null; message: string; authorName: string | null; authorId: string | null; createdAt: string | null; parentId: string | null; permalinkUrl: string | null; postText: string | null; pageRepliedInThread?: boolean; threadReplyAuthorName?: string | null }>>> {
     if (!pageId) return { ok: false, data: null, error: 'معرّف الصفحة مطلوب.' };
     try {
       const perPost = Math.max(1, Math.min(50, Math.trunc(limit)));
@@ -1326,13 +1326,21 @@ export class FacebookClient {
       const edges = [`/${pageId}/feed`, `/${pageId}/videos`, `/${pageId}/video_reels`];
       // PR-S5: يُطلب `message` (نص المنشور) و`description` (وصف الفيديو) كي لا تظهر
       // «منشور بلا نص ظاهر» لمنشور له نص فعلاً. التعليقات مضمَّنة داخل الحواف نفسها.
-      const fields = `id,message,description,comments.filter(stream).order(reverse_chronological).summary(true).limit(${perPost}){id,message,from,created_time,parent{id},permalink_url}`;
+      //
+      // PR-B (البند 4) — كلفة كشف «رد الصفحة داخل الخيط»: الردود الفرعية (replies)
+      // **ليست** ضمن استجابة التعليقات العادية، وجلبها لكل تعليق بنداء منفصل كان
+      // سيضيف نداءً لكل تعليق (حتى 25/منشور ⇒ مئات نداءات كل دورة). الأرخص (والمُنفَّذ
+      // هنا): `comments.limit(1){from}` داخل حقل التعليق نفسه — يُعاد **أول رد فرعي
+      // واحد** ضمن نفس نداء الحافة، فلا نداء إضافي إطلاقاً وكلفة الحصة = 0 إضافية
+      // (نفس 3 حواف ≤ 4 نداءات للدورة). يُطابَق بمعرّف الصفحة أولاً (from.id = pageId)
+      // ثم باسم الصفحة المخزَّن احتياطاً في الخادم.
+      const fields = `id,message,description,comments.filter(stream).order(reverse_chronological).summary(true).limit(${perPost}){id,message,from,created_time,parent{id},permalink_url,comments.limit(1){from}}`;
       // شكل احتياطي **داخل الحافة نفسها** (بلا `?ids=` إطلاقاً): يُستخدم فقط إن
       // رفض Graph مُعدِّلات الحقل (filter/order/summary/permalink) بخطأ عقد —
       // فلا نعود أبداً إلى المسار المجمّع المحذوف. النداء الاحتياطي لا يقع إلا عند
       // رفض فعلي، والدورة السليمة تبقى 3 نداءات (≤ 4).
-      const fieldsFallback = `id,message,description,comments.limit(${perPost}){id,message,from,created_time,parent{id}}`;
-      const out: Array<{ commentId: string; postId: string | null; message: string; authorName: string | null; authorId: string | null; createdAt: string | null; parentId: string | null; permalinkUrl: string | null; postText: string | null }> = [];
+      const fieldsFallback = `id,message,description,comments.limit(${perPost}){id,message,from,created_time,parent{id},comments.limit(1){from}}`;
+      const out: Array<{ commentId: string; postId: string | null; message: string; authorName: string | null; authorId: string | null; createdAt: string | null; parentId: string | null; permalinkUrl: string | null; postText: string | null; pageRepliedInThread?: boolean; threadReplyAuthorName?: string | null }> = [];
       const seen = new Set<string>();
       const postIds: string[] = [];
       const seenPosts = new Set<string>();
@@ -1400,6 +1408,13 @@ export class FacebookClient {
               const message = typeof c?.message === 'string' ? c.message : '';
               if (!commentId || seen.has(commentId)) continue;
               seen.add(commentId);
+              // PR-B (البند 4): هل ردّت الصفحة نفسها داخل خيط التعليق؟ نقرأ ردّاً
+              // فرعياً واحداً (`comments.limit(1){from}`) **ضمن الطلب نفسه** (لا
+              // طلب إضافي لكل تعليق)، ونطابقه بمعرّف الصفحة أولاً (أدق دليل).
+              const nested = Array.isArray(c?.comments?.data) ? c.comments.data[0] : null;
+              const nestedFromId = nested?.from?.id ? String(nested.from.id) : '';
+              const pageRepliedInThread = Boolean(nestedFromId && String(pageId) === nestedFromId);
+              const threadReplyAuthorName = nested?.from?.name ? String(nested.from.name) : null;
               out.push({
                 commentId, postId: postId || null, message,
                 authorName: c?.from?.name ? String(c.from.name) : null,
@@ -1408,6 +1423,8 @@ export class FacebookClient {
                 parentId: c?.parent?.id ? String(c.parent.id) : null,
                 permalinkUrl: c?.permalink_url ? String(c.permalink_url) : null,
                 postText,
+                pageRepliedInThread,
+                threadReplyAuthorName,
               });
             }
           }

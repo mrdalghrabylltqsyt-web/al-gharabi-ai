@@ -16,7 +16,7 @@
  * - الضمان لا يُجاب في هذا الإصدار — يُحوَّل للمالك دائماً بلا ذكر أي مدة.
  */
 
-import { generateReply, isOffTopic, type ClassifiedComment, type ReplyFactSet, type ReplyContext } from './comments';
+import { generateReply, asksInstallmentAvailability, isOffTopic, type ClassifiedComment, type ReplyFactSet, type ReplyContext } from './comments';
 import { generateConversationalReply, type DialogueContext } from './replyDialogue';
 import {
   extractInquiryAttributes, matchProducts, type InquiryAttributes,
@@ -113,9 +113,9 @@ function factsHaveTopicValue(topic: string, f: ReplyFactSet): boolean {
 export function buildProductChoiceReply(candidates: readonly any[]): string {
   const names = candidates.slice(0, 2).map((p) => String(p?.name || '').trim()).filter(Boolean);
   if (names.length < 2) {
-    return 'هلا بيك 🌸 خبرني أي موديل بالضبط تقصد وأنا أعطيك التفاصيل.';
+    return 'هلا وغلا 🌸 خبرني أي موديل بالضبط تقصد وأنا أعطيك التفاصيل.';
   }
-  return `هلا بيك 🌸 عندنا أكثر من خيار: ${names[0]} أو ${names[1]}؟ خبرني أي واحد تقصد وأحسبلك التفاصيل.`;
+  return `هلا وغلا 🌸 عندنا أكثر من خيار: ${names[0]} أو ${names[1]}؟ خبرني أي واحد تقصد وأحسبلك التفاصيل.`;
 }
 
 /** يبني سؤال توضيحي موجّهاً حسب الخصائص الناقصة (النوع/المقاس/الماركة/الميزانية). */
@@ -127,12 +127,12 @@ export function buildAttributeClarifyReply(attrs: InquiryAttributes, topic: stri
   const list = asks.slice(0, 2).join(' و');
   if (topic === 'price' || topic === 'installment') {
     return list
-      ? `هلا بيك 🌸 تدلل، خبرني ${list} حتى أعطيك السعر والقسط الأدق.`
-      : 'هلا بيك 🌸 خبرني أي موديل بالضبط تقصد وأنا أحسبلك السعر والقسط.';
+      ? `هلا وغلا 🌸 تدلل، خبرني ${list} حتى أعطيك السعر والقسط الأدق.`
+      : 'هلا وغلا 🌸 خبرني أي موديل بالضبط تقصد وأنا أحسبلك السعر والقسط.';
   }
   return list
-    ? `هلا بيك 🌸 وضّحلي ${list} وأنا أساعدك بالتفاصيل.`
-    : 'هلا بيك 🌸 وضّحلي شنو تحتاج بالضبط وأنا أساعدك.';
+    ? `هلا وغلا 🌸 وضّحلي ${list} وأنا أساعدك بالتفاصيل.`
+    : 'هلا وغلا 🌸 وضّحلي شنو تحتاج بالضبط وأنا أساعدك.';
 }
 
 /**
@@ -194,6 +194,12 @@ export function resolveInquiry(input: ResolveInquiryInput): ResolveInquiryResult
 
   // 3) جواب مسجّل من قاعدة المعرفة ⇒ يُعاد **حرفياً** كما هو (لا إعادة صياغة، ولا
   //    تغيير أي رقم). هذا يثبّت عقد «الأرقام من القاعدة فقط».
+  //    استثناء: سؤال «في تقسيط؟» يُجاب أولاً بـ«نعم» + المدة المسجّلة + دعوة
+  //    للتفاصيل (طلب المالك) — فلا يختطفه نص السياسة المسجّل.
+  if (asksInstallmentAvailability(input.text)) {
+    const g = generateReply(cls, facts, replyCtx);
+    return base('answer', g.text, g.strategy, g.reason, { usedFacts: g.usedFacts });
+  }
   if (knowledgeMatchesTopic) {
     return base('answer', String(input.knowledge!.answer), 'knowledge_recorded',
       'جواب مسجّل حرفياً من قاعدة معرفة المعرض ⇒ يُستخدم كما هو بلا أي تغيير في الأرقام.',

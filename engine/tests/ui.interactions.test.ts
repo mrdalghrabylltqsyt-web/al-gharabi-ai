@@ -109,7 +109,8 @@ check('لا href="#" أو onClick فارغ في الملفات المعدّلة'
 console.log('\n=== 9) عناصر زخرفية لم تُحوَّل إلى أزرار وهمية ===');
 // نقاط حالة الاتصال (النقطة الملوّنة) زخرفية داخل اللقطة، تبقى span لا زراً.
 check('نقطة حالة المنصة تبقى span زخرفي (لا زر)', dash.includes('w-2 h-2 rounded-full'));
-check('شارة Gemini في الترويسة تبقى span (ليست زراً)', /<span className="hidden sm:inline-flex[^>]*>[\s\S]*?Gemini/.test(header));
+// شارة Gemini تبقى عنصر عرض (span) لا زراً — نصّها الآن من حالة صادقة (geminiBadge.label).
+check('شارة Gemini في الترويسة تبقى span (ليست زراً)', /<span[\s\S]{0,200}hidden sm:inline-flex/.test(header) && header.includes('{geminiBadge.label}') && !/<button[^>]*>[\s\S]{0,200}geminiBadge/.test(header));
 
 console.log('\n=== 10) انحدار: التنقل والقوائم والأقسام سليمة (لا حذف) ===');
 check('كل الأقسام الهرمية لا تزال في App.tsx', ['section_home','section_publish','section_customers','section_products','section_settings'].every((s) => app.includes(`case '${s}':`)));

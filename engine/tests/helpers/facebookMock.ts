@@ -120,13 +120,13 @@ export interface FacebookMockState {
   ownedApps?: string[];
   failOwnedApps?: boolean;
   /** منشورات الصفحة وتعليقاتها (GET /{page-id}/feed) — لقراءة تعليقات المراقب. */
-  feedPosts?: Array<{ id: string; message?: string; description?: string; comments?: Array<{ id: string; message?: string; from?: { id?: string; name?: string }; created_time?: string; parent?: { id?: string }; permalink_url?: string }>; commentsTotalCount?: number }>;
+  feedPosts?: Array<{ id: string; message?: string; description?: string; comments?: Array<{ id: string; message?: string; from?: { id?: string; name?: string }; created_time?: string; parent?: { id?: string }; permalink_url?: string; nestedReplies?: Array<{ id: string; message?: string; from?: { id?: string; name?: string } }> }>; commentsTotalCount?: number }>;
   /**
    * منشورات فيديو/ريلز للصفحة (`GET /{page-id}/videos` و`/{page-id}/video_reels`) —
    * لإثبات أن سحب التعليقات يقرأ من كل أنواع المنشورات لا من `/feed` وحده.
    */
-  pageVideos?: Array<{ id: string; message?: string; description?: string; comments?: Array<{ id: string; message?: string; from?: { id?: string; name?: string }; created_time?: string; parent?: { id?: string }; permalink_url?: string }>; commentsTotalCount?: number }>;
-  pageReels?: Array<{ id: string; message?: string; description?: string; comments?: Array<{ id: string; message?: string; from?: { id?: string; name?: string }; created_time?: string; parent?: { id?: string }; permalink_url?: string }>; commentsTotalCount?: number }>;
+  pageVideos?: Array<{ id: string; message?: string; description?: string; comments?: Array<{ id: string; message?: string; from?: { id?: string; name?: string }; created_time?: string; parent?: { id?: string }; permalink_url?: string; nestedReplies?: Array<{ id: string; message?: string; from?: { id?: string; name?: string } }> }>; commentsTotalCount?: number }>;
+  pageReels?: Array<{ id: string; message?: string; description?: string; comments?: Array<{ id: string; message?: string; from?: { id?: string; name?: string }; created_time?: string; parent?: { id?: string }; permalink_url?: string; nestedReplies?: Array<{ id: string; message?: string; from?: { id?: string; name?: string } }> }>; commentsTotalCount?: number }>;
   failFeed?: boolean;
   /** عدد نداءات القراءة المجمّعة (`GET /?ids=`) — لإثبات ≤ نداء واحد لـ45 منشوراً. */
   commentBatchCalls: number;
@@ -535,6 +535,15 @@ export async function startFacebookMockServer(
       if (m) list = list.slice(0, Number(m[1]));
       const wantPermalink = /permalink_url/.test(fields);
       list = list.map((c) => (wantPermalink && !c.permalink_url ? { ...c, permalink_url: `https://www.facebook.com/${String(c.id)}` } : c));
+      // PR-B (البند 4): الردّ الفرعي — عند طلب `comments.limit(1){from}` داخل حقل
+      // التعليق نُعيد أول رد فرعي (`nestedReplies`) ضمن الطلب نفسه، فيستطيع الخادم
+      // كشف رد الصفحة على نفس التعليق بلا طلب إضافي لكل تعليق.
+      if (/comments\.limit\(\d+\)/.test(fields)) {
+        list = list.map((c: any) => {
+          const nested = Array.isArray(c?.nestedReplies) ? c.nestedReplies.slice(0, 1) : [];
+          return { ...c, comments: { data: nested } };
+        });
+      }
       state.commentIdsReturned.push(...list.map((c: any) => String(c.id)));
       return { data: list, summary: fields.includes('summary') ? { total_count: comments ? comments.length : 0 } : undefined };
     }

@@ -44,7 +44,7 @@ npm install
 npm run dev            # tsx server.ts
 npm run lint           # tsc --noEmit
 npm run build          # vite build + esbuild server.ts -> dist/server.cjs
-npm run final-audit    # node final-audit.mjs (1812 فحصاً)
+npm run final-audit    # node final-audit.mjs (1842 فحصاً)
 npm test               # storage + engine + auth + ... + db + runtime
 ```
 - التشغيل الإنتاجي: `PORT=4517 NODE_ENV=production APP_URL=http://localhost:4517 node dist/server.cjs`
@@ -7141,3 +7141,111 @@ TikTok (مجمّد)، Telegram/Threads، نموذج الجدولة، نطاق ER
 **37 فحصاً**) + 8 فحوص final-audit `prc-*`. `npm run lint` ✅ · `npm run build` ✅ ·
 `final-audit` **1804**. ملاحظة دمج: تعارض نصي وحيد مع PR-A في سطر `"test"` في `package.json`
 (اتحاد السكربتات) — يُحل يدوياً عند الدمج.
+
+## جودة الرد — تصنيف الاستفسارات الحقيقية من صندوق الزبائن (2026-10-21)
+
+**الجذر المُثبت (من الإنتاج، لا تخمين):** مسودات صندوق الزبائن وُلِّدت بنصوص لا تخصّ
+سؤال العميل. أُعيد إنتاجه محلياً على نفس محرّك الرد (`comments.ts` → `inquiryResolver.ts`
+→ `replyDialogue.ts`):
+
+| التعليق | قبل الإصلاح | بعد الإصلاح |
+|---|---|---|
+| «العنوان والسعر» | clarify: «خبرني الماركة والمقاس…» | answer: يذكر العنوان المسجّل |
+| «السعر والمكان» | clarify: «خبرني الماركة والمقاس…» | answer: يذكر العنوان المسجّل |
+| «وين موجودين» | clarify: «وضّحلي الماركة والمقاس…» | answer: يذكر العنوان المسجّل |
+| «بكام سعر» / «شو سعر» / «متاح» | answer: «شكراً، نورتنا» (neutral_generic) | answer: سعر/توفر مؤرّض أو سؤال توضيحي مناسب |
+| «في تقسيط» | clarify: «وضّحلي الماركة والمقاس…» | answer: شروط التقسيط المسجّلة حرفياً |
+
+**أسباب جذرية ثلاثة (كلها في `engine/social/comments.ts`):**
+1. **`PATTERNS.business` ناقص:** «بكام/شو سعر/شنو سعره/متاح/اكو/موجود» لم تكن فيه،
+   فسقطت إلى `intent=other` ⇒ رد عام (`neutral_generic`).
+2. **`TOPIC_PATTERNS.location` ضيّق:** لم يلتقط «العنوان/المكان/مكان» المجرّدة ولا
+   «وين موجودين»، فصُنّفت price/availability ⇒ سؤال «الماركة والمقاس» على سؤال موقع.
+3. **لا استنتاج موضوع ⇒ استفسار:** تعليق يحمل موضوعاً تجارياً محدّداً بلا كلمة استفهام
+   صريحة («عندكم توصيل») كان يبقى `other`؛ الآن `topic !== 'general'` ⇒ `business_inquiry`.
+
+**القيد الملزم (مُنع انحدار):** **لا تُدرج كلمات الموقع (عنوان/مكان/موقع/وين) في
+`PATTERNS.business`** — أسئلة الموقع ليست «استفسار شراء»، وإدراجها يجعل
+`classifyConversation` (`engine/brain/audience/conversationIntelligence.ts`) يصنّف
+«وين موقع المعرض؟» `purchase_intent` خطأً (اكتُشف بانحدار `brain.runtime` وأُصلح).
+تُغطّى أسئلة الموقع عبر `topic === 'location'` وحدها.
+
+**لم يُمسّ:** معادلة القسط، بوابة الموافقة/`commercialSendMode=approval`، Kill Switch،
+حالة مراقب YouTube، أي سرّ/مفتاح، ولا أي مسار نشر. تغيير محرّك التصنيف/الرد الحتمي فقط.
+
+**الاختبار:** `engine/tests/reply.quality.classification.test.ts` (`npm run test:reply-quality`،
+**58 فحصاً**، مضاف إلى `npm test`) — يُثبت التصنيف الصحيح + الرد المؤرّض + بقاء حواجز
+عدم الاختراع + **تنوّع بادئة الرد المؤرّض**، و**يفشل على الكود القديم** (مُثبت). فحوص
+final-audit الخمسة الجديدة: `reply-quality-*` (الإجمالي **1828**).
+
+**ROOT-7 (تنوّع البادئة):** ردود الحقائق الموثّقة (سعر/موقع/دوام/توفر) كانت تُبنى نصياً
+وتبدأ كلها بـ«هلا بيك» حرفياً — فيبدو الرد ميكانيكياً متطابقاً لكل زبون. أُضيف
+`trustedOpener(seed, previous)` (مصدر واحد): يوزّع البادئة على نفس المدخل
+(ثبات/idempotency) ويستثني ما افتُتح به ردّ سابق في نفس المحادثة. فحوص final-audit:
+`reply-trusted-opener-single-source`، `reply-trusted-opener-varies`، `reply-trusted-opener-test`.
+
+### ROOT-4 — كشف حساب المعرض حين يختلف اسم الصفحة عن اسم المعرض (2026-10-21)
+كشف «التعليق صادر من حسابنا» في مراقب Meta كان يطابق **معرّف الصفحة/حساب إنستغرام**
+(أساس صحيح) أو **الاسم** ضمن `ownNames` — وكانت القائمة تحوي اسم المعرض فقط
+(`workspace.showroom.name` + «معرض الغرابي») دون اسم الصفحة/حساب إنستغرام المخزَّنين.
+فإن حجب Meta حقل `from` (بلا `pages_read_user_content`) واختلف اسم الصفحة الرسمي عن اسم
+المعرض (مثل «معرض الغرابي للتقسيط»)، اعتُبر تعليقنا/ردّنا تعليقَ عميل فيُولَّد عليه رد —
+حلقة/تكرار. الإصلاح: `ownNames` (server.ts ~8295) تشمل الآن `providerTokens.facebook.pageName`
+و`instagram.pageName`/`igUsername` و`platformConnections.get(platform).accountName` (مُنقّاة
+من `@`). المطابقة بالمعرّف تبقى الأساس. فحص final-audit: `meta-self-authored-uses-stored-identity`.
+
+### ROOT-7 — ربط المنشور بالمنتج (فقدان حقائق السعر في الردود) (2026-10-21)
+معرّف المنتج المختار في «مركز صناعة المحتوى» كان **لا يُحفظ** على المنشور إطلاقاً
+(`/api/workspace/content` لا يقرأ `productId`)، ولا يُمرَّر عند النشر إلى سجل النشر —
+فتفقد `resolveProductForPost` الدليل الصريح، ويُصعَّد استفسار السعر بدل أن يُرد من بيانات
+المعرض المسجّلة. الإصلاح: `Post.productId` (نوع)، و`ContentEngineView` يرسله، والخادم
+يحفظه **فقط إن طابق منتجاً مسجّلاً** (بلا اختراع ربط)، ويُمرَّر عبر النشر الموحّد
+(`productId: post.productId`) إلى `buildPublishRecord` (حقل `PublishRecord.productId`)
+فيُحفظ في سجل النشر الحقيقي. اختبار `content.product.link.test.ts` (`npm run
+test:content-product-link`، 12 فحصاً) يُثبت الإنشاء/التحقق/النشر/الرد المؤرّض، و**يفشل على
+الكود القديم** (مُثبت: 5 إخفاقات). فحوص final-audit: `content-post-product-link-*`،
+`content-publish-passes-product-id`، `publish-record-carries-product-id`،
+`content-product-link-test(-wired)`.
+
+### PR-B (استكمال #71) — جودة الرد التجاري: بنود 1..8 كاملة (2026-10-22)
+على الفرع `fix/commercial-reply-quality` (يبقى **Draft**؛ لا دمج/نشر/تغيير متغيّرات،
+و`commercialSendMode` يبقى `approval`، ولا رد لزبون، ولا مساس بـPR #64/ERP/معادلة القسط).
+أُنجزت البنود الثمانية من المراجعة:
+
+1. **الترحيب المحايد جنسياً (مصدر واحد `engine/social/replyQuality.ts`):**
+   `FORBIDDEN_GENDERED_OPENERS = ['هلا بيك','مرحبا بيك']` و`hasGenderedOpener`. أُزيلت
+   الصيغ المجنّسة من كل القوالب في `comments.ts`/`inquiryResolver.ts`/`commercialBrain.ts`/
+   `replyDialogue.ts`، واستُبدلت بصيغ محايدة (هلا وغلا، حياك الله، أهلاً وسهلاً، نورتنا،
+   تدلل). **حارس نهائي في `server.ts`** (`sanitizeGendered` عند بناء الرد) يمنع مرور أي نص
+   مجنّس إلى المنصة حتى لو جاء من مسار آخر.
+2. **رد الموقع (البند 2):** `visitDetailsClause` يذكر العنوان ثم الدوام ثم الهاتف/الواتساب
+   بالترتيب، من `showroom.address`/`workingHours`/`phoneUnified` فقط؛ الحقل الغائب لا يُذكر
+   ولا يُخترع رقم.
+3. **السؤال المركّب (البند 3):** `detectCompoundInquiry`/`isCompoundInquiry` +
+   استراتيجية `compound_location_price` تُجيب العنوان والدوام **و** السعر في رد واحد؛
+   منتج معروف ⇒ رقم حقيقي، وإلا `priceClause` دعوة صريحة للخاص/الواتساب بلا اختراع رقم.
+4. **رد سابق من الصفحة (البند 4):** `decideCommentAction` يقبل `pageAlreadyReplied` ويُصدر
+   `SKIP_PAGE_ALREADY_REPLIED` (سلطة القرار الواحدة في `youtubeWatcher.ts`، ويُمرَّر من
+   `metaWatcher.ts`). الكشف يقرأ **رداً فرعياً واحداً ضمن الطلب نفسه**
+   (`comments.limit(1){from}` لفيسبوك و`replies.limit(1){from}` لإنستغرام) — **لا طلب إضافي
+   لكل تعليق**، فالكلفة على حصة Meta صفر إضافي (نفس عدد النداءات الحالية). يُسجَّل الوسم
+   `threadPageReplied` على التعليق الوارد فيمنع إنشاء أي مسودة.
+5. **«في تقسيط» (البند 5):** `asksInstallmentAvailability` + استراتيجية
+   `installment_availability_yes` ⇒ يبدأ بعد الترحيب بـ«نعم» ثم المدة المسجّلة ثم دعوة للتفاصيل.
+6. **شارة الرأس (البند 6):** الجذر كان خلط «حماية الحصة» بـ«تعطيل المزوّد». `Header.tsx`
+   يقرأ حالة صادقة عبر `src/services/geminiBadge.ts` (`describeGeminiBadge`: مفعّل/محرّك
+   حتمي/غير معروف)، و`api.ts` `checkHealth` يقرأ **جسم** الاستجابة حتى عند 503 (عطل مخزن
+   مع `aiEnabled=true`) فلا يُعلن «غير مفعّل» خطأً.
+7. **ربط منشور قديم بمنتج (البند 7):** `resolveProductLink` (تحقق وجود المنتج فعلاً) في
+   `PATCH /api/workspace/content/:id` (و`POST`) — طريقة المالك لربط منشور موجود بمنتج
+   مسجّل بلا تخمين؛ وواجهة `ApprovalWorkflowView` فيها حقل «المنتج المرتبط».
+8. **اختبار الانحدار (البند 8):** `engine/tests/prb.reply.regression.test.ts`
+   (`npm run test:prb-reply-regression`، 62 فحصاً) يمرّ بالتعليقات التسعة حرفياً
+   (العنوان والسعر، السعر والمكان، السعر والعنوان، وين موجودين، في تقسيط، كم السعر،
+   بكام سعر، شو سعر، متاح) ويتحقق من البنود أعلاه، إضافة إلى `reply.quality.classification`
+   (58) و`content.product.link` (12).
+
+اختبارات مصاحبة مُحدَّثة لتطابق الترحيب المحايد: `youtube.connector` (245)،
+`meta.watcher.productfacts` (16)، `ui.interactions` (40). final-audit **1842** فحصاً
+(كتلة `prb-*` الجديدة). `npm run lint` ✅ · `npm run build` ✅ · `npm test` ✅ (EXIT=0) ·
+`npm run final-audit` ✅. لم يُلمس أي سرّ/مفتاح/OAuth، ولا ERP، ولا معادلة القسط.

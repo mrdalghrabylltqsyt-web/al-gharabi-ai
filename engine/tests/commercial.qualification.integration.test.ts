@@ -169,7 +169,13 @@ async function main(): Promise<void> {
   metaState = createFacebookMock({
     pages: [{ id: 'PAGE_S5', name: 'معرض الغرابي', accessToken: FB_PAGE_TOKEN, tasks: ['MANAGE'] }],
     userAccessToken: 'FB_USER_TOKEN',
-    feedPosts: [{ id: 'POST_S5', message: 'منشور اختبار PR-S5', comments: [{ id: 'cPoll1', message: '👏', from: { id: 'A_POLL', name: null }, created_time: String(Math.floor((Date.now() - 3600_000) / 1000)) }] }],
+    feedPosts: [{ id: 'POST_S5', message: 'منشور اختبار PR-S5', comments: [
+      { id: 'cPoll1', message: '👏', from: { id: 'A_POLL', name: null }, created_time: String(Math.floor((Date.now() - 3600_000) / 1000)) },
+      // PR-B (البند 4): تعليق سؤال حقيقي عليه رد من الصفحة نفسها داخل الخيط (المطابقة
+      // بالمعرّف) ⇒ يجب ألا تُنشأ له مسودة (SKIP_PAGE_ALREADY_REPLIED).
+      { id: 'cPageReplied', message: 'كم سعر الموبايل؟', from: { id: 'A_CUST', name: null }, created_time: String(Math.floor((Date.now() - 1800_000) / 1000)),
+        nestedReplies: [{ id: 'r_page_1', message: 'أهلاً وسهلاً، راسلنا على الخاص ونعطيك السعر.', from: { id: 'PAGE_S5', name: 'معرض الغرابي' } }] },
+    ] }],
   });
   metaMock = await startFacebookMockServer(FB_PORT, metaState);
   seedState();
@@ -257,6 +263,24 @@ async function main(): Promise<void> {
     check('الإلغاء يصمد بعد restart', inbox2.drafts.find((d: any) => d.id === 'dE')?.status === 'cancelled');
     check('الأرشفة تصمد بعد restart', inbox2.leads.find((l: any) => l.id === 'lead_emoji')?.archived === true);
     check('مسودة الجواب الصحيحة تبقى معلّقة بعد restart', inbox2.drafts.find((d: any) => d.id === 'dG')?.status === 'pending');
+
+    group('7ب) PR-B (البند 4): تعليق عليه رد من الصفحة داخل الخيط ⇒ لا مسودة + SKIP_PAGE_ALREADY_REPLIED');
+    // بعد دورة المراقب (poll) أعلاه سُجل التعليق `cPageReplied` ووُسم `threadPageReplied`
+    // من الرد الفرعي الحقيقي (from.id = PAGE_S5). الدورة التالية لا تُنشئ له مسودة.
+    // العقل التجاري معطَّل افتراضياً (fail-closed) — نُفعّله صراحةً للمالك لتعمل الدورة.
+    const enableRes = await fetch(`${BASE}/api/agent/commercial/kill-switch`, { method: 'POST', headers: auth, body: JSON.stringify({ enabled: true }) });
+    check('تفعيل العقل التجاري من المالك نجح', enableRes.ok, String(enableRes.status));
+    const runPage = await (await fetch(`${BASE}/api/agent/commercial/run`, { method: 'POST', headers: auth, body: '{}' })).json();
+    check('دورة العقل نجحت', runPage.success === true, JSON.stringify(runPage).slice(0, 200));
+    const inboxAfterPage = await (await fetch(`${BASE}/api/commercial/inbox`, { headers: auth })).json();
+    const pageDrafts = (inboxAfterPage.drafts || []).filter((d: any) => d.externalId === 'cPageReplied');
+    check('لا مسودة للتعليق الذي ردّت عليه الصفحة', pageDrafts.length === 0, JSON.stringify(pageDrafts));
+    const stateAfterPage = JSON.parse(readFileSync(join(stateDir, '.gharabi-state.json'), 'utf8'));
+    const pageComment = (stateAfterPage.workspace?.socialComments || []).find((c: any) => c.externalId === 'cPageReplied');
+    check('التعليق وُسم threadPageReplied=true من الرد الفرعي الحقيقي', pageComment?.threadPageReplied === true, JSON.stringify(pageComment));
+    check('سجل audit يحمل commercial_draft_skipped بـSKIP_PAGE_ALREADY_REPLIED',
+      (stateAfterPage.audit || []).some((a: any) => a.action === 'commercial_draft_skipped' && String(a.detail || '').includes('SKIP_PAGE_ALREADY_REPLIED')),
+      JSON.stringify((stateAfterPage.audit || []).filter((a: any) => a.action === 'commercial_draft_skipped').slice(0, 3)));
 
     group('8) سجل audit يحمل قرارات التنظيف');
     const auditLog = JSON.parse(readFileSync(join(stateDir, '.gharabi-state.json'), 'utf8')).audit || [];

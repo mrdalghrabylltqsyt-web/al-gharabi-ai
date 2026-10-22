@@ -204,6 +204,7 @@ export const ContentEngineView: React.FC = () => {
       status,
       mediaUrl: effectiveMediaUrl,
       mediaType: effectiveMediaType,
+      productId: selectedProduct?.id,
       authorName: currentUser.name,
       authorRole: currentUser.role,
       tags: ['تقسيط_منتجات', 'معرض_الغرابي', ...selectedPlatforms],

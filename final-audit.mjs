@@ -1226,7 +1226,7 @@ add('youtube-watcher-tests', watcherTest.includes('watcherGate') && watcherTest.
 const commentsModule = read('engine/social/comments.ts');
 add('youtube-praise-iraqi-phrases', commentsModule.includes('مرتب') && commentsModule.includes('ما شاء الله') && commentsModule.includes('تسلمون') && commentsModule.includes('عاشت ايدك'), 'تصنيف المدح يشمل العبارات العراقية العفوية (مرتب/ما شاء الله/تسلمون) لا الفصحى وحدها');
 add('youtube-positive-emoji-interaction', commentsModule.includes('POSITIVE_EMOJI_RE') && commentsModule.includes('EMOJI_ONLY_RE') && commentsModule.includes("intent = 'praise'"), 'التعليق الإيجابي بالإيموجي (قلوب/إعجاب) يُعامل كتفاعل إيجابي قابل للرد لا كمجهول');
-add('youtube-iraqi-reply-dialect', commentsModule.includes('هلا بيك') && commentsModule.includes('نورتنا') && commentsModule.includes('تدلل'), 'الردود الحتمية باللهجة العراقية العفوية القصيرة (لا فصحى جامدة)');
+add('youtube-iraqi-reply-dialect', commentsModule.includes('نورتنا') && commentsModule.includes('تدلل') && commentsModule.includes('هلا وغلا') && !/['"`]هلا بيك/.test(commentsModule), 'الردود الحتمية باللهجة العراقية العفوية القصيرة بترحيب محايد (لا فصحى جامدة ولا صيغة تفترض جنس العميل)');
 add('youtube-escalation-specific-reason', watcherModule.includes('يحتاج بيانات المنتج المؤكدة') && watcherModule.includes('شكوى/حالة حساسة'), 'سبب التصعيد محدد ومرتبط بالمضمون لا رسالة عامة');
 add('youtube-escalation-not-config-noise', watcherModule.includes("code: 'DEFER_AUTOREPLY_DISABLED'") && watcherModule.includes("code: 'ESCALATE_BUSINESS_INQUIRY'") && watcherModule.includes("code: 'ESCALATE_SENSITIVE'") && watcherModule.includes('isDeferredDecision'), 'تعذّر الرد بسبب إعداد المالك قرار غير نهائي (DEFER بكود صريح) لا تصعيد كاذب، والتصعيد بسبب حقيقي مرتبط بالمضمون فقط');
 add('youtube-defer-release-on-enable', watcherModule.includes('releaseDeferredEntries') && server.includes('releaseDeferredEntries(watcherState.processed)') && server.includes('releasedDeferred: released'), 'التعليقات المؤجَّلة (تعذّر بسبب الإعداد) تُحرَّر وتُعاد تقييمها تلقائياً عند تمكين الرد — بلا فقدان تعليق');
@@ -1303,6 +1303,30 @@ add('reply-intelligence-reply-facts-dep', read('engine/social/routes.ts').includ
 add('reply-intelligence-no-fake-marketing', !/عرض خاص.{0,40}احجز الآن/.test(replyComments), 'لا عبارات إعلانية جاهزة في محرّك الرد');
 add('reply-intelligence-types', read('src/types/index.ts').includes('ReplyIntelligence') && read('src/types/index.ts').includes('subIntent'), 'أنواع Reply Intelligence معلنة ومطابقة للخادم');
 add('reply-intelligence-ui', read('src/components/social/SocialManagerView.tsx').includes('replyIntelligence') && read('src/components/social/SocialManagerView.tsx').includes('استراتيجية الرد'), 'واجهة التصنيف تعرض الاستراتيجية والحقائق الموثوقة');
+// جودة الرد (fix/commercial-reply-quality): التصنيف يلتقط الصيغ العراقية المجرّدة التي
+// كانت تسقط إلى other/neutral فيرد رد عام على سؤال حقيقي (الجذر المُثبت من الإنتاج).
+add('reply-quality-business-patterns', /business:\s*\/[^\n]*بكام[^\n]*متاح/.test(replyComments), 'نمط الاستفسار التجاري يشمل «بكام/متاح» فلا تسقط أسئلة السعر/التوفر إلى other');
+add('reply-quality-business-excludes-location', (() => { const line = (replyComments.match(/business:\s*\/[^\n]*/) || [''])[0]; return line.length > 0 && !/(عنوان|مكان|موقع|وين)/.test(line); })(), 'نمط الاستفسار التجاري لا يحمل كلمات الموقع (فلا تُصنَّف أسئلة الموقع شراءً)');
+add('reply-quality-location-bare-forms', /location:\s*\/[^\n]*عنوان[^\n]*مكان/.test(replyComments), 'موضوع الموقع يلتقط الصيغ المجرّدة («العنوان/المكان») و«وين موجودين»');
+add('reply-quality-topic-implies-inquiry', /else if \(topic !== 'general'\) intent = 'business_inquiry'/.test(replyComments), 'موضوع تجاري محدّد بلا كلمة استفهام صريحة يُصنَّف استفساراً لا «محايداً»');
+add('reply-quality-test', read('engine/tests/reply.quality.classification.test.ts').includes('reply-quality checks') && read('engine/tests/reply.quality.classification.test.ts').includes('العنوان والسعر'), 'اختبار جودة الرد موجود ويثبّت تصنيف الصيغ الإنتاجية');
+add('reply-quality-test-wired', /"test:reply-quality":\s*"tsx engine\/tests\/reply\.quality\.classification\.test\.ts"/.test(read('package.json')) && /npm run test:reply-intelligence && npm run test:reply-quality/.test(read('package.json')), 'اختبار جودة الرد مسجّل ضمن npm test');
+// ROOT-7: ربط المنشور بالمنتج — يُحفظ معرّف المنتج المسجّل فقط، ويُمرَّر عند النشر
+// إلى سجل النشر، فتُستخدم حقائق السعر/القسط في ردود تعليقات المنشور بدل التصعيد.
+add('content-post-product-link-persisted', /const productIdRaw = typeof b\.productId === "string"/.test(server) && /productId, status: resolvedStatus/.test(server), 'معرّف المنتج يُحفظ على المنشور (بعد التحقق من وجوده)');
+add('content-post-product-link-validated', /workspace\.products \|\| \[\]\)\.some\(\(p: any\) => String\(p\.id\) === productIdRaw\)/.test(server), 'معرّف المنتج لا يُحفظ إلا إن طابق منتجاً مسجّلاً (لا اختراع ربط)');
+add('content-publish-passes-product-id', /productId: typeof post\.productId === "string" && post\.productId \? post\.productId : undefined/.test(server), 'النشر الموحّد يمرّر معرّف منتج المنشور إلى المنفّذ');
+add('publish-record-carries-product-id', read('engine/social/publishing.ts').includes('productId?: string | null;') && /productId: input\.productId \?\? null/.test(read('engine/social/publishing.ts')), 'سجل النشر يحمل معرّف المنتج ليُربط المنشور الخارجي بمنتجه');
+add('content-product-link-test', read('engine/tests/content.product.link.test.ts').includes('product-post link checks'), 'اختبار ربط المنشور بالمنتج موجود');
+add('content-product-link-test-wired', /"test:content-product-link":\s*"tsx engine\/tests\/content\.product\.link\.test\.ts"/.test(read('package.json')) && /npm run test:reply-quality && npm run test:content-product-link/.test(read('package.json')), 'اختبار ربط المنشور بالمنتج مسجّل ضمن npm test');
+// ROOT-4: أسماء حساب المعرض تُضمّن اسم الصفحة/حساب إنستغرام المخزَّنين، فلا يُصنَّف
+// تعليقنا/ردّنا تعليقَ عميل حين يختلف اسم الصفحة الرسمي عن اسم المعرض.
+add('meta-self-authored-uses-stored-identity', /getProviderToken\("facebook"\)\?\.pageName/.test(server) && /getProviderToken\("instagram"\)\?\.igUsername/.test(server), 'كشف حساب المعرض يشمل اسم الصفحة/حساب إنستغرام المخزَّنين (لا الاسم فقط)');
+// ROOT-7 (تنوّع البادئة): ردود الحقائق الموثّقة كانت تبدأ كلها بـ«هلا بيك» حرفياً.
+// `trustedOpener` يوزّع البادئة ويستثني المستخدَم سابقاً في نفس المحادثة.
+add('reply-trusted-opener-single-source', /function trustedOpener\(seed: string, previous: string\[\]\)/.test(replyComments) && /trustedOpener\(seed, previous\)/.test(replyComments), 'مصدر واحد لبادئة الرد المؤرّض المتنوّعة');
+add('reply-trusted-opener-varies', (replyComments.match(/\$\{trustedOpener\(seed, previous\)\}/g) || []).length >= 4, 'كل ردود الحقائق (سعر/موقع/دوام/توفر) تستخدم البادئة المتنوّعة لا «هلا بيك» الثابتة');
+add('reply-trusted-opener-test', read('engine/tests/reply.quality.classification.test.ts').includes('تنوّع بادئة الرد المؤرّض'), 'اختبار تنوّع البادئة موجود');
 add('reply-intelligence-tests', fs.existsSync(path.join(root, 'engine/tests/reply.intelligence.test.ts')) && pkg.scripts['test:reply-intelligence'], 'اختبار Reply Intelligence مسجّل');
 add('reply-intelligence-test-in-suite', typeof pkg.scripts.test === 'string' && pkg.scripts.test.includes('test:reply-intelligence'), 'اختبار Reply Intelligence ضمن npm test');
 add('reply-intelligence-no-ai-quota', !/aiEngine|gemini|fetch\(|https?:/.test(replyComments), 'محرّك الرد حتمي بالكامل: لا مزود ولا شبكة ولا استهلاك حصة');
@@ -5449,9 +5473,10 @@ add('watcher-advisory-not-authority',
 
     add('prc-header-health-polls-and-unknown',
       /setInterval\(\s*poll\s*,\s*60_?000\s*\)/.test(headerSrc) &&
-      /setAiReady\(null\)/.test(headerSrc) &&
-      /aiReady === null \? 'Gemini: غير معروف'/.test(headerSrc),
-      'الترويسة تعيد جلب /api/health دورياً وتعرض «غير معروف» عند فشل الجلب (لا «Gemini محمي»)');
+      /describeGeminiBadge\(null\)/.test(headerSrc) &&
+      /describeGeminiBadge\(h\)/.test(headerSrc) &&
+      !headerSrc.includes('محمي/غير مفعّل'),
+      'الترويسة تعيد جلب /api/health دورياً وتعرض حالة Gemini الصادقة من الجسم (لا «محمي/غير مفعّل»)');
 
     add('prc-platform-card-labels-truthful',
       /تاريخ الربط:/.test(hubSrc2) && !/آخر مزامنة فعلية:/.test(hubSrc2) &&
@@ -5493,6 +5518,71 @@ add('watcher-advisory-not-authority',
       /test:prc-display-consistency/.test(read('package.json')) &&
       prcTest.includes('PASSED:'),
       'اختبار PR-C موجود ومُسجّل في package.json');
+  }
+
+  // 12ب) PR-B — جودة الرد: ترحيب محايد + موقع/مركّب + رد الصفحة + شارة Gemini + ربط المنتج.
+  {
+    const rq = read('engine/social/replyQuality.ts');
+    const prbTest = read('engine/tests/prb.reply.regression.test.ts');
+    const metaWatcherModule = read('engine/social/metaWatcher.ts');
+    const headerSrc = read('src/components/common/Header.tsx');
+    const badgeSrc = read('src/services/geminiBadge.ts');
+    const apiSrc = read('src/services/api.ts');
+    const approvalSrc = read('src/components/approval/ApprovalWorkflowView.tsx');
+    const fbSrc = read('engine/social/facebook.ts');
+    const igSrc = read('engine/social/instagram.ts');
+
+    add('prb-gendered-opener-forbidden-single-source',
+      rq.includes('FORBIDDEN_GENDERED_OPENERS') && rq.includes("'هلا بيك'") && rq.includes("'مرحبا بيك'") && rq.includes('hasGenderedOpener'),
+      'مصدر واحد يحظر الصيغ التي تفترض جنس العميل (هلا بيك/مرحبا بيك)');
+    add('prb-no-gendered-opener-in-prod-code',
+      !/['"`]هلا بيك/.test(commentsModule) && !/['"`]هلا بيك/.test(read('engine/social/replyDialogue.ts')) &&
+      !/['"`]مرحبا بيك/.test(commentsModule) && !/['"`]هلا بيك/.test(read('engine/commercial/commercialBrain.ts')),
+      'لا صيغة «هلا بيك»/«مرحبا بيك» في أي قالب إنتاج (comments/replyDialogue/commercialBrain)');
+    add('prb-gendered-opener-guard-wired',
+      server.includes('hasGenderedOpener(candidate)') && server.includes('sanitizeGendered'),
+      'حارس نهائي في مسار الرد يمنع مرور أي نص مجنّس إلى المنصة');
+    add('prb-location-reply-order',
+      commentsModule.includes('visitDetailsClause') && /موقعنا: \$\{trimEndPunct\(f\.locationText\)\}/.test(commentsModule) &&
+      /والدوام \$\{trimEndPunct\(f\.hoursText\)\}/.test(commentsModule) && /وللتواصل: \$\{phones\.join/.test(commentsModule),
+      'رد الموقع: العنوان ثم الدوام ثم الهاتف/الواتساب من المسجّل فقط');
+    add('prb-compound-inquiry',
+      commentsModule.includes('detectCompoundInquiry') && commentsModule.includes('isCompoundInquiry') && commentsModule.includes('compound_location_price'),
+      'السؤال المركّب (عنوان+سعر) يُجاب في رد واحد (العنوان والدوام والسعر أو دعوة للتواصل)');
+    add('prb-installment-availability-yes',
+      commentsModule.includes('asksInstallmentAvailability') && commentsModule.includes('installment_availability_yes') && commentsModule.includes('نعم عدنا تقسيط'),
+      '«في تقسيط» يبدأ بعد الترحيب بـ«نعم» ثم المدة المسجّلة ثم دعوة للتفاصيل');
+    add('prb-page-already-replied-code',
+      watcherModule.includes("'SKIP_PAGE_ALREADY_REPLIED'") && watcherModule.includes('pageAlreadyReplied') &&
+      metaWatcherModule.includes('pageAlreadyReplied'),
+      'كود SKIP_PAGE_ALREADY_REPLIED في سلطة القرار الواحدة (YouTube/Meta)');
+    add('prb-page-reply-detect-single-request',
+      fbSrc.includes('comments.limit(1){from}') && fbSrc.includes('pageRepliedInThread') &&
+      igSrc.includes('replies.limit(1){from}') && igSrc.includes('pageRepliedInThread'),
+      'كشف رد الصفحة داخل الخيط يقرأ رداً فرعياً واحداً ضمن الطلب نفسه (لا طلب إضافي لكل تعليق)');
+    add('prb-page-reply-blocks-draft',
+      server.includes('threadPageReplied') && server.includes('if (input.threadPageReplied === true)') &&
+      /const threadPageReplied = c\.pageRepliedInThread === true/.test(server) &&
+      /threadPageReplied: row\.threadPageReplied === true/.test(server),
+      'رد سابق من الصفحة يُسجَّل على التعليق الوارد ويمنع إنشاء أي مسودة');
+    add('prb-gemini-badge-honest',
+      badgeSrc.includes('describeGeminiBadge') && badgeSrc.includes('Gemini: محرّك حتمي') &&
+      headerSrc.includes('describeGeminiBadge') && !headerSrc.includes('محمي/غير مفعّل'),
+      'شارة Gemini صادقة: لا تخلط الحماية بتعطيل المزود');
+    add('prb-health-body-on-non2xx',
+      /const body = await res\.json\(\)\.catch\(\(\) => null\)/.test(apiSrc) && !/if \(!res\.ok\) throw new Error\('Health check failed'\)/.test(apiSrc),
+      'checkHealth يقرأ جسم /api/health حتى عند رمز غير 2xx (503 مع جسم صحيح)');
+    add('prb-product-link-verified',
+      rq.includes('resolveProductLink') && server.includes('resolveProductLink(b.productId, workspace.products as any)'),
+      'ربط منشور بمنتج يتحقق من وجود المنتج فعلاً قبل الحفظ (لا ربط بالتخمين)');
+    add('prb-product-link-ui',
+      approvalSrc.includes('editProductId') && /<select[\s\S]{0,600}products/.test(approvalSrc) && approvalSrc.includes('المنتج المرتبط'),
+      'واجهة تعديل المنشور تتيح اختيار المنتج المرتبط (للمنشورات القديمة)');
+    add('prb-regression-test',
+      fs.existsSync(path.join(root, 'engine/tests/prb.reply.regression.test.ts')) &&
+      /test:prb-reply-regression/.test(read('package.json')) &&
+      prbTest.includes('العنوان والسعر') && prbTest.includes('بكام سعر') && prbTest.includes('متاح'),
+      'اختبار انحدار PR-B يغطي التعليقات التسعة حرفياً ومُسجّل في package.json');
   }
 
   // 12) AGENTS.md: عدد فحوصات final-audit مطابق للفعلي (يُعَدّ من نص الملف نفسه).

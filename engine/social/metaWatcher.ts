@@ -188,6 +188,8 @@ export function decideMetaCommentAction(input: {
   isSpam: boolean;
   isSelfAuthored: boolean;
   alreadyReplied: boolean;
+  /** PR-B: هل سبق أن ردّت الصفحة نفسها داخل خيط التعليق؟ ⇒ لا مسودة/رد (SKIP_PAGE_ALREADY_REPLIED). */
+  pageAlreadyReplied?: boolean;
   controls: MetaWatcherControls;
 }): CommentDecision {
   return decideCommentAction({ ...input, controls: normalizeMetaWatcherControls(input.controls) });

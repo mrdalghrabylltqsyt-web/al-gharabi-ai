@@ -99,6 +99,7 @@ import { inspectDriveAuthEnv, createRefreshTokenProvider } from "./tools/dr/driv
 import { DriveClient, createGaxiosTransport } from "./tools/dr/drive-client.mjs";
 import { settleWithTimeout, envTimeoutMs, DRIVE_PUBLIC_HOST_TIMEOUT_MS } from "./tools/dr/drive-timeouts.mjs";
 import { publishVideoPublicly } from "./engine/social/videoPublicHosting";
+import { resolveProductLink, hasGenderedOpener } from "./engine/social/replyQuality";
 import { classifyHttpError, shouldExposeErrorMessage, safeErrorMessage, redactSecretsFromText } from "./engine/runtime/errorSafety";
 import { enforceRateWindowCap, RATE_WINDOW_TTL_MS } from "./engine/runtime/rateWindow";
 import { createProcessSafety } from "./engine/runtime/processSafety";
@@ -8204,10 +8205,14 @@ async function generateWatcherReply(input: {
   const facts = replyFactsForProduct(grounding);
   if (knowledge) { facts.knowledgeAnswer = knowledge.answer; facts.knowledgeTopic = knowledge.topic; }
   const deterministic = generateConversationalReply(input.cls, facts, ctx);
+  // PR-B (البند 1): حارس نهائي — أي نص (حتمي أو من مزوّد) يحمل صيغة ترحيب تفترض جنس
+  // العميل يُستبدل بالسقوط الحتمي الآمن. لا يمرّ رد مجنّس إلى أي منصة إطلاقاً.
+  const sanitizeGendered = (candidate: string, fallback: string): string =>
+    hasGenderedOpener(candidate) ? fallback : candidate;
   // قرار المُحلّل غير التوضيحي (جواب/تصعيد/اختيار) يُعتمد كما هو — لا يمرّ بالمسار
   // الذكي (لا حاجة: النص من بيانات مسجّلة). التوضيح وحده يُجرَّب تحسينه بالـAI.
   if (resolved.kind !== 'clarify') {
-    return { text: resolved.text, clarify: false, escalate: resolved.kind === 'escalate', strategy: resolved.strategy, source: 'deterministic' };
+    return { text: sanitizeGendered(resolved.text, deterministic.text || resolved.text), clarify: false, escalate: resolved.kind === 'escalate', strategy: resolved.strategy, source: 'deterministic' };
   }
   if (input.allowAi === false) {
     return { text: resolved.text, clarify: true, escalate: false, strategy: resolved.strategy, source: 'deterministic' };
@@ -8285,9 +8290,21 @@ async function runMetaWatcherCycle(trigger: string): Promise<{ ok: boolean; trig
           callsPerCycle: Number(fetched.callsPerCycle || 0),
         };
       }
-      const ownNames = [String(workspace.showroom?.name || ""), "معرض الغرابي"];
       const pageIdFb = String(getProviderToken("facebook")?.pageId || "");
       const igId = String(getProviderToken("instagram")?.igAccountId || "");
+      // ROOT-4: أسماء حساب المعرض الحقيقية تُضمّن من الاعتماد المخزَّن (اسم الصفحة/
+      // حساب إنستغرام) لا من اسم المعرض فقط. بدونها، متى حجب Meta حقل `from` (بلا
+      // `pages_read_user_content`) لا يبقى إلا مطابقة الاسم — فإن اختلف اسم الصفحة
+      // الرسمي عن اسم المعرض (مثل «معرض الغرابي للتقسيط») اعتُبر ردّنا/تعليقنا
+      // تعليق عميل، فيُولَّد عليه رد (حلقة/تكرار). المطابقة بالمعرّف تبقى الأساس.
+      const ownNames = [
+        String(workspace.showroom?.name || ""),
+        "معرض الغرابي",
+        String(getProviderToken("facebook")?.pageName || ""),
+        String(getProviderToken("instagram")?.pageName || ""),
+        String(getProviderToken("instagram")?.igUsername || ""),
+        String(platformConnections.get(platform)?.accountName || ""),
+      ].map((n) => String(n || "").replace(/^@/, "").trim()).filter(Boolean);
       let processedThisCycle = 0;
       for (const c of (fetched.ok ? (fetched.comments || []) : [])) {
         if (processedThisCycle >= META_POLLING_MAX_PER_CYCLE) break;
@@ -8308,6 +8325,9 @@ async function runMetaWatcherCycle(trigger: string): Promise<{ ok: boolean; trig
           // PR-S5: وسم الاستيراد بأثر رجعي (backfill) — عمر التعليق عند الاستقبال > 24
           // ساعة ⇒ لا يولّد متابعة. يُحسب قبل الإدراج ليبقى سطر السقف قريباً من unshift.
           const commentBackfill = isBackfillImport(c.createdAt || null, new Date().toISOString());
+          // PR-B (البند 4): `threadPageReplied` يُحفظ هل ردّت الصفحة نفسها داخل الخيط —
+          // فيمنع لاحقاً إنشاء مسودة لعميل حصل على جواب (SKIP_PAGE_ALREADY_REPLIED).
+          const threadPageReplied = c.pageRepliedInThread === true || isSelfAuthored(c.threadReplyAuthorName || undefined, ownNames);
           (workspace as any).socialComments.unshift({
             id: workspaceId("comment"), platform, externalId, postExternalId: c.postId || c.mediaId || null,
             authorName: c.authorName || c.username || null,
@@ -8317,6 +8337,7 @@ async function runMetaWatcherCycle(trigger: string): Promise<{ ok: boolean; trig
             replyTarget: { commentId: externalId },
             permalinkUrl: c.permalinkUrl || null,
             postText: c.postText || null, backfill: commentBackfill,
+            threadPageReplied,
           });
           if ((workspace as any).socialComments.length > WORKSPACE_MAX_SOCIAL_COMMENTS) (workspace as any).socialComments.length = WORKSPACE_MAX_SOCIAL_COMMENTS;
           newDetected += 1;
@@ -8346,9 +8367,13 @@ async function runMetaWatcherCycle(trigger: string): Promise<{ ok: boolean; trig
           );
         } catch { /* جلسة الفريق لا تُسقط دورة المراقبة */ }
         const centralDecision = centralActionDecisionForEvent(`comment:${externalId}`);
+        // PR-B (البند 4): هل سبق أن ردّت الصفحة/الحساب نفسه داخل هذا الخيط؟ المطابقة
+        // بالمعرّف أولاً (pageId/igId في الرد الفرعي)، ثم باسم الصفحة المخزَّن احتياطاً.
+        const pageAlreadyReplied = c.pageRepliedInThread === true
+          || isSelfAuthored(c.threadReplyAuthorName || undefined, ownNames);
         const advisory = decideMetaCommentAction({
           intent: cls.intent, requiresHumanReview: cls.requiresHumanReview, isSpam: cls.isSpam,
-          isSelfAuthored: selfAuthored, alreadyReplied, controls,
+          isSelfAuthored: selfAuthored, alreadyReplied, pageAlreadyReplied, controls,
         });
         const replyGate = metaWatcherGate(controls, "reply");
         const rr = metaReplyReady(platform);
@@ -9243,7 +9268,19 @@ async function createInstantReplyDraft(input: {
   cls: ReturnType<typeof classifyComment>;
   subjectId: string;
   nowIso: string;
+  /**
+   * PR-B (البند 4): هل سبق أن ردّت الصفحة نفسها داخل خيط هذا التعليق؟ عندها لا
+   * تُنشأ مسودة — العميل حصل على جواب، والسبب يُسجَّل `SKIP_PAGE_ALREADY_REPLIED`.
+   */
+  threadPageReplied?: boolean;
 }): Promise<CommercialDraft | null> {
+  // العميل حصل على رد من الصفحة داخل نفس الخيط ⇒ لا مسودة (لا رد مكرر عليه).
+  if (input.threadPageReplied === true) {
+    audit('commercial-brain', 'commercial_draft_skipped', JSON.stringify({
+      code: 'SKIP_PAGE_ALREADY_REPLIED', externalId: input.externalId, platform: input.platform,
+    }));
+    return null;
+  }
   // نقتصر على نية شراء/سؤال سعر أو قسط — لا مسودات لكل تعليق مدح/تحية.
   const cls: any = input.cls;
   const isPriceOrInstallment = cls?.topic === 'price' || cls?.topic === 'availability' || cls?.isBusinessInquiry === true;
@@ -9463,6 +9500,8 @@ async function runCommercialBrainCycle(trigger: string): Promise<{ ok: boolean; 
           product, cls: (interaction.classification as any) || classifyComment(interaction.text),
           subjectId: kind === 'message' ? `dm:${String(interaction.replyTarget?.recipientId || '')}` : String(row.postExternalId || row.mediaId || 'thread'),
           nowIso,
+          // PR-B (البند 4): رد سابق من الصفحة داخل الخيط ⇒ لا مسودة (SKIP_PAGE_ALREADY_REPLIED).
+          threadPageReplied: row.threadPageReplied === true,
         });
         if (draft) { drafted += 1; draftedLeads.add(lead.key); }
       }
@@ -13461,7 +13500,11 @@ app.post("/api/workspace/content", authenticateToken, (req, res) => {
   const statusDecision = canSetContentStatusByRole(user.role, desiredStatus);
   if (!statusDecision.allowed) return res.status(statusDecision.code === "PUBLISHED_REQUIRES_PROVIDER_PROOF" ? 409 : 403).json({ success: false, code: statusDecision.code, error: statusDecision.reason });
   const resolvedStatus = desiredStatus;
-  const post = { id: cleanText(b.id, 100) || workspaceId("post"), title: cleanText(b.title, 160) || "مسودة جديدة", content, platformVersions: b.platformVersions && typeof b.platformVersions === "object" ? b.platformVersions : undefined, targetPlatforms: targets, mediaUrl: cleanText(b.mediaUrl, 500) || undefined, mediaType: ["image","video","carousel"].includes(b.mediaType) ? b.mediaType : undefined, status: resolvedStatus, scheduledFor: normalizeScheduleInput(b.scheduledFor) ?? undefined, publishedAt: cleanText(b.publishedAt, 80) || undefined, createdAt: cleanText(b.createdAt, 80) || new Date().toISOString(), authorId: user.id, authorName: cleanText(b.authorName, 160) || user.name, authorRole: cleanText(b.authorRole, 40) || user.role, history: Array.isArray(b.history) ? b.history.slice(-50) : [], metrics: b.metrics && typeof b.metrics === "object" ? b.metrics : undefined, tags: Array.isArray(b.tags) ? b.tags.filter((x:any)=>typeof x === "string").slice(0,20) : [], campaignName: cleanText(b.campaignName, 160) };
+  // ROOT-7: معرّف المنتج يُحفظ فقط إن طابق منتجاً مسجّلاً فعلاً (بلا اختراع ربط).
+  // بدون حفظه لا يمكن ربط المنشور بالمنتج عند النشر، فتفقد الردود حقائق السعر/القسط.
+  const productIdRaw = typeof b.productId === "string" ? b.productId.trim() : "";
+  const productId = productIdRaw && (workspace.products || []).some((p: any) => String(p.id) === productIdRaw) ? productIdRaw : undefined;
+  const post = { id: cleanText(b.id, 100) || workspaceId("post"), title: cleanText(b.title, 160) || "مسودة جديدة", content, platformVersions: b.platformVersions && typeof b.platformVersions === "object" ? b.platformVersions : undefined, targetPlatforms: targets, mediaUrl: cleanText(b.mediaUrl, 500) || undefined, mediaType: ["image","video","carousel"].includes(b.mediaType) ? b.mediaType : undefined, productId, status: resolvedStatus, scheduledFor: normalizeScheduleInput(b.scheduledFor) ?? undefined, publishedAt: cleanText(b.publishedAt, 80) || undefined, createdAt: cleanText(b.createdAt, 80) || new Date().toISOString(), authorId: user.id, authorName: cleanText(b.authorName, 160) || user.name, authorRole: cleanText(b.authorRole, 40) || user.role, history: Array.isArray(b.history) ? b.history.slice(-50) : [], metrics: b.metrics && typeof b.metrics === "object" ? b.metrics : undefined, tags: Array.isArray(b.tags) ? b.tags.filter((x:any)=>typeof x === "string").slice(0,20) : [], campaignName: cleanText(b.campaignName, 160) };
   workspace.posts.unshift(post); persistState(); audit(user.id, "workspace_content_created", post.id); res.status(201).json({ success: true, post });
 });
 
@@ -13481,6 +13524,12 @@ app.patch("/api/workspace/content/:id", authenticateToken, (req,res)=>{
   }
   if(b.scheduledFor!==undefined){ const norm=normalizeScheduleInput(b.scheduledFor); post.scheduledFor=norm ?? undefined; }
   if(b.campaignName!==undefined) post.campaignName=cleanText(b.campaignName,160);
+  // PR-B (البند 7): ربط منشور **موجود** بمنتج مسجّل — الطريقة الوحيدة للمالك لربط
+  // منشورات قديمة بمنتجاتها (بلا تخمين). المصدر الواحد `resolveProductLink` يقبل
+  // المعرّف فقط إن كان المنتج مسجّلاً فعلاً؛ غير ذلك يُفكّ الربط بلا اختراع.
+  if(b.productId!==undefined){
+    post.productId = resolveProductLink(b.productId, workspace.products as any);
+  }
   persistState(); audit(user.id,"workspace_content_updated",post.id); res.json({success:true,post});
 });
 
@@ -13609,6 +13658,9 @@ app.post("/api/workspace/content/:id/publish", requireOwner, async (req, res) =>
       privacyStatus: typeof req.body?.privacyStatus === "string" ? req.body.privacyStatus : "public",
       approved: true,
       postId: post.id,
+      // ROOT-7: معرّف المنتج المسجّل على المنشور يُمرَّر للنشر ليُحفظ على سجل النشر،
+      // فيُربط المنشور الخارجي بمنتجه وتُستخدم حقائق السعر/القسط في الردود بدل التصعيد.
+      productId: typeof post.productId === "string" && post.productId ? post.productId : undefined,
     }, user.id);
     return { platform, result };
   }));
@@ -18215,6 +18267,10 @@ function replyFactsForProduct(product: any | null): ReplyFactSet {
     monthlyInstallmentText: replyInstallmentTextForProduct(product) || undefined,
     locationText: address || undefined,
     hoursText: showroom.workingHours ? cleanText(showroom.workingHours, 120) : undefined,
+    // أرقام التواصل المسجّلة فعلاً (تظهر في ردّ الموقع بالترتيب المطلوب). غيابها ⇒
+    // لا يُذكر أي رقم (لا اختراع).
+    phoneText: showroom.phoneUnified ? cleanText(showroom.phoneUnified, 40) : undefined,
+    whatsappText: showroom.whatsappSales ? cleanText(showroom.whatsappSales, 40) : undefined,
     inStock: typeof product?.inStock === 'boolean' ? product.inStock : null,
     hasRecordedPromotion: [showroom.promotions, showroom.activeOffer].some((x: any) => cleanText(x, 300).length > 0),
     requiredDocuments: requiredDocuments.length ? requiredDocuments : undefined,

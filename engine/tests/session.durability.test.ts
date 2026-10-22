@@ -65,7 +65,8 @@ async function stop(proc: ChildProcess): Promise<void> {
 }
 
 async function run(): Promise<void> {
-  const PORT = 5300 + Math.floor(Math.random() * 400);
+  // النطاق يستثني 5432 (Postgres في CI) فلا يفشل عشوائياً بـEADDRINUSE.
+  const PORT = 5300 + Math.floor(Math.random() * 130);
   const BASE = `http://127.0.0.1:${PORT}`;
   const dirA = mkdtempSync(join(tmpdir(), 'gharabi-session-a-'));
   const dirB = mkdtempSync(join(tmpdir(), 'gharabi-session-b-'));

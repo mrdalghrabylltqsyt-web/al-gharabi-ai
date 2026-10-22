@@ -146,7 +146,10 @@ async function main(): Promise<void> {
     const text = String(rep[0]?.message || '');
     check('الرد يذكر السعر المسجّل فعلاً', text.includes('1,000,000'), text);
     check('الرد يذكر القسط الشهري المشتقّ (66,667)', text.includes('66,667'), text);
-    check('الرد بلغة عراقية طبيعية', /هلا بيك/.test(text), text);
+    // البادئة تتنوّع الآن (ROOT-7) — نتحقق من لهجة عراقية طبيعية عامة لا من بادئة ثابتة.
+    // PR-B (البند 1): الترحيب محايد جنسياً — لا «هلا بيك»/«مرحبا بيك».
+    check('الرد بلغة عراقية طبيعية وترحيب محايد', /تدلل|حياك الله|نورتنا|أهلاً وسهلاً|هلا وغلا/.test(text), text);
+    check('لا صيغة تفترض جنس العميل', !/هلا بيك|مرحبا بيك/.test(text), text);
 
     group('5) تعليق غير مرتبط => لا رد (تصعيد بلا اختراع)');
     const owner = await (await fetch(`${BASE}/api/agent/meta/watcher`, { headers: auth })).json();
