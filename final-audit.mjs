@@ -1303,6 +1303,14 @@ add('reply-intelligence-reply-facts-dep', read('engine/social/routes.ts').includ
 add('reply-intelligence-no-fake-marketing', !/عرض خاص.{0,40}احجز الآن/.test(replyComments), 'لا عبارات إعلانية جاهزة في محرّك الرد');
 add('reply-intelligence-types', read('src/types/index.ts').includes('ReplyIntelligence') && read('src/types/index.ts').includes('subIntent'), 'أنواع Reply Intelligence معلنة ومطابقة للخادم');
 add('reply-intelligence-ui', read('src/components/social/SocialManagerView.tsx').includes('replyIntelligence') && read('src/components/social/SocialManagerView.tsx').includes('استراتيجية الرد'), 'واجهة التصنيف تعرض الاستراتيجية والحقائق الموثوقة');
+// جودة الرد (fix/commercial-reply-quality): التصنيف يلتقط الصيغ العراقية المجرّدة التي
+// كانت تسقط إلى other/neutral فيرد رد عام على سؤال حقيقي (الجذر المُثبت من الإنتاج).
+add('reply-quality-business-patterns', /business:\s*\/[^\n]*بكام[^\n]*متاح/.test(replyComments), 'نمط الاستفسار التجاري يشمل «بكام/متاح» فلا تسقط أسئلة السعر/التوفر إلى other');
+add('reply-quality-business-excludes-location', (() => { const line = (replyComments.match(/business:\s*\/[^\n]*/) || [''])[0]; return line.length > 0 && !/(عنوان|مكان|موقع|وين)/.test(line); })(), 'نمط الاستفسار التجاري لا يحمل كلمات الموقع (فلا تُصنَّف أسئلة الموقع شراءً)');
+add('reply-quality-location-bare-forms', /location:\s*\/[^\n]*عنوان[^\n]*مكان/.test(replyComments), 'موضوع الموقع يلتقط الصيغ المجرّدة («العنوان/المكان») و«وين موجودين»');
+add('reply-quality-topic-implies-inquiry', /else if \(topic !== 'general'\) intent = 'business_inquiry'/.test(replyComments), 'موضوع تجاري محدّد بلا كلمة استفهام صريحة يُصنَّف استفساراً لا «محايداً»');
+add('reply-quality-test', read('engine/tests/reply.quality.classification.test.ts').includes('reply-quality checks') && read('engine/tests/reply.quality.classification.test.ts').includes('العنوان والسعر'), 'اختبار جودة الرد موجود ويثبّت تصنيف الصيغ الإنتاجية');
+add('reply-quality-test-wired', /"test:reply-quality":\s*"tsx engine\/tests\/reply\.quality\.classification\.test\.ts"/.test(read('package.json')) && /npm run test:reply-intelligence && npm run test:reply-quality/.test(read('package.json')), 'اختبار جودة الرد مسجّل ضمن npm test');
 add('reply-intelligence-tests', fs.existsSync(path.join(root, 'engine/tests/reply.intelligence.test.ts')) && pkg.scripts['test:reply-intelligence'], 'اختبار Reply Intelligence مسجّل');
 add('reply-intelligence-test-in-suite', typeof pkg.scripts.test === 'string' && pkg.scripts.test.includes('test:reply-intelligence'), 'اختبار Reply Intelligence ضمن npm test');
 add('reply-intelligence-no-ai-quota', !/aiEngine|gemini|fetch\(|https?:/.test(replyComments), 'محرّك الرد حتمي بالكامل: لا مزود ولا شبكة ولا استهلاك حصة');

@@ -44,7 +44,7 @@ npm install
 npm run dev            # tsx server.ts
 npm run lint           # tsc --noEmit
 npm run build          # vite build + esbuild server.ts -> dist/server.cjs
-npm run final-audit    # node final-audit.mjs (1812 فحصاً)
+npm run final-audit    # node final-audit.mjs (1818 فحصاً)
 npm test               # storage + engine + auth + ... + db + runtime
 ```
 - التشغيل الإنتاجي: `PORT=4517 NODE_ENV=production APP_URL=http://localhost:4517 node dist/server.cjs`
@@ -7141,3 +7141,39 @@ TikTok (مجمّد)، Telegram/Threads، نموذج الجدولة، نطاق ER
 **37 فحصاً**) + 8 فحوص final-audit `prc-*`. `npm run lint` ✅ · `npm run build` ✅ ·
 `final-audit` **1804**. ملاحظة دمج: تعارض نصي وحيد مع PR-A في سطر `"test"` في `package.json`
 (اتحاد السكربتات) — يُحل يدوياً عند الدمج.
+
+## جودة الرد — تصنيف الاستفسارات الحقيقية من صندوق الزبائن (2026-10-21)
+
+**الجذر المُثبت (من الإنتاج، لا تخمين):** مسودات صندوق الزبائن وُلِّدت بنصوص لا تخصّ
+سؤال العميل. أُعيد إنتاجه محلياً على نفس محرّك الرد (`comments.ts` → `inquiryResolver.ts`
+→ `replyDialogue.ts`):
+
+| التعليق | قبل الإصلاح | بعد الإصلاح |
+|---|---|---|
+| «العنوان والسعر» | clarify: «خبرني الماركة والمقاس…» | answer: يذكر العنوان المسجّل |
+| «السعر والمكان» | clarify: «خبرني الماركة والمقاس…» | answer: يذكر العنوان المسجّل |
+| «وين موجودين» | clarify: «وضّحلي الماركة والمقاس…» | answer: يذكر العنوان المسجّل |
+| «بكام سعر» / «شو سعر» / «متاح» | answer: «شكراً، نورتنا» (neutral_generic) | answer: سعر/توفر مؤرّض أو سؤال توضيحي مناسب |
+| «في تقسيط» | clarify: «وضّحلي الماركة والمقاس…» | answer: شروط التقسيط المسجّلة حرفياً |
+
+**أسباب جذرية ثلاثة (كلها في `engine/social/comments.ts`):**
+1. **`PATTERNS.business` ناقص:** «بكام/شو سعر/شنو سعره/متاح/اكو/موجود» لم تكن فيه،
+   فسقطت إلى `intent=other` ⇒ رد عام (`neutral_generic`).
+2. **`TOPIC_PATTERNS.location` ضيّق:** لم يلتقط «العنوان/المكان/مكان» المجرّدة ولا
+   «وين موجودين»، فصُنّفت price/availability ⇒ سؤال «الماركة والمقاس» على سؤال موقع.
+3. **لا استنتاج موضوع ⇒ استفسار:** تعليق يحمل موضوعاً تجارياً محدّداً بلا كلمة استفهام
+   صريحة («عندكم توصيل») كان يبقى `other`؛ الآن `topic !== 'general'` ⇒ `business_inquiry`.
+
+**القيد الملزم (مُنع انحدار):** **لا تُدرج كلمات الموقع (عنوان/مكان/موقع/وين) في
+`PATTERNS.business`** — أسئلة الموقع ليست «استفسار شراء»، وإدراجها يجعل
+`classifyConversation` (`engine/brain/audience/conversationIntelligence.ts`) يصنّف
+«وين موقع المعرض؟» `purchase_intent` خطأً (اكتُشف بانحدار `brain.runtime` وأُصلح).
+تُغطّى أسئلة الموقع عبر `topic === 'location'` وحدها.
+
+**لم يُمسّ:** معادلة القسط، بوابة الموافقة/`commercialSendMode=approval`، Kill Switch،
+حالة مراقب YouTube، أي سرّ/مفتاح، ولا أي مسار نشر. تغيير محرّك التصنيف/الرد الحتمي فقط.
+
+**الاختبار:** `engine/tests/reply.quality.classification.test.ts` (`npm run test:reply-quality`،
+**54 فحصاً**، مضاف إلى `npm test`) — يُثبت التصنيف الصحيح + الرد المؤرّض + بقاء حواجز
+عدم الاختراع، و**يفشل على الكود القديم** (مُثبت). فحوص final-audit الخمسة الجديدة:
+`reply-quality-*` (الإجمالي **1818**).
