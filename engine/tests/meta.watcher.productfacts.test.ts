@@ -146,7 +146,8 @@ async function main(): Promise<void> {
     const text = String(rep[0]?.message || '');
     check('الرد يذكر السعر المسجّل فعلاً', text.includes('1,000,000'), text);
     check('الرد يذكر القسط الشهري المشتقّ (66,667)', text.includes('66,667'), text);
-    check('الرد بلغة عراقية طبيعية', /هلا بيك/.test(text), text);
+    // البادئة تتنوّع الآن (ROOT-7) — نتحقق من لهجة عراقية طبيعية عامة لا من بادئة ثابتة.
+    check('الرد بلغة عراقية طبيعية', /هلا بيك|تدلل|حياك الله|مرحبا بيك|نورتنا|أهلاً وسهلاً/.test(text), text);
 
     group('5) تعليق غير مرتبط => لا رد (تصعيد بلا اختراع)');
     const owner = await (await fetch(`${BASE}/api/agent/meta/watcher`, { headers: auth })).json();

@@ -44,7 +44,7 @@ npm install
 npm run dev            # tsx server.ts
 npm run lint           # tsc --noEmit
 npm run build          # vite build + esbuild server.ts -> dist/server.cjs
-npm run final-audit    # node final-audit.mjs (1825 فحصاً)
+npm run final-audit    # node final-audit.mjs (1828 فحصاً)
 npm test               # storage + engine + auth + ... + db + runtime
 ```
 - التشغيل الإنتاجي: `PORT=4517 NODE_ENV=production APP_URL=http://localhost:4517 node dist/server.cjs`
@@ -7174,9 +7174,15 @@ TikTok (مجمّد)، Telegram/Threads، نموذج الجدولة، نطاق ER
 حالة مراقب YouTube، أي سرّ/مفتاح، ولا أي مسار نشر. تغيير محرّك التصنيف/الرد الحتمي فقط.
 
 **الاختبار:** `engine/tests/reply.quality.classification.test.ts` (`npm run test:reply-quality`،
-**54 فحصاً**، مضاف إلى `npm test`) — يُثبت التصنيف الصحيح + الرد المؤرّض + بقاء حواجز
-عدم الاختراع، و**يفشل على الكود القديم** (مُثبت). فحوص final-audit الخمسة الجديدة:
-`reply-quality-*` (الإجمالي **1825**).
+**58 فحصاً**، مضاف إلى `npm test`) — يُثبت التصنيف الصحيح + الرد المؤرّض + بقاء حواجز
+عدم الاختراع + **تنوّع بادئة الرد المؤرّض**، و**يفشل على الكود القديم** (مُثبت). فحوص
+final-audit الخمسة الجديدة: `reply-quality-*` (الإجمالي **1828**).
+
+**ROOT-7 (تنوّع البادئة):** ردود الحقائق الموثّقة (سعر/موقع/دوام/توفر) كانت تُبنى نصياً
+وتبدأ كلها بـ«هلا بيك» حرفياً — فيبدو الرد ميكانيكياً متطابقاً لكل زبون. أُضيف
+`trustedOpener(seed, previous)` (مصدر واحد): يوزّع البادئة على نفس المدخل
+(ثبات/idempotency) ويستثني ما افتُتح به ردّ سابق في نفس المحادثة. فحوص final-audit:
+`reply-trusted-opener-single-source`، `reply-trusted-opener-varies`، `reply-trusted-opener-test`.
 
 ### ROOT-4 — كشف حساب المعرض حين يختلف اسم الصفحة عن اسم المعرض (2026-10-21)
 كشف «التعليق صادر من حسابنا» في مراقب Meta كان يطابق **معرّف الصفحة/حساب إنستغرام**

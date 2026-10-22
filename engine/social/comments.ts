@@ -449,6 +449,19 @@ function pickVariant(variants: string[], seed: string, previous: string[]): stri
   return pool[stableHash(seed) % pool.length];
 }
 
+/**
+ * يختار بادئة ترحيبية عراقية متنوّعة لردود «الحقائق الموثّقة» (سعر/موقع/دوام/توفر).
+ * هذه الردود تُبنى نصياً (لا عبر `pickVariant`)، فكانت كلها تبدأ بـ«هلا بيك» حرفياً —
+ * فيبدو الرد ميكانيكياً متطابقاً لكل زبون. الاختيار هنا يوزّع البادئة على نفس المدخل
+ * (ثبات/idempotency) ويستثني ما استُخدم سابقاً في نفس المحادثة (لا تكرار ميكانيكي).
+ */
+function trustedOpener(seed: string, previous: string[]): string {
+  const openers = ['هلا بيك', 'تدلل', 'أهلاً وسهلاً', 'حياك الله', 'مرحبا بيك', 'نورتنا'];
+  // `previous` يحمل نصوص الردود الكاملة، فنستثني البادئة إن كانت قد افتُتح بها ردّ سابق.
+  const usedOpeners = openers.filter((o) => previous.some((p) => String(p || '').startsWith(o)));
+  return pickVariant(openers, seed, usedOpeners);
+}
+
 /** يبني بادئة اسم المنتج بأمان لغوي عند توفره. */
 function withProduct(name: string | undefined, sentence: (p: string) => string): string {
   const p = (name || '').trim();
@@ -583,13 +596,13 @@ export function generateReply(
             const docs = standardizedDocsClause(f);
             if (docs) usedFacts.push('documents');
             return done(withProduct(f.productName, (p) => p
-              ? `هلا بيك، سعر ${p}: ${f.priceText}، والقسط الشهري يبدأ من ${f.monthlyInstallmentText}.${docs} تريد نأكدلك التفاصيل؟`
-              : `هلا بيك، السعر: ${f.priceText}، والقسط الشهري يبدأ من ${f.monthlyInstallmentText}.${docs} تريد نأكدلك التفاصيل؟`),
+              ? `${trustedOpener(seed, previous)}، سعر ${p}: ${f.priceText}، والقسط الشهري يبدأ من ${f.monthlyInstallmentText}.${docs} تريد نأكدلك التفاصيل؟`
+              : `${trustedOpener(seed, previous)}، السعر: ${f.priceText}، والقسط الشهري يبدأ من ${f.monthlyInstallmentText}.${docs} تريد نأكدلك التفاصيل؟`),
               'price_trusted', 'سعر وخطط تقسيط مسجّلة فعلاً ⇒ يُذكر السعر والقسط المشتقّ من بيانات حقيقية.');
           }
           return done(withProduct(f.productName, (p) => p
-            ? `هلا بيك، سعر ${p}: ${f.priceText}. تريد نحسبلك القسط؟`
-            : `هلا بيك، السعر: ${f.priceText}. تريد نحسبلك القسط؟`),
+            ? `${trustedOpener(seed, previous)}، سعر ${p}: ${f.priceText}. تريد نحسبلك القسط؟`
+            : `${trustedOpener(seed, previous)}، السعر: ${f.priceText}. تريد نحسبلك القسط؟`),
             'price_trusted', 'سعر مسجّل فعلاً ⇒ يُذكر السعر الحقيقي مع عرض حساب القسط.');
         }
         return {
@@ -608,8 +621,8 @@ export function generateReply(
           // نص الموقع المسجّل قد ينتهي بنقطة؛ نطبّع علامة النهاية فلا تتكرّر («..»).
           const loc = trimEndPunct(f.locationText);
           return done(withProduct(f.productName, (p) => p
-            ? `تدلل، ${p} تجده عندنا في ${loc}. حياك الله 🌹`
-            : `موقعنا: ${loc}. تفضل زورنا 🌸`),
+            ? `${trustedOpener(seed, previous)}، ${p} تجده عندنا في ${loc}. حياك الله 🌹`
+            : `${trustedOpener(seed, previous)}، موقعنا: ${loc}. تفضل زورنا 🌸`),
             'location_trusted', 'موقع مسجّل فعلاً ⇒ يُذكر الموقع الحقيقي.');
         }
         return {
@@ -624,7 +637,7 @@ export function generateReply(
       case 'hours':
         if (f.hoursText) {
           usedFacts.push('hours');
-          return done(`دوامنا: ${trimEndPunct(f.hoursText)}. حياك الله 🌸`,
+          return done(`${trustedOpener(seed, previous)}، دوامنا: ${trimEndPunct(f.hoursText)}. حياك الله 🌸`,
             'hours_trusted', 'دوام مسجّل فعلاً ⇒ يُذكر الدوام الحقيقي.');
         }
         return {
@@ -640,8 +653,8 @@ export function generateReply(
         if (f.inStock === true) {
           usedFacts.push('stock');
           return done(withProduct(f.productName, (p) => p
-            ? `${p} متوفر حالياً 🌸 تريد نحجزلك؟`
-            : 'إي متوفر حالياً 🌸 تريد نحجزلك؟'),
+            ? `${trustedOpener(seed, previous)}، ${p} متوفر حالياً 🌸 تريد نحجزلك؟`
+            : `${trustedOpener(seed, previous)}، إي متوفر حالياً 🌸 تريد نحجزلك؟`),
             'availability_trusted', 'توفر مسجّل فعلاً ⇒ يُؤكَّد التوفر.');
         }
         if (f.inStock === false) {

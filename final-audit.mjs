@@ -1322,6 +1322,11 @@ add('content-product-link-test-wired', /"test:content-product-link":\s*"tsx engi
 // ROOT-4: أسماء حساب المعرض تُضمّن اسم الصفحة/حساب إنستغرام المخزَّنين، فلا يُصنَّف
 // تعليقنا/ردّنا تعليقَ عميل حين يختلف اسم الصفحة الرسمي عن اسم المعرض.
 add('meta-self-authored-uses-stored-identity', /getProviderToken\("facebook"\)\?\.pageName/.test(server) && /getProviderToken\("instagram"\)\?\.igUsername/.test(server), 'كشف حساب المعرض يشمل اسم الصفحة/حساب إنستغرام المخزَّنين (لا الاسم فقط)');
+// ROOT-7 (تنوّع البادئة): ردود الحقائق الموثّقة كانت تبدأ كلها بـ«هلا بيك» حرفياً.
+// `trustedOpener` يوزّع البادئة ويستثني المستخدَم سابقاً في نفس المحادثة.
+add('reply-trusted-opener-single-source', /function trustedOpener\(seed: string, previous: string\[\]\)/.test(replyComments) && /trustedOpener\(seed, previous\)/.test(replyComments), 'مصدر واحد لبادئة الرد المؤرّض المتنوّعة');
+add('reply-trusted-opener-varies', (replyComments.match(/\$\{trustedOpener\(seed, previous\)\}/g) || []).length >= 4, 'كل ردود الحقائق (سعر/موقع/دوام/توفر) تستخدم البادئة المتنوّعة لا «هلا بيك» الثابتة');
+add('reply-trusted-opener-test', read('engine/tests/reply.quality.classification.test.ts').includes('تنوّع بادئة الرد المؤرّض'), 'اختبار تنوّع البادئة موجود');
 add('reply-intelligence-tests', fs.existsSync(path.join(root, 'engine/tests/reply.intelligence.test.ts')) && pkg.scripts['test:reply-intelligence'], 'اختبار Reply Intelligence مسجّل');
 add('reply-intelligence-test-in-suite', typeof pkg.scripts.test === 'string' && pkg.scripts.test.includes('test:reply-intelligence'), 'اختبار Reply Intelligence ضمن npm test');
 add('reply-intelligence-no-ai-quota', !/aiEngine|gemini|fetch\(|https?:/.test(replyComments), 'محرّك الرد حتمي بالكامل: لا مزود ولا شبكة ولا استهلاك حصة');

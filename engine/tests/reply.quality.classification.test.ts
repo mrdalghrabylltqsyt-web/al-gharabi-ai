@@ -14,7 +14,7 @@
  * منطق صافٍ: لا شبكة ولا مزود ولا ساعة.
  */
 
-import { classifyComment } from '../social/comments';
+import { classifyComment, generateReply } from '../social/comments';
 import { resolveInquiry } from '../social/inquiryResolver';
 import { buildShowroomKnowledge, findKnowledgeMatch } from '../social/showroomKnowledge';
 
@@ -145,6 +145,29 @@ group('4) حواجز عدم الاختراع تبقى قائمة');
 {
   const cls = classifyComment('عاشت إيدكم');
   check('مدح «عاشت إيدكم» يبقى مدحاً', cls.intent === 'praise', `got ${cls.intent}`);
+}
+
+group('5) تنوّع بادئة الرد المؤرّض (ROOT-7: لا تكرار ميكانيكي)');
+{
+  const facts = { productName: 'ثلاجة سامسونج', priceText: '750,000 د.ع', monthlyInstallmentText: '75,000 د.ع' };
+  const prev: string[] = [];
+  const openers = new Set<string>();
+  let idempotent = true;
+  for (let i = 0; i < 4; i++) {
+    const r = generateReply(classifyComment('كم سعر الثلاجة؟'), facts, { previousReplies: prev });
+    openers.add(r.text.split('،')[0]);
+    prev.push(r.text);
+    // نفس المدخل بنفس السياق (بلا سابق) ⇒ نفس النص حرفياً.
+    if (i === 0) {
+      const a = generateReply(classifyComment('كم سعر الثلاجة؟'), facts, {}).text;
+      const b = generateReply(classifyComment('كم سعر الثلاجة؟'), facts, {}).text;
+      idempotent = a === b;
+    }
+  }
+  check('البادئة تتنوّع عبر المحادثة (≥3 صيغ لـ4 ردود)', openers.size >= 3, [...openers].join(' | '));
+  check('نفس المدخل بنفس السياق ⇒ نفس النص (idempotency)', idempotent);
+  check('الرد يبقى مؤرّضاً بالبيانات المسجّلة', prev[0].includes('750,000'), prev[0]);
+  check('لا كسر لصيغة السعر/القسط', prev[0].includes('75,000'), prev[0]);
 }
 
 // ---------------------------------------------------------------------------
