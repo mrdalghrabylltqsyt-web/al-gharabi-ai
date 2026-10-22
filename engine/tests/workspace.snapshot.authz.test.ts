@@ -88,6 +88,10 @@ function startApp(): { proc: ChildProcess; log: () => string } {
     PORT: String(PORT), NODE_ENV: 'production', APP_URL: BASE,
     STATE_DIR: stateDir, SESSION_SECRET,
     PLATFORM_TOKEN_ENCRYPTION_KEY: crypto.randomBytes(32).toString('hex'),
+    // PR-C/C2: «متصل» لتيليجرام صادقة فقط إن كان الموصل مهيّأً فعلاً (رمز البوت + سرّ webhook).
+    // قيم اختبار محلية وهمية — لا اتصال منصّات فعلي.
+    TELEGRAM_BOT_TOKEN: '123456789:TEST_TOKEN_LOCAL_ONLY',
+    TELEGRAM_WEBHOOK_SECRET: 'test-webhook-secret-local-only',
   };
   delete env.GEMINI_API_KEY;
   delete env.DATABASE_URL;
