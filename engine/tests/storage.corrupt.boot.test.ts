@@ -74,7 +74,9 @@ async function run(): Promise<void> {
 
   // (ب) ملف حالة سليم => إقلاع ناجح (لا إنذار كاذب).
   {
-    const PORT = 5400 + Math.floor(Math.random() * 100);
+    // نطاق 5600..5699 لا يتقاطع مع منفذ Postgres (5432) المستخدم في CI ولا مع نطاقات
+    // اختبارات أخرى — كان 5400..5499 يشمل 5432 فيفشل عشوائياً بـEADDRINUSE.
+    const PORT = 5600 + Math.floor(Math.random() * 100);
     const dir = mkdtempSync(join(tmpdir(), 'gharabi-f17-ok-'));
     const app = startApp(PORT, dir);
     try {
