@@ -107,6 +107,8 @@ async function main(): Promise<void> {
       publishRecords: [{ id: 'pub_ig', platform: 'instagram', postId: 'x', providerPostId: GROUND_MEDIA, productId: PRODUCT.id, state: 'published', simulated: false }],
     },
   }), 'utf8');
+  // PR-A: وضع الإرسال `auto` صراحةً (الافتراضي approval يحجب الإرسال الآلي).
+  writeFileSync(join(stateDir, 'commercial.json'), JSON.stringify({ leads: [], sendMode: 'auto' }, null, 2), 'utf8');
 
   const mock = await startInstagramMockServer(IG_PORT, createInstagramMock({
     feedMedia: [

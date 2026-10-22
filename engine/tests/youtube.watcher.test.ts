@@ -80,8 +80,9 @@ function entry(partial: Partial<WatcherProcessedEntry>): WatcherProcessedEntry {
   check('B: الجدولة محجوبة افتراضياً', watcherGate(c, 'schedule').code === 'AUTO_SCHEDULE_DISABLED');
   const on = { ...c, autoReply: true };
   check('B: الرد مسموح بعد التمكين', watcherGate(on, 'reply').allowed === true);
-  check('B: Kill Switch يوقف كل شيء', watcherGate({ ...on, paused: true }, 'reply').code === 'AUTOMATION_PAUSED');
-  check('B: Kill Switch يوقف القراءة أيضاً', watcherGate({ ...on, paused: true }, 'read').allowed === false);
+  check('B: Kill Switch يوقف الإرسال (رد/نشر/جدولة)', watcherGate({ ...on, paused: true }, 'reply').code === 'AUTOMATION_PAUSED' && watcherGate({ ...on, paused: true }, 'publish').code === 'AUTOMATION_PAUSED' && watcherGate({ ...on, paused: true }, 'schedule').code === 'AUTOMATION_PAUSED');
+  // PR-A: Kill Switch يوقف الإرسال لا القراءة — القراءة/التحليل يستمران (نص الواجهة).
+  check('B: Kill Switch يبقي القراءة والتحليل مستمرين', watcherGate({ ...on, paused: true }, 'read').allowed === true);
   check('B: التعطيل الكامل يمنع حتى القراءة', watcherGate({ ...on, enabled: false }, 'read').code === 'WATCHER_DISABLED');
   check('B: وضع المراجعة لا يحجب كل الردود (الحالات الواضحة تمر)', watcherGate({ ...on, humanReviewMode: true }, 'reply').allowed === true);
 }
@@ -341,10 +342,11 @@ function entry(partial: Partial<WatcherProcessedEntry>): WatcherProcessedEntry {
   check('P: تطبيع قيمة محفوظة غير صالحة => الافتراضي', normalizeWatcherControls({ cadenceMinutes: 9 }).cadenceMinutes === 5);
   check('P: توافق خلفي مع cadenceMs المحفوظ', normalizeWatcherControls({ cadenceMs: 240_000 }).cadenceMinutes === 4);
   check('P: العرض يكشف cadenceMs الصحيح', watcherControlsView({ ...d, cadenceMinutes: 5 }).cadenceMs === 300_000);
-  check('P: العرض يكشف الفاصل الفعلي عند Kill Switch = 0', watcherControlsView({ ...d, cadenceMinutes: 3, paused: true }).cadenceMs === 0);
+  // PR-A: Kill Switch لا يُصفّر الفاصل — القراءة/التحليل يستمران، والإرسال محجوب بالبوابة.
+  check('P: العرض يحفظ الفاصل الفعلي عند Kill Switch', watcherControlsView({ ...d, cadenceMinutes: 3, paused: true }).cadenceMs === 180_000);
 }
 
-// --- Q) أمان الجدولة: مؤقّت واحد فقط عند تغيير الفاصل + Kill Switch يوقف كل شيء ---
+// --- Q) أمان الجدولة: مؤقّت واحد فقط عند تغيير الفاصل + إيقاف الجدولة الصريح ---
 {
   // مؤقّتات وهمية قابلة للتتبع: تثبت أن reschedule يُبطل القديم قبل إنشاء الجديد.
   const live = new Set<object>();
@@ -364,7 +366,7 @@ function entry(partial: Partial<WatcherProcessedEntry>): WatcherProcessedEntry {
   check('Q: التغيير إلى 2 دقيقة يُبقي مؤقّتاً واحداً', s.status().activeTimers === 1);
   check('Q: عدد إعادة الجدولة مُتتبَّع', s.status().reschedules === 2);
   s.stop();
-  check('Q: Kill Switch/الإيقاف يُلغي كل المؤقّتات', s.status().active === false && s.status().activeTimers === 0);
+  check('Q: الإيقاف الصريح للجدولة يُلغي كل المؤقّتات', s.status().active === false && s.status().activeTimers === 0);
   // إعادة الجدولة بعد الإيقاف تُنشئ مؤقّتاً واحداً فقط (لا يتراكم).
   s.reschedule();
   check('Q: إعادة التشغيل بعد الإيقاف = مؤقّت واحد', s.status().activeTimers === 1);

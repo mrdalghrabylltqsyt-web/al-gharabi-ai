@@ -121,7 +121,10 @@ export interface WatcherGateDecision {
 
 /**
  * بوابة الأتمتة الموحّدة. لا يجوز لأي عملية أن تتجاوزها:
- * - القراءة/التحليل مسموحة ما لم يكن paused.
+ * - القراءة/التحليل مسموحة ما لم تكن المراقبة معطّلة (`enabled=false`).
+ * - **Kill Switch (`paused`) يوقف الإرسال (رد/نشر/جدولة) فقط، والقراءة/التحليل
+ *   تستمران** — مطابقةً للنص الظاهر في الواجهة («توقّفت الردود/النشر/الجدولة
+ *   وبقيت القراءة والتحليل»). كان `paused` يمنع القراءة أيضاً فيخالف النص.
  * - الإرسال (رد/نشر/جدولة) يحتاج enabled + non-paused + الإذن الخاص.
  *
  * ملاحظة مهمة: `humanReviewMode` لا يُعطّل كل الأتمتة. الحالات الآمنة والواضحة
@@ -131,8 +134,9 @@ export interface WatcherGateDecision {
 export function watcherGate(controls: YouTubeWatcherControls, action: WatcherAction): WatcherGateDecision {
   const c = normalizeWatcherControls(controls);
   if (!c.enabled) return { allowed: false, code: 'WATCHER_DISABLED', reason: 'مراقبة YouTube معطّلة من المالك.' };
-  if (c.paused) return { allowed: false, code: 'AUTOMATION_PAUSED', reason: 'الأتمتة موقوفة مؤقتاً (Kill Switch)؛ القراءة والتحليل فقط.' };
+  // القراءة/التحليل تستمران حتى مع Kill Switch (لا إرسال، لكن لا فقدان رؤية).
   if (action === 'read') return { allowed: true, code: 'ALLOWED', reason: 'قراءة/تحليل مسموحان.' };
+  if (c.paused) return { allowed: false, code: 'AUTOMATION_PAUSED', reason: 'الأتمتة موقوفة مؤقتاً (Kill Switch): توقّف الرد والنشر والجدولة، والقراءة والتحليل مستمران.' };
   if (action === 'reply' && !c.autoReply) return { allowed: false, code: 'AUTO_REPLY_DISABLED', reason: 'الرد الآلي معطّل من المالك.' };
   if (action === 'publish' && !c.autoPublish) return { allowed: false, code: 'AUTO_PUBLISH_DISABLED', reason: 'النشر الآلي معطّل من المالك.' };
   if (action === 'schedule' && !c.autoSchedule) return { allowed: false, code: 'AUTO_SCHEDULE_DISABLED', reason: 'الجدولة الآلية معطّلة من المالك.' };
@@ -152,11 +156,11 @@ export function isSafeForAutoReply(intent: string): boolean {
 /** ملخص للعرض في الصحة/الواجهة (بلا أي سرّ). */
 export function watcherControlsView(controls: YouTubeWatcherControls) {
   const c = normalizeWatcherControls(controls);
-  const cadencePaused = c.enabled && c.paused;
   return {
     ...c,
-    /** الفاصل الفعلي المطبَّق على الجدولة (ميلي ثانية). عند Kill Switch لا فحص. */
-    cadenceMs: cadencePaused ? 0 : cadenceMinutesToMs(c.cadenceMinutes),
+    /** الفاصل الفعلي المطبَّق على الجدولة (ميلي ثانية). Kill Switch لا يُوقف الفحص
+     *  (القراءة/التحليل مستمران) — فيبقى الفاصل الفعلي معروضاً بصدق. */
+    cadenceMs: cadenceMinutesToMs(c.cadenceMinutes),
     cadenceEffectiveMinutes: c.cadenceMinutes,
     killSwitchActive: c.paused,
     autoReplyEffective: c.enabled && !c.paused && !c.humanReviewMode && c.autoReply,

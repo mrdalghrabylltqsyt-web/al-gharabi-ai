@@ -12,7 +12,7 @@
  */
 
 import { spawn, type ChildProcess } from 'node:child_process';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { randomBytes } from 'node:crypto';
@@ -91,6 +91,8 @@ async function main(): Promise<void> {
     const C2 = { id: 'cmt_obs_2', threadId: 'thr_o2', videoId: 'vid_alpha', author: 'حسين', text: 'ما شاء الله عليكم تبارك الله', publishedAt: '2026-10-02T09:05:00Z', likeCount: 0 };
     const C3 = { id: 'cmt_obs_3', threadId: 'thr_o3', videoId: 'vid_alpha', author: 'زينب', text: 'تسلمون على الطرح الجميل', publishedAt: '2026-10-02T09:10:00Z', likeCount: 0 };
 
+    // PR-A: وضع الإرسال `auto` صراحةً (الافتراضي approval يحجب الإرسال الآلي).
+    writeFileSync(join(stateDir, 'commercial.json'), JSON.stringify({ leads: [], sendMode: 'auto' }, null, 2), 'utf8');
     startApp(mock.base);
     if (!(await waitForHealth())) { console.log(log.slice(-2000)); throw new Error('الخادم لم يقلع'); }
     const auth = await login();

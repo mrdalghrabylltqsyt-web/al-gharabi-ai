@@ -40,6 +40,7 @@ import {
   type BrainRuntimeState,
 } from '../../brain/brainRuntime';
 import { dedupeLearningEvents, type LearningEvent } from '../../brain/learning/learningLoop';
+import { markCycleDeferred } from '../../ops/cycleDeferral';
 import { makeMemoryEntry } from '../../brain/memory/longTerm';
 import { toMemoryRecord } from '../../brain/memory/store';
 
@@ -239,6 +240,20 @@ function makeDeps(overrides: Partial<any> = {}) {
     check('T1: لا إجراء خارجي', status.executesExternalActions === false);
     check('T2: لا استهلاك Gemini', status.geminiUsedOnCycles === false);
     check('T3: الحالة معروضة بالعربية', typeof status.statusLabelAr === 'string' && status.statusLabelAr.length > 0);
+  }
+
+  // T2 (PR-B B6) — دورة مستحقة لكن مؤجَّلة ⇒ DEFERRED لا تُحسب نجاحاً.
+  group('T2: deferral is not counted as success');
+  {
+    const base = emptyBrainRuntimeState();
+    const deferredState: BrainRuntimeState = { ...base, lastStatus: 'SUCCESS', lastSuccessAt: new Date(NOW - 60 * 60000).toISOString(), lastCycleCompletedAt: new Date(NOW - 60 * 60000).toISOString(), deferral: markCycleDeferred(undefined, 'ضغط استهلاك', new Date(NOW).toISOString()) };
+    const status = buildBrainRuntimeStatus(deferredState, NOW, 15 * 60000, { enabled: true, scheduled: true, running: false });
+    check('T2-1: الحالة DEFERRED لا SUCCESS', status.status === 'DEFERRED', String(status.status));
+    check('T2-2: التسمية العربية للمؤجَّلة', status.statusLabelAr.includes('مؤجَّلة'), status.statusLabelAr);
+    check('T2-3: آخر نجاح يبقى معلناً بصدق', status.lastSuccessAt === deferredState.lastSuccessAt);
+    // غير مستحقة ⇒ لا يعلو التأجيل على الحالة الأخيرة.
+    const notDue: BrainRuntimeState = { ...deferredState, lastCycleStartedAt: new Date(NOW).toISOString() };
+    check('T2-4: لا استحقاق ⇒ الحالة الأخيرة كما هي', buildBrainRuntimeStatus(notDue, NOW, 15 * 60000, { enabled: true, scheduled: true, running: false }).status === 'SUCCESS');
   }
 
   // U — لا منطق لمنصات غير YouTube.

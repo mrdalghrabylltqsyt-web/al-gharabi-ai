@@ -114,7 +114,9 @@ export function CommercialBrainKillSwitch() {
               <div className="bg-slate-950/50 border border-slate-800 rounded-xl p-3">
                 <div className="text-xs text-slate-400 mb-1">آخر دورة</div>
                 <div className="text-sm text-slate-200">
-                  {state?.lastRun ? `${state.lastRun.at} — أُرسل ${state.lastRun.followUpsSent}` : 'لا يوجد'}
+                  {state?.deferral?.deferred
+                    ? `مؤجَّلة منذ ${state.deferral.lastDeferredAt || 'غير معروف'} — ${state.deferral.deferredReason || 'ضغط استهلاك'}`
+                    : (state?.lastRun ? `${state.lastRun.at} — أُرسل ${state.lastRun.followUpsSent}` : 'لا يوجد')}
                 </div>
               </div>
               <div className="bg-slate-950/50 border border-slate-800 rounded-xl p-3">

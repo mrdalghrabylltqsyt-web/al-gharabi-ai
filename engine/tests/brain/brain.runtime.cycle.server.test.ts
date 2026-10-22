@@ -133,6 +133,10 @@ async function connectYouTube(auth: Record<string, string>): Promise<void> {
     const ytConn = (plats.platforms || []).find((p: any) => p.id === 'youtube')?.connection || {};
     check('YouTube متصل وموثق', ytConn.status === 'connected' && ytConn.providerVerified === true);
     await fetch(`${BASE}/api/platforms/youtube/delegation`, { method: 'POST', headers: auth, body: JSON.stringify({ actions: ['reply'] }) });
+    // PR-A: هذا الاختبار يقيس **مسار الإرسال التلقائي** (رد المراقب + حدث تعلّم حقيقي)،
+    // فيضبط وضع الإرسال `auto` صراحةً (الافتراضي الآن `approval` fail-closed يحجب
+    // الإرسال الآلي ويُسجّل طلب موافقة بدلاً منه).
+    await fetch(`${BASE}/api/agent/commercial/send-mode`, { method: 'POST', headers: auth, body: JSON.stringify({ mode: 'auto' }) });
     mock.state.comments = [{ id: 'cmt_rt_praise', threadId: 'thr_rt', videoId: 'vid_alpha', author: 'حسين', text: 'عاشت إيدكم، خدمة ممتازة', publishedAt: '2026-10-02T09:00:00Z', likeCount: 0 }];
     await fetch(`${BASE}/api/agent/youtube/watcher/controls`, { method: 'POST', headers: auth, body: JSON.stringify({ enabled: true, autoReply: true, paused: false, humanReviewMode: false }) });
     mock.state.lastInsertPath = null;
