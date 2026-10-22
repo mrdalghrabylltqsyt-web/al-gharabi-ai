@@ -29,8 +29,10 @@ const read = (p: string) => fs.readFileSync(path.join(root, p), 'utf8');
 {
   const header = read('src/components/common/Header.tsx');
   check('C3: ترويسة تُعيد جلب /api/health دورياً', /setInterval\(\s*poll\s*,\s*60_?000\s*\)/.test(header));
-  check('C3: فشل الجلب يُعلن غير معروف (aiReady=null)', /setAiReady\(null\)/.test(header));
-  check('C3: النص عند الفشل «غير معروف» لا «محمي/غير مفعّل»', /aiReady === null \? 'Gemini: غير معروف'/.test(header));
+  // PR-B: الشارة تُحسب من منطق صادق واحد بدل ربط «الحماية» بـ«تعطيل المزود».
+  check('C3: فشل الجلب يُعلن «غير معروف» عبر describeGeminiBadge(null)', /describeGeminiBadge\(null\)/.test(header));
+  check('C3: حالة الصحة تُمرَّر للمنطق الصادق describeGeminiBadge(h)', /describeGeminiBadge\(h\)/.test(header));
+  check('C3: لا نص «محمي/غير مفعّل» في الترويسة', !header.includes('محمي/غير مفعّل'));
   check('C3: حالة offline تُعامل كغير معروفة', /h\.status === 'offline'/.test(header));
 }
 

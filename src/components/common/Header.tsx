@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { useApp } from '../../context/AppContext';
 import { apiService } from '../../services/api';
+import { describeGeminiBadge } from '../../services/geminiBadge';
 import {
   Sparkles,
   Bell,
@@ -36,7 +37,9 @@ export const Header: React.FC<HeaderProps> = ({ onOpenMobileMenu }) => {
   const [roleDropdownOpen, setRoleDropdownOpen] = useState(false);
   const [notificationsOpen, setNotificationsOpen] = useState(false);
   const [isSyncing, setIsSyncing] = useState(false);
-  const [aiReady, setAiReady] = useState<boolean | null>(null);
+  // حالة شارة Gemini (نص/دلالة/عنوان) — تُحسب من جسم /api/health الصادق، فلا
+  // تخلط «الحماية فعّالة» بـ«المزود معطّل» (الجذر المُثبت لعرض الشارة القديمة).
+  const [geminiBadge, setGeminiBadge] = useState(() => describeGeminiBadge(null));
   // مؤشر صحة عامة: نقطة صغيرة تعكس /api/health الحقيقية (ok / يحتاج انتباهاً).
   const [systemHealth, setSystemHealth] = useState<'checking' | 'ok' | 'attention'>('checking');
 
@@ -46,20 +49,20 @@ export const Header: React.FC<HeaderProps> = ({ onOpenMobileMenu }) => {
       apiService.checkHealth()
         .then((h) => {
           if (cancelled) return;
+          // حالة الشارة من جسم الصحة الصادق (تعذّر الجلب ⇒ «غير معروف» بلا ادّعاء).
+          setGeminiBadge(describeGeminiBadge(h));
           // C3: 'offline' تعني تعذّر الجلب ⇒ «غير معروف» لا «Gemini غير مفعّل».
           if (!h || h.status === 'offline') {
-            setAiReady(null);
             setSystemHealth('attention');
             return;
           }
-          setAiReady(Boolean(h.aiEnabled));
           // status: 'ok' من الخادم = كل الأنظمة تعمل؛ غير ذلك (degraded) = يحتاج انتباهاً.
           setSystemHealth(h.status === 'ok' ? 'ok' : 'attention');
         })
         .catch(() => {
           if (cancelled) return;
           // C3: فشل الجلب ≠ «Gemini غير مفعّل». نُعلن «غير معروف» بدل ادّعاء حالة.
-          setAiReady(null);
+          setGeminiBadge(describeGeminiBadge(null));
           setSystemHealth('attention');
         });
     };
@@ -129,9 +132,19 @@ export const Header: React.FC<HeaderProps> = ({ onOpenMobileMenu }) => {
                   />
                   {systemHealth === 'checking' ? 'فحص' : systemHealth === 'ok' ? 'سليم' : 'تنبيه'}
                 </span>
-                <span className="hidden sm:inline-flex items-center gap-1 text-[11px] px-2 py-0.5 rounded-full bg-emerald-950/80 border border-emerald-500/30 text-emerald-300 font-medium">
-                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span>
-                  {aiReady === null ? 'Gemini: غير معروف' : aiReady ? 'Gemini مفعّل' : 'Gemini محمي/غير مفعّل'}
+                <span
+                  className={`hidden sm:inline-flex items-center gap-1 text-[11px] px-2 py-0.5 rounded-full font-medium border ${
+                    geminiBadge.tone === 'enabled'
+                      ? 'bg-emerald-950/80 border-emerald-500/30 text-emerald-300'
+                      : geminiBadge.tone === 'deterministic'
+                        ? 'bg-sky-950/80 border-sky-500/30 text-sky-300'
+                        : 'bg-slate-800/80 border-slate-700 text-slate-300'
+                  }`}
+                  title={geminiBadge.title}
+                  aria-label={geminiBadge.title}
+                >
+                  <span className={`w-1.5 h-1.5 rounded-full ${geminiBadge.tone === 'enabled' ? 'bg-emerald-400 animate-pulse' : geminiBadge.tone === 'deterministic' ? 'bg-sky-400' : 'bg-slate-400'}`}></span>
+                  {geminiBadge.label}
                 </span>
               </div>
               <p className="text-[11px] text-slate-400 hidden sm:block">

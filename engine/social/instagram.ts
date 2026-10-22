@@ -630,7 +630,7 @@ export class InstagramClient {
    * `comments.order(reverse_chronological).limit(25)` يضمن أحدث التعليقات،
    * و`permalink_url` الحقيقي يُحفظ لزر «فتح على إنستغرام». منع التكرار بمعرّف التعليق.
    */
-  async listMediaComments(igAccountId: string, pageAccessToken: string, mediaLimit = 10, commentsLimit = 25, extraMediaIds: string[] = []): Promise<InstagramResult<Array<{ commentId: string; mediaId: string | null; text: string; username: string | null; authorId: string | null; createdAt: string | null; permalinkUrl: string | null; postText: string | null }>>> {
+  async listMediaComments(igAccountId: string, pageAccessToken: string, mediaLimit = 10, commentsLimit = 25, extraMediaIds: string[] = []): Promise<InstagramResult<Array<{ commentId: string; mediaId: string | null; text: string; username: string | null; authorId: string | null; createdAt: string | null; permalinkUrl: string | null; postText: string | null; pageRepliedInThread?: boolean; threadReplyAuthorName?: string | null }>>> {
     if (!igAccountId) return { ok: false, data: null, error: 'معرّف حساب Instagram مطلوب.' };
     try {
       const perMedia = Math.max(1, Math.min(50, Math.trunc(commentsLimit)));
@@ -640,7 +640,7 @@ export class InstagramClient {
       let graphCalls = 0;
       const u = new URL(instagramGraphUrl(`/${igAccountId}/media`, this.baseUrl));
       // PR-S5: يُطلب `caption` (نص منشور إنستغرام) كي لا يظهر «منشور بلا نص ظاهر».
-      u.searchParams.set('fields', `id,permalink_url,caption,comments.order(reverse_chronological).summary(true).limit(${perMedia}){id,text,username,from,created_time,permalink_url}`);
+      u.searchParams.set('fields', `id,permalink_url,caption,comments.order(reverse_chronological).summary(true).limit(${perMedia}){id,text,username,from,created_time,permalink_url,replies.limit(1){from}}`);
       u.searchParams.set('limit', String(Math.max(1, Math.min(50, Math.trunc(mediaLimit)))));
       u.searchParams.set('access_token', pageAccessToken);
       graphCalls += 1;
@@ -654,7 +654,7 @@ export class InstagramClient {
         const pCode = ex.providerCode ?? providerErrorCode(data);
         return { ok: false, data: null, error: msg, providerCode: pCode, providerSubcode: ex.providerSubcode, providerTraceId: ex.providerTraceId, code: classifyInstagramProviderError(msg, pCode) };
       }
-      const out: Array<{ commentId: string; mediaId: string | null; text: string; username: string | null; authorId: string | null; createdAt: string | null; permalinkUrl: string | null; postText: string | null }> = [];
+      const out: Array<{ commentId: string; mediaId: string | null; text: string; username: string | null; authorId: string | null; createdAt: string | null; permalinkUrl: string | null; postText: string | null; pageRepliedInThread?: boolean; threadReplyAuthorName?: string | null }> = [];
       const seen = new Set<string>();
       let reportedTotal = 0;
       let mediaScanned = 0;
@@ -671,6 +671,13 @@ export class InstagramClient {
           const text = typeof c?.text === 'string' ? c.text : '';
           if (!commentId || seen.has(commentId)) continue;
           seen.add(commentId);
+          // PR-B (البند 4): هل ردّت الصفحة/الحساب نفسه داخل خيط التعليق؟ نقرأ ردّاً
+          // فرعياً واحداً (`replies.limit(1){from}`) **ضمن الطلب نفسه** (لا طلب
+          // إضافي لكل تعليق)، ونطابقه بمعرّف حساب إنستغرام أولاً.
+          const nested = Array.isArray(c?.replies?.data) ? c.replies.data[0] : null;
+          const nestedFromId = nested?.from?.id ? String(nested.from.id) : '';
+          const pageRepliedInThread = Boolean(nestedFromId && String(igAccountId) === nestedFromId);
+          const threadReplyAuthorName = nested?.from?.username ? String(nested.from.username) : (nested?.username ? String(nested.username) : null);
           out.push({
             commentId, mediaId, text,
             username: c?.username ? String(c.username) : (c?.from?.username ? String(c.from.username) : null),
@@ -678,6 +685,8 @@ export class InstagramClient {
             createdAt: c?.created_time ? String(c.created_time) : (c?.timestamp ? String(c.timestamp) : null),
             permalinkUrl: c?.permalink_url ? String(c.permalink_url) : mediaPermalink,
             postText,
+            pageRepliedInThread,
+            threadReplyAuthorName,
           });
         }
       }

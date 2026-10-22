@@ -99,6 +99,7 @@ import { inspectDriveAuthEnv, createRefreshTokenProvider } from "./tools/dr/driv
 import { DriveClient, createGaxiosTransport } from "./tools/dr/drive-client.mjs";
 import { settleWithTimeout, envTimeoutMs, DRIVE_PUBLIC_HOST_TIMEOUT_MS } from "./tools/dr/drive-timeouts.mjs";
 import { publishVideoPublicly } from "./engine/social/videoPublicHosting";
+import { resolveProductLink, hasGenderedOpener } from "./engine/social/replyQuality";
 import { classifyHttpError, shouldExposeErrorMessage, safeErrorMessage, redactSecretsFromText } from "./engine/runtime/errorSafety";
 import { enforceRateWindowCap, RATE_WINDOW_TTL_MS } from "./engine/runtime/rateWindow";
 import { createProcessSafety } from "./engine/runtime/processSafety";
@@ -8204,10 +8205,14 @@ async function generateWatcherReply(input: {
   const facts = replyFactsForProduct(grounding);
   if (knowledge) { facts.knowledgeAnswer = knowledge.answer; facts.knowledgeTopic = knowledge.topic; }
   const deterministic = generateConversationalReply(input.cls, facts, ctx);
+  // PR-B (البند 1): حارس نهائي — أي نص (حتمي أو من مزوّد) يحمل صيغة ترحيب تفترض جنس
+  // العميل يُستبدل بالسقوط الحتمي الآمن. لا يمرّ رد مجنّس إلى أي منصة إطلاقاً.
+  const sanitizeGendered = (candidate: string, fallback: string): string =>
+    hasGenderedOpener(candidate) ? fallback : candidate;
   // قرار المُحلّل غير التوضيحي (جواب/تصعيد/اختيار) يُعتمد كما هو — لا يمرّ بالمسار
   // الذكي (لا حاجة: النص من بيانات مسجّلة). التوضيح وحده يُجرَّب تحسينه بالـAI.
   if (resolved.kind !== 'clarify') {
-    return { text: resolved.text, clarify: false, escalate: resolved.kind === 'escalate', strategy: resolved.strategy, source: 'deterministic' };
+    return { text: sanitizeGendered(resolved.text, deterministic.text || resolved.text), clarify: false, escalate: resolved.kind === 'escalate', strategy: resolved.strategy, source: 'deterministic' };
   }
   if (input.allowAi === false) {
     return { text: resolved.text, clarify: true, escalate: false, strategy: resolved.strategy, source: 'deterministic' };
@@ -8320,6 +8325,9 @@ async function runMetaWatcherCycle(trigger: string): Promise<{ ok: boolean; trig
           // PR-S5: وسم الاستيراد بأثر رجعي (backfill) — عمر التعليق عند الاستقبال > 24
           // ساعة ⇒ لا يولّد متابعة. يُحسب قبل الإدراج ليبقى سطر السقف قريباً من unshift.
           const commentBackfill = isBackfillImport(c.createdAt || null, new Date().toISOString());
+          // PR-B (البند 4): `threadPageReplied` يُحفظ هل ردّت الصفحة نفسها داخل الخيط —
+          // فيمنع لاحقاً إنشاء مسودة لعميل حصل على جواب (SKIP_PAGE_ALREADY_REPLIED).
+          const threadPageReplied = c.pageRepliedInThread === true || isSelfAuthored(c.threadReplyAuthorName || undefined, ownNames);
           (workspace as any).socialComments.unshift({
             id: workspaceId("comment"), platform, externalId, postExternalId: c.postId || c.mediaId || null,
             authorName: c.authorName || c.username || null,
@@ -8329,6 +8337,7 @@ async function runMetaWatcherCycle(trigger: string): Promise<{ ok: boolean; trig
             replyTarget: { commentId: externalId },
             permalinkUrl: c.permalinkUrl || null,
             postText: c.postText || null, backfill: commentBackfill,
+            threadPageReplied,
           });
           if ((workspace as any).socialComments.length > WORKSPACE_MAX_SOCIAL_COMMENTS) (workspace as any).socialComments.length = WORKSPACE_MAX_SOCIAL_COMMENTS;
           newDetected += 1;
@@ -8358,9 +8367,13 @@ async function runMetaWatcherCycle(trigger: string): Promise<{ ok: boolean; trig
           );
         } catch { /* جلسة الفريق لا تُسقط دورة المراقبة */ }
         const centralDecision = centralActionDecisionForEvent(`comment:${externalId}`);
+        // PR-B (البند 4): هل سبق أن ردّت الصفحة/الحساب نفسه داخل هذا الخيط؟ المطابقة
+        // بالمعرّف أولاً (pageId/igId في الرد الفرعي)، ثم باسم الصفحة المخزَّن احتياطاً.
+        const pageAlreadyReplied = c.pageRepliedInThread === true
+          || isSelfAuthored(c.threadReplyAuthorName || undefined, ownNames);
         const advisory = decideMetaCommentAction({
           intent: cls.intent, requiresHumanReview: cls.requiresHumanReview, isSpam: cls.isSpam,
-          isSelfAuthored: selfAuthored, alreadyReplied, controls,
+          isSelfAuthored: selfAuthored, alreadyReplied, pageAlreadyReplied, controls,
         });
         const replyGate = metaWatcherGate(controls, "reply");
         const rr = metaReplyReady(platform);
@@ -9255,7 +9268,19 @@ async function createInstantReplyDraft(input: {
   cls: ReturnType<typeof classifyComment>;
   subjectId: string;
   nowIso: string;
+  /**
+   * PR-B (البند 4): هل سبق أن ردّت الصفحة نفسها داخل خيط هذا التعليق؟ عندها لا
+   * تُنشأ مسودة — العميل حصل على جواب، والسبب يُسجَّل `SKIP_PAGE_ALREADY_REPLIED`.
+   */
+  threadPageReplied?: boolean;
 }): Promise<CommercialDraft | null> {
+  // العميل حصل على رد من الصفحة داخل نفس الخيط ⇒ لا مسودة (لا رد مكرر عليه).
+  if (input.threadPageReplied === true) {
+    audit('commercial-brain', 'commercial_draft_skipped', JSON.stringify({
+      code: 'SKIP_PAGE_ALREADY_REPLIED', externalId: input.externalId, platform: input.platform,
+    }));
+    return null;
+  }
   // نقتصر على نية شراء/سؤال سعر أو قسط — لا مسودات لكل تعليق مدح/تحية.
   const cls: any = input.cls;
   const isPriceOrInstallment = cls?.topic === 'price' || cls?.topic === 'availability' || cls?.isBusinessInquiry === true;
@@ -9475,6 +9500,8 @@ async function runCommercialBrainCycle(trigger: string): Promise<{ ok: boolean; 
           product, cls: (interaction.classification as any) || classifyComment(interaction.text),
           subjectId: kind === 'message' ? `dm:${String(interaction.replyTarget?.recipientId || '')}` : String(row.postExternalId || row.mediaId || 'thread'),
           nowIso,
+          // PR-B (البند 4): رد سابق من الصفحة داخل الخيط ⇒ لا مسودة (SKIP_PAGE_ALREADY_REPLIED).
+          threadPageReplied: row.threadPageReplied === true,
         });
         if (draft) { drafted += 1; draftedLeads.add(lead.key); }
       }
@@ -13497,6 +13524,12 @@ app.patch("/api/workspace/content/:id", authenticateToken, (req,res)=>{
   }
   if(b.scheduledFor!==undefined){ const norm=normalizeScheduleInput(b.scheduledFor); post.scheduledFor=norm ?? undefined; }
   if(b.campaignName!==undefined) post.campaignName=cleanText(b.campaignName,160);
+  // PR-B (البند 7): ربط منشور **موجود** بمنتج مسجّل — الطريقة الوحيدة للمالك لربط
+  // منشورات قديمة بمنتجاتها (بلا تخمين). المصدر الواحد `resolveProductLink` يقبل
+  // المعرّف فقط إن كان المنتج مسجّلاً فعلاً؛ غير ذلك يُفكّ الربط بلا اختراع.
+  if(b.productId!==undefined){
+    post.productId = resolveProductLink(b.productId, workspace.products as any);
+  }
   persistState(); audit(user.id,"workspace_content_updated",post.id); res.json({success:true,post});
 });
 
@@ -18234,6 +18267,10 @@ function replyFactsForProduct(product: any | null): ReplyFactSet {
     monthlyInstallmentText: replyInstallmentTextForProduct(product) || undefined,
     locationText: address || undefined,
     hoursText: showroom.workingHours ? cleanText(showroom.workingHours, 120) : undefined,
+    // أرقام التواصل المسجّلة فعلاً (تظهر في ردّ الموقع بالترتيب المطلوب). غيابها ⇒
+    // لا يُذكر أي رقم (لا اختراع).
+    phoneText: showroom.phoneUnified ? cleanText(showroom.phoneUnified, 40) : undefined,
+    whatsappText: showroom.whatsappSales ? cleanText(showroom.whatsappSales, 40) : undefined,
     inStock: typeof product?.inStock === 'boolean' ? product.inStock : null,
     hasRecordedPromotion: [showroom.promotions, showroom.activeOffer].some((x: any) => cleanText(x, 300).length > 0),
     requiredDocuments: requiredDocuments.length ? requiredDocuments : undefined,

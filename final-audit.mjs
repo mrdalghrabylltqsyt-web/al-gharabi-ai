@@ -1226,7 +1226,7 @@ add('youtube-watcher-tests', watcherTest.includes('watcherGate') && watcherTest.
 const commentsModule = read('engine/social/comments.ts');
 add('youtube-praise-iraqi-phrases', commentsModule.includes('مرتب') && commentsModule.includes('ما شاء الله') && commentsModule.includes('تسلمون') && commentsModule.includes('عاشت ايدك'), 'تصنيف المدح يشمل العبارات العراقية العفوية (مرتب/ما شاء الله/تسلمون) لا الفصحى وحدها');
 add('youtube-positive-emoji-interaction', commentsModule.includes('POSITIVE_EMOJI_RE') && commentsModule.includes('EMOJI_ONLY_RE') && commentsModule.includes("intent = 'praise'"), 'التعليق الإيجابي بالإيموجي (قلوب/إعجاب) يُعامل كتفاعل إيجابي قابل للرد لا كمجهول');
-add('youtube-iraqi-reply-dialect', commentsModule.includes('هلا بيك') && commentsModule.includes('نورتنا') && commentsModule.includes('تدلل'), 'الردود الحتمية باللهجة العراقية العفوية القصيرة (لا فصحى جامدة)');
+add('youtube-iraqi-reply-dialect', commentsModule.includes('نورتنا') && commentsModule.includes('تدلل') && commentsModule.includes('هلا وغلا') && !/['"`]هلا بيك/.test(commentsModule), 'الردود الحتمية باللهجة العراقية العفوية القصيرة بترحيب محايد (لا فصحى جامدة ولا صيغة تفترض جنس العميل)');
 add('youtube-escalation-specific-reason', watcherModule.includes('يحتاج بيانات المنتج المؤكدة') && watcherModule.includes('شكوى/حالة حساسة'), 'سبب التصعيد محدد ومرتبط بالمضمون لا رسالة عامة');
 add('youtube-escalation-not-config-noise', watcherModule.includes("code: 'DEFER_AUTOREPLY_DISABLED'") && watcherModule.includes("code: 'ESCALATE_BUSINESS_INQUIRY'") && watcherModule.includes("code: 'ESCALATE_SENSITIVE'") && watcherModule.includes('isDeferredDecision'), 'تعذّر الرد بسبب إعداد المالك قرار غير نهائي (DEFER بكود صريح) لا تصعيد كاذب، والتصعيد بسبب حقيقي مرتبط بالمضمون فقط');
 add('youtube-defer-release-on-enable', watcherModule.includes('releaseDeferredEntries') && server.includes('releaseDeferredEntries(watcherState.processed)') && server.includes('releasedDeferred: released'), 'التعليقات المؤجَّلة (تعذّر بسبب الإعداد) تُحرَّر وتُعاد تقييمها تلقائياً عند تمكين الرد — بلا فقدان تعليق');
@@ -5473,9 +5473,10 @@ add('watcher-advisory-not-authority',
 
     add('prc-header-health-polls-and-unknown',
       /setInterval\(\s*poll\s*,\s*60_?000\s*\)/.test(headerSrc) &&
-      /setAiReady\(null\)/.test(headerSrc) &&
-      /aiReady === null \? 'Gemini: غير معروف'/.test(headerSrc),
-      'الترويسة تعيد جلب /api/health دورياً وتعرض «غير معروف» عند فشل الجلب (لا «Gemini محمي»)');
+      /describeGeminiBadge\(null\)/.test(headerSrc) &&
+      /describeGeminiBadge\(h\)/.test(headerSrc) &&
+      !headerSrc.includes('محمي/غير مفعّل'),
+      'الترويسة تعيد جلب /api/health دورياً وتعرض حالة Gemini الصادقة من الجسم (لا «محمي/غير مفعّل»)');
 
     add('prc-platform-card-labels-truthful',
       /تاريخ الربط:/.test(hubSrc2) && !/آخر مزامنة فعلية:/.test(hubSrc2) &&
@@ -5517,6 +5518,71 @@ add('watcher-advisory-not-authority',
       /test:prc-display-consistency/.test(read('package.json')) &&
       prcTest.includes('PASSED:'),
       'اختبار PR-C موجود ومُسجّل في package.json');
+  }
+
+  // 12ب) PR-B — جودة الرد: ترحيب محايد + موقع/مركّب + رد الصفحة + شارة Gemini + ربط المنتج.
+  {
+    const rq = read('engine/social/replyQuality.ts');
+    const prbTest = read('engine/tests/prb.reply.regression.test.ts');
+    const metaWatcherModule = read('engine/social/metaWatcher.ts');
+    const headerSrc = read('src/components/common/Header.tsx');
+    const badgeSrc = read('src/services/geminiBadge.ts');
+    const apiSrc = read('src/services/api.ts');
+    const approvalSrc = read('src/components/approval/ApprovalWorkflowView.tsx');
+    const fbSrc = read('engine/social/facebook.ts');
+    const igSrc = read('engine/social/instagram.ts');
+
+    add('prb-gendered-opener-forbidden-single-source',
+      rq.includes('FORBIDDEN_GENDERED_OPENERS') && rq.includes("'هلا بيك'") && rq.includes("'مرحبا بيك'") && rq.includes('hasGenderedOpener'),
+      'مصدر واحد يحظر الصيغ التي تفترض جنس العميل (هلا بيك/مرحبا بيك)');
+    add('prb-no-gendered-opener-in-prod-code',
+      !/['"`]هلا بيك/.test(commentsModule) && !/['"`]هلا بيك/.test(read('engine/social/replyDialogue.ts')) &&
+      !/['"`]مرحبا بيك/.test(commentsModule) && !/['"`]هلا بيك/.test(read('engine/commercial/commercialBrain.ts')),
+      'لا صيغة «هلا بيك»/«مرحبا بيك» في أي قالب إنتاج (comments/replyDialogue/commercialBrain)');
+    add('prb-gendered-opener-guard-wired',
+      server.includes('hasGenderedOpener(candidate)') && server.includes('sanitizeGendered'),
+      'حارس نهائي في مسار الرد يمنع مرور أي نص مجنّس إلى المنصة');
+    add('prb-location-reply-order',
+      commentsModule.includes('visitDetailsClause') && /موقعنا: \$\{trimEndPunct\(f\.locationText\)\}/.test(commentsModule) &&
+      /والدوام \$\{trimEndPunct\(f\.hoursText\)\}/.test(commentsModule) && /وللتواصل: \$\{phones\.join/.test(commentsModule),
+      'رد الموقع: العنوان ثم الدوام ثم الهاتف/الواتساب من المسجّل فقط');
+    add('prb-compound-inquiry',
+      commentsModule.includes('detectCompoundInquiry') && commentsModule.includes('isCompoundInquiry') && commentsModule.includes('compound_location_price'),
+      'السؤال المركّب (عنوان+سعر) يُجاب في رد واحد (العنوان والدوام والسعر أو دعوة للتواصل)');
+    add('prb-installment-availability-yes',
+      commentsModule.includes('asksInstallmentAvailability') && commentsModule.includes('installment_availability_yes') && commentsModule.includes('نعم عدنا تقسيط'),
+      '«في تقسيط» يبدأ بعد الترحيب بـ«نعم» ثم المدة المسجّلة ثم دعوة للتفاصيل');
+    add('prb-page-already-replied-code',
+      watcherModule.includes("'SKIP_PAGE_ALREADY_REPLIED'") && watcherModule.includes('pageAlreadyReplied') &&
+      metaWatcherModule.includes('pageAlreadyReplied'),
+      'كود SKIP_PAGE_ALREADY_REPLIED في سلطة القرار الواحدة (YouTube/Meta)');
+    add('prb-page-reply-detect-single-request',
+      fbSrc.includes('comments.limit(1){from}') && fbSrc.includes('pageRepliedInThread') &&
+      igSrc.includes('replies.limit(1){from}') && igSrc.includes('pageRepliedInThread'),
+      'كشف رد الصفحة داخل الخيط يقرأ رداً فرعياً واحداً ضمن الطلب نفسه (لا طلب إضافي لكل تعليق)');
+    add('prb-page-reply-blocks-draft',
+      server.includes('threadPageReplied') && server.includes('if (input.threadPageReplied === true)') &&
+      /const threadPageReplied = c\.pageRepliedInThread === true/.test(server) &&
+      /threadPageReplied: row\.threadPageReplied === true/.test(server),
+      'رد سابق من الصفحة يُسجَّل على التعليق الوارد ويمنع إنشاء أي مسودة');
+    add('prb-gemini-badge-honest',
+      badgeSrc.includes('describeGeminiBadge') && badgeSrc.includes('Gemini: محرّك حتمي') &&
+      headerSrc.includes('describeGeminiBadge') && !headerSrc.includes('محمي/غير مفعّل'),
+      'شارة Gemini صادقة: لا تخلط الحماية بتعطيل المزود');
+    add('prb-health-body-on-non2xx',
+      /const body = await res\.json\(\)\.catch\(\(\) => null\)/.test(apiSrc) && !/if \(!res\.ok\) throw new Error\('Health check failed'\)/.test(apiSrc),
+      'checkHealth يقرأ جسم /api/health حتى عند رمز غير 2xx (503 مع جسم صحيح)');
+    add('prb-product-link-verified',
+      rq.includes('resolveProductLink') && server.includes('resolveProductLink(b.productId, workspace.products as any)'),
+      'ربط منشور بمنتج يتحقق من وجود المنتج فعلاً قبل الحفظ (لا ربط بالتخمين)');
+    add('prb-product-link-ui',
+      approvalSrc.includes('editProductId') && /<select[\s\S]{0,600}products/.test(approvalSrc) && approvalSrc.includes('المنتج المرتبط'),
+      'واجهة تعديل المنشور تتيح اختيار المنتج المرتبط (للمنشورات القديمة)');
+    add('prb-regression-test',
+      fs.existsSync(path.join(root, 'engine/tests/prb.reply.regression.test.ts')) &&
+      /test:prb-reply-regression/.test(read('package.json')) &&
+      prbTest.includes('العنوان والسعر') && prbTest.includes('بكام سعر') && prbTest.includes('متاح'),
+      'اختبار انحدار PR-B يغطي التعليقات التسعة حرفياً ومُسجّل في package.json');
   }
 
   // 12) AGENTS.md: عدد فحوصات final-audit مطابق للفعلي (يُعَدّ من نص الملف نفسه).

@@ -44,7 +44,7 @@ npm install
 npm run dev            # tsx server.ts
 npm run lint           # tsc --noEmit
 npm run build          # vite build + esbuild server.ts -> dist/server.cjs
-npm run final-audit    # node final-audit.mjs (1828 فحصاً)
+npm run final-audit    # node final-audit.mjs (1842 فحصاً)
 npm test               # storage + engine + auth + ... + db + runtime
 ```
 - التشغيل الإنتاجي: `PORT=4517 NODE_ENV=production APP_URL=http://localhost:4517 node dist/server.cjs`
@@ -7206,3 +7206,46 @@ test:content-product-link`، 12 فحصاً) يُثبت الإنشاء/التحق
 الكود القديم** (مُثبت: 5 إخفاقات). فحوص final-audit: `content-post-product-link-*`،
 `content-publish-passes-product-id`، `publish-record-carries-product-id`،
 `content-product-link-test(-wired)`.
+
+### PR-B (استكمال #71) — جودة الرد التجاري: بنود 1..8 كاملة (2026-10-22)
+على الفرع `fix/commercial-reply-quality` (يبقى **Draft**؛ لا دمج/نشر/تغيير متغيّرات،
+و`commercialSendMode` يبقى `approval`، ولا رد لزبون، ولا مساس بـPR #64/ERP/معادلة القسط).
+أُنجزت البنود الثمانية من المراجعة:
+
+1. **الترحيب المحايد جنسياً (مصدر واحد `engine/social/replyQuality.ts`):**
+   `FORBIDDEN_GENDERED_OPENERS = ['هلا بيك','مرحبا بيك']` و`hasGenderedOpener`. أُزيلت
+   الصيغ المجنّسة من كل القوالب في `comments.ts`/`inquiryResolver.ts`/`commercialBrain.ts`/
+   `replyDialogue.ts`، واستُبدلت بصيغ محايدة (هلا وغلا، حياك الله، أهلاً وسهلاً، نورتنا،
+   تدلل). **حارس نهائي في `server.ts`** (`sanitizeGendered` عند بناء الرد) يمنع مرور أي نص
+   مجنّس إلى المنصة حتى لو جاء من مسار آخر.
+2. **رد الموقع (البند 2):** `visitDetailsClause` يذكر العنوان ثم الدوام ثم الهاتف/الواتساب
+   بالترتيب، من `showroom.address`/`workingHours`/`phoneUnified` فقط؛ الحقل الغائب لا يُذكر
+   ولا يُخترع رقم.
+3. **السؤال المركّب (البند 3):** `detectCompoundInquiry`/`isCompoundInquiry` +
+   استراتيجية `compound_location_price` تُجيب العنوان والدوام **و** السعر في رد واحد؛
+   منتج معروف ⇒ رقم حقيقي، وإلا `priceClause` دعوة صريحة للخاص/الواتساب بلا اختراع رقم.
+4. **رد سابق من الصفحة (البند 4):** `decideCommentAction` يقبل `pageAlreadyReplied` ويُصدر
+   `SKIP_PAGE_ALREADY_REPLIED` (سلطة القرار الواحدة في `youtubeWatcher.ts`، ويُمرَّر من
+   `metaWatcher.ts`). الكشف يقرأ **رداً فرعياً واحداً ضمن الطلب نفسه**
+   (`comments.limit(1){from}` لفيسبوك و`replies.limit(1){from}` لإنستغرام) — **لا طلب إضافي
+   لكل تعليق**، فالكلفة على حصة Meta صفر إضافي (نفس عدد النداءات الحالية). يُسجَّل الوسم
+   `threadPageReplied` على التعليق الوارد فيمنع إنشاء أي مسودة.
+5. **«في تقسيط» (البند 5):** `asksInstallmentAvailability` + استراتيجية
+   `installment_availability_yes` ⇒ يبدأ بعد الترحيب بـ«نعم» ثم المدة المسجّلة ثم دعوة للتفاصيل.
+6. **شارة الرأس (البند 6):** الجذر كان خلط «حماية الحصة» بـ«تعطيل المزوّد». `Header.tsx`
+   يقرأ حالة صادقة عبر `src/services/geminiBadge.ts` (`describeGeminiBadge`: مفعّل/محرّك
+   حتمي/غير معروف)، و`api.ts` `checkHealth` يقرأ **جسم** الاستجابة حتى عند 503 (عطل مخزن
+   مع `aiEnabled=true`) فلا يُعلن «غير مفعّل» خطأً.
+7. **ربط منشور قديم بمنتج (البند 7):** `resolveProductLink` (تحقق وجود المنتج فعلاً) في
+   `PATCH /api/workspace/content/:id` (و`POST`) — طريقة المالك لربط منشور موجود بمنتج
+   مسجّل بلا تخمين؛ وواجهة `ApprovalWorkflowView` فيها حقل «المنتج المرتبط».
+8. **اختبار الانحدار (البند 8):** `engine/tests/prb.reply.regression.test.ts`
+   (`npm run test:prb-reply-regression`، 62 فحصاً) يمرّ بالتعليقات التسعة حرفياً
+   (العنوان والسعر، السعر والمكان، السعر والعنوان، وين موجودين، في تقسيط، كم السعر،
+   بكام سعر، شو سعر، متاح) ويتحقق من البنود أعلاه، إضافة إلى `reply.quality.classification`
+   (58) و`content.product.link` (12).
+
+اختبارات مصاحبة مُحدَّثة لتطابق الترحيب المحايد: `youtube.connector` (245)،
+`meta.watcher.productfacts` (16)، `ui.interactions` (40). final-audit **1842** فحصاً
+(كتلة `prb-*` الجديدة). `npm run lint` ✅ · `npm run build` ✅ · `npm test` ✅ (EXIT=0) ·
+`npm run final-audit` ✅. لم يُلمس أي سرّ/مفتاح/OAuth، ولا ERP، ولا معادلة القسط.

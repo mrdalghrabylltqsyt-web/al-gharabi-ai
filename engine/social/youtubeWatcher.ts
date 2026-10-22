@@ -206,6 +206,7 @@ export type CentralActionDecision = 'NO_ACTION' | 'ALLOWED_ACTION' | 'APPROVAL_R
 export type CommentDecisionCode =
   | 'SKIP_SELF_AUTHORED'
   | 'SKIP_ALREADY_REPLIED'
+  | 'SKIP_PAGE_ALREADY_REPLIED'
   | 'SKIP_SPAM'
   | 'SKIP_OUT_OF_CHANNEL_CONTEXT'
   | 'ESCALATE_BUSINESS_INQUIRY'
@@ -225,6 +226,7 @@ export type CommentDecisionCode =
 export const YOUTUBE_DECISION_CODE_STAGES: Record<CommentDecisionCode, ReadonlyArray<YouTubeCommentStage>> = {
   SKIP_SELF_AUTHORED: ['SKIPPED'],
   SKIP_ALREADY_REPLIED: ['SKIPPED'],
+  SKIP_PAGE_ALREADY_REPLIED: ['SKIPPED'],
   SKIP_SPAM: ['SKIPPED'],
   SKIP_OUT_OF_CHANNEL_CONTEXT: ['SKIPPED'],
   ESCALATE_BUSINESS_INQUIRY: ['ESCALATED'],
@@ -296,11 +298,18 @@ export function decideCommentAction(input: {
   isSpam: boolean;
   isSelfAuthored: boolean;
   alreadyReplied: boolean;
+  /**
+   * هل سبق أن ردّت **الصفحة نفسها** داخل خيط هذا التعليق (رد من حساب المعرض
+   * المالك للمنشور/الحساب)؟ عندها لا يُنشأ رد آلي ثانٍ على نفس الخيط — منعاً
+   * لتكرار الرد على عميل حصل على جواب. الافتراضي false (لا يغيّر أي سلوك قائم).
+   */
+  pageAlreadyReplied?: boolean;
   controls: YouTubeWatcherControls;
 }): CommentDecision {
   const c = normalizeWatcherControls(input.controls);
   if (input.isSelfAuthored) return { action: 'skip', code: 'SKIP_SELF_AUTHORED', reason: 'التعليق صادر من حساب المعرض؛ لا حلقة ردود.', requiresHuman: false };
   if (input.alreadyReplied) return { action: 'skip', code: 'SKIP_ALREADY_REPLIED', reason: 'سبق الرد على هذا التعليق (منع التكرار).', requiresHuman: false };
+  if (input.pageAlreadyReplied) return { action: 'skip', code: 'SKIP_PAGE_ALREADY_REPLIED', reason: 'سبق أن ردّت الصفحة على هذا الخيط (رد من حساب المعرض)؛ لا رد ثانٍ.', requiresHuman: false };
   if (input.isSpam) return { action: 'skip', code: 'SKIP_SPAM', reason: 'تعليق مصنّف سبام؛ لا رد آلي.', requiresHuman: false };
   // التصعيد بسبب حقيقي مرتبط بمضمون التعليق (لا بسبب حالة إعداد فقط):
   if (input.intent === 'business_inquiry') {
@@ -365,9 +374,10 @@ export function resolveCommentExecution(input: {
    */
   priceFactsVerified?: boolean;
 }): CommentDecision {
-  // 1) تجاهل بموجب سلامة التعليق (نفس/حساب المعرض/سبام/مُعالَج سابقاً).
+  // 1) تجاهل بموجب سلامة التعليق (نفس/حساب المعرض/سبام/مُعالَج سابقاً/رد الصفحة).
   if (input.advisory.code === 'SKIP_SELF_AUTHORED'
     || input.advisory.code === 'SKIP_ALREADY_REPLIED'
+    || input.advisory.code === 'SKIP_PAGE_ALREADY_REPLIED'
     || input.advisory.code === 'SKIP_SPAM') {
     return input.advisory;
   }

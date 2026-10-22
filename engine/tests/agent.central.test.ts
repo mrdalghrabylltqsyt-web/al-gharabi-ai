@@ -460,7 +460,8 @@ async function unitTests() {
     const rc = await cycleOrch.run(tc.id);
     check('K: الدورة اكتملت مع تفويض فعّال', rc.status === 'completed', rc.status);
     check('K: معرّف التعليق الحقيقي وصل لمنفّذ الرد', seenReplyArgs?.commentId === 'rc1', JSON.stringify(seenReplyArgs));
-    check('K: نص الرد المقترح فعلاً وصل لمنفّذ الرد (لهجة عراقية)', typeof seenReplyArgs?.text === 'string' && seenReplyArgs.text.length > 0 && seenReplyArgs.text.includes('هلا بيك'), String(seenReplyArgs?.text));
+    // PR-B (البند 1): الترحيب محايد — لا «هلا بيك»/«مرحبا بيك».
+    check('K: نص الرد المقترح فعلاً وصل لمنفّذ الرد (لهجة عراقية محايدة)', typeof seenReplyArgs?.text === 'string' && seenReplyArgs.text.length > 0 && /تدلل|حياك الله|نورتنا|أهلاً وسهلاً|هلا وغلا/.test(seenReplyArgs.text) && !/هلا بيك|مرحبا بيك/.test(seenReplyArgs.text), String(seenReplyArgs?.text));
     const verifyEntry = rc.journal.find((e) => e.toolId === 'youtube_reply_verify');
     check('K: خطوة التحقق نُفّذت بنجاح', verifyEntry?.ok === true, JSON.stringify(verifyEntry));
     const replyOut = (rc.result?.data || []).find((d: any) => d.toolId === 'youtube_reply');
