@@ -39,6 +39,9 @@ export const AUTOMATIC_SEND_ACTORS: readonly string[] = Object.freeze([
   'auto',
   'cron',
   'scheduler',
+  // الوكيل المركزي (مهام /api/agent/tasks): النص من توليد الوكيل لا من المالك،
+  // حتى لو بدأ المالك المهمة أو منح تفويض YouTube. يُحجب في وضع الموافقة.
+  'agent',
 ]);
 
 /** فاعلون صرّح بهم إنسان (فعلهم موافقة): لا يُحجبون في وضع الموافقة. */

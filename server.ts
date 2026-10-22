@@ -8903,6 +8903,24 @@ async function guardCustomerSend(input: {
 }): Promise<{ allowed: boolean; code: string; body: any }> {
   const decision = evaluateCustomerSendGate({ sendMode: commercialSendMode, actor: input.actor, platform: input.platform, operation: input.operation });
   if (decision.allowed) return { allowed: true, code: 'ALLOWED', body: null };
+  // منع التكرار: طلب معلّق للهدف نفسه (منصة + عملية + تعليق/مستلم) لا يُنشأ مرة
+  // ثانية. يُحدَّث النص فقط إن تغيّر، ولا كتابة إلى القاعدة إن لم يتغيّر شيء.
+  const targetExt = input.externalId ? String(input.externalId) : null;
+  const targetRcp = input.recipientId ? String(input.recipientId) : null;
+  const existing = outboundApprovals.find((r) => r.status === 'pending' && r.platform === input.platform
+    && r.operation === input.operation && r.externalId === targetExt && r.recipientId === targetRcp);
+  if (existing) {
+    const nextText = String(input.text || '').slice(0, 4000);
+    if (existing.text !== nextText) {
+      existing.text = nextText;
+      existing.at = new Date().toISOString();
+      await persistCommercialLeads();
+    }
+    return {
+      allowed: false, code: 'NEEDS_APPROVAL',
+      body: { success: false, sent: false, delivered: false, needsApproval: true, code: 'NEEDS_APPROVAL', error: decision.reason, approval: existing, duplicate: true },
+    };
+  }
   // تسجيل طلب الموافقة (بلا إرسال). لا يُسجَّل الطلب إن كان الوضع auto.
   const req: OutboundApprovalRequest = {
     id: workspaceId('approval'), platform: input.platform, operation: input.operation,
@@ -14793,8 +14811,8 @@ ${UNTRUSTED_TEXT_POLICY_AR}`;
       return { ok: true, learning };
     },
     youtubeReply: async (input: { commentId: string; text: string; commentText?: string }) => {
-      // التنفيذ الخارجي يمر بمنفّذ الرد الحقيقي نفسه (كل البوابات سارية، لا تجاوز).
-      const result = await executeYouTubeReply({ commentId: input.commentId, text: input.text, commentText: input.commentText }, userId);
+      // منفّذ الرد نفسه بفاعل "agent" (نص الوكيل ليس موافقة المالك ⇒ بوابة الموافقة).
+      const result = await executeYouTubeReply({ commentId: input.commentId, text: input.text, commentText: input.commentText }, "agent");
       if (result.status >= 400) throw new Error(result.body?.error || "فشل الرد على تعليق YouTube.");
       // لا تسليم بلا معرّف رد حقيقي من YouTube (منفّذ الرد يضمن ذلك؛ نتحقّق هنا أيضاً).
       const delivered = result.body?.delivered === true && Boolean(result.body?.externalReplyId);

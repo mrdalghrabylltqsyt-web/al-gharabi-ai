@@ -129,6 +129,7 @@ function unitTests(): void {
   check('وضع auto => يمرّ (خارج نطاق الحجب)', evaluateCustomerSendGate({ sendMode: 'auto', actor: 'watcher' }).allowed === true);
   check('قيمة وضع مجهولة تُعالج كـapproval (fail-safe)', evaluateCustomerSendGate({ sendMode: 'nonsense', actor: 'watcher' }).allowed === false);
   check('isAutomaticSendActor يميّز الآلي عن الإنسان', isAutomaticSendActor('watcher') === true && isAutomaticSendActor('owner') === false && isAutomaticSendActor(undefined) === true);
+  check('الوكيل المركزي (agent) فاعل آلي => حجب في approval', evaluateCustomerSendGate({ sendMode: 'approval', actor: 'agent', platform: 'youtube' }).allowed === false);
 }
 
 // ---------------------------------------------------------------------------
@@ -197,6 +198,24 @@ async function integrationTests(): Promise<void> {
     check('طلب الموافقة يحمل النص المقترح (لا فارغ)', (inbox.outboundApprovals || []).every((r: any) => typeof r.text === 'string' && r.text.length > 0), JSON.stringify((inbox.outboundApprovals || []).map((r: any) => r.platform)));
     const platformsSeen = new Set((inbox.outboundApprovals || []).map((r: any) => r.platform));
     check('المنصات المسجَّلة تشمل youtube وfacebook وtelegram', platformsSeen.has('youtube') && platformsSeen.has('facebook') && platformsSeen.has('telegram'), JSON.stringify([...platformsSeen]));
+
+    group('3b) تكامل: الوكيل المركزي مع تفويض YouTube فعّال لا يتجاوز البوابة + منع تكرار الطابور');
+    // مهمة يبدأها المالك، لكن نص الرد من الوكيل: تفويض الرد فعّال (مُنح أعلاه) ووضع approval.
+    ytMock.state.lastInsertPath = null;
+    const agentTask = async () => (await (await fetch(`${BASE}/api/agent/tasks`, { method: 'POST', headers: auth, body: JSON.stringify({ task: 'أرسل رداً على تعليق يوتيوب', context: { commentId: 'cmt_agent_gate', replyText: 'أهلاً بك في معرض الغرابي.' } }) })).json());
+    const agentRun1 = await agentTask();
+    const agentEntry = (agentRun1.task?.journal || []).find((e: any) => e.toolId === 'youtube_reply');
+    check('الوكيل: youtube_reply لم تُسلَّم (محجوبة بالبوابة)', agentEntry?.ok !== true, JSON.stringify(agentEntry));
+    check('الوكيل: لا comments.insert مع approval رغم التفويض', ytMock.state.lastInsertPath === null, String(ytMock.state.lastInsertPath));
+    const agentQueue1 = ((await (await fetch(`${BASE}/api/commercial/inbox`, { headers: auth })).json()).outboundApprovals || [])
+      .filter((r: any) => r.platform === 'youtube' && r.externalId === 'cmt_agent_gate');
+    check('الوكيل: سُجّل طلب موافقة واحد بفاعل agent', agentQueue1.length === 1 && agentQueue1[0].actor === 'agent', JSON.stringify(agentQueue1));
+    // تكرار المهمة نفسها: لا طلب ثانٍ للهدف نفسه.
+    await agentTask();
+    const agentQueue2 = ((await (await fetch(`${BASE}/api/commercial/inbox`, { headers: auth })).json()).outboundApprovals || [])
+      .filter((r: any) => r.platform === 'youtube' && r.externalId === 'cmt_agent_gate');
+    check('منع التكرار: محاولة ثانية للهدف نفسه لا تنشئ طلباً جديداً', agentQueue2.length === 1, `count=${agentQueue2.length}`);
+    check('منع التكرار: لا comments.insert في المحاولة الثانية', ytMock.state.lastInsertPath === null);
 
     group('4) تكامل: فعل المالك الصريح يمرّ (الإرسال اليدوي)');
     // الرد اليدوي من المالك يمرّ (فعل الموافقة) — يثبت أن البوابة لا تُقفل الإرسال الشرعي.
