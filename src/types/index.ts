@@ -63,6 +63,12 @@ export interface Post {
   platformPublishResults?: Record<string, { state: string; httpStatus?: number; providerPostId?: string | null; error?: string | null; code?: string | null; at?: string }>;
   mediaUrl?: string;
   mediaType?: 'image' | 'video' | 'carousel';
+  /**
+   * معرّف المنتج المسجّل الذي وُلّد عنه المنشور (اختياري). يُحفظ ليُربط المنشور
+   * بالمنتج عند النشر، فتُستخدم حقائق المنتج المسجّلة (سعر/قسط) في الردود بدل
+   * التصعيد. غيابه يعني منشوراً عاماً بلا منتج — لا يُخترع ربط.
+   */
+  productId?: string;
   status: PostStatus;
   scheduledFor?: string;
   publishedAt?: string;

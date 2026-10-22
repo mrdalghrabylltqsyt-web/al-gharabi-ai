@@ -44,7 +44,7 @@ npm install
 npm run dev            # tsx server.ts
 npm run lint           # tsc --noEmit
 npm run build          # vite build + esbuild server.ts -> dist/server.cjs
-npm run final-audit    # node final-audit.mjs (1818 فحصاً)
+npm run final-audit    # node final-audit.mjs (1825 فحصاً)
 npm test               # storage + engine + auth + ... + db + runtime
 ```
 - التشغيل الإنتاجي: `PORT=4517 NODE_ENV=production APP_URL=http://localhost:4517 node dist/server.cjs`
@@ -7176,4 +7176,27 @@ TikTok (مجمّد)، Telegram/Threads، نموذج الجدولة، نطاق ER
 **الاختبار:** `engine/tests/reply.quality.classification.test.ts` (`npm run test:reply-quality`،
 **54 فحصاً**، مضاف إلى `npm test`) — يُثبت التصنيف الصحيح + الرد المؤرّض + بقاء حواجز
 عدم الاختراع، و**يفشل على الكود القديم** (مُثبت). فحوص final-audit الخمسة الجديدة:
-`reply-quality-*` (الإجمالي **1818**).
+`reply-quality-*` (الإجمالي **1825**).
+
+### ROOT-4 — كشف حساب المعرض حين يختلف اسم الصفحة عن اسم المعرض (2026-10-21)
+كشف «التعليق صادر من حسابنا» في مراقب Meta كان يطابق **معرّف الصفحة/حساب إنستغرام**
+(أساس صحيح) أو **الاسم** ضمن `ownNames` — وكانت القائمة تحوي اسم المعرض فقط
+(`workspace.showroom.name` + «معرض الغرابي») دون اسم الصفحة/حساب إنستغرام المخزَّنين.
+فإن حجب Meta حقل `from` (بلا `pages_read_user_content`) واختلف اسم الصفحة الرسمي عن اسم
+المعرض (مثل «معرض الغرابي للتقسيط»)، اعتُبر تعليقنا/ردّنا تعليقَ عميل فيُولَّد عليه رد —
+حلقة/تكرار. الإصلاح: `ownNames` (server.ts ~8295) تشمل الآن `providerTokens.facebook.pageName`
+و`instagram.pageName`/`igUsername` و`platformConnections.get(platform).accountName` (مُنقّاة
+من `@`). المطابقة بالمعرّف تبقى الأساس. فحص final-audit: `meta-self-authored-uses-stored-identity`.
+
+### ROOT-7 — ربط المنشور بالمنتج (فقدان حقائق السعر في الردود) (2026-10-21)
+معرّف المنتج المختار في «مركز صناعة المحتوى» كان **لا يُحفظ** على المنشور إطلاقاً
+(`/api/workspace/content` لا يقرأ `productId`)، ولا يُمرَّر عند النشر إلى سجل النشر —
+فتفقد `resolveProductForPost` الدليل الصريح، ويُصعَّد استفسار السعر بدل أن يُرد من بيانات
+المعرض المسجّلة. الإصلاح: `Post.productId` (نوع)، و`ContentEngineView` يرسله، والخادم
+يحفظه **فقط إن طابق منتجاً مسجّلاً** (بلا اختراع ربط)، ويُمرَّر عبر النشر الموحّد
+(`productId: post.productId`) إلى `buildPublishRecord` (حقل `PublishRecord.productId`)
+فيُحفظ في سجل النشر الحقيقي. اختبار `content.product.link.test.ts` (`npm run
+test:content-product-link`، 12 فحصاً) يُثبت الإنشاء/التحقق/النشر/الرد المؤرّض، و**يفشل على
+الكود القديم** (مُثبت: 5 إخفاقات). فحوص final-audit: `content-post-product-link-*`،
+`content-publish-passes-product-id`، `publish-record-carries-product-id`،
+`content-product-link-test(-wired)`.

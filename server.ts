@@ -8285,9 +8285,21 @@ async function runMetaWatcherCycle(trigger: string): Promise<{ ok: boolean; trig
           callsPerCycle: Number(fetched.callsPerCycle || 0),
         };
       }
-      const ownNames = [String(workspace.showroom?.name || ""), "معرض الغرابي"];
       const pageIdFb = String(getProviderToken("facebook")?.pageId || "");
       const igId = String(getProviderToken("instagram")?.igAccountId || "");
+      // ROOT-4: أسماء حساب المعرض الحقيقية تُضمّن من الاعتماد المخزَّن (اسم الصفحة/
+      // حساب إنستغرام) لا من اسم المعرض فقط. بدونها، متى حجب Meta حقل `from` (بلا
+      // `pages_read_user_content`) لا يبقى إلا مطابقة الاسم — فإن اختلف اسم الصفحة
+      // الرسمي عن اسم المعرض (مثل «معرض الغرابي للتقسيط») اعتُبر ردّنا/تعليقنا
+      // تعليق عميل، فيُولَّد عليه رد (حلقة/تكرار). المطابقة بالمعرّف تبقى الأساس.
+      const ownNames = [
+        String(workspace.showroom?.name || ""),
+        "معرض الغرابي",
+        String(getProviderToken("facebook")?.pageName || ""),
+        String(getProviderToken("instagram")?.pageName || ""),
+        String(getProviderToken("instagram")?.igUsername || ""),
+        String(platformConnections.get(platform)?.accountName || ""),
+      ].map((n) => String(n || "").replace(/^@/, "").trim()).filter(Boolean);
       let processedThisCycle = 0;
       for (const c of (fetched.ok ? (fetched.comments || []) : [])) {
         if (processedThisCycle >= META_POLLING_MAX_PER_CYCLE) break;
@@ -13461,7 +13473,11 @@ app.post("/api/workspace/content", authenticateToken, (req, res) => {
   const statusDecision = canSetContentStatusByRole(user.role, desiredStatus);
   if (!statusDecision.allowed) return res.status(statusDecision.code === "PUBLISHED_REQUIRES_PROVIDER_PROOF" ? 409 : 403).json({ success: false, code: statusDecision.code, error: statusDecision.reason });
   const resolvedStatus = desiredStatus;
-  const post = { id: cleanText(b.id, 100) || workspaceId("post"), title: cleanText(b.title, 160) || "مسودة جديدة", content, platformVersions: b.platformVersions && typeof b.platformVersions === "object" ? b.platformVersions : undefined, targetPlatforms: targets, mediaUrl: cleanText(b.mediaUrl, 500) || undefined, mediaType: ["image","video","carousel"].includes(b.mediaType) ? b.mediaType : undefined, status: resolvedStatus, scheduledFor: normalizeScheduleInput(b.scheduledFor) ?? undefined, publishedAt: cleanText(b.publishedAt, 80) || undefined, createdAt: cleanText(b.createdAt, 80) || new Date().toISOString(), authorId: user.id, authorName: cleanText(b.authorName, 160) || user.name, authorRole: cleanText(b.authorRole, 40) || user.role, history: Array.isArray(b.history) ? b.history.slice(-50) : [], metrics: b.metrics && typeof b.metrics === "object" ? b.metrics : undefined, tags: Array.isArray(b.tags) ? b.tags.filter((x:any)=>typeof x === "string").slice(0,20) : [], campaignName: cleanText(b.campaignName, 160) };
+  // ROOT-7: معرّف المنتج يُحفظ فقط إن طابق منتجاً مسجّلاً فعلاً (بلا اختراع ربط).
+  // بدون حفظه لا يمكن ربط المنشور بالمنتج عند النشر، فتفقد الردود حقائق السعر/القسط.
+  const productIdRaw = typeof b.productId === "string" ? b.productId.trim() : "";
+  const productId = productIdRaw && (workspace.products || []).some((p: any) => String(p.id) === productIdRaw) ? productIdRaw : undefined;
+  const post = { id: cleanText(b.id, 100) || workspaceId("post"), title: cleanText(b.title, 160) || "مسودة جديدة", content, platformVersions: b.platformVersions && typeof b.platformVersions === "object" ? b.platformVersions : undefined, targetPlatforms: targets, mediaUrl: cleanText(b.mediaUrl, 500) || undefined, mediaType: ["image","video","carousel"].includes(b.mediaType) ? b.mediaType : undefined, productId, status: resolvedStatus, scheduledFor: normalizeScheduleInput(b.scheduledFor) ?? undefined, publishedAt: cleanText(b.publishedAt, 80) || undefined, createdAt: cleanText(b.createdAt, 80) || new Date().toISOString(), authorId: user.id, authorName: cleanText(b.authorName, 160) || user.name, authorRole: cleanText(b.authorRole, 40) || user.role, history: Array.isArray(b.history) ? b.history.slice(-50) : [], metrics: b.metrics && typeof b.metrics === "object" ? b.metrics : undefined, tags: Array.isArray(b.tags) ? b.tags.filter((x:any)=>typeof x === "string").slice(0,20) : [], campaignName: cleanText(b.campaignName, 160) };
   workspace.posts.unshift(post); persistState(); audit(user.id, "workspace_content_created", post.id); res.status(201).json({ success: true, post });
 });
 
@@ -13609,6 +13625,9 @@ app.post("/api/workspace/content/:id/publish", requireOwner, async (req, res) =>
       privacyStatus: typeof req.body?.privacyStatus === "string" ? req.body.privacyStatus : "public",
       approved: true,
       postId: post.id,
+      // ROOT-7: معرّف المنتج المسجّل على المنشور يُمرَّر للنشر ليُحفظ على سجل النشر،
+      // فيُربط المنشور الخارجي بمنتجه وتُستخدم حقائق السعر/القسط في الردود بدل التصعيد.
+      productId: typeof post.productId === "string" && post.productId ? post.productId : undefined,
     }, user.id);
     return { platform, result };
   }));

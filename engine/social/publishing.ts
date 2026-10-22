@@ -81,6 +81,12 @@ export interface PublishRecord {
   providerSubcode?: number | null;
   /** معرّف تتبّع المزود (Meta fbtrace_id) — يُقدَّم للدعم ولا يُخترع. */
   providerTraceId?: string | null;
+  /**
+   * معرّف المنتج المسجّل المرتبط بالمنشور (ROOT-7). يُحفظ عند النشر ليُربط المنشور
+   * الخارجي بمنتجه، فتُستخدم حقائق المنتج (سعر/قسط) في الردود بدل التصعيد.
+   * `null` يعني منشوراً بلا منتج مسجّل — لا يُخترع ربط.
+   */
+  productId?: string | null;
 }
 
 /**
@@ -99,6 +105,7 @@ export function buildPublishRecord(input: {
   providerCode?: number | null;
   providerSubcode?: number | null;
   providerTraceId?: string | null;
+  productId?: string | null;
 }): PublishRecord {
   const published = Boolean(input.providerPostId) && !input.error;
   return {
@@ -114,6 +121,7 @@ export function buildPublishRecord(input: {
     providerCode: input.providerCode ?? null,
     providerSubcode: input.providerSubcode ?? null,
     providerTraceId: input.providerTraceId ?? null,
+    productId: input.productId ?? null,
   };
 }
 

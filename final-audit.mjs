@@ -1311,6 +1311,17 @@ add('reply-quality-location-bare-forms', /location:\s*\/[^\n]*عنوان[^\n]*م
 add('reply-quality-topic-implies-inquiry', /else if \(topic !== 'general'\) intent = 'business_inquiry'/.test(replyComments), 'موضوع تجاري محدّد بلا كلمة استفهام صريحة يُصنَّف استفساراً لا «محايداً»');
 add('reply-quality-test', read('engine/tests/reply.quality.classification.test.ts').includes('reply-quality checks') && read('engine/tests/reply.quality.classification.test.ts').includes('العنوان والسعر'), 'اختبار جودة الرد موجود ويثبّت تصنيف الصيغ الإنتاجية');
 add('reply-quality-test-wired', /"test:reply-quality":\s*"tsx engine\/tests\/reply\.quality\.classification\.test\.ts"/.test(read('package.json')) && /npm run test:reply-intelligence && npm run test:reply-quality/.test(read('package.json')), 'اختبار جودة الرد مسجّل ضمن npm test');
+// ROOT-7: ربط المنشور بالمنتج — يُحفظ معرّف المنتج المسجّل فقط، ويُمرَّر عند النشر
+// إلى سجل النشر، فتُستخدم حقائق السعر/القسط في ردود تعليقات المنشور بدل التصعيد.
+add('content-post-product-link-persisted', /const productIdRaw = typeof b\.productId === "string"/.test(server) && /productId, status: resolvedStatus/.test(server), 'معرّف المنتج يُحفظ على المنشور (بعد التحقق من وجوده)');
+add('content-post-product-link-validated', /workspace\.products \|\| \[\]\)\.some\(\(p: any\) => String\(p\.id\) === productIdRaw\)/.test(server), 'معرّف المنتج لا يُحفظ إلا إن طابق منتجاً مسجّلاً (لا اختراع ربط)');
+add('content-publish-passes-product-id', /productId: typeof post\.productId === "string" && post\.productId \? post\.productId : undefined/.test(server), 'النشر الموحّد يمرّر معرّف منتج المنشور إلى المنفّذ');
+add('publish-record-carries-product-id', read('engine/social/publishing.ts').includes('productId?: string | null;') && /productId: input\.productId \?\? null/.test(read('engine/social/publishing.ts')), 'سجل النشر يحمل معرّف المنتج ليُربط المنشور الخارجي بمنتجه');
+add('content-product-link-test', read('engine/tests/content.product.link.test.ts').includes('product-post link checks'), 'اختبار ربط المنشور بالمنتج موجود');
+add('content-product-link-test-wired', /"test:content-product-link":\s*"tsx engine\/tests\/content\.product\.link\.test\.ts"/.test(read('package.json')) && /npm run test:reply-quality && npm run test:content-product-link/.test(read('package.json')), 'اختبار ربط المنشور بالمنتج مسجّل ضمن npm test');
+// ROOT-4: أسماء حساب المعرض تُضمّن اسم الصفحة/حساب إنستغرام المخزَّنين، فلا يُصنَّف
+// تعليقنا/ردّنا تعليقَ عميل حين يختلف اسم الصفحة الرسمي عن اسم المعرض.
+add('meta-self-authored-uses-stored-identity', /getProviderToken\("facebook"\)\?\.pageName/.test(server) && /getProviderToken\("instagram"\)\?\.igUsername/.test(server), 'كشف حساب المعرض يشمل اسم الصفحة/حساب إنستغرام المخزَّنين (لا الاسم فقط)');
 add('reply-intelligence-tests', fs.existsSync(path.join(root, 'engine/tests/reply.intelligence.test.ts')) && pkg.scripts['test:reply-intelligence'], 'اختبار Reply Intelligence مسجّل');
 add('reply-intelligence-test-in-suite', typeof pkg.scripts.test === 'string' && pkg.scripts.test.includes('test:reply-intelligence'), 'اختبار Reply Intelligence ضمن npm test');
 add('reply-intelligence-no-ai-quota', !/aiEngine|gemini|fetch\(|https?:/.test(replyComments), 'محرّك الرد حتمي بالكامل: لا مزود ولا شبكة ولا استهلاك حصة');
