@@ -7112,3 +7112,32 @@ TikTok (مجمّد)، Telegram/Threads، نموذج الجدولة، نطاق ER
 رمز/مسار `/api/health` (حقول فقط)، نطاق ERP، أي سرّ/متغيّر بيئة، أي نشر/دمج. **لا دمج** —
 بانتظار موافقة المالك.
 
+
+## PR-C — تناقضات العرض والاتصال (C1–C8) — فرع `fix/pr-c-display-consistency` (2026-10-21)
+
+إصلاحات طبقة عرض/اتصال فقط (لا تغيير سلوك إرسال، ولا أسرار، ولا إعدادات منصات). **Draft فقط.**
+
+- **C2 (مصدر واحد لحالة اتصال المنصات):** `effectivePlatformConnection(platform)` في `server.ts`
+  — Telegram لا يُعلن «متصل» إلا إن كان الاتصال المحفوظ موثقاً **و** الموصل مهيّأً فعلاً
+  (`telegramBotToken()` + `telegramWebhookSecret()`)؛ وإلا `reauth_needed`. تُقرأ في
+  `safeConnection`، وكل `liveFor`/readiness/control-plane، وعبر dep جديد `effectiveConnection`
+  في `engine/social/routes.ts` (`connectionFor`).
+- **C3 (ترويسة):** `Header.tsx` تعيد جلب `/api/health` كل 60s، وتعرض «Gemini: غير معروف»
+  عند فشل الجلب/`status==='offline'` بدل «Gemini محمي/غير مفعّل» (كانت تُعلن `false`).
+- **C4 (بطاقة المنصة):** `SocialHubView.tsx` — «تاريخ الربط» بدل «آخر مزامنة فعلية» (كانت
+  تعرض `connectedAt`)، وإضافة «آخر استقبال» من بيانات الاستقبال الفعلية.
+- **C5 (تقويم بغداد):** `ContentCalendarView.tsx` يحسب الشهر/الأسبوع/اليوم من التاريخ الفعلي
+  بتوقيت بغداد (بدل «سبتمبر 2026» وأيام 14–20 ثابتة) ويوزّع المنشورات على يومها؛ المصدر
+  الواحد `ARABIC_MONTHS`/`ARABIC_WEEKDAYS`/`arabicMonthLabel` في `src/utils/scheduleTime.ts`.
+- **C6 (وكيل المحتوى):** `MarketingAgentView.tsx` يأخذ المدة/الدفعة الأولى من المنتج المختار،
+  والافتراضي `INSTALLMENT_MONTHS_DEFAULT=10` (بدل 12). **لم تُمسّ معادلة القسط (PR #64).**
+- **C7 (إيقاع المراقب):** `youtubeWatcherScheduler.ts` صار يقبل `getRemainingMs` ويُسلّح
+  بالموعد الفعلي (بحدّ الإيقاع وأرضية 5s)، فلا يُضاف حتى 60s فتتحوّل 5 إلى 6. مُوصَّل في
+  مراقبي YouTube/Meta/Telegram في `server.ts`.
+- **C8 (تسمية النسخ):** `SystemControlView.tsx` — «نسخ الحالة المحلية» (لقطات ملف الحالة من
+  `listBackups`) بدل «النسخ الاحتياطية» المتضارب مع نقاط استعادة Drive (`/api/dr/recovery-points`).
+
+**اختبار:** `engine/tests/prc.display.consistency.test.ts` (`npm run test:prc-display-consistency`،
+**37 فحصاً**) + 8 فحوص final-audit `prc-*`. `npm run lint` ✅ · `npm run build` ✅ ·
+`final-audit` **1804**. ملاحظة دمج: تعارض نصي وحيد مع PR-A في سطر `"test"` في `package.json`
+(اتحاد السكربتات) — يُحل يدوياً عند الدمج.
