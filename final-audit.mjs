@@ -5115,13 +5115,15 @@ add('watcher-advisory-not-authority',
     !/GEMINI_API_KEY\s*=\s*['"]/.test(followupIntegrationTest),
     'اختبارا المتابعة/الإيقاف يستخدمان خادماً وهمياً محلياً بلا مزود حقيقي ولا مفتاح Gemini');
   // PR-S1: حارس نافذة مراسلة Meta (24 ساعة) + إصلاح الحجز المزدوج ليوتيوب.
+  // إصلاح 2026-10-22: النافذة الآن جزء من بوابة `evaluateFollowUpEligibility` الموحّدة
+  // (تسمح بالمتابعة فقط داخل نافذة بعد ردّنا على الرسائل الخاصة)، ويُسجَّل السبب.
   add('commercial-meta-window-guard-wired',
-    server.includes("lead.kind === 'message' && !isWithinMetaMessageWindow(lead.lastCustomerInteractionAt, nowIso)") &&
     server.includes('commercial_followup_blocked_meta_window') &&
-    server.includes('outside_meta_message_window_24h') &&
+    server.includes("followUpEligibility.code === 'OUTSIDE_META_WINDOW'") &&
     server.includes('windowBlocked: commercialWindowBlocked') &&
-    read('engine/commercial/commercialBrain.ts').includes('COMMERCIAL_META_MESSAGE_WINDOW_HOURS = 24'),
-    'حارس مؤقت يمنع متابعة تجارية عبر رسائل Meta خارج 24 ساعة ويُسجّل السبب (مصدر واحد)');
+    read('engine/commercial/commercialBrain.ts').includes('COMMERCIAL_META_MESSAGE_WINDOW_HOURS = 24') &&
+    read('engine/commercial/commercialBrain.ts').includes('COMMERCIAL_FOLLOWUP_WINDOW_HOURS = 72'),
+    'حارس نافذة المراسلة موحّد داخل بوابة المتابعة ويُسجّل السبب (مصدر واحد)');
   add('commercial-meta-window-guard-test',
     fs.existsSync(path.join(root, 'engine/tests/commercial.meta.window.guard.test.ts')) &&
     JSON.parse(read('package.json')).scripts.test.includes('npm run test:commercial-meta-window'),
@@ -5172,6 +5174,69 @@ add('watcher-advisory-not-authority',
     fs.existsSync(path.join(root, 'engine/tests/commercial.inbox.test.ts')) &&
     JSON.parse(read('package.json')).scripts.test.includes('npm run test:commercial-inbox'),
     'اختبار صندوق الزبائن موجود ومسجّل في npm test');
+
+  // إصلاح متابعات العقل التجاري (واقعة 2026-10-22): الأساس الزمني = رد المعرض لا
+  // تعليق الزبون، ولا متابعة على التعليقات العامة، والمحادثة الحيّة تمنع المتابعة.
+  const brainSrc = read('engine/commercial/commercialBrain.ts');
+  const qualSrc = read('engine/commercial/leadQualification.ts');
+  add('commercial-followup-based-on-business-reply',
+    brainSrc.includes('COMMERCIAL_FOLLOWUP_MIN_HOURS = 48') &&
+    brainSrc.includes('export function isCustomerRepliedAfterBusiness') &&
+    /const base = Date\.parse\(String\(lead\.lastBusinessReplyAt/.test(brainSrc) &&
+    /nextFollowUpAt[\s\S]{0,900}isCustomerRepliedAfterBusiness\(lead\)/.test(brainSrc) &&
+    !brainSrc.includes('COMMERCIAL_FOLLOWUP_HOURS'),
+    'المتابعة تُحسب من آخر رد للمعرض + 48 ساعة (لا من تعليق الزبون) والمحادثة الحيّة تمنعها');
+  add('commercial-followup-message-only',
+    qualSrc.includes("if (lead.kind !== 'message')") &&
+    qualSrc.includes("code: 'PUBLIC_COMMENT_NO_FOLLOWUP'") &&
+    qualSrc.includes("code: 'CONVERSATION_LIVE'") &&
+    qualSrc.includes("code: 'OUTSIDE_META_WINDOW'") &&
+    qualSrc.includes("code: 'FOLLOWUP_ONCE'") &&
+    qualSrc.includes('isWithinFollowUpWindow') &&
+    brainSrc.includes('COMMERCIAL_FOLLOWUP_WINDOW_HOURS = 72'),
+    'بوابة المتابعة: رسائل خاصة فقط + نافذة مراسلة + محادثة باردة + متابعة واحدة');
+  add('commercial-followup-single-per-inquiry',
+    qualSrc.includes('export function followUpExhaustedForLead') &&
+    qualSrc.includes('export function countLeadFollowUps') &&
+    qualSrc.includes('COMMERCIAL_MAX_FOLLOWUPS') &&
+    brainSrc.includes('COMMERCIAL_MAX_FOLLOWUPS = 1') &&
+    !qualSrc.includes('countPublicFollowUps'),
+    'متابعة واحدة لكل استفسار (مصدر واحد يعدّ متابعات الزبون لا التعليق)');
+  add('commercial-followup-records-business-reply',
+    /async function recordBusinessReplyOnLead/.test(server) &&
+    server.includes('lead.lastBusinessReplyAt = input.atIso') &&
+    /executeMetaCommentReply[\s\S]{0,14000}recordBusinessReplyOnLead/.test(server) &&
+    /executeMetaMessageReply[\s\S]{0,14000}recordBusinessReplyOnLead/.test(server),
+    'رد المعرض الفعلي يُسجَّل على العميل (أساس المتابعة) بعد التسليم المؤكّد فقط');
+  add('commercial-followup-no-window-gate-on-comment',
+    !server.includes("lead.kind === 'message' && !isWithinMetaMessageWindow") &&
+    /evaluateFollowUpEligibility\(\{ lead, drafts: commercialDrafts, nowIso \}\)/.test(server),
+    'بوابة النافذة موحّدة داخل evaluateFollowUpEligibility (لا فحص مكرر يسمح بمتابعة تعليق عام)');
+  add('reply-opener-no-duplication',
+    read('engine/social/comments.ts').includes('export function dedupeReplyOpener') &&
+    read('engine/social/comments.ts').includes('dedupeReplyOpenerIn(generateReplyCore(') &&
+    !/return done\(`\$\{trustedOpener\(seed, previous\)\}، نعم عدنا تقسيط\. تدلل/.test(read('engine/social/comments.ts')),
+    'بادئة الترحيب لا تتكرر داخل الرد (يُطبَّق على كل قوالب المحرّك)');
+  add('commercial-followup-rules-test',
+    fs.existsSync(path.join(root, 'engine/tests/commercial.followup.rules.test.ts')) &&
+    JSON.parse(read('package.json')).scripts.test.includes('npm run test:commercial-followup-rules') &&
+    JSON.parse(read('package.json')).scripts['test:commercial-followup-rules'].includes('commercial.followup.rules.test.ts'),
+    'اختبار قواعد المتابعة السلوكي موجود ومسجّل في npm test');
+
+  // إصلاح PR #71 (البند 7): ربط منشور منشور بمنتج بلا تغيير حالته ولا نشر ثانٍ.
+  add('content-post-product-link-immutable-published',
+    /const isPublishedPost = post\.status === 'published';/.test(server) &&
+    /isPublishedPost\) return res\.status\(422\)\.json\(\{success:false,code:'PUBLISHED_IMMUTABLE'/.test(server) &&
+    /if\(b\.productId!==undefined\)\{[\s\S]{0,400}for \(const rec of \(\(workspace as any\)\.publishRecords \|\| \[\]\)\)/.test(server),
+    'ربط منشور منشور بمنتج إجراء مستقل: لا يغيّر حالته، ويُحدَّث على سجلات النشر');
+  add('resolve-product-for-post-reads-post-product-id',
+    /for \(const rec of \(\(workspace as any\)\.publishRecords \|\| \[\]\)\)[\s\S]{0,600}const linkedPost = \(workspace\.posts \|\| \[\]\)\.find/.test(server) &&
+    /linkedPost && \(linkedPost as any\)\.productId/.test(server),
+    'resolveProductForPost يقرأ post.productId عبر سجل النشر المرتبط (يصل الربط إلى الردود)');
+  add('content-published-product-link-test',
+    fs.existsSync(path.join(root, 'engine/tests/content.published.product.link.test.ts')) &&
+    JSON.parse(read('package.json')).scripts.test.includes('npm run test:content-published-product-link'),
+    'اختبار ربط منشور منشور بمنتج (تكامل) موجود ومسجّل في npm test');
 
   // 12) مهلة إقلاع خادم الاختبارات: كل اختبارات الخوادم تنتظر 180s (لا 60s) لأن
   // `tsx server.ts` يُترجم عند التشغيل وقد يتجاوز 60s تحت حمل CI فيصير الفحص مزعزعاً.
@@ -5320,8 +5385,9 @@ add('watcher-advisory-not-authority',
       read('engine/commercial/leadQualification.ts').includes('COMMERCIAL_FOLLOWUP_MAX_AGE_HOURS = 168') &&
       read('engine/commercial/leadQualification.ts').includes("code: 'STALE_BEYOND_7_DAYS'") &&
       read('engine/commercial/leadQualification.ts').includes("code: 'BACKFILL_NO_FOLLOWUP'") &&
-      read('engine/commercial/leadQualification.ts').includes("code: 'PUBLIC_FOLLOWUP_ONCE'"),
-      'بوابة متابعة واحدة: ≤7 أيام، بلا backfill، تعليق عام مرة واحدة');
+      read('engine/commercial/leadQualification.ts').includes("code: 'PUBLIC_COMMENT_NO_FOLLOWUP'") &&
+      read('engine/commercial/leadQualification.ts').includes("code: 'FOLLOWUP_ONCE'"),
+      'بوابة متابعة واحدة: ≤7 أيام، بلا backfill، رسائل خاصة فقط، ومتابعة واحدة لكل استفسار');
     add('prs5-cleanup-no-delete',
       read('engine/commercial/leadQualification.ts').includes('export function planCommercialDraftCleanup') &&
       read('engine/commercial/leadQualification.ts').includes('export function planCommercialLeadArchive') &&

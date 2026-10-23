@@ -124,57 +124,83 @@ function main(): void {
   check('عمر 3 أيام = backfill', isBackfillImport(iso(3 * D), NOW));
 
   group('4) بوابة المتابعة النظيفة (مصدر واحد)');
+  // رسالة خاصة (المسار الوحيد المسموح للمتابعة). الزبون سأل ثم **ردّ المعرض** عليه
+  // قبل 49 ساعة والزبون ساكت بعدها ⇒ المحادثة باردة ومؤهّلة للمتابعة.
+  const msgBase = (over: Partial<InboundInteraction> = {}) => leadFrom('كم القسط؟', { kind: 'message', conversationId: 'PSID9', replyTarget: { recipientId: 'PSID9' }, ...over });
+  const msgLead = msgBase({ at: iso(50 * H) });
+  // بلا رد للمعرض ⇒ لا أساس لمتابعة.
+  check('بلا رد للمعرض ⇒ NO_BUSINESS_REPLY',
+    evaluateFollowUpEligibility({ lead: msgLead, drafts: [], nowIso: NOW }).code === 'NO_BUSINESS_REPLY');
+  // تعليق عام (kind=comment) ⇒ لا متابعة إطلاقاً.
+  check('تعليق عام ⇒ PUBLIC_COMMENT_NO_FOLLOWUP',
+    evaluateFollowUpEligibility({ lead: priceLead, drafts: [], nowIso: NOW }).code === 'PUBLIC_COMMENT_NO_FOLLOWUP');
+  // رسالة خاصة: رد المعرض قبل 49 ساعة، الزبون ساكت، داخل النافذة ⇒ مؤهّل.
+  const reply49 = { ...msgLead, lastBusinessReplyAt: iso(49 * H) };
+  check('رسالة خاصة + رد معرض قبل 49س + الزبون ساكت ⇒ مؤهّل',
+    evaluateFollowUpEligibility({ lead: reply49, drafts: [], nowIso: NOW }).code === 'ELIGIBLE');
+  // خارج نافذة المتابعة (بعد 80 ساعة من ردّنا) ⇒ لا متابعة.
+  const reply80 = { ...msgBase({ at: iso(90 * H) }), lastBusinessReplyAt: iso(80 * H) };
+  check('خارج نافذة المراسلة ⇒ OUTSIDE_META_WINDOW',
+    evaluateFollowUpEligibility({ lead: reply80, drafts: [], nowIso: NOW }).code === 'OUTSIDE_META_WINDOW');
+  // المحادثة حيّة: الزبون ردّ بعد رد المعرض ⇒ لا متابعة.
+  const liveLead = { ...reply49, lastCustomerInteractionAt: iso(2 * H) };
+  check('ردّ الزبون بعد رد المعرض ⇒ CONVERSATION_LIVE',
+    evaluateFollowUpEligibility({ lead: liveLead, drafts: [], nowIso: NOW }).code === 'CONVERSATION_LIVE');
+  // متابعة واحدة فقط: مسودة متابعة قائمة ⇒ لا ثانية.
+  const oneDraft = draft({ id: 'm1', leadId: msgLead.id, leadKey: msgLead.key, purpose: 'follow_up', kind: 'message', externalId: 'msg1', recipientId: 'PSID9' });
+  check('متابعة واحدة قائمة ⇒ لا ثانية (FOLLOWUP_ONCE)',
+    evaluateFollowUpEligibility({ lead: reply49, drafts: [oneDraft], nowIso: NOW }).code === 'FOLLOWUP_ONCE');
+  // القواعد القديمة تبقى سارية.
   const staleLead = leadFrom('كم سعر؟', { at: iso(20 * D) });
   check('20 يوماً ⇒ لا متابعة (STALE_BEYOND_7_DAYS)',
     evaluateFollowUpEligibility({ lead: staleLead, drafts: [], nowIso: NOW }).code === 'STALE_BEYOND_7_DAYS');
   const emojiFollow = evaluateFollowUpEligibility({ lead: emojiLead, drafts: [], nowIso: NOW });
   check('إيموجي ⇒ لا متابعة (NOT_A_REAL_QUESTION)', !emojiFollow.eligible && emojiFollow.code === 'NOT_A_REAL_QUESTION');
-  const backfillLead: CommercialLead = { ...priceLead, backfill: true };
+  const backfillLead: CommercialLead = { ...msgBase(), backfill: true, lastBusinessReplyAt: iso(49 * H) };
   check('backfill ⇒ لا متابعة (BACKFILL_NO_FOLLOWUP)',
     evaluateFollowUpEligibility({ lead: backfillLead, drafts: [], nowIso: NOW }).code === 'BACKFILL_NO_FOLLOWUP');
-  const publicDraft = draft({ id: 'pub1', leadId: priceLead.id, leadKey: priceLead.key, purpose: 'follow_up', kind: 'comment', externalId: 'c1' });
-  check('تعليق عام مُتابَع مرة ⇒ لا متابعة ثانية (PUBLIC_FOLLOWUP_ONCE)',
-    evaluateFollowUpEligibility({ lead: priceLead, drafts: [publicDraft], nowIso: NOW }).code === 'PUBLIC_FOLLOWUP_ONCE');
-  const msgLead = leadFrom('كم القسط؟', { kind: 'message', conversationId: 'PSID9', replyTarget: { recipientId: 'PSID9' } });
-  const msgFollowDraft = draft({ id: 'm1', leadId: msgLead.id, leadKey: msgLead.key, purpose: 'follow_up', kind: 'message', externalId: 'msg1', recipientId: 'PSID9' });
-  check('الرسالة الخاصة ليست مقيّدة بمرة واحدة', evaluateFollowUpEligibility({ lead: msgLead, drafts: [msgFollowDraft], nowIso: NOW }).eligible === true);
-  const healthy = evaluateFollowUpEligibility({ lead: priceLead, drafts: [], nowIso: NOW });
-  check('سؤال حقيقي حديث ⇒ متابعة مؤهّلة', healthy.eligible && healthy.code === 'ELIGIBLE');
 
   group('5) التنظيف: إلغاء المسودات المخالفة بلا حذف + أرشفة الـleads المخالفة');
   const emojiLead2 = leadFrom('😍', { externalId: 'cE', conversationId: 'author:E' });
   const staleLead2 = leadFrom('كم سعر؟', { externalId: 'cS', conversationId: 'author:S', at: iso(20 * D) });
   const goodLead = leadFrom('كم سعر هذا الموبايل؟', { externalId: 'cG', conversationId: 'author:G' });
-  const leads = [emojiLead2, staleLead2, goodLead];
+  // متابعة على تعليق عام (مخالفة) + متابعة رسالة صحيحة.
+  const msgCleanLead = leadFrom('كم القسط؟', { kind: 'message', conversationId: 'PSID_C', replyTarget: { recipientId: 'PSID_C' }, externalId: 'mc', at: iso(50 * H) });
+  msgCleanLead.lastBusinessReplyAt = iso(49 * H);
+  const leads = [emojiLead2, staleLead2, goodLead, msgCleanLead];
   const drafts: CommercialDraft[] = [
     draft({ id: 'dE', leadId: emojiLead2.id, leadKey: emojiLead2.key, externalId: 'cE', purpose: 'follow_up' }),
     draft({ id: 'dS', leadId: staleLead2.id, leadKey: staleLead2.key, externalId: 'cS', purpose: 'follow_up' }),
+    draft({ id: 'dPub', leadId: goodLead.id, leadKey: goodLead.key, externalId: 'cG', purpose: 'follow_up', kind: 'comment' }),
+    draft({ id: 'dMsg', leadId: msgCleanLead.id, leadKey: msgCleanLead.key, purpose: 'follow_up', kind: 'message', externalId: 'mc', recipientId: 'PSID_C' }),
     draft({ id: 'dG', leadId: goodLead.id, leadKey: goodLead.key, externalId: 'cG', purpose: 'reply' }),
   ];
   const plan = planCommercialDraftCleanup({ drafts, leads, nowIso: NOW });
   const byId = new Map(plan.cancellations.map((c) => [c.id, c]));
   check('مسودة الإيموجي تُلغى بسبب NOT_A_REAL_QUESTION', byId.get('dE')?.code === 'NOT_A_REAL_QUESTION', JSON.stringify(byId.get('dE')));
   check('مسودة الـ20 يوماً تُلغى بسبب STALE_BEYOND_7_DAYS', byId.get('dS')?.code === 'STALE_BEYOND_7_DAYS', JSON.stringify(byId.get('dS')));
+  check('متابعة التعليق العام تُلغى بسبب PUBLIC_COMMENT_NO_FOLLOWUP', byId.get('dPub')?.code === 'PUBLIC_COMMENT_NO_FOLLOWUP', JSON.stringify(byId.get('dPub')));
   check('مسودة الجواب الصحيحة **لا تُلغى**', !byId.has('dG'));
-  check('المُبقي من المعلّق = 1', plan.keptPending === 1, String(plan.keptPending));
+  check('متابعة الرسالة الخاصة الصحيحة **لا تُلغى**', !byId.has('dMsg'));
   check('كل إلغاء يحمل سبباً مكتوباً', plan.cancellations.every((c) => c.reason.trim().length > 0));
   const archivePlan = planCommercialLeadArchive(leads);
   check('يُؤرشف lead الإيموجي فقط', archivePlan.length === 1 && archivePlan[0].id === emojiLead2.id, JSON.stringify(archivePlan));
   check('lead السؤال الصحيح (حتى القديم) لا يُؤرشف — التأهيل لا الأقدمية', !archivePlan.some((a) => a.id === goodLead.id || a.id === staleLead2.id));
 
-  group('6) التعليق العام يُتابَع مرة واحدة كحد أقصى (يُبقي الأقدم)');
-  const leadPub = leadFrom('كم سعر؟', { externalId: 'cP', conversationId: 'author:P' });
+  group('6) متابعة واحدة لكل استفسار (تُبقي الأقدم)');
+  const leadMsg = leadFrom('كم القسط؟', { externalId: 'mP', conversationId: 'PSID_P', kind: 'message', replyTarget: { recipientId: 'PSID_P' }, at: iso(50 * H) });
+  leadMsg.lastBusinessReplyAt = iso(49 * H);
   const pubDrafts: CommercialDraft[] = [
-    draft({ id: 'p1', leadId: leadPub.id, leadKey: leadPub.key, externalId: 'cP', purpose: 'follow_up', kind: 'comment', createdAt: iso(3 * H) }),
-    draft({ id: 'p2', leadId: leadPub.id, leadKey: leadPub.key, externalId: 'cP', purpose: 'follow_up', kind: 'comment', createdAt: iso(1 * H) }),
+    draft({ id: 'p1', leadId: leadMsg.id, leadKey: leadMsg.key, externalId: 'mP', recipientId: 'PSID_P', purpose: 'follow_up', kind: 'message', createdAt: iso(3 * H) }),
+    draft({ id: 'p2', leadId: leadMsg.id, leadKey: leadMsg.key, externalId: 'mP', recipientId: 'PSID_P', purpose: 'follow_up', kind: 'message', createdAt: iso(1 * H) }),
   ];
-  const pubPlan = planCommercialDraftCleanup({ drafts: pubDrafts, leads: [leadPub], nowIso: NOW });
-  check('الأقدم يبقى والأحدث يُلغى (PUBLIC_FOLLOWUP_ONCE)', !pubPlan.cancellations.some((c) => c.id === 'p1') && pubPlan.cancellations.some((c) => c.id === 'p2' && c.code === 'PUBLIC_FOLLOWUP_ONCE'), JSON.stringify(pubPlan.cancellations));
+  const pubPlan = planCommercialDraftCleanup({ drafts: pubDrafts, leads: [leadMsg], nowIso: NOW });
+  check('الأقدم يبقى والأحدث يُلغى (FOLLOWUP_ONCE)', !pubPlan.cancellations.some((c) => c.id === 'p1') && pubPlan.cancellations.some((c) => c.id === 'p2' && c.code === 'FOLLOWUP_ONCE'), JSON.stringify(pubPlan.cancellations));
 
   group('7) ملخّص التأهيل');
   const summary = summarizeQualification({ leads, drafts, nowIso: NOW });
-  check('إجمالي العملاء = 3', summary.totalLeads === 3, JSON.stringify(summary));
-  check('المؤهّلون = 2 (سؤال حقيقي)', summary.qualifiedLeads === 2, JSON.stringify(summary));
+  check('إجمالي العملاء = 4', summary.totalLeads === 4, JSON.stringify(summary));
+  check('المؤهّلون = 3 (سؤال حقيقي)', summary.qualifiedLeads === 3, JSON.stringify(summary));
   check('متابعات قديمة/backfill مُعلّقة = 1', summary.staleFollowUpDrafts === 1, JSON.stringify(summary));
   check('مسودات الجواب = 1', summary.answerDrafts === 1, JSON.stringify(summary));
 

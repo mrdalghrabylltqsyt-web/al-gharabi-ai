@@ -44,7 +44,7 @@ npm install
 npm run dev            # tsx server.ts
 npm run lint           # tsc --noEmit
 npm run build          # vite build + esbuild server.ts -> dist/server.cjs
-npm run final-audit    # node final-audit.mjs (1842 فحصاً)
+npm run final-audit    # node final-audit.mjs (1852 فحصاً)
 npm test               # storage + engine + auth + ... + db + runtime
 ```
 - التشغيل الإنتاجي: `PORT=4517 NODE_ENV=production APP_URL=http://localhost:4517 node dist/server.cjs`
@@ -7249,3 +7249,63 @@ test:content-product-link`، 12 فحصاً) يُثبت الإنشاء/التحق
 `meta.watcher.productfacts` (16)، `ui.interactions` (40). final-audit **1842** فحصاً
 (كتلة `prb-*` الجديدة). `npm run lint` ✅ · `npm run build` ✅ · `npm test` ✅ (EXIT=0) ·
 `npm run final-audit` ✅. لم يُلمس أي سرّ/مفتاح/OAuth، ولا ERP، ولا معادلة القسط.
+
+## إصلاح متابعات العقل التجاري + ربط منشور منشور بمنتج (واقعة 2026-10-22)
+
+**الواقعة (إنتاج):** زبونة علّقت «العنوان والسعر» على منشور فيسبوك عام، فردّ المعرض عليها،
+ثم بعد ساعات اقترح العقل التجاري **مسودة متابعة عامة** تحت تعليقها («هلا وغلا 🌹 حيبت أتأكد
+إذا بعدك مهتم…») — رد عام يشبه السبام على تعليق حديث.
+
+**الجذور المُثبتة (ملف:سطر قبل الإصلاح):**
+1. `engine/commercial/commercialBrain.ts` — `nextFollowUpAt` كان يبني موعد المتابعة من
+   `lastCustomerInteractionAt` (تعليق الزبون) + `COMMERCIAL_FOLLOWUP_HOURS=[24,72]`، **لا من
+   رد المعرض**. فمتابعة حديثة تحت تعليق قديم تبدو «مستحقة».
+2. `server.ts` (حلقة `runCommercialBrainCycle` ~9520) — بوابة المتابعة الوحيدة كانت نافذة
+   Meta على `lead.kind === 'message'` فقط، ولا تمنع التعليقات العامة صراحةً، ولا تتحقق من
+   «ردّ الزبون بعد رد المعرض».
+3. `engine/social/comments.ts` (قالب `installment_availability_yes`) — البادئة كانت
+   `trustedOpener(...)` ثم نص فيه «تدلل، راسلنا» حرفياً ⇒ تكرار «تدلل» داخل الرد نفسه.
+4. `server.ts:~8110` — `resolveProductForPost` كان يقرأ `publishRecords` و`contentQueue`
+   فقط، لا `post.productId`؛ و`PATCH /api/workspace/content/:id` كان يحوّل حالة المنشور
+   المنشور إلى `edited` عند أي تعديل (خطر نشره مرتين).
+
+**الإصلاح (مصدر واحد، بلا مساس بالحماية القائمة):**
+- **أساس زمني = رد المعرض:** `lead.lastBusinessReplyAt` يُسجَّل بعد **تسليم مؤكّد فعلي**
+  (`recordBusinessReplyOnLead` موصول في `executeMetaCommentReply` و`executeMetaMessageReply`)،
+  ويُعاد حساب `nextFollowUpAt` منه (`COMMERCIAL_FOLLOWUP_MIN_HOURS = 48`).
+- **رسائل خاصة فقط:** `evaluateFollowUpEligibility` يرفض التعليقات العامة صراحةً
+  (`PUBLIC_COMMENT_NO_FOLLOWUP`)، ويشترط نافذة المتابعة (`isWithinFollowUpWindow`،
+  `COMMERCIAL_FOLLOWUP_WINDOW_HOURS = 72`)، ويرفض `CONVERSATION_LIVE` إن ردّ الزبون بعد رد
+  المعرض، و`NO_BUSINESS_REPLY` إن لا رد للمعرض. القواعد القديمة باقية: ≤7 أيام
+  (`STALE_BEYOND_7_DAYS`)، بلا backfill، ومتابعة واحدة لكل استفسار (`FOLLOWUP_ONCE`،
+  `COMMERCIAL_MAX_FOLLOWUPS = 1`).
+- **بادئة لا تتكرر:** `dedupeReplyOpener` في `comments.ts` يُغلّف ناتج `generateReplyCore`
+  فيمرّ **كل** قالب (لا قالب واحد)، فيُحذف تكرار البادئة بعد أول جملة.
+- **ربط منشور منشور بمنتج (البند 7):** `PATCH /api/workspace/content/:id` يعامل المنشور
+  `published` معاملة خاصة: تغيير الحالة مرفوض **422 `PUBLISHED_IMMUTABLE`**، وربط المنتج
+  إجراء مستقل يحدّث `post.productId` **وكل سجلات النشر المرتبطة** بلا تغيير الحالة/المحتوى.
+  و`resolveProductForPost` يقرأ الآن `post.productId` عبر سجل النشر المرتبط، فتصل حقائق
+  المنتج إلى الردود بلا إعادة نشر.
+
+**الاختبارات (سلوكية، تفشل على الكود القديم — مُثبت):**
+- `engine/tests/commercial.followup.rules.test.ts` (`npm run test:commercial-followup-rules`،
+  **15 فحصاً**): تعليق عام + رد معرض قبل ساعات ⇒ لا مسودة؛ رسالة خاصة + رد معرض قبل 49س +
+  الزبون ساكت ⇒ مسودة واحدة؛ الزبون ردّ بعد رد المعرض ⇒ لا متابعة؛ خارج النافذة (80س) ⇒ لا
+  متابعة؛ متابعة واحدة فقط؛ وثبات بعد دورة ثانية؛ وبادئة غير مكرّرة. **7 إخفاقات على الكود
+  القديم.**
+- `engine/tests/content.published.product.link.test.ts`
+  (`npm run test:content-published-product-link`، **14 فحصاً**): ربط منتج لمنشور منشور ⇒
+  الحالة تبقى `published` وسجل النشر يُحدَّث؛ تغيير الحالة ⇒ 422؛ تعليق «كم السعر» ⇒ الرد
+  يذكر السعر الحقيقي. **5 إخفاقات على الكود القديم.**
+- `engine/tests/commercial.qualification.test.ts` (**51 فحصاً**) و`commercial.inbox.test.ts`
+  أُعيد ضبط مواعيدها لتطابق القاعدة الجديدة (الأساس الزمني = رد المعرض).
+
+فحوص final-audit الجديدة: `commercial-followup-based-on-business-reply`،
+`commercial-followup-message-only`، `commercial-followup-single-per-inquiry`،
+`commercial-followup-records-business-reply`، `commercial-followup-no-window-gate-on-comment`،
+`reply-opener-no-duplication`، `commercial-followup-rules-test`،
+`content-post-product-link-immutable-published`، `resolve-product-for-post-reads-post-product-id`،
+`content-published-product-link-test` (الإجمالي **1852**).
+
+**لم يُمسّ:** `commercialSendMode` يبقى `approval` (لا إرسال لزبون)، Kill Switch، تجميد TikTok،
+YouTube (المراقب Paused)، PR #64، ERP، ومعادلة القسط. لا دمج ولا نشر ولا تغيير متغيّرات.

@@ -537,6 +537,33 @@ function trustedOpener(seed: string, previous: string[]): string {
   return pickVariant(openers, seed, usedOpeners);
 }
 
+/**
+ * بادئات الترحيب المعروفة. القاعدة: البادئة التي يفتتح بها الرد **لا تتكرر** داخله
+ * (الجذر: «تدلل، نعم عدنا تقسيط. تدلل، راسلنا…» — كلمة البادئة نفسها مرّتين).
+ */
+const REPLY_OPENERS: readonly string[] = Object.freeze([
+  'هلا وغلا', 'أهلاً وسهلاً', 'حياك الله', 'نورتنا', 'تدلل', 'تحت أمرك', 'من عيوني', 'هلا والله',
+]);
+
+/**
+ * يمنع تكرار بادئة الترحيب داخل الرد: إن افتُتح النص ببادئة معروفة ثم تكرّرت نفس
+ * البادئة في مقطع لاحق (بعد «،» أو «.») تُحذف التكرار اللاحق — فتكون البادئة مرة
+ * واحدة. يُطبَّق على **كل** قوالب الردود (لا قالب بعينه) فلا يتكرر أي ترحيب.
+ */
+export function dedupeReplyOpener(text: string): string {
+  let t = String(text || '').trim();
+  if (!t) return t;
+  for (const o of REPLY_OPENERS) {
+    if (!t.startsWith(o)) continue;
+    const tail = t.slice(o.length);
+    const esc = o.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const re = new RegExp(`([،.]\\s*)${esc}[،.]?\\s*`, 'g');
+    t = o + tail.replace(re, '$1');
+    break;
+  }
+  return t.replace(/[،]\s*[،]/g, '،').replace(/\s{2,}/g, ' ').trim();
+}
+
 /** يبني بادئة اسم المنتج بأمان لغوي عند توفره. */
 function withProduct(name: string | undefined, sentence: (p: string) => string): string {
   const p = (name || '').trim();
@@ -572,6 +599,20 @@ function standardizedDocsClause(f: ReplyFactSet): string {
  * - الردود القصيرة تبقى قصيرة، والردود لا تتحوّل إلى إعلان تسويقي.
  */
 export function generateReply(
+  comment: ClassifiedComment,
+  facts: ReplyFactSet = {},
+  context: ReplyContext = {},
+): GeneratedReply {
+  return dedupeReplyOpenerIn(generateReplyCore(comment, facts, context));
+}
+
+/** يطبّق قاعدة «بادئة الترحيب لا تتكرر داخل الرد» على مخرَج المحرّك (كل القوالب). */
+function dedupeReplyOpenerIn(reply: GeneratedReply): GeneratedReply {
+  const text = dedupeReplyOpener(reply.text);
+  return text === reply.text ? reply : { ...reply, text };
+}
+
+function generateReplyCore(
   comment: ClassifiedComment,
   facts: ReplyFactSet = {},
   context: ReplyContext = {},

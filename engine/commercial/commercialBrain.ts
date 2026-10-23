@@ -35,24 +35,57 @@ export const COMMERCIAL_MAX_DISCOUNT_PERCENT_DEFAULT = 5;
  * المعتادة، ويعمل السقف المطلق كشبكة أمان فقط.
  */
 export const COMMERCIAL_MAX_DISCOUNT_ABS_DEFAULT = 200000;
-/** نوافذ المتابعة الافتراضية (ساعات) — بلا رسالة باردة، فقط لمَن بدأ التواصل. */
-export const COMMERCIAL_FOLLOWUP_HOURS: readonly number[] = Object.freeze([24, 72]);
-/** حدّ أقصى لعدد المتابعات قبل التوقف عن الإلحاح (لا إزعاج). */
-export const COMMERCIAL_MAX_FOLLOWUPS = 2;
+/**
+ * الحدّ الأدنى قبل متابعة نظيفة (ساعات) — **يُقاس من آخر رد فعلي للمعرض**، لا من
+ * تعليق الزبون. الجذر المُثبت (2026-10-22): كان الموعد يُحسب من آخر تفاعل للعميل،
+ * فبعد أن ردّ المعرض على الزبونة اقترح العقل «متابعة» بعد 24 ساعة من تعليقها —
+ * أي متابعة على تعليق عام تحت تعليقها رغم أن المعرض ردّ عليها للتوّ.
+ */
+export const COMMERCIAL_FOLLOWUP_MIN_HOURS = 48;
+/** حدّ أقصى لعدد المتابعات لكل استفسار (متابعة واحدة فقط — لا إلحاح). */
+export const COMMERCIAL_MAX_FOLLOWUPS = 1;
 
 /**
- * PR-S1 — حارس مؤقت: نافذة مراسلة Meta الرسمية (24 ساعة من آخر رسالة للعميل).
+ * PR-S1 — حارس مؤقت: نافذة مراسلة Meta الرسمية (24 ساعة من آخر تفاعل للعميل).
  * خارج هذه النافذة، إرسال رسالة عبر Messenger/DM يخالف سياسة Meta ويعرّض الصفحة
  * للتقييد. هذا حارس مؤقت (يُوسَّع لاحقاً في PR منفصل لمعالجة كل حالات النافذة).
  */
 export const COMMERCIAL_META_MESSAGE_WINDOW_HOURS = 24;
 
-/** هل آخر تفاعل للعميل داخل نافذة مراسلة Meta (24 ساعة) الآن؟ */
-export function isWithinMetaMessageWindow(lastCustomerInteractionAt: string | null | undefined, nowIso: string): boolean {
-  const last = Date.parse(String(lastCustomerInteractionAt || ''));
+/**
+ * نافذة إرسال المتابعة (ساعات) — تُقاس من **آخر رد للمعرض** لا من تعليق الزبون.
+ * المتابعة هي «نكزة» بعد أن أجاب المعرض وهدأ العميل، فيجب أن تقع داخل نافذة
+ * المراسلة المسموحة بعد ردنا. تجاوزها ⇒ المحادثة مهجورة، لا نُرسل شيئاً.
+ */
+export const COMMERCIAL_FOLLOWUP_WINDOW_HOURS = 72;
+
+/** هل اللحظة داخل نافذة مراسلة بطول محدّد (افتراضياً نافذة Meta 24 ساعة)؟ */
+export function isWithinMetaMessageWindow(
+  lastInteractionAt: string | null | undefined,
+  nowIso: string,
+  windowHours: number = COMMERCIAL_META_MESSAGE_WINDOW_HOURS,
+): boolean {
+  const last = Date.parse(String(lastInteractionAt || ''));
   const now = Date.parse(nowIso);
   if (!Number.isFinite(last) || !Number.isFinite(now)) return false;
-  return now - last < COMMERCIAL_META_MESSAGE_WINDOW_HOURS * 3600_000;
+  const hours = Number.isFinite(windowHours) && windowHours > 0 ? windowHours : COMMERCIAL_META_MESSAGE_WINDOW_HOURS;
+  return now - last < hours * 3600_000;
+}
+
+/** هل آخر رد للمعرض داخل نافذة المتابعة المسموحة (من ردنا لا من تعليق الزبون)؟ */
+export function isWithinFollowUpWindow(lastBusinessReplyAt: string | null | undefined, nowIso: string): boolean {
+  return isWithinMetaMessageWindow(lastBusinessReplyAt, nowIso, COMMERCIAL_FOLLOWUP_WINDOW_HOURS);
+}
+
+/**
+ * هل ردّ الزبون **بعد** آخر رد فعلي للمعرض؟ (المحادثة حيّة ⇒ لا متابعة).
+ * عند غياب أحد الوقتين لا يمكن الجزم ⇒ `false` (لا نمنع بلا دليل).
+ */
+export function isCustomerRepliedAfterBusiness(lead: Pick<CommercialLead, 'lastCustomerInteractionAt' | 'lastBusinessReplyAt'>): boolean {
+  const cust = Date.parse(String(lead.lastCustomerInteractionAt || ''));
+  const biz = Date.parse(String(lead.lastBusinessReplyAt || ''));
+  if (!Number.isFinite(cust) || !Number.isFinite(biz)) return false;
+  return cust >= biz;
 }
 /** عتبة «العميل جاهز للتعاقد»: تفاعل كافٍ + إشارة شراء صريحة. */
 export const COMMERCIAL_MIN_TOUCHES_FOR_READY = 2;
@@ -494,21 +527,21 @@ export function mergeCommercialInteraction(lead: CommercialLead, input: InboundI
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
- * يحدّد وقت المتابعة القادم: آخر تفاعل من العميل + نافذة المتابعة التالية، **فقط**
- * إذا بدأ العميل التواصل، ولم يرد المعرض بعده، ولم يُستنفد حدّ المتابعات.
- * غياب شرط ⇒ `null` (لا متابعة).
+ * يحدّد وقت المتابعة القادم: **آخر رد فعلي من المعرض + 48 ساعة**، **فقط** إذا بدأ
+ * العميل التواصل، ولم يردّ بعد ردّنا (المحادثة باردة)، ولم يُستنفد حدّ المتابعة.
+ * غياب شرط ⇒ `null` (لا متابعة). الجذر المُثبت: الأساس كان **تعليق الزبون** لا
+ * ردّ المعرض، فيُقترح «متابعة» بعد رد حديث للمعرض.
  */
 export function nextFollowUpAt(lead: CommercialLead): string | null {
   if (!lead.initiatedByCustomer) return null; // لا رسالة باردة أبداً.
   if (lead.stage === 'WON' || lead.stage === 'LOST' || lead.stage === 'ESCALATED') return null;
   if (lead.followUpsSent >= COMMERCIAL_MAX_FOLLOWUPS) return null; // لا إلحاح.
-  if (!lead.lastCustomerInteractionAt) return null;
-  // إن ردّ المعرض بعد آخر رسالة للعميل، لا متابعة (لا تكرار بعد رد حديث).
-  if (lead.lastBusinessReplyAt && Date.parse(lead.lastBusinessReplyAt) >= Date.parse(lead.lastCustomerInteractionAt)) return null;
-  const base = Date.parse(lead.lastCustomerInteractionAt);
+  // الأساس = آخر رد فعلي من المعرض. بلا رد للمعرض لا أساس لمتابعة (لا نُنكز على سؤال).
+  const base = Date.parse(String(lead.lastBusinessReplyAt || ''));
   if (!Number.isFinite(base)) return null;
-  const hours = COMMERCIAL_FOLLOWUP_HOURS[Math.min(lead.followUpsSent, COMMERCIAL_FOLLOWUP_HOURS.length - 1)];
-  return new Date(base + hours * 3600_000).toISOString();
+  // المحادثة حيّة: ردّ الزبون بعد آخر رد للمعرض ⇒ لا متابعة.
+  if (isCustomerRepliedAfterBusiness(lead)) return null;
+  return new Date(base + COMMERCIAL_FOLLOWUP_MIN_HOURS * 3600_000).toISOString();
 }
 
 export interface FollowUpDueResult {
@@ -519,7 +552,9 @@ export interface FollowUpDueResult {
 
 /** هل حان وقت المتابعة الآن؟ (قرار حتمي بلا ساعة حقيقية). */
 export function isFollowUpDue(lead: CommercialLead, nowIso: string): FollowUpDueResult {
-  const scheduled = lead.nextFollowUpAt || nextFollowUpAt(lead);
+  // يُحسَب دائماً من الحقائق الحالية (آخر رد للمعرض) لا من قيمة محفوظة قد تكون
+  // محسوبة بقاعدة قديمة — فيستحيل أن تُقترح متابعة بناءً على تعليق الزبون وحده.
+  const scheduled = nextFollowUpAt(lead);
   if (!lead.initiatedByCustomer) return { due: false, state: 'STOPPED', reason: 'لم يبدأ العميل التواصل — لا رسالة باردة.' };
   if (lead.stage === 'WON' || lead.stage === 'LOST') return { due: false, state: 'STOPPED', reason: 'العميل محسوم (صفقة/مفقود).' };
   if (lead.followUpsSent >= COMMERCIAL_MAX_FOLLOWUPS) return { due: false, state: 'STOPPED', reason: 'استُنفد حدّ المتابعات (لا إلحاح).' };

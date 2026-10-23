@@ -93,7 +93,14 @@ async function login(): Promise<Record<string, string>> {
   return { 'Content-Type': 'application/json', Authorization: `Bearer ${body.token}` };
 }
 
-/** يزرع عميلين (متابعة مستحقة داخل/خارج نافذة Meta) + اتصال Facebook موثق + مفتاح مفعّل. */
+/**
+ * يزرع عميلين لاختبار **الرد الفوري في وضع الموافقة** (لا المتابعة — تلك مُغطّاة في
+ * `commercial.followup.rules.test.ts`):
+ *  - lead_in: رسالة خاصة حديثة (2 ساعة) بلا رد للمعرض ⇒ مسودة **رد فوري** معلّقة.
+ *  - lead_out: رسالة خاصة قديمة (72 ساعة) بلا رد للمعرض ⇒ مسودة الرد الفوري منتهية
+ *    (خارج نافذة Meta للرد الحرّ)، ولا متابعة (خارج نافذة المتابعة).
+ * + اتصال Facebook موثق + مفتاح مفعّل.
+ */
 function seedState(): void {
   const nowMs = Date.now();
   const leads = [

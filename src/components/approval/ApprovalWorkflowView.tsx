@@ -67,6 +67,13 @@ export const ApprovalWorkflowView: React.FC = () => {
 
   const handleSaveEdit = () => {
     if (!editingPost) return;
+    // منشور **منشور فعلاً**: الربط بمنتج إجراء مستقل — لا نغيّر حالته ولا محتواه
+    // ولا نُعيده لمسار الموافقة (منعاً لنشر مزدوج). نرسل معرّف المنتج فقط.
+    if (editingPost.status === 'published') {
+      updatePostContent(editingPost.id, { productId: editProductId || undefined });
+      setEditingPost(null);
+      return;
+    }
     updatePostContent(editingPost.id, {
       title: editTitle,
       content: editContent,
@@ -418,7 +425,7 @@ export const ApprovalWorkflowView: React.FC = () => {
             <div className="flex items-center justify-between border-b border-slate-800 pb-3">
               <h3 className="font-bold text-base text-white flex items-center gap-2">
                 <Edit3 className="w-5 h-5 text-emerald-400" />
-                تعديل المحتوى قبل الاعتماد
+                {editingPost.status === 'published' ? 'ربط المنشور المنشور بمنتج' : 'تعديل المحتوى قبل الاعتماد'}
               </h3>
               <button
                 onClick={() => setEditingPost(null)}
@@ -428,6 +435,12 @@ export const ApprovalWorkflowView: React.FC = () => {
               </button>
             </div>
 
+            {editingPost.status === 'published' && (
+              <p className="text-[11px] text-amber-300 bg-amber-950/40 border border-amber-500/30 rounded-xl px-3 py-2">
+                المنشور منشور فعلاً — الربط بمنتج إجراء مستقل لا يغيّر حالته ولا نصه (منعاً للنشر المزدوج).
+              </p>
+            )}
+
             <div className="space-y-3 text-xs">
               <div>
                 <label className="block text-slate-300 font-bold mb-1">عنوان المنشور</label>
@@ -435,7 +448,8 @@ export const ApprovalWorkflowView: React.FC = () => {
                   type="text"
                   value={editTitle}
                   onChange={(e) => setEditTitle(e.target.value)}
-                  className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2.5 text-white focus:outline-none focus:border-emerald-500"
+                  disabled={editingPost.status === 'published'}
+                  className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2.5 text-white focus:outline-none focus:border-emerald-500 disabled:opacity-50"
                 />
               </div>
 
@@ -445,7 +459,8 @@ export const ApprovalWorkflowView: React.FC = () => {
                   rows={8}
                   value={editContent}
                   onChange={(e) => setEditContent(e.target.value)}
-                  className="w-full bg-slate-950 border border-slate-800 rounded-xl p-3 text-white focus:outline-none focus:border-emerald-500 font-sans"
+                  disabled={editingPost.status === 'published'}
+                  className="w-full bg-slate-950 border border-slate-800 rounded-xl p-3 text-white focus:outline-none focus:border-emerald-500 font-sans disabled:opacity-50"
                 />
               </div>
 
@@ -479,7 +494,7 @@ export const ApprovalWorkflowView: React.FC = () => {
                 onClick={handleSaveEdit}
                 className="px-5 py-2 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold shadow-md shadow-emerald-500/20 cursor-pointer"
               >
-                حفظ التعديل كـ [تم التعديل]
+                {editingPost.status === 'published' ? 'حفظ الربط' : 'حفظ التعديل كـ [تم التعديل]'}
               </button>
             </div>
           </div>

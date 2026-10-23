@@ -20,6 +20,9 @@
 import { classifyComment, type ClassifiedComment } from '../social/comments';
 import {
   isRealCommercialQuestion,
+  isCustomerRepliedAfterBusiness,
+  isWithinFollowUpWindow,
+  COMMERCIAL_MAX_FOLLOWUPS,
   type CommercialLead,
   type LeadQuestionSignals,
 } from './commercialBrain';
@@ -95,20 +98,23 @@ export function isBackfillImport(createdAt: string | null | undefined, nowIso: s
   return now - t > COMMERCIAL_BACKFILL_MIN_AGE_MS;
 }
 
-/** مسودات المتابعة العلنية (تعليق عام) على نفس الحدث — كلها تُحتسب للمنع. */
-export function countPublicFollowUps(externalId: string, drafts: readonly CommercialDraft[]): number {
-  const id = String(externalId || '');
-  if (!id) return 0;
+/**
+ * مسودات المتابعة الفعلية لزبون واحد — كلها تُحتسب للمنع (بلا حذف). المتابعة
+ * «واحدة لكل استفسار»: أي مسودة متابعة قائمة (pending/approved/أُرسلت) لهذا الزبون
+ * تُستنفد الحدّ، فلا تُقترح متابعة ثانية قبل انتهاء المدة ولا بعدها.
+ */
+export function countLeadFollowUps(leadKey: string, drafts: readonly CommercialDraft[]): number {
+  const key = String(leadKey || '');
+  if (!key) return 0;
   return drafts.filter(
-    (d) => d.kind === 'comment' && d.purpose === 'follow_up' && String(d.externalId || '') === id && d.status !== 'rejected' && d.status !== 'cancelled',
+    (d) => d.purpose === 'follow_up' && String(d.leadKey || '') === key && d.status !== 'rejected' && d.status !== 'cancelled',
   ).length;
 }
 
-/** هل استُنفدت متابعة التعليق العام (مرة واحدة كحد أقصى)؟ */
-export function publicFollowUpExhausted(lead: CommercialLead, drafts: readonly CommercialDraft[]): boolean {
-  if (lead.kind !== 'comment') return false;
-  const target = String(lead.lastExternalId || lead.replyTarget?.commentId || '');
-  return countPublicFollowUps(target, drafts) >= 1;
+/** هل استُنفدت متابعة هذا الاستفسار (متابعة واحدة كحد أقصى)؟ */
+export function followUpExhaustedForLead(lead: CommercialLead, drafts: readonly CommercialDraft[]): boolean {
+  if (lead.followUpsSent >= COMMERCIAL_MAX_FOLLOWUPS) return true;
+  return countLeadFollowUps(lead.key, drafts) >= COMMERCIAL_MAX_FOLLOWUPS;
 }
 
 export interface FollowUpEligibility {
@@ -118,13 +124,15 @@ export interface FollowUpEligibility {
 }
 
 /**
- * بوابة متابعة واحدة صريحة تجمع كل قواعد PR-S5:
- *  - ليس سبام/غير مؤهّل، وليس lead مؤرشفاً.
- *  - آخر تفاعل للعميل سؤال حقيقي.
- *  - ليس استيراداً بأثر رجعي (backfill).
- *  - عمر التفاعل ≤ 7 أيام.
- *  - التعليق العام يُتابَع مرة واحدة كحد أقصى.
- * (شروط عدم الرد/الحدّ الأقصى للمتابعات تبقى في `isFollowUpDue` القائم.)
+ * بوابة المتابعة النظيفة (مصدر واحد) — تُحسم بالترتيب الصريح:
+ *  1) ليس lead مؤرشفاً ولا سبام (سؤال حقيقي مسجّل، وآخر تفاعل للعميل سؤال حقيقي).
+ *  2) **الرسائل الخاصة فقط**: لا متابعة على تعليق عام (comment_reply) إطلاقاً.
+ *  3) ليس استيراداً بأثر رجعي (backfill).
+ *  4) عمر تفاعل العميل ≤ 7 أيام.
+ *  5) يوجد **رد فعلي من المعرض** (الأساس الزمني) وداخل نافذة المتابعة المسموحة.
+ *  6) **المحادثة باردة**: لم يردّ الزبون بعد آخر رد للمعرض.
+ *  7) **متابعة واحدة لكل استفسار** (لا متابعة ثانية).
+ * كل منع يحمل كوداً صريحاً — لا يُنشأ شيء عند المنع.
  */
 export function evaluateFollowUpEligibility(input: {
   lead: CommercialLead;
@@ -139,8 +147,18 @@ export function evaluateFollowUpEligibility(input: {
   if (!isFollowUpAgeEligible(lead.lastCustomerInteractionAt, nowIso)) {
     return { eligible: false, code: 'STALE_BEYOND_7_DAYS', reason: `التفاعل أقدم من ${COMMERCIAL_FOLLOWUP_MAX_AGE_HOURS / 24} أيام — لا متابعة.` };
   }
-  if (publicFollowUpExhausted(lead, drafts)) {
-    return { eligible: false, code: 'PUBLIC_FOLLOWUP_ONCE', reason: 'التعليق العام يُتابَع مرة واحدة كحد أقصى.' };
+  // لا متابعة على التعليقات العامة إطلاقاً — المتابعة في الرسائل الخاصة فقط.
+  if (lead.kind !== 'message') return { eligible: false, code: 'PUBLIC_COMMENT_NO_FOLLOWUP', reason: 'لا متابعة على التعليقات العامة — المتابعة تُقترح في الرسائل الخاصة فقط.' };
+  // الأساس الزمني = آخر رد فعلي من المعرض، لا تعليق الزبون. بلا رد للمعرض لا أساس.
+  if (!lead.lastBusinessReplyAt) return { eligible: false, code: 'NO_BUSINESS_REPLY', reason: 'لا رد سابق من المعرض — لا أساس لمتابعة.' };
+  if (isCustomerRepliedAfterBusiness(lead)) {
+    return { eligible: false, code: 'CONVERSATION_LIVE', reason: 'ردّ الزبون بعد آخر رد للمعرض — المحادثة حيّة، لا متابعة.' };
+  }
+  if (!isWithinFollowUpWindow(lead.lastBusinessReplyAt, nowIso)) {
+    return { eligible: false, code: 'OUTSIDE_META_WINDOW', reason: 'خارج نافذة المراسلة المسموحة بعد ردّنا — لا متابعة.' };
+  }
+  if (followUpExhaustedForLead(lead, drafts)) {
+    return { eligible: false, code: 'FOLLOWUP_ONCE', reason: 'متابعة واحدة لكل استفسار كحد أقصى.' };
   }
   return { eligible: true, code: 'ELIGIBLE', reason: 'مؤهّل لمتابعة واحدة نظيفة.' };
 }
@@ -156,10 +174,12 @@ export interface DraftCancellation {
 }
 
 /**
- * يخطّط إلغاء المسودات المعلّقة المخالفة للقواعد الجديدة (لا يحذف شيئاً):
+ * يخطّط إلغاء المسودات المعلّقة المخالفة للقواعد (لا يحذف شيئاً):
  *  - lead مفقود/مؤرشف/غير مؤهّل (إيموجي/مدح) ⇒ إلغاء.
+ *  - متابعة على تعليق عام ⇒ إلغاء (المتابعة في الرسائل الخاصة فقط).
  *  - متابعة على backfill أو تفاعل أقدم من 7 أيام ⇒ إلغاء.
- *  - متابعة علنية ثانية على نفس التعليق ⇒ إلغاء (تُبقي الأقدم).
+ *  - متابعة بلا رد سابق للمعرض، أو خارج نافذة المراسلة، أو والمحادثة حيّة ⇒ إلغاء.
+ *  - متابعة ثانية لنفس الزبون ⇒ إلغاء (تُبقي الأقدم؛ متابعة واحدة لكل استفسار).
  * مسودة «جواب على سؤال» لعميل مؤهّل حديث تبقى سليمة.
  */
 export function planCommercialDraftCleanup(input: {
@@ -172,8 +192,8 @@ export function planCommercialDraftCleanup(input: {
   for (const l of leads) leadByKey.set(l.key, l);
   const cancellations: DraftCancellation[] = [];
   const cancelSet = new Set<string>();
-  // متابعات علنية مقبولة سابقاً لكل حدث (لإبقاء الأقدم فقط).
-  const acceptedPublicFollowUp = new Set<string>();
+  // متابعات مقبولة سابقاً لكل زبون (لإبقاء الأقدم فقط — متابعة واحدة لكل استفسار).
+  const acceptedFollowUpLead = new Set<string>();
 
   const pending = drafts.filter((d) => d.status === 'pending').slice().sort((a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt));
   for (const d of pending) {
@@ -196,14 +216,20 @@ export function planCommercialDraftCleanup(input: {
       } else if (!isFollowUpAgeEligible(lead.lastCustomerInteractionAt, nowIso)) {
         code = 'STALE_BEYOND_7_DAYS';
         reason = `التفاعل أقدم من ${COMMERCIAL_FOLLOWUP_MAX_AGE_HOURS / 24} أيام — لا متابعة.`;
-      } else if (d.kind === 'comment') {
-        const key = String(d.externalId || '');
-        if (acceptedPublicFollowUp.has(key)) {
-          code = 'PUBLIC_FOLLOWUP_ONCE';
-          reason = 'التعليق العام يُتابَع مرة واحدة كحد أقصى — أُلغيت المتابعة المكرّرة.';
-        } else {
-          acceptedPublicFollowUp.add(key);
-        }
+      } else if (d.kind !== 'message') {
+        code = 'PUBLIC_COMMENT_NO_FOLLOWUP';
+        reason = 'لا متابعة على التعليقات العامة — المتابعة في الرسائل الخاصة فقط.';
+      } else if (!lead.lastBusinessReplyAt) {
+        code = 'NO_BUSINESS_REPLY';
+        reason = 'لا رد سابق من المعرض — لا أساس لمتابعة.';
+      } else if (isCustomerRepliedAfterBusiness(lead)) {
+        code = 'CONVERSATION_LIVE';
+        reason = 'ردّ الزبون بعد آخر رد للمعرض — المحادثة حيّة، لا متابعة.';
+      } else if (acceptedFollowUpLead.has(lead.key)) {
+        code = 'FOLLOWUP_ONCE';
+        reason = 'متابعة واحدة لكل استفسار كحد أقصى — أُلغيت المتابعة المكرّرة.';
+      } else {
+        acceptedFollowUpLead.add(lead.key);
       }
     }
     if (code) {
