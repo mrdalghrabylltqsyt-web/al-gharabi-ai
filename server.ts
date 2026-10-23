@@ -74,7 +74,6 @@ import {
   nextFollowUpAt, isFollowUpDue, applyFollowUpSent, buildCommercialFollowUpText,
   buildCommercialProposal, confirmCommercialProposal, rejectCommercialProposal,
   toCommercialLeadRow, summarizeCommercialLeads, commercialPublicBlock, normalizeCommercialLeads,
-  isWithinMetaMessageWindow,
   estimateCommercialCycleCost,
 } from "./engine/commercial/commercialBrain";
 import {
@@ -5002,6 +5001,30 @@ async function ingestWebhookComments(input: {
 type MetaReplyResult = { status: number; body: any };
 
 /**
+ * يسجّل رداً **فعلياً** من المعرض على عميل محتمل قائم: يحدّث `lastBusinessReplyAt`
+ * (وهو الأساس الزمني الوحيد للمتابعة) ويعيد حساب `nextFollowUpAt`. يُستدعى بعد
+ * تسليم مؤكّد بمعرّف مزوّد فقط — فلا يُسجَّل رد لم يقع. لا يُنشئ عميلاً من لا شيء.
+ */
+async function recordBusinessReplyOnLead(input: { platform: string; externalId?: string; recipientId?: string; atIso: string }): Promise<void> {
+  const platform = String(input.platform || '').toLowerCase();
+  const externalId = String(input.externalId || '').trim();
+  const recipientId = String(input.recipientId || '').trim();
+  const lead = commercialLeads.find((l) => {
+    if (String(l.platform || '').toLowerCase() !== platform) return false;
+    if (recipientId && String(l.replyTarget?.recipientId || '') === recipientId) return true;
+    if (externalId && (String(l.lastExternalId || '') === externalId
+      || String(l.replyTarget?.commentId || '') === externalId
+      || l.sourceEventIds.includes(externalId))) return true;
+    return false;
+  });
+  if (!lead) return;
+  lead.lastBusinessReplyAt = input.atIso;
+  lead.updatedAt = input.atIso;
+  lead.nextFollowUpAt = nextFollowUpAt(lead);
+  await persistCommercialLeads();
+}
+
+/**
  * الرد الحقيقي على تعليق Facebook/Instagram (comment_reply). يُعيد دائماً بنية
  * {status, body} ليستخدمه المسار والمراقب. لا يُعلن delivered=true بلا معرّف رد
  * من Meta. يُطلق القفل الذرّي دائماً حتى عند الفشل.
@@ -5101,6 +5124,11 @@ async function executeMetaCommentReply(
     (workspace as any).socialReplies.unshift(record);
     if ((workspace as any).socialReplies.length > WORKSPACE_MAX_SOCIAL_REPLIES) (workspace as any).socialReplies.length = WORKSPACE_MAX_SOCIAL_REPLIES;
     audit(actor, result.ok ? `social_${platform}_comment_reply_sent` : `social_${platform}_comment_reply_failed`, `${externalId}:${result.ok ? 'delivered' : 'failed'}`);
+    // رد المعرض الفعلي يُسجَّل على العميل المحتمل (أساس المتابعة الزمني). يُسجَّل
+    // بعد التسليم المؤكّد فقط؛ ولا يُنشئ عميلاً — يحدّث الموجود إن وُجد.
+    if (result.ok && result.providerReplyId) {
+      await recordBusinessReplyOnLead({ platform, externalId, atIso: record.repliedAt });
+    }
     await persistStateDurable();
     if (!result.ok) return { status: 502, body: { success: false, delivered: false, simulated: false, reply: record, error: record.deliveryError } };
     return { status: 200, body: { success: true, delivered: true, simulated: false, providerReplyId: record.providerReplyId, reply: record } };
@@ -5204,6 +5232,10 @@ async function executeMetaMessageReply(
     (workspace as any).socialReplies.unshift(record);
     if ((workspace as any).socialReplies.length > WORKSPACE_MAX_SOCIAL_REPLIES) (workspace as any).socialReplies.length = WORKSPACE_MAX_SOCIAL_REPLIES;
     audit(actor, result.ok ? `social_${platform}_message_reply_sent` : `social_${platform}_message_reply_failed`, `${guardExternalId}:${result.ok ? 'delivered' : 'failed'}`);
+    // رد المعرض الفعلي على الرسالة يُسجَّل على العميل (أساس المتابعة الزمني).
+    if (result.ok && result.providerReplyId) {
+      await recordBusinessReplyOnLead({ platform, externalId: guardExternalId, recipientId: targetRecipient, atIso: record.repliedAt });
+    }
     await persistStateDurable();
     if (!result.ok) return { status: 502, body: { success: false, delivered: false, simulated: false, reply: record, error: record.deliveryError } };
     return { status: 200, body: { success: true, delivered: true, simulated: false, providerReplyId: record.providerReplyId, reply: record } };
@@ -8116,7 +8148,13 @@ function resolveProductForPost(postExternalId: string | null): any | null {
   }
   for (const rec of ((workspace as any).publishRecords || [])) {
     const recPost = String(rec?.externalVideoId || rec?.providerPostId || '');
-    if (recPost === pid && rec?.productId) ids.add(String(rec.productId));
+    if (recPost !== pid) continue;
+    if (rec?.productId) ids.add(String(rec.productId));
+    // الجذر (PR #71): كان يُقرأ `rec.productId` فقط، فلا يصل ربط المنتج اللاحق على
+    // منشور منشور فعلاً. سجل النشر يحمل `postId` الداخلي، ومنه نقرأ `post.productId`
+    // (الدليل الصريح) — فتُستخدم حقائق السعر/القسط في الردود بعد الربط.
+    const linkedPost = (workspace.posts || []).find((p: any) => String(p.id) === String(rec?.postId || ''));
+    if (linkedPost && (linkedPost as any).productId) ids.add(String((linkedPost as any).productId));
   }
   if (ids.size !== 1) return null;
   const id = [...ids][0];
@@ -9515,26 +9553,22 @@ async function runCommercialBrainCycle(trigger: string): Promise<{ ok: boolean; 
       const due = isFollowUpDue(lead, nowIso);
       if (!due.due) continue;
       if (!['facebook', 'instagram'].includes(lead.platform)) continue;
-      // PR-S5 — بوابة المتابعة النظيفة (مصدر واحد): لا متابعة لغير المؤهّل بسؤال
-      // حقيقي، ولا على backfill، ولا على تفاعل أقدم من 7 أيام، ولا متابعة علنية
-      // ثانية على نفس التعليق (مرة واحدة كحد أقصى). لا يُنشأ شيء عند المنع.
+      // بوابة المتابعة النظيفة (مصدر واحد): رسائل خاصة فقط، وأساس زمني = آخر رد
+      // للمعرض (لا تعليق الزبون)، والمحادثة باردة، وداخل نافذة المراسلة المسموحة،
+      // ومتابعة واحدة لكل استفسار. كل منع يُسجَّل بكوده بلا أي إرسال.
       const followUpEligibility = evaluateFollowUpEligibility({ lead, drafts: commercialDrafts, nowIso });
       if (!followUpEligibility.eligible) {
-        audit('commercial-brain', 'commercial_followup_not_eligible', JSON.stringify({
-          leadKey: lead.key, platform: lead.platform, code: followUpEligibility.code,
-        }));
-        continue;
-      }
-      // PR-S1 — حارس مؤقت: نافذة مراسلة Meta الرسمية (24 ساعة) تنطبق على **الرسائل
-      // الخاصة (Messenger/DM)** فقط، لا على الردود العامة على التعليقات (لا تخضع
-      // لنافذة 24 ساعة). خارج النافذة لا تُرسَل متابعة رسالة (قد تُرفض/تعرّض الصفحة
-      // للتقييد) ويُسجَّل السبب؛ أما متابعة التعليق العام فتسلك كما كانت.
-      if (lead.kind === 'message' && !isWithinMetaMessageWindow(lead.lastCustomerInteractionAt, nowIso)) {
-        commercialWindowBlocked += 1;
-        audit('commercial-brain', 'commercial_followup_blocked_meta_window', JSON.stringify({
-          leadKey: lead.key, platform: lead.platform, kind: lead.kind,
-          lastCustomerInteractionAt: lead.lastCustomerInteractionAt, reason: 'outside_meta_message_window_24h',
-        }));
+        if (followUpEligibility.code === 'OUTSIDE_META_WINDOW') {
+          commercialWindowBlocked += 1;
+          audit('commercial-brain', 'commercial_followup_blocked_meta_window', JSON.stringify({
+            leadKey: lead.key, platform: lead.platform, kind: lead.kind,
+            lastBusinessReplyAt: lead.lastBusinessReplyAt, reason: followUpEligibility.code,
+          }));
+        } else {
+          audit('commercial-brain', 'commercial_followup_not_eligible', JSON.stringify({
+            leadKey: lead.key, platform: lead.platform, code: followUpEligibility.code,
+          }));
+        }
         continue;
       }
       const text = buildCommercialFollowUpText(lead);
@@ -13513,11 +13547,16 @@ app.patch("/api/workspace/content/:id", authenticateToken, (req,res)=>{
   if(!post) return res.status(404).json({success:false,error:"المنشور غير موجود."});
   if (!canEditContent(user.role)) return res.status(403).json({success:false,error:"لا تملك صلاحية تعديل المحتوى."});
   const b=req.body||{};
+  // يُلتقط قبل أي تعديل: منشور **منشور فعلاً** يُعامَل معاملة خاصة (البند 7).
+  const isPublishedPost = post.status === 'published';
   if(b.title!==undefined) post.title=cleanText(b.title,160)||post.title;
   if(b.content!==undefined){ const c=cleanText(b.content,10000); if(!c) return res.status(400).json({success:false,error:"المحتوى لا يمكن أن يكون فارغاً."}); if(/125\s*\/\s*125/i.test(c)||/سيارة|سيارات|\bcars?\b/i.test(c)) return res.status(422).json({success:false,error:"المحتوى خالف قواعد مشروع الغرابي."}); post.content=c; }
   if(Array.isArray(b.targetPlatforms)) post.targetPlatforms=[...new Set(b.targetPlatforms.filter((x:any)=>SUPPORTED_PLATFORMS.some((p:any)=>p.id===x)))].slice(0,10);
   // سياسة حالة واحدة: approved/scheduled مقتصران على مساريهما الرسميين (owner)، وpublished يتطلب إثبات مزود.
+  // منشور منشور فعلاً: أي طلب تغيير حالة مرفوض صراحةً (البند 7 — منع إعادته لمسار
+  // الموافقة/نشر مزدوج). الربط بمنتج إجراء مستقل أدناه بلا تغيير حالة.
   if(b.status!==undefined){
+    if(isPublishedPost) return res.status(422).json({success:false,code:'PUBLISHED_IMMUTABLE',error:'منشور منشور فعلاً — لا يمكن تغيير حالته (قد يسبب نشراً مزدوجاً). الربط بمنتج إجراء مستقل.'});
     const decision=canSetContentStatusByRole(user.role,String(b.status));
     if(!decision.allowed) return res.status(decision.code==='PUBLISHED_REQUIRES_PROVIDER_PROOF'?409:403).json({success:false,code:decision.code,error:decision.reason});
     post.status=String(b.status);
@@ -13527,8 +13566,21 @@ app.patch("/api/workspace/content/:id", authenticateToken, (req,res)=>{
   // PR-B (البند 7): ربط منشور **موجود** بمنتج مسجّل — الطريقة الوحيدة للمالك لربط
   // منشورات قديمة بمنتجاتها (بلا تخمين). المصدر الواحد `resolveProductLink` يقبل
   // المعرّف فقط إن كان المنتج مسجّلاً فعلاً؛ غير ذلك يُفكّ الربط بلا اختراع.
+  //
+  // إصلاح (PR #71): كان تعديل منشور **منشور فعلاً** يغيّر حالته إلى "edited" (يعيده
+  // لمسار الموافقة بخطر نشر مزدوج)، وكان ربط المنتج لا يصل إلى سجلات النشر. الآن:
+  //  - إن كان المنشور `published`، الربط إجراء مستقل لا يغيّر الحالة ولا المحتوى،
+  //    ويُحدَّث `productId` على كل سجلات النشر المرتبطة به.
+  //  - طلب تغيير الحالة صراحةً على منشور منشور مرفوض (422) — لا إعادة لمسار الموافقة.
   if(b.productId!==undefined){
     post.productId = resolveProductLink(b.productId, workspace.products as any);
+    // مزامنة الربط إلى كل سجلات النشر المرتبطة (postId الداخلي) — فتصبح حقائق
+    // المنتج متاحة للردود عبر `resolveProductForPost` بلا إعادة نشر.
+    if (isPublishedPost) {
+      for (const rec of ((workspace as any).publishRecords || [])) {
+        if (String(rec?.postId || '') === String(post.id)) rec.productId = post.productId ?? null;
+      }
+    }
   }
   persistState(); audit(user.id,"workspace_content_updated",post.id); res.json({success:true,post});
 });

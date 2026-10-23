@@ -89,22 +89,27 @@ async function login(): Promise<Record<string, string>> {
   return { 'Content-Type': 'application/json', Authorization: `Bearer ${body.token}` };
 }
 
-/** يبني ملف الحالة المحلي: منتج مسجّل + منشور مرتبط + عميل مستحق للمتابعة (مُسلَّح). */
+/** يبني ملف الحالة المحلي: منتج مسجّل + **رسالة خاصة** مستحقة للمتابعة (مُسلَّحة). */
 function writeSeededState(): void {
-  const overdue = new Date(Date.now() - 48 * 3600_000).toISOString();
-  const inboundComment = {
-    id: 'cmt_fu', platform: 'facebook', externalId: 'C_FU', postExternalId: 'POST1', kind: 'comment',
-    text: 'شنو سعر الثلاجة؟', authorName: 'حيدر', createdAt: overdue, ingestSource: 'facebook_webhook',
+  // إصلاح 2026-10-22: المتابعة صارت **للرسائل الخاصة فقط** وبأساس «آخر رد للمعرض»
+  // (لا تعليق الزبون). نزرع رسالة خاصة: الزبون سأل قبل 50 ساعة وردّ المعرض قبل 49
+  // ساعة ثم سكت ⇒ داخل نافذة المتابعة (72 ساعة) ومؤهّل لمتابعة واحدة.
+  const customerAt = new Date(Date.now() - 50 * 3600_000).toISOString();
+  const replyAt = new Date(Date.now() - 49 * 3600_000).toISOString();
+  const inboundMessage = {
+    id: 'msg_fu', platform: 'facebook', externalId: 'MSG_FU', kind: 'message',
+    text: 'شنو سعر الثلاجة؟', authorName: 'حيدر', createdAt: customerAt, ingestSource: 'facebook_webhook',
+    replyTarget: { recipientId: 'PSID_FU' },
     classification: { intent: 'question', sentiment: 'neutral' },
   };
   const lead = {
-    id: 'lead_fu', key: 'facebook::thread:POST1', platform: 'facebook', conversationId: 'thread:POST1',
-    kind: 'comment', replyTarget: { commentId: 'C_FU', videoId: 'POST1' }, lastExternalId: 'C_FU',
-    initiatedByCustomer: true, sourceEventIds: ['C_FU'], customerName: 'حيدر',
+    id: 'lead_fu', key: 'facebook:conv:PSID_FU', platform: 'facebook', conversationId: 'conv:PSID_FU',
+    kind: 'message', replyTarget: { recipientId: 'PSID_FU' }, lastExternalId: 'MSG_FU',
+    initiatedByCustomer: true, sourceEventIds: ['MSG_FU'], customerName: 'حيدر',
     interestedProductId: 'P_FRIDGE', interestedProductName: 'ثلاجة سامسونج', stage: 'ENGAGED',
-    touches: 1, lastCustomerText: 'شنو سعر الثلاجة؟', lastInteractionAt: overdue, createdAt: overdue, updatedAt: overdue,
-    lastCustomerInteractionAt: overdue, lastBusinessReplyAt: null, followUpState: 'SCHEDULED',
-    followUpsSent: 0, nextFollowUpAt: overdue, pendingProposal: null, escalationReason: null, notes: [],
+    touches: 1, lastCustomerText: 'شنو سعر الثلاجة؟', lastInteractionAt: customerAt, createdAt: customerAt, updatedAt: replyAt,
+    lastCustomerInteractionAt: customerAt, lastBusinessReplyAt: replyAt, followUpState: 'SCHEDULED',
+    followUpsSent: 0, nextFollowUpAt: replyAt, pendingProposal: null, escalationReason: null, notes: [],
   };
   writeFileSync(join(stateDir, '.gharabi-state.json'), JSON.stringify({
     schemaVersion: 16, savedAt: new Date().toISOString(), users: [ownerUser],
@@ -112,7 +117,7 @@ function writeSeededState(): void {
     workspace: {
       showroom: { name: 'معرض الغرابي' },
       products: [{ id: 'P_FRIDGE', name: 'ثلاجة سامسونج', cashPrice: 1_000_000, category: 'ثلاجات', durationMonths: 10, inStock: true }],
-      posts: [], socialComments: [inboundComment], socialReplies: [], socialApprovals: [], publishRecords: [],
+      posts: [], socialComments: [inboundMessage], socialReplies: [], socialApprovals: [], publishRecords: [],
     },
   }), 'utf8');
   // مفتاح العقل التجاري: مفعَّل (الافتراضي)، وسجل عميل واحد مستحق للمتابعة.
@@ -125,10 +130,8 @@ function writeSeededState(): void {
   if (!existsSync(tsxCli)) { console.error('tsx CLI غير موجود — شغّل npm install أولاً.'); process.exit(1); }
   writeSeededState();
 
-  // منشور فيه تعليق عميل (C_FU) — يُسحب للتحقق من أن التعليق حقيقي (بلا اختلاق).
-  const mockState: FacebookMockState = createFacebookMock({
-    feedPosts: [{ id: 'POST1', comments: [{ id: 'C_FU', message: 'شنو سعر الثلاجة؟', from: { id: 'U9', name: 'حيدر' }, created_time: '2026-01-01T00:00:00+0000' }] }],
-  });
+  // صفحة مربوطة (بلا منشورات) — المتابعة رسالة خاصة تُرسل عبر `/messages` لا تعليقاً.
+  const mockState: FacebookMockState = createFacebookMock({ feedPosts: [] });
   const mock = await startFacebookMockServer(FB_PORT, mockState);
   let app = startApp(mock.base);
   const auth = { 'Content-Type': 'application/json' } as Record<string, string>;
@@ -143,19 +146,20 @@ function writeSeededState(): void {
     check('ربط Facebook ينجح', cbRes.status === 200, `status=${cbRes.status}`);
 
     group('2) دورة العقل التجاري تُسلّم المتابعة المستحقة فعلاً (إصلاح العطل)');
-    const before = mockState.commentReplies.length;
+    const before = mockState.sentMessages.length;
     const run1 = await (await fetch(`${BASE}/api/agent/commercial/run`, { method: 'POST', headers: auth, body: '{}' })).json();
     check('الدورة تعمل', run1.success === true, JSON.stringify(run1));
     check('الدورة تُعلن إرسال متابعة واحدة (followUpsSent=1)', run1.result?.followUpsSent === 1, JSON.stringify(run1.result));
-    const sent = mockState.commentReplies.slice(before);
-    check('وصل فعلاً رد متابعة حقيقي إلى Meta (نفس التعليق C_FU)', sent.length === 1 && sent[0].commentId === 'C_FU', JSON.stringify(sent));
-    check('معرّف رد المتابعة حقيقي من Meta', sent.length === 1 && /^REPLY_C_FU_/.test(sent[0].id || ''), JSON.stringify(sent));
+    const sent = mockState.sentMessages.slice(before);
+    check('وصلت متابعة حقيقية كرسالة خاصة للمستلم الصحيح', sent.length === 1 && sent[0].recipientId === 'PSID_FU', JSON.stringify(sent));
+    check('معرّف رسالة المتابعة حقيقي من Meta', sent.length === 1 && /^mid\./.test(sent[0].messageId || ''), JSON.stringify(sent));
+    check('لم تُرسل متابعة كتعليق عام إطلاقاً', mockState.commentReplies.length === 0, JSON.stringify(mockState.commentReplies));
 
     group('3) حماية منع التكرار تبقى سليمة (لا إرسال ثانٍ لنفس المفتاح)');
-    const repliesAfterFirst = mockState.commentReplies.length;
+    const msgsAfterFirst = mockState.sentMessages.length;
     const run2 = await (await fetch(`${BASE}/api/agent/commercial/run`, { method: 'POST', headers: auth, body: '{}' })).json();
     check('الدورة الثانية لا ترسل شيئاً (followUpsSent=0)', run2.result?.followUpsSent === 0, JSON.stringify(run2.result));
-    check('لا رد إضافي وصل إلى Meta', mockState.commentReplies.length === repliesAfterFirst, `delta=${mockState.commentReplies.length - repliesAfterFirst}`);
+    check('لا رسالة إضافية وصلت إلى Meta', mockState.sentMessages.length === msgsAfterFirst, `delta=${mockState.sentMessages.length - msgsAfterFirst}`);
 
     group('4) الحالة بعد الإصلاح: followUpsSent ارتفع والمتابعة القادمة أُعيدت جدولتها');
     const leads1 = await (await fetch(`${BASE}/api/commercial/leads`, { headers: auth })).json();
@@ -169,10 +173,10 @@ function writeSeededState(): void {
     const ksOff = await (await fetch(`${BASE}/api/agent/commercial/kill-switch`, { method: 'POST', headers: auth, body: JSON.stringify({ enabled: false, reason: 'emergency_stop_test' }) })).json();
     check('إيقاف المفتاح ينجح', ksOff.success === true && ksOff.killSwitch?.enabled === false, JSON.stringify(ksOff));
     check('الإيقاف يسجّل الوقت والسبب', Boolean(ksOff.killSwitch?.killAt) && ksOff.killSwitch?.killReason === 'emergency_stop_test', JSON.stringify(ksOff.killSwitch));
-    const repliesBeforeOff = mockState.commentReplies.length;
+    const repliesBeforeOff = mockState.sentMessages.length;
     const runOff = await (await fetch(`${BASE}/api/agent/commercial/run`, { method: 'POST', headers: auth, body: '{}' })).json();
     check('الدورة بعد الإيقاف تُتخطّى صراحةً (skipped=disabled)', runOff.result?.skipped === 'disabled', JSON.stringify(runOff.result));
-    check('لا إرسال خارجي بعد الإيقاف', mockState.commentReplies.length === repliesBeforeOff);
+    check('لا إرسال خارجي بعد الإيقاف', mockState.sentMessages.length === repliesBeforeOff);
     const ksOn = await (await fetch(`${BASE}/api/agent/commercial/kill-switch`, { method: 'POST', headers: auth, body: JSON.stringify({ enabled: true }) })).json();
     check('إعادة التفعيل تنجح', ksOn.success === true && ksOn.killSwitch?.enabled === true, JSON.stringify(ksOn));
 

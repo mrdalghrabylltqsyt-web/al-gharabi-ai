@@ -137,34 +137,35 @@ group('5) تسجيل العميل المحتمل + التكرار');
 check('مفتاح العميل = منصة+خيط (بلا اختراع هوية)', commercialLeadKey('Facebook', 'post-9') === 'facebook::post-9');
 check('عميل لم يبدأ التواصل لا يُعدّ initiatedByCustomer', createCommercialLead(inbound({ fromCustomer: false })).initiatedByCustomer === false);
 
-group('6) جدولة المتابعة (لا رسالة باردة)');
+group('6) جدولة المتابعة (من رد المعرض، لا من تعليق الزبون)');
 {
-  let lead = createCommercialLead(inbound());
-  // لا وقت متابعة محفوظ بعد ⇒ يُحسب من آخر تفاعل للعميل + 24 ساعة.
-  const nf = nextFollowUpAt(lead);
-  check('نافذة المتابعة الأولى بعد 24 ساعة', nf === hoursLater(24));
-  check('قبل الموعد ⇒ غير مستحقة', isFollowUpDue(lead, hoursLater(10)).due === false);
-  check('بعد الموعد ⇒ مستحقة', isFollowUpDue({ ...lead, nextFollowUpAt: nf }, hoursLater(25)).due === true);
+  const lead = createCommercialLead(inbound());
+  // بلا رد للمعرض لا أساس لمتابعة (لا نُنكز على سؤال لم نُجب عنه).
+  check('بلا رد للمعرض ⇒ لا نافذة متابعة', nextFollowUpAt(lead) === null);
+  check('بلا رد للمعرض ⇒ غير مستحقة', isFollowUpDue(lead, hoursLater(25)).due === false);
 
-  // بعد رد المعرض لا متابعة (لا تكرار).
+  // رد المعرض بعد 5 ساعات ⇒ المتابعة بعد 48 ساعة من **ردّنا** (لا من تعليق الزبون).
   const replied = { ...lead, lastBusinessReplyAt: hoursLater(5) };
-  check('رد المعرض بعد العميل ⇒ لا متابعة', nextFollowUpAt(replied) === null);
+  check('نافذة المتابعة = رد المعرض + 48 ساعة', nextFollowUpAt(replied) === hoursLater(5 + 48));
+  check('قبل الموعد ⇒ غير مستحقة', isFollowUpDue(replied, hoursLater(5 + 47)).due === false);
+  check('بعد الموعد ⇒ مستحقة', isFollowUpDue(replied, hoursLater(5 + 49)).due === true);
+
+  // المحادثة حيّة: ردّ الزبون بعد آخر رد للمعرض ⇒ لا متابعة.
+  const live = { ...replied, lastCustomerInteractionAt: hoursLater(6) };
+  check('ردّ الزبون بعد رد المعرض ⇒ لا متابعة', nextFollowUpAt(live) === null);
   check('حالة المتابعة STOPPED عند عدم بدء العميل', (() => {
     const cold = createCommercialLead(inbound({ fromCustomer: false }));
     return isFollowUpDue(cold, hoursLater(48)).state === 'STOPPED';
   })());
   check('لا متابعة بعد استنفاد الحدّ', (() => {
-    let l: CommercialLead = { ...lead, followUpsSent: COMMERCIAL_MAX_FOLLOWUPS };
+    const l: CommercialLead = { ...replied, followUpsSent: COMMERCIAL_MAX_FOLLOWUPS };
     return nextFollowUpAt(l) === null;
   })());
-  // إرسال متابعة حقيقي يزيد العدّاد ويسجّل ردّ المعرض (فلا متابعة تالية بلا تفاعل جديد).
-  const sent = applyFollowUpSent(lead, hoursLater(24));
-  check('إرسال متابعة ⇒ +1 وردّ معرض مسجّل', sent.followUpsSent === 1 && sent.lastBusinessReplyAt === hoursLater(24));
-  check('بعد المتابعة لا نافذة تالية بلا تفاعل جديد (لا إلحاح)', sent.nextFollowUpAt === null);
-  // عودة العميل بعد المتابعة تفتح النافذة الثانية (72 ساعة من تفاعله الجديد).
-  const reengaged = mergeCommercialInteraction(sent, inbound({ externalId: 'ext-3', text: 'طيب شكد القسط؟', at: hoursLater(30) }));
-  check('عودة العميل بعد المتابعة ⇒ نافذة ثانية بعد 72 ساعة', nextFollowUpAt(reengaged) === hoursLater(30 + 72));
-  check('لا متابعة لعميل محسوم (WON)', nextFollowUpAt({ ...lead, stage: 'WON' }) === null);
+  // إرسال متابعة حقيقي يزيد العدّاد ويسجّل ردّ المعرض.
+  const sent = applyFollowUpSent(replied, hoursLater(5 + 48));
+  check('إرسال متابعة ⇒ +1 وردّ معرض مسجّل', sent.followUpsSent === 1 && sent.lastBusinessReplyAt === hoursLater(5 + 48));
+  check('متابعة واحدة فقط ⇒ لا نافذة تالية', sent.nextFollowUpAt === null);
+  check('لا متابعة لعميل محسوم (WON)', nextFollowUpAt({ ...replied, stage: 'WON' }) === null);
 }
 
 group('7) اقتراح الصفقة + التأكيد البشري');

@@ -95,20 +95,24 @@ async function login(): Promise<Record<string, string>> {
  * مع عميل مستحق للمتابعة — لإثبات أن غياب السجل = معطَّل (fail-closed).
  */
 function writeCleanBootState(): void {
-  const overdue = new Date(Date.now() - 48 * 3600_000).toISOString();
-  const inboundComment = {
-    id: 'cmt_cb', platform: 'facebook', externalId: 'C_CB', postExternalId: 'POST_CB', kind: 'comment',
-    text: 'شنو سعر الثلاجة؟', authorName: 'حيدر', createdAt: overdue, ingestSource: 'facebook_webhook',
+  // إصلاح 2026-10-22: المتابعة للرسائل الخاصة فقط وبأساس «آخر رد للمعرض». نزرع
+  // رسالة خاصة: الزبون سأل قبل 50 ساعة وردّ المعرض قبل 49 ساعة ثم سكت ⇒ مؤهّل.
+  const customerAt = new Date(Date.now() - 50 * 3600_000).toISOString();
+  const replyAt = new Date(Date.now() - 49 * 3600_000).toISOString();
+  const inboundMessage = {
+    id: 'msg_cb', platform: 'facebook', externalId: 'MSG_CB', kind: 'message',
+    text: 'شنو سعر الثلاجة؟', authorName: 'حيدر', createdAt: customerAt, ingestSource: 'facebook_webhook',
+    replyTarget: { recipientId: 'PSID_CB' },
     classification: { intent: 'question', sentiment: 'neutral' },
   };
   const lead = {
-    id: 'lead_cb', key: 'facebook::thread:POST_CB', platform: 'facebook', conversationId: 'thread:POST_CB',
-    kind: 'comment', replyTarget: { commentId: 'C_CB', videoId: 'POST_CB' }, lastExternalId: 'C_CB',
-    initiatedByCustomer: true, sourceEventIds: ['C_CB'], customerName: 'حيدر',
+    id: 'lead_cb', key: 'facebook:conv:PSID_CB', platform: 'facebook', conversationId: 'conv:PSID_CB',
+    kind: 'message', replyTarget: { recipientId: 'PSID_CB' }, lastExternalId: 'MSG_CB',
+    initiatedByCustomer: true, sourceEventIds: ['MSG_CB'], customerName: 'حيدر',
     interestedProductId: 'P_FRIDGE', interestedProductName: 'ثلاجة سامسونج', stage: 'ENGAGED',
-    touches: 1, lastCustomerText: 'شنو سعر الثلاجة؟', lastInteractionAt: overdue, createdAt: overdue, updatedAt: overdue,
-    lastCustomerInteractionAt: overdue, lastBusinessReplyAt: null, followUpState: 'SCHEDULED',
-    followUpsSent: 0, nextFollowUpAt: overdue, pendingProposal: null, escalationReason: null, notes: [],
+    touches: 1, lastCustomerText: 'شنو سعر الثلاجة؟', lastInteractionAt: customerAt, createdAt: customerAt, updatedAt: replyAt,
+    lastCustomerInteractionAt: customerAt, lastBusinessReplyAt: replyAt, followUpState: 'SCHEDULED',
+    followUpsSent: 0, nextFollowUpAt: replyAt, pendingProposal: null, escalationReason: null, notes: [],
   };
   writeFileSync(join(stateDir, '.gharabi-state.json'), JSON.stringify({
     schemaVersion: 16, savedAt: new Date().toISOString(), users: [ownerUser],
@@ -116,7 +120,7 @@ function writeCleanBootState(): void {
     workspace: {
       showroom: { name: 'معرض الغرابي' },
       products: [{ id: 'P_FRIDGE', name: 'ثلاجة سامسونج', cashPrice: 1_000_000, category: 'ثلاجات', durationMonths: 10, inStock: true }],
-      posts: [], socialComments: [inboundComment], socialReplies: [], socialApprovals: [], publishRecords: [],
+      posts: [], socialComments: [inboundMessage], socialReplies: [], socialApprovals: [], publishRecords: [],
     },
   }), 'utf8');
   // **مهم:** لا حقل killSwitch إطلاقاً — يحاكي إقلاعاً نظيفاً/ترقية بلا سجل مفتاح محفوظ.
@@ -128,7 +132,7 @@ function writeCleanBootState(): void {
   writeCleanBootState();
 
   const mockState: FacebookMockState = createFacebookMock({
-    feedPosts: [{ id: 'POST_CB', comments: [{ id: 'C_CB', message: 'شنو سعر الثلاجة؟', from: { id: 'U9', name: 'حيدر' }, created_time: '2026-01-01T00:00:00+0000' }] }],
+    feedPosts: [],
   });
   const mock = await startFacebookMockServer(FB_PORT, mockState);
   let app = startApp(mock.base);
@@ -146,10 +150,10 @@ function writeCleanBootState(): void {
     check('الجدولة غير نشطة على إقلاع نظيف', ksGet.scheduler?.active === false, JSON.stringify(ksGet.scheduler));
 
     group('2) صفر أفعال خارجية قبل التفعيل (الدليل الحاسم)');
-    const before = mockState.commentReplies.length;
+    const before = mockState.sentMessages.length;
     const runDisabled = await (await fetch(`${BASE}/api/agent/commercial/run`, { method: 'POST', headers: auth, body: '{}' })).json();
     check('الدورة تُعلن تخطّياً صريحاً (skipped=disabled)', runDisabled.result?.skipped === 'disabled', JSON.stringify(runDisabled.result));
-    check('لا إرسال خارجي إلى Meta إطلاقاً', mockState.commentReplies.length === before, `delta=${mockState.commentReplies.length - before}`);
+    check('لا إرسال خارجي إلى Meta إطلاقاً', mockState.sentMessages.length === before, `delta=${mockState.commentReplies.length - before}`);
     check('لا شبكة إلى مزوّد أثناء التعطيل (calls لم تتغيّر)', mockState.calls === 0, `calls=${mockState.calls}`);
 
     group('3) ربط Facebook (خادم Graph وهمي) ثم التفعيل الصريح من المالك');
@@ -164,13 +168,14 @@ function writeCleanBootState(): void {
     check('تبديل وضع الإرسال إلى auto ينجح', sm.success === true && sm.sendMode === 'auto', JSON.stringify(sm).slice(0, 160));
 
     group('4) بعد التفعيل ⇒ المتابعة المستحقة تُسلَّم فعلاً بمعرّف Meta حقيقي');
-    const beforeOn = mockState.commentReplies.length;
+    const beforeOn = mockState.sentMessages.length;
     const runEnabled = await (await fetch(`${BASE}/api/agent/commercial/run`, { method: 'POST', headers: auth, body: '{}' })).json();
     check('الدورة تعمل بعد التفعيل', runEnabled.success === true, JSON.stringify(runEnabled));
     check('أُرسلت متابعة واحدة (followUpsSent=1)', runEnabled.result?.followUpsSent === 1, JSON.stringify(runEnabled.result));
-    const sent = mockState.commentReplies.slice(beforeOn);
-    check('وصل رد متابعة حقيقي إلى Meta (C_CB)', sent.length === 1 && sent[0].commentId === 'C_CB', JSON.stringify(sent));
-    check('معرّف رد المتابعة حقيقي من Meta', sent.length === 1 && /^REPLY_C_CB_/.test(sent[0].id || ''), JSON.stringify(sent));
+    const sent = mockState.sentMessages.slice(beforeOn);
+    check('وصلت متابعة حقيقية كرسالة خاصة (PSID_CB)', sent.length === 1 && sent[0].recipientId === 'PSID_CB', JSON.stringify(sent));
+    check('معرّف رسالة المتابعة حقيقي من Meta', sent.length === 1 && /^mid\./.test(sent[0].messageId || ''), JSON.stringify(sent));
+    check('لم تُرسل متابعة كتعليق عام إطلاقاً', mockState.commentReplies.length === 0, JSON.stringify(mockState.commentReplies));
 
     group('5) الحالة المفعَّلة تصمد بعد restart');
     await stop(app.proc);

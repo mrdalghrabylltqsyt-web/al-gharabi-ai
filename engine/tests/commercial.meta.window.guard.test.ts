@@ -150,16 +150,22 @@ async function integration(): Promise<void> {
   proc!.kill('SIGTERM');
   await new Promise((r) => setTimeout(r, 1500));
   const nowMs = Date.now();
+  const H = 3600_000;
+  const iso = (h: number) => new Date(nowMs - h * H).toISOString();
+  // إصلاح 2026-10-22: المتابعة تُحسَب من **آخر رد للمعرض** وتُقترح في **الرسائل الخاصة
+  // فقط** وداخل نافذة المتابعة (72 ساعة).
+  //  - lead_in: رسالة خاصة، رد المعرض قبل 49 ساعة، الزبون ساكت ⇒ داخل النافذة ⇒ تُرسل.
+  //  - lead_out: رسالة خاصة، رد المعرض قبل 80 ساعة ⇒ خارج النافذة ⇒ تُحجب (windowBlocked).
+  //  - lead_cmt: تعليق عام ⇒ لا متابعة إطلاقاً (PUBLIC_COMMENT_NO_FOLLOWUP).
   const leads = [
     {
       id: 'lead_in', key: 'facebook:conv_in', platform: 'facebook', conversationId: 'conv_in', kind: 'message',
       replyTarget: { recipientId: 'PSID_IN' }, lastExternalId: 'msg_in', initiatedByCustomer: true,
       sourceEventIds: ['msg_in'], customerName: 'زبون داخلي', interestedProductId: null, interestedProductName: null,
       stage: 'ENGAGED', touches: 1, lastCustomerText: 'كم القسط؟',
-      lastInteractionAt: new Date(nowMs - 2 * 3600_000).toISOString(),
-      createdAt: new Date(nowMs - 2 * 3600_000).toISOString(), updatedAt: new Date(nowMs - 2 * 3600_000).toISOString(),
-      lastCustomerInteractionAt: new Date(nowMs - 2 * 3600_000).toISOString(), lastBusinessReplyAt: null,
-      followUpState: 'SCHEDULED', followUpsSent: 0, nextFollowUpAt: new Date(nowMs - 3600_000).toISOString(),
+      lastInteractionAt: iso(50), createdAt: iso(50), updatedAt: iso(49),
+      lastCustomerInteractionAt: iso(50), lastBusinessReplyAt: iso(49),
+      followUpState: 'SCHEDULED', followUpsSent: 0, nextFollowUpAt: iso(1),
       pendingProposal: null, escalationReason: null, notes: [],
     },
     {
@@ -167,22 +173,19 @@ async function integration(): Promise<void> {
       replyTarget: { recipientId: 'PSID_OUT' }, lastExternalId: 'msg_out', initiatedByCustomer: true,
       sourceEventIds: ['msg_out'], customerName: 'زبون خارجي', interestedProductId: null, interestedProductName: null,
       stage: 'ENGAGED', touches: 1, lastCustomerText: 'كم القسط؟',
-      lastInteractionAt: new Date(nowMs - 72 * 3600_000).toISOString(),
-      createdAt: new Date(nowMs - 72 * 3600_000).toISOString(), updatedAt: new Date(nowMs - 72 * 3600_000).toISOString(),
-      lastCustomerInteractionAt: new Date(nowMs - 72 * 3600_000).toISOString(), lastBusinessReplyAt: null,
-      followUpState: 'SCHEDULED', followUpsSent: 0, nextFollowUpAt: new Date(nowMs - 3600_000).toISOString(),
+      lastInteractionAt: iso(90), createdAt: iso(90), updatedAt: iso(80),
+      lastCustomerInteractionAt: iso(90), lastBusinessReplyAt: iso(80),
+      followUpState: 'SCHEDULED', followUpsSent: 0, nextFollowUpAt: iso(1),
       pendingProposal: null, escalationReason: null, notes: [],
     },
     {
-      // تعليق عام قديم (خارج 24h) — لا يخضع لنافذة مراسلة Meta، فيجب أن يبقى مسموحاً.
       id: 'lead_cmt', key: 'facebook:thread_old', platform: 'facebook', conversationId: 'thread_old', kind: 'comment',
       replyTarget: { commentId: 'C_OLD', videoId: 'POST1' }, lastExternalId: 'C_OLD', initiatedByCustomer: true,
       sourceEventIds: ['C_OLD'], customerName: 'زبون تعليق', interestedProductId: null, interestedProductName: null,
       stage: 'ENGAGED', touches: 1, lastCustomerText: 'كم القسط؟',
-      lastInteractionAt: new Date(nowMs - 72 * 3600_000).toISOString(),
-      createdAt: new Date(nowMs - 72 * 3600_000).toISOString(), updatedAt: new Date(nowMs - 72 * 3600_000).toISOString(),
-      lastCustomerInteractionAt: new Date(nowMs - 72 * 3600_000).toISOString(), lastBusinessReplyAt: null,
-      followUpState: 'SCHEDULED', followUpsSent: 0, nextFollowUpAt: new Date(nowMs - 3600_000).toISOString(),
+      lastInteractionAt: iso(50), createdAt: iso(50), updatedAt: iso(49),
+      lastCustomerInteractionAt: iso(50), lastBusinessReplyAt: iso(49),
+      followUpState: 'SCHEDULED', followUpsSent: 0, nextFollowUpAt: iso(1),
       pendingProposal: null, escalationReason: null, notes: [],
     },
   ];
