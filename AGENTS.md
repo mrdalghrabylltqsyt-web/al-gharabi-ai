@@ -7287,18 +7287,28 @@ test:content-product-link`، 12 فحصاً) يُثبت الإنشاء/التحق
   و`resolveProductForPost` يقرأ الآن `post.productId` عبر سجل النشر المرتبط، فتصل حقائق
   المنتج إلى الردود بلا إعادة نشر.
 
-**الاختبارات (سلوكية، تفشل على الكود القديم — مُثبت):**
+**الاختبارات (سلوكية، تفشل على الكود القديم — مُثبت بتشغيل فعلي):**
 - `engine/tests/commercial.followup.rules.test.ts` (`npm run test:commercial-followup-rules`،
   **15 فحصاً**): تعليق عام + رد معرض قبل ساعات ⇒ لا مسودة؛ رسالة خاصة + رد معرض قبل 49س +
   الزبون ساكت ⇒ مسودة واحدة؛ الزبون ردّ بعد رد المعرض ⇒ لا متابعة؛ خارج النافذة (80س) ⇒ لا
   متابعة؛ متابعة واحدة فقط؛ وثبات بعد دورة ثانية؛ وبادئة غير مكرّرة. **7 إخفاقات على الكود
-  القديم.**
+  القديم** (رقم واحد مُثبت بتشغيل الاختبار على `5cb5317`).
 - `engine/tests/content.published.product.link.test.ts`
   (`npm run test:content-published-product-link`، **14 فحصاً**): ربط منتج لمنشور منشور ⇒
   الحالة تبقى `published` وسجل النشر يُحدَّث؛ تغيير الحالة ⇒ 422؛ تعليق «كم السعر» ⇒ الرد
   يذكر السعر الحقيقي. **5 إخفاقات على الكود القديم.**
-- `engine/tests/commercial.qualification.test.ts` (**51 فحصاً**) و`commercial.inbox.test.ts`
-  أُعيد ضبط مواعيدها لتطابق القاعدة الجديدة (الأساس الزمني = رد المعرض).
+
+**اختبارات قائمة مُعدَّلة** (أُعيد ضبط مواعيدها/توقعاتها لتطابق القاعدة الجديدة — الأساس
+الزمني = رد المعرض):
+- `engine/tests/commercial.brain.test.ts` — **64 فحصاً**.
+- `engine/tests/commercial.inbox.test.ts` — **43 فحصاً**.
+- `engine/tests/commercial.followup.killswitch.integration.test.ts` — **25 فحصاً**.
+- `engine/tests/commercial.killswitch.cleanboot.test.ts` — **19 فحصاً**.
+- `engine/tests/commercial.qualification.test.ts` — **52 فحصاً**.
+- `engine/tests/commercial.meta.window.guard.test.ts` — بلا تغيير في الفحوص (تعديل بذرة
+  الاختبار فقط).
+
+**حالة `npm test`:** **171 مدخلة / 164 سطر PASSED** (EXIT=0).
 
 فحوص final-audit الجديدة: `commercial-followup-based-on-business-reply`،
 `commercial-followup-message-only`، `commercial-followup-single-per-inquiry`،
