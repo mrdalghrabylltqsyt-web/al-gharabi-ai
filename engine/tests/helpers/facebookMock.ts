@@ -132,6 +132,8 @@ export interface FacebookMockState {
   commentBatchCalls: number;
   /** يرفض الطلب المجمّع `GET /?ids=` كاملاً (يحاكي رفض Graph لشكل الطلب) — لإثبات السقوط الآمن. */
   failCommentBatch?: boolean;
+  /** عدد مرات رفض /feed لطلبه `description` المُلغى لعقدة Post (يجب أن يبقى 0). */
+  feedDescriptionRejections?: number;
   /** عدد نداءات قراءة تعليقات منشور منفرد (`GET /{post-id}?fields=comments...`) — يجب أن يبقى 0. */
   commentNodeCalls: number;
   /** PR-S4: معرّفات التعليقات التي أُعيدت فعلاً في قراءات الحواف (لإثبات أيها قُرئ). */
@@ -499,11 +501,17 @@ export async function startFacebookMockServer(
     state.calls += 1;
     if (state.failFeed) return res.status(400).json({ error: { message: 'Permissions error', code: 200 } });
     const fields = String(req.query.fields || '');
+    // سلوك Graph الحقيقي (v3.3+): طلب `description` على مستوى عقدة Post في /feed
+    // يُرفض كاملاً بخطأ (#12). يمنع رجوع العطل الذي أسقط تعليقات المنشورات العادية.
+    const topLevelFields = fields.replace(/\{[^{}]*\}/g, '').replace(/\{[^{}]*\}/g, '');
+    if (/(^|,)description(,|$)/.test(topLevelFields)) {
+      state.feedDescriptionRejections = (state.feedDescriptionRejections || 0) + 1;
+      return res.status(400).json({ error: { message: '(#12) deprecate_post_aggregated_fields_for_attachement is deprecated for versions v3.3 and higher', type: 'OAuthException', code: 12 } });
+    }
     const rows = (state.feedPosts || []).map((p) => ({
       id: p.id,
       created_time: '2026-01-01T00:00:00+0000',
       message: p.message,
-      description: p.description,
       comments: p.comments ? applyCommentFields(p.comments, fields) : undefined,
     }));
     return res.json({ data: rows });

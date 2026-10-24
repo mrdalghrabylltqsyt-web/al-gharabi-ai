@@ -557,6 +557,14 @@ export function buildPublishVideoBody(fileUrl: string, description?: string): UR
 }
 
 /**
+ * يزيل حقل `description` من مستوى المنشور في سلسلة الحقول (لا يمسّ الحقول
+ * المتداخلة). يُستخدم لحافة `/feed` لأن `description` مُلغى لعقدة Post منذ v3.3.
+ */
+export function stripDescriptionField(fields: string): string {
+  return fields.replace(/(^|,)description(?=,|$)/, '$1').replace(/,,/g, ',').replace(/^,|,$/g, '');
+}
+
+/**
  * يبني جسم نشر منشور نصي/رابط على صفحة (`POST /{page-id}/feed`).
  *
  * `published=true` **صريح** (وليس اعتماداً على الافتراضي): يمنع — بحسب عقد Graph —
@@ -1371,11 +1379,18 @@ export class FacebookClient {
         }
       };
       for (const path of edges) {
-        let read = await readEdge(path, fields);
+        // حقل `description` خاص بعُقد الفيديو فقط. على حافة `/feed` (عقدة Post) أزالته
+        // Meta منذ v3.3 ضمن حقول المرفقات المجمّعة، فيُرفض النداء كاملاً بخطأ (#12)
+        // «deprecate_post_aggregated_fields_for_attachement» — وكان ذلك يُسقط تعليقات
+        // كل المنشورات النصية/المصورة من السحب الاحتياطي في كل دورة.
+        const isFeedEdge = path.endsWith('/feed');
+        const shape = isFeedEdge ? stripDescriptionField(fields) : fields;
+        const shapeFallback = isFeedEdge ? stripDescriptionField(fieldsFallback) : fieldsFallback;
+        let read = await readEdge(path, shape);
         // رفض عقد الحقل (غير صلاحية) ⇒ إعادة محاولة واحدة بالشكل الاحتياطي داخل
         // الحافة نفسها — لا عودة لمسار `?ids=` المحذوف.
         if (!read.ok && !(read.pCode === 190 || read.pCode === 102 || read.pCode === 10)) {
-          read = await readEdge(path, fieldsFallback);
+          read = await readEdge(path, shapeFallback);
         }
         if (!read.ok) {
           const msg = String(read.msg || 'فشل قراءة تعليقات الصفحة.');

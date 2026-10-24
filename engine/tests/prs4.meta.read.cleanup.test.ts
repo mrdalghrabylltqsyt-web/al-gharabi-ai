@@ -154,6 +154,7 @@ async function main(): Promise<void> {
     // البند 1: حُذف مسار الطلب المجمّع كلياً.
     check('لا نداء ?ids= إطلاقاً (المسار محذوف)', mock.state.commentBatchCalls === 0, `batch=${mock.state.commentBatchCalls}`);
     check('صفر نداء لتعليقات منشور منفرد', mock.state.commentNodeCalls === 0, `node=${mock.state.commentNodeCalls}`);
+    check('حافة /feed لا تطلب description المُلغى (لا رفض #12)', (mock.state.feedDescriptionRejections || 0) === 0, `rejections=${mock.state.feedDescriptionRejections}`);
 
     const owner = await (await fetch(`${BASE}/api/agent/meta/watcher`, { headers: auth })).json();
     const stats = owner.watcher?.platformStats?.facebook;
