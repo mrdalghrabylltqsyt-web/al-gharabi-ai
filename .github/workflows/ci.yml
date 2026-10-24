@@ -101,10 +101,7 @@ jobs:
           name: dist
           path: dist/
       - name: npm test
-        shell: bash
-        run: |
-          set -o pipefail
-          npm test 2>&1 | tee /tmp/test.log || { msg=$(tail -150 /tmp/test.log | cut -c1-300 | sed 's/%/%25/g' | sed ':a;N;$!ba;s/\n/%0A/g'); echo "::error title=npm-test-tail::${msg}"; exit 1; }
+        run: npm test
 
   # 3) اختبارات التعافي (DR) — تشغيل مستقل صريح كما طُلب.
   dr:
