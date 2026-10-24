@@ -49,6 +49,7 @@ import {
   CONVERSATION_LIFECYCLE_LABELS_AR,
   type ConversationLifecycleState,
 } from './conversationLifecycle';
+import { CONVERSATION_STATE_MAX } from './conversationLimits';
 import {
   buildPublishRecord,
   collectAvailableMetrics,
@@ -271,7 +272,7 @@ export function registerSocialManagerRoutes(app: express.Express, deps: SocialRo
     const updated = appendMessage(convo, { role: message.role, text: message.text, at: new Date().toISOString(), externalId: message.externalId });
     const idx = list.indexOf(convo);
     list[idx] = updated;
-    if (list.length > 500) list.pop();
+    if (list.length > CONVERSATION_STATE_MAX) list.length = CONVERSATION_STATE_MAX;
     return updated;
   };
 
@@ -306,7 +307,7 @@ export function registerSocialManagerRoutes(app: express.Express, deps: SocialRo
       const rec = states.find((s) => s.conversationId === conversationId);
       if (rec) rec.state = result.to;
       else states.unshift({ conversationId, state: result.to });
-      if (states.length > 500) states.pop();
+      if (states.length > CONVERSATION_STATE_MAX) states.length = CONVERSATION_STATE_MAX;
     }
     return result;
   };

@@ -91,6 +91,22 @@ import {
   normalizeCommercialDrafts, normalizeOwnerDecisions, buildLeadConversation,
   COMMERCIAL_SEND_MODE_LABELS_AR, COMMERCIAL_DRAFT_TYPE_LABELS_AR, authorDisplayName,
 } from "./engine/commercial/commercialDrafts";
+import {
+  type CommercialSaleRecord,
+  buildCommercialSaleRecord,
+  normalizeCommercialSaleRecord,
+  buildMonthlyCommercialReport,
+  monthKeyOf,
+} from "./engine/commercial/commercialSales";
+import {
+  type JobAutomationState,
+  defaultJobAutomationState,
+  normalizeJobAutomationState,
+  setJobAutoExecute,
+  decideAutoExecute,
+  jobAutomationPublicBlock,
+} from "./engine/social/jobAutomation";
+import { CONVERSATION_STATE_MAX, conversationLimitsPublicBlock } from "./engine/social/conversationLimits";
 import { classifyConversation } from "./engine/brain/audience/conversationIntelligence";
 import { capabilityRow } from "./engine/brain/strategy/capabilityMatrix";
 import { registerDriveRoutes } from "./engine/dr/routes";
@@ -1419,7 +1435,7 @@ const WORKSPACE_MAX_PROVIDER_EVENTS = 10000;
 const WORKSPACE_MAX_SOCIAL_COMMENTS = 10000;
 const WORKSPACE_MAX_SOCIAL_REPLIES = 5000;
 const WORKSPACE_MAX_PUBLISH_RECORDS = 5000;
-const WORKSPACE_MAX_SOCIAL_CONVERSATIONS = 500;
+const WORKSPACE_MAX_SOCIAL_CONVERSATIONS = CONVERSATION_STATE_MAX;
 
 // Migration guard: a post is never considered externally published merely because
 // an old/local record said so. Until a real provider execution receipt exists,
@@ -8980,6 +8996,12 @@ let commercialSendMode: CommercialSendMode = 'approval';
 let commercialDrafts: CommercialDraft[] = [];
 /** سجل قرارات المالك (النص الأصلي + المعدّل) — للتعلم لاحقاً، بلا تبنّي تعلّم الآن. */
 let commercialOwnerDecisions: CommercialOwnerDecision[] = [];
+/**
+ * B8 — سجل المبيعات المرتبط بالمحادثة (زر «تم البيع»). يُحفظ مع مفتاح `commercial`
+ * نفسه (بلا جدول جديد — قرار المالك). لا يُخترع سجل: يلزم مبلغ موجب + اسم منتج.
+ */
+let commercialSales: CommercialSaleRecord[] = [];
+const COMMERCIAL_MAX_SALES = 5000;
 
 /**
  * PR-A: طابور طلبات الموافقة على الإرسال الآلي. حين يكون وضع الإرسال `approval`
@@ -9136,6 +9158,8 @@ async function persistCommercialLeads(): Promise<void> {
       sendMode: commercialSendMode,
       drafts: commercialDrafts.slice(0, COMMERCIAL_MAX_DRAFTS),
       ownerDecisions: commercialOwnerDecisions.slice(0, COMMERCIAL_MAX_DECISIONS),
+      // B8: سجل المبيعات المرتبط بالمحادثة (بلا جدول جديد — نفس المفتاح).
+      sales: commercialSales.slice(0, COMMERCIAL_MAX_SALES),
       // PR-A: طلبات الموافقة على الإرسال الآلي (بلا إرسال) — تصمد بعد restart.
       outboundApprovals: outboundApprovals.slice(0, OUTBOUND_APPROVALS_MAX),
       // N2: قفل دورة العقل التجاري يُحفظ هنا (بلا سرّ) فيصمد/يُبطل صراحةً عند الإغلاق.
@@ -9159,6 +9183,10 @@ function applyCommercialStateSnapshot(raw: any): void {
   commercialSendMode = normalizeCommercialSendMode(raw.sendMode);
   commercialDrafts = normalizeCommercialDrafts(raw.drafts).slice(0, COMMERCIAL_MAX_DRAFTS);
   commercialOwnerDecisions = normalizeOwnerDecisions(raw.ownerDecisions).slice(0, COMMERCIAL_MAX_DECISIONS);
+  // B8: سجل المبيعات المرتبط بالمحادثة (توافق خلفي: غيابه ⇒ لا سجلات).
+  commercialSales = Array.isArray(raw.sales)
+    ? (raw.sales as unknown[]).map(normalizeCommercialSaleRecord).filter((x): x is CommercialSaleRecord => x !== null).slice(0, COMMERCIAL_MAX_SALES)
+    : [];
   // PR-A: طلبات الموافقة على الإرسال الآلي (توافق خلفي: غيابها ⇒ لا طلبات).
   outboundApprovals = Array.isArray(raw.outboundApprovals)
     ? raw.outboundApprovals.filter((r: any) => r && typeof r.id === 'string' && typeof r.platform === 'string').slice(0, OUTBOUND_APPROVALS_MAX)
@@ -10028,9 +10056,89 @@ app.post("/api/commercial/leads/:id/proposal/confirm", authenticateToken, async 
   res.json({ success: true, lead: toCommercialLeadRow(lead), note: 'أُكّدت الصفقة بشراً؛ لم يُسجَّل دفع ولم يُعدّل مخزون تلقائياً.' });
 });
 
+// --- B8: ربط البيع بالمحادثة (زر «تم البيع») + تقرير شهري حتمي ---
+// تسجيل صفقة حقيقية مرتبطة بالـlead/المحادثة مع المنصة المصدر والمبلغ. لا جدول
+// جديد (نفس مفتاح commercial). لا يُخترع سجل: مبلغ موجب + اسم منتج مطلوبان.
+app.post("/api/commercial/sales", authenticateToken, async (req, res) => {
+  const user = (req as any).user as ServerUser;
+  if (!canConfirmCommercialProposal(user)) return res.status(403).json({ success: false, error: 'لا تملك صلاحية تسجيل البيع.' });
+  const leadId = typeof req.body?.leadId === 'string' ? req.body.leadId.trim() : '';
+  const lead = leadId ? commercialLeads.find((l) => l.id === leadId) || null : null;
+  // المنصة المصدر: من الـlead إن وُجد، وإلا من الجسم، وإلا صريحة 'unknown' (بلا اختراع).
+  const sourcePlatform = lead?.platform || req.body?.platform || 'unknown';
+  const record = buildCommercialSaleRecord({
+    id: workspaceId('csale'),
+    sourcePlatform,
+    leadId: lead?.id || leadId || undefined,
+    conversationId: lead?.conversationId || undefined,
+    customerName: lead?.customerName || req.body?.customerName,
+    productId: req.body?.productId || lead?.interestedProductId,
+    productName: req.body?.productName || lead?.interestedProductName,
+    amount: req.body?.amount,
+    recordedBy: user.id,
+    recordedAt: new Date().toISOString(),
+  });
+  if (!record) return res.status(400).json({ success: false, error: 'مبلغ البيع واسم المنتج مطلوبان (مبلغ موجب).', code: 'SALE_INVALID' });
+  commercialSales.unshift(record);
+  if (commercialSales.length > COMMERCIAL_MAX_SALES) commercialSales.length = COMMERCIAL_MAX_SALES;
+  if (lead) {
+    lead.notes = [...(lead.notes || []), `sale_recorded:${record.id}:${record.amount}`].slice(-50);
+    lead.updatedAt = new Date().toISOString();
+  }
+  await persistCommercialLeads();
+  audit(user.id, 'commercial_sale_recorded', `${record.id}:${record.sourcePlatform}:${record.amount}`);
+  res.status(201).json({ success: true, sale: record, note: 'سُجّل البيع مرتبطاً بمصدره الحقيقي؛ لم يُعدّل مخزون ولم يُنشأ عقد تلقائياً.' });
+});
+
+app.get("/api/commercial/sales", authenticateToken, (req, res) => {
+  const user = (req as any).user as ServerUser;
+  if (!canConfirmCommercialProposal(user)) return res.status(403).json({ success: false, error: 'لا تملك صلاحية عرض المبيعات.' });
+  res.json({ success: true, sales: commercialSales.slice(0, 500), count: commercialSales.length });
+});
+
+/** تقرير شهري حتمي: عدد الاستفسارات والمبيعات لكل منصة (شهر محلي YYYY-MM). */
+app.get("/api/commercial/monthly-report", authenticateToken, (req, res) => {
+  const user = (req as any).user as ServerUser;
+  if (!canConfirmCommercialProposal(user)) return res.status(403).json({ success: false, error: 'لا تملك صلاحية عرض التقرير.' });
+  const requested = typeof req.query.month === 'string' ? req.query.month.trim() : '';
+  const month = /^\d{4}-\d{2}$/.test(requested) ? requested : (monthKeyOf(new Date().toISOString()) || '');
+  const report = buildMonthlyCommercialReport({
+    monthKey: month,
+    leads: commercialLeads.map((l) => ({ platform: l.platform, createdAt: l.createdAt })),
+    sales: commercialSales,
+  });
+  res.json({ success: true, ...report, note: 'تقرير حتمي من السجلات الحقيقية فقط (لا تقدير ولا اختراع).' });
+});
+
 app.post("/api/agent/commercial/run", requireOwner, async (_req, res) => {
   const result = await runCommercialBrainCycle("manual");
   res.status(result.ok ? 200 : 500).json({ success: result.ok, ...result });
+});
+
+// --- B4: مفتاح «نشر المعتمد تلقائياً في موعده» (للمالك) — الافتراضي معطَّل ---
+app.get("/api/agent/jobs/auto-execute", requireOwner, (_req, res) => {
+  res.json({ success: true, ...jobAutomationPublicBlock(jobAutomationState), readyNow: automationJobs.filter((j: any) => j.status === "ready").length });
+});
+
+app.post("/api/agent/jobs/auto-execute", requireOwner, async (req, res) => {
+  const user = (req as any).user as ServerUser;
+  const raw = (req.body || {}).enabled;
+  if (typeof raw !== "boolean") return res.status(400).json({ success: false, error: "الحقل enabled مطلوب (true/false).", code: "INVALID_ENABLED" });
+  jobAutomationState = setJobAutoExecute(jobAutomationState, raw);
+  saveControlState();
+  audit(user.id, "job_auto_execute_toggled", raw ? "enabled" : "disabled");
+  res.json({
+    success: true, ...jobAutomationPublicBlock(jobAutomationState),
+    note: raw
+      ? "التنفيذ التلقائي مفعّل: تُنفَّذ المهام المعتمدة الجاهزة عند حلول موعدها عبر بوابات النشر نفسها."
+      : "التنفيذ التلقائي معطَّل (الافتراضي الآمن): لا تنفيذ خارجي تلقائي.",
+  });
+});
+
+/** تشغيل دورة التنفيذ التلقائي الآن (تشخيص للمالك، يحترم المفتاح). */
+app.post("/api/agent/jobs/auto-execute/run", requireOwner, async (req, res) => {
+  const result = await runJobAutoExecuteCycle("manual");
+  res.json({ success: true, ...result, note: "لا تنفيذ إن كان المفتاح معطَّلاً أو لا توجد مهمة معتمدة جاهزة." });
 });
 
 // --- مفتاح الإيقاف/التمكين للعقل التجاري (Kill Switch) — للمالك فقط ---
@@ -13257,6 +13365,55 @@ const safeJobWorkerTimer = setInterval(safeTimerCallback(runSafeJobPreflight, "s
 (safeJobWorkerTimer as any).unref?.();
 
 /**
+ * B4: ينفّذ المهام المعتمدة التي حان موعدها تلقائياً — **فقط** إن فعّل المالك مفتاح
+ * «نشر المعتمد تلقائياً في موعده» (الافتراضي معطَّل). لا تنفيذ لمهمة غير معتمدة/غير
+ * جاهزة، ولا إعادة لمهمة نُفّذت/فشلت نهائياً، ولا تنفيذ أثناء انتظار تجدّد حصة YouTube.
+ * التنفيذ يمرّ بنفس `executeApprovedJob` (كل بوابات النشر)، والنتيجة في سجل التدقيق.
+ * لا AI، ولا استدعاء Gemini. حدّ صريح لكل دورة (5 مهام) لمنع موجة تنفيذ.
+ */
+const JOB_AUTO_MAX_PER_CYCLE = 5;
+async function runJobAutoExecuteCycle(trigger: string): Promise<{ attempted: number; executed: number; failed: number; skipped: string }> {
+  if (!jobAutomationState.autoExecuteApproved) return { attempted: 0, executed: 0, failed: 0, skipped: "disabled" };
+  const now = Date.now();
+  const candidates = automationJobs
+    .filter((j: any) => decideAutoExecute({ status: j.status, enabled: true, quotaRetryAt: j.payload?.quotaRetryAt || j.retryAt || null, nowMs: now }).allow)
+    .slice(0, JOB_AUTO_MAX_PER_CYCLE);
+  if (!candidates.length) return { attempted: 0, executed: 0, failed: 0, skipped: "none_due" };
+  let executed = 0; let failed = 0;
+  for (const job of candidates) {
+    // التزامن مضمون بالحجز الدائم داخل executeApprovedJob (مفتاح job.id): دورة
+    // متداخلة تفشل بـ409 IDEMPOTENT_OPERATION_IN_PROGRESS فلا تنفيذ مزدوج.
+    const result = await executeApprovedJob(job, "system");
+    if (result.status === 200 && job.status === "executed") executed += 1; else failed += 1;
+    // B1: نتيجة التنفيذ التلقائي تُدرج في تنبيه المالك (مجمّع) عند الفشل فقط
+    // (لا إغراق عند النجاح). لا رسالة للزبون.
+    if (failed > 0 && result.status !== 200) {
+      recordOwnerAlert({
+        key: ownerAlertKey('social_escalation', job.payload?.platform || null, `autojob_failed:${job.id}`),
+        kind: 'social_escalation',
+        platform: job.payload?.platform || null,
+        title: 'فشل تنفيذ مهمة معتمدة تلقائياً',
+        snippet: truncateAlertSnippet(result.body?.error || 'فشل تنفيذ المهمة المجدولة.'),
+        at: new Date().toISOString(),
+      });
+    }
+  }
+  jobAutomationState = {
+    ...jobAutomationState,
+    lastAutoRunAt: new Date().toISOString(),
+    lastAutoResult: failed === 0 && executed > 0 ? 'executed' : (failed > 0 ? 'failed' : jobAutomationState.lastAutoResult),
+    lastAutoJobId: candidates[candidates.length - 1]?.id || jobAutomationState.lastAutoJobId,
+    autoExecutedCount: jobAutomationState.autoExecutedCount + executed,
+    autoFailedCount: jobAutomationState.autoFailedCount + failed,
+  };
+  saveControlState();
+  audit("system", "job_auto_execute_cycle", `${trigger}:executed=${executed}:failed=${failed}`);
+  return { attempted: candidates.length, executed, failed, skipped: "none" };
+}
+const jobAutoExecuteTimer = setInterval(safeTimerCallback(() => { void runJobAutoExecuteCycle("tick"); }, "job-auto-execute"), 60 * 1000);
+(jobAutoExecuteTimer as any).unref?.();
+
+/**
  * مصالحة دورية لحالة نشر TikTok (status/fetch) — تسدّ فجوة أن التسليم كان
  * يُحسم يدوياً فقط. تعمل داخل عملية Render الدائمة، بلا AI، ولا تكتب حالة بلا
  * تأكيد من المزود. الفترة 60 ثانية كافية ولا تستهلك حصة TikTok بلا داعٍ لأن
@@ -13308,7 +13465,40 @@ async function executeApprovedJob(job: any, userId: string): Promise<{ status: n
       idemOutcome = "done";
       return { status: 200, body: { success: true, job, receipt: job.providerReceipt } };
     }
-    return { status: 501, body: { success: false, error: "الموصل متصل ومتحقق، لكن تنفيذ هذا النوع من النشر يحتاج بيانات الوسائط/العملية الخاصة بالمزود ولم يتم اختلاق تنفيذ وهمي." } };
+    // B5: بقية المنصات تمرّ عبر **نفس المنفّذ الموحّد** `executePlatformPublish`
+    // (youtube/facebook/instagram/threads/tiktok) — لا مسار ثانٍ ولا اختلاق تنفيذ.
+    // المنصة هنا موصولة موثّقة (فُحص أعلاه) وتحمل قدرة النشر في السجل، فالمنفّذ
+    // يُكمل كل بواباته: سلامة المحتوى، ملاءمة النص، منع التكرار، rate limit، audit.
+    // لا نُمرّر postId (الغلاف الخارجي سيحجز مفتاح publish بمفتاح المهمة) فلا يقع
+    // حجز مزدوج. المحتوى معتمد صراحةً (المهمة كانت approved ثم صارت ready).
+    const pubResult = await executePlatformPublish(platform, {
+      content,
+      approved: true,
+      postId: job.id,
+      title: job.payload?.title,
+      description: job.payload?.content,
+      chatId: job.payload?.chatId,
+      videoUrl: job.payload?.videoUrl,
+      imageUrl: job.payload?.imageUrl,
+      videoBase64: job.payload?.videoBase64,
+      mediaRef: job.payload?.mediaRef,
+      privacyStatus: job.payload?.privacyStatus,
+      publishAt: job.payload?.publishAt,
+      productId: job.payload?.productId,
+    }, userId);
+    const providerPostId = pubResult.body?.providerPostId || pubResult.body?.providerPublishId || pubResult.body?.externalVideoId || null;
+    if (pubResult.status === 200 && (providerPostId || pubResult.body?.pendingRetry === true)) {
+      job.status = "executed"; job.executedAt = new Date().toISOString(); job.providerVerified = Boolean(providerPostId);
+      job.providerReceipt = { provider: platform, postId: providerPostId, mediaKind: pubResult.body?.receipt?.mediaKind ?? null, pendingRetry: pubResult.body?.pendingRetry === true, executedAt: new Date().toISOString() };
+      persistState();
+      audit(userId, "job_executed", `${job.id}:${platform}`);
+      idemOutcome = classifyExternalOperationOutcome({ ok: true, pending: pubResult.body?.pendingRetry === true, failureKind: providerFailureKind(pubResult.body?.code) });
+      return { status: 200, body: { success: true, job, receipt: job.providerReceipt } };
+    }
+    job.status = "failed"; job.lastError = String(pubResult.body?.error || "فشل تنفيذ المهمة.").slice(0, 500);
+    persistState(); audit(userId, "job_execution_failed", `${job.id}:${platform}`);
+    idemOutcome = classifyExternalOperationOutcome({ ok: false, pending: pubResult.body?.pendingRetry === true, failureKind: providerFailureKind(pubResult.body?.code) });
+    return { status: pubResult.status && pubResult.status >= 400 ? pubResult.status : 502, body: { success: false, error: job.lastError, code: pubResult.body?.code || "PROVIDER_ERROR", job } };
   } catch (e: any) {
     job.status = "failed"; job.lastError = String(e?.message || e).slice(0, 500); persistState(); audit(userId, "job_execution_failed", `${job.id}:${platform}`);
     idemOutcome = "failed";
@@ -14740,6 +14930,8 @@ function applyControlSnapshot(control: any): void {
   // B1/Y2: حالة تنبيه المالك الخارجي (مفتاح التشغيل + الطابور + مفاتيح منع التكرار)
   // — تصمد بعد restart/cold start. لا سرّ ولا بيانات عملاء إضافية.
   ownerAlertState = normalizeOwnerAlertState(control.ownerAlerts);
+  // B4: مفتاح التنفيذ التلقائي للمهام المعتمدة + عدّاداته — تصمد بعد restart (بلا سرّ).
+  jobAutomationState = normalizeJobAutomationState(control.jobAutomation);
 }
 
 /** يقرأ حالة التحكّم متزامناً (backend الملف) عند الإقلاع. */
@@ -14809,6 +15001,8 @@ function buildControlState() {
     // B1/Y2: تنبيه المالك الخارجي (مفتاح + طابور + مفاتيح منع تكرار) — تصمد بعد
     // restart فلا تُكرَّر التنبيهات ولا يُفقد المتراكم. بلا سرّ ولا بيانات عملاء.
     ownerAlerts: ownerAlertState,
+    // B4: مفتاح التنفيذ التلقائي + عدّاداته — تصمد بعد restart (بلا سرّ).
+    jobAutomation: jobAutomationState,
   };
 }
 
@@ -16070,6 +16264,13 @@ let ownerAlertTimer: NodeJS.Timeout | null = null;
 let ownerAlertInFlight = false;
 const OWNER_ALERT_TICK_MS = 60 * 1000;
 
+// -----------------------------------------------------------------------------
+// B4: التنفيذ التلقائي الاختياري للمهام المعتمدة — **معطَّل افتراضياً** (fail-closed).
+// الحالة تُحفظ عبر محوّل الحالة في مفتاح `control.jobAutomation` فتصمد بعد restart.
+// لا تنفيذ لأي مهمة غير معتمدة/غير جاهزة، ولا إعادة لمهمة نُفّذت أو فشلت نهائياً.
+// -----------------------------------------------------------------------------
+let jobAutomationState: JobAutomationState = defaultJobAutomationState();
+
 /** يُدرج حدث تنبيه جديد (يُحفظ لاحقاً مع دورة الإرسال). */
 function recordOwnerAlert(item: OwnerAlertItem): void {
   const next = enqueueOwnerAlert(ownerAlertState, item);
@@ -16434,10 +16635,10 @@ function buildPersistedState() {
       socialComments: (workspace as any).socialComments.slice(0, 10000),
       socialReplies: (workspace as any).socialReplies.slice(0, 5000), socialApprovals: (workspace as any).socialApprovals.slice(0, 5000), publishRecords: (workspace as any).publishRecords.slice(0, 5000), performanceRecords: (workspace as any).performanceRecords.slice(0, 20000), marketingDecisions: (workspace as any).marketingDecisions.slice(0, 2000), strategiesTested: (workspace as any).strategiesTested.slice(0, 2000),
       // نوافذ المحادثة قصيرة المدى (منصة+خيط): تصمد بعد restart وتُغذّي عزل السياق.
-      socialConversations: ((workspace as any).socialConversations || []).slice(0, 500),
+      socialConversations: ((workspace as any).socialConversations || []).slice(0, CONVERSATION_STATE_MAX),
       // تصعيدات بشرية ودورة حياة المحادثات: تصمد بعد restart (تمنع إغلاقاً مع تصعيد معلّق).
       socialEscalations: ((workspace as any).socialEscalations || []).slice(0, 5000),
-      socialConversationStates: ((workspace as any).socialConversationStates || []).slice(0, 500),
+      socialConversationStates: ((workspace as any).socialConversationStates || []).slice(0, CONVERSATION_STATE_MAX),
       // معرّفات تحديثات Telegram لصمود منع التكرار بعد restart (يمنع إعادة معالجة رسالة).
       // الحدّ DEDUPE_ID_MAX (2000) بدل 20000: يكفي لمنع replay/retry عبر نافذة
       // زمنية معقولة، ويقلّص حجم كائن الحالة الكامل المُنقل إلى Neon ~10×.
@@ -16915,6 +17116,13 @@ app.get("/api/readiness", (_req, res) => {
        * مُعلن هنا (لا انهيار). الحقول منطقية/أرقام فقط بلا أي بيانات عملاء.
        */
       ownerAlerts: ownerAlertPublicBlock(ownerAlertState, getOwnerEmailConfig().configured && getOwnerEmailConfig().fromConfigured),
+      /** B4: التنفيذ التلقائي للمهام المعتمدة — معطَّل افتراضياً (fail-closed). */
+      jobAutomation: jobAutomationPublicBlock(jobAutomationState),
+      /** B7: حدود حالة المحادثات (مصدر واحد) — عرض فقط بلا بيانات عملاء. */
+      conversationLimits: conversationLimitsPublicBlock(
+        Array.isArray((workspace as any).socialConversations) ? (workspace as any).socialConversations.length : 0,
+        Array.isArray((workspace as any).socialConversationStates) ? (workspace as any).socialConversationStates.length : 0,
+      ),
     },
     ai: {
       ...aiProviderState(),
@@ -17604,6 +17812,13 @@ app.get("/api/health", (_req, res) => {
     },
     // B1/Y2: تنبيه المالك الخارجي (Resend) — منطقي/أرقام فقط بلا أي بيانات عملاء.
     ownerAlerts: ownerAlertPublicBlock(ownerAlertState, getOwnerEmailConfig().configured && getOwnerEmailConfig().fromConfigured),
+    /** B4: التنفيذ التلقائي للمهام المعتمدة — معطَّل افتراضياً (fail-closed). */
+    jobAutomation: jobAutomationPublicBlock(jobAutomationState),
+    /** B7: حدود حالة المحادثات (مصدر واحد) — عرض فقط بلا بيانات عملاء. */
+    conversationLimits: conversationLimitsPublicBlock(
+      Array.isArray((workspace as any).socialConversations) ? (workspace as any).socialConversations.length : 0,
+      Array.isArray((workspace as any).socialConversationStates) ? (workspace as any).socialConversationStates.length : 0,
+    ),
     geminiUsage: geminiStatus(),
     // حالة مفتاح تشفير توكنات المنصات: تفصل missing من invalid بلا كشف القيمة،
     // فتعكس نفس الحكم الذي يستخدمه encryptSecret/credentials فعلياً.
@@ -20249,6 +20464,7 @@ async function startServer() {
       try { (app as any).drAutoBackup?.stop?.(); } catch { /* تجاهل */ }
       try { clearInterval(runtimeCleanupTimer); } catch { /* تجاهل */ }
       try { clearInterval(safeJobWorkerTimer); } catch { /* تجاهل */ }
+      try { clearInterval(jobAutoExecuteTimer); } catch { /* تجاهل */ }
       try { clearInterval(tiktokReconcileTimer); } catch { /* تجاهل */ }
       try { stopYouTubeQuotaRetryTimer(); } catch { /* تجاهل */ }
       // B1/Y2: إيقاف مؤقّت تنبيه المالك (لا إرسال أثناء الإغلاق).

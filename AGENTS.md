@@ -44,7 +44,7 @@ npm install
 npm run dev            # tsx server.ts
 npm run lint           # tsc --noEmit
 npm run build          # vite build + esbuild server.ts -> dist/server.cjs
-npm run final-audit    # node final-audit.mjs (1875 فحصاً)
+npm run final-audit    # node final-audit.mjs (1896 فحصاً)
 npm test               # storage + engine + auth + ... + db + runtime
 ```
 - التشغيل الإنتاجي: `PORT=4517 NODE_ENV=production APP_URL=http://localhost:4517 node dist/server.cjs`
@@ -7409,3 +7409,61 @@ Netlify، وتصحيح إعلان قدرات غير موجودة. **لا مسا�
 فحوص final-audit الجديدة: `owner-alerts-*` (11)، `r1-netlify-*` (5)، `c2-no-undeclared-publish-capability`
 — الإجمالي **1875** فحصاً. `npm run lint` ✅ · `npm run build` ✅ · `npm test` ✅ (EXIT=0) ·
 `npm run test:dr` ✅ · `npm run final-audit` ✅.
+
+## الجزء 2 — النشر المجدول والمتابعة وقياس المبيعات (2026-10-24)
+
+دفعة تُغلق فجوات تشغيلية حقيقية في دورة النشر/البيع، بلا جدول قاعدة بيانات جديد
+(كل الحالة في مخزن الحالة القائم)، وبلا أي إرسال آلي للزبائن (sendMode=approval باقٍ).
+
+### B5 — منفّذ المهام المجدولة عبر المنفّذ الموحّد
+- **الفجوة المُثبتة:** `executeApprovedJob` كان ينفّذ Telegram فقط ويرد **501** لكل
+  المنصات الأخرى («لا يتم اختلاق تنفيذ وهمي») رغم توفّر منفّذ نشر حقيقي موحّد.
+- **الإصلاح:** فرع «بقية المنصات» يستدعي الآن **`executePlatformPublish` نفسه** (نفس
+  المنفّذ الذي يخدم النشر بنقرة واحدة)، فيمرّ بكل بواباته: اتصال موثق، قدرة السجل، سلامة
+  المحتوى، ملاءمة النص، منع التكرار الدائم، rate limit، audit. الإيصال يُثبّت بمعرّف منشور
+  حقيقي (`providerPostId`/`providerPublishId`/`externalVideoId`)، ولا نجاح بلا معرّف.
+- اختبار: `part2.integration.test.ts` (المجموعة 4) — مهمة معتمدة على Facebook تُنفَّذ
+  **200 لا 501** وتُنشر فعلاً على خادم Graph وهمي، وإعادة التنفيذ تُرفض (منع تكرار).
+
+### B4 — تنفيذ تلقائي اختياري (الافتراضي معطَّل)
+- **الوحدة `engine/social/jobAutomation.ts`** (منطق صافٍ): `defaultJobAutomationState`
+  (**`autoExecuteApproved: false` = fail-closed**)، `normalizeJobAutomationState` (أي قيمة
+  غير true تُبقيه معطَّلاً)، `setJobAutoExecute`، و`decideAutoExecute` (الحالة الوحيدة
+  المقبولة `ready`؛ الحالات المنتهية لا تُعاد؛ انتظار تجدّد حصة YouTube ⇒ `QUOTA_WAIT`).
+- **الخادم:** `runJobAutoExecuteCycle` (حدّ 5 مهام/دورة) يعمل عبر مؤقّت داخلي `.unref()`
+  يُوقف عند SIGTERM. عند تعطيل المفتاح لا ينفّذ شيئاً (صفر فعل خارجي). الحالة تُحفظ في
+  `control.jobAutomation` فتصمد بعد restart. مسارات owner: `GET/POST
+  /api/agent/jobs/auto-execute` و`POST .../auto-execute/run`.
+- اختبار: `part2.integration.test.ts` (المجموعتان 2 و5) — الافتراضي معطَّل ⇒ لا تنفيذ؛
+  التفعيل ⇒ مهمة معتمدة جاهزة تُنفَّذ تلقائياً؛ التعطيل ⇒ تبقى `ready`.
+
+### B8 — ربط البيع بالمحادثة + تقرير شهري حتمي
+- **الوحدة `engine/commercial/commercialSales.ts`** (منطق صافٍ): `buildCommercialSaleRecord`
+  (يرفض مبلغاً غير موجب أو بلا اسم منتج — لا بيع وهمي)، `normalizeCommercialSaleRecord`،
+  `monthKeyOf`، و`buildMonthlyCommercialReport` (عدد الاستفسارات والمبيعات والقيمة لكل منصة
+  من السجلات الحقيقية فقط، والشهر من طابع ISO بلا زحزحة مناطق).
+- **الخادم:** سجل `commercialSales` يُحفظ **داخل مفتاح `commercial` القائم** (لا جدول جديد).
+  المسارات: `POST /api/commercial/sales` (زر «تم البيع»، للمالك/المدير، يسجّل المنصة المصدر
+  من الـlead)، `GET /api/commercial/sales`، `GET /api/commercial/monthly-report`.
+- **الواجهة:** `CommercialInbox.tsx` — بطاقة «تسجيل بيع (تم البيع)» بمبلغ ومنتج وزر مرتبط
+  بـ`apiService.recordCommercialSale`.
+- اختبار: `part2.integration.test.ts` (المجموعة 6) + `part2.logic.test.ts` (B8).
+
+### B7 — حدّ صريح مصدر واحد لحالة المحادثات
+- **الوحدة `engine/social/conversationLimits.ts`:** `CONVERSATION_STATE_MAX = 500`،
+  `capNewestFirst` (الأحدث أولاً، الأقدم يُسقط)، و`conversationLimitsPublicBlock`.
+- **التطبيق:** `server.ts` (`WORKSPACE_MAX_SOCIAL_CONVERSATIONS = CONVERSATION_STATE_MAX`
+  + قصّ الحفظ) و`engine/social/routes.ts` (`appendConversationMessage` و`applyLifecycleEvent`)
+  يستخدمان الثابت نفسه بدل الرقم المكرّر.
+- **الإعلان:** كتلة `conversationLimits` في `/api/health` و`/api/readiness` (أرقام تقنية فقط
+  بلا بيانات عملاء) — تُعلن بلوغ الحدّ صراحةً.
+- **خطة النقل إلى جدول مستقل (بانتظار موافقة المالك — بلا تنفيذ):** نقل
+  `socialConversations` و`socialConversationStates` إلى جدولين مستقلين في Postgres مع فهرس
+  على `conversationId`، وترحيل تدريجي (قراءة من الجدولين، كتابة للجديد)، ونسخة احتياطية
+  كاملة قبل الترحيل. **لا يُنفَّذ قبل الموافقة الصريحة (القاعدة 5).**
+
+### الحالة
+- `npm run lint` ✅ · `npm run build` ✅ · `npm test` ✅ · `npm run test:dr` ✅ ·
+  `npm run final-audit` ✅ (**1896** فحصاً). اختباران جديدان: `test:part2-logic` و
+  `test:part2-integration`. **لم يُمسّ** أي سرّ/مفتاح/OAuth، ولا جدول قاعدة بيانات،
+  ولا نطاق ERP، ولا منصات أخرى. `sendMode` يبقى `approval` والتنفيذ التلقائي معطَّل افتراضياً.

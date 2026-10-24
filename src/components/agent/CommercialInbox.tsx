@@ -247,6 +247,11 @@ export function CommercialInbox() {
   // PR-S5: تشخيص قراءة-فقط لاسم الكاتب (from).
   const [diagBusy, setDiagBusy] = useState(false);
   const [diagResult, setDiagResult] = useState<any>(null);
+  // B8: نموذج «تم البيع» (ربط البيع بالمحادثة/الـlead).
+  const [saleBusy, setSaleBusy] = useState(false);
+  const [saleAmount, setSaleAmount] = useState('');
+  const [saleProductName, setSaleProductName] = useState('');
+  const [saleNote, setSaleNote] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     try {
@@ -314,6 +319,24 @@ export function CommercialInbox() {
       setError(e?.message || (accept ? 'تعذر تأكيد الصفقة' : 'تعذر رفض العرض'));
     } finally {
       setBusyId(null);
+    }
+  };
+
+  // B8: تسجيل بيع حقيقي مرتبط بالمحادثة/الـlead (زر «تم البيع»).
+  const recordSale = async (leadId: string, productName?: string | null, productId?: string | null) => {
+    const amount = Number(saleAmount);
+    const name = (saleProductName || productName || '').trim();
+    setSaleBusy(true); setSaleNote(null); setError(null);
+    try {
+      const res = await apiService.recordCommercialSale({ leadId, amount, productName: name, productId: productId || undefined });
+      setSaleNote(`سُجّل البيع: ${Number(res?.sale?.amount || amount).toLocaleString('ar-IQ')} د.ع — ${res?.sale?.sourcePlatform || ''}`);
+      setSaleAmount(''); setSaleProductName('');
+      await load();
+      await openLead(leadId);
+    } catch (e: any) {
+      setError(e?.message || 'تعذر تسجيل البيع');
+    } finally {
+      setSaleBusy(false);
     }
   };
 
@@ -596,6 +619,39 @@ export function CommercialInbox() {
           ) : (
             <div className="text-[11px] text-slate-500 mb-3">لا عرض صفقة معلّق لهذا الزبون.</div>
           )}
+
+          {/* B8: زر «تم البيع» — يربط البيع بالمحادثة والمنصة المصدر والمبلغ. */}
+          <div className="rounded-xl border border-emerald-500/30 bg-emerald-950/10 p-3 mb-3">
+            <div className="text-xs font-bold text-emerald-300 mb-2">تسجيل بيع (تم البيع)</div>
+            <div className="flex flex-wrap gap-2 items-center">
+              <input
+                type="number"
+                inputMode="numeric"
+                min={1}
+                value={saleAmount}
+                onChange={(e) => setSaleAmount(e.target.value)}
+                placeholder="مبلغ البيع (د.ع)"
+                className="w-40 text-xs rounded-xl bg-slate-950 border border-slate-700 text-slate-100 p-2"
+              />
+              <input
+                type="text"
+                value={saleProductName}
+                onChange={(e) => setSaleProductName(e.target.value)}
+                placeholder={selectedLead.proposal?.productName || 'اسم المنتج'}
+                className="w-48 text-xs rounded-xl bg-slate-950 border border-slate-700 text-slate-100 p-2"
+              />
+              <button
+                type="button"
+                disabled={saleBusy || !saleAmount || Number(saleAmount) <= 0}
+                onClick={() => void recordSale(selectedLead.lead.id, selectedLead.proposal?.productName, selectedLead.proposal?.productId)}
+                className="px-3 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold disabled:opacity-50 flex items-center gap-1"
+              >
+                {saleBusy ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Package className="w-3.5 h-3.5" />} تم البيع
+              </button>
+            </div>
+            <div className="text-[10px] text-slate-500 mt-1">المنصة المصدر: {selectedLead.lead.platform} • يُسجَّل مرتبطاً بهذا الزبون. لا تعديل مخزون ولا عقد تلقائي.</div>
+            {saleNote ? <div className="text-[11px] text-emerald-300 mt-1">{saleNote}</div> : null}
+          </div>
 
           <div className="text-xs font-bold text-slate-300 mb-2">سجل المحادثة</div>
           {Array.isArray(selectedLead.conversation) && selectedLead.conversation.length > 0 ? (
