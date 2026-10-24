@@ -16,7 +16,7 @@ services:
     autoDeploy: true
     envVars:
       - key: NODE_VERSION
-        value: "20"
+        value: "22"
       - key: RECOVERY_CENTER_HOSTED
         value: "true"
       # اعتماد OAuth لعميل Drive (نفس عميل «AI-Gharabi AI — Google Drive Backup»).

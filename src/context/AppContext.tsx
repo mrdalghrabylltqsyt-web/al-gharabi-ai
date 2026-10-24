@@ -103,6 +103,8 @@ interface AppContextType {
 const AppContext = createContext<AppContextType | undefined>(undefined);
 
 const STORAGE_PREFIX = 'algharabi_clean_v1_7_';
+/** مفاتيح نسخة مساحة العمل في المتصفح — تُمسح كلها عند تسجيل الخروج (C10). */
+const WORKSPACE_CACHE_KEYS = ['platforms', 'posts', 'conversations', 'products', 'plans', 'info'] as const;
 
 export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [activeTab, setActiveTab] = useState<string>('section_home');
@@ -328,7 +330,28 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     setCurrentUser(null);
     setUsers([]);
     setAuthUnavailable(false);
+    clearWorkspaceCache();
     showToast('تم تسجيل الخروج بنجاح');
+  };
+
+  /**
+   * C10: عند الخروج تُمسح نسخة المنصات/المنشورات/المحادثات/المنتجات/الخطط/بيانات
+   * المعرض المحفوظة في متصفح الجهاز، وتعود الحالة في الذاكرة إلى قيمها الابتدائية.
+   * الخادم هو المصدر الوحيد؛ عند الدخول التالي يُعاد التحميل منه (hydrateWorkspace).
+   * إيقاف `workspaceHydrated` أولاً يمنع مؤثّرات المزامنة من إعادة الكتابة بعد المسح.
+   */
+  const clearWorkspaceCache = () => {
+    setWorkspaceHydrated(false);
+    for (const key of WORKSPACE_CACHE_KEYS) {
+      try { localStorage.removeItem(`${STORAGE_PREFIX}${key}`); } catch { /* تخزين غير متاح */ }
+    }
+    setPlatforms(INITIAL_PLATFORMS);
+    setPosts(INITIAL_POSTS);
+    setConversations(INITIAL_CONVERSATIONS);
+    setActiveConversationId(null);
+    setShowroomInfo(INITIAL_SHOWROOM_INFO);
+    setProducts(INITIAL_PRODUCTS);
+    setInstallmentPlans(INITIAL_INSTALLMENT_PLANS);
   };
 
   // Load from clean storage

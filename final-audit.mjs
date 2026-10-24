@@ -225,7 +225,7 @@ add('render-no-secrets', (() => {
   return !/AIzaSy[A-Za-z0-9_\-]{10,}/.test(r) && !/re_[A-Za-z0-9]{20,}/.test(r) && !/sk-[A-Za-z0-9]{20,}/.test(r) && !/postgres(ql)?:\/\/[^\s"']*:[^\s"']*@/.test(r);
 })(), 'render.yaml بلا أي سر أو نص اتصال قاعدة');
 add('render-secrets-sync-false', (() => { const r = read('render.yaml'); return ['SESSION_SECRET','PLATFORM_TOKEN_ENCRYPTION_KEY','GEMINI_API_KEY','RESEND_API_KEY','DATABASE_URL','OWNER_EMAIL'].every((k) => new RegExp(`key:\\s*${k}\\s*\\n\\s*sync:\\s*false`).test(r)); })(), 'كل الأسرار sync: false في render.yaml');
-add('render-free-plan-node20', /plan:\s*free/.test(read('render.yaml')) && read('render.yaml').includes('npm ci && npm run build') && read('render.yaml').includes('npm run start') && /NODE_VERSION\s*\n\s*value:\s*"20"/.test(read('render.yaml')), 'Render Free مع build/start وNode 20');
+add('render-free-plan-docker-node22', /plan:\s*free/.test(read('render.yaml')) && /runtime:\s*docker/.test(read('render.yaml')) && /dockerfilePath:\s*\.\/Dockerfile/.test(read('render.yaml')) && /FROM node:22-slim AS runtime/.test(read('Dockerfile')) && /RUN npm run build/.test(read('Dockerfile')) && /CMD \["node", "dist\/server\.cjs"\]/.test(read('Dockerfile')), 'R6: render.yaml يطابق الخدمة الحية (Docker، خطة Free) وصورة Node 22 تبني وتشغّل dist/server.cjs');
 add('render-healthcheck', /healthCheckPath:\s*\/api\/health/.test(read('render.yaml')), 'Render healthCheckPath هو /api/health');
 
 // قبول Batch 4: بوابة التصريح تُختبر على الخادم الفعلي (لا بحقن برمجي).
@@ -2365,7 +2365,7 @@ add('dr-collector-reads-bundle', cloudSyncSrc.includes("source: 'bundle'") && cl
 add('dr-source-bundle-guard-intact', cloudSyncSrc.includes('assessSourceCompleteness(bundle.included, options)') && /complete\s*=\s*paths\.size\s*>=\s*minFiles\s*&&\s*missingRequired\.length\s*===\s*0/.test(cloudSyncSrc), 'حرس SOURCE_INCOMPLETE مطبَّق على الحزمة أيضاً (لم يُخفَّف)');
 add('dr-source-bundle-build-script', (pkg.scripts['build'] || '').includes('tools/dr/source-bundle.mjs') && Boolean(pkg.scripts['build:source-bundle']), 'خطوة البناء تُنتج الحزمة داخل dist (لا حاجة لـ.git في الصورة)');
 add('dr-source-bundle-docker-copy', read('Dockerfile').includes('COPY --from=build /app/dist ./dist') && !read('Dockerfile').includes('COPY --from=build /app/.git'), 'صورة الإنتاج تنسخ dist (وفيه الحزمة) بلا .git');
-add('dr-source-bundle-docker-git-buildstage', /apt-get install -y --no-install-recommends git/.test(read('Dockerfile')) && /FROM node:20-slim AS build[\s\S]*?apt-get install[\s\S]*?git[\s\S]*?FROM node:20-slim AS runtime/.test(read('Dockerfile')), 'git يُثبَّت في مرحلة البناء فقط ليبني الحزمة من الشجرة المتتبَّعة (الصورة النهائية بلا git)');
+add('dr-source-bundle-docker-git-buildstage', /apt-get install -y --no-install-recommends git/.test(read('Dockerfile')) && /FROM node:22-slim AS build[\s\S]*?apt-get install[\s\S]*?git[\s\S]*?FROM node:22-slim AS runtime/.test(read('Dockerfile')), 'git يُثبَّت في مرحلة البناء فقط ليبني الحزمة من الشجرة المتتبَّعة (الصورة النهائية بلا git)');
 add('dr-source-bundle-walk-fallback', sourceBundleModule.includes('export function walkProjectSource') && sourceBundleModule.includes("sourceMode = 'walk'") && sourceBundleModule.includes('NON_SOURCE_DIRS'), 'احتياطي بناء من مشي الشجرة عند غياب git زمن البناء (بلا تعطيل فحص الأسرار)');
 add('dr-source-bundle-docker-context', !/^\.git$/m.test(read('.dockerignore')) && !/^docs$/m.test(read('.dockerignore')), 'سياق بناء Docker يحوي .git (للـcommit) وكامل شجرة المصدر (لا استبعاد صامت لملفات متتبَّعة)');
 add('dr-source-bundle-test', sourceBundleTest.includes('docker-like collector uses bundle') && sourceBundleTest.includes('guard rejects bundle missing server.ts') && sourceBundleTest.includes('CURRENT treeHash unchanged after failed collection'), 'اختبار الحزمة يثبت: بيئة Docker + الحرس + عدم تأثّر CURRENT');
@@ -5919,6 +5919,34 @@ add('watcher-advisory-not-authority',
       gbTest.includes('GOOGLE_BUSINESS_POSTS_BASE') &&
       /test:google-business/.test(read('package.json')),
       'اختبار Google Business يستخدم خادم وهمي محلي ومُسجّل في package.json');
+  }
+
+  // الجزء 4 (التحصين): Node 22، Dependabot، npm audit، مسح نسخة المتصفح عند الخروج.
+  {
+    const ci = read('.github/workflows/ci.yml');
+    const dep = fs.existsSync(path.join(root, '.github/dependabot.yml')) ? read('.github/dependabot.yml') : '';
+    const ctx = read('src/context/AppContext.tsx');
+    add('r2-node22-everywhere',
+      !/node-version:\s*'20'/.test(ci) && (ci.match(/node-version:\s*'22'/g) || []).length >= 4 &&
+      read('netlify.toml').includes('NODE_VERSION = "22"') &&
+      /NODE_VERSION\s*\n\s*value:\s*"22"/.test(read('dr-recovery-center/render.yaml')) &&
+      !/node:20/.test(read('Dockerfile')),
+      'R2: Node 22 في Dockerfile وCI وNetlify ومركز الاستعادة (Node 20 انتهى دعمه)');
+    add('c9-actions-node24-majors',
+      !/actions\/(checkout|setup-node|upload-artifact|download-artifact)@v4/.test(ci) &&
+      /actions\/checkout@v5/.test(ci) && /actions\/setup-node@v5/.test(ci),
+      'C9: إجراءات GitHub بإصدارات تعمل على Node 24 (لا تحذير Node 20)');
+    add('c3-dependabot-npm-and-actions',
+      /package-ecosystem:\s*"npm"/.test(dep) && /package-ecosystem:\s*"github-actions"/.test(dep) && /interval:\s*"weekly"/.test(dep),
+      'C3: Dependabot أسبوعي لمكتبات npm وإجراءات GitHub');
+    add('c4-npm-audit-ci-gate',
+      /npm audit --omit=dev/.test(ci) && /critical/.test(ci) && read('.gitignore').includes('audit.json'),
+      'C4: CI يفحص ثغرات مكتبات الإنتاج ويفشل عند critical');
+    add('c10-logout-clears-browser-cache',
+      ctx.includes('clearWorkspaceCache();') && ctx.includes('setWorkspaceHydrated(false);') &&
+      /WORKSPACE_CACHE_KEYS = \['platforms', 'posts', 'conversations', 'products', 'plans', 'info'\]/.test(ctx) &&
+      ctx.includes('localStorage.removeItem(`${STORAGE_PREFIX}${key}`)'),
+      'C10: تسجيل الخروج يمسح نسخة مساحة العمل من المتصفح ويوقف إعادة كتابتها');
   }
 
   // 12) AGENTS.md: عدد فحوصات final-audit مطابق للفعلي (يُعَدّ من نص الملف نفسه).

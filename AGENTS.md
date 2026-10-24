@@ -1,5 +1,38 @@
 # AGENTS.md — دليل عمل وكلاء الذكاء الاصطناعي على مشروع الغرابي AI
 
+## الحالة الحالية (اقرأ هذا أولاً — حُدِّث 2026-10-24 بعد الجزء 4)
+
+**التشغيل:** خادم واحد يكتب على القاعدة: Render (`al-gharabi-ai`، Docker، Node 22، خطة Free).
+موقع Netlify يمرّر `/api/*` إلى Render كـproxy ولا يشغّل خادماً (R1). التخزين Postgres (Neon).
+
+**المنصات (الاتصال الحي يُقرأ من `/api/health`، لا من هذا الملف):**
+| المنصة | الكود | الربط الحي حتى 2026-10-24 |
+|---|---|---|
+| Facebook | نشر + تعليقات + رسائل + رد | متصل |
+| YouTube | رفع + نشر + تعليقات + رد + إحصاءات | متصل |
+| WhatsApp | رسائل + رد (نافذة 24س، قوالب خارجها) | غير مربوط (ينتظر رقم أعمال المالك) |
+| Google Business | نشر localPost | غير مربوط (سر OAuth في Render خاطئ + طلب وصول API) |
+| Instagram | نشر + تعليقات + رسائل + رد | غير مربوط |
+| Telegram | نشر + رسائل + رد | غير مؤكد |
+| TikTok | نشر + إحصاءات (لا تعليقات بطبيعة المنصة) | غير مربوط (يحتاج تدقيق TikTok) |
+| Threads | نشر فقط | غير مربوط (تطبيق Meta منفصل) |
+| X / Snapchat | لا كود نشر — القدرات فارغة صراحةً (C2) | — |
+
+**الأوضاع الافتراضية (fail-closed):** `sendMode=approval` (لا رد آلي للزبون بلا موافقة) ·
+العقل التجاري موقوف حتى يفعّله المالك · التنفيذ التلقائي للمهام المعتمدة معطَّل (B4) ·
+تنبيه المالك البريدي مفعَّل كل 30 دقيقة (B1).
+
+**الأعداد الحالية:** `npm test` = 177 مجموعة · `final-audit` = 1913 فحصاً.
+
+**معلّق على قرار المالك فقط:** B7 (نقل المحادثات إلى جدول مستقل) · PR #24 وPR #3 (مراجعة) ·
+ربط WhatsApp/Google Business/Instagram/Telegram/TikTok/Threads · وضع تطبيق Meta (Live +
+Advanced Access) · التحقق من `YOUTUBE_ONLY_OPERATIONAL` · خطة Render مدفوعة · حذف مركز
+الاستعادة المكرر.
+
+**قواعد ثابتة:** تجميد TikTok (favicon/index.html/tiktok*.txt/terms/privacy/OAuth callback) ·
+لا تغيير لرمز `/api/health` · لا ERP/CRM/مالية · لا أسرار · تغيير المخطط يحتاج موافقة ونسخة
+احتياطية · الدمج: اختبارات كاملة ← دمج ← Live ← smoke ← rollback عند الفشل.
+
 ## الهوية والنطاق
 - المشروع: `al-gharabi-ai` — مساعد ذكي مركزي متعدد المنصات لمعرض الغرابي للتقسيط.
 - **النطاق الرسمي الحالي: سوشيال + AI + تسويق.** هذا هو المعيار الوحيد لقبول أي ميزة.
@@ -44,7 +77,7 @@ npm install
 npm run dev            # tsx server.ts
 npm run lint           # tsc --noEmit
 npm run build          # vite build + esbuild server.ts -> dist/server.cjs
-npm run final-audit    # node final-audit.mjs (1908 فحصاً)
+npm run final-audit    # node final-audit.mjs (1913 فحصاً)
 npm test               # storage + engine + auth + ... + db + runtime
 ```
 - التشغيل الإنتاجي: `PORT=4517 NODE_ENV=production APP_URL=http://localhost:4517 node dist/server.cjs`

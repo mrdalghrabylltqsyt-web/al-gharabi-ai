@@ -5,7 +5,7 @@
 # تثبيت نسخة Node على Netlify: الكود والاختبارات مبنية على Node 20+،
 # وتثبيتها يمنع أي انحراف في بيئة البناء بين المحلي والنشر.
 [build.environment]
-  NODE_VERSION = "20"
+  NODE_VERSION = "22"
 
 [functions]
   directory = "netlify/functions"
