@@ -44,7 +44,7 @@ npm install
 npm run dev            # tsx server.ts
 npm run lint           # tsc --noEmit
 npm run build          # vite build + esbuild server.ts -> dist/server.cjs
-npm run final-audit    # node final-audit.mjs (1896 فحصاً)
+npm run final-audit    # node final-audit.mjs (1908 فحصاً)
 npm test               # storage + engine + auth + ... + db + runtime
 ```
 - التشغيل الإنتاجي: `PORT=4517 NODE_ENV=production APP_URL=http://localhost:4517 node dist/server.cjs`
@@ -7467,3 +7467,71 @@ Netlify، وتصحيح إعلان قدرات غير موجودة. **لا مسا�
   `npm run final-audit` ✅ (**1896** فحصاً). اختباران جديدان: `test:part2-logic` و
   `test:part2-integration`. **لم يُمسّ** أي سرّ/مفتاح/OAuth، ولا جدول قاعدة بيانات،
   ولا نطاق ERP، ولا منصات أخرى. `sendMode` يبقى `approval` والتنفيذ التلقائي معطَّل افتراضياً.
+
+## W1 + G3 — موصلان حقيقيان جديدان: WhatsApp Cloud API ونشر Google Business (دفعة على فرع منفصل)
+
+دفعة تكمل مبدأ «الإعلان الصادق»: كان WhatsApp وGoogle Business يُعلنان `realConnector: false`
+و`capabilities: []`، بينما أُضيف لكلٍّ منهما موصل تنفيذ حقيقي فعلي. **لم يُمسّ** أي سرّ/مفتاح/OAuth
+قائم، ولا Gemini، ولا قاعدة البيانات (لا جدول جديد)، ولا نطاق ERP، ولا أي منصة أخرى.
+
+### W1 — موصل WhatsApp Business Cloud API (رسائل وردود فقط)
+- **الوحدة `engine/social/whatsapp.ts`** (مصدر واحد، منطق صافٍ قابل للاختبار):
+  - `WhatsAppClient` مع `verifyPhoneNumber` (إثبات رقم أعمال فعلي عبر `GET /{id}` — لا اتصال
+    بلا تحقق من Meta)، `sendText`، `sendTemplate`.
+  - **حارس نافذة 24 ساعة** `evaluateWhatsAppSend`: داخل النافذة ⇒ نص حر؛ خارجها + قالب
+    مُهيّأ ⇒ قالب معتمد؛ خارجها بلا قالب ⇒ **حجب صريح** (`WHATSAPP_WINDOW_CLOSED_NO_TEMPLATE`)
+    بدل مخالفة سياسة Meta. الثابت `WHATSAPP_MESSAGE_WINDOW_HOURS = 24` مطابق لنافذة
+    مراسلة Meta المستخدمة في العقل التجاري.
+  - `normalizeWhatsAppInbound` (تطبيع الرسائل الواردة لحدث موحّد + هدف الرد = معرّف هاتف
+    العميل)، `parseWhatsAppStatuses` (حالات التسليم)، `isPlausibleWhatsAppMessageId`
+    (`wamid...` — أساس منع التكرار)، و`classifyWhatsAppProviderError` (يفرّق النافذة المغلقة
+    131047 عن قالب غير معتمد 132001 عن رمز منتهٍ 190).
+  - **متغيّرات البيئة بأسماء فقط:** `WHATSAPP_PHONE_NUMBER_ID`، `WHATSAPP_ACCESS_TOKEN`،
+    `WHATSAPP_APP_SECRET`، `WHATSAPP_VERIFY_TOKEN`، `WHATSAPP_DEFAULT_TEMPLATE`،
+    `WHATSAPP_DEFAULT_TEMPLATE_LANGUAGE` (موثّقة في `.env.example` و`render.yaml` بلا قيم).
+- **الخادم (`server.ts`):** مصنع العميل + محوّل الاعتماد المشفّر (`providerTokens.whatsapp`)،
+  فرع `verifyProviderConnection` (إثبات رقم فعلي)، استقبال webhook موقّع (`X-Hub-Signature-256`
+  على الجسم الخام) يُحفظ **قبل الإقرار** (لا فقدان ولا تكرار بعد cold start)، المنفّذ المركزي
+  `executeWhatsAppMessageReply` (سلامة محتوى + منع تكرار + حارس النافذة + قفل الرد المتزامن —
+  **لا تسليم بلا معرّف رسالة حقيقي من Meta**)، ومسارات owner: `configure`/`reply`/`status`.
+- **العقل التجاري:** الرسائل الواردة تُمرَّر إلى `incomingToInteraction`/leads/المتابعة/
+  صندوق الموافقات كباقي المنصات، والإرسال الآلي يمر ببوابة الموافقة الافتراضية (`approval`).
+- **السجل:** `capabilities: ['messages', 'message_reply']` و`realConnector: true` (لا نشر —
+  WhatsApp Business لا يوفر نشر منشورات عامة عبر Cloud API).
+
+### G3 — نشر Google Business Profile (localPost)
+- **الوحدة `engine/social/googleBusiness.ts`:** `GoogleBusinessClient.createLocalPost` ينشر
+  منشور تحديث (`summary` + رابط CTA اختياري) عبر `POST /v4/accounts/{a}/locations/{l}/localPosts`
+  — **لا نجاح بلا معرّف منشور حقيقي من Google** (اسم المورد). `validateGoogleBusinessPost`
+  (طول/نوع موضوع/رابط)، `buildGoogleBusinessPostBody`، `parseLocationResourceName`،
+  و`classifyGoogleBusinessError`.
+- **الخادم:** فرع نشر `google_business` داخل `executePlatformPublish` (نفس البوابات: اعتماد →
+  قدرة → سلامة محتوى → اتصال موثق → idempotency). `GOOGLE_BUSINESS_ACCOUNT_BASE/INFO_BASE/POSTS_BASE`
+  قابلة للتجاوز للاختبار فقط.
+- **السجل:** `capabilities: ['publish']` و`realConnector: true` (لا scheduling/analytics —
+  غير منفّذة). `readiness.ts` يُعلن webhook لـGoogle Business `NOT_SUPPORTED` (لا واجهة webhook رسمية).
+
+### الاختبارات (خوادم وهمية محلية، بلا مزود/حصة/سرّ واقعي)
+- `engine/tests/whatsapp.connector.test.ts` (`npm run test:whatsapp`، **45 فحصاً**): وحدة
+  (الأجسام، حارس النافذة، التطبيع، الأخطاء، البيئة) + تكامل بخادم WhatsApp وهمي
+  (`engine/tests/helpers/whatsappMock.ts`): الإعداد يثبت الرقم، webhook موقّع + منع تكرار،
+  الرد داخل النافذة بمعرّف حقيقي، الحجب خارج النافذة بلا قالب، بوابة الموافقة، رفض رقم خاطئ،
+  والثبات بعد restart.
+- `engine/tests/google.business.connector.test.ts` (`npm run test:google-business`، **23 فحصاً**):
+  وحدة (التحقق/البناء/التحليل/التصنيف) + تكامل بخادم Google Business وهمي
+  (`engine/tests/helpers/googleBusinessMock.ts`): نشر localPost بمعرّف حقيقي، بلا موافقة ⇒ 409،
+  محتوى فارغ ⇒ 400، فشل المزود بلا معرّف مختلق، وتصريح 401.
+- **اختبارات قائمة مُحدَّثة** لتعكس الإعلان الجديد: `platform.capabilities` (27)،
+  `platform.foundation` (122)، `platform.integration` (37)، `publish.all-platforms` (41)،
+  `publish.readiness` (34)، `google.business.oauth.integration` (17).
+- فحوص final-audit الجديدة: `w1-whatsapp-*` و`g3-google-business-*` (12 فحصاً) — الإجمالي
+  **1908** فحصاً. `c2-no-undeclared-publish-capability` مُحدَّث (google_business يعلن publish
+  المنفّذ فقط).
+
+### حالة المنصات الآن
+- **موصلات حقيقية منفّذة (8):** Telegram، Facebook، Instagram، Threads، TikTok، YouTube،
+  **WhatsApp** (رسائل)، **Google Business** (نشر).
+- **بلا موصل منفّذ (2):** X، Snapchat (`capabilities: []`، النشر يرد `CAPABILITY_NOT_SUPPORTED`).
+- **ما يبقى على المالك (إجراء خارجي):** ربط WhatsApp (رقم أعمال معتمد + `WHATSAPP_ACCESS_TOKEN`
+  + `WHATSAPP_APP_SECRET`/`WHATSAPP_VERIFY_TOKEN`)، وربط Google Business (سرّ OAuth صحيح +
+  إتمام وصول Business Profile API من Google).

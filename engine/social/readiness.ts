@@ -105,7 +105,7 @@ const WEBHOOK_SUPPORT: Record<PlatformId, { level: ReadinessLevel; note: string 
   youtube: { level: 'EXTERNAL_SETUP_REQUIRED', note: 'إشعارات PubSubHubbub لليوتيوب تحتاج تسجيل تطبيق وتحقق نطاق.' },
   facebook: { level: 'READY', note: 'webhook Facebook منفّذ فعلاً: تحقق challenge + توقيع X-Hub-Signature-256 على الجسم الخام + منع تكرار بمعرّف الحدث.' },
   instagram: { level: 'READY', note: 'webhook إنستغرام منفّذ فعلاً عبر نفس تطبيق Meta: تحقق challenge + توقيع X-Hub-Signature-256 على الجسم الخام + منع تكرار بمعرّف التعليق/الرسالة. تُفعَّل حقول instagram من لوحة تطبيق Meta.' },
-  whatsapp: { level: 'EXTERNAL_SETUP_REQUIRED', note: 'WhatsApp Cloud API تدعم webhooks بعد ربط رقم أعمال معتمد.' },
+  whatsapp: { level: 'EXTERNAL_SETUP_REQUIRED', note: 'webhook WhatsApp Cloud API منفّذ فعلاً: تحقق X-Hub-Signature-256 على الجسم الخام + منع تكرار بمعرّف الرسالة (wamid). يلزم ربط رقم أعمال معتمد ورمز وصول.' },
   telegram: { level: 'READY', note: 'webhook حقيقي منفّذ بترويسة سرّية + منع تكرار update_id.' },
   x: { level: 'EXTERNAL_SETUP_REQUIRED', note: 'Account Activity API يحتاج خطة مدفوعة واشتراكاً.' },
   snapchat: { level: 'NOT_SUPPORTED', note: 'لا توفر Snapchat webhooks للتعليقات/الرسائل العامة.' },
@@ -121,12 +121,12 @@ const EXTERNAL_SETUP: Record<PlatformId, string[]> = {
   youtube: ['Google Cloud Project', 'GOOGLE_OAUTH_CLIENT_ID / GOOGLE_OAUTH_CLIENT_SECRET', 'تمكين YouTube Data API', 'تسجيل Redirect URI', 'مراجعة الصلاحيات الحساسة'],
   facebook: ['Meta App', 'FACEBOOK_OAUTH_CLIENT_ID / FACEBOOK_OAUTH_CLIENT_SECRET', 'App Review لصلاحيات الصفحة', 'تسجيل Redirect URI'],
   instagram: ['Meta App + حساب Instagram Professional (Business/Creator) مرتبط بالصفحة', 'بيانات تطبيق Meta نفسها (FACEBOOK_OAUTH_CLIENT_ID/SECRET) أو INSTAGRAM_* خاصة', 'App Review لصلاحيات instagram_manage_comments/manage_messages (Advanced Access)', 'تسجيل Redirect URI وتفعيل حقول webhook من لوحة Meta'],
-  whatsapp: ['Meta Business + رقم أعمال', 'WhatsApp Cloud API access token + phone number id', 'قوالب رسائل معتمدة', 'webhook مع رمز تحقق'],
+  whatsapp: ['Meta Business + رقم أعمال معتمد', 'WHATSAPP_PHONE_NUMBER_ID / WHATSAPP_ACCESS_TOKEN (Cloud API)', 'WHATSAPP_APP_SECRET / WHATSAPP_VERIFY_TOKEN (webhook)', 'قالب رسائل معتمد (WHATSAPP_DEFAULT_TEMPLATE) للردود خارج نافذة 24 ساعة'],
   telegram: ['TELEGRAM_BOT_TOKEN', 'TELEGRAM_WEBHOOK_SECRET', 'TELEGRAM_DEFAULT_CHAT_ID (للنشر)', 'APP_URL عام'],
   x: ['X Developer App (خطة مدفوعة)', 'X_OAUTH_CLIENT_ID / X_OAUTH_CLIENT_SECRET', 'OAuth 2.0 PKCE', 'تسجيل Redirect URI'],
   snapchat: ['Snap Developer App', 'SNAPCHAT_OAUTH_CLIENT_ID / SNAPCHAT_OAUTH_CLIENT_SECRET', 'صلاحيات الإعلانات/الحساب', 'تسجيل Redirect URI'],
   threads: ['Meta App', 'THREADS_OAUTH_CLIENT_ID / THREADS_OAUTH_CLIENT_SECRET', 'مراجعة صلاحيات Threads API', 'تسجيل Redirect URI'],
-  google_business: ['Google Cloud Project', 'GOOGLE_OAUTH_CLIENT_ID / GOOGLE_OAUTH_CLIENT_SECRET', 'تمكين Business Profile API', 'طلب وصول عبر نموذج Google', 'تسجيل Redirect URI'],
+  google_business: ['Google Cloud Project', 'GOOGLE_BUSINESS_OAUTH_CLIENT_ID / GOOGLE_BUSINESS_OAUTH_CLIENT_SECRET (أو اعتماد Google المشترك)', 'تمكين Business Profile API', 'طلب وصول عبر نموذج Google (Business Profile API access)', 'تسجيل Redirect URI: /api/platforms/google_business/oauth/callback'],
 };
 
 /**

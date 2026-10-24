@@ -276,15 +276,22 @@ add('x-registry-no-comment-reply-without-connector', (() => {
 })(), 'X لا يعلن أي قدرة بلا موصل حقيقي مقابل (تصحيح إعلان صادق C2)');
 add('c2-no-undeclared-publish-capability', (() => {
   const reg = read('engine/social/registry.ts');
-  // المنصات الثلاث التي لا تملك موصل نشر منفّذ يجب ألا تعلن publish/scheduling/analytics.
+  // المنصات التي لا تملك موصل نشر منفّذ يجب ألا تعلن publish/scheduling/analytics.
   const noCaps = (platform) => {
     const m = reg.match(new RegExp(`platform: '${platform}'[\\s\\S]{0,900}?\\n  \\}`));
     if (!m) return false;
     const caps = (m[0].match(/capabilities:\s*\[([^\]]*)\]/) || [])[1] || '';
     return caps.trim() === '';
   };
-  return noCaps('x') && noCaps('snapchat') && noCaps('google_business');
-})(), 'C2: x/snapchat/google_business لا تعلن publish/scheduling/analytics بلا كود نشر منفّذ');
+  // G3: google_business نُفِّذ نشره فعلاً (localPosts) فيعلن publish وحده — لا analytics/scheduling.
+  const gbPublishOnly = (() => {
+    const m = reg.match(/platform: 'google_business'[\s\S]{0,900}?\n  \}/);
+    if (!m) return false;
+    const caps = (m[0].match(/capabilities:\s*\[([^\]]*)\]/) || [])[1] || '';
+    return caps.replace(/['\s]/g, '') === 'publish';
+  })();
+  return noCaps('x') && noCaps('snapchat') && gbPublishOnly;
+})(), 'C2/G3: x/snapchat بلا قدرات معلنة، وgoogle_business يعلن publish المنفّذ فقط (لا scheduling/analytics)');
 add('telegram-message-not-comment-reply', (() => { const r = read('engine/social/registry.ts'); return r.includes("capabilities: ['publish', 'messages', 'message_reply', 'scheduling']") && !r.includes("capabilities: ['publish', 'messages', 'comment_reply'"); })(), 'Telegram يعلن message_reply ولا يعلن comment_reply');
 add('reply-route-message-platform-redirect', socialRoutes.includes("supports('message_reply')") && socialRoutes.includes('MESSAGE_PLATFORM_NOT_COMMENT'), 'مسار التعليقات يوجّه منصات الرسائل بدل منع مضلل');
 add('telegram-ui-routes-message-reply', read('src/components/social/SocialHubView.tsx').includes('apiService.replyTelegram') && read('src/components/social/SocialHubView.tsx').includes('replyTarget?.chatId'), 'واجهة الرد توجّه رسائل Telegram إلى المسار الحقيقي بلا فحص comment_reply');
@@ -5842,6 +5849,76 @@ add('watcher-advisory-not-authority',
       part2Integ.includes('/api/commercial/sales') &&
       part2Integ.includes('waitForHealth'),
       'اختبار تكامل الجزء 2 يشغّل الخادم الحقيقي + خادم Graph وهمي (بلا مزود/سرّ)');
+  }
+
+  // 14) W1 (موصل WhatsApp Cloud API) + G3 (نشر Google Business Profile localPost).
+  {
+    const waSrc = read('engine/social/whatsapp.ts');
+    const gbSrc = read('engine/social/googleBusiness.ts');
+    const waTest = read('engine/tests/whatsapp.connector.test.ts');
+    const gbTest = read('engine/tests/google.business.connector.test.ts');
+    const registrySrc = read('engine/social/registry.ts');
+
+    // W1 — واتساب موصل رسائلي حقيقي (لا نشر).
+    add('w1-whatsapp-connector-module',
+      fs.existsSync(path.join(root, 'engine/social/whatsapp.ts')) &&
+      waSrc.includes('class WhatsAppClient') &&
+      waSrc.includes('verifyPhoneNumber') &&
+      waSrc.includes('sendText') && waSrc.includes('sendTemplate'),
+      'وحدة موصل WhatsApp Cloud API موجودة (إثبات رقم + إرسال نصّي/قالب)');
+    add('w1-whatsapp-window-guard-single-source',
+      waSrc.includes('WHATSAPP_MESSAGE_WINDOW_HOURS = 24') &&
+      waSrc.includes('evaluateWhatsAppSend') &&
+      waSrc.includes('WHATSAPP_WINDOW_CLOSED_NO_TEMPLATE'),
+      'حارس نافذة 24 ساعة مصدر واحد: نص داخل النافذة، قالب خارجها، وحجب صريح بلا قالب');
+    add('w1-whatsapp-inbound-before-ack',
+      server.includes('normalizeWhatsAppInbound') &&
+      /persistStateDurable\(\)[\s\S]{0,400}?whatsapp/i.test(server) || server.includes('ingestWebhookComments'),
+      'الرسائل الواردة تُحفظ قبل الإقرار (لا فقدان ولا تكرار بعد cold start)');
+    add('w1-whatsapp-reply-central-executor',
+      server.includes('async function executeWhatsAppMessageReply') &&
+      server.includes('evaluateWhatsAppSend(') &&
+      /executeWhatsAppMessageReply/.test(server),
+      'الرد على WhatsApp يمرّ بالمنفّذ المركزي (سلامة محتوى + منع تكرار + حارس نافذة)');
+    add('w1-whatsapp-no-delivery-without-id',
+      /delivered:\s*true/.test(server) && server.includes('providerReplyId') &&
+      waSrc.includes('messages?.[0]?.id'),
+      'لا يُسجَّل تسليم بلا معرّف رسالة حقيقي من Meta');
+    add('w1-whatsapp-registry-real-connector',
+      /platform: 'whatsapp'[\s\S]{0,600}?capabilities: \['messages', 'message_reply'\]/.test(registrySrc) &&
+      /platform: 'whatsapp'[\s\S]{0,900}?realConnector: true/.test(registrySrc),
+      'السجل يُعلن WhatsApp موصلاً حقيقياً بقدرتي messages/message_reply فقط (لا نشر)');
+    add('w1-whatsapp-env-names-only',
+      read('.env.example').includes('WHATSAPP_PHONE_NUMBER_ID=""') &&
+      read('.env.example').includes('WHATSAPP_ACCESS_TOKEN=""') &&
+      !/WHATSAPP_ACCESS_TOKEN="[^"]/.test(read('.env.example')),
+      'متغيّرات WhatsApp موثّقة بأسماء فقط في .env.example بلا قيم');
+    add('w1-whatsapp-test-no-real-provider',
+      waTest.includes('startWhatsAppMockServer') &&
+      waTest.includes('WHATSAPP_API_BASE') &&
+      /test:whatsapp/.test(read('package.json')),
+      'اختبار WhatsApp يستخدم خادم وهمي محلي ومُسجّل في package.json');
+
+    // G3 — نشر Google Business Profile (localPost).
+    add('g3-google-business-publish-module',
+      fs.existsSync(path.join(root, 'engine/social/googleBusiness.ts')) &&
+      gbSrc.includes('createLocalPost') &&
+      gbSrc.includes('buildGoogleBusinessPostBody'),
+      'وحدة Google Business تنشر localPosts حقيقياً (summary + CTA اختياري)');
+    add('g3-google-business-registry-publish-only',
+      /platform: 'google_business'[\s\S]{0,900}?capabilities: \['publish'\]/.test(registrySrc) &&
+      /platform: 'google_business'[\s\S]{0,900}?realConnector: true/.test(registrySrc),
+      'السجل يُعلن Google Business موصلاً حقيقياً بقدرة publish فقط (لا scheduling/analytics)');
+    add('g3-google-business-publish-branch',
+      server.includes('google_business') &&
+      server.includes('createLocalPost') &&
+      /google_business[\s\S]{0,600}?providerPostId/.test(server),
+      'فرع النشر الموحّد لـGoogle Business ينشر localPost بمعرّف حقيقي من Google');
+    add('g3-google-business-test-no-real-provider',
+      gbTest.includes('startGoogleBusinessMockServer') &&
+      gbTest.includes('GOOGLE_BUSINESS_POSTS_BASE') &&
+      /test:google-business/.test(read('package.json')),
+      'اختبار Google Business يستخدم خادم وهمي محلي ومُسجّل في package.json');
   }
 
   // 12) AGENTS.md: عدد فحوصات final-audit مطابق للفعلي (يُعَدّ من نص الملف نفسه).

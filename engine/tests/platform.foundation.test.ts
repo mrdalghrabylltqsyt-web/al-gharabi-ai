@@ -61,26 +61,29 @@ function run(): void {
     }));
   // CONNECTOR_READY = موصل منفّذ فعلاً في الكود. Telegram ثم Facebook ثم Instagram
   // ثم TikTok ثم YouTube ثم Threads (Task #24).
-  check('الموصلات المنفّذة CONNECTOR_READY = telegram,facebook,instagram,tiktok,youtube,threads', PLATFORM_READINESS.filter((r) => r.implementationStatus === 'CONNECTOR_READY').map((r) => r.platform).sort().join(',') === 'facebook,instagram,telegram,threads,tiktok,youtube');
-  check('كل بقية المنصات FOUNDATION_READY', PLATFORM_READINESS.filter((r) => !['telegram', 'facebook', 'instagram', 'tiktok', 'youtube', 'threads'].includes(r.platform)).every((r) => r.implementationStatus === 'FOUNDATION_READY'));
+  check('الموصلات المنفّذة CONNECTOR_READY = الثمانية (بما فيها whatsapp,google_business)', PLATFORM_READINESS.filter((r) => r.implementationStatus === 'CONNECTOR_READY').map((r) => r.platform).sort().join(',') === 'facebook,google_business,instagram,telegram,threads,tiktok,whatsapp,youtube');
+  check('كل بقية المنصات FOUNDATION_READY', PLATFORM_READINESS.filter((r) => !['telegram', 'facebook', 'instagram', 'tiktok', 'youtube', 'threads', 'whatsapp', 'google_business'].includes(r.platform)).every((r) => r.implementationStatus === 'FOUNDATION_READY'));
   check('المصفوفة لا تحمل حالة اتصال تشغيلية', PLATFORM_READINESS.every((r) => !('connected' in r) && !('providerVerified' in r) && ['READY', 'EXTERNAL_SETUP_REQUIRED', 'NOT_SUPPORTED'].includes(r.connection)));
   check('حقول الجاهزية كلها قيم معروفة',
     PLATFORM_READINESS.every((r) => [r.connector, r.oauth, r.connection, r.verification, r.webhook, r.read, r.reply, r.publish, r.schedule, r.analytics].every((v) => ['READY', 'EXTERNAL_SETUP_REQUIRED', 'NOT_SUPPORTED'].includes(v))));
   check('كل منصة لها متطلبات خارجية معلنة', PLATFORM_READINESS.every((r) => Array.isArray(r.externalSetup) && r.externalSetup.length > 0));
   check('متطلبات Telegram الخارجية لا تحمل أي قيمة سرّية', PLATFORM_READINESS.find((r) => r.platform === 'telegram')!.externalSetup.every((s) => !/[A-Za-z0-9_-]{30,}/.test(s)));
   // القدرات في المصفوفة تعكس السجل بدقة.
-  check('whatsapp: نشر NOT_SUPPORTED ورسائل متاحة',
-    readinessFor('whatsapp')!.publish === 'NOT_SUPPORTED' && readinessFor('whatsapp')!.read !== 'NOT_SUPPORTED');
+  // W1: واتساب موصل رسائلي حقيقي — لا قدرة نشر (الرسائل والرد عليها فقط)،
+  // والرد متاح فعلاً عبر Cloud API.
+  check('whatsapp: نشر NOT_SUPPORTED ورد متاح',
+    readinessFor('whatsapp')!.publish === 'NOT_SUPPORTED' && readinessFor('whatsapp')!.reply !== 'NOT_SUPPORTED');
   check('snapchat: رد NOT_SUPPORTED (لا تعليقات)',
     readinessFor('snapchat')!.reply === 'NOT_SUPPORTED' && readinessFor('snapchat')!.read === 'NOT_SUPPORTED');
-  check('google_business: رد NOT_SUPPORTED', readinessFor('google_business')!.reply === 'NOT_SUPPORTED');
+  // G3: Google Business ينشر localPosts فعلاً؛ لا رد على تعليقات (لا واجهة رسمية).
+  check('google_business: رد NOT_SUPPORTED ونشر متاح', readinessFor('google_business')!.reply === 'NOT_SUPPORTED' && readinessFor('google_business')!.publish !== 'NOT_SUPPORTED');
   check('telegram: نشر ورد READY', readinessFor('telegram')!.publish === 'READY' && readinessFor('telegram')!.reply === 'READY');
   check('snapchat: webhook NOT_SUPPORTED', readinessFor('snapchat')!.webhook === 'NOT_SUPPORTED');
   check('facebook: webhook منفّذ (READY)', readinessFor('facebook')!.webhook === 'READY');
   check('كل منصة تدعم الرد يجب أن تدعم القراءة', PLATFORM_READINESS.every((r) => r.reply !== 'READY' || r.read !== 'NOT_SUPPORTED'));
   check('readinessFor يرفض المجهول', readinessFor('myspace') === null);
   const sum = readinessSummary();
-  check('ملخص الجاهزية صحيح', sum.total === 10 && sum.connectorReady === 6 && sum.foundationReady === 4);
+  check('ملخص الجاهزية صحيح', sum.total === 10 && sum.connectorReady === 8 && sum.foundationReady === 2);
 
   // ---------- 2) أساس OAuth ----------
   const s1 = createOAuthState();

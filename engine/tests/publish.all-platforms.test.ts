@@ -252,7 +252,9 @@ async function publish(auth: Record<string, string>, id: string): Promise<any> {
     check('Threads موصول موثق', byId('threads').connected === true && byId('threads').providerVerified === true);
     check('Telegram موصول موثق', byId('telegram').connected === true && byId('telegram').providerVerified === true);
     check('الموصلات الست معلنة حقيقية', ['facebook', 'instagram', 'threads', 'telegram', 'tiktok', 'youtube'].every((id) => byId(id).realConnector === true), JSON.stringify(['facebook', 'instagram', 'threads', 'telegram', 'tiktok', 'youtube'].map((id) => [id, byId(id).realConnector])));
-    check('المنصات الأربع بلا موصل منفّذ', ['whatsapp', 'x', 'snapchat', 'google_business'].every((id) => byId(id).realConnector === false));
+    // W1/G3: صار WhatsApp وGoogle Business موصلين حقيقيين منفّذين؛ المتبقي بلا موصل: X وSnapchat.
+    check('X وSnapchat بلا موصل منفّذ', ['x', 'snapchat'].every((id) => byId(id).realConnector === false));
+    check('WhatsApp وGoogle Business موصلان حقيقيان منفّذان', ['whatsapp', 'google_business'].every((id) => byId(id).realConnector === true));
 
     group('2) النشر على المنصات العشر معاً — نتيجة مستقلة لكل منصة');
     const mediaUrl = `${BASE}/media/offer-banner.jpg`;
@@ -274,7 +276,8 @@ async function publish(auth: Record<string, string>, id: string): Promise<any> {
     check('واتساب => CAPABILITY_NOT_SUPPORTED (لا قدرة نشر)', r.whatsapp?.code === 'CAPABILITY_NOT_SUPPORTED', JSON.stringify(r.whatsapp));
     check('X => CAPABILITY_NOT_SUPPORTED (لا قدرة نشر معلنة — تصحيح C2)', r.x?.code === 'CAPABILITY_NOT_SUPPORTED', JSON.stringify(r.x));
     check('سنابشات => CAPABILITY_NOT_SUPPORTED (تصحيح C2)', r.snapchat?.code === 'CAPABILITY_NOT_SUPPORTED', JSON.stringify(r.snapchat));
-    check('Google Business => CAPABILITY_NOT_SUPPORTED (تصحيح C2)', r.google_business?.code === 'CAPABILITY_NOT_SUPPORTED', JSON.stringify(r.google_business));
+    // G3: Google Business يعلن نشراً حقيقياً؛ غير متصل في الاختبار => NOT_CONNECTED (لا معرّف مختلق).
+    check('Google Business => NOT_CONNECTED (موصل حقيقي غير متصل)', r.google_business?.code === 'NOT_CONNECTED', JSON.stringify(r.google_business));
     check('لا منصة فاشلة تحمل معرّف مزود مختلق', ['youtube', 'tiktok', 'whatsapp', 'x', 'snapchat', 'google_business'].every((p) => r[p]?.providerPostId === null), JSON.stringify(r));
 
     group('5) كل منصة تتلقى النوع المدعوم لها فقط (المسار الصحيح لكل API)');
@@ -285,7 +288,7 @@ async function publish(auth: Record<string, string>, id: string): Promise<any> {
     check('Telegram: sendMessage فعلية', tgMock.sent.length >= 1, String(tgMock.sent.length));
 
     group('6) لا يُعلن published كاذباً حين لا تُسلّم أي منصة');
-    const noneId = await createAndApprove(auth, { title: 'منصات غير منفّذة', content: 'نص تدقيق بلا قدرة نشر فعلية.', targetPlatforms: ['x', 'snapchat', 'google_business'], status: 'review' });
+    const noneId = await createAndApprove(auth, { title: 'منصات غير منفّذة', content: 'نص تدقيق بلا قدرة نشر فعلية.', targetPlatforms: ['x', 'snapchat', 'whatsapp'], status: 'review' });
     const none = await publish(auth, noneId);
     check('لا تسليم لأي منصة غير منفّذة', none.body.anyDelivered === false, String(none.body.anyDelivered));
     check('المنشور لم يُعلن published', none.body.post?.status !== 'published', String(none.body.post?.status));
