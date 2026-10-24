@@ -4058,6 +4058,30 @@ add('watcher-advisory-not-authority',
     pkg.scripts['test:prp2-delete-confirm'] === 'tsx engine/tests/prp2.delete.confirm.ui.test.ts' &&
     read('engine/e2e/prp2.delete-confirm.e2e.spec.ts').includes('لا يُحذف إلا بـ«نعم»'),
     'اختبار PR-P2 مسجَّل ضمن npm test مع e2e حقيقي');
+  // 8ج) PR-P1: توحيد صيغة القسط بين العقل والمنتج + إصلاح PATCH (مصدر واحد).
+  const replyInstallmentSlice = server.slice(server.indexOf('function replyInstallmentTextForProduct'), server.indexOf('function replyInstallmentTextForProduct') + 1400);
+  add('prp1-reply-installment-uses-stored-formula',
+    server.includes('function replyInstallmentTextForProduct') &&
+    replyInstallmentSlice.includes('computeInstallmentPrice({') &&
+    !replyInstallmentSlice.includes('Math.ceil(financed / months)') &&
+    !replyInstallmentSlice.includes('cash - down'),
+    'قسط العقل يُحسب بـcomputeInstallmentPrice (installmentPrice/المدة) لا cash/المدة');
+  add('prp1-facts-include-stored-installment',
+    server.includes('if (computed.ok) derived.push(computed.installmentPrice, computed.monthlyInstallment)'),
+    'حقائق المنتج تشمل سعر التقسيط والقسط المشتقّين فيمرّ رد العقل عبر حارس المطالبات بلا حجب زائف');
+  add('prp1-patch-resolves-stored-months',
+    server.includes('function resolveStoredInstallmentMonths') &&
+    server.includes('b.installmentMonths !== undefined ? b.installmentMonths : resolveStoredInstallmentMonths(product)') &&
+    !server.includes('installmentMonths: b.installmentMonths, installmentMarkupPercent: b.installmentMarkupPercent });\n    if (!computed.ok) return res.status(400)'),
+    'PATCH يحلّ المدة من المخزّن (لا الافتراضي 10) فيُحافظ على منتج بمدة 12');
+  add('prp1-installment-from-synced',
+    server.includes('product.installmentFrom = fields.monthlyInstallment;'),
+    'installmentFrom يُحدَّث بالقسط المشتقّ الجديد فلا يبقى على قيمة قديمة');
+  add('prp1-test-registered',
+    (pkg.scripts['test'] || '').includes('test:prp1-installment-unification') &&
+    pkg.scripts['test:prp1-installment-unification'] === 'tsx engine/tests/prp1.installment.unification.test.ts' &&
+    read('engine/tests/prp1.installment.unification.test.ts').includes('62,500'),
+    'اختبار PR-P1 مسجَّل ضمن npm test ويغطّي القبول 62,500 (لا 50,000)');
 
   // 9ب) كشف السبب الحقيقي لفشل النشر الموحّد (Instagram/Threads) + تمييز YouTube.
   const threadsSrc = read('engine/social/threads.ts');

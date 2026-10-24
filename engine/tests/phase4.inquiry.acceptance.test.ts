@@ -202,7 +202,9 @@ async function main(): Promise<void> {
     check('«شعرس شاشة 55؟» ⇒ مطابقة بالمقاس وتعرض السعر المسجّل', String(tv.suggestedDeterministicReply || '').includes('600,000'), tv.suggestedDeterministicReply);
     const sharp = await classify(auth, 'شكد القسط لشارك 50 على 10 شهور؟');
     check('«شارك 50» ⇒ يطابق شارب (مرادف) ويعطي القسط', String(sharp.suggestedDeterministicReply || '').includes('480,000'), sharp.suggestedDeterministicReply);
-    check('«شارك 50» ⇒ القسط مشتقّ من القاعدة (43,200)', String(sharp.suggestedDeterministicReply || '').includes('43,200'), sharp.suggestedDeterministicReply);
+    // المعادلة الموحّدة (المصدر الواحد installmentPrice): ceil((الكاش + 25%) ÷ المدة)
+    // = ceil(480,000 × 1.25 ÷ 10) = ceil(60,000) = 60,000 (لا cash/المدة = 43,200).
+    check('«شارك 50» ⇒ القسط مشتقّ من القاعدة (60,000)', String(sharp.suggestedDeterministicReply || '').includes('60,000'), sharp.suggestedDeterministicReply);
     check('«شارك 50» ⇒ لا يذكر سعراً غير مسجّل', !/750,000|900,000|600,000/.test(String(sharp.suggestedDeterministicReply || '')), sharp.suggestedDeterministicReply);
 
     group('7) قبول: أخطاء إملائية ولهجة مختلطة ⇒ فهم وإجابة من القاعدة');
@@ -217,9 +219,11 @@ async function main(): Promise<void> {
     check('سؤال رياضة ⇒ بلا أي رقم', !/\d/.test(String(off.suggestedDeterministicReply || '')), off.suggestedDeterministicReply);
 
     group('9) عقد: كل رقم في الرد مصدره القاعدة (لا اختراع)');
-    // الأرقام المشروعة: أسعار/أقساط المنتجات المسجّلة + أرقام بيانات المعرض المؤكدة
-    // (العنوان «العمود 202» والدوام «8» والمدة «10»). أي رقم آخر = اختراع ⇒ فشل.
-    const allowedNumbers = new Set(['750,000', '600,000', '480,000', '900,000', '43,200', '54,000', '10', '202', '8', '55', '50', '16', '12']);
+    // الأرقام المشروعة: أسعار المنتجات المسجّلة + الأقساط المشتقّة بالمعادلة الموحّدة
+    // ceil((الكاش + 25%) ÷ المدة) [شارب 50 ⇒ 60,000، سامسونج 55 ⇒ 75,000، ثلاجة شارب ⇒ 93,750]
+    // + أرقام بيانات المعرض المؤكدة (العنوان «العمود 202» والدوام «8» والمدة «10»)
+    // + مقاسات/أحجام أسماء المنتجات. أي رقم آخر = اختراع ⇒ فشل.
+    const allowedNumbers = new Set(['750,000', '600,000', '480,000', '900,000', '60,000', '75,000', '93,750', '10', '202', '8', '55', '50', '16', '12']);
     const all = [loc, hours, months, terms, p1, p2, p3, tv, sharp, typo, dialect, off];
     let leaked: string | null = null;
     for (const r of all) {

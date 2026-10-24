@@ -190,7 +190,8 @@ async function main(): Promise<void> {
     const grReply = mock.state.commentReplies.find((r) => r.commentId === 'GRND1');
     check('أُرسل جواب نهائي فعلي (بمعرّف رد حقيقي)', Boolean(grReply) && /^REPLY_/.test(String(grReply?.id)), JSON.stringify(mock.state.commentReplies.map((r) => [r.commentId, r.id])));
     check('الجواب يذكر السعر المسجّل (250,000)', /250,000/.test(String(grReply?.message || '')), grReply?.message);
-    check('الجواب يذكر القسط المشتقّ (22,500)', /22,500/.test(String(grReply?.message || '')), grReply?.message);
+    // القسط = ceil((سعر الكاش + 25%) ÷ المدة) = ceil(312,500 ÷ 10) = 31,250 (لا cash/المدة).
+    check('الجواب يذكر القسط المشتقّ (31,250)', /31,250/.test(String(grReply?.message || '')), grReply?.message);
     check('الجواب ليس سؤال توضيح (المنتج محدّد)', !/خبرني أي موديل|وضّحلي/.test(String(grReply?.message || '')), grReply?.message);
     const w2 = await (await fetch(`${BASE}/api/agent/meta/watcher`, { headers: auth })).json();
     const grEntry = (w2.watcher?.recent || []).find((r: any) => r.commentId === 'GRND1');
