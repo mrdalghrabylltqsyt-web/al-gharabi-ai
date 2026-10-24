@@ -5949,6 +5949,25 @@ add('watcher-advisory-not-authority',
       'C10: تسجيل الخروج يمسح نسخة مساحة العمل من المتصفح ويوقف إعادة كتابتها');
   }
 
+  // قسط المحتوى التسويقي = معادلة الكتالوج (سعر التقسيط بنسبة الزيادة، لا سعر الكاش).
+  {
+    const fmt = read('engine/workspace/format.ts');
+    add('marketing-quote-uses-installment-price',
+      /const installmentPrice = Math\.round\(cashPrice \* \(1 \+ markup \/ 100\)\)/.test(fmt) &&
+      /const financedAmount = Math\.max\(0, installmentPrice - downPayment\)/.test(fmt) &&
+      fmt.includes('INSTALLMENT_MARKUP_PERCENT_DEFAULT') &&
+      (server.match(/buildMarketingQuote\([^)]*installmentMarkupPercent\)/g) || []).length === 2 &&
+      server.includes('سعر التقسيط: ${formatIqd(quote.installmentPrice)}'),
+      'قسط منشورات التسويق يبدأ من سعر التقسيط (الكاش + نسبة المنتج) كالكتالوج، ويُعرض سعر التقسيط');
+    add('marketing-quote-months-from-catalog',
+      (server.match(/resolveStoredInstallmentMonths\(product\) \?\? 0/g) || []).length >= 2,
+      'مدة قسط التسويق تُقرأ من installmentMonths ثم durationMonths (لا شهر واحد افتراضياً)');
+    add('marketing-quote-regression-test',
+      read('package.json').includes('npm run test:marketing-quote-markup') &&
+      read('engine/tests/marketing.quote.markup.test.ts').includes('62,500'),
+      'اختبار انحدار قسط التسويق مسجّل ضمن npm test');
+  }
+
   // 12) AGENTS.md: عدد فحوصات final-audit مطابق للفعلي (يُعَدّ من نص الملف نفسه).
   const auditCount = (read('final-audit.mjs').match(/^\s*add\(/gm) || []).length;
   add('agents-audit-count-accurate',
