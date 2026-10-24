@@ -1,0 +1,29 @@
+# C3: تحديثات المكتبات وإجراءات GitHub أسبوعياً، مجمّعة في طلب واحد لكل نوع.
+# كل طلب يمر بنفس CI الكامل ولا يُدمج تلقائياً (البروتوكول: اختبارات ثم دمج يدوي).
+version: 2
+updates:
+  - package-ecosystem: "npm"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "saturday"
+      time: "06:00"
+      timezone: "Asia/Baghdad"
+    open-pull-requests-limit: 5
+    groups:
+      production-dependencies:
+        dependency-type: "production"
+        update-types: ["minor", "patch"]
+      development-dependencies:
+        dependency-type: "development"
+        update-types: ["minor", "patch"]
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "saturday"
+      time: "06:00"
+      timezone: "Asia/Baghdad"
+    groups:
+      github-actions:
+        patterns: ["*"]

@@ -9,18 +9,18 @@
 services:
   - type: web
     name: al-gharabi-ai
-    runtime: node
+    # R6: الخدمة الحية تُبنى فعلاً من Dockerfile (runtime docker)، فالملف يطابق الواقع.
+    # نسخة Node تحددها صورة Dockerfile (node:22-slim)، وأوامر البناء/التشغيل داخلها
+    # (npm ci && npm run build ثم node dist/server.cjs).
+    runtime: docker
     plan: free
     region: oregon
     branch: main
     autoDeploy: true
-    buildCommand: npm ci && npm run build
-    startCommand: npm run start
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
     healthCheckPath: /api/health
     envVars:
-      # Node 20 مثبّتة: الكود والاختبارات مبنية على Node 20+.
-      - key: NODE_VERSION
-        value: "20"
       - key: NODE_ENV
         value: production
       # Render يضبط PORT تلقائياً؛ الخادم يقرأ process.env.PORT ويستمع على 0.0.0.0.

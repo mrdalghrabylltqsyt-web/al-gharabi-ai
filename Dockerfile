@@ -2,7 +2,7 @@
 # لا تحتوي أي سر: كل الأسرار تُمرَّر كمتغيرات بيئة وقت التشغيل.
 # السبب: المنصات المجانية تتغيّر شروطها، فنبقي الصورة محايدة (منفذ واحد،
 # عملية واحدة) لتعمل على أي مستضيف يحقن PORT ويشغّل Express.
-FROM node:20-slim AS build
+FROM node:22-slim AS build
 WORKDIR /app
 # NODE_ENV=production هنا ضروري ليبني Vite حزمة الواجهة بوضع الإنتاج (Vite يحترم
 # NODE_ENV المضبوطة مسبقاً، فمع development يختار فرع React التطويري غير المصغّر).
@@ -22,7 +22,7 @@ COPY . .
 # vite build ثم حزمة المصدر الموثوقة ثم تجميع server.ts إلى dist/server.cjs.
 RUN npm run build
 
-FROM node:20-slim AS runtime
+FROM node:22-slim AS runtime
 WORKDIR /app
 ENV NODE_ENV=production
 # الاعتماديات الإنتاجية فقط في الصورة النهائية (أصغر وأقل سطح هجوم).

@@ -40,19 +40,25 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
         with:
-          node-version: '20'
+          node-version: '22'
           cache: 'npm'
       - name: npm ci
         run: npm ci --no-audit --no-fund
+      # C4: فحص ثغرات مكتبات الإنتاج. يفشل البناء عند وجود ثغرة critical، ويعلن
+      # عدد ثغرات high كتحذير ظاهر (تُعالَج عبر طلبات Dependabot الأسبوعية).
+      - name: npm audit (production dependencies)
+        run: |
+          npm audit --omit=dev --json > audit.json || true
+          node -e "const v=(require('./audit.json').metadata||{}).vulnerabilities||{};console.log('::notice title=npm audit::'+JSON.stringify(v));if((v.high||0)>0)console.log('::warning title=npm audit::high='+v.high);if((v.critical||0)>0){console.log('::error title=npm audit::critical='+v.critical);process.exit(1)}"
       - name: lint (tsc --noEmit)
         run: npm run lint
       - name: build (vite + source bundle + esbuild)
         run: npm run build
       - name: upload dist artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: dist
           path: dist/
@@ -82,15 +88,15 @@ jobs:
       # SSL ما لم يُذكر هذا في رابط الاتصال.
       GHARABI_TEST_DATABASE_URL: postgresql://gharabi:gharabi_ci@localhost:5432/gharabi_test?sslmode=disable
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
         with:
-          node-version: '20'
+          node-version: '22'
           cache: 'npm'
       - name: npm ci
         run: npm ci --no-audit --no-fund
       - name: download dist artifact
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v5
         with:
           name: dist
           path: dist/
@@ -118,15 +124,15 @@ jobs:
     env:
       GHARABI_TEST_DATABASE_URL: postgresql://gharabi:gharabi_ci@localhost:5432/gharabi_test?sslmode=disable
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
         with:
-          node-version: '20'
+          node-version: '22'
           cache: 'npm'
       - name: npm ci
         run: npm ci --no-audit --no-fund
       - name: download dist artifact
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v5
         with:
           name: dist
           path: dist/
@@ -138,15 +144,15 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
         with:
-          node-version: '20'
+          node-version: '22'
           cache: 'npm'
       - name: npm ci
         run: npm ci --no-audit --no-fund
       - name: download dist artifact
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v5
         with:
           name: dist
           path: dist/
@@ -157,6 +163,6 @@ jobs:
   docker:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: docker build
         run: docker build -t al-gharabi-ai:ci .
