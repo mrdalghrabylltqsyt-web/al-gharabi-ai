@@ -109,9 +109,12 @@ const ADAPTER_SPECS: AdapterSpec[] = [
     name: 'WhatsApp Business',
     displayName: 'WhatsApp Business',
     // واتساب للأعمال لا يوفر نشر منشورات عامة ولا تعليقات؛ الرسائل والرد عليها فقط.
+    // W1: موصل حقيقي منفّذ الآن (engine/social/whatsapp.ts): إثبات رقم أعمال فعلي،
+    // إرسال نصّي داخل نافذة 24 ساعة، وقالب معتمد خارجها. لا يُعلن اتصال بلا تحقّق
+    // من Meta، ولا تسليم بلا معرّف رسالة حقيقي.
     capabilities: ['messages', 'message_reply'],
     credentialMode: 'app-registration',
-    realConnector: false,
+    realConnector: true,
   },
   {
     platform: 'telegram',
@@ -167,13 +170,14 @@ const ADAPTER_SPECS: AdapterSpec[] = [
     platform: 'google_business',
     name: 'Google Business Profile',
     displayName: 'Google Business Profile',
-    // تصحيح إعلان صادق (C2): الموصل الحالي يقرأ الحسابات فقط (mybusinessaccount-
-    // management) ولا ينفّذ نشر localPosts بعد — فمسارات النشر/الجدولة ترد «غير
-    // مدعوم». لا تُعلن publish/analytics/scheduling حتى يُبنى كود النشر فعلاً.
-    // التعليقات غير متاحة عبر الواجهة الرسمية إطلاقاً.
-    capabilities: [],
+    // G3: نشر localPosts منفّذ فعلاً (engine/social/googleBusiness.ts) — منشور تحديث
+    // نصّي (summary) مع رابط CTA اختياري. القدرة المُعلنة `publish` فقط: لا جدولة
+    // ولا تحليلات منفّذة (Google لا توفّر تعليقات عبر الواجهة الرسمية أصلاً).
+    capabilities: ['publish'],
     credentialMode: 'oauth2',
-    realConnector: false,
+    // موصل حقيقي منفّذ للنشر؛ يبقى العمل الفعلي يحتاج ربط OAuth من المالك (وإتمام
+    // وصول Business Profile API من Google) قبل أي نشر حقيقي — انظر AGENTS.md.
+    realConnector: true,
   },
 ];
 

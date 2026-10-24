@@ -93,7 +93,7 @@ async function login(): Promise<Record<string, string>> {
     check('المصفوفة بلا جلسة => 401', matrixNoAuth.status === 401);
     const matrix = await (await fetch(`${BASE}/api/platforms/readiness-matrix`, { headers: auth })).json();
     check('المصفوفة تعيد عشر منصات', matrix.platforms.length === 10);
-    check('الملخص: ستة موصلات جاهزة (telegram,facebook,instagram,tiktok,youtube,threads)', matrix.summary.connectorReady === 6 && matrix.summary.foundationReady === 4);
+    check('الملخص: ثمانية موصلات جاهزة (+ whatsapp,google_business)', matrix.summary.connectorReady === 8 && matrix.summary.foundationReady === 2);
     const fb = matrix.platforms.find((p: any) => p.platform === 'facebook');
     check('facebook: موصل منفّذ وOAuth يحتاج إعداداً خارجياً', fb.implementationStatus === 'CONNECTOR_READY' && fb.oauth === 'EXTERNAL_SETUP_REQUIRED');
     check('facebook: لا اتصال مدّعى', fb.connection.status === 'disconnected' && fb.connection.providerVerified === false);
@@ -186,7 +186,8 @@ async function login(): Promise<Record<string, string>> {
       method: 'POST', headers: auth, body: JSON.stringify({ content: 'منشور تجريبي', approved: true }),
     });
     const gbBody = await gbPublish.json();
-    check('google_business بلا قدرة نشر => CAPABILITY_NOT_SUPPORTED', gbPublish.status === 422 && gbBody.code === 'CAPABILITY_NOT_SUPPORTED');
+    // G3: Google Business يعلن نشراً حقيقياً؛ غير متصل => NOT_CONNECTED (لا معرّف مختلق).
+    check('google_business موصل حقيقي غير متصل => NOT_CONNECTED', gbPublish.status === 409 && gbBody.code === 'NOT_CONNECTED');
     const noApproval = await fetch(`${BASE}/api/platforms/telegram/publish`, {
       method: 'POST', headers: auth, body: JSON.stringify({ content: 'منشور', approved: false }),
     });

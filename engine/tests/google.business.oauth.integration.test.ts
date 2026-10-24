@@ -94,7 +94,9 @@ async function login(): Promise<Record<string, string>> {
     check('Google Business موجود في center الربط', Boolean(gb));
     check('الاعتماد مضبوط (GOOGLE_BUSINESS_*)', gb.connectionConfigured === true);
     check('oauthAvailable=true (مسار البدء قابل للبدء)', gb.oauthAvailable === true);
-    check('الحالة EXTERNAL_SETUP_REQUIRED (لا موصل منفّذ بعد)', gb.state === 'EXTERNAL_SETUP_REQUIRED');
+    // G3: موصل Google Business صار منفّذاً فعلاً، فالحالة CODE_READY (كود جاهز + اعتماد مضبوط،
+    // غير متصل بعد) بدل EXTERNAL_SETUP_REQUIRED (لا موصل).
+    check('الحالة CONFIGURED (موصل منفّذ واعتماد مضبوط، غير متصل)', gb.state === 'CONFIGURED', JSON.stringify({ state: gb.state }));
     // بوابة «الاتصال» في طبقة التحكم مرتبطة بتنفيذ الموصل لا ببدء OAuth، فتبقى محجوبة
     // هنا (لا موصل تنفيذ). الدليل الحقيقي على تفعيل الزر هو oauthAvailable أعلاه،
     // وإثباته الفعلي في المجموعة 2 (استدعاء /oauth/start ينجح فعلاً).

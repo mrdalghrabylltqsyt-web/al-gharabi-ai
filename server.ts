@@ -272,6 +272,30 @@ import {
   type TikTokTruthfulState,
 } from "./engine/social/tiktokState";
 import {
+  WhatsAppClient,
+  createWhatsAppFetch,
+  evaluateWhatsAppSend,
+  normalizeWhatsAppInbound,
+  parseWhatsAppStatuses,
+  classifyWhatsAppProviderError,
+  whatsappPhoneNumberIdFromEnv,
+  whatsappAccessTokenFromEnv,
+  whatsappDefaultTemplateFromEnv,
+  WHATSAPP_ENV_NAMES,
+  WHATSAPP_MESSAGE_WINDOW_HOURS,
+  type WhatsAppSendDecision,
+} from "./engine/social/whatsapp";
+import {
+  GoogleBusinessClient,
+  createGoogleBusinessFetch,
+  validateGoogleBusinessPost,
+  buildGoogleBusinessPostBody,
+  parseLocationResourceName,
+  classifyGoogleBusinessError,
+  GOOGLE_BUSINESS_SUMMARY_MAX,
+  type GoogleBusinessLocalPostInput,
+} from "./engine/social/googleBusiness";
+import {
   createOAuthState,
   createPkcePair,
   requiresPkce,
@@ -2713,6 +2737,145 @@ async function withThreadsToken<T>(fn: (token: string) => Promise<{ ok: boolean;
   }
   return first;
 }
+
+// -------------------------------------------------------------
+// WhatsApp Business Cloud API — موصل رسائلي حقيقي (W1).
+// لا OAuth: رمز وصول ثابت + معرّف رقم أعمال من البيئة أو محفوظين مشفّرين.
+// لا يُعلن اتصال بلا تحقّق حقيقي من Meta، ولا تسليم بلا معرّف رسالة حقيقي.
+// كل الردود تمرّ ببوابة الموافقة المركزية (sendMode=approval افتراضياً).
+// -------------------------------------------------------------
+const whatsappFetchImpl = createWhatsAppFetch((url, init) => fetch(url, init as any));
+function whatsappClient(): WhatsAppClient { return new WhatsAppClient(whatsappFetchImpl, process.env.WHATSAPP_API_BASE); }
+/** معرّف رقم أعمال WhatsApp: المحفوظ المشفّر ثم البيئة (لا يُعاد في أي استجابة). */
+function whatsappPhoneNumberId(): string {
+  const stored = getProviderToken("whatsapp");
+  if (stored?.phoneNumberId) return String(stored.phoneNumberId);
+  return whatsappPhoneNumberIdFromEnv();
+}
+/** رمز وصول Cloud API: المحفوظ المشفّر ثم البيئة. */
+function whatsappAccessToken(): string {
+  const stored = getProviderToken("whatsapp");
+  if (stored?.accessToken) return String(stored.accessToken);
+  return whatsappAccessTokenFromEnv();
+}
+/** سرّ توقيع webhook (X-Hub-Signature-256). */
+function whatsappAppSecret(): string {
+  const stored = getProviderToken("whatsapp");
+  if (stored?.appSecret) return String(stored.appSecret);
+  return (process.env[WHATSAPP_ENV_NAMES.appSecret] || "").trim();
+}
+/** رمز تحقق الاشتراك (hub.challenge). */
+function whatsappVerifyToken(): string {
+  return (process.env[WHATSAPP_ENV_NAMES.verifyToken] || "").trim();
+}
+/** القالب الافتراضي المُهيّأ (أو المحفوظ) — يُستخدم خارج نافذة 24 ساعة. */
+function whatsappDefaultTemplate(): { name: string; language: string } | null {
+  const stored = getProviderToken("whatsapp");
+  if (stored?.templateName) return { name: String(stored.templateName), language: String(stored.templateLanguage || 'ar') };
+  return whatsappDefaultTemplateFromEnv();
+}
+/** يحفظ اعتماد WhatsApp مشفّراً (لا يُعاد ولا يُسجَّل). */
+function saveWhatsAppCredentials(input: { phoneNumberId: string; accessToken: string; displayPhoneNumber?: string | null; verifiedName?: string | null; appSecret?: string; templateName?: string; templateLanguage?: string }) {
+  const existing = getProviderToken("whatsapp") || {};
+  setProviderToken("whatsapp", {
+    ...existing,
+    phoneNumberId: input.phoneNumberId,
+    accessToken: input.accessToken,
+    displayPhoneNumber: input.displayPhoneNumber || existing.displayPhoneNumber || "",
+    verifiedName: input.verifiedName || existing.verifiedName || "",
+    appSecret: input.appSecret || existing.appSecret || whatsappAppSecret() || "",
+    templateName: input.templateName || existing.templateName || "",
+    templateLanguage: input.templateLanguage || existing.templateLanguage || "ar",
+    connectedAt: existing.connectedAt || new Date().toISOString(),
+  });
+}
+/** هل موصل WhatsApp مكتمل الإعداد (رقم + رمز)؟ */
+function whatsappConnectorConfigured(): boolean { return Boolean(whatsappPhoneNumberId() && whatsappAccessToken()); }
+/** رابط استقبال أحداث WhatsApp لهذا الخادم. */
+function whatsappWebhookUrl(): string { return `${publicBaseUrlNow()}/api/platforms/whatsapp/webhook`; }
+/** تسجيل آمن لحدث WhatsApp الوارد (بلا سرّ ولا نص رسالة). */
+function logWhatsAppWebhook(event: { externalId?: string | null; outcome: "accepted" | "duplicate" | "rejected" | "ignored" | "status"; persisted?: boolean }): void {
+  const parts = ["[whatsapp-webhook]", "platform=whatsapp", `outcome=${event.outcome}`];
+  if (event.externalId) parts.push(`external=${event.externalId}`);
+  if (typeof event.persisted === "boolean") parts.push(`persisted=${event.persisted}`);
+  console.log(parts.join(" "));
+}
+
+// -------------------------------------------------------------
+// Google Business Profile — نشر localPosts حقيقي (G3).
+// OAuth عام (Google) بنطاق business.manage؛ النشر يلزمه معرّف موقع حقيقي مقروء.
+// لا نشر بلا معرّف منشور حقيقي من Google. الأسرار مشفّرة عبر محوّل الحالة.
+// -------------------------------------------------------------
+const googleBusinessFetchImpl = createGoogleBusinessFetch((url, init) => fetch(url, init as any));
+function googleBusinessClient(): GoogleBusinessClient {
+  return new GoogleBusinessClient(googleBusinessFetchImpl, process.env.GOOGLE_BUSINESS_INFO_BASE, process.env.GOOGLE_BUSINESS_POSTS_BASE);
+}
+/** رمز وصول Google Business (من الاعتماد المشفّر المحفوظ عبر OAuth). */
+function googleBusinessAccessToken(): string | null {
+  const stored = getProviderToken("google_business");
+  return stored?.access_token ? String(stored.access_token) : null;
+}
+/** معرّف الحساب (اسم المورد accounts/X) المحفوظ من الربط. */
+function googleBusinessAccountResource(): string | null {
+  const stored = getProviderToken("google_business");
+  return stored?.accountResource ? String(stored.accountResource) : null;
+}
+/** معرّف الموقع (locationId) المحفوظ — يُقرأ من Google عند الحاجة إن غاب. */
+function googleBusinessLocationId(): string | null {
+  const stored = getProviderToken("google_business");
+  return stored?.locationId ? String(stored.locationId) : null;
+}
+/** هل انتهى رمز Google Business (يُجدَّد عبر refresh_token المخزّن). */
+function googleBusinessAccessExpired(): boolean {
+  const stored = getProviderToken("google_business");
+  return isAccessTokenExpired({ expiresAt: stored?.expiresAt ?? null });
+}
+/** يحفظ اعتماد Google Business مشفّراً (رمز + حساب + موقع). */
+function saveGoogleBusinessCredentials(input: { accessToken?: string; refreshToken?: string | null; expiresIn?: number | null; accountResource?: string | null; locationId?: string | null; scope?: string | null; accountName?: string | null }) {
+  const existing = getProviderToken("google_business") || {};
+  setProviderToken("google_business", {
+    ...existing,
+    access_token: input.accessToken || existing.access_token || "",
+    refresh_token: input.refreshToken || existing.refresh_token || "",
+    expiresAt: input.expiresIn ? Date.now() + Number(input.expiresIn) * 1000 : (existing.expiresAt ?? null),
+    accountResource: input.accountResource || existing.accountResource || "",
+    locationId: input.locationId || existing.locationId || "",
+    scope: input.scope || existing.scope || "",
+    accountName: input.accountName || existing.accountName || "",
+    connectedAt: existing.connectedAt || new Date().toISOString(),
+  });
+}
+/**
+ * تجديد رمز Google Business عبر refresh_token المخزّن (نفس نمط YouTube/TikTok).
+ * يُعيد الرمز الجديد أو null عند الفشل (لا نجاح وهمي).
+ */
+async function forceRefreshGoogleBusinessToken(): Promise<string | null> {
+  const stored = getProviderToken("google_business");
+  const refreshToken = stored?.refresh_token ? String(stored.refresh_token) : "";
+  if (!refreshToken) return null;
+  const cfg: any = OAUTH_CONFIG["google_business"];
+  if (!cfg?.clientId || !cfg?.clientSecret) return null;
+  try {
+    const body = new URLSearchParams({ client_id: String(cfg.clientId), client_secret: String(cfg.clientSecret), refresh_token: refreshToken, grant_type: "refresh_token" });
+    const res = await fetch(cfg.token, { method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" }, body: body.toString() });
+    const data: any = await res.json().catch(() => null);
+    if (!res.ok || !data?.access_token) { audit("system", "google_business_refresh_failed", String(data?.error || "provider_error")); return null; }
+    saveGoogleBusinessCredentials({ accessToken: String(data.access_token), expiresIn: data.expires_in ? Number(data.expires_in) : null });
+    await persistStateDurable();
+    audit("system", "google_business_token_refreshed", "auto");
+    return String(data.access_token);
+  } catch { return null; }
+}
+/** يضمن رمزاً صالحاً لـGoogle Business (يُجدّد عند الانتهاء المعلن). */
+async function ensureGoogleBusinessAccessToken(): Promise<{ ok: boolean; token?: string; error?: string }> {
+  const token = googleBusinessAccessToken();
+  if (!token) return { ok: false, error: "لا اعتماد Google Business محفوظ؛ نفّذ الربط عبر OAuth أولاً." };
+  if (!googleBusinessAccessExpired()) return { ok: true, token };
+  const refreshed = await forceRefreshGoogleBusinessToken();
+  if (!refreshed) return { ok: false, error: "فشل تجديد رمز Google Business؛ أعد الربط." };
+  return { ok: true, token: refreshed };
+}
+
 /** تسجيل آمن لحدث Instagram الوارد. ممنوع تسجيل أي سرّ أو نص رسالة. */
 function logInstagramWebhook(event: { kind: string; externalId?: string | null; outcome: "accepted" | "duplicate" | "rejected" | "ignored"; persisted?: boolean }): void {
   const parts = ["[instagram-webhook]", "platform=instagram", `kind=${event.kind}`, `outcome=${event.outcome}`];
@@ -3721,6 +3884,36 @@ async function verifyProviderConnection(platform: string): Promise<{ verified: b
     if (!proof.ok || !proof.data?.channelId) return { verified: false, error: proof.error || "تعذّر إثبات هوية قناة YouTube." };
     return { verified: true, accountId: proof.data.channelId, accountName: proof.data.title || undefined };
   }
+  if (platform === "whatsapp") {
+    // W1: إثبات حقيقي لرقم أعمال WhatsApp Cloud API عبر GET /{phone-number-id}.
+    // لا يُعلن اتصال بلا استجابة مزود حقيقية، ولا يُعاد أي رمز.
+    const phoneNumberId = whatsappPhoneNumberId();
+    const token = whatsappAccessToken();
+    if (!phoneNumberId || !token) return { verified: false, error: "لا اعتماد WhatsApp محفوظ (WHATSAPP_PHONE_NUMBER_ID / WHATSAPP_ACCESS_TOKEN)؛ أكمل الإعداد أولاً." };
+    const proof = await whatsappClient().verifyPhoneNumber(phoneNumberId, token);
+    if (!proof.ok || !proof.data?.phoneNumberId) return { verified: false, error: proof.error || "تعذّر إثبات رقم أعمال WhatsApp." };
+    const name = proof.data.verifiedName || proof.data.displayPhoneNumber || proof.data.phoneNumberId;
+    return { verified: true, accountId: proof.data.phoneNumberId, accountName: name };
+  }
+  if (platform === "google_business") {
+    // G3: إثبات حقيقي بحساب Google Business مقروء فعلاً عبر mybusinessaccountmanagement.
+    // لا يُعلن اتصال بلا حساب حقيقي من Google، ولا يُختلق اسم.
+    const ensured = await ensureGoogleBusinessAccessToken();
+    if (!ensured.ok || !ensured.token) return { verified: false, error: ensured.error || "لا اعتماد Google Business صالح." };
+    try {
+      const r = await fetch(`${process.env.GOOGLE_BUSINESS_ACCOUNT_BASE || "https://mybusinessaccountmanagement.googleapis.com"}/v1/accounts`, { headers: { Authorization: `Bearer ${ensured.token}` } });
+      const d: any = await r.json().catch(() => null);
+      if (!r.ok || !Array.isArray(d?.accounts) || !d.accounts[0]?.name) {
+        const msg = String(d?.error?.message || "تعذّر إثبات حساب Google Business.");
+        return { verified: false, error: msg };
+      }
+      const accountResource = String(d.accounts[0].name);
+      saveGoogleBusinessCredentials({ accountResource, accountName: d.accounts[0].accountName ? String(d.accounts[0].accountName) : null });
+      return { verified: true, accountId: accountResource, accountName: d.accounts[0].accountName ? String(d.accounts[0].accountName) : accountResource };
+    } catch (e: any) {
+      return { verified: false, error: String(e?.message || "فشل الاتصال بـGoogle Business.") };
+    }
+  }
   return { verified: false, error: "لا يوجد موصل إثبات حقيقي لهذه المنصة؛ إتمام الاتصال يحتاج اعتماد تطبيق من المزود." };
 }
 function publicProviderReadiness(platform: string): { configured: boolean; mode: string; action: string; missing?: string[]; invalid?: string[]; next?: string; realConnector?: boolean } {
@@ -4425,8 +4618,12 @@ async function fetchProviderAccount(platform: string, accessToken: string): Prom
       const d = await r.json(); if (r.ok && d.data?.id) return { accountId: String(d.data.id), accountName: d.data.username ? `@${d.data.username}` : d.data.name };
     }
     if (platform === "google_business") {
-      const r = await fetch("https://mybusinessaccountmanagement.googleapis.com/v1/accounts", { headers: { Authorization: `Bearer ${accessToken}` } });
-      const d = await r.json(); if (r.ok && d.accounts?.[0]) return { accountId: d.accounts[0].name, accountName: d.accounts[0].accountName };
+      // G3: نحفظ الرمز + refresh token (يلزمهما التجديد لاحقاً)، ونثبت حساباً حقيقياً.
+      const r = await fetch(`${process.env.GOOGLE_BUSINESS_ACCOUNT_BASE || "https://mybusinessaccountmanagement.googleapis.com"}/v1/accounts`, { headers: { Authorization: `Bearer ${accessToken}` } });
+      const d = await r.json(); if (r.ok && d.accounts?.[0]) {
+        saveGoogleBusinessCredentials({ accessToken, accountResource: d.accounts[0].name, accountName: d.accounts[0].accountName ? String(d.accounts[0].accountName) : null });
+        return { accountId: d.accounts[0].name, accountName: d.accounts[0].accountName };
+      }
     }
   } catch { /* الإثبات الإضافي اختياري؛ الفشل لا يُلغي نجاح التبادل */ }
   return null;
@@ -4885,7 +5082,11 @@ async function handleOAuthCallback(req:any, res:any, rawQuery:string, viaPost:bo
     const accountId=proof.accountId, accountName=proof.accountName||proof.accountId;
     // يُخزَّن الرمز مع انتهاء مطلق محسوب ومع refresh token إن وُجد.
     const stored={...token, expiresAt: parsedToken.expiresIn ? Date.now()+parsedToken.expiresIn*1000 : null};
-    setProviderToken(platform,stored); platformConnections.set(platform,{platform,status:"connected",accountId,accountName,connectedAt:new Date().toISOString(),providerVerified:true}); savePlatformConnections(); audit(pending!.userId,"platform_oauth_connected",`${platform}:${accountId}`);
+    setProviderToken(platform,stored);
+    // G3: الرمز أُعيد كتابته أعلاه (يحمل refresh_token من Google)؛ نُعيد إلحاق
+    // معرّف الحساب/الاسم بعد الكتابة فلا يُفقدا.
+    if (platform === "google_business") saveGoogleBusinessCredentials({ accessToken: String(parsedToken.accessToken || ""), refreshToken: (token as any)?.refresh_token || null, expiresIn: parsedToken.expiresIn ?? null, accountResource: accountId, accountName: accountName });
+    platformConnections.set(platform,{platform,status:"connected",accountId,accountName,connectedAt:new Date().toISOString(),providerVerified:true}); savePlatformConnections(); audit(pending!.userId,"platform_oauth_connected",`${platform}:${accountId}`);
     sendHtml("<html lang='ar' dir='rtl'><meta charset='utf-8'><title>تم الربط</title><body style='font-family:sans-serif;padding:40px'><h2>تم ربط المنصة بنجاح.</h2><p>يمكنك إغلاق هذه النافذة والعودة إلى الغرابي AI.</p></body></html>");
   } catch(e:any) { audit(pending!.userId,"platform_oauth_failed",platform); const errMsg=redactSecretsFromText(String(e?.message||e)).slice(0,300); console.error(`[oauth-callback-error] ${platform} status=502 message=${errMsg}`); const hint=oauthFailureHint(platform,errMsg); failHtml(502, `فشل إكمال ربط المنصة: ${errMsg}${hint?" — "+hint:""}`); }
 }
@@ -4926,6 +5127,69 @@ app.post("/api/platforms/telegram/configure", requireOwner, async (req,res)=>{
   audit((req as any).user.id,"telegram_configured",me.botId);
   // لا يُعاد الرمز ولا السرّ إطلاقاً؛ يُعلن فقط نجاح التحقق وضبط الـwebhook.
   res.json({success:true,connection:safeConnection("telegram"),webhook:{registered:true,url:telegramWebhookUrl(),secretConfigured:true,status:registration.status,verified:registration.matchesExpectedUrl,detail:registration.detail},verified:true});
+});
+
+// -------------------------------------------------------------
+// WhatsApp Business Cloud API — مسارات الموصل الحقيقي (W1).
+// الإعداد يثبت الرقم فعلياً لدى Meta (لا اتصال بلا استجابة مزود)، والرد يمرّ بكل
+// البوابات عبر المنفّذ المركزي (بوابة الموافقة + نافذة 24 ساعة + سلامة محتوى).
+// كل الردود تمرّ ببوابة الموافقة: لا إرسال آلي للزبائن.
+// -------------------------------------------------------------
+app.post("/api/platforms/whatsapp/configure", requireOwner, async (req, res) => {
+  const user = (req as any).user as ServerUser;
+  const phoneNumberId = (typeof req.body?.phoneNumberId === "string" ? req.body.phoneNumberId.trim() : "") || whatsappPhoneNumberId();
+  const accessToken = (typeof req.body?.accessToken === "string" ? req.body.accessToken.trim() : "") || whatsappAccessToken();
+  if (!phoneNumberId) return res.status(400).json({ success: false, error: "WHATSAPP_PHONE_NUMBER_ID مطلوب (أو اضبطه في البيئة)." });
+  if (!accessToken) return res.status(400).json({ success: false, error: "WHATSAPP_ACCESS_TOKEN مطلوب (أو اضبطه في البيئة)." });
+  if (!tokenKeyBytes()) return res.status(503).json({ success: false, error: tokenKeyInspection().reason });
+  // 1) إثبات رقم الأعمال فعلياً لدى Meta — لا يُعلن اتصال بلا استجابة مزود.
+  const proof = await whatsappClient().verifyPhoneNumber(phoneNumberId, accessToken);
+  if (!proof.ok || !proof.data?.phoneNumberId) {
+    return res.status(400).json({ success: false, error: proof.error || "تعذّر إثبات رقم أعمال WhatsApp.", code: proof.code || null });
+  }
+  // 2) حفظ الاعتماد مشفّراً **قبل** الإعلان، فلا ينفصل ما نتحقق منه عمّا نستخدمه.
+  try { saveWhatsAppCredentials({ phoneNumberId: proof.data.phoneNumberId, accessToken, displayPhoneNumber: proof.data.displayPhoneNumber, verifiedName: proof.data.verifiedName }); }
+  catch (e: any) { return res.status(503).json({ success: false, error: `تعذّر حفظ اعتماد WhatsApp: ${String(e?.message || e).slice(0, 180)}` }); }
+  platformConnections.set("whatsapp", { platform: "whatsapp", status: "connected", accountId: proof.data.phoneNumberId, accountName: proof.data.verifiedName || proof.data.displayPhoneNumber || "WhatsApp Business", connectedAt: new Date().toISOString(), providerVerified: true });
+  savePlatformConnections();
+  await persistStateDurable();
+  audit(user.id, "whatsapp_configured", proof.data.phoneNumberId);
+  // لا يُعاد الرمز ولا السرّ إطلاقاً.
+  res.json({ success: true, connection: safeConnection("whatsapp"), verified: true, webhookUrl: whatsappWebhookUrl(), windowHours: WHATSAPP_MESSAGE_WINDOW_HOURS });
+});
+
+/** حالة موصل WhatsApp الحقيقية (بلا أي سرّ). */
+app.get("/api/platforms/whatsapp/status", authenticateToken, (_req, res) => {
+  const conn: any = platformConnections.get("whatsapp");
+  const stored = getProviderToken("whatsapp") || {};
+  res.json({
+    success: true,
+    platform: "whatsapp",
+    connected: Boolean(conn?.status === "connected" && conn?.providerVerified === true),
+    providerVerified: conn?.providerVerified === true,
+    configured: whatsappConnectorConfigured(),
+    accountId: stored?.phoneNumberId ? String(stored.phoneNumberId) : null,
+    accountName: stored?.verifiedName ? String(stored.verifiedName) : (stored?.displayPhoneNumber ? String(stored.displayPhoneNumber) : null),
+    webhookUrl: whatsappWebhookUrl(),
+    windowHours: WHATSAPP_MESSAGE_WINDOW_HOURS,
+    templateConfigured: Boolean(whatsappDefaultTemplate()),
+    capabilities: ["messages", "message_reply"],
+    note: "لا نشر منشورات عامة على WhatsApp؛ الرسائل والرد عليها فقط، وكل رد يمرّ ببوابة الموافقة.",
+  });
+});
+
+/** الرد على رسالة WhatsApp — نفس المنفّذ المركزي (كل البوابات سارية). */
+app.post("/api/platforms/whatsapp/reply", requireOwner, async (req, res) => {
+  const user = (req as any).user as { id: string };
+  const result = await executeWhatsAppMessageReply({
+    externalId: typeof req.body?.externalId === "string" ? req.body.externalId.trim() : "",
+    recipientId: typeof req.body?.recipientId === "string" ? req.body.recipientId.trim() : "",
+    text: typeof req.body?.text === "string" ? req.body.text : "",
+    commentText: typeof req.body?.commentText === "string" ? req.body.commentText : "",
+    productId: typeof req.body?.productId === "string" ? req.body.productId.trim() : "",
+    productName: typeof req.body?.productName === "string" ? req.body.productName.trim() : "",
+  }, user.id);
+  return res.status(result.status).json(result.body);
 });
 
 // -------------------------------------------------------------
@@ -5369,6 +5633,117 @@ async function executeTelegramMessageReply(
     await persistStateDurable();
     if (!result.ok) return { status: 502, body: { success: false, delivered: false, simulated: false, reply: record, error: record.deliveryError } };
     return { status: 200, body: { success: true, delivered: true, simulated: false, providerReplyId: record.providerReplyId, reply: record } };
+  } finally {
+    if (idemKey) await endExternalOperation(idemKey, idemOutcome);
+    releaseReplyLock(lock);
+  }
+}
+
+/**
+ * W1: الرد الحقيقي على رسالة WhatsApp عبر Cloud API — منفّذ مركزي واحد يستخدمه
+ * المسار اليدوي للمالك (وما يمرّ من بوابة الموافقة/صندوق الزبائن). كل البوابات
+ * سارية بالترتيب: بوابة الموافقة → قفل الرد → اتصال موثق → معدّل → وجود الرسالة
+ * الواردة → تصنيف → سلامة محتوى → idempotency → منع تكرار → **حارس نافذة 24 ساعة**
+ * → الإرسال (نص حر داخل النافذة، أو قالب معتمد خارجها، أو حجب صريح بلا قالب).
+ * لا يُسجَّل delivered=true بلا معرّف رسالة حقيقي من Meta.
+ */
+async function executeWhatsAppMessageReply(
+  input: { externalId: string; recipientId?: string; text: string; commentText?: string; productId?: string; productName?: string; idempotencyKey?: string },
+  actor: string,
+): Promise<MetaReplyResult> {
+  const externalId = String(input.externalId || '').trim();
+  const recipientId = String(input.recipientId || '').trim();
+  const text = String(input.text || '').trim();
+  const commentText = typeof input.commentText === 'string' ? input.commentText : '';
+  const idempotencyKey = typeof input.idempotencyKey === 'string' ? input.idempotencyKey.trim() : '';
+  if (!text) return { status: 400, body: { success: false, error: 'نص الرد مطلوب.' } };
+
+  const onlyBlock = youtubeOnlyBlock('whatsapp');
+  if (onlyBlock.blocked) return { status: onlyBlock.status!, body: onlyBlock.body };
+
+  // بوابة الموافقة المركزية قبل أي نداء مزوّد (نفس مبدأ مسار Meta/Telegram).
+  const approvalGate = await guardCustomerSend({ actor, platform: 'whatsapp', operation: 'message_reply', externalId, recipientId, text, productId: input.productId || null });
+  if (!approvalGate.allowed) return { status: 409, body: approvalGate.body };
+
+  const lock = replyLockKey('whatsapp', 'message', externalId || `whatsapp-msg:${recipientId}`, idempotencyKey);
+  if (!acquireReplyLock(lock)) return { status: 409, body: { success: false, error: 'طلب رد آخر على نفس الرسالة قيد التنفيذ بالفعل؛ انتظر حتى يكتمل لمنع التكرار.', code: 'REPLY_IN_PROGRESS' } };
+  let idemKey = '';
+  let idemOutcome: IdempotencyFinishStatus | null = 'failed';
+  try {
+    const conn: any = platformConnections.get('whatsapp');
+    if (!conn || conn.status !== 'connected' || conn.providerVerified !== true) {
+      return { status: 409, body: { success: false, error: 'WhatsApp غير متصل باتصال موثق؛ لا يمكن إرسال أي رسالة خارجية.' } };
+    }
+    const phoneNumberId = whatsappPhoneNumberId();
+    const accessToken = whatsappAccessToken();
+    if (!phoneNumberId || !accessToken) return { status: 503, body: { success: false, error: 'موصل WhatsApp غير مهيأ (WHATSAPP_PHONE_NUMBER_ID / WHATSAPP_ACCESS_TOKEN ناقص).' } };
+    const rl = operationRateLimit('whatsapp:reply', 'message');
+    if (!rl.allowed) return { status: 429, body: { success: false, code: 'RATE_LIMITED', error: 'تم بلوغ حد معدّل الرسائل؛ العملية قابلة لإعادة المحاولة لاحقاً بلا إنشاء نسخة مكررة.', retryAfterMs: rl.retryAfterMs, limit: rl.limit } };
+    const comment = (workspace as any).socialComments.find((c: any) => c.platform === 'whatsapp' && c.externalId === externalId && c.kind === 'message');
+    const targetRecipient = recipientId || String(comment?.replyTarget?.recipientId || '');
+    if (!comment && !targetRecipient) return { status: 404, body: { success: false, error: 'لا توجد رسالة WhatsApp واردة بهذا المعرّف؛ لا إرسال بلا رسالة حقيقية.' } };
+    const classification = classifyComment(commentText || text);
+    if (!canAutoReply(classification)) return { status: 422, body: { success: false, error: classification.reviewReason || 'هذه الرسالة تستوجب مراجعة بشرية قبل أي رد.', classification, requiresHumanReview: true } };
+    const ownNames = [String(workspace.showroom?.name || ''), 'معرض الغرابي'];
+    if (isSelfAuthored(comment?.authorName, ownNames)) return { status: 409, body: { success: false, error: 'الرسالة صادرة من حساب المعرض؛ لا يُرد عليها لتجنب حلقة ردود.' } };
+
+    const productId = typeof input.productId === 'string' ? input.productId.trim() : '';
+    const productName = typeof input.productName === 'string' ? input.productName.trim() : '';
+    const product = (workspace.products || []).find((p: any) => (productId && p.id === productId) || (productName && p.name === productName)) || null;
+    const replyFacts = buildFactsForProduct(product, Number(product?.downPaymentPercent || 0), Number(product?.durationMonths || 0));
+    const safety = analyzeBusinessClaims(text, replyFacts);
+    if (!safety.safe) {
+      return { status: 422, body: { success: false, error: 'نص الرسالة يحمل عرضاً تجارياً غير مسجّل، وتم إيقافه قبل أي إرسال.', contentSafety: { safe: false, violations: safety.blocked.map((v) => v.detail), codes: safety.blocked.map((v) => v.code) } } };
+    }
+
+    const guardExternalId = externalId || `whatsapp-msg:${targetRecipient}`;
+    const idem = await beginExternalOperation({ platform: 'whatsapp', operation: 'message_reply', targetId: guardExternalId, idempotencyKey });
+    if (idem.blocked) return idem.blocked;
+    idemKey = idem.key;
+
+    const history: ReplyRecord[] = (workspace as any).socialReplies.filter((r: any) => r.platform === 'whatsapp' && r.kind === 'message').map((r: any) => ({ externalId: r.externalId, replyFingerprint: r.replyFingerprint, repliedAt: r.repliedAt, idempotencyKey: r.idempotencyKey }));
+    const decision = evaluateReplyGuard({ externalId: guardExternalId, replyText: text, history, idempotencyKey });
+    if (!decision.allowed) return { status: 409, body: { success: false, error: decision.reason, guard: decision } };
+
+    // حارس نافذة الـ24 ساعة (مصدر واحد في الموصل): داخل النافذة ⇒ نص حر؛ خارجها
+    // ⇒ قالب معتمد فقط؛ وبلا قالب ⇒ **حجب صريح** بدل مخالفة سياسة WhatsApp.
+    const lastCustomerAt = comment?.createdAt ? String(comment.createdAt) : null;
+    const sendDecision = evaluateWhatsAppSend({ lastCustomerMessageAt: lastCustomerAt, nowIso: new Date().toISOString(), template: whatsappDefaultTemplate() });
+    if (sendDecision.mode === 'blocked') {
+      return { status: 409, body: { success: false, error: sendDecision.reason, code: sendDecision.code, withinWindow: false, windowHours: WHATSAPP_MESSAGE_WINDOW_HOURS } };
+    }
+    const client = whatsappClient();
+    const result = sendDecision.mode === 'template' && sendDecision.template
+      ? await client.sendTemplate(phoneNumberId, accessToken, { to: targetRecipient, name: sendDecision.template.name, language: sendDecision.template.language, bodyParams: [text] })
+      : await client.sendText(phoneNumberId, accessToken, targetRecipient, text);
+    // F-02: OAuthException (190) من نداء الإرسال الفعلي ⇒ الاتصال reauth_needed.
+    reauthOnOAuthException('whatsapp', result);
+    idemOutcome = classifyExternalOperationOutcome({ ok: result.ok, failureKind: providerFailureKind(result.code) });
+
+    const record = {
+      id: workspaceId('reply'), platform: 'whatsapp', externalId: guardExternalId, text, kind: 'message',
+      replyFingerprint: decision.fingerprint, classification,
+      idempotencyKey: idempotencyKey || undefined,
+      contentSafety: { safe: true, violations: [] as string[], codes: [] as string[] },
+      repliedAt: new Date().toISOString(), createdBy: actor, simulated: false,
+      delivered: result.ok, providerReplyId: result.data?.providerMessageId || null,
+      receipt: result.ok ? { provider: 'whatsapp', messageId: result.data?.providerMessageId, recipientId: result.data?.waId || targetRecipient, sendMode: sendDecision.mode, sentAt: new Date().toISOString() } : null,
+      deliveryError: result.ok ? null : (result.error || 'فشل إرسال الرسالة عبر WhatsApp.'),
+      reviewStatus: result.ok ? 'delivered' : 'failed',
+      note: result.ok
+        ? `أُرسلت الرسالة فعلياً عبر WhatsApp (${sendDecision.mode === 'template' ? 'قالب معتمد' : 'نص حر داخل النافذة'}) وثُبّتت بمعرّف من Meta.`
+        : 'فشل الإرسال عبر WhatsApp؛ لم يُسجَّل أي تسليم.',
+    };
+    if (!Array.isArray((workspace as any).socialReplies)) (workspace as any).socialReplies = [];
+    (workspace as any).socialReplies.unshift(record);
+    if ((workspace as any).socialReplies.length > WORKSPACE_MAX_SOCIAL_REPLIES) (workspace as any).socialReplies.length = WORKSPACE_MAX_SOCIAL_REPLIES;
+    audit(actor, result.ok ? 'social_whatsapp_message_reply_sent' : 'social_whatsapp_message_reply_failed', `${guardExternalId}:${result.ok ? 'delivered' : 'failed'}`);
+    if (result.ok && record.providerReplyId) {
+      await recordBusinessReplyOnLead({ platform: 'whatsapp', externalId: guardExternalId, recipientId: targetRecipient, atIso: record.repliedAt });
+    }
+    await persistStateDurable();
+    if (!result.ok) return { status: 502, body: { success: false, delivered: false, simulated: false, reply: record, error: record.deliveryError, code: result.code || 'PROVIDER_ERROR' } };
+    return { status: 200, body: { success: true, delivered: true, simulated: false, providerReplyId: record.providerReplyId, sendMode: sendDecision.mode, reply: record } };
   } finally {
     if (idemKey) await endExternalOperation(idemKey, idemOutcome);
     releaseReplyLock(lock);
@@ -6459,16 +6834,38 @@ app.post("/api/platforms/:platform/webhook", requireRawBody, async (req, res) =>
   const secret = webhookSecretFor(platform);
   const rawBody = String((req as any).rawBody ?? "");
   const verification = verifier.verify({ headers: req.headers as Record<string, string | undefined>, rawBody, secret });
-  if (!verification.ok) return res.status(401).json({ success: false, error: verification.reason || "حدث غير موثوق." });
+  if (!verification.ok) {
+    if (platform === "whatsapp") logWhatsAppWebhook({ outcome: "rejected" });
+    return res.status(401).json({ success: false, error: verification.reason || "حدث غير موثوق." });
+  }
   if (!isValidWebhookPayload(req.body)) return res.status(400).json({ success: false, error: "حمولة webhook غير صالحة." });
 
-  const events = normalizeMetaEvents(platform as PlatformId, req.body);
-  if (!events.length) return res.status(200).json({ success: true, accepted: true, ignored: "no_supported_event" });
+  // W1: تطبيع WhatsApp عبر المصدر الواحد في الموصل (يشمل اسم المرسل من contacts
+  // وهدف الرد = معرّف هاتف العميل)، بينما بقية منصات Meta تُطبَّع عبر normalizeMetaEvents.
+  const events = platform === "whatsapp"
+    ? normalizeWhatsAppInbound(req.body)
+    : normalizeMetaEvents(platform as PlatformId, req.body);
+  // حالات التسليم الخاصة بـWhatsApp تُسجَّل بلا نصّ (لا تُنشئ حدثاً ولا تُعتمد كرسالة).
+  if (platform === "whatsapp") {
+    const statuses = parseWhatsAppStatuses(req.body);
+    for (const st of statuses) logWhatsAppWebhook({ externalId: st.messageId, outcome: "status" });
+    if (!events.length && statuses.length) return res.status(200).json({ success: true, accepted: true, statuses: statuses.length });
+  }
+  if (!events.length) {
+    if (platform === "whatsapp") logWhatsAppWebhook({ outcome: "ignored" });
+    return res.status(200).json({ success: true, accepted: true, ignored: "no_supported_event" });
+  }
 
   const { accepted, duplicates } = await ingestWebhookComments({
     platform, events, auditKind: `${platform}_inbound_events`,
     webhookEventType: (ev) => ev.kind,
   });
+  // W1: حفظ دائم **قبل الإقرار** لرسائل WhatsApp (مبدأ Telegram نفسه): يمنع فقد
+  // الرسالة وحماية منع التكرار عند cold start/deploy. لا نغيّر توقيت بقية المنصات.
+  if (platform === "whatsapp") {
+    await persistStateDurable();
+    logWhatsAppWebhook({ outcome: accepted.length ? "accepted" : "duplicate", persisted: true });
+  }
   res.status(200).json({ success: true, accepted: true, processed: accepted.length, ignoredDuplicates: duplicates });
 });
 
@@ -9492,7 +9889,8 @@ async function resolveCommercialNegotiation(lead: CommercialLead, text: string):
 /** يبني تفاعلاً وارداً موحّداً من سجل استقبال حقيقي (بلا اختلاق حقل). */
 function incomingToInteraction(row: any, nowIso: string): InboundInteraction | null {
   const platform = String(row.platform || '').toLowerCase();
-  if (!['facebook', 'instagram'].includes(platform)) return null;
+  // W1: WhatsApp منصة رسائلية حقيقية تُغذّي العقل التجاري كباقي المنصات.
+  if (!['facebook', 'instagram', 'whatsapp'].includes(platform)) return null;
   const externalId = String(row.externalId || '').trim();
   const text = String(row.text || '').trim();
   if (!externalId || !text) return null;
@@ -9560,7 +9958,7 @@ async function runCommercialBrainCycle(trigger: string): Promise<{ ok: boolean; 
     // 1) تسجيل Leads من كل تفاعل وارد حقيقي (تعليق أو رسالة) على Facebook/Instagram،
     //    من سجل الاستقبال الحقيقي مباشرةً (لا اختلاق). السبام/حساب المعرض يُستبعد.
     const inboundRows = ((workspace as any).socialComments || [])
-      .filter((c: any) => ['facebook', 'instagram'].includes(String(c.platform || '').toLowerCase()))
+      .filter((c: any) => ['facebook', 'instagram', 'whatsapp'].includes(String(c.platform || '').toLowerCase()))
       .slice(0, 200);
     const seen = new Set<string>();
     for (const row of inboundRows) {
@@ -9605,7 +10003,9 @@ async function runCommercialBrainCycle(trigger: string): Promise<{ ok: boolean; 
       if (draftedLeads.has(lead.key)) continue; // أُنشئت له مسودة رد فورية هذه الدورة.
       const due = isFollowUpDue(lead, nowIso);
       if (!due.due) continue;
-      if (!['facebook', 'instagram'].includes(lead.platform)) continue;
+      // W1: المتابعة تشمل WhatsApp أيضاً (منصة رسائلية)؛ لكن متابعة WhatsApp تخضع
+      // لنافذة 24 ساعة نفسها أدناه عبر حارس الإرسال داخل المنفّذ المركزي.
+      if (!['facebook', 'instagram', 'whatsapp'].includes(lead.platform)) continue;
       // بوابة المتابعة النظيفة (مصدر واحد): رسائل خاصة فقط، وأساس زمني = آخر رد
       // للمعرض (لا تعليق الزبون)، والمحادثة باردة، وداخل نافذة المراسلة المسموحة،
       // ومتابعة واحدة لكل استفسار. كل منع يُسجَّل بكوده بلا أي إرسال.
@@ -9648,9 +10048,11 @@ async function runCommercialBrainCycle(trigger: string): Promise<{ ok: boolean; 
         if (draft) drafted += 1;
         continue;
       }
-      const res = isMessage
-        ? await executeMetaMessageReply(lead.platform as any, { externalId: lead.lastExternalId || '', recipientId: String(lead.replyTarget?.recipientId || ''), text, commentText: lead.lastCustomerText || '', productId: product?.id, idempotencyKey: followUpIdem }, 'commercial-brain')
-        : await executeMetaCommentReply(lead.platform as any, { externalId: lead.lastExternalId || '', text, commentText: lead.lastCustomerText || '', productId: product?.id, idempotencyKey: followUpIdem }, 'commercial-brain');
+      const res = lead.platform === 'whatsapp'
+        ? await executeWhatsAppMessageReply({ externalId: lead.lastExternalId || '', recipientId: String(lead.replyTarget?.recipientId || ''), text, commentText: lead.lastCustomerText || '', productId: product?.id, idempotencyKey: followUpIdem }, 'commercial-brain')
+        : isMessage
+          ? await executeMetaMessageReply(lead.platform as any, { externalId: lead.lastExternalId || '', recipientId: String(lead.replyTarget?.recipientId || ''), text, commentText: lead.lastCustomerText || '', productId: product?.id, idempotencyKey: followUpIdem }, 'commercial-brain')
+          : await executeMetaCommentReply(lead.platform as any, { externalId: lead.lastExternalId || '', text, commentText: lead.lastCustomerText || '', productId: product?.id, idempotencyKey: followUpIdem }, 'commercial-brain');
       const delivered = Boolean(res.body?.delivered && res.body?.providerReplyId);
       if (delivered) {
         const updated = applyFollowUpSent(lead, new Date().toISOString());
@@ -9982,9 +10384,11 @@ app.post("/api/commercial/drafts/:id/decision", requireOwner, async (req, res) =
   const lead = commercialLeads.find((l) => l.id === draft.leadId) || null;
   const productId = draft.productId || undefined;
   const sendText = updated.approvedText || updated.text;
-  const res_ = draft.kind === 'message'
-    ? await executeMetaMessageReply(draft.platform as any, { externalId: draft.externalId, recipientId: String(draft.recipientId || ''), text: sendText, commentText: lead?.lastCustomerText || '', productId, idempotencyKey: draft.idempotencyKey || undefined }, 'commercial-owner-approval')
-    : await executeMetaCommentReply(draft.platform as any, { externalId: draft.externalId, text: sendText, commentText: lead?.lastCustomerText || '', productId, idempotencyKey: draft.idempotencyKey || undefined }, 'commercial-owner-approval');
+  const res_ = draft.platform === 'whatsapp'
+    ? await executeWhatsAppMessageReply({ externalId: draft.externalId, recipientId: String(draft.recipientId || ''), text: sendText, commentText: lead?.lastCustomerText || '', productId, idempotencyKey: draft.idempotencyKey || undefined }, 'commercial-owner-approval')
+    : draft.kind === 'message'
+      ? await executeMetaMessageReply(draft.platform as any, { externalId: draft.externalId, recipientId: String(draft.recipientId || ''), text: sendText, commentText: lead?.lastCustomerText || '', productId, idempotencyKey: draft.idempotencyKey || undefined }, 'commercial-owner-approval')
+      : await executeMetaCommentReply(draft.platform as any, { externalId: draft.externalId, text: sendText, commentText: lead?.lastCustomerText || '', productId, idempotencyKey: draft.idempotencyKey || undefined }, 'commercial-owner-approval');
   const delivered = Boolean(res_.body?.delivered && res_.body?.providerReplyId);
   updated = markDraftDelivery(updated, { sent: delivered, providerReplyId: res_.body?.providerReplyId || null, error: res_.body?.error || null });
   const idx = commercialDrafts.findIndex((d) => d.id === draft.id);
@@ -12388,6 +12792,39 @@ async function executePlatformPublishInner(platform: string, body: any, actor: s
         note: mode === "DIRECT_POST" ? TIKTOK_DIRECT_POST_PENDING_NOTE : TIKTOK_DRAFT_PENDING_OWNER_NOTE,
       } };
     }
+    if (platform === "google_business") {
+      // G3: نشر localPost حقيقي عبر Google Business Profile API. منشور تحديث نصّي
+      // (summary) مع رابط CTA اختياري. لا نجاح بلا معرّف منشور حقيقي من Google.
+      const ensured = await ensureGoogleBusinessAccessToken();
+      if (!ensured.ok || !ensured.token) return { status: 503, body: { success: false, error: ensured.error || "لا اعتماد Google Business صالح.", code: "CONNECTOR_NOT_READY" } };
+      const accountResource = googleBusinessAccountResource();
+      if (!accountResource) return { status: 503, body: { success: false, error: "لا حساب Google Business موثق؛ أعد الربط عبر OAuth.", code: "CONNECTOR_NOT_READY" } };
+      const parsedAccount = parseLocationResourceName(`${accountResource}/locations/_probe`)?.accountId || String(accountResource).replace(/^accounts\//, "");
+      // الموقع: المحفوظ، وإلا نقرأه فعلياً من Google (لا اختراع معرّف موقع).
+      let locationId = googleBusinessLocationId() || "";
+      if (!locationId) {
+        const locs = await googleBusinessClient().listLocations(accountResource, ensured.token);
+        if (!locs.ok || !locs.data?.length) {
+          return { status: 502, body: { success: false, error: locs.error || "تعذّر قراءة موقع Google Business للنشر.", code: locs.code || "LOCATION_NOT_FOUND" } };
+        }
+        locationId = locs.data[0].locationId;
+        saveGoogleBusinessCredentials({ accountResource, locationId });
+      }
+      const linkUrl = typeof body?.linkUrl === "string" ? body.linkUrl.trim() : (typeof body?.mediaUrl === "string" ? body.mediaUrl.trim() : "");
+      const postInput: GoogleBusinessLocalPostInput = { summary: content, linkUrl, languageCode: typeof body?.languageCode === "string" ? body.languageCode : "ar", topicType: "STANDARD" };
+      const validation = validateGoogleBusinessPost(postInput);
+      if (!validation.ok) return { status: 422, body: { success: false, error: validation.reason, code: validation.code || "INVALID_POST" } };
+      const published = await googleBusinessClient().createLocalPost({ accountId: parsedAccount, locationId, post: postInput, accessToken: ensured.token });
+      const receipt = published.ok ? { provider: "google_business", accountId: parsedAccount, locationId, postId: published.data?.providerPostId, state: published.data?.state, sentAt: new Date().toISOString() } : null;
+      const record = buildPublishRecord({ platform: platform as any, postId: typeof body?.postId === "string" ? body.postId : workspaceId("post"), providerPostId: published.data?.providerPostId || null, simulated: false, error: published.ok ? null : published.error, code: published.code ?? null, providerCode: published.providerCode ?? null });
+      if (!Array.isArray((workspace as any).publishRecords)) (workspace as any).publishRecords = [];
+      (workspace as any).publishRecords.unshift({ ...record, id: workspaceId("publish"), createdBy: user.id, receipt, productId: typeof body?.productId === "string" && body.productId.trim() ? body.productId.trim() : null });
+      if ((workspace as any).publishRecords.length > WORKSPACE_MAX_PUBLISH_RECORDS) (workspace as any).publishRecords.length = WORKSPACE_MAX_PUBLISH_RECORDS;
+      persistState();
+      audit(user.id, published.ok ? "platform_publish_published" : "platform_publish_failed", `${platform}`);
+      if (!published.ok) return { status: 502, body: { success: false, record, error: published.error, code: published.code || "PROVIDER_ERROR", providerStatus: published.providerStatus ?? null, note: "لم يُسجَّل أي نشر بلا معرّف منشور حقيقي من Google." } };
+      return { status: 200, body: { success: true, record, providerPostId: published.data?.providerPostId, receipt } };
+    }
     return { status: 501, body: { success: false, error: "الموصل متصل لكن تنفيذ النشر لهذه المنصة يحتاج بيانات المزود ولم يُختلق تنفيذ وهمي.", code: "EXTERNAL_SETUP_REQUIRED", platform } };
   } catch (e: any) {
     return { status: 502, body: { success: false, error: String(e?.message || e).slice(0, 300), code: "PROVIDER_ERROR" } };
@@ -13469,8 +13906,10 @@ async function executeApprovedJob(job: any, userId: string): Promise<{ status: n
     // (youtube/facebook/instagram/threads/tiktok) — لا مسار ثانٍ ولا اختلاق تنفيذ.
     // المنصة هنا موصولة موثّقة (فُحص أعلاه) وتحمل قدرة النشر في السجل، فالمنفّذ
     // يُكمل كل بواباته: سلامة المحتوى، ملاءمة النص، منع التكرار، rate limit، audit.
-    // لا نُمرّر postId (الغلاف الخارجي سيحجز مفتاح publish بمفتاح المهمة) فلا يقع
-    // حجز مزدوج. المحتوى معتمد صراحةً (المهمة كانت approved ثم صارت ready).
+    // نُمرّر postId = معرّف المهمة: يجعله الغلاف الخارجي يحجز مفتاح publish مستقل
+    // (`operation: "publish"`) عن مفتاح المهمة المحجوز أعلاه (`operation: "job_execute"`)،
+    // فالحجزان مختلفان (لا تعارض)، وكلٌّ يمنع تكراره الخاص. المحتوى معتمد صراحةً
+    // (المهمة كانت approved ثم صارت ready).
     const pubResult = await executePlatformPublish(platform, {
       content,
       approved: true,
