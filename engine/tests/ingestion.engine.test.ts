@@ -75,10 +75,11 @@ group('2) مصفوفة المنصات: عشر صفوف مشتقة من السج�
   check('instagram channel=webhook', byP.instagram.channel === 'webhook');
   check('youtube channel=polling', byP.youtube.channel === 'polling');
   check('tiktok channel=none (no public comment API)', byP.tiktok.channel === 'none');
-  check('whatsapp channel=none', byP.whatsapp.channel === 'none');
+  // W1: WhatsApp صار موصلاً حقيقياً يستقبل عبر webhook موقّع (لا 'none').
+  check('whatsapp channel=webhook (W1)', byP.whatsapp.channel === 'webhook');
   check('tiktok cannot ingest (no ingest channel)', byP.tiktok.canIngest === false);
   const ingestible = ingestiblePlatforms();
-  check('ingestible = telegram/facebook/instagram/youtube', ['telegram', 'facebook', 'instagram', 'youtube'].every((p) => ingestible.includes(p as any)) && ingestible.length === 4);
+  check('ingestible = telegram/facebook/instagram/youtube/whatsapp', ['telegram', 'facebook', 'instagram', 'youtube', 'whatsapp'].every((p) => ingestible.includes(p as any)) && ingestible.length === 5);
   check('non-ingestible platform not claimed', !ingestible.includes('snapchat' as any));
 }
 
@@ -158,8 +159,8 @@ group('6) الصحة: حقول تقنية فقط (لا اسم/نص/رد)');
   check('health has channels map', typeof h.channels === 'object' && h.channels.youtube === 'polling');
   check('health exposes NO author name', !flat.includes('CANARY_AUTHOR'));
   check('health exposes NO comment text', !flat.includes('CANARY_COMMENT_TEXT'));
-  check('health lists ingestible platforms', h.ingestiblePlatforms.length === 4);
-  check('health lists channels missing (honest)', h.channelsMissing.length === 6);
+  check('health lists ingestible platforms', h.ingestiblePlatforms.length === 5);
+  check('health lists channels missing (honest)', h.channelsMissing.length === 5);
 
   // انحراف: حدث من منصة بلا قناة إدخال => degraded + unexpected.
   const bad = buildIngestionHealth(summarizeIngestion({ events: [mkEvent({ platform: 'snapchat', text: 'x', externalId: 's1' })] }));
