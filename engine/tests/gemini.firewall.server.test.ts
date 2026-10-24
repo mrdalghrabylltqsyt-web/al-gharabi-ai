@@ -16,6 +16,7 @@ import { mkdtempSync, existsSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { randomBytes } from 'node:crypto';
+import { reserveFreePort } from './helpers/freePort';
 
 let passed = 0;
 const failures: string[] = [];
@@ -27,7 +28,7 @@ function check(name: string, condition: boolean, detail = ''): void {
 const REPO_ROOT = process.cwd();
 const tsxCli = join(REPO_ROOT, 'node_modules', 'tsx', 'dist', 'cli.mjs');
 const serverEntry = join(REPO_ROOT, 'server.ts');
-const PORT = 6450 + Math.floor(Math.random() * 120);
+const PORT = await reserveFreePort();
 const BASE = `http://127.0.0.1:${PORT}`;
 const PREVIEW_TOKEN = randomBytes(24).toString('hex');
 const stateDir = mkdtempSync(join(tmpdir(), 'gharabi-firewall-'));

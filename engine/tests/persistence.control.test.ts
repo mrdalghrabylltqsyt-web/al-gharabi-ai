@@ -14,6 +14,7 @@ import { mkdtempSync, rmSync, readFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { issueChallengeCode } from '../auth/challenge';
+import { reserveFreePort } from './helpers/freePort';
 
 let passed = 0;
 const failures: string[] = [];
@@ -82,7 +83,7 @@ const secretBuffer = crypto.createHash('sha256').update(`gharabi-session:${SECRE
 
 async function run(): Promise<void> {
   const dir = mkdtempSync(join(tmpdir(), 'gharabi-control-'));
-  const port = 5800 + Math.floor(Math.random() * 120);
+  const port = await reserveFreePort();
   const base = `http://127.0.0.1:${port}`;
   const logs: string[] = [];
   const TOKEN_A = crypto.randomBytes(24).toString('hex');

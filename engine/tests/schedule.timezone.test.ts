@@ -28,6 +28,7 @@ import {
   wallClockToIsoWithOffset,
   zonedWallClockToEpoch,
 } from '../../src/utils/scheduleTime';
+import { reserveFreePort } from './helpers/freePort';
 
 let passed = 0;
 const failures: string[] = [];
@@ -143,7 +144,7 @@ function baghdadWall(offsetMs: number): string {
 async function runServerTests(): Promise<void> {
   if (!existsSync(tsxCli)) { failures.push('tsx CLI غير موجود — شغّل npm install أولاً'); return; }
   const cwd = mkdtempSync(join(tmpdir(), 'gharabi-sched-'));
-  const port = 5410 + Math.floor(Math.random() * 200);
+  const port = await reserveFreePort();
   const base = `http://127.0.0.1:${port}`;
   const app = startApp(port, cwd);
   try {

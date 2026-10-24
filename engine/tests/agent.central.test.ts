@@ -9,7 +9,6 @@
  */
 
 import express from 'express';
-import net from 'node:net';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { AgentOrchestrator } from '../agent/orchestrator';
@@ -31,18 +30,8 @@ import {
   YOUTUBE_DELEGATION_ACTIONS,
 } from '../social/youtubeDelegation';
 import type { AgentToolContext } from '../agent/tools';
+import { reserveFreePort } from './helpers/freePort';
 
-/** يختار منفذاً حراً فعلياً (نطاق معيّن) لتفادي تصادم عشوائي عند npm test كاملاً. */
-function freePort(preferred: number): Promise<number> {
-  return new Promise((resolve) => {
-    const srv = net.createServer();
-    srv.once('error', () => resolve(freePort(0)));
-    srv.listen(preferred, '127.0.0.1', () => {
-      const port = (srv.address() as net.AddressInfo).port;
-      srv.close(() => resolve(port));
-    });
-  });
-}
 
 let passed = 0;
 const failures: string[] = [];
@@ -605,7 +594,7 @@ async function unitTests() {
 async function integrationTests() {
   // منفذ حر فعلي: يمنع تصادم عشوائي مع اختبارات أخرى عند تشغيل npm test كاملاً.
   // F-07: نطاق يتجنّب منافذ Node المحظورة (5060/5061) التي تُفشل fetch بـ"bad port".
-  const PORT = await freePort(4820 + Math.floor(Math.random() * 200));
+  const PORT = await reserveFreePort();
   const BASE = `http://127.0.0.1:${PORT}`;
   const app = express();
   app.use(express.json());

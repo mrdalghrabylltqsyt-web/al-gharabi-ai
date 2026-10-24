@@ -8,6 +8,7 @@
 import express from 'express';
 import { registerSocialManagerRoutes } from '../social/routes';
 import { buildRuntimeBrain } from '../brain/runtime';
+import { reserveFreePort } from './helpers/freePort';
 
 let passed = 0;
 const failures: string[] = [];
@@ -16,7 +17,7 @@ function check(name: string, condition: boolean, detail = ''): void {
   else failures.push(`${name}${detail ? ` — ${detail}` : ''}`);
 }
 
-const PORT = 4319 + Math.floor(Math.random() * 500);
+const PORT = await reserveFreePort();
 const BASE = `http://127.0.0.1:${PORT}`;
 
 // مستخدم مصادق عليه للاختبار: المسارات تُختبر بجلسة صالحة، والمصادقة نفسها

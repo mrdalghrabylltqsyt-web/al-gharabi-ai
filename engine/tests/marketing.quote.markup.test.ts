@@ -21,6 +21,7 @@ import { join } from 'node:path';
 import { randomBytes } from 'node:crypto';
 import { buildMarketingQuote } from '../workspace/format';
 import { computeInstallmentPrice } from '../../src/utils/installmentPrice';
+import { reserveFreePort } from './helpers/freePort';
 
 let passed = 0;
 const failures: string[] = [];
@@ -33,7 +34,7 @@ function group(title: string): void { console.log(`\n▸ ${title}`); }
 const REPO_ROOT = process.cwd();
 const tsxCli = join(REPO_ROOT, 'node_modules', 'tsx', 'dist', 'cli.mjs');
 const serverEntry = join(REPO_ROOT, 'server.ts');
-const APP_PORT = 7820 + Math.floor(Math.random() * 120);
+const APP_PORT = await reserveFreePort();
 const BASE = `http://127.0.0.1:${APP_PORT}`;
 const PREVIEW_TOKEN = randomBytes(24).toString('hex');
 const stateDir = mkdtempSync(join(tmpdir(), 'gharabi-mq-'));

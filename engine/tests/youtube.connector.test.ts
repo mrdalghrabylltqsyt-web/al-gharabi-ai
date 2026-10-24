@@ -37,6 +37,7 @@ import { resolveYouTubeState, youtubeOnlyModeEnabled, guardExternalOperationPlat
 import { summarizeChannelAnalytics, analyzeYouTubeAudience, buildYouTubeLearning } from '../social/youtubeLearning';
 import { createYouTubeMock, startYouTubeMockServer } from './helpers/youtubeMock';
 import { PLATFORM_SPECS, hasRealConnector, platformSupports } from '../social/registry';
+import { reserveFreePort } from './helpers/freePort';
 
 let passed = 0;
 const failures: string[] = [];
@@ -49,9 +50,9 @@ function group(title: string): void { console.log(`\n▸ ${title}`); }
 const REPO_ROOT = process.cwd();
 const tsxCli = join(REPO_ROOT, 'node_modules', 'tsx', 'dist', 'cli.mjs');
 const serverEntry = join(REPO_ROOT, 'server.ts');
-const APP_PORT = 7500 + Math.floor(Math.random() * 40);
+const APP_PORT = await reserveFreePort();
 const BASE = `http://127.0.0.1:${APP_PORT}`;
-const YT_PORT = 7560 + Math.floor(Math.random() * 40);
+const YT_PORT = await reserveFreePort();
 const PREVIEW_TOKEN = randomBytes(24).toString('hex');
 const SESSION_SECRET = 'youtube-connector-test-secret-not-real';
 const GO_CLIENT_ID = 'test-google-client-id.apps.googleusercontent.com';

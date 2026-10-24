@@ -5851,6 +5851,68 @@ add('watcher-advisory-not-authority',
       'اختبار تكامل الجزء 2 يشغّل الخادم الحقيقي + خادم Graph وهمي (بلا مزود/سرّ)');
   }
 
+  // 13ب) صيانة الجزء 5: منافذ الاختبارات حتمية (لا تخمين عشوائي، لا منافذ محظورة في fetch).
+  {
+    const freePortSrc = read('engine/tests/helpers/freePort.ts');
+    const flakyTest = read('engine/tests/flaky.port.regression.test.ts');
+
+    add('flaky-port-single-source-helper',
+      fs.existsSync(path.join(root, 'engine/tests/helpers/freePort.ts')) &&
+      freePortSrc.includes('export function reserveFreePort') &&
+      freePortSrc.includes('listen(0,') &&
+      freePortSrc.includes('FETCH_BLOCKED_PORTS') &&
+      freePortSrc.includes('isFetchBlockedPort'),
+      'حاجز منفذ حر واحد (listen(0)) مع قائمة المنافذ المحظورة في fetch');
+
+    add('flaky-port-no-random-guess-in-tests',
+      (() => {
+        const re = /\d{3,5}\s*\+\s*Math\.floor\(\s*Math\.random\(\)\s*\*\s*\d+\s*\)/;
+        const dir = path.join(root, 'engine/tests');
+        const walk = (d) => fs.readdirSync(d, { withFileTypes: true }).flatMap((e) => {
+          const p = path.join(d, e.name);
+          if (e.isDirectory()) return walk(p);
+          if (!p.endsWith('.ts') || p.endsWith('helpers/freePort.ts')) return [];
+          return re.test(fs.readFileSync(p, 'utf8')) ? [p] : [];
+        });
+        return walk(dir).length === 0;
+      })(),
+      'لا اختبار يخمّن منفذاً عبر Math.random (كان جذر التقطع)');
+
+    add('flaky-port-no-local-freeport-duplication',
+      (() => {
+        const dir = path.join(root, 'engine/tests');
+        const walk = (d) => fs.readdirSync(d, { withFileTypes: true }).flatMap((e) => {
+          const p = path.join(d, e.name);
+          if (e.isDirectory()) return walk(p);
+          if (!p.endsWith('.ts') || p.endsWith('helpers/freePort.ts')) return [];
+          return /function\s+freePort\s*\(/.test(fs.readFileSync(p, 'utf8')) ? [p] : [];
+        });
+        return walk(dir).length === 0;
+      })(),
+      'لا تعريف freePort محلي مكرّر (مصدر واحد)');
+
+    add('flaky-port-regression-test',
+      flakyTest.includes('FETCH_BLOCKED_PORTS') &&
+      flakyTest.includes('reserveFreePort') &&
+      flakyTest.includes('isFetchBlockedPort'),
+      'اختبار انحدار حتمي يمنع عودة تخمين المنافذ');
+  }
+
+  // 13ج) حارس انحراف النشر: مطابقة SHA قصير/طويل (لا انحراف كاذب).
+  {
+    const wf = read('.github/workflows/deploy-drift-watchdog.yml');
+    add('deploy-drift-sha-prefix-match',
+      wf.includes('${HEAD:0:$len}') && wf.includes('${PROD:0:$len}') &&
+      /len.*-ge 7/.test(wf) && wf.includes('match=false'),
+      'حارس الانحراف يطابق SHA القصير بالطويل (بادئة، حدّ 7) ولا يعتمد مقارنة نصية ساذجة');
+    add('deploy-drift-empty-is-drift',
+      /\[ -n "\$HEAD" \] && \[ -n "\$PROD" \]/.test(wf),
+      'القيمة الفارغة (HEAD أو PROD) تُعتبر انحرافاً — لا ادّعاء تطابق');
+    add('deploy-drift-sha-match-test',
+      fs.existsSync(path.join(root, 'engine/tests/deploy.drift.sha.test.ts')),
+      'اختبار انحدار لمطابقة SHA في حارس الانحراف');
+  }
+
   // 14) W1 (موصل WhatsApp Cloud API) + G3 (نشر Google Business Profile localPost).
   {
     const waSrc = read('engine/social/whatsapp.ts');

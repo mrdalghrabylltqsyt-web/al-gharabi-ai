@@ -23,6 +23,7 @@ import { join } from 'node:path';
 import { randomBytes, createCipheriv } from 'node:crypto';
 import type { Server } from 'node:http';
 import { createTelegramMock, startTelegramMockServer } from './helpers/telegramMock';
+import { reserveFreePort } from './helpers/freePort';
 
 let passed = 0;
 const failures: string[] = [];
@@ -35,7 +36,7 @@ function group(title: string): void { console.log(`\n▸ ${title}`); }
 const REPO_ROOT = process.cwd();
 const tsxCli = join(REPO_ROOT, 'node_modules', 'tsx', 'dist', 'cli.mjs');
 const serverEntry = join(REPO_ROOT, 'server.ts');
-const APP_PORT = 8900 + Math.floor(Math.random() * 30);
+const APP_PORT = await reserveFreePort();
 const META_PORT = 8940;
 const TH_PORT = 8945;
 const TT_PORT = 8950;

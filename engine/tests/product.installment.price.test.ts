@@ -26,6 +26,7 @@ import {
   INSTALLMENT_MONTHS_DEFAULT,
   INSTALLMENT_ROUNDING_POLICY,
 } from '../../src/utils/installmentPrice';
+import { reserveFreePort } from './helpers/freePort';
 
 let passed = 0;
 const failures: string[] = [];
@@ -135,7 +136,7 @@ function unitTests(): void {
 const REPO_ROOT = process.cwd();
 const tsxCli = join(REPO_ROOT, 'node_modules', 'tsx', 'dist', 'cli.mjs');
 const serverEntry = join(REPO_ROOT, 'server.ts');
-const PORT = 6860 + Math.floor(Math.random() * 200);
+const PORT = await reserveFreePort();
 const BASE = `http://127.0.0.1:${PORT}`;
 const SESSION_SECRET = 'product-installment-secret-local-only';
 const secretBuffer = crypto.createHash('sha256').update(`gharabi-session:${SESSION_SECRET}`).digest();

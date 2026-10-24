@@ -15,6 +15,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { issueChallengeCode } from '../auth/challenge';
 import { buildServerTestEnv } from './helpers/serverTestEnv';
+import { reserveFreePort } from './helpers/freePort';
 
 let passed = 0;
 const failures: string[] = [];
@@ -66,7 +67,7 @@ async function stop(proc: ChildProcess): Promise<void> {
 
 async function run(): Promise<void> {
   // النطاق يستثني 5432 (Postgres في CI) فلا يفشل عشوائياً بـEADDRINUSE.
-  const PORT = 5300 + Math.floor(Math.random() * 130);
+  const PORT = await reserveFreePort();
   const BASE = `http://127.0.0.1:${PORT}`;
   const dirA = mkdtempSync(join(tmpdir(), 'gharabi-session-a-'));
   const dirB = mkdtempSync(join(tmpdir(), 'gharabi-session-b-'));

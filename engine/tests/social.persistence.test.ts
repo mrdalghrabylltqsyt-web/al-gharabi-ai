@@ -20,6 +20,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { randomBytes } from 'node:crypto';
 import { createTelegramMock, startTelegramMockServer } from './helpers/telegramMock';
+import { reserveFreePort } from './helpers/freePort';
 
 let passed = 0;
 const failures: string[] = [];
@@ -31,14 +32,14 @@ function check(name: string, condition: boolean, detail = ''): void {
 const REPO_ROOT = process.cwd();
 const tsxCli = join(REPO_ROOT, 'node_modules', 'tsx', 'dist', 'cli.mjs');
 const serverEntry = join(REPO_ROOT, 'server.ts');
-const PORT = 5820 + Math.floor(Math.random() * 120);
+const PORT = await reserveFreePort();
 const BASE = `http://127.0.0.1:${PORT}`;
 const PREVIEW_TOKEN = randomBytes(24).toString('hex');
 // سر ثابت للعمليتين كي تبقى جلسة المالك صالحة بعد إعادة التشغيل.
 const SESSION_SECRET = 'social-persistence-test-secret-not-real';
 
 const stateDir = mkdtempSync(join(tmpdir(), 'gharabi-social-persist-'));
-const TG_PORT = 6200 + Math.floor(Math.random() * 150);
+const TG_PORT = await reserveFreePort();
 const WEBHOOK_SECRET = 'persist_test_webhook_secret_1234';
 const TG_BOT_TOKEN = '111222333:PERSIST_TEST_TOKEN_NOT_REAL';
 

@@ -16,6 +16,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { randomBytes } from 'node:crypto';
 import { buildServerTestEnv } from './helpers/serverTestEnv';
+import { reserveFreePort } from './helpers/freePort';
 
 let passed = 0;
 const failures: string[] = [];
@@ -58,7 +59,7 @@ async function run(): Promise<void> {
 
   // ---- الحالة 1: المتغير غائب => المسار غير موجود إطلاقاً ----
   const cwdOff = mkdtempSync(join(tmpdir(), 'gharabi-preview-off-'));
-  const offPort = 5210 + Math.floor(Math.random() * 200);
+  const offPort = await reserveFreePort();
   const offBase = `http://127.0.0.1:${offPort}`;
   const off = startApp(offPort, cwdOff, null);
   try {

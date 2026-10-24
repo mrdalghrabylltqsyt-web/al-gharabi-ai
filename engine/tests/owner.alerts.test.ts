@@ -18,6 +18,7 @@ import { mkdtempSync, rmSync, existsSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { buildServerTestEnv } from './helpers/serverTestEnv';
+import { reserveFreePort } from './helpers/freePort';
 
 let passed = 0;
 const failures: string[] = [];
@@ -115,7 +116,7 @@ async function run(): Promise<void> {
 
   const cwd = mkdtempSync(join(tmpdir(), 'gharabi-alerts-test-'));
   seedState(cwd);
-  const PORT = 5210 + Math.floor(Math.random() * 300);
+  const PORT = await reserveFreePort();
   const BASE = `http://127.0.0.1:${PORT}`;
   let app: { proc: ChildProcess; log: () => string } | null = null;
 

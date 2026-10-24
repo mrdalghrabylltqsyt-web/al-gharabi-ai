@@ -16,6 +16,7 @@ import { buildRuntimeBrain, type RuntimeBrainInput } from '../brain/runtime';
 import { emptyBrainMemory } from '../brain/memory/store';
 import { toMarketingDecisionProjection, toOperationalMemoryProjection } from '../brain/projections';
 import type { PlatformId } from '../social/adapter';
+import { reserveFreePort } from './helpers/freePort';
 
 let passed = 0;
 const failures: string[] = [];
@@ -98,7 +99,7 @@ function buildApp(workspace: any, centralBrainState: () => any) {
 }
 
 async function run(): Promise<void> {
-  const PORT = 4519 + Math.floor(Math.random() * 400);
+  const PORT = await reserveFreePort();
   const BASE = `http://127.0.0.1:${PORT}`;
 
   // --------------------------------------------------------------------- A

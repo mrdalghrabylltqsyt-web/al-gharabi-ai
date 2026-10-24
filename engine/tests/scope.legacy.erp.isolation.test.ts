@@ -27,6 +27,7 @@ import { mkdtempSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { randomBytes } from 'node:crypto';
+import { reserveFreePort } from './helpers/freePort';
 
 let passed = 0;
 const failures: string[] = [];
@@ -147,7 +148,7 @@ async function login(base: string, token: string): Promise<string> {
   if (!existsSync(tsxCli)) { console.error('tsx CLI غير موجود — شغّل npm install أولاً.'); process.exit(1); }
 
   // ---------- المرحلة أ: المفتاح مُطفأ (الافتراضي) => العزل فعّال ----------
-  const portA = 7710 + Math.floor(Math.random() * 40);
+  const portA = await reserveFreePort();
   const baseA = `http://127.0.0.1:${portA}`;
   const stateDirA = mkdtempSync(join(tmpdir(), 'gharabi-legacy-erp-off-'));
   const previewTokenA = randomBytes(24).toString('hex');
@@ -256,7 +257,7 @@ async function login(base: string, token: string): Promise<string> {
   }
 
   // ---------- المرحلة ب: المفتاح مُفعّل => العزل مُعطَّل ----------
-  const portB = 7760 + Math.floor(Math.random() * 40);
+  const portB = await reserveFreePort();
   const baseB = `http://127.0.0.1:${portB}`;
   const stateDirB = mkdtempSync(join(tmpdir(), 'gharabi-legacy-erp-on-'));
   const previewTokenB = randomBytes(24).toString('hex');
@@ -285,7 +286,7 @@ async function login(base: string, token: string): Promise<string> {
   }
 
   // ---------- المرحلة ج: تفعيل تبويب المبيعات وحده (بلا مفتاح ERP) ----------
-  const portC = 7800 + Math.floor(Math.random() * 30);
+  const portC = await reserveFreePort();
   const baseC = `http://127.0.0.1:${portC}`;
   const stateDirC = mkdtempSync(join(tmpdir(), 'gharabi-sales-tab-on-'));
   const previewTokenC = randomBytes(24).toString('hex');
@@ -306,7 +307,7 @@ async function login(base: string, token: string): Promise<string> {
   }
 
   // ---------- المرحلة د: تفعيل غرفة العمليات وحدها (بلا مفتاح ERP) ----------
-  const portD = 7840 + Math.floor(Math.random() * 30);
+  const portD = await reserveFreePort();
   const baseD = `http://127.0.0.1:${portD}`;
   const stateDirD = mkdtempSync(join(tmpdir(), 'gharabi-ops-tab-on-'));
   const previewTokenD = randomBytes(24).toString('hex');

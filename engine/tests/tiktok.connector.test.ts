@@ -67,6 +67,7 @@ import {
 } from '../social/tiktokState';
 import { signSession } from '../auth/sessions';
 import { PLATFORM_SPECS, hasRealConnector } from '../social/registry';
+import { reserveFreePort } from './helpers/freePort';
 
 let passed = 0;
 const failures: string[] = [];
@@ -79,9 +80,9 @@ function group(title: string): void { console.log(`\n▸ ${title}`); }
 const REPO_ROOT = process.cwd();
 const tsxCli = join(REPO_ROOT, 'node_modules', 'tsx', 'dist', 'cli.mjs');
 const serverEntry = join(REPO_ROOT, 'server.ts');
-const APP_PORT = 7300 + Math.floor(Math.random() * 80);
+const APP_PORT = await reserveFreePort();
 const BASE = `http://127.0.0.1:${APP_PORT}`;
-const TT_PORT = 7400 + Math.floor(Math.random() * 80);
+const TT_PORT = await reserveFreePort();
 const PREVIEW_TOKEN = randomBytes(24).toString('hex');
 const SESSION_SECRET = 'tiktok-connector-test-secret-not-real';
 const TT_CLIENT_KEY = 'test_tiktok_client_key';

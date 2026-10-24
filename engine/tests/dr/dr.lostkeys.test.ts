@@ -20,7 +20,6 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import net from 'node:net';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { createFakeDriveState, makeFakeTransport } from './helpers/fakeDrive';
@@ -34,6 +33,7 @@ import { RECOVERY_SECRET_INVENTORY } from '../../dr/recoveryVault/inventory';
 import { classifyInventoryForRecovery, summarizeRecovery } from '../../dr/recoveryVault/recoveryReport';
 import { verifyRecoveryPoint, extractSourceBundle, materializeSource } from '../../../tools/dr/restore.mjs';
 import { collectRepoFiles } from '../../../tools/dr/cloud-sync.mjs';
+import { reserveFreePort } from '../helpers/freePort';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(HERE, '..', '..', '..');
@@ -45,16 +45,6 @@ function check(name: string, condition: boolean, detail = ''): void {
   else failures.push(`${name}${detail ? ` — ${detail}` : ''}`);
 }
 
-function freePort(preferred: number): Promise<number> {
-  return new Promise((resolve) => {
-    const srv = net.createServer();
-    srv.once('error', () => resolve(freePort(0)));
-    srv.listen(preferred, '127.0.0.1', () => {
-      const port = (srv.address() as net.AddressInfo).port;
-      srv.close(() => resolve(port));
-    });
-  });
-}
 
 // البيئة "الأصلية" الكاملة (قيم اختبار عابرة — ليست أسرار إنتاج).
 const VAULT_KEY = 'f'.repeat(64);
@@ -83,7 +73,7 @@ function makeStore(state: any) {
 async function bootRestoredSource(workDir: string, extraEnv: Record<string, string>) {
   const nm = path.join(workDir, 'node_modules');
   try { if (!fs.existsSync(nm)) fs.symlinkSync(path.join(REPO_ROOT, 'node_modules'), nm, 'dir'); } catch { /* تجاهل */ }
-  const bootPort = await freePort(56100 + Math.floor(Math.random() * 80));
+  const bootPort = await reserveFreePort();
   const env: Record<string, string> = { ...process.env, ...extraEnv, PORT: String(bootPort) } as Record<string, string>;
   const tsxCli = path.join(REPO_ROOT, 'node_modules/tsx/dist/cli.mjs');
   const child = spawn(process.execPath, [tsxCli, 'server.ts'], { cwd: workDir, env, stdio: ['ignore', 'pipe', 'pipe'], detached: true });

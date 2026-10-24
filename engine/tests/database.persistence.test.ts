@@ -17,6 +17,7 @@ import { join } from 'node:path';
 import { issueChallengeCode } from '../auth/challenge';
 import { createTelegramMock, startTelegramMockServer } from './helpers/telegramMock';
 import { buildServerTestEnv } from './helpers/serverTestEnv';
+import { reserveFreePort } from './helpers/freePort';
 
 let passed = 0;
 const failures: string[] = [];
@@ -99,7 +100,7 @@ async function run(): Promise<void> {
     return;
   }
 
-  const PORT = 5700 + Math.floor(Math.random() * 200);
+  const PORT = await reserveFreePort();
   const BASE = `http://127.0.0.1:${PORT}`;
   // مجلدان محليان فارغان: أي بيانات تظهر يجب أن تأتي من Postgres، لا من القرص.
   const emptyDirA = mkdtempSync(join(tmpdir(), 'gharabi-db-a-'));
@@ -107,7 +108,7 @@ async function run(): Promise<void> {
 
   let app: { proc: ChildProcess; log: () => string } | null = null;
   // خادم Telegram وهمي محلي: موصل حقيقي بلا مزود خارجي.
-  const TG_PORT = 6400 + Math.floor(Math.random() * 200);
+  const TG_PORT = await reserveFreePort();
   const tg = await startTelegramMockServer(TG_PORT, createTelegramMock());
 
   try {

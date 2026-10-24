@@ -51,6 +51,7 @@ import {
 } from '../social/facebook';
 import { createFacebookMock, startFacebookMockServer } from './helpers/facebookMock';
 import { signSession } from '../auth/sessions';
+import { reserveFreePort } from './helpers/freePort';
 
 let passed = 0;
 const failures: string[] = [];
@@ -65,9 +66,9 @@ const tsxCli = join(REPO_ROOT, 'node_modules', 'tsx', 'dist', 'cli.mjs');
 const serverEntry = join(REPO_ROOT, 'server.ts');
 // نطاقات منفصلة وآمنة: تتجنّب منافذ fetch المحظورة (مثل 6000/6667) وتفادي
 // تصادم النطاقات مع بقية الاختبارات، فلا يتخطّى fetch ولا يفشل الإقلاع عشوائياً.
-const APP_PORT = 6700 + Math.floor(Math.random() * 100);
+const APP_PORT = await reserveFreePort();
 const BASE = `http://127.0.0.1:${APP_PORT}`;
-const FB_PORT = 6800 + Math.floor(Math.random() * 100);
+const FB_PORT = await reserveFreePort();
 const PREVIEW_TOKEN = randomBytes(24).toString('hex');
 const SESSION_SECRET = 'facebook-connector-test-secret-not-real';
 const FB_APP_SECRET = 'fb_test_app_secret_not_real_1234567890';

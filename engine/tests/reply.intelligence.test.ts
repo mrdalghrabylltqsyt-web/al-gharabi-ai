@@ -15,6 +15,7 @@ import express from 'express';
 import { registerSocialManagerRoutes } from '../social/routes';
 import { classifyComment, generateReply, type ReplyFactSet } from '../social/comments';
 import { buildBusinessFacts } from '../social/contentSafety';
+import { reserveFreePort } from './helpers/freePort';
 
 let passed = 0;
 const failures: string[] = [];
@@ -24,7 +25,7 @@ function check(name: string, condition: boolean, detail = ''): void {
 }
 function group(title: string): void { console.log(`\n▸ ${title}`); }
 
-const PORT = 5510 + Math.floor(Math.random() * 300);
+const PORT = await reserveFreePort();
 const PORT2 = PORT + 500;
 const TEST_USER = { id: 'owner', role: 'owner' };
 

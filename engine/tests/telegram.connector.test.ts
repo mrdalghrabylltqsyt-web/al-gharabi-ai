@@ -28,6 +28,7 @@ import {
   checkWebhookRegistration,
 } from '../social/telegram';
 import { createTelegramMock, startTelegramMockServer } from './helpers/telegramMock';
+import { reserveFreePort } from './helpers/freePort';
 
 let passed = 0;
 const failures: string[] = [];
@@ -40,9 +41,9 @@ function group(title: string): void { console.log(`\n▸ ${title}`); }
 const REPO_ROOT = process.cwd();
 const tsxCli = join(REPO_ROOT, 'node_modules', 'tsx', 'dist', 'cli.mjs');
 const serverEntry = join(REPO_ROOT, 'server.ts');
-const APP_PORT = 5860 + Math.floor(Math.random() * 200);
+const APP_PORT = await reserveFreePort();
 const BASE = `http://127.0.0.1:${APP_PORT}`;
-const TG_PORT = 6100 + Math.floor(Math.random() * 200);
+const TG_PORT = await reserveFreePort();
 const PREVIEW_TOKEN = randomBytes(24).toString('hex');
 const SESSION_SECRET = 'telegram-connector-test-secret-not-real';
 const BOT_TOKEN = '111222333:TEST_BOT_TOKEN_NOT_REAL';
