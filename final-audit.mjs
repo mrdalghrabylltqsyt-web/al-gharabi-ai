@@ -5995,8 +5995,8 @@ add('watcher-advisory-not-authority',
       !/node:20/.test(read('Dockerfile')),
       'R2: Node 22 في Dockerfile وCI وNetlify ومركز الاستعادة (Node 20 انتهى دعمه)');
     add('c9-actions-node24-majors',
-      !/actions\/(checkout|setup-node|upload-artifact|download-artifact)@v4/.test(ci) &&
-      /actions\/checkout@v5/.test(ci) && /actions\/setup-node@v5/.test(ci),
+      !/actions\/(checkout|setup-node|upload-artifact|download-artifact)@v[1-4]\b/.test(ci) &&
+      /actions\/checkout@v[5-9]\b/.test(ci) && /actions\/setup-node@v[5-9]\b/.test(ci),
       'C9: إجراءات GitHub بإصدارات تعمل على Node 24 (لا تحذير Node 20)');
     add('c3-dependabot-npm-and-actions',
       /package-ecosystem:\s*"npm"/.test(dep) && /package-ecosystem:\s*"github-actions"/.test(dep) && /interval:\s*"weekly"/.test(dep),
