@@ -488,7 +488,7 @@ export const SocialManagerView: React.FC = () => {
             <ShieldCheck className="w-4 h-4 text-emerald-400" /> مصفوفة جاهزية المنصات العشر
           </h3>
           <p className="text-[11px] text-slate-500 mb-4">
-            READY = منفّذ في الكود · <span className="text-amber-400">إعداد خارجي</span> = البنية جاهزة وتحتاج إجراءً من المزود · NOT_SUPPORTED = المنصة لا توفرها رسمياً.
+            READY = منفّذ في الكود · <span className="text-amber-400">إعداد خارجي</span> = البنية جاهزة وتحتاج إجراءً من المزود · <span className="text-slate-500">غير مدعوم بعد</span> = لا موصل منفّذ أو المنصة لا توفّرها رسمياً.
             {readiness.summary && <> — موصل جاهز: {readiness.summary.connectorReady} · أساس جاهز: {readiness.summary.foundationReady}</>}
           </p>
           <div className="overflow-x-auto">
@@ -513,7 +513,7 @@ export const SocialManagerView: React.FC = () => {
                     ? <span className="text-emerald-400 font-bold">READY</span>
                     : v === 'EXTERNAL_SETUP_REQUIRED'
                       ? <span className="text-amber-400">إعداد خارجي</span>
-                      : <span className="text-slate-600">غير مدعوم</span>;
+                      : <span className="text-slate-600">غير مدعوم بعد</span>;
                   return (
                     <tr key={r.platform} className="border-b border-slate-800/60">
                       <td className="py-2 px-2 font-bold text-white whitespace-nowrap">{r.displayName}</td>

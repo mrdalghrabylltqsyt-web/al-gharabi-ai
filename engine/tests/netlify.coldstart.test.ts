@@ -171,7 +171,9 @@ try {
 
   // 12) التحقق من تهيئة Netlify.
   const toml = readFileSync('netlify.toml', 'utf8');
-  check('netlify.toml يعيد كتابة /api/* للدالة بحالة 200', /from\s*=\s*"\/api\/\*"/.test(toml) && /status\s*=\s*200/.test(toml));
+  // R1: /api/* يُمرَّر كـproxy (حالة 200) إلى خادم Render الوحيد — لا دالة محلية
+  // تكتب على نفس القاعدة. ملف الدالة يبقى لكنه غير موصول.
+  check('netlify.toml يمرّر /api/* كـproxy إلى Render بحالة 200', /from\s*=\s*"\/api\/\*"/.test(toml) && /al-gharabi-ai\.onrender\.com\/api\/:splat/.test(toml) && /status\s*=\s*200/.test(toml));
   check('netlify.toml لا يحتوي أي سر', !/AIzaSy|re_[A-Za-z0-9]|sk-[A-Za-z0-9]/.test(toml));
 } finally {
   try {

@@ -1657,6 +1657,21 @@ ${payload.topic || payload.productName || 'أنظمة وحلول التقسيط 
     if (!res.ok || !data.success) throw new Error(data.error || 'تعذر تحميل حالة مراقبة YouTube');
     return data.watcher;
   },
+  // --- B1 + Y2: تنبيه المالك الخارجي (Resend) — للمالك فقط ---
+  /** حالة تنبيه المالك: مفتاح التشغيل + الطابور المعلّق + نتيجة آخر دورة (بلا سرّ). */
+  async getOwnerAlerts(): Promise<any> {
+    const res = await fetch('/api/agent/owner-alerts', { headers: getAuthHeaders() });
+    const data = await res.json();
+    if (!res.ok || !data.success) throw new Error(data.error || 'تعذر تحميل حالة تنبيه المالك');
+    return data.alerts;
+  },
+  /** تبديل مفتاح تنبيه المالك الخارجي (true = مفعّل). */
+  async setOwnerAlerts(enabled: boolean): Promise<any> {
+    const res = await fetch('/api/agent/owner-alerts', { method: 'POST', headers: getAuthHeaders(), body: JSON.stringify({ enabled }) });
+    const data = await res.json();
+    if (!res.ok || !data.success) throw new Error(data.error || 'تعذر تبديل تنبيه المالك');
+    return data.alerts;
+  },
   // --- Meta Reply Watcher (مراقب ردود Facebook/Instagram 24/7) — للمالك فقط ---
   /** حالة مراقب ردود Meta (تحكم + سجل معالجة تفصيلي) — مسار محمي. */
   async getMetaWatcher(): Promise<any> {

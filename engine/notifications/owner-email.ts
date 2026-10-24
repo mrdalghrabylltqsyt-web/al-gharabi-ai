@@ -85,6 +85,54 @@ export function buildOwnerOtpHtml(code: string): string {
 </html>`;
 }
 
+export interface SendOwnerAlertInput {
+  to: string;
+  subject: string;
+  text: string;
+  html: string;
+}
+
+/**
+ * إرسال تنبيه المالك الخارجي (B1/Y2) عبر نفس مزوّد Resend القائم.
+ * لا retry: محاولة واحدة. تُعيد نفس شكل نتيجة OTP (sent/error) بلا أي سرّ.
+ * **لا يُستخدم لإرسال أي شيء للزبون** — المرسل والمستقبل بريد المالك فقط.
+ */
+export async function sendOwnerAlertEmail(input: SendOwnerAlertInput): Promise<SendOwnerOtpResult> {
+  const apiKey = readSecret("RESEND_API_KEY");
+  const from = readSecret("RESEND_FROM_EMAIL");
+  if (!apiKey) return { sent: false, provider: null, error: "email_provider_not_configured" };
+  if (!from) return { sent: false, provider: "resend", error: "email_from_not_configured" };
+
+  try {
+    const resend = new Resend(apiKey);
+    const { error } = await resend.emails.send({
+      from,
+      to: input.to,
+      subject: input.subject,
+      text: input.text,
+      html: input.html,
+    });
+    if (error) {
+      return {
+        sent: false,
+        provider: "resend",
+        error: String((error as any)?.name || "send_failed"),
+        errorCode: String((error as any)?.name || "send_failed"),
+        errorMessage: sanitizeProviderMessage((error as any)?.message) || null,
+      };
+    }
+    return { sent: true, provider: "resend", error: null };
+  } catch (err: any) {
+    return {
+      sent: false,
+      provider: "resend",
+      error: String(err?.name || "send_failed"),
+      errorCode: String(err?.name || "send_failed"),
+      errorMessage: sanitizeProviderMessage(err?.message) || null,
+    };
+  }
+}
+
 /**
  * إرسال رسالة واحدة عبر Resend. لا retry: محاولة واحدة فقط.
  * تُعيد sent=false مع سبب مختصر عند غياب الإعداد أو فشل الإرسال.

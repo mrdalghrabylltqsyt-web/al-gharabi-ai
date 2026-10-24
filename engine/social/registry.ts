@@ -128,12 +128,12 @@ const ADAPTER_SPECS: AdapterSpec[] = [
     platform: 'x',
     name: 'X',
     displayName: 'X',
-    // تصحيح إعلان صادق: لا موصل تعليقات/رد حقيقي لـX. سياسة X الرسمية تمنع الرد
-    // غير المُستدعى على تعليقات العملاء عبر API لكل المستويات self-serve
-    // (Free/Basic/Pro/Pay-per-use) — Enterprise وحده مستثنى، أو الرد على منشورات
-    // الحساب نفسه. ولا يوجد أي استدعاء تحليلات فعلي مقابل لـX في الكود. لذا لا
-    // تُعلن comments/comment_reply/analytics؛ المعلن هو ما يقابله تنفيذ فعلي فقط.
-    capabilities: ['publish', 'scheduling'],
+    // تصحيح إعلان صادق (C2): لا موصل نشر حقيقي لـX — مسار النشر يرد صراحةً
+    // «غير مدعوم» (لا تنفيذ). كان يُعلن publish/scheduling بلا كود نشر مقابل،
+    // فيوهم المالك بقدرة غير موجودة. سياسة X الرسمية تمنع الرد غير المُستدعى على
+    // تعليقات العملاء عبر API لكل المستويات self-serve (Enterprise وحده مستثنى)،
+    // ولا استدعاء تحليلات فعلي. لذا لا تُعلن أي قدرة حتى يُبنى الكود فعلاً.
+    capabilities: [],
     credentialMode: 'oauth2',
     realConnector: false,
   },
@@ -141,8 +141,9 @@ const ADAPTER_SPECS: AdapterSpec[] = [
     platform: 'snapchat',
     name: 'Snapchat',
     displayName: 'Snapchat',
-    // لا تتوفر قراءة تعليقات عامة عبر الواجهة الرسمية.
-    capabilities: ['publish', 'analytics', 'scheduling'],
+    // تصحيح إعلان صادق (C2): لا موصل نشر/تحليلات/جدولة منفّذ لـSnapchat — مسار
+    // النشر يرد «غير مدعوم». لا تُعلن قدرة بلا تنفيذ مقابل.
+    capabilities: [],
     credentialMode: 'oauth2',
     realConnector: false,
   },
@@ -166,8 +167,11 @@ const ADAPTER_SPECS: AdapterSpec[] = [
     platform: 'google_business',
     name: 'Google Business Profile',
     displayName: 'Google Business Profile',
-    // التحديثات المحلية متاحة؛ التعليقات غير متاحة عبر الواجهة الرسمية.
-    capabilities: ['publish', 'analytics', 'scheduling'],
+    // تصحيح إعلان صادق (C2): الموصل الحالي يقرأ الحسابات فقط (mybusinessaccount-
+    // management) ولا ينفّذ نشر localPosts بعد — فمسارات النشر/الجدولة ترد «غير
+    // مدعوم». لا تُعلن publish/analytics/scheduling حتى يُبنى كود النشر فعلاً.
+    // التعليقات غير متاحة عبر الواجهة الرسمية إطلاقاً.
+    capabilities: [],
     credentialMode: 'oauth2',
     realConnector: false,
   },
