@@ -92,6 +92,10 @@ async function main(): Promise<void> {
     },
   }), 'utf8');
 
+  // بوابة الموافقة (PR #68) تجعل الافتراضي `approval` فيُحجب الإرسال الآلي؛ هذا
+  // الاختبار يفحص نص الرد المُرسل فعلاً، فيُضبط وضع الإرسال `auto` صراحةً للاختبار فقط
+  // (نفس نمط meta.watcher.productfacts). لا يغيّر الافتراضي في الإنتاج.
+  writeFileSync(join(stateDir, 'commercial.json'), JSON.stringify({ leads: [], sendMode: 'auto' }, null, 2), 'utf8');
   const mock = await startFacebookMockServer(FB_PORT, createFacebookMock({
     feedPosts: [{ id: LINKED_POST, comments: [
       { id: 'C_P1', message: 'كم القسط؟', from: { id: 'U1', name: 'زبون' }, created_time: '2026-03-01T09:00:00+0000' },
