@@ -1765,6 +1765,21 @@ ${payload.topic || payload.productName || 'أنظمة وحلول التقسيط 
     if (!res.ok || !data.success) throw new Error(data.error || 'تعذر رفض العرض');
     return data;
   },
+  /** B8: تسجيل بيع حقيقي مرتبط بالمحادثة/الـlead (زر «تم البيع») — للمالك/المدير. */
+  async recordCommercialSale(input: { leadId?: string; productId?: string; productName?: string; amount: number; platform?: string; customerName?: string }): Promise<any> {
+    const res = await fetch('/api/commercial/sales', { method: 'POST', headers: getAuthHeaders(), body: JSON.stringify(input) });
+    const data = await res.json();
+    if (!res.ok || !data.success) throw new Error(data.error || 'تعذر تسجيل البيع');
+    return data;
+  },
+  /** B8: التقرير الشهري الحتمي (استفسارات/مبيعات لكل منصة). */
+  async getCommercialMonthlyReport(month?: string): Promise<any> {
+    const q = month ? `?month=${encodeURIComponent(month)}` : '';
+    const res = await fetch(`/api/commercial/monthly-report${q}`, { headers: getAuthHeaders() });
+    const data = await res.json();
+    if (!res.ok || !data.success) throw new Error(data.error || 'تعذر جلب التقرير');
+    return data;
+  },
   /** تحديث تحكم مراقب Meta (autoReply/paused/humanReviewMode/cadenceMinutes) — للمالك. */
   async setMetaWatcherControls(controls: Record<string, boolean | number>): Promise<any> {
     const res = await fetch('/api/agent/meta/watcher/controls', { method: 'POST', headers: getAuthHeaders(), body: JSON.stringify(controls) });

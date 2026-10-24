@@ -3463,7 +3463,7 @@ add('context-conversation-state-module',
   convState.includes('export function isConversationStale'),
   'وحدة حالة المحادثة: معرّف صريح + نافذة قصيرة المدى محدودة + طزاجة (منطق صافٍ)');
 add('context-conversations-durable',
-  server.includes('socialConversations: ((workspace as any).socialConversations || []).slice(0, 500)') &&
+  server.includes('socialConversations: ((workspace as any).socialConversations || []).slice(0, CONVERSATION_STATE_MAX)') &&
   server.includes('socialConversations: Array.isArray(raw.workspace.socialConversations)') &&
   server.includes('"socialConversations"'),
   'نوافذ المحادثة تُحفظ وتُسترجع عبر محوّل الحالة (تصمد بعد restart)');
@@ -5736,6 +5736,112 @@ add('watcher-advisory-not-authority',
       /test:prb-reply-regression/.test(read('package.json')) &&
       prbTest.includes('العنوان والسعر') && prbTest.includes('بكام سعر') && prbTest.includes('متاح'),
       'اختبار انحدار PR-B يغطي التعليقات التسعة حرفياً ومُسجّل في package.json');
+  }
+
+  // 13) الجزء 2: B5 (منفّذ المهام عبر المنفّذ الموحّد) + B4 (تنفيذ تلقائي اختياري)
+  //     + B8 (ربط البيع بالمحادثة + تقرير شهري) + B7 (حدود حالة المحادثات).
+  {
+    const jobAutoSrc = read('engine/social/jobAutomation.ts');
+    const salesSrc = read('engine/commercial/commercialSales.ts');
+    const convLimitsSrc = read('engine/social/conversationLimits.ts');
+    const part2Logic = read('engine/tests/part2.logic.test.ts');
+    const part2Integ = read('engine/tests/part2.integration.test.ts');
+
+    // B5 — لا 501 لغير Telegram: المنفّذ الموحّد يُستدعى من منفّذ المهام.
+    add('b5-job-executor-uses-unified-publish',
+      server.includes('const pubResult = await executePlatformPublish(platform, {') &&
+      server.includes('postId: job.id,'),
+      'منفّذ المهام المعتمدة يستدعي المنفّذ الموحّد executePlatformPublish بدل رد 501');
+    add('b5-job-executor-no-501-fallback',
+      !/return \{ status: 501, body: \{ success: false, error: "الموصل متصل ومتحقق/.test(server),
+      'أُزيل رد 501 القديم لغير Telegram من منفّذ المهام');
+    add('b5-job-receipt-real-provider-id',
+      /providerPostId \|\| pubResult\.body\?\.providerPublishId \|\| pubResult\.body\?\.externalVideoId/.test(server),
+      'إيصال المهمة يُثبّت بمعرّف منشور حقيقي من المزوّد (لا ادّعاء نجاح بلا معرّف)');
+
+    // B4 — التنفيذ التلقائي: معطَّل افتراضياً + مصدر واحد للحالة.
+    add('b4-auto-execute-default-off',
+      jobAutoSrc.includes('autoExecuteApproved: false') &&
+      jobAutoSrc.includes('r.autoExecuteApproved === true'),
+      'مفتاح التنفيذ التلقائي معطَّل افتراضياً (fail-closed؛ أي قيمة غير true تُبقيه معطَّلاً)');
+    add('b4-auto-execute-ready-only',
+      jobAutoSrc.includes("String(input.status) !== 'ready'") &&
+      jobAutoSrc.includes("code: 'NOT_READY'"),
+      'لا تنفيذ تلقائي لمهمة غير جاهزة (لا غير معتمدة، ولا منتهية)');
+    add('b4-auto-execute-quota-wait',
+      jobAutoSrc.includes("code: 'QUOTA_WAIT'") && jobAutoSrc.includes('quotaRetryAt'),
+      'انتظار تجدّد حصة YouTube يمنع التنفيذ التلقائي قبل موعده');
+    add('b4-auto-execute-cycle-wired',
+      server.includes('async function runJobAutoExecuteCycle(') &&
+      server.includes('if (!jobAutomationState.autoExecuteApproved) return') &&
+      server.includes('clearInterval(jobAutoExecuteTimer)'),
+      'دورة التنفيذ التلقائي موصولة بمؤقّت داخلي وتُوقف عند الإغلاق، ولا تعمل والمفتاح معطَّل');
+    add('b4-auto-execute-owner-only',
+      server.includes('app.get("/api/agent/jobs/auto-execute", requireOwner') &&
+      server.includes('app.post("/api/agent/jobs/auto-execute", requireOwner'),
+      'مسارات مفتاح التنفيذ التلقائي محصورة بالمالك');
+    add('b4-auto-execute-persisted',
+      server.includes('jobAutomation: jobAutomationState') &&
+      server.includes('jobAutomationState = normalizeJobAutomationState(control.jobAutomation)'),
+      'حالة التنفيذ التلقائي تُحفظ وتُسترجع عبر محوّل الحالة فتصمد بعد restart');
+
+    // B8 — سجل المبيعات + التقرير الشهري (بلا جدول جديد).
+    add('b8-sales-single-source',
+      fs.existsSync(path.join(root, 'engine/commercial/commercialSales.ts')) &&
+      salesSrc.includes('buildCommercialSaleRecord') &&
+      salesSrc.includes('buildMonthlyCommercialReport'),
+      'وحدة ربط البيع بالمحادثة والتقرير الشهري موجودة (مصدر واحد)');
+    add('b8-sales-rejects-fake',
+      salesSrc.includes('!Number.isFinite(amount) || amount <= 0') &&
+      salesSrc.includes('if (!productName) return null'),
+      'سجل البيع يرفض مبلغاً غير موجب أو بلا اسم منتج (لا بيع وهمي)');
+    add('b8-sales-no-new-table',
+      server.includes('sales: commercialSales.slice(0, COMMERCIAL_MAX_SALES)') &&
+      server.includes('commercialSales = Array.isArray(raw.sales)'),
+      'سجل المبيعات يُحفظ داخل مفتاح commercial القائم (بلا جدول قاعدة بيانات جديد)');
+    add('b8-sales-routes-authz',
+      server.includes('app.post("/api/commercial/sales", authenticateToken') &&
+      server.includes('app.get("/api/commercial/monthly-report", authenticateToken') &&
+      server.includes('canConfirmCommercialProposal(user)'),
+      'مسارات المبيعات/التقرير محميّة وتتطلّب صلاحية بشرية (مالك/مدير)');
+    add('b8-monthly-report-deterministic',
+      salesSrc.includes("monthKeyOf(lead?.createdAt) !== input.monthKey") &&
+      salesSrc.includes("monthKeyOf(sale.recordedAt) !== input.monthKey"),
+      'التقرير الشهري حتمي من السجلات الحقيقية فقط (لا تقدير ولا اختراع)');
+    add('b8-sales-ui-button',
+      read('src/components/agent/CommercialInbox.tsx').includes('تم البيع') &&
+      read('src/components/agent/CommercialInbox.tsx').includes('recordCommercialSale'),
+      'زر «تم البيع» موصول في صندوق الزبائن عبر apiService.recordCommercialSale');
+
+    // B7 — حدّ صريح مصدر واحد لكل مصفوفة حالة المحادثات.
+    add('b7-conversation-cap-single-source',
+      convLimitsSrc.includes('export const CONVERSATION_STATE_MAX = 500') &&
+      server.includes('const WORKSPACE_MAX_SOCIAL_CONVERSATIONS = CONVERSATION_STATE_MAX') &&
+      read('engine/social/routes.ts').includes('if (list.length > CONVERSATION_STATE_MAX) list.length = CONVERSATION_STATE_MAX'),
+      'الحدّ 500 مصدر واحد يُطبَّق في كل موضع كتابة (server + routes)');
+    add('b7-conversation-cap-oldest-dropped',
+      convLimitsSrc.includes('list.slice(0, limit)'),
+      'القصّ يُسقط الأقدم (الأحدث أولاً) فلا تنمو الحالة بلا سقف');
+    add('b7-conversation-limits-block-exposed',
+      server.includes('conversationLimits: conversationLimitsPublicBlock(') &&
+      convLimitsSrc.includes('conversationLimitsPublicBlock'),
+      'كتلة حدود المحادثات معلنة في /api/health و/api/readiness (بلا بيانات عملاء)');
+
+    // الاختبارات مسجّلة ومُغطّية.
+    add('part2-tests-registered',
+      /test:part2-logic/.test(read('package.json')) &&
+      /test:part2-integration/.test(read('package.json')) &&
+      /npm run test:part2-logic && npm run test:part2-integration/.test(read('package.json')),
+      'اختبارا الجزء 2 (وحدة + تكامل) مُسجّلان في npm test');
+    add('part2-logic-test-covers-b4-b7-b8',
+      part2Logic.includes('decideAutoExecute') && part2Logic.includes('capNewestFirst') && part2Logic.includes('buildMonthlyCommercialReport'),
+      'اختبار وحدة الجزء 2 يغطي B4 وB7 وB8');
+    add('part2-integration-test-real-server',
+      part2Integ.includes('startFacebookMockServer') &&
+      part2Integ.includes('/api/control/jobs/') &&
+      part2Integ.includes('/api/commercial/sales') &&
+      part2Integ.includes('waitForHealth'),
+      'اختبار تكامل الجزء 2 يشغّل الخادم الحقيقي + خادم Graph وهمي (بلا مزود/سرّ)');
   }
 
   // 12) AGENTS.md: عدد فحوصات final-audit مطابق للفعلي (يُعَدّ من نص الملف نفسه).
