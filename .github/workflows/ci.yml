@@ -101,7 +101,10 @@ jobs:
           name: dist
           path: dist/
       - name: npm test
-        run: npm test
+        shell: bash
+        run: |
+          set -o pipefail
+          npm test 2>&1 | tee /tmp/test.log || { { grep -E '^> al-gharabi-ai@' /tmp/test.log | tail -1; grep -vE '^\s*$' /tmp/test.log | grep -vE '^npm (error|ERR)' | tail -8; } | sed 's/%/%25/g' | while IFS= read -r l; do echo "::error::${l:0:900}"; done; exit 1; }
 
   # 3) اختبارات التعافي (DR) — تشغيل مستقل صريح كما طُلب.
   dr:
