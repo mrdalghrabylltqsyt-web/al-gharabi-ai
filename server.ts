@@ -19042,8 +19042,8 @@ function buildFactsForProduct(product: any | null, downPaymentPercent: number, d
   if (hasPrice) {
     const percent = Number.isFinite(downPaymentPercent) ? Math.max(0, Math.min(99, downPaymentPercent)) : 0;
     const months = Number.isInteger(durationMonths) && durationMonths > 0 ? durationMonths : 1;
-    const q = buildMarketingQuote(cashPrice, percent, months);
-    derived.push(q.cashPrice, q.downPayment, q.financedAmount, q.monthlyPayment, q.totalInstallments);
+    const q = buildMarketingQuote(cashPrice, percent, months, product?.installmentMarkupPercent);
+    derived.push(q.cashPrice, q.installmentPrice, q.downPayment, q.financedAmount, q.monthlyPayment, q.totalInstallments);
     // معادلة التقسيط المخزّنة على المنتج (سعر التقسيط والقسط الشهري) مشتقة من سعر
     // الكاش + نسبة الزيادة المسجّلة، فهي حقائق مشروعة لا مُختلقة. تُحسب من نفس
     // المصدر الواحد (`computeInstallmentPrice`) وتُضاف كي يمرّ رد العقل الذي يذكر
@@ -19398,7 +19398,7 @@ function buildPlatformCopy(input: {
   const specLine = specs.length ? `المواصفات: ${specs.slice(0, 4).join("، ")}` : "";
   const optionsLine = installmentOptions.length ? `خيارات السداد: ${installmentOptions.slice(0, 4).join("، ")}` : "";
   const quoteLine = quote
-    ? `سعر الكاش: ${formatIqd(quote.cashPrice)}\nالدفعة الأولى: ${formatIqd(quote.downPayment)}\nالقسط الشهري: ${formatIqd(quote.monthlyPayment)} لمدة ${quote.months} شهراً\nإجمالي الأقساط: ${formatIqd(quote.totalInstallments)}`
+    ? `سعر الكاش: ${formatIqd(quote.cashPrice)}\nسعر التقسيط: ${formatIqd(quote.installmentPrice)}\nالدفعة الأولى: ${formatIqd(quote.downPayment)}\nالقسط الشهري: ${formatIqd(quote.monthlyPayment)} لمدة ${quote.months} شهراً\nإجمالي الأقساط: ${formatIqd(quote.totalInstallments)}`
     : "";
   const hoursLine = showroom?.workingHours?.trim() ? `ساعات العمل: ${showroom.workingHours.trim()}` : "";
   const locationLine = [showroom?.address?.trim(), showroom?.city?.trim()].filter(Boolean).join(" - ");
@@ -19462,7 +19462,7 @@ function generateBriefContent(input: {
   let quote: any = null;
   const cashPrice = Number(product?.cashPrice);
   if (Number.isFinite(cashPrice) && cashPrice > 0) {
-    quote = buildMarketingQuote(cashPrice, downPaymentPercent, durationMonths > 0 ? durationMonths : 1);
+    quote = buildMarketingQuote(cashPrice, downPaymentPercent, durationMonths > 0 ? durationMonths : 1, product?.installmentMarkupPercent);
     if (durationMonths <= 0) warnings.push("لم تُحدد مدة الأقساط، فتم استخدام شهر واحد لحسبة القسط. حدّد المدة لعرض أدق.");
     if (product?.inStock === false) warnings.push("المنتج غير متوفر حالياً في المخزون؛ راجع الكمية قبل نشر العرض.");
   } else {
@@ -19524,7 +19524,7 @@ app.post("/api/ai/content-brief", authenticateToken, (req, res) => {
   if (!productName) return res.status(400).json({ success: false, error: "حدد منتجاً من قاعدة البيانات أو اكتب اسم المنتج." });
 
   const downPaymentPercent = Number.isFinite(Number(b.downPaymentPercent)) ? Math.max(0, Math.min(99, Math.floor(Number(b.downPaymentPercent)))) : Number(product?.downPaymentPercent || 0);
-  const durationMonths = Number.isInteger(Number(b.durationMonths)) ? Math.max(1, Math.min(60, Number(b.durationMonths))) : Number(product?.durationMonths || 0);
+  const durationMonths = Number.isInteger(Number(b.durationMonths)) ? Math.max(1, Math.min(60, Number(b.durationMonths))) : (resolveStoredInstallmentMonths(product) ?? 0);
   const cashPrice = Number(product?.cashPrice);
 
   // حارس المدخلات: لا تُطلب عروض غير مسجّلة من المحرك أصلاً (مثل «بدون دفعة أولى»).
@@ -19847,7 +19847,8 @@ app.post("/api/ai/marketing-campaigns", authenticateToken, (req, res) => {
   // Each product is generated independently so prices and figures never mix.
   for (const product of products) {
     const downPaymentPercent = overrideDown !== null ? overrideDown : Number(product?.downPaymentPercent || 0);
-    const durationMonths = overrideMonths !== null ? overrideMonths : Number(product?.durationMonths || 0);
+    // نفس مدة الكتالوج: installmentMonths ثم durationMonths (مصدر واحد مع الرد والتعديل).
+    const durationMonths = overrideMonths !== null ? overrideMonths : (resolveStoredInstallmentMonths(product) ?? 0);
 
     // حارس المدخلات لكل منتج على حدة: لا عرض غير مسجّل في بيانات هذا المنتج.
     const productRequestFacts = buildFactsForProduct(product, downPaymentPercent, durationMonths);
