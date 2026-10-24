@@ -53,7 +53,9 @@ function classify(head: string, prod: string): string {
   try {
     execFileSync('bash', ['-c', script, '_', head, prod], {
       encoding: 'utf8',
-      env: { ...process.env, GITHUB_OUTPUT: outFile },
+      // بيئة صريحة دنيا (PATH فقط) + ملف الإخراج — لا وراثة process.env كاملة،
+      // ولا نُقلع الخادم هنا إطلاقاً (فحص منطق bash خالص).
+      env: { PATH: process.env.PATH ?? '/usr/bin:/bin', GITHUB_OUTPUT: outFile },
     });
     const written = readFileSync(outFile, 'utf8');
     if (/^drift=false$/m.test(written)) return 'NO_DRIFT';
