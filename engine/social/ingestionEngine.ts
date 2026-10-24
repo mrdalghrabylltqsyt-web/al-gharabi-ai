@@ -92,13 +92,15 @@ export interface PlatformIngestionRow {
 
 /**
  * مصدر واحد لقناة الإدخال لكل منصة. المنصات ذات الموصل الحقيقي المنفّذ
- * (Telegram/Facebook/Instagram) تستقبل عبر webhook موقّع؛ وYouTube (بلا webhook
- * عام في هذا النظام) يسحب دورياً؛ والبقية بلا قناة استقبال منفّذة الآن.
+ * (Telegram/Facebook/Instagram/WhatsApp) تستقبل عبر webhook موقّع؛ وYouTube (بلا
+ * webhook عام في هذا النظام) يسحب دورياً؛ والبقية بلا قناة استقبال منفّذة الآن.
  */
 const INGESTION_CHANNEL_BY_PLATFORM: Record<string, IngestionChannel> = Object.freeze({
   telegram: 'webhook',
   facebook: 'webhook',
   instagram: 'webhook',
+  // W1: استقبال WhatsApp Cloud API عبر webhook موقّع (X-Hub-Signature-256 على الجسم الخام).
+  whatsapp: 'webhook',
   youtube: 'polling',
 });
 

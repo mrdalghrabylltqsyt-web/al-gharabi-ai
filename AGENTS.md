@@ -7535,3 +7535,12 @@ Netlify، وتصحيح إعلان قدرات غير موجودة. **لا مسا�
 - **ما يبقى على المالك (إجراء خارجي):** ربط WhatsApp (رقم أعمال معتمد + `WHATSAPP_ACCESS_TOKEN`
   + `WHATSAPP_APP_SECRET`/`WHATSAPP_VERIFY_TOKEN`)، وربط Google Business (سرّ OAuth صحيح +
   إتمام وصول Business Profile API من Google).
+
+### تصحيح تابع — قناة استقبال WhatsApp في مصفوفة الاستقبال (2026-10-24)
+كان `INGESTION_CHANNEL_BY_PLATFORM` في `engine/social/ingestionEngine.ts` يُعلن WhatsApp
+`channel: 'none'` (قيمة ما قبل W1)، بينما W1 نفّذ استقبالاً حقيقياً عبر webhook موقّع. النتيجة:
+حدث WhatsApp حقيقي كان يُصنَّف `unexpectedSources` ويُسقط `buildIngestionHealth` إلى `degraded`
+بلا سبب فعلي. أُصلح المصدر الواحد إلى `whatsapp: 'webhook'` (مع تصحيح `ingestiblePlatforms`
+من 4 إلى 5 و`channelsMissing` من 6 إلى 5)، وحُدِّث `engine/tests/ingestion.engine.test.ts`
+ليثبت القيمة الجديدة. فحوص final-audit تبقى **1908** (لا فحوص جديدة — تصحيح قيمة داخل مصدر
+قائم). هذا إعلان صادق مطابق للسلوك الفعلي، لا تغيير سلوك.
