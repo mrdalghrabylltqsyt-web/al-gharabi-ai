@@ -250,14 +250,15 @@ async function run(): Promise<void> {
     check('التوجيه يذكر مسار النشر الحقيقي', String(publishConnected.body.publishRoute).includes('/api/platforms/facebook/publish'));
 
     // منصة بلا موصل نشر حقيقي (X) تبقى تسجّل محاولة فاشلة صريحة (لا نشر مُختلق).
+    // C2: X لم تعد تعلن قدرة publish (لا موصل نشر منفّذ) → فحص ما قبل النشر يفشل
+    // عند «لا تدعم النشر» (409) بدل تسجيل محاولة محاكاة. لا سجل ولا نشر مُختلق.
     disconnected.set('x', { platform: 'x', status: 'connected', providerVerified: true });
     const publishX = await post('/api/social/manager/publish/execute', { platform: 'x', postId: 'post-approved' });
-    check('النشر لا ينجح بدون موصل إنتاجي', publishX.status === 501 && publishX.body.executed === false);
-    check('سجل النشر يُسجَّل فاشلاً لا منشوراً', publishX.body.record.state === 'failed' && publishX.body.record.providerPostId === null);
-    check('المحاولة مُعلَّمة كمحاكاة', publishX.body.record.simulated === true);
+    check('النشر لا ينجح لمنصة بلا قدرة نشر (C2)', publishX.status === 409 && publishX.body.success === false, `status=${publishX.status}`);
+    check('السبب صريح: المنصة لا تدعم النشر', JSON.stringify(publishX.body.reasons || []).includes('لا تدعم النشر') || JSON.stringify(publishX.body.checks || {}).includes('supportsPublish'));
 
     const publishRecords = await get('/api/social/manager/publish/records');
-    check('سجل النشر يحفظ المحاولة الفعلية', publishRecords.body.count === 1);
+    check('لا سجل نشر مُختلق لمنصة بلا قدرة', publishRecords.body.count === 0);
     check('لا يوجد أي نشر ناجح مُختلق', publishRecords.body.publishedCount === 0);
 
     const capsConnected = await get('/api/social/manager/capabilities');

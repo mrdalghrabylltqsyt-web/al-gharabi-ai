@@ -11,13 +11,19 @@
   directory = "netlify/functions"
   node_bundler = "esbuild"
 
-# كل طلبات /api/* تُعاد كتابتها إلى دالة Express الموحّدة.
-# الحالة 200 (rewrite) تحافظ على المسار الأصلي داخل event.path،
-# فيرى Express مساراته كما هي (/api/health, /api/auth/...).
+# R1: كل طلبات /api/* تُمرَّر كـproxy (بحالة 200) إلى خادم Render الوحيد، بدل
+# تشغيل server.ts داخل دالة Netlify. السبب الجذري: كان الموقع والـFunction يقرآن
+# ويكتبان **نفس** جدول gharabi_state بنمط «آخر كاتب يفوز» مع خادم Render، فيمكن أن
+# يمسح تعديل المالك بصمت (تضارب كتابة بين عمليتين). الآن **خادم واحد يكتب** فقط.
+#
+# الحالة 200 (rewrite/proxy) تحافظ على المسار الأصلي، وتُمرَّر الكوكيز وترويسات
+# المصادقة (Authorization) كما هي، فتعمل الجلسات ومسارات OAuth بلا تغيير.
+# ملف الدالة netlify/functions/api.ts يبقى في المستودع (لا حذف) لكنه لم يعد مستخدماً.
 [[redirects]]
   from = "/api/*"
-  to = "/.netlify/functions/api/:splat"
+  to = "https://al-gharabi-ai.onrender.com/api/:splat"
   status = 200
+  force = true
 
 # SEC-01: مجلد dist/dr-source يحوي حزمة المصدر الكاملة (source.tar.gz + البيان +
 # بصمة الالتزام). Netlify ينشر dist كأصول ثابتة فيخدمه علناً. هذه القاعدة تمنعه

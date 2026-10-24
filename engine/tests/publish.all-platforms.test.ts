@@ -272,9 +272,9 @@ async function publish(auth: Record<string, string>, id: string): Promise<any> {
     check('يوتيوب موحّد لكن بلا فيديو => MEDIA_REQUIRED (لا نشر نصي مختلق)', r.youtube?.code === 'MEDIA_REQUIRED', JSON.stringify(r.youtube));
     check('تيك توك بلا وسائط => MEDIA_REQUIRED (لا نشر نصي مختلق)', r.tiktok?.code === 'MEDIA_REQUIRED', JSON.stringify(r.tiktok));
     check('واتساب => CAPABILITY_NOT_SUPPORTED (لا قدرة نشر)', r.whatsapp?.code === 'CAPABILITY_NOT_SUPPORTED', JSON.stringify(r.whatsapp));
-    check('X => EXTERNAL_SETUP_REQUIRED (موصل غير منفّذ)', r.x?.code === 'EXTERNAL_SETUP_REQUIRED', JSON.stringify(r.x));
-    check('سنابشات => EXTERNAL_SETUP_REQUIRED', r.snapchat?.code === 'EXTERNAL_SETUP_REQUIRED', JSON.stringify(r.snapchat));
-    check('Google Business => EXTERNAL_SETUP_REQUIRED', r.google_business?.code === 'EXTERNAL_SETUP_REQUIRED', JSON.stringify(r.google_business));
+    check('X => CAPABILITY_NOT_SUPPORTED (لا قدرة نشر معلنة — تصحيح C2)', r.x?.code === 'CAPABILITY_NOT_SUPPORTED', JSON.stringify(r.x));
+    check('سنابشات => CAPABILITY_NOT_SUPPORTED (تصحيح C2)', r.snapchat?.code === 'CAPABILITY_NOT_SUPPORTED', JSON.stringify(r.snapchat));
+    check('Google Business => CAPABILITY_NOT_SUPPORTED (تصحيح C2)', r.google_business?.code === 'CAPABILITY_NOT_SUPPORTED', JSON.stringify(r.google_business));
     check('لا منصة فاشلة تحمل معرّف مزود مختلق', ['youtube', 'tiktok', 'whatsapp', 'x', 'snapchat', 'google_business'].every((p) => r[p]?.providerPostId === null), JSON.stringify(r));
 
     group('5) كل منصة تتلقى النوع المدعوم لها فقط (المسار الصحيح لكل API)');

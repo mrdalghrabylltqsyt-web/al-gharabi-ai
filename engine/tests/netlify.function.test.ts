@@ -63,8 +63,9 @@ try {
     const toml = readFileSync('netlify.toml', 'utf8');
     check('netlify.toml يحدد مجلد الدوال', /\[functions\][\s\S]*?directory\s*=\s*"netlify\/functions"/.test(toml));
     check('netlify.toml يحدد node_bundler = esbuild', /node_bundler\s*=\s*"esbuild"/.test(toml));
-    check('netlify.toml يعيد كتابة /api/* إلى الدالة', /from\s*=\s*"\/api\/\*"/.test(toml) && /to\s*=\s*"\/\.netlify\/functions\/api\/:splat"/.test(toml));
-    check('rewrite الـAPI بحالة 200 (يحافظ على المسار بعكس 301)', /from\s*=\s*"\/api\/\*"[\s\S]{0,120}?status\s*=\s*200/.test(toml));
+    check('netlify.toml يعيد كتابة /api/* كـproxy إلى خادم Render الوحيد (R1)', /from\s*=\s*"\/api\/\*"/.test(toml) && /to\s*=\s*"https:\/\/al-gharabi-ai\.onrender\.com\/api\/:splat"/.test(toml));
+    check('rewrite الـAPI بحالة 200 (يحافظ على المسار بعكس 301)', /from\s*=\s*"\/api\/\*"[\s\S]{0,200}?status\s*=\s*200/.test(toml));
+    check('netlify.toml لم يعد يوجّه /api/* إلى دالة محلية (خادم واحد يكتب)', !/to\s*=\s*"\/\.netlify\/functions\/api\/:splat"/.test(toml));
     check('netlify.toml ينشر dist', /publish\s*=\s*"dist"/.test(toml));
     check('netlify.toml لا يحتوي أي سر', !/AIzaSy|secret|api_?key/i.test(toml));
   }

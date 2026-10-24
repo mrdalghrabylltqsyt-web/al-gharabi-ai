@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useState } from 'react';
-import { Activity, Archive, CheckCircle2, Download, FileCheck2, Loader2, PlugZap, RefreshCw, ShieldCheck, TimerReset, TriangleAlert } from 'lucide-react';
+import { Activity, Archive, Bell, CheckCircle2, Download, FileCheck2, Loader2, PlugZap, RefreshCw, ShieldCheck, TimerReset, TriangleAlert } from 'lucide-react';
 import { apiService } from '../../services/api';
 import { useApp } from '../../context/AppContext';
 
@@ -11,13 +11,23 @@ export const SystemControlView: React.FC = () => {
   // تحميل الصفحة. الزر محصور بالمالك في هذه الواجهة، والحماية الحقيقية على الخادم.
   const [geminiTesting, setGeminiTesting] = useState(false);
   const [geminiResult, setGeminiResult] = useState<{ ok: boolean; message: string; hint?: string | null } | null>(null);
+  // B1 + Y2: تنبيه المالك الخارجي (Resend) — مفتاح تشغيل/إيقاف (افتراضياً مفعّل).
+  const [ownerAlerts, setOwnerAlerts] = useState<any>(null);
+  const [alertsBusy, setAlertsBusy] = useState(false);
+  const toggleOwnerAlerts = useCallback(async (enabled: boolean) => {
+    if (alertsBusy) return;
+    setAlertsBusy(true);
+    try { setOwnerAlerts(await apiService.setOwnerAlerts(enabled)); showToast(enabled ? 'تنبيه المالك مفعّل' : 'تنبيه المالك معطّل'); }
+    catch (e: any) { showToast(e.message); }
+    finally { setAlertsBusy(false); }
+  }, [alertsBusy, showToast]);
   const runGeminiTest = useCallback(async () => {
     if (geminiTesting) return;
     setGeminiTesting(true); setGeminiResult(null);
     try { setGeminiResult(await apiService.verifyGeminiProvider()); }
     finally { setGeminiTesting(false); }
   }, [geminiTesting]);
-  const load = useCallback(async () => { setLoading(true); try { const [h,i,o,b,a,d,al]=await Promise.all([apiService.checkHealth(),apiService.getSystemIntegrity().catch((e)=>({healthy:false,error:e.message})),apiService.getControlOverview().catch(()=>null),apiService.listSystemBackupsDetailed().catch(()=>({backups:[]})),apiService.getControlAudit(25).catch(()=>[]),apiService.getSystemDiagnostics().catch(()=>null),apiService.getSystemAlerts().catch(()=>[]),apiService.getDeploymentChecklist().catch(()=>null)]); setHealth(h);setIntegrity(i);setOverview(o);setDiagnostics(d);setAlerts(al);setBackups(b.backups||[]);setAudit(a||[]);} finally{setLoading(false);} },[]);
+  const load = useCallback(async () => { setLoading(true); try { const [h,i,o,b,a,d,al,dep,oa]=await Promise.all([apiService.checkHealth(),apiService.getSystemIntegrity().catch((e)=>({healthy:false,error:e.message})),apiService.getControlOverview().catch(()=>null),apiService.listSystemBackupsDetailed().catch(()=>({backups:[]})),apiService.getControlAudit(25).catch(()=>[]),apiService.getSystemDiagnostics().catch(()=>null),apiService.getSystemAlerts().catch(()=>[]),apiService.getDeploymentChecklist().catch(()=>null),apiService.getOwnerAlerts().catch(()=>null)]); setHealth(h);setIntegrity(i);setOverview(o);setDiagnostics(d);setAlerts(al);setBackups(b.backups||[]);setAudit(a||[]);setDeployment(dep);setOwnerAlerts(oa);} finally{setLoading(false);} },[]);
   useEffect(()=>{void load()},[load]);
   if(currentUser?.role!=='owner') return <div className="p-8 rounded-2xl glass text-center text-slate-300">هذا المركز مخصص لمالك النظام فقط.</div>;
   const checks: [string, boolean][] = integrity?.checks ? (Object.entries(integrity.checks) as [string, boolean][]) : [];
@@ -32,6 +42,19 @@ export const SystemControlView: React.FC = () => {
         <button onClick={()=>void runGeminiTest()} disabled={geminiTesting} className="px-4 py-2 rounded-xl bg-slate-800 border border-slate-700 text-xs font-bold text-white flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed">{geminiTesting?<Loader2 className="w-4 h-4 animate-spin"/>:<PlugZap className="w-4 h-4"/>} {geminiTesting?'جارٍ اختبار الاتصال...':'اختبار اتصال Gemini'}</button>
       </div>
       {geminiResult&&<div className={`mt-4 p-3 rounded-xl border flex items-start gap-2 ${geminiResult.ok?'bg-emerald-500/10 border-emerald-500/30':'bg-rose-500/10 border-rose-500/30'}`}>{geminiResult.ok?<CheckCircle2 className="w-4 h-4 text-emerald-400 mt-0.5"/>:<TriangleAlert className="w-4 h-4 text-rose-400 mt-0.5"/>}<div className="text-xs"><p className={geminiResult.ok?'text-emerald-300 font-bold':'text-rose-300 font-bold'}>{geminiResult.ok?'نجاح':'فشل'}</p><p className="text-slate-300 mt-1">{geminiResult.message}</p>{geminiResult.hint&&<p className="text-[10px] text-amber-300/90 mt-1 leading-relaxed">التوجيه التشخيصي: {geminiResult.hint}</p>}</div></div>}
+    </section>
+    <section className="p-5 rounded-2xl glass">
+      <div className="flex items-start justify-between flex-wrap gap-3">
+        <div><h3 className="font-bold text-white flex items-center gap-2"><Bell className="w-4 h-4 text-emerald-400"/> تنبيه المالك الخارجي (بريد)</h3><p className="text-[10px] text-slate-500 mt-1">عند كل استفسار زبون جديد (مسودة بانتظار موافقتك)، وكل تصعيد، وانقطاع رمز منصة (إعادة ربط)، يُرسل بريد واحد مجمّع كل 30 دقيقة كحد أقصى إلى بريد المالك عبر Resend. لا يستهلك Gemini ولا يُرسل أي شيء للزبون.</p></div>
+        <button onClick={()=>void toggleOwnerAlerts(!(ownerAlerts?.enabled))} disabled={alertsBusy || !ownerAlerts} className={`px-4 py-2 rounded-xl text-xs font-bold flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed ${ownerAlerts?.enabled?'bg-emerald-500 text-slate-950':'bg-slate-800 border border-slate-700 text-white'}`}><Bell className="w-4 h-4"/> {ownerAlerts?.enabled?'مفعّل — إيقاف':'معطّل — تفعيل'}</button>
+      </div>
+      {ownerAlerts&&<div className="mt-3 grid grid-cols-2 md:grid-cols-4 gap-2 text-[11px]">
+        <div className="p-2 rounded-lg bg-slate-950/60 border border-slate-800"><span className="text-slate-500">إعداد البريد</span><p className={ownerAlerts.emailProviderConfigured?'text-emerald-300 font-bold':'text-amber-300 font-bold'}>{ownerAlerts.emailProviderConfigured?'مضبوط':'غير مضبوط (تعطيل صامت)'}</p></div>
+        <div className="p-2 rounded-lg bg-slate-950/60 border border-slate-800"><span className="text-slate-500">بانتظار الدفعة</span><p className="text-white font-bold">{ownerAlerts.pending ?? 0}</p></div>
+        <div className="p-2 rounded-lg bg-slate-950/60 border border-slate-800"><span className="text-slate-500">أُرسلت</span><p className="text-white font-bold">{ownerAlerts.sentCount ?? 0}</p></div>
+        <div className="p-2 rounded-lg bg-slate-950/60 border border-slate-800"><span className="text-slate-500">آخر إرسال</span><p className="text-white font-bold truncate">{ownerAlerts.lastSentAt?new Date(ownerAlerts.lastSentAt).toLocaleString('ar-IQ'):'—'}</p></div>
+      </div>}
+      {ownerAlerts?.lastError&&<p className="text-[10px] text-amber-300/90 mt-2">آخر خطأ: {ownerAlerts.lastError}</p>}
     </section>
     {deployment&&<section className="p-5 rounded-2xl bg-slate-900 border border-emerald-500/20"><div className="flex items-center justify-between mb-4"><div><h3 className="font-bold text-white">قائمة الإنهاء والتشغيل الحقيقي</h3><p className="text-[10px] text-slate-500 mt-1">لا تعتبر المنصة جاهزة إلا بعد تحقق المزود الفعلي.</p></div><span className={`px-3 py-1 rounded-full text-[10px] font-black ${deployment.ready?'bg-emerald-500/15 text-emerald-400':'bg-amber-500/15 text-amber-400'}`}>{deployment.ready?'جاهز من ناحية النظام':'يحتاج إكمال إعدادات'}</span></div><div className="grid md:grid-cols-2 lg:grid-cols-3 gap-2 mb-4">{(deployment.checks||[]).map((c:any)=><div key={c.id} className="p-3 rounded-xl bg-slate-950/60 border border-slate-800 flex justify-between"><span className="text-xs text-slate-300">{c.label}</span>{c.ok?<CheckCircle2 className="w-4 h-4 text-emerald-400"/>:<TriangleAlert className="w-4 h-4 text-amber-400"/>}</div>)}</div><div className="grid md:grid-cols-2 gap-2">{(deployment.platforms||[]).map((x:any)=><div key={x.platform} className="p-3 rounded-xl bg-slate-950/60 border border-slate-800"><div className="flex justify-between"><span className="text-xs font-bold text-white">{x.name}</span><span className="text-[10px] text-slate-500">{x.productionReady?'إنتاجي':x.connected?'متصل':'غير متصل'}</span></div>{x.missing?.length>0&&<p className="text-[10px] text-amber-400 mt-1">المطلوب: {x.missing.join('، ')}</p>}<p className="text-[10px] text-slate-500 mt-1">{x.next}</p></div>)}</div></section>}
     {alerts.length>0&&<section className="p-5 rounded-2xl glass"><h3 className="font-bold text-white mb-3">تنبيهات التشغيل</h3><div className="grid md:grid-cols-2 gap-2">{alerts.map((a:any)=><div key={a.id} className="p-3 rounded-xl bg-slate-950/60 border border-slate-800"><p className="text-xs font-bold text-slate-200">{a.title}</p><p className="text-[10px] text-slate-500 mt-1">{a.detail}</p></div>)}</div></section>}

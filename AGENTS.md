@@ -44,7 +44,7 @@ npm install
 npm run dev            # tsx server.ts
 npm run lint           # tsc --noEmit
 npm run build          # vite build + esbuild server.ts -> dist/server.cjs
-npm run final-audit    # node final-audit.mjs (1857 فحصاً)
+npm run final-audit    # node final-audit.mjs (1875 فحصاً)
 npm test               # storage + engine + auth + ... + db + runtime
 ```
 - التشغيل الإنتاجي: `PORT=4517 NODE_ENV=production APP_URL=http://localhost:4517 node dist/server.cjs`
@@ -7346,3 +7346,66 @@ YouTube (المراقب Paused)، PR #64، ERP، ومعادلة القسط. لا
 `prp1-reply-installment-uses-stored-formula`، `prp1-facts-include-stored-installment`،
 `prp1-patch-resolves-stored-months`، `prp1-installment-from-synced`، `prp1-test-registered`
 (الإجمالي **1773**).
+
+## الجزء 1 — إيقاف النزيف (B1+Y2 / R1 / C2 / C7) — فرع `feat/part1-stop-bleeding`
+
+دفعة «إيقاف النزيف»: تنبيه خارجي فوري للمالك، وإزالة الكتابة المزدوجة على القاعدة عبر
+Netlify، وتصحيح إعلان قدرات غير موجودة. **لا مساس** بملفات تجميد TikTok ولا رمز `/api/health`
+ولا نطاق ERP/CRM/المالية ولا أي سرّ أو إعداد منصة.
+
+### B1 + Y2 — تنبيه المالك الخارجي (Resend)
+- **الوحدة الجديدة `engine/notifications/ownerAlerts.ts`** (منطق صافٍ، بلا شبكة/أسرار/Gemini):
+  `enqueueOwnerAlert` (طابور تجميع)، `isOwnerAlertDue` (**نافذة 30 دقيقة** = `OWNER_ALERT_BATCH_WINDOW_MS`،
+  أول تنبيه فوري)، `syncReauthAlerts` (يُدرج `platform_reauth` لكل منصة حالتها `reauth_needed`
+  ويُزيل المفتاح عند استعادة الاتصال)، `buildOwnerAlertDigest` (نص+HTML عربي RTL يحوي العدّ
+  لكل نوع + **أول 120 حرفاً** من كل تعليق + **رابط صفحة الموافقات** `/?tab=commercial_inbox`)،
+  `markOwnerAlertSent` (يُفرّغ المعلّق عند النجاح فقط؛ `no_provider` لا يمسح المعلّق)،
+  `ownerAlertPublicBlock` (حقول منطقية/أرقام فقط بلا أي بيانات عملاء). **مفتاح تشغيل افتراضي مفعّل**
+  (`enabled: true`)، ومنع تكرار عبر `sentKeys` (سقف 500).
+- **الإرسال:** `sendOwnerAlertEmail` في `engine/notifications/owner-email.ts` — **يعيد استخدام
+  مزوّد Resend القائم** (لا نظام تنبيه ثانٍ)، محاولة واحدة، بلا سرّ في النتيجة.
+- **الربط في `server.ts`:** `ownerAlertState` يُحفظ/يُسترجع عبر محوّل الحالة في مفتاح
+  `control.ownerAlerts` فيصمد بعد restart/cold start. المؤقّت الداخلي `startOwnerAlertDispatcher`
+  (نبضة كل دقيقة، `.unref()`، مستقل عن المتصفح) يبدأ بعد `app.listen` ويتوقف في SIGTERM.
+  **الأحداث الثلاثة موصولة:** مسودة استفسار (`createCommercialDraft`)، تصعيد بشري
+  (`notifyEscalation`)، وانقطاع ربط منصة (`syncReauthAlerts`).
+- **الخصوصية/الحصة:** لا Gemini (منطق حتمي)، ولا رسالة للزبون (المستقبل = `OWNER_EMAIL` فقط)،
+  ولا كتابة كل دقيقة عند غياب المزوّد (تُثبّت مرة واحدة).
+- **المسارات (owner فقط):** `GET/POST /api/agent/owner-alerts` (قراءة/تبديل) و
+  `POST /api/agent/owner-alerts/run` (دورة يدوية). `/api/health.ownerAlerts` و
+  `/api/readiness.auth.ownerAlerts` يعلنان الحالة منطقياً — **غياب إعداد البريد = تعطيل صامت
+  مُعلن** (لا انهيار).
+- **الواجهة:** بطاقة «تنبيه المالك الخارجي (بريد)» في `SystemControlView` (مفتاح تشغيل/إيقاف
+  + عدّاد + حالة المزوّد) و`apiService.getOwnerAlerts/setOwnerAlerts`.
+
+### R1 — Netlify يكتب على نفس قاعدة البيانات (خادم واحد فقط)
+- **الجذر:** الموقع `al-gharabi-ai.netlify.app` كان يشغّل `server.ts` كاملاً كدالة عبر
+  `netlify/functions/api.ts`، فيقرأ ويكتب **نفس** جدول `gharabi_state` بنمط «آخر كاتب يفوز»
+  مع خادم Render — فيمكن أن يمسح تعديل المالك بصمت.
+- **الإصلاح (`netlify.toml`):** `/api/*` يُمرَّر الآن **كـproxy بحالة 200** إلى
+  `https://al-gharabi-ai.onrender.com/api/:splat` بدل الدالة، فلا يبقى إلا خادم واحد يكتب.
+  الحالة 200 تحافظ على المسار والكوكيز وترويسة `Authorization`، فتعمل الجلسات ومسارات OAuth
+  بلا تغيير. **ملف الدالة باقٍ** في المستودع (لا حذف) لكنه غير موصول. حجب `/dr-source` و
+  `/server.cjs` بحالة 404 باقٍ كما هو.
+
+### C2 — إزالة إعلان قدرات غير موجودة
+- **الجذر:** `engine/social/registry.ts` كان يُعلن `publish` لـ`x` و`snapchat` و`google_business`
+  بينما مسار النشر يرد 501 لها (لا كود نشر حقيقي) — إعلان قدرة بلا تنفيذ مقابل.
+- **الإصلاح:** `capabilities: []` للثلاث حتى يُبنى كود النشر فعلاً. مسار النشر الموحّد يرد
+  الآن **422 `CAPABILITY_NOT_SUPPORTED`** («النشر غير مدعوم لهذه المنصة بعد») بدل الوعد
+  بقدرة غير موجودة. الواجهة (`SocialManagerView`) تعرض «غير مدعوم بعد» بصدق.
+
+### C7 — إغلاق بلاغ انحراف النشر #41
+- تحقق حي: الإنتاج (`/api/health.deploy.commit = 1086324`) يطابق آخر commit على `main`
+  (`1086324` Merge PR #64)، و`deploy.startedAt = 2026-10-24T02:30:21Z`. البلاغ أُغلق بتعليق
+  يذكر رقم النشر الحي.
+
+**الاختبارات:** `engine/tests/owner.alerts.test.ts` (`npm run test:owner-alerts`، **24 فحصاً**،
+خادم حقيقي + خادم Resend وهمي بلا بريد حقيقي): إنتاج تنبيه فعلي عند إقلاع بمنصة `reauth_needed`،
+ذكر المنصة، رابط صفحة الموافقات، منع التكرار، مفتاح التشغيل (للمالك فقط 401)، وغياب المزوّد =
+تعطيل صامت معلن. **يفشل على الكود القديم** (لا مسارات ولا إرسال). مُدرَج في `npm test`.
+اختبارات مُحدَّثة لتطابق C2: `platform.capabilities`، `platform.integration`،
+`publish.all-platforms`، `social.routes`، `central.brain.upgrade`، و`netlify.*` (هدف الـproxy).
+فحوص final-audit الجديدة: `owner-alerts-*` (11)، `r1-netlify-*` (5)، `c2-no-undeclared-publish-capability`
+— الإجمالي **1875** فحصاً. `npm run lint` ✅ · `npm run build` ✅ · `npm test` ✅ (EXIT=0) ·
+`npm run test:dr` ✅ · `npm run final-audit` ✅.

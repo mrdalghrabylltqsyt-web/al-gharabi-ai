@@ -43,6 +43,63 @@ add('otp-failure-reason-nonsecret', server.includes('/^[a-z0-9_]{1,48}$/') && se
 add('otp-health-email-config-block', server.includes('ownerEmail:') && server.includes('fromConfigured: getOwnerEmailConfig().fromConfigured'), '/api/health يُعلن إعداد البريد منطقياً بلا أي قيمة سرّية');
 add('otp-failure-reason-tested', fs.readFileSync(path.join(root, 'engine/tests/owner.email.test.ts'), 'utf8').includes("failedBody.reason === 'invalid_from_address'"), 'اختبار يثبت كود سبب الفشل غير السرّي (invalid_from_address / email_provider_not_configured)');
 
+// B1 + Y2: تنبيه المالك الخارجي (Resend) — مصدر واحد، تجميع، دوام، بلا Gemini.
+add('owner-alerts-module', fs.existsSync(path.join(root, 'engine/notifications/ownerAlerts.ts')) &&
+  read('engine/notifications/ownerAlerts.ts').includes('OWNER_ALERT_BATCH_WINDOW_MS') &&
+  read('engine/notifications/ownerAlerts.ts').includes('30 * 60 * 1000'),
+  'وحدة تنبيه المالك موجودة مع نافذة تجميع 30 دقيقة صريحة');
+add('owner-alerts-default-enabled', read('engine/notifications/ownerAlerts.ts').includes('enabled: true') &&
+  read('engine/notifications/ownerAlerts.ts').includes('r.enabled === false ? false : true'),
+  'تنبيه المالك مفعّل افتراضياً (أي قيمة غير false صريحة تُبقيه مفعّلاً)');
+add('owner-alerts-single-source-resend', read('engine/notifications/owner-email.ts').includes('export async function sendOwnerAlertEmail') &&
+  server.includes('sendOwnerAlertEmail('),
+  'الإرسال يعيد استخدام مزوّد Resend القائم (بلا نظام تنبيه ثانٍ)');
+add('owner-alerts-batching-window', server.includes('isOwnerAlertDue(ownerAlertState, now)') &&
+  server.includes('OWNER_ALERT_TICK_MS = 60 * 1000'),
+  'الخادم يُجمّع ويرسل عند انقضاء نافذة الـ30 دقيقة فقط (نبضة كل دقيقة)');
+add('owner-alerts-dedupe', read('engine/notifications/ownerAlerts.ts').includes('state.sentKeys.includes(key)') &&
+  read('engine/notifications/ownerAlerts.ts').includes('ownerAlertKey('),
+  'منع تكرار نفس الحدث عبر مفاتيح sentKeys (لا تنبيه مكرر)');
+add('owner-alerts-persisted', server.includes('ownerAlerts: ownerAlertState') &&
+  server.includes('ownerAlertState = normalizeOwnerAlertState(control.ownerAlerts)'),
+  'حالة التجميع تُحفظ وتُسترجع عبر محوّل الحالة فتصمد بعد restart');
+add('owner-alerts-triggers-three', server.includes("kind: 'commercial_draft'") &&
+  server.includes("kind: 'social_escalation'") &&
+  server.includes('syncReauthAlerts(') &&
+  read('engine/notifications/ownerAlerts.ts').includes("'platform_reauth'"),
+  'الأحداث الثلاثة موصولة: مسودة استفسار + تصعيد + انقطاع رمز منصة');
+add('owner-alerts-no-gemini', !/GoogleGenAI|aiEngine|generateContent/.test(read('engine/notifications/ownerAlerts.ts')) &&
+  !/GoogleGenAI|aiEngine|generateContent/.test(read('engine/notifications/owner-email.ts')),
+  'تنبيه المالك لا يستهلك Gemini (منطق حتمي + Resend فقط)');
+add('owner-alerts-owner-only-routes', server.includes('app.get("/api/agent/owner-alerts", requireOwner') &&
+  server.includes('app.post("/api/agent/owner-alerts", requireOwner'),
+  'مسارات تنبيه المالك محصورة بالمالك');
+add('owner-alerts-readiness-block', server.includes('ownerAlerts: ownerAlertPublicBlock(ownerAlertState') &&
+  read('engine/notifications/ownerAlerts.ts').includes('emailProviderConfigured'),
+  'غياب إعداد البريد = تعطيل صامت معلن في /api/readiness (لا انهيار)');
+add('owner-alerts-ui-toggle', read('src/components/system/SystemControlView.tsx').includes('toggleOwnerAlerts') &&
+  read('src/components/system/SystemControlView.tsx').includes('apiService.setOwnerAlerts') &&
+  read('src/services/api.ts').includes('/api/agent/owner-alerts'),
+  'مفتاح تشغيل/إيقاف تنبيه المالك في الإعدادات (واجهة + خدمة)');
+add('owner-alerts-test', fs.existsSync(path.join(root, 'engine/tests/owner.alerts.test.ts')) &&
+  /test:owner-alerts/.test(read('package.json')) &&
+  (pkg.scripts.test || '').includes('test:owner-alerts'),
+  'اختبار انحدار لتنبيه المالك مسجّل في npm test');
+
+// R1: Netlify يمرّر /api/* كـproxy إلى خادم Render الوحيد (لا كتابة مزدوجة على القاعدة).
+add('r1-netlify-api-proxy', /from = "\/api\/\*"[\s\S]{0,200}?to = "https:\/\/al-gharabi-ai\.onrender\.com\/api\/:splat"[\s\S]{0,80}?status = 200/.test(read('netlify.toml')),
+  'R1: /api/* يُمرَّر كـproxy (200) إلى Render فلا يبقى إلا خادم واحد يكتب على القاعدة');
+add('r1-netlify-no-local-function-rewrite', !/to = "\/\.netlify\/functions\/api\/:splat"/.test(read('netlify.toml')),
+  'R1: لم يعد /api/* يُوجَّه إلى الدالة المحلية (الكتابة المزدوجة أُزيلت)');
+add('r1-netlify-function-retained', fs.existsSync(path.join(root, 'netlify/functions/api.ts')),
+  'R1: ملف الدالة باقٍ في المستودع (لا حذف) لكنه غير موصول');
+add('r1-netlify-dr-source-404-preserved', /from = "\/dr-source\/\*"[\s\S]*?status = 404/.test(read('netlify.toml')) &&
+  /from = "\/server\.cjs"[\s\S]*?status = 404/.test(read('netlify.toml')),
+  'R1: حجب /dr-source و/server.cjs بحالة 404 باقٍ كما هو');
+add('r1-netlify-proxy-test', read('engine/tests/netlify.function.test.ts').includes('al-gharabi-ai\\.onrender\\.com') ||
+  read('engine/tests/netlify.coldstart.test.ts').includes('al-gharabi-ai\\.onrender\\.com'),
+  'اختبار Netlify يتحقق من هدف الـproxy إلى Render (R1)');
+
 // فحص أسرار: لا مفاتيح مزودين ولا توكن GitHub في الملفات الإنتاجية.
 const sourceFiles = ['server.ts', 'engine/notifications/owner-email.ts', 'netlify/functions/api.ts'];
 const secretFree = sourceFiles.every((f) => {
@@ -207,21 +264,27 @@ add('capability-message-reply-explicit', read('engine/social/adapter.ts').includ
 // مستثنى. ولا استدعاء تحليلات فعلي مقابل. القدرة المعلنة = ما يقابله تنفيذ حقيقي فقط.
 add('x-registry-no-comment-reply-without-connector', (() => {
   const reg = read('engine/social/registry.ts');
-  const m = reg.match(/platform: 'x'[\s\S]{0,700}?\n  \}/);
+  const m = reg.match(/platform: 'x'[\s\S]{0,900}?\n  \}/);
   if (!m) return false;
   const block = m[0];
   const capsMatch = block.match(/capabilities:\s*\[([^\]]*)\]/);
   if (!capsMatch) return false;
   const caps = capsMatch[1];
-  const realConnector = /realConnector:\s*true/.test(block);
-  // لا comments/comment_reply بلا موصل حقيقي مقابل.
-  if (!realConnector && /'comment_reply'|'comments'/.test(caps)) return false;
-  // لا analytics بلا استدعاء تحليلات فعلي لـX في الكود.
-  const serverSrc = read('server.ts');
-  const xAnalyticsCall = /api\.twitter\.com[^"`]*metrics|api\.x\.com[^"`]*metrics|public_metrics|tweet\.fields=[^"`]*public_metrics/.test(serverSrc);
-  if (!xAnalyticsCall && /'analytics'/.test(caps)) return false;
-  return caps.includes("'publish'");
-})(), 'X لا يعلن تعليقات/رد/تحليلات بلا موصل حقيقي مقابل (تصحيح إعلان صادق)');
+  // C2: لا قدرة معلنة لـX إطلاقاً حتى يُبنى كود نشر/رد/تحليلات فعلي مقابل.
+  // (كان يُعلن publish/scheduling بلا تنفيذ، فيوهم بقدرة غير موجودة.)
+  return caps.trim() === '';
+})(), 'X لا يعلن أي قدرة بلا موصل حقيقي مقابل (تصحيح إعلان صادق C2)');
+add('c2-no-undeclared-publish-capability', (() => {
+  const reg = read('engine/social/registry.ts');
+  // المنصات الثلاث التي لا تملك موصل نشر منفّذ يجب ألا تعلن publish/scheduling/analytics.
+  const noCaps = (platform) => {
+    const m = reg.match(new RegExp(`platform: '${platform}'[\\s\\S]{0,900}?\\n  \\}`));
+    if (!m) return false;
+    const caps = (m[0].match(/capabilities:\s*\[([^\]]*)\]/) || [])[1] || '';
+    return caps.trim() === '';
+  };
+  return noCaps('x') && noCaps('snapchat') && noCaps('google_business');
+})(), 'C2: x/snapchat/google_business لا تعلن publish/scheduling/analytics بلا كود نشر منفّذ');
 add('telegram-message-not-comment-reply', (() => { const r = read('engine/social/registry.ts'); return r.includes("capabilities: ['publish', 'messages', 'message_reply', 'scheduling']") && !r.includes("capabilities: ['publish', 'messages', 'comment_reply'"); })(), 'Telegram يعلن message_reply ولا يعلن comment_reply');
 add('reply-route-message-platform-redirect', socialRoutes.includes("supports('message_reply')") && socialRoutes.includes('MESSAGE_PLATFORM_NOT_COMMENT'), 'مسار التعليقات يوجّه منصات الرسائل بدل منع مضلل');
 add('telegram-ui-routes-message-reply', read('src/components/social/SocialHubView.tsx').includes('apiService.replyTelegram') && read('src/components/social/SocialHubView.tsx').includes('replyTarget?.chatId'), 'واجهة الرد توجّه رسائل Telegram إلى المسار الحقيقي بلا فحص comment_reply');
@@ -4217,11 +4280,11 @@ add('watcher-advisory-not-authority',
     /if \(!hasRealConnector\(platform\)\) \{[\s\S]{0,200}?EXTERNAL_SETUP_REQUIRED[\s\S]{0,200}?const conn: any = platformConnections\.get\(platform\)/.test(server),
     'النشر يعلن EXTERNAL_SETUP_REQUIRED لمنصة بلا موصل منفّذ قبل فحص الاتصال (لا NOT_CONNECTED المضلِّل)');
   add('publish-all-platforms-tests',
-    read('engine/tests/platform.integration.test.ts').includes("code === 'EXTERNAL_SETUP_REQUIRED'") &&
+    read('engine/tests/platform.integration.test.ts').includes("code === 'CAPABILITY_NOT_SUPPORTED'") &&
     read('engine/tests/publish.provider.error.test.ts').includes('REELS') &&
     read('engine/tests/publish.provider.error.test.ts').includes('share_to_feed') &&
     read('engine/tests/threads.connector.test.ts').includes('TOKEN_EXPIRED'),
-    'اختبارات النشر تغطي: EXTERNAL_SETUP_REQUIRED + فيديو Instagram REELS/share_to_feed + تصنيف انتهاء رمز Threads');
+    'اختبارات النشر تغطي: CAPABILITY_NOT_SUPPORTED (C2) + فيديو Instagram REELS/share_to_feed + تصنيف انتهاء رمز Threads');
   // جذر «CLIENT_ERROR: Invalid parameter»: انتظار جاهزية حاوية الوسائط قبل النشر.
   const igModule = read('engine/social/instagram.ts');
   add('media-container-readiness-single-source',

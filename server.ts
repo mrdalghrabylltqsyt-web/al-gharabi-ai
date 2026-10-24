@@ -603,7 +603,22 @@ import {
   type BusinessFacts,
   type BusinessClaimViolation,
 } from "./engine/social/contentSafety";
-import { getOwnerEmailConfig, sendOwnerOtpEmail, sanitizeProviderMessage } from "./engine/notifications/owner-email";
+import { getOwnerEmailConfig, sendOwnerOtpEmail, sendOwnerAlertEmail, sanitizeProviderMessage } from "./engine/notifications/owner-email";
+import {
+  defaultOwnerAlertState,
+  normalizeOwnerAlertState,
+  enqueueOwnerAlert,
+  isOwnerAlertDue,
+  buildOwnerAlertDigest,
+  markOwnerAlertSent,
+  setOwnerAlertEnabled,
+  syncReauthAlerts,
+  ownerAlertPublicBlock,
+  ownerAlertKey,
+  truncateAlertSnippet,
+  type OwnerAlertState,
+  type OwnerAlertItem,
+} from "./engine/notifications/ownerAlerts";
 import {
   createStorageAdapter,
   isPooledPostgresEndpoint,
@@ -9224,6 +9239,16 @@ function createCommercialDraft(input: {
   };
   commercialDrafts.unshift(draft);
   if (commercialDrafts.length > COMMERCIAL_MAX_DRAFTS) commercialDrafts.length = COMMERCIAL_MAX_DRAFTS;
+  // B1/Y2: استفسار زبون جديد أنشأ مسودة تنتظر الموافقة ⇒ تنبيه المالك الخارجي
+  // (مجمّع كل 30 دقيقة). لا رسالة للزبون، ولا استهلاك Gemini.
+  recordOwnerAlert({
+    key: ownerAlertKey('commercial_draft', draft.platform, draft.id),
+    kind: 'commercial_draft',
+    platform: draft.platform,
+    title: 'استفسار زبون يحتاج موافقتك',
+    snippet: draft.text,
+    at: draft.createdAt,
+  });
   return draft;
 }
 
@@ -10050,6 +10075,38 @@ app.post("/api/agent/commercial/kill-switch", requireOwner, async (req, res) => 
   await persistCommercialLeads();
   audit(user.id, "commercial_brain_disabled", reason || "owner_disabled");
   res.json({ success: true, killSwitch: commercialKillSwitchView(), note: "العقل التجاري موقوف — لا متابعة ولا تنفيذ خارجي حتى إعادة التفعيل." });
+});
+
+// --- B1 + Y2: تنبيه المالك الخارجي (Resend) — للمالك فقط ---
+// قراءة الحالة + تبديل مفتاح التشغيل/الإيقاف + تشغيل دورة الآن (تشخيص). لا سرّ
+// ولا بيانات عملاء، ولا استهلاك Gemini، ولا رسالة للزبون.
+app.get("/api/agent/owner-alerts", requireOwner, (_req, res) => {
+  res.json({
+    success: true,
+    alerts: ownerAlertPublicBlock(ownerAlertState, getOwnerEmailConfig().configured && getOwnerEmailConfig().fromConfigured),
+    lastCycle: { sent: ownerAlertState.lastResult === 'sent', reason: ownerAlertState.lastResult, count: ownerAlertState.pending.length },
+  });
+});
+
+app.post("/api/agent/owner-alerts", requireOwner, async (req, res) => {
+  const user = (req as any).user as ServerUser;
+  const raw = (req.body || {}).enabled;
+  if (typeof raw !== "boolean") {
+    return res.status(400).json({ success: false, error: "الحقل enabled مطلوب (true/false).", code: "INVALID_ENABLED" });
+  }
+  ownerAlertState = setOwnerAlertEnabled(ownerAlertState, raw);
+  await persistCritical();
+  audit(user.id, raw ? "owner_alerts_enabled" : "owner_alerts_disabled", "owner_route");
+  res.json({
+    success: true,
+    alerts: ownerAlertPublicBlock(ownerAlertState, getOwnerEmailConfig().configured && getOwnerEmailConfig().fromConfigured),
+    note: raw ? "تنبيه المالك الخارجي مفعَّل (تجميع كل 30 دقيقة)." : "تنبيه المالك الخارجي معطَّل.",
+  });
+});
+
+app.post("/api/agent/owner-alerts/run", requireOwner, async (_req, res) => {
+  const result = await runOwnerAlertCycle("manual");
+  res.json({ success: true, result, alerts: ownerAlertPublicBlock(ownerAlertState, getOwnerEmailConfig().configured && getOwnerEmailConfig().fromConfigured) });
 });
 
 // -----------------------------------------------------------------------------
@@ -11927,9 +11984,10 @@ async function executePlatformPublishInner(platform: string, body: any, actor: s
   // وضع YOUTUBE_ONLY_OPERATIONAL: يمنع أي عملية خارجية على منصة غير YouTube.
   const onlyBlock = youtubeOnlyBlock(platform);
   if (onlyBlock.blocked) return { status: onlyBlock.status!, body: onlyBlock.body };
-  // القدرة تُقرأ من السجل: منصة لا تدعم النشر لا تُحاول إطلاقاً.
+  // القدرة تُقرأ من السجل: منصة لا تعلن النشر (لا موصل منفّذ بعد، أو لا توفّره
+  // واجهتها الرسمية) تُردّ صراحةً بـ«غير مدعوم بعد» — لا وعد بقدرة غير موجودة.
   if (!hasCapability(platform, "publish")) {
-    return { status: 422, body: { success: false, error: "المنصة لا تدعم النشر عبر واجهتها الرسمية في هذا النظام.", code: "CAPABILITY_NOT_SUPPORTED", platform } };
+    return { status: 422, body: { success: false, error: "النشر غير مدعوم لهذه المنصة بعد (لا موصل نشر منفّذ).", code: "CAPABILITY_NOT_SUPPORTED", platform } };
   }
   // محتوى خارجي يمر عبر حارس السلامة قبل أي إرسال.
   const safety = analyzeBusinessClaims(content, buildFactsForProduct(null, 0, 0));
@@ -14679,6 +14737,9 @@ function applyControlSnapshot(control: any): void {
   // نتيجة آخر تحقق حي من Gemini: تُسترجَع فتصمد بعد restart، فلا يبدو المزود
   // غير متحقَّق بعد كل نشر (بلا سرّ — حالة/نص/موديل/وقت فقط).
   aiLiveVerificationState.restore(control.aiLiveVerification);
+  // B1/Y2: حالة تنبيه المالك الخارجي (مفتاح التشغيل + الطابور + مفاتيح منع التكرار)
+  // — تصمد بعد restart/cold start. لا سرّ ولا بيانات عملاء إضافية.
+  ownerAlertState = normalizeOwnerAlertState(control.ownerAlerts);
 }
 
 /** يقرأ حالة التحكّم متزامناً (backend الملف) عند الإقلاع. */
@@ -14745,6 +14806,9 @@ function buildControlState() {
     // نتيجة آخر تحقق حي من Gemini — تصمد بعد restart فلا يبدو المزود غير متحقَّق
     // بعد كل نشر (بلا أي سرّ: حالة/نص تشخيصي/موديل/وقت/فئة/توجيه).
     aiLiveVerification: aiLiveVerificationState.snapshot(),
+    // B1/Y2: تنبيه المالك الخارجي (مفتاح + طابور + مفاتيح منع تكرار) — تصمد بعد
+    // restart فلا تُكرَّر التنبيهات ولا يُفقد المتراكم. بلا سرّ ولا بيانات عملاء.
+    ownerAlerts: ownerAlertState,
   };
 }
 
@@ -15993,6 +16057,96 @@ function runCognitiveCycleNow(input: {
 /** حالة وقت التشغيل المحفوظة (بلا أي سرّ) + قفل الدورة. */
 let brainRuntimeState: BrainRuntimeState = emptyBrainRuntimeState();
 
+// -----------------------------------------------------------------------------
+// B1 + Y2: تنبيه المالك الخارجي (Resend) — تجميع كل 30 دقيقة.
+//
+// الحالة تُحفظ عبر محوّل الحالة في مفتاح `control.ownerAlerts` فتصمد بعد
+// restart/cold start. لا Gemini، ولا رسالة للزبون، ولا سرّ. غياب مزوّد البريد =
+// تعطيل صامت معلن في /api/readiness (لا انهيار).
+// -----------------------------------------------------------------------------
+let ownerAlertState: OwnerAlertState = defaultOwnerAlertState();
+let ownerAlertTimer: NodeJS.Timeout | null = null;
+/** دورة إرسال واحدة فقط في أي لحظة (لا إرسال مزدوج). */
+let ownerAlertInFlight = false;
+const OWNER_ALERT_TICK_MS = 60 * 1000;
+
+/** يُدرج حدث تنبيه جديد (يُحفظ لاحقاً مع دورة الإرسال). */
+function recordOwnerAlert(item: OwnerAlertItem): void {
+  const next = enqueueOwnerAlert(ownerAlertState, item);
+  if (next !== ownerAlertState) {
+    ownerAlertState = next;
+    saveControlState();
+  }
+}
+
+/** يزامن تنبيهات انقطاع الربط من الحالات الحيّة (يُستدعى عند كل نبضة إرسال). */
+function syncOwnerReauthAlerts(): void {
+  const connections = Array.from(platformConnections.values()).map((c: any) => ({ platform: String(c.platform), status: c.status }));
+  const next = syncReauthAlerts(ownerAlertState, connections, new Date().toISOString());
+  if (next !== ownerAlertState) {
+    ownerAlertState = next;
+    saveControlState();
+  }
+}
+
+/**
+ * دورة إرسال واحدة: تُزامن reauth، تتحقق من الاستحقاق (نافذة 30 دقيقة)، تبني
+ * الدفعة، وتُرسل عبر Resend القائم. بلا مزوّد ⇒ لا إرسال ويُعلن السبب (لا مسح
+ * للمعلّق). لا استدعاء Gemini إطلاقاً.
+ */
+async function runOwnerAlertCycle(trigger: string): Promise<{ sent: boolean; reason: string; count: number }> {
+  if (ownerAlertInFlight) return { sent: false, reason: 'in_flight', count: ownerAlertState.pending.length };
+  ownerAlertInFlight = true;
+  try {
+    syncOwnerReauthAlerts();
+    if (!ownerAlertState.enabled) return { sent: false, reason: 'disabled', count: ownerAlertState.pending.length };
+    const now = Date.now();
+    if (!isOwnerAlertDue(ownerAlertState, now)) return { sent: false, reason: 'not_due', count: ownerAlertState.pending.length };
+    const config = getOwnerEmailConfig();
+    if (!config.configured || !config.fromConfigured || !OWNER_EMAIL) {
+      // بلا مزوّد: لا إرسال ويُعلن السبب بصراحة، ولا يُمسح المعلّق. نُثبّت الكتابة
+      // مرة واحدة عند الدخول لحالة «بلا مزوّد» فقط — لا كتابة كل دقيقة (انضباط حصة).
+      const wasNoProvider = ownerAlertState.lastResult === 'no_provider';
+      ownerAlertState = markOwnerAlertSent(ownerAlertState, now, 'no_provider');
+      if (!wasNoProvider) saveControlState();
+      return { sent: false, reason: 'no_provider', count: ownerAlertState.pending.length };
+    }
+    const digest = buildOwnerAlertDigest(ownerAlertState, publicBaseUrlNow());
+    if (digest.count === 0) return { sent: false, reason: 'empty', count: 0 };
+    const result = await sendOwnerAlertEmail({ to: OWNER_EMAIL, subject: digest.subject, text: digest.text, html: digest.html });
+    if (result.sent) {
+      ownerAlertState = markOwnerAlertSent(ownerAlertState, now, 'sent');
+      audit('system', 'owner_alert_sent', `${digest.count} ${trigger}`);
+      saveControlState();
+      return { sent: true, reason: 'sent', count: digest.count };
+    }
+    const reason = /^[a-z0-9_]{1,48}$/.test(String(result.error || '')) ? String(result.error) : 'send_failed';
+    ownerAlertState = markOwnerAlertSent(ownerAlertState, now, 'failed', reason);
+    audit('system', 'owner_alert_failed', reason);
+    saveControlState();
+    return { sent: false, reason, count: ownerAlertState.pending.length };
+  } catch (e: any) {
+    ownerAlertState = markOwnerAlertSent(ownerAlertState, Date.now(), 'failed', String(e?.code || e?.name || 'cycle_failed').slice(0, 80));
+    return { sent: false, reason: 'cycle_failed', count: ownerAlertState.pending.length };
+  } finally {
+    ownerAlertInFlight = false;
+  }
+}
+
+/** يبدأ مؤقّت دورة التنبيه (كل دقيقة) — مستقل عن المتصفح، لا يستدعي Gemini. */
+function startOwnerAlertDispatcher(): void {
+  if (ownerAlertTimer) return;
+  ownerAlertTimer = setInterval(() => { void runOwnerAlertCycle('tick'); }, OWNER_ALERT_TICK_MS);
+  (ownerAlertTimer as any).unref?.();
+  void runOwnerAlertCycle('boot');
+}
+
+function stopOwnerAlertDispatcher(): void {
+  if (!ownerAlertTimer) return;
+  clearInterval(ownerAlertTimer);
+  ownerAlertTimer = null;
+}
+
 /** قفل داخل العملية يمنع محاولة دورة ثانية أثناء جريانها (دفاع إضافي فوق الـlease). */
 let brainRuntimeInFlight = false;
 let brainRuntimeTimer: NodeJS.Timeout | null = null;
@@ -16756,6 +16910,11 @@ app.get("/api/readiness", (_req, res) => {
       emailFromConfigured: getOwnerEmailConfig().fromConfigured,
       /** الدخول الدائم يحتاج بريداً مضبوطاً لجلب الرمز ومفتاح جلسة ثابتاً. */
       permanentAccessReady: Boolean(OWNER_EMAIL) && SESSIONS_DURABLE && getOwnerEmailConfig().configured && getOwnerEmailConfig().fromConfigured,
+      /**
+       * B1/Y2: تنبيه المالك الخارجي (Resend). غياب إعداد البريد = تعطيل صامت
+       * مُعلن هنا (لا انهيار). الحقول منطقية/أرقام فقط بلا أي بيانات عملاء.
+       */
+      ownerAlerts: ownerAlertPublicBlock(ownerAlertState, getOwnerEmailConfig().configured && getOwnerEmailConfig().fromConfigured),
     },
     ai: {
       ...aiProviderState(),
@@ -17443,6 +17602,8 @@ app.get("/api/health", (_req, res) => {
       fromConfigured: getOwnerEmailConfig().fromConfigured,
       envNames: { owner: "OWNER_EMAIL", provider: "RESEND_API_KEY", from: "RESEND_FROM_EMAIL" },
     },
+    // B1/Y2: تنبيه المالك الخارجي (Resend) — منطقي/أرقام فقط بلا أي بيانات عملاء.
+    ownerAlerts: ownerAlertPublicBlock(ownerAlertState, getOwnerEmailConfig().configured && getOwnerEmailConfig().fromConfigured),
     geminiUsage: geminiStatus(),
     // حالة مفتاح تشفير توكنات المنصات: تفصل missing من invalid بلا كشف القيمة،
     // فتعكس نفس الحكم الذي يستخدمه encryptSecret/credentials فعلياً.
@@ -19591,6 +19752,15 @@ registerSocialManagerRoutes(app, {
         `منصة ${record?.platform || "غير معروفة"} — ${String(record?.commentText || "").slice(0, 200)}`,
         "warning",
       );
+      // B1/Y2: تصعيد بشري ⇒ تنبيه المالك الخارجي أيضاً (مجمّع). بلا رسالة للزبون.
+      recordOwnerAlert({
+        key: ownerAlertKey('social_escalation', record?.platform || null, String(record?.id || record?.externalId || Date.now())),
+        kind: 'social_escalation',
+        platform: record?.platform || null,
+        title: `تصعيد: ${record?.reasonLabelAr || record?.reason || 'حالة تحتاج مراجعة'}`,
+        snippet: truncateAlertSnippet(record?.commentText || ''),
+        at: new Date().toISOString(),
+      });
       return { delivered: Boolean(n?.id), channel: "in_app_notification", error: n?.id ? null : "notification_not_created" };
     } catch (e) {
       return { delivered: false, channel: null, error: e instanceof Error ? e.name : "notifier_failed" };
@@ -20023,6 +20193,15 @@ async function startServer() {
     console.error("[الغرابي AI] failed to start Commercial Brain:", String(e?.message || e).slice(0, 120));
   }
 
+  // B1 + Y2: تنبيه المالك الخارجي (Resend) — مؤقّت داخلي كل دقيقة يُجمّع الأحداث
+  // (مسودات/تصعيدات/انقطاع ربط) ويرسل رسالة واحدة كل 30 دقيقة كحد أقصى. مستقل عن
+  // المتصفح، لا يستدعي Gemini، ولا يُرسل أي شيء للزبون. بلا مزوّد ⇒ تعطيل صامت معلن.
+  try {
+    startOwnerAlertDispatcher();
+  } catch (e: any) {
+    console.error("[الغرابي AI] failed to start owner alert dispatcher:", String(e?.message || e).slice(0, 120));
+  }
+
   // إغلاق نظيف: ينتظر تفريغ طابور الكتابة (مع مهلة صارمة ≤ 10 ثوانٍ) ثم يُنهي
   // اتصال قاعدة البيانات ويخرج. المهلة تمنع تعليق العملية إن تجمّد المخزن.
   // نُفرّغ الطابور في حلقة لأن كتابة جديدة قد تُسلسَل أثناء الإغلاق، فنلتقط
@@ -20072,6 +20251,8 @@ async function startServer() {
       try { clearInterval(safeJobWorkerTimer); } catch { /* تجاهل */ }
       try { clearInterval(tiktokReconcileTimer); } catch { /* تجاهل */ }
       try { stopYouTubeQuotaRetryTimer(); } catch { /* تجاهل */ }
+      // B1/Y2: إيقاف مؤقّت تنبيه المالك (لا إرسال أثناء الإغلاق).
+      try { stopOwnerAlertDispatcher(); } catch { /* تجاهل */ }
       // تحرير أقفال الدوام صراحةً (تُبطل فوراً عند إقلاع العملية الجديدة بدل
       // انتظار انتهاء مهلتها) — **ويُكتب التحرير في المخزن الدائم** قبل التفريغ،
       // وإلا بقي القفل القديم محفوظاً فيبدو محتجزاً لعملية أخرى حتى انتهاء مهلته.

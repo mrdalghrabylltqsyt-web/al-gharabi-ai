@@ -227,7 +227,8 @@ const comments = [
   // X: لا موصل تعليقات/رد/تحليلات حقيقي — سياسة X الرسمية تمنع الرد غير المُستدعى
   // على تعليقات العملاء عبر API لكل المستويات self-serve. تُشتق NOT_AVAILABLE من السجل.
   check('9: X تعليقات/رد/تحليلات غير متاحة', capabilityRow('x').states.comments === 'NOT_AVAILABLE' && capabilityRow('x').states.reply === 'NOT_AVAILABLE' && capabilityRow('x').states.analytics === 'NOT_AVAILABLE');
-  check('9: X ينشر ويجدول فقط', platformCan('x', 'publish') && platformCan('x', 'schedule'));
+  // C2: X لا تملك موصل نشر/جدولة منفّذ — فلا تُعلن أي قدرة (تصحيح إعلان صادق).
+  check('9: X لا ينشر ولا يجدول بلا كود منفّذ (C2)', !platformCan('x', 'publish') && !platformCan('x', 'schedule'));
   check('9: الجغرافيا غير متاحة للجميع', rows.every((r) => r.states.geography === 'NOT_AVAILABLE'));
   check('9: سبب القدرة معلن', capabilityReason('tiktok', 'comments').includes('لا توفّر'));
   check('9: WhatsApp لا ينشر', capabilityRow('whatsapp').states.publish === 'NOT_AVAILABLE');
