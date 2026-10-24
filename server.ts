@@ -707,6 +707,8 @@ import { neonUsageApiConfig, fetchNeonActualUsage, NEON_USAGE_POLL_MIN_INTERVAL_
 import { SESSION_TTL_MS, signSession, verifySession, type SessionPayload } from "./engine/auth/sessions";
 import { CHALLENGE_TTL_MS, issueChallengeCode, matchChallengeWindow } from "./engine/auth/challenge";
 import { isScheduleInFuture, normalizeScheduleInput, wallClockToEpoch } from "./src/utils/scheduleTime";
+// C1: دوال مساحة العمل الصافية مستخرجة إلى وحدة مستقلة (بلا تغيير سلوك).
+import { cleanText, workspaceId, formatIqd, buildMarketingQuote } from "./engine/workspace/format";
 import { productInstallmentFields, computeInstallmentPrice, type InstallmentInput } from "./src/utils/installmentPrice";
 
 dotenv.config();
@@ -13965,14 +13967,6 @@ app.post("/api/publish/preflight", authenticateToken, (req, res) => {
 // This is the single operational source for showroom/catalog/content/customer state.
 // -------------------------------------------------------------
 
-function cleanText(value: unknown, max = 500): string {
-  return typeof value === "string" ? value.trim().slice(0, max) : "";
-}
-
-function workspaceId(prefix: string): string {
-  return `${prefix}-${Date.now()}-${crypto.randomBytes(4).toString("hex")}`;
-}
-
 app.get("/api/workspace/snapshot", authenticateToken, (req, res) => {
   const isOwner = ((req as any).user as ServerUser)?.role === "owner";
   const connected = connectedPlatformIds();
@@ -19351,21 +19345,6 @@ function ensureSafeBusinessText(text: string, facts: BusinessFacts, fallback: ()
   // يشترك فيه كل مسار يولّد نصاً تجارياً (توليد المحتوى، المحادثة، تصنيف الرسائل).
   const result = buildSafeBusinessReply(text, facts, fallback);
   return { text: result.text, check: result.report, replaced: result.replaced };
-}
-
-function formatIqd(value: number): string {
-  return `${Math.round(value).toLocaleString("en-US")} د.ع`;
-}
-
-// Mirrors /api/catalog/quote: down payment then ceil-to-IQD monthly installment.
-function buildMarketingQuote(cashPrice: number, downPaymentPercent: number, months: number) {
-  const downPayment = Math.ceil((cashPrice * downPaymentPercent) / 100);
-  const financedAmount = Math.max(0, cashPrice - downPayment);
-  const monthlyPayment = Math.ceil(financedAmount / months);
-  return {
-    cashPrice, downPayment, financedAmount, months, monthlyPayment,
-    totalInstallments: monthlyPayment * months, currency: "IQD" as const, rounding: "ceil-to-IQD",
-  };
 }
 
 /** يقصّ نصاً عند حدود الكلمة **بالعدّ الصحيح للمنصة** (Threads = بايتات UTF-8)،
