@@ -22,7 +22,7 @@
 العقل التجاري موقوف حتى يفعّله المالك · التنفيذ التلقائي للمهام المعتمدة معطَّل (B4) ·
 تنبيه المالك البريدي مفعَّل كل 30 دقيقة (B1).
 
-**الأعداد الحالية:** `npm test` = 177 مجموعة · `final-audit` = 1913 فحصاً.
+**الأعداد الحالية:** `npm test` = 178 مجموعة · `final-audit` = 1916 فحصاً.
 
 **معلّق على قرار المالك فقط:** B7 (نقل المحادثات إلى جدول مستقل) · PR #24 وPR #3 (مراجعة) ·
 ربط WhatsApp/Google Business/Instagram/Telegram/TikTok/Threads · وضع تطبيق Meta (Live +
@@ -77,7 +77,7 @@ npm install
 npm run dev            # tsx server.ts
 npm run lint           # tsc --noEmit
 npm run build          # vite build + esbuild server.ts -> dist/server.cjs
-npm run final-audit    # node final-audit.mjs (1913 فحصاً)
+npm run final-audit    # node final-audit.mjs (1916 فحصاً)
 npm test               # storage + engine + auth + ... + db + runtime
 ```
 - التشغيل الإنتاجي: `PORT=4517 NODE_ENV=production APP_URL=http://localhost:4517 node dist/server.cjs`
