@@ -75,6 +75,14 @@ const a = await reserveFreePort();
 const b = await reserveFreePort();
 check('حجزان متتاليان يعيدان منفذين صالحين وغير محظورين',
   a > 0 && b > 0 && !isFetchBlockedPort(a) && !isFetchBlockedPort(b), `a=${a} b=${b}`);
+check('حجزان متتاليان لا يعيدان المنفذ نفسه (لا تصادم خادم/خادم وهمي)', a !== b, `a=${a} b=${b}`);
+
+// ---- 4ب) ضمان حتمي عبر حجوزات كثيرة: لا تكرار للمنفذ نفسه في العملية ----
+const batch: number[] = [];
+for (let i = 0; i < 30; i += 1) batch.push(await reserveFreePort());
+const unique = new Set(batch);
+check('30 حجزاً متتالياً كلها منافذ فريدة (لا تكرار)', unique.size === batch.length,
+  `unique=${unique.size} total=${batch.length}`);
 
 // ---- 5) لا بقايا استيراد net بلا استخدام ----
 const netLeftovers: string[] = [];

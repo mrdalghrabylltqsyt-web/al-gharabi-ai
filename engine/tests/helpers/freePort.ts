@@ -38,29 +38,53 @@ export function isFetchBlockedPort(port: number): boolean {
 }
 
 /**
+ * المنافذ التي سلّمناها في هذه العملية. `listen(0)` ثم `close()` يُعيد المنفذ إلى
+ * مجمّع النظام المؤقت، فقد يعيده الطلب التالي (سباق حقيقي نادر). الضمان الحتمي:
+ * لا نسلّم المنفذ نفسه مرتين في العملية الواحدة — وإلا حجز خادم الاختبار المنفذ
+ * نفسه لخادم آخر (مثلاً APP_PORT == FB_PORT) فأجاب خادم وهمي (Express) على
+ * `/api/health` بـHTML 404، فيبدو الخادم «لم يقلع» ثم يفشل `res.json()` بـ
+ * «Unexpected token '<'».
+ */
+const handedOut = new Set<number>();
+
+/**
  * يحجز منفذاً حراً فعلياً من نظام التشغيل عبر `listen(0)` ثم يحرّره.
  * يرفض (لا يُخفي) أي منفذ محظور — وهو مستحيل عملياً لأن منافذ النظام المؤقتة
  * تبدأ من 32768، لكن الفحص يجعل الضمان صريحاً ومُختبَراً لا مفترضاً.
  */
 export function reserveFreePort(): Promise<number> {
   return new Promise<number>((resolve, reject) => {
-    const srv = net.createServer();
-    srv.unref();
-    srv.once('error', reject);
-    srv.listen(0, '127.0.0.1', () => {
-      const addr = srv.address();
-      if (!addr || typeof addr === 'string') {
-        srv.close(() => reject(new Error('free_port_no_address')));
-        return;
-      }
-      const port = addr.port;
-      srv.close(() => {
-        if (isFetchBlockedPort(port)) {
-          reject(new Error(`free_port_blocked:${port}`));
+    const attempt = (triesLeft: number): void => {
+      const srv = net.createServer();
+      srv.unref();
+      srv.once('error', reject);
+      srv.listen(0, '127.0.0.1', () => {
+        const addr = srv.address();
+        if (!addr || typeof addr === 'string') {
+          srv.close(() => reject(new Error('free_port_no_address')));
           return;
         }
-        resolve(port);
+        const port = addr.port;
+        srv.close(() => {
+          if (isFetchBlockedPort(port)) {
+            reject(new Error(`free_port_blocked:${port}`));
+            return;
+          }
+          // ضمان حتمي: لا نسلّم المنفذ نفسه مرتين في العملية الواحدة. إن تكرّر
+          // (بعد أن أعاده النظام إلى المجمّع المؤقت) نطلب منفذاً آخر بدل تسليمه.
+          if (handedOut.has(port)) {
+            if (triesLeft <= 0) {
+              reject(new Error(`free_port_exhausted:${port}`));
+              return;
+            }
+            attempt(triesLeft - 1);
+            return;
+          }
+          handedOut.add(port);
+          resolve(port);
+        });
       });
-    });
+    };
+    attempt(20);
   });
 }
