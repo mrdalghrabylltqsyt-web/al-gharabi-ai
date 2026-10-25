@@ -29,8 +29,8 @@ export function parseOwnerTelegramChatId(env: Record<string, string | undefined>
 /** نص الرسالة الفورية: النوع والمنصة ومقتطف قصير ورابط الصفحة المعنية. */
 export function buildOwnerTelegramMessage(item: OwnerAlertItem, appUrl: string | null): string {
   const label = OWNER_ALERT_KIND_LABELS_AR[item.kind] || 'تنبيه';
-  const icon = item.kind === 'commercial_draft' ? '🛒' : item.kind === 'social_escalation' ? '⚠️' : item.kind === 'backup_stale' ? '💾' : item.kind === 'ingest_failing' ? '📭' : '🔌';
-  const tab = item.kind === 'platform_reauth' || item.kind === 'ingest_failing' ? 'platform_connections' : item.kind === 'backup_stale' ? 'cloud_backup' : 'commercial_inbox';
+  const icon = item.kind === 'commercial_draft' ? '🛒' : item.kind === 'social_escalation' ? '⚠️' : item.kind === 'backup_stale' ? '💾' : item.kind === 'ingest_failing' ? '📭' : item.kind === 'storage_failing' ? '🗄️' : '🔌';
+  const tab = item.kind === 'platform_reauth' || item.kind === 'ingest_failing' ? 'platform_connections' : item.kind === 'backup_stale' ? 'cloud_backup' : item.kind === 'storage_failing' ? 'system' : 'commercial_inbox';
   const url = appUrl ? `${appUrl.replace(/\/$/, '')}/?tab=${tab}` : null;
   const lines = [`${icon} ${label}${item.platform ? ` — ${item.platform}` : ''}`];
   const body = String(item.snippet || item.title || '').trim().slice(0, 300);

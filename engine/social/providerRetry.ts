@@ -33,6 +33,13 @@ export interface ProviderRetryConfig {
   maxDelayMs: number;
   /** سقف احترام Retry-After (ms) — يمنع تعليق الطلب بلا نهاية. الافتراضي 60000. */
   maxRetryAfterMs: number;
+  /**
+   * مهلة طلب **القراءة** الواحد (ms). الافتراضي 25000. صيانة 2026-10-25: لم تكن هناك أي
+   * مهلة، فقراءة Graph/YouTube المعلّقة قد تحبس دورة كاملة (المراقب/المؤشرات) حتى مهلة
+   * المكتبة (~5 دقائق لكل محاولة × 3)، وتتجاوز مدة القفل فتتداخل الدورات. الكتابة (رفع
+   * فيديو/نشر) بلا مهلة مضافة — قد تطول مشروعاً، ولا تُعاد أصلاً.
+   */
+  readTimeoutMs: number;
   /** نوم قابل للحقن (اختبار حتمي بلا ساعة حقيقية). */
   sleep: (ms: number) => Promise<void>;
   /** ساعة قابلة للحقن (لتحويل تاريخ Retry-After). */
@@ -64,6 +71,7 @@ export function providerRetryConfig(
     baseDelayMs: envInt(env, 'PROVIDER_RETRY_BASE_MS', DEFAULT_BASE_DELAY_MS, 1, 60_000),
     maxDelayMs: envInt(env, 'PROVIDER_RETRY_MAX_MS', DEFAULT_MAX_DELAY_MS, 1, 120_000),
     maxRetryAfterMs: envInt(env, 'PROVIDER_RETRY_MAX_RETRY_AFTER_MS', DEFAULT_MAX_RETRY_AFTER_MS, 1, 300_000),
+    readTimeoutMs: envInt(env, 'PROVIDER_READ_TIMEOUT_MS', 25_000, 1_000, 120_000),
     sleep: overrides.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms))),
     now: overrides.now ?? (() => Date.now()),
     ...overrides,
@@ -228,7 +236,9 @@ export function createRetryingProviderFetch(
       let res: any;
       let networkError: unknown = null;
       try {
-        res = await baseFetch(url, init);
+        // مهلة للقراءة فقط وما لم يمرّر المستدعي إشارة إلغاء خاصة به.
+        const useTimeout = kind === 'read' && !(init as any)?.signal && typeof AbortSignal !== 'undefined' && typeof (AbortSignal as any).timeout === 'function';
+        res = await baseFetch(url, useTimeout ? { ...init, signal: (AbortSignal as any).timeout(config.readTimeoutMs) } : init);
       } catch (e) {
         networkError = e;
       }
