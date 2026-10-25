@@ -708,6 +708,7 @@ import { driveApiAccountingSnapshot, recordDriveApiCall, type DriveApiCallKind }
 import { neonUsageApiConfig, fetchNeonActualUsage, NEON_USAGE_POLL_MIN_INTERVAL_MS, computeCuHours } from "./engine/ops/neonUsage";
 import { buildSalesReadiness, sanitizeOAuthFailureMessage, type ReadinessPlatformInput } from "./engine/ops/salesReadiness";
 import { backupFreshness } from "./engine/dr/autoBackup";
+import { summarizePublishHealth, formatPublishLogLine } from "./engine/ops/publishHealth";
 import { SESSION_TTL_MS, signSession, verifySession, type SessionPayload } from "./engine/auth/sessions";
 import { CHALLENGE_TTL_MS, issueChallengeCode, matchChallengeWindow } from "./engine/auth/challenge";
 import { isScheduleInFuture, normalizeScheduleInput, wallClockToEpoch } from "./src/utils/scheduleTime";
@@ -11614,6 +11615,14 @@ app.post("/api/platforms/youtube/reply", requireOwner, async (req, res) => {
  * المحتوى (base64) أو رابط عام للفيديو، مع idempotency وrate limit وحارس سلامة.
  */
 /**
+ * سطر سجل منظّم لكل محاولة نشر (المنفّذ الموحّد + YouTube المباشر) — يثبت من سجلات
+ * Render أن النشر يعمل أو سبب فشله الحقيقي، بلا نص المنشور ولا أي رمز.
+ */
+function logPublishAttempt<T extends { status: number; body: any }>(platform: string, startedMs: number, result: T): T {
+  try { console.log(formatPublishLogLine(platform, result, Date.now() - startedMs)); } catch { /* السجل لا يُفشل النشر */ }
+  return result;
+}
+/**
  * F-07: غلاف منع التكرار الدائم لرفع YouTube حول `executeYouTubePublishInner`.
  * يحجز قبل أي نداء مزود (نفس المنصة + معرّف المنشور) فيمنع رفع نفس الفيديو مرتين
  * بعد إعادة التشغيل أو عبر نسختين. **لا يوجد تجاوز (`force` أُزيل):** انتظار الحصة
@@ -11626,12 +11635,13 @@ async function executeYouTubePublish(input: {
   productId?: string | null;
   mode?: "manual" | "auto";
 }, actor: string): Promise<{ status: number; body: any }> {
-  if (!input.postId) return executeYouTubePublishInner(input, actor);
+  const started = Date.now();
+  if (!input.postId) return logPublishAttempt("youtube", started, await executeYouTubePublishInner(input, actor));
   const idem = await beginExternalOperation({ platform: "youtube", operation: "publish", targetId: String(input.postId) });
-  if (idem.blocked) return idem.blocked;
+  if (idem.blocked) return logPublishAttempt("youtube", started, idem.blocked);
   let outcome: IdempotencyFinishStatus | null = "failed";
   try {
-    const result = await executeYouTubePublishInner(input, actor);
+    const result = logPublishAttempt("youtube", started, await executeYouTubePublishInner(input, actor));
     // F-07: انتظار الحصة (pendingRetry) حالة مميزة `pending_quota` — ليست done،
     // فتُعيد إعادة المحاولة المسموحة بلا أن تُمنع ولا أن تُعدّ نجاحاً.
     outcome = classifyExternalOperationOutcome({
@@ -12876,12 +12886,13 @@ async function executePlatformPublishInner(platform: string, body: any, actor: s
  */
 async function executePlatformPublish(platform: string, body: any, actor: string): Promise<{ status: number; body: any }> {
   const publishTargetId = typeof body?.postId === "string" && body.postId.trim() ? body.postId.trim() : "";
-  if (!publishTargetId) return executePlatformPublishInner(platform, body, actor);
+  const started = Date.now();
+  if (!publishTargetId) return logPublishAttempt(platform, started, await executePlatformPublishInner(platform, body, actor));
   const idem = await beginExternalOperation({ platform, operation: "publish", targetId: publishTargetId });
-  if (idem.blocked) return idem.blocked;
+  if (idem.blocked) return logPublishAttempt(platform, started, idem.blocked);
   let outcome: IdempotencyFinishStatus | null = "failed";
   try {
-    const result = await executePlatformPublishInner(platform, body, actor);
+    const result = logPublishAttempt(platform, started, await executePlatformPublishInner(platform, body, actor));
     // F-07: 200 = نجح/تهيئة مقبولة (TikTok publishing)؛ pendingRetry = انتظار حصة
     // مقصود (pending_quota لا done)؛ وإلا يُصنَّف الفشل (انقطاع ≠ فشل مؤكد).
     outcome = classifyExternalOperationOutcome({
@@ -13492,6 +13503,12 @@ function salesReadinessReport() {
     backup: drControl.driveRefreshToken || drControl.driveAutoBackup
       ? { configured: true, ...backupFreshness(drControl.driveAutoBackup, Date.now()) }
       : { configured: false, level: 'critical', lastSuccessAt: null, ageHours: null, lastError: null, lastSkippedReason: null },
+    publishing: (() => {
+      const live = platforms.filter((p) => p.connected && p.realConnector);
+      const names = new Map(live.map((p) => [p.id, p.name]));
+      return summarizePublishHealth((workspace as any).publishRecords || [], live.map((p) => p.id), Date.now())
+        .map((h) => ({ ...h, name: names.get(h.platform) || h.platform }));
+    })(),
   });
 }
 app.get("/api/control/sales-readiness", requireOwner, (_req, res) => {
