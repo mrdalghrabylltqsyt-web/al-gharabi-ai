@@ -5246,7 +5246,9 @@ add('watcher-advisory-not-authority',
     server.includes("let commercialSendMode: CommercialSendMode = 'approval'"),
     'في وضع الموافقة تُحفظ المسودة بلا أي نداء مزوّد (continue قبل الإرسال)');
   add('commercial-draft-send-central-executor',
-    /\/api\/commercial\/drafts\/:id\/decision[\s\S]{0,4000}executeMeta(Comment|Message)Reply/.test(server) &&
+    // القرار في مصدر واحد (decideCommercialDraft) يستدعيه مسار التطبيق وزر Telegram معاً.
+    /async function decideCommercialDraft\([\s\S]{0,6000}executeMeta(Comment|Message)Reply/.test(server) &&
+    /\/api\/commercial\/drafts\/:id\/decision", requireOwner[\s\S]{0,300}decideCommercialDraft\(/.test(server) &&
     server.includes('commercial-owner-approval'),
     'إرسال المسودة يمر بالمنفّذ المركزي نفسه (سلامة المحتوى + منع التكرار) لا مسار جانبي');
   add('commercial-inbox-owner-only',
@@ -6072,6 +6074,30 @@ add('watcher-advisory-not-authority',
       read('.env.example').includes('OWNER_TELEGRAM_CHAT_ID=') && read('render.yaml').includes('key: OWNER_TELEGRAM_CHAT_ID') &&
       read('package.json').includes('npm run test:owner-telegram-alerts'),
       'OWNER_TELEGRAM_CHAT_ID موثّق واختبار التنبيه الفوري مسجّل');
+  }
+
+  // موافقة بضغطة واحدة من Telegram: زر موقّع، المالك فقط، نفس منفّذ قرار التطبيق.
+  {
+    const tg = read('engine/notifications/ownerTelegram.ts');
+    add('onetap-signed-buttons',
+      tg.includes("createHmac('sha256', secret)") && tg.includes('timingSafeEqual(') && tg.includes('<= 64 ? data : null'),
+      'أزرار Telegram موقّعة بـHMAC وتُتحقق بمقارنة ثابتة الزمن وضمن 64 بايت');
+    add('onetap-owner-private-chat-only',
+      tg.includes('cb.fromId === ownerChatId && cb.chatId === ownerChatId') &&
+      server.includes('if (!isOwnerTelegramCallback(cb, ownerChat)) {'),
+      'الضغط يُقبل من محادثة المالك الخاصة فقط');
+    add('onetap-single-decision-path',
+      server.includes('async function decideCommercialDraft(draftId: string, rawKindInput: unknown, editedTextInput: unknown, actorId: string)') &&
+      server.includes('const out = await decideCommercialDraft(String(req.params.id), req.body?.kind, req.body?.text, user.id);') &&
+      server.includes('const out = await decideCommercialDraft(action.draftId, action.action, null, actorId);'),
+      'زر التطبيق وزر Telegram يمرّان بنفس قرار المالك (لا مسار جانبي)');
+    add('onetap-webhook-secret-first-and-owner-chat-ignored',
+      server.indexOf('const callback = parseTelegramCallbackQuery(req.body);') > server.indexOf('if(!verification.ok) {') &&
+      server.includes('ignored:"owner_chat"'),
+      'التحقق من سرّ webhook يسبق الضغطات، ورسائل المالك لا تُسجَّل كزبون');
+    add('onetap-regression-test',
+      read('package.json').includes('npm run test:telegram-one-tap-approval'),
+      'اختبار الموافقة بضغطة واحدة مسجّل ضمن npm test');
   }
 
   // 12) AGENTS.md: عدد فحوصات final-audit مطابق للفعلي (يُعَدّ من نص الملف نفسه).
