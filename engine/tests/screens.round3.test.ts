@@ -73,7 +73,7 @@ check('حالة TikTok لا تُعرض «غير متصلة» قبل الجلب',
 check('★ منصة متصلة تُعرض بحالتها لا بخطوات الإعداد', server.includes('function connectedPlatformNextHint(platform: string, c: any): string | null') && (server.match(/connectedPlatformNextHint\(p\.id, c\)/g) || []).length === 2);
 check('★ تنبيهات حقيقية (ردود منتظرة/قراءة متوقفة)', server.includes('id:"pending-replies"') && server.includes('id:`ingest-${pf}`') && !server.includes('id:"google-client"'));
 check('★ تجديد الرمز الروتيني لا يُغرق سجل العمليات', !server.includes('audit("system", "youtube_token_refreshed", "auto");'));
-check('«تحقق Google» اختياري لا يُسقط السلامة', server.includes('const optionalChecks = { googleSignInConfigured: Boolean(GOOGLE_CLIENT_ID) };') && !server.includes('googleAudienceCheckConfigured: Boolean(GOOGLE_CLIENT_ID),'));
+check('«تحقق Google» اختياري لا يُسقط السلامة', server.includes('const optionalChecks = { googleSignInConfigured: Boolean(GOOGLE_CLIENT_ID),') && !server.includes('googleAudienceCheckConfigured: Boolean(GOOGLE_CLIENT_ID),'));
 const sys = read('src/components/system/SystemControlView.tsx');
 check('التشخيص: وارد حقيقي + ردود منتظرة بدل محادثات CRM', sys.includes("['تعليقات ورسائل الزبائن',diagnostics.workspace.inbound") && sys.includes('ردود بانتظار موافقتك'));
 check('نسخ الملف المحلي «غير مستخدمة» على Postgres', sys.includes("diagnostics.storageBackend!=='file'?'Postgres + Drive'"));

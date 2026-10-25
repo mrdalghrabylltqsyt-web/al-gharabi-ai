@@ -15492,6 +15492,7 @@ app.get("/api/system/alerts", authenticateToken, (req, res) => {
   for (const [pf, st] of Object.entries(((metaPollingState as any)?.platformStats || {}) as Record<string, any>)) {
     if (Number(st?.consecutiveErrors || 0) >= META_READ_FAIL_WARN_CYCLES) alerts.push({ id:`ingest-${pf}`, severity:"warning", title:`قراءة تعليقات ${pf} متوقفة`, detail:`فشلت ${st.consecutiveErrors} دورات متتالية (${String(st.lastErrorCode || "خطأ")}). قد يلزم إعادة ربط المنصة.` });
   }
+  if ((storageAdapter as any).tlsStatus?.result === "fallback_unverified") alerts.push({ id:"db-tls", severity:"warning", title:"اتصال قاعدة البيانات بلا تحقق من الشهادة", detail:`رُفضت شهادة TLS (${String((storageAdapter as any).tlsStatus?.errorCode || "")}) فعاد الاتصال للوضع القديم كي لا يتوقف المشروع — يحتاج مراجعة.` });
   if (persistStats.failStreak > 0) alerts.push({ id:"storage-failing", severity: persistStats.failStreak >= STORAGE_FAILING_ALERT_STREAK ? "critical" : "warning", title:"حفظ البيانات يفشل", detail:`${persistStats.failStreak} كتابة متتالية فشلت منذ ${persistStats.failingSince || "—"} (${String(lastPersistError || "خطأ")}).` });
   if (!ownerTelegramConfigured()) alerts.push({ id:"owner-telegram", severity:"info", title:"تنبيه Telegram الفوري غير مكتمل", detail:"ينقصه OWNER_TELEGRAM_CHAT_ID — التنبيه بالبريد يعمل. اضغط «ربط Telegram والتحقق» عند الجاهزية." });
   if (connectedPlatformIds().length === 0) alerts.push({ id:"platforms", severity:"info", title:"لا توجد منصات متصلة", detail:"جميع المنصات ما زالت بانتظار OAuth/API فعلي؛ لا يوجد نشر خارجي." });
@@ -18315,7 +18316,7 @@ app.get("/api/system/integrity", requireOwner, (_req, res) => {
   // فحص الشاشات (2026-10-25 #3): «تحقق Google» كان فحصاً إلزامياً يظهر تحذيراً دائماً،
   // رغم أن الدخول برمز البريد وتسجيل Google **اختياري** (بلا GOOGLE_CLIENT_ID يُرفض بأمان).
   // صار فحصاً اختيارياً منفصلاً لا يُسقط سلامة النظام.
-  const optionalChecks = { googleSignInConfigured: Boolean(GOOGLE_CLIENT_ID) };
+  const optionalChecks = { googleSignInConfigured: Boolean(GOOGLE_CLIENT_ID), databaseTls: ((storageAdapter as any).tlsStatus?.result ?? null) as string | null };
   res.status(healthy ? 200 : 503).json({ success: healthy, healthy, version: PROJECT_VERSION, schemaVersion: STATE_SCHEMA_VERSION, checks, optionalChecks, counts: { users: serverUsers.length, products: workspace.products.length, plans: workspace.installmentPlans.length, posts: workspace.posts.length, conversations: workspace.conversations.length, leads: workspace.leads.length, tasks: workspace.tasks.length, sales: workspace.sales.length, payments: workspace.payments.length, inventoryMovements: (workspace as any).inventoryMovements.length, jobs: automationJobs.length, audit: auditLog.length }, timestamp: new Date().toISOString() });
 });
 
