@@ -92,7 +92,7 @@ const DEVICE_PATTERNS: ReadonlyArray<{ type: DeviceType; re: RegExp; labelAr: st
   { type: 'tv', re: /شاشه|شاش|تلفزيون|تلفزيون|تلفاز|تي في|tv|television/, labelAr: 'شاشة' },
   { type: 'washer', re: /غساله|غسالات|نشافه|washer|washing/, labelAr: 'غسالة' },
   { type: 'phone', re: /موبايل|تلفون|هاتف|جوال|ايفون|ايباد|phone|mobile/, labelAr: 'موبايل' },
-  { type: 'ac', re: /مكيف|سبليت|تكييف|\bac\b|air\s*condition/, labelAr: 'مكيف' },
+  { type: 'ac', re: /مكيف|سبليت|سبلت|تكييف|\bac\b|air\s*condition/, labelAr: 'مكيف' },
   { type: 'cooker', re: /طباخ|فرن|غاز|مايكرويف|cooker|oven|microwave/, labelAr: 'طباخ' },
 ]);
 
@@ -118,14 +118,19 @@ function normalizeDigits(input: string): string {
  * بجانب نوع جهاز (مثل «شاشة 55» ⇒ 55 بوصة، «شارب 50» ⇒ 50 بوصة).
  * يعيد { value, unit } أو null. لا يخترع مقاساً غير مذكور.
  */
-export function sizeFromText(input: string): { value: number; unit: 'inch' | 'feet' | 'liter' | null } | null {
+export function sizeFromText(input: string): { value: number; unit: 'inch' | 'feet' | 'liter' | 'kg' | 'ton' | null } | null {
   const n = normalizeDigits(normalizeArabicUniform(input));
   if (!n) return null;
-  const withUnit = n.match(/(\d{1,3})\s*(بوصه|انش|انج|قدم|لتر|liter|inch|feet|ft)/);
+  // فحص الشاشات (2026-10-25 #3): «بكام 8كليو» لم يُفهم مقاساً فسُئل الزبون عن «المقاس
+  // أو الحجم» رغم أنه ذكره. أُضيفت سعة الغسالات (كيلو/كليو/كغم) وقدرة السبلت (طن، مع
+  // الكسور مثل 1.5 طن) — الوحدة ملتصقة بالرقم أو منفصلة.
+  // الكسر (1.5 طن) يُقرأ من النص الخام قبل التطبيع (التطبيع يُسقط النقطة).
+  const UNIT_RE = /(\d{1,3}(?:[.,٫]\d{1,2})?)\s*(بوصة|بوصه|انش|إنش|انج|قدم|لتر|liter|inch|feet|ft|كيلوغرام|كيلو|كليو|كغم|كغ|kg|طن|ton)/i;
+  const withUnit = normalizeDigits(String(input ?? '')).match(UNIT_RE) || n.match(UNIT_RE);
   if (withUnit) {
-    const value = Number(withUnit[1]);
+    const value = Number(withUnit[1].replace(/[,٫]/, '.'));
     const u = withUnit[2];
-    const unit = /قدم|feet|ft/.test(u) ? 'feet' : /لتر|liter/.test(u) ? 'liter' : 'inch';
+    const unit = /قدم|feet|ft/.test(u) ? 'feet' : /لتر|liter/.test(u) ? 'liter' : /كيلو|كليو|كغ|kg/.test(u) ? 'kg' : /طن|ton/.test(u) ? 'ton' : 'inch';
     return Number.isFinite(value) ? { value, unit } : null;
   }
   // رقم مجرّد بجانب نوع جهاز معروف ⇒ يُفترض مقاساً (بوصة للشاشات/الموبايل، قدم للثلاجات).
@@ -174,7 +179,7 @@ export function monthsFromText(input: string): number | null {
 
 export interface InquiryAttributes {
   deviceType: DeviceType | null;
-  size: { value: number; unit: 'inch' | 'feet' | 'liter' | null } | null;
+  size: { value: number; unit: 'inch' | 'feet' | 'liter' | 'kg' | 'ton' | null } | null;
   brand: string | null;
   model: string | null;
   budget: number | null;
@@ -196,7 +201,7 @@ export function extractInquiryAttributes(text: string): InquiryAttributes {
 
 export interface ProductAttributes {
   deviceType: DeviceType | null;
-  size: { value: number; unit: 'inch' | 'feet' | 'liter' | null } | null;
+  size: { value: number; unit: 'inch' | 'feet' | 'liter' | 'kg' | 'ton' | null } | null;
   brand: string | null;
 }
 

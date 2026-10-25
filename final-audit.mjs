@@ -6251,6 +6251,17 @@ add('watcher-advisory-not-authority',
     read('package.json').includes('npm run test:screens-round2'),
     'بطاقات المنصات والوارد والمتابعات والبحث والمخزن تقرأ من مصادرها الحقيقية بلا محاكاة ولا عبارات عامة');
 
+  // 11j) فحص الشاشات الجولة 3: ردود الزبائن تحمل العنوان المسجّل، أوقات بتوقيت بغداد، لا حالة قبل الجلب.
+  add('screens-round3-root-fixes',
+    !/function replyFactsForProduct\(product: any \| null\): ReplyFactSet \{\n  if \(!product\) return \{\};/.test(server) &&
+    server.includes('async function refreshStalePendingReplyDrafts(nowIso: string)') &&
+    read('engine/social/inquiryResolver.ts').includes('export function asksLocationToo(text: string): boolean') &&
+    fs.existsSync(path.join(root, 'src/utils/displayTime.ts')) &&
+    read('src/components/system/CloudBackupView.tsx').includes('const awaitingFirstLoad') &&
+    server.includes('function connectedPlatformNextHint(platform: string, c: any)') &&
+    read('package.json').includes('npm run test:screens-round3'),
+    'ردود الزبائن من حقائق المعرض حتى بلا منتج + سعر/موقع معاً + المقاس بالكيلو، أوقات موحّدة، ولا حالة كاذبة أثناء التحميل');
+
   // 12) AGENTS.md: عدد فحوصات final-audit مطابق للفعلي (يُعَدّ من نص الملف نفسه).
   const auditCount = (read('final-audit.mjs').match(/^\s*add\(/gm) || []).length;
   add('agents-audit-count-accurate',

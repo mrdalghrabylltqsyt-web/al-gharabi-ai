@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { fmtDateTime } from '../../utils/displayTime';
 import { useApp } from '../../context/AppContext';
 import { apiService } from '../../services/api';
 import {
@@ -226,7 +227,7 @@ export const ApprovalWorkflowView: React.FC = () => {
                       </span>
                     </div>
                     <p className="text-xs text-slate-400">
-                      تم الإنشاء: {post.createdAt} • الكاتب: {post.authorName} ({post.authorRole})
+                      تم الإنشاء: {fmtDateTime(post.createdAt)} • الكاتب: {post.authorName} ({post.authorRole})
                     </p>
                   </div>
 
@@ -270,7 +271,7 @@ export const ApprovalWorkflowView: React.FC = () => {
                 {post.publishedAt && (
                   <div className="p-2.5 rounded-xl bg-teal-950/40 border border-teal-500/30 text-xs text-teal-300 flex items-center gap-2">
                     <CheckCircle className="w-4 h-4 text-teal-400 shrink-0" />
-                    <span>تنفيذ خارجي موثّق على المنصات في: {post.publishedAt}</span>
+                    <span>تنفيذ خارجي موثّق على المنصات في: {fmtDateTime(post.publishedAt)}</span>
                   </div>
                 )}
 
@@ -576,7 +577,7 @@ export const ApprovalWorkflowView: React.FC = () => {
                 >
                   <div className="flex items-center justify-between">
                     <span className="font-bold text-white">{act.byUser}</span>
-                    <span className="text-[10px] text-slate-400 font-mono">{act.timestamp}</span>
+                    <span className="text-[10px] text-slate-400 font-mono">{fmtDateTime(act.timestamp)}</span>
                   </div>
                   <p className="text-[11px] text-emerald-400 font-medium">
                     الإجراء: {act.action} ({act.userRole})

@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useState } from 'react';
+import { fmtDateTime } from '../../utils/displayTime';
 import { useApp } from '../../context/AppContext';
 import { ScheduleTimestamp } from '../common/ScheduleTimestamp';
 import {
@@ -487,7 +488,7 @@ export const SocialHubView: React.FC = () => {
                   <div>
                     <h4 className="font-bold text-sm text-white">{post.title}</h4>
                     <p className="text-xs text-slate-400 mt-0.5">
-                      نُشر في: {post.publishedAt || 'مؤخراً'} • الكاتب: {post.authorName}
+                      نُشر في: {fmtDateTime(post.publishedAt, 'مؤخراً')} • الكاتب: {post.authorName}
                     </p>
                   </div>
                   <div className="flex items-center gap-1">

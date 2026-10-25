@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useState } from 'react';
+import { fmtDateTime } from '../../utils/displayTime';
 import { RefreshCw, ShieldCheck, PlugZap, AlertTriangle, CheckCircle2, XCircle, Loader2, ExternalLink, KeyRound, Webhook } from 'lucide-react';
 import { apiService } from '../../services/api';
 import { useApp } from '../../context/AppContext';
@@ -270,7 +271,7 @@ const FacebookVideoDiagnosticsPanel: React.FC = () => {
             ? <p className="text-slate-500">لا سجلات نشر فاشلة محفوظة.</p>
             : diag.diagnostics.map((r: any, i: number) => (
               <div key={r.id || i} className="p-1.5 rounded bg-slate-900/70 border border-slate-800 space-y-0.5">
-                <p className="text-slate-300"><span className="font-bold">{r.platform}</span> · {r.state} {r.executedAt ? <span className="text-slate-500" dir="ltr">· {r.executedAt}</span> : null}</p>
+                <p className="text-slate-300"><span className="font-bold">{r.platform}</span> · {r.state} {r.executedAt ? <span className="text-slate-500">· {fmtDateTime(r.executedAt)}</span> : null}</p>
                 <p className="text-rose-300">{r.error || '—'}</p>
                 <p className="text-slate-500" dir="ltr">code={r.providerCode ?? '—'} subcode={r.providerSubcode ?? '—'} fbtrace={r.providerTraceId || '—'}</p>
               </div>
@@ -682,7 +683,7 @@ const YouTubeStatusPanel: React.FC<{ onReconnect: () => void; busy: boolean }> =
           <p className="text-emerald-300 font-bold flex items-center gap-1"><CheckCircle2 className="w-3 h-3" /> حالة الفحص: ناجح</p>
           <p className="text-slate-400">اسم القناة: <code className="text-slate-200">{result.accountName || '—'}</code></p>
           <p className="text-slate-400">معرّف القناة: <code className="text-slate-200" dir="ltr">{result.accountId || '—'}</code></p>
-          <p className="text-slate-400">وقت آخر فحص: <code className="text-slate-200" dir="ltr">{result.checkedAt || '—'}</code></p>
+          <p className="text-slate-400">وقت آخر فحص: <code className="text-slate-200">{fmtDateTime(result.checkedAt)}</code></p>
           {result.tokenRefreshed && <p className="text-sky-300">أُعيد تجديد رمز الوصول تلقائياً قبل الفحص (الاتصال دائم بلا إعادة ربط).</p>}
           {diag?.state?.state && (
             <p className="text-slate-400">الحالة الصادقة: <span className="text-slate-200 font-bold">{diag.state.labelAr}</span> — {diag.state.reason}</p>

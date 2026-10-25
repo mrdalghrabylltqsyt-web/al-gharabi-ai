@@ -312,6 +312,9 @@ export const CloudBackupView: React.FC = () => {
     ['نقاط الاستعادة', String(snapshot?.restorePointCount ?? 0), ShieldCheck],
   ];
 
+  // لم تصل أي حالة بعد ولا خطأ معلن ⇒ تحميل أول (لا قيم افتراضية تُقرأ كعطل).
+  const awaitingFirstLoad = !snapshot && !health && !statusError;
+
   return (
     <div className="space-y-6">
       <div className="p-6 rounded-2xl bg-gradient-to-l from-slate-900 to-sky-950/50 border border-sky-500/20 flex flex-col md:flex-row justify-between gap-4">
@@ -399,6 +402,16 @@ export const CloudBackupView: React.FC = () => {
         </section>
       )}
 
+      {/* فحص الشاشات (2026-10-25 #3): قبل وصول أول حالة من الخادم كانت الصفحة تعرض القيم
+          الافتراضية («Google Drive غير مربوط»، «OAuth ناقصة»، «نقاط الاستعادة 0») فتبدو كعطل
+          حقيقي رغم أن الربط سليم. الآن: لا تُعرض أي حالة قبل جلبها فعلاً. */}
+      {awaitingFirstLoad ? (
+        <section className="p-8 rounded-2xl glass text-center" data-testid="backup-first-load">
+          <Loader2 className="w-6 h-6 animate-spin text-sky-400 mx-auto mb-2" />
+          <p className="text-xs text-slate-300">جارٍ جلب حالة النسخ والربط من الخادم…</p>
+          <p className="text-[10px] text-slate-500 mt-1">لا تُعرض أي حالة قبل وصولها فعلاً (قد يأخذ الخادم ثوانٍ عند الإقلاع البارد).</p>
+        </section>
+      ) : (<>
       {/* حالة الإعداد / الربط */}
       <section className="p-5 rounded-2xl glass">
         <div className="flex items-center justify-between flex-wrap gap-3">
@@ -665,6 +678,8 @@ export const CloudBackupView: React.FC = () => {
           </details>
         )}
       </section>
+
+      </>)}
 
       <p className="text-[10px] text-slate-500 text-center">لا تُعرض هنا أي أسرار: لا state ولا authorization code ولا refresh token ولا أي قيمة مفتاح. رمز التجديد ومفاتيح الخزنة تبقى مشفّرة على الخادم فقط.</p>
     </div>

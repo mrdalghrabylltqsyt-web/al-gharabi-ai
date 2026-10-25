@@ -1,4 +1,5 @@
 import React from 'react';
+import { fmtDateTime } from '../../utils/displayTime';
 import { useApp } from '../../context/AppContext';
 import {
   Sparkles,
@@ -403,7 +404,7 @@ export const DashboardView: React.FC = () => {
                       <div>
                         <h4 className="text-xs font-bold text-white">{conv.customerName}</h4>
                         <p className="text-[10px] text-slate-400">
-                          عبر {conv.channel.toUpperCase()} • {conv.lastMessageTime}
+                          عبر {conv.channel.toUpperCase()} • {fmtDateTime(conv.lastMessageTime)}
                         </p>
                       </div>
                     </div>

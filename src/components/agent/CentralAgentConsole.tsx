@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useState } from 'react';
+import { fmtDateTime } from '../../utils/displayTime';
 import { useApp } from '../../context/AppContext';
 import { apiService } from '../../services/api';
 import {
@@ -114,7 +115,7 @@ function CommentAnalysisPanel({ data }: { data: AgentResultItem[] }) {
         <p><span className="text-slate-500">نص التعليق: </span>{latest?.text ?? latestAnalysis?.text ?? '—'}</p>
         {videoTitle && <p><span className="text-slate-500">الفيديو: </span>{videoTitle}</p>}
         {latest?.authorName && <p><span className="text-slate-500">الكاتب: </span>{latest.authorName}</p>}
-        {latest?.publishedAt && <p><span className="text-slate-500">التاريخ: </span>{latest.publishedAt}</p>}
+        {latest?.publishedAt && <p><span className="text-slate-500">التاريخ: </span>{fmtDateTime(latest.publishedAt)}</p>}
         <div className="flex flex-wrap gap-2 pt-1">
           {typeAr && <span className="text-[10px] px-2 py-0.5 rounded-full bg-sky-900/40 text-sky-200 border border-sky-500/40">النوع: {typeAr}</span>}
           {sentimentAr && <span className="text-[10px] px-2 py-0.5 rounded-full bg-amber-900/40 text-amber-200 border border-amber-500/40">المشاعر: {sentimentAr}</span>}

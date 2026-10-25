@@ -7,6 +7,7 @@
  */
 
 import React, { useCallback, useEffect, useState } from 'react';
+import { fmtDateTime } from '../../utils/displayTime';
 import { apiService } from '../../services/api';
 import { useApp } from '../../context/AppContext';
 
@@ -67,7 +68,7 @@ export function CommercialBrainKillSwitch() {
                   </div>
                   {state?.killSwitch?.killAt ? (
                     <div className="text-[11px] text-slate-500 mt-1">
-                      آخر إيقاف: {state.killSwitch.killAt}{state.killSwitch.killReason ? ` — السبب: ${state.killSwitch.killReason}` : ''}
+                      آخر إيقاف: {fmtDateTime(state.killSwitch.killAt)}{state.killSwitch.killReason ? ` — السبب: ${state.killSwitch.killReason}` : ''}
                     </div>
                   ) : null}
                 </div>
@@ -115,8 +116,8 @@ export function CommercialBrainKillSwitch() {
                 <div className="text-xs text-slate-400 mb-1">آخر دورة</div>
                 <div className="text-sm text-slate-200">
                   {state?.deferral?.deferred
-                    ? `مؤجَّلة منذ ${state.deferral.lastDeferredAt || 'غير معروف'} — ${state.deferral.deferredReason || 'ضغط استهلاك'}`
-                    : (state?.lastRun ? `${state.lastRun.at} — أُرسل ${state.lastRun.followUpsSent}` : 'لا يوجد')}
+                    ? `مؤجَّلة منذ ${fmtDateTime(state.deferral.lastDeferredAt, 'غير معروف')} — ${state.deferral.deferredReason || 'ضغط استهلاك'}`
+                    : (state?.lastRun ? `${fmtDateTime(state.lastRun.at)} — أُرسل ${state.lastRun.followUpsSent}` : 'لا يوجد')}
                 </div>
               </div>
               <div className="bg-slate-950/50 border border-slate-800 rounded-xl p-3">

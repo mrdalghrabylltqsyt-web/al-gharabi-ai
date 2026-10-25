@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useState } from 'react';
+import { fmtDateTime } from '../../utils/displayTime';
 import { useApp } from '../../context/AppContext';
 import { apiService } from '../../services/api';
 import {
@@ -400,12 +401,12 @@ export const SocialManagerView: React.FC = () => {
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
         <div className="p-5 rounded-2xl glass space-y-2">
           <span className="text-xs text-slate-400 block font-semibold">المنصات المتصلة</span>
-          <div className="text-2xl sm:text-3xl font-black text-emerald-400">{summary?.connected ?? 0}</div>
+          <div className="text-2xl sm:text-3xl font-black text-emerald-400">{summary ? (summary.connected ?? 0) : '…'}</div>
           <p className="text-[11px] text-slate-500">من أصل {summary?.totalPlatforms ?? 10} منصة مدعومة</p>
         </div>
         <div className="p-5 rounded-2xl glass space-y-2">
           <span className="text-xs text-slate-400 block font-semibold">غير متصلة</span>
-          <div className="text-2xl sm:text-3xl font-black text-slate-300">{summary?.disconnected ?? 0}</div>
+          <div className="text-2xl sm:text-3xl font-black text-slate-300">{summary ? (summary.disconnected ?? 0) : '…'}</div>
           <p className="text-[11px] text-slate-500">لا تُنفَّذ لها أي عملية خارجية</p>
         </div>
         <div className="p-5 rounded-2xl glass space-y-2">
@@ -880,7 +881,7 @@ export const SocialManagerView: React.FC = () => {
                 <div>الحالة: <span className={metaWatcher.watcherActive ? 'text-emerald-400 font-bold' : 'text-amber-400 font-bold'}>{metaWatcher.watcherActive ? 'يعمل' : 'متوقف'}</span></div>
                 <div>الفاصل: <span className="text-slate-200 font-bold">{metaWatcher.cadenceMinutes} دقيقة</span></div>
                 <div>عدد الدورات: <span className="text-slate-200">{metaWatcher.pollCount ?? 0}</span></div>
-                <div>آخر فحص: <span className="text-slate-400" dir="ltr">{metaWatcher.lastPollAt || '—'}</span></div>
+                <div>آخر فحص: <span className="text-slate-400">{fmtDateTime(metaWatcher.lastPollAt)}</span></div>
                 {metaWatcher.lastError && <div className="text-rose-300">آخر خطأ: <span dir="ltr" className="font-mono">{metaWatcher.lastError}</span></div>}
               </div>
               <div className="p-3 rounded-xl bg-slate-950 border border-slate-800 space-y-1">
@@ -969,7 +970,7 @@ export const SocialManagerView: React.FC = () => {
                 <div>الحالة: <span className={telegramWatcher.watcherActive ? 'text-emerald-400 font-bold' : 'text-amber-400 font-bold'}>{telegramWatcher.watcherActive ? 'يعمل' : 'متوقف'}</span></div>
                 <div>الفاصل: <span className="text-slate-200 font-bold">{telegramWatcher.cadenceMinutes} دقيقة</span></div>
                 <div>عدد الدورات: <span className="text-slate-200">{telegramWatcher.pollCount ?? 0}</span></div>
-                <div>آخر فحص: <span className="text-slate-400" dir="ltr">{telegramWatcher.lastPollAt || '—'}</span></div>
+                <div>آخر فحص: <span className="text-slate-400">{fmtDateTime(telegramWatcher.lastPollAt)}</span></div>
                 {telegramWatcher.lastError && <div className="text-rose-300">آخر خطأ: <span dir="ltr" className="font-mono">{telegramWatcher.lastError}</span></div>}
               </div>
               <div className="p-3 rounded-xl bg-slate-950 border border-slate-800 space-y-1">
@@ -1059,10 +1060,10 @@ export const SocialManagerView: React.FC = () => {
             {ttStatus?.stateReason && <div className="text-slate-400">{ttStatus.stateReason}</div>}
             {ttStatus?.nextAction && <div className="text-slate-300">الإجراء التالي: {ttStatus.nextAction}</div>}
             <div>حالة الاتصال: <span className={ttStatus?.providerVerified ? 'text-emerald-400 font-bold' : ttStatus?.connected ? 'text-indigo-300 font-bold' : 'text-slate-400 font-bold'}>
-              {ttStatus?.providerVerified ? 'متصلة وموثقة (open_id)' : ttStatus?.connected ? 'متصلة — بانتظار التوثيق' : 'غير متصلة'}
+              {!ttStatus ? 'جارٍ التحميل…' : ttStatus.providerVerified ? 'متصلة وموثقة (open_id)' : ttStatus.connected ? 'متصلة — بانتظار التوثيق' : 'غير متصلة'}
             </span></div>
             {ttStatus?.accountName && <div>الحساب: <span className="font-mono text-slate-200">{ttStatus.accountName}</span></div>}
-            <div>التوكن: <span className={ttStatus?.tokenStored ? 'text-emerald-400 font-bold' : 'text-slate-400 font-bold'}>{ttStatus?.tokenStored ? 'مخزّن مشفّراً' : 'غير مخزّن'}</span></div>
+            <div>التوكن: <span className={ttStatus?.tokenStored ? 'text-emerald-400 font-bold' : 'text-slate-400 font-bold'}>{!ttStatus ? '…' : ttStatus.tokenStored ? 'مخزّن مشفّراً' : 'غير مخزّن'}</span></div>
             <div>refresh token: <span className={ttStatus?.refreshTokenStored ? 'text-emerald-400 font-bold' : 'text-slate-400 font-bold'}>{ttStatus?.refreshTokenStored ? 'موجود' : 'غير موجود'}</span></div>
             {ttStatus?.tokenExpired && <div className="text-rose-300 font-bold">التوكن منتهٍ — يلزم تجديد تلقائي أو إعادة ربط.</div>}
           </div>

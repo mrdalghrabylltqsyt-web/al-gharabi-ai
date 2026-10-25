@@ -483,6 +483,7 @@ import {
   isDeferredDecision as isMetaDeferredDecision,
   releaseDeferredEntries as releaseMetaDeferredEntries,
   metaExecutionDecisionFromCentral,
+  META_READ_FAIL_WARN_CYCLES,
   type MetaPlatform,
   type MetaPollingState,
 } from "./engine/social/metaWatcher";
@@ -4166,7 +4167,10 @@ async function ensureYouTubeAccessToken(): Promise<{ ok: boolean; token?: string
     scope: res.data.scope,
   });
   await persistStateDurable();
-  audit("system", "youtube_token_refreshed", "auto");
+  // فحص الشاشات (2026-10-25 #3): تجديد الرمز الروتيني (كل ساعة) كان يُسجَّل في سجل
+  // العمليات فيُغرقه (12 من 12 سجلاً ظاهراً) ويكتب للقاعدة كل ساعة. صار سطر سجل خادم
+  // فقط؛ فشل التجديد يبقى مُسجَّلاً كما هو.
+  console.log("[youtube] token_refreshed trigger=auto");
   logYouTube("token_refreshed", { scopeCount: res.data.scope.length });
   return { ok: true, token: res.data.accessToken, refreshed: true };
 }
@@ -10031,6 +10035,52 @@ function incomingToInteraction(row: any, nowIso: string): InboundInteraction | n
  * وتُرسل متابعة تلقائية لمن بدأ التواصل عبر المنفّذ المركزي وحده. لا تنفيذ خارجي
  * بلا اتصال موثق وحارسَي المحتوى/التكرار (كلاهما داخل المنفّذ).
  */
+/**
+ * فحص الشاشات (2026-10-25 #3): المسودات المعلّقة التي وُلّدت قبل إصلاح حقائق المعرض
+ * (تسأل «أي فرع/مدينة» أو تتجاهل العنوان/المقاس المذكور) تُعاد صياغتها من نفس المحرّك
+ * الحالي. لا تعديل في مكانها: الأصلية تُلغى بسبب مكتوب وتُنشأ بديلة جديدة بانتظار
+ * موافقة المالك (لا إرسال). تُعالج المسودات الأصلية فقط (`reply:`) فلا سلسلة استبدال.
+ */
+async function refreshStalePendingReplyDrafts(nowIso: string): Promise<number> {
+  let refreshed = 0;
+  const inbound = ((workspace as any).socialComments || []) as any[];
+  for (const d of commercialDrafts.slice()) {
+    if (d.status !== 'pending' || d.purpose !== 'reply') continue;
+    if (!String(d.idempotencyKey || '').startsWith('reply:')) continue;
+    const row = inbound.find((c: any) => String(c.externalId || '') === String(d.externalId || ''));
+    const lead = commercialLeads.find((l) => l.id === d.leadId);
+    if (!row || !lead || !String(row.text || '').trim()) continue;
+    const product = resolveProductForInteraction({
+      commentText: String(row.text), postExternalId: row.postExternalId || null, postText: row.postText || null,
+      leadProductId: lead.interestedProductId || null,
+    }).product;
+    const cls = (row.classification as any) || classifyComment(String(row.text));
+    const gen = await generateWatcherReply({
+      platform: d.platform, commentText: String(row.text),
+      subjectId: d.kind === 'message' ? `dm:${String(d.recipientId || '')}` : String(row.postExternalId || row.mediaId || 'thread'),
+      subjectTitle: null, product, cls, allowAi: false,
+    });
+    const text = String(gen.text || '').trim();
+    if (!text || text === String(d.text || '').trim()) continue;
+    const facts = buildFactsForProduct(product, Number(product?.downPaymentPercent || 0), Number(product?.durationMonths || 0));
+    if (!analyzeBusinessClaims(text, facts).safe) continue;
+    const idx = commercialDrafts.findIndex((x) => x.id === d.id);
+    if (idx < 0) continue;
+    commercialDrafts[idx] = cancelCommercialDraft(d, { reason: 'استُبدلت بصياغة أدق من بيانات المعرض المسجّلة (العنوان/المقاس) — لم تُرسل.', at: nowIso, code: 'SUPERSEDED_BETTER_REPLY' });
+    const next = createCommercialDraft({
+      lead, purpose: 'reply', text, externalId: d.externalId, recipientId: d.recipientId,
+      productId: product?.id ? String(product.id) : d.productId, idempotencyKey: `reply-refresh:${d.externalId}`,
+      windowExpiresAt: d.windowExpiresAt, at: nowIso,
+    });
+    if (next) {
+      refreshed += 1;
+      audit('commercial-brain', 'commercial_draft_refreshed', JSON.stringify({ from: d.id, to: next.id, platform: d.platform }));
+    }
+  }
+  if (refreshed) { await persistCommercialLeads(); console.log(`[commercial] drafts_refreshed=${refreshed}`); }
+  return refreshed;
+}
+
 async function runCommercialBrainCycle(trigger: string): Promise<{ ok: boolean; trigger: string; result?: any; error?: string }> {
   // Kill Switch (مفتاح رئيسي واحد): حين يكون معطّلاً (**الافتراضي، fail-closed**) لا
   // تنفّذ الدورة أي عمل — تُعلن التخطّي بصراحة بلا أي تنفيذ خارجي حتى يفعّله المالك.
@@ -10056,6 +10106,8 @@ async function runCommercialBrainCycle(trigger: string): Promise<{ ok: boolean; 
     // المخالفة إلى `cancelled` (بسبب مكتوب) ويؤرشف الـleads غير المؤهّلة (إيموجي/
     // مدح) بلا حذف. حتمي بالكامل (بلا AI ولا نداء مزوّد). لا يُنشئ أي مسودة جديدة.
     const cleanup = runCommercialQualificationCleanup({ by: 'system', trigger: `cycle:${trigger}` });
+    // المسودات المعلّقة القديمة الأضعف تُستبدل بصياغة المحرّك الحالي (بلا إرسال).
+    try { await refreshStalePendingReplyDrafts(nowIso); } catch (e: any) { console.log(`[commercial] drafts_refresh_failed error=${String(e?.name || 'error')}`); }
     if (cleanup.cancelledDrafts > 0 || cleanup.archivedLeads > 0) {
       await persistCommercialLeads();
     }
@@ -13119,7 +13171,7 @@ app.get("/api/platforms/:platform/health", authenticateToken, async (req,res)=>{
 app.get("/api/platforms/readiness", authenticateToken, (_req,res)=>res.json({success:true,platforms:SUPPORTED_PLATFORMS.map(p=>({platform:p.id,name:p.name,connection:safeConnection(p.id)})),generatedAt:new Date().toISOString()}));
 
 app.get("/api/platforms/production-readiness", authenticateToken, (_req,res)=>{
-  const rows=SUPPORTED_PLATFORMS.map((p:any)=>{ const r=publicProviderReadiness(p.id); const c:any=platformConnections.get(p.id); const connected=Boolean(c?.status==="connected" && c?.providerVerified===true); const production=connected && hasRealConnector(p.id); return {platform:p.id,name:p.name,configured:r.configured,connected,providerVerified:Boolean(c?.providerVerified),productionReady:production,realConnector:hasRealConnector(p.id),credentialMode:credentialModeOf(p.id),mode:r.mode,missing:r.missing||[],next:p.id==="telegram"?"ضبط Bot Token ثم الضغط على «ربط Telegram» لتسجيل webhook حقيقي":OAUTH_CONFIG[p.id]?"ضبط بيانات OAuth ثم تسجيل Redirect URI والربط": "إضافة موصل إنتاجي معتمد قبل تفعيل النشر"}; });
+  const rows=SUPPORTED_PLATFORMS.map((p:any)=>{ const r=publicProviderReadiness(p.id); const c:any=platformConnections.get(p.id); const connected=Boolean(c?.status==="connected" && c?.providerVerified===true); const production=connected && hasRealConnector(p.id); return {platform:p.id,name:p.name,configured:r.configured,connected,providerVerified:Boolean(c?.providerVerified),productionReady:production,realConnector:hasRealConnector(p.id),credentialMode:credentialModeOf(p.id),mode:r.mode,missing:r.missing||[],next:connectedPlatformNextHint(p.id, c) || (p.id==="telegram"?"ضبط Bot Token ثم الضغط على «ربط Telegram» لتسجيل webhook حقيقي":OAUTH_CONFIG[p.id]?"ضبط بيانات OAuth ثم تسجيل Redirect URI والربط": "إضافة موصل إنتاجي معتمد قبل تفعيل النشر")}; });
   res.json({success:true,generatedAt:new Date().toISOString(),projectVersion:PROJECT_VERSION,summary:{total:rows.length,connected:rows.filter(x=>x.connected).length,productionReady:rows.filter(x=>x.productionReady).length},platforms:rows,note:"هذه الصفحة تميز الجاهزية التقنية عن الاتصال الفعلي ولا تمنح أي منصة حالة نجاح وهمية. productionReady يتطلب موصلاً حقيقياً منفّذاً + اتصالاً موثقاً."});
 });
 
@@ -15372,7 +15424,7 @@ app.get("/api/system/diagnostics", requireOwner, (_req, res) => {
   const approved = automationJobs.filter((j:any)=>j.status==="approved").length;
   const ready = automationJobs.filter((j:any)=>j.status==="ready").length;
   const failed = automationJobs.filter((j:any)=>j.status==="failed").length;
-  res.json({ success:true, generatedAt:new Date().toISOString(), version:PROJECT_VERSION, schemaVersion:STATE_SCHEMA_VERSION, node:process.version, uptimeSeconds:Math.round(process.uptime()), memory:{ rss:memory.rss, heapUsed:memory.heapUsed, heapTotal:memory.heapTotal }, sessions:activeSessionCount(), users:serverUsers.length, platforms:{ total:SUPPORTED_PLATFORMS.length, connected:connectedPlatformIds().length }, workspace:{ products:workspace.products.length, posts:workspace.posts.length, conversations:workspace.conversations.length, plans:workspace.installmentPlans.length, leads:workspace.leads.length, tasks:workspace.tasks.length, sales:workspace.sales.length, payments:workspace.payments.length, suppliers:workspace.suppliers.length, purchases:workspace.purchases.length, expenses:workspace.expenses.length, contracts:workspace.contracts.length, installmentSchedules:workspace.installmentSchedules.length }, jobs:{ total:automationJobs.length, queued, approved, ready, failed }, backups:{ count: (()=>{ try{return fs.readdirSync(BACKUP_DIR).filter(n=>n.startsWith("state-")&&n.endsWith(".json")).length;}catch{return 0;} })() } });
+  res.json({ success:true, generatedAt:new Date().toISOString(), version:PROJECT_VERSION, schemaVersion:STATE_SCHEMA_VERSION, node:process.version, uptimeSeconds:Math.round(process.uptime()), memory:{ rss:memory.rss, heapUsed:memory.heapUsed, heapTotal:memory.heapTotal }, sessions:activeSessionCount(), users:serverUsers.length, platforms:{ total:SUPPORTED_PLATFORMS.length, connected:connectedPlatformIds().length }, workspace:{ products:workspace.products.length, posts:workspace.posts.length, conversations:workspace.conversations.length, inbound:(((workspace as any).socialComments||[]) as any[]).length, commercialLeads:commercialLeads.filter((l:any)=>!l.archived).length, pendingCustomerReplies:commercialDrafts.filter((d:any)=>d.status==="pending").length, plans:workspace.installmentPlans.length, leads:workspace.leads.length, tasks:workspace.tasks.length, sales:workspace.sales.length, payments:workspace.payments.length, suppliers:workspace.suppliers.length, purchases:workspace.purchases.length, expenses:workspace.expenses.length, contracts:workspace.contracts.length, installmentSchedules:workspace.installmentSchedules.length }, jobs:{ total:automationJobs.length, queued, approved, ready, failed }, storageBackend: storageAdapter.backend, backups:{ count: (()=>{ try{return fs.readdirSync(BACKUP_DIR).filter(n=>n.startsWith("state-")&&n.endsWith(".json")).length;}catch{return 0;} })() } });
 });
 
 
@@ -15432,12 +15484,23 @@ app.get("/api/crm/follow-ups/today", authenticateToken, (_req,res)=>{
 app.get("/api/system/alerts", authenticateToken, (req, res) => {
   const alerts:any[] = [];
   if (!OWNER_EMAIL) alerts.push({ id:"owner-email", severity:"critical", title:"بريد المالك غير مضبوط", detail:"يجب ضبط OWNER_EMAIL قبل الاعتماد على نظام التحقق الخاص بالمالك." });
-  if (!GOOGLE_CLIENT_ID) alerts.push({ id:"google-client", severity:"warning", title:"تحقق Google غير مضبوط", detail:"تسجيل Google لن يملك فحص جمهور التطبيق حتى يتم ضبط GOOGLE_CLIENT_ID." });
+  // فحص الشاشات (2026-10-25 #3): التنبيهات كانت تعرض «تحقق Google» (ميزة دخول اختيارية)
+  // وتغفل ما يحتاج المالك فعلاً. الآن: ردود الزبائن المنتظرة، قراءة تعليقات متوقفة،
+  // وتنبيه Telegram الفوري غير المكتمل — كلها من حالة حقيقية.
+  const pendingReplies = commercialDrafts.filter((d:any)=>d.status==="pending").length;
+  if (pendingReplies) alerts.push({ id:"pending-replies", severity:"warning", title:"ردود زبائن بانتظار موافقتك", detail:`${pendingReplies} رد جاهز لزبائن حقيقيين — افتح «صندوق الزبائن» للموافقة أو التعديل.` });
+  for (const [pf, st] of Object.entries(((metaPollingState as any)?.platformStats || {}) as Record<string, any>)) {
+    if (Number(st?.consecutiveErrors || 0) >= META_READ_FAIL_WARN_CYCLES) alerts.push({ id:`ingest-${pf}`, severity:"warning", title:`قراءة تعليقات ${pf} متوقفة`, detail:`فشلت ${st.consecutiveErrors} دورات متتالية (${String(st.lastErrorCode || "خطأ")}). قد يلزم إعادة ربط المنصة.` });
+  }
+  if (!ownerTelegramConfigured()) alerts.push({ id:"owner-telegram", severity:"info", title:"تنبيه Telegram الفوري غير مكتمل", detail:"ينقصه OWNER_TELEGRAM_CHAT_ID — التنبيه بالبريد يعمل. اضغط «ربط Telegram والتحقق» عند الجاهزية." });
   if (connectedPlatformIds().length === 0) alerts.push({ id:"platforms", severity:"info", title:"لا توجد منصات متصلة", detail:"جميع المنصات ما زالت بانتظار OAuth/API فعلي؛ لا يوجد نشر خارجي." });
   const failed = automationJobs.filter((j:any)=>j.status==="failed").length;
   if (failed) alerts.push({ id:"jobs-failed", severity:"warning", title:"مهام فاشلة", detail:`يوجد ${failed} مهمة فاشلة تحتاج مراجعة.` });
   const newConversations = workspace.conversations.filter((c:any)=>c.status==="new").length;
   if (newConversations) alerts.push({ id:"messages", severity:"info", title:"استفسارات جديدة", detail:`يوجد ${newConversations} استفسار يحتاج متابعة.` });
+  const dayAgo = Date.now() - 86400000;
+  const inquiries24h = (((workspace as any).socialComments||[]) as any[]).filter((c:any)=>Date.parse(c?.createdAt||"")>=dayAgo && (c?.classification?.isBusinessInquiry===true || c?.classification?.intent==="business_inquiry")).length;
+  if (inquiries24h) alerts.push({ id:"inquiries-24h", severity:"info", title:"استفسارات زبائن آخر 24 ساعة", detail:`${inquiries24h} استفسار تجاري حقيقي من المنصات خلال آخر 24 ساعة.` });
   res.json({ success:true, generatedAt:new Date().toISOString(), alerts });
 });
 
@@ -18194,13 +18257,16 @@ app.get("/api/system/integrity", requireOwner, (_req, res) => {
     stateFile: stateUsable,
     stateWritable: status.writable,
     ownerConfigured: Boolean(OWNER_EMAIL),
-    googleAudienceCheckConfigured: Boolean(GOOGLE_CLIENT_ID),
     platformConnectionsPersisted: stateUsable,
     workspaceLoaded: Boolean(workspace && typeof workspace === "object"),
     backupDirectory: storageAdapter.backend === "file" ? (() => { try { ensureBackupDirectory(); return true; } catch { return false; } })() : status.healthy,
   };
   const healthy = Object.values(checks).every(Boolean);
-  res.status(healthy ? 200 : 503).json({ success: healthy, healthy, version: PROJECT_VERSION, schemaVersion: STATE_SCHEMA_VERSION, checks, counts: { users: serverUsers.length, products: workspace.products.length, plans: workspace.installmentPlans.length, posts: workspace.posts.length, conversations: workspace.conversations.length, leads: workspace.leads.length, tasks: workspace.tasks.length, sales: workspace.sales.length, payments: workspace.payments.length, inventoryMovements: (workspace as any).inventoryMovements.length, jobs: automationJobs.length, audit: auditLog.length }, timestamp: new Date().toISOString() });
+  // فحص الشاشات (2026-10-25 #3): «تحقق Google» كان فحصاً إلزامياً يظهر تحذيراً دائماً،
+  // رغم أن الدخول برمز البريد وتسجيل Google **اختياري** (بلا GOOGLE_CLIENT_ID يُرفض بأمان).
+  // صار فحصاً اختيارياً منفصلاً لا يُسقط سلامة النظام.
+  const optionalChecks = { googleSignInConfigured: Boolean(GOOGLE_CLIENT_ID) };
+  res.status(healthy ? 200 : 503).json({ success: healthy, healthy, version: PROJECT_VERSION, schemaVersion: STATE_SCHEMA_VERSION, checks, optionalChecks, counts: { users: serverUsers.length, products: workspace.products.length, plans: workspace.installmentPlans.length, posts: workspace.posts.length, conversations: workspace.conversations.length, leads: workspace.leads.length, tasks: workspace.tasks.length, sales: workspace.sales.length, payments: workspace.payments.length, inventoryMovements: (workspace as any).inventoryMovements.length, jobs: automationJobs.length, audit: auditLog.length }, timestamp: new Date().toISOString() });
 });
 
 app.get("/api/system/export", requireOwner, (_req, res) => {
@@ -18875,8 +18941,23 @@ app.get("/api/system/final-readiness", requireOwner, (_req,res)=>{
   const healthy=checks.every(x=>x.ok); res.status(healthy?200:503).json({success:healthy,ready:healthy,projectVersion:PROJECT_VERSION,schemaVersion:STATE_SCHEMA_VERSION,checks,blocking:checks.filter(x=>!x.ok)});
 });
 
+/**
+ * فحص الشاشات (2026-10-25 #3): قائمة الجاهزية كانت تعرض لمنصة **متصلة فعلاً** نص الإعداد
+ * («نفّذ الربط…»، «ضبط بيانات OAuth…») فيبدو أنها غير مربوطة. للمتصلة: حالتها الحقيقية
+ * (الحساب + قراءة التعليقات إن كانت متعثّرة). غير المتصلة تبقى بخطوة إعدادها.
+ */
+function connectedPlatformNextHint(platform: string, c: any): string | null {
+  if (!(c?.status === "connected" && c?.providerVerified === true)) return null;
+  const who = c?.accountName ? ` (${String(c.accountName).slice(0, 60)})` : "";
+  const st = (((metaPollingState as any)?.platformStats || {}) as Record<string, any>)[platform];
+  if (st && Number(st.consecutiveErrors || 0) >= META_READ_FAIL_WARN_CYCLES) {
+    return `متصل${who} — لكن قراءة التعليقات متعثّرة (${String(st.lastErrorCode || "خطأ")}، ${st.consecutiveErrors} دورات).`;
+  }
+  return `متصل ومُتحقَّق من المزود${who}.`;
+}
+
 app.get("/api/system/deployment-checklist", requireOwner, (_req,res)=>{
-  const platformRows=SUPPORTED_PLATFORMS.map((p:any)=>{ const r=publicProviderReadiness(p.id); const c:any=platformConnections.get(p.id); return {platform:p.id,name:p.name,configured:Boolean(r.configured),connected:Boolean(c?.status==="connected"&&c?.providerVerified===true),providerVerified:Boolean(c?.providerVerified===true),productionReady:Boolean(c?.status==="connected"&&c?.providerVerified===true&&p.id==="telegram"),missing:r.missing||[],next:r.next||"إضافة موصل إنتاجي معتمد"}; });
+  const platformRows=SUPPORTED_PLATFORMS.map((p:any)=>{ const r=publicProviderReadiness(p.id); const c:any=platformConnections.get(p.id); return {platform:p.id,name:p.name,configured:Boolean(r.configured),connected:Boolean(c?.status==="connected"&&c?.providerVerified===true),providerVerified:Boolean(c?.providerVerified===true),productionReady:Boolean(c?.status==="connected"&&c?.providerVerified===true&&p.id==="telegram"),missing:r.missing||[],next:connectedPlatformNextHint(p.id, c) || r.next||"إضافة موصل إنتاجي معتمد"}; });
   const checks=[
     {id:"auth",label:"المصادقة والمالك",ok:serverUsers.some((u:any)=>u.role==="owner")},
     {id:"persistence",label:"التخزين والنسخ الاحتياطية",ok:Boolean(workspace&&typeof workspace==="object")&&storageStatus().healthy},
@@ -19857,8 +19938,26 @@ function resolveYouTubeVideoProduct(videoId: string | null | undefined): { produ
  * مصدر واحد يُستخدم في مسار المراقب والمراجعة، فلا يختلف الرد عن بيانات المعرض.
  */
 function replyFactsForProduct(product: any | null): ReplyFactSet {
-  if (!product) return {};
   const showroom: any = workspace.showroom || {};
+  // فحص الشاشات (2026-10-25 #3) — جذر «خبرني أي فرع أو أي مدينة تقصد»: عند غياب منتج
+  // مرتبط بالمنشور كانت الدالة تعيد {} فتسقط معها حقائق **المعرض** (العنوان/الدوام/الهاتف)
+  // رغم أنها مسجّلة ولا علاقة لها بالمنتج. فكل سؤال «العنوان؟» على منشور غير مربوط
+  // (أغلب المنشورات) يُسأل الزبون عن «الفرع» بدل إعطائه العنوان. الآن حقائق المعرض
+  // تُعاد دائماً، وحقائق المنتج (سعر/قسط/توفر/اسم) فقط عند وجود منتج.
+  if (!product) {
+    const addressOnly = [showroom.address, showroom.city].map((x: any) => cleanText(x, 200)).filter(Boolean).join(' - ');
+    const docsOnly = (Array.isArray(showroom.requiredDocuments) ? showroom.requiredDocuments : []).map((d: any) => cleanText(d, 80)).filter(Boolean).slice(0, 20);
+    return {
+      locationText: addressOnly || undefined,
+      hoursText: showroom.workingHours ? cleanText(showroom.workingHours, 120) : undefined,
+      phoneText: showroom.phoneUnified ? cleanText(showroom.phoneUnified, 40) : undefined,
+      whatsappText: showroom.whatsappSales ? cleanText(showroom.whatsappSales, 40) : undefined,
+      inStock: null,
+      hasRecordedPromotion: [showroom.promotions, showroom.activeOffer].some((x: any) => cleanText(x, 300).length > 0),
+      requiredDocuments: docsOnly.length ? docsOnly : undefined,
+      installmentMonthsText: showroomInstallmentMonthsText() || undefined,
+    };
+  }
   const address = [showroom.address, showroom.city].map((x: any) => cleanText(x, 200)).filter(Boolean).join(' - ');
   const price = Number(product?.cashPrice);
   // المستمسكات: أولوية لمستمسكات المنتج الخاصة، وإلا القائمة العامة للمعرض — كلها
