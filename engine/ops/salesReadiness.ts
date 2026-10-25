@@ -7,6 +7,8 @@
  * ولا يعيد أي نص زبون أو قيمة سرية — أعداد وأسماء منصات وأسماء متغيرات فقط.
  */
 
+import { publishFailureHint, type PublishHealthPlatform } from './publishHealth';
+
 export type ReadinessSeverity = 'blocker' | 'warning' | 'info' | 'ok';
 export type ReadinessArea = 'customers' | 'platforms' | 'automation' | 'content' | 'system';
 export type ReadinessActor = 'owner' | 'system';
@@ -48,6 +50,8 @@ export interface SalesReadinessInput {
     lastError: string | null;
     lastSkippedReason: string | null;
   };
+  /** صحة النشر الفعلي على كل منصة متصلة (من سجل النشر الحقيقي). */
+  publishing?: Array<PublishHealthPlatform & { name: string }>;
 }
 
 export interface ReadinessItem {
@@ -278,6 +282,49 @@ export function buildSalesReadiness(input: SalesReadinessInput): SalesReadinessR
     }
   }
 
+  // 8b) النشر الفعلي — «متصل» لا يعني «ينشر»: نقرأ آخر نتيجة حقيقية لكل منصة.
+  const DAY = 24 * 60 * 60 * 1000;
+  const nowMs = Date.parse(input.nowIso);
+  const failingNow = (p: PublishHealthPlatform) => Boolean(p.lastFailureAt) && (!p.lastSuccessAt || Date.parse(p.lastFailureAt!) > Date.parse(p.lastSuccessAt));
+  if (input.publishing && input.publishing.length) {
+    const working: string[] = [];
+    for (const p of input.publishing) {
+      if (failingNow(p) && p.lastFailure) {
+        const hint = publishFailureHint(p.name, p.lastFailure);
+        const n = p.consecutiveFailures;
+        push({
+          id: `publish-${p.platform}`, area: 'platforms', actor: hint.actor, severity: 'warning',
+          title: n > 1 ? `آخر ${n} محاولات نشر على ${p.name} فشلت` : `آخر نشر على ${p.name} فشل`,
+          detail: `السبب من ${p.name}: «${p.lastFailure.error}».${p.lastSuccessAt ? '' : ' لم يُسجَّل أي نشر ناجح على هذه المنصة بعد.'}`,
+          action: hint.action,
+        });
+        continue;
+      }
+      if (!p.lastSuccessAt) {
+        push({
+          id: `publish-${p.platform}`, area: 'content', actor: 'owner', severity: 'info',
+          title: `لم يُنشر على ${p.name} بعد`,
+          detail: 'المنصة متصلة لكن لا يوجد منشور ناجح مسجّل عليها.',
+          action: `انشر أول منتج على ${p.name} من مركز المحتوى.`,
+        });
+        continue;
+      }
+      const days = Number.isFinite(nowMs) ? Math.floor((nowMs - Date.parse(p.lastSuccessAt)) / DAY) : 0;
+      if (days >= 7) {
+        push({
+          id: `publish-${p.platform}`, area: 'content', actor: 'owner', severity: 'info',
+          title: `لا نشر على ${p.name} منذ ${days} يوماً`,
+          detail: 'النشر يعمل، لكن الصفحة ساكتة؛ الزبون يرى منشورات قديمة.',
+          action: `انشر منتجاً أو عرضاً على ${p.name} من مركز المحتوى.`,
+        });
+      }
+      working.push(p.name);
+    }
+    if (working.length) {
+      push({ id: 'publish-health', area: 'platforms', actor: 'system', severity: 'ok', title: 'النشر يعمل فعلياً', detail: `آخر نشر نجح بمعرّف حقيقي من المنصة على: ${working.join('، ')}.`, action: '' });
+    }
+  }
+
   // 9) معلومات النظام.
   if (input.sendMode !== 'auto') {
     push({
@@ -310,6 +357,7 @@ export function buildSalesReadiness(input: SalesReadinessInput): SalesReadinessR
     !(waitHours !== null && waitHours >= CUSTOMER_WAIT_BLOCKER_HOURS && input.pendingApprovals.count > 0),
     input.staleMarketing.unpublished === 0,
     ...(input.backup ? [input.backup.configured && input.backup.level !== 'critical'] : []),
+    ...(input.publishing && input.publishing.length ? [input.publishing.every((p) => !failingNow(p))] : []),
   ];
   const score = checks.length ? Math.round((checks.filter(Boolean).length / checks.length) * 100) : 0;
   const verdict: SalesReadinessReport['verdict'] = counts.blocker > 0 ? 'blocked' : counts.warning > 0 ? 'partial' : 'selling';

@@ -6039,7 +6039,10 @@ add('watcher-advisory-not-authority',
     const panel = fs.existsSync(path.join(root, 'src/components/dashboard/SalesReadinessPanel.tsx')) ? read('src/components/dashboard/SalesReadinessPanel.tsx') : '';
     add('sales-readiness-deterministic-module',
       sr.includes('export function buildSalesReadiness') && sr.includes('CUSTOMER_WAIT_BLOCKER_HOURS') &&
-      !/fetch\(|@google\/genai|from ['"][^'"]*engine\/ai\//.test(sr) && !/^import /m.test(sr),
+      !/fetch\(|@google\/genai|from ['"][^'"]*engine\/ai\//.test(sr) &&
+      // الاستيراد الوحيد المسموح: وحدة صحة النشر الصافية (هي نفسها بلا أي استيراد).
+      sr.split('\n').filter((l) => /^import /.test(l)).every((l) => /from '\.\/publishHealth';$/.test(l)) &&
+      (!fs.existsSync(path.join(root, 'engine/ops/publishHealth.ts')) || !/^import /m.test(read('engine/ops/publishHealth.ts'))),
       'جاهزية البيع وحدة صافية حتمية (بلا شبكة وبلا Gemini)');
     add('sales-readiness-owner-only-route',
       server.includes('app.get("/api/control/sales-readiness", requireOwner,') && server.includes('usesGemini: false'),
@@ -6125,6 +6128,22 @@ add('watcher-advisory-not-authority',
       read('src/components/system/CloudBackupView.tsx').includes('data-testid="backup-freshness"') &&
       read('package.json').includes('npm run test:backup-reliability'),
       'تنبيه المالك عند توقّف النسخة، وبندها في جاهزية البيع وشاشة النسخ السحابية');
+  }
+
+  // 11c) صحة النشر الفعلي: «متصل» لا يعني «ينشر» — كل محاولة تُسجَّل، والفشل يظهر للمالك.
+  {
+    const ph = fs.existsSync(path.join(root, 'engine/ops/publishHealth.ts')) ? read('engine/ops/publishHealth.ts') : '';
+    add('publish-attempt-logged',
+      ph.includes('export function formatPublishLogLine') &&
+      /async function executePlatformPublish\([\s\S]{0,900}?logPublishAttempt\(platform, started, await executePlatformPublishInner/.test(server) &&
+      /async function executeYouTubePublish\([\s\S]{0,900}?logPublishAttempt\("youtube", started, await executeYouTubePublishInner/.test(server),
+      'كل محاولة نشر (الموحّد + YouTube) تكتب سطر [publish] بالنتيجة والكود — بلا نص ولا رمز');
+    add('publish-health-in-readiness',
+      ph.includes('export function summarizePublishHealth') && ph.includes('export function publishFailureHint') &&
+      read('engine/ops/salesReadiness.ts').includes('id: `publish-${p.platform}`') &&
+      server.includes('summarizePublishHealth((workspace as any).publishRecords') &&
+      read('package.json').includes('npm run test:publish-health'),
+      'جاهزية البيع تعرض فشل النشر الفعلي على كل منصة متصلة بسببه الحقيقي وإجراء الإصلاح');
   }
 
   // 12) AGENTS.md: عدد فحوصات final-audit مطابق للفعلي (يُعَدّ من نص الملف نفسه).
