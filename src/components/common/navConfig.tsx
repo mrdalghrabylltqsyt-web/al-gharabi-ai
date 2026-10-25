@@ -2,7 +2,7 @@ import React from 'react';
 import {
   Home, LayoutDashboard, Send, Sparkles, MessageSquareText, Store, Cog,
   Bot, BarChart3, Calendar, Users, Search, ClipboardList, Brain, BrainCircuit, PlugZap,
-  CloudUpload, Database, ServerCog, Youtube, ShieldCheck, Activity,
+  CloudUpload, Database, ServerCog, MonitorPlay, ShieldCheck, Activity,
   CreditCard, Network, Power, Boxes, Inbox,
 } from 'lucide-react';
 import { salesTabEnabled, operationsTabEnabled } from './scopeFlags';
@@ -192,7 +192,7 @@ export const NAV_SECTIONS: NavSection[] = [
         items: [
           { id: 'platform_connections', label: 'مركز ربط المنصات (الكل)', desc: 'حالة كل منصة والإجراء التالي لتفعيلها', icon: PlugZap, keywords: ['connect', 'meta', 'tiktok', 'youtube', 'telegram'] },
           { id: 'social', label: 'المنصات المتصلة والمنشورات', desc: 'حالة الحسابات وقدرات النشر لكل منصة (فيسبوك/إنستغرام/تيك توك/يوتيوب/تيليغرام/ثريدز/واتساب/X/سناب/جوجل)', icon: PlugZap, keywords: ['platforms', 'connected', 'facebook', 'instagram', 'tiktok', 'youtube', 'telegram', 'threads', 'whatsapp', 'x', 'snapchat', 'google business'] },
-          { id: 'youtube_operations', label: 'مدير تشغيل YouTube', desc: 'مراقبة القناة والتعليقات والرد الآلي + طابور المحتوى 24/7', icon: Youtube, ownerOnly: true, keywords: ['youtube', 'watcher', 'cadence', 'auto-reply'] },
+          { id: 'youtube_operations', label: 'مدير تشغيل YouTube', desc: 'مراقبة القناة والتعليقات والرد الآلي + طابور المحتوى 24/7', icon: MonitorPlay, ownerOnly: true, keywords: ['youtube', 'watcher', 'cadence', 'auto-reply'] },
         ],
       },
       // قرار مالك صريح (2026-10-13): الأسطح التجارية (مبيعات/غرفة عمليات) تظهر في

@@ -5861,8 +5861,9 @@ add('watcher-advisory-not-authority',
       freePortSrc.includes('export function reserveFreePort') &&
       freePortSrc.includes('listen(0,') &&
       freePortSrc.includes('FETCH_BLOCKED_PORTS') &&
-      freePortSrc.includes('isFetchBlockedPort'),
-      'حاجز منفذ حر واحد (listen(0)) مع قائمة المنافذ المحظورة في fetch');
+      freePortSrc.includes('isFetchBlockedPort') &&
+      freePortSrc.includes('handedOut'),
+      'حاجز منفذ حر واحد (listen(0)) مع قائمة المنافذ المحظورة في fetch وضمان عدم التكرار');
 
     add('flaky-port-no-random-guess-in-tests',
       (() => {

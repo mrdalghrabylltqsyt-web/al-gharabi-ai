@@ -40,8 +40,8 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-node@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           node-version: '22'
           cache: 'npm'
@@ -58,7 +58,7 @@ jobs:
       - name: build (vite + source bundle + esbuild)
         run: npm run build
       - name: upload dist artifact
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v7
         with:
           name: dist
           path: dist/
@@ -88,15 +88,15 @@ jobs:
       # SSL ما لم يُذكر هذا في رابط الاتصال.
       GHARABI_TEST_DATABASE_URL: postgresql://gharabi:gharabi_ci@localhost:5432/gharabi_test?sslmode=disable
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-node@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           node-version: '22'
           cache: 'npm'
       - name: npm ci
         run: npm ci --no-audit --no-fund
       - name: download dist artifact
-        uses: actions/download-artifact@v5
+        uses: actions/download-artifact@v8
         with:
           name: dist
           path: dist/
@@ -124,15 +124,15 @@ jobs:
     env:
       GHARABI_TEST_DATABASE_URL: postgresql://gharabi:gharabi_ci@localhost:5432/gharabi_test?sslmode=disable
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-node@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           node-version: '22'
           cache: 'npm'
       - name: npm ci
         run: npm ci --no-audit --no-fund
       - name: download dist artifact
-        uses: actions/download-artifact@v5
+        uses: actions/download-artifact@v8
         with:
           name: dist
           path: dist/
@@ -144,15 +144,15 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-node@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           node-version: '22'
           cache: 'npm'
       - name: npm ci
         run: npm ci --no-audit --no-fund
       - name: download dist artifact
-        uses: actions/download-artifact@v5
+        uses: actions/download-artifact@v8
         with:
           name: dist
           path: dist/
@@ -163,6 +163,6 @@ jobs:
   docker:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - name: docker build
         run: docker build -t al-gharabi-ai:ci .
