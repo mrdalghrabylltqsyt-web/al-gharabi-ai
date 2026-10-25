@@ -22,6 +22,12 @@ export const WATCHER_VOLATILE_PATHS: readonly string[] = Object.freeze([
   'lastPollAt',
   'pollCount',
   'lastScanned',
+  // قياس الإنتاج بعد #97 (written≈42/ساعة): مراقب YouTube يضيف كل دورة طابعاً إلى
+  // processedWindow (غير مستخدم إلا للحفظ) وسطر «poll_complete» إلى audit، فتتغير
+  // البصمة كل دورة. أي حدث حقيقي يغيّر حقلاً آخر مهماً (processed/lastError/الطابور
+  // /reviewOverrides) فيُكتب معه السجل كاملاً.
+  'processedWindow',
+  'audit',
   'lease.acquiredAtMs',
   'lease.expiresAtMs',
   'deferral.lastDeferredAt',

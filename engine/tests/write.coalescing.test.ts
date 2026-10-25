@@ -66,6 +66,16 @@ for (const [name, v] of cases) {
   check(`★ ${name} ⇒ كتابة`, d.write && d.reason === 'changed', d.reason);
 }
 
+group('2b) مراقب YouTube: طابع الدورة وسطر poll_complete متطايران');
+{
+  const yt = (over: any = {}) => ({ controls: { enabled: true }, processed: [{ commentId: 'y1', stage: 'REPLIED' }], processedWindow: [T], audit: [{ id: 'a1', action: 'poll_complete' }], contentQueue: [{ id: 'q1', state: 'PUBLISHED' }], lastError: null, lastPollAt: 'a', pollCount: 1, ...over });
+  const y0 = decideCoalescedWrite(undefined, yt(), T);
+  check('★ دورة YouTube بلا حدث ⇒ لا كتابة', decideCoalescedWrite(y0.memo, yt({ processedWindow: [T, T + 5 * MIN], audit: [{ id: 'a2', action: 'poll_complete' }, { id: 'a1', action: 'poll_complete' }], lastPollAt: 'b', pollCount: 2 }), T + 5 * MIN).write === false);
+  check('★ رد جديد ⇒ كتابة (مع سجل التدقيق)', decideCoalescedWrite(y0.memo, yt({ processed: [{ commentId: 'y2', stage: 'REPLIED' }, { commentId: 'y1', stage: 'REPLIED' }], audit: [{ id: 'a3', action: 'reply_sent' }] }), T + MIN).write);
+  check('★ تغيّر طابور المحتوى ⇒ كتابة', decideCoalescedWrite(y0.memo, yt({ contentQueue: [{ id: 'q1', state: 'FAILED' }] }), T + MIN).write);
+  check('خطأ قراءة ⇒ كتابة', decideCoalescedWrite(y0.memo, yt({ lastError: 'VIDEO_LIST_FAILED' }), T + MIN).write);
+}
+
 group('3) المهلة القصوى + force');
 check('★ بعد 30 دقيقة ⇒ كتابة', decideCoalescedWrite(first.memo, tick, T + BOOKKEEPING_MAX_DELAY_MS).reason === 'max_delay');
 check('قبلها بدقيقة ⇒ لا كتابة', decideCoalescedWrite(first.memo, tick, T + BOOKKEEPING_MAX_DELAY_MS - MIN).write === false);
