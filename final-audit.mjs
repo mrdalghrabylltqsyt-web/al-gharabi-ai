@@ -6031,6 +6031,29 @@ add('watcher-advisory-not-authority',
       'اختبار انحدار قسط التسويق مسجّل ضمن npm test');
   }
 
+  // جاهزية البيع: تشخيص ذاتي حتمي لما يمنع البيع، للمالك فقط، بلا Gemini وبلا نصوص زبائن.
+  {
+    const sr = read('engine/ops/salesReadiness.ts');
+    const panel = fs.existsSync(path.join(root, 'src/components/dashboard/SalesReadinessPanel.tsx')) ? read('src/components/dashboard/SalesReadinessPanel.tsx') : '';
+    add('sales-readiness-deterministic-module',
+      sr.includes('export function buildSalesReadiness') && sr.includes('CUSTOMER_WAIT_BLOCKER_HOURS') &&
+      !/fetch\(|@google\/genai|from ['"][^'"]*engine\/ai\//.test(sr) && !/^import /m.test(sr),
+      'جاهزية البيع وحدة صافية حتمية (بلا شبكة وبلا Gemini)');
+    add('sales-readiness-owner-only-route',
+      server.includes('app.get("/api/control/sales-readiness", requireOwner,') && server.includes('usesGemini: false'),
+      'مسار جاهزية البيع للمالك فقط');
+    add('sales-readiness-oauth-failure-persisted',
+      server.includes('recordOAuthFailure(platform, errMsg);') && server.includes('clearOAuthFailure(platform);') &&
+      server.includes('oauthFailures = normalizeOAuthFailures(control.oauthFailures);') && sr.includes('export function sanitizeOAuthFailureMessage'),
+      'آخر فشل ربط OAuth يُحفظ منقّى ويصمد بعد restart ويُمسح عند النجاح');
+    add('sales-readiness-dashboard-panel',
+      panel.includes('fetchSellingReadiness') && read('src/components/dashboard/CommandCenterView.tsx').includes('{isOwner && <SalesReadinessPanel onNavigate={go} />}'),
+      'لوحة جاهزية البيع في مركز القيادة للمالك');
+    add('sales-readiness-regression-test',
+      read('package.json').includes('npm run test:sales-readiness') && read('engine/tests/sales.readiness.test.ts').includes('لا نص زبون في الاستجابة'),
+      'اختبار جاهزية البيع مسجّل ضمن npm test');
+  }
+
   // 12) AGENTS.md: عدد فحوصات final-audit مطابق للفعلي (يُعَدّ من نص الملف نفسه).
   const auditCount = (read('final-audit.mjs').match(/^\s*add\(/gm) || []).length;
   add('agents-audit-count-accurate',
