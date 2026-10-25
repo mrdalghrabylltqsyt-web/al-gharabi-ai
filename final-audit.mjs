@@ -6146,6 +6146,20 @@ add('watcher-advisory-not-authority',
       'جاهزية البيع تعرض فشل النشر الفعلي على كل منصة متصلة بسببه الحقيقي وإجراء الإصلاح');
   }
 
+  // 11d) خطأ قراءة التعليقات لكل منصة (عطل 18→24 أكتوبر: نجاح Instagram كان يمسح فشل Facebook).
+  {
+    const mw = read('engine/social/metaWatcher.ts');
+    add('meta-read-error-per-platform',
+      mw.includes('export function applyMetaReadOutcome') && mw.includes('export function aggregateMetaReadErrors') &&
+      !/if \(!fetched\.ok\) \{\s*metaPollingState\.lastError = /.test(server) &&
+      server.includes('metaPollingState.platformStats[platform] = readUpdate.stats;') &&
+      server.includes('const aggregated = aggregateMetaReadErrors(') &&
+      server.includes('syncIngestFailingAlerts();') &&
+      read('engine/ops/salesReadiness.ts').includes('id: `comments-${c.platform}`') &&
+      read('package.json').includes('npm run test:meta-ingest-perplatform'),
+      'فشل قراءة تعليقات منصة لا يمسحه نجاح غيرها: خطأ لكل منصة + تنبيه المالك + بند جاهزية');
+  }
+
   // 12) AGENTS.md: عدد فحوصات final-audit مطابق للفعلي (يُعَدّ من نص الملف نفسه).
   const auditCount = (read('final-audit.mjs').match(/^\s*add\(/gm) || []).length;
   add('agents-audit-count-accurate',

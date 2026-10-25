@@ -469,6 +469,10 @@ import {
   META_WATCHER_PLATFORMS,
   defaultMetaPollingState,
   defaultMetaPlatformIngestStats,
+  applyMetaReadOutcome,
+  aggregateMetaReadErrors,
+  metaReadErrorCode,
+  metaIngestWarning,
   normalizeMetaPollingState,
   metaPollingControlsView,
   metaPollingPublicBlock,
@@ -8754,29 +8758,26 @@ async function runMetaWatcherCycle(trigger: string): Promise<{ ok: boolean; trig
       const fetched = await fetchMetaInboundComments(platform);
       // فشل سحب التعليقات (قراءة فقط) لا يمنع معالجة الرسائل الواردة عبر webhook
       // (مصدر مستقل)، لكنه يُعلن كخطأ حقيقي (لا نجاح صامت).
-      if (!fetched.ok) {
-        metaPollingState.lastError = fetched.error || "fetch failed";
-        metaPollingState.consecutiveErrors += 1;
-        // F-02: OAuthException (190) من سحب التعليقات ⇒ الاتصال reauth_needed
-        // فيتوقف المراقب عن هذه المنصة حتى إعادة الربط (بلا تكرار صامت للأبد).
-        reauthOnOAuthException(platform, fetched);
-      } else {
-        metaPollingState.lastError = null;
-        metaPollingState.consecutiveErrors = 0;
-        // إحصاءات الاستقبال: تُغلق «الفشل الصامت» (قراءة ok بلا تعليقات رغم وجود
-        // منشورات). تُحدَّث كل دورة ناجحة، ويُحدَّث وقت آخر استقبال فقط عند وصول
-        // تعليق فعلي (أدناه).
-        const prev = metaPollingState.platformStats[platform] || defaultMetaPlatformIngestStats();
-        metaPollingState.platformStats[platform] = {
-          postsScanned: Number(fetched.postsScanned || 0),
-          commentsVisible: (fetched.comments || []).length,
-          // PR-S4: المجموع المُعلَن من Meta (comments.summary.total_count) بجانب
-          // المرئي فعلاً — فيظهر أي فرق تغطية بصراحة (لا فشل صامت).
-          commentsTotalReported: Number(fetched.commentsTotalReported || 0),
-          lastIngestAt: prev.lastIngestAt || null,
-          callsPerCycle: Number(fetched.callsPerCycle || 0),
-        };
+      // إصلاح 2026-10-25: الخطأ **لكل منصة** (كان عاماً فيمسحه نجاح المنصة التالية في
+      // نفس الدورة — فشلت قراءة Facebook ~6 أيام والحالة «healthy»). الحقلان العامّان
+      // يُشتقّان بعد الحلقة من كل المنصات.
+      const readNowIso = new Date().toISOString();
+      const readUpdate = applyMetaReadOutcome(
+        metaPollingState.platformStats[platform],
+        fetched.ok
+          // إحصاءات الاستقبال: تُغلق «الفشل الصامت» (قراءة ok بلا تعليقات رغم وجود
+          // منشورات). PR-S4: المجموع المُعلَن من Meta بجانب المرئي فعلاً.
+          ? { ok: true, postsScanned: Number(fetched.postsScanned || 0), commentsVisible: (fetched.comments || []).length, commentsTotalReported: Number(fetched.commentsTotalReported || 0), callsPerCycle: Number(fetched.callsPerCycle || 0) }
+          : { ok: false, error: fetched.error || "fetch failed", code: metaReadErrorCode(fetched) },
+        readNowIso,
+      );
+      metaPollingState.platformStats[platform] = readUpdate.stats;
+      if (readUpdate.log) {
+        console.log(`[comments] platform=${platform} outcome=${readUpdate.log} code=${readUpdate.stats.lastErrorCode || '-'} streak=${readUpdate.stats.consecutiveErrors}${readUpdate.log === 'recovered' ? ` after=${readUpdate.recoveredAfter}` : ''}`);
       }
+      // F-02: OAuthException (190) من سحب التعليقات ⇒ الاتصال reauth_needed
+      // فيتوقف المراقب عن هذه المنصة حتى إعادة الربط (بلا تكرار صامت للأبد).
+      if (!fetched.ok) reauthOnOAuthException(platform, fetched);
       const pageIdFb = String(getProviderToken("facebook")?.pageId || "");
       const igId = String(getProviderToken("instagram")?.igAccountId || "");
       // ROOT-4: أسماء حساب المعرض الحقيقية تُضمّن من الاعتماد المخزَّن (اسم الصفحة/
@@ -9021,6 +9022,10 @@ async function runMetaWatcherCycle(trigger: string): Promise<{ ok: boolean; trig
         if (metaPollingState.processed.length > META_POLLING_MAX_PROCESSED) metaPollingState.processed.length = META_POLLING_MAX_PROCESSED;
       }
     }
+    // الحقلان العامّان من كل المنصات (أي منصة فاشلة تظهر — لا تُمسح بنجاح غيرها).
+    const aggregated = aggregateMetaReadErrors(metaPollingState.platformStats as any);
+    metaPollingState.lastError = aggregated.lastError;
+    metaPollingState.consecutiveErrors = aggregated.consecutiveErrors;
     metaPollingState.pollCount += 1;
     metaPollingState.lastPollAt = new Date().toISOString();
     metaPollingState.lastScanned = (metaPollingState.lastScanned || 0);
@@ -13509,6 +13514,13 @@ function salesReadinessReport() {
       return summarizePublishHealth((workspace as any).publishRecords || [], live.map((p) => p.id), Date.now())
         .map((h) => ({ ...h, name: names.get(h.platform) || h.platform }));
     })(),
+    commentIngest: META_WATCHER_PLATFORMS
+      .filter((id) => platforms.some((p) => p.id === id && p.connected))
+      .map((id) => {
+        const st: any = (metaPollingState.platformStats as any)[id] || {};
+        const w = metaIngestWarning(st, Date.now());
+        return { platform: id, name: platforms.find((p) => p.id === id)?.name || id, failing: Number(st.consecutiveErrors || 0) >= 3, reason: w.reason, code: st.lastErrorCode || null };
+      }),
   });
 }
 app.get("/api/control/sales-readiness", requireOwner, (_req, res) => {
@@ -16964,6 +16976,7 @@ async function runOwnerAlertCycle(trigger: string): Promise<{ sent: boolean; rea
   try {
     syncOwnerReauthAlerts();
     syncBackupStaleAlert();
+    syncIngestFailingAlerts();
     if (!ownerAlertState.enabled) return { sent: false, reason: 'disabled', count: ownerAlertState.pending.length };
     const now = Date.now();
     if (!isOwnerAlertDue(ownerAlertState, now)) return { sent: false, reason: 'not_due', count: ownerAlertState.pending.length };
@@ -17003,6 +17016,29 @@ async function runOwnerAlertCycle(trigger: string): Promise<{ sent: boolean; rea
  * ومرة عند 24 ساعة منذ آخر نسخة ناجحة لكل «حلقة توقّف» (المفتاح يحمل وقت آخر نجاح).
  * توقّفت النسخ 51 ساعة بصمت قبل هذا الإصلاح. بلا Gemini وبلا أسرار.
  */
+/**
+ * تنبيه المالك عند توقّف قراءة التعليقات على منصة متصلة (6 دورات فاشلة ≈ 30 دقيقة).
+ * تنبيه واحد لكل انقطاع (المفتاح = بداية سلسلة الفشل)، ولا تنبيه بعد التعافي.
+ */
+const INGEST_FAILING_ALERT_CYCLES = 6;
+function syncIngestFailingAlerts(): void {
+  for (const platform of META_WATCHER_PLATFORMS) {
+    const conn: any = platformConnections.get(platform);
+    if (!conn || conn.status !== "connected") continue;
+    const st: any = (metaPollingState.platformStats as any)[platform];
+    if (!st || Number(st.consecutiveErrors || 0) < INGEST_FAILING_ALERT_CYCLES) continue;
+    const w = metaIngestWarning(st, Date.now());
+    recordOwnerAlert({
+      key: ownerAlertKey('ingest_failing', platform, String(st.failingSince || 'unknown')),
+      kind: 'ingest_failing',
+      platform,
+      title: 'قراءة التعليقات متوقفة',
+      snippet: truncateAlertSnippet(`${w.reason} آخر خطأ: ${String(st.lastError || '').slice(0, 100)}`),
+      at: new Date().toISOString(),
+    });
+  }
+}
+
 function syncBackupStaleAlert(): void {
   if (!drControl.driveRefreshToken && !drControl.driveAutoBackup) return; // لا نسخ مهيّأة إطلاقاً
   const f = backupFreshness(drControl.driveAutoBackup, Date.now());

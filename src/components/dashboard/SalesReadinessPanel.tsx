@@ -21,6 +21,7 @@ export function readinessTargetTab(id: string): string | null {
   if (id.startsWith('stale-marketing')) return 'content';
   if (id === 'backup') return 'cloud_backup';
   if (id.startsWith('publish-')) return 'content';
+  if (id.startsWith('comments-')) return 'platform_connections';
   return null;
 }
 
