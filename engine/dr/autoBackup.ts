@@ -83,3 +83,95 @@ export function buildAutoBackupStatus(state: any, nowMs: number, intervalMs: num
     due: isAutoBackupDue(lastRunAtMs, nowMs, intervalMs),
   };
 }
+
+// -----------------------------------------------------------------------------
+// موثوقية النسخة (إصلاح 2026-10-25): توقّفت النسخ 51 ساعة بصمت بعد rp-052.
+//
+// ثلاث ثغرات أُغلقت هنا (منطق صافٍ):
+//  1) تأجيل ضغط الاستهلاك كان بلا سقف ⇒ يُؤجّل كل 15 دقيقة حتى نهاية الشهر.
+//     الآن: إن مضى على آخر نسخة **ناجحة** 24 ساعة تُنفَّذ النسخة رغم الضغط.
+//  2) بعد الفشل كان الانتظار 6 ساعات كاملة ⇒ الآن إعادة محاولة بعد 30 دقيقة.
+//  3) النتائج غير الناجحة بلا `state` (مثل NOT_AUTHORIZED) كانت تُسجَّل بلا خطأ
+//     ⇒ الآن تُطبَّع إلى فشل صريح مع الكود، ويُقاس عمر آخر نسخة ناجحة للتنبيه.
+// -----------------------------------------------------------------------------
+
+/** إعادة المحاولة بعد تشغيل فاشل (لا انتظار 6 ساعات بعد الفشل). */
+export const AUTO_BACKUP_FAILURE_RETRY_MS = 30 * 60 * 1000;
+/** أقصى عمر لآخر نسخة ناجحة قبل تجاوز تأجيل ضغط الاستهلاك. */
+export const AUTO_BACKUP_MAX_DEFER_MS = 24 * 60 * 60 * 1000;
+/** عتبتا التنبيه على عمر آخر نسخة ناجحة. */
+export const BACKUP_STALE_WARNING_MS = 12 * 60 * 60 * 1000;
+export const BACKUP_STALE_CRITICAL_MS = 24 * 60 * 60 * 1000;
+
+const SUCCESS_STATES = new Set(['backed_up', 'no_change']);
+
+/** هل النتيجة المحفوظة نجاح (نسخة جديدة أو بلا تغيير منذ آخر نسخة)؟ */
+export function isSuccessfulBackupResult(state: unknown): boolean {
+  return SUCCESS_STATES.has(String(state ?? ''));
+}
+
+/**
+ * يطبّع نتيجة `runFullBackup` إلى حالة صريحة: نجاح بحالته، أو فشل بكوده. الردود
+ * المبكرة (NOT_AUTHORIZED / DRIVE_CLIENT_UNAVAILABLE / SOURCE_INCOMPLETE / ...)
+ * لا تحمل `state` وكانت تُسجَّل كـ«undefined» بلا خطأ.
+ */
+export function normalizeBackupOutcome(body: any): { state: string; recoveryPointId: string | null; reason: string | null } {
+  const state = typeof body?.state === 'string' && body.state ? body.state : (body?.success === true ? 'backed_up' : 'failed');
+  const reasonRaw = body?.reason ?? body?.code ?? (isSuccessfulBackupResult(state) ? null : 'backup_failed');
+  return {
+    state,
+    recoveryPointId: body?.recoveryPointId ?? null,
+    reason: reasonRaw == null ? null : String(reasonRaw).slice(0, 120),
+  };
+}
+
+/** وقت آخر نسخة ناجحة (ms) — من الحقل الجديد، أو من آخر تشغيل إن كان ناجحاً. */
+export function parseLastSuccessAtMs(state: any): number | null {
+  const raw = state?.lastSuccessAt ?? (isSuccessfulBackupResult(state?.lastRunResult) ? state?.lastRunAt : null);
+  if (!raw) return null;
+  const t = Date.parse(String(raw));
+  return Number.isFinite(t) ? t : null;
+}
+
+export type AutoBackupDecisionReason = 'not_due' | 'pressure_defer' | 'due' | 'retry_after_failure' | 'forced_stale';
+
+/**
+ * قرار التشغيل الموحّد: الاستحقاق (6 ساعات، أو 30 دقيقة بعد فشل) ثم الضغط (يُؤجّل
+ * المجدول فقط، وبسقف 24 ساعة منذ آخر نجاح). اليدوي والإقلاع لا يُؤجَّلان بالضغط.
+ */
+export function decideAutoBackupRun(input: {
+  state: any; nowMs: number; intervalMs: number; trigger: string; pressureDefer: boolean;
+  retryMs?: number; maxDeferMs?: number;
+}): { run: boolean; reason: AutoBackupDecisionReason } {
+  const retryMs = input.retryMs ?? AUTO_BACKUP_FAILURE_RETRY_MS;
+  const maxDeferMs = input.maxDeferMs ?? AUTO_BACKUP_MAX_DEFER_MS;
+  const lastRun = parseLastRunAtMs(input.state);
+  const lastFailed = lastRun != null && input.state?.lastRunResult != null && !isSuccessfulBackupResult(input.state?.lastRunResult);
+  const regularDue = isAutoBackupDue(lastRun, input.nowMs, input.intervalMs);
+  const retryDue = lastFailed && lastRun != null && input.nowMs - lastRun >= retryMs;
+  if (!regularDue && !retryDue) return { run: false, reason: 'not_due' };
+  if (input.trigger === 'scheduled' && input.pressureDefer) {
+    const lastSuccess = parseLastSuccessAtMs(input.state);
+    const age = lastSuccess == null ? Number.POSITIVE_INFINITY : input.nowMs - lastSuccess;
+    if (age < maxDeferMs) return { run: false, reason: 'pressure_defer' };
+    return { run: true, reason: 'forced_stale' };
+  }
+  return { run: true, reason: lastFailed ? 'retry_after_failure' : 'due' };
+}
+
+/** حداثة آخر نسخة ناجحة: ok (< 12 س) · warning (12–24 س) · critical (> 24 س أو لا نسخة معروفة). */
+export function backupFreshness(state: any, nowMs: number): {
+  level: 'ok' | 'warning' | 'critical'; lastSuccessAt: string | null; ageHours: number | null;
+  lastError: string | null; lastSkippedReason: string | null;
+} {
+  const t = parseLastSuccessAtMs(state);
+  const ageMs = t == null ? null : Math.max(0, nowMs - t);
+  const level = ageMs == null || ageMs >= BACKUP_STALE_CRITICAL_MS ? 'critical' : ageMs >= BACKUP_STALE_WARNING_MS ? 'warning' : 'ok';
+  return {
+    level,
+    lastSuccessAt: t == null ? null : new Date(t).toISOString(),
+    ageHours: ageMs == null ? null : Math.round((ageMs / 3_600_000) * 10) / 10,
+    lastError: state?.lastError ?? null,
+    lastSkippedReason: state?.lastSkippedReason ?? null,
+  };
+}

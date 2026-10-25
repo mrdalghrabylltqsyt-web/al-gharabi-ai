@@ -358,6 +358,30 @@ export const CloudBackupView: React.FC = () => {
         </section>
       )}
 
+      {/* حداثة آخر نسخة ناجحة (إصلاح توقّف 51 ساعة بصمت): ظاهرة دائماً أعلى الصفحة. */}
+      {snapshot?.autoBackup?.freshness && (() => {
+        const ab = snapshot.autoBackup;
+        const f = ab.freshness;
+        const tone = f.level === 'ok' ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-200' : f.level === 'warning' ? 'bg-amber-500/10 border-amber-500/30 text-amber-200' : 'bg-rose-500/10 border-rose-500/40 text-rose-200';
+        const age = f.ageHours == null ? null : f.ageHours < 1 ? 'أقل من ساعة' : `${Math.round(f.ageHours)} ساعة`;
+        return (
+          <section className={`p-4 rounded-2xl border ${tone}`} data-testid="backup-freshness">
+            <p className="text-xs font-bold flex items-center gap-2">
+              {f.level === 'ok' ? <CheckCircle2 className="w-4 h-4" /> : <TriangleAlert className="w-4 h-4" />}
+              {age ? `آخر نسخة احتياطية ناجحة قبل ${age}` : 'لا توجد نسخة احتياطية ناجحة معروفة'}
+              {f.level !== 'ok' && ' — يُفترض نسخة كل 6 ساعات'}
+            </p>
+            <p className="text-[11px] mt-1 opacity-90">
+              {ab.consecutiveFailures ? `محاولات فاشلة متتالية: ${ab.consecutiveFailures} · ` : ''}
+              {f.lastError ? `آخر خطأ: ${String(f.lastError).slice(0, 100)} · ` : ''}
+              {f.lastSkippedReason === 'pressure_defer' ? 'آخر تأجيل بسبب حدود الخطة المجانية (بحد أقصى 24 ساعة) · ' : ''}
+              {ab.nextRunAt ? `الموعد التالي: ${fmtTime(ab.nextRunAt)}` : ''}
+            </p>
+            {f.level !== 'ok' && <p className="text-[11px] mt-1">إن كان الخطأ يخص التفويض فاضغط «إعادة الربط» ثم «نسخة الآن». النظام يعيد المحاولة تلقائياً كل 30 دقيقة بعد الفشل.</p>}
+          </section>
+        );
+      })()}
+
       {statusError && (
         <section className="p-4 rounded-2xl bg-amber-500/10 border border-amber-500/30 flex items-start justify-between gap-3 flex-wrap">
           <div className="flex items-start gap-2">

@@ -39,6 +39,15 @@ export interface SalesReadinessInput {
   /** مسودات/منشورات تسويق وُلّدت بحسبة القسط القديمة (قبل إصلاح نسبة الزيادة). */
   staleMarketing: { unpublished: number; published: number };
   geminiConfigured: boolean;
+  /** حداثة آخر نسخة احتياطية ناجحة (حماية بيانات الزبائن والمنتجات والمبيعات). */
+  backup?: {
+    configured: boolean;
+    level: 'ok' | 'warning' | 'critical';
+    lastSuccessAt: string | null;
+    ageHours: number | null;
+    lastError: string | null;
+    lastSkippedReason: string | null;
+  };
 }
 
 export interface ReadinessItem {
@@ -240,7 +249,36 @@ export function buildSalesReadiness(input: SalesReadinessInput): SalesReadinessR
     });
   }
 
-  // 8) معلومات النظام.
+  // 8) النسخة الاحتياطية — ضياع بيانات الزبائن والمنتجات يوقف البيع كلياً.
+  if (input.backup) {
+    const b = input.backup;
+    const age = b.ageHours == null ? null : b.ageHours < 1 ? 'أقل من ساعة' : `${Math.round(b.ageHours)} ساعة`;
+    const why = b.lastError
+      ? `آخر خطأ: «${String(b.lastError).slice(0, 80)}».`
+      : b.lastSkippedReason === 'pressure_defer' ? 'السبب: تأجيل بسبب اقتراب حدود الخطة المجانية.' : '';
+    const authLike = /NOT_AUTHORIZED|invalid_grant|unauthor|401|token/i.test(String(b.lastError || ''));
+    if (!b.configured) {
+      push({
+        id: 'backup', area: 'system', actor: 'owner', severity: 'blocker',
+        title: 'النسخ الاحتياطي غير مفعّل',
+        detail: 'لا نسخة احتياطية لبيانات الزبائن والمنتجات والمبيعات؛ أي عطل في قاعدة البيانات يُفقدها.',
+        action: 'افتح «النسخ السحابية» في التطبيق واربط Google Drive.',
+      });
+    } else if (b.level === 'ok') {
+      push({ id: 'backup', area: 'system', actor: 'system', severity: 'ok', title: 'النسخة الاحتياطية حديثة', detail: `آخر نسخة ناجحة قبل ${age}.`, action: '' });
+    } else {
+      push({
+        id: 'backup', area: 'system', actor: authLike ? 'owner' : 'system', severity: b.level === 'critical' ? 'blocker' : 'warning',
+        title: age ? `النسخة الاحتياطية متوقفة منذ ${age}` : 'لا نسخة احتياطية ناجحة معروفة',
+        detail: `يُفترض نسخة كل 6 ساعات. ${why}`.trim(),
+        action: authLike
+          ? 'تفويض Google Drive انتهى: افتح «النسخ السحابية» واضغط «ربط Google Drive» من جديد، ثم «نسخة الآن».'
+          : 'افتح «النسخ السحابية» واضغط «نسخة الآن»؛ النظام يعيد المحاولة تلقائياً كل 30 دقيقة.',
+      });
+    }
+  }
+
+  // 9) معلومات النظام.
   if (input.sendMode !== 'auto') {
     push({
       id: 'send-mode', area: 'customers', actor: 'owner', severity: 'info',
@@ -271,6 +309,7 @@ export function buildSalesReadiness(input: SalesReadinessInput): SalesReadinessR
     !input.youtubeOnlyMode,
     !(waitHours !== null && waitHours >= CUSTOMER_WAIT_BLOCKER_HOURS && input.pendingApprovals.count > 0),
     input.staleMarketing.unpublished === 0,
+    ...(input.backup ? [input.backup.configured && input.backup.level !== 'critical'] : []),
   ];
   const score = checks.length ? Math.round((checks.filter(Boolean).length / checks.length) * 100) : 0;
   const verdict: SalesReadinessReport['verdict'] = counts.blocker > 0 ? 'blocked' : counts.warning > 0 ? 'partial' : 'selling';

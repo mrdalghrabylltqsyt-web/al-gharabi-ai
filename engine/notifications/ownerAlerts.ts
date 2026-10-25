@@ -17,12 +17,13 @@
  * في الخادم (Resend القائم). إعادة استخدام كامل بلا نظام تنبيه ثانٍ.
  */
 
-export type OwnerAlertKind = 'commercial_draft' | 'social_escalation' | 'platform_reauth';
+export type OwnerAlertKind = 'commercial_draft' | 'social_escalation' | 'platform_reauth' | 'backup_stale';
 
 export const OWNER_ALERT_KIND_LABELS_AR: Readonly<Record<OwnerAlertKind, string>> = Object.freeze({
   commercial_draft: 'استفسار زبون يحتاج موافقتك',
   social_escalation: 'تصعيد يحتاج مراجعة بشرية',
   platform_reauth: 'انقطاع ربط منصة يحتاج إعادة ربط',
+  backup_stale: 'النسخة الاحتياطية متوقفة',
 });
 
 export type OwnerAlertSendResult = 'sent' | 'disabled' | 'no_provider' | 'empty' | 'failed';
@@ -93,7 +94,7 @@ export function normalizeOwnerAlertState(raw: unknown): OwnerAlertState {
         .filter((x): x is Record<string, unknown> => Boolean(x && typeof x === 'object'))
         .map((x) => ({
           key: String(x.key || ''),
-          kind: (['commercial_draft', 'social_escalation', 'platform_reauth'] as OwnerAlertKind[]).includes(x.kind as OwnerAlertKind)
+          kind: (['commercial_draft', 'social_escalation', 'platform_reauth', 'backup_stale'] as OwnerAlertKind[]).includes(x.kind as OwnerAlertKind)
             ? (x.kind as OwnerAlertKind)
             : 'social_escalation',
           platform: x.platform == null ? null : String(x.platform),
@@ -168,7 +169,7 @@ export function isOwnerAlertDue(state: OwnerAlertState, nowMs: number): boolean 
 
 /** عدد المعلّق لكل نوع — يُعرض في الملخّص بلا بيانات عملاء. */
 export function ownerAlertCountsByKind(state: OwnerAlertState): Record<OwnerAlertKind, number> {
-  const out: Record<OwnerAlertKind, number> = { commercial_draft: 0, social_escalation: 0, platform_reauth: 0 };
+  const out: Record<OwnerAlertKind, number> = { commercial_draft: 0, social_escalation: 0, platform_reauth: 0, backup_stale: 0 };
   for (const p of state.pending) out[p.kind] += 1;
   return out;
 }
@@ -185,6 +186,7 @@ export function buildOwnerAlertDigest(state: OwnerAlertState, appUrl: string | n
   if (counts.commercial_draft) lines.push(`- استفسارات زبائن تنتظر موافقتك: ${counts.commercial_draft}`);
   if (counts.social_escalation) lines.push(`- تصعيدات تحتاج مراجعة بشرية: ${counts.social_escalation}`);
   if (counts.platform_reauth) lines.push(`- منصات تحتاج إعادة ربط: ${counts.platform_reauth}`);
+  if (counts.backup_stale) lines.push(`- تحذير: النسخة الاحتياطية متوقفة — افتح النسخ السحابية في التطبيق`);
   lines.push('');
   for (const p of state.pending) {
     lines.push(`• [${OWNER_ALERT_KIND_LABELS_AR[p.kind]}]${p.platform ? ` (${p.platform})` : ''} — ${p.snippet || p.title}`);
