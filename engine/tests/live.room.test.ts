@@ -9,7 +9,7 @@
  */
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { classifyLogLine, auditToLiveEvent, LiveEventBuffer, buildLiveModules, LIVE_MODULE_KEYS } from '../ops/liveRoom';
+import { classifyLogLine, auditToLiveEvent, LiveEventBuffer, buildLiveModules, LIVE_MODULE_KEYS, buildLiveInsights } from '../ops/liveRoom';
 
 const ROOT = process.cwd();
 const read = (p: string) => readFileSync(join(ROOT, p), 'utf8');
@@ -83,6 +83,40 @@ check('★ نبضة لكل حدث على خط قسمه', ui.includes('lbr-burst'
 check('يتوقف عند إخفاء الصفحة', ui.includes("document.visibilityState === 'visible'"));
 check('للمالك فقط في الواجهة والتنقل', ui.includes("currentUser?.role === 'owner'") && read('src/components/common/navConfig.tsx').includes("id: 'live_room'") && read('src/App.tsx').includes("case 'live_room': return <LiveBrainRoom />;"));
 check('لا أرقام ثابتة مختلقة في الواجهة', !/1,064|2,516|\b156\b/.test(ui));
+
+// 7) الإصدار 2 — رؤى حقيقية + مقاييس الخادم + واجهة متوهجة متجاوبة
+const nowI = Date.parse('2026-10-25T20:00:00Z');
+const iso = (msAgo: number) => new Date(nowI - msAgo).toISOString();
+const insights = buildLiveInsights({
+  nowMs: nowI,
+  comments: [
+    { createdAt: iso(10 * 60000), platform: 'facebook', text: 'بيش السبلت؟', classification: { intent: 'business_inquiry', topic: 'price' } },
+    { createdAt: iso(30 * 60000), platform: 'facebook', text: 'شنو شروط التقسيط', classification: { intent: 'question', topic: 'installment', isBusinessInquiry: true } },
+    { createdAt: iso(5 * 3600000), platform: 'youtube', text: 'حلو', classification: { intent: 'praise' } },
+    { createdAt: iso(3 * 86400000), platform: 'instagram', text: 'قديم', classification: { intent: 'question' } },
+    { createdAt: iso(60000), platform: 'facebook', text: 'مستورد', backfill: true, classification: { intent: 'question' } },
+  ],
+  leads: [{ interestedProductName: 'سبلت 2 طن', stage: 'NEW' }, { interestedProductName: 'سبلت 2 طن', stage: 'QUALIFIED' }, { interestedProductName: 'ثلاجة', archived: true }],
+  publishRecords: [{ platform: 'youtube', state: 'published', externalVideoId: 'v1' }, { platform: 'facebook', state: 'published' }, { platform: 'facebook', state: 'failed' }, { platform: 'x', state: 'published', providerPostId: 'p', simulated: true }],
+});
+check('★ 24 خانة ساعية', insights.hourly24.length === 24 && insights.hourlyInquiries24.length === 24);
+check('★ آخر 24 ساعة فقط، بلا المستورد', insights.hourly24.reduce((a, b) => a + b, 0) === 3, JSON.stringify(insights.hourly24));
+check('★ الاستفسارات التجارية (بما فيها isBusinessInquiry)', insights.hourlyInquiries24.reduce((a, b) => a + b, 0) === 2);
+check('الأحدث في آخر خانة', insights.hourly24[23] === 2);
+check('النوايا بالعربية مرتبة', insights.intents[0].key === 'business_inquiry' && insights.intents[0].count === 2 && insights.intents[0].label === 'استفسار تجاري');
+check('المواضيع', insights.topics.some((t) => t.key === 'price' && t.label === 'السعر'));
+check('★ حسب المنصة', insights.byPlatform[0].platform === 'facebook' && insights.byPlatform[0].total === 2 && insights.byPlatform[0].last24h === 2);
+check('★ أكثر منتج مطلوب من الزبائن غير المؤرشفين', insights.topProducts.length === 1 && insights.topProducts[0].name === 'سبلت 2 طن' && insights.topProducts[0].count === 2);
+check('★ النشر يُحسب بمعرّف حقيقي فقط ولا يحسب المُحاكى', insights.publish.find((p) => p.platform === 'youtube')?.published === 1 && insights.publish.find((p) => p.platform === 'facebook')?.published === 0 && insights.publish.find((p) => p.platform === 'facebook')?.failed === 1 && !insights.publish.some((p) => p.platform === 'x'));
+check('★ آخر التعليقات بلا أسماء الزبائن', insights.latestComments.length === 4 && insights.latestComments.every((c) => !('authorName' in c)) && insights.latestComments[0].text === 'بيش السبلت؟');
+check('مراحل الزبائن', insights.leadStages.length === 2);
+check('★ الخادم يرسل الرؤى والمقاييس والموافقات', server.includes('insights: buildLiveInsights({') && server.includes('telemetry: (() => {') && server.includes('approvals: (() => {'));
+check('★ تأخّر حلقة الأحداث يُقاس فعلاً', server.includes('liveLoop') && /setInterval\([\s\S]{0,400}liveLoop[\s\S]{0,200}\.unref/.test(server));
+check('★ الواجهة تتصغّر على الهاتف بدل القصّ', ui.includes('ResizeObserver') && ui.includes('scale(${scale})'));
+check('★ توهّج SVG حقيقي', ui.includes('feGaussianBlur') && ui.includes('url(#lbrGlow)'));
+check('★ نبض النشاط من أوقات الأحداث الحقيقية', ui.includes('eventTimes') && ui.includes('BUCKET_MS'));
+check('★ لوحات الرؤى والمقاييس', ['hourly24', 'intents', 'topProducts', 'latestComments', 'leadStages', 'tel.rssMb', 'tel.loopLagMs', 'appr.latest'].every((k) => ui.includes(k)));
+check('احترام تقليل الحركة', ui.includes('prefers-reduced-motion') && ui.includes('lbr-still'));
 
 console.log('\n' + '='.repeat(60));
 if (failures.length) {

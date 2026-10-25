@@ -324,3 +324,99 @@ export function buildLiveModules(i: LiveRoomInput): Record<LiveModuleKey, LiveMo
   };
   return views as Record<LiveModuleKey, LiveModuleView>;
 }
+
+// -----------------------------------------------------------------------------
+// رؤى حية (الإصدار 2): كل ما يقرؤه المشروع عن زبائنه ومنشوراته — من السجلات الحقيقية فقط.
+// -----------------------------------------------------------------------------
+export interface LiveInsightsInput {
+  nowMs: number;
+  comments: Array<{ createdAt?: string; platform?: string; kind?: string; text?: string; backfill?: boolean; classification?: { intent?: string; topic?: string; isBusinessInquiry?: boolean } }>;
+  leads: Array<{ interestedProductName?: string | null; archived?: boolean; stage?: string }>;
+  publishRecords: Array<{ platform?: string; state?: string; simulated?: boolean; providerPostId?: string; externalVideoId?: string; createdAt?: string; publishedAt?: string }>;
+}
+
+export interface LiveInsights {
+  /** تعليقات/رسائل واردة لكل ساعة من آخر 24 ساعة (الأقدم أولاً). */
+  hourly24: number[];
+  /** الاستفسارات التجارية لكل ساعة من آخر 24 ساعة. */
+  hourlyInquiries24: number[];
+  intents: Array<{ key: string; label: string; count: number }>;
+  topics: Array<{ key: string; label: string; count: number }>;
+  byPlatform: Array<{ platform: string; label: string; total: number; last24h: number }>;
+  topProducts: Array<{ name: string; count: number }>;
+  publish: Array<{ platform: string; label: string; published: number; failed: number }>;
+  latestComments: Array<{ platform: string; label: string; intent: string; text: string; at: string }>;
+  leadStages: Array<{ key: string; count: number }>;
+}
+
+const INTENT_AR: Record<string, string> = { business_inquiry: 'استفسار تجاري', question: 'سؤال', praise: 'مدح', complaint: 'شكوى', spam: 'سبام', other: 'أخرى' };
+const TOPIC_AR: Record<string, string> = { price: 'السعر', installment: 'التقسيط', installment_terms: 'شروط التقسيط', availability: 'التوفر', location: 'الموقع', hours: 'الدوام', delivery: 'التوصيل', warranty: 'الضمان', contact: 'التواصل' };
+
+function intentOf(c: LiveInsightsInput['comments'][number]): string {
+  const k = c.classification || {};
+  if (k.isBusinessInquiry === true || k.intent === 'business_inquiry') return 'business_inquiry';
+  return String(k.intent || 'other');
+}
+
+export function buildLiveInsights(i: LiveInsightsInput): LiveInsights {
+  const hourMs = 3600000;
+  const start = i.nowMs - 24 * hourMs;
+  const hourly24 = new Array(24).fill(0);
+  const hourlyInquiries24 = new Array(24).fill(0);
+  const intents = new Map<string, number>();
+  const topics = new Map<string, number>();
+  const plat = new Map<string, { total: number; last24h: number }>();
+  const real = (i.comments || []).filter((c) => c && !c.backfill);
+  for (const c of real) {
+    const t = Date.parse(String(c.createdAt || ''));
+    const intent = intentOf(c);
+    intents.set(intent, (intents.get(intent) || 0) + 1);
+    const topic = String(c.classification?.topic || '');
+    if (topic && TOPIC_AR[topic]) topics.set(topic, (topics.get(topic) || 0) + 1);
+    const p = String(c.platform || 'other');
+    const cur = plat.get(p) || { total: 0, last24h: 0 };
+    cur.total += 1;
+    if (Number.isFinite(t) && t >= start && t <= i.nowMs) {
+      cur.last24h += 1;
+      const idx = Math.min(23, Math.max(0, Math.floor((t - start) / hourMs)));
+      hourly24[idx] += 1;
+      if (intent === 'business_inquiry') hourlyInquiries24[idx] += 1;
+    }
+    plat.set(p, cur);
+  }
+  const products = new Map<string, number>();
+  const stages = new Map<string, number>();
+  for (const l of i.leads || []) {
+    if (!l || l.archived) continue;
+    const n = String(l.interestedProductName || '').trim();
+    if (n) products.set(n, (products.get(n) || 0) + 1);
+    const s = String(l.stage || 'NEW');
+    stages.set(s, (stages.get(s) || 0) + 1);
+  }
+  const pub = new Map<string, { published: number; failed: number }>();
+  for (const r of i.publishRecords || []) {
+    if (!r || r.simulated) continue;
+    const p = String(r.platform || 'other');
+    const cur = pub.get(p) || { published: 0, failed: 0 };
+    if ((r.state === 'published' || r.state === 'scheduled') && (r.providerPostId || r.externalVideoId)) cur.published += 1;
+    else if (r.state === 'failed') cur.failed += 1;
+    pub.set(p, cur);
+  }
+  const sorted = <T,>(m: Map<string, T>, f: (k: string, v: T) => any, by: (x: any) => number) => [...m.entries()].map(([k, v]) => f(k, v)).sort((a, b) => by(b) - by(a));
+  const latestComments = real
+    .slice()
+    .sort((a, b) => Date.parse(String(b.createdAt || '')) - Date.parse(String(a.createdAt || '')))
+    .slice(0, 8)
+    .map((c) => ({ platform: String(c.platform || ''), label: platformAr(String(c.platform || '')), intent: INTENT_AR[intentOf(c)] || 'تفاعل', text: clip(c.text, 110), at: String(c.createdAt || '') }));
+  return {
+    hourly24,
+    hourlyInquiries24,
+    intents: sorted(intents, (k, v) => ({ key: k, label: INTENT_AR[k] || k, count: v }), (x) => x.count),
+    topics: sorted(topics, (k, v) => ({ key: k, label: TOPIC_AR[k] || k, count: v }), (x) => x.count).slice(0, 8),
+    byPlatform: sorted(plat, (k, v) => ({ platform: k, label: platformAr(k), total: v.total, last24h: v.last24h }), (x) => x.total),
+    topProducts: sorted(products, (k, v) => ({ name: clip(k, 60), count: v }), (x) => x.count).slice(0, 6),
+    publish: sorted(pub, (k, v) => ({ platform: k, label: platformAr(k), published: v.published, failed: v.failed }), (x) => x.published),
+    latestComments,
+    leadStages: sorted(stages, (k, v) => ({ key: k, count: v }), (x) => x.count),
+  };
+}
