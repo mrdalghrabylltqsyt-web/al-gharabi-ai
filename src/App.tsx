@@ -39,6 +39,7 @@ const BrainCommandView = lazy(() => import('./components/agent/BrainCommandView'
 const CentralBrainView = lazy(() => import('./components/agent/CentralBrainView').then((m) => ({ default: m.CentralBrainView })));
 const MarketingAgentView = lazy(() => import('./components/agent/MarketingAgentView').then((m) => ({ default: m.MarketingAgentView })));
 const CloudBackupView = lazy(() => import('./components/system/CloudBackupView').then((m) => ({ default: m.CloudBackupView })));
+const LiveBrainRoom = lazy(() => import('./components/live/LiveBrainRoom').then((m) => ({ default: m.LiveBrainRoom })));
 
 // LEGACY ERP: أسطح خارج نطاق المشروع المعلن، مخفية من التنقل (LEGACY_ERP_NAV_ENABLED=false).
 // تُحمَّل عند الطلب فقط (code splitting) فلا تثقل الحزمة الأولية، مع بقاء الحالات في
@@ -134,6 +135,7 @@ const AppContent: React.FC = () => {
   // لا نسختان من المنطق: صفحات الأقسام (SectionHub) تستدعي هذه الدالة نفسها.
   const renderLeafView = (tab: string): React.ReactNode => {
     switch (tab) {
+      case 'live_room': return <LiveBrainRoom />;
       case 'command_center': return <CommandCenterView />;
       case 'dashboard': return <DashboardView />;
       case 'executive': return <ExecutiveCommandView />;

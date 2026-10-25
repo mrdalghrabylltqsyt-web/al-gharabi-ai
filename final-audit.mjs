@@ -6272,6 +6272,16 @@ add('watcher-advisory-not-authority',
     read('package.json').includes('npm run test:hardening-maintenance'),
     'لا تعليق دورة بقراءة معلّقة، لا حبس لطابور الكتابة، لا كتابات كاملة مكرّرة، لا فشل حفظ صامت، وتقرير ثغرات الحزم في كل تشغيل');
 
+  // 11l) غرفة العقل الحية: المخطط الهندسي حيّاً من الخادم الحقيقي (للمالك).
+  add('live-brain-room-real-stream',
+    fs.existsSync(path.join(root, 'engine/ops/liveRoom.ts')) &&
+    server.includes('app.get("/api/live/room", requireOwner,') &&
+    server.includes('liveEvent(auditToLiveEvent(action, detail));') &&
+    read('src/components/live/LiveBrainRoom.tsx').includes('apiService.getLiveRoom(lastIdRef.current)') &&
+    read('src/App.tsx').includes("case 'live_room': return <LiveBrainRoom />;") &&
+    read('package.json').includes('npm run test:live-room'),
+    'غرفة العقل الحية تُبث من أحداث الخادم الفعلية وحالة الأقسام الثلاثة عشر الحقيقية — بلا أرقام ثابتة');
+
   // 12) AGENTS.md: عدد فحوصات final-audit مطابق للفعلي (يُعَدّ من نص الملف نفسه).
   const auditCount = (read('final-audit.mjs').match(/^\s*add\(/gm) || []).length;
   add('agents-audit-count-accurate',

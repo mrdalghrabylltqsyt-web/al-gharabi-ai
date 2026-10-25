@@ -716,6 +716,7 @@ import { buildSalesReadiness, sanitizeOAuthFailureMessage, type ReadinessPlatfor
 import { backupFreshness } from "./engine/dr/autoBackup";
 import { summarizePublishHealth, formatPublishLogLine } from "./engine/ops/publishHealth";
 import { realProductPhrases } from "./src/utils/productPhrases";
+import { LiveEventBuffer, classifyLogLine, auditToLiveEvent, buildLiveModules, platformAr, type LiveEventInput } from "./engine/ops/liveRoom";
 import { parseFacebookPostMetrics, parseInstagramMediaMetrics, parseGraphInsights, parseFollowers, upsertPerformanceRecords, summarizePlatformMetrics, type MetricValues } from "./engine/social/metricsSync";
 import { resolveInteractionProduct, productFactStatement, productNamedInText, type ProductResolution } from "./engine/social/productResolution";
 import { decideCoalescedWrite, type CoalesceMemo, USAGE_INDICATOR_VOLATILE_PATHS } from "./engine/ops/writeCoalescing";
@@ -727,6 +728,36 @@ import { cleanText, workspaceId, formatIqd, buildMarketingQuote } from "./engine
 import { productInstallmentFields, computeInstallmentPrice, type InstallmentInput } from "./src/utils/installmentPrice";
 
 dotenv.config();
+
+// -----------------------------------------------------------------------------
+// غرفة العقل الحية (2026-10-25): مخزن أحداث حيّ في الذاكرة يُغذّى مما يجري فعلاً —
+// أسطر السجل المنظّمة (بادئات معروفة فقط)، عمليات audit، استقبال التعليقات، مسودات
+// الردود وقرارات المراقب. بلا كتابة للقاعدة، وبلا أي سرّ (النصوص مقصوصة ومصنّفة).
+// -----------------------------------------------------------------------------
+const liveEvents = new LiveEventBuffer(300);
+function liveEvent(input: LiveEventInput | null): void {
+  if (!input) return;
+  try { liveEvents.push(input, new Date().toISOString()); } catch { /* البث لا يُفشل أي مسار */ }
+}
+/** تعليق/رسالة واردة ⇒ حدث حي (النية فقط + مقتطف قصير؛ بلا هوية الكاتب). */
+function liveCommentEvent(row: any): LiveEventInput | null {
+  if (!row || row.backfill) return null;
+  const k = row.classification || {};
+  const intent = k.isBusinessInquiry || k.intent === "business_inquiry" ? "استفسار تجاري" : k.intent === "complaint" ? "شكوى" : k.intent === "praise" ? "مدح" : k.intent === "question" ? "سؤال" : "تفاعل";
+  return { module: "customers", level: k.intent === "complaint" ? "warn" : "info", title: `${row.kind === "message" ? "رسالة" : "تعليق"} جديد على ${platformAr(row.platform)} — ${intent}`, text: String(row.text || "").slice(0, 90) };
+}
+(() => {
+  const wrap = (fn: (...a: any[]) => void) => (...args: any[]) => {
+    fn(...args);
+    try {
+      const first = args.map((a) => (typeof a === "string" ? a : "")).join(" ");
+      if (first) liveEvent(classifyLogLine(first));
+    } catch { /* تجاهل */ }
+  };
+  console.log = wrap(console.log.bind(console));
+  console.warn = wrap(console.warn.bind(console));
+  console.error = wrap(console.error.bind(console));
+})();
 
 const app = express();
 
@@ -5287,6 +5318,7 @@ async function ingestWebhookComments(input: {
     };
     if (!input.omitKind) comment.kind = ev.kind;
     (workspace as any).socialComments.unshift(comment);
+    liveEvent(liveCommentEvent(comment));
     if ((workspace as any).socialComments.length > WORKSPACE_MAX_SOCIAL_COMMENTS) (workspace as any).socialComments.length = WORKSPACE_MAX_SOCIAL_COMMENTS;
     input.appendProviderId?.(ev);
     accepted.push(ev.externalId);
@@ -7081,6 +7113,7 @@ function ingestYouTubeComment(c: YouTubeComment, videoId: string | null): { dupl
     ingestSource: "youtube_api", replyTarget: { commentId: c.commentId, videoId: videoId || c.videoId },
   };
   (workspace as any).socialComments.unshift(record);
+  liveEvent(liveCommentEvent(record));
   if ((workspace as any).socialComments.length > WORKSPACE_MAX_SOCIAL_COMMENTS) (workspace as any).socialComments.length = WORKSPACE_MAX_SOCIAL_COMMENTS;
   const ids: string[] = Array.isArray((workspace as any).youtubeCommentIds) ? (workspace as any).youtubeCommentIds : [];
   (workspace as any).youtubeCommentIds = [...ids, c.commentId].slice(-DEDUPE_ID_MAX);
@@ -7753,6 +7786,14 @@ function watcherAudit(entry: {
   generatedText?: string | null; sent?: boolean | null; providerId?: string | null; verification?: string | null;
   error?: string | null; actor?: string | null;
 }): void {
+  // أحداث المراقب المهمة فقط (لا كل poll_complete) ⇒ البث الحي.
+  const WATCHER_LIVE: Record<string, [string, "ok" | "info" | "warn" | "error"]> = {
+    reply_sent: ["رد أُرسل على يوتيوب", "ok"], reply_failed: ["فشل رد على يوتيوب", "error"],
+    comment_escalated: ["تعليق يوتيوب صُعّد لك", "warn"], comment_deferred: ["تعليق يوتيوب محفوظ (الرد الآلي موقوف)", "info"],
+    reply_blocked: ["رد يوتيوب محجوب بالبوابة", "warn"],
+  };
+  const wl = WATCHER_LIVE[String(entry.action || "")];
+  if (wl) liveEvent({ module: "automation", level: wl[1], title: wl[0], text: String(entry.reason || "").slice(0, 90) });
   watcherState.audit.unshift({
     id: crypto.randomUUID(),
     at: new Date().toISOString(),
@@ -8905,6 +8946,7 @@ async function runMetaWatcherCycle(trigger: string): Promise<{ ok: boolean; trig
             threadPageReplied,
           });
           if ((workspace as any).socialComments.length > WORKSPACE_MAX_SOCIAL_COMMENTS) (workspace as any).socialComments.length = WORKSPACE_MAX_SOCIAL_COMMENTS;
+          liveEvent(liveCommentEvent((workspace as any).socialComments[0]));
           newDetected += 1;
           // وقت آخر استقبال فعلي لهذه المنصة (يُغذّي تحذير 48 ساعة).
           metaPollingState.platformStats[platform].lastIngestAt = new Date().toISOString();
@@ -9772,6 +9814,7 @@ function createCommercialDraft(input: {
   };
   commercialDrafts.unshift(draft);
   if (commercialDrafts.length > COMMERCIAL_MAX_DRAFTS) commercialDrafts.length = COMMERCIAL_MAX_DRAFTS;
+  liveEvent({ module: 'gate', level: 'info', title: `رد جاهز بانتظار موافقتك — ${platformAr(draft.platform)}`, text: String(draft.text || '').slice(0, 90) });
   // B1/Y2: استفسار زبون جديد أنشأ مسودة تنتظر الموافقة ⇒ تنبيه المالك الخارجي
   // (مجمّع كل 30 دقيقة). لا رسالة للزبون، ولا استهلاك Gemini.
   recordOwnerAlert({
@@ -14278,6 +14321,93 @@ function platformCardMetrics(platform: string): { followers: number | null; foll
   };
 }
 
+// -----------------------------------------------------------------------------
+// غرفة العقل الحية: لقطة كاملة من حالة الخادم الحقيقية + الأحداث الجديدة منذ `since`.
+// للمالك فقط. تُقرأ من الذاكرة بلا أي استعلام للقاعدة (خفيفة على الخطة المجانية)؛
+// الواجهة تستطلعها كل بضع ثوانٍ أثناء فتح الشاشة فقط.
+// -----------------------------------------------------------------------------
+app.get("/api/live/room", requireOwner, (req, res) => {
+  const nowMs = Date.now();
+  const since = Number(req.query?.since || 0);
+  const inbound = (((workspace as any).socialComments || []) as any[]);
+  const dayAgo = nowMs - 86400000;
+  const metricsPlatforms = ((metricsSyncState.lastResult as any)?.platforms || {}) as Record<string, any>;
+  const audience = (((workspace as any).platformAudience || {}) as Record<string, { followers: number | null }>);
+  const partialOf = (id: string): string | null => {
+    const m = metricsPlatforms[id];
+    if (id === "threads" && m && m.posts > 0 && m.withMetrics === 0) return "ينقص صلاحية الرؤى";
+    if (id === "tiktok") return "الإحصاءات بانتظار مراجعة تيك توك";
+    const st: any = (metaPollingState.platformStats as any)?.[id];
+    if (st && Number(st.consecutiveErrors || 0) >= META_READ_FAIL_WARN_CYCLES) return "قراءة التعليقات متعثّرة";
+    return null;
+  };
+  const platforms = SUPPORTED_PLATFORMS.map((p: any) => {
+    const c: any = platformConnections.get(p.id);
+    const connected = Boolean(c?.status === "connected" && c?.providerVerified === true);
+    return { id: p.id, connected, partial: connected ? partialOf(p.id) : null };
+  });
+  const records = (((workspace as any).publishRecords || []) as any[]).filter((r) => !r?.simulated && (r?.providerPostId || r?.externalVideoId) && (r?.state === "published" || r?.state === "scheduled"));
+  const metaFailing = Object.entries(((metaPollingState as any)?.platformStats || {}) as Record<string, any>).filter(([, st]) => Number(st?.consecutiveErrors || 0) >= META_READ_FAIL_WARN_CYCLES).map(([p]) => p);
+  const fresh = (() => { try { return backupFreshness(drControl.driveAutoBackup, nowMs); } catch { return null; } })();
+  const pressure = (() => { try { return String(currentUsagePressure().level || "normal"); } catch { return "normal"; } })();
+  const input = {
+    nowMs,
+    platforms,
+    pendingReplies: commercialDrafts.filter((d: any) => d.status === "pending").length,
+    inbound: inbound.length,
+    inquiries24h: inbound.filter((c: any) => Date.parse(c?.createdAt || "") >= dayAgo && (c?.classification?.isBusinessInquiry === true || c?.classification?.intent === "business_inquiry")).length,
+    leadsOpen: commercialLeads.filter((l: any) => !l.archived && !["WON", "LOST", "CLOSED"].includes(String(l.stage || ""))).length,
+    products: (workspace.products || []).length,
+    productsInStock: (workspace.products || []).filter((p: any) => p.inStock !== false).length,
+    publishedPosts: new Set(records.map((r) => String(r.externalVideoId || r.providerPostId))).size,
+    measured: Object.entries(metricsPlatforms).map(([platform, m]: [string, any]) => ({ platform, ok: Number(m?.withMetrics || 0), total: Number(m?.posts || 0) })),
+    followers: Object.fromEntries(Object.entries(audience).map(([k, v]) => [k, typeof v?.followers === "number" ? v.followers : null])),
+    sendModeApproval: requiresApproval(commercialSendMode),
+    commercialEnabled: commercialKillSwitchEnabled(),
+    youtubeAutoReply: Boolean(watcherState.controls?.autoReply) && !watcherState.controls?.paused,
+    youtubeCycles: Number(watcherState.pollCount || 0),
+    youtubeLastPollAt: watcherState.lastPollAt || null,
+    metaLastPollAt: metaPollingState.lastPollAt || null,
+    metaFailing,
+    brainCycles: Number(brainRuntimeState.cycleCount || 0),
+    brainLastSuccessAt: brainRuntimeState.lastSuccessAt || null,
+    storageHealthy: Boolean(storageReady),
+    tls: ((storageAdapter as any).tlsStatus?.result ?? (storageAdapter.backend === "postgres" ? null : "file")) as string | null,
+    persistFailStreak: persistStats.failStreak,
+    writesCoalesced: persistStats.coalesced,
+    writesDone: persistStats.written,
+    backupLevel: fresh ? fresh.level : null,
+    backupLastSuccessAt: fresh ? fresh.lastSuccessAt : null,
+    memoryMb: Math.round(process.memoryUsage().rss / 1048576),
+    uptimeSec: Math.round(process.uptime()),
+    geminiEnabled: Boolean(geminiStatus().enabled),
+    ownerTelegram: ownerTelegramConfigured(),
+    ownerEmailAlerts: Boolean(ownerAlertState.enabled),
+    usagePressure: pressure,
+  };
+  const modules = buildLiveModules(input);
+  const cadence = {
+    youtube: (() => { try { return watcherCadenceMs(); } catch { return null; } })(),
+    meta: (() => { try { return metaPollingCadenceMs(); } catch { return null; } })(),
+  };
+  res.json({
+    success: true,
+    serverTime: new Date(nowMs).toISOString(),
+    modules,
+    platforms: platforms.map((p) => ({ ...p, followers: audience[p.id]?.followers ?? null })),
+    pulse: {
+      youtube: { cycles: input.youtubeCycles, lastAt: input.youtubeLastPollAt, cadenceMs: cadence.youtube },
+      meta: { cycles: Number(metaPollingState.pollCount || 0), lastAt: input.metaLastPollAt, cadenceMs: cadence.meta },
+      brain: { cycles: input.brainCycles, lastAt: brainRuntimeState.lastCycleCompletedAt || null },
+      commercial: { lastAt: commercialLastRun?.at || null, drafted: commercialLastRun?.drafted ?? null },
+      metrics: { lastAt: metricsSyncState.lastRunAt },
+      backup: { lastAt: input.backupLastSuccessAt, level: input.backupLevel },
+    },
+    events: liveEvents.since(since, since > 0 ? 60 : 40),
+    lastEventId: liveEvents.lastId,
+  });
+});
+
 app.get("/api/workspace/snapshot", authenticateToken, (req, res) => {
   const isOwner = ((req as any).user as ServerUser)?.role === "owner";
   const connected = connectedPlatformIds();
@@ -17990,6 +18120,7 @@ async function persistStateDurableOrThrow(): Promise<void> {
 function audit(userId: string, action: string, detail?: string) {
   auditLog.unshift({ id: crypto.randomUUID(), at: new Date().toISOString(), userId, action, detail });
   if (auditLog.length > 100) auditLog.pop();
+  liveEvent(auditToLiveEvent(action, detail));
 
   persistState();
 }

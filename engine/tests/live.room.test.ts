@@ -1,0 +1,93 @@
+/**
+ * غرفة العقل الحية — المنطق الصافي + عقود الربط بالخادم والواجهة.
+ *  1) أسطر السجل المعروفة فقط تتحوّل لأحداث (لا بث لسطر عشوائي)، بنص عربي واضح.
+ *  2) عمليات audit ⇒ أحداث، والقراءة الروتينية (بحث/عرض) لا تُبث.
+ *  3) المخزن الدائري: ترتيب، since، منع تكرار فوري، سقف.
+ *  4) حالة الأقسام من أرقام حقيقية (لا افتراض).
+ *  5) الخادم: مسار للمالك فقط، يُغذّى من السجل/audit/التعليقات/المسودات/المراقب.
+ *  6) الواجهة: استطلاع حقيقي، نبضة لكل حدث، لا أرقام ثابتة.
+ */
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { classifyLogLine, auditToLiveEvent, LiveEventBuffer, buildLiveModules, LIVE_MODULE_KEYS } from '../ops/liveRoom';
+
+const ROOT = process.cwd();
+const read = (p: string) => readFileSync(join(ROOT, p), 'utf8');
+let passed = 0;
+const failures: string[] = [];
+function check(name: string, condition: boolean, detail = ''): void {
+  if (condition) passed += 1; else failures.push(`${name}${detail ? ` — ${detail}` : ''}`);
+}
+
+// 1) السجل
+const m = classifyLogLine('[metrics] platform=facebook posts=7 withMetrics=5 followers=1064 error=10');
+check('★ سطر المؤشرات ⇒ حدث الذاكرة بالعربية', m?.module === 'memory' && m.title === 'أرقام فيسبوك' && m.text.includes('قيست 5 من 7') && m.text.includes('1064'), JSON.stringify(m));
+check('منصة بلا أي قياس ⇒ تحذير', classifyLogLine('[metrics] platform=threads posts=11 withMetrics=0 followers=- error=10')?.level === 'warn');
+check('★ نشر ناجح ⇒ النشر والمنصات', classifyLogLine('[publish] platform=instagram outcome=published status=200 providerPostId=1 code=- providerCode=- ms=900')?.module === 'platforms');
+check('فشل نشر ⇒ خطأ', classifyLogLine('[publish] platform=threads outcome=failed status=502 providerPostId=- code=X providerCode=- ms=1')?.level === 'error');
+check('★ نسخة احتياطية ناجحة', classifyLogLine('[dr-backup] outcome=ok state=done trigger=auto decision=due recoveryPoint=rp-055 ms=1000')?.module === 'backup');
+check('★ تعثّر قراءة التعليقات', classifyLogLine('[comments] platform=facebook outcome=failed code=100 streak=3')?.level === 'error');
+check('TLS قاعدة البيانات', classifyLogLine('[storage] tls verify=ok mode=strict')?.module === 'storage');
+check('فشل الحفظ', classifyLogLine('Could not persist server state: ETIMEDOUT streak=2')?.level === 'error');
+check('إقلاع الخادم', classifyLogLine('[الغرابي AI Server] running on http://0.0.0.0:10000')?.module === 'monitor');
+check('★ سطر عشوائي لا يُبث', classifyLogLine('some random debug token=abc') === null && classifyLogLine('') === null);
+
+// 2) audit
+check('★ عملية معروفة ⇒ حدث', auditToLiveEvent('product_created', 'سبلت 2 طن')?.module === 'products');
+check('★ البحث/العرض لا يُبث', auditToLiveEvent('workspace_search', 'x') === null && auditToLiveEvent('commercial_inbox_view') === null);
+check('تفصيل JSON لا يُعرض خاماً', auditToLiveEvent('commercial_draft_refreshed', '{"from":"a"}')?.text === '');
+check('عملية غير معروفة ⇒ قسم مستنتج', auditToLiveEvent('youtube_reply_sent')?.module === 'automation');
+
+// 3) المخزن
+const buf = new LiveEventBuffer(5);
+const t0 = Date.parse('2026-10-25T20:00:00Z');
+for (let i = 0; i < 8; i += 1) buf.push({ module: 'core', level: 'info', title: `e${i}`, text: '' }, new Date(t0 + i * 5000).toISOString());
+check('★ سقف المخزن', buf.since(0).length === 5 && buf.since(0)[0].title === 'e3');
+check('★ since يعيد الجديد فقط', buf.since(6).map((e) => e.title).join(',') === 'e6,e7');
+check('منع التكرار الفوري', buf.push({ module: 'core', level: 'info', title: 'e7', text: '' }, new Date(t0 + 7 * 5000 + 1000).toISOString()) === null);
+check('lastId يتقدّم', buf.lastId === 8);
+
+// 4) الأقسام
+const base = {
+  nowMs: t0, platforms: [{ id: 'facebook', connected: true }, { id: 'threads', connected: true, partial: 'ينقص صلاحية الرؤى' }, { id: 'whatsapp', connected: false }],
+  pendingReplies: 4, inbound: 156, inquiries24h: 3, leadsOpen: 15, products: 81, productsInStock: 80, publishedPosts: 16,
+  measured: [{ platform: 'youtube', ok: 50, total: 50 }, { platform: 'threads', ok: 0, total: 11 }], followers: { facebook: 1064 },
+  sendModeApproval: true, commercialEnabled: true, youtubeAutoReply: false, youtubeCycles: 2516, youtubeLastPollAt: new Date(t0 - 60000).toISOString(),
+  metaLastPollAt: new Date(t0 - 120000).toISOString(), metaFailing: [], brainCycles: 40, brainLastSuccessAt: new Date(t0 - 600000).toISOString(),
+  storageHealthy: true, tls: 'verified', persistFailStreak: 0, writesCoalesced: 30, writesDone: 60, backupLevel: 'ok' as const,
+  backupLastSuccessAt: new Date(t0 - 3600000).toISOString(), memoryMb: 150, uptimeSec: 3600, geminiEnabled: true, ownerTelegram: false, ownerEmailAlerts: true, usagePressure: 'normal',
+};
+const v = buildLiveModules(base);
+check('★ كل الأقسام الثلاثة عشر موجودة', LIVE_MODULE_KEYS.every((k) => Boolean((v as any)[k])));
+check('★ المنصات جزئية (غير مربوطة + صلاحية ناقصة)', v.platforms.status === 'partial' && v.platforms.metric.startsWith('2 من 3'));
+check('الرد الآلي الموقوف ⇒ الأتمتة جزئية', v.automation.status === 'partial');
+check('المالك: 4 ردود تنتظره', v.owner.metric.includes('4'));
+check('★ التخزين الموثّق ⇒ يعمل', v.storage.status === 'ok');
+check('★ فشل الحفظ ⇒ التخزين متوقف', buildLiveModules({ ...base, persistFailStreak: 3 }).storage.status === 'off');
+check('الذاكرة: 50 من 61 مقاساً', v.memory.metric.startsWith('50 من 61'));
+check('لا نسخ ⇒ النسخ متوقف', buildLiveModules({ ...base, backupLevel: null, backupLastSuccessAt: null }).backup.status === 'off');
+
+// 5) الخادم
+const server = read('server.ts');
+check('★ المسار للمالك فقط', server.includes('app.get("/api/live/room", requireOwner,'));
+check('★ يُغذّى من السجل (بادئات معروفة)', server.includes('if (first) liveEvent(classifyLogLine(first));'));
+check('★ ومن audit', server.includes('liveEvent(auditToLiveEvent(action, detail));'));
+check('★ ومن كل تعليق وارد', (server.match(/liveEvent\(liveCommentEvent\(/g) || []).length === 3);
+check('ومن مسودات الردود وقرارات المراقب', server.includes("title: `رد جاهز بانتظار موافقتك") && server.includes('const WATCHER_LIVE'));
+check('اللقطة من الذاكرة بلا استعلام قاعدة', !/app\.get\("\/api\/live\/room"[\s\S]{0,4000}storageAdapter\.read/.test(server));
+
+// 6) الواجهة
+const ui = read('src/components/live/LiveBrainRoom.tsx');
+check('★ استطلاع حقيقي للخادم', ui.includes('apiService.getLiveRoom(lastIdRef.current)') && ui.includes('const POLL_MS = 4000;'));
+check('★ نبضة لكل حدث على خط قسمه', ui.includes('lbr-burst') && ui.includes('offsetPath'));
+check('يتوقف عند إخفاء الصفحة', ui.includes("document.visibilityState === 'visible'"));
+check('للمالك فقط في الواجهة والتنقل', ui.includes("currentUser?.role === 'owner'") && read('src/components/common/navConfig.tsx').includes("id: 'live_room'") && read('src/App.tsx').includes("case 'live_room': return <LiveBrainRoom />;"));
+check('لا أرقام ثابتة مختلقة في الواجهة', !/1,064|2,516|\b156\b/.test(ui));
+
+console.log('\n' + '='.repeat(60));
+if (failures.length) {
+  console.error(`FAILED: ${failures.length} — passed ${passed}`);
+  for (const x of failures) console.error('  ✗ ' + x);
+  process.exit(1);
+}
+console.log(`PASSED: ${passed} live-room checks`);
