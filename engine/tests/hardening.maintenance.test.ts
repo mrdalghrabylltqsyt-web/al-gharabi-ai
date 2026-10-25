@@ -9,7 +9,7 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { createRetryingProviderFetch, providerRetryConfig } from '../social/providerRetry';
-import { postgresPoolConfig } from '../storage/adapter';
+import { postgresPoolConfig, pgTlsVerifyMode, isTlsCertError } from '../storage/adapter';
 import { OWNER_ALERT_KIND_LABELS_AR } from '../notifications/ownerAlerts';
 
 const ROOT = process.cwd();
@@ -61,6 +61,15 @@ async function main() {
   const ci = read('.github/workflows/ci.yml');
   check('★ تدقيق ثغرات حزم الإنتاج في CI (غير مانع)', ci.includes('npm audit --omit=dev --json') && ci.includes('continue-on-error: true'));
 
+
+  // 6) التحقق من شهادة TLS لقاعدة البيانات (المرحلة 1: auto مع رجوع مُسجَّل)
+  check('★ الوضع الافتراضي auto', pgTlsVerifyMode({}) === 'auto' && pgTlsVerifyMode({ PG_TLS_VERIFY: 'STRICT' }) === 'strict' && pgTlsVerifyMode({ PG_TLS_VERIFY: 'off' }) === 'off' && pgTlsVerifyMode({ PG_TLS_VERIFY: 'x' }) === 'auto');
+  check('★ التحقق مفعّل حين يُطلب', (postgresPoolConfig('postgresql://u:p@h/d?sslmode=require', { verifyTls: true }) as any).ssl.rejectUnauthorized === true);
+  check('بلا طلب ⇒ السلوك القديم', (postgresPoolConfig('postgresql://u:p@h/d?sslmode=require') as any).ssl.rejectUnauthorized === false);
+  check('★ أخطاء الشهادة فقط تُعدّ أخطاء TLS', isTlsCertError({ code: 'SELF_SIGNED_CERT_IN_CHAIN' }) && isTlsCertError({ code: 'ERR_TLS_CERT_ALTNAME_INVALID' }) && isTlsCertError({ message: 'unable to verify the first certificate' }) && !isTlsCertError({ code: 'ECONNREFUSED' }) && !isTlsCertError({ code: '28P01' }));
+  const adapterSrc = read('engine/storage/adapter.ts');
+  check('★ رجوع مُسجَّل فقط عند رفض الشهادة في وضع auto', adapterSrc.includes("if (!result.ok && mode === 'auto' && verifyTls && isTlsCertError(result.error))") && adapterSrc.includes('tls verify=failed code='));
+  check('حالة TLS ظاهرة للمالك + تنبيه عند الرجوع', server.includes('databaseTls: ((storageAdapter as any).tlsStatus?.result') && server.includes('id:"db-tls"'));
   clearInterval(keepAlive);
   console.log('\n' + '='.repeat(60));
   if (failures.length) {

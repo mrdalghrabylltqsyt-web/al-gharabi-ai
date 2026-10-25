@@ -459,7 +459,34 @@ class FileStorageAdapter implements StorageAdapter {
  * `53000 insufficient_resources` ويفشل الإقلاع. min=0 فلا يبقى اتصال خامل دائم.
  * المهلة 15 ثانية حتى يتسع استيقاظ Neon من النوم.
  */
-export function postgresPoolConfig(connectionString: string): Record<string, unknown> {
+/**
+ * التحقق من شهادة TLS لقاعدة البيانات — صيانة 2026-10-25 (المرحلة 1).
+ *
+ * كان الاتصال بـNeon مشفّراً لكن **بلا تحقق من الشهادة** (`rejectUnauthorized:false`)،
+ * فأي وسيط على الشبكة يستطيع انتحال القاعدة. المرحلة 1 («auto»، الافتراضي): نحاول
+ * اتصالاً موثَّقاً أولاً؛ إن رُفضت الشهادة تحديداً (لا أي خطأ آخر) نسجّل ذلك بوضوح ونعود
+ * للوضع السابق كي لا يتوقف المشروع. بعد ثبوت `verify=ok` في السجل تُفرض الصرامة.
+ *   PG_TLS_VERIFY = auto (افتراضي) | strict (تحقق إلزامي) | off (السلوك القديم).
+ */
+export type PgTlsVerifyMode = 'auto' | 'strict' | 'off';
+export function pgTlsVerifyMode(env: Record<string, string | undefined> = process.env): PgTlsVerifyMode {
+  const raw = String(env.PG_TLS_VERIFY ?? '').trim().toLowerCase();
+  return raw === 'strict' || raw === 'off' ? raw : 'auto';
+}
+
+const TLS_CERT_ERROR_CODES = new Set([
+  'SELF_SIGNED_CERT_IN_CHAIN', 'DEPTH_ZERO_SELF_SIGNED_CERT', 'UNABLE_TO_VERIFY_LEAF_SIGNATURE',
+  'UNABLE_TO_GET_ISSUER_CERT_LOCALLY', 'UNABLE_TO_GET_ISSUER_CERT', 'CERT_HAS_EXPIRED', 'CERT_NOT_YET_VALID',
+  'CERT_UNTRUSTED', 'CERT_REJECTED', 'CERT_SIGNATURE_FAILURE', 'ERR_TLS_CERT_ALTNAME_INVALID',
+]);
+/** هل الخطأ رفضٌ لشهادة TLS تحديداً (لا خطأ شبكة/مصادقة)؟ */
+export function isTlsCertError(error: any): boolean {
+  const code = String(error?.code || error?.cause?.code || '').toUpperCase();
+  if (TLS_CERT_ERROR_CODES.has(code)) return true;
+  return /self[- ]signed certificate|unable to verify the first certificate|certificate has expired|Hostname\/IP does not match certificate/i.test(String(error?.message || ''));
+}
+
+export function postgresPoolConfig(connectionString: string, opts: { verifyTls?: boolean } = {}): Record<string, unknown> {
   const forceSsl = !/sslmode=disable/i.test(connectionString);
   return {
     connectionString,
@@ -476,7 +503,7 @@ export function postgresPoolConfig(connectionString: string): Record<string, unk
     keepAlive: true,
     allowExitOnIdle: true,
     application_name: "gharabi-ai",
-    ...(forceSsl ? { ssl: { rejectUnauthorized: false } } : {}),
+    ...(forceSsl ? { ssl: { rejectUnauthorized: opts.verifyTls === true } } : {}),
   };
 }
 
@@ -586,6 +613,9 @@ class PostgresStorageAdapter implements StorageAdapter {
    */
   private writeBaseline = new Map<string, string>();
 
+  /** نتيجة التحقق من شهادة TLS عند آخر اتصال: verified | fallback_unverified | off | null. */
+  tlsStatus: { mode: PgTlsVerifyMode; result: 'verified' | 'fallback_unverified' | 'off' | null; errorCode: string | null } = { mode: 'auto', result: null, errorCode: null };
+
   constructor(private readonly connectionString: string) {}
 
   get durable(): boolean {
@@ -595,10 +625,12 @@ class PostgresStorageAdapter implements StorageAdapter {
   async init(): Promise<void> {
     // pool جديد لكل محاولة: بعد خطأ اتصال (خصوصاً استيقاظ Neon من النوم) قد
     // يبقى الـpool السابق في حالة "مسمّمة"، فنعيد البناء بدل إعادة استخدامه.
+    const mode = pgTlsVerifyMode();
+    let verifyTls = mode !== 'off';
     const connectOnce = async (): Promise<void> => {
       if (this.pool) { try { await this.pool.end?.(); } catch { /* تجاهل */ } this.pool = null; }
       const { Pool } = await import("pg");
-      this.pool = new Pool(postgresPoolConfig(this.connectionString));
+      this.pool = new Pool(postgresPoolConfig(this.connectionString, { verifyTls }));
       // خطأ اتصال عابر داخل pool لا يجب أن يُسقط العملية.
       this.pool.on?.("error", () => { /* يُعالج عند الطلب التالي */ });
       // Neon Free ينام ويستيقظ عند أول اتصال؛ المهلة 15 ثانية تكفي للاستيقاظ،
@@ -630,7 +662,18 @@ class PostgresStorageAdapter implements StorageAdapter {
       this.detail = null;
     };
 
-    const result = await runPgStartupWithRetry(connectOnce);
+    let result = await runPgStartupWithRetry(connectOnce);
+    const usesSsl = !/sslmode=disable/i.test(this.connectionString);
+    if (!result.ok && mode === 'auto' && verifyTls && isTlsCertError(result.error)) {
+      const code = String((result.error as any)?.code || 'TLS_CERT_ERROR').slice(0, 60);
+      console.error(`[storage] tls verify=failed code=${code} fallback=unverified (PG_TLS_VERIFY=auto)`);
+      this.tlsStatus = { mode, result: 'fallback_unverified', errorCode: code };
+      verifyTls = false;
+      result = await runPgStartupWithRetry(connectOnce);
+    } else if (result.ok && usesSsl) {
+      this.tlsStatus = { mode, result: verifyTls ? 'verified' : 'off', errorCode: null };
+      console.log(`[storage] tls verify=${verifyTls ? 'ok' : 'off'} mode=${mode}`);
+    }
     if (!result.ok) {
       this.healthy = false;
       const error: any = result.error;
