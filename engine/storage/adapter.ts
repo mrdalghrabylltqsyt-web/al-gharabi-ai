@@ -467,6 +467,12 @@ export function postgresPoolConfig(connectionString: string): Record<string, unk
     min: 0,
     connectionTimeoutMillis: 15_000,
     idleTimeoutMillis: 30_000,
+    // صيانة 2026-10-25: لا مهلة للاستعلام كانت تعني أن استعلاماً معلّقاً (اتصال نصف مفتوح
+    // بعد نوم Neon/انقطاع شبكة) يحبس طابور الكتابة **للأبد** فتتوقف كل الكتابات بصمت حتى
+    // إعادة التشغيل. الآن: مهلة على العميل والخادم (45 ثانية تكفي لأكبر لقطة حالة)،
+    // فيفشل الاستعلام صراحةً ويُسجَّل، وتتابع الكتابات التالية.
+    query_timeout: 45_000,
+    statement_timeout: 45_000,
     keepAlive: true,
     allowExitOnIdle: true,
     application_name: "gharabi-ai",

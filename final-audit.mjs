@@ -6262,6 +6262,16 @@ add('watcher-advisory-not-authority',
     read('package.json').includes('npm run test:screens-round3'),
     'ردود الزبائن من حقائق المعرض حتى بلا منتج + سعر/موقع معاً + المقاس بالكيلو، أوقات موحّدة، ولا حالة كاذبة أثناء التحميل');
 
+  // 11k) صيانة عامة: مهل القراءة/الاستعلام، دمج كتابات الحالة، تنبيه فشل الحفظ، تدقيق الحزم.
+  add('hardening-maintenance-pillars',
+    read('engine/social/providerRetry.ts').includes("readTimeoutMs: envInt(env, 'PROVIDER_READ_TIMEOUT_MS', 25_000, 1_000, 120_000)") &&
+    read('engine/storage/adapter.ts').includes('query_timeout: 45_000') &&
+    server.includes('if (persistPending) { persistStats.coalesced += 1; return; }') &&
+    server.includes('syncStorageFailingAlert();') &&
+    read('.github/workflows/ci.yml').includes('npm audit --omit=dev --json') &&
+    read('package.json').includes('npm run test:hardening-maintenance'),
+    'لا تعليق دورة بقراءة معلّقة، لا حبس لطابور الكتابة، لا كتابات كاملة مكرّرة، لا فشل حفظ صامت، وتقرير ثغرات الحزم في كل تشغيل');
+
   // 12) AGENTS.md: عدد فحوصات final-audit مطابق للفعلي (يُعَدّ من نص الملف نفسه).
   const auditCount = (read('final-audit.mjs').match(/^\s*add\(/gm) || []).length;
   add('agents-audit-count-accurate',

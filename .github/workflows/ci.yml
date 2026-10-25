@@ -158,6 +158,21 @@ jobs:
           path: dist/
       - name: npm run final-audit
         run: npm run final-audit
+      # صيانة 2026-10-25: تدقيق ثغرات حزم الإنتاج — تقرير دائم في كل تشغيل (ملخص +
+      # تنبيهات). غير مانع حالياً حتى يُحسم كل بند بقرار (ترقية آمنة لا تكسر الإنتاج).
+      - name: npm audit (production deps, report)
+        if: always()
+        continue-on-error: true
+        run: |
+          npm audit --omit=dev --json > audit.json || true
+          node -e '
+            const a = require("./audit.json"); const v = a.vulnerabilities || {}; const m = (a.metadata || {}).vulnerabilities || {};
+            const rows = Object.entries(v).map(([n, x]) => `${x.severity} ${n} ${x.range || ""} fix=${typeof x.fixAvailable === "object" ? x.fixAvailable.name + "@" + x.fixAvailable.version : x.fixAvailable}`);
+            const line = `prod deps vulnerabilities: ${JSON.stringify(m)}`;
+            console.log(line); rows.forEach((r) => console.log(r));
+            require("fs").appendFileSync(process.env.GITHUB_STEP_SUMMARY, "### npm audit (production)\n" + line + "\n\n" + rows.map((r) => "- " + r).join("\n") + "\n");
+            for (const r of rows.filter((r) => /^(high|critical)/.test(r))) console.log(`::warning title=npm audit::${r}`);
+          '
 
   # 5) بناء صورة Docker — يثبت أن الصورة تُبنى (نفس مسار النشر).
   docker:

@@ -15492,6 +15492,7 @@ app.get("/api/system/alerts", authenticateToken, (req, res) => {
   for (const [pf, st] of Object.entries(((metaPollingState as any)?.platformStats || {}) as Record<string, any>)) {
     if (Number(st?.consecutiveErrors || 0) >= META_READ_FAIL_WARN_CYCLES) alerts.push({ id:`ingest-${pf}`, severity:"warning", title:`قراءة تعليقات ${pf} متوقفة`, detail:`فشلت ${st.consecutiveErrors} دورات متتالية (${String(st.lastErrorCode || "خطأ")}). قد يلزم إعادة ربط المنصة.` });
   }
+  if (persistStats.failStreak > 0) alerts.push({ id:"storage-failing", severity: persistStats.failStreak >= STORAGE_FAILING_ALERT_STREAK ? "critical" : "warning", title:"حفظ البيانات يفشل", detail:`${persistStats.failStreak} كتابة متتالية فشلت منذ ${persistStats.failingSince || "—"} (${String(lastPersistError || "خطأ")}).` });
   if (!ownerTelegramConfigured()) alerts.push({ id:"owner-telegram", severity:"info", title:"تنبيه Telegram الفوري غير مكتمل", detail:"ينقصه OWNER_TELEGRAM_CHAT_ID — التنبيه بالبريد يعمل. اضغط «ربط Telegram والتحقق» عند الجاهزية." });
   if (connectedPlatformIds().length === 0) alerts.push({ id:"platforms", severity:"info", title:"لا توجد منصات متصلة", detail:"جميع المنصات ما زالت بانتظار OAuth/API فعلي؛ لا يوجد نشر خارجي." });
   const failed = automationJobs.filter((j:any)=>j.status==="failed").length;
@@ -17452,6 +17453,7 @@ async function runOwnerAlertCycle(trigger: string): Promise<{ sent: boolean; rea
     syncOwnerReauthAlerts();
     syncBackupStaleAlert();
     syncIngestFailingAlerts();
+    syncStorageFailingAlert();
     if (!ownerAlertState.enabled) return { sent: false, reason: 'disabled', count: ownerAlertState.pending.length };
     const now = Date.now();
     if (!isOwnerAlertDue(ownerAlertState, now)) return { sent: false, reason: 'not_due', count: ownerAlertState.pending.length };
@@ -17512,6 +17514,23 @@ function syncIngestFailingAlerts(): void {
       at: new Date().toISOString(),
     });
   }
+}
+
+/**
+ * صيانة 2026-10-25: فشل حفظ الحالة في القاعدة كان يُكتب في سجل الخادم فقط — لا يعرف المالك
+ * أن التغييرات الجديدة قد تضيع عند أول إعادة تشغيل. 3 فشلات متتالية ⇒ تنبيه (بريد/Telegram).
+ */
+const STORAGE_FAILING_ALERT_STREAK = 3;
+function syncStorageFailingAlert(): void {
+  if (persistStats.failStreak < STORAGE_FAILING_ALERT_STREAK) return;
+  recordOwnerAlert({
+    key: ownerAlertKey('storage_failing', null, String(persistStats.failingSince || 'unknown')),
+    kind: 'storage_failing',
+    platform: null,
+    title: 'حفظ البيانات يفشل',
+    snippet: truncateAlertSnippet(`فشلت ${persistStats.failStreak} كتابات متتالية للحالة (${String(lastPersistError || 'خطأ')}). التغييرات الجديدة قد تضيع عند إعادة التشغيل — راجع قاعدة البيانات (Neon).`),
+    at: new Date().toISOString(),
+  });
 }
 
 function syncBackupStaleAlert(): void {
@@ -17763,6 +17782,7 @@ function cleanupRuntimeState() {
   if (now - lastWriteStatsLogAt >= 60 * 60 * 1000) {
     lastWriteStatsLogAt = now;
     console.log(`[storage] coalesced=${watcherWriteStats.coalesced} written=${watcherWriteStats.written} (since boot)`);
+    console.log(`[storage] state_writes requested=${persistStats.requested} written=${persistStats.written} coalesced=${persistStats.coalesced} fail_streak=${persistStats.failStreak} (since boot)`);
   }
   for (const [sid, exp] of revokedSessions) if (exp < now) revokedSessions.delete(sid);
   for (const [email, exp] of consumedChallenges) if (exp < now) consumedChallenges.delete(email);
@@ -17867,13 +17887,43 @@ function buildPersistedState() {
 let persistQueue: Promise<void> = Promise.resolve();
 let lastPersistError: string | null = null;
 
+// صيانة 2026-10-25: دمج كتابات الحالة الكاملة. كان كل نداء persistState (91 موضعاً، منها
+// audit() عند كل عملية) يبني لقطة الحالة الكاملة ويضيف كتابة كاملة للقاعدة إلى الطابور —
+// فدفعة من 10 عمليات = 10 كتابات كاملة متتالية بنفس المحتوى تقريباً (حمل على Neon المجاني
+// وعلى الذاكرة). الآن: إن كانت هناك كتابة **مُجدولة لم تبدأ بعد** فلا تُضاف أخرى؛ تلك
+// الكتابة تبني اللقطة لحظة بدئها فتشمل كل التغييرات السابقة. الضمان نفسه محفوظ: كل
+// تغيير يتبعه كتابة تبدأ بعده. persistStateDurable ما زالت تُرجع الطابور فتنتظر الكتابة.
+let persistPending = false;
+const persistStats = { requested: 0, written: 0, coalesced: 0, failStreak: 0, failingSince: null as string | null };
 function persistState(): void {
   // لا كتابة قبل جهوزية المخزن: كتابة لقطة فارغة فوق حالة قائمة أسوأ من عدم الكتابة.
   if (!storageReady) {
     lastPersistError = storageInitError || "storage_not_ready";
     return;
   }
-  persistQueue = persistStateNow();
+  persistStats.requested += 1;
+  if (persistPending) { persistStats.coalesced += 1; return; }
+  persistPending = true;
+  persistQueue = persistQueue
+    .then(() => {
+      // يُصفَّر قبل بناء اللقطة: أي تغيير بعد هذه اللحظة يجدول كتابة جديدة بعدها.
+      persistPending = false;
+      const snapshot = buildPersistedState();
+      persistStats.written += 1;
+      return storageAdapter.write(STORAGE_KEY_STATE, snapshot);
+    })
+    .then(() => {
+      lastPersistError = null;
+      if (persistStats.failStreak) console.log(`[storage] state_write outcome=recovered after=${persistStats.failStreak}`);
+      persistStats.failStreak = 0; persistStats.failingSince = null;
+    })
+    .catch((error: any) => {
+      persistPending = false;
+      lastPersistError = String(error?.code || error?.name || "persist_failed").slice(0, 60);
+      persistStats.failStreak += 1;
+      if (!persistStats.failingSince) persistStats.failingSince = new Date().toISOString();
+      console.warn("Could not persist server state:", lastPersistError, `streak=${persistStats.failStreak}`);
+    });
 }
 
 /**
