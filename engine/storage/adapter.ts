@@ -469,9 +469,12 @@ class FileStorageAdapter implements StorageAdapter {
  *   PG_TLS_VERIFY = auto (افتراضي) | strict (تحقق إلزامي) | off (السلوك القديم).
  */
 export type PgTlsVerifyMode = 'auto' | 'strict' | 'off';
+// المرحلة 2 (2026-10-25): ثبت في الإنتاج `[storage] tls verify=ok mode=auto` (شهادة Neon
+// موثّقة بسلسلة ثقة النظام)، فصار التحقق **إلزامياً افتراضياً** (strict): لا رجوع صامت إلى
+// اتصال غير موثَّق يمكن لوسيط استغلاله. طوارئ فقط: PG_TLS_VERIFY=auto (رجوع مُسجَّل + تنبيه).
 export function pgTlsVerifyMode(env: Record<string, string | undefined> = process.env): PgTlsVerifyMode {
   const raw = String(env.PG_TLS_VERIFY ?? '').trim().toLowerCase();
-  return raw === 'strict' || raw === 'off' ? raw : 'auto';
+  return raw === 'auto' || raw === 'off' ? raw : 'strict';
 }
 
 const TLS_CERT_ERROR_CODES = new Set([
