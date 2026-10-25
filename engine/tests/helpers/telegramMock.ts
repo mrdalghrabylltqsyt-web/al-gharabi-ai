@@ -19,7 +19,11 @@ export interface TelegramMockState {
   failSend: boolean;
   /** يفشل setWebhook عند true. */
   failSetWebhook: boolean;
-  sent: { chatId: string; text: string; messageId: string; replyToMessageId: string | null }[];
+  sent: { chatId: string; text: string; messageId: string; replyToMessageId: string | null; replyMarkup?: any }[];
+  /** إقرارات ضغط الأزرار (answerCallbackQuery). */
+  callbackAnswers: { callbackId: string; text: string }[];
+  /** إزالة أزرار رسائل (editMessageReplyMarkup). */
+  keyboardCleared: { chatId: string; messageId: string }[];
   webhookUrl: string | null;
   webhookSecret: string | null;
   webhookDeleted: boolean;
@@ -44,6 +48,8 @@ export function createTelegramMock(): TelegramMockState {
     failSend: false,
     failSetWebhook: false,
     sent: [],
+    callbackAnswers: [],
+    keyboardCleared: [],
     webhookUrl: null,
     webhookSecret: null,
     webhookDeleted: false,
@@ -108,8 +114,16 @@ export async function startTelegramMockServer(
       const text = String(req.body?.text ?? '');
       const replyToMessageId = req.body?.reply_to_message_id !== undefined ? String(req.body.reply_to_message_id) : null;
       const messageId = String(1000 + state.sent.length);
-      state.sent.push({ chatId, text, messageId, replyToMessageId });
+      state.sent.push({ chatId, text, messageId, replyToMessageId, replyMarkup: req.body?.reply_markup });
       return res.json({ ok: true, result: { message_id: Number(messageId), chat: { id: Number(chatId) || 0 }, text } });
+    }
+    if (method === 'answerCallbackQuery') {
+      state.callbackAnswers.push({ callbackId: String(req.body?.callback_query_id ?? ''), text: String(req.body?.text ?? '') });
+      return res.json({ ok: true, result: true });
+    }
+    if (method === 'editMessageReplyMarkup') {
+      state.keyboardCleared.push({ chatId: String(req.body?.chat_id ?? ''), messageId: String(req.body?.message_id ?? '') });
+      return res.json({ ok: true, result: true });
     }
     return res.status(404).json({ ok: false, description: 'unknown method' });
   });

@@ -179,6 +179,7 @@ import {
   constantTimeEqual,
   checkWebhookRegistration,
   type TelegramFetch,
+  parseTelegramCallbackQuery,
 } from "./engine/social/telegram";
 import {
   FacebookClient,
@@ -659,7 +660,7 @@ import {
   type OwnerAlertState,
   type OwnerAlertItem,
 } from "./engine/notifications/ownerAlerts";
-import { parseOwnerTelegramChatId, buildOwnerTelegramMessage, decideOwnerTelegramSend, defaultOwnerTelegramRateState, newlyQueuedAlerts, OWNER_TELEGRAM_OVERFLOW_TEXT, OWNER_TELEGRAM_MAX_PER_HOUR, type OwnerTelegramRateState } from "./engine/notifications/ownerTelegram";
+import { parseOwnerTelegramChatId, buildOwnerTelegramMessage, decideOwnerTelegramSend, defaultOwnerTelegramRateState, newlyQueuedAlerts, OWNER_TELEGRAM_OVERFLOW_TEXT, OWNER_TELEGRAM_MAX_PER_HOUR, signOwnerTelegramAction, verifyOwnerTelegramAction, isOwnerTelegramCallback, draftIdFromAlertKey, ownerTelegramDecisionText, type OwnerTelegramRateState } from "./engine/notifications/ownerTelegram";
 import {
   createStorageAdapter,
   isPooledPostgresEndpoint,
@@ -5769,7 +5770,21 @@ app.post("/api/platforms/telegram/webhook", express.json({limit:"256kb"}), async
     logTelegramWebhook({ updateId, outcome: "rejected" });
     return res.status(401).json({success:false,error:verification.reason||"تحديث غير موثوق."});
   }
+  // ضغطة زر في تنبيه المالك (موافقة/رفض بضغطة واحدة) — لا تُعامل كرسالة زبون.
+  const callback = parseTelegramCallbackQuery(req.body);
+  if(callback) {
+    const r = await handleOwnerTelegramCallback(callback);
+    logTelegramWebhook({ updateId: callback.updateId, outcome: r.handled ? "accepted" : "ignored" });
+    return res.status(200).json({success:true,accepted:true,callback:r.outcome});
+  }
   const parsed = parseTelegramUpdate(req.body);
+  // رسائل المالك نفسه لبوت المعرض (محادثته الخاصة) ليست استفسار زبون: لا تُسجَّل
+  // تعليقاً ولا تُنشئ مسودة رد. تُقبل بلا أثر.
+  const ownerChatForInbound = parseOwnerTelegramChatId(process.env);
+  if(parsed && ownerChatForInbound && parsed.chatId === ownerChatForInbound) {
+    logTelegramWebhook({ updateId: parsed.updateId, outcome: "ignored" });
+    return res.status(200).json({success:true,accepted:true,ignored:"owner_chat"});
+  }
   // تحديث غير نصي (وسائط/تعديلات) يُقبل ويُتجاهل بلا خطأ، فلا يُعيد Telegram المحاولة.
   if(!parsed) {
     logTelegramWebhook({ updateId, outcome: "ignored" });
@@ -10338,36 +10353,40 @@ app.get("/api/commercial/leads/:id", requireOwner, (req, res) => {
  *   الدائم + نافذة Meta)، ولا تُسجَّل مسودة "مرسلة" بلا معرّف رد حقيقي من المزوّد.
  * - المسودة المنتهية (خارج نافذة Meta) تُعلَّم منتهيةً ولا تُرسل.
  */
-app.post("/api/commercial/drafts/:id/decision", requireOwner, async (req, res) => {
-  const user = (req as any).user as ServerUser;
-  const draft = commercialDrafts.find((d) => d.id === req.params.id);
-  if (!draft) return res.status(404).json({ success: false, error: 'المسودة غير موجودة.' });
+/**
+ * قرار المالك على مسودة رد لزبون (موافقة/تعديل وموافقة/رفض) — مصدر واحد يستخدمه
+ * زر التطبيق وزر Telegram معاً، فلا مسار جانبي: نفس نافذة Meta، نفس المنفّذ
+ * المركزي، نفس سجل القرار والتدقيق.
+ */
+async function decideCommercialDraft(draftId: string, rawKindInput: unknown, editedTextInput: unknown, actorId: string): Promise<{ status: number; body: any }> {
+  const draft = commercialDrafts.find((d) => d.id === draftId);
+  if (!draft) return { status: 404, body: { success: false, error: 'المسودة غير موجودة.' } };
   // مسودة خرجت من نافذة Meta (منتهية) ⇒ لا إرسال حتى لو وُوفق عليها — كود صريح.
   if (draft.status === 'expired') {
-    return res.status(409).json({ success: false, error: 'المسودة منتهية (خارج نافذة Meta)؛ لا تُرسل.', code: 'DRAFT_EXPIRED', draft: draftRowForOwner(draft) });
+    return { status: 409, body: { success: false, error: 'المسودة منتهية (خارج نافذة Meta)؛ لا تُرسل.', code: 'DRAFT_EXPIRED', draft: draftRowForOwner(draft) } };
   }
-  const rawKind = String(req.body?.kind || '').trim();
+  const rawKind = String(rawKindInput || '').trim();
   if (!['approve', 'edit_approve', 'reject'].includes(rawKind)) {
-    return res.status(400).json({ success: false, error: 'نوع القرار مطلوب (approve|edit_approve|reject).', code: 'INVALID_DECISION' });
+    return { status: 400, body: { success: false, error: 'نوع القرار مطلوب (approve|edit_approve|reject).', code: 'INVALID_DECISION' } };
   }
   const kind = rawKind as CommercialDecisionKind;
-  const editedText = typeof req.body?.text === 'string' ? String(req.body.text) : null;
+  const editedText = typeof editedTextInput === 'string' ? String(editedTextInput) : null;
   const nowIso = new Date().toISOString();
 
-  const applied = applyOwnerDecision(draft, { kind, editedText, by: user.id, at: nowIso });
-  if (!applied.ok) return res.status(409).json({ success: false, error: applied.reason });
+  const applied = applyOwnerDecision(draft, { kind, editedText, by: actorId, at: nowIso });
+  if (!applied.ok) return { status: 409, body: { success: false, error: applied.reason } };
   let updated = applied.draft;
 
   // الرفض: لا إرسال إطلاقاً — يُسجَّل القرار ويُحفظ.
   if (kind === 'reject') {
     const idx = commercialDrafts.findIndex((d) => d.id === draft.id);
     if (idx >= 0) commercialDrafts[idx] = updated;
-    const record = buildOwnerDecisionRecord(updated, { id: workspaceId('cdec'), kind, editedText, by: user.id, at: nowIso, delivered: false });
+    const record = buildOwnerDecisionRecord(updated, { id: workspaceId('cdec'), kind, editedText, by: actorId, at: nowIso, delivered: false });
     commercialOwnerDecisions.unshift(record);
     if (commercialOwnerDecisions.length > COMMERCIAL_MAX_DECISIONS) commercialOwnerDecisions.length = COMMERCIAL_MAX_DECISIONS;
     await persistCommercialLeads();
-    audit(user.id, 'commercial_draft_rejected', `${draft.id}:${draft.leadKey}`);
-    return res.json({ success: true, draft: draftRowForOwner(updated), decision: record, note: 'رُفضت المسودة؛ لم يُرسل شيء.' });
+    audit(actorId, 'commercial_draft_rejected', `${draft.id}:${draft.leadKey}`);
+    return { status: 200, body: { success: true, draft: draftRowForOwner(updated), decision: record, note: 'رُفضت المسودة؛ لم يُرسل شيء.' } };
   }
 
   // الموافقة/التعديل: فحص نافذة Meta أولاً (لا إرسال خارج النافذة).
@@ -10376,12 +10395,12 @@ app.post("/api/commercial/drafts/:id/decision", requireOwner, async (req, res) =
     if (sendability.shouldExpire) updated = markDraftExpired(updated, nowIso);
     const idx = commercialDrafts.findIndex((d) => d.id === draft.id);
     if (idx >= 0) commercialDrafts[idx] = updated;
-    const record = buildOwnerDecisionRecord(updated, { id: workspaceId('cdec'), kind, editedText, by: user.id, at: nowIso, delivered: false });
+    const record = buildOwnerDecisionRecord(updated, { id: workspaceId('cdec'), kind, editedText, by: actorId, at: nowIso, delivered: false });
     commercialOwnerDecisions.unshift(record);
     if (commercialOwnerDecisions.length > COMMERCIAL_MAX_DECISIONS) commercialOwnerDecisions.length = COMMERCIAL_MAX_DECISIONS;
     await persistCommercialLeads();
-    audit(user.id, 'commercial_draft_not_sent', `${draft.id}:${sendability.reason}`);
-    return res.status(409).json({ success: false, error: sendability.reason, code: sendability.shouldExpire ? 'DRAFT_EXPIRED' : 'DRAFT_NOT_SENDABLE', draft: draftRowForOwner(updated) });
+    audit(actorId, 'commercial_draft_not_sent', `${draft.id}:${sendability.reason}`);
+    return { status: 409, body: { success: false, error: sendability.reason, code: sendability.shouldExpire ? 'DRAFT_EXPIRED' : 'DRAFT_NOT_SENDABLE', draft: draftRowForOwner(updated) } };
   }
 
   // الإرسال عبر المنفّذ المركزي نفسه (لا مسار جانبي).
@@ -10397,15 +10416,21 @@ app.post("/api/commercial/drafts/:id/decision", requireOwner, async (req, res) =
   updated = markDraftDelivery(updated, { sent: delivered, providerReplyId: res_.body?.providerReplyId || null, error: res_.body?.error || null });
   const idx = commercialDrafts.findIndex((d) => d.id === draft.id);
   if (idx >= 0) commercialDrafts[idx] = updated;
-  const record = buildOwnerDecisionRecord(updated, { id: workspaceId('cdec'), kind, editedText, by: user.id, at: nowIso, delivered, providerReplyId: res_.body?.providerReplyId || null });
+  const record = buildOwnerDecisionRecord(updated, { id: workspaceId('cdec'), kind, editedText, by: actorId, at: nowIso, delivered, providerReplyId: res_.body?.providerReplyId || null });
   commercialOwnerDecisions.unshift(record);
   if (commercialOwnerDecisions.length > COMMERCIAL_MAX_DECISIONS) commercialOwnerDecisions.length = COMMERCIAL_MAX_DECISIONS;
   await persistCommercialLeads();
-  audit(user.id, delivered ? 'commercial_draft_sent' : 'commercial_draft_send_failed', `${draft.id}:${delivered ? 'delivered' : 'failed'}`);
+  audit(actorId, delivered ? 'commercial_draft_sent' : 'commercial_draft_send_failed', `${draft.id}:${delivered ? 'delivered' : 'failed'}`);
   if (!delivered) {
-    return res.status(res_.status && res_.status >= 400 ? res_.status : 502).json({ success: false, delivered: false, error: res_.body?.error || 'فشل إرسال المسودة.', draft: draftRowForOwner(updated), decision: record });
+    return { status: res_.status && res_.status >= 400 ? res_.status : 502, body: { success: false, delivered: false, error: res_.body?.error || 'فشل إرسال المسودة.', draft: draftRowForOwner(updated), decision: record } };
   }
-  return res.json({ success: true, delivered: true, providerReplyId: updated.providerReplyId, draft: draftRowForOwner(updated), decision: record, note: 'أُرسلت المسودة عبر المنفّذ المركزي وثُبّتت بمعرّف من المزوّد.' });
+  return { status: 200, body: { success: true, delivered: true, providerReplyId: updated.providerReplyId, draft: draftRowForOwner(updated), decision: record, note: 'أُرسلت المسودة عبر المنفّذ المركزي وثُبّتت بمعرّف من المزوّد.' } };
+}
+
+app.post("/api/commercial/drafts/:id/decision", requireOwner, async (req, res) => {
+  const user = (req as any).user as ServerUser;
+  const out = await decideCommercialDraft(String(req.params.id), req.body?.kind, req.body?.text, user.id);
+  res.status(out.status).json(out.body);
 });
 
 /** تبديل وضع إرسال العقل التجاري (approval | auto) — للمالك، مستقل عن Kill Switch. */
@@ -16822,12 +16847,12 @@ function ownerTelegramPublicBlock() {
     failedCount: ownerTelegramStatus.failedCount,
   };
 }
-async function sendOwnerTelegramText(text: string): Promise<boolean> {
+async function sendOwnerTelegramText(text: string, inlineKeyboard?: { text: string; callbackData?: string; url?: string }[][]): Promise<boolean> {
   const chatId = parseOwnerTelegramChatId(process.env);
   const client = telegramClient();
   if (!chatId || !client) return false;
   try {
-    const r = await client.sendMessage({ chatId, text });
+    const r = await client.sendMessage({ chatId, text, inlineKeyboard });
     ownerTelegramStatus.lastAt = new Date().toISOString();
     if (r.ok) { ownerTelegramStatus.lastResult = 'sent'; ownerTelegramStatus.sentCount += 1; return true; }
     ownerTelegramStatus.lastResult = 'failed'; ownerTelegramStatus.failedCount += 1;
@@ -16846,8 +16871,53 @@ function notifyOwnerTelegramInstant(items: OwnerAlertItem[]): void {
     ownerTelegramRate = next;
     if (decision === 'drop') continue;
     const text = decision === 'overflow' ? OWNER_TELEGRAM_OVERFLOW_TEXT : buildOwnerTelegramMessage(item, appUrl);
-    void sendOwnerTelegramText(text);
+    void sendOwnerTelegramText(text, decision === 'send' ? ownerTelegramDraftButtons(item) : undefined);
   }
+}
+
+/** أزرار «موافقة وإرسال / رفض» لتنبيه استفسار زبون (مسودة معلّقة فقط). */
+function ownerTelegramDraftButtons(item: OwnerAlertItem): { text: string; callbackData?: string; url?: string }[][] | undefined {
+  if (item.kind !== 'commercial_draft') return undefined;
+  const draftId = draftIdFromAlertKey(item.key);
+  const draft = draftId ? commercialDrafts.find((d) => d.id === draftId) : null;
+  if (!draft || draft.status !== 'pending') return undefined;
+  const approve = signOwnerTelegramAction('approve', draft.id, SESSION_SECRET);
+  const reject = signOwnerTelegramAction('reject', draft.id, SESSION_SECRET);
+  if (!approve || !reject) return undefined;
+  return [[{ text: '✅ موافقة وإرسال', callbackData: approve }, { text: '❌ رفض', callbackData: reject }]];
+}
+
+/**
+ * ضغطة زر من Telegram: تُقبل من محادثة المالك الخاصة فقط وبتوقيع صالح، ثم تمر
+ * بنفس قرار المالك في التطبيق (decideCommercialDraft). أي ضغطة أخرى تُقرّ بلا أثر.
+ */
+async function handleOwnerTelegramCallback(cb: { callbackId: string; fromId: string; chatId: string | null; messageId: string | null; data: string }): Promise<{ handled: boolean; outcome: string }> {
+  const client = telegramClient();
+  const ownerChat = parseOwnerTelegramChatId(process.env);
+  if (!isOwnerTelegramCallback(cb, ownerChat)) {
+    audit('system', 'owner_telegram_callback_rejected', 'not_owner');
+    if (client) await client.answerCallbackQuery(cb.callbackId, 'غير مصرّح.');
+    return { handled: false, outcome: 'not_owner' };
+  }
+  const action = verifyOwnerTelegramAction(cb.data, SESSION_SECRET);
+  if (!action) {
+    audit('system', 'owner_telegram_callback_rejected', 'bad_signature');
+    if (client) await client.answerCallbackQuery(cb.callbackId, 'زر غير صالح.');
+    return { handled: false, outcome: 'bad_signature' };
+  }
+  const owner = serverUsers.find((u) => u.role === 'owner');
+  const actorId = owner?.id || 'owner';
+  const out = await decideCommercialDraft(action.draftId, action.action, null, actorId);
+  const ok = out.status < 400 && out.body?.success === true;
+  const text = ownerTelegramDecisionText(action.action, { ok, delivered: out.body?.delivered === true, error: out.body?.error || null });
+  audit(actorId, 'owner_telegram_decision', `${action.draftId}:${action.action}:${ok ? 'ok' : out.status}`);
+  if (client) {
+    await client.answerCallbackQuery(cb.callbackId, text);
+    // تُزال الأزرار بعد أي قرار نهائي فلا يُضغط مرتين (القرار نفسه محمي من التكرار أيضاً).
+    if (cb.chatId && cb.messageId && (ok || out.status === 404 || out.status === 409)) await client.clearInlineKeyboard(cb.chatId, cb.messageId);
+  }
+  if (ownerChat) await sendOwnerTelegramText(text);
+  return { handled: true, outcome: ok ? 'ok' : `status_${out.status}` };
 }
 
 /** يزامن تنبيهات انقطاع الربط من الحالات الحيّة (يُستدعى عند كل نبضة إرسال). */

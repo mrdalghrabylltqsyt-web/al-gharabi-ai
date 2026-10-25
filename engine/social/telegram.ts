@@ -141,10 +141,51 @@ export function isDuplicateUpdate(input: {
   return false;
 }
 
+export interface TelegramInlineButton {
+  text: string;
+  /** بيانات زر الاستدعاء (≤ 64 بايت حسب Telegram). */
+  callbackData?: string;
+  /** أو رابط يُفتح في المتصفح. */
+  url?: string;
+}
+
 export interface TelegramSendRequest {
   chatId: string;
   text: string;
   replyToMessageId?: string;
+  /** أزرار تحت الرسالة (صفوف). تُستخدم لتنبيه المالك فقط، لا لرسائل الزبائن. */
+  inlineKeyboard?: TelegramInlineButton[][];
+}
+
+/** ضغطة زر من رسالة البوت (callback_query) — للمالك فقط في الاستخدام الحالي. */
+export interface InboundTelegramCallback {
+  updateId: number;
+  callbackId: string;
+  fromId: string;
+  chatId: string | null;
+  messageId: string | null;
+  data: string;
+}
+
+/** يستخرج ضغطة زر من تحديث Telegram؛ أي شكل آخر ⇒ null. */
+export function parseTelegramCallbackQuery(update: any): InboundTelegramCallback | null {
+  const cq = update?.callback_query;
+  if (!cq || typeof cq !== 'object') return null;
+  if (typeof update.update_id !== 'number' || !Number.isFinite(update.update_id)) return null;
+  const callbackId = typeof cq.id === 'string' ? cq.id : '';
+  const fromId = cq.from?.id;
+  const data = typeof cq.data === 'string' ? cq.data : '';
+  if (!callbackId || fromId === undefined || fromId === null || !data) return null;
+  const chatId = cq.message?.chat?.id;
+  const messageId = cq.message?.message_id;
+  return {
+    updateId: update.update_id,
+    callbackId,
+    fromId: String(fromId),
+    chatId: chatId === undefined || chatId === null ? null : String(chatId),
+    messageId: messageId === undefined || messageId === null ? null : String(messageId),
+    data,
+  };
 }
 
 /**
@@ -169,6 +210,12 @@ export function buildSendMessageBody(req: TelegramSendRequest): Record<string, u
   }
   // بلا معاينة روابط لتفادي مظهر سبام؛ لا يغيّر المحتوى نفسه.
   body.link_preview_options = { is_disabled: true };
+  const rows = (req.inlineKeyboard || [])
+    .map((row) => row
+      .filter((b) => b && b.text && (b.url || (b.callbackData && Buffer.byteLength(b.callbackData, 'utf8') <= 64)))
+      .map((b) => (b.url ? { text: b.text, url: b.url } : { text: b.text, callback_data: b.callbackData })))
+    .filter((row) => row.length > 0);
+  if (rows.length) body.reply_markup = { inline_keyboard: rows };
   return body;
 }
 
@@ -335,6 +382,33 @@ export class TelegramClient {
    * يسجّل webhook الحقيقي لدى Telegram مع سرّ secret_token. Telegram سيرسل هذا
    * السرّ في ترويسة كل تحديث، فيصبح أساس التحقق من صحة المصدر.
    */
+  /** يقرّ بضغطة الزر (يُخفي مؤشر التحميل) مع نص قصير يظهر للمستخدم. */
+  async answerCallbackQuery(callbackId: string, text: string): Promise<{ ok: boolean }> {
+    if (!this.botToken || !callbackId) return { ok: false };
+    try {
+      const res = await this.fetchImpl(telegramApiUrl('answerCallbackQuery', this.botToken, this.baseUrl), {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ callback_query_id: callbackId, text: String(text || '').slice(0, 200) }),
+      });
+      const data = await res.json().catch(() => null);
+      return { ok: Boolean(res.ok && data?.ok) };
+    } catch { return { ok: false }; }
+  }
+
+  /** يزيل أزرار رسالة سابقة (بعد اتخاذ القرار) فلا يُضغط الزر مرتين. */
+  async clearInlineKeyboard(chatId: string, messageId: string): Promise<{ ok: boolean }> {
+    if (!this.botToken || !chatId || !messageId) return { ok: false };
+    try {
+      const asNumber = Number(messageId);
+      const res = await this.fetchImpl(telegramApiUrl('editMessageReplyMarkup', this.botToken, this.baseUrl), {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ chat_id: chatId, message_id: Number.isFinite(asNumber) ? asNumber : messageId, reply_markup: { inline_keyboard: [] } }),
+      });
+      const data = await res.json().catch(() => null);
+      return { ok: Boolean(res.ok && data?.ok) };
+    } catch { return { ok: false }; }
+  }
+
   async setWebhook(url: string, secretToken: string): Promise<{ ok: boolean; description?: string }> {
     if (!this.botToken) return { ok: false, description: 'رمز البوت غير متوفر.' };
     if (!url || !secretToken) return { ok: false, description: 'رابط webhook والسرّ مطلوبان.' };
