@@ -256,7 +256,7 @@ export function buildSalesReadiness(input: SalesReadinessInput): SalesReadinessR
     const why = b.lastError
       ? `آخر خطأ: «${String(b.lastError).slice(0, 80)}».`
       : b.lastSkippedReason === 'pressure_defer' ? 'السبب: تأجيل بسبب اقتراب حدود الخطة المجانية.' : '';
-    const authLike = /NOT_AUTHORIZED|invalid_grant|unauthor|401|token/i.test(String(b.lastError || ''));
+    const authLike = /NOT_AUTHORIZED|invalid_grant|reauth|unauthor|401|token/i.test(String(b.lastError || ''));
     if (!b.configured) {
       push({
         id: 'backup', area: 'system', actor: 'owner', severity: 'blocker',

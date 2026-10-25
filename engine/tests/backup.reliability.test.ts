@@ -92,6 +92,10 @@ group('5) جاهزية البيع');
   const it = stale.items.find((i) => i.id === 'backup');
   check('★ نسخة متوقفة 51 س ⇒ عائق', it?.severity === 'blocker' && /51 ساعة/.test(it.title), JSON.stringify(it));
   check('★ خطأ تفويض ⇒ الحل إعادة ربط Google Drive', /ربط Google Drive/.test(it?.action || ''), it?.action);
+  // الكود الحقيقي المرصود في سجل الإنتاج 2026-10-25: reason=drive_reauth_required.
+  const prodReauth = buildSalesReadiness({ ...base, backup: { configured: true, ...backupFreshness({ lastSuccessAt: iso(NOW - 51 * H), lastError: 'drive_reauth_required' }, NOW) } });
+  const pr = prodReauth.items.find((i) => i.id === 'backup');
+  check('★ drive_reauth_required (كود الإنتاج) ⇒ إعادة ربط Google Drive على المالك', /ربط Google Drive/.test(pr?.action || '') && pr?.actor === 'owner', JSON.stringify(pr));
   const fresh = buildSalesReadiness({ ...base, backup: { configured: true, ...backupFreshness({ lastSuccessAt: iso(NOW - 2 * H) }, NOW) } });
   check('نسخة حديثة ⇒ ok', fresh.items.find((i) => i.id === 'backup')?.severity === 'ok');
   check('النسخة المتوقفة تخفض الدرجة', stale.score < fresh.score, `${stale.score} < ${fresh.score}`);
