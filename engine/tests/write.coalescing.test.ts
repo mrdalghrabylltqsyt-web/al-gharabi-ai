@@ -10,12 +10,13 @@
  *  2) أي تغيير حقيقي (تعليق جديد في processed، خطأ، تحكم، تحرير قفل) ⇒ كتابة فوراً.
  *  3) بعد 30 دقيقة ⇒ كتابة (لا يبقى وقت آخر دورة قديماً بلا حد).
  *  4) force (الإغلاق) يكتب دائماً.
- *  5) مسارات العقل والمؤشرات: العدّادات متطايرة، وتغيّر الإعداد/الخطأ/الشهر مهم.
+ *  5) مؤشرات الحصص: العدّادات متطايرة، وتغيّر الشهر مهم. (حالة العقل لا تُدمج عمداً:
+ *     تحرير قفله يجب أن يصمد بعد restart فوراً.)
  *  6) القيمة الأصلية لا تُعدَّل (نسخة عميقة).
  */
 import {
   decideCoalescedWrite, significantFingerprint, BOOKKEEPING_MAX_DELAY_MS,
-  BRAIN_RUNTIME_VOLATILE_PATHS, USAGE_INDICATOR_VOLATILE_PATHS,
+  USAGE_INDICATOR_VOLATILE_PATHS,
 } from '../ops/writeCoalescing';
 
 let passed = 0;
@@ -71,14 +72,7 @@ check('قبلها بدقيقة ⇒ لا كتابة', decideCoalescedWrite(first.
 check('★ force يكتب دائماً', decideCoalescedWrite(first.memo, tick, T + MIN, { force: true }).reason === 'forced');
 check('المهلة 30 دقيقة', BOOKKEEPING_MAX_DELAY_MS === 30 * MIN);
 
-group('4) العقل والمؤشرات');
-const ctrl = (over: any = {}) => ({ driveRefreshToken: 'enc', ownerAlerts: { enabled: true }, brainRuntime: { status: 'IDLE', lock: null, cycleCount: 5, lastCycleStartedAt: 'a', lastError: null, failedCount: 0, deferral: { deferred: false, lastDeferredAt: null } }, ...over });
-const b0 = decideCoalescedWrite(undefined, ctrl(), T, { volatilePaths: BRAIN_RUNTIME_VOLATILE_PATHS });
-const bTick = decideCoalescedWrite(b0.memo, ctrl({ brainRuntime: { status: 'RUNNING', lock: { owner: 'x' }, cycleCount: 6, lastCycleStartedAt: 'b', lastError: null, failedCount: 0, deferral: { deferred: false, lastDeferredAt: 'q' } } }), T + 15 * MIN, { volatilePaths: BRAIN_RUNTIME_VOLATILE_PATHS });
-check('★ دورة عقل عادية ⇒ لا إعادة كتابة لحالة التحكم كاملة', bTick.write === false, bTick.reason);
-check('★ فشل دورة العقل ⇒ كتابة', decideCoalescedWrite(b0.memo, ctrl({ brainRuntime: { status: 'IDLE', lock: null, cycleCount: 6, lastCycleStartedAt: 'b', lastError: 'boom', failedCount: 1, deferral: { deferred: false, lastDeferredAt: null } } }), T + MIN, { volatilePaths: BRAIN_RUNTIME_VOLATILE_PATHS }).write);
-check('★ تغيّر إعداد آخر في حالة التحكم ⇒ كتابة', decideCoalescedWrite(b0.memo, ctrl({ ownerAlerts: { enabled: false } }), T + MIN, { volatilePaths: BRAIN_RUNTIME_VOLATILE_PATHS }).write);
-check('★ تغيّر رمز Drive ⇒ كتابة', decideCoalescedWrite(b0.memo, ctrl({ driveRefreshToken: 'enc2' }), T + MIN, { volatilePaths: BRAIN_RUNTIME_VOLATILE_PATHS }).write);
+group('4) مؤشرات الحصص');
 const u = (over: any = {}) => ({ month: '2026-10', egressBytesMonth: 100, egressBytesSinceBoot: 5, updatedAt: 'a', accountingVersion: 2, renderUptime: { month: '2026-10', hoursThisMonth: 500.1, lastAccruedAt: 'a', firstSeenAt: 'f', updatedAt: 'a' }, ...over });
 const u0 = decideCoalescedWrite(undefined, u(), T, { volatilePaths: USAGE_INDICATOR_VOLATILE_PATHS });
 check('★ طلب /api/health ⇒ لا كتابة لمؤشر عرض', decideCoalescedWrite(u0.memo, u({ egressBytesMonth: 200, updatedAt: 'b', renderUptime: { month: '2026-10', hoursThisMonth: 500.2, lastAccruedAt: 'b', firstSeenAt: 'f', updatedAt: 'b' } }), T + MIN, { volatilePaths: USAGE_INDICATOR_VOLATILE_PATHS }).write === false);

@@ -6173,12 +6173,14 @@ add('watcher-advisory-not-authority',
       server.includes('await writeWatcherStateCoalesced(WATCHER_STATE_KEY, {') &&
       server.includes('await writeWatcherStateCoalesced(META_POLLING_STATE_KEY, {') &&
       server.includes('await writeWatcherStateCoalesced(TELEGRAM_POLLING_STATE_KEY, {') &&
-      server.includes('writeWatcherStateCoalesced(STORAGE_KEY_CONTROL, buildControlState(), false, BRAIN_RUNTIME_VOLATILE_PATHS)') &&
+      server.includes('writeWatcherStateCoalesced(STORAGE_KEY_USAGE_INDICATORS,') &&
+      // قفل العقل وعدّاداته لا تُدمج (التحرير يجب أن يصمد بعد restart فوراً).
+      server.includes('.then(() => storageAdapter.write(STORAGE_KEY_CONTROL, buildControlState()))') &&
       server.includes('persistWatcherState({ force: true })') && server.includes('persistMetaPollingState({ force: true })') &&
       // الذاكرة تتقدم بعد نجاح الكتابة فقط (لا فقد تغيير بعد كتابة فاشلة).
       /await storageAdapter\.write\(key, value\);\s*watcherWriteMemos\.set\(key, d\.memo\);/.test(server) &&
       read('package.json').includes('npm run test:write-coalescing'),
-      'كتابات حالة المراقبين/العقل/المؤشرات تُدمج إن كانت مسك دفاتر فقط (حتى 30 دقيقة)، والتغيير الحقيقي والإغلاق يُكتبان فوراً');
+      'كتابات حالة المراقبين ومؤشرات الحصص تُدمج إن كانت مسك دفاتر فقط (حتى 30 دقيقة)، والتغيير الحقيقي والإغلاق يُكتبان فوراً');
     add('telegram-job-content-safety',
       /if \(platform === "telegram"\) \{[\s\S]{0,400}?analyzeBusinessClaims\(content[\s\S]{0,1600}?client\.sendMessage\(\{ chatId, text: content \}\)/.test(server),
       'مهمة Telegram المعتمدة تمرّ بحارس سلامة المحتوى قبل الإرسال (كانت الثغرة الوحيدة بين مسارات الإرسال)');

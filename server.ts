@@ -713,7 +713,7 @@ import { neonUsageApiConfig, fetchNeonActualUsage, NEON_USAGE_POLL_MIN_INTERVAL_
 import { buildSalesReadiness, sanitizeOAuthFailureMessage, type ReadinessPlatformInput } from "./engine/ops/salesReadiness";
 import { backupFreshness } from "./engine/dr/autoBackup";
 import { summarizePublishHealth, formatPublishLogLine } from "./engine/ops/publishHealth";
-import { decideCoalescedWrite, type CoalesceMemo, BRAIN_RUNTIME_VOLATILE_PATHS, USAGE_INDICATOR_VOLATILE_PATHS } from "./engine/ops/writeCoalescing";
+import { decideCoalescedWrite, type CoalesceMemo, USAGE_INDICATOR_VOLATILE_PATHS } from "./engine/ops/writeCoalescing";
 import { SESSION_TTL_MS, signSession, verifySession, type SessionPayload } from "./engine/auth/sessions";
 import { CHALLENGE_TTL_MS, issueChallengeCode, matchChallengeWindow } from "./engine/auth/challenge";
 import { isScheduleInFuture, normalizeScheduleInput, wallClockToEpoch } from "./src/utils/scheduleTime";
@@ -17119,9 +17119,9 @@ function brainRuntimeEnabled(): boolean {
 function persistBrainRuntimeState(): void {
   if (!storageReady) return;
   persistQueue = persistQueue
-    // توفير الخطة المجانية: عدّادات/طوابع/قفل دورة العقل وحدها لا تُعيد كتابة حالة
-    // التحكم الكاملة كل دورة (حتى 30 دقيقة). أي تغيير آخر يُكتب فوراً كما كان.
-    .then(() => writeWatcherStateCoalesced(STORAGE_KEY_CONTROL, buildControlState(), false, BRAIN_RUNTIME_VOLATILE_PATHS))
+    // لا دمج هنا عمداً: تحرير قفل العقل وعدّاداته يجب أن يصمد بعد restart فوراً
+    // (وإلا يبدو القفل محتجزاً فتُتخطّى الدورة) — مثبت باختبار brain.runtime.cycle.server.
+    .then(() => storageAdapter.write(STORAGE_KEY_CONTROL, buildControlState()))
     .catch((error: any) => {
       lastPersistError = String(error?.code || error?.name || "persist_failed").slice(0, 60);
       console.warn("Could not persist brain runtime state:", lastPersistError);

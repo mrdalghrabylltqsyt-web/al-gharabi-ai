@@ -72,16 +72,6 @@ export function decideCoalescedWrite(
   return { write: false, memo: prev, reason: 'bookkeeping_only' };
 }
 
-/** مسك دفاتر وقت تشغيل العقل داخل حالة التحكم (عدّادات/طوابع/قفل الدورة). */
-export const BRAIN_RUNTIME_VOLATILE_PATHS: readonly string[] = Object.freeze([
-  'brainRuntime.status', 'brainRuntime.lastStatus', 'brainRuntime.lock',
-  'brainRuntime.lastCycleStartedAt', 'brainRuntime.lastCycleCompletedAt', 'brainRuntime.lastSuccessAt',
-  'brainRuntime.lastTrigger', 'brainRuntime.cycleCount', 'brainRuntime.successCount', 'brainRuntime.noDataCount',
-  'brainRuntime.skippedLockedCount', 'brainRuntime.staleLockRecoveries', 'brainRuntime.lastDurationMs',
-  'brainRuntime.lastNewEvents', 'brainRuntime.lastNewMemoryRecords', 'brainRuntime.totalNewMemoryRecords',
-  'brainRuntime.lastMemoryTotal', 'brainRuntime.persistenceSuccessCount', 'brainRuntime.deferral.lastDeferredAt',
-]);
-
 /** مؤشرات الحصص (عرض فقط): تتغير مع كل طلب صحة؛ تغيّر الشهر وحده مهم. */
 export const USAGE_INDICATOR_VOLATILE_PATHS: readonly string[] = Object.freeze([
   'updatedAt', 'egressBytesMonth', 'egressBytesSinceBoot',
