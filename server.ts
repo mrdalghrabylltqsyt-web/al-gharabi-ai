@@ -713,6 +713,7 @@ import { neonUsageApiConfig, fetchNeonActualUsage, NEON_USAGE_POLL_MIN_INTERVAL_
 import { buildSalesReadiness, sanitizeOAuthFailureMessage, type ReadinessPlatformInput } from "./engine/ops/salesReadiness";
 import { backupFreshness } from "./engine/dr/autoBackup";
 import { summarizePublishHealth, formatPublishLogLine } from "./engine/ops/publishHealth";
+import { decideCoalescedWrite, type CoalesceMemo, BRAIN_RUNTIME_VOLATILE_PATHS, USAGE_INDICATOR_VOLATILE_PATHS } from "./engine/ops/writeCoalescing";
 import { SESSION_TTL_MS, signSession, verifySession, type SessionPayload } from "./engine/auth/sessions";
 import { CHALLENGE_TTL_MS, issueChallengeCode, matchChallengeWindow } from "./engine/auth/challenge";
 import { isScheduleInFuture, normalizeScheduleInput, wallClockToEpoch } from "./src/utils/scheduleTime";
@@ -1152,6 +1153,9 @@ const freeTierUsageState: { egressBytesMonth: number; egressBytesSinceBoot: numb
   accountingVersion: USAGE_ACCOUNTING_VERSION,
 };
 // عدّاد ساعات تشغيل Render (تقدير صادق — لا API حقيقي) + حالة Drive API اليومية.
+/** ذاكرة دمج كتابات «مسك الدفاتر» (انظر writeWatcherStateCoalesced). */
+const watcherWriteMemos = new Map<string, CoalesceMemo>();
+const watcherWriteStats = { written: 0, coalesced: 0 };
 const renderUptimeState: RenderUptimeState = { month: null, hoursThisMonth: 0, lastAccruedAt: null, firstSeenAt: null, updatedAt: null };
 let usagePersistQueued = false;
 // إصلاح 2026-10-20: قياس Neon الفعلي (اختياري) — آخر رقم مقروء من Neon API ووقته.
@@ -1212,7 +1216,8 @@ function refreshFreeTierUsage(): void {
     usagePersistQueued = true;
     const t = setTimeout(() => {
       usagePersistQueued = false;
-      void storageAdapter.write(STORAGE_KEY_USAGE_INDICATORS, { ...freeTierUsageState, renderUptime: { ...renderUptimeState }, neonActual: neonActualUsage }).catch(() => { /* مؤشر عرض: فشل الحفظ لا يُسقط الخدمة */ });
+      // كل طلب /api/health كان يكتب هنا (الطوابع تتغير دائماً)؛ الآن حتى كل 30 دقيقة.
+      void writeWatcherStateCoalesced(STORAGE_KEY_USAGE_INDICATORS, { ...freeTierUsageState, renderUptime: { ...renderUptimeState }, neonActual: neonActualUsage }, false, USAGE_INDICATOR_VOLATILE_PATHS).catch(() => { /* مؤشر عرض: فشل الحفظ لا يُسقط الخدمة */ });
     }, 5000);
     (t as any).unref?.();
   }
@@ -7758,11 +7763,26 @@ function watcherAudit(entry: {
   if (watcherState.audit.length > WATCHER_MAX_AUDIT) watcherState.audit.length = WATCHER_MAX_AUDIT;
 }
 
+/**
+ * توفير الخطة المجانية: كتابة حالة المراقب تُدمج إن كان التغيير «مسك دفاتر» فقط
+ * (وقت آخر دورة، عدّاد الدورات، انتهاء القفل، أرقام المسح) — حتى 30 دقيقة. أي
+ * تغيير حقيقي يُكتب فوراً، والإغلاق يكتب دائماً (force). الذاكرة تُحدَّث بعد نجاح
+ * الكتابة فقط، فلا يُفقد تغيير بعد كتابة فاشلة.
+ */
+// (ذاكرة الدمج مُعرّفة أعلى الملف قرب مؤشرات الحصص لتُتاح لمؤقّتها مبكراً.)
+async function writeWatcherStateCoalesced(key: string, value: unknown, force = false, volatilePaths?: readonly string[]): Promise<void> {
+  const d = decideCoalescedWrite(watcherWriteMemos.get(key), value, Date.now(), { force, volatilePaths });
+  if (!d.write) { watcherWriteStats.coalesced += 1; return; }
+  await storageAdapter.write(key, value);
+  watcherWriteMemos.set(key, d.memo);
+  watcherWriteStats.written += 1;
+}
+
 /** يحفظ حالة الـwatcher عبر المحوّل (تصمد بعد restart) — كتابة دائمة. */
-async function persistWatcherState(): Promise<void> {
+async function persistWatcherState(opts: { force?: boolean } = {}): Promise<void> {
   if (!storageReady) return;
   try {
-    await storageAdapter.write(WATCHER_STATE_KEY, {
+    await writeWatcherStateCoalesced(WATCHER_STATE_KEY, {
       controls: watcherState.controls,
       processed: watcherState.processed.slice(0, WATCHER_MAX_PROCESSED),
       processedWindow: watcherState.processedWindow.slice(-2000),
@@ -7785,7 +7805,7 @@ async function persistWatcherState(): Promise<void> {
       // طابور المحتوى (نشر/جدولة/مراجعة) يُحفظ ضمن حالة الـwatcher فيصمد بعد restart.
       contentQueue: contentQueue.slice(0, CONTENT_QUEUE_MAX),
       contentMediaTotalBytes,
-    });
+    }, opts?.force === true);
   } catch (error: any) {
     lastPersistError = String(error?.code || error?.name || "persist_failed").slice(0, 60);
   }
@@ -8509,10 +8529,10 @@ function metaPollingDue(): boolean {
   return Date.now() - t >= metaPollingCadenceMs();
 }
 
-async function persistMetaPollingState(): Promise<void> {
+async function persistMetaPollingState(opts: { force?: boolean } = {}): Promise<void> {
   if (!storageReady) return;
   try {
-    await storageAdapter.write(META_POLLING_STATE_KEY, {
+    await writeWatcherStateCoalesced(META_POLLING_STATE_KEY, {
       controls: metaPollingState.controls,
       processed: metaPollingState.processed.slice(0, META_POLLING_MAX_PROCESSED),
       lastPollAt: metaPollingState.lastPollAt,
@@ -8524,7 +8544,7 @@ async function persistMetaPollingState(): Promise<void> {
       lease: metaPollingLease,
       // إصلاح 2026-10-20: تتبّع التأجيل يصمد بعد restart.
       deferral: normalizeDeferralState(metaPollingState.deferral),
-    });
+    }, opts?.force === true);
   } catch { /* يُعلن عبر حالة الحفظ العامة */ }
 }
 
@@ -9133,10 +9153,10 @@ function telegramPollingDue(): boolean {
   return Date.now() - t >= telegramPollingCadenceMs();
 }
 
-async function persistTelegramPollingState(): Promise<void> {
+async function persistTelegramPollingState(opts: { force?: boolean } = {}): Promise<void> {
   if (!storageReady) return;
   try {
-    await storageAdapter.write(TELEGRAM_POLLING_STATE_KEY, {
+    await writeWatcherStateCoalesced(TELEGRAM_POLLING_STATE_KEY, {
       controls: telegramPollingState.controls,
       processed: telegramPollingState.processed.slice(0, TELEGRAM_POLLING_MAX_PROCESSED),
       lastPollAt: telegramPollingState.lastPollAt,
@@ -9147,7 +9167,7 @@ async function persistTelegramPollingState(): Promise<void> {
       lease: telegramPollingLease,
       // إصلاح 2026-10-20: تتبّع التأجيل يصمد بعد restart.
       deferral: normalizeDeferralState(telegramPollingState.deferral),
-    });
+    }, opts?.force === true);
   } catch { /* يُعلن عبر حالة الحفظ العامة */ }
 }
 
@@ -14028,6 +14048,14 @@ async function executeApprovedJob(job: any, userId: string): Promise<{ status: n
   let idemOutcome: IdempotencyFinishStatus | null = "failed";
   try {
     if (platform === "telegram") {
+      // ثغرة حارس (فحص 2026-10-25): مسار Telegram للمهام كان يُرسل بلا حارس سلامة
+      // المحتوى (كل المنصات الأخرى تمرّ عبر executePlatformPublish الذي يفحصه).
+      const tgSafety = analyzeBusinessClaims(content, buildFactsForProduct(null, 0, 0));
+      if (!tgSafety.safe) {
+        job.status = "failed"; job.lastError = "المحتوى يحمل عرضاً تجارياً غير مسجّل، وتم إيقافه قبل الإرسال."; persistState(); audit(userId, "job_execution_blocked_safety", `${job.id}:telegram`);
+        idemOutcome = "failed";
+        return { status: 422, body: { success: false, error: job.lastError, code: "CONTENT_SAFETY_BLOCKED", contentSafety: { violations: tgSafety.blocked.map((v) => v.detail), codes: tgSafety.blocked.map((v) => v.code) }, job } };
+      }
       const client = telegramClient(); if (!client) return { status: 503, body: { success: false, error: "موصل Telegram غير مهيأ (رمز بوت غير متوفر)." } };
       const chatId = String(process.env.TELEGRAM_DEFAULT_CHAT_ID || job.payload?.chatId || ""); if (!chatId) return { status: 503, body: { success: false, error: "Telegram يحتاج TELEGRAM_DEFAULT_CHAT_ID أو chatId في المهمة." } };
       const sent = await client.sendMessage({ chatId, text: content });
@@ -17091,7 +17119,9 @@ function brainRuntimeEnabled(): boolean {
 function persistBrainRuntimeState(): void {
   if (!storageReady) return;
   persistQueue = persistQueue
-    .then(() => storageAdapter.write(STORAGE_KEY_CONTROL, buildControlState()))
+    // توفير الخطة المجانية: عدّادات/طوابع/قفل دورة العقل وحدها لا تُعيد كتابة حالة
+    // التحكم الكاملة كل دورة (حتى 30 دقيقة). أي تغيير آخر يُكتب فوراً كما كان.
+    .then(() => writeWatcherStateCoalesced(STORAGE_KEY_CONTROL, buildControlState(), false, BRAIN_RUNTIME_VOLATILE_PATHS))
     .catch((error: any) => {
       lastPersistError = String(error?.code || error?.name || "persist_failed").slice(0, 60);
       console.warn("Could not persist brain runtime state:", lastPersistError);
@@ -17279,8 +17309,14 @@ function rateLimitAI(userId: string): boolean {
 // فحص بدء OAuth لكل منصة، ونوافذ معدّل عمليات YouTube لكل نوع). كلها الآن
 // مقيّدة بـTTL صريح مطابق لعمرها الفعلي. لا نحذف قوائم الإبطال (revokedSessions/
 // userRevocations) بالتقييد العددي لأنها مصدر صلاحية أمني لا يجوز إسقاطه.
+let lastWriteStatsLogAt = Date.now();
 function cleanupRuntimeState() {
   const now = Date.now();
+  // سطر ساعي واحد يثبت توفير الكتابات (كم كتابة دُمجت مقابل كم كُتبت فعلاً).
+  if (now - lastWriteStatsLogAt >= 60 * 60 * 1000) {
+    lastWriteStatsLogAt = now;
+    console.log(`[storage] coalesced=${watcherWriteStats.coalesced} written=${watcherWriteStats.written} (since boot)`);
+  }
   for (const [sid, exp] of revokedSessions) if (exp < now) revokedSessions.delete(sid);
   for (const [email, exp] of consumedChallenges) if (exp < now) consumedChallenges.delete(email);
   for (const [token, session] of activeSessions) if (session.expiresAt < now) activeSessions.delete(token);
@@ -21185,9 +21221,10 @@ async function startServer() {
         telegramPollingLease = releaseLease(telegramPollingLease, TELEGRAM_POLLING_LEASE_OWNER).lease;
         commercialLease = releaseLease(commercialLease, COMMERCIAL_LEASE_OWNER).lease;
         // الكتابة الصريحة (الطابور يضمن الترتيب؛ تُنتظر ضمن مهلة التفريغ أدناه).
-        persistWatcherState().catch(() => { /* يُعلن عبر حالة الحفظ العامة */ });
-        persistMetaPollingState().catch(() => { /* يُعلن عبر حالة الحفظ العامة */ });
-        persistTelegramPollingState().catch(() => { /* يُعلن عبر حالة الحفظ العامة */ });
+        // force: الإغلاق يكتب الحالة كاملة دائماً (يتجاوز دمج «مسك الدفاتر»).
+        persistWatcherState({ force: true }).catch(() => { /* يُعلن عبر حالة الحفظ العامة */ });
+        persistMetaPollingState({ force: true }).catch(() => { /* يُعلن عبر حالة الحفظ العامة */ });
+        persistTelegramPollingState({ force: true }).catch(() => { /* يُعلن عبر حالة الحفظ العامة */ });
         persistCommercialLeads().catch(() => { /* يُعلن عبر حالة الحفظ العامة */ });
       } catch { /* تجاهل */ }
       const deadline = new Promise<void>((resolve) => setTimeout(resolve, 10_000));

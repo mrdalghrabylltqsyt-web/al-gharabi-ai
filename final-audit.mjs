@@ -6160,6 +6160,25 @@ add('watcher-advisory-not-authority',
       'فشل قراءة تعليقات منصة لا يمسحه نجاح غيرها: خطأ لكل منصة + تنبيه المالك + بند جاهزية');
   }
 
+  // 11e) الخطة المجانية: دمج كتابات «مسك الدفاتر» (Neon يبقى مستيقظاً بكتابات بلا حدث).
+  {
+    const wc = fs.existsSync(path.join(root, 'engine/ops/writeCoalescing.ts')) ? read('engine/ops/writeCoalescing.ts') : '';
+    add('free-tier-coalesced-bookkeeping-writes',
+      wc.includes('export function decideCoalescedWrite') && wc.includes('BOOKKEEPING_MAX_DELAY_MS = 30 * 60 * 1000') &&
+      server.includes('await writeWatcherStateCoalesced(WATCHER_STATE_KEY, {') &&
+      server.includes('await writeWatcherStateCoalesced(META_POLLING_STATE_KEY, {') &&
+      server.includes('await writeWatcherStateCoalesced(TELEGRAM_POLLING_STATE_KEY, {') &&
+      server.includes('writeWatcherStateCoalesced(STORAGE_KEY_CONTROL, buildControlState(), false, BRAIN_RUNTIME_VOLATILE_PATHS)') &&
+      server.includes('persistWatcherState({ force: true })') && server.includes('persistMetaPollingState({ force: true })') &&
+      // الذاكرة تتقدم بعد نجاح الكتابة فقط (لا فقد تغيير بعد كتابة فاشلة).
+      /await storageAdapter\.write\(key, value\);\s*watcherWriteMemos\.set\(key, d\.memo\);/.test(server) &&
+      read('package.json').includes('npm run test:write-coalescing'),
+      'كتابات حالة المراقبين/العقل/المؤشرات تُدمج إن كانت مسك دفاتر فقط (حتى 30 دقيقة)، والتغيير الحقيقي والإغلاق يُكتبان فوراً');
+    add('telegram-job-content-safety',
+      /if \(platform === "telegram"\) \{[\s\S]{0,400}?analyzeBusinessClaims\(content[\s\S]{0,1600}?client\.sendMessage\(\{ chatId, text: content \}\)/.test(server),
+      'مهمة Telegram المعتمدة تمرّ بحارس سلامة المحتوى قبل الإرسال (كانت الثغرة الوحيدة بين مسارات الإرسال)');
+  }
+
   // 12) AGENTS.md: عدد فحوصات final-audit مطابق للفعلي (يُعَدّ من نص الملف نفسه).
   const auditCount = (read('final-audit.mjs').match(/^\s*add\(/gm) || []).length;
   add('agents-audit-count-accurate',
