@@ -6228,6 +6228,18 @@ add('watcher-advisory-not-authority',
     server.includes('(linkedPost as any).campaignLink?.productId'),
     'المنشور يحفظ ربط منتجه: تلقائياً من النص، ومن وكيل التسويق والحملات (كان يضيع)');
 
+  // 11h) مزامنة المؤشرات الحقيقية تلقائياً (وقود تعلّم العقل) — كانت «عيّنة 0».
+  add('metrics-sync-feeds-learning',
+    fs.existsSync(path.join(root, 'engine/social/metricsSync.ts')) &&
+    read('engine/social/metricsSync.ts').includes('export function upsertPerformanceRecords') &&
+    server.includes('async function runMetricsSync(trigger: string)') &&
+    server.includes('const METRICS_SYNC_INTERVAL_MS = 6 * 60 * 60 * 1000;') &&
+    server.includes('app.post("/api/analytics/sync", requireOwner,') &&
+    // مسار YouTube القديم لم يعد يضيف صفاً مكرراً كل فتح.
+    !server.includes('(workspace as any).performanceRecords.unshift({ id: workspaceId("perf"), platform: "youtube"') &&
+    read('package.json').includes('npm run test:metrics-sync'),
+    'المؤشرات تُجلب تلقائياً كل 6 ساعات من YouTube/Facebook/Instagram/Threads إلى سجل أداء بلا تكرار يقرؤه العقل');
+
   // 12) AGENTS.md: عدد فحوصات final-audit مطابق للفعلي (يُعَدّ من نص الملف نفسه).
   const auditCount = (read('final-audit.mjs').match(/^\s*add\(/gm) || []).length;
   add('agents-audit-count-accurate',

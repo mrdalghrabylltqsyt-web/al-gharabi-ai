@@ -40,18 +40,19 @@ export const AnalyticsView: React.FC = () => {
         <div className="text-xs text-slate-300 bg-slate-950 px-4 py-2 rounded-xl border border-slate-800">
           الحالة: <span className="text-emerald-400 font-bold">بيانات مساحة العمل</span>
         </div><button onClick={() => void load()} disabled={loading} className="px-3 py-2 rounded-xl bg-slate-800 border border-slate-700 text-xs font-bold text-white flex items-center gap-2"><RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} /> تحديث</button>
+        <button onClick={async () => { setLoading(true); try { await (await import('../../services/api')).apiService.syncAnalytics(); } catch { /* يُعرض آخر حال بعد التحديث */ } finally { setLoading(false); } await load(); }} disabled={loading} className="px-3 py-2 rounded-xl bg-emerald-900/60 border border-emerald-700/50 text-xs font-bold text-emerald-200">جلب الأرقام من المنصات الآن</button>
       </div>
 
-      <div className="p-4 rounded-2xl bg-amber-950/20 border border-amber-500/20 text-xs text-amber-200">لا يتم عرض متابعين أو مشاهدات خارجية كأرقام حية ما لم توجد منصة موصولة فعلياً. الأرقام أدناه مبنية فقط على البيانات المحفوظة داخل النظام.</div>
+      <div className="p-4 rounded-2xl bg-amber-950/20 border border-amber-500/20 text-xs text-amber-200">الأرقام تُقرأ من المنصات نفسها تلقائياً كل {data?.metricsSync?.intervalHours ?? 6} ساعات (آخر جلب: {data?.metricsSync?.lastRunAt ? new Date(data.metricsSync.lastRunAt).toLocaleString('ar-IQ') : 'لم يتم بعد'} • {data?.metricsSync?.measuredRecords ?? 0} منشوراً مقاساً). ما لم تسمح به صلاحيات المنصة يظهر «—» ولا يُخترع.</div>
 
       {/* Main KPI Stats */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
         <div className="p-5 rounded-2xl glass space-y-2">
           <span className="text-xs text-slate-400 block font-semibold">إجمالي المتابعين الموثقين</span>
           <div className="flex items-baseline gap-2">
-            <span className="text-2xl sm:text-3xl font-black text-slate-500">—</span>
+            <span className={`text-2xl sm:text-3xl font-black ${typeof data?.followers === 'number' ? 'text-white' : 'text-slate-500'}`}>{typeof data?.followers === 'number' ? data.followers.toLocaleString() : '—'}</span>
           </div>
-          <p className="text-[11px] text-slate-500">غير متاح: لم يُجلب عدد المتابعين من المنصات بعد • {connectedPlatformsCount} منصة متصلة</p>
+          <p className="text-[11px] text-slate-500">{typeof data?.followers === 'number' ? 'مجموع المتابعين المقروء فعلاً من المنصات' : 'لم يُقرأ عدد المتابعين من المنصات بعد'} • {connectedPlatformsCount} منصة متصلة</p>
         </div>
 
         <div className="p-5 rounded-2xl glass space-y-2">
@@ -134,10 +135,10 @@ export const AnalyticsView: React.FC = () => {
                     </span>
                   </td>
                   <td className="py-3.5 text-slate-300 font-mono">
-                    —
+                    {typeof p.followers === 'number' ? p.followers.toLocaleString() : '—'}
                   </td>
                   <td className="py-3.5 text-emerald-400 font-mono font-bold">
-                    —
+                    {typeof p.engagementRate === 'number' ? `${p.engagementRate}%` : '—'}
                   </td>
                   <td className="py-3.5 text-slate-300 font-mono" title={p.planned !== undefined ? `مستهدفة في ${p.planned} منشور • فشل ${p.failed || 0}` : undefined}>{p.posts || 0}{p.failed ? <span className="text-rose-400/80 text-[10px] mr-1">({p.failed} فشل)</span> : null}</td>
                   <td className="py-3.5 text-slate-300 font-mono">{p.inbound ?? '—'}</td>
