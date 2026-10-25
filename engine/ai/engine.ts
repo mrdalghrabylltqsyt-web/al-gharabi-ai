@@ -244,8 +244,15 @@ export class AiEngine {
     deterministicFallback: () => string;
     /** وصف تشخيصي فقط (منصة/عملية) — لا يغيّر أي قرار حماية. */
     meta?: AiCallMeta;
+    /**
+     * ميزانية زمنية كلية للنداء (كل الموديلات معاً). بدونها قد يستغرق التناوب على
+     * 5 موديلات × مهلة 20 ثانية دقيقة ونصف عند ضغط المزود، فتنتهي مهلة المستدعي
+     * (خطوة الوكيل 20 ثانية) قبل أن يعود البديل الحتمي ⇒ «فشل» بدل نص آمن.
+     */
+    deadlineMs?: number;
   }): Promise<AiResult> {
     const { cacheKey, prompt, json, deterministicFallback } = input;
+    const deadlineMs = Number.isFinite(Number(input.deadlineMs)) && Number(input.deadlineMs) > 0 ? Number(input.deadlineMs) : null;
     const meta: AiCallMeta = input.meta ?? {};
 
     // 1) التخزين المؤقت: لا يستهلك حصة ولا يلمس الشبكة.
@@ -264,7 +271,7 @@ export class AiEngine {
       return running;
     }
 
-    const task = this.execute({ cacheKey, prompt, json, deterministicFallback, meta })
+    const task = this.execute({ cacheKey, prompt, json, deterministicFallback, meta, deadlineMs })
       .finally(() => this.inFlight.delete(cacheKey));
     this.inFlight.set(cacheKey, task);
     return task;
@@ -276,8 +283,11 @@ export class AiEngine {
     json?: boolean;
     deterministicFallback: () => string;
     meta: AiCallMeta;
+    deadlineMs?: number | null;
   }): Promise<AiResult> {
     const { cacheKey, prompt, json, deterministicFallback, meta } = input;
+    const deadlineMs = input.deadlineMs ?? null;
+    const runStartedAt = Date.now();
     const fallbackResult = (
       notice: string,
       reason: AiFallbackReason,
@@ -345,8 +355,19 @@ export class AiEngine {
       const attemptAllModels = async (): Promise<string> => {
         let lastError: any = null;
         for (const model of this.models) {
+          // الميزانية الكلية: لا نبدأ موديلاً بلا وقت كافٍ، ومهلة كل موديل ≤ المتبقي.
+          let perModelTimeout = this.timeoutMs;
+          if (deadlineMs !== null) {
+            const remaining = deadlineMs - (Date.now() - runStartedAt);
+            if (remaining < 2_000) {
+              lastError = lastError ?? Object.assign(new Error('AI deadline exhausted'), { name: 'TimeoutError' });
+              this.onEvent({ type: 'deadline_exhausted', detail: `model=${model}` });
+              break;
+            }
+            perModelTimeout = Math.min(this.timeoutMs, remaining);
+          }
           try {
-            const text = await generateWithTimeout(this.provider as AiProvider, model, boundedPrompt, Boolean(json), this.timeoutMs, this.maxOutputTokens);
+            const text = await generateWithTimeout(this.provider as AiProvider, model, boundedPrompt, Boolean(json), perModelTimeout, this.maxOutputTokens);
             const trimmed = (text || '').trim();
             if (!trimmed) throw new Error('empty response from provider');
             servedModel = model;

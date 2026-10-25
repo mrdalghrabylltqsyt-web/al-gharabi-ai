@@ -713,6 +713,7 @@ import { neonUsageApiConfig, fetchNeonActualUsage, NEON_USAGE_POLL_MIN_INTERVAL_
 import { buildSalesReadiness, sanitizeOAuthFailureMessage, type ReadinessPlatformInput } from "./engine/ops/salesReadiness";
 import { backupFreshness } from "./engine/dr/autoBackup";
 import { summarizePublishHealth, formatPublishLogLine } from "./engine/ops/publishHealth";
+import { resolveInteractionProduct, productFactStatement, type ProductResolution } from "./engine/social/productResolution";
 import { decideCoalescedWrite, type CoalesceMemo, USAGE_INDICATOR_VOLATILE_PATHS } from "./engine/ops/writeCoalescing";
 import { SESSION_TTL_MS, signSession, verifySession, type SessionPayload } from "./engine/auth/sessions";
 import { CHALLENGE_TTL_MS, issueChallengeCode, matchChallengeWindow } from "./engine/auth/challenge";
@@ -8045,7 +8046,9 @@ async function runYouTubeWatcherCycle(trigger: "schedule" | "manual" = "schedule
       // من الفيديو (طابور محتوى منشور/سجل نشر مربوط بمنتج) لا من تخمين النص.
       // وجود منتج بسعر مسجّل + رد يجتاز حارس المحتوى ⇒ استفسار السعر يُرد من
       // بيانات المعرض بدل تصعيده. غياب الدليل يُبقي التصعيد كما كان.
-      const videoProductRes = resolveYouTubeVideoProduct(c.videoId);
+      // المصدر الواحد: ربط صريح ← عنوان الفيديو يسمّي منتجاً ← نص الزبون يسمّيه.
+      const ytResolution = resolveProductForInteraction({ commentText: String(c.text || ""), youtubeVideoId: c.videoId || null });
+      const videoProductRes = { product: ytResolution.product, source: ytResolution.via };
       const priceReply = verifiedProductFactsForReply({ product: videoProductRes.product, commentText: String(c.text || "") });
       const priceFactsVerified = priceReply.verified;
       // سبب التصعيد من التصنيف الحتمي الحقيقي (بلا اختراع). استفسار السعر مع
@@ -8075,7 +8078,7 @@ async function runYouTubeWatcherCycle(trigger: "schedule" | "manual" = "schedule
           `تحليل تعليق YouTube جديد والبتّ في الرد عليه من الحقائق المسجّلة (بلا اختراع)`,
           "youtube",
           `comment:${String(c.commentId)}`,
-          { externalId: String(c.commentId), commentText: String(c.text || ""), objective: "البتّ في رد آمن على تعليق YouTube من الحقائق المسجّلة", conversationId: `youtube::${String(c.videoId || 'thread')}`, escalationReason: preReason, priceFactsVerified },
+          { externalId: String(c.commentId), commentText: String(c.text || ""), objective: "البتّ في رد آمن على تعليق YouTube من الحقائق المسجّلة", conversationId: `youtube::${String(c.videoId || 'thread')}`, escalationReason: preReason, priceFactsVerified, productFact: ytResolution.fact },
         );
         // الطبقة الإدراكية (Batch 7): دورة فهم/تذكّر/تخطيط/تعلّم على نفس الحدث
         // والقرار المحكوم. **لا تنفيذ خارجي** ولا AI؛ تُحدِّث الذاكرة العاملة
@@ -8634,6 +8637,50 @@ function resolveProductForPost(postExternalId: string | null): any | null {
   return (workspace.products || []).find((p: any) => String(p.id) === id) || null;
 }
 
+/** نص منشورنا المنشور فعلاً (عنوان/محتوى) من معرّف المنشور لدى المنصة — بلا شبكة. */
+function ownPostTextForExternalId(postExternalId: string | null | undefined): string | null {
+  const pid = String(postExternalId || '').trim();
+  if (!pid) return null;
+  for (const it of contentQueue) {
+    if (String(it.externalVideoId || '') === pid) return [ (it as any).title, (it as any).description ].filter(Boolean).join(' ') || null;
+  }
+  for (const rec of ((workspace as any).publishRecords || [])) {
+    const recPost = String(rec?.externalVideoId || rec?.providerPostId || '');
+    // معرّف فيسبوك قد يُعاد بصيغة PAGE_POST أو POST وحده — نطابق الصيغتين.
+    if (!recPost || !(recPost === pid || recPost.endsWith(`_${pid}`) || pid.endsWith(`_${recPost}`))) continue;
+    if (rec?.title) return String(rec.title);
+    const post = (workspace.posts || []).find((p: any) => String(p.id) === String(rec?.postId || ''));
+    if (post) return [(post as any).title, (post as any).content].filter(Boolean).join(' ') || null;
+  }
+  return null;
+}
+
+/**
+ * المصدر الواحد لحسم منتج تفاعل زبون (العقل المركزي + مولّد الرد + المسودات):
+ * زبون مهتم ← ربط صريح ← نص المنشور يسمّي المنتج ← نص الزبون يسمّيه/مطابقة حاسمة.
+ * يعيد أيضاً حقيقة المنتج للعقل والعقول المساعدة. بلا اختراع: غموض ⇒ null.
+ */
+function resolveProductForInteraction(input: {
+  commentText: string;
+  postExternalId?: string | null;
+  postText?: string | null;
+  youtubeVideoId?: string | null;
+  leadProductId?: string | null;
+}): ProductResolution & { fact: string | null } {
+  const linked = input.youtubeVideoId ? resolveYouTubeVideoProduct(input.youtubeVideoId).product : resolveProductForPost(input.postExternalId || null);
+  const postText = [input.postText, ownPostTextForExternalId(input.youtubeVideoId || input.postExternalId || null)].filter(Boolean).join(' ') || null;
+  const r = resolveInteractionProduct({
+    products: (workspace.products || []) as any[],
+    leadProductId: input.leadProductId || null,
+    postLinkedProduct: linked,
+    postText,
+    commentText: input.commentText,
+  });
+  if (!r.product) return { ...r, fact: null };
+  const f = replyFactsForProduct(r.product);
+  return { ...r, fact: productFactStatement(r.product, { priceText: f.priceText || null, installmentText: f.monthlyInstallmentText || null, inStock: f.inStock ?? null }) };
+}
+
 // ---------------------------------------------------------------------------
 // حلقة الحوار/التوضيح + تأريض الكتالوج لردود Meta (Facebook/Instagram).
 // مصدر واحد للسياق (conversationState) ومحرّك الردود الحتمي (replyDialogue) —
@@ -8856,7 +8903,10 @@ async function runMetaWatcherCycle(trigger: string): Promise<{ ok: boolean; trig
         // حقائق المنتج الموثّقة: تُحلّ من منشور التعليق بمعرّف صريح فقط (بلا تخمين)،
         // فيُرد استفسار السعر من بيانات المعرض الحقيقية بدل التصعيد — وإن لم تتوفر
         // حقائق يبقى تصعيداً كما كان (لا اختراع سعر/قسط).
-        const productRes = resolveProductForPost(c.postId || c.mediaId || null);
+        // المصدر الواحد لحسم المنتج (يقرؤه العقل المركزي والرد معاً) — كان الربط الصريح
+        // وحده فيُصعَّد كل سؤال سعر على منشور غير مربوط رغم وجود المنتج في المخزن.
+        const resolution = resolveProductForInteraction({ commentText: text, postExternalId: c.postId || c.mediaId || null, postText: c.postText || null });
+        const productRes = resolution.product;
         const priceReply = verifiedProductFactsForReply({ product: productRes, commentText: text });
         const priceFactsVerified = priceReply.verified;
         const baseReason = escalationReasonFor({ intent: cls.intent, isSpam: cls.isSpam, requiresHumanReview: cls.requiresHumanReview, topic: (cls as any).topic ?? null });
@@ -8871,7 +8921,7 @@ async function runMetaWatcherCycle(trigger: string): Promise<{ ok: boolean; trig
             `تحليل تعليق ${platform === 'facebook' ? 'Facebook' : 'Instagram'} جديد والبتّ في الرد عليه من الحقائق المسجّلة (بلا اختراع)`,
             platform,
             `comment:${externalId}`,
-            { externalId, commentText: text, objective: "البتّ في رد آمن على تعليق Meta من الحقائق المسجّلة", conversationId: `${platform}::${String(c.postId || c.mediaId || 'thread')}`, escalationReason: preReason, priceFactsVerified },
+            { externalId, commentText: text, objective: "البتّ في رد آمن على تعليق Meta من الحقائق المسجّلة", conversationId: `${platform}::${String(c.postId || c.mediaId || 'thread')}`, escalationReason: preReason, priceFactsVerified, productFact: resolution.fact },
           );
         } catch { /* جلسة الفريق لا تُسقط دورة المراقبة */ }
         const centralDecision = centralActionDecisionForEvent(`comment:${externalId}`);
@@ -8963,7 +9013,8 @@ async function runMetaWatcherCycle(trigger: string): Promise<{ ok: boolean; trig
           || (platform === "facebook" && Boolean(m.authorId && pageIdFb && String(m.authorId) === pageIdFb))
           || (platform === "instagram" && Boolean(m.authorId && igId && String(m.authorId) === igId));
         const cls = classifyComment(text);
-        const productRes = resolveProductForPost(m.postExternalId || null);
+        const resolution = resolveProductForInteraction({ commentText: text, postExternalId: m.postExternalId || null, postText: m.postText || null });
+        const productRes = resolution.product;
         const priceReply = verifiedProductFactsForReply({ product: productRes, commentText: text });
         const priceFactsVerified = priceReply.verified;
         const baseReason = escalationReasonFor({ intent: cls.intent, isSpam: cls.isSpam, requiresHumanReview: cls.requiresHumanReview, topic: (cls as any).topic ?? null });
@@ -8976,7 +9027,7 @@ async function runMetaWatcherCycle(trigger: string): Promise<{ ok: boolean; trig
             `تحليل رسالة ${platform === 'facebook' ? 'Facebook' : 'Instagram'} جديدة والبتّ في الرد عليها من الحقائق المسجّلة (بلا اختراع)`,
             platform,
             `comment:${externalId}`,
-            { externalId, commentText: text, objective: "البتّ في رد آمن على رسالة Meta من الحقائق المسجّلة", conversationId: `${platform}::dm`, escalationReason: preReason, priceFactsVerified },
+            { externalId, commentText: text, objective: "البتّ في رد آمن على رسالة Meta من الحقائق المسجّلة", conversationId: `${platform}::dm`, escalationReason: preReason, priceFactsVerified, productFact: resolution.fact },
           );
         } catch { /* جلسة الفريق لا تُسقط دورة المراقبة */ }
         const centralDecision = centralActionDecisionForEvent(`comment:${externalId}`);
@@ -9250,7 +9301,8 @@ async function runTelegramWatcherCycle(trigger: string): Promise<{ ok: boolean; 
       const chatId = String(m.replyTarget?.chatId || "");
       const selfAuthored = isSelfAuthored(m.authorName || undefined, ownNames);
       const cls = classifyComment(text);
-      const productRes = resolveProductForPost(m.postExternalId || null);
+      const resolution = resolveProductForInteraction({ commentText: text, postExternalId: m.postExternalId || null, postText: m.postText || null });
+      const productRes = resolution.product;
       const priceReply = verifiedProductFactsForReply({ product: productRes, commentText: text });
       const priceFactsVerified = priceReply.verified;
       const baseReason = escalationReasonFor({ intent: cls.intent, isSpam: cls.isSpam, requiresHumanReview: cls.requiresHumanReview, topic: (cls as any).topic ?? null });
@@ -9262,7 +9314,7 @@ async function runTelegramWatcherCycle(trigger: string): Promise<{ ok: boolean; 
           "تحليل رسالة Telegram جديدة والبتّ في الرد عليها من الحقائق المسجّلة (بلا اختراع)",
           "telegram",
           `comment:${externalId}`,
-          { externalId, commentText: text, objective: "البتّ في رد آمن على رسالة Telegram من الحقائق المسجّلة", conversationId: `telegram::${chatId}`, escalationReason: preReason, priceFactsVerified },
+          { externalId, commentText: text, objective: "البتّ في رد آمن على رسالة Telegram من الحقائق المسجّلة", conversationId: `telegram::${chatId}`, escalationReason: preReason, priceFactsVerified, productFact: resolution.fact },
         );
       } catch { /* جلسة الفريق لا تُسقط دورة المراقبة */ }
       const centralDecision = centralActionDecisionForEvent(`comment:${externalId}`);
@@ -10026,9 +10078,11 @@ async function runCommercialBrainCycle(trigger: string): Promise<{ ok: boolean; 
       // لا بعد 24 ساعة. خارج وضع الموافقة لا نُنشئ مسودة (الرد الآلي يبقى كما هو).
       if (lead && requiresApproval(commercialSendMode) && !commercialKillSignal) {
         const kind: 'comment' | 'message' = interaction.kind === 'message' ? 'message' : 'comment';
-        const product = lead.interestedProductId
-          ? (workspace.products || []).find((p: any) => String(p.id) === String(lead.interestedProductId)) || null
-          : resolveProductForPost(row.postExternalId || null);
+        // نفس المصدر الواحد: اهتمام الزبون ← ربط المنشور ← نص المنشور ← نص الزبون.
+        const product = resolveProductForInteraction({
+          commentText: interaction.text, postExternalId: row.postExternalId || null, postText: row.postText || null,
+          leadProductId: lead.interestedProductId || null,
+        }).product;
         const draft = await createInstantReplyDraft({
           lead, platform: lead.platform as MetaPlatform, externalId: interaction.externalId,
           text: interaction.text, kind, recipientId: interaction.replyTarget?.recipientId || null,
@@ -15641,6 +15695,8 @@ const BRAIN_MEMORY_MAX = 5000;
  * وتُحفظ في المخزن الدائم فتصمد بعد إعادة التشغيل/cold start، فلا تُفقد مهام
  * المالك ولا نتائج التحقق.
  */
+/** ميزانية نداء AI داخل أداة الوكيل — أقل من مهلة الخطوة الافتراضية (20 ثانية). */
+const AGENT_AI_DEADLINE_MS = 16_000;
 const agentOrchestrator = new AgentOrchestrator({
   toolContext: {} as AgentToolContext,
   newId: () => workspaceId("atask"),
@@ -15804,7 +15860,9 @@ function buildAgentToolContext(operator: AgentOperator, userId: string): AgentTo
       const safePrompt = `${wrapUntrustedText(prompt, { maxChars: 4000 })}
 
 ${UNTRUSTED_TEXT_POLICY_AR}`;
-      const result = await aiEngine.run({ cacheKey, prompt: safePrompt, deterministicFallback: () => "تعذر توليد نص من المزود الآن؛ يلزم إعادة المحاولة أو صياغة يدوية.", meta: { platform: 'general', operation: 'agent_tool_generate' } });
+      // ميزانية كلية أقل من مهلة خطوة الوكيل (20 ثانية): عند بطء المزود يعود البديل
+      // الحتمي داخل الخطوة بدل «TIMEOUT» يُفشل المهمة كلها (رُصد: خطة المحتوى فشلت 40s).
+      const result = await aiEngine.run({ cacheKey, prompt: safePrompt, deadlineMs: AGENT_AI_DEADLINE_MS, deterministicFallback: () => "تعذر توليد نص من المزود الآن؛ يلزم إعادة المحاولة أو صياغة يدوية.", meta: { platform: 'general', operation: 'agent_tool_generate' } });
       return { text: result.text, usedProvider: result.usedProvider, source: result.source };
     },
     // --- أدوات YouTube الحقيقية (المنصة التشغيلية الأساسية) ---
@@ -16470,7 +16528,7 @@ function centralActionDecisionForEvent(eventIdentity: string): BrainDecisionStat
 }
 
 /** سياق الفريق الحقيقي من بيانات الإنتاج (بلا شبكة وبلا أسرار). */
-function teamContext(task: string, platform: PlatformId, meta: { escalationReason?: EscalationReason | null } = {}) {
+function teamContext(task: string, platform: PlatformId, meta: { escalationReason?: EscalationReason | null; extraFacts?: Array<{ id: string; statement: string; source: string }> } = {}) {
   const input = brainRuntimeInput();
   const activeMemory = brainMemoryStore.records.filter((r) => r.status === 'active' && !r.stale).length;
   // Gap 3 (Batch 8.1): سياق تجاري حقيقي (استراتيجية/جمهور/سوق/تاريخ قرارات) يُغذّي
@@ -16483,7 +16541,9 @@ function teamContext(task: string, platform: PlatformId, meta: { escalationReaso
     comments: input.comments.map((c) => ({ platform: c.platform, externalId: c.externalId, text: c.text, at: c.at ?? null, authorName: c.authorName ?? null })),
     watcher: input.watcher.map((w) => ({ commentId: w.commentId, stage: w.stage, action: w.action ?? null, code: w.code ?? null, at: w.at ?? null, externalReplyId: w.externalReplyId ?? null })),
     connections: input.connections,
-    verifiedFacts: (input.verifiedFacts || []).map((f) => ({ id: f.id, statement: f.statement, source: f.source })),
+    // حقائق المعرض + حقيقة المنتج المحسوم لهذا الحدث من مخزن المنتجات (السعر/القسط/
+    // التوفر) — فيقرأ العقل والعقول المساعدة نفس ما سيُرد به على الزبون.
+    verifiedFacts: [...(input.verifiedFacts || []), ...(meta.extraFacts || [])].map((f) => ({ id: f.id, statement: f.statement, source: f.source })),
     memoryActive: activeMemory,
     aiAvailable: Boolean(process.env.GEMINI_API_KEY),
     priorSessions: teamSessionState.sessions.length,
@@ -16629,12 +16689,15 @@ async function runTeamSessionNow(
   task: string,
   platform: PlatformId,
   eventIdentity: string,
-  meta: { externalId?: string | null; commentText?: string; objective?: string; conversationId?: string | null; escalationReason?: EscalationReason | null; priceFactsVerified?: boolean } = {},
+  meta: { externalId?: string | null; commentText?: string; objective?: string; conversationId?: string | null; escalationReason?: EscalationReason | null; priceFactsVerified?: boolean; productFact?: string | null } = {},
 ) {
   const nowMs = Date.now();
   const dedupe = `team:${platform}:${String(eventIdentity).trim().toLowerCase().slice(0, 200)}:${String(task).trim().toLowerCase().replace(/\s+/g, ' ').slice(0, 200)}`;
   const existing = teamSessionState.sessions.find((s) => s.dedupeKey === dedupe) || null;
-  const session = runTeamSession(teamContext(task, platform, { escalationReason: meta.escalationReason ?? null }), {
+  const session = runTeamSession(teamContext(task, platform, {
+    escalationReason: meta.escalationReason ?? null,
+    extraFacts: meta.productFact ? [{ id: "event_product", statement: meta.productFact, source: "مخزن المنتجات (منتج محسوم لهذا الحدث)" }] : [],
+  }), {
     trigger,
     platform,
     eventIdentity,
