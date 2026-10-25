@@ -326,13 +326,13 @@ export const LiveBrainRoom: React.FC = () => {
     return arr;
   }, [eventTimes, now]);
   const perMinute = buckets.slice(-6).reduce((a, b) => a + b, 0);
-  const moduleHeat = useMemo(() => {
+  const moduleHeat = useMemo<Record<string, number>>(() => {
     const m: Record<string, number> = {};
     const cutoff = now - RECENT_MS;
     for (const e of eventTimes) if (e.t >= cutoff) m[e.m] = (m[e.m] || 0) + 1;
     return m;
   }, [eventTimes, now]);
-  const maxHeat = Math.max(1, ...Object.values(moduleHeat));
+  const maxHeat = Math.max(1, ...(Object.values(moduleHeat) as number[]));
 
   const hourly: number[] = Array.isArray(ins.hourly24) ? ins.hourly24 : [];
   const hourlyInq: number[] = Array.isArray(ins.hourlyInquiries24) ? ins.hourlyInquiries24 : [];
