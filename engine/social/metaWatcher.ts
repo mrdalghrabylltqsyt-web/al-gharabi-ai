@@ -132,8 +132,10 @@ export function applyMetaReadOutcome(
     };
   }
   const n = prev.consecutiveErrors + 1;
+  // صياغة صريحة (tsconfig بلا strictNullChecks لا يضيّق الاتحاد على `ok`).
+  const failure = outcome as { ok: false; error: string; code: string };
   return {
-    stats: { ...prev, lastError: String(outcome.error || 'fetch failed').slice(0, 300), lastErrorCode: outcome.code, consecutiveErrors: n, failingSince: prev.failingSince || nowIso },
+    stats: { ...prev, lastError: String(failure.error || 'fetch failed').slice(0, 300), lastErrorCode: failure.code, consecutiveErrors: n, failingSince: prev.failingSince || nowIso },
     log: n === 1 ? 'failed' : n % Math.max(1, logEveryCycles) === 0 ? 'still_failing' : null,
     recoveredAfter: 0,
   };
