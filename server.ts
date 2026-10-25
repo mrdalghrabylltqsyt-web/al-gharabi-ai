@@ -659,6 +659,7 @@ import {
   type OwnerAlertState,
   type OwnerAlertItem,
 } from "./engine/notifications/ownerAlerts";
+import { parseOwnerTelegramChatId, buildOwnerTelegramMessage, decideOwnerTelegramSend, defaultOwnerTelegramRateState, newlyQueuedAlerts, OWNER_TELEGRAM_OVERFLOW_TEXT, OWNER_TELEGRAM_MAX_PER_HOUR, type OwnerTelegramRateState } from "./engine/notifications/ownerTelegram";
 import {
   createStorageAdapter,
   isPooledPostgresEndpoint,
@@ -10598,7 +10599,7 @@ app.post("/api/agent/commercial/kill-switch", requireOwner, async (req, res) => 
 app.get("/api/agent/owner-alerts", requireOwner, (_req, res) => {
   res.json({
     success: true,
-    alerts: ownerAlertPublicBlock(ownerAlertState, getOwnerEmailConfig().configured && getOwnerEmailConfig().fromConfigured),
+    alerts: { ...ownerAlertPublicBlock(ownerAlertState, getOwnerEmailConfig().configured && getOwnerEmailConfig().fromConfigured), telegram: ownerTelegramPublicBlock() },
     lastCycle: { sent: ownerAlertState.lastResult === 'sent', reason: ownerAlertState.lastResult, count: ownerAlertState.pending.length },
   });
 });
@@ -10614,7 +10615,7 @@ app.post("/api/agent/owner-alerts", requireOwner, async (req, res) => {
   audit(user.id, raw ? "owner_alerts_enabled" : "owner_alerts_disabled", "owner_route");
   res.json({
     success: true,
-    alerts: ownerAlertPublicBlock(ownerAlertState, getOwnerEmailConfig().configured && getOwnerEmailConfig().fromConfigured),
+    alerts: { ...ownerAlertPublicBlock(ownerAlertState, getOwnerEmailConfig().configured && getOwnerEmailConfig().fromConfigured), telegram: ownerTelegramPublicBlock() },
     note: raw ? "تنبيه المالك الخارجي مفعَّل (تجميع كل 30 دقيقة)." : "تنبيه المالك الخارجي معطَّل.",
   });
 });
@@ -13456,7 +13457,7 @@ function salesReadinessReport() {
     platforms,
     commercialBrainEnabled: commercialKillSwitchEnabled(),
     sendMode: commercialSendMode,
-    ownerAlerts: { enabled: ownerAlertState.enabled, emailConfigured: email.configured && email.fromConfigured },
+    ownerAlerts: { enabled: ownerAlertState.enabled, emailConfigured: email.configured && email.fromConfigured, telegramConfigured: ownerTelegramConfigured() },
     pendingApprovals: { count: pending.length, oldestAt },
     readyJobs: automationJobs.filter((j: any) => j.status === "ready").length,
     autoExecuteEnabled: jobAutomationState.autoExecuteApproved,
@@ -16788,19 +16789,75 @@ let jobAutomationState: JobAutomationState = defaultJobAutomationState();
 
 /** يُدرج حدث تنبيه جديد (يُحفظ لاحقاً مع دورة الإرسال). */
 function recordOwnerAlert(item: OwnerAlertItem): void {
+  const before = ownerAlertState.pending;
   const next = enqueueOwnerAlert(ownerAlertState, item);
   if (next !== ownerAlertState) {
     ownerAlertState = next;
     saveControlState();
+    notifyOwnerTelegramInstant(newlyQueuedAlerts(before, ownerAlertState.pending));
+  }
+}
+
+// -----------------------------------------------------------------------------
+// تنبيه المالك الفوري عبر Telegram (قناة ثانية بجانب ملخص البريد كل 30 دقيقة).
+// كل حدث جديد يُرسل خلال ثوانٍ إلى محادثة المالك الخاصة مع بوت المعرض فقط
+// (OWNER_TELEGRAM_CHAT_ID، رقم موجب). منع التكرار يرثه من طابور التنبيه (المفتاح)،
+// وحدّ 20 رسالة/ساعة يمنع الإغراق. بلا Gemini، ولا يُرسل شيء للزبون.
+// -----------------------------------------------------------------------------
+let ownerTelegramRate: OwnerTelegramRateState = defaultOwnerTelegramRateState();
+const ownerTelegramStatus: { lastResult: string | null; lastAt: string | null; sentCount: number; failedCount: number } = { lastResult: null, lastAt: null, sentCount: 0, failedCount: 0 };
+function ownerTelegramConfigured(): boolean {
+  return Boolean(parseOwnerTelegramChatId(process.env) && telegramBotToken());
+}
+function ownerTelegramPublicBlock() {
+  return {
+    configured: ownerTelegramConfigured(),
+    chatIdSet: Boolean(parseOwnerTelegramChatId(process.env)),
+    botTokenSet: Boolean(telegramBotToken()),
+    instant: true,
+    maxPerHour: OWNER_TELEGRAM_MAX_PER_HOUR,
+    lastResult: ownerTelegramStatus.lastResult,
+    lastAt: ownerTelegramStatus.lastAt,
+    sentCount: ownerTelegramStatus.sentCount,
+    failedCount: ownerTelegramStatus.failedCount,
+  };
+}
+async function sendOwnerTelegramText(text: string): Promise<boolean> {
+  const chatId = parseOwnerTelegramChatId(process.env);
+  const client = telegramClient();
+  if (!chatId || !client) return false;
+  try {
+    const r = await client.sendMessage({ chatId, text });
+    ownerTelegramStatus.lastAt = new Date().toISOString();
+    if (r.ok) { ownerTelegramStatus.lastResult = 'sent'; ownerTelegramStatus.sentCount += 1; return true; }
+    ownerTelegramStatus.lastResult = 'failed'; ownerTelegramStatus.failedCount += 1;
+    return false;
+  } catch {
+    ownerTelegramStatus.lastAt = new Date().toISOString();
+    ownerTelegramStatus.lastResult = 'failed'; ownerTelegramStatus.failedCount += 1;
+    return false;
+  }
+}
+function notifyOwnerTelegramInstant(items: OwnerAlertItem[]): void {
+  if (!items.length || !ownerAlertState.enabled || !ownerTelegramConfigured()) return;
+  const appUrl = publicBaseUrlNow();
+  for (const item of items) {
+    const { decision, next } = decideOwnerTelegramSend(ownerTelegramRate, Date.now());
+    ownerTelegramRate = next;
+    if (decision === 'drop') continue;
+    const text = decision === 'overflow' ? OWNER_TELEGRAM_OVERFLOW_TEXT : buildOwnerTelegramMessage(item, appUrl);
+    void sendOwnerTelegramText(text);
   }
 }
 
 /** يزامن تنبيهات انقطاع الربط من الحالات الحيّة (يُستدعى عند كل نبضة إرسال). */
 function syncOwnerReauthAlerts(): void {
   const connections = Array.from(platformConnections.values()).map((c: any) => ({ platform: String(c.platform), status: c.status }));
+  const before = ownerAlertState.pending;
   const next = syncReauthAlerts(ownerAlertState, connections, new Date().toISOString());
   if (next !== ownerAlertState) {
     ownerAlertState = next;
+    notifyOwnerTelegramInstant(newlyQueuedAlerts(before, ownerAlertState.pending).filter((x) => x.kind === 'platform_reauth'));
     saveControlState();
   }
 }

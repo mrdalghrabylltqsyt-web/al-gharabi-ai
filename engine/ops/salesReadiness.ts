@@ -30,7 +30,7 @@ export interface SalesReadinessInput {
   platforms: ReadinessPlatformInput[];
   commercialBrainEnabled: boolean;
   sendMode: string;
-  ownerAlerts: { enabled: boolean; emailConfigured: boolean };
+  ownerAlerts: { enabled: boolean; emailConfigured: boolean; telegramConfigured?: boolean };
   /** طلبات رد على زبائن تنتظر موافقة المالك. */
   pendingApprovals: { count: number; oldestAt: string | null };
   /** مهام نشر معتمدة حان موعدها وتنتظر التنفيذ. */
@@ -172,23 +172,34 @@ export function buildSalesReadiness(input: SalesReadinessInput): SalesReadinessR
     });
   }
 
-  // 4) التنبيه الخارجي — بدونه لا يعلم المالك بالزبون.
-  if (!input.ownerAlerts.emailConfigured) {
+  // 4) التنبيه الخارجي — بدونه لا يعلم المالك بالزبون (بريد ملخّص + Telegram فوري).
+  const telegramOn = input.ownerAlerts.telegramConfigured === true;
+  const anyChannel = input.ownerAlerts.emailConfigured || telegramOn;
+  if (!anyChannel) {
     push({
       id: 'owner-alerts', area: 'customers', actor: 'owner', severity: 'blocker',
-      title: 'تنبيه البريد غير مهيّأ',
+      title: 'لا قناة تنبيه مهيّأة',
       detail: 'لن يصلك أي تنبيه عند وصول زبون أو تصعيد أو انقطاع منصة.',
-      action: 'اضبط OWNER_EMAIL وRESEND_API_KEY وRESEND_FROM_EMAIL في Render.',
+      action: 'اضبط OWNER_EMAIL وRESEND_API_KEY وRESEND_FROM_EMAIL في Render، أو OWNER_TELEGRAM_CHAT_ID مع بوت تيليغرام.',
     });
   } else if (!input.ownerAlerts.enabled) {
     push({
       id: 'owner-alerts', area: 'customers', actor: 'owner', severity: 'warning',
-      title: 'تنبيه البريد موقوف',
+      title: 'تنبيه المالك موقوف',
       detail: 'لن يصلك تنبيه عند وصول زبون.',
       action: 'فعّل «تنبيه المالك» من لوحة التحكم.',
     });
   } else {
-    push({ id: 'owner-alerts', area: 'customers', actor: 'owner', severity: 'ok', title: 'تنبيه البريد مفعّل', detail: 'يصلك ملخص كل 30 دقيقة عند وجود جديد.', action: '' });
+    const channels = [input.ownerAlerts.emailConfigured ? 'البريد (ملخّص كل 30 دقيقة)' : null, telegramOn ? 'Telegram (فوري)' : null].filter(Boolean).join(' + ');
+    push({ id: 'owner-alerts', area: 'customers', actor: 'owner', severity: 'ok', title: 'تنبيه المالك مفعّل', detail: `القنوات: ${channels}.`, action: '' });
+  }
+  if (anyChannel && !telegramOn) {
+    push({
+      id: 'owner-telegram', area: 'customers', actor: 'owner', severity: 'info',
+      title: 'التنبيه الفوري على Telegram غير مفعّل',
+      detail: 'البريد يصل كملخص كل 30 دقيقة؛ Telegram يوصل كل زبون جديد إلى هاتفك خلال ثوانٍ.',
+      action: 'أرسل أي رسالة لبوت المعرض على Telegram، واحصل على رقم محادثتك (مثلاً من @userinfobot)، ثم ضعه في OWNER_TELEGRAM_CHAT_ID في Render.',
+    });
   }
 
   // 5) المتابعة التجارية.
@@ -255,7 +266,7 @@ export function buildSalesReadiness(input: SalesReadinessInput): SalesReadinessR
   // الدرجة: القدرات التجارية الأساسية (منصات البيع + التنبيه + المتابعة + لا انتظار + لا حجب).
   const checks: boolean[] = [
     ...CORE_SALES_PLATFORMS.filter((id) => byId.get(id)?.realConnector).map((id) => Boolean(byId.get(id)?.connected)),
-    input.ownerAlerts.enabled && input.ownerAlerts.emailConfigured,
+    input.ownerAlerts.enabled && (input.ownerAlerts.emailConfigured || input.ownerAlerts.telegramConfigured === true),
     input.commercialBrainEnabled,
     !input.youtubeOnlyMode,
     !(waitHours !== null && waitHours >= CUSTOMER_WAIT_BLOCKER_HOURS && input.pendingApprovals.count > 0),
