@@ -13,13 +13,29 @@
  * يعيد Express صفحة HTML 404 بدل JSON. لذا نُطبّع المسار أدناه.
  */
 import serverless from "serverless-http";
-import { app, warmStorage } from "../../server";
 
-const inner = serverless(app);
+/**
+ * إزالة الحمل المكرر (فحص 2026-10-25): منذ R1 كل /api/* يمرّ proxy إلى Render،
+ * لكن Netlify ظل ينشر هذه الدالة (حزمة 2.4MB، ذاكرة 1024MB) وتبقى قابلة للاستدعاء
+ * مباشرة على /.netlify/functions/api/* — أي خادم ثانٍ كامل يقرأ ويكتب **نفس**
+ * قاعدة البيانات (عكس هدف R1: خادم واحد يكتب). الآن الدالة **معطّلة افتراضياً**:
+ * ترد 410 بلا تحميل server.ts ولا أي اتصال بالقاعدة. تُفعَّل صراحةً فقط عند الحاجة
+ * (اختبارات/طوارئ) بـ GHARABI_NETLIFY_FUNCTION_ENABLED=1. التحميل كسول (dynamic import).
+ */
+const ENABLED = () => process.env.GHARABI_NETLIFY_FUNCTION_ENABLED === "1";
 
-// كل عملية دالة جديدة تهيّئ المخزن أولاً (يقرأ الحالة الفعلية من Postgres_عند
-// وجود DATABASE_URL). يُخزَّن الوعد فلا تتكرر التهيئة داخل العملية الواحدة.
-const warmed = warmStorage();
+let innerPromise: Promise<{ inner: (e: any, c: any) => Promise<any> }> | null = null;
+function loadInner() {
+  if (!innerPromise) {
+    innerPromise = import("../../server").then(async ({ app, warmStorage }) => {
+      // كل عملية دالة جديدة تهيّئ المخزن أولاً (يقرأ الحالة الفعلية من Postgres عند
+      // وجود DATABASE_URL). يُخزَّن الوعد فلا تتكرر التهيئة داخل العملية الواحدة.
+      try { await warmStorage(); } catch { /* يتعامل معها الخادم كحالة تخزين غير جاهزة */ }
+      return { inner: serverless(app) as any };
+    });
+  }
+  return innerPromise;
+}
 
 const FUNCTION_PREFIX = "/.netlify/functions/api";
 
@@ -43,7 +59,14 @@ function normalizeEvent(event: Record<string, unknown>): Record<string, unknown>
 }
 
 export const handler = async (event: Record<string, unknown>, context: Record<string, unknown>) => {
+  if (!ENABLED()) {
+    return {
+      statusCode: 410,
+      headers: { "content-type": "application/json; charset=utf-8" },
+      body: JSON.stringify({ success: false, code: "NETLIFY_FUNCTION_RETIRED", error: "هذه الدالة متوقفة؛ الخادم الوحيد على Render (/api عبر proxy)." }),
+    };
+  }
   // ننتظر تهيئة المخزن قبل معالجة أي طلب، فلا يقرأ الطلب حالة لم تُحمَّل بعد.
-  try { await warmed; } catch { /* يتعامل معها الخادم كحالة تخزين غير جاهزة */ }
+  const { inner } = await loadInner();
   return inner(normalizeEvent(event), context);
 };

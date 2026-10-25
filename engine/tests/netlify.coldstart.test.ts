@@ -40,6 +40,7 @@ writeFileSync(
 (async () => {
   const [, , bundle, dir, secret, token, owner, action, ...args] = process.argv;
   process.env.NETLIFY = 'true';
+  process.env.GHARABI_NETLIFY_FUNCTION_ENABLED = '1';
   process.env.NODE_ENV = 'production';
   process.env.SESSION_SECRET = secret;
   process.env.GHARABI_PREVIEW_TOKEN = token;

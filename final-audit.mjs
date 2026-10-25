@@ -93,6 +93,11 @@ add('r1-netlify-no-local-function-rewrite', !/to = "\/\.netlify\/functions\/api\
   'R1: لم يعد /api/* يُوجَّه إلى الدالة المحلية (الكتابة المزدوجة أُزيلت)');
 add('r1-netlify-function-retained', fs.existsSync(path.join(root, 'netlify/functions/api.ts')),
   'R1: ملف الدالة باقٍ في المستودع (لا حذف) لكنه غير موصول');
+add('r1-netlify-function-disabled-by-default',
+  /process\.env\.GHARABI_NETLIFY_FUNCTION_ENABLED === "1"/.test(read('netlify/functions/api.ts')) &&
+  !/^import \{[^}]*\} from "\.\.\/\.\.\/server";/m.test(read('netlify/functions/api.ts')) &&
+  read('netlify/functions/api.ts').includes('statusCode: 410'),
+  'الدالة المنشورة على Netlify معطّلة افتراضياً (410 بلا تحميل server.ts) — لا خادم ثانٍ يكتب نفس القاعدة');
 add('r1-netlify-dr-source-404-preserved', /from = "\/dr-source\/\*"[\s\S]*?status = 404/.test(read('netlify.toml')) &&
   /from = "\/server\.cjs"[\s\S]*?status = 404/.test(read('netlify.toml')),
   'R1: حجب /dr-source و/server.cjs بحالة 404 باقٍ كما هو');
