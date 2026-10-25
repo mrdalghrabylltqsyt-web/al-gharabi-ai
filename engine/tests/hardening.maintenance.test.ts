@@ -63,7 +63,7 @@ async function main() {
 
 
   // 6) التحقق من شهادة TLS لقاعدة البيانات (المرحلة 1: auto مع رجوع مُسجَّل)
-  check('★ الوضع الافتراضي auto', pgTlsVerifyMode({}) === 'auto' && pgTlsVerifyMode({ PG_TLS_VERIFY: 'STRICT' }) === 'strict' && pgTlsVerifyMode({ PG_TLS_VERIFY: 'off' }) === 'off' && pgTlsVerifyMode({ PG_TLS_VERIFY: 'x' }) === 'auto');
+  check('★ الوضع الافتراضي strict (بعد ثبوت verify=ok في الإنتاج)', pgTlsVerifyMode({}) === 'strict' && pgTlsVerifyMode({ PG_TLS_VERIFY: 'AUTO' }) === 'auto' && pgTlsVerifyMode({ PG_TLS_VERIFY: 'off' }) === 'off' && pgTlsVerifyMode({ PG_TLS_VERIFY: 'x' }) === 'strict');
   check('★ التحقق مفعّل حين يُطلب', (postgresPoolConfig('postgresql://u:p@h/d?sslmode=require', { verifyTls: true }) as any).ssl.rejectUnauthorized === true);
   check('بلا طلب ⇒ السلوك القديم', (postgresPoolConfig('postgresql://u:p@h/d?sslmode=require') as any).ssl.rejectUnauthorized === false);
   check('★ أخطاء الشهادة فقط تُعدّ أخطاء TLS', isTlsCertError({ code: 'SELF_SIGNED_CERT_IN_CHAIN' }) && isTlsCertError({ code: 'ERR_TLS_CERT_ALTNAME_INVALID' }) && isTlsCertError({ message: 'unable to verify the first certificate' }) && !isTlsCertError({ code: 'ECONNREFUSED' }) && !isTlsCertError({ code: '28P01' }));
