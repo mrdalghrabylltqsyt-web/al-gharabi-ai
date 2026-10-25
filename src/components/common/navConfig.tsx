@@ -131,6 +131,7 @@ export const NAV_SECTIONS: NavSection[] = [
         title: 'القيادة والنظرة العامة',
         icon: LayoutDashboard,
         items: [
+          { id: 'live_room', label: 'غرفة العقل الحية', desc: 'المخطط الهندسي حيّاً: كل قسم وكل حدث لحظة وقوعه', icon: Activity, ownerOnly: true, keywords: ['live', 'brain', 'blueprint', 'مباشر', 'حي', 'العقل'] },
           { id: 'command_center', label: 'مركز القيادة', desc: 'حالة النظام، ملخص العمل، والتنبيهات', icon: LayoutDashboard, keywords: ['dashboard', 'overview'] },
           { id: 'dashboard', label: 'لوحة التحكم الرئيسية', desc: 'المؤشرات والعمليات الحالية', icon: LayoutDashboard, keywords: ['dashboard'] },
         ],

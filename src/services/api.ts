@@ -1713,6 +1713,13 @@ ${payload.topic || payload.productName || 'أنظمة وحلول التقسيط 
   },
   // --- PR-S2: صندوق الزبائن (للمالك فقط) ---
   /** صندوق الزبائن: العملاء المحتملون + المسودات بانتظار الموافقة + وضع الإرسال. */
+  /** غرفة العقل الحية: لقطة حالة الخادم الحقيقية + الأحداث الجديدة منذ `since` (للمالك). */
+  async getLiveRoom(since = 0): Promise<any> {
+    const res = await fetch(`/api/live/room?since=${encodeURIComponent(String(since || 0))}`, { headers: getAuthHeaders(), cache: 'no-store' });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || !data.success) throw new Error(data.error || 'تعذر جلب البث الحي');
+    return data;
+  },
   async getCommercialInbox(): Promise<any> {
     const res = await fetch('/api/commercial/inbox', { headers: getAuthHeaders() });
     const data = await res.json();
