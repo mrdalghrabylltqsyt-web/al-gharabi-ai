@@ -145,7 +145,37 @@ export function buildAttributeClarifyReply(attrs: InquiryAttributes, topic: stri
  *  6) نقص معلومة ⇒ سؤال توضيحي موجّه بالخصائص.
  *  7) غير ذلك ⇒ محرّك الحوار الحتمي (سؤال/تصعيد حسب الحالة).
  */
+/**
+ * فحص الشاشات (2026-10-25 #3): «شو سعر، وين بالضبط، باي محافظة؟» سؤالان في رسالة واحدة
+ * (سعر + موقع). المصنّف يختار موضوعاً واحداً (السعر) فيُهمل الموقع، فيُسأل الزبون عن
+ * الماركة ولا يُعطى العنوان رغم أنه مسجّل. يُكشف طلب الموقع المرافق هنا.
+ */
+const LOCATION_ASK_RE = /(^|\s)(?:و|ف|ب)?(وين|وين ما|منين|عنوان|العنوان|عنوانكم|موقع|موقعكم|مكان|مكانكم|محافظ|محافظه|اي محافظه|فرع|فروع|لوكيشن|location|address)(\s|$|[؟?،,.])/;
+export function asksLocationToo(text: string): boolean {
+  const t = String(text || '').replace(/[أإآ]/g, 'ا').replace(/ة/g, 'ه').replace(/ى/g, 'ي').toLowerCase();
+  return LOCATION_ASK_RE.test(` ${t} `);
+}
+
 export function resolveInquiry(input: ResolveInquiryInput): ResolveInquiryResult {
+  const r = resolveInquiryCore(input);
+  // الموقع المسجّل يُضاف عندما يسأل الزبون عنه مع سؤال آخر ولم يتضمنه الرد — نصّاً
+  // حرفياً من بيانات المعرض (عنوان + دوام + هاتف)، بلا اختراع. لا يُضاف للتصعيد/السبام.
+  const f = input.productFacts || {};
+  if (f.locationText && r.kind !== 'escalate' && !r.usedFacts.includes('location')
+    && !input.classification.isSpam && !input.classification.requiresHumanReview
+    && asksLocationToo(input.text)) {
+    const parts: string[] = [`موقعنا: ${String(f.locationText).replace(/[.،\s]+$/, '')}`];
+    if (f.hoursText) parts.push(`والدوام ${String(f.hoursText).replace(/[.،\s]+$/, '')}`);
+    const body = r.text.replace(/\s*🌸\s*/g, ' ').replace(/\s+/g, ' ').trim();
+    const opener = /^(هلا وغلا|تدلل|حياك الله|نورتنا|من عيوني)[ ،,]*/.exec(body);
+    const rest = opener ? body.slice(opener[0].length) : body;
+    const text = `${opener ? opener[1] : 'هلا وغلا'} 🌸 ${parts.join('، ')}. ${rest}`.replace(/\s+/g, ' ').trim();
+    return { ...r, text, usedFacts: [...r.usedFacts, 'location', ...(f.hoursText ? ['hours'] : [])], reason: `${r.reason} + طلب موقع مرافق ⇒ أُضيف العنوان المسجّل.` };
+  }
+  return r;
+}
+
+function resolveInquiryCore(input: ResolveInquiryInput): ResolveInquiryResult {
   const cls = input.classification;
   const attrs = extractInquiryAttributes(input.text);
   const facts: ReplyFactSet = { ...(input.productFacts || {}) };

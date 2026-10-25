@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { fmtDateTime } from '../../utils/displayTime';
 import { useApp } from '../../context/AppContext';
 import { apiService } from '../../services/api';
 import {
@@ -353,7 +354,7 @@ export const CustomerCenterView: React.FC = () => {
                       >
                         {msg.text}
                       </div>
-                      <span className="text-[9px] text-slate-500 mt-0.5 px-1">{msg.timestamp}</span>
+                      <span className="text-[9px] text-slate-500 mt-0.5 px-1">{fmtDateTime(msg.timestamp)}</span>
                     </div>
                   );
                 })}
