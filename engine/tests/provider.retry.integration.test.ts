@@ -28,6 +28,7 @@ import { randomBytes } from 'node:crypto';
 import type { Server } from 'node:http';
 import { createFacebookMock, startFacebookMockServer, type FacebookMockState } from './helpers/facebookMock';
 import { createInstagramMock, startInstagramMockServer, type InstagramMockState } from './helpers/instagramMock';
+import { reserveFreePort } from './helpers/freePort';
 
 let passed = 0;
 const failures: string[] = [];
@@ -39,10 +40,10 @@ function group(title: string): void { console.log(`\n▸ ${title}`); }
 const REPO_ROOT = process.cwd();
 const tsxCli = join(REPO_ROOT, 'node_modules', 'tsx', 'dist', 'cli.mjs');
 const serverEntry = join(REPO_ROOT, 'server.ts');
-const FB_APP_PORT = 8600 + Math.floor(Math.random() * 40);
-const IG_APP_PORT = 8660 + Math.floor(Math.random() * 40);
-const FB_MOCK_PORT = 8700 + Math.floor(Math.random() * 40);
-const IG_MOCK_PORT = 8760 + Math.floor(Math.random() * 40);
+const FB_APP_PORT = await reserveFreePort();
+const IG_APP_PORT = await reserveFreePort();
+const FB_MOCK_PORT = await reserveFreePort();
+const IG_MOCK_PORT = await reserveFreePort();
 const PREVIEW_TOKEN = randomBytes(24).toString('hex');
 const SESSION_SECRET = 'provider-retry-integration-secret-not-real';
 const APP_SECRET = 'fb_test_app_secret_not_real_1234567890';

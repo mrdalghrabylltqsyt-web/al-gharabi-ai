@@ -16,6 +16,7 @@ import { mkdtempSync, rmSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { randomBytes } from 'node:crypto';
+import { reserveFreePort } from './helpers/freePort';
 
 let passed = 0;
 const failures: string[] = [];
@@ -30,7 +31,7 @@ const tsxCli = join(REPO_ROOT, 'node_modules', 'tsx', 'dist', 'cli.mjs');
 const serverEntry = join(REPO_ROOT, 'server.ts');
 // نطاق يتجنّب المنافذ المحظورة في fetch/undici (6000 و6665–6669 و6697)،
 // وإلا فشل الاختبار عشوائياً بـ«bad port» بلا علاقة بالكود.
-const PORT = 6510 + Math.floor(Math.random() * 150);
+const PORT = await reserveFreePort();
 const BASE = `http://127.0.0.1:${PORT}`;
 const PREVIEW_TOKEN = randomBytes(24).toString('hex');
 const SESSION_SECRET = 'control-plane-test-secret-not-real';

@@ -27,6 +27,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { issueChallengeCode } from '../auth/challenge';
 import { buildServerTestEnv } from './helpers/serverTestEnv';
+import { reserveFreePort } from './helpers/freePort';
 
 let passed = 0;
 const failures: string[] = [];
@@ -87,7 +88,7 @@ async function previewLogin(base: string): Promise<{ status: number; body: any }
 }
 
 async function run(): Promise<void> {
-  const PORT = 5500 + Math.floor(Math.random() * 300);
+  const PORT = await reserveFreePort();
   const BASE = `http://127.0.0.1:${PORT}`;
   const dir = mkdtempSync(join(tmpdir(), 'gharabi-persist-critical-'));
 

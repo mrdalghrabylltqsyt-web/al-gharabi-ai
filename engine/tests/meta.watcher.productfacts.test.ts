@@ -16,6 +16,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { randomBytes, createHash } from 'node:crypto';
 import { createFacebookMock, startFacebookMockServer } from './helpers/facebookMock';
+import { reserveFreePort } from './helpers/freePort';
 
 let passed = 0;
 const failures: string[] = [];
@@ -28,9 +29,9 @@ function group(title: string): void { console.log(`\n▸ ${title}`); }
 const REPO_ROOT = process.cwd();
 const tsxCli = join(REPO_ROOT, 'node_modules', 'tsx', 'dist', 'cli.mjs');
 const serverEntry = join(REPO_ROOT, 'server.ts');
-const APP_PORT = 7600 + Math.floor(Math.random() * 100);
+const APP_PORT = await reserveFreePort();
 const BASE = `http://127.0.0.1:${APP_PORT}`;
-const FB_PORT = 7700 + Math.floor(Math.random() * 100);
+const FB_PORT = await reserveFreePort();
 const PREVIEW_TOKEN = randomBytes(24).toString('hex');
 const SESSION_SECRET = 'meta-watcher-facts-secret-not-real';
 const FB_APP_SECRET = 'fb_test_app_secret_not_real_facts_123';

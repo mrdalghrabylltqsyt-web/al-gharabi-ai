@@ -21,6 +21,7 @@ import { mkdtempSync, rmSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { randomBytes } from 'node:crypto';
+import { reserveFreePort } from './helpers/freePort';
 
 let passed = 0;
 const failures: string[] = [];
@@ -91,7 +92,7 @@ async function run(): Promise<void> {
   if (!existsSync(tsxCli)) { console.error('tsx CLI غير موجود — شغّل npm install أولاً.'); process.exit(1); }
 
   const stateDir = mkdtempSync(join(tmpdir(), 'gharabi-content-safety-'));
-  const port = 5410 + Math.floor(Math.random() * 200);
+  const port = await reserveFreePort();
   const base = `http://127.0.0.1:${port}`;
   const app = startApp(port, stateDir);
 

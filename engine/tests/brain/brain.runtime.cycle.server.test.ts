@@ -19,6 +19,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { randomBytes } from 'node:crypto';
 import { createYouTubeMock, startYouTubeMockServer } from '../helpers/youtubeMock';
+import { reserveFreePort } from '../helpers/freePort';
 
 let passed = 0;
 const failures: string[] = [];
@@ -31,9 +32,9 @@ function group(t: string) { console.log(`\n▸ ${t}`); }
 const REPO_ROOT = process.cwd();
 const tsxCli = join(REPO_ROOT, 'node_modules', 'tsx', 'dist', 'cli.mjs');
 const serverEntry = join(REPO_ROOT, 'server.ts');
-const PORT = 7480 + Math.floor(Math.random() * 40);
+const PORT = await reserveFreePort();
 const BASE = `http://127.0.0.1:${PORT}`;
-const YT_PORT = 7540 + Math.floor(Math.random() * 40);
+const YT_PORT = await reserveFreePort();
 const PREVIEW_TOKEN = randomBytes(24).toString('hex');
 const GO_CLIENT_ID = 'test-google-client-id.apps.googleusercontent.com';
 const GO_CLIENT_SECRET = 'test-google-client-secret-not-real';

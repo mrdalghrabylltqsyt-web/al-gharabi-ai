@@ -19,6 +19,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { randomBytes } from 'node:crypto';
 import { PUBLIC_ENDPOINT_FORBIDDEN_CUSTOMER_FIELDS, PUBLIC_WATCHER_ALLOWED_KEYS, PUBLIC_ENDPOINT_FORBIDDEN_OPERATIONAL_FIELDS } from '../social/healthPrivacy';
+import { reserveFreePort } from './helpers/freePort';
 
 let passed = 0;
 const failures: string[] = [];
@@ -31,7 +32,7 @@ function group(title: string): void { console.log(`\n▸ ${title}`); }
 const REPO_ROOT = process.cwd();
 const tsxCli = join(REPO_ROOT, 'node_modules', 'tsx', 'dist', 'cli.mjs');
 const serverEntry = join(REPO_ROOT, 'server.ts');
-const PORT = 6300 + Math.floor(Math.random() * 120);
+const PORT = await reserveFreePort();
 const BASE = `http://127.0.0.1:${PORT}`;
 const PREVIEW_TOKEN = randomBytes(24).toString('hex');
 const SESSION_SECRET = 'health-privacy-test-secret-not-real';

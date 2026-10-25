@@ -15,6 +15,7 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { buildServerTestEnv } from './helpers/serverTestEnv';
+import { reserveFreePort } from './helpers/freePort';
 
 let passed = 0;
 const failures: string[] = [];
@@ -57,7 +58,7 @@ async function awaitExitOrListen(app: AppHandle, base: string, timeoutMs = 40_00
 async function run(): Promise<void> {
   // (أ) ملف حالة معطوب => فشل قاتل صريح.
   {
-    const PORT = 5300 + Math.floor(Math.random() * 100);
+    const PORT = await reserveFreePort();
     const dir = mkdtempSync(join(tmpdir(), 'gharabi-f17-bad-'));
     // نكتب ملف الحالة المعطوب **قبل** الإقلاع (لا سباق مع قراءة الخادم).
     writeFileSync(join(dir, '.gharabi-state.json'), '{ "workspace": { "posts": [ ', 'utf8');
@@ -76,7 +77,7 @@ async function run(): Promise<void> {
   {
     // نطاق 5600..5699 لا يتقاطع مع منفذ Postgres (5432) المستخدم في CI ولا مع نطاقات
     // اختبارات أخرى — كان 5400..5499 يشمل 5432 فيفشل عشوائياً بـEADDRINUSE.
-    const PORT = 5600 + Math.floor(Math.random() * 100);
+    const PORT = await reserveFreePort();
     const dir = mkdtempSync(join(tmpdir(), 'gharabi-f17-ok-'));
     const app = startApp(PORT, dir);
     try {
@@ -93,7 +94,7 @@ async function run(): Promise<void> {
 
   // (ج) غياب الملف تماماً => تشغيل أول نظيف (لا فشل).
   {
-    const PORT = 5500 + Math.floor(Math.random() * 100);
+    const PORT = await reserveFreePort();
     const dir = mkdtempSync(join(tmpdir(), 'gharabi-f17-first-'));
     const app = startApp(PORT, dir);
     try {

@@ -16,6 +16,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { randomBytes, createCipheriv } from 'node:crypto';
 import { isWithinMetaMessageWindow, COMMERCIAL_META_MESSAGE_WINDOW_HOURS } from '../commercial/commercialBrain';
+import { reserveFreePort } from './helpers/freePort';
 
 let passed = 0;
 const failures: string[] = [];
@@ -48,8 +49,8 @@ check('بالضبط 24 ساعة => خارج النافذة (حدّ صارم)', i
 const REPO_ROOT = process.cwd();
 const tsxCli = join(REPO_ROOT, 'node_modules', 'tsx', 'dist', 'cli.mjs');
 const serverEntry = join(REPO_ROOT, 'server.ts');
-const APP_PORT = 8300 + Math.floor(Math.random() * 40);
-const META_PORT = 8360 + Math.floor(Math.random() * 40);
+const APP_PORT = await reserveFreePort();
+const META_PORT = await reserveFreePort();
 const BASE = `http://127.0.0.1:${APP_PORT}`;
 const META_BASE = `http://127.0.0.1:${META_PORT}`;
 const PREVIEW_TOKEN = randomBytes(24).toString('hex');

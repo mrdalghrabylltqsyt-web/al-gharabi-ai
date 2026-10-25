@@ -20,6 +20,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import crypto from 'node:crypto';
 import { signSession } from '../auth/sessions';
+import { reserveFreePort } from './helpers/freePort';
 
 let passed = 0;
 const failures: string[] = [];
@@ -31,7 +32,7 @@ function check(name: string, condition: boolean, detail = ''): void {
 const REPO_ROOT = process.cwd();
 const tsxCli = join(REPO_ROOT, 'node_modules', 'tsx', 'dist', 'cli.mjs');
 const serverEntry = join(REPO_ROOT, 'server.ts');
-const PORT = 6060 + Math.floor(Math.random() * 40); // 6060..6099: بلا منافذ fetch المحظورة وبلا تعارض مع نطاقات بقية الاختبارات
+const PORT = await reserveFreePort(); // 6060..6099: بلا منافذ fetch المحظورة وبلا تعارض مع نطاقات بقية الاختبارات
 const BASE = `http://127.0.0.1:${PORT}`;
 const SESSION_SECRET = 'sales-erp-authz-secret-local-only';
 const secretBuffer = crypto.createHash('sha256').update(`gharabi-session:${SESSION_SECRET}`).digest();

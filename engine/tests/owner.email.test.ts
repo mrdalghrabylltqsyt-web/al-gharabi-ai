@@ -15,6 +15,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { sanitizeProviderMessage } from '../../engine/notifications/owner-email';
 import { buildServerTestEnv } from './helpers/serverTestEnv';
+import { reserveFreePort } from './helpers/freePort';
 
 let passed = 0;
 const failures: string[] = [];
@@ -116,7 +117,7 @@ async function run(): Promise<void> {
   const baseOverride = stubBaseUrl(stub);
 
   const cwd = mkdtempSync(join(tmpdir(), 'gharabi-email-test-'));
-  const PORT = 4811 + Math.floor(Math.random() * 400);
+  const PORT = await reserveFreePort();
   const BASE = `http://127.0.0.1:${PORT}`;
 
   let app: { proc: ChildProcess; log: () => string } | null = null;

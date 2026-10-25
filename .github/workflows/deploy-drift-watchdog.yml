@@ -39,13 +39,26 @@ jobs:
           echo "UTC: $(date -u +%FT%TZ)"
           echo "main HEAD:  $HEAD"
           echo "production: $PROD"
-          if [ -z "$PROD" ] || [ -z "$HEAD" ] || [ "$HEAD" != "$PROD" ]; then
+          # المقارنة: SHA قصير (7/8) يطابق الطويل إن كان بادئة له (في الاتجاهين)، والقيمة
+          # الفارغة انحراف دائماً. المقارنة النصية الساذجة السابقة صنّفت `bb004fe` مقابل
+          # `bb004fef…` انحرافاً كاذباً وهما نفس الالتزام. نقارن البادئة المشتركة بطول
+          # أقصر المدخلين (بحدّ أدنى 7 محارف) — متماثل في الاتجاهين وفشل آمن للقصير الملتبس.
+          match=false
+          if [ -n "$HEAD" ] && [ -n "$PROD" ]; then
+            n=${#HEAD}; m=${#PROD}
+            len=$n
+            if [ "$m" -lt "$n" ]; then len=$m; fi
+            if [ "$len" -ge 7 ] && [ "${HEAD:0:$len}" = "${PROD:0:$len}" ]; then
+              match=true
+            fi
+          fi
+          if [ "$match" = true ]; then
+            echo "drift=false" >> "$GITHUB_OUTPUT"
+            echo "الإنتاج يخدم آخر commit على main — لا انحراف."
+          else
             echo "drift=true" >> "$GITHUB_OUTPUT"
             echo "head=$HEAD" >> "$GITHUB_OUTPUT"
             echo "prod=$PROD" >> "$GITHUB_OUTPUT"
-          else
-            echo "drift=false" >> "$GITHUB_OUTPUT"
-            echo "الإنتاج يخدم آخر commit على main — لا انحراف."
           fi
 
       - name: Report drift (single tracking issue)

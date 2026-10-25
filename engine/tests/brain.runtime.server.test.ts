@@ -17,6 +17,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { randomBytes } from 'node:crypto';
 import { createTelegramMock, startTelegramMockServer } from './helpers/telegramMock';
+import { reserveFreePort } from './helpers/freePort';
 
 let passed = 0;
 const failures: string[] = [];
@@ -29,12 +30,12 @@ function group(title: string): void { console.log(`\n▸ ${title}`); }
 const REPO_ROOT = process.cwd();
 const tsxCli = join(REPO_ROOT, 'node_modules', 'tsx', 'dist', 'cli.mjs');
 const serverEntry = join(REPO_ROOT, 'server.ts');
-const PORT = 6980 + Math.floor(Math.random() * 100);
+const PORT = await reserveFreePort();
 const BASE = `http://127.0.0.1:${PORT}`;
 const PREVIEW_TOKEN = randomBytes(24).toString('hex');
 const SESSION_SECRET = 'brain-runtime-test-secret-not-real';
 const stateDir = mkdtempSync(join(tmpdir(), 'gharabi-brain-rt-'));
-const TG_PORT = 6850 + Math.floor(Math.random() * 100);
+const TG_PORT = await reserveFreePort();
 const WEBHOOK_SECRET = 'brain_rt_webhook_secret_1234';
 const TG_BOT_TOKEN = '111222333:BRAIN_RT_TOKEN_NOT_REAL';
 

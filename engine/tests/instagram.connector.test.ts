@@ -38,6 +38,7 @@ import {
 } from '../social/instagram';
 import { createInstagramMock, startInstagramMockServer } from './helpers/instagramMock';
 import { signSession } from '../auth/sessions';
+import { reserveFreePort } from './helpers/freePort';
 
 let passed = 0;
 const failures: string[] = [];
@@ -51,9 +52,9 @@ const REPO_ROOT = process.cwd();
 const tsxCli = join(REPO_ROOT, 'node_modules', 'tsx', 'dist', 'cli.mjs');
 const serverEntry = join(REPO_ROOT, 'server.ts');
 // نطاقات منفصلة عن Facebook/بقية الاختبارات، وتتجنّب منافذ fetch المحظورة.
-const APP_PORT = 7100 + Math.floor(Math.random() * 80);
+const APP_PORT = await reserveFreePort();
 const BASE = `http://127.0.0.1:${APP_PORT}`;
-const IG_PORT = 7200 + Math.floor(Math.random() * 80);
+const IG_PORT = await reserveFreePort();
 const PREVIEW_TOKEN = randomBytes(24).toString('hex');
 const SESSION_SECRET = 'instagram-connector-test-secret-not-real';
 const IG_APP_SECRET = 'ig_test_app_secret_not_real_1234567890';

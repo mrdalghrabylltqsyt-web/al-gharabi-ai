@@ -25,6 +25,7 @@ import { createFacebookMock, startFacebookMockServer } from './helpers/facebookM
 import { createYouTubeMock, startYouTubeMockServer } from './helpers/youtubeMock';
 import { createTelegramMock, startTelegramMockServer } from './helpers/telegramMock';
 import { signSession } from '../auth/sessions';
+import { reserveFreePort } from './helpers/freePort';
 
 let passed = 0;
 const failures: string[] = [];
@@ -37,11 +38,11 @@ function group(title: string): void { console.log(`\n▸ ${title}`); }
 const REPO_ROOT = process.cwd();
 const tsxCli = join(REPO_ROOT, 'node_modules', 'tsx', 'dist', 'cli.mjs');
 const serverEntry = join(REPO_ROOT, 'server.ts');
-const APP_PORT = 7820 + Math.floor(Math.random() * 40);
+const APP_PORT = await reserveFreePort();
 const BASE = `http://127.0.0.1:${APP_PORT}`;
-const FB_PORT = 7900 + Math.floor(Math.random() * 40);
-const YT_PORT = 7960 + Math.floor(Math.random() * 40);
-const TG_PORT = 8060 + Math.floor(Math.random() * 40);
+const FB_PORT = await reserveFreePort();
+const YT_PORT = await reserveFreePort();
+const TG_PORT = await reserveFreePort();
 const PREVIEW_TOKEN = randomBytes(24).toString('hex');
 const SESSION_SECRET = 'pr-a-approval-gate-test-secret-not-real';
 const FB_APP_SECRET = 'fb_test_app_secret_not_real_1234567890';

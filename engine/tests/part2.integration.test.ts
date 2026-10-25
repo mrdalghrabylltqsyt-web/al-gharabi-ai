@@ -20,6 +20,7 @@ import { mkdtempSync, rmSync, writeFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { startFacebookMockServer, createFacebookMock, type FacebookMockState } from './helpers/facebookMock';
+import { reserveFreePort } from './helpers/freePort';
 
 let passed = 0;
 const failures: string[] = [];
@@ -32,9 +33,9 @@ function group(title: string): void { console.log(`\n▸ ${title}`); }
 const REPO_ROOT = process.cwd();
 const tsxCli = join(REPO_ROOT, 'node_modules', 'tsx', 'dist', 'cli.mjs');
 const serverEntry = join(REPO_ROOT, 'server.ts');
-const APP_PORT = 6400 + Math.floor(Math.random() * 90);
+const APP_PORT = await reserveFreePort();
 const BASE = `http://127.0.0.1:${APP_PORT}`;
-const FB_PORT = 6500 + Math.floor(Math.random() * 90);
+const FB_PORT = await reserveFreePort();
 const PREVIEW_TOKEN = randomBytes(24).toString('hex');
 const SESSION_SECRET = 'part2-integration-secret-not-real';
 const FB_APP_SECRET = 'fb_test_app_secret_not_real_part2';

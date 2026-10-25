@@ -46,6 +46,7 @@ import {
   MIRROR_MANIFEST_NAME,
 } from '../../../tools/dr/cloud-lib.mjs';
 import { collectRepoFiles } from '../../../tools/dr/cloud-sync.mjs';
+import { reserveFreePort } from '../helpers/freePort';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(HERE, '..', '..', '..');
@@ -282,7 +283,7 @@ async function tryIsolatedDbRestore(sql: string) {
   try {
     const EmbeddedPostgres = (await import(pathToFileURL(embedded).href)).default;
     const pg = (await import('pg')).default;
-    const port = 56500 + Math.floor(Math.random() * 300);
+    const port = await reserveFreePort();
     const password = crypto.randomBytes(12).toString('hex');
     const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gharabi-stage4-pg-'));
     const db = new EmbeddedPostgres({ databaseDir: dataDir, user: 'postgres', password, port, persistent: false, onLog: () => {} });
