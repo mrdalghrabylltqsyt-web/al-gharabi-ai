@@ -19,6 +19,7 @@ export function readinessTargetTab(id: string): string | null {
   if (id === 'commercial-brain') return 'commercial_kill_switch';
   if (id === 'ready-jobs') return 'control';
   if (id.startsWith('stale-marketing')) return 'content';
+  if (id === 'backup') return 'cloud_backup';
   return null;
 }
 

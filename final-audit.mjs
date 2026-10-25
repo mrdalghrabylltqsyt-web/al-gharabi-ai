@@ -2444,10 +2444,10 @@ const autoBackupTest = fs.existsSync(path.join(root, 'engine/tests/dr/dr.autoBac
 const serverSrc = read('server.ts');
 add('dr-auto-backup-module', autoBackupModule.includes('AUTO_BACKUP_DEFAULT_INTERVAL_MS = 6 * 60 * 60 * 1000') && autoBackupModule.includes('resolveAutoBackupIntervalMs') && autoBackupModule.includes('isAutoBackupDue') && autoBackupModule.includes('buildAutoBackupStatus'), 'وحدة الجدولة: إيقاع افتراضي 6 ساعات + حسم آمن + قرار استحقاق');
 add('dr-auto-backup-reuses-manual-path', drRoutes.includes('async function runFullBackup') && drRoutes.includes("runFullBackup('manual')") && drRoutes.includes("runFullBackup(trigger)") && /app\.post\('\/api\/dr\/backup'[\s\S]{0,200}runFullBackup\('manual'\)/.test(drRoutes), 'النسخة التلقائية واليدوية تمرّان بنفس المسار الرسمي runFullBackup (لا مسار موازٍ)');
-add('dr-auto-backup-shared-lock', /runAutoBackupCycle[\s\S]{0,600}backupRunning \|\| autoBackupInFlight/.test(drRoutes) && drRoutes.includes("recordAutoBackupSkip('already_running')"), 'القفل المشترك: دورة تلقائية لا تبدأ إن كانت نسخة/مزامنة قيد التنفيذ');
-add('dr-auto-backup-no-restart-duplicate', drRoutes.includes('parseLastRunAtMs') && drRoutes.includes('isAutoBackupDue(lastRunAtMs, startedMs, autoBackupIntervalMs)') && drRoutes.includes("reason: 'not_due'"), 'لا نسخة مكرّرة عند إعادة التشغيل: القرار من الزمن المنقضي منذ آخر تشغيل محفوظ');
+add('dr-auto-backup-shared-lock', /async function runAutoBackupCycle[\s\S]{0,2500}backupRunning \|\| autoBackupInFlight/.test(drRoutes) && drRoutes.includes("recordAutoBackupSkip('already_running')"), 'القفل المشترك: دورة تلقائية لا تبدأ إن كانت نسخة/مزامنة قيد التنفيذ');
+add('dr-auto-backup-no-restart-duplicate', drRoutes.includes('parseLastRunAtMs') && drRoutes.includes('decideAutoBackupRun({ state, nowMs: startedMs, intervalMs: autoBackupIntervalMs') && read('engine/dr/autoBackup.ts').includes('const regularDue = isAutoBackupDue(lastRun, input.nowMs, input.intervalMs);') && drRoutes.includes("reason: 'not_due'"), 'لا نسخة مكرّرة عند إعادة التشغيل: القرار من الزمن المنقضي منذ آخر تشغيل محفوظ');
 add('dr-auto-backup-durable-state', serverSrc.includes('driveAutoBackup') && serverSrc.includes('drControl.driveAutoBackup = control.driveAutoBackup') && serverSrc.includes('driveAutoBackup: drControl.driveAutoBackup'), 'حالة الجدولة تُحفظ وتُسترجع عبر محوّل الحالة (تصمد بعد restart)');
-add('dr-auto-backup-failure-not-success', drRoutes.includes("lastError: result.state === 'failed'") && drRoutes.includes("lastRecoveryPointId: result.state === 'backed_up'") && drRoutes.includes("outcome: status >= 200 && status < 300 ? 'ran' : 'failed'"), 'الفشل يُسجَّل فشلاً ولا يُعدّ نقطة استعادة ناجحة (لا ادّعاء نجاح)');
+add('dr-auto-backup-failure-not-success', drRoutes.includes("lastError: ok ? null : result.reason ?? 'failed'") && drRoutes.includes("lastRecoveryPointId: result.state === 'backed_up'") && drRoutes.includes("outcome: ok ? 'ran' : 'failed'"), 'الفشل يُسجَّل فشلاً ولا يُعدّ نقطة استعادة ناجحة (لا ادّعاء نجاح)');
 add('dr-retention-bounded-protected', drRoutes.includes('pruneCompletedRestorePoints') && drRoutes.includes('retentionEnabled') && read('tools/dr/retention.mjs').includes('DEFAULT_PROTECTED_IDS') && read('tools/dr/retention.mjs').includes("'rp-002', 'rp-003', 'rp-004'"), 'الاحتفاظ محدود (3 نقاط مكتملة) ومحميّ (rp-002/003/004 لا تُحذف)');
 add('dr-retention-after-success-only', /result\.state === 'backed_up' \|\| result\.state === 'no_change'[\s\S]{0,300}pruneCompletedRestorePoints/.test(drRoutes), 'التقليم يقع فقط بعد نسخة ناجحة ومتحقّقة (لا حذف قبل اكتمال الجديدة)');
 add('dr-retention-plan-pure', read('tools/dr/retention.mjs').includes('export function planRetention') && read('tools/dr/retention.mjs').includes('skippedProtected') && read('tools/dr/retention.mjs').includes('incomplete'), 'منطق الاحتفاظ صافٍ قابل للاختبار: يتخطّى المحميّ والناقص والأحدث');
@@ -6098,6 +6098,33 @@ add('watcher-advisory-not-authority',
     add('onetap-regression-test',
       read('package.json').includes('npm run test:telegram-one-tap-approval'),
       'اختبار الموافقة بضغطة واحدة مسجّل ضمن npm test');
+  }
+
+  // موثوقية النسخة الاحتياطية (توقّف 51 ساعة بصمت بعد rp-052): سقف للتأجيل،
+  // إعادة محاولة بعد الفشل، تطبيع الردود المبكرة، سجل لكل تشغيل، وتنبيه/جاهزية.
+  {
+    const ab = read('engine/dr/autoBackup.ts');
+    const drr = read('engine/dr/routes.ts');
+    add('backup-defer-has-ceiling',
+      ab.includes('AUTO_BACKUP_MAX_DEFER_MS = 24 * 60 * 60 * 1000') && ab.includes("return { run: true, reason: 'forced_stale' };") &&
+      drr.includes('const decision = decideAutoBackupRun({'),
+      'تأجيل ضغط الاستهلاك بسقف 24 ساعة منذ آخر نسخة ناجحة');
+    add('backup-retry-after-failure',
+      ab.includes('AUTO_BACKUP_FAILURE_RETRY_MS = 30 * 60 * 1000') && ab.includes("'retry_after_failure'"),
+      'إعادة محاولة النسخة بعد 30 دقيقة من الفشل');
+    add('backup-early-returns-normalized',
+      ab.includes('export function normalizeBackupOutcome') && drr.includes('const outcome = normalizeBackupOutcome(body);') &&
+      drr.includes('lastSuccessAt: ok ? at : prev.lastSuccessAt ?? null'),
+      'الردود المبكرة (NOT_AUTHORIZED...) تُسجَّل فشلاً صريحاً، ويُحفظ وقت آخر نجاح');
+    add('backup-every-run-logged',
+      drr.includes('[dr-backup] outcome=${ok ?') && drr.includes('[dr-backup] outcome=deferred'),
+      'كل تشغيل/تأجيل للنسخة يُكتب في سجل الخادم');
+    add('backup-stale-alert-and-readiness',
+      server.includes('syncBackupStaleAlert();') && server.includes("kind: 'backup_stale',") &&
+      read('engine/ops/salesReadiness.ts').includes("id: 'backup'") &&
+      read('src/components/system/CloudBackupView.tsx').includes('data-testid="backup-freshness"') &&
+      read('package.json').includes('npm run test:backup-reliability'),
+      'تنبيه المالك عند توقّف النسخة، وبندها في جاهزية البيع وشاشة النسخ السحابية');
   }
 
   // 12) AGENTS.md: عدد فحوصات final-audit مطابق للفعلي (يُعَدّ من نص الملف نفسه).

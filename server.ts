@@ -707,6 +707,7 @@ import {
 import { driveApiAccountingSnapshot, recordDriveApiCall, type DriveApiCallKind } from "./engine/dr/driveApiAccounting";
 import { neonUsageApiConfig, fetchNeonActualUsage, NEON_USAGE_POLL_MIN_INTERVAL_MS, computeCuHours } from "./engine/ops/neonUsage";
 import { buildSalesReadiness, sanitizeOAuthFailureMessage, type ReadinessPlatformInput } from "./engine/ops/salesReadiness";
+import { backupFreshness } from "./engine/dr/autoBackup";
 import { SESSION_TTL_MS, signSession, verifySession, type SessionPayload } from "./engine/auth/sessions";
 import { CHALLENGE_TTL_MS, issueChallengeCode, matchChallengeWindow } from "./engine/auth/challenge";
 import { isScheduleInFuture, normalizeScheduleInput, wallClockToEpoch } from "./src/utils/scheduleTime";
@@ -13488,6 +13489,9 @@ function salesReadinessReport() {
     autoExecuteEnabled: jobAutomationState.autoExecuteApproved,
     staleMarketing: staleMarketingCounts(),
     geminiConfigured: Boolean(process.env.GEMINI_API_KEY),
+    backup: drControl.driveRefreshToken || drControl.driveAutoBackup
+      ? { configured: true, ...backupFreshness(drControl.driveAutoBackup, Date.now()) }
+      : { configured: false, level: 'critical', lastSuccessAt: null, ageHours: null, lastError: null, lastSkippedReason: null },
   });
 }
 app.get("/api/control/sales-readiness", requireOwner, (_req, res) => {
@@ -16942,6 +16946,7 @@ async function runOwnerAlertCycle(trigger: string): Promise<{ sent: boolean; rea
   ownerAlertInFlight = true;
   try {
     syncOwnerReauthAlerts();
+    syncBackupStaleAlert();
     if (!ownerAlertState.enabled) return { sent: false, reason: 'disabled', count: ownerAlertState.pending.length };
     const now = Date.now();
     if (!isOwnerAlertDue(ownerAlertState, now)) return { sent: false, reason: 'not_due', count: ownerAlertState.pending.length };
@@ -16974,6 +16979,27 @@ async function runOwnerAlertCycle(trigger: string): Promise<{ sent: boolean; rea
   } finally {
     ownerAlertInFlight = false;
   }
+}
+
+/**
+ * تنبيه المالك الخارجي (بريد + Telegram) عند توقّف النسخة الاحتياطية: مرة عند 12 ساعة
+ * ومرة عند 24 ساعة منذ آخر نسخة ناجحة لكل «حلقة توقّف» (المفتاح يحمل وقت آخر نجاح).
+ * توقّفت النسخ 51 ساعة بصمت قبل هذا الإصلاح. بلا Gemini وبلا أسرار.
+ */
+function syncBackupStaleAlert(): void {
+  if (!drControl.driveRefreshToken && !drControl.driveAutoBackup) return; // لا نسخ مهيّأة إطلاقاً
+  const f = backupFreshness(drControl.driveAutoBackup, Date.now());
+  if (f.level === 'ok') return;
+  const age = f.ageHours == null ? 'غير معروف' : `${Math.round(f.ageHours)} ساعة`;
+  const why = f.lastError ? ` آخر خطأ: ${String(f.lastError).slice(0, 80)}.` : f.lastSkippedReason === 'pressure_defer' ? ' السبب: تأجيل بسبب اقتراب حدود الخطة المجانية.' : '';
+  recordOwnerAlert({
+    key: ownerAlertKey('backup_stale', null, `${f.lastSuccessAt || 'never'}:${f.level}`),
+    kind: 'backup_stale',
+    platform: null,
+    title: 'النسخة الاحتياطية متوقفة',
+    snippet: `آخر نسخة احتياطية ناجحة منذ ${age}.${why}`.slice(0, 200),
+    at: new Date().toISOString(),
+  });
 }
 
 /** يبدأ مؤقّت دورة التنبيه (كل دقيقة) — مستقل عن المتصفح، لا يستدعي Gemini. */

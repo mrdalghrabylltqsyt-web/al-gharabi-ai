@@ -30,6 +30,10 @@ import { acquireLease, releaseLease, normalizeLease } from '../social/durableLea
 import {
   resolveAutoBackupIntervalMs,
   isAutoBackupDue,
+  decideAutoBackupRun,
+  normalizeBackupOutcome,
+  isSuccessfulBackupResult,
+  backupFreshness,
   parseLastRunAtMs,
   nextAutoBackupAtMs,
   buildAutoBackupStatus,
@@ -1546,14 +1550,19 @@ export function registerDriveRoutes(app: express.Express, deps: DriveRoutesDeps)
   /** يحفظ نتيجة دورة الجدولة في الحالة (تصمد بعد restart، بلا أسرار). */
   function recordAutoBackupRun(result: { state: string; recoveryPointId?: string | null; reason?: string | null }, trigger: string, startedMs: number): void {
     const prev = control().driveAutoBackup || {};
+    const ok = isSuccessfulBackupResult(result.state);
+    const at = now();
     const entry = {
       ...prev,
-      lastRunAt: now(),
+      lastRunAt: at,
       lastRunStartedAtMs: startedMs,
       lastRunResult: result.state,
       lastRunTrigger: trigger,
+      // آخر نسخة ناجحة (يُقاس منها عمر النسخة للتنبيه وسقف التأجيل) — لا يتغيّر عند الفشل.
+      lastSuccessAt: ok ? at : prev.lastSuccessAt ?? null,
+      consecutiveFailures: ok ? 0 : (prev.consecutiveFailures || 0) + 1,
       lastRecoveryPointId: result.state === 'backed_up' ? result.recoveryPointId ?? null : prev.lastRecoveryPointId ?? null,
-      lastError: result.state === 'failed' ? result.reason ?? 'failed' : null,
+      lastError: ok ? null : result.reason ?? 'failed',
       runCount: (prev.runCount || 0) + 1,
       intervalMs: autoBackupIntervalMs,
     };
@@ -1580,30 +1589,51 @@ export function registerDriveRoutes(app: express.Express, deps: DriveRoutesDeps)
    * عند الاستحقاق تنفّذ النسخة الكاملة عبر `runFullBackup('scheduled')` — نفس المسار
    * الرسمي — وتسجّل النتيجة الصادقة.
    */
+  let lastDeferLogMs = 0;
   async function runAutoBackupCycle(trigger: string = 'scheduled'): Promise<any> {
     const startedMs = Date.now();
-    const lastRunAtMs = parseLastRunAtMs(control().driveAutoBackup);
-    if (!isAutoBackupDue(lastRunAtMs, startedMs, autoBackupIntervalMs)) {
+    const state = control().driveAutoBackup;
+    // حارس ضغط الاستهلاك يُؤجّل المجدول فقط، وبسقف 24 ساعة منذ آخر نسخة ناجحة؛
+    // وبعد الفشل تُعاد المحاولة بعد 30 دقيقة بدل 6 ساعات (decideAutoBackupRun).
+    const pressure = trigger === 'scheduled' && Boolean(deps.pressureDeferTick && deps.pressureDeferTick());
+    const decision = decideAutoBackupRun({ state, nowMs: startedMs, intervalMs: autoBackupIntervalMs, trigger, pressureDefer: pressure });
+    if (!decision.run && decision.reason === 'not_due') {
+      const lastRunAtMs = parseLastRunAtMs(state);
       return { outcome: 'skipped', reason: 'not_due', nextRunAt: nextAutoBackupAtMs(lastRunAtMs, autoBackupIntervalMs) == null ? null : new Date(nextAutoBackupAtMs(lastRunAtMs, autoBackupIntervalMs)!).toISOString() };
     }
     if (backupRunning || autoBackupInFlight) {
       recordAutoBackupSkip('already_running');
       return { outcome: 'skipped', reason: 'already_running' };
     }
-    // حارس ضغط الاستهلاك: تأجيل نبضة واحدة للنسخة المجدولة (لا تعطيل) عند الاقتراب
-    // من حدّ المزوّد. لا يُؤثّر على النسخة اليدوية ولا على فحص الإقلاع.
-    if (trigger === 'scheduled' && deps.pressureDeferTick && deps.pressureDeferTick()) {
+    if (!decision.run && decision.reason === 'pressure_defer') {
       recordAutoBackupSkip('pressure_defer');
+      if (startedMs - lastDeferLogMs >= 60 * 60 * 1000) {
+        lastDeferLogMs = startedMs;
+        const f = backupFreshness(state, startedMs);
+        console.log(`[dr-backup] outcome=deferred reason=pressure_defer trigger=${trigger} lastSuccessAgeHours=${f.ageHours ?? 'unknown'}`);
+      }
       return { outcome: 'skipped', reason: 'pressure_defer' };
+    }
+    if (decision.reason === 'forced_stale') {
+      console.log(`[dr-backup] outcome=forcing reason=stale_over_24h trigger=${trigger} (ضغط الاستهلاك لا يمنع نسخة مضى على آخر نجاح لها 24 ساعة)`);
     }
     autoBackupInFlight = true;
     try {
       const { status, body } = await runFullBackup(trigger);
-      recordAutoBackupRun(body, trigger, startedMs);
-      return { outcome: status >= 200 && status < 300 ? 'ran' : 'failed', state: body.state ?? body.code ?? null, recoveryPointId: body.recoveryPointId ?? null, reason: body.reason ?? body.code ?? null, status };
+      const outcome = normalizeBackupOutcome(body);
+      recordAutoBackupRun(outcome, trigger, startedMs);
+      const ok = isSuccessfulBackupResult(outcome.state);
+      console.log(`[dr-backup] outcome=${ok ? 'ok' : 'failed'} state=${outcome.state} trigger=${trigger} decision=${decision.reason} recoveryPoint=${outcome.recoveryPointId ?? '-'}${ok ? '' : ` reason=${outcome.reason}`} ms=${Date.now() - startedMs}`);
+      if (!ok && deps.notifyOwner) {
+        notifyOwnerOnce('backup_failed', 'فشل النسخة الاحتياطية التلقائية', `تعذّر إنشاء النسخة (${String(outcome.reason || 'backup_failed').slice(0, 80)}). ستُعاد المحاولة بعد 30 دقيقة.`, 'critical', `auto_backup:${String(outcome.reason || 'failed').slice(0, 40)}`);
+      }
+      // `state` في الرد يبقى كما كان (حالة النسخة أو كود الرفض) للتوافق؛ السجل المحفوظ يطبّعه إلى failed.
+      return { outcome: ok ? 'ran' : 'failed', state: body.state ?? body.code ?? outcome.state, recoveryPointId: outcome.recoveryPointId, reason: outcome.reason, status, decision: decision.reason };
     } catch (err: any) {
-      recordAutoBackupRun({ state: 'failed', reason: String(err?.code || err?.message || 'auto_backup_failed').slice(0, 120) }, trigger, startedMs);
-      return { outcome: 'failed', reason: String(err?.code || err?.message || 'auto_backup_failed').slice(0, 120) };
+      const reason = String(err?.code || err?.message || 'auto_backup_failed').slice(0, 120);
+      recordAutoBackupRun({ state: 'failed', reason }, trigger, startedMs);
+      console.log(`[dr-backup] outcome=failed state=exception trigger=${trigger} reason=${reason.replace(/\s+/g, '_').slice(0, 80)}`);
+      return { outcome: 'failed', reason };
     } finally {
       autoBackupInFlight = false;
     }
@@ -1612,8 +1642,9 @@ export function registerDriveRoutes(app: express.Express, deps: DriveRoutesDeps)
   /** حالة الجدولة الصادقة (بلا سرّ) للواجهة/الصحة. */
   function autoBackupStatus(): any {
     const base = buildAutoBackupStatus(control().driveAutoBackup, Date.now(), autoBackupIntervalMs);
+    const freshness = backupFreshness(control().driveAutoBackup, Date.now());
     const tickMs = Math.max(60 * 1000, Math.min(AUTO_BACKUP_TICK_MS, autoBackupIntervalMs));
-    return { ...base, scheduled: autoBackupTimer !== null, tickMinutes: Math.round(tickMs / 60000), running: autoBackupInFlight };
+    return { ...base, scheduled: autoBackupTimer !== null, tickMinutes: Math.round(tickMs / 60000), running: autoBackupInFlight, freshness, consecutiveFailures: control().driveAutoBackup?.consecutiveFailures ?? 0 };
   }
 
   /** يبدأ المؤقّت الداخلي (مرة واحدة). `.unref()` يمنع تعليق الإغلاق النظيف. */
