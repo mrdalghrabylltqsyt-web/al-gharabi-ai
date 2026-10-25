@@ -20,6 +20,7 @@ import {
   Building,
 } from 'lucide-react';
 import { SocialPlatformId, CustomerConversation } from '../../types';
+import { PlatformInboundPanel } from './PlatformInboundPanel';
 
 export const CustomerCenterView: React.FC = () => {
   const {
@@ -29,7 +30,6 @@ export const CustomerCenterView: React.FC = () => {
     sendCustomerReply,
     transferToHuman,
     markConversationResolved,
-    addNewCustomerMessage,
     showroomInfo,
     users,
     showToast,
@@ -41,10 +41,6 @@ export const CustomerCenterView: React.FC = () => {
   const [searchTerm, setSearchTerm] = useState<string>('');
   const [replyInputText, setReplyInputText] = useState<string>('');
   const [isClassifying, setIsClassifying] = useState<boolean>(false);
-  const [showSimulateModal, setShowSimulateModal] = useState<boolean>(false);
-  const [simName, setSimName] = useState<string>('');
-  const [simChannel, setSimChannel] = useState<SocialPlatformId>('whatsapp');
-  const [simMessage, setSimMessage] = useState<string>('');
   const [selectedStaff, setSelectedStaff] = useState<string>(users[0]?.name || 'مالك النظام');
 
   // Filter conversations
@@ -95,12 +91,7 @@ export const CustomerCenterView: React.FC = () => {
     }
   };
 
-  const handleSimulateNewMessage = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!simMessage.trim()) return;
-    addNewCustomerMessage(simChannel, simName, simMessage);
-    setShowSimulateModal(false);
-  };
+
 
   return (
     <div className="space-y-6">
@@ -117,21 +108,18 @@ export const CustomerCenterView: React.FC = () => {
             </span>
           </div>
           <p className="text-xs text-slate-400 mt-1">
-            استقبال محادثات واستفسارات التقسيط من WhatsApp، Instagram، Telegram، TikTok، X، وسناب
-            مع تصنيف الذكاء الاصطناعي واقتراح عروض الأسعار الدقيقة.
+            تعليقات ورسائل الزبائن الحقيقية من المنصات المتصلة (فيسبوك، إنستغرام، يوتيوب، ثريدز…)
+            مع تصنيف النية وربط المنتج والسعر من المخزن، والإرسال بموافقة المالك.
           </p>
         </div>
 
-        <button
-          onClick={() => setShowSimulateModal(true)}
-          className="flex items-center gap-1.5 px-4 py-2.5 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 text-xs font-bold shadow-md shadow-emerald-500/20 transition cursor-pointer"
-        >
-          <UserPlus className="w-4 h-4" />
-          محاكاة رسالة عميل جديدة
-        </button>
+        {/* أُزيل زر «محاكاة رسالة عميل» — كان يُنشئ محادثة مُختلقة (لا بيانات مزيفة). */}
       </div>
 
-      {/* Main Inbox Interface: Sidebar (4 cols) + Active Chat (8 cols) */}
+      <PlatformInboundPanel />
+
+      {/* محادثات CRM اليدوية (قديمة): تظهر فقط إن وُجدت فعلاً — الوارد الحقيقي في اللوحة أعلاه. */}
+      {conversations.length > 0 && (
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 min-h-[600px]">
         {/* Right Conversations List (in RTL, this is start - 4 cols) */}
         <div className="lg:col-span-5 xl:col-span-4 glass rounded-2xl p-4 flex flex-col space-y-3">
@@ -159,7 +147,7 @@ export const CustomerCenterView: React.FC = () => {
               >
                 الكل ({conversations.length})
               </button>
-              {['whatsapp', 'instagram', 'snapchat', 'telegram', 'x'].map((ch) => (
+              {['facebook', 'instagram', 'youtube', 'threads', 'tiktok', 'whatsapp', 'telegram'].map((ch) => (
                 <button
                   key={ch}
                   onClick={() => setFilterChannel(ch)}
@@ -441,84 +429,8 @@ export const CustomerCenterView: React.FC = () => {
           )}
         </div>
       </div>
-
-      {/* Modal: Simulate Customer Message */}
-      {showSimulateModal && (
-        <div className="fixed inset-0 z-50 bg-black/70 backdrop-blur-sm flex items-center justify-center p-4">
-          <div className="w-full max-w-md glass rounded-3xl p-6 shadow-2xl space-y-4 animate-in fade-in">
-            <div className="flex items-center justify-between border-b border-slate-800 pb-3">
-              <h3 className="font-bold text-base text-white flex items-center gap-2">
-                <UserPlus className="w-5 h-5 text-emerald-400" />
-                محاكاة رسالة عميل جديدة واردة
-              </h3>
-              <button
-                onClick={() => setShowSimulateModal(false)}
-                className="text-slate-400 hover:text-white"
-              >
-                ✕
-              </button>
-            </div>
-
-            <form onSubmit={handleSimulateNewMessage} className="space-y-3 text-xs">
-              <div>
-                <label className="block text-slate-300 font-bold mb-1">اسم العميل</label>
-                <input
-                  type="text"
-                  placeholder="أدخل اسم العميل..."
-                  value={simName}
-                  onChange={(e) => setSimName(e.target.value)}
-                  className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-white focus:outline-none focus:border-emerald-500"
-                  required
-                />
-              </div>
-
-              <div>
-                <label className="block text-slate-300 font-bold mb-1">القناة الواردة</label>
-                <select
-                  value={simChannel}
-                  onChange={(e) => setSimChannel(e.target.value as any)}
-                  className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-white focus:outline-none focus:border-emerald-500 uppercase"
-                >
-                  <option value="whatsapp">WhatsApp (واتساب)</option>
-                  <option value="instagram">Instagram (إنستغرام)</option>
-                  <option value="snapchat">Snapchat (سناب شات)</option>
-                  <option value="telegram">Telegram (تليغرام)</option>
-                  <option value="tiktok">TikTok (تيك توك)</option>
-                  <option value="x">X / Twitter (إكس)</option>
-                </select>
-              </div>
-
-              <div>
-                <label className="block text-slate-300 font-bold mb-1">نص رسالة العميل</label>
-                <textarea
-                  rows={3}
-                  placeholder="أدخل نص استفسار العميل هنا..."
-                  value={simMessage}
-                  onChange={(e) => setSimMessage(e.target.value)}
-                  className="w-full bg-slate-950 border border-slate-800 rounded-xl p-3 text-white focus:outline-none focus:border-emerald-500 resize-none"
-                  required
-                />
-              </div>
-
-              <div className="pt-3 flex items-center justify-end gap-2 border-t border-slate-800">
-                <button
-                  type="button"
-                  onClick={() => setShowSimulateModal(false)}
-                  className="px-4 py-2 rounded-xl bg-slate-800 text-slate-300 font-semibold cursor-pointer"
-                >
-                  إلغاء
-                </button>
-                <button
-                  type="submit"
-                  className="px-5 py-2 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold shadow-md shadow-emerald-500/20 cursor-pointer"
-                >
-                  إرسال الرسالة للمركز
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>
       )}
+
     </div>
   );
 };

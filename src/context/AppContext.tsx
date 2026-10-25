@@ -152,7 +152,18 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           const remote = snapshot.platforms.find((p: any) => p.id === local.id || p.platform === local.platform);
           if (!remote) return local;
           const connection = remote.connection || {};
-          return { ...local, status: connection.status === 'connected' ? 'connected' : 'disconnected', handle: connection.accountName || local.handle, lastSyncTime: connection.connectedAt || 'غير مربوط بعد' };
+          const m = remote.metrics && typeof remote.metrics === 'object' ? remote.metrics : null;
+          return {
+            ...local,
+            status: connection.status === 'connected' ? 'connected' : 'disconnected',
+            handle: connection.accountName || local.handle,
+            lastSyncTime: connection.connectedAt || 'غير مربوط بعد',
+            // أرقام البطاقة من الخادم (مزامنة المؤشرات الحقيقية) — لا قيم ثابتة من الواجهة.
+            measured: m,
+            followers: typeof m?.followers === 'number' ? m.followers : 0,
+            engagementRate: typeof m?.engagementRate === 'number' ? `${m.engagementRate}%` : '—',
+            postsCount: typeof m?.publishedPosts === 'number' ? m.publishedPosts : 0,
+          };
         }));
       }
     } catch (err) {

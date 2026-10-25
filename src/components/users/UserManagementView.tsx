@@ -55,7 +55,8 @@ export const UserManagementView: React.FC = () => {
       customer_chat: true,
       transfer_human: true,
       edit_database: true,
-      system_settings: true,
+      // ربط المنصات/إعادة ربطها للمالك وحده على الخادم (requireOwner) — المصفوفة تطابقه.
+      system_settings: false,
       manage_users: false,
     },
     content_creator: {

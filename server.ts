@@ -714,6 +714,7 @@ import { neonUsageApiConfig, fetchNeonActualUsage, NEON_USAGE_POLL_MIN_INTERVAL_
 import { buildSalesReadiness, sanitizeOAuthFailureMessage, type ReadinessPlatformInput } from "./engine/ops/salesReadiness";
 import { backupFreshness } from "./engine/dr/autoBackup";
 import { summarizePublishHealth, formatPublishLogLine } from "./engine/ops/publishHealth";
+import { realProductPhrases } from "./src/utils/productPhrases";
 import { parseFacebookPostMetrics, parseInstagramMediaMetrics, parseGraphInsights, parseFollowers, upsertPerformanceRecords, summarizePlatformMetrics, type MetricValues } from "./engine/social/metricsSync";
 import { resolveInteractionProduct, productFactStatement, productNamedInText, type ProductResolution } from "./engine/social/productResolution";
 import { decideCoalescedWrite, type CoalesceMemo, USAGE_INDICATOR_VOLATILE_PATHS } from "./engine/ops/writeCoalescing";
@@ -14206,6 +14207,25 @@ app.post("/api/publish/preflight", authenticateToken, (req, res) => {
 // This is the single operational source for showroom/catalog/content/customer state.
 // -------------------------------------------------------------
 
+/** أرقام بطاقة منصة من مصادرها الحقيقية فقط (null = لم يُقس بعد، لا صفر مختلق). */
+function platformCardMetrics(platform: string): { followers: number | null; followersAt: string | null; engagementRate: number | null; publishedPosts: number; measuredPosts: number; inbound: number } {
+  const audience = (((workspace as any).platformAudience || {}) as Record<string, { followers: number | null; at: string }>)[platform];
+  const perf = ((((workspace as any).performanceRecords || []) as any[])).filter((r) => r?.platform === platform);
+  const records = ((((workspace as any).publishRecords || []) as any[])).filter((r) => r?.platform === platform && !r?.simulated && (r?.providerPostId || r?.externalVideoId) && (r?.state === "published" || r?.state === "scheduled"));
+  const publishedIds = new Set(records.map((r) => String(r.externalVideoId || r.providerPostId)));
+  // YouTube: فيديوهات القناة المقاسة كلها منشورات حقيقية على القناة.
+  for (const r of perf) if (platform === "youtube" && r?.postExternalId) publishedIds.add(String(r.postExternalId));
+  const followers = typeof audience?.followers === "number" ? audience.followers : null;
+  return {
+    followers,
+    followersAt: audience?.at || null,
+    engagementRate: perf.length ? summarizePlatformMetrics(perf, followers).engagementRate : null,
+    publishedPosts: publishedIds.size,
+    measuredPosts: perf.length,
+    inbound: ((((workspace as any).socialComments || []) as any[])).filter((c) => c?.platform === platform).length,
+  };
+}
+
 app.get("/api/workspace/snapshot", authenticateToken, (req, res) => {
   const isOwner = ((req as any).user as ServerUser)?.role === "owner";
   const connected = connectedPlatformIds();
@@ -14219,7 +14239,11 @@ app.get("/api/workspace/snapshot", authenticateToken, (req, res) => {
       conversations: workspace.conversations,
       // Least-privilege: هوية الحساب (accountName/accountId/lastSyncAt) للمالك فقط؛
       // غير المالك يرى الحالة التقنية (status/connectedAt/providerVerified) بلا هوية.
-      platforms: SUPPORTED_PLATFORMS.map((p: any) => ({ ...p, connection: snapshotConnection(p.id, isOwner) })),
+      // فحص الشاشات (2026-10-25 #2): بطاقات المنصات كانت تعرض «المتابعون 0 / التفاعل 0.0% /
+      // منشورات نشطة 0» من قيم واجهة ثابتة، رغم أن مزامنة المؤشرات جلبت أرقاماً حقيقية
+      // (فيسبوك 1064 متابعاً…). الآن كل بطاقة تحمل أرقامها من مصدرها: المتابعون من
+      // المزود، المنشورات = منشورات بمعرّف حقيقي، التفاعل من سجل الأداء المقاس — null إن لم يُقس.
+      platforms: SUPPORTED_PLATFORMS.map((p: any) => ({ ...p, connection: snapshotConnection(p.id, isOwner), metrics: platformCardMetrics(p.id) })),
       connectedPlatforms: connected,
       generatedAt: new Date().toISOString(),
       source: "server-workspace"
@@ -14350,7 +14374,7 @@ app.get("/api/workspace/products", authenticateToken, (_req, res) => {
 
 app.post("/api/workspace/products", authenticateToken, (req, res) => {
   const user = (req as any).user as ServerUser;
-  if (!["owner", "manager", "staff"].includes(user.role)) return res.status(403).json({ success: false, error: "لا تملك صلاحية إضافة المنتجات." });
+  if (!["owner", "manager"].includes(user.role)) return res.status(403).json({ success: false, error: "لا تملك صلاحية إضافة المنتجات." }); // مطابق لمصفوفة الصلاحيات المعلنة (المالك/المدير فقط)
   const b = req.body || {};
   const name = cleanText(b.name, 160);
   const cashPrice = Number(b.cashPrice);
@@ -14378,7 +14402,7 @@ app.post("/api/workspace/products", authenticateToken, (req, res) => {
 
 app.patch("/api/workspace/products/:id", authenticateToken, (req, res) => {
   const user = (req as any).user as ServerUser;
-  if (!["owner", "manager", "staff"].includes(user.role)) return res.status(403).json({ success: false, error: "لا تملك صلاحية تعديل المنتجات." });
+  if (!["owner", "manager"].includes(user.role)) return res.status(403).json({ success: false, error: "لا تملك صلاحية تعديل المنتجات." }); // مطابق لمصفوفة الصلاحيات المعلنة (المالك/المدير فقط)
   const product = workspace.products.find((p: any) => p.id === req.params.id);
   if (!product) return res.status(404).json({ success: false, error: "المنتج غير موجود." });
   const b = req.body || {};
@@ -14426,7 +14450,7 @@ app.get("/api/workspace/plans", authenticateToken, (_req, res) => {
 
 app.post("/api/workspace/plans", authenticateToken, (req, res) => {
   const user = (req as any).user as ServerUser;
-  if (!["owner", "manager", "staff"].includes(user.role)) return res.status(403).json({ success: false, error: "لا تملك صلاحية إضافة خطط التقسيط." });
+  if (!["owner", "manager"].includes(user.role)) return res.status(403).json({ success: false, error: "لا تملك صلاحية إضافة خطط التقسيط." }); // مطابق لمصفوفة الصلاحيات المعلنة (المالك/المدير فقط)
   const b = req.body || {};
   const title = cleanText(b.title, 160);
   if (!title) return res.status(400).json({ success: false, error: "عنوان خطة التقسيط مطلوب." });
@@ -14437,7 +14461,7 @@ app.post("/api/workspace/plans", authenticateToken, (req, res) => {
 
 app.patch("/api/workspace/plans/:id", authenticateToken, (req, res) => {
   const user = (req as any).user as ServerUser;
-  if (!["owner", "manager", "staff"].includes(user.role)) return res.status(403).json({ success: false, error: "لا تملك صلاحية تعديل خطط التقسيط." });
+  if (!["owner", "manager"].includes(user.role)) return res.status(403).json({ success: false, error: "لا تملك صلاحية تعديل خطط التقسيط." }); // مطابق لمصفوفة الصلاحيات المعلنة (المالك/المدير فقط)
   const plan = workspace.installmentPlans.find((p:any)=>p.id===req.params.id);
   if (!plan) return res.status(404).json({ success: false, error: "خطة التقسيط غير موجودة." });
   const b=req.body||{};
@@ -15057,17 +15081,37 @@ app.post("/api/analytics/ingest", requireOwner, (req,res) => {
 // Operations intelligence: deterministic search, analytics and alerts.
 // These endpoints never call Gemini and never claim external social metrics.
 // -------------------------------------------------------------
-function normalizeSearch(value: unknown): string { return String(value ?? "").trim().toLowerCase().slice(0, 120); }
-function containsQuery(value: unknown, q: string): boolean { return q ? String(value ?? "").toLowerCase().includes(q) : false; }
+// تطبيع عربي للبحث: «ثلاجه» تجد «ثلاجة»، و«اسعار» تجد «أسعار» (بلا تشكيل/تطويل).
+function foldArabicSearch(value: unknown): string {
+  return String(value ?? "").toLowerCase()
+    .replace(/[\u064B-\u0652\u0640]/g, "")
+    .replace(/[أإآٱ]/g, "ا").replace(/ة/g, "ه").replace(/ى/g, "ي").replace(/ؤ/g, "و").replace(/ئ/g, "ي")
+    .replace(/\s+/g, " ");
+}
+function normalizeSearch(value: unknown): string { return foldArabicSearch(String(value ?? "").trim()).slice(0, 120); }
+function containsQuery(value: unknown, q: string): boolean { return q ? foldArabicSearch(value).includes(q) : false; }
 
 app.get("/api/workspace/search", authenticateToken, (req, res) => {
   const q = normalizeSearch(req.query.q);
-  if (q.length < 2) return res.status(400).json({ success: false, error: "اكتب كلمتين على الأقل للبحث." });
+  if (q.length < 2) return res.status(400).json({ success: false, error: "اكتب حرفين على الأقل للبحث." });
   const products = workspace.products.filter((x: any) => [x.name, x.category, x.modelYear, ...(x.specs || [])].some(v => containsQuery(v, q))).slice(0, 25);
   const posts = workspace.posts.filter((x: any) => [x.title, x.content, x.campaignName, ...(x.tags || [])].some(v => containsQuery(v, q))).slice(0, 25);
   const conversations = workspace.conversations.filter((x: any) => [x.customerName, x.phone, x.lastMessage, x.interestedProduct, ...(x.history || []).map((m:any)=>m.text)].some(v => containsQuery(v, q))).slice(0, 25);
+  // فحص الشاشات (2026-10-25 #2): البحث كان يغطي محادثات CRM اليدوية فقط (فارغة)، فلا
+  // يجد أي زبون حقيقي. الآن يشمل الوارد الحقيقي من المنصات، وزبائن العقل التجاري (للمالك).
+  const inbound = (((workspace as any).socialComments || []) as any[])
+    .filter((c) => [c.text, c.authorName].some((v) => containsQuery(v, q)))
+    .slice(0, 25)
+    .map((c) => ({ id: c.id, platform: c.platform, authorName: c.authorName || null, text: c.text, createdAt: c.createdAt, kind: c.kind || "comment" }));
+  const isOwner = ((req as any).user as ServerUser)?.role === "owner";
+  const leads = isOwner
+    ? commercialLeads
+      .filter((l: any) => [l.customerName, l.interestedProductName, l.lastCustomerText].some((v) => containsQuery(v, q)))
+      .slice(0, 25)
+      .map((l: any) => ({ id: l.id, platform: l.platform, customerName: l.customerName || null, interestedProductName: l.interestedProductName || null, stage: l.stage, lastCustomerText: l.lastCustomerText || null }))
+    : [];
   audit((req as any).user.id, "workspace_search", q);
-  res.json({ success: true, query: q, counts: { products: products.length, posts: posts.length, conversations: conversations.length }, results: { products, posts, conversations } });
+  res.json({ success: true, query: q, counts: { products: products.length, posts: posts.length, conversations: conversations.length, inbound: inbound.length, leads: leads.length }, results: { products, posts, conversations, inbound, leads } });
 });
 
 // -------------------------------------------------------------
@@ -19739,8 +19783,8 @@ function buildFactsForProduct(product: any | null, downPaymentPercent: number, d
     inStock: typeof product?.inStock === "boolean" ? product.inStock : null,
     promotions: [showroom.promotions, showroom.activeOffer].map((x: any) => cleanText(x, 300)).filter(Boolean),
     allowedPhrases: [
-      ...(Array.isArray(product?.installmentOptions) ? product.installmentOptions : []),
-      ...(Array.isArray(product?.specs) ? product.specs : []),
+      ...realProductPhrases(product?.installmentOptions),
+      ...realProductPhrases(product?.specs),
       ...(Array.isArray(product?.requiredDocuments) ? product.requiredDocuments : []),
       ...(Array.isArray(showroom.policies) ? showroom.policies : []),
       ...(Array.isArray(showroom.requiredDocuments) ? showroom.requiredDocuments : []),
@@ -19941,8 +19985,8 @@ function buildYouTubeDescriptionInput(productId?: string | null, productName?: s
       ? {
           name: cleanText(product.name, 120),
           category: cleanText(product.category, 40) || null,
-          specs: Array.isArray(product.specs) ? product.specs : [],
-          installmentOptions: Array.isArray(product.installmentOptions) ? product.installmentOptions : [],
+          specs: realProductPhrases(product.specs),
+          installmentOptions: realProductPhrases(product.installmentOptions),
           inStock: typeof product.inStock === 'boolean' ? product.inStock : null,
         }
       : null,
@@ -20146,8 +20190,8 @@ function generateBriefContent(input: {
     const platformName = SUPPORTED_PLATFORMS.find((p: any) => p.id === platform)?.name || platform;
     const copy = buildPlatformCopy({
       platform, platformName, goal, tone, task, productName, categoryLabel, quote,
-      specs: Array.isArray(product?.specs) ? product.specs : [],
-      installmentOptions: Array.isArray(product?.installmentOptions) ? product.installmentOptions : [],
+      specs: realProductPhrases(product?.specs),
+      installmentOptions: realProductPhrases(product?.installmentOptions),
       showroom: workspace.showroom, contactLine, notes,
     });
     const composed = composePlatformText(platform, copy.headline, copy.body, copy.cta, copy.hashtags, PLATFORM_TEXT_LIMITS[platform] || 2000);

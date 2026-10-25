@@ -857,7 +857,8 @@ export function registerSocialManagerRoutes(app: express.Express, deps: SocialRo
       platform: platform || null,
       externalFetchAvailable: canFetch,
       externalFetch: externalFetch ? { fetched: externalFetch.comments?.length || 0, inserted: externalFetch.inserted || 0, duplicates: externalFetch.duplicates || 0 } : null,
-      comments: filtered.slice(0, 200),
+      // limit اختياري (≤1000) لصندوق الوارد الموحّد؛ الافتراضي 200 كما كان.
+      comments: filtered.slice(0, Math.min(1000, Math.max(1, Number(req.query?.limit) || 200))),
       count: filtered.length,
       note: platform === 'youtube'
         ? 'تعليقات YouTube حقيقية من commentThreads.list (youtube.force-ssl). التعليقات المعروضة مسجّلة من جلب فعلي فقط — لا بيانات مُختلقة.'

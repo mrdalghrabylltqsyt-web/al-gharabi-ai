@@ -53,8 +53,8 @@ export const SocialHubView: React.FC = () => {
     platforms,
     togglePlatformStatus,
     addCustomPlatform,
-    syncAllPlatforms,
     posts,
+    refreshWorkspace,
     showToast,
     setActiveTab,
     currentUser,
@@ -115,9 +115,40 @@ export const SocialHubView: React.FC = () => {
     }
   }, [showToast]);
 
+  // يُحمَّل عند فتح الشاشة (لا عند فتح التبويب فقط) كي لا يظهر عدّاد «التعليقات 0»
+  // كاذباً بينما الخادم يحمل تعليقات حقيقية مستلمة.
   useEffect(() => {
-    if (activeSubTab === 'comments') void loadConsole();
-  }, [activeSubTab, loadConsole]);
+    void loadConsole();
+  }, [loadConsole]);
+
+  // «مزامنة الحسابات الآن»: كانت رسالة شكلية بلا أي طلب. الآن تجلب الأرقام الحقيقية من
+  // المنصات المتصلة (للمالك) ثم تعيد قراءة مساحة العمل؛ لغير المالك تعيد القراءة فقط.
+  const [syncing, setSyncing] = useState(false);
+  const syncAllPlatforms = async () => {
+    setSyncing(true);
+    try {
+      if (isOwner) {
+        const r: any = await apiService.syncAnalytics();
+        const per = r?.platforms && typeof r.platforms === 'object' ? Object.keys(r.platforms).length : 0;
+        showToast(`تم جلب الأرقام الحقيقية من ${per} منصة متصلة.`);
+      }
+      await refreshWorkspace();
+      await loadConsole();
+      if (!isOwner) showToast('تم تحديث الحالة من الخادم.');
+    } catch (error: any) {
+      showToast(error?.message || 'تعذر المزامنة');
+    } finally {
+      setSyncing(false);
+    }
+  };
+
+  const fmtDate = (v?: string | null): string => {
+    if (!v) return 'غير مربوط بعد';
+    const t = Date.parse(v);
+    return Number.isFinite(t) ? new Date(t).toLocaleString('ar-IQ', { dateStyle: 'short', timeStyle: 'short' }) : v;
+  };
+  const fmtFollowers = (p: { measured?: { followers: number | null } | null; followers: number }): string =>
+    typeof p.measured?.followers === 'number' ? p.measured.followers.toLocaleString('ar-IQ') : '—';
 
   const handleRealConnect = async (platformId: string) => {
     try {
@@ -283,18 +314,19 @@ export const SocialHubView: React.FC = () => {
 
         <div className="flex items-center gap-2.5 flex-wrap">
           <button
-            onClick={() => syncAllPlatforms()}
+            onClick={() => void syncAllPlatforms()}
+            disabled={syncing}
             className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 text-xs font-semibold transition cursor-pointer"
           >
-            <RefreshCw className="w-3.5 h-3.5 text-emerald-400" />
-            مزامنة الحسابات الآن
+            <RefreshCw className={`w-3.5 h-3.5 text-emerald-400 ${syncing ? 'animate-spin' : ''}`} />
+            {syncing ? 'جارٍ الجلب...' : 'مزامنة الحسابات الآن'}
           </button>
           <button
-            onClick={() => setShowAddModal(true)}
+            onClick={() => setActiveTab('platform_connections')}
             className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 text-xs font-bold shadow-md shadow-emerald-500/20 transition cursor-pointer"
           >
             <Plus className="w-4 h-4" />
-            إضافة منصة جديدة
+            ربط منصة
           </button>
         </div>
       </div>
@@ -392,7 +424,7 @@ export const SocialHubView: React.FC = () => {
                   </div>
 
                   <button
-                    onClick={() => p.status === 'connected' ? togglePlatformStatus(p.id) : handleRealConnect(p.platform)}
+                    onClick={() => p.status === 'connected' ? setActiveTab('platform_connections') : handleRealConnect(p.platform)}
                     className={`text-[10px] font-bold px-2.5 py-1 rounded-full border transition cursor-pointer ${
                       p.status === 'connected'
                         ? 'bg-emerald-950/80 text-emerald-300 border-emerald-500/40 hover:bg-rose-950/60 hover:text-rose-300 hover:border-rose-500/40'
@@ -407,7 +439,7 @@ export const SocialHubView: React.FC = () => {
                   <div className="p-2 rounded-xl bg-slate-950/50">
                     <span className="text-[10px] text-slate-400 block">المتابعون</span>
                     <span className="text-xs font-extrabold text-white">
-                      {(p.followers || 0).toLocaleString()}
+                      {fmtFollowers(p)}
                     </span>
                   </div>
                   <div className="p-2 rounded-xl bg-slate-950/50">
@@ -418,12 +450,12 @@ export const SocialHubView: React.FC = () => {
                   </div>
                   <div className="p-2 rounded-xl bg-slate-950/50">
                     <span className="text-[10px] text-slate-400 block">منشورات نشطة</span>
-                    <span className="text-xs font-extrabold text-white">{p.postsCount}</span>
+                    <span className="text-xs font-extrabold text-white">{p.postsCount.toLocaleString('ar-IQ')}</span>
                   </div>
                 </div>
 
                 <div className="flex items-center justify-between gap-2 text-[11px] text-slate-400 pt-1">
-                  <span>تاريخ الربط: {p.lastSyncTime || 'غير مربوط بعد'}</span>
+                  <span>تاريخ الربط: {p.status === 'connected' ? fmtDate(p.lastSyncTime) : 'غير مربوط بعد'}</span>
                   <span>آخر استقبال: {lastIngestByPlatform[p.platform] ? new Date(lastIngestByPlatform[p.platform]).toLocaleString('ar-IQ') : 'لا استقبال'}</span>
                   <button
                     onClick={() => setActiveTab('content')}
@@ -813,8 +845,8 @@ export const SocialHubView: React.FC = () => {
 
           <div className="space-y-3">
             {platforms.map((p) => {
-              const maxFollowers = 200000;
-              const percent = Math.min(100, Math.round((p.followers / maxFollowers) * 100));
+              const maxFollowers = Math.max(1, ...platforms.map((x) => (typeof x.measured?.followers === 'number' ? x.measured.followers : 0)));
+              const percent = typeof p.measured?.followers === 'number' ? Math.min(100, Math.round((p.measured.followers / maxFollowers) * 100)) : 0;
               return (
                 <div key={p.id} className="space-y-1">
                   <div className="flex items-center justify-between text-xs">
@@ -823,7 +855,7 @@ export const SocialHubView: React.FC = () => {
                       {p.name}
                     </span>
                     <span className="text-slate-400">
-                      {p.followers.toLocaleString()} متابع • تفاعل {p.engagementRate}
+                      {fmtFollowers(p)} متابع • تفاعل {p.engagementRate} • منشورات {p.postsCount}
                     </span>
                   </div>
                   <div className="w-full h-2.5 bg-slate-950 rounded-full overflow-hidden">
