@@ -82,6 +82,20 @@ export interface PerformanceRow {
   [k: string]: unknown;
 }
 
+/** قياس جديد لمنشور (بلا معرّف السجل). */
+export interface PerformanceIncoming {
+  platform: string;
+  postExternalId: string;
+  values: MetricValues;
+  recordedBy: string;
+  at?: string;
+  contentType?: string | null;
+  title?: string | null;
+  productCategory?: string | null;
+  postId?: string | null;
+  publishedAt?: string | null;
+}
+
 /**
  * دمج قياسات جديدة في سجل الأداء: صف واحد لكل (منصة + منشور) يُحدَّث بأحدث القيم
  * (لا تكرار يضخّم عيّنة التعلّم). القيم الغائبة في القياس الجديد تبقى كما كانت.
@@ -89,7 +103,7 @@ export interface PerformanceRow {
  */
 export function upsertPerformanceRecords(
   existing: readonly PerformanceRow[],
-  incoming: ReadonlyArray<Omit<PerformanceRow, 'id' | 'at'> & { at?: string }>,
+  incoming: ReadonlyArray<PerformanceIncoming>,
   nowIso: string,
   newId: () => string,
   max = 20000,
@@ -110,7 +124,7 @@ export function upsertPerformanceRecords(
     const k = key(inc);
     const prev = map.get(k);
     if (prev) {
-      map.set(k, { ...prev, ...inc, values: { ...prev.values, ...inc.values }, at: inc.at || nowIso, firstAt: prev.firstAt || prev.at, id: prev.id });
+      map.set(k, { ...prev, ...inc, values: { ...prev.values, ...inc.values }, at: inc.at || nowIso, firstAt: prev.firstAt || prev.at, id: prev.id } as PerformanceRow);
       updated += 1;
     } else {
       map.set(k, { ...inc, id: newId(), at: inc.at || nowIso, firstAt: nowIso } as PerformanceRow);
