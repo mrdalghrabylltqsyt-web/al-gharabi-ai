@@ -138,10 +138,11 @@ async function run(): Promise<void> {
   const releaseIdx = block.indexOf('releaseLease(watcherLease');
   const drainIdx = block.indexOf('drainQueue()');
   for (const [label, call] of [
-    ['persistWatcherState', 'persistWatcherState()'],
-    ['persistMetaPollingState', 'persistMetaPollingState()'],
-    ['persistTelegramPollingState', 'persistTelegramPollingState()'],
-    ['persistCommercialLeads', 'persistCommercialLeads()'],
+    // الإغلاق يكتب بـ force (يتجاوز دمج «مسك الدفاتر» — PR #97)؛ المطلوب الاستدعاء نفسه.
+    ['persistWatcherState', 'persistWatcherState('],
+    ['persistMetaPollingState', 'persistMetaPollingState('],
+    ['persistTelegramPollingState', 'persistTelegramPollingState('],
+    ['persistCommercialLeads', 'persistCommercialLeads('],
   ] as [string, string][]) {
     const i = block.indexOf(call);
     check(`★ shutdown يكتب تحرير القفل عبر ${label}`, i >= 0, block.slice(0, 60));
