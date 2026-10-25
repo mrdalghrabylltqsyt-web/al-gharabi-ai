@@ -231,6 +231,7 @@ import {
   isThreadsContainerReady,
   isThreadsContainerFailed,
   type ThreadsFetch,
+  threadsGraphUrl,
 } from "./engine/social/threads";
 import {
   TikTokClient,
@@ -713,6 +714,7 @@ import { neonUsageApiConfig, fetchNeonActualUsage, NEON_USAGE_POLL_MIN_INTERVAL_
 import { buildSalesReadiness, sanitizeOAuthFailureMessage, type ReadinessPlatformInput } from "./engine/ops/salesReadiness";
 import { backupFreshness } from "./engine/dr/autoBackup";
 import { summarizePublishHealth, formatPublishLogLine } from "./engine/ops/publishHealth";
+import { parseFacebookPostMetrics, parseInstagramMediaMetrics, parseGraphInsights, parseFollowers, upsertPerformanceRecords, summarizePlatformMetrics, type MetricValues } from "./engine/social/metricsSync";
 import { resolveInteractionProduct, productFactStatement, productNamedInText, type ProductResolution } from "./engine/social/productResolution";
 import { decideCoalescedWrite, type CoalesceMemo, USAGE_INDICATOR_VOLATILE_PATHS } from "./engine/ops/writeCoalescing";
 import { SESSION_TTL_MS, signSession, verifySession, type SessionPayload } from "./engine/auth/sessions";
@@ -7119,16 +7121,17 @@ app.get("/api/platforms/youtube/analytics", authenticateToken, async (req, res) 
   clearYouTubeProviderError();
   // تُحفظ المؤشرات في سجل الأداء الحقيقي (لتغذية العقل والذاكرة).
   if (!Array.isArray((workspace as any).performanceRecords)) (workspace as any).performanceRecords = [];
+  // صف واحد لكل فيديو يُحدَّث (كان يُضاف صف جديد عند كل فتح للشاشة فتتضخم عيّنة التعلّم).
+  const ytIncoming: any[] = [];
   for (const v of videos) {
-    if (v.viewCount === null && v.likeCount === null && v.commentCount === null) continue;
     const values: Record<string, number> = {};
     if (v.viewCount !== null) values.views = v.viewCount;
     if (v.likeCount !== null) values.likes = v.likeCount;
     if (v.commentCount !== null) values.comments = v.commentCount;
     if (!Object.keys(values).length) continue;
-    (workspace as any).performanceRecords.unshift({ id: workspaceId("perf"), platform: "youtube", contentType: "video", postExternalId: v.videoId, values, at: new Date().toISOString(), recordedBy: "system" });
+    ytIncoming.push({ platform: "youtube", contentType: "video", postExternalId: v.videoId, values, recordedBy: "system", title: v.title || null });
   }
-  if ((workspace as any).performanceRecords.length > 20000) (workspace as any).performanceRecords = (workspace as any).performanceRecords.slice(0, 20000);
+  (workspace as any).performanceRecords = upsertPerformanceRecords((workspace as any).performanceRecords, ytIncoming, new Date().toISOString(), () => workspaceId("perf")).records;
   persistState();
   res.json({
     success: true,
@@ -15067,6 +15070,197 @@ app.get("/api/workspace/search", authenticateToken, (req, res) => {
   res.json({ success: true, query: q, counts: { products: products.length, posts: posts.length, conversations: conversations.length }, results: { products, posts, conversations } });
 });
 
+// -------------------------------------------------------------
+// مزامنة المؤشرات الحقيقية من المنصات (وقود تعلّم العقل) — كل 6 ساعات + عند الإقلاع.
+// قراءة فقط عبر الرموز المخزّنة؛ أي حقل/صلاحية غير متاحة ⇒ يُتخطّى بلا اختراع.
+// -------------------------------------------------------------
+const METRICS_SYNC_INTERVAL_MS = 6 * 60 * 60 * 1000;
+const METRICS_SYNC_MAX_POSTS = 25;
+let metricsSyncRunning = false;
+let metricsSyncState: { lastRunAt: string | null; lastResult: any | null } = { lastRunAt: null, lastResult: null };
+
+async function graphGetJson(fetchImpl: (url: string, init: any) => Promise<any>, url: string): Promise<any> {
+  try {
+    const res = await fetchImpl(url, { method: "GET" });
+    const json = await res.json().catch(() => null);
+    return json && typeof json === "object" ? json : null;
+  } catch { return null; }
+}
+
+/** آخر منشوراتنا الناجحة على منصة (معرّف المزود + المنشور الداخلي) — بلا تكرار. */
+function recentPublishedTargets(platform: string): Array<{ externalId: string; postId: string | null; productId: string | null }> {
+  const seen = new Set<string>();
+  const out: Array<{ externalId: string; postId: string | null; productId: string | null }> = [];
+  for (const r of (((workspace as any).publishRecords || []) as any[])) {
+    if (r?.platform !== platform || r?.simulated) continue;
+    if (!(r?.state === "published" || r?.state === "scheduled")) continue;
+    const ext = String(r?.externalVideoId || r?.providerPostId || "").trim();
+    if (!ext || seen.has(ext)) continue;
+    seen.add(ext);
+    out.push({ externalId: ext, postId: r?.postId ? String(r.postId) : null, productId: r?.productId ? String(r.productId) : null });
+    if (out.length >= METRICS_SYNC_MAX_POSTS) break;
+  }
+  return out;
+}
+
+function metricRowContext(t: { postId: string | null; productId: string | null }) {
+  const post: any = t.postId ? (workspace.posts || []).find((p: any) => String(p.id) === t.postId) : null;
+  const productId = t.productId || post?.productId || post?.campaignLink?.productId || null;
+  const product: any = productId ? (workspace.products || []).find((p: any) => String(p.id) === String(productId)) : null;
+  return { postId: t.postId, title: post?.title ? String(post.title).slice(0, 160) : null, productCategory: product?.category ? String(product.category) : null, contentType: post?.mediaType || (post ? "post" : null) };
+}
+
+async function runMetricsSync(trigger: string): Promise<any> {
+  if (metricsSyncRunning) return { ok: false, skipped: "running" };
+  metricsSyncRunning = true;
+  const nowIso = new Date().toISOString();
+  const incoming: any[] = [];
+  const audience: Record<string, { followers: number | null; at: string }> = { ...((workspace as any).platformAudience || {}) };
+  const perPlatform: Record<string, { posts: number; withMetrics: number; followers: number | null; error: string | null }> = {};
+  const live = (p: string) => { const c: any = platformConnections.get(p); return Boolean(c && c.status === "connected" && c.providerVerified === true); };
+  try {
+    // --- YouTube: كل فيديوهات القناة (حتى 50) + المشتركون (≈3 وحدات حصة).
+    if (live("youtube") && youtubeOperationGuard().ok) {
+      const st = { posts: 0, withMetrics: 0, followers: null as number | null, error: null as string | null };
+      const ensured = await ensureYouTubeAccessToken();
+      if (ensured.ok && ensured.token) {
+        const ch = await youtubeClient().getChannelStatistics(ensured.token);
+        if (ch.ok && ch.data) st.followers = ch.data.subscriberCount ?? null;
+        const stored = youtubeStoredCredentials();
+        const vids = await youtubeClient().listMyVideos(ensured.token, { uploadsPlaylistId: String(stored?.uploadsPlaylistId || ""), maxResults: 50 });
+        for (const v of (vids.ok && vids.data ? vids.data.videos : [])) {
+          st.posts += 1;
+          const values: MetricValues = {};
+          if (v.viewCount !== null) values.views = v.viewCount;
+          if (v.likeCount !== null) values.likes = v.likeCount;
+          if (v.commentCount !== null) values.comments = v.commentCount;
+          if (!Object.keys(values).length) continue;
+          st.withMetrics += 1;
+          const rec = (((workspace as any).publishRecords || []) as any[]).find((r) => String(r?.externalVideoId || r?.providerPostId || "") === v.videoId);
+          const ctx = metricRowContext({ postId: rec?.postId ? String(rec.postId) : null, productId: rec?.productId ? String(rec.productId) : null });
+          incoming.push({ platform: "youtube", postExternalId: v.videoId, values, recordedBy: "metrics_sync", ...ctx, title: ctx.title || v.title || null, contentType: "video", publishedAt: v.publishedAt || null });
+        }
+        if (!vids.ok) st.error = String(vids.code || "VIDEO_LIST_FAILED");
+      } else st.error = String(ensured.code || "TOKEN_UNAVAILABLE");
+      perPlatform.youtube = st;
+    }
+    // --- Facebook: متابعو الصفحة + تفاعل آخر 25 منشوراً لنا.
+    if (live("facebook")) {
+      const st = { posts: 0, withMetrics: 0, followers: null as number | null, error: null as string | null };
+      const target = facebookReplyTarget();
+      if (!("error" in target)) {
+        const tok = encodeURIComponent(target.pageToken);
+        const page = await graphGetJson(faceBookFetchImpl as any, `${facebookGraphUrl(`/${target.pageId}`, FACEBOOK_GRAPH_API_BASE_ENV)}?fields=followers_count,fan_count&access_token=${tok}`);
+        st.followers = parseFollowers(page);
+        for (const t of recentPublishedTargets("facebook")) {
+          st.posts += 1;
+          let json = await graphGetJson(faceBookFetchImpl as any, `${facebookGraphUrl(`/${t.externalId}`, FACEBOOK_GRAPH_API_BASE_ENV)}?fields=reactions.summary(true).limit(0),comments.summary(true).limit(0),shares&access_token=${tok}`);
+          // عقدة فيديو لا تقبل shares ⇒ إعادة بلا الحقل (لا يُسقط القراءة كلها).
+          if (json?.error) json = await graphGetJson(faceBookFetchImpl as any, `${facebookGraphUrl(`/${t.externalId}`, FACEBOOK_GRAPH_API_BASE_ENV)}?fields=reactions.summary(true).limit(0),comments.summary(true).limit(0)&access_token=${tok}`);
+          const values = parseFacebookPostMetrics(json);
+          if (json?.error && !st.error) st.error = String(json.error?.code ?? "GRAPH_ERROR");
+          if (!Object.keys(values).length) continue;
+          st.withMetrics += 1;
+          incoming.push({ platform: "facebook", postExternalId: t.externalId, values, recordedBy: "metrics_sync", ...metricRowContext(t) });
+        }
+      } else st.error = "NOT_CONNECTED";
+      perPlatform.facebook = st;
+    }
+    // --- Instagram: متابعو الحساب + إعجابات/تعليقات (+ الوصول/المشاهدات إن سُمح بالرؤى).
+    if (live("instagram")) {
+      const st = { posts: 0, withMetrics: 0, followers: null as number | null, error: null as string | null };
+      const target = instagramReplyTarget();
+      if (!("error" in target)) {
+        const tok = encodeURIComponent(target.pageToken);
+        const acct = await graphGetJson(instagramFetchImpl as any, `${facebookGraphUrl(`/${target.igAccountId}`, FACEBOOK_GRAPH_API_BASE_ENV)}?fields=followers_count,media_count&access_token=${tok}`);
+        st.followers = parseFollowers(acct);
+        for (const t of recentPublishedTargets("instagram")) {
+          st.posts += 1;
+          const media = await graphGetJson(instagramFetchImpl as any, `${facebookGraphUrl(`/${t.externalId}`, FACEBOOK_GRAPH_API_BASE_ENV)}?fields=like_count,comments_count&access_token=${tok}`);
+          const values: MetricValues = { ...parseInstagramMediaMetrics(media) };
+          const ins = await graphGetJson(instagramFetchImpl as any, `${facebookGraphUrl(`/${t.externalId}/insights`, FACEBOOK_GRAPH_API_BASE_ENV)}?metric=reach,views,saved,shares&access_token=${tok}`);
+          Object.assign(values, parseGraphInsights(ins, { reach: "reach", views: "views", saved: "saves", shares: "shares" }));
+          if (media?.error && !st.error) st.error = String(media.error?.code ?? "GRAPH_ERROR");
+          if (!Object.keys(values).length) continue;
+          st.withMetrics += 1;
+          incoming.push({ platform: "instagram", postExternalId: t.externalId, values, recordedBy: "metrics_sync", ...metricRowContext(t) });
+        }
+      } else st.error = "NOT_CONNECTED";
+      perPlatform.instagram = st;
+    }
+    // --- Threads: رؤى كل منشور (views/likes/replies/reposts) + المتابعون، إن سُمح.
+    if (live("threads")) {
+      const st = { posts: 0, withMetrics: 0, followers: null as number | null, error: null as string | null };
+      const target = threadsPublishTarget();
+      if (!("error" in target)) {
+        const tok = encodeURIComponent(target.accessToken);
+        const fol = await graphGetJson(threadsFetchImpl as any, `${threadsGraphUrl(`/${target.threadsUserId}/threads_insights`, THREADS_GRAPH_API_BASE_ENV)}?metric=followers_count&access_token=${tok}`);
+        const fv = parseGraphInsights(fol, { followers_count: "reach" });
+        st.followers = typeof fv.reach === "number" ? fv.reach : null;
+        for (const t of recentPublishedTargets("threads")) {
+          st.posts += 1;
+          const ins = await graphGetJson(threadsFetchImpl as any, `${threadsGraphUrl(`/${t.externalId}/insights`, THREADS_GRAPH_API_BASE_ENV)}?metric=views,likes,replies,reposts&access_token=${tok}`);
+          const values = parseGraphInsights(ins, { views: "views", likes: "likes", replies: "comments", reposts: "shares" });
+          if (ins?.error && !st.error) st.error = String(ins.error?.code ?? "GRAPH_ERROR");
+          if (!Object.keys(values).length) continue;
+          st.withMetrics += 1;
+          incoming.push({ platform: "threads", postExternalId: t.externalId, values, recordedBy: "metrics_sync", ...metricRowContext(t) });
+        }
+      } else st.error = "NOT_CONNECTED";
+      perPlatform.threads = st;
+    }
+    for (const [p, st] of Object.entries(perPlatform)) {
+      if (st.followers !== null) audience[p] = { followers: st.followers, at: nowIso };
+    }
+    const merged = upsertPerformanceRecords(((workspace as any).performanceRecords || []) as any[], incoming, nowIso, () => workspaceId("perf"));
+    (workspace as any).performanceRecords = merged.records;
+    (workspace as any).platformAudience = audience;
+    // مؤشرات المنشور الداخلي = مجموع منصاته (مصدر موثّق من المزود) — تظهر في التحليلات.
+    const byPost = new Map<string, MetricValues>();
+    for (const r of merged.records as any[]) {
+      if (!r.postId) continue;
+      const acc = byPost.get(String(r.postId)) || {};
+      for (const [k, v] of Object.entries(r.values || {})) if (typeof v === "number") (acc as any)[k] = ((acc as any)[k] || 0) + v;
+      byPost.set(String(r.postId), acc);
+    }
+    for (const post of (workspace.posts || []) as any[]) {
+      const m = byPost.get(String(post.id));
+      if (!m) continue;
+      post.metrics = { ...(post.metrics || {}), ...m };
+      post.metricSource = "provider_verified";
+      post.metricsUpdatedAt = nowIso;
+    }
+    persistState();
+    const result = { ok: true, trigger, at: nowIso, platforms: perPlatform, added: merged.added, updated: merged.updated, dedupedOld: merged.deduped, totalRecords: merged.records.length };
+    metricsSyncState = { lastRunAt: nowIso, lastResult: result };
+    for (const [p, st] of Object.entries(perPlatform)) console.log(`[metrics] platform=${p} posts=${st.posts} withMetrics=${st.withMetrics} followers=${st.followers ?? "-"} error=${st.error ?? "-"}`);
+    return result;
+  } catch (e: any) {
+    const result = { ok: false, trigger, at: nowIso, error: String(e?.code || e?.name || "metrics_sync_failed").slice(0, 60) };
+    metricsSyncState = { lastRunAt: nowIso, lastResult: result };
+    console.log(`[metrics] outcome=failed error=${result.error}`);
+    return result;
+  } finally {
+    metricsSyncRunning = false;
+  }
+}
+
+app.post("/api/analytics/sync", requireOwner, async (_req, res) => {
+  const r = await runMetricsSync("manual");
+  res.status(r.ok ? 200 : 409).json({ success: Boolean(r.ok), ...r });
+});
+
+(() => {
+  const boot = setTimeout(() => { void runMetricsSync("boot"); }, 4 * 60 * 1000);
+  (boot as any).unref?.();
+  const t = setInterval(safeTimerCallback(() => {
+    // قراءة خفيفة (≤ ~60 نداء كل 6 ساعات)، تُؤجَّل فقط عند ضغط حرج — ويُسجَّل.
+    if (currentUsagePressure().deferNonCritical) { console.log("[metrics] outcome=deferred reason=usage_pressure"); return; }
+    void runMetricsSync("schedule");
+  }, "metrics-sync"), METRICS_SYNC_INTERVAL_MS);
+  (t as any).unref?.();
+})();
+
 app.get("/api/analytics/overview", authenticateToken, (_req, res) => {
   const posts = workspace.posts;
   const conversations = workspace.conversations;
@@ -15082,9 +15276,14 @@ app.get("/api/analytics/overview", authenticateToken, (_req, res) => {
   const okRecord = (r: any) => Boolean(r?.providerPostId || r?.externalVideoId) && (r?.state === "published" || r?.state === "scheduled");
   const inbound = ((workspace as any).socialComments || []) as any[];
   const isInquiry = (c: any) => { const k = c?.classification || {}; return k.isBusinessInquiry === true || k.intent === "business_inquiry" || ["price","installment","installment_terms","availability"].includes(String(k.topic || "")); };
-  const providerMetrics = posts.some((p:any) => p.metricSource === "provider_verified");
+  const providerMetrics = posts.some((p:any) => p.metricSource === "provider_verified") || (((workspace as any).performanceRecords || []) as any[]).length > 0;
+  const audience = ((workspace as any).platformAudience || {}) as Record<string, { followers: number | null; at: string }>;
+  const perfRows = (((workspace as any).performanceRecords || []) as any[]);
   const channels = SUPPORTED_PLATFORMS.map(p => ({
     platform: p.id, name: p.name,
+    followers: audience[p.id]?.followers ?? null,
+    engagementRate: summarizePlatformMetrics(perfRows.filter((r) => r.platform === p.id), audience[p.id]?.followers ?? null).engagementRate,
+    measuredPosts: perfRows.filter((r) => r.platform === p.id).length,
     connected: platformConnections.get(p.id)?.status === "connected",
     posts: records.filter((r) => r.platform === p.id && okRecord(r)).length,
     planned: posts.filter((x:any) => (x.targetPlatforms || []).includes(p.id)).length,
@@ -15092,7 +15291,9 @@ app.get("/api/analytics/overview", authenticateToken, (_req, res) => {
     inbound: inbound.filter((c) => c.platform === p.id).length,
     conversations: conversations.filter((x:any) => x.channel === p.id).length,
   }));
-  const metrics = posts.reduce((a:any,p:any) => { const m=p.metrics || {}; a.views += Number(m.views)||0; a.likes += Number(m.likes)||0; a.comments += Number(m.comments)||0; a.shares += Number(m.shares)||0; a.reach += Number(m.reach)||0; return a; }, { views:0, likes:0, comments:0, shares:0, reach:0 });
+  // المجاميع من سجل الأداء المقاس فعلاً من المزودين (يشمل فيديوهات القناة كلها).
+  const metrics = perfRows.reduce((a:any,r:any) => { const m=r.values || {}; a.views += Number(m.views)||0; a.likes += Number(m.likes)||0; a.comments += Number(m.comments)||0; a.shares += Number(m.shares)||0; a.reach += Number(m.reach)||0; return a; }, { views:0, likes:0, comments:0, shares:0, reach:0 });
+  const followersKnown = Object.values(audience).filter((a) => typeof a?.followers === "number");
   const publishedPostIds = new Set(records.filter(okRecord).map((r) => String(r.postId || "")).filter(Boolean));
   res.json({
     success:true, source:"local_workspace", externalMetricsAvailable: providerMetrics, generatedAt:new Date().toISOString(),
@@ -15101,6 +15302,8 @@ app.get("/api/analytics/overview", authenticateToken, (_req, res) => {
     inbound: { total: inbound.length, comments: inbound.filter((c) => c.kind !== "message").length, messages: inbound.filter((c) => c.kind === "message").length },
     inquiries: { total: inbound.filter(isInquiry).length, customers: commercialLeads.length },
     metrics: providerMetrics ? metrics : { views:null, likes:null, comments:null, shares:null, reach:null },
+    followers: followersKnown.length ? followersKnown.reduce((n, a) => n + Number(a.followers || 0), 0) : null,
+    metricsSync: { lastRunAt: metricsSyncState.lastRunAt, intervalHours: METRICS_SYNC_INTERVAL_MS / 3600000, measuredRecords: perfRows.length },
     channels,
   });
 });

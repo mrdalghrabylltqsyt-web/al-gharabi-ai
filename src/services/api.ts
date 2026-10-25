@@ -1114,6 +1114,12 @@ ${payload.topic || payload.productName || 'أنظمة وحلول التقسيط 
     return true;
   },
 
+  async syncAnalytics() {
+    const res = await fetch('/api/analytics/sync', { method: 'POST', headers: getAuthHeaders() });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || !data.success) throw new Error(data.error || 'تعذر جلب الأرقام من المنصات');
+    return data;
+  },
   async getAnalyticsOverview() {
     const res = await fetch('/api/analytics/overview', { headers: getAuthHeaders() });
     const data = await res.json();
