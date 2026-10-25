@@ -26,6 +26,8 @@ export interface PlatformAccount {
   color: string;
   badge?: string;
   lastSyncTime?: string;
+  /** أرقام حقيقية من الخادم (null = لم يُقس بعد من المزود — يُعرض «—» لا صفر). */
+  measured?: { followers: number | null; followersAt: string | null; engagementRate: number | null; publishedPosts: number; measuredPosts: number; inbound: number } | null;
 }
 
 export type PostStatus =

@@ -16,6 +16,7 @@ import {
   Search,
 } from 'lucide-react';
 import { ShowroomProduct } from '../../types';
+import { realProductPhrases, modelLabel } from '../../utils/productPhrases';
 import {
   computeInstallmentPrice,
   INSTALLMENT_MONTHS_DEFAULT,
@@ -67,11 +68,29 @@ export const ShowroomDatabaseView: React.FC = () => {
     other: 'أخرى',
   }[category]);
 
+  // نظام التقسيط الفعلي كما هو مسجّل على المنتجات (مدة + نسبة الزيادة) — لا خطة مختلقة.
+  const derivedPlans = (() => {
+    const map = new Map<string, { key: string; months: number; markup: number; count: number }>();
+    for (const p of products) {
+      const months = Number(p.installmentMonths);
+      const inst = Number(p.installmentPrice);
+      const cash = Number(p.cashPrice);
+      if (!Number.isFinite(months) || months <= 0 || !Number.isFinite(inst) || !(cash > 0)) continue;
+      const markup = Math.round(((inst / cash) - 1) * 1000) / 10;
+      const key = `${months}:${markup}`;
+      const cur = map.get(key) || { key, months, markup, count: 0 };
+      cur.count += 1;
+      map.set(key, cur);
+    }
+    return [...map.values()].sort((a, b) => b.count - a.count);
+  })();
+
   const filteredProducts = products.filter(
     (p) =>
       p.name.includes(searchTerm) ||
       p.category.includes(searchTerm) ||
-      p.specs.some((s) => s.includes(searchTerm))
+      (categoryLabel(p.category) || '').includes(searchTerm) ||
+      realProductPhrases(p.specs).some((s) => s.includes(searchTerm))
   );
 
   // المستمسكات المطلوبة للتقسيط: مصدرها بيانات المعرض المسجّلة (لا قائمة ثابتة في
@@ -87,6 +106,31 @@ export const ShowroomDatabaseView: React.FC = () => {
     }
     updateShowroomInfo({ requiredDocuments: [...requiredDocuments, value] });
     setNewDocument('');
+  };
+
+  // بنك الأسئلة الشائعة: يضيفه المالك/المدير فعلاً (يُحفظ على الخادم ويقرؤه العقل) — لا أسئلة مختلقة.
+  const [newFaqQ, setNewFaqQ] = useState('');
+  const [newFaqA, setNewFaqA] = useState('');
+  const canEditFaq = currentUser?.role === 'owner' || currentUser?.role === 'manager';
+  const handleAddFaq = () => {
+    const q = newFaqQ.trim();
+    const a = newFaqA.trim();
+    if (!q || !a) { showToast('اكتب السؤال وجوابه المعتمد.'); return; }
+    updateShowroomInfo({ faqs: [...(showroomInfo.faqs || []), { id: `faq-${Date.now()}`, q, a, category: 'عام' }] });
+    setNewFaqQ('');
+    setNewFaqA('');
+  };
+  const [newPolicy, setNewPolicy] = useState('');
+  const handleAddPolicy = () => {
+    const v = newPolicy.trim();
+    if (!v) return;
+    if ((showroomInfo.policies || []).includes(v)) { showToast('هذا الشرط مضاف مسبقاً.'); return; }
+    updateShowroomInfo({ policies: [...(showroomInfo.policies || []), v] });
+    setNewPolicy('');
+  };
+  const handleRemovePolicy = (v: string) => updateShowroomInfo({ policies: (showroomInfo.policies || []).filter((x) => x !== v) });
+  const handleRemoveFaq = (id: string) => {
+    updateShowroomInfo({ faqs: (showroomInfo.faqs || []).filter((f) => f.id !== id) });
   };
 
   const handleRemoveDocument = (doc: string) => {
@@ -129,8 +173,9 @@ export const ShowroomDatabaseView: React.FC = () => {
       downPaymentPercent: 0,
       durationMonths: months,
       image: newProductImage,
-      installmentOptions: ['خيارات تقسيط حسب الأهلية', 'مدد سداد مرنة', 'خطط تمويل حسب المنتج'],
-      specs: ['مواصفات المنتج حسب الفئة', 'ضمان حسب سياسة المورد', 'خدمة ما بعد البيع حسب المنتج'],
+      // لا عبارات عامة مختلقة: المواصفات/خيارات السداد يسجّلها المالك فعلاً أو تبقى فارغة.
+      installmentOptions: [],
+      specs: [],
       inStock: true,
       installmentPrice: derived.installmentPrice,
       installmentMonths: derived.installmentMonths,
@@ -226,7 +271,7 @@ export const ShowroomDatabaseView: React.FC = () => {
         {[
           { id: 'products', label: 'منتجات المعرض', count: products.length, icon: Package },
           { id: 'plans', label: 'أنظمة وخطط التقسيط', count: installmentPlans.length, icon: BadgePercent },
-          { id: 'policies', label: 'سياسات وشروط التمويل', icon: FileCheck },
+          { id: 'policies', label: 'سياسات وشروط التمويل', count: (showroomInfo.policies || []).length + requiredDocuments.length, icon: FileCheck },
           { id: 'faqs', label: 'الأسئلة الشائعة (FAQ)', count: showroomInfo.faqs.length, icon: HelpCircle },
         ].map((tab) => {
           const Icon = tab.icon;
@@ -267,7 +312,7 @@ export const ShowroomDatabaseView: React.FC = () => {
               />
             </div>
             <span className="text-xs text-slate-400">
-              إجمالي {filteredProducts.length} منتجات جاهزة للتسليم
+              {filteredProducts.length} منتج • المتوفر {filteredProducts.filter((p) => p.inStock !== false).length}
             </span>
           </div>
 
@@ -302,10 +347,10 @@ export const ShowroomDatabaseView: React.FC = () => {
                       )}
                       <div className="absolute top-3 right-3 flex items-center gap-1.5">
                         <span className="text-[10px] font-bold px-2.5 py-1 rounded-full bg-slate-950/80 backdrop-blur-md text-emerald-300 border border-emerald-500/30">
-                          موديل {prod.modelYear || new Date().getFullYear()}
+                          {modelLabel(prod.modelYear, new Date().getFullYear()) || 'بلا موديل مسجّل'}
                         </span>
-                        <span className="text-[10px] font-bold px-2.5 py-1 rounded-full bg-slate-950/80 backdrop-blur-md text-white border border-slate-800 uppercase">
-                          {prod.category}
+                        <span className="text-[10px] font-bold px-2.5 py-1 rounded-full bg-slate-950/80 backdrop-blur-md text-white border border-slate-800">
+                          {categoryLabel(prod.category) || prod.category}
                         </span>
                       </div>
 
@@ -321,7 +366,7 @@ export const ShowroomDatabaseView: React.FC = () => {
                       <div>
                         <h3 className="font-extrabold text-sm text-white">{prod.name}</h3>
                         <p className="text-xs text-slate-400 mt-0.5">
-                          سعر الكاش: {prod.cashPrice.toLocaleString()} (شامل الضريبة)
+                          سعر الكاش: {prod.cashPrice.toLocaleString()} د.ع
                         </p>
                         {Number.isFinite(prod.installmentPrice) && (
                           <p className="text-xs text-emerald-300/90 mt-0.5">
@@ -333,7 +378,7 @@ export const ShowroomDatabaseView: React.FC = () => {
 
                       {/* Specifications badges */}
                       <div className="flex flex-wrap gap-1.5">
-                        {prod.specs.map((spec, i) => (
+                        {realProductPhrases(prod.specs).map((spec, i) => (
                           <span
                             key={i}
                             className="text-[10px] px-2 py-0.5 rounded-md bg-slate-950 text-slate-300 border border-slate-800"
@@ -345,7 +390,17 @@ export const ShowroomDatabaseView: React.FC = () => {
 
                       {/* Installment options */}
                       <div className="space-y-1 text-[11px] text-emerald-300/90 pt-2 border-t border-slate-800">
-                        {prod.installmentOptions.map((opt, i) => (
+                        {/* حقائق التقسيط المسجّلة فعلاً لهذا المنتج (بدل عبارات عامة ثابتة). */}
+                        {[
+                          Number.isFinite(prod.installmentMonths) && Number.isFinite(prod.monthlyInstallment)
+                            ? `${Number(prod.installmentMonths)} أقساط شهرية × ${Number(prod.monthlyInstallment).toLocaleString()} د.ع`
+                            : null,
+                          Number.isFinite(prod.downPaymentPercent) && Number(prod.downPaymentPercent) > 0
+                            ? `مقدّمة ${Number(prod.downPaymentPercent)}%`
+                            : null,
+                          prod.inStock === false ? 'غير متوفر حالياً' : 'متوفر',
+                          ...realProductPhrases(prod.installmentOptions),
+                        ].filter(Boolean).map((opt, i) => (
                           <div key={i} className="flex items-center gap-1.5">
                             <CheckCircle2 className="w-3 h-3 text-emerald-400 shrink-0" />
                             <span>{opt}</span>
@@ -381,8 +436,18 @@ export const ShowroomDatabaseView: React.FC = () => {
           {installmentPlans.length === 0 ? (
             <div className="col-span-1 md:col-span-3 p-12 text-center text-slate-400 bg-slate-900/50 rounded-2xl border border-slate-800">
               <BadgePercent className="w-10 h-10 text-slate-600 mx-auto mb-3" />
-              <p className="font-bold text-white text-sm">لا توجد برامج أو خطط تقسيط مضافة حالياً</p>
-              <p className="text-xs text-slate-500 mt-1">يمكن إضافة برامج وشروط التقسيط المعتمدة للمعرض لاحقاً.</p>
+              <p className="font-bold text-white text-sm">لا توجد برامج تقسيط مسمّاة — نظام التقسيط الفعلي مسجّل على المنتجات نفسها:</p>
+              <div className="mt-4 grid gap-2 max-w-xl mx-auto text-right">
+                {derivedPlans.length === 0 ? (
+                  <p className="text-xs text-slate-500">لا يوجد منتج بسعر تقسيط مسجّل بعد.</p>
+                ) : derivedPlans.map((pl) => (
+                  <div key={pl.key} className="p-3 rounded-xl bg-slate-950/70 border border-slate-800 text-xs text-slate-200 flex items-center justify-between gap-3">
+                    <span className="font-bold text-emerald-300">{pl.months} شهراً • زيادة {pl.markup}% على الكاش</span>
+                    <span className="text-slate-400">{pl.count} منتج</span>
+                  </div>
+                ))}
+                <p className="text-[10px] text-slate-500">مُشتق حرفياً من أسعار الكاش والتقسيط المسجّلة لكل منتج — وهو ما يستخدمه العقل في الرد على الزبائن.</p>
+              </div>
             </div>
           ) : (
             installmentPlans.map((prog) => (
@@ -497,11 +562,20 @@ export const ShowroomDatabaseView: React.FC = () => {
                     className="p-3 rounded-xl bg-slate-950/70 border border-slate-800 text-xs text-slate-200 flex items-start gap-2.5"
                   >
                     <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0 mt-0.5" />
-                    <span>{pol}</span>
+                    <span className="flex-1">{pol}</span>
+                    {canEditFaq && (
+                      <button type="button" onClick={() => handleRemovePolicy(pol)} className="text-rose-400 hover:text-rose-300 shrink-0" aria-label={`حذف شرط ${pol}`}><Trash2 className="w-3.5 h-3.5" /></button>
+                    )}
                   </div>
                 ))
               )}
             </div>
+            {canEditFaq && (
+              <div className="flex items-center gap-2 pt-1">
+                <input type="text" value={newPolicy} onChange={(e) => setNewPolicy(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); handleAddPolicy(); } }} placeholder="أضف شرطاً معتمداً (مثال: التسليم خلال 24 ساعة)..." className="flex-1 bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-white text-xs focus:outline-none focus:border-emerald-500" />
+                <button type="button" onClick={handleAddPolicy} className="px-3 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold flex items-center gap-1.5"><Plus className="w-3.5 h-3.5" /> إضافة</button>
+              </div>
+            )}
           </div>
         </div>
       )}
@@ -512,6 +586,15 @@ export const ShowroomDatabaseView: React.FC = () => {
           <div className="p-4 rounded-2xl bg-slate-900/60 border border-slate-800 text-xs text-slate-400">
             💡 هذه الأسئلة والإجابات يستند عليها الذكاء الاصطناعي لتقديم ردود رسمية فورية وموثقة للعملاء.
           </div>
+
+          {canEditFaq && (
+            <div className="p-4 rounded-2xl glass space-y-2">
+              <p className="text-xs font-bold text-white">إضافة سؤال وجوابه المعتمد</p>
+              <input value={newFaqQ} onChange={(e) => setNewFaqQ(e.target.value)} placeholder="السؤال (مثال: هل التقسيط بدون كفيل؟)" className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-white text-xs focus:outline-none focus:border-emerald-500" />
+              <textarea value={newFaqA} onChange={(e) => setNewFaqA(e.target.value)} placeholder="الجواب المعتمد كما تريده أن يصل للزبون" rows={2} className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-white text-xs focus:outline-none focus:border-emerald-500" />
+              <button type="button" onClick={handleAddFaq} className="px-3 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold flex items-center gap-1.5"><Plus className="w-3.5 h-3.5" /> حفظ السؤال</button>
+            </div>
+          )}
 
           {showroomInfo.faqs.length === 0 ? (
             <div className="p-12 text-center text-slate-400 bg-slate-900/50 rounded-2xl border border-slate-800">
@@ -530,6 +613,9 @@ export const ShowroomDatabaseView: React.FC = () => {
                   {faq.q}
                 </h4>
                 <p className="text-xs text-slate-300 leading-relaxed pr-6">{faq.a}</p>
+                {canEditFaq && (
+                  <button type="button" onClick={() => handleRemoveFaq(faq.id)} className="text-[10px] text-rose-400 hover:text-rose-300 pr-6 flex items-center gap-1"><Trash2 className="w-3 h-3" /> حذف</button>
+                )}
               </div>
             ))
           )}

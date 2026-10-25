@@ -1554,8 +1554,11 @@ ${payload.topic || payload.productName || 'أنظمة وحلول التقسيط 
   },
 
   /** التعليقات المسجلة فعلياً. يوضّح الرد ما إذا كان الجلب الخارجي متاحاً. */
-  async getSocialComments(platform?: string): Promise<SocialCommentsResult> {
-    const qs = platform ? `?platform=${encodeURIComponent(platform)}` : '';
+  async getSocialComments(platform?: string, limit?: number): Promise<SocialCommentsResult> {
+    const params = new URLSearchParams();
+    if (platform) params.set('platform', platform);
+    if (limit) params.set('limit', String(limit));
+    const qs = params.toString() ? `?${params.toString()}` : '';
     const res = await fetch(`/api/social/manager/comments${qs}`, { headers: getAuthHeaders() });
     const data = await res.json();
     if (!res.ok || !data.success) throw new Error(data.error || 'تعذر تحميل التعليقات');

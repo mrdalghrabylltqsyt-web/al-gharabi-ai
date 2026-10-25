@@ -139,7 +139,7 @@ export function YouTubeOperationsView() {
           <Stat label="الردود" value={state?.counters?.replied ?? 0} sub={`مُتحقَّق: ${state?.counters?.verified ?? 0}`} />
           <Stat label="التصعيدات" value={state?.counters?.escalated ?? 0} sub="تحتاج تدخلك" />
           <Stat label="التجاهلات" value={state?.counters?.skipped ?? 0} sub="سبام/حسابنا/مكرر" />
-          <Stat label="مؤجَّلة" value={state?.counters?.deferred ?? 0} sub="تعذّرت بسبب إعداد الرد" />
+          <Stat label="مؤجَّلة" value={state?.counters?.deferred ?? 0} sub="محفوظة لأن الرد الآلي موقوف — تُعاد تلقائياً عند التفعيل" />
           <Stat label="ردود فاشلة" value={state?.counters?.failed ?? 0} />
           <Stat label="الأخطاء المتتالية" value={state?.consecutiveErrors ?? 0} sub={state?.lastError || undefined} />
           <Stat label="عدد الدورات" value={state?.pollCount ?? 0} />

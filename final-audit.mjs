@@ -6240,6 +6240,17 @@ add('watcher-advisory-not-authority',
     read('package.json').includes('npm run test:metrics-sync'),
     'المؤشرات تُجلب تلقائياً كل 6 ساعات من YouTube/Facebook/Instagram/Threads إلى سجل أداء بلا تكرار يقرؤه العقل');
 
+  // 11i) فحص الشاشات الجولة 2: كل شاشة من مصدرها الحقيقي (منصات/وارد/متابعات/بحث/مخزن).
+  add('screens-round2-real-sources',
+    server.includes('metrics: platformCardMetrics(p.id)') &&
+    read('src/components/customers/CustomerCenterView.tsx').includes('<PlatformInboundPanel />') &&
+    !read('src/components/customers/CustomerCenterView.tsx').includes('محاكاة رسالة عميل جديدة') &&
+    read('src/components/operations/OperationsView.tsx').includes('<CommercialFollowUpsPanel />') &&
+    server.includes('results: { products, posts, conversations, inbound, leads }') &&
+    !read('src/components/database/ShowroomDatabaseView.tsx').includes("specs: ['مواصفات المنتج حسب الفئة'") &&
+    read('package.json').includes('npm run test:screens-round2'),
+    'بطاقات المنصات والوارد والمتابعات والبحث والمخزن تقرأ من مصادرها الحقيقية بلا محاكاة ولا عبارات عامة');
+
   // 12) AGENTS.md: عدد فحوصات final-audit مطابق للفعلي (يُعَدّ من نص الملف نفسه).
   const auditCount = (read('final-audit.mjs').match(/^\s*add\(/gm) || []).length;
   add('agents-audit-count-accurate',
