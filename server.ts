@@ -2316,7 +2316,7 @@ const OAUTH_CONFIG: Record<string, any> = {
   instagram: { provider: "meta", auth: `https://www.facebook.com${FACEBOOK_DIALOG_PATH}`, token: "https://graph.facebook.com/v21.0/oauth/access_token", clientId: envSecret("INSTAGRAM_OAUTH_CLIENT_ID") || envSecret("FACEBOOK_OAUTH_CLIENT_ID"), clientSecret: envSecret("INSTAGRAM_OAUTH_CLIENT_SECRET") || envSecret("FACEBOOK_OAUTH_CLIENT_SECRET"), scopes: [...INSTAGRAM_REQUIRED_SCOPES] },
   x: { provider: "x", auth: "https://twitter.com/i/oauth2/authorize", token: "https://api.twitter.com/2/oauth2/token", clientId: envSecret("X_OAUTH_CLIENT_ID"), clientSecret: envSecret("X_OAUTH_CLIENT_SECRET"), scopes: ["tweet.read", "tweet.write", "users.read", "offline.access"] },
   snapchat: { provider: "snapchat", auth: "https://accounts.snapchat.com/login/oauth2/authorize", token: "https://accounts.snapchat.com/login/oauth2/access_token", clientId: envSecret("SNAPCHAT_OAUTH_CLIENT_ID"), clientSecret: envSecret("SNAPCHAT_OAUTH_CLIENT_SECRET"), scopes: ["snapchat-marketing-api"] },
-  threads: { provider: "meta", auth: "https://threads.net/oauth/authorize", token: "https://graph.threads.net/oauth/access_token", clientId: envSecret("THREADS_OAUTH_CLIENT_ID"), clientSecret: envSecret("THREADS_OAUTH_CLIENT_SECRET"), scopes: ["threads_basic", "threads_content_publish", "threads_manage_replies"] },
+  threads: { provider: "meta", auth: "https://threads.net/oauth/authorize", token: "https://graph.threads.net/oauth/access_token", clientId: envSecret("THREADS_OAUTH_CLIENT_ID"), clientSecret: envSecret("THREADS_OAUTH_CLIENT_SECRET"), scopes: ["threads_basic", "threads_content_publish", "threads_manage_replies", "threads_manage_insights"] },
 };
 function oauthReady(platform: string) { const c = OAUTH_CONFIG[platform]; return Boolean(c?.clientId && c?.clientSecret && resolvePublicUrl(process.env).valid && tokenKeyBytes()); }
 /** هل العنوان العام الحالي عام (https على نطاق غير محلي)؟ يلزم للربط الإنتاجي. */
@@ -13469,7 +13469,7 @@ app.get("/api/platforms/:platform/oauth/setup", requireOwner, async (req,res)=>{
         "تأكد أن Use Case «Access the Threads API» مضاف للتطبيق.",
         "انسخ Threads App ID/Secret إلى THREADS_OAUTH_CLIENT_ID/THREADS_OAUTH_CLIENT_SECRET.",
         "أضف قيمة redirectUri بالضبط في: حالات الاستخدام → الوصول إلى واجهة API تطبيق Threads → تخصيص → الإعدادات → روابط إعادة توجيه OAuth (قائمة خاصة بـThreads منفصلة عن Facebook Login for Business).",
-        "فعّل نطاقات Threads API: threads_basic, threads_content_publish, threads_manage_replies.",
+        "فعّل نطاقات Threads API: threads_basic, threads_content_publish, threads_manage_replies, threads_manage_insights (لقراءة أداء المنشورات وتعلّم العقل).",
         "في وضع Development: أضف حساب Threads المستخدَم لتسجيل الدخول كـ Threads Tester ثم اقبل الدعوة (وإلا يرد Meta 1349245).",
       ],
       metaDashboardFields:{
@@ -15154,9 +15154,23 @@ async function runMetricsSync(trigger: string): Promise<any> {
         st.followers = parseFollowers(page);
         for (const t of recentPublishedTargets("facebook")) {
           st.posts += 1;
-          let json = await graphGetJson(faceBookFetchImpl as any, `${facebookGraphUrl(`/${t.externalId}`, FACEBOOK_GRAPH_API_BASE_ENV)}?fields=reactions.summary(true).limit(0),comments.summary(true).limit(0),shares&access_token=${tok}`);
-          // عقدة فيديو لا تقبل shares ⇒ إعادة بلا الحقل (لا يُسقط القراءة كلها).
-          if (json?.error) json = await graphGetJson(faceBookFetchImpl as any, `${facebookGraphUrl(`/${t.externalId}`, FACEBOOK_GRAPH_API_BASE_ENV)}?fields=reactions.summary(true).limit(0),comments.summary(true).limit(0)&access_token=${tok}`);
+          // القياس الأول (2026-10-25): منشور واحد من 7 أعاد أرقاماً والباقي خطأ #100 — معرّفات
+          // صور/فيديوهات (لا عقدة Post) لا تقبل shares/reactions بنفس الصيغة. نجرّب بالترتيب
+          // صيغاً رسمية أبسط، وعلى المعرّف المركّب PAGE_POST إن كان المعرّف قصيراً.
+          const fbIds = [t.externalId, ...(t.externalId.includes("_") ? [] : [`${target.pageId}_${t.externalId}`])];
+          const fbShapes = [
+            "reactions.summary(true).limit(0),comments.summary(true).limit(0),shares",
+            "reactions.summary(true).limit(0),comments.summary(true).limit(0)",
+            "likes.summary(true).limit(0),comments.summary(true).limit(0)",
+            "comments.summary(true).limit(0)",
+          ];
+          let json: any = null;
+          outer: for (const fid of fbIds) {
+            for (const shape of fbShapes) {
+              json = await graphGetJson(faceBookFetchImpl as any, `${facebookGraphUrl(`/${fid}`, FACEBOOK_GRAPH_API_BASE_ENV)}?fields=${shape}&access_token=${tok}`);
+              if (json && !json.error && Object.keys(parseFacebookPostMetrics(json)).length) break outer;
+            }
+          }
           const values = parseFacebookPostMetrics(json);
           if (json?.error && !st.error) st.error = String(json.error?.code ?? "GRAPH_ERROR");
           if (!Object.keys(values).length) continue;
