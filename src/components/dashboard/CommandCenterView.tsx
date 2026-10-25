@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { useApp } from '../../context/AppContext';
 import { apiService } from '../../services/api';
+import { SalesReadinessPanel } from './SalesReadinessPanel';
 import { NAV_SECTIONS } from '../common/Sidebar';
 import {
   ShieldCheck,
@@ -100,6 +101,9 @@ export const CommandCenterView: React.FC = () => {
           تحديث الحالة
         </button>
       </div>
+
+      {/* جاهزية البيع: ما يمنع الموظف من البيع الآن، مرتباً بالأثر (للمالك فقط). */}
+      {isOwner && <SalesReadinessPanel onNavigate={go} />}
 
       {errors.length > 0 && (
         <Card className="border-amber-500/30 bg-amber-950/20">

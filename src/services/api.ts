@@ -1659,6 +1659,13 @@ ${payload.topic || payload.productName || 'أنظمة وحلول التقسيط 
   },
   // --- B1 + Y2: تنبيه المالك الخارجي (Resend) — للمالك فقط ---
   /** حالة تنبيه المالك: مفتاح التشغيل + الطابور المعلّق + نتيجة آخر دورة (بلا سرّ). */
+  /** جاهزية البيع: تشخيص ذاتي لما يمنع البيع الآن (للمالك فقط، بلا Gemini). */
+  async fetchSellingReadiness(): Promise<any> {
+    const res = await fetch('/api/control/sales-readiness', { headers: getAuthHeaders() });
+    const data = await res.json();
+    if (!res.ok || !data.success) throw new Error(data.error || 'تعذر تحميل جاهزية البيع');
+    return data.readiness;
+  },
   async getOwnerAlerts(): Promise<any> {
     const res = await fetch('/api/agent/owner-alerts', { headers: getAuthHeaders() });
     const data = await res.json();

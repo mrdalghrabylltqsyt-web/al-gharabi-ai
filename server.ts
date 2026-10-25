@@ -704,6 +704,7 @@ import {
 } from "./engine/ops/cycleDeferral";
 import { driveApiAccountingSnapshot, recordDriveApiCall, type DriveApiCallKind } from "./engine/dr/driveApiAccounting";
 import { neonUsageApiConfig, fetchNeonActualUsage, NEON_USAGE_POLL_MIN_INTERVAL_MS, computeCuHours } from "./engine/ops/neonUsage";
+import { buildSalesReadiness, sanitizeOAuthFailureMessage, type ReadinessPlatformInput } from "./engine/ops/salesReadiness";
 import { SESSION_TTL_MS, signSession, verifySession, type SessionPayload } from "./engine/auth/sessions";
 import { CHALLENGE_TTL_MS, issueChallengeCode, matchChallengeWindow } from "./engine/auth/challenge";
 import { isScheduleInFuture, normalizeScheduleInput, wallClockToEpoch } from "./src/utils/scheduleTime";
@@ -5088,9 +5089,9 @@ async function handleOAuthCallback(req:any, res:any, rawQuery:string, viaPost:bo
     // G3: الرمز أُعيد كتابته أعلاه (يحمل refresh_token من Google)؛ نُعيد إلحاق
     // معرّف الحساب/الاسم بعد الكتابة فلا يُفقدا.
     if (platform === "google_business") saveGoogleBusinessCredentials({ accessToken: String(parsedToken.accessToken || ""), refreshToken: (token as any)?.refresh_token || null, expiresIn: parsedToken.expiresIn ?? null, accountResource: accountId, accountName: accountName });
-    platformConnections.set(platform,{platform,status:"connected",accountId,accountName,connectedAt:new Date().toISOString(),providerVerified:true}); savePlatformConnections(); audit(pending!.userId,"platform_oauth_connected",`${platform}:${accountId}`);
+    platformConnections.set(platform,{platform,status:"connected",accountId,accountName,connectedAt:new Date().toISOString(),providerVerified:true}); savePlatformConnections(); clearOAuthFailure(platform); audit(pending!.userId,"platform_oauth_connected",`${platform}:${accountId}`);
     sendHtml("<html lang='ar' dir='rtl'><meta charset='utf-8'><title>تم الربط</title><body style='font-family:sans-serif;padding:40px'><h2>تم ربط المنصة بنجاح.</h2><p>يمكنك إغلاق هذه النافذة والعودة إلى الغرابي AI.</p></body></html>");
-  } catch(e:any) { audit(pending!.userId,"platform_oauth_failed",platform); const errMsg=redactSecretsFromText(String(e?.message||e)).slice(0,300); console.error(`[oauth-callback-error] ${platform} status=502 message=${errMsg}`); const hint=oauthFailureHint(platform,errMsg); failHtml(502, `فشل إكمال ربط المنصة: ${errMsg}${hint?" — "+hint:""}`); }
+  } catch(e:any) { audit(pending!.userId,"platform_oauth_failed",platform); const errMsg=redactSecretsFromText(String(e?.message||e)).slice(0,300); console.error(`[oauth-callback-error] ${platform} status=502 message=${errMsg}`); recordOAuthFailure(platform, errMsg); const hint=oauthFailureHint(platform,errMsg); failHtml(502, `فشل إكمال ربط المنصة: ${errMsg}${hint?" — "+hint:""}`); }
 }
 
 app.post("/api/platforms/telegram/configure", requireOwner, async (req,res)=>{
@@ -13390,6 +13391,83 @@ app.get("/api/control/final-check", requireOwner, (_req,res)=>{
   const blocking=checks.filter(x=>x.blocking&&!x.ok); res.status(blocking.length?503:200).json({success:blocking.length===0,ready:blocking.length===0,version:PROJECT_VERSION,schemaVersion:STATE_SCHEMA_VERSION,checks,blocking});
 });
 
+// -------------------------------------------------------------
+// جاهزية البيع (Sales Readiness): تشخيص ذاتي حتمي لما يمنع البيع الآن.
+// يقرأ الحالة الحقيقية فقط (اتصالات، موافقات معلّقة، إعدادات، محتوى)، بلا Gemini
+// وبلا أسرار وبلا نصوص زبائن. للمالك فقط.
+// -------------------------------------------------------------
+let oauthFailures: Record<string, { at: string; message: string }> = {};
+function normalizeOAuthFailures(raw: unknown): Record<string, { at: string; message: string }> {
+  const out: Record<string, { at: string; message: string }> = {};
+  if (!raw || typeof raw !== "object") return out;
+  for (const [k, v] of Object.entries(raw as Record<string, any>)) {
+    if (!SUPPORTED_PLATFORMS.some((p) => p.id === k) || !v || typeof v !== "object") continue;
+    const message = sanitizeOAuthFailureMessage(v.message);
+    const at = typeof v.at === "string" && Number.isFinite(Date.parse(v.at)) ? v.at : null;
+    if (message && at) out[k] = { at, message };
+  }
+  return out;
+}
+function recordOAuthFailure(platform: string, message: string): void {
+  if (!SUPPORTED_PLATFORMS.some((p) => p.id === platform)) return;
+  oauthFailures = { ...oauthFailures, [platform]: { at: new Date().toISOString(), message: sanitizeOAuthFailureMessage(message) } };
+  saveControlState();
+}
+function clearOAuthFailure(platform: string): void {
+  if (!oauthFailures[platform]) return;
+  const next = { ...oauthFailures };
+  delete next[platform];
+  oauthFailures = next;
+  saveControlState();
+}
+/** منشورات تسويق وُلّدت بحسبة القسط القديمة: سجل المهمة بلا installmentPrice. */
+function staleMarketingCounts(): { unpublished: number; published: number } {
+  const staleIds = new Set<string>();
+  for (const b of ((workspace as any).marketingBriefs || []) as any[]) {
+    if (!b?.quote || b.quote.installmentPrice !== undefined) continue;
+    for (const id of Array.isArray(b.savedPostIds) ? b.savedPostIds : []) staleIds.add(String(id));
+  }
+  let unpublished = 0, published = 0;
+  for (const post of (workspace.posts || []) as any[]) {
+    if (!staleIds.has(String(post?.id))) continue;
+    if (post.status === "published") published += 1;
+    else if (post.status !== "deleted") unpublished += 1;
+  }
+  return { unpublished, published };
+}
+function salesReadinessReport() {
+  const platforms: ReadinessPlatformInput[] = SUPPORTED_PLATFORMS.map((p) => {
+    const conn: any = platformConnections.get(p.id);
+    let credentialsConfigured = false;
+    try { credentialsConfigured = inspectPlatformCredentials(p.id as PlatformId, process.env).connection.configured; } catch { credentialsConfigured = false; }
+    return {
+      id: p.id, name: p.name, realConnector: Boolean(p.realConnector),
+      connected: conn?.status === "connected" && conn?.providerVerified === true,
+      credentialsConfigured,
+      lastOAuthFailure: oauthFailures[p.id] || null,
+    };
+  });
+  const pending = outboundApprovals.filter((r) => r.status === "pending");
+  const oldestAt = pending.reduce<string | null>((acc, r) => (!acc || Date.parse(r.at) < Date.parse(acc) ? r.at : acc), null);
+  const email = getOwnerEmailConfig();
+  return buildSalesReadiness({
+    nowIso: new Date().toISOString(),
+    youtubeOnlyMode: youtubeOnlyModeEnabled(),
+    platforms,
+    commercialBrainEnabled: commercialKillSwitchEnabled(),
+    sendMode: commercialSendMode,
+    ownerAlerts: { enabled: ownerAlertState.enabled, emailConfigured: email.configured && email.fromConfigured },
+    pendingApprovals: { count: pending.length, oldestAt },
+    readyJobs: automationJobs.filter((j: any) => j.status === "ready").length,
+    autoExecuteEnabled: jobAutomationState.autoExecuteApproved,
+    staleMarketing: staleMarketingCounts(),
+    geminiConfigured: Boolean(process.env.GEMINI_API_KEY),
+  });
+}
+app.get("/api/control/sales-readiness", requireOwner, (_req, res) => {
+  res.json({ success: true, readiness: salesReadinessReport(), generatedBy: "deterministic-sales-readiness", usesGemini: false });
+});
+
 app.get("/api/platforms/capabilities", authenticateToken, (_req, res) => {
   res.json({ success: true, platforms: SUPPORTED_PLATFORMS.map(p => ({ ...p, connection: platformConnections.get(p.id) })), connectedPlatforms: connectedPlatformIds(), note: "الاتصال لا يُعتبر حقيقياً إلا بعد OAuth/API فعلي." });
 });
@@ -15365,6 +15443,8 @@ function applyControlSnapshot(control: any): void {
   ownerAlertState = normalizeOwnerAlertState(control.ownerAlerts);
   // B4: مفتاح التنفيذ التلقائي للمهام المعتمدة + عدّاداته — تصمد بعد restart (بلا سرّ).
   jobAutomationState = normalizeJobAutomationState(control.jobAutomation);
+  // جاهزية البيع: آخر فشل ربط OAuth لكل منصة (نص منقّى بلا أسرار) — يصمد بعد restart.
+  oauthFailures = normalizeOAuthFailures(control.oauthFailures);
 }
 
 /** يقرأ حالة التحكّم متزامناً (backend الملف) عند الإقلاع. */
@@ -15436,6 +15516,8 @@ function buildControlState() {
     ownerAlerts: ownerAlertState,
     // B4: مفتاح التنفيذ التلقائي + عدّاداته — تصمد بعد restart (بلا سرّ).
     jobAutomation: jobAutomationState,
+    // جاهزية البيع: آخر فشل ربط لكل منصة (بلا أسرار) حتى ينجح الربط التالي.
+    oauthFailures,
   };
 }
 
