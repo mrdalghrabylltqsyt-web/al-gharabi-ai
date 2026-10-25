@@ -1,6 +1,10 @@
 [build]
   command = "npm run build"
   publish = "dist"
+  # الخطة المجانية (رصيد بناء Netlify محدود): الموقع هنا واجهة + proxy فقط، فلا
+  # يُعاد البناء إلا إذا تغيّر ما يدخل حزمة الواجهة. أغلب الدمج يمسّ الخادم
+  # (server.ts/engine) الذي يعمل على Render وحده. exit 0 = تخطٍّ، 1 = بناء.
+  ignore = "git diff --quiet $CACHED_COMMIT_REF $COMMIT_REF -- src index.html public vite.config.ts netlify.toml netlify package.json package-lock.json tsconfig.json"
 
 # تثبيت نسخة Node على Netlify: الكود والاختبارات مبنية على Node 20+،
 # وتثبيتها يمنع أي انحراف في بيئة البناء بين المحلي والنشر.

@@ -86,6 +86,15 @@ try {
   if (typeof mod.handler !== 'function') throw new Error('توقف الاختبار: لا يوجد handler');
   const handler = mod.handler;
 
+  // ★ الدالة معطّلة افتراضياً (لا خادم ثانٍ يكتب القاعدة): 410 بلا تحميل server.ts.
+  delete process.env.GHARABI_NETLIFY_FUNCTION_ENABLED;
+  const off = await handler(apiEvent('/api/health'), {});
+  check('★ الدالة معطّلة افتراضياً ⇒ 410', off.statusCode === 410, `got ${off.statusCode}`);
+  check('★ رد التعطيل كود صريح', JSON.parse(off.body || '{}').code === 'NETLIFY_FUNCTION_RETIRED', off.body);
+  const offWrite = await handler(apiEvent('/api/auth/request-owner-challenge', 'POST', { email: 'probe@example.com' }), {});
+  check('★ لا مسار كتابة عبر الدالة المعطّلة', offWrite.statusCode === 410, `got ${offWrite.statusCode}`);
+  process.env.GHARABI_NETLIFY_FUNCTION_ENABLED = '1';
+
   await (async () => {
     // أ) /api/health يصل إلى Express ويعيد 200 لا 404.
     const h = await handler(apiEvent('/api/health'), {});
