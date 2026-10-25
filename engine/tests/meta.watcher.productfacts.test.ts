@@ -41,6 +41,8 @@ const stateDir = mkdtempSync(join(tmpdir(), 'gharabi-meta-facts-'));
 // معرّف منشور رابط بالمنتج: يطابق publishRecord.providerPostId أدناه.
 const LINKED_POST = 'POST_LINKED_PRICE';
 const UNLINKED_POST = 'POST_UNLINKED';
+// منشور غير مربوط صراحةً لكن نصّه يسمّي منتجاً من المخزن (أغلب منشورات الإنتاج).
+const NAMED_POST = 'POST_NAMED_NOT_LINKED';
 
 function startApp(fbBase: string): { proc: ChildProcess; log: () => string } {
   let log = '';
@@ -116,6 +118,9 @@ async function main(): Promise<void> {
       { id: UNLINKED_POST, comments: [
         { id: 'C_UNLINKED', message: 'شنو سعر التلفزيون؟', from: { id: 'U10', name: 'حسين' }, created_time: '2026-02-01T00:01:00+0000' },
       ] },
+      { id: NAMED_POST, message: 'ثلاجة كولر 18 قدم صارت أسهل ويا معرض الغرابي 🌟 تقسيط ميسر', comments: [
+        { id: 'C_NAMED', message: 'شكد سعرها؟', from: { id: 'U11', name: 'علي' }, created_time: '2026-02-01T00:02:00+0000' },
+      ] },
     ],
   }));
   let app = startApp(mock.base);
@@ -142,9 +147,10 @@ async function main(): Promise<void> {
     const poll = await (await fetch(`${BASE}/api/agent/meta/watcher/poll`, { method: 'POST', headers: auth, body: '{}' })).json();
     check('الدورة تعمل', poll.success === true, JSON.stringify(poll));
     const rep = mock.state.commentReplies;
-    check('أُرسل رد فعلي واحد على التعليق المرتبط', rep.length === 1, `replies=${rep.length}`);
-    check('الرد على التعليق المرتبط الصحيح', rep[0]?.commentId === 'C_LINKED', JSON.stringify(rep[0]));
-    const text = String(rep[0]?.message || '');
+    const linkedReply = rep.find((r) => r.commentId === 'C_LINKED');
+    check('أُرسل رد فعلي واحد على التعليق المرتبط', rep.filter((r) => r.commentId === 'C_LINKED').length === 1, `replies=${rep.length}`);
+    check('الرد على التعليق المرتبط الصحيح', Boolean(linkedReply), JSON.stringify(rep));
+    const text = String(linkedReply?.message || '');
     check('الرد يذكر السعر المسجّل فعلاً', text.includes('1,000,000'), text);
     // القسط = ceil((1,000,000 + 25%) ÷ 12) = ceil(1,250,000 ÷ 12) = 104,167 (لا cash/المدة).
     check('الرد يذكر القسط الشهري المشتقّ (104,167)', text.includes('104,167'), text);
@@ -159,13 +165,19 @@ async function main(): Promise<void> {
     check('لم يُرسل رد للتعليق غير المرتبط', !rep.some((r) => r.commentId === 'C_UNLINKED'));
     check('سجل الرد المرتبط بمعرّف مزوّد حقيقي', Boolean((owner.watcher?.recent || []).find((r: any) => r.commentId === 'C_LINKED' && r.stage === 'REPLIED' && r.externalReplyId)), JSON.stringify((owner.watcher?.recent || []).find((r: any) => r.commentId === 'C_LINKED')));
 
+    group('5ب) منشور غير مربوط لكن نصّه يسمّي المنتج ⇒ رد من المخزن (لا تصعيد)');
+    const namedReply = rep.find((r) => r.commentId === 'C_NAMED');
+    check('★ «شكد سعرها؟» على منشور يسمّي ثلاجة كولر 18 قدم ⇒ رد فعلي', Boolean(namedReply), JSON.stringify(rep.map((r) => r.commentId)));
+    check('★ الرد يحمل سعر المخزن والقسط', String(namedReply?.message || '').includes('1,000,000') && String(namedReply?.message || '').includes('104,167'), String(namedReply?.message || ''));
+    check('مجموع الردود = 2 (المرتبط + المسمّى)، والتلفزيون بلا رد', rep.length === 2, `replies=${rep.length}`);
+
     group('6) إعادة التشغيل: لا رد مكرر ويصمد السجل');
     await stop(app.proc);
     app = startApp(mock.base);
     check('الخادم يقلع بعد restart', await waitForHealth(), app.log().slice(0, 400));
     Object.assign(auth, await login());
     await fetch(`${BASE}/api/agent/meta/watcher/poll`, { method: 'POST', headers: auth, body: '{}' });
-    check('لا رد مكرر بعد إعادة التشغيل', mock.state.commentReplies.length === 1, `replies=${mock.state.commentReplies.length}`);
+    check('لا رد مكرر بعد إعادة التشغيل', mock.state.commentReplies.length === 2, `replies=${mock.state.commentReplies.length}`);
   } finally {
     await stop(app.proc);
     await mock.stop();

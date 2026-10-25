@@ -6186,6 +6186,27 @@ add('watcher-advisory-not-authority',
       'مهمة Telegram المعتمدة تمرّ بحارس سلامة المحتوى قبل الإرسال (كانت الثغرة الوحيدة بين مسارات الإرسال)');
   }
 
+  // 11f) ربط العقل والعقول المساعدة بمخزن المنتجات: مصدر واحد لحسم المنتج.
+  {
+    const pr = fs.existsSync(path.join(root, 'engine/social/productResolution.ts')) ? read('engine/social/productResolution.ts') : '';
+    const calls = (server.match(/resolveProductForInteraction\(\{/g) || []).length;
+    add('brain-catalog-single-product-resolution',
+      pr.includes('export function resolveInteractionProduct') && pr.includes('export function conflictsWithComment') &&
+      server.includes('function resolveProductForInteraction(') && calls >= 5 &&
+      // البوابة لم تعد تقرأ الربط الصريح وحده في المراقبين/المسودات.
+      !/const productRes = resolveProductForPost\(c\.postId \|\| c\.mediaId \|\| null\);/.test(server) &&
+      !/const videoProductRes = resolveYouTubeVideoProduct\(c\.videoId\);/.test(server) &&
+      server.includes('productFact: resolution.fact') && server.includes('extraFacts: meta.productFact ?') &&
+      read('package.json').includes('npm run test:product-resolution'),
+      'العقل المركزي والعقول المساعدة ومولّد الرد يحسمون المنتج من مصدر واحد (اهتمام ← ربط ← نص المنشور ← نص الزبون) ويقرؤون سعره وقسطه من المخزن');
+  }
+
+  add('agent-ai-step-deadline',
+    read('engine/ai/engine.ts').includes('deadlineMs?: number;') && read('engine/ai/engine.ts').includes('perModelTimeout = Math.min(this.timeoutMs, remaining)') &&
+    server.includes('deadlineMs: AGENT_AI_DEADLINE_MS') && /const AGENT_AI_DEADLINE_MS = 1\d_000;/.test(server) &&
+    read('package.json').includes('npm run test:ai-deadline'),
+    'نداء AI داخل أداة الوكيل بميزانية كلية أقل من مهلة الخطوة ⇒ البديل الآمن يعود بدل فشل المهمة (TIMEOUT 40s)');
+
   // 12) AGENTS.md: عدد فحوصات final-audit مطابق للفعلي (يُعَدّ من نص الملف نفسه).
   const auditCount = (read('final-audit.mjs').match(/^\s*add\(/gm) || []).length;
   add('agents-audit-count-accurate',
