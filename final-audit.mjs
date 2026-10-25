@@ -6207,6 +6207,27 @@ add('watcher-advisory-not-authority',
     read('package.json').includes('npm run test:ai-deadline'),
     'نداء AI داخل أداة الوكيل بميزانية كلية أقل من مهلة الخطوة ⇒ البديل الآمن يعود بدل فشل المهمة (TIMEOUT 40s)');
 
+  // 11g) فحص شاشات المالك (2026-10-25): كل رقم من مصدره الحقيقي، والربط بالمنتج لا يضيع.
+  add('screens-analytics-real-sources',
+    server.includes('posts: records.filter((r) => r.platform === p.id && okRecord(r)).length,') &&
+    server.includes('inbound: { total: inbound.length,') && server.includes('inquiries: { total: inbound.filter(isInquiry).length') &&
+    server.includes('metrics: providerMetrics ? metrics : { views:null') &&
+    read('src/components/analytics/AnalyticsView.tsx').includes("['التعليقات والرسائل المستلمة',data?.inbound?.total ?? null]"),
+    'التحليلات: منشورات فعلية بمعرّف منصة، تعليقات/استفسارات مستلمة فعلاً، ومؤشرات غير مجلوبة «—» لا صفر');
+  add('screens-readiness-live-overlay',
+    server.includes("oauth: live && r.oauth === 'EXTERNAL_SETUP_REQUIRED' ? 'READY' : r.oauth,") &&
+    read('src/components/social/SocialManagerView.tsx').includes("v === 'NOT_NEEDED'"),
+    'مصفوفة الجاهزية: منصة مربوطة فعلاً لا تظهر «إعداد خارجي» في OAuth/التحقق');
+  add('screens-open-conversations-include-social',
+    server.includes('const openConversations = crmOpenConversations + socialOpenConversations;'),
+    'المحادثات المفتوحة تشمل زبائن المنصات (لا CRM اليدوي وحده)');
+  add('posts-keep-product-link',
+    server.includes('const inferredProduct = explicitProductId ? null : productNamedInText(') &&
+    server.includes('productLinkSource: product?.id ? "marketing_agent" : undefined,') &&
+    server.includes('productLinkSource: product?.id ? "campaign" : undefined,') &&
+    server.includes('(linkedPost as any).campaignLink?.productId'),
+    'المنشور يحفظ ربط منتجه: تلقائياً من النص، ومن وكيل التسويق والحملات (كان يضيع)');
+
   // 12) AGENTS.md: عدد فحوصات final-audit مطابق للفعلي (يُعَدّ من نص الملف نفسه).
   const auditCount = (read('final-audit.mjs').match(/^\s*add\(/gm) || []).length;
   add('agents-audit-count-accurate',

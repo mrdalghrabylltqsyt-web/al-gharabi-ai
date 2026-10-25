@@ -513,7 +513,9 @@ export const SocialManagerView: React.FC = () => {
                     ? <span className="text-emerald-400 font-bold">READY</span>
                     : v === 'EXTERNAL_SETUP_REQUIRED'
                       ? <span className="text-amber-400">إعداد خارجي</span>
-                      : <span className="text-slate-600">غير مدعوم بعد</span>;
+                      : v === 'NOT_NEEDED'
+                        ? <span className="text-slate-400" title="المنصة تُقرأ دورياً؛ webhook غير لازم">لا يلزم</span>
+                        : <span className="text-slate-600">غير مدعوم بعد</span>;
                   return (
                     <tr key={r.platform} className="border-b border-slate-800/60">
                       <td className="py-2 px-2 font-bold text-white whitespace-nowrap">{r.displayName}</td>

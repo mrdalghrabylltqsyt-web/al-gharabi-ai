@@ -49,31 +49,29 @@ export const AnalyticsView: React.FC = () => {
         <div className="p-5 rounded-2xl glass space-y-2">
           <span className="text-xs text-slate-400 block font-semibold">إجمالي المتابعين الموثقين</span>
           <div className="flex items-baseline gap-2">
-            <span className="text-2xl sm:text-3xl font-black text-white">
-              {(data?.channels || []).reduce((a:any,x:any) => a + 0, 0).toLocaleString()}
-            </span>
+            <span className="text-2xl sm:text-3xl font-black text-slate-500">—</span>
           </div>
-          <p className="text-[11px] text-slate-500">لا توجد بيانات متابعين خارجية محفوظة بعد • {connectedPlatformsCount} منصة متصلة</p>
+          <p className="text-[11px] text-slate-500">غير متاح: لم يُجلب عدد المتابعين من المنصات بعد • {connectedPlatformsCount} منصة متصلة</p>
         </div>
 
         <div className="p-5 rounded-2xl glass space-y-2">
           <span className="text-xs text-slate-400 block font-semibold">المنشورات والمحتوى</span>
           <div className="flex items-baseline gap-2">
             <span className="text-2xl sm:text-3xl font-black text-emerald-400">
-              {posts?.total || 0}
+              {posts?.verifiedPublished ?? posts?.total ?? 0}
             </span>
           </div>
-          <p className="text-[11px] text-slate-500">إجمالي المنشورات المجدولة والمنشورة</p>
+          <p className="text-[11px] text-slate-500">منشور وصل فعلاً بمعرّف من المنصة ({posts?.verifiedPublishes ?? 0} نشر على المنصات) • {posts?.total || 0} في مركز المحتوى</p>
         </div>
 
         <div className="p-5 rounded-2xl glass space-y-2">
           <span className="text-xs text-slate-400 block font-semibold">استفسارات التقسيط الواردة</span>
           <div className="flex items-baseline gap-2">
             <span className="text-2xl sm:text-3xl font-black text-white">
-              {conversations?.total || 0}
+              {data?.inquiries?.total ?? conversations?.total ?? 0}
             </span>
           </div>
-          <p className="text-[11px] text-slate-500">محادثة واستفسار عبر القنوات المربوطة</p>
+          <p className="text-[11px] text-slate-500">تعليق/رسالة صنّفها النظام استفسار سعر/قسط/توفر • {data?.inquiries?.customers ?? 0} زبون متابَع</p>
         </div>
 
         <div className="p-5 rounded-2xl glass space-y-2">
@@ -87,7 +85,8 @@ export const AnalyticsView: React.FC = () => {
         </div>
       </div>
 
-      <div className="grid grid-cols-2 lg:grid-cols-5 gap-3">{[['المشاهدات',metrics.views],['الإعجابات',metrics.likes],['التعليقات',metrics.comments],['المشاركات',metrics.shares],['الوصول',metrics.reach]].map(([label,value])=><div key={label} className="p-4 rounded-2xl glass"><p className="text-[11px] text-slate-500">{label}</p><p className="text-lg font-black text-white mt-1">{Number(value||0).toLocaleString()}</p></div>)}</div>
+      <div className="grid grid-cols-2 lg:grid-cols-5 gap-3">{[['المشاهدات',metrics.views],['الإعجابات',metrics.likes],['التعليقات والرسائل المستلمة',data?.inbound?.total ?? null],['المشاركات',metrics.shares],['الوصول',metrics.reach]].map(([label,value])=><div key={label} className="p-4 rounded-2xl glass"><p className="text-[11px] text-slate-500">{label}</p><p className={`text-lg font-black mt-1 ${value === null || value === undefined ? 'text-slate-500' : 'text-white'}`}>{value === null || value === undefined ? '—' : Number(value).toLocaleString()}</p></div>)}</div>
+      {!data?.externalMetricsAvailable && <p className="text-[11px] text-slate-500 -mt-3">«—» = لم يُجلب هذا المؤشر من المنصات بعد (لا نعرض صفراً غير حقيقي). التعليقات والرسائل رقم حقيقي مستلم فعلاً.</p>}
 
       {/* Platform Comparison Table */}
       <div className="p-6 rounded-2xl glass space-y-4">
@@ -105,7 +104,8 @@ export const AnalyticsView: React.FC = () => {
                 <th className="pb-3 font-semibold">حالة الاتصال</th>
                 <th className="pb-3 font-semibold">المتابعون</th>
                 <th className="pb-3 font-semibold">معدل التفاعل</th>
-                <th className="pb-3 font-semibold">عدد المنشورات</th>
+                <th className="pb-3 font-semibold">منشورات فعلية</th>
+                <th className="pb-3 font-semibold">تعليقات/رسائل مستلمة</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-800/80">
@@ -139,7 +139,8 @@ export const AnalyticsView: React.FC = () => {
                   <td className="py-3.5 text-emerald-400 font-mono font-bold">
                     —
                   </td>
-                  <td className="py-3.5 text-slate-300 font-mono">{p.posts || 0}</td>
+                  <td className="py-3.5 text-slate-300 font-mono" title={p.planned !== undefined ? `مستهدفة في ${p.planned} منشور • فشل ${p.failed || 0}` : undefined}>{p.posts || 0}{p.failed ? <span className="text-rose-400/80 text-[10px] mr-1">({p.failed} فشل)</span> : null}</td>
+                  <td className="py-3.5 text-slate-300 font-mono">{p.inbound ?? '—'}</td>
                 </tr>
               ))}
             </tbody>

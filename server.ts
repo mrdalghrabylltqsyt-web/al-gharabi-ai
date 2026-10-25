@@ -713,7 +713,7 @@ import { neonUsageApiConfig, fetchNeonActualUsage, NEON_USAGE_POLL_MIN_INTERVAL_
 import { buildSalesReadiness, sanitizeOAuthFailureMessage, type ReadinessPlatformInput } from "./engine/ops/salesReadiness";
 import { backupFreshness } from "./engine/dr/autoBackup";
 import { summarizePublishHealth, formatPublishLogLine } from "./engine/ops/publishHealth";
-import { resolveInteractionProduct, productFactStatement, type ProductResolution } from "./engine/social/productResolution";
+import { resolveInteractionProduct, productFactStatement, productNamedInText, type ProductResolution } from "./engine/social/productResolution";
 import { decideCoalescedWrite, type CoalesceMemo, USAGE_INDICATOR_VOLATILE_PATHS } from "./engine/ops/writeCoalescing";
 import { SESSION_TTL_MS, signSession, verifySession, type SessionPayload } from "./engine/auth/sessions";
 import { CHALLENGE_TTL_MS, issueChallengeCode, matchChallengeWindow } from "./engine/auth/challenge";
@@ -8631,6 +8631,8 @@ function resolveProductForPost(postExternalId: string | null): any | null {
     // (الدليل الصريح) — فتُستخدم حقائق السعر/القسط في الردود بعد الربط.
     const linkedPost = (workspace.posts || []).find((p: any) => String(p.id) === String(rec?.postId || ''));
     if (linkedPost && (linkedPost as any).productId) ids.add(String((linkedPost as any).productId));
+    // منشورات الحملات القديمة حفظت المنتج في campaignLink فقط (قبل إصلاح 2026-10-25).
+    else if (linkedPost && (linkedPost as any).campaignLink?.productId) ids.add(String((linkedPost as any).campaignLink.productId));
   }
   if (ids.size !== 1) return null;
   const id = [...ids][0];
@@ -13127,7 +13129,22 @@ app.get("/api/platforms/readiness-matrix", authenticateToken, (_req,res)=>{
   // الصفوف الغنية: جاهزية الكود + حالة الاعتماد + الحالة التشغيلية الآن + الحجب والإجراء التالي.
   const fbPending = facebookPageSelectionPending();
   const igPending = instagramPageSelectionPending();
-  const platforms = buildReadinessDetails(liveFor, process.env).map((r)=>({ ...r, pageSelectionPending: r.platform === 'facebook' ? fbPending : r.platform === 'instagram' ? igPending : undefined, connection: { status: r.connected ? "connected" : "disconnected", providerVerified: r.providerVerified, accountName: null } }));
+  // فحص الشاشات (2026-10-25): أعمدة OAuth/التحقق كانت ثابتة من الكود فتظهر «إعداد
+  // خارجي» لمنصة مربوطة فعلاً (TikTok/YouTube/Facebook/Instagram) — تناقض أمام المالك.
+  // الاتصال الموثّق الحي يعني أن OAuth والتحقق اكتملا ⇒ READY. وwebhook لمنصة تُقرأ
+  // دورياً (YouTube/TikTok) ليس عائقاً ⇒ NOT_NEEDED («لا يلزم»).
+  const POLLING_READ: Record<string, boolean> = { youtube: true, tiktok: true, threads: true };
+  const platforms = buildReadinessDetails(liveFor, process.env).map((r: any)=>{
+    const live = Boolean(r.connected && r.providerVerified);
+    return {
+      ...r,
+      oauth: live && r.oauth === 'EXTERNAL_SETUP_REQUIRED' ? 'READY' : r.oauth,
+      verification: live && r.verification === 'EXTERNAL_SETUP_REQUIRED' ? 'READY' : r.verification,
+      webhook: live && r.webhook === 'EXTERNAL_SETUP_REQUIRED' && POLLING_READ[r.platform] ? 'NOT_NEEDED' : r.webhook,
+      pageSelectionPending: r.platform === 'facebook' ? fbPending : r.platform === 'instagram' ? igPending : undefined,
+      connection: { status: r.connected ? "connected" : "disconnected", providerVerified: r.providerVerified, accountName: null },
+    };
+  });
   res.json({success:true,generatedAt:new Date().toISOString(),projectVersion:PROJECT_VERSION,summary:readinessSummary(),platforms,note:"levels أعلاه تصف الكود؛ operational تصف ما يعمل الآن فعلاً، وstate هي الحالة الجامعة الدقيقة. لا تحمل أي سرّ."});
 });
 
@@ -14210,10 +14227,18 @@ app.get("/api/workspace/snapshot", authenticateToken, (req, res) => {
 app.get("/api/workspace/summary", authenticateToken, (_req, res) => {
   const connected = connectedPlatformIds();
   const activePosts = workspace.posts.filter((p: any) => ["review", "approved", "scheduled", "published"].includes(p.status)).length;
-  const openConversations = workspace.conversations.filter((c: any) => c.status !== "resolved").length;
+  const crmOpenConversations = workspace.conversations.filter((c: any) => c.status !== "resolved").length;
+  // فحص الشاشات (2026-10-25): «المحادثات المفتوحة 0» بينما 15 زبوناً ينتظرون الرد —
+  // العدّاد كان يقرأ محادثات CRM اليدوية فقط. الزبائن الحقيقيون من المنصات هم Leads
+  // العقل التجاري غير المؤرشفة؛ يُجمعان (بلا تكرار مصدر).
+  const socialOpenConversations = commercialLeads.filter((l: any) => !l.archived && !["WON", "LOST", "CLOSED"].includes(String(l.stage || ""))).length;
+  const openConversations = crmOpenConversations + socialOpenConversations;
   res.json({
     success: true,
     summary: {
+      crmOpenConversations,
+      socialOpenConversations,
+      pendingCustomerReplies: commercialDrafts.filter((d: any) => d.status === "pending").length,
       showroomConfigured: Boolean(workspace.showroom?.name && workspace.showroom?.name.trim()),
       products: workspace.products.length,
       inStockProducts: workspace.products.filter((p: any) => p.inStock !== false).length,
@@ -14460,8 +14485,14 @@ app.post("/api/workspace/content", authenticateToken, (req, res) => {
   // ROOT-7: معرّف المنتج يُحفظ فقط إن طابق منتجاً مسجّلاً فعلاً (بلا اختراع ربط).
   // بدون حفظه لا يمكن ربط المنشور بالمنتج عند النشر، فتفقد الردود حقائق السعر/القسط.
   const productIdRaw = typeof b.productId === "string" ? b.productId.trim() : "";
-  const productId = productIdRaw && (workspace.products || []).some((p: any) => String(p.id) === productIdRaw) ? productIdRaw : undefined;
-  const post = { id: cleanText(b.id, 100) || workspaceId("post"), title: cleanText(b.title, 160) || "مسودة جديدة", content, platformVersions: b.platformVersions && typeof b.platformVersions === "object" ? b.platformVersions : undefined, targetPlatforms: targets, mediaUrl: cleanText(b.mediaUrl, 500) || undefined, mediaType: ["image","video","carousel"].includes(b.mediaType) ? b.mediaType : undefined, productId, status: resolvedStatus, scheduledFor: normalizeScheduleInput(b.scheduledFor) ?? undefined, publishedAt: cleanText(b.publishedAt, 80) || undefined, createdAt: cleanText(b.createdAt, 80) || new Date().toISOString(), authorId: user.id, authorName: cleanText(b.authorName, 160) || user.name, authorRole: cleanText(b.authorRole, 40) || user.role, history: Array.isArray(b.history) ? b.history.slice(-50) : [], metrics: b.metrics && typeof b.metrics === "object" ? b.metrics : undefined, tags: Array.isArray(b.tags) ? b.tags.filter((x:any)=>typeof x === "string").slice(0,20) : [], campaignName: cleanText(b.campaignName, 160) };
+  const explicitProductId = productIdRaw && (workspace.products || []).some((p: any) => String(p.id) === productIdRaw) ? productIdRaw : undefined;
+  // فحص الشاشات (2026-10-25): مركز المحتوى يبدأ «بدون تحديد منتج» فتُحفظ أغلب المنشورات
+  // بلا ربط ⇒ أسئلة السعر عليها تُصعَّد. إن سمّى العنوان/النص منتجاً **واحداً** من المخزن
+  // يُربط تلقائياً (نفس قاعدة الحسم الصارمة)، ويُعلَّم مصدر الربط للشفافية.
+  const inferredProduct = explicitProductId ? null : productNamedInText(`${cleanText(b.title, 160)} ${content}`, (workspace.products || []) as any[]);
+  const productId = explicitProductId || (inferredProduct ? String(inferredProduct.id) : undefined);
+  const productLinkSource = explicitProductId ? "owner" : (inferredProduct ? "auto_name" : undefined);
+  const post = { id: cleanText(b.id, 100) || workspaceId("post"), title: cleanText(b.title, 160) || "مسودة جديدة", content, productLinkSource, platformVersions: b.platformVersions && typeof b.platformVersions === "object" ? b.platformVersions : undefined, targetPlatforms: targets, mediaUrl: cleanText(b.mediaUrl, 500) || undefined, mediaType: ["image","video","carousel"].includes(b.mediaType) ? b.mediaType : undefined, productId, status: resolvedStatus, scheduledFor: normalizeScheduleInput(b.scheduledFor) ?? undefined, publishedAt: cleanText(b.publishedAt, 80) || undefined, createdAt: cleanText(b.createdAt, 80) || new Date().toISOString(), authorId: user.id, authorName: cleanText(b.authorName, 160) || user.name, authorRole: cleanText(b.authorRole, 40) || user.role, history: Array.isArray(b.history) ? b.history.slice(-50) : [], metrics: b.metrics && typeof b.metrics === "object" ? b.metrics : undefined, tags: Array.isArray(b.tags) ? b.tags.filter((x:any)=>typeof x === "string").slice(0,20) : [], campaignName: cleanText(b.campaignName, 160) };
   workspace.posts.unshift(post); persistState(); audit(user.id, "workspace_content_created", post.id); res.status(201).json({ success: true, post });
 });
 
@@ -15040,9 +15071,38 @@ app.get("/api/analytics/overview", authenticateToken, (_req, res) => {
   const posts = workspace.posts;
   const conversations = workspace.conversations;
   const statusCount = (status: string) => posts.filter((p:any) => p.status === status).length;
-  const channels = SUPPORTED_PLATFORMS.map(p => ({ platform: p.id, name: p.name, connected: platformConnections.get(p.id)?.status === "connected", posts: posts.filter((x:any) => (x.targetPlatforms || []).includes(p.id)).length, conversations: conversations.filter((x:any) => x.channel === p.id).length }));
+  // فحص الشاشات (2026-10-25): الجدول كان يعدّ «عدد المنشورات» من المنصات **المستهدفة**
+  // (حتى X/Snapchat/WhatsApp التي لا تنشر، والمنشورات الفاشلة)، و«التعليقات» و«الاستفسارات»
+  // صفراً رغم 156 تعليقاً حقيقياً مستلماً. الآن كل رقم من مصدره الحقيقي:
+  //  - منشور فعلي = سجل نشر بمعرّف حقيقي من المنصة (published/scheduled).
+  //  - التعليقات/الرسائل = ما استُلم فعلاً (socialComments).
+  //  - الاستفسارات = ما صنّفه المحرّك استفساراً تجارياً + عدد الزبائن المتابَعين.
+  //  - مؤشرات المزود (مشاهدات/إعجابات/وصول) null ما لم تُجلب فعلاً — لا صفر مُضلِّل.
+  const records = (((workspace as any).publishRecords || []) as any[]).filter((r) => !r?.simulated);
+  const okRecord = (r: any) => Boolean(r?.providerPostId || r?.externalVideoId) && (r?.state === "published" || r?.state === "scheduled");
+  const inbound = ((workspace as any).socialComments || []) as any[];
+  const isInquiry = (c: any) => { const k = c?.classification || {}; return k.isBusinessInquiry === true || k.intent === "business_inquiry" || ["price","installment","installment_terms","availability"].includes(String(k.topic || "")); };
+  const providerMetrics = posts.some((p:any) => p.metricSource === "provider_verified");
+  const channels = SUPPORTED_PLATFORMS.map(p => ({
+    platform: p.id, name: p.name,
+    connected: platformConnections.get(p.id)?.status === "connected",
+    posts: records.filter((r) => r.platform === p.id && okRecord(r)).length,
+    planned: posts.filter((x:any) => (x.targetPlatforms || []).includes(p.id)).length,
+    failed: records.filter((r) => r.platform === p.id && r.state === "failed").length,
+    inbound: inbound.filter((c) => c.platform === p.id).length,
+    conversations: conversations.filter((x:any) => x.channel === p.id).length,
+  }));
   const metrics = posts.reduce((a:any,p:any) => { const m=p.metrics || {}; a.views += Number(m.views)||0; a.likes += Number(m.likes)||0; a.comments += Number(m.comments)||0; a.shares += Number(m.shares)||0; a.reach += Number(m.reach)||0; return a; }, { views:0, likes:0, comments:0, shares:0, reach:0 });
-  res.json({ success:true, source:"local_workspace", externalMetricsAvailable:false, generatedAt:new Date().toISOString(), posts:{ total:posts.length, drafts:statusCount("draft"), review:statusCount("review"), approved:statusCount("approved"), scheduled:statusCount("scheduled"), published:statusCount("published") }, conversations:{ total:conversations.length, new:conversations.filter((x:any)=>x.status==="new").length, open:conversations.filter((x:any)=>x.status!=="resolved").length, resolved:conversations.filter((x:any)=>x.status==="resolved").length }, metrics, channels });
+  const publishedPostIds = new Set(records.filter(okRecord).map((r) => String(r.postId || "")).filter(Boolean));
+  res.json({
+    success:true, source:"local_workspace", externalMetricsAvailable: providerMetrics, generatedAt:new Date().toISOString(),
+    posts:{ total:posts.length, drafts:statusCount("draft"), review:statusCount("review"), approved:statusCount("approved"), scheduled:statusCount("scheduled"), published:statusCount("published"), verifiedPublished: publishedPostIds.size, verifiedPublishes: records.filter(okRecord).length },
+    conversations:{ total:conversations.length, new:conversations.filter((x:any)=>x.status==="new").length, open:conversations.filter((x:any)=>x.status!=="resolved").length, resolved:conversations.filter((x:any)=>x.status==="resolved").length },
+    inbound: { total: inbound.length, comments: inbound.filter((c) => c.kind !== "message").length, messages: inbound.filter((c) => c.kind === "message").length },
+    inquiries: { total: inbound.filter(isInquiry).length, customers: commercialLeads.length },
+    metrics: providerMetrics ? metrics : { views:null, likes:null, comments:null, shares:null, reach:null },
+    channels,
+  });
 });
 
 app.get("/api/system/diagnostics", requireOwner, (_req, res) => {
@@ -19967,6 +20027,9 @@ app.post("/api/ai/content-brief", authenticateToken, (req, res) => {
         authorId: user.id, authorName: user.name, authorRole: user.role,
         history: [{ id: workspaceId("act"), byUser: user.name, userRole: user.role, action: "create", timestamp: createdAt, note: "أُنشئ بواسطة وكيل الغرابي الذكي" }],
         tags: ["تقسيط_منتجات", "معرض_الغرابي", piece.platform], campaignName: cleanText(b.campaignName, 160) || undefined,
+        // كان الوكيل يعرف المنتج ولا يحفظ معرّفه على المنشور ⇒ يضيع الربط عند النشر.
+        productId: product?.id ? String(product.id) : undefined,
+        productLinkSource: product?.id ? "marketing_agent" : undefined,
       };
       workspace.posts.unshift(post);
       savedPostIds.push(post.id);
@@ -20290,6 +20353,8 @@ app.post("/api/ai/marketing-campaigns", authenticateToken, (req, res) => {
           tags: ["تقسيط_منتجات", "معرض_الغرابي", piece.platform], campaignName: name,
           // Durable, single-source link between the post and its campaign draft.
           campaignLink: { campaignId, campaignName: name, draftId: taskId, productId: product.id, productName: product.name, platform: piece.platform, linkedAt: createdAt },
+          productId: product?.id ? String(product.id) : undefined,
+          productLinkSource: product?.id ? "campaign" : undefined,
         };
         workspace.posts.unshift(post);
         drafts.push({ taskId, title: post.title, platform: piece.platform, postId: post.id, createdAt, decision: null, decidedAt: null, decidedBy: null, decisionNote: null });
