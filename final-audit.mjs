@@ -6054,6 +6054,26 @@ add('watcher-advisory-not-authority',
       'اختبار جاهزية البيع مسجّل ضمن npm test');
   }
 
+  // تنبيه المالك الفوري عبر Telegram: محادثة المالك الخاصة فقط، بلا تكرار، بحدّ معدّل.
+  {
+    const tg = read('engine/notifications/ownerTelegram.ts');
+    add('owner-telegram-private-chat-only',
+      tg.includes("/^[1-9]\\d{4,19}$/") && tg.includes("OWNER_TELEGRAM_CHAT_ENV = 'OWNER_TELEGRAM_CHAT_ID'"),
+      'معرّف محادثة المالك رقم موجب فقط (لا مجموعات/قنوات)');
+    add('owner-telegram-rate-limited',
+      tg.includes('OWNER_TELEGRAM_MAX_PER_HOUR = 20') && tg.includes("decision: 'overflow'") && tg.includes("decision: 'drop'"),
+      'حدّ 20 رسالة/ساعة ثم رسالة تجاوز واحدة');
+    add('owner-telegram-wired-new-alerts-only',
+      server.includes('notifyOwnerTelegramInstant(newlyQueuedAlerts(before, ownerAlertState.pending));') &&
+      server.includes("filter((x) => x.kind === 'platform_reauth')") &&
+      server.includes('if (!items.length || !ownerAlertState.enabled || !ownerTelegramConfigured()) return;'),
+      'الإرسال الفوري للأحداث الجديدة فقط ويحترم مفتاح تنبيه المالك');
+    add('owner-telegram-documented-and-tested',
+      read('.env.example').includes('OWNER_TELEGRAM_CHAT_ID=') && read('render.yaml').includes('key: OWNER_TELEGRAM_CHAT_ID') &&
+      read('package.json').includes('npm run test:owner-telegram-alerts'),
+      'OWNER_TELEGRAM_CHAT_ID موثّق واختبار التنبيه الفوري مسجّل');
+  }
+
   // 12) AGENTS.md: عدد فحوصات final-audit مطابق للفعلي (يُعَدّ من نص الملف نفسه).
   const auditCount = (read('final-audit.mjs').match(/^\s*add\(/gm) || []).length;
   add('agents-audit-count-accurate',

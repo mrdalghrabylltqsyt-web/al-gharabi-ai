@@ -15,7 +15,7 @@ interface Report { score: number; verdict: 'selling' | 'partial' | 'blocked'; ve
 export function readinessTargetTab(id: string): string | null {
   if (id === 'customers-waiting') return 'commercial_inbox';
   if (id.startsWith('platform-') || id === 'no-sales-channel') return 'platform_connections';
-  if (id === 'owner-alerts') return 'system';
+  if (id === 'owner-alerts' || id === 'owner-telegram') return 'system';
   if (id === 'commercial-brain') return 'commercial_kill_switch';
   if (id === 'ready-jobs') return 'control';
   if (id.startsWith('stale-marketing')) return 'content';
