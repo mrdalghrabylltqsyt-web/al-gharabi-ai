@@ -52,6 +52,8 @@ export interface SalesReadinessInput {
   };
   /** صحة النشر الفعلي على كل منصة متصلة (من سجل النشر الحقيقي). */
   publishing?: Array<PublishHealthPlatform & { name: string }>;
+  /** قراءة التعليقات لكل منصة متصلة: هل تفشل الآن (لا يصل أي تعليق زبون)؟ */
+  commentIngest?: Array<{ platform: string; name: string; failing: boolean; reason: string; code: string | null }>;
 }
 
 export interface ReadinessItem {
@@ -325,6 +327,20 @@ export function buildSalesReadiness(input: SalesReadinessInput): SalesReadinessR
     }
   }
 
+  // 8c) قراءة تعليقات الزبائن — منصة متصلة لا تُقرأ تعليقاتها = زبائن بلا رد.
+  for (const c of input.commentIngest || []) {
+    if (!c.failing) continue;
+    const reauth = /\.190\b|REAUTH|TOKEN/i.test(String(c.code || ''));
+    push({
+      id: `comments-${c.platform}`, area: 'customers', actor: reauth ? 'owner' : 'system', severity: 'blocker',
+      title: `تعليقات ${c.name} لا تصل`,
+      detail: c.reason,
+      action: reauth
+        ? `انتهى تفويض ${c.name}: أعد الربط من مركز ربط المنصات.`
+        : 'النظام يعيد القراءة كل دورة تلقائياً؛ إن استمر أكثر من ساعة راجع صلاحيات القراءة في لوحة المزود.',
+    });
+  }
+
   // 9) معلومات النظام.
   if (input.sendMode !== 'auto') {
     push({
@@ -358,6 +374,7 @@ export function buildSalesReadiness(input: SalesReadinessInput): SalesReadinessR
     input.staleMarketing.unpublished === 0,
     ...(input.backup ? [input.backup.configured && input.backup.level !== 'critical'] : []),
     ...(input.publishing && input.publishing.length ? [input.publishing.every((p) => !failingNow(p))] : []),
+    ...(input.commentIngest && input.commentIngest.length ? [input.commentIngest.every((c) => !c.failing)] : []),
   ];
   const score = checks.length ? Math.round((checks.filter(Boolean).length / checks.length) * 100) : 0;
   const verdict: SalesReadinessReport['verdict'] = counts.blocker > 0 ? 'blocked' : counts.warning > 0 ? 'partial' : 'selling';

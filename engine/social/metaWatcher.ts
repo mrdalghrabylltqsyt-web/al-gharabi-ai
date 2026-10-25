@@ -61,10 +61,22 @@ export interface MetaPlatformIngestStats {
    * والتحقق من الهدف (≤ 4 لفيسبوك). لا يُخفى ولا يُقدَّر.
    */
   callsPerCycle: number;
+  /**
+   * إصلاح 2026-10-25 — خطأ القراءة **لكل منصة**. كان الخطأ عاماً للمراقب، فنجاح
+   * Instagram بعد فشل Facebook في نفس الدورة يمسحه: قراءة تعليقات Facebook فشلت
+   * ~6 أيام (خطأ #12، 18→24 أكتوبر) والحالة «healthy». الآن لكل منصة خطؤها وسلسلتها.
+   */
+  lastError: string | null;
+  /** كود تقني قصير لآخر فشل (بلا نص مزوّد) — آمن للعرض العام. */
+  lastErrorCode: string | null;
+  consecutiveErrors: number;
+  /** بداية سلسلة الفشل الحالية (null = القراءة سليمة). */
+  failingSince: string | null;
+  lastOkAt: string | null;
 }
 
 export function defaultMetaPlatformIngestStats(): MetaPlatformIngestStats {
-  return { postsScanned: 0, commentsVisible: 0, commentsTotalReported: 0, lastIngestAt: null, callsPerCycle: 0 };
+  return { postsScanned: 0, commentsVisible: 0, commentsTotalReported: 0, lastIngestAt: null, callsPerCycle: 0, lastError: null, lastErrorCode: null, consecutiveErrors: 0, failingSince: null, lastOkAt: null };
 }
 
 export function normalizeMetaPlatformIngestStats(raw: any): MetaPlatformIngestStats {
@@ -76,6 +88,68 @@ export function normalizeMetaPlatformIngestStats(raw: any): MetaPlatformIngestSt
     commentsTotalReported: Number.isFinite(Number(raw.commentsTotalReported)) ? Math.max(0, Math.trunc(Number(raw.commentsTotalReported))) : 0,
     lastIngestAt: typeof raw.lastIngestAt === 'string' ? raw.lastIngestAt : null,
     callsPerCycle: Number.isFinite(Number(raw.callsPerCycle)) ? Math.max(0, Math.trunc(Number(raw.callsPerCycle))) : 0,
+    lastError: typeof raw.lastError === 'string' ? raw.lastError.slice(0, 300) : null,
+    lastErrorCode: typeof raw.lastErrorCode === 'string' ? raw.lastErrorCode.slice(0, 60) : null,
+    consecutiveErrors: Number.isFinite(Number(raw.consecutiveErrors)) ? Math.max(0, Math.trunc(Number(raw.consecutiveErrors))) : 0,
+    failingSince: typeof raw.failingSince === 'string' ? raw.failingSince : null,
+    lastOkAt: typeof raw.lastOkAt === 'string' ? raw.lastOkAt : null,
+  };
+}
+
+/** بعد هذا العدد من دورات القراءة الفاشلة المتتالية تُعدّ المنصة «لا تستقبل». */
+export const META_READ_FAIL_WARN_CYCLES = 3;
+
+/** كود تقني قصير من نتيجة فشل القراءة (ASCII فقط، بلا نص مزوّد). */
+export function metaReadErrorCode(fetched: { code?: string | null; providerCode?: number | null }): string {
+  const code = String(fetched?.code || 'FETCH_FAILED').replace(/[^A-Za-z0-9_]/g, '').slice(0, 40) || 'FETCH_FAILED';
+  return fetched?.providerCode != null ? `${code}.${fetched.providerCode}` : code;
+}
+
+/**
+ * يحدّث إحصاءات منصة واحدة بعد محاولة قراءة: النجاح يصفّر سلسلة الفشل، والفشل
+ * يزيدها ويحفظ بدايتها. يعيد أيضاً حدث السجل المطلوب (أول فشل/كل ساعة/تعافٍ) كي
+ * لا يُغرق السجل كل 5 دقائق ولا يصمت عن عطل مستمر.
+ */
+export function applyMetaReadOutcome(
+  prevRaw: MetaPlatformIngestStats | undefined,
+  outcome: { ok: true; postsScanned: number; commentsVisible: number; commentsTotalReported: number; callsPerCycle: number }
+    | { ok: false; error: string; code: string },
+  nowIso: string,
+  logEveryCycles = 12,
+): { stats: MetaPlatformIngestStats; log: 'failed' | 'still_failing' | 'recovered' | null; recoveredAfter: number } {
+  const prev = normalizeMetaPlatformIngestStats(prevRaw);
+  if (outcome.ok) {
+    const recoveredAfter = prev.consecutiveErrors;
+    return {
+      stats: {
+        ...prev,
+        postsScanned: outcome.postsScanned, commentsVisible: outcome.commentsVisible,
+        commentsTotalReported: outcome.commentsTotalReported, callsPerCycle: outcome.callsPerCycle,
+        lastError: null, lastErrorCode: null, consecutiveErrors: 0, failingSince: null, lastOkAt: nowIso,
+      },
+      log: recoveredAfter > 0 ? 'recovered' : null,
+      recoveredAfter,
+    };
+  }
+  const n = prev.consecutiveErrors + 1;
+  return {
+    stats: { ...prev, lastError: String(outcome.error || 'fetch failed').slice(0, 300), lastErrorCode: outcome.code, consecutiveErrors: n, failingSince: prev.failingSince || nowIso },
+    log: n === 1 ? 'failed' : n % Math.max(1, logEveryCycles) === 0 ? 'still_failing' : null,
+    recoveredAfter: 0,
+  };
+}
+
+/**
+ * الحقلان العامّان للمراقب (توافق خلفي) يُشتقّان من المنصات لا من آخر منصة قُرئت:
+ * أي منصة فاشلة ⇒ خطأ ظاهر بكودها، وأطول سلسلة فشل.
+ */
+export function aggregateMetaReadErrors(stats: Record<string, MetaPlatformIngestStats>): { lastError: string | null; consecutiveErrors: number } {
+  const failing = Object.entries(stats || {}).map(([p, raw]) => [p, normalizeMetaPlatformIngestStats(raw)] as const).filter(([, s]) => s.consecutiveErrors > 0);
+  if (!failing.length) return { lastError: null, consecutiveErrors: 0 };
+  return {
+    // رمز تقني بلا مسافات (يمرّ من منقّي الخطأ العام إن قصر، وإلا «connection error»).
+    lastError: failing.map(([p, s]) => `${p}.${s.lastErrorCode || 'FETCH_FAILED'}`).join('-').slice(0, 120),
+    consecutiveErrors: Math.max(...failing.map(([, s]) => s.consecutiveErrors)),
   };
 }
 
@@ -90,6 +164,12 @@ export const META_STALE_INGEST_MS = META_STALE_INGEST_HOURS * 3600_000;
  */
 export function metaIngestWarning(stats: MetaPlatformIngestStats, nowMs: number): { stale: boolean; hoursSince: number | null; reason: string } {
   const s = normalizeMetaPlatformIngestStats(stats);
+  // القراءة نفسها تفشل ⇒ لا استقبال مهما كانت المنشورات (كان يُخفى بنجاح منصة أخرى).
+  if (s.consecutiveErrors >= META_READ_FAIL_WARN_CYCLES) {
+    const since = s.failingSince ? Date.parse(s.failingSince) : NaN;
+    const h = Number.isFinite(since) ? Math.floor((nowMs - since) / 3600_000) : null;
+    return { stale: true, hoursSince: h, reason: `قراءة التعليقات تفشل منذ ${h === null ? s.consecutiveErrors + ' دورة' : h + ' ساعة'} (الكود ${s.lastErrorCode || 'FETCH_FAILED'}) — لا يصل أي تعليق جديد.` };
+  }
   if (s.postsScanned <= 0) return { stale: false, hoursSince: null, reason: 'لا منشورات مفحوصة بعد.' };
   if (!s.lastIngestAt) {
     return { stale: true, hoursSince: null, reason: `لا استقبال فعلي إطلاقاً مع وجود ${s.postsScanned} منشوراً مفحوصاً — قد تكون الصلاحية/وضع التطبيق تحجب التعليقات.` };
@@ -253,12 +333,14 @@ export function metaPollingControlsView(controls: MetaWatcherControls) {
 export function metaPollingPublicBlock(state: MetaPollingState) {
   const s = normalizeMetaPollingState(state);
   const nowMs = Date.now();
+  // نص خطأ المزوّد الخام (lastError) لا يظهر في الكتلة العامة — الكود التقني فقط.
+  const publicStats = (raw: MetaPlatformIngestStats) => { const { lastError: _omit, ...rest } = normalizeMetaPlatformIngestStats(raw); return rest; };
   const platformStats = {
-    facebook: normalizeMetaPlatformIngestStats(s.platformStats.facebook),
-    instagram: normalizeMetaPlatformIngestStats(s.platformStats.instagram),
+    facebook: publicStats(s.platformStats.facebook),
+    instagram: publicStats(s.platformStats.instagram),
   };
   const warnings = META_WATCHER_PLATFORMS.map((platform) => {
-    const w = metaIngestWarning(platformStats[platform], nowMs);
+    const w = metaIngestWarning(s.platformStats[platform], nowMs);
     return w.stale ? { platform, hoursSince: w.hoursSince, reason: w.reason } : null;
   }).filter(Boolean);
   const deferral = normalizeDeferralState(s.deferral);
