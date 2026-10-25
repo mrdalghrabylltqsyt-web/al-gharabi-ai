@@ -6282,6 +6282,14 @@ add('watcher-advisory-not-authority',
     read('package.json').includes('npm run test:live-room'),
     'غرفة العقل الحية تُبث من أحداث الخادم الفعلية وحالة الأقسام الثلاثة عشر الحقيقية — بلا أرقام ثابتة');
 
+  add('live-brain-room-v2-insights',
+    read('engine/ops/liveRoom.ts').includes('export function buildLiveInsights(') &&
+    server.includes('insights: buildLiveInsights({') &&
+    server.includes('loopLagMs: liveLoop.lagMs,') &&
+    read('src/components/live/LiveBrainRoom.tsx').includes('ResizeObserver') &&
+    read('src/components/live/LiveBrainRoom.tsx').includes('feGaussianBlur'),
+    'غرفة العقل الحية v2: رؤى الزبائن والنشر ومقاييس الخادم الحقيقية، توهّج SVG، وتصغير متجاوب للهاتف بلا قصّ');
+
   // 12) AGENTS.md: عدد فحوصات final-audit مطابق للفعلي (يُعَدّ من نص الملف نفسه).
   const auditCount = (read('final-audit.mjs').match(/^\s*add\(/gm) || []).length;
   add('agents-audit-count-accurate',

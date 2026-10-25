@@ -716,7 +716,7 @@ import { buildSalesReadiness, sanitizeOAuthFailureMessage, type ReadinessPlatfor
 import { backupFreshness } from "./engine/dr/autoBackup";
 import { summarizePublishHealth, formatPublishLogLine } from "./engine/ops/publishHealth";
 import { realProductPhrases } from "./src/utils/productPhrases";
-import { LiveEventBuffer, classifyLogLine, auditToLiveEvent, buildLiveModules, platformAr, type LiveEventInput } from "./engine/ops/liveRoom";
+import { LiveEventBuffer, classifyLogLine, auditToLiveEvent, buildLiveModules, buildLiveInsights, platformAr, type LiveEventInput } from "./engine/ops/liveRoom";
 import { parseFacebookPostMetrics, parseInstagramMediaMetrics, parseGraphInsights, parseFollowers, upsertPerformanceRecords, summarizePlatformMetrics, type MetricValues } from "./engine/social/metricsSync";
 import { resolveInteractionProduct, productFactStatement, productNamedInText, type ProductResolution } from "./engine/social/productResolution";
 import { decideCoalescedWrite, type CoalesceMemo, USAGE_INDICATOR_VOLATILE_PATHS } from "./engine/ops/writeCoalescing";
@@ -735,6 +735,19 @@ dotenv.config();
 // الردود وقرارات المراقب. بلا كتابة للقاعدة، وبلا أي سرّ (النصوص مقصوصة ومصنّفة).
 // -----------------------------------------------------------------------------
 const liveEvents = new LiveEventBuffer(300);
+// تأخّر حلقة الأحداث (مؤشر حيوية حقيقي للخادم): عيّنة كل ثانية، متوسط متحرك — بلا كلفة تُذكر.
+const liveLoop = { lagMs: 0, maxLagMs: 0 };
+(() => {
+  let expected = Date.now() + 1000;
+  const t = setInterval(() => {
+    const now = Date.now();
+    const lag = Math.max(0, now - expected);
+    liveLoop.lagMs = Math.round(liveLoop.lagMs * 0.8 + lag * 0.2);
+    liveLoop.maxLagMs = Math.max(Math.round(liveLoop.maxLagMs * 0.98), lag);
+    expected = now + 1000;
+  }, 1000);
+  (t as any).unref?.();
+})();
 function liveEvent(input: LiveEventInput | null): void {
   if (!input) return;
   try { liveEvents.push(input, new Date().toISOString()); } catch { /* البث لا يُفشل أي مسار */ }
@@ -14405,6 +14418,41 @@ app.get("/api/live/room", requireOwner, (req, res) => {
     },
     events: liveEvents.since(since, since > 0 ? 60 : 40),
     lastEventId: liveEvents.lastId,
+    // الإصدار 2: رؤى الزبائن والنشر (24 ساعة، النوايا، المواضيع، أكثر المنتجات سؤالاً…).
+    insights: buildLiveInsights({
+      nowMs,
+      comments: inbound as any[],
+      leads: commercialLeads as any[],
+      publishRecords: (((workspace as any).publishRecords || []) as any[]),
+    }),
+    telemetry: (() => {
+      const mem = process.memoryUsage();
+      const g: any = (() => { try { return geminiStatus(); } catch { return {}; } })();
+      const pr: any = (() => { try { return currentUsagePressure(); } catch { return {}; } })();
+      return {
+        rssMb: Math.round(mem.rss / 1048576),
+        heapMb: Math.round(mem.heapUsed / 1048576),
+        limitMb: 512,
+        uptimeSec: Math.round(process.uptime()),
+        loopLagMs: liveLoop.lagMs,
+        loopLagMaxMs: liveLoop.maxLagMs,
+        geminiUsedToday: Number(g.usedToday ?? 0),
+        geminiLimit: Number(g.dailyGuard ?? 0),
+        pressureLevel: String(pr.level || "normal"),
+        pressurePercent: typeof pr.usedPercent === "number" ? pr.usedPercent : null,
+        pressureProvider: pr.provider || null,
+        writes: { requested: persistStats.requested, written: persistStats.written, coalesced: persistStats.coalesced },
+        eventsBuffered: liveEvents.lastId,
+      };
+    })(),
+    approvals: (() => {
+      const pending = commercialDrafts.filter((d: any) => d.status === "pending");
+      const latest: any = pending.slice().sort((a: any, b: any) => Date.parse(String(b.createdAt || "")) - Date.parse(String(a.createdAt || "")))[0] || null;
+      return {
+        pending: pending.length,
+        latest: latest ? { platform: platformAr(String(latest.platform || "")), text: String(latest.text || "").slice(0, 140), at: latest.createdAt || null } : null,
+      };
+    })(),
   });
 });
 
