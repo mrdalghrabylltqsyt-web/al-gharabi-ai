@@ -68,7 +68,7 @@ export interface PatrolFacts {
   revokedSessions: number;
   loginEmailReady: boolean;
   // agents
-  brainEnabled: boolean; brainLastStatus: string | null; brainLastError: string | null; brainLastSuccessAt: string | null; brainCadenceMs: number;
+  brainEnabled: boolean; brainLastStatus: string | null; brainLastError: string | null; brainLastSuccessAt: string | null; brainLastCompletedAt: string | null; brainCadenceMs: number;
   brainMemoryRecords: number; brainMemoryCap: number | null;
   // platforms
   platforms: Array<{ id: string; connected: boolean; providerVerified: boolean; expiresAt: string | null; tokenReadable: boolean | null }>;
@@ -134,7 +134,7 @@ export const PATROL_CHECKS: Readonly<Record<EngineerModule, Check[]>> = Object.f
     c('auth.revoked', 'سجل الجلسات الملغاة', 'السجل محدود بـ500؛ تجاوزه يُسقط الأقدم فتعود جلسات ملغاة صالحة.', (f) => f.revokedSessions >= 450 ? { status: 'warn', detail: `${f.revokedSessions} من 500`, advice: 'استخدم «إبطال كل الجلسات» بدل الإبطال الفردي' } : { status: 'ok', detail: `${f.revokedSessions} من 500` }),
   ],
   agents: [
-    c('agents.run', 'دورة العقل المركزي', 'العقل يتعلّم من البيانات كل 15 دقيقة؛ توقّفه يجمّد التوصيات.', (f) => { if (!f.brainEnabled) return { status: 'skip', detail: 'معطّل من الإعداد' }; const a = ageMs(f.brainLastSuccessAt, f.nowMs); return a == null ? { status: 'warn', detail: 'لا دورة ناجحة بعد', advice: 'انتظر الدورة الأولى' } : a > f.brainCadenceMs * 3 ? { status: 'fail', detail: `آخر نجاح منذ ${ageText(a)}`, advice: 'المهندس يشغّل دورة مباشرة', repair: 'cycles' } : { status: 'ok', detail: `آخر نجاح منذ ${ageText(a)}` }; }),
+    c('agents.run', 'دورة العقل المركزي', 'العقل يتعلّم من البيانات كل 15 دقيقة؛ توقّفه يجمّد التوصيات.', (f) => { if (!f.brainEnabled) return { status: 'skip', detail: 'معطّل من الإعداد' }; const a = ageMs(f.brainLastCompletedAt, f.nowMs); const s = ageMs(f.brainLastSuccessAt, f.nowMs); return a == null ? { status: 'warn', detail: 'لم تكتمل دورة منذ الإقلاع بعد', advice: 'تكتمل أول دورة خلال 15 دقيقة' } : a > f.brainCadenceMs * 3 ? { status: 'fail', detail: `آخر دورة مكتملة منذ ${ageText(a)}`, advice: 'المهندس يشغّل دورة مباشرة', repair: 'cycles' } : { status: 'ok', detail: `آخر دورة منذ ${ageText(a)}${s != null ? ` · آخر تعلّم جديد منذ ${ageText(s)}` : ''}` }; }),
     c('agents.failures', 'آخر دورة للعقل', 'دورة FAILED تعني خطأ في بناء العقل من البيانات.', (f) => f.brainLastStatus === 'FAILED' ? { status: 'fail', detail: `فشلت${f.brainLastError ? `: ${f.brainLastError}` : ''}`, advice: 'المهندس يعيد التشغيل؛ إن تكرر راجع سجل Render' } : { status: 'ok', detail: `آخر حالة ${f.brainLastStatus || '—'}` }),
     c('agents.memory', 'ذاكرة العقل', 'امتلاء الذاكرة يجعل العقل ينسى الأقدم.', (f) => f.brainMemoryCap && f.brainMemoryRecords >= f.brainMemoryCap * 0.9 ? { status: 'warn', detail: `${f.brainMemoryRecords} من ${f.brainMemoryCap}`, advice: 'طبيعي أن تدور؛ تأكد أن الدروس المهمة مثبّتة' } : { status: 'ok', detail: `${f.brainMemoryRecords} سجلاً${f.brainMemoryCap ? ` من ${f.brainMemoryCap}` : ''}` }),
   ],
@@ -146,7 +146,7 @@ export const PATROL_CHECKS: Readonly<Record<EngineerModule, Check[]>> = Object.f
     c('platforms.publish', 'نجاح النشر · 24 ساعة', 'فشل النشر المتكرر يضيّع المحتوى المعتمد.', (f) => { const t = f.publishOk24h + f.publishFailed24h; return t === 0 ? { status: 'ok', detail: 'لا محاولات نشر اليوم' } : f.publishFailed24h / t > 0.3 ? { status: 'warn', detail: `${f.publishFailed24h} فشل من ${t}`, advice: 'افتح سجل النشر لمعرفة رمز الفشل' } : { status: 'ok', detail: `${f.publishOk24h} نجاح من ${t}` }; }),
   ],
   gate: [
-    c('gate.mode', 'وضع الإرسال', 'التلقائي يرسل بلا مراجعتك.', (f) => f.sendModeAuto ? { status: 'warn', detail: 'تلقائي (بقرارك)', advice: 'أعده إلى «موافقة» إن لم يكن مقصوداً' } : { status: 'ok', detail: 'لا إرسال بلا موافقتك' }),
+    c('gate.mode', 'وضع الإرسال', 'التلقائي يرسل بلا مراجعتك.', (f) => f.sendModeAuto ? { status: 'ok', detail: 'تلقائي — بقرارك (ليس عطلاً؛ يمكنك إعادته إلى «موافقة» من مركز السيطرة)' } : { status: 'ok', detail: 'لا إرسال بلا موافقتك' }),
     c('gate.expired', 'مسودات تجاوزت نافذة الرد', 'مسودة منتهية النافذة لا يمكن إرسالها وتضلّل العدّاد.', (f) => f.expiredPendingDrafts ? { status: 'warn', detail: `${f.expiredPendingDrafts} مسودة منتهية ما زالت «معلّقة»`, advice: 'المهندس يعلّمها منتهية (بلا حذف)', repair: 'drafts_expired' } : { status: 'ok', detail: 'لا مسودات منتهية معلّقة' }),
   ],
   automation: [

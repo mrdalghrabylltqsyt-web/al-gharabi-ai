@@ -14802,7 +14802,8 @@ function patrolFacts(module: string | null = null): PatrolFacts {
   const mp = ((metricsSyncState.lastResult as any)?.platforms || {}) as Record<string, any>;
   const comments = (((workspace as any).socialComments || []) as any[]);
   const lastIn: Record<string, string | null> = {};
-  for (const p of SUPPORTED_PLATFORMS.map((x: any) => x.id)) if (linked(p) && p !== "tiktok") lastIn[p] = null; // تيك توك بلا تعليقات بطبيعة المنصة
+  // فقط المنصات التي يستقبل نظامنا تعليقاتها/رسائلها فعلاً (ثريدز/تيك توك/Google Business بلا استقبال تعليقات هنا).
+  for (const p of ["facebook", "instagram", "youtube", "telegram", "whatsapp"]) if (linked(p)) lastIn[p] = null;
   if (at("customers")) for (const c of comments) { const p = String(c?.platform || ""); if (p in lastIn && (!lastIn[p] || String(c.createdAt) > String(lastIn[p]))) lastIn[p] = String(c.createdAt || ""); }
   const esc = (((workspace as any).socialEscalations || []) as any[]).filter((e) => e && e.state !== "RESOLVED");
   const pub = (((workspace as any).publishRecords || []) as any[]).filter((r) => !r?.simulated && Date.parse(String(r?.createdAt || r?.publishedAt || "")) >= nowMs - 86400000);
@@ -14854,6 +14855,7 @@ function patrolFacts(module: string | null = null): PatrolFacts {
     brainLastStatus: brainRuntimeState.lastStatus || null,
     brainLastError: brainRuntimeState.lastError ? String(brainRuntimeState.lastError).slice(0, 80) : null,
     brainLastSuccessAt: brainRuntimeState.lastSuccessAt || null,
+    brainLastCompletedAt: brainRuntimeState.lastCycleCompletedAt || null,
     brainCadenceMs: safe(() => brainRuntimeIntervalMs(), 15 * 60000),
     brainMemoryRecords: Array.isArray((brainMemoryStore as any)?.records) ? (brainMemoryStore as any).records.length : 0,
     brainMemoryCap: null,
@@ -14939,7 +14941,8 @@ function patrolStep(): void {
       const persistentWarn = chk.status === "warn" && hist.length >= 3 && hist.slice(-3).every((x) => x === "warn");
       const becameFail = chk.status === "fail" && prev !== "fail";
       const recovered = chk.status === "ok" && (prev === "fail" || prev === "warn") && hist.slice(0, -1).filter((x) => x !== "ok").length >= 2;
-      if (becameFail || (persistentWarn && hist.slice(-4, -1).filter((x) => x === "warn").length === 2)) {
+      const recentSame = engineerState.reports.some((r) => r.incidentKey === `patrol:${chk.id}` && r.status !== "self_recovered" && nowMs - Date.parse(r.endedAt) < 12 * 3600000);
+      if (!recentSame && (becameFail || (persistentWarn && hist.slice(-4, -1).filter((x) => x === "warn").length === 2))) {
         notable = true;
         const t = new Date(nowMs).toISOString();
         addReport(engineerState, {

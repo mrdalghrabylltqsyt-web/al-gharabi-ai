@@ -113,7 +113,7 @@ check('مراحل الزبائن', insights.leadStages.length === 2);
 check('★ الخادم يرسل الرؤى والمقاييس والموافقات', server.includes('insights: buildLiveInsights({') && server.includes('telemetry: (() => {') && server.includes('approvals: (() => {'));
 check('★ تأخّر حلقة الأحداث يُقاس فعلاً', server.includes('liveLoop') && /setInterval\([\s\S]{0,400}liveLoop[\s\S]{0,200}\.unref/.test(server));
 check('★ الواجهة تتصغّر على الهاتف بدل القصّ', ui.includes('ResizeObserver') && ui.includes('scale(${scale})'));
-check('★ توهّج SVG حقيقي', ui.includes('feGaussianBlur') && ui.includes('url(#lbrGlow)'));
+check('★ توهّج SVG حقيقي (طبقة ثابتة مخزّنة لا يُعاد حسابها كل إطار)', ui.includes('feGaussianBlur') && ui.includes('url(#lbrGlowWideS)'));
 check('★ نبض النشاط من أوقات الأحداث الحقيقية', ui.includes('eventTimes') && ui.includes('BUCKET_MS'));
 check('★ لوحات الرؤى والمقاييس', ['hourly24', 'intents', 'topProducts', 'latestComments', 'leadStages', 'tel.rssMb', 'tel.loopLagMs', 'appr.latest'].every((k) => ui.includes(k)));
 check('احترام تقليل الحركة', ui.includes('prefers-reduced-motion') && ui.includes('lbr-still'));
