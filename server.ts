@@ -9976,8 +9976,9 @@ async function createInstantReplyDraft(input: {
   if (!isPriceOrInstallment && !hasBuyingSignal(cls, input.text)) return null;
   const idem = `reply:${input.externalId}`;
   if (findCommercialDraftByKey(input.lead.key, idem)) return null;
-  // رد جاهز (أو مُرسل) لنفس التعليق من المراقب ⇒ لا مسودة ثانية: المالك يحسمه من مكان واحد.
-  if (outboundApprovals.some((r) => r.platform === input.platform && r.externalId === String(input.externalId) && (r.status === 'pending' || r.status === 'sent'))) return null;
+  // رد أُرسل فعلاً لنفس التعليق ⇒ لا مسودة. أما رد جاهز معلّق من المراقب فمسودة صندوق
+  // الزبائن (بحقائق السعر/القسط) أدقّ منه: تحلّ محله فيحسمه المالك من مكان واحد.
+  if (outboundApprovals.some((r) => r.platform === input.platform && r.externalId === String(input.externalId) && r.status === 'sent')) return null;
   const gen = await generateWatcherReply({
     platform: input.platform, commentText: input.text, subjectId: input.subjectId,
     subjectTitle: null, product: input.product, cls: input.cls, allowAi: false,
@@ -9987,6 +9988,8 @@ async function createInstantReplyDraft(input: {
   // حارس المحتوى: لا مسودة تحمل ادعاءً غير مسجّل (نفس بوابة المتابعة).
   const facts = buildFactsForProduct(input.product, Number(input.product?.downPaymentPercent || 0), Number(input.product?.durationMonths || 0));
   if (!analyzeBusinessClaims(text, facts).safe) return null;
+  const superseded = outboundApprovals.filter((r) => r.status === 'pending' && r.platform === input.platform && r.externalId === String(input.externalId)).map((r) => r.id);
+  if (superseded.length) outboundApprovals = outboundApprovals.filter((r) => !superseded.includes(r.id));
   return createCommercialDraft({
     lead: input.lead,
     purpose: 'reply',
