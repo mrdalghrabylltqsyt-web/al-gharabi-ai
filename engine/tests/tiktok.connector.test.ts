@@ -483,9 +483,15 @@ async function integrationTests(): Promise<void> {
     check('مفردات الحالات معلنة في الرد', Array.isArray(status.truthfulStates) && status.truthfulStates.length === 11);
     check('الحالة الصادقة بلا أي سرّ', !JSON.stringify({ s: status.state, r: status.stateReason, n: status.nextAction }).includes(TT_CLIENT_SECRET));
 
-    group('13) تكامل: إعادة استخدام state مرفوضة (منع replay)');
-    const replay = await fetch(`${BASE}/api/platforms/tiktok/oauth/callback?code=AUTHCODE_TEST&state=${encodeURIComponent(stateVal)}`, { headers: auth });
-    check('إعادة استخدام state => 400', replay.status === 400, `status=${replay.status}`);
+    group('13) تكامل: إعادة استخدام state (منع replay) مع إعادة عرض العودة المكررة (#121)');
+    // #121: العودة المكررة الحرفية (نفس state + نفس code) تتلقى نتيجة الأول — بلا تبادل ثانٍ للرمز.
+    const callsBeforeReplay = mock.state.calls;
+    const dup = await fetch(`${BASE}/api/platforms/tiktok/oauth/callback?code=AUTHCODE_TEST&state=${encodeURIComponent(stateVal)}`, { headers: auth });
+    check('العودة المكررة الحرفية تتلقى نتيجة الأول (لا فشل كاذب)', dup.status === cbRes.status, `status=${dup.status}`);
+    check('★ العودة المكررة لا تبادل الرمز مرة ثانية لدى المزوّد', mock.state.calls === callsBeforeReplay, `calls ${callsBeforeReplay}→${mock.state.calls}`);
+    // منع replay الحقيقي باقٍ: نفس state بـcode مختلف مرفوض.
+    const replay = await fetch(`${BASE}/api/platforms/tiktok/oauth/callback?code=AUTHCODE_OTHER&state=${encodeURIComponent(stateVal)}`, { headers: auth });
+    check('إعادة استخدام state بـcode آخر => 400', replay.status === 400, `status=${replay.status}`);
 
     group('14) تكامل: state غير صالح مرفوض');
     const badState = await fetch(`${BASE}/api/platforms/tiktok/oauth/callback?code=X&state=totally_invalid_state_value`, { headers: auth });
