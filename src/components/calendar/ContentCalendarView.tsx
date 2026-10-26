@@ -14,6 +14,7 @@ import {
   toScheduleDisplay,
   APP_TIMEZONE,
 } from '../../utils/scheduleTime';
+import { ScheduledJobsPanel } from './ScheduledJobsPanel';
 
 /** الجدار الزمني البغدادي ليوم المنشور: `scheduledFor` للمجدول، وإلا `publishedAt`/`createdAt`. */
 function postWallClock(post: any) {
@@ -177,6 +178,7 @@ export const ContentCalendarView: React.FC = () => {
           </div>
         ))}
       </div>
+      <ScheduledJobsPanel />
     </div>
   );
 };

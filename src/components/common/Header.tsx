@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { useApp } from '../../context/AppContext';
 import { apiService } from '../../services/api';
 import { describeGeminiBadge } from '../../services/geminiBadge';
+import { fmtDateTime } from '../../utils/displayTime';
 import {
   Sparkles,
   Bell,
@@ -16,6 +17,8 @@ import {
   LogOut,
   Shield,
   Mail,
+  AlertTriangle,
+  Info,
 } from 'lucide-react';
 
 interface HeaderProps {
@@ -72,8 +75,38 @@ export const Header: React.FC<HeaderProps> = ({ onOpenMobileMenu }) => {
     return () => { cancelled = true; clearInterval(timer); };
   }, []);
 
+  // ربط 2026-10-26: تنبيهات الخادم الحقيقية (pushNotification) لم تكن تصل لأي شاشة —
+  // «إعادة ربط منصة مطلوبة» و«اقتراب حصة YouTube» و«تعثّر المراقب» كانت تُخزَّن بصمت.
+  const [serverNotes, setServerNotes] = useState<any[]>([]);
+  const [serverUnread, setServerUnread] = useState(0);
+  const loadNotes = React.useCallback(() => {
+    if (!currentUser) return;
+    apiService.getNotifications()
+      .then((r) => { setServerNotes(r.notifications); setServerUnread(r.unread); })
+      .catch(() => { /* الشارة تبقى على آخر قيمة معروفة */ });
+  }, [currentUser]);
+  React.useEffect(() => {
+    loadNotes();
+    const t = setInterval(() => { if (document.visibilityState === 'visible') loadNotes(); }, 60_000);
+    return () => clearInterval(t);
+  }, [loadNotes]);
+  const openNote = (n: any) => {
+    if (!n.read) {
+      setServerNotes((xs) => xs.map((x) => (x.id === n.id ? { ...x, read: true } : x)));
+      setServerUnread((u) => Math.max(0, u - 1));
+      apiService.markNotificationRead(n.id).catch(() => loadNotes());
+    }
+    if (typeof n.link === 'string' && /^[a-z_]+$/.test(n.link)) { setActiveTab(n.link); setNotificationsOpen(false); }
+  };
+  const readAll = () => {
+    setServerNotes((xs) => xs.map((x) => ({ ...x, read: true })));
+    setServerUnread(0);
+    apiService.markAllNotificationsRead().catch(() => loadNotes());
+  };
+  const unreadNotes = serverNotes.filter((n) => !n.read).slice(0, 8);
+
   const totalNotifications =
-    notificationBadge.pendingReviews + notificationBadge.unreadMessages;
+    notificationBadge.pendingReviews + notificationBadge.unreadMessages + serverUnread;
 
   const handleSync = () => {
     setIsSyncing(true);
@@ -260,15 +293,29 @@ export const Header: React.FC<HeaderProps> = ({ onOpenMobileMenu }) => {
                     </div>
                   )}
 
-                  <div className="p-2.5 rounded-xl bg-slate-800/50 text-xs text-slate-300 flex items-start gap-2">
-                    <span className="w-2 h-2 rounded-full bg-emerald-400 mt-1.5 shrink-0"></span>
-                    <div>
-                      <p className="font-medium text-slate-200">الوكيل الذكي جاهز</p>
-                      <p className="text-[11px] text-slate-400">
-                        جاهز لتوليد المحتوى الذكي والرد على استفسارات التقسيط
-                      </p>
-                    </div>
-                  </div>
+                  {unreadNotes.map((n) => {
+                    const crit = n.severity === 'critical', warn = n.severity === 'warning';
+                    const cls = crit ? 'bg-rose-950/40 border-rose-500/30 text-rose-200' : warn ? 'bg-amber-950/30 border-amber-500/25 text-amber-100' : 'bg-slate-800/60 border-slate-700 text-slate-200';
+                    return (
+                      <button type="button" key={n.id} onClick={() => openNote(n)} className={`w-full text-right p-2.5 rounded-xl border text-xs flex items-start gap-2 transition hover:brightness-125 ${cls}`}>
+                        {crit || warn ? <AlertTriangle className={`w-4 h-4 shrink-0 mt-0.5 ${crit ? 'text-rose-400' : 'text-amber-400'}`} /> : <Info className="w-4 h-4 shrink-0 mt-0.5 text-sky-400" />}
+                        <span className="min-w-0">
+                          <span className="block font-semibold">{n.title}</span>
+                          {n.body && <span className="block text-[11px] opacity-80 leading-5 break-words">{String(n.body).slice(0, 220)}</span>}
+                          <span className="block text-[10px] opacity-60 mt-0.5">{fmtDateTime(n.createdAt)}</span>
+                        </span>
+                      </button>
+                    );
+                  })}
+                  {serverUnread > unreadNotes.length && (
+                    <p className="text-[11px] text-slate-400 px-1">و{serverUnread - unreadNotes.length} تنبيهات أقدم غير مقروءة.</p>
+                  )}
+                  {totalNotifications === 0 && (
+                    <p className="p-2.5 text-xs text-slate-400 text-center">لا تنبيهات جديدة.</p>
+                  )}
+                  {serverUnread > 0 && (
+                    <button type="button" onClick={readAll} className="w-full text-center text-[11px] text-emerald-300 hover:underline py-1">تعليم الكل كمقروء</button>
+                  )}
                 </div>
               </div>
             )}

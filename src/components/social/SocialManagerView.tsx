@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useState } from 'react';
 import { fmtDateTime } from '../../utils/displayTime';
 import { useApp } from '../../context/AppContext';
 import { apiService } from '../../services/api';
+import { EscalationsPanel } from './EscalationsPanel';
 import {
   Bot,
   RefreshCw,
@@ -370,6 +371,7 @@ export const SocialManagerView: React.FC = () => {
 
   return (
     <div className="space-y-6">
+      <EscalationsPanel />
       {/* Header */}
       <div className="p-6 rounded-2xl glass flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
         <div>

@@ -8,6 +8,7 @@
 
 import React, { useCallback, useEffect, useState } from 'react';
 import { apiService } from '../../services/api';
+import { CommercialMonthlyReport } from './CommercialMonthlyReport';
 import { useApp } from '../../context/AppContext';
 import {
   Inbox, RefreshCw, CheckCircle2, XCircle, Pencil, Send, AlertTriangle,
@@ -686,6 +687,7 @@ export function CommercialInbox() {
           ) : null}
         </section>
       ) : null}
+      <CommercialMonthlyReport />
     </div>
   );
 }
