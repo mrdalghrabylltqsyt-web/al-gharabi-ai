@@ -116,6 +116,20 @@ check('★ الغرفة الحية تعرض المهندس', server.includes('en
 const ui = read('src/components/live/LiveBrainRoom.tsx');
 const sp = read('src/components/live/SpiderPatrol.tsx');
 check('★ العنكبوت المتجوّل طبقة فوق الواجهة كاملة (الصفحة والشاشة الحية)', ui.includes('<SpiderPatrol') && ui.includes('spiderEl(wallInnerRef)') && ui.includes('spiderEl(pageRootRef)'));
+{
+  // كل الواجهة محطات فحص: كل محطة مربوطة بفحص حقيقي موجود في قاعدة المعرفة (لا محطة وهمية).
+  const cc = read('src/components/live/LiveControlCenter.tsx');
+  const kb = read('engine/ops/engineerPatrol.ts');
+  const known = new Set(Array.from(kb.matchAll(/c\('([a-zA-Z]+\.[a-zA-Z]+)'/g)).map((m) => m[1]));
+  const refs = Array.from((ui + cc).matchAll(/check:([a-zA-Z.,]+)/g)).flatMap((m) => m[1].split(',')).filter(Boolean);
+  const unknown = refs.filter((id) => !known.has(id));
+  check('★ محطات الفحص تغطي الواجهة كلها (مؤشرات، مقاييس، دورات، منصات، مفاتيح، لوحات، رأس)', (ui.match(/data-station=/g) || []).length >= 25 && cc.includes('data-station={ccStation(r.key)}') && ui.includes('data-station={`module:${m.key}`}') && ui.includes('data-station={CYCLE_ST[c.key]'), `stations=${(ui.match(/data-station=/g) || []).length}`);
+  check('★ كل محطة مربوطة بفحص حقيقي موجود في قاعدة المعرفة', refs.length >= 40 && unknown.length === 0, unknown.join(',') || `refs=${refs.length}`);
+  check('★ جولة كبرى على الشاشة كلها (شبكة خلايا أفعوانية) لا تكدّس داخل المخطط', sp.includes('const GC = 5, GR = 4;') && sp.includes("querySelectorAll('[data-station]')") && sp.includes('S.cellStep'));
+  check('★ خيوط سحب من محطة إلى محطة تخبو ببطء (نسيج على الواجهة)', sp.includes('THREAD_LIFE_MS') && sp.includes('S.threads.push(') && sp.includes('lbr-drag'));
+  check('★ نتيجة المحطة من آخر فحص حقيقي على الخادم (الكامل + الجاري)', sp.includes('const verdict = (el: Element)') && ui.includes('inspCache.current') && ui.includes('current={patrol?.current || null}'));
+  check('الإصلاح يتقدّم على الجولة', sp.includes('if (S.repairKey) {') && sp.includes('يُصلح:'));
+}
 check('★ لوحة المهندس + التقارير الكاملة', ui.includes('المهندس المشرف') && ui.includes('(eng?.reports || []).map((r: any)'));
 check('تشغيل/إيقاف وفحص الآن للمالك', ui.includes('apiService.toggleEngineer(') && ui.includes('apiService.runEngineerCheck()'));
 
@@ -132,11 +146,14 @@ check('تشغيل/إيقاف وفحص الآن للمالك', ui.includes('apiSe
     storageReady: true, storageBackend: 'postgres', tls: 'verified', persistFailStreak: 0, writesRequested: 100, writesDone: 90, metricsLastRunAt: iso(30), metricsIntervalMs: 21600000,
     measured: [{ platform: 'youtube', ok: 5, total: 5, issue: null }], geminiConfigured: true, geminiVerified: 'ok', geminiUsed: 1, geminiLimit: 40, youtubeQuotaPercent: 10, youtubeQuotaExhausted: false,
     products: 81, productsBadPrice: 0, productsNoName: 0, installmentPlans: 2, showroomName: true, lastInboundAt: { facebook: iso(60) }, escalationsOpen: 0, oldestOpenEscalationAt: null,
+    tokenKeyState: 'valid', draftsExpiringSoon: 0, unreadNotifications: 12, brainPersistFailures: 0, brainStaleLockRecoveries: 0, heapMb: 90, watcherErrors: { youtube: 0, meta: 0 },
+    lastWebhookAt: { facebook: iso(120) }, staleOpenLeads: 0, openLeads: 5, productsNoImage: 10, productsStockMismatch: 0,
+    telegramBotReady: false, emailProviderReady: true, audienceKnown: { facebook: true }, performanceRecords: 40,
     collections: [{ key: 'socialComments', size: 100, growthPerDay: 5 }], ...over,
   });
   check('★ الدورية تغطي المركز والأقسام الثلاثة عشر كلها', PATROL_ORDER.length === 14 && new Set(PATROL_ORDER).size === 14 && PATROL_ORDER.every((m) => (PATROL_CHECKS as any)[m]?.length > 0));
   const total = Object.values(PATROL_CHECKS).reduce((a, x) => a + x.length, 0);
-  check('★ قاعدة معرفة واسعة (≥40 فحصاً) وكل فحص يحمل «لماذا»', total >= 40 && PATROL_ORDER.every((m) => inspectModule(m, facts()).checks.every((c) => c.why.length > 10)), `total=${total}`);
+  check('★ قاعدة معرفة واسعة (≥60 فحصاً) وكل فحص يحمل «لماذا»', total >= 60 && PATROL_ORDER.every((m) => inspectModule(m, facts()).checks.every((c) => c.why.length > 10)), `total=${total}`);
   check('★ نظام سليم ⇒ كل الأقسام سليمة وصحة 100%', PATROL_ORDER.every((m) => inspectModule(m, facts()).status !== 'fail') && (healthScore(PATROL_ORDER.map((m) => inspectModule(m, facts()))) || 0) >= 95);
   const bad = facts({ persistFailStreak: 3, sessionSecretSource: 'ephemeral', productsBadPrice: 2, platforms: [{ id: 'facebook', connected: true, providerVerified: true, expiresAt: null, tokenReadable: false }] });
   check('★ فشل الحفظ يُرصد في قسم التخزين مع إصلاح', inspectModule('storage', bad).checks.some((c) => c.id === 'storage.persist' && c.status === 'fail' && c.repair === 'persist'));
@@ -159,6 +176,11 @@ check('تشغيل/إيقاف وفحص الآن للمالك', ui.includes('apiSe
   check('★ قرار المالك (الإرسال التلقائي) ليس ثغرة', inspectModule('gate', facts({ sendModeAuto: true })).checks.find((c) => c.id === 'gate.mode')?.status === 'ok');
   check('★ لا إنذار «وارد مقطوع» لمنصات لا يستقبل نظامنا تعليقاتها', read('server.ts').includes('for (const p of ["facebook", "instagram", "youtube", "telegram", "whatsapp"]) if (linked(p)) lastIn[p] = null;'));
   check('★ لا تقارير مكررة للثغرة نفسها بعد كل نشر (12 ساعة)', read('server.ts').includes('const recentSame = engineerState.reports.some((r) => r.incidentKey === `patrol:${chk.id}`'));
+  check('★ مفتاح تشفير الرموز غير صالح = عطل يكشفه', inspectModule('auth', facts({ tokenKeyState: 'missing' })).checks.some((c) => c.id === 'auth.tokenKey' && c.status === 'fail'));
+  check('★ زبائن محتملون بلا متابعة أسبوعاً = تحذير', inspectModule('customers', facts({ staleOpenLeads: 3 })).checks.some((c) => c.id === 'customers.leads' && c.status === 'warn'));
+  check('★ «متوفر» بكمية صفر = تحذير', inspectModule('products', facts({ productsStockMismatch: 2 })).checks.some((c) => c.id === 'products.stock' && c.status === 'warn'));
+  check('مزوّد بريد غير مضبوط = عطل (لا دخول)', inspectModule('external', facts({ emailProviderReady: false })).checks.some((c) => c.id === 'external.email' && c.status === 'fail'));
+  check('كل قسم فيه ≥3 فروع فحص', PATROL_ORDER.every((m) => (PATROL_CHECKS as any)[m].length >= 3));
   check('الفحص المعطوب لا يُسقط الدورية', inspectModule('platforms', { ...facts(), platforms: null as any }).checks.length > 0);
   const eng = read('server.ts');
   check('★ الدورية تعمل كل 5 ث على الخادم (ذاكرة فقط) ولا تمنع الإغلاق', eng.includes('const PATROL_STEP_MS = 5000;') && eng.includes('setInterval(patrolStep, PATROL_STEP_MS)') && eng.includes('startEngineerPatrol();'));
@@ -166,8 +188,8 @@ check('تشغيل/إيقاف وفحص الآن للمالك', ui.includes('apiSe
   check('★ الثغرة الجديدة ⇒ تقرير + حدث حي، والعطل بلا إصلاح ⇒ تنبيهك (مرة/12 س)', eng.includes('الدورية: ${chk.label}') && eng.includes('"engineer_patrol"') && eng.includes('nowMs - last > 12 * 3600000'));
   check('★ التفاصيل الثقيلة في الاستطلاع الكامل فقط', eng.includes('inspections: full ? list : undefined') && eng.includes('engineerView(!lite)'));
   check('★ كتيّب المسودات المنتهية بلا حذف', eng.includes('sweepExpiredCommercialDrafts(new Date().toISOString())') && eng.includes('case "patrol_fix"'));
-  check('★ يتبع الدورية الحقيقية (cursor + فحوص القسم الجاري) والإصلاح يتقدّم عليها', ui.includes("cursor={patrol?.cursor ? String(patrol.cursor) : null}") && ui.includes('patrol?.current?.checks') && sp.includes('const repairKey = P.repair'));
-  check('★ مشي سلس: حلقة إطارات تكتب DOM مباشرة (بلا إعادة رسم React) + تسارع/تباطؤ + دوران نحو الاتجاه', sp.includes('requestAnimationFrame(tick)') && sp.includes('body.style.transform') && sp.includes('Math.atan2(S.vy, S.vx)') && sp.includes('d * 2.6 + 30'));
+  check('★ يتبع الدورية الحقيقية (كل الفحوص + القسم الجاري) والإصلاح يتقدّم عليها', ui.includes('inspections={inspections}') && ui.includes('current={patrol?.current || null}') && sp.includes('const rk = P.repair'));
+  check('★ مشي سلس: حلقة إطارات تكتب DOM مباشرة (بلا إعادة رسم React) + تسارع/تباطؤ + دوران نحو الاتجاه', sp.includes('requestAnimationFrame(tick)') && sp.includes('body.style.transform') && sp.includes('Math.atan2(S.vy, S.vx)') && sp.includes('d * 2.8 + 40'));
   check('★ مشية رباعية متناوبة بأرجل بمفصلين', sp.includes("lbr-leg-a") && sp.includes("lbr-leg-b") && sp.includes('alternate-reverse') && sp.includes('Q${kx}'));
   check('★ يقف فوق العنصر، يُنزل خيطه، يعرض نتيجة الفحص، يرفع الخيط ويمضي', ["'drop'", "'inspect'", "'lift'"].every((m) => sp.includes(m)) && sp.includes('lbr-roam-tag') && sp.includes("classList.add('lbr-scanning')"));
   check('★ لا يغطي العنصر المفحوص (يقف فوق الحافة، اللافتة فوقه أو بجانبه)', sp.includes('r.y - 40') && sp.includes('anchorY: r.y + 4') && sp.includes('S.y > 80'));

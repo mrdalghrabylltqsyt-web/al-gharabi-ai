@@ -282,11 +282,11 @@ const Spark: React.FC<{ vals: number[]; color: string; w?: number; h?: number; i
   );
 };
 
-const Gauge: React.FC<{ value: number | null; max: number; label: string; text: string; color: string }> = ({ value, max, label, text, color }) => {
+const Gauge: React.FC<{ value: number | null; max: number; label: string; text: string; color: string; station?: string }> = ({ value, max, label, text, color, station }) => {
   const r = 34, c = 2 * Math.PI * r;
   const frac = value == null || !max ? 0 : Math.max(0, Math.min(1, value / max));
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4, minWidth: 0 }}>
+    <div data-station={station} data-st-name={label} style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4, minWidth: 0 }}>
       <svg width="90" height="90" viewBox="0 0 90 90" role="img" aria-label={`${label}: ${text}`}>
         <circle cx="45" cy="45" r={r} fill="none" stroke="#1B2550" strokeWidth="7" />
         <circle cx="45" cy="45" r={r} fill="none" stroke={color} strokeWidth="7" strokeLinecap="round" strokeDasharray={`${(c * frac).toFixed(1)} ${c.toFixed(1)}`} transform="rotate(-90 45 45)" style={{ filter: `drop-shadow(0 0 6px ${color})`, transition: 'stroke-dasharray .9s cubic-bezier(.2,.8,.2,1)' }} />
@@ -298,10 +298,10 @@ const Gauge: React.FC<{ value: number | null; max: number; label: string; text: 
   );
 };
 
-const Kpi: React.FC<{ label: string; value: number; suffix?: string; sub: string; color: string; spark?: number[]; id: string }> = ({ label, value, suffix, sub, color, spark, id }) => {
+const Kpi: React.FC<{ label: string; value: number; suffix?: string; sub: string; color: string; spark?: number[]; id: string; station?: string }> = ({ label, value, suffix, sub, color, spark, id, station }) => {
   const v = useCountUp(value);
   return (
-    <div className="lbr-panel lbr-kpi" style={{ padding: '12px 14px', display: 'flex', flexDirection: 'column', gap: 4, minWidth: 0 }}>
+    <div className="lbr-panel lbr-kpi" data-station={station} data-st-name={label} style={{ padding: '12px 14px', display: 'flex', flexDirection: 'column', gap: 4, minWidth: 0 }}>
       <div style={{ fontSize: 12, color: '#93A1C3' }}>{label}</div>
       <div style={{ display: 'flex', alignItems: 'flex-end', justifyContent: 'space-between', gap: 8 }}>
         <span className="v lbr-mono" dir="ltr" style={{ color }}>{fmt(v)}{suffix || ''}</span>
@@ -557,6 +557,9 @@ export const LiveBrainRoom: React.FC<{ variant?: 'page' | 'wall'; onClose?: () =
     ok: { t: '', c: '#C9D3EA' }, late: { t: 'متأخرة', c: '#F87171' }, deferred: { t: 'مؤجّلة', c: '#FBBF24' }, paused: { t: 'موقوفة', c: '#93A1C3' }, never: { t: 'لم تبدأ', c: '#FBBF24' },
   };
   const cadText = (ms: number | null | undefined) => (!ms ? '' : ms >= 3600000 ? `كل ${Math.round(ms / 3600000)} س` : `كل ${Math.round(ms / 60000)} د`);
+  // كل صف دورة = محطة فحص مرتبطة بفحوصها الحقيقية لدى المهندس.
+  const CYCLE_ST: Record<string, string> = { youtube: 'check:automation.timers,automation.watcherErrors,external.youtubeQuota', meta: 'check:automation.timers,automation.watcherErrors,platforms.webhook', telegram: 'check:automation.timers,external.telegram', brain: 'check:agents.run,agents.failures,agents.locks', commercial: 'check:core.cycles,gate.expired', metrics: 'check:memory.sync,memory.measured', backup: 'check:backup.fresh,backup.failures,backup.auth' };
+  const JOURNEY_ST = ['check:customers.inbound', 'check:customers.escalations', 'check:gate.mode,gate.window', 'check:owner.pending', 'check:automation.jobs', 'check:platforms.publish', 'check:memory.sync'];
   const pulseRows = useMemo(() => {
     const cy: any[] = Array.isArray(data?.cycles) ? data.cycles : [];
     return cy.map((c) => {
@@ -689,13 +692,13 @@ export const LiveBrainRoom: React.FC<{ variant?: 'page' | 'wall'; onClose?: () =
           </div>
         </div>
         <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 8, fontSize: 12 }}>
-          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '7px 12px', borderRadius: 999, border: `1px solid ${error ? '#7A1F3A' : feedWarn ? '#6B4A12' : '#1E6B55'}`, color: error ? '#FDA4AF' : feedWarn ? '#FCD34D' : '#6EE7B7', background: 'rgba(0,0,0,.25)' }}>
+          <span data-station="check:core.events,monitor.lag" data-st-name="البث الحي" style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '7px 12px', borderRadius: 999, border: `1px solid ${error ? '#7A1F3A' : feedWarn ? '#6B4A12' : '#1E6B55'}`, color: error ? '#FDA4AF' : feedWarn ? '#FCD34D' : '#6EE7B7', background: 'rgba(0,0,0,.25)' }}>
             <span className="lbr-blink" style={{ width: 8, height: 8, borderRadius: '50%', background: error ? '#F87171' : feedWarn ? '#FBBF24' : '#34D399', boxShadow: `0 0 10px ${error ? '#F87171' : feedWarn ? '#FBBF24' : '#34D399'}` }} />
             {sleeping ? 'سكون ليلي — المس الشاشة للاستئناف' : error ? 'انقطاع مؤقت — إعادة المحاولة' : feedStale ? `البث متأخر — آخر تحديث ${ago(lastOkAt ? new Date(lastOkAt + skewRef.current).toISOString() : null, now)}` : data ? `بث حي · ${ago(lastOkAt ? new Date(lastOkAt + skewRef.current).toISOString() : null, now)}` : 'جارٍ الاتصال…'}
           </span>
-          {modules.gate && <span style={{ padding: '7px 12px', borderRadius: 999, border: '1px solid #6B4A12', color: '#FCD34D', background: 'rgba(0,0,0,.25)' }}>{modules.gate.metric}</span>}
-          {modules.automation && modules.automation.status !== 'ok' && <span style={{ padding: '7px 12px', borderRadius: 999, border: '1px solid #7A1F3A', color: '#FDA4AF', background: 'rgba(0,0,0,.25)' }}>{modules.automation.metric}</span>}
-          <span className="lbr-mono" style={{ padding: '7px 12px', borderRadius: 999, border: '1px solid #1A2350', background: 'rgba(0,0,0,.25)' }}>{clock(new Date(now).toISOString())} بغداد</span>
+          {modules.gate && <span data-station="check:gate.mode,gate.window,gate.expired" data-st-name="البوابة" style={{ padding: '7px 12px', borderRadius: 999, border: '1px solid #6B4A12', color: '#FCD34D', background: 'rgba(0,0,0,.25)' }}>{modules.gate.metric}</span>}
+          {modules.automation && modules.automation.status !== 'ok' && <span data-station="check:automation.timers,automation.watcherErrors" data-st-name="الأتمتة" style={{ padding: '7px 12px', borderRadius: 999, border: '1px solid #7A1F3A', color: '#FDA4AF', background: 'rgba(0,0,0,.25)' }}>{modules.automation.metric}</span>}
+          <span className="lbr-mono" data-station="check:core.uptime,core.scope" data-st-name="ساعة الخادم" style={{ padding: '7px 12px', borderRadius: 999, border: '1px solid #1A2350', background: 'rgba(0,0,0,.25)' }}>{clock(new Date(now).toISOString())} بغداد</span>
           {wall && <span style={{ display: 'inline-flex', gap: 10, padding: '7px 12px', borderRadius: 999, border: '1px solid #1A2350', background: 'rgba(0,0,0,.25)' }}>{(['ok', 'partial', 'off'] as const).map((k) => <span key={k} style={{ display: 'inline-flex', alignItems: 'center', gap: 5 }}><span style={{ width: 8, height: 8, borderRadius: 3, background: STATUS_COLOR[k], boxShadow: `0 0 8px ${STATUS_COLOR[k]}` }} />{k === 'ok' ? 'يعمل' : k === 'partial' ? 'جزئي' : 'متوقف'}</span>)}</span>}
           {snd.supported && (
             <span className={'lbr-snd' + (snd.playing ? ' on' : '')} role="group" aria-label="إيقاع الغرفة">
@@ -726,12 +729,12 @@ export const LiveBrainRoom: React.FC<{ variant?: 'page' | 'wall'; onClose?: () =
   );
   const kpisEl = (
         <section aria-label="المؤشرات الحية" data-mod="customers owner platforms" style={{ display: 'grid', gridTemplateColumns: wall ? 'repeat(6, minmax(0, 1fr))' : 'repeat(auto-fit, minmax(170px, 1fr))', gap: wall ? 10 : 12 }}>
-          <Kpi id="k1" label="تفاعلات الزبائن · 24 ساعة" value={sum(hourly)} sub={`من كل المنصات — الإجمالي ${fmt(sum((ins.byPlatform || []).map((p: any) => p.total)))}`} color="#7DD3FC" spark={hourly} />
-          <Kpi id="k2" label="استفسارات تجارية · 24 ساعة" value={sum(hourlyInq)} sub="سعر · تقسيط · توفر" color="#F0ABFC" spark={hourlyInq} />
-          <Kpi id="k3" label="ردود بانتظار موافقتك" value={Number(appr.pending || 0)} sub="جاهزة للإرسال بنقرة" color="#FCD34D" />
-          <Kpi id="k4" label="منصات متصلة" value={connected} suffix={` / ${fmt(plats.length || 10)}`} sub="بتحقق من المزوّد" color="#6EE7B7" />
-          <Kpi id="k5" label="منشورات بمعرّف حقيقي" value={publishedTotal} sub={scheduledTotal ? `منشورة فعلاً · ${fmt(scheduledTotal)} مجدولة لدى المنصات` : 'منشورة فعلاً على المنصات'} color="#A5B4FC" />
-          <Kpi id="k6" label="نبض الأحداث · دقيقة" value={perMinute} sub="أحداث حقيقية آخر 60 ثانية" color="#22D3EE" spark={buckets} />
+          <Kpi id="k1" station="check:customers.inbound" label="تفاعلات الزبائن · 24 ساعة" value={sum(hourly)} sub={`من كل المنصات — الإجمالي ${fmt(sum((ins.byPlatform || []).map((p: any) => p.total)))}`} color="#7DD3FC" spark={hourly} />
+          <Kpi id="k2" station="check:customers.escalations,customers.leads" label="استفسارات تجارية · 24 ساعة" value={sum(hourlyInq)} sub="سعر · تقسيط · توفر" color="#F0ABFC" spark={hourlyInq} />
+          <Kpi id="k3" station="check:owner.pending,owner.backlog" label="ردود بانتظار موافقتك" value={Number(appr.pending || 0)} sub="جاهزة للإرسال بنقرة" color="#FCD34D" />
+          <Kpi id="k4" station="check:platforms.verified,platforms.token,platforms.expiry" label="منصات متصلة" value={connected} suffix={` / ${fmt(plats.length || 10)}`} sub="بتحقق من المزوّد" color="#6EE7B7" />
+          <Kpi id="k5" station="check:platforms.publish" label="منشورات بمعرّف حقيقي" value={publishedTotal} sub={scheduledTotal ? `منشورة فعلاً · ${fmt(scheduledTotal)} مجدولة لدى المنصات` : 'منشورة فعلاً على المنصات'} color="#A5B4FC" />
+          <Kpi id="k6" station="check:core.events" label="نبض الأحداث · دقيقة" value={perMinute} sub="أحداث حقيقية آخر 60 ثانية" color="#22D3EE" spark={buckets} />
         </section>
   );
   const controlEl = (
@@ -848,7 +851,7 @@ export const LiveBrainRoom: React.FC<{ variant?: 'page' | 'wall'; onClose?: () =
                       <span key={b.id} className="lbr-burst" style={{ offsetPath: `path('${b.path}')`, background: `radial-gradient(circle, #fff 0%, ${b.color} 45%, transparent 70%)`, boxShadow: `0 0 16px ${b.color}, 0 0 36px ${b.color}` } as React.CSSProperties} />
                     ))}
 
-                    <div ref={coreRef} data-modcard="core" className="lbr-core" style={{ position: 'absolute', left: CX - 92, top: CY - 92, width: 184, height: 184, borderRadius: '50%', border: '2px solid #F0ABFC', background: 'radial-gradient(circle at 50% 38%, #3B1166 0%, #160A33 45%, #070417 80%)', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 3, textAlign: 'center' }}>
+                    <div ref={coreRef} data-modcard="core" data-station="module:core" className="lbr-core" style={{ position: 'absolute', left: CX - 92, top: CY - 92, width: 184, height: 184, borderRadius: '50%', border: '2px solid #F0ABFC', background: 'radial-gradient(circle at 50% 38%, #3B1166 0%, #160A33 45%, #070417 80%)', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 3, textAlign: 'center' }}>
                       <svg width="52" height="52" viewBox="0 0 48 48" aria-hidden="true" style={{ filter: 'drop-shadow(0 0 12px #E879F9)' }}><g fill="none" stroke="#FDF4FF" strokeWidth="1.8" strokeLinecap="round"><ellipse cx="24" cy="27" rx="7" ry="8" /><circle cx="24" cy="15" r="4" /><path d="M17 23 L8 15 L4 18 M17 27 L5 27 L2 31 M17 31 L8 39 L5 44 M31 23 L40 15 L44 18 M31 27 L43 27 L46 31 M31 31 L40 39 L43 44" /></g></svg>
                       <div style={{ fontSize: 15, fontWeight: 800, textShadow: '0 0 14px rgba(240,171,252,.8)' }}>العقل المركزي</div>
                       <div style={{ fontSize: 10, color: '#D8B4FE' }}>والمنسّق التنفيذي</div>
@@ -863,7 +866,7 @@ export const LiveBrainRoom: React.FC<{ variant?: 'page' | 'wall'; onClose?: () =
                       const glow = STATUS_COLOR[st];
                       const cls = 'lbr-mod' + (selected === m.key ? ' sel' : '') + (hitActive(m.key) ? ' hit' : '') + (spider.module === m.key && spider.phase === 'work' ? ' fixing' : '') + (patrolMod(m.key)?.status === 'fail' ? ' p-fail' : patrolMod(m.key)?.status === 'warn' ? ' p-warn' : '');
                       return (
-                        <button key={m.key} type="button" data-modcard={m.key} className={cls} onClick={() => setSelected(m.key)} aria-label={`عرض قسم ${m.title}`}
+                        <button key={m.key} type="button" data-modcard={m.key} data-station={`module:${m.key}`} className={cls} onClick={() => setSelected(m.key)} aria-label={`عرض قسم ${m.title}`}
                           style={{ position: 'absolute', left: m.x - 90, top: m.y - 38, width: 180, minHeight: 76, padding: '8px 10px', borderRadius: 14, border: `1px solid ${m.color}55`, background: `linear-gradient(160deg, rgba(14,18,44,.95), rgba(8,10,26,.9))`, color: '#E7ECF8', textAlign: 'right', cursor: 'pointer', display: 'flex', flexDirection: 'column', gap: 3, boxShadow: `0 0 ${10 + heat * 26}px ${m.color}${heat > 0.05 ? '66' : '22'}, inset 0 0 18px ${m.color}14` }}>
                           <span style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 6, width: '100%' }}>
                             <span style={{ fontSize: 13, fontWeight: 700 }}>{m.title}</span>
@@ -898,7 +901,7 @@ export const LiveBrainRoom: React.FC<{ variant?: 'page' | 'wall'; onClose?: () =
             </section>
   );
   const pulseEl = (
-            <section aria-label="نبض النشاط" data-mod="monitor core" className="lbr-panel">
+            <section aria-label="نبض النشاط" data-mod="monitor core" data-station="check:core.events,core.rejections" data-st-name="نبض النشاط" className="lbr-panel">
               <div style={{ display: 'flex', justifyContent: 'space-between', flexWrap: 'wrap', gap: 8, marginBottom: 6 }}>
                 <h2 className="lbr-h">نبض النشاط الحقيقي — آخر 5 دقائق</h2>
                 <span className="lbr-mono" style={{ fontSize: 11, color: '#93A1C3' }}>{perMinute} حدث/دقيقة · {sum(buckets)} في 5 د</span>
@@ -913,7 +916,7 @@ export const LiveBrainRoom: React.FC<{ variant?: 'page' | 'wall'; onClose?: () =
             </section>
   );
   const interEl = (
-              <section className="lbr-panel" data-mod="customers" aria-label="تفاعلات 24 ساعة">
+              <section className="lbr-panel" data-mod="customers" aria-label="تفاعلات 24 ساعة" data-station="check:customers.inbound" data-st-name="تفاعلات 24 ساعة">
                 <h2 className="lbr-h" style={{ marginBottom: 10 }}>تفاعلات الزبائن — 24 ساعة</h2>
                 <div style={{ display: 'flex', alignItems: 'flex-end', gap: 3, height: 120 }}>
                   {hourly.map((v, i) => (
@@ -930,7 +933,7 @@ export const LiveBrainRoom: React.FC<{ variant?: 'page' | 'wall'; onClose?: () =
               </section>
   );
   const intentsEl = (
-              <section className="lbr-panel" data-mod="customers" aria-label="نوايا الزبائن">
+              <section className="lbr-panel" data-mod="customers" aria-label="نوايا الزبائن" data-station="check:customers.escalations" data-st-name="نوايا الزبائن">
                 <h2 className="lbr-h" style={{ marginBottom: 10 }}>ماذا يريد الزبائن؟ — النوايا</h2>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 14, flexWrap: 'wrap' }}>
                   <svg width="120" height="120" viewBox="0 0 120 120" role="img" aria-label="توزيع نوايا الزبائن">
@@ -952,13 +955,13 @@ export const LiveBrainRoom: React.FC<{ variant?: 'page' | 'wall'; onClose?: () =
               </section>
   );
   const topicsEl = (
-              <section className="lbr-panel" data-mod="customers" aria-label="مواضيع الأسئلة">
+              <section className="lbr-panel" data-mod="customers" aria-label="مواضيع الأسئلة" data-station="check:customers.inbound,customers.escalations" data-st-name="مواضيع الأسئلة">
                 <h2 className="lbr-h" style={{ marginBottom: 10 }}>عن ماذا يسألون؟ — المواضيع</h2>
                 {(ins.topics || []).map((t: any, i: number) => {
                   const max = Math.max(1, ...(ins.topics || []).map((x: any) => x.count));
                   const c = ['#F0ABFC', '#7DD3FC', '#FCD34D', '#6EE7B7', '#A5B4FC', '#FDA4AF', '#67E8F9', '#C4B5FD'][i % 8];
                   return (
-                    <div key={t.key} style={{ marginBottom: 8 }}>
+                    <div key={t.key} data-station="check:customers.inbound" data-st-name={String(t.label || 'موضوع')} style={{ marginBottom: 8 }}>
                       <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12 }}><span>{t.label}</span><span className="lbr-mono" style={{ color: '#C9D3EA' }}>{fmt(t.count)}</span></div>
                       <div style={{ height: 7, borderRadius: 999, background: '#141B3D', overflow: 'hidden' }}><div className="lbr-bar" style={{ height: 7, width: `${(t.count / max) * 100}%`, background: `linear-gradient(90deg, ${c}, ${c}88)`, boxShadow: `0 0 10px ${c}` }} /></div>
                     </div>
@@ -968,12 +971,12 @@ export const LiveBrainRoom: React.FC<{ variant?: 'page' | 'wall'; onClose?: () =
               </section>
   );
   const prodsEl = (
-              <section className="lbr-panel" data-mod="products" aria-label="أكثر المنتجات سؤالاً">
+              <section className="lbr-panel" data-mod="products" aria-label="أكثر المنتجات سؤالاً" data-station="check:products.count,products.integrity" data-st-name="المنتجات">
                 <h2 className="lbr-h" style={{ marginBottom: 10 }}>أكثر المنتجات طلباً من الزبائن</h2>
                 {(ins.topProducts || []).map((p: any, i: number) => {
                   const max = Math.max(1, ...(ins.topProducts || []).map((x: any) => x.count));
                   return (
-                    <div key={p.name} style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+                    <div key={p.name} data-station="check:products.stock,products.images" data-st-name={String(p.name)} style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
                       <span className="lbr-mono" style={{ width: 20, height: 20, flex: 'none', borderRadius: 6, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 11, background: i === 0 ? '#F0ABFC' : '#1B2550', color: i === 0 ? '#05070F' : '#C9D3EA' }}>{i + 1}</span>
                       <div style={{ flex: 1, minWidth: 0 }}>
                         <div style={{ display: 'flex', justifyContent: 'space-between', gap: 6, fontSize: 12 }}><span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{p.name}</span><span className="lbr-mono" style={{ color: '#C9D3EA' }}>{p.count}</span></div>
@@ -986,7 +989,7 @@ export const LiveBrainRoom: React.FC<{ variant?: 'page' | 'wall'; onClose?: () =
               </section>
   );
   const platInsEl = (
-              <section className="lbr-panel" data-mod="platforms memory" aria-label="المنصات">
+              <section className="lbr-panel" data-mod="platforms memory" aria-label="المنصات" data-station="check:memory.measured,memory.records,memory.sync" data-st-name="قياس المنصات">
                 <h2 className="lbr-h" style={{ marginBottom: 10 }}>المنصات — جمهور ووارد ونشر</h2>
                 {(ins.byPlatform || []).map((p: any) => {
                   const pl = plats.find((x) => x.id === p.platform);
@@ -994,7 +997,7 @@ export const LiveBrainRoom: React.FC<{ variant?: 'page' | 'wall'; onClose?: () =
                   const pub = (ins.publish || []).find((x: any) => x.platform === p.platform);
                   const c = PLATFORM_COLOR[p.platform] || '#A5B4FC';
                   return (
-                    <div key={p.platform} style={{ marginBottom: 9 }}>
+                    <div key={p.platform} data-station="check:memory.measured,platforms.audience" data-st-name={PLATFORM_AR[p.platform] || p.platform} style={{ marginBottom: 9 }}>
                       <div style={{ display: 'flex', justifyContent: 'space-between', gap: 6, fontSize: 12 }}>
                         <span style={{ color: c, fontWeight: 600 }}>{p.label}</span>
                         <span className="lbr-mono" style={{ color: '#C9D3EA', fontSize: 11 }}>{fmt(p.total)} وارد · {p.last24h} اليوم{typeof pl?.followers === 'number' ? ` · ${fmt(pl.followers)} متابع` : ''}{pub ? ` · ${fmt(pub.published)} منشور${pub.scheduled ? ` + ${fmt(pub.scheduled)} مجدول` : ''}` : ''}</span>
@@ -1006,11 +1009,11 @@ export const LiveBrainRoom: React.FC<{ variant?: 'page' | 'wall'; onClose?: () =
               </section>
   );
   const leadsEl = (
-              <section className="lbr-panel" data-mod="owner gate" aria-label="مراحل الزبائن">
+              <section className="lbr-panel" data-mod="owner gate" aria-label="مراحل الزبائن" data-station="check:customers.leads,owner.pending" data-st-name="مراحل الزبائن">
                 <h2 className="lbr-h" style={{ marginBottom: 10 }}>رحلة الزبائن المحتملين</h2>
                 <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
                   {(ins.leadStages || []).map((s: any) => (
-                    <div key={s.key} style={{ padding: '8px 12px', borderRadius: 12, border: '1px solid rgba(240,171,252,.3)', background: 'rgba(42,15,69,.35)', textAlign: 'center', minWidth: 84 }}>
+                    <div key={s.key} data-station="check:customers.leads" data-st-name={STAGE_AR[s.key] || String(s.key)} style={{ padding: '8px 12px', borderRadius: 12, border: '1px solid rgba(240,171,252,.3)', background: 'rgba(42,15,69,.35)', textAlign: 'center', minWidth: 84 }}>
                       <div className="lbr-mono" style={{ fontSize: 20, fontWeight: 700, color: '#F0ABFC', textShadow: '0 0 12px rgba(240,171,252,.6)' }}>{s.count}</div>
                       <div style={{ fontSize: 11, color: '#C9D3EA' }}>{STAGE_AR[s.key] || s.key}</div>
                     </div>
@@ -1026,7 +1029,7 @@ export const LiveBrainRoom: React.FC<{ variant?: 'page' | 'wall'; onClose?: () =
               </section>
   );
   const voicesEl = (
-            <section aria-label="أصوات الزبائن" className="lbr-panel" data-mod="customers" style={flexPanel}>
+            <section aria-label="أصوات الزبائن" className="lbr-panel" data-mod="customers" data-station="check:customers.inbound,platforms.webhook" data-st-name="أصوات الزبائن" style={flexPanel}>
               <h2 className="lbr-h" style={{ marginBottom: 10 }}>أصوات الزبائن — آخر ما وصل</h2>
               <div style={{ ...(wall ? { flex: '1 1 0', minHeight: 60 } : { height: 170 }), overflow: 'hidden', maskImage: 'linear-gradient(180deg, transparent, #000 15%, #000 85%, transparent)' }}>
                 <div className={(ins.latestComments || []).length > 3 ? 'lbr-ticker' : ''}>
@@ -1045,11 +1048,11 @@ export const LiveBrainRoom: React.FC<{ variant?: 'page' | 'wall'; onClose?: () =
             </section>
   );
   const journeyEl = (
-            <section aria-label="السير العام" data-mod="owner automation" className="lbr-panel">
+            <section aria-label="السير العام" data-mod="owner automation" data-station="check:automation.jobs,automation.failed" data-st-name="السير العام" className="lbr-panel">
               <h2 className="lbr-h" style={{ marginBottom: wall ? 6 : 10 }}>{wall ? 'السير العام — يضيء مع آخر حدث' : 'السير العام — تضيء الخطوة التي وقع فيها آخر حدث'}</h2>
               <div style={{ display: 'grid', gridTemplateColumns: wall ? 'repeat(2, minmax(0, 1fr))' : 'repeat(auto-fit, minmax(150px, 1fr))', gap: wall ? 6 : 10 }}>
                 {JOURNEY.map((j, i) => (
-                  <div key={j.title} title={wall ? j.detail : undefined} className={'lbr-step' + (i === journeyIdx ? ' on' : '')} style={{ padding: wall ? '5px 10px' : '10px 12px', border: '1px solid rgba(99,102,241,.25)', borderRadius: 14, display: 'flex', gap: 10, alignItems: 'flex-start', background: 'rgba(6,9,24,.6)', transition: 'all .4s' }}>
+                  <div key={j.title} data-station={JOURNEY_ST[i % JOURNEY_ST.length]} data-st-name={j.title} title={wall ? j.detail : undefined} className={'lbr-step' + (i === journeyIdx ? ' on' : '')} style={{ padding: wall ? '5px 10px' : '10px 12px', border: '1px solid rgba(99,102,241,.25)', borderRadius: 14, display: 'flex', gap: 10, alignItems: 'flex-start', background: 'rgba(6,9,24,.6)', transition: 'all .4s' }}>
                     <span className="lbr-mono" style={{ width: 28, height: 28, flex: 'none', borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 12, fontWeight: 800, background: j.badge, color: '#05070F', boxShadow: `0 0 14px ${j.badge}` }}>{i + 1}</span>
                     <div><div style={{ fontSize: 13, fontWeight: 700 }}>{j.title}</div>{!wall && <div style={{ fontSize: 11, color: '#93A1C3' }}>{j.detail}</div>}</div>
                   </div>
@@ -1063,10 +1066,14 @@ export const LiveBrainRoom: React.FC<{ variant?: 'page' | 'wall'; onClose?: () =
   const ST_ICON: Record<string, string> = { ok: '✓', warn: '⚠', fail: '✗', skip: '–' };
   const score: number | null = typeof patrol?.score === 'number' ? patrol.score : null;
   const scoreCol = score == null ? '#93A1C3' : score >= 90 ? '#34D399' : score >= 70 ? '#FBBF24' : '#F87171';
-  const inspections: any[] = Array.isArray(patrol?.inspections) ? patrol.inspections : [];
+  // الاستطلاع الخفيف لا يحمل الفحوص الكاملة: نحتفظ بآخر نسخة كاملة ونحدّث القسم الجاري منها.
+  const inspCache = useRef<any[]>([]);
+  if (Array.isArray(patrol?.inspections)) inspCache.current = patrol.inspections;
+  else if (patrol?.current?.module) inspCache.current = [...inspCache.current.filter((x) => x.module !== patrol.current.module), patrol.current];
+  const inspections: any[] = inspCache.current;
   const selInsp = patrolSel ? inspections.find((x) => x.module === patrolSel) : null;
   const engineerEl = (
-            <section className="lbr-panel lbr-eng" aria-label="المهندس المشرف" style={wall ? { ...flexPanel, minHeight: 360, overflow: 'hidden' } : undefined}>
+            <section className="lbr-panel lbr-eng" aria-label="المهندس المشرف" data-station="check:storage.ready,storage.tls,core.scope" data-st-name="المهندس المشرف" style={wall ? { ...flexPanel, minHeight: 360, overflow: 'hidden' } : undefined}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginBottom: 6 }}>
                 <h2 className="lbr-h">المهندس المشرف — حارس المشروع</h2>
                 <span style={{ display: 'inline-flex', gap: 6 }}>
@@ -1166,19 +1173,19 @@ export const LiveBrainRoom: React.FC<{ variant?: 'page' | 'wall'; onClose?: () =
             <section className="lbr-panel" data-mod="monitor storage">
               <h2 className="lbr-h" style={{ marginBottom: 12 }}>جسد الخادم — مقاييس حيّة</h2>
               <div className="lbr-gauges" style={{ display: 'grid', gridTemplateColumns: wall ? 'repeat(4, minmax(0, 1fr))' : 'repeat(2, minmax(0, 1fr))', gap: wall ? 6 : 10 }}>
-                <Gauge value={tel.rssMb ?? null} max={tel.limitMb || 512} label="الذاكرة" text={`${tel.rssMb ?? '—'} / ${tel.limitMb || 512} ميغا`} color={(tel.rssMb || 0) > 400 ? '#F87171' : '#34D399'} />
-                <Gauge value={tel.geminiLimit ? tel.geminiUsedToday : null} max={tel.geminiLimit || 1} label="Gemini اليوم" text={`${tel.geminiUsedToday ?? 0} / ${tel.geminiLimit || '—'} طلب`} color="#A78BFA" />
-                <Gauge value={tel.pressurePercent} max={100} label="استهلاك الخطة" text={tel.pressurePercent == null ? `${tel.pressureLevel || '—'}` : `${tel.pressureProvider || ''} · ${tel.pressureLevel}`} color={tel.pressureLevel === 'normal' ? '#22D3EE' : '#FBBF24'} />
-                <Gauge value={tel.writes ? tel.writes.coalesced : null} max={Math.max(1, (tel.writes?.coalesced || 0) + (tel.writes?.written || 0))} label="كتابات موفّرة" text={`${tel.writes?.coalesced ?? 0} مدموجة من ${(tel.writes?.coalesced || 0) + (tel.writes?.written || 0)}`} color="#2DD4BF" />
+                <Gauge value={tel.rssMb ?? null} max={tel.limitMb || 512} station="check:monitor.memory,monitor.heap,monitor.leak" label="الذاكرة" text={`${tel.rssMb ?? '—'} / ${tel.limitMb || 512} ميغا`} color={(tel.rssMb || 0) > 400 ? '#F87171' : '#34D399'} />
+                <Gauge value={tel.geminiLimit ? tel.geminiUsedToday : null} max={tel.geminiLimit || 1} station="check:external.geminiQuota,external.gemini" label="Gemini اليوم" text={`${tel.geminiUsedToday ?? 0} / ${tel.geminiLimit || '—'} طلب`} color="#A78BFA" />
+                <Gauge value={tel.pressurePercent} max={100} station="check:monitor.pressure" label="استهلاك الخطة" text={tel.pressurePercent == null ? `${tel.pressureLevel || '—'}` : `${tel.pressureProvider || ''} · ${tel.pressureLevel}`} color={tel.pressureLevel === 'normal' ? '#22D3EE' : '#FBBF24'} />
+                <Gauge value={tel.writes ? tel.writes.coalesced : null} max={Math.max(1, (tel.writes?.coalesced || 0) + (tel.writes?.written || 0))} station="check:storage.coalesce,storage.persist" label="كتابات موفّرة" text={`${tel.writes?.coalesced ?? 0} مدموجة من ${(tel.writes?.coalesced || 0) + (tel.writes?.written || 0)}`} color="#2DD4BF" />
               </div>
               <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, marginTop: 10, fontSize: 11, color: '#93A1C3' }}>
-                <span>تأخّر حلقة الأحداث: <span className="lbr-mono" style={{ color: (tel.loopLagMs || 0) > 200 ? '#FBBF24' : '#6EE7B7' }}>{tel.loopLagMs ?? '—'} ms</span></span>
-                <span>يعمل منذ <span className="lbr-mono" style={{ color: '#E7ECF8' }}>{tel.uptimeSec ? Math.round(tel.uptimeSec / 60) : '—'} د</span></span>
+                <span data-station="check:monitor.lag" data-st-name="حلقة الأحداث">تأخّر حلقة الأحداث: <span className="lbr-mono" style={{ color: (tel.loopLagMs || 0) > 200 ? '#FBBF24' : '#6EE7B7' }}>{tel.loopLagMs ?? '—'} ms</span></span>
+                <span data-station="check:core.uptime" data-st-name="مدة التشغيل">يعمل منذ <span className="lbr-mono" style={{ color: '#E7ECF8' }}>{tel.uptimeSec ? Math.round(tel.uptimeSec / 60) : '—'} د</span></span>
               </div>
             </section>
   );
   const eventsEl = (
-            <section className="lbr-panel" data-mod="core" style={flexPanel}>
+            <section className="lbr-panel" data-mod="core" data-station="check:core.events,core.rejections" data-st-name="آخر الأحداث" style={flexPanel}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
                 <h2 className="lbr-h">آخر الأحداث</h2>
                 <span className="lbr-blink" style={{ fontSize: 11, color: '#6EE7B7' }}>● مباشر</span>
@@ -1211,7 +1218,7 @@ export const LiveBrainRoom: React.FC<{ variant?: 'page' | 'wall'; onClose?: () =
                 const c = p.connected ? (p.partial ? STATUS_COLOR.partial : STATUS_COLOR.ok) : STATUS_COLOR.off;
                 const txt = p.connected ? (p.partial ? `متصل — ${p.partial}` : `متصل${typeof p.followers === 'number' ? ` · ${fmt(p.followers)}` : ''}`) : 'غير مربوط';
                 return (
-                  <div key={p.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: wall ? 'flex-start' : 'center', flexDirection: wall ? 'column' : 'row', gap: wall ? 2 : 8, padding: wall ? '5px 0' : '7px 0', borderBottom: '1px solid rgba(27,37,80,.6)', fontSize: wall ? 11.5 : 12 }}>
+                  <div key={p.id} data-station={p.connected ? 'check:platforms.token,platforms.expiry,platforms.reauth' : 'check:platforms.verified'} data-st-name={PLATFORM_AR[p.id] || p.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: wall ? 'flex-start' : 'center', flexDirection: wall ? 'column' : 'row', gap: wall ? 2 : 8, padding: wall ? '5px 0' : '7px 0', borderBottom: '1px solid rgba(27,37,80,.6)', fontSize: wall ? 11.5 : 12 }}>
                     <span style={{ color: PLATFORM_COLOR[p.id] || '#E7ECF8', fontWeight: 600 }}>{PLATFORM_AR[p.id] || p.id}</span>
                     <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, color: c, textAlign: 'left' }}><span className={p.connected && !p.partial ? '' : 'lbr-blink'} style={{ width: 8, height: 8, flex: 'none', borderRadius: '50%', background: c, boxShadow: `0 0 8px ${c}` }} />{txt}</span>
                   </div>
@@ -1224,7 +1231,7 @@ export const LiveBrainRoom: React.FC<{ variant?: 'page' | 'wall'; onClose?: () =
             <section className="lbr-panel" data-mod="automation agents backup memory">
               <h2 className="lbr-h" style={{ marginBottom: 8 }}>نبض الدورات 24/7</h2>
               {pulseRows.map((c) => (
-                <div key={c.key} title={c.title || undefined} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, padding: '7px 0', borderBottom: '1px solid rgba(27,37,80,.6)', fontSize: 12 }}>
+                <div key={c.key} data-station={CYCLE_ST[c.key] || 'check:automation.timers'} data-st-name={c.name} title={c.title || undefined} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, padding: '7px 0', borderBottom: '1px solid rgba(27,37,80,.6)', fontSize: 12 }}>
                   <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
                     {/* النقطة تنبض فقط حين تعمل الدورة في موعدها؛ وإلا تأخذ لون حالتها ثابتة. */}
                     <span className={c.ok ? 'lbr-blink' : ''} style={{ width: 7, height: 7, flex: 'none', borderRadius: '50%', background: c.ok ? c.color : c.stateColor, boxShadow: `0 0 8px ${c.ok ? c.color : c.stateColor}` }} />
@@ -1257,8 +1264,8 @@ export const LiveBrainRoom: React.FC<{ variant?: 'page' | 'wall'; onClose?: () =
   const spiderEl = (root: React.RefObject<HTMLDivElement>) => eng ? (
     <SpiderPatrol
       rootRef={root}
-      cursor={patrol?.cursor ? String(patrol.cursor) : null}
-      checks={(patrol?.current?.checks || []).map((c: any) => ({ label: String(c.label), status: c.status }))}
+      inspections={inspections}
+      current={patrol?.current || null}
       titles={SEC_AR}
       repair={eng?.job ? { module: String(eng.job.module), label: String(eng.job.title) } : spider.phase !== 'home' && spider.module ? { module: spider.module, label: spider.label } : null}
       motion={motion}
