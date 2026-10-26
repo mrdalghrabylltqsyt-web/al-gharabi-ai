@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { apiService } from '../../services/api';
 import { useApp } from '../../context/AppContext';
+import { LiveAlertStrip, LiveControlCenter } from './LiveControlCenter';
 
 /**
  * غرفة العقل الحية — الإصدار 2 (2026-10-25).
@@ -239,6 +240,7 @@ export const LiveBrainRoom: React.FC = () => {
   const burstSeq = useRef(0);
   const firstLoad = useRef(true);
   const stageWrap = useRef<HTMLDivElement>(null);
+  const controlRef = useRef<HTMLDivElement>(null);
   const wrapW = useWidth(stageWrap);
   const scale = Math.min(1, Math.max(0.3, (wrapW - 4) / W));
 
@@ -404,6 +406,7 @@ export const LiveBrainRoom: React.FC = () => {
       </header>
 
       <div style={{ position: 'relative', padding: 16, display: 'flex', flexDirection: 'column', gap: 16 }}>
+        <LiveAlertStrip data={data} onJump={() => controlRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })} />
         <section aria-label="المؤشرات الحية" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(170px, 1fr))', gap: 12 }}>
           <Kpi id="k1" label="تفاعلات الزبائن · 24 ساعة" value={sum(hourly)} sub={`من كل المنصات — الإجمالي ${fmt(sum((ins.byPlatform || []).map((p: any) => p.total)))}`} color="#7DD3FC" spark={hourly} />
           <Kpi id="k2" label="استفسارات تجارية · 24 ساعة" value={sum(hourlyInq)} sub="سعر · تقسيط · توفر" color="#F0ABFC" spark={hourlyInq} />
@@ -412,6 +415,8 @@ export const LiveBrainRoom: React.FC = () => {
           <Kpi id="k5" label="منشورات بمعرّف حقيقي" value={publishedTotal} sub="منشورة فعلاً على المنصات" color="#A5B4FC" />
           <Kpi id="k6" label="نبض الأحداث · دقيقة" value={perMinute} sub="أحداث حقيقية آخر 60 ثانية" color="#22D3EE" spark={buckets} />
         </section>
+
+        <LiveControlCenter data={data} refresh={() => { void poll(); }} now={now} anchorRef={controlRef} />
 
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 16 }}>
           <main style={{ flex: '999 1 680px', minWidth: 0, display: 'flex', flexDirection: 'column', gap: 16 }}>

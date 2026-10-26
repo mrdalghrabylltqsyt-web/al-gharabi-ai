@@ -118,6 +118,19 @@ check('★ نبض النشاط من أوقات الأحداث الحقيقية',
 check('★ لوحات الرؤى والمقاييس', ['hourly24', 'intents', 'topProducts', 'latestComments', 'leadStages', 'tel.rssMb', 'tel.loopLagMs', 'appr.latest'].every((k) => ui.includes(k)));
 check('احترام تقليل الحركة', ui.includes('prefers-reduced-motion') && ui.includes('lbr-still'));
 
+// 8) مركز السيطرة — كل التنبيهات والإشعارات والتصعيدات ومفاتيح الأمان داخل الغرفة
+const cc = read('src/components/live/LiveControlCenter.tsx');
+check('★ مصدر تنبيهات واحد للشاشتين', server.includes('function buildSystemAlerts(): any[]') && server.includes('const alerts = buildSystemAlerts();') && server.includes('alerts: (() => { try { return buildSystemAlerts(); }'));
+check('★ الغرفة تحمل الإشعارات والتصعيدات والمفاتيح', server.includes('notifications: (() => {') && server.includes('escalations: (() => {') && server.includes('controls: (() => {'));
+check('★ حالات الأمان صارت تنبيهات', ['escalations-open', 'commercial-killed', 'send-mode-auto', 'watcher-paused-', 'backup-stale', 'notifications-critical'].every((k) => server.includes(k)));
+check('★ كل إشعار يُبث لحظياً في الغرفة', /function pushNotification[\s\S]{0,900}liveEvent\(/.test(server));
+check('★ كل مفاتيح الأمان مربوطة', ['setCommercialKillSwitch', 'setCommercialSendMode', 'setYouTubeWatcherControls', 'setMetaWatcherControls', 'setTelegramWatcherControls', 'setJobAutoExecute', 'setOwnerAlerts'].every((m) => cc.includes(`apiService.${m}(`)));
+check('★ إيقاف طارئ شامل', cc.includes('إيقاف طارئ شامل') && cc.includes('Promise.allSettled'));
+check('★ التحويل نحو أتمتة أكثر يطلب تأكيداً', cc.includes('riskyOn') && cc.includes('role="dialog"'));
+check('الإشعارات تُعلَّم مقروءة والتصعيدات تُحَل من الغرفة', cc.includes('apiService.markNotificationRead(n.id)') && cc.includes('apiService.markAllNotificationsRead()') && cc.includes("apiService.transitionEscalation(e.id, 'resolve')"));
+check('شريط إنذار بلا عدّ مزدوج', cc.includes("a.id !== 'notifications-critical'"));
+check('★ مدمج في الغرفة', ui.includes('<LiveAlertStrip') && ui.includes('<LiveControlCenter'));
+
 console.log('\n' + '='.repeat(60));
 if (failures.length) {
   console.error(`FAILED: ${failures.length} — passed ${passed}`);

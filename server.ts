@@ -14445,6 +14445,40 @@ app.get("/api/live/room", requireOwner, (req, res) => {
         eventsBuffered: liveEvents.lastId,
       };
     })(),
+    // مركز السيطرة (2026-10-26): كل التنبيهات والإشعارات والتصعيدات + حالة كل مفاتيح الأمان.
+    alerts: (() => { try { return buildSystemAlerts(); } catch { return []; } })(),
+    notifications: (() => {
+      const mine = ((((workspace as any).notifications || []) as any[]).filter((n: any) => !n.userId || n.userId === "owner"));
+      const unread = mine.filter((n: any) => !n.read);
+      return {
+        unread: unread.length,
+        critical: unread.filter((n: any) => n.severity === "critical").length,
+        latest: unread.slice(0, 12).map((n: any) => ({ id: n.id, type: n.type, title: String(n.title || "").slice(0, 140), body: String(n.body || "").slice(0, 240), severity: n.severity || "info", link: n.link || null, createdAt: n.createdAt })),
+      };
+    })(),
+    escalations: (() => {
+      const open = ((((workspace as any).socialEscalations || []) as any[]).filter((e: any) => e && e.state !== "RESOLVED"));
+      return {
+        open: open.length,
+        latest: open.slice().sort((a: any, b: any) => Date.parse(String(b.createdAt || "")) - Date.parse(String(a.createdAt || ""))).slice(0, 6)
+          .map((e: any) => ({ id: e.id, platform: platformAr(String(e.platform || "")), reason: e.reasonLabelAr || e.reason, text: String(e.commentText || "").slice(0, 160), state: e.state, createdAt: e.createdAt })),
+      };
+    })(),
+    controls: (() => {
+      const yt: any = normalizeWatcherControls(watcherState.controls);
+      const mc: any = (metaPollingState as any)?.controls || {};
+      const tc: any = (telegramPollingState as any)?.controls || {};
+      const pick = (c: any) => ({ enabled: c.enabled !== false, paused: c.paused === true, autoReply: c.autoReply === true, humanReviewMode: c.humanReviewMode === true });
+      return {
+        commercial: { ...commercialKillSwitchView(), sendMode: commercialSendMode },
+        youtube: { ...pick(yt), autoPublish: yt.autoPublish === true },
+        meta: pick(mc),
+        telegram: pick(tc),
+        jobs: { autoExecute: jobAutomationState.autoExecuteApproved === true },
+        ownerAlerts: { enabled: ownerAlertState.enabled === true, emailReady: getOwnerEmailConfig().configured && getOwnerEmailConfig().fromConfigured, telegramReady: ownerTelegramConfigured() },
+        youtubeOnlyMode: youtubeOnlyModeEnabled(),
+      };
+    })(),
     approvals: (() => {
       const pending = commercialDrafts.filter((d: any) => d.status === "pending");
       const latest: any = pending.slice().sort((a: any, b: any) => Date.parse(String(b.createdAt || "")) - Date.parse(String(a.createdAt || "")))[0] || null;
@@ -15700,7 +15734,12 @@ app.get("/api/crm/follow-ups/today", authenticateToken, (_req,res)=>{
   res.json({success:true,rows:rows.slice(0,500),overdue:rows.filter((x:any)=>Date.parse(x.nextFollowUpAt)<now).length,today:rows.filter((x:any)=>Date.parse(x.nextFollowUpAt)>=now).length});
 });
 
-app.get("/api/system/alerts", authenticateToken, (req, res) => {
+/**
+ * تنبيهات النظام الحيّة (مصدر واحد): شاشة المراقبة وغرفة العقل الحية تقرآن الشيء نفسه.
+ * ربط 2026-10-26: أُضيفت حالات الأمان — مفتاح إيقاف مفعّل، مراقب موقوف، إرسال تلقائي
+ * للزبائن، تصعيدات مفتوحة، نسخة احتياطية متأخرة، وتنبيهات حرجة غير مقروءة.
+ */
+function buildSystemAlerts(): any[] {
   const alerts:any[] = [];
   if (!OWNER_EMAIL) alerts.push({ id:"owner-email", severity:"critical", title:"بريد المالك غير مضبوط", detail:"يجب ضبط OWNER_EMAIL قبل الاعتماد على نظام التحقق الخاص بالمالك." });
   // فحص الشاشات (2026-10-25 #3): التنبيهات كانت تعرض «تحقق Google» (ميزة دخول اختيارية)
@@ -15722,6 +15761,32 @@ app.get("/api/system/alerts", authenticateToken, (req, res) => {
   const dayAgo = Date.now() - 86400000;
   const inquiries24h = (((workspace as any).socialComments||[]) as any[]).filter((c:any)=>Date.parse(c?.createdAt||"")>=dayAgo && (c?.classification?.isBusinessInquiry===true || c?.classification?.intent==="business_inquiry")).length;
   if (inquiries24h) alerts.push({ id:"inquiries-24h", severity:"info", title:"استفسارات زبائن آخر 24 ساعة", detail:`${inquiries24h} استفسار تجاري حقيقي من المنصات خلال آخر 24 ساعة.` });
+  // --- حالات الأمان والسيطرة (2026-10-26) ---
+  const openEsc = (((workspace as any).socialEscalations || []) as any[]).filter((e:any)=>e && e.state !== "RESOLVED").length;
+  if (openEsc) alerts.push({ id:"escalations-open", severity:"warning", title:"حالات زبائن تحتاج تدخّلك", detail:`${openEsc} حالة أوقف العقل الرد الآلي عليها (شكوى/طلب بشري/معلومة غير مؤكدة) — بانتظار حلّك.`, link:"social_manager" });
+  if (!commercialBrainEnabled) alerts.push(commercialBrainKillAt
+    ? { id:"commercial-killed", severity:"warning", title:"العقل التجاري موقوف (إيقاف طارئ)", detail:`أُوقف ${commercialBrainKillAt}${commercialBrainKillReason ? ` — ${commercialBrainKillReason}` : ""}. لا متابعة للزبائن حتى إعادة التفعيل.`, link:"commercial_kill_switch" }
+    : { id:"commercial-killed", severity:"info", title:"العقل التجاري غير مفعّل", detail:"لم يُفعَّل بعد — لا متابعة تلقائية للزبائن.", link:"commercial_kill_switch" });
+  if (commercialSendMode === "auto") alerts.push({ id:"send-mode-auto", severity:"info", title:"الإرسال التلقائي للزبائن مفعّل", detail:"العقل التجاري يرسل المتابعات بنفسه بلا موافقتك المسبقة.", link:"commercial_inbox" });
+  const wc:any[] = [
+    ["youtube", "يوتيوب", normalizeWatcherControls(watcherState.controls)],
+    ["meta", "فيسبوك/إنستغرام", (metaPollingState as any)?.controls || {}],
+    ["telegram", "تيليغرام", (telegramPollingState as any)?.controls || {}],
+  ];
+  for (const [key, label, c] of wc) {
+    if (c?.paused === true) alerts.push({ id:`watcher-paused-${key}`, severity:"warning", title:`مراقب ${label} موقوف (إيقاف طارئ)`, detail:"لا تُقرأ التعليقات الجديدة ولا يُرد عليها حتى الاستئناف.", link:"live_room" });
+  }
+  try {
+    const fresh = backupFreshness(drControl.driveAutoBackup, Date.now());
+    if (fresh && fresh.level !== "ok" && (drControl.driveRefreshToken || drControl.driveAutoBackup)) alerts.push({ id:"backup-stale", severity: fresh.level === "critical" ? "critical" : "warning", title:"النسخة الاحتياطية متأخرة", detail:`آخر نسخة ناجحة ${fresh.ageHours != null ? `قبل ${fresh.ageHours} ساعة` : "غير معروفة"}${fresh.lastError ? ` — ${String(fresh.lastError).slice(0, 80)}` : ""}.`, link:"cloud_backup" });
+  } catch { /* النسخ غير مهيأ */ }
+  const critUnread = ((((workspace as any).notifications || []) as any[]).filter((n:any)=>!n.read && n.severity === "critical" && (!n.userId || n.userId === "owner"))).length;
+  if (critUnread) alerts.push({ id:"notifications-critical", severity:"critical", title:"تنبيهات حرجة غير مقروءة", detail:`${critUnread} تنبيه حرج (إعادة ربط/تعطل) لم يُطّلع عليه بعد.` });
+  return alerts;
+}
+
+app.get("/api/system/alerts", authenticateToken, (req, res) => {
+  const alerts = buildSystemAlerts();
   res.json({ success:true, generatedAt:new Date().toISOString(), alerts });
 });
 
@@ -19144,7 +19209,13 @@ app.get('/api/control/daily-brief', authenticateToken, (req,res)=>{
 const WEBHOOK_SECRET = process.env.WEBHOOK_SECRET || "";
 function pushNotification(userId:string|null, type:string, title:string, body:string, severity:"info"|"warning"|"critical"="info", link?:string){
   const item={id:workspaceId("notif"),userId,title,body,type,severity,read:false,link:link||null,createdAt:new Date().toISOString()};
-  (workspace as any).notifications.unshift(item); (workspace as any).notifications=(workspace as any).notifications.slice(0,10000); return item;
+  (workspace as any).notifications.unshift(item); (workspace as any).notifications=(workspace as any).notifications.slice(0,10000);
+  // كل تنبيه يظهر لحظياً في غرفة العقل الحية (نبضة على قسمه) — لا تنبيه يمرّ بصمت.
+  try {
+    const mod = /reauth|connect|token/.test(type) ? "platforms" : /quota|gemini/.test(type) ? "external" : /escalation/.test(type) ? "gate" : /backup|drive/.test(type) ? "backup" : /storage/.test(type) ? "storage" : "monitor";
+    liveEvent({ module: mod as any, level: severity === "critical" ? "error" : severity === "warning" ? "warn" : "info", title: `تنبيه: ${String(title).slice(0, 80)}`, text: String(body || "").slice(0, 160) });
+  } catch { /* البث لا يُسقط التنبيه */ }
+  return item;
 }
 function providerStatus(platform:string){
   const account=platformConnections.get(platform);
