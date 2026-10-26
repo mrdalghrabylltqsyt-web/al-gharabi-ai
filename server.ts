@@ -14909,6 +14909,27 @@ function patrolFacts(module: string | null = null): PatrolFacts {
     lastInboundAt: lastIn,
     escalationsOpen: esc.length,
     oldestOpenEscalationAt: oldest(esc),
+    tokenKeyState: safe(() => String(tokenKeyInspection().state || ""), null as any) || null,
+    draftsExpiringSoon: pending.filter((d: any) => { const t = Date.parse(String(d?.windowExpiresAt || "")); return Number.isFinite(t) && t > nowMs && t - nowMs < 2 * 3600000; }).length,
+    unreadNotifications: owner.filter((n) => !n.read).length,
+    brainPersistFailures: Number((brainRuntimeState as any).persistenceFailureCount || 0),
+    brainStaleLockRecoveries: Number((brainRuntimeState as any).staleLockRecoveries || 0),
+    heapMb: Math.round(process.memoryUsage().heapUsed / 1048576),
+    watcherErrors: { youtube: Number(watcherState.consecutiveErrors || 0), meta: Math.max(0, ...Object.values(((metaPollingState as any)?.platformStats || {}) as Record<string, any>).map((st: any) => Number(st?.consecutiveErrors || 0))) },
+    lastWebhookAt: (() => {
+      const out: Record<string, string | null> = {};
+      for (const p of ["facebook", "instagram"]) if (linked(p)) out[p] = null;
+      if (at("platforms")) for (const e of (((workspace as any).webhookEvents || []) as any[])) { const p = String(e?.platform || ""); if (p in out && (!out[p] || String(e.receivedAt) > String(out[p]))) out[p] = String(e.receivedAt || ""); }
+      return out;
+    })(),
+    staleOpenLeads: commercialLeads.filter((l: any) => !l.archived && !["WON", "LOST", "CLOSED"].includes(String(l.stage || "")) && Date.parse(String(l.lastInteractionAt || "")) < nowMs - 7 * 86400000).length,
+    openLeads: commercialLeads.filter((l: any) => !l.archived && !["WON", "LOST", "CLOSED"].includes(String(l.stage || ""))).length,
+    productsNoImage: products.filter((p) => !String(p?.image || "").trim()).length,
+    productsStockMismatch: products.filter((p) => p?.inStock !== false && Number(p?.stockQuantity) === 0 && Number(p?.reorderLevel || 0) > 0).length,
+    telegramBotReady: safe(() => Boolean(telegramBotToken()), false),
+    emailProviderReady: safe(() => getOwnerEmailConfig().configured, false),
+    audienceKnown: Object.fromEntries(["facebook", "instagram", "youtube"].filter((p) => linked(p)).map((p) => [p, typeof (((workspace as any).platformAudience || {})[p]?.followers) === "number"])),
+    performanceRecords: Array.isArray((workspace as any).performanceRecords) ? (workspace as any).performanceRecords.length : 0,
     collections,
   };
 }

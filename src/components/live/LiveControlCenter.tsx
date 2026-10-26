@@ -70,6 +70,15 @@ function beep(): void {
     window.setTimeout(() => { try { ctx.close(); } catch { /* */ } }, 800);
   } catch { /* الصوت اختياري */ }
 }
+/** كل مفتاح أمان = محطة فحص للعنكبوت المهندس، مرتبطة بفحوصها الحقيقية (يقرأ فقط، لا يغيّر المفتاح). */
+const ccStation = (key: string): string => {
+  if (key === 'commercial') return 'check:core.cycles,gate.expired';
+  if (key === 'sendmode' || key.endsWith('-reply') || key.endsWith('-review')) return 'check:gate.mode,gate.window';
+  if (key.endsWith('-run')) return 'check:automation.timers,automation.watcherErrors';
+  if (key === 'yt-publish' || key === 'jobs') return 'check:automation.jobs,automation.failed,platforms.publish';
+  if (key === 'owneralerts') return 'check:owner.channel,external.telegram,external.email';
+  return 'check:auth.owner,auth.secret';
+};
 const readPref = (k: string): boolean => { try { return localStorage.getItem(k) === '1'; } catch { return false; } };
 const writePref = (k: string, v: boolean) => { try { localStorage.setItem(k, v ? '1' : '0'); } catch { /* */ } };
 
@@ -99,7 +108,7 @@ export const LiveAlertStrip: React.FC<{ data: any; onJump: () => void; hideJump?
   const color = level === 'ok' ? '#34D399' : SEV[level].c;
   const cur = top.length ? top[idx % top.length] : null;
   return (
-    <section aria-label="حالة الإنذار" className={`lcc-strip lcc-sweep ${level === 'critical' ? 'lcc-crit' : level === 'warning' ? 'lcc-warn' : 'lcc-ok'}`}
+    <section aria-label="حالة الإنذار" data-station="check:owner.critical,owner.channel" data-st-name="شريط الإنذار" className={`lcc-strip lcc-sweep ${level === 'critical' ? 'lcc-crit' : level === 'warning' ? 'lcc-warn' : 'lcc-ok'}`}
       style={{ background: level === 'ok' ? 'linear-gradient(90deg, rgba(6,78,59,.45), rgba(6,9,24,.8))' : `linear-gradient(90deg, ${SEV[level].bg}, rgba(6,9,24,.85))` }}>
       <style>{CSS}</style>
       <div style={{ display: 'flex', alignItems: 'center', gap: 12, minWidth: 0, flex: '1 1 300px' }}>
@@ -243,7 +252,7 @@ export const LiveControlCenter: React.FC<{ data: any; refresh: () => void; now: 
           const healthy = r.on === r.goodWhenOn;
           const col = healthy ? '#34D399' : r.goodWhenOn ? '#F87171' : '#FBBF24';
           return (
-            <div key={r.key} className="lcc-card" title={compact ? r.desc : undefined} style={{ boxShadow: `inset 0 0 22px ${col}14, 0 0 14px ${col}22`, ...(compact ? { padding: 9, gap: 6 } : {}) }}>
+            <div key={r.key} className="lcc-card" data-station={ccStation(r.key)} data-st-name={r.title} title={compact ? r.desc : undefined} style={{ boxShadow: `inset 0 0 22px ${col}14, 0 0 14px ${col}22`, ...(compact ? { padding: 9, gap: 6 } : {}) }}>
               <div style={{ display: 'flex', flexWrap: compact ? 'wrap' : undefined, justifyContent: 'space-between', alignItems: 'center', gap: compact ? 4 : 8 }}>
                 <span style={{ fontSize: 13, fontWeight: 700 }}>{r.title}</span>
                 <span className="lcc-pill" style={{ borderColor: col, color: col }}>
