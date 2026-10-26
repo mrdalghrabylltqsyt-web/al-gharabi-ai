@@ -52,11 +52,11 @@ export function classifyLogLine(raw: string): LiveEventInput | null {
   if (!line) return null;
   if (line.startsWith('[metrics]')) {
     if (kv(line, 'outcome') === 'deferred') return { module: 'memory', level: 'warn', title: 'مزامنة الأرقام مؤجّلة', text: 'بسبب ضغط استهلاك الخطة المجانية' };
-    if (kv(line, 'outcome') === 'failed') return { module: 'memory', level: 'error', title: 'فشلت مزامنة الأرقام', text: clip(kv(line, 'error')) };
+    if (kv(line, 'outcome') === 'failed') return { module: 'memory', level: 'error', title: 'فشلت مزامنة الأرقام', text: clip(kv(line, 'issue') || kv(line, 'error')) };
     const p = kv(line, 'platform');
     if (!p) return null;
     const posts = Number(kv(line, 'posts') || 0), ok = Number(kv(line, 'withMetrics') || 0);
-    const fol = kv(line, 'followers'); const err = kv(line, 'error');
+    const fol = kv(line, 'followers'); const err = kv(line, 'issue') || kv(line, 'error');
     const level: LiveLevel = posts > 0 && ok === 0 ? 'warn' : 'ok';
     return { module: 'memory', level, title: `أرقام ${platformAr(p)}`, text: `قيست ${ok} من ${posts}${fol && fol !== '-' ? ` — ${fol} متابع` : ''}${err && err !== '-' && ok < posts ? ` (رمز ${err})` : ''}` };
   }

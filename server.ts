@@ -15361,6 +15361,28 @@ async function graphGetJson(fetchImpl: (url: string, init: any) => Promise<any>,
   } catch { return null; }
 }
 
+/**
+ * فحص جذري (2026-10-26): «الكائن غير موجود» من Graph (رمز 100 مع الفرعي 33) يعني أن
+ * المنشور حُذف من المنصة نفسها. نعلّم سجل النشر remoteGone (بلا حذف أي بيانات) فيتوقف
+ * طلبه كل دورة ولا يُحسب «فشل قياس» دائماً.
+ */
+function graphObjectGone(json: any): boolean {
+  const e = json?.error;
+  return Boolean(e) && Number(e.code) === 100 && Number(e.error_subcode) === 33;
+}
+function markPublishRemoteGone(platform: string, externalId: string, nowIso: string): void {
+  for (const r of (((workspace as any).publishRecords || []) as any[])) {
+    if (r?.platform === platform && String(r?.externalVideoId || r?.providerPostId || "") === externalId && !r.remoteGone) {
+      r.remoteGone = { at: nowIso, code: "100/33" };
+    }
+  }
+}
+function graphErrTag(json: any): string | null {
+  const e = json?.error;
+  if (!e) return null;
+  return `${e.code ?? "GRAPH"}${e.error_subcode ? "/" + e.error_subcode : ""}`;
+}
+
 /** آخر منشوراتنا الناجحة على منصة (معرّف المزود + المنشور الداخلي) — بلا تكرار. */
 function recentPublishedTargets(platform: string): Array<{ externalId: string; postId: string | null; productId: string | null }> {
   const seen = new Set<string>();
@@ -15368,6 +15390,8 @@ function recentPublishedTargets(platform: string): Array<{ externalId: string; p
   for (const r of (((workspace as any).publishRecords || []) as any[])) {
     if (r?.platform !== platform || r?.simulated) continue;
     if (!(r?.state === "published" || r?.state === "scheduled")) continue;
+    // منشور حذفه المالك من المنصة نفسها (أكّده المزوّد بـ 100/33) لا يُعاد طلبه كل 6 ساعات.
+    if (r?.remoteGone) continue;
     const ext = String(r?.externalVideoId || r?.providerPostId || "").trim();
     if (!ext || seen.has(ext)) continue;
     seen.add(ext);
@@ -15390,12 +15414,12 @@ async function runMetricsSync(trigger: string): Promise<any> {
   const nowIso = new Date().toISOString();
   const incoming: any[] = [];
   const audience: Record<string, { followers: number | null; at: string }> = { ...((workspace as any).platformAudience || {}) };
-  const perPlatform: Record<string, { posts: number; withMetrics: number; followers: number | null; error: string | null }> = {};
+  const perPlatform: Record<string, { posts: number; withMetrics: number; followers: number | null; error: string | null; issues: Record<string, number>; gone: number }> = {};
   const live = (p: string) => { const c: any = platformConnections.get(p); return Boolean(c && c.status === "connected" && c.providerVerified === true); };
   try {
     // --- YouTube: كل فيديوهات القناة (حتى 50) + المشتركون (≈3 وحدات حصة).
     if (live("youtube") && youtubeOperationGuard().ok) {
-      const st = { posts: 0, withMetrics: 0, followers: null as number | null, error: null as string | null };
+      const st = { posts: 0, withMetrics: 0, followers: null as number | null, error: null as string | null, issues: {} as Record<string, number>, gone: 0 };
       const ensured = await ensureYouTubeAccessToken();
       if (ensured.ok && ensured.token) {
         const ch = await youtubeClient().getChannelStatistics(ensured.token);
@@ -15420,7 +15444,7 @@ async function runMetricsSync(trigger: string): Promise<any> {
     }
     // --- Facebook: متابعو الصفحة + تفاعل آخر 25 منشوراً لنا.
     if (live("facebook")) {
-      const st = { posts: 0, withMetrics: 0, followers: null as number | null, error: null as string | null };
+      const st = { posts: 0, withMetrics: 0, followers: null as number | null, error: null as string | null, issues: {} as Record<string, number>, gone: 0 };
       const target = facebookReplyTarget();
       if (!("error" in target)) {
         const tok = encodeURIComponent(target.pageToken);
@@ -15439,15 +15463,22 @@ async function runMetricsSync(trigger: string): Promise<any> {
             "comments.summary(true).limit(0)",
           ];
           let json: any = null;
+          let firstErr: any = null;
           outer: for (const fid of fbIds) {
             for (const shape of fbShapes) {
               json = await graphGetJson(faceBookFetchImpl as any, `${facebookGraphUrl(`/${fid}`, FACEBOOK_GRAPH_API_BASE_ENV)}?fields=${shape}&access_token=${tok}`);
+              if (json?.error && !firstErr) firstErr = json;
               if (json && !json.error && Object.keys(parseFacebookPostMetrics(json)).length) break outer;
             }
           }
           const values = parseFacebookPostMetrics(json);
-          if (json?.error && !st.error) st.error = String(json.error?.code ?? "GRAPH_ERROR");
-          if (!Object.keys(values).length) continue;
+          if (!Object.keys(values).length) {
+            // سبب الفشل من أول محاولة على المعرّف الأصلي (لا من آخر صيغة بديلة) — تشخيص صادق.
+            const tag = graphErrTag(firstErr || json);
+            if (tag) st.issues[tag] = (st.issues[tag] || 0) + 1;
+            if (graphObjectGone(firstErr)) { markPublishRemoteGone("facebook", t.externalId, nowIso); st.gone += 1; }
+            continue;
+          }
           st.withMetrics += 1;
           incoming.push({ platform: "facebook", postExternalId: t.externalId, values, recordedBy: "metrics_sync", ...metricRowContext(t) });
         }
@@ -15456,7 +15487,7 @@ async function runMetricsSync(trigger: string): Promise<any> {
     }
     // --- Instagram: متابعو الحساب + إعجابات/تعليقات (+ الوصول/المشاهدات إن سُمح بالرؤى).
     if (live("instagram")) {
-      const st = { posts: 0, withMetrics: 0, followers: null as number | null, error: null as string | null };
+      const st = { posts: 0, withMetrics: 0, followers: null as number | null, error: null as string | null, issues: {} as Record<string, number>, gone: 0 };
       const target = instagramReplyTarget();
       if (!("error" in target)) {
         const tok = encodeURIComponent(target.pageToken);
@@ -15468,7 +15499,11 @@ async function runMetricsSync(trigger: string): Promise<any> {
           const values: MetricValues = { ...parseInstagramMediaMetrics(media) };
           const ins = await graphGetJson(instagramFetchImpl as any, `${facebookGraphUrl(`/${t.externalId}/insights`, FACEBOOK_GRAPH_API_BASE_ENV)}?metric=reach,views,saved,shares&access_token=${tok}`);
           Object.assign(values, parseGraphInsights(ins, { reach: "reach", views: "views", saved: "saves", shares: "shares" }));
-          if (media?.error && !st.error) st.error = String(media.error?.code ?? "GRAPH_ERROR");
+          if (media?.error) {
+            const tag = graphErrTag(media);
+            if (tag) st.issues[tag] = (st.issues[tag] || 0) + 1;
+            if (graphObjectGone(media)) { markPublishRemoteGone("instagram", t.externalId, nowIso); st.gone += 1; continue; }
+          }
           if (!Object.keys(values).length) continue;
           st.withMetrics += 1;
           incoming.push({ platform: "instagram", postExternalId: t.externalId, values, recordedBy: "metrics_sync", ...metricRowContext(t) });
@@ -15478,7 +15513,7 @@ async function runMetricsSync(trigger: string): Promise<any> {
     }
     // --- Threads: رؤى كل منشور (views/likes/replies/reposts) + المتابعون، إن سُمح.
     if (live("threads")) {
-      const st = { posts: 0, withMetrics: 0, followers: null as number | null, error: null as string | null };
+      const st = { posts: 0, withMetrics: 0, followers: null as number | null, error: null as string | null, issues: {} as Record<string, number>, gone: 0 };
       const target = threadsPublishTarget();
       if (!("error" in target)) {
         const tok = encodeURIComponent(target.accessToken);
@@ -15489,7 +15524,7 @@ async function runMetricsSync(trigger: string): Promise<any> {
           st.posts += 1;
           const ins = await graphGetJson(threadsFetchImpl as any, `${threadsGraphUrl(`/${t.externalId}/insights`, THREADS_GRAPH_API_BASE_ENV)}?metric=views,likes,replies,reposts&access_token=${tok}`);
           const values = parseGraphInsights(ins, { views: "views", likes: "likes", replies: "comments", reposts: "shares" });
-          if (ins?.error && !st.error) st.error = String(ins.error?.code ?? "GRAPH_ERROR");
+          if (ins?.error) { const tag = graphErrTag(ins); if (tag) st.issues[tag] = (st.issues[tag] || 0) + 1; }
           if (!Object.keys(values).length) continue;
           st.withMetrics += 1;
           incoming.push({ platform: "threads", postExternalId: t.externalId, values, recordedBy: "metrics_sync", ...metricRowContext(t) });
@@ -15521,12 +15556,18 @@ async function runMetricsSync(trigger: string): Promise<any> {
     persistState();
     const result = { ok: true, trigger, at: nowIso, platforms: perPlatform, added: merged.added, updated: merged.updated, dedupedOld: merged.deduped, totalRecords: merged.records.length };
     metricsSyncState = { lastRunAt: nowIso, lastResult: result };
-    for (const [p, st] of Object.entries(perPlatform)) console.log(`[metrics] platform=${p} posts=${st.posts} withMetrics=${st.withMetrics} followers=${st.followers ?? "-"} error=${st.error ?? "-"}`);
+    for (const [p, st] of Object.entries(perPlatform) as Array<[string, any]>) {
+      // «issue» لا «error»: Render يصنّف أي سطر فيه كلمة error كخطأ — حتى قياس يوتيوب الناجح 50/50.
+      const issues = Object.entries(st.issues || {}).map(([k, v]) => `${k}x${v}`).join(",");
+      const issue = st.error || issues || "-";
+      const line = `[metrics] platform=${p} posts=${st.posts} withMetrics=${st.withMetrics} followers=${st.followers ?? "-"} issue=${issue}${st.gone ? ` gone=${st.gone}` : ""}`;
+      if (st.posts > 0 && st.withMetrics === 0) console.warn(line); else console.log(line);
+    }
     return result;
   } catch (e: any) {
     const result = { ok: false, trigger, at: nowIso, error: String(e?.code || e?.name || "metrics_sync_failed").slice(0, 60) };
     metricsSyncState = { lastRunAt: nowIso, lastResult: result };
-    console.log(`[metrics] outcome=failed error=${result.error}`);
+    console.warn(`[metrics] outcome=failed issue=${result.error}`);
     return result;
   } finally {
     metricsSyncRunning = false;
@@ -17148,6 +17189,7 @@ function brainEscalationNotifier() {
         `تصعيد العقل المركزي: ${record?.reasonLabelAr || record?.reason || 'حالة تحتاج مراجعة'}`,
         `منصة ${record?.platform || 'غير معروفة'} — ${String(record?.commentText || '').slice(0, 200)}`,
         'warning',
+        'social_manager',
       );
       return { delivered: Boolean(n?.id), channel: 'in_app_notification', error: n?.id ? null : 'notification_not_created' };
     } catch (e) {
@@ -21427,6 +21469,7 @@ registerSocialManagerRoutes(app, {
         `تصعيد بشري: ${record?.reasonLabelAr || record?.reason || "حالة تحتاج مراجعة"}`,
         `منصة ${record?.platform || "غير معروفة"} — ${String(record?.commentText || "").slice(0, 200)}`,
         "warning",
+        "social_manager",
       );
       // B1/Y2: تصعيد بشري ⇒ تنبيه المالك الخارجي أيضاً (مجمّع). بلا رسالة للزبون.
       recordOwnerAlert({

@@ -233,7 +233,7 @@ export function buildSalesReadiness(input: SalesReadinessInput): SalesReadinessR
       id: 'ready-jobs', area: 'automation', actor: 'owner', severity: 'warning',
       title: `${input.readyJobs} منشور معتمد حان موعده ولم يُنشر`,
       detail: 'التنفيذ التلقائي للمعتمد معطّل، فتنتظر المنشورات ضغطة تنفيذ.',
-      action: 'نفّذها من مركز التحكم، أو فعّل «نشر المعتمد تلقائياً في موعده».',
+      action: 'نفّذها من «الجدولة والتقويم ← طابور مهام النشر»، أو فعّل «نشر المعتمد تلقائياً في موعده» هناك.',
     });
   }
 

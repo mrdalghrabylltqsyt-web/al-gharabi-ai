@@ -6290,6 +6290,15 @@ add('watcher-advisory-not-authority',
     read('src/components/live/LiveBrainRoom.tsx').includes('feGaussianBlur'),
     'غرفة العقل الحية v2: رؤى الزبائن والنشر ومقاييس الخادم الحقيقية، توهّج SVG، وتصغير متجاوب للهاتف بلا قصّ');
 
+  add('final-root-sweep-wiring',
+    read('package.json').includes('npm run test:final-sweep') &&
+    read('src/components/common/Header.tsx').includes('apiService.getNotifications()') &&
+    read('src/components/calendar/ContentCalendarView.tsx').includes('<ScheduledJobsPanel />') &&
+    read('src/components/social/SocialManagerView.tsx').includes('<EscalationsPanel />') &&
+    read('src/components/agent/CommercialInbox.tsx').includes('<CommercialMonthlyReport />') &&
+    read('engine/storage/adapter.ts').includes('export function stripSslModeParam('),
+    'المسح الجذري: تنبيهات الخادم وطابور المهام والتصعيدات وتقرير الشهر لها شاشات، وTLS بإعدادنا الصريح');
+
   // 12) AGENTS.md: عدد فحوصات final-audit مطابق للفعلي (يُعَدّ من نص الملف نفسه).
   const auditCount = (read('final-audit.mjs').match(/^\s*add\(/gm) || []).length;
   add('agents-audit-count-accurate',

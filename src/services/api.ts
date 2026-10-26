@@ -1039,6 +1039,45 @@ ${payload.topic || payload.productName || 'أنظمة وحلول التقسيط 
     return data.job;
   },
 
+  /** طابور مهام النشر (للمالك كل المهام، ولغيره مهامه فقط). */
+  async listJobs(): Promise<any[]> {
+    const res = await fetch('/api/control/jobs', { headers: getAuthHeaders(), cache: 'no-store' });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || !data.success) throw new Error(data.error || 'تعذر جلب المهام');
+    return Array.isArray(data.jobs) ? data.jobs : [];
+  },
+  async approveJob(jobId: string) {
+    const res = await fetch(`/api/control/jobs/${encodeURIComponent(jobId)}/approve`, { method: 'POST', headers: getAuthHeaders() });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || !data.success) throw new Error(data.error || 'تعذر اعتماد المهمة');
+    return data.job;
+  },
+  /** مفتاح «نشر المعتمد تلقائياً في موعده» (للمالك) — معطّل افتراضياً. */
+  async getJobAutoExecute(): Promise<any> {
+    const res = await fetch('/api/agent/jobs/auto-execute', { headers: getAuthHeaders(), cache: 'no-store' });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || !data.success) throw new Error(data.error || 'تعذر جلب حالة التنفيذ التلقائي');
+    return data;
+  },
+  async setJobAutoExecute(enabled: boolean): Promise<any> {
+    const res = await fetch('/api/agent/jobs/auto-execute', { method: 'POST', headers: getAuthHeaders(), body: JSON.stringify({ enabled }) });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || !data.success) throw new Error(data.error || 'تعذر تغيير التنفيذ التلقائي');
+    return data;
+  },
+  /** التصعيدات البشرية (حالات أوقف فيها العقل الرد الآلي وطلب المالك). */
+  async getEscalations(): Promise<{ escalations: any[]; pending: number }> {
+    const res = await fetch('/api/social/manager/escalations', { headers: getAuthHeaders(), cache: 'no-store' });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || !data.success) throw new Error(data.error || 'تعذر جلب التصعيدات');
+    return { escalations: Array.isArray(data.escalations) ? data.escalations : [], pending: Number(data.pending || 0) };
+  },
+  async transitionEscalation(id: string, event: 'acknowledge' | 'resolve'): Promise<any> {
+    const res = await fetch(`/api/social/manager/escalations/${encodeURIComponent(id)}/transition`, { method: 'POST', headers: getAuthHeaders(), body: JSON.stringify({ event }) });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || !data.success) throw new Error(data.error || 'تعذر تحديث التصعيد');
+    return data.escalation;
+  },
   async cancelJob(jobId: string) {
     const res = await fetch(`/api/control/jobs/${encodeURIComponent(jobId)}/cancel`, { method: 'POST', headers: getAuthHeaders() });
     const data = await res.json();
@@ -1714,6 +1753,21 @@ ${payload.topic || payload.productName || 'أنظمة وحلول التقسيط 
   // --- PR-S2: صندوق الزبائن (للمالك فقط) ---
   /** صندوق الزبائن: العملاء المحتملون + المسودات بانتظار الموافقة + وضع الإرسال. */
   /** غرفة العقل الحية: لقطة حالة الخادم الحقيقية + الأحداث الجديدة منذ `since` (للمالك). */
+  /** تنبيهات الخادم الحقيقية (إعادة ربط منصة، حصة YouTube، تعثّر مراقب، تنبيهات المالك). */
+  async getNotifications(): Promise<{ notifications: any[]; unread: number }> {
+    const res = await fetch('/api/notifications', { headers: getAuthHeaders(), cache: 'no-store' });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || !data.success) throw new Error(data.error || 'تعذر جلب التنبيهات');
+    return { notifications: Array.isArray(data.notifications) ? data.notifications : [], unread: Number(data.unread || 0) };
+  },
+  async markNotificationRead(id: string): Promise<void> {
+    const res = await fetch(`/api/notifications/${encodeURIComponent(id)}/read`, { method: 'POST', headers: getAuthHeaders() });
+    if (!res.ok) throw new Error('تعذر تعليم التنبيه كمقروء');
+  },
+  async markAllNotificationsRead(): Promise<void> {
+    const res = await fetch('/api/notifications/read-all', { method: 'POST', headers: getAuthHeaders() });
+    if (!res.ok) throw new Error('تعذر تعليم التنبيهات كمقروءة');
+  },
   async getLiveRoom(since = 0): Promise<any> {
     const res = await fetch(`/api/live/room?since=${encodeURIComponent(String(since || 0))}`, { headers: getAuthHeaders(), cache: 'no-store' });
     const data = await res.json().catch(() => ({}));

@@ -489,10 +489,22 @@ export function isTlsCertError(error: any): boolean {
   return /self[- ]signed certificate|unable to verify the first certificate|certificate has expired|Hostname\/IP does not match certificate/i.test(String(error?.message || ''));
 }
 
+/** يزيل sslmode/uselibpqcompat من رابط Postgres مع الإبقاء على باقي المعاملات كما هي. */
+export function stripSslModeParam(connectionString: string): string {
+  const q = connectionString.indexOf('?');
+  if (q < 0) return connectionString;
+  const base = connectionString.slice(0, q);
+  const kept = connectionString.slice(q + 1).split('&').filter((kv) => kv && !/^(sslmode|uselibpqcompat)=/i.test(kv));
+  return kept.length ? `${base}?${kept.join('&')}` : base;
+}
+
 export function postgresPoolConfig(connectionString: string, opts: { verifyTls?: boolean } = {}): Record<string, unknown> {
   const forceSsl = !/sslmode=disable/i.test(connectionString);
   return {
-    connectionString,
+    // إصلاح جذري (2026-10-26): مكتبة pg تدمج sslmode من الرابط **فوق** إعداد ssl الصريح،
+    // فكان sslmode=require في رابط Neon يُلغي قرارنا (ويطبع تحذير SECURITY WARNING في كل
+    // إقلاع). نزيله من الرابط حين نفرض TLS بأنفسنا، فيصبح إعدادنا أدناه هو الحاكم الوحيد.
+    connectionString: forceSsl ? stripSslModeParam(connectionString) : connectionString,
     max: 3,
     min: 0,
     connectionTimeoutMillis: 15_000,
