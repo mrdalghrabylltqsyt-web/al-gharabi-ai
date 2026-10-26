@@ -127,6 +127,11 @@ export function buildFivePlatformReadiness(inputs: readonly FivePlatformInput[],
     // 5) القياس والتعلّم
     if (!p.metrics) {
       lines.push({ key: 'metrics', label: 'القياس والتعلّم', state: p.connected ? 'partial' : 'blocked', detail: 'لا قياس بعد (لا منشورات مسجّلة أو المزامنة لم تعمل بعد).', fix: null });
+    } else if (p.metrics.issue && /^SCOPE_MISSING/.test(p.metrics.issue)) {
+      // تيك توك: الرمز الحالي لا يحمل نطاق قراءة الأرقام — صادق ومحدّد بدل «لا قياس بعد» المبهم.
+      lines.push({ key: 'metrics', label: 'القياس والتعلّم', state: 'partial',
+        detail: 'الربط الحالي لا يملك إذن قراءة أرقام الفيديوهات (video.list)، فلا قياس حتى يُمنح.',
+        fix: 'في TikTok Developer Portal أضف منتج Display API ونطاقي video.list وuser.info.stats لتطبيقنا، ثم أضفهما إلى TIKTOK_OAUTH_SCOPES في Render وأعد ربط تيك توك.' });
     } else if (p.metrics.issue) {
       const perm = /(^|,)10x|permission|review/i.test(p.metrics.issue);
       lines.push({ key: 'metrics', label: 'القياس والتعلّم', state: 'partial',

@@ -195,7 +195,9 @@ function unitTests(): void {
   check('حلّ مجموعة جزئية يضيف user.info.basic', partial.includes('user.info.basic'));
   check('حلّ مجموعة جزئية يضيف video.upload (مسار المسودة)', partial.includes('video.upload'));
   check('حلّ مجموعة جزئية يضيف video.publish (مسار النشر المباشر)', partial.includes('video.publish'));
-  check('لا يُضاف نطاق خارج النطاقات الثلاثة المعتمدة عبر التجاوز', resolveTikTokScopes(['video.list']).includes('video.list') === false);
+  // 2026-10-26: نطاقا القياس (Display API) يُقبلان بالتجاوز الصريح فقط — لا يُطلبان افتراضياً.
+  check('★ نطاق القياس video.list يُقبل بالتجاوز الصريح (مزامنة الأرقام)', resolveTikTokScopes(['video.list']).includes('video.list') && resolveTikTokScopes(['user.info.stats']).includes('user.info.stats'));
+  check('★ نطاقا القياس لا يُطلبان افتراضياً (لا كسر لشاشة الربط)', !resolveTikTokScopes().includes('video.list') && !TIKTOK_REQUIRED_SCOPES.includes('video.list'));
   check('الحلّ بلا تكرار', new Set(partial).size === partial.length);
   check('لا نطاق غير رسمي في الحلّ', resolveTikTokScopes(['not_a_real_scope']).includes('not_a_real_scope') === false);
 

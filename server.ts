@@ -16551,9 +16551,9 @@ async function runMetricsSync(trigger: string): Promise<any> {
           const values = parseFacebookPostMetrics(json);
           if (!Object.keys(values).length) {
             // سبب الفشل من أول محاولة على المعرّف الأصلي (لا من آخر صيغة بديلة) — تشخيص صادق.
+            if (graphObjectGone(firstErr)) { markPublishRemoteGone("facebook", t.externalId, nowIso); st.gone += 1; st.posts -= 1; continue; }
             const tag = graphErrTag(firstErr || json);
             if (tag) st.issues[tag] = (st.issues[tag] || 0) + 1;
-            if (graphObjectGone(firstErr)) { markPublishRemoteGone("facebook", t.externalId, nowIso); st.gone += 1; }
             continue;
           }
           st.withMetrics += 1;
@@ -16577,9 +16577,9 @@ async function runMetricsSync(trigger: string): Promise<any> {
           const ins = await graphGetJson(instagramFetchImpl as any, `${facebookGraphUrl(`/${t.externalId}/insights`, FACEBOOK_GRAPH_API_BASE_ENV)}?metric=reach,views,saved,shares&access_token=${tok}`);
           Object.assign(values, parseGraphInsights(ins, { reach: "reach", views: "views", saved: "saves", shares: "shares" }));
           if (media?.error) {
+            if (graphObjectGone(media)) { markPublishRemoteGone("instagram", t.externalId, nowIso); st.gone += 1; st.posts -= 1; continue; }
             const tag = graphErrTag(media);
             if (tag) st.issues[tag] = (st.issues[tag] || 0) + 1;
-            if (graphObjectGone(media)) { markPublishRemoteGone("instagram", t.externalId, nowIso); st.gone += 1; continue; }
           }
           if (!Object.keys(values).length) continue;
           st.withMetrics += 1;
@@ -16601,6 +16601,9 @@ async function runMetricsSync(trigger: string): Promise<any> {
           st.posts += 1;
           const ins = await graphGetJson(threadsFetchImpl as any, `${threadsGraphUrl(`/${t.externalId}/insights`, THREADS_GRAPH_API_BASE_ENV)}?metric=views,likes,replies,reposts&access_token=${tok}`);
           const values = parseGraphInsights(ins, { views: "views", likes: "likes", replies: "comments", reposts: "shares" });
+          // 2026-10-26: ثريدز كان يعدّ 100/33 (منشور حذفه المالك من التطبيق) «مشكلة» دائمة فتبقى
+          // المنصة صفراء «9 من 11» للأبد. الآن مثل فيسبوك وإنستغرام: يُعلَّم محذوفاً ويُستبعد من العدّ.
+          if (graphObjectGone(ins)) { markPublishRemoteGone("threads", t.externalId, nowIso); st.gone += 1; st.posts -= 1; continue; }
           if (ins?.error) { const tag = graphErrTag(ins); if (tag) st.issues[tag] = (st.issues[tag] || 0) + 1; }
           if (!Object.keys(values).length) continue;
           st.withMetrics += 1;
@@ -16608,6 +16611,39 @@ async function runMetricsSync(trigger: string): Promise<any> {
         }
       } else st.error = "NOT_CONNECTED";
       perPlatform.threads = st;
+    }
+    // --- TikTok (2026-10-26): لم تكن له مزامنة أرقام إطلاقاً فبقي «لا قياس بعد» للأبد.
+    // Display API الرسمي: /v2/video/list/ (نطاق video.list) + المتابعون (user.info.stats).
+    // إن لم يمنح الرمز النطاق نقول ذلك صراحةً (SCOPE_MISSING) بدل صمت أو رقم وهمي.
+    if (live("tiktok")) {
+      const st = { posts: 0, withMetrics: 0, followers: null as number | null, error: null as string | null, issues: {} as Record<string, number>, gone: 0 };
+      const granted: string[] = Array.isArray(tiktokStoredCredentials()?.scope) ? tiktokStoredCredentials().scope.map(String) : [];
+      if (!granted.includes("video.list")) st.error = "SCOPE_MISSING_video.list";
+      else {
+        const ensured = await ensureTikTokAccessToken();
+        if (ensured.ok && ensured.token) {
+          if (granted.includes("user.info.stats")) {
+            const f = await tiktokClient().getFollowerCount(ensured.token);
+            if (f.ok && f.data) st.followers = f.data.followers;
+          }
+          const vids = await tiktokClient().listVideos(ensured.token, 20);
+          for (const v of (vids.ok && vids.data ? vids.data.videos : [])) {
+            st.posts += 1;
+            const values: MetricValues = {};
+            if (v.views !== null) values.views = v.views;
+            if (v.likes !== null) values.likes = v.likes;
+            if (v.comments !== null) values.comments = v.comments;
+            if (v.shares !== null) values.shares = v.shares;
+            if (!Object.keys(values).length) continue;
+            st.withMetrics += 1;
+            const rec = (((workspace as any).publishRecords || []) as any[]).find((r) => r?.platform === "tiktok" && String(r?.externalVideoId || r?.providerPostId || "") === v.id);
+            const ctx = metricRowContext({ postId: rec?.postId ? String(rec.postId) : null, productId: rec?.productId ? String(rec.productId) : null });
+            incoming.push({ platform: "tiktok", postExternalId: v.id, values, recordedBy: "metrics_sync", ...ctx, title: ctx.title || v.title || null, contentType: "video", publishedAt: v.createTime ? new Date(v.createTime * 1000).toISOString() : null });
+          }
+          if (!vids.ok) st.error = String(vids.code || "VIDEO_LIST_FAILED");
+        } else st.error = "TOKEN_UNAVAILABLE";
+      }
+      perPlatform.tiktok = st;
     }
     for (const [p, st] of Object.entries(perPlatform)) {
       if (st.followers !== null) audience[p] = { followers: st.followers, at: nowIso };
