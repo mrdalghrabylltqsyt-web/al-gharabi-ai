@@ -1768,6 +1768,20 @@ ${payload.topic || payload.productName || 'أنظمة وحلول التقسيط 
     const res = await fetch('/api/notifications/read-all', { method: 'POST', headers: getAuthHeaders() });
     if (!res.ok) throw new Error('تعذر تعليم التنبيهات كمقروءة');
   },
+  /** المهندس المشرف: فحص فوري (للمالك). */
+  async runEngineerCheck(): Promise<any> {
+    const res = await fetch('/api/engineer/check', { method: 'POST', headers: { ...getAuthHeaders(), 'Content-Type': 'application/json' } });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || !data.success) throw new Error(data.error || 'تعذّر تشغيل الفحص');
+    return data;
+  },
+  /** المهندس المشرف: تشغيل/إيقاف (للمالك). */
+  async toggleEngineer(enabled: boolean): Promise<any> {
+    const res = await fetch('/api/engineer/toggle', { method: 'POST', headers: { ...getAuthHeaders(), 'Content-Type': 'application/json' }, body: JSON.stringify({ enabled }) });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || !data.success) throw new Error(data.error || 'تعذّر تغيير حالة المهندس');
+    return data;
+  },
   /** lite = استطلاع خفيف بلا الرؤى الثقيلة (حارس الخطة المجانية). */
   async getLiveRoom(since = 0, lite = false): Promise<any> {
     const res = await fetch(`/api/live/room?since=${encodeURIComponent(String(since || 0))}${lite ? '&lite=1' : ''}`, { headers: getAuthHeaders(), cache: 'no-store' });
