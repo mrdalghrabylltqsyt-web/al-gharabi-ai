@@ -198,7 +198,7 @@ const CSS = `
 .lbr-wall .lbr-kpi .v{font-size:28px}
 .lbr-sel-wall>div{margin-top:8px!important;padding:10px 12px!important}
 .lbr-wall .lbr-gauges svg{width:78px;height:78px}
-.lbr-wall .lbr-step>span:first-child{width:36px!important;height:36px!important;font-size:15px!important}
+.lbr-wall .lbr-step>span:first-child{width:30px!important;height:30px!important;font-size:14px!important}
 .lbr-wall .lbr-step{align-items:center!important}
 .lbr-wall .lbr-h{font-size:15px}
 .lbr-wall .lbr-h:before{width:8px;height:8px}
@@ -217,6 +217,27 @@ const CSS = `
 .lbr-snd.on .lbr-eq i{animation:lbr-eq .9s ease-in-out infinite}
 .lbr-snd.on .lbr-eq i:nth-child(2){animation-delay:-.3s}.lbr-snd.on .lbr-eq i:nth-child(3){animation-delay:-.6s}.lbr-snd.on .lbr-eq i:nth-child(4){animation-delay:-.45s}
 @keyframes lbr-eq{0%,100%{height:3px}50%{height:14px}}
+.lbr-spider{position:absolute;left:0;top:0;width:44px;height:44px;margin:-22px 0 0 -22px;offset-rotate:auto 90deg;offset-distance:0%;transition:offset-distance 1.7s cubic-bezier(.45,.05,.3,1),opacity .3s;z-index:6;filter:drop-shadow(0 0 10px #FBBF24) drop-shadow(0 0 22px rgba(251,191,36,.6));pointer-events:none}
+.lbr-spider.out,.lbr-spider.work{offset-distance:100%}
+.lbr-spider.back{offset-distance:0%}
+.lbr-spider .lbr-legs{animation:lbr-walk .28s ease-in-out infinite alternate;transform-origin:24px 27px}
+.lbr-spider.work .lbr-legs{animation-duration:.12s}
+@keyframes lbr-walk{from{transform:scaleX(.9)}to{transform:scaleX(1.1)}}
+.lbr-wrench{position:absolute;top:-14px;left:28px;font-size:18px;animation:lbr-hammer .4s ease-in-out infinite alternate;transform-origin:bottom left}
+@keyframes lbr-hammer{from{transform:rotate(-30deg)}to{transform:rotate(25deg)}}
+.lbr-mod.fixing{border-color:#FBBF24!important;box-shadow:0 0 0 2px #FBBF24,0 0 34px rgba(251,191,36,.65)!important;animation:lbr-fix 0.9s ease-in-out infinite}
+@keyframes lbr-fix{50%{box-shadow:0 0 0 1px #FDE68A,0 0 14px rgba(251,191,36,.35)}}
+.lbr-eng-btn{padding:4px 10px;border-radius:999px;border:1px solid #2B3A66;background:#0F1630;color:#E7ECF8;font-size:11.5px;font-weight:700;cursor:pointer}
+.lbr-eng-btn:disabled{opacity:.5;cursor:wait}
+.lbr-eng-now{padding:8px 10px;border-radius:12px;border:1px solid rgba(52,211,153,.35);background:rgba(6,78,59,.18);font-size:12.5px;line-height:1.6}
+.lbr-eng-now.busy{border-color:#FBBF24;background:rgba(120,80,10,.25);animation:lbr-fix 1.4s ease-in-out infinite}
+.lbr-eng-stat{text-align:center;font-size:10.5px;color:#93A1C3;padding:5px 2px;border-radius:10px;background:rgba(0,0,0,.25);border:1px solid #1B2550}
+.lbr-eng-stat span{display:block;font-size:17px;font-weight:800;font-family:'JetBrains Mono',ui-monospace,monospace}
+.lbr-eng-rep{border:1px solid #1B2550;border-radius:10px;background:rgba(6,9,24,.6);padding:5px 8px}
+.lbr-eng-rep summary{display:flex;align-items:center;gap:6px;cursor:pointer;font-size:12px;list-style:none}
+.lbr-eng-rep summary::-webkit-details-marker{display:none}
+.lbr-eng-badge{flex:none;font-size:10px;padding:1px 7px;border-radius:999px;border:1px solid}
+.lbr-still .lbr-spider .lbr-legs,.lbr-still .lbr-wrench,.lbr-still .lbr-mod.fixing,.lbr-still .lbr-eng-now.busy{animation:none}
 @media (prefers-reduced-motion: reduce){.lbr-stars,.lbr-scan,.lbr-radar,.lbr-rot,.lbr-rot2,.lbr-rot3,.lbr-orbit,.lbr-counter,.lbr-ticker{animation:none}}
 `;
 
@@ -268,7 +289,7 @@ const Kpi: React.FC<{ label: string; value: number; suffix?: string; sub: string
  */
 export const LiveBrainRoom: React.FC<{ variant?: 'page' | 'wall'; onClose?: () => void }> = ({ variant = 'page', onClose }) => {
   const wall = variant === 'wall';
-  const { currentUser } = useApp();
+  const { currentUser, showToast } = useApp();
   const isOwner = currentUser?.role === 'owner';
   const [data, setData] = useState<any>(null);
   const [events, setEvents] = useState<LiveEvt[]>([]);
@@ -296,6 +317,15 @@ export const LiveBrainRoom: React.FC<{ variant?: 'page' | 'wall'; onClose?: () =
     return () => { evs.forEach((e) => window.removeEventListener(e, bump)); window.clearInterval(t); };
   }, []);
   const [snd, setSnd] = useState<SoundState>(() => getSoundtrack().state);
+  // ——— المهندس المشرف: العنكبوت يمشي من المركز إلى القسم المعطّل، يعمل، ثم يعود ———
+  // home = في المركز · out = يمشي إليه · work = يُصلح · back = يعود. الرحلة تُشغَّل لكل مهمة
+  // حقيقية (مهمة جارية، أو تقرير جديد أُنجز بين استطلاعين) — لا حركة بلا مهمة.
+  const [spider, setSpider] = useState<{ phase: 'home' | 'out' | 'work' | 'back'; module: string | null; label: string }>({ phase: 'home', module: null, label: '' });
+  const spiderTimers = useRef<number[]>([]);
+  const seenJob = useRef<string | null>(null);
+  const seenReport = useRef<string | null>(null);
+  const [engBusy, setEngBusy] = useState(false);
+
   const coreRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
     const st = getSoundtrack();
@@ -524,6 +554,51 @@ export const LiveBrainRoom: React.FC<{ variant?: 'page' | 'wall'; onClose?: () =
     return frac >= 0.999 ? `M${60 - r} 60 A${r} ${r} 0 1 1 ${60 + r} 60 A${r} ${r} 0 1 1 ${60 - r} 60` : `M${x0.toFixed(2)} ${y0.toFixed(2)} A${r} ${r} 0 ${large} 1 ${x1.toFixed(2)} ${y1.toFixed(2)}`;
   };
 
+  const eng: any = data?.engineer || null;
+  useEffect(() => {
+    if (!eng) return;
+    const clear = () => { spiderTimers.current.forEach((t) => window.clearTimeout(t)); spiderTimers.current = []; };
+    const later = (fn: () => void, ms: number) => { spiderTimers.current.push(window.setTimeout(fn, ms)); };
+    const job = eng.job;
+    const top = Array.isArray(eng.reports) ? eng.reports[0] : null;
+    if (seenReport.current === null) seenReport.current = top?.id || '';
+    if (job && job.id !== seenJob.current) {
+      seenJob.current = job.id; clear();
+      setSpider({ phase: 'out', module: job.module, label: job.title });
+      later(() => setSpider((s) => (s.phase === 'out' ? { ...s, phase: 'work' } : s)), 1700);
+      return;
+    }
+    if (!job && (spider.phase === 'out' || spider.phase === 'work')) {
+      if (top) seenReport.current = top.id;
+      clear();
+      later(() => setSpider((s) => ({ ...s, phase: 'back' })), spider.phase === 'out' ? 1700 : 600);
+      later(() => setSpider({ phase: 'home', module: null, label: '' }), (spider.phase === 'out' ? 1700 : 600) + 1700);
+      return;
+    }
+    // مهمة اكتملت كلها بين استطلاعين: تُعرض الرحلة كاملة من تقريرها الحقيقي.
+    if (!job && top && top.id !== seenReport.current && ['resolved', 'escalated', 'retrying'].includes(top.status) && spider.phase === 'home') {
+      seenReport.current = top.id; clear();
+      setSpider({ phase: 'out', module: top.module, label: top.title });
+      later(() => setSpider((s) => ({ ...s, phase: 'work' })), 1700);
+      later(() => setSpider((s) => ({ ...s, phase: 'back' })), 1700 + 2200);
+      later(() => setSpider({ phase: 'home', module: null, label: '' }), 1700 + 2200 + 1700);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [eng?.job?.id, eng?.reports?.[0]?.id, Boolean(eng?.job)]);
+  useEffect(() => () => { spiderTimers.current.forEach((t) => window.clearTimeout(t)); }, []);
+  const engCheck = async () => {
+    setEngBusy(true);
+    try { await apiService.runEngineerCheck(); showToast('اكتمل فحص المهندس المشرف'); void poll(); }
+    catch (e: any) { showToast(e?.message || 'تعذّر الفحص'); }
+    finally { setEngBusy(false); }
+  };
+  const engToggle = async () => {
+    setEngBusy(true);
+    try { await apiService.toggleEngineer(!eng?.enabled); showToast(eng?.enabled ? 'أُوقف المهندس المشرف' : 'شُغّل المهندس المشرف'); void poll(); }
+    catch (e: any) { showToast(e?.message || 'تعذّر التغيير'); }
+    finally { setEngBusy(false); }
+  };
+
   // طاقة الإيقاع من النظام الحقيقي: نشاط الأحداث في الدقيقة + أخطر تنبيه قائم.
   const alarmLevel: 'ok' | 'warn' | 'critical' = (data?.alerts || []).some((a: any) => a.severity === 'critical') ? 'critical' : (data?.alerts || []).some((a: any) => a.severity === 'warning') ? 'warn' : 'ok';
   useEffect(() => { getSoundtrack().setEnergy(perMinute, alarmLevel); }, [perMinute, alarmLevel]);
@@ -562,8 +637,6 @@ export const LiveBrainRoom: React.FC<{ variant?: 'page' | 'wall'; onClose?: () =
   const feedWarn = feedStale || sleeping;
   // لوحة تتمدّد لتملأ ما تبقّى من العمود في الشاشة الحية (قوائم تُمرَّر داخلها فقط).
   const flexPanel: React.CSSProperties | undefined = wall ? { display: 'flex', flexDirection: 'column', flex: '1 1 0', minHeight: 190 } : undefined;
-  // لوحة تتمدّد لملء الفراغ ولا تنكمش تحت محتواها.
-  const growPanel: React.CSSProperties | undefined = wall ? { display: 'flex', flexDirection: 'column', flex: '1 0 auto' } : undefined;
 
 
   const headerEl = (
@@ -721,6 +794,12 @@ export const LiveBrainRoom: React.FC<{ variant?: 'page' | 'wall'; onClose?: () =
                       <circle cx={CX} cy={CY} r="88" fill="none" stroke="#38BDF8" strokeWidth="1.4" className="lbr-halo2" />
                     </svg>
 
+                    {spider.phase !== 'home' && spider.module && MOD_BY_KEY[spider.module as ModKey] && (
+                      <div className={'lbr-spider ' + spider.phase} aria-hidden="true" style={{ offsetPath: `path('${pathOut(MOD_BY_KEY[spider.module as ModKey])}')` }}>
+                        <svg width="44" height="44" viewBox="0 0 48 48"><g fill="none" stroke="#FDE68A" strokeWidth="2.2" strokeLinecap="round"><ellipse cx="24" cy="27" rx="6.5" ry="7.5" fill="#3B2405" /><circle cx="24" cy="16" r="4" fill="#3B2405" /><path className="lbr-legs" d="M18 23 L9 15 L5 18 M18 27 L6 27 L3 31 M18 31 L9 39 L6 44 M30 23 L39 15 L43 18 M30 27 L42 27 L45 31 M30 31 L39 39 L42 44" /></g></svg>
+                        {spider.phase === 'work' && <span className="lbr-wrench">🔧</span>}
+                      </div>
+                    )}
                     {motion && bursts.map((b) => (
                       <span key={b.id} className="lbr-burst" style={{ offsetPath: `path('${b.path}')`, background: `radial-gradient(circle, #fff 0%, ${b.color} 45%, transparent 70%)`, boxShadow: `0 0 16px ${b.color}, 0 0 36px ${b.color}` } as React.CSSProperties} />
                     ))}
@@ -738,7 +817,7 @@ export const LiveBrainRoom: React.FC<{ variant?: 'page' | 'wall'; onClose?: () =
                       const st: Status = v?.status || 'partial';
                       const heat = (moduleHeat[m.key] || 0) / maxHeat;
                       const glow = STATUS_COLOR[st];
-                      const cls = 'lbr-mod' + (selected === m.key ? ' sel' : '') + (hitActive(m.key) ? ' hit' : '');
+                      const cls = 'lbr-mod' + (selected === m.key ? ' sel' : '') + (hitActive(m.key) ? ' hit' : '') + (spider.module === m.key && spider.phase === 'work' ? ' fixing' : '');
                       return (
                         <button key={m.key} type="button" className={cls} onClick={() => setSelected(m.key)} aria-label={`عرض قسم ${m.title}`}
                           style={{ position: 'absolute', left: m.x - 90, top: m.y - 38, width: 180, minHeight: 76, padding: '8px 10px', borderRadius: 14, border: `1px solid ${m.color}55`, background: `linear-gradient(160deg, rgba(14,18,44,.95), rgba(8,10,26,.9))`, color: '#E7ECF8', textAlign: 'right', cursor: 'pointer', display: 'flex', flexDirection: 'column', gap: 3, boxShadow: `0 0 ${10 + heat * 26}px ${m.color}${heat > 0.05 ? '66' : '22'}, inset 0 0 18px ${m.color}14` }}>
@@ -922,16 +1001,78 @@ export const LiveBrainRoom: React.FC<{ variant?: 'page' | 'wall'; onClose?: () =
             </section>
   );
   const journeyEl = (
-            <section aria-label="السير العام" className="lbr-panel" style={growPanel}>
-              <h2 className="lbr-h" style={{ marginBottom: 10 }}>السير العام — تضيء الخطوة التي وقع فيها آخر حدث</h2>
-              <div style={{ display: 'grid', gridTemplateColumns: wall ? 'minmax(0, 1fr)' : 'repeat(auto-fit, minmax(150px, 1fr))', gap: wall ? 8 : 10, ...(wall ? { flex: 1, gridAutoRows: '1fr' } : {}) }}>
+            <section aria-label="السير العام" className="lbr-panel">
+              <h2 className="lbr-h" style={{ marginBottom: wall ? 6 : 10 }}>{wall ? 'السير العام — يضيء مع آخر حدث' : 'السير العام — تضيء الخطوة التي وقع فيها آخر حدث'}</h2>
+              <div style={{ display: 'grid', gridTemplateColumns: wall ? 'repeat(2, minmax(0, 1fr))' : 'repeat(auto-fit, minmax(150px, 1fr))', gap: wall ? 6 : 10 }}>
                 {JOURNEY.map((j, i) => (
-                  <div key={j.title} className={'lbr-step' + (i === journeyIdx ? ' on' : '')} style={{ padding: '10px 12px', border: '1px solid rgba(99,102,241,.25)', borderRadius: 14, display: 'flex', gap: 10, alignItems: 'flex-start', background: 'rgba(6,9,24,.6)', transition: 'all .4s' }}>
+                  <div key={j.title} title={wall ? j.detail : undefined} className={'lbr-step' + (i === journeyIdx ? ' on' : '')} style={{ padding: wall ? '5px 10px' : '10px 12px', border: '1px solid rgba(99,102,241,.25)', borderRadius: 14, display: 'flex', gap: 10, alignItems: 'flex-start', background: 'rgba(6,9,24,.6)', transition: 'all .4s' }}>
                     <span className="lbr-mono" style={{ width: 28, height: 28, flex: 'none', borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 12, fontWeight: 800, background: j.badge, color: '#05070F', boxShadow: `0 0 14px ${j.badge}` }}>{i + 1}</span>
-                    <div><div style={{ fontSize: 13, fontWeight: 700 }}>{j.title}</div><div style={{ fontSize: 11, color: '#93A1C3' }}>{j.detail}</div></div>
+                    <div><div style={{ fontSize: 13, fontWeight: 700 }}>{j.title}</div>{!wall && <div style={{ fontSize: 11, color: '#93A1C3' }}>{j.detail}</div>}</div>
                   </div>
                 ))}
               </div>
+            </section>
+  );
+  const ENG_STATUS: Record<string, [string, string]> = { resolved: ['أُصلح', '#34D399'], escalated: ['صُعِّد إليك', '#F87171'], retrying: ['سيعيد المحاولة', '#FBBF24'], deferred: ['مؤجّل', '#FBBF24'], monitoring: ['تحت المراقبة', '#38BDF8'], self_recovered: ['تعافى', '#A5B4FC'] };
+  const engineerEl = (
+            <section className="lbr-panel lbr-eng" aria-label="المهندس المشرف" style={wall ? { ...flexPanel, minHeight: 310, overflow: 'hidden' } : undefined}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginBottom: 6 }}>
+                <h2 className="lbr-h">المهندس المشرف — يُصلح ولا يطوّر</h2>
+                <span style={{ display: 'inline-flex', gap: 6 }}>
+                  <button type="button" className="lbr-eng-btn" disabled={engBusy || !eng} onClick={() => void engCheck()}>افحص الآن</button>
+                  <button type="button" className="lbr-eng-btn" disabled={engBusy || !eng} aria-pressed={Boolean(eng?.enabled)} onClick={() => void engToggle()} style={{ borderColor: eng?.enabled ? '#34D399' : '#F87171', color: eng?.enabled ? '#6EE7B7' : '#FCA5A5' }}>{eng?.enabled ? '● يعمل' : '○ متوقف'}</button>
+                </span>
+              </div>
+              {!eng ? <div style={{ fontSize: 12, color: '#93A1C3' }}>{data ? 'المهندس غير متاح على هذا الخادم بعد.' : 'جارٍ الاتصال…'}</div> : (
+                <>
+                  <div className={'lbr-eng-now' + (eng.job ? ' busy' : '')}>
+                    {eng.job
+                      ? <><b>🕷 يعمل الآن على:</b> {eng.job.title}<div style={{ fontSize: 11, color: '#FDE68A' }}>{eng.job.phase === 'verifying' ? 'يتحقق من زوال العطل…' : `الخطوة: ${eng.job.step}`}</div></>
+                      : spider.phase !== 'home' ? <><b>🕷 {spider.phase === 'back' ? 'يعود إلى المركز' : 'في طريقه إلى'}:</b> {spider.label}</>
+                      : (eng.incidents || []).length
+                        ? <><b>⚠ أعطال مرصودة:</b> {(eng.incidents || []).length} — يتعامل معها حسب الأولوية والحدود</>
+                        : <><b>🕸 في المركز — كل شيء سليم</b><div style={{ fontSize: 11, color: '#93A1C3' }}>{fmt(eng.stats?.checks || 0)} فحص · آخر فحص {ago(eng.stats?.lastCheckAt, now)}</div></>}
+                  </div>
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0, 1fr))', gap: 6, margin: '8px 0' }}>
+                    <div className="lbr-eng-stat"><span style={{ color: '#34D399' }}>{fmt(eng.stats?.resolved24h || 0)}</span>أُصلح · 24س</div>
+                    <div className="lbr-eng-stat"><span style={{ color: '#F87171' }}>{fmt(eng.stats?.escalated24h || 0)}</span>صُعِّد · 24س</div>
+                    <div className="lbr-eng-stat"><span style={{ color: '#FBBF24' }}>{fmt(eng.stats?.actionsLastHour || 0)}/{fmt(eng.policy?.maxActionsPerHour || 12)}</span>إجراء · ساعة</div>
+                  </div>
+                  {(eng.incidents || []).map((i: any) => (
+                    <div key={i.key} style={{ fontSize: 11.5, padding: '6px 8px', marginBottom: 6, borderRadius: 10, border: `1px solid ${i.severity === 'critical' ? '#F87171' : '#FBBF24'}55`, background: 'rgba(0,0,0,.25)' }}>
+                      <b style={{ color: i.severity === 'critical' ? '#FCA5A5' : '#FCD34D' }}>{i.title}</b>
+                      {i.needsOwner && <div style={{ color: '#FCA5A5' }}>يحتاج قرارك: {i.needsOwner}</div>}
+                      {i.observeOnly && <div style={{ color: '#93C5FD' }}>مراقبة فقط — لا إجراء آلي آمن</div>}
+                    </div>
+                  ))}
+                  <div style={{ fontSize: 11, color: '#93A1C3', margin: '2px 0 6px' }}>التقارير ({(eng.reports || []).length})</div>
+                  <div style={{ ...(wall ? { flex: '1 1 0', minHeight: 0 } : { maxHeight: 360 }), overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 6 }}>
+                    {!(eng?.reports || []).length && <div style={{ fontSize: 12, color: '#6EE7B7' }}>لا تقارير بعد — لم يحتج أي قسم إلى إصلاح.</div>}
+                    {(eng?.reports || []).map((r: any) => {
+                      const [t, c] = ENG_STATUS[r.status] || ['—', '#93A1C3'];
+                      return (
+                        <details key={r.id} className="lbr-eng-rep">
+                          <summary>
+                            <span className="lbr-eng-badge" style={{ borderColor: c, color: c }}>{t}</span>
+                            <span style={{ flex: 1, minWidth: 0 }}>{r.title}</span>
+                            <span className="lbr-mono" style={{ fontSize: 10, color: '#7C89AD', flex: 'none' }}>{ago(r.endedAt, now)}</span>
+                          </summary>
+                          <div style={{ fontSize: 11.5, lineHeight: 1.7, color: '#C9D3EA', padding: '6px 2px 2px' }}>
+                            <div>{r.summary}</div>
+                            {(r.evidence || []).length > 0 && <div style={{ color: '#93A1C3' }}>الدليل: {(r.evidence || []).join(' · ')}</div>}
+                            {(r.steps || []).map((st: any, i: number) => (
+                              <div key={i} style={{ display: 'flex', gap: 6 }}><span style={{ color: st.ok ? '#34D399' : '#F87171' }}>{st.ok ? '✓' : '✗'}</span><span><b>{st.label}</b> — {st.detail} <span className="lbr-mono" style={{ fontSize: 10, color: '#6B7AA0' }}>{clock(st.at)}</span></span></div>
+                            ))}
+                            <div><b>التحقق:</b> {r.verification}</div>
+                            <div style={{ color: '#93A1C3' }}>المحاولة {r.attempt} · المدة {Math.max(1, Math.round((r.durationMs || 0) / 1000))} ث{r.nextAction ? ` · التالي: ${r.nextAction}` : ''}</div>
+                          </div>
+                        </details>
+                      );
+                    })}
+                  </div>
+                  <div style={{ fontSize: 10, color: '#6B7AA0', marginTop: 6, lineHeight: 1.6 }}>لا يغيّر قراراتك · لا يحذف · لا يمسّ الإعدادات أو الأسرار · {eng.policy?.maxAttempts || 3} محاولات ثم يصعّد إليك ويهدأ {eng.policy?.cooldownHours || 6} س · حد {eng.policy?.maxActionsPerHour || 12} إجراء/ساعة</div>
+                </>
+              )}
             </section>
   );
   const gaugesEl = (
@@ -1063,6 +1204,7 @@ export const LiveBrainRoom: React.FC<{ variant?: 'page' | 'wall'; onClose?: () =
           </main>
 
           <aside aria-label="اللوحات الحية" style={{ flex: '1 1 300px', maxWidth: 400, minWidth: 0, display: 'flex', flexDirection: 'column', gap: 16 }}>
+            {engineerEl}
             {gaugesEl}
             {eventsEl}
             {platStatusEl}
@@ -1096,8 +1238,8 @@ export const LiveBrainRoom: React.FC<{ variant?: 'page' | 'wall'; onClose?: () =
       <div ref={wallGridRef} className="lbr-wallgrid">
         <div className="lbr-col">{controlEl}</div>
         <div className="lbr-col">{mapEl}{pulseEl}</div>
-        <div className="lbr-col">{interEl}{intentsEl}{topicsEl}{voicesEl}</div>
-        <div className="lbr-col">{prodsEl}{platInsEl}{leadsEl}{journeyEl}</div>
+        <div className="lbr-col">{interEl}{intentsEl}{topicsEl}{prodsEl}{voicesEl}</div>
+        <div className="lbr-col">{engineerEl}{platInsEl}{leadsEl}{journeyEl}</div>
         <div className="lbr-col">{gaugesEl}{cyclesEl}{platStatusEl}{eventsEl}</div>
       </div>
     </div>

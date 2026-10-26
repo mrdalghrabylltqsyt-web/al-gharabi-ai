@@ -717,6 +717,7 @@ import { backupFreshness, resolveAutoBackupIntervalMs } from "./engine/dr/autoBa
 import { summarizePublishHealth, formatPublishLogLine } from "./engine/ops/publishHealth";
 import { realProductPhrases } from "./src/utils/productPhrases";
 import { LiveEventBuffer, classifyLogLine, auditToLiveEvent, buildLiveModules, buildLiveInsights, buildLiveCycles, platformAr, type LiveEventInput } from "./engine/ops/liveRoom";
+import { detectIncidents, decideNext, forgetRecovered, addReport, withTimeout, emptyEngineerState, normalizeEngineerState, ENGINEER_POLICY, type EngineerState, type EngineerSnapshot, type Incident, type ReportStep, type EngineerReport } from "./engine/ops/siteEngineer";
 import { parseFacebookPostMetrics, parseInstagramMediaMetrics, parseGraphInsights, parseFollowers, upsertPerformanceRecords, summarizePlatformMetrics, type MetricValues } from "./engine/social/metricsSync";
 import { resolveInteractionProduct, productFactStatement, productNamedInText, type ProductResolution } from "./engine/social/productResolution";
 import { decideCoalescedWrite, type CoalesceMemo, USAGE_INDICATOR_VOLATILE_PATHS } from "./engine/ops/writeCoalescing";
@@ -14454,6 +14455,7 @@ app.get("/api/live/room", requireOwner, (req, res) => {
       } catch { return []; }
     })(),
     usage: { multiplier: (() => { try { return usagePressureMultiplier(); } catch { return 1; } })(), level: pressure },
+    engineer: (() => { try { return engineerView(); } catch { return null; } })(),
     telemetry: (() => {
       const mem = process.memoryUsage();
       const g: any = (() => { try { return geminiStatus(); } catch { return {}; } })();
@@ -14517,6 +14519,282 @@ app.get("/api/live/room", requireOwner, (req, res) => {
       };
     })(),
   });
+});
+
+
+// =============================================================================
+// المهندس المشرف (2026-10-26): عنكبوت العقل المركزي الذي يُصلح ولا يطوّر.
+// يرصد كل دقيقة من حالة الخادم الحقيقية (ذاكرة فقط، بلا شبكة)، وإن تعطّل قسم يتحرك
+// إليه وينفّذ إصلاحاً آمناً معروفاً عبر المشغّلات نفسها (التي تفرض قرارات المالك)،
+// ثم يتحقق أن العطل زال فعلاً ويكتب تقريراً كاملاً. ما يحتاج قرار المالك يُصعَّد إليه.
+// القواعد والحدود في engine/ops/siteEngineer.ts (ثابتة ومختبرة).
+// =============================================================================
+const STORAGE_KEY_ENGINEER = "siteEngineer";
+let engineerState: EngineerState = emptyEngineerState();
+const engineerStreaks: Record<string, number> = {};
+let engineerActiveIncidents: Incident[] = [];
+let engineerJob: null | { id: string; incidentKey: string; module: string; title: string; kind: string; startedAt: string; phase: "working" | "verifying"; step: string; steps: ReportStep[] } = null;
+let engineerTimer: ReturnType<typeof setInterval> | null = null;
+let engineerBusy = false;
+
+async function loadEngineerState(): Promise<void> {
+  try { engineerState = normalizeEngineerState(await storageAdapter.read<any>(STORAGE_KEY_ENGINEER)); } catch { engineerState = emptyEngineerState(); }
+}
+/** حفظ صغير ونادر (عند انتهاء مهمة أو تبديل التشغيل فقط) — لا كتابة في كل فحص. */
+function persistEngineerState(): void {
+  if (!storageReady) return;
+  const snap = { ...engineerState, reports: engineerState.reports.slice(0, ENGINEER_POLICY.maxReports), actions: engineerState.actions.slice(-50) };
+  persistQueue = persistQueue.then(() => storageAdapter.write(STORAGE_KEY_ENGINEER, snap)).catch(() => { /* التقرير يبقى في الذاكرة */ });
+}
+
+/** لقطة الحالة الحقيقية للرصد (من الذاكرة فقط). */
+function engineerSnapshot(): EngineerSnapshot {
+  const nowMs = Date.now();
+  const yt: any = normalizeWatcherControls(watcherState.controls);
+  const mc: any = (metaPollingState as any)?.controls || {};
+  const tc: any = (telegramPollingState as any)?.controls || {};
+  const linked = (id: string) => { const c: any = platformConnections.get(id); return Boolean(c?.status === "connected" && c?.providerVerified === true); };
+  const fresh = (() => { try { return backupFreshness(drControl.driveAutoBackup, nowMs); } catch { return null; } })();
+  const dr: any = (() => { try { return (app as any).drAutoBackup?.status?.() || null; } catch { return null; } })();
+  return {
+    nowMs,
+    storageReady: Boolean(storageReady),
+    persistFailStreak: persistStats.failStreak,
+    persistFailingSince: persistStats.failingSince,
+    cycles: [
+      { key: "youtube", label: "مراقب يوتيوب", cadenceMs: watcherCadenceMs(), lastRunAt: watcherState.lastPollAt || null, active: linked("youtube") && yt.enabled !== false && yt.paused !== true, deferred: normalizeDeferralState(watcherState.deferral).deferred },
+      { key: "meta", label: "مراقب فيسبوك/إنستغرام", cadenceMs: metaPollingCadenceMs(), lastRunAt: metaPollingState.lastPollAt || null, active: (linked("facebook") || linked("instagram")) && mc.enabled !== false && mc.paused !== true, deferred: normalizeDeferralState(metaPollingState.deferral).deferred },
+      { key: "telegram", label: "مراقب تيليغرام", cadenceMs: telegramPollingCadenceMs(), lastRunAt: telegramPollingState.lastPollAt || null, active: linked("telegram") && tc.enabled !== false && tc.paused !== true, deferred: normalizeDeferralState(telegramPollingState.deferral).deferred },
+      { key: "brain", label: "العقل المركزي", cadenceMs: brainRuntimeIntervalMs(), lastRunAt: brainRuntimeState.lastCycleCompletedAt || null, active: brainRuntimeEnabled(), deferred: normalizeDeferralState(brainRuntimeState.deferral).deferred },
+      { key: "commercial", label: "العقل التجاري", cadenceMs: 10 * 60 * 1000 * usagePressureMultiplier(), lastRunAt: commercialLastRun?.at || null, active: commercialKillSwitchEnabled(), deferred: normalizeDeferralState(commercialDeferral).deferred },
+      { key: "metrics", label: "مزامنة الأرقام", cadenceMs: METRICS_SYNC_INTERVAL_MS, lastRunAt: metricsSyncState.lastRunAt || null, active: true, deferred: false },
+    ],
+    backup: { configured: Boolean(drControl.driveRefreshToken), level: fresh ? fresh.level : null, running: Boolean(dr?.running), lastSuccessAt: fresh ? fresh.lastSuccessAt : null, consecutiveFailures: Number(dr?.consecutiveFailures || 0) },
+    metaFailing: Object.entries(((metaPollingState as any)?.platformStats || {}) as Record<string, any>)
+      .filter(([p, st]) => linked(p) && Number(st?.consecutiveErrors || 0) >= META_READ_FAIL_WARN_CYCLES)
+      .map(([platform, st]) => ({ platform, code: st?.lastErrorCode ? String(st.lastErrorCode) : null, streak: Number(st?.consecutiveErrors || 0) })),
+    youtube: { connected: linked("youtube"), consecutiveErrors: Number(watcherState.consecutiveErrors || 0), lastError: watcherState.lastError ? String(watcherState.lastError) : null },
+    memoryMb: Math.round(process.memoryUsage().rss / 1048576),
+    limitMb: 512,
+    loopLagMs: liveLoop.lagMs,
+  };
+}
+
+type EngineerPlan = { steps: Array<{ label: string; timeoutMs?: number; run: () => Promise<{ ok: boolean; detail: string }> }>; verify: (startedMs: number) => { ok: boolean; detail: string } };
+const engAfter = (iso: string | null | undefined, ms: number) => { const t = iso ? Date.parse(String(iso)) : NaN; return Number.isFinite(t) && t >= ms - 1000; };
+const engResText = (r: any) => (r?.ok ? "نجحت" : `لم تنجح: ${String(r?.error || r?.result?.skipped || r?.reason || "سبب غير معروف").slice(0, 100)}`);
+
+/** كتيّب الإصلاح: لكل عطل خطوات آمنة معروفة + تحقّق حقيقي. لا شيء هنا يغيّر قرار المالك. */
+function engineerPlaybook(inc: Incident): EngineerPlan | null {
+  switch (inc.kind) {
+    case "cycle_stale": {
+      const k = inc.target;
+      if (k === "youtube") return {
+        steps: [
+          { label: "إعادة تسليح مؤقّت مراقب يوتيوب", run: async () => { if (!watcherScheduler) startYouTubeWatcher(); else watcherScheduler.reschedule(); return { ok: true, detail: "المؤقّت مُسلَّح على الإيقاع الحالي" }; } },
+          { label: "تشغيل دورة مراقبة مباشرة", run: async () => { const r = await runYouTubeWatcherCycle("manual"); return { ok: Boolean(r.ok), detail: `الدورة ${engResText(r)}` }; } },
+        ],
+        verify: (t0) => engAfter(watcherState.lastPollAt, t0) ? { ok: true, detail: `آخر دورة الآن ${watcherState.lastPollAt}` } : { ok: false, detail: "لم يتقدّم موعد آخر دورة" },
+      };
+      if (k === "meta") return {
+        steps: [
+          { label: "إعادة تسليح مؤقّت مراقب فيسبوك/إنستغرام", run: async () => { if (!metaPollingScheduler) startMetaPollingWatcher(); else metaPollingScheduler.reschedule(); return { ok: true, detail: "المؤقّت مُسلَّح" }; } },
+          { label: "تشغيل دورة قراءة مباشرة", run: async () => { const r = await runMetaWatcherCycle("self_heal"); return { ok: Boolean(r.ok), detail: `الدورة ${engResText(r)}` }; } },
+        ],
+        verify: (t0) => engAfter(metaPollingState.lastPollAt, t0) ? { ok: true, detail: `آخر دورة الآن ${metaPollingState.lastPollAt}` } : { ok: false, detail: "لم يتقدّم موعد آخر دورة" },
+      };
+      if (k === "telegram") return {
+        steps: [
+          { label: "إعادة تسليح مؤقّت مراقب تيليغرام", run: async () => { if (!telegramPollingScheduler) startTelegramPollingWatcher(); else telegramPollingScheduler.reschedule(); return { ok: true, detail: "المؤقّت مُسلَّح" }; } },
+          { label: "تشغيل دورة مباشرة", run: async () => { const r = await runTelegramWatcherCycle("self_heal"); return { ok: Boolean(r.ok), detail: `الدورة ${engResText(r)}` }; } },
+        ],
+        verify: (t0) => engAfter(telegramPollingState.lastPollAt, t0) ? { ok: true, detail: `آخر دورة الآن ${telegramPollingState.lastPollAt}` } : { ok: false, detail: "لم يتقدّم موعد آخر دورة" },
+      };
+      if (k === "brain") return {
+        steps: [
+          { label: "إعادة تشغيل مؤقّت العقل المركزي", run: async () => { if (!brainRuntimeTimer) startBrainRuntime(); return { ok: true, detail: brainRuntimeTimer ? "المؤقّت يعمل" : "تعذّر تشغيل المؤقّت" }; } },
+          { label: "تشغيل دورة تفكير مباشرة", run: async () => { const r: any = await runBrainRuntimeCycleInternal("manual"); const ok = r?.status === "SUCCESS" || r?.status === "NO_NEW_DATA"; return { ok, detail: `الحالة ${String(r?.status || "—")}${r?.reason ? ` — ${String(r.reason).slice(0, 80)}` : ""}` }; } },
+        ],
+        verify: (t0) => engAfter(brainRuntimeState.lastCycleCompletedAt, t0) ? { ok: true, detail: `اكتملت دورة ${brainRuntimeState.lastCycleCompletedAt}` } : { ok: false, detail: "لم تكتمل دورة جديدة" },
+      };
+      if (k === "commercial") return {
+        steps: [
+          { label: "إعادة تسليح مؤقّت العقل التجاري", run: async () => { startCommercialBrain(); commercialScheduler?.reschedule(); return { ok: Boolean(commercialScheduler), detail: commercialScheduler ? "المؤقّت مُسلَّح" : "لم يُنشأ المؤقّت" }; } },
+          { label: "تشغيل دورة متابعة مباشرة", run: async () => { const r = await runCommercialBrainCycle("self_heal"); return { ok: Boolean(r.ok) && !r.result?.skipped, detail: `الدورة ${engResText(r.result?.skipped ? { ok: false, ...r } : r)}` }; } },
+        ],
+        verify: (t0) => engAfter(commercialLastRun?.at, t0) ? { ok: true, detail: `آخر دورة الآن ${commercialLastRun?.at}` } : { ok: false, detail: "لم تُسجَّل دورة جديدة" },
+      };
+      if (k === "metrics") return {
+        steps: [{ label: "تشغيل مزامنة الأرقام مباشرة", timeoutMs: 5 * 60000, run: async () => { const r = await runMetricsSync("self_heal"); return { ok: Boolean(r?.ok), detail: `المزامنة ${engResText(r)}` }; } }],
+        verify: (t0) => engAfter(metricsSyncState.lastRunAt, t0) ? { ok: true, detail: `مزامنة جديدة ${metricsSyncState.lastRunAt}` } : { ok: false, detail: "لم تتم مزامنة جديدة" },
+      };
+      return null;
+    }
+    case "persist_failing": return {
+      steps: [{ label: "إعادة محاولة حفظ الحالة في قاعدة البيانات", run: async () => { persistState(); await persistQueue; return { ok: persistStats.failStreak === 0, detail: persistStats.failStreak === 0 ? "حُفظت الحالة" : `ما زال الحفظ يفشل (${lastPersistError || "—"})` }; } }],
+      verify: () => persistStats.failStreak === 0 ? { ok: true, detail: "الحفظ سليم الآن" } : { ok: false, detail: `${persistStats.failStreak} فشل متتالٍ` },
+    };
+    case "backup_stale": return {
+      steps: [{ label: "تشغيل دورة النسخ الاحتياطي على Google Drive", timeoutMs: 10 * 60000, run: async () => { const r: any = await (app as any).drAutoBackup?.runCycle?.("self_heal"); return { ok: r?.outcome !== "failed" && r?.outcome !== undefined, detail: `النتيجة: ${String(r?.outcome || "غير متاحة")}${r?.reason ? ` — ${String(r.reason).slice(0, 80)}` : ""}` }; } }],
+      verify: () => { const f = backupFreshness(drControl.driveAutoBackup, Date.now()); return f.level === "ok" ? { ok: true, detail: `نسخة حديثة ${f.lastSuccessAt}` } : { ok: false, detail: `ما زالت ${f.level === "critical" ? "قديمة جداً" : "متأخرة"}` }; },
+    };
+    case "meta_read_failing": {
+      const p = String(inc.target || "");
+      return {
+        steps: [{ label: `إعادة دورة قراءة ${platformAr(p)}`, run: async () => { const r = await runMetaWatcherCycle("self_heal"); return { ok: Boolean(r.ok), detail: `الدورة ${engResText(r)}` }; } }],
+        verify: () => { const st: any = (metaPollingState as any)?.platformStats?.[p]; const n = Number(st?.consecutiveErrors || 0); return n === 0 ? { ok: true, detail: "القراءة عادت تعمل" } : { ok: false, detail: `ما زالت تفشل (${n} دورات، ${String(st?.lastErrorCode || "—")})` }; },
+      };
+    }
+    case "youtube_errors": return {
+      steps: [
+        { label: "تجديد رمز وصول يوتيوب", run: async () => { const r = await ensureYouTubeAccessToken(); return { ok: Boolean(r.ok), detail: r.ok ? (r.refreshed ? "جُدِّد الرمز" : "الرمز صالح") : `تعذّر: ${String(r.code || r.error || "").slice(0, 80)}` }; } },
+        { label: "تشغيل دورة مراقبة للتأكد", run: async () => { const r = await runYouTubeWatcherCycle("manual"); return { ok: Boolean(r.ok), detail: `الدورة ${engResText(r)}` }; } },
+      ],
+      verify: () => Number(watcherState.consecutiveErrors || 0) === 0 ? { ok: true, detail: "لا أخطاء متتالية الآن" } : { ok: false, detail: `${watcherState.consecutiveErrors} أخطاء متتالية` },
+    };
+    default: return null;
+  }
+}
+
+function engineerMem(key: string) {
+  const m = engineerState.incidents[key] || (engineerState.incidents[key] = { attempts: 0, lastAttemptAt: null, escalatedAt: null, firstSeenAt: Date.now() });
+  return m;
+}
+function engineerReport(inc: Incident, partial: Partial<EngineerReport> & { status: EngineerReport["status"]; steps: ReportStep[]; verification: string; summary: string; startedMs: number; nextAction?: string | null }): EngineerReport {
+  const end = Date.now();
+  return {
+    id: workspaceId("eng"), incidentKey: inc.key, kind: inc.kind, module: inc.module, severity: inc.severity, title: inc.title, evidence: inc.evidence,
+    attempt: engineerMem(inc.key).attempts, startedAt: new Date(partial.startedMs).toISOString(), endedAt: new Date(end).toISOString(), durationMs: end - partial.startedMs,
+    status: partial.status, steps: partial.steps, verification: partial.verification, summary: partial.summary, nextAction: partial.nextAction ?? null,
+  };
+}
+
+/** تنفيذ مهمة إصلاح واحدة: يتحرك ← يعمل خطوة بخطوة ← يتحقق ← يقرّر ← يكتب التقرير. */
+async function engineerRepair(inc: Incident): Promise<void> {
+  const plan = engineerPlaybook(inc);
+  const t0 = Date.now();
+  const mem = engineerMem(inc.key);
+  mem.attempts += 1; mem.lastAttemptAt = t0;
+  engineerState.actions.push(t0);
+  const steps: ReportStep[] = [];
+  engineerJob = { id: workspaceId("job"), incidentKey: inc.key, module: inc.module, title: inc.title, kind: inc.kind, startedAt: new Date(t0).toISOString(), phase: "working", step: "التشخيص", steps };
+  liveEvent({ module: inc.module as any, level: "warn", title: `🕷 المهندس يتجه إلى: ${inc.title}`, text: inc.evidence.join(" · ").slice(0, 150) });
+  audit("site-engineer", "engineer_dispatched", `${inc.key} attempt=${mem.attempts}`);
+  steps.push({ at: new Date().toISOString(), label: "التشخيص", ok: true, detail: inc.evidence.join(" · ") });
+  if (!plan) {
+    steps.push({ at: new Date().toISOString(), label: "البحث عن إصلاح آمن", ok: false, detail: "لا يوجد إصلاح آمن معروف لهذا العطل" });
+    engineerEscalate(inc, steps, "لا يوجد إصلاح آلي آمن لهذا العطل", t0);
+    return;
+  }
+  for (const st of plan.steps) {
+    engineerJob.step = st.label;
+    let r: { ok: boolean; detail: string };
+    try { r = await withTimeout(st.run(), st.timeoutMs || ENGINEER_POLICY.stepTimeoutMs, st.label); }
+    catch (e: any) { r = { ok: false, detail: String(e?.message || e?.code || "خطأ").slice(0, 140) }; }
+    steps.push({ at: new Date().toISOString(), label: st.label, ok: r.ok, detail: r.detail });
+    liveEvent({ module: inc.module as any, level: r.ok ? "info" : "warn", title: `🔧 ${st.label}`, text: r.detail.slice(0, 150) });
+  }
+  engineerJob.phase = "verifying"; engineerJob.step = "التحقق";
+  const v = (() => { try { return plan.verify(t0); } catch (e: any) { return { ok: false, detail: String(e?.message || "تعذّر التحقق").slice(0, 120) }; } })();
+  steps.push({ at: new Date().toISOString(), label: "التحقق من زوال العطل", ok: v.ok, detail: v.detail });
+  if (v.ok) {
+    addReport(engineerState, engineerReport(inc, { status: "resolved", steps, verification: v.detail, summary: `أُصلح «${inc.title}» في المحاولة ${mem.attempts} وتحقّقتُ من زوال العطل.`, startedMs: t0 }));
+    delete engineerState.incidents[inc.key];
+    liveEvent({ module: inc.module as any, level: "ok", title: `✅ المهندس أصلح: ${inc.title}`, text: v.detail.slice(0, 150) });
+    audit("site-engineer", "engineer_resolved", inc.key);
+    if (inc.severity === "critical") pushNotification("owner", "engineer_report", `المهندس المشرف أصلح: ${inc.title}`, `${v.detail}. التقرير الكامل في غرفة العقل الحية.`, "info", "live_room");
+  } else if (mem.attempts >= ENGINEER_POLICY.maxAttempts) {
+    engineerEscalate(inc, steps, `بقي العطل بعد ${mem.attempts} محاولات (${v.detail})`, t0);
+  } else {
+    const waitMin = Math.round(ENGINEER_POLICY.backoffMs[Math.min(mem.attempts, ENGINEER_POLICY.backoffMs.length - 1)] / 60000);
+    addReport(engineerState, engineerReport(inc, { status: "retrying", steps, verification: v.detail, summary: `لم يزُل العطل بعد المحاولة ${mem.attempts} — سأعيد المحاولة بعد ${waitMin} دقيقة.`, startedMs: t0, nextAction: `محاولة ${mem.attempts + 1} بعد ${waitMin} د` }));
+    liveEvent({ module: inc.module as any, level: "warn", title: `⏳ المهندس سيعيد المحاولة: ${inc.title}`, text: `بعد ${waitMin} د — ${v.detail}`.slice(0, 150) });
+  }
+}
+
+function engineerEscalate(inc: Incident, steps: ReportStep[], reason: string, t0: number): void {
+  const mem = engineerMem(inc.key);
+  mem.escalatedAt = Date.now();
+  addReport(engineerState, engineerReport(inc, { status: "escalated", steps, verification: reason, summary: `صعّدتُ «${inc.title}» إليك: ${reason}.`, startedMs: t0, nextAction: inc.needsOwner || "يحتاج تدخّلك — لن أعيد المحاولة 6 ساعات" }));
+  liveEvent({ module: inc.module as any, level: "error", title: `🚨 المهندس يصعّد إليك: ${inc.title}`, text: (inc.needsOwner || reason).slice(0, 150) });
+  audit("site-engineer", "engineer_escalated", `${inc.key}: ${reason}`.slice(0, 200));
+  pushNotification("owner", "engineer_escalation", `المهندس المشرف يحتاجك: ${inc.title}`, `${inc.evidence.join(" · ")}. ${inc.needsOwner || reason}`.slice(0, 400), inc.severity === "critical" ? "critical" : "warning", "live_room");
+}
+
+/** فحص واحد: رصد ← قرار ← (مهمة واحدة على الأكثر). لا يتداخل فحصان. */
+async function engineerTick(trigger: "schedule" | "manual" = "schedule"): Promise<void> {
+  if (engineerBusy) return;
+  engineerBusy = true;
+  try {
+    const nowMs = Date.now();
+    engineerState.checks += 1;
+    engineerState.lastCheckAt = new Date(nowMs).toISOString();
+    const incidents = detectIncidents(engineerSnapshot(), engineerStreaks);
+    engineerActiveIncidents = incidents;
+    const recovered = forgetRecovered(engineerState, new Set(incidents.map((i) => i.key)));
+    for (const key of recovered) {
+      const t = Date.now();
+      addReport(engineerState, { id: workspaceId("eng"), incidentKey: key, kind: key.split(":")[0] as any, module: "core", severity: "warning", title: "تعافى العطل", evidence: [], attempt: 0, startedAt: new Date(t).toISOString(), endedAt: new Date(t).toISOString(), durationMs: 0, status: "self_recovered", steps: [], verification: "لم يعد العطل يظهر في الفحص", summary: `زال العطل «${key}» بعد محاولاتي السابقة.`, nextAction: null });
+    }
+    if (!engineerState.enabled) { if (recovered.length) persistEngineerState(); return; }
+    const pressureCritical = (() => { try { return Boolean(currentUsagePressure().deferNonCritical); } catch { return false; } })();
+    const d = decideNext(engineerState, incidents, nowMs, { pressureCritical });
+    if (d.kind === "repair") await engineerRepair(d.incident);
+    else if (d.kind === "escalate") engineerEscalate(d.incident, [{ at: new Date().toISOString(), label: "التشخيص", ok: true, detail: d.incident.evidence.join(" · ") }], d.reason, Date.now());
+    else if (d.kind === "observe") {
+      const mem = engineerMem(d.incident.key); mem.lastAttemptAt = nowMs;
+      addReport(engineerState, engineerReport(d.incident, { status: "monitoring", steps: [{ at: new Date().toISOString(), label: "المراقبة", ok: true, detail: d.incident.evidence.join(" · ") }], verification: "لا إجراء آمن تلقائياً — أراقب وأبلغك", summary: `أراقب «${d.incident.title}». لا إصلاح آلي آمن له (لا أعيد تشغيل الخادم بنفسي).`, startedMs: nowMs, nextAction: "إن استمر: راجع الاستهلاك أو خطة الاستضافة" }));
+      pushNotification("owner", "engineer_monitoring", `المهندس المشرف يراقب: ${d.incident.title}`, d.incident.evidence.join(" · "), "warning", "live_room");
+    } else if (d.kind === "defer") {
+      const mem = engineerMem(d.incident.key); mem.lastAttemptAt = nowMs;
+      addReport(engineerState, engineerReport(d.incident, { status: "deferred", steps: [], verification: d.reason, summary: `أجّلتُ إصلاح «${d.incident.title}»: ${d.reason}.`, startedMs: nowMs, nextAction: "يُعاد عند انخفاض الضغط" }));
+    }
+    if (d.kind !== "wait" || recovered.length || trigger === "manual") persistEngineerState();
+  } catch (e: any) {
+    console.warn("[engineer] tick_failed", String(e?.message || e).slice(0, 120));
+  } finally {
+    engineerJob = null;
+    engineerBusy = false;
+  }
+}
+
+function startSiteEngineer(): void {
+  if (engineerTimer) return;
+  // يبدأ بعد 3 دقائق من الإقلاع (تستقر الدورات أولاً)، ثم فحص كل دقيقة. `.unref()`.
+  const boot = setTimeout(() => { void engineerTick(); }, 3 * 60000); (boot as any).unref?.();
+  engineerTimer = setInterval(() => { void engineerTick(); }, 60000); (engineerTimer as any).unref?.();
+  console.log("[الغرابي AI] Site engineer scheduled every 1 min (repair-only, owner decisions respected)");
+}
+
+/** عرض المهندس للغرفة الحية (بلا أسرار). */
+function engineerView() {
+  const nowMs = Date.now();
+  const day = engineerState.reports.filter((r) => nowMs - Date.parse(r.endedAt) < 86400000);
+  return {
+    enabled: engineerState.enabled,
+    job: engineerJob ? { ...engineerJob, steps: engineerJob.steps.slice(-6) } : null,
+    incidents: engineerActiveIncidents.map((i) => ({ key: i.key, module: i.module, severity: i.severity, title: i.title, needsOwner: i.needsOwner || null, observeOnly: Boolean(i.observeOnly) })),
+    reports: engineerState.reports.slice(0, 15),
+    stats: { checks: engineerState.checks, lastCheckAt: engineerState.lastCheckAt, resolved24h: day.filter((r) => r.status === "resolved").length, escalated24h: day.filter((r) => r.status === "escalated").length, actionsLastHour: engineerState.actions.filter((t) => nowMs - t < 3600000).length },
+    policy: { maxAttempts: ENGINEER_POLICY.maxAttempts, maxActionsPerHour: ENGINEER_POLICY.maxActionsPerHour, cooldownHours: ENGINEER_POLICY.cooldownAfterEscalateMs / 3600000 },
+  };
+}
+
+app.get("/api/engineer", requireOwner, (_req, res) => {
+  res.json({ success: true, engineer: { ...engineerView(), reports: engineerState.reports } });
+});
+app.post("/api/engineer/check", requireOwner, async (req, res) => {
+  if (engineerBusy) return res.status(409).json({ success: false, error: "المهندس يعمل على مهمة الآن." });
+  audit(((req as any).user as ServerUser)?.id || "owner", "engineer_manual_check", "");
+  await engineerTick("manual");
+  res.json({ success: true, engineer: engineerView() });
+});
+app.post("/api/engineer/toggle", requireOwner, (req, res) => {
+  const enabled = req.body?.enabled === true;
+  engineerState.enabled = enabled;
+  audit(((req as any).user as ServerUser)?.id || "owner", "engineer_toggled", enabled ? "on" : "off");
+  persistEngineerState();
+  res.json({ success: true, engineer: engineerView() });
 });
 
 app.get("/api/workspace/snapshot", authenticateToken, (req, res) => {
@@ -16124,6 +16402,8 @@ async function bootstrapStorage(): Promise<void> {
       if (media) applyContentMediaState(media);
       const freeTierUsage = await storageAdapter.read<any>(STORAGE_KEY_USAGE_INDICATORS);
       applyFreeTierUsageSnapshot(freeTierUsage);
+      // المهندس المشرف: تقاريره وذاكرة محاولاته تصمد بعد restart.
+      await loadEngineerState();
     } catch (error: any) {
       storageInitError = String(error?.code || error?.name || "state_read_failed").slice(0, 60);
       return;
@@ -22010,6 +22290,13 @@ async function startServer() {
     }
   } catch (e: any) {
     console.error("[الغرابي AI] failed to start Commercial Brain:", String(e?.message || e).slice(0, 120));
+  }
+
+  // المهندس المشرف (إصلاح فقط): يرصد كل دقيقة ويُصلح ما تعطّل بأمان ويصعّد ما يحتاجك.
+  try {
+    startSiteEngineer();
+  } catch (e: any) {
+    console.error("[الغرابي AI] failed to start site engineer:", String(e?.message || e).slice(0, 120));
   }
 
   // B1 + Y2: تنبيه المالك الخارجي (Resend) — مؤقّت داخلي كل دقيقة يُجمّع الأحداث
