@@ -6299,6 +6299,12 @@ add('watcher-advisory-not-authority',
     read('engine/storage/adapter.ts').includes('export function stripSslModeParam('),
     'المسح الجذري: تنبيهات الخادم وطابور المهام والتصعيدات وتقرير الشهر لها شاشات، وTLS بإعدادنا الصريح');
 
+  add('live-control-center',
+    server.includes('function buildSystemAlerts(): any[]') &&
+    read('src/components/live/LiveControlCenter.tsx').includes('إيقاف طارئ شامل') &&
+    read('src/components/live/LiveBrainRoom.tsx').includes('<LiveControlCenter'),
+    'غرفة العقل الحية: كل التنبيهات والإشعارات والتصعيدات ومفاتيح الأمان والإيقاف الطارئ الشامل في مكان واحد');
+
   // 12) AGENTS.md: عدد فحوصات final-audit مطابق للفعلي (يُعَدّ من نص الملف نفسه).
   const auditCount = (read('final-audit.mjs').match(/^\s*add\(/gm) || []).length;
   add('agents-audit-count-accurate',
