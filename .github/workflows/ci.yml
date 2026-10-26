@@ -101,7 +101,8 @@ jobs:
           name: dist
           path: dist/
       - name: npm test
-        run: npm test
+        run: |
+          npm test > test.log 2>&1 || { echo "::error::$(tail -70 test.log | sed -e ':a' -e 'N' -e '$!ba' -e 's/%/%25/g' -e 's/\r//g' -e 's/\n/%0A/g')"; exit 1; }
 
   # 3) اختبارات التعافي (DR) — تشغيل مستقل صريح كما طُلب.
   dr:
