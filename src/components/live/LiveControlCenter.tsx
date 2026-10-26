@@ -46,6 +46,9 @@ const CSS = `
 .lcc-tab.on{background:#2A0F45;border-color:#E879F9;color:#fff;box-shadow:0 0 14px rgba(232,121,249,.35)}
 .lcc-new{animation:lcc-new 2s ease-out}
 @keyframes lcc-new{from{background:rgba(248,113,113,.3)}to{background:transparent}}
+.lcc-compact .lcc-note{display:none}
+.lcc-compact .lcc-card .lcc-btn{min-height:28px;padding:4px 10px;border-radius:10px}
+.lcc-compact .lcc-big{font-size:13px;padding:8px 14px;border-radius:12px}
 .lbr-still .lcc-crit,.lbr-still .lcc-warn,.lbr-still .lcc-big,.lbr-still .lcc-sweep:after{animation:none}
 `;
 
@@ -79,7 +82,7 @@ function ago(iso: string | null | undefined, now: number): string {
 }
 
 /** شريط الإنذار العلوي — يعكس أخطر حالة قائمة الآن. */
-export const LiveAlertStrip: React.FC<{ data: any; onJump: () => void }> = ({ data, onJump }) => {
+export const LiveAlertStrip: React.FC<{ data: any; onJump: () => void; hideJump?: boolean }> = ({ data, onJump, hideJump }) => {
   const alerts: any[] = Array.isArray(data?.alerts) ? data.alerts : [];
   const notes = data?.notifications || {};
   const esc = data?.escalations || {};
@@ -111,13 +114,14 @@ export const LiveAlertStrip: React.FC<{ data: any; onJump: () => void }> = ({ da
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, fontSize: 12 }}>
         <span className="lcc-pill" style={{ borderColor: '#F87171', color: '#FCA5A5' }}>إشعارات غير مقروءة {Number(notes.unread || 0)}</span>
         <span className="lcc-pill" style={{ borderColor: '#F472B6', color: '#F9A8D4' }}>تصعيدات مفتوحة {Number(esc.open || 0)}</span>
-        <button type="button" className="lcc-btn lcc-neutral" onClick={onJump}>مركز السيطرة ↓</button>
+        {!hideJump && <button type="button" className="lcc-btn lcc-neutral" onClick={onJump}>مركز السيطرة ↓</button>}
       </div>
     </section>
   );
 };
 
-export const LiveControlCenter: React.FC<{ data: any; refresh: () => void; now: number; anchorRef: React.RefObject<HTMLDivElement> }> = ({ data, refresh, now, anchorRef }) => {
+/** compact = عرض الشاشة الحية: بطاقات مضغوطة وقائمة تنبيهات تملأ ما تبقّى من العمود. onLeave يُغلق الشاشة عند الانتقال لصفحة أخرى. */
+export const LiveControlCenter: React.FC<{ data: any; refresh: () => void; now: number; anchorRef: React.RefObject<HTMLDivElement>; compact?: boolean; onLeave?: () => void }> = ({ data, refresh, now, anchorRef, compact, onLeave }) => {
   const { setActiveTab, showToast } = useApp();
   const [busy, setBusy] = useState<string | null>(null);
   const [confirm, setConfirm] = useState<Confirm | null>(null);
@@ -213,15 +217,16 @@ export const LiveControlCenter: React.FC<{ data: any; refresh: () => void; now: 
     else void run(r.key, fn, ok);
   };
 
-  const openLink = (link: string | null | undefined) => { if (link && /^[a-z_]+$/.test(link) && link !== 'live_room') setActiveTab(link); };
+  const go = (tab: string) => { setActiveTab(tab); onLeave?.(); };
+  const openLink = (link: string | null | undefined) => { if (link && /^[a-z_]+$/.test(link) && link !== 'live_room') go(link); };
 
   return (
-    <section ref={anchorRef} aria-label="مركز السيطرة والأمان" className="lbr-panel" style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+    <section ref={anchorRef} aria-label="مركز السيطرة والأمان" className={'lbr-panel' + (compact ? ' lcc-compact' : '')} style={{ display: 'flex', flexDirection: 'column', gap: compact ? 10 : 14, ...(compact ? { flex: '1 1 0', minHeight: 0 } : {}) }}>
       <style>{CSS}</style>
       <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'space-between', gap: 10 }}>
         <div>
           <h2 className="lbr-h">مركز السيطرة والأمان</h2>
-          <div style={{ fontSize: 11, color: '#93A1C3', marginTop: 4 }}>كل مفتاح هنا يعمل على الخادم فوراً ويُسجَّل في سجل التدقيق. الإيقاف فوري، والتشغيل نحو أتمتة أكثر يطلب تأكيدك.</div>
+          <div className="lcc-note" style={{ fontSize: 11, color: '#93A1C3', marginTop: 4 }}>كل مفتاح هنا يعمل على الخادم فوراً ويُسجَّل في سجل التدقيق. الإيقاف فوري، والتشغيل نحو أتمتة أكثر يطلب تأكيدك.</div>
         </div>
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center' }}>
           <button type="button" className="lcc-btn lcc-neutral" aria-pressed={sound} onClick={() => { const v = !sound; setSound(v); writePref('gharabi.live.sound', v); if (v) beep(); }}>
@@ -231,20 +236,20 @@ export const LiveControlCenter: React.FC<{ data: any; refresh: () => void; now: 
         </div>
       </div>
 
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(min(150px, 100%), 1fr))', gap: 10 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: compact ? 'repeat(auto-fill, minmax(min(128px, 100%), 1fr))' : 'repeat(auto-fill, minmax(min(150px, 100%), 1fr))', gap: compact ? 8 : 10 }}>
         {rows.map((r) => {
           const healthy = r.on === r.goodWhenOn;
           const col = healthy ? '#34D399' : r.goodWhenOn ? '#F87171' : '#FBBF24';
           return (
-            <div key={r.key} className="lcc-card" style={{ boxShadow: `inset 0 0 22px ${col}14, 0 0 14px ${col}22` }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
+            <div key={r.key} className="lcc-card" title={compact ? r.desc : undefined} style={{ boxShadow: `inset 0 0 22px ${col}14, 0 0 14px ${col}22`, ...(compact ? { padding: 9, gap: 6 } : {}) }}>
+              <div style={{ display: 'flex', flexWrap: compact ? 'wrap' : undefined, justifyContent: 'space-between', alignItems: 'center', gap: compact ? 4 : 8 }}>
                 <span style={{ fontSize: 13, fontWeight: 700 }}>{r.title}</span>
                 <span className="lcc-pill" style={{ borderColor: col, color: col }}>
                   <span className={healthy ? '' : 'lbr-blink'} style={{ width: 7, height: 7, borderRadius: '50%', background: col, boxShadow: `0 0 8px ${col}` }} />
                   {r.on ? r.onLabel : r.offLabel}
                 </span>
               </div>
-              <div style={{ fontSize: 11, color: '#93A1C3', lineHeight: 1.6, flex: 1 }}>{r.desc}</div>
+              {!compact && <div style={{ fontSize: 11, color: '#93A1C3', lineHeight: 1.6, flex: 1 }}>{r.desc}</div>}
               <button type="button" disabled={busy === r.key || !data} onClick={() => toggle(r)}
                 className={`lcc-btn ${r.on ? (r.goodWhenOn ? 'lcc-danger' : 'lcc-safe') : (r.goodWhenOn ? 'lcc-safe' : 'lcc-neutral')}`}>
                 {r.on ? (r.goodWhenOn ? (r.key.endsWith('-run') || r.key === 'commercial' ? 'إيقاف طارئ' : 'إيقاف') : 'إطفاء') : (r.key.endsWith('-run') ? 'استئناف' : 'تفعيل')}
@@ -266,7 +271,7 @@ export const LiveControlCenter: React.FC<{ data: any; refresh: () => void; now: 
         <button type="button" className={`lcc-tab${tab === 'esc' ? ' on' : ''}`} onClick={() => setTab('esc')}>التصعيدات ({Number(esc.open || 0)})</button>
       </div>
 
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 8, maxHeight: 420, overflowY: 'auto' }}>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 8, ...(compact ? { flex: '1 1 0', minHeight: 210 } : { maxHeight: 420 }), overflowY: 'auto' }}>
         {tab === 'alerts' && (alerts.length === 0
           ? <div style={{ fontSize: 12, color: '#6EE7B7' }}>لا تنبيهات قائمة — كل شيء سليم الآن.</div>
           : [...alerts].sort((a, b) => ({ critical: 0, warning: 1, info: 2 } as any)[sevOf(a.severity)] - ({ critical: 0, warning: 1, info: 2 } as any)[sevOf(b.severity)]).map((a) => {
@@ -324,7 +329,7 @@ export const LiveControlCenter: React.FC<{ data: any; refresh: () => void; now: 
                 <div style={{ display: 'flex', gap: 8 }}>
                   {e.state === 'PENDING' && <button type="button" className="lcc-btn lcc-neutral" disabled={busy === e.id} onClick={() => void run(e.id, () => apiService.transitionEscalation(e.id, 'acknowledge'), 'تم الاطلاع')}>اطّلعت</button>}
                   <button type="button" className="lcc-btn lcc-safe" disabled={busy === e.id} onClick={() => void run(e.id, () => apiService.transitionEscalation(e.id, 'resolve'), 'حُلّت الحالة')}>حُلّت</button>
-                  <button type="button" className="lcc-btn lcc-neutral" onClick={() => setActiveTab('social_manager')}>الرد اليدوي</button>
+                  <button type="button" className="lcc-btn lcc-neutral" onClick={() => go('social_manager')}>الرد اليدوي</button>
                 </div>
               </div>
             ))}

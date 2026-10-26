@@ -19,13 +19,16 @@ import {
   Mail,
   AlertTriangle,
   Info,
+  MonitorPlay,
 } from 'lucide-react';
 
 interface HeaderProps {
   onOpenMobileMenu: () => void;
+  /** يفتح «الشاشة الحية»: كل اللوحة الحية في شاشة واحدة فوق الواجهة (للمالك فقط). */
+  onOpenLiveWall?: () => void;
 }
 
-export const Header: React.FC<HeaderProps> = ({ onOpenMobileMenu }) => {
+export const Header: React.FC<HeaderProps> = ({ onOpenMobileMenu, onOpenLiveWall }) => {
   const {
     currentUser,
     logout,
@@ -179,6 +182,28 @@ export const Header: React.FC<HeaderProps> = ({ onOpenMobileMenu }) => {
                   <span className={`w-1.5 h-1.5 rounded-full ${geminiBadge.tone === 'enabled' ? 'bg-emerald-400 animate-pulse' : geminiBadge.tone === 'deterministic' ? 'bg-sky-400' : 'bg-slate-400'}`}></span>
                   {geminiBadge.label}
                 </span>
+                {/* زر «الشاشة الحية»: يفتح اللوحة الحية كاملة في شاشة واحدة بلا تمرير (للمالك). */}
+                {currentUser?.role === 'owner' && onOpenLiveWall && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      // ملء الشاشة يُطلب داخل النقرة نفسها (شرط المتصفح)، وعلى الشاشات الكبيرة فقط.
+                      try {
+                        if (window.innerWidth >= 900 && !document.fullscreenElement) {
+                          void document.documentElement.requestFullscreen?.().catch(() => undefined);
+                        }
+                      } catch { /* ملء الشاشة اختياري */ }
+                      onOpenLiveWall();
+                    }}
+                    title="الشاشة الحية — كل التنبيهات والإشعارات والأعمال في شاشة واحدة (Esc للإغلاق)"
+                    aria-label="فتح الشاشة الحية: اللوحة الحية كاملة في شاشة واحدة"
+                    className="inline-flex items-center gap-1 text-[11px] px-2 py-0.5 rounded-full font-bold border bg-fuchsia-950/70 border-fuchsia-400/50 text-fuchsia-200 hover:bg-fuchsia-900/70 hover:text-white shadow-[0_0_12px_rgba(232,121,249,0.35)] transition cursor-pointer"
+                  >
+                    <MonitorPlay className="w-3.5 h-3.5" />
+                    <span className="hidden sm:inline">الشاشة الحية</span>
+                    <span className="w-1.5 h-1.5 rounded-full bg-fuchsia-400 animate-pulse" aria-hidden="true" />
+                  </button>
+                )}
               </div>
               <p className="text-[11px] text-slate-400 hidden sm:block">
                 مركز الذكاء الموحد لمعرض الغرابي للتقسيط
