@@ -68,6 +68,9 @@ const DR_RETURN_MESSAGES: Record<string, string> = {
 const AppContent: React.FC = () => {
   const { activeTab, setActiveTab, toastMessage, showToast, isAuthenticated, isLoadingAuth, authUnavailable, retryAuth } = useApp();
   const [mobileOpen, setMobileOpen] = useState(false);
+  // «الشاشة الحية»: اللوحة الحية كاملة في شاشة واحدة فوق الواجهة (تُفتح من زر الترويسة).
+  const [liveWallOpen, setLiveWallOpen] = useState(false);
+  const closeLiveWall = React.useCallback(() => setLiveWallOpen(false), []);
 
   // عودة تفويض Google Drive: الخادم يحوّل المتصفح إلى /?dr=authorized أو
   // /?dr=error&reason=<code>. نقرأ النتيجة، نفتح تبويب النسخ السحابي، ثم ننظّف
@@ -201,10 +204,22 @@ const AppContent: React.FC = () => {
     <div className="min-h-screen text-slate-100 flex flex-col font-sans selection:bg-emerald-500 selection:text-slate-950">
       {/* Toast Notification */}
       {toastMessage && (
-        <div className="fixed top-5 left-1/2 -translate-x-1/2 z-50 glass-strong glass-active px-5 py-2.5 rounded-2xl text-sm font-bold flex items-center gap-2 text-accent animate-in fade-in slide-in-from-top-4">
+        <div className="fixed top-5 left-1/2 -translate-x-1/2 z-[90] glass-strong glass-active px-5 py-2.5 rounded-2xl text-sm font-bold flex items-center gap-2 text-accent animate-in fade-in slide-in-from-top-4">
           <CheckCircle2 className="w-4 h-4 text-accent shrink-0" />
           <span>{toastMessage}</span>
         </div>
+      )}
+
+      {liveWallOpen && (
+        <Suspense
+          fallback={
+            <div className="fixed inset-0 z-[60] flex items-center justify-center bg-[#03040B] text-fuchsia-200 text-sm font-bold">
+              جارٍ فتح الشاشة الحية...
+            </div>
+          }
+        >
+          <LiveBrainRoom variant="wall" onClose={closeLiveWall} />
+        </Suspense>
       )}
 
       <div className="flex flex-1 min-h-screen relative z-[1]">
@@ -216,7 +231,7 @@ const AppContent: React.FC = () => {
 
         {/* Main Content Area */}
         <div className="flex-1 flex flex-col min-w-0">
-          <Header onOpenMobileMenu={() => setMobileOpen(true)} />
+          <Header onOpenMobileMenu={() => setMobileOpen(true)} onOpenLiveWall={() => setLiveWallOpen(true)} />
 
           <main className="flex-1 p-4 sm:p-6 lg:p-8 max-w-7xl w-full mx-auto">
             <Suspense

@@ -102,19 +102,23 @@ function useCountUp(target: number, ms = 900): number {
   return v;
 }
 
-/** مقياس عرض الحاوية (لتصغير المخطط على الهاتف بدل قصّه). */
-function useWidth(ref: React.RefObject<HTMLDivElement>): number {
-  const [w, setW] = useState(W);
+/** مقاس الحاوية (عرض وارتفاع): لتصغير المخطط على الهاتف بدل قصّه، ولملاءمة الشاشة الحية. */
+function useBox(ref: React.RefObject<HTMLDivElement>, init: { w: number; h: number }): { w: number; h: number } {
+  const [box, setBox] = useState(init);
   useLayoutEffect(() => {
     const el = ref.current; if (!el) return;
-    const update = () => setW(el.clientWidth || W);
+    const update = () => {
+      const w = el.clientWidth || init.w, h = el.clientHeight || init.h;
+      setBox((b) => (b.w === w && b.h === h ? b : { w, h }));
+    };
     update();
     const ro = typeof ResizeObserver !== 'undefined' ? new ResizeObserver(update) : null;
     ro?.observe(el);
     window.addEventListener('resize', update);
     return () => { ro?.disconnect(); window.removeEventListener('resize', update); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ref]);
-  return w;
+  return box;
 }
 
 function sparkPath(vals: number[], w: number, h: number): { line: string; area: string } {
@@ -177,6 +181,17 @@ const CSS = `
 .lbr-heart{stroke-dasharray:6 400;animation:lbr-heart 2.4s linear infinite}
 @keyframes lbr-heart{from{stroke-dashoffset:406}to{stroke-dashoffset:0}}
 .lbr-still .lbr-stars,.lbr-still .lbr-scan,.lbr-still .lbr-flow-in,.lbr-still .lbr-flow-out,.lbr-still .lbr-flow-x,.lbr-still .lbr-halo,.lbr-still .lbr-halo2,.lbr-still .lbr-rot,.lbr-still .lbr-rot2,.lbr-still .lbr-rot3,.lbr-still .lbr-orbit,.lbr-still .lbr-counter,.lbr-still .lbr-radar,.lbr-still .lbr-blink,.lbr-still .lbr-core,.lbr-still .lbr-ticker,.lbr-still .lbr-heart{animation:none}
+.lbr-wallgrid{flex:1 1 0;min-height:0;display:grid;grid-template-columns:minmax(0,1.45fr) minmax(0,1.5fr) minmax(0,.85fr) minmax(0,.85fr) minmax(0,.9fr);gap:10px;padding:0 12px}
+.lbr-col{display:flex;flex-direction:column;gap:10px;min-height:0;min-width:0;overflow:hidden}
+.lbr-col>*{flex-shrink:0}
+.lbr-wall .lbr-panel{padding:10px 12px}
+.lbr-wall .lbr-kpi{padding:8px 12px!important}
+.lbr-wall .lbr-kpi .v{font-size:24px}
+.lbr-sel-wall>div{margin-top:8px!important;padding:10px 12px!important}
+.lbr-wall .lbr-gauges svg{width:66px;height:66px}
+.lbr-wall .lbr-gauges>div>div{font-size:10.5px!important}
+.lbr-wall .lbr-col ::-webkit-scrollbar{width:6px}
+.lbr-wall .lbr-col ::-webkit-scrollbar-thumb{background:#2B3A66;border-radius:6px}
 @media (prefers-reduced-motion: reduce){.lbr-stars,.lbr-scan,.lbr-radar,.lbr-rot,.lbr-rot2,.lbr-rot3,.lbr-orbit,.lbr-counter,.lbr-ticker{animation:none}}
 `;
 
@@ -221,7 +236,13 @@ const Kpi: React.FC<{ label: string; value: number; suffix?: string; sub: string
   );
 };
 
-export const LiveBrainRoom: React.FC = () => {
+/**
+ * variant='wall' = «الشاشة الحية»: تُفتح من زر في الترويسة فوق كل الواجهة (تختفي الأقسام
+ * الجانبية)، وتعرض كل لوحات الغرفة دفعة واحدة في شاشة واحدة بلا تمرير. البيانات نفسها
+ * من `/api/live/room` — لا مصدر ثانٍ ولا أرقام مختلقة.
+ */
+export const LiveBrainRoom: React.FC<{ variant?: 'page' | 'wall'; onClose?: () => void }> = ({ variant = 'page', onClose }) => {
+  const wall = variant === 'wall';
   const { currentUser } = useApp();
   const isOwner = currentUser?.role === 'owner';
   const [data, setData] = useState<any>(null);
@@ -241,8 +262,53 @@ export const LiveBrainRoom: React.FC = () => {
   const firstLoad = useRef(true);
   const stageWrap = useRef<HTMLDivElement>(null);
   const controlRef = useRef<HTMLDivElement>(null);
-  const wrapW = useWidth(stageWrap);
-  const scale = Math.min(1, Math.max(0.3, (wrapW - 4) / W));
+  const stageBox = useBox(stageWrap, { w: W, h: H });
+  const wrapW = stageBox.w;
+  const scale = wall
+    ? Math.max(0.2, Math.min(1, (stageBox.w - 4) / W, (stageBox.h - 4) / H))
+    : Math.min(1, Math.max(0.3, (wrapW - 4) / W));
+
+  // ——— الشاشة الحية (wall) ———
+  const onCloseRef = useRef(onClose);
+  onCloseRef.current = onClose;
+  const wallRef = useRef<HTMLDivElement>(null);
+  const wallGridRef = useRef<HTMLDivElement>(null);
+  const wallBox = useBox(wallRef, { w: typeof window !== 'undefined' ? window.innerWidth : 1920, h: typeof window !== 'undefined' ? window.innerHeight : 1080 });
+  const fitMode = wall && wallBox.w >= 900;
+  // تصميم الشاشة على عرض 1680–1920 نقطة؛ الشاشات الأكبر (تلفاز/4K) تُكبَّر حتى 1.35.
+  const baseScale = wallBox.w >= 1920 ? Math.min(1.35, wallBox.w / 1920) : Math.min(1, wallBox.w / 1680);
+  const [fitScale, setFitScale] = useState<number | null>(null);
+  const wallScale = fitScale ?? baseScale;
+  const fsSupported = typeof document !== 'undefined' && typeof document.documentElement?.requestFullscreen === 'function';
+  const [isFs, setIsFs] = useState(() => typeof document !== 'undefined' && Boolean(document.fullscreenElement));
+  const toggleFs = useCallback(() => {
+    try {
+      if (document.fullscreenElement) void document.exitFullscreen?.().catch(() => undefined);
+      else void document.documentElement.requestFullscreen?.().catch(() => undefined);
+    } catch { /* ملء الشاشة اختياري */ }
+  }, []);
+
+  useEffect(() => {
+    if (!wall) return;
+    const body = document.body;
+    const prevOverflow = body.style.overflow;
+    body.style.overflow = 'hidden';
+    body.dataset.liveWall = '1'; // الغرفة في التبويب تتوقف عن الجلب ما دامت الشاشة الحية مفتوحة (لا جلب مزدوج).
+    const onKey = (e: KeyboardEvent) => {
+      // Esc يغلق الشاشة — إلا إن كان مربع تأكيد مفتوحاً فوقها.
+      if (e.key === 'Escape' && !document.fullscreenElement && document.querySelectorAll('[aria-modal="true"]').length <= 1) onCloseRef.current?.();
+    };
+    const onFs = () => setIsFs(Boolean(document.fullscreenElement));
+    window.addEventListener('keydown', onKey);
+    document.addEventListener('fullscreenchange', onFs);
+    return () => {
+      body.style.overflow = prevOverflow;
+      delete body.dataset.liveWall;
+      window.removeEventListener('keydown', onKey);
+      document.removeEventListener('fullscreenchange', onFs);
+      try { if (document.fullscreenElement) void document.exitFullscreen?.().catch(() => undefined); } catch { /* */ }
+    };
+  }, [wall]);
 
   const ingest = useCallback((incoming: LiveEvt[]) => {
     if (!incoming.length) return;
@@ -298,9 +364,10 @@ export const LiveBrainRoom: React.FC = () => {
   useEffect(() => {
     if (!isOwner) return;
     void poll();
-    const t = window.setInterval(() => { if (document.visibilityState === 'visible') void poll(); }, POLL_MS);
+    // يتوقف عند إخفاء الصفحة؛ وغرفة التبويب تصمت ما دامت الشاشة الحية مفتوحة (هي تجلب بنفسها).
+    const t = window.setInterval(() => { if (document.visibilityState === 'visible' && (wall || document.body.dataset.liveWall !== '1')) void poll(); }, POLL_MS);
     return () => window.clearInterval(t);
-  }, [isOwner, poll]);
+  }, [isOwner, poll, wall]);
 
   useEffect(() => {
     const t = window.setInterval(() => setNow(Date.now()), 1000);
@@ -371,21 +438,36 @@ export const LiveBrainRoom: React.FC = () => {
     return frac >= 0.999 ? `M${60 - r} 60 A${r} ${r} 0 1 1 ${60 + r} 60 A${r} ${r} 0 1 1 ${60 - r} 60` : `M${x0.toFixed(2)} ${y0.toFixed(2)} A${r} ${r} 0 ${large} 1 ${x1.toFixed(2)} ${y1.toFixed(2)}`;
   };
 
+  // ملاءمة الشاشة: إن تجاوز محتوى أي عمود ارتفاعه، تُصغَّر الكتلة كلها بالقدر اللازم فقط.
+  // يُعاد الحساب من المقياس الأساسي عند تغيّر مقاس الشاشة أو عدد العناصر الثابتة.
+  const fitKey = `${wallBox.w}x${wallBox.h}|${plats.length}|${(ins.topics || []).length}|${(ins.topProducts || []).length}|${(ins.byPlatform || []).length}|${(ins.leadStages || []).length}|${appr.latest ? 1 : 0}|${(selView?.items || []).length}|${selected}|${data ? 1 : 0}`;
+  const fitKeyRef = useRef('');
+  useLayoutEffect(() => {
+    if (!fitMode) return;
+    if (fitKeyRef.current !== fitKey) {
+      fitKeyRef.current = fitKey;
+      if (fitScale !== null) { setFitScale(null); return; }
+    }
+    const grid = wallGridRef.current; if (!grid) return;
+    let ratio = 1;
+    for (const col of Array.from(grid.children) as HTMLElement[]) {
+      if (col.clientHeight > 0) ratio = Math.max(ratio, col.scrollHeight / col.clientHeight);
+    }
+    if (ratio > 1.01 && wallScale > 0.45) setFitScale(Math.max(0.45, wallScale / ratio));
+  });
+
   if (!isOwner) {
     return <div className="p-8 rounded-2xl glass text-center text-slate-300">غرفة العقل الحية مخصصة لمالك النظام فقط.</div>;
   }
 
   const wave = sparkPath(buckets, 600, 70);
   const maxHour = Math.max(1, ...hourly);
+  // لوحة تتمدّد لتملأ ما تبقّى من العمود في الشاشة الحية (قوائم تُمرَّر داخلها فقط).
+  const flexPanel: React.CSSProperties | undefined = wall ? { display: 'flex', flexDirection: 'column', flex: '1 1 0', minHeight: 120 } : undefined;
 
-  return (
-    <div dir="rtl" className={'lbr' + (motion ? '' : ' lbr-still')} style={{ position: 'relative', background: 'radial-gradient(ellipse 90% 60% at 50% 22%, #170F3A 0%, #070A1A 55%, #03040B 100%)', color: '#E7ECF8', borderRadius: 22, border: '1px solid #1A2350', overflow: 'hidden' }}>
-      <style>{CSS}</style>
-      <div className="lbr-stars" />
-      <div className="lbr-grid" />
-      <div className="lbr-scan" />
 
-      <header style={{ position: 'relative', display: 'flex', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'space-between', gap: 12, padding: '16px 18px', borderBottom: '1px solid rgba(99,102,241,.2)', background: 'linear-gradient(180deg, rgba(10,8,30,.9), rgba(6,9,22,.6))' }}>
+  const headerEl = (
+      <header style={{ position: 'relative', display: 'flex', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'space-between', gap: 12, padding: wall ? '8px 14px' : '16px 18px', flex: 'none', borderBottom: '1px solid rgba(99,102,241,.2)', background: 'linear-gradient(180deg, rgba(10,8,30,.9), rgba(6,9,22,.6))' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
           <svg width="46" height="46" viewBox="0 0 48 48" aria-hidden="true" style={{ filter: 'drop-shadow(0 0 10px #E879F9)' }}><g fill="none" stroke="#F0ABFC" strokeWidth="1.8" strokeLinecap="round"><ellipse cx="24" cy="27" rx="7" ry="8" /><circle cx="24" cy="15" r="4" /><path d="M17 23 L8 15 L4 18 M17 27 L5 27 L2 31 M17 31 L8 39 L5 44 M31 23 L40 15 L44 18 M31 27 L43 27 L46 31 M31 31 L40 39 L43 44" /></g></svg>
           <div>
@@ -401,13 +483,18 @@ export const LiveBrainRoom: React.FC = () => {
           {modules.gate && <span style={{ padding: '7px 12px', borderRadius: 999, border: '1px solid #6B4A12', color: '#FCD34D', background: 'rgba(0,0,0,.25)' }}>{modules.gate.metric}</span>}
           {modules.automation && modules.automation.status !== 'ok' && <span style={{ padding: '7px 12px', borderRadius: 999, border: '1px solid #7A1F3A', color: '#FDA4AF', background: 'rgba(0,0,0,.25)' }}>{modules.automation.metric}</span>}
           <span className="lbr-mono" style={{ padding: '7px 12px', borderRadius: 999, border: '1px solid #1A2350', background: 'rgba(0,0,0,.25)' }}>{clock(new Date(now).toISOString())} بغداد</span>
+          {wall && <span style={{ display: 'inline-flex', gap: 10, padding: '7px 12px', borderRadius: 999, border: '1px solid #1A2350', background: 'rgba(0,0,0,.25)' }}>{(['ok', 'partial', 'off'] as const).map((k) => <span key={k} style={{ display: 'inline-flex', alignItems: 'center', gap: 5 }}><span style={{ width: 8, height: 8, borderRadius: 3, background: STATUS_COLOR[k], boxShadow: `0 0 8px ${STATUS_COLOR[k]}` }} />{k === 'ok' ? 'يعمل' : k === 'partial' ? 'جزئي' : 'متوقف'}</span>)}</span>}
           <button type="button" onClick={() => setMotion((m) => !m)} style={{ padding: '7px 14px', minHeight: 34, borderRadius: 999, border: '1px solid #2B3A66', background: '#0F1630', color: '#E7ECF8', cursor: 'pointer' }}>{motion ? 'إيقاف الحركة' : 'تشغيل الحركة'}</button>
+          {wall && fsSupported && <button type="button" onClick={toggleFs} style={{ padding: '7px 14px', minHeight: 34, borderRadius: 999, border: '1px solid #2B3A66', background: '#0F1630', color: '#E7ECF8', cursor: 'pointer' }}>{isFs ? 'خروج من ملء الشاشة' : 'ملء الشاشة'}</button>}
+          {wall && <button type="button" onClick={() => onCloseRef.current?.()} aria-label="إغلاق الشاشة الحية" title="إغلاق (Esc)" style={{ padding: '7px 16px', minHeight: 34, borderRadius: 999, border: '1px solid #F0ABFC', background: 'linear-gradient(135deg,#3B0D4F,#140B30)', color: '#FDF4FF', fontWeight: 700, cursor: 'pointer', boxShadow: '0 0 16px rgba(240,171,252,.35)' }}>✕ إغلاق</button>}
         </div>
       </header>
-
-      <div style={{ position: 'relative', padding: 16, display: 'flex', flexDirection: 'column', gap: 16 }}>
-        <LiveAlertStrip data={data} onJump={() => controlRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })} />
-        <section aria-label="المؤشرات الحية" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(170px, 1fr))', gap: 12 }}>
+  );
+  const alertEl = (
+        <LiveAlertStrip data={data} hideJump={wall} onJump={() => controlRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })} />
+  );
+  const kpisEl = (
+        <section aria-label="المؤشرات الحية" style={{ display: 'grid', gridTemplateColumns: wall ? 'repeat(6, minmax(0, 1fr))' : 'repeat(auto-fit, minmax(170px, 1fr))', gap: wall ? 10 : 12 }}>
           <Kpi id="k1" label="تفاعلات الزبائن · 24 ساعة" value={sum(hourly)} sub={`من كل المنصات — الإجمالي ${fmt(sum((ins.byPlatform || []).map((p: any) => p.total)))}`} color="#7DD3FC" spark={hourly} />
           <Kpi id="k2" label="استفسارات تجارية · 24 ساعة" value={sum(hourlyInq)} sub="سعر · تقسيط · توفر" color="#F0ABFC" spark={hourlyInq} />
           <Kpi id="k3" label="ردود بانتظار موافقتك" value={Number(appr.pending || 0)} sub="جاهزة للإرسال بنقرة" color="#FCD34D" />
@@ -415,17 +502,40 @@ export const LiveBrainRoom: React.FC = () => {
           <Kpi id="k5" label="منشورات بمعرّف حقيقي" value={publishedTotal} sub="منشورة فعلاً على المنصات" color="#A5B4FC" />
           <Kpi id="k6" label="نبض الأحداث · دقيقة" value={perMinute} sub="أحداث حقيقية آخر 60 ثانية" color="#22D3EE" spark={buckets} />
         </section>
-
-        <LiveControlCenter data={data} refresh={() => { void poll(); }} now={now} anchorRef={controlRef} />
-
-        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 16 }}>
-          <main style={{ flex: '999 1 680px', minWidth: 0, display: 'flex', flexDirection: 'column', gap: 16 }}>
-            <section aria-label="المخطط الحي" className="lbr-panel" style={{ padding: 12 }}>
+  );
+  const controlEl = (
+        <LiveControlCenter data={data} refresh={() => { void poll(); }} now={now} anchorRef={controlRef} compact={wall} onLeave={wall ? () => onCloseRef.current?.() : undefined} />
+  );
+  const selectedBlock = (
+              <div style={{ marginTop: 12, border: '1px solid rgba(192,132,252,.35)', borderRadius: 16, background: 'linear-gradient(110deg, rgba(42,15,69,.55), rgba(10,16,38,.7))', padding: '14px 16px', display: 'flex', flexWrap: 'wrap', gap: 18 }}>
+                <div style={{ flex: '1 1 220px', minWidth: 0 }}>
+                  <div className="lbr-mono" style={{ fontSize: 10, color: '#C4B5FD' }}>SELECTED MODULE · القسم المحدد</div>
+                  <div style={{ fontSize: 21, fontWeight: 800, color: sel.color, textShadow: `0 0 16px ${sel.color}88` }}>{sel.title}</div>
+                  <div className="lbr-mono" style={{ fontSize: 10, color: '#93A1C3' }}>{sel.en}</div>
+                  {selView && <div style={{ display: 'inline-flex', alignItems: 'center', gap: 6, marginTop: 6, fontSize: 12, color: STATUS_COLOR[selView.status] }}><span style={{ width: 8, height: 8, borderRadius: '50%', background: STATUS_COLOR[selView.status], boxShadow: `0 0 8px ${STATUS_COLOR[selView.status]}` }} />{STATUS_TEXT[selView.status]} — {selView.metric}</div>}
+                  <div style={{ fontSize: 11, color: '#93A1C3', marginTop: 6 }}>نشاط آخر 10 دقائق: <span className="lbr-mono" style={{ color: '#E7ECF8' }}>{moduleHeat[selected] || 0}</span> حدث</div>
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginTop: 10 }}>
+                    {sel.parts.map((p) => <span key={p} style={{ fontSize: 11, padding: '3px 9px', borderRadius: 999, border: `1px solid ${sel.color}55`, color: '#DDE4F5', background: `${sel.color}10` }}>{p}</span>)}
+                  </div>
+                </div>
+                <div style={{ flex: '2 1 320px', minWidth: 0, display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(160px, 1fr))', gap: 8 }}>
+                  {(selView?.items || []).map((it: any) => (
+                    <div key={it.name} style={{ padding: '8px 10px', border: '1px solid rgba(99,102,241,.25)', borderRadius: 12, background: 'rgba(6,9,24,.75)' }}>
+                      <div style={{ fontSize: 12, fontWeight: 600 }}>{it.name}</div>
+                      <div style={{ fontSize: 11, color: STATUS_COLOR[it.status] || '#93A1C3' }}>{it.value}</div>
+                    </div>
+                  ))}
+                  {!selView && <div style={{ fontSize: 12, color: '#93A1C3' }}>جارٍ جلب الحالة الحقيقية…</div>}
+                </div>
+              </div>
+  );
+  const mapEl = (
+            <section aria-label="المخطط الحي" className="lbr-panel" style={wall ? { padding: 10, flex: '1 1 0', minHeight: 260, display: 'flex', flexDirection: 'column' } : { padding: 12 }}>
               <div style={{ display: 'flex', flexWrap: 'wrap', justifyContent: 'space-between', gap: 8, padding: '2px 6px 8px' }}>
                 <h2 className="lbr-h">المخطط الهندسي الحي — 13 قسماً حول العقل المركزي</h2>
                 <span style={{ fontSize: 11, color: '#93A1C3' }}>كل نبضة = حدث حقيقي الآن · توهّج القسم = نشاطه آخر 10 دقائق</span>
               </div>
-              <div ref={stageWrap} style={{ width: '100%' }}>
+              <div ref={stageWrap} style={wall ? { width: '100%', flex: '1 1 0', minHeight: 0, overflow: 'hidden', display: 'flex', alignItems: 'center' } : { width: '100%' }}>
                 <div style={{ position: 'relative', width: '100%', height: H * scale }}>
                   <div style={{ position: 'absolute', left: '50%', top: 0, width: W, height: H, transform: `translateX(-50%) scale(${scale})`, transformOrigin: 'top center' }}>
                     <div className="lbr-radar" />
@@ -528,7 +638,7 @@ export const LiveBrainRoom: React.FC = () => {
                 </div>
               </div>
 
-              {scale < 0.7 && (
+              {scale < 0.7 && !wall && (
                 <div aria-label="الأقسام الثلاثة عشر" style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: 8, marginTop: 10 }}>
                   {MODS.map((m) => {
                     const v = modules[m.key]; const st: Status = v?.status || 'partial'; const c = STATUS_COLOR[st];
@@ -543,29 +653,10 @@ export const LiveBrainRoom: React.FC = () => {
                 </div>
               )}
 
-              <div style={{ marginTop: 12, border: '1px solid rgba(192,132,252,.35)', borderRadius: 16, background: 'linear-gradient(110deg, rgba(42,15,69,.55), rgba(10,16,38,.7))', padding: '14px 16px', display: 'flex', flexWrap: 'wrap', gap: 18 }}>
-                <div style={{ flex: '1 1 220px', minWidth: 0 }}>
-                  <div className="lbr-mono" style={{ fontSize: 10, color: '#C4B5FD' }}>SELECTED MODULE · القسم المحدد</div>
-                  <div style={{ fontSize: 21, fontWeight: 800, color: sel.color, textShadow: `0 0 16px ${sel.color}88` }}>{sel.title}</div>
-                  <div className="lbr-mono" style={{ fontSize: 10, color: '#93A1C3' }}>{sel.en}</div>
-                  {selView && <div style={{ display: 'inline-flex', alignItems: 'center', gap: 6, marginTop: 6, fontSize: 12, color: STATUS_COLOR[selView.status] }}><span style={{ width: 8, height: 8, borderRadius: '50%', background: STATUS_COLOR[selView.status], boxShadow: `0 0 8px ${STATUS_COLOR[selView.status]}` }} />{STATUS_TEXT[selView.status]} — {selView.metric}</div>}
-                  <div style={{ fontSize: 11, color: '#93A1C3', marginTop: 6 }}>نشاط آخر 10 دقائق: <span className="lbr-mono" style={{ color: '#E7ECF8' }}>{moduleHeat[selected] || 0}</span> حدث</div>
-                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginTop: 10 }}>
-                    {sel.parts.map((p) => <span key={p} style={{ fontSize: 11, padding: '3px 9px', borderRadius: 999, border: `1px solid ${sel.color}55`, color: '#DDE4F5', background: `${sel.color}10` }}>{p}</span>)}
-                  </div>
-                </div>
-                <div style={{ flex: '2 1 320px', minWidth: 0, display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(160px, 1fr))', gap: 8 }}>
-                  {(selView?.items || []).map((it: any) => (
-                    <div key={it.name} style={{ padding: '8px 10px', border: '1px solid rgba(99,102,241,.25)', borderRadius: 12, background: 'rgba(6,9,24,.75)' }}>
-                      <div style={{ fontSize: 12, fontWeight: 600 }}>{it.name}</div>
-                      <div style={{ fontSize: 11, color: STATUS_COLOR[it.status] || '#93A1C3' }}>{it.value}</div>
-                    </div>
-                  ))}
-                  {!selView && <div style={{ fontSize: 12, color: '#93A1C3' }}>جارٍ جلب الحالة الحقيقية…</div>}
-                </div>
-              </div>
+              {wall ? <div className="lbr-sel-wall" style={{ flex: 'none', maxHeight: '34%', overflowY: 'auto' }}>{selectedBlock}</div> : selectedBlock}
             </section>
-
+  );
+  const pulseEl = (
             <section aria-label="نبض النشاط" className="lbr-panel">
               <div style={{ display: 'flex', justifyContent: 'space-between', flexWrap: 'wrap', gap: 8, marginBottom: 6 }}>
                 <h2 className="lbr-h">نبض النشاط الحقيقي — آخر 5 دقائق</h2>
@@ -579,8 +670,8 @@ export const LiveBrainRoom: React.FC = () => {
                 {wave.line && <path d={wave.line} fill="none" stroke="#FFFFFF" strokeWidth="2.5" className="lbr-heart" transform="translate(0 6)" />}
               </svg>
             </section>
-
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))', gap: 16 }}>
+  );
+  const interEl = (
               <section className="lbr-panel" aria-label="تفاعلات 24 ساعة">
                 <h2 className="lbr-h" style={{ marginBottom: 10 }}>تفاعلات الزبائن — 24 ساعة</h2>
                 <div style={{ display: 'flex', alignItems: 'flex-end', gap: 3, height: 120 }}>
@@ -595,7 +686,8 @@ export const LiveBrainRoom: React.FC = () => {
                 <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 10, color: '#7C89AD', marginTop: 4 }}><span>قبل 24 س</span><span>الآن</span></div>
                 <div style={{ display: 'flex', gap: 12, fontSize: 11, marginTop: 6 }}><span style={{ color: '#7DD3FC' }}>■ تفاعلات</span><span style={{ color: '#F0ABFC' }}>■ استفسارات تجارية</span></div>
               </section>
-
+  );
+  const intentsEl = (
               <section className="lbr-panel" aria-label="نوايا الزبائن">
                 <h2 className="lbr-h" style={{ marginBottom: 10 }}>ماذا يريد الزبائن؟ — النوايا</h2>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 14, flexWrap: 'wrap' }}>
@@ -616,7 +708,8 @@ export const LiveBrainRoom: React.FC = () => {
                   </div>
                 </div>
               </section>
-
+  );
+  const topicsEl = (
               <section className="lbr-panel" aria-label="مواضيع الأسئلة">
                 <h2 className="lbr-h" style={{ marginBottom: 10 }}>عن ماذا يسألون؟ — المواضيع</h2>
                 {(ins.topics || []).map((t: any, i: number) => {
@@ -631,7 +724,8 @@ export const LiveBrainRoom: React.FC = () => {
                 })}
                 {!(ins.topics || []).length && <span style={{ fontSize: 12, color: '#93A1C3' }}>لا مواضيع مصنّفة بعد.</span>}
               </section>
-
+  );
+  const prodsEl = (
               <section className="lbr-panel" aria-label="أكثر المنتجات سؤالاً">
                 <h2 className="lbr-h" style={{ marginBottom: 10 }}>أكثر المنتجات طلباً من الزبائن</h2>
                 {(ins.topProducts || []).map((p: any, i: number) => {
@@ -648,7 +742,8 @@ export const LiveBrainRoom: React.FC = () => {
                 })}
                 {!(ins.topProducts || []).length && <span style={{ fontSize: 12, color: '#93A1C3' }}>لم يُحدَّد منتج من أسئلة الزبائن بعد.</span>}
               </section>
-
+  );
+  const platInsEl = (
               <section className="lbr-panel" aria-label="المنصات">
                 <h2 className="lbr-h" style={{ marginBottom: 10 }}>المنصات — جمهور ووارد ونشر</h2>
                 {(ins.byPlatform || []).map((p: any) => {
@@ -667,7 +762,8 @@ export const LiveBrainRoom: React.FC = () => {
                   );
                 })}
               </section>
-
+  );
+  const leadsEl = (
               <section className="lbr-panel" aria-label="مراحل الزبائن">
                 <h2 className="lbr-h" style={{ marginBottom: 10 }}>رحلة الزبائن المحتملين</h2>
                 <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
@@ -686,11 +782,11 @@ export const LiveBrainRoom: React.FC = () => {
                   </div>
                 )}
               </section>
-            </div>
-
-            <section aria-label="أصوات الزبائن" className="lbr-panel">
+  );
+  const voicesEl = (
+            <section aria-label="أصوات الزبائن" className="lbr-panel" style={flexPanel}>
               <h2 className="lbr-h" style={{ marginBottom: 10 }}>أصوات الزبائن — آخر ما وصل</h2>
-              <div style={{ height: 170, overflow: 'hidden', maskImage: 'linear-gradient(180deg, transparent, #000 15%, #000 85%, transparent)' }}>
+              <div style={{ ...(wall ? { flex: '1 1 0', minHeight: 60 } : { height: 170 }), overflow: 'hidden', maskImage: 'linear-gradient(180deg, transparent, #000 15%, #000 85%, transparent)' }}>
                 <div className={(ins.latestComments || []).length > 3 ? 'lbr-ticker' : ''}>
                   {[...(ins.latestComments || []), ...((ins.latestComments || []).length > 3 ? ins.latestComments : [])].map((c: any, i: number) => (
                     <div key={i} style={{ display: 'flex', gap: 10, padding: '8px 4px', borderBottom: '1px solid rgba(27,37,80,.6)' }}>
@@ -705,10 +801,11 @@ export const LiveBrainRoom: React.FC = () => {
                 </div>
               </div>
             </section>
-
+  );
+  const journeyEl = (
             <section aria-label="السير العام" className="lbr-panel">
               <h2 className="lbr-h" style={{ marginBottom: 10 }}>السير العام — تضيء الخطوة التي وقع فيها آخر حدث</h2>
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 10 }}>
+              <div style={{ display: 'grid', gridTemplateColumns: wall ? 'repeat(2, minmax(0, 1fr))' : 'repeat(auto-fit, minmax(150px, 1fr))', gap: 10 }}>
                 {JOURNEY.map((j, i) => (
                   <div key={j.title} className={'lbr-step' + (i === journeyIdx ? ' on' : '')} style={{ padding: '10px 12px', border: '1px solid rgba(99,102,241,.25)', borderRadius: 14, display: 'flex', gap: 10, alignItems: 'flex-start', background: 'rgba(6,9,24,.6)', transition: 'all .4s' }}>
                     <span className="lbr-mono" style={{ width: 28, height: 28, flex: 'none', borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 12, fontWeight: 800, background: j.badge, color: '#05070F', boxShadow: `0 0 14px ${j.badge}` }}>{i + 1}</span>
@@ -717,12 +814,11 @@ export const LiveBrainRoom: React.FC = () => {
                 ))}
               </div>
             </section>
-          </main>
-
-          <aside aria-label="اللوحات الحية" style={{ flex: '1 1 300px', maxWidth: 400, minWidth: 0, display: 'flex', flexDirection: 'column', gap: 16 }}>
+  );
+  const gaugesEl = (
             <section className="lbr-panel">
               <h2 className="lbr-h" style={{ marginBottom: 12 }}>جسد الخادم — مقاييس حيّة</h2>
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: 10 }}>
+              <div className="lbr-gauges" style={{ display: 'grid', gridTemplateColumns: wall ? 'repeat(4, minmax(0, 1fr))' : 'repeat(2, minmax(0, 1fr))', gap: wall ? 6 : 10 }}>
                 <Gauge value={tel.rssMb ?? null} max={tel.limitMb || 512} label="الذاكرة" text={`${tel.rssMb ?? '—'} / ${tel.limitMb || 512} ميغا`} color={(tel.rssMb || 0) > 400 ? '#F87171' : '#34D399'} />
                 <Gauge value={tel.geminiLimit ? tel.geminiUsedToday : null} max={tel.geminiLimit || 1} label="Gemini اليوم" text={`${tel.geminiUsedToday ?? 0} / ${tel.geminiLimit || '—'} طلب`} color="#A78BFA" />
                 <Gauge value={tel.pressurePercent} max={100} label="استهلاك الخطة" text={tel.pressurePercent == null ? `${tel.pressureLevel || '—'}` : `${tel.pressureProvider || ''} · ${tel.pressureLevel}`} color={tel.pressureLevel === 'normal' ? '#22D3EE' : '#FBBF24'} />
@@ -733,14 +829,15 @@ export const LiveBrainRoom: React.FC = () => {
                 <span>يعمل منذ <span className="lbr-mono" style={{ color: '#E7ECF8' }}>{tel.uptimeSec ? Math.round(tel.uptimeSec / 60) : '—'} د</span></span>
               </div>
             </section>
-
-            <section className="lbr-panel">
+  );
+  const eventsEl = (
+            <section className="lbr-panel" style={flexPanel}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
                 <h2 className="lbr-h">آخر الأحداث</h2>
                 <span className="lbr-blink" style={{ fontSize: 11, color: '#6EE7B7' }}>● مباشر</span>
               </div>
               {events.length === 0 && <div style={{ fontSize: 12, color: '#93A1C3', padding: '8px 0' }}>{data ? 'لم يقع حدث منذ إقلاع الخادم بعد — سيظهر هنا لحظة وقوعه.' : 'جارٍ الاتصال بالخادم…'}</div>}
-              <div style={{ maxHeight: 560, overflowY: 'auto' }}>
+              <div style={{ ...(wall ? { flex: '1 1 0', minHeight: 0 } : { maxHeight: 560 }), overflowY: 'auto' }}>
                 {events.slice(0, 30).map((e) => {
                   const c = LEVEL_COLOR[e.level] || '#93A1C3';
                   return (
@@ -757,7 +854,8 @@ export const LiveBrainRoom: React.FC = () => {
                 })}
               </div>
             </section>
-
+  );
+  const platStatusEl = (
             <section className="lbr-panel">
               <h2 className="lbr-h" style={{ marginBottom: 8 }}>حالة المنصات العشر</h2>
               {plats.map((p: any) => {
@@ -771,7 +869,8 @@ export const LiveBrainRoom: React.FC = () => {
                 );
               })}
             </section>
-
+  );
+  const cyclesEl = (
             <section className="lbr-panel">
               <h2 className="lbr-h" style={{ marginBottom: 8 }}>نبض الدورات 24/7</h2>
               {pulseRows.map((c) => (
@@ -781,16 +880,103 @@ export const LiveBrainRoom: React.FC = () => {
                 </div>
               ))}
             </section>
-
+  );
+  const legendEl = (
             <section className="lbr-panel" style={{ fontSize: 12 }}>
               <div style={{ color: '#93A1C3', marginBottom: 8 }}>مفتاح الحالة</div>
               <div style={{ display: 'flex', flexWrap: 'wrap', gap: 12 }}>
                 {(['ok', 'partial', 'off'] as const).map((k) => <span key={k} style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}><span style={{ width: 10, height: 10, borderRadius: 3, background: STATUS_COLOR[k], boxShadow: `0 0 8px ${STATUS_COLOR[k]}` }} />{STATUS_TEXT[k]}</span>)}
               </div>
             </section>
+  );
+
+  const backdrop = (
+    <>
+      <style>{CSS}</style>
+      <div className="lbr-stars" />
+      <div className="lbr-grid" />
+      <div className="lbr-scan" />
+    </>
+  );
+
+  // تخطيط الصفحة العادي (كما كان) — يُستخدم في التبويب، وفي الشاشة الحية على الشاشات الضيقة.
+  const pageBody = (
+    <>
+      {headerEl}
+
+      <div style={{ position: 'relative', padding: 16, display: 'flex', flexDirection: 'column', gap: 16 }}>
+        {alertEl}
+        {kpisEl}
+
+        {controlEl}
+
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 16 }}>
+          <main style={{ flex: '999 1 680px', minWidth: 0, display: 'flex', flexDirection: 'column', gap: 16 }}>
+            {mapEl}
+            {pulseEl}
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))', gap: 16 }}>
+              {interEl}
+              {intentsEl}
+              {topicsEl}
+              {prodsEl}
+              {platInsEl}
+              {leadsEl}
+            </div>
+            {voicesEl}
+            {journeyEl}
+          </main>
+
+          <aside aria-label="اللوحات الحية" style={{ flex: '1 1 300px', maxWidth: 400, minWidth: 0, display: 'flex', flexDirection: 'column', gap: 16 }}>
+            {gaugesEl}
+            {eventsEl}
+            {platStatusEl}
+            {cyclesEl}
+            {legendEl}
           </aside>
         </div>
       </div>
+    </>
+  );
+
+  if (!wall) {
+    return (
+      <div dir="rtl" className={'lbr' + (motion ? '' : ' lbr-still')} style={{ position: 'relative', background: 'radial-gradient(ellipse 90% 60% at 50% 22%, #170F3A 0%, #070A1A 55%, #03040B 100%)', color: '#E7ECF8', borderRadius: 22, border: '1px solid #1A2350', overflow: 'hidden' }}>
+        {backdrop}
+        {pageBody}
+      </div>
+    );
+  }
+
+  // الشاشة الحية: كل اللوحات في شاشة واحدة بلا تمرير — خمسة أعمدة تملأ الشاشة، ثم
+  // تُصغَّر الكتلة كلها بالمقدار اللازم فقط حتى لا يخرج شيء عن حدود الشاشة.
+  const wallBody = (
+    <div style={{ position: 'relative', height: '100%', display: 'flex', flexDirection: 'column', gap: 10, padding: '0 0 10px' }}>
+      {headerEl}
+      <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1.25fr) minmax(0, 3.2fr)', gap: 10, padding: '0 12px', flex: 'none', alignItems: 'stretch' }}>
+        {alertEl}
+        {kpisEl}
+      </div>
+      <div ref={wallGridRef} className="lbr-wallgrid">
+        <div className="lbr-col">{controlEl}</div>
+        <div className="lbr-col">{mapEl}{pulseEl}</div>
+        <div className="lbr-col">{interEl}{intentsEl}{topicsEl}{voicesEl}</div>
+        <div className="lbr-col">{prodsEl}{platInsEl}{leadsEl}{journeyEl}</div>
+        <div className="lbr-col">{gaugesEl}{cyclesEl}{platStatusEl}{eventsEl}</div>
+      </div>
+    </div>
+  );
+
+  return (
+    <div ref={wallRef} dir="rtl" role="dialog" aria-modal="true" aria-label="الشاشة الحية — اللوحة الحية كاملة" className={'lbr lbr-wall' + (motion ? '' : ' lbr-still')}
+      style={{ position: 'fixed', inset: 0, zIndex: 60, background: 'radial-gradient(ellipse 90% 60% at 50% 22%, #170F3A 0%, #070A1A 55%, #03040B 100%)', color: '#E7ECF8', overflowX: 'hidden', overflowY: fitMode ? 'hidden' : 'auto' }}>
+      {backdrop}
+      {fitMode ? (
+        <div style={{ position: 'absolute', top: 0, right: 0, width: wallBox.w / wallScale, height: wallBox.h / wallScale, transform: `scale(${wallScale})`, transformOrigin: 'top right' }}>
+          {wallBody}
+        </div>
+      ) : (
+        <div style={{ position: 'relative' }}>{pageBody}</div>
+      )}
     </div>
   );
 };
