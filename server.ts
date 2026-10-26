@@ -14797,8 +14797,8 @@ function patrolFacts(module: string | null = null): PatrolFacts {
   const health = safe(() => cycleHealthWarning(), null as any);
   const dr: any = safe(() => (app as any).drAutoBackup?.status?.() || null, null);
   const fresh = safe(() => backupFreshness(drControl.driveAutoBackup, nowMs), null as any);
-  const g: any = safe(() => geminiStatus(), {});
-  const yq: any = safe(() => youtubeQuotaStatusSnapshot(), null);
+  const g: any = safe<any>(() => geminiStatus(), {});
+  const yq: any = safe<any>(() => youtubeQuotaStatusSnapshot(), null);
   const mp = ((metricsSyncState.lastResult as any)?.platforms || {}) as Record<string, any>;
   const comments = (((workspace as any).socialComments || []) as any[]);
   const lastIn: Record<string, string | null> = {};
@@ -14806,7 +14806,7 @@ function patrolFacts(module: string | null = null): PatrolFacts {
   if (at("customers")) for (const c of comments) { const p = String(c?.platform || ""); if (p in lastIn && (!lastIn[p] || String(c.createdAt) > String(lastIn[p]))) lastIn[p] = String(c.createdAt || ""); }
   const esc = (((workspace as any).socialEscalations || []) as any[]).filter((e) => e && e.state !== "RESOLVED");
   const pub = (((workspace as any).publishRecords || []) as any[]).filter((r) => !r?.simulated && Date.parse(String(r?.createdAt || r?.publishedAt || "")) >= nowMs - 86400000);
-  const yt: any = safe(() => normalizeWatcherControls(watcherState.controls), {});
+  const yt: any = safe<any>(() => normalizeWatcherControls(watcherState.controls), {});
   const mc: any = (metaPollingState as any)?.controls || {};
   const tc: any = (telegramPollingState as any)?.controls || {};
   const sched = (s: any) => Boolean(s && safe(() => s.status().active, false));
