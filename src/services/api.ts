@@ -1815,6 +1815,36 @@ ${payload.topic || payload.productName || 'أنظمة وحلول التقسيط 
     }
     return data;
   },
+  /** ردود جهّزها العقل على كل المنصات بانتظار نقرة المالك. */
+  async getOutboundApprovals(platform = '', status = 'pending'): Promise<any> {
+    const q = new URLSearchParams({ status });
+    if (platform) q.set('platform', platform);
+    const res = await fetch(`/api/commercial/approvals?${q.toString()}`, { headers: getAuthHeaders(), cache: 'no-store' });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || !data.success) throw new Error(data.error || 'تعذر تحميل الردود الجاهزة');
+    return data;
+  },
+  /** إرسال/تعديل ثم إرسال/رفض رد جاهز واحد (يمر بالمنفّذ المركزي للمنصة). */
+  async decideOutboundApproval(id: string, kind: 'approve' | 'edit_approve' | 'reject', text?: string): Promise<any> {
+    const res = await fetch(`/api/commercial/approvals/${encodeURIComponent(id)}/decision`, { method: 'POST', headers: getAuthHeaders(), body: JSON.stringify({ kind, text: text ?? undefined }) });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || !data.success) { const err: any = new Error(data.error || 'تعذر تنفيذ القرار'); err.code = data.code; throw err; }
+    return data;
+  },
+  /** «أرسل كل الجاهز» (أو ارفض الكل) لمنصة أو لكل المنصات — حتى 25 رداً بالنقرة. */
+  async bulkOutboundApprovals(input: { platform?: string; kind: 'approve' | 'reject' }): Promise<any> {
+    const res = await fetch('/api/commercial/approvals/bulk', { method: 'POST', headers: getAuthHeaders(), body: JSON.stringify(input) });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || !data.success) throw new Error(data.error || 'تعذر تنفيذ الدفعة');
+    return data;
+  },
+  /** جاهزية المنصات الخمس المربوطة (قراءة/رد/نشر/قياس) من الحالة الحقيقية. */
+  async getFivePlatformReadiness(): Promise<any> {
+    const res = await fetch('/api/platforms/five-readiness', { headers: getAuthHeaders(), cache: 'no-store' });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || !data.success) throw new Error(data.error || 'تعذر تحميل جاهزية المنصات');
+    return data;
+  },
   /** تبديل وضع إرسال العقل التجاري (approval | auto) — مستقل عن Kill Switch. */
   async setCommercialSendMode(mode: 'approval' | 'auto'): Promise<any> {
     const res = await fetch('/api/agent/commercial/send-mode', { method: 'POST', headers: getAuthHeaders(), body: JSON.stringify({ mode }) });

@@ -159,7 +159,11 @@ const ADAPTER_SPECS: AdapterSpec[] = [
     // لا رد على تعليقات (Threads لا يملك endpoint ردود مستقلاً، ولا webhook/قفل
     // تكرار مبنيَّين لهذه المنصة بعد)، ولا جلب تحليلات حقيقي. إعلانها هنا بلا
     // تنفيذ كان سيخالف قاعدة «القدرة تُقرأ من السجل ويقابلها استدعاء حقيقي».
-    capabilities: ['publish'],
+    // 2026-10-26: + قراءة تعليقات الزبائن (ردودهم على منشورات المعرض — GET
+    // /{media-id}/replies بنطاق threads_read_replies) والرد عليها (حاوية بـreply_to_id
+    // ثم نشر — threads_manage_replies) عبر منفّذ مركزي واحد بكل الحمايات وبوابة
+    // الموافقة. لا رسائل خاصة (Threads لا يوفرها) ولا تحليلات هنا.
+    capabilities: ['publish', 'comments', 'comment_reply'],
     credentialMode: 'oauth2',
     // أول موصل نشر حقيقي لـThreads: OAuth (مُصلَح Task #24) + حاوية + نشر +
     // فحص حالة. يبقى العمل الفعلي يحتاج تطبيق Meta "Threads API" منفصلاً
