@@ -110,7 +110,7 @@ export const SpiderPatrol: React.FC<SpiderPatrolProps> = ({ rootRef, inspections
     for (let r = 0; r < GR; r++) for (let i = 0; i < GC; i++) ORDER.push(r * GC + (r % 2 ? GC - 1 - i : i));
     const nextStation = (): Element | null => {
       const W = layer.offsetWidth || 1, H = layer.offsetHeight || 1;
-      const all = Array.from(root.querySelectorAll('[data-station]')).filter(visible);
+      const all: Element[] = Array.from(root.querySelectorAll<Element>('[data-station]')).filter(visible);
       if (!all.length) return null;
       const cells = new Map<number, Array<{ e: Element; x: number; y: number }>>();
       for (const e of all) {
