@@ -144,6 +144,42 @@ export function resolveLoginConfigId(
   return null;
 }
 
+/**
+ * العودة المكررة لنفس الـcallback (العطل المُثبت في سجلات 2026-10-26 مع Threads):
+ * متصفح الجوال/Meta يطلب رابط الإرجاع نفسه مرتين خلال ~200ms. الطلب الأول يستهلك
+ * state ويُكمل الربط، والثاني يُرفض بـ«جلسة غير معروفة أو أُعيد استخدامها» —
+ * والمتصفح يعرض رد **الثاني** فيرى المالك فشلاً رغم أن الربط نجح أو ما زال جارياً.
+ *
+ * الحل دون إضعاف منع إعادة الاستخدام: لا يُبادَل الرمز مرة ثانية أبداً؛ الطلب
+ * المكرر (نفس state + نفس المنصة + نفس code/fragment حرفياً، خلال نافذة قصيرة)
+ * يتلقى **نفس نتيجة** الطلب الأول فقط. أي اختلاف في code أو المنصة = رفض كما كان.
+ */
+export const OAUTH_DUPLICATE_CALLBACK_WINDOW_MS = 5 * 60 * 1000;
+
+export interface ConsumedOAuthCallback {
+  platform: string;
+  /** بصمة sha256 لـcode/fragment — لا يُحفظ الرمز نفسه. */
+  fingerprint: string;
+  consumedAt: number;
+}
+
+/** بصمة غير قابلة للعكس لقيمة الرمز المُعاد (code أو مقطع الاستجابة). */
+export function oauthCallbackFingerprint(value: string): string {
+  return crypto.createHash('sha256').update(String(value || '')).digest('hex');
+}
+
+/** هل هذا الطلب تكرار مشروع لعودة استُهلكت للتو؟ */
+export function isDuplicateOAuthCallback(
+  prior: ConsumedOAuthCallback | undefined | null,
+  input: { platform: string; fingerprint: string; now?: number },
+): boolean {
+  if (!prior) return false;
+  if (!input.fingerprint || prior.fingerprint !== input.fingerprint) return false;
+  if (prior.platform !== input.platform) return false;
+  const now = input.now ?? Date.now();
+  return now - prior.consumedAt >= 0 && now - prior.consumedAt <= OAUTH_DUPLICATE_CALLBACK_WINDOW_MS;
+}
+
 /** هل انتهت صلاحية state؟ */
 export function isStateExpired(pending: Pick<OAuthPendingState, 'expiresAt'>, now = Date.now()): boolean {
   return !Number.isFinite(pending.expiresAt) || pending.expiresAt <= now;

@@ -302,6 +302,10 @@ import {
   createPkcePair,
   requiresPkce,
   validateOAuthCallback,
+  oauthCallbackFingerprint,
+  isDuplicateOAuthCallback,
+  OAUTH_DUPLICATE_CALLBACK_WINDOW_MS,
+  type ConsumedOAuthCallback,
   buildAuthorizationParams,
   buildTokenExchangeBody,
   parseTokenResponse,
@@ -2164,6 +2168,22 @@ const platformConnections = new Map<string, PlatformConnection>();
 
 type OAuthPending = { platform: string; userId: string; expiresAt: number; codeVerifier?: string; redirectUri: string };
 const pendingOAuth = new Map<string, OAuthPending>();
+// عودات OAuth المستهلكة للتو (ذاكرة فقط، 5 دقائق): تسمح بإرجاع نتيجة الطلب الأول
+// لطلب مكرر بنفس state+code بدل رفضه — دون أي تبادل ثانٍ للرمز.
+type ConsumedOAuthEntry = ConsumedOAuthCallback & { result: Promise<{ status: number; kind: "json" | "send"; body: any }> };
+const consumedOAuthCallbacks = new Map<string, ConsumedOAuthEntry>();
+/** يلتقط الرد النهائي لطلب الإكمال الأول ليُعاد عرضه للطلب المكرر. */
+function captureOAuthOutcome(res:any, platform:string): Promise<{ status: number; kind: "json" | "send"; body: any }> {
+  return new Promise((resolve) => {
+    let settled=false;
+    const done=(kind:"json"|"send", body:any)=>{ if(settled) return; settled=true; clearTimeout(timer); logOAuthStart(platform, { outcome: "callback_completed", status: res.statusCode }); resolve({ status: res.statusCode || 200, kind, body }); };
+    const timer=setTimeout(()=>{ if(settled) return; settled=true; resolve({ status: 504, kind: "send", body: "ما زال إكمال الربط جارياً؛ حدّث صفحة ربط المنصات بعد دقيقة للتحقق من الحالة." }); }, 90_000);
+    (timer as any).unref?.();
+    const origJson=res.json.bind(res); const origSend=res.send.bind(res);
+    res.json=(body:any)=>{ done("json", body); return origJson(body); };
+    res.send=(body:any)=>{ if(!settled && typeof body==="string") done("send", body); return origSend(body); };
+  });
+}
 // المفتاح يُقرأ عند كل استخدام (لا يُلتقط وقت الإقلاع) حتى يعكس التشخيص البيئة
 // الفعلية، ويُفكّ عبر التعريف الموحّد في engine/social/tokenKey.ts.
 function tokenKeyInspection() { return inspectTokenKeyFromEnv(); }
@@ -4976,11 +4996,24 @@ async function handleOAuthCallback(req:any, res:any, rawQuery:string, viaPost:bo
   const redirectUri=oauthCallbackUrl(platform);
   // سجل آمن لعودة Meta: هل وصلت، وبأي رمز خطأ — بلا state ولا code ولا توكن.
   logOAuthStart(platform, { outcome: "callback_received", viaPost, hasState: Boolean(state), hasCode: Boolean(params.get("code")), providerError: params.get("error") ? String(params.get("error")).slice(0, 60) : null, redirectUri });
+  // عودة مكررة لنفس الطلب (متصفح الجوال/Meta يطلب الرابط مرتين): نعيد نتيجة الأول
+  // كما هي ولا نبادل الرمز مرة ثانية. أي اختلاف في code/المنصة يسقط إلى الرفض أدناه.
+  const callbackFingerprint=oauthCallbackFingerprint(params.get("code")||params.get("fragment")||"");
+  if(!pending && state){
+    const prior=consumedOAuthCallbacks.get(state);
+    if(prior && isDuplicateOAuthCallback(prior,{platform,fingerprint:callbackFingerprint})){
+      logOAuthStart(platform, { outcome: "callback_duplicate_replayed" });
+      const r=await prior.result;
+      if(viaPost) return res.status(r.status).json(r.kind==="json"?r.body:{success:r.status<400,error:r.status<400?undefined:String(r.body||"")});
+      return res.status(r.status).send(r.kind==="send"?r.body:(r.status<400?"تم الربط بنجاح. يمكنك إغلاق هذه النافذة.":String(r.body?.error||"فشل إكمال الربط.")));
+    }
+  }
   const check=validateOAuthCallback({pending,platform,redirectUri});
   if(!check.ok || !cfg) { logOAuthStart(platform, { outcome: "callback_rejected", reason: check.reason || "no_config" }); return failHtml(400, `فشل التحقق من جلسة OAuth: ${check.reason||"مزود غير مُعدّ"}.`); }
   // يُستهلك state مرة واحدة فقط (يمنع إعادة الاستخدام)؛ نثبّت الحذف في المخزن
   // الدائم فوراً فلا يُسترجَع عند إعادة تشغيل لاحقة فيُقبل تكرار الطلب.
   pendingOAuth.delete(state);
+  consumedOAuthCallbacks.set(state,{platform,fingerprint:callbackFingerprint,consumedAt:Date.now(),result:captureOAuthOutcome(res,platform)});
   // F-29: fail-closed — إن لم يُثبَّت حذف state فلا نقبل الرمز (منع إعادة استخدام
   // state عبر restart). نرد فشلاً صريحاً بدل المتابعة بحذف غير مثبّت.
   try {
@@ -19090,6 +19123,7 @@ function cleanupRuntimeState() {
   for (const [key, window] of authAttemptWindow) if (now - window.startedAt >= RATE_WINDOW_TTL_MS) authAttemptWindow.delete(key);
   // جلسات OAuth المعلّقة تنتهي بصلاحيتها، والذاكرة التشخيصية لبدء OAuth بـTTL قصير.
   for (const [state, pending] of pendingOAuth) if (pending.expiresAt < now) pendingOAuth.delete(state);
+  for (const [state, entry] of consumedOAuthCallbacks) if (now - entry.consumedAt > OAUTH_DUPLICATE_CALLBACK_WINDOW_MS) consumedOAuthCallbacks.delete(state);
   for (const [platform, entry] of oauthStartPreflightCache) if (now - entry.at >= OAUTH_PREFLIGHT_TTL_MS) oauthStartPreflightCache.delete(platform);
   for (const [platform, entry] of lastOAuthPreflight) if (now - entry.at >= OAUTH_PREFLIGHT_TTL_MS) lastOAuthPreflight.delete(platform);
   // نافذة المعدّل المشتركة (YouTube + ردود/رسائل Meta): تُنقّى بالـTTL فلا تنمو بلا حد.
