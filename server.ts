@@ -713,10 +713,10 @@ import {
 import { driveApiAccountingSnapshot, recordDriveApiCall, type DriveApiCallKind } from "./engine/dr/driveApiAccounting";
 import { neonUsageApiConfig, fetchNeonActualUsage, NEON_USAGE_POLL_MIN_INTERVAL_MS, computeCuHours } from "./engine/ops/neonUsage";
 import { buildSalesReadiness, sanitizeOAuthFailureMessage, type ReadinessPlatformInput } from "./engine/ops/salesReadiness";
-import { backupFreshness } from "./engine/dr/autoBackup";
+import { backupFreshness, resolveAutoBackupIntervalMs } from "./engine/dr/autoBackup";
 import { summarizePublishHealth, formatPublishLogLine } from "./engine/ops/publishHealth";
 import { realProductPhrases } from "./src/utils/productPhrases";
-import { LiveEventBuffer, classifyLogLine, auditToLiveEvent, buildLiveModules, buildLiveInsights, platformAr, type LiveEventInput } from "./engine/ops/liveRoom";
+import { LiveEventBuffer, classifyLogLine, auditToLiveEvent, buildLiveModules, buildLiveInsights, buildLiveCycles, platformAr, type LiveEventInput } from "./engine/ops/liveRoom";
 import { parseFacebookPostMetrics, parseInstagramMediaMetrics, parseGraphInsights, parseFollowers, upsertPerformanceRecords, summarizePlatformMetrics, type MetricValues } from "./engine/social/metricsSync";
 import { resolveInteractionProduct, productFactStatement, productNamedInText, type ProductResolution } from "./engine/social/productResolution";
 import { decideCoalescedWrite, type CoalesceMemo, USAGE_INDICATOR_VOLATILE_PATHS } from "./engine/ops/writeCoalescing";
@@ -14342,14 +14342,21 @@ function platformCardMetrics(platform: string): { followers: number | null; foll
 app.get("/api/live/room", requireOwner, (req, res) => {
   const nowMs = Date.now();
   const since = Number(req.query?.since || 0);
+  // حارس الخطة المجانية: الاستطلاع الخفيف (كل 4 ث) يحمل الأحداث والحالة فقط؛ الرؤى الثقيلة
+  // (تمرّ على كل التعليقات) تُرسل في الاستطلاع الكامل فقط (كل 30 ث من الواجهة).
+  const lite = String(req.query?.lite || "") === "1";
   const inbound = (((workspace as any).socialComments || []) as any[]);
   const dayAgo = nowMs - 86400000;
   const metricsPlatforms = ((metricsSyncState.lastResult as any)?.platforms || {}) as Record<string, any>;
   const audience = (((workspace as any).platformAudience || {}) as Record<string, { followers: number | null }>);
+  // تدقيق 2026-10-26: «جزئي» من البيانات الفعلية لا من نص ثابت — منصة نُشر عليها ولم يُقس
+  // أي منشور لها في آخر مزامنة ⇒ الأرقام ناقصة. تيك توك: يُعلَن ما دامت لم تُقس أرقامه فعلاً.
   const partialOf = (id: string): string | null => {
     const m = metricsPlatforms[id];
-    if (id === "threads" && m && m.posts > 0 && m.withMetrics === 0) return "ينقص صلاحية الرؤى";
-    if (id === "tiktok") return "الإحصاءات بانتظار مراجعة تيك توك";
+    if (m && Number(m.posts || 0) > 0 && Number(m.withMetrics || 0) === 0) {
+      return id === "threads" ? "ينقص صلاحية الرؤى" : id === "tiktok" ? "الإحصاءات بانتظار مراجعة تيك توك" : "لم تُقس أرقام منشوراتها";
+    }
+    if (id === "tiktok" && !(m && Number(m.withMetrics || 0) > 0)) return "الإحصاءات بانتظار مراجعة تيك توك";
     const st: any = (metaPollingState.platformStats as any)?.[id];
     if (st && Number(st.consecutiveErrors || 0) >= META_READ_FAIL_WARN_CYCLES) return "قراءة التعليقات متعثّرة";
     return null;
@@ -14419,12 +14426,34 @@ app.get("/api/live/room", requireOwner, (req, res) => {
     events: liveEvents.since(since, since > 0 ? 60 : 40),
     lastEventId: liveEvents.lastId,
     // الإصدار 2: رؤى الزبائن والنشر (24 ساعة، النوايا، المواضيع، أكثر المنتجات سؤالاً…).
-    insights: buildLiveInsights({
-      nowMs,
-      comments: inbound as any[],
-      leads: commercialLeads as any[],
-      publishRecords: (((workspace as any).publishRecords || []) as any[]),
+    ...(lite ? {} : {
+      insights: buildLiveInsights({
+        nowMs,
+        comments: inbound as any[],
+        leads: commercialLeads as any[],
+        publishRecords: (((workspace as any).publishRecords || []) as any[]),
+      }),
     }),
+    // دورات 24/7 من مصدرها: الإيقاع الفعلي (مع مضاعف ضغط الخطة)، العدد، التأجيل، التأخّر.
+    cycles: (() => {
+      try {
+        const mult = (() => { try { return usagePressureMultiplier(); } catch { return 1; } })();
+        const ytc: any = normalizeWatcherControls(watcherState.controls);
+        const mc: any = (metaPollingState as any)?.controls || {};
+        const tc: any = (telegramPollingState as any)?.controls || {};
+        const telegramLinked = platforms.some((p) => p.id === "telegram" && p.connected);
+        return buildLiveCycles([
+          { key: "youtube", label: "مراقب يوتيوب", cadenceMs: cadence.youtube, lastRunAt: watcherState.lastPollAt || null, cycles: Number(watcherState.pollCount || 0), active: ytc.enabled !== false && ytc.paused !== true, ...normalizeDeferralState(watcherState.deferral), pausedReason: ytc.paused ? "موقوف طارئاً بقرارك" : "معطّل" },
+          { key: "meta", label: "مراقب فيسبوك/إنستغرام", cadenceMs: cadence.meta, lastRunAt: metaPollingState.lastPollAt || null, cycles: Number(metaPollingState.pollCount || 0), active: mc.enabled !== false && mc.paused !== true, ...normalizeDeferralState(metaPollingState.deferral), pausedReason: mc.paused ? "موقوف طارئاً بقرارك" : "معطّل" },
+          { key: "telegram", label: "مراقب تيليغرام", cadenceMs: (() => { try { return telegramPollingCadenceMs(); } catch { return null; } })(), lastRunAt: telegramPollingState.lastPollAt || null, cycles: Number((telegramPollingState as any).pollCount || 0), active: telegramLinked && tc.enabled !== false && tc.paused !== true, ...normalizeDeferralState(telegramPollingState.deferral), pausedReason: !telegramLinked ? "تيليغرام غير مربوط" : tc.paused ? "موقوف طارئاً بقرارك" : "معطّل" },
+          { key: "brain", label: "العقل المركزي", cadenceMs: brainRuntimeIntervalMs(), lastRunAt: brainRuntimeState.lastCycleCompletedAt || null, cycles: Number(brainRuntimeState.cycleCount || 0), active: brainRuntimeEnabled(), ...normalizeDeferralState(brainRuntimeState.deferral), pausedReason: "معطّل من الإعداد" },
+          { key: "commercial", label: "العقل التجاري", cadenceMs: 10 * 60 * 1000 * mult, lastRunAt: commercialLastRun?.at || null, active: commercialKillSwitchEnabled(), ...normalizeDeferralState(commercialDeferral), pausedReason: "موقوف بمفتاح الطوارئ" },
+          { key: "metrics", label: "مزامنة الأرقام", cadenceMs: METRICS_SYNC_INTERVAL_MS, lastRunAt: metricsSyncState.lastRunAt || null, active: true },
+          { key: "backup", label: "النسخ الاحتياطي", cadenceMs: resolveAutoBackupIntervalMs(process.env as Record<string, string | undefined>), lastRunAt: fresh ? fresh.lastSuccessAt : null, active: Boolean(drControl.driveRefreshToken || drControl.driveAutoBackup), pausedReason: "Google Drive غير مربوط" },
+        ], nowMs);
+      } catch { return []; }
+    })(),
+    usage: { multiplier: (() => { try { return usagePressureMultiplier(); } catch { return 1; } })(), level: pressure },
     telemetry: (() => {
       const mem = process.memoryUsage();
       const g: any = (() => { try { return geminiStatus(); } catch { return {}; } })();

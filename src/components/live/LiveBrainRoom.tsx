@@ -59,6 +59,12 @@ const JOURNEY = [
   { title: 'تحليل النتائج', detail: 'وتوصيات للتحسين', badge: '#38BDF8', mods: ['memory', 'monitor'] },
 ];
 const POLL_MS = 4000;
+/** الاستطلاع الكامل (مع الرؤى الثقيلة) كل 30 ث؛ ما بينها خفيف (أحداث + حالة). */
+const FULL_EVERY_MS = 30000;
+/** البث يُعدّ متأخراً إن لم ينجح جلب منذ هذه المدة. */
+const STALE_MS = 15000;
+/** حارس الخطة المجانية: بين 00:00 و06:00 بغداد ينام الخادم؛ الشاشة الخاملة لا توقظه. */
+const NIGHT_IDLE_MS = 10 * 60000;
 // عدد الغرف المفتوحة (التبويب + الشاشة الحية): الموسيقى تتوقف حين تُغلق آخر غرفة.
 let openRooms = 0;
 const BUCKET_MS = 10000;
@@ -271,6 +277,24 @@ export const LiveBrainRoom: React.FC<{ variant?: 'page' | 'wall'; onClose?: () =
   const [hits, setHits] = useState<Record<string, number>>({});
   const [selected, setSelected] = useState<ModKey>('platforms');
   const [motion, setMotion] = useState(true);
+  // حارس الخطة المجانية (الليل): لا يُبقي الشاشةُ الخاملة الخادمَ مستيقظاً 00:00–06:00 بغداد.
+  const [sleeping, setSleeping] = useState(false);
+  const sleepingRef = useRef(false);
+  const lastInteractRef = useRef(Date.now());
+  useEffect(() => {
+    const bump = () => {
+      lastInteractRef.current = Date.now();
+      if (sleepingRef.current) { sleepingRef.current = false; setSleeping(false); }
+    };
+    const evs = ['pointerdown', 'pointermove', 'keydown', 'wheel', 'touchstart'];
+    evs.forEach((e) => window.addEventListener(e, bump, { passive: true }));
+    const t = window.setInterval(() => {
+      const h = Number(new Date(Date.now() + skewRef.current).toLocaleString('en-US', { hour: 'numeric', hour12: false, timeZone: 'Asia/Baghdad' })) % 24;
+      const night = h >= 0 && h < 6;
+      if (night && Date.now() - lastInteractRef.current > NIGHT_IDLE_MS && !sleepingRef.current) { sleepingRef.current = true; setSleeping(true); }
+    }, 30000);
+    return () => { evs.forEach((e) => window.removeEventListener(e, bump)); window.clearInterval(t); };
+  }, []);
   const [snd, setSnd] = useState<SoundState>(() => getSoundtrack().state);
   const coreRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
@@ -359,7 +383,7 @@ export const LiveBrainRoom: React.FC<{ variant?: 'page' | 'wall'; onClose?: () =
     });
     // تاريخ النشاط الحقيقي (أوقات الأحداث نفسها) — يغذّي نبض النشاط وتوهّج الأقسام.
     setEventTimes((prev) => {
-      const cutoff = Date.now() - RECENT_MS;
+      const cutoff = Date.now() + skewRef.current - RECENT_MS;
       const add = incoming.map((e) => ({ t: Date.parse(e.at), m: e.module })).filter((x) => Number.isFinite(x.t));
       return [...prev, ...add].filter((x) => x.t >= cutoff).slice(-600);
     });
@@ -389,10 +413,17 @@ export const LiveBrainRoom: React.FC<{ variant?: 'page' | 'wall'; onClose?: () =
     }
   }, []);
 
+  const skewRef = useRef(0); // فرق ساعة الجهاز عن ساعة الخادم — كل الأزمنة تُحسب بساعة الخادم
+  const lastFullRef = useRef(0);
   const poll = useCallback(async () => {
     try {
-      const r = await apiService.getLiveRoom(lastIdRef.current);
-      setData(r);
+      const full = !lastFullRef.current || Date.now() - lastFullRef.current >= FULL_EVERY_MS;
+      const r = full ? await apiService.getLiveRoom(lastIdRef.current) : await apiService.getLiveRoom(lastIdRef.current, true);
+      if (full) lastFullRef.current = Date.now();
+      const st = Date.parse(String(r?.serverTime || ''));
+      if (Number.isFinite(st)) skewRef.current = Math.round(skewRef.current * 0.5 + (st - Date.now()) * 0.5);
+      // الاستطلاع الخفيف لا يحمل الرؤى: تبقى آخر رؤى كاملة حتى الاستطلاع الكامل التالي.
+      setData((prev: any) => ({ ...r, insights: r.insights ?? prev?.insights }));
       ingest(Array.isArray(r.events) ? r.events : []);
       if (typeof r.lastEventId === 'number') lastIdRef.current = r.lastEventId;
       firstLoad.current = false;
@@ -407,12 +438,12 @@ export const LiveBrainRoom: React.FC<{ variant?: 'page' | 'wall'; onClose?: () =
     if (!isOwner) return;
     void poll();
     // يتوقف عند إخفاء الصفحة؛ وغرفة التبويب تصمت ما دامت الشاشة الحية مفتوحة (هي تجلب بنفسها).
-    const t = window.setInterval(() => { if (document.visibilityState === 'visible' && (wall || document.body.dataset.liveWall !== '1')) void poll(); }, POLL_MS);
+    const t = window.setInterval(() => { if (document.visibilityState === 'visible' && (wall || document.body.dataset.liveWall !== '1') && !sleepingRef.current) void poll(); }, POLL_MS);
     return () => window.clearInterval(t);
   }, [isOwner, poll, wall]);
 
   useEffect(() => {
-    const t = window.setInterval(() => setNow(Date.now()), 1000);
+    const t = window.setInterval(() => setNow(Date.now() + skewRef.current), 1000);
     return () => window.clearInterval(t);
   }, []);
 
@@ -422,9 +453,14 @@ export const LiveBrainRoom: React.FC<{ variant?: 'page' | 'wall'; onClose?: () =
   const appr = data?.approvals || {};
   const sel = MOD_BY_KEY[selected];
   const selView = modules[selected];
-  const coreIdx = Math.floor(now / 2200) % CORE_FNS.length;
+  // تدقيق 2026-10-26: لا تدوير وهمي — نص قلب العقل = آخر حدث حقيقي (خلال دقيقتين)، والحلقة
+  // تضيء القسم الذي وقع فيه؛ وإن لم يقع حدث يُقال ذلك صراحة.
+  const lastEvt = events[0];
+  const lastEvtAge = lastEvt ? now - Date.parse(lastEvt.at) : Infinity;
+  const coreLive = Number.isFinite(lastEvtAge) && lastEvtAge < 120000;
+  const coreIdx = coreLive ? Math.abs([...String(lastEvt.module)].reduce((a, ch) => a + ch.charCodeAt(0), 0)) % CORE_FNS.length : -1;
   const hitActive = (k: string) => Boolean(hits[k] && now - hits[k] < 1500);
-  const journeyIdx = activeStep ?? (Math.floor(now / 2600) % JOURNEY.length);
+  const journeyIdx = activeStep != null && Number.isFinite(lastEvtAge) && lastEvtAge < RECENT_MS ? activeStep : -1;
 
   // نبض النشاط الحقيقي: أحداث لكل 10 ثوانٍ على آخر 5 دقائق.
   const buckets = useMemo(() => {
@@ -450,19 +486,27 @@ export const LiveBrainRoom: React.FC<{ variant?: 'page' | 'wall'; onClose?: () =
   const sum = (a: number[]) => a.reduce((x, y) => x + y, 0);
   const plats: any[] = data?.platforms || [];
   const connected = plats.filter((p) => p.connected).length;
-  const publishedTotal = (ins.publish || []).reduce((a: number, p: any) => a + p.published, 0);
+  const publishedTotal = (ins.publish || []).reduce((a: number, p: any) => a + Number(p.published || 0), 0);
+  const scheduledTotal = (ins.publish || []).reduce((a: number, p: any) => a + Number(p.scheduled || 0), 0);
 
+  // دورات 24/7 من الخادم: الإيقاع الفعلي (مع مضاعف ضغط الخطة)، العدد، التأجيل، التأخّر.
+  const CYCLE_COLOR: Record<string, string> = { youtube: '#F43F5E', meta: '#60A5FA', telegram: '#38BDF8', brain: '#A78BFA', commercial: '#E879F9', metrics: '#22D3EE', backup: '#34D399' };
+  const CYCLE_STATE: Record<string, { t: string; c: string }> = {
+    ok: { t: '', c: '#C9D3EA' }, late: { t: 'متأخرة', c: '#F87171' }, deferred: { t: 'مؤجّلة', c: '#FBBF24' }, paused: { t: 'موقوفة', c: '#93A1C3' }, never: { t: 'لم تبدأ', c: '#FBBF24' },
+  };
+  const cadText = (ms: number | null | undefined) => (!ms ? '' : ms >= 3600000 ? `كل ${Math.round(ms / 3600000)} س` : `كل ${Math.round(ms / 60000)} د`);
   const pulseRows = useMemo(() => {
-    const p = data?.pulse || {};
-    const cad = (ms: number | null | undefined) => (ms ? `كل ${Math.round(ms / 60000)} د` : '');
-    return [
-      { name: 'مراقب يوتيوب', value: `${p.youtube?.cycles ?? '—'} دورة · ${ago(p.youtube?.lastAt, now)}`, sub: cad(p.youtube?.cadenceMs), color: '#F43F5E' },
-      { name: 'مراقب فيسبوك/إنستغرام', value: `${p.meta?.cycles ?? '—'} دورة · ${ago(p.meta?.lastAt, now)}`, sub: cad(p.meta?.cadenceMs), color: '#60A5FA' },
-      { name: 'العقل المركزي', value: `${p.brain?.cycles ?? '—'} دورة · ${ago(p.brain?.lastAt, now)}`, sub: 'كل 15 د', color: '#A78BFA' },
-      { name: 'العقل التجاري', value: ago(p.commercial?.lastAt, now), sub: 'كل 10 د', color: '#E879F9' },
-      { name: 'مزامنة الأرقام', value: ago(p.metrics?.lastAt, now), sub: 'كل 6 س', color: '#22D3EE' },
-      { name: 'النسخ الاحتياطي', value: ago(p.backup?.lastAt, now), sub: p.backup?.level === 'ok' ? 'حديثة' : p.backup?.level ? 'متأخرة' : '', color: p.backup?.level === 'ok' ? '#34D399' : '#FBBF24' },
-    ];
+    const cy: any[] = Array.isArray(data?.cycles) ? data.cycles : [];
+    return cy.map((c) => {
+      const stt = CYCLE_STATE[c.status] || CYCLE_STATE.ok;
+      const parts = [typeof c.cycles === 'number' && c.cycles > 0 ? `${fmt(c.cycles)} دورة` : '', c.status === 'paused' ? '' : ago(c.lastRunAt, now)].filter(Boolean);
+      return {
+        key: String(c.key), name: String(c.label), sub: cadText(c.cadenceMs), color: CYCLE_COLOR[c.key] || '#A5B4FC',
+        value: parts.join(' · ') || '—', state: stt.t, stateColor: stt.c, note: c.note || '', ok: c.status === 'ok',
+        title: [c.note, c.nextDueAt ? `الدورة التالية ${clock(c.nextDueAt)}` : ''].filter(Boolean).join(' — '),
+      };
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [data, now]);
 
   // حلقة النوايا (donut) من التصنيف الحقيقي.
@@ -487,7 +531,7 @@ export const LiveBrainRoom: React.FC<{ variant?: 'page' | 'wall'; onClose?: () =
   // ملاءمة الشاشة: يُبحث عن أكبر مقياس لا يخرج عنده أي عمود عن الشاشة — فيُكبَّر المحتوى
   // حين يتسع المكان ويُصغَّر بالقدر اللازم فقط حين يضيق. القياس على DOM مباشرة قبل الرسم
   // (بلا وميض)، ويُعاد عند تغيّر مقاس الشاشة أو بنية المحتوى، ومرة كل دقيقة.
-  const fitKey = `${wallBox.w}x${wallBox.h}|${plats.length}|${(ins.topics || []).length}|${(ins.topProducts || []).length}|${(ins.byPlatform || []).length}|${(ins.leadStages || []).length}|${appr.latest ? 1 : 0}|${(selView?.items || []).length}|${selected}|${data ? 1 : 0}|${(data?.alerts || []).length}|${Math.floor(now / 60000)}`;
+  const fitKey = `${wallBox.w}x${wallBox.h}|${plats.length}|${(ins.topics || []).length}|${(ins.topProducts || []).length}|${(ins.byPlatform || []).length}|${(ins.leadStages || []).length}|${appr.latest ? 1 : 0}|${(selView?.items || []).length}|${selected}|${data ? 1 : 0}|${(data?.alerts || []).length}|${sleeping ? 1 : 0}|${(data?.cycles || []).length}|${Math.floor(now / 60000)}`;
   const fitKeyRef = useRef('');
   useLayoutEffect(() => {
     if (!fitMode || fitKeyRef.current === fitKey) return;
@@ -513,6 +557,9 @@ export const LiveBrainRoom: React.FC<{ variant?: 'page' | 'wall'; onClose?: () =
 
   const wave = sparkPath(buckets, 600, 70);
   const maxHour = Math.max(1, ...hourly);
+  // البث متأخر إن لم ينجح جلب منذ 15 ث (لا يُعرض «بث حي» على بيانات قديمة).
+  const feedStale = Boolean(data && lastOkAt && Date.now() - lastOkAt > STALE_MS);
+  const feedWarn = feedStale || sleeping;
   // لوحة تتمدّد لتملأ ما تبقّى من العمود في الشاشة الحية (قوائم تُمرَّر داخلها فقط).
   const flexPanel: React.CSSProperties | undefined = wall ? { display: 'flex', flexDirection: 'column', flex: '1 1 0', minHeight: 190 } : undefined;
   // لوحة تتمدّد لملء الفراغ ولا تنكمش تحت محتواها.
@@ -529,9 +576,9 @@ export const LiveBrainRoom: React.FC<{ variant?: 'page' | 'wall'; onClose?: () =
           </div>
         </div>
         <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 8, fontSize: 12 }}>
-          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '7px 12px', borderRadius: 999, border: `1px solid ${error ? '#7A1F3A' : '#1E6B55'}`, color: error ? '#FDA4AF' : '#6EE7B7', background: 'rgba(0,0,0,.25)' }}>
-            <span className="lbr-blink" style={{ width: 8, height: 8, borderRadius: '50%', background: error ? '#F87171' : '#34D399', boxShadow: `0 0 10px ${error ? '#F87171' : '#34D399'}` }} />
-            {error ? 'انقطاع مؤقت — إعادة المحاولة' : data ? `بث حي · ${ago(lastOkAt ? new Date(lastOkAt).toISOString() : null, now)}` : 'جارٍ الاتصال…'}
+          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '7px 12px', borderRadius: 999, border: `1px solid ${error ? '#7A1F3A' : feedWarn ? '#6B4A12' : '#1E6B55'}`, color: error ? '#FDA4AF' : feedWarn ? '#FCD34D' : '#6EE7B7', background: 'rgba(0,0,0,.25)' }}>
+            <span className="lbr-blink" style={{ width: 8, height: 8, borderRadius: '50%', background: error ? '#F87171' : feedWarn ? '#FBBF24' : '#34D399', boxShadow: `0 0 10px ${error ? '#F87171' : feedWarn ? '#FBBF24' : '#34D399'}` }} />
+            {sleeping ? 'سكون ليلي — المس الشاشة للاستئناف' : error ? 'انقطاع مؤقت — إعادة المحاولة' : feedStale ? `البث متأخر — آخر تحديث ${ago(lastOkAt ? new Date(lastOkAt + skewRef.current).toISOString() : null, now)}` : data ? `بث حي · ${ago(lastOkAt ? new Date(lastOkAt + skewRef.current).toISOString() : null, now)}` : 'جارٍ الاتصال…'}
           </span>
           {modules.gate && <span style={{ padding: '7px 12px', borderRadius: 999, border: '1px solid #6B4A12', color: '#FCD34D', background: 'rgba(0,0,0,.25)' }}>{modules.gate.metric}</span>}
           {modules.automation && modules.automation.status !== 'ok' && <span style={{ padding: '7px 12px', borderRadius: 999, border: '1px solid #7A1F3A', color: '#FDA4AF', background: 'rgba(0,0,0,.25)' }}>{modules.automation.metric}</span>}
@@ -555,6 +602,12 @@ export const LiveBrainRoom: React.FC<{ variant?: 'page' | 'wall'; onClose?: () =
         </div>
       </header>
   );
+  const sleepEl = sleeping ? (
+    <div role="status" style={{ margin: wall ? '0 12px' : 0, padding: '10px 14px', borderRadius: 14, border: '1px solid #6B4A12', background: 'linear-gradient(90deg, rgba(120,80,10,.3), rgba(6,9,24,.85))', color: '#FCD34D', fontSize: 13, display: 'flex', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'space-between', gap: 10 }}>
+      <span>🌙 سكون ليلي لحماية ساعات الخطة المجانية: الخادم ينام 00:00–06:00، والشاشة الخاملة أوقفت الجلب كي لا توقظه. البيانات المعروضة آخر ما وصل.</span>
+      <button type="button" onClick={() => { lastInteractRef.current = Date.now(); sleepingRef.current = false; setSleeping(false); void poll(); }} style={{ padding: '6px 14px', borderRadius: 999, border: '1px solid #FBBF24', background: '#2A1B05', color: '#FDE68A', cursor: 'pointer', fontWeight: 700 }}>استئناف الآن</button>
+    </div>
+  ) : null;
   const alertEl = (
         <LiveAlertStrip data={data} hideJump={wall} onJump={() => controlRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })} />
   );
@@ -564,7 +617,7 @@ export const LiveBrainRoom: React.FC<{ variant?: 'page' | 'wall'; onClose?: () =
           <Kpi id="k2" label="استفسارات تجارية · 24 ساعة" value={sum(hourlyInq)} sub="سعر · تقسيط · توفر" color="#F0ABFC" spark={hourlyInq} />
           <Kpi id="k3" label="ردود بانتظار موافقتك" value={Number(appr.pending || 0)} sub="جاهزة للإرسال بنقرة" color="#FCD34D" />
           <Kpi id="k4" label="منصات متصلة" value={connected} suffix={` / ${fmt(plats.length || 10)}`} sub="بتحقق من المزوّد" color="#6EE7B7" />
-          <Kpi id="k5" label="منشورات بمعرّف حقيقي" value={publishedTotal} sub="منشورة فعلاً على المنصات" color="#A5B4FC" />
+          <Kpi id="k5" label="منشورات بمعرّف حقيقي" value={publishedTotal} sub={scheduledTotal ? `منشورة فعلاً · ${fmt(scheduledTotal)} مجدولة لدى المنصات` : 'منشورة فعلاً على المنصات'} color="#A5B4FC" />
           <Kpi id="k6" label="نبض الأحداث · دقيقة" value={perMinute} sub="أحداث حقيقية آخر 60 ثانية" color="#22D3EE" spark={buckets} />
         </section>
   );
@@ -598,7 +651,7 @@ export const LiveBrainRoom: React.FC<{ variant?: 'page' | 'wall'; onClose?: () =
             <section aria-label="المخطط الحي" className="lbr-panel" style={wall ? { padding: 10, flex: '1 1 0', minHeight: 420, display: 'flex', flexDirection: 'column' } : { padding: 12 }}>
               <div style={{ display: 'flex', flexWrap: 'wrap', justifyContent: 'space-between', gap: 8, padding: '2px 6px 8px' }}>
                 <h2 className="lbr-h">المخطط الهندسي الحي — 13 قسماً حول العقل المركزي</h2>
-                <span style={{ fontSize: 11, color: '#93A1C3' }}>كل نبضة = حدث حقيقي الآن · توهّج القسم = نشاطه آخر 10 دقائق</span>
+                <span style={{ fontSize: 11, color: '#93A1C3' }}>الخط المتدفق = قسم يعمل · الوميض الأبيض = حدث حقيقي لحظة وقوعه · التوهّج = نشاط آخر 10 دقائق</span>
               </div>
               <div ref={stageWrap} style={wall ? { width: '100%', flex: '1 1 0', minHeight: 0, overflow: 'hidden', display: 'flex', alignItems: 'center' } : { width: '100%' }}>
                 <div style={{ position: 'relative', width: '100%', height: H * scale }}>
@@ -676,7 +729,7 @@ export const LiveBrainRoom: React.FC<{ variant?: 'page' | 'wall'; onClose?: () =
                       <svg width="52" height="52" viewBox="0 0 48 48" aria-hidden="true" style={{ filter: 'drop-shadow(0 0 12px #E879F9)' }}><g fill="none" stroke="#FDF4FF" strokeWidth="1.8" strokeLinecap="round"><ellipse cx="24" cy="27" rx="7" ry="8" /><circle cx="24" cy="15" r="4" /><path d="M17 23 L8 15 L4 18 M17 27 L5 27 L2 31 M17 31 L8 39 L5 44 M31 23 L40 15 L44 18 M31 27 L43 27 L46 31 M31 31 L40 39 L43 44" /></g></svg>
                       <div style={{ fontSize: 15, fontWeight: 800, textShadow: '0 0 14px rgba(240,171,252,.8)' }}>العقل المركزي</div>
                       <div style={{ fontSize: 10, color: '#D8B4FE' }}>والمنسّق التنفيذي</div>
-                      <div style={{ fontSize: 11, color: '#F5D0FE', fontWeight: 600 }}>{CORE_FNS[coreIdx]}</div>
+                      <div style={{ fontSize: 11, color: '#F5D0FE', fontWeight: 600 }}>{coreLive ? String(lastEvt.title).slice(0, 26) : 'بانتظار حدث'}</div>
                       {modules.core && <div className="lbr-mono" style={{ fontSize: 9, color: '#A5B4FC' }}>{modules.core.metric}</div>}
                     </div>
 
@@ -821,7 +874,7 @@ export const LiveBrainRoom: React.FC<{ variant?: 'page' | 'wall'; onClose?: () =
                     <div key={p.platform} style={{ marginBottom: 9 }}>
                       <div style={{ display: 'flex', justifyContent: 'space-between', gap: 6, fontSize: 12 }}>
                         <span style={{ color: c, fontWeight: 600 }}>{p.label}</span>
-                        <span className="lbr-mono" style={{ color: '#C9D3EA', fontSize: 11 }}>{fmt(p.total)} وارد · {p.last24h} اليوم{typeof pl?.followers === 'number' ? ` · ${fmt(pl.followers)} متابع` : ''}{pub ? ` · ${pub.published} منشور` : ''}</span>
+                        <span className="lbr-mono" style={{ color: '#C9D3EA', fontSize: 11 }}>{fmt(p.total)} وارد · {p.last24h} اليوم{typeof pl?.followers === 'number' ? ` · ${fmt(pl.followers)} متابع` : ''}{pub ? ` · ${fmt(pub.published)} منشور${pub.scheduled ? ` + ${fmt(pub.scheduled)} مجدول` : ''}` : ''}</span>
                       </div>
                       <div style={{ height: 6, borderRadius: 999, background: '#141B3D', overflow: 'hidden' }}><div className="lbr-bar" style={{ height: 6, width: `${(p.total / max) * 100}%`, background: `linear-gradient(90deg, ${c}, ${c}66)`, boxShadow: `0 0 8px ${c}` }} /></div>
                     </div>
@@ -943,11 +996,24 @@ export const LiveBrainRoom: React.FC<{ variant?: 'page' | 'wall'; onClose?: () =
             <section className="lbr-panel">
               <h2 className="lbr-h" style={{ marginBottom: 8 }}>نبض الدورات 24/7</h2>
               {pulseRows.map((c) => (
-                <div key={c.name} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, padding: '7px 0', borderBottom: '1px solid rgba(27,37,80,.6)', fontSize: 12 }}>
-                  <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}><span className="lbr-blink" style={{ width: 7, height: 7, borderRadius: '50%', background: c.color, boxShadow: `0 0 8px ${c.color}` }} />{c.name}{c.sub && <span style={{ color: '#6B7AA0', fontSize: 10 }}>{c.sub}</span>}</span>
-                  <span className="lbr-mono" style={{ fontSize: 11, color: '#C9D3EA' }}>{c.value}</span>
+                <div key={c.key} title={c.title || undefined} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, padding: '7px 0', borderBottom: '1px solid rgba(27,37,80,.6)', fontSize: 12 }}>
+                  <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
+                    {/* النقطة تنبض فقط حين تعمل الدورة في موعدها؛ وإلا تأخذ لون حالتها ثابتة. */}
+                    <span className={c.ok ? 'lbr-blink' : ''} style={{ width: 7, height: 7, flex: 'none', borderRadius: '50%', background: c.ok ? c.color : c.stateColor, boxShadow: `0 0 8px ${c.ok ? c.color : c.stateColor}` }} />
+                    {c.name}{c.sub && <span style={{ color: '#6B7AA0', fontSize: 10 }}>{c.sub}</span>}
+                  </span>
+                  <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, flex: 'none' }}>
+                    {c.state && <span style={{ fontSize: 10, padding: '1px 7px', borderRadius: 999, border: `1px solid ${c.stateColor}`, color: c.stateColor }}>{c.state}</span>}
+                    <span className="lbr-mono" style={{ fontSize: 11, color: '#C9D3EA' }}>{c.value}</span>
+                  </span>
                 </div>
               ))}
+              {!pulseRows.length && <div style={{ fontSize: 12, color: '#93A1C3', padding: '6px 0' }}>{data ? 'لا بيانات دورات من الخادم.' : 'جارٍ الاتصال…'}</div>}
+              {pulseRows.some((c) => c.note && !c.ok) && (
+                <div style={{ marginTop: 8, fontSize: 11, color: '#93A1C3', lineHeight: 1.6 }}>
+                  {pulseRows.filter((c) => c.note && !c.ok).map((c) => <div key={'n' + c.key}><span style={{ color: c.stateColor }}>● </span>{c.name}: {c.note}</div>)}
+                </div>
+              )}
             </section>
   );
   const legendEl = (
@@ -974,6 +1040,7 @@ export const LiveBrainRoom: React.FC<{ variant?: 'page' | 'wall'; onClose?: () =
       {headerEl}
 
       <div style={{ position: 'relative', padding: 16, display: 'flex', flexDirection: 'column', gap: 16 }}>
+        {sleepEl}
         {alertEl}
         {kpisEl}
 
@@ -1021,6 +1088,7 @@ export const LiveBrainRoom: React.FC<{ variant?: 'page' | 'wall'; onClose?: () =
   const wallBody = (
     <div style={{ position: 'relative', height: '100%', display: 'flex', flexDirection: 'column', gap: 10, padding: '0 0 10px' }}>
       {headerEl}
+      {sleepEl}
       <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1.25fr) minmax(0, 3.2fr)', gap: 10, padding: '0 12px', flex: 'none', alignItems: 'stretch' }}>
         {alertEl}
         {kpisEl}

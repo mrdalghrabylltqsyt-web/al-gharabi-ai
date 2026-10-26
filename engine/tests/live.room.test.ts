@@ -9,7 +9,7 @@
  */
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { classifyLogLine, auditToLiveEvent, LiveEventBuffer, buildLiveModules, LIVE_MODULE_KEYS, buildLiveInsights } from '../ops/liveRoom';
+import { classifyLogLine, auditToLiveEvent, LiveEventBuffer, buildLiveModules, LIVE_MODULE_KEYS, buildLiveInsights, buildLiveCycles, describeMetricsIssue } from '../ops/liveRoom';
 
 const ROOT = process.cwd();
 const read = (p: string) => readFileSync(join(ROOT, p), 'utf8');
@@ -152,6 +152,38 @@ check('الطاقة من النشاط الحقيقي وأخطر تنبيه', ui.
 check('قلب العقل ينبض مع الضربة', ui.includes('lbr-thump') && snd.includes('onBeat('));
 check('محرّك واحد مشترك ويتوقف بإغلاق آخر غرفة', snd.includes('export function getSoundtrack()') && ui.includes('if (openRooms <= 0) st.stop(false)'));
 check('لا تشغيل بلا نقرة (سياسة المتصفح) والاختيار محفوظ', snd.includes("ctx.state !== 'running'") && snd.includes('gharabi.live.music'));
+
+// 11) تدقيق الحقيقة (2026-10-26 #3): كل رقم من مصدره، لا نص ثابت ولا حركة توحي بنشاط غير حاصل
+{
+  const NOW = Date.parse('2026-10-26T10:00:00Z');
+  const iso = (minAgo: number) => new Date(NOW - minAgo * 60000).toISOString();
+  const cy = buildLiveCycles([
+    { key: 'yt', label: 'يوتيوب', cadenceMs: 300000, lastRunAt: iso(2), cycles: 10, active: true },
+    { key: 'cm', label: 'تجاري', cadenceMs: 600000, lastRunAt: iso(40), active: true },
+    { key: 'tg', label: 'تيليغرام', cadenceMs: 600000, lastRunAt: null, active: false, pausedReason: 'غير مربوط' },
+    { key: 'br', label: 'عقل', cadenceMs: 900000, lastRunAt: iso(60), active: true, deferred: true, deferredReason: 'ضغط الخطة' },
+    { key: 'mx', label: 'أرقام', cadenceMs: 21600000, lastRunAt: null, active: true },
+  ], NOW);
+  check('★ دورة في موعدها = سليمة مع موعد التالية', cy[0].status === 'ok' && cy[0].nextDueAt === iso(-3) && cy[0].cycles === 10);
+  check('★ دورة فاتتها أكثر من دورتين = متأخرة (منطق /api/health)', cy[1].status === 'late' && /فاتتها/.test(String(cy[1].note)));
+  check('★ دورة موقوفة تُعلن سببها لا «متأخرة»', cy[2].status === 'paused' && cy[2].note === 'غير مربوط');
+  check('★ دورة مؤجّلة تُعلن سبب التأجيل', cy[3].status === 'deferred' && cy[3].note === 'ضغط الخطة');
+  check('دورة لم تُنفَّذ منذ الإقلاع تُقال صراحة', cy[4].status === 'never');
+  check('★ رموز أخطاء المنصات بالعربية', describeMetricsIssue('10x11') === 'ينقص إذن الإحصاءات (11 منشوراً · 10x11)' && describeMetricsIssue('-') === null && /انتهت صلاحية/.test(String(describeMetricsIssue('190x2,4x1'))));
+  check('سطر الأرقام يشرح الرمز بالعربية', /ينقص إذن الإحصاءات/.test(String(classifyLogLine('[metrics] platform=threads posts=11 withMetrics=0 followers=- issue=10x11')?.text)));
+  const pub = buildLiveInsights({ nowMs: NOW, comments: [], leads: [], publishRecords: [
+    { platform: 'facebook', state: 'published', providerPostId: 'a' }, { platform: 'facebook', state: 'published', providerPostId: 'a' },
+    { platform: 'facebook', state: 'scheduled', providerPostId: 'b' }, { platform: 'facebook', state: 'scheduled', providerPostId: 'a' },
+  ] }).publish.find((p) => p.platform === 'facebook');
+  check('★ المنشور يُعدّ مرة واحدة والمجدول لا يُخلط بالمنشور', pub?.published === 1 && pub?.scheduled === 1);
+  check('★ الخادم يرسل الدورات بإيقاعها الفعلي (مع مضاعف الضغط)', server.includes('cycles: (() => {') && server.includes('cadenceMs: 10 * 60 * 1000 * mult') && server.includes('resolveAutoBackupIntervalMs(process.env'));
+  check('★ «جزئي» من البيانات لا نص ثابت', server.includes('Number(m.withMetrics || 0) === 0') && !server.includes('if (id === "tiktok") return "الإحصاءات'));
+  check('★ استطلاع خفيف + كامل كل 30 ث (حارس الخطة)', server.includes('const lite = String(req.query?.lite') && ui.includes('const FULL_EVERY_MS = 30000;') && ui.includes('insights: r.insights ?? prev?.insights'));
+  check('★ الأزمنة بساعة الخادم لا الجهاز', ui.includes('skewRef.current') && ui.includes('r?.serverTime'));
+  check('★ «بث حي» لا يُعرض على بيانات قديمة', ui.includes('const STALE_MS = 15000;') && ui.includes('البث متأخر'));
+  check('★ لا تدوير وهمي للسير العام ولا لنص قلب العقل', !ui.includes('Math.floor(now / 2600) % JOURNEY.length') && !ui.includes('Math.floor(now / 2200) % CORE_FNS.length') && ui.includes("'بانتظار حدث'"));
+  check('★ سكون ليلي يحمي ساعات الخطة المجانية', ui.includes('NIGHT_IDLE_MS') && ui.includes("timeZone: 'Asia/Baghdad'") && ui.includes('!sleepingRef.current) void poll()'));
+}
 
 console.log('\n' + '='.repeat(60));
 if (failures.length) {

@@ -1768,8 +1768,9 @@ ${payload.topic || payload.productName || 'أنظمة وحلول التقسيط 
     const res = await fetch('/api/notifications/read-all', { method: 'POST', headers: getAuthHeaders() });
     if (!res.ok) throw new Error('تعذر تعليم التنبيهات كمقروءة');
   },
-  async getLiveRoom(since = 0): Promise<any> {
-    const res = await fetch(`/api/live/room?since=${encodeURIComponent(String(since || 0))}`, { headers: getAuthHeaders(), cache: 'no-store' });
+  /** lite = استطلاع خفيف بلا الرؤى الثقيلة (حارس الخطة المجانية). */
+  async getLiveRoom(since = 0, lite = false): Promise<any> {
+    const res = await fetch(`/api/live/room?since=${encodeURIComponent(String(since || 0))}${lite ? '&lite=1' : ''}`, { headers: getAuthHeaders(), cache: 'no-store' });
     const data = await res.json().catch(() => ({}));
     if (!res.ok || !data.success) throw new Error(data.error || 'تعذر جلب البث الحي');
     return data;
