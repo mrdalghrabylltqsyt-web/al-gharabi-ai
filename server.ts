@@ -465,6 +465,8 @@ import {
   type WatcherOpportunity,
 } from "./engine/social/youtubeWatcher";
 import { evaluateCustomerSendGate, isAutomaticSendActor } from "./engine/social/sendApprovalGate";
+import { FIVE_PLATFORMS, buildFivePlatformReadiness, type FivePlatformInput } from "./engine/social/fivePlatformReadiness";
+import { normalizeOutboundApprovals, findPendingForTarget, findDecidedForTarget, applyApprovalOutcome, approvalExecutorFor, summarizeApprovalsByPlatform, preparesRepliesForApproval, OUTBOUND_STATUS_LABELS_AR, type OutboundApprovalRequest } from "./engine/social/outboundApprovals";
 import { createWatcherScheduler, type WatcherScheduler } from "./engine/social/youtubeWatcherScheduler";
 import {
   META_WATCHER_PLATFORMS,
@@ -2364,7 +2366,7 @@ const OAUTH_CONFIG: Record<string, any> = {
   instagram: { provider: "meta", auth: `https://www.facebook.com${FACEBOOK_DIALOG_PATH}`, token: "https://graph.facebook.com/v21.0/oauth/access_token", clientId: envSecret("INSTAGRAM_OAUTH_CLIENT_ID") || envSecret("FACEBOOK_OAUTH_CLIENT_ID"), clientSecret: envSecret("INSTAGRAM_OAUTH_CLIENT_SECRET") || envSecret("FACEBOOK_OAUTH_CLIENT_SECRET"), scopes: [...INSTAGRAM_REQUIRED_SCOPES] },
   x: { provider: "x", auth: "https://twitter.com/i/oauth2/authorize", token: "https://api.twitter.com/2/oauth2/token", clientId: envSecret("X_OAUTH_CLIENT_ID"), clientSecret: envSecret("X_OAUTH_CLIENT_SECRET"), scopes: ["tweet.read", "tweet.write", "users.read", "offline.access"] },
   snapchat: { provider: "snapchat", auth: "https://accounts.snapchat.com/login/oauth2/authorize", token: "https://accounts.snapchat.com/login/oauth2/access_token", clientId: envSecret("SNAPCHAT_OAUTH_CLIENT_ID"), clientSecret: envSecret("SNAPCHAT_OAUTH_CLIENT_SECRET"), scopes: ["snapchat-marketing-api"] },
-  threads: { provider: "meta", auth: "https://threads.net/oauth/authorize", token: "https://graph.threads.net/oauth/access_token", clientId: envSecret("THREADS_OAUTH_CLIENT_ID"), clientSecret: envSecret("THREADS_OAUTH_CLIENT_SECRET"), scopes: ["threads_basic", "threads_content_publish", "threads_manage_replies", "threads_manage_insights"] },
+  threads: { provider: "meta", auth: "https://threads.net/oauth/authorize", token: "https://graph.threads.net/oauth/access_token", clientId: envSecret("THREADS_OAUTH_CLIENT_ID"), clientSecret: envSecret("THREADS_OAUTH_CLIENT_SECRET"), scopes: ["threads_basic", "threads_content_publish", "threads_read_replies", "threads_manage_replies", "threads_manage_insights"] },
 };
 function oauthReady(platform: string) { const c = OAUTH_CONFIG[platform]; return Boolean(c?.clientId && c?.clientSecret && resolvePublicUrl(process.env).valid && tokenKeyBytes()); }
 /** هل العنوان العام الحالي عام (https على نطاق غير محلي)؟ يلزم للربط الإنتاجي. */
@@ -8171,7 +8173,7 @@ async function runYouTubeWatcherCycle(trigger: "schedule" | "manual" = "schedule
       } catch { /* جلسة الفريق لا تُسقط دورة المراقبة */ }
       // سلطة القرار الوحيدة: قرار العقل المركزي (وليس تصنيفاً مستقلاً). يُقرأ من
       // الجلسة التي قرّرها العقل لهذا الحدث تماماً. غيابه ⇒ لا رد (أمان).
-      const centralDecision = centralActionDecisionForEvent(`comment:${String(c.commentId)}`);
+      const centralDecisionRaw = centralActionDecisionForEvent(`comment:${String(c.commentId)}`);
       // تصنيف استشاري (فحص سلامة التعليق — ليس قراراً) — يمنع الرد على سبام/نفس
       // الحساب/المُعالَج، ويصعّد الحساس. يبقى مصدر الأكواد التفصيلية.
       const advisory = decideCommentAction({
@@ -8181,10 +8183,14 @@ async function runYouTubeWatcherCycle(trigger: "schedule" | "manual" = "schedule
       // القرار التنفيذي النهائي: مشتقّ من قرار العقل المركزي + الفحوص الاستشارية
       // + بوابة الأتمتة. لا يملك سلطة قرار مستقلة (Batch 8.1).
       const replyGate = watcherGate(controls, "reply");
+      // وضع «التجهيز للموافقة» (وضع الإرسال «موافقة»): يُجهَّز الرد ويُحجب عند البوابة
+      // المركزية كرد جاهز بانتظار نقرة المالك؛ قرار «يحتاج موافقة» من العقل = هذا تماماً.
+      const prepareYt = !replyGate.allowed && preparesRepliesForApproval({ sendMode: commercialSendMode, enabled: controls.enabled, paused: controls.paused });
+      const centralDecision = prepareYt && centralDecisionRaw === 'APPROVAL_REQUIRED' ? 'ALLOWED_ACTION' : centralDecisionRaw;
       const decision = resolveCommentExecution({
         centralDecision: centralDecision ?? 'FAILED_SAFE',
         advisory,
-        automationAllowed: replyGate.allowed,
+        automationAllowed: replyGate.allowed || prepareYt,
         replyReady: replyReady.ready,
         belongsToChannel,
         isPraise: isSafeForAutoReply(cls.intent),
@@ -8238,7 +8244,11 @@ async function runYouTubeWatcherCycle(trigger: "schedule" | "manual" = "schedule
       // الرد الحقيقي: قرار العقل المركزي (ALLOWED_ACTION) + بوابات التنفيذ مكتملة
       // (فُحصت داخل resolveCommentExecution). يمر بنفس executeYouTubeReply (كل
       // البوابات). دفاع مزدوج: إعادة فرض بوابة الأتمتة عند نقطة التنفيذ نفسها.
-      const replyGateFinal = watcherGate(controls, "reply");
+      const replyGateRaw = watcherGate(controls, "reply");
+      // دفاع مزدوج: في وضع التجهيز يمر الرد إلى المنفّذ الذي يحجبه حتماً كطلب موافقة
+      // (الفاعل "watcher" آلي في وضع «موافقة») — فلا يخرج إرسال بلا نقرة المالك.
+      const finalPrepare = !replyGateRaw.allowed && preparesRepliesForApproval({ sendMode: commercialSendMode, enabled: controls.enabled, paused: controls.paused });
+      const replyGateFinal = finalPrepare ? { ...replyGateRaw, allowed: true } : replyGateRaw;
       if (!replyReady.ready || !replyGateFinal.allowed) {
         const code = !replyGateFinal.allowed ? replyGateFinal.code : (replyReady.code || "REPLY_NOT_READY");
         baseEntry.stage = "ESCALATED";
@@ -9001,9 +9011,12 @@ async function runMetaWatcherCycle(trigger: string): Promise<{ ok: boolean; trig
           isSelfAuthored: selfAuthored, alreadyReplied, pageAlreadyReplied, controls,
         });
         const replyGate = metaWatcherGate(controls, "reply");
+        // وضع «التجهيز للموافقة»: في وضع الإرسال «موافقة» يُجهَّز الرد ويُحجب عند
+        // البوابة المركزية كرد جاهز بانتظار نقرة المالك (لا إرسال بلا نقرته).
+        const prepareOk = replyGate.allowed || preparesRepliesForApproval({ sendMode: commercialSendMode, enabled: controls.enabled, paused: controls.paused });
         const rr = metaReplyReady(platform);
         const decision = resolveMetaReplyExecution({
-          centralDecision: metaExecutionDecisionFromCentral(centralDecision, replyGate.allowed), advisory, automationAllowed: replyGate.allowed,
+          centralDecision: metaExecutionDecisionFromCentral(centralDecision, prepareOk), advisory, automationAllowed: prepareOk,
           replyReady: rr.ready, belongsToChannel: true, isPraise: isSafeForAutoReply(cls.intent),
           humanReviewMode: Boolean(controls.humanReviewMode),
           centralEscalationReason: preReason,
@@ -9103,9 +9116,12 @@ async function runMetaWatcherCycle(trigger: string): Promise<{ ok: boolean; trig
           isSelfAuthored: selfAuthored, alreadyReplied, controls,
         });
         const replyGate = metaWatcherGate(controls, "reply");
+        // وضع «التجهيز للموافقة»: في وضع الإرسال «موافقة» يُجهَّز الرد ويُحجب عند
+        // البوابة المركزية كرد جاهز بانتظار نقرة المالك (لا إرسال بلا نقرته).
+        const prepareOk = replyGate.allowed || preparesRepliesForApproval({ sendMode: commercialSendMode, enabled: controls.enabled, paused: controls.paused });
         const rr = metaReplyReady(platform);
         const decision = resolveMetaReplyExecution({
-          centralDecision: metaExecutionDecisionFromCentral(centralDecision, replyGate.allowed), advisory, automationAllowed: replyGate.allowed,
+          centralDecision: metaExecutionDecisionFromCentral(centralDecision, prepareOk), advisory, automationAllowed: prepareOk,
           replyReady: rr.ready, belongsToChannel: true, isPraise: isSafeForAutoReply(cls.intent),
           humanReviewMode: Boolean(controls.humanReviewMode),
           centralEscalationReason: preReason,
@@ -9159,6 +9175,13 @@ async function runMetaWatcherCycle(trigger: string): Promise<{ ok: boolean; trig
         }
         if (metaPollingState.processed.length > META_POLLING_MAX_PROCESSED) metaPollingState.processed.length = META_POLLING_MAX_PROCESSED;
       }
+    }
+    // Threads (عائلة Meta): تعليقات الزبائن على منشورات المعرض بنفس المفاتيح والإيقاع.
+    try {
+      const th = await runThreadsRepliesCycle(controls);
+      newDetected += th.newDetected; replied += th.replied; escalated += th.escalated; skipped += th.skipped; deferred += th.deferred; failed += th.failed;
+    } catch (thErr: any) {
+      threadsReadStatus.ok = false; threadsReadStatus.code = 'CYCLE_ERROR'; threadsReadStatus.error = String(thErr?.message || thErr).slice(0, 200);
     }
     // الحقلان العامّان من كل المنصات (أي منصة فاشلة تظهر — لا تُمسح بنجاح غيرها).
     const aggregated = aggregateMetaReadErrors(metaPollingState.platformStats as any);
@@ -9571,12 +9594,6 @@ const COMMERCIAL_MAX_SALES = 5000;
  * موافقة يحمل النص المقترح — فلا يُرسل شيء ولا يُفقد الرد. لا سرّ فيه.
  * يُحفظ عبر مفتاح `commercial` نفسه (بلا بنية/جدول جديد) فيصمد بعد restart.
  */
-interface OutboundApprovalRequest {
-  id: string; platform: string; operation: string;
-  externalId: string | null; recipientId: string | null;
-  text: string; productId: string | null; actor: string;
-  at: string; status: 'pending';
-}
 const OUTBOUND_APPROVALS_MAX = 2000;
 let outboundApprovals: OutboundApprovalRequest[] = [];
 
@@ -9598,8 +9615,28 @@ async function guardCustomerSend(input: {
   // ثانية. يُحدَّث النص فقط إن تغيّر، ولا كتابة إلى القاعدة إن لم يتغيّر شيء.
   const targetExt = input.externalId ? String(input.externalId) : null;
   const targetRcp = input.recipientId ? String(input.recipientId) : null;
-  const existing = outboundApprovals.find((r) => r.status === 'pending' && r.platform === input.platform
-    && r.operation === input.operation && r.externalId === targetExt && r.recipientId === targetRcp);
+  const target = { platform: input.platform, operation: input.operation, externalId: targetExt, recipientId: targetRcp };
+  // هدف حُسم سابقاً (أُرسل أو رفضه المالك) ⇒ لا طلب جديد: لا يعود رد مرفوض، ولا
+  // يُجهَّز رد ثانٍ لزبون أُجيب. يبقى «بانتظار موافقة» (لا فشل) فلا يُحسب خطأً.
+  const decided = findDecidedForTarget(outboundApprovals, target);
+  if (decided) {
+    return {
+      allowed: false, code: 'NEEDS_APPROVAL',
+      body: { success: false, sent: false, delivered: false, needsApproval: true, code: 'NEEDS_APPROVAL', error: decision.reason, approval: decided, decided: true },
+    };
+  }
+  // مسودة معلّقة في صندوق الزبائن لنفس التعليق/الرسالة ⇒ لا طلب ثانٍ مكرر: المالك
+  // يحسمها من مكان واحد.
+  if (targetExt) {
+    const draft = commercialDrafts.find((d: any) => d.status === 'pending' && d.platform === input.platform && String(d.externalId || '') === targetExt);
+    if (draft) {
+      return {
+        allowed: false, code: 'NEEDS_APPROVAL',
+        body: { success: false, sent: false, delivered: false, needsApproval: true, code: 'NEEDS_APPROVAL', error: decision.reason, draftId: draft.id, duplicate: true },
+      };
+    }
+  }
+  const existing = findPendingForTarget(outboundApprovals, target);
   if (existing) {
     const nextText = String(input.text || '').slice(0, 4000);
     if (existing.text !== nextText) {
@@ -9750,9 +9787,7 @@ function applyCommercialStateSnapshot(raw: any): void {
     ? (raw.sales as unknown[]).map(normalizeCommercialSaleRecord).filter((x): x is CommercialSaleRecord => x !== null).slice(0, COMMERCIAL_MAX_SALES)
     : [];
   // PR-A: طلبات الموافقة على الإرسال الآلي (توافق خلفي: غيابها ⇒ لا طلبات).
-  outboundApprovals = Array.isArray(raw.outboundApprovals)
-    ? raw.outboundApprovals.filter((r: any) => r && typeof r.id === 'string' && typeof r.platform === 'string').slice(0, OUTBOUND_APPROVALS_MAX)
-    : [];
+  outboundApprovals = normalizeOutboundApprovals(raw.outboundApprovals, OUTBOUND_APPROVALS_MAX);
   // N2: القفل الدائم لدورة العقل التجاري (owner + انتهاء فقط، بلا سرّ).
   commercialLease = normalizeLease(raw.lease);
   // PR-B (B4): آخر دورة (أرقام تشغيلية بلا بيانات عملاء) تصمد بعد restart.
@@ -9941,6 +9976,9 @@ async function createInstantReplyDraft(input: {
   if (!isPriceOrInstallment && !hasBuyingSignal(cls, input.text)) return null;
   const idem = `reply:${input.externalId}`;
   if (findCommercialDraftByKey(input.lead.key, idem)) return null;
+  // رد أُرسل فعلاً لنفس التعليق ⇒ لا مسودة. أما رد جاهز معلّق من المراقب فمسودة صندوق
+  // الزبائن (بحقائق السعر/القسط) أدقّ منه: تحلّ محله فيحسمه المالك من مكان واحد.
+  if (outboundApprovals.some((r) => r.platform === input.platform && r.externalId === String(input.externalId) && r.status === 'sent')) return null;
   const gen = await generateWatcherReply({
     platform: input.platform, commentText: input.text, subjectId: input.subjectId,
     subjectTitle: null, product: input.product, cls: input.cls, allowAi: false,
@@ -9950,6 +9988,8 @@ async function createInstantReplyDraft(input: {
   // حارس المحتوى: لا مسودة تحمل ادعاءً غير مسجّل (نفس بوابة المتابعة).
   const facts = buildFactsForProduct(input.product, Number(input.product?.downPaymentPercent || 0), Number(input.product?.durationMonths || 0));
   if (!analyzeBusinessClaims(text, facts).safe) return null;
+  const superseded = outboundApprovals.filter((r) => r.status === 'pending' && r.platform === input.platform && r.externalId === String(input.externalId)).map((r) => r.id);
+  if (superseded.length) outboundApprovals = outboundApprovals.filter((r) => !superseded.includes(r.id));
   return createCommercialDraft({
     lead: input.lead,
     purpose: 'reply',
@@ -10628,6 +10668,398 @@ app.post("/api/commercial/drafts/:id/decision", requireOwner, async (req, res) =
   const user = (req as any).user as ServerUser;
   const out = await decideCommercialDraft(String(req.params.id), req.body?.kind, req.body?.text, user.id);
   res.status(out.status).json(out.body);
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Threads — قراءة تعليقات الزبائن (ردودهم على منشورات المعرض) والرد عليها.
+// نفس مبدأ Meta تماماً: سحب حقيقي ← تصنيف ← قرار العقل ← رد عبر منفّذ مركزي
+// واحد بكل الحمايات. يتطلب نطاقَي threads_read_replies وthreads_manage_replies.
+// ═══════════════════════════════════════════════════════════════════════════
+
+/** حالة قراءة تعليقات Threads (ذاكرة فقط — للعرض والصدق، بلا سرّ). */
+let threadsReadStatus: { lastAttemptAt: string | null; ok: boolean | null; code: string | null; error: string | null; postsScanned: number; repliesSeen: number; lastIngestAt: string | null } = {
+  lastAttemptAt: null, ok: null, code: null, error: null, postsScanned: 0, repliesSeen: 0, lastIngestAt: null,
+};
+const THREADS_REPLIES_MAX_POSTS = 6;
+const THREADS_REPLIES_POST_WINDOW_DAYS = 14;
+
+/** منشورات المعرض الحديثة على Threads (من سجل النشر الحقيقي، بمعرّف مزوّد فقط). */
+function recentThreadsPostIds(nowMs: number): string[] {
+  const out: string[] = [];
+  for (const r of ((workspace as any).publishRecords || []) as any[]) {
+    if (out.length >= THREADS_REPLIES_MAX_POSTS) break;
+    if (r?.platform !== 'threads' || !r?.providerPostId || r?.state === 'failed') continue;
+    const t = Date.parse(String(r.executedAt || r.publishedAt || r.createdAt || ''));
+    if (Number.isFinite(t) && nowMs - t > THREADS_REPLIES_POST_WINDOW_DAYS * 86400000) continue;
+    const id = String(r.providerPostId);
+    if (!out.includes(id)) out.push(id);
+  }
+  return out;
+}
+
+/** منفّذ الرد الحقيقي على تعليق Threads (= رد على رد الزبون) — كل البوابات هنا. */
+async function executeThreadsCommentReply(input: { externalId: string; text: string; commentText?: string; productId?: string }, actor: string): Promise<{ status: number; body: any }> {
+  const externalId = String(input.externalId || '').trim();
+  const text = String(input.text || '').trim();
+  const commentText = typeof input.commentText === 'string' ? input.commentText : '';
+  if (!externalId) return { status: 400, body: { success: false, error: 'معرّف تعليق Threads مطلوب لمنع الرد المكرر.' } };
+  if (!text) return { status: 400, body: { success: false, error: 'نص الرد مطلوب.' } };
+  const onlyBlock = youtubeOnlyBlock('threads');
+  if (onlyBlock.blocked) return { status: onlyBlock.status!, body: onlyBlock.body };
+  // بوابة الموافقة المركزية قبل أي نداء مزوّد (نفس مسار Meta).
+  const approvalGate = await guardCustomerSend({ actor, platform: 'threads', operation: 'comment_reply', externalId, text, productId: input.productId || null });
+  if (!approvalGate.allowed) return { status: 409, body: approvalGate.body };
+  const lock = replyLockKey('threads', 'comment', externalId, '');
+  if (!acquireReplyLock(lock)) return { status: 409, body: { success: false, error: 'طلب رد آخر على نفس التعليق قيد التنفيذ؛ انتظر لمنع التكرار.', code: 'REPLY_IN_PROGRESS' } };
+  let idemKey = '';
+  let idemOutcome: IdempotencyFinishStatus | null = 'failed';
+  try {
+    const conn: any = platformConnections.get('threads');
+    if (!conn || conn.status !== 'connected' || conn.providerVerified !== true) return { status: 409, body: { success: false, error: 'Threads غير متصل باتصال موثّق؛ لا إرسال.' } };
+    const target = threadsPublishTarget();
+    if ('error' in target) return { status: 503, body: { success: false, error: target.error, code: 'CONNECTOR_NOT_READY' } };
+    const rl = operationRateLimit('threads:reply', 'comment');
+    if (!rl.allowed) return { status: 429, body: { success: false, code: 'RATE_LIMITED', error: 'تم بلوغ حد معدّل الردود؛ أعد المحاولة لاحقاً.', retryAfterMs: rl.retryAfterMs, limit: rl.limit } };
+    const comment = ((workspace as any).socialComments || []).find((c: any) => c.platform === 'threads' && c.externalId === externalId);
+    if (!comment) return { status: 404, body: { success: false, error: 'لا يوجد تعليق Threads وارد بهذا المعرّف؛ لا إرسال بلا تعليق حقيقي.' } };
+    const classification = classifyComment(commentText || String(comment.text || '') || text);
+    if (!canAutoReply(classification)) return { status: 422, body: { success: false, error: classification.reviewReason || 'هذا التعليق يستوجب مراجعة بشرية.', requiresHumanReview: true } };
+    if (comment.ownedByMe === true) return { status: 409, body: { success: false, error: 'التعليق صادر من حساب المعرض؛ لا رد عليه.' } };
+    const product = input.productId ? (workspace.products || []).find((p: any) => p.id === input.productId) || null : null;
+    const safety = analyzeBusinessClaims(text, buildFactsForProduct(product, Number(product?.downPaymentPercent || 0), Number(product?.durationMonths || 0)));
+    if (!safety.safe) return { status: 422, body: { success: false, error: 'نص الرد يحمل عرضاً تجارياً غير مسجّل، وأُوقف قبل الإرسال.', contentSafety: { safe: false, violations: safety.blocked.map((v) => v.detail) } } };
+    // حجز النتيجة قبل أي نداء مزوّد (لا رد مكرر بعد إعادة التشغيل).
+    const idem = await beginExternalOperation({ platform: 'threads', operation: 'comment_reply', targetId: externalId, idempotencyKey: '' });
+    if (idem.blocked) return idem.blocked;
+    idemKey = idem.key;
+    const history: ReplyRecord[] = ((workspace as any).socialReplies || []).filter((r: any) => r.platform === 'threads').map((r: any) => ({ externalId: r.externalId, replyFingerprint: r.replyFingerprint, repliedAt: r.repliedAt, idempotencyKey: r.idempotencyKey }));
+    const decision = evaluateReplyGuard({ externalId, replyText: text, history, idempotencyKey: '' });
+    if (!decision.allowed) return { status: 409, body: { success: false, error: decision.reason, guard: decision } };
+    // رد Threads = منشور نصي جديد بـreply_to_id (حاوية ثم نشر — رسمياً).
+    const container = await withThreadsToken((token) => threadsClient().createMediaContainer(target.threadsUserId, token, { text, replyToId: externalId }));
+    const published = container.ok && container.data
+      ? await withThreadsToken((token) => threadsClient().publishContainer(target.threadsUserId, token, container.data!.containerId))
+      : { ok: false, data: null as any, error: container.error, code: container.code || null };
+    idemOutcome = classifyExternalOperationOutcome({ ok: published.ok, failureKind: providerFailureKind(published.code || null) });
+    const providerReplyId = published.ok ? String(published.data?.providerPostId || '') || null : null;
+    const record = {
+      id: workspaceId('reply'), platform: 'threads', externalId, text, kind: 'comment',
+      replyFingerprint: decision.fingerprint, classification,
+      contentSafety: { safe: true, violations: [] as string[], codes: [] as string[] },
+      repliedAt: new Date().toISOString(), createdBy: actor, simulated: false,
+      delivered: Boolean(providerReplyId), providerReplyId,
+      receipt: providerReplyId ? { provider: 'threads', replyId: providerReplyId, sentAt: new Date().toISOString() } : null,
+      deliveryError: providerReplyId ? null : String(published.error || 'فشل الرد عبر Threads.'),
+      reviewStatus: providerReplyId ? 'delivered' : 'failed',
+      note: providerReplyId ? 'أُرسل الرد فعلياً عبر Threads وثُبّت بمعرّف من Meta.' : 'فشل الإرسال عبر Threads؛ لم يُسجَّل تسليم.',
+    };
+    if (!Array.isArray((workspace as any).socialReplies)) (workspace as any).socialReplies = [];
+    (workspace as any).socialReplies.unshift(record);
+    if ((workspace as any).socialReplies.length > WORKSPACE_MAX_SOCIAL_REPLIES) (workspace as any).socialReplies.length = WORKSPACE_MAX_SOCIAL_REPLIES;
+    audit(actor, providerReplyId ? 'social_threads_comment_reply_sent' : 'social_threads_comment_reply_failed', `${externalId}`);
+    if (providerReplyId) await recordBusinessReplyOnLead({ platform: 'threads', externalId, atIso: record.repliedAt });
+    await persistStateDurable();
+    if (!providerReplyId) return { status: 502, body: { success: false, delivered: false, simulated: false, reply: record, error: record.deliveryError, code: published.code || 'PROVIDER_ERROR' } };
+    return { status: 200, body: { success: true, delivered: true, simulated: false, providerReplyId, reply: record } };
+  } finally {
+    if (idemKey) await endExternalOperation(idemKey, idemOutcome);
+    releaseReplyLock(lock);
+  }
+}
+
+/**
+ * دورة تعليقات Threads (تُستدعى ضمن دورة مراقب Meta، بنفس مفاتيحه وإيقاعه):
+ * تسحب ردود الزبائن على آخر منشورات المعرض، تسجّلها واردةً، ثم تبتّ فيها بنفس
+ * سلطة القرار الواحدة. في وضع الموافقة يُجهَّز الرد ويُحجب كرد جاهز بانتظار نقرتك.
+ */
+async function runThreadsRepliesCycle(controls: any): Promise<{ newDetected: number; replied: number; escalated: number; skipped: number; deferred: number; failed: number }> {
+  const out = { newDetected: 0, replied: 0, escalated: 0, skipped: 0, deferred: 0, failed: 0 };
+  const conn: any = platformConnections.get('threads');
+  if (!conn || conn.status !== 'connected' || conn.providerVerified !== true) return out;
+  if (!controls?.enabled) return out;
+  const nowMs = Date.now();
+  const postIds = recentThreadsPostIds(nowMs);
+  // منشورات الحساب الحديثة من Threads نفسه (تشمل ما نُشر من التطبيق مباشرةً).
+  const target = threadsPublishTarget();
+  if (!('error' in target)) {
+    const listed = await withThreadsToken((token) => threadsClient().listRecentThreads(target.threadsUserId, token, THREADS_REPLIES_MAX_POSTS));
+    if (listed.ok && listed.data) {
+      for (const p of listed.data.posts) {
+        const t = Date.parse(String(p.timestamp || ''));
+        if (Number.isFinite(t) && nowMs - t > THREADS_REPLIES_POST_WINDOW_DAYS * 86400000) continue;
+        if (!postIds.includes(p.id) && postIds.length < THREADS_REPLIES_MAX_POSTS + 2) postIds.push(p.id);
+      }
+    }
+  }
+  threadsReadStatus.lastAttemptAt = new Date().toISOString();
+  threadsReadStatus.postsScanned = postIds.length;
+  if (!postIds.length) { threadsReadStatus.ok = true; threadsReadStatus.code = 'NO_RECENT_POSTS'; threadsReadStatus.error = null; return out; }
+  const ownName = String(platformConnections.get('threads')?.accountName || '').replace(/^@/, '').trim().toLowerCase();
+  let seen = 0;
+  for (const postId of postIds) {
+    const fetched = await withThreadsToken((token) => threadsClient().listReplies(postId, token));
+    if (!fetched.ok || !fetched.data) {
+      threadsReadStatus.ok = false; threadsReadStatus.code = String(fetched.code || 'READ_FAILED'); threadsReadStatus.error = String(fetched.error || '').slice(0, 200);
+      // نطاق ناقص = لا فائدة من بقية المنشورات في هذه الدورة (السبب واحد ومعلن).
+      if (fetched.code === 'PERMISSION_MISSING' || fetched.code === 'TOKEN_EXPIRED') break;
+      continue;
+    }
+    threadsReadStatus.ok = true; threadsReadStatus.code = null; threadsReadStatus.error = null;
+    for (const rep of fetched.data.replies) {
+      seen += 1;
+      if (rep.hidden) continue;
+      const externalId = rep.id;
+      const selfAuthored = rep.ownedByMe || Boolean(ownName && String(rep.username || '').toLowerCase() === ownName);
+      const exists = ((workspace as any).socialComments || []).find((x: any) => x.platform === 'threads' && x.externalId === externalId);
+      const processed = metaPollingState.processed.some((p: any) => p.commentId === externalId && p.stage !== 'NEW');
+      if (exists && processed) continue;
+      if (!exists) {
+        const cls0 = classifyComment(rep.text);
+        if (!Array.isArray((workspace as any).socialComments)) (workspace as any).socialComments = [];
+        (workspace as any).socialComments.unshift({
+          id: workspaceId('comment'), platform: 'threads', externalId, postExternalId: postId,
+          authorName: rep.username || null, authorId: null, text: rep.text, createdAt: rep.timestamp || new Date().toISOString(),
+          classification: cls0, requiresHumanReview: cls0.requiresHumanReview, ingestSource: 'threads_polling',
+          replyTarget: { commentId: externalId }, permalinkUrl: rep.permalink, ownedByMe: selfAuthored,
+          backfill: isBackfillImport(rep.timestamp || null, new Date().toISOString()),
+        });
+        if ((workspace as any).socialComments.length > WORKSPACE_MAX_SOCIAL_COMMENTS) (workspace as any).socialComments.length = WORKSPACE_MAX_SOCIAL_COMMENTS;
+        liveEvent(liveCommentEvent((workspace as any).socialComments[0]));
+        out.newDetected += 1;
+        threadsReadStatus.lastIngestAt = new Date().toISOString();
+      }
+      const cls = classifyComment(rep.text);
+      const resolution = resolveProductForInteraction({ commentText: rep.text, postExternalId: postId, postText: null });
+      const priceReply = verifiedProductFactsForReply({ product: resolution.product, commentText: rep.text });
+      const baseReason = escalationReasonFor({ intent: cls.intent, isSpam: cls.isSpam, requiresHumanReview: cls.requiresHumanReview, topic: (cls as any).topic ?? null });
+      const preReason = (priceReply.verified && baseReason === 'price_unverified') ? null : baseReason;
+      try {
+        await runTeamSessionNow('youtube_event', 'تحليل تعليق Threads جديد والبتّ في الرد عليه من الحقائق المسجّلة (بلا اختراع)', 'threads' as PlatformId, `comment:${externalId}`,
+          { externalId, commentText: rep.text, objective: 'البتّ في رد آمن على تعليق Threads من الحقائق المسجّلة', conversationId: `threads::${postId}`, escalationReason: preReason, priceFactsVerified: priceReply.verified, productFact: resolution.fact });
+      } catch { /* جلسة الفريق لا تُسقط الدورة */ }
+      const centralDecision = centralActionDecisionForEvent(`comment:${externalId}`);
+      const advisory = decideMetaCommentAction({ intent: cls.intent, requiresHumanReview: cls.requiresHumanReview, isSpam: cls.isSpam, isSelfAuthored: selfAuthored, alreadyReplied: processed, controls });
+      const replyGate = metaWatcherGate(controls, 'reply');
+      const prepareOk = replyGate.allowed || preparesRepliesForApproval({ sendMode: commercialSendMode, enabled: controls.enabled, paused: controls.paused });
+      const decision = resolveMetaReplyExecution({
+        centralDecision: metaExecutionDecisionFromCentral(centralDecision, prepareOk), advisory, automationAllowed: prepareOk,
+        replyReady: hasCapability('threads', 'comment_reply'), belongsToChannel: true, isPraise: isSafeForAutoReply(cls.intent),
+        humanReviewMode: Boolean(controls.humanReviewMode), centralEscalationReason: preReason, priceFactsVerified: priceReply.verified,
+      });
+      const entry: WatcherProcessedEntry = {
+        commentId: externalId, stage: 'ANALYZED', action: decision.action, reason: decision.reason, code: decision.code,
+        videoId: postId, authorName: rep.username || null, text: rep.text, platform: 'threads' as any, productFactsVerified: priceReply.verified,
+        at: new Date().toISOString(), publishedAt: rep.timestamp || null,
+      };
+      if (isMetaDeferredDecision(decision.code)) { entry.stage = 'SKIPPED'; entry.deferred = true; out.deferred += 1; }
+      else if (decision.action !== 'reply') { entry.stage = decision.action === 'escalate' ? 'ESCALATED' : 'SKIPPED'; if (decision.action === 'escalate') out.escalated += 1; else out.skipped += 1; }
+      else {
+        const gen = await generateWatcherReply({ platform: 'threads' as any, commentText: rep.text, subjectId: postId, subjectTitle: null, product: resolution.product, cls });
+        const replyText = gen.text || watcherIraqiReply(rep.text);
+        const res = await executeThreadsCommentReply({ externalId, text: replyText, commentText: rep.text, productId: resolution.product?.id }, 'watcher');
+        if (res.body?.delivered && res.body?.providerReplyId) { entry.stage = 'REPLIED'; entry.replyText = replyText; entry.externalReplyId = String(res.body.providerReplyId); entry.reason = 'أُرسل الرد الحقيقي وردّ Threads بمعرّف.'; out.replied += 1; }
+        else if (res.body?.needsApproval === true) { entry.stage = 'SKIPPED'; entry.deferred = true; entry.code = 'DEFER_AUTOREPLY_DISABLED' as any; entry.reason = 'رد جاهز بانتظار نقرة المالك (وضع الموافقة) — لم يُرسل شيء.'; out.deferred += 1; }
+        else { entry.stage = 'FAILED'; entry.reason = `فشل إرسال الرد: ${res.body?.error || res.status}`; out.failed += 1; }
+      }
+      metaPollingState.processed.unshift(entry);
+      if (metaPollingState.processed.length > META_POLLING_MAX_PROCESSED) metaPollingState.processed.length = META_POLLING_MAX_PROCESSED;
+    }
+  }
+  threadsReadStatus.repliesSeen = seen;
+  return out;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// «ردود جاهزة بانتظار نقرتك» — كل رد جهّزه العقل وحجبته بوابة الموافقة يُرسل
+// بنقرة المالك عبر **المنفّذ المركزي نفسه** للمنصة (لا مسار جانبي، كل الحمايات
+// سارية). المالك فاعل صريح ⇒ البوابة تسمح (فعل الموافقة نفسه).
+// ═══════════════════════════════════════════════════════════════════════════
+
+/** نص الزبون الأصلي وسياقه لطلب موافقة (من السجلات الحقيقية فقط). */
+function outboundApprovalContext(r: OutboundApprovalRequest): { customerText: string; authorName: string | null; permalinkUrl: string | null; postText: string | null; subjectId: string | null; customerAt: string | null } {
+  const ext = String(r.externalId || '');
+  if (r.platform === 'youtube') {
+    const e: any = watcherState.processed.find((p) => p.commentId === ext);
+    return { customerText: String(e?.text || ''), authorName: e?.authorName || null, permalinkUrl: e?.videoId ? `https://www.youtube.com/watch?v=${encodeURIComponent(String(e.videoId))}&lc=${encodeURIComponent(ext)}` : null, postText: null, subjectId: e?.videoId || null, customerAt: e?.publishedAt || null };
+  }
+  const c: any = ((workspace as any).socialComments || []).find((x: any) => x.platform === r.platform && String(x.externalId || '') === ext);
+  return { customerText: String(c?.text || ''), authorName: c?.authorName || null, permalinkUrl: c?.permalinkUrl || null, postText: c?.postText ? String(c.postText).slice(0, 160) : null, subjectId: c?.postExternalId || null, customerAt: c?.createdAt || null };
+}
+
+function outboundApprovalRow(r: OutboundApprovalRequest) {
+  const ctx = outboundApprovalContext(r);
+  const product = r.productId ? (workspace.products || []).find((p: any) => String(p.id) === String(r.productId)) : null;
+  return {
+    id: r.id, platform: r.platform, platformLabelAr: SUPPORTED_PLATFORMS.find((p: any) => p.id === r.platform)?.name || r.platform,
+    operation: r.operation, kindLabelAr: r.operation === 'message_reply' ? 'رد على رسالة' : 'رد على تعليق',
+    text: r.text, at: r.at, status: r.status, statusLabelAr: OUTBOUND_STATUS_LABELS_AR[r.status],
+    decidedAt: r.decidedAt || null, sentText: r.sentText || null, providerReplyId: r.providerReplyId || null, error: r.error || null,
+    productName: product ? String(product.name || '') : null,
+    sendable: approvalExecutorFor(r.platform, r.operation) !== null,
+    customer: { name: ctx.authorName, text: ctx.customerText, at: ctx.customerAt, permalinkUrl: ctx.permalinkUrl, postText: ctx.postText },
+  };
+}
+
+/** يوسم سجل المراقب بالنتيجة الحقيقية (يظهر في تقارير المراقب كما وقع). */
+function markWatcherEntryAfterApproval(r: OutboundApprovalRequest, outcome: 'sent' | 'rejected', text: string | null, providerReplyId: string | null): void {
+  const ext = String(r.externalId || '');
+  const list: any[] = r.platform === 'youtube' ? watcherState.processed : metaPollingState.processed;
+  const e: any = list.find((p: any) => p.commentId === ext);
+  if (!e) return;
+  e.deferred = false;
+  if (outcome === 'sent') {
+    e.stage = 'REPLIED'; e.action = 'reply'; e.replyText = text; e.externalReplyId = providerReplyId;
+    e.reason = 'أُرسل الرد بنقرة المالك (رد جاهز) عبر المنفّذ المركزي وثُبّت بمعرّف من المزوّد.';
+  } else {
+    e.stage = 'SKIPPED'; e.action = 'skip';
+    e.reason = 'رفض المالك الرد الجاهز؛ لم يُرسل شيء ولن يُعاد تجهيزه.';
+  }
+}
+
+async function dispatchOutboundApproval(r: OutboundApprovalRequest, text: string, actorId: string): Promise<{ status: number; delivered: boolean; providerReplyId: string | null; error: string | null; code: string | null }> {
+  const ex = approvalExecutorFor(r.platform, r.operation);
+  const commentText = outboundApprovalContext(r).customerText;
+  const externalId = String(r.externalId || '');
+  const recipientId = String(r.recipientId || '');
+  const productId = r.productId || undefined;
+  let res: { status: number; body: any };
+  if (ex === 'youtube_comment') res = await executeYouTubeReply({ commentId: externalId, text, commentText, productId }, actorId);
+  else if (ex === 'meta_comment') res = await executeMetaCommentReply(r.platform as any, { externalId, text, commentText, productId }, actorId);
+  else if (ex === 'meta_message') res = await executeMetaMessageReply(r.platform as any, { externalId, recipientId, text, commentText, productId }, actorId);
+  else if (ex === 'threads_comment') res = await executeThreadsCommentReply({ externalId, text, commentText, productId }, actorId);
+  else if (ex === 'telegram_message') res = await executeTelegramMessageReply({ externalId, text, commentText, productId }, actorId);
+  else if (ex === 'whatsapp_message') res = await executeWhatsAppMessageReply({ externalId, recipientId, text, commentText, productId }, actorId);
+  else return { status: 422, delivered: false, providerReplyId: null, error: 'لا منفّذ إرسال لهذه العملية على هذه المنصة.', code: 'NO_EXECUTOR' };
+  const providerReplyId = String(res.body?.providerReplyId || res.body?.externalReplyId || '') || null;
+  const delivered = Boolean(res.body?.delivered && providerReplyId);
+  return { status: res.status, delivered, providerReplyId, error: delivered ? null : String(res.body?.error || res.body?.code || 'تعذّر الإرسال'), code: res.body?.code || null };
+}
+
+async function decideOutboundApproval(id: string, kindRaw: unknown, textRaw: unknown, actorId: string): Promise<{ status: number; body: any }> {
+  const idx = outboundApprovals.findIndex((x) => x.id === id);
+  if (idx < 0) return { status: 404, body: { success: false, error: 'الرد الجاهز غير موجود.' } };
+  const r = outboundApprovals[idx];
+  if (r.status === 'sent' || r.status === 'rejected') return { status: 409, body: { success: false, error: 'حُسم هذا الرد سابقاً.', code: 'ALREADY_DECIDED', approval: outboundApprovalRow(r) } };
+  const kind = String(kindRaw || '').trim();
+  if (!['approve', 'edit_approve', 'reject'].includes(kind)) return { status: 400, body: { success: false, error: 'نوع القرار مطلوب (approve|edit_approve|reject).', code: 'INVALID_DECISION' } };
+  const nowIso = new Date().toISOString();
+  if (kind === 'reject') {
+    outboundApprovals[idx] = applyApprovalOutcome(r, { kind: 'rejected', by: actorId, at: nowIso });
+    markWatcherEntryAfterApproval(r, 'rejected', null, null);
+    audit(actorId, 'outbound_approval_rejected', `${r.platform}:${r.operation}:${r.externalId || r.recipientId || ''}`);
+    await persistCommercialLeads();
+    if (r.platform === 'youtube') await persistWatcherState(); else await persistMetaPollingState();
+    return { status: 200, body: { success: true, sent: false, approval: outboundApprovalRow(outboundApprovals[idx]), note: 'رُفض الرد؛ لم يُرسل شيء ولن يُعاد تجهيزه لهذا الزبون.' } };
+  }
+  const edited = typeof textRaw === 'string' ? textRaw.trim().slice(0, 4000) : '';
+  if (kind === 'edit_approve' && !edited) return { status: 400, body: { success: false, error: 'النص المعدّل مطلوب.', code: 'TEXT_REQUIRED' } };
+  const text = kind === 'edit_approve' ? edited : r.text;
+  const out = await dispatchOutboundApproval(r, text, actorId);
+  const cur = outboundApprovals.findIndex((x) => x.id === id);
+  if (out.delivered && out.providerReplyId) {
+    if (cur >= 0) outboundApprovals[cur] = applyApprovalOutcome(outboundApprovals[cur], { kind: 'sent', text, providerReplyId: out.providerReplyId, by: actorId, at: new Date().toISOString() });
+    markWatcherEntryAfterApproval(r, 'sent', text, out.providerReplyId);
+    audit(actorId, 'outbound_approval_sent', `${r.platform}:${r.operation}:${r.externalId || r.recipientId || ''}`);
+  } else {
+    if (cur >= 0) outboundApprovals[cur] = applyApprovalOutcome(outboundApprovals[cur], { kind: 'failed', error: out.error || 'تعذّر الإرسال', by: actorId, at: new Date().toISOString() });
+    audit(actorId, 'outbound_approval_send_failed', `${r.platform}:${out.code || out.status}`);
+  }
+  await persistCommercialLeads();
+  if (out.delivered) { if (r.platform === 'youtube') await persistWatcherState(); else await persistMetaPollingState(); }
+  const row = cur >= 0 ? outboundApprovalRow(outboundApprovals[cur]) : null;
+  if (!out.delivered) return { status: out.status >= 400 ? out.status : 502, body: { success: false, sent: false, error: out.error, code: out.code, approval: row } };
+  return { status: 200, body: { success: true, sent: true, providerReplyId: out.providerReplyId, approval: row, note: 'أُرسل الرد عبر المنفّذ المركزي وثُبّت بمعرّف من المزوّد.' } };
+}
+
+/** جاهزية المنصات الخمس المربوطة — من الحالة الحقيقية فقط (بلا شبكة ولا أسرار). */
+function fivePlatformReadinessReport() {
+  const nowMs = Date.now();
+  const byPlatform = summarizeApprovalsByPlatform(outboundApprovals, nowMs);
+  const mp = ((metricsSyncState.lastResult as any)?.platforms || {}) as Record<string, any>;
+  const records: any[] = (workspace as any).publishRecords || [];
+  const ytControls = normalizeWatcherControls(watcherState.controls);
+  const metaControls = normalizeMetaWatcherControlsForCycle();
+  const inputs: FivePlatformInput[] = FIVE_PLATFORMS.map((platform) => {
+    const conn: any = platformConnections.get(platform);
+    const spec: any = SUPPORTED_PLATFORMS.find((x: any) => x.id === platform);
+    const caps = (['publish', 'comments', 'comment_reply', 'messages', 'message_reply', 'analytics'] as const).filter((c) => hasCapability(platform, c));
+    let read: FivePlatformInput['read'] = { attempted: false, ok: null, lastIngestAt: null, errorCode: null, error: null };
+    if (platform === 'youtube') {
+      read = { attempted: Boolean(watcherState.lastPollAt), ok: watcherState.lastError ? false : (watcherState.lastPollAt ? true : null), lastIngestAt: (watcherState.processed[0] as any)?.at || null, errorCode: null, error: watcherState.lastError || null };
+    } else if (platform === 'facebook' || platform === 'instagram') {
+      const st: any = (metaPollingState.platformStats as any)?.[platform] || {};
+      read = { attempted: Boolean(st.lastOkAt || st.lastError || metaPollingState.lastPollAt), ok: st.consecutiveErrors > 0 ? false : (st.lastOkAt ? true : null), lastIngestAt: st.lastIngestAt || null, errorCode: st.lastErrorCode || null, error: st.lastError || null };
+    } else if (platform === 'threads') {
+      read = { attempted: Boolean(threadsReadStatus.lastAttemptAt), ok: threadsReadStatus.ok, lastIngestAt: threadsReadStatus.lastIngestAt, errorCode: threadsReadStatus.code, error: threadsReadStatus.error };
+    }
+    const watcher = platform === 'youtube' ? { enabled: ytControls.enabled, paused: ytControls.paused, autoReply: ytControls.autoReply }
+      : platform === 'tiktok' ? null : { enabled: metaControls.enabled, paused: metaControls.paused, autoReply: metaControls.autoReply };
+    const last = records.find((r) => r?.platform === platform) || null;
+    const m = mp[platform];
+    const issue = m ? (m.error || (m.issues ? Object.entries(m.issues).map(([k, v]) => `${k}x${v}`).join(',') : null) || null) : null;
+    const ap = byPlatform[platform] || { pending: 0, oldestPendingAt: null, sent24h: 0 };
+    return {
+      platform, name: spec?.name || platform,
+      connected: Boolean(conn && conn.status === 'connected' && conn.providerVerified === true),
+      capabilities: caps, read, watcher,
+      approvals: { pending: ap.pending, oldestPendingAt: ap.oldestPendingAt, sent24h: ap.sent24h },
+      lastPublish: { at: last?.executedAt || null, ok: last ? last.state !== 'failed' : null, code: last?.code || null },
+      metrics: m ? { posts: Number(m.posts || 0), withMetrics: Number(m.withMetrics || 0), issue } : null,
+    };
+  });
+  return buildFivePlatformReadiness(inputs, { sendMode: commercialSendMode, nowMs });
+}
+
+app.get("/api/platforms/five-readiness", requireOwner, (_req, res) => {
+  res.json({ success: true, ...fivePlatformReadinessReport(), sendMode: commercialSendMode, generatedAt: new Date().toISOString(), usesGemini: false });
+});
+
+app.get("/api/commercial/approvals", requireOwner, (req, res) => {
+  const platform = typeof req.query.platform === 'string' ? req.query.platform.trim() : '';
+  const status = typeof req.query.status === 'string' ? req.query.status.trim() : 'pending';
+  let rows = outboundApprovals.slice();
+  if (platform) rows = rows.filter((r) => r.platform === platform);
+  if (status !== 'all') rows = rows.filter((r) => r.status === status);
+  rows.sort((a, b) => Date.parse(b.at) - Date.parse(a.at));
+  res.json({
+    success: true,
+    sendMode: commercialSendMode,
+    approvals: rows.slice(0, 300).map(outboundApprovalRow),
+    byPlatform: summarizeApprovalsByPlatform(outboundApprovals, Date.now()),
+    pendingTotal: outboundApprovals.filter((r) => r.status === 'pending').length,
+  });
+});
+
+app.post("/api/commercial/approvals/:id/decision", requireOwner, async (req, res) => {
+  const user = (req as any).user as ServerUser;
+  const out = await decideOutboundApproval(String(req.params.id), req.body?.kind, req.body?.text, user.id);
+  res.status(out.status).json(out.body);
+});
+
+/**
+ * «أرسل كل الجاهز» لمنصة (أو كلها) بنقرة واحدة. تسلسلي (لا إغراق للمزوّد)، بسقف
+ * 25 رداً للنقرة، وكل رد يمر بمنفّذه المركزي وحماياته. فشل رد لا يوقف البقية.
+ */
+app.post("/api/commercial/approvals/bulk", requireOwner, async (req, res) => {
+  const user = (req as any).user as ServerUser;
+  const kind = String(req.body?.kind || 'approve');
+  if (!['approve', 'reject'].includes(kind)) return res.status(400).json({ success: false, error: 'نوع القرار (approve|reject).' });
+  const platform = typeof req.body?.platform === 'string' ? req.body.platform.trim() : '';
+  const ids: string[] = Array.isArray(req.body?.ids) ? req.body.ids.map((x: any) => String(x)) : [];
+  const targets = outboundApprovals
+    .filter((r) => r.status === 'pending' || (kind === 'approve' && r.status === 'failed'))
+    .filter((r) => (!platform || r.platform === platform) && (!ids.length || ids.includes(r.id)))
+    .slice(0, 25);
+  let sent = 0, failed = 0, rejected = 0;
+  const results: any[] = [];
+  for (const r of targets) {
+    const out = await decideOutboundApproval(r.id, kind, null, user.id);
+    if (kind === 'reject') { if (out.status === 200) rejected += 1; }
+    else if (out.body?.sent) sent += 1; else failed += 1;
+    results.push({ id: r.id, platform: r.platform, ok: out.status === 200, error: out.body?.error || null });
+  }
+  const remaining = outboundApprovals.filter((r) => r.status === 'pending' && (!platform || r.platform === platform)).length;
+  res.json({ success: true, processed: targets.length, sent, failed, rejected, remaining, results });
 });
 
 /** تبديل وضع إرسال العقل التجاري (approval | auto) — للمالك، مستقل عن Kill Switch. */
@@ -14514,9 +14946,16 @@ app.get("/api/live/room", requireOwner, (req, res) => {
     approvals: (() => {
       const pending = commercialDrafts.filter((d: any) => d.status === "pending");
       const latest: any = pending.slice().sort((a: any, b: any) => Date.parse(String(b.createdAt || "")) - Date.parse(String(a.createdAt || "")))[0] || null;
+      // + الردود الجاهزة التي جهّزها العقل على كل المنصات وحجبتها بوابة الموافقة.
+      const ready = outboundApprovals.filter((r) => r.status === "pending");
+      const latestReady = ready.slice().sort((a, b) => Date.parse(b.at) - Date.parse(a.at))[0] || null;
+      const useReady = latestReady && (!latest || Date.parse(latestReady.at) > Date.parse(String(latest.createdAt || "")));
       return {
-        pending: pending.length,
-        latest: latest ? { platform: platformAr(String(latest.platform || "")), text: String(latest.text || "").slice(0, 140), at: latest.createdAt || null } : null,
+        pending: pending.length + ready.length,
+        drafts: pending.length,
+        readyReplies: ready.length,
+        latest: useReady ? { platform: platformAr(String(latestReady!.platform || "")), text: String(latestReady!.text || "").slice(0, 140), at: latestReady!.at || null }
+          : latest ? { platform: platformAr(String(latest.platform || "")), text: String(latest.text || "").slice(0, 140), at: latest.createdAt || null } : null,
       };
     })(),
   });
@@ -14839,8 +15278,9 @@ function patrolFacts(module: string | null = null): PatrolFacts {
     unhandledRejections: unhandledRejectionCount,
     unhandledRejectionsDelta: Math.max(0, unhandledRejectionCount - lastRejectionsSeen),
     liveEventsBuffered: liveEvents.lastId,
-    pendingDrafts: pending.length,
-    oldestPendingDraftAt: oldest(pending),
+    // + الردود الجاهزة على المنصات بانتظار نقرة المالك (زبون ينتظر بالمثل).
+    pendingDrafts: pending.length + outboundApprovals.filter((r) => r.status === "pending").length,
+    oldestPendingDraftAt: [oldest(pending), oldest(outboundApprovals.filter((r) => r.status === "pending"), "at")].filter(Boolean).sort()[0] || null,
     unreadCritical: unreadCrit.length,
     oldestUnreadCriticalAt: oldest(unreadCrit),
     ownerEmailReady: safe(() => getOwnerEmailConfig().configured && getOwnerEmailConfig().fromConfigured, false),

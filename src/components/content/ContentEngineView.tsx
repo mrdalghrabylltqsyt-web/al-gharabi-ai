@@ -238,9 +238,23 @@ export const ContentEngineView: React.FC = () => {
         <div className="lg:col-span-7 space-y-5">
           {/* Platform Selector */}
           <div className="p-5 rounded-2xl glass space-y-3">
-            <label className="block text-xs font-bold text-slate-300">
-              1. اختر المنصات المستهدفة (يمكن اختيار أكثر من منصة):
-            </label>
+            <div className="flex items-center justify-between gap-2 flex-wrap">
+              <label className="block text-xs font-bold text-slate-300">
+                1. اختر المنصات المستهدفة (يمكن اختيار أكثر من منصة):
+              </label>
+              {/* نقرة واحدة: كل المنصات المربوطة فعلاً (منشور واحد يتوزّع عليها كلها). */}
+              <button
+                type="button"
+                onClick={() => {
+                  const linked = platforms.filter((p) => p.status === 'connected').map((p) => p.platform);
+                  if (linked.length) { setSelectedPlatforms(linked); setActivePreviewPlatform(linked[0]); }
+                  else showToast('لا منصة مربوطة الآن.');
+                }}
+                className="px-3 py-1.5 rounded-lg text-[11px] font-bold bg-emerald-600/20 text-emerald-200 border border-emerald-500/40 hover:bg-emerald-600/30"
+              >
+                كل المنصات المربوطة ({platforms.filter((p) => p.status === 'connected').length})
+              </button>
+            </div>
             <div className="grid grid-cols-3 sm:grid-cols-5 gap-2">
               {platforms.map((p) => {
                 const isSelected = selectedPlatforms.includes(p.platform);

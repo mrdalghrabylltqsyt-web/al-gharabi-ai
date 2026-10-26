@@ -9,6 +9,7 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { apiService } from '../../services/api';
 import { CommercialMonthlyReport } from './CommercialMonthlyReport';
+import { ReadyRepliesPanel } from './ReadyRepliesPanel';
 import { useApp } from '../../context/AppContext';
 import {
   Inbox, RefreshCw, CheckCircle2, XCircle, Pencil, Send, AlertTriangle,
@@ -460,6 +461,9 @@ export function CommercialInbox() {
         {note ? <div className="text-xs text-emerald-300 bg-emerald-500/10 border border-emerald-500/30 rounded-xl p-2 mt-3">{note}</div> : null}
         {error ? <div className="text-xs text-rose-300 bg-rose-500/10 border border-rose-500/30 rounded-xl p-2 mt-3">{error}</div> : null}
       </section>
+
+      {/* المنصات الخمس: جاهزية حقيقية + ردود جهّزها العقل بانتظار نقرتك. */}
+      <ReadyRepliesPanel />
 
       {/* PR-S5: قسم أول «أسئلة تنتظر جوابك» (جواب على سؤال) بالأحدث أولاً. */}
       <section className="glass rounded-2xl p-5">

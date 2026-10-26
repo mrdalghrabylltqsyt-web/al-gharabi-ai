@@ -58,6 +58,37 @@ export interface ThreadsPublishInput {
 
 export type ThreadsMediaKind = 'text' | 'image' | 'video';
 
+/** رد زبون على منشور Threads (= تعليق). */
+export interface ThreadsReply {
+  id: string;
+  text: string;
+  username: string | null;
+  timestamp: string | null;
+  permalink: string | null;
+  /** صادر من حساب المعرض نفسه ⇒ لا يُرد عليه (منع حلقة الردود). */
+  ownedByMe: boolean;
+  hidden: boolean;
+}
+
+/** تحليل استجابة `/{media-id}/replies` — يسقط كل عنصر بلا معرّف أو نص. */
+export function parseThreadsReplies(data: any): ThreadsReply[] {
+  const list = Array.isArray(data?.data) ? data.data : [];
+  return list
+    .filter((x: any) => x && x.id && typeof x.text === 'string' && x.text.trim())
+    .map((x: any) => ({
+      id: String(x.id),
+      text: String(x.text).trim(),
+      username: x.username ? String(x.username) : null,
+      timestamp: x.timestamp ? String(x.timestamp) : null,
+      permalink: x.permalink ? String(x.permalink) : null,
+      ownedByMe: x.is_reply_owned_by_me === true,
+      hidden: String(x.hide_status || '').toUpperCase() === 'HIDDEN',
+    }));
+}
+
+/** النطاقات اللازمة لقراءة تعليقات Threads والرد عليها. */
+export const THREADS_REPLY_SCOPES: readonly string[] = Object.freeze(['threads_read_replies', 'threads_manage_replies']);
+
 /**
  * يبني جسم إنشاء الحاوية (`POST /{threads-user-id}/threads`). خلافاً
  * لإنستغرام، النص المجرّد (`TEXT`) مقبول رسمياً — فلا يُرفض بلا وسائط.
@@ -349,6 +380,56 @@ export class ThreadsClient {
       return { ok: true, data: { providerPostId: String(data.id) } };
     } catch (e: any) {
       return { ok: false, data: null, error: String(e?.message || 'فشل الاتصال بـThreads.') };
+    }
+  }
+
+  /**
+   * أحدث منشورات حساب المعرض على Threads (`GET /{user-id}/threads`) — تشمل ما نُشر
+   * من التطبيق مباشرةً لا من نظامنا فقط، فلا يفوت تعليق زبون على أي منشور حديث.
+   */
+  async listRecentThreads(threadsUserId: string, accessToken: string, limit = 6): Promise<ThreadsResult<{ posts: Array<{ id: string; timestamp: string | null }> }>> {
+    if (!threadsUserId) return { ok: false, data: null, error: 'معرّف حساب Threads مطلوب.' };
+    try {
+      const u = new URL(threadsGraphUrl(`/${threadsUserId}/threads`, this.baseUrl));
+      u.searchParams.set('fields', 'id,timestamp,is_quote_post');
+      u.searchParams.set('limit', String(Math.max(1, Math.min(25, limit))));
+      u.searchParams.set('access_token', accessToken);
+      const res = await this.fetchImpl(u.toString(), { method: 'GET' });
+      const data = await res.json().catch(() => null);
+      if (!res.ok || data?.error) {
+        const msg = errorMessage(data, 'تعذّر قراءة منشورات Threads.');
+        const pCode = providerErrorCode(data);
+        return { ok: false, data: null, error: msg, providerCode: pCode, code: classifyThreadsProviderError(msg, pCode) };
+      }
+      const posts = (Array.isArray(data?.data) ? data.data : []).filter((x: any) => x && x.id).map((x: any) => ({ id: String(x.id), timestamp: x.timestamp ? String(x.timestamp) : null }));
+      return { ok: true, data: { posts } };
+    } catch (e: any) {
+      return { ok: false, data: null, error: String(e?.message || 'فشل الاتصال بـThreads.'), code: 'NETWORK_ERROR' };
+    }
+  }
+
+  /**
+   * ردود الزبائن (التعليقات) على منشور Threads للمعرض — `GET /{media-id}/replies`
+   * (يتطلب نطاق `threads_read_replies`). الردود الصادرة من حساب المعرض نفسه تُعلَّم
+   * (`ownedByMe`) فلا يُرد عليها. لا نجاح بلا قائمة حقيقية من Meta.
+   */
+  async listReplies(mediaId: string, accessToken: string): Promise<ThreadsResult<{ replies: ThreadsReply[] }>> {
+    if (!mediaId) return { ok: false, data: null, error: 'معرّف منشور Threads مطلوب.' };
+    try {
+      const u = new URL(threadsGraphUrl(`/${mediaId}/replies`, this.baseUrl));
+      u.searchParams.set('fields', 'id,text,username,timestamp,permalink,is_reply_owned_by_me,hide_status');
+      u.searchParams.set('reverse', 'false');
+      u.searchParams.set('access_token', accessToken);
+      const res = await this.fetchImpl(u.toString(), { method: 'GET' });
+      const data = await res.json().catch(() => null);
+      if (!res.ok || data?.error) {
+        const msg = errorMessage(data, 'تعذّر قراءة ردود منشور Threads.');
+        const pCode = providerErrorCode(data);
+        return { ok: false, data: null, error: msg, providerCode: pCode, code: pCode === 10 || /permission/i.test(msg) ? 'PERMISSION_MISSING' : classifyThreadsProviderError(msg, pCode) };
+      }
+      return { ok: true, data: { replies: parseThreadsReplies(data) } };
+    } catch (e: any) {
+      return { ok: false, data: null, error: String(e?.message || 'فشل الاتصال بـThreads.'), code: 'NETWORK_ERROR' };
     }
   }
 

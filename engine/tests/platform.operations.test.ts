@@ -101,9 +101,9 @@ function main(): void {
   const thOperational = computePlatformStatus('threads', connectedVerified, FULL_ENV)!;
   check('Threads متصل موثق + موصل منفّذ => OPERATIONAL', thOperational.state === 'OPERATIONAL' && thOperational.providerVerified);
   check('لا OPERATIONAL لـThreads بلا توثيق', computePlatformStatus('threads', connectedUnverified, FULL_ENV)!.state !== 'OPERATIONAL');
-  // النشر فقط هو القدرة المُعلَنة فعلاً (Task #24 لم يبنِ ردوداً/تحليلات لـThreads بعد).
+  // 2026-10-26: Threads ينشر ويقرأ تعليقات الزبائن ويرد عليها (منفّذ مركزي بكل الحمايات).
   check('Threads: النشر مدعوم', thOperational.operations.find((o) => o.operation === 'publish')!.supported);
-  check('Threads: الرد غير مدعوم (لا endpoint ردود مستقل، ولا webhook/قفل تكرار مبنيّان بعد)', thOperational.operations.find((o) => o.operation === 'reply')!.code === 'CAPABILITY_NOT_SUPPORTED');
+  check('Threads: الرد على التعليقات مدعوم (منفّذ مركزي)', thOperational.operations.find((o) => o.operation === 'reply')!.supported === true);
   // Instagram أصبح ثالث موصل حقيقي: CONFIGURED بلا اتصال، وOPERATIONAL عند الاتصال الموثق.
   const igConfigured = computePlatformStatus('instagram', disconnected, FULL_ENV)!;
   check('Instagram موصل منفّذ => CONFIGURED (لا EXTERNAL_SETUP_REQUIRED)', igConfigured.state === 'CONFIGURED');

@@ -195,9 +195,9 @@ export const LiveControlCenter: React.FC<{ data: any; refresh: () => void; now: 
   const watcherRows = (id: 'youtube' | 'meta' | 'telegram', label: string, setter: (x: Record<string, boolean | number>) => Promise<any>): Row[] => {
     const w = c[id] || {};
     return [
-      { key: `${id}-run`, title: `مراقب ${label}`, desc: 'قراءة التعليقات والرسائل الجديدة كل دورة.', on: !w.paused, onLabel: 'يعمل', offLabel: 'موقوف طارئاً', goodWhenOn: true,
+      { key: `${id}-run`, title: `مراقب ${label}`, desc: id === 'meta' ? 'قراءة التعليقات والرسائل الجديدة كل دورة (فيسبوك وإنستغرام وثريدز).' : 'قراءة التعليقات والرسائل الجديدة كل دورة.', on: !w.paused, onLabel: 'يعمل', offLabel: 'موقوف طارئاً', goodWhenOn: true,
         toOn: () => setter({ paused: false }), toOff: () => setter({ paused: true }), riskyOn: `استئناف مراقب ${label}: تعود القراءة فقط، ويبقى الرد الآلي معطّلاً حتى تفعّله صراحةً.` },
-      { key: `${id}-reply`, title: `الرد الآلي — ${label}`, desc: 'يرد العقل بنفسه على الأسئلة المؤكدة.', on: !!w.autoReply, onLabel: 'مفعّل', offLabel: 'معطّل', goodWhenOn: false,
+      { key: `${id}-reply`, title: `الرد الآلي — ${label}`, desc: c.commercial?.sendMode === 'auto' ? 'يرد العقل بنفسه على الأسئلة المؤكدة.' : 'وضع الموافقة: كل رد يُجهَّز وينتظر نقرتك في «صندوق الزبائن». هذا المفتاح يجعل المنصة ترد بنفسها حين تختار «إرسال تلقائي».', on: !!w.autoReply, onLabel: 'مفعّل', offLabel: 'معطّل', goodWhenOn: false,
         toOn: () => setter({ autoReply: true }), toOff: () => setter({ autoReply: false }), riskyOn: `تفعيل الرد الآلي على ${label}: سيرد العقل على الزبائن بلا مراجعتك (ضمن حدود الحقائق الموثّقة فقط).` },
       { key: `${id}-review`, title: `المراجعة البشرية — ${label}`, desc: 'كل رد يُحجز لمراجعتك قبل الإرسال.', on: !!w.humanReviewMode, onLabel: 'مفعّلة', offLabel: 'معطّلة', goodWhenOn: true,
         toOn: () => setter({ humanReviewMode: true }), toOff: () => setter({ humanReviewMode: false }), riskyOff: `إلغاء المراجعة البشرية على ${label}: الردود قد تُرسل بلا مراجعتك إن كان الرد الآلي مفعّلاً.` },
@@ -211,7 +211,7 @@ export const LiveControlCenter: React.FC<{ data: any; refresh: () => void; now: 
     ...watcherRows('youtube', 'يوتيوب', (x) => apiService.setYouTubeWatcherControls(x)),
     { key: 'yt-publish', title: 'النشر الآلي على يوتيوب', desc: 'نشر محتوى الطابور المعتمد على القناة.', on: !!c.youtube?.autoPublish, onLabel: 'مفعّل', offLabel: 'معطّل', goodWhenOn: false,
       toOn: () => apiService.setYouTubeWatcherControls({ autoPublish: true }), toOff: () => apiService.setYouTubeWatcherControls({ autoPublish: false }), riskyOn: 'تفعيل النشر الآلي على يوتيوب: يُنشر المحتوى المعتمد تلقائياً على القناة.' },
-    ...watcherRows('meta', 'فيسبوك/إنستغرام', (x) => apiService.setMetaWatcherControls(x)),
+    ...watcherRows('meta', 'فيسبوك/إنستغرام/ثريدز', (x) => apiService.setMetaWatcherControls(x)),
     ...watcherRows('telegram', 'تيليغرام', (x) => apiService.setTelegramWatcherControls(x)),
     { key: 'jobs', title: 'نشر المعتمد تلقائياً في موعده', desc: 'تنفيذ مهام النشر المعتمدة عند حلول موعدها.', on: !!c.jobs?.autoExecute, onLabel: 'مفعّل', offLabel: 'معطّل', goodWhenOn: false,
       toOn: () => apiService.setJobAutoExecute(true), toOff: () => apiService.setJobAutoExecute(false), riskyOn: 'تفعيل النشر التلقائي للمعتمد: تُنشر المهام المعتمدة بنفسها عند موعدها عبر بوابات النشر.' },

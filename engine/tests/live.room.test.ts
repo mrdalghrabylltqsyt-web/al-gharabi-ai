@@ -72,7 +72,7 @@ const server = read('server.ts');
 check('★ المسار للمالك فقط', server.includes('app.get("/api/live/room", requireOwner,'));
 check('★ يُغذّى من السجل (بادئات معروفة)', server.includes('if (first) liveEvent(classifyLogLine(first));'));
 check('★ ومن audit', server.includes('liveEvent(auditToLiveEvent(action, detail));'));
-check('★ ومن كل تعليق وارد', (server.match(/liveEvent\(liveCommentEvent\(/g) || []).length === 3);
+check('★ ومن كل تعليق وارد', (server.match(/liveEvent\(liveCommentEvent\(/g) || []).length === 4);
 check('ومن مسودات الردود وقرارات المراقب', server.includes("title: `رد جاهز بانتظار موافقتك") && server.includes('const WATCHER_LIVE'));
 check('اللقطة من الذاكرة بلا استعلام قاعدة', !/app\.get\("\/api\/live\/room"[\s\S]{0,4000}storageAdapter\.read/.test(server));
 
