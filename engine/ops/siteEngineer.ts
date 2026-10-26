@@ -22,7 +22,7 @@ export type EngineerModule =
 export type IncidentSeverity = 'warning' | 'critical';
 export type IncidentKind =
   | 'cycle_stale' | 'persist_failing' | 'storage_down' | 'backup_stale'
-  | 'meta_read_failing' | 'youtube_errors' | 'memory_high' | 'loop_lag';
+  | 'meta_read_failing' | 'youtube_errors' | 'memory_high' | 'loop_lag' | 'patrol_fix';
 
 export interface Incident {
   key: string;
@@ -162,6 +162,10 @@ export interface EngineerReport {
 export interface IncidentMemory { attempts: number; lastAttemptAt: number | null; escalatedAt: number | null; firstSeenAt: number }
 export interface EngineerState {
   enabled: boolean;
+  /** خط أساس السعة: أول قياس لحجم كل مجموعة (لحساب معدل النمو اليومي). يُجدَّد كل 7 أيام. */
+  baseline: Record<string, { t: number; v: number }>;
+  /** آخر تنبيه للمالك لكل فحص (لا تكرار قبل 12 ساعة). */
+  notified: Record<string, number>;
   incidents: Record<string, IncidentMemory>;
   reports: EngineerReport[];
   actions: number[];
@@ -170,7 +174,7 @@ export interface EngineerState {
 }
 
 export function emptyEngineerState(): EngineerState {
-  return { enabled: true, incidents: {}, reports: [], actions: [], checks: 0, lastCheckAt: null };
+  return { enabled: true, baseline: {}, notified: {}, incidents: {}, reports: [], actions: [], checks: 0, lastCheckAt: null };
 }
 
 /** تحميل آمن من المخزن (أي حقل تالف يُستبدل بالافتراضي). */
@@ -185,7 +189,10 @@ export function normalizeEngineerState(raw: any): EngineerState {
       incidents[k] = { attempts: Number(v.attempts) || 0, lastAttemptAt: Number.isFinite(v.lastAttemptAt) ? v.lastAttemptAt : null, escalatedAt: Number.isFinite(v.escalatedAt) ? v.escalatedAt : null, firstSeenAt: Number(v.firstSeenAt) || Date.now() };
     }
   }
-  return { enabled: raw.enabled !== false, incidents, reports, actions: Array.isArray(raw.actions) ? raw.actions.filter((x: any) => Number.isFinite(x)).slice(-50) : [], checks: Number(raw.checks) || 0, lastCheckAt: typeof raw.lastCheckAt === 'string' ? raw.lastCheckAt : null };
+  const numMap = (o: any) => Object.fromEntries(Object.entries(o && typeof o === 'object' ? o : {}).filter(([, v]) => Number.isFinite(v as number))) as Record<string, number>;
+  const baseline: Record<string, { t: number; v: number }> = {};
+  for (const [k, v] of Object.entries(raw.baseline && typeof raw.baseline === 'object' ? raw.baseline : {})) { const b: any = v; if (b && Number.isFinite(b.t) && Number.isFinite(b.v)) baseline[k] = { t: b.t, v: b.v }; }
+  return { enabled: raw.enabled !== false, baseline, notified: numMap(raw.notified), incidents, reports, actions: Array.isArray(raw.actions) ? raw.actions.filter((x: any) => Number.isFinite(x)).slice(-50) : [], checks: Number(raw.checks) || 0, lastCheckAt: typeof raw.lastCheckAt === 'string' ? raw.lastCheckAt : null };
 }
 
 const SEV_RANK: Record<IncidentSeverity, number> = { critical: 0, warning: 1 };
@@ -248,4 +255,15 @@ export async function withTimeout<T>(p: Promise<T>, ms: number, label: string): 
   let t: any;
   const timeout = new Promise<never>((_, rej) => { t = setTimeout(() => rej(new Error(`انتهت مهلة «${label}» (${Math.round(ms / 1000)} ث)`)), ms); if (t?.unref) t.unref(); });
   try { return await Promise.race([p, timeout]); } finally { clearTimeout(t); }
+}
+
+/** أعطال قابلة للإصلاح الآمن مصدرها الدورية (ما لا يغطيه الرصد الأساسي). */
+export function incidentsFromPatrol(checks: Array<{ id: string; module: EngineerModule; label: string; status: string; detail: string; repair?: string | null }>): Incident[] {
+  const out: Incident[] = [];
+  for (const c of checks) {
+    if (c.repair === 'drafts_expired' && (c.status === 'warn' || c.status === 'fail')) {
+      out.push({ key: 'patrol_fix:drafts_expired', kind: 'patrol_fix', target: 'drafts_expired', module: c.module, severity: 'warning', title: c.label, evidence: [c.detail] });
+    }
+  }
+  return out;
 }

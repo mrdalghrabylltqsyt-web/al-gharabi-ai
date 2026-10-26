@@ -717,7 +717,8 @@ import { backupFreshness, resolveAutoBackupIntervalMs } from "./engine/dr/autoBa
 import { summarizePublishHealth, formatPublishLogLine } from "./engine/ops/publishHealth";
 import { realProductPhrases } from "./src/utils/productPhrases";
 import { LiveEventBuffer, classifyLogLine, auditToLiveEvent, buildLiveModules, buildLiveInsights, buildLiveCycles, platformAr, type LiveEventInput } from "./engine/ops/liveRoom";
-import { detectIncidents, decideNext, forgetRecovered, addReport, withTimeout, emptyEngineerState, normalizeEngineerState, ENGINEER_POLICY, type EngineerState, type EngineerSnapshot, type Incident, type ReportStep, type EngineerReport } from "./engine/ops/siteEngineer";
+import { detectIncidents, decideNext, forgetRecovered, addReport, withTimeout, emptyEngineerState, normalizeEngineerState, incidentsFromPatrol, ENGINEER_POLICY, type EngineerState, type EngineerSnapshot, type Incident, type ReportStep, type EngineerReport } from "./engine/ops/siteEngineer";
+import { PATROL_ORDER, COLLECTION_CAPS, inspectModule, healthScore, slopePerHour, growthPerDay, type PatrolFacts, type ModuleInspection } from "./engine/ops/engineerPatrol";
 import { parseFacebookPostMetrics, parseInstagramMediaMetrics, parseGraphInsights, parseFollowers, upsertPerformanceRecords, summarizePlatformMetrics, type MetricValues } from "./engine/social/metricsSync";
 import { resolveInteractionProduct, productFactStatement, productNamedInText, type ProductResolution } from "./engine/social/productResolution";
 import { decideCoalescedWrite, type CoalesceMemo, USAGE_INDICATOR_VOLATILE_PATHS } from "./engine/ops/writeCoalescing";
@@ -14455,7 +14456,7 @@ app.get("/api/live/room", requireOwner, (req, res) => {
       } catch { return []; }
     })(),
     usage: { multiplier: (() => { try { return usagePressureMultiplier(); } catch { return 1; } })(), level: pressure },
-    engineer: (() => { try { return engineerView(); } catch { return null; } })(),
+    engineer: (() => { try { return engineerView(!lite); } catch { return null; } })(),
     telemetry: (() => {
       const mem = process.memoryUsage();
       const g: any = (() => { try { return geminiStatus(); } catch { return {}; } })();
@@ -14652,6 +14653,14 @@ function engineerPlaybook(inc: Incident): EngineerPlan | null {
       ],
       verify: () => Number(watcherState.consecutiveErrors || 0) === 0 ? { ok: true, detail: "لا أخطاء متتالية الآن" } : { ok: false, detail: `${watcherState.consecutiveErrors} أخطاء متتالية` },
     };
+    case "patrol_fix": {
+      if (inc.target === "drafts_expired") return {
+        // نفس عمل دورة العقل التجاري (لا حذف): المسودة المنتهية النافذة تُعلَّم «منتهية» فلا تُرسل.
+        steps: [{ label: "تعليم المسودات المنتهية النافذة «منتهية» (بلا حذف)", run: async () => { const n = sweepExpiredCommercialDrafts(new Date().toISOString()); if (n > 0) await persistCommercialLeads(); return { ok: true, detail: `${n} مسودة عُلّمت منتهية` }; } }],
+        verify: () => { const nowIso = new Date().toISOString(); const left = commercialDrafts.filter((d: any) => d.status === "pending" && isDraftExpired(d, nowIso)).length; return left === 0 ? { ok: true, detail: "لا مسودة منتهية معلّقة" } : { ok: false, detail: `${left} ما زالت معلّقة` }; },
+      };
+      return null;
+    }
     default: return null;
   }
 }
@@ -14729,7 +14738,7 @@ async function engineerTick(trigger: "schedule" | "manual" = "schedule"): Promis
     const nowMs = Date.now();
     engineerState.checks += 1;
     engineerState.lastCheckAt = new Date(nowMs).toISOString();
-    const incidents = detectIncidents(engineerSnapshot(), engineerStreaks);
+    const incidents = [...detectIncidents(engineerSnapshot(), engineerStreaks), ...incidentsFromPatrol(Object.values(patrolInspections).flatMap((m) => m.checks))];
     engineerActiveIncidents = incidents;
     const recovered = forgetRecovered(engineerState, new Set(incidents.map((i) => i.key)));
     for (const key of recovered) {
@@ -14758,16 +14767,245 @@ async function engineerTick(trigger: "schedule" | "manual" = "schedule"): Promis
   }
 }
 
+
+// -----------------------------------------------------------------------------
+// دورية العنكبوت (2026-10-26): تجوال مستمر على الأقسام الأربعة عشر — قسم كل 5 ثوانٍ
+// (جولة كاملة ~70 ث)، ليلاً ونهاراً، سواء فُتحت الشاشة أم لا. كل وقفة = فحص حقيقي لكل ما
+// بُني في ذلك القسم (قاعدة المعرفة في engine/ops/engineerPatrol.ts). ذاكرة فقط، بلا شبكة.
+// -----------------------------------------------------------------------------
+const PATROL_STEP_MS = 5000;
+const patrolInspections: Record<string, ModuleInspection> = {};
+const patrolHistory: Record<string, string[]> = {}; // آخر حالات كل فحص (لكشف «تحذير مستمر»)
+const memorySamples: Array<{ t: number; v: number }> = [];
+let patrolCursor = -1;
+let patrolRound = 0;
+let patrolTimer: ReturnType<typeof setInterval> | null = null;
+let lastRejectionsSeen = 0;
+
+/** حقائق الدورية من حالة الخادم (قراءة فقط). كل حقل يُحمى فلا يُسقط فشلُه الدوريةَ كلها. */
+function patrolFacts(module: string | null = null): PatrolFacts {
+  const nowMs = Date.now();
+  // الحسابات الثقيلة (فك الرموز، مسح التعليقات، أحجام المجموعات) تُنفَّذ فقط عند وقفة قسمها.
+  const at = (m: string) => module === null || module === m;
+  const nowIso = new Date(nowMs).toISOString();
+  const safe = <T,>(fn: () => T, d: T): T => { try { return fn(); } catch { return d; } };
+  const linked = (id: string) => { const c: any = platformConnections.get(id); return Boolean(c?.status === "connected" && c?.providerVerified === true); };
+  const owner = (((workspace as any).notifications || []) as any[]).filter((n) => !n.userId || n.userId === "owner");
+  const unreadCrit = owner.filter((n) => !n.read && n.severity === "critical");
+  const pending = commercialDrafts.filter((d: any) => d.status === "pending");
+  const oldest = (rows: any[], f = "createdAt") => rows.map((r) => String(r?.[f] || "")).filter(Boolean).sort()[0] || null;
+  const health = safe(() => cycleHealthWarning(), null as any);
+  const dr: any = safe(() => (app as any).drAutoBackup?.status?.() || null, null);
+  const fresh = safe(() => backupFreshness(drControl.driveAutoBackup, nowMs), null as any);
+  const g: any = safe<any>(() => geminiStatus(), {});
+  const yq: any = safe<any>(() => youtubeQuotaStatusSnapshot(), null);
+  const mp = ((metricsSyncState.lastResult as any)?.platforms || {}) as Record<string, any>;
+  const comments = (((workspace as any).socialComments || []) as any[]);
+  const lastIn: Record<string, string | null> = {};
+  for (const p of SUPPORTED_PLATFORMS.map((x: any) => x.id)) if (linked(p) && p !== "tiktok") lastIn[p] = null; // تيك توك بلا تعليقات بطبيعة المنصة
+  if (at("customers")) for (const c of comments) { const p = String(c?.platform || ""); if (p in lastIn && (!lastIn[p] || String(c.createdAt) > String(lastIn[p]))) lastIn[p] = String(c.createdAt || ""); }
+  const esc = (((workspace as any).socialEscalations || []) as any[]).filter((e) => e && e.state !== "RESOLVED");
+  const pub = (((workspace as any).publishRecords || []) as any[]).filter((r) => !r?.simulated && Date.parse(String(r?.createdAt || r?.publishedAt || "")) >= nowMs - 86400000);
+  const yt: any = safe<any>(() => normalizeWatcherControls(watcherState.controls), {});
+  const mc: any = (metaPollingState as any)?.controls || {};
+  const tc: any = (telegramPollingState as any)?.controls || {};
+  const sched = (s: any) => Boolean(s && safe(() => s.status().active, false));
+  const products = (workspace.products || []) as any[];
+  const collections = !at("storage") ? [] : Object.keys(COLLECTION_CAPS).map((key) => {
+    const size = Array.isArray((workspace as any)[key]) ? (workspace as any)[key].length : 0;
+    const base = engineerState.baseline[key];
+    return { key, size, growthPerDay: growthPerDay(base || null, { t: nowMs, v: size }) };
+  });
+  const tokenReadable = (id: string): boolean | null => {
+    if (!at("platforms") || !linked(id)) return null;
+    const stored = (workspace as any).providerTokens?.[id];
+    if (!stored) return null; // منصات تُدار بمتغيّرات البيئة لا تخزّن رمزاً هنا
+    return safe(() => getProviderToken(id) !== null, null);
+  };
+  const tokenExpiry = (id: string): string | null => {
+    if (!at("platforms") || !linked(id)) return null;
+    const t: any = safe(() => getProviderToken(id), null);
+    const v = t?.expiresAt ?? t?.expires_at ?? null;
+    const ms = typeof v === "number" ? (v < 1e12 ? v * 1000 : v) : Date.parse(String(v || ""));
+    return Number.isFinite(ms) ? new Date(ms).toISOString() : null;
+  };
+  return {
+    nowMs,
+    uptimeSec: Math.round(process.uptime()),
+    cycleHealthy: health ? Boolean(health.healthy) : null,
+    staleCycleNames: health ? (health.staleCycles || []).map((x: any) => String(x.name)) : [],
+    legacyErpEnabled: safe(() => legacyErpScopeEnabled(), false),
+    unhandledRejections: unhandledRejectionCount,
+    unhandledRejectionsDelta: Math.max(0, unhandledRejectionCount - lastRejectionsSeen),
+    liveEventsBuffered: liveEvents.lastId,
+    pendingDrafts: pending.length,
+    oldestPendingDraftAt: oldest(pending),
+    unreadCritical: unreadCrit.length,
+    oldestUnreadCriticalAt: oldest(unreadCrit),
+    ownerEmailReady: safe(() => getOwnerEmailConfig().configured && getOwnerEmailConfig().fromConfigured, false),
+    ownerTelegramReady: safe(() => ownerTelegramConfigured(), false),
+    ownerAlertsEnabled: ownerAlertState.enabled === true,
+    ownerAccounts: serverUsers.filter((u) => u.role === "owner").length,
+    activeOwnerAccounts: serverUsers.filter((u) => u.role === "owner" && u.active !== false).length,
+    sessionSecretSource: SESSION_SECRET_SOURCE,
+    revokedSessions: revokedSessions.size,
+    loginEmailReady: safe(() => getOwnerEmailConfig().configured && getOwnerEmailConfig().fromConfigured, false),
+    brainEnabled: safe(() => brainRuntimeEnabled(), false),
+    brainLastStatus: brainRuntimeState.lastStatus || null,
+    brainLastError: brainRuntimeState.lastError ? String(brainRuntimeState.lastError).slice(0, 80) : null,
+    brainLastSuccessAt: brainRuntimeState.lastSuccessAt || null,
+    brainCadenceMs: safe(() => brainRuntimeIntervalMs(), 15 * 60000),
+    brainMemoryRecords: Array.isArray((brainMemoryStore as any)?.records) ? (brainMemoryStore as any).records.length : 0,
+    brainMemoryCap: null,
+    platforms: SUPPORTED_PLATFORMS.map((p: any) => { const c: any = platformConnections.get(p.id); return { id: p.id, connected: c?.status === "connected", providerVerified: c?.providerVerified === true, expiresAt: tokenExpiry(p.id), tokenReadable: tokenReadable(p.id) }; }),
+    reauthUnread: owner.filter((n) => !n.read && /reauth/.test(String(n.type || ""))).length,
+    publishFailed24h: pub.filter((r) => r.state === "failed").length,
+    publishOk24h: pub.filter((r) => r.state === "published" || r.state === "scheduled").length,
+    sendModeAuto: !requiresApproval(commercialSendMode),
+    commercialEnabled: safe(() => commercialKillSwitchEnabled(), false),
+    expiredPendingDrafts: pending.filter((d: any) => safe(() => isDraftExpired(d, nowIso), false)).length,
+    schedulers: [
+      { key: "youtube", label: "مراقب يوتيوب", expected: linked("youtube") && yt.enabled !== false, armed: sched(watcherScheduler) },
+      { key: "meta", label: "مراقب فيسبوك/إنستغرام", expected: (linked("facebook") || linked("instagram")) && mc.enabled !== false, armed: sched(metaPollingScheduler) },
+      { key: "telegram", label: "مراقب تيليغرام", expected: linked("telegram") && tc.enabled !== false, armed: sched(telegramPollingScheduler) },
+      { key: "commercial", label: "العقل التجاري", expected: safe(() => commercialKillSwitchEnabled(), false), armed: sched(commercialScheduler) },
+      { key: "brain", label: "العقل المركزي", expected: safe(() => brainRuntimeEnabled(), false), armed: brainRuntimeTimer !== null },
+      { key: "engineer", label: "المهندس المشرف", expected: true, armed: engineerTimer !== null },
+    ],
+    jobsOverdue: jobAutomationState.autoExecuteApproved ? automationJobs.filter((j: any) => j.status === "ready" && j.scheduledFor && Date.parse(String(j.scheduledFor)) < nowMs - 30 * 60000).length : 0,
+    jobsFailed24h: automationJobs.filter((j: any) => j.status === "failed" && Date.parse(String(j.executedAt || j.createdAt || "")) >= nowMs - 86400000).length,
+    driveAuthorized: Boolean(drControl.driveRefreshToken),
+    backupLevel: fresh ? fresh.level : null,
+    backupConsecutiveFailures: Number(dr?.consecutiveFailures || 0),
+    backupLastError: fresh?.lastError ? String(fresh.lastError).slice(0, 60) : null,
+    memoryMb: Math.round(process.memoryUsage().rss / 1048576),
+    limitMb: 512,
+    memorySlopeMbPerHour: slopePerHour(memorySamples),
+    loopLagMs: liveLoop.lagMs,
+    loopLagMaxMs: liveLoop.maxLagMs,
+    usageLevel: safe(() => String(currentUsagePressure().level || "normal"), "normal"),
+    storageReady: Boolean(storageReady),
+    storageBackend: String(storageAdapter.backend || "file"),
+    tls: ((storageAdapter as any).tlsStatus?.result ?? null) as string | null,
+    persistFailStreak: persistStats.failStreak,
+    writesRequested: persistStats.requested,
+    writesDone: persistStats.written,
+    metricsLastRunAt: metricsSyncState.lastRunAt || null,
+    metricsIntervalMs: METRICS_SYNC_INTERVAL_MS,
+    measured: Object.entries(mp).map(([platform, m]: [string, any]) => ({ platform, ok: Number(m?.withMetrics || 0), total: Number(m?.posts || 0), issue: m?.error || (m?.issues ? Object.entries(m.issues).map(([k, v]) => `${k}x${v}`).join(",") : null) || null })),
+    geminiConfigured: Boolean(g?.configured),
+    geminiVerified: g?.providerState?.verification ?? null,
+    geminiUsed: Number(g?.usedToday || 0),
+    geminiLimit: Number(g?.dailyGuard || 0),
+    youtubeQuotaPercent: yq && typeof yq.usedPercent === "number" ? Math.round(yq.usedPercent) : null,
+    youtubeQuotaExhausted: Boolean(yq?.exhausted),
+    products: products.length,
+    productsBadPrice: products.filter((p) => !(Number(p?.cashPrice) > 0)).length,
+    productsNoName: products.filter((p) => !String(p?.name || "").trim()).length,
+    installmentPlans: Array.isArray(workspace.installmentPlans) ? workspace.installmentPlans.length : 0,
+    showroomName: Boolean(String((workspace.showroom as any)?.name || "").trim()),
+    lastInboundAt: lastIn,
+    escalationsOpen: esc.length,
+    oldestOpenEscalationAt: oldest(esc),
+    collections,
+  };
+}
+
+/** وقفة واحدة: يفحص القسم التالي، يسجّل النتيجة، ويُبلّغ عن التحوّلات المهمة. */
+function patrolStep(): void {
+  try {
+    patrolCursor = (patrolCursor + 1) % PATROL_ORDER.length;
+    if (patrolCursor === 0) patrolRound += 1;
+    const module = PATROL_ORDER[patrolCursor];
+    const nowMs = Date.now();
+    if (module === "monitor") {
+      memorySamples.push({ t: nowMs, v: Math.round(process.memoryUsage().rss / 1048576) });
+      while (memorySamples.length > 72 || (memorySamples.length && nowMs - memorySamples[0].t > 3 * 3600000)) memorySamples.shift();
+    }
+    const facts = patrolFacts(module);
+    if (module === "core") lastRejectionsSeen = unhandledRejectionCount;
+    if (module === "storage") {
+      // خط أساس السعة: أول قياس لكل مجموعة، ويُجدَّد كل 7 أيام ليبقى معدل النمو حديثاً.
+      let changed = false;
+      for (const c of facts.collections) { const b = engineerState.baseline[c.key]; if (!b || nowMs - b.t > 7 * 86400000) { engineerState.baseline[c.key] = { t: nowMs, v: c.size }; changed = true; } }
+      if (changed) persistEngineerState();
+    }
+    const insp = inspectModule(module, facts);
+    patrolInspections[module] = insp;
+    let notable = false;
+    for (const chk of insp.checks) {
+      const hist = (patrolHistory[chk.id] = [...(patrolHistory[chk.id] || []), chk.status].slice(-4));
+      const prev = hist.length > 1 ? hist[hist.length - 2] : "ok";
+      const persistentWarn = chk.status === "warn" && hist.length >= 3 && hist.slice(-3).every((x) => x === "warn");
+      const becameFail = chk.status === "fail" && prev !== "fail";
+      const recovered = chk.status === "ok" && (prev === "fail" || prev === "warn") && hist.slice(0, -1).filter((x) => x !== "ok").length >= 2;
+      if (becameFail || (persistentWarn && hist.slice(-4, -1).filter((x) => x === "warn").length === 2)) {
+        notable = true;
+        const t = new Date(nowMs).toISOString();
+        addReport(engineerState, {
+          id: workspaceId("eng"), incidentKey: `patrol:${chk.id}`, kind: "patrol_fix", module: chk.module, severity: chk.status === "fail" ? "critical" : "warning",
+          title: `الدورية: ${chk.label}`, evidence: [chk.detail], attempt: 0, startedAt: t, endedAt: t, durationMs: 0,
+          status: chk.repair ? "retrying" : "monitoring",
+          steps: [{ at: t, label: `فحص ${chk.label}`, ok: false, detail: chk.detail }],
+          verification: `لماذا يهم: ${chk.why}`,
+          summary: chk.repair ? `رصدتُ «${chk.label}» أثناء الدورية وسأصلحه ضمن الحدود.` : `رصدتُ «${chk.label}» أثناء الدورية — لا إصلاح آلي آمن له.`,
+          nextAction: chk.advice,
+        });
+        liveEvent({ module: chk.module as any, level: chk.status === "fail" ? "error" : "warn", title: `🕷 الدورية رصدت: ${chk.label}`, text: chk.detail.slice(0, 150) });
+        const last = engineerState.notified[chk.id] || 0;
+        if (chk.status === "fail" && !chk.repair && nowMs - last > 12 * 3600000) {
+          engineerState.notified[chk.id] = nowMs;
+          pushNotification("owner", "engineer_patrol", `الدورية رصدت ثغرة: ${chk.label}`, `${chk.detail}. ${chk.advice || ""}`.slice(0, 400), "warning", "live_room");
+        }
+      } else if (recovered) {
+        notable = true;
+        const t = new Date(nowMs).toISOString();
+        addReport(engineerState, { id: workspaceId("eng"), incidentKey: `patrol:${chk.id}`, kind: "patrol_fix", module: chk.module, severity: "warning", title: `الدورية: ${chk.label}`, evidence: [chk.detail], attempt: 0, startedAt: t, endedAt: t, durationMs: 0, status: "self_recovered", steps: [], verification: chk.detail, summary: `عاد «${chk.label}» سليماً.`, nextAction: null });
+        liveEvent({ module: chk.module as any, level: "ok", title: `🕷 الدورية: عاد سليماً — ${chk.label}`, text: chk.detail.slice(0, 150) });
+      }
+    }
+    if (notable) persistEngineerState();
+  } catch (e: any) {
+    console.warn("[engineer] patrol_step_failed", String(e?.message || e).slice(0, 120));
+  }
+}
+
+function startEngineerPatrol(): void {
+  if (patrolTimer) return;
+  const boot = setTimeout(() => { patrolTimer = setInterval(patrolStep, PATROL_STEP_MS); (patrolTimer as any).unref?.(); patrolStep(); }, 60000);
+  (boot as any).unref?.();
+  console.log(`[الغرابي AI] Engineer patrol: ${PATROL_ORDER.length} sections, one every ${PATROL_STEP_MS / 1000}s (memory-only)`);
+}
+
+function patrolView(full = true) {
+  const list = PATROL_ORDER.map((m) => patrolInspections[m]).filter(Boolean) as ModuleInspection[];
+  const gaps = list.flatMap((m) => m.checks.filter((c) => c.status === "fail" || c.status === "warn")).sort((a, b) => (a.status === "fail" ? 0 : 1) - (b.status === "fail" ? 0 : 1)).slice(0, 12);
+  const cur = patrolCursor >= 0 ? PATROL_ORDER[patrolCursor] : null;
+  return {
+    stepMs: PATROL_STEP_MS,
+    round: patrolRound,
+    cursor: cur,
+    order: PATROL_ORDER,
+    score: healthScore(list),
+    checksTotal: list.reduce((a, m) => a + m.checks.length, 0),
+    current: cur && patrolInspections[cur] ? patrolInspections[cur] : null,
+    modules: Object.fromEntries(list.map((m) => [m.module, { status: m.status, at: m.at, counts: m.counts }])),
+    inspections: full ? list : undefined,
+    gaps,
+  };
+}
+
 function startSiteEngineer(): void {
   if (engineerTimer) return;
   // يبدأ بعد 3 دقائق من الإقلاع (تستقر الدورات أولاً)، ثم فحص كل دقيقة. `.unref()`.
   const boot = setTimeout(() => { void engineerTick(); }, 3 * 60000); (boot as any).unref?.();
   engineerTimer = setInterval(() => { void engineerTick(); }, 60000); (engineerTimer as any).unref?.();
   console.log("[الغرابي AI] Site engineer scheduled every 1 min (repair-only, owner decisions respected)");
+  startEngineerPatrol();
 }
 
 /** عرض المهندس للغرفة الحية (بلا أسرار). */
-function engineerView() {
+function engineerView(full = true) {
   const nowMs = Date.now();
   const day = engineerState.reports.filter((r) => nowMs - Date.parse(r.endedAt) < 86400000);
   return {
@@ -14777,6 +15015,7 @@ function engineerView() {
     reports: engineerState.reports.slice(0, 15),
     stats: { checks: engineerState.checks, lastCheckAt: engineerState.lastCheckAt, resolved24h: day.filter((r) => r.status === "resolved").length, escalated24h: day.filter((r) => r.status === "escalated").length, actionsLastHour: engineerState.actions.filter((t) => nowMs - t < 3600000).length },
     policy: { maxAttempts: ENGINEER_POLICY.maxAttempts, maxActionsPerHour: ENGINEER_POLICY.maxActionsPerHour, cooldownHours: ENGINEER_POLICY.cooldownAfterEscalateMs / 3600000 },
+    patrol: (() => { try { return patrolView(full); } catch { return null; } })(),
   };
 }
 
