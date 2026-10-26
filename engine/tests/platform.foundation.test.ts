@@ -20,6 +20,9 @@ import {
   requiresPkce,
   isStateExpired,
   validateOAuthCallback,
+  oauthCallbackFingerprint,
+  isDuplicateOAuthCallback,
+  OAUTH_DUPLICATE_CALLBACK_WINDOW_MS,
   buildAuthorizationParams,
   buildTokenExchangeBody,
   parseTokenResponse,
@@ -102,6 +105,18 @@ function run(): void {
   check('callback state مجهول مرفوض', !validateOAuthCallback({ pending: undefined, platform: 'facebook', redirectUri: 'https://app/cb' }).ok);
   check('callback منتهٍ مرفوض', !validateOAuthCallback({ pending, platform: 'facebook', redirectUri: 'https://app/cb', now: Date.now() + 5000 }).ok);
   check('TTL state عشر دقائق', OAUTH_STATE_TTL_MS === 600000);
+  // العودة المكررة (Threads 2026-10-26): نفس state+code => نتيجة الأول، وأي اختلاف => رفض.
+  {
+    const fp = oauthCallbackFingerprint('code-1');
+    const prior = { platform: 'threads', fingerprint: fp, consumedAt: 1_000 };
+    check('بصمة الرمز لا تحوي الرمز', !fp.includes('code-1') && fp.length === 64);
+    check('تكرار نفس الرمز خلال النافذة مقبول للإعادة', isDuplicateOAuthCallback(prior, { platform: 'threads', fingerprint: fp, now: 1_200 }));
+    check('رمز مختلف بنفس state مرفوض', !isDuplicateOAuthCallback(prior, { platform: 'threads', fingerprint: oauthCallbackFingerprint('code-2'), now: 1_200 }));
+    check('منصة مختلفة مرفوضة', !isDuplicateOAuthCallback(prior, { platform: 'facebook', fingerprint: fp, now: 1_200 }));
+    check('بعد النافذة مرفوض', !isDuplicateOAuthCallback(prior, { platform: 'threads', fingerprint: fp, now: 1_000 + OAUTH_DUPLICATE_CALLBACK_WINDOW_MS + 1 }));
+    check('بلا سابق مرفوض', !isDuplicateOAuthCallback(undefined, { platform: 'threads', fingerprint: fp, now: 1_200 }));
+    check('الخادم يعيد نتيجة الطلب الأول ولا يبادل الرمز مرتين', serverSource.includes('callback_duplicate_replayed') && serverSource.includes('consumedOAuthCallbacks.set(state'));
+  }
   // TikTok: تدفّق الويب الرسمي بلا PKCE (العقد الرسمي للويب) — حتى لو مُرّر تحدٍّ يُهمَل.
   const tkParams = buildAuthorizationParams({ platform: 'tiktok', clientId: 'ck', redirectUri: 'r', scopes: ['a', 'b'], state: 'st', pkceChallenge: 'ch' });
   check('TikTok: client_key وscope بفواصل بلا code_challenge', tkParams.client_key === 'ck' && tkParams.scope === 'a,b' && tkParams.code_challenge === undefined);
