@@ -7,6 +7,8 @@
  * لا أسرار: أسطر السجل المقبولة محصورة بقائمة بادئات معروفة، وكل نص يُقصّ.
  */
 
+import { cycleStaleWarning } from './cycleDeferral';
+
 export type LiveModuleKey =
   | 'core' | 'owner' | 'auth' | 'agents' | 'platforms' | 'external' | 'gate' | 'automation'
   | 'backup' | 'monitor' | 'storage' | 'memory' | 'products' | 'customers';
@@ -58,7 +60,8 @@ export function classifyLogLine(raw: string): LiveEventInput | null {
     const posts = Number(kv(line, 'posts') || 0), ok = Number(kv(line, 'withMetrics') || 0);
     const fol = kv(line, 'followers'); const err = kv(line, 'issue') || kv(line, 'error');
     const level: LiveLevel = posts > 0 && ok === 0 ? 'warn' : 'ok';
-    return { module: 'memory', level, title: `أرقام ${platformAr(p)}`, text: `قيست ${ok} من ${posts}${fol && fol !== '-' ? ` — ${fol} متابع` : ''}${err && err !== '-' && ok < posts ? ` (رمز ${err})` : ''}` };
+    const why = ok < posts ? describeMetricsIssue(err) : null;
+    return { module: 'memory', level, title: `أرقام ${platformAr(p)}`, text: `قيست ${ok} من ${posts}${fol && fol !== '-' ? ` — ${fol} متابع` : ''}${why ? ` — ${why}` : ''}` };
   }
   if (line.startsWith('[comments]')) {
     const p = platformAr(kv(line, 'platform') || '');
@@ -344,7 +347,8 @@ export interface LiveInsights {
   topics: Array<{ key: string; label: string; count: number }>;
   byPlatform: Array<{ platform: string; label: string; total: number; last24h: number }>;
   topProducts: Array<{ name: string; count: number }>;
-  publish: Array<{ platform: string; label: string; published: number; failed: number }>;
+  /** منشورة فعلاً بمعرّف حقيقي (فريدة لكل معرّف) · مجدولة لدى المنصة · فاشلة. */
+  publish: Array<{ platform: string; label: string; published: number; scheduled: number; failed: number }>;
   latestComments: Array<{ platform: string; label: string; intent: string; text: string; at: string }>;
   leadStages: Array<{ key: string; count: number }>;
 }
@@ -393,12 +397,16 @@ export function buildLiveInsights(i: LiveInsightsInput): LiveInsights {
     const s = String(l.stage || 'NEW');
     stages.set(s, (stages.get(s) || 0) + 1);
   }
-  const pub = new Map<string, { published: number; failed: number }>();
+  // تدقيق 2026-10-26: «منشور فعلاً» = حالة published بمعرّف حقيقي، **فريد لكل معرّف** (لا يُعدّ
+  // سجلّان للمنشور نفسه مرتين)، والمجدول لدى المنصة يُعدّ وحده — لا يُخلط بالمنشور.
+  const pub = new Map<string, { published: Set<string>; scheduled: Set<string>; failed: number }>();
   for (const r of i.publishRecords || []) {
     if (!r || r.simulated) continue;
     const p = String(r.platform || 'other');
-    const cur = pub.get(p) || { published: 0, failed: 0 };
-    if ((r.state === 'published' || r.state === 'scheduled') && (r.providerPostId || r.externalVideoId)) cur.published += 1;
+    const cur = pub.get(p) || { published: new Set<string>(), scheduled: new Set<string>(), failed: 0 };
+    const id = String(r.externalVideoId || r.providerPostId || '');
+    if (id && r.state === 'published') { cur.published.add(id); cur.scheduled.delete(id); }
+    else if (id && r.state === 'scheduled' && !cur.published.has(id)) cur.scheduled.add(id);
     else if (r.state === 'failed') cur.failed += 1;
     pub.set(p, cur);
   }
@@ -415,8 +423,74 @@ export function buildLiveInsights(i: LiveInsightsInput): LiveInsights {
     topics: sorted(topics, (k, v) => ({ key: k, label: TOPIC_AR[k] || k, count: v }), (x) => x.count).slice(0, 8),
     byPlatform: sorted(plat, (k, v) => ({ platform: k, label: platformAr(k), total: v.total, last24h: v.last24h }), (x) => x.total),
     topProducts: sorted(products, (k, v) => ({ name: clip(k, 60), count: v }), (x) => x.count).slice(0, 6),
-    publish: sorted(pub, (k, v) => ({ platform: k, label: platformAr(k), published: v.published, failed: v.failed }), (x) => x.published),
+    publish: sorted(pub, (k, v) => ({ platform: k, label: platformAr(k), published: v.published.size, scheduled: v.scheduled.size, failed: v.failed }), (x) => x.published),
     latestComments,
     leadStages: sorted(stages, (k, v) => ({ key: k, count: v }), (x) => x.count),
   };
+}
+
+// -----------------------------------------------------------------------------
+// تدقيق 2026-10-26 (#3): دورات 24/7 من مصدرها الحقيقي — الإيقاع الفعلي (مع مضاعف ضغط
+// الخطة)، عدد الدورات، التأجيل وسببه، والتأخّر — بدل نصوص إيقاع ثابتة في الواجهة.
+// -----------------------------------------------------------------------------
+
+export type LiveCycleStatus = 'ok' | 'late' | 'deferred' | 'paused' | 'never';
+export interface LiveCycleInput {
+  key: string;
+  label: string;
+  cadenceMs: number | null;
+  lastRunAt: string | null;
+  cycles?: number | null;
+  active: boolean;
+  deferred?: boolean;
+  deferredReason?: string | null;
+  /** سبب التوقف حين يكون غير نشط (قرار المالك/إعداد). */
+  pausedReason?: string | null;
+}
+export interface LiveCycleView {
+  key: string;
+  label: string;
+  cadenceMs: number | null;
+  lastRunAt: string | null;
+  nextDueAt: string | null;
+  cycles: number | null;
+  status: LiveCycleStatus;
+  note: string | null;
+}
+
+/** حالة كل دورة: متأخرة = فاتتها أكثر من دورتين (منطق /api/health نفسه). */
+export function buildLiveCycles(rows: LiveCycleInput[], nowMs: number): LiveCycleView[] {
+  return rows.map((r) => {
+    const cadence = typeof r.cadenceMs === 'number' && r.cadenceMs > 0 ? r.cadenceMs : null;
+    const t = r.lastRunAt ? Date.parse(r.lastRunAt) : NaN;
+    const nextDueAt = cadence && Number.isFinite(t) ? new Date(t + cadence).toISOString() : null;
+    let status: LiveCycleStatus = 'ok';
+    let note: string | null = null;
+    if (!r.active) { status = 'paused'; note = r.pausedReason || 'موقوفة بقرارك'; }
+    else if (r.deferred) { status = 'deferred'; note = clip(r.deferredReason || 'مؤجّلة لحماية الخطة المجانية', 120); }
+    else if (!Number.isFinite(t)) { status = 'never'; note = 'لم تُنفَّذ دورة منذ الإقلاع بعد'; }
+    else if (cadence) {
+      const w = cycleStaleWarning(r.lastRunAt, cadence, nowMs);
+      if (w.stale) { status = 'late'; note = `فاتتها ~${w.missedCycles} دورات`; }
+    }
+    return { key: r.key, label: r.label, cadenceMs: cadence, lastRunAt: Number.isFinite(t) ? new Date(t).toISOString() : null, nextDueAt, cycles: typeof r.cycles === 'number' ? r.cycles : null, status, note };
+  });
+}
+
+/** رموز أخطاء Graph/المنصات ⇒ عربية مفهومة («10x11» = الرمز 10 على 11 منشوراً). */
+const GRAPH_CODE_AR: Record<string, string> = {
+  '10': 'ينقص إذن الإحصاءات', '200': 'ينقص إذن', '190': 'انتهت صلاحية الرمز — أعد الربط',
+  '4': 'حد الطلبات', '17': 'حد الطلبات', '32': 'حد الطلبات', '613': 'حد الطلبات',
+  '100': 'منشور محذوف أو غير متاح', '803': 'منشور غير موجود', '1': 'خطأ مؤقت من المنصة', '2': 'خطأ مؤقت من المنصة',
+};
+export function describeMetricsIssue(issue: string | null | undefined): string | null {
+  const raw = String(issue || '').trim();
+  if (!raw || raw === '-') return null;
+  const parts = raw.split(',').map((x) => x.trim()).filter(Boolean).slice(0, 3).map((p) => {
+    const m = /^([A-Za-z0-9_]+)(?:\/\d+)?x(\d+)$/.exec(p);
+    if (!m) return clip(p, 40);
+    const ar = GRAPH_CODE_AR[m[1]] || `رمز ${m[1]}`;
+    return `${ar} (${m[2]} منشوراً · ${p})`;
+  });
+  return parts.join('، ');
 }
