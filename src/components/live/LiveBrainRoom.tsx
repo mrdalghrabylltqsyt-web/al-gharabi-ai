@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useSta
 import { apiService } from '../../services/api';
 import { useApp } from '../../context/AppContext';
 import { LiveAlertStrip, LiveControlCenter } from './LiveControlCenter';
+import { getSoundtrack, SOUND_MODES, type SoundMode, type SoundState, type PingLevel } from './liveSoundtrack';
 
 /**
  * غرفة العقل الحية — الإصدار 2 (2026-10-25).
@@ -58,6 +59,8 @@ const JOURNEY = [
   { title: 'تحليل النتائج', detail: 'وتوصيات للتحسين', badge: '#38BDF8', mods: ['memory', 'monitor'] },
 ];
 const POLL_MS = 4000;
+// عدد الغرف المفتوحة (التبويب + الشاشة الحية): الموسيقى تتوقف حين تُغلق آخر غرفة.
+let openRooms = 0;
 const BUCKET_MS = 10000;
 const BUCKETS = 30; // 5 دقائق
 const RECENT_MS = 10 * 60000;
@@ -196,6 +199,18 @@ const CSS = `
 .lbr-wall .lbr-gauges>div>div{font-size:10.5px!important}
 .lbr-wall .lbr-col ::-webkit-scrollbar{width:6px}
 .lbr-wall .lbr-col ::-webkit-scrollbar-thumb{background:#2B3A66;border-radius:6px}
+.lbr-core{transition:transform .17s cubic-bezier(.2,.8,.2,1),filter .17s}
+.lbr-core.lbr-thump{transform:scale(1.07);filter:brightness(1.35) saturate(1.2)}
+.lbr-snd{display:inline-flex;align-items:center;gap:6px;padding:3px 6px 3px 4px;border-radius:999px;border:1px solid #2B3A66;background:#0F1630}
+.lbr-snd.on{border-color:#E879F9;box-shadow:0 0 16px rgba(232,121,249,.35)}
+.lbr-snd-btn{display:inline-flex;align-items:center;gap:7px;padding:5px 12px;min-height:30px;border-radius:999px;border:0;background:linear-gradient(135deg,#3B0D4F,#140B30);color:#FDF4FF;font-weight:700;cursor:pointer}
+.lbr-snd select{background:#0B1028;color:#E7ECF8;border:1px solid #1E2A5E;border-radius:999px;padding:4px 8px;font-size:12px;cursor:pointer}
+.lbr-snd input[type=range]{width:78px;accent-color:#E879F9;cursor:pointer}
+.lbr-eq{display:inline-flex;align-items:flex-end;gap:2px;height:14px}
+.lbr-eq i{display:block;width:3px;height:4px;border-radius:2px;background:#F0ABFC}
+.lbr-snd.on .lbr-eq i{animation:lbr-eq .9s ease-in-out infinite}
+.lbr-snd.on .lbr-eq i:nth-child(2){animation-delay:-.3s}.lbr-snd.on .lbr-eq i:nth-child(3){animation-delay:-.6s}.lbr-snd.on .lbr-eq i:nth-child(4){animation-delay:-.45s}
+@keyframes lbr-eq{0%,100%{height:3px}50%{height:14px}}
 @media (prefers-reduced-motion: reduce){.lbr-stars,.lbr-scan,.lbr-radar,.lbr-rot,.lbr-rot2,.lbr-rot3,.lbr-orbit,.lbr-counter,.lbr-ticker{animation:none}}
 `;
 
@@ -256,6 +271,26 @@ export const LiveBrainRoom: React.FC<{ variant?: 'page' | 'wall'; onClose?: () =
   const [hits, setHits] = useState<Record<string, number>>({});
   const [selected, setSelected] = useState<ModKey>('platforms');
   const [motion, setMotion] = useState(true);
+  const [snd, setSnd] = useState<SoundState>(() => getSoundtrack().state);
+  const coreRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const st = getSoundtrack();
+    openRooms += 1;
+    const unsub = st.subscribe(setSnd);
+    // نبض قلب العقل المركزي مع كل ضربة إيقاع.
+    const unbeat = st.onBeat(() => {
+      const el = coreRef.current; if (!el) return;
+      el.classList.add('lbr-thump');
+      window.setTimeout(() => el.classList.remove('lbr-thump'), 170);
+    });
+    // إن اختار المالك التشغيل سابقاً تُستأنف تلقائياً (يتجاهلها المتصفح بصمت إن لم يسمح بعد).
+    if (st.wanted && !st.state.playing) void st.start();
+    return () => {
+      unsub(); unbeat();
+      openRooms -= 1;
+      if (openRooms <= 0) st.stop(false);
+    };
+  }, []);
   const [error, setError] = useState<string | null>(null);
   const [lastOkAt, setLastOkAt] = useState<number | null>(null);
   const [now, setNow] = useState(Date.now());
@@ -330,6 +365,8 @@ export const LiveBrainRoom: React.FC<{ variant?: 'page' | 'wall'; onClose?: () =
     });
     if (firstLoad.current) return;
     setFreshIds(new Set(incoming.map((e) => e.id)));
+    // كل حدث حقيقي جديد نغمةٌ على الإيقاع (حتى 3 لكل دفعة كي لا تتزاحم).
+    for (const e of incoming.slice(-3)) getSoundtrack().ping((['ok', 'info', 'warn', 'error'].includes(e.level) ? e.level : 'info') as PingLevel);
     const t = Date.now();
     const newBursts: Burst[] = [];
     const hitUpd: Record<string, number> = {};
@@ -443,6 +480,10 @@ export const LiveBrainRoom: React.FC<{ variant?: 'page' | 'wall'; onClose?: () =
     return frac >= 0.999 ? `M${60 - r} 60 A${r} ${r} 0 1 1 ${60 + r} 60 A${r} ${r} 0 1 1 ${60 - r} 60` : `M${x0.toFixed(2)} ${y0.toFixed(2)} A${r} ${r} 0 ${large} 1 ${x1.toFixed(2)} ${y1.toFixed(2)}`;
   };
 
+  // طاقة الإيقاع من النظام الحقيقي: نشاط الأحداث في الدقيقة + أخطر تنبيه قائم.
+  const alarmLevel: 'ok' | 'warn' | 'critical' = (data?.alerts || []).some((a: any) => a.severity === 'critical') ? 'critical' : (data?.alerts || []).some((a: any) => a.severity === 'warning') ? 'warn' : 'ok';
+  useEffect(() => { getSoundtrack().setEnergy(perMinute, alarmLevel); }, [perMinute, alarmLevel]);
+
   // ملاءمة الشاشة: يُبحث عن أكبر مقياس لا يخرج عنده أي عمود عن الشاشة — فيُكبَّر المحتوى
   // حين يتسع المكان ويُصغَّر بالقدر اللازم فقط حين يضيق. القياس على DOM مباشرة قبل الرسم
   // (بلا وميض)، ويُعاد عند تغيّر مقاس الشاشة أو بنية المحتوى، ومرة كل دقيقة.
@@ -496,6 +537,18 @@ export const LiveBrainRoom: React.FC<{ variant?: 'page' | 'wall'; onClose?: () =
           {modules.automation && modules.automation.status !== 'ok' && <span style={{ padding: '7px 12px', borderRadius: 999, border: '1px solid #7A1F3A', color: '#FDA4AF', background: 'rgba(0,0,0,.25)' }}>{modules.automation.metric}</span>}
           <span className="lbr-mono" style={{ padding: '7px 12px', borderRadius: 999, border: '1px solid #1A2350', background: 'rgba(0,0,0,.25)' }}>{clock(new Date(now).toISOString())} بغداد</span>
           {wall && <span style={{ display: 'inline-flex', gap: 10, padding: '7px 12px', borderRadius: 999, border: '1px solid #1A2350', background: 'rgba(0,0,0,.25)' }}>{(['ok', 'partial', 'off'] as const).map((k) => <span key={k} style={{ display: 'inline-flex', alignItems: 'center', gap: 5 }}><span style={{ width: 8, height: 8, borderRadius: 3, background: STATUS_COLOR[k], boxShadow: `0 0 8px ${STATUS_COLOR[k]}` }} />{k === 'ok' ? 'يعمل' : k === 'partial' ? 'جزئي' : 'متوقف'}</span>)}</span>}
+          {snd.supported && (
+            <span className={'lbr-snd' + (snd.playing ? ' on' : '')} role="group" aria-label="إيقاع الغرفة">
+              <button type="button" className="lbr-snd-btn" onClick={() => getSoundtrack().toggle()} aria-pressed={snd.playing} title={snd.playing ? 'إيقاف إيقاع الغرفة' : 'تشغيل إيقاع حيّ يتفاعل مع أحداث النظام'}>
+                <span className="lbr-eq" aria-hidden="true"><i /><i /><i /><i /></span>
+                {snd.playing ? 'إيقاف الإيقاع' : 'تشغيل الإيقاع'}
+              </button>
+              <select aria-label="نمط الإيقاع" value={snd.mode} onChange={(e) => getSoundtrack().setMode(e.target.value as SoundMode)}>
+                {SOUND_MODES.map((m) => <option key={m.id} value={m.id}>{m.label} · {m.bpm}</option>)}
+              </select>
+              <input type="range" min={0} max={100} step={1} aria-label="مستوى الصوت" title={`الصوت ${Math.round(snd.volume * 100)}%`} value={Math.round(snd.volume * 100)} onChange={(e) => getSoundtrack().setVolume(Number(e.target.value) / 100)} />
+            </span>
+          )}
           <button type="button" onClick={() => setMotion((m) => !m)} style={{ padding: '7px 14px', minHeight: 34, borderRadius: 999, border: '1px solid #2B3A66', background: '#0F1630', color: '#E7ECF8', cursor: 'pointer' }}>{motion ? 'إيقاف الحركة' : 'تشغيل الحركة'}</button>
           {wall && fsSupported && <button type="button" onClick={toggleFs} style={{ padding: '7px 14px', minHeight: 34, borderRadius: 999, border: '1px solid #2B3A66', background: '#0F1630', color: '#E7ECF8', cursor: 'pointer' }}>{isFs ? 'خروج من ملء الشاشة' : 'ملء الشاشة'}</button>}
           {wall && <button type="button" onClick={() => onCloseRef.current?.()} aria-label="إغلاق الشاشة الحية" title="إغلاق (Esc)" style={{ padding: '7px 16px', minHeight: 34, borderRadius: 999, border: '1px solid #F0ABFC', background: 'linear-gradient(135deg,#3B0D4F,#140B30)', color: '#FDF4FF', fontWeight: 700, cursor: 'pointer', boxShadow: '0 0 16px rgba(240,171,252,.35)' }}>✕ إغلاق</button>}
@@ -619,7 +672,7 @@ export const LiveBrainRoom: React.FC<{ variant?: 'page' | 'wall'; onClose?: () =
                       <span key={b.id} className="lbr-burst" style={{ offsetPath: `path('${b.path}')`, background: `radial-gradient(circle, #fff 0%, ${b.color} 45%, transparent 70%)`, boxShadow: `0 0 16px ${b.color}, 0 0 36px ${b.color}` } as React.CSSProperties} />
                     ))}
 
-                    <div className="lbr-core" style={{ position: 'absolute', left: CX - 92, top: CY - 92, width: 184, height: 184, borderRadius: '50%', border: '2px solid #F0ABFC', background: 'radial-gradient(circle at 50% 38%, #3B1166 0%, #160A33 45%, #070417 80%)', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 3, textAlign: 'center' }}>
+                    <div ref={coreRef} className="lbr-core" style={{ position: 'absolute', left: CX - 92, top: CY - 92, width: 184, height: 184, borderRadius: '50%', border: '2px solid #F0ABFC', background: 'radial-gradient(circle at 50% 38%, #3B1166 0%, #160A33 45%, #070417 80%)', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 3, textAlign: 'center' }}>
                       <svg width="52" height="52" viewBox="0 0 48 48" aria-hidden="true" style={{ filter: 'drop-shadow(0 0 12px #E879F9)' }}><g fill="none" stroke="#FDF4FF" strokeWidth="1.8" strokeLinecap="round"><ellipse cx="24" cy="27" rx="7" ry="8" /><circle cx="24" cy="15" r="4" /><path d="M17 23 L8 15 L4 18 M17 27 L5 27 L2 31 M17 31 L8 39 L5 44 M31 23 L40 15 L44 18 M31 27 L43 27 L46 31 M31 31 L40 39 L43 44" /></g></svg>
                       <div style={{ fontSize: 15, fontWeight: 800, textShadow: '0 0 14px rgba(240,171,252,.8)' }}>العقل المركزي</div>
                       <div style={{ fontSize: 10, color: '#D8B4FE' }}>والمنسّق التنفيذي</div>

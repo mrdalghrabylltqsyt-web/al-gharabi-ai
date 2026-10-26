@@ -143,6 +143,16 @@ check('Esc والإغلاق يعيدان الواجهة كما كانت', ui.inc
 check('مركز السيطرة المضغوط يغلق الشاشة عند الانتقال', cc.includes('compact?: boolean') && cc.includes('onLeave?.()'));
 check('الإشعار المنبثق يظهر فوق الشاشة الحية', app.includes('z-[90] glass-strong'));
 
+// 10) إيقاع الغرفة — موسيقى تُولَّد محلياً وتتفاعل مع الأحداث الحقيقية
+const snd = read('src/components/live/liveSoundtrack.ts');
+check('★ الإيقاع يُولَّد في المتصفح (لا ملفات ولا شبكة ولا حصة)', snd.includes('createOscillator') && !/fetch\(|new Audio\(|\.mp3|\.wav|apiService/.test(snd));
+check('★ زر تشغيل/إيقاف + نمط + مستوى صوت', ui.includes('getSoundtrack().toggle()') && ui.includes('نمط الإيقاع') && ui.includes('مستوى الصوت') && snd.includes("SOUND_MODES"));
+check('★ كل حدث حقيقي نغمة على الإيقاع', ui.includes('getSoundtrack().ping(') && snd.includes('ping(level: PingLevel)'));
+check('الطاقة من النشاط الحقيقي وأخطر تنبيه', ui.includes('getSoundtrack().setEnergy(perMinute, alarmLevel)'));
+check('قلب العقل ينبض مع الضربة', ui.includes('lbr-thump') && snd.includes('onBeat('));
+check('محرّك واحد مشترك ويتوقف بإغلاق آخر غرفة', snd.includes('export function getSoundtrack()') && ui.includes('if (openRooms <= 0) st.stop(false)'));
+check('لا تشغيل بلا نقرة (سياسة المتصفح) والاختيار محفوظ', snd.includes("ctx.state !== 'running'") && snd.includes('gharabi.live.music'));
+
 console.log('\n' + '='.repeat(60));
 if (failures.length) {
   console.error(`FAILED: ${failures.length} — passed ${passed}`);
