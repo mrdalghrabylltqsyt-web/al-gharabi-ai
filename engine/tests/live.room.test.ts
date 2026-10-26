@@ -137,7 +137,7 @@ const app = read('src/App.tsx');
 check('★ زر الشاشة الحية في الترويسة للمالك فقط', header.includes('الشاشة الحية') && header.includes("currentUser?.role === 'owner' && onOpenLiveWall") && header.includes('requestFullscreen'));
 check('★ الشاشة الحية فوق الواجهة (تخفي الأقسام الجانبية)', app.includes('<LiveBrainRoom variant="wall" onClose={closeLiveWall} />') && ui.includes("position: 'fixed', inset: 0, zIndex: 60"));
 check('★ نفس المصدر لا مصدر ثانٍ', !/fetch\(/.test(ui) && ui.includes('apiService.getLiveRoom(lastIdRef.current)'));
-check('★ ملاءمة شاشة واحدة بلا تمرير', ui.includes('lbr-wallgrid') && ui.includes('col.scrollHeight / col.clientHeight') && ui.includes("transformOrigin: 'top right'"));
+check('★ ملاءمة شاشة واحدة بلا تمرير', ui.includes('lbr-wallgrid') && ui.includes('c.scrollHeight <= c.clientHeight + 1') && ui.includes('wallBox.w / 1500') && ui.includes("transformOrigin: 'top right'"));
 check('لا جلب مزدوج أثناء فتح الشاشة', ui.includes("document.body.dataset.liveWall !== '1'") && ui.includes('delete body.dataset.liveWall'));
 check('Esc والإغلاق يعيدان الواجهة كما كانت', ui.includes("e.key === 'Escape'") && ui.includes('body.style.overflow = prevOverflow') && ui.includes('exitFullscreen'));
 check('مركز السيطرة المضغوط يغلق الشاشة عند الانتقال', cc.includes('compact?: boolean') && cc.includes('onLeave?.()'));

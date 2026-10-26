@@ -80,9 +80,9 @@ function ago(iso: string | null | undefined, now: number): string {
   return h < 48 ? `قبل ${h} س` : `قبل ${Math.round(h / 24)} يوم`;
 }
 function clock(iso: string): string {
-  try { return new Date(iso).toLocaleTimeString('ar-IQ', { hour: '2-digit', minute: '2-digit', second: '2-digit', timeZone: 'Asia/Baghdad' }); } catch { return ''; }
+  try { return new Date(iso).toLocaleTimeString('ar-IQ-u-nu-latn', { hour: '2-digit', minute: '2-digit', second: '2-digit', timeZone: 'Asia/Baghdad' }); } catch { return ''; }
 }
-const fmt = (n: number) => { try { return Math.round(n).toLocaleString('ar-IQ'); } catch { return String(Math.round(n)); } };
+const fmt = (n: number) => { try { return Math.round(n).toLocaleString('en-US'); } catch { return String(Math.round(n)); } };
 
 /** عدّاد يتصاعد بسلاسة نحو القيمة الحقيقية الجديدة. */
 function useCountUp(target: number, ms = 900): number {
@@ -186,9 +186,13 @@ const CSS = `
 .lbr-col>*{flex-shrink:0}
 .lbr-wall .lbr-panel{padding:10px 12px}
 .lbr-wall .lbr-kpi{padding:8px 12px!important}
-.lbr-wall .lbr-kpi .v{font-size:24px}
+.lbr-wall .lbr-kpi .v{font-size:28px}
 .lbr-sel-wall>div{margin-top:8px!important;padding:10px 12px!important}
-.lbr-wall .lbr-gauges svg{width:66px;height:66px}
+.lbr-wall .lbr-gauges svg{width:78px;height:78px}
+.lbr-wall .lbr-step>span:first-child{width:36px!important;height:36px!important;font-size:15px!important}
+.lbr-wall .lbr-step{align-items:center!important}
+.lbr-wall .lbr-h{font-size:15px}
+.lbr-wall .lbr-h:before{width:8px;height:8px}
 .lbr-wall .lbr-gauges>div>div{font-size:10.5px!important}
 .lbr-wall .lbr-col ::-webkit-scrollbar{width:6px}
 .lbr-wall .lbr-col ::-webkit-scrollbar-thumb{background:#2B3A66;border-radius:6px}
@@ -273,6 +277,7 @@ export const LiveBrainRoom: React.FC<{ variant?: 'page' | 'wall'; onClose?: () =
   onCloseRef.current = onClose;
   const wallRef = useRef<HTMLDivElement>(null);
   const wallGridRef = useRef<HTMLDivElement>(null);
+  const wallInnerRef = useRef<HTMLDivElement>(null);
   const wallBox = useBox(wallRef, { w: typeof window !== 'undefined' ? window.innerWidth : 1920, h: typeof window !== 'undefined' ? window.innerHeight : 1080 });
   const fitMode = wall && wallBox.w >= 900;
   // تصميم الشاشة على عرض 1680–1920 نقطة؛ الشاشات الأكبر (تلفاز/4K) تُكبَّر حتى 1.35.
@@ -438,22 +443,27 @@ export const LiveBrainRoom: React.FC<{ variant?: 'page' | 'wall'; onClose?: () =
     return frac >= 0.999 ? `M${60 - r} 60 A${r} ${r} 0 1 1 ${60 + r} 60 A${r} ${r} 0 1 1 ${60 - r} 60` : `M${x0.toFixed(2)} ${y0.toFixed(2)} A${r} ${r} 0 ${large} 1 ${x1.toFixed(2)} ${y1.toFixed(2)}`;
   };
 
-  // ملاءمة الشاشة: إن تجاوز محتوى أي عمود ارتفاعه، تُصغَّر الكتلة كلها بالقدر اللازم فقط.
-  // يُعاد الحساب من المقياس الأساسي عند تغيّر مقاس الشاشة أو عدد العناصر الثابتة.
-  const fitKey = `${wallBox.w}x${wallBox.h}|${plats.length}|${(ins.topics || []).length}|${(ins.topProducts || []).length}|${(ins.byPlatform || []).length}|${(ins.leadStages || []).length}|${appr.latest ? 1 : 0}|${(selView?.items || []).length}|${selected}|${data ? 1 : 0}`;
+  // ملاءمة الشاشة: يُبحث عن أكبر مقياس لا يخرج عنده أي عمود عن الشاشة — فيُكبَّر المحتوى
+  // حين يتسع المكان ويُصغَّر بالقدر اللازم فقط حين يضيق. القياس على DOM مباشرة قبل الرسم
+  // (بلا وميض)، ويُعاد عند تغيّر مقاس الشاشة أو بنية المحتوى، ومرة كل دقيقة.
+  const fitKey = `${wallBox.w}x${wallBox.h}|${plats.length}|${(ins.topics || []).length}|${(ins.topProducts || []).length}|${(ins.byPlatform || []).length}|${(ins.leadStages || []).length}|${appr.latest ? 1 : 0}|${(selView?.items || []).length}|${selected}|${data ? 1 : 0}|${(data?.alerts || []).length}|${Math.floor(now / 60000)}`;
   const fitKeyRef = useRef('');
   useLayoutEffect(() => {
-    if (!fitMode) return;
-    if (fitKeyRef.current !== fitKey) {
-      fitKeyRef.current = fitKey;
-      if (fitScale !== null) { setFitScale(null); return; }
-    }
-    const grid = wallGridRef.current; if (!grid) return;
-    let ratio = 1;
-    for (const col of Array.from(grid.children) as HTMLElement[]) {
-      if (col.clientHeight > 0) ratio = Math.max(ratio, col.scrollHeight / col.clientHeight);
-    }
-    if (ratio > 1.01 && wallScale > 0.45) setFitScale(Math.max(0.45, wallScale / ratio));
+    if (!fitMode || fitKeyRef.current === fitKey) return;
+    const inner = wallInnerRef.current, grid = wallGridRef.current;
+    if (!inner || !grid) return;
+    fitKeyRef.current = fitKey;
+    const fits = (sc: number) => {
+      inner.style.width = `${wallBox.w / sc}px`;
+      inner.style.height = `${wallBox.h / sc}px`;
+      return (Array.from(grid.children) as HTMLElement[]).every((c) => c.scrollHeight <= c.clientHeight + 1);
+    };
+    // الحد الأعلى: لا يقل عرض التصميم عن 1500 نقطة (حتى لا تنضغط الأعمدة)، ولا يتجاوز 1.6.
+    let lo = 0.45, hi = Math.max(lo, Math.min(1.6, wallBox.w / 1500));
+    if (fits(hi)) lo = hi;
+    else for (let i = 0; i < 10; i++) { const m = (lo + hi) / 2; if (fits(m)) lo = m; else hi = m; }
+    fits(lo);
+    setFitScale(Math.round(lo * 1000) / 1000);
   });
 
   if (!isOwner) {
@@ -463,7 +473,9 @@ export const LiveBrainRoom: React.FC<{ variant?: 'page' | 'wall'; onClose?: () =
   const wave = sparkPath(buckets, 600, 70);
   const maxHour = Math.max(1, ...hourly);
   // لوحة تتمدّد لتملأ ما تبقّى من العمود في الشاشة الحية (قوائم تُمرَّر داخلها فقط).
-  const flexPanel: React.CSSProperties | undefined = wall ? { display: 'flex', flexDirection: 'column', flex: '1 1 0', minHeight: 120 } : undefined;
+  const flexPanel: React.CSSProperties | undefined = wall ? { display: 'flex', flexDirection: 'column', flex: '1 1 0', minHeight: 190 } : undefined;
+  // لوحة تتمدّد لملء الفراغ ولا تنكمش تحت محتواها.
+  const growPanel: React.CSSProperties | undefined = wall ? { display: 'flex', flexDirection: 'column', flex: '1 0 auto' } : undefined;
 
 
   const headerEl = (
@@ -498,7 +510,7 @@ export const LiveBrainRoom: React.FC<{ variant?: 'page' | 'wall'; onClose?: () =
           <Kpi id="k1" label="تفاعلات الزبائن · 24 ساعة" value={sum(hourly)} sub={`من كل المنصات — الإجمالي ${fmt(sum((ins.byPlatform || []).map((p: any) => p.total)))}`} color="#7DD3FC" spark={hourly} />
           <Kpi id="k2" label="استفسارات تجارية · 24 ساعة" value={sum(hourlyInq)} sub="سعر · تقسيط · توفر" color="#F0ABFC" spark={hourlyInq} />
           <Kpi id="k3" label="ردود بانتظار موافقتك" value={Number(appr.pending || 0)} sub="جاهزة للإرسال بنقرة" color="#FCD34D" />
-          <Kpi id="k4" label="منصات متصلة" value={connected} suffix={` / ${plats.length || 10}`} sub="بتحقق من المزوّد" color="#6EE7B7" />
+          <Kpi id="k4" label="منصات متصلة" value={connected} suffix={` / ${fmt(plats.length || 10)}`} sub="بتحقق من المزوّد" color="#6EE7B7" />
           <Kpi id="k5" label="منشورات بمعرّف حقيقي" value={publishedTotal} sub="منشورة فعلاً على المنصات" color="#A5B4FC" />
           <Kpi id="k6" label="نبض الأحداث · دقيقة" value={perMinute} sub="أحداث حقيقية آخر 60 ثانية" color="#22D3EE" spark={buckets} />
         </section>
@@ -530,7 +542,7 @@ export const LiveBrainRoom: React.FC<{ variant?: 'page' | 'wall'; onClose?: () =
               </div>
   );
   const mapEl = (
-            <section aria-label="المخطط الحي" className="lbr-panel" style={wall ? { padding: 10, flex: '1 1 0', minHeight: 260, display: 'flex', flexDirection: 'column' } : { padding: 12 }}>
+            <section aria-label="المخطط الحي" className="lbr-panel" style={wall ? { padding: 10, flex: '1 1 0', minHeight: 420, display: 'flex', flexDirection: 'column' } : { padding: 12 }}>
               <div style={{ display: 'flex', flexWrap: 'wrap', justifyContent: 'space-between', gap: 8, padding: '2px 6px 8px' }}>
                 <h2 className="lbr-h">المخطط الهندسي الحي — 13 قسماً حول العقل المركزي</h2>
                 <span style={{ fontSize: 11, color: '#93A1C3' }}>كل نبضة = حدث حقيقي الآن · توهّج القسم = نشاطه آخر 10 دقائق</span>
@@ -653,7 +665,7 @@ export const LiveBrainRoom: React.FC<{ variant?: 'page' | 'wall'; onClose?: () =
                 </div>
               )}
 
-              {wall ? <div className="lbr-sel-wall" style={{ flex: 'none', maxHeight: '34%', overflowY: 'auto' }}>{selectedBlock}</div> : selectedBlock}
+              {wall ? <div className="lbr-sel-wall" style={{ flex: 'none', maxHeight: '30%', overflowY: 'auto' }}>{selectedBlock}</div> : selectedBlock}
             </section>
   );
   const pulseEl = (
@@ -684,6 +696,7 @@ export const LiveBrainRoom: React.FC<{ variant?: 'page' | 'wall'; onClose?: () =
                   ))}
                 </div>
                 <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 10, color: '#7C89AD', marginTop: 4 }}><span>قبل 24 س</span><span>الآن</span></div>
+                {data && sum(hourly) === 0 && <div style={{ fontSize: 12, color: '#93A1C3', marginTop: 6 }}>لا تفاعلات من الزبائن في آخر 24 ساعة — يظهر كل تعليق أو رسالة هنا لحظة وصوله.</div>}
                 <div style={{ display: 'flex', gap: 12, fontSize: 11, marginTop: 6 }}><span style={{ color: '#7DD3FC' }}>■ تفاعلات</span><span style={{ color: '#F0ABFC' }}>■ استفسارات تجارية</span></div>
               </section>
   );
@@ -803,9 +816,9 @@ export const LiveBrainRoom: React.FC<{ variant?: 'page' | 'wall'; onClose?: () =
             </section>
   );
   const journeyEl = (
-            <section aria-label="السير العام" className="lbr-panel">
+            <section aria-label="السير العام" className="lbr-panel" style={growPanel}>
               <h2 className="lbr-h" style={{ marginBottom: 10 }}>السير العام — تضيء الخطوة التي وقع فيها آخر حدث</h2>
-              <div style={{ display: 'grid', gridTemplateColumns: wall ? 'repeat(2, minmax(0, 1fr))' : 'repeat(auto-fit, minmax(150px, 1fr))', gap: 10 }}>
+              <div style={{ display: 'grid', gridTemplateColumns: wall ? 'minmax(0, 1fr)' : 'repeat(auto-fit, minmax(150px, 1fr))', gap: wall ? 8 : 10, ...(wall ? { flex: 1, gridAutoRows: '1fr' } : {}) }}>
                 {JOURNEY.map((j, i) => (
                   <div key={j.title} className={'lbr-step' + (i === journeyIdx ? ' on' : '')} style={{ padding: '10px 12px', border: '1px solid rgba(99,102,241,.25)', borderRadius: 14, display: 'flex', gap: 10, alignItems: 'flex-start', background: 'rgba(6,9,24,.6)', transition: 'all .4s' }}>
                     <span className="lbr-mono" style={{ width: 28, height: 28, flex: 'none', borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 12, fontWeight: 800, background: j.badge, color: '#05070F', boxShadow: `0 0 14px ${j.badge}` }}>{i + 1}</span>
@@ -858,16 +871,19 @@ export const LiveBrainRoom: React.FC<{ variant?: 'page' | 'wall'; onClose?: () =
   const platStatusEl = (
             <section className="lbr-panel">
               <h2 className="lbr-h" style={{ marginBottom: 8 }}>حالة المنصات العشر</h2>
+              {/* في الشاشة الحية: عمودان متجاوران بدل قائمة طويلة، لتوفير الارتفاع. */}
+              <div style={wall ? { display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', columnGap: 14 } : undefined}>
               {plats.map((p: any) => {
                 const c = p.connected ? (p.partial ? STATUS_COLOR.partial : STATUS_COLOR.ok) : STATUS_COLOR.off;
                 const txt = p.connected ? (p.partial ? `متصل — ${p.partial}` : `متصل${typeof p.followers === 'number' ? ` · ${fmt(p.followers)}` : ''}`) : 'غير مربوط';
                 return (
-                  <div key={p.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, padding: '7px 0', borderBottom: '1px solid rgba(27,37,80,.6)', fontSize: 12 }}>
+                  <div key={p.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: wall ? 'flex-start' : 'center', flexDirection: wall ? 'column' : 'row', gap: wall ? 2 : 8, padding: wall ? '5px 0' : '7px 0', borderBottom: '1px solid rgba(27,37,80,.6)', fontSize: wall ? 11.5 : 12 }}>
                     <span style={{ color: PLATFORM_COLOR[p.id] || '#E7ECF8', fontWeight: 600 }}>{PLATFORM_AR[p.id] || p.id}</span>
                     <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, color: c, textAlign: 'left' }}><span className={p.connected && !p.partial ? '' : 'lbr-blink'} style={{ width: 8, height: 8, flex: 'none', borderRadius: '50%', background: c, boxShadow: `0 0 8px ${c}` }} />{txt}</span>
                   </div>
                 );
               })}
+              </div>
             </section>
   );
   const cyclesEl = (
@@ -971,7 +987,7 @@ export const LiveBrainRoom: React.FC<{ variant?: 'page' | 'wall'; onClose?: () =
       style={{ position: 'fixed', inset: 0, zIndex: 60, background: 'radial-gradient(ellipse 90% 60% at 50% 22%, #170F3A 0%, #070A1A 55%, #03040B 100%)', color: '#E7ECF8', overflowX: 'hidden', overflowY: fitMode ? 'hidden' : 'auto' }}>
       {backdrop}
       {fitMode ? (
-        <div style={{ position: 'absolute', top: 0, right: 0, width: wallBox.w / wallScale, height: wallBox.h / wallScale, transform: `scale(${wallScale})`, transformOrigin: 'top right' }}>
+        <div ref={wallInnerRef} style={{ position: 'absolute', top: 0, right: 0, width: wallBox.w / wallScale, height: wallBox.h / wallScale, transform: `scale(${wallScale})`, transformOrigin: 'top right' }}>
           {wallBody}
         </div>
       ) : (
