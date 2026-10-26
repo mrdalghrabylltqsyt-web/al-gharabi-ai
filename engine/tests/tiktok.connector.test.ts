@@ -195,7 +195,9 @@ function unitTests(): void {
   check('حلّ مجموعة جزئية يضيف user.info.basic', partial.includes('user.info.basic'));
   check('حلّ مجموعة جزئية يضيف video.upload (مسار المسودة)', partial.includes('video.upload'));
   check('حلّ مجموعة جزئية يضيف video.publish (مسار النشر المباشر)', partial.includes('video.publish'));
-  check('لا يُضاف نطاق خارج النطاقات الثلاثة المعتمدة عبر التجاوز', resolveTikTokScopes(['video.list']).includes('video.list') === false);
+  // 2026-10-26: نطاقا القياس (Display API) يُقبلان بالتجاوز الصريح فقط — لا يُطلبان افتراضياً.
+  check('★ نطاق القياس video.list يُقبل بالتجاوز الصريح (مزامنة الأرقام)', resolveTikTokScopes(['video.list']).includes('video.list') && resolveTikTokScopes(['user.info.stats']).includes('user.info.stats'));
+  check('★ نطاقا القياس لا يُطلبان افتراضياً (لا كسر لشاشة الربط)', !resolveTikTokScopes().includes('video.list') && !TIKTOK_REQUIRED_SCOPES.includes('video.list'));
   check('الحلّ بلا تكرار', new Set(partial).size === partial.length);
   check('لا نطاق غير رسمي في الحلّ', resolveTikTokScopes(['not_a_real_scope']).includes('not_a_real_scope') === false);
 
@@ -481,9 +483,15 @@ async function integrationTests(): Promise<void> {
     check('مفردات الحالات معلنة في الرد', Array.isArray(status.truthfulStates) && status.truthfulStates.length === 11);
     check('الحالة الصادقة بلا أي سرّ', !JSON.stringify({ s: status.state, r: status.stateReason, n: status.nextAction }).includes(TT_CLIENT_SECRET));
 
-    group('13) تكامل: إعادة استخدام state مرفوضة (منع replay)');
-    const replay = await fetch(`${BASE}/api/platforms/tiktok/oauth/callback?code=AUTHCODE_TEST&state=${encodeURIComponent(stateVal)}`, { headers: auth });
-    check('إعادة استخدام state => 400', replay.status === 400, `status=${replay.status}`);
+    group('13) تكامل: إعادة استخدام state (منع replay) مع إعادة عرض العودة المكررة (#121)');
+    // #121: العودة المكررة الحرفية (نفس state + نفس code) تتلقى نتيجة الأول — بلا تبادل ثانٍ للرمز.
+    const callsBeforeReplay = mock.state.calls;
+    const dupCb = await fetch(`${BASE}/api/platforms/tiktok/oauth/callback?code=AUTHCODE_TEST&state=${encodeURIComponent(stateVal)}`, { headers: auth });
+    check('العودة المكررة الحرفية تتلقى نتيجة الأول (لا فشل كاذب)', dupCb.status === cbRes.status, `status=${dupCb.status}`);
+    check('★ العودة المكررة لا تبادل الرمز مرة ثانية لدى المزوّد', mock.state.calls === callsBeforeReplay, `calls ${callsBeforeReplay}→${mock.state.calls}`);
+    // منع replay الحقيقي باقٍ: نفس state بـcode مختلف مرفوض.
+    const replay = await fetch(`${BASE}/api/platforms/tiktok/oauth/callback?code=AUTHCODE_OTHER&state=${encodeURIComponent(stateVal)}`, { headers: auth });
+    check('إعادة استخدام state بـcode آخر => 400', replay.status === 400, `status=${replay.status}`);
 
     group('14) تكامل: state غير صالح مرفوض');
     const badState = await fetch(`${BASE}/api/platforms/tiktok/oauth/callback?code=X&state=totally_invalid_state_value`, { headers: auth });

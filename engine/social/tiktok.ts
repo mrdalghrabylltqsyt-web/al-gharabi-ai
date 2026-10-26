@@ -223,8 +223,16 @@ export const TIKTOK_REQUIRED_SCOPES: readonly string[] = Object.freeze([
 /**
  * تجاوز اختياري من البيئة (قائمة مفصولة بفواصل).
  */
+/**
+ * نطاقات القياس (Display API) — اختيارية: تُطلب فقط إن أضافها المالك إلى `TIKTOK_OAUTH_SCOPES`
+ * بعد تفعيلها لتطبيقنا في TikTok Developer Portal؛ طلب نطاق غير مفعَّل يكسر شاشة الربط.
+ * - video.list      → POST /v2/video/list/ (view/like/comment/share لفيديوهات الحساب).
+ * - user.info.stats → follower_count من /v2/user/info/.
+ */
+export const TIKTOK_MEASUREMENT_SCOPES: readonly string[] = Object.freeze(['video.list', 'user.info.stats']);
+
 export function resolveTikTokScopes(requested?: readonly string[]): string[] {
-  const known = new Set(TIKTOK_REQUIRED_SCOPES);
+  const known = new Set([...TIKTOK_REQUIRED_SCOPES, ...TIKTOK_MEASUREMENT_SCOPES]);
   const extra = (requested || [])
     .map((s) => String(s).trim())
     .filter((s) => Boolean(s) && known.has(s));
@@ -666,6 +674,15 @@ function tiktokErrorCode(data: any): string | null {
   return code && String(code) !== 'ok' ? String(code) : null;
 }
 
+export interface TikTokVideoStats { id: string; title: string | null; createTime: number | null; views: number | null; likes: number | null; comments: number | null; shares: number | null }
+
+/** تحويل عنصر فيديو من /v2/video/list/ إلى أرقام صافية (null لما لم يُرجعه المزود — لا صفر وهمي). */
+export function parseTikTokVideoStats(v: any): TikTokVideoStats | null {
+  if (!v || !v.id) return null;
+  const num = (x: any) => { const n = Number(x); return x !== undefined && x !== null && Number.isFinite(n) ? n : null; };
+  return { id: String(v.id), title: v.title ? String(v.title) : null, createTime: num(v.create_time), views: num(v.view_count), likes: num(v.like_count), comments: num(v.comment_count), shares: num(v.share_count) };
+}
+
 export interface TikTokAccountIdentity {
   openId: string;
   displayName: string | null;
@@ -787,6 +804,41 @@ export class TikTokClient {
           unionId: user.union_id ? String(user.union_id) : null,
         },
       };
+    } catch (e: any) {
+      return { ok: false, data: null, error: String(e?.message || 'فشل الاتصال بـTikTok.'), code: 'NETWORK_ERROR' };
+    }
+  }
+
+  /** أرقام فيديوهات الحساب (Display API، نطاق video.list) — صفحة واحدة حتى 20 فيديو. */
+  async listVideos(accessToken: string, maxCount = 20): Promise<TikTokResult<{ videos: TikTokVideoStats[] }>> {
+    if (!accessToken) return { ok: false, data: null, error: 'رمز الوصول غير متوفر.' };
+    try {
+      const u = new URL(tiktokApiUrl('/v2/video/list/', this.baseUrl));
+      u.searchParams.set('fields', 'id,title,create_time,view_count,like_count,comment_count,share_count');
+      const res = await this.fetchImpl(u.toString(), { method: 'POST', headers: tiktokAuthHeaders(accessToken), body: JSON.stringify({ max_count: Math.max(1, Math.min(20, maxCount)) }) });
+      const data = await res.json().catch(() => null);
+      const errorCode = tiktokErrorCode(data);
+      if (!res.ok || errorCode || !Array.isArray(data?.data?.videos)) {
+        return { ok: false, data: null, error: tiktokError(data, 'تعذّر قراءة فيديوهات TikTok.'), code: errorCode || `HTTP_${res.status}` };
+      }
+      return { ok: true, data: { videos: (data.data.videos as any[]).map(parseTikTokVideoStats).filter((v): v is TikTokVideoStats => v !== null) } };
+    } catch (e: any) {
+      return { ok: false, data: null, error: String(e?.message || 'فشل الاتصال بـTikTok.'), code: 'NETWORK_ERROR' };
+    }
+  }
+
+  /** عدد متابعي الحساب (نطاق user.info.stats). */
+  async getFollowerCount(accessToken: string): Promise<TikTokResult<{ followers: number | null }>> {
+    if (!accessToken) return { ok: false, data: null, error: 'رمز الوصول غير متوفر.' };
+    try {
+      const u = new URL(tiktokApiUrl('/v2/user/info/', this.baseUrl));
+      u.searchParams.set('fields', 'follower_count');
+      const res = await this.fetchImpl(u.toString(), { method: 'GET', headers: { Authorization: `Bearer ${accessToken}` } });
+      const data = await res.json().catch(() => null);
+      const errorCode = tiktokErrorCode(data);
+      if (!res.ok || errorCode) return { ok: false, data: null, error: tiktokError(data, 'تعذّر قراءة متابعي TikTok.'), code: errorCode || `HTTP_${res.status}` };
+      const n = Number(data?.data?.user?.follower_count);
+      return { ok: true, data: { followers: Number.isFinite(n) ? n : null } };
     } catch (e: any) {
       return { ok: false, data: null, error: String(e?.message || 'فشل الاتصال بـTikTok.'), code: 'NETWORK_ERROR' };
     }

@@ -108,6 +108,22 @@ check('نطاقات Threads للتعليقات معلنة', THREADS_REPLY_SCOPES
   check('★ الواجهة: إرسال/تعديل/رفض لكل رد + «أرسل كل الجاهز» لكل منصة', ui.includes("decide(x.id, 'approve')") && ui.includes("decide(x.id, 'edit_approve', editText)") && ui.includes("decide(x.id, 'reject')") && ui.includes("bulk(r.platform, 'approve')"));
   check('اللوحة داخل صندوق الزبائن', read('src/components/agent/CommercialInbox.tsx').includes('<ReadyRepliesPanel />'));
 
+  // 2026-10-26: سبب اللون الأصفر لتيك توك وثريدز — إصلاح جذري.
+  const tkIn = (metrics: FivePlatformInput['metrics']): FivePlatformInput => ({ platform: 'tiktok', name: 'TikTok', connected: true, capabilities: ['publish', 'analytics'],
+    read: { attempted: false, ok: null, lastIngestAt: null, errorCode: null, error: null }, watcher: null,
+    approvals: { pending: 0, oldestPendingAt: null, sent24h: 0 }, lastPublish: { at: iso(60 * 24 * 5), ok: true, code: null }, metrics });
+  const tkScope = buildFivePlatformReadiness([tkIn({ posts: 0, withMetrics: 0, issue: 'SCOPE_MISSING_video.list' })], { sendMode: 'approval', nowMs: NOW }).rows[0];
+  const tkLine = tkScope.lines.find((l) => l.key === 'metrics')!;
+  check('★ تيك توك بلا نطاق video.list: سبب محدّد وإصلاح دقيق بدل «لا قياس بعد»', tkLine.state === 'partial' && tkLine.detail.includes('video.list') && String(tkLine.fix).includes('TIKTOK_OAUTH_SCOPES'));
+  const tkOk = buildFivePlatformReadiness([tkIn({ posts: 6, withMetrics: 6, issue: null })], { sendMode: 'approval', nowMs: NOW }).rows[0];
+  check('★ تيك توك يصبح أخضر بمجرد القياس (التعليقات «غير متاحة» لا تُحسب ضده)', tkOk.state === 'ready', tkOk.state);
+  const srv = read('server.ts');
+  check('★ مزامنة الأرقام تشمل تيك توك عبر Display API', srv.includes('tiktokClient().listVideos(') && srv.includes('perPlatform.tiktok = st'));
+  check('★ ثريدز يستبعد المنشور المحذوف (100/33) بدل عدّه مشكلة', srv.includes('markPublishRemoteGone("threads"'));
+  const { parseTikTokVideoStats } = await import('../social/tiktok');
+  const pv = parseTikTokVideoStats({ id: '7', view_count: 120, like_count: 4, comment_count: 0 });
+  check('تحويل أرقام فيديو تيك توك: الصفر الحقيقي يبقى والمفقود null', pv?.views === 120 && pv?.comments === 0 && pv?.shares === null && parseTikTokVideoStats({}) === null);
+
   console.log('\n' + '='.repeat(60));
   if (failed) { console.log(`FAILED: ${failed} — passed ${passed}`); process.exit(1); }
   console.log(`PASSED: ${passed} five-platforms-ready checks`);

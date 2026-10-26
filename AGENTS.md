@@ -52,6 +52,10 @@
 في الوضع «تلقائي» مفتاح «الرد الآلي» لكل منصة هو الحَكَم. ثريدز: قراءة الردود (`threads_read_replies`) والرد
 (`threads_manage_replies`) ضمن دورة مراقب Meta. تيك توك: لا تعليقات عبر الواجهة الرسمية (يُعلن «غير متاح»).
 الجاهزية الحقيقية لكل منصة: `/api/platforms/five-readiness` + لوحة `ReadyRepliesPanel` في صندوق الزبائن.
+**القياس (2026-10-26):** تيك توك صار له قياس عبر Display API (`listVideos` على `/v2/video/list/` + المتابعون)؛
+نطاقا `video.list` و`user.info.stats` اختياريان (`TIKTOK_MEASUREMENT_SCOPES`) ولا يُطلبان إلا عبر
+`TIKTOK_OAUTH_SCOPES` بعد تفعيلهما في Developer Portal، وبدونهما تعلن الجاهزية `SCOPE_MISSING_video.list` بإصلاح دقيق.
+ثريدز (وفيسبوك/إنستغرام) يستبعد المنشور المحذوف من المنصة (100/33) بـ`markPublishRemoteGone` ولا يعدّه مشكلة.
 
 **معلّق على قرار المالك فقط:** B7 (نقل المحادثات إلى جدول مستقل) · PR #24 وPR #3 (مراجعة) ·
 ربط WhatsApp/Google Business/Instagram/Telegram/TikTok/Threads · وضع تطبيق Meta (Live +
