@@ -217,13 +217,13 @@ const CSS = `
 .lbr-snd.on .lbr-eq i{animation:lbr-eq .9s ease-in-out infinite}
 .lbr-snd.on .lbr-eq i:nth-child(2){animation-delay:-.3s}.lbr-snd.on .lbr-eq i:nth-child(3){animation-delay:-.6s}.lbr-snd.on .lbr-eq i:nth-child(4){animation-delay:-.45s}
 @keyframes lbr-eq{0%,100%{height:3px}50%{height:14px}}
-.lbr-spider{position:absolute;left:0;top:0;width:44px;height:44px;margin:-22px 0 0 -22px;offset-rotate:auto 90deg;offset-distance:0%;transition:offset-distance 1.7s cubic-bezier(.45,.05,.3,1),opacity .3s;z-index:6;filter:drop-shadow(0 0 10px #FBBF24) drop-shadow(0 0 22px rgba(251,191,36,.6));pointer-events:none}
+.lbr-spider{position:absolute;left:0;top:0;width:72px;height:72px;margin:-36px 0 0 -36px;offset-rotate:auto 90deg;offset-distance:0%;transition:offset-distance 1.7s cubic-bezier(.45,.05,.3,1),opacity .3s;z-index:6;filter:drop-shadow(0 0 10px #FBBF24) drop-shadow(0 0 22px rgba(251,191,36,.6));pointer-events:none}
 .lbr-spider.out,.lbr-spider.work{offset-distance:100%}
 .lbr-spider.back{offset-distance:0%}
 .lbr-spider .lbr-legs{animation:lbr-walk .28s ease-in-out infinite alternate;transform-origin:24px 27px}
 .lbr-spider.work .lbr-legs{animation-duration:.12s}
 @keyframes lbr-walk{from{transform:scaleX(.9)}to{transform:scaleX(1.1)}}
-.lbr-wrench{position:absolute;top:-14px;left:28px;font-size:18px;animation:lbr-hammer .4s ease-in-out infinite alternate;transform-origin:bottom left}
+.lbr-wrench{position:absolute;top:-16px;left:48px;font-size:28px;animation:lbr-hammer .4s ease-in-out infinite alternate;transform-origin:bottom left}
 @keyframes lbr-hammer{from{transform:rotate(-30deg)}to{transform:rotate(25deg)}}
 .lbr-mod.fixing{border-color:#FBBF24!important;box-shadow:0 0 0 2px #FBBF24,0 0 34px rgba(251,191,36,.65)!important;animation:lbr-fix 0.9s ease-in-out infinite}
 @keyframes lbr-fix{50%{box-shadow:0 0 0 1px #FDE68A,0 0 14px rgba(251,191,36,.35)}}
@@ -238,6 +238,32 @@ const CSS = `
 .lbr-eng-rep summary::-webkit-details-marker{display:none}
 .lbr-eng-badge{flex:none;font-size:10px;padding:1px 7px;border-radius:999px;border:1px solid}
 .lbr-still .lbr-spider .lbr-legs,.lbr-still .lbr-wrench,.lbr-still .lbr-mod.fixing,.lbr-still .lbr-eng-now.busy{animation:none}
+.lbr-patrol{width:64px;height:64px;margin:-32px 0 0 -32px;filter:drop-shadow(0 0 8px #34D399) drop-shadow(0 0 18px rgba(52,211,153,.5))}
+.lbr-patrol.walking{animation:lbr-hop 1.7s cubic-bezier(.45,.05,.3,1) forwards}
+.lbr-patrol.arrived{offset-distance:100%;transition:none}
+.lbr-patrol.arrived .lbr-legs{animation-duration:.9s}
+@keyframes lbr-hop{from{offset-distance:0%}to{offset-distance:100%}}
+.lbr-scanring{transform-box:fill-box;transform-origin:center;animation:lbr-ring 1.6s ease-out infinite}
+@keyframes lbr-ring{0%{opacity:.9;transform:scale(.55)}100%{opacity:0;transform:scale(1.05)}}
+.lbr-verdict{position:absolute;transform:translateX(-50%);z-index:7;font-size:19px;font-weight:800;padding:4px 14px;border-radius:999px;border:1px solid;background:rgba(3,6,18,.92);white-space:nowrap;animation:lbr-pop .35s ease-out;pointer-events:none}
+@keyframes lbr-pop{from{opacity:0;transform:translate(-50%,6px) scale(.8)}to{opacity:1;transform:translate(-50%,0) scale(1)}}
+.lbr-mod.p-warn{box-shadow:inset 0 0 0 1px rgba(251,191,36,.6)}
+.lbr-mod.p-fail{box-shadow:inset 0 0 0 1px rgba(248,113,113,.8),0 0 18px rgba(248,113,113,.35)}
+.lbr-scanning{overflow:hidden}
+.lbr-scanning::after{content:"";position:absolute;left:0;right:0;top:-40%;height:40%;background:linear-gradient(180deg,transparent,rgba(52,211,153,.13),rgba(167,243,208,.22),transparent);animation:lbr-sweep 1.8s linear infinite;pointer-events:none;border-radius:18px}
+@keyframes lbr-sweep{to{top:100%}}
+.lbr-score{flex:none;width:74px;height:74px;border-radius:50%;border:3px solid;display:flex;flex-direction:column;align-items:center;justify-content:center;background:rgba(0,0,0,.3)}
+.lbr-score b{font-size:20px;font-family:'JetBrains Mono',ui-monospace,monospace;line-height:1}
+.lbr-score span{font-size:9px;color:#93A1C3;margin-top:3px}
+.lbr-secgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(92px,1fr));gap:4px;margin-top:8px}
+.lbr-sec{display:flex;align-items:center;gap:5px;font-size:10.5px;padding:3px 6px;border-radius:8px;border:1px solid;background:rgba(6,9,24,.6);color:#DDE4F5;cursor:pointer;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.lbr-sec i{flex:none;width:7px;height:7px;border-radius:50%}
+.lbr-sec.cur{background:rgba(6,78,59,.45);box-shadow:0 0 10px rgba(52,211,153,.4)}
+.lbr-sec.sel{outline:1px solid #F0ABFC}
+.lbr-tab{padding:3px 10px;border-radius:999px;font-size:11px;cursor:pointer;border:1px solid #1E2A5E;background:#0B1028;color:#C9D3EA}
+.lbr-tab.on{background:#2A0F45;border-color:#E879F9;color:#fff}
+.lbr-gap{font-size:11.5px;line-height:1.6;padding:6px 8px;border-radius:10px;border:1px solid;background:rgba(6,9,24,.6)}
+.lbr-still .lbr-patrol.walking{animation-duration:.01s}.lbr-still .lbr-scanring,.lbr-still .lbr-scanning::after{animation:none}
 @media (prefers-reduced-motion: reduce){.lbr-stars,.lbr-scan,.lbr-radar,.lbr-rot,.lbr-rot2,.lbr-rot3,.lbr-orbit,.lbr-counter,.lbr-ticker{animation:none}}
 `;
 
@@ -586,6 +612,39 @@ export const LiveBrainRoom: React.FC<{ variant?: 'page' | 'wall'; onClose?: () =
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [eng?.job?.id, eng?.reports?.[0]?.id, Boolean(eng?.job)]);
   useEffect(() => () => { spiderTimers.current.forEach((t) => window.clearTimeout(t)); }, []);
+
+  // ——— دورية العنكبوت: يمشي بلا توقف من قسم إلى قسم كما تفحص الدورية على الخادم فعلاً ———
+  // كل قفزة = انتقال الدورية الحقيقية إلى القسم التالي (cursor من الخادم)؛ عند الوصول يمدّ خيطاً
+  // ويعرض نتيجة الفحص الحقيقية لذلك القسم.
+  const patrol: any = eng?.patrol || null;
+  const [hop, setHop] = useState<{ id: number; from: string | null; to: string; arrived: boolean } | null>(null);
+  const hopSeq = useRef(0);
+  const hopTimer = useRef<number | null>(null);
+  useEffect(() => {
+    const to = patrol?.cursor ? String(patrol.cursor) : null;
+    if (!to) return;
+    setHop((prev) => {
+      if (prev && prev.to === to) return prev;
+      const id = ++hopSeq.current;
+      if (hopTimer.current) window.clearTimeout(hopTimer.current);
+      hopTimer.current = window.setTimeout(() => setHop((h) => (h && h.id === id ? { ...h, arrived: true } : h)), 1700);
+      return { id, from: prev ? prev.to : null, to, arrived: false };
+    });
+  }, [patrol?.cursor, patrol?.round]);
+  useEffect(() => () => { if (hopTimer.current) window.clearTimeout(hopTimer.current); }, []);
+  const hopPath = (h: { from: string | null; to: string }): string | null => {
+    const A = h.from && h.from !== 'core' ? MOD_BY_KEY[h.from as ModKey] : null;
+    const B = h.to !== 'core' ? MOD_BY_KEY[h.to as ModKey] : null;
+    if (A && B) return crossPath(A, B);
+    if (!A && B) return pathOut(B);
+    if (A && !B) return pathIn(A);
+    return null; // من المركز إلى المركز: يبقى في مكانه
+  };
+  const patrolMod = (k: string) => patrol?.modules?.[k] || null;
+  const scanningMods = hop && hop.arrived && (spider.phase === 'home') ? [hop.to] : [];
+  const scanCls = (mods: string[]) => (mods.some((m) => scanningMods.includes(m)) ? ' lbr-scanning' : '');
+  const [patrolTab, setPatrolTab] = useState<'gaps' | 'reports' | 'sections'>('gaps');
+  const [patrolSel, setPatrolSel] = useState<string | null>(null);
   const engCheck = async () => {
     setEngBusy(true);
     try { await apiService.runEngineerCheck(); showToast('اكتمل فحص المهندس المشرف'); void poll(); }
@@ -794,9 +853,38 @@ export const LiveBrainRoom: React.FC<{ variant?: 'page' | 'wall'; onClose?: () =
                       <circle cx={CX} cy={CY} r="88" fill="none" stroke="#38BDF8" strokeWidth="1.4" className="lbr-halo2" />
                     </svg>
 
+                    {spider.phase === 'home' && hop && (() => {
+                      const path = hopPath(hop);
+                      const dest = hop.to !== 'core' ? MOD_BY_KEY[hop.to as ModKey] : null;
+                      const res = patrolMod(hop.to);
+                      const col = res?.status === 'fail' ? '#F87171' : res?.status === 'warn' ? '#FBBF24' : '#34D399';
+                      return (
+                        <>
+                          {path ? (
+                            <div key={hop.id} className={'lbr-spider lbr-patrol' + (hop.arrived ? ' arrived' : ' walking')} aria-hidden="true" style={{ offsetPath: `path('${path}')` }}>
+                              <svg width="64" height="64" viewBox="0 0 48 48"><g fill="none" stroke="#A7F3D0" strokeWidth="2.2" strokeLinecap="round"><ellipse cx="24" cy="27" rx="6.5" ry="7.5" fill="#052E2B" /><circle cx="24" cy="16" r="4" fill="#052E2B" /><path className="lbr-legs" d="M18 23 L9 15 L5 18 M18 27 L6 27 L3 31 M18 31 L9 39 L6 44 M30 23 L39 15 L43 18 M30 27 L42 27 L45 31 M30 31 L39 39 L42 44" /></g></svg>
+                            </div>
+                          ) : null}
+                          {hop.arrived && dest && res && (
+                            <>
+                              <svg className="lbr-thread" width={W} height={H} viewBox={`0 0 ${W} ${H}`} aria-hidden="true" style={{ position: 'absolute', inset: 0, pointerEvents: 'none' }}>
+                                <line x1={dest.x} y1={dest.y + 40} x2={dest.x} y2={dest.y + 60} stroke={col} strokeWidth="1.6" strokeDasharray="2 3" />
+                                <circle cx={dest.x} cy={dest.y} r="96" fill="none" stroke={col} strokeWidth="1.4" className="lbr-scanring" />
+                              </svg>
+                              <div className="lbr-verdict" style={{ left: dest.x, top: dest.y + 62, borderColor: col, color: col }}>
+                                {res.status === 'ok' ? '✓' : res.status === 'fail' ? '✗' : '⚠'} {res.counts.ok}/{res.counts.ok + res.counts.warn + res.counts.fail} سليم
+                              </div>
+                            </>
+                          )}
+                          {hop.arrived && hop.to === 'core' && res && (
+                            <div className="lbr-verdict" style={{ left: CX, top: CY + 100, borderColor: col, color: col }}>{res.status === 'ok' ? '✓' : res.status === 'fail' ? '✗' : '⚠'} فحص المركز {res.counts.ok}/{res.counts.ok + res.counts.warn + res.counts.fail}</div>
+                          )}
+                        </>
+                      );
+                    })()}
                     {spider.phase !== 'home' && spider.module && MOD_BY_KEY[spider.module as ModKey] && (
                       <div className={'lbr-spider ' + spider.phase} aria-hidden="true" style={{ offsetPath: `path('${pathOut(MOD_BY_KEY[spider.module as ModKey])}')` }}>
-                        <svg width="44" height="44" viewBox="0 0 48 48"><g fill="none" stroke="#FDE68A" strokeWidth="2.2" strokeLinecap="round"><ellipse cx="24" cy="27" rx="6.5" ry="7.5" fill="#3B2405" /><circle cx="24" cy="16" r="4" fill="#3B2405" /><path className="lbr-legs" d="M18 23 L9 15 L5 18 M18 27 L6 27 L3 31 M18 31 L9 39 L6 44 M30 23 L39 15 L43 18 M30 27 L42 27 L45 31 M30 31 L39 39 L42 44" /></g></svg>
+                        <svg width="72" height="72" viewBox="0 0 48 48"><g fill="none" stroke="#FDE68A" strokeWidth="2.2" strokeLinecap="round"><ellipse cx="24" cy="27" rx="6.5" ry="7.5" fill="#3B2405" /><circle cx="24" cy="16" r="4" fill="#3B2405" /><path className="lbr-legs" d="M18 23 L9 15 L5 18 M18 27 L6 27 L3 31 M18 31 L9 39 L6 44 M30 23 L39 15 L43 18 M30 27 L42 27 L45 31 M30 31 L39 39 L42 44" /></g></svg>
                         {spider.phase === 'work' && <span className="lbr-wrench">🔧</span>}
                       </div>
                     )}
@@ -817,7 +905,7 @@ export const LiveBrainRoom: React.FC<{ variant?: 'page' | 'wall'; onClose?: () =
                       const st: Status = v?.status || 'partial';
                       const heat = (moduleHeat[m.key] || 0) / maxHeat;
                       const glow = STATUS_COLOR[st];
-                      const cls = 'lbr-mod' + (selected === m.key ? ' sel' : '') + (hitActive(m.key) ? ' hit' : '') + (spider.module === m.key && spider.phase === 'work' ? ' fixing' : '');
+                      const cls = 'lbr-mod' + (selected === m.key ? ' sel' : '') + (hitActive(m.key) ? ' hit' : '') + (spider.module === m.key && spider.phase === 'work' ? ' fixing' : '') + (patrolMod(m.key)?.status === 'fail' ? ' p-fail' : patrolMod(m.key)?.status === 'warn' ? ' p-warn' : '');
                       return (
                         <button key={m.key} type="button" className={cls} onClick={() => setSelected(m.key)} aria-label={`عرض قسم ${m.title}`}
                           style={{ position: 'absolute', left: m.x - 90, top: m.y - 38, width: 180, minHeight: 76, padding: '8px 10px', borderRadius: 14, border: `1px solid ${m.color}55`, background: `linear-gradient(160deg, rgba(14,18,44,.95), rgba(8,10,26,.9))`, color: '#E7ECF8', textAlign: 'right', cursor: 'pointer', display: 'flex', flexDirection: 'column', gap: 3, boxShadow: `0 0 ${10 + heat * 26}px ${m.color}${heat > 0.05 ? '66' : '22'}, inset 0 0 18px ${m.color}14` }}>
@@ -869,7 +957,7 @@ export const LiveBrainRoom: React.FC<{ variant?: 'page' | 'wall'; onClose?: () =
             </section>
   );
   const interEl = (
-              <section className="lbr-panel" aria-label="تفاعلات 24 ساعة">
+              <section className={'lbr-panel' + scanCls(['customers'])} aria-label="تفاعلات 24 ساعة">
                 <h2 className="lbr-h" style={{ marginBottom: 10 }}>تفاعلات الزبائن — 24 ساعة</h2>
                 <div style={{ display: 'flex', alignItems: 'flex-end', gap: 3, height: 120 }}>
                   {hourly.map((v, i) => (
@@ -886,7 +974,7 @@ export const LiveBrainRoom: React.FC<{ variant?: 'page' | 'wall'; onClose?: () =
               </section>
   );
   const intentsEl = (
-              <section className="lbr-panel" aria-label="نوايا الزبائن">
+              <section className={'lbr-panel' + scanCls(['customers'])} aria-label="نوايا الزبائن">
                 <h2 className="lbr-h" style={{ marginBottom: 10 }}>ماذا يريد الزبائن؟ — النوايا</h2>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 14, flexWrap: 'wrap' }}>
                   <svg width="120" height="120" viewBox="0 0 120 120" role="img" aria-label="توزيع نوايا الزبائن">
@@ -908,7 +996,7 @@ export const LiveBrainRoom: React.FC<{ variant?: 'page' | 'wall'; onClose?: () =
               </section>
   );
   const topicsEl = (
-              <section className="lbr-panel" aria-label="مواضيع الأسئلة">
+              <section className={'lbr-panel' + scanCls(['customers'])} aria-label="مواضيع الأسئلة">
                 <h2 className="lbr-h" style={{ marginBottom: 10 }}>عن ماذا يسألون؟ — المواضيع</h2>
                 {(ins.topics || []).map((t: any, i: number) => {
                   const max = Math.max(1, ...(ins.topics || []).map((x: any) => x.count));
@@ -924,7 +1012,7 @@ export const LiveBrainRoom: React.FC<{ variant?: 'page' | 'wall'; onClose?: () =
               </section>
   );
   const prodsEl = (
-              <section className="lbr-panel" aria-label="أكثر المنتجات سؤالاً">
+              <section className={'lbr-panel' + scanCls(['products'])} aria-label="أكثر المنتجات سؤالاً">
                 <h2 className="lbr-h" style={{ marginBottom: 10 }}>أكثر المنتجات طلباً من الزبائن</h2>
                 {(ins.topProducts || []).map((p: any, i: number) => {
                   const max = Math.max(1, ...(ins.topProducts || []).map((x: any) => x.count));
@@ -942,7 +1030,7 @@ export const LiveBrainRoom: React.FC<{ variant?: 'page' | 'wall'; onClose?: () =
               </section>
   );
   const platInsEl = (
-              <section className="lbr-panel" aria-label="المنصات">
+              <section className={'lbr-panel' + scanCls(['platforms', 'memory'])} aria-label="المنصات">
                 <h2 className="lbr-h" style={{ marginBottom: 10 }}>المنصات — جمهور ووارد ونشر</h2>
                 {(ins.byPlatform || []).map((p: any) => {
                   const pl = plats.find((x) => x.id === p.platform);
@@ -962,7 +1050,7 @@ export const LiveBrainRoom: React.FC<{ variant?: 'page' | 'wall'; onClose?: () =
               </section>
   );
   const leadsEl = (
-              <section className="lbr-panel" aria-label="مراحل الزبائن">
+              <section className={'lbr-panel' + scanCls(['owner', 'gate'])} aria-label="مراحل الزبائن">
                 <h2 className="lbr-h" style={{ marginBottom: 10 }}>رحلة الزبائن المحتملين</h2>
                 <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
                   {(ins.leadStages || []).map((s: any) => (
@@ -982,7 +1070,7 @@ export const LiveBrainRoom: React.FC<{ variant?: 'page' | 'wall'; onClose?: () =
               </section>
   );
   const voicesEl = (
-            <section aria-label="أصوات الزبائن" className="lbr-panel" style={flexPanel}>
+            <section aria-label="أصوات الزبائن" className={'lbr-panel' + scanCls(['customers'])} style={flexPanel}>
               <h2 className="lbr-h" style={{ marginBottom: 10 }}>أصوات الزبائن — آخر ما وصل</h2>
               <div style={{ ...(wall ? { flex: '1 1 0', minHeight: 60 } : { height: 170 }), overflow: 'hidden', maskImage: 'linear-gradient(180deg, transparent, #000 15%, #000 85%, transparent)' }}>
                 <div className={(ins.latestComments || []).length > 3 ? 'lbr-ticker' : ''}>
@@ -1014,69 +1102,112 @@ export const LiveBrainRoom: React.FC<{ variant?: 'page' | 'wall'; onClose?: () =
             </section>
   );
   const ENG_STATUS: Record<string, [string, string]> = { resolved: ['أُصلح', '#34D399'], escalated: ['صُعِّد إليك', '#F87171'], retrying: ['سيعيد المحاولة', '#FBBF24'], deferred: ['مؤجّل', '#FBBF24'], monitoring: ['تحت المراقبة', '#38BDF8'], self_recovered: ['تعافى', '#A5B4FC'] };
+  const SEC_AR: Record<string, string> = { core: 'المركز', ...Object.fromEntries(MODS.map((m) => [m.key, m.title])) };
+  const ST_COL: Record<string, string> = { ok: '#34D399', warn: '#FBBF24', fail: '#F87171', skip: '#64748B' };
+  const ST_ICON: Record<string, string> = { ok: '✓', warn: '⚠', fail: '✗', skip: '–' };
+  const score: number | null = typeof patrol?.score === 'number' ? patrol.score : null;
+  const scoreCol = score == null ? '#93A1C3' : score >= 90 ? '#34D399' : score >= 70 ? '#FBBF24' : '#F87171';
+  const inspections: any[] = Array.isArray(patrol?.inspections) ? patrol.inspections : [];
+  const selInsp = patrolSel ? inspections.find((x) => x.module === patrolSel) : null;
   const engineerEl = (
-            <section className="lbr-panel lbr-eng" aria-label="المهندس المشرف" style={wall ? { ...flexPanel, minHeight: 310, overflow: 'hidden' } : undefined}>
+            <section className="lbr-panel lbr-eng" aria-label="المهندس المشرف" style={wall ? { ...flexPanel, minHeight: 360, overflow: 'hidden' } : undefined}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginBottom: 6 }}>
-                <h2 className="lbr-h">المهندس المشرف — يُصلح ولا يطوّر</h2>
+                <h2 className="lbr-h">المهندس المشرف — حارس المشروع</h2>
                 <span style={{ display: 'inline-flex', gap: 6 }}>
                   <button type="button" className="lbr-eng-btn" disabled={engBusy || !eng} onClick={() => void engCheck()}>افحص الآن</button>
-                  <button type="button" className="lbr-eng-btn" disabled={engBusy || !eng} aria-pressed={Boolean(eng?.enabled)} onClick={() => void engToggle()} style={{ borderColor: eng?.enabled ? '#34D399' : '#F87171', color: eng?.enabled ? '#6EE7B7' : '#FCA5A5' }}>{eng?.enabled ? '● يعمل' : '○ متوقف'}</button>
+                  <button type="button" className="lbr-eng-btn" disabled={engBusy || !eng} aria-pressed={Boolean(eng?.enabled)} onClick={() => void engToggle()} style={{ borderColor: eng?.enabled ? '#34D399' : '#F87171', color: eng?.enabled ? '#6EE7B7' : '#FCA5A5' }}>{eng?.enabled ? '● يُصلح' : '○ الإصلاح متوقف'}</button>
                 </span>
               </div>
               {!eng ? <div style={{ fontSize: 12, color: '#93A1C3' }}>{data ? 'المهندس غير متاح على هذا الخادم بعد.' : 'جارٍ الاتصال…'}</div> : (
                 <>
-                  <div className={'lbr-eng-now' + (eng.job ? ' busy' : '')}>
-                    {eng.job
-                      ? <><b>🕷 يعمل الآن على:</b> {eng.job.title}<div style={{ fontSize: 11, color: '#FDE68A' }}>{eng.job.phase === 'verifying' ? 'يتحقق من زوال العطل…' : `الخطوة: ${eng.job.step}`}</div></>
-                      : spider.phase !== 'home' ? <><b>🕷 {spider.phase === 'back' ? 'يعود إلى المركز' : 'في طريقه إلى'}:</b> {spider.label}</>
-                      : (eng.incidents || []).length
-                        ? <><b>⚠ أعطال مرصودة:</b> {(eng.incidents || []).length} — يتعامل معها حسب الأولوية والحدود</>
-                        : <><b>🕸 في المركز — كل شيء سليم</b><div style={{ fontSize: 11, color: '#93A1C3' }}>{fmt(eng.stats?.checks || 0)} فحص · آخر فحص {ago(eng.stats?.lastCheckAt, now)}</div></>}
-                  </div>
-                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0, 1fr))', gap: 6, margin: '8px 0' }}>
-                    <div className="lbr-eng-stat"><span style={{ color: '#34D399' }}>{fmt(eng.stats?.resolved24h || 0)}</span>أُصلح · 24س</div>
-                    <div className="lbr-eng-stat"><span style={{ color: '#F87171' }}>{fmt(eng.stats?.escalated24h || 0)}</span>صُعِّد · 24س</div>
-                    <div className="lbr-eng-stat"><span style={{ color: '#FBBF24' }}>{fmt(eng.stats?.actionsLastHour || 0)}/{fmt(eng.policy?.maxActionsPerHour || 12)}</span>إجراء · ساعة</div>
-                  </div>
-                  {(eng.incidents || []).map((i: any) => (
-                    <div key={i.key} style={{ fontSize: 11.5, padding: '6px 8px', marginBottom: 6, borderRadius: 10, border: `1px solid ${i.severity === 'critical' ? '#F87171' : '#FBBF24'}55`, background: 'rgba(0,0,0,.25)' }}>
-                      <b style={{ color: i.severity === 'critical' ? '#FCA5A5' : '#FCD34D' }}>{i.title}</b>
-                      {i.needsOwner && <div style={{ color: '#FCA5A5' }}>يحتاج قرارك: {i.needsOwner}</div>}
-                      {i.observeOnly && <div style={{ color: '#93C5FD' }}>مراقبة فقط — لا إجراء آلي آمن</div>}
+                  <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
+                    <div className="lbr-score" style={{ borderColor: scoreCol, color: scoreCol, boxShadow: `0 0 18px ${scoreCol}55` }} title="صحة المشروع من آخر فحص لكل قسم">
+                      <b>{score == null ? '—' : `${score}%`}</b><span>صحة المشروع</span>
                     </div>
-                  ))}
-                  <div style={{ fontSize: 11, color: '#93A1C3', margin: '2px 0 6px' }}>التقارير ({(eng.reports || []).length})</div>
-                  <div style={{ ...(wall ? { flex: '1 1 0', minHeight: 0 } : { maxHeight: 360 }), overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 6 }}>
-                    {!(eng?.reports || []).length && <div style={{ fontSize: 12, color: '#6EE7B7' }}>لا تقارير بعد — لم يحتج أي قسم إلى إصلاح.</div>}
-                    {(eng?.reports || []).map((r: any) => {
-                      const [t, c] = ENG_STATUS[r.status] || ['—', '#93A1C3'];
-                      return (
-                        <details key={r.id} className="lbr-eng-rep">
-                          <summary>
-                            <span className="lbr-eng-badge" style={{ borderColor: c, color: c }}>{t}</span>
-                            <span style={{ flex: 1, minWidth: 0 }}>{r.title}</span>
-                            <span className="lbr-mono" style={{ fontSize: 10, color: '#7C89AD', flex: 'none' }}>{ago(r.endedAt, now)}</span>
-                          </summary>
-                          <div style={{ fontSize: 11.5, lineHeight: 1.7, color: '#C9D3EA', padding: '6px 2px 2px' }}>
-                            <div>{r.summary}</div>
-                            {(r.evidence || []).length > 0 && <div style={{ color: '#93A1C3' }}>الدليل: {(r.evidence || []).join(' · ')}</div>}
-                            {(r.steps || []).map((st: any, i: number) => (
-                              <div key={i} style={{ display: 'flex', gap: 6 }}><span style={{ color: st.ok ? '#34D399' : '#F87171' }}>{st.ok ? '✓' : '✗'}</span><span><b>{st.label}</b> — {st.detail} <span className="lbr-mono" style={{ fontSize: 10, color: '#6B7AA0' }}>{clock(st.at)}</span></span></div>
-                            ))}
-                            <div><b>التحقق:</b> {r.verification}</div>
-                            <div style={{ color: '#93A1C3' }}>المحاولة {r.attempt} · المدة {Math.max(1, Math.round((r.durationMs || 0) / 1000))} ث{r.nextAction ? ` · التالي: ${r.nextAction}` : ''}</div>
+                    <div className={'lbr-eng-now' + (eng.job ? ' busy' : '')} style={{ flex: 1, minWidth: 0 }}>
+                      {eng.job
+                        ? <><b>🕷 يُصلح الآن:</b> {eng.job.title}<div style={{ fontSize: 11, color: '#FDE68A' }}>{eng.job.phase === 'verifying' ? 'يتحقق من زوال العطل…' : `الخطوة: ${eng.job.step}`}</div></>
+                        : spider.phase !== 'home' ? <><b>🕷 {spider.phase === 'back' ? 'يعود إلى المركز' : 'في طريقه للإصلاح'}:</b> {spider.label}</>
+                        : patrol?.cursor ? <><b>🕸 يتجوّل ويفحص:</b> {SEC_AR[patrol.cursor] || patrol.cursor}<div style={{ fontSize: 11, color: '#93A1C3' }}>الجولة {fmt(patrol.round || 0)} · {fmt(patrol.checksTotal || 0)} فحصاً · قسم كل {Math.round((patrol.stepMs || 5000) / 1000)} ث · أُصلح {fmt(eng.stats?.resolved24h || 0)} اليوم</div></>
+                        : <><b>🕸 يستعد للدورية…</b><div style={{ fontSize: 11, color: '#93A1C3' }}>تبدأ بعد دقيقة من الإقلاع</div></>}
+                    </div>
+                  </div>
+                  <div style={{ display: 'flex', gap: 6, margin: '6px 0' }}>
+                    {([['gaps', `الثغرات (${(patrol?.gaps || []).length})`], ['reports', `التقارير (${(eng.reports || []).length})`], ['sections', 'تفاصيل القسم']] as const).map(([k, t]) => (
+                      <button key={k} type="button" className={'lbr-tab' + (patrolTab === k ? ' on' : '')} onClick={() => setPatrolTab(k)}>{t}</button>
+                    ))}
+                  </div>
+                  <div style={{ ...(wall ? { flex: '1 1 0', minHeight: 0 } : { maxHeight: 380 }), overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 6 }}>
+                    {patrolTab === 'gaps' && (
+                      (patrol?.gaps || []).length === 0
+                        ? <div style={{ fontSize: 12, color: '#6EE7B7' }}>{patrol?.round ? 'لا ثغرات في آخر جولة — كل ما فُحص سليم.' : 'الجولة الأولى قيد التنفيذ…'}</div>
+                        : (patrol.gaps as any[]).map((g) => (
+                          <div key={g.id} className="lbr-gap" style={{ borderColor: `${ST_COL[g.status]}66` }}>
+                            <div style={{ display: 'flex', gap: 6, alignItems: 'baseline' }}><b style={{ color: ST_COL[g.status] }}>{ST_ICON[g.status]}</b><b style={{ flex: 1 }}>{g.label}</b><span style={{ fontSize: 10, color: '#7C89AD' }}>{SEC_AR[g.module] || g.module}</span></div>
+                            <div style={{ color: '#C9D3EA' }}>{g.detail}</div>
+                            {g.advice && <div style={{ color: g.repair ? '#6EE7B7' : '#FCD34D' }}>{g.repair ? '🔧 ' : '👤 '}{g.advice}</div>}
                           </div>
-                        </details>
+                        ))
+                    )}
+                    {patrolTab === 'sections' && (
+                  <div className="lbr-secgrid" style={{ marginTop: 0 }} role="list" aria-label="أقسام الدورية">
+                    {(patrol?.order || []).map((k: string) => {
+                      const r = patrolMod(k); const st = r?.status || 'skip';
+                      return (
+                        <button key={k} type="button" role="listitem" className={'lbr-sec' + (patrol?.cursor === k ? ' cur' : '') + (patrolSel === k ? ' sel' : '')} style={{ borderColor: `${ST_COL[st]}88` }} title={`${SEC_AR[k] || k}: ${r ? `${r.counts.ok} سليم · ${r.counts.warn} تحذير · ${r.counts.fail} عطل` : 'لم يُفحص بعد'}`} onClick={() => { setPatrolSel(k === patrolSel ? null : k); setPatrolTab('sections'); }}>
+                          <i style={{ background: ST_COL[st], boxShadow: `0 0 6px ${ST_COL[st]}` }} />{SEC_AR[k] || k}
+                        </button>
                       );
                     })}
                   </div>
-                  <div style={{ fontSize: 10, color: '#6B7AA0', marginTop: 6, lineHeight: 1.6 }}>لا يغيّر قراراتك · لا يحذف · لا يمسّ الإعدادات أو الأسرار · {eng.policy?.maxAttempts || 3} محاولات ثم يصعّد إليك ويهدأ {eng.policy?.cooldownHours || 6} س · حد {eng.policy?.maxActionsPerHour || 12} إجراء/ساعة</div>
+                    )}
+                    {patrolTab === 'sections' && (
+                      !selInsp ? <div style={{ fontSize: 12, color: '#93A1C3' }}>{inspections.length ? 'اختر قسماً من الأعلى لترى كل فحوصه.' : 'تظهر التفاصيل مع أول تحديث كامل (كل 30 ث).'}</div> : (
+                        <>
+                          <div style={{ fontSize: 11, color: '#93A1C3' }}>{SEC_AR[selInsp.module]} · فُحص {ago(selInsp.at, now)}</div>
+                          {selInsp.checks.map((c: any) => (
+                            <div key={c.id} className="lbr-gap" style={{ borderColor: `${ST_COL[c.status]}55` }}>
+                              <div style={{ display: 'flex', gap: 6 }}><b style={{ color: ST_COL[c.status] }}>{ST_ICON[c.status]}</b><b style={{ flex: 1 }}>{c.label}</b></div>
+                              <div style={{ color: '#C9D3EA' }}>{c.detail}</div>
+                              <div style={{ color: '#7C89AD' }}>لماذا: {c.why}</div>
+                              {c.advice && <div style={{ color: '#FCD34D' }}>العمل: {c.advice}</div>}
+                            </div>
+                          ))}
+                        </>
+                      )
+                    )}
+                    {patrolTab === 'reports' && (
+                      !(eng?.reports || []).length ? <div style={{ fontSize: 12, color: '#6EE7B7' }}>لا تقارير بعد — لم يحتج أي قسم إلى تدخّل.</div> :
+                      (eng?.reports || []).map((r: any) => {
+                        const [t, c] = ENG_STATUS[r.status] || ['—', '#93A1C3'];
+                        return (
+                          <details key={r.id} className="lbr-eng-rep">
+                            <summary>
+                              <span className="lbr-eng-badge" style={{ borderColor: c, color: c }}>{t}</span>
+                              <span style={{ flex: 1, minWidth: 0 }}>{r.title}</span>
+                              <span className="lbr-mono" style={{ fontSize: 10, color: '#7C89AD', flex: 'none' }}>{ago(r.endedAt, now)}</span>
+                            </summary>
+                            <div style={{ fontSize: 11.5, lineHeight: 1.7, color: '#C9D3EA', padding: '6px 2px 2px' }}>
+                              <div>{r.summary}</div>
+                              {(r.evidence || []).length > 0 && <div style={{ color: '#93A1C3' }}>الدليل: {(r.evidence || []).join(' · ')}</div>}
+                              {(r.steps || []).map((st: any, i: number) => (
+                                <div key={i} style={{ display: 'flex', gap: 6 }}><span style={{ color: st.ok ? '#34D399' : '#F87171' }}>{st.ok ? '✓' : '✗'}</span><span><b>{st.label}</b> — {st.detail} <span className="lbr-mono" style={{ fontSize: 10, color: '#6B7AA0' }}>{clock(st.at)}</span></span></div>
+                              ))}
+                              <div><b>التحقق:</b> {r.verification}</div>
+                              <div style={{ color: '#93A1C3' }}>المحاولة {r.attempt} · المدة {Math.max(1, Math.round((r.durationMs || 0) / 1000))} ث{r.nextAction ? ` · التالي: ${r.nextAction}` : ''}</div>
+                            </div>
+                          </details>
+                        );
+                      })
+                    )}
+                  </div>
+                  <div style={{ fontSize: 10, color: '#6B7AA0', marginTop: 6, lineHeight: 1.6 }}>يتجوّل ويفحص كل الأقسام بلا توقف · يُصلح الآمن فقط ويتحقق · لا يغيّر قراراتك ولا يحذف · {eng.policy?.maxAttempts || 3} محاولات ثم يصعّد إليك · حد {eng.policy?.maxActionsPerHour || 12} إجراء/ساعة</div>
                 </>
               )}
             </section>
   );
   const gaugesEl = (
-            <section className="lbr-panel">
+            <section className={'lbr-panel' + scanCls(['monitor', 'storage'])}>
               <h2 className="lbr-h" style={{ marginBottom: 12 }}>جسد الخادم — مقاييس حيّة</h2>
               <div className="lbr-gauges" style={{ display: 'grid', gridTemplateColumns: wall ? 'repeat(4, minmax(0, 1fr))' : 'repeat(2, minmax(0, 1fr))', gap: wall ? 6 : 10 }}>
                 <Gauge value={tel.rssMb ?? null} max={tel.limitMb || 512} label="الذاكرة" text={`${tel.rssMb ?? '—'} / ${tel.limitMb || 512} ميغا`} color={(tel.rssMb || 0) > 400 ? '#F87171' : '#34D399'} />
@@ -1091,7 +1222,7 @@ export const LiveBrainRoom: React.FC<{ variant?: 'page' | 'wall'; onClose?: () =
             </section>
   );
   const eventsEl = (
-            <section className="lbr-panel" style={flexPanel}>
+            <section className={'lbr-panel' + scanCls(['core'])} style={flexPanel}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
                 <h2 className="lbr-h">آخر الأحداث</h2>
                 <span className="lbr-blink" style={{ fontSize: 11, color: '#6EE7B7' }}>● مباشر</span>
@@ -1116,7 +1247,7 @@ export const LiveBrainRoom: React.FC<{ variant?: 'page' | 'wall'; onClose?: () =
             </section>
   );
   const platStatusEl = (
-            <section className="lbr-panel">
+            <section className={'lbr-panel' + scanCls(['platforms', 'external'])}>
               <h2 className="lbr-h" style={{ marginBottom: 8 }}>حالة المنصات العشر</h2>
               {/* في الشاشة الحية: عمودان متجاوران بدل قائمة طويلة، لتوفير الارتفاع. */}
               <div style={wall ? { display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', columnGap: 14 } : undefined}>
@@ -1134,7 +1265,7 @@ export const LiveBrainRoom: React.FC<{ variant?: 'page' | 'wall'; onClose?: () =
             </section>
   );
   const cyclesEl = (
-            <section className="lbr-panel">
+            <section className={'lbr-panel' + scanCls(['automation', 'agents', 'backup', 'memory'])}>
               <h2 className="lbr-h" style={{ marginBottom: 8 }}>نبض الدورات 24/7</h2>
               {pulseRows.map((c) => (
                 <div key={c.key} title={c.title || undefined} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, padding: '7px 0', borderBottom: '1px solid rgba(27,37,80,.6)', fontSize: 12 }}>

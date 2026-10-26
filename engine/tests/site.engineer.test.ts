@@ -7,7 +7,9 @@ import { join } from 'node:path';
 import {
   detectIncidents, decideNext, forgetRecovered, addReport, emptyEngineerState, normalizeEngineerState,
   withTimeout, ENGINEER_POLICY, type EngineerSnapshot,
+  incidentsFromPatrol,
 } from '../ops/siteEngineer';
+import { PATROL_ORDER, PATROL_CHECKS, COLLECTION_CAPS, inspectModule, capacityChecks, healthScore, slopePerHour, growthPerDay, type PatrolFacts } from '../ops/engineerPatrol';
 
 const ROOT = process.cwd();
 const read = (p: string) => readFileSync(join(ROOT, p), 'utf8');
@@ -98,7 +100,7 @@ const base = (over: Partial<EngineerSnapshot> = {}): EngineerSnapshot => ({
 const server = read('server.ts');
 const engBlock = server.slice(server.indexOf('const STORAGE_KEY_ENGINEER'), server.indexOf('app.get("/api/engineer", requireOwner'));
 check('★ كتلة المهندس موجودة', engBlock.length > 2000);
-check('★ لا يغيّر أي مفتاح للمالك', !/setCommercialKillSwitch|commercialSendMode\s*=|controls\.(paused|autoReply|enabled|humanReviewMode)\s*=|setJobAutoExecute|autoExecuteApproved\s*=|ownerAlertState\.enabled\s*=/.test(engBlock));
+check('★ لا يغيّر أي مفتاح للمالك', !/setCommercialKillSwitch|commercialSendMode\s*=(?!=)|controls\.(paused|autoReply|enabled|humanReviewMode)\s*=(?!=)|setJobAutoExecute|autoExecuteApproved\s*=(?!=)|ownerAlertState\.enabled\s*=(?!=)|ownerAlertState\s*=(?!=)/.test(engBlock));
 check('★ لا حذف ولا إعادة تشغيل للعملية ولا كود', !/process\.exit|\.splice\(|\bdelete workspace|storageAdapter\.(delete|clear)|DROP |TRUNCATE|child_process|execSync/.test(engBlock));
 check('★ الإصلاح عبر المشغّلات الرسمية', ['runYouTubeWatcherCycle("manual")', 'runMetaWatcherCycle("self_heal")', 'runTelegramWatcherCycle("self_heal")', 'runBrainRuntimeCycleInternal("manual")', 'runCommercialBrainCycle("self_heal")', 'runMetricsSync("self_heal")', 'drAutoBackup?.runCycle?.("self_heal")', 'ensureYouTubeAccessToken()', 'persistState()'].every((x) => engBlock.includes(x)));
 check('★ كل إصلاح يُتحقق منه قبل إعلانه', engBlock.includes('plan.verify(t0)') && engBlock.includes('status: "resolved"'));
@@ -108,13 +110,61 @@ check('★ تقاريره تصمد بعد restart (مفتاح تخزين مست�
 check('★ للمالك فقط', server.includes('app.get("/api/engineer", requireOwner') && server.includes('app.post("/api/engineer/check", requireOwner') && server.includes('app.post("/api/engineer/toggle", requireOwner'));
 check('★ مهمة واحدة في كل مرة', engBlock.includes('if (engineerBusy) return;'));
 check('يبدأ بعد الإقلاع ويعمل كل دقيقة بلا منع الإغلاق', engBlock.includes('setInterval(() => { void engineerTick(); }, 60000)') && engBlock.includes('unref'));
-check('★ الغرفة الحية تعرض المهندس', server.includes('engineer: (() => { try { return engineerView(); }'));
+check('★ الغرفة الحية تعرض المهندس', server.includes('engineer: (() => { try { return engineerView(!lite); }'));
 
 // 5) الواجهة: العنكبوت يتحرك إلى القسم المعطّل
 const ui = read('src/components/live/LiveBrainRoom.tsx');
 check('★ العنكبوت يمشي على مسار القسم الحقيقي', ui.includes('lbr-spider') && ui.includes('pathOut(MOD_BY_KEY'));
 check('★ لوحة المهندس + التقارير الكاملة', ui.includes('المهندس المشرف') && ui.includes('(eng?.reports || []).map((r: any)'));
 check('تشغيل/إيقاف وفحص الآن للمالك', ui.includes('apiService.toggleEngineer(') && ui.includes('apiService.runEngineerCheck()'));
+
+// 6) الدورية: تجوال على كل الأقسام + قاعدة المعرفة + التنبؤ بالثغرات
+{
+  const facts = (over: Partial<PatrolFacts> = {}): PatrolFacts => ({
+    nowMs: NOW, uptimeSec: 9000, cycleHealthy: true, staleCycleNames: [], legacyErpEnabled: false, unhandledRejections: 0, unhandledRejectionsDelta: 0, liveEventsBuffered: 10,
+    pendingDrafts: 0, oldestPendingDraftAt: null, unreadCritical: 0, oldestUnreadCriticalAt: null, ownerEmailReady: true, ownerTelegramReady: false, ownerAlertsEnabled: true,
+    ownerAccounts: 1, activeOwnerAccounts: 1, sessionSecretSource: 'SESSION_SECRET', revokedSessions: 3, loginEmailReady: true,
+    brainEnabled: true, brainLastStatus: 'SUCCESS', brainLastError: null, brainLastSuccessAt: iso(5), brainCadenceMs: 900000, brainMemoryRecords: 10, brainMemoryCap: null,
+    platforms: [{ id: 'facebook', connected: true, providerVerified: true, expiresAt: null, tokenReadable: true }], reauthUnread: 0, publishFailed24h: 0, publishOk24h: 1,
+    sendModeAuto: false, commercialEnabled: true, expiredPendingDrafts: 0, schedulers: [{ key: 'youtube', label: 'يوتيوب', expected: true, armed: true }], jobsOverdue: 0, jobsFailed24h: 0,
+    driveAuthorized: true, backupLevel: 'ok', backupConsecutiveFailures: 0, backupLastError: null, memoryMb: 200, limitMb: 512, memorySlopeMbPerHour: 0.5, loopLagMs: 2, loopLagMaxMs: 20, usageLevel: 'normal',
+    storageReady: true, storageBackend: 'postgres', tls: 'verified', persistFailStreak: 0, writesRequested: 100, writesDone: 90, metricsLastRunAt: iso(30), metricsIntervalMs: 21600000,
+    measured: [{ platform: 'youtube', ok: 5, total: 5, issue: null }], geminiConfigured: true, geminiVerified: 'ok', geminiUsed: 1, geminiLimit: 40, youtubeQuotaPercent: 10, youtubeQuotaExhausted: false,
+    products: 81, productsBadPrice: 0, productsNoName: 0, installmentPlans: 2, showroomName: true, lastInboundAt: { facebook: iso(60) }, escalationsOpen: 0, oldestOpenEscalationAt: null,
+    collections: [{ key: 'socialComments', size: 100, growthPerDay: 5 }], ...over,
+  });
+  check('★ الدورية تغطي المركز والأقسام الثلاثة عشر كلها', PATROL_ORDER.length === 14 && new Set(PATROL_ORDER).size === 14 && PATROL_ORDER.every((m) => (PATROL_CHECKS as any)[m]?.length > 0));
+  const total = Object.values(PATROL_CHECKS).reduce((a, x) => a + x.length, 0);
+  check('★ قاعدة معرفة واسعة (≥40 فحصاً) وكل فحص يحمل «لماذا»', total >= 40 && PATROL_ORDER.every((m) => inspectModule(m, facts()).checks.every((c) => c.why.length > 10)), `total=${total}`);
+  check('★ نظام سليم ⇒ كل الأقسام سليمة وصحة 100%', PATROL_ORDER.every((m) => inspectModule(m, facts()).status !== 'fail') && (healthScore(PATROL_ORDER.map((m) => inspectModule(m, facts()))) || 0) >= 95);
+  const bad = facts({ persistFailStreak: 3, sessionSecretSource: 'ephemeral', productsBadPrice: 2, platforms: [{ id: 'facebook', connected: true, providerVerified: true, expiresAt: null, tokenReadable: false }] });
+  check('★ فشل الحفظ يُرصد في قسم التخزين مع إصلاح', inspectModule('storage', bad).checks.some((c) => c.id === 'storage.persist' && c.status === 'fail' && c.repair === 'persist'));
+  check('★ سرّ جلسات مؤقت = عطل أمني', inspectModule('auth', bad).checks.some((c) => c.id === 'auth.secret' && c.status === 'fail'));
+  check('★ رمز منصة لا يُفك = عطل صامت يُكشف', inspectModule('platforms', bad).checks.some((c) => c.id === 'platforms.token' && c.status === 'fail'));
+  check('منتج بلا سعر = تحذير مع توصية', inspectModule('products', bad).checks.some((c) => c.id === 'products.integrity' && c.status === 'warn' && Boolean(c.advice)));
+  check('كل فحص غير سليم يحمل «العمل»', PATROL_ORDER.flatMap((m) => inspectModule(m, bad).checks).filter((c) => c.status === 'warn' || c.status === 'fail').every((c) => Boolean(c.advice)));
+  const cap = capacityChecks(facts({ collections: [{ key: 'notifications', size: 8600, growthPerDay: 90 }, { key: 'socialComments', size: 9700, growthPerDay: 10 }, { key: 'products', size: 50, growthPerDay: 0 }] }));
+  check('★ التنبؤ بالثغرة: الإشعارات تبلغ سقفها خلال ~16 يوماً = تحذير مبكر', cap.find((c) => c.id === 'capacity.notifications')?.status === 'warn' && /16 يوم/.test(String(cap.find((c) => c.id === 'capacity.notifications')?.detail)));
+  check('★ مجموعة عند 97% = عطل (القصّ الصامت وشيك)', cap.find((c) => c.id === 'capacity.socialComments')?.status === 'fail');
+  check('مجموعة صغيرة بلا نمو = سليمة', cap.find((c) => c.id === 'capacity.products')?.status === 'ok');
+  check('السقوف مطابقة لقصّ التحميل في الخادم', read('server.ts').includes('socialComments: Array.isArray(raw.workspace.socialComments) ? raw.workspace.socialComments.slice(0, ' + COLLECTION_CAPS.socialComments + ')') && read('server.ts').includes('notifications: Array.isArray(raw.workspace.notifications) ? raw.workspace.notifications.slice(0, ' + COLLECTION_CAPS.notifications + ')'));
+  const leak = Array.from({ length: 10 }, (_, i) => ({ t: NOW + i * 5 * 60000, v: 300 + i * 2 }));
+  check('★ كشف التسرّب: ميل الذاكرة +24 ميغا/ساعة', Math.round(slopePerHour(leak) || 0) === 24 && slopePerHour(leak.slice(0, 3)) === null);
+  check('معدل النمو يحتاج 6 ساعات على الأقل (لا حكم من عيّنة قصيرة)', growthPerDay({ t: NOW, v: 0 }, { t: NOW + 3600000, v: 10 }) === null && growthPerDay({ t: NOW, v: 0 }, { t: NOW + 86400000, v: 50 }) === 50);
+  const leakF = facts({ memoryMb: 400, memorySlopeMbPerHour: 20 });
+  check('★ تسرّب يبلغ الحد خلال يوم = تحذير بموعده', inspectModule('monitor', leakF).checks.some((c) => c.id === 'monitor.leak' && c.status === 'warn' && /الحد بعد/.test(c.detail)));
+  check('★ مسودات منتهية = إصلاح آمن عبر الكتيّب', incidentsFromPatrol(inspectModule('gate', facts({ expiredPendingDrafts: 3 })).checks).some((i) => i.key === 'patrol_fix:drafts_expired') && incidentsFromPatrol(inspectModule('gate', facts()).checks).length === 0);
+  check('الفحص المعطوب لا يُسقط الدورية', inspectModule('platforms', { ...facts(), platforms: null as any }).checks.length > 0);
+  const eng = read('server.ts');
+  check('★ الدورية تعمل كل 5 ث على الخادم (ذاكرة فقط) ولا تمنع الإغلاق', eng.includes('const PATROL_STEP_MS = 5000;') && eng.includes('setInterval(patrolStep, PATROL_STEP_MS)') && eng.includes('startEngineerPatrol();'));
+  check('★ الحسابات الثقيلة فقط عند وقفة قسمها', eng.includes('if (at("customers")) for (const c of comments)') && eng.includes('const collections = !at("storage")') && eng.includes('if (!at("platforms") || !linked(id)) return null;'));
+  check('★ الثغرة الجديدة ⇒ تقرير + حدث حي، والعطل بلا إصلاح ⇒ تنبيهك (مرة/12 س)', eng.includes('الدورية: ${chk.label}') && eng.includes('"engineer_patrol"') && eng.includes('nowMs - last > 12 * 3600000'));
+  check('★ التفاصيل الثقيلة في الاستطلاع الكامل فقط', eng.includes('inspections: full ? list : undefined') && eng.includes('engineerView(!lite)'));
+  check('★ كتيّب المسودات المنتهية بلا حذف', eng.includes('sweepExpiredCommercialDrafts(new Date().toISOString())') && eng.includes('case "patrol_fix"'));
+  check('★ العنكبوت يتجوّل على الخريطة بخطى الدورية الحقيقية', ui.includes('lbr-patrol') && ui.includes('patrol?.cursor') && ui.includes('crossPath(A, B)') && ui.includes('lbr-verdict'));
+  check('★ اللوحات المعنية تُمسح أثناء الفحص', (ui.match(/scanCls\(\[/g) || []).length >= 9);
+  check('★ صحة المشروع + الأقسام + الثغرات + التقارير', ui.includes('صحة المشروع') && ui.includes("'gaps'") && ui.includes('lbr-secgrid'));
+}
 
 void (async () => {
   let timedOut = false;
