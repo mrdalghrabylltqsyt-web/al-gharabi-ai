@@ -26,10 +26,11 @@ interface Confirm { title: string; body: string; danger: boolean; run: () => Pro
 
 const CSS = `
 .lcc-strip{position:relative;overflow:hidden;border-radius:16px;padding:12px 16px;display:flex;flex-wrap:wrap;align-items:center;gap:12px;justify-content:space-between}
-.lcc-crit{animation:lcc-crit 1.4s ease-in-out infinite}
-@keyframes lcc-crit{0%,100%{box-shadow:0 0 0 1px #F87171,0 0 24px rgba(248,113,113,.35)}50%{box-shadow:0 0 0 2px #FCA5A5,0 0 60px rgba(248,113,113,.75)}}
-.lcc-warn{animation:lcc-warn 2.4s ease-in-out infinite}
-@keyframes lcc-warn{0%,100%{box-shadow:0 0 0 1px #FBBF24,0 0 16px rgba(251,191,36,.25)}50%{box-shadow:0 0 0 1px #FDE68A,0 0 40px rgba(251,191,36,.5)}}
+.lcc-crit{box-shadow:0 0 0 1px #F87171,0 0 24px rgba(248,113,113,.35)}
+.lcc-crit::before{content:"";position:absolute;inset:0;border-radius:inherit;box-shadow:inset 0 0 0 2px #FCA5A5,inset 0 0 46px rgba(248,113,113,.55);opacity:0;animation:lcc-pulse 1.4s ease-in-out infinite;pointer-events:none;will-change:opacity}
+.lcc-warn{box-shadow:0 0 0 1px #FBBF24,0 0 16px rgba(251,191,36,.25)}
+.lcc-warn::before{content:"";position:absolute;inset:0;border-radius:inherit;box-shadow:inset 0 0 0 1px #FDE68A,inset 0 0 34px rgba(251,191,36,.4);opacity:0;animation:lcc-pulse 2.4s ease-in-out infinite;pointer-events:none;will-change:opacity}
+@keyframes lcc-pulse{50%{opacity:1}}
 .lcc-ok{box-shadow:0 0 0 1px #34D399,0 0 22px rgba(52,211,153,.25)}
 .lcc-sweep:after{content:"";position:absolute;inset:0;background:linear-gradient(90deg,transparent,rgba(255,255,255,.08),transparent);transform:translateX(-100%);animation:lcc-sweep 3s linear infinite;pointer-events:none}
 @keyframes lcc-sweep{to{transform:translateX(100%)}}
@@ -39,7 +40,8 @@ const CSS = `
 .lcc-danger{background:linear-gradient(135deg,#7F1D1D,#450A0A);border-color:#F87171;color:#FEE2E2;box-shadow:0 0 18px rgba(248,113,113,.35)}
 .lcc-safe{background:linear-gradient(135deg,#064E3B,#022C22);border-color:#34D399;color:#D1FAE5}
 .lcc-neutral{background:#0F1630;border-color:#2B3A66;color:#E7ECF8}
-.lcc-big{font-size:15px;padding:12px 20px;border-radius:16px;animation:lcc-crit 2.2s ease-in-out infinite}
+.lcc-big{position:relative;font-size:15px;padding:12px 20px;border-radius:16px}
+.lcc-big::before{content:"";position:absolute;inset:-2px;border-radius:inherit;box-shadow:0 0 0 2px #FCA5A5,0 0 40px rgba(248,113,113,.7);opacity:0;animation:lcc-pulse 2.2s ease-in-out infinite;pointer-events:none;will-change:opacity}
 .lcc-card{border:1px solid rgba(99,102,241,.25);border-radius:16px;padding:12px;background:rgba(6,9,24,.75);display:flex;flex-direction:column;gap:8px;min-width:0}
 .lcc-pill{display:inline-flex;align-items:center;gap:6px;font-size:11px;padding:3px 10px;border-radius:999px;border:1px solid}
 .lcc-tab{padding:6px 12px;border-radius:10px;font-size:12px;cursor:pointer;border:1px solid #1E2A5E;background:#0B1028;color:#C9D3EA}
@@ -49,7 +51,7 @@ const CSS = `
 .lcc-compact .lcc-note{display:none}
 .lcc-compact .lcc-card .lcc-btn{min-height:28px;padding:4px 10px;border-radius:10px}
 .lcc-compact .lcc-big{font-size:13px;padding:8px 14px;border-radius:12px}
-.lbr-still .lcc-crit,.lbr-still .lcc-warn,.lbr-still .lcc-big,.lbr-still .lcc-sweep:after{animation:none}
+.lbr-still .lcc-crit::before,.lbr-still .lcc-warn::before,.lbr-still .lcc-big::before,.lbr-still .lcc-sweep:after{animation:none}
 `;
 
 function beep(): void {
@@ -221,7 +223,7 @@ export const LiveControlCenter: React.FC<{ data: any; refresh: () => void; now: 
   const openLink = (link: string | null | undefined) => { if (link && /^[a-z_]+$/.test(link) && link !== 'live_room') go(link); };
 
   return (
-    <section ref={anchorRef} aria-label="مركز السيطرة والأمان" className={'lbr-panel' + (compact ? ' lcc-compact' : '')} style={{ display: 'flex', flexDirection: 'column', gap: compact ? 10 : 14, ...(compact ? { flex: '1 1 0', minHeight: 0 } : {}) }}>
+    <section ref={anchorRef} data-mod="gate auth owner" aria-label="مركز السيطرة والأمان" className={'lbr-panel' + (compact ? ' lcc-compact' : '')} style={{ display: 'flex', flexDirection: 'column', gap: compact ? 10 : 14, ...(compact ? { flex: '1 1 0', minHeight: 0 } : {}) }}>
       <style>{CSS}</style>
       <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'space-between', gap: 10 }}>
         <div>

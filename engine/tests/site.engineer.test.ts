@@ -114,7 +114,8 @@ check('★ الغرفة الحية تعرض المهندس', server.includes('en
 
 // 5) الواجهة: العنكبوت يتحرك إلى القسم المعطّل
 const ui = read('src/components/live/LiveBrainRoom.tsx');
-check('★ العنكبوت يمشي على مسار القسم الحقيقي', ui.includes('lbr-spider') && ui.includes('pathOut(MOD_BY_KEY'));
+const sp = read('src/components/live/SpiderPatrol.tsx');
+check('★ العنكبوت المتجوّل طبقة فوق الواجهة كاملة (الصفحة والشاشة الحية)', ui.includes('<SpiderPatrol') && ui.includes('spiderEl(wallInnerRef)') && ui.includes('spiderEl(pageRootRef)'));
 check('★ لوحة المهندس + التقارير الكاملة', ui.includes('المهندس المشرف') && ui.includes('(eng?.reports || []).map((r: any)'));
 check('تشغيل/إيقاف وفحص الآن للمالك', ui.includes('apiService.toggleEngineer(') && ui.includes('apiService.runEngineerCheck()'));
 
@@ -124,7 +125,7 @@ check('تشغيل/إيقاف وفحص الآن للمالك', ui.includes('apiSe
     nowMs: NOW, uptimeSec: 9000, cycleHealthy: true, staleCycleNames: [], legacyErpEnabled: false, unhandledRejections: 0, unhandledRejectionsDelta: 0, liveEventsBuffered: 10,
     pendingDrafts: 0, oldestPendingDraftAt: null, unreadCritical: 0, oldestUnreadCriticalAt: null, ownerEmailReady: true, ownerTelegramReady: false, ownerAlertsEnabled: true,
     ownerAccounts: 1, activeOwnerAccounts: 1, sessionSecretSource: 'SESSION_SECRET', revokedSessions: 3, loginEmailReady: true,
-    brainEnabled: true, brainLastStatus: 'SUCCESS', brainLastError: null, brainLastSuccessAt: iso(5), brainCadenceMs: 900000, brainMemoryRecords: 10, brainMemoryCap: null,
+    brainEnabled: true, brainLastStatus: 'SUCCESS', brainLastError: null, brainLastSuccessAt: iso(5), brainLastCompletedAt: iso(5), brainCadenceMs: 900000, brainMemoryRecords: 10, brainMemoryCap: null,
     platforms: [{ id: 'facebook', connected: true, providerVerified: true, expiresAt: null, tokenReadable: true }], reauthUnread: 0, publishFailed24h: 0, publishOk24h: 1,
     sendModeAuto: false, commercialEnabled: true, expiredPendingDrafts: 0, schedulers: [{ key: 'youtube', label: 'يوتيوب', expected: true, armed: true }], jobsOverdue: 0, jobsFailed24h: 0,
     driveAuthorized: true, backupLevel: 'ok', backupConsecutiveFailures: 0, backupLastError: null, memoryMb: 200, limitMb: 512, memorySlopeMbPerHour: 0.5, loopLagMs: 2, loopLagMaxMs: 20, usageLevel: 'normal',
@@ -154,6 +155,10 @@ check('تشغيل/إيقاف وفحص الآن للمالك', ui.includes('apiSe
   const leakF = facts({ memoryMb: 400, memorySlopeMbPerHour: 20 });
   check('★ تسرّب يبلغ الحد خلال يوم = تحذير بموعده', inspectModule('monitor', leakF).checks.some((c) => c.id === 'monitor.leak' && c.status === 'warn' && /الحد بعد/.test(c.detail)));
   check('★ مسودات منتهية = إصلاح آمن عبر الكتيّب', incidentsFromPatrol(inspectModule('gate', facts({ expiredPendingDrafts: 3 })).checks).some((i) => i.key === 'patrol_fix:drafts_expired') && incidentsFromPatrol(inspectModule('gate', facts()).checks).length === 0);
+  check('★ العقل حيّ بالدورة المكتملة لا «آخر تعلّم» (لا إنذار كاذب حين لا بيانات جديدة)', inspectModule('agents', facts({ brainLastSuccessAt: iso(600), brainLastCompletedAt: iso(5) })).checks.find((c) => c.id === 'agents.run')?.status === 'ok');
+  check('★ قرار المالك (الإرسال التلقائي) ليس ثغرة', inspectModule('gate', facts({ sendModeAuto: true })).checks.find((c) => c.id === 'gate.mode')?.status === 'ok');
+  check('★ لا إنذار «وارد مقطوع» لمنصات لا يستقبل نظامنا تعليقاتها', read('server.ts').includes('for (const p of ["facebook", "instagram", "youtube", "telegram", "whatsapp"]) if (linked(p)) lastIn[p] = null;'));
+  check('★ لا تقارير مكررة للثغرة نفسها بعد كل نشر (12 ساعة)', read('server.ts').includes('const recentSame = engineerState.reports.some((r) => r.incidentKey === `patrol:${chk.id}`'));
   check('الفحص المعطوب لا يُسقط الدورية', inspectModule('platforms', { ...facts(), platforms: null as any }).checks.length > 0);
   const eng = read('server.ts');
   check('★ الدورية تعمل كل 5 ث على الخادم (ذاكرة فقط) ولا تمنع الإغلاق', eng.includes('const PATROL_STEP_MS = 5000;') && eng.includes('setInterval(patrolStep, PATROL_STEP_MS)') && eng.includes('startEngineerPatrol();'));
@@ -161,8 +166,14 @@ check('تشغيل/إيقاف وفحص الآن للمالك', ui.includes('apiSe
   check('★ الثغرة الجديدة ⇒ تقرير + حدث حي، والعطل بلا إصلاح ⇒ تنبيهك (مرة/12 س)', eng.includes('الدورية: ${chk.label}') && eng.includes('"engineer_patrol"') && eng.includes('nowMs - last > 12 * 3600000'));
   check('★ التفاصيل الثقيلة في الاستطلاع الكامل فقط', eng.includes('inspections: full ? list : undefined') && eng.includes('engineerView(!lite)'));
   check('★ كتيّب المسودات المنتهية بلا حذف', eng.includes('sweepExpiredCommercialDrafts(new Date().toISOString())') && eng.includes('case "patrol_fix"'));
-  check('★ العنكبوت يتجوّل على الخريطة بخطى الدورية الحقيقية', ui.includes('lbr-patrol') && ui.includes('patrol?.cursor') && ui.includes('crossPath(A, B)') && ui.includes('lbr-verdict'));
-  check('★ اللوحات المعنية تُمسح أثناء الفحص', (ui.match(/scanCls\(\[/g) || []).length >= 9);
+  check('★ يتبع الدورية الحقيقية (cursor + فحوص القسم الجاري) والإصلاح يتقدّم عليها', ui.includes("cursor={patrol?.cursor ? String(patrol.cursor) : null}") && ui.includes('patrol?.current?.checks') && sp.includes('const repairKey = P.repair'));
+  check('★ مشي سلس: حلقة إطارات تكتب DOM مباشرة (بلا إعادة رسم React) + تسارع/تباطؤ + دوران نحو الاتجاه', sp.includes('requestAnimationFrame(tick)') && sp.includes('body.style.transform') && sp.includes('Math.atan2(S.vy, S.vx)') && sp.includes('d * 2.6 + 30'));
+  check('★ مشية رباعية متناوبة بأرجل بمفصلين', sp.includes("lbr-leg-a") && sp.includes("lbr-leg-b") && sp.includes('alternate-reverse') && sp.includes('Q${kx}'));
+  check('★ يقف فوق العنصر، يُنزل خيطه، يعرض نتيجة الفحص، يرفع الخيط ويمضي', ["'drop'", "'inspect'", "'lift'"].every((m) => sp.includes(m)) && sp.includes('lbr-roam-tag') && sp.includes("classList.add('lbr-scanning')"));
+  check('★ لا يغطي العنصر المفحوص (يقف فوق الحافة، اللافتة فوقه أو بجانبه)', sp.includes('r.y - 40') && sp.includes('anchorY: r.y + 4') && sp.includes('S.y > 80'));
+  check('★ كل قسم له بطاقة على المخطط + لوحات أهداف', (ui.match(/data-mod="/g) || []).length >= 14 && ui.includes('data-modcard={m.key}') && ui.includes('data-modcard="core"') && read('src/components/live/LiveControlCenter.tsx').includes('data-mod="gate auth owner"'));
+  check('يتوقف حين تُخفى الصفحة أو تُوقف الحركة (يقف ساكناً بنتيجته)', sp.includes("document.visibilityState === 'visible'") && sp.includes('const still = () =>'));
+  check('★ أداء: حلقات العقل طبقات GPU، والتوهّج الثابت طبقة منفصلة، والنبض بالشفافية', ui.includes('className="lbr-ring lbr-rot"') && ui.includes('lbrGlowWideS') && ui.includes('@keyframes lbr-glowp') && !ui.includes('@keyframes lbr-breathe') && ui.includes('@keyframes lbr-drift{to{transform:translate3d'));
   check('★ صحة المشروع + الأقسام + الثغرات + التقارير', ui.includes('صحة المشروع') && ui.includes("'gaps'") && ui.includes('lbr-secgrid'));
 }
 

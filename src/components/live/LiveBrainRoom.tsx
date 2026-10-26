@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useSta
 import { apiService } from '../../services/api';
 import { useApp } from '../../context/AppContext';
 import { LiveAlertStrip, LiveControlCenter } from './LiveControlCenter';
+import { SpiderPatrol, SPIDER_CSS } from './SpiderPatrol';
 import { getSoundtrack, SOUND_MODES, type SoundMode, type SoundState, type PingLevel } from './liveSoundtrack';
 
 /**
@@ -145,10 +146,10 @@ interface Burst { id: number; color: string; path: string }
 const CSS = `
 .lbr{--glass:rgba(9,13,32,.78)}
 .lbr-mono{font-family:'JetBrains Mono',ui-monospace,monospace;letter-spacing:.02em}
-.lbr-stars{position:absolute;inset:0;pointer-events:none;background-image:radial-gradient(1px 1px at 12% 18%,#fff8,transparent),radial-gradient(1px 1px at 72% 34%,#fff6,transparent),radial-gradient(1.5px 1.5px at 38% 72%,#c4b5fd99,transparent),radial-gradient(1px 1px at 88% 82%,#7dd3fc88,transparent),radial-gradient(1px 1px at 22% 58%,#fff5,transparent),radial-gradient(1.5px 1.5px at 58% 12%,#f0abfc88,transparent),radial-gradient(1px 1px at 8% 92%,#fff4,transparent),radial-gradient(1px 1px at 94% 8%,#fff6,transparent);background-size:340px 340px;animation:lbr-drift 120s linear infinite;opacity:.8}
-@keyframes lbr-drift{to{background-position:340px 680px}}
+.lbr-stars{position:absolute;inset:0;pointer-events:none;background-image:radial-gradient(1px 1px at 12% 18%,#fff8,transparent),radial-gradient(1px 1px at 72% 34%,#fff6,transparent),radial-gradient(1.5px 1.5px at 38% 72%,#c4b5fd99,transparent),radial-gradient(1px 1px at 88% 82%,#7dd3fc88,transparent),radial-gradient(1px 1px at 22% 58%,#fff5,transparent),radial-gradient(1.5px 1.5px at 58% 12%,#f0abfc88,transparent),radial-gradient(1px 1px at 8% 92%,#fff4,transparent),radial-gradient(1px 1px at 94% 8%,#fff6,transparent);background-size:340px 340px;animation:lbr-drift 120s linear infinite;opacity:.8;inset:-340px 0 0 -340px;will-change:transform}
+@keyframes lbr-drift{to{transform:translate3d(340px,340px,0)}}
 .lbr-grid{position:absolute;inset:0;pointer-events:none;background-image:linear-gradient(rgba(99,102,241,.07) 1px,transparent 1px),linear-gradient(90deg,rgba(99,102,241,.07) 1px,transparent 1px);background-size:44px 44px;mask-image:radial-gradient(ellipse 70% 60% at 50% 45%,#000 30%,transparent 80%)}
-.lbr-scan{position:absolute;left:0;right:0;height:120px;top:-120px;pointer-events:none;background:linear-gradient(180deg,transparent,rgba(232,121,249,.06),transparent);animation:lbr-scan 7s linear infinite}
+.lbr-scan{position:absolute;left:0;right:0;height:120px;top:-120px;pointer-events:none;will-change:transform;background:linear-gradient(180deg,transparent,rgba(232,121,249,.06),transparent);animation:lbr-scan 7s linear infinite}
 @keyframes lbr-scan{to{transform:translateY(1100px)}}
 .lbr-flow-in{stroke-dasharray:3 13;animation:lbr-dash 1.2s linear infinite}
 .lbr-flow-out{stroke-dasharray:3 13;animation:lbr-dash 1.6s linear infinite reverse}
@@ -157,17 +158,19 @@ const CSS = `
 .lbr-halo{transform-origin:520px 400px;animation:lbr-halo 3.2s ease-out infinite}
 .lbr-halo2{transform-origin:520px 400px;animation:lbr-halo 3.2s ease-out 1.6s infinite}
 @keyframes lbr-halo{0%{transform:scale(.75);opacity:.9}100%{transform:scale(1.9);opacity:0}}
+.lbr-ring{position:absolute;left:0;top:0;width:1040px;height:800px;pointer-events:none;will-change:transform}
 .lbr-rot{transform-origin:520px 400px;animation:lbr-rot 60s linear infinite}
 .lbr-rot2{transform-origin:520px 400px;animation:lbr-rot 30s linear infinite reverse}
 .lbr-rot3{transform-origin:520px 400px;animation:lbr-rot 18s linear infinite}
 .lbr-orbit{transform-origin:520px 400px;animation:lbr-rot 22s linear infinite}
 .lbr-counter{animation:lbr-rot 22s linear infinite reverse}
 @keyframes lbr-rot{to{transform:rotate(360deg)}}
-.lbr-radar{position:absolute;left:300px;top:180px;width:440px;height:440px;border-radius:50%;background:conic-gradient(from 0deg,rgba(232,121,249,.0) 0deg,rgba(232,121,249,.0) 300deg,rgba(232,121,249,.22) 350deg,rgba(125,211,252,.35) 360deg);animation:lbr-rot 6s linear infinite;mask-image:radial-gradient(circle,#000 0 60%,transparent 70%);pointer-events:none}
-.lbr-blink{animation:lbr-blink 1.3s ease-in-out infinite}
+.lbr-radar{position:absolute;left:300px;top:180px;width:440px;height:440px;border-radius:50%;background:conic-gradient(from 0deg,rgba(232,121,249,.0) 0deg,rgba(232,121,249,.0) 300deg,rgba(232,121,249,.22) 350deg,rgba(125,211,252,.35) 360deg);animation:lbr-rot 6s linear infinite;mask-image:radial-gradient(circle,#000 0 60%,transparent 70%);pointer-events:none;will-change:transform}
+.lbr-blink{animation:lbr-blink 1.3s ease-in-out infinite;will-change:opacity}
 @keyframes lbr-blink{50%{opacity:.25}}
-.lbr-core{animation:lbr-breathe 2.6s ease-in-out infinite}
-@keyframes lbr-breathe{0%,100%{box-shadow:0 0 30px rgba(217,70,239,.45),0 0 70px rgba(99,102,241,.25),inset 0 0 30px rgba(217,70,239,.25)}50%{box-shadow:0 0 50px rgba(217,70,239,.75),0 0 120px rgba(56,189,248,.35),inset 0 0 44px rgba(56,189,248,.3)}}
+.lbr-core{box-shadow:0 0 30px rgba(217,70,239,.45),0 0 70px rgba(99,102,241,.25),inset 0 0 30px rgba(217,70,239,.25)}
+.lbr-core::before{content:"";position:absolute;inset:-2px;border-radius:50%;box-shadow:0 0 50px rgba(217,70,239,.75),0 0 120px rgba(56,189,248,.35),inset 0 0 44px rgba(56,189,248,.3);opacity:0;animation:lbr-glowp 2.6s ease-in-out infinite;pointer-events:none;will-change:opacity}
+@keyframes lbr-glowp{50%{opacity:1}}
 .lbr-burst{position:absolute;left:0;top:0;width:14px;height:14px;margin:-7px 0 0 -7px;border-radius:50%;offset-rotate:0deg;animation:lbr-travel 1.4s cubic-bezier(.4,.1,.3,1) forwards;pointer-events:none;mix-blend-mode:screen}
 @keyframes lbr-travel{0%{offset-distance:0%;opacity:0;transform:scale(.5)}10%{opacity:1;transform:scale(1.4)}100%{offset-distance:100%;opacity:.1;transform:scale(.7)}}
 .lbr-mod{backdrop-filter:blur(6px);transition:transform .25s, box-shadow .3s, border-color .2s}
@@ -189,7 +192,7 @@ const CSS = `
 .lbr-bar{transition:height .8s cubic-bezier(.2,.8,.2,1),width .8s cubic-bezier(.2,.8,.2,1)}
 .lbr-heart{stroke-dasharray:6 400;animation:lbr-heart 2.4s linear infinite}
 @keyframes lbr-heart{from{stroke-dashoffset:406}to{stroke-dashoffset:0}}
-.lbr-still .lbr-stars,.lbr-still .lbr-scan,.lbr-still .lbr-flow-in,.lbr-still .lbr-flow-out,.lbr-still .lbr-flow-x,.lbr-still .lbr-halo,.lbr-still .lbr-halo2,.lbr-still .lbr-rot,.lbr-still .lbr-rot2,.lbr-still .lbr-rot3,.lbr-still .lbr-orbit,.lbr-still .lbr-counter,.lbr-still .lbr-radar,.lbr-still .lbr-blink,.lbr-still .lbr-core,.lbr-still .lbr-ticker,.lbr-still .lbr-heart{animation:none}
+.lbr-still .lbr-stars,.lbr-still .lbr-scan,.lbr-still .lbr-flow-in,.lbr-still .lbr-flow-out,.lbr-still .lbr-flow-x,.lbr-still .lbr-halo,.lbr-still .lbr-halo2,.lbr-still .lbr-rot,.lbr-still .lbr-rot2,.lbr-still .lbr-rot3,.lbr-still .lbr-orbit,.lbr-still .lbr-counter,.lbr-still .lbr-radar,.lbr-still .lbr-blink,.lbr-still .lbr-core::before,.lbr-still .lbr-ticker,.lbr-still .lbr-heart{animation:none}
 .lbr-wallgrid{flex:1 1 0;min-height:0;display:grid;grid-template-columns:minmax(0,1.45fr) minmax(0,1.5fr) minmax(0,.85fr) minmax(0,.85fr) minmax(0,.9fr);gap:10px;padding:0 12px}
 .lbr-col{display:flex;flex-direction:column;gap:10px;min-height:0;min-width:0;overflow:hidden}
 .lbr-col>*{flex-shrink:0}
@@ -250,6 +253,7 @@ const CSS = `
 .lbr-mod.p-warn{box-shadow:inset 0 0 0 1px rgba(251,191,36,.6)}
 .lbr-mod.p-fail{box-shadow:inset 0 0 0 1px rgba(248,113,113,.8),0 0 18px rgba(248,113,113,.35)}
 .lbr-scanning{overflow:hidden}
+.lbr-scanning:not(.lbr-mod):not(.lbr-core){position:relative}
 .lbr-scanning::after{content:"";position:absolute;left:0;right:0;top:-40%;height:40%;background:linear-gradient(180deg,transparent,rgba(52,211,153,.13),rgba(167,243,208,.22),transparent);animation:lbr-sweep 1.8s linear infinite;pointer-events:none;border-radius:18px}
 @keyframes lbr-sweep{to{top:100%}}
 .lbr-score{flex:none;width:74px;height:74px;border-radius:50%;border:3px solid;display:flex;flex-direction:column;align-items:center;justify-content:center;background:rgba(0,0,0,.3)}
@@ -393,6 +397,8 @@ export const LiveBrainRoom: React.FC<{ variant?: 'page' | 'wall'; onClose?: () =
   const wallRef = useRef<HTMLDivElement>(null);
   const wallGridRef = useRef<HTMLDivElement>(null);
   const wallInnerRef = useRef<HTMLDivElement>(null);
+  const pageRootRef = useRef<HTMLDivElement>(null);
+  const wallPageRef = useRef<HTMLDivElement>(null);
   const wallBox = useBox(wallRef, { w: typeof window !== 'undefined' ? window.innerWidth : 1920, h: typeof window !== 'undefined' ? window.innerHeight : 1080 });
   const fitMode = wall && wallBox.w >= 900;
   // تصميم الشاشة على عرض 1680–1920 نقطة؛ الشاشات الأكبر (تلفاز/4K) تُكبَّر حتى 1.35.
@@ -617,32 +623,7 @@ export const LiveBrainRoom: React.FC<{ variant?: 'page' | 'wall'; onClose?: () =
   // كل قفزة = انتقال الدورية الحقيقية إلى القسم التالي (cursor من الخادم)؛ عند الوصول يمدّ خيطاً
   // ويعرض نتيجة الفحص الحقيقية لذلك القسم.
   const patrol: any = eng?.patrol || null;
-  const [hop, setHop] = useState<{ id: number; from: string | null; to: string; arrived: boolean } | null>(null);
-  const hopSeq = useRef(0);
-  const hopTimer = useRef<number | null>(null);
-  useEffect(() => {
-    const to = patrol?.cursor ? String(patrol.cursor) : null;
-    if (!to) return;
-    setHop((prev) => {
-      if (prev && prev.to === to) return prev;
-      const id = ++hopSeq.current;
-      if (hopTimer.current) window.clearTimeout(hopTimer.current);
-      hopTimer.current = window.setTimeout(() => setHop((h) => (h && h.id === id ? { ...h, arrived: true } : h)), 1700);
-      return { id, from: prev ? prev.to : null, to, arrived: false };
-    });
-  }, [patrol?.cursor, patrol?.round]);
-  useEffect(() => () => { if (hopTimer.current) window.clearTimeout(hopTimer.current); }, []);
-  const hopPath = (h: { from: string | null; to: string }): string | null => {
-    const A = h.from && h.from !== 'core' ? MOD_BY_KEY[h.from as ModKey] : null;
-    const B = h.to !== 'core' ? MOD_BY_KEY[h.to as ModKey] : null;
-    if (A && B) return crossPath(A, B);
-    if (!A && B) return pathOut(B);
-    if (A && !B) return pathIn(A);
-    return null; // من المركز إلى المركز: يبقى في مكانه
-  };
   const patrolMod = (k: string) => patrol?.modules?.[k] || null;
-  const scanningMods = hop && hop.arrived && (spider.phase === 'home') ? [hop.to] : [];
-  const scanCls = (mods: string[]) => (mods.some((m) => scanningMods.includes(m)) ? ' lbr-scanning' : '');
   const [patrolTab, setPatrolTab] = useState<'gaps' | 'reports' | 'sections'>('gaps');
   const [patrolSel, setPatrolSel] = useState<string | null>(null);
   const engCheck = async () => {
@@ -744,7 +725,7 @@ export const LiveBrainRoom: React.FC<{ variant?: 'page' | 'wall'; onClose?: () =
         <LiveAlertStrip data={data} hideJump={wall} onJump={() => controlRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })} />
   );
   const kpisEl = (
-        <section aria-label="المؤشرات الحية" style={{ display: 'grid', gridTemplateColumns: wall ? 'repeat(6, minmax(0, 1fr))' : 'repeat(auto-fit, minmax(170px, 1fr))', gap: wall ? 10 : 12 }}>
+        <section aria-label="المؤشرات الحية" data-mod="customers owner platforms" style={{ display: 'grid', gridTemplateColumns: wall ? 'repeat(6, minmax(0, 1fr))' : 'repeat(auto-fit, minmax(170px, 1fr))', gap: wall ? 10 : 12 }}>
           <Kpi id="k1" label="تفاعلات الزبائن · 24 ساعة" value={sum(hourly)} sub={`من كل المنصات — الإجمالي ${fmt(sum((ins.byPlatform || []).map((p: any) => p.total)))}`} color="#7DD3FC" spark={hourly} />
           <Kpi id="k2" label="استفسارات تجارية · 24 ساعة" value={sum(hourlyInq)} sub="سعر · تقسيط · توفر" color="#F0ABFC" spark={hourlyInq} />
           <Kpi id="k3" label="ردود بانتظار موافقتك" value={Number(appr.pending || 0)} sub="جاهزة للإرسال بنقرة" color="#FCD34D" />
@@ -780,7 +761,7 @@ export const LiveBrainRoom: React.FC<{ variant?: 'page' | 'wall'; onClose?: () =
               </div>
   );
   const mapEl = (
-            <section aria-label="المخطط الحي" className="lbr-panel" style={wall ? { padding: 10, flex: '1 1 0', minHeight: 420, display: 'flex', flexDirection: 'column' } : { padding: 12 }}>
+            <section aria-label="المخطط الحي" data-mod="agents" className="lbr-panel" style={wall ? { padding: 10, flex: '1 1 0', minHeight: 420, display: 'flex', flexDirection: 'column' } : { padding: 12 }}>
               <div style={{ display: 'flex', flexWrap: 'wrap', justifyContent: 'space-between', gap: 8, padding: '2px 6px 8px' }}>
                 <h2 className="lbr-h">المخطط الهندسي الحي — 13 قسماً حول العقل المركزي</h2>
                 <span style={{ fontSize: 11, color: '#93A1C3' }}>الخط المتدفق = قسم يعمل · الوميض الأبيض = حدث حقيقي لحظة وقوعه · التوهّج = نشاط آخر 10 دقائق</span>
@@ -789,6 +770,38 @@ export const LiveBrainRoom: React.FC<{ variant?: 'page' | 'wall'; onClose?: () =
                 <div style={{ position: 'relative', width: '100%', height: H * scale }}>
                   <div style={{ position: 'absolute', left: '50%', top: 0, width: W, height: H, transform: `translateX(-50%) scale(${scale})`, transformOrigin: 'top center' }}>
                     <div className="lbr-radar" />
+                    {/* طبقة توهّج ثابتة منفصلة: يُحسب تمويهها مرة واحدة ويُخزَّن (لا يُعاد كل إطار مع العناصر المتحركة). */}
+                    <svg width={W} height={H} viewBox={`0 0 ${W} ${H}`} style={{ position: 'absolute', inset: 0, willChange: 'transform', pointerEvents: 'none' }} aria-hidden="true">
+                      <defs><filter id="lbrGlowWideS" x="-50%" y="-50%" width="200%" height="200%"><feGaussianBlur stdDeviation="7" /></filter></defs>
+                      {MODS.map((m) => {
+                        const st: Status = modules[m.key]?.status || 'partial';
+                        if (st === 'off') return null;
+                        const heat = Math.round(((moduleHeat[m.key] || 0) / maxHeat) * 4) / 4; // درجات قليلة = إعادة حساب نادرة
+                        return <path key={'gw' + m.key} d={pathIn(m)} fill="none" stroke={m.color} strokeWidth={5 + heat * 6} strokeOpacity={0.16 + heat * 0.25} filter="url(#lbrGlowWideS)" />;
+                      })}
+                    </svg>
+                    {/* حلقات العقل الدوّارة: كل حلقة طبقة مستقلة تدور على المعالج الرسومي (بلا إعادة رسم للمخطط في كل إطار). */}
+                    <div className="lbr-ring lbr-rot"><svg width={W} height={H} viewBox={`0 0 ${W} ${H}`} aria-hidden="true"><ellipse cx={CX} cy={CY} rx="320" ry="240" fill="none" stroke="#1E2A5E" strokeDasharray="1 9" /></svg></div>
+                    <div className="lbr-ring lbr-rot2"><svg width={W} height={H} viewBox={`0 0 ${W} ${H}`} aria-hidden="true">                      
+                        <circle cx={CX} cy={CY} r="160" fill="none" stroke="#3B2A7A" strokeOpacity=".8" strokeDasharray="22 8 3 8" />
+                        {Array.from({ length: 48 }).map((_, i) => {
+                          const a = (i / 48) * 2 * Math.PI; const r1 = i % 4 === 0 ? 168 : 164, r2 = 174;
+                          return <line key={i} x1={CX + r1 * Math.cos(a)} y1={CY + r1 * Math.sin(a)} x2={CX + r2 * Math.cos(a)} y2={CY + r2 * Math.sin(a)} stroke={i % 4 === 0 ? '#C084FC' : '#3B3F7A'} strokeWidth={i % 4 === 0 ? 1.6 : 1} />;
+                        })}
+                      </svg></div>
+                    <div className="lbr-ring lbr-rot3"><svg width={W} height={H} viewBox={`0 0 ${W} ${H}`} aria-hidden="true"><circle cx={CX} cy={CY} r="122" fill="none" stroke="#7DD3FC" strokeOpacity=".35" strokeDasharray="60 20 4 20" strokeWidth="1.4" /></svg></div>
+                    <div className="lbr-ring lbr-orbit"><svg width={W} height={H} viewBox={`0 0 ${W} ${H}`} aria-hidden="true">                      
+                        {AGENTS.map((a, i) => {
+                          const ang = (i / AGENTS.length) * 2 * Math.PI - Math.PI / 2; const x = CX + 140 * Math.cos(ang), y = CY + 140 * Math.sin(ang);
+                          return (
+                            <g key={a}>
+                              <line x1={CX} y1={CY} x2={x} y2={y} stroke="#7C3AED" strokeOpacity=".25" />
+                              <circle cx={x} cy={y} r="13" fill="#140B30" stroke="#C084FC" strokeWidth="1.4" /><circle cx={x} cy={y} r="16" fill="none" stroke="#C084FC" strokeOpacity=".25" strokeWidth="4" />
+                              <g style={{ transformOrigin: `${x}px ${y}px` }} className="lbr-counter"><text x={x} y={y + 28} textAnchor="middle" fontSize="10" fill="#D8B4FE">{a}</text></g>
+                            </g>
+                          );
+                        })}
+                      </svg></div>
                     <svg width={W} height={H} viewBox={`0 0 ${W} ${H}`} style={{ position: 'absolute', inset: 0 }} role="img" aria-label="تدفق البيانات بين أقسام المشروع والعقل المركزي">
                       <defs>
                         <radialGradient id="lbrCore" cx="50%" cy="50%" r="50%"><stop offset="0%" stopColor="#D946EF" stopOpacity=".6" /><stop offset="45%" stopColor="#6366F1" stopOpacity=".2" /><stop offset="100%" stopColor="#0EA5E9" stopOpacity="0" /></radialGradient>
@@ -801,98 +814,41 @@ export const LiveBrainRoom: React.FC<{ variant?: 'page' | 'wall'; onClose?: () =
                         ))}
                       </defs>
                       <circle cx={CX} cy={CY} r="300" fill="url(#lbrCore)" />
-                      <g className="lbr-rot"><ellipse cx={CX} cy={CY} rx="320" ry="240" fill="none" stroke="#1E2A5E" strokeDasharray="1 9" /></g>
-                      <g className="lbr-rot2">
-                        <circle cx={CX} cy={CY} r="160" fill="none" stroke="#3B2A7A" strokeOpacity=".8" strokeDasharray="22 8 3 8" />
-                        {Array.from({ length: 48 }).map((_, i) => {
-                          const a = (i / 48) * 2 * Math.PI; const r1 = i % 4 === 0 ? 168 : 164, r2 = 174;
-                          return <line key={i} x1={CX + r1 * Math.cos(a)} y1={CY + r1 * Math.sin(a)} x2={CX + r2 * Math.cos(a)} y2={CY + r2 * Math.sin(a)} stroke={i % 4 === 0 ? '#C084FC' : '#3B3F7A'} strokeWidth={i % 4 === 0 ? 1.6 : 1} />;
-                        })}
-                      </g>
-                      <g className="lbr-rot3"><circle cx={CX} cy={CY} r="122" fill="none" stroke="#7DD3FC" strokeOpacity=".35" strokeDasharray="60 20 4 20" strokeWidth="1.4" /></g>
                       {MODS.map((m) => {
                         const st: Status = modules[m.key]?.status || 'partial';
                         if (st === 'off') return <path key={'s' + m.key} d={pathIn(m)} fill="none" stroke="#5B2236" strokeWidth="1.2" strokeDasharray="3 7" />;
                         const heat = (moduleHeat[m.key] || 0) / maxHeat;
                         return (
                           <g key={'s' + m.key}>
-                            <path d={pathIn(m)} fill="none" stroke={m.color} strokeWidth={5 + heat * 6} strokeOpacity={0.16 + heat * 0.25} filter="url(#lbrGlowWide)" />
                             <path d={pathIn(m)} fill="none" stroke={`url(#lbrG-${m.key})`} strokeWidth="1.4" strokeOpacity=".55" />
-                            <path d={pathIn(m)} fill="none" stroke={m.color} strokeWidth="2.2" strokeLinecap="round" className={m.dir === 'in' ? 'lbr-flow-in' : 'lbr-flow-out'} filter="url(#lbrGlow)" />
+                            <path d={pathIn(m)} fill="none" stroke={m.color} strokeWidth="2.2" strokeLinecap="round" className={m.dir === 'in' ? 'lbr-flow-in' : 'lbr-flow-out'} />
                           </g>
                         );
                       })}
                       {CROSS.map(([a, b]) => <path key={a + b} d={crossPath(MOD_BY_KEY[a], MOD_BY_KEY[b])} fill="none" stroke="#6D7BD0" strokeOpacity=".55" strokeWidth="1.1" className="lbr-flow-x" />)}
                       {motion && MODS.filter((m) => (modules[m.key]?.status || 'partial') !== 'off').flatMap((m, i) => {
-                        const n = 1 + Math.min(3, Math.round(((moduleHeat[m.key] || 0) / maxHeat) * 3));
+                        const n = 1 + Math.min(1, Math.round(((moduleHeat[m.key] || 0) / maxHeat) * 1));
                         return Array.from({ length: n }).map((_, j) => (
-                          <circle key={`amb${m.key}${j}`} r={j === 0 ? 3.4 : 2.4} fill={m.color} filter="url(#lbrGlow)">
+                          <circle key={`amb${m.key}${j}`} r={j === 0 ? 3.4 : 2.4} fill={m.color} stroke={m.color} strokeOpacity=".35" strokeWidth="5">
                             <animateMotion dur={`${2 + (i % 4) * 0.35}s`} begin={`${((i * 0.37) + j * 0.6) % 2.4}s`} repeatCount="indefinite" path={m.dir === 'in' ? pathIn(m) : pathOut(m)} />
                           </circle>
                         ));
                       })}
-                      <g className="lbr-orbit">
-                        {AGENTS.map((a, i) => {
-                          const ang = (i / AGENTS.length) * 2 * Math.PI - Math.PI / 2; const x = CX + 140 * Math.cos(ang), y = CY + 140 * Math.sin(ang);
-                          return (
-                            <g key={a}>
-                              <line x1={CX} y1={CY} x2={x} y2={y} stroke="#7C3AED" strokeOpacity=".25" />
-                              <circle cx={x} cy={y} r="13" fill="#140B30" stroke="#C084FC" strokeWidth="1.4" filter="url(#lbrGlow)" />
-                              <g style={{ transformOrigin: `${x}px ${y}px` }} className="lbr-counter"><text x={x} y={y + 28} textAnchor="middle" fontSize="10" fill="#D8B4FE">{a}</text></g>
-                            </g>
-                          );
-                        })}
-                      </g>
                       {CORE_FNS.map((f, i) => {
                         const s0 = i / CORE_FNS.length + 0.006, fr = 1 / CORE_FNS.length - 0.012;
                         const r = 104; const a0 = s0 * 2 * Math.PI - Math.PI / 2, a1 = (s0 + fr) * 2 * Math.PI - Math.PI / 2;
                         const d = `M${CX + r * Math.cos(a0)} ${CY + r * Math.sin(a0)} A${r} ${r} 0 0 1 ${CX + r * Math.cos(a1)} ${CY + r * Math.sin(a1)}`;
-                        return <path key={f} d={d} fill="none" stroke={i === coreIdx ? '#F0ABFC' : '#3B2A7A'} strokeWidth={i === coreIdx ? 5 : 3} strokeLinecap="round" filter={i === coreIdx ? 'url(#lbrGlow)' : undefined} style={{ transition: 'stroke .4s' }} />;
+                        return <path key={f} d={d} fill="none" stroke={i === coreIdx ? '#F0ABFC' : '#3B2A7A'} strokeWidth={i === coreIdx ? 5 : 3} strokeLinecap="round"  style={{ transition: 'stroke .4s' }} />;
                       })}
                       <circle cx={CX} cy={CY} r="88" fill="none" stroke="#E879F9" strokeWidth="2" className="lbr-halo" />
                       <circle cx={CX} cy={CY} r="88" fill="none" stroke="#38BDF8" strokeWidth="1.4" className="lbr-halo2" />
                     </svg>
 
-                    {spider.phase === 'home' && hop && (() => {
-                      const path = hopPath(hop);
-                      const dest = hop.to !== 'core' ? MOD_BY_KEY[hop.to as ModKey] : null;
-                      const res = patrolMod(hop.to);
-                      const col = res?.status === 'fail' ? '#F87171' : res?.status === 'warn' ? '#FBBF24' : '#34D399';
-                      return (
-                        <>
-                          {path ? (
-                            <div key={hop.id} className={'lbr-spider lbr-patrol' + (hop.arrived ? ' arrived' : ' walking')} aria-hidden="true" style={{ offsetPath: `path('${path}')` }}>
-                              <svg width="64" height="64" viewBox="0 0 48 48"><g fill="none" stroke="#A7F3D0" strokeWidth="2.2" strokeLinecap="round"><ellipse cx="24" cy="27" rx="6.5" ry="7.5" fill="#052E2B" /><circle cx="24" cy="16" r="4" fill="#052E2B" /><path className="lbr-legs" d="M18 23 L9 15 L5 18 M18 27 L6 27 L3 31 M18 31 L9 39 L6 44 M30 23 L39 15 L43 18 M30 27 L42 27 L45 31 M30 31 L39 39 L42 44" /></g></svg>
-                            </div>
-                          ) : null}
-                          {hop.arrived && dest && res && (
-                            <>
-                              <svg className="lbr-thread" width={W} height={H} viewBox={`0 0 ${W} ${H}`} aria-hidden="true" style={{ position: 'absolute', inset: 0, pointerEvents: 'none' }}>
-                                <line x1={dest.x} y1={dest.y + 40} x2={dest.x} y2={dest.y + 60} stroke={col} strokeWidth="1.6" strokeDasharray="2 3" />
-                                <circle cx={dest.x} cy={dest.y} r="96" fill="none" stroke={col} strokeWidth="1.4" className="lbr-scanring" />
-                              </svg>
-                              <div className="lbr-verdict" style={{ left: dest.x, top: dest.y + 62, borderColor: col, color: col }}>
-                                {res.status === 'ok' ? '✓' : res.status === 'fail' ? '✗' : '⚠'} {res.counts.ok}/{res.counts.ok + res.counts.warn + res.counts.fail} سليم
-                              </div>
-                            </>
-                          )}
-                          {hop.arrived && hop.to === 'core' && res && (
-                            <div className="lbr-verdict" style={{ left: CX, top: CY + 100, borderColor: col, color: col }}>{res.status === 'ok' ? '✓' : res.status === 'fail' ? '✗' : '⚠'} فحص المركز {res.counts.ok}/{res.counts.ok + res.counts.warn + res.counts.fail}</div>
-                          )}
-                        </>
-                      );
-                    })()}
-                    {spider.phase !== 'home' && spider.module && MOD_BY_KEY[spider.module as ModKey] && (
-                      <div className={'lbr-spider ' + spider.phase} aria-hidden="true" style={{ offsetPath: `path('${pathOut(MOD_BY_KEY[spider.module as ModKey])}')` }}>
-                        <svg width="72" height="72" viewBox="0 0 48 48"><g fill="none" stroke="#FDE68A" strokeWidth="2.2" strokeLinecap="round"><ellipse cx="24" cy="27" rx="6.5" ry="7.5" fill="#3B2405" /><circle cx="24" cy="16" r="4" fill="#3B2405" /><path className="lbr-legs" d="M18 23 L9 15 L5 18 M18 27 L6 27 L3 31 M18 31 L9 39 L6 44 M30 23 L39 15 L43 18 M30 27 L42 27 L45 31 M30 31 L39 39 L42 44" /></g></svg>
-                        {spider.phase === 'work' && <span className="lbr-wrench">🔧</span>}
-                      </div>
-                    )}
                     {motion && bursts.map((b) => (
                       <span key={b.id} className="lbr-burst" style={{ offsetPath: `path('${b.path}')`, background: `radial-gradient(circle, #fff 0%, ${b.color} 45%, transparent 70%)`, boxShadow: `0 0 16px ${b.color}, 0 0 36px ${b.color}` } as React.CSSProperties} />
                     ))}
 
-                    <div ref={coreRef} className="lbr-core" style={{ position: 'absolute', left: CX - 92, top: CY - 92, width: 184, height: 184, borderRadius: '50%', border: '2px solid #F0ABFC', background: 'radial-gradient(circle at 50% 38%, #3B1166 0%, #160A33 45%, #070417 80%)', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 3, textAlign: 'center' }}>
+                    <div ref={coreRef} data-modcard="core" className="lbr-core" style={{ position: 'absolute', left: CX - 92, top: CY - 92, width: 184, height: 184, borderRadius: '50%', border: '2px solid #F0ABFC', background: 'radial-gradient(circle at 50% 38%, #3B1166 0%, #160A33 45%, #070417 80%)', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 3, textAlign: 'center' }}>
                       <svg width="52" height="52" viewBox="0 0 48 48" aria-hidden="true" style={{ filter: 'drop-shadow(0 0 12px #E879F9)' }}><g fill="none" stroke="#FDF4FF" strokeWidth="1.8" strokeLinecap="round"><ellipse cx="24" cy="27" rx="7" ry="8" /><circle cx="24" cy="15" r="4" /><path d="M17 23 L8 15 L4 18 M17 27 L5 27 L2 31 M17 31 L8 39 L5 44 M31 23 L40 15 L44 18 M31 27 L43 27 L46 31 M31 31 L40 39 L43 44" /></g></svg>
                       <div style={{ fontSize: 15, fontWeight: 800, textShadow: '0 0 14px rgba(240,171,252,.8)' }}>العقل المركزي</div>
                       <div style={{ fontSize: 10, color: '#D8B4FE' }}>والمنسّق التنفيذي</div>
@@ -907,7 +863,7 @@ export const LiveBrainRoom: React.FC<{ variant?: 'page' | 'wall'; onClose?: () =
                       const glow = STATUS_COLOR[st];
                       const cls = 'lbr-mod' + (selected === m.key ? ' sel' : '') + (hitActive(m.key) ? ' hit' : '') + (spider.module === m.key && spider.phase === 'work' ? ' fixing' : '') + (patrolMod(m.key)?.status === 'fail' ? ' p-fail' : patrolMod(m.key)?.status === 'warn' ? ' p-warn' : '');
                       return (
-                        <button key={m.key} type="button" className={cls} onClick={() => setSelected(m.key)} aria-label={`عرض قسم ${m.title}`}
+                        <button key={m.key} type="button" data-modcard={m.key} className={cls} onClick={() => setSelected(m.key)} aria-label={`عرض قسم ${m.title}`}
                           style={{ position: 'absolute', left: m.x - 90, top: m.y - 38, width: 180, minHeight: 76, padding: '8px 10px', borderRadius: 14, border: `1px solid ${m.color}55`, background: `linear-gradient(160deg, rgba(14,18,44,.95), rgba(8,10,26,.9))`, color: '#E7ECF8', textAlign: 'right', cursor: 'pointer', display: 'flex', flexDirection: 'column', gap: 3, boxShadow: `0 0 ${10 + heat * 26}px ${m.color}${heat > 0.05 ? '66' : '22'}, inset 0 0 18px ${m.color}14` }}>
                           <span style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 6, width: '100%' }}>
                             <span style={{ fontSize: 13, fontWeight: 700 }}>{m.title}</span>
@@ -942,7 +898,7 @@ export const LiveBrainRoom: React.FC<{ variant?: 'page' | 'wall'; onClose?: () =
             </section>
   );
   const pulseEl = (
-            <section aria-label="نبض النشاط" className="lbr-panel">
+            <section aria-label="نبض النشاط" data-mod="monitor core" className="lbr-panel">
               <div style={{ display: 'flex', justifyContent: 'space-between', flexWrap: 'wrap', gap: 8, marginBottom: 6 }}>
                 <h2 className="lbr-h">نبض النشاط الحقيقي — آخر 5 دقائق</h2>
                 <span className="lbr-mono" style={{ fontSize: 11, color: '#93A1C3' }}>{perMinute} حدث/دقيقة · {sum(buckets)} في 5 د</span>
@@ -957,7 +913,7 @@ export const LiveBrainRoom: React.FC<{ variant?: 'page' | 'wall'; onClose?: () =
             </section>
   );
   const interEl = (
-              <section className={'lbr-panel' + scanCls(['customers'])} aria-label="تفاعلات 24 ساعة">
+              <section className="lbr-panel" data-mod="customers" aria-label="تفاعلات 24 ساعة">
                 <h2 className="lbr-h" style={{ marginBottom: 10 }}>تفاعلات الزبائن — 24 ساعة</h2>
                 <div style={{ display: 'flex', alignItems: 'flex-end', gap: 3, height: 120 }}>
                   {hourly.map((v, i) => (
@@ -974,7 +930,7 @@ export const LiveBrainRoom: React.FC<{ variant?: 'page' | 'wall'; onClose?: () =
               </section>
   );
   const intentsEl = (
-              <section className={'lbr-panel' + scanCls(['customers'])} aria-label="نوايا الزبائن">
+              <section className="lbr-panel" data-mod="customers" aria-label="نوايا الزبائن">
                 <h2 className="lbr-h" style={{ marginBottom: 10 }}>ماذا يريد الزبائن؟ — النوايا</h2>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 14, flexWrap: 'wrap' }}>
                   <svg width="120" height="120" viewBox="0 0 120 120" role="img" aria-label="توزيع نوايا الزبائن">
@@ -996,7 +952,7 @@ export const LiveBrainRoom: React.FC<{ variant?: 'page' | 'wall'; onClose?: () =
               </section>
   );
   const topicsEl = (
-              <section className={'lbr-panel' + scanCls(['customers'])} aria-label="مواضيع الأسئلة">
+              <section className="lbr-panel" data-mod="customers" aria-label="مواضيع الأسئلة">
                 <h2 className="lbr-h" style={{ marginBottom: 10 }}>عن ماذا يسألون؟ — المواضيع</h2>
                 {(ins.topics || []).map((t: any, i: number) => {
                   const max = Math.max(1, ...(ins.topics || []).map((x: any) => x.count));
@@ -1012,7 +968,7 @@ export const LiveBrainRoom: React.FC<{ variant?: 'page' | 'wall'; onClose?: () =
               </section>
   );
   const prodsEl = (
-              <section className={'lbr-panel' + scanCls(['products'])} aria-label="أكثر المنتجات سؤالاً">
+              <section className="lbr-panel" data-mod="products" aria-label="أكثر المنتجات سؤالاً">
                 <h2 className="lbr-h" style={{ marginBottom: 10 }}>أكثر المنتجات طلباً من الزبائن</h2>
                 {(ins.topProducts || []).map((p: any, i: number) => {
                   const max = Math.max(1, ...(ins.topProducts || []).map((x: any) => x.count));
@@ -1030,7 +986,7 @@ export const LiveBrainRoom: React.FC<{ variant?: 'page' | 'wall'; onClose?: () =
               </section>
   );
   const platInsEl = (
-              <section className={'lbr-panel' + scanCls(['platforms', 'memory'])} aria-label="المنصات">
+              <section className="lbr-panel" data-mod="platforms memory" aria-label="المنصات">
                 <h2 className="lbr-h" style={{ marginBottom: 10 }}>المنصات — جمهور ووارد ونشر</h2>
                 {(ins.byPlatform || []).map((p: any) => {
                   const pl = plats.find((x) => x.id === p.platform);
@@ -1050,7 +1006,7 @@ export const LiveBrainRoom: React.FC<{ variant?: 'page' | 'wall'; onClose?: () =
               </section>
   );
   const leadsEl = (
-              <section className={'lbr-panel' + scanCls(['owner', 'gate'])} aria-label="مراحل الزبائن">
+              <section className="lbr-panel" data-mod="owner gate" aria-label="مراحل الزبائن">
                 <h2 className="lbr-h" style={{ marginBottom: 10 }}>رحلة الزبائن المحتملين</h2>
                 <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
                   {(ins.leadStages || []).map((s: any) => (
@@ -1070,7 +1026,7 @@ export const LiveBrainRoom: React.FC<{ variant?: 'page' | 'wall'; onClose?: () =
               </section>
   );
   const voicesEl = (
-            <section aria-label="أصوات الزبائن" className={'lbr-panel' + scanCls(['customers'])} style={flexPanel}>
+            <section aria-label="أصوات الزبائن" className="lbr-panel" data-mod="customers" style={flexPanel}>
               <h2 className="lbr-h" style={{ marginBottom: 10 }}>أصوات الزبائن — آخر ما وصل</h2>
               <div style={{ ...(wall ? { flex: '1 1 0', minHeight: 60 } : { height: 170 }), overflow: 'hidden', maskImage: 'linear-gradient(180deg, transparent, #000 15%, #000 85%, transparent)' }}>
                 <div className={(ins.latestComments || []).length > 3 ? 'lbr-ticker' : ''}>
@@ -1089,7 +1045,7 @@ export const LiveBrainRoom: React.FC<{ variant?: 'page' | 'wall'; onClose?: () =
             </section>
   );
   const journeyEl = (
-            <section aria-label="السير العام" className="lbr-panel">
+            <section aria-label="السير العام" data-mod="owner automation" className="lbr-panel">
               <h2 className="lbr-h" style={{ marginBottom: wall ? 6 : 10 }}>{wall ? 'السير العام — يضيء مع آخر حدث' : 'السير العام — تضيء الخطوة التي وقع فيها آخر حدث'}</h2>
               <div style={{ display: 'grid', gridTemplateColumns: wall ? 'repeat(2, minmax(0, 1fr))' : 'repeat(auto-fit, minmax(150px, 1fr))', gap: wall ? 6 : 10 }}>
                 {JOURNEY.map((j, i) => (
@@ -1207,7 +1163,7 @@ export const LiveBrainRoom: React.FC<{ variant?: 'page' | 'wall'; onClose?: () =
             </section>
   );
   const gaugesEl = (
-            <section className={'lbr-panel' + scanCls(['monitor', 'storage'])}>
+            <section className="lbr-panel" data-mod="monitor storage">
               <h2 className="lbr-h" style={{ marginBottom: 12 }}>جسد الخادم — مقاييس حيّة</h2>
               <div className="lbr-gauges" style={{ display: 'grid', gridTemplateColumns: wall ? 'repeat(4, minmax(0, 1fr))' : 'repeat(2, minmax(0, 1fr))', gap: wall ? 6 : 10 }}>
                 <Gauge value={tel.rssMb ?? null} max={tel.limitMb || 512} label="الذاكرة" text={`${tel.rssMb ?? '—'} / ${tel.limitMb || 512} ميغا`} color={(tel.rssMb || 0) > 400 ? '#F87171' : '#34D399'} />
@@ -1222,7 +1178,7 @@ export const LiveBrainRoom: React.FC<{ variant?: 'page' | 'wall'; onClose?: () =
             </section>
   );
   const eventsEl = (
-            <section className={'lbr-panel' + scanCls(['core'])} style={flexPanel}>
+            <section className="lbr-panel" data-mod="core" style={flexPanel}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
                 <h2 className="lbr-h">آخر الأحداث</h2>
                 <span className="lbr-blink" style={{ fontSize: 11, color: '#6EE7B7' }}>● مباشر</span>
@@ -1247,7 +1203,7 @@ export const LiveBrainRoom: React.FC<{ variant?: 'page' | 'wall'; onClose?: () =
             </section>
   );
   const platStatusEl = (
-            <section className={'lbr-panel' + scanCls(['platforms', 'external'])}>
+            <section className="lbr-panel" data-mod="platforms external">
               <h2 className="lbr-h" style={{ marginBottom: 8 }}>حالة المنصات العشر</h2>
               {/* في الشاشة الحية: عمودان متجاوران بدل قائمة طويلة، لتوفير الارتفاع. */}
               <div style={wall ? { display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', columnGap: 14 } : undefined}>
@@ -1265,7 +1221,7 @@ export const LiveBrainRoom: React.FC<{ variant?: 'page' | 'wall'; onClose?: () =
             </section>
   );
   const cyclesEl = (
-            <section className={'lbr-panel' + scanCls(['automation', 'agents', 'backup', 'memory'])}>
+            <section className="lbr-panel" data-mod="automation agents backup memory">
               <h2 className="lbr-h" style={{ marginBottom: 8 }}>نبض الدورات 24/7</h2>
               {pulseRows.map((c) => (
                 <div key={c.key} title={c.title || undefined} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, padding: '7px 0', borderBottom: '1px solid rgba(27,37,80,.6)', fontSize: 12 }}>
@@ -1297,9 +1253,21 @@ export const LiveBrainRoom: React.FC<{ variant?: 'page' | 'wall'; onClose?: () =
             </section>
   );
 
+  // العنكبوت المتجوّل على كل الواجهة: يتبع الدورية الحقيقية، والإصلاح يتقدّم عليها.
+  const spiderEl = (root: React.RefObject<HTMLDivElement>) => eng ? (
+    <SpiderPatrol
+      rootRef={root}
+      cursor={patrol?.cursor ? String(patrol.cursor) : null}
+      checks={(patrol?.current?.checks || []).map((c: any) => ({ label: String(c.label), status: c.status }))}
+      titles={SEC_AR}
+      repair={eng?.job ? { module: String(eng.job.module), label: String(eng.job.title) } : spider.phase !== 'home' && spider.module ? { module: spider.module, label: spider.label } : null}
+      motion={motion}
+    />
+  ) : null;
   const backdrop = (
     <>
       <style>{CSS}</style>
+      <style>{SPIDER_CSS}</style>
       <div className="lbr-stars" />
       <div className="lbr-grid" />
       <div className="lbr-scan" />
@@ -1349,9 +1317,10 @@ export const LiveBrainRoom: React.FC<{ variant?: 'page' | 'wall'; onClose?: () =
 
   if (!wall) {
     return (
-      <div dir="rtl" className={'lbr' + (motion ? '' : ' lbr-still')} style={{ position: 'relative', background: 'radial-gradient(ellipse 90% 60% at 50% 22%, #170F3A 0%, #070A1A 55%, #03040B 100%)', color: '#E7ECF8', borderRadius: 22, border: '1px solid #1A2350', overflow: 'hidden' }}>
+      <div ref={pageRootRef} dir="rtl" className={'lbr' + (motion ? '' : ' lbr-still')} style={{ position: 'relative', background: 'radial-gradient(ellipse 90% 60% at 50% 22%, #170F3A 0%, #070A1A 55%, #03040B 100%)', color: '#E7ECF8', borderRadius: 22, border: '1px solid #1A2350', overflow: 'hidden' }}>
         {backdrop}
         {pageBody}
+        {spiderEl(pageRootRef)}
       </div>
     );
   }
@@ -1383,9 +1352,10 @@ export const LiveBrainRoom: React.FC<{ variant?: 'page' | 'wall'; onClose?: () =
       {fitMode ? (
         <div ref={wallInnerRef} style={{ position: 'absolute', top: 0, right: 0, width: wallBox.w / wallScale, height: wallBox.h / wallScale, transform: `scale(${wallScale})`, transformOrigin: 'top right' }}>
           {wallBody}
+          {spiderEl(wallInnerRef)}
         </div>
       ) : (
-        <div style={{ position: 'relative' }}>{pageBody}</div>
+        <div ref={wallPageRef} style={{ position: 'relative' }}>{pageBody}{spiderEl(wallPageRef)}</div>
       )}
     </div>
   );
