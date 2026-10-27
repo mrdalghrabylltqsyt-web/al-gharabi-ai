@@ -213,7 +213,7 @@ export function buildSalesReadiness(input: SalesReadinessInput): SalesReadinessR
       id: 'owner-telegram', area: 'customers', actor: 'owner', severity: 'info',
       title: 'التنبيه الفوري على Telegram غير مفعّل',
       detail: 'البريد يصل كملخص كل 30 دقيقة؛ Telegram يوصل كل زبون جديد إلى هاتفك خلال ثوانٍ.',
-      action: 'أرسل أي رسالة لبوت المعرض على Telegram، واحصل على رقم محادثتك (مثلاً من @userinfobot)، ثم ضعه في OWNER_TELEGRAM_CHAT_ID في Render.',
+      action: 'اضغط «اربط هاتفي بنقرة واحدة» هنا، ثم Start في تيليغرام — بلا إعدادات Render.',
     });
   }
 

@@ -9034,13 +9034,15 @@ async function runMetaWatcherCycle(trigger: string): Promise<{ ok: boolean; trig
         // مركزي => `FAILED_SAFE` (لا رد). تمكين المالك الصريح للرد الآلي هو الموافقة
         // على الإجراء الخارجي لـMeta (لا يُعمَّم تفويض YouTube على أي منصة أخرى).
         try {
-          await runTeamSessionNow(
-            "youtube_event",
+          const teamRes = await runTeamSessionNow(
+            "platform_event",
             `تحليل تعليق ${platform === 'facebook' ? 'Facebook' : 'Instagram'} جديد والبتّ في الرد عليه من الحقائق المسجّلة (بلا اختراع)`,
             platform,
             `comment:${externalId}`,
             { externalId, commentText: text, objective: "البتّ في رد آمن على تعليق Meta من الحقائق المسجّلة", conversationId: `${platform}::${String(c.postId || c.mediaId || 'thread')}`, escalationReason: preReason, priceFactsVerified, productFact: resolution.fact },
           );
+          // الطبقة الإدراكية لكل المنصات (2026-10-27): كانت تعمل ليوتيوب وحده — «دورات إدراكية 2» رغم 166 جلسة.
+          cognitionAfterTeam(teamRes, { platform: platform, eventIdentity: `comment:${externalId}`, eventText: String(text || ""), objective: "البتّ في رد آمن على تعليق Meta من الحقائق المسجّلة", conversationId: `${platform}::${String(c.postId || c.mediaId || 'thread')}`, externalId: String(externalId), escalationReason: preReason, isMessage: false });
         } catch { /* جلسة الفريق لا تُسقط دورة المراقبة */ }
         const centralDecision = centralActionDecisionForEvent(`comment:${externalId}`);
         // PR-B (البند 4): هل سبق أن ردّت الصفحة/الحساب نفسه داخل هذا الخيط؟ المطابقة
@@ -9143,13 +9145,15 @@ async function runMetaWatcherCycle(trigger: string): Promise<{ ok: boolean; trig
         // نفس سلطة القرار الوحيدة للرسائل: جلسة فريق حقيقية => قرار العقل المركزي.
         // غياب قرار مركزي => `FAILED_SAFE` (لا إرسال). تمكين الرد الآلي هو الموافقة.
         try {
-          await runTeamSessionNow(
-            "youtube_event",
+          const teamRes = await runTeamSessionNow(
+            "platform_event",
             `تحليل رسالة ${platform === 'facebook' ? 'Facebook' : 'Instagram'} جديدة والبتّ في الرد عليها من الحقائق المسجّلة (بلا اختراع)`,
             platform,
             `comment:${externalId}`,
             { externalId, commentText: text, objective: "البتّ في رد آمن على رسالة Meta من الحقائق المسجّلة", conversationId: `${platform}::dm`, escalationReason: preReason, priceFactsVerified, productFact: resolution.fact },
           );
+          // الطبقة الإدراكية لكل المنصات (2026-10-27): كانت تعمل ليوتيوب وحده — «دورات إدراكية 2» رغم 166 جلسة.
+          cognitionAfterTeam(teamRes, { platform: platform, eventIdentity: `comment:${externalId}`, eventText: String(text || ""), objective: "البتّ في رد آمن على رسالة Meta من الحقائق المسجّلة", conversationId: `${platform}::dm`, externalId: String(externalId), escalationReason: preReason, isMessage: true });
         } catch { /* جلسة الفريق لا تُسقط دورة المراقبة */ }
         const centralDecision = centralActionDecisionForEvent(`comment:${externalId}`);
         const advisory = decideMetaCommentAction({
@@ -9440,13 +9444,15 @@ async function runTelegramWatcherCycle(trigger: string): Promise<{ ok: boolean; 
       const preReason = (priceFactsVerified && baseReason === 'price_unverified') ? null : baseReason;
       // سلطة القرار الوحيدة: جلسة فريق حقيقية => قرار العقل المركزي (نفس نمط Meta).
       try {
-        await runTeamSessionNow(
-          "youtube_event",
+        const teamRes = await runTeamSessionNow(
+          "platform_event",
           "تحليل رسالة Telegram جديدة والبتّ في الرد عليها من الحقائق المسجّلة (بلا اختراع)",
           "telegram",
           `comment:${externalId}`,
           { externalId, commentText: text, objective: "البتّ في رد آمن على رسالة Telegram من الحقائق المسجّلة", conversationId: `telegram::${chatId}`, escalationReason: preReason, priceFactsVerified, productFact: resolution.fact },
         );
+          // الطبقة الإدراكية لكل المنصات (2026-10-27): كانت تعمل ليوتيوب وحده — «دورات إدراكية 2» رغم 166 جلسة.
+          cognitionAfterTeam(teamRes, { platform: "telegram", eventIdentity: `comment:${externalId}`, eventText: String(text || ""), objective: "البتّ في رد آمن على رسالة Telegram من الحقائق المسجّلة", conversationId: `telegram::${chatId}`, externalId: String(externalId), escalationReason: preReason, isMessage: true });
       } catch { /* جلسة الفريق لا تُسقط دورة المراقبة */ }
       const centralDecision = centralActionDecisionForEvent(`comment:${externalId}`);
       const advisory = decideTelegramCommentAction({
@@ -10875,8 +10881,10 @@ async function runThreadsRepliesCycle(controls: any): Promise<{ newDetected: num
       const baseReason = escalationReasonFor({ intent: cls.intent, isSpam: cls.isSpam, requiresHumanReview: cls.requiresHumanReview, topic: (cls as any).topic ?? null });
       const preReason = (priceReply.verified && baseReason === 'price_unverified') ? null : baseReason;
       try {
-        await runTeamSessionNow('youtube_event', 'تحليل تعليق Threads جديد والبتّ في الرد عليه من الحقائق المسجّلة (بلا اختراع)', 'threads' as PlatformId, `comment:${externalId}`,
+        const teamRes = await runTeamSessionNow('platform_event', 'تحليل تعليق Threads جديد والبتّ في الرد عليه من الحقائق المسجّلة (بلا اختراع)', 'threads' as PlatformId, `comment:${externalId}`,
           { externalId, commentText: rep.text, objective: 'البتّ في رد آمن على تعليق Threads من الحقائق المسجّلة', conversationId: `threads::${postId}`, escalationReason: preReason, priceFactsVerified: priceReply.verified, productFact: resolution.fact });
+          // الطبقة الإدراكية لكل المنصات (2026-10-27): كانت تعمل ليوتيوب وحده — «دورات إدراكية 2» رغم 166 جلسة.
+          cognitionAfterTeam(teamRes, { platform: 'threads' as PlatformId, eventIdentity: `comment:${externalId}`, eventText: String(rep.text || ""), objective: 'البتّ في رد آمن على تعليق Threads من الحقائق المسجّلة', conversationId: `threads::${postId}`, externalId: String(externalId), escalationReason: preReason, isMessage: false });
       } catch { /* جلسة الفريق لا تُسقط الدورة */ }
       const centralDecision = centralActionDecisionForEvent(`comment:${externalId}`);
       const advisory = decideMetaCommentAction({ intent: cls.intent, requiresHumanReview: cls.requiresHumanReview, isSpam: cls.isSpam, isSelfAuthored: selfAuthored, alreadyReplied: processed, controls });
@@ -11335,6 +11343,8 @@ app.post("/api/agent/owner-alerts/telegram/pair", requireOwner, async (req, res)
     const reg = checkWebhookRegistration({ info, expectedUrl: telegramWebhookUrl(), secretConfigured: Boolean(telegramWebhookSecret()) });
     webhook = { ready: reg.status === "registered", detail: reg.detail };
   } catch { /* يبقى غير مؤكد */ }
+  // بلا webhook مسجّل: نلتقط الرمز من رسائل البوت مباشرة (قراءة بلا استهلاك) — الربط يكتمل في الحالتين.
+  if (!webhook.ready) startOwnerPairingPoller();
   res.json({
     success: true,
     code,
@@ -14831,7 +14841,7 @@ app.post("/api/publish/preflight", authenticateToken, (req, res) => {
 // -------------------------------------------------------------
 
 /** أرقام بطاقة منصة من مصادرها الحقيقية فقط (null = لم يُقس بعد، لا صفر مختلق). */
-function platformCardMetrics(platform: string): { followers: number | null; followersAt: string | null; engagementRate: number | null; publishedPosts: number; measuredPosts: number; inbound: number } {
+function platformCardMetrics(platform: string): { followers: number | null; followersAt: string | null; engagementRate: number | null; publishedPosts: number; measuredPosts: number; inbound: number; inquiries: number } {
   const audience = (((workspace as any).platformAudience || {}) as Record<string, { followers: number | null; at: string }>)[platform];
   const perf = ((((workspace as any).performanceRecords || []) as any[])).filter((r) => r?.platform === platform);
   const records = ((((workspace as any).publishRecords || []) as any[])).filter((r) => r?.platform === platform && !r?.simulated && (r?.providerPostId || r?.externalVideoId) && (r?.state === "published" || r?.state === "scheduled"));
@@ -14846,6 +14856,8 @@ function platformCardMetrics(platform: string): { followers: number | null; foll
     publishedPosts: publishedIds.size,
     measuredPosts: perf.length,
     inbound: customerComments().filter((c) => c?.platform === platform).length,
+    // استفسارات تجارية حقيقية من زبائن هذه المنصة (بلا ردود المعرض) — لبطاقة «استفسارات التقسيط».
+    inquiries: customerComments().filter((c) => c?.platform === platform && (c?.classification?.isBusinessInquiry === true || c?.classification?.intent === "business_inquiry")).length,
   };
 }
 
@@ -18637,6 +18649,35 @@ async function runTeamSessionNow(
  * PERCEIVE → … → LEARN. **لا تنفيذ خارجي** ولا استهلاك AI. تُحدِّث الذاكرة العاملة
  * (سياق قصير المدى) وتُخزّن التقرير (بلا تكرار) فتصمد بعد restart. لا ترمي.
  */
+/**
+ * الطبقة الإدراكية بعد جلسة فريق لأي منصة (2026-10-27): نفس دورة يوتيوب (فهم/تذكّر/تخطيط/تعلّم)
+ * على قرار العقل المحكوم نفسه — بلا تنفيذ خارجي ولا AI. فشلها لا يُسقط دورة المراقبة.
+ */
+function cognitionAfterTeam(teamResult: any, e: { platform: PlatformId; eventIdentity: string; eventText: string; objective: string; conversationId: string | null; externalId: string | null; escalationReason: EscalationReason | null; isMessage: boolean }): void {
+  try {
+    const bd = teamResult?.brainDecision || null;
+    if (!bd || !teamResult?.session) return;
+    const conn: any = platformConnections.get(e.platform);
+    const states: any = capabilityRow(e.platform).states;
+    runCognitiveCycleNow({
+      session: teamResult.session,
+      decision: bd,
+      platform: e.platform,
+      eventIdentity: e.eventIdentity,
+      eventText: e.eventText,
+      objective: e.objective,
+      conversationId: e.conversationId,
+      externalId: e.externalId,
+      escalationReason: e.escalationReason,
+      replyCapable: e.isMessage ? (states.message_reply === 'AVAILABLE' || states.messaging === 'AVAILABLE' || states.reply === 'AVAILABLE') : states.reply === 'AVAILABLE',
+      publishCapable: states.publish === 'AVAILABLE',
+      providerVerified: Boolean(conn && conn.status === 'connected' && conn.providerVerified),
+      // الإرسال الخارجي يبقى خلف بوابة الموافقة المركزية؛ الإدراك لا يفترض تفويضاً.
+      externalApproved: false,
+    });
+  } catch { /* الدورة الإدراكية لا تُسقط دورة المراقبة */ }
+}
+
 function runCognitiveCycleNow(input: {
   session: TeamSession;
   decision: BrainDecision;
@@ -18860,6 +18901,40 @@ function notifyOwnerTelegramInstant(items: OwnerAlertItem[]): void {
     const text = decision === 'overflow' ? OWNER_TELEGRAM_OVERFLOW_TEXT : buildOwnerTelegramMessage(item, appUrl);
     void sendOwnerTelegramText(text, decision === 'send' ? ownerTelegramDraftButtons(item) : undefined);
   }
+}
+
+/**
+ * ربط المالك حين لا webhook مسجّل للبوت (2026-10-27): الرمز لا يصل الخادم عبر webhook، فنقرأ
+ * رسائل البوت المعلّقة كل 3 ث (getUpdates **بلا تأكيد** — لا يُستهلك شيء) حتى يظهر الرمز أو
+ * تنتهي صلاحيته. هكذا تكون «نقرة واحدة» حقيقية سواء كان البوت مربوطاً بـwebhook أم لا.
+ */
+let ownerPairingPoller: ReturnType<typeof setInterval> | null = null;
+function startOwnerPairingPoller(): void {
+  if (ownerPairingPoller) return;
+  const seen = new Set<number>();
+  let busy = false;
+  ownerPairingPoller = setInterval(() => {
+    if (busy) return;
+    const p = ownerTelegramPairing.pending;
+    const client = telegramClient();
+    if (!p || Date.now() > p.expiresAt || !client) { if (ownerPairingPoller) clearInterval(ownerPairingPoller); ownerPairingPoller = null; return; }
+    busy = true;
+    void (async () => {
+      try {
+        const r = await client.peekUpdates(100);
+        if (!r.ok) return;
+        for (const m of r.messages) {
+          if (seen.has(m.updateId)) continue;
+          seen.add(m.updateId);
+          const code = extractPairingCode(m.text);
+          if (!code) continue;
+          const outcome = await handleOwnerTelegramPairingMessage(code, m.chatId);
+          if (outcome === "paired") { if (ownerPairingPoller) clearInterval(ownerPairingPoller); ownerPairingPoller = null; return; }
+        }
+      } catch { /* المحاولة التالية */ } finally { busy = false; }
+    })();
+  }, 3000);
+  (ownerPairingPoller as any).unref?.();
 }
 
 /** رمز ربط المالك في webhook ليس رسالة زبون: يُعالج ويُقرّ هنا، فلا يُسجَّل تعليقاً ولا يولّد مسودة. */

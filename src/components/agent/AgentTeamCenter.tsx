@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { apiService } from '../../services/api';
+import { sessionSourceLabel } from '../../utils/sessionSource';
 
 /**
  * مركز فريق الوكلاء (Agent Team Center) — عرض جلسات الفريق الداخلي.
@@ -188,14 +189,14 @@ export default function AgentTeamCenter() {
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
         <div className="glass rounded-2xl p-3 lg:col-span-1">
           <h3 className="text-sm font-bold text-slate-200 mb-2">الجلسات ({list.length})</h3>
-          {list.length === 0 && <div className="text-xs text-slate-500">لا جلسات بعد. تبدأ الجلسات تلقائياً من أحداث YouTube الحقيقية.</div>}
+          {list.length === 0 && <div className="text-xs text-slate-500">لا جلسات بعد. تبدأ الجلسات تلقائياً من تعليقات ورسائل المنصات الحقيقية.</div>}
           <div className="space-y-2 max-h-[600px] overflow-y-auto">
             {list.map((s) => (
               <button key={s.teamSessionId} onClick={() => void openSession(s.teamSessionId)}
                 className={`w-full text-right border rounded-lg p-2 transition-colors ${selected?.teamSessionId === s.teamSessionId ? 'border-indigo-600 bg-indigo-950/30' : 'border-slate-800 bg-slate-950/40 hover:border-slate-700'}`}>
                 <div className="flex items-center gap-1 flex-wrap mb-1">
                   <TruthBadge state={s.truthState} />
-                  <span className="text-[10px] text-slate-500">{s.trigger}</span>
+                  <span className="text-[10px] text-slate-500" data-session-source>{sessionSourceLabel(s)}</span>
                   {s.criticFailed && <span className="text-[10px] text-amber-400">نقد فشل</span>}
                   {s.memoryWritten && <span className="text-[10px] text-emerald-400">✓ ذاكرة</span>}
                 </div>

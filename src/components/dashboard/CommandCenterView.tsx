@@ -159,6 +159,8 @@ export const CommandCenterView: React.FC = () => {
         <Card>
           <div className="flex items-center gap-2 text-slate-400 text-[11px]"><Megaphone className="w-3.5 h-3.5" /> منشورات مسجّلة</div>
           <div className="text-2xl font-black text-white mt-1">{Array.isArray(posts) ? posts.length : 0}</div>
+          {/* 2026-10-27: الرئيسية تعرض «منشور/مجدول» فقط فبدا 16 مقابل 17؛ التفصيل يوضح الفرق. */}
+          {Array.isArray(posts) && posts.length > 0 && <div className="text-[10px] text-slate-500" data-posts-breakdown>{posts.filter((p: any) => p.status === 'published' || p.status === 'scheduled').length} منشور/مجدول · {posts.filter((p: any) => p.status !== 'published' && p.status !== 'scheduled').length} مسودة/مراجعة</div>}
           <button onClick={() => go('content')} className="text-[11px] text-emerald-300 mt-1 hover:underline">إنشاء/نشر ←</button>
         </Card>
         <Card>

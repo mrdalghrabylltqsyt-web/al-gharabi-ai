@@ -447,6 +447,27 @@ export class TelegramClient {
     }
   }
 
+  /**
+   * قراءة الرسائل المعلّقة (getUpdates) **بلا تأكيد** — لا يُمرَّر offset، فلا يُستهلك أي تحديث
+   * ويبقى كل شيء كما هو لدى Telegram (يُسلَّم لاحقاً للـwebhook عند تسجيله). يُستخدم فقط حين لا
+   * webhook مسجّل (Telegram يرفض getUpdates مع webhook فعّال — 409)، لالتقاط رمز ربط المالك.
+   */
+  async peekUpdates(limit = 100): Promise<{ ok: boolean; messages: Array<{ updateId: number; chatId: string; text: string }>; error?: string }> {
+    if (!this.botToken) return { ok: false, messages: [], error: 'رمز البوت غير متوفر.' };
+    try {
+      const url = `${telegramApiUrl('getUpdates', this.botToken, this.baseUrl)}?limit=${Math.max(1, Math.min(100, limit))}&timeout=0&allowed_updates=${encodeURIComponent('["message"]')}`;
+      const res = await this.fetchImpl(url, { method: 'GET' });
+      const data = await res.json().catch(() => null);
+      if (!res.ok || !data?.ok || !Array.isArray(data.result)) return { ok: false, messages: [], error: String(data?.description || `HTTP ${res.status}`) };
+      const messages = (data.result as any[])
+        .map((u) => ({ updateId: Number(u?.update_id), chatId: u?.message?.chat?.id != null ? String(u.message.chat.id) : '', text: typeof u?.message?.text === 'string' ? u.message.text : '' }))
+        .filter((m) => Number.isFinite(m.updateId) && m.chatId && m.text);
+      return { ok: true, messages };
+    } catch (e: any) {
+      return { ok: false, messages: [], error: String(e?.message || 'فشل الاتصال بـTelegram.') };
+    }
+  }
+
   /** يحذف الـwebhook لدى Telegram عند قطع الاتصال. */
   async deleteWebhook(): Promise<{ ok: boolean }> {
     try {

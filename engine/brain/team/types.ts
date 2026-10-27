@@ -98,7 +98,8 @@ export interface TeamDecision {
 export interface TeamSession {
   teamSessionId: string;
   task: string;
-  trigger: 'youtube_event' | 'owner_request' | 'scheduled' | 'manual';
+  /** youtube_event = حدث يوتيوب · platform_event = حدث من منصة أخرى (فيسبوك/إنستغرام/ثريدز/تيليغرام). */
+  trigger: 'youtube_event' | 'platform_event' | 'owner_request' | 'scheduled' | 'manual';
   source: string;
   participants: TeamAgentId[];
   evidence: string[];
