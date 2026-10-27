@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { AlertTriangle, CheckCircle2, Gauge, Info, RefreshCw, ShieldAlert } from 'lucide-react';
 import { apiService } from '../../services/api';
+import { OwnerTelegramPair } from '../system/OwnerTelegramPair';
 
 /**
  * لوحة «جاهزية البيع» — يقرأ الموظف حالته الحقيقية ويخبر المالك بما يمنع البيع
@@ -89,6 +90,7 @@ export const SalesReadinessPanel: React.FC<{ onNavigate: (tab: string) => void }
                       <p className="text-xs font-bold text-white">{it.title} <span className="text-[10px] font-normal text-slate-400">· {st.label}</span></p>
                       <p className="text-[11px] text-slate-300">{it.detail}</p>
                       {it.action && <p className="text-[11px] text-slate-200"><b>الحل:</b> {it.action}</p>}
+                      {it.id === 'owner-telegram' && <OwnerTelegramPair compact onChange={(t) => { if (t?.configured) void load(); }} />}
                     </div>
                     {target && it.severity !== 'ok' && (
                       <button onClick={() => onNavigate(target)} className="shrink-0 px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-[11px] text-emerald-300 font-bold cursor-pointer">فتح ←</button>

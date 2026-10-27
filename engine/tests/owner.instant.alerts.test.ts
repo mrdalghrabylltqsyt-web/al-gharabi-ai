@@ -87,6 +87,7 @@ const OWNER = '123456789';
 {
   const server = read('server.ts');
   const sys = read('src/components/system/SystemControlView.tsx');
+  const pairUi = read('src/components/system/OwnerTelegramPair.tsx');
   const api = read('src/services/api.ts');
   check('★ مسارا الربط للمالك فقط', server.includes('app.post("/api/agent/owner-alerts/telegram/pair", requireOwner') && server.includes('app.delete("/api/agent/owner-alerts/telegram/pair", requireOwner'));
   check('★ رسالة الربط ليست رسالة زبون (تُعالج قبل التسجيل ولا تولّد مسودة)', server.indexOf('if(parsed && await ownerPairingIntercept(parsed, res)) return;') > 0 && server.indexOf('if(parsed && await ownerPairingIntercept(parsed, res)) return;') < server.indexOf('const telegramEvent = buildNormalizedEvent({') && server.includes('const code = extractPairingCode(parsed.text);\n  if (!code) return false;'));
@@ -94,7 +95,7 @@ const OWNER = '123456789';
   check('★ يصمد بعد restart في حالة التحكّم', server.includes('ownerTelegramPairing = normalizeOwnerTelegramPairing(control.ownerTelegramPairing);') && server.includes('    ownerTelegramPairing,\n'));
   check('★ الرمز بالعشوائية التشفيرية وسرّ الجلسة', server.includes('newPairingCode((n) => crypto.randomBytes(n))') && server.includes('startOwnerTelegramPairing(ownerTelegramPairing, code, SESSION_SECRET, Date.now())'));
   check('★ إنذار الذاكرة من وقفة المراقبة ودورة التنبيه', server.includes('try { syncMemoryPressureAlert(); } catch') && server.includes('    syncMemoryPressureAlert();\n'));
-  check('★ زر «اربط هاتفي بنقرة» + رابط البوت + تحديث تلقائي حتى التأكيد', sys.includes('data-tg-pair') && sys.includes('افتح البوت واضغط Start') && sys.includes('apiService.startOwnerTelegramPairing()') && api.includes("'/api/agent/owner-alerts/telegram/pair'"));
+  check('★ زر «اربط هاتفي بنقرة» + رابط البوت + تحديث تلقائي حتى التأكيد', pairUi.includes('data-tg-pair') && sys.includes('<OwnerTelegramPair') && pairUi.includes('افتح البوت واضغط Start') && pairUi.includes('apiService.startOwnerTelegramPairing()') && api.includes("'/api/agent/owner-alerts/telegram/pair'"));
 }
 
 console.log('\n' + '='.repeat(60));

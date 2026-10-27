@@ -111,7 +111,9 @@ const EXPLICIT_CONSTRAINTS: Partial<Record<PlatformId, Partial<Record<Capability
     messaging: 'NOT_AVAILABLE',
     audience: 'NOT_AVAILABLE',
     geography: 'NOT_AVAILABLE',
-    publish: 'REQUIRES_REVIEW',
+    // 2026-10-27: كانت «مراجعة» — لكن لا كود نشر لـSnapchat (السجل: capabilities فارغة، مسار النشر
+    // يرد «غير مدعوم»). القدرة بلا تنفيذ = غير متاحة صراحةً، لا «تنتظر مراجعة».
+    publish: 'NOT_AVAILABLE',
   },
   google_business: {
     comments: 'NOT_AVAILABLE',

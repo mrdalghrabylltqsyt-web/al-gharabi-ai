@@ -30,7 +30,11 @@ export const DashboardView: React.FC = () => {
     notificationBadge,
   } = useApp();
 
-  const totalFollowers = platforms.reduce((acc, p) => acc + p.followers, 0);
+  const totalFollowers = platforms.reduce((acc, p) => acc + (typeof p.measured?.followers === 'number' ? p.measured.followers : 0), 0);
+  // 2026-10-27: كانت البطاقة تعدّ «المحادثات» القديمة (0) بينما الاستفسارات الحقيقية في تعليقات/رسائل المنصات.
+  const realInquiries = platforms.reduce((acc, p) => acc + (Number(p.measured?.inquiries) || 0), 0);
+  const realInbound = platforms.reduce((acc, p) => acc + (Number(p.measured?.inbound) || 0), 0);
+  const fmtFollowers = (p: { measured?: { followers: number | null } | null }) => (typeof p.measured?.followers === 'number' ? p.measured.followers.toLocaleString() : '—');
   const pendingPosts = posts.filter((p) => p.status === 'review');
   const publishedPosts = posts.filter((p) => p.status === 'published');
   const scheduledPosts = posts.filter((p) => p.status === 'scheduled');
@@ -167,11 +171,11 @@ export const DashboardView: React.FC = () => {
             </div>
           </div>
           <div className="mt-3 flex items-baseline gap-2">
-            <span className="text-2xl sm:text-3xl font-extrabold text-white">
-              {conversations.length}
+            <span className="text-2xl sm:text-3xl font-extrabold text-white" data-real-inquiries>
+              {realInquiries + conversations.length}
             </span>
           </div>
-          <p className="mt-1 text-[11px] text-slate-500">إجمالي المحادثات المسجلة بالنظام</p>
+          <p className="mt-1 text-[11px] text-slate-500">استفسار تجاري حقيقي من زبائن المنصات · {realInbound.toLocaleString()} تعليق ورسالة زبون</p>
         </button>
 
         {/* Available Products in Showroom → products database */}
@@ -264,7 +268,7 @@ export const DashboardView: React.FC = () => {
               <div className="mt-3 pt-2 border-t border-slate-800/80 flex items-center justify-between text-[11px]">
                 <span className="text-slate-400">المتابعون</span>
                 <span className="font-bold text-slate-200">
-                  {(p.followers || 0).toLocaleString()}
+                  {fmtFollowers(p)}
                 </span>
               </div>
             </div>

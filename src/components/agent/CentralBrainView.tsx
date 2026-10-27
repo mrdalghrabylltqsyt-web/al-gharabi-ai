@@ -140,6 +140,15 @@ export const CentralBrainView: React.FC = () => {
 
   const platforms: any[] = diag?.platforms || [];
   const byPlatform: any[] = learning?.byPlatform || [];
+  // 2026-10-27: كان العدّاد يقرأ حقلاً غير موجود (totalSamples) فيُظهر 0 رغم 64 سجلاً مقاساً.
+  const totalSamples: number = byPlatform.reduce((a, s) => a + (Number(s?.sampleSize) || 0), 0);
+  // المؤشرات المتاحة فعلاً لكل منصة من عيّنة التعلم نفسها (لا عمود فارغ).
+  const METRIC_AR: Record<string, string> = { views: 'مشاهدات', likes: 'إعجابات', comments: 'تعليقات', shares: 'مشاركات', reach: 'وصول', saves: 'حفظ' };
+  const metricsOf = (platform: string): string => {
+    const smp = byPlatform.find((x) => x?.platform === platform);
+    const av = Array.isArray(smp?.availableMetrics) ? smp.availableMetrics.filter((m: any) => m?.available).map((m: any) => METRIC_AR[m.metric] || m.metric) : [];
+    return av.length ? av.join('، ') : '—';
+  };
 
   return (
     <div className="space-y-5">
@@ -160,7 +169,7 @@ export const CentralBrainView: React.FC = () => {
         <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-xs">
           <Stat label="منصات مغطّاة" value={diag?.platforms?.length ?? '—'} />
           <Stat label="منصات متصلة" value={diag?.connectedPlatformIds?.length ?? '—'} />
-          <Stat label="سجلات أداء للتعلّم" value={learning?.totalSamples ?? 0} />
+          <Stat label="سجلات أداء للتعلّم" value={totalSamples} />
           <Stat label="نداءات Gemini (قراءة)" value={diag?.ai?.providerCalls ?? 0} />
         </div>
         {diag?.limitations?.length ? (
@@ -215,7 +224,7 @@ export const CentralBrainView: React.FC = () => {
                   <td className="text-center py-2 px-2">{p.readsComments ? '✓' : 'غير متاح'}</td>
                   <td className="text-center py-2 px-2">{p.repliesToComments ? '✓' : 'غير متاح'}</td>
                   <td className="text-center py-2 px-2">{p.realConnector ? '✓' : 'أساس فقط'}</td>
-                  <td className="text-center py-2 px-2 text-slate-400">{Array.isArray(p.availableMetrics) ? p.availableMetrics.join('، ') : '—'}</td>
+                  <td className="text-center py-2 px-2 text-slate-400">{metricsOf(p.platform)}</td>
                 </tr>
               ))}
             </tbody>
