@@ -17,7 +17,7 @@
  * في الخادم (Resend القائم). إعادة استخدام كامل بلا نظام تنبيه ثانٍ.
  */
 
-export type OwnerAlertKind = 'commercial_draft' | 'social_escalation' | 'platform_reauth' | 'backup_stale' | 'ingest_failing' | 'storage_failing';
+export type OwnerAlertKind = 'commercial_draft' | 'social_escalation' | 'platform_reauth' | 'backup_stale' | 'ingest_failing' | 'storage_failing' | 'memory_pressure';
 
 export const OWNER_ALERT_KIND_LABELS_AR: Readonly<Record<OwnerAlertKind, string>> = Object.freeze({
   commercial_draft: 'استفسار زبون يحتاج موافقتك',
@@ -26,6 +26,7 @@ export const OWNER_ALERT_KIND_LABELS_AR: Readonly<Record<OwnerAlertKind, string>
   backup_stale: 'النسخة الاحتياطية متوقفة',
   ingest_failing: 'قراءة التعليقات متوقفة',
   storage_failing: 'حفظ البيانات يفشل',
+  memory_pressure: 'ذاكرة الخادم تقترب من الحد',
 });
 
 export type OwnerAlertSendResult = 'sent' | 'disabled' | 'no_provider' | 'empty' | 'failed';
@@ -96,7 +97,7 @@ export function normalizeOwnerAlertState(raw: unknown): OwnerAlertState {
         .filter((x): x is Record<string, unknown> => Boolean(x && typeof x === 'object'))
         .map((x) => ({
           key: String(x.key || ''),
-          kind: (['commercial_draft', 'social_escalation', 'platform_reauth', 'backup_stale', 'ingest_failing', 'storage_failing'] as OwnerAlertKind[]).includes(x.kind as OwnerAlertKind)
+          kind: (['commercial_draft', 'social_escalation', 'platform_reauth', 'backup_stale', 'ingest_failing', 'storage_failing', 'memory_pressure'] as OwnerAlertKind[]).includes(x.kind as OwnerAlertKind)
             ? (x.kind as OwnerAlertKind)
             : 'social_escalation',
           platform: x.platform == null ? null : String(x.platform),
@@ -171,7 +172,7 @@ export function isOwnerAlertDue(state: OwnerAlertState, nowMs: number): boolean 
 
 /** عدد المعلّق لكل نوع — يُعرض في الملخّص بلا بيانات عملاء. */
 export function ownerAlertCountsByKind(state: OwnerAlertState): Record<OwnerAlertKind, number> {
-  const out: Record<OwnerAlertKind, number> = { commercial_draft: 0, social_escalation: 0, platform_reauth: 0, backup_stale: 0, ingest_failing: 0, storage_failing: 0 };
+  const out: Record<OwnerAlertKind, number> = { commercial_draft: 0, social_escalation: 0, platform_reauth: 0, backup_stale: 0, ingest_failing: 0, storage_failing: 0, memory_pressure: 0 };
   for (const p of state.pending) out[p.kind] += 1;
   return out;
 }
@@ -190,6 +191,7 @@ export function buildOwnerAlertDigest(state: OwnerAlertState, appUrl: string | n
   if (counts.platform_reauth) lines.push(`- منصات تحتاج إعادة ربط: ${counts.platform_reauth}`);
   if (counts.backup_stale) lines.push(`- تحذير: النسخة الاحتياطية متوقفة — افتح النسخ السحابية في التطبيق`);
   if (counts.storage_failing) lines.push(`- خطر: حفظ البيانات في قاعدة البيانات يفشل — التغييرات الجديدة قد تضيع عند إعادة التشغيل`);
+  if (counts.memory_pressure) lines.push(`- تحذير: ذاكرة الخادم تقترب من حد الخطة المجانية — إن بلغته يُعاد تشغيل الخادم`);
   if (counts.ingest_failing) lines.push(`- تحذير: قراءة التعليقات متوقفة على ${counts.ingest_failing} منصة — تعليقات الزبائن لا تصل`);
   lines.push('');
   for (const p of state.pending) {

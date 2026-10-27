@@ -22,6 +22,31 @@ export const SystemControlView: React.FC = () => {
     catch (e: any) { showToast(e.message); }
     finally { setAlertsBusy(false); }
   }, [alertsBusy, showToast]);
+  // ربط Telegram المالك بنقرة (بلا إعدادات Render): رمز لمرة واحدة يُرسل للبوت من محادثتك الخاصة.
+  const [tgPair, setTgPair] = useState<{ code: string; expiresAt: string; deepLink: string | null; instruction: string; webhook?: { ready: boolean; detail: string } } | null>(null);
+  const startTgPair = useCallback(async () => {
+    if (alertsBusy) return;
+    setAlertsBusy(true);
+    try { const r = await apiService.startOwnerTelegramPairing(); setTgPair(r); setOwnerAlerts((a: any) => (a ? { ...a, telegram: r.telegram } : a)); }
+    catch (e: any) { showToast(e.message); }
+    finally { setAlertsBusy(false); }
+  }, [alertsBusy, showToast]);
+  const unpairTg = useCallback(async () => {
+    if (alertsBusy) return;
+    setAlertsBusy(true);
+    try { const t = await apiService.unpairOwnerTelegram(); setTgPair(null); setOwnerAlerts((a: any) => (a ? { ...a, telegram: t } : a)); showToast('أُلغي ربط Telegram'); }
+    catch (e: any) { showToast(e.message); }
+    finally { setAlertsBusy(false); }
+  }, [alertsBusy, showToast]);
+  // أثناء انتظار الربط: تحديث الحالة كل 5 ث حتى يصل تأكيد البوت (يتوقف عند النجاح أو انتهاء الرمز).
+  useEffect(() => {
+    if (!tgPair || ownerAlerts?.telegram?.configured) return;
+    const t = window.setInterval(async () => {
+      if (Date.now() > Date.parse(tgPair.expiresAt)) { setTgPair(null); return; }
+      try { const a = await apiService.getOwnerAlerts(); setOwnerAlerts(a); if (a?.telegram?.configured) { setTgPair(null); showToast('تم ربط Telegram — التنبيهات تصل هاتفك الآن'); } } catch { /* المحاولة التالية */ }
+    }, 5000);
+    return () => window.clearInterval(t);
+  }, [tgPair, ownerAlerts?.telegram?.configured, showToast]);
   const runGeminiTest = useCallback(async () => {
     if (geminiTesting) return;
     setGeminiTesting(true); setGeminiResult(null);
@@ -60,7 +85,14 @@ export const SystemControlView: React.FC = () => {
       {ownerAlerts?.lastError&&<p className="text-[10px] text-amber-300/90 mt-2">آخر خطأ: {ownerAlerts.lastError}</p>}
       {ownerAlerts?.telegram&&<div className="mt-3 p-2 rounded-lg bg-slate-950/60 border border-slate-800 text-[11px] flex flex-wrap items-center gap-x-4 gap-y-1">
         <span className="text-slate-500">Telegram الفوري</span>
-        <span className={ownerAlerts.telegram.configured?'text-emerald-300 font-bold':'text-amber-300 font-bold'}>{ownerAlerts.telegram.configured?'مفعّل — كل زبون جديد يصل هاتفك خلال ثوانٍ':(ownerAlerts.telegram.botTokenSet?'ينقصه OWNER_TELEGRAM_CHAT_ID في Render':'ينقصه بوت Telegram ورقم محادثتك')}</span>
+        <span className={ownerAlerts.telegram.configured?'text-emerald-300 font-bold':'text-amber-300 font-bold'}>{ownerAlerts.telegram.configured?'مفعّل — كل زبون جديد يصل هاتفك خلال ثوانٍ':(ownerAlerts.telegram.botTokenSet?'غير مربوط بهاتفك بعد — اربطه بنقرة':'ينقصه بوت Telegram — اربط بوت المعرض أولاً')}</span>
+        {!ownerAlerts.telegram.configured&&ownerAlerts.telegram.botTokenSet&&!tgPair&&<button type="button" data-tg-pair onClick={()=>void startTgPair()} disabled={alertsBusy} className="px-3 py-1.5 rounded-lg bg-sky-500 text-slate-950 font-bold disabled:opacity-50">اربط هاتفي بنقرة</button>}
+        {ownerAlerts.telegram.configured&&ownerAlerts.telegram.chatSource==='paired'&&<button type="button" onClick={()=>void unpairTg()} disabled={alertsBusy} className="px-3 py-1.5 rounded-lg bg-slate-800 border border-slate-700 text-slate-300 disabled:opacity-50">إلغاء الربط</button>}
+        {tgPair&&!ownerAlerts.telegram.configured&&<div className="basis-full mt-1 p-2 rounded-lg bg-sky-500/10 border border-sky-500/30 text-sky-100">
+          {tgPair.deepLink?<a href={tgPair.deepLink} target="_blank" rel="noopener noreferrer" className="inline-block px-3 py-1.5 rounded-lg bg-sky-500 text-slate-950 font-bold">افتح البوت واضغط Start</a>:null}
+          <p className="mt-1">{tgPair.instruction} — الرمز <b className="font-mono tracking-widest text-white" dir="ltr">{tgPair.code}</b> صالح 10 دقائق. ستتحدث الحالة هنا تلقائياً.</p>
+          {tgPair.webhook&&!tgPair.webhook.ready&&<p className="mt-1 text-amber-300">تنبيه: {tgPair.webhook.detail} — لن يصل الرمز للخادم قبل تصحيحه من «ربط المنصات ← Telegram».</p>}
+        </div>}
         {ownerAlerts.telegram.configured&&<span className="text-slate-400">أُرسل: <b className="text-white">{ownerAlerts.telegram.sentCount ?? 0}</b>{ownerAlerts.telegram.failedCount?<> · فشل: <b className="text-amber-300">{ownerAlerts.telegram.failedCount}</b></>:null}</span>}
       </div>}
     </section>

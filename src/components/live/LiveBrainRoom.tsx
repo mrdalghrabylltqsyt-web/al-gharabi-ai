@@ -313,12 +313,49 @@ const Kpi: React.FC<{ label: string; value: number; suffix?: string; sub: string
 };
 
 /**
+ * جهاز محمول (2026-10-27): الشاشة الحية صُمّمت لعرض 1680–1920 نقطة بخمسة أعمدة. على الهاتف —
+ * وخاصة بوضع «موقع سطح المكتب» حيث يُبلغ المتصفح عرضاً ~980 — كانت تُصغَّر كلها فلا يُقرأ شيء.
+ * اللمس الخشن + شاشة جهاز < 700 نقطة = هاتف ⇒ عمود واحد مقروء، الأهم أولاً، مع تكبير يُلغي
+ * تصغير «موقع سطح المكتب». المالك يستطيع العودة للعرض الكامل (يُحفظ في هذا المتصفح فقط).
+ */
+const HANDHELD_PREF_KEY = 'gharabi.live.fullWallOnPhone';
+function readHandheld(): { handheld: boolean; zoom: number } {
+  if (typeof window === 'undefined') return { handheld: false, zoom: 1 };
+  try {
+    const coarse = typeof window.matchMedia === 'function' && window.matchMedia('(pointer: coarse)').matches;
+    const sw = Math.min(window.screen?.width || 0, window.screen?.height || 0) || window.innerWidth;
+    const handheld = coarse && sw > 0 && sw < 700;
+    // عرض الجهاز الفعلي بحسب الاتجاه؛ «موقع سطح المكتب» يجعل innerWidth أعرض منه بكثير.
+    const deviceW = window.innerWidth > window.innerHeight ? Math.max(window.screen?.width || 0, window.screen?.height || 0) : sw;
+    const zoom = handheld && deviceW > 0 ? Math.min(3, Math.max(1, window.innerWidth / deviceW)) : 1;
+    return { handheld, zoom: Math.round(zoom * 100) / 100 };
+  } catch { return { handheld: false, zoom: 1 }; }
+}
+function useHandheld(): { handheld: boolean; zoom: number } {
+  const [v, setV] = useState(readHandheld);
+  useEffect(() => {
+    const on = () => setV((prev) => { const n = readHandheld(); return n.handheld === prev.handheld && n.zoom === prev.zoom ? prev : n; });
+    window.addEventListener('resize', on);
+    window.addEventListener('orientationchange', on);
+    return () => { window.removeEventListener('resize', on); window.removeEventListener('orientationchange', on); };
+  }, []);
+  return v;
+}
+
+/**
  * variant='wall' = «الشاشة الحية»: تُفتح من زر في الترويسة فوق كل الواجهة (تختفي الأقسام
  * الجانبية)، وتعرض كل لوحات الغرفة دفعة واحدة في شاشة واحدة بلا تمرير. البيانات نفسها
  * من `/api/live/room` — لا مصدر ثانٍ ولا أرقام مختلقة.
  */
 export const LiveBrainRoom: React.FC<{ variant?: 'page' | 'wall'; onClose?: () => void }> = ({ variant = 'page', onClose }) => {
-  const wall = variant === 'wall';
+  // isWall = سلوك الطبقة (إغلاق، ملء الشاشة، منع الجلب المزدوج)؛ wall = تخطيط الأعمدة الخمسة.
+  // على الهاتف تبقى الطبقة لكن التخطيط عمود واحد مقروء (ما لم يطلب المالك العرض الكامل).
+  const isWall = variant === 'wall';
+  const device = useHandheld();
+  const [fullOnPhone, setFullOnPhone] = useState<boolean>(() => { try { return typeof window !== 'undefined' && window.localStorage.getItem(HANDHELD_PREF_KEY) === '1'; } catch { return false; } });
+  const mobile = device.handheld && !fullOnPhone;
+  const wall = isWall && !mobile;
+  const toggleFullOnPhone = useCallback(() => setFullOnPhone((v) => { const n = !v; try { window.localStorage.setItem(HANDHELD_PREF_KEY, n ? '1' : '0'); } catch { /* تفضيل اختياري */ } return n; }), []);
   const { currentUser, showToast } = useApp();
   const isOwner = currentUser?.role === 'owner';
   const [data, setData] = useState<any>(null);
@@ -415,7 +452,7 @@ export const LiveBrainRoom: React.FC<{ variant?: 'page' | 'wall'; onClose?: () =
   }, []);
 
   useEffect(() => {
-    if (!wall) return;
+    if (!isWall) return;
     const body = document.body;
     const prevOverflow = body.style.overflow;
     body.style.overflow = 'hidden';
@@ -434,7 +471,7 @@ export const LiveBrainRoom: React.FC<{ variant?: 'page' | 'wall'; onClose?: () =
       document.removeEventListener('fullscreenchange', onFs);
       try { if (document.fullscreenElement) void document.exitFullscreen?.().catch(() => undefined); } catch { /* */ }
     };
-  }, [wall]);
+  }, [isWall]);
 
   const ingest = useCallback((incoming: LiveEvt[]) => {
     if (!incoming.length) return;
@@ -477,10 +514,10 @@ export const LiveBrainRoom: React.FC<{ variant?: 'page' | 'wall'; onClose?: () =
 
   const skewRef = useRef(0); // فرق ساعة الجهاز عن ساعة الخادم — كل الأزمنة تُحسب بساعة الخادم
   const lastFullRef = useRef(0);
-  const poll = useCallback(async () => {
+  const poll = useCallback(async (opts: { wait?: boolean; signal?: AbortSignal } = {}): Promise<any | null> => {
     try {
       const full = !lastFullRef.current || Date.now() - lastFullRef.current >= FULL_EVERY_MS;
-      const r = full ? await apiService.getLiveRoom(lastIdRef.current) : await apiService.getLiveRoom(lastIdRef.current, true);
+      const r = full ? await apiService.getLiveRoom(lastIdRef.current) : await apiService.getLiveRoom(lastIdRef.current, true, { wait: opts.wait, signal: opts.signal });
       if (full) lastFullRef.current = Date.now();
       const st = Date.parse(String(r?.serverTime || ''));
       if (Number.isFinite(st)) skewRef.current = Math.round(skewRef.current * 0.5 + (st - Date.now()) * 0.5);
@@ -491,18 +528,62 @@ export const LiveBrainRoom: React.FC<{ variant?: 'page' | 'wall'; onClose?: () =
       firstLoad.current = false;
       setError(null);
       setLastOkAt(Date.now());
+      return r;
     } catch (e: any) {
+      if (opts.signal?.aborted) return null; // مغادرة الشاشة — ليس انقطاعاً
       setError(e?.message || 'انقطاع مؤقت');
+      return null;
     }
   }, [ingest]);
 
+  // البث اللحظي (2026-10-27): حلقة انتظار طويل بدل الاستطلاع كل 4 ث — الطلب يبقى معلّقاً على
+  // الخادم حتى أول حدث حقيقي (يظهر فوراً) أو 20 ث. أي فشل متكرر أو خادم قديم ⇒ رجوع تلقائي
+  // للاستطلاع العادي، ومحاولة البث من جديد بعد دقيقتين. اللقطة الكاملة كل 30 ث كما كانت.
+  const [streamMode, setStreamMode] = useState<'stream' | 'poll'>('poll');
   useEffect(() => {
     if (!isOwner) return;
-    void poll();
+    const outer = new AbortController();
+    let stopped = false;
     // يتوقف عند إخفاء الصفحة؛ وغرفة التبويب تصمت ما دامت الشاشة الحية مفتوحة (هي تجلب بنفسها).
-    const t = window.setInterval(() => { if (document.visibilityState === 'visible' && (wall || document.body.dataset.liveWall !== '1') && !sleepingRef.current) void poll(); }, POLL_MS);
-    return () => window.clearInterval(t);
-  }, [isOwner, poll, wall]);
+    const active = () => document.visibilityState === 'visible' && (isWall || document.body.dataset.liveWall !== '1') && !sleepingRef.current;
+    const pause = (ms: number) => new Promise<void>((resolve) => {
+      const t = window.setTimeout(resolve, ms);
+      outer.signal.addEventListener('abort', () => { window.clearTimeout(t); resolve(); }, { once: true });
+    });
+    void (async () => {
+      let canStream = true, fails = 0, retryStreamAt = 0;
+      await poll();
+      while (!stopped) {
+        if (!active()) { await pause(1000); continue; }
+        if (!canStream && Date.now() >= retryStreamAt) canStream = true;
+        const fullDue = Date.now() - lastFullRef.current >= FULL_EVERY_MS;
+        if (!canStream && !fullDue) await pause(POLL_MS);
+        if (stopped) break;
+        // مهلة العميل فوق مهلة الخادم (20 ث) بهامش، كي لا يبقى طلب يتيم خلف وكيل بطيء.
+        const req = new AbortController();
+        const kill = () => req.abort();
+        outer.signal.addEventListener('abort', kill, { once: true });
+        const guard = window.setTimeout(kill, 28000);
+        const t0 = Date.now();
+        const r = await poll({ wait: canStream && !fullDue, signal: req.signal });
+        window.clearTimeout(guard);
+        outer.signal.removeEventListener('abort', kill);
+        if (stopped) break;
+        if (!r) {
+          fails += 1;
+          if (fails >= 3 && canStream) { canStream = false; retryStreamAt = Date.now() + 120000; setStreamMode('poll'); }
+          await pause(Math.min(30000, 2000 * 2 ** Math.min(fails, 4)));
+          continue;
+        }
+        fails = 0;
+        if (r.stream?.mode === 'long-poll') { if (canStream) setStreamMode('stream'); }
+        else if (!fullDue) { canStream = false; retryStreamAt = Date.now() + 600000; setStreamMode('poll'); }
+        // الخادم مشغول (سقف المنتظرين) أو رد فوري بلا انتظار: مهلة قصيرة كي لا تدور الحلقة بلا توقف.
+        if (r.stream?.waited === 'busy' || (canStream && !fullDue && Date.now() - t0 < 300 && !(r.events || []).length)) await pause(POLL_MS);
+      }
+    })();
+    return () => { stopped = true; outer.abort(); };
+  }, [isOwner, poll, isWall]);
 
   useEffect(() => {
     const t = window.setInterval(() => setNow(Date.now() + skewRef.current), 1000);
@@ -676,7 +757,8 @@ export const LiveBrainRoom: React.FC<{ variant?: 'page' | 'wall'; onClose?: () =
   const wave = sparkPath(buckets, 600, 70);
   const maxHour = Math.max(1, ...hourly);
   // البث متأخر إن لم ينجح جلب منذ 15 ث (لا يُعرض «بث حي» على بيانات قديمة).
-  const feedStale = Boolean(data && lastOkAt && Date.now() - lastOkAt > STALE_MS);
+  // في البث اللحظي يُرد الخادم كل ≤20 ث حتى بلا جديد؛ التأخّر يُقاس على ذلك.
+  const feedStale = Boolean(data && lastOkAt && Date.now() - lastOkAt > (streamMode === 'stream' ? STALE_MS + 20000 : STALE_MS));
   const feedWarn = feedStale || sleeping;
   // لوحة تتمدّد لتملأ ما تبقّى من العمود في الشاشة الحية (قوائم تُمرَّر داخلها فقط).
   const flexPanel: React.CSSProperties | undefined = wall ? { display: 'flex', flexDirection: 'column', flex: '1 1 0', minHeight: 190 } : undefined;
@@ -694,7 +776,7 @@ export const LiveBrainRoom: React.FC<{ variant?: 'page' | 'wall'; onClose?: () =
         <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 8, fontSize: 12 }}>
           <span data-station="check:core.events,monitor.lag" data-st-name="البث الحي" style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '7px 12px', borderRadius: 999, border: `1px solid ${error ? '#7A1F3A' : feedWarn ? '#6B4A12' : '#1E6B55'}`, color: error ? '#FDA4AF' : feedWarn ? '#FCD34D' : '#6EE7B7', background: 'rgba(0,0,0,.25)' }}>
             <span className="lbr-blink" style={{ width: 8, height: 8, borderRadius: '50%', background: error ? '#F87171' : feedWarn ? '#FBBF24' : '#34D399', boxShadow: `0 0 10px ${error ? '#F87171' : feedWarn ? '#FBBF24' : '#34D399'}` }} />
-            {sleeping ? 'سكون ليلي — المس الشاشة للاستئناف' : error ? 'انقطاع مؤقت — إعادة المحاولة' : feedStale ? `البث متأخر — آخر تحديث ${ago(lastOkAt ? new Date(lastOkAt + skewRef.current).toISOString() : null, now)}` : data ? `بث حي · ${ago(lastOkAt ? new Date(lastOkAt + skewRef.current).toISOString() : null, now)}` : 'جارٍ الاتصال…'}
+            {sleeping ? 'سكون ليلي — المس الشاشة للاستئناف' : error ? 'انقطاع مؤقت — إعادة المحاولة' : feedStale ? `البث متأخر — آخر تحديث ${ago(lastOkAt ? new Date(lastOkAt + skewRef.current).toISOString() : null, now)}` : data ? (streamMode === 'stream' ? 'بث لحظي · متصل — كل حدث يظهر فور وقوعه' : `بث حي · ${ago(lastOkAt ? new Date(lastOkAt + skewRef.current).toISOString() : null, now)}`) : 'جارٍ الاتصال…'}
           </span>
           {modules.gate && <span data-station="check:gate.mode,gate.window,gate.expired" data-st-name="البوابة" style={{ padding: '7px 12px', borderRadius: 999, border: '1px solid #6B4A12', color: '#FCD34D', background: 'rgba(0,0,0,.25)' }}>{modules.gate.metric}</span>}
           {modules.automation && modules.automation.status !== 'ok' && <span data-station="check:automation.timers,automation.watcherErrors" data-st-name="الأتمتة" style={{ padding: '7px 12px', borderRadius: 999, border: '1px solid #7A1F3A', color: '#FDA4AF', background: 'rgba(0,0,0,.25)' }}>{modules.automation.metric}</span>}
@@ -713,8 +795,9 @@ export const LiveBrainRoom: React.FC<{ variant?: 'page' | 'wall'; onClose?: () =
             </span>
           )}
           <button type="button" onClick={() => setMotion((m) => !m)} style={{ padding: '7px 14px', minHeight: 34, borderRadius: 999, border: '1px solid #2B3A66', background: '#0F1630', color: '#E7ECF8', cursor: 'pointer' }}>{motion ? 'إيقاف الحركة' : 'تشغيل الحركة'}</button>
+          {isWall && device.handheld && <button type="button" data-phone-layout onClick={toggleFullOnPhone} style={{ padding: '7px 14px', minHeight: 34, borderRadius: 999, border: '1px solid #2B3A66', background: '#0F1630', color: '#E7ECF8', cursor: 'pointer' }}>{mobile ? 'العرض الكامل' : 'عرض الهاتف'}</button>}
           {wall && fsSupported && <button type="button" onClick={toggleFs} style={{ padding: '7px 14px', minHeight: 34, borderRadius: 999, border: '1px solid #2B3A66', background: '#0F1630', color: '#E7ECF8', cursor: 'pointer' }}>{isFs ? 'خروج من ملء الشاشة' : 'ملء الشاشة'}</button>}
-          {wall && <button type="button" onClick={() => onCloseRef.current?.()} aria-label="إغلاق الشاشة الحية" title="إغلاق (Esc)" style={{ padding: '7px 16px', minHeight: 34, borderRadius: 999, border: '1px solid #F0ABFC', background: 'linear-gradient(135deg,#3B0D4F,#140B30)', color: '#FDF4FF', fontWeight: 700, cursor: 'pointer', boxShadow: '0 0 16px rgba(240,171,252,.35)' }}>✕ إغلاق</button>}
+          {isWall && <button type="button" onClick={() => onCloseRef.current?.()} aria-label="إغلاق الشاشة الحية" title="إغلاق (Esc)" style={{ padding: '7px 16px', minHeight: 34, borderRadius: 999, border: '1px solid #F0ABFC', background: 'linear-gradient(135deg,#3B0D4F,#140B30)', color: '#FDF4FF', fontWeight: 700, cursor: 'pointer', boxShadow: '0 0 16px rgba(240,171,252,.35)' }}>✕ إغلاق</button>}
         </div>
       </header>
   );
@@ -738,7 +821,7 @@ export const LiveBrainRoom: React.FC<{ variant?: 'page' | 'wall'; onClose?: () =
         </section>
   );
   const controlEl = (
-        <LiveControlCenter data={data} refresh={() => { void poll(); }} now={now} anchorRef={controlRef} compact={wall} onLeave={wall ? () => onCloseRef.current?.() : undefined} />
+        <LiveControlCenter data={data} refresh={() => { void poll(); }} now={now} anchorRef={controlRef} compact={wall} onLeave={isWall ? () => onCloseRef.current?.() : undefined} />
   );
   const selectedBlock = (
               <div style={{ marginTop: 12, border: '1px solid rgba(192,132,252,.35)', borderRadius: 16, background: 'linear-gradient(110deg, rgba(42,15,69,.55), rgba(10,16,38,.7))', padding: '14px 16px', display: 'flex', flexWrap: 'wrap', gap: 18 }}>
@@ -1066,6 +1149,11 @@ export const LiveBrainRoom: React.FC<{ variant?: 'page' | 'wall'; onClose?: () =
   const ST_ICON: Record<string, string> = { ok: '✓', warn: '⚠', fail: '✗', skip: '–' };
   const score: number | null = typeof patrol?.score === 'number' ? patrol.score : null;
   const scoreCol = score == null ? '#93A1C3' : score >= 90 ? '#34D399' : score >= 70 ? '#FBBF24' : '#F87171';
+  // تفصيل الصحة الصادق (موزون بالأثر + سقف عند العطل): لماذا هذا الرقم، لا رقم وحده.
+  const health: any = patrol?.health || null;
+  const healthWhy: string = health
+    ? [`${health.fails || 0} عطل · ${health.warns || 0} تحذير · ${health.ok || 0} سليم`, health.capped ? `الموزون ${health.weighted}% — خُفّض لأن ${health.fails ? 'عطلاً قائماً' : 'تحذيراً يمسّ الزبائن'} يمنع إعلانه أخضر` : null, ...((health.top || []) as any[]).slice(0, 4).map((t: any) => `${t.status === 'fail' ? '✗' : '⚠'} ${t.label}: ${t.detail}`)].filter(Boolean).join('\n')
+    : 'صحة المشروع من آخر فحص لكل قسم';
   // الاستطلاع الخفيف لا يحمل الفحوص الكاملة: نحتفظ بآخر نسخة كاملة ونحدّث القسم الجاري منها.
   const inspCache = useRef<any[]>([]);
   if (Array.isArray(patrol?.inspections)) inspCache.current = patrol.inspections;
@@ -1084,8 +1172,9 @@ export const LiveBrainRoom: React.FC<{ variant?: 'page' | 'wall'; onClose?: () =
               {!eng ? <div style={{ fontSize: 12, color: '#93A1C3' }}>{data ? 'المهندس غير متاح على هذا الخادم بعد.' : 'جارٍ الاتصال…'}</div> : (
                 <>
                   <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
-                    <div className="lbr-score" style={{ borderColor: scoreCol, color: scoreCol, boxShadow: `0 0 18px ${scoreCol}55` }} title="صحة المشروع من آخر فحص لكل قسم">
+                    <div className="lbr-score" style={{ borderColor: scoreCol, color: scoreCol, boxShadow: `0 0 18px ${scoreCol}55` }} title={healthWhy} aria-label={`صحة المشروع ${score == null ? 'غير معروفة' : `${score}%`}. ${healthWhy}`}>
                       <b>{score == null ? '—' : `${score}%`}</b><span>صحة المشروع</span>
+                      {health && (health.fails || health.warns) ? <span data-health-counts style={{ fontSize: 9, color: health.fails ? '#FCA5A5' : '#FDE68A', marginTop: 1 }}>{health.fails ? `${health.fails} عطل` : `${health.warns} تحذير`}</span> : null}
                     </div>
                     <div className={'lbr-eng-now' + (eng.job ? ' busy' : '')} style={{ flex: 1, minWidth: 0 }}>
                       {eng.job
@@ -1322,7 +1411,45 @@ export const LiveBrainRoom: React.FC<{ variant?: 'page' | 'wall'; onClose?: () =
     </>
   );
 
-  if (!wall) {
+  // الهاتف: عمود واحد بالأولوية — ما يحتاج قرارك الآن، ثم صحة المشروع، ثم الأرقام، ثم التفاصيل.
+  const mobileBody = (
+    <div data-live-mobile style={{ zoom: device.zoom !== 1 ? device.zoom : undefined } as React.CSSProperties}>
+      {headerEl}
+      <div style={{ position: 'relative', padding: 12, display: 'flex', flexDirection: 'column', gap: 12 }}>
+        {sleepEl}
+        {alertEl}
+        {engineerEl}
+        {kpisEl}
+        {controlEl}
+        {voicesEl}
+        {interEl}
+        {intentsEl}
+        {platStatusEl}
+        {eventsEl}
+        {cyclesEl}
+        {gaugesEl}
+        {leadsEl}
+        {prodsEl}
+        {topicsEl}
+        {platInsEl}
+        {pulseEl}
+        {mapEl}
+        {journeyEl}
+        {legendEl}
+      </div>
+    </div>
+  );
+
+  if (!isWall) {
+    if (mobile) {
+      return (
+        <div ref={pageRootRef} dir="rtl" className={'lbr lbr-mobile' + (motion ? '' : ' lbr-still')} style={{ position: 'relative', background: 'radial-gradient(ellipse 90% 60% at 50% 22%, #170F3A 0%, #070A1A 55%, #03040B 100%)', color: '#E7ECF8', borderRadius: 16, overflow: 'hidden' }}>
+          {backdrop}
+          {mobileBody}
+          {spiderEl(pageRootRef)}
+        </div>
+      );
+    }
     return (
       <div ref={pageRootRef} dir="rtl" className={'lbr' + (motion ? '' : ' lbr-still')} style={{ position: 'relative', background: 'radial-gradient(ellipse 90% 60% at 50% 22%, #170F3A 0%, #070A1A 55%, #03040B 100%)', color: '#E7ECF8', borderRadius: 22, border: '1px solid #1A2350', overflow: 'hidden' }}>
         {backdrop}
@@ -1353,10 +1480,12 @@ export const LiveBrainRoom: React.FC<{ variant?: 'page' | 'wall'; onClose?: () =
   );
 
   return (
-    <div ref={wallRef} dir="rtl" role="dialog" aria-modal="true" aria-label="الشاشة الحية — اللوحة الحية كاملة" className={'lbr lbr-wall' + (motion ? '' : ' lbr-still')}
+    <div ref={wallRef} dir="rtl" role="dialog" aria-modal="true" aria-label="الشاشة الحية — اللوحة الحية كاملة" className={'lbr ' + (mobile ? 'lbr-mobile' : 'lbr-wall') + (motion ? '' : ' lbr-still')}
       style={{ position: 'fixed', inset: 0, zIndex: 60, background: 'radial-gradient(ellipse 90% 60% at 50% 22%, #170F3A 0%, #070A1A 55%, #03040B 100%)', color: '#E7ECF8', overflowX: 'hidden', overflowY: fitMode ? 'hidden' : 'auto' }}>
       {backdrop}
-      {fitMode ? (
+      {mobile ? (
+        <div ref={wallPageRef} style={{ position: 'relative' }}>{mobileBody}{spiderEl(wallPageRef)}</div>
+      ) : fitMode ? (
         <div ref={wallInnerRef} style={{ position: 'absolute', top: 0, right: 0, width: wallBox.w / wallScale, height: wallBox.h / wallScale, transform: `scale(${wallScale})`, transformOrigin: 'top right' }}>
           {wallBody}
           {spiderEl(wallInnerRef)}

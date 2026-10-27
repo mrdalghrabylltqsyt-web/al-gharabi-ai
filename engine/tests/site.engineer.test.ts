@@ -184,7 +184,7 @@ check('تشغيل/إيقاف وفحص الآن للمالك', ui.includes('apiSe
   check('الفحص المعطوب لا يُسقط الدورية', inspectModule('platforms', { ...facts(), platforms: null as any }).checks.length > 0);
   const eng = read('server.ts');
   check('★ الدورية تعمل كل 5 ث على الخادم (ذاكرة فقط) ولا تمنع الإغلاق', eng.includes('const PATROL_STEP_MS = 5000;') && eng.includes('setInterval(patrolStep, PATROL_STEP_MS)') && eng.includes('startEngineerPatrol();'));
-  check('★ الحسابات الثقيلة فقط عند وقفة قسمها', eng.includes('if (at("customers")) for (const c of comments)') && eng.includes('const collections = !at("storage")') && eng.includes('if (!at("platforms") || !linked(id)) return null;'));
+  check('★ الحسابات الثقيلة فقط عند وقفة قسمها', eng.includes('if (at("customers")) for (const c of safe(() => customerComments(), comments))') && eng.includes('const collections = !at("storage")') && eng.includes('if (!at("platforms") || !linked(id)) return null;'));
   check('★ الثغرة الجديدة ⇒ تقرير + حدث حي، والعطل بلا إصلاح ⇒ تنبيهك (مرة/12 س)', eng.includes('الدورية: ${chk.label}') && eng.includes('"engineer_patrol"') && eng.includes('nowMs - last > 12 * 3600000'));
   check('★ التفاصيل الثقيلة في الاستطلاع الكامل فقط', eng.includes('inspections: full ? list : undefined') && eng.includes('engineerView(!lite)'));
   check('★ كتيّب المسودات المنتهية بلا حذف', eng.includes('sweepExpiredCommercialDrafts(new Date().toISOString())') && eng.includes('case "patrol_fix"'));

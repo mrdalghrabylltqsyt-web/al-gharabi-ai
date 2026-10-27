@@ -1727,6 +1727,20 @@ ${payload.topic || payload.productName || 'أنظمة وحلول التقسيط 
     if (!res.ok || !data.success) throw new Error(data.error || 'تعذر تبديل تنبيه المالك');
     return data.alerts;
   },
+  /** ربط Telegram المالك بنقرة: رمز لمرة واحدة (10 د) + رابط البوت. */
+  async startOwnerTelegramPairing(): Promise<{ code: string; expiresAt: string; deepLink: string | null; instruction: string; webhook?: { ready: boolean; detail: string }; telegram: any }> {
+    const res = await fetch('/api/agent/owner-alerts/telegram/pair', { method: 'POST', headers: getAuthHeaders() });
+    const data = await res.json();
+    if (!res.ok || !data.success) throw new Error(data.error || 'تعذر إنشاء رمز ربط Telegram');
+    return data;
+  },
+  /** إلغاء ربط Telegram المالك بالرمز. */
+  async unpairOwnerTelegram(): Promise<any> {
+    const res = await fetch('/api/agent/owner-alerts/telegram/pair', { method: 'DELETE', headers: getAuthHeaders() });
+    const data = await res.json();
+    if (!res.ok || !data.success) throw new Error(data.error || 'تعذر إلغاء ربط Telegram');
+    return data.telegram;
+  },
   // --- Meta Reply Watcher (مراقب ردود Facebook/Instagram 24/7) — للمالك فقط ---
   /** حالة مراقب ردود Meta (تحكم + سجل معالجة تفصيلي) — مسار محمي. */
   async getMetaWatcher(): Promise<any> {
@@ -1783,8 +1797,12 @@ ${payload.topic || payload.productName || 'أنظمة وحلول التقسيط 
     return data;
   },
   /** lite = استطلاع خفيف بلا الرؤى الثقيلة (حارس الخطة المجانية). */
-  async getLiveRoom(since = 0, lite = false): Promise<any> {
-    const res = await fetch(`/api/live/room?since=${encodeURIComponent(String(since || 0))}${lite ? '&lite=1' : ''}`, { headers: getAuthHeaders(), cache: 'no-store' });
+  /**
+   * لقطة الغرفة الحية. `wait` (مع lite) = بث لحظي بالانتظار الطويل: الخادم يُمسك الطلب حتى
+   * أول حدث حقيقي (≤20 ث). `signal` يُلغي الطلب المعلّق عند مغادرة الشاشة.
+   */
+  async getLiveRoom(since = 0, lite = false, opts: { wait?: boolean; signal?: AbortSignal } = {}): Promise<any> {
+    const res = await fetch(`/api/live/room?since=${encodeURIComponent(String(since || 0))}${lite ? '&lite=1' : ''}${lite && opts.wait ? '&wait=1' : ''}`, { headers: getAuthHeaders(), cache: 'no-store', signal: opts.signal });
     const data = await res.json().catch(() => ({}));
     if (!res.ok || !data.success) throw new Error(data.error || 'تعذر جلب البث الحي');
     return data;
