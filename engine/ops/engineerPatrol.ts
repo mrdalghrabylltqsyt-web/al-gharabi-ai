@@ -139,8 +139,8 @@ export const PATROL_CHECKS: Readonly<Record<EngineerModule, Check[]>> = Object.f
   owner: [
     c('owner.backlog', 'تراكم الإشعارات غير المقروءة', 'مئات الإشعارات غير المقروءة تُغرق الجديد المهم.', (f) => f.unreadNotifications > 500 ? { status: 'warn', detail: `${f.unreadNotifications} غير مقروء`, advice: '«تعليم كل الإشعارات كمقروءة» من مركز السيطرة بعد مراجعتها' } : { status: 'ok', detail: `${f.unreadNotifications} غير مقروء` }),
     c('owner.pending', 'ردود تنتظر قرارك', 'رد جاهز لا يُرسل يعني زبوناً ينتظر.', (f) => { const a = ageMs(f.oldestPendingDraftAt, f.nowMs); return f.pendingDrafts === 0 ? { status: 'ok', detail: 'لا شيء ينتظر' } : a != null && a > 48 * H ? { status: 'warn', detail: `${f.pendingDrafts} رداً، أقدمها منذ ${ageText(a)}`, advice: 'افتح «صندوق الزبائن» ووافق أو عدّل' } : { status: 'ok', detail: `${f.pendingDrafts} رداً حديثاً` }; }),
-    c('owner.critical', 'تنبيهات حرجة غير مقروءة', 'تنبيه حرج قديم غير مقروء يخفي ما يستجد.', (f) => { const a = ageMs(f.oldestUnreadCriticalAt, f.nowMs); return f.unreadCritical === 0 ? { status: 'ok', detail: 'لا شيء' } : a != null && a > 24 * H ? { status: 'warn', detail: `${f.unreadCritical} منذ ${ageText(a)}`, advice: 'اقرأها من مركز السيطرة أو علّمها مقروءة' } : { status: 'ok', detail: `${f.unreadCritical} حديثة` }; }),
-    c('owner.channel', 'قناة تنبيهك الخارجية', 'بلا قناة خارجية لن تعلم بالعطل إلا إن فتحت الشاشة.', (f) => !f.ownerAlertsEnabled ? { status: 'warn', detail: 'التنبيهات الخارجية معطّلة', advice: 'فعّلها من مركز السيطرة' } : f.ownerEmailReady || f.ownerTelegramReady ? { status: 'ok', detail: [f.ownerEmailReady ? 'بريد' : '', f.ownerTelegramReady ? 'تيليغرام' : ''].filter(Boolean).join(' + ') } : { status: 'fail', detail: 'لا بريد ولا تيليغرام مضبوط', advice: 'اضبط RESEND/البريد أو OWNER_TELEGRAM_CHAT_ID' }),
+    c('owner.critical', 'تنبيهات حرجة غير مقروءة', 'تنبيه حرج قديم غير مقروء يخفي ما يستجد.', (f) => { const a = ageMs(f.oldestUnreadCriticalAt, f.nowMs); return f.unreadCritical === 0 ? { status: 'ok', detail: 'لا شيء' } : a != null && a > 7 * D ? { status: 'fail', detail: `${f.unreadCritical} منذ ${ageText(a)} — تجاوزت أسبوعاً`, advice: 'اقرأها من مركز السيطرة أو علّمها مقروءة — تنبيه حرج مهمل أسبوعاً يُعامل عطلاً' } : a != null && a > 24 * H ? { status: 'warn', detail: `${f.unreadCritical} منذ ${ageText(a)}`, advice: 'اقرأها من مركز السيطرة أو علّمها مقروءة' } : { status: 'ok', detail: `${f.unreadCritical} حديثة` }; }),
+    c('owner.channel', 'قناة تنبيهك الخارجية', 'بلا قناة خارجية لن تعلم بالعطل إلا إن فتحت الشاشة.', (f) => !f.ownerAlertsEnabled ? { status: 'warn', detail: 'التنبيهات الخارجية معطّلة', advice: 'فعّلها من مركز السيطرة' } : f.ownerEmailReady || f.ownerTelegramReady ? { status: 'ok', detail: [f.ownerEmailReady ? 'بريد' : '', f.ownerTelegramReady ? 'تيليغرام' : ''].filter(Boolean).join(' + ') + (f.ownerTelegramReady ? '' : ' — الفوري غير مربوط (اربط هاتفك بنقرة من «تنبيه المالك»)') } : { status: 'fail', detail: 'لا بريد ولا تيليغرام مضبوط', advice: 'اضبط RESEND/البريد أو OWNER_TELEGRAM_CHAT_ID' }),
   ],
   auth: [
     c('auth.tokenKey', 'مفتاح تشفير رموز المنصات', 'بلا مفتاح صالح لا تُحفظ رموز المنصات ولا تُقرأ — كل ربط يفشل.', (f) => f.tokenKeyState == null ? { status: 'skip', detail: '—' } : f.tokenKeyState === 'valid' ? { status: 'ok', detail: 'صالح' } : { status: 'fail', detail: `الحالة: ${f.tokenKeyState}`, advice: 'اضبط PLATFORM_TOKEN_ENCRYPTION_KEY (32 بايت) في Render — لا تغيّره بعد الربط' }),
@@ -216,7 +216,7 @@ export const PATROL_CHECKS: Readonly<Record<EngineerModule, Check[]>> = Object.f
   customers: [
     c('customers.leads', 'زبائن محتملون بلا متابعة', 'زبون سأل ولم يُتابَع أسبوعاً غالباً اشترى من غيرك.', (f) => f.staleOpenLeads ? { status: 'warn', detail: `${f.staleOpenLeads} من ${f.openLeads} بلا تفاعل منذ 7 أيام`, advice: 'راجع صندوق الزبائن — العقل التجاري يتابع ضمن نوافذ المنصة فقط' } : { status: 'ok', detail: `${f.openLeads} مفتوحاً، كلهم حديثون` }),
     c('customers.inbound', 'وصول التعليقات من المنصات', 'منصة متصلة لا يصلها شيء منذ أسبوع قد يكون استقبالها مقطوعاً.', (f) => { const quiet = Object.entries(f.lastInboundAt).filter(([, at]) => { const a = ageMs(at, f.nowMs); return a == null || a > 7 * D; }).map(([p]) => p); return quiet.length ? { status: 'warn', detail: `لا وارد منذ أسبوع: ${quiet.map(pa).join('، ')}`, advice: 'قد يكون طبيعياً (لا تفاعل)؛ وإلا تحقق من webhook/الأذونات' } : { status: 'ok', detail: 'كل المنصات المتصلة يصلها وارد' }; }),
-    c('customers.escalations', 'تصعيدات مفتوحة قديمة', 'زبون صُعّد ولم يُرد عليه منذ يومين قد خسرته.', (f) => { const a = ageMs(f.oldestOpenEscalationAt, f.nowMs); return !f.escalationsOpen ? { status: 'ok', detail: 'لا تصعيدات' } : a != null && a > 48 * H ? { status: 'warn', detail: `${f.escalationsOpen} مفتوحة، أقدمها منذ ${ageText(a)}`, advice: 'ردّ يدوياً ثم «حُلّت» من مركز السيطرة' } : { status: 'ok', detail: `${f.escalationsOpen} حديثة` }; }),
+    c('customers.escalations', 'تصعيدات مفتوحة قديمة', 'زبون صُعّد ولم يُرد عليه منذ يومين قد خسرته.', (f) => { const a = ageMs(f.oldestOpenEscalationAt, f.nowMs); return !f.escalationsOpen ? { status: 'ok', detail: 'لا تصعيدات' } : a != null && a > 7 * D ? { status: 'fail', detail: `${f.escalationsOpen} مفتوحة، أقدمها منذ ${ageText(a)} — زبائن بلا رد أكثر من أسبوع`, advice: 'ردّ يدوياً ثم «حُلّت» من مركز السيطرة، أو أغلق ما فات أوانه' } : a != null && a > 48 * H ? { status: 'warn', detail: `${f.escalationsOpen} مفتوحة، أقدمها منذ ${ageText(a)}`, advice: 'ردّ يدوياً ثم «حُلّت» من مركز السيطرة' } : { status: 'ok', detail: `${f.escalationsOpen} حديثة` }; }),
   ],
 });
 
@@ -248,11 +248,64 @@ export function inspectModule(module: EngineerModule, f: PatrolFacts): ModuleIns
   return { module, at: new Date(f.nowMs).toISOString(), status, counts, checks };
 }
 
-/** صحة المشروع الكلية من آخر فحص لكل قسم: سليم=1، تحذير=0.5، عطل=0 (غير المتاح مستبعد). */
+/**
+ * وزن كل فحص في الصحة الكلية (2026-10-27). المتوسط البسيط كان يساوي «سعة مجموعة» بـ«زبائن بلا رد»
+ * فيُعلن 95% والمعرض يخسر زبائن. الوزن يعكس الأثر الحقيقي على العمل:
+ *   3 = زبون أو بيانات تضيع الآن · 2 = المالك لا يعلم أو المحتوى/الردود أضعف · 1 = صيانة.
+ */
+export const CHECK_IMPACT: Readonly<Record<string, number>> = Object.freeze({
+  'customers.escalations': 3, 'customers.leads': 3, 'customers.inbound': 3, 'gate.window': 3, 'owner.pending': 3,
+  'platforms.reauth': 3, 'platforms.token': 3, 'storage.persist': 3, 'storage.ready': 3, 'monitor.memory': 3,
+  'auth.tokenKey': 3, 'auth.owner': 3, 'auth.login': 3, 'external.email': 3, 'backup.auth': 2,
+  'owner.critical': 2, 'owner.channel': 2, 'owner.backlog': 2, 'backup.fresh': 2, 'backup.failures': 2,
+  'products.images': 2, 'products.showroom': 2, 'products.integrity': 2, 'products.stock': 2, 'products.count': 2,
+  'platforms.expiry': 2, 'platforms.webhook': 2, 'platforms.verified': 2, 'monitor.leak': 2, 'core.cycles': 2,
+  'automation.timers': 2, 'automation.watcherErrors': 2, 'auth.secret': 2, 'gate.expired': 2,
+});
+export const checkImpact = (id: string): number => CHECK_IMPACT[id] ?? (id.startsWith('capacity.') ? 2 : 1);
+
+/** سقف الصحة حين يوجد عطل قائم: مشروع فيه عطل لا يُعلن أخضر مهما سلم الباقي. */
+export const HEALTH_CAP_WITH_FAIL = 79;
+/** سقفها حين يوجد تحذير عالي الأثر (زبون/بيانات): لا يُعلن «ممتاز». */
+export const HEALTH_CAP_WITH_HIGH_WARN = 89;
+
+export interface HealthBreakdown {
+  score: number | null;
+  /** المتوسط الموزون قبل السقوف (للشفافية). */
+  weighted: number | null;
+  capped: boolean;
+  fails: number; warns: number; ok: number; skipped: number;
+  /** أثقل الثغرات وزناً أولاً — هي ما يخفض الصحة. */
+  top: Array<{ id: string; label: string; status: 'warn' | 'fail'; impact: number; detail: string }>;
+}
+
+/**
+ * صحة المشروع الكلية من آخر فحص لكل قسم — متوسط موزون بالأثر (سليم=1، تحذير=0.4، عطل=0،
+ * وغير المتاح مستبعد) ثم سقف صادق: أي عطل ⇒ ≤79، وأي تحذير عالي الأثر ⇒ ≤89.
+ */
+export function healthBreakdown(inspections: ModuleInspection[]): HealthBreakdown {
+  let sum = 0, wsum = 0, fails = 0, warns = 0, ok = 0, skipped = 0, highWarn = false;
+  const issues: HealthBreakdown['top'] = [];
+  for (const m of inspections) for (const x of m.checks) {
+    if (x.status === 'skip') { skipped += 1; continue; }
+    const w = checkImpact(x.id);
+    wsum += w;
+    if (x.status === 'ok') { ok += 1; sum += w; continue; }
+    if (x.status === 'warn') { warns += 1; sum += w * 0.4; if (w >= 3) highWarn = true; }
+    else fails += 1;
+    issues.push({ id: x.id, label: x.label, status: x.status, impact: w, detail: x.detail });
+  }
+  if (!wsum) return { score: null, weighted: null, capped: false, fails, warns, ok, skipped, top: [] };
+  const weighted = Math.round((sum / wsum) * 100);
+  const cap = fails ? HEALTH_CAP_WITH_FAIL : highWarn ? HEALTH_CAP_WITH_HIGH_WARN : 100;
+  const score = Math.min(weighted, cap);
+  issues.sort((a, b) => (a.status === b.status ? 0 : a.status === 'fail' ? -1 : 1) || b.impact - a.impact);
+  return { score, weighted, capped: score < weighted, fails, warns, ok, skipped, top: issues.slice(0, 6) };
+}
+
+/** صحة المشروع الكلية (رقم فقط) — انظر `healthBreakdown`. */
 export function healthScore(inspections: ModuleInspection[]): number | null {
-  let sum = 0, n = 0;
-  for (const m of inspections) for (const x of m.checks) { if (x.status === 'skip') continue; n += 1; sum += x.status === 'ok' ? 1 : x.status === 'warn' ? 0.5 : 0; }
-  return n ? Math.round((sum / n) * 100) : null;
+  return healthBreakdown(inspections).score;
 }
 
 /** ميل خطي (وحدة/ساعة) من عيّنات {t,v} — لكشف التسرّب والنمو. يحتاج 20 دقيقة على الأقل. */

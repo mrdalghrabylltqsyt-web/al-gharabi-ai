@@ -182,7 +182,7 @@ check('لا تشغيل بلا نقرة (سياسة المتصفح) والاخت�
   check('★ الأزمنة بساعة الخادم لا الجهاز', ui.includes('skewRef.current') && ui.includes('r?.serverTime'));
   check('★ «بث حي» لا يُعرض على بيانات قديمة', ui.includes('const STALE_MS = 15000;') && ui.includes('البث متأخر'));
   check('★ لا تدوير وهمي للسير العام ولا لنص قلب العقل', !ui.includes('Math.floor(now / 2600) % JOURNEY.length') && !ui.includes('Math.floor(now / 2200) % CORE_FNS.length') && ui.includes("'بانتظار حدث'"));
-  check('★ سكون ليلي يحمي ساعات الخطة المجانية', ui.includes('NIGHT_IDLE_MS') && ui.includes("timeZone: 'Asia/Baghdad'") && ui.includes('!sleepingRef.current) void poll()'));
+  check('★ سكون ليلي يحمي ساعات الخطة المجانية', ui.includes('NIGHT_IDLE_MS') && ui.includes("timeZone: 'Asia/Baghdad'") && ui.includes("(isWall || document.body.dataset.liveWall !== '1') && !sleepingRef.current;") && ui.includes('if (!active()) { await pause(1000); continue; }'));
 }
 
 console.log('\n' + '='.repeat(60));

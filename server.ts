@@ -724,7 +724,11 @@ import { summarizePublishHealth, formatPublishLogLine } from "./engine/ops/publi
 import { realProductPhrases } from "./src/utils/productPhrases";
 import { LiveEventBuffer, classifyLogLine, auditToLiveEvent, buildLiveModules, buildLiveInsights, buildLiveCycles, platformAr, type LiveEventInput } from "./engine/ops/liveRoom";
 import { detectIncidents, decideNext, forgetRecovered, addReport, withTimeout, emptyEngineerState, normalizeEngineerState, incidentsFromPatrol, ENGINEER_POLICY, type EngineerState, type EngineerSnapshot, type Incident, type ReportStep, type EngineerReport } from "./engine/ops/siteEngineer";
-import { PATROL_ORDER, COLLECTION_CAPS, inspectModule, healthScore, slopePerHour, growthPerDay, type PatrolFacts, type ModuleInspection } from "./engine/ops/engineerPatrol";
+import { PATROL_ORDER, COLLECTION_CAPS, inspectModule, healthScore, healthBreakdown, slopePerHour, growthPerDay, type PatrolFacts, type ModuleInspection } from "./engine/ops/engineerPatrol";
+import { buildOwnIdentity, customerVoices, type OwnIdentity } from "./engine/social/ownVoice";
+import { memoryPressureAlert } from "./engine/ops/memoryWatch";
+import { LiveWaiters, LIVE_WAIT_MAX_MS } from "./engine/ops/liveWait";
+import { defaultOwnerTelegramPairing, normalizeOwnerTelegramPairing, newPairingCode, startOwnerTelegramPairing, extractPairingCode, completeOwnerTelegramPairing, unpairOwnerTelegram, effectiveOwnerChat, pairingOutcomeText, OWNER_TG_PAIRING_TTL_MS, type OwnerTelegramPairingState } from "./engine/notifications/ownerTelegramPairing";
 import { parseFacebookPostMetrics, parseInstagramMediaMetrics, parseGraphInsights, parseFollowers, upsertPerformanceRecords, summarizePlatformMetrics, type MetricValues } from "./engine/social/metricsSync";
 import { resolveInteractionProduct, productFactStatement, productNamedInText, type ProductResolution } from "./engine/social/productResolution";
 import { decideCoalescedWrite, type CoalesceMemo, USAGE_INDICATOR_VOLATILE_PATHS } from "./engine/ops/writeCoalescing";
@@ -743,6 +747,8 @@ dotenv.config();
 // الردود وقرارات المراقب. بلا كتابة للقاعدة، وبلا أي سرّ (النصوص مقصوصة ومصنّفة).
 // -----------------------------------------------------------------------------
 const liveEvents = new LiveEventBuffer(300);
+// بث لحظي: الطلب الخفيف ينتظر الحدث التالي (≤20 ث) بدل الاستطلاع كل 4 ث — انظر engine/ops/liveWait.ts.
+const liveWaiters = new LiveWaiters();
 // تأخّر حلقة الأحداث (مؤشر حيوية حقيقي للخادم): عيّنة كل ثانية، متوسط متحرك — بلا كلفة تُذكر.
 const liveLoop = { lagMs: 0, maxLagMs: 0 };
 (() => {
@@ -758,7 +764,7 @@ const liveLoop = { lagMs: 0, maxLagMs: 0 };
 })();
 function liveEvent(input: LiveEventInput | null): void {
   if (!input) return;
-  try { liveEvents.push(input, new Date().toISOString()); } catch { /* البث لا يُفشل أي مسار */ }
+  try { if (liveEvents.push(input, new Date().toISOString())) liveWaiters.notify(); } catch { /* البث لا يُفشل أي مسار */ }
 }
 /** تعليق/رسالة واردة ⇒ حدث حي (النية فقط + مقتطف قصير؛ بلا هوية الكاتب). */
 function liveCommentEvent(row: any): LiveEventInput | null {
@@ -5881,7 +5887,8 @@ app.post("/api/platforms/telegram/webhook", express.json({limit:"256kb"}), async
   const parsed = parseTelegramUpdate(req.body);
   // رسائل المالك نفسه لبوت المعرض (محادثته الخاصة) ليست استفسار زبون: لا تُسجَّل
   // تعليقاً ولا تُنشئ مسودة رد. تُقبل بلا أثر.
-  const ownerChatForInbound = parseOwnerTelegramChatId(process.env);
+  if(parsed && await ownerPairingIntercept(parsed, res)) return;
+  const ownerChatForInbound = ownerTelegramChatId();
   if(parsed && ownerChatForInbound && parsed.chatId === ownerChatForInbound) {
     logTelegramWebhook({ updateId: parsed.updateId, outcome: "ignored" });
     return res.status(200).json({success:true,accepted:true,ignored:"owner_chat"});
@@ -7157,7 +7164,7 @@ function ingestYouTubeComment(c: YouTubeComment, videoId: string | null): { dupl
   const record = {
     id: workspaceId("comment"), platform: "youtube", externalId: c.commentId,
     threadId: c.threadId, postExternalId: videoId || c.videoId,
-    authorName: c.authorName, text: c.text, createdAt: c.publishedAt || new Date().toISOString(),
+    authorName: c.authorName, authorId: (c as any).authorChannelId || null, text: c.text, createdAt: c.publishedAt || new Date().toISOString(),
     updatedAt: c.updatedAt, likeCount: c.likeCount, replyCount: c.replyCount, isReply: c.isReply, parentId: c.parentId,
     classification, requiresHumanReview: classification.requiresHumanReview,
     ingestSource: "youtube_api", replyTarget: { commentId: c.commentId, videoId: videoId || c.videoId },
@@ -8992,6 +8999,7 @@ async function runMetaWatcherCycle(trigger: string): Promise<{ ok: boolean; trig
           // PR-B (البند 4): `threadPageReplied` يُحفظ هل ردّت الصفحة نفسها داخل الخيط —
           // فيمنع لاحقاً إنشاء مسودة لعميل حصل على جواب (SKIP_PAGE_ALREADY_REPLIED).
           const threadPageReplied = c.pageRepliedInThread === true || isSelfAuthored(c.threadReplyAuthorName || undefined, ownNames);
+          // صوت المعرض (ردّ الصفحة نفسها) يُوسم صراحةً `selfAuthored` فلا يُحسب زبوناً في الغرفة الحية.
           (workspace as any).socialComments.unshift({
             id: workspaceId("comment"), platform, externalId, postExternalId: c.postId || c.mediaId || null,
             authorName: c.authorName || c.username || null,
@@ -9001,7 +9009,7 @@ async function runMetaWatcherCycle(trigger: string): Promise<{ ok: boolean; trig
             replyTarget: { commentId: externalId },
             permalinkUrl: c.permalinkUrl || null,
             postText: c.postText || null, backfill: commentBackfill,
-            threadPageReplied,
+            threadPageReplied, ...(selfAuthored ? { selfAuthored: true } : {}),
           });
           if ((workspace as any).socialComments.length > WORKSPACE_MAX_SOCIAL_COMMENTS) (workspace as any).socialComments.length = WORKSPACE_MAX_SOCIAL_COMMENTS;
           liveEvent(liveCommentEvent((workspace as any).socialComments[0]));
@@ -11305,6 +11313,46 @@ app.post("/api/agent/owner-alerts", requireOwner, async (req, res) => {
     alerts: { ...ownerAlertPublicBlock(ownerAlertState, getOwnerEmailConfig().configured && getOwnerEmailConfig().fromConfigured), telegram: ownerTelegramPublicBlock() },
     note: raw ? "تنبيه المالك الخارجي مفعَّل (تجميع كل 30 دقيقة)." : "تنبيه المالك الخارجي معطَّل.",
   });
+});
+
+// ربط Telegram المالك بنقرة (2026-10-27): رمز لمرة واحدة (10 د) يرسله المالك للبوت من محادثته
+// الخاصة، فيُحفظ رقم محادثته — بلا تعديل إعدادات Render. البيئة إن ضُبطت تبقى الأولى.
+app.post("/api/agent/owner-alerts/telegram/pair", requireOwner, async (req, res) => {
+  const user = (req as any).user as ServerUser;
+  const client = telegramClient();
+  if (!client) return res.status(409).json({ success: false, code: "BOT_NOT_CONFIGURED", error: "بوت Telegram غير مضبوط بعد — اربط بوت المعرض من «ربط المنصات» أولاً." });
+  if (parseOwnerTelegramChatId(process.env)) return res.status(409).json({ success: false, code: "ENV_CONFIGURED", error: "التنبيه مربوط عبر OWNER_TELEGRAM_CHAT_ID في الخادم — لا حاجة لرمز." });
+  const code = newPairingCode((n) => crypto.randomBytes(n));
+  ownerTelegramPairing = startOwnerTelegramPairing(ownerTelegramPairing, code, SESSION_SECRET, Date.now());
+  saveControlState();
+  audit(user.id, "owner_telegram_pairing_started", "owner_route");
+  let botUsername: string | null = null;
+  try { const me = await client.getMe(); botUsername = me.ok ? me.username : null; } catch { botUsername = null; }
+  // الرمز يصل عبر webhook البوت؛ إن لم يكن مسجّلاً على هذا الخادم فالربط لن يكتمل — نقولها صراحةً.
+  let webhook: { ready: boolean; detail: string } = { ready: false, detail: "تعذّر التحقق من webhook البوت." };
+  try {
+    const info = await client.getWebhookInfo();
+    const reg = checkWebhookRegistration({ info, expectedUrl: telegramWebhookUrl(), secretConfigured: Boolean(telegramWebhookSecret()) });
+    webhook = { ready: reg.status === "registered", detail: reg.detail };
+  } catch { /* يبقى غير مؤكد */ }
+  res.json({
+    success: true,
+    code,
+    webhook,
+    expiresAt: new Date(Date.now() + OWNER_TG_PAIRING_TTL_MS).toISOString(),
+    botUsername,
+    deepLink: botUsername ? `https://t.me/${botUsername}?start=${code}` : null,
+    instruction: botUsername ? `افتح الرابط من هاتفك واضغط «Start»، أو أرسل للبوت: /link ${code}` : `أرسل لبوت المعرض من محادثتك الخاصة: /link ${code}`,
+    telegram: ownerTelegramPublicBlock(),
+  });
+});
+
+app.delete("/api/agent/owner-alerts/telegram/pair", requireOwner, async (req, res) => {
+  const user = (req as any).user as ServerUser;
+  ownerTelegramPairing = unpairOwnerTelegram(ownerTelegramPairing);
+  saveControlState();
+  audit(user.id, "owner_telegram_unpaired", "owner_route");
+  res.json({ success: true, telegram: ownerTelegramPublicBlock(), note: parseOwnerTelegramChatId(process.env) ? "أُلغي الربط بالرمز؛ ما زال OWNER_TELEGRAM_CHAT_ID في الخادم فعّالاً." : "أُلغي ربط Telegram." });
 });
 
 app.post("/api/agent/owner-alerts/run", requireOwner, async (_req, res) => {
@@ -14797,8 +14845,42 @@ function platformCardMetrics(platform: string): { followers: number | null; foll
     engagementRate: perf.length ? summarizePlatformMetrics(perf, followers).engagementRate : null,
     publishedPosts: publishedIds.size,
     measuredPosts: perf.length,
-    inbound: ((((workspace as any).socialComments || []) as any[])).filter((c) => c?.platform === platform).length,
+    inbound: customerComments().filter((c) => c?.platform === platform).length,
   };
+}
+
+// -----------------------------------------------------------------------------
+// صوت المعرض ليس صوت زبون (2026-10-27): ردود الصفحة نفسها كانت تُقرأ مع تعليقات المنشور
+// وتظهر في «أصوات الزبائن» وتُحسب استفساراً تجارياً. الهوية من مصادرها الحقيقية فقط:
+// أسماء ومعرّفات حسابات المعرض المتصلة + نصوص الردود التي أرسلها المعرض فعلاً.
+// تُخزَّن مؤقتاً دقيقة واحدة (الاستطلاع الخفيف لا يعيد بناءها كل 4 ثوانٍ).
+// -----------------------------------------------------------------------------
+let ownIdentityCache: { at: number; key: string; id: OwnIdentity } | null = null;
+function ownIdentityNow(): OwnIdentity {
+  const replies = (((workspace as any).socialReplies || []) as any[]);
+  const key = `${replies.length}:${replies[0]?.id || ""}:${outboundApprovals.length}:${platformConnections.size}:${String(workspace.showroom?.name || "")}`;
+  const nowMs = Date.now();
+  if (ownIdentityCache && ownIdentityCache.key === key && nowMs - ownIdentityCache.at < 60000) return ownIdentityCache.id;
+  const tok = (p: string): any => { try { return getProviderToken(p) || {}; } catch { return {}; } };
+  const names: unknown[] = [workspace.showroom?.name, "معرض الغرابي", tok("facebook").pageName, tok("instagram").pageName, tok("instagram").igUsername, tok("youtube").channelTitle, tok("threads").username];
+  const ids: unknown[] = [tok("facebook").pageId, tok("instagram").igAccountId, tok("youtube").channelId, tok("threads").threadsUserId];
+  for (const c of platformConnections.values() as any) { names.push((c as any)?.accountName); ids.push((c as any)?.accountId); }
+  const replyTexts: unknown[] = replies.filter((r) => r && r.simulated !== true).map((r) => r.text);
+  for (const a of outboundApprovals as any[]) { if (a?.sentText) replyTexts.push(a.sentText); }
+  const id = buildOwnIdentity({ names, ids, replyTexts });
+  ownIdentityCache = { at: nowMs, key, id };
+  return id;
+}
+/** تعليقات الزبائن الحقيقية فقط (بلا ردود حسابات المعرض) — مخزّنة حتى يتغيّر الوارد أو الهوية. */
+let customerCommentsCache: { key: string; rows: any[] } | null = null;
+function customerComments(): any[] {
+  const all = (((workspace as any).socialComments || []) as any[]);
+  const id = ownIdentityNow();
+  const key = `${all.length}:${all[0]?.id || ""}:${all[all.length - 1]?.id || ""}:${ownIdentityCache?.key || ""}:${ownIdentityCache?.at || 0}`;
+  if (customerCommentsCache && customerCommentsCache.key === key) return customerCommentsCache.rows;
+  const rows = customerVoices(all, id);
+  customerCommentsCache = { key, rows };
+  return rows;
 }
 
 // -----------------------------------------------------------------------------
@@ -14806,13 +14888,22 @@ function platformCardMetrics(platform: string): { followers: number | null; foll
 // للمالك فقط. تُقرأ من الذاكرة بلا أي استعلام للقاعدة (خفيفة على الخطة المجانية)؛
 // الواجهة تستطلعها كل بضع ثوانٍ أثناء فتح الشاشة فقط.
 // -----------------------------------------------------------------------------
-app.get("/api/live/room", requireOwner, (req, res) => {
-  const nowMs = Date.now();
+app.get("/api/live/room", requireOwner, async (req, res) => {
   const since = Number(req.query?.since || 0);
+  // بث لحظي (انتظار طويل): الطلب الخفيف بلا جديد ينتظر أول حدث حقيقي حتى 20 ث ثم يُرد —
+  // الحدث يصل فوراً، والطلبات في الهدوء أقل ~80%. أول طلب (since=0) والكامل لا ينتظران أبداً.
+  let waited: string | null = null;
+  if (String(req.query?.wait || "") === "1" && String(req.query?.lite || "") === "1" && since > 0 && liveEvents.lastId <= since) {
+    // `res` لا `req`: في Node الحديث يُطلق req «close» فور قراءة الطلب لا عند انقطاع المتصفح.
+    waited = await liveWaiters.wait(LIVE_WAIT_MAX_MS, (cancel) => { res.on("close", cancel); });
+    if (waited === "closed" || res.writableEnded || (res as any).destroyed) return;
+  }
+  const nowMs = Date.now();
   // حارس الخطة المجانية: الاستطلاع الخفيف (كل 4 ث) يحمل الأحداث والحالة فقط؛ الرؤى الثقيلة
   // (تمرّ على كل التعليقات) تُرسل في الاستطلاع الكامل فقط (كل 30 ث من الواجهة).
   const lite = String(req.query?.lite || "") === "1";
-  const inbound = (((workspace as any).socialComments || []) as any[]);
+  // أصوات الزبائن فقط: ردود حسابات المعرض لا تُحسب تفاعلاً ولا استفساراً.
+  const inbound = customerComments();
   const dayAgo = nowMs - 86400000;
   const metricsPlatforms = ((metricsSyncState.lastResult as any)?.platforms || {}) as Record<string, any>;
   const audience = (((workspace as any).platformAudience || {}) as Record<string, { followers: number | null }>);
@@ -14880,6 +14971,8 @@ app.get("/api/live/room", requireOwner, (req, res) => {
   res.json({
     success: true,
     serverTime: new Date(nowMs).toISOString(),
+    // نمط البث: الخادم يدعم الانتظار الطويل؛ `waited` = event/timeout/busy حين انتظر الطلب.
+    stream: { mode: "long-poll", maxWaitMs: LIVE_WAIT_MAX_MS, waited },
     modules,
     platforms: platforms.map((p) => ({ ...p, followers: audience[p.id]?.followers ?? null })),
     pulse: {
@@ -15276,7 +15369,8 @@ function patrolFacts(module: string | null = null): PatrolFacts {
   const lastIn: Record<string, string | null> = {};
   // فقط المنصات التي يستقبل نظامنا تعليقاتها/رسائلها فعلاً (ثريدز/تيك توك/Google Business بلا استقبال تعليقات هنا).
   for (const p of ["facebook", "instagram", "youtube", "telegram", "whatsapp"]) if (linked(p)) lastIn[p] = null;
-  if (at("customers")) for (const c of comments) { const p = String(c?.platform || ""); if (p in lastIn && (!lastIn[p] || String(c.createdAt) > String(lastIn[p]))) lastIn[p] = String(c.createdAt || ""); }
+  // ردود حسابات المعرض ليست «وارداً» — وإلا بدت منصة مقطوعة الاستقبال حيّة.
+  if (at("customers")) for (const c of safe(() => customerComments(), comments)) { const p = String(c?.platform || ""); if (p in lastIn && (!lastIn[p] || String(c.createdAt) > String(lastIn[p]))) lastIn[p] = String(c.createdAt || ""); }
   const esc = (((workspace as any).socialEscalations || []) as any[]).filter((e) => e && e.state !== "RESOLVED");
   const pub = (((workspace as any).publishRecords || []) as any[]).filter((r) => !r?.simulated && Date.parse(String(r?.createdAt || r?.publishedAt || "")) >= nowMs - 86400000);
   const yt: any = safe<any>(() => normalizeWatcherControls(watcherState.controls), {});
@@ -15417,6 +15511,7 @@ function patrolStep(): void {
     if (module === "monitor") {
       memorySamples.push({ t: nowMs, v: Math.round(process.memoryUsage().rss / 1048576) });
       while (memorySamples.length > 72 || (memorySamples.length && nowMs - memorySamples[0].t > 3 * 3600000)) memorySamples.shift();
+      try { syncMemoryPressureAlert(); } catch { /* الإنذار لا يُسقط الدورية */ }
     }
     const facts = patrolFacts(module);
     if (module === "core") lastRejectionsSeen = unhandledRejectionCount;
@@ -15484,6 +15579,8 @@ function patrolView(full = true) {
     cursor: cur,
     order: PATROL_ORDER,
     score: healthScore(list),
+    // تفصيل الصحة: الموزون قبل السقف، عدد الأعطال/التحذيرات، وأثقل الثغرات — كي يرى المالك لماذا.
+    health: healthBreakdown(list),
     checksTotal: list.reduce((a, m) => a + m.checks.length, 0),
     current: cur && patrolInspections[cur] ? patrolInspections[cur] : null,
     modules: Object.fromEntries(list.map((m) => [m.module, { status: m.status, at: m.at, counts: m.counts }])),
@@ -16831,14 +16928,14 @@ function buildSystemAlerts(): any[] {
   }
   if ((storageAdapter as any).tlsStatus?.result === "fallback_unverified") alerts.push({ id:"db-tls", severity:"warning", title:"اتصال قاعدة البيانات بلا تحقق من الشهادة", detail:`رُفضت شهادة TLS (${String((storageAdapter as any).tlsStatus?.errorCode || "")}) فعاد الاتصال للوضع القديم كي لا يتوقف المشروع — يحتاج مراجعة.` });
   if (persistStats.failStreak > 0) alerts.push({ id:"storage-failing", severity: persistStats.failStreak >= STORAGE_FAILING_ALERT_STREAK ? "critical" : "warning", title:"حفظ البيانات يفشل", detail:`${persistStats.failStreak} كتابة متتالية فشلت منذ ${persistStats.failingSince || "—"} (${String(lastPersistError || "خطأ")}).` });
-  if (!ownerTelegramConfigured()) alerts.push({ id:"owner-telegram", severity:"info", title:"تنبيه Telegram الفوري غير مكتمل", detail:"ينقصه OWNER_TELEGRAM_CHAT_ID — التنبيه بالبريد يعمل. اضغط «ربط Telegram والتحقق» عند الجاهزية." });
+  if (!ownerTelegramConfigured()) alerts.push({ id:"owner-telegram", severity:"info", title:"تنبيه Telegram الفوري غير مكتمل", detail: telegramBotToken() ? "التنبيه بالبريد يعمل، لكن الحالات الحرجة لا تصل هاتفك فوراً. اربط هاتفك بنقرة من «النظام ← تنبيه المالك» (رمز لمرة واحدة، بلا إعدادات Render)." : "ينقصه بوت Telegram للمعرض — التنبيه بالبريد يعمل. اربط البوت من «ربط المنصات» ثم اربط هاتفك بنقرة." });
   if (connectedPlatformIds().length === 0) alerts.push({ id:"platforms", severity:"info", title:"لا توجد منصات متصلة", detail:"جميع المنصات ما زالت بانتظار OAuth/API فعلي؛ لا يوجد نشر خارجي." });
   const failed = automationJobs.filter((j:any)=>j.status==="failed").length;
   if (failed) alerts.push({ id:"jobs-failed", severity:"warning", title:"مهام فاشلة", detail:`يوجد ${failed} مهمة فاشلة تحتاج مراجعة.` });
   const newConversations = workspace.conversations.filter((c:any)=>c.status==="new").length;
   if (newConversations) alerts.push({ id:"messages", severity:"info", title:"استفسارات جديدة", detail:`يوجد ${newConversations} استفسار يحتاج متابعة.` });
   const dayAgo = Date.now() - 86400000;
-  const inquiries24h = (((workspace as any).socialComments||[]) as any[]).filter((c:any)=>Date.parse(c?.createdAt||"")>=dayAgo && (c?.classification?.isBusinessInquiry===true || c?.classification?.intent==="business_inquiry")).length;
+  const inquiries24h = customerComments().filter((c:any)=>Date.parse(c?.createdAt||"")>=dayAgo && (c?.classification?.isBusinessInquiry===true || c?.classification?.intent==="business_inquiry")).length;
   if (inquiries24h) alerts.push({ id:"inquiries-24h", severity:"info", title:"استفسارات زبائن آخر 24 ساعة", detail:`${inquiries24h} استفسار تجاري حقيقي من المنصات خلال آخر 24 ساعة.` });
   // --- حالات الأمان والسيطرة (2026-10-26) ---
   const openEsc = (((workspace as any).socialEscalations || []) as any[]).filter((e:any)=>e && e.state !== "RESOLVED").length;
@@ -17337,6 +17434,8 @@ function applyControlSnapshot(control: any): void {
   jobAutomationState = normalizeJobAutomationState(control.jobAutomation);
   // جاهزية البيع: آخر فشل ربط OAuth لكل منصة (نص منقّى بلا أسرار) — يصمد بعد restart.
   oauthFailures = normalizeOAuthFailures(control.oauthFailures);
+  // ربط Telegram المالك بالرمز — يصمد بعد restart (رقم محادثة + بصمة رمز، بلا سرّ).
+  ownerTelegramPairing = normalizeOwnerTelegramPairing(control.ownerTelegramPairing);
 }
 
 /** يقرأ حالة التحكّم متزامناً (backend الملف) عند الإقلاع. */
@@ -17410,6 +17509,8 @@ function buildControlState() {
     jobAutomation: jobAutomationState,
     // جاهزية البيع: آخر فشل ربط لكل منصة (بلا أسرار) حتى ينجح الربط التالي.
     oauthFailures,
+    // ربط Telegram المالك بالرمز: رقم المحادثة + بصمة الرمز المعلّق فقط.
+    ownerTelegramPairing,
   };
 }
 
@@ -18676,6 +18777,8 @@ let brainRuntimeState: BrainRuntimeState = emptyBrainRuntimeState();
 // تعطيل صامت معلن في /api/readiness (لا انهيار).
 // -----------------------------------------------------------------------------
 let ownerAlertState: OwnerAlertState = defaultOwnerAlertState();
+// ربط Telegram المالك بالرمز (2026-10-27): رقم محادثته الخاصة + بصمة رمز معلّق فقط — بلا سرّ.
+let ownerTelegramPairing: OwnerTelegramPairingState = defaultOwnerTelegramPairing();
 let ownerAlertTimer: NodeJS.Timeout | null = null;
 /** دورة إرسال واحدة فقط في أي لحظة (لا إرسال مزدوج). */
 let ownerAlertInFlight = false;
@@ -18707,13 +18810,21 @@ function recordOwnerAlert(item: OwnerAlertItem): void {
 // -----------------------------------------------------------------------------
 let ownerTelegramRate: OwnerTelegramRateState = defaultOwnerTelegramRateState();
 const ownerTelegramStatus: { lastResult: string | null; lastAt: string | null; sentCount: number; failedCount: number } = { lastResult: null, lastAt: null, sentCount: 0, failedCount: 0 };
+/** محادثة المالك الفعّالة: OWNER_TELEGRAM_CHAT_ID أولاً، ثم الربط بالرمز من الشاشة الحية. */
+function ownerTelegramChat(): { chatId: string | null; source: "env" | "paired" | null } {
+  return effectiveOwnerChat(parseOwnerTelegramChatId(process.env), ownerTelegramPairing);
+}
+function ownerTelegramChatId(): string | null { return ownerTelegramChat().chatId; }
 function ownerTelegramConfigured(): boolean {
-  return Boolean(parseOwnerTelegramChatId(process.env) && telegramBotToken());
+  return Boolean(ownerTelegramChatId() && telegramBotToken());
 }
 function ownerTelegramPublicBlock() {
   return {
     configured: ownerTelegramConfigured(),
-    chatIdSet: Boolean(parseOwnerTelegramChatId(process.env)),
+    chatIdSet: Boolean(ownerTelegramChatId()),
+    chatSource: ownerTelegramChat().source,
+    pairedAt: ownerTelegramPairing.chatId ? ownerTelegramPairing.pairedAt : null,
+    pairingPending: Boolean(ownerTelegramPairing.pending && ownerTelegramPairing.pending.expiresAt > Date.now()),
     botTokenSet: Boolean(telegramBotToken()),
     instant: true,
     maxPerHour: OWNER_TELEGRAM_MAX_PER_HOUR,
@@ -18724,7 +18835,7 @@ function ownerTelegramPublicBlock() {
   };
 }
 async function sendOwnerTelegramText(text: string, inlineKeyboard?: { text: string; callbackData?: string; url?: string }[][]): Promise<boolean> {
-  const chatId = parseOwnerTelegramChatId(process.env);
+  const chatId = ownerTelegramChatId();
   const client = telegramClient();
   if (!chatId || !client) return false;
   try {
@@ -18751,6 +18862,32 @@ function notifyOwnerTelegramInstant(items: OwnerAlertItem[]): void {
   }
 }
 
+/** رمز ربط المالك في webhook ليس رسالة زبون: يُعالج ويُقرّ هنا، فلا يُسجَّل تعليقاً ولا يولّد مسودة. */
+async function ownerPairingIntercept(parsed: { text: string; chatId: string; updateId: number | null }, res: express.Response): Promise<boolean> {
+  const code = extractPairingCode(parsed.text);
+  if (!code) return false;
+  const outcome = await handleOwnerTelegramPairingMessage(code, parsed.chatId);
+  logTelegramWebhook({ updateId: parsed.updateId, outcome: "ignored" });
+  res.status(200).json({ success: true, accepted: true, ignored: "owner_pairing", pairing: outcome });
+  return true;
+}
+
+/**
+ * رسالة ربط من محادثة Telegram (/start CODE أو /link CODE): تُطابق الرمز المعلّق (بصمة، مرة
+ * واحدة، 10 د، محادثة خاصة فقط)، تحفظ النتيجة، وتردّ على المرسل. لا تُسجَّل رسالة زبون.
+ */
+async function handleOwnerTelegramPairingMessage(code: string, chatId: string): Promise<string> {
+  const done = completeOwnerTelegramPairing(ownerTelegramPairing, { code, chatId }, SESSION_SECRET, Date.now());
+  ownerTelegramPairing = done.state;
+  if (done.outcome === "no_pending") return done.outcome;
+  saveControlState();
+  audit("system", "owner_telegram_pairing", done.outcome);
+  const tg = telegramClient();
+  if (tg) { try { await tg.sendMessage({ chatId, text: pairingOutcomeText(done.outcome) }); } catch { /* الرد اختياري */ } }
+  if (done.outcome === "paired") liveEvent({ module: "owner", level: "ok", title: "ربط Telegram المالك", text: "التنبيهات الفورية تصل الآن إلى هاتف المالك." });
+  return done.outcome;
+}
+
 /** أزرار «موافقة وإرسال / رفض» لتنبيه استفسار زبون (مسودة معلّقة فقط). */
 function ownerTelegramDraftButtons(item: OwnerAlertItem): { text: string; callbackData?: string; url?: string }[][] | undefined {
   if (item.kind !== 'commercial_draft') return undefined;
@@ -18769,7 +18906,7 @@ function ownerTelegramDraftButtons(item: OwnerAlertItem): { text: string; callba
  */
 async function handleOwnerTelegramCallback(cb: { callbackId: string; fromId: string; chatId: string | null; messageId: string | null; data: string }): Promise<{ handled: boolean; outcome: string }> {
   const client = telegramClient();
-  const ownerChat = parseOwnerTelegramChatId(process.env);
+  const ownerChat = ownerTelegramChatId();
   if (!isOwnerTelegramCallback(cb, ownerChat)) {
     audit('system', 'owner_telegram_callback_rejected', 'not_owner');
     if (client) await client.answerCallbackQuery(cb.callbackId, 'غير مصرّح.');
@@ -18821,6 +18958,7 @@ async function runOwnerAlertCycle(trigger: string): Promise<{ sent: boolean; rea
     syncBackupStaleAlert();
     syncIngestFailingAlerts();
     syncStorageFailingAlert();
+    syncMemoryPressureAlert();
     if (!ownerAlertState.enabled) return { sent: false, reason: 'disabled', count: ownerAlertState.pending.length };
     const now = Date.now();
     if (!isOwnerAlertDue(ownerAlertState, now)) return { sent: false, reason: 'not_due', count: ownerAlertState.pending.length };
@@ -18888,6 +19026,24 @@ function syncIngestFailingAlerts(): void {
  * أن التغييرات الجديدة قد تضيع عند أول إعادة تشغيل. 3 فشلات متتالية ⇒ تنبيه (بريد/Telegram).
  */
 const STORAGE_FAILING_ALERT_STREAK = 3;
+/**
+ * إنذار ذاكرة الخادم للمالك (Telegram فوراً + ملخص البريد) قبل أن تقتل الخطة المجانية العملية:
+ * ≥70% تحذير، ≥85% خطر، أو ميل ثابت يبلغ الحد خلال 12 ساعة. تنبيه واحد لكل مستوى في اليوم.
+ * يُستدعى من وقفة «المراقبة» في الدورية (كل جولة ~70 ث) ومن دورة التنبيه.
+ */
+function syncMemoryPressureAlert(): void {
+  const a = memoryPressureAlert({ rssMb: process.memoryUsage().rss / 1048576, limitMb: 512, slopeMbPerHour: slopePerHour(memorySamples), nowMs: Date.now() });
+  if (!a) return;
+  recordOwnerAlert({
+    key: ownerAlertKey('memory_pressure', null, a.id),
+    kind: 'memory_pressure',
+    platform: null,
+    title: a.title,
+    snippet: truncateAlertSnippet(a.snippet),
+    at: new Date().toISOString(),
+  });
+}
+
 function syncStorageFailingAlert(): void {
   if (persistStats.failStreak < STORAGE_FAILING_ALERT_STREAK) return;
   recordOwnerAlert({
@@ -23110,6 +23266,8 @@ async function startServer() {
     // بـSIGKILL بعد المهلة وضاعت الكتابات). مهلة مطلقة تُجبر الخروج.
     const hardExit = setTimeout(() => { console.error("[الغرابي AI] shutdown deadline — forcing exit"); process.exit(0); }, 10_000);
     hardExit.unref?.();
+    // طلبات البث المعلّقة (انتظار طويل) يُردّ عليها فوراً بلقطة أخيرة فلا تُبقي الإغلاق معلّقاً.
+    try { liveWaiters.notify(); } catch { /* تجاهل */ }
     const serverClosed = new Promise<void>((resolve) => {
       try { httpServer.close(() => resolve()); } catch { resolve(); }
       // اتصالات keep-alive الخاملة تُبقي server.close() معلّقاً؛ نُغلقها فوراً
