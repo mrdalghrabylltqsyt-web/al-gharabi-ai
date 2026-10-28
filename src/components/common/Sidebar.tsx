@@ -2,8 +2,9 @@ import React from 'react';
 import { useApp } from '../../context/AppContext';
 import {
   Package, BadgePercent, CheckCircle2, X, ChevronDown, Search as SearchIcon,
-  AlertTriangle, Bell,
+  AlertTriangle, Bell, CornerDownLeft, Database as DataIcon,
 } from 'lucide-react';
+import { searchFeatures, focusFeature, type FeatureHit } from './featureSearch';
 import {
   NAV_SECTIONS,
   visibleSectionBranches,
@@ -55,7 +56,7 @@ const readExpanded = (): { sections: string[]; branches: string[] } => {
 };
 
 export const Sidebar: React.FC<SidebarProps> = ({ mobileOpen, onCloseMobile }) => {
-  const { activeTab, setActiveTab, notificationBadge, currentUser, showroomInfo } = useApp();
+  const { activeTab, setActiveTab, notificationBadge, currentUser, showroomInfo, setSearchQuery } = useApp();
   const isOwner = currentUser?.role === 'owner';
 
   const [query, setQuery] = React.useState('');
@@ -114,6 +115,19 @@ export const Sidebar: React.FC<SidebarProps> = ({ mobileOpen, onCloseMobile }) =
   const sectionsToRender = searching
     ? searchNav(query, isOwner)
     : NAV_SECTIONS.filter((s) => !s.ownerOnly || isOwner);
+  // البحث الشامل: كل شاشة وكل لوحة وكل تبويب داخلي في المشروع (لا أسماء التبويبات فقط).
+  const featureHits: FeatureHit[] = React.useMemo(() => (searching ? searchFeatures(query, isOwner, 40) : []), [query, searching, isOwner]);
+  const openFeature = (h: FeatureHit) => {
+    setActiveTab(h.tab);
+    onCloseMobile();
+    focusFeature(h.anchor, h.anchorKind);
+  };
+  // البحث في البيانات (منتجات/أقساط/منشورات/عملاء) يبقى في شاشته كما هو — رابط مباشر له.
+  const searchData = () => {
+    setSearchQuery(query.trim());
+    setActiveTab('search');
+    onCloseMobile();
+  };
 
   const isSectionExpanded = (id: string) => searching || expandedSections.includes(id);
 
@@ -166,7 +180,12 @@ export const Sidebar: React.FC<SidebarProps> = ({ mobileOpen, onCloseMobile }) =
             <input
               value={query}
               onChange={(e) => setQuery(e.target.value)}
-              placeholder="بحث في الأقسام والوظائف…"
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && featureHits[0]) { e.preventDefault(); openFeature(featureHits[0]); }
+                if (e.key === 'Escape') setQuery('');
+              }}
+              placeholder="بحث في الأقسام والوظائف وكل الشاشات…"
+              aria-label="بحث شامل في الأقسام والوظائف"
               className={`w-full bg-slate-950/60 border border-slate-800 rounded-xl pr-9 pl-3 py-2 text-[12px] text-slate-200 placeholder:text-slate-500 focus:outline-none focus:border-emerald-600/60 ${FOCUS_RING}`}
               style={{ fontSize: 16 }}
             />
@@ -193,7 +212,44 @@ export const Sidebar: React.FC<SidebarProps> = ({ mobileOpen, onCloseMobile }) =
             </button>
           )}
 
-          {sectionsToRender.length === 0 && (
+          {searching && featureHits.length > 0 && (
+            <div className="space-y-0.5 pb-2" role="list" aria-label="نتائج البحث الشامل">
+              {featureHits.map((h, i) => (
+                <button
+                  key={h.key}
+                  type="button"
+                  role="listitem"
+                  onClick={() => openFeature(h)}
+                  className={`w-full flex items-start gap-2 px-2 py-1.5 rounded-lg text-right transition cursor-pointer border ${i === 0 ? 'border-emerald-600/40 bg-emerald-500/5' : 'border-transparent'} hover:bg-slate-800/70 ${FOCUS_RING}`}
+                  title={h.desc || h.title}
+                >
+                  <SearchIcon className="w-3.5 h-3.5 mt-0.5 shrink-0 text-slate-500" />
+                  <span className="flex-1 min-w-0">
+                    <span className="block text-[11.5px] text-slate-200 font-semibold truncate">{h.title}</span>
+                    <span className="block text-[10px] text-slate-500 truncate">{h.anchor || h.desc ? `داخل: ${h.tabLabel}` : 'شاشة'}{h.desc ? ` — ${h.desc}` : ''}</span>
+                  </span>
+                  {i === 0 && <CornerDownLeft className="w-3 h-3 mt-1 shrink-0 text-emerald-500/70" aria-label="Enter" />}
+                </button>
+              ))}
+            </div>
+          )}
+
+          {searching && (
+            <button
+              type="button"
+              onClick={searchData}
+              className={`w-full flex items-center gap-2 px-2 py-1.5 mb-1 rounded-lg text-right border border-slate-800 text-slate-400 hover:text-white hover:bg-slate-800/70 ${FOCUS_RING}`}
+            >
+              <DataIcon className="w-3.5 h-3.5 shrink-0" />
+              <span className="text-[11px] truncate">ابحث عن «{query.trim()}» في المنتجات والأقساط والمنشورات والعملاء</span>
+            </button>
+          )}
+
+          {searching && sectionsToRender.length > 0 && (
+            <div className="px-2 pt-2 pb-1 text-[10px] font-bold text-slate-500 uppercase tracking-wider">الأقسام المطابقة</div>
+          )}
+
+          {sectionsToRender.length === 0 && featureHits.length === 0 && (
             <p className="px-3 py-4 text-[11px] text-slate-500">لا نتائج مطابقة.</p>
           )}
 
