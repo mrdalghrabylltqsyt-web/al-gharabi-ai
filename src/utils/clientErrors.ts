@@ -5,7 +5,8 @@
  * الخادم يعلم به أبداً. هنا تُلتقط ثلاثة أشياء فقط وتُرسل للمهندس:
  *   1. انهيار شاشة (React ErrorBoundary)،
  *   2. خطأ JavaScript غير ملتقط أو وعد مرفوض،
- *   3. طلب /api لم يصل للخادم أصلاً (502–504: الخادم نائم/متوقف/يُعاد نشره).
+ *   3. طلب /api لم يصل للخادم أصلاً (502–504 بلا X-Request-ID: الخادم نائم/يُعاد نشره) — بعد إعادة
+ *      محاولة واحدة للقراءة، فلحظة إعادة النشر لا تظهر للمالك كعطل.
  * بلا أي بيانات زبون: الرسالة + الموضع فقط، بسقف 10 تقارير/دقيقة، وتكرار نفس الرسالة يُرسل مرة.
  */
 const TOKEN_KEY = 'algharabi_auth_token';
@@ -13,7 +14,22 @@ const sent = new Map<string, number>();
 let windowStart = 0;
 let windowCount = 0;
 
-export function reportClientError(message: string, where?: string | null, frame?: string | null): void {
+/** تقارير لم تصل (الخادم نائم/يُعاد نشره) تُرسل عند أول رد ناجح منه — لا يضيع عطل. */
+const pending: string[] = [];
+function send(token: string, body: string): void {
+  nativeFetch('/api/engineer/client-error', { method: 'POST', keepalive: true, headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }, body })
+    .then((r) => { if (r.status >= 500 && pending.length < 10) pending.push(body); })
+    .catch(() => { if (pending.length < 10) pending.push(body); });
+}
+function flushPending(): void {
+  if (!pending.length) return;
+  let token: string | null = null;
+  try { token = localStorage.getItem(TOKEN_KEY); } catch { /* تجاهل */ }
+  if (!token) return;
+  for (const body of pending.splice(0, pending.length)) send(token, body);
+}
+
+export function reportClientError(message: string, where?: string | null, frame?: string | null, method?: string | null): void {
   try {
     const msg = String(message || '').slice(0, 300);
     if (!msg) return;
@@ -26,12 +42,7 @@ export function reportClientError(message: string, where?: string | null, frame?
     if (++windowCount > 10) return;
     sent.set(key, now);
     if (sent.size > 200) sent.clear();
-    void nativeFetch('/api/engineer/client-error', {
-      method: 'POST',
-      keepalive: true,
-      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-      body: JSON.stringify({ message: msg, where: where || location.hash || location.pathname, frame: frame || null }),
-    }).catch(() => undefined);
+    send(token, JSON.stringify({ message: msg, where: where || location.hash || location.pathname, frame: frame || null, method: method || null }));
   } catch { /* الإبلاغ لا يكسر الواجهة أبداً */ }
 }
 
@@ -59,14 +70,26 @@ export function installClientErrorReporting(): void {
     reportClientError(`${r?.name || 'Rejection'}: ${r?.message || String(r)}`, null, firstFrame(r?.stack));
   });
   window.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
-    const res = await nativeFetch(input, init);
+    let res = await nativeFetch(input, init);
     try {
       const url = typeof input === 'string' ? input : input instanceof URL ? input.pathname : input.url;
       const path = (() => { try { return new URL(url, location.origin).pathname; } catch { return String(url); } })();
-      // 500 يراه الخادم نفسه ويسجّله بتفاصيل أدق؛ الواجهة تبلّغ فقط عن 502–504 (الخادم لم يُجب أصلاً).
+      const method = String(init?.method || (input instanceof Request ? input.method : 'GET') || 'GET').toUpperCase();
       if (res.status >= 502 && res.status <= 504 && path.startsWith('/api/') && path !== '/api/engineer/client-error') {
-        reportClientError(`api ${res.status} ${path}`, path, null);
+        // الخادم يضع X-Request-ID على كل رد: وجوده يعني أن الخادم أجاب بنفسه (والخادم سجّل العطل
+        // بتفاصيله)، وغيابه يعني أن البوابة لم تصل إليه أصلاً (نوم/إعادة نشر).
+        const reachedServer = Boolean(res.headers.get('x-request-id'));
+        // إصلاح ذاتي في الواجهة: قراءة فشلت مؤقتاً تُعاد مرة بعد ثانيتين قبل أن يرى المالك خطأ.
+        // الكتابة لا تُعاد أبداً (لا نشر/رد مكرر).
+        if (method === 'GET' && !(input instanceof Request)) {
+          await new Promise((r) => setTimeout(r, 2000));
+          const retry = await nativeFetch(input, init);
+          if (retry.status < 502 || retry.status > 504) return retry;
+          res = retry;
+        }
+        if (!reachedServer && !res.headers.get('x-request-id')) reportClientError(`api ${res.status} ${path}`, path, null, method);
       }
+      else if (res.status < 500 && path.startsWith('/api/') && path !== '/api/engineer/client-error') flushPending();
     } catch { /* تجاهل */ }
     return res;
   };

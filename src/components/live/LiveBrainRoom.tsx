@@ -1214,6 +1214,12 @@ export const LiveBrainRoom: React.FC<{ variant?: 'page' | 'wall'; onClose?: () =
                               <div style={{ fontSize: 11.5, lineHeight: 1.7, color: '#C9D3EA', padding: '6px 2px 2px' }}>
                                 <div><b>التشخيص:</b> {d.diagnosis}</div>
                                 <div style={{ color: '#FCD34D' }}><b>العلاج:</b> {d.fix}</div>
+                                {d.repair && (
+                                  <div style={{ color: d.repair.outcome === 'fixed' ? '#6EE7B7' : d.repair.outcome === 'owner' ? '#FCD34D' : d.repair.outcome === 'developer' ? '#A5B4FC' : '#FCA5A5' }}>
+                                    <b>{d.repair.outcome === 'fixed' ? '🔧 أصلحه المهندس' : d.repair.outcome === 'owner' ? '👤 يحتاج إجراءك' : d.repair.outcome === 'developer' ? '🛠 أُحيل لمهندس الكود' : `🔧 حاول المهندس (${d.repair.attempts})`}:</b> {d.repair.summary} <span style={{ color: '#6B7AA0', fontSize: 10 }}>{ago(d.repair.at, now)}</span>
+                                    {(d.repair.steps || []).map((st: string, i: number) => <div key={i} style={{ fontSize: 10.5, color: '#93A1C3' }}>{st}</div>)}
+                                  </div>
+                                )}
                                 <div style={{ color: '#93A1C3' }}>{ownerAr[d.owner] || ''}{(d.where || []).length ? ` · الموضع: ${(d.where || []).join('، ')}` : ''}{d.frame ? ` · ${d.frame}` : ''}</div>
                                 {(d.samples || []).slice(0, 2).map((x: string, i: number) => <div key={i} className="lbr-mono" style={{ fontSize: 10.5, color: '#7C89AD', direction: 'ltr', textAlign: 'left', wordBreak: 'break-all' }}>{x}</div>)}
                                 <div style={{ color: '#6B7AA0', fontSize: 10.5 }}>أول مرة {ago(d.firstAt, now)}{d.firstVersion ? ` على النسخة ${d.firstVersion}` : ''} · البصمة {d.fp}</div>
@@ -1225,6 +1231,22 @@ export const LiveBrainRoom: React.FC<{ variant?: 'page' | 'wall'; onClose?: () =
                             </details>
                           );
                         })
+                    )}
+                    {patrolTab === 'defects' && (defects?.repaired || []).length > 0 && (
+                      <div style={{ marginTop: 4 }} aria-label="ما أصلحه المهندس مؤخراً">
+                        <div style={{ fontSize: 11, color: '#6EE7B7', fontWeight: 700, margin: '4px 0' }}>✅ أصلحه المهندس ذاتياً — آخر 48 ساعة ({(defects.repaired as any[]).length})</div>
+                        {(defects.repaired as any[]).map((d) => (
+                          <details key={d.fp} className="lbr-eng-rep" style={{ borderColor: '#34D39955' }}>
+                            <summary><span className="lbr-eng-badge" style={{ borderColor: '#34D399', color: '#34D399' }}>أُصلح</span><span style={{ flex: 1, minWidth: 0 }}>{d.title}</span><span className="lbr-mono" style={{ fontSize: 10, color: '#7C89AD', flex: 'none' }}>{ago(d.resolvedAt, now)}</span></summary>
+                            <div style={{ fontSize: 11.5, lineHeight: 1.7, color: '#C9D3EA', padding: '6px 2px 2px' }}>
+                              <div><b>كان:</b> {d.diagnosis}</div>
+                              <div style={{ color: '#6EE7B7' }}><b>ما فعله المهندس:</b> {d.repair?.summary}</div>
+                              {(d.repair?.steps || []).map((st: string, i: number) => <div key={i} style={{ fontSize: 10.5, color: '#93A1C3' }}>{st}</div>)}
+                              <div style={{ color: '#6B7AA0', fontSize: 10.5 }}>إن عاد سيُفتح تلقائياً ويُعلَّم «عاد بعد إصلاحه».</div>
+                            </div>
+                          </details>
+                        ))}
+                      </div>
                     )}
                     {patrolTab === 'gaps' && (
                       (patrol?.gaps || []).length === 0

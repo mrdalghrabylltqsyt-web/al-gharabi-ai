@@ -22,6 +22,7 @@
  */
 
 import crypto from 'node:crypto';
+import { createRetryingProviderFetch, providerRetryConfig } from './providerRetry';
 
 export const TELEGRAM_API_BASE = 'https://api.telegram.org';
 
@@ -476,4 +477,17 @@ export class TelegramClient {
       return { ok: Boolean(res.ok && data?.ok) };
     } catch { return { ok: false }; }
   }
+}
+
+/**
+ * غلاف fetch لـTelegram بإعادة محاولة آمنة (2026-10-28). كان Telegram الموصل الوحيد بلا
+ * إعادة محاولة ولا مهلة: انقطاع شبكة عابر («fetch failed») عند getWebhookInfo/getMe كان
+ * يُرجع 502 للمالك فوراً (رصده سجل الأعطال الحقيقية في الإنتاج). القراءة (GET) وحدها
+ * تُعاد مع تراجع ومهلة؛ الإرسال (POST) لا يُعاد أبداً — لا رسالة مكررة للزبون.
+ */
+export function createTelegramFetch(
+  baseFetch: (url: string, init: any) => Promise<any>,
+  overrides: Parameters<typeof providerRetryConfig>[1] = {},
+): TelegramFetch {
+  return createRetryingProviderFetch(baseFetch, { config: providerRetryConfig(process.env, overrides) }) as TelegramFetch;
 }

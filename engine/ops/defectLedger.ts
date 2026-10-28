@@ -35,6 +35,9 @@ export interface FailureEvent {
   frame?: string | null;
   status?: number | null;
   durationMs?: number | null;
+  /** طريقة الطلب والمسار الخام (لإعادة تنفيذ GET فاشل عند الإصلاح) — بلا جسم ولا ترويسات. */
+  method?: string | null;
+  path?: string | null;
 }
 
 export interface Diagnosis {
@@ -68,12 +71,27 @@ export interface DefectGroup {
   samples: string[];
   status: 'open' | 'resolved' | 'ignored';
   resolvedAt: string | null;
-  resolvedBy: 'auto' | 'owner' | null;
+  resolvedBy: 'auto' | 'owner' | 'engineer' | null;
+  /** القاعدة التي صنّفته (تحدد خطة الإصلاح). */
+  rule: string;
+  /** آخر طلب فشل (GET فقط يُعاد تنفيذه عند الإصلاح). */
+  lastMethod: string | null;
+  lastPath: string | null;
+  /** آخر ما فعله المهندس بهذا العطل — يظهر على بطاقته. */
+  repair: DefectRepair | null;
   /** عاد بعد أن عُلّم محلولاً: إصلاح لم ينجح. */
   regressions: number;
   /** نسخة الكود التي ظهر عليها أول مرة (commit مختصر). */
   firstVersion: string | null;
   lastVersion: string | null;
+}
+
+export interface DefectRepair {
+  at: string;
+  outcome: 'fixed' | 'failed' | 'owner' | 'developer';
+  summary: string;
+  steps: string[];
+  attempts: number;
 }
 
 export interface DefectLedger {
@@ -348,8 +366,10 @@ export function recordFailure(ledger: DefectLedger, ev: FailureEvent, opts: { no
     existing.count += 1;
     existing.lastAt = nowIso;
     existing.lastVersion = version || existing.lastVersion;
-    if (isRegression) { existing.status = 'open'; existing.resolvedAt = null; existing.resolvedBy = null; existing.regressions += 1; }
+    if (isRegression) { existing.status = 'open'; existing.resolvedAt = null; existing.resolvedBy = null; existing.regressions += 1; if (existing.repair?.outcome === 'fixed') existing.repair = { ...existing.repair, outcome: 'failed', summary: `عاد بعد إصلاحي: ${existing.repair.summary}`.slice(0, 300) }; }
     if (ev.where) { const w = normalizeRoute(ev.where); if (!existing.where.includes(w)) existing.where = [w, ...existing.where].slice(0, LEDGER_POLICY.maxWhere); }
+    existing.rule = d.key;
+    if (ev.path) { existing.lastMethod = String(ev.method || 'GET').toUpperCase(); existing.lastPath = String(ev.path).slice(0, 200); }
     if (!existing.samples.includes(sample)) existing.samples = [sample, ...existing.samples].slice(0, LEDGER_POLICY.maxSamples);
     // التشخيص قد يتحسّن مع تحديث قاعدة المعرفة — يؤخذ الأحدث.
     Object.assign(existing, { title: d.title, diagnosis: d.diagnosis, fix: d.fix, severity: d.severity, owner: d.owner });
@@ -360,6 +380,7 @@ export function recordFailure(ledger: DefectLedger, ev: FailureEvent, opts: { no
     where: ev.where ? [normalizeRoute(ev.where)] : [], frame: ev.frame ? sanitizeSample(ev.frame).slice(0, 120) : null,
     count: 1, firstAt: nowIso, lastAt: nowIso, samples: [sample], status: 'open', resolvedAt: null, resolvedBy: null,
     regressions: 0, firstVersion: version, lastVersion: version,
+    rule: d.key, lastMethod: ev.path ? String(ev.method || 'GET').toUpperCase() : null, lastPath: ev.path ? String(ev.path).slice(0, 200) : null, repair: null,
   };
   ledger.groups[fp] = group;
   enforceCap(ledger);
@@ -450,8 +471,12 @@ export function normalizeLedger(raw: any): DefectLedger {
       count: Number(g.count) || 1, firstAt: g.firstAt, lastAt: String(g.lastAt || g.firstAt),
       samples: Array.isArray(g.samples) ? g.samples.slice(0, LEDGER_POLICY.maxSamples).map(String) : [],
       status: g.status === 'resolved' || g.status === 'ignored' ? g.status : 'open',
-      resolvedAt: g.resolvedAt ? String(g.resolvedAt) : null, resolvedBy: g.resolvedBy === 'owner' || g.resolvedBy === 'auto' ? g.resolvedBy : null,
+      resolvedAt: g.resolvedAt ? String(g.resolvedAt) : null, resolvedBy: g.resolvedBy === 'owner' || g.resolvedBy === 'auto' || g.resolvedBy === 'engineer' ? g.resolvedBy : null,
       regressions: Number(g.regressions) || 0, firstVersion: g.firstVersion || null, lastVersion: g.lastVersion || null,
+      rule: typeof g.rule === 'string' ? g.rule : '', lastMethod: g.lastMethod ? String(g.lastMethod) : null, lastPath: g.lastPath ? String(g.lastPath) : null,
+      repair: g.repair && typeof g.repair === 'object' && typeof g.repair.summary === 'string'
+        ? { at: String(g.repair.at || ''), outcome: ['fixed', 'failed', 'owner', 'developer'].includes(g.repair.outcome) ? g.repair.outcome : 'failed', summary: g.repair.summary, steps: Array.isArray(g.repair.steps) ? g.repair.steps.slice(0, 8).map(String) : [], attempts: Number(g.repair.attempts) || 0 }
+        : null,
     };
   }
   base.events = Number(raw.events) || 0;
@@ -472,4 +497,59 @@ export function defectLogLine(g: DefectGroup, event: 'new' | 'regression'): stri
     `title=${JSON.stringify(g.title)}`, `sample=${JSON.stringify(g.samples[0] || '')}`,
   ];
   return parts.filter(Boolean).join(' ');
+}
+
+// -----------------------------------------------------------------------------
+// الإصلاح الذاتي (2026-10-28): لكل عطل مرصود خطة إصلاح حقيقية أو جهة مسؤولة صريحة.
+// -----------------------------------------------------------------------------
+export type RepairPlan =
+  /** إعادة تنفيذ الطلب الذي فشل (قراءة GET فقط — الكتابة لا تُعاد أبداً). */
+  | { action: 'replay_route'; method: 'GET'; path: string }
+  /** التحقق أن الخادم يجيب الآن (عطل لحظة إعادة النشر/النوم). */
+  | { action: 'verify_server'; path: string | null }
+  /** تجديد رمز منصة رفض المزوّد تجديده. */
+  | { action: 'refresh_token'; platform: string }
+  /** إعادة مزامنة الأرقام لمنصة/للكل. */
+  | { action: 'rerun_metrics'; platform: string | null }
+  /** إعادة دورة النسخ الاحتياطي. */
+  | { action: 'rerun_backup' }
+  /** إعادة محاولة الحفظ في قاعدة البيانات. */
+  | { action: 'retry_persist' }
+  /** لا إصلاح آلي ممكن: إعداد/ربط بيد المالك (يُذكر الإجراء بالضبط). */
+  | { action: 'owner'; instructions: string }
+  /** عيب في الكود نفسه: يُصلحه مهندس الكود (تعديل + اختبار + طلب دمج). */
+  | { action: 'developer' };
+
+/** يحدد خطة الإصلاح من القاعدة التي صنّفت العطل. منطق صافٍ مختبر. */
+export function repairPlanFor(g: Pick<DefectGroup, 'kind' | 'owner' | 'rule' | 'fix' | 'lastMethod' | 'lastPath'>): RepairPlan {
+  const rule = String(g.rule || '');
+  const getPath = g.lastMethod === 'GET' && g.lastPath && g.lastPath.startsWith('/api/') ? g.lastPath : null;
+  if (rule === 'client-gateway') return { action: 'verify_server', path: getPath };
+  if (rule.startsWith('http:') && g.kind === 'provider') return getPath ? { action: 'replay_route', method: 'GET', path: getPath } : { action: 'verify_server', path: null };
+  if (rule.startsWith('refresh:')) {
+    const platform = rule.slice('refresh:'.length);
+    return platform === 'youtube' ? { action: 'refresh_token', platform } : { action: 'owner', instructions: g.fix };
+  }
+  if (rule.startsWith('metrics:')) return { action: 'rerun_metrics', platform: rule.slice('metrics:'.length) || null };
+  if (rule === 'backup-failed') return { action: 'rerun_backup' };
+  if (rule === 'persist') return { action: 'retry_persist' };
+  if (g.owner === 'owner') return { action: 'owner', instructions: g.fix };
+  return { action: 'developer' };
+}
+
+/** يسجّل نتيجة محاولة إصلاح على العطل نفسه؛ النجاح المتحقَّق يغلقه «أصلحه المهندس». */
+export function recordRepair(ledger: DefectLedger, fp: string, r: { outcome: DefectRepair['outcome']; summary: string; steps: string[]; nowMs: number }): DefectGroup | null {
+  const g = ledger.groups[fp];
+  if (!g) return null;
+  const attempts = (g.repair?.attempts || 0) + 1;
+  g.repair = { at: new Date(r.nowMs).toISOString(), outcome: r.outcome, summary: r.summary.slice(0, 300), steps: r.steps.slice(0, 8).map((x) => String(x).slice(0, 200)), attempts };
+  if (r.outcome === 'fixed') { g.status = 'resolved'; g.resolvedAt = g.repair.at; g.resolvedBy = 'engineer'; }
+  return g;
+}
+
+/** ما أصلحه المهندس مؤخراً (للعرض: «أُصلح ذاتياً»). */
+export function recentlyRepaired(ledger: DefectLedger, nowMs: number, withinMs = 48 * 3600000): DefectGroup[] {
+  return Object.values(ledger.groups)
+    .filter((g) => g.resolvedBy === 'engineer' && g.resolvedAt && nowMs - Date.parse(g.resolvedAt) < withinMs)
+    .sort((a, b) => (a.resolvedAt! < b.resolvedAt! ? 1 : -1));
 }

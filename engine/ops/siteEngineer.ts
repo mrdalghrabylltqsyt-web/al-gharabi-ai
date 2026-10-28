@@ -22,7 +22,9 @@ export type EngineerModule =
 export type IncidentSeverity = 'warning' | 'critical';
 export type IncidentKind =
   | 'cycle_stale' | 'persist_failing' | 'storage_down' | 'backup_stale'
-  | 'meta_read_failing' | 'youtube_errors' | 'memory_high' | 'loop_lag' | 'patrol_fix';
+  | 'meta_read_failing' | 'youtube_errors' | 'memory_high' | 'loop_lag' | 'patrol_fix'
+  /** عطل حقيقي من سجل الأعطال (defectLedger) له خطة إصلاح. */
+  | 'defect_fix';
 
 export interface Incident {
   key: string;
@@ -39,6 +41,8 @@ export interface Incident {
   heavy?: boolean;
   /** مفتاح فرعي (دورة/منصة) للكتيّب. */
   target?: string;
+  /** تهدئة خاصة بعد التصعيد/المراقبة (الافتراضي 6 س) — عطل إعداد لا يتغيّر بالساعة يُذكَّر به أقل. */
+  cooldownMs?: number;
 }
 
 export interface EngineerSnapshot {
@@ -214,10 +218,11 @@ export function decideNext(state: EngineerState, incidents: Incident[], nowMs: n
   const sorted = incidents.slice().sort((a, b) => SEV_RANK[a.severity] - SEV_RANK[b.severity]);
   for (const inc of sorted) {
     const mem = state.incidents[inc.key];
-    if (mem?.escalatedAt && nowMs - mem.escalatedAt < P.cooldownAfterEscalateMs) continue; // صُعِّد — تهدئة
+    const cool = inc.cooldownMs ?? P.cooldownAfterEscalateMs;
+    if (mem?.escalatedAt && nowMs - mem.escalatedAt < cool) continue; // صُعِّد — تهدئة
     if (inc.needsOwner) return { kind: 'escalate', incident: inc, reason: inc.needsOwner };
     if (inc.observeOnly) {
-      if (mem?.lastAttemptAt && nowMs - mem.lastAttemptAt < P.cooldownAfterEscalateMs) continue;
+      if (mem?.lastAttemptAt && nowMs - mem.lastAttemptAt < cool) continue;
       return { kind: 'observe', incident: inc };
     }
     const attempts = mem?.attempts || 0;
@@ -266,4 +271,22 @@ export function incidentsFromPatrol(checks: Array<{ id: string; module: Engineer
     }
   }
   return out;
+}
+
+/**
+ * أعطال سجل الأعطال ⇒ مهام للمهندس. ما له إصلاح تشغيلي يُصلَح ويُتحقَّق منه؛ ما بيد المالك
+ * يُصعَّد مرة كل 3 أيام بالإجراء الدقيق؛ عيب الكود يُحال لمهندس الكود (مراقبة بلا إزعاج).
+ */
+export function incidentsFromDefects(defects: Array<{ fp: string; kind: string; severity: 'critical' | 'warning'; title: string; samples: string[]; plan: { action: string; instructions?: string } }>): Incident[] {
+  const moduleOf = (kind: string): EngineerModule => (kind === 'config' || kind === 'provider' ? 'platforms' : kind === 'performance' ? 'monitor' : 'core');
+  return defects.map((d) => {
+    const base: Incident = {
+      key: `defect:${d.fp}`, kind: 'defect_fix', target: d.fp, module: moduleOf(d.kind), severity: d.severity,
+      title: d.title, evidence: [d.samples[0] || d.title].filter(Boolean),
+    };
+    if (d.plan.action === 'owner') return { ...base, needsOwner: d.plan.instructions || 'يحتاج إجراءك', cooldownMs: 72 * 3600000 };
+    if (d.plan.action === 'developer') return { ...base, observeOnly: true, cooldownMs: 72 * 3600000 };
+    if (d.plan.action === 'rerun_backup' || d.plan.action === 'rerun_metrics') return { ...base, heavy: true };
+    return base;
+  });
 }
