@@ -728,6 +728,7 @@ import { LiveEventBuffer, classifyLogLine, auditToLiveEvent, buildLiveModules, b
 import { detectIncidents, decideNext, forgetRecovered, addReport, withTimeout, emptyEngineerState, normalizeEngineerState, incidentsFromPatrol, incidentsFromDefects, ENGINEER_POLICY, type EngineerState, type EngineerSnapshot, type Incident, type ReportStep, type EngineerReport } from "./engine/ops/siteEngineer";
 import { PATROL_ORDER, COLLECTION_CAPS, COLLECTION_AR, inspectModule, healthScore, healthBreakdown, slopePerHour, growthPerDay, type PatrolFacts, type ModuleInspection } from "./engine/ops/engineerPatrol";
 import { recordFailure, sweepLedger, markDefect, openDefects, ledgerSummary, normalizeLedger, emptyLedger, defectLogLine, repairPlanFor, recordRepair, recentlyRepaired, normalizeRoute, LEDGER_POLICY, type DefectLedger, type FailureEvent, type RepairPlan } from "./engine/ops/defectLedger";
+import { TOKEN_KEEPER_POLICY, isPermanentRefreshError, backoffMs, decideRenewal, ownerTokenNeeds, autoRenewable, shouldMarkReauth, keeperSummary, leadFor, fmtDur, type TokenState, type RenewalKind, type KeeperRun } from "./engine/ops/tokenKeeper";
 import { PROBE_ROUTES, PROACTIVE_POLICY, evaluateProbe, summarizeRound, deployVerdict, RouteLatency, slowRoutes, isSpiking, buildForecasts, notificationHygiene, type ProbeRound, type Forecast } from "./engine/ops/engineerProactive";
 import { buildOwnIdentity, customerVoices, type OwnIdentity } from "./engine/social/ownVoice";
 import { memoryPressureAlert, baselineSlopePerHour } from "./engine/ops/memoryWatch";
@@ -2842,6 +2843,23 @@ function instagramPageSelectionPending(): boolean {
 // بمسار OAuth العام (لا فرع callback مخصّص) بعد إصلاح إلزامية إثبات الهوية.
 // النشر فقط حالياً (حاوية + نشر + فحص حالة)؛ لا رد/تحليلات حقيقية بعد.
 // -------------------------------------------------------------
+/**
+ * سجل محاولات التجديد لكل منصة (ذاكرة): عدد الإخفاقات المتتالية وآخر رمز خطأ — يقرأه حارس
+ * الرموز ليقرر الانتظار (فشل عابر) أو إشراك المالك (رفض دائم). يُصفَّر عند أول نجاح.
+ */
+/** تاريخ انتهاء مخزّن (رقم بالثواني أو بالمللي، أو نص ISO) ⇒ مللي أو null. */
+function tokenExpiryMs(v: any): number | null {
+  if (v == null || v === "") return null;
+  const ms = typeof v === "number" ? (v < 1e12 ? v * 1000 : v) : Date.parse(String(v));
+  return Number.isFinite(ms) && ms > 0 ? ms : null;
+}
+const tokenRenewTrack = new Map<string, { failures: number; code: string | null; at: number }>();
+function noteRenewal(id: string, ok: boolean, code: string | null = null): { failures: number; code: string | null; at: number } {
+  const prev = tokenRenewTrack.get(id);
+  const next = ok ? { failures: 0, code: null, at: Date.now() } : { failures: (prev?.failures || 0) + 1, code: code ? String(code).slice(0, 60) : null, at: Date.now() };
+  tokenRenewTrack.set(id, next);
+  return next;
+}
 const THREADS_GRAPH_API_BASE_ENV = process.env.THREADS_GRAPH_API_BASE;
 const threadsFetchImpl: ThreadsFetch = (url, init) => fetch(url, init as any);
 function threadsClient(): ThreadsClient { return new ThreadsClient(threadsFetchImpl, THREADS_GRAPH_API_BASE_ENV); }
@@ -2859,7 +2877,8 @@ function threadsAccessExpired(): boolean {
 /** يحفظ اعتماد Threads مشفّراً (لا يُعاد ولا يُسجَّل). */
 function saveThreadsCredentials(input: { accessToken: string; expiresAt?: number | null }) {
   const existing = threadsStoredCredentials() || {};
-  setProviderToken("threads", { ...existing, access_token: input.accessToken, expiresAt: input.expiresAt ?? null });
+  // issuedAt: Meta لا يمدّد رمزاً عمره أقل من 24 ساعة — الحارس يحتاج عمر الرمز.
+  setProviderToken("threads", { ...existing, access_token: input.accessToken, expiresAt: input.expiresAt ?? null, issuedAt: Date.now() });
 }
 /** يضبط حالة Threads على reauth_needed صراحةً (لا بقاء على connected بصمت). */
 async function markThreadsReauthNeeded(reason: string): Promise<void> {
@@ -2915,9 +2934,13 @@ async function forceRefreshThreadsToken(): Promise<string | null> {
   if (!token) return null;
   const res = await threadsClient().refreshLongLivedToken(token);
   if (!res.ok || !res.data?.accessToken) {
+    noteRenewal("threads", false, res.code || null);
     audit("system", "threads_refresh_failed", res.code || "provider_error");
+    // الرفض الدائم فقط عطل (المهندس يسجله)؛ العابر يُعاد آلياً في دورة الحارس التالية.
+    console.log(`[threads-oauth] outcome=${isPermanentRefreshError(res.code) ? "refresh_failed" : "refresh_retry"} reason=${String(res.code || "provider_error").slice(0, 40)}`);
     return null;
   }
+  noteRenewal("threads", true);
   saveThreadsCredentials({ accessToken: res.data.accessToken, expiresAt: res.data.expiresIn ? Date.now() + res.data.expiresIn * 1000 : null });
   await persistStateDurable();
   audit("system", "threads_token_refreshed", "auto");
@@ -2931,7 +2954,20 @@ async function forceRefreshThreadsToken(): Promise<string | null> {
 async function ensureThreadsAccessToken(): Promise<{ ok: boolean; token?: string; refreshed?: boolean; error?: string }> {
   const token = threadsAccessToken();
   if (!token) return { ok: false, error: "لا اعتماد Threads محفوظ؛ نفّذ الربط عبر OAuth أولاً." };
-  if (!threadsAccessExpired()) return { ok: true, token, refreshed: false };
+  if (!threadsAccessExpired()) {
+    // الإصلاح الجذري: Meta لا يمدّد رمز Threads إلا *قبل* انتهائه. إن اقترب الانتهاء (ضمن هامش
+    // الحارس) وعمر الرمز ≥24 ساعة نمدّده الآن؛ فشلٌ هنا لا يوقف العملية لأن الرمز ما زال صالحاً.
+    const st = threadsStoredCredentials() || {};
+    const exp = tokenExpiryMs(st.expiresAt);
+    const issued = tokenExpiryMs(st.issuedAt) || tokenExpiryMs(st.connectedAt);
+    const tr = tokenRenewTrack.get("threads");
+    const coolingDown = Boolean(tr && tr.failures > 0 && Date.now() - tr.at < backoffMs(tr.failures));
+    if (exp && !coolingDown && exp - Date.now() < leadFor("threads") && (!issued || Date.now() - issued >= TOKEN_KEEPER_POLICY.threadsMinAgeMs)) {
+      const extended = await forceRefreshThreadsToken();
+      if (extended) return { ok: true, token: extended, refreshed: true };
+    }
+    return { ok: true, token, refreshed: false };
+  }
   const refreshed = await forceRefreshThreadsToken();
   if (!refreshed) {
     await markThreadsReauthNeeded("refresh_failed");
@@ -3081,19 +3117,26 @@ function saveGoogleBusinessCredentials(input: { accessToken?: string; refreshTok
 async function forceRefreshGoogleBusinessToken(): Promise<string | null> {
   const stored = getProviderToken("google_business");
   const refreshToken = stored?.refresh_token ? String(stored.refresh_token) : "";
-  if (!refreshToken) return null;
+  if (!refreshToken) { noteRenewal("google_business", false, "no_refresh_token"); return null; }
   const cfg: any = OAUTH_CONFIG["google_business"];
-  if (!cfg?.clientId || !cfg?.clientSecret) return null;
+  if (!cfg?.clientId || !cfg?.clientSecret) { noteRenewal("google_business", false, "credentials_missing"); return null; }
   try {
     const body = new URLSearchParams({ client_id: String(cfg.clientId), client_secret: String(cfg.clientSecret), refresh_token: refreshToken, grant_type: "refresh_token" });
     const res = await fetch(cfg.token, { method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" }, body: body.toString() });
     const data: any = await res.json().catch(() => null);
-    if (!res.ok || !data?.access_token) { audit("system", "google_business_refresh_failed", String(data?.error || "provider_error")); return null; }
+    if (!res.ok || !data?.access_token) {
+      const code = data?.error ? String(data.error) : null;
+      noteRenewal("google_business", false, code);
+      audit("system", "google_business_refresh_failed", String(code || "provider_error"));
+      console.log(`[google_business-oauth] outcome=${isPermanentRefreshError(code) ? "refresh_failed" : "refresh_retry"} reason=${String(code || `http_${res.status}`).slice(0, 40)}`);
+      return null;
+    }
+    noteRenewal("google_business", true);
     saveGoogleBusinessCredentials({ accessToken: String(data.access_token), expiresIn: data.expires_in ? Number(data.expires_in) : null });
     await persistStateDurable();
     audit("system", "google_business_token_refreshed", "auto");
     return String(data.access_token);
-  } catch { return null; }
+  } catch (e: any) { noteRenewal("google_business", false, "network"); console.log("[google_business-oauth] outcome=refresh_retry reason=network"); return null; }
 }
 /** يضمن رمزاً صالحاً لـGoogle Business (يُجدّد عند الانتهاء المعلن). */
 async function ensureGoogleBusinessAccessToken(): Promise<{ ok: boolean; token?: string; error?: string }> {
@@ -3268,6 +3311,16 @@ async function ensureTikTokAccessToken(): Promise<{ ok: boolean; token?: string;
   const token = tiktokAccessToken();
   if (!token) return { ok: false, error: "لا رمز TikTok محفوظ؛ نفّذ الربط عبر OAuth أولاً." };
   if (!tiktokAccessExpired()) return { ok: true, token, refreshed: false };
+  return refreshTikTokNow();
+}
+/**
+ * تجديد رمز TikTok الآن (يستدعيه الاستخدام عند الانتهاء، وحارس الرموز قبل الانتهاء بساعات).
+ * رمز الوصول 24 ساعة بتصميم TikTok وrefresh token لسنة — فالتجديد آلي بالكامل.
+ * الإصلاح الجذري: فشل عابر (شبكة/ضغط TikTok) لم يعد يقطع الربط؛ يُعاد في الدورة التالية،
+ * والانقطاع يُعلن فقط عند رفض دائم أو تتابع إخفاقات بعد انتهاء الرمز فعلاً.
+ */
+async function refreshTikTokNow(): Promise<{ ok: boolean; token?: string; refreshed?: boolean; error?: string; code?: string | null }> {
+  const stored = tiktokStoredCredentials();
   const refresh = tiktokRefreshToken();
   const cfg = tiktokOAuthConfig();
   if (!refresh || !cfg?.clientId || !cfg?.clientSecret) {
@@ -3277,13 +3330,22 @@ async function ensureTikTokAccessToken(): Promise<{ ok: boolean; token?: string;
   }
   const res = await tiktokClient().refreshToken({ clientKey: String(cfg.clientId), clientSecret: String(cfg.clientSecret), refreshToken: refresh });
   if (!res.ok || !res.data?.accessToken) {
-    // لا فشل صامت: يُعلن أن الاتصال يحتاج إعادة ربط حقيقية بدل ادعاء اتصال قائم.
+    const code = res.code ? String(res.code) : null;
+    const tr = noteRenewal("tiktok", false, code);
+    const accessExp = tokenExpiryMs(stored?.expiresAt);
+    audit("system", "tiktok_refresh_failed", code || "provider_error");
+    if (!shouldMarkReauth(code, tr.failures, accessExp, Date.now())) {
+      console.log(`[tiktok-oauth] outcome=refresh_retry reason=${String(code || "provider_error").slice(0, 40)} failures=${tr.failures}`);
+      return { ok: false, error: "تعذّر تجديد رمز TikTok مؤقتاً؛ يُعاد آلياً.", code };
+    }
+    // لا فشل صامت: رفض دائم ⇒ يُعلن أن الاتصال يحتاج إعادة ربط حقيقية بدل ادعاء اتصال قائم.
+    console.log(`[tiktok-oauth] outcome=refresh_failed reason=${String(code || "provider_error").slice(0, 40)}`);
     platformConnections.set("tiktok", { platform: "tiktok", status: "reauth_needed", accountId: String(stored?.openId || ""), connectedAt: new Date().toISOString() });
     savePlatformConnections();
     await persistStateDurable();
-    audit("system", "tiktok_refresh_failed", res.code || "provider_error");
-    return { ok: false, error: res.error || "فشل تجديد رمز TikTok؛ أعد الربط." };
+    return { ok: false, error: res.error || "فشل تجديد رمز TikTok؛ أعد الربط.", code };
   }
+  noteRenewal("tiktok", true);
   saveTikTokCredentials({
     accessToken: res.data.accessToken,
     refreshToken: res.data.refreshToken || refresh,
@@ -4032,6 +4094,43 @@ function saveFacebookCredentials(input: { pageId: string; pageName?: string | nu
  * الصفحة متاح أصلاً من `/me/accounts`. يُبقى `getPageProfile` كمسار احتياطي فقط
  * عند غياب الرمز من قائمة الصفحات، ويُستخدم مستقلاً في `verifyProviderConnection`.
  */
+/**
+ * يشترك تطبيقنا في أحداث الصفحة. إصلاح جذري (2026-10-28): Meta ترفض الاشتراك *كله* إن نقص إذن
+ * حقل واحد (messages ⇐ pages_messaging)، فكانت التعليقات تتوقف أيضاً بسبب نقص إذن الرسائل. نشترك
+ * بما يسمح به الإذن (feed) فتصل التعليقات فوراً، ويبقى نقص الرسائل معلناً بسببه الدقيق.
+ */
+async function subscribeFacebookPage(pageId: string, pageToken: string): Promise<{ ok: boolean; partial?: boolean; error?: string }> {
+  const client = facebookClient();
+  const sub = await client.subscribeApp(pageId, pageToken, FACEBOOK_SUBSCRIBED_FIELDS);
+  if (sub.ok) return { ok: true };
+  if (/pages_messaging|messages field/i.test(String(sub.error || ""))) {
+    const withoutMessaging = FACEBOOK_SUBSCRIBED_FIELDS.filter((f) => !/^messag/i.test(f));
+    if (withoutMessaging.length) {
+      const partial = await client.subscribeApp(pageId, pageToken, withoutMessaging);
+      console.log(`[facebook-subscribe] outcome=${partial.ok ? "partial" : "failed"} fields=${withoutMessaging.join(",")} missing=messages reason=pages_messaging`);
+      if (partial.ok) return { ok: true, partial: true, error: "اشتُرك في التعليقات فقط — الرسائل تحتاج إذن pages_messaging" };
+    }
+  }
+  return { ok: false, error: sub.error };
+}
+/**
+ * إصلاح ذاتي عند الإقلاع: صفحة متصلة وتطبيقنا غير مشترك في أحداثها (فشل اشتراك سابق) ⇒ لا تصل
+ * التعليقات عبر webhook. يُتحقق مرة لكل إقلاع ويُعاد الاشتراك (عملية idempotent عند Meta).
+ */
+let facebookSubscriptionHealedAt: string | null = null;
+async function healFacebookSubscription(): Promise<{ checked: boolean; resubscribed: boolean; detail: string }> {
+  const conn: any = platformConnections.get("facebook");
+  const cred: any = getProviderToken("facebook") || {};
+  const appId = String(facebookOAuthConfig()?.clientId || "");
+  if (conn?.status !== "connected" || !cred.pageId || !cred.pageAccessToken || !appId) return { checked: false, resubscribed: false, detail: "غير متصل" };
+  const cur = await facebookClient().getSubscribedApps(String(cred.pageId), String(cred.pageAccessToken));
+  if (!cur.ok) return { checked: false, resubscribed: false, detail: cur.error || "تعذّرت القراءة" };
+  if ((cur.data || []).includes(appId)) return { checked: true, resubscribed: false, detail: "مشترك" };
+  const r = await subscribeFacebookPage(String(cred.pageId), String(cred.pageAccessToken));
+  console.log(`[facebook-subscribe] outcome=${r.ok ? (r.partial ? "healed_partial" : "healed") : "heal_failed"}`);
+  if (r.ok) facebookSubscriptionHealedAt = new Date().toISOString();
+  return { checked: true, resubscribed: r.ok, detail: r.ok ? (r.partial ? "أُعيد الاشتراك (تعليقات فقط)" : "أُعيد الاشتراك") : (r.error || "فشل") };
+}
 async function facebookFinalizePageSelection(pageId: string, userAccessToken: string, pageData?: { pageId?: string | null; pageName?: string | null; pageAccessToken?: string | null } | null): Promise<{ ok: boolean; pageName?: string | null; error?: string; subscribed?: boolean }> {
   const client = facebookClient();
   const resolvedPageId = String(pageData?.pageId || pageId || "").trim();
@@ -4048,11 +4147,11 @@ async function facebookFinalizePageSelection(pageId: string, userAccessToken: st
   }
   // اشتراك التطبيق في أحداث الصفحة. عدم الاشتراك لا يُبطل الاتصال لكنه يُعلن
   // صراحةً لأن بدون اشتراك لن تصل أي أحداث webhook.
-  const sub = await client.subscribeApp(resolvedPageId, pageToken, FACEBOOK_SUBSCRIBED_FIELDS);
+  const sub = await subscribeFacebookPage(resolvedPageId, pageToken);
   saveFacebookCredentials({ pageId: resolvedPageId, pageName, pageAccessToken: pageToken, userAccessToken });
   platformConnections.set("facebook", { platform: "facebook", status: "connected", accountId: resolvedPageId, accountName: pageName || "Facebook Page", connectedAt: new Date().toISOString(), providerVerified: true });
   savePlatformConnections();
-  return { ok: true, pageName, subscribed: sub.ok, error: sub.ok ? undefined : sub.error };
+  return { ok: true, pageName, subscribed: sub.ok, error: sub.error || undefined };
 }
 
 /**
@@ -4374,12 +4473,14 @@ function youtubeReauthReason(): string | null {
   if (youtubeLastRefreshError) return `فشل تجديد رمز يوتيوب 3 مرات متتالية (${youtubeLastRefreshError}) — أعد الربط من مركز ربط المنصات.`;
   return null;
 }
-async function ensureYouTubeAccessToken(): Promise<{ ok: boolean; token?: string; refreshed?: boolean; error?: string; code?: string | null }> {
+async function ensureYouTubeAccessToken(opts: { ahead?: boolean } = {}): Promise<{ ok: boolean; token?: string; refreshed?: boolean; error?: string; code?: string | null }> {
   const stored = youtubeStoredCredentials();
   const token = youtubeAccessToken();
   if (!token) return { ok: false, error: "لا اعتماد YouTube محفوظ؛ نفّذ الربط عبر OAuth أولاً." };
   // ضمن صلاحيته (بهامش أمان 60 ثانية في isAccessTokenExpired): لا نجدّد بلا داع.
-  if (!youtubeAccessExpired() || !youtubeRefreshToken()) return { ok: true, token, refreshed: false };
+  // ahead: حارس الرموز يجدّد قبل الانتهاء بهامشه (لا ينتظر عملية تكتشف الانتهاء).
+  const dueAhead = Boolean(opts.ahead) && (() => { const e = tokenExpiryMs(stored?.expiresAt) || 0; return !e || e - Date.now() < leadFor("youtube"); })();
+  if ((!youtubeAccessExpired() && !dueAhead) || !youtubeRefreshToken()) return { ok: true, token, refreshed: false };
   const refresh = youtubeRefreshToken() as string;
   const cfg = youtubeOAuthConfig();
   if (!cfg?.clientId || !cfg?.clientSecret) {
@@ -4389,7 +4490,8 @@ async function ensureYouTubeAccessToken(): Promise<{ ok: boolean; token?: string
   if (!res.ok || !res.data?.accessToken) {
     // 2026-10-27: سبب الرفض يُسجَّل (رمز خطأ Google ليس سرّاً) — كان يُحذف فلا يُعرف لماذا انقطع.
     const reasonCode = String(res.code || "provider_error");
-    console.log(`[youtube-oauth] outcome=refresh_failed reason=${reasonCode.slice(0, 40)}`);
+    noteRenewal("youtube", false, res.code ? String(res.code) : null);
+    console.log(`[youtube-oauth] outcome=${YOUTUBE_PERMANENT_REFRESH_ERRORS.has(reasonCode) ? "refresh_failed" : "refresh_retry"} reason=${reasonCode.slice(0, 40)}`);
     // عطل عابر (شبكة/مهلة/ضغط Google) لا يقطع الربط: يُعاد التجديد في الدورة التالية. ثلاثة
     // إخفاقات عابرة متتالية فقط تُعامل انقطاعاً. الرفض الدائم (invalid_grant…) يقطع فوراً.
     const permanent = YOUTUBE_PERMANENT_REFRESH_ERRORS.has(reasonCode);
@@ -4409,6 +4511,7 @@ async function ensureYouTubeAccessToken(): Promise<{ ok: boolean; token?: string
     maybeAlertYouTubeReauth();
     return { ok: false, error: res.error || "فشل تجديد رمز Google؛ أعد الربط.", code: res.code ?? null };
   }
+  noteRenewal("youtube", true);
   youtubeTransientRefreshFailures = 0;
   youtubeLastRefreshError = null;
   saveYouTubeCredentials({
@@ -15711,7 +15814,15 @@ function patrolFacts(module: string | null = null): PatrolFacts {
     brainCadenceMs: safe(() => brainRuntimeIntervalMs(), 15 * 60000),
     brainMemoryRecords: Array.isArray((brainMemoryStore as any)?.records) ? (brainMemoryStore as any).records.length : 0,
     brainMemoryCap: null,
-    platforms: SUPPORTED_PLATFORMS.map((p: any) => { const c: any = platformConnections.get(p.id); return { id: p.id, connected: c?.status === "connected", providerVerified: c?.providerVerified === true, expiresAt: tokenExpiry(p.id), tokenReadable: tokenReadable(p.id) }; }),
+    platforms: (() => {
+      const ts = at("platforms") ? safe(() => new Map(tokenStates().map((t) => [t.id, t])), new Map<string, TokenState>()) : new Map<string, TokenState>();
+      return SUPPORTED_PLATFORMS.map((p: any) => {
+        const c: any = platformConnections.get(p.id); const t = ts.get(p.id);
+        // رمز صفحة Facebook/Instagram دائم: انتهاء رمز المستخدم ليس انتهاء المنصة.
+        const exp = t && (t.renewal === "permanent_page_token" || t.renewal === "static") ? null : tokenExpiry(p.id);
+        return { id: p.id, connected: c?.status === "connected", providerVerified: c?.providerVerified === true, expiresAt: exp, tokenReadable: tokenReadable(p.id), autoRenew: t ? autoRenewable(t, nowMs) : false };
+      });
+    })(),
     reauthUnread: owner.filter((n) => !n.read && /reauth/.test(String(n.type || ""))).length,
     publishFailed24h: pub.filter((r) => r.state === "failed").length,
     publishOk24h: pub.filter((r) => r.state === "published" || r.state === "scheduled").length,
@@ -16022,9 +16133,15 @@ function refreshForecasts(): void {
     const utcH = new Date(nowMs).getUTCHours() + new Date(nowMs).getUTCMinutes() / 60;
     const fresh = (() => { try { return backupFreshness(drControl.driveAutoBackup, nowMs); } catch { return null; } })();
     const spiking = Object.values(defectLedger.groups).filter((g) => g.status === "open" && isSpiking(defectTimes.get(g.fp) || [], nowMs)).map((g) => ({ title: g.title, count10m: (defectTimes.get(g.fp) || []).filter((t) => nowMs - t <= PROACTIVE_POLICY.spikeWindowMs).length }));
-    proactiveForecasts = buildForecasts({
+    // الإصلاح الجذري: «قابل للتجديد آلياً» من حارس الرموز لكل منصة (كان: يوتيوب فقط، فطُلب من المالك
+    // إعادة ربط TikTok كل يوم رغم أن رمزه يُجدَّد آلياً بتصميم TikTok). رمز صفحة Facebook/Instagram
+    // دائم، فانتهاء رمز المستخدم لا يُعرض كانتهاء للمنصة.
+    const tStates = tokenStates();
+    const tById = new Map(tStates.map((t) => [t.id, t]));
+    const needs: Forecast[] = ownerTokenNeeds(tStates, nowMs).map((n) => ({ ...n, owner: "owner" as const }));
+    const built = buildForecasts({
       nowMs,
-      platforms: f.platforms.map((p) => ({ id: p.id, label: platformAr(p.id), connected: p.connected, expiresAt: p.expiresAt, refreshable: p.id === "youtube" && Boolean(youtubeRefreshToken()) })),
+      platforms: f.platforms.map((p) => { const t = tById.get(p.id); return { id: p.id, label: platformAr(p.id), connected: p.connected, expiresAt: t ? (t.accessExpiresAt ? new Date(t.accessExpiresAt).toISOString() : null) : p.expiresAt, refreshable: t ? autoRenewable(t, nowMs) : false }; }),
       collections: f.collections.map((c) => ({ key: c.key, label: COLLECTION_AR[c.key] || c.key, size: c.size, cap: COLLECTION_CAPS[c.key], growthPerDay: c.growthPerDay })),
       memory: { mb: f.memoryMb, limitMb: f.limitMb, slopeMbPerHour: f.memorySlopeMbPerHour },
       youtubeQuota: yq && typeof yq.usedPercent === "number" ? { usedPercent: yq.usedPercent, resetInHours: hoursUntilPacificMidnight(nowMs) } : null,
@@ -16033,6 +16150,8 @@ function refreshForecasts(): void {
       spiking,
       backup: fresh && drControl.driveRefreshToken ? { ageHours: fresh.ageHours, intervalHours: 6 } : null,
     });
+    const needIds = new Set(needs.map((n) => n.id));
+    proactiveForecasts = [...needs, ...built.filter((b) => !needIds.has(b.id))];
     forecastsAt = new Date(nowMs).toISOString();
     for (const fc of proactiveForecasts) {
       if (fc.severity !== "critical" || fc.owner !== "owner") continue;
@@ -16122,9 +16241,145 @@ async function startCrashDetection(): Promise<void> {
 let lifeShuttingDown = false;
 const shuttingDownFlag = () => lifeShuttingDown;
 
+// -----------------------------------------------------------------------------
+// حارس الرموز (2026-10-28): يجدّد كل رمز منصة *قبل* انتهائه، فلا تنقطع منصة ولا يُطلب من
+// المالك إعادة ربط رمز يُجدَّد آلياً بطبيعته. المالك يُشرَك فقط حين يرفض المزوّد نهائياً أو
+// يقترب انتهاء إذن التجديد السنوي نفسه (TikTok). المنطق الصافي في engine/ops/tokenKeeper.ts.
+// -----------------------------------------------------------------------------
+const TOKEN_RENEWAL: Record<string, RenewalKind> = {
+  tiktok: "refresh_token", youtube: "refresh_token", google_business: "refresh_token",
+  threads: "extend_before_expiry", facebook: "permanent_page_token", instagram: "permanent_page_token",
+  telegram: "static", whatsapp: "static",
+};
+let keeperTimer: ReturnType<typeof setInterval> | null = null;
+let keeperRunning = false;
+let keeperLastAt: string | null = null;
+const keeperRuns: KeeperRun[] = [];
+
+/** حالة رمز كل منصة من الاعتماد المحفوظ (بلا أي سرّ في الناتج). */
+function tokenStates(): TokenState[] {
+  return SUPPORTED_PLATFORMS.map((p: any) => {
+    const id = String(p.id);
+    const conn: any = platformConnections.get(id);
+    const t: any = (() => { try { return getProviderToken(id); } catch { return null; } })() || {};
+    let renewal: RenewalKind = TOKEN_RENEWAL[id] || "none";
+    const status = conn?.status ? String(conn.status) : null;
+    const linked = status === "connected" || status === "reauth_needed";
+    let hasToken = false; let hasRefreshToken = false; let appConfigured = true;
+    let accessExpiresAt: number | null = tokenExpiryMs(t.expiresAt ?? t.expires_at);
+    let refreshExpiresAt: number | null = null;
+    if (id === "tiktok") { hasToken = Boolean(t.accessToken); hasRefreshToken = Boolean(tiktokRefreshToken()); const c = tiktokOAuthConfig(); appConfigured = Boolean(c?.clientId && c?.clientSecret); refreshExpiresAt = tokenExpiryMs(t.refreshExpiresAt); }
+    else if (id === "youtube") { hasToken = Boolean(youtubeAccessToken()); hasRefreshToken = Boolean(youtubeRefreshToken()); const c = youtubeOAuthConfig(); appConfigured = Boolean(c?.clientId && c?.clientSecret); }
+    else if (id === "google_business") { hasToken = Boolean(t.access_token); hasRefreshToken = Boolean(t.refresh_token); const c: any = OAUTH_CONFIG["google_business"]; appConfigured = Boolean(c?.clientId && c?.clientSecret); }
+    else if (id === "threads") { hasToken = Boolean(t.access_token); }
+    else if (id === "facebook" || id === "instagram") {
+      hasToken = Boolean(t.pageAccessToken);
+      // رمز الصفحة دائم فقط إن اشتُق من رمز مستخدم طويل. انتهاء رمز المستخدم ليس انتهاء رمز الصفحة.
+      accessExpiresAt = null;
+      if (!hasToken && t.userAccessToken) { hasToken = true; renewal = "none"; }
+    }
+    else if (id === "telegram") { hasToken = Boolean(t.botToken || (() => { try { return telegramBotToken(); } catch { return ""; } })()); accessExpiresAt = null; }
+    else if (id === "whatsapp") { hasToken = Boolean(t.accessToken || (() => { try { return whatsappAccessToken(); } catch { return ""; } })()); accessExpiresAt = null; }
+    const tr = tokenRenewTrack.get(id);
+    return {
+      id, label: platformAr(id), status, renewal: linked ? renewal : "none", hasToken: linked && hasToken, hasRefreshToken, appConfigured,
+      accessExpiresAt, refreshExpiresAt, issuedAt: tokenExpiryMs(t.issuedAt) || tokenExpiryMs(t.connectedAt),
+      failures: tr?.failures || 0, lastErrorCode: tr?.code || null, lastAttemptAt: tr?.at || null,
+    };
+  });
+}
+
+async function renewPlatformToken(id: string): Promise<{ ok: boolean; code?: string | null; error?: string }> {
+  if (id === "tiktok") { const r = await refreshTikTokNow(); return { ok: r.ok, code: r.code ?? null, error: r.error }; }
+  if (id === "youtube") { const r = await ensureYouTubeAccessToken({ ahead: true }); return { ok: r.ok && Boolean(r.refreshed), code: r.code ?? null, error: r.ok && !r.refreshed ? "لم يُجدَّد" : r.error }; }
+  if (id === "google_business") { const r = await forceRefreshGoogleBusinessToken(); return { ok: Boolean(r), code: tokenRenewTrack.get(id)?.code ?? null }; }
+  if (id === "threads") { const r = await forceRefreshThreadsToken(); return { ok: Boolean(r), code: tokenRenewTrack.get(id)?.code ?? null }; }
+  return { ok: false, error: "لا مجدِّد لهذه المنصة" };
+}
+
+/** دورة الحارس: كل 15 دقيقة يقرر لكل منصة ويجدّد ما اقترب انتهاؤه. */
+async function runTokenKeeper(trigger: "boot" | "schedule" | "manual" = "schedule"): Promise<KeeperRun[]> {
+  if (keeperRunning) return [];
+  keeperRunning = true;
+  const done: KeeperRun[] = [];
+  try {
+    const nowMs = Date.now();
+    for (const st of tokenStates()) {
+      const d = decideRenewal(st, nowMs);
+      if (d.action !== "refresh") continue;
+      const before = st.accessExpiresAt;
+      let r: { ok: boolean; code?: string | null; error?: string };
+      try { r = await renewPlatformToken(st.id); } catch (e: any) { noteRenewal(st.id, false, "exception"); r = { ok: false, code: "exception", error: String(e?.message || e).slice(0, 120) }; }
+      const after = tokenStates().find((x) => x.id === st.id);
+      const at = new Date().toISOString();
+      const run: KeeperRun = r.ok
+        ? { id: st.id, label: st.label, at, outcome: "renewed", detail: `${d.reason} ⇒ جُدِّد`, newExpiresAt: after?.accessExpiresAt ? new Date(after.accessExpiresAt).toISOString() : null }
+        : { id: st.id, label: st.label, at, outcome: after && decideRenewal(after, Date.now()).action === "owner" ? "owner" : "failed", detail: `${d.reason} ⇒ فشل (${r.code || "خطأ مزوّد"})${(after?.failures || 0) > 0 ? ` — محاولة ${after?.failures}` : ""}`, newExpiresAt: null };
+      done.push(run);
+      keeperRuns.unshift(run); if (keeperRuns.length > 40) keeperRuns.length = 40;
+      console.log(`[token-keeper] platform=${st.id} outcome=${run.outcome} trigger=${trigger}${r.code ? ` code=${String(r.code).slice(0, 40)}` : ""}`);
+      // نجاح تجديد يثبت أن الإذن سليم: اتصال عُلِّم «يحتاج إعادة ربط» بسبب فشل تجديد سابق يُستعاد.
+      const conn: any = platformConnections.get(st.id);
+      let restored = false;
+      if (r.ok && conn?.status === "reauth_needed") { platformConnections.set(st.id, { ...conn, status: "connected" }); savePlatformConnections(); persistState(); restored = true; }
+      // تقرير المهندس: التجديدات النادرة (TikTok يومياً، Threads كل ~40 يوماً) والإخفاقات والاستعادة؛
+      // تجديد Google الساعي يُسجَّل في سجل الحارس فقط كي لا يُغرق التقارير.
+      if (!r.ok || restored || st.id === "tiktok" || st.id === "threads") {
+        addReport(engineerState, {
+          id: workspaceId("eng"), incidentKey: `token-keeper:${st.id}`, kind: "patrol_fix", module: "platforms",
+          severity: r.ok || run.outcome !== "owner" ? "warning" : "critical",
+          title: r.ok ? `جُدِّد رمز ${st.label} قبل انتهائه` : `تعذّر تجديد رمز ${st.label}`,
+          evidence: [`قبل: ${before ? `ينتهي ${new Date(before).toISOString()} (${before > nowMs ? `بعد ${fmtDur(before - nowMs)}` : "منتهٍ"})` : "تاريخ غير معروف"}`, r.ok ? `بعد: ${run.newExpiresAt || "—"}` : `رمز الخطأ: ${r.code || "—"}`],
+          attempt: Math.max(1, after?.failures || 1), startedAt: at, endedAt: at, durationMs: 0,
+          status: r.ok ? "resolved" : run.outcome === "owner" ? "escalated" : "retrying",
+          steps: [{ at, label: `تجديد استباقي عبر ${st.renewal === "extend_before_expiry" ? "تمديد الرمز الطويل" : "refresh token"}`, ok: r.ok, detail: r.ok ? (restored ? "واستُعيد الاتصال من «يحتاج إعادة ربط» إلى «متصل»" : "تم") : (r.error || r.code || "رفض المزوّد") }],
+          verification: r.ok ? "الرمز الجديد محفوظ مشفّراً بتاريخ انتهاء جديد" : run.outcome === "owner" ? "المزوّد رفض نهائياً — لا يُحل بالانتظار" : "فشل عابر — يُعاد آلياً قبل الانتهاء",
+          summary: r.ok ? `جدّدتُ رمز ${st.label} قبل انتهائه — لا انقطاع ولا حاجة لإعادة ربط.${restored ? " واستعدتُ الاتصال." : ""}` : run.outcome === "owner" ? `رمز ${st.label} رُفض تجديده نهائياً (${r.code || "—"}) — يلزم ربط واحد منك.` : `تجديد ${st.label} فشل مؤقتاً (${r.code || "شبكة"}) — سأعيد المحاولة تلقائياً والرمز ما زال صالحاً.`,
+          nextAction: run.outcome === "owner" ? `أعد ربط ${st.label} من «مركز ربط المنصات».` : null,
+        });
+        persistEngineerState();
+      }
+    }
+    // مرة لكل إقلاع: اشتراك صفحة Facebook في أحداثها (بدونه لا تصل التعليقات عبر webhook).
+    if (trigger === "boot") {
+      const h = await healFacebookSubscription().catch(() => null);
+      if (h?.resubscribed) {
+        const at = new Date().toISOString();
+        addReport(engineerState, { id: workspaceId("eng"), incidentKey: "heal:facebook-subscription", kind: "patrol_fix", module: "platforms", severity: "warning", title: "أُعيد اشتراك صفحة فيسبوك في أحداثها", evidence: ["تطبيقنا لم يكن ضمن subscribed_apps للصفحة — التعليقات لا تصل عبر webhook"], attempt: 1, startedAt: at, endedAt: at, durationMs: 0, status: "resolved", steps: [{ at, label: "POST subscribed_apps", ok: true, detail: h.detail }], verification: "قراءة subscribed_apps بعد الاشتراك", summary: `أعدتُ اشتراك صفحة فيسبوك في أحداثها: ${h.detail}.`, nextAction: null });
+        persistEngineerState();
+      }
+    }
+  } catch (e: any) { console.warn("[token-keeper] cycle_failed", String(e?.message || e).slice(0, 120)); }
+  finally { keeperRunning = false; keeperLastAt = new Date().toISOString(); }
+  return done;
+}
+
+function tokenKeeperView() {
+  const nowMs = Date.now();
+  const states = tokenStates();
+  return {
+    lastAt: keeperLastAt,
+    intervalMin: TOKEN_KEEPER_POLICY.intervalMs / 60000,
+    summary: keeperSummary(states, nowMs),
+    platforms: states.filter((s) => s.hasToken).map((s) => {
+      const d = decideRenewal(s, nowMs);
+      return { id: s.id, label: s.label, renewal: s.renewal, autoRenew: autoRenewable(s, nowMs), expiresAt: s.accessExpiresAt ? new Date(s.accessExpiresAt).toISOString() : null, refreshExpiresAt: s.refreshExpiresAt ? new Date(s.refreshExpiresAt).toISOString() : null, decision: d.action, reason: d.reason, failures: s.failures };
+    }),
+    runs: keeperRuns.slice(0, 20),
+  };
+}
+
+function startTokenKeeper(): void {
+  if (keeperTimer) return;
+  const boot = setTimeout(() => { void runTokenKeeper("boot"); }, TOKEN_KEEPER_POLICY.firstRunAfterBootMs); (boot as any).unref?.();
+  keeperTimer = setInterval(() => { void runTokenKeeper("schedule"); }, TOKEN_KEEPER_POLICY.intervalMs); (keeperTimer as any).unref?.();
+  console.log(`[الغرابي AI] Token keeper: renews platform tokens before expiry every ${TOKEN_KEEPER_POLICY.intervalMs / 60000} min`);
+}
+
 function startProactiveEngineer(): void {
   if (probeTimer) return;
   void startCrashDetection();
+  startTokenKeeper();
   void (async () => { try { probePrevVersionRound = (await storageAdapter.read<any>(STORAGE_KEY_PROBES)) || null; } catch { /* */ } })();
   // فحص ما بعد النشر بعد 3 دقائق من الإقلاع (تستقر الدورات)، ثم جولة كل 10 دقائق.
   const boot = setTimeout(() => { void runProbeRound("deploy"); }, PROACTIVE_POLICY.firstProbeAfterBootMs); (boot as any).unref?.();
@@ -16144,6 +16399,7 @@ function proactiveView(full = true) {
     forecastsAt,
     latency: full ? routeLatency.summary().slice(0, 10) : undefined,
     hygiene: lastHygiene,
+    tokens: (() => { try { return tokenKeeperView(); } catch { return null; } })(),
   };
 }
 

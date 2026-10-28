@@ -289,7 +289,7 @@ export function classifyFailure(ev: FailureEvent): Diagnosis | null {
       kind: 'config', severity: 'critical', owner: 'owner', key: `graph-perm:${platform}:${endpoint}`,
       title: code === '190' ? `رمز ${pa(platform)} ملغى أو منتهٍ` : `${pa(platform)} ترفض: إذن ناقص${needed ? ` (${needed})` : ''}`,
       diagnosis: `${endpoint || 'نداء Graph'} رُفض: ${msg}`,
-      fix: code === '190' ? `أعد ربط ${pa(platform)} من «مركز ربط المنصات».` : `أعد ربط ${pa(platform)} ووافق على كل الأذونات${needed ? ` — خصوصاً ${needed}` : ''}؛ إن لم يظهر الإذن في نافذة الربط فأضفه لتطبيق Meta (App Review/Advanced Access).`,
+      fix: code === '190' ? `أعد ربط ${pa(platform)} من «مركز ربط المنصات».` : `إعادة الربط وحدها لا تضيف الإذن: نافذة Meta تعرض فقط ما في «إعداد تسجيل الدخول» (Login Configuration) للتطبيق. في developers.facebook.com ← تطبيقك ← Facebook Login for Business ← Configurations: أضف ${needed || 'الإذن الناقص'} إلى الإعداد المستخدم (FACEBOOK_LOGIN_CONFIG_ID)، وتأكد أن الإذن مفعّل في App Review ← Permissions، ثم أعد ربط ${pa(platform)} مرة واحدة.`,
     };
     return {
       kind: 'provider', severity: 'warning', owner: 'engineer', key: `graph:${platform}:${endpoint}`,
@@ -395,7 +395,13 @@ export function recordFailure(ledger: DefectLedger, ev: FailureEvent, opts: { no
   ledger.updatedAt = nowIso;
   const existing = ledger.groups[fp];
   if (existing) {
-    const isRegression = existing.status === 'resolved';
+    // «عاد بعد حله» فقط إن حُلّ فعلاً: بإصلاح (مهندس/مالك) أو عيب كود أُغلق بنسخة جديدة. عطل إعداد/مزوّد
+    // أُغلق لمجرد الهدوء ثم ظهر في دورته التالية (مزامنة إحصاءات كل ساعات) ليس regression — يُعاد فتحه
+    // بصمت (كان يُعلن «عاد» مع كل نشر لإذن تيك توك الناقص نفسه).
+    const wasResolved = existing.status === 'resolved';
+    const quietClosed = wasResolved && existing.resolvedBy === 'auto' && existing.kind !== 'code' && existing.kind !== 'client';
+    const isRegression = wasResolved && !quietClosed;
+    if (quietClosed) { existing.status = 'open'; existing.resolvedAt = null; existing.resolvedBy = null; }
     existing.count += 1;
     existing.lastAt = nowIso;
     existing.lastVersion = version || existing.lastVersion;

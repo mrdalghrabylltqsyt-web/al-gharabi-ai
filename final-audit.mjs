@@ -861,7 +861,7 @@ const youtubeUi = read('src/components/social/PlatformConnectionCenter.tsx');
 add('youtube-token-refresh-single-source', server.includes('async function ensureYouTubeAccessToken') && server.includes('refreshAccessToken('), 'تجديد رمز YouTube عبر refresh_token منفّذ في الخادم (مصدر واحد)');
 add('youtube-refresh-resilient-wrapper', server.includes('function fetchYouTubeChannelResilient') && /fetchYouTubeChannelResilient\(\)/.test(server), 'قراءة القناة تمر عبر غلاف يجدّد الرمز عند الانتهاء فلا يسقط الاتصال');
 add('youtube-health-uses-resilient', /platform==="youtube"[\s\S]{0,700}?fetchYouTubeChannelResilient/.test(server) && /platform === "youtube"[\s\S]{0,700}?fetchYouTubeChannelResilient/.test(server), 'health وverifyProviderConnection يستخدمان القراءة المُجدِّدة لا الرمز المباشر');
-add('youtube-refresh-no-oauth-when-valid', /if \(!youtubeAccessExpired\(\) \|\| !youtubeRefreshToken\(\)\) return \{ ok: true, token, refreshed: false \}/.test(server), 'لا يُطلب إعادة OAuth إن كان الرمز صالحاً أو refresh متاحاً');
+add('youtube-refresh-no-oauth-when-valid', /if \(\(!youtubeAccessExpired\(\) && !dueAhead\) \|\| !youtubeRefreshToken\(\)\) return \{ ok: true, token, refreshed: false \}/.test(server), 'لا يُطلب إعادة OAuth إن كان الرمز صالحاً أو refresh متاحاً');
 add('youtube-refresh-fail-reauth', /youtube_refresh_failed[\s\S]{0,400}?reauth_needed|reauth_needed[\s\S]{0,400}?youtube_refresh_failed/.test(server), 'فشل التجديد الفعلي فقط يُعلن reauth_needed');
 add('youtube-health-exposes-token-refreshed', server.includes('tokenRefreshed:Boolean(proof.refreshed)'), 'استجابة health تُعلن إن جُدِّد الرمز (بلا أي قيمة سرّية)');
 add('youtube-health-exposes-refreshable', server.includes('tokenRefreshable:'), 'health يُعلن أن التجديد متاح (منطقي فقط)');
