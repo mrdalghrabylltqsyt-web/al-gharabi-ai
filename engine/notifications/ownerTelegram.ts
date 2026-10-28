@@ -10,7 +10,7 @@
  * نفسه في الخادم عبر موصل Telegram القائم. لا يُرسل شيء للزبون إطلاقاً.
  */
 import { createHmac, timingSafeEqual } from 'node:crypto';
-import { OWNER_ALERT_KIND_LABELS_AR, type OwnerAlertItem } from './ownerAlerts';
+import { OWNER_ALERT_KIND_LABELS_AR, platformLabelAr, type OwnerAlertItem } from './ownerAlerts';
 
 export const OWNER_TELEGRAM_CHAT_ENV = 'OWNER_TELEGRAM_CHAT_ID';
 /** أقصى رسائل فورية في الساعة؛ بعدها رسالة تجاوز واحدة ويكمل البريد الملخّص. */
@@ -32,7 +32,7 @@ export function buildOwnerTelegramMessage(item: OwnerAlertItem, appUrl: string |
   const icon = item.kind === 'commercial_draft' ? '🛒' : item.kind === 'social_escalation' ? '⚠️' : item.kind === 'backup_stale' ? '💾' : item.kind === 'ingest_failing' ? '📭' : item.kind === 'storage_failing' ? '🗄️' : item.kind === 'memory_pressure' ? '🧠' : '🔌';
   const tab = item.kind === 'platform_reauth' || item.kind === 'ingest_failing' ? 'platform_connections' : item.kind === 'backup_stale' ? 'cloud_backup' : item.kind === 'storage_failing' || item.kind === 'memory_pressure' ? 'system' : 'commercial_inbox';
   const url = appUrl ? `${appUrl.replace(/\/$/, '')}/?tab=${tab}` : null;
-  const lines = [`${icon} ${label}${item.platform ? ` — ${item.platform}` : ''}`];
+  const lines = [`${icon} ${label}${item.platform ? ` — ${platformLabelAr(item.platform)}` : ''}`];
   const body = String(item.snippet || item.title || '').trim().slice(0, 300);
   if (body) lines.push(body);
   if (url) lines.push('', url);

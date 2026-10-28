@@ -135,10 +135,10 @@ async function run(): Promise<void> {
     check('انقطاع الربط أنتج تنبيهاً خارجياً فعلياً (Resend)', stubState.calls.length >= 1, `calls=${stubState.calls.length}`);
     const first = stubState.calls[0];
     check('التنبيه أُرسل إلى OWNER_EMAIL (لا للزبون)', first?.body?.to === OWNER_EMAIL, JSON.stringify(first?.body?.to));
-    check('التنبيه من RESEND_FROM_EMAIL', first?.body?.from === FROM_EMAIL, String(first?.body?.from));
-    check('التنبيه يذكر المنصة المنقطعة (facebook)', /facebook/.test(String(first?.body?.text || '')) || /facebook/.test(String(first?.body?.html || '')), String(first?.body?.text || '').slice(0, 160));
+    check('التنبيه من RESEND_FROM_EMAIL باسم «الغرابي AI»', first?.body?.from === `الغرابي AI <${FROM_EMAIL}>`, String(first?.body?.from));
+    check('التنبيه يذكر المنصة المنقطعة (فيسبوك)', /فيسبوك/.test(String(first?.body?.text || '')) || /فيسبوك/.test(String(first?.body?.html || '')), String(first?.body?.text || '').slice(0, 160));
     check('التنبيه HTML عربي RTL', String(first?.body?.html || '').includes('dir="rtl"'));
-    check('التنبيه يحمل رابط صفحة الموافقات', /tab=commercial_inbox/.test(String(first?.body?.text || '')) || /commercial_inbox/.test(String(first?.body?.html || '')));
+    check('تنبيه انقطاع الربط يحمل رابط مركز ربط المنصات', /tab=platform_connections/.test(String(first?.body?.text || '')) || /platform_connections/.test(String(first?.body?.html || '')));
 
     // الحالة معلنة: مُرسل واحد، بلا معلّق.
     const st1 = await (await fetch(`${BASE}/api/agent/owner-alerts`, { headers: auth })).json();

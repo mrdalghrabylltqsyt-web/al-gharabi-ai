@@ -177,11 +177,28 @@ export function ownerAlertCountsByKind(state: OwnerAlertState): Record<OwnerAler
   return out;
 }
 
+/** اسم المنصة بالعربية في التنبيهات (كانت تظهر «youtube» خاماً). */
+const PLATFORM_AR: Record<string, string> = { facebook: 'فيسبوك', instagram: 'إنستغرام', youtube: 'يوتيوب', threads: 'ثريدز', tiktok: 'تيك توك', telegram: 'تيليغرام', whatsapp: 'واتساب', x: 'X', snapchat: 'سناب شات', google_business: 'Google Business' };
+export const platformLabelAr = (p: string | null | undefined): string => (p ? PLATFORM_AR[p] || p : '');
+
+/** الصفحة التي يفتحها رابط التنبيه: صفحة النوع إن كانت الأحداث من نوع واحد، وإلا مركز القيادة. */
+export function ownerAlertTargetTab(kinds: OwnerAlertKind[]): { tab: string; label: string } {
+  const set = new Set(kinds);
+  const one = set.size === 1 ? [...set][0] : null;
+  if (one === 'commercial_draft' || one === 'social_escalation') return { tab: 'commercial_inbox', label: 'فتح صفحة الموافقات' };
+  if (one === 'platform_reauth' || one === 'ingest_failing') return { tab: 'platform_connections', label: 'فتح مركز ربط المنصات' };
+  if (one === 'backup_stale') return { tab: 'cloud_backup', label: 'فتح النسخ السحابية' };
+  if (one === 'storage_failing' || one === 'memory_pressure') return { tab: 'system', label: 'فتح مراقبة النظام' };
+  return { tab: 'command_center', label: 'فتح مركز القيادة' };
+}
+
 /** يبني نص/HTML الدفعة المجمّعة (عربي RTL). لا سرّ ولا معرّف عميل زائد. */
 export function buildOwnerAlertDigest(state: OwnerAlertState, appUrl: string | null): { count: number; subject: string; text: string; html: string } {
   const count = state.pending.length;
   const counts = ownerAlertCountsByKind(state);
-  const approvalsUrl = appUrl ? `${appUrl.replace(/\/$/, '')}/?tab=commercial_inbox` : null;
+  // 2026-10-27: كان الرابط «فتح صفحة الموافقات» حتى لتنبيه الذاكرة — صار بحسب نوع الحدث.
+  const target = ownerAlertTargetTab(state.pending.map((p) => p.kind));
+  const approvalsUrl = appUrl ? `${appUrl.replace(/\/$/, '')}/?tab=${target.tab}` : null;
   const subject = `تنبيه الغرابي AI — ${count} ${count === 1 ? 'حدث يحتاج انتباهك' : 'أحداث تحتاج انتباهك'}`;
 
   const lines: string[] = [];
@@ -195,20 +212,20 @@ export function buildOwnerAlertDigest(state: OwnerAlertState, appUrl: string | n
   if (counts.ingest_failing) lines.push(`- تحذير: قراءة التعليقات متوقفة على ${counts.ingest_failing} منصة — تعليقات الزبائن لا تصل`);
   lines.push('');
   for (const p of state.pending) {
-    lines.push(`• [${OWNER_ALERT_KIND_LABELS_AR[p.kind]}]${p.platform ? ` (${p.platform})` : ''} — ${p.snippet || p.title}`);
+    lines.push(`• [${OWNER_ALERT_KIND_LABELS_AR[p.kind]}]${p.platform ? ` (${platformLabelAr(p.platform)})` : ''} — ${p.snippet || p.title}`);
   }
   if (approvalsUrl) {
     lines.push('');
-    lines.push(`صفحة الموافقات: ${approvalsUrl}`);
+    lines.push(`${target.label}: ${approvalsUrl}`);
   }
 
   const rowsHtml = state.pending
     .map(
-      (p) => `<tr><td style="padding:8px 10px;border-bottom:1px solid #334155;font-size:12px;color:#94a3b8;white-space:nowrap;">${OWNER_ALERT_KIND_LABELS_AR[p.kind]}${p.platform ? `<br/><span style="color:#64748b;">${p.platform}</span>` : ''}</td><td style="padding:8px 10px;border-bottom:1px solid #334155;font-size:12px;color:#e2e8f0;">${escapeHtml(p.snippet || p.title)}</td></tr>`,
+      (p) => `<tr><td style="padding:8px 10px;border-bottom:1px solid #334155;font-size:12px;color:#94a3b8;white-space:nowrap;">${OWNER_ALERT_KIND_LABELS_AR[p.kind]}${p.platform ? `<br/><span style="color:#64748b;">${platformLabelAr(p.platform)}</span>` : ''}</td><td style="padding:8px 10px;border-bottom:1px solid #334155;font-size:12px;color:#e2e8f0;">${escapeHtml(p.snippet || p.title)}</td></tr>`,
     )
     .join('');
   const linkHtml = approvalsUrl
-    ? `<p style="margin:20px 0 0;font-size:12px;"><a href="${escapeHtml(approvalsUrl)}" style="color:#34d399;">فتح صفحة الموافقات</a></p>`
+    ? `<p style="margin:20px 0 0;font-size:12px;"><a href="${escapeHtml(approvalsUrl)}" style="color:#34d399;">${target.label}</a></p>`
     : '';
   const html = `<!DOCTYPE html>
 <html dir="rtl" lang="ar">
@@ -270,7 +287,7 @@ export function setOwnerAlertEnabled(state: OwnerAlertState, enabled: boolean): 
  */
 export function syncReauthAlerts(
   state: OwnerAlertState,
-  connections: Array<{ platform: string; status?: string }>,
+  connections: Array<{ platform: string; status?: string; reason?: string | null }>,
   nowIso: string,
 ): OwnerAlertState {
   if (!state.enabled) return state;
@@ -289,8 +306,8 @@ export function syncReauthAlerts(
       key: ownerAlertKey('platform_reauth', c.platform, 'reauth'),
       kind: 'platform_reauth',
       platform: c.platform,
-      title: `إعادة ربط ${c.platform} مطلوبة`,
-      snippet: `انقطع رمز ${c.platform}؛ أعد الربط من مركز ربط المنصات.`,
+      title: `إعادة ربط ${platformLabelAr(c.platform)} مطلوبة`,
+      snippet: truncateAlertSnippet(c.reason || `انقطع رمز ${platformLabelAr(c.platform)}؛ أعد الربط من مركز ربط المنصات.`),
       at: nowIso,
     });
   }

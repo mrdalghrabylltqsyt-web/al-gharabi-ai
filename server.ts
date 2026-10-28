@@ -726,7 +726,7 @@ import { LiveEventBuffer, classifyLogLine, auditToLiveEvent, buildLiveModules, b
 import { detectIncidents, decideNext, forgetRecovered, addReport, withTimeout, emptyEngineerState, normalizeEngineerState, incidentsFromPatrol, ENGINEER_POLICY, type EngineerState, type EngineerSnapshot, type Incident, type ReportStep, type EngineerReport } from "./engine/ops/siteEngineer";
 import { PATROL_ORDER, COLLECTION_CAPS, inspectModule, healthScore, healthBreakdown, slopePerHour, growthPerDay, type PatrolFacts, type ModuleInspection } from "./engine/ops/engineerPatrol";
 import { buildOwnIdentity, customerVoices, type OwnIdentity } from "./engine/social/ownVoice";
-import { memoryPressureAlert } from "./engine/ops/memoryWatch";
+import { memoryPressureAlert, baselineSlopePerHour } from "./engine/ops/memoryWatch";
 import { LiveWaiters, LIVE_WAIT_MAX_MS } from "./engine/ops/liveWait";
 import { defaultOwnerTelegramPairing, normalizeOwnerTelegramPairing, newPairingCode, startOwnerTelegramPairing, extractPairingCode, completeOwnerTelegramPairing, unpairOwnerTelegram, effectiveOwnerChat, pairingOutcomeText, OWNER_TG_PAIRING_TTL_MS, type OwnerTelegramPairingState } from "./engine/notifications/ownerTelegramPairing";
 import { parseFacebookPostMetrics, parseInstagramMediaMetrics, parseGraphInsights, parseFollowers, upsertPerformanceRecords, summarizePlatformMetrics, type MetricValues } from "./engine/social/metricsSync";
@@ -4211,6 +4211,17 @@ function youtubeForceSslGranted(): boolean {
  * يُطلب من المالك إعادة OAuth ما دام refresh token صالحاً؛ وإذا فشل التجديد فعلاً
  * يُعلن الحاجة لإعادة الربط بدل فشل صامت. لا يُسجَّل أي رمز.
  */
+/** رفض دائم من Google لا يزول بإعادة المحاولة (رمز ملغى/منتهٍ أو تطبيق غير صالح). */
+const YOUTUBE_PERMANENT_REFRESH_ERRORS = new Set(["invalid_grant", "invalid_client", "unauthorized_client"]);
+let youtubeTransientRefreshFailures = 0;
+let youtubeLastRefreshError: string | null = null;
+/** سبب انقطاع يوتيوب بالعربية للتنبيه — invalid_grant بعد ~7 أيام = تطبيق Google في وضع «Testing». */
+function youtubeReauthReason(): string | null {
+  if (youtubeLastRefreshError === "invalid_grant") return "رفضت Google تجديد رمز يوتيوب (invalid_grant). إن تكرر كل 7 أيام فتطبيق Google في وضع «Testing»: من Google Cloud ← OAuth consent screen اضغط «Publish app»، ثم أعد الربط.";
+  if (youtubeLastRefreshError === "invalid_client" || youtubeLastRefreshError === "unauthorized_client") return `بيانات تطبيق Google في الخادم مرفوضة (${youtubeLastRefreshError}) — تحقّق من YOUTUBE_CLIENT_ID/SECRET ثم أعد الربط.`;
+  if (youtubeLastRefreshError) return `فشل تجديد رمز يوتيوب 3 مرات متتالية (${youtubeLastRefreshError}) — أعد الربط من مركز ربط المنصات.`;
+  return null;
+}
 async function ensureYouTubeAccessToken(): Promise<{ ok: boolean; token?: string; refreshed?: boolean; error?: string; code?: string | null }> {
   const stored = youtubeStoredCredentials();
   const token = youtubeAccessToken();
@@ -4224,6 +4235,18 @@ async function ensureYouTubeAccessToken(): Promise<{ ok: boolean; token?: string
   }
   const res = await youtubeClient().refreshAccessToken({ clientId: String(cfg.clientId), clientSecret: String(cfg.clientSecret), refreshToken: refresh });
   if (!res.ok || !res.data?.accessToken) {
+    // 2026-10-27: سبب الرفض يُسجَّل (رمز خطأ Google ليس سرّاً) — كان يُحذف فلا يُعرف لماذا انقطع.
+    const reasonCode = String(res.code || "provider_error");
+    console.log(`[youtube-oauth] outcome=refresh_failed reason=${reasonCode.slice(0, 40)}`);
+    // عطل عابر (شبكة/مهلة/ضغط Google) لا يقطع الربط: يُعاد التجديد في الدورة التالية. ثلاثة
+    // إخفاقات عابرة متتالية فقط تُعامل انقطاعاً. الرفض الدائم (invalid_grant…) يقطع فوراً.
+    const permanent = YOUTUBE_PERMANENT_REFRESH_ERRORS.has(reasonCode);
+    youtubeTransientRefreshFailures = permanent ? 0 : youtubeTransientRefreshFailures + 1;
+    if (!permanent && youtubeTransientRefreshFailures < 3) {
+      audit("system", "youtube_refresh_transient", reasonCode);
+      return { ok: false, error: res.error || "تعذّر تجديد رمز Google مؤقتاً؛ ستُعاد المحاولة تلقائياً.", code: res.code ?? null };
+    }
+    youtubeLastRefreshError = reasonCode;
     // لا فشل صامت: يُعلن أن الاتصال يحتاج إعادة ربط حقيقية بدل ادعاء اتصال قائم.
     platformConnections.set("youtube", { platform: "youtube", status: "reauth_needed", accountId: String(stored?.channelId || ""), connectedAt: stored?.connectedAt || new Date().toISOString() });
     savePlatformConnections();
@@ -4234,6 +4257,8 @@ async function ensureYouTubeAccessToken(): Promise<{ ok: boolean; token?: string
     maybeAlertYouTubeReauth();
     return { ok: false, error: res.error || "فشل تجديد رمز Google؛ أعد الربط.", code: res.code ?? null };
   }
+  youtubeTransientRefreshFailures = 0;
+  youtubeLastRefreshError = null;
   saveYouTubeCredentials({
     accessToken: res.data.accessToken,
     refreshToken: res.data.refreshToken || refresh,
@@ -15461,7 +15486,8 @@ function patrolFacts(module: string | null = null): PatrolFacts {
     backupLastError: fresh?.lastError ? String(fresh.lastError).slice(0, 60) : null,
     memoryMb: Math.round(process.memoryUsage().rss / 1048576),
     limitMb: 512,
-    memorySlopeMbPerHour: slopePerHour(memorySamples),
+    // أرضية الذاكرة لا قممها (فحص «اتجاه الذاكرة» كان يقرأ قفزة النسخة تسرّباً).
+    memorySlopeMbPerHour: process.uptime() >= 3 * 3600 ? baselineSlopePerHour(memorySamples) : null,
     loopLagMs: liveLoop.lagMs,
     loopLagMaxMs: liveLoop.maxLagMs,
     usageLevel: safe(() => String(currentUsagePressure().level || "normal"), "normal"),
@@ -15521,8 +15547,11 @@ function patrolStep(): void {
     const module = PATROL_ORDER[patrolCursor];
     const nowMs = Date.now();
     if (module === "monitor") {
-      memorySamples.push({ t: nowMs, v: Math.round(process.memoryUsage().rss / 1048576) });
-      while (memorySamples.length > 72 || (memorySamples.length && nowMs - memorySamples[0].t > 3 * 3600000)) memorySamples.shift();
+      // عيّنة كل 5 دقائق على الأكثر، تمتد 6 ساعات (72 عيّنة) — كانت كل جولة (~70 ث) فلم يتجاوز المدى
+      // 84 دقيقة، وهو أقصر من أن يُميّز تسرّباً من قفزة النسخة الاحتياطية.
+      const lastSample = memorySamples[memorySamples.length - 1];
+      if (!lastSample || nowMs - lastSample.t >= 5 * 60000) memorySamples.push({ t: nowMs, v: Math.round(process.memoryUsage().rss / 1048576) });
+      while (memorySamples.length > 72 || (memorySamples.length && nowMs - memorySamples[0].t > 6 * 3600000)) memorySamples.shift();
       try { syncMemoryPressureAlert(); } catch { /* الإنذار لا يُسقط الدورية */ }
     }
     const facts = patrolFacts(module);
@@ -19010,7 +19039,7 @@ async function handleOwnerTelegramCallback(cb: { callbackId: string; fromId: str
 
 /** يزامن تنبيهات انقطاع الربط من الحالات الحيّة (يُستدعى عند كل نبضة إرسال). */
 function syncOwnerReauthAlerts(): void {
-  const connections = Array.from(platformConnections.values()).map((c: any) => ({ platform: String(c.platform), status: c.status }));
+  const connections = Array.from(platformConnections.values()).map((c: any) => ({ platform: String(c.platform), status: c.status, reason: c.platform === "youtube" ? youtubeReauthReason() : null }));
   const before = ownerAlertState.pending;
   const next = syncReauthAlerts(ownerAlertState, connections, new Date().toISOString());
   if (next !== ownerAlertState) {
@@ -19107,7 +19136,8 @@ const STORAGE_FAILING_ALERT_STREAK = 3;
  * يُستدعى من وقفة «المراقبة» في الدورية (كل جولة ~70 ث) ومن دورة التنبيه.
  */
 function syncMemoryPressureAlert(): void {
-  const a = memoryPressureAlert({ rssMb: process.memoryUsage().rss / 1048576, limitMb: 512, slopeMbPerHour: slopePerHour(memorySamples), nowMs: Date.now() });
+  // الميل من «أرضية» الذاكرة لا القمم، ولا تنبؤ في أول 3 ساعات (إنذار 10:58 الكاذب: +29 ميغا/س من قفزة واحدة).
+  const a = memoryPressureAlert({ rssMb: process.memoryUsage().rss / 1048576, limitMb: 512, slopeMbPerHour: baselineSlopePerHour(memorySamples), nowMs: Date.now(), uptimeSec: Math.round(process.uptime()) });
   if (!a) return;
   recordOwnerAlert({
     key: ownerAlertKey('memory_pressure', null, a.id),

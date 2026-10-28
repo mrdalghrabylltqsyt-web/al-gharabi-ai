@@ -5,6 +5,7 @@
  * لا يُعاد الرمز ولا يُسجَّل في أي سجل — النتيجة المسجلة حالة إرسال مجرّدة.
  */
 import { Resend } from "resend";
+import { withSenderName } from './senderName';
 
 export type EmailProvider = "resend";
 
@@ -92,6 +93,7 @@ export interface SendOwnerAlertInput {
   html: string;
 }
 
+
 /**
  * إرسال تنبيه المالك الخارجي (B1/Y2) عبر نفس مزوّد Resend القائم.
  * لا retry: محاولة واحدة. تُعيد نفس شكل نتيجة OTP (sent/error) بلا أي سرّ.
@@ -99,7 +101,7 @@ export interface SendOwnerAlertInput {
  */
 export async function sendOwnerAlertEmail(input: SendOwnerAlertInput): Promise<SendOwnerOtpResult> {
   const apiKey = readSecret("RESEND_API_KEY");
-  const from = readSecret("RESEND_FROM_EMAIL");
+  const from = withSenderName(readSecret("RESEND_FROM_EMAIL"));
   if (!apiKey) return { sent: false, provider: null, error: "email_provider_not_configured" };
   if (!from) return { sent: false, provider: "resend", error: "email_from_not_configured" };
 
@@ -139,7 +141,7 @@ export async function sendOwnerAlertEmail(input: SendOwnerAlertInput): Promise<S
  */
 export async function sendOwnerOtpEmail(input: SendOwnerOtpInput): Promise<SendOwnerOtpResult> {
   const apiKey = readSecret("RESEND_API_KEY");
-  const from = readSecret("RESEND_FROM_EMAIL");
+  const from = withSenderName(readSecret("RESEND_FROM_EMAIL"));
   if (!apiKey) return { sent: false, provider: null, error: "email_provider_not_configured" };
   if (!from) return { sent: false, provider: "resend", error: "email_from_not_configured" };
 

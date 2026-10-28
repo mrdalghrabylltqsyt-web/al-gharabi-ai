@@ -17,12 +17,44 @@ export const MEMORY_LEAK_MIN_SLOPE = 5;
 /** أفق التنبؤ: إن بلغ الميلُ الحدَّ خلال هذه الساعات يُنذَر المالك. */
 export const MEMORY_LEAK_HORIZON_HOURS = 12;
 
+/** أقل مدى عيّنات للتنبؤ (ساعتان) — دون ذلك قفزة جمع القمامة/النسخة تُقرأ اتجاهاً. */
+export const MEMORY_FORECAST_MIN_SPAN_MS = 2 * 3600000;
+/** لا تنبؤ في أول 3 ساعات بعد الإقلاع: الذاكرة تصعد طبيعياً حتى تستقر الذاكرة المؤقتة. */
+export const MEMORY_FORECAST_MIN_UPTIME_SEC = 3 * 3600;
+
+/**
+ * ميل «أرضية» الذاكرة (ميغا/ساعة) — 2026-10-27. على الخادم الحي تتأرجح الذاكرة 100–215 ميغا حول
+ * ~120 (قفزات النسخة الاحتياطية/جمع القمامة)، فقرأ الانحدار الخطي على العيّنات الخام قفزةً واحدة
+ * «+29 ميغا/ساعة» وأنذر كذباً. التسرّب الحقيقي يرفع **الأرضية** لا القمم: نقسم المدى إلى 4 نوافذ
+ * زمنية، نأخذ أدنى قيمة في كل نافذة، ونحسب الميل عليها. يحتاج ساعتين على الأقل.
+ */
+export function baselineSlopePerHour(samples: ReadonlyArray<{ t: number; v: number }>): number | null {
+  const s = (samples || []).filter((x) => Number.isFinite(x?.t) && Number.isFinite(x?.v)).slice().sort((a, b) => a.t - b.t);
+  if (s.length < 8) return null;
+  const t0 = s[0].t, span = s[s.length - 1].t - t0;
+  if (span < MEMORY_FORECAST_MIN_SPAN_MS) return null;
+  const buckets: Array<{ t: number; v: number }> = [];
+  for (let b = 0; b < 4; b++) {
+    const lo = t0 + (span * b) / 4, hi = t0 + (span * (b + 1)) / 4;
+    const inB = s.filter((x) => x.t >= lo && (b === 3 ? x.t <= hi : x.t < hi));
+    if (!inB.length) return null;
+    const min = inB.reduce((m, x) => (x.v < m.v ? x : m), inB[0]);
+    buckets.push({ t: (lo + hi) / 2, v: min.v });
+  }
+  const mt = buckets.reduce((a, x) => a + x.t, 0) / 4, mv = buckets.reduce((a, x) => a + x.v, 0) / 4;
+  let num = 0, den = 0;
+  for (const x of buckets) { num += (x.t - mt) * (x.v - mv); den += (x.t - mt) ** 2; }
+  return den ? (num / den) * 3600000 : null;
+}
+
 export interface MemoryPressureInput {
   rssMb: number;
   limitMb: number;
   /** ميل الذاكرة (ميغا/ساعة) من عيّنات الدورية؛ null حتى تكفي العيّنات. */
   slopeMbPerHour: number | null;
   nowMs: number;
+  /** زمن تشغيل العملية (ث) — التنبؤ ممنوع في فترة الإحماء. غيابه = لا تنبؤ. */
+  uptimeSec?: number | null;
 }
 
 export interface MemoryPressureAlert {
@@ -51,7 +83,8 @@ export function memoryPressureAlert(i: MemoryPressureInput): MemoryPressureAlert
   if (ratio >= MEMORY_WARN_RATIO) {
     return { level: 'warn', id: `warn:${day}`, title: 'ذاكرة الخادم مرتفعة', snippet: `تحذير: ${base} راقب الاتجاه من «المهندس المشرف».`, hoursToLimit };
   }
-  if (slope != null && slope >= MEMORY_LEAK_MIN_SLOPE && hoursToLimit != null && hoursToLimit <= MEMORY_LEAK_HORIZON_HOURS) {
+  const warmedUp = typeof i.uptimeSec === 'number' && i.uptimeSec >= MEMORY_FORECAST_MIN_UPTIME_SEC;
+  if (warmedUp && slope != null && slope >= MEMORY_LEAK_MIN_SLOPE && hoursToLimit != null && hoursToLimit <= MEMORY_LEAK_HORIZON_HOURS) {
     return { level: 'forecast', id: `forecast:${day}`, title: 'ذاكرة الخادم تصعد بثبات (تسرّب محتمل)', snippet: `تنبؤ: ${base} إن استمر فراجع آخر تغيير نُشر.`, hoursToLimit };
   }
   return null;

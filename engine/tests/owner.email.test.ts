@@ -151,7 +151,7 @@ async function run(): Promise<void> {
     check('الطلب ذهب إلى /emails على المزود', (call?.url || '').includes('/emails'), call?.url);
     check('التوجيه استخدم Authorization من المفتاح دون طبعه', call?.authorization === `Bearer ${FAKE_KEY}`);
     check('الرسالة أُرسلت إلى OWNER_EMAIL المعرّف في البيئة', call?.body?.to === OWNER_EMAIL, JSON.stringify(call?.body?.to));
-    check('الرسالة أُرسلت من RESEND_FROM_EMAIL المعرّف في البيئة', call?.body?.from === FROM_EMAIL, String(call?.body?.from));
+    check('الرسالة أُرسلت من RESEND_FROM_EMAIL المعرّف في البيئة (باسم «الغرابي AI»)', call?.body?.from === `الغرابي AI <${FROM_EMAIL}>`, String(call?.body?.from));
     check('الرسالة تحتوي رمزاً مكوّناً من 6 أرقام', /\b\d{6}\b/.test(String(call?.body?.html || '')));
     check('الرسالة HTML عربية (dir=rtl)', String(call?.body?.html || '').includes('dir="rtl"') && String(call?.body?.html || '').includes('lang="ar"'));
     check('السجل لا يحتوي المفتاح ولا الرمز', !app.log().includes(FAKE_KEY) && !/\b\d{6}\b/.test(app.log().replace(/[^\d]/g, ' ')));
