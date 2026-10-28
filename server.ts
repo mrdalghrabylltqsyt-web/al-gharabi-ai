@@ -726,6 +726,7 @@ import { realProductPhrases } from "./src/utils/productPhrases";
 import { LiveEventBuffer, classifyLogLine, auditToLiveEvent, buildLiveModules, buildLiveInsights, buildLiveCycles, platformAr, type LiveEventInput } from "./engine/ops/liveRoom";
 import { detectIncidents, decideNext, forgetRecovered, addReport, withTimeout, emptyEngineerState, normalizeEngineerState, incidentsFromPatrol, ENGINEER_POLICY, type EngineerState, type EngineerSnapshot, type Incident, type ReportStep, type EngineerReport } from "./engine/ops/siteEngineer";
 import { PATROL_ORDER, COLLECTION_CAPS, inspectModule, healthScore, healthBreakdown, slopePerHour, growthPerDay, type PatrolFacts, type ModuleInspection } from "./engine/ops/engineerPatrol";
+import { recordFailure, sweepLedger, markDefect, openDefects, ledgerSummary, normalizeLedger, emptyLedger, defectLogLine, LEDGER_POLICY, type DefectLedger, type FailureEvent } from "./engine/ops/defectLedger";
 import { buildOwnIdentity, customerVoices, type OwnIdentity } from "./engine/social/ownVoice";
 import { memoryPressureAlert, baselineSlopePerHour } from "./engine/ops/memoryWatch";
 import { LiveWaiters, LIVE_WAIT_MAX_MS } from "./engine/ops/liveWait";
@@ -777,17 +778,85 @@ function liveCommentEvent(row: any): LiveEventInput | null {
   const intent = k.isBusinessInquiry || k.intent === "business_inquiry" ? "استفسار تجاري" : k.intent === "complaint" ? "شكوى" : k.intent === "praise" ? "مدح" : k.intent === "question" ? "سؤال" : "تفاعل";
   return { module: "customers", level: k.intent === "complaint" ? "warn" : "info", title: `${row.kind === "message" ? "رسالة" : "تعليق"} جديد على ${platformAr(row.platform)} — ${intent}`, text: String(row.text || "").slice(0, 90) };
 }
+// =============================================================================
+// سجل الأعطال الحقيقية (2026-10-28): عين المهندس المشرف على ما يحدث فعلاً — كل 500،
+// كل استثناء، كل انهيار شاشة، كل رفض من مزوّد، كل عملية بطيئة جداً. يُجمع كل عطل في
+// مجموعة واحدة ببصمة ثابتة مع تشخيصه وعلاجه ومن يملك العلاج (engine/ops/defectLedger.ts).
+// العطل الجديد يُكتب سطراً واحداً `[defect] new …` يقرؤه «مهندس الكود» المجدول من سجل
+// Render فيفتح إصلاحاً حقيقياً في الكود. لا شبكة ولا أسرار ولا حصة.
+// =============================================================================
+const STORAGE_KEY_DEFECTS = "defectLedger";
+const DEFECT_VERSION = (process.env.RENDER_GIT_COMMIT || process.env.GIT_COMMIT || "").trim().slice(0, 7) || null;
+const DEFECT_BOOT_MS = Date.now();
+let defectLedger: DefectLedger = emptyLedger();
+let defectPersistTimer: ReturnType<typeof setTimeout> | null = null;
+let defectIntakeBusy = false;
+const defectNotifyTimes: number[] = [];
+function defectIntake(ev: FailureEvent): void {
+  if (defectIntakeBusy) return; // سطر يكتبه السجل نفسه لا يُعاد تسجيله
+  defectIntakeBusy = true;
+  try {
+    const nowMs = Date.now();
+    const r = recordFailure(defectLedger, ev, { nowMs, version: DEFECT_VERSION });
+    if (!r) return;
+    if (r.isNew || r.isRegression) {
+      const g = r.group;
+      console.log(defectLogLine(g, r.isNew ? "new" : "regression"));
+      setTimeout(() => {
+        try {
+          liveEvent({ module: "core" as any, level: g.severity === "critical" ? "error" : "warn", title: `🕷 ${r.isRegression ? "عاد عطل بعد حله" : "عطل حقيقي جديد"}: ${g.title}`, text: g.diagnosis.slice(0, 150) });
+          // إشعار المالك للحرج فقط، وبسقف 6/ساعة كي لا يغرق صندوقه.
+          while (defectNotifyTimes.length && nowMs - defectNotifyTimes[0] > 3600000) defectNotifyTimes.shift();
+          if (g.severity === "critical" && defectNotifyTimes.length < 6) {
+            defectNotifyTimes.push(nowMs);
+            const who = g.owner === "owner" ? "يحتاج إجراءك" : g.owner === "developer" ? "عيب برمجي — يُصلَح في الكود" : "المهندس يعالجه";
+            pushNotification("owner", "engineer_defect", `المهندس رصد عطلاً حقيقياً (${who}): ${g.title}`, `${g.diagnosis} العلاج: ${g.fix}`.slice(0, 400), g.owner === "owner" ? "critical" : "warning", "live_room");
+          }
+        } catch { /* الإبلاغ لا يُسقط شيئاً */ }
+      }, 0).unref?.();
+    }
+    scheduleDefectPersist();
+  } catch { /* السجل لا يُسقط أي مسار */ } finally { defectIntakeBusy = false; }
+}
+/** حفظ مجمّع: مرة كل دقيقة على الأكثر وفقط عند التغيير (حماية حصة Neon). */
+function scheduleDefectPersist(): void {
+  if (defectPersistTimer) return;
+  defectPersistTimer = setTimeout(() => {
+    defectPersistTimer = null;
+    try {
+      if (!storageReady) return;
+      const snap = JSON.parse(JSON.stringify(defectLedger));
+      persistQueue = persistQueue.then(() => storageAdapter.write(STORAGE_KEY_DEFECTS, snap)).catch(() => { /* يبقى في الذاكرة */ });
+    } catch { /* تجاهل */ }
+  }, 60000);
+  (defectPersistTimer as any).unref?.();
+}
+/** تحميل الدفتر عند الإقلاع ودمج ما سُجّل قبل جاهزية المخزن (أعطال الإقلاع نفسها). */
+async function loadDefectLedger(): Promise<void> {
+  try {
+    const loaded = normalizeLedger(await storageAdapter.read<any>(STORAGE_KEY_DEFECTS));
+    for (const g of Object.values(defectLedger.groups)) {
+      const prev = loaded.groups[g.fp];
+      if (!prev) { loaded.groups[g.fp] = g; continue; }
+      prev.count += g.count; prev.lastAt = g.lastAt > prev.lastAt ? g.lastAt : prev.lastAt; prev.lastVersion = g.lastVersion || prev.lastVersion;
+      if (prev.status === "resolved") { prev.status = "open"; prev.resolvedAt = null; prev.resolvedBy = null; prev.regressions += 1; }
+    }
+    loaded.events += defectLedger.events;
+    defectLedger = loaded;
+  } catch { /* يبقى ما في الذاكرة */ }
+}
 (() => {
-  const wrap = (fn: (...a: any[]) => void) => (...args: any[]) => {
+  const wrap = (fn: (...a: any[]) => void, level: "info" | "warn" | "error") => (...args: any[]) => {
     fn(...args);
     try {
-      const first = args.map((a) => (typeof a === "string" ? a : "")).join(" ");
+      const first = args.map((a) => (typeof a === "string" ? a : a instanceof Error ? `${a.name}: ${a.message}` : "")).join(" ");
       if (first) liveEvent(classifyLogLine(first));
+      if (first) defectIntake({ source: "log", text: first, level });
     } catch { /* تجاهل */ }
   };
-  console.log = wrap(console.log.bind(console));
-  console.warn = wrap(console.warn.bind(console));
-  console.error = wrap(console.error.bind(console));
+  console.log = wrap(console.log.bind(console), "info");
+  console.warn = wrap(console.warn.bind(console), "warn");
+  console.error = wrap(console.error.bind(console), "error");
 })();
 
 const app = express();
@@ -816,8 +885,10 @@ const processSafety = createProcessSafety({
   exit: (code) => process.exit(code),
   testMode: isFatalRejectionTestMode,
 });
-process.on("uncaughtException", (err) => processSafety.handleUncaughtException(err));
+const errFrame = (e: any): string | null => { const line = String(e?.stack || "").split("\n").slice(1).find((l) => /\.(ts|js|cjs|mjs):\d+/.test(l) && !/node_modules|node:internal/.test(l)); return line ? line.trim().replace(/^at\s+/, "").slice(0, 140) : null; };
+process.on("uncaughtException", (err) => { defectIntake({ source: "exception", text: `${(err as any)?.name || "Error"}: ${(err as any)?.message || err}`, frame: errFrame(err), where: "uncaughtException" }); processSafety.handleUncaughtException(err); });
 process.on("unhandledRejection", (reason) => {
+  defectIntake({ source: "exception", text: `${(reason as any)?.name || "Rejection"}: ${(reason as any)?.message || String(reason)}`, frame: errFrame(reason), where: "unhandledRejection" });
   processSafety.handleUnhandledRejection(reason);
   unhandledRejectionCount = processSafety.unhandledRejectionCount;
 });
@@ -876,6 +947,28 @@ app.use((req, res, next) => {
   const requestId = (incoming || crypto.randomUUID()).slice(0, 80);
   (req as any).requestId = requestId;
   res.setHeader("X-Request-ID", requestId);
+  next();
+});
+
+// المهندس يرى كل طلب /api ينتهي بـ5xx أو يستغرق أكثر من 15 ث — مع رسالة الخطأ الحقيقية
+// التي أعادها المسار (لا «خطأ داخلي» عام). الانتظار الطويل المقصود (wait=1) ورفع الملفات
+// والنسخ الاحتياطي مستثناة من «البطء» لأنها طويلة بطبيعتها.
+const DEFECT_SLOW_EXEMPT = /\/dr\/|\/backup|upload|\/engineer\/check|\/oauth\//i;
+app.use((req, res, next) => {
+  const path = String(req.path || "");
+  if (!path.startsWith("/api/") || path === "/api/engineer/client-error") return next();
+  const t0 = Date.now();
+  let errorText = "";
+  const origJson = res.json.bind(res);
+  (res as any).json = (body: any) => { try { if (res.statusCode >= 500 && body && typeof body === "object") errorText = String(body.error || body.message || body.code || "").slice(0, 200); } catch { /* تجاهل */ } return origJson(body); };
+  res.on("finish", () => {
+    try {
+      const status = res.statusCode; const ms = Date.now() - t0;
+      const slow = ms >= LEDGER_POLICY.slowRequestMs && String((req.query as any)?.wait || "") !== "1" && !DEFECT_SLOW_EXEMPT.test(path);
+      const realText = String(res.locals?.defectText || errorText || (status >= 500 ? "no error body" : ""));
+      if (status >= 500 || slow) defectIntake({ source: "http", text: `${req.method} ${realText}`.trim(), status, where: path, frame: res.locals?.defectFrame || null, durationMs: slow ? ms : null });
+    } catch { /* تجاهل */ }
+  });
   next();
 });
 
@@ -15383,6 +15476,8 @@ async function engineerTick(trigger: "schedule" | "manual" = "schedule"): Promis
     const nowMs = Date.now();
     engineerState.checks += 1;
     engineerState.lastCheckAt = new Date(nowMs).toISOString();
+    // صيانة سجل الأعطال: ما غاب طويلاً (أو أُصلح بنسخة جديدة) يُعلَّم محلولاً.
+    try { if (sweepLedger(defectLedger, { nowMs, version: DEFECT_VERSION, versionSinceMs: DEFECT_BOOT_MS }).length) scheduleDefectPersist(); } catch { /* تجاهل */ }
     const incidents = [...detectIncidents(engineerSnapshot(), engineerStreaks), ...incidentsFromPatrol(Object.values(patrolInspections).flatMap((m) => m.checks))];
     engineerActiveIncidents = incidents;
     const recovered = forgetRecovered(engineerState, new Set(incidents.map((i) => i.key)));
@@ -15414,11 +15509,12 @@ async function engineerTick(trigger: "schedule" | "manual" = "schedule"): Promis
 
 
 // -----------------------------------------------------------------------------
-// دورية العنكبوت (2026-10-26): تجوال مستمر على الأقسام الأربعة عشر — قسم كل 5 ثوانٍ
-// (جولة كاملة ~70 ث)، ليلاً ونهاراً، سواء فُتحت الشاشة أم لا. كل وقفة = فحص حقيقي لكل ما
-// بُني في ذلك القسم (قاعدة المعرفة في engine/ops/engineerPatrol.ts). ذاكرة فقط، بلا شبكة.
+// دورية العنكبوت: تجوال على الأقسام الأربعة عشر — قسم كل 30 ثانية (جولة كاملة ~7 د).
+// (2026-10-28: كانت قسماً كل 5 ث — 17 ألف فحص يومياً لإعدادات لا تتغيّر إلا نادراً، بلا
+// عطل واحد مكتشف. الأعطال الحقيقية يلتقطها الآن «سجل الأعطال» لحظة وقوعها؛ والدورية
+// تبقى لحالة الإعدادات والسعة والتسرّب فقط.) ذاكرة فقط، بلا شبكة.
 // -----------------------------------------------------------------------------
-const PATROL_STEP_MS = 5000;
+const PATROL_STEP_MS = 30000;
 const patrolInspections: Record<string, ModuleInspection> = {};
 const patrolHistory: Record<string, string[]> = {}; // آخر حالات كل فحص (لكشف «تحذير مستمر»)
 const memorySamples: Array<{ t: number; v: number }> = [];
@@ -15485,6 +15581,7 @@ function patrolFacts(module: string | null = null): PatrolFacts {
     unhandledRejections: unhandledRejectionCount,
     unhandledRejectionsDelta: Math.max(0, unhandledRejectionCount - lastRejectionsSeen),
     liveEventsBuffered: liveEvents.lastId,
+    ...(() => { const open = safe(() => openDefects(defectLedger), [] as any[]); return { defectsOpen: open.length, defectsCritical: open.filter((g: any) => g.severity === "critical").length, defectsTopTitle: open[0]?.title || null }; })(),
     // + الردود الجاهزة على المنصات بانتظار نقرة المالك (زبون ينتظر بالمثل).
     pendingDrafts: pending.length + outboundApprovals.filter((r) => r.status === "pending").length,
     oldestPendingDraftAt: [oldest(pending), oldest(outboundApprovals.filter((r) => r.status === "pending"), "at")].filter(Boolean).sort()[0] || null,
@@ -15629,7 +15726,8 @@ function patrolStep(): void {
         });
         liveEvent({ module: chk.module as any, level: chk.status === "fail" ? "error" : "warn", title: `🕷 الدورية رصدت: ${chk.label}`, text: chk.detail.slice(0, 150) });
         const last = engineerState.notified[chk.id] || 0;
-        if (chk.status === "fail" && !chk.repair && nowMs - last > 12 * 3600000) {
+        // ثغرة إعداد قائمة لا تتغيّر بين ساعة وأخرى: تذكير كل 3 أيام لا كل 12 ساعة (ضجيج).
+        if (chk.status === "fail" && !chk.repair && nowMs - last > 72 * 3600000) {
           engineerState.notified[chk.id] = nowMs;
           pushNotification("owner", "engineer_patrol", `الدورية رصدت ثغرة: ${chk.label}`, `${chk.detail}. ${chk.advice || ""}`.slice(0, 400), "warning", "live_room");
         }
@@ -15694,8 +15792,40 @@ function engineerView(full = true) {
     stats: { checks: engineerState.checks, lastCheckAt: engineerState.lastCheckAt, resolved24h: day.filter((r) => r.status === "resolved").length, escalated24h: day.filter((r) => r.status === "escalated").length, actionsLastHour: engineerState.actions.filter((t) => nowMs - t < 3600000).length },
     policy: { maxAttempts: ENGINEER_POLICY.maxAttempts, maxActionsPerHour: ENGINEER_POLICY.maxActionsPerHour, cooldownHours: ENGINEER_POLICY.cooldownAfterEscalateMs / 3600000 },
     patrol: (() => { try { return patrolView(full); } catch { return null; } })(),
+    // الأعطال الحقيقية المرصودة (500/استثناء/انهيار شاشة/رفض مزوّد/بطء) — هي ما يهم فعلاً.
+    defects: (() => { try { return { summary: ledgerSummary(defectLedger), open: openDefects(defectLedger).slice(0, full ? 40 : 12), version: DEFECT_VERSION }; } catch { return null; } })(),
   };
 }
+
+app.get("/api/engineer/defects", requireOwner, (_req, res) => {
+  const all = Object.values(defectLedger.groups).sort((a, b) => (a.lastAt < b.lastAt ? 1 : -1));
+  res.json({ success: true, version: DEFECT_VERSION, summary: ledgerSummary(defectLedger), open: openDefects(defectLedger), closed: all.filter((g) => g.status !== "open").slice(0, 50) });
+});
+app.post("/api/engineer/defects/:fp", requireOwner, (req, res) => {
+  const action = String(req.body?.action || "");
+  if (!["resolved", "ignored", "open"].includes(action)) return res.status(400).json({ success: false, error: "الإجراء غير معروف." });
+  const g = markDefect(defectLedger, String(req.params.fp || "").slice(0, 40), action as any, Date.now());
+  if (!g) return res.status(404).json({ success: false, error: "العطل غير موجود." });
+  audit(((req as any).user as ServerUser)?.id || "owner", "engineer_defect_marked", `${g.fp}:${action}`);
+  scheduleDefectPersist();
+  res.json({ success: true, defect: g, summary: ledgerSummary(defectLedger) });
+});
+// أخطاء الواجهة (انهيار شاشة، خطأ JavaScript، طلب رجع 5xx) تصل من متصفح المستخدم المسجّل.
+// محمي بالجلسة، بحجم صغير وسقف 20 تقريراً/دقيقة لكل مستخدم — لا يمكن إغراق الدفتر.
+const clientErrorWindow = new Map<string, { startedAt: number; count: number }>();
+app.post("/api/engineer/client-error", authenticateToken, (req, res) => {
+  const uid = String(((req as any).user as ServerUser)?.id || "anon");
+  const now = Date.now();
+  const w = clientErrorWindow.get(uid);
+  if (!w || now - w.startedAt > 60000) clientErrorWindow.set(uid, { startedAt: now, count: 1 });
+  else if (++w.count > 20) return res.status(429).json({ success: false });
+  if (clientErrorWindow.size > 500) clientErrorWindow.clear();
+  const b = req.body || {};
+  const text = String(b.message || "").slice(0, 300);
+  if (!text) return res.status(400).json({ success: false });
+  defectIntake({ source: "client", text, where: String(b.where || "").slice(0, 120) || null, frame: String(b.frame || "").slice(0, 140) || null });
+  res.json({ success: true });
+});
 
 app.get("/api/engineer", requireOwner, (_req, res) => {
   res.json({ success: true, engineer: { ...engineerView(), reports: engineerState.reports } });
@@ -17358,6 +17488,7 @@ async function bootstrapStorage(): Promise<void> {
       applyFreeTierUsageSnapshot(freeTierUsage);
       // المهندس المشرف: تقاريره وذاكرة محاولاته تصمد بعد restart.
       await loadEngineerState();
+      await loadDefectLedger();
     } catch (error: any) {
       storageInitError = String(error?.code || error?.name || "state_read_failed").slice(0, 60);
       return;
@@ -23229,12 +23360,19 @@ app.use("/api", (req, res) => {
 // وما عداها 500 عام بلا stack. في الإنتاج الرسالة عامة دائماً.
 app.use((err: unknown, req: any, res: any, next: any) => {
   const info = classifyHttpError(err);
-  console.error(`[الغرابي AI] request error (${info.code}):`, safeErrorMessage(err, shouldExposeErrorMessage(process.env)));
+  // السجل الداخلي يحمل الرسالة الحقيقية (منقّاة) وموضعها — كانت «خطأ داخلي في الخادم» فقط في
+  // الإنتاج فلا يمكن لأحد تشخيص أي 500. الرد للعميل يبقى عاماً كما كان.
+  const realMsg = safeErrorMessage(err, true);
+  // يمرّر الرسالة الحقيقية وموضعها لمراقب /api فيُسجَّل العطل مرة واحدة بتشخيص كامل.
+  if (info.status >= 500) { res.locals.defectText = realMsg; res.locals.defectFrame = errFrame(err); }
+  if (info.status >= 500) console.error(`[الغرابي AI] request error (${info.code}) ${req?.method || ""} ${String(req?.path || "").slice(0, 100)}: ${realMsg}${errFrame(err) ? ` @ ${errFrame(err)}` : ""}`);
+  else console.warn(`[الغرابي AI] request rejected (${info.code}) ${String(req?.path || "").slice(0, 100)}`);
   if (res.headersSent) return next(err);
   res.status(info.status).json({
     success: false,
     code: info.code,
-    error: shouldExposeErrorMessage(process.env) ? safeErrorMessage(err, true) : info.message,
+    // للعميل: رسالة منقّاة في التطوير فقط، وعامة في الإنتاج.
+    error: shouldExposeErrorMessage(process.env) ? safeErrorMessage(err, shouldExposeErrorMessage(process.env)) : info.message,
     requestId: req?.requestId,
   });
 });

@@ -613,6 +613,10 @@ export function registerDriveRoutes(app: express.Express, deps: DriveRoutesDeps)
         };
       }
       const files = [...(collected.included || []), ...(collected.excluded || [])];
+      // توقيت كل مرحلة (2026-10-28): نسخة إنتاج استغرقت 28 دقيقة بلا أي دليل على المرحلة البطيئة.
+      const stageMs: Record<string, number> = {};
+      let stageT = Date.now();
+      const stageEnd = (name: string) => { const t = Date.now(); stageMs[name] = t - stageT; stageT = t; };
       const result = await runBackup({
         store,
         files,
@@ -624,6 +628,7 @@ export function registerDriveRoutes(app: express.Express, deps: DriveRoutesDeps)
         meta: deps.gitMeta ? deps.gitMeta() : defaultGitMeta(),
         now: startedAt,
       });
+      stageEnd('snapshot');
       rememberStructure(store);
       // مزامنة المرآة الفردية (current/files/**) — ملفات حقيقية بمكانها.
       let mirror: any = null;
@@ -657,6 +662,7 @@ export function registerDriveRoutes(app: express.Express, deps: DriveRoutesDeps)
           deps.persistControl({ driveMirror: control().driveMirror });
         }
       }
+      stageEnd('mirror');
       // خزنة مفاتيح الطوارئ: مزامنة تلقائية مع النسخة (منفصلة الترقيم، نفس مبدأ CURRENT).
       // فشلها لا يُسقط النسخة المتحقّقة — يُعلن صراحةً بلا قيمة سرّية.
       let keyVault: any = null;
@@ -675,6 +681,7 @@ export function registerDriveRoutes(app: express.Express, deps: DriveRoutesDeps)
           keyVault = { state: 'failed', reason: String(e?.code || e?.message || 'key_vault_failed').slice(0, 80) };
         }
       }
+      stageEnd('keyvault');
       // الاحتفاظ بثلاث نقاط مكتملة: يُنفَّذ **فقط** بعد نسخة ناجحة ومتحقّقة. لا يُحذف
       // أي شيء قبل اكتمال النقطة الجديدة، ولا تُحذف النقاط المحميّة (rp-002/003/004).
       let retention: any = null;
@@ -690,6 +697,8 @@ export function registerDriveRoutes(app: express.Express, deps: DriveRoutesDeps)
           retention = { ok: false, code: String(e?.code || e?.message || 'retention_failed').slice(0, 60), deleted: [] };
         }
       }
+      stageEnd('retention');
+      console.log(`[dr-backup] stages ${Object.entries(stageMs).map(([k, v]) => `${k}=${Math.round(v / 1000)}s`).join(' ')} files=${files.length} uploaded=${result.uploaded ?? 0}`);
       recordBackupResult(result, trigger);
       // تنبيه المالك عند فشل النسخة (عبر القناة القائمة، بلا تكرار داخل النافذة).
       if (result.state === 'failed') {
@@ -719,6 +728,7 @@ export function registerDriveRoutes(app: express.Express, deps: DriveRoutesDeps)
           errorDetails: result.errorDetails ?? null,
           problems: result.problems ?? null,
           secretScan: result.secretScan ?? { ok: true, findings: 0 },
+          stageMs,
           at: startedAt,
         },
       };

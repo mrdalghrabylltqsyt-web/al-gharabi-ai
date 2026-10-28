@@ -4,6 +4,7 @@
  */
 
 import React, { useState, lazy, Suspense } from 'react';
+import { ErrorBoundary } from './components/common/ErrorBoundary';
 import { AppProvider, useApp } from './context/AppContext';
 import { Header } from './components/common/Header';
 import { Sidebar } from './components/common/Sidebar';
@@ -218,7 +219,7 @@ const AppContent: React.FC = () => {
             </div>
           }
         >
-          <LiveBrainRoom variant="wall" onClose={closeLiveWall} />
+          <ErrorBoundary area="live-wall"><LiveBrainRoom variant="wall" onClose={closeLiveWall} /></ErrorBoundary>
         </Suspense>
       )}
 
@@ -241,7 +242,10 @@ const AppContent: React.FC = () => {
                 </div>
               }
             >
-              {renderActiveView()}
+              {/* انهيار شاشة واحدة لا يُسقط الشريط الجانبي: الحاجز يُعاد تهيئته عند تغيير التبويب. */}
+              <ErrorBoundary key={activeTab} area={`tab:${activeTab}`}>
+                {renderActiveView()}
+              </ErrorBoundary>
             </Suspense>
           </main>
 

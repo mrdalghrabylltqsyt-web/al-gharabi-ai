@@ -708,7 +708,14 @@ export const LiveBrainRoom: React.FC<{ variant?: 'page' | 'wall'; onClose?: () =
   // ويعرض نتيجة الفحص الحقيقية لذلك القسم.
   const patrol: any = eng?.patrol || null;
   const patrolMod = (k: string) => patrol?.modules?.[k] || null;
-  const [patrolTab, setPatrolTab] = useState<'gaps' | 'reports' | 'sections'>('gaps');
+  const [patrolTab, setPatrolTab] = useState<'defects' | 'gaps' | 'reports' | 'sections'>('defects');
+  const defects: any = eng?.defects || null;
+  const engDefect = async (fp: string, action: 'resolved' | 'ignored') => {
+    setEngBusy(true);
+    try { await apiService.markEngineerDefect(fp, action); showToast(action === 'resolved' ? 'عُلّم العطل «عولج» — إن عاد سيُفتح تلقائياً' : 'تُجوهل العطل'); void poll(); }
+    catch (e: any) { showToast(e?.message || 'تعذّر التحديث'); }
+    finally { setEngBusy(false); }
+  };
   const [patrolSel, setPatrolSel] = useState<string | null>(null);
   const engCheck = async () => {
     setEngBusy(true);
@@ -1185,11 +1192,40 @@ export const LiveBrainRoom: React.FC<{ variant?: 'page' | 'wall'; onClose?: () =
                     </div>
                   </div>
                   <div style={{ display: 'flex', gap: 6, margin: '6px 0' }}>
-                    {([['gaps', `الثغرات (${(patrol?.gaps || []).length})`], ['reports', `التقارير (${(eng.reports || []).length})`], ['sections', 'تفاصيل القسم']] as const).map(([k, t]) => (
+                    {([['defects', `الأعطال الحقيقية (${defects?.summary?.open ?? 0})`], ['gaps', `ثغرات الإعداد (${(patrol?.gaps || []).length})`], ['reports', `التقارير (${(eng.reports || []).length})`], ['sections', 'تفاصيل القسم']] as const).map(([k, t]) => (
                       <button key={k} type="button" className={'lbr-tab' + (patrolTab === k ? ' on' : '')} onClick={() => setPatrolTab(k)}>{t}</button>
                     ))}
                   </div>
                   <div style={{ ...(wall ? { flex: '1 1 0', minHeight: 0 } : { maxHeight: 380 }), overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 6 }}>
+                    {patrolTab === 'defects' && (
+                      !(defects?.open || []).length
+                        ? <div style={{ fontSize: 12, color: '#6EE7B7', lineHeight: 1.8 }}>لا أعطال حقيقية مفتوحة. المهندس يرى كل طلب يفشل على الخادم، كل استثناء، كل انهيار شاشة، كل رفض من مزوّد، وكل عملية بطيئة — لحظة وقوعها{defects?.summary?.events ? ` (${fmt(defects.summary.events)} حدثاً سُجّل حتى الآن)` : ''}.</div>
+                        : (defects.open as any[]).map((d) => {
+                          const kindAr: Record<string, string> = { code: 'عيب كود', client: 'عيب واجهة', provider: 'مزوّد', config: 'إعداد', performance: 'أداء' };
+                          const ownerAr: Record<string, string> = { developer: '🛠 يُصلَح في الكود', owner: '👤 يحتاج إجراءك', engineer: '🕷 المهندس يعالجه' };
+                          const col = d.severity === 'critical' ? '#F87171' : '#FBBF24';
+                          return (
+                            <details key={d.fp} className="lbr-eng-rep" style={{ borderColor: `${col}66` }}>
+                              <summary>
+                                <span className="lbr-eng-badge" style={{ borderColor: col, color: col }}>{kindAr[d.kind] || d.kind}</span>
+                                <span style={{ flex: 1, minWidth: 0 }}>{d.title}{d.regressions ? ' — عاد بعد حله' : ''}</span>
+                                <span className="lbr-mono" style={{ fontSize: 10, color: '#7C89AD', flex: 'none' }}>×{fmt(d.count)} · {ago(d.lastAt, now)}</span>
+                              </summary>
+                              <div style={{ fontSize: 11.5, lineHeight: 1.7, color: '#C9D3EA', padding: '6px 2px 2px' }}>
+                                <div><b>التشخيص:</b> {d.diagnosis}</div>
+                                <div style={{ color: '#FCD34D' }}><b>العلاج:</b> {d.fix}</div>
+                                <div style={{ color: '#93A1C3' }}>{ownerAr[d.owner] || ''}{(d.where || []).length ? ` · الموضع: ${(d.where || []).join('، ')}` : ''}{d.frame ? ` · ${d.frame}` : ''}</div>
+                                {(d.samples || []).slice(0, 2).map((x: string, i: number) => <div key={i} className="lbr-mono" style={{ fontSize: 10.5, color: '#7C89AD', direction: 'ltr', textAlign: 'left', wordBreak: 'break-all' }}>{x}</div>)}
+                                <div style={{ color: '#6B7AA0', fontSize: 10.5 }}>أول مرة {ago(d.firstAt, now)}{d.firstVersion ? ` على النسخة ${d.firstVersion}` : ''} · البصمة {d.fp}</div>
+                                <div style={{ display: 'flex', gap: 6, marginTop: 4 }}>
+                                  <button type="button" className="lbr-eng-btn" disabled={engBusy} onClick={() => void engDefect(d.fp, 'resolved')}>عولج</button>
+                                  <button type="button" className="lbr-eng-btn" disabled={engBusy} onClick={() => void engDefect(d.fp, 'ignored')}>تجاهل</button>
+                                </div>
+                              </div>
+                            </details>
+                          );
+                        })
+                    )}
                     {patrolTab === 'gaps' && (
                       (patrol?.gaps || []).length === 0
                         ? <div style={{ fontSize: 12, color: '#6EE7B7' }}>{patrol?.round ? 'لا ثغرات في آخر جولة — كل ما فُحص سليم.' : 'الجولة الأولى قيد التنفيذ…'}</div>

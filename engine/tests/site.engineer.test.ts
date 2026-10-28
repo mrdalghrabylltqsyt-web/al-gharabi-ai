@@ -136,7 +136,7 @@ check('تشغيل/إيقاف وفحص الآن للمالك', ui.includes('apiSe
 // 6) الدورية: تجوال على كل الأقسام + قاعدة المعرفة + التنبؤ بالثغرات
 {
   const facts = (over: Partial<PatrolFacts> = {}): PatrolFacts => ({
-    nowMs: NOW, uptimeSec: 9000, cycleHealthy: true, staleCycleNames: [], legacyErpEnabled: false, unhandledRejections: 0, unhandledRejectionsDelta: 0, liveEventsBuffered: 10,
+    nowMs: NOW, uptimeSec: 9000, cycleHealthy: true, staleCycleNames: [], legacyErpEnabled: false, unhandledRejections: 0, unhandledRejectionsDelta: 0, liveEventsBuffered: 10, defectsOpen: 0, defectsCritical: 0, defectsTopTitle: null,
     pendingDrafts: 0, oldestPendingDraftAt: null, unreadCritical: 0, oldestUnreadCriticalAt: null, ownerEmailReady: true, ownerTelegramReady: false, ownerAlertsEnabled: true,
     ownerAccounts: 1, activeOwnerAccounts: 1, sessionSecretSource: 'SESSION_SECRET', revokedSessions: 3, loginEmailReady: true,
     brainEnabled: true, brainLastStatus: 'SUCCESS', brainLastError: null, brainLastSuccessAt: iso(5), brainLastCompletedAt: iso(5), brainCadenceMs: 900000, brainMemoryRecords: 10, brainMemoryCap: null,
@@ -183,9 +183,9 @@ check('تشغيل/إيقاف وفحص الآن للمالك', ui.includes('apiSe
   check('كل قسم فيه ≥3 فروع فحص', PATROL_ORDER.every((m) => (PATROL_CHECKS as any)[m].length >= 3));
   check('الفحص المعطوب لا يُسقط الدورية', inspectModule('platforms', { ...facts(), platforms: null as any }).checks.length > 0);
   const eng = read('server.ts');
-  check('★ الدورية تعمل كل 5 ث على الخادم (ذاكرة فقط) ولا تمنع الإغلاق', eng.includes('const PATROL_STEP_MS = 5000;') && eng.includes('setInterval(patrolStep, PATROL_STEP_MS)') && eng.includes('startEngineerPatrol();'));
+  check('★ الدورية تعمل كل 30 ث على الخادم (ذاكرة فقط) ولا تمنع الإغلاق', eng.includes('const PATROL_STEP_MS = 30000;') && eng.includes('setInterval(patrolStep, PATROL_STEP_MS)') && eng.includes('startEngineerPatrol();'));
   check('★ الحسابات الثقيلة فقط عند وقفة قسمها', eng.includes('if (at("customers")) for (const c of safe(() => customerComments(), comments))') && eng.includes('const collections = !at("storage")') && eng.includes('if (!at("platforms") || !linked(id)) return null;'));
-  check('★ الثغرة الجديدة ⇒ تقرير + حدث حي، والعطل بلا إصلاح ⇒ تنبيهك (مرة/12 س)', eng.includes('الدورية: ${chk.label}') && eng.includes('"engineer_patrol"') && eng.includes('nowMs - last > 12 * 3600000'));
+  check('★ الثغرة الجديدة ⇒ تقرير + حدث حي، والعطل بلا إصلاح ⇒ تنبيهك (مرة/3 أيام — ثغرة إعداد لا تتغيّر بالساعة)', eng.includes('الدورية: ${chk.label}') && eng.includes('"engineer_patrol"') && eng.includes('nowMs - last > 72 * 3600000'));
   check('★ التفاصيل الثقيلة في الاستطلاع الكامل فقط', eng.includes('inspections: full ? list : undefined') && eng.includes('engineerView(!lite)'));
   check('★ كتيّب المسودات المنتهية بلا حذف', eng.includes('sweepExpiredCommercialDrafts(new Date().toISOString())') && eng.includes('case "patrol_fix"'));
   check('★ يتبع الدورية الحقيقية (كل الفحوص + القسم الجاري) والإصلاح يتقدّم عليها', ui.includes('inspections={inspections}') && ui.includes('current={patrol?.current || null}') && sp.includes('const rk = P.repair'));
