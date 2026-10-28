@@ -181,6 +181,15 @@ export function classifyFailure(ev: FailureEvent): Diagnosis | null {
   const where = ev.where ? normalizeRoute(ev.where) : '';
 
   // 1) استثناء غير مُلتقَط / وعد مرفوض — عيب كود دائماً.
+  if (ev.source === 'exception' && /^crash:/.test(String(ev.where || ''))) {
+    const oom = ev.where === 'crash:oom';
+    return {
+      kind: oom ? 'performance' : 'code', severity: 'critical', owner: 'developer', key: String(ev.where),
+      title: oom ? 'الخادم انهار بنفاد الذاكرة وأعيد تشغيله' : 'الخادم انهار وأعيد تشغيله',
+      diagnosis: oom ? 'آخر قراءة ذاكرة قبل الموت كانت قرب حد 512 ميغا (خطة Render المجانية) — عمل يحمّل بيانات كثيرة دفعة واحدة أو تسرّب.' : 'العملية ماتت بلا إغلاق نظيف (خطأ قاتل) — ضاعت أي كتابة لم تُحفظ وانقطعت الشاشات لحظتها.',
+      fix: oom ? 'مهندس الكود يحدد ما يستهلك الذاكرة (سجل الذاكرة + آخر نسخة) ويقلّله؛ المهندس ينذر قبلها من اتجاه الذاكرة.' : 'مهندس الكود يقرأ سجل Render لحظة الانهيار ويصلح السبب.',
+    };
+  }
   if (ev.source === 'exception') {
     return {
       kind: 'code', severity: 'critical', owner: 'developer', key: `exception:${where}`,

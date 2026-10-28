@@ -708,7 +708,8 @@ export const LiveBrainRoom: React.FC<{ variant?: 'page' | 'wall'; onClose?: () =
   // ويعرض نتيجة الفحص الحقيقية لذلك القسم.
   const patrol: any = eng?.patrol || null;
   const patrolMod = (k: string) => patrol?.modules?.[k] || null;
-  const [patrolTab, setPatrolTab] = useState<'defects' | 'gaps' | 'reports' | 'sections'>('defects');
+  const [patrolTab, setPatrolTab] = useState<'defects' | 'proactive' | 'gaps' | 'reports' | 'sections'>('defects');
+  const pro: any = eng?.proactive || null;
   const defects: any = eng?.defects || null;
   const engDefect = async (fp: string, action: 'resolved' | 'ignored') => {
     setEngBusy(true);
@@ -1192,7 +1193,7 @@ export const LiveBrainRoom: React.FC<{ variant?: 'page' | 'wall'; onClose?: () =
                     </div>
                   </div>
                   <div style={{ display: 'flex', gap: 6, margin: '6px 0' }}>
-                    {([['defects', `الأعطال الحقيقية (${defects?.summary?.open ?? 0})`], ['gaps', `ثغرات الإعداد (${(patrol?.gaps || []).length})`], ['reports', `التقارير (${(eng.reports || []).length})`], ['sections', 'تفاصيل القسم']] as const).map(([k, t]) => (
+                    {([['defects', `الأعطال الحقيقية (${defects?.summary?.open ?? 0})`], ['proactive', `الاستباقي (${(pro?.forecasts || []).length + (pro?.lastRound?.failed || 0)})`], ['gaps', `ثغرات الإعداد (${(patrol?.gaps || []).length})`], ['reports', `التقارير (${(eng.reports || []).length})`], ['sections', 'تفاصيل القسم']] as const).map(([k, t]) => (
                       <button key={k} type="button" className={'lbr-tab' + (patrolTab === k ? ' on' : '')} onClick={() => setPatrolTab(k)}>{t}</button>
                     ))}
                   </div>
@@ -1231,6 +1232,43 @@ export const LiveBrainRoom: React.FC<{ variant?: 'page' | 'wall'; onClose?: () =
                             </details>
                           );
                         })
+                    )}
+                    {patrolTab === 'proactive' && (
+                      <div aria-label="الفحص الاستباقي والتوقعات" style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                        <div style={{ fontSize: 11.5, color: '#C9D3EA', lineHeight: 1.7 }}>
+                          <b style={{ color: '#A5B4FC' }}>🕷 الفحص الاستباقي:</b>{' '}
+                          {pro?.lastRound
+                            ? <>يفتح {fmt(pro.lastRound.results?.length || 0)} شاشة رئيسية بالمسار الحقيقي كل 10 دقائق — آخر جولة {ago(pro.lastRound.at, now)}: <b style={{ color: pro.lastRound.failed ? '#FCA5A5' : '#6EE7B7' }}>{pro.lastRound.failed ? `${pro.lastRound.failed} تفشل` : 'كلها تعمل'}</b>{pro.lastRound.slow ? ` · ${pro.lastRound.slow} بطيئة` : ''}{pro.lastRound.trigger === 'deploy' ? ' (فحص ما بعد النشر)' : ''}</>
+                            : 'أول جولة بعد 3 دقائق من الإقلاع، ثم كل 10 دقائق.'}
+                        </div>
+                        {(pro?.lastRound?.results || []).map((r: any) => (
+                          <div key={r.path} className="lbr-gap" style={{ borderColor: `${!r.ok ? '#F87171' : r.slow ? '#FBBF24' : '#34D399'}55`, display: 'flex', gap: 6, alignItems: 'baseline' }}>
+                            <b style={{ color: !r.ok ? '#F87171' : r.slow ? '#FBBF24' : '#34D399' }}>{!r.ok ? '✗' : r.slow ? '⚠' : '✓'}</b>
+                            <span style={{ flex: 1, minWidth: 0 }}>{r.label} <span style={{ color: '#7C89AD', fontSize: 10 }}>· {r.screen}</span></span>
+                            <span className="lbr-mono" style={{ fontSize: 10, color: '#93A1C3' }}>{r.detail}</span>
+                          </div>
+                        ))}
+                        <div style={{ fontSize: 11.5, color: '#A5B4FC', fontWeight: 700, marginTop: 6 }}>🔮 ما سيقع إن لم يُفعل شيء ({(pro?.forecasts || []).length})</div>
+                        {(pro?.forecasts || []).length === 0
+                          ? <div style={{ fontSize: 11.5, color: '#6EE7B7' }}>لا شيء متوقع: لا رمز ينتهي قريباً، لا حصة تنفد، لا ذاكرة تمتلئ، لا مسار يتباطأ، لا عطل يتصاعد.</div>
+                          : (pro.forecasts as any[]).map((fc) => {
+                            const col = fc.severity === 'critical' ? '#F87171' : fc.severity === 'warning' ? '#FBBF24' : '#38BDF8';
+                            return (
+                              <div key={fc.id} className="lbr-gap" style={{ borderColor: `${col}66` }}>
+                                <div style={{ display: 'flex', gap: 6 }}><b style={{ color: col }}>{fc.severity === 'critical' ? '⏰' : '⚠'}</b><b style={{ flex: 1 }}>{fc.title}</b></div>
+                                <div style={{ color: '#C9D3EA' }}>{fc.detail}</div>
+                                <div style={{ color: '#FCD34D' }}>{fc.owner === 'owner' ? '👤 ' : fc.owner === 'developer' ? '🛠 ' : '🕷 '}{fc.action}</div>
+                              </div>
+                            );
+                          })}
+                        {(pro?.latency || []).length > 0 && (
+                          <details className="lbr-eng-rep">
+                            <summary><span style={{ flex: 1 }}>⏱ أبطأ المسارات (من الطلبات الحقيقية)</span></summary>
+                            {(pro.latency as any[]).map((l) => <div key={l.route} className="lbr-mono" style={{ fontSize: 10.5, color: l.p95 >= 5000 ? '#FCA5A5' : '#93A1C3', direction: 'ltr', textAlign: 'left' }}>{l.route} · p50 {l.p50}ms · p95 {l.p95}ms · {l.n} طلب{l.errors ? ` · ${l.errors} خطأ` : ''}</div>)}
+                          </details>
+                        )}
+                        {pro?.hygiene?.marked > 0 && <div style={{ fontSize: 11, color: '#93A1C3' }}>🧹 آخر تنظيف للإشعارات {ago(pro.hygiene.at, now)}: {fmt(pro.hygiene.marked)} قديم/مكرر عُلّم مقروءاً (بلا حذف، والحرج لم يُلمس).</div>}
+                      </div>
                     )}
                     {patrolTab === 'defects' && (defects?.repaired || []).length > 0 && (
                       <div style={{ marginTop: 4 }} aria-label="ما أصلحه المهندس مؤخراً">

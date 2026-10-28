@@ -136,7 +136,7 @@ check('تشغيل/إيقاف وفحص الآن للمالك', ui.includes('apiSe
 // 6) الدورية: تجوال على كل الأقسام + قاعدة المعرفة + التنبؤ بالثغرات
 {
   const facts = (over: Partial<PatrolFacts> = {}): PatrolFacts => ({
-    nowMs: NOW, uptimeSec: 9000, cycleHealthy: true, staleCycleNames: [], legacyErpEnabled: false, unhandledRejections: 0, unhandledRejectionsDelta: 0, liveEventsBuffered: 10, defectsOpen: 0, defectsCritical: 0, defectsTopTitle: null,
+    nowMs: NOW, uptimeSec: 9000, cycleHealthy: true, staleCycleNames: [], legacyErpEnabled: false, unhandledRejections: 0, unhandledRejectionsDelta: 0, liveEventsBuffered: 10, defectsOpen: 0, defectsCritical: 0, defectsTopTitle: null, probeTotal: 0, probeFailed: 0, probeSlow: 0, probeAgeMin: null, probeFailedLabels: [], forecastsCritical: 0, forecastsWarning: 0, forecastTop: null,
     pendingDrafts: 0, oldestPendingDraftAt: null, unreadCritical: 0, oldestUnreadCriticalAt: null, ownerEmailReady: true, ownerTelegramReady: false, ownerAlertsEnabled: true,
     ownerAccounts: 1, activeOwnerAccounts: 1, sessionSecretSource: 'SESSION_SECRET', revokedSessions: 3, loginEmailReady: true,
     brainEnabled: true, brainLastStatus: 'SUCCESS', brainLastError: null, brainLastSuccessAt: iso(5), brainLastCompletedAt: iso(5), brainCadenceMs: 900000, brainMemoryRecords: 10, brainMemoryCap: null,
