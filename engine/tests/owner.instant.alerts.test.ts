@@ -67,7 +67,7 @@ const OWNER = '123456789';
 
 // 2) إنذار الذاكرة
 {
-  const at = (rss: number, slope: number | null) => memoryPressureAlert({ rssMb: rss, limitMb: 512, slopeMbPerHour: slope, nowMs: NOW });
+  const at = (rss: number, slope: number | null) => memoryPressureAlert({ rssMb: rss, limitMb: 512, slopeMbPerHour: slope, nowMs: NOW, uptimeSec: 6 * 3600 });
   check('★ الحالة الحية (207 ميغا، +5.5/س ⇒ الحد بعد ~55 س) = لا إزعاج', at(207, 5.5) === null);
   check('★ ≥70% = تحذير', at(360, 1)?.level === 'warn');
   check('★ ≥85% = خطر', at(440, 0)?.level === 'critical');
