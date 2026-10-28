@@ -273,6 +273,30 @@ export function classifyFailure(ev: FailureEvent): Diagnosis | null {
       fix: 'اتبع النص المعروض في نافذة الربط؛ إن تكرر بلا سبب واضح فالمسار يحتاج فحص كود.',
     };
   }
+  // 4ب٢) رفض Graph API (فيسبوك/إنستغرام/ثريدز) — كان يُكتب في السجل ولا يراه أحد (رُصد حياً 2026-10-28:
+  //       اشتراك رسائل الصفحة رُفض لغياب pages_messaging).
+  m = /^\[(facebook|instagram|threads)-graph-error\]\s+(\{.*\})\s*$/i.exec(text);
+  if (m) {
+    let info: any = {};
+    try { info = JSON.parse(m[2]); } catch { /* سطر تالف */ }
+    const platform = m[1].toLowerCase();
+    const code = String(info.code ?? '');
+    const msg = String(info.message || '').slice(0, 200);
+    const endpoint = String(info.endpoint || '').replace(/\/\d{6,}\//g, '/:id/');
+    const perm = /permission|permissions|(#(10|200|3)\))/i.exec(msg) || ['10', '200', '3', '100'].includes(code) && /permission/i.test(msg);
+    const needed = /needed:\s*([a-z_,\s]+)/i.exec(msg)?.[1]?.trim() || null;
+    if (perm || code === '190') return {
+      kind: 'config', severity: 'critical', owner: 'owner', key: `graph-perm:${platform}:${endpoint}`,
+      title: code === '190' ? `رمز ${pa(platform)} ملغى أو منتهٍ` : `${pa(platform)} ترفض: إذن ناقص${needed ? ` (${needed})` : ''}`,
+      diagnosis: `${endpoint || 'نداء Graph'} رُفض: ${msg}`,
+      fix: code === '190' ? `أعد ربط ${pa(platform)} من «مركز ربط المنصات».` : `أعد ربط ${pa(platform)} ووافق على كل الأذونات${needed ? ` — خصوصاً ${needed}` : ''}؛ إن لم يظهر الإذن في نافذة الربط فأضفه لتطبيق Meta (App Review/Advanced Access).`,
+    };
+    return {
+      kind: 'provider', severity: 'warning', owner: 'engineer', key: `graph:${platform}:${endpoint}`,
+      title: `${pa(platform)} رفضت طلباً (${info.status || '?'}/${code || '?'})`,
+      diagnosis: `${endpoint}: ${msg}`, fix: 'إن تكرر فالسبب في الرسالة؛ المهندس يتابعه.',
+    };
+  }
   // 4ج) فشل تجديد رمز (يعني أن المنصة ستتوقف).
   m = /\[(\w+)-oauth\]\s+outcome=refresh_failed/i.exec(text);
   if (m) return {
