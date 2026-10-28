@@ -70,7 +70,7 @@ const MIN = 60000;
 // 5) يوتيوب
 {
   const server = read('server.ts');
-  check('★ سبب رفض Google يُسجَّل في سجل الخادم', server.includes('console.log(`[youtube-oauth] outcome=refresh_failed reason=${reasonCode.slice(0, 40)}`);'));
+  check('★ سبب رفض Google يُسجَّل في سجل الخادم', server.includes('console.log(`[youtube-oauth] outcome=${YOUTUBE_PERMANENT_REFRESH_ERRORS.has(reasonCode) ? "refresh_failed" : "refresh_retry"} reason=${reasonCode.slice(0, 40)}`);'));
   check('★ الرفض الدائم فقط يقطع فوراً (invalid_grant/invalid_client/unauthorized_client)', server.includes('const YOUTUBE_PERMANENT_REFRESH_ERRORS = new Set(["invalid_grant", "invalid_client", "unauthorized_client"]);'));
   check('★ العطل العابر لا يقطع الربط حتى 3 إخفاقات متتالية', server.includes('if (!permanent && youtubeTransientRefreshFailures < 3) {') && server.indexOf('if (!permanent && youtubeTransientRefreshFailures < 3) {') < server.indexOf('platformConnections.set("youtube", { platform: "youtube", status: "reauth_needed", accountId: String(stored?.channelId'));
   check('نجاح التجديد يصفّر العدّاد والسبب', server.includes('  youtubeTransientRefreshFailures = 0;\n  youtubeLastRefreshError = null;\n  saveYouTubeCredentials({'));

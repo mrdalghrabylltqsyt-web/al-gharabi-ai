@@ -1,6 +1,6 @@
 /**
  * مُولَّد آلياً بواسطة scripts/build-search-index.mjs — لا تعدّله يدوياً.
- * كل عنوان لوحة/قسم ظاهر في شاشات المشروع مع التبويب الذي يعرضه (254 عنصراً).
+ * كل عنوان لوحة/قسم ظاهر في شاشات المشروع مع التبويب الذي يعرضه (256 عنصراً).
  */
 export interface GeneratedSearchEntry { title: string; tab: string; kind: 'panel' | 'tab'; file: string }
 export const GENERATED_SEARCH_INDEX: GeneratedSearchEntry[] = [
@@ -857,6 +857,12 @@ export const GENERATED_SEARCH_INDEX: GeneratedSearchEntry[] = [
   "file": "src/components/live/LiveBrainRoom.tsx"
  },
  {
+  "title": "حارس الرموز",
+  "tab": "live_room",
+  "kind": "panel",
+  "file": "src/components/live/LiveBrainRoom.tsx"
+ },
+ {
   "title": "حالة الإنذار",
   "tab": "live_room",
   "kind": "panel",
@@ -870,6 +876,12 @@ export const GENERATED_SEARCH_INDEX: GeneratedSearchEntry[] = [
  },
  {
   "title": "رحلة الزبائن المحتملين",
+  "tab": "live_room",
+  "kind": "panel",
+  "file": "src/components/live/LiveBrainRoom.tsx"
+ },
+ {
+  "title": "سجل التجديد",
   "tab": "live_room",
   "kind": "panel",
   "file": "src/components/live/LiveBrainRoom.tsx"

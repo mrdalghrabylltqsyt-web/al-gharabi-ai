@@ -193,6 +193,20 @@ check('★ 502 من الخادم نفسه لا يُحسب «الخادم لم ي
 check('★ تقرير لم يصل يُرسل عند عودة الخادم', ce.includes('flushPending()'));
 check('★ الواجهة تعرض ما أصلحه المهندس وخطواته', read('src/components/live/LiveBrainRoom.tsx').includes('أصلحه المهندس ذاتياً'));
 
+// عطل إعداد دوري أُغلق بالهدوء ثم ظهر في دورته التالية ليس «عاد بعد حله»
+{
+  const Q = emptyLedger();
+  const line = log('[metrics] platform=tiktok posts=0 withMetrics=0 followers=- issue=SCOPE_MISSING_video.list');
+  recordFailure(Q, line, { nowMs: NOW });
+  sweepLedger(Q, { nowMs: NOW + LEDGER_POLICY.autoResolveMs + 60000 });
+  const fpq = Object.keys(Q.groups)[0];
+  check('عطل الإعداد يُغلق بالهدوء', Q.groups[fpq]?.status === 'resolved' && Q.groups[fpq]?.resolvedBy === 'auto');
+  const again = recordFailure(Q, line, { nowMs: NOW + LEDGER_POLICY.autoResolveMs + 120000 });
+  check('★ ظهوره الدوري التالي يعيد فتحه بلا «regression» زائف', again?.isRegression === false && Q.groups[fpq].status === 'open' && Q.groups[fpq].regressions === 0);
+  markDefect(Q, fpq, 'resolved', NOW + LEDGER_POLICY.autoResolveMs + 180000);
+  check('ما أغلقه المالك ثم عاد ⇒ regression حقيقي', recordFailure(Q, line, { nowMs: NOW + LEDGER_POLICY.autoResolveMs + 240000 })?.isRegression === true);
+}
+
 console.log('\n' + '='.repeat(60));
 if (failures.length) {
   console.error(`FAILED: ${failures.length} — passed ${passed}`);

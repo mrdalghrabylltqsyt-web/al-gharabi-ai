@@ -169,7 +169,11 @@ export function buildForecasts(f: ForecastInput): Forecast[] {
     if (!p.connected || !p.expiresAt) continue;
     const hours = (Date.parse(p.expiresAt) - f.nowMs) / H;
     if (!Number.isFinite(hours) || hours > 10 * 24) continue;
-    if (p.refreshable) continue; // يُجدَّد تلقائياً (يوتيوب) — لا إنذار
+    // يُجدَّد آلياً (حارس الرموز): ليس شأن المالك. إن انتهى رغم ذلك فهو عمل المهندس لا المالك.
+    if (p.refreshable) {
+      if (hours <= 0) out.push({ id: `token:${p.id}`, severity: 'warning', etaHours: 0, owner: 'engineer', title: `رمز ${p.label} انتهى قبل أن يُجدَّد`, detail: 'حارس الرموز يجدّده آلياً؛ إن تكرر الفشل يظهر سببه في سجل الحارس.', action: 'لا شيء منك — المهندس يعيد التجديد في الدورة التالية.' });
+      continue;
+    }
     out.push({
       id: `token:${p.id}`, severity: hours <= 48 ? 'critical' : 'warning', etaHours: Math.max(0, hours), owner: 'owner',
       title: hours <= 0 ? `رمز ${p.label} انتهى` : `رمز ${p.label} ينتهي بعد ${fmtH(hours)}`,

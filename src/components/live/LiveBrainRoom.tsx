@@ -1248,6 +1248,31 @@ export const LiveBrainRoom: React.FC<{ variant?: 'page' | 'wall'; onClose?: () =
                             <span className="lbr-mono" style={{ fontSize: 10, color: '#93A1C3' }}>{r.detail}</span>
                           </div>
                         ))}
+                        {pro?.tokens && (
+                          <div aria-label="حارس الرموز" style={{ display: 'flex', flexDirection: 'column', gap: 4, marginTop: 6 }}>
+                            <div style={{ fontSize: 11.5, color: '#A5B4FC', fontWeight: 700 }}>
+                              🔑 حارس الرموز — يجدّد رمز كل منصة قبل انتهائه (كل {pro.tokens.intervalMin} دقيقة)
+                              <span style={{ color: '#93A1C3', fontWeight: 400 }}>{pro.tokens.lastAt ? ` · آخر دورة ${ago(pro.tokens.lastAt, now)}` : ' · أول دورة بعد 3 دقائق من الإقلاع'}</span>
+                            </div>
+                            {(pro.tokens.platforms || []).map((t: any) => {
+                              const col = t.decision === 'owner' ? '#F87171' : t.decision === 'refresh' || t.failures ? '#FBBF24' : '#34D399';
+                              const kind = t.renewal === 'refresh_token' ? 'يُجدَّد آلياً' : t.renewal === 'extend_before_expiry' ? 'يُمدَّد آلياً قبل انتهائه' : t.renewal === 'permanent_page_token' ? 'رمز صفحة دائم' : t.renewal === 'static' ? 'رمز ثابت' : '—';
+                              return (
+                                <div key={t.id} className="lbr-gap" style={{ borderColor: `${col}55`, display: 'flex', gap: 6, alignItems: 'baseline', flexWrap: 'wrap' }}>
+                                  <b style={{ color: col }}>{t.decision === 'owner' ? '✗' : '✓'}</b>
+                                  <span style={{ flex: 1, minWidth: 0 }}>{t.label} <span style={{ color: '#7C89AD', fontSize: 10 }}>· {kind}</span></span>
+                                  <span style={{ fontSize: 10.5, color: t.decision === 'owner' ? '#FCA5A5' : '#93A1C3' }}>{t.decision === 'owner' ? `يحتاجك: ${t.reason}` : t.expiresAt ? `صالح حتى ${new Date(t.expiresAt).toLocaleString('ar')}` : t.reason}</span>
+                                </div>
+                              );
+                            })}
+                            {(pro.tokens.runs || []).length > 0 && (
+                              <details className="lbr-eng-rep">
+                                <summary><span style={{ flex: 1 }}>سجل التجديد ({(pro.tokens.runs as any[]).length})</span></summary>
+                                {(pro.tokens.runs as any[]).map((r, i) => <div key={i} style={{ fontSize: 10.5, color: r.outcome === 'renewed' ? '#6EE7B7' : r.outcome === 'owner' ? '#FCA5A5' : '#FCD34D' }}>{ago(r.at, now)} · {r.label}: {r.detail}{r.newExpiresAt ? ` — صالح حتى ${new Date(r.newExpiresAt).toLocaleString('ar')}` : ''}</div>)}
+                              </details>
+                            )}
+                          </div>
+                        )}
                         <div style={{ fontSize: 11.5, color: '#A5B4FC', fontWeight: 700, marginTop: 6 }}>🔮 ما سيقع إن لم يُفعل شيء ({(pro?.forecasts || []).length})</div>
                         {(pro?.forecasts || []).length === 0
                           ? <div style={{ fontSize: 11.5, color: '#6EE7B7' }}>لا شيء متوقع: لا رمز ينتهي قريباً، لا حصة تنفد، لا ذاكرة تمتلئ، لا مسار يتباطأ، لا عطل يتصاعد.</div>
