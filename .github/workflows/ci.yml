@@ -100,8 +100,16 @@ jobs:
         with:
           name: dist
           path: dist/
+      # عند الفشل: اسم المجموعة الفاشلة وأسطر الفشل تظهر كتعليق على الطلب (Annotation)، فيُعرف
+      # السبب من بريد «PR run failed» نفسه بلا فتح السجل الكامل.
       - name: npm test
-        run: npm test
+        run: |
+          set -o pipefail
+          if npm test 2>&1 | tee test.log; then exit 0; fi
+          suite=$(grep -oE '^> al-gharabi-ai@[^ ]+ test:[A-Za-z0-9_-]+' test.log | tail -1 | sed 's/.* //')
+          detail=$(grep -E 'FAILED|✗|Error|AssertionError' test.log | tail -12 | cut -c1-300 | sed 's/%/%25/g' | awk '{printf "%s%%0A", $0}')
+          echo "::error title=فشل ${suite:-npm test}::${detail}"
+          exit 1
 
   # 3) اختبارات التعافي (DR) — تشغيل مستقل صريح كما طُلب.
   dr:
