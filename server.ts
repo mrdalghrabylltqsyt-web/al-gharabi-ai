@@ -671,6 +671,7 @@ import {
   truncateAlertSnippet,
   type OwnerAlertState,
   type OwnerAlertItem,
+  platformLabelAr,
 } from "./engine/notifications/ownerAlerts";
 import { parseOwnerTelegramChatId, buildOwnerTelegramMessage, decideOwnerTelegramSend, defaultOwnerTelegramRateState, newlyQueuedAlerts, OWNER_TELEGRAM_OVERFLOW_TEXT, OWNER_TELEGRAM_MAX_PER_HOUR, signOwnerTelegramAction, verifyOwnerTelegramAction, isOwnerTelegramCallback, draftIdFromAlertKey, ownerTelegramDecisionText, type OwnerTelegramRateState } from "./engine/notifications/ownerTelegram";
 import {
@@ -2771,7 +2772,7 @@ function markProviderReauthNeeded(platform: string, reason: string): void {
   savePlatformConnections();
   void persistStateDurable();
   audit('system', `${platform}_reauth_needed`, reason || 'oauth_exception');
-  pushNotification('owner', `${platform}_reauth_needed`, `إعادة ربط ${platform} مطلوبة`,
+  pushNotification('owner', `${platform}_reauth_needed`, `إعادة ربط ${platformLabelAr(platform)} مطلوبة`,
     'سُحب التفويض أو انتهى الرمز؛ أُوقفت محاولات الرد والنشر حتى إعادة الربط.', 'critical', 'platform_connections');
 }
 
@@ -4155,7 +4156,25 @@ for (const p of SUPPORTED_PLATFORMS) platformConnections.set(p.id, { platform: p
 // اتصالات المنصات وتوكناتها تمر عبر نفس المخزن: توكنات المنصات المشفّرة تُحفظ
 // داخل workspace.providerTokens، واتصالات المنصات في platformConnections.
 function savePlatformConnections() {
+  resolveReauthNotificationsForConnected();
   persistState();
+}
+/**
+ * 2026-10-28: بعد إعادة ربط منصة يبقى تنبيه «إعادة ربط … مطلوبة» الحرج غير مقروء إلى الأبد، فيتضخم
+ * «تنبيهات حرجة غير مقروءة» ويحكم المهندس بعطل زال. عند رجوع المنصة «متصلة» تُعلَّم تنبيهات
+ * انقطاعها السابقة «محلولة تلقائياً» (مقروءة + وقت الحل) — بلا حذف.
+ */
+function resolveReauthNotificationsForConnected(): number {
+  const connected = new Set(Array.from(platformConnections.values()).filter((c: any) => c?.status === "connected").map((c: any) => String(c.platform)));
+  if (!connected.size) return 0;
+  const at = new Date().toISOString();
+  let n = 0;
+  for (const item of (((workspace as any).notifications || []) as any[])) {
+    if (!item || item.read) continue;
+    const m = /^([a-z_]+)_reauth_needed$/.exec(String(item.type || ""));
+    if (m && connected.has(m[1])) { item.read = true; item.resolvedAt = at; item.resolvedBy = "auto_reconnected"; n += 1; }
+  }
+  return n;
 }
 function loadPlatformConnections() {
   // استرجاع اتصالات المنصات من اللقطة المحمّلة عند الإقلاع (خلفية الملف
@@ -16872,7 +16891,8 @@ app.get("/api/analytics/overview", authenticateToken, (_req, res) => {
   //  - مؤشرات المزود (مشاهدات/إعجابات/وصول) null ما لم تُجلب فعلاً — لا صفر مُضلِّل.
   const records = (((workspace as any).publishRecords || []) as any[]).filter((r) => !r?.simulated);
   const okRecord = (r: any) => Boolean(r?.providerPostId || r?.externalVideoId) && (r?.state === "published" || r?.state === "scheduled");
-  const inbound = ((workspace as any).socialComments || []) as any[];
+  // التحليلات من أصوات الزبائن فقط — ردود المعرض لا تُحسب استفساراً ولا تفاعلاً (2026-10-28).
+  const inbound = customerComments();
   const isInquiry = (c: any) => { const k = c?.classification || {}; return k.isBusinessInquiry === true || k.intent === "business_inquiry" || ["price","installment","installment_terms","availability"].includes(String(k.topic || "")); };
   const providerMetrics = posts.some((p:any) => p.metricSource === "provider_verified") || (((workspace as any).performanceRecords || []) as any[]).length > 0;
   const audience = ((workspace as any).platformAudience || {}) as Record<string, { followers: number | null; at: string }>;
@@ -16912,7 +16932,7 @@ app.get("/api/system/diagnostics", requireOwner, (_req, res) => {
   const approved = automationJobs.filter((j:any)=>j.status==="approved").length;
   const ready = automationJobs.filter((j:any)=>j.status==="ready").length;
   const failed = automationJobs.filter((j:any)=>j.status==="failed").length;
-  res.json({ success:true, generatedAt:new Date().toISOString(), version:PROJECT_VERSION, schemaVersion:STATE_SCHEMA_VERSION, node:process.version, uptimeSeconds:Math.round(process.uptime()), memory:{ rss:memory.rss, heapUsed:memory.heapUsed, heapTotal:memory.heapTotal }, sessions:activeSessionCount(), users:serverUsers.length, platforms:{ total:SUPPORTED_PLATFORMS.length, connected:connectedPlatformIds().length }, workspace:{ products:workspace.products.length, posts:workspace.posts.length, conversations:workspace.conversations.length, inbound:(((workspace as any).socialComments||[]) as any[]).length, commercialLeads:commercialLeads.filter((l:any)=>!l.archived).length, pendingCustomerReplies:commercialDrafts.filter((d:any)=>d.status==="pending").length, plans:workspace.installmentPlans.length, leads:workspace.leads.length, tasks:workspace.tasks.length, sales:workspace.sales.length, payments:workspace.payments.length, suppliers:workspace.suppliers.length, purchases:workspace.purchases.length, expenses:workspace.expenses.length, contracts:workspace.contracts.length, installmentSchedules:workspace.installmentSchedules.length }, jobs:{ total:automationJobs.length, queued, approved, ready, failed }, storageBackend: storageAdapter.backend, backups:{ count: (()=>{ try{return fs.readdirSync(BACKUP_DIR).filter(n=>n.startsWith("state-")&&n.endsWith(".json")).length;}catch{return 0;} })() } });
+  res.json({ success:true, generatedAt:new Date().toISOString(), version:PROJECT_VERSION, schemaVersion:STATE_SCHEMA_VERSION, node:process.version, uptimeSeconds:Math.round(process.uptime()), memory:{ rss:memory.rss, heapUsed:memory.heapUsed, heapTotal:memory.heapTotal }, sessions:activeSessionCount(), users:serverUsers.length, platforms:{ total:SUPPORTED_PLATFORMS.length, connected:connectedPlatformIds().length }, workspace:{ products:workspace.products.length, posts:workspace.posts.length, conversations:workspace.conversations.length, inbound:customerComments().length, inboundAll:(((workspace as any).socialComments||[]) as any[]).length, commercialLeads:commercialLeads.filter((l:any)=>!l.archived).length, pendingCustomerReplies:commercialDrafts.filter((d:any)=>d.status==="pending").length, plans:workspace.installmentPlans.length, leads:workspace.leads.length, tasks:workspace.tasks.length, sales:workspace.sales.length, payments:workspace.payments.length, suppliers:workspace.suppliers.length, purchases:workspace.purchases.length, expenses:workspace.expenses.length, contracts:workspace.contracts.length, installmentSchedules:workspace.installmentSchedules.length }, jobs:{ total:automationJobs.length, queued, approved, ready, failed }, storageBackend: storageAdapter.backend, backups:{ count: (()=>{ try{return fs.readdirSync(BACKUP_DIR).filter(n=>n.startsWith("state-")&&n.endsWith(".json")).length;}catch{return 0;} })() } });
 });
 
 
@@ -17495,6 +17515,11 @@ function applyControlSnapshot(control: any): void {
   oauthFailures = normalizeOAuthFailures(control.oauthFailures);
   // ربط Telegram المالك بالرمز — يصمد بعد restart (رقم محادثة + بصمة رمز، بلا سرّ).
   ownerTelegramPairing = normalizeOwnerTelegramPairing(control.ownerTelegramPairing);
+  const tgs: any = control.ownerTelegramStats && typeof control.ownerTelegramStats === "object" ? control.ownerTelegramStats : {};
+  ownerTelegramStatus.sentCount = Math.max(0, Number(tgs.sentCount) || 0);
+  ownerTelegramStatus.failedCount = Math.max(0, Number(tgs.failedCount) || 0);
+  ownerTelegramStatus.lastAt = typeof tgs.lastAt === "string" ? tgs.lastAt : null;
+  ownerTelegramStatus.lastResult = typeof tgs.lastResult === "string" ? tgs.lastResult : null;
 }
 
 /** يقرأ حالة التحكّم متزامناً (backend الملف) عند الإقلاع. */
@@ -17570,6 +17595,8 @@ function buildControlState() {
     oauthFailures,
     // ربط Telegram المالك بالرمز: رقم المحادثة + بصمة الرمز المعلّق فقط.
     ownerTelegramPairing,
+    // عدّاد رسائل تيليغرام للمالك — يصمد بعد النشر (بلا محتوى رسائل).
+    ownerTelegramStats: { ...ownerTelegramStatus },
   };
 }
 
@@ -18897,6 +18924,7 @@ function recordOwnerAlert(item: OwnerAlertItem): void {
 // وحدّ 20 رسالة/ساعة يمنع الإغراق. بلا Gemini، ولا يُرسل شيء للزبون.
 // -----------------------------------------------------------------------------
 let ownerTelegramRate: OwnerTelegramRateState = defaultOwnerTelegramRateState();
+// يُحفظ في حالة التحكّم (2026-10-28): كان يُصفَّر مع كل نشر فتعرض الشاشة «أُرسل: 0» رغم وصول الرسائل.
 const ownerTelegramStatus: { lastResult: string | null; lastAt: string | null; sentCount: number; failedCount: number } = { lastResult: null, lastAt: null, sentCount: 0, failedCount: 0 };
 /** محادثة المالك الفعّالة: OWNER_TELEGRAM_CHAT_ID أولاً، ثم الربط بالرمز من الشاشة الحية. */
 function ownerTelegramChat(): { chatId: string | null; source: "env" | "paired" | null } {
@@ -18929,8 +18957,8 @@ async function sendOwnerTelegramText(text: string, inlineKeyboard?: { text: stri
   try {
     const r = await client.sendMessage({ chatId, text, inlineKeyboard });
     ownerTelegramStatus.lastAt = new Date().toISOString();
-    if (r.ok) { ownerTelegramStatus.lastResult = 'sent'; ownerTelegramStatus.sentCount += 1; return true; }
-    ownerTelegramStatus.lastResult = 'failed'; ownerTelegramStatus.failedCount += 1;
+    if (r.ok) { ownerTelegramStatus.lastResult = 'sent'; ownerTelegramStatus.sentCount += 1; saveControlState(); return true; }
+    ownerTelegramStatus.lastResult = 'failed'; ownerTelegramStatus.failedCount += 1; saveControlState();
     return false;
   } catch {
     ownerTelegramStatus.lastAt = new Date().toISOString();

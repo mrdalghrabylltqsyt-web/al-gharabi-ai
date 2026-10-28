@@ -696,7 +696,9 @@ export function toCommercialLeadRow(lead: CommercialLead): CommercialLeadRow {
     lastInteractionAt: lead.lastInteractionAt,
     followUpState: lead.followUpState,
     followUpLabelAr: COMMERCIAL_FOLLOWUP_LABELS_AR[lead.followUpState],
-    nextFollowUpAt: lead.nextFollowUpAt,
+    // 2026-10-28: يُحسب من الحقائق الحالية (القاعدة نفسها في isFollowUpDue) لا القيمة المخزّنة القديمة —
+    // كانت الشاشة تعرض «متابعة مستحقة الآن (16)» من قيم محسوبة بقاعدة سابقة.
+    nextFollowUpAt: nextFollowUpAt(lead),
     followUpsSent: lead.followUpsSent,
     hasPendingProposal: Boolean(lead.pendingProposal && lead.pendingProposal.status === 'pending'),
     escalationReason: lead.escalationReason,
