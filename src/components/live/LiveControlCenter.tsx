@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { apiService } from '../../services/api';
 import { useApp } from '../../context/AppContext';
+import { focusFeature } from '../common/featureSearch';
 
 /**
  * مركز السيطرة داخل غرفة العقل الحية (2026-10-26).
@@ -137,6 +138,29 @@ export const LiveControlCenter: React.FC<{ data: any; refresh: () => void; now: 
   const [busy, setBusy] = useState<string | null>(null);
   const [confirm, setConfirm] = useState<Confirm | null>(null);
   const [tab, setTab] = useState<'alerts' | 'notes' | 'esc'>('alerts');
+  // القوائم الكاملة (2026-10-28): الحمولة الحية تحمل آخر 12 إشعاراً و6 تصعيدات فقط، فكانت
+  // «11 تنبيهاً حرجاً» و«44 حالة» لا يُوصل إليها. عند الفتح تُجلب القائمة كاملة من مسارها الرسمي.
+  const [noteFilter, setNoteFilter] = useState<'all' | 'critical'>('all');
+  const [fullNotes, setFullNotes] = useState<any[] | null>(null);
+  const [fullEsc, setFullEsc] = useState<any[] | null>(null);
+  const [listBusy, setListBusy] = useState(false);
+  const listRef = useRef<HTMLDivElement>(null);
+  const reveal = () => window.setTimeout(() => listRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 60);
+  const loadNotes = async (only: 'all' | 'critical' = 'all') => {
+    setListBusy(true);
+    // غير المقروء فقط ومُرشَّح على الخادم قبل القصّ — فلا يضيع حرج قديم خلف مئات الإشعارات.
+    try { const r = await apiService.getNotifications({ unread: true, ...(only === 'critical' ? { severity: 'critical' as const } : {}) }); setFullNotes((r.notifications || []).filter((n: any) => !n.userId || n.userId === 'owner')); }
+    catch (e: any) { showToast(e?.message || 'تعذّر جلب الإشعارات'); }
+    finally { setListBusy(false); }
+  };
+  const loadEsc = async () => {
+    setListBusy(true);
+    try { const r = await apiService.getEscalations(); setFullEsc(r.escalations || []); }
+    catch (e: any) { showToast(e?.message || 'تعذّر جلب الحالات'); }
+    finally { setListBusy(false); }
+  };
+  const openCritical = () => { setTab('notes'); setNoteFilter('critical'); void loadNotes('critical'); reveal(); };
+  const openEscalations = () => { setTab('esc'); void loadEsc(); reveal(); };
   const [sound, setSound] = useState(() => readPref('gharabi.live.sound'));
   const seenCrit = useRef<Set<string> | null>(null);
   const [freshIds, setFreshIds] = useState<Set<string>>(new Set());
@@ -168,7 +192,7 @@ export const LiveControlCenter: React.FC<{ data: any; refresh: () => void; now: 
     setBusy(key);
     try { await fn(); showToast(ok); }
     catch (e: any) { showToast(e?.message || 'تعذر تنفيذ الإجراء'); }
-    finally { setBusy(null); refresh(); }
+    finally { setBusy(null); refresh(); if (fullNotes) void loadNotes(noteFilter); if (fullEsc) void loadEsc(); }
   };
   const ask = (cf: Confirm) => setConfirm(cf);
 
@@ -278,11 +302,13 @@ export const LiveControlCenter: React.FC<{ data: any; refresh: () => void; now: 
 
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
         <button type="button" className={`lcc-tab${tab === 'alerts' ? ' on' : ''}`} onClick={() => setTab('alerts')}>تنبيهات النظام ({alerts.length})</button>
-        <button type="button" className={`lcc-tab${tab === 'notes' ? ' on' : ''}`} onClick={() => setTab('notes')}>الإشعارات ({Number(notes.unread || 0)})</button>
-        <button type="button" className={`lcc-tab${tab === 'esc' ? ' on' : ''}`} onClick={() => setTab('esc')}>التصعيدات ({Number(esc.open || 0)})</button>
+        <button type="button" className={`lcc-tab${tab === 'notes' ? ' on' : ''}`} onClick={() => { setTab('notes'); setNoteFilter('all'); void loadNotes('all'); }}>الإشعارات ({Number(notes.unread || 0)})</button>
+        {Number(notes.critical || 0) > 0 && <button type="button" className={`lcc-tab${tab === 'notes' && noteFilter === 'critical' ? ' on' : ''}`} style={{ borderColor: '#F87171', color: '#FCA5A5' }} onClick={openCritical}>الحرجة ({Number(notes.critical)})</button>}
+        <button type="button" className={`lcc-tab${tab === 'esc' ? ' on' : ''}`} onClick={openEscalations}>التصعيدات ({Number(esc.open || 0)})</button>
       </div>
 
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 8, ...(compact ? { flex: '1 1 0', minHeight: 210 } : { maxHeight: 420 }), overflowY: 'auto' }}>
+      <div ref={listRef} aria-label="قائمة التنبيهات والحالات" style={{ display: 'flex', flexDirection: 'column', gap: 8, ...(compact ? { flex: '1 1 0', minHeight: 210 } : { maxHeight: 520 }), overflowY: 'auto' }}>
+        {listBusy && <div style={{ fontSize: 11, color: '#93A1C3' }}>جارٍ جلب القائمة كاملة…</div>}
         {tab === 'alerts' && (alerts.length === 0
           ? <div style={{ fontSize: 12, color: '#6EE7B7' }}>لا تنبيهات قائمة — كل شيء سليم الآن.</div>
           : [...alerts].sort((a, b) => ({ critical: 0, warning: 1, info: 2 } as any)[sevOf(a.severity)] - ({ critical: 0, warning: 1, info: 2 } as any)[sevOf(b.severity)]).map((a) => {
@@ -294,59 +320,95 @@ export const LiveControlCenter: React.FC<{ data: any; refresh: () => void; now: 
                   <div style={{ fontSize: 13, fontWeight: 700 }}>{a.title} <span style={{ fontSize: 10, color: s.c }}>· {s.t}</span></div>
                   <div style={{ fontSize: 11, color: '#C9D3EA', lineHeight: 1.6, overflowWrap: 'anywhere' }}>{a.detail}</div>
                 </div>
-                {a.link && a.link !== 'live_room' && <button type="button" className="lcc-btn lcc-neutral" onClick={() => openLink(a.link)}>افتح</button>}
+                {a.id === 'notifications-critical'
+                  ? <button type="button" className="lcc-btn lcc-danger" onClick={openCritical}>اعرضها الآن</button>
+                  : a.id === 'escalations-open'
+                    ? <button type="button" className="lcc-btn lcc-neutral" onClick={openEscalations}>اعرض الحالات</button>
+                    : a.link && a.link !== 'live_room' && <button type="button" className="lcc-btn lcc-neutral" onClick={() => openLink(a.link)}>افتح</button>}
               </div>
             );
           }))}
 
-        {tab === 'notes' && (
+        {tab === 'notes' && (() => {
+          const src: any[] = fullNotes ? fullNotes.filter((n: any) => !n.read) : (notes.latest || []);
+          const list = noteFilter === 'critical' ? src.filter((n: any) => n.severity === 'critical') : src;
+          return (
           <>
-            {(notes.latest || []).length === 0 && <div style={{ fontSize: 12, color: '#6EE7B7' }}>لا إشعارات غير مقروءة.</div>}
-            {(notes.latest || []).map((n: any) => {
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, alignItems: 'center' }}>
+              <button type="button" className={`lcc-tab${noteFilter === 'all' ? ' on' : ''}`} onClick={() => { setNoteFilter('all'); void loadNotes('all'); }}>كل غير المقروءة ({Number(notes.unread || 0)})</button>
+              <button type="button" className={`lcc-tab${noteFilter === 'critical' ? ' on' : ''}`} onClick={() => { setNoteFilter('critical'); void loadNotes('critical'); }}>الحرجة فقط ({Number(notes.critical || 0)})</button>
+              {noteFilter === 'critical' && list.length > 0 && (
+                <button type="button" className="lcc-btn lcc-safe" disabled={busy === 'readcrit'} onClick={() => void run('readcrit', async () => { for (const n of list) await apiService.markNotificationRead(n.id); }, `عُلّمت ${list.length} تنبيهات حرجة كمقروءة`)}>
+                  قرأتها كلها ({list.length})
+                </button>
+              )}
+            </div>
+            {!listBusy && list.length === 0 && <div style={{ fontSize: 12, color: '#6EE7B7' }}>{noteFilter === 'critical' ? 'لا تنبيهات حرجة غير مقروءة.' : 'لا إشعارات غير مقروءة.'}</div>}
+            {list.map((n: any) => {
               const s = SEV[sevOf(n.severity)];
               return (
                 <div key={n.id} className={freshIds.has(`n:${n.id}`) ? 'lcc-new' : ''} style={{ display: 'flex', gap: 10, alignItems: 'flex-start', padding: 10, borderRadius: 12, border: `1px solid ${s.c}55`, background: s.bg }}>
                   <span style={{ width: 10, height: 10, marginTop: 4, flex: 'none', borderRadius: '50%', background: s.c, boxShadow: `0 0 10px ${s.c}` }} />
                   <div style={{ flex: 1, minWidth: 0 }}>
-                    <div style={{ fontSize: 13, fontWeight: 700 }}>{n.title}</div>
+                    <div style={{ fontSize: 13, fontWeight: 700 }}>{n.title} <span style={{ fontSize: 10, color: s.c }}>· {s.t}</span></div>
                     {n.body && <div style={{ fontSize: 11, color: '#C9D3EA', lineHeight: 1.6, overflowWrap: 'anywhere' }}>{n.body}</div>}
                     <div style={{ fontSize: 10, color: '#7C89AD' }}>{ago(n.createdAt, now)}</div>
                   </div>
                   <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-                    {n.link && <button type="button" className="lcc-btn lcc-neutral" onClick={() => { void apiService.markNotificationRead(n.id).catch(() => undefined); openLink(n.link); }}>افتح</button>}
+                    {n.link && n.link !== 'live_room' && <button type="button" className="lcc-btn lcc-neutral" onClick={() => { void apiService.markNotificationRead(n.id).catch(() => undefined); openLink(n.link); }}>افتح</button>}
                     <button type="button" className="lcc-btn lcc-safe" disabled={busy === n.id} onClick={() => void run(n.id, () => apiService.markNotificationRead(n.id), 'عُلّم كمقروء')}>قرأته</button>
                   </div>
                 </div>
               );
             })}
-            {Number(notes.unread || 0) > 0 && (
+            {noteFilter === 'all' && Number(notes.unread || 0) > 0 && (
               <button type="button" className="lcc-btn lcc-neutral" disabled={busy === 'readall'} onClick={() => void run('readall', () => apiService.markAllNotificationsRead(), 'عُلّمت كل الإشعارات كمقروءة')}>
                 تعليم كل الإشعارات ({Number(notes.unread)}) كمقروءة
               </button>
             )}
           </>
-        )}
+          );
+        })()}
 
-        {tab === 'esc' && (
+        {tab === 'esc' && (() => {
+          // القائمة الكاملة من مسار التصعيدات الرسمي (كل الحالات المفتوحة لا آخر 6 فقط).
+          const PF: Record<string, string> = { facebook: 'فيسبوك', instagram: 'إنستغرام', youtube: 'يوتيوب', threads: 'ثريدز', tiktok: 'تيك توك', telegram: 'تيليغرام', whatsapp: 'واتساب' };
+          const list: any[] = fullEsc
+            ? fullEsc.filter((e: any) => e.state !== 'RESOLVED').sort((a: any, b: any) => Date.parse(String(b.createdAt || '')) - Date.parse(String(a.createdAt || '')))
+              .map((e: any) => ({ id: e.id, platform: PF[e.platform] || e.platform, reason: e.reasonLabelAr || e.reason, text: String(e.commentText || '').slice(0, 300), state: e.state, createdAt: e.createdAt }))
+            : (esc.latest || []);
+          const pendingOnes = list.filter((e: any) => e.state === 'PENDING');
+          return (
           <>
-            {(esc.latest || []).length === 0 && <div style={{ fontSize: 12, color: '#6EE7B7' }}>لا حالات مصعّدة مفتوحة.</div>}
-            {(esc.latest || []).map((e: any) => (
+            <div style={{ fontSize: 11, color: '#93A1C3', lineHeight: 1.7 }}>
+              أوقف العقل الرد الآلي على هذه الحالات (شكوى، طلب بشري، معلومة غير مؤكدة). اقرأ كلام الزبون، ردّ بنفسك من المنصة أو من «الرد اليدوي»، ثم اضغط «حُلّت».
+            </div>
+            {pendingOnes.length > 1 && (
+              <button type="button" className="lcc-btn lcc-neutral" disabled={busy === 'ackall'} onClick={() => void run('ackall', async () => { for (const e of pendingOnes) await apiService.transitionEscalation(e.id, 'acknowledge'); }, `اطّلعت على ${pendingOnes.length} حالة`)}>
+                اطّلعت على كل الجديدة ({pendingOnes.length})
+              </button>
+            )}
+            {!listBusy && list.length === 0 && <div style={{ fontSize: 12, color: '#6EE7B7' }}>لا حالات مصعّدة مفتوحة.</div>}
+            {list.map((e: any) => (
               <div key={e.id} className={freshIds.has(`e:${e.id}`) ? 'lcc-new' : ''} style={{ padding: 10, borderRadius: 12, border: '1px solid rgba(244,114,182,.4)', background: 'rgba(80,7,36,.3)', display: 'flex', flexDirection: 'column', gap: 6 }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, fontSize: 11 }}>
                   <span style={{ color: '#F9A8D4', fontWeight: 700 }}>{e.reason}</span>
-                  <span style={{ color: '#93A1C3' }}>{e.platform} · {ago(e.createdAt, now)} · {e.state === 'ACKNOWLEDGED' ? 'مُطّلع عليه' : 'معلّق'}</span>
+                  <span style={{ color: '#93A1C3' }}>{e.platform} · {ago(e.createdAt, now)} · {e.state === 'ACKNOWLEDGED' ? 'مُطّلع عليه' : 'جديد'}</span>
                 </div>
                 {e.text && <div style={{ fontSize: 13, lineHeight: 1.7 }}>«{e.text}»</div>}
-                <div style={{ display: 'flex', gap: 8 }}>
+                <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
                   {e.state === 'PENDING' && <button type="button" className="lcc-btn lcc-neutral" disabled={busy === e.id} onClick={() => void run(e.id, () => apiService.transitionEscalation(e.id, 'acknowledge'), 'تم الاطلاع')}>اطّلعت</button>}
                   <button type="button" className="lcc-btn lcc-safe" disabled={busy === e.id} onClick={() => void run(e.id, () => apiService.transitionEscalation(e.id, 'resolve'), 'حُلّت الحالة')}>حُلّت</button>
-                  <button type="button" className="lcc-btn lcc-neutral" onClick={() => go('social_manager')}>الرد اليدوي</button>
+                  <button type="button" className="lcc-btn lcc-neutral" onClick={() => { go('social_manager'); focusFeature('التصعيدات البشرية', 'panel'); }}>الرد اليدوي</button>
                 </div>
               </div>
             ))}
-            {Number(esc.open || 0) > (esc.latest || []).length && <div style={{ fontSize: 11, color: '#93A1C3' }}>و{Number(esc.open) - (esc.latest || []).length} حالات أخرى في مدير النشر.</div>}
+            {!fullEsc && Number(esc.open || 0) > (esc.latest || []).length && (
+              <button type="button" className="lcc-btn lcc-neutral" onClick={openEscalations}>اعرض كل الحالات ({Number(esc.open)})</button>
+            )}
           </>
-        )}
+          );
+        })()}
       </div>
 
       {confirm && (
