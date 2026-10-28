@@ -4,7 +4,7 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { classifyFailure } from '../ops/defectLedger';
-import { PROBE_ROUTES, PROACTIVE_POLICY, evaluateProbe, summarizeRound, deployVerdict, RouteLatency, slowRoutes, isSpiking, buildForecasts, notificationHygiene, type ForecastInput } from '../ops/engineerProactive';
+import { PROBE_ROUTES, PROACTIVE_POLICY, evaluateProbe, summarizeRound, deployVerdict, RouteLatency, slowRoutes, isSpiking, buildForecasts, notificationHygiene, judgeBoot, type ForecastInput } from '../ops/engineerProactive';
 
 const read = (p: string) => readFileSync(join(process.cwd(), p), 'utf8');
 let passed = 0; const failures: string[] = [];
@@ -94,6 +94,19 @@ const crash = classifyFailure({ source: 'exception', text: 'الخادم انه�
 check('★ انهيار بنفاد الذاكرة يُشخَّص كذلك', crash?.severity === 'critical' && /نفاد الذاكرة/.test(crash.title));
 check('★ كشف الانهيار: نبضة + علامة إغلاق نظيف + فحص عند الإقلاع', server.includes('async function startCrashDetection') && server.includes('markCleanShutdown();') && server.includes('!prev.cleanShutdownAt'));
 check('سياسة: لا يُلمس الحرج + 10 دقائق', PROACTIVE_POLICY.probeIntervalMs === 600000);
+
+// الحكم على الإقلاع: تداخل النشر ليس انهياراً (كان كل نشر يُسجَّل «الخادم انهار»)
+{
+  const boot = Date.parse('2026-10-28T16:10:54Z');
+  const old = { bootId: 'A', version: '30b2305', heartbeatAt: '2026-10-28T16:10:26Z', cleanShutdownAt: null, memoryMb: 143 };
+  check('★ نشر جديد والقديمة نبضت قبيل إقلاعنا ⇒ تداخل نشر لا انهيار', judgeBoot({ prev: old, recheck: old, currentBootId: 'B', currentVersion: 'e23ffde', bootMs: boot }) === 'deploy_overlap');
+  check('★ القديمة كتبت الإغلاق النظيف خلال المهلة ⇒ سليم', judgeBoot({ prev: old, recheck: { ...old, cleanShutdownAt: '2026-10-28T16:11:30Z' }, currentBootId: 'B', currentVersion: 'e23ffde', bootMs: boot }) === 'clean');
+  check('القديمة ما زالت تنبض بعد إقلاعنا ⇒ ليس انهياراً', judgeBoot({ prev: old, recheck: { ...old, heartbeatAt: '2026-10-28T16:12:00Z' }, currentBootId: 'B', currentVersion: '30b2305', bootMs: boot }) === 'deploy_overlap');
+  check('★ النسخة نفسها أُعيد تشغيلها بلا إغلاق نظيف ⇒ انهيار حقيقي', judgeBoot({ prev: old, recheck: old, currentBootId: 'B', currentVersion: '30b2305', bootMs: boot }) === 'crash');
+  check('نسخة مختلفة لكن آخر نبضة قديمة (ماتت قبل النشر) ⇒ انهيار', judgeBoot({ prev: { ...old, heartbeatAt: '2026-10-28T15:30:00Z' }, recheck: null, currentBootId: 'B', currentVersion: 'e23ffde', bootMs: boot }) === 'crash');
+  check('إغلاق نظيف سابق ⇒ سليم', judgeBoot({ prev: { ...old, cleanShutdownAt: '2026-10-28T16:09:00Z' }, recheck: null, currentBootId: 'B', currentVersion: 'e23ffde', bootMs: boot }) === 'clean');
+  check('★ الخادم ينتظر قبل الحكم ولا ينبض قبله', server.includes('await new Promise((r) => { const t = setTimeout(r, BOOT_RECHECK_MS);') && server.includes('if (verdict === "crash") {'));
+}
 
 console.log('\n' + '='.repeat(60));
 if (failures.length) { console.error(`FAILED: ${failures.length} — passed ${passed}`); for (const f of failures) console.error('  ✗ ' + f); process.exit(1); }

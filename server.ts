@@ -729,7 +729,7 @@ import { detectIncidents, decideNext, forgetRecovered, addReport, withTimeout, e
 import { PATROL_ORDER, COLLECTION_CAPS, COLLECTION_AR, inspectModule, healthScore, healthBreakdown, slopePerHour, growthPerDay, type PatrolFacts, type ModuleInspection } from "./engine/ops/engineerPatrol";
 import { recordFailure, sweepLedger, markDefect, openDefects, ledgerSummary, normalizeLedger, emptyLedger, defectLogLine, repairPlanFor, recordRepair, recentlyRepaired, normalizeRoute, LEDGER_POLICY, type DefectLedger, type FailureEvent, type RepairPlan } from "./engine/ops/defectLedger";
 import { TOKEN_KEEPER_POLICY, isPermanentRefreshError, backoffMs, decideRenewal, ownerTokenNeeds, autoRenewable, shouldMarkReauth, keeperSummary, leadFor, fmtDur, type TokenState, type RenewalKind, type KeeperRun } from "./engine/ops/tokenKeeper";
-import { PROBE_ROUTES, PROACTIVE_POLICY, evaluateProbe, summarizeRound, deployVerdict, RouteLatency, slowRoutes, isSpiking, buildForecasts, notificationHygiene, type ProbeRound, type Forecast } from "./engine/ops/engineerProactive";
+import { PROBE_ROUTES, PROACTIVE_POLICY, evaluateProbe, summarizeRound, deployVerdict, RouteLatency, slowRoutes, isSpiking, buildForecasts, notificationHygiene, judgeBoot, BOOT_RECHECK_MS, type ProbeRound, type Forecast } from "./engine/ops/engineerProactive";
 import { buildOwnIdentity, customerVoices, type OwnIdentity } from "./engine/social/ownVoice";
 import { memoryPressureAlert, baselineSlopePerHour } from "./engine/ops/memoryWatch";
 import { LiveWaiters, LIVE_WAIT_MAX_MS } from "./engine/ops/liveWait";
@@ -16222,7 +16222,16 @@ function markCleanShutdown(): void {
 async function startCrashDetection(): Promise<void> {
   try {
     const prev: any = await storageAdapter.read<any>(STORAGE_KEY_LIFE);
+    // لا حكم فوري: Render يُقلعنا قبل إيقاف النسخة السابقة. ننتظر أن تُوقف وتكتب إغلاقها ثم نحكم
+    // (ولا ننبض قبل الحكم كي لا نمحو سجلها).
+    let recheck: any = null;
     if (prev && prev.bootId && prev.bootId !== LIFE_BOOT_ID && !prev.cleanShutdownAt) {
+      await new Promise((r) => { const t = setTimeout(r, BOOT_RECHECK_MS); (t as any).unref?.(); });
+      recheck = await storageAdapter.read<any>(STORAGE_KEY_LIFE).catch(() => null);
+    }
+    const verdict = judgeBoot({ prev, recheck, currentBootId: LIFE_BOOT_ID, currentVersion: DEFECT_VERSION, bootMs: DEFECT_BOOT_MS });
+    if (verdict === "deploy_overlap") console.log(`[engineer] boot_after_deploy prev_boot=${prev?.bootId} prev_version=${prev?.version || "-"} (تداخل نشر، ليس انهياراً)`);
+    if (verdict === "crash") {
       const lastBeat = Date.parse(String(prev.heartbeatAt || ""));
       const mem = Number(prev.memoryMb || 0);
       const nearLimit = mem >= 430;

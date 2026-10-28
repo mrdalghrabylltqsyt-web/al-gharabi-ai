@@ -269,3 +269,31 @@ export function notificationHygiene(rows: HygieneNotification[], nowMs: number):
   }
   return { ids: [...ids], old, duplicates };
 }
+
+// -----------------------------------------------------------------------------
+// الحكم على الإقلاع: انهيار حقيقي أم تداخل نشر؟ (2026-10-28)
+// -----------------------------------------------------------------------------
+/**
+ * Render يُقلع النسخة الجديدة *قبل* إيقاف القديمة (نشر بلا انقطاع)، فتقرأ الجديدة سجل حياة القديمة
+ * وهي ما زالت تعمل ولم تكتب علامة الإغلاق النظيف بعد — فكان كل نشر يُسجَّل «الخادم انهار» حرجاً زائفاً.
+ * الحكم الآن بعد مهلة (`recheck` = قراءة ثانية بعد أن يُوقف Render القديمة):
+ *   - القديمة كتبت الإغلاق النظيف أو ما زالت تنبض ⇒ ليس انهياراً.
+ *   - نسخة مختلفة ونبضها الأخير قبيل إقلاعنا مباشرة ⇒ تداخل نشر (أُوقفت القديمة قسراً بعد التبديل).
+ *   - غير ذلك ⇒ انهيار حقيقي.
+ */
+export type BootVerdict = 'clean' | 'deploy_overlap' | 'crash';
+export interface LifeRec { bootId?: string | null; version?: string | null; heartbeatAt?: string | null; cleanShutdownAt?: string | null; memoryMb?: number | null }
+export function judgeBoot(input: { prev: LifeRec | null; recheck: LifeRec | null; currentBootId: string; currentVersion: string | null; bootMs: number }): BootVerdict {
+  const { prev, recheck } = input;
+  if (!prev || !prev.bootId || prev.bootId === input.currentBootId || prev.cleanShutdownAt) return 'clean';
+  if (recheck && recheck.bootId === prev.bootId) {
+    if (recheck.cleanShutdownAt) return 'clean';
+    const a = Date.parse(String(prev.heartbeatAt || '')); const b = Date.parse(String(recheck.heartbeatAt || ''));
+    if (Number.isFinite(a) && Number.isFinite(b) && b > a) return 'deploy_overlap'; // ما زالت تعمل بعد إقلاعنا
+  }
+  const lastBeat = Date.parse(String(prev.heartbeatAt || ''));
+  const beatNearBoot = Number.isFinite(lastBeat) && input.bootMs - lastBeat < 11 * 60000;
+  if (prev.version && input.currentVersion && prev.version !== input.currentVersion && beatNearBoot) return 'deploy_overlap';
+  return 'crash';
+}
+export const BOOT_RECHECK_MS = 150000;
