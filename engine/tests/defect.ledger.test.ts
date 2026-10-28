@@ -7,7 +7,7 @@ import { join } from 'node:path';
 import {
   classifyFailure, recordFailure, sweepLedger, markDefect, openDefects, ledgerSummary, normalizeLedger,
   emptyLedger, fingerprint, normalizeRoute, sanitizeSample, defectLogLine, LEDGER_POLICY,
-  repairPlanFor, recordRepair, recentlyRepaired,
+  repairPlanFor, recordRepair, recentlyRepaired, countsAsRegression, isDeployOverlapCrash,
 } from '../ops/defectLedger';
 import { incidentsFromDefects, decideNext, emptyEngineerState } from '../ops/siteEngineer';
 
@@ -205,6 +205,18 @@ check('★ الواجهة تعرض ما أصلحه المهندس وخطواته
   check('★ ظهوره الدوري التالي يعيد فتحه بلا «regression» زائف', again?.isRegression === false && Q.groups[fpq].status === 'open' && Q.groups[fpq].regressions === 0);
   markDefect(Q, fpq, 'resolved', NOW + LEDGER_POLICY.autoResolveMs + 180000);
   check('ما أغلقه المالك ثم عاد ⇒ regression حقيقي', recordFailure(Q, line, { nowMs: NOW + LEDGER_POLICY.autoResolveMs + 240000 })?.isRegression === true);
+}
+
+// 2026-10-28: «انهيار» أثناء النشر (تداخل النسختين) ليس انهياراً.
+{
+  const base = { where: ['crash:process'], firstVersion: 'e23ffde' } as any;
+  check('★ انهيار بعينة نسخة سابقة مختلفة = تبديل نشر لا انهيار', isDeployOverlapCrash({ ...base, samples: ['[crash:process] الخادم انهار وأعيد تشغيله: لم يُغلق إغلاقاً نظيفاً (آخر نبضة —، آخر ذاكرة 143 ميغا، النسخة 30b2305)'] }) === true);
+  check('انهيار على النسخة نفسها = انهيار حقيقي', isDeployOverlapCrash({ ...base, samples: ['[crash:process] ... النسخة e23ffde)'] }) === false);
+  check('نفاد الذاكرة لا يُعاد تصنيفه', isDeployOverlapCrash({ where: ['crash:oom'], firstVersion: 'e23ffde', samples: ['النسخة 30b2305'] } as any) === false);
+  check('عطل إعداد أغلقه الهدوء لا يُحسب «عاد بعد حله»', countsAsRegression({ status: 'resolved', resolvedBy: 'auto', kind: 'config' }) === false);
+  check('عيب كود أُغلق بنسخة جديدة ثم عاد = regression', countsAsRegression({ status: 'resolved', resolvedBy: 'auto', kind: 'code' }) === true);
+  const legacy = normalizeLedger({ groups: { a: { kind: 'config', owner: 'owner', title: 't', firstAt: '2026-10-28T00:00:00Z', lastAt: '2026-10-28T00:00:00Z', regressions: 6, samples: [], where: [] } } });
+  check('★ عدّاد «عاد» القديم لإذن بيد المالك يُصفَّر (6× زائفة)', legacy.groups.a.regressions === 0);
 }
 
 console.log('\n' + '='.repeat(60));

@@ -210,7 +210,7 @@
     "test:dr-routes": "tsx engine/tests/dr/dr.routes.test.ts",
     "test:dr-backup": "tsx engine/tests/dr/dr.backup.test.ts",
     "test:dr-secrets": "tsx engine/tests/dr/dr.secrets.test.ts",
-    "test:dr-mirror": "tsx engine/tests/dr/dr.mirror.test.ts",
+    "test:dr-mirror": "tsx engine/tests/dr/dr.mirror.test.ts && node engine/tests/dr/dr.mirror.parallel.test.mjs",
     "test:dr-keyvault": "tsx engine/tests/dr/dr.keyvault.test.ts",
     "test:dr-restore": "tsx engine/tests/dr/dr.restore.test.ts",
     "test:dr-endpoints": "tsx engine/tests/dr/dr.endpoints.test.ts",

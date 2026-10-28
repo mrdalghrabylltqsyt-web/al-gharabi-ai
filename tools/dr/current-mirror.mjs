@@ -19,6 +19,7 @@
 
 import {
   normalizeRelPath,
+  dirSegments,
   shouldExclude,
   hashContent,
   computeTreeHash,
@@ -70,6 +71,23 @@ function summarizeDiff(diff) {
  * @param {number} [options.headroomBytes]
  * @returns {Promise<object>} نتيجة صادقة (no_change|synced|blocked|secret_blocked|failed).
  */
+/** توازي الرفع/التحقق في المرآة (حد آمن تحت حصة Drive لكل مستخدم). */
+export const MIRROR_CONCURRENCY = 8;
+
+/** ينفّذ fn على العناصر بتوازٍ أقصاه limit؛ أي استثناء يُرفع بعد انتهاء الجاري. */
+export async function mapLimit(items, limit, fn) {
+  let i = 0;
+  let error = null;
+  const worker = async () => {
+    while (i < items.length && !error) {
+      const idx = i++;
+      try { await fn(items[idx], idx); } catch (e) { error = error || e; }
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
+  if (error) throw error;
+}
+
 export async function runCurrentMirror(options = {}) {
   const store = options.store;
   const now = options.now || new Date().toISOString();
@@ -171,13 +189,24 @@ export async function runCurrentMirror(options = {}) {
   const failed = [];
   const byPath = new Map();
 
-  for (const entry of entries) {
+  // سرعة (2026-10-28): كانت كل نسخة بعد نشر جديد ترفع 619 ملفاً ثم تعيد تنزيلها **واحداً واحداً**
+  // (~1200 نداء متتابع ≈ 25 دقيقة). المجلدات تُنشأ أولاً بالتتابع (لا سباق ينشئ مجلداً مكرراً)،
+  // ثم الرفع والتحقق بتوازٍ محدود. نفس الضمانات: لا اعتماد إلا بعد رفع وتحقق كل ملف.
+  const concurrency = Math.max(1, Math.min(16, Number(options.concurrency) || MIRROR_CONCURRENCY));
+  if (typeof store.ensureVersionDirPath === 'function') {
+    const dirs = [...new Set(entries.map((e) => dirSegments(e.path).join('/')))].sort();
+    for (const d of dirs) {
+      const r = await store.ensureVersionDirPath(newVersion, d ? d.split('/') : []);
+      if (!r.ok) return { state: 'failed', uploaded: 0, removed: 0, reason: r.code || 'folder_create_failed', treeHash, commit, at: now, stagingVersion: newVersion, headVersion: currentVersion || null, message: 'تعذّر تجهيز مجلدات النسخة الجديدة: لم يُعتمد شيء (CURRENT السابقة سليمة).' };
+    }
+  }
+  await mapLimit(entries, concurrency, async (entry) => {
     const content = contents.get(entry.path);
     const res = await store.upsertVersionFile(newVersion, entry.path, content, mimeTypeForPath(entry.path));
-    if (!res.ok) { failed.push({ path: entry.path, code: res.code, message: res.message }); continue; }
+    if (!res.ok) { failed.push({ path: entry.path, code: res.code, message: res.message }); return; }
     byPath.set(entry.path, { path: entry.path, sha256: entry.sha256, size: content.length, driveId: res.data?.id || null });
     uploaded.push(entry.path);
-  }
+  });
 
   // 7) فشل رفع => لا اعتماد. النسخة الناقصة تُترك كـstaging (تُنظَّف لاحقاً) وCURRENT تبقى سليمة.
   if (failed.length) {
@@ -190,13 +219,14 @@ export async function runCurrentMirror(options = {}) {
     return { state: 'failed', uploaded: uploaded.length, removed: 0, reason: 'tree_hash_mismatch', expected: treeHash, actual: candidateTree, treeHash, commit, at: now, stagingVersion: newVersion, message: 'عدم تطابق بصمة الشجرة بعد الرفع: لا اعتماد.' };
   }
   const verifyProblems = [];
-  for (const entry of entries) {
+  await mapLimit(entries, concurrency, async (entry) => {
     const record = byPath.get(entry.path);
-    if (!record?.driveId) { verifyProblems.push(`no_drive_id:${entry.path}`); continue; }
+    if (!record?.driveId) { verifyProblems.push(`no_drive_id:${entry.path}`); return; }
     const dl = await store.client.downloadFile(record.driveId);
-    if (!dl.ok || !dl.data) { verifyProblems.push(`unreadable:${entry.path}`); continue; }
+    if (!dl.ok || !dl.data) { verifyProblems.push(`unreadable:${entry.path}`); return; }
     if (hashContent(dl.data) !== entry.sha256) verifyProblems.push(`hash_mismatch:${entry.path}`);
-  }
+  });
+  verifyProblems.sort();
   if (verifyProblems.length) {
     return { state: 'failed', uploaded: uploaded.length, removed: 0, reason: 'verify_failed', problems: verifyProblems.slice(0, 20), treeHash, commit, at: now, stagingVersion: newVersion, message: 'فشل التحقق من ملفات النسخة الجديدة فعلاً: لا اعتماد.' };
   }

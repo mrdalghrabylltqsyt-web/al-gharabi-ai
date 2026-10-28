@@ -399,9 +399,8 @@ export function recordFailure(ledger: DefectLedger, ev: FailureEvent, opts: { no
     // أُغلق لمجرد الهدوء ثم ظهر في دورته التالية (مزامنة إحصاءات كل ساعات) ليس regression — يُعاد فتحه
     // بصمت (كان يُعلن «عاد» مع كل نشر لإذن تيك توك الناقص نفسه).
     const wasResolved = existing.status === 'resolved';
-    const quietClosed = wasResolved && existing.resolvedBy === 'auto' && existing.kind !== 'code' && existing.kind !== 'client';
-    const isRegression = wasResolved && !quietClosed;
-    if (quietClosed) { existing.status = 'open'; existing.resolvedAt = null; existing.resolvedBy = null; }
+    const isRegression = wasResolved && countsAsRegression(existing);
+    if (wasResolved && !isRegression) { existing.status = 'open'; existing.resolvedAt = null; existing.resolvedBy = null; }
     existing.count += 1;
     existing.lastAt = nowIso;
     existing.lastVersion = version || existing.lastVersion;
@@ -424,6 +423,29 @@ export function recordFailure(ledger: DefectLedger, ev: FailureEvent, opts: { no
   ledger.groups[fp] = group;
   enforceCap(ledger);
   return { group, isNew: true, isRegression: false };
+}
+
+/**
+ * هل عودة عطل مُغلق تُعدّ «عاد بعد حله»؟ (2026-10-28) فقط إن أُغلق بإصلاح حقيقي: المهندس أو المالك،
+ * أو عيب كود أُغلق بنسخة جديدة. عطل إعداد/مزوّد أُغلق لمجرد الهدوء ثم عاد في دورته التالية (إذن تيك توك
+ * الناقص يُرصد مع كل مزامنة وكل إقلاع) ليس regression — كان يُعرض «6× عاد بعد حله» ولم يُحل أصلاً.
+ */
+export function countsAsRegression(g: Pick<DefectGroup, 'status' | 'resolvedBy' | 'kind'>): boolean {
+  if (g.status !== 'resolved') return false;
+  if (g.resolvedBy === 'auto' && g.kind !== 'code' && g.kind !== 'client') return false;
+  return true;
+}
+
+/**
+ * «انهيار» رُصد أثناء نشر نسخة جديدة (2026-10-28): Render يُقلع النسخة الجديدة **قبل** أن يرسل SIGTERM
+ * للقديمة، فكانت الجديدة تقرأ سجل حياة القديمة (حية بلا علامة إغلاق بعد) وتعلن «الخادم انهار». العلامة:
+ * النسخة المذكورة في العينة تختلف عن النسخة التي سجّلت العطل. الانهيار الحقيقي يُعيد Render تشغيله
+ * على **النسخة نفسها**.
+ */
+export function isDeployOverlapCrash(g: Pick<DefectGroup, 'where' | 'samples' | 'firstVersion'>): boolean {
+  if (!g.where.some((w) => w === 'crash:process')) return false;
+  const v = /النسخة\s+([0-9a-f]{7})/i.exec(g.samples.join(' '))?.[1] || null;
+  return Boolean(v && g.firstVersion && v !== g.firstVersion);
 }
 
 /** السقف: يُحذف الأقدم من المحلول أولاً ثم من المفتوح الأقل تكراراً. */
@@ -511,7 +533,7 @@ export function normalizeLedger(raw: any): DefectLedger {
       samples: Array.isArray(g.samples) ? g.samples.slice(0, LEDGER_POLICY.maxSamples).map(String) : [],
       status: g.status === 'resolved' || g.status === 'ignored' ? g.status : 'open',
       resolvedAt: g.resolvedAt ? String(g.resolvedAt) : null, resolvedBy: g.resolvedBy === 'owner' || g.resolvedBy === 'auto' || g.resolvedBy === 'engineer' ? g.resolvedBy : null,
-      regressions: Number(g.regressions) || 0, firstVersion: g.firstVersion || null, lastVersion: g.lastVersion || null,
+      regressions: g.kind === 'config' && g.owner === 'owner' && g.resolvedBy !== 'owner' ? 0 : Number(g.regressions) || 0, firstVersion: g.firstVersion || null, lastVersion: g.lastVersion || null,
       rule: typeof g.rule === 'string' ? g.rule : '', lastMethod: g.lastMethod ? String(g.lastMethod) : null, lastPath: g.lastPath ? String(g.lastPath) : null,
       repair: g.repair && typeof g.repair === 'object' && typeof g.repair.summary === 'string'
         ? { at: String(g.repair.at || ''), outcome: ['fixed', 'failed', 'owner', 'developer'].includes(g.repair.outcome) ? g.repair.outcome : 'failed', summary: g.repair.summary, steps: Array.isArray(g.repair.steps) ? g.repair.steps.slice(0, 8).map(String) : [], attempts: Number(g.repair.attempts) || 0 }
