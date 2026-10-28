@@ -731,6 +731,7 @@ import { memoryPressureAlert, baselineSlopePerHour } from "./engine/ops/memoryWa
 import { LiveWaiters, LIVE_WAIT_MAX_MS } from "./engine/ops/liveWait";
 import { oauthFailPage } from "./engine/social/oauthFailPage";
 import { pickGoogleCredentialPair } from "./engine/social/googleCredPair";
+import { googleBusinessAccountHint } from "./engine/social/googleBusinessHint";
 import { defaultOwnerTelegramPairing, normalizeOwnerTelegramPairing, newPairingCode, startOwnerTelegramPairing, extractPairingCode, completeOwnerTelegramPairing, unpairOwnerTelegram, effectiveOwnerChat, pairingOutcomeText, OWNER_TG_PAIRING_TTL_MS, type OwnerTelegramPairingState } from "./engine/notifications/ownerTelegramPairing";
 import { parseFacebookPostMetrics, parseInstagramMediaMetrics, parseGraphInsights, parseFollowers, upsertPerformanceRecords, summarizePlatformMetrics, type MetricValues } from "./engine/social/metricsSync";
 import { resolveInteractionProduct, productFactStatement, productNamedInText, type ProductResolution } from "./engine/social/productResolution";
@@ -4753,7 +4754,7 @@ function clearYouTubeProviderError(): void { youtubeLastProviderError = null; }
  * استعلاماً مباشراً أو فشل، نُبقي المعرّف العام ونعتمد الإثبات على نجاح التبادل.
  * كل استدعاء هنا رسمي ومحدود، ولا يُسجّل أي رمز.
  */
-async function fetchProviderAccount(platform: string, accessToken: string): Promise<{ accountId?: string; accountName?: string } | null> {
+async function fetchProviderAccount(platform: string, accessToken: string): Promise<{ accountId?: string; accountName?: string; error?: string } | null> {
   try {
     if (platform === "youtube") {
       const info = await youtubeClient().fetchMyChannel(accessToken);
@@ -4779,10 +4780,15 @@ async function fetchProviderAccount(platform: string, accessToken: string): Prom
     if (platform === "google_business") {
       // G3: نحفظ الرمز + refresh token (يلزمهما التجديد لاحقاً)، ونثبت حساباً حقيقياً.
       const r = await fetch(`${process.env.GOOGLE_BUSINESS_ACCOUNT_BASE || "https://mybusinessaccountmanagement.googleapis.com"}/v1/accounts`, { headers: { Authorization: `Bearer ${accessToken}` } });
-      const d = await r.json(); if (r.ok && d.accounts?.[0]) {
+      const d: any = await r.json().catch(() => null); if (r.ok && d?.accounts?.[0]) {
         saveGoogleBusinessCredentials({ accessToken, accountResource: d.accounts[0].name, accountName: d.accounts[0].accountName ? String(d.accounts[0].accountName) : null });
         return { accountId: d.accounts[0].name, accountName: d.accounts[0].accountName };
       }
+      // 2026-10-28: رسالة Google الحقيقية كانت تُرمى فيظهر «تعذّر إثبات هوية…» بلا سبب. الآن تُسجَّل وتُشرح.
+      const gMsg = String(d?.error?.message || "").slice(0, 240);
+      const gReason = String(d?.error?.details?.find?.((x: any) => x?.reason)?.reason || d?.error?.status || "").slice(0, 60);
+      console.log(`[oauth] google_business accounts_check status=${r.status} reason=${gReason || "-"} message=${redactSecretsFromText(gMsg) || "-"}`);
+      return { error: `${googleBusinessAccountHint({ status: r.status, message: gMsg, reason: gReason, empty: r.ok })}${gMsg ? ` (Google: ${redactSecretsFromText(gMsg)})` : ""}` };
     }
   } catch { /* الإثبات الإضافي اختياري؛ الفشل لا يُلغي نجاح التبادل */ }
   return null;
@@ -5251,7 +5257,7 @@ async function handleOAuthCallback(req:any, res:any, rawQuery:string, viaPost:bo
     // Snapchat/X/Threads/Google Business جميعها realConnector:false بالفعل (لا
     // تنفيذ خارجي أصلاً عبرها حتى مع هذه الثغرة).
     const proof=await fetchProviderAccount(platform,parsedToken.accessToken!);
-    if(!proof || !proof.accountId) throw new Error(`تعذّر إثبات هوية حساب ${platform} الحقيقية لدى المزود بعد تبادل الرمز؛ لا يُعلن اتصال موثق بلا هوية حقيقية مؤكَّدة.`);
+    if(!proof || !proof.accountId) throw new Error(proof?.error || `تعذّر إثبات هوية حساب ${platform} الحقيقية لدى المزود بعد تبادل الرمز؛ لا يُعلن اتصال موثق بلا هوية حقيقية مؤكَّدة.`);
     const accountId=proof.accountId, accountName=proof.accountName||proof.accountId;
     // يُخزَّن الرمز مع انتهاء مطلق محسوب ومع refresh token إن وُجد.
     const stored={...token, expiresAt: parsedToken.expiresIn ? Date.now()+parsedToken.expiresIn*1000 : null};
