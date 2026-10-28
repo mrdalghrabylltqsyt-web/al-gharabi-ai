@@ -1789,6 +1789,13 @@ ${payload.topic || payload.productName || 'أنظمة وحلول التقسيط 
     if (!res.ok || !data.success) throw new Error(data.error || 'تعذّر تشغيل الفحص');
     return data;
   },
+  /** سجل الأعطال الحقيقية: المالك يعلّم عطلاً «عولج» أو «تجاهل» أو يعيد فتحه. */
+  async markEngineerDefect(fp: string, action: 'resolved' | 'ignored' | 'open'): Promise<any> {
+    const res = await fetch(`/api/engineer/defects/${encodeURIComponent(fp)}`, { method: 'POST', headers: { ...getAuthHeaders(), 'Content-Type': 'application/json' }, body: JSON.stringify({ action }) });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || !data.success) throw new Error(data.error || 'تعذّر تحديث العطل');
+    return data;
+  },
   /** المهندس المشرف: تشغيل/إيقاف (للمالك). */
   async toggleEngineer(enabled: boolean): Promise<any> {
     const res = await fetch('/api/engineer/toggle', { method: 'POST', headers: { ...getAuthHeaders(), 'Content-Type': 'application/json' }, body: JSON.stringify({ enabled }) });

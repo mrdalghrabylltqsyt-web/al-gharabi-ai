@@ -1,0 +1,144 @@
+/**
+ * سجل الأعطال الحقيقية — يُختبر بأسطر سجل الإنتاج الفعلية (Render، 25–28 أكتوبر 2026)
+ * التي لم تلتقطها الدورية القديمة، وبأحداث 500/استثناء/انهيار شاشة.
+ */
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import {
+  classifyFailure, recordFailure, sweepLedger, markDefect, openDefects, ledgerSummary, normalizeLedger,
+  emptyLedger, fingerprint, normalizeRoute, sanitizeSample, defectLogLine, LEDGER_POLICY,
+} from '../ops/defectLedger';
+
+const ROOT = process.cwd();
+const read = (p: string) => readFileSync(join(ROOT, p), 'utf8');
+let passed = 0; const failures: string[] = [];
+const check = (name: string, ok: boolean, info = '') => { if (ok) passed++; else failures.push(name + (info ? ` — ${info}` : '')); };
+const NOW = Date.parse('2026-10-28T05:00:00Z');
+const log = (text: string, level: 'info' | 'warn' | 'error' = 'info') => ({ source: 'log' as const, text, level });
+
+// ---------------------------------------------------------------------------
+// 1) أسطر الإنتاج الحقيقية
+// ---------------------------------------------------------------------------
+const secret = classifyFailure(log('[oauth-callback-error] google_business status=502 message=The provided client secret is invalid.'));
+check('★ سرّ OAuth خاطئ ⇒ إعداد حرج بيد المالك', secret?.kind === 'config' && secret.owner === 'owner' && secret.severity === 'critical', JSON.stringify(secret));
+check('★ العلاج يذكر Render والمنصة', /Render/.test(secret?.fix || '') && /Google Business/.test(secret?.fix || ''));
+
+const refresh = classifyFailure(log('[youtube-oauth] outcome=refresh_failed'));
+check('★ فشل تجديد رمز يوتيوب ⇒ حرج + إعادة ربط', refresh?.severity === 'critical' && /أعد ربط يوتيوب/.test(refresh.fix));
+
+const slow = classifyFailure(log('[dr-backup] outcome=ok state=backed_up trigger=scheduled decision=due recoveryPoint=rp-064 ms=1678473'));
+check('★ نسخة احتياطية 28 دقيقة ⇒ عطل أداء (لم تره الدورية)', slow?.kind === 'performance' && /28 دقيقة/.test(slow.diagnosis), JSON.stringify(slow));
+check('نسخة احتياطية سريعة ليست عطلاً', classifyFailure(log('[dr-backup] outcome=ok state=backed_up ms=42000')) === null);
+check('النسخ المؤجّل/المفروض ليس فشلاً', classifyFailure(log('[dr-backup] outcome=deferred reason=pressure_defer trigger=scheduled')) === null && classifyFailure(log('[dr-backup] outcome=forcing reason=stale_over_24h trigger=scheduled')) === null);
+check('سطر مراحل النسخ ليس عطلاً', classifyFailure(log('[dr-backup] stages snapshot=900s mirror=400s files=300 uploaded=12')) === null);
+check('نسخة احتياطية فاشلة ⇒ حرج', classifyFailure(log('[dr-backup] outcome=failed reason=quota ms=1000'))?.severity === 'critical');
+
+const tiktok = classifyFailure(log('[metrics] platform=tiktok posts=0 withMetrics=0 followers=- issue=SCOPE_MISSING_video.list'));
+check('★ إذن video.list ناقص ⇒ إعداد بيد المالك', tiktok?.kind === 'config' && tiktok.owner === 'owner' && /تيك توك/.test(tiktok.title));
+check('رمز Meta 10 ⇒ إذن ناقص', classifyFailure(log('[metrics] platform=facebook posts=7 withMetrics=5 followers=1064 error=10'))?.kind === 'config');
+check('مزامنة سليمة issue=- ليست عطلاً', classifyFailure(log('[metrics] platform=facebook posts=5 withMetrics=5 followers=1067 issue=-')) === null);
+
+const rejected = classifyFailure(log('[oauth] youtube {"outcome":"callback_rejected","reason":"جلسة OAuth غير معروفة أو أُعيد استخدامها."}'));
+check('عودة OAuth مرفوضة ⇒ تحذير للمالك', rejected?.severity === 'warning' && rejected.owner === 'owner');
+
+for (const ok of [
+  '[oauth] youtube {"outcome":"authorized_url_issued","redirectUri":"x"}',
+  '[oauth] youtube {"outcome":"callback_completed","status":200}',
+  '[youtube-oauth] outcome=token_refreshed scopeCount=3',
+  '[storage] state_writes requested=75 written=74 coalesced=1 fail_streak=0 (since boot)',
+  '[الغرابي AI Server] running on http://0.0.0.0:10000',
+  '[defect] new fp=abc kind=code title="x"',
+]) check(`ليس عطلاً: ${ok.slice(0, 50)}`, classifyFailure(log(ok)) === null);
+
+// ---------------------------------------------------------------------------
+// 2) أعطال الكود الحقيقية: 500، استثناء، انهيار شاشة
+// ---------------------------------------------------------------------------
+const h500 = classifyFailure({ source: 'http', text: 'Cannot read properties of undefined (reading map)', status: 500, where: '/api/commercial/leads/lead_9f8e7d6c5b/draft' });
+check('★ 500 من مسار ⇒ عيب كود حرج لمهندس الكود', h500?.kind === 'code' && h500.owner === 'developer' && h500.severity === 'critical');
+check('مسار يُطبَّع بلا معرّفات', normalizeRoute('/api/commercial/leads/lead_9f8e7d6c5b/draft') === '/api/commercial/leads/:id/draft', normalizeRoute('/api/commercial/leads/lead_9f8e7d6c5b/draft'));
+check('502 ⇒ مزوّد لا كود', classifyFailure({ source: 'http', text: '', status: 502, where: '/api/x' })?.kind === 'provider');
+check('200 بطيء جداً ⇒ أداء', classifyFailure({ source: 'http', text: '', status: 200, where: '/api/x', durationMs: 20000 })?.kind === 'performance');
+check('200 عادي ليس عطلاً', classifyFailure({ source: 'http', text: '', status: 200, where: '/api/x', durationMs: 80 }) === null);
+check('★ استثناء غير معالج ⇒ حرج', classifyFailure({ source: 'exception', text: 'TypeError: x is not a function' })?.severity === 'critical');
+check('★ انهيار شاشة ⇒ عيب واجهة حرج', classifyFailure({ source: 'client', text: 'render crash: Cannot read properties of null', where: 'live' })?.severity === 'critical');
+check('★ شاشة تلقت 500 ⇒ عيب كود', classifyFailure({ source: 'client', text: 'api 500 /api/finance/aging', where: '/api/finance/aging' })?.kind === 'code');
+check('★ شاشة تلقت 502 ⇒ الخادم لم يُجب (لا عيب كود)', classifyFailure({ source: 'client', text: 'api 502 /api/live/room', where: '/api/live/room' })?.kind === 'provider');
+check('خطأ JS في سطر تحذير ⇒ عيب كود', classifyFailure(log('[brain] something TypeError: a.b is undefined', 'warn'))?.kind === 'code');
+check('دورة المهندس فشلت ⇒ عيب كود', classifyFailure(log('[engineer] tick_failed boom', 'warn'))?.owner === 'developer');
+
+// ---------------------------------------------------------------------------
+// 3) الدفتر: تجميع، تكرار، حل، عودة، سقف
+// ---------------------------------------------------------------------------
+const L = emptyLedger();
+const ev500 = (id: string) => ({ source: 'http' as const, text: `Cannot read properties of undefined (reading 'map') id=${id}`, status: 500, where: `/api/leads/lead_${id}aaaaaa/draft` });
+const r1 = recordFailure(L, ev500('111111'), { nowMs: NOW, version: 'aaa1111' });
+const r2 = recordFailure(L, ev500('222222'), { nowMs: NOW + 60000, version: 'aaa1111' });
+check('★ تكرار العطل نفسه بمعرّفات مختلفة ⇒ مجموعة واحدة', r1?.isNew === true && r2?.isNew === false && r1?.group.fp === r2?.group.fp && Object.keys(L.groups).length === 1);
+check('العدّاد يزيد', r2?.group.count === 2);
+check('لا عطل ⇒ لا تسجيل', recordFailure(L, log('[storage] state_writes requested=1'), { nowMs: NOW }) === null && L.events === 2);
+
+// عيب الكود لا يُغلق بالصمت وحده على نفس النسخة
+let res = sweepLedger(L, { nowMs: NOW + 3 * 86400000, version: 'aaa1111', versionSinceMs: NOW - 86400000 });
+check('★ عيب كود لا يُغلق بالصمت على النسخة نفسها', res.length === 0 && openDefects(L).length === 1);
+// نسخة جديدة نُشرت وغاب عليها أكثر من 6 ساعات ⇒ حُلّ
+res = sweepLedger(L, { nowMs: NOW + 3 * 86400000, version: 'bbb2222', versionSinceMs: NOW + 3 * 86400000 - 7 * 3600000 });
+check('★ يُغلق بعد نسخة جديدة وغيابه عليها', res.length === 1 && openDefects(L).length === 0);
+const back = recordFailure(L, ev500('333333'), { nowMs: NOW + 4 * 86400000, version: 'bbb2222' });
+check('★ عودة بعد الحل ⇒ regression', back?.isRegression === true && back.group.regressions === 1 && back.group.status === 'open');
+
+// عطل مزوّد يُغلق بعد 24 ساعة صمت
+const L2 = emptyLedger();
+recordFailure(L2, log('[youtube-oauth] outcome=refresh_failed'), { nowMs: NOW });
+check('عطل مزوّد يُغلق بعد 24 س صمت', sweepLedger(L2, { nowMs: NOW + LEDGER_POLICY.autoResolveMs + 1000 }).length === 1);
+check('المحلول يُنسى بعد 14 يوماً', (sweepLedger(L2, { nowMs: NOW + 20 * 86400000 }), Object.keys(L2.groups).length === 0));
+
+// قرار المالك
+const L3 = emptyLedger();
+const g = recordFailure(L3, log('[metrics] platform=threads posts=9 withMetrics=0 issue=10x9'), { nowMs: NOW })!.group;
+check('المالك يتجاهل', markDefect(L3, g.fp, 'ignored', NOW)?.status === 'ignored' && openDefects(L3).length === 0);
+
+// السقف
+const L4 = emptyLedger();
+for (let i = 0; i < LEDGER_POLICY.maxGroups + 40; i++) recordFailure(L4, { source: 'http', text: `boom variant ${'x'.repeat(i % 7)} ${String.fromCharCode(97 + (i % 26))}${String.fromCharCode(97 + Math.floor(i / 26))}`, status: 500, where: `/api/r${String.fromCharCode(97 + (i % 26))}${String.fromCharCode(97 + Math.floor(i / 26))}` }, { nowMs: NOW + i });
+check('★ سقف المجموعات محترم', Object.keys(L4.groups).length <= LEDGER_POLICY.maxGroups, String(Object.keys(L4.groups).length));
+
+// تنقية العيّنات
+const s = sanitizeSample('failed for ali@example.com phone +964 770 123 4567 Bearer abcdefghijklmnopqrstuvwxyz0123456789');
+check('★ العيّنة بلا بريد/هاتف/رمز', !/example\.com/.test(s) && !/770 123/.test(s) && !/abcdefghijklmnop/.test(s), s);
+
+// التحميل الآمن
+const N = normalizeLedger({ groups: { a: { title: 't', firstAt: '2026-10-28T00:00:00Z', kind: 'code', severity: 'critical', samples: ['x'] }, bad: null }, events: 3 });
+check('التحميل يتجاهل التالف', Object.keys(N.groups).length === 1 && N.events === 3);
+check('التحميل من قيمة فارغة', Object.keys(normalizeLedger(null).groups).length === 0);
+
+// سطر السجل للمهندس المجدول
+const line = defectLogLine(back!.group, 'regression');
+check('★ سطر [defect] واحد مُهيكل', /^\[defect\] regression fp=\w{12} kind=code sev=critical owner=developer where=\/api\/leads\/:id\/draft/.test(line) && !line.includes('\n'), line);
+check('سطر [defect] لا يُعاد تسجيله كعطل', classifyFailure(log(line, 'warn')) === null);
+
+const sum = ledgerSummary(L);
+check('الملخص يعدّ المفتوح لمهندس الكود', sum.open === 1 && sum.forDeveloper === 1 && sum.regressions === 1);
+check('البصمة ثابتة', fingerprint({ kind: 'code', key: 'k' }, { source: 'log', text: 'x 1' }) === fingerprint({ kind: 'code', key: 'k' }, { source: 'log', text: 'x 2' }));
+
+// ---------------------------------------------------------------------------
+// 4) التوصيل في الخادم والواجهة
+// ---------------------------------------------------------------------------
+const server = read('server.ts');
+check('★ الخادم يسجّل 500 والبطء لكل /api', /res\.on\("finish"/.test(server) && /defectIntake\(\{ source: "http"/.test(server));
+check('★ الخادم يسجّل الاستثناء غير المعالج', /defectIntake\(\{ source: "exception"/.test(server));
+check('★ وسيط الأخطاء يسجّل الرسالة الحقيقية داخلياً (لا «خطأ داخلي» فقط)', /request error \(\$\{info\.code\}\) \$\{req\?\.method/.test(server));
+check('★ مسار تقارير الواجهة محمي ومحدود', /app\.post\("\/api\/engineer\/client-error", authenticateToken/.test(server) && /clientErrorWindow/.test(server));
+check('★ مسارات الدفتر للمالك فقط', /app\.get\("\/api\/engineer\/defects", requireOwner/.test(server) && /app\.post\("\/api\/engineer\/defects\/:fp", requireOwner/.test(server));
+check('الدفتر يُحفظ ويُحمَّل', /STORAGE_KEY_DEFECTS/.test(server) && /normalizeLedger\(/.test(server));
+const main = read('src/main.tsx');
+check('★ الواجهة تلتقط الانهيار وأخطاء الخادم', /ErrorBoundary/.test(main) && /installClientErrorReporting\(\)/.test(main) && /reportClientError/.test(read('src/components/common/ErrorBoundary.tsx')));
+const ui = read('src/components/live/LiveBrainRoom.tsx');
+check('★ تبويب «الأعطال الحقيقية» في غرفة المهندس', ui.includes("'defects'") && ui.includes('الأعطال الحقيقية'));
+
+console.log('\n' + '='.repeat(60));
+if (failures.length) {
+  console.error(`FAILED: ${failures.length} — passed ${passed}`);
+  for (const f of failures) console.error('  ✗ ' + f);
+  process.exit(1);
+}
+console.log(`PASSED: ${passed} defect-ledger checks`);
