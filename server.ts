@@ -729,6 +729,7 @@ import { buildOwnIdentity, customerVoices, type OwnIdentity } from "./engine/soc
 import { memoryPressureAlert, baselineSlopePerHour } from "./engine/ops/memoryWatch";
 import { LiveWaiters, LIVE_WAIT_MAX_MS } from "./engine/ops/liveWait";
 import { oauthFailPage } from "./engine/social/oauthFailPage";
+import { pickGoogleCredentialPair } from "./engine/social/googleCredPair";
 import { defaultOwnerTelegramPairing, normalizeOwnerTelegramPairing, newPairingCode, startOwnerTelegramPairing, extractPairingCode, completeOwnerTelegramPairing, unpairOwnerTelegram, effectiveOwnerChat, pairingOutcomeText, OWNER_TG_PAIRING_TTL_MS, type OwnerTelegramPairingState } from "./engine/notifications/ownerTelegramPairing";
 import { parseFacebookPostMetrics, parseInstagramMediaMetrics, parseGraphInsights, parseFollowers, upsertPerformanceRecords, summarizePlatformMetrics, type MetricValues } from "./engine/social/metricsSync";
 import { resolveInteractionProduct, productFactStatement, productNamedInText, type ProductResolution } from "./engine/social/productResolution";
@@ -2376,6 +2377,18 @@ function loginConfigEnvNames(platform: string): string[] {
   return [...(LOGIN_CONFIG_ENV_NAMES[platform] || [])];
 }
 
+/**
+ * اعتماد Google Business زوجاً متّسقاً (2026-10-28) — انظر engine/social/googleCredPair.ts.
+ * الزوج الخاص (GOOGLE_BUSINESS_*) يُستعمل فقط إن اكتمل ولم ترفضه Google؛ وإلا الزوج المشترك.
+ */
+let googleBusinessPairRejected = false;
+function googleBusinessCredentials(): { clientId: string; clientSecret: string; source: "business" | "shared" | "none" } {
+  return pickGoogleCredentialPair({
+    business: { clientId: envSecret("GOOGLE_BUSINESS_OAUTH_CLIENT_ID") || envSecret("GOOGLE_BUSINESS_CLIENT_ID") || "", clientSecret: envSecret("GOOGLE_BUSINESS_OAUTH_CLIENT_SECRET") || envSecret("GOOGLE_BUSINESS_CLIENT_SECRET") || "" },
+    shared: { clientId: envSecret("GOOGLE_OAUTH_CLIENT_ID") || envSecret("GOOGLE_CLIENT_ID") || "", clientSecret: envSecret("GOOGLE_OAUTH_CLIENT_SECRET") || "" },
+    businessRejected: googleBusinessPairRejected,
+  });
+}
 const OAUTH_CONFIG: Record<string, any> = {
   // youtube.readonly يقابل استدعاءً حقيقياً منفّذاً (channels.list?mine=true) لإثبات
   // هوية القناة، وyoutube.upload بقي مطلوباً بقرار المالك تمهيداً لرفع الفيديو.
@@ -2385,7 +2398,10 @@ const OAUTH_CONFIG: Record<string, any> = {
   // أو البديل GOOGLE_BUSINESS_CLIENT_ID/SECRET) ثم يسقط لاعتماد Google المشترك
   // (GOOGLE_OAUTH_CLIENT_ID/SECRET ثم GOOGLE_CLIENT_ID) — فلا يلزم اعتماد جديد إن
   // كانت YouTube مضبوطة أصلاً، ولا يتأثر مسار YouTube بهذه البدائل.
-  google_business: { provider: "google", auth: "https://accounts.google.com/o/oauth2/v2/auth", token: "https://oauth2.googleapis.com/token", clientId: envSecret("GOOGLE_BUSINESS_OAUTH_CLIENT_ID") || envSecret("GOOGLE_BUSINESS_CLIENT_ID") || envSecret("GOOGLE_OAUTH_CLIENT_ID") || envSecret("GOOGLE_CLIENT_ID"), clientSecret: envSecret("GOOGLE_BUSINESS_OAUTH_CLIENT_SECRET") || envSecret("GOOGLE_BUSINESS_CLIENT_SECRET") || envSecret("GOOGLE_OAUTH_CLIENT_SECRET"), scopes: ["https://www.googleapis.com/auth/business.manage"] },
+  // 2026-10-28: المعرّف والسرّ يُختاران **زوجاً واحداً** (كانا يُختاران كلٌّ بسلسلة مستقلة، فيُقرن معرّف
+  // الاعتماد المشترك بسرّ GOOGLE_BUSINESS_* قديم ⇒ «The provided client secret is invalid»). وإن رفضت
+  // Google الزوج الخاص (invalid_client) يُستعمل الزوج المشترك المُثبت (نفسه الذي يربط يوتيوب) تلقائياً.
+  google_business: { provider: "google", auth: "https://accounts.google.com/o/oauth2/v2/auth", token: "https://oauth2.googleapis.com/token", get clientId() { return googleBusinessCredentials().clientId; }, get clientSecret() { return googleBusinessCredentials().clientSecret; }, scopes: ["https://www.googleapis.com/auth/business.manage"] },
   tiktok: { provider: "tiktok", auth: `https://www.tiktok.com/v2/auth/authorize/`, token: "https://open.tiktokapis.com/v2/oauth/token/", clientId: envSecret("TIKTOK_CLIENT_KEY"), clientSecret: envSecret("TIKTOK_CLIENT_SECRET"), scopes: [...TIKTOK_REQUIRED_SCOPES] },
   // business_management إلزامي منذ Graph v17 لعرض صفحات Business Manager عبر
   // /me/accounts؛ بدونه يظهر الحساب «يدير صفر صفحات» فاشلاً بلا سبب واضح.
@@ -5226,7 +5242,7 @@ async function handleOAuthCallback(req:any, res:any, rawQuery:string, viaPost:bo
     if (platform === "google_business") saveGoogleBusinessCredentials({ accessToken: String(parsedToken.accessToken || ""), refreshToken: (token as any)?.refresh_token || null, expiresIn: parsedToken.expiresIn ?? null, accountResource: accountId, accountName: accountName });
     platformConnections.set(platform,{platform,status:"connected",accountId,accountName,connectedAt:new Date().toISOString(),providerVerified:true}); savePlatformConnections(); clearOAuthFailure(platform); audit(pending!.userId,"platform_oauth_connected",`${platform}:${accountId}`);
     sendHtml("<html lang='ar' dir='rtl'><meta charset='utf-8'><title>تم الربط</title><body style='font-family:sans-serif;padding:40px'><h2>تم ربط المنصة بنجاح.</h2><p>يمكنك إغلاق هذه النافذة والعودة إلى الغرابي AI.</p></body></html>");
-  } catch(e:any) { audit(pending!.userId,"platform_oauth_failed",platform); const errMsg=redactSecretsFromText(String(e?.message||e)).slice(0,300); console.error(`[oauth-callback-error] ${platform} status=502 message=${errMsg}`); recordOAuthFailure(platform, errMsg); const hint=oauthFailureHint(platform,errMsg); failHtml(502, `فشل إكمال ربط المنصة: ${errMsg}${hint?" — "+hint:""}`); }
+  } catch(e:any) { audit(pending!.userId,"platform_oauth_failed",platform); const errMsg=redactSecretsFromText(String(e?.message||e)).slice(0,300); console.error(`[oauth-callback-error] ${platform} status=502 message=${errMsg}`); recordOAuthFailure(platform, errMsg); if(platform==="google_business" && /client secret is invalid|invalid_client/i.test(errMsg) && googleBusinessCredentials().source==="business"){ googleBusinessPairRejected=true; console.log("[oauth] google_business credential_pair=business rejected=invalid_client fallback=shared"); } const hint=platform==="google_business"&&googleBusinessPairRejected&&googleBusinessCredentials().source==="shared"?"رفضت Google السرّ الخاص بـGoogle Business في Render؛ صار الخادم يستعمل اعتماد Google المشترك (نفسه الذي يربط يوتيوب). اضغط «ربط» مرة أخرى.":oauthFailureHint(platform,errMsg); failHtml(502, `فشل إكمال ربط المنصة: ${errMsg}${hint?" — "+hint:""}`); }
 }
 
 app.post("/api/platforms/telegram/configure", requireOwner, async (req,res)=>{

@@ -49,14 +49,13 @@ check('oauthAvailable معرّف في نوع الحالة', operations.includes(
 check('oauthAvailable = دعم OAuth + اعتماد مضبوط', /oauthAvailable:\s*readiness\.oauth\s*!==\s*'NOT_SUPPORTED'\s*&&\s*connectionConfigured/.test(operations));
 
 // 4) اعتماد Google Business يُقرأ من متغيراته الصحيحة (الخاصة أو المشتركة).
-check('OAUTH_CONFIG لـgoogle_business يقرأ GOOGLE_BUSINESS_OAUTH_CLIENT_ID',
-  /google_business:\s*\{[\s\S]{0,900}?GOOGLE_BUSINESS_OAUTH_CLIENT_ID/.test(server));
-check('والسرّ GOOGLE_BUSINESS_OAUTH_CLIENT_SECRET',
-  /google_business:\s*\{[\s\S]{0,900}?GOOGLE_BUSINESS_OAUTH_CLIENT_SECRET/.test(server));
-check('البديل GOOGLE_BUSINESS_CLIENT_ID مقبول',
-  /google_business:\s*\{[\s\S]{0,900}?GOOGLE_BUSINESS_CLIENT_ID/.test(server));
-check('يسقط لاعتماد Google المشترك (GOOGLE_OAUTH_CLIENT_ID) عند غياب الخاص',
-  /GOOGLE_BUSINESS_OAUTH_CLIENT_ID"\)\s*\|\|\s*envSecret\("GOOGLE_BUSINESS_CLIENT_ID"\)\s*\|\|\s*envSecret\("GOOGLE_OAUTH_CLIENT_ID"\)/.test(server));
+// 2026-10-28: المعرّف والسرّ زوج واحد من مصدر واحد (googleBusinessCredentials ← pickGoogleCredentialPair).
+check('OAUTH_CONFIG لـgoogle_business يقرأ الزوج المتّسق',
+  server.includes('get clientId() { return googleBusinessCredentials().clientId; }, get clientSecret() { return googleBusinessCredentials().clientSecret; }'));
+check('الزوج الخاص GOOGLE_BUSINESS_OAUTH_CLIENT_ID/SECRET (والبديل GOOGLE_BUSINESS_CLIENT_ID/SECRET)',
+  server.includes('business: { clientId: envSecret("GOOGLE_BUSINESS_OAUTH_CLIENT_ID") || envSecret("GOOGLE_BUSINESS_CLIENT_ID") || "", clientSecret: envSecret("GOOGLE_BUSINESS_OAUTH_CLIENT_SECRET") || envSecret("GOOGLE_BUSINESS_CLIENT_SECRET") || "" }'));
+check('يسقط لاعتماد Google المشترك (GOOGLE_OAUTH_CLIENT_ID/SECRET) زوجاً كاملاً',
+  server.includes('shared: { clientId: envSecret("GOOGLE_OAUTH_CLIENT_ID") || envSecret("GOOGLE_CLIENT_ID") || "", clientSecret: envSecret("GOOGLE_OAUTH_CLIENT_SECRET") || "" }'));
 check('نطاق Business Profile الصحيح مطلوب',
   server.includes('https://www.googleapis.com/auth/business.manage'));
 
