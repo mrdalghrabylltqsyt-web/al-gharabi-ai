@@ -728,6 +728,7 @@ import { PATROL_ORDER, COLLECTION_CAPS, inspectModule, healthScore, healthBreakd
 import { buildOwnIdentity, customerVoices, type OwnIdentity } from "./engine/social/ownVoice";
 import { memoryPressureAlert, baselineSlopePerHour } from "./engine/ops/memoryWatch";
 import { LiveWaiters, LIVE_WAIT_MAX_MS } from "./engine/ops/liveWait";
+import { oauthFailPage } from "./engine/social/oauthFailPage";
 import { defaultOwnerTelegramPairing, normalizeOwnerTelegramPairing, newPairingCode, startOwnerTelegramPairing, extractPairingCode, completeOwnerTelegramPairing, unpairOwnerTelegram, effectiveOwnerChat, pairingOutcomeText, OWNER_TG_PAIRING_TTL_MS, type OwnerTelegramPairingState } from "./engine/notifications/ownerTelegramPairing";
 import { parseFacebookPostMetrics, parseInstagramMediaMetrics, parseGraphInsights, parseFollowers, upsertPerformanceRecords, summarizePlatformMetrics, type MetricValues } from "./engine/social/metricsSync";
 import { resolveInteractionProduct, productFactStatement, productNamedInText, type ProductResolution } from "./engine/social/productResolution";
@@ -5019,8 +5020,9 @@ async function handleOAuthCallback(req:any, res:any, rawQuery:string, viaPost:bo
   // POST (تدفّق المقطع) يرد JSON لاستدعاء fetch؛ GET (تدفّق code) يرد صفحة HTML
   // للمتصفح. المنطق واحد، ويختلف شكل الرد فقط.
   const sendHtml=(html:string)=>viaPost?res.json({success:true}):res.send(html);
-  const failHtml=(status:number,msg:string)=>viaPost?res.status(status).json({success:false,error:msg}):res.status(status).send(msg);
   const params=new URLSearchParams(rawQuery||"");
+  // صفحة عربية بسبب الفشل وخطواته وزر عودة (كان سطراً خاماً على صفحة بيضاء). نص الرسالة نفسه لا يتغيّر.
+  const failHtml=(status:number,msg:string)=>viaPost?res.status(status).json({success:false,error:msg}):res.status(status).send(oauthFailPage({ platform: String(req.params.platform||"").replace(/-/g,"_"), message: msg, providerError: params.get("error"), appUrl: publicBaseUrlNow() }));
   // تطبيع معرّف المنصة (يقبل صيغة الشرطة google-business كـalias للمعرّف القانوني)
   // حتى تنجح العودة من نفس مسار البدء.
   const platform=String(req.params.platform||"").replace(/-/g,"_"); const state=params.get("state")||""; const pending=pendingOAuth.get(state); const cfg=OAUTH_CONFIG[platform];
