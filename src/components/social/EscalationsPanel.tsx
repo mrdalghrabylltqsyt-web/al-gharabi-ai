@@ -18,14 +18,24 @@ export const EscalationsPanel: React.FC = () => {
   const [pending, setPending] = useState(0);
   const [showDone, setShowDone] = useState(false);
   const [busy, setBusy] = useState<string | null>(null);
+  const [state, setState] = useState<'loading' | 'ok' | 'error'>('loading');
 
   const load = useCallback(async () => {
-    try { const r = await apiService.getEscalations(); setRows(r.escalations); setPending(r.pending); }
-    catch { /* اللوحة تختفي إن تعذّر الجلب */ }
+    try { const r = await apiService.getEscalations(); setRows(r.escalations); setPending(r.pending); setState('ok'); }
+    catch { setState('error'); }
   }, []);
   useEffect(() => { void load(); }, [load]);
 
-  if (!rows.length) return null;
+  // كانت اللوحة تختفي كلياً أثناء التحميل أو عند الفشل، فيصل المالك من «افتح» ولا يجد شيئاً.
+  if (state !== 'ok' || !rows.length) {
+    if (state === 'ok') return null;
+    return (
+      <section className="p-4 rounded-2xl glass border border-rose-500/20 text-xs" dir="rtl" aria-label="التصعيدات البشرية">
+        {state === 'loading' ? <span className="text-slate-400">جارٍ تحميل الحالات التي تحتاج تدخّلك…</span>
+          : <span className="text-rose-300">تعذّر تحميل الحالات. <button type="button" className="underline" onClick={() => { setState('loading'); void load(); }}>أعد المحاولة</button></span>}
+      </section>
+    );
+  }
   const open = rows.filter((e) => e.state !== 'RESOLVED');
   const list = showDone ? rows.slice(0, 30) : open;
 

@@ -1768,8 +1768,11 @@ ${payload.topic || payload.productName || 'أنظمة وحلول التقسيط 
   /** صندوق الزبائن: العملاء المحتملون + المسودات بانتظار الموافقة + وضع الإرسال. */
   /** غرفة العقل الحية: لقطة حالة الخادم الحقيقية + الأحداث الجديدة منذ `since` (للمالك). */
   /** تنبيهات الخادم الحقيقية (إعادة ربط منصة، حصة YouTube، تعثّر مراقب، تنبيهات المالك). */
-  async getNotifications(): Promise<{ notifications: any[]; unread: number }> {
-    const res = await fetch('/api/notifications', { headers: getAuthHeaders(), cache: 'no-store' });
+  async getNotifications(filter: { unread?: boolean; severity?: 'critical' | 'warning' | 'info' } = {}): Promise<{ notifications: any[]; unread: number }> {
+    const qs = new URLSearchParams();
+    if (filter.unread) qs.set('unread', '1');
+    if (filter.severity) qs.set('severity', filter.severity);
+    const res = await fetch(`/api/notifications${qs.toString() ? `?${qs}` : ''}`, { headers: getAuthHeaders(), cache: 'no-store' });
     const data = await res.json().catch(() => ({}));
     if (!res.ok || !data.success) throw new Error(data.error || 'تعذر جلب التنبيهات');
     return { notifications: Array.isArray(data.notifications) ? data.notifications : [], unread: Number(data.unread || 0) };

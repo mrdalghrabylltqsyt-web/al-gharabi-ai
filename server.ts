@@ -20842,8 +20842,11 @@ function providerStatus(platform:string){
 }
 app.get("/api/notifications", authenticateToken, (req,res)=>{
   const u=(req as any).user as ServerUser; const all=(workspace as any).notifications||[];
-  const rows=all.filter((n:any)=>!n.userId||n.userId===u.id).slice(0,200);
-  res.json({success:true,notifications:rows,unread:rows.filter((n:any)=>!n.read).length});
+  // الترشيح قبل القصّ (2026-10-28): مع ~300 غير مقروء كان الحرج الأقدم يقع خارج أول 200 فلا يُرى.
+  const onlyUnread=String(req.query?.unread||"")==="1"; const sev=String(req.query?.severity||"");
+  const mine=all.filter((n:any)=>(!n.userId||n.userId===u.id) && (!onlyUnread||!n.read) && (!sev||n.severity===sev));
+  const rows=mine.slice(0,200);
+  res.json({success:true,notifications:rows,unread:mine.filter((n:any)=>!n.read).length,total:mine.length});
 });
 app.post("/api/notifications/:id/read", authenticateToken, (req,res)=>{
   const u=(req as any).user as ServerUser; const n=(workspace as any).notifications.find((x:any)=>x.id===req.params.id);
