@@ -180,6 +180,7 @@ import {
   checkWebhookRegistration,
   type TelegramFetch,
   parseTelegramCallbackQuery,
+  createTelegramFetch,
 } from "./engine/social/telegram";
 import {
   FacebookClient,
@@ -724,9 +725,9 @@ import { backupFreshness, resolveAutoBackupIntervalMs } from "./engine/dr/autoBa
 import { summarizePublishHealth, formatPublishLogLine } from "./engine/ops/publishHealth";
 import { realProductPhrases } from "./src/utils/productPhrases";
 import { LiveEventBuffer, classifyLogLine, auditToLiveEvent, buildLiveModules, buildLiveInsights, buildLiveCycles, platformAr, type LiveEventInput } from "./engine/ops/liveRoom";
-import { detectIncidents, decideNext, forgetRecovered, addReport, withTimeout, emptyEngineerState, normalizeEngineerState, incidentsFromPatrol, ENGINEER_POLICY, type EngineerState, type EngineerSnapshot, type Incident, type ReportStep, type EngineerReport } from "./engine/ops/siteEngineer";
+import { detectIncidents, decideNext, forgetRecovered, addReport, withTimeout, emptyEngineerState, normalizeEngineerState, incidentsFromPatrol, incidentsFromDefects, ENGINEER_POLICY, type EngineerState, type EngineerSnapshot, type Incident, type ReportStep, type EngineerReport } from "./engine/ops/siteEngineer";
 import { PATROL_ORDER, COLLECTION_CAPS, inspectModule, healthScore, healthBreakdown, slopePerHour, growthPerDay, type PatrolFacts, type ModuleInspection } from "./engine/ops/engineerPatrol";
-import { recordFailure, sweepLedger, markDefect, openDefects, ledgerSummary, normalizeLedger, emptyLedger, defectLogLine, LEDGER_POLICY, type DefectLedger, type FailureEvent } from "./engine/ops/defectLedger";
+import { recordFailure, sweepLedger, markDefect, openDefects, ledgerSummary, normalizeLedger, emptyLedger, defectLogLine, repairPlanFor, recordRepair, recentlyRepaired, LEDGER_POLICY, type DefectLedger, type FailureEvent, type RepairPlan } from "./engine/ops/defectLedger";
 import { buildOwnIdentity, customerVoices, type OwnIdentity } from "./engine/social/ownVoice";
 import { memoryPressureAlert, baselineSlopePerHour } from "./engine/ops/memoryWatch";
 import { LiveWaiters, LIVE_WAIT_MAX_MS } from "./engine/ops/liveWait";
@@ -953,10 +954,14 @@ app.use((req, res, next) => {
 // المهندس يرى كل طلب /api ينتهي بـ5xx أو يستغرق أكثر من 15 ث — مع رسالة الخطأ الحقيقية
 // التي أعادها المسار (لا «خطأ داخلي» عام). الانتظار الطويل المقصود (wait=1) ورفع الملفات
 // والنسخ الاحتياطي مستثناة من «البطء» لأنها طويلة بطبيعتها.
+/** معرّف عشوائي لكل عملية يميّز طلبات التحقق الداخلية للمهندس (لا يغادر الخادم). */
+const ENGINEER_PROBE_ID = crypto.randomUUID();
 const DEFECT_SLOW_EXEMPT = /\/dr\/|\/backup|upload|\/engineer\/check|\/oauth\//i;
 app.use((req, res, next) => {
   const path = String(req.path || "");
   if (!path.startsWith("/api/") || path === "/api/engineer/client-error") return next();
+  // إعادة التنفيذ التي يجريها المهندس للتحقق من إصلاحه لا تُسجَّل كحادثة جديدة.
+  if (req.headers["x-engineer-probe"] === ENGINEER_PROBE_ID) return next();
   const t0 = Date.now();
   let errorText = "";
   const origJson = res.json.bind(res);
@@ -966,7 +971,7 @@ app.use((req, res, next) => {
       const status = res.statusCode; const ms = Date.now() - t0;
       const slow = ms >= LEDGER_POLICY.slowRequestMs && String((req.query as any)?.wait || "") !== "1" && !DEFECT_SLOW_EXEMPT.test(path);
       const realText = String(res.locals?.defectText || errorText || (status >= 500 ? "no error body" : ""));
-      if (status >= 500 || slow) defectIntake({ source: "http", text: `${req.method} ${realText}`.trim(), status, where: path, frame: res.locals?.defectFrame || null, durationMs: slow ? ms : null });
+      if (status >= 500 || slow) defectIntake({ source: "http", text: `${req.method} ${realText}`.trim(), status, where: path, frame: res.locals?.defectFrame || null, durationMs: slow ? ms : null, method: req.method, path });
     } catch { /* تجاهل */ }
   });
   next();
@@ -2709,7 +2714,8 @@ function saveTelegramCredentials(botToken: string, webhookSecret: string, webhoo
   });
 }
 /** الترويسة لا تُسجَّل ولا تُعاد أبداً؛ تُستخدم للتحقق فقط. */
-const telegramFetchImpl: TelegramFetch = (url, init) => fetch(url, init as any);
+// قراءات Telegram (getMe/getWebhookInfo/getUpdates) تُعاد عند انقطاع عابر؛ الإرسال لا يُعاد أبداً.
+const telegramFetchImpl: TelegramFetch = createTelegramFetch((url, init) => fetch(url, init as any));
 function telegramClient(): TelegramClient | null {
   const token = telegramBotToken();
   if (!token) return null;
@@ -15323,6 +15329,74 @@ type EngineerPlan = { steps: Array<{ label: string; timeoutMs?: number; run: () 
 const engAfter = (iso: string | null | undefined, ms: number) => { const t = iso ? Date.parse(String(iso)) : NaN; return Number.isFinite(t) && t >= ms - 1000; };
 const engResText = (r: any) => (r?.ok ? "نجحت" : `لم تنجح: ${String(r?.error || r?.result?.skipped || r?.reason || "سبب غير معروف").slice(0, 100)}`);
 
+/** نتيجة محاولة الإصلاح تُكتب على بطاقة العطل نفسه (وتُغلقه عند النجاح المتحقَّق). */
+function defectRepairOutcome(fp: string, outcome: "fixed" | "failed" | "owner" | "developer", summary: string, steps: ReportStep[]): void {
+  try {
+    const g = recordRepair(defectLedger, fp, { outcome, summary, steps: steps.map((x) => `${x.ok ? "✓" : "✗"} ${x.label}: ${x.detail}`), nowMs: Date.now() });
+    if (g && outcome === "fixed") console.log(`[defect] fixed fp=${g.fp} by=engineer title=${JSON.stringify(g.title)}`);
+    scheduleDefectPersist();
+  } catch { /* السجل لا يُسقط المهندس */ }
+}
+
+/**
+ * إعادة تنفيذ طلب قراءة فشل — بالمسار الحقيقي كاملاً (المصادقة والصلاحيات كما هي) وباسم
+ * المالك، عبر جلسة موقّعة عمرها دقيقة واحدة لا تُخزَّن ولا تغادر الخادم. GET فقط.
+ */
+async function engineerReplayGet(path: string): Promise<{ ok: boolean; status: number; detail: string }> {
+  if (!/^\/api\//.test(path) || /oauth|client-error|\/auth\//i.test(path)) return { ok: false, status: 0, detail: "مسار غير مسموح بإعادة تنفيذه" };
+  const owner = serverUsers.find((u) => u.role === "owner" && u.active !== false);
+  if (!owner) return { ok: false, status: 0, detail: "لا حساب مالك نشط لتنفيذ الطلب باسمه" };
+  const now = Date.now();
+  const token = signSession({ uid: owner.id, iat: now, exp: now + 60000, sid: `engineer-probe-${crypto.randomUUID()}` }, SESSION_SECRET);
+  try {
+    const res = await fetch(`http://127.0.0.1:${PORT}${path}`, { headers: { Authorization: `Bearer ${token}`, "x-engineer-probe": ENGINEER_PROBE_ID }, signal: AbortSignal.timeout(45000) });
+    const body: any = await res.json().catch(() => null);
+    const err = body && typeof body === "object" && !body.success && body.error ? ` — ${String(body.error).slice(0, 100)}` : "";
+    audit("site-engineer", "engineer_route_replay", `${path} -> ${res.status}`.slice(0, 200));
+    return { ok: res.status < 500, status: res.status, detail: `${path} أجاب ${res.status}${err}` };
+  } catch (e: any) {
+    return { ok: false, status: 0, detail: `تعذّر تنفيذ ${path}: ${String(e?.message || e).slice(0, 80)}` };
+  }
+}
+
+/** خطة إصلاح عطل من سجل الأعطال: خطوات حقيقية + تحقق حقيقي (engine/ops/defectLedger.ts → repairPlanFor). */
+function defectRepairPlaybook(fp: string): EngineerPlan | null {
+  const g = defectLedger.groups[fp];
+  if (!g) return null;
+  const plan: RepairPlan = repairPlanFor(g);
+  let last: { ok: boolean; detail: string } = { ok: false, detail: "لم يُنفَّذ" };
+  const keep = (r: { ok: boolean; detail: string }) => { last = r; return r; };
+  switch (plan.action) {
+    case "replay_route": return {
+      steps: [{ label: `إعادة تنفيذ الطلب الذي فشل (${plan.path})`, timeoutMs: 60000, run: async () => keep(await engineerReplayGet(plan.path)) }],
+      verify: () => last.ok ? { ok: true, detail: `${last.detail} — الطلب نفسه ينجح الآن` } : { ok: false, detail: last.detail },
+    };
+    case "verify_server": return {
+      steps: [
+        { label: "فحص الخادم: القاعدة والحفظ وسرعة الاستجابة", run: async () => keep(storageReady && persistStats.failStreak === 0 && liveLoop.lagMs < 400 ? { ok: true, detail: `يعمل منذ ${Math.round(process.uptime() / 60)} د، الحفظ سليم، التأخّر ${liveLoop.lagMs}ms` } : { ok: false, detail: `القاعدة ${storageReady ? "جاهزة" : "غير جاهزة"} · فشل الحفظ ${persistStats.failStreak} · التأخّر ${liveLoop.lagMs}ms` }) },
+        ...(plan.path ? [{ label: `إعادة الطلب الذي لم يُجب (${plan.path})`, timeoutMs: 60000, run: async () => { const r = await engineerReplayGet(plan.path!); return last.ok ? keep(r) : r; } }] : []),
+      ],
+      verify: () => last.ok ? { ok: true, detail: `${last.detail}${process.uptime() < 900 ? " (الخطأ وقع لحظة إعادة النشر — الخادم يجيب الآن)" : ""}` } : { ok: false, detail: last.detail },
+    };
+    case "refresh_token": return {
+      steps: [{ label: `تجديد رمز ${platformAr(plan.platform)}`, run: async () => { const r = await ensureYouTubeAccessToken(); return keep({ ok: Boolean(r.ok), detail: r.ok ? (r.refreshed ? "جُدِّد الرمز" : "الرمز صالح") : `رُفض التجديد: ${String(r.code || r.error || "").slice(0, 80)}` }); } }],
+      verify: () => last,
+    };
+    case "rerun_metrics": return {
+      steps: [{ label: `إعادة مزامنة أرقام ${plan.platform ? platformAr(plan.platform) : "المنصات"}`, timeoutMs: 5 * 60000, run: async () => { const r: any = await runMetricsSync("self_heal"); return { ok: Boolean(r?.ok), detail: `المزامنة ${engResText(r)}` }; } }],
+      verify: () => {
+        const m: any = plan.platform ? (metricsSyncState.lastResult as any)?.platforms?.[plan.platform] : null;
+        if (!plan.platform) return { ok: true, detail: "اكتملت المزامنة" };
+        const issue = m?.error || (m?.issues && Object.keys(m.issues).length ? Object.keys(m.issues).join(",") : null);
+        return m && !issue ? { ok: true, detail: `${platformAr(plan.platform)}: ${m.withMetrics}/${m.posts} منشوراً مقاساً بلا مشكلة` } : { ok: false, detail: `ما زالت المشكلة: ${issue || "لا نتيجة"}` };
+      },
+    };
+    case "rerun_backup": return engineerPlaybook({ key: "backup_stale", kind: "backup_stale", module: "backup", severity: "critical", title: g.title, evidence: [] });
+    case "retry_persist": return engineerPlaybook({ key: "persist_failing", kind: "persist_failing", module: "storage", severity: "critical", title: g.title, evidence: [] });
+    default: return null; // owner/developer: لا خطوات تشغيلية — يُصعَّد/يُحال في decideNext.
+  }
+}
+
 /** كتيّب الإصلاح: لكل عطل خطوات آمنة معروفة + تحقّق حقيقي. لا شيء هنا يغيّر قرار المالك. */
 function engineerPlaybook(inc: Incident): EngineerPlan | null {
   switch (inc.kind) {
@@ -15391,6 +15465,7 @@ function engineerPlaybook(inc: Incident): EngineerPlan | null {
       ],
       verify: () => Number(watcherState.consecutiveErrors || 0) === 0 ? { ok: true, detail: "لا أخطاء متتالية الآن" } : { ok: false, detail: `${watcherState.consecutiveErrors} أخطاء متتالية` },
     };
+    case "defect_fix": return defectRepairPlaybook(String(inc.target || ""));
     case "patrol_fix": {
       if (inc.target === "drafts_expired") return {
         // نفس عمل دورة العقل التجاري (لا حذف): المسودة المنتهية النافذة تُعلَّم «منتهية» فلا تُرسل.
@@ -15446,6 +15521,7 @@ async function engineerRepair(inc: Incident): Promise<void> {
   steps.push({ at: new Date().toISOString(), label: "التحقق من زوال العطل", ok: v.ok, detail: v.detail });
   if (v.ok) {
     addReport(engineerState, engineerReport(inc, { status: "resolved", steps, verification: v.detail, summary: `أُصلح «${inc.title}» في المحاولة ${mem.attempts} وتحقّقتُ من زوال العطل.`, startedMs: t0 }));
+    if (inc.kind === "defect_fix") defectRepairOutcome(String(inc.target), "fixed", `أُصلح وتحقّقتُ: ${v.detail}`, steps);
     delete engineerState.incidents[inc.key];
     liveEvent({ module: inc.module as any, level: "ok", title: `✅ المهندس أصلح: ${inc.title}`, text: v.detail.slice(0, 150) });
     audit("site-engineer", "engineer_resolved", inc.key);
@@ -15454,6 +15530,7 @@ async function engineerRepair(inc: Incident): Promise<void> {
     engineerEscalate(inc, steps, `بقي العطل بعد ${mem.attempts} محاولات (${v.detail})`, t0);
   } else {
     const waitMin = Math.round(ENGINEER_POLICY.backoffMs[Math.min(mem.attempts, ENGINEER_POLICY.backoffMs.length - 1)] / 60000);
+    if (inc.kind === "defect_fix") defectRepairOutcome(String(inc.target), "failed", `المحاولة ${mem.attempts} لم تُزل العطل (${v.detail}) — سأعيد`, steps);
     addReport(engineerState, engineerReport(inc, { status: "retrying", steps, verification: v.detail, summary: `لم يزُل العطل بعد المحاولة ${mem.attempts} — سأعيد المحاولة بعد ${waitMin} دقيقة.`, startedMs: t0, nextAction: `محاولة ${mem.attempts + 1} بعد ${waitMin} د` }));
     liveEvent({ module: inc.module as any, level: "warn", title: `⏳ المهندس سيعيد المحاولة: ${inc.title}`, text: `بعد ${waitMin} د — ${v.detail}`.slice(0, 150) });
   }
@@ -15462,6 +15539,7 @@ async function engineerRepair(inc: Incident): Promise<void> {
 function engineerEscalate(inc: Incident, steps: ReportStep[], reason: string, t0: number): void {
   const mem = engineerMem(inc.key);
   mem.escalatedAt = Date.now();
+  if (inc.kind === "defect_fix") defectRepairOutcome(String(inc.target), inc.needsOwner ? "owner" : "failed", inc.needsOwner ? `يحتاج إجراءك: ${inc.needsOwner}` : `لم ينجح الإصلاح الآلي: ${reason}`, steps);
   addReport(engineerState, engineerReport(inc, { status: "escalated", steps, verification: reason, summary: `صعّدتُ «${inc.title}» إليك: ${reason}.`, startedMs: t0, nextAction: inc.needsOwner || "يحتاج تدخّلك — لن أعيد المحاولة 6 ساعات" }));
   liveEvent({ module: inc.module as any, level: "error", title: `🚨 المهندس يصعّد إليك: ${inc.title}`, text: (inc.needsOwner || reason).slice(0, 150) });
   audit("site-engineer", "engineer_escalated", `${inc.key}: ${reason}`.slice(0, 200));
@@ -15478,7 +15556,9 @@ async function engineerTick(trigger: "schedule" | "manual" = "schedule"): Promis
     engineerState.lastCheckAt = new Date(nowMs).toISOString();
     // صيانة سجل الأعطال: ما غاب طويلاً (أو أُصلح بنسخة جديدة) يُعلَّم محلولاً.
     try { if (sweepLedger(defectLedger, { nowMs, version: DEFECT_VERSION, versionSinceMs: DEFECT_BOOT_MS }).length) scheduleDefectPersist(); } catch { /* تجاهل */ }
-    const incidents = [...detectIncidents(engineerSnapshot(), engineerStreaks), ...incidentsFromPatrol(Object.values(patrolInspections).flatMap((m) => m.checks))];
+    // الأعطال الحقيقية المرصودة تدخل قائمة مهام المهندس: يُصلح ما له إصلاح، ويُحيل الباقي لمالكه.
+    const defectIncidents = (() => { try { return incidentsFromDefects(openDefects(defectLedger).map((g) => ({ fp: g.fp, kind: g.kind, severity: g.severity, title: g.title, samples: g.samples, plan: repairPlanFor(g) as any }))); } catch { return []; } })();
+    const incidents = [...detectIncidents(engineerSnapshot(), engineerStreaks), ...incidentsFromPatrol(Object.values(patrolInspections).flatMap((m) => m.checks)), ...defectIncidents];
     engineerActiveIncidents = incidents;
     const recovered = forgetRecovered(engineerState, new Set(incidents.map((i) => i.key)));
     for (const key of recovered) {
@@ -15492,8 +15572,15 @@ async function engineerTick(trigger: "schedule" | "manual" = "schedule"): Promis
     else if (d.kind === "escalate") engineerEscalate(d.incident, [{ at: new Date().toISOString(), label: "التشخيص", ok: true, detail: d.incident.evidence.join(" · ") }], d.reason, Date.now());
     else if (d.kind === "observe") {
       const mem = engineerMem(d.incident.key); mem.lastAttemptAt = nowMs;
+      if (d.incident.kind === "defect_fix") {
+        // عيب في الكود نفسه: لا يُصلح بإعادة تشغيل شيء — يُحال لمهندس الكود (تعديل + اختبار + طلب دمج).
+        const steps = [{ at: new Date().toISOString(), label: "التشخيص", ok: true, detail: d.incident.evidence.join(" · ").slice(0, 200) }, { at: new Date().toISOString(), label: "الإحالة لمهندس الكود", ok: true, detail: "يقرأ سطر [defect] من السجل ويفتح إصلاحاً في الكود مع اختبار" }];
+        addReport(engineerState, engineerReport(d.incident, { status: "monitoring", steps, verification: "عيب برمجي — الإصلاح يكون في الكود لا بإعادة تشغيل", summary: `«${d.incident.title}» عيب في الكود: أحلتُه لمهندس الكود ليصلحه بتعديل واختبار ويرسل لك طلب الدمج.`, startedMs: nowMs, nextAction: "مهندس الكود في دورته القادمة" }));
+        defectRepairOutcome(String(d.incident.target), "developer", "عيب في الكود — أُحيل لمهندس الكود (تعديل + اختبار + طلب دمج)", steps);
+      } else {
       addReport(engineerState, engineerReport(d.incident, { status: "monitoring", steps: [{ at: new Date().toISOString(), label: "المراقبة", ok: true, detail: d.incident.evidence.join(" · ") }], verification: "لا إجراء آمن تلقائياً — أراقب وأبلغك", summary: `أراقب «${d.incident.title}». لا إصلاح آلي آمن له (لا أعيد تشغيل الخادم بنفسي).`, startedMs: nowMs, nextAction: "إن استمر: راجع الاستهلاك أو خطة الاستضافة" }));
       pushNotification("owner", "engineer_monitoring", `المهندس المشرف يراقب: ${d.incident.title}`, d.incident.evidence.join(" · "), "warning", "live_room");
+      }
     } else if (d.kind === "defer") {
       const mem = engineerMem(d.incident.key); mem.lastAttemptAt = nowMs;
       addReport(engineerState, engineerReport(d.incident, { status: "deferred", steps: [], verification: d.reason, summary: `أجّلتُ إصلاح «${d.incident.title}»: ${d.reason}.`, startedMs: nowMs, nextAction: "يُعاد عند انخفاض الضغط" }));
@@ -15793,7 +15880,7 @@ function engineerView(full = true) {
     policy: { maxAttempts: ENGINEER_POLICY.maxAttempts, maxActionsPerHour: ENGINEER_POLICY.maxActionsPerHour, cooldownHours: ENGINEER_POLICY.cooldownAfterEscalateMs / 3600000 },
     patrol: (() => { try { return patrolView(full); } catch { return null; } })(),
     // الأعطال الحقيقية المرصودة (500/استثناء/انهيار شاشة/رفض مزوّد/بطء) — هي ما يهم فعلاً.
-    defects: (() => { try { return { summary: ledgerSummary(defectLedger), open: openDefects(defectLedger).slice(0, full ? 40 : 12), version: DEFECT_VERSION }; } catch { return null; } })(),
+    defects: (() => { try { return { summary: ledgerSummary(defectLedger), open: openDefects(defectLedger).slice(0, full ? 40 : 12), repaired: recentlyRepaired(defectLedger, Date.now()).slice(0, 10), version: DEFECT_VERSION }; } catch { return null; } })(),
   };
 }
 
@@ -15823,7 +15910,9 @@ app.post("/api/engineer/client-error", authenticateToken, (req, res) => {
   const b = req.body || {};
   const text = String(b.message || "").slice(0, 300);
   if (!text) return res.status(400).json({ success: false });
-  defectIntake({ source: "client", text, where: String(b.where || "").slice(0, 120) || null, frame: String(b.frame || "").slice(0, 140) || null });
+  const where = String(b.where || "").slice(0, 160) || null;
+  const method = String(b.method || "GET").toUpperCase() === "GET" ? "GET" : "POST";
+  defectIntake({ source: "client", text, where, frame: String(b.frame || "").slice(0, 140) || null, method, path: where && where.startsWith("/api/") ? where.split("?")[0] : null });
   res.json({ success: true });
 });
 

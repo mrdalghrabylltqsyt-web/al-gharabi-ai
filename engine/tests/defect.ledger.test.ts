@@ -7,7 +7,9 @@ import { join } from 'node:path';
 import {
   classifyFailure, recordFailure, sweepLedger, markDefect, openDefects, ledgerSummary, normalizeLedger,
   emptyLedger, fingerprint, normalizeRoute, sanitizeSample, defectLogLine, LEDGER_POLICY,
+  repairPlanFor, recordRepair, recentlyRepaired,
 } from '../ops/defectLedger';
+import { incidentsFromDefects, decideNext, emptyEngineerState } from '../ops/siteEngineer';
 
 const ROOT = process.cwd();
 const read = (p: string) => readFileSync(join(ROOT, p), 'utf8');
@@ -134,6 +136,58 @@ const main = read('src/main.tsx');
 check('★ الواجهة تلتقط الانهيار وأخطاء الخادم', /ErrorBoundary/.test(main) && /installClientErrorReporting\(\)/.test(main) && /reportClientError/.test(read('src/components/common/ErrorBoundary.tsx')));
 const ui = read('src/components/live/LiveBrainRoom.tsx');
 check('★ تبويب «الأعطال الحقيقية» في غرفة المهندس', ui.includes("'defects'") && ui.includes('الأعطال الحقيقية'));
+
+
+// ---------------------------------------------------------------------------
+// 5) الإصلاح الذاتي — بالأعطال الأربعة الحقيقية التي ظهرت للمالك في الإنتاج (2026-10-28)
+// ---------------------------------------------------------------------------
+const R = emptyLedger();
+const tg = recordFailure(R, { source: 'http', text: 'GET fetch failed', status: 502, where: '/api/platforms/telegram/webhook-info', method: 'GET', path: '/api/platforms/telegram/webhook-info' }, { nowMs: NOW, version: 'f7db9a4' })!.group;
+const tgPlan = repairPlanFor(tg);
+check('★ 502 من مسار قراءة ⇒ يُعاد تنفيذ الطلب نفسه للتحقق', tgPlan.action === 'replay_route' && (tgPlan as any).path === '/api/platforms/telegram/webhook-info', JSON.stringify(tgPlan));
+const gw = recordFailure(R, { source: 'client', text: 'api 502 /api/live/room', where: '/api/live/room', method: 'GET', path: '/api/live/room' }, { nowMs: NOW })!.group;
+check('★ الخادم لم يُجب ⇒ فحص الخادم + إعادة الطلب', repairPlanFor(gw).action === 'verify_server' && (repairPlanFor(gw) as any).path === '/api/live/room');
+const tt = recordFailure(R, log('[metrics] platform=tiktok posts=0 withMetrics=0 followers=- issue=SCOPE_MISSING_video.list'), { nowMs: NOW })!.group;
+check('★ إذن تيك توك ⇒ بيد المالك بالإجراء الدقيق (لا ادعاء إصلاح)', repairPlanFor(tt).action === 'owner' && /أعد ربط تيك توك/.test((repairPlanFor(tt) as any).instructions));
+const post500 = recordFailure(R, { source: 'http', text: 'POST boom', status: 502, where: '/api/posts/x/publish', method: 'POST', path: '/api/posts/x/publish' }, { nowMs: NOW })!.group;
+check('★ الكتابة لا تُعاد أبداً (لا نشر مكرر)', repairPlanFor(post500).action !== 'replay_route');
+const code = recordFailure(R, { source: 'http', text: 'TypeError: x.map is not a function', status: 500, where: '/api/commercial/leads', method: 'GET', path: '/api/commercial/leads' }, { nowMs: NOW })!.group;
+check('★ عيب كود ⇒ مهندس الكود (لا إعادة تشغيل تخفيه)', repairPlanFor(code).action === 'developer');
+check('تجديد رمز يوتيوب ⇒ refresh_token', repairPlanFor(recordFailure(R, log('[youtube-oauth] outcome=refresh_failed'), { nowMs: NOW })!.group).action === 'refresh_token');
+check('مزامنة متعثّرة ⇒ إعادة المزامنة', repairPlanFor({ kind: 'provider', owner: 'engineer', rule: 'metrics:facebook', fix: '', lastMethod: null, lastPath: null }).action === 'rerun_metrics');
+
+// النتيجة تُكتب على البطاقة، والنجاح المتحقَّق يغلق العطل «أصلحه المهندس»
+recordRepair(R, tg.fp, { outcome: 'fixed', summary: 'أُصلح وتحقّقتُ: الطلب ينجح الآن', steps: ['✓ إعادة تنفيذ الطلب: 200'], nowMs: NOW + 60000 });
+check('★ الإصلاح المتحقَّق يغلق العطل باسم المهندس', R.groups[tg.fp].status === 'resolved' && R.groups[tg.fp].resolvedBy === 'engineer' && R.groups[tg.fp].repair?.outcome === 'fixed');
+check('★ يظهر في «أصلحه المهندس مؤخراً»', recentlyRepaired(R, NOW + 120000).some((g) => g.fp === tg.fp));
+recordFailure(R, { source: 'http', text: 'GET fetch failed', status: 502, where: '/api/platforms/telegram/webhook-info', method: 'GET', path: '/api/platforms/telegram/webhook-info' }, { nowMs: NOW + 3600000 });
+check('★ عودته بعد الإصلاح ⇒ يُفتح و«الإصلاح لم يصمد» (لا إصلاح شكلي)', R.groups[tg.fp].status === 'open' && R.groups[tg.fp].regressions === 1 && R.groups[tg.fp].repair?.outcome === 'failed');
+recordRepair(R, tt.fp, { outcome: 'owner', summary: 'يحتاج إجراءك', steps: [], nowMs: NOW });
+check('حالة «بيد المالك» لا تغلق العطل', R.groups[tt.fp].status === 'open');
+
+// من الدفتر إلى مهام المهندس
+const incs = incidentsFromDefects(openDefects(R).map((g) => ({ fp: g.fp, kind: g.kind, severity: g.severity, title: g.title, samples: g.samples, plan: repairPlanFor(g) as any })));
+const incTg = incs.find((i) => i.target === tg.fp)!; const incTt = incs.find((i) => i.target === tt.fp)!; const incCode = incs.find((i) => i.target === code.fp)!;
+check('★ عطل قابل للإصلاح ⇒ مهمة إصلاح', incTg && !incTg.needsOwner && !incTg.observeOnly);
+check('★ عطل المالك ⇒ تصعيد بتهدئة 3 أيام (لا إزعاج)', Boolean(incTt?.needsOwner) && incTt.cooldownMs === 72 * 3600000);
+check('★ عيب الكود ⇒ إحالة بلا إزعاج', Boolean(incCode?.observeOnly));
+const st = emptyEngineerState();
+const d1 = decideNext(st, [incTg], NOW, { pressureCritical: false });
+check('★ المهندس يقرّر «إصلاح» للعطل القابل', d1.kind === 'repair');
+st.incidents[incTt.key] = { attempts: 0, lastAttemptAt: null, escalatedAt: NOW, firstSeenAt: NOW };
+check('لا يُعاد التصعيد قبل 3 أيام', decideNext(st, [incTt], NOW + 24 * 3600000, { pressureCritical: false }).kind === 'wait');
+
+// التوصيل الحقيقي في الخادم والواجهة
+const srv = read('server.ts');
+check('★ الأعطال تدخل مهام المهندس كل دقيقة', srv.includes('incidentsFromDefects(openDefects(defectLedger)'));
+check('★ إعادة التنفيذ بالمسار الحقيقي وبجلسة مالك قصيرة (GET فقط) ولا تُسجَّل كحادثة', /async function engineerReplayGet/.test(srv) && srv.includes('exp: now + 60000') && srv.includes('req.headers["x-engineer-probe"] === ENGINEER_PROBE_ID'));
+check('★ نتيجة الإصلاح تُكتب على العطل وتُغلقه', srv.includes('defectRepairOutcome(String(inc.target), "fixed"'));
+check('★ Telegram صار بإعادة محاولة للقراءة (جذر 502 fetch failed)', srv.includes('createTelegramFetch((url, init) => fetch(url, init as any))') && /export function createTelegramFetch/.test(read('engine/social/telegram.ts')));
+const ce = read('src/utils/clientErrors.ts');
+check('★ الواجهة تعيد القراءة المؤقتة الفاشلة قبل أن يرى المالك خطأ', ce.includes("method === 'GET'") && ce.includes('const retry = await nativeFetch(input, init);'));
+check('★ 502 من الخادم نفسه لا يُحسب «الخادم لم يُجب»', ce.includes("res.headers.get('x-request-id')"));
+check('★ تقرير لم يصل يُرسل عند عودة الخادم', ce.includes('flushPending()'));
+check('★ الواجهة تعرض ما أصلحه المهندس وخطواته', read('src/components/live/LiveBrainRoom.tsx').includes('أصلحه المهندس ذاتياً'));
 
 console.log('\n' + '='.repeat(60));
 if (failures.length) {
