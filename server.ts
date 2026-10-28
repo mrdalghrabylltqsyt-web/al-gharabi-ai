@@ -727,7 +727,7 @@ import { realProductPhrases } from "./src/utils/productPhrases";
 import { LiveEventBuffer, classifyLogLine, auditToLiveEvent, buildLiveModules, buildLiveInsights, buildLiveCycles, platformAr, type LiveEventInput } from "./engine/ops/liveRoom";
 import { detectIncidents, decideNext, forgetRecovered, addReport, withTimeout, emptyEngineerState, normalizeEngineerState, incidentsFromPatrol, incidentsFromDefects, ENGINEER_POLICY, type EngineerState, type EngineerSnapshot, type Incident, type ReportStep, type EngineerReport } from "./engine/ops/siteEngineer";
 import { PATROL_ORDER, COLLECTION_CAPS, COLLECTION_AR, inspectModule, healthScore, healthBreakdown, slopePerHour, growthPerDay, type PatrolFacts, type ModuleInspection } from "./engine/ops/engineerPatrol";
-import { recordFailure, sweepLedger, markDefect, openDefects, ledgerSummary, normalizeLedger, emptyLedger, defectLogLine, repairPlanFor, recordRepair, recentlyRepaired, normalizeRoute, LEDGER_POLICY, type DefectLedger, type FailureEvent, type RepairPlan } from "./engine/ops/defectLedger";
+import { recordFailure, sweepLedger, markDefect, openDefects, ledgerSummary, normalizeLedger, emptyLedger, defectLogLine, repairPlanFor, recordRepair, recentlyRepaired, countsAsRegression, isDeployOverlapCrash, normalizeRoute, LEDGER_POLICY, type DefectLedger, type FailureEvent, type RepairPlan } from "./engine/ops/defectLedger";
 import { TOKEN_KEEPER_POLICY, isPermanentRefreshError, backoffMs, decideRenewal, ownerTokenNeeds, autoRenewable, shouldMarkReauth, keeperSummary, leadFor, fmtDur, type TokenState, type RenewalKind, type KeeperRun } from "./engine/ops/tokenKeeper";
 import { PROBE_ROUTES, PROACTIVE_POLICY, evaluateProbe, summarizeRound, deployVerdict, RouteLatency, slowRoutes, isSpiking, buildForecasts, notificationHygiene, type ProbeRound, type Forecast } from "./engine/ops/engineerProactive";
 import { buildOwnIdentity, customerVoices, type OwnIdentity } from "./engine/social/ownVoice";
@@ -854,10 +854,17 @@ async function loadDefectLedger(): Promise<void> {
       const prev = loaded.groups[g.fp];
       if (!prev) { loaded.groups[g.fp] = g; continue; }
       prev.count += g.count; prev.lastAt = g.lastAt > prev.lastAt ? g.lastAt : prev.lastAt; prev.lastVersion = g.lastVersion || prev.lastVersion;
-      if (prev.status === "resolved") { prev.status = "open"; prev.resolvedAt = null; prev.resolvedBy = null; prev.regressions += 1; }
+      if (prev.status === "resolved") { const reg = countsAsRegression(prev); prev.status = "open"; prev.resolvedAt = null; prev.resolvedBy = null; if (reg) prev.regressions += 1; }
     }
     loaded.events += defectLedger.events;
     defectLedger = loaded;
+    // «انهيار» سُجّل أثناء نشر (تداخل النسختين) ليس انهياراً: يُغلق بالسبب الحقيقي.
+    for (const g of Object.values(defectLedger.groups)) {
+      if (g.status === "open" && isDeployOverlapCrash(g)) {
+        recordRepair(defectLedger, g.fp, { outcome: "fixed", summary: "لم يكن انهياراً: تبديل نسخة أثناء النشر (النسخة الجديدة أقلعت قبل إغلاق القديمة). صُحّح كاشف الانهيار ليُمهل النسخة القديمة حتى تُغلق.", steps: ["✓ مقارنة نسخة العينة بنسخة الإقلاع: مختلفتان = نشر لا انهيار"], nowMs: Date.now() });
+        console.log(`[defect] fixed fp=${g.fp} by=engineer title=${JSON.stringify(g.title)} reason=deploy_overlap`);
+      }
+    }
   } catch { /* يبقى ما في الذاكرة */ }
 }
 (() => {
@@ -16219,9 +16226,26 @@ function markCleanShutdown(): void {
   const rec = lifeRecord(true);
   persistQueue = persistQueue.then(() => storageAdapter.write(STORAGE_KEY_LIFE, rec)).catch(() => { /* */ });
 }
+/** مهلة قبل الحكم بالانهيار: Render يُقلع النسخة الجديدة ثم يرسل SIGTERM للقديمة بعد نجاح فحص الصحة
+ *  (≈ثوانٍ إلى دقيقة) والإغلاق النظيف ≤10 ث. نُمهل 3 دقائق ثم نعيد القراءة. */
+const CRASH_JUDGE_DELAY_MS = 3 * 60000;
 async function startCrashDetection(): Promise<void> {
   try {
-    const prev: any = await storageAdapter.read<any>(STORAGE_KEY_LIFE);
+    const first: any = await storageAdapter.read<any>(STORAGE_KEY_LIFE);
+    let prev: any = first;
+    if (first && first.bootId && first.bootId !== LIFE_BOOT_ID && !first.cleanShutdownAt) {
+      // تداخل النشر: السجل قد يكون لنسخة **ما زالت حية** لم تتلقَّ SIGTERM بعد. لا نكتب نبضتنا
+      // (فتطمس علامتها) ولا نحكم حتى تمضي المهلة، ثم نقرأ ثانية.
+      await new Promise<void>((r) => { const t = setTimeout(r, CRASH_JUDGE_DELAY_MS); (t as any).unref?.(); });
+      if (shuttingDownFlag()) return;
+      const again: any = await storageAdapter.read<any>(STORAGE_KEY_LIFE).catch(() => null);
+      if (again && again.bootId === first.bootId && again.cleanShutdownAt) {
+        console.log(`[engineer] deploy_handover prev_boot=${first.bootId} prev_version=${first.version || "-"} clean=1`);
+        prev = null;
+      } else if (again && again.bootId !== first.bootId) {
+        prev = null; // كتبت عملية أخرى بعدها: لا دليل على موت العملية السابقة
+      } else prev = again || first;
+    }
     if (prev && prev.bootId && prev.bootId !== LIFE_BOOT_ID && !prev.cleanShutdownAt) {
       const lastBeat = Date.parse(String(prev.heartbeatAt || ""));
       const mem = Number(prev.memoryMb || 0);
