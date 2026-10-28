@@ -6,8 +6,14 @@ import { reportClientError, firstFrame } from '../../utils/clientErrors';
  * أثر عند الخادم. الآن: الشاشة المنهارة وحدها تعرض رسالة مع زر «إعادة المحاولة»، والمهندس
  * المشرف يتلقى العطل بموضعه ليُصلَح في الكود.
  */
-export class ErrorBoundary extends Component<{ children: ReactNode; area?: string }, { error: Error | null }> {
-  state = { error: null as Error | null };
+type Props = { children: ReactNode; area?: string };
+type State = { error: Error | null };
+
+export class ErrorBoundary extends Component<Props, State> {
+  // المشروع بلا @types/react فيُستنتج نوع Component من JavaScript؛ نعلن الحقلين صراحةً.
+  declare props: Readonly<Props>;
+  declare setState: (next: State) => void;
+  state: State = { error: null };
 
   static getDerivedStateFromError(error: Error) {
     return { error };

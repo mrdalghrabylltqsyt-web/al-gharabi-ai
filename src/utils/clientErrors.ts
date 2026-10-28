@@ -41,7 +41,7 @@ export function firstFrame(stack?: string | null): string | null {
   return line ? line.trim().replace(/^at\s+/, '').slice(0, 140) : null;
 }
 
-let nativeFetch: typeof fetch = (...a) => fetch(...a);
+let nativeFetch: typeof fetch = (input, init) => fetch(input, init);
 
 /** يُستدعى مرة واحدة عند الإقلاع. */
 export function installClientErrorReporting(): void {
