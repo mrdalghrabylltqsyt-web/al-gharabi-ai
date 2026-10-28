@@ -52,6 +52,10 @@ for (const ok of [
   '[defect] new fp=abc kind=code title="x"',
 ]) check(`ليس عطلاً: ${ok.slice(0, 50)}`, classifyFailure(log(ok)) === null);
 
+const gp = classifyFailure(log('[facebook-graph-error] {"endpoint":"POST /102540549308721/subscribed_apps","status":403,"code":200,"subcode":null,"message":"(#200) To subscribe to the messages field, one of these permissions is needed: pages_messaging","type":"OAuthException","fbtraceId":"x","errorUserTitle":null,"errorUserMsg":null}'));
+check('★ رفض Graph الحي (pages_messaging) ⇒ إذن ناقص بيد المالك مع اسم الإذن', gp?.kind === 'config' && gp.owner === 'owner' && /pages_messaging/.test(gp.title) && /subscribed_apps/.test(gp.diagnosis), JSON.stringify(gp));
+check('رمز Graph ملغى 190 ⇒ إعادة ربط', /ملغى/.test(classifyFailure(log('[threads-graph-error] {"endpoint":"GET /me","status":400,"code":190,"message":"Error validating access token"}'))?.title || ''));
+
 // ---------------------------------------------------------------------------
 // 2) أعطال الكود الحقيقية: 500، استثناء، انهيار شاشة
 // ---------------------------------------------------------------------------

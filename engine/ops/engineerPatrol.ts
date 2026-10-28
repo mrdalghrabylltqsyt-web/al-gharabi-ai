@@ -42,7 +42,7 @@ export const COLLECTION_CAPS: Readonly<Record<string, number>> = Object.freeze({
   telegramUpdateIds: 20000, facebookEventIds: 20000, instagramEventIds: 20000, youtubeCommentIds: 20000, youtubeOperationKeys: 20000,
   marketingDecisions: 2000, strategiesTested: 2000,
 });
-const COLLECTION_AR: Record<string, string> = {
+export const COLLECTION_AR: Record<string, string> = {
   socialComments: 'التعليقات والرسائل', notifications: 'الإشعارات', webhookEvents: 'أحداث webhook', providerEvents: 'أحداث المزوّد',
   socialReplies: 'الردود', socialEscalations: 'التصعيدات', socialApprovals: 'الموافقات', publishRecords: 'سجل النشر',
   performanceRecords: 'سجل الأداء', products: 'المنتجات', posts: 'المحتوى', conversations: 'المحادثات',
@@ -60,6 +60,9 @@ export interface PatrolFacts {
   liveEventsBuffered: number;
   /** سجل الأعطال الحقيقية (500/استثناء/انهيار شاشة/رفض مزوّد/بطء) — المفتوح منها. */
   defectsOpen: number; defectsCritical: number; defectsTopTitle: string | null;
+  /** الفحص الاستباقي للشاشات (آخر جولة) + التوقعات. */
+  probeTotal: number; probeFailed: number; probeSlow: number; probeAgeMin: number | null; probeFailedLabels: string[];
+  forecastsCritical: number; forecastsWarning: number; forecastTop: string | null;
   // owner
   pendingDrafts: number; oldestPendingDraftAt: string | null;
   unreadCritical: number; oldestUnreadCriticalAt: string | null;
@@ -137,6 +140,8 @@ export const PATROL_CHECKS: Readonly<Record<EngineerModule, Check[]>> = Object.f
     c('core.scope', 'عزل أسطح ERP القديمة', 'النطاق المعلن سوشيال + AI + تسويق؛ فتح الأسطح القديمة يكشف مسارات غير مختبرة.', (f) => f.legacyErpEnabled ? { status: 'warn', detail: 'GHARABI_ENABLE_LEGACY_ERP_SCOPE مفعّل', advice: 'أعده إلى false ما لم تقرّر غير ذلك صراحة' } : { status: 'ok', detail: 'معزولة (404 قبل المصادقة)' }),
     c('core.rejections', 'وعود غير معالَجة', 'خطأ غير ملتقط قد يترك عملية في حالة غير معروفة.', (f) => f.unhandledRejectionsDelta > 0 ? { status: 'warn', detail: `${f.unhandledRejectionsDelta} جديدة منذ الجولة السابقة (المجموع ${f.unhandledRejections})`, advice: 'راجع سجل Render عند هذا الوقت لمعرفة المسار' } : { status: 'ok', detail: `لا جديد (المجموع منذ الإقلاع ${f.unhandledRejections})` }),
     c('core.defects', 'أعطال حقيقية وقعت فعلاً', 'هذا ما يراه المالك والزبون: طلب فشل، شاشة انهارت، مزوّد رفض. الإعدادات السليمة لا تعني أن شيئاً لم ينكسر.', (f) => f.defectsCritical > 0 ? { status: 'fail', detail: `${f.defectsCritical} حرج من ${f.defectsOpen} مفتوحاً${f.defectsTopTitle ? ` — أخطرها: ${f.defectsTopTitle}` : ''}`, advice: 'افتح تبويب «الأعطال الحقيقية»: لكل عطل تشخيصه وعلاجه ومن يملكه' } : f.defectsOpen > 0 ? { status: 'warn', detail: `${f.defectsOpen} مفتوحاً${f.defectsTopTitle ? ` — ${f.defectsTopTitle}` : ''}`, advice: 'راجع تبويب «الأعطال الحقيقية»' } : { status: 'ok', detail: 'لا عطل حقيقي مفتوح' }),
+    c('core.probes', 'شاشات المالك تفتح فعلاً', 'المهندس يفتح كل شاشة رئيسية كل 10 دقائق بالمسار الحقيقي — شاشة تفشل هنا ستفشل أمامك.', (f) => f.probeTotal === 0 ? { status: 'skip', detail: f.probeAgeMin == null ? 'أول جولة بعد 3 دقائق من الإقلاع' : '—' } : f.probeFailed ? { status: 'fail', detail: `${f.probeFailed} من ${f.probeTotal} تفشل: ${f.probeFailedLabels.join('، ')}`, advice: 'دخلت سجل الأعطال الحقيقية — المهندس يعالجها أو يحيلها لمهندس الكود' } : f.probeSlow ? { status: 'warn', detail: `${f.probeSlow} بطيئة من ${f.probeTotal}`, advice: 'راجع «الاستباقي» لمعرفة المسار البطيء' } : { status: 'ok', detail: `${f.probeTotal}/${f.probeTotal} تعمل${f.probeAgeMin != null ? ` · قبل ${f.probeAgeMin} د` : ''}` }),
+    c('core.forecasts', 'ما سيقع إن لم يُفعل شيء', 'التوقعات تنذر قبل الوقوع: رمز ينتهي، حصة تنفد، ذاكرة تمتلئ، عطل يتصاعد.', (f) => f.forecastsCritical ? { status: 'fail', detail: `${f.forecastsCritical} توقع حرج${f.forecastTop ? ` — ${f.forecastTop}` : ''}`, advice: 'افتح «الاستباقي»: لكل توقع الإجراء قبل الوقوع' } : f.forecastsWarning ? { status: 'warn', detail: `${f.forecastsWarning} تحذير${f.forecastTop ? ` — ${f.forecastTop}` : ''}`, advice: 'افتح «الاستباقي»' } : { status: 'ok', detail: 'لا شيء متوقع خلال الأيام القادمة' }),
     c('core.uptime', 'استقرار العملية', 'إعادة التشغيل المتكررة تعني انهياراً أو نفاد ذاكرة.', (f) => f.uptimeSec < 300 ? { status: 'warn', detail: `أقلع منذ ${Math.round(f.uptimeSec / 60)} د`, advice: 'طبيعي بعد النشر؛ إن تكرر بلا نشر فهو انهيار — راجع سجل Render' } : { status: 'ok', detail: `يعمل منذ ${ageText(f.uptimeSec * 1000)}` }),
   ],
   owner: [
@@ -257,7 +262,7 @@ export function inspectModule(module: EngineerModule, f: PatrolFacts): ModuleIns
  *   3 = زبون أو بيانات تضيع الآن · 2 = المالك لا يعلم أو المحتوى/الردود أضعف · 1 = صيانة.
  */
 export const CHECK_IMPACT: Readonly<Record<string, number>> = Object.freeze({
-  'core.defects': 3, 'customers.escalations': 3, 'customers.leads': 3, 'customers.inbound': 3, 'gate.window': 3, 'owner.pending': 3,
+  'core.defects': 3, 'core.probes': 3, 'core.forecasts': 2, 'customers.escalations': 3, 'customers.leads': 3, 'customers.inbound': 3, 'gate.window': 3, 'owner.pending': 3,
   'platforms.reauth': 3, 'platforms.token': 3, 'storage.persist': 3, 'storage.ready': 3, 'monitor.memory': 3,
   'auth.tokenKey': 3, 'auth.owner': 3, 'auth.login': 3, 'external.email': 3, 'backup.auth': 2,
   'owner.critical': 2, 'owner.channel': 2, 'owner.backlog': 2, 'backup.fresh': 2, 'backup.failures': 2,

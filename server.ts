@@ -726,8 +726,9 @@ import { summarizePublishHealth, formatPublishLogLine } from "./engine/ops/publi
 import { realProductPhrases } from "./src/utils/productPhrases";
 import { LiveEventBuffer, classifyLogLine, auditToLiveEvent, buildLiveModules, buildLiveInsights, buildLiveCycles, platformAr, type LiveEventInput } from "./engine/ops/liveRoom";
 import { detectIncidents, decideNext, forgetRecovered, addReport, withTimeout, emptyEngineerState, normalizeEngineerState, incidentsFromPatrol, incidentsFromDefects, ENGINEER_POLICY, type EngineerState, type EngineerSnapshot, type Incident, type ReportStep, type EngineerReport } from "./engine/ops/siteEngineer";
-import { PATROL_ORDER, COLLECTION_CAPS, inspectModule, healthScore, healthBreakdown, slopePerHour, growthPerDay, type PatrolFacts, type ModuleInspection } from "./engine/ops/engineerPatrol";
-import { recordFailure, sweepLedger, markDefect, openDefects, ledgerSummary, normalizeLedger, emptyLedger, defectLogLine, repairPlanFor, recordRepair, recentlyRepaired, LEDGER_POLICY, type DefectLedger, type FailureEvent, type RepairPlan } from "./engine/ops/defectLedger";
+import { PATROL_ORDER, COLLECTION_CAPS, COLLECTION_AR, inspectModule, healthScore, healthBreakdown, slopePerHour, growthPerDay, type PatrolFacts, type ModuleInspection } from "./engine/ops/engineerPatrol";
+import { recordFailure, sweepLedger, markDefect, openDefects, ledgerSummary, normalizeLedger, emptyLedger, defectLogLine, repairPlanFor, recordRepair, recentlyRepaired, normalizeRoute, LEDGER_POLICY, type DefectLedger, type FailureEvent, type RepairPlan } from "./engine/ops/defectLedger";
+import { PROBE_ROUTES, PROACTIVE_POLICY, evaluateProbe, summarizeRound, deployVerdict, RouteLatency, slowRoutes, isSpiking, buildForecasts, notificationHygiene, type ProbeRound, type Forecast } from "./engine/ops/engineerProactive";
 import { buildOwnIdentity, customerVoices, type OwnIdentity } from "./engine/social/ownVoice";
 import { memoryPressureAlert, baselineSlopePerHour } from "./engine/ops/memoryWatch";
 import { LiveWaiters, LIVE_WAIT_MAX_MS } from "./engine/ops/liveWait";
@@ -793,6 +794,8 @@ let defectLedger: DefectLedger = emptyLedger();
 let defectPersistTimer: ReturnType<typeof setTimeout> | null = null;
 let defectIntakeBusy = false;
 const defectNotifyTimes: number[] = [];
+const defectTimes = new Map<string, number[]>();
+const defectSpikeNotified = new Map<string, number>();
 function defectIntake(ev: FailureEvent): void {
   if (defectIntakeBusy) return; // سطر يكتبه السجل نفسه لا يُعاد تسجيله
   defectIntakeBusy = true;
@@ -800,6 +803,16 @@ function defectIntake(ev: FailureEvent): void {
     const nowMs = Date.now();
     const r = recordFailure(defectLedger, ev, { nowMs, version: DEFECT_VERSION });
     if (!r) return;
+    // عطل يتصاعد (5 مرات في 10 دقائق): ليس حادثة عابرة — يُرفع حرجاً ويُنذر المالك مرة كل ساعة.
+    const times = (defectTimes.get(r.group.fp) || []).filter((t) => nowMs - t <= PROACTIVE_POLICY.spikeWindowMs);
+    times.push(nowMs); defectTimes.set(r.group.fp, times);
+    if (defectTimes.size > 300) { const k = defectTimes.keys().next().value; if (k) defectTimes.delete(k); }
+    if (isSpiking(times, nowMs) && nowMs - (defectSpikeNotified.get(r.group.fp) || 0) > 3600000) {
+      defectSpikeNotified.set(r.group.fp, nowMs);
+      r.group.severity = "critical";
+      const g0 = r.group;
+      setTimeout(() => { try { pushNotification("owner", "engineer_spike", `عطل يتصاعد: ${g0.title}`, `تكرر ${times.length} مرات خلال 10 دقائق. ${g0.diagnosis}`.slice(0, 400), "critical", "live_room"); } catch { /* */ } }, 0).unref?.();
+    }
     if (r.isNew || r.isRegression) {
       const g = r.group;
       console.log(defectLogLine(g, r.isNew ? "new" : "regression"));
@@ -954,6 +967,8 @@ app.use((req, res, next) => {
 // المهندس يرى كل طلب /api ينتهي بـ5xx أو يستغرق أكثر من 15 ث — مع رسالة الخطأ الحقيقية
 // التي أعادها المسار (لا «خطأ داخلي» عام). الانتظار الطويل المقصود (wait=1) ورفع الملفات
 // والنسخ الاحتياطي مستثناة من «البطء» لأنها طويلة بطبيعتها.
+/** زمن كل مسار من الطلبات الحقيقية (p50/p95) — المهندس ينذر بالمسار الذي يتباطأ قبل أن ينهار. */
+const routeLatency = new RouteLatency();
 /** معرّف عشوائي لكل عملية يميّز طلبات التحقق الداخلية للمهندس (لا يغادر الخادم). */
 const ENGINEER_PROBE_ID = crypto.randomUUID();
 const DEFECT_SLOW_EXEMPT = /\/dr\/|\/backup|upload|\/engineer\/check|\/oauth\//i;
@@ -969,6 +984,7 @@ app.use((req, res, next) => {
   res.on("finish", () => {
     try {
       const status = res.statusCode; const ms = Date.now() - t0;
+      if (String((req.query as any)?.wait || "") !== "1") routeLatency.record(normalizeRoute(path), ms, status);
       const slow = ms >= LEDGER_POLICY.slowRequestMs && String((req.query as any)?.wait || "") !== "1" && !DEFECT_SLOW_EXEMPT.test(path);
       const realText = String(res.locals?.defectText || errorText || (status >= 500 ? "no error body" : ""));
       if (status >= 500 || slow) defectIntake({ source: "http", text: `${req.method} ${realText}`.trim(), status, where: path, frame: res.locals?.defectFrame || null, durationMs: slow ? ms : null, method: req.method, path });
@@ -15342,20 +15358,21 @@ function defectRepairOutcome(fp: string, outcome: "fixed" | "failed" | "owner" |
  * إعادة تنفيذ طلب قراءة فشل — بالمسار الحقيقي كاملاً (المصادقة والصلاحيات كما هي) وباسم
  * المالك، عبر جلسة موقّعة عمرها دقيقة واحدة لا تُخزَّن ولا تغادر الخادم. GET فقط.
  */
-async function engineerReplayGet(path: string): Promise<{ ok: boolean; status: number; detail: string }> {
-  if (!/^\/api\//.test(path) || /oauth|client-error|\/auth\//i.test(path)) return { ok: false, status: 0, detail: "مسار غير مسموح بإعادة تنفيذه" };
+async function engineerReplayGet(path: string, opts: { audit?: boolean } = {}): Promise<{ ok: boolean; status: number; detail: string; ms: number }> {
+  // /api/auth/me وحده مسموح من مسارات المصادقة (قراءة الجلسة نفسها) — لا دخول/خروج/رموز.
+  if (!/^\/api\//.test(path) || /oauth|client-error/i.test(path) || (/\/auth\//i.test(path) && path !== "/api/auth/me")) return { ok: false, status: 0, detail: "مسار غير مسموح بإعادة تنفيذه", ms: 0 };
   const owner = serverUsers.find((u) => u.role === "owner" && u.active !== false);
-  if (!owner) return { ok: false, status: 0, detail: "لا حساب مالك نشط لتنفيذ الطلب باسمه" };
+  if (!owner) return { ok: false, status: 0, detail: "لا حساب مالك نشط لتنفيذ الطلب باسمه", ms: 0 };
   const now = Date.now();
   const token = signSession({ uid: owner.id, iat: now, exp: now + 60000, sid: `engineer-probe-${crypto.randomUUID()}` }, SESSION_SECRET);
   try {
     const res = await fetch(`http://127.0.0.1:${PORT}${path}`, { headers: { Authorization: `Bearer ${token}`, "x-engineer-probe": ENGINEER_PROBE_ID }, signal: AbortSignal.timeout(45000) });
     const body: any = await res.json().catch(() => null);
     const err = body && typeof body === "object" && !body.success && body.error ? ` — ${String(body.error).slice(0, 100)}` : "";
-    audit("site-engineer", "engineer_route_replay", `${path} -> ${res.status}`.slice(0, 200));
-    return { ok: res.status < 500, status: res.status, detail: `${path} أجاب ${res.status}${err}` };
+    if (opts.audit !== false) audit("site-engineer", "engineer_route_replay", `${path} -> ${res.status}`.slice(0, 200));
+    return { ok: res.status < 500, status: res.status, detail: `${path} أجاب ${res.status}${err}`, ms: Date.now() - now };
   } catch (e: any) {
-    return { ok: false, status: 0, detail: `تعذّر تنفيذ ${path}: ${String(e?.message || e).slice(0, 80)}` };
+    return { ok: false, status: 0, detail: `تعذّر تنفيذ ${path}: ${String(e?.message || e).slice(0, 80)}`, ms: Date.now() - now };
   }
 }
 
@@ -15669,6 +15686,10 @@ function patrolFacts(module: string | null = null): PatrolFacts {
     unhandledRejectionsDelta: Math.max(0, unhandledRejectionCount - lastRejectionsSeen),
     liveEventsBuffered: liveEvents.lastId,
     ...(() => { const open = safe(() => openDefects(defectLedger), [] as any[]); return { defectsOpen: open.length, defectsCritical: open.filter((g: any) => g.severity === "critical").length, defectsTopTitle: open[0]?.title || null }; })(),
+    probeTotal: probeLastRound?.results.length || 0, probeFailed: probeLastRound?.failed || 0, probeSlow: probeLastRound?.slow || 0,
+    probeAgeMin: probeLastRound ? Math.round((nowMs - Date.parse(probeLastRound.at)) / 60000) : null,
+    probeFailedLabels: (probeLastRound?.results || []).filter((r) => !r.ok).map((r) => r.label).slice(0, 4),
+    forecastsCritical: proactiveForecasts.filter((x) => x.severity === "critical").length, forecastsWarning: proactiveForecasts.filter((x) => x.severity === "warning").length, forecastTop: proactiveForecasts[0]?.title || null,
     // + الردود الجاهزة على المنصات بانتظار نقرة المالك (زبون ينتظر بالمثل).
     pendingDrafts: pending.length + outboundApprovals.filter((r) => r.status === "pending").length,
     oldestPendingDraftAt: [oldest(pending), oldest(outboundApprovals.filter((r) => r.status === "pending"), "at")].filter(Boolean).sort()[0] || null,
@@ -15865,6 +15886,7 @@ function startSiteEngineer(): void {
   engineerTimer = setInterval(() => { void engineerTick(); }, 60000); (engineerTimer as any).unref?.();
   console.log("[الغرابي AI] Site engineer scheduled every 1 min (repair-only, owner decisions respected)");
   startEngineerPatrol();
+  startProactiveEngineer();
 }
 
 /** عرض المهندس للغرفة الحية (بلا أسرار). */
@@ -15881,6 +15903,7 @@ function engineerView(full = true) {
     patrol: (() => { try { return patrolView(full); } catch { return null; } })(),
     // الأعطال الحقيقية المرصودة (500/استثناء/انهيار شاشة/رفض مزوّد/بطء) — هي ما يهم فعلاً.
     defects: (() => { try { return { summary: ledgerSummary(defectLedger), open: openDefects(defectLedger).slice(0, full ? 40 : 12), repaired: recentlyRepaired(defectLedger, Date.now()).slice(0, 10), version: DEFECT_VERSION }; } catch { return null; } })(),
+    proactive: (() => { try { return proactiveView(full); } catch { return null; } })(),
   };
 }
 
@@ -15916,6 +15939,214 @@ app.post("/api/engineer/client-error", authenticateToken, (req, res) => {
   res.json({ success: true });
 });
 
+// -----------------------------------------------------------------------------
+// المهندس — الطبقة الاستباقية (2026-10-28): يكشف العطل قبل أن يراه المالك.
+// engine/ops/engineerProactive.ts يحمل المنطق والسياسة؛ هنا التشغيل فقط.
+// -----------------------------------------------------------------------------
+const STORAGE_KEY_PROBES = "engineerProbes";
+let probeLastRound: ProbeRound | null = null;
+let probePrevVersionRound: ProbeRound | null = null;
+let probeRounds = 0;
+let probeRunning = false;
+let probeTimer: ReturnType<typeof setInterval> | null = null;
+let probeNextAt: number | null = null;
+let proactiveForecasts: Forecast[] = [];
+let forecastsAt: string | null = null;
+let lastHygiene: { at: string; marked: number; old: number; duplicates: number } | null = null;
+const forecastNotified = new Map<string, number>();
+const stuckSince: Record<string, number> = {};
+
+/** جولة فحص استباقي: يفتح كل شاشة رئيسية بالمسار الحقيقي ويحكم عليها قبل أن يفتحها المالك. */
+async function runProbeRound(trigger: ProbeRound["trigger"]): Promise<ProbeRound | null> {
+  if (probeRunning) return probeLastRound;
+  probeRunning = true;
+  try {
+    const results = [];
+    for (const route of PROBE_ROUTES) {
+      const r = await engineerReplayGet(route.path, { audit: false });
+      const res = evaluateProbe(route, r, Date.now());
+      results.push(res);
+      if (!res.ok) {
+        // عطل مكتشف استباقياً: يدخل سجل الأعطال بالمسار نفسه فيُصلَح/يُحال كأي عطل حقيقي.
+        defectIntake({ source: "http", text: `GET ${r.detail} (كشفه الفحص الاستباقي قبل أن يراه المالك)`, status: r.status || 503, where: route.path.split("?")[0], method: "GET", path: route.path });
+      } else if (res.ms >= LEDGER_POLICY.slowRequestMs) {
+        defectIntake({ source: "http", text: `GET بطيء في الفحص الاستباقي`, status: r.status, where: route.path.split("?")[0], durationMs: res.ms, method: "GET", path: route.path });
+      }
+    }
+    const round = summarizeRound(results, trigger, DEFECT_VERSION, Date.now());
+    probeLastRound = round;
+    probeRounds += 1;
+    if (trigger === "deploy") {
+      // فحص ما بعد النشر: حكم صريح على النسخة الجديدة مقارنة بالجولة الأخيرة للنسخة السابقة.
+      const v = deployVerdict(round, probePrevVersionRound && probePrevVersionRound.version !== DEFECT_VERSION ? probePrevVersionRound : null);
+      const t = new Date().toISOString();
+      addReport(engineerState, {
+        id: workspaceId("eng"), incidentKey: `deploy:${DEFECT_VERSION || "unknown"}`, kind: "patrol_fix" as any, module: "core", severity: v.ok ? "warning" : "critical",
+        title: `فحص ما بعد النشر — النسخة ${DEFECT_VERSION || "الحالية"}`, evidence: v.regressions.slice(0, 6), attempt: 1, startedAt: t, endedAt: t, durationMs: 0,
+        status: v.ok ? "resolved" : "escalated",
+        steps: round.results.map((x) => ({ at: x.at, label: x.label, ok: x.ok && !x.slow, detail: x.detail })),
+        verification: v.summary, summary: v.summary,
+        nextAction: v.ok ? null : "الأعطال دخلت سجل الأعطال؛ إن كانت عيب كود فمهندس الكود يصلحها — أو ارجع للنسخة السابقة من Render (Rollback)",
+      });
+      if (!v.ok) pushNotification("owner", "engineer_deploy", `النسخة الجديدة أدخلت عطلاً`, v.summary.slice(0, 400), "critical", "live_room");
+      liveEvent({ module: "core" as any, level: v.ok ? "ok" : "error", title: v.ok ? "🕷 فحص ما بعد النشر: سليم" : "🕷 فحص ما بعد النشر: عطل", text: v.summary.slice(0, 150) });
+      persistEngineerState();
+    } else if (round.failed) {
+      liveEvent({ module: "core" as any, level: "warn", title: `🕷 الفحص الاستباقي: ${round.failed} شاشة تفشل`, text: round.results.filter((x) => !x.ok).map((x) => x.label).join("، ").slice(0, 150) });
+    }
+    if (storageReady) { const snap = JSON.parse(JSON.stringify(round)); persistQueue = persistQueue.then(() => storageAdapter.write(STORAGE_KEY_PROBES, snap)).catch(() => { /* */ }); }
+    return round;
+  } catch (e: any) {
+    console.warn("[engineer] probe_round_failed", String(e?.message || e).slice(0, 120));
+    return null;
+  } finally {
+    probeRunning = false;
+  }
+}
+
+/** ساعات حتى منتصف ليل المحيط الهادئ (تجدد حصة YouTube). */
+function hoursUntilPacificMidnight(nowMs: number): number {
+  try {
+    const parts = new Intl.DateTimeFormat("en-US", { timeZone: "America/Los_Angeles", hour: "numeric", minute: "numeric", hour12: false }).formatToParts(new Date(nowMs));
+    const h = Number(parts.find((p) => p.type === "hour")?.value || 0) % 24; const m = Number(parts.find((p) => p.type === "minute")?.value || 0);
+    return Math.max(0, 24 - h - m / 60);
+  } catch { return 12; }
+}
+
+/** التوقعات من حالة الخادم الحقيقية (كل 5 دقائق) + إنذار المالك بالحرج مرة يومياً لكل توقع. */
+function refreshForecasts(): void {
+  try {
+    const nowMs = Date.now();
+    const f = patrolFacts(null);
+    const yq: any = (() => { try { return youtubeQuotaStatusSnapshot(); } catch { return null; } })();
+    const utcH = new Date(nowMs).getUTCHours() + new Date(nowMs).getUTCMinutes() / 60;
+    const fresh = (() => { try { return backupFreshness(drControl.driveAutoBackup, nowMs); } catch { return null; } })();
+    const spiking = Object.values(defectLedger.groups).filter((g) => g.status === "open" && isSpiking(defectTimes.get(g.fp) || [], nowMs)).map((g) => ({ title: g.title, count10m: (defectTimes.get(g.fp) || []).filter((t) => nowMs - t <= PROACTIVE_POLICY.spikeWindowMs).length }));
+    proactiveForecasts = buildForecasts({
+      nowMs,
+      platforms: f.platforms.map((p) => ({ id: p.id, label: platformAr(p.id), connected: p.connected, expiresAt: p.expiresAt, refreshable: p.id === "youtube" && Boolean(youtubeRefreshToken()) })),
+      collections: f.collections.map((c) => ({ key: c.key, label: COLLECTION_AR[c.key] || c.key, size: c.size, cap: COLLECTION_CAPS[c.key], growthPerDay: c.growthPerDay })),
+      memory: { mb: f.memoryMb, limitMb: f.limitMb, slopeMbPerHour: f.memorySlopeMbPerHour },
+      youtubeQuota: yq && typeof yq.usedPercent === "number" ? { usedPercent: yq.usedPercent, resetInHours: hoursUntilPacificMidnight(nowMs) } : null,
+      gemini: f.geminiLimit > 0 ? { used: f.geminiUsed, limit: f.geminiLimit, hoursElapsed: utcH, hoursLeftInDay: 24 - utcH } : null,
+      slow: slowRoutes(routeLatency.summary()),
+      spiking,
+      backup: fresh && drControl.driveRefreshToken ? { ageHours: fresh.ageHours, intervalHours: 6 } : null,
+    });
+    forecastsAt = new Date(nowMs).toISOString();
+    for (const fc of proactiveForecasts) {
+      if (fc.severity !== "critical" || fc.owner !== "owner") continue;
+      if (nowMs - (forecastNotified.get(fc.id) || 0) < 86400000) continue;
+      forecastNotified.set(fc.id, nowMs);
+      pushNotification("owner", "engineer_forecast", `قبل أن يقع: ${fc.title}`, `${fc.detail} ${fc.action}`.slice(0, 400), "critical", "live_room");
+    }
+  } catch (e: any) { console.warn("[engineer] forecast_failed", String(e?.message || e).slice(0, 120)); }
+}
+
+/** نظافة التنبيهات: القديم المعلوماتي والمكرر يُعلَّم مقروءاً (لا حذف، والحرج لا يُلمس). */
+function runNotificationHygiene(): void {
+  try {
+    const rows = ((workspace as any).notifications || []) as any[];
+    const h = notificationHygiene(rows, Date.now());
+    if (!h.ids.length) { lastHygiene = { at: new Date().toISOString(), marked: 0, old: 0, duplicates: 0 }; return; }
+    const ids = new Set(h.ids); const at = new Date().toISOString();
+    for (const n of rows) if (ids.has(n.id)) { n.read = true; n.readAt = at; n.readBy = "site-engineer"; }
+    persistState();
+    lastHygiene = { at, marked: h.ids.length, old: h.old, duplicates: h.duplicates };
+    addReport(engineerState, { id: workspaceId("eng"), incidentKey: "hygiene:notifications", kind: "patrol_fix" as any, module: "owner", severity: "warning", title: "نظافة الإشعارات", evidence: [`${h.old} قديم معلوماتي/تحذير · ${h.duplicates} مكرر`], attempt: 1, startedAt: at, endedAt: at, durationMs: 0, status: "resolved", steps: [{ at, label: "تعليم القديم والمكرر مقروءاً (بلا حذف — الحرج لم يُلمس)", ok: true, detail: `${h.ids.length} إشعاراً` }], verification: "الحرج وما يحتاج قرارك بقي غير مقروء وظاهراً", summary: `نظّفتُ ${h.ids.length} إشعاراً قديماً أو مكرراً كانت تُغرق المهم — لم يُحذف شيء ولم يُلمس أي تنبيه حرج.`, nextAction: null });
+    persistEngineerState();
+  } catch { /* */ }
+}
+
+/** علم «يعمل» عالق (الدورة ماتت في منتصفها) يمنع كل دورة لاحقة: يُحرَّر بعد 20 دقيقة متصلة. */
+function releaseStuckFlags(): void {
+  const nowMs = Date.now();
+  const check = (key: string, running: boolean, release: () => void, label: string) => {
+    if (!running) { delete stuckSince[key]; return; }
+    stuckSince[key] = stuckSince[key] || nowMs;
+    if (nowMs - stuckSince[key] < 20 * 60000) return;
+    release(); delete stuckSince[key];
+    const t = new Date().toISOString();
+    addReport(engineerState, { id: workspaceId("eng"), incidentKey: `stuck:${key}`, kind: "cycle_stale" as any, module: "automation", severity: "warning", title: `${label} عالقة`, evidence: ["علم «قيد التشغيل» بقي 20 دقيقة متصلة — الدورة ماتت في منتصفها"], attempt: 1, startedAt: t, endedAt: t, durationMs: 0, status: "resolved", steps: [{ at: t, label: "تحرير العلم العالق", ok: true, detail: "الدورة التالية تعمل في موعدها" }], verification: "حُرّر — الدورة التالية في موعدها", summary: `حرّرتُ «${label}» العالقة فعادت دوراتها تعمل.`, nextAction: null });
+    persistEngineerState();
+  };
+  check("metrics", metricsSyncRunning, () => { metricsSyncRunning = false; }, "مزامنة الأرقام");
+  check("probe", probeRunning, () => { probeRunning = false; }, "جولة الفحص الاستباقي");
+}
+
+let proactiveTicks = 0;
+function proactiveTick(): void {
+  proactiveTicks += 1;
+  releaseStuckFlags();
+  if (proactiveTicks % 5 === 1) refreshForecasts();
+  if (proactiveTicks % 30 === 1) runNotificationHygiene();
+}
+
+// -----------------------------------------------------------------------------
+// كشف الانهيار (2026-10-28): الخادم لا يرى موته بنفسه. نبضة كل 10 دقائق تحفظ آخر ذاكرة ووقت؛
+// الإغلاق النظيف (SIGTERM عند النشر) يُعلَّم. إقلاع بلا علامة إغلاق نظيف لنفس العملية السابقة
+// = انهيار حقيقي (نفاد ذاكرة 512 ميغا، استثناء قاتل) ⇒ عطل حرج بآخر قراءة ذاكرة قبل الموت.
+// -----------------------------------------------------------------------------
+const STORAGE_KEY_LIFE = "engineerLife";
+const LIFE_BOOT_ID = crypto.randomUUID().slice(0, 8);
+let lifeHeartbeatTimer: ReturnType<typeof setInterval> | null = null;
+function lifeRecord(clean: boolean) {
+  return { bootId: LIFE_BOOT_ID, version: DEFECT_VERSION, bootAt: new Date(DEFECT_BOOT_MS).toISOString(), heartbeatAt: new Date().toISOString(), memoryMb: Math.round(process.memoryUsage().rss / 1048576), cleanShutdownAt: clean ? new Date().toISOString() : null };
+}
+function markCleanShutdown(): void {
+  lifeShuttingDown = true;
+  try { if (lifeHeartbeatTimer) clearInterval(lifeHeartbeatTimer); } catch { /* */ }
+  if (!storageReady) return;
+  const rec = lifeRecord(true);
+  persistQueue = persistQueue.then(() => storageAdapter.write(STORAGE_KEY_LIFE, rec)).catch(() => { /* */ });
+}
+async function startCrashDetection(): Promise<void> {
+  try {
+    const prev: any = await storageAdapter.read<any>(STORAGE_KEY_LIFE);
+    if (prev && prev.bootId && prev.bootId !== LIFE_BOOT_ID && !prev.cleanShutdownAt) {
+      const lastBeat = Date.parse(String(prev.heartbeatAt || ""));
+      const mem = Number(prev.memoryMb || 0);
+      const nearLimit = mem >= 430;
+      defectIntake({
+        source: "exception",
+        text: `الخادم انهار وأعيد تشغيله: لم يُغلق إغلاقاً نظيفاً (آخر نبضة ${Number.isFinite(lastBeat) ? new Date(lastBeat).toISOString() : "—"}، آخر ذاكرة ${mem} ميغا${nearLimit ? " — قرب حد 512: نفاد ذاكرة غالباً" : ""}، النسخة ${prev.version || "—"})`,
+        where: nearLimit ? "crash:oom" : "crash:process",
+      });
+      console.error(`[engineer] crash_detected prev_boot=${prev.bootId} last_memory_mb=${mem} version=${prev.version || "-"}`);
+    }
+  } catch { /* */ }
+  const beat = () => { if (!storageReady || shuttingDownFlag()) return; const rec = lifeRecord(false); persistQueue = persistQueue.then(() => storageAdapter.write(STORAGE_KEY_LIFE, rec)).catch(() => { /* */ }); };
+  beat();
+  lifeHeartbeatTimer = setInterval(beat, 10 * 60000); (lifeHeartbeatTimer as any).unref?.();
+}
+let lifeShuttingDown = false;
+const shuttingDownFlag = () => lifeShuttingDown;
+
+function startProactiveEngineer(): void {
+  if (probeTimer) return;
+  void startCrashDetection();
+  void (async () => { try { probePrevVersionRound = (await storageAdapter.read<any>(STORAGE_KEY_PROBES)) || null; } catch { /* */ } })();
+  // فحص ما بعد النشر بعد 3 دقائق من الإقلاع (تستقر الدورات)، ثم جولة كل 10 دقائق.
+  const boot = setTimeout(() => { void runProbeRound("deploy"); }, PROACTIVE_POLICY.firstProbeAfterBootMs); (boot as any).unref?.();
+  probeNextAt = Date.now() + PROACTIVE_POLICY.firstProbeAfterBootMs;
+  probeTimer = setInterval(() => { probeNextAt = Date.now() + PROACTIVE_POLICY.probeIntervalMs; void runProbeRound("schedule"); }, PROACTIVE_POLICY.probeIntervalMs); (probeTimer as any).unref?.();
+  const t = setInterval(proactiveTick, 60000); (t as any).unref?.();
+  console.log(`[الغرابي AI] Engineer proactive: ${PROBE_ROUTES.length} screen probes every ${PROACTIVE_POLICY.probeIntervalMs / 60000} min + forecasts + hygiene`);
+}
+
+function proactiveView(full = true) {
+  return {
+    lastRound: probeLastRound ? (full ? probeLastRound : { ...probeLastRound, results: probeLastRound.results.filter((r) => !r.ok || r.slow) }) : null,
+    rounds: probeRounds,
+    running: probeRunning,
+    nextAt: probeNextAt ? new Date(probeNextAt).toISOString() : null,
+    forecasts: proactiveForecasts,
+    forecastsAt,
+    latency: full ? routeLatency.summary().slice(0, 10) : undefined,
+    hygiene: lastHygiene,
+  };
+}
+
 app.get("/api/engineer", requireOwner, (_req, res) => {
   res.json({ success: true, engineer: { ...engineerView(), reports: engineerState.reports } });
 });
@@ -15923,6 +16154,9 @@ app.post("/api/engineer/check", requireOwner, async (req, res) => {
   if (engineerBusy) return res.status(409).json({ success: false, error: "المهندس يعمل على مهمة الآن." });
   audit(((req as any).user as ServerUser)?.id || "owner", "engineer_manual_check", "");
   await engineerTick("manual");
+  // «افحص الآن» يشغّل أيضاً جولة الفحص الاستباقي والتوقعات فوراً.
+  await runProbeRound("manual");
+  refreshForecasts();
   res.json({ success: true, engineer: engineerView() });
 });
 app.post("/api/engineer/toggle", requireOwner, (req, res) => {
@@ -23682,6 +23916,8 @@ async function startServer() {
       try { stopYouTubeQuotaRetryTimer(); } catch { /* تجاهل */ }
       // B1/Y2: إيقاف مؤقّت تنبيه المالك (لا إرسال أثناء الإغلاق).
       try { stopOwnerAlertDispatcher(); } catch { /* تجاهل */ }
+      // كشف الانهيار: إغلاق نظيف يُسجَّل؛ غيابه عند الإقلاع التالي = انهيار (نفاد ذاكرة/خطأ قاتل).
+      try { markCleanShutdown(); } catch { /* تجاهل */ }
       // تحرير أقفال الدوام صراحةً (تُبطل فوراً عند إقلاع العملية الجديدة بدل
       // انتظار انتهاء مهلتها) — **ويُكتب التحرير في المخزن الدائم** قبل التفريغ،
       // وإلا بقي القفل القديم محفوظاً فيبدو محتجزاً لعملية أخرى حتى انتهاء مهلته.
