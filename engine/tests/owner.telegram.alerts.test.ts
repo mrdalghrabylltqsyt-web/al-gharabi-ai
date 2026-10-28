@@ -63,7 +63,7 @@ async function main(): Promise<void> {
 
   const item = { key: 'commercial_draft:facebook:d1', kind: 'commercial_draft' as const, platform: 'facebook', title: 'استفسار', snippet: 'كم سعر الثلاجة؟', at: new Date().toISOString() };
   const msg = buildOwnerTelegramMessage(item, 'https://example.app/');
-  check('الرسالة تذكر النوع والمنصة', msg.includes('استفسار زبون يحتاج موافقتك') && msg.includes('facebook'), msg);
+  check('الرسالة تذكر النوع والمنصة (بالعربية)', msg.includes('استفسار زبون يحتاج موافقتك') && msg.includes('فيسبوك'), msg);
   check('الرسالة تحمل المقتطف', msg.includes('كم سعر الثلاجة؟'));
   check('رابط صندوق الموافقات', msg.includes('https://example.app/?tab=commercial_inbox'), msg);
   const reauth = buildOwnerTelegramMessage({ ...item, kind: 'platform_reauth', snippet: '' }, null);
@@ -118,7 +118,7 @@ async function main(): Promise<void> {
     const toOwner = () => tg.state.sent.filter((m) => m.chatId === OWNER_CHAT);
     const got = await waitFor(() => toOwner().length >= 1, 20_000);
     check('★ رسالة Telegram فورية وصلت لمحادثة المالك', got, JSON.stringify(tg.state.sent.map((m) => m.chatId)));
-    check('الرسالة عن انقطاع ربط facebook', /انقطاع ربط/.test(toOwner()[0]?.text || '') && /facebook/.test(toOwner()[0]?.text || ''), toOwner()[0]?.text);
+    check('الرسالة عن انقطاع ربط فيسبوك (بالعربية)', /انقطاع ربط/.test(toOwner()[0]?.text || '') && /فيسبوك/.test(toOwner()[0]?.text || ''), toOwner()[0]?.text);
     check('★ لا رسالة لأي محادثة أخرى', tg.state.sent.every((m) => m.chatId === OWNER_CHAT), JSON.stringify(tg.state.sent.map((m) => m.chatId)));
 
     const login = await (await fetch(`${BASE}/api/auth/preview-login`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ token: PREVIEW_TOKEN }) })).json();
