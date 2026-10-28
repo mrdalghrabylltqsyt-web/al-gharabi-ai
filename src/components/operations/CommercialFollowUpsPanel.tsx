@@ -72,6 +72,12 @@ export const CommercialFollowUpsPanel: React.FC = () => {
         ))}
       </div>
 
+      {due.length > 0 && data && data.killSwitchEnabled === false && (
+        <div data-followups-paused className="p-3 rounded-xl border border-amber-500/40 bg-amber-950/30 text-[11px] text-amber-100 flex flex-wrap items-center justify-between gap-2">
+          <span>{due.length} متابعة حان وقتها، لكن <b>العقل التجاري موقوف</b> فلن تُجهَّز. شغّله ليُعدّ ردود المتابعة (تبقى بانتظار موافقتك).</span>
+          <button onClick={() => setActiveTab('commercial_kill_switch')} className="px-2.5 py-1 rounded-lg bg-amber-500 text-slate-950 font-bold">تشغيل العقل التجاري</button>
+        </div>
+      )}
       <div className="flex gap-1.5 text-[11px] overflow-x-auto">
         {([['open', `المفتوحة (${leads.filter((l) => !['WON', 'LOST'].includes(l.stage)).length})`], ['due', `متابعة مستحقة الآن (${due.length})`], ['all', `الكل (${leads.length})`]] as Array<[string, string]>).map(([id, label]) => (
           <button key={id} onClick={() => setStage(id)} className={`px-2.5 py-1 rounded-lg font-semibold shrink-0 ${stage === id ? 'bg-emerald-500 text-slate-950' : 'bg-slate-950 text-slate-400'}`}>{label}</button>

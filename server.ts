@@ -671,6 +671,7 @@ import {
   truncateAlertSnippet,
   type OwnerAlertState,
   type OwnerAlertItem,
+  platformLabelAr,
 } from "./engine/notifications/ownerAlerts";
 import { parseOwnerTelegramChatId, buildOwnerTelegramMessage, decideOwnerTelegramSend, defaultOwnerTelegramRateState, newlyQueuedAlerts, OWNER_TELEGRAM_OVERFLOW_TEXT, OWNER_TELEGRAM_MAX_PER_HOUR, signOwnerTelegramAction, verifyOwnerTelegramAction, isOwnerTelegramCallback, draftIdFromAlertKey, ownerTelegramDecisionText, type OwnerTelegramRateState } from "./engine/notifications/ownerTelegram";
 import {
@@ -730,6 +731,7 @@ import { memoryPressureAlert, baselineSlopePerHour } from "./engine/ops/memoryWa
 import { LiveWaiters, LIVE_WAIT_MAX_MS } from "./engine/ops/liveWait";
 import { oauthFailPage } from "./engine/social/oauthFailPage";
 import { pickGoogleCredentialPair } from "./engine/social/googleCredPair";
+import { googleBusinessAccountHint } from "./engine/social/googleBusinessHint";
 import { defaultOwnerTelegramPairing, normalizeOwnerTelegramPairing, newPairingCode, startOwnerTelegramPairing, extractPairingCode, completeOwnerTelegramPairing, unpairOwnerTelegram, effectiveOwnerChat, pairingOutcomeText, OWNER_TG_PAIRING_TTL_MS, type OwnerTelegramPairingState } from "./engine/notifications/ownerTelegramPairing";
 import { parseFacebookPostMetrics, parseInstagramMediaMetrics, parseGraphInsights, parseFollowers, upsertPerformanceRecords, summarizePlatformMetrics, type MetricValues } from "./engine/social/metricsSync";
 import { resolveInteractionProduct, productFactStatement, productNamedInText, type ProductResolution } from "./engine/social/productResolution";
@@ -2771,7 +2773,7 @@ function markProviderReauthNeeded(platform: string, reason: string): void {
   savePlatformConnections();
   void persistStateDurable();
   audit('system', `${platform}_reauth_needed`, reason || 'oauth_exception');
-  pushNotification('owner', `${platform}_reauth_needed`, `إعادة ربط ${platform} مطلوبة`,
+  pushNotification('owner', `${platform}_reauth_needed`, `إعادة ربط ${platformLabelAr(platform)} مطلوبة`,
     'سُحب التفويض أو انتهى الرمز؛ أُوقفت محاولات الرد والنشر حتى إعادة الربط.', 'critical', 'platform_connections');
 }
 
@@ -4155,7 +4157,25 @@ for (const p of SUPPORTED_PLATFORMS) platformConnections.set(p.id, { platform: p
 // اتصالات المنصات وتوكناتها تمر عبر نفس المخزن: توكنات المنصات المشفّرة تُحفظ
 // داخل workspace.providerTokens، واتصالات المنصات في platformConnections.
 function savePlatformConnections() {
+  resolveReauthNotificationsForConnected();
   persistState();
+}
+/**
+ * 2026-10-28: بعد إعادة ربط منصة يبقى تنبيه «إعادة ربط … مطلوبة» الحرج غير مقروء إلى الأبد، فيتضخم
+ * «تنبيهات حرجة غير مقروءة» ويحكم المهندس بعطل زال. عند رجوع المنصة «متصلة» تُعلَّم تنبيهات
+ * انقطاعها السابقة «محلولة تلقائياً» (مقروءة + وقت الحل) — بلا حذف.
+ */
+function resolveReauthNotificationsForConnected(): number {
+  const connected = new Set(Array.from(platformConnections.values()).filter((c: any) => c?.status === "connected").map((c: any) => String(c.platform)));
+  if (!connected.size) return 0;
+  const at = new Date().toISOString();
+  let n = 0;
+  for (const item of (((workspace as any).notifications || []) as any[])) {
+    if (!item || item.read) continue;
+    const m = /^([a-z_]+)_reauth_needed$/.exec(String(item.type || ""));
+    if (m && connected.has(m[1])) { item.read = true; item.resolvedAt = at; item.resolvedBy = "auto_reconnected"; n += 1; }
+  }
+  return n;
 }
 function loadPlatformConnections() {
   // استرجاع اتصالات المنصات من اللقطة المحمّلة عند الإقلاع (خلفية الملف
@@ -4734,7 +4754,7 @@ function clearYouTubeProviderError(): void { youtubeLastProviderError = null; }
  * استعلاماً مباشراً أو فشل، نُبقي المعرّف العام ونعتمد الإثبات على نجاح التبادل.
  * كل استدعاء هنا رسمي ومحدود، ولا يُسجّل أي رمز.
  */
-async function fetchProviderAccount(platform: string, accessToken: string): Promise<{ accountId?: string; accountName?: string } | null> {
+async function fetchProviderAccount(platform: string, accessToken: string): Promise<{ accountId?: string; accountName?: string; error?: string } | null> {
   try {
     if (platform === "youtube") {
       const info = await youtubeClient().fetchMyChannel(accessToken);
@@ -4760,10 +4780,15 @@ async function fetchProviderAccount(platform: string, accessToken: string): Prom
     if (platform === "google_business") {
       // G3: نحفظ الرمز + refresh token (يلزمهما التجديد لاحقاً)، ونثبت حساباً حقيقياً.
       const r = await fetch(`${process.env.GOOGLE_BUSINESS_ACCOUNT_BASE || "https://mybusinessaccountmanagement.googleapis.com"}/v1/accounts`, { headers: { Authorization: `Bearer ${accessToken}` } });
-      const d = await r.json(); if (r.ok && d.accounts?.[0]) {
+      const d: any = await r.json().catch(() => null); if (r.ok && d?.accounts?.[0]) {
         saveGoogleBusinessCredentials({ accessToken, accountResource: d.accounts[0].name, accountName: d.accounts[0].accountName ? String(d.accounts[0].accountName) : null });
         return { accountId: d.accounts[0].name, accountName: d.accounts[0].accountName };
       }
+      // 2026-10-28: رسالة Google الحقيقية كانت تُرمى فيظهر «تعذّر إثبات هوية…» بلا سبب. الآن تُسجَّل وتُشرح.
+      const gMsg = String(d?.error?.message || "").slice(0, 240);
+      const gReason = String(d?.error?.details?.find?.((x: any) => x?.reason)?.reason || d?.error?.status || "").slice(0, 60);
+      console.log(`[oauth] google_business accounts_check status=${r.status} reason=${gReason || "-"} message=${redactSecretsFromText(gMsg) || "-"}`);
+      return { error: `${googleBusinessAccountHint({ status: r.status, message: gMsg, reason: gReason, empty: r.ok })}${gMsg ? ` (Google: ${redactSecretsFromText(gMsg)})` : ""}` };
     }
   } catch { /* الإثبات الإضافي اختياري؛ الفشل لا يُلغي نجاح التبادل */ }
   return null;
@@ -4937,7 +4962,7 @@ async function handleOAuthStart(req:any,res:any){
     note:"إن ظهرت صفحة «حدث خطأ ما» فمعرّف التطبيق/سرّه أو App Domains/Valid OAuth Redirect URIs غير مطابق لدى Meta. القيم الدقيقة في GET /api/platforms/:platform/oauth/setup.",
   } : undefined;
   // سجل آمن: الروابط والنطاق والفاتورة فقط — بلا client_id ولا أي سرّ.
-  logOAuthStart(platform, { outcome: "authorized_url_issued", redirectUri: callbackUrl, domain: urlInfo.host, publicUrlSource: urlInfo.source, publicUrlIsPublic: publicOk, appTokenKind: preflight.appToken?.kind ?? null, scopeCount: scopes.length, authEndpoint: authEndpointFor(platform), domainWarning: Boolean(domainWarning), metaSetupHint: Boolean(metaSetupHint), scopeDependencyGaps: scopeGaps, loginConfigIdUsed: Boolean(loginConfigId) });
+  logOAuthStart(platform, { outcome: "authorized_url_issued", clientIdTail: String(cfg?.clientId || "").split(".")[0].slice(-6) || null, credentialSource: platform === "google_business" ? googleBusinessCredentials().source : null, redirectUri: callbackUrl, domain: urlInfo.host, publicUrlSource: urlInfo.source, publicUrlIsPublic: publicOk, appTokenKind: preflight.appToken?.kind ?? null, scopeCount: scopes.length, authEndpoint: authEndpointFor(platform), domainWarning: Boolean(domainWarning), metaSetupHint: Boolean(metaSetupHint), scopeDependencyGaps: scopeGaps, loginConfigIdUsed: Boolean(loginConfigId) });
   res.json({success:true,platform,authorizationUrl:u.toString(),authEndpoint:authEndpointFor(platform),expiresAt:pending.expiresAt,redirectUri:callbackUrl,domain:urlInfo.host,publicUrlSource:urlInfo.source,publicUrlIsPublic:publicOk,scopes,appIdFormatOk:isPlausibleMetaAppId(String(cfg.clientId || "")),appTokenKind:preflight.appToken?.kind ?? null,domainWarning,metaSetupHint,scopeDependencyGaps:scopeGaps.length?scopeGaps:undefined,
     // TikTok: المفتاح المستخدم فعلاً في الرابط (مُخفى + بصمة) بلا أي سرّ، ليُقارَن
     // مباشرةً مع Client key في لوحة TikTok Developers عند رسالة رفض المفتاح.
@@ -5232,7 +5257,7 @@ async function handleOAuthCallback(req:any, res:any, rawQuery:string, viaPost:bo
     // Snapchat/X/Threads/Google Business جميعها realConnector:false بالفعل (لا
     // تنفيذ خارجي أصلاً عبرها حتى مع هذه الثغرة).
     const proof=await fetchProviderAccount(platform,parsedToken.accessToken!);
-    if(!proof || !proof.accountId) throw new Error(`تعذّر إثبات هوية حساب ${platform} الحقيقية لدى المزود بعد تبادل الرمز؛ لا يُعلن اتصال موثق بلا هوية حقيقية مؤكَّدة.`);
+    if(!proof || !proof.accountId) throw new Error(proof?.error || `تعذّر إثبات هوية حساب ${platform} الحقيقية لدى المزود بعد تبادل الرمز؛ لا يُعلن اتصال موثق بلا هوية حقيقية مؤكَّدة.`);
     const accountId=proof.accountId, accountName=proof.accountName||proof.accountId;
     // يُخزَّن الرمز مع انتهاء مطلق محسوب ومع refresh token إن وُجد.
     const stored={...token, expiresAt: parsedToken.expiresIn ? Date.now()+parsedToken.expiresIn*1000 : null};
@@ -5242,7 +5267,7 @@ async function handleOAuthCallback(req:any, res:any, rawQuery:string, viaPost:bo
     if (platform === "google_business") saveGoogleBusinessCredentials({ accessToken: String(parsedToken.accessToken || ""), refreshToken: (token as any)?.refresh_token || null, expiresIn: parsedToken.expiresIn ?? null, accountResource: accountId, accountName: accountName });
     platformConnections.set(platform,{platform,status:"connected",accountId,accountName,connectedAt:new Date().toISOString(),providerVerified:true}); savePlatformConnections(); clearOAuthFailure(platform); audit(pending!.userId,"platform_oauth_connected",`${platform}:${accountId}`);
     sendHtml("<html lang='ar' dir='rtl'><meta charset='utf-8'><title>تم الربط</title><body style='font-family:sans-serif;padding:40px'><h2>تم ربط المنصة بنجاح.</h2><p>يمكنك إغلاق هذه النافذة والعودة إلى الغرابي AI.</p></body></html>");
-  } catch(e:any) { audit(pending!.userId,"platform_oauth_failed",platform); const errMsg=redactSecretsFromText(String(e?.message||e)).slice(0,300); console.error(`[oauth-callback-error] ${platform} status=502 message=${errMsg}`); recordOAuthFailure(platform, errMsg); if(platform==="google_business" && /client secret is invalid|invalid_client/i.test(errMsg) && googleBusinessCredentials().source==="business"){ googleBusinessPairRejected=true; console.log("[oauth] google_business credential_pair=business rejected=invalid_client fallback=shared"); } const hint=platform==="google_business"&&googleBusinessPairRejected&&googleBusinessCredentials().source==="shared"?"رفضت Google السرّ الخاص بـGoogle Business في Render؛ صار الخادم يستعمل اعتماد Google المشترك (نفسه الذي يربط يوتيوب). اضغط «ربط» مرة أخرى.":oauthFailureHint(platform,errMsg); failHtml(502, `فشل إكمال ربط المنصة: ${errMsg}${hint?" — "+hint:""}`); }
+  } catch(e:any) { audit(pending!.userId,"platform_oauth_failed",platform); const errMsg=redactSecretsFromText(String(e?.message||e)).slice(0,300); console.error(`[oauth-callback-error] ${platform} status=502 message=${errMsg}`); recordOAuthFailure(platform, errMsg); if(platform==="google_business" && /client secret is invalid|invalid_client/i.test(errMsg) && googleBusinessCredentials().source==="business"){ googleBusinessPairRejected=true; saveControlState(); console.log("[oauth] google_business credential_pair=business rejected=invalid_client fallback=shared"); } const hint=platform==="google_business"&&googleBusinessPairRejected&&googleBusinessCredentials().source==="shared"?"رفضت Google السرّ الخاص بـGoogle Business في Render؛ صار الخادم يستعمل اعتماد Google المشترك (نفسه الذي يربط يوتيوب). اضغط «ربط» مرة أخرى.":oauthFailureHint(platform,errMsg); failHtml(502, `فشل إكمال ربط المنصة: ${errMsg}${hint?" — "+hint:""}`); }
 }
 
 app.post("/api/platforms/telegram/configure", requireOwner, async (req,res)=>{
@@ -16872,7 +16897,8 @@ app.get("/api/analytics/overview", authenticateToken, (_req, res) => {
   //  - مؤشرات المزود (مشاهدات/إعجابات/وصول) null ما لم تُجلب فعلاً — لا صفر مُضلِّل.
   const records = (((workspace as any).publishRecords || []) as any[]).filter((r) => !r?.simulated);
   const okRecord = (r: any) => Boolean(r?.providerPostId || r?.externalVideoId) && (r?.state === "published" || r?.state === "scheduled");
-  const inbound = ((workspace as any).socialComments || []) as any[];
+  // التحليلات من أصوات الزبائن فقط — ردود المعرض لا تُحسب استفساراً ولا تفاعلاً (2026-10-28).
+  const inbound = customerComments();
   const isInquiry = (c: any) => { const k = c?.classification || {}; return k.isBusinessInquiry === true || k.intent === "business_inquiry" || ["price","installment","installment_terms","availability"].includes(String(k.topic || "")); };
   const providerMetrics = posts.some((p:any) => p.metricSource === "provider_verified") || (((workspace as any).performanceRecords || []) as any[]).length > 0;
   const audience = ((workspace as any).platformAudience || {}) as Record<string, { followers: number | null; at: string }>;
@@ -16912,7 +16938,7 @@ app.get("/api/system/diagnostics", requireOwner, (_req, res) => {
   const approved = automationJobs.filter((j:any)=>j.status==="approved").length;
   const ready = automationJobs.filter((j:any)=>j.status==="ready").length;
   const failed = automationJobs.filter((j:any)=>j.status==="failed").length;
-  res.json({ success:true, generatedAt:new Date().toISOString(), version:PROJECT_VERSION, schemaVersion:STATE_SCHEMA_VERSION, node:process.version, uptimeSeconds:Math.round(process.uptime()), memory:{ rss:memory.rss, heapUsed:memory.heapUsed, heapTotal:memory.heapTotal }, sessions:activeSessionCount(), users:serverUsers.length, platforms:{ total:SUPPORTED_PLATFORMS.length, connected:connectedPlatformIds().length }, workspace:{ products:workspace.products.length, posts:workspace.posts.length, conversations:workspace.conversations.length, inbound:(((workspace as any).socialComments||[]) as any[]).length, commercialLeads:commercialLeads.filter((l:any)=>!l.archived).length, pendingCustomerReplies:commercialDrafts.filter((d:any)=>d.status==="pending").length, plans:workspace.installmentPlans.length, leads:workspace.leads.length, tasks:workspace.tasks.length, sales:workspace.sales.length, payments:workspace.payments.length, suppliers:workspace.suppliers.length, purchases:workspace.purchases.length, expenses:workspace.expenses.length, contracts:workspace.contracts.length, installmentSchedules:workspace.installmentSchedules.length }, jobs:{ total:automationJobs.length, queued, approved, ready, failed }, storageBackend: storageAdapter.backend, backups:{ count: (()=>{ try{return fs.readdirSync(BACKUP_DIR).filter(n=>n.startsWith("state-")&&n.endsWith(".json")).length;}catch{return 0;} })() } });
+  res.json({ success:true, generatedAt:new Date().toISOString(), version:PROJECT_VERSION, schemaVersion:STATE_SCHEMA_VERSION, node:process.version, uptimeSeconds:Math.round(process.uptime()), memory:{ rss:memory.rss, heapUsed:memory.heapUsed, heapTotal:memory.heapTotal }, sessions:activeSessionCount(), users:serverUsers.length, platforms:{ total:SUPPORTED_PLATFORMS.length, connected:connectedPlatformIds().length }, workspace:{ products:workspace.products.length, posts:workspace.posts.length, conversations:workspace.conversations.length, inbound:customerComments().length, inboundAll:(((workspace as any).socialComments||[]) as any[]).length, commercialLeads:commercialLeads.filter((l:any)=>!l.archived).length, pendingCustomerReplies:commercialDrafts.filter((d:any)=>d.status==="pending").length, plans:workspace.installmentPlans.length, leads:workspace.leads.length, tasks:workspace.tasks.length, sales:workspace.sales.length, payments:workspace.payments.length, suppliers:workspace.suppliers.length, purchases:workspace.purchases.length, expenses:workspace.expenses.length, contracts:workspace.contracts.length, installmentSchedules:workspace.installmentSchedules.length }, jobs:{ total:automationJobs.length, queued, approved, ready, failed }, storageBackend: storageAdapter.backend, backups:{ count: (()=>{ try{return fs.readdirSync(BACKUP_DIR).filter(n=>n.startsWith("state-")&&n.endsWith(".json")).length;}catch{return 0;} })() } });
 });
 
 
@@ -17495,6 +17521,13 @@ function applyControlSnapshot(control: any): void {
   oauthFailures = normalizeOAuthFailures(control.oauthFailures);
   // ربط Telegram المالك بالرمز — يصمد بعد restart (رقم محادثة + بصمة رمز، بلا سرّ).
   ownerTelegramPairing = normalizeOwnerTelegramPairing(control.ownerTelegramPairing);
+  // رفض Google لزوج GOOGLE_BUSINESS_* يصمد بعد النشر (وإلا عاد السرّ الخاطئ مع كل إعادة تشغيل).
+  googleBusinessPairRejected = control.googleBusinessPairRejected === true;
+  const tgs: any = control.ownerTelegramStats && typeof control.ownerTelegramStats === "object" ? control.ownerTelegramStats : {};
+  ownerTelegramStatus.sentCount = Math.max(0, Number(tgs.sentCount) || 0);
+  ownerTelegramStatus.failedCount = Math.max(0, Number(tgs.failedCount) || 0);
+  ownerTelegramStatus.lastAt = typeof tgs.lastAt === "string" ? tgs.lastAt : null;
+  ownerTelegramStatus.lastResult = typeof tgs.lastResult === "string" ? tgs.lastResult : null;
 }
 
 /** يقرأ حالة التحكّم متزامناً (backend الملف) عند الإقلاع. */
@@ -17570,6 +17603,10 @@ function buildControlState() {
     oauthFailures,
     // ربط Telegram المالك بالرمز: رقم المحادثة + بصمة الرمز المعلّق فقط.
     ownerTelegramPairing,
+    // عدّاد رسائل تيليغرام للمالك — يصمد بعد النشر (بلا محتوى رسائل).
+    ownerTelegramStats: { ...ownerTelegramStatus },
+    // اعتماد Google Business: رُفض الزوج الخاص ⇒ يُستعمل المشترك (بلا أي سرّ).
+    googleBusinessPairRejected,
   };
 }
 
@@ -18897,6 +18934,7 @@ function recordOwnerAlert(item: OwnerAlertItem): void {
 // وحدّ 20 رسالة/ساعة يمنع الإغراق. بلا Gemini، ولا يُرسل شيء للزبون.
 // -----------------------------------------------------------------------------
 let ownerTelegramRate: OwnerTelegramRateState = defaultOwnerTelegramRateState();
+// يُحفظ في حالة التحكّم (2026-10-28): كان يُصفَّر مع كل نشر فتعرض الشاشة «أُرسل: 0» رغم وصول الرسائل.
 const ownerTelegramStatus: { lastResult: string | null; lastAt: string | null; sentCount: number; failedCount: number } = { lastResult: null, lastAt: null, sentCount: 0, failedCount: 0 };
 /** محادثة المالك الفعّالة: OWNER_TELEGRAM_CHAT_ID أولاً، ثم الربط بالرمز من الشاشة الحية. */
 function ownerTelegramChat(): { chatId: string | null; source: "env" | "paired" | null } {
@@ -18929,8 +18967,8 @@ async function sendOwnerTelegramText(text: string, inlineKeyboard?: { text: stri
   try {
     const r = await client.sendMessage({ chatId, text, inlineKeyboard });
     ownerTelegramStatus.lastAt = new Date().toISOString();
-    if (r.ok) { ownerTelegramStatus.lastResult = 'sent'; ownerTelegramStatus.sentCount += 1; return true; }
-    ownerTelegramStatus.lastResult = 'failed'; ownerTelegramStatus.failedCount += 1;
+    if (r.ok) { ownerTelegramStatus.lastResult = 'sent'; ownerTelegramStatus.sentCount += 1; saveControlState(); return true; }
+    ownerTelegramStatus.lastResult = 'failed'; ownerTelegramStatus.failedCount += 1; saveControlState();
     return false;
   } catch {
     ownerTelegramStatus.lastAt = new Date().toISOString();

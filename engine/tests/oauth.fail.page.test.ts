@@ -6,6 +6,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { oauthFailPage, oauthDenialHint } from '../social/oauthFailPage';
 import { pickGoogleCredentialPair } from '../social/googleCredPair';
+import { googleBusinessAccountHint } from '../social/googleBusinessHint';
 
 let passed = 0; const failures: string[] = [];
 const check = (name: string, ok: boolean, info = '') => { if (ok) passed++; else failures.push(name + (info ? ` — ${info}` : '')); };
@@ -34,6 +35,14 @@ check('★ مسار العودة يستعمل الصفحة (GET) ويبقي JSON
   check('رفض الخاص بلا مشترك ⇒ يبقى الخاص (لا فراغ)', pickGoogleCredentialPair({ business: B, shared: E, businessRejected: true }).source === 'business');
   check('لا اعتماد ⇒ none', pickGoogleCredentialPair({ business: E, shared: E }).source === 'none');
   check('★ الخادم يحوّل للمشترك عند invalid_client ويشرح للمالك', server.includes('googleBusinessPairRejected=true;') && server.includes('صار الخادم يستعمل اعتماد Google المشترك'));
+}
+
+// سبب رفض Google Business يُشرح (كان يُرمى — 06:00)
+{
+  check('★ API غير مفعّلة ⇒ «Enable» بالاسم', /My Business Account Management API/.test(googleBusinessAccountHint({ status: 403, message: 'My Business Account Management API has not been used in project 1000112058267 before or it is disabled.', reason: 'SERVICE_DISABLED' })));
+  check('★ حصة صفر (لم يُقبل طلب الوصول) ⇒ «Request access»', /Request access/.test(googleBusinessAccountHint({ status: 429, message: "Quota exceeded for quota metric 'Requests'", reason: 'RATE_LIMIT_EXCEEDED' })));
+  check('★ لا ملف نشاط تجاري على الحساب', /لا يملك ملف نشاط تجاري/.test(googleBusinessAccountHint({ status: 200, empty: true })));
+  check('★ الخادم يسجّل رسالة Google ويمرّرها لصفحة الفشل', server.includes('accounts_check status=${r.status} reason=') && server.includes('throw new Error(proof?.error ||'));
 }
 
 console.log('\n' + '='.repeat(60));
