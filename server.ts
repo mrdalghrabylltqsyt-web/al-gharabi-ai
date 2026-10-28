@@ -4956,7 +4956,7 @@ async function handleOAuthStart(req:any,res:any){
     note:"إن ظهرت صفحة «حدث خطأ ما» فمعرّف التطبيق/سرّه أو App Domains/Valid OAuth Redirect URIs غير مطابق لدى Meta. القيم الدقيقة في GET /api/platforms/:platform/oauth/setup.",
   } : undefined;
   // سجل آمن: الروابط والنطاق والفاتورة فقط — بلا client_id ولا أي سرّ.
-  logOAuthStart(platform, { outcome: "authorized_url_issued", redirectUri: callbackUrl, domain: urlInfo.host, publicUrlSource: urlInfo.source, publicUrlIsPublic: publicOk, appTokenKind: preflight.appToken?.kind ?? null, scopeCount: scopes.length, authEndpoint: authEndpointFor(platform), domainWarning: Boolean(domainWarning), metaSetupHint: Boolean(metaSetupHint), scopeDependencyGaps: scopeGaps, loginConfigIdUsed: Boolean(loginConfigId) });
+  logOAuthStart(platform, { outcome: "authorized_url_issued", clientIdTail: String(cfg?.clientId || "").split(".")[0].slice(-6) || null, credentialSource: platform === "google_business" ? googleBusinessCredentials().source : null, redirectUri: callbackUrl, domain: urlInfo.host, publicUrlSource: urlInfo.source, publicUrlIsPublic: publicOk, appTokenKind: preflight.appToken?.kind ?? null, scopeCount: scopes.length, authEndpoint: authEndpointFor(platform), domainWarning: Boolean(domainWarning), metaSetupHint: Boolean(metaSetupHint), scopeDependencyGaps: scopeGaps, loginConfigIdUsed: Boolean(loginConfigId) });
   res.json({success:true,platform,authorizationUrl:u.toString(),authEndpoint:authEndpointFor(platform),expiresAt:pending.expiresAt,redirectUri:callbackUrl,domain:urlInfo.host,publicUrlSource:urlInfo.source,publicUrlIsPublic:publicOk,scopes,appIdFormatOk:isPlausibleMetaAppId(String(cfg.clientId || "")),appTokenKind:preflight.appToken?.kind ?? null,domainWarning,metaSetupHint,scopeDependencyGaps:scopeGaps.length?scopeGaps:undefined,
     // TikTok: المفتاح المستخدم فعلاً في الرابط (مُخفى + بصمة) بلا أي سرّ، ليُقارَن
     // مباشرةً مع Client key في لوحة TikTok Developers عند رسالة رفض المفتاح.
@@ -5261,7 +5261,7 @@ async function handleOAuthCallback(req:any, res:any, rawQuery:string, viaPost:bo
     if (platform === "google_business") saveGoogleBusinessCredentials({ accessToken: String(parsedToken.accessToken || ""), refreshToken: (token as any)?.refresh_token || null, expiresIn: parsedToken.expiresIn ?? null, accountResource: accountId, accountName: accountName });
     platformConnections.set(platform,{platform,status:"connected",accountId,accountName,connectedAt:new Date().toISOString(),providerVerified:true}); savePlatformConnections(); clearOAuthFailure(platform); audit(pending!.userId,"platform_oauth_connected",`${platform}:${accountId}`);
     sendHtml("<html lang='ar' dir='rtl'><meta charset='utf-8'><title>تم الربط</title><body style='font-family:sans-serif;padding:40px'><h2>تم ربط المنصة بنجاح.</h2><p>يمكنك إغلاق هذه النافذة والعودة إلى الغرابي AI.</p></body></html>");
-  } catch(e:any) { audit(pending!.userId,"platform_oauth_failed",platform); const errMsg=redactSecretsFromText(String(e?.message||e)).slice(0,300); console.error(`[oauth-callback-error] ${platform} status=502 message=${errMsg}`); recordOAuthFailure(platform, errMsg); if(platform==="google_business" && /client secret is invalid|invalid_client/i.test(errMsg) && googleBusinessCredentials().source==="business"){ googleBusinessPairRejected=true; console.log("[oauth] google_business credential_pair=business rejected=invalid_client fallback=shared"); } const hint=platform==="google_business"&&googleBusinessPairRejected&&googleBusinessCredentials().source==="shared"?"رفضت Google السرّ الخاص بـGoogle Business في Render؛ صار الخادم يستعمل اعتماد Google المشترك (نفسه الذي يربط يوتيوب). اضغط «ربط» مرة أخرى.":oauthFailureHint(platform,errMsg); failHtml(502, `فشل إكمال ربط المنصة: ${errMsg}${hint?" — "+hint:""}`); }
+  } catch(e:any) { audit(pending!.userId,"platform_oauth_failed",platform); const errMsg=redactSecretsFromText(String(e?.message||e)).slice(0,300); console.error(`[oauth-callback-error] ${platform} status=502 message=${errMsg}`); recordOAuthFailure(platform, errMsg); if(platform==="google_business" && /client secret is invalid|invalid_client/i.test(errMsg) && googleBusinessCredentials().source==="business"){ googleBusinessPairRejected=true; saveControlState(); console.log("[oauth] google_business credential_pair=business rejected=invalid_client fallback=shared"); } const hint=platform==="google_business"&&googleBusinessPairRejected&&googleBusinessCredentials().source==="shared"?"رفضت Google السرّ الخاص بـGoogle Business في Render؛ صار الخادم يستعمل اعتماد Google المشترك (نفسه الذي يربط يوتيوب). اضغط «ربط» مرة أخرى.":oauthFailureHint(platform,errMsg); failHtml(502, `فشل إكمال ربط المنصة: ${errMsg}${hint?" — "+hint:""}`); }
 }
 
 app.post("/api/platforms/telegram/configure", requireOwner, async (req,res)=>{
@@ -17515,6 +17515,8 @@ function applyControlSnapshot(control: any): void {
   oauthFailures = normalizeOAuthFailures(control.oauthFailures);
   // ربط Telegram المالك بالرمز — يصمد بعد restart (رقم محادثة + بصمة رمز، بلا سرّ).
   ownerTelegramPairing = normalizeOwnerTelegramPairing(control.ownerTelegramPairing);
+  // رفض Google لزوج GOOGLE_BUSINESS_* يصمد بعد النشر (وإلا عاد السرّ الخاطئ مع كل إعادة تشغيل).
+  googleBusinessPairRejected = control.googleBusinessPairRejected === true;
   const tgs: any = control.ownerTelegramStats && typeof control.ownerTelegramStats === "object" ? control.ownerTelegramStats : {};
   ownerTelegramStatus.sentCount = Math.max(0, Number(tgs.sentCount) || 0);
   ownerTelegramStatus.failedCount = Math.max(0, Number(tgs.failedCount) || 0);
@@ -17597,6 +17599,8 @@ function buildControlState() {
     ownerTelegramPairing,
     // عدّاد رسائل تيليغرام للمالك — يصمد بعد النشر (بلا محتوى رسائل).
     ownerTelegramStats: { ...ownerTelegramStatus },
+    // اعتماد Google Business: رُفض الزوج الخاص ⇒ يُستعمل المشترك (بلا أي سرّ).
+    googleBusinessPairRejected,
   };
 }
 

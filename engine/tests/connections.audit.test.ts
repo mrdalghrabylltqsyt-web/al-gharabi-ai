@@ -36,6 +36,9 @@ check('★ عدّاد رسائل تيليغرام يصمد بعد النشر', s
 // 5) أصوات الزبائن فقط
 check('★ التشخيص والتحليلات تعدّ أصوات الزبائن فقط', server.includes('inbound:customerComments().length, inboundAll:') && (server.match(/const inbound = customerComments\(\);/g) || []).length === 2);
 
+// 6) رفض زوج Google Business يصمد بعد النشر
+check('★ التحويل للاعتماد المشترك يُحفظ ويُسترجع بعد إعادة التشغيل', server.includes('googleBusinessPairRejected = control.googleBusinessPairRejected === true;') && server.includes('    googleBusinessPairRejected,\n') && server.includes('googleBusinessPairRejected=true; saveControlState();'));
+
 console.log('\n' + '='.repeat(60));
 if (failures.length) { console.error(`FAILED: ${failures.length} — passed ${passed}`); for (const f of failures) console.error('  ✗ ' + f); process.exit(1); }
 console.log(`PASSED: ${passed} connections-audit checks`);
