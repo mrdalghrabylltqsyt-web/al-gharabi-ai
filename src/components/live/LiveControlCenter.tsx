@@ -116,7 +116,7 @@ export const LiveAlertStrip: React.FC<{ data: any; onJump: () => void; hideJump?
         <span className="lbr-blink" style={{ width: 14, height: 14, flex: 'none', borderRadius: '50%', background: color, boxShadow: `0 0 16px ${color}` }} />
         <div style={{ minWidth: 0 }}>
           <div style={{ fontSize: 15, fontWeight: 800, color }}>
-            {level === 'ok' ? 'كل الأنظمة تحت السيطرة' : level === 'critical' ? `${crit} حالة حرجة تحتاجك الآن` : `${warn} حالة تحتاج انتباهك`}
+            {level === 'ok' ? 'كل الأنظمة تحت السيطرة' : level === 'critical' ? `${crit} ${crit === 1 ? 'تنبيه حرج يحتاجك' : 'تنبيهات حرجة تحتاجك'} الآن` : `${warn} ${warn === 1 ? 'تنبيه يحتاج' : 'تنبيهات تحتاج'} انتباهك`}
           </div>
           <div style={hideJump ? { fontSize: 12, color: '#C9D3EA', overflow: 'hidden', display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', lineHeight: 1.6 } : { fontSize: 12, color: '#C9D3EA', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
             {cur ? `${cur.title} — ${cur.detail || ''}` : 'لا تنبيه حرج ولا تحذير قائم — المراقبة مستمرة.'}
