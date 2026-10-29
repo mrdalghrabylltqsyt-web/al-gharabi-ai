@@ -15519,6 +15519,37 @@ function defectRepairPlaybook(fp: string): EngineerPlan | null {
         return m && !issue ? { ok: true, detail: `${platformAr(plan.platform)}: ${m.withMetrics}/${m.posts} منشوراً مقاساً بلا مشكلة` } : { ok: false, detail: `ما زالت المشكلة: ${issue || "لا نتيجة"}` };
       },
     };
+    case "verify_new_version": return {
+      // شاشة من نسخة سابقة: الإصلاح = الخادم يقدّم النسخة الحالية سليمة + الملف المفقود ليس منها (فهو من
+      // النسخة القديمة فعلاً) + الواجهة تعيد التحميل تلقائياً. إن كان الملف مرجعاً في النسخة الحالية ومفقوداً
+      // فهذا عيب بناء حقيقي ⇒ يفشل التحقق ويُحال لمهندس الكود.
+      steps: [
+        { label: "فحص الخادم: القاعدة والحفظ وسرعة الاستجابة", run: async () => keep(storageReady && persistStats.failStreak === 0 && liveLoop.lagMs < 400 ? { ok: true, detail: `يعمل منذ ${Math.round(process.uptime() / 60)} د على النسخة ${DEFECT_VERSION || "الحالية"}` } : { ok: false, detail: `القاعدة ${storageReady ? "جاهزة" : "غير جاهزة"} · فشل الحفظ ${persistStats.failStreak} · التأخّر ${liveLoop.lagMs}ms` }) },
+        { label: "التحقق من ملفات النسخة الحالية", run: async () => {
+          if (!last.ok) return last;
+          try {
+            const dist = path.join(process.cwd(), "dist");
+            const html = fs.readFileSync(path.join(dist, "index.html"), "utf8");
+            const entries = [...html.matchAll(/\/assets\/([\w.-]+\.(?:js|css))/g)].map((m) => m[1]);
+            const missingEntry = entries.find((f) => !fs.existsSync(path.join(dist, "assets", f)));
+            if (missingEntry) return keep({ ok: false, detail: `ملف أساسي في النسخة الحالية مفقود: ${missingEntry} — عيب بناء` });
+            if (plan.asset && fs.existsSync(path.join(dist, "assets", plan.asset))) return keep({ ok: false, detail: `الملف ${plan.asset} موجود في النسخة الحالية — السبب ليس نسخة قديمة` });
+            return keep({ ok: true, detail: `النسخة الحالية سليمة (${entries.length} ملفاً أساسياً)${plan.asset ? `، والملف ${plan.asset} من النسخة السابقة` : ""} — الصفحة تعيد التحميل تلقائياً عند فتح شاشة قديمة` });
+          } catch (e: any) { return keep({ ok: false, detail: `تعذّر فحص ملفات النسخة: ${String(e?.message || e).slice(0, 80)}` }); }
+        } },
+      ],
+      verify: () => last,
+    };
+    case "verify_scope_setup": return {
+      steps: [{ label: `فحص إذن ${plan.scope} في إعداد ${platformAr(plan.platform)} ورمزه`, run: async () => {
+        const requested = tiktokOAuthScopes().includes(plan.scope);
+        const granted: string[] = Array.isArray(tiktokStoredCredentials()?.scope) ? tiktokStoredCredentials().scope.map(String) : [];
+        if (granted.includes(plan.scope)) return keep({ ok: true, detail: `الإذن ${plan.scope} ممنوح الآن — القياس يعمل في المزامنة التالية` });
+        if (!requested) return keep({ ok: true, detail: `${plan.scope} نطاق قياس اختياري غير مطلوب في الإعداد — ليس عطلاً. أغلقته، وتفعيله متاح من «جاهزية المنصات» متى أردت` });
+        return keep({ ok: false, detail: `النطاق مطلوب في الإعداد لكن الرمز الحالي لا يحمله — يلزم إعادة ربط ${platformAr(plan.platform)} مع الموافقة عليه` });
+      } }],
+      verify: () => last,
+    };
     case "rerun_backup": return engineerPlaybook({ key: "backup_stale", kind: "backup_stale", module: "backup", severity: "critical", title: g.title, evidence: [] });
     case "retry_persist": return engineerPlaybook({ key: "persist_failing", kind: "persist_failing", module: "storage", severity: "critical", title: g.title, evidence: [] });
     default: return null; // owner/developer: لا خطوات تشغيلية — يُصعَّد/يُحال في decideNext.

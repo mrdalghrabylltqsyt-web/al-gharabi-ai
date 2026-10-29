@@ -161,6 +161,13 @@ const PLATFORM_AR: Record<string, string> = { facebook: 'فيسبوك', instagra
 const pa = (p: string) => PLATFORM_AR[p] || p;
 
 /** أخطاء برمجية صريحة (JavaScript) — لا يصلحها إلا تعديل الكود. */
+/**
+ * ملف شاشة من نسخة سابقة لم يعد موجوداً بعد النشر (أسماء الملفات تحمل بصمة المحتوى): متصفح المالك المفتوح
+ * على النسخة القديمة يطلبه فيفشل. ليس عيب كود — الواجهة تعيد التحميل مرة لتأخذ النسخة الجديدة.
+ */
+export const STALE_CHUNK_RE = /dynamically imported module|Importing a module script failed|ChunkLoadError|Loading chunk [\w-]+ failed|Unable to preload CSS|module script.*MIME type/i;
+export function isStaleChunkText(text: string): boolean { return STALE_CHUNK_RE.test(String(text || '')); }
+
 const JS_BUG_RE = /\b(TypeError|ReferenceError|RangeError|SyntaxError)\b|cannot read propert|is not a function|is not defined|is not iterable|undefined is not|cannot set propert|maximum call stack|invalid time value|unexpected token/i;
 
 /** رموز Meta/Graph المعروفة لإذن ناقص أو رمز ملغى. */
@@ -201,6 +208,12 @@ export function classifyFailure(ev: FailureEvent): Diagnosis | null {
 
   // 2) انهيار شاشة أو خطأ JavaScript في متصفح المالك.
   if (ev.source === 'client') {
+    if (isStaleChunkText(text)) return {
+      kind: 'provider', severity: 'warning', owner: 'engineer', key: 'client-stale-chunk',
+      title: 'شاشة مفتوحة من نسخة سابقة بعد النشر',
+      diagnosis: 'المتصفح كان على النسخة القديمة وطلب ملف شاشة لم يعد موجوداً بعد النشر — ليس عيباً في الكود.',
+      fix: 'الواجهة تعيد تحميل الصفحة مرة تلقائياً لتأخذ النسخة الجديدة؛ إن تكرر بعدها فتحقق من أن النشر اكتمل.',
+    };
     const apiFail = /^api\s+(\d{3})\b/i.exec(text);
     if (apiFail) {
       const st = Number(apiFail[1]);
@@ -430,8 +443,10 @@ export function recordFailure(ledger: DefectLedger, ev: FailureEvent, opts: { no
  * أو عيب كود أُغلق بنسخة جديدة. عطل إعداد/مزوّد أُغلق لمجرد الهدوء ثم عاد في دورته التالية (إذن تيك توك
  * الناقص يُرصد مع كل مزامنة وكل إقلاع) ليس regression — كان يُعرض «6× عاد بعد حله» ولم يُحل أصلاً.
  */
-export function countsAsRegression(g: Pick<DefectGroup, 'status' | 'resolvedBy' | 'kind'>): boolean {
+export function countsAsRegression(g: Pick<DefectGroup, 'status' | 'resolvedBy' | 'kind'> & { rule?: string | null }): boolean {
   if (g.status !== 'resolved') return false;
+  // شاشة من نسخة سابقة تتكرر طبيعياً مع كل نشر — ليست «عاد بعد حله».
+  if (g.rule === 'client-stale-chunk') return false;
   if (g.resolvedBy === 'auto' && g.kind !== 'code' && g.kind !== 'client') return false;
   return true;
 }
@@ -475,6 +490,17 @@ export function sweepLedger(ledger: DefectLedger, opts: { nowMs: number; version
       continue;
     }
     if (g.status !== 'open') continue;
+    // عطل واجهة سُجّل قبل تمييز «ملف نسخة سابقة» وكل عيّناته منه: ليس عيب كود ينتظر نشراً — يُعاد تصنيفه
+    // للمهندس فيصلحه ويتحقق ويكتب تقريره (لا إغلاق صامت).
+    if (g.kind === 'client' && g.samples.length > 0 && g.samples.every(isStaleChunkText)) {
+      Object.assign(g, {
+        kind: 'provider', severity: 'warning', owner: 'engineer', rule: 'client-stale-chunk',
+        title: 'شاشة مفتوحة من نسخة سابقة بعد النشر',
+        diagnosis: 'المتصفح كان على النسخة القديمة وطلب ملف شاشة لم يعد موجوداً بعد النشر — ليس عيباً في الكود.',
+        fix: 'المهندس يتحقق أن الخادم يقدّم النسخة الجديدة، والواجهة تعيد التحميل مرة تلقائياً.',
+      });
+      continue;
+    }
     const isCode = g.kind === 'code' || g.kind === 'client';
     const quietLongEnough = opts.nowMs - last > (isCode ? P.codeResolveAfterDeployMs : P.autoResolveMs);
     const newCode = !isCode || (opts.version && g.lastVersion && opts.version !== g.lastVersion && opts.versionSinceMs != null && opts.nowMs - opts.versionSinceMs > P.codeResolveAfterDeployMs);
@@ -576,16 +602,29 @@ export type RepairPlan =
   | { action: 'rerun_backup' }
   /** إعادة محاولة الحفظ في قاعدة البيانات. */
   | { action: 'retry_persist' }
+  /** ملف شاشة من نسخة سابقة: التحقق أن الخادم يقدّم النسخة الجديدة وأن الملف المفقود ليس منها. */
+  | { action: 'verify_new_version'; asset: string | null }
+  /** إذن قياس ناقص: التحقق هل النطاق مطلوب أصلاً في الإعداد، وهل مُنح بعد إعادة الربط. */
+  | { action: 'verify_scope_setup'; platform: string; scope: string }
   /** لا إصلاح آلي ممكن: إعداد/ربط بيد المالك (يُذكر الإجراء بالضبط). */
   | { action: 'owner'; instructions: string }
   /** عيب في الكود نفسه: يُصلحه مهندس الكود (تعديل + اختبار + طلب دمج). */
   | { action: 'developer' };
 
 /** يحدد خطة الإصلاح من القاعدة التي صنّفت العطل. منطق صافٍ مختبر. */
-export function repairPlanFor(g: Pick<DefectGroup, 'kind' | 'owner' | 'rule' | 'fix' | 'lastMethod' | 'lastPath'>): RepairPlan {
+/** اسم ملف الشاشة المفقود من عيّنة الخطأ (assets/X-hash.js) — للتحقق أنه ليس من النسخة الحالية. */
+export function staleChunkAsset(samples: string[] | null | undefined): string | null {
+  for (const t of samples || []) { const m = /assets\/([\w.-]+\.(?:js|css))/i.exec(String(t)); if (m) return m[1]; }
+  return null;
+}
+
+export function repairPlanFor(g: Pick<DefectGroup, 'kind' | 'owner' | 'rule' | 'fix' | 'lastMethod' | 'lastPath'> & { samples?: string[] }): RepairPlan {
   const rule = String(g.rule || '');
   const getPath = g.lastMethod === 'GET' && g.lastPath && g.lastPath.startsWith('/api/') ? g.lastPath : null;
   if (rule === 'client-gateway') return { action: 'verify_server', path: getPath };
+  if (rule === 'client-stale-chunk') return { action: 'verify_new_version', asset: staleChunkAsset(g.samples) };
+  // إذن قياس تيك توك: المهندس يتحقق بنفسه (مطلوب في الإعداد؟ مُنح؟) ولا يحيل للمالك ما ليس عطلاً.
+  if (rule === 'metrics-perm:tiktok') return { action: 'verify_scope_setup', platform: 'tiktok', scope: 'video.list' };
   if (rule.startsWith('http:') && g.kind === 'provider') return getPath ? { action: 'replay_route', method: 'GET', path: getPath } : { action: 'verify_server', path: null };
   if (rule.startsWith('refresh:')) {
     const platform = rule.slice('refresh:'.length);
