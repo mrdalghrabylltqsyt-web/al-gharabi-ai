@@ -443,8 +443,10 @@ export function recordFailure(ledger: DefectLedger, ev: FailureEvent, opts: { no
  * أو عيب كود أُغلق بنسخة جديدة. عطل إعداد/مزوّد أُغلق لمجرد الهدوء ثم عاد في دورته التالية (إذن تيك توك
  * الناقص يُرصد مع كل مزامنة وكل إقلاع) ليس regression — كان يُعرض «6× عاد بعد حله» ولم يُحل أصلاً.
  */
-export function countsAsRegression(g: Pick<DefectGroup, 'status' | 'resolvedBy' | 'kind'>): boolean {
+export function countsAsRegression(g: Pick<DefectGroup, 'status' | 'resolvedBy' | 'kind'> & { rule?: string | null }): boolean {
   if (g.status !== 'resolved') return false;
+  // شاشة من نسخة سابقة تتكرر طبيعياً مع كل نشر — ليست «عاد بعد حله».
+  if (g.rule === 'client-stale-chunk') return false;
   if (g.resolvedBy === 'auto' && g.kind !== 'code' && g.kind !== 'client') return false;
   return true;
 }
@@ -488,10 +490,15 @@ export function sweepLedger(ledger: DefectLedger, opts: { nowMs: number; version
       continue;
     }
     if (g.status !== 'open') continue;
-    // عطل واجهة سُجّل قبل تمييز «ملف نسخة سابقة» وكل عيّناته منه: ليس عيب كود يُنتظر له نشر — يُغلق.
+    // عطل واجهة سُجّل قبل تمييز «ملف نسخة سابقة» وكل عيّناته منه: ليس عيب كود ينتظر نشراً — يُعاد تصنيفه
+    // للمهندس فيصلحه ويتحقق ويكتب تقريره (لا إغلاق صامت).
     if (g.kind === 'client' && g.samples.length > 0 && g.samples.every(isStaleChunkText)) {
-      g.status = 'resolved'; g.resolvedAt = new Date(opts.nowMs).toISOString(); g.resolvedBy = 'auto';
-      resolved.push(g.fp);
+      Object.assign(g, {
+        kind: 'provider', severity: 'warning', owner: 'engineer', rule: 'client-stale-chunk',
+        title: 'شاشة مفتوحة من نسخة سابقة بعد النشر',
+        diagnosis: 'المتصفح كان على النسخة القديمة وطلب ملف شاشة لم يعد موجوداً بعد النشر — ليس عيباً في الكود.',
+        fix: 'المهندس يتحقق أن الخادم يقدّم النسخة الجديدة، والواجهة تعيد التحميل مرة تلقائياً.',
+      });
       continue;
     }
     const isCode = g.kind === 'code' || g.kind === 'client';
@@ -595,16 +602,29 @@ export type RepairPlan =
   | { action: 'rerun_backup' }
   /** إعادة محاولة الحفظ في قاعدة البيانات. */
   | { action: 'retry_persist' }
+  /** ملف شاشة من نسخة سابقة: التحقق أن الخادم يقدّم النسخة الجديدة وأن الملف المفقود ليس منها. */
+  | { action: 'verify_new_version'; asset: string | null }
+  /** إذن قياس ناقص: التحقق هل النطاق مطلوب أصلاً في الإعداد، وهل مُنح بعد إعادة الربط. */
+  | { action: 'verify_scope_setup'; platform: string; scope: string }
   /** لا إصلاح آلي ممكن: إعداد/ربط بيد المالك (يُذكر الإجراء بالضبط). */
   | { action: 'owner'; instructions: string }
   /** عيب في الكود نفسه: يُصلحه مهندس الكود (تعديل + اختبار + طلب دمج). */
   | { action: 'developer' };
 
 /** يحدد خطة الإصلاح من القاعدة التي صنّفت العطل. منطق صافٍ مختبر. */
-export function repairPlanFor(g: Pick<DefectGroup, 'kind' | 'owner' | 'rule' | 'fix' | 'lastMethod' | 'lastPath'>): RepairPlan {
+/** اسم ملف الشاشة المفقود من عيّنة الخطأ (assets/X-hash.js) — للتحقق أنه ليس من النسخة الحالية. */
+export function staleChunkAsset(samples: string[] | null | undefined): string | null {
+  for (const t of samples || []) { const m = /assets\/([\w.-]+\.(?:js|css))/i.exec(String(t)); if (m) return m[1]; }
+  return null;
+}
+
+export function repairPlanFor(g: Pick<DefectGroup, 'kind' | 'owner' | 'rule' | 'fix' | 'lastMethod' | 'lastPath'> & { samples?: string[] }): RepairPlan {
   const rule = String(g.rule || '');
   const getPath = g.lastMethod === 'GET' && g.lastPath && g.lastPath.startsWith('/api/') ? g.lastPath : null;
-  if (rule === 'client-gateway' || rule === 'client-stale-chunk') return { action: 'verify_server', path: rule === 'client-gateway' ? getPath : null };
+  if (rule === 'client-gateway') return { action: 'verify_server', path: getPath };
+  if (rule === 'client-stale-chunk') return { action: 'verify_new_version', asset: staleChunkAsset(g.samples) };
+  // إذن قياس تيك توك: المهندس يتحقق بنفسه (مطلوب في الإعداد؟ مُنح؟) ولا يحيل للمالك ما ليس عطلاً.
+  if (rule === 'metrics-perm:tiktok') return { action: 'verify_scope_setup', platform: 'tiktok', scope: 'video.list' };
   if (rule.startsWith('http:') && g.kind === 'provider') return getPath ? { action: 'replay_route', method: 'GET', path: getPath } : { action: 'verify_server', path: null };
   if (rule.startsWith('refresh:')) {
     const platform = rule.slice('refresh:'.length);
