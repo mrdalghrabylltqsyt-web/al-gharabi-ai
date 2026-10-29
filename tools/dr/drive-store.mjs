@@ -69,6 +69,11 @@ export class DriveStore {
     this._versionsRootId = null;
     this._versionRoots = new Map(); // version -> filesRoot folder id
     this._versionDirs = new Map();  // `${version}:${key}` -> folder id
+    // أبناء كل مجلد داخل نسخة مرآة: folderId -> Promise<Map<name, {id, mimeType}>>.
+    // سرعة (2026-10-29): كان كل رفع يسرد مجلده كاملاً قبل الكتابة (findChild) فصار رفع نسخة
+    // بعد كل نشر ~625 سرداً إضافياً متنامي الحجم (mirror=526s). المجلد يُسرد مرة واحدة فقط،
+    // والمجلد الذي أنشأناه للتو معروف أنه فارغ فلا يُسرد إطلاقاً.
+    this._versionChildren = new Map();
     this._kvVersionsRootId = null;
   }
 
@@ -625,12 +630,39 @@ export class DriveStore {
       const cacheKey = `${version}:${key}`;
       const cachedDir = this._versionDirs.get(cacheKey);
       if (cachedDir) { parentId = cachedDir; continue; }
-      const ensured = await this.ensureFolder(parentId, seg);
+      const ensured = await this.ensureVersionChildFolder(parentId, seg);
       if (!ensured.ok) return ensured;
       parentId = ensured.data;
       this._versionDirs.set(cacheKey, parentId);
     }
     return { ok: true, data: parentId };
+  }
+
+  /** أبناء مجلد داخل نسخة (سرد واحد لكل مجلد، مشترك بين الرفعات المتوازية). */
+  async versionChildren(folderId) {
+    let pending = this._versionChildren.get(folderId);
+    if (!pending) {
+      pending = this.listChildren(folderId).then((list) => {
+        if (!list.ok) { this._versionChildren.delete(folderId); return list; }
+        return { ok: true, data: new Map(list.data.map((f) => [f.name, { id: f.id, mimeType: f.mimeType }])) };
+      });
+      this._versionChildren.set(folderId, pending);
+    }
+    return pending;
+  }
+
+  /** يضمن مجلداً فرعياً داخل نسخة؛ المُنشأ للتو يُسجَّل فارغاً فلا يُسرد. */
+  async ensureVersionChildFolder(parentId, name) {
+    const kids = await this.versionChildren(parentId);
+    if (!kids.ok) return kids;
+    const found = kids.data.get(name);
+    if (found && found.mimeType === 'application/vnd.google-apps.folder') return { ok: true, data: found.id };
+    const created = await this.client.createFolder(name, parentId);
+    if (!created.ok) return created;
+    const id = created.data?.id;
+    kids.data.set(name, { id, mimeType: 'application/vnd.google-apps.folder' });
+    this._versionChildren.set(id, Promise.resolve({ ok: true, data: new Map() }));
+    return { ok: true, data: id };
   }
 
   /** يرفع/يحدّث ملفاً داخل نسخة محدّدة (بمسار نسبي). */
@@ -640,9 +672,19 @@ export class DriveStore {
     if (!dir.ok) return dir;
     const name = path.split('/').pop();
     const buf = toBuffer(content);
-    const res = await this.upsertFile(dir.data, name, buf, mimeType || mimeTypeForPath(path));
-    if (!res.ok) return res;
-    return { ok: true, data: { id: res.data?.id, name, size: buf.length } };
+    const kids = await this.versionChildren(dir.data);
+    if (!kids.ok) return kids;
+    const mime = mimeType || mimeTypeForPath(path);
+    const existing = kids.data.get(name);
+    if (existing) {
+      const updated = await this.client.updateFileContent(existing.id, buf, mime);
+      if (!updated.ok) return updated;
+      return { ok: true, data: { id: existing.id, name, size: buf.length } };
+    }
+    const created = await this.client.createFile({ name, parentId: dir.data, content: buf, mimeType: mime });
+    if (!created.ok) return created;
+    kids.data.set(name, { id: created.data?.id, mimeType: mime });
+    return { ok: true, data: { id: created.data?.id, name, size: buf.length } };
   }
 
   /** يقرأ ملفاً من نسخة محدّدة بالمسار النسبي. */
@@ -727,6 +769,7 @@ export class DriveStore {
     const removed = await this.deleteFolderRecursive(vdir.data);
     this._versionRoots.delete(version);
     for (const key of [...this._versionDirs.keys()]) if (key.startsWith(`${version}:`)) this._versionDirs.delete(key);
+    this._versionChildren.clear();
     return removed;
   }
 

@@ -303,6 +303,40 @@ async function main() {
     check('every version dir has a manifest', allHaveManifest);
   }
 
+  // سرعة المرآة (2026-10-29، بصمة d2d203756eeb: mirror=526s files=625 بعد النشر): كل رفع كان يسرد
+  // مجلده كاملاً قبل الكتابة. الآن: لا سرد لمجلد أنشأناه للتو، وسرد واحد فقط لأي مجلد قائم.
+  {
+    const state = createFakeDriveState();
+    const store = makeStore(state);
+    let lists = 0;
+    const origList = store.client.listChildren.bind(store.client);
+    store.client.listChildren = async (id: string) => { lists += 1; return origList(id); };
+    const many = Array.from({ length: 60 }, (_, i) => ({ path: `src/d${i % 4}/f${i}.ts`, content: `export const f${i} = ${i};` }));
+    const r1 = await runCurrentMirror({ store, files: many, commit: 'p1' });
+    check('perf: first version synced', r1.state === 'synced', r1.state);
+    const listsAfterFirst = lists;
+    check('perf: listings do not scale with file count', listsAfterFirst < 20, `lists=${listsAfterFirst} for ${many.length} files`);
+    const s1 = buildMirrorSnapshot(many);
+    const many2 = many.map((f, i) => (i === 0 ? { ...f, content: 'export const changed = 1;' } : f));
+    const store2 = makeStore(state);
+    let lists2 = 0;
+    const origList2 = store2.client.listChildren.bind(store2.client);
+    store2.client.listChildren = async (id: string) => { lists2 += 1; return origList2(id); };
+    const r2 = await runCurrentMirror({ store: store2, files: many2, commit: 'p2', previousMirror: { version: 1, treeHash: s1.treeHash, files: s1.entries }, currentFiles: s1.entries });
+    check('perf: second version synced', r2.state === 'synced' && r2.headVersion === 2, `${r2.state} v=${r2.headVersion}`);
+    check('perf: second version listings bounded', lists2 < 25, `lists=${lists2}`);
+    check('perf: second version has all files', versionMirrorPaths(state, 2).length === many2.length, String(versionMirrorPaths(state, 2).length));
+    const resolved = await resolveCurrentMirror(store2);
+    check('perf: CURRENT consistent after fast upload', resolved.ok === true && resolved.data.consistent === true);
+    // نسخة staging متبقية من محاولة فاشلة: الملف القائم يُحدَّث لا يُكرَّر.
+    const store3 = makeStore(state);
+    const pre = await store3.upsertVersionFile(9, 'src/x/a.ts', 'one', 'text/plain');
+    const store4 = makeStore(state);
+    const again = await store4.upsertVersionFile(9, 'src/x/a.ts', 'two', 'text/plain');
+    const named = [...state.files.values()].filter((f: any) => f.name === 'a.ts' && f.mimeType !== 'application/vnd.google-apps.folder');
+    check('perf: existing staging file updated not duplicated', pre.ok && again.ok && again.data.id === pre.data.id && named.length === 1, `n=${named.length}`);
+  }
+
   if (failures.length) {
     console.error(`DR MIRROR TESTS FAILED (${failures.length}):`);
     for (const f of failures) console.error(`  - ${f}`);
