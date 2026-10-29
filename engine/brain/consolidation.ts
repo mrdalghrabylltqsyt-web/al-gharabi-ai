@@ -2,7 +2,8 @@
  * Central Brain Consolidation — عقد السلطة الواحدة (منطق خالص قابل للاختبار).
  *
  * هذا العقد يوثّق ويُثبّت المعمارية الموحّدة: **عقل مركزي واحد (Central Brain 1)**
- * هو السلطة الوحيدة للقرار. الوكلاء الستة مستشارون فقط ولا يملكون قراراً، والناقد
+ * هو السلطة الوحيدة للقرار. التنسيق (orchestrator) وظيفة العقل نفسه، وتحته خمسة
+ * مستشارين (البحث/التحليل/الاستراتيجية/النقد/القرار) لا يملكون قراراً، والناقد
  * يتحدّى ولا يستبدل. الطبقة الإدراكية **قدرة داخلية** لا عقل ثانٍ: تستقبل سياق
  * العقل المركزي (استراتيجية/جمهور/سوق/معرفة) طالبةً، لا تُنتج قراراً مستقلاً.
  *
@@ -51,10 +52,25 @@ export const CENTRAL_BRAIN_CAPABILITY_LABELS_AR: Readonly<Record<CentralBrainCap
   strategy: 'الاستراتيجية',
 });
 
-/** الوكلاء الستة — مستشارون فقط: لا يملكون قراراً ولا تنفيذاً. */
+/**
+ * التنسيق وظيفة العقل المركزي نفسه لا مستشار مستقل (التسمية في الفريق: «المنسّق (العقل المركزي)»).
+ * يختار المستشارين لكل حدث (`agentCouncil`) ويجمع آراءهم، والقرار يبقى في `composeBrainDecision`.
+ */
+export const BRAIN_COORDINATOR_AGENT_ID = 'orchestrator' as const;
+
+/** المستشارون الخمسة للعقل المركزي — يرصدون/يحلّلون/يوصون فقط: لا قرار ولا تنفيذ. */
 export const ADVISOR_AGENT_IDS: readonly string[] = Object.freeze([
-  'orchestrator', 'research', 'analysis', 'strategy', 'critic', 'decision',
+  'research', 'analysis', 'strategy', 'critic', 'decision',
 ]);
+
+/** دور كل مستشار كما يعرفه العقل (مرجع الواجهة والتفويض). */
+export const ADVISOR_ROLES_AR: Readonly<Record<string, { labelAr: string; role: string }>> = Object.freeze({
+  research: { labelAr: 'مستشار البحث', role: 'يجمع الحقائق المسجّلة والأدلة من التعليقات والسجل — لا يخترع.' },
+  analysis: { labelAr: 'مستشار التحليل', role: 'يقرأ النية والأنماط والأرقام الحقيقية ويحدّد الفجوات.' },
+  strategy: { labelAr: 'مستشار الاستراتيجية', role: 'يقترح الاتجاه والمحتوى والتوقيت وفق الاستراتيجية المسجّلة.' },
+  critic: { labelAr: 'مستشار النقد والتحقق', role: 'يتحدّى المقترح ويكشف الادعاء بلا دليل — لا يستبدل العقل.' },
+  decision: { labelAr: 'مستشار القرار', role: 'يصوغ توصية قرار مع شروطها؛ الاعتماد للعقل المركزي وحده.' },
+});
 
 export interface AdvisorContract {
   agentId: string;
@@ -106,9 +122,11 @@ export function centralBrainAuthorityContract(input?: {
     decisionAuthorityCount: 1,
     decisionAuthorityProducer: 'composeBrainDecision',
     externalExecutionFromBrain: false,
+    coordinator: { agentId: BRAIN_COORDINATOR_AGENT_ID, ownedByCentralBrain: true, isAdvisor: false },
     advisors: {
       ids: ADVISOR_AGENT_IDS,
       count: ADVISOR_AGENT_IDS.length,
+      roles: ADVISOR_ROLES_AR,
       canDecide: false,
       canExecuteExternal: false,
     },
@@ -121,7 +139,7 @@ export function centralBrainAuthorityContract(input?: {
     capabilities: CENTRAL_BRAIN_CAPABILITIES,
     strategyStateOwned: Boolean(input?.strategyStateOwned),
     decisionLedgerOwned: Boolean(input?.decisionLedgerOwned),
-    note: 'عقل مركزي واحد هو السلطة الوحيدة للقرار؛ الإدراك والوكلاء والناقد قدرات/مستشارون تابعون.',
+    note: 'عقل مركزي واحد هو السلطة الوحيدة للقرار ويتولى التنسيق بنفسه؛ المستشارون الخمسة والإدراك والناقد قدرات تابعة.',
   };
 }
 

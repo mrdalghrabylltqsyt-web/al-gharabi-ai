@@ -18,7 +18,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import {
-  CENTRAL_BRAIN_ID, CENTRAL_BRAIN_CAPABILITIES, ADVISOR_AGENT_IDS,
+  CENTRAL_BRAIN_ID, CENTRAL_BRAIN_CAPABILITIES, ADVISOR_AGENT_IDS, BRAIN_COORDINATOR_AGENT_ID, ADVISOR_ROLES_AR,
   advisorContract, criticContract, isAdvisoryOnly, centralBrainAuthorityContract,
 } from '../../brain/consolidation';
 import {
@@ -98,8 +98,12 @@ function run(): void {
   check('isAdvisoryOnly يعلن الإدراك استشارياً', isAdvisoryOnly('cognition').decisive === false);
 
   // ── 3) الوكلاء الستة مستشارون فقط ─────────────────────────────────────────
-  group('3) الوكلاء الستة لا يملكون سلطة قرار');
-  check('ستة وكلاء بالضبط', ADVISOR_AGENT_IDS.length === 6);
+  group('3) العقل المركزي + خمسة مستشارين لا يملكون سلطة قرار');
+  check('خمسة مستشارين بالضبط', ADVISOR_AGENT_IDS.length === 5);
+  check('التنسيق وظيفة العقل لا مستشار', BRAIN_COORDINATOR_AGENT_ID === 'orchestrator' && !ADVISOR_AGENT_IDS.includes('orchestrator'));
+  check('لكل مستشار دور معلن', ADVISOR_AGENT_IDS.every((a) => Boolean(ADVISOR_ROLES_AR[a]?.role)));
+  check('العقد يعلن المنسّق مملوكاً للعقل', contract.coordinator.ownedByCentralBrain === true && contract.coordinator.isAdvisor === false);
+  check('العقد يعلن خمسة مستشارين', contract.advisors.count === 5);
   check('كل وكلاء مستشارون (canDecide=false)', ADVISOR_AGENT_IDS.every((a) => advisorContract(a).canDecide === false));
   check('كل وكلاء بلا تنفيذ خارجي', ADVISOR_AGENT_IDS.every((a) => advisorContract(a).canExecuteExternal === false));
   check('عقد الوكلاء في السلطة يمنع القرار', contract.advisors.canDecide === false);

@@ -166,8 +166,8 @@ function run(): void {
   }
 
   // ── 8) الوكلاء الستة استشاريون ─────────────────────────────────────────────
-  group('8) الوكلاء الستة استشاريون');
-  check('ADVISOR_AGENT_IDS يحصر ستة وكلاء', ADVISOR_AGENT_IDS.length === 6);
+  group('8) العقل المركزي يُنسّق وخمسة مستشارين استشاريون');
+  check('ADVISOR_AGENT_IDS يحصر خمسة مستشارين', ADVISOR_AGENT_IDS.length === 5 && !ADVISOR_AGENT_IDS.includes('orchestrator'));
   check('الوكلاء لا يملكون سلطة تنفيذ (لا تصريح خارجي)', !/export function .*Agent[\s\S]{0,400}?executeYouTube/.test(read('engine/brain/team/agents.ts')));
 
   // ── 9) الناقد استشاري ──────────────────────────────────────────────────────

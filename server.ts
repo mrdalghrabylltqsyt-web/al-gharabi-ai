@@ -59,6 +59,7 @@ import {
   centralBrainAuthorityContract, CENTRAL_BRAIN_CAPABILITIES, CENTRAL_BRAIN_CAPABILITY_LABELS_AR,
   ADVISOR_AGENT_IDS, CENTRAL_BRAIN_ID, CENTRAL_BRAIN_LABEL_AR,
 } from "./engine/brain/consolidation";
+import { buildCentralBrainMandate } from "./engine/brain/mandate";
 import type { CognitiveBrainContext } from "./engine/brain/cognition/cognitiveLoop";
 import { escalateBrainDecision, type BrainEscalationHook } from "./engine/brain/team/brainEscalation";
 import { evaluateSixAgentAction, isAllowedSixAgentAction, SIX_AGENT_ALLOWED_ACTIONS, type StoredReplyPattern } from "./engine/brain/team/executionPolicy";
@@ -23924,6 +23925,30 @@ registerCognitionRoutes(app, {
   }),
   decisionLedgerSummary: () => summarizeDecisionLedger(decisionLedger),
   decisionLedgerEntries: (limit) => decisionLedger.entries.slice(-limit).reverse(),
+});
+
+// تفويض العقل المركزي: كل مهامه (تفكير/استشارات/تطوير/إدارة) وأولوياته الآن من أرقام حقيقية —
+// سجل الأعطال (المهندس) + جاهزية البيع (الموظف) + جاهزية النشر الموحّد + الردود المعلّقة. حتمي بلا Gemini.
+app.get("/api/agent/brain/mandate", authenticateToken, requireOwner, (_req, res) => {
+  const read = <T,>(fn: () => T): T | null => { try { return fn(); } catch { return null; } };
+  const engineer = read(() => ledgerSummary(defectLedger));
+  const readiness = read(() => salesReadinessReport());
+  const publish = read(() => buildPublishReadinessReport().summary);
+  const pending = read(() => outboundApprovals.filter((r) => r.status === "pending").length);
+  res.json({
+    success: true,
+    generatedAt: new Date().toISOString(),
+    mandate: buildCentralBrainMandate({
+      engineer,
+      employee: readiness ? {
+        verdict: readiness.verdict, verdictText: readiness.verdictText, score: readiness.score,
+        blockers: readiness.items.filter((i) => i.severity === "blocker").map((i) => i.title).slice(0, 5),
+      } : null,
+      publishing: publish ? { readyNow: publish.readyNow, connectRequired: publish.connectRequired, externalSetupRequired: publish.externalSetupRequired } : null,
+      pendingApprovals: pending,
+    }),
+    usesGemini: false,
+  });
 });
 
 // -------------------------------------------------------------

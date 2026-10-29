@@ -66,23 +66,26 @@ export const CentralBrainCognitionPanel: React.FC = () => {
   const [reports, setReports] = useState<ReportRow[]>([]);
   const [strategy, setStrategy] = useState<any>(null);
   const [ledger, setLedger] = useState<any>(null);
+  const [mandate, setMandate] = useState<any>(null);
   const [error, setError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true); setError(null);
     try {
-      const [cog, lp, rep, strat, led] = await Promise.all([
+      const [cog, lp, rep, strat, led, man] = await Promise.all([
         apiService.getCognitionState().catch(() => null),
         apiService.getCognitionLearningLoop().catch(() => null),
         apiService.getCognitionReports().catch(() => null),
         apiService.getBrainStrategyState().catch(() => null),
         apiService.getCognitionDecisionLedger().catch(() => null),
+        apiService.getBrainMandate().catch(() => null),
       ]);
       setCognition(cog);
       setLoop(lp?.learningLoop || null);
       setReports(rep?.reports || []);
       setStrategy(strat?.strategyState || null);
       setLedger(led || null);
+      setMandate(man?.mandate || null);
     } catch (e: any) {
       setError(e?.message || 'تعذر تحميل لوحة الإدراك.');
     } finally {
@@ -104,10 +107,10 @@ export const CentralBrainCognitionPanel: React.FC = () => {
           <h1 className="text-base font-black text-white">العقل المركزي ١ — CENTRAL BRAIN 1</h1>
           <p className="text-xs text-slate-400 mt-1.5">
             عقل واحد هو السلطة الوحيدة للقرار. ما يلي <span className="text-slate-200 font-bold">قدرات داخلية</span> تحت العقل نفسه
-            (لا عقول مستقلة): فهم → ذاكرة → استدلال → مشورة الوكلاء الستة → نقد → قرار محكوم → إجراء → ملاحظة → تعلّم → عودة للعقل.
+            (لا عقول مستقلة): فهم → ذاكرة → استدلال → مشورة المستشارين الخمسة → نقد → قرار محكوم → إجراء → ملاحظة → تعلّم → عودة للعقل.
           </p>
           <p className="text-[11px] text-slate-500 mt-1">
-            الوكلاء الستة (Orchestrator/Research/Analysis/Strategy/Critic/Decision) <span className="text-slate-300">مستشارون فقط</span> — لا يملكون قراراً ولا تنفيذاً.
+            التنسيق وظيفة العقل نفسه، وتحته خمسة مستشارين (البحث/التحليل/الاستراتيجية/النقد/القرار) <span className="text-slate-300">يوصون فقط</span> — لا يملكون قراراً ولا تنفيذاً.
             قراءة فقط — لا تنفيذ خارجي، ولا استهلاك AI، ولا اختراع بيانات.
           </p>
         </div>
@@ -118,6 +121,37 @@ export const CentralBrainCognitionPanel: React.FC = () => {
       </header>
 
       {error ? <div className="p-3 rounded-xl bg-rose-950/40 border border-rose-800 text-rose-200 text-xs">{error}</div> : null}
+
+      {/* تفويض العقل: كل مهامه وأولوياته الآن من أرقام حقيقية (المهندس/الموظف/النشر الموحّد). */}
+      {mandate ? (
+        <Card title="تفويض العقل المركزي — مهامه وأولوياته الآن"
+          hint="الأولويات من سجل الأعطال وجاهزية البيع وجاهزية النشر الحقيقية؛ المصدر الغائب يُعلن غير متاح. العقل يرتّب ويقرّر، والتنفيذ عبر بوابة الموافقة.">
+          {mandate.priorities?.length ? (
+            <ol className="space-y-2 mb-4">
+              {mandate.priorities.map((p: any) => (
+                <li key={p.rank} className={`p-3 rounded-xl border text-xs ${p.severity === 'critical' ? 'bg-rose-950/30 border-rose-800' : p.severity === 'warning' ? 'bg-amber-950/20 border-amber-800' : 'bg-slate-950 border-slate-800'}`}>
+                  <div className="font-bold text-slate-100">{p.rank}. {p.title}</div>
+                  <div className="text-slate-400 mt-1">{p.why} — <span className="text-slate-300">المسؤول: {p.actor === 'owner' ? 'المالك' : p.actor === 'engineer' ? 'المهندس' : p.actor === 'developer' ? 'مهندس الكود' : 'العقل'}</span></div>
+                </li>
+              ))}
+            </ol>
+          ) : (
+            <p className="text-xs text-emerald-300 mb-4">لا شيء يحتاج انتباه العقل الآن من المصادر المتاحة.</p>
+          )}
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+            {(mandate.pillars || []).map((pl: any) => (
+              <div key={pl.pillar} className="p-3 rounded-xl bg-slate-950 border border-slate-800">
+                <div className="text-[11px] font-bold text-slate-200 mb-2">{pl.labelAr} ({pl.duties.length})</div>
+                <ul className="space-y-1">
+                  {pl.duties.map((d: any) => (
+                    <li key={d.id} className="text-[11px] text-slate-400"><span className="text-slate-200">{d.labelAr}:</span> {d.what}</li>
+                  ))}
+                </ul>
+              </div>
+            ))}
+          </div>
+        </Card>
+      ) : null}
 
       {/* 0) قدرات العقل المركزي الداخلية (تحت عقل واحد) */}
       <Card title="قدرات العقل المركزي (مكوّنات تحت عقل واحد)"

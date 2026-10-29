@@ -745,6 +745,13 @@ ${payload.topic || payload.productName || 'أنظمة وحلول التقسيط 
     return data;
   },
   // سجل قرار→نتيجة (يملكه العقل المركزي) — قراءة فقط.
+  async getBrainMandate() {
+    const res = await fetch('/api/agent/brain/mandate', { headers: getAuthHeaders() });
+    const data = await res.json();
+    if (!res.ok || !data.success) throw new Error(data.error || 'تعذر جلب تفويض العقل المركزي');
+    return data;
+  },
+
   async getCognitionDecisionLedger() {
     const res = await fetch('/api/agent/brain/cognition/decision-ledger', { headers: getAuthHeaders() });
     const data = await res.json();
