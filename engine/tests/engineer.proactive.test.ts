@@ -79,6 +79,20 @@ check('★ الحرج لا يُلمس أبداً', !h.ids.includes('c1'));
 check('★ القديم المعلوماتي والمكرر يُعلَّمان مقروءين', h.ids.includes('i1') && h.ids.includes('i3') && !h.ids.includes('i2'));
 check('التحذير الحديث نسبياً يبقى', !h.ids.includes('w1'));
 check('المقروء لا يُعاد', !h.ids.includes('r1'));
+// الحرج الذي زال سببه (تحقق حي من الخادم) يُغلق؛ الباقي سببه يبقى؛ ومن الحرج المكرر يبقى أحدثه.
+const crit = [
+  { id: 'k1', severity: 'critical', type: 'youtube_reauth_needed', title: 'أعد ربط يوتيوب', createdAt: new Date(NOW - 3 * day).toISOString() },
+  { id: 'k2', severity: 'critical', type: 'engineer_forecast', title: 'قبل أن يقع: x', createdAt: new Date(NOW - day).toISOString() },
+  { id: 'k3', severity: 'critical', type: 'engineer_forecast', title: 'قبل أن يقع: x', createdAt: new Date(NOW - 2 * day).toISOString() },
+  { id: 'k4', severity: 'warning', type: 'database_stale', title: 'النسخة الاحتياطية أقدم من البيانات', createdAt: new Date(NOW - day).toISOString() },
+];
+const hc = notificationHygiene(crit, NOW, (n) => n.type === 'youtube_reauth_needed' || n.type === 'database_stale');
+check('★ حرج زال سببه يُغلق', hc.ids.includes('k1') && hc.cleared >= 1);
+check('★ حرج سببه باقٍ لا يُغلق (أحدثه يبقى)', !hc.ids.includes('k2'));
+check('★ الحرج المكرر: الأقدم يُعلَّم مقروءاً', hc.ids.includes('k3'));
+check('★ تحذير زال سببه يُغلق قبل عمره', hc.ids.includes('k4'));
+check('★ بلا تحقق حي: لا يُغلق أي حرج متفرد', !notificationHygiene(crit, NOW).ids.includes('k1'));
+check('★ تحقق يرمي ⇒ يبقى الحرج', !notificationHygiene(crit, NOW, () => { throw new Error('x'); }).ids.includes('k1'));
 
 // 7) التوصيل
 check('★ جولة فحص كل 10 دقائق + فحص ما بعد النشر', server.includes('void runProbeRound("deploy")') && server.includes('PROACTIVE_POLICY.probeIntervalMs'));

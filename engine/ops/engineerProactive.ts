@@ -251,21 +251,38 @@ export interface HygieneNotification { id: string; read?: boolean; severity?: st
 
 /**
  * ما يُعلَّم مقروءاً (لا يُحذف شيء): معلوماتي أقدم من 7 أيام، تحذير أقدم من 21 يوماً، والمكرر
- * (نفس النوع والعنوان) يبقى أحدثه فقط. **الحرج لا يُلمس أبداً** — قراره للمالك وحده.
+ * (نفس النوع والعنوان) يبقى أحدثه فقط.
+ *
+ * **الحرج لا يُغلق بالعمر أبداً** — لكن الحرج الذي **زال سببه فعلاً** (`causeCleared`: الخادم يتحقق من
+ * الحالة الحية — المنصة عادت متصلة، العطل أُغلق، النسخة حديثة بعده…) يُعلَّم مقروءاً؛ وإلا بقي معلّقاً للأبد
+ * فيُبقي «حالة حرجة تحتاجك الآن» مشتعلة بلا شيء يُفعل. ومن الحرج المكرر (نفس النوع والعنوان) يبقى أحدثه.
+ * غياب `causeCleared` أو جوابه false ⇒ الحرج يبقى كما هو.
  */
-export function notificationHygiene(rows: HygieneNotification[], nowMs: number): { ids: string[]; old: number; duplicates: number } {
+export function notificationHygiene(
+  rows: HygieneNotification[],
+  nowMs: number,
+  causeCleared?: (n: HygieneNotification) => boolean,
+): { ids: string[]; old: number; duplicates: number; cleared: number } {
   const P = PROACTIVE_POLICY;
   const ids = new Set<string>();
-  let old = 0, duplicates = 0;
+  let old = 0, duplicates = 0, cleared = 0;
   const seen = new Set<string>();
-  const unread = rows.filter((n) => n && !n.read && n.severity !== 'critical' && (!n.userId || n.userId === 'owner'))
+  const seenCritical = new Set<string>();
+  const cleared$ = (n: HygieneNotification): boolean => { try { return Boolean(causeCleared && causeCleared(n)); } catch { return false; } };
+  const unread = rows.filter((n) => n && !n.read && (!n.userId || n.userId === 'owner'))
     .sort((a, b) => String(b.createdAt || '').localeCompare(String(a.createdAt || '')));
   for (const n of unread) {
+    const key = `${n.type || ''}|${String(n.title || '').trim()}`;
+    if (n.severity === 'critical') {
+      if (cleared$(n)) { ids.add(n.id); cleared += 1; continue; }
+      if (seenCritical.has(key)) { ids.add(n.id); duplicates += 1; } else seenCritical.add(key);
+      continue;
+    }
+    if (cleared$(n)) { ids.add(n.id); cleared += 1; continue; }
     const age = nowMs - Date.parse(String(n.createdAt || ''));
     const limit = n.severity === 'warning' ? P.hygieneWarningAgeMs : P.hygieneInfoAgeMs;
     if (Number.isFinite(age) && age > limit) { ids.add(n.id); old += 1; continue; }
-    const key = `${n.type || ''}|${String(n.title || '').trim()}`;
     if (seen.has(key)) { ids.add(n.id); duplicates += 1; } else seen.add(key);
   }
-  return { ids: [...ids], old, duplicates };
+  return { ids: [...ids], old, duplicates, cleared };
 }

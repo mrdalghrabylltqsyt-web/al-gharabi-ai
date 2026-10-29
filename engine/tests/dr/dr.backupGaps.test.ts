@@ -153,8 +153,19 @@ async function main() {
       check('الفحص يبقى no_op لأن الكود لم يتغيّر', recon.outcome === 'no_op', JSON.stringify(recon));
       check('لكن الموازنة تكشف بيانات جديدة', recon.databaseBalance?.status === 'stale', JSON.stringify(recon.databaseBalance));
       check('الموازنة تذكر العدد الجديد (9 منتجات)', recon.databaseBalance?.productCount === 9, String(recon.databaseBalance?.productCount));
+      // النسخة حديثة: تغيّر البيانات بعدها طبيعي تغطيه النسخة المجدولة التالية — لا إزعاج للمالك.
+      check('نسخة حديثة: لا تنبيه رغم تغيّر البيانات', h.alerts.filter((a) => a.kind === 'database_stale').length === 0, String(h.alerts.length));
+      check('الموازنة تعلن أن النسخ غير متأخر', recon.databaseBalance?.backupLagging === false);
+      // النسخ المجدول تأخّر 13 ساعة (دورتان فائتتان) والبيانات تغيّرت ⇒ تنبيه حقيقي.
+      drControl.driveBackup.lastSuccessAt = new Date(Date.now() - 13 * 3600000).toISOString();
+      dumpText = makeDump(10, 4);
+      await h.app.drReconciliation.runCycle('manual');
       const staleAlerts = h.alerts.filter((a) => a.kind === 'database_stale');
-      check('تنبيه «النسخة أقدم من البيانات» وصل', staleAlerts.length === 1, String(h.alerts.length));
+      check('تنبيه «النسخة أقدم من البيانات» وصل عند تأخّر النسخ', staleAlerts.length === 1, String(h.alerts.length));
+      // بيانات تتغيّر مجدداً (بصمة جديدة): المفتاح ثابت فلا إغراق.
+      dumpText = makeDump(11, 4);
+      await h.app.drReconciliation.runCycle('manual');
+      check('بصمة جديدة لا تُطلق تنبيهاً ثانياً', h.alerts.filter((a) => a.kind === 'database_stale').length === 1);
       check('التنبيه بلا محتوى عميل', /النسخة الاحتياطية أقدم/.test(staleAlerts[0]?.title || ''));
       // دورة أخرى بلا تغيير إضافي: تبقى stale لكن دون تكرار التنبيه.
       await h.app.drReconciliation.runCycle('manual');
@@ -188,6 +199,8 @@ async function main() {
     const h = await makeApp(state, () => fullSource('health'), drControl, { dumpDatabase: async () => dumpText });
     try {
       await h.app.drAutoBackup.runFullBackup('manual');
+      // النسخ تأخّر فعلاً (13 س) ثم تغيّرت البيانات ⇒ تنبيه حقيقي يظهر في الصحة.
+      drControl.driveBackup.lastSuccessAt = new Date(Date.now() - 13 * 3600000).toISOString();
       dumpText = makeDump(7, 3);
       await h.app.drReconciliation.runCycle('manual');
       const health = await (await fetch(`${h.base}/api/dr/health`)).json();

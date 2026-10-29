@@ -16070,7 +16070,48 @@ let probeTimer: ReturnType<typeof setInterval> | null = null;
 let probeNextAt: number | null = null;
 let proactiveForecasts: Forecast[] = [];
 let forecastsAt: string | null = null;
-let lastHygiene: { at: string; marked: number; old: number; duplicates: number } | null = null;
+let lastHygiene: { at: string; marked: number; old: number; duplicates: number; cleared?: number } | null = null;
+/** آخر فحص ما بعد نشر نجح — إنذار «النسخة أدخلت عطلاً» الأقدم منه زال سببه. */
+let lastDeployOkAtMs = 0;
+
+/**
+ * هل زال سبب الإشعار فعلاً؟ تحقق حي من الحالة الحالية، لا من العمر. أي نوع غير معروف أو حالة غير
+ * محمّلة بعد ⇒ false فيبقى الإشعار (لا إخفاء لما لم يُتحقق منه).
+ */
+function notificationCauseCleared(n: any): boolean {
+  const created = Date.parse(String(n?.createdAt || ""));
+  if (!Number.isFinite(created)) return false;
+  const title = String(n?.title || "");
+  switch (n?.type) {
+    case "youtube_reauth_needed": {
+      const c: any = platformConnections.get("youtube");
+      return c?.status === "connected" && c?.providerVerified === true;
+    }
+    case "engineer_deploy":
+      return lastDeployOkAtMs > created;
+    case "engineer_forecast":
+      if (!forecastsAt) return false;
+      return !proactiveForecasts.some((f: any) => f.severity === "critical" && f.owner === "owner" && title.includes(String(f.title || "")));
+    case "engineer_defect":
+    case "engineer_spike":
+      if (!storageReady) return false;
+      return !openDefects(defectLedger).some((g) => title.includes(g.title));
+    case "engineer_escalation": {
+      // تصعيد مرتبط بعطل في السجل: يزول سببه حين يُغلق ذلك العطل. تصعيد لا يطابق أي عطل يبقى كما هو.
+      if (!storageReady) return false;
+      const linked = Object.values(defectLedger.groups).filter((g) => g.title && title.includes(g.title));
+      return linked.length > 0 && linked.every((g) => g.status !== "open");
+    }
+    case "database_stale":
+    case "backup_failed": {
+      const f = backupFreshness(drControl.driveAutoBackup, Date.now());
+      const okAt = Date.parse(String(f.lastSuccessAt || ""));
+      return f.level === "ok" && Number.isFinite(okAt) && okAt > created;
+    }
+    default:
+      return false;
+  }
+}
 const forecastNotified = new Map<string, number>();
 const stuckSince: Record<string, number> = {};
 
@@ -16107,6 +16148,7 @@ async function runProbeRound(trigger: ProbeRound["trigger"]): Promise<ProbeRound
         nextAction: v.ok ? null : "الأعطال دخلت سجل الأعطال؛ إن كانت عيب كود فمهندس الكود يصلحها — أو ارجع للنسخة السابقة من Render (Rollback)",
       });
       if (!v.ok) pushNotification("owner", "engineer_deploy", `النسخة الجديدة أدخلت عطلاً`, v.summary.slice(0, 400), "critical", "live_room");
+      else lastDeployOkAtMs = Date.now();
       liveEvent({ module: "core" as any, level: v.ok ? "ok" : "error", title: v.ok ? "🕷 فحص ما بعد النشر: سليم" : "🕷 فحص ما بعد النشر: عطل", text: v.summary.slice(0, 150) });
       persistEngineerState();
     } else if (round.failed) {
@@ -16173,13 +16215,13 @@ function refreshForecasts(): void {
 function runNotificationHygiene(): void {
   try {
     const rows = ((workspace as any).notifications || []) as any[];
-    const h = notificationHygiene(rows, Date.now());
-    if (!h.ids.length) { lastHygiene = { at: new Date().toISOString(), marked: 0, old: 0, duplicates: 0 }; return; }
+    const h = notificationHygiene(rows, Date.now(), notificationCauseCleared);
+    if (!h.ids.length) { lastHygiene = { at: new Date().toISOString(), marked: 0, old: 0, duplicates: 0, cleared: 0 }; return; }
     const ids = new Set(h.ids); const at = new Date().toISOString();
     for (const n of rows) if (ids.has(n.id)) { n.read = true; n.readAt = at; n.readBy = "site-engineer"; }
     persistState();
-    lastHygiene = { at, marked: h.ids.length, old: h.old, duplicates: h.duplicates };
-    addReport(engineerState, { id: workspaceId("eng"), incidentKey: "hygiene:notifications", kind: "patrol_fix" as any, module: "owner", severity: "warning", title: "نظافة الإشعارات", evidence: [`${h.old} قديم معلوماتي/تحذير · ${h.duplicates} مكرر`], attempt: 1, startedAt: at, endedAt: at, durationMs: 0, status: "resolved", steps: [{ at, label: "تعليم القديم والمكرر مقروءاً (بلا حذف — الحرج لم يُلمس)", ok: true, detail: `${h.ids.length} إشعاراً` }], verification: "الحرج وما يحتاج قرارك بقي غير مقروء وظاهراً", summary: `نظّفتُ ${h.ids.length} إشعاراً قديماً أو مكرراً كانت تُغرق المهم — لم يُحذف شيء ولم يُلمس أي تنبيه حرج.`, nextAction: null });
+    lastHygiene = { at, marked: h.ids.length, old: h.old, duplicates: h.duplicates, cleared: h.cleared };
+    addReport(engineerState, { id: workspaceId("eng"), incidentKey: "hygiene:notifications", kind: "patrol_fix" as any, module: "owner", severity: "warning", title: "نظافة الإشعارات", evidence: [`${h.old} قديم معلوماتي/تحذير · ${h.duplicates} مكرر · ${h.cleared} زال سببه (تحقق حي)`], attempt: 1, startedAt: at, endedAt: at, durationMs: 0, status: "resolved", steps: [{ at, label: "تعليم القديم والمكرر وما زال سببه مقروءاً (بلا حذف)", ok: true, detail: `${h.ids.length} إشعاراً` }], verification: "ما زال سببه قائماً — حرجاً كان أو يحتاج قرارك — بقي غير مقروء وظاهراً", summary: `نظّفتُ ${h.ids.length} إشعاراً: ${h.old} قديم، ${h.duplicates} مكرر، و${h.cleared} زال سببه فعلاً (تحققت من الحالة الحية). لم يُحذف شيء، وما زال سببه قائماً بقي ظاهراً.`, nextAction: null });
     persistEngineerState();
   } catch { /* */ }
 }
@@ -17530,9 +17572,14 @@ async function runMetricsSync(trigger: string): Promise<any> {
     // Display API الرسمي: /v2/video/list/ (نطاق video.list) + المتابعون (user.info.stats).
     // إن لم يمنح الرمز النطاق نقول ذلك صراحةً (SCOPE_MISSING) بدل صمت أو رقم وهمي.
     if (live("tiktok")) {
-      const st = { posts: 0, withMetrics: 0, followers: null as number | null, error: null as string | null, issues: {} as Record<string, number>, gone: 0 };
+      const st = { posts: 0, withMetrics: 0, followers: null as number | null, error: null as string | null, issues: {} as Record<string, number>, gone: 0, setupPending: null as string | null };
       const granted: string[] = Array.isArray(tiktokStoredCredentials()?.scope) ? tiktokStoredCredentials().scope.map(String) : [];
-      if (!granted.includes("video.list")) st.error = "SCOPE_MISSING_video.list";
+      if (!granted.includes("video.list")) {
+        st.error = "SCOPE_MISSING_video.list";
+        // النطاق اختياري ولا يُطلب إلا إن أضافه المالك إلى TIKTOK_OAUTH_SCOPES: غيابه حينها إعداد لم
+        // يُفعَّل بعد (تعرضه جاهزية المنصات بإصلاحه الدقيق)، لا عطل يتكرر مع كل مزامنة في سجل الأعطال.
+        if (!tiktokOAuthScopes().includes("video.list")) st.setupPending = "video.list";
+      }
       else {
         const ensured = await ensureTikTokAccessToken();
         if (ensured.ok && ensured.token) {
@@ -17586,8 +17633,9 @@ async function runMetricsSync(trigger: string): Promise<any> {
     for (const [p, st] of Object.entries(perPlatform) as Array<[string, any]>) {
       // «issue» لا «error»: Render يصنّف أي سطر فيه كلمة error كخطأ — حتى قياس يوتيوب الناجح 50/50.
       const issues = Object.entries(st.issues || {}).map(([k, v]) => `${k}x${v}`).join(",");
-      const issue = st.error || issues || "-";
-      const line = `[metrics] platform=${p} posts=${st.posts} withMetrics=${st.withMetrics} followers=${st.followers ?? "-"} issue=${issue}${st.gone ? ` gone=${st.gone}` : ""}`;
+      // إعداد اختياري لم يُفعَّل ليس «issue»: يُكتب setup= فلا يلتقطه سجل الأعطال ولا يُنبَّه به كل مزامنة.
+      const issue = st.setupPending ? "-" : (st.error || issues || "-");
+      const line = `[metrics] platform=${p} posts=${st.posts} withMetrics=${st.withMetrics} followers=${st.followers ?? "-"} issue=${issue}${st.setupPending ? ` setup=SCOPE_NOT_REQUESTED_${st.setupPending}` : ""}${st.gone ? ` gone=${st.gone}` : ""}`;
       if (st.posts > 0 && st.withMetrics === 0) console.warn(line); else console.log(line);
     }
     return result;
