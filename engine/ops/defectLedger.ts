@@ -92,6 +92,8 @@ export interface DefectRepair {
   summary: string;
   steps: string[];
   attempts: number;
+  /** كيف أُغلق: إصلاح المهندس، أو تحقّق المهندس من زواله (بعد المالك/نسخة جديدة/دون تدخّل). */
+  closure?: 'repair' | 'verified_gone';
 }
 
 export interface DefectLedger {
@@ -505,7 +507,17 @@ export function sweepLedger(ledger: DefectLedger, opts: { nowMs: number; version
     const quietLongEnough = opts.nowMs - last > (isCode ? P.codeResolveAfterDeployMs : P.autoResolveMs);
     const newCode = !isCode || (opts.version && g.lastVersion && opts.version !== g.lastVersion && opts.versionSinceMs != null && opts.nowMs - opts.versionSinceMs > P.codeResolveAfterDeployMs);
     if (quietLongEnough && newCode) {
-      g.status = 'resolved'; g.resolvedAt = new Date(opts.nowMs).toISOString(); g.resolvedBy = 'auto';
+      // لا إغلاق صامت: المهندس يوثّق تحقّقه من الزوال ومن أزاله (بروتوكول الإغلاق).
+      const atIso = new Date(opts.nowMs).toISOString();
+      const hours = Math.max(1, Math.round((opts.nowMs - last) / 3600000));
+      const prev = g.repair?.outcome;
+      const who = isCode ? `بعد نشر النسخة ${opts.version}` : prev === 'owner' ? 'بعد إجراء المالك' : prev === 'developer' ? 'بعد إصلاح الكود' : 'دون حاجة لتدخّل';
+      g.repair = {
+        at: atIso, outcome: 'fixed', closure: 'verified_gone', attempts: g.repair?.attempts || 0,
+        summary: `تحققتُ من زواله ${who}: لم يتكرر منذ ${hours} ساعة${isCode ? ` على النسخة ${opts.version}` : ''}.`.slice(0, 300),
+        steps: [`✓ آخر ظهور: ${g.lastAt}`, `✓ لا ظهور جديد منذ ${hours} ساعة${isCode ? ` على النسخة الجديدة ${opts.version}` : ''}`],
+      };
+      g.status = 'resolved'; g.resolvedAt = atIso; g.resolvedBy = 'auto';
       resolved.push(g.fp);
     }
   }
@@ -562,7 +574,7 @@ export function normalizeLedger(raw: any): DefectLedger {
       regressions: g.kind === 'config' && g.owner === 'owner' && g.resolvedBy !== 'owner' ? 0 : Number(g.regressions) || 0, firstVersion: g.firstVersion || null, lastVersion: g.lastVersion || null,
       rule: typeof g.rule === 'string' ? g.rule : '', lastMethod: g.lastMethod ? String(g.lastMethod) : null, lastPath: g.lastPath ? String(g.lastPath) : null,
       repair: g.repair && typeof g.repair === 'object' && typeof g.repair.summary === 'string'
-        ? { at: String(g.repair.at || ''), outcome: ['fixed', 'failed', 'owner', 'developer'].includes(g.repair.outcome) ? g.repair.outcome : 'failed', summary: g.repair.summary, steps: Array.isArray(g.repair.steps) ? g.repair.steps.slice(0, 8).map(String) : [], attempts: Number(g.repair.attempts) || 0 }
+        ? { at: String(g.repair.at || ''), outcome: ['fixed', 'failed', 'owner', 'developer'].includes(g.repair.outcome) ? g.repair.outcome : 'failed', summary: g.repair.summary, steps: Array.isArray(g.repair.steps) ? g.repair.steps.slice(0, 8).map(String) : [], attempts: Number(g.repair.attempts) || 0, ...(g.repair.closure === 'repair' || g.repair.closure === 'verified_gone' ? { closure: g.repair.closure } : {}) }
         : null,
     };
   }
@@ -642,7 +654,7 @@ export function recordRepair(ledger: DefectLedger, fp: string, r: { outcome: Def
   const g = ledger.groups[fp];
   if (!g) return null;
   const attempts = (g.repair?.attempts || 0) + 1;
-  g.repair = { at: new Date(r.nowMs).toISOString(), outcome: r.outcome, summary: r.summary.slice(0, 300), steps: r.steps.slice(0, 8).map((x) => String(x).slice(0, 200)), attempts };
+  g.repair = { at: new Date(r.nowMs).toISOString(), outcome: r.outcome, summary: r.summary.slice(0, 300), steps: r.steps.slice(0, 8).map((x) => String(x).slice(0, 200)), attempts, ...(r.outcome === 'fixed' ? { closure: 'repair' as const } : {}) };
   if (r.outcome === 'fixed') { g.status = 'resolved'; g.resolvedAt = g.repair.at; g.resolvedBy = 'engineer'; }
   return g;
 }
@@ -650,6 +662,6 @@ export function recordRepair(ledger: DefectLedger, fp: string, r: { outcome: Def
 /** ما أصلحه المهندس مؤخراً (للعرض: «أُصلح ذاتياً»). */
 export function recentlyRepaired(ledger: DefectLedger, nowMs: number, withinMs = 48 * 3600000): DefectGroup[] {
   return Object.values(ledger.groups)
-    .filter((g) => g.resolvedBy === 'engineer' && g.resolvedAt && nowMs - Date.parse(g.resolvedAt) < withinMs)
+    .filter((g) => (g.resolvedBy === 'engineer' || (g.resolvedBy === 'auto' && g.repair?.closure === 'verified_gone')) && g.resolvedAt && nowMs - Date.parse(g.resolvedAt) < withinMs)
     .sort((a, b) => (a.resolvedAt! < b.resolvedAt! ? 1 : -1));
 }

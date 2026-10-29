@@ -263,10 +263,11 @@ export function notificationHygiene(
   rows: HygieneNotification[],
   nowMs: number,
   causeCleared?: (n: HygieneNotification) => boolean,
-): { ids: string[]; old: number; duplicates: number; cleared: number } {
+): { ids: string[]; old: number; duplicates: number; cleared: number; clearedIds: string[] } {
   const P = PROACTIVE_POLICY;
   const ids = new Set<string>();
   let old = 0, duplicates = 0, cleared = 0;
+  const clearedIds: string[] = [];
   const seen = new Set<string>();
   const seenCritical = new Set<string>();
   const cleared$ = (n: HygieneNotification): boolean => { try { return Boolean(causeCleared && causeCleared(n)); } catch { return false; } };
@@ -275,15 +276,15 @@ export function notificationHygiene(
   for (const n of unread) {
     const key = `${n.type || ''}|${String(n.title || '').trim()}`;
     if (n.severity === 'critical') {
-      if (cleared$(n)) { ids.add(n.id); cleared += 1; continue; }
+      if (cleared$(n)) { ids.add(n.id); clearedIds.push(n.id); cleared += 1; continue; }
       if (seenCritical.has(key)) { ids.add(n.id); duplicates += 1; } else seenCritical.add(key);
       continue;
     }
-    if (cleared$(n)) { ids.add(n.id); cleared += 1; continue; }
+    if (cleared$(n)) { ids.add(n.id); clearedIds.push(n.id); cleared += 1; continue; }
     const age = nowMs - Date.parse(String(n.createdAt || ''));
     const limit = n.severity === 'warning' ? P.hygieneWarningAgeMs : P.hygieneInfoAgeMs;
     if (Number.isFinite(age) && age > limit) { ids.add(n.id); old += 1; continue; }
     if (seen.has(key)) { ids.add(n.id); duplicates += 1; } else seen.add(key);
   }
-  return { ids: [...ids], old, duplicates, cleared };
+  return { ids: [...ids], old, duplicates, cleared, clearedIds };
 }

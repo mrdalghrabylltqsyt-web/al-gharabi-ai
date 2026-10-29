@@ -5,7 +5,7 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import {
-  detectIncidents, decideNext, forgetRecovered, addReport, emptyEngineerState, normalizeEngineerState,
+  detectIncidents, decideNext, forgetRecovered, trackIncidents, closeRecovered, closureReportAr, CLOSURE_POLICY, addReport, emptyEngineerState, normalizeEngineerState,
   withTimeout, ENGINEER_POLICY, type EngineerSnapshot,
   incidentsFromPatrol,
 } from '../ops/siteEngineer';
@@ -90,6 +90,21 @@ const base = (over: Partial<EngineerSnapshot> = {}): EngineerSnapshot => ({
   const rec = forgetRecovered(st, new Set());
   check('★ ما زال بعد محاولاتنا يُسجَّل «تعافى» وتُنسى ذاكرته', rec.length === 1 && rec[0] === 'cycle_stale:youtube' && Object.keys(st.incidents).length === 0);
   for (let i = 0; i < ENGINEER_POLICY.maxReports + 10; i++) addReport(st, { id: `r${i}`, incidentKey: 'k', kind: 'cycle_stale', module: 'core', severity: 'warning', title: 't', evidence: [], attempt: 1, startedAt: iso(0), endedAt: iso(0), durationMs: 1, status: 'resolved', steps: [], verification: '', summary: '', nextAction: null });
+  // بروتوكول الإغلاق: لا اختفاء صامت — كل ما زال يُغلق بتقرير ✅ يذكر كيف زال.
+  const cs = emptyEngineerState();
+  const mk = (key: string, title: string) => ({ key, kind: 'cycle_stale' as any, module: 'core' as any, severity: 'warning' as const, title, evidence: [] });
+  trackIncidents(cs, [mk('a', 'أ'), mk('b', 'ب'), mk('c', 'ج'), mk('d', 'د')], NOW);
+  cs.incidents['a'].attempts = 1;
+  cs.incidents['b'].escalatedAt = NOW;
+  const cl = closeRecovered(cs, new Set(['d']), NOW + CLOSURE_POLICY.selfRecoveredMinMs + 1000);
+  const how = (k: string) => cl.find((x) => x.key === k)?.how;
+  check('★ ما أصلحناه ثم زال ⇒ «أصلح» بتقرير', how('a') === 'after_repair' && /أصلحتُ/.test(closureReportAr(cl.find((x) => x.key === 'a')!).summary));
+  check('★ ما صُعِّد للمالك ثم زال ⇒ المهندس يتحقق ويغلقه بتقرير', how('b') === 'after_owner' && /بعد إجرائك/.test(closureReportAr(cl.find((x) => x.key === 'b')!).summary));
+  check('★ ما تعافى دون تدخّل ⇒ يُوثَّق «تحقق من زواله» لا يختفي', how('c') === 'self' && cl.find((x) => x.key === 'c')!.title === 'ج');
+  check('ما زال قائماً لا يُغلق وذاكرته باقية', !how('d') && Boolean(cs.incidents['d']) && !cs.incidents['a']);
+  const flick = emptyEngineerState(); trackIncidents(flick, [mk('f', 'و')], NOW);
+  check('تذبذب لحظي (<3 د بلا تدخّل) لا يُغرق التقارير', closeRecovered(flick, new Set(), NOW + 60000).length === 0 && !flick.incidents['f']);
+  check('الذاكرة تحفظ العنوان عبر التحميل', normalizeEngineerState({ incidents: { k: { attempts: 0, firstSeenAt: NOW, title: 'عنوان' } } }).incidents.k.title === 'عنوان');
   check('التقارير محدودة (لا تضخّم في التخزين)', st.reports.length === ENGINEER_POLICY.maxReports && st.reports[0].id === `r${ENGINEER_POLICY.maxReports + 9}`);
   const norm = normalizeEngineerState({ enabled: false, reports: [{ id: 'a' }, null, 5], incidents: { x: { attempts: 'z' }, y: null }, actions: [1, 'b'] });
   check('★ تحميل آمن من مخزن تالف', norm.enabled === false && norm.reports.length === 1 && norm.incidents.x.attempts === 0 && !norm.incidents.y && norm.actions.length === 1);
