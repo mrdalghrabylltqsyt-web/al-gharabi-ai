@@ -156,6 +156,11 @@ export interface StorageAdapter {
    * لا تتصل بأي قاعدة خارجية ولا تُظهر رابط الاتصال؛ ولا تُرفع إلا **مشفّرة**.
    */
   dump(): Promise<string>;
+  /**
+   * حجم الخزن الحقيقي للمهندس (2026-10-29): حجم القاعدة كاملاً وأكبر المفاتيح (بلا قيمها).
+   * قراءة فقط. Postgres: pg_database_size + pg_column_size. الملف: مجموع أحجام ملفات الحالة.
+   */
+  sizeReport?(): Promise<{ databaseBytes: number | null; keys: Array<{ key: string; bytes: number }> } | null>;
   status(): StorageStatus;
   listBackups(): BackupInfo[];
   /**
@@ -372,6 +377,14 @@ class FileStorageAdapter implements StorageAdapter {
    * التطبيق (state/usage/control) تحمل توكنات مشفّرة بالفعل وليس أسراراً صريحة.
    * تُرفع هذه النسخة **مشفّرة** فقط (AES-256-GCM) ولا تصل إلى Drive خاماً.
    */
+  async sizeReport(): Promise<{ databaseBytes: number | null; keys: Array<{ key: string; bytes: number }> } | null> {
+    try {
+      const names = fs.existsSync(this.stateDir) ? fs.readdirSync(this.stateDir).filter((f) => f.endsWith(".json")) : [];
+      const keys = names.map((f) => ({ key: f.replace(/\.json$/, ""), bytes: fs.statSync(path.join(this.stateDir, f)).size })).sort((a, b) => b.bytes - a.bytes);
+      return { databaseBytes: keys.reduce((a, k) => a + k.bytes, 0), keys: keys.slice(0, 8) };
+    } catch { return null; }
+  }
+
   async dump(): Promise<string> {
     const out: Record<string, unknown> = { backend: this.backend, exportedAt: new Date().toISOString(), keys: {} };
     for (const key of Object.keys(FILE_NAMES)) {
@@ -791,6 +804,18 @@ class PostgresStorageAdapter implements StorageAdapter {
    * الاتصال ولا أي سرّ، ولا تُرفع إلا مشفّرة. عند تعذّر القراءة تُرمى لتُعلَن
    * النسخة فاشلة بدل نسخة ناقصة كاذبة.
    */
+  async sizeReport(): Promise<{ databaseBytes: number | null; keys: Array<{ key: string; bytes: number }> } | null> {
+    if (!this.pool || !this.healthy) return null;
+    try {
+      const db = await this.pool.query("SELECT pg_database_size(current_database())::bigint AS bytes");
+      const rows = await this.pool.query("SELECT key, pg_column_size(value)::bigint AS bytes FROM gharabi_state ORDER BY 2 DESC LIMIT 8");
+      return {
+        databaseBytes: Number(db.rows?.[0]?.bytes ?? NaN) || null,
+        keys: (rows.rows || []).map((r: any) => ({ key: String(r.key), bytes: Number(r.bytes) || 0 })),
+      };
+    } catch { return null; }
+  }
+
   async dump(): Promise<string> {
     if (!this.pool || !this.healthy) throw new Error("database_unavailable");
     const result = await this.pool.query("SELECT key, value, updated_at FROM gharabi_state ORDER BY key");

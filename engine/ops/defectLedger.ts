@@ -176,7 +176,7 @@ const JS_BUG_RE = /\b(TypeError|ReferenceError|RangeError|SyntaxError)\b|cannot 
 const META_PERMISSION_CODES = new Set(['10', '100', '200', '190', '3', '33']);
 
 /** أسطر لا تمثّل عطلاً حتى لو احتوت كلمة «error» (ملخصات سليمة، رسائل المهندس نفسه). */
-const NOT_A_FAILURE_RE = /^\[(defect|engineer-ledger|storage\] state_writes|storage\] coalesced)|request (error|rejected) \(|\bissue=-(\s|$)|outcome=(ok|connected|token_refreshed|authorized_url_issued|callback_received|callback_completed|callback_duplicate_replayed)\b/i;
+const NOT_A_FAILURE_RE = /^\[(defect|engineer-ledger|security\]|guard-canary\] outcome=recovered|dep-audit\]|storage\] state_writes|storage\] coalesced)|request (error|rejected) \(|\bissue=-(\s|$)|outcome=(ok|connected|token_refreshed|authorized_url_issued|callback_received|callback_completed|callback_duplicate_replayed)\b/i;
 
 /**
  * يصنّف حدثاً واحداً. يُرجع null إن لم يكن عطلاً. القواعد مأخوذة من أسطر سجل الإنتاج
@@ -265,6 +265,37 @@ export function classifyFailure(ev: FailureEvent): Diagnosis | null {
 
   // 4) أسطر السجل.
   // 4أ) خطأ المسار يُسجَّل من مراقب /api مع الرسالة الحقيقية (مرة واحدة) — سطر السجل مستبعد أعلاه.
+  // 4أ٢) حارس حماية لا يحمي على الخادم الحي (كناري الحرّاس، 2026-10-29) — عطل حرج. سرّ الجلسات بيد المالك،
+  //       والباقي عيب كود؛ المهندس يعيد الاختبار ويغلقه ✅ متى عاد الحارس يحمي (verify_guard).
+  let gm = /^\[guard-canary\]\s+outcome=failed\s+guard=([\w-]+)\s+detail=(.*)$/i.exec(text);
+  if (gm) {
+    const id = gm[1]; let detail = gm[2]; try { detail = JSON.parse(detail); } catch { /* نص خام */ }
+    if (id === 'session_secret') return {
+      kind: 'config', severity: 'critical', owner: 'owner', key: `guard:${id}`,
+      title: 'سرّ توقيع الجلسات ضعيف',
+      diagnosis: `كناري الحرّاس: ${String(detail).slice(0, 160)} — يمكن تخمينه وتزوير جلسة مالك.`,
+      fix: 'في Render ← Environment: اضبط SESSION_SECRET بقيمة عشوائية طولها 48 حرفاً أو أكثر ثم أعد النشر (ستحتاج تسجيل الدخول مجدداً).',
+    };
+    return {
+      kind: 'code', severity: 'critical', owner: 'developer', key: `guard:${id}`,
+      title: `حارس حماية لا يعمل: ${id}`,
+      diagnosis: `كناري الحرّاس مرّر هجوماً تجريبياً على الخادم الحي فلم يُرفض: ${String(detail).slice(0, 180)}`,
+      fix: 'مهندس الكود يعيد الحارس (الاختبار الحي في engine/ops/guardCanary.ts يحدد الحالة الفاشلة) مع اختبار يمنع عودته.',
+    };
+  }
+  // 4أ٣) الموقع غير قابل للوصول من الإنترنت / شهادة / ترويسات (فحص الحافة من الخارج).
+  gm = /^\[edge-probe\]\s+outcome=failed\s+target=(public|render)\s+verdict=(\w+)\s+host=(\S*)\s+detail=(.*)$/i.exec(text);
+  if (gm) {
+    const [, target, verdict, host] = gm; let detail = gm[4]; try { detail = JSON.parse(detail); } catch { /* */ }
+    const tls = verdict === 'tls_expired' || verdict === 'tls_soon';
+    return {
+      kind: verdict === 'headers' ? 'config' : 'provider', severity: verdict === 'down' || verdict === 'tls_expired' ? 'critical' : 'warning',
+      owner: 'engineer', key: `edge:${target}:${tls ? 'tls' : verdict}`,
+      title: verdict === 'down' ? `${target === 'public' ? 'الموقع العام' : 'خادم Render'} لا يُفتح من الإنترنت` : tls ? `شهادة ${host} ${verdict === 'tls_expired' ? 'منتهية' : 'قاربت الانتهاء'}` : `ترويسات الحماية لا تصل عبر ${host}`,
+      diagnosis: String(detail).slice(0, 200),
+      fix: 'المهندس يعيد الفحص الخارجي ويقارن العنوانين (Netlify/Render) فيحدد مكان العطل؛ ما يبقى معطّلاً بعد ذلك يُصعَّد لمالكه بالإجراء الدقيق.',
+    };
+  }
   // 4ب) فشل OAuth بعد العودة من المزوّد.
   let m = /\[oauth-callback-error\]\s+(\w+)\s+status=(\d+)\s+message=(.*)$/i.exec(text);
   if (m) {
@@ -616,6 +647,10 @@ export type RepairPlan =
   | { action: 'retry_persist' }
   /** ملف شاشة من نسخة سابقة: التحقق أن الخادم يقدّم النسخة الجديدة وأن الملف المفقود ليس منها. */
   | { action: 'verify_new_version'; asset: string | null }
+  /** حارس حماية فشل: إعادة كناري الحرّاس على الخادم الحي. */
+  | { action: 'verify_guard'; guard: string }
+  /** الموقع/الشهادة من الخارج: إعادة الفحص الخارجي. */
+  | { action: 'verify_edge'; target: string }
   /** إذن قياس ناقص: التحقق هل النطاق مطلوب أصلاً في الإعداد، وهل مُنح بعد إعادة الربط. */
   | { action: 'verify_scope_setup'; platform: string; scope: string }
   /** لا إصلاح آلي ممكن: إعداد/ربط بيد المالك (يُذكر الإجراء بالضبط). */
@@ -636,6 +671,8 @@ export function repairPlanFor(g: Pick<DefectGroup, 'kind' | 'owner' | 'rule' | '
   if (rule === 'client-gateway') return { action: 'verify_server', path: getPath };
   if (rule === 'client-stale-chunk') return { action: 'verify_new_version', asset: staleChunkAsset(g.samples) };
   // إذن قياس تيك توك: المهندس يتحقق بنفسه (مطلوب في الإعداد؟ مُنح؟) ولا يحيل للمالك ما ليس عطلاً.
+  if (rule.startsWith('guard:') && rule !== 'guard:session_secret') return { action: 'verify_guard', guard: rule.slice('guard:'.length) };
+  if (rule.startsWith('edge:')) return { action: 'verify_edge', target: rule.split(':')[1] || 'public' };
   if (rule === 'metrics-perm:tiktok') return { action: 'verify_scope_setup', platform: 'tiktok', scope: 'video.list' };
   if (rule.startsWith('http:') && g.kind === 'provider') return getPath ? { action: 'replay_route', method: 'GET', path: getPath } : { action: 'verify_server', path: null };
   if (rule.startsWith('refresh:')) {
