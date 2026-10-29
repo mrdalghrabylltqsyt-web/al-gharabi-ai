@@ -38,6 +38,7 @@ import {
   nextAutoBackupAtMs,
   buildAutoBackupStatus,
   AUTO_BACKUP_TICK_MS,
+  BACKUP_STALE_WARNING_MS,
 } from './autoBackup';
 import {
   inspectDriveAuthEnv,
@@ -549,20 +550,26 @@ export function registerDriveRoutes(app: express.Express, deps: DriveRoutesDeps)
       : { fingerprint: null, rowCount: 0, valueBytes: 0, productCount: 0, saleCount: 0, error: 'no_dump_database' };
     const pointFingerprint = control().driveBackup?.lastSuccessDatabaseHash ?? null;
     const verdict = evaluateDatabaseBalance(live, pointFingerprint);
-    if (verdict.status === 'stale') {
+    // القاعدة الحية تتغيّر بعد كل نسخة بدقائق (تعليقات/مراقبون/حالة)، فـ«أحدث من النسخة» حالة طبيعية
+    // تغطيها النسخة المجدولة التالية — ليست عطلاً. كان التنبيه يُطلق مع كل بصمة جديدة (المفتاح يحمل
+    // البصمة) فيُغرق المالك بعد كل نسخة ناجحة. الآن: لا ينبّه إلا إذا تأخّرت آخر نسخة ناجحة عن حدّ
+    // التأخّر (12 س = دورتان فائتتان)، مرة واحدة لكل نافذة بمفتاح ثابت.
+    const lastOkMs = Date.parse(String(control().driveBackup?.lastSuccessAt || ''));
+    const backupLagging = !Number.isFinite(lastOkMs) || Date.now() - lastOkMs >= BACKUP_STALE_WARNING_MS;
+    if (verdict.status === 'stale' && backupLagging) {
       notifyOwnerOnce(
         'database_stale',
         'النسخة الاحتياطية أقدم من البيانات',
-        verdict.message,
+        `${verdict.message} النسخ المجدول لم يلحق بها منذ ${Number.isFinite(lastOkMs) ? Math.round((Date.now() - lastOkMs) / 3_600_000) : '؟'} ساعة.`,
         'warning',
-        `database_stale:${live.fingerprint}`,
+        'database_stale',
       );
     }
     const prev = control().driveDbBalance || {};
-    const entry = { at: now(), status: verdict.status, changed: verdict.changed, reason: verdict.reason, liveFingerprint: live.fingerprint, pointFingerprint, productCount: live.productCount, saleCount: live.saleCount, checkCount: (prev.checkCount || 0) + 1 };
+    const entry = { at: now(), status: verdict.status, changed: verdict.changed, backupLagging, reason: verdict.reason, liveFingerprint: live.fingerprint, pointFingerprint, productCount: live.productCount, saleCount: live.saleCount, checkCount: (prev.checkCount || 0) + 1 };
     control().driveDbBalance = entry;
     deps.persistControl({ driveDbBalance: entry });
-    return { ...verdict, productCount: live.productCount, saleCount: live.saleCount, at: entry.at, checkCount: entry.checkCount };
+    return { ...verdict, backupLagging, productCount: live.productCount, saleCount: live.saleCount, at: entry.at, checkCount: entry.checkCount };
   }
 
   /**

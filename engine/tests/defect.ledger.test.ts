@@ -219,6 +219,14 @@ check('★ الواجهة تعرض ما أصلحه المهندس وخطواته
   check('★ عدّاد «عاد» القديم لإذن بيد المالك يُصفَّر (6× زائفة)', legacy.groups.a.regressions === 0);
 }
 
+// نطاق قياس تيك توك اختياري لم يُطلب في الإعداد: سطر setup= ليس عطلاً ولا يُنبَّه به كل مزامنة.
+check('★ نطاق اختياري لم يُطلب (setup=) لا يدخل سجل الأعطال', classifyFailure(log('[metrics] platform=tiktok posts=0 withMetrics=0 followers=- issue=- setup=SCOPE_NOT_REQUESTED_video.list')) === null);
+{
+  const srv = readFileSync(join(process.cwd(), 'server.ts'), 'utf8');
+  check('★ المزامنة تميّز النطاق غير المطلوب عن المطلوب الناقص', srv.includes('if (!tiktokOAuthScopes().includes("video.list")) st.setupPending = "video.list";'));
+  check('★ نظافة الإشعارات تتحقق من زوال السبب حياً', srv.includes('notificationHygiene(rows, Date.now(), notificationCauseCleared)'));
+}
+
 console.log('\n' + '='.repeat(60));
 if (failures.length) {
   console.error(`FAILED: ${failures.length} — passed ${passed}`);
