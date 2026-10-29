@@ -1151,7 +1151,7 @@ export const LiveBrainRoom: React.FC<{ variant?: 'page' | 'wall'; onClose?: () =
               </div>
             </section>
   );
-  const ENG_STATUS: Record<string, [string, string]> = { resolved: ['أُصلح', '#34D399'], escalated: ['صُعِّد إليك', '#F87171'], retrying: ['سيعيد المحاولة', '#FBBF24'], deferred: ['مؤجّل', '#FBBF24'], monitoring: ['تحت المراقبة', '#38BDF8'], self_recovered: ['تعافى', '#A5B4FC'] };
+  const ENG_STATUS: Record<string, [string, string]> = { resolved: ['✅ أُصلح', '#34D399'], escalated: ['صُعِّد إليك', '#F87171'], retrying: ['سيعيد المحاولة', '#FBBF24'], deferred: ['مؤجّل', '#FBBF24'], monitoring: ['تحت المراقبة', '#38BDF8'], self_recovered: ['✅ تحقق من زواله', '#34D399'] };
   const SEC_AR: Record<string, string> = { core: 'المركز', ...Object.fromEntries(MODS.map((m) => [m.key, m.title])) };
   const ST_COL: Record<string, string> = { ok: '#34D399', warn: '#FBBF24', fail: '#F87171', skip: '#64748B' };
   const ST_ICON: Record<string, string> = { ok: '✓', warn: '⚠', fail: '✗', skip: '–' };
@@ -1292,19 +1292,19 @@ export const LiveBrainRoom: React.FC<{ variant?: 'page' | 'wall'; onClose?: () =
                             {(pro.latency as any[]).map((l) => <div key={l.route} className="lbr-mono" style={{ fontSize: 10.5, color: l.p95 >= 5000 ? '#FCA5A5' : '#93A1C3', direction: 'ltr', textAlign: 'left' }}>{l.route} · p50 {l.p50}ms · p95 {l.p95}ms · {l.n} طلب{l.errors ? ` · ${l.errors} خطأ` : ''}</div>)}
                           </details>
                         )}
-                        {pro?.hygiene?.marked > 0 && <div style={{ fontSize: 11, color: '#93A1C3' }}>🧹 آخر تنظيف للإشعارات {ago(pro.hygiene.at, now)}: {fmt(pro.hygiene.marked)} قديم/مكرر عُلّم مقروءاً (بلا حذف، والحرج لم يُلمس).</div>}
+                        {pro?.hygiene?.marked > 0 && <div style={{ fontSize: 11, color: '#93A1C3' }}>🧹 آخر تنظيف للإشعارات {ago(pro.hygiene.at, now)}: {fmt(pro.hygiene.marked)} قديم/مكرر أو زال سببه عُلّم مقروءاً (بلا حذف؛ ما زال سببه قائماً بقي ظاهراً).</div>}
                       </div>
                     )}
-                    {patrolTab === 'defects' && (defects?.repaired || []).length > 0 && (
-                      <div style={{ marginTop: 4 }} aria-label="ما أصلحه المهندس مؤخراً">
-                        <div style={{ fontSize: 11, color: '#6EE7B7', fontWeight: 700, margin: '4px 0' }}>✅ أصلحه المهندس ذاتياً — آخر 48 ساعة ({(defects.repaired as any[]).length})</div>
-                        {(defects.repaired as any[]).map((d) => (
-                          <details key={d.fp} className="lbr-eng-rep" style={{ borderColor: '#34D39955' }}>
-                            <summary><span className="lbr-eng-badge" style={{ borderColor: '#34D399', color: '#34D399' }}>أُصلح</span><span style={{ flex: 1, minWidth: 0 }}>{d.title}</span><span className="lbr-mono" style={{ fontSize: 10, color: '#7C89AD', flex: 'none' }}>{ago(d.resolvedAt, now)}</span></summary>
+                    {patrolTab === 'defects' && ((defects?.closed || defects?.repaired || []) as any[]).length > 0 && (
+                      <div style={{ marginTop: 4 }} aria-label="ما أغلقه المهندس مؤخراً">
+                        <div style={{ fontSize: 11, color: '#6EE7B7', fontWeight: 700, margin: '4px 0' }}>✅ أغلقه المهندس بتقرير — آخر 48 ساعة ({((defects.closed || defects.repaired) as any[]).length})</div>
+                        {((defects.closed || (defects.repaired as any[]).map((d: any) => ({ id: d.fp, title: d.title, badge: d.repair?.closure === 'verified_gone' ? 'تحقق من زواله' : 'أصلح', summary: d.repair?.summary, steps: d.repair?.steps || [], at: d.resolvedAt, diagnosis: d.diagnosis }))) as any[]).map((d) => (
+                          <details key={d.id} className="lbr-eng-rep" style={{ borderColor: '#34D39955' }}>
+                            <summary><span className="lbr-eng-badge" style={{ borderColor: '#34D399', color: '#34D399' }}>✅ {d.badge}</span><span style={{ flex: 1, minWidth: 0 }}>{d.title}</span><span className="lbr-mono" style={{ fontSize: 10, color: '#7C89AD', flex: 'none' }}>{ago(d.at, now)}</span></summary>
                             <div style={{ fontSize: 11.5, lineHeight: 1.7, color: '#C9D3EA', padding: '6px 2px 2px' }}>
-                              <div><b>كان:</b> {d.diagnosis}</div>
-                              <div style={{ color: '#6EE7B7' }}><b>ما فعله المهندس:</b> {d.repair?.summary}</div>
-                              {(d.repair?.steps || []).map((st: string, i: number) => <div key={i} style={{ fontSize: 10.5, color: '#93A1C3' }}>{st}</div>)}
+                              {d.diagnosis ? <div><b>كان:</b> {d.diagnosis}</div> : null}
+                              <div style={{ color: '#6EE7B7' }}><b>ما فعله المهندس:</b> {d.summary}</div>
+                              {(d.steps || []).map((st: string, i: number) => <div key={i} style={{ fontSize: 10.5, color: '#93A1C3' }}>{st}</div>)}
                               <div style={{ color: '#6B7AA0', fontSize: 10.5 }}>إن عاد سيُفتح تلقائياً ويُعلَّم «عاد بعد إصلاحه».</div>
                             </div>
                           </details>

@@ -194,7 +194,7 @@ const ce = read('src/utils/clientErrors.ts');
 check('★ الواجهة تعيد القراءة المؤقتة الفاشلة قبل أن يرى المالك خطأ', ce.includes("method === 'GET'") && ce.includes('const retry = await nativeFetch(input, init);'));
 check('★ 502 من الخادم نفسه لا يُحسب «الخادم لم يُجب»', ce.includes("res.headers.get('x-request-id')"));
 check('★ تقرير لم يصل يُرسل عند عودة الخادم', ce.includes('flushPending()'));
-check('★ الواجهة تعرض ما أصلحه المهندس وخطواته', read('src/components/live/LiveBrainRoom.tsx').includes('أصلحه المهندس ذاتياً'));
+check('★ الواجهة تعرض ما أصلحه المهندس وخطواته', read('src/components/live/LiveBrainRoom.tsx').includes('أغلقه المهندس بتقرير'));
 
 // عطل إعداد دوري أُغلق بالهدوء ثم ظهر في دورته التالية ليس «عاد بعد حله»
 {
@@ -257,6 +257,24 @@ check('★ نطاق اختياري لم يُطلب (setup=) لا يدخل سجل
   const ce2 = readFileSync(join(process.cwd(), 'src/utils/clientErrors.ts'), 'utf8');
   check('★ الواجهة تعيد التحميل مرة عند ملف نسخة سابقة', ui.includes('isStaleChunkError(error) && reloadForNewVersion()') && ce2.includes("'vite:preloadError'"));
   check('★ إعادة التحميل بحارس زمني (لا حلقة)', readFileSync(join(process.cwd(), 'src/utils/staleChunk.ts'), 'utf8').includes('RELOAD_GUARD_MS'));
+}
+
+// بروتوكول الإغلاق في السجل: الإغلاق بالهدوء صار تحقّقاً موثّقاً يظهر في قائمة ✅.
+{
+  const L2 = emptyLedger();
+  const g1 = recordFailure(L2, log('[metrics] platform=facebook posts=7 withMetrics=0 followers=1064 error=10'), { nowMs: NOW })!.group;
+  recordRepair(L2, g1.fp, { outcome: 'owner', summary: 'يحتاج إجراءك', steps: [], nowMs: NOW });
+  const later = NOW + LEDGER_POLICY.autoResolveMs + 3600000;
+  sweepLedger(L2, { nowMs: later, version: 'v2', versionSinceMs: NOW });
+  const g = L2.groups[g1.fp];
+  check('★ الإغلاق بالهدوء موثّق (لا صامت)', g.status === 'resolved' && g.repair?.closure === 'verified_gone' && g.repair.steps.length >= 2);
+  check('★ يذكر أنه زال بعد إجراء المالك', /بعد إجراء المالك/.test(g.repair?.summary || ''));
+  check('★ يظهر في قائمة ✅', recentlyRepaired(L2, later + 1000).some((x) => x.fp === g1.fp));
+  check('عودة عطل إعداد أُغلق بالتحقق ليست «عاد بعد حله» (إعادة رصد دورية)', countsAsRegression(g) === false);
+  const srv3 = readFileSync(join(process.cwd(), 'server.ts'), 'utf8');
+  check('★ المهندس يغلق كل حادثة زالت بتقرير (closeRecovered)', srv3.includes('closeRecovered(engineerState') && srv3.includes('closureReportAr(c)'));
+  check('★ التنبيه الذي زال سببه يُغلق بتقرير ✅ يسمّيه', srv3.includes('h.clearedIds.length') && srv3.includes('تحققتُ وأغلقتُ'));
+  check('★ قائمة واحدة لكل ما أغلقه المهندس', srv3.includes('closed: engineerClosures(Date.now())'));
 }
 
 console.log('\n' + '='.repeat(60));

@@ -163,7 +163,7 @@ export interface EngineerReport {
   nextAction: string | null;
 }
 
-export interface IncidentMemory { attempts: number; lastAttemptAt: number | null; escalatedAt: number | null; firstSeenAt: number }
+export interface IncidentMemory { attempts: number; lastAttemptAt: number | null; escalatedAt: number | null; firstSeenAt: number; title?: string; module?: string }
 export interface EngineerState {
   enabled: boolean;
   /** خط أساس السعة: أول قياس لحجم كل مجموعة (لحساب معدل النمو اليومي). يُجدَّد كل 7 أيام. */
@@ -190,7 +190,7 @@ export function normalizeEngineerState(raw: any): EngineerState {
   if (raw.incidents && typeof raw.incidents === 'object') {
     for (const [k, v] of Object.entries(raw.incidents as Record<string, any>)) {
       if (!v || typeof v !== 'object') continue;
-      incidents[k] = { attempts: Number(v.attempts) || 0, lastAttemptAt: Number.isFinite(v.lastAttemptAt) ? v.lastAttemptAt : null, escalatedAt: Number.isFinite(v.escalatedAt) ? v.escalatedAt : null, firstSeenAt: Number(v.firstSeenAt) || Date.now() };
+      incidents[k] = { attempts: Number(v.attempts) || 0, lastAttemptAt: Number.isFinite(v.lastAttemptAt) ? v.lastAttemptAt : null, escalatedAt: Number.isFinite(v.escalatedAt) ? v.escalatedAt : null, firstSeenAt: Number(v.firstSeenAt) || Date.now(), ...(typeof v.title === 'string' ? { title: v.title.slice(0, 200) } : {}), ...(typeof v.module === 'string' ? { module: v.module } : {}) };
     }
   }
   const numMap = (o: any) => Object.fromEntries(Object.entries(o && typeof o === 'object' ? o : {}).filter(([, v]) => Number.isFinite(v as number))) as Record<string, number>;
@@ -237,6 +237,54 @@ export function decideNext(state: EngineerState, incidents: Incident[], nowMs: n
     return { kind: 'repair', incident: inc };
   }
   return { kind: 'wait' };
+}
+
+// -----------------------------------------------------------------------------
+// بروتوكول الإغلاق (قاعدة المالك الثابتة 2026-10-29): كل ما يدخل نظر المهندس — عطل، تحذير، ثغرة،
+// حادثة — لا ينتهي إلا بإحدى ثلاث: ✅ «أصلحه المهندس» (إجراء + تحقق)، ✅ «تحقق المهندس من زواله»
+// (زال بعد إجراء المالك أو نسخة جديدة أو تعافى — مع تقرير)، أو «بيد المالك» مفتوحاً بالإجراء الدقيق
+// ويُعاد التحقق منه حتى يزول. لا اختفاء صامت ولا رسالة بلا إغلاق.
+// -----------------------------------------------------------------------------
+export const CLOSURE_POLICY = Object.freeze({
+  /** حادثة تعافت دون تدخّل: تُوثَّق فقط إن بقيت ظاهرة ≥3 دقائق (لا ضجيج من التذبذب اللحظي). */
+  selfRecoveredMinMs: 3 * 60000,
+});
+
+export type ClosureHow = 'after_repair' | 'after_owner' | 'self';
+export interface Closure { key: string; title: string; module: string; how: ClosureHow; openForMs: number }
+
+/** يسجّل كل حادثة مرئية في الذاكرة بعنوانها، فيُعرف ما زال منها لاحقاً ويُوثَّق إغلاقه. */
+export function trackIncidents(state: EngineerState, incidents: Incident[], nowMs: number): void {
+  for (const inc of incidents) {
+    const m = state.incidents[inc.key] || (state.incidents[inc.key] = { attempts: 0, lastAttemptAt: null, escalatedAt: null, firstSeenAt: nowMs });
+    m.title = inc.title;
+    m.module = inc.module;
+  }
+}
+
+/**
+ * ما زال من الحوادث يُغلق بتقرير: بعد إصلاحنا، بعد إجراء المالك (كانت مصعّدة)، أو تعافى بنفسه. تُحذف
+ * ذاكرته في كل الحالات؛ والتذبذب اللحظي (<3 د بلا تدخّل) لا يُوثَّق.
+ */
+export function closeRecovered(state: EngineerState, activeKeys: Set<string>, nowMs: number): Closure[] {
+  const out: Closure[] = [];
+  for (const [k, m] of Object.entries(state.incidents)) {
+    if (activeKeys.has(k)) continue;
+    const how: ClosureHow = m.escalatedAt ? 'after_owner' : (m.attempts || 0) > 0 ? 'after_repair' : 'self';
+    const openForMs = Math.max(0, nowMs - (m.firstSeenAt || nowMs));
+    if (how !== 'self' || openForMs >= CLOSURE_POLICY.selfRecoveredMinMs) out.push({ key: k, title: m.title || k, module: m.module || 'core', how, openForMs });
+    delete state.incidents[k];
+  }
+  return out;
+}
+
+/** نص تقرير الإغلاق (✅) لكل طريقة. */
+export function closureReportAr(c: Closure): { summary: string; verification: string } {
+  const mins = Math.max(1, Math.round(c.openForMs / 60000));
+  const dur = mins >= 120 ? `${Math.round(mins / 60)} ساعة` : `${mins} دقيقة`;
+  if (c.how === 'after_repair') return { summary: `✅ أصلحتُ «${c.title}» وتحققتُ أنه لم يعد يظهر في الفحص.`, verification: `زال بعد إصلاحي (ظل ظاهراً ${dur}).` };
+  if (c.how === 'after_owner') return { summary: `✅ تحققتُ: «${c.title}» زال بعد إجرائك ولم يعد يظهر في الفحص.`, verification: `كان مصعّداً إليك؛ أعدتُ الفحص فوجدته سليماً (ظل ظاهراً ${dur}).` };
+  return { summary: `✅ تحققتُ: «${c.title}» زال ولم يعد يظهر في الفحص.`, verification: `تعافى دون حاجة لإصلاح (ظل ظاهراً ${dur}).` };
 }
 
 /** ينسى الأعطال التي زالت (تعافت) ويُرجع مفاتيح ما تعافى بعد محاولة منا (لتقرير «تعافى»). */

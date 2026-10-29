@@ -726,7 +726,7 @@ import { backupFreshness, resolveAutoBackupIntervalMs } from "./engine/dr/autoBa
 import { summarizePublishHealth, formatPublishLogLine } from "./engine/ops/publishHealth";
 import { realProductPhrases } from "./src/utils/productPhrases";
 import { LiveEventBuffer, classifyLogLine, auditToLiveEvent, buildLiveModules, buildLiveInsights, buildLiveCycles, platformAr, type LiveEventInput } from "./engine/ops/liveRoom";
-import { detectIncidents, decideNext, forgetRecovered, addReport, withTimeout, emptyEngineerState, normalizeEngineerState, incidentsFromPatrol, incidentsFromDefects, ENGINEER_POLICY, type EngineerState, type EngineerSnapshot, type Incident, type ReportStep, type EngineerReport } from "./engine/ops/siteEngineer";
+import { detectIncidents, decideNext, trackIncidents, closeRecovered, closureReportAr, addReport, withTimeout, emptyEngineerState, normalizeEngineerState, incidentsFromPatrol, incidentsFromDefects, ENGINEER_POLICY, type EngineerState, type EngineerSnapshot, type Incident, type ReportStep, type EngineerReport } from "./engine/ops/siteEngineer";
 import { PATROL_ORDER, COLLECTION_CAPS, COLLECTION_AR, inspectModule, healthScore, healthBreakdown, slopePerHour, growthPerDay, type PatrolFacts, type ModuleInspection } from "./engine/ops/engineerPatrol";
 import { recordFailure, sweepLedger, markDefect, openDefects, ledgerSummary, normalizeLedger, emptyLedger, defectLogLine, repairPlanFor, recordRepair, recentlyRepaired, countsAsRegression, isDeployOverlapCrash, normalizeRoute, LEDGER_POLICY, type DefectLedger, type FailureEvent, type RepairPlan } from "./engine/ops/defectLedger";
 import { TOKEN_KEEPER_POLICY, isPermanentRefreshError, backoffMs, decideRenewal, ownerTokenNeeds, autoRenewable, shouldMarkReauth, keeperSummary, leadFor, fmtDur, type TokenState, type RenewalKind, type KeeperRun } from "./engine/ops/tokenKeeper";
@@ -15719,10 +15719,17 @@ async function engineerTick(trigger: "schedule" | "manual" = "schedule"): Promis
     const defectIncidents = (() => { try { return incidentsFromDefects(openDefects(defectLedger).map((g) => ({ fp: g.fp, kind: g.kind, severity: g.severity, title: g.title, samples: g.samples, plan: repairPlanFor(g) as any }))); } catch { return []; } })();
     const incidents = [...detectIncidents(engineerSnapshot(), engineerStreaks), ...incidentsFromPatrol(Object.values(patrolInspections).flatMap((m) => m.checks)), ...defectIncidents];
     engineerActiveIncidents = incidents;
-    const recovered = forgetRecovered(engineerState, new Set(incidents.map((i) => i.key)));
-    for (const key of recovered) {
+    // بروتوكول الإغلاق: كل حادثة تُتذكَّر بعنوانها، وما زال منها يُغلق بتقرير ✅ (أصلحتُه / زال بعد إجراء
+    // المالك / تعافى) — لا اختفاء صامت. أعطال السجل تُوثَّق في السجل نفسه (repair.closure) فلا تكرار هنا.
+    trackIncidents(engineerState, incidents, nowMs);
+    const recovered = closeRecovered(engineerState, new Set(incidents.map((i) => i.key)), nowMs);
+    for (const c of recovered) {
+      if (c.key.startsWith("defect:")) continue;
       const t = Date.now();
-      addReport(engineerState, { id: workspaceId("eng"), incidentKey: key, kind: key.split(":")[0] as any, module: "core", severity: "warning", title: "تعافى العطل", evidence: [], attempt: 0, startedAt: new Date(t).toISOString(), endedAt: new Date(t).toISOString(), durationMs: 0, status: "self_recovered", steps: [], verification: "لم يعد العطل يظهر في الفحص", summary: `زال العطل «${key}» بعد محاولاتي السابقة.`, nextAction: null });
+      if (engineerState.reports.some((r) => r.incidentKey === c.key && (r.status === "resolved" || r.status === "self_recovered") && t - Date.parse(r.endedAt) < 10 * 60000)) continue;
+      const rep = closureReportAr(c);
+      addReport(engineerState, { id: workspaceId("eng"), incidentKey: c.key, kind: c.key.split(":")[0] as any, module: c.module as any, severity: "warning", title: c.title, evidence: [], attempt: 0, startedAt: new Date(t - c.openForMs).toISOString(), endedAt: new Date(t).toISOString(), durationMs: c.openForMs, status: c.how === "self" ? "self_recovered" : "resolved", steps: [{ at: new Date(t).toISOString(), label: "إعادة الفحص", ok: true, detail: rep.verification }], verification: rep.verification, summary: rep.summary, nextAction: null });
+      liveEvent({ module: c.module as any, level: "ok", title: `🕷 ${rep.summary}`.slice(0, 120), text: rep.verification.slice(0, 150) });
     }
     if (!engineerState.enabled) { if (recovered.length) persistEngineerState(); return; }
     const pressureCritical = (() => { try { return Boolean(currentUsagePressure().deferNonCritical); } catch { return false; } })();
@@ -16052,7 +16059,7 @@ function engineerView(full = true) {
     policy: { maxAttempts: ENGINEER_POLICY.maxAttempts, maxActionsPerHour: ENGINEER_POLICY.maxActionsPerHour, cooldownHours: ENGINEER_POLICY.cooldownAfterEscalateMs / 3600000 },
     patrol: (() => { try { return patrolView(full); } catch { return null; } })(),
     // الأعطال الحقيقية المرصودة (500/استثناء/انهيار شاشة/رفض مزوّد/بطء) — هي ما يهم فعلاً.
-    defects: (() => { try { return { summary: ledgerSummary(defectLedger), open: openDefects(defectLedger).slice(0, full ? 40 : 12), repaired: recentlyRepaired(defectLedger, Date.now()).slice(0, 10), version: DEFECT_VERSION }; } catch { return null; } })(),
+    defects: (() => { try { return { summary: ledgerSummary(defectLedger), open: openDefects(defectLedger).slice(0, full ? 40 : 12), repaired: recentlyRepaired(defectLedger, Date.now()).slice(0, 10), closed: engineerClosures(Date.now()).slice(0, 25), version: DEFECT_VERSION }; } catch { return null; } })(),
     proactive: (() => { try { return proactiveView(full); } catch { return null; } })(),
   };
 }
@@ -16110,6 +16117,24 @@ let lastDeployOkAtMs = 0;
  * هل زال سبب الإشعار فعلاً؟ تحقق حي من الحالة الحالية، لا من العمر. أي نوع غير معروف أو حالة غير
  * محمّلة بعد ⇒ false فيبقى الإشعار (لا إخفاء لما لم يُتحقق منه).
  */
+/**
+ * كل ما أغلقه المهندس في 48 ساعة بتقرير ✅ — قائمة واحدة: أعطال السجل (أصلحها أو تحقق من زوالها) +
+ * حوادث الفحص والدورية التي أصلحها أو زالت بعد إجراء المالك + التنبيهات التي زال سببها.
+ */
+function engineerClosures(nowMs: number): Array<{ id: string; title: string; badge: "أصلح" | "تحقق من زواله"; summary: string; steps: string[]; at: string; diagnosis: string | null }> {
+  const out: Array<{ id: string; title: string; badge: "أصلح" | "تحقق من زواله"; summary: string; steps: string[]; at: string; diagnosis: string | null }> = [];
+  for (const g of recentlyRepaired(defectLedger, nowMs)) {
+    out.push({ id: `defect:${g.fp}`, title: g.title, badge: g.repair?.closure === "verified_gone" ? "تحقق من زواله" : "أصلح", summary: g.repair?.summary || "", steps: g.repair?.steps || [], at: String(g.resolvedAt || ""), diagnosis: g.diagnosis || null });
+  }
+  for (const r of engineerState.reports) {
+    if (r.status !== "resolved" && r.status !== "self_recovered") continue;
+    if (String(r.incidentKey || "").startsWith("defect:") || r.incidentKey === "hygiene:notifications") continue;
+    if (nowMs - Date.parse(r.endedAt) > 48 * 3600000) continue;
+    out.push({ id: r.id, title: r.title, badge: r.status === "self_recovered" ? "تحقق من زواله" : "أصلح", summary: r.summary, steps: (r.steps || []).map((x) => `${x.ok ? "✓" : "✗"} ${x.label}: ${x.detail}`), at: r.endedAt, diagnosis: r.evidence?.[0] || null });
+  }
+  return out.sort((a, b) => (a.at < b.at ? 1 : -1));
+}
+
 function notificationCauseCleared(n: any): boolean {
   const created = Date.parse(String(n?.createdAt || ""));
   if (!Number.isFinite(created)) return false;
@@ -16128,11 +16153,20 @@ function notificationCauseCleared(n: any): boolean {
     case "engineer_spike":
       if (!storageReady) return false;
       return !openDefects(defectLedger).some((g) => title.includes(g.title));
-    case "engineer_escalation": {
-      // تصعيد مرتبط بعطل في السجل: يزول سببه حين يُغلق ذلك العطل. تصعيد لا يطابق أي عطل يبقى كما هو.
-      if (!storageReady) return false;
+    case "engineer_escalation":
+    case "engineer_monitoring": {
+      // تصعيد/مراقبة: يزول سببه حين يُغلق العطل المرتبط في السجل، أو حين لا تعود الحادثة بعنوانها بين
+      // ما يراه المهندس الآن. لا يُحكم قبل أول فحص للمهندس بعد الإقلاع.
+      if (!storageReady || !engineerState.lastCheckAt) return false;
       const linked = Object.values(defectLedger.groups).filter((g) => g.title && title.includes(g.title));
-      return linked.length > 0 && linked.every((g) => g.status !== "open");
+      if (linked.length) return linked.every((g) => g.status !== "open");
+      return !engineerActiveIncidents.some((i) => i.title && title.includes(i.title));
+    }
+    case "engineer_patrol": {
+      // ثغرة الدورية: تزول حين يعود فحصها سليماً في آخر جولة له.
+      const checks = Object.values(patrolInspections).flatMap((m) => m.checks || []);
+      const match = checks.filter((c: any) => c?.label && title.includes(String(c.label)));
+      return match.length > 0 && match.every((c: any) => c.status === "ok");
     }
     case "database_stale":
     case "backup_failed": {
@@ -16252,6 +16286,12 @@ function runNotificationHygiene(): void {
     const ids = new Set(h.ids); const at = new Date().toISOString();
     for (const n of rows) if (ids.has(n.id)) { n.read = true; n.readAt = at; n.readBy = "site-engineer"; }
     persistState();
+    // بروتوكول الإغلاق: كل تنبيه زال سببه يُغلق بتقرير ✅ يسمّيه — لا تعليم «مقروء» صامت.
+    if (h.clearedIds.length) {
+      const cl = new Set(h.clearedIds);
+      const items = rows.filter((n) => cl.has(n.id));
+      addReport(engineerState, { id: workspaceId("eng"), incidentKey: "closure:notifications", kind: "patrol_fix" as any, module: "owner", severity: items.some((n) => n.severity === "critical") ? "critical" : "warning", title: `أغلقتُ ${items.length} تنبيهاً زال سببه`, evidence: items.slice(0, 8).map((n) => String(n.title || "").slice(0, 120)), attempt: 1, startedAt: at, endedAt: at, durationMs: 0, status: "resolved", steps: items.slice(0, 12).map((n) => ({ at, label: `✅ ${String(n.title || "تنبيه").slice(0, 120)}`, ok: true, detail: "تحققتُ من الحالة الحية: السبب زال" })), verification: "تحقق حي لكل تنبيه (اتصال المنصة، سجل الأعطال، فحص ما بعد النشر، الدورية، حداثة النسخة)", summary: `✅ تحققتُ وأغلقتُ ${items.length} تنبيهاً زال سببه فعلاً.`, nextAction: null });
+    }
     lastHygiene = { at, marked: h.ids.length, old: h.old, duplicates: h.duplicates, cleared: h.cleared };
     addReport(engineerState, { id: workspaceId("eng"), incidentKey: "hygiene:notifications", kind: "patrol_fix" as any, module: "owner", severity: "warning", title: "نظافة الإشعارات", evidence: [`${h.old} قديم معلوماتي/تحذير · ${h.duplicates} مكرر · ${h.cleared} زال سببه (تحقق حي)`], attempt: 1, startedAt: at, endedAt: at, durationMs: 0, status: "resolved", steps: [{ at, label: "تعليم القديم والمكرر وما زال سببه مقروءاً (بلا حذف)", ok: true, detail: `${h.ids.length} إشعاراً` }], verification: "ما زال سببه قائماً — حرجاً كان أو يحتاج قرارك — بقي غير مقروء وظاهراً", summary: `نظّفتُ ${h.ids.length} إشعاراً: ${h.old} قديم، ${h.duplicates} مكرر، و${h.cleared} زال سببه فعلاً (تحققت من الحالة الحية). لم يُحذف شيء، وما زال سببه قائماً بقي ظاهراً.`, nextAction: null });
     persistEngineerState();
