@@ -106,6 +106,8 @@ const AUDIT_MAP: Record<string, { module: LiveModuleKey; level: LiveLevel; title
   commercial_draft_refreshed: { module: 'customers', level: 'info', title: 'مسودة رد أدق' },
   commercial_draft_skipped: { module: 'customers', level: 'info', title: 'لا حاجة لرد (ردّت الصفحة)' },
   commercial_qualification_cleanup: { module: 'customers', level: 'info', title: 'تنظيف المسودات' },
+  commercial_followup_not_eligible: { module: 'customers', level: 'info', title: 'متابعة غير مستحقة (لا إرسال)' },
+  commercial_followup_blocked_meta_window: { module: 'gate', level: 'info', title: 'متابعة محجوبة: خارج نافذة المراسلة' },
   commercial_send_mode_changed: { module: 'gate', level: 'warn', title: 'تغيير وضع الإرسال' },
   commercial_kill_switch: { module: 'gate', level: 'warn', title: 'مفتاح الإيقاف الطارئ' },
   owner_alert_sent: { module: 'owner', level: 'info', title: 'تنبيه أُرسل لك' },
@@ -350,6 +352,10 @@ export interface LiveInsights {
   /** منشورة فعلاً بمعرّف حقيقي (فريدة لكل معرّف) · مجدولة لدى المنصة · فاشلة. */
   publish: Array<{ platform: string; label: string; published: number; scheduled: number; failed: number }>;
   latestComments: Array<{ platform: string; label: string; intent: string; text: string; at: string }>;
+  /** وقت آخر تفاعل حقيقي مخزَّن (أي فترة) — يميّز «لا تفاعل اليوم» عن «الاستقبال متوقف». */
+  lastInboundAt: string | null;
+  /** عدد التفاعلات المخزَّنة كلها (النوايا والمواضيع تُحسب عليها، لا على 24 ساعة). */
+  storedTotal: number;
   leadStages: Array<{ key: string; count: number }>;
 }
 
@@ -425,6 +431,8 @@ export function buildLiveInsights(i: LiveInsightsInput): LiveInsights {
     topProducts: sorted(products, (k, v) => ({ name: clip(k, 60), count: v }), (x) => x.count).slice(0, 6),
     publish: sorted(pub, (k, v) => ({ platform: k, label: platformAr(k), published: v.published.size, scheduled: v.scheduled.size, failed: v.failed }), (x) => x.published),
     latestComments,
+    lastInboundAt: latestComments[0]?.at || null,
+    storedTotal: real.length,
     leadStages: sorted(stages, (k, v) => ({ key: k, count: v }), (x) => x.count),
   };
 }

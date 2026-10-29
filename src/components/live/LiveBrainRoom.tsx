@@ -92,6 +92,15 @@ function ago(iso: string | null | undefined, now: number): string {
 function clock(iso: string): string {
   try { return new Date(iso).toLocaleTimeString('ar-IQ-u-nu-latn', { hour: '2-digit', minute: '2-digit', second: '2-digit', timeZone: 'Asia/Baghdad' }); } catch { return ''; }
 }
+/** «قبل كم» لآخر تفاعل — بساعة الخادم المصحّحة. */
+const sinceAr = (iso: string | null | undefined, nowMs: number): string => {
+  const t = iso ? Date.parse(iso) : NaN;
+  if (!Number.isFinite(t)) return '';
+  const m = Math.max(0, Math.round((nowMs - t) / 60000));
+  if (m < 60) return m < 1 ? 'الآن' : `قبل ${m} د`;
+  const h = Math.round(m / 60);
+  return h < 48 ? `قبل ${h} س` : `قبل ${Math.round(h / 24)} يوم`;
+};
 const fmt = (n: number) => { try { return Math.round(n).toLocaleString('en-US'); } catch { return String(Math.round(n)); } };
 
 /** عدّاد يتصاعد بسلاسة نحو القيمة الحقيقية الجديدة. */
@@ -1009,6 +1018,19 @@ export const LiveBrainRoom: React.FC<{ variant?: 'page' | 'wall'; onClose?: () =
   const interEl = (
               <section className="lbr-panel" data-mod="customers" aria-label="تفاعلات 24 ساعة" data-station="check:customers.inbound" data-st-name="تفاعلات 24 ساعة">
                 <h2 className="lbr-h" style={{ marginBottom: 10 }}>تفاعلات الزبائن — 24 ساعة</h2>
+                {/* تدقيق 2026-10-29: لا مخطط فارغ بارتفاع كامل — حين لا تفاعل اليوم يُقال متى وصل آخر تفاعل حقيقي،
+                    فيميّز المالك «هدوء» عن «استقبال متوقف». */}
+                {data && sum(hourly) === 0 ? (
+                  <div style={{ padding: '10px 12px', borderRadius: 12, background: 'rgba(20,27,61,.55)', border: '1px dashed #27325F', fontSize: 12, lineHeight: 1.9, color: '#C9D3EA' }}>
+                    <div style={{ fontWeight: 700, color: '#E7ECF8' }}>لا تفاعلات من الزبائن في آخر 24 ساعة</div>
+                    <div style={{ color: '#93A1C3' }}>
+                      {ins.lastInboundAt
+                        ? <>آخر تفاعل حقيقي وصل <span className="lbr-mono" style={{ color: '#7DD3FC' }}>{sinceAr(ins.lastInboundAt, now)}</span>{(ins.latestComments || [])[0]?.label ? ` من ${(ins.latestComments || [])[0].label}` : ''} — المخزَّن كله {fmt(Number(ins.storedTotal || 0))} تفاعلاً.</>
+                        : 'لم يصل أي تفاعل حقيقي بعد.'}
+                      {' '}يظهر كل تعليق أو رسالة هنا لحظة وصوله.
+                    </div>
+                  </div>
+                ) : <>
                 <div style={{ display: 'flex', alignItems: 'flex-end', gap: 3, height: 120 }}>
                   {hourly.map((v, i) => (
                     <div key={i} title={`${v} تفاعل · ${hourlyInq[i] || 0} استفسار`} style={{ flex: 1, display: 'flex', flexDirection: 'column', justifyContent: 'flex-end', height: '100%', gap: 1 }}>
@@ -1019,19 +1041,19 @@ export const LiveBrainRoom: React.FC<{ variant?: 'page' | 'wall'; onClose?: () =
                   ))}
                 </div>
                 <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 10, color: '#7C89AD', marginTop: 4 }}><span>قبل 24 س</span><span>الآن</span></div>
-                {data && sum(hourly) === 0 && <div style={{ fontSize: 12, color: '#93A1C3', marginTop: 6 }}>لا تفاعلات من الزبائن في آخر 24 ساعة — يظهر كل تعليق أو رسالة هنا لحظة وصوله.</div>}
                 <div style={{ display: 'flex', gap: 12, fontSize: 11, marginTop: 6 }}><span style={{ color: '#7DD3FC' }}>■ تفاعلات</span><span style={{ color: '#F0ABFC' }}>■ استفسارات تجارية</span></div>
+                </>}
               </section>
   );
   const intentsEl = (
               <section className="lbr-panel" data-mod="customers" aria-label="نوايا الزبائن" data-station="check:customers.escalations" data-st-name="نوايا الزبائن">
-                <h2 className="lbr-h" style={{ marginBottom: 10 }}>ماذا يريد الزبائن؟ — النوايا</h2>
+                <h2 className="lbr-h" style={{ marginBottom: 10 }}>ماذا يريد الزبائن؟ — النوايا <span style={{ fontSize: 10, fontWeight: 500, color: '#7C89AD' }}>· كل التفاعلات المخزَّنة</span></h2>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 14, flexWrap: 'wrap' }}>
                   <svg width="120" height="120" viewBox="0 0 120 120" role="img" aria-label="توزيع نوايا الزبائن">
                     <circle cx="60" cy="60" r="44" fill="none" stroke="#141B3D" strokeWidth="14" />
                     {donut.map((d) => <path key={d.key} d={arc(d.start, d.frac, 44)} fill="none" stroke={d.color} strokeWidth="14" style={{ filter: `drop-shadow(0 0 5px ${d.color})` }} />)}
                     <text x="60" y="58" textAnchor="middle" fontSize="18" fontWeight="700" fill="#E7ECF8" className="lbr-mono">{fmt(sum(intents.map((x) => x.count)))}</text>
-                    <text x="60" y="74" textAnchor="middle" fontSize="9" fill="#93A1C3">تفاعل مصنّف</text>
+                    <text x="60" y="74" textAnchor="middle" fontSize="9" fill="#93A1C3">مصنّف · كل الفترة</text>
                   </svg>
                   <div style={{ flex: 1, minWidth: 140, display: 'flex', flexDirection: 'column', gap: 5 }}>
                     {donut.map((d) => (
@@ -1047,7 +1069,7 @@ export const LiveBrainRoom: React.FC<{ variant?: 'page' | 'wall'; onClose?: () =
   );
   const topicsEl = (
               <section className="lbr-panel" data-mod="customers" aria-label="مواضيع الأسئلة" data-station="check:customers.inbound,customers.escalations" data-st-name="مواضيع الأسئلة">
-                <h2 className="lbr-h" style={{ marginBottom: 10 }}>عن ماذا يسألون؟ — المواضيع</h2>
+                <h2 className="lbr-h" style={{ marginBottom: 10 }}>عن ماذا يسألون؟ — المواضيع <span style={{ fontSize: 10, fontWeight: 500, color: '#7C89AD' }}>· كل الفترة</span></h2>
                 {(ins.topics || []).map((t: any, i: number) => {
                   const max = Math.max(1, ...(ins.topics || []).map((x: any) => x.count));
                   const c = ['#F0ABFC', '#7DD3FC', '#FCD34D', '#6EE7B7', '#A5B4FC', '#FDA4AF', '#67E8F9', '#C4B5FD'][i % 8];

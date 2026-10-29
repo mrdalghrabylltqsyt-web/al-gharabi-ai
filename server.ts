@@ -92,6 +92,7 @@ import {
   normalizeCommercialDrafts, normalizeOwnerDecisions, buildLeadConversation,
   COMMERCIAL_SEND_MODE_LABELS_AR, COMMERCIAL_DRAFT_TYPE_LABELS_AR, authorDisplayName,
 } from "./engine/commercial/commercialDrafts";
+import { createFollowUpDecisionMemo } from "./engine/commercial/followUpDecisionMemo";
 import {
   type CommercialSaleRecord,
   buildCommercialSaleRecord,
@@ -10520,6 +10521,8 @@ async function refreshStalePendingReplyDrafts(nowIso: string): Promise<number> {
   return refreshed;
 }
 
+/** قرارات منع المتابعة المسجّلة (تسجيل التغيّر لا التكرار) — في الذاكرة، تُعاد بعد الإقلاع. */
+const followUpDecisionMemo = createFollowUpDecisionMemo(2000);
 async function runCommercialBrainCycle(trigger: string): Promise<{ ok: boolean; trigger: string; result?: any; error?: string }> {
   // Kill Switch (مفتاح رئيسي واحد): حين يكون معطّلاً (**الافتراضي، fail-closed**) لا
   // تنفّذ الدورة أي عمل — تُعلن التخطّي بصراحة بلا أي تنفيذ خارجي حتى يفعّله المالك.
@@ -10608,19 +10611,23 @@ async function runCommercialBrainCycle(trigger: string): Promise<{ ok: boolean; 
       // ومتابعة واحدة لكل استفسار. كل منع يُسجَّل بكوده بلا أي إرسال.
       const followUpEligibility = evaluateFollowUpEligibility({ lead, drafts: commercialDrafts, nowIso });
       if (!followUpEligibility.eligible) {
+        // إصلاح 2026-10-29: المنع نفسه لنفس الزبون يتكرر كل دورة — يُسجَّل مرة عند ظهوره أو تغيّر سببه
+        // فقط، كي لا يمحو سجل العمليات (سقف 100) ولا يظهر في الغرفة الحية كنشاط منتظم وهمي.
+        const newDecision = followUpDecisionMemo.changed(lead.key, String(followUpEligibility.code || ''));
         if (followUpEligibility.code === 'OUTSIDE_META_WINDOW') {
           commercialWindowBlocked += 1;
-          audit('commercial-brain', 'commercial_followup_blocked_meta_window', JSON.stringify({
+          if (newDecision) audit('commercial-brain', 'commercial_followup_blocked_meta_window', JSON.stringify({
             leadKey: lead.key, platform: lead.platform, kind: lead.kind,
             lastBusinessReplyAt: lead.lastBusinessReplyAt, reason: followUpEligibility.code,
           }));
-        } else {
+        } else if (newDecision) {
           audit('commercial-brain', 'commercial_followup_not_eligible', JSON.stringify({
             leadKey: lead.key, platform: lead.platform, code: followUpEligibility.code,
           }));
         }
         continue;
       }
+      followUpDecisionMemo.forget(lead.key); // صار مؤهلاً: أي منع لاحق يُسجَّل من جديد
       const text = buildCommercialFollowUpText(lead);
       // حارس المحتوى صريح إضافي (المنفّذ يفرضه أيضاً): لا متابعة تحمل ادعاءً.
       const product = lead.interestedProductId ? (workspace.products || []).find((x: any) => String(x.id) === String(lead.interestedProductId)) || null : null;

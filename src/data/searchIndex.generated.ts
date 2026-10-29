@@ -881,7 +881,7 @@ export const GENERATED_SEARCH_INDEX: GeneratedSearchEntry[] = [
   "file": "src/components/live/LiveBrainRoom.tsx"
  },
  {
-  "title": "عن ماذا يسألون؟ — المواضيع",
+  "title": "عن ماذا يسألون؟ — المواضيع · كل الفترة",
   "tab": "live_room",
   "kind": "panel",
   "file": "src/components/live/LiveBrainRoom.tsx"
@@ -899,7 +899,7 @@ export const GENERATED_SEARCH_INDEX: GeneratedSearchEntry[] = [
   "file": "src/components/live/LiveBrainRoom.tsx"
  },
  {
-  "title": "ماذا يريد الزبائن؟ — النوايا",
+  "title": "ماذا يريد الزبائن؟ — النوايا · كل التفاعلات المخزَّنة",
   "tab": "live_room",
   "kind": "panel",
   "file": "src/components/live/LiveBrainRoom.tsx"
