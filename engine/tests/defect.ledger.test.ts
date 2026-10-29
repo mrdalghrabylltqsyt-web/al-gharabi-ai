@@ -227,6 +227,26 @@ check('★ نطاق اختياري لم يُطلب (setup=) لا يدخل سجل
   check('★ نظافة الإشعارات تتحقق من زوال السبب حياً', srv.includes('notificationHygiene(rows, Date.now(), notificationCauseCleared)'));
 }
 
+// ملف شاشة من نسخة سابقة بعد النشر: ليس عيب كود ولا حرجاً — والواجهة تعيد التحميل مرة.
+{
+  const stale = classifyFailure({ source: 'client', text: 'render crash: TypeError: error loading dynamically imported module: https://x/assets/LiveBrainRoom-BCLZ6HV1.js', where: 'tab:section_home' });
+  check('★ ملف نسخة سابقة ⇒ ليس عيب كود ولا حرجاً', stale?.kind === 'provider' && stale.severity === 'warning' && stale.owner === 'engineer');
+  check('★ صيغ المتصفحات الثلاث تُميَّز', ['Failed to fetch dynamically imported module: /a.js', 'Importing a module script failed.', 'ChunkLoadError: Loading chunk 12 failed'].every((t) => classifyFailure({ source: 'client', text: `render crash: ${t}`, where: 'x' })?.kind === 'provider'));
+  check('★ انهيار شاشة حقيقي يبقى عيب واجهة حرجاً', classifyFailure({ source: 'client', text: 'render crash: TypeError: Cannot read properties of null', where: 'x' })?.severity === 'critical');
+  check('★ إصلاحه: التحقق من الخادم لا إحالة لمهندس الكود', repairPlanFor({ kind: 'provider', owner: 'engineer', rule: 'client-stale-chunk', fix: '', lastMethod: null, lastPath: null }).action === 'verify_server');
+  // عطل قديم سُجّل قبل التمييز (client حرج) وكل عيّناته من نسخة سابقة ⇒ يُغلق في الصيانة.
+  const L = emptyLedger();
+  L.groups['old'] = { fp: 'old', kind: 'client', severity: 'critical', owner: 'developer', title: 'خطأ في الواجهة (tab:section_home)', diagnosis: '', fix: '', where: [], frame: null, count: 1, firstAt: new Date(NOW).toISOString(), lastAt: new Date(NOW).toISOString(), samples: ['[tab:section_home] render crash: TypeError: error loading dynamically imported module: https://x/assets/A-1.js'], status: 'open', resolvedAt: null, resolvedBy: null, regressions: 0, firstVersion: 'v1', lastVersion: 'v1', rule: 'client:tab:section_home', lastMethod: null, lastPath: null, repair: null } as any;
+  L.groups['real'] = { ...L.groups['old'], fp: 'real', samples: ['[x] render crash: TypeError: Cannot read properties of null'] } as any;
+  const closed = sweepLedger(L, { nowMs: NOW + 60000, version: 'v1', versionSinceMs: NOW });
+  check('★ عطل نسخة سابقة القديم يُغلق فوراً', closed.includes('old') && L.groups['old'].status === 'resolved');
+  check('★ عطل واجهة حقيقي لا يُغلق بالصمت', !closed.includes('real') && L.groups['real'].status === 'open');
+  const ui = readFileSync(join(process.cwd(), 'src/components/common/ErrorBoundary.tsx'), 'utf8');
+  const ce2 = readFileSync(join(process.cwd(), 'src/utils/clientErrors.ts'), 'utf8');
+  check('★ الواجهة تعيد التحميل مرة عند ملف نسخة سابقة', ui.includes('isStaleChunkError(error) && reloadForNewVersion()') && ce2.includes("'vite:preloadError'"));
+  check('★ إعادة التحميل بحارس زمني (لا حلقة)', readFileSync(join(process.cwd(), 'src/utils/staleChunk.ts'), 'utf8').includes('RELOAD_GUARD_MS'));
+}
+
 console.log('\n' + '='.repeat(60));
 if (failures.length) {
   console.error(`FAILED: ${failures.length} — passed ${passed}`);

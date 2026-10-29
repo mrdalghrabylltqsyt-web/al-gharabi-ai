@@ -161,6 +161,13 @@ const PLATFORM_AR: Record<string, string> = { facebook: 'فيسبوك', instagra
 const pa = (p: string) => PLATFORM_AR[p] || p;
 
 /** أخطاء برمجية صريحة (JavaScript) — لا يصلحها إلا تعديل الكود. */
+/**
+ * ملف شاشة من نسخة سابقة لم يعد موجوداً بعد النشر (أسماء الملفات تحمل بصمة المحتوى): متصفح المالك المفتوح
+ * على النسخة القديمة يطلبه فيفشل. ليس عيب كود — الواجهة تعيد التحميل مرة لتأخذ النسخة الجديدة.
+ */
+export const STALE_CHUNK_RE = /dynamically imported module|Importing a module script failed|ChunkLoadError|Loading chunk [\w-]+ failed|Unable to preload CSS|module script.*MIME type/i;
+export function isStaleChunkText(text: string): boolean { return STALE_CHUNK_RE.test(String(text || '')); }
+
 const JS_BUG_RE = /\b(TypeError|ReferenceError|RangeError|SyntaxError)\b|cannot read propert|is not a function|is not defined|is not iterable|undefined is not|cannot set propert|maximum call stack|invalid time value|unexpected token/i;
 
 /** رموز Meta/Graph المعروفة لإذن ناقص أو رمز ملغى. */
@@ -201,6 +208,12 @@ export function classifyFailure(ev: FailureEvent): Diagnosis | null {
 
   // 2) انهيار شاشة أو خطأ JavaScript في متصفح المالك.
   if (ev.source === 'client') {
+    if (isStaleChunkText(text)) return {
+      kind: 'provider', severity: 'warning', owner: 'engineer', key: 'client-stale-chunk',
+      title: 'شاشة مفتوحة من نسخة سابقة بعد النشر',
+      diagnosis: 'المتصفح كان على النسخة القديمة وطلب ملف شاشة لم يعد موجوداً بعد النشر — ليس عيباً في الكود.',
+      fix: 'الواجهة تعيد تحميل الصفحة مرة تلقائياً لتأخذ النسخة الجديدة؛ إن تكرر بعدها فتحقق من أن النشر اكتمل.',
+    };
     const apiFail = /^api\s+(\d{3})\b/i.exec(text);
     if (apiFail) {
       const st = Number(apiFail[1]);
@@ -475,6 +488,12 @@ export function sweepLedger(ledger: DefectLedger, opts: { nowMs: number; version
       continue;
     }
     if (g.status !== 'open') continue;
+    // عطل واجهة سُجّل قبل تمييز «ملف نسخة سابقة» وكل عيّناته منه: ليس عيب كود يُنتظر له نشر — يُغلق.
+    if (g.kind === 'client' && g.samples.length > 0 && g.samples.every(isStaleChunkText)) {
+      g.status = 'resolved'; g.resolvedAt = new Date(opts.nowMs).toISOString(); g.resolvedBy = 'auto';
+      resolved.push(g.fp);
+      continue;
+    }
     const isCode = g.kind === 'code' || g.kind === 'client';
     const quietLongEnough = opts.nowMs - last > (isCode ? P.codeResolveAfterDeployMs : P.autoResolveMs);
     const newCode = !isCode || (opts.version && g.lastVersion && opts.version !== g.lastVersion && opts.versionSinceMs != null && opts.nowMs - opts.versionSinceMs > P.codeResolveAfterDeployMs);
@@ -585,7 +604,7 @@ export type RepairPlan =
 export function repairPlanFor(g: Pick<DefectGroup, 'kind' | 'owner' | 'rule' | 'fix' | 'lastMethod' | 'lastPath'>): RepairPlan {
   const rule = String(g.rule || '');
   const getPath = g.lastMethod === 'GET' && g.lastPath && g.lastPath.startsWith('/api/') ? g.lastPath : null;
-  if (rule === 'client-gateway') return { action: 'verify_server', path: getPath };
+  if (rule === 'client-gateway' || rule === 'client-stale-chunk') return { action: 'verify_server', path: rule === 'client-gateway' ? getPath : null };
   if (rule.startsWith('http:') && g.kind === 'provider') return getPath ? { action: 'replay_route', method: 'GET', path: getPath } : { action: 'verify_server', path: null };
   if (rule.startsWith('refresh:')) {
     const platform = rule.slice('refresh:'.length);

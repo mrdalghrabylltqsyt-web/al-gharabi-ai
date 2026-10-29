@@ -9,6 +9,8 @@
  *      محاولة واحدة للقراءة، فلحظة إعادة النشر لا تظهر للمالك كعطل.
  * بلا أي بيانات زبون: الرسالة + الموضع فقط، بسقف 10 تقارير/دقيقة، وتكرار نفس الرسالة يُرسل مرة.
  */
+import { isStaleChunkError, reloadForNewVersion } from './staleChunk';
+
 const TOKEN_KEY = 'algharabi_auth_token';
 const sent = new Map<string, number>();
 let windowStart = 0;
@@ -59,12 +61,16 @@ export function installClientErrorReporting(): void {
   if (typeof window === 'undefined' || (window as any).__gharabiErrorsInstalled) return;
   (window as any).__gharabiErrorsInstalled = true;
   nativeFetch = window.fetch.bind(window);
+  // Vite يطلق هذا الحدث حين يفشل تحميل ملف شاشة مسبقاً — بعد النشر يعني نسخة قديمة مفتوحة.
+  window.addEventListener('vite:preloadError', (e: Event) => { if (reloadForNewVersion()) e.preventDefault(); });
   window.addEventListener('error', (e) => {
     if (!e?.message) return;
+    if (isStaleChunkError(e.error || e.message) && reloadForNewVersion()) return;
     reportClientError(`${e.error?.name || 'Error'}: ${e.message}`, null, firstFrame(e.error?.stack) || (e.filename ? `${e.filename.split('/').pop()}:${e.lineno}` : null));
   });
   window.addEventListener('unhandledrejection', (e) => {
     const r: any = e?.reason;
+    if (isStaleChunkError(r) && reloadForNewVersion()) return;
     // رفض طلب شبكة (انقطاع الإنترنت) ليس عيباً في الكود.
     if (r?.name === 'AbortError' || /Failed to fetch|NetworkError|Load failed/i.test(String(r?.message || r))) return;
     reportClientError(`${r?.name || 'Rejection'}: ${r?.message || String(r)}`, null, firstFrame(r?.stack));
