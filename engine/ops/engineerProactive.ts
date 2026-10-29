@@ -46,6 +46,7 @@ export const PROBE_ROUTES: readonly ProbeRoute[] = Object.freeze([
   { path: '/api/agent/telegram/watcher', label: 'مراقب تيليغرام', screen: 'مركز السيطرة' },
   { path: '/api/agent/youtube/quota', label: 'حصة يوتيوب', screen: 'مدير تشغيل YouTube' },
   { path: '/api/brain/recommendations', label: 'توصيات العقل', screen: 'العقل المركزي' },
+  { path: '/api/agent/brain/mandate', label: 'تفويض العقل المركزي', screen: 'العقل المركزي' },
 ]);
 
 export const PROACTIVE_POLICY = Object.freeze({
