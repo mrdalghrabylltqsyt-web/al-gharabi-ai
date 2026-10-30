@@ -75,9 +75,16 @@ export interface DispatchEnv {
   storageHealthy: boolean;
 }
 
-export type DispatchDecision =
-  | { act: true; platforms: string[] }
-  | { act: false; state: DispatchState; reason: string; changed: boolean };
+/** شكل واحد (لا اتحاد مميَّز): tsconfig المشروع غير صارم فلا يضيّق `act` المنطقي. */
+export interface DispatchDecision {
+  act: boolean;
+  /** المنصات المطلوب النشر عليها الآن (فارغة حين act=false). */
+  platforms: string[];
+  state: DispatchState;
+  reason: string;
+  /** تغيّرت الحالة عن المحفوظة (يُكتب وينبَّه مرة واحدة). */
+  changed: boolean;
+}
 
 const REASONS: Record<DispatchState, string> = {
   waiting: 'لم يحن موعد النشر بعد.',
@@ -101,15 +108,15 @@ export function unpublishedPlatforms(targets: string[], results?: Record<string,
 export function decideScheduledDispatch(post: DispatchCandidateInput, env: DispatchEnv): DispatchDecision {
   const prev = post.dispatch || {};
   const same = (state: DispatchState) => prev.state === state;
-  const hold = (state: DispatchState): DispatchDecision => ({ act: false, state, reason: REASONS[state], changed: !same(state) });
+  const hold = (state: DispatchState): DispatchDecision => ({ act: false, platforms: [], state, reason: REASONS[state], changed: !same(state) });
 
   // منشور منشور فعلاً يُعاد فقط لمنصاته المتبقية ضمن خطة إعادة المحاولة.
   const retryingPublished = post.status === 'published' && prev.state === 'retry_wait' && (prev.remainingPlatforms || []).length > 0;
-  if (post.status !== 'scheduled' && !retryingPublished) return { act: false, state: (prev.state as DispatchState) || 'waiting', reason: prev.reason || '', changed: false };
-  if (!Number.isFinite(post.scheduledEpochMs)) return { act: false, state: 'waiting', reason: 'موعد غير صالح.', changed: false };
+  if (post.status !== 'scheduled' && !retryingPublished) return { act: false, platforms: [], state: (prev.state as DispatchState) || 'waiting', reason: prev.reason || '', changed: false };
+  if (!Number.isFinite(post.scheduledEpochMs)) return { act: false, platforms: [], state: 'waiting', reason: 'موعد غير صالح.', changed: false };
   if (post.scheduledEpochMs > env.nowMs) return hold('waiting');
   // حالات نهائية: لا إعادة تلقائية حتى يعيد المالك الجدولة (يُصفّر معلومات الإرسال) أو ينشر يدوياً.
-  if (prev.state === 'missed' || prev.state === 'failed' || prev.state === 'partial' || prev.state === 'published') return { act: false, state: prev.state, reason: prev.reason || REASONS[prev.state], changed: false };
+  if (prev.state === 'missed' || prev.state === 'failed' || prev.state === 'partial' || prev.state === 'published') return { act: false, platforms: [], state: prev.state, reason: prev.reason || REASONS[prev.state], changed: false };
 
   const attempts = Number(prev.attempts || 0);
   // نافذة التأخير تخص الإطلاق الأول فقط؛ إعادة محاولة بدأت في موعدها تُكمَل.
@@ -118,13 +125,13 @@ export function decideScheduledDispatch(post: DispatchCandidateInput, env: Dispa
   if (!env.storageHealthy) return hold('storage_unhealthy');
 
   const nextAt = prev.nextAttemptAt ? Date.parse(String(prev.nextAttemptAt)) : NaN;
-  if (Number.isFinite(nextAt) && nextAt > env.nowMs) return { act: false, state: 'retry_wait', reason: prev.reason || REASONS.retry_wait, changed: false };
+  if (Number.isFinite(nextAt) && nextAt > env.nowMs) return { act: false, platforms: [], state: 'retry_wait', reason: prev.reason || REASONS.retry_wait, changed: false };
 
   const platforms = attempts > 0 && Array.isArray(prev.remainingPlatforms) && prev.remainingPlatforms.length
     ? prev.remainingPlatforms
     : unpublishedPlatforms(post.targetPlatforms, post.platformResults);
   if (!platforms.length) return hold('published');
-  return { act: true, platforms };
+  return { act: true, platforms, state: 'publishing', reason: REASONS.publishing, changed: true };
 }
 
 /**

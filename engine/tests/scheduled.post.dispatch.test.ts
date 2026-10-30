@@ -23,10 +23,10 @@ const due = { status: 'scheduled', scheduledEpochMs: NOW - 44 * 60_000, targetPl
 
 // 1) القرار
 const d1 = decideScheduledDispatch(due, env);
-check('حان الموعد + المفتاح مفعّل + الحفظ سليم ⇒ يُنشر على كل المنصات', d1.act === true && d1.act && d1.platforms.length === 4);
+check('حان الموعد + المفتاح مفعّل + الحفظ سليم ⇒ يُنشر على كل المنصات', d1.act === true && d1.platforms.length === 4);
 
 const d2 = decideScheduledDispatch({ ...due, scheduledEpochMs: NOW + 60_000 }, env);
-check('قبل الموعد ⇒ انتظار', !d2.act && !d2.act && d2.state === 'waiting');
+check('قبل الموعد ⇒ انتظار', !d2.act && d2.state === 'waiting');
 
 const d3 = decideScheduledDispatch(due, { ...env, autoEnabled: false });
 check('المفتاح مطفأ ⇒ لا نشر مع سبب صريح', !d3.act && d3.state === 'auto_disabled' && d3.changed === true);
@@ -41,13 +41,13 @@ const d6 = decideScheduledDispatch({ ...due, status: 'approved' }, env);
 check('منشور غير مجدول ⇒ لا شيء', !d6.act);
 
 const d7 = decideScheduledDispatch({ ...due, platformResults: { facebook: { state: 'published' } } }, env);
-check('المنشور على منصة لا يُعاد عليها', d7.act === true && d7.act && !d7.platforms.includes('facebook') && d7.platforms.length === 3);
+check('المنشور على منصة لا يُعاد عليها', d7.act === true && !d7.platforms.includes('facebook') && d7.platforms.length === 3);
 
 const d8 = decideScheduledDispatch({ ...due, dispatch: { state: 'retry_wait', attempts: 1, nextAttemptAt: new Date(NOW + 60_000).toISOString(), remainingPlatforms: ['youtube'] } }, env);
 check('إعادة المحاولة تحترم موعدها', !d8.act && d8.state === 'retry_wait');
 
 const d9 = decideScheduledDispatch({ ...due, dispatch: { state: 'retry_wait', attempts: 1, nextAttemptAt: new Date(NOW - 1).toISOString(), remainingPlatforms: ['youtube'] } }, env);
-check('حان موعد الإعادة ⇒ المنصات المتبقية فقط', d9.act === true && d9.act && d9.platforms.join() === 'youtube');
+check('حان موعد الإعادة ⇒ المنصات المتبقية فقط', d9.act === true && d9.platforms.join() === 'youtube');
 
 for (const st of ['failed', 'partial', 'missed', 'published'] as const) {
   const d = decideScheduledDispatch({ ...due, dispatch: { state: st, attempts: 3 } }, env);
@@ -55,7 +55,7 @@ for (const st of ['failed', 'partial', 'missed', 'published'] as const) {
 }
 
 const d10 = decideScheduledDispatch({ ...due, status: 'published', dispatch: { state: 'retry_wait', attempts: 1, nextAttemptAt: new Date(NOW - 1).toISOString(), remainingPlatforms: ['instagram'] } }, env);
-check('منشور نُشر جزئياً يُكمل منصاته المتبقية', d10.act === true && d10.act && d10.platforms.join() === 'instagram');
+check('منشور نُشر جزئياً يُكمل منصاته المتبقية', d10.act === true && d10.platforms.join() === 'instagram');
 
 // 2) التسوية
 const allOk = Object.fromEntries(T.map((p) => [p, { state: 'published' }]));
