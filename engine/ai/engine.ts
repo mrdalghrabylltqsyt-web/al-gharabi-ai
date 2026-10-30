@@ -33,8 +33,8 @@ export interface AiProvider {
 }
 
 export interface AiUsageGuard {
-  /** هل يُسمح باستهلاك طلب واحد الآن؟ */
-  canConsume(): boolean;
+  /** هل يُسمح باستهلاك طلب واحد الآن؟ `meta` يميّز العمل الخلفي (يُوزَّع على اليوم) عن طلب المالك. */
+  canConsume(meta?: AiCallMeta): boolean;
   /** يحجز طلباً واحداً؛ يعيد false إذا نفدت الحصة. */
   consume(): boolean;
   /** يعيد الحجز عند فشل الطلب حتى لا تُحسب محاولة فاشلة على الحصة. */
@@ -321,7 +321,7 @@ export class AiEngine {
 
     // 5) الحارس المركزي: لا استهلاك بدون رصيد. هذا هو خط الدفاع الوحيد المشترك
     // لكل المنصات (الحالية والمستقبلية) ولا يمكن لأي مسار منصة تجاوزه.
-    if (!this.guard.canConsume() || !this.guard.consume()) {
+    if (!this.guard.canConsume(meta) || !this.guard.consume()) {
       this.ledger.recordGuardBlocked();
       this.onEvent({ type: 'guard_blocked', detail: cacheKey });
       return fallbackResult('تم بلوغ حد الحماية اليومي المحلي للذكاء الاصطناعي؛ تم استخدام المحرك المحلي الحتمي.', 'quota_guard', 'rate_limited');

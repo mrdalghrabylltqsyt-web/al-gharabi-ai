@@ -35,7 +35,7 @@ function ago(iso: string | null | undefined, now: number): string {
   const h = Math.round(m / 60);
   return h < 48 ? `قبل ${h} س` : `قبل ${Math.round(h / 24)} يوم`;
 }
-const until = (iso: string, now: number) => { const m = Math.max(0, Math.round((Date.parse(iso) - now) / 60000)); return m < 60 ? `${m} د` : `${Math.round(m / 60)} س`; };
+const until = (iso: string, now: number) => { const m = Math.max(0, Math.round((Date.parse(iso) - now) / 60000)); return m < 60 ? `${m} د` : m < 48 * 60 ? `${Math.round(m / 60)} س` : `${Math.round(m / 1440)} يوم`; };
 const mb = (b: number | null | undefined) => (b == null ? '—' : `${(b / 1048576).toFixed(b >= 10 * 1048576 ? 0 : 1)} ميغا`);
 
 const Row: React.FC<{ status: string; children: React.ReactNode; station?: string; name?: string }> = ({ status, children, station, name }) => (
@@ -110,12 +110,32 @@ export const GuardianPanel: React.FC<Props> = ({ g, now, busy, onRun, onUnblock 
       ))}
       {!edge && <div style={{ fontSize: 11, color: '#93A1C3' }}>{(g.edgeConfigured || []).length ? 'أول فحص خارجي بعد 4 دقائق من الإقلاع.' : 'لا عنوان عام https مضبوط (APP_URL) — يعمل على الخادم المنشور فقط.'}</div>}
 
-      {/* الخطط المجانية */}
-      <div style={{ fontSize: 11.5, color: '#A5B4FC', fontWeight: 700, marginTop: 4 }}>الخطط المجانية (مع تنبؤ نهاية الشهر)</div>
-      {((plans?.verdicts || []) as any[]).filter((v) => v.status !== 'skip').map((v) => (
-        <Row key={v.provider} status={v.status} station="check:monitor.freeplans" name={v.label}>{v.detail}</Row>
-      ))}
-      {!((plans?.verdicts || []) as any[]).some((v) => v.status !== 'skip') && <div style={{ fontSize: 11, color: '#93A1C3' }}>لا قياس للحصص بعد.</div>}
+      {/* الخطط المجانية: كل حصة موزّعة على مدتها */}
+      <div style={{ fontSize: 11.5, color: '#A5B4FC', fontWeight: 700, marginTop: 4 }}>الحصص المجانية — موزّعة على مدتها</div>
+      {g.pacing?.rule && <div style={{ fontSize: 10.5, color: '#93A1C3', lineHeight: 1.6 }}>{g.pacing.rule}</div>}
+      {((g.pacing?.rows || []) as any[]).filter((r) => r.state !== 'unknown').map((r) => {
+        const st = r.level === 'critical' ? 'fail' : r.level === 'watch' ? 'warn' : 'ok';
+        const pct = Math.min(100, Number(r.usedPercent) || 0);
+        const allow = r.allowedPercent == null ? null : Math.min(100, Number(r.allowedPercent));
+        return (
+          <Row key={r.provider} status={st} station="check:monitor.freeplans" name={r.label}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', gap: 6 }}><b>{r.label}</b><span className="lbr-mono" style={{ color: '#93A1C3' }}>{r.usedPercent}%{allow != null ? ` / المسموح الآن ${allow}%` : ''}</span></div>
+            <div style={{ position: 'relative', height: 6, borderRadius: 999, background: '#141B3D', margin: '3px 0' }} aria-hidden="true">
+              <div style={{ position: 'absolute', insetInlineStart: 0, top: 0, bottom: 0, width: `${pct}%`, borderRadius: 999, background: ST[st] }} />
+              {allow != null && <div title="خط الإيقاع" style={{ position: 'absolute', top: -2, bottom: -2, insetInlineStart: `calc(${allow}% - 1px)`, width: 2, background: '#E7ECF8' }} />}
+            </div>
+            <div style={{ fontSize: 10.5, color: '#93A1C3' }}>{r.detail}{r.resetsAt ? ` · تتجدد بعد ${until(r.resetsAt, now)}` : ''}</div>
+          </Row>
+        );
+      })}
+      {!((g.pacing?.rows || []) as any[]).some((r) => r.state !== 'unknown') && <div style={{ fontSize: 11, color: '#93A1C3' }}>لا قياس للحصص بعد.</div>}
+      {g.pacing && (
+        <div style={{ fontSize: 10.5, color: '#93A1C3', lineHeight: 1.6 }}>
+          YouTube: قراءات المراقبة ≤ {g.pacing.youtube?.allowedNowUnits ?? '—'} وحدة حتى الآن (ميزانيتها {g.pacing.youtube?.readBudget ?? '—'}، واحتياطي النشر {g.pacing.youtube?.publishReserve ?? '—'} محفوظ) ·
+          Gemini: العمل الخلفي موزّع على اليوم{g.pacing.gemini?.pacedSkips ? ` (أُجّل ${g.pacing.gemini.pacedSkips} طلباً للمحرك المحلي)` : ''}، وطلباتك تأخذ حتى السقف ·
+          المهندس نفسه: لا يوقظ الخادم ولا القاعدة بفحوصه{g.selfCost?.edgeSkippedIdle ? ` (تخطّى ${g.selfCost.edgeSkippedIdle} فحصاً خارجياً والموقع بلا زوار)` : ''}.
+        </div>
+      )}
 
       {/* الخزن */}
       <div style={{ fontSize: 11.5, color: '#A5B4FC', fontWeight: 700, marginTop: 4 }}>الخزن (كل 6 س{storage ? ` · آخره ${ago(storage.at, now)}` : ''})</div>

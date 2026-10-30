@@ -21,6 +21,8 @@
  * والقرار لا يمسّ أي عملية يطلبها المالك يدوياً.
  */
 
+import { judgePace, type PacePeriod, type PaceVerdict } from './quotaPacing';
+
 export type UsagePressureLevel = 'normal' | 'watch' | 'critical';
 
 export interface UsagePressureSignal {
@@ -28,6 +30,11 @@ export interface UsagePressureSignal {
   usedPercent: number | null;
   /** معرف المزوّد للتوثيق (بلا سرّ). */
   provider?: string;
+  /**
+   * مدة الحصة (2026-10-29، قاعدة المالك: توزيع الحصة على مدتها). حين تُمرَّر مع `nowMs` يُحكم
+   * على الإشارة بالإيقاع (المسموح حتى الآن) لا بعتبة ثابتة. غيابها = السلوك السابق (80/95).
+   */
+  period?: PacePeriod;
 }
 
 export interface UsagePressureDecision {
@@ -53,6 +60,8 @@ export interface UsagePressureDecision {
   /** المتطلّب: تأجيل نبضة النسخ الاحتياطي الحرجة (لا تعطيلها كلياً). */
   deferCriticalTick: boolean;
   note: string;
+  /** حكم الإيقاع لكل إشارة ذات مدة (للعرض والمهندس). */
+  pace?: Array<{ provider: string | null } & PaceVerdict>;
 }
 
 /** عتبة التحذير الافتراضية (تُضاعف الإيقاع) — 80%. */
@@ -71,8 +80,10 @@ function clampRatio(n: number): number {
  */
 export function resolveUsagePressure(
   signals: readonly UsagePressureSignal[],
-  opts: { watchRatio?: number; criticalRatio?: number } = {},
+  opts: { watchRatio?: number; criticalRatio?: number; nowMs?: number } = {},
 ): UsagePressureDecision {
+  // توزيع الحصة على مدتها: إن حملت الإشارات مدتها ومُرّر الوقت، يُحكم بالإيقاع.
+  if (opts.nowMs != null && signals.some((s) => s?.period)) return resolvePacedPressure(signals, opts.nowMs, opts);
   const watch = clampRatio(opts.watchRatio ?? USAGE_PRESSURE_WATCH_RATIO);
   const critical = Math.max(watch, clampRatio(opts.criticalRatio ?? USAGE_PRESSURE_CRITICAL_RATIO));
   let top: UsagePressureSignal | null = null;
@@ -121,4 +132,46 @@ export function usagePressureIntervalMultiplier(level: UsagePressureLevel): numb
  */
 export function usagePressureIngestIntervalMultiplier(level: UsagePressureLevel): number {
   return level === 'watch' ? 2 : 1;
+}
+
+const LEVEL_RANK: Record<UsagePressureLevel, number> = { normal: 0, watch: 1, critical: 2 };
+
+/**
+ * الحارس بالإيقاع: لكل حصة ذات مدة يُقارن المستهلك بالمسموح حتى الآن (ما مضى من المدة + هامش)،
+ * والسعوية بعتبتي 80/95، والإشارة بلا مدة بالعتبات الثابتة. الأشد يحكم.
+ */
+function resolvePacedPressure(
+  signals: readonly UsagePressureSignal[], nowMs: number,
+  opts: { watchRatio?: number; criticalRatio?: number },
+): UsagePressureDecision {
+  const pace: Array<{ provider: string | null } & PaceVerdict> = [];
+  let worst: { level: UsagePressureLevel; provider: string | null; used: number; why: string } | null = null;
+  for (const s of signals) {
+    if (s?.usedPercent == null || !Number.isFinite(Number(s.usedPercent))) continue;
+    let level: UsagePressureLevel; let why: string;
+    if (s.period) {
+      const v = judgePace(Number(s.usedPercent), s.period, nowMs);
+      pace.push({ provider: s.provider ?? null, ...v });
+      level = v.level; why = v.detail;
+    } else {
+      const legacy = resolveUsagePressure([{ usedPercent: s.usedPercent, provider: s.provider }], { watchRatio: opts.watchRatio, criticalRatio: opts.criticalRatio });
+      level = legacy.level; why = `${Math.round(Number(s.usedPercent))}%`;
+    }
+    const used = Math.round(Number(s.usedPercent));
+    if (!worst || LEVEL_RANK[level] > LEVEL_RANK[worst.level] || (LEVEL_RANK[level] === LEVEL_RANK[worst.level] && used > worst.used)) worst = { level, provider: s.provider ?? null, used, why };
+  }
+  if (!worst) {
+    return { level: 'normal', provider: null, usedPercent: null, slowDown: false, deferNonCritical: false, deferIngest: false, deferCriticalTick: false, note: 'لا مؤشر استهلاك مُقاس بعد — لا ضغط.', pace };
+  }
+  const base = { provider: worst.provider, usedPercent: worst.used, deferIngest: false, pace };
+  if (worst.level === 'critical') {
+    return { ...base, level: 'critical', slowDown: true, deferNonCritical: true, deferCriticalTick: true,
+      note: `${worst.provider ?? 'حصة'}: ${worst.why} — تُؤجَّل **الأعمال الثقيلة** حتى يلحقها الوقت، والاستقبال الخفيف مستمر بلا توقّف.` };
+  }
+  if (worst.level === 'watch') {
+    return { ...base, level: 'watch', slowDown: true, deferNonCritical: false, deferCriticalTick: false,
+      note: `${worst.provider ?? 'حصة'}: ${worst.why} — تُضاعف فواصل الدورات حتى يعود الاستهلاك إلى خطه (لا تأجيل).` };
+  }
+  return { ...base, level: 'normal', slowDown: false, deferNonCritical: false, deferCriticalTick: false,
+    note: `كل الحصص على إيقاعها أو تحته (الأعلى ${worst.provider ?? ''} ${worst.used}%) — الإيقاع الطبيعي كاملاً.` };
 }

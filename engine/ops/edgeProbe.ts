@@ -25,10 +25,12 @@ export interface EdgeTargetResult {
 export interface EdgeRound { at: string; results: EdgeTargetResult[]; worst: EdgeTargetResult['verdict'] }
 
 export const EDGE_POLICY = Object.freeze({
-  intervalMs: 15 * 60 * 1000,
+  intervalMs: 30 * 60 * 1000,
   timeoutMs: 20_000,
   /** أبطأ من هذا = تحذير (يشمل استيقاظ Render من النوم). */
   slowMs: 8_000,
+  /** لا فحص خارجي إن لم يزر أحد الموقع خلال هذه المدة: طلب المهندس لنفسه يبقي Render المجاني مستيقظاً. */
+  selfWakeGuardMs: 10 * 60 * 1000,
   /** شهادة تنتهي خلال هذه الأيام = تحذير (Netlify/Render يجدّدانها عادة قبل 30 يوماً). */
   tlsWarnDays: 14,
   requiredApiHeaders: ['x-content-type-options', 'x-frame-options', 'referrer-policy'],
