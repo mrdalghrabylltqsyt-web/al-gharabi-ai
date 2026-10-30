@@ -325,7 +325,7 @@ export function incidentsFromPatrol(checks: Array<{ id: string; module: Engineer
  * أعطال سجل الأعطال ⇒ مهام للمهندس. ما له إصلاح تشغيلي يُصلَح ويُتحقَّق منه؛ ما بيد المالك
  * يُصعَّد مرة كل 3 أيام بالإجراء الدقيق؛ عيب الكود يُحال لمهندس الكود (مراقبة بلا إزعاج).
  */
-export function incidentsFromDefects(defects: Array<{ fp: string; kind: string; severity: 'critical' | 'warning'; title: string; samples: string[]; plan: { action: string; instructions?: string } }>): Incident[] {
+export function incidentsFromDefects(defects: Array<{ fp: string; kind: string; severity: 'critical' | 'warning'; title: string; samples: string[]; plan: { action: string; instructions?: string; detail?: string } }>): Incident[] {
   const moduleOf = (kind: string): EngineerModule => (kind === 'config' || kind === 'provider' ? 'platforms' : kind === 'performance' ? 'monitor' : 'core');
   return defects.map((d) => {
     const base: Incident = {
@@ -334,6 +334,8 @@ export function incidentsFromDefects(defects: Array<{ fp: string; kind: string; 
     };
     if (d.plan.action === 'owner') return { ...base, needsOwner: d.plan.instructions || 'يحتاج إجراءك', cooldownMs: 72 * 3600000 };
     if (d.plan.action === 'developer') return { ...base, observeOnly: true, cooldownMs: 72 * 3600000 };
+    // ينتظر قياساً قادماً: يُراقَب ويُعاد النظر فيه كل ساعة، فيُغلق بالقياس فور وقوعه (لا 72 ساعة).
+    if (d.plan.action === 'await_measure') return { ...base, observeOnly: true, cooldownMs: 3600000, evidence: [d.plan.detail || base.evidence[0]].filter(Boolean) as string[] };
     if (d.plan.action === 'rerun_backup' || d.plan.action === 'rerun_metrics') return { ...base, heavy: true };
     return base;
   });
