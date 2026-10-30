@@ -1,0 +1,88 @@
+# دمج تلقائي لإصلاحات مهندس الكود — بموافقة المالك الصريحة (2026-10-30).
+#
+# لماذا: عطل الواجهة (fp=bfeef086772f) بقي مفتوحاً على لوحة المهندس وإصلاحه جاهز في PR #144
+# بانتظار نقرة دمج. المالك وافق أن يُدمج إصلاح مهندس الكود وحده متى نجحت كل البوابات.
+#
+# الشروط (كلها، وإلا لا دمج ويُكتب السبب تعليقاً على الطلب):
+#   1. الفرع من هذا المستودع ويبدأ بـ claude/code-engineer- (مهمة مهندس الكود المجدولة فقط).
+#   2. تشغيل CI على آخر commit في الطلب نجح بالكامل (build/test/final-audit/dr/docker).
+#   3. كل فحص آخر على الـcommit نفسه (معاينة Netlify…) اكتمل بلا فشل.
+#   4. الطلب مفتوح وليس مسودة ولا يحمل الوسم no-automerge.
+#   5. لا يلمس ملفات محمية: سير العمل، إعداد Render/Docker، ملفات TikTok المجمّدة، أو المخطط/الهجرات.
+# بعد الدمج: Render ينشر تلقائياً، وحارس انحراف النشر يتحقق، والمهندس يغلق العطل بتقرير بعد غيابه
+# على النسخة الجديدة. التراجع: revert للـcommit المدموج.
+name: Code engineer auto-merge
+
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+
+permissions:
+  contents: write
+  pull-requests: write
+  checks: read
+
+concurrency:
+  group: code-engineer-automerge
+  cancel-in-progress: false
+
+jobs:
+  automerge:
+    if: >-
+      github.event.workflow_run.event == 'pull_request' &&
+      github.event.workflow_run.conclusion == 'success' &&
+      startsWith(github.event.workflow_run.head_branch, 'claude/code-engineer-') &&
+      github.event.workflow_run.head_repository.full_name == github.repository
+    runs-on: ubuntu-latest
+    steps:
+      - name: Verify and merge
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { owner, repo } = context.repo;
+            const run = context.payload.workflow_run;
+            const sha = run.head_sha;
+            const branch = run.head_branch;
+            const prs = (await github.rest.pulls.list({ owner, repo, state: 'open', head: `${owner}:${branch}` })).data;
+            const pr = prs.find((p) => p.head.sha === sha);
+            if (!pr) { core.info(`لا طلب مفتوح على ${branch}@${sha.slice(0, 7)} (دُفع commit أحدث؟) — لا دمج.`); return; }
+            const say = async (body) => github.rest.issues.createComment({ owner, repo, issue_number: pr.number, body });
+
+            if (pr.draft) { core.info('مسودة — لا دمج.'); return; }
+            if (pr.labels.some((l) => l.name === 'no-automerge')) { core.info('وسم no-automerge — لا دمج.'); return; }
+
+            const files = await github.paginate(github.rest.pulls.listFiles, { owner, repo, pull_number: pr.number, per_page: 100 });
+            const PROTECTED = [
+              /^\.github\//, /^render\.yaml$/, /^Dockerfile$/, /^netlify\.toml$/,
+              /^index\.html$/, /^public\/favicon/i, /tiktok[^/]*\.txt$/i, /^public\/(terms|privacy)/i,
+              /migration/i, /schema\.sql$/i,
+            ];
+            const blocked = files.map((f) => f.filename).filter((n) => PROTECTED.some((re) => re.test(n)));
+            if (blocked.length) {
+              await say(`⏸ لم أدمج تلقائياً: الطلب يلمس ملفات محمية تحتاج مراجعة المالك:\n${blocked.map((n) => `- \`${n}\``).join('\n')}`);
+              return;
+            }
+
+            // ننتظر حتى 10 د اكتمال الفحوص الخارجية (معاينة Netlify…) على الـcommit نفسه.
+            const deadline = Date.now() + 10 * 60000;
+            let pending = [], failed = [];
+            while (true) {
+              const runs = await github.paginate(github.rest.checks.listForRef, { owner, repo, ref: sha, per_page: 100 });
+              const statuses = (await github.rest.repos.getCombinedStatusForRef({ owner, repo, ref: sha })).data.statuses;
+              pending = [...runs.filter((c) => c.status !== 'completed' && c.name !== 'automerge').map((c) => c.name), ...statuses.filter((s) => s.state === 'pending').map((s) => s.context)];
+              failed = [...runs.filter((c) => c.status === 'completed' && !['success', 'neutral', 'skipped'].includes(c.conclusion)).map((c) => `${c.name}=${c.conclusion}`), ...statuses.filter((s) => s.state === 'failure' || s.state === 'error').map((s) => `${s.context}=${s.state}`)];
+              if (failed.length || !pending.length || Date.now() > deadline) break;
+              await new Promise((r) => setTimeout(r, 30000));
+            }
+            if (failed.length) { await say(`⏸ لم أدمج تلقائياً: فحوص فشلت — ${failed.join('، ')}`); return; }
+            if (pending.length) { await say(`⏸ لم أدمج تلقائياً: فحوص لم تكتمل خلال 10 د — ${pending.join('، ')}. ادمج يدوياً بعد اكتمالها.`); return; }
+
+            const fresh = (await github.rest.pulls.get({ owner, repo, pull_number: pr.number })).data;
+            if (fresh.state !== 'open' || fresh.head.sha !== sha) { core.info('تغيّر الطلب أثناء الانتظار — لا دمج.'); return; }
+            if (fresh.mergeable === false) { await say('⏸ لم أدمج تلقائياً: تعارض مع main — يلزم تحديث الفرع.'); return; }
+
+            const title = `${fresh.title} (#${pr.number})`;
+            await github.rest.pulls.merge({ owner, repo, pull_number: pr.number, sha, merge_method: 'squash', commit_title: title });
+            await say(`✅ دُمج تلقائياً (موافقة المالك 2026-10-30): كل الفحوص نجحت على \`${sha.slice(0, 7)}\`. Render ينشر الآن، والمهندس يغلق العطل بتقرير بعد غيابه على النسخة الجديدة. للتراجع: revert لهذا الدمج.`);
+            try { await github.rest.git.deleteRef({ owner, repo, ref: `heads/${branch}` }); } catch (e) { core.info(`لم يُحذف الفرع: ${e.message}`); }
