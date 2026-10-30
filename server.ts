@@ -16324,7 +16324,7 @@ function storageVerdictNow() {
 }
 function freePlanQuotas(ext: { geminiUsed: number; geminiLimit: number; youtubePercent: number | null }): PlanQuota[] {
   const out: PlanQuota[] = [];
-  let sig: Array<{ usedPercent: number | null; provider?: string }> = [];
+  let sig: Array<{ usedPercent: number | null; provider?: string; period?: PacePeriod }> = [];
   try { sig = usagePressureSignals(); } catch { /* */ }
   for (const x of sig) { const meta = PLAN_LABELS[String(x.provider)]; if (meta) out.push({ provider: String(x.provider), label: meta.label, period: x.period || meta.period, usedPercent: x.usedPercent }); }
   if (ext.geminiLimit > 0) out.push({ provider: "gemini", label: PLAN_LABELS.gemini.label, period: "day_utc", usedPercent: (ext.geminiUsed / ext.geminiLimit) * 100 });
