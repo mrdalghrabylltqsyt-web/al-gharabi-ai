@@ -259,6 +259,42 @@ check('★ نطاق اختياري لم يُطلب (setup=) لا يدخل سجل
   check('★ إعادة التحميل بحارس زمني (لا حلقة)', readFileSync(join(process.cwd(), 'src/utils/staleChunk.ts'), 'utf8').includes('RELOAD_GUARD_MS'));
 }
 
+// fp=bfeef086772f (Render 2026-10-30 01:51، ver=a537b32، بعد نشر 01:49):
+// «render crash: TypeError: can't access property "default", e._result is undefined» في tab:section_home.
+// السبب: معالج vite:preloadError كان يستدعي preventDefault، وVite عندها يبتلع فشل الاستيراد ويُرجع undefined
+// (`baseModule().catch(handlePreloadError)`)، فيستلم React.lazy وحدة فارغة وتنهار الشاشة قبل اكتمال إعادة التحميل.
+{
+  const reloads: number[] = [];
+  const store = new Map<string, string>();
+  (globalThis as any).sessionStorage = { getItem: (k: string) => store.get(k) ?? null, setItem: (k: string, v: string) => { store.set(k, v); } };
+  (globalThis as any).location = { reload: () => { reloads.push(Date.now()); } };
+  // المعالج الحقيقي الذي تسجّله الواجهة عند الإقلاع (لا نسخة منه).
+  const listeners = new Map<string, Array<(e: any) => void>>();
+  (globalThis as any).window = { addEventListener: (t: string, fn: any) => { listeners.set(t, [...(listeners.get(t) || []), fn]); }, fetch: async () => new Response('{}') };
+  const { installClientErrorReporting } = await import('../../src/utils/clientErrors');
+  installClientErrorReporting();
+  const { reloadForNewVersion, isStaleChunkError } = await import('../../src/utils/staleChunk');
+  const handlers = listeners.get('vite:preloadError') || [];
+  check('الواجهة تسجّل معالج vite:preloadError', handlers.length === 1);
+  // نسخة مطابقة لسلوك مساعد Vite (__vitePreload): الحدث قابل للإلغاء، والخطأ يُبتلع إن أُلغي.
+  const vitePreload = (baseModule: () => Promise<any>) => baseModule().catch((err: unknown) => {
+    const e = new Event('vite:preloadError', { cancelable: true }); (e as any).payload = err;
+    for (const h of handlers) h(e);
+    if (!e.defaultPrevented) throw err;
+  });
+  const missing = () => Promise.reject(new TypeError('error loading dynamically imported module: https://al-gharabi-ai.onrender.com/assets/LiveBrainRoom-BCLZ6HV1.js'))
+    .then((m: any) => ({ default: m.LiveBrainRoom }));
+  let resolvedTo: unknown = 'pending'; let rejected: unknown = null;
+  await vitePreload(missing).then((m) => { resolvedTo = m; }, (err) => { rejected = err; });
+  check('★ fp=bfeef086772f: فشل ملف الشاشة لا يتحوّل إلى وحدة undefined تُسقط React.lazy', resolvedTo === 'pending' && rejected !== null, String(resolvedTo));
+  check('★ الفشل يصل لحاجز الانهيار كملف نسخة سابقة (لا «_result is undefined»)', isStaleChunkError(rejected));
+  check('★ إعادة التحميل بدأت مرة واحدة', reloads.length === 1);
+  check('★ حاجز الانهيار بعدها لا يبلّغ عطلاً (إعادة التحميل جارية في هذه الصفحة)', reloadForNewVersion() === true && reloads.length === 1);
+  const ce3 = readFileSync(join(process.cwd(), 'src/utils/clientErrors.ts'), 'utf8');
+  check('★ معالج preloadError لا يمنع الحدث', ce3.includes("addEventListener('vite:preloadError', handleVitePreloadError)") && !/preloadError[^\n]*preventDefault\(\)/.test(ce3));
+  delete (globalThis as any).sessionStorage; delete (globalThis as any).location; delete (globalThis as any).window;
+}
+
 // بروتوكول الإغلاق في السجل: الإغلاق بالهدوء صار تحقّقاً موثّقاً يظهر في قائمة ✅.
 {
   const L2 = emptyLedger();
