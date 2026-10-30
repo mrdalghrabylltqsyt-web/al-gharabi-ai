@@ -235,7 +235,9 @@ function run(): void {
   // الحرفي نفسه لكل منصة (يتجاهل platformVersions المكيَّفة)، ولا يمرّر أي وسيط
   // (videoUrl/imageUrl) إطلاقاً — فتفشل إنستغرام/ثريدز دائماً بـMEDIA_REQUIRED
   // رغم إرفاق المالك فيديو ورابطه العام فعلياً من "مركز صناعة المحتوى".
-  const publishRouteMatch = serverSource.match(/app\.post\("\/api\/workspace\/content\/:id\/publish"[\s\S]{0,9000}?\n\}\);/);
+  // 2026-10-30: منطق التوزيع انتقل إلى المنفّذ المشترك `publishWorkspacePostToPlatforms` (يستخدمه
+  // المسار اليدوي ومنفّذ المنشورات المجدولة) — نفحص المنفّذ والمسار معاً.
+  const publishRouteMatch = serverSource.match(/async function publishWorkspacePostToPlatforms[\s\S]{0,12000}?app\.post\("\/api\/workspace\/content\/:id\/publish"[\s\S]{0,9000}?\n\}\);/);
   const publishRouteSrc = publishRouteMatch ? publishRouteMatch[0] : '';
   check('مسار النشر متعدد المنصات موجود وقابل للفحص', publishRouteSrc.length > 500);
   check('كل منصة تقرأ نسختها من platformVersions أولاً', publishRouteSrc.includes('post.platformVersions[platform]'));
@@ -243,7 +245,7 @@ function run(): void {
   check('لا إرسال post.content الحرفي وحده بلا فرع لكل منصة (الثغرة القديمة)', !/content:\s*post\.content\s*,\s*approved:\s*true/.test(publishRouteSrc));
   check('وسيط الفيديو الحقيقي يُمرَّر كـvideoUrl حين mediaType فيديو', /mediaFields\.videoUrl\s*=\s*mediaUrl/.test(publishRouteSrc));
   check('وسيط الصورة الحقيقي يُمرَّر كـimageUrl حين mediaType صورة', /mediaFields\.imageUrl\s*=\s*mediaUrl/.test(publishRouteSrc));
-  check('حقول الوسيط تُدمَج فعلياً في نداء executePlatformPublish', /executePlatformPublish\(platform,\s*\{\s*\.\.\.req\.body,\s*\.\.\.mediaFields,\s*content:\s*perPlatformContent/.test(publishRouteSrc));
+  check('حقول الوسيط تُدمَج فعلياً في نداء executePlatformPublish', /executePlatformPublish\(platform,\s*\{\s*\.\.\.extraBody,\s*\.\.\.mediaFields,\s*content:\s*perPlatformContent/.test(publishRouteSrc));
   // بوابة الاعتماد لم تُمسّ: لا يزال owner-only + status==="approved" إلزاميين.
   check('بوابة owner-only ما زالت قائمة', serverSource.includes('app.post("/api/workspace/content/:id/publish", requireOwner'));
   check('شرط status==="approved" ما زال إلزامياً قبل أي توزيع', /post\.status\s*!==\s*"approved"/.test(publishRouteSrc));

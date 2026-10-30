@@ -25,6 +25,17 @@
 
 **الأعداد الحالية:** `npm test` = 213 مجموعة · `final-audit` = 1962 فحصاً.
 
+**منفّذ المنشورات المجدولة في التقويم (إصلاح جذري 2026-10-30، `engine/social/scheduledPostDispatch.ts`):** «جدولة منشور»
+كانت تضع `post.status="scheduled"` في `workspace.posts` فقط، والمنفّذ التلقائي (B4) يقرأ `automationJobs` وحدها، ومسار النشر
+متعدد المنصات يرفض غير `approved` — فلا شيء ينشر المنشور المجدول أبداً (يبقى «مجدولاً» بلا خطأ ولا مهمة في الطابور). الآن
+`runScheduledPostDispatch` كل دقيقة: ما حان موعده يُنشر عبر **المنفّذ نفسه للنقرة اليدوية** (`publishWorkspacePostToPlatforms` ←
+`executePlatformPublish`) تحت مفتاح المالك «نشر المعتمد تلقائياً في موعده»؛ حجز دائم (`persistStateDurableOrThrow`) قبل أي نداء
+مزود، و**لا نشر والحفظ متعطّل** (نتيجة لا تُحفظ = تكرار بعد إعادة التشغيل)؛ كل منصة مستقلة (المنشور لا يُعاد، الفاشل 3 محاولات
+5/15/45 د، حصة YouTube تنتظر تجدّدها، `publishing` لا يُعاد)؛ متأخر >24 س ⇒ `missed` بيد المالك؛ فشل نهائي بلا نشر ⇒ يعود
+`approved`. الحالة في `post.scheduleDispatch` وتظهر على بطاقة اليوم في التقويم، والمعلّق/الفاشل يُنبَّه به المالك. إعادة الجدولة
+تصفّرها. النشر اليدوي صار يقبل `scheduled`. فشل الحفظ يُصنَّف سببه مرة (`[storage] write_failed cause=neon_compute_quota_exceeded|…`).
+الاختبار: `test:scheduled-post-dispatch`.
+
 **تسجيل قرارات المتابعة بالتغيّر لا بالتكرار + صدق لوحات الغرفة الحية (2026-10-29):** دورة العقل التجاري كانت
 تكتب `commercial_followup_not_eligible`/`commercial_followup_blocked_meta_window` لكل زبون في كل دورة بالسبب نفسه،
 فيُمحى سجل العمليات (سقف 100) وتظهر الغرفة الحية «نشاطاً» منتظماً وهمياً. الآن `engine/commercial/followUpDecisionMemo.ts`:
