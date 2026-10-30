@@ -72,7 +72,8 @@ group('4) التوزيع الموحّد في الخادم يمرّر videoUrl ل
 check('المسار الموحّد موجود', server.includes('/api/workspace/content/:id/publish'));
 // الوسيط يُبنى عاماً من post.mediaUrl/mediaType ويُمرَّر داخل حلقة المنصات بلا شرط على اسم المنصة.
 check('mediaFields تُبنى من نوع الوسيط الفعلي', /mediaFields\.videoUrl\s*=\s*mediaUrl/.test(server));
-check('mediaFields تُمرَّر إلى executePlatformPublish بلا شرط منصة', /\{ \.\.\.req\.body, \.\.\.mediaFields/.test(server));
+// 2026-10-30: المنفّذ المشترك `publishWorkspacePostToPlatforms` يستقبل جسم الطلب باسم extraBody.
+check('mediaFields تُمرَّر إلى executePlatformPublish بلا شرط منصة', /\{ \.\.\.extraBody, \.\.\.mediaFields/.test(server));
 check('لا استثناء منصة في بناء الوسيط (لا قائمة إنستغرام/تيك توك)', !/mediaFields[\s\S]{0,200}(instagram|tiktok)\s*===/.test(server));
 
 group('5) موصلات فيسبوك/ثريدز تستهلك رابط الفيديو فعلاً');
