@@ -37,7 +37,7 @@ const H = 3600000;
   check('★ 15% بعد 3 ساعات = على الإيقاع ⇒ الإيقاع الكامل', judgePace(15, 'day_utc', morning).level === 'normal');
   const late = judgePace(85, 'month_utc', Date.parse('2026-10-31T12:00:00Z'));
   check('★ 85% في آخر يوم من الشهر = تحت الإيقاع ⇒ بلا إبطاء (الحصة تُستعمل حتى أقصاها)', late.level === 'normal', JSON.stringify(late));
-  check('★ 98% = حرج مهما كان الوقت (لا تجاوز للسقف)', judgePace(98, 'month_utc', Date.parse('2026-10-31T23:00:00Z')).state === 'exhausted');
+  check('★ 95% = حرج مهما كان الوقت (لا تجاوز للسقف)', judgePace(95, 'month_utc', Date.parse('2026-10-31T23:00:00Z')).state === 'exhausted');
   check('السعة: 80 مراقبة و95 حرج', judgePace(81, 'capacity', 0).level === 'watch' && judgePace(96, 'capacity', 0).level === 'critical' && judgePace(50, 'capacity', 0).level === 'normal');
   check('غير مقيس لا يُعلن ضغطاً', judgePace(null, 'day_utc', morning).level === 'normal');
   check('تاريخ التجدد', judgePace(10, 'day_utc', morning).resetsAt === Date.parse('2026-10-17T00:00:00Z'));
