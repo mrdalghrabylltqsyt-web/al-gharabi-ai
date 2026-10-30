@@ -16,6 +16,17 @@ import {
 } from '../../utils/scheduleTime';
 import { ScheduledJobsPanel } from './ScheduledJobsPanel';
 
+const DISPATCH_LABEL_AR: Record<string, string> = {
+  auto_disabled: '⚠ لم يُنشر: النشر التلقائي مطفأ',
+  storage_unhealthy: '⚠ مؤجَّل: حفظ البيانات متعطّل',
+  publishing: 'جارٍ النشر…',
+  retry_wait: 'إعادة محاولة قريباً',
+  published: '✓ نُشر على المنصات',
+  partial: '⚠ نُشر جزئياً',
+  failed: '✗ فشل النشر',
+  missed: '⚠ فات موعده',
+};
+
 /** الجدار الزمني البغدادي ليوم المنشور: `scheduledFor` للمجدول، وإلا `publishedAt`/`createdAt`. */
 function postWallClock(post: any) {
   const source = post?.scheduledFor || post?.publishedAt || post?.createdAt;
@@ -134,6 +145,9 @@ export const ContentCalendarView: React.FC = () => {
                   const isPublished = ev.status === 'published';
                   const isScheduled = ev.status === 'scheduled';
                   const isReview = ev.status === 'review';
+                  // حالة النشر المجدول الحقيقية من الخادم (منفّذ المجدول): لا يبقى «مجدول» صامتاً بعد موعده.
+                  const dispatch = ev.scheduleDispatch && ev.scheduleDispatch.state !== 'waiting' ? ev.scheduleDispatch : null;
+                  const dispatchLabel = dispatch ? (DISPATCH_LABEL_AR[dispatch.state] || dispatch.state) : null;
 
                   return (
                     <div
@@ -156,6 +170,11 @@ export const ContentCalendarView: React.FC = () => {
                           {isPublished ? 'منشور' : isScheduled ? 'مجدول' : 'مراجعة'}
                         </span>
                       </div>
+                      {dispatchLabel && (
+                        <div title={dispatch.reason || ''} className={`text-[9px] font-bold ${['failed', 'partial', 'missed', 'auto_disabled', 'storage_unhealthy'].includes(dispatch.state) ? 'text-rose-300' : 'text-sky-300'}`}>
+                          {dispatchLabel}
+                        </div>
+                      )}
                     </div>
                   );
                 })}

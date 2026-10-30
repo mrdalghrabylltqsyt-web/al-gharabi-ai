@@ -67,6 +67,7 @@ export const ScheduledJobsPanel: React.FC = () => {
               {auto.autoExecuteApproved ? 'مفعّل' : 'معطّل (الافتراضي الآمن)'} · نُفّذ تلقائياً {auto.autoExecutedCount ?? 0} · فشل {auto.autoFailedCount ?? 0}
               {auto.lastAutoRunAt ? ` · آخر دورة ${fmtDateTime(auto.lastAutoRunAt)}` : ''}
             </p>
+            <p className="text-slate-500 mt-0.5">يشمل المنشورات المجدولة في التقويم أعلاه: تُنشر على منصاتها عند حلول موعدها، وتظهر نتيجتها على بطاقة اليوم.</p>
           </div>
           <button type="button" role="switch" aria-checked={Boolean(auto.autoExecuteApproved)} disabled={busy === 'auto'} onClick={() => void toggleAuto()}
             className={`relative w-12 h-7 rounded-full transition ${auto.autoExecuteApproved ? 'bg-emerald-500' : 'bg-slate-700'}`}>

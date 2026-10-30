@@ -109,6 +109,7 @@ import {
   decideAutoExecute,
   jobAutomationPublicBlock,
 } from "./engine/social/jobAutomation";
+import { decideScheduledDispatch, settleScheduledDispatch, dispatchReasonAr, SCHEDULED_DISPATCH_POLICY } from "./engine/social/scheduledPostDispatch";
 import { CONVERSATION_STATE_MAX, conversationLimitsPublicBlock } from "./engine/social/conversationLimits";
 import { classifyConversation } from "./engine/brain/audience/conversationIntelligence";
 import { capabilityRow } from "./engine/brain/strategy/capabilityMatrix";
@@ -15116,6 +15117,93 @@ async function runJobAutoExecuteCycle(trigger: string): Promise<{ attempted: num
   audit("system", "job_auto_execute_cycle", `${trigger}:executed=${executed}:failed=${failed}`);
   return { attempted: candidates.length, executed, failed, skipped: "none" };
 }
+/**
+ * منفّذ المنشورات المجدولة في التقويم (إصلاح جذري 2026-10-30 — `engine/social/scheduledPostDispatch.ts`).
+ * كان المنشور المجدول يبقى «مجدولاً» للأبد: لا شيء في الخادم يقرأ `workspace.posts` المجدولة.
+ * الآن كل دقيقة: ما حان موعده يُنشر عبر المنفّذ نفسه للنقرة اليدوية، تحت مفتاح المالك نفسه،
+ * ولا يُنشر والحفظ الدائم متعطّل (نتيجة لا تُحفظ = نشر مكرر بعد إعادة التشغيل).
+ */
+function storageHealthyForPublish(): boolean {
+  return storageReady && persistStats.failStreak === 0 && !lastPersistError;
+}
+function scheduledPostEpoch(post: any): number {
+  const wall = wallClockToEpoch(post?.scheduledFor);
+  return Number.isFinite(wall) ? wall : Date.parse(String(post?.scheduledFor || ""));
+}
+let scheduledDispatchRunning = false;
+async function runScheduledPostDispatch(trigger: string): Promise<{ published: number; failed: number; held: number }> {
+  if (scheduledDispatchRunning) return { published: 0, failed: 0, held: 0 };
+  scheduledDispatchRunning = true;
+  let published = 0; let failed = 0; let held = 0;
+  try {
+    const nowMs = Date.now();
+    const env = { nowMs, autoEnabled: jobAutomationState.autoExecuteApproved === true, storageHealthy: storageHealthyForPublish() };
+    let changed = false; let processed = 0;
+    for (const post of workspace.posts as any[]) {
+      if (post?.status !== "scheduled" && post?.status !== "published") continue;
+      if (!post.scheduledFor || scheduledDispatchInFlight.has(post.id)) continue;
+      const targets = workspacePostTargetPlatforms(post);
+      const decision = decideScheduledDispatch({ status: post.status, scheduledEpochMs: scheduledPostEpoch(post), targetPlatforms: targets, dispatch: post.scheduleDispatch, platformResults: post.platformPublishResults }, env);
+      if (!decision.act) {
+        if (decision.changed && post.status === "scheduled") {
+          const prev = post.scheduleDispatch || {};
+          post.scheduleDispatch = { attempts: 0, lastAttemptAt: null, nextAttemptAt: null, remainingPlatforms: targets, ...prev, state: decision.state, reason: decision.reason, updatedAt: new Date(nowMs).toISOString() };
+          changed = true;
+          if (decision.state !== "waiting") {
+            held += 1;
+            console.warn(`[scheduled-publish] post=${post.id} outcome=held state=${decision.state}`);
+            recordOwnerAlert({ key: ownerAlertKey('social_escalation', null, `scheduled_held:${post.id}:${decision.state}`), kind: 'social_escalation', platform: null, title: 'منشور مجدول لم يُنشر في موعده', snippet: truncateAlertSnippet(`«${String(post.title || "").slice(0, 60)}»: ${decision.reason}`), at: new Date(nowMs).toISOString() });
+          }
+        }
+        continue;
+      }
+      if (processed >= SCHEDULED_DISPATCH_POLICY.maxPerCycle) break;
+      processed += 1;
+      const attemptsBefore = Number(post.scheduleDispatch?.attempts || 0);
+      const prevStatus = post.status;
+      scheduledDispatchInFlight.add(post.id);
+      try {
+        // حجز دائم قبل أي نداء مزود: إن لم يُحفظ «قيد النشر» فلا نشر (منع التكرار بعد إعادة التشغيل).
+        post.scheduleDispatch = { ...(post.scheduleDispatch || {}), state: "publishing", reason: dispatchReasonAr("publishing"), attempts: attemptsBefore, remainingPlatforms: decision.platforms, updatedAt: new Date().toISOString() };
+        try { await persistStateDurableOrThrow(); } catch {
+          post.scheduleDispatch = { ...post.scheduleDispatch, state: "storage_unhealthy", reason: dispatchReasonAr("storage_unhealthy") };
+          held += 1; continue;
+        }
+        const fresh = await publishWorkspacePostToPlatforms(post, decision.platforms, "system", {});
+        const merged = { ...(post.platformPublishResults || {}), ...fresh };
+        const settled = settleScheduledDispatch({ targetPlatforms: targets, results: merged, attemptsBefore, nowMs: Date.now() });
+        post.platformPublishResults = merged;
+        post.status = settled.postStatus === "scheduled" && prevStatus === "published" ? "published" : settled.postStatus;
+        if (post.status === "published" && !post.publishedAt) post.publishedAt = new Date().toISOString();
+        post.scheduleDispatch = settled.dispatch;
+        post.history = Array.isArray(post.history) ? post.history : [];
+        post.history.push({ id: workspaceId("approval"), byUser: "النشر المجدول", userRole: "system", action: "scheduled_publish", timestamp: new Date().toISOString(), note: `${settled.dispatch.state}: ${decision.platforms.map((p) => `${p}=${fresh[p]?.state}`).join(" ")}` });
+        const okCount = decision.platforms.filter((p) => fresh[p]?.state === "published").length;
+        const badCount = decision.platforms.length - okCount;
+        published += okCount; failed += badCount;
+        console.log(`[scheduled-publish] post=${post.id} trigger=${trigger} attempt=${attemptsBefore + 1} outcome=${settled.dispatch.state} ${decision.platforms.map((p) => `${p}=${fresh[p]?.state}${fresh[p]?.code ? `/${fresh[p].code}` : ""}`).join(" ")}`);
+        if (badCount > 0 && (settled.dispatch.state === "failed" || settled.dispatch.state === "partial")) {
+          recordOwnerAlert({ key: ownerAlertKey('social_escalation', null, `scheduled_failed:${post.id}`), kind: 'social_escalation', platform: null, title: 'فشل نشر منشور مجدول', snippet: truncateAlertSnippet(`«${String(post.title || "").slice(0, 60)}»: ${decision.platforms.filter((p) => fresh[p]?.state !== "published").map((p) => `${p}: ${fresh[p]?.error || fresh[p]?.code || "فشل"}`).join(" · ")}`), at: new Date().toISOString() });
+        }
+        audit("system", "scheduled_post_dispatch", `${post.id}:${settled.dispatch.state}`);
+        changed = true;
+      } finally {
+        scheduledDispatchInFlight.delete(post.id);
+      }
+    }
+    if (published || failed) {
+      jobAutomationState = { ...jobAutomationState, lastAutoRunAt: new Date().toISOString(), lastAutoResult: failed === 0 ? 'executed' : 'failed', autoExecutedCount: jobAutomationState.autoExecutedCount + published, autoFailedCount: jobAutomationState.autoFailedCount + failed };
+      saveControlState();
+    }
+    if (changed) persistState();
+  } finally {
+    scheduledDispatchRunning = false;
+  }
+  return { published, failed, held };
+}
+const scheduledPostDispatchTimer = setInterval(safeTimerCallback(() => { void runScheduledPostDispatch("tick"); }, "scheduled-post-dispatch"), 60 * 1000);
+(scheduledPostDispatchTimer as any).unref?.();
+
 const jobAutoExecuteTimer = setInterval(safeTimerCallback(() => { void runJobAutoExecuteCycle("tick"); }, "job-auto-execute"), 60 * 1000);
 (jobAutoExecuteTimer as any).unref?.();
 
@@ -17419,15 +17507,19 @@ app.get("/api/public/video/:ref", (req, res) => {
  *  - المنشور يجب أن يكون status==="approved" عبر المسار الرسمي.
  *  - لا يُعلن "published" بلا معرّف نشر حقيقي من مزود المنصة.
  */
-app.post("/api/workspace/content/:id/publish", requireOwner, async (req, res) => {
-  const user = (req as any).user as { id: string };
-  const post = workspace.posts.find((p: any) => p.id === req.params.id);
-  if (!post) return res.status(404).json({ success: false, error: "المنشور غير موجود." });
-  if (post.status !== "approved") {
-    return res.status(409).json({ success: false, error: "لا نشر إلا لمنشور معتمد (approved) عبر المسار الرسمي.", code: "APPROVAL_REQUIRED", status: post.status });
-  }
-  const requested = Array.isArray(post.targetPlatforms) ? post.targetPlatforms.filter((x: any) => SUPPORTED_PLATFORMS.some((p: any) => p.id === x)) : [];
-  if (!requested.length) return res.status(400).json({ success: false, error: "لا توجد منصات هدف صالحة على المنشور.", code: "NO_TARGET_PLATFORMS" });
+/** منشورات قيد النشر التلقائي الآن — يمنع تزامن النقرة اليدوية مع المنفّذ على المنشور نفسه. */
+const scheduledDispatchInFlight = new Set<string>();
+
+/** المنصات الهدف الصالحة لمنشور (مصدر واحد للمسار اليدوي ومنفّذ المجدول). */
+function workspacePostTargetPlatforms(post: any): string[] {
+  return Array.isArray(post?.targetPlatforms) ? post.targetPlatforms.filter((x: any) => SUPPORTED_PLATFORMS.some((p: any) => p.id === x)) : [];
+}
+
+/**
+ * النشر الفعلي لمنشور من مساحة العمل على قائمة منصات — **المنفّذ الوحيد** للنقرة اليدوية
+ * ولمنفّذ المنشورات المجدولة (لا مسار نشر ثانٍ). يعيد نتيجة مستقلة لكل منصة.
+ */
+async function publishWorkspacePostToPlatforms(post: any, requested: string[], actorId: string, extraBody: any = {}): Promise<Record<string, any>> {
 
   // توزيع متوازٍ: كل منصة مستقلة تماماً عن الأخريات (نجاح/فشل/سبب منفصل).
   //
@@ -17451,19 +17543,19 @@ app.post("/api/workspace/content/:id/publish", requireOwner, async (req, res) =>
       if (post.mediaType === "video") mediaFields.videoUrl = mediaUrl;
       else if (post.mediaType === "image") mediaFields.imageUrl = mediaUrl;
     }
-    const result = await executePlatformPublish(platform, { ...req.body, ...mediaFields, content: perPlatformContent,
+    const result = await executePlatformPublish(platform, { ...extraBody, ...mediaFields, content: perPlatformContent,
       // تلميحات موحّدة لكل منصة في نقرة واحدة (لا تُغيّر النص):
       //  - YouTube: عنوان من عنوان المنشور (أو مشتق من المحتوى) ولا نشر بلا فيديو.
       //  - قرار مالك مباشر ⇒ public افتراضاً (إلا إن اختار المالك غير ذلك).
       title: typeof post.title === "string" ? post.title : undefined,
       description: typeof post.content === "string" ? post.content : undefined,
-      privacyStatus: typeof req.body?.privacyStatus === "string" ? req.body.privacyStatus : "public",
+      privacyStatus: typeof extraBody?.privacyStatus === "string" ? extraBody.privacyStatus : "public",
       approved: true,
       postId: post.id,
       // ROOT-7: معرّف المنتج المسجّل على المنشور يُمرَّر للنشر ليُحفظ على سجل النشر،
       // فيُربط المنشور الخارجي بمنتجه وتُستخدم حقائق السعر/القسط في الردود بدل التصعيد.
       productId: typeof post.productId === "string" && post.productId ? post.productId : undefined,
-    }, user.id);
+    }, actorId);
     return { platform, result };
   }));
 
@@ -17498,6 +17590,21 @@ app.post("/api/workspace/content/:id/publish", requireOwner, async (req, res) =>
     }
   });
 
+  return results;
+}
+
+app.post("/api/workspace/content/:id/publish", requireOwner, async (req, res) => {
+  const user = (req as any).user as { id: string };
+  const post = workspace.posts.find((p: any) => p.id === req.params.id);
+  if (!post) return res.status(404).json({ success: false, error: "المنشور غير موجود." });
+  // «مجدول» = اعتمده المالك ثم جدوله (مسار /schedule للمالك فقط)، فنشره الآن يدوياً مسموح.
+  if (post.status !== "approved" && post.status !== "scheduled") {
+    return res.status(409).json({ success: false, error: "لا نشر إلا لمنشور معتمد (approved) أو مجدول عبر المسار الرسمي.", code: "APPROVAL_REQUIRED", status: post.status });
+  }
+  if (scheduledDispatchInFlight.has(post.id)) return res.status(409).json({ success: false, code: "DISPATCH_IN_PROGRESS", error: "المنشور قيد النشر التلقائي الآن — انتظر النتيجة." });
+  const requested = workspacePostTargetPlatforms(post);
+  if (!requested.length) return res.status(400).json({ success: false, error: "لا توجد منصات هدف صالحة على المنشور.", code: "NO_TARGET_PLATFORMS" });
+  const results = await publishWorkspacePostToPlatforms(post, requested, user.id, req.body || {});
   post.platformPublishResults = results;
   // المنشور يُعلن published فقط إن نُشر فعلاً على منصة واحدة على الأقل بمعرّف مزود حقيقي.
   const anyDelivered = Object.values(results).some((r: any) => r.state === "published");
@@ -17831,7 +17938,7 @@ app.post("/api/workspace/content/:id/schedule", requireOwner, (req,res) => {
   if(post.status!=="approved") return res.status(409).json({success:false,error:"لا يمكن الجدولة قبل موافقة المالك."});
   // الجدار الزمني المحلي (Asia/Baghdad) هو المعنى المخزَّن؛ نقارنه باللحظة الحالية بتحويل صحيح.
   if(!when || !isScheduleInFuture(when)) return res.status(400).json({success:false,error:"موعد الجدولة غير صالح أو في الماضي."});
-  post.status="scheduled"; post.scheduledFor=when; post.history=Array.isArray(post.history)?post.history:[]; post.history.push({id:workspaceId("approval"),byUser:user.name,userRole:user.role,action:"schedule",timestamp:new Date().toISOString(),note:when});
+  post.status="scheduled"; post.scheduledFor=when; post.scheduleDispatch=undefined; post.history=Array.isArray(post.history)?post.history:[]; post.history.push({id:workspaceId("approval"),byUser:user.name,userRole:user.role,action:"schedule",timestamp:new Date().toISOString(),note:when});
   persistState(); audit(user.id,"content_scheduled",`${post.id}:${when}`); res.json({success:true,post});
 });
 
@@ -20897,7 +21004,24 @@ function persistState(): void {
       persistStats.failStreak += 1;
       if (!persistStats.failingSince) persistStats.failingSince = new Date().toISOString();
       console.warn("Could not persist server state:", lastPersistError, `streak=${persistStats.failStreak}`);
+      // 2026-10-30: الرمز وحده (53000) لا يفرّق بين ضغط اتصالات عابر ونفاد حصة حوسبة Neon الشهرية
+      // (تمنع كل كتابة حتى أول الشهر). نصنّف نص الخطأ مرة عند أول فشل وعند تغيّر السبب — بلا نص خام.
+      const cause = classifyPersistFailureCause(error);
+      if (persistStats.failStreak === 1 || cause !== lastPersistFailureCause) {
+        lastPersistFailureCause = cause;
+        console.warn(`[storage] write_failed code=${lastPersistError} cause=${cause}`);
+      }
     });
+}
+let lastPersistFailureCause = "";
+function classifyPersistFailureCause(error: any): string {
+  const msg = String(error?.message || "").toLowerCase();
+  if (/compute time quota/.test(msg)) return "neon_compute_quota_exceeded";
+  if (/data transfer quota/.test(msg)) return "neon_transfer_quota_exceeded";
+  if (/project size limit|size limit .* exceeded|disk.*full/.test(msg)) return "neon_storage_full";
+  if (/too many (connections|clients)|remaining connection slots/.test(msg)) return "too_many_connections";
+  if (/timeout|terminated|econnreset|etimedout/.test(msg)) return "network_or_timeout";
+  return "unknown";
 }
 
 /**
