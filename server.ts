@@ -734,6 +734,7 @@ import { SecuritySentinel, resolveClientIdentity, classifyRequest, classifyRespo
 import { runGuardCanary, guardFailureLine, GUARD_PROBES, type GuardDeps, type GuardRound } from "./engine/ops/guardCanary";
 import { edgeTargets, judgeEdge, edgeRound, edgeFailureLine, edgeRemedy, EDGE_POLICY, hostOf, type EdgeRound, type EdgeHttpResult, type EdgeTlsResult } from "./engine/ops/edgeProbe";
 import { judgePlans, judgeStorage, bytesGrowthPerDay, PLAN_LABELS, type PlanQuota, type StorageSizeReport } from "./engine/ops/resourceWatch";
+import { judgePace, pacedAllows, paceAllowedPercent, catchUpInMs, type PacePeriod } from "./engine/ops/quotaPacing";
 import tls from "tls";
 import { recordFailure, sweepLedger, markDefect, openDefects, ledgerSummary, normalizeLedger, emptyLedger, defectLogLine, repairPlanFor, recordRepair, recentlyRepaired, countsAsRegression, isDeployOverlapCrash, normalizeRoute, LEDGER_POLICY, type DefectLedger, type FailureEvent, type RepairPlan } from "./engine/ops/defectLedger";
 import { TOKEN_KEEPER_POLICY, isPermanentRefreshError, backoffMs, decideRenewal, ownerTokenNeeds, autoRenewable, shouldMarkReauth, keeperSummary, leadFor, fmtDur, type TokenState, type RenewalKind, type KeeperRun } from "./engine/ops/tokenKeeper";
@@ -1068,6 +1069,9 @@ let securityAlertAt = 0;
 let securityAlertLevel: string = "calm";
 /** هل يرى الحارس عناوين الزوار فعلاً؟ (لو كانت كل الطلبات «داخلية» فالوكيل لا يمرّر العنوان — يُعلن ذلك). */
 const sentinelSight = { direct: 0, proxied: 0, internal: 0 };
+/** آخر طلب خارجي حقيقي (لا فحص المهندس لنفسه): المهندس لا يوقظ الخادم بنفسه أبداً (ساعات Render المجانية). */
+let lastExternalTrafficAt = 0;
+const EDGE_PROBE_UA = "gharabi-engineer-edge-probe/1";
 function requestIdentity(req: express.Request): ClientIdentity {
   const h = (n: string): string | null => { const v = req.headers[n]; return Array.isArray(v) ? v.join(",") : v ? String(v) : null; };
   return resolveClientIdentity({ forwardedFor: h("x-forwarded-for"), socketIp: req.socket?.remoteAddress || null, nfClientIp: h("x-nf-client-connection-ip"), nfRequestId: h("x-nf-request-id"), host: h("host"), forwardedHost: h("x-forwarded-host") });
@@ -1104,6 +1108,7 @@ app.use((req, res, next) => {
   let id: ClientIdentity;
   try { id = requestIdentity(req); } catch { return next(); }
   sentinelSight[id.internal ? "internal" : id.viaProxy ? "proxied" : "direct"] += 1;
+  if (!id.internal && req.headers["user-agent"] !== EDGE_PROBE_UA) lastExternalTrafficAt = Date.now();
   if (id.internal) return next(); // فحوص المهندس الداخلية وفحص صحة المنصة
   if (req.path !== "/api/health" && securitySentinel.isBlocked(id, Date.now())) {
     res.setHeader("Retry-After", "3600");
@@ -1515,7 +1520,7 @@ function neonActualTransferBytes(): number | null {
 }
 
 /** يجمع إشارات ضغط الاستهلاك من المؤشرات المُقاسة فقط (بلا سرّ). */
-function usagePressureSignals(): { usedPercent: number | null; provider?: string }[] {
+function usagePressureSignals(): { usedPercent: number | null; provider?: string; period?: PacePeriod }[] {
   const backend = storageAdapter.backend;
   const neonEgressBytes = backend === "postgres" ? freeTierUsageState.egressBytesMonth : 0;
   const neon = buildNeonTransferIndicator({ egressBytesMonth: neonEgressBytes, alertThresholdPercent: USAGE_ALERT_THRESHOLD, backend, actualTransferBytes: backend === "postgres" ? neonActualTransferBytes() : null });
@@ -1532,17 +1537,23 @@ function usagePressureSignals(): { usedPercent: number | null; provider?: string
   const measuredHours = renderUptimeState.hoursThisMonth;
   const worstCase = measuredHours + RENDER_RECOVERY_CENTER_ALLOWANCE_HOURS;
   const render = buildRenderUptimeIndicator({ measuredHoursThisMonth: measuredHours, worstCaseWorkspaceHours: worstCase, limitHours: FREE_TIER_QUOTAS.renderWorkspaceMonthlyHours, alertThresholdPercent: USAGE_ALERT_THRESHOLD });
-  return [
-    { usedPercent: neon.usedPercent, provider: 'neon' },
-    { usedPercent: drive.usedPercent, provider: 'drive' },
-    { usedPercent: driveApi.usedPercent, provider: 'driveApi' },
-    { usedPercent: render.usedPercent, provider: 'render' },
+  // قاعدة المالك (2026-10-29): كل حصة موزّعة على مدتها — المدة تُمرَّر فيُحكم بالإيقاع لا بعتبة ثابتة.
+  // ساعات Render: تُقاس على ما يتبقى بعد هامش مركز الاستعادة (الحصة مشتركة)، فإيقاع خدمتنا وحدها هو المقيس.
+  const renderPaced = measuredHours / Math.max(1, FREE_TIER_QUOTAS.renderWorkspaceMonthlyHours - RENDER_RECOVERY_CENTER_ALLOWANCE_HOURS) * 100;
+  const out: { usedPercent: number | null; provider?: string; period?: PacePeriod }[] = [
+    { usedPercent: neon.usedPercent, provider: 'neon', period: 'month_utc' },
+    { usedPercent: drive.usedPercent, provider: 'drive', period: 'capacity' },
+    { usedPercent: driveApi.usedPercent, provider: 'driveApi', period: 'day_pacific' },
+    { usedPercent: render.usedPercent == null ? null : Math.round(renderPaced * 10) / 10, provider: 'render', period: 'month_utc' },
   ];
+  // حوسبة Neon (100 CU-ساعة/شهر) — أشد حصص Neon المجانية؛ تُقاس حين يُضبط NEON_API_KEY.
+  if (backend === "postgres" && neonActualUsage) out.push({ usedPercent: Math.round((computeCuHours(neonActualUsage.computeSeconds) / FREE_TIER_QUOTAS.neonMonthlyComputeCuHours) * 1000) / 10, provider: 'neonCompute', period: 'month_utc' });
+  return out;
 }
 
 /** قرار الحارس الحالي (يُحسب عند الطلب، بلا آثار جانبية). */
 function currentUsagePressure(): UsagePressureDecision {
-  return resolveUsagePressure(usagePressureSignals());
+  return resolveUsagePressure(usagePressureSignals(), { nowMs: Date.now() });
 }
 
 /** مضاعف الفاصل الفعلي للدورات غير الحرجة (1 عادي، 2 عند الضغط). */
@@ -8248,11 +8259,14 @@ function watcherAudit(entry: {
  * الكتابة فقط، فلا يُفقد تغيير بعد كتابة فاشلة.
  */
 // (ذاكرة الدمج مُعرّفة أعلى الملف قرب مؤشرات الحصص لتُتاح لمؤقّتها مبكراً.)
+/** آخر كتابة فعلية إلى القاعدة — القاعدة مستيقظة بعدها دقائق، فقياسات المهندس تركب عليها بلا كلفة استيقاظ. */
+let lastStateWriteAt = 0;
 async function writeWatcherStateCoalesced(key: string, value: unknown, force = false, volatilePaths?: readonly string[]): Promise<void> {
   const d = decideCoalescedWrite(watcherWriteMemos.get(key), value, Date.now(), { force, volatilePaths });
   if (!d.write) { watcherWriteStats.coalesced += 1; return; }
   await storageAdapter.write(key, value);
   watcherWriteMemos.set(key, d.memo);
+  lastStateWriteAt = Date.now();
   watcherWriteStats.written += 1;
 }
 
@@ -8466,6 +8480,17 @@ async function runYouTubeWatcherCycle(trigger: "schedule" | "manual" = "schedule
         watcherAudit({ action: "poll_skipped", reason: `quota_low_prioritize_publish (remaining=${remaining}, reserve=${reserve})`, decision: "QUOTA_LOW" });
         await persistWatcherState();
         return { ok: true, skippedPoll: true, gate: "QUOTA_LOW", reason: "الحصة المتبقية منخفضة؛ أُعطيت الأولوية للنشر الفعلي.", newDetected, replied, escalated, skipped, verified, failed };
+      }
+      // توزيع الحصة على اليوم (قاعدة المالك 2026-10-29): قراءات المراقبة لا تسبق إيقاع اليوم — ميزانيتها
+      // الحصة ناقص احتياطي النشر، والمسموح حتى الآن = ما مضى من يوم المحيط الهادئ + هامش. فلا تُستنفد
+      // الحصة صباحاً ويبقى المساء بلا مراقبة، وتبقى المراقبة بأقصى ما تسمح به الحصة على امتداد اليوم.
+      const readBudget = Math.max(0, YOUTUBE_DAILY_QUOTA - YOUTUBE_QUOTA_PUBLISH_RESERVE_UNITS);
+      if (YOUTUBE_QUOTA_PROTECTION && !pacedAllows(quotaSnap.unitsUsed, readBudget, unitsPerPoll, "day_pacific", now)) {
+        watcherState.lastPollAt = new Date(now).toISOString();
+        const resumeMin = Math.ceil(catchUpInMs(((quotaSnap.unitsUsed + unitsPerPoll) / Math.max(1, readBudget)) * 100, "day_pacific", now) / 60000);
+        watcherAudit({ action: "poll_skipped", reason: `quota_paced (used=${quotaSnap.unitsUsed}, allowed_now=${Math.floor(readBudget * paceAllowedPercent(now, "day_pacific") / 100)}, resume_in_min=${resumeMin})`, decision: "QUOTA_PACED" });
+        await persistWatcherState();
+        return { ok: true, skippedPoll: true, gate: "QUOTA_PACED", reason: `قراءات اليوم سبقت إيقاع الحصة؛ تُستأنف بعد ~${resumeMin} د حتى لا تنفد قبل نهاية اليوم.`, newDetected, replied, escalated, skipped, verified, failed };
       }
     }
     const videosRes = await youtubeClient().listMyVideos((await ensureYouTubeAccessToken()).token!, {
@@ -15643,7 +15668,7 @@ function defectRepairPlaybook(fp: string): EngineerPlan | null {
     };
     case "verify_edge": return {
       steps: [{ label: `إعادة الفحص من الإنترنت (${plan.target === "public" ? "العنوان العام" : "Render مباشرة"} + الشهادة)`, timeoutMs: 90000, run: async () => {
-        const r = await runEdgeRound();
+        const r = await runEdgeRound({ manual: true });
         const x = r?.results.find((y) => y.id === plan.target);
         if (!x) return keep({ ok: true, detail: "الهدف لم يعد مضبوطاً في العناوين العامة — لا عطل قائم" });
         const good = x.verdict === "ok" || x.verdict === "slow";
@@ -16145,12 +16170,14 @@ function patrolView(full = true) {
 // حجم القاعدة الحقيقي كل 6 س (resourceWatch.ts)، وحالة الحارس الأمني تُحفظ كل 10 د عند تغيّرها.
 // كل فشل يدخل سجل الأعطال بقاعدته (guard:/edge:) فيُصلح/يُتحقق منه ويُغلق ✅ بتقرير — لا إغلاق صامت.
 const STORAGE_KEY_GUARDIAN = "engineerGuardian";
-const GUARDIAN_POLICY = Object.freeze({ canaryMs: 30 * 60000, firstCanaryMs: 60000, firstEdgeMs: 4 * 60000, storageMs: 6 * 3600000, firstStorageMs: 5 * 60000, persistMinMs: 10 * 60000 });
+const GUARDIAN_POLICY = Object.freeze({ canaryMs: 30 * 60000, firstCanaryMs: 60000, firstEdgeMs: 4 * 60000, storageMs: 6 * 3600000, firstStorageMs: 5 * 60000, persistMinMs: 6 * 3600000 });
 let guardRound: GuardRound | null = null;
 let edgeLast: EdgeRound | null = null;
 let edgeRunning = false;
+let edgeSkippedIdle = 0;
 let storageSizeLast: (StorageSizeReport & { growthPerDay: number | null }) | null = null;
 let dbSamples: Array<{ t: number; v: number }> = [];
+let storageSizePending = false;
 let guardianPersistAt = 0;
 const guardianTimers: Array<ReturnType<typeof setInterval>> = [];
 /** لقطة ثغرات مكتبات الإنتاج التي بُنيت بها هذه النسخة (scripts/dep-audit-snapshot.mjs زمن بناء Docker). */
@@ -16171,13 +16198,21 @@ async function loadGuardianState(): Promise<void> {
     dbSamples = Array.isArray(raw.dbSamples) ? raw.dbSamples.filter((x: any) => Number.isFinite(x?.t) && Number.isFinite(x?.v)).slice(-60) : [];
   } catch { /* يبدأ نظيفاً */ }
 }
+/**
+ * حفظ الحارس نادر عمداً (حوسبة Neon): فوراً فقط حين يتغيّر الحظر (حظر جديد/رفع) — وهو ما يجب أن يصمد بعد
+ * إعادة التشغيل — وإلا مرة كل 6 ساعات للعدّادات، ودائماً بالكتابة المدموجة (لا كتابة إن لم يتغيّر شيء).
+ */
+let guardianBlocksSig = "";
 function persistGuardian(force = false): void {
   if (!storageReady) return;
   const nowMs = Date.now();
-  if (!force && (!guardianDirty || nowMs - guardianPersistAt < GUARDIAN_POLICY.persistMinMs)) return;
-  guardianDirty = false; guardianPersistAt = nowMs;
-  const snap = { sentinel: securitySentinel.snapshot(nowMs), dbSamples: dbSamples.slice(-60) };
-  persistQueue = persistQueue.then(() => storageAdapter.write(STORAGE_KEY_GUARDIAN, snap)).catch(() => { guardianDirty = true; });
+  const sentinel = securitySentinel.snapshot(nowMs);
+  const sig = `${sentinel.totalBlocks}|${sentinel.blocks.length}`;
+  const blocksChanged = sig !== guardianBlocksSig;
+  if (!force && !blocksChanged && (!guardianDirty || nowMs - guardianPersistAt < GUARDIAN_POLICY.persistMinMs)) return;
+  guardianDirty = false; guardianPersistAt = nowMs; guardianBlocksSig = sig;
+  const snap = { sentinel, dbSamples: dbSamples.slice(-60) };
+  persistQueue = persistQueue.then(() => writeWatcherStateCoalesced(STORAGE_KEY_GUARDIAN, snap, force || blocksChanged)).catch(() => { guardianDirty = true; });
 }
 /** المالك دخل بنجاح: عنوانه موثوق لا يُحظر (ويُرفع أي حظر عنه). */
 function guardianTrust(req: express.Request, user: { role?: string } | null | undefined): void {
@@ -16217,7 +16252,7 @@ async function edgeHttp(url: string): Promise<EdgeHttpResult> {
   const ac = new AbortController();
   const to = setTimeout(() => ac.abort(), EDGE_POLICY.timeoutMs);
   try {
-    const r = await fetch(url, { signal: ac.signal, redirect: "manual", headers: { "user-agent": "gharabi-engineer-edge-probe/1" } });
+    const r = await fetch(url, { signal: ac.signal, redirect: "manual", headers: { "user-agent": EDGE_PROBE_UA } });
     const headers: Record<string, string> = {};
     r.headers.forEach((v, k) => { headers[k] = v; });
     try { await r.arrayBuffer(); } catch { /* */ }
@@ -16246,8 +16281,11 @@ function edgeTargetList() {
   return edgeTargets(publicBaseUrlNow(), renderUrl);
 }
 /** يصل إلى الموقع من الإنترنت كما يفعل الزائر (بلا جلسة) عبر كل عنوان عام، ويقرأ الشهادات. */
-async function runEdgeRound(): Promise<EdgeRound | null> {
+async function runEdgeRound(opts: { manual?: boolean } = {}): Promise<EdgeRound | null> {
   if (edgeRunning) return edgeLast;
+  // لا يوقظ الخادم بنفسه: Render المجاني ينام بعد 15 د بلا زيارات (توفير ساعات الشهر)، وطلب المهندس لنفسه
+  // من الإنترنت زيارة تبقيه مستيقظاً. فيفحص فقط وهناك زوار حقيقيون خلال آخر 10 د (أو بطلب المالك).
+  if (!opts.manual && Date.now() - lastExternalTrafficAt > EDGE_POLICY.selfWakeGuardMs) { edgeSkippedIdle += 1; return edgeLast; }
   edgeRunning = true;
   try {
     const targets = edgeTargetList();
@@ -16264,9 +16302,13 @@ async function runEdgeRound(): Promise<EdgeRound | null> {
 }
 
 /** حجم الخزن الحقيقي (قراءة فقط) — يُؤجَّل عند ضغط الخطة الحرج كي لا يوقظ القاعدة بلا داعٍ. */
-async function runStorageSize(): Promise<void> {
+async function runStorageSize(opts: { manual?: boolean } = {}): Promise<void> {
   if (!storageReady || typeof storageAdapter.sizeReport !== "function") return;
-  try { if (currentUsagePressure().deferNonCritical) return; } catch { /* */ }
+  try { if (!opts.manual && currentUsagePressure().deferNonCritical) return; } catch { /* */ }
+  // لا يوقظ القاعدة بنفسه (حوسبة Neon المجانية تُحسب بوقت الاستيقاظ): يقيس فقط بعد كتابة حقيقية خلال آخر
+  // 3 دقائق — القاعدة مستيقظة أصلاً فالاستعلام بلا كلفة استيقاظ. وإلا يعيد المحاولة في الجولة التالية.
+  if (!opts.manual && Date.now() - lastStateWriteAt > 3 * 60000) { storageSizePending = true; return; }
+  storageSizePending = false;
   const r = await storageAdapter.sizeReport();
   if (!r || r.databaseBytes == null) return;
   const nowMs = Date.now();
@@ -16282,14 +16324,30 @@ function storageVerdictNow() {
 }
 function freePlanQuotas(ext: { geminiUsed: number; geminiLimit: number; youtubePercent: number | null }): PlanQuota[] {
   const out: PlanQuota[] = [];
-  let sig: Array<{ usedPercent: number | null; provider?: string }> = [];
+  let sig: Array<{ usedPercent: number | null; provider?: string; period?: PacePeriod }> = [];
   try { sig = usagePressureSignals(); } catch { /* */ }
-  for (const x of sig) { const meta = PLAN_LABELS[String(x.provider)]; if (meta) out.push({ provider: String(x.provider), label: meta.label, period: meta.period, usedPercent: x.usedPercent }); }
-  if (ext.geminiLimit > 0) out.push({ provider: "gemini", label: PLAN_LABELS.gemini.label, period: "day", usedPercent: (ext.geminiUsed / ext.geminiLimit) * 100 });
-  if (ext.youtubePercent != null) out.push({ provider: "youtube", label: PLAN_LABELS.youtube.label, period: "day", usedPercent: ext.youtubePercent });
+  for (const x of sig) { const meta = PLAN_LABELS[String(x.provider)]; if (meta) out.push({ provider: String(x.provider), label: meta.label, period: x.period || meta.period, usedPercent: x.usedPercent }); }
+  if (ext.geminiLimit > 0) out.push({ provider: "gemini", label: PLAN_LABELS.gemini.label, period: "day_utc", usedPercent: (ext.geminiUsed / ext.geminiLimit) * 100 });
+  if (ext.youtubePercent != null) out.push({ provider: "youtube", label: PLAN_LABELS.youtube.label, period: "day_pacific", usedPercent: ext.youtubePercent });
   const sv = storageVerdictNow();
   if (sv && sv.percent != null) out.push({ provider: "neonStorage", label: PLAN_LABELS.neonStorage.label, period: "capacity", usedPercent: sv.percent });
   return out;
+}
+/** توزيع كل حصة على مدتها (قاعدة المالك): المستهلك، المسموح حتى الآن، الحالة، ومتى تتجدد — لغرفة المهندس. */
+function quotaPacingView() {
+  const nowMs = Date.now();
+  const g: any = (() => { try { return geminiStatus(); } catch { return {}; } })();
+  const yq: any = (() => { try { return youtubeQuotaStatusSnapshot(); } catch { return null; } })();
+  const rows = freePlanQuotas({ geminiUsed: Number(g?.usedToday || 0), geminiLimit: Number(g?.dailyGuard || 0), youtubePercent: yq && typeof yq.usedPercent === "number" ? yq.usedPercent : null })
+    .map((q) => { const v = judgePace(q.usedPercent, q.period, nowMs); return { provider: q.provider, label: q.label, period: q.period, ...v, resetsAt: v.resetsAt ? new Date(v.resetsAt).toISOString() : null }; });
+  let pressure: any = null;
+  try { const p = currentUsagePressure(); pressure = { level: p.level, provider: p.provider, note: p.note }; } catch { /* */ }
+  return {
+    rule: "كل حصة موزّعة على مدتها: المسموح حتى الآن = ما مضى من المدة + هامش صغير (يوم ≈ ساعتان، شهر ≈ يوم ونصف). تحت الإيقاع = الإيقاع الكامل؛ فوقه = أبطأ حتى يعود لخطه؛ لا تجاوز للسقف أبداً.",
+    rows, pressure,
+    gemini: { backgroundOps: [...GEMINI_BACKGROUND_OPERATIONS], pacedSkips: geminiPaceStats.pacedSkips, lastPacedAt: geminiPaceStats.lastPacedAt },
+    youtube: { readBudget: Math.max(0, YOUTUBE_DAILY_QUOTA - YOUTUBE_QUOTA_PUBLISH_RESERVE_UNITS), publishReserve: YOUTUBE_QUOTA_PUBLISH_RESERVE_UNITS, allowedNowUnits: Math.floor(Math.max(0, YOUTUBE_DAILY_QUOTA - YOUTUBE_QUOTA_PUBLISH_RESERVE_UNITS) * paceAllowedPercent(nowMs, "day_pacific") / 100) },
+  };
 }
 /** حقائق الحارس للدورية (اختيارية في PatrolFacts). */
 function guardianFacts(nowMs: number, ext: { geminiUsed: number; geminiLimit: number; youtubePercent: number | null }): Pick<PatrolFacts, "security" | "guards" | "edge" | "plans" | "storageSize" | "deps"> {
@@ -16321,6 +16379,8 @@ function guardianView(full = true) {
     edge: edgeLast ? { ...edgeLast, results: edgeLast.results.map((r) => ({ ...r, remedy: r.verdict === "ok" ? null : edgeRemedy(r.verdict, r.id) })) } : null,
     edgeConfigured: edgeTargetList().map((t) => ({ id: t.id, label: t.label, host: hostOf(t.baseUrl) })),
     plans: { status: plans.status, verdicts: plans.verdicts },
+    pacing: quotaPacingView(),
+    selfCost: { edgeSkippedIdle, lastExternalTrafficAt: lastExternalTrafficAt ? new Date(lastExternalTrafficAt).toISOString() : null, storageSizePending, persistEveryHours: GUARDIAN_POLICY.persistMinMs / 3600000 },
     storage: storageSizeLast ? { ...storageSizeLast, verdict: storageVerdictNow() } : null,
     dependencies: depAudit,
   };
@@ -16335,7 +16395,7 @@ function startGuardian(): void {
   every(() => runEdgeRound(), EDGE_POLICY.intervalMs);
   once(() => runStorageSize().catch(() => undefined), GUARDIAN_POLICY.firstStorageMs);
   every(() => runStorageSize(), GUARDIAN_POLICY.storageMs);
-  every(() => { persistGuardian(); try { maybeSecurityAlert(Date.now(), false); } catch { /* */ } }, 5 * 60000);
+  every(() => { persistGuardian(); if (storageSizePending) void runStorageSize().catch(() => undefined); try { maybeSecurityAlert(Date.now(), false); } catch { /* */ } }, 60000);
   console.log("[الغرابي AI] Engineer guardian armed: security sentinel, guard canary 30 min, edge probe 15 min, storage size 6 h");
 }
 
@@ -16346,7 +16406,7 @@ app.get("/api/engineer/guardian", requireOwner, (_req, res) => {
 app.post("/api/engineer/guardian/run", requireOwner, async (req, res) => {
   const user = (req as any).user as ServerUser;
   runGuardRound();
-  await Promise.all([runEdgeRound().catch(() => null), runStorageSize().catch(() => undefined)]);
+  await Promise.all([runEdgeRound({ manual: true }).catch(() => null), runStorageSize({ manual: true }).catch(() => undefined)]);
   audit(user.id, "engineer_guardian_run", "manual");
   res.json({ success: true, guardian: guardianView(true) });
 });
@@ -20779,7 +20839,7 @@ function persistState(): void {
       persistPending = false;
       const snapshot = buildPersistedState();
       persistStats.written += 1;
-      return storageAdapter.write(STORAGE_KEY_STATE, snapshot);
+      return storageAdapter.write(STORAGE_KEY_STATE, snapshot).then((v) => { lastStateWriteAt = Date.now(); return v; });
     })
     .then(() => {
       lastPersistError = null;
@@ -20985,8 +21045,22 @@ function canUseGemini(): boolean {
 }
 
 /** الحارس المحلي الذي يستهلكه محرك الذكاء الاصطناعي — واحد للمشروع كله. */
+/**
+ * عمليات Gemini التي تجري **في الخلفية** بلا طلب من المالك (ردود المراقبين، التصنيف، تنفيذ المهام):
+ * تُوزَّع على اليوم — لا تسبق إيقاع الحصة (قاعدة المالك 2026-10-29)، فلا تأكل الدورات حصة اليوم كلها
+ * في ساعات قليلة. حين تسبقه يعمل المحرك المحلي الحتمي (نفس السلوك عند بلوغ الحد). ما يطلبه المالك
+ * بنفسه (محادثة الوكيل، توليد المحتوى، الوصف، التحقق) يأخذ حتى سقف اليوم كاملاً.
+ */
+const GEMINI_BACKGROUND_OPERATIONS = new Set(["comment_reply", "message_reply", "meta_clarification", "message_classification", "job_execute"]);
+const geminiPaceStats = { pacedSkips: 0, lastPacedAt: null as string | null };
+function geminiBackgroundPaced(meta?: { operation?: string } | null): boolean {
+  if (!meta?.operation || !GEMINI_BACKGROUND_OPERATIONS.has(String(meta.operation))) return true;
+  if (pacedAllows(geminiUsageCount, GEMINI_DAILY_LIMIT, 1, "day_utc", Date.now())) return true;
+  geminiPaceStats.pacedSkips += 1; geminiPaceStats.lastPacedAt = new Date().toISOString();
+  return false;
+}
 const aiUsageGuard: AiUsageGuard = {
-  canConsume: () => canUseGemini(),
+  canConsume: (meta) => canUseGemini() && geminiBackgroundPaced(meta),
   consume: () => {
     rollUsageDayIfNeeded();
     if (geminiUsageCount >= GEMINI_DAILY_LIMIT) return false;

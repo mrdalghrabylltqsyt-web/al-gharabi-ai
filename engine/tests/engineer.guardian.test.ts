@@ -179,12 +179,13 @@ const MIN = 60000;
 {
   const mid = Date.parse('2026-10-16T00:00:00Z');
   check('نسبة الشهر', Math.abs(monthElapsedFraction(mid) - 15 / 31) < 0.01);
-  const v = judgePlan({ provider: 'render', label: 'ساعات Render', usedPercent: 60, period: 'month' }, mid);
-  check('★ 60% في منتصف الشهر ⇒ تنبؤ 124% ⇒ تحذير الآن', v.status === 'warn' && (v.projectedPercent || 0) > 100, JSON.stringify(v));
-  check('اليومي لا يُتنبأ', judgePlan({ provider: 'gemini', label: 'g', usedPercent: 50, period: 'day' }, mid).projectedPercent === null);
+  const v = judgePlan({ provider: 'render', label: 'ساعات Render', usedPercent: 60, period: 'month_utc' }, mid);
+  check('★ 60% في منتصف الشهر (المسموح ~53%) ⇒ سبق إيقاعه ⇒ تحذير الآن', v.status === 'warn' && (v.projectedPercent || 0) > 100 && v.paceState === 'ahead', JSON.stringify(v));
+  check('★ 85% في آخر يوم من الشهر = تحت إيقاعه ⇒ سليم (تُستعمل الحصة حتى أقصاها)', judgePlan({ provider: 'render', label: 'r', usedPercent: 85, period: 'month_utc' }, Date.parse('2026-10-31T12:00:00Z')).status === 'ok');
+  check('اليومي يُحكم بإيقاع يومه', judgePlan({ provider: 'gemini', label: 'g', usedPercent: 50, period: 'day_utc' }, Date.parse('2026-10-16T06:00:00Z')).status === 'fail' && judgePlan({ provider: 'gemini', label: 'g', usedPercent: 50, period: 'day_utc' }, Date.parse('2026-10-16T18:00:00Z')).status === 'ok');
   check('≥95% عطل', judgePlan({ provider: 'drive', label: 'd', usedPercent: 96, period: 'capacity' }, mid).status === 'fail');
-  check('غير مقيس = غير متاح', judgePlan({ provider: 'neon', label: 'n', usedPercent: null, period: 'month' }, mid).status === 'skip');
-  check('الأسوأ يحكم', judgePlans([{ provider: 'a', label: 'a', usedPercent: 10, period: 'day' }, { provider: 'b', label: 'b', usedPercent: 97, period: 'capacity' }], mid).worst?.provider === 'b');
+  check('غير مقيس = غير متاح', judgePlan({ provider: 'neon', label: 'n', usedPercent: null, period: 'month_utc' }, mid).status === 'skip');
+  check('الأسوأ يحكم', judgePlans([{ provider: 'a', label: 'a', usedPercent: 10, period: 'day_utc' }, { provider: 'b', label: 'b', usedPercent: 97, period: 'capacity' }], mid).worst?.provider === 'b');
   const Q = 512 * 1048576;
   const sv = judgeStorage({ at: '', backend: 'postgres', databaseBytes: 400 * 1048576, keys: [{ key: 'state', bytes: 300 * 1048576 }] }, Q, 5 * 1048576);
   check('★ القاعدة 78% وتمتلئ بعد ~22 يوماً ⇒ تحذير يسمّي الأكبر', sv.status === 'warn' && sv.daysToFull === 22 && sv.detail.includes('state'), JSON.stringify(sv));

@@ -1,3 +1,5 @@
+import { judgePace, periodElapsed, type PacePeriod } from './quotaPacing';
+
 /**
  * مراقبة الخطط المجانية والخزن (2026-10-29) — منطق صافٍ.
  *
@@ -11,48 +13,41 @@ export interface PlanQuota {
   provider: string;
   label: string;
   usedPercent: number | null;
-  /** شهرية (تُتنبأ بنهاية الشهر) أم يومية/سعة ثابتة. */
-  period: 'month' | 'day' | 'capacity';
+  /** مدة الحصة: تُوزَّع عليها (قاعدة المالك 2026-10-29) — أو سعة ثابتة. */
+  period: PacePeriod;
 }
-export interface PlanVerdict extends PlanQuota { projectedPercent: number | null; status: 'ok' | 'warn' | 'fail' | 'skip'; detail: string }
+export interface PlanVerdict extends PlanQuota { projectedPercent: number | null; allowedPercent: number | null; paceState: string; status: 'ok' | 'warn' | 'fail' | 'skip'; detail: string }
 
-export const PLAN_LABELS: Readonly<Record<string, { label: string; period: PlanQuota['period'] }>> = Object.freeze({
-  neon: { label: 'نقل قاعدة Neon (شهري)', period: 'month' },
-  neonCompute: { label: 'حوسبة Neon (شهري)', period: 'month' },
+export const PLAN_LABELS: Readonly<Record<string, { label: string; period: PacePeriod }>> = Object.freeze({
+  neon: { label: 'نقل قاعدة Neon (شهري)', period: 'month_utc' },
+  neonCompute: { label: 'حوسبة Neon (شهري)', period: 'month_utc' },
   drive: { label: 'مساحة Google Drive', period: 'capacity' },
-  driveApi: { label: 'حصة Drive API (يومي)', period: 'day' },
-  render: { label: 'ساعات Render (شهري)', period: 'month' },
-  gemini: { label: 'Gemini (يومي)', period: 'day' },
-  youtube: { label: 'حصة YouTube (يومي)', period: 'day' },
+  driveApi: { label: 'حصة Drive API (يومي)', period: 'day_pacific' },
+  render: { label: 'ساعات Render (شهري)', period: 'month_utc' },
+  gemini: { label: 'Gemini (يومي)', period: 'day_utc' },
+  youtube: { label: 'حصة YouTube (يومي)', period: 'day_pacific' },
   neonStorage: { label: 'مساحة قاعدة Neon', period: 'capacity' },
 });
 
 /** نسبة الشهر المنقضي (0..1] بتوقيت UTC. */
 export function monthElapsedFraction(nowMs: number): number {
-  const d = new Date(nowMs);
-  const start = Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), 1);
-  const end = Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + 1, 1);
-  return Math.max(1 / 31, Math.min(1, (nowMs - start) / (end - start)));
+  return Math.max(1 / 31, periodElapsed(nowMs, 'month_utc'));
 }
 
+/** الحكم بالإيقاع: فوق المسموح حتى الآن = تحذير، فوقه كثيراً أو عند السقف = عطل؛ تحت الإيقاع سليم مهما ارتفعت النسبة. */
 export function judgePlan(q: PlanQuota, nowMs: number): PlanVerdict {
-  if (q.usedPercent == null || !Number.isFinite(q.usedPercent)) return { ...q, projectedPercent: null, status: 'skip', detail: `${q.label}: غير مقيس بعد` };
-  const used = Math.max(0, q.usedPercent);
-  // التنبؤ معتبر بعد 3 أيام من الشهر فقط (قبلها يضخّمه أي نشاط أول الشهر).
-  const frac = monthElapsedFraction(nowMs);
-  const projected = q.period === 'month' && frac >= 0.1 ? Math.round(used / frac) : null;
-  let status: PlanVerdict['status'] = 'ok';
-  if (used >= 95) status = 'fail';
-  else if (used >= 80 || (projected != null && projected >= 100)) status = 'warn';
-  const detail = `${q.label}: ${Math.round(used)}%${projected != null ? ` — بهذا الإيقاع ${projected}% آخر الشهر` : ''}`;
-  return { ...q, usedPercent: Math.round(used * 10) / 10, projectedPercent: projected, status, detail };
+  const v = judgePace(q.usedPercent, q.period, nowMs);
+  if (v.state === 'unknown') return { ...q, projectedPercent: null, allowedPercent: null, paceState: v.state, status: 'skip', detail: `${q.label}: غير مقيس بعد` };
+  const status: PlanVerdict['status'] = v.level === 'critical' ? 'fail' : v.level === 'watch' ? 'warn' : 'ok';
+  const proj = v.projectedPercent != null && q.period !== 'capacity' ? ` · بهذا الإيقاع ${v.projectedPercent}% آخر المدة` : '';
+  return { ...q, usedPercent: v.usedPercent, projectedPercent: v.projectedPercent, allowedPercent: v.allowedPercent, paceState: v.state, status, detail: `${q.label}: ${v.detail}${proj}` };
 }
 
 export function judgePlans(quotas: PlanQuota[], nowMs: number): { status: 'ok' | 'warn' | 'fail' | 'skip'; verdicts: PlanVerdict[]; worst: PlanVerdict | null } {
   const verdicts = quotas.map((q) => judgePlan(q, nowMs));
   const rank = { fail: 0, warn: 1, ok: 2, skip: 3 } as const;
   const measured = verdicts.filter((v) => v.status !== 'skip');
-  const worst = measured.slice().sort((a, b) => rank[a.status] - rank[b.status] || Number(b.projectedPercent ?? b.usedPercent) - Number(a.projectedPercent ?? a.usedPercent))[0] || null;
+  const worst = measured.slice().sort((a, b) => rank[a.status] - rank[b.status] || Number(b.usedPercent) - Number(a.usedPercent))[0] || null;
   return { status: worst ? worst.status : 'skip', verdicts, worst };
 }
 

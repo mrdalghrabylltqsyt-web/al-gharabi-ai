@@ -249,10 +249,10 @@ export const PATROL_CHECKS: Readonly<Record<EngineerModule, Check[]>> = Object.f
       if (e.worst === 'tls_soon' || e.worst === 'headers' || e.worst === 'slow') return { status: 'warn', detail: e.details.join(' · '), advice: e.remedy || null };
       return { status: stale ? 'warn' : 'ok', detail: `${e.details.join(' · ')}${stale ? ` (آخر فحص قبل ${e.ageMin} د)` : ''}`, advice: stale ? 'الفحص الخارجي متوقف — يعيد المهندس تسليحه' : null };
     }),
-    c('monitor.freeplans', 'كل حصة مجانية وتنبؤ نهاية الشهر', 'نفاد حصة واحدة (ساعات Render، نقل Neon، Drive…) يوقف المشروع أو النسخ — الإنذار قبل النفاد لا بعده.', (f) => {
+    c('monitor.freeplans', 'كل حصة مجانية موزّعة على مدتها', 'كل حصة (Render، Neon، Drive، Gemini، YouTube…) تُستهلك على إيقاع مدتها: لا تنفد مبكراً فيتوقف المشروع، ولا تُترك غير مستعملة.', (f) => {
       const p = f.plans;
       if (!p || p.status === 'skip') return { status: 'skip', detail: 'لا قياس للحصص بعد' };
-      return { status: p.status, detail: p.details.join(' · '), advice: p.status === 'ok' ? null : `الأعلى: ${p.worstDetail}. الحارس يبطئ الأعمال الثقيلة تلقائياً عند 80%؛ قرار المالك: خطة أعلى أو تقليل التكرار.` };
+      return { status: p.status, detail: p.details.join(' · '), advice: p.status === 'ok' ? null : `الأعلى: ${p.worstDetail}. الحارس يبطئ الدورات تلقائياً حتى يعود الاستهلاك إلى خط الإيقاع (ويؤجّل الثقيل إن سبقه كثيراً) — لا إجراء مطلوب ما لم يتكرر كل مدة؛ عندها القرار للمالك: خطة أعلى أو تقليل التكرار.` };
     }),
   ],
   storage: [
